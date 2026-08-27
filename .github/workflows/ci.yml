@@ -44,13 +44,23 @@ jobs:
           od -An -tx1 -N 16 target/bios.img
 
       - name: Boot BIOS in QEMU
+        id: bios
         timeout-minutes: 5
+        continue-on-error: true
         run: cargo run -- --ci
 
       - name: Boot UEFI in QEMU
+        id: uefi
         timeout-minutes: 5
+        continue-on-error: true
         run: cargo run -- uefi --ci
 
       - name: Boot AArch64 in QEMU
+        id: aarch64
         timeout-minutes: 5
+        continue-on-error: true
         run: cargo run -- aarch64 --ci
+
+      - name: Fail if any boot failed
+        if: steps.bios.outcome == 'failure' || steps.uefi.outcome == 'failure' || steps.aarch64.outcome == 'failure'
+        run: exit 1
