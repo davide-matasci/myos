@@ -114,10 +114,10 @@ cargo run -- uefi --ci
 cargo run -- aarch64 --ci
 ```
 
-BIOS/UEFI boots with `-display none`, require the hello string on serial,
-and expect QEMU to exit via `isa-debug-exit`. AArch64 requires the same
-hello string and exits via PSCI SYSTEM_OFF (must not hang; CI times out
-at 60s).
+BIOS/UEFI boots with `-display none`, require `Hello from myos`, `heap ok`,
+and `int ok` on serial, and expect QEMU to exit via `isa-debug-exit`
+(BIOS ~20s, UEFI 60s). AArch64 requires the same three strings and exits
+via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
 
 ## Layout
 
@@ -125,9 +125,10 @@ at 60s).
 |------|------|
 | `src/main.rs` | Host launcher: starts QEMU (BIOS, UEFI, AArch64) |
 | `build.rs` | `DiskImageBuilder` → BIOS + UEFI images |
-| `kernel/src/main.rs` | `no_std` entry, serial hello, halt |
-| `kernel/src/arch/x86/` | COM1 serial, isa-debug-exit |
-| `kernel/src/arch/aarch64/` | `_start`, PL011 UART, PSCI off, linker script |
+| `kernel/src/main.rs` | `no_std` entry: hello, heap, timer IRQ, halt |
+| `kernel/src/heap.rs` | 128 KiB `linked_list_allocator` heap |
+| `kernel/src/arch/x86/` | COM1, paging, GDT/IDT/PIC/PIT, isa-debug-exit |
+| `kernel/src/arch/aarch64/` | `_start`, PL011, identity MMU, GICv2 timer, PSCI off |
 | `kernel/src/framebuffer.rs` | Pixel writer for the x86_64 bootloader framebuffer |
 | `kernel/src/font.rs` | Tiny 8x8 bitmap font |
 | `.cargo/config.toml` | `bindeps` (artifact dependencies) |
@@ -142,3 +143,8 @@ at 60s).
 - QEMU `virt` RAM starts at `0x40000000`. The DTB can sit there on a
   bare-metal boot, so the kernel is linked at `0x40080000`. UART0 is the
   virt PL011 at `0x09000000`.
+- Paging: x86_64 keeps the bootloader's offset map and maps a 128 KiB
+  heap at `0x_4444_4444_0000`. AArch64 identity-maps 1 GiB of devices +
+  1 GiB of RAM and turns the EL1 MMU on.
+- Interrupts: x86_64 uses the 8259 PIC + PIT (IRQ0). AArch64 uses GICv2
+  (`-machine virt,gic-version=2`) and the generic physical timer (PPI 30).
