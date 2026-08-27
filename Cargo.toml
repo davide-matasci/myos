@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "modules/hello", "modules/abi"]
+members = ["kernel", "modules/abi"]
 default-members = ["."]
 
 [package]
@@ -20,15 +20,5 @@ kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 [profile.dev]
 panic = "abort"
 
-[profile.dev.package.hello]
-opt-level = "s"
-debug = false
-strip = "debuginfo"
-
 [profile.release]
 panic = "abort"
-
-[profile.release.package.hello]
-opt-level = "s"
-debug = false
-strip = "debuginfo"
