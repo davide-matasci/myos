@@ -3,8 +3,15 @@ bindeps = true
 
 # Hello is a no_std artifact; force abort even if cargo picks the
 # build-override profile (panic=unwind by default).
+# Limine panics on ET_DYN without PT_DYNAMIC (CI #44). Static + kernel
+# code model yields a higher-half ET_EXEC.
 [target.x86_64-unknown-none]
-rustflags = ["-C", "panic=abort"]
+rustflags = [
+    "-C", "panic=abort",
+    "-C", "code-model=kernel",
+    "-C", "relocation-model=static",
+    "-C", "link-arg=-no-pie",
+]
 
 [target.aarch64-unknown-none-softfloat]
-rustflags = ["-C", "panic=abort"]
+rustflags = ["-C", "panic=abort", "-C", "relocation-model=static"]

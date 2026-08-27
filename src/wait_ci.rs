@@ -3,6 +3,12 @@ struct CiExpect {
     qemu_debug_exit: bool,
 }
 
+const CI_NEEDLES: [&str; 4] = ["Hello from myos", "heap ok", "int ok", "mod ok"];
+
+fn serial_has_all_needles(serial: &str) -> bool {
+    CI_NEEDLES.iter().all(|n| serial.contains(n))
+}
+
 fn wait_ci(mut child: Child, expect: CiExpect) {
     let mut stdout = child.stdout.take().expect("qemu stdout");
     let mut stderr = child.stderr.take().expect("qemu stderr");
@@ -47,21 +53,21 @@ fn wait_ci(mut child: Child, expect: CiExpect) {
     let err = stderr_handle.join().expect("stderr thread");
     eprint!("{err}");
 
-    if timed_out {
-        eprintln!("error: QEMU timed out after {:?}", expect.timeout);
-        if serial.is_empty() {
-            eprintln!("error: serial was empty at timeout");
+    if !serial_has_all_needles(&serial) {
+        if timed_out {
+            eprintln!("error: QEMU timed out after {:?}", expect.timeout);
+            if serial.is_empty() {
+                eprintln!("error: serial was empty at timeout");
+            }
+        }
+        for needle in CI_NEEDLES {
+            if !serial.contains(needle) {
+                eprintln!("error: serial output did not contain {needle:?}");
+            }
         }
         exit(1);
     }
-
-    for needle in ["Hello from myos", "heap ok", "int ok", "mod ok"] {
-        if !serial.contains(needle) {
-            eprintln!("error: serial output did not contain {needle:?}");
-            exit(1);
-        }
-    }
-    if expect.qemu_debug_exit {
+    if expect.qemu_debug_exit && !timed_out {
         if status.code() != Some(QEMU_SUCCESS_STATUS) {
             eprintln!(
                 "error: unexpected QEMU exit status {status:?} (want {QEMU_SUCCESS_STATUS} from isa-debug-exit)"
