@@ -44,7 +44,9 @@ fn kernel_main() -> ! {
     heap::init();
     prove_heap(&mut serial);
 
+    let _ = writeln!(serial, "irq init");
     arch::init_interrupts();
+    let _ = writeln!(serial, "irq wait");
     arch::wait_for_interrupt_proof();
     let _ = writeln!(serial, "int ok");
 

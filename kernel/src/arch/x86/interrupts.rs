@@ -1,76 +1,50 @@
-//! IDT + 8259 PIC + PIT. A timer IRQ is the "int ok" proof.
-//!
-//! Limine (base rev 5+) leaves the local APIC enabled and LINT0 masked, which
-//! disconnects the PIC. Drop the APIC so IRQ0 from the PIT can reach us.
+//! IDT + x2APIC timer. Limine leaves the LAPIC enabled, so 8259 PIC IRQs
+//! never arrive (CI #46 hung after "heap ok" on BIOS and UEFI).
 
+use core::arch::x86_64::__cpuid;
 use core::sync::atomic::{AtomicBool, Ordering};
-use pic8259::ChainedPics;
-use spin::{Mutex, Once};
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use spin::Once;
+use x86_64::registers::model_specific::Msr;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 use super::gdt;
 
-pub const PIC_1_OFFSET: u8 = 32;
-pub const PIC_2_OFFSET: u8 = 40;
+const TIMER_VECTOR: u8 = 32;
+const SPURIOUS_VECTOR: u8 = 0xFF;
+const IA32_APIC_BASE: u32 = 0x1B;
+const MSR_EOI: u32 = 0x80B;
+const MSR_SVR: u32 = 0x80F;
+const MSR_LVT_TIMER: u32 = 0x832;
+const MSR_LVT_LINT0: u32 = 0x835;
+const MSR_LVT_LINT1: u32 = 0x836;
+const MSR_TMICT: u32 = 0x838;
+const MSR_TMDCR: u32 = 0x83E;
 
-static PICS: Mutex<ChainedPics> =
-    Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
 
-#[derive(Clone, Copy)]
-#[repr(u8)]
-enum Irq {
-    Timer = PIC_1_OFFSET,
-}
-
-fn disable_apic() {
-    // IA32_APIC_BASE (MSR 0x1B), bit 11 = APIC global enable.
-    unsafe {
-        let mut lo: u32;
-        let mut hi: u32;
-        core::arch::asm!(
-            "rdmsr",
-            in("ecx") 0x1Bu32,
-            out("eax") lo,
-            out("edx") hi,
-            options(nomem, nostack, preserves_flags),
-        );
-        lo &= !(1 << 11);
-        core::arch::asm!(
-            "wrmsr",
-            in("ecx") 0x1Bu32,
-            in("eax") lo,
-            in("edx") hi,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-}
-
 pub fn init() {
     super::gdt::init();
-    disable_apic();
 
     let idt = IDT.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint);
+        idt.page_fault.set_handler_fn(page_fault);
+        idt.general_protection_fault.set_handler_fn(general_protection);
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
-        idt[Irq::Timer as u8].set_handler_fn(timer);
+        idt[TIMER_VECTOR].set_handler_fn(timer);
+        idt[SPURIOUS_VECTOR].set_handler_fn(spurious);
         idt
     });
     idt.load();
 
-    unsafe {
-        let mut pics = PICS.lock();
-        pics.initialize();
-        // Unmask only IRQ0 (PIT). 1 = masked.
-        pics.write_masks(0b1111_1110, 0b1111_1111);
+    if !init_x2apic_timer() {
+        panic!("x2APIC required (Limine leaves PIC IRQs dead)");
     }
-    init_pit();
     x86_64::instructions::interrupts::enable();
 }
 
@@ -80,7 +54,49 @@ pub fn wait_for_interrupt_proof() {
     }
 }
 
+fn has_x2apic() -> bool {
+    let r = unsafe { __cpuid(1) };
+    r.ecx & (1 << 21) != 0
+}
+
+fn wrmsr(reg: u32, val: u64) {
+    let mut msr = Msr::new(reg);
+    unsafe {
+        msr.write(val);
+    }
+}
+
+fn init_x2apic_timer() -> bool {
+    if !has_x2apic() {
+        return false;
+    }
+    let mut base = Msr::new(IA32_APIC_BASE);
+    unsafe {
+        let v = base.read();
+        base.write(v | (1 << 11) | (1 << 10));
+    }
+    // SVR: software-enable + spurious vector. LINT0/1 masked so PIC is idle.
+    wrmsr(MSR_SVR, 0x100 | SPURIOUS_VECTOR as u64);
+    wrmsr(MSR_LVT_LINT0, 1 << 16);
+    wrmsr(MSR_LVT_LINT1, 1 << 16);
+    wrmsr(MSR_TMDCR, 0b1011); // divide by 1
+    // Periodic so a tick that expires before sti stays pending.
+    wrmsr(MSR_LVT_TIMER, TIMER_VECTOR as u64 | (1 << 17));
+    wrmsr(MSR_TMICT, 100_000);
+    true
+}
+
 extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {}
+
+extern "x86-interrupt" fn spurious(_frame: InterruptStackFrame) {}
+
+extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFaultErrorCode) {
+    panic!("page fault {code:?} {frame:?}");
+}
+
+extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, code: u64) {
+    panic!("general protection {code:#x} {frame:?}");
+}
 
 extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _code: u64) -> ! {
     panic!("double fault: {frame:?}");
@@ -88,17 +104,6 @@ extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _code: u64) -
 
 extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
     TIMER_FIRED.store(true, Ordering::SeqCst);
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(Irq::Timer as u8);
-    }
-}
-
-fn init_pit() {
-    // Channel 0, lobyte/hibyte, mode 2 (rate generator). ~100 Hz.
-    const DIVISOR: u16 = 11932;
-    unsafe {
-        core::arch::asm!("out dx, al", in("dx") 0x43_u16, in("al") 0x34_u8, options(nomem, nostack, preserves_flags));
-        core::arch::asm!("out dx, al", in("dx") 0x40_u16, in("al") (DIVISOR as u8), options(nomem, nostack, preserves_flags));
-        core::arch::asm!("out dx, al", in("dx") 0x40_u16, in("al") ((DIVISOR >> 8) as u8), options(nomem, nostack, preserves_flags));
-    }
+    wrmsr(MSR_LVT_TIMER, TIMER_VECTOR as u64 | (1 << 16));
+    wrmsr(MSR_EOI, 0);
 }
