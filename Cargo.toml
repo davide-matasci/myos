@@ -1,0 +1,20 @@
+[package]
+name = "myos"
+version = "0.1.0"
+edition = "2024"
+description = "A small x86_64 kernel that boots in QEMU and prints to the VGA text buffer."
+publish = false
+
+[dependencies]
+bootloader = "0.9.35"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[[bin]]
+name = "myos"
+test = false
+bench = false
