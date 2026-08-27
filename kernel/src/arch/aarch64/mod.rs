@@ -1,6 +1,7 @@
 //! AArch64 QEMU `virt`: no rust-osdev bootloader, just `-kernel` into RAM.
 
 mod boot;
+mod interrupts;
 mod paging;
 mod serial;
 pub use serial::SerialPort;
@@ -14,6 +15,14 @@ pub fn init_paging() {
 
 pub fn map_writable(start: usize, size: usize) {
     paging::map_writable(start, size);
+}
+
+pub fn init_interrupts() {
+    interrupts::init();
+}
+
+pub fn wait_for_interrupt_proof() {
+    interrupts::wait_for_interrupt_proof();
 }
 
 /// PSCI SYSTEM_OFF via HVC. QEMU `virt` uses HVC as the PSCI conduit, and

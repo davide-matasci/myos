@@ -1,5 +1,7 @@
 //! x86_64: bootloader 0.11 already dropped us in long mode with a framebuffer.
 
+mod gdt;
+mod interrupts;
 mod paging;
 mod serial;
 pub use serial::SerialPort;
@@ -15,6 +17,14 @@ pub fn init_paging(boot_info: &'static mut BootInfo) {
 
 pub fn map_writable(start: usize, size: usize) {
     paging::map_writable(start, size);
+}
+
+pub fn init_interrupts() {
+    interrupts::init();
+}
+
+pub fn wait_for_interrupt_proof() {
+    interrupts::wait_for_interrupt_proof();
 }
 
 /// QEMU `isa-debug-exit` at iobase 0xf4. A no-op if the device was not added.
