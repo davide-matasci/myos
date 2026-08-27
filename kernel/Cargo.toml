@@ -9,5 +9,9 @@ name = "kernel"
 test = false
 bench = false
 
+[dependencies]
+linked_list_allocator = "0.10.5"
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 bootloader_api = "0.11.17"
+x86_64 = "0.15.2"
