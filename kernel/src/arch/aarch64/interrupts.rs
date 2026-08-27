@@ -1,4 +1,8 @@
-//! EL1 exception vectors, GICv2, and the generic physical timer.
+//! Exception vectors, GICv2, and the generic physical timer.
+//!
+//! Limine (base rev 6) enters with PSTATE.SP=0 (SP_EL0), either at EL1 or at
+//! EL2 with VHE (`HCR_EL2.{E2H,TGE}`). IRQs taken with SPSel=0 use the
+//! Current-EL SP0 slot, not SP_ELx; the handler has to live in both.
 
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -14,31 +18,31 @@ global_asm!(
     .align 11
     .global exception_vectors
 exception_vectors:
-    // Current EL, SP_EL0
-    .align 7
-    b exception_hang
-    .align 7
-    b exception_hang
-    .align 7
-    b exception_hang
-    .align 7
-    b exception_hang
-    // Current EL, SP_ELx (this is us)
+    // Current EL, SP_EL0 (Limine entry: PSTATE.SP=0)
     .align 7
     b exception_hang
     .align 7
     b irq_el1h
     .align 7
+    b irq_el1h
+    .align 7
     b exception_hang
+    // Current EL, SP_ELx
+    .align 7
+    b exception_hang
+    .align 7
+    b irq_el1h
+    .align 7
+    b irq_el1h
     .align 7
     b exception_hang
     // Lower EL, AArch64
     .align 7
     b exception_hang
     .align 7
-    b exception_hang
+    b irq_el1h
     .align 7
-    b exception_hang
+    b irq_el1h
     .align 7
     b exception_hang
     // Lower EL, AArch32
@@ -110,20 +114,35 @@ fn current_el() -> u64 {
     (el >> 2) & 3
 }
 
+/// Copy SP_EL0 onto SP_ELx and switch to SPSel=1 so later IRQs use the SPx slot.
+fn use_spx() {
+    unsafe {
+        asm!(
+            "mov {tmp}, sp",
+            "msr spsel, #1",
+            "isb",
+            "mov sp, {tmp}",
+            tmp = out(reg) _,
+            options(nomem),
+        );
+    }
+}
+
 pub fn init() {
-    // Limine may enter at EL1 or EL2. IRQs use the current-EL VBAR.
+    use_spx();
+    // VHE at EL2 redirects *_EL1 onto the EL2 bank; still set VBAR_EL2 when
+    // we are actually at EL2 so a non-VHE handoff would work too.
     let v = exception_vectors as *const () as usize;
     unsafe {
+        asm!("msr vbar_el1, {v}", "isb", v = in(reg) v, options(nostack));
         if current_el() >= 2 {
             asm!("msr vbar_el2, {v}", "isb", v = in(reg) v, options(nostack));
-        } else {
-            asm!("msr vbar_el1, {v}", "isb", v = in(reg) v, options(nostack));
         }
     }
     init_gic();
     init_timer();
     unsafe {
-        asm!("msr daifclr, #2", options(nomem, nostack)); // unmask IRQ
+        asm!("msr daifclr, #3", options(nomem, nostack)); // unmask IRQ+FIQ
     }
 }
 
@@ -136,8 +155,8 @@ pub fn wait_for_interrupt_proof() {
 }
 
 fn init_gic() {
-    write32(GICD, 1); // GICD_CTLR enable
-    write32(GICC, 1); // GICC_CTLR enable
+    write32(GICD, 3); // GICD_CTLR enable group 0+1
+    write32(GICC, 3); // GICC_CTLR enable group 0+1
     write32(GICC + 0x004, 0xFF); // PMR: accept all
     write32(GICD + 0x100, 1 << TIMER_INTID);
     unsafe {

@@ -1,4 +1,7 @@
 //! IDT + 8259 PIC + PIT. A timer IRQ is the "int ok" proof.
+//!
+//! Limine (base rev 5+) leaves the local APIC enabled and LINT0 masked, which
+//! disconnects the PIC. Drop the APIC so IRQ0 from the PIT can reach us.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use pic8259::ChainedPics;
@@ -21,8 +24,32 @@ enum Irq {
     Timer = PIC_1_OFFSET,
 }
 
+fn disable_apic() {
+    // IA32_APIC_BASE (MSR 0x1B), bit 11 = APIC global enable.
+    unsafe {
+        let mut lo: u32;
+        let mut hi: u32;
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") 0x1Bu32,
+            out("eax") lo,
+            out("edx") hi,
+            options(nomem, nostack, preserves_flags),
+        );
+        lo &= !(1 << 11);
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") 0x1Bu32,
+            in("eax") lo,
+            in("edx") hi,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
 pub fn init() {
     super::gdt::init();
+    disable_apic();
 
     let idt = IDT.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
