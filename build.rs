@@ -11,22 +11,16 @@ fn main() {
         .create_bios_image(&bios_path)
         .expect("failed to create BIOS disk image");
 
+    let uefi_path = out_dir.join("uefi.img");
+    builder
+        .create_uefi_image(&uefi_path)
+        .expect("failed to create UEFI disk image");
+
     let target_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("target");
     let _ = std::fs::create_dir_all(&target_dir);
     let _ = std::fs::copy(&bios_path, target_dir.join("bios.img"));
-    println!("cargo:rustc-env=BIOS_PATH={}", bios_path.display());
+    let _ = std::fs::copy(&uefi_path, target_dir.join("uefi.img"));
 
-    #[cfg(feature = "uefi")]
-    {
-        let uefi_path = out_dir.join("uefi.img");
-        builder
-            .create_uefi_image(&uefi_path)
-            .expect("failed to create UEFI disk image");
-        let _ = std::fs::copy(&uefi_path, target_dir.join("uefi.img"));
-        println!("cargo:rustc-env=UEFI_PATH={}", uefi_path.display());
-    }
-    #[cfg(not(feature = "uefi"))]
-    {
-        println!("cargo:rustc-env=UEFI_PATH=");
-    }
+    println!("cargo:rustc-env=BIOS_PATH={}", bios_path.display());
+    println!("cargo:rustc-env=UEFI_PATH={}", uefi_path.display());
 }

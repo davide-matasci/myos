@@ -10,17 +10,11 @@ edition = "2024"
 description = "A small x86_64 kernel that boots in QEMU and prints to the bootloader framebuffer."
 publish = false
 
-[features]
-default = []
-# UEFI disk image. Current nightly often fails to link `bootloader-x86_64-uefi`;
-# BIOS 0.11 is what CI boots. Try: cargo run --features uefi -- uefi
-uefi = ["bootloader/uefi", "dep:ovmf-prebuilt"]
-
 [dependencies]
-ovmf-prebuilt = { version = "0.2.9", optional = true }
+ovmf-prebuilt = "0.2.9"
 
 [build-dependencies]
-bootloader = { version = "0.11.17", default-features = false, features = ["bios"] }
+bootloader = "0.11.17"
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 
 [profile.dev]

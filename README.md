@@ -6,17 +6,18 @@ starting point to grow into a real OS, not a feature dump.
 
 It uses **[bootloader 0.11+](https://crates.io/crates/bootloader)**
 (`bootloader` 0.11.17 / `bootloader_api` 0.11.17): a `kernel` crate plus a
-host builder that produces a BIOS disk image with `DiskImageBuilder`. VGA
-text at `0xb8000` is gone — 0.11 gives you a pixel framebuffer instead.
+host builder that produces BIOS and UEFI disk images with
+`DiskImageBuilder`. VGA text at `0xb8000` is gone — UEFI (and the 0.11 BIOS
+path) give you a pixel framebuffer instead.
 
-The default build is **BIOS only**. The UEFI bootloader crate currently fails
-to link on the newest nightlies (`bootloader-x86_64-uefi` vs the `uefi` crate),
-so CI boots BIOS. UEFI is still there behind `--features uefi`.
+Nightly is **pinned** (`nightly-2026-07-26`) because floating latest nightly
+fails to link `bootloader-x86_64-uefi` (the `uefi` crate vs rust-lld). That
+pin is the day before 0.11.17 was published.
 
 ## Prerequisites
 
 - [rustup](https://rustup.rs/) (the `rust-toolchain.toml` in this repo
-  selects nightly and the components below)
+  selects the pinned nightly and the components below)
 - QEMU (`qemu-system-x86_64`)
 
 Nightly components / targets (installed automatically by rustup from
@@ -25,11 +26,12 @@ Nightly components / targets (installed automatically by rustup from
 - `llvm-tools-preview` — the bootloader crate needs `llvm-objcopy` to build
   its BIOS stages
 - `rust-src`
-- `x86_64-unknown-none` — kernel target (tier 2, no custom JSON)
+- `x86_64-unknown-none` — kernel target
+- `x86_64-unknown-uefi` — used while building the UEFI bootloader
 
 ```sh
 # rustup reads rust-toolchain.toml on the first cargo invocation
-# and installs nightly + components + targets.
+# and installs the pinned nightly + components + targets.
 
 # Debian/Ubuntu:  sudo apt install qemu-system-x86
 # Fedora:         sudo dnf install qemu-system-x86
@@ -50,23 +52,23 @@ image, and starts QEMU. You should see a green `Hello from myos` on a black
 screen. Close the QEMU window to exit.
 
 ```sh
-cargo run --features uefi -- uefi
+cargo run -- uefi
 ```
 
 Same thing over UEFI (OVMF firmware is fetched on first run into
-`target/ovmf`). This also needs the `x86_64-unknown-uefi` target. It may fail
-on the newest nightly until `bootloader-x86_64-uefi` catches up.
+`target/ovmf`).
 
-To only build the BIOS image:
+To only build the images:
 
 ```sh
 cargo build
 ```
 
-A copy also lands at:
+Copies also land at:
 
 ```
 target/bios.img
+target/uefi.img
 ```
 
 Boot a built image yourself with:
@@ -81,27 +83,28 @@ Release build:
 cargo run --release
 ```
 
-Headless check (what CI runs):
+Headless checks (what CI runs):
 
 ```sh
 cargo run -- --ci
+cargo run -- uefi --ci
 ```
 
-That boots the BIOS image with `-display none`, requires the hello string
-on serial, and expects QEMU to exit via `isa-debug-exit`.
+That boots with `-display none`, requires the hello string on serial, and
+expects QEMU to exit via `isa-debug-exit`.
 
 ## Layout
 
 | Path | Role |
 |------|------|
 | `src/main.rs` | Host launcher: starts QEMU |
-| `build.rs` | `DiskImageBuilder` → BIOS image (UEFI if `--features uefi`) |
+| `build.rs` | `DiskImageBuilder` → BIOS + UEFI images |
 | `kernel/src/main.rs` | `no_std` entry (`entry_point!`), serial, halt |
 | `kernel/src/framebuffer.rs` | Pixel writer for the bootloader framebuffer |
 | `kernel/src/font.rs` | Tiny 8x8 bitmap font |
 | `kernel/src/serial.rs` | COM1 UART for QEMU `-serial stdio` |
 | `.cargo/config.toml` | `bindeps` (artifact dependencies) |
-| `rust-toolchain.toml` | nightly + `llvm-tools-preview` + rust-src + kernel target |
+| `rust-toolchain.toml` | pinned nightly + `llvm-tools-preview` + rust-src + targets |
 
 ## Notes
 
