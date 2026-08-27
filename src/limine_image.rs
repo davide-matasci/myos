@@ -13,6 +13,7 @@ pub const LIMINE_TARBALL_SHA256: &str =
     "07d054e6297d8c41bee74ddd30024696e4ad811e7e73be28d98dc0a6168fbfeb";
 
 pub const LIMINE_CONF: &str = "\
+serial: yes
 timeout: 0
 
 /myos
@@ -149,6 +150,10 @@ pub fn write_esp_image(
             path: "EFI/BOOT/limine.conf".into(),
             data: LIMINE_CONF.as_bytes().to_vec(),
         },
+        DiskFile {
+            path: "limine.conf".into(),
+            data: LIMINE_CONF.as_bytes().to_vec(),
+        },
     ];
     if let Some(sys) = bios_sys {
         files.push(DiskFile {
@@ -167,6 +172,7 @@ pub fn bios_install(limine_tool: &Path, image: &Path) {
     let status = Command::new(limine_tool)
         .arg("bios-install")
         .arg(image)
+        .arg("1")
         .status()
         .expect("failed to spawn limine bios-install");
     if !status.success() {
@@ -196,7 +202,7 @@ fn build_gpt_fat16(files: &[DiskFile]) -> Vec<u8> {
         ],
         BIOS_BOOT_START_LBA,
         BIOS_BOOT_END_LBA,
-        0,
+        4, // legacy-BIOS-bootable (bit 2)
         "BIOS Boot",
     );
     // Partition 1: FAT16 ESP

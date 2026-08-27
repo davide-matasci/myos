@@ -68,6 +68,10 @@ fn run_bios(bios_path: &str) {
         .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
         .arg("stdio")
+        .arg("-nic")
+        .arg("none")
+        .arg("-boot")
+        .arg("order=c,menu=off")
         .status()
         .expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -161,6 +165,10 @@ fn run_ci_bios(bios_path: &str) {
         .arg("none")
         .arg("-device")
         .arg("isa-debug-exit,iobase=0xf4,iosize=0x04")
+        .arg("-nic")
+        .arg("none")
+        .arg("-boot")
+        .arg("order=c,menu=off")
         .arg("-no-reboot")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
