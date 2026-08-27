@@ -1,15 +1,14 @@
-//! Exception vectors, GICv2, and the generic physical timer.
+//! EL1/EL2 exception vectors, GICv2, and the generic virtual timer.
 //!
-//! Limine (base rev 6) enters with PSTATE.SP=0 (SP_EL0), either at EL1 or at
-//! EL2 with VHE (`HCR_EL2.{E2H,TGE}`). IRQs taken with SPSel=0 use the
-//! Current-EL SP0 slot, not SP_ELx; the handler has to live in both.
+//! Physical CNTP (PPI 30) never fired under Limine on QEMU virt (CI #46).
+//! CNTV / PPI 27 is forwarded to whatever EL we actually entered.
 
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const GICD: usize = 0x0800_0000;
 const GICC: usize = 0x0801_0000;
-const TIMER_INTID: u32 = 30; // PPI 14: NS EL1 physical timer
+const TIMER_INTID: u32 = 27; // PPI 11: virtual timer
 
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
 
@@ -18,31 +17,31 @@ global_asm!(
     .align 11
     .global exception_vectors
 exception_vectors:
-    // Current EL, SP_EL0 (Limine entry: PSTATE.SP=0)
+    // Current EL, SP_EL0
+    .align 7
+    b exception_hang
+    .align 7
+    b exception_hang
+    .align 7
+    b exception_hang
+    .align 7
+    b exception_hang
+    // Current EL, SP_ELx (this is us)
     .align 7
     b exception_hang
     .align 7
     b irq_el1h
     .align 7
-    b irq_el1h
-    .align 7
     b exception_hang
-    // Current EL, SP_ELx
-    .align 7
-    b exception_hang
-    .align 7
-    b irq_el1h
-    .align 7
-    b irq_el1h
     .align 7
     b exception_hang
     // Lower EL, AArch64
     .align 7
     b exception_hang
     .align 7
-    b irq_el1h
+    b exception_hang
     .align 7
-    b irq_el1h
+    b exception_hang
     .align 7
     b exception_hang
     // Lower EL, AArch32
@@ -114,35 +113,19 @@ fn current_el() -> u64 {
     (el >> 2) & 3
 }
 
-/// Copy SP_EL0 onto SP_ELx and switch to SPSel=1 so later IRQs use the SPx slot.
-fn use_spx() {
-    unsafe {
-        asm!(
-            "mov {tmp}, sp",
-            "msr spsel, #1",
-            "isb",
-            "mov sp, {tmp}",
-            tmp = out(reg) _,
-            options(nomem),
-        );
-    }
-}
-
 pub fn init() {
-    use_spx();
-    // VHE at EL2 redirects *_EL1 onto the EL2 bank; still set VBAR_EL2 when
-    // we are actually at EL2 so a non-VHE handoff would work too.
     let v = exception_vectors as *const () as usize;
     unsafe {
-        asm!("msr vbar_el1, {v}", "isb", v = in(reg) v, options(nostack));
         if current_el() >= 2 {
             asm!("msr vbar_el2, {v}", "isb", v = in(reg) v, options(nostack));
+        } else {
+            asm!("msr vbar_el1, {v}", "isb", v = in(reg) v, options(nostack));
         }
     }
     init_gic();
     init_timer();
     unsafe {
-        asm!("msr daifclr, #3", options(nomem, nostack)); // unmask IRQ+FIQ
+        asm!("msr daifclr, #2", options(nomem, nostack)); // unmask IRQ
     }
 }
 
@@ -155,8 +138,8 @@ pub fn wait_for_interrupt_proof() {
 }
 
 fn init_gic() {
-    write32(GICD, 3); // GICD_CTLR enable group 0+1
-    write32(GICC, 3); // GICC_CTLR enable group 0+1
+    write32(GICD, 1); // GICD_CTLR enable Grp0
+    write32(GICC, 1); // GICC_CTLR enable
     write32(GICC + 0x004, 0xFF); // PMR: accept all
     write32(GICD + 0x100, 1 << TIMER_INTID);
     unsafe {
@@ -171,8 +154,8 @@ fn init_timer() {
     }
     let ticks = (freq / 100).max(1);
     unsafe {
-        asm!("msr cntp_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
-        asm!("msr cntp_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
+        asm!("msr cntv_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
+        asm!("msr cntv_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
         asm!("isb", options(nomem, nostack));
     }
 }
@@ -183,9 +166,8 @@ extern "C" fn aarch64_irq_handler() {
     let id = iar & 0x3FF;
     if id == TIMER_INTID {
         TIMER_FIRED.store(true, Ordering::SeqCst);
-        // One-shot: mask the timer so we do not keep taking IRQs.
         unsafe {
-            asm!("msr cntp_ctl_el0, {c}", c = in(reg) 0u64, options(nomem, nostack));
+            asm!("msr cntv_ctl_el0, {c}", c = in(reg) 0u64, options(nomem, nostack));
         }
     }
     if id < 1020 {
