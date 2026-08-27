@@ -1,32 +1,29 @@
 #![no_std]
 #![no_main]
 
+mod arch;
+#[cfg(target_arch = "x86_64")]
 mod font;
+#[cfg(target_arch = "x86_64")]
 mod framebuffer;
-mod serial;
 
-use bootloader_api::{entry_point, BootInfo};
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
-use framebuffer::FrameBufferWriter;
-use serial::SerialPort;
+use arch::SerialPort;
 
 const HELLO: &str = "Hello from myos";
 
-/// QEMU `isa-debug-exit` success code. Absent that device, the write is ignored
-/// and the kernel falls through to `hlt`.
-const QEMU_SUCCESS: u32 = 0x10;
-const QEMU_FAILURE: u32 = 0x11;
+#[cfg(target_arch = "x86_64")]
+bootloader_api::entry_point!(kernel_main_x86);
 
-entry_point!(kernel_main);
-
-fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
+#[cfg(target_arch = "x86_64")]
+fn kernel_main_x86(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     let mut serial = SerialPort::new();
     let _ = writeln!(serial, "{HELLO}");
 
     if let Some(fb) = boot_info.framebuffer.as_mut() {
-        let mut writer = FrameBufferWriter::new(fb);
+        let mut writer = framebuffer::FrameBufferWriter::new(fb);
         writer.clear();
         let _ = writeln!(writer, "{HELLO}");
     } else {
@@ -34,8 +31,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     serial.flush();
-    exit_qemu(QEMU_SUCCESS);
-    halt();
+    arch::exit_qemu(arch::QEMU_SUCCESS);
+    arch::halt();
+}
+
+/// Called from `_start` in `arch/aarch64/boot.rs`.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn kernel_main_aarch64() -> ! {
+    let mut serial = SerialPort::new();
+    let _ = writeln!(serial, "{HELLO}");
+    serial.flush();
+    arch::exit_qemu(arch::QEMU_SUCCESS);
+    arch::halt();
 }
 
 #[panic_handler]
@@ -43,26 +50,6 @@ fn panic(info: &PanicInfo) -> ! {
     let mut serial = SerialPort::new();
     let _ = writeln!(serial, "panic: {info}");
     serial.flush();
-    exit_qemu(QEMU_FAILURE);
-    halt();
-}
-
-fn exit_qemu(code: u32) {
-    // iobase=0xf4, iosize=0x04 — a no-op if the device was not added to QEMU.
-    unsafe {
-        core::arch::asm!(
-            "out dx, eax",
-            in("dx") 0xf4_u16,
-            in("eax") code,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-}
-
-fn halt() -> ! {
-    loop {
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
-    }
+    arch::exit_qemu(arch::QEMU_FAILURE);
+    arch::halt();
 }

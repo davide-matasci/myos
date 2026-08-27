@@ -22,13 +22,13 @@ jobs:
         with:
           toolchain: nightly-2026-07-26
           components: rust-src, llvm-tools-preview
-          targets: x86_64-unknown-none, x86_64-unknown-uefi
+          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm
 
       - name: Build kernel and BIOS+UEFI disk images
         run: cargo build
@@ -40,3 +40,7 @@ jobs:
       - name: Boot UEFI in QEMU
         timeout-minutes: 5
         run: cargo run -- uefi --ci
+
+      - name: Boot AArch64 in QEMU
+        timeout-minutes: 5
+        run: cargo run -- aarch64 --ci

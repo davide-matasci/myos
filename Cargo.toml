@@ -7,7 +7,7 @@ default-members = ["."]
 name = "myos"
 version = "0.1.0"
 edition = "2024"
-description = "A small x86_64 kernel that boots in QEMU and prints to the bootloader framebuffer."
+description = "A small kernel that boots in QEMU on x86_64 (BIOS/UEFI) and AArch64 (virt)."
 publish = false
 
 [dependencies]
