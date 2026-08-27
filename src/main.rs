@@ -62,6 +62,8 @@ Usage: cargo run -- [bios|uefi|aarch64] [--ci]
 
 fn run_bios(bios_path: &str) {
     let status = Command::new("qemu-system-x86_64")
+        .arg("-cpu")
+        .arg("qemu64,+x2apic")
         .arg("-m")
         .arg("256")
         .arg("-drive")
@@ -80,6 +82,8 @@ fn run_bios(bios_path: &str) {
 fn run_uefi(uefi_path: &str) {
     let (code, vars) = ovmf_files(Arch::X64);
     let status = Command::new("qemu-system-x86_64")
+        .arg("-cpu")
+        .arg("qemu64,+x2apic")
         .arg("-m")
         .arg("256")
         .arg("-drive")
@@ -155,6 +159,8 @@ const QEMU_SUCCESS_STATUS: i32 = (0x10 << 1) | 1;
 
 fn run_ci_bios(bios_path: &str) {
     let child = Command::new("qemu-system-x86_64")
+        .arg("-cpu")
+        .arg("qemu64,+x2apic")
         .arg("-m")
         .arg("256")
         .arg("-drive")
@@ -186,6 +192,8 @@ fn run_ci_bios(bios_path: &str) {
 fn run_ci_uefi(uefi_path: &str) {
     let (code, vars) = ovmf_files(Arch::X64);
     let child = Command::new("qemu-system-x86_64")
+        .arg("-cpu")
+        .arg("qemu64,+x2apic")
         .arg("-m")
         .arg("256")
         .arg("-drive")
