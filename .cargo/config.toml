@@ -1,2 +1,10 @@
 [unstable]
 bindeps = true
+
+# Hello is a no_std artifact; force abort even if cargo picks the
+# build-override profile (panic=unwind by default).
+[target.x86_64-unknown-none]
+rustflags = ["-C", "panic=abort"]
+
+[target.aarch64-unknown-none-softfloat]
+rustflags = ["-C", "panic=abort"]
