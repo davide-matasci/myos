@@ -1,17 +1,22 @@
-//! Host launcher: builds a bootable disk image (via `build.rs`) and starts QEMU.
+//! Host launcher: builds a bootable image and starts QEMU.
 //!
 //! ```text
-//! cargo run              # BIOS, graphical
+//! cargo run                 # x86_64 BIOS, graphical
 //! cargo run -- bios
-//! cargo run -- uefi      # UEFI (fetches OVMF into target/ovmf)
-//! cargo run -- --ci      # headless BIOS check
-//! cargo run -- uefi --ci # headless UEFI check
+//! cargo run -- uefi         # x86_64 UEFI (fetches OVMF into target/ovmf)
+//! cargo run -- aarch64      # QEMU virt, serial console
+//! cargo run -- --ci         # headless BIOS check
+//! cargo run -- uefi --ci    # headless UEFI check
+//! cargo run -- aarch64 --ci # headless AArch64 check
 //! ```
 
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{exit, Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+const AARCH64_TARGET: &str = "aarch64-unknown-none-softfloat";
 
 fn main() {
     let bios_path = env!("BIOS_PATH");
@@ -26,31 +31,29 @@ fn main() {
     let ci = args.iter().any(|a| a == "--ci");
     let mode = args
         .iter()
-        .find(|a| a.as_str() == "uefi" || a.as_str() == "bios")
+        .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64"))
         .map(|s| s.as_str())
         .unwrap_or("bios");
 
-    if ci {
-        if mode == "uefi" {
-            run_ci_uefi(uefi_path);
-        } else {
-            run_ci_bios(bios_path);
-        }
-    } else if mode == "uefi" {
-        run_uefi(uefi_path);
-    } else {
-        run_bios(bios_path);
+    match (mode, ci) {
+        ("aarch64", true) => run_ci_aarch64(),
+        ("aarch64", false) => run_aarch64(),
+        ("uefi", true) => run_ci_uefi(uefi_path),
+        ("uefi", false) => run_uefi(uefi_path),
+        (_, true) => run_ci_bios(bios_path),
+        (_, false) => run_bios(bios_path),
     }
 }
 
 fn print_usage() {
     eprintln!(
         "\
-Usage: cargo run -- [bios|uefi] [--ci]
+Usage: cargo run -- [bios|uefi|aarch64] [--ci]
 
-  bios   Boot the BIOS disk image in QEMU (default, graphical)
-  uefi   Boot the UEFI disk image in QEMU (fetches OVMF on first run)
-  --ci   Headless boot; require serial hello + isa-debug-exit",
+  bios      Boot the x86_64 BIOS disk image in QEMU (default, graphical)
+  uefi      Boot the x86_64 UEFI disk image in QEMU (fetches OVMF on first run)
+  aarch64   Boot the AArch64 kernel on QEMU virt (serial console)
+  --ci      Headless boot; require serial hello and a clean QEMU exit",
     );
 }
 
@@ -89,6 +92,14 @@ fn run_uefi(uefi_path: &str) {
     exit(status.code().unwrap_or(1));
 }
 
+fn run_aarch64() {
+    let kernel = build_aarch64_kernel();
+    let status = qemu_aarch64(&kernel, false)
+        .status()
+        .expect("failed to start qemu-system-aarch64");
+    exit(status.code().unwrap_or(1));
+}
+
 fn ovmf_files() -> (std::path::PathBuf, std::path::PathBuf) {
     let prebuilt =
         Prebuilt::fetch(Source::LATEST, "target/ovmf").expect("failed to fetch OVMF prebuilt");
@@ -117,7 +128,13 @@ fn run_ci_bios(bios_path: &str) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to start qemu-system-x86_64");
-    wait_ci(child, Duration::from_secs(20));
+    wait_ci(
+        child,
+        CiExpect {
+            timeout: Duration::from_secs(20),
+            qemu_debug_exit: true,
+        },
+    );
 }
 
 fn run_ci_uefi(uefi_path: &str) {
@@ -148,10 +165,102 @@ fn run_ci_uefi(uefi_path: &str) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to start qemu-system-x86_64");
-    wait_ci(child, Duration::from_secs(60));
+    wait_ci(
+        child,
+        CiExpect {
+            timeout: Duration::from_secs(60),
+            qemu_debug_exit: true,
+        },
+    );
 }
 
-fn wait_ci(mut child: Child, timeout: Duration) {
+fn run_ci_aarch64() {
+    let kernel = build_aarch64_kernel();
+    let child = qemu_aarch64(&kernel, true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start qemu-system-aarch64");
+    wait_ci(
+        child,
+        CiExpect {
+            timeout: Duration::from_secs(60),
+            qemu_debug_exit: false,
+        },
+    );
+}
+
+fn qemu_aarch64(kernel: &Path, ci: bool) -> Command {
+    let mut cmd = Command::new("qemu-system-aarch64");
+    // gic-version=2 keeps the distributor/CPU interface at the classic MMIO
+    // addresses (0x0800_0000 / 0x0801_0000) used later for IRQs.
+    cmd.arg("-machine")
+        .arg("virt,gic-version=2")
+        .arg("-cpu")
+        .arg("cortex-a72")
+        .arg("-m")
+        .arg("256")
+        .arg("-kernel")
+        .arg(kernel)
+        .arg("-serial")
+        .arg("stdio");
+    if ci {
+        cmd.arg("-display").arg("none");
+    } else {
+        cmd.arg("-nographic");
+    }
+    cmd
+}
+
+fn build_aarch64_kernel() -> PathBuf {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let mut cmd = Command::new(cargo);
+    cmd.arg("build")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("-p")
+        .arg("kernel")
+        .arg("--bin")
+        .arg("kernel")
+        .arg("--target")
+        .arg(AARCH64_TARGET);
+    if !cfg!(debug_assertions) {
+        cmd.arg("--release");
+    }
+    let status = cmd
+        .status()
+        .expect("failed to invoke cargo for aarch64 kernel");
+    if !status.success() {
+        eprintln!("error: building aarch64 kernel failed");
+        exit(1);
+    }
+
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
+    let elf = target_dir
+        .join(AARCH64_TARGET)
+        .join(profile)
+        .join("kernel");
+    if !elf.is_file() {
+        eprintln!("error: aarch64 kernel ELF missing at {}", elf.display());
+        exit(1);
+    }
+    elf
+}
+
+struct CiExpect {
+    timeout: Duration,
+    qemu_debug_exit: bool,
+}
+
+fn wait_ci(mut child: Child, expect: CiExpect) {
     let mut stdout = child.stdout.take().expect("qemu stdout");
     let mut stderr = child.stderr.take().expect("qemu stderr");
     let stdout_handle = std::thread::spawn(move || {
@@ -169,10 +278,10 @@ fn wait_ci(mut child: Child, timeout: Duration) {
     let status = loop {
         match child.try_wait().expect("failed to wait on qemu") {
             Some(status) => break status,
-            None if started.elapsed() > timeout => {
+            None if started.elapsed() > expect.timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                eprintln!("error: QEMU timed out after {:?}", timeout);
+                eprintln!("error: QEMU timed out after {:?}", expect.timeout);
                 exit(1);
             }
             None => std::thread::sleep(Duration::from_millis(50)),
@@ -188,10 +297,12 @@ fn wait_ci(mut child: Child, timeout: Duration) {
         eprintln!("error: serial output did not contain \"Hello from myos\"");
         exit(1);
     }
-    if status.code() != Some(QEMU_SUCCESS_STATUS) {
-        eprintln!(
-            "error: unexpected QEMU exit status {status:?} (want {QEMU_SUCCESS_STATUS} from isa-debug-exit)"
-        );
-        exit(1);
+    if expect.qemu_debug_exit {
+        if status.code() != Some(QEMU_SUCCESS_STATUS) {
+            eprintln!(
+                "error: unexpected QEMU exit status {status:?} (want {QEMU_SUCCESS_STATUS} from isa-debug-exit)"
+            );
+            exit(1);
+        }
     }
 }
