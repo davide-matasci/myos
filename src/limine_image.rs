@@ -22,7 +22,9 @@ timeout: 0
 
 const SECTOR: usize = 512;
 const IMAGE_BYTES: usize = 64 * 1024 * 1024;
-const PART_START_LBA: u64 = 2048;
+const BIOS_BOOT_START_LBA: u64 = 2048;
+const BIOS_BOOT_END_LBA: u64 = 4095;
+const ESP_START_LBA: u64 = 4096;
 
 pub struct LimineFiles {
     pub dir: PathBuf,
@@ -122,7 +124,7 @@ pub struct DiskFile {
     pub data: Vec<u8>,
 }
 
-/// GPT disk with one FAT16 ESP. `efi_name` is e.g. `BOOTX64.EFI`.
+/// GPT disk with a BIOS boot partition and a FAT16 ESP. `efi_name` is e.g. `BOOTX64.EFI`.
 pub fn write_esp_image(
     dest: &Path,
     kernel: &[u8],
@@ -176,15 +178,42 @@ fn build_gpt_fat16(files: &[DiskFile]) -> Vec<u8> {
     let mut disk = vec![0u8; IMAGE_BYTES];
     let total_lba = (IMAGE_BYTES / SECTOR) as u64;
     let backup_lba = total_lba - 1;
-    let part_end = backup_lba - 33;
-    let part_lbas = part_end - PART_START_LBA + 1;
+    let esp_end = backup_lba - 33;
+    let esp_lbas = esp_end - ESP_START_LBA + 1;
 
     write_protective_mbr(&mut disk, total_lba);
     let mut entries = [0u8; 128 * 128];
+    // Partition 0: BIOS boot (no filesystem); limine bios-install embeds here.
     write_gpt_entry(
         &mut entries[0..128],
-        PART_START_LBA,
-        part_end,
+        &[
+            0x48, 0x61, 0x68, 0x21, 0x49, 0x64, 0x6F, 0x6E, 0x74, 0x4E, 0x65, 0x65, 0x64, 0x45,
+            0x46, 0x49,
+        ],
+        &[
+            0x73, 0x6F, 0x79, 0x6D, 0x00, 0x00, 0x00, 0x40, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x03,
+        ],
+        BIOS_BOOT_START_LBA,
+        BIOS_BOOT_END_LBA,
+        0,
+        "BIOS Boot",
+    );
+    // Partition 1: FAT16 ESP
+    write_gpt_entry(
+        &mut entries[128..256],
+        &[
+            0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E,
+            0xC9, 0x3B,
+        ],
+        &[
+            0x73, 0x6F, 0x79, 0x6D, 0x00, 0x00, 0x00, 0x40, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x02,
+        ],
+        ESP_START_LBA,
+        esp_end,
+        1,
+        "EFI System",
     );
     let entries_crc = crc32(&entries);
     write_gpt_header(&mut disk, 1, backup_lba, 2, entries_crc, total_lba, true);
@@ -202,8 +231,8 @@ fn build_gpt_fat16(files: &[DiskFile]) -> Vec<u8> {
         false,
     );
 
-    let part_off = PART_START_LBA as usize * SECTOR;
-    let part = &mut disk[part_off..part_off + part_lbas as usize * SECTOR];
+    let part_off = ESP_START_LBA as usize * SECTOR;
+    let part = &mut disk[part_off..part_off + esp_lbas as usize * SECTOR];
     format_and_write_fat16(part, files);
     disk
 }
@@ -225,22 +254,21 @@ fn write_protective_mbr(disk: &mut [u8], total_lba: u64) {
     p[12..16].copy_from_slice(&sectors.to_le_bytes());
 }
 
-fn write_gpt_entry(e: &mut [u8], start: u64, end: u64) {
-    // EFI System Partition type GUID C12A7328-F81F-11D2-BA4B-00A0C93EC93B
-    e[0..16].copy_from_slice(&[
-        0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9,
-        0x3B,
-    ]);
-    // unique partition GUID
-    e[16..32].copy_from_slice(&[
-        0x73, 0x6F, 0x79, 0x6D, 0x00, 0x00, 0x00, 0x40, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x02,
-    ]);
+fn write_gpt_entry(
+    e: &mut [u8],
+    type_guid: &[u8; 16],
+    unique_guid: &[u8; 16],
+    start: u64,
+    end: u64,
+    attrs: u64,
+    name: &str,
+) {
+    e[0..16].copy_from_slice(type_guid);
+    e[16..32].copy_from_slice(unique_guid);
     e[32..40].copy_from_slice(&start.to_le_bytes());
     e[40..48].copy_from_slice(&end.to_le_bytes());
-    // attrs: bit 0 = required partition (ESP)
-    e[48..56].copy_from_slice(&1u64.to_le_bytes());
-    let name: Vec<u16> = "EFI System".encode_utf16().collect();
+    e[48..56].copy_from_slice(&attrs.to_le_bytes());
+    let name: Vec<u16> = name.encode_utf16().collect();
     for (i, c) in name.iter().take(36).enumerate() {
         e[56 + i * 2..56 + i * 2 + 2].copy_from_slice(&c.to_le_bytes());
     }
