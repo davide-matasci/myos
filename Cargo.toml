@@ -1,20 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["kernel"]
+default-members = ["."]
+
 [package]
 name = "myos"
 version = "0.1.0"
 edition = "2024"
-description = "A small x86_64 kernel that boots in QEMU and prints to the VGA text buffer."
+description = "A small x86_64 kernel that boots in QEMU and prints to the bootloader framebuffer."
 publish = false
 
 [dependencies]
-bootloader = "0.9.35"
+ovmf-prebuilt = "0.2.9"
+
+[build-dependencies]
+bootloader = "0.11.17"
+kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 
 [profile.dev]
 panic = "abort"
 
 [profile.release]
 panic = "abort"
-
-[[bin]]
-name = "myos"
-test = false
-bench = false
