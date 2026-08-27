@@ -1,5 +1,8 @@
-include!("src/limine_image.rs");
+mod limine_image {
+    include!("src/limine_image.rs");
+}
 
+use limine_image::{bios_install, fetch_limine, write_esp_image, LIMINE_VERSION};
 use std::path::PathBuf;
 
 fn main() {
