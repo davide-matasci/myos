@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 extern crate alloc;
 
@@ -46,6 +47,10 @@ fn kernel_main_x86(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     heap::init();
     prove_heap(&mut serial);
 
+    arch::init_interrupts();
+    arch::wait_for_interrupt_proof();
+    let _ = writeln!(serial, "int ok");
+
     serial.flush();
     arch::exit_qemu(arch::QEMU_SUCCESS);
     arch::halt();
@@ -60,6 +65,10 @@ pub(crate) fn kernel_main_aarch64() -> ! {
     arch::init_paging();
     heap::init();
     prove_heap(&mut serial);
+
+    arch::init_interrupts();
+    arch::wait_for_interrupt_proof();
+    let _ = writeln!(serial, "int ok");
 
     serial.flush();
     arch::exit_qemu(arch::QEMU_SUCCESS);
