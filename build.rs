@@ -12,10 +12,12 @@ fn main() {
 
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let limine_dir = manifest.join("target").join(format!("limine-v{LIMINE_VERSION}"));
-    // include! pulls limine_image.rs into this build script; cargo does not
-    // track that path automatically, so image-layout fixes never rebuilt the
-    // GPT/FAT disk (CI kept booting a stale bios.img with no Limine stage).
+    // include! pulls these into the build script; cargo does not track them
+    // automatically, so image-layout fixes must force a bios.img rebuild.
     println!("cargo:rerun-if-changed=src/limine_image.rs");
+    println!("cargo:rerun-if-changed=src/limine_gpt.rs");
+    println!("cargo:rerun-if-changed=src/limine_fat.rs");
+    println!("cargo:rerun-if-changed=src/limine_dir.rs");
     println!("cargo:rerun-if-changed={}", kernel_path.display());
 
     let limine = fetch_limine(&limine_dir);
