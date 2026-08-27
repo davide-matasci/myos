@@ -138,14 +138,13 @@ internals; they only go through that table. There is no dynamic linker
 that resolves against the kernel `.dynsym`.
 
 The hello module (`modules/hello`) prints `mod ok` through `write_str`.
-The kernel lists it as a **normal artifact dependency** (`artifact =
-"bin:hello"`), so cargo builds hello for the same target and profile as
-the kernel (`panic = "abort"`). Do not put modules under
-`[build-dependencies]`: that profile is unwind-only, and a `no_std` crate
-cannot unwind. `include_bytes!(env!("CARGO_BIN_FILE_HELLO_hello"))` bakes
-the ELF into the kernel. After heap and IRQs are up, the loader copies
-`PT_LOAD` into the heap, applies relocs, finds `module_init` in `.symtab`,
-and calls it.
+It is its own tiny cargo workspace (`panic = "abort"`). `kernel/build.rs`
+builds it for the kernel's target into `OUT_DIR` and feeds the ELF path
+into `include_bytes!`. That avoids cargo artifact-deps (the kernel is
+already an artifact of the host crate; nesting another one panics the
+feature resolver) and `[build-dependencies]` (those cannot `panic=abort`).
+After heap and IRQs are up, the loader copies `PT_LOAD` into the heap,
+applies relocs, finds `module_init` in `.symtab`, and calls it.
 
 x86_64 hello is a PIE (`ET_DYN`) with `R_X86_64_RELATIVE` relocs.
 AArch64 hello is `ET_EXEC` slid as a unit: prebuilt `libcore` is not PIC,
@@ -156,14 +155,12 @@ PC-relative `ADR`, so a slide is enough. Both images use 4 KiB
 ### Adding another module
 
 1. Copy `modules/hello` to `modules/foo` (keep `myos-abi`, `module_init`,
-   a `_start` stub, and a panic handler).
-2. Add it to `[workspace].members` and as a kernel `[dependencies]`
-   artifact (`artifact = "bin:foo"`, not a build-dependency).
-3. `include_bytes!(env!("CARGO_BIN_FILE_FOO_foo"))` and
+   a `_start` stub, a panic handler, `[workspace]`, and `panic = "abort"`).
+2. In `kernel/build.rs`, cargo-build `foo` the same way as hello, then
+   `include_bytes!(env!("FOO_MODULE_PATH"))` and
    `modules::load("foo", FOO_IMAGE)` after the heap exists.
-4. Keep `[profile.dev.package.foo]` / `[profile.release.package.foo]` at
-   `opt-level = "s"`, `debug = false`, `strip = "debuginfo"` so the ELF
-   stays small. Use `-u module_init` (see `modules/hello/build.rs`)
+3. Keep `opt-level = "s"`, `debug = false`, `strip = "debuginfo"` so the
+   ELF stays small. Use `-u module_init` (see `modules/hello/build.rs`)
    instead of `--export-dynamic`.
 
 ## Layout
