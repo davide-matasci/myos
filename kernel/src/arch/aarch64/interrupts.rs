@@ -98,14 +98,27 @@ unsafe extern "C" {
     fn exception_vectors();
 }
 
-pub fn init() {
+fn current_el() -> u64 {
+    let el: u64;
     unsafe {
         asm!(
-            "msr vbar_el1, {v}",
-            "isb",
-            v = in(reg) exception_vectors as *const () as usize,
-            options(nostack),
+            "mrs {el}, CurrentEL",
+            el = out(reg) el,
+            options(nomem, nostack, preserves_flags)
         );
+    }
+    (el >> 2) & 3
+}
+
+pub fn init() {
+    // Limine may enter at EL1 or EL2. IRQs use the current-EL VBAR.
+    let v = exception_vectors as *const () as usize;
+    unsafe {
+        if current_el() >= 2 {
+            asm!("msr vbar_el2, {v}", "isb", v = in(reg) v, options(nostack));
+        } else {
+            asm!("msr vbar_el1, {v}", "isb", v = in(reg) v, options(nostack));
+        }
     }
     init_gic();
     init_timer();
@@ -126,8 +139,7 @@ fn init_gic() {
     write32(GICD, 1); // GICD_CTLR enable
     write32(GICC, 1); // GICC_CTLR enable
     write32(GICC + 0x004, 0xFF); // PMR: accept all
-    let en = read32(GICD + 0x100);
-    write32(GICD + 0x100, en | (1 << TIMER_INTID));
+    write32(GICD + 0x100, 1 << TIMER_INTID);
     unsafe {
         core::ptr::write_volatile((GICD + 0x400 + TIMER_INTID as usize) as *mut u8, 0x80);
     }
@@ -142,6 +154,7 @@ fn init_timer() {
     unsafe {
         asm!("msr cntp_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
         asm!("msr cntp_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
+        asm!("isb", options(nomem, nostack));
     }
 }
 
