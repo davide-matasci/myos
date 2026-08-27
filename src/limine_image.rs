@@ -1,6 +1,6 @@
-//! GPT disk + FAT16 ESP writer, plus Limine binary fetch.
-//!
-//! Included from `build.rs` (`include!`) and compiled into the host crate.
+// GPT disk + FAT16 ESP writer, plus Limine binary fetch.
+//
+// Included from `build.rs` (`include!`) and compiled into the host crate.
 
 use std::fs;
 use std::path::{Path, PathBuf};
