@@ -20,6 +20,10 @@ use std::process::{exit, Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const AARCH64_TARGET: &str = "aarch64-unknown-none-softfloat";
+/// Default qemu64 does not advertise x2APIC (CI #49 panicked, #50 fell back
+/// to PIC and hung). Limine leaves PIC IRQs dead, so the kernel timer proof
+/// needs the x2APIC MSRs.
+const X86_CPU: &str = "qemu64,+x2apic";
 
 fn main() {
     let bios_path = env!("BIOS_PATH");
@@ -63,7 +67,7 @@ Usage: cargo run -- [bios|uefi|aarch64] [--ci]
 fn run_bios(bios_path: &str) {
     let status = Command::new("qemu-system-x86_64")
         .arg("-cpu")
-        .arg("qemu64,+x2apic")
+        .arg(X86_CPU)
         .arg("-m")
         .arg("256")
         .arg("-drive")
@@ -83,7 +87,7 @@ fn run_uefi(uefi_path: &str) {
     let (code, vars) = ovmf_files(Arch::X64);
     let status = Command::new("qemu-system-x86_64")
         .arg("-cpu")
-        .arg("qemu64,+x2apic")
+        .arg(X86_CPU)
         .arg("-m")
         .arg("256")
         .arg("-drive")
@@ -160,7 +164,7 @@ const QEMU_SUCCESS_STATUS: i32 = (0x10 << 1) | 1;
 fn run_ci_bios(bios_path: &str) {
     let child = Command::new("qemu-system-x86_64")
         .arg("-cpu")
-        .arg("qemu64,+x2apic")
+        .arg(X86_CPU)
         .arg("-m")
         .arg("256")
         .arg("-drive")
@@ -193,7 +197,7 @@ fn run_ci_uefi(uefi_path: &str) {
     let (code, vars) = ovmf_files(Arch::X64);
     let child = Command::new("qemu-system-x86_64")
         .arg("-cpu")
-        .arg("qemu64,+x2apic")
+        .arg(X86_CPU)
         .arg("-m")
         .arg("256")
         .arg("-drive")
