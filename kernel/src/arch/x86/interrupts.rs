@@ -1,36 +1,41 @@
-//! IDT + x2APIC timer.
+//! IDT + xAPIC timer via MMIO.
 //!
-//! Limine base rev 5 leaves the local APIC enabled, LINT0/timer LVT masked,
-//! and IOAPIC ExtINT masked, so PIC IRQ0 never arrives. CI #49 showed QEMU's
-//! default `qemu64` CPU does not even advertise x2APIC (CPUID.1.ECX[21]);
-//! CI #50 then silently fell back to PIC and hung after "irq wait". The
-//! launcher now passes `-cpu qemu64,+x2apic`. APIC MMIO is not in the
-//! base-rev-3+ HHDM, so the timer is programmed through x2APIC MSRs.
+//! TCG (GitHub Actions) does not implement x2APIC: CI #51 printed
+//! "TCG doesn't support requested feature: CPUID.01H:ECX.x2apic".
+//! PIC IRQ0 also never arrives under Limine. Map the local APIC
+//! (phys from IA32_APIC_BASE) at HHDM+phys and program the xAPIC timer.
 
-use core::arch::x86_64::__cpuid;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Once;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 use super::gdt;
+use crate::limine_boot;
 
 const TIMER_VECTOR: u8 = 32;
 const SPURIOUS_VECTOR: u8 = 0xFF;
-
 const IA32_APIC_BASE: u32 = 0x1B;
-const X2APIC_TPR: u32 = 0x808;
-const X2APIC_EOI: u32 = 0x80B;
-const X2APIC_SVR: u32 = 0x80F;
-const X2APIC_LVT_TIMER: u32 = 0x832;
-const X2APIC_LVT_LINT0: u32 = 0x835;
-const X2APIC_LVT_LINT1: u32 = 0x836;
-const X2APIC_INIT_COUNT: u32 = 0x838;
-const X2APIC_DIV: u32 = 0x83E;
 const APIC_EN: u64 = 1 << 11;
 const APIC_EXTD: u64 = 1 << 10;
 
+const SVR: u32 = 0xF0;
+const TPR: u32 = 0x80;
+const EOI: u32 = 0xB0;
+const LVT_TIMER: u32 = 0x320;
+const LVT_LINT0: u32 = 0x350;
+const LVT_LINT1: u32 = 0x360;
+const INIT_COUNT: u32 = 0x380;
+const DIV: u32 = 0x3E0;
+
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
+static LAPIC: AtomicUsize = AtomicUsize::new(0);
+
+#[repr(align(4096))]
+struct Table([u64; 512]);
+
+static mut SCRATCH: [Table; 3] = [Table([0; 512]), Table([0; 512]), Table([0; 512])];
+static mut SCRATCH_USED: usize = 0;
 
 fn rdmsr(msr: u32) -> u64 {
     let lo: u32;
@@ -61,29 +66,62 @@ fn wrmsr(msr: u32, val: u64) {
     }
 }
 
-fn has_x2apic() -> bool {
-    let r = unsafe { __cpuid(1) };
-    r.ecx & (1 << 21) != 0
+fn cr3_phys() -> u64 {
+    let c: u64;
+    unsafe {
+        core::arch::asm!("mov {c}, cr3", c = out(reg) c, options(nomem, nostack, preserves_flags));
+    }
+    c & !0xfff
 }
 
-fn enable_x2apic_timer() {
-    let mut base = rdmsr(IA32_APIC_BASE);
-    base |= APIC_EN;
-    wrmsr(IA32_APIC_BASE, base);
-    base |= APIC_EXTD;
-    wrmsr(IA32_APIC_BASE, base);
-    unsafe {
-        core::arch::asm!("mfence", options(nomem, nostack, preserves_flags));
-    }
+fn table_at(phys: u64) -> *mut [u64; 512] {
+    (limine_boot::hhdm_offset() + phys) as *mut [u64; 512]
+}
 
-    wrmsr(X2APIC_SVR, 0x100 | u64::from(SPURIOUS_VECTOR));
-    wrmsr(X2APIC_TPR, 0);
-    wrmsr(X2APIC_LVT_LINT0, 1 << 16);
-    wrmsr(X2APIC_LVT_LINT1, 1 << 16);
-    // Divide by 1, periodic, vector 32.
-    wrmsr(X2APIC_DIV, 0xB);
-    wrmsr(X2APIC_LVT_TIMER, u64::from(TIMER_VECTOR) | (1 << 17));
-    wrmsr(X2APIC_INIT_COUNT, 100_000);
+fn alloc_table() -> (u64, *mut [u64; 512]) {
+    unsafe {
+        let i = SCRATCH_USED;
+        SCRATCH_USED += 1;
+        assert!(i < 3, "lapic map: out of scratch page tables");
+        let p = core::ptr::addr_of_mut!(SCRATCH[i]);
+        let phys = limine_boot::kernel_virt_to_phys(p as usize);
+        (phys, core::ptr::addr_of_mut!((*p).0))
+    }
+}
+
+fn ensure(entry: &mut u64) -> *mut [u64; 512] {
+    if *entry & 1 != 0 {
+        assert!(*entry & (1 << 7) == 0, "lapic map: huge page in the way");
+        return table_at(*entry & !0xfff);
+    }
+    let (phys, ptr) = alloc_table();
+    *entry = phys | 0b11;
+    ptr
+}
+
+fn map_lapic(phys: u64) -> usize {
+    let virt = limine_boot::hhdm_offset() + phys;
+    let i4 = ((virt >> 39) & 0x1ff) as usize;
+    let i3 = ((virt >> 30) & 0x1ff) as usize;
+    let i2 = ((virt >> 21) & 0x1ff) as usize;
+    let i1 = ((virt >> 12) & 0x1ff) as usize;
+    unsafe {
+        let pml4 = table_at(cr3_phys());
+        let pdpt = ensure(&mut (*pml4)[i4]);
+        let pd = ensure(&mut (*pdpt)[i3]);
+        let pt = ensure(&mut (*pd)[i2]);
+        // present, writable, PWT, PCD, NX: uncacheable MMIO
+        (*pt)[i1] = phys | 0b11 | (1 << 3) | (1 << 4) | (1u64 << 63);
+        core::arch::asm!("invlpg [{v}]", v = in(reg) virt, options(nostack, preserves_flags));
+    }
+    virt as usize
+}
+
+fn lapic_w(off: u32, val: u32) {
+    let b = LAPIC.load(Ordering::SeqCst);
+    unsafe {
+        core::ptr::write_volatile((b + off as usize) as *mut u32, val);
+    }
 }
 
 pub fn init() {
@@ -105,10 +143,22 @@ pub fn init() {
     });
     idt.load();
 
-    if !has_x2apic() {
-        panic!("x2APIC required (QEMU needs -cpu qemu64,+x2apic)");
-    }
-    enable_x2apic_timer();
+    let mut base = rdmsr(IA32_APIC_BASE);
+    base |= APIC_EN;
+    base &= !APIC_EXTD;
+    wrmsr(IA32_APIC_BASE, base);
+    let phys = base & 0xffff_f000;
+    let va = map_lapic(phys);
+    LAPIC.store(va, Ordering::SeqCst);
+
+    lapic_w(SVR, 0x100 | u32::from(SPURIOUS_VECTOR));
+    lapic_w(TPR, 0);
+    lapic_w(LVT_LINT0, 1 << 16);
+    lapic_w(LVT_LINT1, 1 << 16);
+    lapic_w(DIV, 0xB);
+    lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 17));
+    lapic_w(INIT_COUNT, 100_000);
+
     x86_64::instructions::interrupts::enable();
 }
 
@@ -136,6 +186,6 @@ extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFault
 
 extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
     TIMER_FIRED.store(true, Ordering::SeqCst);
-    wrmsr(X2APIC_LVT_TIMER, u64::from(TIMER_VECTOR) | (1 << 16));
-    wrmsr(X2APIC_EOI, 0);
+    lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 16));
+    lapic_w(EOI, 0);
 }
