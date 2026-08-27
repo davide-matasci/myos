@@ -25,14 +25,23 @@ jobs:
           components: rust-src, llvm-tools-preview
           targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat
 
+      # prefix-key busts the poisoned rust-cache from 77c4886: restored target/
+      # mtimes made cargo skip build.rs, so CI booted a stale bios.img with
+      # broken FAT 8.3 names and zero serial.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-1
 
       - name: Install QEMU, AArch64 UEFI firmware, and a C compiler
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm qemu-efi-aarch64 gcc
 
       - name: Build kernel and Limine BIOS+UEFI disk images
-        run: cargo build
+        run: |
+          cargo clean -p myos
+          cargo build
+          test -f target/bios.img
+          od -An -tx1 -N 16 target/bios.img
 
       - name: Boot BIOS in QEMU
         timeout-minutes: 5
