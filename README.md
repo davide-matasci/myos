@@ -138,13 +138,14 @@ internals; they only go through that table. There is no dynamic linker
 that resolves against the kernel `.dynsym`.
 
 The hello module (`modules/hello`) prints `mod ok` through `write_str`.
-The kernel crate lists it as a **build-time artifact dependency**
-(`artifact = "bin:hello", target = "target"`), so cargo builds hello for
-the same target as the kernel (`x86_64-unknown-none` or
-`aarch64-unknown-none-softfloat`). `kernel/build.rs` feeds the ELF path
-into `include_bytes!`; the bytes are baked into the kernel. After heap
-and IRQs are up, the loader copies `PT_LOAD` into the heap, applies
-relocs, finds `module_init` in `.symtab`, and calls it.
+The kernel lists it as a **normal artifact dependency** (`artifact =
+"bin:hello"`), so cargo builds hello for the same target and profile as
+the kernel (`panic = "abort"`). Do not put modules under
+`[build-dependencies]`: that profile is unwind-only, and a `no_std` crate
+cannot unwind. `include_bytes!(env!("CARGO_BIN_FILE_HELLO_hello"))` bakes
+the ELF into the kernel. After heap and IRQs are up, the loader copies
+`PT_LOAD` into the heap, applies relocs, finds `module_init` in `.symtab`,
+and calls it.
 
 x86_64 hello is a PIE (`ET_DYN`) with `R_X86_64_RELATIVE` relocs.
 AArch64 hello is `ET_EXEC` slid as a unit: prebuilt `libcore` is not PIC,
@@ -156,10 +157,9 @@ PC-relative `ADR`, so a slide is enough. Both images use 4 KiB
 
 1. Copy `modules/hello` to `modules/foo` (keep `myos-abi`, `module_init`,
    a `_start` stub, and a panic handler).
-2. Add it to `[workspace].members` and as a kernel
-   `[build-dependencies]` artifact (`target = "target"`).
-3. In `kernel/build.rs`, `cargo:rustc-env` a path like hello's, then
-   `include_bytes!(env!("FOO_MODULE_PATH"))` and
+2. Add it to `[workspace].members` and as a kernel `[dependencies]`
+   artifact (`artifact = "bin:foo"`, not a build-dependency).
+3. `include_bytes!(env!("CARGO_BIN_FILE_FOO_foo"))` and
    `modules::load("foo", FOO_IMAGE)` after the heap exists.
 4. Keep `[profile.dev.package.foo]` / `[profile.release.package.foo]` at
    `opt-level = "s"`, `debug = false`, `strip = "debuginfo"` so the ELF

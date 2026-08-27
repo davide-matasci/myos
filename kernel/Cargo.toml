@@ -13,9 +13,9 @@ bench = false
 linked_list_allocator = "0.10.5"
 spin = "0.9.8"
 myos-abi = { path = "../modules/abi" }
-
-[build-dependencies]
-hello = { path = "../modules/hello", artifact = "bin:hello", target = "target" }
+# Normal artifact dep (not build-dep): same profile as the kernel, so
+# panic=abort. Build-deps get panic=unwind and cargo forbids overriding it.
+hello = { path = "../modules/hello", artifact = "bin:hello" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 bootloader_api = "0.11.17"

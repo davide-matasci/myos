@@ -12,7 +12,7 @@ use alloc::alloc::{alloc, dealloc, Layout};
 use core::fmt::Write;
 use myos_abi::{KernelApi, ABI_VERSION};
 
-const HELLO_IMAGE: &[u8] = include_bytes!(env!("HELLO_MODULE_PATH"));
+const HELLO_IMAGE: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_HELLO_hello"));
 
 static API: KernelApi = KernelApi {
     abi_version: ABI_VERSION,

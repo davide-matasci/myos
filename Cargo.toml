@@ -24,7 +24,6 @@ panic = "abort"
 opt-level = "s"
 debug = false
 strip = "debuginfo"
-panic = "abort"
 
 [profile.release]
 panic = "abort"
@@ -33,4 +32,3 @@ panic = "abort"
 opt-level = "s"
 debug = false
 strip = "debuginfo"
-panic = "abort"
