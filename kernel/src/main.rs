@@ -10,6 +10,7 @@ mod font;
 #[cfg(target_arch = "x86_64")]
 mod framebuffer;
 mod heap;
+mod modules;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -51,6 +52,8 @@ fn kernel_main_x86(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     arch::wait_for_interrupt_proof();
     let _ = writeln!(serial, "int ok");
 
+    modules::load_embedded_hello();
+
     serial.flush();
     arch::exit_qemu(arch::QEMU_SUCCESS);
     arch::halt();
@@ -69,6 +72,8 @@ pub(crate) fn kernel_main_aarch64() -> ! {
     arch::init_interrupts();
     arch::wait_for_interrupt_proof();
     let _ = writeln!(serial, "int ok");
+
+    modules::load_embedded_hello();
 
     serial.flush();
     arch::exit_qemu(arch::QEMU_SUCCESS);
