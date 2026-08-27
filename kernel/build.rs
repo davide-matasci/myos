@@ -5,10 +5,12 @@ use std::process::Command;
 fn main() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    if arch == "aarch64" {
-        let script = format!("{manifest_dir}/src/arch/aarch64/link.ld");
+    let script = format!("{manifest_dir}/link.ld");
+    if arch == "aarch64" || arch == "x86_64" {
         println!("cargo:rustc-link-arg-bins=-T{script}");
         println!("cargo:rerun-if-changed={script}");
+        println!("cargo:rustc-link-arg-bins=-z");
+        println!("cargo:rustc-link-arg-bins=max-page-size=0x1000");
     }
 
     // Hello is its own tiny workspace so this nested `cargo build` does not

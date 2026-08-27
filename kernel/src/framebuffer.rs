@@ -1,7 +1,8 @@
 //! Pixel framebuffer writer using the built-in 8x8 font.
 
-use bootloader_api::info::{FrameBuffer, PixelFormat};
 use core::fmt;
+
+use limine::framebuffer::Framebuffer;
 
 use crate::font;
 
@@ -14,28 +15,41 @@ pub struct FrameBufferWriter<'a> {
     buffer: &'a mut [u8],
     width: usize,
     height: usize,
-    stride: usize,
+    pitch: usize,
     bytes_per_pixel: usize,
-    pixel_format: PixelFormat,
+    r_shift: u8,
+    g_shift: u8,
+    b_shift: u8,
+    r_size: u8,
+    g_size: u8,
+    b_size: u8,
     col: usize,
     row: usize,
 }
 
-impl<'a> FrameBufferWriter<'a> {
-    pub fn new(fb: &'a mut FrameBuffer) -> Self {
-        let info = fb.info();
+impl FrameBufferWriter<'static> {
+    pub fn from_limine(fb: &'static Framebuffer) -> Self {
+        let bpp = (fb.bpp as usize).max(8);
+        let bytes_per_pixel = (bpp + 7) / 8;
         Self {
-            buffer: fb.buffer_mut(),
-            width: info.width,
-            height: info.height,
-            stride: info.stride,
-            bytes_per_pixel: info.bytes_per_pixel,
-            pixel_format: info.pixel_format,
+            buffer: unsafe { fb.as_slice_mut() },
+            width: fb.width as usize,
+            height: fb.height as usize,
+            pitch: fb.pitch as usize,
+            bytes_per_pixel,
+            r_shift: fb.red_mask_shift,
+            g_shift: fb.green_mask_shift,
+            b_shift: fb.blue_mask_shift,
+            r_size: fb.red_mask_size.max(1),
+            g_size: fb.green_mask_size.max(1),
+            b_size: fb.blue_mask_size.max(1),
             col: 0,
             row: 0,
         }
     }
+}
 
+impl FrameBufferWriter<'_> {
     pub fn clear(&mut self) {
         for y in 0..self.height {
             for x in 0..self.width {
@@ -97,41 +111,25 @@ impl<'a> FrameBufferWriter<'a> {
         if x >= self.width || y >= self.height {
             return;
         }
-        let offset = (y * self.stride + x) * self.bytes_per_pixel;
+        let offset = y * self.pitch + x * self.bytes_per_pixel;
         let Some(pixel) = self.buffer.get_mut(offset..offset + self.bytes_per_pixel) else {
             return;
         };
-        match self.pixel_format {
-            PixelFormat::Rgb => {
-                pixel[0] = r;
-                pixel[1] = g;
-                pixel[2] = b;
-            }
-            PixelFormat::Bgr => {
-                pixel[0] = b;
-                pixel[1] = g;
-                pixel[2] = r;
-            }
-            PixelFormat::U8 => {
-                pixel[0] = g;
-            }
-            PixelFormat::Unknown {
-                red_position,
-                green_position,
-                blue_position,
-            } => {
-                if let Some(p) = pixel.get_mut(red_position as usize) {
-                    *p = r;
-                }
-                if let Some(p) = pixel.get_mut(green_position as usize) {
-                    *p = g;
-                }
-                if let Some(p) = pixel.get_mut(blue_position as usize) {
-                    *p = b;
-                }
-            }
-            _ => {}
-        }
+        let mut val = 0u32;
+        val |= (scale(r, self.r_size) as u32) << self.r_shift;
+        val |= (scale(g, self.g_size) as u32) << self.g_shift;
+        val |= (scale(b, self.b_size) as u32) << self.b_shift;
+        let bytes = val.to_le_bytes();
+        let n = pixel.len().min(4);
+        pixel[..n].copy_from_slice(&bytes[..n]);
+    }
+}
+
+fn scale(channel: u8, bits: u8) -> u8 {
+    if bits >= 8 {
+        channel
+    } else {
+        channel >> (8 - bits)
     }
 }
 

@@ -1,23 +1,14 @@
-//! x86_64: bootloader 0.11 already dropped us in long mode with a framebuffer.
+//! x86_64: Limine already dropped us in long mode with HHDM + framebuffer.
 
 mod gdt;
 mod interrupts;
-mod paging;
 mod serial;
 pub use serial::SerialPort;
-
-use bootloader_api::BootInfo;
 
 pub const QEMU_SUCCESS: u32 = 0x10;
 pub const QEMU_FAILURE: u32 = 0x11;
 
-pub fn init_paging(boot_info: &'static mut BootInfo) {
-    paging::init(boot_info);
-}
-
-pub fn map_writable(start: usize, size: usize) {
-    paging::map_writable(start, size);
-}
+pub fn early_init() {}
 
 pub fn init_interrupts() {
     interrupts::init();

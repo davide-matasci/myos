@@ -5,11 +5,10 @@
 extern crate alloc;
 
 mod arch;
-#[cfg(target_arch = "x86_64")]
 mod font;
-#[cfg(target_arch = "x86_64")]
 mod framebuffer;
 mod heap;
+mod limine_boot;
 mod modules;
 
 use alloc::boxed::Box;
@@ -21,51 +20,27 @@ use arch::SerialPort;
 
 const HELLO: &str = "Hello from myos";
 
-#[cfg(target_arch = "x86_64")]
-const BOOTLOADER_CONFIG: bootloader_api::BootloaderConfig = {
-    let mut config = bootloader_api::BootloaderConfig::new_default();
-    config.mappings.physical_memory = Some(bootloader_api::config::Mapping::Dynamic);
-    config
-};
-
-#[cfg(target_arch = "x86_64")]
-bootloader_api::entry_point!(kernel_main_x86, config = &BOOTLOADER_CONFIG);
-
-#[cfg(target_arch = "x86_64")]
-fn kernel_main_x86(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
-    let mut serial = SerialPort::new();
-    let _ = writeln!(serial, "{HELLO}");
-
-    if let Some(fb) = boot_info.framebuffer.as_mut() {
-        let mut writer = framebuffer::FrameBufferWriter::new(fb);
-        writer.clear();
-        let _ = writeln!(writer, "{HELLO}");
-    } else {
-        let _ = writeln!(serial, "no framebuffer");
-    }
-
-    arch::init_paging(boot_info);
-    heap::init();
-    prove_heap(&mut serial);
-
-    arch::init_interrupts();
-    arch::wait_for_interrupt_proof();
-    let _ = writeln!(serial, "int ok");
-
-    modules::load_embedded_hello();
-
-    serial.flush();
-    arch::exit_qemu(arch::QEMU_SUCCESS);
-    arch::halt();
+#[unsafe(no_mangle)]
+extern "C" fn _start() -> ! {
+    kernel_main()
 }
 
-/// Called from `_start` in `arch/aarch64/boot.rs`.
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn kernel_main_aarch64() -> ! {
+fn kernel_main() -> ! {
+    arch::early_init();
+
     let mut serial = SerialPort::new();
     let _ = writeln!(serial, "{HELLO}");
+    let _ = limine_boot::base_revision_supported();
+    let _ = limine_boot::DTB.response();
 
-    arch::init_paging();
+    if let Some(resp) = limine_boot::FRAMEBUFFER.response() {
+        if let Some(fb) = resp.framebuffers().first() {
+            let mut writer = framebuffer::FrameBufferWriter::from_limine(fb);
+            writer.clear();
+            let _ = writeln!(writer, "{HELLO}");
+        }
+    }
+
     heap::init();
     prove_heap(&mut serial);
 

@@ -16,7 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pinned: floating nightly fails to link bootloader-x86_64-uefi.
+      # Pinned: floating nightly fails to link bootloader leftovers / keep the
+      # known-good toolchain until an explicit unpin.
       - name: Install pinned nightly
         uses: dtolnay/rust-toolchain@master
         with:
@@ -27,10 +28,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm
+      - name: Install QEMU, AArch64 UEFI firmware, and a C compiler
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm qemu-efi-aarch64 gcc
 
-      - name: Build kernel and BIOS+UEFI disk images
+      - name: Build kernel and Limine BIOS+UEFI disk images
         run: cargo build
 
       - name: Boot BIOS in QEMU
