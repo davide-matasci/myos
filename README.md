@@ -6,9 +6,12 @@ starting point to grow into a real OS, not a feature dump.
 
 It uses **[bootloader 0.11+](https://crates.io/crates/bootloader)**
 (`bootloader` 0.11.17 / `bootloader_api` 0.11.17): a `kernel` crate plus a
-host builder that produces BIOS and UEFI disk images with
-`DiskImageBuilder`. VGA text at `0xb8000` is gone — UEFI (and the 0.11 BIOS
-path) give you a pixel framebuffer instead.
+host builder that produces a BIOS disk image with `DiskImageBuilder`. VGA
+text at `0xb8000` is gone — 0.11 gives you a pixel framebuffer instead.
+
+The default build is **BIOS only**. The UEFI bootloader crate currently fails
+to link on the newest nightlies (`bootloader-x86_64-uefi` vs the `uefi` crate),
+so CI boots BIOS. UEFI is still there behind `--features uefi`.
 
 ## Prerequisites
 
@@ -23,7 +26,6 @@ Nightly components / targets (installed automatically by rustup from
   its BIOS stages
 - `rust-src`
 - `x86_64-unknown-none` — kernel target (tier 2, no custom JSON)
-- `x86_64-unknown-uefi` — used while building the UEFI bootloader
 
 ```sh
 # rustup reads rust-toolchain.toml on the first cargo invocation
@@ -34,8 +36,6 @@ Nightly components / targets (installed automatically by rustup from
 # macOS:          brew install qemu
 # Arch:           sudo pacman -S qemu-system-x86
 ```
-
-There is no `bootimage` runner anymore.
 
 ## Build and run
 
@@ -50,23 +50,23 @@ image, and starts QEMU. You should see a green `Hello from myos` on a black
 screen. Close the QEMU window to exit.
 
 ```sh
-cargo run -- uefi
+cargo run --features uefi -- uefi
 ```
 
 Same thing over UEFI (OVMF firmware is fetched on first run into
-`target/ovmf`).
+`target/ovmf`). This also needs the `x86_64-unknown-uefi` target. It may fail
+on the newest nightly until `bootloader-x86_64-uefi` catches up.
 
-To only build the images:
+To only build the BIOS image:
 
 ```sh
 cargo build
 ```
 
-Copies also land at:
+A copy also lands at:
 
 ```
 target/bios.img
-target/uefi.img
 ```
 
 Boot a built image yourself with:
@@ -95,13 +95,13 @@ on serial, and expects QEMU to exit via `isa-debug-exit`.
 | Path | Role |
 |------|------|
 | `src/main.rs` | Host launcher: starts QEMU |
-| `build.rs` | `DiskImageBuilder` → BIOS + UEFI images |
+| `build.rs` | `DiskImageBuilder` → BIOS image (UEFI if `--features uefi`) |
 | `kernel/src/main.rs` | `no_std` entry (`entry_point!`), serial, halt |
 | `kernel/src/framebuffer.rs` | Pixel writer for the bootloader framebuffer |
 | `kernel/src/font.rs` | Tiny 8x8 bitmap font |
 | `kernel/src/serial.rs` | COM1 UART for QEMU `-serial stdio` |
 | `.cargo/config.toml` | `bindeps` (artifact dependencies) |
-| `rust-toolchain.toml` | nightly + `llvm-tools-preview` + rust-src + targets |
+| `rust-toolchain.toml` | nightly + `llvm-tools-preview` + rust-src + kernel target |
 
 ## Notes
 

@@ -1,13 +1,12 @@
 //! Host launcher: builds a bootable disk image (via `build.rs`) and starts QEMU.
 //!
 //! ```text
-//! cargo run            # BIOS, graphical (default)
+//! cargo run                 # BIOS, graphical (default)
 //! cargo run -- bios
-//! cargo run -- uefi    # UEFI via OVMF (downloaded on first run)
-//! cargo run -- --ci    # headless BIOS; used by GitHub Actions
+//! cargo run --features uefi -- uefi
+//! cargo run -- --ci         # headless BIOS; used by GitHub Actions
 //! ```
 
-use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use std::io::Read;
 use std::process::{exit, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -48,8 +47,8 @@ fn print_usage() {
 Usage: cargo run -- [bios|uefi] [--ci]
 
   bios   Boot the BIOS disk image in QEMU (default, graphical)
-  uefi   Boot the UEFI disk image in QEMU (fetches OVMF on first run)
-  --ci   Headless BIOS boot; require serial hello + isa-debug-exit"
+  uefi   Boot the UEFI disk image (requires --features uefi)
+  --ci   Headless BIOS boot; require serial hello + isa-debug-exit",
     );
 }
 
@@ -65,29 +64,40 @@ fn run_bios(bios_path: &str) {
 }
 
 fn run_uefi(uefi_path: &str) {
-    let prebuilt =
-        Prebuilt::fetch(Source::LATEST, "target/ovmf").expect("failed to fetch OVMF prebuilt");
-    let code = prebuilt.get_file(Arch::X64, FileType::Code);
-    let vars = prebuilt.get_file(Arch::X64, FileType::Vars);
+    #[cfg(not(feature = "uefi"))]
+    {
+        let _ = uefi_path;
+        eprintln!("UEFI image is not in this build. Rebuild with:\n  cargo run --features uefi -- uefi");
+        exit(2);
+    }
+    #[cfg(feature = "uefi")]
+    {
+        use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 
-    let status = Command::new("qemu-system-x86_64")
-        .arg("-drive")
-        .arg(format!("format=raw,file={uefi_path}"))
-        .arg("-drive")
-        .arg(format!(
-            "if=pflash,format=raw,unit=0,file={},readonly=on",
-            code.display()
-        ))
-        .arg("-drive")
-        .arg(format!(
-            "if=pflash,format=raw,unit=1,file={},snapshot=on",
-            vars.display()
-        ))
-        .arg("-serial")
-        .arg("stdio")
-        .status()
-        .expect("failed to start qemu-system-x86_64");
-    exit(status.code().unwrap_or(1));
+        let prebuilt =
+            Prebuilt::fetch(Source::LATEST, "target/ovmf").expect("failed to fetch OVMF prebuilt");
+        let code = prebuilt.get_file(Arch::X64, FileType::Code);
+        let vars = prebuilt.get_file(Arch::X64, FileType::Vars);
+
+        let status = Command::new("qemu-system-x86_64")
+            .arg("-drive")
+            .arg(format!("format=raw,file={uefi_path}"))
+            .arg("-drive")
+            .arg(format!(
+                "if=pflash,format=raw,unit=0,file={},readonly=on",
+                code.display()
+            ))
+            .arg("-drive")
+            .arg(format!(
+                "if=pflash,format=raw,unit=1,file={},snapshot=on",
+                vars.display()
+            ))
+            .arg("-serial")
+            .arg("stdio")
+            .status()
+            .expect("failed to start qemu-system-x86_64");
+        exit(status.code().unwrap_or(1));
+    }
 }
 
 /// QEMU `isa-debug-exit` turns a 32-bit write of `value` into process status `(value << 1) | 1`.
