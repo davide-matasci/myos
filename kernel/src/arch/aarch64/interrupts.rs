@@ -4,18 +4,15 @@
 //! EL2 with VHE (`HCR_EL2.{E2H,TGE}`). IRQs taken with SPSel=0 use the
 //! Current-EL SP0 slot, not SP_ELx; the handler has to live in both.
 //!
-//! At EL2, CNTHCTL_EL2 is in the CNTKCTL layout and Limine only sets bits 0-1
-//! (EL0 access). The EL1 physical timer (CNTP / PPI 30) is the wrong one;
-//! also arm CNTV (PPI 27) and, at EL2, CNTHP (PPI 26) and CNTHV (PPI 28).
+//! CI #47: CNTP (PPI 30) plus SP0 vectors prints int ok. CI #50: LLVM on
+//! nightly-2026-07-26 rejects `cnthv_*_el2`, so stay on EL0 timer registers.
 
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const GICD: usize = 0x0800_0000;
 const GICC: usize = 0x0801_0000;
-const PPI_EL2_PHYS: u32 = 26; // CNTHP
 const PPI_EL1_VIRT: u32 = 27; // CNTV
-const PPI_EL2_VIRT: u32 = 28; // CNTHV
 const PPI_EL1_PHYS: u32 = 30; // CNTP
 
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
@@ -174,46 +171,25 @@ fn init_gic() {
     write32(GICD, 3); // GICD_CTLR enable group 0+1
     write32(GICC, 3); // GICC_CTLR enable group 0+1
     write32(GICC + 0x004, 0xFF); // PMR: accept all
-    let enables = (1 << PPI_EL2_PHYS) | (1 << PPI_EL1_VIRT) | (1 << PPI_EL2_VIRT) | (1 << PPI_EL1_PHYS);
-    write32(GICD + 0x100, enables);
-    for id in [PPI_EL2_PHYS, PPI_EL1_VIRT, PPI_EL2_VIRT, PPI_EL1_PHYS] {
+    write32(GICD + 0x100, (1 << PPI_EL1_VIRT) | (1 << PPI_EL1_PHYS));
+    for id in [PPI_EL1_VIRT, PPI_EL1_PHYS] {
         unsafe {
             core::ptr::write_volatile((GICD + 0x400 + id as usize) as *mut u8, 0x80);
         }
     }
 }
 
-fn cntfrq() -> u64 {
+fn init_timer() {
     let freq: u64;
     unsafe {
         asm!("mrs {f}, cntfrq_el0", f = out(reg) freq, options(nomem, nostack, preserves_flags));
     }
-    freq
-}
-
-fn init_timer() {
-    let ticks = (cntfrq() / 100).max(1);
+    let ticks = (freq / 100).max(1);
     unsafe {
-        // EL1 virtual + physical (PPI 27 / 30). Harmless extras if EL2 takes another PPI.
         asm!("msr cntv_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
         asm!("msr cntv_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
         asm!("msr cntp_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
         asm!("msr cntp_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
-    }
-    if current_el() >= 2 {
-        unsafe {
-            // VHE CNTHCTL uses the CNTKCTL layout; bits 10-11 enable EL1 physical timer.
-            let mut h: u64;
-            asm!("mrs {h}, cnthctl_el2", h = out(reg) h, options(nomem, nostack, preserves_flags));
-            h |= (1 << 10) | (1 << 11);
-            asm!("msr cnthctl_el2, {h}", h = in(reg) h, options(nomem, nostack));
-            asm!("msr cnthp_tval_el2, {t}", t = in(reg) ticks, options(nomem, nostack));
-            asm!("msr cnthp_ctl_el2, {c}", c = in(reg) 1u64, options(nomem, nostack));
-            asm!("msr cnthv_tval_el2, {t}", t = in(reg) ticks, options(nomem, nostack));
-            asm!("msr cnthv_ctl_el2, {c}", c = in(reg) 1u64, options(nomem, nostack));
-        }
-    }
-    unsafe {
         asm!("isb", options(nomem, nostack));
     }
 }
@@ -223,23 +199,13 @@ fn disable_timers() {
         asm!("msr cntp_ctl_el0, {c}", c = in(reg) 0u64, options(nomem, nostack));
         asm!("msr cntv_ctl_el0, {c}", c = in(reg) 0u64, options(nomem, nostack));
     }
-    if current_el() >= 2 {
-        unsafe {
-            asm!("msr cnthp_ctl_el2, {c}", c = in(reg) 0u64, options(nomem, nostack));
-            asm!("msr cnthv_ctl_el2, {c}", c = in(reg) 0u64, options(nomem, nostack));
-        }
-    }
-}
-
-fn is_timer_ppi(id: u32) -> bool {
-    id == PPI_EL2_PHYS || id == PPI_EL1_VIRT || id == PPI_EL2_VIRT || id == PPI_EL1_PHYS
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_irq_handler() {
     let iar = read32(GICC + 0x0C);
     let id = iar & 0x3FF;
-    if is_timer_ppi(id) {
+    if id == PPI_EL1_VIRT || id == PPI_EL1_PHYS {
         TIMER_FIRED.store(true, Ordering::SeqCst);
         disable_timers();
     }
