@@ -53,7 +53,7 @@ Usage: cargo run -- [bios|uefi|aarch64] [--ci]
   bios      Boot the x86_64 BIOS disk image in QEMU (default, graphical)
   uefi      Boot the x86_64 UEFI disk image in QEMU (fetches OVMF on first run)
   aarch64   Boot the AArch64 kernel on QEMU virt (serial console)
-  --ci      Headless boot; require serial hello/heap/int and a clean QEMU exit",
+  --ci      Headless boot; require serial hello/heap/int/mod and a clean QEMU exit",
     );
 }
 
@@ -293,7 +293,7 @@ fn wait_ci(mut child: Child, expect: CiExpect) {
     eprint!("{err}");
     print!("{serial}");
 
-    for needle in ["Hello from myos", "heap ok", "int ok"] {
+    for needle in ["Hello from myos", "heap ok", "int ok", "mod ok"] {
         if !serial.contains(needle) {
             eprintln!("error: serial output did not contain {needle:?}");
             exit(1);

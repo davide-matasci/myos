@@ -115,9 +115,56 @@ cargo run -- aarch64 --ci
 ```
 
 BIOS/UEFI boots with `-display none`, require `Hello from myos`, `heap ok`,
-and `int ok` on serial, and expect QEMU to exit via `isa-debug-exit`
-(BIOS ~20s, UEFI 60s). AArch64 requires the same three strings and exits
+`int ok`, and `mod ok` on serial, and expect QEMU to exit via `isa-debug-exit`
+(BIOS ~20s, UEFI 60s). AArch64 requires the same four strings and exits
 via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
+
+## Modules
+
+There is still no filesystem. "Modular" here means **runtime load of an
+ELF already sitting in memory**, not Multiboot modules and not an initrd.
+
+A module is a `#![no_std]` crate that exports:
+
+```rust
+unsafe extern "C" fn module_init(api: *const KernelApi) -> i32
+unsafe extern "C" fn module_exit() // optional
+```
+
+`KernelApi` is a `#[repr(C)]` table of function pointers (`write_str`,
+`alloc`, `dealloc`) defined in `modules/abi`. The kernel fills it in and
+passes `&KernelApi` into `module_init`. Modules must not call kernel
+internals; they only go through that table. There is no dynamic linker
+that resolves against the kernel `.dynsym`.
+
+The hello module (`modules/hello`) prints `mod ok` through `write_str`.
+The kernel crate lists it as a **build-time artifact dependency**
+(`artifact = "bin:hello", target = "target"`), so cargo builds hello for
+the same target as the kernel (`x86_64-unknown-none` or
+`aarch64-unknown-none-softfloat`). `kernel/build.rs` feeds the ELF path
+into `include_bytes!`; the bytes are baked into the kernel. After heap
+and IRQs are up, the loader copies `PT_LOAD` into the heap, applies
+relocs, finds `module_init` in `.symtab`, and calls it.
+
+x86_64 hello is a PIE (`ET_DYN`) with `R_X86_64_RELATIVE` relocs.
+AArch64 hello is `ET_EXEC` slid as a unit: prebuilt `libcore` is not PIC,
+so `-pie` fails to link (`R_AARCH64_ABS64` in libcore). `module_init` uses
+PC-relative `ADR`, so a slide is enough. Both images use 4 KiB
+`max-page-size` so they fit on the 128 KiB heap.
+
+### Adding another module
+
+1. Copy `modules/hello` to `modules/foo` (keep `myos-abi`, `module_init`,
+   a `_start` stub, and a panic handler).
+2. Add it to `[workspace].members` and as a kernel
+   `[build-dependencies]` artifact (`target = "target"`).
+3. In `kernel/build.rs`, `cargo:rustc-env` a path like hello's, then
+   `include_bytes!(env!("FOO_MODULE_PATH"))` and
+   `modules::load("foo", FOO_IMAGE)` after the heap exists.
+4. Keep `[profile.dev.package.foo]` / `[profile.release.package.foo]` at
+   `opt-level = "s"`, `debug = false`, `strip = "debuginfo"` so the ELF
+   stays small. Use `-u module_init` (see `modules/hello/build.rs`)
+   instead of `--export-dynamic`.
 
 ## Layout
 
@@ -125,8 +172,11 @@ via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
 |------|------|
 | `src/main.rs` | Host launcher: starts QEMU (BIOS, UEFI, AArch64) |
 | `build.rs` | `DiskImageBuilder` → BIOS + UEFI images |
-| `kernel/src/main.rs` | `no_std` entry: hello, heap, timer IRQ, halt |
+| `kernel/src/main.rs` | `no_std` entry: hello, heap, timer IRQ, load module, halt |
 | `kernel/src/heap.rs` | 128 KiB `linked_list_allocator` heap |
+| `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
+| `modules/abi` | Shared `KernelApi` / `module_init` C ABI |
+| `modules/hello` | Sample module; embedded into the kernel at build time |
 | `kernel/src/arch/x86/` | COM1, paging, GDT/IDT/PIC/PIT, isa-debug-exit |
 | `kernel/src/arch/aarch64/` | `_start`, PL011, identity MMU, GICv2 timer, PSCI off |
 | `kernel/src/framebuffer.rs` | Pixel writer for the x86_64 bootloader framebuffer |
@@ -148,3 +198,6 @@ via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
   1 GiB of RAM and turns the EL1 MMU on.
 - Interrupts: x86_64 uses the 8259 PIC + PIT (IRQ0). AArch64 uses GICv2
   (`-machine virt,gic-version=2`) and the generic physical timer (PPI 30).
+- Modules run from the heap (x86_64 heap PTEs are executable; AArch64 RAM
+  is EL1-executable). The loader flushes the I-cache on AArch64 after
+  copying.
