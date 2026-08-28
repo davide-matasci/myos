@@ -180,6 +180,8 @@ unsafe fn blk_read(api: &KernelApi, lba: u64, buf: &mut [u8; SECTOR]) -> Result<
     if rc == 0 {
         Ok(())
     } else {
+        let m = b"fat blk\n";
+        (api.write_str)(m.as_ptr(), m.len());
         Err(-1)
     }
 }

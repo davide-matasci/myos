@@ -3,10 +3,8 @@
 
 const MSG_PATH: &[u8] = b"/msg";
 
-// PT_LOAD .bss: in user_range_ok (in_code). Do not use a stack local (#95:
-// nostack + opt-level s can place a 64-byte array past the mapped stack page).
-// Do not use UnsafeCell::get on a static (#97: pointer failed user_range_ok,
-// likely GOT vs RIP-relative). addr_of_mut is the #94 path that got n > 0.
+// PT_LOAD .bss: in user_range_ok (in_code). addr_of_mut so the pointer is
+// RIP-relative, not a GOT slot that needs .rela.dyn (#97 UnsafeCell::get).
 static mut MSG_BUF: [u8; 64] = [0; 64];
 
 #[unsafe(no_mangle)]
@@ -14,26 +12,28 @@ pub extern "C" fn _start() -> ! {
     let msg = b"user ok\n";
     unsafe { sys_write(msg.as_ptr() as usize, msg.len()); }
 
-    let fd = unsafe { sys_open(MSG_PATH.as_ptr() as usize, MSG_PATH.len()) };
+    let path = b"/msg";
+    let fd = unsafe { sys_open(path.as_ptr() as usize, path.len()) };
     if fd == usize::MAX {
-        fat_miss();
+        miss(b"fat nofd\n");
     }
     let buf_ptr = core::ptr::addr_of_mut!(MSG_BUF) as *mut u8 as usize;
     let n = unsafe { sys_read(fd, buf_ptr, 64) };
     unsafe { sys_close(fd); }
-    if n == 0 || n == usize::MAX {
-        fat_miss();
+    if n == usize::MAX {
+        miss(b"fat nread\n");
+    }
+    if n == 0 {
+        miss(b"fat empty\n");
     }
     unsafe { sys_write(buf_ptr, n); }
-    // Needle from .rodata (same path as `user ok`). #94 read succeeded but
-    // the echo was not the substring `fat ok` (zeros/padding).
     let ok = b"fat ok\n";
     unsafe { sys_write(ok.as_ptr() as usize, ok.len()); }
     unsafe { sys_exit(); }
+    let _ = MSG_PATH;
 }
 
-fn fat_miss() -> ! {
-    let m = b"fat miss\n";
+fn miss(m: &[u8]) -> ! {
     unsafe { sys_write(m.as_ptr() as usize, m.len()); }
     unsafe { sys_exit(); }
 }
