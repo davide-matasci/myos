@@ -163,23 +163,30 @@ pub fn fd_open(data: &'static [u8]) -> Option<usize> {
     })
 }
 
-/// Copy from `fd` into the user buffer at `buf`. `range_ok` must accept the
-/// actual byte count. Bad fd or a failed range check returns `usize::MAX`.
-pub fn fd_read(
-    fd: usize,
-    buf: usize,
-    len: usize,
-    range_ok: fn(usize, usize) -> bool,
-) -> usize {
+/// Copy from `fd` into the user buffer at `buf`. Bad fd or a failed range
+/// check returns `usize::MAX`.
+///
+/// Range checks use this task's map fields under the same `TASKS` lock —
+/// do not call back into `current_user_map` (non-reentrant `spin::Mutex`,
+/// CI #116–#121 hang after `open`).
+pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
     with_current_mut(|t| {
         let Some(Some(f)) = t.fds.get_mut(fd) else {
             return usize::MAX;
         };
         let n = len.min(f.data.len().saturating_sub(f.pos));
-        if n != 0 && !range_ok(buf, n) {
-            return usize::MAX;
-        }
         if n != 0 {
+            let base = t.user_base as usize;
+            let end = match buf.checked_add(n) {
+                Some(e) => e,
+                None => return usize::MAX,
+            };
+            let stack = t.stack_off as usize;
+            let in_code = buf >= base && end <= base + t.image_span;
+            let in_stack = buf >= base + stack && end <= base + stack + 4096;
+            if !(in_code || in_stack) {
+                return usize::MAX;
+            }
             unsafe {
                 core::ptr::copy_nonoverlapping(f.data.as_ptr().add(f.pos), buf as *mut u8, n);
             }
@@ -400,9 +407,10 @@ fn spawn_inner(
 }
 
 pub fn yield_now() {
+    let flags = irq_save();
     irq_off();
     schedule();
-    irq_on();
+    irq_restore(flags);
 }
 
 /// Same switch as `yield_now`. No-op until `enable_preempt` so the first-tick
