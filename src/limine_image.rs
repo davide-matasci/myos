@@ -47,6 +47,12 @@ impl LimineFiles {
     pub fn bios_sys(&self) -> PathBuf {
         self.dir.join("limine-bios.sys")
     }
+    pub fn bios_cd(&self) -> PathBuf {
+        self.dir.join("limine-bios-cd.bin")
+    }
+    pub fn uefi_cd(&self) -> PathBuf {
+        self.dir.join("limine-uefi-cd.bin")
+    }
     pub fn tool(&self) -> PathBuf {
         self.dir.join("limine")
     }
@@ -215,6 +221,94 @@ pub fn bios_install(limine_tool: &Path, image: &Path) {
         .expect("failed to spawn limine bios-install");
     if !status.success() {
         panic!("limine bios-install failed for {}", image.display());
+    }
+}
+
+/// Limine BIOS+UEFI hybrid ISO. Recreates `iso_root`, runs xorriso, then
+/// `limine bios-install` with no partition number. Needs `xorriso` on PATH.
+pub fn write_x86_iso(
+    dest: &Path,
+    iso_root: &Path,
+    kernel: &Path,
+    hello: &Path,
+    ok: &Path,
+    limine: &LimineFiles,
+) {
+    for p in [limine.bios_cd(), limine.uefi_cd()] {
+        if !p.is_file() {
+            panic!("Limine CD boot file missing: {}", p.display());
+        }
+    }
+
+    let _ = fs::remove_dir_all(iso_root);
+    fs::create_dir_all(iso_root.join("boot/limine"))
+        .unwrap_or_else(|e| panic!("create iso boot/limine: {e}"));
+    fs::create_dir_all(iso_root.join("EFI/BOOT"))
+        .unwrap_or_else(|e| panic!("create iso EFI/BOOT: {e}"));
+
+    let copy = |src: &Path, rel: &str| {
+        let dst = iso_root.join(rel);
+        fs::copy(src, &dst).unwrap_or_else(|e| {
+            panic!("copy {} -> {}: {e}", src.display(), dst.display())
+        });
+    };
+    copy(kernel, "boot/kernel");
+    copy(hello, "boot/hello");
+    copy(ok, "boot/ok");
+    copy(&limine.bios_sys(), "boot/limine/limine-bios.sys");
+    copy(&limine.bios_cd(), "boot/limine/limine-bios-cd.bin");
+    copy(&limine.uefi_cd(), "boot/limine/limine-uefi-cd.bin");
+    copy(&limine.bootx64(), "EFI/BOOT/BOOTX64.EFI");
+
+    let conf = LIMINE_CONF.as_bytes();
+    for rel in ["boot/limine/limine.conf", "EFI/BOOT/limine.conf", "limine.conf"] {
+        let dst = iso_root.join(rel);
+        fs::write(&dst, conf)
+            .unwrap_or_else(|e| panic!("write {}: {e}", dst.display()));
+    }
+
+    if let Some(parent) = dest.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let status = Command::new("xorriso")
+        .args([
+            "-as",
+            "mkisofs",
+            "-R",
+            "-r",
+            "-J",
+            "-b",
+            "boot/limine/limine-bios-cd.bin",
+            "-no-emul-boot",
+            "-boot-load-size",
+            "4",
+            "-boot-info-table",
+            "-hfsplus",
+            "-apm-block-size",
+            "2048",
+            "--efi-boot",
+            "boot/limine/limine-uefi-cd.bin",
+            "-efi-boot-part",
+            "--efi-boot-image",
+            "--protective-msdos-label",
+        ])
+        .arg(iso_root)
+        .arg("-o")
+        .arg(dest)
+        .status()
+        .expect("failed to spawn xorriso (needed to build the hybrid ISO)");
+    if !status.success() {
+        panic!("xorriso failed to write {}", dest.display());
+    }
+
+    let status = Command::new(limine.tool())
+        .arg("bios-install")
+        .arg(dest)
+        .status()
+        .expect("failed to spawn limine bios-install");
+    if !status.success() {
+        panic!("limine bios-install failed for {}", dest.display());
     }
 }
 
