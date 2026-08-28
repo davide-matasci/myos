@@ -53,6 +53,8 @@ syscall_entry:
     mov r10, rsp
     mov rsp, [rip + {kernel_rsp0}]
     push r11
+    push r9
+    push r8
     push rcx          # user rip
     push r10          # user rsp (on this kernel stack, survives wait/yield)
     push rax          # nr; 16-byte align for call
@@ -66,6 +68,8 @@ syscall_entry:
     add rsp, 8
     pop r10
     pop rcx
+    pop r8
+    pop r9
     pop r11
     mov rsp, r10
     sysretq
