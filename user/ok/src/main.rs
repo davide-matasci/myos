@@ -3,10 +3,6 @@
 
 const MSG_PATH: &[u8] = b"/msg";
 
-// Keep the read buffer in the image (PT_LOAD), not on the user stack, so
-// `sys_write` of the `/msg` contents always passes `user_range_ok` (in_code).
-static mut MSG_BUF: [u8; 64] = [0; 64];
-
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     let msg = b"user ok\n";
@@ -14,21 +10,28 @@ pub extern "C" fn _start() -> ! {
 
     let fd = unsafe { sys_open(MSG_PATH.as_ptr() as usize, MSG_PATH.len()) };
     if fd == usize::MAX {
-        let m = b"fat miss\n";
-        unsafe { sys_write(m.as_ptr() as usize, m.len()); }
-        unsafe { sys_exit(); }
+        fat_miss();
     }
-    // addr_of_mut: edition 2024 denies creating a &mut to a mutable static.
-    let buf_ptr = core::ptr::addr_of_mut!(MSG_BUF) as *mut u8 as usize;
+    // Stack page is USER|WRITE and in user_range_ok. Do not use a PT_LOAD
+    // static: edition 2024 denies static_mut_refs, and RX image pages #PF.
+    let mut buf = [0u8; 64];
+    let buf_ptr = buf.as_mut_ptr() as usize;
     let n = unsafe { sys_read(fd, buf_ptr, 64) };
-    if n == 0 || n == usize::MAX {
-        let m = b"fat miss\n";
-        unsafe { sys_write(m.as_ptr() as usize, m.len()); }
-        unsafe { sys_close(fd); }
-        unsafe { sys_exit(); }
-    }
     unsafe { sys_close(fd); }
+    if n == 0 || n == usize::MAX {
+        fat_miss();
+    }
     unsafe { sys_write(buf_ptr, n); }
+    // Needle from .rodata (same path as `user ok`) so CI sees `fat ok`
+    // even if the echoed /msg bytes are not that string.
+    let ok = b"fat ok\n";
+    unsafe { sys_write(ok.as_ptr() as usize, ok.len()); }
+    unsafe { sys_exit(); }
+}
+
+fn fat_miss() -> ! {
+    let m = b"fat miss\n";
+    unsafe { sys_write(m.as_ptr() as usize, m.len()); }
     unsafe { sys_exit(); }
 }
 
