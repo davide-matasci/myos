@@ -1,19 +1,15 @@
 [workspace]
 
 [package]
-name = "init"
+name = "myos-user"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Userspace init: open/exec `/ok` from bootfs."
+description = "Userspace syscall wrappers for myos."
 
-[[bin]]
-name = "init"
-test = false
-bench = false
-
-[dependencies]
-myos-user = { path = "../lib" }
+[lib]
+name = "myos_user"
+path = "src/lib.rs"
 
 [profile.dev]
 panic = "abort"

@@ -57,7 +57,7 @@ fn main() {
         &target,
         &profile,
         &out,
-        &[],
+        &["../lib/src/lib.rs", "../lib/Cargo.toml"],
     );
     nested_elf(
         &cargo,
@@ -69,7 +69,7 @@ fn main() {
         &target,
         &profile,
         &out,
-        &[],
+        &["../lib/src/lib.rs", "../lib/Cargo.toml"],
     );
 }
 

@@ -10,7 +10,6 @@ use myos_abi::{KernelApi, ABI_VERSION};
 
 const SECTOR: usize = 512;
 const MSG_NAME: &[u8; 8] = b"MSG     ";
-const MSG_BYTES: &[u8] = b"fat ok\n";
 
 #[inline(never)]
 #[unsafe(no_mangle)]
@@ -67,18 +66,7 @@ unsafe fn run(api: &KernelApi) -> Result<(), i32> {
     let root_lba = reserved + u64::from(fats) * fat_sz16;
     let data_lba = root_lba + u64::from(root_sectors);
 
-    // CI #101: MSG name matched but size was 0, so /msg was empty. Skip
-    // zero-length dirents; if that leaves no file, read the first data
-    // cluster (writer puts `fat ok\n` there).
-    let (first_cluster, file_size) = match find_msg(api, root_lba, root_sectors) {
-        Ok(pair) => pair,
-        Err(-4) => {
-            let m = b"fat sz0\n";
-            (api.write_str)(m.as_ptr(), m.len());
-            (2u16, MSG_BYTES.len())
-        }
-        Err(e) => return Err(e),
-    };
+    let (first_cluster, file_size) = find_msg(api, root_lba, root_sectors)?;
     if file_size > 4096 {
         return Err(-6);
     }
@@ -93,19 +81,7 @@ unsafe fn run(api: &KernelApi) -> Result<(), i32> {
         file_size,
         &mut file,
     )?;
-    // CI #102: x86 still registered empty /msg with no fat sz0. Log n
-    // and fall back to the known payload if the disk bytes are wrong.
-    let mut nmsg = *b"fat n0\n";
-    nmsg[5] = b'0' + (n.min(9) as u8);
-    (api.write_str)(nmsg.as_ptr(), nmsg.len());
-    let payload: &[u8] = if n >= MSG_BYTES.len() && &file[..MSG_BYTES.len()] == MSG_BYTES {
-        &file[..n]
-    } else {
-        let m = b"fat fb\n";
-        (api.write_str)(m.as_ptr(), m.len());
-        MSG_BYTES
-    };
-    vfs_register(api, b"msg", payload)?;
+    vfs_register(api, b"msg", &file[..n])?;
     Ok(())
 }
 
@@ -203,8 +179,6 @@ unsafe fn blk_read(api: &KernelApi, lba: u64, buf: &mut [u8; SECTOR]) -> Result<
     if rc == 0 {
         Ok(())
     } else {
-        let m = b"fat blk\n";
-        (api.write_str)(m.as_ptr(), m.len());
         Err(-1)
     }
 }

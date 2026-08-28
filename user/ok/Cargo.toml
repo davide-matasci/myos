@@ -5,12 +5,15 @@ name = "ok"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Userspace ok: write `user ok` then exit."
+description = "Userspace ok: write `user ok`, read `/msg`, then exit."
 
 [[bin]]
 name = "ok"
 test = false
 bench = false
+
+[dependencies]
+myos-user = { path = "../lib" }
 
 [profile.dev]
 panic = "abort"
