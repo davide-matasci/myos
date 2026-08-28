@@ -1,0 +1,25 @@
+[workspace]
+
+[package]
+name = "init"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Userspace init: write `user ok` then exit."
+
+[[bin]]
+name = "init"
+test = false
+bench = false
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

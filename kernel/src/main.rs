@@ -70,7 +70,7 @@ fn kernel_main() -> ! {
     modules::load_limine_modules();
 
     user::init();
-    user::spawn_two();
+    user::spawn_init();
     while !user::both_exited() {
         task::yield_now();
     }
