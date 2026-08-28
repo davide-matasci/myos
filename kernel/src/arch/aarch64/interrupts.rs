@@ -60,8 +60,10 @@ exception_vectors:
     b exception_hang
 
     // Frame (16*18): x0-x29 pairs at 16*0..14, x30 at 16*15,
-    // elr_el1/spsr_el1 at 16*16, sp_el0 at 16*17. CPU ELR/SPSR/SP_EL0
-    // are not banked per-task; wait/preempt enter() would clobber them.
+    // elr/spsr at 16*16, sp_el0 at 16*17. ELR/SPSR are not VHE-aliased:
+    // exception to EL2 writes ELR_EL2, so CurrentEL>=2 uses the EL2 bank.
+    // CPU ELR/SPSR/SP_EL0 are not banked per-task; wait/preempt enter()
+    // would clobber them.
 
 irq_el1h:
     sub sp, sp, #(16 * 18)
@@ -81,16 +83,32 @@ irq_el1h:
     stp x26, x27, [sp, #16 * 13]
     stp x28, x29, [sp, #16 * 14]
     str x30, [sp, #16 * 15]
+    mrs x3, CurrentEL
+    cmp x3, #8
+    b.lt 1f
+    mrs x0, elr_el2
+    mrs x1, spsr_el2
+    b 2f
+1:
     mrs x0, elr_el1
     mrs x1, spsr_el1
+2:
     mrs x2, sp_el0
     stp x0, x1, [sp, #16 * 16]
     str x2, [sp, #16 * 17]
     bl aarch64_irq_handler
     ldp x0, x1, [sp, #16 * 16]
     ldr x2, [sp, #16 * 17]
+    mrs x3, CurrentEL
+    cmp x3, #8
+    b.lt 1f
+    msr elr_el2, x0
+    msr spsr_el2, x1
+    b 2f
+1:
     msr elr_el1, x0
     msr spsr_el1, x1
+2:
     msr sp_el0, x2
     isb
     ldr x30, [sp, #16 * 15]
@@ -130,8 +148,16 @@ lower_sync:
     stp x26, x27, [sp, #16 * 13]
     stp x28, x29, [sp, #16 * 14]
     str x30, [sp, #16 * 15]
+    mrs x3, CurrentEL
+    cmp x3, #8
+    b.lt 1f
+    mrs x0, elr_el2
+    mrs x1, spsr_el2
+    b 2f
+1:
     mrs x0, elr_el1
     mrs x1, spsr_el1
+2:
     mrs x2, sp_el0
     stp x0, x1, [sp, #16 * 16]
     str x2, [sp, #16 * 17]
@@ -139,8 +165,16 @@ lower_sync:
     bl aarch64_lower_sync
     ldp x0, x1, [sp, #16 * 16]
     ldr x2, [sp, #16 * 17]
+    mrs x3, CurrentEL
+    cmp x3, #8
+    b.lt 1f
+    msr elr_el2, x0
+    msr spsr_el2, x1
+    b 2f
+1:
     msr elr_el1, x0
     msr spsr_el1, x1
+2:
     msr sp_el0, x2
     isb
     ldr x30, [sp, #16 * 15]
@@ -292,16 +326,15 @@ extern "C" fn aarch64_irq_handler() {
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     let esr: u64;
-    let elr: u64;
     let far: u64;
-    let sp_el0: u64;
     unsafe {
         asm!("mrs {esr}, esr_el1", esr = out(reg) esr, options(nomem, nostack));
-        asm!("mrs {elr}, elr_el1", elr = out(reg) elr, options(nomem, nostack));
         asm!("mrs {far}, far_el1", far = out(reg) far, options(nomem, nostack));
-        asm!("mrs {sp}, sp_el0", sp = out(reg) sp_el0, options(nomem, nostack));
     }
     let ec = (esr >> 26) & 0x3f;
+    // Stacked by lower_sync: elr/spsr at 16*16, sp_el0 at 16*17.
+    let elr = unsafe { *frame.add(32) };
+    let sp_el0 = unsafe { *frame.add(34) };
     if ec == 0x15 {
         unsafe {
             // Keep IRQs masked for the syscall body (x86 syscall_entry does cli).
@@ -334,7 +367,11 @@ extern "C" fn aarch64_sync_handler() -> ! {
     let far: u64;
     unsafe {
         asm!("mrs {esr}, esr_el1", esr = out(reg) esr, options(nomem, nostack));
-        asm!("mrs {elr}, elr_el1", elr = out(reg) elr, options(nomem, nostack));
+        if current_el() >= 2 {
+            asm!("mrs {elr}, elr_el2", elr = out(reg) elr, options(nomem, nostack));
+        } else {
+            asm!("mrs {elr}, elr_el1", elr = out(reg) elr, options(nomem, nostack));
+        }
         asm!("mrs {far}, far_el1", far = out(reg) far, options(nomem, nostack));
     }
     panic!("sync abort esr={esr:#x} elr={elr:#x} far={far:#x}");
