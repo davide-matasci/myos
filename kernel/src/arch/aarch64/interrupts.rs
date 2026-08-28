@@ -278,6 +278,8 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     let ec = (esr >> 26) & 0x3f;
     if ec == 0x15 {
         unsafe {
+            // Keep IRQs masked for the syscall body (x86 syscall_entry does cli).
+            core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
             let nr = *frame.add(8) as usize;
             let a0 = *frame.add(0) as usize;
             let a1 = *frame.add(1) as usize;
