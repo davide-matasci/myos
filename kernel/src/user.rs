@@ -773,7 +773,10 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let argc = arg_refs.len();
     task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
     #[cfg(target_arch = "aarch64")]
-    try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
+    {
+        crate::console::write_str("exec go\n");
+        try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
+    }
     enter(entry, rsp, argc, argv);
 }
 
