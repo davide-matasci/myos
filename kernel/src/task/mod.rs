@@ -38,6 +38,28 @@ struct Fd {
     pos: usize,
 }
 
+/// User register snapshot so a forked child can resume after the syscall
+/// with the same callee-saved state the parent had (rax/x0 forced to 0).
+#[derive(Clone, Copy)]
+pub struct ForkRegs {
+    pub rip: usize,
+    pub rsp: usize,
+    #[cfg(target_arch = "x86_64")]
+    pub rbx: u64,
+    #[cfg(target_arch = "x86_64")]
+    pub rbp: u64,
+    #[cfg(target_arch = "x86_64")]
+    pub r12: u64,
+    #[cfg(target_arch = "x86_64")]
+    pub r13: u64,
+    #[cfg(target_arch = "x86_64")]
+    pub r14: u64,
+    #[cfg(target_arch = "x86_64")]
+    pub r15: u64,
+    #[cfg(target_arch = "aarch64")]
+    pub x: [u64; 31],
+}
+
 #[derive(Clone, Copy)]
 struct Task {
     state: State,
@@ -54,6 +76,7 @@ struct Task {
     image_span: usize,
     stack_off: u64,
     ppid: usize,
+    fork_regs: Option<ForkRegs>,
 }
 
 const EMPTY: Task = Task {
@@ -70,6 +93,7 @@ const EMPTY: Task = Task {
     image_span: 0,
     stack_off: 0,
     ppid: 0,
+    fork_regs: None,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -197,13 +221,14 @@ pub fn replace_user(
         t.image_span = image_span;
         t.stack_off = stack_off;
         t.fds = [None; MAX_FDS];
+        t.fork_regs = None;
     });
     user::switch_aspace(aspace);
     LOADED_ASPACE.store(aspace, Ordering::SeqCst);
 }
 
 pub fn spawn(entry: fn()) {
-    spawn_inner(0, Some(entry), 0, 0, 0, 0, 0, 0, [None; MAX_FDS]);
+    spawn_inner(0, Some(entry), 0, 0, 0, 0, 0, 0, [None; MAX_FDS], None);
 }
 
 pub fn spawn_user(
@@ -224,16 +249,17 @@ pub fn spawn_user(
         stack_off,
         0,
         [None; MAX_FDS],
+        None,
     );
 }
 
-/// Copy the current user task: new aspace, copied fds, same user RIP/RSP.
-/// Child is Ready and will `enter()` with rax/x0 = 0. Returns the child slot.
-pub fn fork_current() -> Option<usize> {
+/// Copy the current user task: new aspace, copied fds, fork resume regs.
+/// Child is Ready and will resume userspace with rax/x0 = 0. Returns child slot.
+pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (rip, rsp, fds, base, span, off, ppid) = {
+    let (fds, base, span, off, ppid) = {
         let tasks = TASKS.lock();
         let id = CURRENT.load(Ordering::SeqCst);
         let t = tasks[id];
@@ -242,15 +268,7 @@ pub fn fork_current() -> Option<usize> {
             irq_restore(flags);
             return None;
         }
-        (
-            t.user_rip,
-            t.user_rsp,
-            t.fds,
-            t.user_base,
-            t.image_span,
-            t.stack_off,
-            id,
-        )
+        (t.fds, t.user_base, t.image_span, t.stack_off, id)
     };
 
     let Some(aspace) = user::copy_user_aspace(base, span, off) else {
@@ -286,13 +304,14 @@ pub fn fork_current() -> Option<usize> {
         entry: None,
         aspace,
         kernel_stack_top: top,
-        user_rip: rip,
-        user_rsp: rsp,
+        user_rip: child_regs.rip,
+        user_rsp: child_regs.rsp,
         fds,
         user_base: base,
         image_span: span,
         stack_off: off,
         ppid,
+        fork_regs: Some(child_regs),
     };
     drop(tasks);
     user::note_fork();
@@ -345,6 +364,7 @@ fn spawn_inner(
     stack_off: u64,
     ppid: usize,
     fds: [Option<Fd>; MAX_FDS],
+    fork_regs: Option<ForkRegs>,
 ) {
     let flags = irq_save();
     irq_off();
@@ -373,6 +393,7 @@ fn spawn_inner(
         image_span,
         stack_off,
         ppid,
+        fork_regs,
     };
     drop(tasks);
     irq_restore(flags);
@@ -445,10 +466,6 @@ pub fn schedule() {
     }
 }
 
-/// Serial write used by tasks. Holds a lock so bytes from two tasks cannot
-/// interleave. IRQs off for the write so a timer tick cannot switch while
-/// the UART is mid-character. Restores the previous interrupt state so a
-/// syscall (IF already off) does not `sti`.
 pub fn print(s: &str) {
     let flags = irq_save();
     irq_off();
@@ -479,11 +496,16 @@ pub fn print_bytes(bytes: &[u8]) {
 }
 
 extern "C" fn trampoline() -> ! {
-    let (entry, user_rip, user_rsp) = {
+    let (entry, user_rip, user_rsp, fork_regs) = {
         let id = CURRENT.load(Ordering::SeqCst);
-        let t = TASKS.lock()[id];
-        (t.entry, t.user_rip, t.user_rsp)
+        let mut tasks = TASKS.lock();
+        let t = &mut tasks[id];
+        let fr = t.fork_regs.take();
+        (t.entry, t.user_rip, t.user_rsp, fr)
     };
+    if let Some(fr) = fork_regs {
+        crate::user::enter_fork(fr);
+    }
     if user_rip != 0 {
         crate::user::enter(user_rip, user_rsp);
     }
