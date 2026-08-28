@@ -4,9 +4,18 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[workspace]
+
 [[bin]]
 name = "std-hello"
 path = "main.rs"
 
-# Requires a patched Rust sysroot; see std/pal/README.md.
-# This manifest is documentation-only in the stock repo CI.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[unstable]
+build-std = ["std", "panic_abort"]
+build-std-features = ["compiler-builtins-mem"]

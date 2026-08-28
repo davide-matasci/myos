@@ -1,56 +1,52 @@
-# Rust `std` PAL skeleton for myos
+# Rust `std` PAL for myos
 
-This directory mirrors what belongs in a patched Rust tree at
-`library/std/src/sys/pal/myos/`. Copy or symlink it there, then apply the
-wiring patches below and build with `-Z build-std=std,panic_abort`.
+This directory holds the myos Platform Abstraction Layer and the automation
+that patches a pinned nightly Rust tree for `-Z build-std`.
 
-See also the [OSDev wiki](https://wiki.osdev.org/Porting_Rust_standard_library).
+Target toolchain: `nightly-2026-07-26` (see root `rust-toolchain.toml`).
 
-## 1. Allow the OS in `library/std/build.rs`
+## Layout
 
-Add `|| target_os == "myos"` to the supported-OS list (same block as `uefi`,
-`hermit`, …).
+| Path | Role |
+|------|------|
+| `pal/myos/` | PAL entry (`_start`), init, abort, syscall helpers |
+| `sys/myos/` | `alloc` (brk), `fd`, `stdio`, shared `abi` |
+| `os/myos/` | `OsStrExt` and fd re-exports |
+| `patches/wire-myos.py` | Copies `rust-src` and inserts `target_os = "myos"` wiring |
+| `../scripts/prepare-rust-std-myos.sh` | Builds a custom sysroot under `target/myos-sysroot` |
+| `../scripts/myos-rustc.sh` | rustc wrapper that points at the patched sysroot |
+| `examples/hello/` | `println!("std ok")` smoke binary |
 
-## 2. Wire the PAL in `library/std/src/sys/pal/mod.rs`
-
-```rust
-} else if #[cfg(target_os = "myos")] {
-    mod myos;
-    pub use self::myos::*;
-```
-
-## 3. Copy this tree
+## Quick start
 
 ```sh
-cp -r std/pal/myos "$RUST_SRC/library/std/src/sys/pal/myos"
-```
+./scripts/prepare-rust-std-myos.sh
 
-Set `RUST_SRC` to your pinned nightly source (same version as `rust-toolchain.toml`).
-
-## 4. Build a std program (host cross-compile)
-
-From this repo after patching Rust:
-
-```sh
 export RUSTC_BOOTSTRAP=1
-cargo +nightly build \
+export MYOS_SYSROOT=$PWD/target/myos-sysroot
+export RUSTC=$PWD/scripts/myos-rustc.sh
+
+cargo +nightly-2026-07-26 build \
   -Z build-std=std,panic_abort \
+  -Z build-std-features=compiler-builtins-mem \
+  -Z unstable-options \
+  -Z json-target-spec \
   --target targets/x86_64-unknown-myos.json \
   --manifest-path std/examples/hello/Cargo.toml
 ```
 
-The myos kernel must already provide syscall **9 (`brk`)** and the usual fd/process
-API documented in the root `README.md`.
+The resulting ELF is at `std/examples/hello/target/x86_64-unknown-myos/debug/std-hello`.
+
+## Kernel requirements
+
+Syscall ABI matches `user/lib`: write (0), exit (1), read (3), close (4), brk (9).
+x86_64 `_start` expects SysV argc/argv on the stack (same as existing user ELFs).
 
 ## Status
 
-| PAL module | Status |
-|------------|--------|
-| `alloc.rs` | Bump `GlobalAlloc` on `brk` (matches `user/lib`) |
-| `os.rs` | Raw `write`/`read`/`open`/`close`/`exit` syscalls |
-| `args.rs` | argc/argv from `_start` stack (x86 SysV) |
-| `thread_local_key.rs` | Single-threaded stub |
-| `start.rs` | `_start` → `std::rt` (needs full std link) |
+Bring-up scope: **`println!("std ok")`** via patched `std` on x86_64-myos.
+Networking, filesystem, threads, and fork-aware `std` process support are still stubs
+or unsupported paths in libstd.
 
-Full `std` (threads, filesystem, networking) needs more kernel features (`mmap`,
-`clock_gettime`, …). This skeleton targets **`println!("std ok")` bring-up**.
+Long term, publish a versioned **sysroot** per pinned nightly so consumers use
+`--sysroot=` instead of patching locally; PAL source stays in this repo.
