@@ -16,17 +16,17 @@ Multiboot-for-ARM).
 
 Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 
-The kernel runs round-robin **kernel threads** plus one **user `init` process**.
-Userspace is a real `#![no_std]` ELF (`user/init`), not a handwritten blob:
-nested cargo like hello, baked in with `include_bytes!`, loaded into
-per-process page tables at `USER_BASE`, write/exit syscalls. It is not a
-kernel module (no `KernelApi`). Init has its own CR3/TTBR0; the kernel/HHDM
+The kernel runs round-robin **kernel threads** plus one **user process**.
+Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
+`include_bytes!`, spawned as today, then **execs `/ok` from bootfs**.
+`user/ok` prints `user ok` and exits. Userspace programs are ELFs, not
+`KernelApi` modules. Nested cargo like hello; loaded into per-process page
+tables at `USER_BASE`. Init has its own CR3/TTBR0; the kernel/HHDM
 (and on AArch64 the TTBR0 device block for UART/GIC) is mapped into the
-aspace. It drops to ring 3 / EL0 and uses `syscall` / `svc` for write and
-exit. Kernel threads can `task::yield_now()` cooperatively; the timer IRQ
-also calls the same `task::schedule()` after EOI, so the switch is
-preemptive too (including user mode). CI checks `task a`, `task b`,
-`sched ok`, and `user ok`.
+aspace. It drops to ring 3 / EL0 and uses `syscall` / `svc`. Kernel threads
+can `task::yield_now()` cooperatively; the timer IRQ also calls the same
+`task::schedule()` after EOI, so the switch is preemptive too (including
+user mode). CI checks `task a`, `task b`, `sched ok`, and `user ok`.
 
 ## Prerequisites
 
@@ -137,12 +137,20 @@ BIOS/UEFI boots with `-display none`, require `Hello from myos`, `heap ok`,
 (BIOS ~20s, UEFI 60s). AArch64 requires the same strings and exits
 via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
 
+## VFS and bootfs
+
+A tiny VFS (`kernel/src/fs/`) is a **mount table** with ops/`lookup`. The
+first backend is **bootfs**: Limine modules (basename of `file.path()`,
+stripping `boot():` and slashes) plus an embedded `/ok` ELF fallback.
+ESP `boot/ok` overwrites the embed when both exist. This is **not** virtio
+and **not** FAT yet; a FAT mount can be added later.
+
 ## Modules
 
-There is still no filesystem. A module is an ELF the kernel already has in
-RAM. **One loader** (`kernel/src/modules`) copies `PT_LOAD`, applies relocs,
-and calls `module_init`. The two names below are only **how the bytes got
-into RAM**:
+Kernel modules are still ELFs the kernel already has in RAM (not loaded
+through open/exec). **One loader** (`kernel/src/modules`) copies `PT_LOAD`,
+applies relocs, and calls `module_init`. `/hello` is still the kernel hello
+module. The two names below are only **how the bytes got into RAM**:
 
 | | Embedded | Limine |
 |---|---|---|
@@ -210,7 +218,8 @@ That is exactly `load_embedded_hello()` for `modules/hello`.
 Limine loads extra files at boot and hands the kernel a pointer + size.
 The kernel still uses the same ELF loader. You do **not** need a new
 `include_bytes!` if you only want the Limine path: `load_limine_modules()`
-already iterates every module Limine listed.
+already iterates every module Limine listed. Userspace ELFs in that list
+(`MissingInit`) are skipped so they can live on bootfs instead.
 
 1. Build the ELF the same way as hello. `kernel/build.rs` also copies hello
    to a stable path the host can find:
@@ -218,16 +227,17 @@ already iterates every module Limine listed.
    `target/hello-aarch64-unknown-none-softfloat`.
 2. Write those bytes onto the ESP as `boot/foo`.
    `write_esp_image` in `src/limine_image.rs` already does this for hello
-   (`boot/hello`). Host `build.rs` (x86) and `build_aarch64_image` in
-   `src/main.rs` pass the file in.
+   (`boot/hello`) and `ok` (`boot/ok`). Host `build.rs` (x86) and
+   `build_aarch64_image` in `src/main.rs` pass the files in.
 3. Add a line under `/myos` in `LIMINE_CONF` (`src/limine_image.rs`):
 
    ```
    module_path: boot():/boot/foo
    ```
 
-   Hello’s line is `module_path: boot():/boot/hello`. You can repeat
-   `module_path` for more files.
+   Hello’s line is `module_path: boot():/boot/hello`. `ok` is
+   `module_path: boot():/boot/ok`. You can repeat `module_path` for more
+   files. FAT 8.3: keep names short (`ok`, `hello`) so they are not LFN.
 4. Reboot. On success the kernel prints `limine mod ok` (hello’s own
    `module_init` still prints `mod ok`).
 
@@ -236,13 +246,29 @@ but you still rebuild the **disk image** so the ESP file updates.
 
 ## Userspace
 
-Userspace is a real `init` ELF (`user/init`), not a handwritten machine-code
-blob. The crate is its own tiny workspace (same shape as `modules/hello`:
-`panic = "abort"`, `opt-level = "s"`). `kernel/build.rs` nested-`cargo
-build`s it; the kernel bakes the ELF with `include_bytes!` and loads
-`PT_LOAD` into per-process page tables at `USER_BASE`, applying the same
-relocs as the module loader. Init is **not** a kernel module: no
-`KernelApi`, no `module_init`. It issues write/exit syscalls (`user ok`).
+Userspace programs are ELFs, not KernelApi modules. Init is PID1-style:
+baked into the kernel (`user/init`), spawned as today, and execs `/ok`
+from bootfs. `user/ok` is its own tiny workspace (same shape as
+`user/init` / `modules/hello`: `panic = "abort"`, `opt-level = "s"`).
+`kernel/build.rs` nested-`cargo build`s both; init is `include_bytes!`,
+`ok` is also embedded as a bootfs fallback and placed on the ESP as
+`boot/ok`.
+
+`PT_LOAD` is realized at `USER_BASE` with the same relocs as the module
+loader. **One user process**: `exec` replaces the image in place (same
+task, no second `USERS_ALIVE` / `note_exit`). Syscalls:
+
+| nr | name | args |
+|----|------|------|
+| 0 | write | ptr, len |
+| 1 | exit | |
+| 2 | open | path, path_len → fd |
+| 3 | read | fd, buf, len → n |
+| 4 | close | fd |
+| 5 | exec | path, path_len (does not return on success) |
+
+x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. AArch64 `svc`:
+`x8`=nr, `x0`/`x1`/`x2`=a0/a1/a2. Errors return `usize::MAX`.
 
 ## Layout
 
@@ -251,17 +277,19 @@ relocs as the module loader. Init is **not** a kernel module: no
 | `src/main.rs` | Host launcher: starts QEMU (BIOS, UEFI, AArch64) |
 | `src/limine_image.rs` | GPT+FAT ESP writer + Limine binary fetch + `limine.conf` |
 | `build.rs` | Fetch Limine, wrap the x86_64 kernel in BIOS+UEFI images |
-| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, kernel threads, modules, user init, halt |
+| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, kernel threads, bootfs, modules, user init, halt |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
 | `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages) |
-| `kernel/src/user.rs` | Load `user/init` ELF at `USER_BASE`, per-process page tables, `syscall`/`svc` write+exit, enter ring 3 / EL0 |
+| `kernel/src/fs/` | Tiny VFS: mount table + bootfs (Limine modules + embedded `/ok`) |
+| `kernel/src/user.rs` | Load user ELFs at `USER_BASE`, per-process page tables, `syscall`/`svc`, in-place exec |
 | `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
 | `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
 | `modules/abi` | Shared `KernelApi` / `module_init` C ABI |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
-| `user/init` | Userspace init ELF: prints `user ok` then exits (not a kernel module) |
+| `user/init` | PID1-style: baked in, opens `/ok`, execs it (not a kernel module) |
+| `user/ok` | Second userspace ELF: prints `user ok` then exits; ESP `boot/ok` |
 | `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, isa-debug-exit |
 | `kernel/src/arch/aarch64/` | PL011, TTBR0 device map, GICv2 timer, lower-EL SVC, PSCI off |
 | `kernel/src/framebuffer.rs` | Pixel writer for a Limine framebuffer |
