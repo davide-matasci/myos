@@ -11,6 +11,8 @@ pub fn serial_read_byte() -> Option<u8> {
     serial::read_byte()
 }
 
+pub fn serial_flush_rx() {}
+
 pub fn keyboard_init() {
     keyboard::init();
 }

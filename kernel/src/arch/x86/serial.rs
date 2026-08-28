@@ -38,10 +38,31 @@ impl SerialPort {
 
 /// Non-blocking read from COM1. Returns `None` if the RX FIFO is empty.
 pub fn read_byte() -> Option<u8> {
-    if inb(COM1 + 5) & 0x01 == 0 {
+    let status = inb(COM1 + 5);
+    if status & 0x01 == 0 {
         return None;
     }
-    Some(inb(COM1))
+    // Drop break/framing/parity/overrun garbage (common with no cable attached).
+    if status & 0x1E != 0 {
+        let _ = inb(COM1);
+        return None;
+    }
+    let b = inb(COM1);
+    // Floating RX lines often read 0xFF; never treat as input.
+    if b == 0xFF {
+        return None;
+    }
+    Some(b)
+}
+
+/// Discard anything already in the RX FIFO (call once during boot).
+pub fn flush_rx() {
+    for _ in 0..256 {
+        if inb(COM1 + 5) & 0x01 == 0 {
+            return;
+        }
+        let _ = inb(COM1);
+    }
 }
 
 impl fmt::Write for SerialPort {

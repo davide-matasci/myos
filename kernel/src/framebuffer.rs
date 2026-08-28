@@ -70,6 +70,12 @@ impl FrameBufferWriter<'_> {
         match byte {
             b'\n' => self.newline(),
             b'\r' => self.col = 0,
+            b'\x08' => {
+                if self.col > 0 {
+                    self.col -= 1;
+                    self.draw_glyph(self.col, self.row, b' ');
+                }
+            }
             byte => {
                 let cols = (self.width / FONT_W).max(1);
                 if self.col >= cols {

@@ -3,7 +3,7 @@
 //! Works on QEMU i8042 and typical PC hardware (including USB keyboards in
 //! legacy PS/2 mode). If probe/init fails we stay on serial-only stdin.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::console;
 
@@ -12,10 +12,12 @@ const STATUS: u16 = 0x64;
 
 const ST_OUT_FULL: u8 = 1;
 const ST_IN_FULL: u8 = 2;
+const ST_AUX: u8 = 0x20; // data in 0x60 is from mouse/aux port
 
 static READY: AtomicBool = AtomicBool::new(false);
 static SHIFT: AtomicBool = AtomicBool::new(false);
 static EXTENDED: AtomicBool = AtomicBool::new(false);
+static PAUSE_SKIP: AtomicUsize = AtomicUsize::new(0);
 
 pub fn init() {
     if probe_and_enable() {
@@ -33,7 +35,13 @@ pub fn poll_byte() -> Option<u8> {
     if !READY.load(Ordering::SeqCst) {
         return None;
     }
-    if inb(STATUS) & ST_OUT_FULL == 0 {
+    let status = inb(STATUS);
+    if status & ST_OUT_FULL == 0 {
+        return None;
+    }
+    // Ignore auxiliary (mouse) bytes — mis-decoding them floods the console.
+    if status & ST_AUX != 0 {
+        let _ = inb(DATA);
         return None;
     }
     let sc = inb(DATA);
@@ -41,12 +49,22 @@ pub fn poll_byte() -> Option<u8> {
 }
 
 fn decode_scancode(sc: u8) -> Option<u8> {
+    let skip = PAUSE_SKIP.load(Ordering::SeqCst);
+    if skip > 0 {
+        PAUSE_SKIP.store(skip - 1, Ordering::SeqCst);
+        return None;
+    }
+    // Controller / device responses, not key events.
+    if matches!(sc, 0x00 | 0xAA | 0xEE | 0xFA | 0xFC | 0xFD | 0xFE) {
+        return None;
+    }
     if sc == 0xE0 {
         EXTENDED.store(true, Ordering::SeqCst);
         return None;
     }
     if sc == 0xE1 {
-        // Pause/break prefix; swallow the rest lazily on poll.
+        // Pause/Break: six follow-up bytes after E1.
+        PAUSE_SKIP.store(6, Ordering::SeqCst);
         return None;
     }
     let extended = EXTENDED.swap(false, Ordering::SeqCst);
@@ -145,8 +163,8 @@ fn probe_and_enable() -> bool {
     let Some(cfg) = read_data() else {
         return false;
     };
-    // Enable keyboard clock, disable IRQs (we poll), keep translation off (set 1).
-    let cfg = (cfg & !0x03) & !0x10;
+    // Enable keyboard clock, disable mouse clock and IRQs (we poll).
+    let cfg = (cfg & !0x03 & !0x10) | 0x20;
     if !write_cmd(0x60) || !write_data(cfg) {
         return false;
     }
@@ -157,7 +175,21 @@ fn probe_and_enable() -> bool {
     if !write_data(0xF4) {
         return false;
     }
-    matches!(read_data(), Some(0xFA))
+    if read_data() != Some(0xFA) {
+        return false;
+    }
+    // Slow typematic to a minimum (avoid repeat floods on stuck keys).
+    let _ = write_data(0xF3);
+    let _ = read_data();
+    let _ = write_data(0x00);
+    let _ = read_data();
+    let _ = write_data(0x00);
+    let _ = read_data();
+    flush_output();
+    SHIFT.store(false, Ordering::SeqCst);
+    EXTENDED.store(false, Ordering::SeqCst);
+    PAUSE_SKIP.store(0, Ordering::SeqCst);
+    true
 }
 
 fn flush_output() {
