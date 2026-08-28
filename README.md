@@ -19,14 +19,16 @@ Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 The kernel runs round-robin **kernel threads** plus one **user process**.
 Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
 `include_bytes!`, spawned as today, then **execs `/ok` from bootfs**.
-`user/ok` prints `user ok` and exits. Userspace programs are ELFs, not
-`KernelApi` modules. Nested cargo like hello; loaded into per-process page
-tables at `USER_BASE`. Init has its own CR3/TTBR0; the kernel/HHDM
-(and on AArch64 the TTBR0 device block for UART/GIC) is mapped into the
-aspace. It drops to ring 3 / EL0 and uses `syscall` / `svc`. Kernel threads
-can `task::yield_now()` cooperatively; the timer IRQ also calls the same
+`user/ok` prints `user ok`, reads `/msg` (FAT16 `MSG` via virtio-blk),
+prints `fat ok`, and exits. Userspace programs are ELFs, not `KernelApi`
+modules. Nested cargo like hello; loaded into per-process page tables at
+`USER_BASE`. Init has its own CR3/TTBR0; the kernel/HHDM (and on AArch64
+the TTBR0 device block for UART/GIC) is mapped into the aspace. It drops
+to ring 3 / EL0 and uses `syscall` / `svc`. Kernel threads can
+`task::yield_now()` cooperatively; the timer IRQ also calls the same
 `task::schedule()` after EOI, so the switch is preemptive too (including
-user mode). CI checks `task a`, `task b`, `sched ok`, and `user ok`.
+user mode). CI checks `task a`, `task b`, `sched ok`, `user ok`, and
+`fat ok`.
 
 ## Prerequisites
 
@@ -70,7 +72,8 @@ cargo run
 ```
 
 That compiles the kernel for `x86_64-unknown-none`, wraps it in a Limine
-GPT+FAT disk (BIOS stages installed), and starts QEMU. You should see a
+GPT+FAT disk (BIOS stages installed), writes `target/fat.img` (FAT16 data
+disk), and starts QEMU with a second virtio-blk device. You should see a
 green `Hello from myos` on a black screen when a framebuffer is present.
 Close the QEMU window to exit.
 
@@ -86,10 +89,10 @@ cargo run -- aarch64
 ```
 
 Builds the kernel for `aarch64-unknown-none-softfloat`, writes
-`target/aarch64.img` (ESP with `BOOTAA64.EFI`), and starts
-`qemu-system-aarch64` on `virt,gic-version=2` (`-cpu cortex-a72`) with
-AAVMF/QEMU_EFI. Serial is on stdio; ramfb gives QEMU a graphical window.
-CI stays serial-only. Close the window or wait for PSCI SYSTEM_OFF.
+`target/aarch64.img` (ESP with `BOOTAA64.EFI`) and `target/fat.img`, and
+starts `qemu-system-aarch64` on `virt,gic-version=2` (`-cpu cortex-a72`)
+with AAVMF/QEMU_EFI. Serial is on stdio; ramfb gives QEMU a graphical
+window. CI stays serial-only. Close the window or wait for PSCI SYSTEM_OFF.
 
 To only build the x86_64 images:
 
@@ -102,12 +105,17 @@ Copies also land at:
 ```
 target/bios.img
 target/uefi.img
+target/fat.img
 ```
 
 Boot a built x86 image yourself with:
 
 ```sh
-qemu-system-x86_64 -m 256 -drive format=raw,file=target/bios.img -serial stdio
+qemu-system-x86_64 -m 256 \
+  -drive format=raw,file=target/bios.img \
+  -drive if=none,id=vd0,format=raw,file=target/fat.img \
+  -device virtio-blk-pci,drive=vd0,disable-modern=on \
+  -serial stdio
 ```
 
 The AArch64 ELF is at:
@@ -132,18 +140,52 @@ cargo run -- aarch64 --ci
 ```
 
 BIOS/UEFI boots with `-display none`, require `Hello from myos`, `heap ok`,
-`int ok`, `task a`, `task b`, `sched ok`, `mod ok`, `limine mod ok`, and
-`user ok` on serial, and expect QEMU to exit via `isa-debug-exit`
-(BIOS ~20s, UEFI 60s). AArch64 requires the same strings and exits
-via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
+`int ok`, `task a`, `task b`, `sched ok`, `mod ok`, `limine mod ok`,
+`user ok`, and `fat ok` on serial, and expect QEMU to exit via
+`isa-debug-exit` (BIOS ~20s, UEFI 60s). AArch64 requires the same strings
+and exits via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
 
-## VFS and bootfs
+## VFS, virtio-blk, and FAT16
 
 A tiny VFS (`kernel/src/fs/`) is a **mount table** with ops/`lookup`. The
-first backend is **bootfs**: Limine modules (basename of `file.path()`,
-stripping `boot():` and slashes) plus an embedded `/ok` ELF fallback.
-ESP `boot/ok` overwrites the embed when both exist. This is **not** virtio
-and **not** FAT yet; a FAT mount can be added later.
+backend is **bootfs**: Limine modules (basename of `file.path()`, stripping
+`boot():` and slashes), an embedded `/ok` ELF fallback, and files
+registered at runtime through `KernelApi::vfs_register`. ESP `boot/ok`
+overwrites the embed when both exist.
+
+**virtio-blk is in-kernel** (`kernel/src/blk.rs`), not a loadable module
+(chicken/egg: the FAT parser needs block I/O to load). x86 uses PCI config
+(`0xCF8`/`0xCFC`) to find vendor `0x1AF4` device `0x1001` and talks
+**legacy I/O-BAR** virtio-blk (QEMU `disable-modern=on`). AArch64 probes
+**virtio-mmio v2** at `0x0a000000` (stride `0x200`, device id 2) for
+`-device virtio-blk-device`. Guest DMA addresses are HHDM VA minus
+`hhdm_offset()` (frame phys from `mm::alloc_frame`), not
+`kernel_virt_to_phys`.
+
+The second QEMU disk is `target/fat.img` (~20 MiB raw FAT16 so the
+existing `format_and_write_fat16` writer stays in the FAT16 cluster
+range). It is **not** the boot drive. All launcher QEMU invocations add:
+
+x86:
+
+```
+-drive if=none,id=vd0,format=raw,file=<fat.img>
+-device virtio-blk-pci,drive=vd0,disable-modern=on
+```
+
+aarch64:
+
+```
+-drive if=none,id=vd0,format=raw,file=<fat.img>
+-device virtio-blk-device,drive=vd0
+```
+
+**FAT16 is a kernel module** (`modules/fat`), same shape as hello, loaded
+from an embed after virtio init. It uses KernelApi only (`blk_read` /
+`vfs_register`): parse the BPB, scan the root directory for `MSG`, walk
+the FAT16 cluster chain, and register `/msg`. Root-only, no subdirs, no
+FAT32. This is **not** FUSE or a userspace FAT parser, and virtio is
+**not** in a module.
 
 ## Modules
 
@@ -159,6 +201,7 @@ module. The two names below are only **how the bytes got into RAM**:
 | Kernel hook | `modules::load("foo", FOO_IMAGE)` | `modules::load_limine_modules()` (already walks every Limine module) |
 | Rebuild | kernel | disk image (`bios.img` / `uefi.img` / `aarch64.img`) |
 | Hello today | yes (`mod ok`) | yes (`mod ok`, then kernel prints `limine mod ok`) |
+| FAT16 today | yes (`modules/fat`, registers `/msg`) | no (embed is enough; a Limine copy would print `limine mod ok` twice) |
 
 A module is a `#![no_std]` crate that exports:
 
@@ -168,9 +211,12 @@ unsafe extern "C" fn module_exit() // optional
 ```
 
 `KernelApi` (`modules/abi`) is a `#[repr(C)]` table (`write_str`, `alloc`,
-`dealloc`). The kernel fills it and passes `&KernelApi` into `module_init`.
-Modules must not call kernel internals. There is no dynamic linker against
-kernel `.dynsym`.
+`dealloc`, `blk_read`, `vfs_register`). ABI version is **2**; new pointers
+are appended, never reordered. The kernel fills it and passes `&KernelApi`
+into `module_init`. Modules must not call kernel internals. There is no
+dynamic linker against kernel `.dynsym`. `blk_read` returns 0 or −1.
+`vfs_register` copies into the bootfs table (kernel-owned `'static`) and
+takes a basename without slash (`msg`).
 
 Do **not** add a module as a cargo artifact-dep of the kernel (that panics
 the feature resolver). Do **not** put it in `[build-dependencies]` (those
@@ -211,7 +257,8 @@ kernel image. No ESP file, no `limine.conf` line.
 4. After heap and IRQs are up (see `kernel/src/main.rs`):
    `modules::load("foo", FOO_IMAGE);`
 
-That is exactly `load_embedded_hello()` for `modules/hello`.
+That is exactly `load_embedded_hello()` for `modules/hello`, and
+`load_embedded_fat()` for `modules/fat` (after `blk::init()`).
 
 ### 3. Limine: put it on the ESP
 
@@ -252,7 +299,9 @@ from bootfs. `user/ok` is its own tiny workspace (same shape as
 `user/init` / `modules/hello`: `panic = "abort"`, `opt-level = "s"`).
 `kernel/build.rs` nested-`cargo build`s both; init is `include_bytes!`,
 `ok` is also embedded as a bootfs fallback and placed on the ESP as
-`boot/ok`.
+`boot/ok`. After printing `user ok`, it `open`s `/msg`, `read`s the
+bytes, writes them to serial (`fat ok`), and exits. If `/msg` is missing
+it spins (CI then fails the `fat ok` needle).
 
 `PT_LOAD` is realized at `USER_BASE` with the same relocs as the module
 loader. **One user process**: `exec` replaces the image in place (same
@@ -274,24 +323,27 @@ x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. AArch64 `svc`:
 
 | Path | Role |
 |------|------|
-| `src/main.rs` | Host launcher: starts QEMU (BIOS, UEFI, AArch64) |
-| `src/limine_image.rs` | GPT+FAT ESP writer + Limine binary fetch + `limine.conf` |
-| `build.rs` | Fetch Limine, wrap the x86_64 kernel in BIOS+UEFI images |
-| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, kernel threads, bootfs, modules, user init, halt |
+| `src/main.rs` | Host launcher: starts QEMU (BIOS, UEFI, AArch64) + second virtio-blk disk |
+| `src/limine_image.rs` | GPT+FAT ESP writer + Limine binary fetch + `limine.conf` + `fat.img` |
+| `build.rs` | Fetch Limine, wrap the x86_64 kernel in BIOS+UEFI images, write `fat.img` |
+| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, kernel threads, bootfs, modules, virtio-blk, fat, user init, halt |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
-| `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages) |
-| `kernel/src/fs/` | Tiny VFS: mount table + bootfs (Limine modules + embedded `/ok`) |
+| `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages, virtqueues) |
+| `kernel/src/blk.rs` | In-kernel virtio-blk: `init` + 512-byte sector `read` |
+| `kernel/src/fs/` | Tiny VFS: mount table + bootfs (Limine modules + embedded `/ok` + `vfs_register`) |
 | `kernel/src/user.rs` | Load user ELFs at `USER_BASE`, per-process page tables, `syscall`/`svc`, in-place exec |
 | `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
 | `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
-| `modules/abi` | Shared `KernelApi` / `module_init` C ABI |
+| `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v2: `blk_read`, `vfs_register`) |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
+| `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
 | `user/init` | PID1-style: baked in, opens `/ok`, execs it (not a kernel module) |
-| `user/ok` | Second userspace ELF: prints `user ok` then exits; ESP `boot/ok` |
-| `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, isa-debug-exit |
-| `kernel/src/arch/aarch64/` | PL011, TTBR0 device map, GICv2 timer, lower-EL SVC, PSCI off |
+| `user/ok` | Second userspace ELF: `user ok`, then reads `/msg`; ESP `boot/ok` |
+| `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, PCI, legacy virtio-blk, isa-debug-exit |
+| `kernel/src/arch/x86/pci.rs` | PCI config via `0xCF8`/`0xCFC`; find virtio-blk |
+| `kernel/src/arch/aarch64/` | PL011, TTBR0 device map, GICv2 timer, lower-EL SVC, virtio-mmio blk, PSCI off |
 | `kernel/src/framebuffer.rs` | Pixel writer for a Limine framebuffer |
 | `kernel/src/font.rs` | Tiny 8x8 bitmap font |
 | `.cargo/config.toml` | `bindeps` (artifact dependencies) |
@@ -305,12 +357,14 @@ x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. AArch64 `svc`:
   EL1, SMC at EL2), which QEMU treats as a shutdown.
 - The kernel is linked in the higher half. Limine sets the stack, enables
   the MMU, and provides an HHDM. Usable memory is accessed as `phys + HHDM`.
-- AArch64 device MMIO (PL011 `0x09000000`, GICv2 `0x08000000`/`0x08010000`)
-  is not in the HHDM at base revision 3+, so the kernel identity-maps a 1 GiB
-  device block on `TTBR0`.
-- Interrupts: x86_64 uses the 8259 PIC + PIT (IRQ0). AArch64 uses GICv2
+- AArch64 device MMIO (PL011 `0x09000000`, GICv2 `0x08000000`/`0x08010000`,
+  virtio-mmio `0x0a000000`) is not in the HHDM at base revision 3+, so the
+  kernel identity-maps a 1 GiB device block on `TTBR0`.
+- Interrupts: x86_64 uses the local xAPIC timer. AArch64 uses GICv2
   (`-machine virt,gic-version=2`) and the generic physical timer (PPI 30).
 - Modules run from the HHDM heap (Limine HHDM mappings are rwx). The loader
   flushes the I-cache on AArch64 after copying.
 - Limine binaries are downloaded from GitHub release `v12.6.1` (sha256-pinned)
   into `target/limine-v12.6.1`. Not a git submodule.
+- virtio-blk init does not panic if the device is missing (earlier CI
+  needles can still print); `/msg` is then absent and CI fails on `fat ok`.
