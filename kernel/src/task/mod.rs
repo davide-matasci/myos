@@ -173,7 +173,7 @@ pub fn set_brk(brk: u64) {
 }
 
 fn heap_base_for(base: u64, stack_off: u64) -> u64 {
-    base + stack_off + crate::user::PAGE as u64
+    base + stack_off + (crate::user::USER_STACK_PAGES * crate::user::PAGE) as u64
 }
 
 pub fn save_user_context(rip: usize, rsp: usize) {
@@ -220,7 +220,8 @@ pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
             None => return usize::MAX,
         };
         let stack = t.stack_off as usize;
-        let in_stack = buf >= base + stack && end <= base + stack + 4096;
+        let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
+        let in_stack = buf >= base + stack && end <= base + stack + stack_bytes;
         if !in_stack {
             return usize::MAX;
         }
@@ -261,8 +262,9 @@ pub fn fd_read(
                 None => return usize::MAX,
             };
             let stack = t.stack_off as usize;
-            let in_code = buf >= base && end <= base + t.image_span;
-            let in_stack = buf >= base + stack && end <= base + stack + 4096;
+            let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
+            let in_code = buf >= base && end <= base + stack;
+            let in_stack = buf >= base + stack && end <= base + stack + stack_bytes;
             if !in_code && !in_stack {
                 return usize::MAX;
             }

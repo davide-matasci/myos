@@ -87,6 +87,30 @@ impl io::Write for Stderr {
 
 pub const STDIN_BUF_SIZE: usize = 0;
 
+struct StackBuf {
+    data: [u8; 256],
+    len: usize,
+}
+
+impl core::fmt::Write for StackBuf {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let bytes = s.as_bytes();
+        let take = bytes.len().min(self.data.len().saturating_sub(self.len));
+        self.data[self.len..self.len + take].copy_from_slice(&bytes[..take]);
+        self.len += take;
+        Ok(())
+    }
+}
+
+/// Format straight to the serial write syscall (no `stdout()` OnceLock).
+pub fn print_args(args: core::fmt::Arguments<'_>) {
+    let mut buf = StackBuf { data: [0; 256], len: 0 };
+    let _ = core::fmt::write(&mut buf, args);
+    if buf.len != 0 {
+        let _ = crate::sys::myos::abi::write(STDOUT_FILENO, &buf.data[..buf.len]);
+    }
+}
+
 pub fn is_ebadf(err: &io::Error) -> bool {
     err.raw_os_error() == Some(EBADF)
 }
