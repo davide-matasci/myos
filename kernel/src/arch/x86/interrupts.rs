@@ -156,6 +156,8 @@ pub fn init() {
     lapic_w(LVT_LINT0, 1 << 16);
     lapic_w(LVT_LINT1, 1 << 16);
     lapic_w(DIV, 0xB);
+    // Periodic (bit 17). Do not mask after the first tick: preemption needs
+    // the timer to keep firing. INIT_COUNT ~100_000 is several kHz in QEMU.
     lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 17));
     lapic_w(INIT_COUNT, 100_000);
 
@@ -186,6 +188,6 @@ extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFault
 
 extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
     TIMER_FIRED.store(true, Ordering::SeqCst);
-    lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 16));
     lapic_w(EOI, 0);
+    crate::task::schedule();
 }
