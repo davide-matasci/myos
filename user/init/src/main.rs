@@ -1,38 +1,23 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, exec, exit, fork, open, read, wait};
+use myos_user::{exec, exit};
 
-const PATH: &[u8] = b"/ok";
-const ELF_MAG: [u8; 4] = [0x7f, b'E', b'L', b'F'];
-
+#[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    match fork() {
-        Some(0) => child(),
-        Some(_) => {
-            let _ = wait();
-            exit();
-        }
-        None => spin(),
-    }
+    exec(b"/sh", &[]);
+    exit();
 }
 
-fn child() -> ! {
-    let Some(fd) = open(PATH) else { spin() };
-    let mut mag = [0u8; 4];
-    let n = read(fd, &mut mag);
-    if n != 4 || mag != ELF_MAG {
-        spin();
-    }
-    close(fd);
-    exec(PATH);
-    spin();
-}
-
-fn spin() -> ! {
-    loop {}
+#[cfg(target_arch = "aarch64")]
+#[unsafe(no_mangle)]
+pub extern "C" fn _start(_argc: usize, _argv: *const usize) -> ! {
+    exec(b"/sh", &[]);
+    exit();
 }
 
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    loop {}
+}

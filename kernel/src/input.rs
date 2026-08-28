@@ -1,0 +1,92 @@
+//! Serial stdin: ring buffer + minimal line discipline (echo, backspace).
+
+use core::sync::atomic::{AtomicUsize, Ordering};
+use spin::Mutex;
+
+use crate::arch::SerialPort;
+use crate::task;
+
+const RING: usize = 256;
+
+static BUF: Mutex<[u8; RING]> = Mutex::new([0; RING]);
+static HEAD: AtomicUsize = AtomicUsize::new(0);
+static TAIL: AtomicUsize = AtomicUsize::new(0);
+
+pub fn init() {
+    HEAD.store(0, Ordering::SeqCst);
+    TAIL.store(0, Ordering::SeqCst);
+}
+
+/// Drain the UART into the ring (call with interrupts enabled).
+pub fn poll() {
+    while let Some(b) = crate::arch::serial_read_byte() {
+        push_byte(b);
+    }
+}
+
+fn push_byte(raw: u8) {
+    let mut byte = raw;
+    if byte == b'\r' {
+        byte = b'\n';
+    }
+    if byte == 127 || byte == 8 {
+        let t = TAIL.load(Ordering::SeqCst);
+        let h = HEAD.load(Ordering::SeqCst);
+        if t != h {
+            TAIL.store((t + RING - 1) % RING, Ordering::SeqCst);
+            let mut serial = SerialPort::new();
+            serial.write_byte(8);
+            serial.write_byte(b' ');
+            serial.write_byte(8);
+        }
+        return;
+    }
+    if byte >= 0x20 || byte == b'\n' || byte == b'\t' {
+        if byte != b'\n' {
+            let mut serial = SerialPort::new();
+            serial.write_byte(byte);
+        }
+        let h = HEAD.load(Ordering::SeqCst);
+        let next = (h + 1) % RING;
+        if next == TAIL.load(Ordering::SeqCst) {
+            return;
+        }
+        BUF.lock()[h] = byte;
+        HEAD.store(next, Ordering::SeqCst);
+        if byte == b'\n' {
+            let mut serial = SerialPort::new();
+            serial.write_byte(b'\n');
+        }
+    }
+}
+
+fn pop_byte() -> Option<u8> {
+    let t = TAIL.load(Ordering::SeqCst);
+    if t == HEAD.load(Ordering::SeqCst) {
+        return None;
+    }
+    let b = BUF.lock()[t];
+    TAIL.store((t + 1) % RING, Ordering::SeqCst);
+    Some(b)
+}
+
+/// Read up to `len` bytes. Blocks until at least one byte is available.
+pub fn read(buf: &mut [u8]) -> usize {
+    let mut n = 0;
+    while n == 0 {
+        poll();
+        while n < buf.len() {
+            match pop_byte() {
+                Some(b) => {
+                    buf[n] = b;
+                    n += 1;
+                }
+                None => break,
+            }
+        }
+        if n == 0 {
+            task::yield_now();
+        }
+    }
+    n
+}

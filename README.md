@@ -18,18 +18,18 @@ Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 
 The kernel runs round-robin **kernel threads** plus **user processes**.
 Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
-`include_bytes!`, spawned as today, then **forks**. The child execs `/ok`
-from bootfs; init `wait`s and stays PID1 until the child is done.
-`user/ok` prints `user ok`, reads `/msg` (FAT16 `MSG` via virtio-blk),
-prints `fat ok`, and exits. Userspace programs are ELFs, not `KernelApi`
-modules. Nested cargo like hello; loaded into per-process page tables at
-`USER_BASE`. Each process has its own CR3/TTBR0; the kernel/HHDM (and on AArch64
-the TTBR0 device block for UART/GIC) is mapped into the aspace. It drops
-to ring 3 / EL0 and uses `syscall` / `svc`. Kernel threads can
-`task::yield_now()` cooperatively; the timer IRQ also calls the same
-`task::schedule()` after EOI, so the switch is preemptive too (including
-user mode). CI checks `task a`, `task b`, `sched ok`, `user ok`, and
-`fat ok`.
+`include_bytes!`, spawned as today, then **execs `/sh`**. The shell prints
+`sh ok`, smoke-runs `/ok` (fork/exec with argv), then drops to an
+interactive `$` prompt on serial stdin. `user/ok` prints `user ok`, reads
+`/msg` (FAT16 `MSG` via virtio-blk), prints `fat ok`, and exits.
+Userspace programs are ELFs, not `KernelApi` modules. Nested cargo like
+hello; loaded into per-process page tables at `USER_BASE`. Each process has
+its own CR3/TTBR0; the kernel/HHDM (and on AArch64 the TTBR0 device block
+for UART/GIC) is mapped into the aspace. It drops to ring 3 / EL0 and uses
+`syscall` / `svc`. Kernel threads can `task::yield_now()` cooperatively;
+the timer IRQ also calls the same `task::schedule()` after EOI, so the
+switch is preemptive too (including user mode). CI checks `task a`,
+`task b`, `sched ok`, `sh ok`, `user ok`, and `fat ok`.
 
 ## Prerequisites
 
@@ -160,9 +160,18 @@ cargo run -- aarch64 --ci
 
 BIOS/UEFI boots with `-display none`, require `Hello from myos`, `heap ok`,
 `int ok`, `task a`, `task b`, `sched ok`, `mod ok`, `limine mod ok`,
-`user ok`, and `fat ok` on serial, and expect QEMU to exit via
-`isa-debug-exit` (BIOS ~20s, UEFI 60s). AArch64 requires the same strings
-and exits via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
+`sh ok`, `user ok`, and `fat ok` on serial. CI kills QEMU once all needles
+are seen (the shell would otherwise block on stdin). AArch64 requires the
+same strings and exits the same way (CI times out at 60s if needles are
+missing).
+
+Interactive use (serial stdin on a TTY):
+
+```sh
+cargo run          # x86 BIOS — type at the `$` prompt after boot
+cargo run -- uefi
+cargo run -- aarch64
+```
 
 ## VFS, virtio-blk, and FAT16
 
@@ -313,35 +322,46 @@ but you still rebuild the **disk image** so the ESP file updates.
 ## Userspace
 
 Userspace programs are ELFs, not KernelApi modules. Init is PID1-style:
-baked into the kernel (`user/init`), spawned as today, and **forks**. The
-child execs `/ok` from bootfs; init `wait`s then `exit`s (it does not
-exec `/ok` itself). `user/ok` is its own tiny workspace (same shape as
-`user/init` / `modules/hello`: `panic = "abort"`, `opt-level = "s"`).
-`kernel/build.rs` nested-`cargo build`s both; init is `include_bytes!`,
-`ok` is also embedded as a bootfs fallback and placed on the ESP as
-`boot/ok`. After printing `user ok`, it `open`s `/msg`, `read`s the
-bytes, writes them to serial (`fat ok`), and exits. If `/msg` is missing
-it spins (CI then fails the `fat ok` needle).
+baked into the kernel (`user/init`), spawned as today, and **execs `/sh`**.
+The shell (`user/sh`) is a tiny `#![no_std]` program: it smoke-runs `/ok`
+(fork/exec with argv) for CI, then reads lines from **stdin (fd 0)** and
+fork/exec's built-in utilities (`echo`, `cat`, `ls`, `ok`, …). Shared
+helpers live in `user/lib` (`myos_user`: syscalls, argv, `read_line`,
+`listdir`).
+
+`user/ok` is its own tiny workspace (same shape as `user/init` /
+`modules/hello`: `panic = "abort"`, `opt-level = "s"`). `kernel/build.rs`
+nested-`cargo build`s init, sh, ok, echo, cat, ls; init is `include_bytes!`,
+the rest are embedded as bootfs fallbacks and placed on the ESP as
+`boot/sh`, `boot/ok`, etc. After printing `user ok`, it `open`s `/msg`,
+`read`s the bytes, writes them to serial (`fat ok`), and exits. If `/msg`
+is missing it spins (CI then fails the `fat ok` needle).
 
 `PT_LOAD` is realized at `USER_BASE` with the same relocs as the module
 loader. **fork** copies user pages into a new aspace (no COW) and a new
 task; the parent gets the child pid (task slot), the child gets 0.
 **exec** replaces the calling task's image (no second `USERS_ALIVE` /
-`note_exit`). **wait** reaps a zombie child. Syscalls:
+`note_exit`) and accepts an optional argv pack. **wait** reaps a zombie
+child. Syscall numbers are **append-only** (reserved for future libc /
+compiler ports). Errors return `usize::MAX`.
 
 | nr | name | args |
 |----|------|------|
 | 0 | write | ptr, len |
 | 1 | exit | |
-| 2 | open | path, path_len → fd |
-| 3 | read | fd, buf, len → n |
+| 2 | open | path, path_len → fd (≥3) |
+| 3 | read | fd, buf, len → n (fd 0 = serial stdin) |
 | 4 | close | fd |
-| 5 | exec | path, path_len (does not return on success) |
+| 5 | exec | path, path_len, args_ptr (0 or `[argc, (ptr,len)...]`) |
 | 6 | fork | → child pid (parent), 0 (child) |
 | 7 | wait | → reaped child pid |
+| 8 | listdir | buf, len → byte count (bootfs names, newline-separated) |
 
-x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. AArch64 `svc`:
-`x8`=nr, `x0`/`x1`/`x2`=a0/a1/a2. Errors return `usize::MAX`.
+x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. At `_start`, argc/argv
+are on the user stack (System V). AArch64 `svc`: `x8`=nr, `x0`/`x1`/`x2`=a0/a1/a2.
+At `_start`, the kernel passes **argc in x0, argv in x1** (argv points to
+an array of string pointers). Exec argv strings must live in writable user
+memory (stack); rodata literals are rejected by the kernel copy-in path.
 
 ## Layout
 
@@ -355,7 +375,8 @@ x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. AArch64 `svc`:
 | `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages, virtqueues) |
 | `kernel/src/blk.rs` | In-kernel virtio-blk: `init` + 512-byte sector `read` |
 | `kernel/src/fs/` | Tiny VFS: mount table + bootfs (Limine modules + embedded `/ok` + `vfs_register`) |
-| `kernel/src/user.rs` | Load user ELFs at `USER_BASE`, per-process page tables, `syscall`/`svc`, fork/wait/exec |
+| `kernel/src/input.rs` | Serial stdin ring buffer (fd 0), echo/backspace |
+| `kernel/src/user.rs` | Load user ELFs at `USER_BASE`, per-process page tables, `syscall`/`svc`, fork/wait/exec, argv |
 | `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
@@ -363,7 +384,12 @@ x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. AArch64 `svc`:
 | `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v2: `blk_read`, `vfs_register`) |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
-| `user/init` | PID1-style: baked in, forks; child execs `/ok` (not a kernel module) |
+| `user/init` | PID1-style: baked in, execs `/sh` (not a kernel module) |
+| `user/sh` | Minimal shell: smoke `/ok`, interactive `$` prompt on serial stdin |
+| `user/echo` | Print argv (`echo hello`) |
+| `user/cat` | Read a bootfs file to stdout |
+| `user/ls` | List bootfs entries (via `listdir`) |
+| `user/lib` | Shared `myos_user` syscall/argv helpers |
 | `user/ok` | Second userspace ELF: `user ok`, then reads `/msg`; ESP `boot/ok` |
 | `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, PCI, legacy virtio-blk, isa-debug-exit |
 | `kernel/src/arch/x86/pci.rs` | PCI config via `0xCF8`/`0xCFC`; find virtio-blk |

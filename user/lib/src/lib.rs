@@ -1,5 +1,12 @@
 #![no_std]
 
+pub mod args;
+pub mod runtime;
+
+pub use args::{arg, argc};
+
+const MAX_EXEC_ARGS: usize = 16;
+
 pub fn write(buf: &[u8]) {
     unsafe { sys_write(buf.as_ptr() as usize, buf.len()) }
 }
@@ -25,8 +32,25 @@ pub fn close(fd: usize) {
     unsafe { sys_close(fd) }
 }
 
-pub fn exec(path: &[u8]) {
-    unsafe { sys_exec(path.as_ptr() as usize, path.len()) }
+/// Exec with argv. `args` are the argument strings (argv[0] is usually the command name).
+pub fn exec(path: &[u8], args: &[&[u8]]) {
+    let mut pack = [0usize; 1 + MAX_EXEC_ARGS * 2];
+    pack[0] = args.len().min(MAX_EXEC_ARGS);
+    for (i, a) in args.iter().take(MAX_EXEC_ARGS).enumerate() {
+        pack[1 + i * 2] = a.as_ptr() as usize;
+        pack[2 + i * 2] = a.len();
+    }
+    unsafe {
+        sys_exec(
+            path.as_ptr() as usize,
+            path.len(),
+            if args.is_empty() {
+                0
+            } else {
+                pack.as_ptr() as usize
+            },
+        )
+    }
 }
 
 pub fn fork() -> Option<usize> {
@@ -47,10 +71,36 @@ pub fn wait() -> Option<usize> {
     }
 }
 
+/// List bootfs entries (newline-separated) into `buf`. Returns byte count.
+pub fn listdir(buf: &mut [u8]) -> usize {
+    unsafe { sys_listdir(buf.as_mut_ptr() as usize, buf.len()) }
+}
+
+/// Read a line from stdin (fd 0), including the trailing `\n` if present.
+pub fn read_line(buf: &mut [u8]) -> usize {
+    let mut n = 0usize;
+    loop {
+        let mut b = [0u8; 1];
+        let r = read(0, &mut b);
+        if r == usize::MAX {
+            break;
+        }
+        if r == 0 {
+            break;
+        }
+        if n < buf.len() {
+            buf[n] = b[0];
+            n += 1;
+        }
+        if b[0] == b'\n' {
+            break;
+        }
+    }
+    n
+}
+
 // x86 syscall_entry clobbers rdi/rsi/rdx when shuffling args into the
 // System-V dispatch. Wrappers lateout those so LLVM reloads them.
-// sys_read uses inout("rdx") len plus lateout rdi/rsi so the length is
-// not left 0 after the syscall.
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys_write(ptr: usize, len: usize) {
@@ -131,17 +181,17 @@ unsafe fn sys_close(fd: usize) {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sys_exec(ptr: usize, len: usize) {
+unsafe fn sys_exec(ptr: usize, len: usize, args: usize) {
     core::arch::asm!(
         "syscall",
         in("rax") 5usize,
         in("rdi") ptr,
         in("rsi") len,
+        in("rdx") args,
         out("rcx") _,
         out("r11") _,
         lateout("rdi") _,
         lateout("rsi") _,
-        lateout("rdx") _,
         options(nostack),
     );
 }
@@ -169,6 +219,25 @@ unsafe fn sys_wait() -> usize {
     core::arch::asm!(
         "syscall",
         in("rax") 7usize,
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        lateout("rdi") _,
+        lateout("rsi") _,
+        lateout("rdx") _,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sys_listdir(buf: usize, len: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "syscall",
+        in("rax") 8usize,
+        in("rdi") buf,
+        in("rsi") len,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
@@ -238,12 +307,13 @@ unsafe fn sys_close(fd: usize) {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn sys_exec(ptr: usize, len: usize) {
+unsafe fn sys_exec(ptr: usize, len: usize, args: usize) {
     core::arch::asm!(
         "svc #0",
         in("x8") 5usize,
         in("x0") ptr,
         in("x1") len,
+        in("x2") args,
         options(nostack),
     );
 }
@@ -267,6 +337,19 @@ unsafe fn sys_wait() -> usize {
         "svc #0",
         in("x8") 7usize,
         lateout("x0") ret,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn sys_listdir(buf: usize, len: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "svc #0",
+        in("x8") 8usize,
+        inout("x0") buf => ret,
+        in("x1") len,
         options(nostack),
     );
     ret

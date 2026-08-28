@@ -10,6 +10,7 @@ mod font;
 mod framebuffer;
 mod fs;
 mod heap;
+mod input;
 mod limine_boot;
 mod mm;
 mod modules;
@@ -82,6 +83,7 @@ fn kernel_main() -> ! {
     let _ = writeln!(serial, "fat kreg");
 
     user::init();
+    input::init();
     user::spawn_init();
     while !user::both_exited() {
         task::yield_now();

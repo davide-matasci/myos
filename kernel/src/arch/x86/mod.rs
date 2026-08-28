@@ -7,6 +7,10 @@ mod serial;
 mod virtio_blk;
 pub use serial::SerialPort;
 
+pub fn serial_read_byte() -> Option<u8> {
+    serial::read_byte()
+}
+
 pub const QEMU_SUCCESS: u32 = 0x10;
 pub const QEMU_FAILURE: u32 = 0x11;
 

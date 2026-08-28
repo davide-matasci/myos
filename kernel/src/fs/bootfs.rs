@@ -7,7 +7,11 @@ use spin::Mutex;
 use crate::arch::SerialPort;
 
 const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
-const MAX_FILES: usize = 8;
+const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
+const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
+const CAT_ELF: &[u8] = include_bytes!(env!("USER_CAT_PATH"));
+const LS_ELF: &[u8] = include_bytes!(env!("USER_LS_PATH"));
+const MAX_FILES: usize = 16;
 const NAME_CAP: usize = 32;
 
 #[derive(Clone, Copy)]
@@ -62,6 +66,29 @@ pub fn lookup(name: &str) -> Option<&'static [u8]> {
     None
 }
 
+/// Copy newline-separated basenames into `buf`. Returns bytes written.
+pub fn listdir(buf: &mut [u8]) -> usize {
+    let files = FILES.lock();
+    let mut n = 0;
+    for slot in files.iter().flatten() {
+        let name = &slot.name[..slot.len];
+        let need = name.len() + 1;
+        if n + need > buf.len() {
+            break;
+        }
+        buf[n..n + name.len()].copy_from_slice(name);
+        n += name.len();
+        buf[n] = b'\n';
+        n += 1;
+    }
+    n
+}
+
+/// Number of registered bootfs entries.
+pub fn count() -> usize {
+    FILES.lock().iter().flatten().count()
+}
+
 fn log_reg(name: &str, n: usize, replace: bool) {
     let mut serial = SerialPort::new();
     let kind = if replace { "rpl" } else { "new" };
@@ -75,6 +102,10 @@ fn log_get(name: &str, n: usize) {
 
 pub fn init() {
     let _ = register("ok", OK_ELF);
+    let _ = register("sh", SH_ELF);
+    let _ = register("echo", ECHO_ELF);
+    let _ = register("cat", CAT_ELF);
+    let _ = register("ls", LS_ELF);
     let Some(resp) = crate::limine_boot::MODULES.response() else {
         return;
     };

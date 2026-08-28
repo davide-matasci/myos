@@ -3,7 +3,7 @@ struct CiExpect {
     qemu_debug_exit: bool,
 }
 
-const CI_NEEDLES: [&str; 10] = [
+const CI_NEEDLES: [&str; 11] = [
     "Hello from myos",
     "heap ok",
     "int ok",
@@ -12,6 +12,7 @@ const CI_NEEDLES: [&str; 10] = [
     "sched ok",
     "mod ok",
     "limine mod ok",
+    "sh ok",
     "user ok",
     "fat ok",
 ];
@@ -23,7 +24,9 @@ fn serial_has_all_needles(serial: &str) -> bool {
 fn wait_ci(mut child: Child, expect: CiExpect) {
     let mut stdout = child.stdout.take().expect("qemu stdout");
     let mut stderr = child.stderr.take().expect("qemu stderr");
-    // Echo serial as it arrives so a timeout still leaves Limine output in CI logs.
+    let serial_acc = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let acc_reader = serial_acc.clone();
+
     let stdout_handle = std::thread::spawn(move || {
         let mut s = String::new();
         let mut buf = [0u8; 256];
@@ -34,6 +37,7 @@ fn wait_ci(mut child: Child, expect: CiExpect) {
                     let chunk = String::from_utf8_lossy(&buf[..n]);
                     eprint!("{chunk}");
                     s.push_str(&chunk);
+                    acc_reader.lock().unwrap().push_str(&chunk);
                 }
                 Err(_) => break,
             }
@@ -48,7 +52,13 @@ fn wait_ci(mut child: Child, expect: CiExpect) {
 
     let started = Instant::now();
     let mut timed_out = false;
+    let mut killed_for_needles = false;
     let status = loop {
+        if serial_has_all_needles(&serial_acc.lock().unwrap()) {
+            let _ = child.kill();
+            killed_for_needles = true;
+            break child.wait().expect("wait after kill");
+        }
         match child.try_wait().expect("failed to wait on qemu") {
             Some(status) => break status,
             None if started.elapsed() > expect.timeout => {
@@ -78,7 +88,7 @@ fn wait_ci(mut child: Child, expect: CiExpect) {
         }
         exit(1);
     }
-    if expect.qemu_debug_exit && !timed_out {
+    if expect.qemu_debug_exit && !timed_out && !killed_for_needles {
         if status.code() != Some(QEMU_SUCCESS_STATUS) {
             eprintln!(
                 "error: unexpected QEMU exit status {status:?} (want {QEMU_SUCCESS_STATUS} from isa-debug-exit)"
