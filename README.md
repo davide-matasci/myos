@@ -126,8 +126,18 @@ via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
 
 ## Modules
 
-There is still no filesystem. "Modular" here means **runtime load of an
-ELF already sitting in memory**, not Multiboot modules and not an initrd.
+There is still no filesystem. A module is an ELF the kernel already has in
+RAM. **One loader** (`kernel/src/modules`) copies `PT_LOAD`, applies relocs,
+and calls `module_init`. The two names below are only **how the bytes got
+into RAM**:
+
+| | Embedded | Limine |
+|---|---|---|
+| Bytes live in | the kernel binary (`include_bytes!`) | a file on the ESP (`boot/foo`) |
+| Who maps them | the compiler | Limine, from `module_path` in `limine.conf` |
+| Kernel hook | `modules::load("foo", FOO_IMAGE)` | `modules::load_limine_modules()` (already walks every Limine module) |
+| Rebuild | kernel | disk image (`bios.img` / `uefi.img` / `aarch64.img`) |
+| Hello today | yes (`mod ok`) | yes (`mod ok`, then kernel prints `limine mod ok`) |
 
 A module is a `#![no_std]` crate that exports:
 
@@ -136,54 +146,95 @@ unsafe extern "C" fn module_init(api: *const KernelApi) -> i32
 unsafe extern "C" fn module_exit() // optional
 ```
 
-`KernelApi` is a `#[repr(C)]` table of function pointers (`write_str`,
-`alloc`, `dealloc`) defined in `modules/abi`. The kernel fills it in and
-passes `&KernelApi` into `module_init`. Modules must not call kernel
-internals; they only go through that table. There is no dynamic linker
-that resolves against the kernel `.dynsym`.
+`KernelApi` (`modules/abi`) is a `#[repr(C)]` table (`write_str`, `alloc`,
+`dealloc`). The kernel fills it and passes `&KernelApi` into `module_init`.
+Modules must not call kernel internals. There is no dynamic linker against
+kernel `.dynsym`.
 
-The hello module (`modules/hello`) prints `mod ok` through `write_str`.
-It is its own tiny cargo workspace (`panic = "abort"`). `kernel/build.rs`
-builds it for the kernel's target into `OUT_DIR` and feeds the ELF path
-into `include_bytes!`. That avoids cargo artifact-deps (the kernel is
-already an artifact of the host crate; nesting another one panics the
-feature resolver) and `[build-dependencies]` (those cannot `panic=abort`).
-After heap and IRQs are up, the loader copies `PT_LOAD` into the heap,
-applies relocs, finds `module_init` in `.symtab`, and calls it.
-Hello is both baked into the kernel and loaded from the ESP via Limine
-`module_path`.
+Do **not** add a module as a cargo artifact-dep of the kernel (that panics
+the feature resolver). Do **not** put it in `[build-dependencies]` (those
+cannot `panic=abort`). Each module crate is its own tiny workspace, like
+`modules/hello`.
 
-x86_64 hello is a PIE (`ET_DYN`) with `R_X86_64_RELATIVE` relocs.
-AArch64 hello is `ET_EXEC` slid as a unit: prebuilt `libcore` is not PIC,
-so `-pie` fails to link (`R_AARCH64_ABS64` in libcore). `module_init` uses
-PC-relative `ADR`, so a slide is enough. Both images use 4 KiB
-`max-page-size` so they fit on the 128 KiB heap.
+x86_64 modules are PIE (`ET_DYN`, `R_X86_64_RELATIVE`). AArch64 modules are
+`ET_EXEC` slid as a unit: prebuilt `libcore` is not PIC, so `-pie` fails to
+link. `module_init` uses PC-relative `ADR`. Both use 4 KiB `max-page-size`
+so they fit on the 128 KiB heap.
 
-### Adding another module
+### 1. The ELF crate (both paths)
 
-1. Copy `modules/hello` to `modules/foo` (keep `myos-abi`, `module_init`,
-   a `_start` stub, a panic handler, `[workspace]`, and `panic = "abort"`).
-2. In `kernel/build.rs`, cargo-build `foo` the same way as hello, then
-   `include_bytes!(env!("FOO_MODULE_PATH"))` and
-   `modules::load("foo", FOO_IMAGE)` after the heap exists.
-3. Keep `opt-level = "s"`, `debug = false`, `strip = "debuginfo"` so the
-   ELF stays small. Use `-u module_init` (see `modules/hello/build.rs`)
-   instead of `--export-dynamic`.
+Copy `modules/hello` to `modules/foo`. Keep:
+
+- `[workspace]` and `panic = "abort"` in `Cargo.toml` (`opt-level = "s"`,
+  `debug = false`, `strip = "debuginfo"`)
+- `myos-abi = { path = "../abi" }`
+- `module_init` / optional `module_exit`, a `_start` stub, a panic handler
+- the link flags in `modules/hello/build.rs` (`-z max-page-size=4096`,
+  `-u module_init` / `-u module_exit`, and `-pie -nostdlib` on x86 only;
+  never `--export-dynamic`)
+
+Then choose embedded, Limine, or both (hello uses both).
+
+### 2. Embedded: bake it into the kernel
+
+The kernel build script compiles the crate and the ELF becomes part of the
+kernel image. No ESP file, no `limine.conf` line.
+
+1. In `kernel/build.rs`, nested-`cargo build` `modules/foo` the same way as
+   hello: own `--target-dir` under `OUT_DIR`, `--target $TARGET`,
+   `RUSTFLAGS=-C panic=abort`. `cargo:rerun-if-changed` its sources.
+2. Point the kernel at that ELF:
+   `println!("cargo:rustc-env=FOO_MODULE_PATH={}", elf.display());`
+3. In `kernel/src/modules/mod.rs`:
+   `const FOO_IMAGE: &[u8] = include_bytes!(env!("FOO_MODULE_PATH"));`
+4. After heap and IRQs are up (see `kernel/src/main.rs`):
+   `modules::load("foo", FOO_IMAGE);`
+
+That is exactly `load_embedded_hello()` for `modules/hello`.
+
+### 3. Limine: put it on the ESP
+
+Limine loads extra files at boot and hands the kernel a pointer + size.
+The kernel still uses the same ELF loader. You do **not** need a new
+`include_bytes!` if you only want the Limine path: `load_limine_modules()`
+already iterates every module Limine listed.
+
+1. Build the ELF the same way as hello. `kernel/build.rs` also copies hello
+   to a stable path the host can find:
+   `target/hello-x86_64-unknown-none` and
+   `target/hello-aarch64-unknown-none-softfloat`.
+2. Write those bytes onto the ESP as `boot/foo`.
+   `write_esp_image` in `src/limine_image.rs` already does this for hello
+   (`boot/hello`). Host `build.rs` (x86) and `build_aarch64_image` in
+   `src/main.rs` pass the file in.
+3. Add a line under `/myos` in `LIMINE_CONF` (`src/limine_image.rs`):
+
+   ```
+   module_path: boot():/boot/foo
+   ```
+
+   Hello’s line is `module_path: boot():/boot/hello`. You can repeat
+   `module_path` for more files.
+4. Reboot. On success the kernel prints `limine mod ok` (hello’s own
+   `module_init` still prints `mod ok`).
+
+Changing only a Limine module does not require a new kernel `include_bytes!`,
+but you still rebuild the **disk image** so the ESP file updates.
 
 ## Layout
 
 | Path | Role |
 |------|------|
 | `src/main.rs` | Host launcher: starts QEMU (BIOS, UEFI, AArch64) |
-| `src/limine_image.rs` | GPT+FAT ESP writer + Limine binary fetch |
+| `src/limine_image.rs` | GPT+FAT ESP writer + Limine binary fetch + `limine.conf` |
 | `build.rs` | Fetch Limine, wrap the x86_64 kernel in BIOS+UEFI images |
-| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, load module, halt |
-| `kernel/src/limine_boot.rs` | Limine requests (base rev, HHDM, memmap, DTB, FB, executable addr) |
+| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, load modules, halt |
+| `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
 | `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
 | `kernel/src/heap.rs` | 128 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
 | `modules/abi` | Shared `KernelApi` / `module_init` C ABI |
-| `modules/hello` | Sample module; embedded into the kernel at build time |
+| `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
 | `kernel/src/arch/x86/` | COM1, GDT/IDT/PIC/PIT, isa-debug-exit |
 | `kernel/src/arch/aarch64/` | PL011, TTBR0 device map, GICv2 timer, PSCI off |
 | `kernel/src/framebuffer.rs` | Pixel writer for a Limine framebuffer |
