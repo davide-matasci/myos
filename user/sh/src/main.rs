@@ -80,6 +80,7 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     match fork() {
         Some(0) => {
             exec(path, &arg_slices[..parts.len()]);
+            write(b"sh: command not found\n");
             exit();
         }
         Some(_) => {
@@ -106,6 +107,7 @@ fn run_path(name: &[u8], parts: &[&[u8]]) {
     match fork() {
         Some(0) => {
             exec(path, &arg_slices[..parts.len()]);
+            write(b"sh: command not found\n");
             exit();
         }
         Some(_) => {
