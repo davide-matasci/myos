@@ -3,7 +3,7 @@ struct CiExpect {
     qemu_debug_exit: bool,
 }
 
-const CI_NEEDLES: [&str; 8] = [
+const CI_NEEDLES: [&str; 9] = [
     "Hello from myos",
     "heap ok",
     "int ok",
@@ -12,6 +12,7 @@ const CI_NEEDLES: [&str; 8] = [
     "sched ok",
     "mod ok",
     "limine mod ok",
+    "user ok",
 ];
 
 fn serial_has_all_needles(serial: &str) -> bool {

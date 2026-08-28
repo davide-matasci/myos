@@ -1,6 +1,6 @@
 //! x86_64: Limine already dropped us in long mode with HHDM + framebuffer.
 
-mod gdt;
+pub mod gdt;
 mod interrupts;
 mod serial;
 pub use serial::SerialPort;

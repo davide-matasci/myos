@@ -9,8 +9,10 @@ mod font;
 mod framebuffer;
 mod heap;
 mod limine_boot;
+mod mm;
 mod modules;
 mod task;
+mod user;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -66,6 +68,12 @@ fn kernel_main() -> ! {
 
     modules::load_embedded_hello();
     modules::load_limine_modules();
+
+    user::init();
+    user::spawn_two();
+    while !user::both_exited() {
+        task::yield_now();
+    }
 
     serial.flush();
     arch::exit_qemu(arch::QEMU_SUCCESS);
