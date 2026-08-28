@@ -1,6 +1,10 @@
 [unstable]
 bindeps = true
 
+# Custom userspace triple for a patched `std` PAL (see std/pal/README.md).
+[target.x86_64-unknown-myos]
+rustflags = ["-C", "panic=abort"]
+
 # Hello is a no_std artifact; force abort even if cargo picks the
 # build-override profile (panic=unwind by default).
 # Limine panics on ET_DYN without PT_DYNAMIC (CI #44). Static + kernel

@@ -18,7 +18,9 @@ const SYS_EXEC: usize = 5;
 const SYS_FORK: usize = 6;
 const SYS_WAIT: usize = 7;
 const SYS_LISTDIR: usize = 8;
-const PAGE: usize = 4096;
+const SYS_BRK: usize = 9;
+pub const PAGE: usize = 4096;
+const HEAP_PAGES: usize = 64;
 const MAX_INIT_PAGES: usize = 32;
 const MAX_PATH: usize = 64;
 const MAX_ARGC: usize = 16;
@@ -263,9 +265,8 @@ fn write_user_usize(aspace: u64, va: usize, val: usize) -> bool {
     write_user_bytes(aspace, va, &val.to_le_bytes())
 }
 
-/// Copy this process's user code+stack pages into a new aspace at the same VA.
-/// Copies via the current aspace's page tables + HHDM (not user VAs).
-pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64) -> Option<u64> {
+/// Copy this process's user code+stack+heap pages into a new aspace at the same VA.
+pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) -> Option<u64> {
     let n_pages = span.div_ceil(PAGE);
     if n_pages == 0 || n_pages > MAX_INIT_PAGES {
         return None;
@@ -290,7 +291,37 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64) -> Option<u64> {
     unsafe {
         core::ptr::copy_nonoverlapping(mm::hhdm(stack_phys), mm::hhdm(stack), PAGE);
     }
-    Some(create_aspace(&frames[..n_pages], stack, base, stack_off))
+    let aspace = create_aspace(&frames[..n_pages], stack, base, stack_off);
+    let heap_base = heap_base_va(base, stack_off);
+    let heap_end = align_up_usize(brk_cur as usize, PAGE);
+    let mut va = heap_base as usize;
+    while va < heap_end {
+        if virt_to_phys(src, va as u64).is_some() {
+            let phys = mm::alloc_frame();
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    mm::hhdm(virt_to_phys(src, va as u64)?),
+                    mm::hhdm(phys),
+                    PAGE,
+                );
+            }
+            map_heap_page(aspace, va as u64, phys);
+        }
+        va += PAGE;
+    }
+    Some(aspace)
+}
+
+fn heap_base_va(base: u64, stack_off: u64) -> u64 {
+    base + stack_off + PAGE as u64
+}
+
+fn heap_limit_va(base: u64, stack_off: u64) -> u64 {
+    heap_base_va(base, stack_off) + (HEAP_PAGES * PAGE) as u64
+}
+
+fn align_up_usize(v: usize, align: usize) -> usize {
+    (v + align - 1) & !(align - 1)
 }
 
 fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
@@ -654,6 +685,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_FORK => sys_fork(user_rip, user_rsp),
         SYS_WAIT => sys_wait(),
         SYS_LISTDIR => sys_listdir(a0, a1),
+        SYS_BRK => sys_brk(a0),
         _ => SYSERR,
     }
 }
@@ -863,6 +895,37 @@ fn sys_wait() -> usize {
     task::wait_child()
 }
 
+fn sys_brk(req: usize) -> usize {
+    let (base, _span, stack_off) = task::current_user_map();
+    let heap_base = heap_base_va(base, stack_off) as usize;
+    let heap_limit = heap_limit_va(base, stack_off) as usize;
+    let cur = task::current_brk() as usize;
+    if req == 0 {
+        return cur;
+    }
+    if req < heap_base || req > heap_limit {
+        return cur;
+    }
+    if req > cur {
+        let aspace = task::current_aspace();
+        let map_end = align_up_usize(req, PAGE);
+        let mut va = if cur == heap_base {
+            heap_base
+        } else {
+            align_up_usize(cur, PAGE)
+        };
+        while va < map_end {
+            if virt_to_phys(aspace, va as u64).is_none() {
+                let frame = mm::alloc_frame();
+                map_heap_page(aspace, va as u64, frame);
+            }
+            va += PAGE;
+        }
+    }
+    task::set_brk(req as u64);
+    req
+}
+
 fn user_range_ok(ptr: usize, len: usize) -> bool {
     let (base, img, stack) = task::current_user_map();
     let base = base as usize;
@@ -873,7 +936,10 @@ fn user_range_ok(ptr: usize, len: usize) -> bool {
     let stack = stack as usize;
     let in_code = ptr >= base && end <= base + img;
     let in_stack = ptr >= base + stack && end <= base + stack + PAGE;
-    in_code || in_stack
+    let heap_base = heap_base_va(base as u64, stack as u64) as usize;
+    let brk = task::current_brk() as usize;
+    let in_heap = brk > heap_base && ptr >= heap_base && end <= brk;
+    in_code || in_stack || in_heap
 }
 
 fn create_aspace(code: &[u64], stack_phys: u64, base: u64, stack_off: u64) -> u64 {
@@ -919,6 +985,36 @@ fn create_aspace_x86(code: &[u64], stack_phys: u64, base: u64, stack_off: u64) -
         PRESENT | WRITE | USER | NX,
     );
     pml4_phys
+}
+
+#[cfg(target_arch = "x86_64")]
+fn map_heap_page(pml4_phys: u64, va: u64, pa: u64) {
+    const PRESENT: u64 = 1;
+    const WRITE: u64 = 1 << 1;
+    const USER: u64 = 1 << 2;
+    const NX: u64 = 1 << 63;
+    map_page_x86(pml4_phys, va, pa, PRESENT | WRITE | USER | NX);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn map_heap_page(l0_phys: u64, va: u64, pa: u64) {
+    const PAGE_DESC: u64 = 0b11;
+    const SH_INNER: u64 = 0b11 << 8;
+    const AF: u64 = 1 << 10;
+    const AP_RW: u64 = 0b01 << 6;
+    const UXN: u64 = 1 << 54;
+    const PA_MASK: u64 = 0x0000_FFFF_FFFF_F000;
+    let i3 = ((va >> 12) & 0x1ff) as usize;
+    unsafe {
+        let l0 = &*mm::table(l0_phys);
+        let l1_phys = l0[0] & PA_MASK;
+        let l1 = &*mm::table(l1_phys);
+        let l2_phys = l1[1] & PA_MASK;
+        let l2 = &*mm::table(l2_phys);
+        let l3_phys = l2[0] & PA_MASK;
+        let l3 = &mut *mm::table(l3_phys);
+        l3[i3] = (pa & PA_MASK) | PAGE_DESC | SH_INNER | AP_RW | AF | UXN;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
