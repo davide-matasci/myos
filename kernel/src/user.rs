@@ -816,14 +816,24 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let (base_u, mapped_span, stack_off) = task::current_user_map();
     let loaded = if cur_aspace != 0 {
         reload_user_elf(cur_aspace, bytes, base_u, stack_off, mapped_span)
-            .map(|(entry, span, off)| (cur_aspace, entry, span, off))
+            .map(|(entry, span, off)| {
+                #[cfg(target_arch = "aarch64")]
+                crate::console::write_str("reload ok\n");
+                (cur_aspace, entry, span, off)
+            })
     } else {
         None
     };
     let (aspace, entry, span, off) = if let Some(v) = loaded {
         v
     } else {
+        #[cfg(target_arch = "aarch64")]
+        if cur_aspace != 0 {
+            crate::console::write_str("reload fail\n");
+        }
         let Some(v) = load_user_elf(bytes) else {
+            #[cfg(target_arch = "aarch64")]
+            crate::console::write_str("load fail\n");
             return SYSERR;
         };
         v
@@ -834,6 +844,7 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let argc = arg_refs.len();
     task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
     #[cfg(target_arch = "aarch64")]
+    crate::console::write_str("exec go\n");
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
     enter(entry, rsp, argc, argv);
 }
