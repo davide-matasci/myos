@@ -16,13 +16,14 @@ Multiboot-for-ARM).
 
 Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 
-The kernel runs round-robin **kernel threads** plus one **user process**.
+The kernel runs round-robin **kernel threads** plus **user processes**.
 Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
-`include_bytes!`, spawned as today, then **execs `/ok` from bootfs**.
+`include_bytes!`, spawned as today, then **forks**. The child execs `/ok`
+from bootfs; init `wait`s and stays PID1 until the child is done.
 `user/ok` prints `user ok`, reads `/msg` (FAT16 `MSG` via virtio-blk),
 prints `fat ok`, and exits. Userspace programs are ELFs, not `KernelApi`
 modules. Nested cargo like hello; loaded into per-process page tables at
-`USER_BASE`. Init has its own CR3/TTBR0; the kernel/HHDM (and on AArch64
+`USER_BASE`. Each process has its own CR3/TTBR0; the kernel/HHDM (and on AArch64
 the TTBR0 device block for UART/GIC) is mapped into the aspace. It drops
 to ring 3 / EL0 and uses `syscall` / `svc`. Kernel threads can
 `task::yield_now()` cooperatively; the timer IRQ also calls the same
@@ -312,8 +313,9 @@ but you still rebuild the **disk image** so the ESP file updates.
 ## Userspace
 
 Userspace programs are ELFs, not KernelApi modules. Init is PID1-style:
-baked into the kernel (`user/init`), spawned as today, and execs `/ok`
-from bootfs. `user/ok` is its own tiny workspace (same shape as
+baked into the kernel (`user/init`), spawned as today, and **forks**. The
+child execs `/ok` from bootfs; init `wait`s then `exit`s (it does not
+exec `/ok` itself). `user/ok` is its own tiny workspace (same shape as
 `user/init` / `modules/hello`: `panic = "abort"`, `opt-level = "s"`).
 `kernel/build.rs` nested-`cargo build`s both; init is `include_bytes!`,
 `ok` is also embedded as a bootfs fallback and placed on the ESP as
@@ -322,8 +324,10 @@ bytes, writes them to serial (`fat ok`), and exits. If `/msg` is missing
 it spins (CI then fails the `fat ok` needle).
 
 `PT_LOAD` is realized at `USER_BASE` with the same relocs as the module
-loader. **One user process**: `exec` replaces the image in place (same
-task, no second `USERS_ALIVE` / `note_exit`). Syscalls:
+loader. **fork** copies user pages into a new aspace (no COW) and a new
+task; the parent gets the child pid (task slot), the child gets 0.
+**exec** replaces the calling task's image (no second `USERS_ALIVE` /
+`note_exit`). **wait** reaps a zombie child. Syscalls:
 
 | nr | name | args |
 |----|------|------|
@@ -333,6 +337,8 @@ task, no second `USERS_ALIVE` / `note_exit`). Syscalls:
 | 3 | read | fd, buf, len → n |
 | 4 | close | fd |
 | 5 | exec | path, path_len (does not return on success) |
+| 6 | fork | → child pid (parent), 0 (child) |
+| 7 | wait | → reaped child pid |
 
 x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. AArch64 `svc`:
 `x8`=nr, `x0`/`x1`/`x2`=a0/a1/a2. Errors return `usize::MAX`.
@@ -349,7 +355,7 @@ x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. AArch64 `svc`:
 | `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages, virtqueues) |
 | `kernel/src/blk.rs` | In-kernel virtio-blk: `init` + 512-byte sector `read` |
 | `kernel/src/fs/` | Tiny VFS: mount table + bootfs (Limine modules + embedded `/ok` + `vfs_register`) |
-| `kernel/src/user.rs` | Load user ELFs at `USER_BASE`, per-process page tables, `syscall`/`svc`, in-place exec |
+| `kernel/src/user.rs` | Load user ELFs at `USER_BASE`, per-process page tables, `syscall`/`svc`, fork/wait/exec |
 | `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
@@ -357,7 +363,7 @@ x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. AArch64 `svc`:
 | `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v2: `blk_read`, `vfs_register`) |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
-| `user/init` | PID1-style: baked in, opens `/ok`, execs it (not a kernel module) |
+| `user/init` | PID1-style: baked in, forks; child execs `/ok` (not a kernel module) |
 | `user/ok` | Second userspace ELF: `user ok`, then reads `/msg`; ESP `boot/ok` |
 | `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, PCI, legacy virtio-blk, isa-debug-exit |
 | `kernel/src/arch/x86/pci.rs` | PCI config via `0xCF8`/`0xCFC`; find virtio-blk |
