@@ -3,6 +3,11 @@
 //! Handles `R_X86_64_RELATIVE` / `R_AARCH64_RELATIVE` plus the absolute
 //! types rustc actually emits for a `no_std` PIE (`GLOB_DAT`, `JUMP_SLOT`,
 //! `R_*_64`). Symbols come from `.dynsym` or `.symtab`.
+//!
+//! `image_span` / `realize` are shared by kernel modules (hello) and the
+//! userspace init ELF. `load_bias` is the **runtime VA** slide
+//! (`dest_va - min_v`); it may differ from the kernel buffer address when
+//! staging into a heap copy that will later be mapped at `USER_BASE`.
 
 use alloc::alloc::{alloc_zeroed, dealloc, Layout};
 use myos_abi::{ModuleExit, ModuleInit};
@@ -18,6 +23,8 @@ const SHT_RELA: u32 = 4;
 const SHT_REL: u32 = 9;
 const SHT_DYNSYM: u32 = 11;
 const SHN_UNDEF: u16 = 0;
+const PF_X: u32 = 1;
+const PF_W: u32 = 2;
 
 const R_X86_64_NONE: u32 = 0;
 const R_X86_64_64: u32 = 1;
@@ -82,7 +89,149 @@ impl Loaded {
     }
 }
 
+struct Ehdr {
+    e_entry: u64,
+    e_phoff: usize,
+    e_shoff: usize,
+    e_phentsize: usize,
+    e_phnum: usize,
+    e_shentsize: usize,
+    e_shnum: usize,
+    min_v: u64,
+    span: usize,
+}
+
+/// `(min_v, span, e_entry)` for the PT_LOAD image. `span` is `max_v - min_v`.
+pub fn image_span(bytes: &[u8]) -> Result<(u64, usize, u64), LoadError> {
+    let h = parse_ehdr(bytes)?;
+    Ok((h.min_v, h.span, h.e_entry))
+}
+
+/// Copy `PT_LOAD` into `dest[vaddr - min_v]`, apply relocs with `load_bias`
+/// as the runtime VA slide (`dest_va - min_v`), sync I-cache, return
+/// `e_entry + load_bias`.
+///
+/// `dest` is only a kernel buffer; `load_bias` must be computed from the
+/// address the image will actually run at (heap VA for modules, `USER_BASE`
+/// for init), not from `dest as u64` unless those are the same.
+pub unsafe fn realize(
+    bytes: &[u8],
+    dest: *mut u8,
+    span: usize,
+    load_bias: u64,
+) -> Result<u64, LoadError> {
+    let h = parse_ehdr(bytes)?;
+    if h.span > span {
+        return Err(LoadError::Unsupported);
+    }
+    for i in 0..h.e_phnum {
+        let p = phdr_at(bytes, &h, i)?;
+        if u32_at(bytes, p)? != PT_LOAD {
+            continue;
+        }
+        let off = u64_at(bytes, p + 8)? as usize;
+        let vaddr = u64_at(bytes, p + 16)?;
+        let filesz = u64_at(bytes, p + 32)? as usize;
+        if filesz == 0 {
+            continue;
+        }
+        let src = bytes
+            .get(off..off.checked_add(filesz).ok_or(LoadError::Truncated)?)
+            .ok_or(LoadError::Truncated)?;
+        let dest_off = (vaddr.wrapping_sub(h.min_v)) as usize;
+        if dest_off
+            .checked_add(filesz)
+            .map(|e| e > span)
+            .unwrap_or(true)
+        {
+            return Err(LoadError::Truncated);
+        }
+        unsafe {
+            dest.add(dest_off)
+                .copy_from_nonoverlapping(src.as_ptr(), filesz);
+        }
+    }
+    apply_relocs(
+        bytes,
+        h.e_shoff,
+        h.e_shentsize,
+        h.e_shnum,
+        load_bias,
+        dest,
+        span,
+        h.min_v,
+    )?;
+    sync_icache(dest, span);
+    Ok(h.e_entry.wrapping_add(load_bias))
+}
+
+/// Union of `PF_W` / `PF_X` on PT_LOAD covering `[page_va, page_va + 4K)`.
+/// Uncovered pages are `(false, false)` (non-writable, non-executable).
+pub fn page_perms(bytes: &[u8], page_va: u64) -> Result<(bool, bool), LoadError> {
+    let h = parse_ehdr(bytes)?;
+    let page_hi = page_va.saturating_add(PAGE as u64);
+    let mut write = false;
+    let mut exec = false;
+    for i in 0..h.e_phnum {
+        let p = phdr_at(bytes, &h, i)?;
+        if u32_at(bytes, p)? != PT_LOAD {
+            continue;
+        }
+        let flags = u32_at(bytes, p + 4)?;
+        let vaddr = u64_at(bytes, p + 16)?;
+        let memsz = u64_at(bytes, p + 40)?;
+        let seg_hi = vaddr.saturating_add(memsz);
+        if vaddr < page_hi && page_va < seg_hi {
+            write |= flags & PF_W != 0;
+            exec |= flags & PF_X != 0;
+        }
+    }
+    Ok((write, exec))
+}
+
 pub fn load(bytes: &[u8]) -> Result<Loaded, LoadError> {
+    let (min_v, span, _e_entry) = image_span(bytes)?;
+    let layout = Layout::from_size_align(span.max(1), PAGE).map_err(|_| LoadError::Alloc)?;
+    let base = unsafe { alloc_zeroed(layout) };
+    if base.is_null() {
+        return Err(LoadError::Alloc);
+    }
+    let load_bias = (base as u64).wrapping_sub(min_v);
+    if let Err(e) = unsafe { realize(bytes, base, span, load_bias) } {
+        unsafe { dealloc(base, layout) };
+        return Err(e);
+    }
+
+    let h = match parse_ehdr(bytes) {
+        Ok(h) => h,
+        Err(e) => {
+            unsafe { dealloc(base, layout) };
+            return Err(e);
+        }
+    };
+    let (init, exit) = match lookup_entry_points(
+        bytes,
+        h.e_shoff,
+        h.e_shentsize,
+        h.e_shnum,
+        load_bias,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            unsafe { dealloc(base, layout) };
+            return Err(e);
+        }
+    };
+
+    Ok(Loaded {
+        base,
+        size: span.max(1),
+        init,
+        exit,
+    })
+}
+
+fn parse_ehdr(bytes: &[u8]) -> Result<Ehdr, LoadError> {
     if bytes.len() < 64 {
         return Err(LoadError::Truncated);
     }
@@ -101,6 +250,7 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, LoadError> {
         return Err(LoadError::BadMachine);
     }
 
+    let e_entry = u64_at(bytes, 24)?;
     let e_phoff = u64_at(bytes, 32)? as usize;
     let e_shoff = u64_at(bytes, 40)? as usize;
     let e_phentsize = u16_at(bytes, 54)? as usize;
@@ -115,7 +265,8 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, LoadError> {
     let mut max_v = 0u64;
     let mut nload = 0usize;
     for i in 0..e_phnum {
-        let p = e_phoff.checked_add(i.checked_mul(e_phentsize).ok_or(LoadError::Truncated)?)
+        let p = e_phoff
+            .checked_add(i.checked_mul(e_phentsize).ok_or(LoadError::Truncated)?)
             .ok_or(LoadError::Truncated)?;
         if u32_at(bytes, p)? != PT_LOAD {
             continue;
@@ -130,42 +281,24 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, LoadError> {
         return Err(LoadError::NoLoad);
     }
     let span = (max_v - min_v) as usize;
-    let layout = Layout::from_size_align(span.max(1), PAGE).map_err(|_| LoadError::Alloc)?;
-    let base = unsafe { alloc_zeroed(layout) };
-    if base.is_null() {
-        return Err(LoadError::Alloc);
-    }
-    let load_bias = base as u64 - min_v;
-
-    for i in 0..e_phnum {
-        let p = e_phoff + i * e_phentsize;
-        if u32_at(bytes, p)? != PT_LOAD {
-            continue;
-        }
-        let off = u64_at(bytes, p + 8)? as usize;
-        let vaddr = u64_at(bytes, p + 16)?;
-        let filesz = u64_at(bytes, p + 32)? as usize;
-        let src = bytes.get(off..off.checked_add(filesz).ok_or(LoadError::Truncated)?)
-            .ok_or(LoadError::Truncated)?;
-        let dest = unsafe { base.add((vaddr - min_v) as usize) };
-        unsafe { dest.copy_from_nonoverlapping(src.as_ptr(), filesz) };
-    }
-
-    if let Err(e) = apply_relocs(bytes, e_shoff, e_shentsize, e_shnum, load_bias, base, span) {
-        unsafe { dealloc(base, layout) };
-        return Err(e);
-    }
-
-    let (init, exit) = lookup_entry_points(bytes, e_shoff, e_shentsize, e_shnum, load_bias)?;
-
-    sync_icache(base, span);
-
-    Ok(Loaded {
-        base,
-        size: span.max(1),
-        init,
-        exit,
+    Ok(Ehdr {
+        e_entry,
+        e_phoff,
+        e_shoff,
+        e_phentsize,
+        e_phnum,
+        e_shentsize,
+        e_shnum,
+        min_v,
+        span,
     })
+}
+
+fn phdr_at(bytes: &[u8], h: &Ehdr, i: usize) -> Result<usize, LoadError> {
+    let _ = bytes;
+    h.e_phoff
+        .checked_add(i.checked_mul(h.e_phentsize).ok_or(LoadError::Truncated)?)
+        .ok_or(LoadError::Truncated)
 }
 
 fn apply_relocs(
@@ -176,9 +309,8 @@ fn apply_relocs(
     load_bias: u64,
     image: *mut u8,
     span: usize,
+    min_v: u64,
 ) -> Result<(), LoadError> {
-    let img_lo = image as u64;
-    let img_hi = img_lo + span as u64;
     for i in 0..shnum {
         let sh = shoff
             .checked_add(i.checked_mul(shentsize).ok_or(LoadError::Truncated)?)
@@ -220,11 +352,11 @@ fn apply_relocs(
             } else {
                 0
             };
-            let loc_addr = load_bias.wrapping_add(r_offset);
-            if loc_addr < img_lo || loc_addr.saturating_add(8) > img_hi {
+            let loc_off = r_offset.wrapping_sub(min_v);
+            if loc_off.saturating_add(8) > span as u64 {
                 return Err(LoadError::BadReloc(r_type));
             }
-            let loc = loc_addr as *mut u64;
+            let loc = unsafe { image.add(loc_off as usize) as *mut u64 };
             match r_type {
                 R_X86_64_NONE => {}
                 R_X86_64_RELATIVE | R_AARCH64_RELATIVE => {
