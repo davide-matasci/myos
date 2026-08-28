@@ -345,6 +345,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         cmd.arg("-display").arg("none");
     } else {
         cmd.arg("-device").arg("ramfb");
+        cmd.arg("-device").arg("virtio-keyboard-device");
     }
     cmd
 }
