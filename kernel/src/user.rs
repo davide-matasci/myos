@@ -41,6 +41,7 @@ core::arch::global_asm!(
     r#"
     .global syscall_entry
 syscall_entry:
+    cli
     mov r10, rsp
     mov rsp, [rip + {kernel_rsp0}]
     push r11
@@ -398,6 +399,8 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
     let cs = (crate::arch::gdt::user_cs() | 3) as u64;
     let ss = (crate::arch::gdt::user_ss() | 3) as u64;
     let rflags: u64 = 0x202;
+    let ursp = user_rsp as u64;
+    let urip = user_rip as u64;
     unsafe {
         core::arch::asm!(
             "cli",
@@ -406,13 +409,13 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
             "push {rf}",
             "push {ucs}",
             "push {urip}",
+            "xor rax, rax",
             "iretq",
             uss = in(reg) ss,
-            ursp = in(reg) user_rsp,
+            ursp = in(reg) ursp,
             rf = in(reg) rflags,
             ucs = in(reg) cs,
-            urip = in(reg) user_rip,
-            in("rax") 0u64,
+            urip = in(reg) urip,
             options(noreturn),
         );
     }
@@ -421,16 +424,17 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
 #[cfg(target_arch = "aarch64")]
 fn enter_aarch64(user_rip: usize, user_rsp: usize) -> ! {
     unsafe {
+        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
         if current_el() >= 2 {
             core::arch::asm!(
                 "msr elr_el2, {rip}",
                 "msr sp_el0, {rsp}",
                 "msr spsr_el2, xzr",
+                "mov x0, xzr",
                 "isb",
                 "eret",
                 rip = in(reg) user_rip,
                 rsp = in(reg) user_rsp,
-                in("x0") 0u64,
                 options(noreturn),
             );
         } else {
@@ -438,167 +442,25 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize) -> ! {
                 "msr elr_el1, {rip}",
                 "msr sp_el0, {rsp}",
                 "msr spsr_el1, xzr",
+                "mov x0, xzr",
                 "isb",
                 "eret",
                 rip = in(reg) user_rip,
                 rsp = in(reg) user_rsp,
-                in("x0") 0u64,
                 options(noreturn),
             );
         }
     }
 }
 
-/// Resume a forked child with the parent's user GPRs (rax/x0 = 0).
+
+/// Resume a forked child at the syscall return PC with rax/x0 = 0.
 pub fn enter_fork(regs: task::ForkRegs) -> ! {
-    let a = task::current_aspace();
-    if a != 0 {
-        switch_aspace(a);
-    }
-    #[cfg(target_arch = "x86_64")]
-    enter_fork_x86(regs);
-    #[cfg(target_arch = "aarch64")]
-    enter_fork_aarch64(regs);
+    // Callee-saved restore via `asm!` inputs miscompiles (CI #121 GP null CS /
+    // AArch64 elr=ones). Init only needs rip/rsp and rax/x0 = 0.
+    enter(regs.rip, regs.rsp);
 }
 
-#[cfg(target_arch = "x86_64")]
-fn enter_fork_x86(regs: task::ForkRegs) -> ! {
-    let cs = (crate::arch::gdt::user_cs() | 3) as u64;
-    let ss = (crate::arch::gdt::user_ss() | 3) as u64;
-    let rflags: u64 = 0x202;
-    unsafe {
-        core::arch::asm!(
-            "cli",
-            "mov rbx, {rbx}",
-            "mov rbp, {rbp}",
-            "mov r12, {r12}",
-            "mov r13, {r13}",
-            "mov r14, {r14}",
-            "mov r15, {r15}",
-            "push {uss}",
-            "push {ursp}",
-            "push {rf}",
-            "push {ucs}",
-            "push {urip}",
-            "xor rax, rax",
-            "iretq",
-            rbx = in(reg) regs.rbx,
-            rbp = in(reg) regs.rbp,
-            r12 = in(reg) regs.r12,
-            r13 = in(reg) regs.r13,
-            r14 = in(reg) regs.r14,
-            r15 = in(reg) regs.r15,
-            uss = in(reg) ss,
-            ursp = in(reg) regs.rsp,
-            rf = in(reg) rflags,
-            ucs = in(reg) cs,
-            urip = in(reg) regs.rip,
-            options(noreturn),
-        );
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
-    // Keep the GPR image in a stack local and reload via a single base
-    // pointer — restoring thirty `in(reg)` operands does not fit.
-    let mut img = regs.x;
-    img[0] = 0;
-    let base = img.as_ptr();
-    let rip = regs.rip;
-    let rsp = regs.rsp;
-    unsafe {
-        if current_el() >= 2 {
-            core::arch::asm!(
-                "ldr x1, [{b}, #8]",
-                "ldr x2, [{b}, #16]",
-                "ldr x3, [{b}, #24]",
-                "ldr x4, [{b}, #32]",
-                "ldr x5, [{b}, #40]",
-                "ldr x6, [{b}, #48]",
-                "ldr x7, [{b}, #56]",
-                "ldr x8, [{b}, #64]",
-                "ldr x9, [{b}, #72]",
-                "ldr x10, [{b}, #80]",
-                "ldr x11, [{b}, #88]",
-                "ldr x12, [{b}, #96]",
-                "ldr x13, [{b}, #104]",
-                "ldr x14, [{b}, #112]",
-                "ldr x15, [{b}, #120]",
-                "ldr x16, [{b}, #128]",
-                "ldr x17, [{b}, #136]",
-                "ldr x18, [{b}, #144]",
-                "ldr x19, [{b}, #152]",
-                "ldr x20, [{b}, #160]",
-                "ldr x21, [{b}, #168]",
-                "ldr x22, [{b}, #176]",
-                "ldr x23, [{b}, #184]",
-                "ldr x24, [{b}, #192]",
-                "ldr x25, [{b}, #200]",
-                "ldr x26, [{b}, #208]",
-                "ldr x27, [{b}, #216]",
-                "ldr x28, [{b}, #224]",
-                "ldr x29, [{b}, #232]",
-                "ldr x30, [{b}, #240]",
-                "msr elr_el2, {rip}",
-                "msr sp_el0, {rsp}",
-                "msr spsr_el2, xzr",
-                "mov x0, xzr",
-                "isb",
-                "eret",
-                b = in(reg) base,
-                rip = in(reg) rip,
-                rsp = in(reg) rsp,
-                options(noreturn),
-            );
-        } else {
-            core::arch::asm!(
-                "ldr x1, [{b}, #8]",
-                "ldr x2, [{b}, #16]",
-                "ldr x3, [{b}, #24]",
-                "ldr x4, [{b}, #32]",
-                "ldr x5, [{b}, #40]",
-                "ldr x6, [{b}, #48]",
-                "ldr x7, [{b}, #56]",
-                "ldr x8, [{b}, #64]",
-                "ldr x9, [{b}, #72]",
-                "ldr x10, [{b}, #80]",
-                "ldr x11, [{b}, #88]",
-                "ldr x12, [{b}, #96]",
-                "ldr x13, [{b}, #104]",
-                "ldr x14, [{b}, #112]",
-                "ldr x15, [{b}, #120]",
-                "ldr x16, [{b}, #128]",
-                "ldr x17, [{b}, #136]",
-                "ldr x18, [{b}, #144]",
-                "ldr x19, [{b}, #152]",
-                "ldr x20, [{b}, #160]",
-                "ldr x21, [{b}, #168]",
-                "ldr x22, [{b}, #176]",
-                "ldr x23, [{b}, #184]",
-                "ldr x24, [{b}, #192]",
-                "ldr x25, [{b}, #200]",
-                "ldr x26, [{b}, #208]",
-                "ldr x27, [{b}, #216]",
-                "ldr x28, [{b}, #224]",
-                "ldr x29, [{b}, #232]",
-                "ldr x30, [{b}, #240]",
-                "msr elr_el1, {rip}",
-                "msr sp_el0, {rsp}",
-                "msr spsr_el1, xzr",
-                "mov x0, xzr",
-                "isb",
-                "eret",
-                b = in(reg) base,
-                rip = in(reg) rip,
-                rsp = in(reg) rsp,
-                options(noreturn),
-            );
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
 #[cfg(target_arch = "aarch64")]
 static mut SYSCALL_FRAME: *mut u64 = core::ptr::null_mut();
 
@@ -677,7 +539,7 @@ fn sys_open(ptr: usize, path_len: usize) -> usize {
 }
 
 fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
-    task::fd_read(fd, buf, len, user_range_ok)
+    task::fd_read(fd, buf, len)
 }
 
 fn sys_close(fd: usize) -> usize {
@@ -707,6 +569,7 @@ fn sys_exec(ptr: usize, path_len: usize) -> usize {
 }
 
 fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
+
     #[cfg(target_arch = "x86_64")]
     let child = {
         let rbx: u64;
