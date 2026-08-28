@@ -50,6 +50,10 @@ struct Task {
     user_rip: usize,
     user_rsp: usize,
     fds: [Option<Fd>; MAX_FDS],
+    user_base: u64,
+    image_span: usize,
+    stack_off: u64,
+    ppid: usize,
 }
 
 const EMPTY: Task = Task {
@@ -62,6 +66,10 @@ const EMPTY: Task = Task {
     user_rip: 0,
     user_rsp: 0,
     fds: [None; MAX_FDS],
+    user_base: 0,
+    image_span: 0,
+    stack_off: 0,
+    ppid: 0,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -97,6 +105,20 @@ pub fn current_id() -> usize {
 pub fn current_aspace() -> u64 {
     let id = CURRENT.load(Ordering::SeqCst);
     TASKS.lock()[id].aspace
+}
+
+/// Per-task user map: (USER_BASE, IMAGE_SPAN, STACK_OFF).
+pub fn current_user_map() -> (u64, usize, u64) {
+    let id = CURRENT.load(Ordering::SeqCst);
+    let t = TASKS.lock()[id];
+    (t.user_base, t.image_span, t.stack_off)
+}
+
+pub fn save_user_context(rip: usize, rsp: usize) {
+    with_current_mut(|t| {
+        t.user_rip = rip;
+        t.user_rsp = rsp;
+    });
 }
 
 fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
@@ -159,11 +181,21 @@ pub fn fd_close(fd: usize) -> bool {
 
 /// In-place exec: replace the current task's user image. Does not spawn,
 /// does not bump USERS_ALIVE, does not note_exit. Resets fds.
-pub fn replace_user(aspace: u64, user_rip: usize, user_rsp: usize) {
+pub fn replace_user(
+    aspace: u64,
+    user_rip: usize,
+    user_rsp: usize,
+    user_base: u64,
+    image_span: usize,
+    stack_off: u64,
+) {
     with_current_mut(|t| {
         t.aspace = aspace;
         t.user_rip = user_rip;
         t.user_rsp = user_rsp;
+        t.user_base = user_base;
+        t.image_span = image_span;
+        t.stack_off = stack_off;
         t.fds = [None; MAX_FDS];
     });
     user::switch_aspace(aspace);
@@ -171,14 +203,149 @@ pub fn replace_user(aspace: u64, user_rip: usize, user_rsp: usize) {
 }
 
 pub fn spawn(entry: fn()) {
-    spawn_inner(0, Some(entry), 0, 0);
+    spawn_inner(0, Some(entry), 0, 0, 0, 0, 0, 0, [None; MAX_FDS]);
 }
 
-pub fn spawn_user(aspace: u64, user_rip: usize, user_rsp: usize) {
-    spawn_inner(aspace, None, user_rip, user_rsp);
+pub fn spawn_user(
+    aspace: u64,
+    user_rip: usize,
+    user_rsp: usize,
+    user_base: u64,
+    image_span: usize,
+    stack_off: u64,
+) {
+    spawn_inner(
+        aspace,
+        None,
+        user_rip,
+        user_rsp,
+        user_base,
+        image_span,
+        stack_off,
+        0,
+        [None; MAX_FDS],
+    );
 }
 
-fn spawn_inner(aspace: u64, entry: Option<fn()>, user_rip: usize, user_rsp: usize) {
+/// Copy the current user task: new aspace, copied fds, same user RIP/RSP.
+/// Child is Ready and will `enter()` with rax/x0 = 0. Returns the child slot.
+pub fn fork_current() -> Option<usize> {
+    let flags = irq_save();
+    irq_off();
+
+    let (rip, rsp, fds, base, span, off, ppid) = {
+        let tasks = TASKS.lock();
+        let id = CURRENT.load(Ordering::SeqCst);
+        let t = tasks[id];
+        if t.user_rip == 0 {
+            drop(tasks);
+            irq_restore(flags);
+            return None;
+        }
+        (
+            t.user_rip,
+            t.user_rsp,
+            t.fds,
+            t.user_base,
+            t.image_span,
+            t.stack_off,
+            id,
+        )
+    };
+
+    let Some(aspace) = user::copy_user_aspace(base, span, off) else {
+        irq_restore(flags);
+        return None;
+    };
+
+    let layout = match Layout::from_size_align(STACK_SIZE, 16) {
+        Ok(l) => l,
+        Err(_) => {
+            irq_restore(flags);
+            return None;
+        }
+    };
+    let stack = unsafe { alloc(layout) };
+    if stack.is_null() {
+        irq_restore(flags);
+        return None;
+    }
+    let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as usize) };
+    let top = stack as usize + STACK_SIZE;
+
+    let mut tasks = TASKS.lock();
+    let Some(slot) = tasks.iter().position(|t| t.state == State::Unused) else {
+        drop(tasks);
+        irq_restore(flags);
+        return None;
+    };
+    tasks[slot] = Task {
+        state: State::Ready,
+        stack_base: stack as usize,
+        sp,
+        entry: None,
+        aspace,
+        kernel_stack_top: top,
+        user_rip: rip,
+        user_rsp: rsp,
+        fds,
+        user_base: base,
+        image_span: span,
+        stack_off: off,
+        ppid,
+    };
+    drop(tasks);
+    user::note_fork();
+    irq_restore(flags);
+    Some(slot)
+}
+
+/// Yield until a child has exited, reap it, return its pid.
+/// `usize::MAX` if this task has no children.
+pub fn wait_child() -> usize {
+    let parent = CURRENT.load(Ordering::SeqCst);
+    loop {
+        let mut any = false;
+        let mut reap = None;
+        {
+            let mut tasks = TASKS.lock();
+            for i in 0..MAX_TASKS {
+                if i == parent
+                    || tasks[i].ppid != parent
+                    || tasks[i].user_rip == 0
+                    || tasks[i].state == State::Unused
+                {
+                    continue;
+                }
+                if tasks[i].state == State::Dead {
+                    reap = Some(i);
+                    break;
+                }
+                any = true;
+            }
+            if let Some(i) = reap {
+                tasks[i] = EMPTY;
+                return i;
+            }
+        }
+        if !any {
+            return usize::MAX;
+        }
+        yield_now();
+    }
+}
+
+fn spawn_inner(
+    aspace: u64,
+    entry: Option<fn()>,
+    user_rip: usize,
+    user_rsp: usize,
+    user_base: u64,
+    image_span: usize,
+    stack_off: u64,
+    ppid: usize,
+    fds: [Option<Fd>; MAX_FDS],
+) {
     let flags = irq_save();
     irq_off();
     let layout = Layout::from_size_align(STACK_SIZE, 16).expect("task stack layout");
@@ -201,7 +368,11 @@ fn spawn_inner(aspace: u64, entry: Option<fn()>, user_rip: usize, user_rsp: usiz
         kernel_stack_top: top,
         user_rip,
         user_rsp,
-        fds: [None; MAX_FDS],
+        fds,
+        user_base,
+        image_span,
+        stack_off,
+        ppid,
     };
     drop(tasks);
     irq_restore(flags);
