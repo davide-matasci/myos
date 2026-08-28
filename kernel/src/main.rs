@@ -82,10 +82,18 @@ fn kernel_main() -> ! {
 
     user::init();
     input::init();
-    console::write_str(
-        "\nSerial console: shell I/O (x86 COM1 38400 8N1, AArch64 PL011).\n\
-         Connect a USB-serial adapter; the monitor shows a copy of serial output.\n\n",
-    );
+    if input::keyboard_present() {
+        console::write_str(
+            "\nstdin: PS/2 keyboard + serial (COM1 38400 8N1). \
+             Output is mirrored to the screen.\n\n",
+        );
+    } else {
+        console::write_str(
+            "\nstdin: serial (x86 COM1 38400 8N1, AArch64 PL011). \
+             Output is mirrored to the screen when a framebuffer exists.\n\
+             Connect USB-serial if no PS/2 keyboard was detected.\n\n",
+        );
+    }
     user::spawn_init();
     while !user::both_exited() {
         task::yield_now();

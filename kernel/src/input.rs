@@ -1,8 +1,9 @@
-//! Serial stdin: ring buffer + minimal line discipline (echo, backspace).
+//! Stdin: serial + PS/2 keyboard (when detected), shared ring buffer.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
+use crate::arch;
 use crate::console;
 use crate::task;
 
@@ -15,11 +16,15 @@ static TAIL: AtomicUsize = AtomicUsize::new(0);
 pub fn init() {
     HEAD.store(0, Ordering::SeqCst);
     TAIL.store(0, Ordering::SeqCst);
+    arch::keyboard_init();
 }
 
-/// Drain the UART into the ring (call with interrupts enabled).
+/// Drain UART and keyboard into the ring (call with interrupts enabled).
 pub fn poll() {
-    while let Some(b) = crate::arch::serial_read_byte() {
+    while let Some(b) = arch::serial_read_byte() {
+        push_byte(b);
+    }
+    while let Some(b) = arch::keyboard_poll_byte() {
         push_byte(b);
     }
 }
@@ -86,4 +91,8 @@ pub fn read(buf: &mut [u8]) -> usize {
         }
     }
     n
+}
+
+pub fn keyboard_present() -> bool {
+    arch::keyboard_present()
 }

@@ -20,7 +20,8 @@ The kernel runs round-robin **kernel threads** plus **user processes**.
 Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
 `include_bytes!`, spawned as today, then **execs `/sh`**. The shell prints
 `sh ok`, smoke-runs `/ok` (fork/exec with argv), then drops to an
-interactive `$` prompt on serial stdin. `user/ok` prints `user ok`, reads
+interactive `$` prompt on **stdin** (PS/2 keyboard when detected, else
+serial). `user/ok` prints `user ok`, reads
 `/msg` (FAT16 `MSG` via virtio-blk), prints `fat ok`, and exits.
 Userspace programs are ELFs, not `KernelApi` modules. Nested cargo like
 hello; loaded into per-process page tables at `USER_BASE`. Each process has
@@ -165,23 +166,27 @@ are seen (the shell would otherwise block on stdin). AArch64 requires the
 same strings and exits the same way (CI times out at 60s if needles are
 missing).
 
-Interactive use (serial stdin on a TTY):
+Interactive use (keyboard on x86 in QEMU window, or serial on a TTY):
 
 ```sh
-cargo run          # x86 BIOS — type at the `$` prompt after boot
+cargo run          # x86 BIOS — type at `$` (keyboard or serial)
 cargo run -- uefi
-cargo run -- aarch64
+cargo run -- aarch64   # serial only for now
 ```
 
 ## Real hardware (not QEMU)
 
 On a physical PC you usually see Limine and then **green text on the
 monitor**. The kernel mirrors serial output to that framebuffer, so boot
-progress (`heap ok`, `sh ok`, `$`, …) should scroll on screen as well as
-on serial.
+progress (`heap ok`, `kbd ok`, `sh ok`, `$`, …) should scroll on screen as
+well as on serial.
 
-**The interactive shell still reads and writes serial only** — there is no
-keyboard driver yet. To use `$` and type commands you need a serial link:
+**stdin (fd 0)** merges **PS/2 keyboard** (x86, when the 8042 responds) and
+**serial**. If probe succeeds the kernel prints `kbd ok` and you can type at
+`$` on a directly attached keyboard (USB keyboards usually work in legacy
+PS/2 mode). Serial remains available at the same time.
+
+If no keyboard is detected, use serial only:
 
 | Arch | Port | Settings |
 |------|------|----------|
@@ -383,7 +388,7 @@ compiler ports). Errors return `usize::MAX`.
 | 0 | write | ptr, len |
 | 1 | exit | |
 | 2 | open | path, path_len → fd (≥3) |
-| 3 | read | fd, buf, len → n (fd 0 = serial stdin) |
+| 3 | read | fd, buf, len → n (fd 0 = keyboard + serial stdin) |
 | 4 | close | fd |
 | 5 | exec | path, path_len, args_ptr (0 or `[argc, (ptr,len)...]`) |
 | 6 | fork | → child pid (parent), 0 (child) |
@@ -409,7 +414,8 @@ memory (stack); rodata literals are rejected by the kernel copy-in path.
 | `kernel/src/blk.rs` | In-kernel virtio-blk: `init` + 512-byte sector `read` |
 | `kernel/src/fs/` | Tiny VFS: mount table + bootfs (Limine modules + embedded `/ok` + `vfs_register`) |
 | `kernel/src/console.rs` | Dual console: serial + Limine framebuffer mirror |
-| `kernel/src/input.rs` | Serial stdin ring buffer (fd 0), echo/backspace |
+| `kernel/src/input.rs` | Stdin ring buffer: PS/2 keyboard + serial (fd 0) |
+| `kernel/src/arch/x86/keyboard.rs` | PS/2 keyboard via 8042 (poll, US QWERTY set 1) |
 | `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
@@ -418,7 +424,7 @@ memory (stack); rodata literals are rejected by the kernel copy-in path.
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
 | `user/init` | PID1-style: baked in, execs `/sh` (not a kernel module) |
-| `user/sh` | Minimal shell: smoke `/ok`, interactive `$` prompt on serial stdin |
+| `user/sh` | Minimal shell: smoke `/ok`, interactive `$` prompt on stdin |
 | `user/echo` | Print argv (`echo hello`) |
 | `user/cat` | Read a bootfs file to stdout |
 | `user/ls` | List bootfs entries (via `listdir`) |

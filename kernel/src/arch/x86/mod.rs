@@ -2,6 +2,7 @@
 
 pub mod gdt;
 mod interrupts;
+mod keyboard;
 pub mod pci;
 mod serial;
 mod virtio_blk;
@@ -9,6 +10,18 @@ pub use serial::SerialPort;
 
 pub fn serial_read_byte() -> Option<u8> {
     serial::read_byte()
+}
+
+pub fn keyboard_init() {
+    keyboard::init();
+}
+
+pub fn keyboard_present() -> bool {
+    keyboard::present()
+}
+
+pub fn keyboard_poll_byte() -> Option<u8> {
+    keyboard::poll_byte()
 }
 
 pub const QEMU_SUCCESS: u32 = 0x10;
