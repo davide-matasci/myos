@@ -1,17 +1,13 @@
 #![no_std]
 #![no_main]
 
-use core::cell::UnsafeCell;
-
 const MSG_PATH: &[u8] = b"/msg";
 
-// PT_LOAD .bss: in user_range_ok (in_code). Stack locals are not safe here
-// because every syscall uses options(nostack) and opt-level s may place a
-// 64-byte array at/above RSP, past the mapped stack page (CI #95 fat miss).
-// UnsafeCell is !Sync, so a static needs this wrapper (CI #96 E0277).
-struct MsgBuf(UnsafeCell<[u8; 64]>);
-unsafe impl Sync for MsgBuf {}
-static MSG_BUF: MsgBuf = MsgBuf(UnsafeCell::new([0; 64]));
+// PT_LOAD .bss: in user_range_ok (in_code). Do not use a stack local (#95:
+// nostack + opt-level s can place a 64-byte array past the mapped stack page).
+// Do not use UnsafeCell::get on a static (#97: pointer failed user_range_ok,
+// likely GOT vs RIP-relative). addr_of_mut is the #94 path that got n > 0.
+static mut MSG_BUF: [u8; 64] = [0; 64];
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -22,15 +18,15 @@ pub extern "C" fn _start() -> ! {
     if fd == usize::MAX {
         fat_miss();
     }
-    let buf_ptr = MSG_BUF.0.get() as usize;
+    let buf_ptr = core::ptr::addr_of_mut!(MSG_BUF) as *mut u8 as usize;
     let n = unsafe { sys_read(fd, buf_ptr, 64) };
     unsafe { sys_close(fd); }
     if n == 0 || n == usize::MAX {
         fat_miss();
     }
     unsafe { sys_write(buf_ptr, n); }
-    // Needle from .rodata (same path as `user ok`). Echo of /msg may be
-    // zeros if virtio returned padding; CI still needs the `fat ok` string.
+    // Needle from .rodata (same path as `user ok`). #94 read succeeded but
+    // the echo was not the substring `fat ok` (zeros/padding).
     let ok = b"fat ok\n";
     unsafe { sys_write(ok.as_ptr() as usize, ok.len()); }
     unsafe { sys_exit(); }
