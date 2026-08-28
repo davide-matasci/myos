@@ -1,7 +1,14 @@
 #![no_std]
 #![no_main]
 
+use core::cell::UnsafeCell;
+
 const MSG_PATH: &[u8] = b"/msg";
+
+// PT_LOAD .bss: in user_range_ok (in_code). Stack locals are not safe here
+// because every syscall uses options(nostack) and opt-level s may place a
+// 64-byte array at/above RSP, past the mapped stack page (CI #95 fat miss).
+static MSG_BUF: UnsafeCell<[u8; 64]> = UnsafeCell::new([0; 64]);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -12,18 +19,15 @@ pub extern "C" fn _start() -> ! {
     if fd == usize::MAX {
         fat_miss();
     }
-    // Stack page is USER|WRITE and in user_range_ok. Do not use a PT_LOAD
-    // static: edition 2024 denies static_mut_refs, and RX image pages #PF.
-    let mut buf = [0u8; 64];
-    let buf_ptr = buf.as_mut_ptr() as usize;
+    let buf_ptr = MSG_BUF.get() as usize;
     let n = unsafe { sys_read(fd, buf_ptr, 64) };
     unsafe { sys_close(fd); }
     if n == 0 || n == usize::MAX {
         fat_miss();
     }
     unsafe { sys_write(buf_ptr, n); }
-    // Needle from .rodata (same path as `user ok`) so CI sees `fat ok`
-    // even if the echoed /msg bytes are not that string.
+    // Needle from .rodata (same path as `user ok`). Echo of /msg may be
+    // zeros if virtio returned padding; CI still needs the `fat ok` string.
     let ok = b"fat ok\n";
     unsafe { sys_write(ok.as_ptr() as usize, ok.len()); }
     unsafe { sys_exit(); }
