@@ -39,9 +39,9 @@ pub fn load_embedded_hello() {
 /// `vfs_register` after reading the virtio-blk disk. Failure is logged
 /// (`fat mod failed`) and is not a kernel panic.
 pub fn load_embedded_fat() {
-    if let Err(_e) = load("fat", FAT_IMAGE) {
+    if let Err(e) = load("fat", FAT_IMAGE) {
         let mut serial = SerialPort::new();
-        let _ = writeln!(serial, "fat mod failed");
+        let _ = writeln!(serial, "fat mod failed: {e}");
     }
 }
 

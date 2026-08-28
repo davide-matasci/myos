@@ -1,9 +1,14 @@
 //! Modern virtio-mmio v2 block device on QEMU `virt`.
 //!
 //! Transports sit at `0x0a000000`, stride `0x200`. Version 2 is required
-//! (QEMU's default). The boot disk may already occupy the first slot as
-//! virtio-blk; we take the **last** device-id-2 transport so we do not
-//! steal the ESP. Polling only; no virtio IRQ.
+//! (QEMU's default). The boot disk may already occupy a slot as virtio-blk;
+//! we probe every device-id-2 transport and keep the one whose LBA 0 looks
+//! like a FAT12/16 boot sector (the second QEMU disk). Polling only; no
+//! virtio IRQ.
+//!
+//! DMA buffers live in cacheable HHDM RAM. QEMU TCG still needs D-cache
+//! clean/invalidate around device-visible reads/writes or `used`/`status`
+//! stay stale and every read times out (`fat mod failed`).
 
 use core::sync::atomic::{compiler_fence, Ordering};
 
@@ -75,14 +80,51 @@ fn dsb() {
     }
 }
 
+/// Clean+invalidate D-cache lines covering `[va, va+len)` so the device and
+/// CPU agree on DMA / virtqueue memory.
+fn dcache_civac(va: *mut u8, len: usize) {
+    if len == 0 {
+        return;
+    }
+    unsafe {
+        let mut addr = va as usize & !63;
+        let end = va as usize + len;
+        while addr < end {
+            core::arch::asm!("dc civac, {x}", x = in(reg) addr, options(nostack));
+            addr += 64;
+        }
+        core::arch::asm!("dsb sy", options(nostack));
+    }
+}
+
 fn write_phys(base: usize, lo: u32, hi: u32, phys: u64) {
     w32(base, lo, phys as u32);
     w32(base, hi, (phys >> 32) as u32);
 }
 
+fn looks_like_fat_boot(sec: &[u8; 512]) -> bool {
+    if sec[510] != 0x55 || sec[511] != 0xAA {
+        return false;
+    }
+    let bps = u16::from_le_bytes([sec[11], sec[12]]) as usize;
+    if bps != 512 {
+        return false;
+    }
+    let spc = sec[13];
+    if spc == 0 {
+        return false;
+    }
+    let fats = sec[16];
+    if fats == 0 {
+        return false;
+    }
+    let fat_sz16 = u16::from_le_bytes([sec[22], sec[23]]);
+    fat_sz16 != 0
+}
+
 pub fn init() {
-    let mut last = None;
-    for i in 0..MMIO_SLOTS {
+    // Prefer higher slots (the data disk is usually after the boot disk).
+    for i in (0..MMIO_SLOTS).rev() {
         let base = MMIO_BASE + i * MMIO_STRIDE;
         if r32(base, REG_MAGIC) != MAGIC {
             continue;
@@ -90,13 +132,32 @@ pub fn init() {
         if r32(base, REG_DEVICE_ID) != DEV_BLK {
             continue;
         }
-        last = Some(base);
-    }
-    let Some(base) = last else {
-        return;
-    };
-    if let Some(dev) = setup(base) {
-        *DEV.lock() = Some(dev);
+        let Some(mut dev) = setup(base) else {
+            continue;
+        };
+        let mut sec = [0u8; 512];
+        let ok = unsafe {
+            virtq::read_buf(
+                dev.num,
+                dev.desc,
+                dev.avail,
+                dev.used,
+                &mut dev.last_used,
+                dev.dma_phys,
+                dev.dma_va,
+                0,
+                &mut sec,
+                || notify_dev(&dev),
+            )
+            .is_ok()
+                && looks_like_fat_boot(&sec)
+        };
+        if ok {
+            // Reset ring state after the probe read so the FAT module starts clean.
+            dev.last_used = unsafe { core::ptr::read_volatile(dev.used.add(2) as *const u16) };
+            *DEV.lock() = Some(dev);
+            return;
+        }
     }
 }
 
@@ -143,6 +204,11 @@ fn setup(base: usize) -> Option<Dev> {
     write_phys(base, REG_DESC_LO, REG_DESC_HI, desc_phys);
     write_phys(base, REG_AVAIL_LO, REG_AVAIL_HI, avail_phys);
     write_phys(base, REG_USED_LO, REG_USED_HI, used_phys);
+    // Device must see zeroed rings / NO_INTERRUPT before QUEUE_READY.
+    dcache_civac(desc_va, 4096);
+    dcache_civac(avail_va, 4096);
+    dcache_civac(used_va, 4096);
+    dcache_civac(dma_va, 4096);
     dsb();
     w32(base, REG_QUEUE_READY, 1);
     if r32(base, REG_QUEUE_READY) != 1 {
@@ -168,7 +234,31 @@ fn setup(base: usize) -> Option<Dev> {
     })
 }
 
+fn notify_dev(dev: &Dev) {
+    // CPU wrote descriptors / avail / request header — push to PoC.
+    dcache_civac(dev.desc, 4096);
+    dcache_civac(dev.avail, 4096);
+    dcache_civac(dev.dma_va, 512 + 16);
+    compiler_fence(Ordering::SeqCst);
+    dsb();
+    w32(dev.base, REG_QUEUE_NOTIFY, 0);
+    let isr = r32(dev.base, REG_ISR);
+    if isr != 0 {
+        w32(dev.base, REG_ISR_ACK, isr);
+    }
+}
+
 fn notify(base: usize) {
+    // Fallback used by read() after DEV is locked; sync via DEV fields.
+    let guard = DEV.lock();
+    if let Some(dev) = guard.as_ref() {
+        // base must match; ignore mismatch rather than notify the wrong device.
+        if dev.base == base {
+            notify_dev(dev);
+            return;
+        }
+    }
+    drop(guard);
     compiler_fence(Ordering::SeqCst);
     dsb();
     w32(base, REG_QUEUE_NOTIFY, 0);
@@ -182,7 +272,7 @@ pub fn read(lba: u64, buf: &mut [u8]) -> Result<(), ()> {
     let mut guard = DEV.lock();
     let dev = guard.as_mut().ok_or(())?;
     let base = dev.base;
-    unsafe {
+    let result = unsafe {
         virtq::read_buf(
             dev.num,
             dev.desc,
@@ -195,5 +285,9 @@ pub fn read(lba: u64, buf: &mut [u8]) -> Result<(), ()> {
             buf,
             || notify(base),
         )
-    }
+    };
+    // Device wrote used ring + status + data — drop stale D-cache lines.
+    dcache_civac(dev.used, 4096);
+    dcache_civac(dev.dma_va, 512 + 16);
+    result
 }

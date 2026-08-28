@@ -3,6 +3,10 @@
 
 const MSG_PATH: &[u8] = b"/msg";
 
+// Keep the read buffer in the image (PT_LOAD), not on the user stack, so
+// `sys_write` of the `/msg` contents always passes `user_range_ok` (in_code).
+static mut MSG_BUF: [u8; 64] = [0; 64];
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     let msg = b"user ok\n";
@@ -10,20 +14,21 @@ pub extern "C" fn _start() -> ! {
 
     let fd = unsafe { sys_open(MSG_PATH.as_ptr() as usize, MSG_PATH.len()) };
     if fd == usize::MAX {
-        spin();
+        let m = b"fat miss\n";
+        unsafe { sys_write(m.as_ptr() as usize, m.len()); }
+        unsafe { sys_exit(); }
     }
-    let mut buf = [0u8; 64];
-    let n = unsafe { sys_read(fd, buf.as_mut_ptr() as usize, buf.len()) };
+    let buf_ptr = unsafe { MSG_BUF.as_mut_ptr() as usize };
+    let n = unsafe { sys_read(fd, buf_ptr, 64) };
     if n == 0 || n == usize::MAX {
-        spin();
+        let m = b"fat miss\n";
+        unsafe { sys_write(m.as_ptr() as usize, m.len()); }
+        unsafe { sys_close(fd); }
+        unsafe { sys_exit(); }
     }
     unsafe { sys_close(fd); }
-    unsafe { sys_write(buf.as_ptr() as usize, n); }
+    unsafe { sys_write(buf_ptr, n); }
     unsafe { sys_exit(); }
-}
-
-fn spin() -> ! {
-    loop {}
 }
 
 #[cfg(target_arch = "x86_64")]

@@ -35,6 +35,8 @@ unsafe fn avail_idx_ptr(avail: *mut u8) -> *mut u16 {
 }
 
 unsafe fn used_idx(used: *mut u8) -> u16 {
+    // AArch64: caller must D-cache-invalidate `used` before this read when
+    // the device updated it via DMA into cacheable RAM.
     unsafe { core::ptr::read_volatile(used.add(2) as *const u16) }
 }
 
@@ -66,6 +68,17 @@ pub unsafe fn push_and_wait(
     let want = last_used.wrapping_add(1);
     for _ in 0..50_000_000u32 {
         compiler_fence(Ordering::SeqCst);
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            // Drop stale used-ring lines so the device's DMA write is visible.
+            let mut addr = used as usize & !63;
+            let end = used as usize + 4096;
+            while addr < end {
+                core::arch::asm!("dc civac, {x}", x = in(reg) addr, options(nostack));
+                addr += 64;
+            }
+            core::arch::asm!("dsb sy", options(nostack));
+        }
         if unsafe { used_idx(used) } == want {
             *last_used = want;
             return Ok(());
@@ -119,6 +132,16 @@ pub unsafe fn read_one(
             0,
         );
         push_and_wait(num, avail, used, last_used, 0, notify)?;
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mut addr = dma_va as usize & !63;
+            let end = dma_va as usize + 512 + 16;
+            while addr < end {
+                core::arch::asm!("dc civac, {x}", x = in(reg) addr, options(nostack));
+                addr += 64;
+            }
+            core::arch::asm!("dsb sy", options(nostack));
+        }
         let status = core::ptr::read_volatile(dma_va.add(crate::blk::DMA_STATUS));
         if status != 0 {
             return Err(());
