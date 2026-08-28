@@ -244,6 +244,7 @@ fn run_ci_bios(bios_path: &str) {
             timeout: Duration::from_secs(20),
             qemu_debug_exit: true,
         },
+        &CI_NEEDLES_X86,
     );
 }
 
@@ -287,6 +288,7 @@ fn run_ci_uefi(uefi_path: &str) {
             timeout: Duration::from_secs(60),
             qemu_debug_exit: true,
         },
+        &CI_NEEDLES_X86,
     );
 }
 
@@ -303,6 +305,7 @@ fn run_ci_aarch64() {
             timeout: Duration::from_secs(60),
             qemu_debug_exit: false,
         },
+        &[],
     );
 }
 
