@@ -18,7 +18,8 @@ pub extern "C" fn _start() -> ! {
         unsafe { sys_write(m.as_ptr() as usize, m.len()); }
         unsafe { sys_exit(); }
     }
-    let buf_ptr = unsafe { MSG_BUF.as_mut_ptr() as usize };
+    // addr_of_mut: edition 2024 denies creating a &mut to a mutable static.
+    let buf_ptr = core::ptr::addr_of_mut!(MSG_BUF) as *mut u8 as usize;
     let n = unsafe { sys_read(fd, buf_ptr, 64) };
     if n == 0 || n == usize::MAX {
         let m = b"fat miss\n";
