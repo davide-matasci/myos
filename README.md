@@ -76,8 +76,8 @@ cargo run -- aarch64
 Builds the kernel for `aarch64-unknown-none-softfloat`, writes
 `target/aarch64.img` (ESP with `BOOTAA64.EFI`), and starts
 `qemu-system-aarch64` on `virt,gic-version=2` (`-cpu cortex-a72`) with
-AAVMF/QEMU_EFI. Serial is on stdio. Ctrl-A X leaves `-nographic` QEMU, or
-the kernel calls PSCI SYSTEM_OFF after printing (QEMU exits).
+AAVMF/QEMU_EFI. Serial is on stdio; ramfb gives QEMU a graphical window.
+CI stays serial-only. Close the window or wait for PSCI SYSTEM_OFF.
 
 To only build the x86_64 images:
 

@@ -4,7 +4,7 @@
 //! cargo run                 # x86_64 BIOS, graphical
 //! cargo run -- bios
 //! cargo run -- uefi         # x86_64 UEFI (fetches OVMF into target/ovmf)
-//! cargo run -- aarch64      # QEMU virt + AAVMF, serial console
+//! cargo run -- aarch64      # QEMU virt + AAVMF, serial + ramfb
 //! cargo run -- --ci         # headless BIOS check
 //! cargo run -- uefi --ci    # headless UEFI check
 //! cargo run -- aarch64 --ci # headless AArch64 check
@@ -59,7 +59,7 @@ Usage: cargo run -- [bios|uefi|aarch64] [--ci]
 
   bios      Boot the x86_64 Limine BIOS disk image in QEMU (default, graphical)
   uefi      Boot the x86_64 Limine UEFI disk image in QEMU (fetches OVMF on first run)
-  aarch64   Boot the AArch64 kernel via Limine on QEMU virt + AAVMF (serial console)
+  aarch64   Boot the AArch64 kernel via Limine on QEMU virt + AAVMF (serial + ramfb)
   --ci      Headless boot; require serial hello/heap/int/mod and a clean QEMU exit",
     );
 }
@@ -281,7 +281,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     if ci {
         cmd.arg("-display").arg("none");
     } else {
-        cmd.arg("-nographic");
+        cmd.arg("-device").arg("ramfb");
     }
     cmd
 }
