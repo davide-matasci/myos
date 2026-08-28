@@ -37,6 +37,7 @@ user mode). CI checks `task a`, `task b`, `sched ok`, `user ok`, and
 - QEMU (`qemu-system-x86_64` and, for AArch64, `qemu-system-aarch64`)
 - A C compiler (`cc`) to build the Limine host tool (`bios-install`)
 - `curl` to fetch the pinned Limine binary tarball on first build
+- `xorriso` to write the hybrid ISO (`cargo run -- iso` only; Debian package `xorriso`)
 - For AArch64: UEFI firmware (the launcher tries `ovmf-prebuilt`, then
   distro AAVMF paths such as `/usr/share/AAVMF/AAVMF_CODE.fd`)
 
@@ -55,6 +56,7 @@ Nightly components / targets (installed automatically by rustup from
 # and installs the pinned nightly + components + targets.
 
 # Debian/Ubuntu:  sudo apt install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 gcc
+# ISO only:       sudo apt install xorriso
 # Fedora:         sudo dnf install qemu-system-x86 qemu-system-aarch64 edk2-aarch64 gcc
 # macOS:          brew install qemu
 # Arch:           sudo pacman -S qemu-system-x86 qemu-system-aarch64 gcc
@@ -117,6 +119,22 @@ qemu-system-x86_64 -m 256 \
   -device virtio-blk-pci,drive=vd0,disable-modern=on \
   -serial stdio
 ```
+
+Write a BIOS+UEFI hybrid ISO (needs `xorriso`; does not start QEMU):
+
+```sh
+cargo run -- iso
+```
+
+That writes `target/myos-x86_64.iso`. GitHub Actions → ISO → Run workflow
+uploads the same artifact. It does not run on push. Optional QEMU:
+
+```sh
+qemu-system-x86_64 -m 256 -cdrom target/myos-x86_64.iso -serial stdio
+```
+
+`target/fat.img` is still a separate virtio-blk disk; attach it as in the
+BIOS command above if you want `/msg`.
 
 The AArch64 ELF is at:
 
@@ -348,6 +366,7 @@ x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. AArch64 `svc`:
 | `kernel/src/font.rs` | Tiny 8x8 bitmap font |
 | `.cargo/config.toml` | `bindeps` (artifact dependencies) |
 | `rust-toolchain.toml` | pinned nightly + `llvm-tools-preview` + rust-src + targets |
+| `.github/workflows/iso.yml` | Manual `workflow_dispatch` x86_64 hybrid ISO artifact |
 
 ## Notes
 
