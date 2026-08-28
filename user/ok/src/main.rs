@@ -1,16 +1,11 @@
 #![no_std]
 #![no_main]
 
-// Keep the /msg buffer tiny and in `_start`, like user/init's 4-byte ELF
-// mag read (that path already works on x86). A 64-byte array returned from
-// an `inline(never)` helper page-faulted in ring 3 at RIP 0x800000142c
-// right after `user ok` (CI #103).
+// 8-byte buffer lives in a real frame (`inline(never)`), not `_start` next
+// to `options(nostack)` syscalls. Do not return the array (#103 PF).
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    let msg = b"user ok\n";
-    unsafe { sys_write(msg.as_ptr() as usize, msg.len()); }
-
+#[inline(never)]
+fn do_msg() {
     let path = b"/msg";
     let fd = unsafe { sys_open(path.as_ptr() as usize, path.len()) };
     if fd == usize::MAX {
@@ -26,6 +21,13 @@ pub extern "C" fn _start() -> ! {
         miss(b"fat empty\n");
     }
     unsafe { sys_write(buf.as_ptr() as usize, n); }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    let msg = b"user ok\n";
+    unsafe { sys_write(msg.as_ptr() as usize, msg.len()); }
+    do_msg();
     let ok = b"fat ok\n";
     unsafe { sys_write(ok.as_ptr() as usize, ok.len()); }
     unsafe { sys_exit(); }

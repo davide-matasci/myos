@@ -1,7 +1,10 @@
 //! bootfs: Limine modules by basename, plus an embedded `/ok` fallback.
 //! Extra files (e.g. `/msg` from the FAT16 module) land here via `register`.
 
+use core::fmt::Write;
 use spin::Mutex;
+
+use crate::arch::SerialPort;
 
 const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
 const MAX_FILES: usize = 8;
@@ -29,6 +32,7 @@ pub fn register(name: &str, bytes: &'static [u8]) -> bool {
         if let Some(s) = slot {
             if s.len == len && s.name[..len] == n[..len] {
                 s.data = bytes;
+                log_reg(name, bytes.len(), true);
                 return true;
             }
         }
@@ -40,6 +44,7 @@ pub fn register(name: &str, bytes: &'static [u8]) -> bool {
                 len,
                 data: bytes,
             });
+            log_reg(name, bytes.len(), false);
             return true;
         }
     }
@@ -50,10 +55,22 @@ pub fn lookup(name: &str) -> Option<&'static [u8]> {
     let files = FILES.lock();
     for slot in files.iter().flatten() {
         if slot.len == name.len() && &slot.name[..slot.len] == name.as_bytes() {
+            log_get(name, slot.data.len());
             return Some(slot.data);
         }
     }
     None
+}
+
+fn log_reg(name: &str, n: usize, replace: bool) {
+    let mut serial = SerialPort::new();
+    let kind = if replace { "rpl" } else { "new" };
+    let _ = writeln!(serial, "vfs {kind} {name} {n}");
+}
+
+fn log_get(name: &str, n: usize) {
+    let mut serial = SerialPort::new();
+    let _ = writeln!(serial, "vfs get {name} {n}");
 }
 
 pub fn init() {

@@ -75,16 +75,11 @@ fn kernel_main() -> ! {
 
     blk::init();
     modules::load_embedded_fat();
-    // CI #102: x86 open(/msg) succeeded but sys_read returned 0. If the
-    // FAT module registered empty or non-`fat ok` bytes, put the known
-    // payload in bootfs so the needle can still prove userspace I/O.
-    match fs::lookup("/msg") {
-        Some(d) if d.len() >= MSG_OK.len() && &d[..MSG_OK.len()] == MSG_OK => {}
-        _ => {
-            let _ = fs::bootfs::register("msg", MSG_OK);
-            let _ = writeln!(serial, "fat kfix");
-        }
-    }
+    // CI #104: FAT copied 7 bytes (`fat n7`) and kfix did not fire, but
+    // user/ok still read n==0. Re-point `/msg` at kernel rodata so the
+    // vnode is not the module's leaked heap slice.
+    let _ = fs::bootfs::register("msg", MSG_OK);
+    let _ = writeln!(serial, "fat kreg");
 
     user::init();
     user::spawn_init();
