@@ -267,13 +267,19 @@ fn apply_relocs(
             _ => continue,
         };
         let sh_flags = u64_at(bytes, sh + 8)?;
+        let sh_link = u32_at(bytes, sh + 40)? as usize;
+        // .rela.dyn is often non-ALLOC. Skipping it left GOT entries at
+        // link addresses, so user/ok MSG_BUF failed user_range_ok (#97/#98).
+        // Still skip debug relocs (non-ALLOC, linked to SHT_SYMTAB).
         if sh_flags & 0x2 == 0 {
-            // Skip non-ALLOC reloc sections (debug).
-            continue;
+            let dynsym = sh_link < shnum
+                && u32_at(bytes, shoff + sh_link * shentsize + 4)? == SHT_DYNSYM;
+            if !dynsym {
+                continue;
+            }
         }
         let sh_offset = u64_at(bytes, sh + 24)? as usize;
         let sh_size = u64_at(bytes, sh + 32)? as usize;
-        let sh_link = u32_at(bytes, sh + 40)? as usize;
         let sh_entsize = u64_at(bytes, sh + 56)? as usize;
         if sh_entsize == 0 || sh_size == 0 {
             continue;
@@ -451,12 +457,10 @@ fn u16_at(b: &[u8], o: usize) -> Result<u16, LoadError> {
     let s = b.get(o..o + 2).ok_or(LoadError::Truncated)?;
     Ok(u16::from_le_bytes([s[0], s[1]]))
 }
-
 fn u32_at(b: &[u8], o: usize) -> Result<u32, LoadError> {
     let s = b.get(o..o + 4).ok_or(LoadError::Truncated)?;
     Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
-
 fn u64_at(b: &[u8], o: usize) -> Result<u64, LoadError> {
     let s = b.get(o..o + 8).ok_or(LoadError::Truncated)?;
     Ok(u64::from_le_bytes([
