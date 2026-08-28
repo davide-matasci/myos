@@ -16,10 +16,13 @@ Multiboot-for-ARM).
 
 Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 
-The kernel runs round-robin **kernel threads** (not userspace: no ring 3 / EL0,
-no syscalls, no per-process page tables). Tasks can `task::yield_now()`
-cooperatively; the timer IRQ also calls the same `task::schedule()` after EOI,
-so the switch is preemptive too. CI checks `task a`, `task b`, and `sched ok`.
+The kernel runs round-robin **kernel threads** plus two **user processes**.
+Each user process has its own CR3/TTBR0; the kernel/HHDM (and on AArch64 the
+TTBR0 device block for UART/GIC) is mapped into every aspace. Tasks drop to
+ring 3 / EL0 and use `syscall` / `svc` for write and exit. Kernel threads can
+`task::yield_now()` cooperatively; the timer IRQ also calls the same
+`task::schedule()` after EOI, so the switch is preemptive too (including
+user mode). CI checks `task a`, `task b`, `sched ok`, and `user ok`.
 
 ## Prerequisites
 
@@ -125,7 +128,8 @@ cargo run -- aarch64 --ci
 ```
 
 BIOS/UEFI boots with `-display none`, require `Hello from myos`, `heap ok`,
-`int ok`, `task a`, `task b`, `sched ok`, `mod ok`, and `limine mod ok` on serial, and expect QEMU to exit via `isa-debug-exit`
+`int ok`, `task a`, `task b`, `sched ok`, `mod ok`, `limine mod ok`, and
+`user ok` on serial, and expect QEMU to exit via `isa-debug-exit`
 (BIOS ~20s, UEFI 60s). AArch64 requires the same strings and exits
 via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
 
@@ -233,16 +237,18 @@ but you still rebuild the **disk image** so the ESP file updates.
 | `src/main.rs` | Host launcher: starts QEMU (BIOS, UEFI, AArch64) |
 | `src/limine_image.rs` | GPT+FAT ESP writer + Limine binary fetch + `limine.conf` |
 | `build.rs` | Fetch Limine, wrap the x86_64 kernel in BIOS+UEFI images |
-| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, kernel threads, load modules, halt |
+| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, kernel threads, modules, user processes, halt |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
+| `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages) |
+| `kernel/src/user.rs` | User blobs, per-process page tables, `syscall`/`svc` write+exit, enter ring 3 / EL0 |
 | `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
-| `kernel/src/task/` | Round-robin kernel threads: `yield_now` + timer preemption |
+| `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
 | `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
 | `modules/abi` | Shared `KernelApi` / `module_init` C ABI |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
-| `kernel/src/arch/x86/` | COM1, GDT/IDT/PIC/PIT, isa-debug-exit |
-| `kernel/src/arch/aarch64/` | PL011, TTBR0 device map, GICv2 timer, PSCI off |
+| `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, isa-debug-exit |
+| `kernel/src/arch/aarch64/` | PL011, TTBR0 device map, GICv2 timer, lower-EL SVC, PSCI off |
 | `kernel/src/framebuffer.rs` | Pixel writer for a Limine framebuffer |
 | `kernel/src/font.rs` | Tiny 8x8 bitmap font |
 | `.cargo/config.toml` | `bindeps` (artifact dependencies) |
