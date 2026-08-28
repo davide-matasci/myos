@@ -27,7 +27,6 @@ fn shell() -> ! {
     let mut smoke_arg = [0u8; ARG_LEN];
     smoke_arg[..2].copy_from_slice(b"ok");
     smoke_fork(b"ok", &[&smoke_arg[..2]]);
-    smoke_fork(b"heap", &[]);
     let mut line = [0u8; MAX_LINE];
     loop {
         write(PROMPT);
