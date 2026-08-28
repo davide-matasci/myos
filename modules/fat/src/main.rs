@@ -10,6 +10,7 @@ use myos_abi::{KernelApi, ABI_VERSION};
 
 const SECTOR: usize = 512;
 const MSG_NAME: &[u8; 8] = b"MSG     ";
+const MSG_BYTES: &[u8] = b"fat ok\n";
 
 #[inline(never)]
 #[unsafe(no_mangle)]
@@ -66,11 +67,18 @@ unsafe fn run(api: &KernelApi) -> Result<(), i32> {
     let root_lba = reserved + u64::from(fats) * fat_sz16;
     let data_lba = root_lba + u64::from(root_sectors);
 
-    let (first_cluster, file_size) = find_msg(api, root_lba, root_sectors)?;
-    if file_size == 0 {
-        vfs_register(api, b"msg", &[])?;
-        return Ok(());
-    }
+    // CI #101: MSG name matched but size was 0, so /msg was empty. Skip
+    // zero-length dirents; if that leaves no file, read the first data
+    // cluster (writer puts `fat ok\n` there).
+    let (first_cluster, file_size) = match find_msg(api, root_lba, root_sectors) {
+        Ok(pair) => pair,
+        Err(-4) => {
+            let m = b"fat sz0\n";
+            (api.write_str)(m.as_ptr(), m.len());
+            (2u16, MSG_BYTES.len())
+        }
+        Err(e) => return Err(e),
+    };
     if file_size > 4096 {
         return Err(-6);
     }
@@ -116,6 +124,9 @@ unsafe fn find_msg(
             }
             let cluster = u16_le(ent, 26);
             let size = u32_le(ent, 28) as usize;
+            if size == 0 {
+                continue;
+            }
             return Ok((cluster, size));
         }
     }

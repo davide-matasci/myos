@@ -283,7 +283,10 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     let mut cmd = Command::new("qemu-system-aarch64");
     // gic-version=2 keeps the distributor/CPU interface at the classic MMIO
     // addresses (0x0800_0000 / 0x0801_0000) used later for IRQs.
-    cmd.arg("-machine")
+    // virtio-mmio transports default to legacy (version 1); the driver is v2.
+    cmd.arg("-global")
+        .arg("virtio-mmio.force-legacy=false")
+        .arg("-machine")
         .arg("virt,gic-version=2")
         .arg("-cpu")
         .arg("cortex-a72")
