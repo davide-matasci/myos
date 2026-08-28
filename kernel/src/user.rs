@@ -1,4 +1,4 @@
-//! Usermode: load `user/init` ELF at USER_BASE, per-process page tables, write/exit syscalls.
+//! Usermode: nested `user/init` ELF, per-process page tables, write/exit.
 
 use alloc::alloc::{alloc_zeroed, dealloc, Layout};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -10,7 +10,9 @@ use crate::task;
 const SYS_WRITE: usize = 0;
 const SYS_EXIT: usize = 1;
 const PAGE: usize = 4096;
-const MAX_INIT_SPAN: usize = 128 * 1024;
+const MAX_INIT_PAGES: usize = 32;
+
+const INIT_ELF: &[u8] = include_bytes!(env!("USER_INIT_PATH"));
 
 static USERS_ALIVE: AtomicUsize = AtomicUsize::new(0);
 static DID_SPAWN: AtomicBool = AtomicBool::new(false);
@@ -21,9 +23,8 @@ const DEFAULT_USER_BASE: u64 = 0x0000_0080_0000_0000; // PML4[1]
 const DEFAULT_USER_BASE: u64 = 0x4000_0000; // L1[1] on QEMU virt RAM
 
 static USER_BASE: AtomicU64 = AtomicU64::new(DEFAULT_USER_BASE);
-static USER_MAPPED_LEN: AtomicU64 = AtomicU64::new(0);
-
-const INIT_IMAGE: &[u8] = include_bytes!(env!("USER_INIT_PATH"));
+static IMAGE_SPAN: AtomicUsize = AtomicUsize::new(PAGE);
+static STACK_OFF: AtomicU64 = AtomicU64::new(0x2000);
 
 #[cfg(target_arch = "x86_64")]
 static mut USER_RSP: usize = 0;
@@ -113,53 +114,65 @@ fn wrmsr(msr: u32, val: u64) {
     }
 }
 
+/// Load the nested `user/init` ELF at USER_BASE and spawn one process.
 pub fn spawn_init() {
-    let (min_v, span, _e_entry) = elf::image_span(INIT_IMAGE).expect("init ELF");
-    if span == 0 || span > MAX_INIT_SPAN {
-        panic!("init image span {span} (need 1..=128KiB)");
-    }
-    let n_pages = (span + PAGE - 1) / PAGE;
-    assert!(n_pages <= MAX_INIT_SPAN / PAGE);
+    let info = elf::image_span(INIT_ELF).expect("init ELF");
+    let n_pages = info.span.div_ceil(PAGE);
+    assert!(n_pages > 0 && n_pages <= MAX_INIT_PAGES, "init ELF too big");
 
-    let (aspace, base) = create_user_tables();
+    let base = pick_user_base();
     USER_BASE.store(base, Ordering::SeqCst);
-    USER_MAPPED_LEN.store(((n_pages + 1) * PAGE) as u64, Ordering::SeqCst);
+    IMAGE_SPAN.store(info.span, Ordering::SeqCst);
+    let stack_off = (n_pages * PAGE) as u64;
+    STACK_OFF.store(stack_off, Ordering::SeqCst);
 
-    let layout = Layout::from_size_align(span.max(1), PAGE).expect("init staging layout");
-    let tmp = unsafe { alloc_zeroed(layout) };
-    assert!(!tmp.is_null(), "init staging alloc");
-    // Relocs must use the user VA, not the heap staging address.
-    let load_bias = base.wrapping_sub(min_v);
-    let entry_va = match unsafe { elf::realize(INIT_IMAGE, tmp, span, load_bias) } {
+    let layout = Layout::from_size_align(info.span.max(1), PAGE).expect("init layout");
+    let buf = unsafe { alloc_zeroed(layout) };
+    assert!(!buf.is_null(), "init realize alloc");
+    let load_bias = base - info.min_vaddr;
+    let entry = match elf::realize(INIT_ELF, buf, load_bias) {
         Ok(e) => e,
         Err(e) => panic!("init realize: {e}"),
     };
 
-    let mut frames = [0u64; 32];
+    let mut frames = [0u64; MAX_INIT_PAGES];
     for i in 0..n_pages {
         frames[i] = mm::alloc_frame();
-        let n = core::cmp::min(PAGE, span - i * PAGE);
+        let off = i * PAGE;
+        let len = core::cmp::min(PAGE, info.span - off);
         unsafe {
-            core::ptr::copy_nonoverlapping(tmp.add(i * PAGE), mm::hhdm(frames[i]), n);
+            core::ptr::copy_nonoverlapping(buf.add(off), mm::hhdm(frames[i]), len);
         }
-        sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
+        sync_icache(mm::hhdm(frames[i]) as usize, len);
     }
-    unsafe { dealloc(tmp, layout) };
+    unsafe { dealloc(buf, layout) };
 
-    for i in 0..n_pages {
-        let va = base + (i as u64) * PAGE as u64;
-        let elf_va = min_v + (i as u64) * PAGE as u64;
-        let (write, exec) = elf::page_perms(INIT_IMAGE, elf_va).expect("init phdrs");
-        map_user_page(aspace, va, frames[i], write, exec);
-    }
     let stack = mm::alloc_frame();
-    let stack_va = base + (n_pages as u64) * PAGE as u64;
-    map_user_page(aspace, stack_va, stack, true, false);
-
-    let user_rsp = stack_va as usize + PAGE;
-    USERS_ALIVE.store(1, Ordering::SeqCst);
+    let aspace = create_aspace(&frames[..n_pages], stack);
+    task::spawn_user(aspace, entry as usize, (base + stack_off + PAGE as u64) as usize);
+    USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
     DID_SPAWN.store(true, Ordering::SeqCst);
-    task::spawn_user(aspace, entry_va as usize, user_rsp);
+}
+
+fn pick_user_base() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let src = task::kernel_aspace() & !0xfff;
+        let pml4 = unsafe { &*mm::table(src) };
+        if pml4[1] == 0 {
+            return DEFAULT_USER_BASE;
+        }
+        for i in 1..256 {
+            if pml4[i] == 0 {
+                return (i as u64) << 39;
+            }
+        }
+        panic!("no free PML4 slot for user");
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        DEFAULT_USER_BASE
+    }
 }
 
 pub fn both_exited() -> bool {
@@ -331,64 +344,35 @@ fn sys_write(ptr: usize, len: usize) -> usize {
 
 fn user_range_ok(ptr: usize, len: usize) -> bool {
     let base = USER_BASE.load(Ordering::SeqCst) as usize;
-    let mapped = USER_MAPPED_LEN.load(Ordering::SeqCst) as usize;
-    if mapped == 0 {
-        return false;
-    }
     let end = match ptr.checked_add(len) {
         Some(e) => e,
         None => return false,
     };
-    ptr >= base && end <= base.saturating_add(mapped)
+    let img = IMAGE_SPAN.load(Ordering::SeqCst);
+    let stack = STACK_OFF.load(Ordering::SeqCst) as usize;
+    let in_code = ptr >= base && end <= base + img;
+    let in_stack = ptr >= base + stack && end <= base + stack + PAGE;
+    in_code || in_stack
 }
 
-fn create_user_tables() -> (u64, u64) {
+fn create_aspace(code: &[u64], stack_phys: u64) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
-        create_tables_x86()
+        create_aspace_x86(code, stack_phys)
     }
     #[cfg(target_arch = "aarch64")]
     {
-        create_tables_aarch64()
-    }
-}
-
-fn map_user_page(aspace: u64, va: u64, pa: u64, write: bool, exec: bool) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        const PRESENT: u64 = 1;
-        const WRITE: u64 = 1 << 1;
-        const USER: u64 = 1 << 2;
-        const NX: u64 = 1 << 63;
-        let mut flags = PRESENT | USER;
-        if write {
-            flags |= WRITE;
-        }
-        if !exec {
-            flags |= NX;
-        }
-        map_page_x86(aspace, va, pa, flags);
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        const PAGE_DESC: u64 = 0b11;
-        const SH_INNER: u64 = 0b11 << 8;
-        const AF: u64 = 1 << 10;
-        const AP_RW: u64 = 0b01 << 6;
-        const AP_RO: u64 = 0b11 << 6;
-        const PXN: u64 = 1 << 53;
-        const UXN: u64 = 1 << 54;
-        let mut flags = PAGE_DESC | SH_INNER | AF | PXN;
-        flags |= if write { AP_RW } else { AP_RO };
-        if !exec {
-            flags |= UXN;
-        }
-        map_page_aarch64(aspace, va, pa, flags);
+        create_aspace_aarch64(code, stack_phys)
     }
 }
 
 #[cfg(target_arch = "x86_64")]
-fn create_tables_x86() -> (u64, u64) {
+fn create_aspace_x86(code: &[u64], stack_phys: u64) -> u64 {
+    const PRESENT: u64 = 1;
+    const WRITE: u64 = 1 << 1;
+    const USER: u64 = 1 << 2;
+    const NX: u64 = 1 << 63;
+
     let src = task::kernel_aspace() & !0xfff;
     let pml4_phys = mm::alloc_frame();
     unsafe {
@@ -397,24 +381,18 @@ fn create_tables_x86() -> (u64, u64) {
         dst_t.copy_from_slice(src_t);
     }
 
-    let slot = {
-        let pml4 = unsafe { &*mm::table(pml4_phys) };
-        if pml4[1] == 0 {
-            1usize
-        } else {
-            let mut found = None;
-            for i in 1..256 {
-                if pml4[i] == 0 {
-                    found = Some(i);
-                    break;
-                }
-            }
-            found.expect("no free PML4 slot for user")
-        }
-    };
-    let base = (slot as u64) << 39;
-    USER_BASE.store(base, Ordering::SeqCst);
-    (pml4_phys, base)
+    let base = USER_BASE.load(Ordering::SeqCst);
+    for (i, &phys) in code.iter().enumerate() {
+        map_page_x86(pml4_phys, base + (i * PAGE) as u64, phys, PRESENT | USER);
+    }
+    let stack_va = base + STACK_OFF.load(Ordering::SeqCst);
+    map_page_x86(
+        pml4_phys,
+        stack_va,
+        stack_phys,
+        PRESENT | WRITE | USER | NX,
+    );
+    pml4_phys
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -450,8 +428,15 @@ fn ensure_user(entry: &mut u64, table_flags: u64, huge: u64) -> *mut [u64; 512] 
 }
 
 #[cfg(target_arch = "aarch64")]
-fn create_tables_aarch64() -> (u64, u64) {
+fn create_aspace_aarch64(code: &[u64], stack_phys: u64) -> u64 {
     const TABLE: u64 = 0b11;
+    const PAGE_DESC: u64 = 0b11;
+    const SH_INNER: u64 = 0b11 << 8;
+    const AF: u64 = 1 << 10;
+    const AP_RW: u64 = 0b01 << 6; // EL1 RW, EL0 RW
+    const AP_RO: u64 = 0b11 << 6; // EL1 RO, EL0 RO
+    const PXN: u64 = 1 << 53;
+    const UXN: u64 = 1 << 54;
     const PA: u64 = 0x0000_FFFF_FFFF_F000;
 
     let k_l0 = task::kernel_aspace() & PA;
@@ -462,45 +447,25 @@ fn create_tables_aarch64() -> (u64, u64) {
 
     let l0 = mm::alloc_frame();
     let l1 = mm::alloc_frame();
+    let l2 = mm::alloc_frame();
+    let l3 = mm::alloc_frame();
+
     unsafe {
         let l0_t = &mut *mm::table(l0);
         let l1_t = &mut *mm::table(l1);
+        let l2_t = &mut *mm::table(l2);
+        let l3_t = &mut *mm::table(l3);
         l0_t[0] = l1 | TABLE;
         l1_t[0] = device;
+        l1_t[1] = l2 | TABLE;
+        l2_t[0] = l3 | TABLE;
+        for (i, &phys) in code.iter().enumerate() {
+            l3_t[i] = PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RO | PXN;
+        }
+        let stack_i = code.len();
+        l3_t[stack_i] = PAGE_DESC | (stack_phys & PA) | SH_INNER | AF | AP_RW | PXN | UXN;
     }
-    USER_BASE.store(DEFAULT_USER_BASE, Ordering::SeqCst);
-    (l0, DEFAULT_USER_BASE)
-}
-
-#[cfg(target_arch = "aarch64")]
-fn map_page_aarch64(l0_phys: u64, va: u64, pa: u64, flags: u64) {
-    const PA: u64 = 0x0000_FFFF_FFFF_F000;
-
-    let i0 = ((va >> 39) & 0x1ff) as usize;
-    let i1 = ((va >> 30) & 0x1ff) as usize;
-    let i2 = ((va >> 21) & 0x1ff) as usize;
-    let i3 = ((va >> 12) & 0x1ff) as usize;
-
-    unsafe {
-        let l0 = &mut *mm::table(l0_phys);
-        let l1 = ensure_table_aarch64(&mut l0[i0]);
-        let l2 = ensure_table_aarch64(&mut (*l1)[i1]);
-        let l3 = ensure_table_aarch64(&mut (*l2)[i2]);
-        (*l3)[i3] = flags | (pa & PA);
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn ensure_table_aarch64(entry: &mut u64) -> *mut [u64; 512] {
-    const TABLE: u64 = 0b11;
-    const PA: u64 = 0x0000_FFFF_FFFF_F000;
-    if *entry & 0b11 == TABLE {
-        return mm::table(*entry & PA);
-    }
-    assert!(*entry == 0, "user map: block in the way");
-    let phys = mm::alloc_frame();
-    *entry = phys | TABLE;
-    mm::table(phys)
+    l0
 }
 
 fn sync_icache(start: usize, size: usize) {
