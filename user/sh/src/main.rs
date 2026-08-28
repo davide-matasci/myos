@@ -25,7 +25,8 @@ fn shell() -> ! {
     write(b"sh ok\n");
     let mut smoke_arg = [0u8; ARG_LEN];
     smoke_arg[..2].copy_from_slice(b"ok");
-    smoke_exec(b"ok", &[&smoke_arg[..2]]);
+    smoke_fork(b"ok", &[&smoke_arg[..2]]);
+    smoke_fork(b"heap", &[]);
     let mut line = [0u8; MAX_LINE];
     loop {
         write(PROMPT);
@@ -52,8 +53,8 @@ fn shell() -> ! {
     }
 }
 
-/// Boot smoke: exec in-process (/ok chains to /heap). Avoids fork during CI.
-fn smoke_exec(name: &[u8], parts: &[&[u8]]) -> ! {
+/// Boot smoke via fork+exec+wait (CI covers fork).
+fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     let mut path_buf = [0u8; 32];
     let path = command_path(name, &mut path_buf);
     let mut arg_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
@@ -66,8 +67,17 @@ fn smoke_exec(name: &[u8], parts: &[&[u8]]) -> ! {
         let n = parts[i].len().min(ARG_LEN);
         arg_slices[i] = &arg_bufs[i][..n];
     }
-    exec(path, &arg_slices[..parts.len()]);
-    exit();
+    match fork() {
+        Some(0) => {
+            exec(path, &arg_slices[..parts.len()]);
+            exit();
+        }
+        Some(_) => {
+            let _ = wait();
+            write(b"fork ok\n");
+        }
+        None => write(b"fork failed\n"),
+    }
 }
 
 fn run_path(name: &[u8], parts: &[&[u8]]) {

@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, exec, exit, open, read, write};
+use myos_user::{close, exit, open, read, write};
 
 #[inline(never)]
 fn do_msg() {
@@ -24,7 +24,6 @@ fn main() -> ! {
     write(b"user ok\n");
     do_msg();
     write(b"fat ok\n");
-    exec(b"/heap", &[]);
     exit();
 }
 
