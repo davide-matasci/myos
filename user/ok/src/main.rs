@@ -1,16 +1,10 @@
 #![no_std]
 #![no_main]
 
-// Stack buffer in a real frame (not `options(nostack)`). #95 put a 64-byte
-// array past the mapped stack page; #97/#102 static MSG_BUF still read 0
-// bytes on x86 PIE. user/init already sys_reads 4 stack bytes successfully.
-
-#[inline(never)]
-fn read_msg(fd: usize) -> (usize, [u8; 64]) {
-    let mut buf = [0u8; 64];
-    let n = unsafe { sys_read(fd, buf.as_mut_ptr() as usize, 64) };
-    (n, buf)
-}
+// Keep the /msg buffer tiny and in `_start`, like user/init's 4-byte ELF
+// mag read (that path already works on x86). A 64-byte array returned from
+// an `inline(never)` helper page-faulted in ring 3 at RIP 0x800000142c
+// right after `user ok` (CI #103).
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -22,7 +16,8 @@ pub extern "C" fn _start() -> ! {
     if fd == usize::MAX {
         miss(b"fat nofd\n");
     }
-    let (n, buf) = read_msg(fd);
+    let mut buf = [0u8; 8];
+    let n = unsafe { sys_read(fd, buf.as_mut_ptr() as usize, 8) };
     unsafe { sys_close(fd); }
     if n == usize::MAX {
         miss(b"fat nread\n");
