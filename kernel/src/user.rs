@@ -186,6 +186,10 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     Some((aspace, entry as usize, info.span, stack_off))
 }
 
+/// Scratch for `reload_user_elf` (no kernel-heap alloc; CI exhausts heap after fork).
+const RELOAD_SCRATCH_BYTES: usize = MAX_INIT_PAGES * PAGE;
+static mut RELOAD_SCRATCH: [u8; RELOAD_SCRATCH_BYTES] = [0; RELOAD_SCRATCH_BYTES];
+
 /// Overwrite the current user image in an existing aspace (no new frames).
 /// Keeps `stack_off` so the mapped stack page stays valid. Fails if the new
 /// image needs more bytes than the current mapping span.
@@ -194,43 +198,45 @@ fn reload_user_elf(
     bytes: &[u8],
     base: u64,
     stack_off: u64,
-    mapped_span: usize,
+    _mapped_span: usize,
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let n_pages = info.span.div_ceil(PAGE);
-    if n_pages == 0 || n_pages > MAX_INIT_PAGES || info.span > mapped_span {
+    if n_pages == 0 || n_pages > MAX_INIT_PAGES {
         return None;
     }
-    let layout = Layout::from_size_align(info.span.max(1), PAGE).ok()?;
-    let buf = unsafe { alloc_zeroed(layout) };
-    if buf.is_null() {
-        return None;
-    }
-    let load_bias = base - info.min_vaddr;
-    let entry = match elf::realize(bytes, buf, load_bias) {
-        Ok(e) => e,
-        Err(_) => {
-            unsafe { dealloc(buf, layout) };
+    for i in 0..n_pages {
+        if virt_to_phys(aspace, base + (i * PAGE) as u64).is_none() {
             return None;
         }
+    }
+    if info.span > RELOAD_SCRATCH_BYTES {
+        return None;
+    }
+    let buf = unsafe { &mut RELOAD_SCRATCH[..info.span] };
+    unsafe {
+        core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
+    }
+    let load_bias = base - info.min_vaddr;
+    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
+        Ok(e) => e,
+        Err(_) => return None,
     };
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
         let Some(phys) = virt_to_phys(aspace, va) else {
-            unsafe { dealloc(buf, layout) };
             return None;
         };
         let off = i * PAGE;
         let len = core::cmp::min(PAGE, info.span - off);
         unsafe {
-            core::ptr::copy_nonoverlapping(buf.add(off), mm::hhdm(phys), len);
+            core::ptr::copy_nonoverlapping(buf.as_ptr().add(off), mm::hhdm(phys), len);
             if len < PAGE {
                 core::ptr::write_bytes(mm::hhdm(phys).add(len), 0, PAGE - len);
             }
         }
         sync_icache(mm::hhdm(phys) as usize, PAGE);
     }
-    unsafe { dealloc(buf, layout) };
     Some((entry as usize, info.span, stack_off))
 }
 
@@ -816,24 +822,14 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let (base_u, mapped_span, stack_off) = task::current_user_map();
     let loaded = if cur_aspace != 0 {
         reload_user_elf(cur_aspace, bytes, base_u, stack_off, mapped_span)
-            .map(|(entry, span, off)| {
-                #[cfg(target_arch = "aarch64")]
-                crate::console::write_str("reload ok\n");
-                (cur_aspace, entry, span, off)
-            })
+            .map(|(entry, span, off)| (cur_aspace, entry, span, off))
     } else {
         None
     };
     let (aspace, entry, span, off) = if let Some(v) = loaded {
         v
     } else {
-        #[cfg(target_arch = "aarch64")]
-        if cur_aspace != 0 {
-            crate::console::write_str("reload fail\n");
-        }
         let Some(v) = load_user_elf(bytes) else {
-            #[cfg(target_arch = "aarch64")]
-            crate::console::write_str("load fail\n");
             return SYSERR;
         };
         v
@@ -844,10 +840,7 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let argc = arg_refs.len();
     task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
     #[cfg(target_arch = "aarch64")]
-    {
-        crate::console::write_str("exec go\n");
-        try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
-    }
+    try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
     enter(entry, rsp, argc, argv);
 }
 
