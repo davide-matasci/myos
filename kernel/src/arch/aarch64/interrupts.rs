@@ -268,10 +268,12 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     let esr: u64;
     let elr: u64;
     let far: u64;
+    let sp_el0: u64;
     unsafe {
         asm!("mrs {esr}, esr_el1", esr = out(reg) esr, options(nomem, nostack));
         asm!("mrs {elr}, elr_el1", elr = out(reg) elr, options(nomem, nostack));
         asm!("mrs {far}, far_el1", far = out(reg) far, options(nomem, nostack));
+        asm!("mrs {sp}, sp_el0", sp = out(reg) sp_el0, options(nomem, nostack));
     }
     let ec = (esr >> 26) & 0x3f;
     if ec == 0x15 {
@@ -280,7 +282,14 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
             let a0 = *frame.add(0) as usize;
             let a1 = *frame.add(1) as usize;
             let a2 = *frame.add(2) as usize;
-            let ret = crate::user::syscall_dispatch(nr, a0, a1, a2);
+            let ret = crate::user::syscall_dispatch(
+                nr,
+                a0,
+                a1,
+                a2,
+                elr as usize,
+                sp_el0 as usize,
+            );
             *frame.add(0) = ret as u64;
         }
         return;
