@@ -83,15 +83,22 @@ fn kernel_main() -> ! {
     user::init();
     input::init();
     if input::keyboard_present() {
+        #[cfg(target_arch = "x86_64")]
         console::write_str(
             "\nstdin: PS/2 keyboard + serial (COM1 38400 8N1). \
+             Output is mirrored to the screen.\n\n",
+        );
+        #[cfg(target_arch = "aarch64")]
+        console::write_str(
+            "\nstdin: virtio keyboard + serial (PL011). \
              Output is mirrored to the screen.\n\n",
         );
     } else {
         console::write_str(
             "\nstdin: serial (x86 COM1 38400 8N1, AArch64 PL011). \
              Output is mirrored to the screen when a framebuffer exists.\n\
-             Connect USB-serial if no PS/2 keyboard was detected.\n\n",
+             Connect USB-serial if no keyboard was detected.\n\
+             UTM SE: add virtio-keyboard-device in QEMU settings.\n\n",
         );
     }
     user::spawn_init();

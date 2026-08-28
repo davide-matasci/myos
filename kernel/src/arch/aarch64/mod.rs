@@ -5,6 +5,7 @@ mod keyboard;
 mod paging;
 mod serial;
 mod virtio_blk;
+mod virtio_input;
 pub use serial::SerialPort;
 
 pub fn serial_read_byte() -> Option<u8> {
