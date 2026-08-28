@@ -16,6 +16,7 @@ static TAIL: AtomicUsize = AtomicUsize::new(0);
 pub fn init() {
     HEAD.store(0, Ordering::SeqCst);
     TAIL.store(0, Ordering::SeqCst);
+    arch::serial_flush_rx();
     arch::keyboard_init();
 }
 
@@ -29,10 +30,17 @@ pub fn poll() {
     }
 }
 
+fn acceptable_input(byte: u8) -> bool {
+    byte == b'\n' || byte == b'\t' || byte == 0x08 || byte == 127 || (0x20..=0x7E).contains(&byte)
+}
+
 fn push_byte(raw: u8) {
     let mut byte = raw;
     if byte == b'\r' {
         byte = b'\n';
+    }
+    if !acceptable_input(byte) {
+        return;
     }
     if byte == 127 || byte == 8 {
         let t = TAIL.load(Ordering::SeqCst);
@@ -45,20 +53,18 @@ fn push_byte(raw: u8) {
         }
         return;
     }
-    if byte >= 0x20 || byte == b'\n' || byte == b'\t' {
-        if byte != b'\n' {
-            console::write_byte(byte);
-        }
-        let h = HEAD.load(Ordering::SeqCst);
-        let next = (h + 1) % RING;
-        if next == TAIL.load(Ordering::SeqCst) {
-            return;
-        }
-        BUF.lock()[h] = byte;
-        HEAD.store(next, Ordering::SeqCst);
-        if byte == b'\n' {
-            console::write_byte(b'\n');
-        }
+    if byte != b'\n' {
+        console::write_byte(byte);
+    }
+    let h = HEAD.load(Ordering::SeqCst);
+    let next = (h + 1) % RING;
+    if next == TAIL.load(Ordering::SeqCst) {
+        return;
+    }
+    BUF.lock()[h] = byte;
+    HEAD.store(next, Ordering::SeqCst);
+    if byte == b'\n' {
+        console::write_byte(b'\n');
     }
 }
 
