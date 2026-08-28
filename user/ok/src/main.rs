@@ -1,11 +1,16 @@
 #![no_std]
 #![no_main]
 
-const MSG_PATH: &[u8] = b"/msg";
+// Stack buffer in a real frame (not `options(nostack)`). #95 put a 64-byte
+// array past the mapped stack page; #97/#102 static MSG_BUF still read 0
+// bytes on x86 PIE. user/init already sys_reads 4 stack bytes successfully.
 
-// PT_LOAD .bss: in user_range_ok (in_code). addr_of_mut so the pointer is
-// RIP-relative, not a GOT slot that needs .rela.dyn (#97 UnsafeCell::get).
-static mut MSG_BUF: [u8; 64] = [0; 64];
+#[inline(never)]
+fn read_msg(fd: usize) -> (usize, [u8; 64]) {
+    let mut buf = [0u8; 64];
+    let n = unsafe { sys_read(fd, buf.as_mut_ptr() as usize, 64) };
+    (n, buf)
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -17,8 +22,7 @@ pub extern "C" fn _start() -> ! {
     if fd == usize::MAX {
         miss(b"fat nofd\n");
     }
-    let buf_ptr = core::ptr::addr_of_mut!(MSG_BUF) as *mut u8 as usize;
-    let n = unsafe { sys_read(fd, buf_ptr, 64) };
+    let (n, buf) = read_msg(fd);
     unsafe { sys_close(fd); }
     if n == usize::MAX {
         miss(b"fat nread\n");
@@ -26,11 +30,10 @@ pub extern "C" fn _start() -> ! {
     if n == 0 {
         miss(b"fat empty\n");
     }
-    unsafe { sys_write(buf_ptr, n); }
+    unsafe { sys_write(buf.as_ptr() as usize, n); }
     let ok = b"fat ok\n";
     unsafe { sys_write(ok.as_ptr() as usize, ok.len()); }
     unsafe { sys_exit(); }
-    let _ = MSG_PATH;
 }
 
 fn miss(m: &[u8]) -> ! {

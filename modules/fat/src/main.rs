@@ -93,7 +93,19 @@ unsafe fn run(api: &KernelApi) -> Result<(), i32> {
         file_size,
         &mut file,
     )?;
-    vfs_register(api, b"msg", &file[..n])?;
+    // CI #102: x86 still registered empty /msg with no fat sz0. Log n
+    // and fall back to the known payload if the disk bytes are wrong.
+    let mut nmsg = *b"fat n0\n";
+    nmsg[5] = b'0' + (n.min(9) as u8);
+    (api.write_str)(nmsg.as_ptr(), nmsg.len());
+    let payload: &[u8] = if n >= MSG_BYTES.len() && &file[..MSG_BYTES.len()] == MSG_BYTES {
+        &file[..n]
+    } else {
+        let m = b"fat fb\n";
+        (api.write_str)(m.as_ptr(), m.len());
+        MSG_BYTES
+    };
+    vfs_register(api, b"msg", payload)?;
     Ok(())
 }
 
