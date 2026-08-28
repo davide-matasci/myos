@@ -186,6 +186,54 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     Some((aspace, entry as usize, info.span, stack_off))
 }
 
+/// Overwrite the current user image in an existing aspace (no new frames).
+/// Keeps `stack_off` so the mapped stack page stays valid. Fails if the new
+/// image needs more bytes than the current mapping span.
+fn reload_user_elf(
+    aspace: u64,
+    bytes: &[u8],
+    base: u64,
+    stack_off: u64,
+    mapped_span: usize,
+) -> Option<(usize, usize, u64)> {
+    let info = elf::image_span(bytes).ok()?;
+    let n_pages = info.span.div_ceil(PAGE);
+    if n_pages == 0 || n_pages > MAX_INIT_PAGES || info.span > mapped_span {
+        return None;
+    }
+    let layout = Layout::from_size_align(info.span.max(1), PAGE).ok()?;
+    let buf = unsafe { alloc_zeroed(layout) };
+    if buf.is_null() {
+        return None;
+    }
+    let load_bias = base - info.min_vaddr;
+    let entry = match elf::realize(bytes, buf, load_bias) {
+        Ok(e) => e,
+        Err(_) => {
+            unsafe { dealloc(buf, layout) };
+            return None;
+        }
+    };
+    for i in 0..n_pages {
+        let va = base + (i * PAGE) as u64;
+        let Some(phys) = virt_to_phys(aspace, va) else {
+            unsafe { dealloc(buf, layout) };
+            return None;
+        };
+        let off = i * PAGE;
+        let len = core::cmp::min(PAGE, info.span - off);
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf.add(off), mm::hhdm(phys), len);
+            if len < PAGE {
+                core::ptr::write_bytes(mm::hhdm(phys).add(len), 0, PAGE - len);
+            }
+        }
+        sync_icache(mm::hhdm(phys) as usize, PAGE);
+    }
+    unsafe { dealloc(buf, layout) };
+    Some((entry as usize, info.span, stack_off))
+}
+
 /// SysV-style user stack: `[argc][argv…][NULL][strings]`, 16-byte aligned.
 /// Writes through the user aspace page tables (kernel cannot dereference user VAs).
 fn build_argv_stack(aspace: u64, user_base: u64, stack_off: u64, args: &[&[u8]]) -> Option<(usize, usize)> {
@@ -763,10 +811,23 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
         Err(()) => return SYSERR,
     };
     let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
-    let Some((aspace, entry, span, off)) = load_user_elf(bytes) else {
-        return SYSERR;
-    };
     let base = USER_BASE.load(Ordering::SeqCst);
+    let cur_aspace = task::current_aspace();
+    let (base_u, mapped_span, stack_off) = task::current_user_map();
+    let loaded = if cur_aspace != 0 {
+        reload_user_elf(cur_aspace, bytes, base_u, stack_off, mapped_span)
+            .map(|(entry, span, off)| (cur_aspace, entry, span, off))
+    } else {
+        None
+    };
+    let (aspace, entry, span, off) = if let Some(v) = loaded {
+        v
+    } else {
+        let Some(v) = load_user_elf(bytes) else {
+            return SYSERR;
+        };
+        v
+    };
     let Some((rsp, argv)) = build_argv_stack(aspace, base, off, &arg_refs) else {
         return SYSERR;
     };
