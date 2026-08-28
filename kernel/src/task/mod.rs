@@ -22,6 +22,7 @@ use switch_aarch64::{seed_stack, task_switch};
 
 const MAX_TASKS: usize = 8;
 const STACK_SIZE: usize = 8 * 1024;
+const MAX_FDS: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -29,6 +30,12 @@ enum State {
     Ready,
     Running,
     Dead,
+}
+
+#[derive(Clone, Copy)]
+struct Fd {
+    data: &'static [u8],
+    pos: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +49,7 @@ struct Task {
     kernel_stack_top: usize,
     user_rip: usize,
     user_rsp: usize,
+    fds: [Option<Fd>; MAX_FDS],
 }
 
 const EMPTY: Task = Task {
@@ -53,6 +61,7 @@ const EMPTY: Task = Task {
     kernel_stack_top: 0,
     user_rip: 0,
     user_rsp: 0,
+    fds: [None; MAX_FDS],
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -90,6 +99,77 @@ pub fn current_aspace() -> u64 {
     TASKS.lock()[id].aspace
 }
 
+fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
+    let mut tasks = TASKS.lock();
+    let id = CURRENT.load(Ordering::SeqCst);
+    f(&mut tasks[id])
+}
+
+pub fn fd_open(data: &'static [u8]) -> Option<usize> {
+    with_current_mut(|t| {
+        for (i, slot) in t.fds.iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = Some(Fd { data, pos: 0 });
+                return Some(i);
+            }
+        }
+        None
+    })
+}
+
+/// Copy from `fd` into the user buffer at `buf`. `range_ok` must accept the
+/// actual byte count. Bad fd or a failed range check returns `usize::MAX`.
+pub fn fd_read(
+    fd: usize,
+    buf: usize,
+    len: usize,
+    range_ok: fn(usize, usize) -> bool,
+) -> usize {
+    with_current_mut(|t| {
+        let Some(Some(f)) = t.fds.get_mut(fd) else {
+            return usize::MAX;
+        };
+        let n = len.min(f.data.len().saturating_sub(f.pos));
+        if n != 0 && !range_ok(buf, n) {
+            return usize::MAX;
+        }
+        if n != 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(f.data.as_ptr().add(f.pos), buf as *mut u8, n);
+            }
+        }
+        f.pos += n;
+        n
+    })
+}
+
+pub fn fd_close(fd: usize) -> bool {
+    with_current_mut(|t| {
+        let Some(slot) = t.fds.get_mut(fd) else {
+            return false;
+        };
+        if slot.is_some() {
+            *slot = None;
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// In-place exec: replace the current task's user image. Does not spawn,
+/// does not bump USERS_ALIVE, does not note_exit. Resets fds.
+pub fn replace_user(aspace: u64, user_rip: usize, user_rsp: usize) {
+    with_current_mut(|t| {
+        t.aspace = aspace;
+        t.user_rip = user_rip;
+        t.user_rsp = user_rsp;
+        t.fds = [None; MAX_FDS];
+    });
+    user::switch_aspace(aspace);
+    LOADED_ASPACE.store(aspace, Ordering::SeqCst);
+}
+
 pub fn spawn(entry: fn()) {
     spawn_inner(0, Some(entry), 0, 0);
 }
@@ -121,6 +201,7 @@ fn spawn_inner(aspace: u64, entry: Option<fn()>, user_rip: usize, user_rsp: usiz
         kernel_stack_top: top,
         user_rip,
         user_rsp,
+        fds: [None; MAX_FDS],
     };
     drop(tasks);
     irq_restore(flags);

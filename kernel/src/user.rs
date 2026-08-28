@@ -1,16 +1,23 @@
-//! Usermode: nested `user/init` ELF, per-process page tables, write/exit.
+//! Usermode: nested `user/init` ELF, per-process page tables, syscalls.
 
 use alloc::alloc::{alloc_zeroed, dealloc, Layout};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use crate::fs;
 use crate::mm;
 use crate::modules::elf;
 use crate::task;
 
 const SYS_WRITE: usize = 0;
 const SYS_EXIT: usize = 1;
+const SYS_OPEN: usize = 2;
+const SYS_READ: usize = 3;
+const SYS_CLOSE: usize = 4;
+const SYS_EXEC: usize = 5;
 const PAGE: usize = 4096;
 const MAX_INIT_PAGES: usize = 32;
+const MAX_PATH: usize = 64;
+const SYSERR: usize = usize::MAX;
 
 const INIT_ELF: &[u8] = include_bytes!(env!("USER_INIT_PATH"));
 
@@ -39,9 +46,12 @@ syscall_entry:
     mov [rip + {user_rsp}], rsp
     mov rsp, [rip + {kernel_rsp0}]
     push r11
-    push rcx
-    push rax
-    mov rdi, rax
+    push rcx          # user rip
+    push rax          # 16-byte align for call
+    mov rcx, rdx      # a2
+    mov rdx, rsi      # a1
+    mov rsi, rdi      # a0
+    mov rdi, rax      # nr
     call {dispatch}
     add rsp, 8
     pop rcx
@@ -116,23 +126,40 @@ fn wrmsr(msr: u32, val: u64) {
 
 /// Load the nested `user/init` ELF at USER_BASE and spawn one process.
 pub fn spawn_init() {
-    let info = elf::image_span(INIT_ELF).expect("init ELF");
-    let n_pages = info.span.div_ceil(PAGE);
-    assert!(n_pages > 0 && n_pages <= MAX_INIT_PAGES, "init ELF too big");
-
     let base = pick_user_base();
     USER_BASE.store(base, Ordering::SeqCst);
+    let (aspace, entry, rsp) = load_user_elf(INIT_ELF).expect("init ELF");
+    task::spawn_user(aspace, entry, rsp);
+    USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
+    DID_SPAWN.store(true, Ordering::SeqCst);
+}
+
+/// Realize `bytes` at USER_BASE: frames, stack page, aspace.
+/// Updates IMAGE_SPAN / STACK_OFF. Old frames are leaked on exec (ok).
+fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize)> {
+    let info = elf::image_span(bytes).ok()?;
+    let n_pages = info.span.div_ceil(PAGE);
+    if n_pages == 0 || n_pages > MAX_INIT_PAGES {
+        return None;
+    }
+
+    let base = USER_BASE.load(Ordering::SeqCst);
     IMAGE_SPAN.store(info.span, Ordering::SeqCst);
     let stack_off = (n_pages * PAGE) as u64;
     STACK_OFF.store(stack_off, Ordering::SeqCst);
 
-    let layout = Layout::from_size_align(info.span.max(1), PAGE).expect("init layout");
+    let layout = Layout::from_size_align(info.span.max(1), PAGE).ok()?;
     let buf = unsafe { alloc_zeroed(layout) };
-    assert!(!buf.is_null(), "init realize alloc");
+    if buf.is_null() {
+        return None;
+    }
     let load_bias = base - info.min_vaddr;
-    let entry = match elf::realize(INIT_ELF, buf, load_bias) {
+    let entry = match elf::realize(bytes, buf, load_bias) {
         Ok(e) => e,
-        Err(e) => panic!("init realize: {e}"),
+        Err(_) => {
+            unsafe { dealloc(buf, layout) };
+            return None;
+        }
     };
 
     let mut frames = [0u64; MAX_INIT_PAGES];
@@ -149,9 +176,8 @@ pub fn spawn_init() {
 
     let stack = mm::alloc_frame();
     let aspace = create_aspace(&frames[..n_pages], stack);
-    task::spawn_user(aspace, entry as usize, (base + stack_off + PAGE as u64) as usize);
-    USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
-    DID_SPAWN.store(true, Ordering::SeqCst);
+    let rsp = (base + stack_off + PAGE as u64) as usize;
+    Some((aspace, entry as usize, rsp))
 }
 
 fn pick_user_base() -> u64 {
@@ -318,11 +344,15 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize) -> ! {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn syscall_dispatch(nr: usize, ptr: usize, len: usize) -> usize {
+pub extern "C" fn syscall_dispatch(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
     match nr {
-        SYS_WRITE => sys_write(ptr, len),
+        SYS_WRITE => sys_write(a0, a1),
         SYS_EXIT => task::die(),
-        _ => usize::MAX,
+        SYS_OPEN => sys_open(a0, a1),
+        SYS_READ => sys_read(a0, a1, a2),
+        SYS_CLOSE => sys_close(a0),
+        SYS_EXEC => sys_exec(a0, a1),
+        _ => SYSERR,
     }
 }
 
@@ -332,7 +362,7 @@ fn sys_write(ptr: usize, len: usize) -> usize {
     }
     let n = len.min(128);
     if !user_range_ok(ptr, n) {
-        return usize::MAX;
+        return SYSERR;
     }
     let mut buf = [0u8; 128];
     unsafe {
@@ -340,6 +370,65 @@ fn sys_write(ptr: usize, len: usize) -> usize {
     }
     task::print_bytes(&buf[..n]);
     len
+}
+
+fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
+    if len == 0 || len > MAX_PATH {
+        return None;
+    }
+    if !user_range_ok(ptr, len) {
+        return None;
+    }
+    let mut buf = [0u8; MAX_PATH];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), len);
+    }
+    Some(buf)
+}
+
+fn sys_open(ptr: usize, path_len: usize) -> usize {
+    let Some(buf) = copy_user_path(ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(data) = fs::lookup(path) else {
+        return SYSERR;
+    };
+    match task::fd_open(data) {
+        Some(fd) => fd,
+        None => SYSERR,
+    }
+}
+
+fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
+    task::fd_read(fd, buf, len, user_range_ok)
+}
+
+fn sys_close(fd: usize) -> usize {
+    if task::fd_close(fd) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+fn sys_exec(ptr: usize, path_len: usize) -> usize {
+    let Some(buf) = copy_user_path(ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(bytes) = fs::lookup(path) else {
+        return SYSERR;
+    };
+    let Some((aspace, entry, rsp)) = load_user_elf(bytes) else {
+        return SYSERR;
+    };
+    task::replace_user(aspace, entry, rsp);
+    enter(entry, rsp);
 }
 
 fn user_range_ok(ptr: usize, len: usize) -> bool {
