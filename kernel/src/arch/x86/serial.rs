@@ -36,6 +36,14 @@ impl SerialPort {
     }
 }
 
+/// Non-blocking read from COM1. Returns `None` if the RX FIFO is empty.
+pub fn read_byte() -> Option<u8> {
+    if inb(COM1 + 5) & 0x01 == 0 {
+        return None;
+    }
+    Some(inb(COM1))
+}
+
 impl fmt::Write for SerialPort {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {

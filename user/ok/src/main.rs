@@ -20,12 +20,23 @@ fn do_msg() {
     write(&buf[..n]);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+fn main() -> ! {
     write(b"user ok\n");
     do_msg();
     write(b"fat ok\n");
     exit();
+}
+
+#[cfg(target_arch = "x86_64")]
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    main()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[unsafe(no_mangle)]
+pub extern "C" fn _start(_argc: usize, _argv: *const usize) -> ! {
+    main()
 }
 
 fn miss(m: &[u8]) -> ! {
@@ -34,4 +45,6 @@ fn miss(m: &[u8]) -> ! {
 }
 
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    loop {}
+}

@@ -1,6 +1,7 @@
 //! Usermode: nested `user/init` ELF, per-process page tables, syscalls.
 
 use alloc::alloc::{alloc_zeroed, dealloc, Layout};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crate::fs;
@@ -16,9 +17,12 @@ const SYS_CLOSE: usize = 4;
 const SYS_EXEC: usize = 5;
 const SYS_FORK: usize = 6;
 const SYS_WAIT: usize = 7;
+const SYS_LISTDIR: usize = 8;
 const PAGE: usize = 4096;
 const MAX_INIT_PAGES: usize = 32;
 const MAX_PATH: usize = 64;
+const MAX_ARGC: usize = 16;
+const MAX_ARG_LEN: usize = 128;
 const SYSERR: usize = usize::MAX;
 
 const INIT_ELF: &[u8] = include_bytes!(env!("USER_INIT_PATH"));
@@ -130,15 +134,16 @@ fn wrmsr(msr: u32, val: u64) {
 pub fn spawn_init() {
     let base = pick_user_base();
     USER_BASE.store(base, Ordering::SeqCst);
-    let (aspace, entry, rsp, span, off) = load_user_elf(INIT_ELF).expect("init ELF");
-    task::spawn_user(aspace, entry, rsp, base, span, off);
+    let (aspace, entry, span, off) = load_user_elf(INIT_ELF).expect("init ELF");
+    let (rsp, argv) = build_argv_stack(aspace, base, off, &[]).expect("init stack");
+    task::spawn_user(aspace, entry, rsp, base, span, off, 0, argv);
     USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
     DID_SPAWN.store(true, Ordering::SeqCst);
 }
 
 /// Realize `bytes` at USER_BASE: frames, stack page, aspace.
 /// Old frames are leaked on exec (ok).
-fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, usize, u64)> {
+fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let n_pages = info.span.div_ceil(PAGE);
     if n_pages == 0 || n_pages > MAX_INIT_PAGES {
@@ -176,8 +181,86 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, usize, u64)> {
 
     let stack = mm::alloc_frame();
     let aspace = create_aspace(&frames[..n_pages], stack, base, stack_off);
-    let rsp = (base + stack_off + PAGE as u64) as usize;
-    Some((aspace, entry as usize, rsp, info.span, stack_off))
+    Some((aspace, entry as usize, info.span, stack_off))
+}
+
+/// SysV-style user stack: `[argc][argv…][NULL][strings]`, 16-byte aligned.
+/// Writes through the user aspace page tables (kernel cannot dereference user VAs).
+fn build_argv_stack(aspace: u64, user_base: u64, stack_off: u64, args: &[&[u8]]) -> Option<(usize, usize)> {
+    if args.len() > MAX_ARGC {
+        return None;
+    }
+    let stack_top = (user_base + stack_off + PAGE as u64) as usize;
+    let stack_bot = (user_base + stack_off) as usize;
+    let mut sp = stack_top;
+    let mut ptrs = [0usize; MAX_ARGC];
+    for (i, arg) in args.iter().enumerate() {
+        if arg.len() > MAX_ARG_LEN {
+            return None;
+        }
+        let slen = arg.len() + 1;
+        sp = sp.checked_sub(slen)?;
+        if sp < stack_bot {
+            return None;
+        }
+        if !write_user_bytes(aspace, sp, arg) {
+            return None;
+        }
+        if !write_user_byte(aspace, sp + arg.len(), 0) {
+            return None;
+        }
+        ptrs[i] = sp;
+    }
+    sp &= !15;
+    sp = sp.checked_sub(8)?;
+    if sp < stack_bot {
+        return None;
+    }
+    if !write_user_usize(aspace, sp, 0) {
+        return None;
+    }
+    for i in (0..args.len()).rev() {
+        sp = sp.checked_sub(8)?;
+        if sp < stack_bot {
+            return None;
+        }
+        if !write_user_usize(aspace, sp, ptrs[i]) {
+            return None;
+        }
+    }
+    sp = sp.checked_sub(8)?;
+    if sp < stack_bot {
+        return None;
+    }
+    if !write_user_usize(aspace, sp, args.len()) {
+        return None;
+    }
+    Some((sp, sp + core::mem::size_of::<usize>()))
+}
+
+fn write_user_byte(aspace: u64, va: usize, byte: u8) -> bool {
+    let page = va & !0xfff;
+    let off = va & 0xfff;
+    let Some(phys) = virt_to_phys(aspace, page as u64) else {
+        return false;
+    };
+    unsafe {
+        *mm::hhdm(phys).add(off) = byte;
+    }
+    true
+}
+
+fn write_user_bytes(aspace: u64, va: usize, src: &[u8]) -> bool {
+    for (i, &b) in src.iter().enumerate() {
+        if !write_user_byte(aspace, va + i, b) {
+            return false;
+        }
+    }
+    true
+}
+
+fn write_user_usize(aspace: u64, va: usize, val: usize) -> bool {
+    write_user_bytes(aspace, va, &val.to_le_bytes())
 }
 
 /// Copy this process's user code+stack pages into a new aspace at the same VA.
@@ -383,7 +466,7 @@ fn current_el() -> u64 {
     (el >> 2) & 3
 }
 
-pub fn enter(user_rip: usize, user_rsp: usize) -> ! {
+pub fn enter(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
     let a = task::current_aspace();
     if a != 0 {
         switch_aspace(a);
@@ -391,7 +474,7 @@ pub fn enter(user_rip: usize, user_rsp: usize) -> ! {
     #[cfg(target_arch = "x86_64")]
     enter_x86(user_rip, user_rsp);
     #[cfg(target_arch = "aarch64")]
-    enter_aarch64(user_rip, user_rsp);
+    enter_aarch64(user_rip, user_rsp, user_argc, user_argv);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -420,17 +503,20 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn enter_aarch64(user_rip: usize, user_rsp: usize) -> ! {
+fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
     unsafe {
         core::arch::asm!(
             "msr elr_el1, {rip}",
             "msr sp_el0, {rsp}",
             "msr spsr_el1, xzr",
+            "mov x0, {argc}",
+            "mov x1, {argv}",
             "isb",
             "eret",
             rip = in(reg) user_rip,
             rsp = in(reg) user_rsp,
-            in("x0") 0u64,
+            argc = in(reg) user_argc,
+            argv = in(reg) user_argv,
             options(noreturn),
         );
     }
@@ -564,9 +650,10 @@ pub extern "C" fn syscall_dispatch(
         SYS_OPEN => sys_open(a0, a1),
         SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
-        SYS_EXEC => sys_exec(a0, a1),
+        SYS_EXEC => sys_exec(a0, a1, a2),
         SYS_FORK => sys_fork(user_rip, user_rsp),
         SYS_WAIT => sys_wait(),
+        SYS_LISTDIR => sys_listdir(a0, a1),
         _ => SYSERR,
     }
 }
@@ -629,7 +716,7 @@ fn sys_close(fd: usize) -> usize {
     }
 }
 
-fn sys_exec(ptr: usize, path_len: usize) -> usize {
+fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let Some(buf) = copy_user_path(ptr, path_len) else {
         return SYSERR;
     };
@@ -639,12 +726,74 @@ fn sys_exec(ptr: usize, path_len: usize) -> usize {
     let Some(bytes) = fs::lookup(path) else {
         return SYSERR;
     };
-    let Some((aspace, entry, rsp, span, off)) = load_user_elf(bytes) else {
+    let arg_bufs = match copy_user_exec_args(args_ptr) {
+        Ok(v) => v,
+        Err(()) => return SYSERR,
+    };
+    let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
+    let Some((aspace, entry, span, off)) = load_user_elf(bytes) else {
         return SYSERR;
     };
     let base = USER_BASE.load(Ordering::SeqCst);
-    task::replace_user(aspace, entry, rsp, base, span, off);
-    enter(entry, rsp);
+    let Some((rsp, argv)) = build_argv_stack(aspace, base, off, &arg_refs) else {
+        return SYSERR;
+    };
+    let argc = arg_refs.len();
+    task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
+    enter(entry, rsp, argc, argv);
+}
+
+fn copy_user_exec_args(args_ptr: usize) -> Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, ()> {
+    if args_ptr == 0 {
+        return Ok(alloc::vec::Vec::new());
+    }
+    if !user_range_ok(args_ptr, core::mem::size_of::<usize>()) {
+        return Err(());
+    }
+    let argc = unsafe { *(args_ptr as *const usize) };
+    if argc > MAX_ARGC {
+        return Err(());
+    }
+    let mut out = alloc::vec::Vec::with_capacity(argc);
+    let pairs = args_ptr + core::mem::size_of::<usize>();
+    for i in 0..argc {
+        let off = pairs + i * 2 * core::mem::size_of::<usize>();
+        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
+            return Err(());
+        }
+        let p = unsafe { *((off) as *const usize) };
+        let n = unsafe { *((off + core::mem::size_of::<usize>()) as *const usize) };
+        if n > MAX_ARG_LEN {
+            return Err(());
+        }
+        if n != 0 && !user_range_ok(p, n) {
+            return Err(());
+        }
+        let mut v = alloc::vec::Vec::with_capacity(n);
+        if n != 0 {
+            v.resize(n, 0);
+            unsafe {
+                core::ptr::copy_nonoverlapping(p as *const u8, v.as_mut_ptr(), n);
+            }
+        }
+        out.push(v);
+    }
+    Ok(out)
+}
+
+fn sys_listdir(buf: usize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    if !user_range_ok(buf, len) {
+        return SYSERR;
+    }
+    let mut kbuf = [0u8; 512];
+    let n = fs::listdir(&mut kbuf).min(kbuf.len()).min(len);
+    unsafe {
+        core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf as *mut u8, n);
+    }
+    n
 }
 
 fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {

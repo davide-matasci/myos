@@ -71,6 +71,25 @@ fn main() {
         &out,
         &["../lib/src/lib.rs", "../lib/Cargo.toml"],
     );
+    for (crate_rel, bin, td, env_key) in [
+        ("../user/sh", "sh", "sh-target", "USER_SH_PATH"),
+        ("../user/echo", "echo", "echo-target", "USER_ECHO_PATH"),
+        ("../user/cat", "cat", "cat-target", "USER_CAT_PATH"),
+        ("../user/ls", "ls", "ls-target", "USER_LS_PATH"),
+    ] {
+        nested_elf(
+            &cargo,
+            manifest,
+            crate_rel,
+            bin,
+            td,
+            env_key,
+            &target,
+            &profile,
+            &out,
+            &["../lib/src/lib.rs", "../lib/Cargo.toml"],
+        );
+    }
 }
 
 fn nested_elf(

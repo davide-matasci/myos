@@ -32,6 +32,11 @@ pub fn lookup(path: &str) -> Option<&'static [u8]> {
     None
 }
 
+/// List bootfs basenames into `buf` (newline-separated).
+pub fn listdir(buf: &mut [u8]) -> usize {
+    bootfs::listdir(buf)
+}
+
 /// Register the embedded `/ok` fallback, then Limine modules (ESP wins).
 pub fn init() {
     bootfs::init();

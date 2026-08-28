@@ -18,6 +18,7 @@ const UARTICR: usize = 0x44;
 
 const FR_TXFF: u32 = 1 << 5;
 const FR_BUSY: u32 = 1 << 3;
+const FR_RXFE: u32 = 1 << 4;
 
 pub struct SerialPort;
 
@@ -50,6 +51,14 @@ impl SerialPort {
     pub fn flush(&mut self) {
         while read32(UARTFR) & FR_BUSY != 0 {}
     }
+}
+
+/// Non-blocking read from PL011. Returns `None` if the RX FIFO is empty.
+pub fn read_byte() -> Option<u8> {
+    if read32(UARTFR) & FR_RXFE != 0 {
+        return None;
+    }
+    Some(read32(UARTDR) as u8)
 }
 
 impl fmt::Write for SerialPort {

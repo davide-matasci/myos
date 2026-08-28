@@ -1,0 +1,27 @@
+[workspace]
+
+[package]
+name = "echo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "echo"
+test = false
+bench = false
+
+[dependencies]
+myos-user = { path = "../lib" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

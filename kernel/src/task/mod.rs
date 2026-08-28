@@ -23,6 +23,8 @@ use switch_aarch64::{seed_stack, task_switch};
 const MAX_TASKS: usize = 8;
 const STACK_SIZE: usize = 8 * 1024;
 const MAX_FDS: usize = 8;
+/// 0 = stdin, 1 = stdout, 2 = stderr (reserved; write uses syscall today).
+const FD_USER_BASE: usize = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -77,6 +79,8 @@ struct Task {
     stack_off: u64,
     ppid: usize,
     fork_regs: Option<ForkRegs>,
+    user_argc: usize,
+    user_argv: usize,
 }
 
 const EMPTY: Task = Task {
@@ -94,6 +98,8 @@ const EMPTY: Task = Task {
     stack_off: 0,
     ppid: 0,
     fork_regs: None,
+    user_argc: 0,
+    user_argv: 0,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -172,13 +178,39 @@ fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
 
 pub fn fd_open(data: &'static [u8]) -> Option<usize> {
     with_current_mut(|t| {
-        for (i, slot) in t.fds.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = Some(Fd { data, pos: 0 });
+        for i in FD_USER_BASE..MAX_FDS {
+            if t.fds[i].is_none() {
+                t.fds[i] = Some(Fd { data, pos: 0 });
                 return Some(i);
             }
         }
         None
+    })
+}
+
+/// Read from fd 0 (serial stdin). `buf` must live in the user map.
+pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    with_current_mut(|t| {
+        let base = t.user_base as usize;
+        let end = match buf.checked_add(len) {
+            Some(e) => e,
+            None => return usize::MAX,
+        };
+        let stack = t.stack_off as usize;
+        let in_stack = buf >= base + stack && end <= base + stack + 4096;
+        if !in_stack {
+            return usize::MAX;
+        }
+        let mut tmp = [0u8; 128];
+        let want = len.min(tmp.len());
+        let n = crate::input::read(&mut tmp[..want]);
+        unsafe {
+            core::ptr::copy_nonoverlapping(tmp.as_ptr(), buf as *mut u8, n);
+        }
+        n
     })
 }
 
@@ -194,6 +226,9 @@ pub fn fd_read(
     len: usize,
     _range_ok: fn(usize, usize) -> bool,
 ) -> usize {
+    if fd == 0 {
+        return fd_read_stdin(buf, len);
+    }
     with_current_mut(|t| {
         let Some(Some(f)) = t.fds.get_mut(fd) else {
             return usize::MAX;
@@ -243,6 +278,8 @@ pub fn replace_user(
     user_base: u64,
     image_span: usize,
     stack_off: u64,
+    user_argc: usize,
+    user_argv: usize,
 ) {
     with_current_mut(|t| {
         t.aspace = aspace;
@@ -251,6 +288,8 @@ pub fn replace_user(
         t.user_base = user_base;
         t.image_span = image_span;
         t.stack_off = stack_off;
+        t.user_argc = user_argc;
+        t.user_argv = user_argv;
         t.fds = [None; MAX_FDS];
         t.fork_regs = None;
     });
@@ -259,7 +298,7 @@ pub fn replace_user(
 }
 
 pub fn spawn(entry: fn()) {
-    spawn_inner(0, Some(entry), 0, 0, 0, 0, 0, 0, [None; MAX_FDS], None);
+    spawn_inner(0, Some(entry), 0, 0, 0, 0, 0, 0, 0, 0, [None; MAX_FDS], None);
 }
 
 pub fn spawn_user(
@@ -269,6 +308,8 @@ pub fn spawn_user(
     user_base: u64,
     image_span: usize,
     stack_off: u64,
+    user_argc: usize,
+    user_argv: usize,
 ) {
     spawn_inner(
         aspace,
@@ -278,6 +319,8 @@ pub fn spawn_user(
         user_base,
         image_span,
         stack_off,
+        user_argc,
+        user_argv,
         0,
         [None; MAX_FDS],
         None,
@@ -290,7 +333,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (fds, base, span, off, ppid) = {
+    let (fds, base, span, off, ppid, uargc, uargv) = {
         let tasks = TASKS.lock();
         let id = CURRENT.load(Ordering::SeqCst);
         let t = tasks[id];
@@ -299,7 +342,15 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             irq_restore(flags);
             return None;
         }
-        (t.fds, t.user_base, t.image_span, t.stack_off, id)
+        (
+            t.fds,
+            t.user_base,
+            t.image_span,
+            t.stack_off,
+            id,
+            t.user_argc,
+            t.user_argv,
+        )
     };
 
     let Some(aspace) = user::copy_user_aspace(base, span, off) else {
@@ -343,6 +394,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         stack_off: off,
         ppid,
         fork_regs: Some(child_regs),
+        user_argc: uargc,
+        user_argv: uargv,
     };
     drop(tasks);
     user::note_fork();
@@ -399,6 +452,8 @@ fn spawn_inner(
     user_base: u64,
     image_span: usize,
     stack_off: u64,
+    user_argc: usize,
+    user_argv: usize,
     ppid: usize,
     fds: [Option<Fd>; MAX_FDS],
     fork_regs: Option<ForkRegs>,
@@ -431,6 +486,8 @@ fn spawn_inner(
         stack_off,
         ppid,
         fork_regs,
+        user_argc,
+        user_argv,
     };
     drop(tasks);
     irq_restore(flags);
@@ -548,14 +605,21 @@ pub fn print_bytes(bytes: &[u8]) {
 }
 
 extern "C" fn trampoline() -> ! {
-    let (entry, user_rip, user_rsp, fork_regs) = {
+    let (entry, user_rip, user_rsp, user_argc, user_argv, fork_regs) = {
         let flags = irq_save();
         irq_off();
         let id = CURRENT.load(Ordering::SeqCst);
         let mut tasks = TASKS.lock();
         let t = &mut tasks[id];
         let fr = t.fork_regs.take();
-        let out = (t.entry, t.user_rip, t.user_rsp, fr);
+        let out = (
+            t.entry,
+            t.user_rip,
+            t.user_rsp,
+            t.user_argc,
+            t.user_argv,
+            fr,
+        );
         drop(tasks);
         irq_restore(flags);
         out
@@ -564,7 +628,7 @@ extern "C" fn trampoline() -> ! {
         crate::user::enter_fork(fr);
     }
     if user_rip != 0 {
-        crate::user::enter(user_rip, user_rsp);
+        crate::user::enter(user_rip, user_rsp, user_argc, user_argv);
     }
     irq_on();
     if let Some(f) = entry {
