@@ -634,60 +634,27 @@ fn enter_fork_x86(regs: task::ForkRegs) -> ! {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
-    // GPR image in a stack local; reload via x0 as base. Program ELR/SP_EL0
-    // *before* the ldrs — otherwise LLVM's in(reg) for rip/rsp can live in
-    // x1..x30 and get overwritten (elr left as ~0xfff… → PC alignment abort).
-    let mut img = regs.x;
-    img[0] = 0;
-    let base = img.as_ptr();
-    let rip = regs.rip;
-    let rsp = regs.rsp;
+fn copy_fork_syscall_frame(src: *const u64) -> [u64; 36] {
+    let mut frame = [0u64; 36];
     unsafe {
-        core::arch::asm!(
-            "msr elr_el1, {rip}",
-            "msr sp_el0, {rsp}",
-            "msr spsr_el1, xzr",
-            "mov x0, {b}",
-            "ldr x1, [x0, #8]",
-            "ldr x2, [x0, #16]",
-            "ldr x3, [x0, #24]",
-            "ldr x4, [x0, #32]",
-            "ldr x5, [x0, #40]",
-            "ldr x6, [x0, #48]",
-            "ldr x7, [x0, #56]",
-            "ldr x8, [x0, #64]",
-            "ldr x9, [x0, #72]",
-            "ldr x10, [x0, #80]",
-            "ldr x11, [x0, #88]",
-            "ldr x12, [x0, #96]",
-            "ldr x13, [x0, #104]",
-            "ldr x14, [x0, #112]",
-            "ldr x15, [x0, #120]",
-            "ldr x16, [x0, #128]",
-            "ldr x17, [x0, #136]",
-            "ldr x18, [x0, #144]",
-            "ldr x19, [x0, #152]",
-            "ldr x20, [x0, #160]",
-            "ldr x21, [x0, #168]",
-            "ldr x22, [x0, #176]",
-            "ldr x23, [x0, #184]",
-            "ldr x24, [x0, #192]",
-            "ldr x25, [x0, #200]",
-            "ldr x26, [x0, #208]",
-            "ldr x27, [x0, #216]",
-            "ldr x28, [x0, #224]",
-            "ldr x29, [x0, #232]",
-            "ldr x30, [x0, #240]",
-            "mov x0, xzr",
-            "isb",
-            "eret",
-            b = in(reg) base,
-            rip = in(reg) rip,
-            rsp = in(reg) rsp,
-            options(noreturn),
-        );
+        for i in 0..=30 {
+            frame[i] = *src.add(i);
+        }
+        frame[32] = *src.add(32);
+        frame[33] = *src.add(33);
+        frame[34] = *src.add(34);
     }
+    frame
+}
+
+#[cfg(target_arch = "aarch64")]
+fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
+    // Resume through the same restore path as `lower_sync` (preserves spsr and
+    // callee-saved state). Rebuilding ELR/SP_EL0 in one asm block miscompiled on
+    // CI and left the child with x0 != 0 → parent+child both blocked in wait.
+    let mut frame = regs.frame;
+    frame[0] = 0;
+    crate::arch::fork_eret_to_user(frame.as_mut_ptr());
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -909,26 +876,14 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
         if frame.is_null() {
             return SYSERR;
         }
-        let mut x = [0u64; 31];
-        unsafe {
-            for i in 0..31 {
-                x[i] = *frame.add(i);
-            }
-        }
-        x[0] = 0; // child return value
         task::ForkRegs {
             rip: user_rip,
             rsp: user_rsp,
-            x,
+            frame: copy_fork_syscall_frame(frame),
         }
     };
     match task::fork_current(child) {
-        Some(pid) => {
-            // Run the child before returning to the parent (helps parent+wait
-            // smoke tests on AArch64 CI where the child otherwise starves).
-            task::yield_now();
-            pid
-        }
+        Some(pid) => pid,
         None => SYSERR,
     }
 }

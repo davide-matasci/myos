@@ -41,6 +41,8 @@ pub fn wait_for_interrupt_proof() {
     interrupts::wait_for_interrupt_proof();
 }
 
+pub use interrupts::fork_eret_to_user;
+
 pub fn virtio_blk_init() {
     virtio_blk::init();
 }

@@ -57,8 +57,9 @@ pub struct ForkRegs {
     pub r14: u64,
     #[cfg(target_arch = "x86_64")]
     pub r15: u64,
+    /// Full `lower_sync` frame (x0..x30, elr, spsr, sp_el0). Index 31 unused.
     #[cfg(target_arch = "aarch64")]
-    pub x: [u64; 31],
+    pub frame: [u64; 36],
 }
 
 #[derive(Clone, Copy)]
