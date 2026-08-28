@@ -29,6 +29,10 @@ const BIOS_BOOT_START_LBA: u64 = 2048;
 const BIOS_BOOT_END_LBA: u64 = 4095;
 const ESP_START_LBA: u64 = 4096;
 
+/// Raw FAT16 data disk for virtio-blk. 16 MiB is just under the writer's
+/// FAT16 minimum (4085 clusters with spc=8); 20 MiB is safely in range.
+pub const FAT_DATA_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
 pub struct LimineFiles {
     pub dir: PathBuf,
 }
@@ -183,6 +187,23 @@ pub fn write_esp_image(
         let _ = fs::create_dir_all(parent);
     }
     fs::write(dest, &image).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+}
+
+/// Raw FAT16 volume (no GPT) for the second QEMU virtio-blk disk.
+/// Root file `MSG` contains exactly `fat ok\n`.
+pub fn write_fat_data_image(dest: &Path) {
+    let mut part = vec![0u8; FAT_DATA_IMAGE_BYTES];
+    format_and_write_fat16(
+        &mut part,
+        &[DiskFile {
+            path: "MSG".into(),
+            data: b"fat ok\n".to_vec(),
+        }],
+    );
+    if let Some(parent) = dest.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(dest, &part).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
 }
 
 pub fn bios_install(limine_tool: &Path, image: &Path) {
