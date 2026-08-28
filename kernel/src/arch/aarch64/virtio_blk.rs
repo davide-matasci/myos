@@ -10,6 +10,7 @@
 //! clean/invalidate around device-visible reads/writes or `used`/`status`
 //! stay stale and every read times out (`fat mod failed`).
 
+use core::fmt::Write;
 use core::sync::atomic::{compiler_fence, Ordering};
 
 use spin::Mutex;
@@ -163,9 +164,13 @@ pub fn init() {
             // Sync last_used with the probe completion.
             dev.last_used = unsafe { core::ptr::read_volatile(dev.used.add(2) as *const u16) };
             *DEV.lock() = Some(dev);
+            let mut serial = crate::arch::SerialPort::new();
+            let _ = writeln!(serial, "virtio ok");
             return;
         }
     }
+    let mut serial = crate::arch::SerialPort::new();
+    let _ = writeln!(serial, "virtio none");
 }
 
 fn setup(base: usize) -> Option<Dev> {
