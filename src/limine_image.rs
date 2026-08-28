@@ -20,6 +20,7 @@ timeout: 0
     protocol: limine
     path: boot():/boot/kernel
     module_path: boot():/boot/hello
+    module_path: boot():/boot/ok
 ";
 
 const SECTOR: usize = 512;
@@ -134,6 +135,7 @@ pub fn write_esp_image(
     efi_bytes: &[u8],
     bios_sys: Option<&[u8]>,
     hello: &[u8],
+    ok: &[u8],
 ) {
     let mut files = vec![
         DiskFile {
@@ -147,6 +149,10 @@ pub fn write_esp_image(
         DiskFile {
             path: "boot/hello".into(),
             data: hello.to_vec(),
+        },
+        DiskFile {
+            path: "boot/ok".into(),
+            data: ok.to_vec(),
         },
         DiskFile {
             path: "boot/limine/limine.conf".into(),
