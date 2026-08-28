@@ -59,6 +59,10 @@ exception_vectors:
     .align 7
     b exception_hang
 
+    // Frame (16*18): x0-x29 pairs at 16*0..14, x30 at 16*15,
+    // elr_el1/spsr_el1 at 16*16, sp_el0 at 16*17. CPU ELR/SPSR/SP_EL0
+    // are not banked per-task; wait/preempt enter() would clobber them.
+
 irq_el1h:
     sub sp, sp, #(16 * 18)
     stp x0, x1, [sp, #16 * 0]
@@ -77,7 +81,18 @@ irq_el1h:
     stp x26, x27, [sp, #16 * 13]
     stp x28, x29, [sp, #16 * 14]
     str x30, [sp, #16 * 15]
+    mrs x0, elr_el1
+    mrs x1, spsr_el1
+    mrs x2, sp_el0
+    stp x0, x1, [sp, #16 * 16]
+    str x2, [sp, #16 * 17]
     bl aarch64_irq_handler
+    ldp x0, x1, [sp, #16 * 16]
+    ldr x2, [sp, #16 * 17]
+    msr elr_el1, x0
+    msr spsr_el1, x1
+    msr sp_el0, x2
+    isb
     ldr x30, [sp, #16 * 15]
     ldp x28, x29, [sp, #16 * 14]
     ldp x26, x27, [sp, #16 * 13]
@@ -115,8 +130,19 @@ lower_sync:
     stp x26, x27, [sp, #16 * 13]
     stp x28, x29, [sp, #16 * 14]
     str x30, [sp, #16 * 15]
+    mrs x0, elr_el1
+    mrs x1, spsr_el1
+    mrs x2, sp_el0
+    stp x0, x1, [sp, #16 * 16]
+    str x2, [sp, #16 * 17]
     mov x0, sp
     bl aarch64_lower_sync
+    ldp x0, x1, [sp, #16 * 16]
+    ldr x2, [sp, #16 * 17]
+    msr elr_el1, x0
+    msr spsr_el1, x1
+    msr sp_el0, x2
+    isb
     ldr x30, [sp, #16 * 15]
     ldp x28, x29, [sp, #16 * 14]
     ldp x26, x27, [sp, #16 * 13]
