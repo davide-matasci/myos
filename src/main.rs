@@ -294,6 +294,11 @@ fn build_aarch64_image() -> PathBuf {
     let hello = std::fs::read(&hello_path).unwrap_or_else(|_| {
         panic!("hello ELF missing at {}", hello_path.display())
     });
+    let ok_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target/ok-aarch64-unknown-none-softfloat");
+    let ok = std::fs::read(&ok_path).unwrap_or_else(|_| {
+        panic!("ok ELF missing at {}", ok_path.display())
+    });
     let limine_dir = PathBuf::from(env!("LIMINE_DIR"));
     let limine = if limine_dir.join("BOOTAA64.EFI").is_file() {
         fetch_limine(&limine_dir)
@@ -305,7 +310,7 @@ fn build_aarch64_image() -> PathBuf {
     };
     let efi = std::fs::read(limine.bootaa64()).expect("BOOTAA64.EFI");
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/aarch64.img");
-    write_esp_image(&image, &kernel_bytes, "BOOTAA64.EFI", &efi, None, &hello);
+    write_esp_image(&image, &kernel_bytes, "BOOTAA64.EFI", &efi, None, &hello, &ok);
     image
 }
 
