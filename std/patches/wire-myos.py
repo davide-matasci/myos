@@ -205,6 +205,15 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        "std/src/io/stdio.rs",
+        [
+            (
+                "#[cfg(not(test))]\npub fn _print(args: fmt::Arguments<'_>) {\n    print_to(args, stdout, \"stdout\");\n}",
+                "#[cfg(not(test))]\n#[cfg(target_os = \"myos\")]\npub fn _print(args: fmt::Arguments<'_>) {\n    crate::sys::stdio::print_args(args);\n}\n\n#[cfg(not(test))]\n#[cfg(not(target_os = \"myos\"))]\npub fn _print(args: fmt::Arguments<'_>) {\n    print_to(args, stdout, \"stdout\");\n}",
+            ),
+        ],
+    ),
+    (
         "std/src/sys/random/mod.rs",
         [
             (

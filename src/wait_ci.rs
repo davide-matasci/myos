@@ -20,11 +20,14 @@ const CI_NEEDLES: [&str; 14] = [
     "fat ok",
 ];
 
-fn serial_has_all_needles(serial: &str) -> bool {
-    CI_NEEDLES.iter().all(|n| serial.contains(n))
+/// Extra serial markers required on x86 BIOS/UEFI only (`std` hello is x86-myos today).
+const CI_NEEDLES_X86: [&str; 1] = ["std ok"];
+
+fn serial_has_all_needles(serial: &str, extra: &[&str]) -> bool {
+    CI_NEEDLES.iter().chain(extra.iter()).all(|n| serial.contains(n))
 }
 
-fn wait_ci(mut child: Child, expect: CiExpect) {
+fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut stdout = child.stdout.take().expect("qemu stdout");
     let mut stderr = child.stderr.take().expect("qemu stderr");
     let serial_acc = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -57,7 +60,7 @@ fn wait_ci(mut child: Child, expect: CiExpect) {
     let mut timed_out = false;
     let mut killed_for_needles = false;
     let status = loop {
-        if serial_has_all_needles(&serial_acc.lock().unwrap()) {
+        if serial_has_all_needles(&serial_acc.lock().unwrap(), extra_needles) {
             let _ = child.kill();
             killed_for_needles = true;
             break child.wait().expect("wait after kill");
@@ -77,15 +80,15 @@ fn wait_ci(mut child: Child, expect: CiExpect) {
     let err = stderr_handle.join().expect("stderr thread");
     eprint!("{err}");
 
-    if !serial_has_all_needles(&serial) {
+    if !serial_has_all_needles(&serial, extra_needles) {
         if timed_out {
             eprintln!("error: QEMU timed out after {:?}", expect.timeout);
             if serial.is_empty() {
                 eprintln!("error: serial was empty at timeout");
             }
         }
-        for needle in CI_NEEDLES {
-            if !serial.contains(needle) {
+        for needle in CI_NEEDLES.iter().chain(extra_needles.iter()) {
+            if !serial.contains(*needle) {
                 eprintln!("error: serial output did not contain {needle:?}");
             }
         }

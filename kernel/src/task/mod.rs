@@ -20,7 +20,10 @@ mod switch_aarch64;
 use switch_aarch64::{seed_stack, task_switch};
 
 const MAX_TASKS: usize = 8;
-const STACK_SIZE: usize = 8 * 1024;
+/// Exec from a syscall runs `load_user_elf` on the task stack (exception frame +
+/// `[MAX_INIT_PAGES]`/`[USER_STACK_PAGES]` frame arrays). 8 KiB overflowed after
+/// widening the user stack to 64 KiB (AArch64 CI hung in `dealloc`).
+const STACK_SIZE: usize = 16 * 1024;
 const MAX_FDS: usize = 8;
 /// 0 = stdin, 1 = stdout, 2 = stderr (reserved; write uses syscall today).
 const FD_USER_BASE: usize = 3;
@@ -173,7 +176,7 @@ pub fn set_brk(brk: u64) {
 }
 
 fn heap_base_for(base: u64, stack_off: u64) -> u64 {
-    base + stack_off + crate::user::PAGE as u64
+    base + stack_off + (crate::user::USER_STACK_PAGES * crate::user::PAGE) as u64
 }
 
 pub fn save_user_context(rip: usize, rsp: usize) {
@@ -220,7 +223,8 @@ pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
             None => return usize::MAX,
         };
         let stack = t.stack_off as usize;
-        let in_stack = buf >= base + stack && end <= base + stack + 4096;
+        let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
+        let in_stack = buf >= base + stack && end <= base + stack + stack_bytes;
         if !in_stack {
             return usize::MAX;
         }
@@ -261,8 +265,9 @@ pub fn fd_read(
                 None => return usize::MAX,
             };
             let stack = t.stack_off as usize;
-            let in_code = buf >= base && end <= base + t.image_span;
-            let in_stack = buf >= base + stack && end <= base + stack + 4096;
+            let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
+            let in_code = buf >= base && end <= base + stack;
+            let in_stack = buf >= base + stack && end <= base + stack + stack_bytes;
             if !in_code && !in_stack {
                 return usize::MAX;
             }

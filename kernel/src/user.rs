@@ -20,6 +20,8 @@ const SYS_WAIT: usize = 7;
 const SYS_LISTDIR: usize = 8;
 const SYS_BRK: usize = 9;
 pub const PAGE: usize = 4096;
+/// User stack mapping below the heap (4 KiB is too small for `std` I/O).
+pub const USER_STACK_PAGES: usize = 16;
 const HEAP_PAGES: usize = 64;
 const MAX_INIT_PAGES: usize = 32;
 const MAX_PATH: usize = 64;
@@ -181,9 +183,13 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     }
     unsafe { dealloc(buf, layout) };
 
-    let stack = mm::alloc_frame();
-    let aspace = create_aspace(&frames[..n_pages], stack, base, stack_off);
-    Some((aspace, entry as usize, info.span, stack_off))
+    let mut stack_frames = [0u64; USER_STACK_PAGES];
+    for frame in &mut stack_frames {
+        *frame = mm::alloc_frame();
+    }
+    let aspace = create_aspace(&frames[..n_pages], &stack_frames, base, stack_off);
+    let mapped_span = n_pages * PAGE;
+    Some((aspace, entry as usize, mapped_span, stack_off))
 }
 
 /// Scratch for `reload_user_elf` (no kernel-heap alloc; CI exhausts heap after fork).
@@ -203,6 +209,11 @@ fn reload_user_elf(
     let info = elf::image_span(bytes).ok()?;
     let n_pages = info.span.div_ceil(PAGE);
     if n_pages == 0 || n_pages > MAX_INIT_PAGES {
+        return None;
+    }
+    // Code must sit below the mapped stack. Otherwise PT_LOAD pages overlap stack
+    // slots (reload saw stack PTEs as "mapped" and clobbered them — heap #10).
+    if n_pages * PAGE > stack_off as usize {
         return None;
     }
     for i in 0..n_pages {
@@ -237,7 +248,7 @@ fn reload_user_elf(
         }
         sync_icache(mm::hhdm(phys) as usize, PAGE);
     }
-    Some((entry as usize, info.span, stack_off))
+    Some((entry as usize, n_pages * PAGE, stack_off))
 }
 
 /// SysV-style user stack: `[argc][argv…][NULL][strings]`, 16-byte aligned.
@@ -246,7 +257,7 @@ fn build_argv_stack(aspace: u64, user_base: u64, stack_off: u64, args: &[&[u8]])
     if args.len() > MAX_ARGC {
         return None;
     }
-    let stack_top = (user_base + stack_off + PAGE as u64) as usize;
+    let stack_top = (user_base + stack_off + (USER_STACK_PAGES * PAGE) as u64) as usize;
     let stack_bot = (user_base + stack_off) as usize;
     let mut sp = stack_top;
     let mut ptrs = [0usize; MAX_ARGC];
@@ -340,12 +351,15 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
         sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
     }
     let stack_va = base + stack_off;
-    let stack_phys = virt_to_phys(src, stack_va)?;
-    let stack = mm::alloc_frame();
-    unsafe {
-        core::ptr::copy_nonoverlapping(mm::hhdm(stack_phys), mm::hhdm(stack), PAGE);
+    let mut stack_frames = [0u64; USER_STACK_PAGES];
+    for i in 0..USER_STACK_PAGES {
+        let phys = virt_to_phys(src, stack_va + (i * PAGE) as u64)?;
+        stack_frames[i] = mm::alloc_frame();
+        unsafe {
+            core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(stack_frames[i]), PAGE);
+        }
     }
-    let aspace = create_aspace(&frames[..n_pages], stack, base, stack_off);
+    let aspace = create_aspace(&frames[..n_pages], &stack_frames, base, stack_off);
     let heap_base = heap_base_va(base, stack_off);
     let heap_end = align_up_usize(brk_cur as usize, PAGE);
     let mut va = heap_base as usize;
@@ -367,7 +381,7 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
 }
 
 fn heap_base_va(base: u64, stack_off: u64) -> u64 {
-    base + stack_off + PAGE as u64
+    base + stack_off + (USER_STACK_PAGES * PAGE) as u64
 }
 
 fn heap_limit_va(base: u64, stack_off: u64) -> u64 {
@@ -632,12 +646,13 @@ fn try_resume_exec_via_syscall_frame(
     if frame_ptr.is_null() {
         return;
     }
-    let mut frame = copy_fork_syscall_frame(frame_ptr);
-    frame[0] = argc as u64;
-    frame[1] = argv as u64;
-    frame[32] = entry as u64;
-    frame[34] = rsp as u64;
-    crate::arch::fork_eret_to_user(frame.as_mut_ptr());
+    unsafe {
+        *frame_ptr.add(0) = argc as u64;
+        *frame_ptr.add(1) = argv as u64;
+        *frame_ptr.add(32) = entry as u64;
+        *frame_ptr.add(34) = rsp as u64;
+        crate::arch::fork_eret_to_user(frame_ptr);
+    }
 }
 
 /// Resume a forked child with the parent's user GPRs (rax/x0 = 0).
@@ -989,34 +1004,34 @@ fn sys_brk(req: usize) -> usize {
 }
 
 fn user_range_ok(ptr: usize, len: usize) -> bool {
-    let (base, img, stack) = task::current_user_map();
+    let (base, _img, stack) = task::current_user_map();
     let base = base as usize;
     let end = match ptr.checked_add(len) {
         Some(e) => e,
         None => return false,
     };
     let stack = stack as usize;
-    let in_code = ptr >= base && end <= base + img;
-    let in_stack = ptr >= base + stack && end <= base + stack + PAGE;
+    let in_code = ptr >= base && end <= base + stack;
+    let in_stack = ptr >= base + stack && end <= base + stack + USER_STACK_PAGES * PAGE;
     let heap_base = heap_base_va(base as u64, stack as u64) as usize;
     let brk = task::current_brk() as usize;
     let in_heap = brk > heap_base && ptr >= heap_base && end <= brk;
     in_code || in_stack || in_heap
 }
 
-fn create_aspace(code: &[u64], stack_phys: u64, base: u64, stack_off: u64) -> u64 {
+fn create_aspace(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
-        create_aspace_x86(code, stack_phys, base, stack_off)
+        create_aspace_x86(code, stack, base, stack_off)
     }
     #[cfg(target_arch = "aarch64")]
     {
-        create_aspace_aarch64(code, stack_phys, base, stack_off)
+        create_aspace_aarch64(code, stack, base, stack_off)
     }
 }
 
 #[cfg(target_arch = "x86_64")]
-fn create_aspace_x86(code: &[u64], stack_phys: u64, base: u64, stack_off: u64) -> u64 {
+fn create_aspace_x86(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {
     const PRESENT: u64 = 1;
     const WRITE: u64 = 1 << 1;
     const USER: u64 = 1 << 2;
@@ -1040,12 +1055,14 @@ fn create_aspace_x86(code: &[u64], stack_phys: u64, base: u64, stack_off: u64) -
         );
     }
     let stack_va = base + stack_off;
-    map_page_x86(
-        pml4_phys,
-        stack_va,
-        stack_phys,
-        PRESENT | WRITE | USER | NX,
-    );
+    for (i, &phys) in stack.iter().enumerate() {
+        map_page_x86(
+            pml4_phys,
+            stack_va + (i * PAGE) as u64,
+            phys,
+            PRESENT | WRITE | USER | NX,
+        );
+    }
     pml4_phys
 }
 
@@ -1112,7 +1129,7 @@ fn ensure_user(entry: &mut u64, table_flags: u64, huge: u64) -> *mut [u64; 512] 
 }
 
 #[cfg(target_arch = "aarch64")]
-fn create_aspace_aarch64(code: &[u64], stack_phys: u64, _base: u64, stack_off: u64) -> u64 {
+fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64) -> u64 {
     const TABLE: u64 = 0b11;
     const PAGE_DESC: u64 = 0b11;
     const SH_INNER: u64 = 0b11 << 8;
@@ -1147,7 +1164,10 @@ fn create_aspace_aarch64(code: &[u64], stack_phys: u64, _base: u64, stack_off: u
             l3_t[i] = PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RW | PXN;
         }
         let stack_i = (stack_off as usize) / PAGE;
-        l3_t[stack_i] = PAGE_DESC | (stack_phys & PA) | SH_INNER | AF | AP_RW | PXN | UXN;
+        for (i, &phys) in stack.iter().enumerate() {
+            l3_t[stack_i + i] =
+                PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RW | PXN | UXN;
+        }
     }
     l0
 }

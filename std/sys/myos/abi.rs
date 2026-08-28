@@ -36,15 +36,14 @@ pub fn close(fd: i32) -> isize {
 }
 
 #[inline]
-pub fn write(fd: i32, buf: &[u8]) -> isize {
+pub fn write(_fd: i32, buf: &[u8]) -> isize {
     let ret: usize;
     unsafe {
         core::arch::asm!(
             "syscall",
             in("rax") SYS_WRITE,
-            in("rdi") fd as usize,
-            in("rsi") buf.as_ptr() as usize,
-            in("rdx") buf.len(),
+            in("rdi") buf.as_ptr() as usize,
+            in("rsi") buf.len(),
             lateout("rax") ret,
             out("rcx") _,
             out("r11") _,

@@ -36,6 +36,11 @@ jobs:
       - name: Install QEMU, AArch64 UEFI firmware, and a C compiler
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm qemu-efi-aarch64 gcc
 
+      - name: Build patched std hello (x86-myos)
+        run: |
+          chmod +x scripts/build-std-hello.sh scripts/prepare-rust-std-myos.sh scripts/myos-rustc.sh
+          ./scripts/build-std-hello.sh
+
       - name: Build kernel and Limine BIOS+UEFI disk images
         run: |
           cargo clean -p myos

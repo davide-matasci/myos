@@ -91,6 +91,27 @@ fn main() {
             &["../lib/src/lib.rs", "../lib/Cargo.toml"],
         );
     }
+
+    if arch == "x86_64" {
+        embed_std_hello(manifest);
+    }
+}
+
+fn embed_std_hello(manifest_dir: &Path) {
+    let stable = manifest_dir
+        .join("../target")
+        .join("std-hello-x86_64-unknown-myos");
+    println!("cargo:rerun-if-changed={}", stable.display());
+    if !stable.is_file() {
+        panic!(
+            "std-hello ELF missing at {} (run ./scripts/build-std-hello.sh)",
+            stable.display()
+        );
+    }
+    println!(
+        "cargo:rustc-env=USER_STD_HELLO_PATH={}",
+        stable.display()
+    );
 }
 
 fn nested_elf(

@@ -34,15 +34,11 @@ pub unsafe extern "C" fn _start() -> ! {
     unsafe { init(argc, argv, 0) };
 
     unsafe extern "C" {
-        fn main() -> i32;
+        fn main();
     }
 
-    let code = unsafe { main() };
-
-    crate::rt::thread_cleanup();
-    crate::rt::cleanup();
-    crate::sys::exit::unique_thread_exit();
-    crate::sys::exit::exit(code);
+    unsafe { main() };
+    abi::exit(0);
 }
 
 #[doc(hidden)]
