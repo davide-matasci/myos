@@ -14,6 +14,8 @@ const SYS_OPEN: usize = 2;
 const SYS_READ: usize = 3;
 const SYS_CLOSE: usize = 4;
 const SYS_EXEC: usize = 5;
+const SYS_FORK: usize = 6;
+const SYS_WAIT: usize = 7;
 const PAGE: usize = 4096;
 const MAX_INIT_PAGES: usize = 32;
 const MAX_PATH: usize = 64;
@@ -30,11 +32,7 @@ const DEFAULT_USER_BASE: u64 = 0x0000_0080_0000_0000; // PML4[1]
 const DEFAULT_USER_BASE: u64 = 0x4000_0000; // L1[1] on QEMU virt RAM
 
 static USER_BASE: AtomicU64 = AtomicU64::new(DEFAULT_USER_BASE);
-static IMAGE_SPAN: AtomicUsize = AtomicUsize::new(PAGE);
-static STACK_OFF: AtomicU64 = AtomicU64::new(0x2000);
 
-#[cfg(target_arch = "x86_64")]
-static mut USER_RSP: usize = 0;
 #[cfg(target_arch = "x86_64")]
 static mut KERNEL_RSP0: usize = 0;
 
@@ -43,23 +41,26 @@ core::arch::global_asm!(
     r#"
     .global syscall_entry
 syscall_entry:
-    mov [rip + {user_rsp}], rsp
+    mov r10, rsp
     mov rsp, [rip + {kernel_rsp0}]
     push r11
     push rcx          # user rip
-    push rax          # 16-byte align for call
+    push r10          # user rsp (on this kernel stack, survives wait/yield)
+    push rax          # nr; 16-byte align for call
+    mov r9, r10       # user_rsp
+    mov r8, rcx       # user_rip
     mov rcx, rdx      # a2
     mov rdx, rsi      # a1
     mov rsi, rdi      # a0
     mov rdi, rax      # nr
     call {dispatch}
     add rsp, 8
+    pop r10
     pop rcx
     pop r11
-    mov rsp, [rip + {user_rsp}]
+    mov rsp, r10
     sysretq
     "#,
-    user_rsp = sym USER_RSP,
     kernel_rsp0 = sym KERNEL_RSP0,
     dispatch = sym syscall_dispatch,
 );
@@ -128,15 +129,15 @@ fn wrmsr(msr: u32, val: u64) {
 pub fn spawn_init() {
     let base = pick_user_base();
     USER_BASE.store(base, Ordering::SeqCst);
-    let (aspace, entry, rsp) = load_user_elf(INIT_ELF).expect("init ELF");
-    task::spawn_user(aspace, entry, rsp);
+    let (aspace, entry, rsp, span, off) = load_user_elf(INIT_ELF).expect("init ELF");
+    task::spawn_user(aspace, entry, rsp, base, span, off);
     USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
     DID_SPAWN.store(true, Ordering::SeqCst);
 }
 
 /// Realize `bytes` at USER_BASE: frames, stack page, aspace.
-/// Updates IMAGE_SPAN / STACK_OFF. Old frames are leaked on exec (ok).
-fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize)> {
+/// Old frames are leaked on exec (ok).
+fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let n_pages = info.span.div_ceil(PAGE);
     if n_pages == 0 || n_pages > MAX_INIT_PAGES {
@@ -144,9 +145,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize)> {
     }
 
     let base = USER_BASE.load(Ordering::SeqCst);
-    IMAGE_SPAN.store(info.span, Ordering::SeqCst);
     let stack_off = (n_pages * PAGE) as u64;
-    STACK_OFF.store(stack_off, Ordering::SeqCst);
 
     let layout = Layout::from_size_align(info.span.max(1), PAGE).ok()?;
     let buf = unsafe { alloc_zeroed(layout) };
@@ -175,9 +174,38 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize)> {
     unsafe { dealloc(buf, layout) };
 
     let stack = mm::alloc_frame();
-    let aspace = create_aspace(&frames[..n_pages], stack);
+    let aspace = create_aspace(&frames[..n_pages], stack, base, stack_off);
     let rsp = (base + stack_off + PAGE as u64) as usize;
-    Some((aspace, entry as usize, rsp))
+    Some((aspace, entry as usize, rsp, info.span, stack_off))
+}
+
+/// Copy this process's user code+stack pages into a new aspace at the same VA.
+pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64) -> Option<u64> {
+    let n_pages = span.div_ceil(PAGE);
+    if n_pages == 0 || n_pages > MAX_INIT_PAGES {
+        return None;
+    }
+    let mut frames = [0u64; MAX_INIT_PAGES];
+    for i in 0..n_pages {
+        frames[i] = mm::alloc_frame();
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (base as usize + i * PAGE) as *const u8,
+                mm::hhdm(frames[i]),
+                PAGE,
+            );
+        }
+        sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
+    }
+    let stack = mm::alloc_frame();
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            (base as usize + stack_off as usize) as *const u8,
+            mm::hhdm(stack),
+            PAGE,
+        );
+    }
+    Some(create_aspace(&frames[..n_pages], stack, base, stack_off))
 }
 
 fn pick_user_base() -> u64 {
@@ -207,6 +235,10 @@ pub fn both_exited() -> bool {
 
 pub fn note_exit() {
     USERS_ALIVE.fetch_sub(1, Ordering::SeqCst);
+}
+
+pub fn note_fork() {
+    USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
 }
 
 pub fn set_kernel_rsp0(top: usize) {
@@ -309,6 +341,7 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
             rf = in(reg) rflags,
             ucs = in(reg) cs,
             urip = in(reg) user_rip,
+            in("rax") 0u64,
             options(noreturn),
         );
     }
@@ -326,6 +359,7 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize) -> ! {
                 "eret",
                 rip = in(reg) user_rip,
                 rsp = in(reg) user_rsp,
+                in("x0") 0u64,
                 options(noreturn),
             );
         } else {
@@ -337,6 +371,7 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize) -> ! {
                 "eret",
                 rip = in(reg) user_rip,
                 rsp = in(reg) user_rsp,
+                in("x0") 0u64,
                 options(noreturn),
             );
         }
@@ -344,7 +379,15 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize) -> ! {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn syscall_dispatch(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
+pub extern "C" fn syscall_dispatch(
+    nr: usize,
+    a0: usize,
+    a1: usize,
+    a2: usize,
+    user_rip: usize,
+    user_rsp: usize,
+) -> usize {
+    task::save_user_context(user_rip, user_rsp);
     match nr {
         SYS_WRITE => sys_write(a0, a1),
         SYS_EXIT => task::die(),
@@ -352,6 +395,8 @@ pub extern "C" fn syscall_dispatch(nr: usize, a0: usize, a1: usize, a2: usize) -
         SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
         SYS_EXEC => sys_exec(a0, a1),
+        SYS_FORK => sys_fork(),
+        SYS_WAIT => sys_wait(),
         _ => SYSERR,
     }
 }
@@ -424,39 +469,51 @@ fn sys_exec(ptr: usize, path_len: usize) -> usize {
     let Some(bytes) = fs::lookup(path) else {
         return SYSERR;
     };
-    let Some((aspace, entry, rsp)) = load_user_elf(bytes) else {
+    let Some((aspace, entry, rsp, span, off)) = load_user_elf(bytes) else {
         return SYSERR;
     };
-    task::replace_user(aspace, entry, rsp);
+    let base = USER_BASE.load(Ordering::SeqCst);
+    task::replace_user(aspace, entry, rsp, base, span, off);
     enter(entry, rsp);
 }
 
+fn sys_fork() -> usize {
+    match task::fork_current() {
+        Some(pid) => pid,
+        None => SYSERR,
+    }
+}
+
+fn sys_wait() -> usize {
+    task::wait_child()
+}
+
 fn user_range_ok(ptr: usize, len: usize) -> bool {
-    let base = USER_BASE.load(Ordering::SeqCst) as usize;
+    let (base, img, stack) = task::current_user_map();
+    let base = base as usize;
     let end = match ptr.checked_add(len) {
         Some(e) => e,
         None => return false,
     };
-    let img = IMAGE_SPAN.load(Ordering::SeqCst);
-    let stack = STACK_OFF.load(Ordering::SeqCst) as usize;
+    let stack = stack as usize;
     let in_code = ptr >= base && end <= base + img;
     let in_stack = ptr >= base + stack && end <= base + stack + PAGE;
     in_code || in_stack
 }
 
-fn create_aspace(code: &[u64], stack_phys: u64) -> u64 {
+fn create_aspace(code: &[u64], stack_phys: u64, base: u64, stack_off: u64) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
-        create_aspace_x86(code, stack_phys)
+        create_aspace_x86(code, stack_phys, base, stack_off)
     }
     #[cfg(target_arch = "aarch64")]
     {
-        create_aspace_aarch64(code, stack_phys)
+        create_aspace_aarch64(code, stack_phys, base, stack_off)
     }
 }
 
 #[cfg(target_arch = "x86_64")]
-fn create_aspace_x86(code: &[u64], stack_phys: u64) -> u64 {
+fn create_aspace_x86(code: &[u64], stack_phys: u64, base: u64, stack_off: u64) -> u64 {
     const PRESENT: u64 = 1;
     const WRITE: u64 = 1 << 1;
     const USER: u64 = 1 << 2;
@@ -470,7 +527,6 @@ fn create_aspace_x86(code: &[u64], stack_phys: u64) -> u64 {
         dst_t.copy_from_slice(src_t);
     }
 
-    let base = USER_BASE.load(Ordering::SeqCst);
     // RW so sys_read can fill PT_LOAD (user/ok MSG_BUF). Still executable.
     for (i, &phys) in code.iter().enumerate() {
         map_page_x86(
@@ -480,7 +536,7 @@ fn create_aspace_x86(code: &[u64], stack_phys: u64) -> u64 {
             PRESENT | WRITE | USER,
         );
     }
-    let stack_va = base + STACK_OFF.load(Ordering::SeqCst);
+    let stack_va = base + stack_off;
     map_page_x86(
         pml4_phys,
         stack_va,
@@ -523,7 +579,7 @@ fn ensure_user(entry: &mut u64, table_flags: u64, huge: u64) -> *mut [u64; 512] 
 }
 
 #[cfg(target_arch = "aarch64")]
-fn create_aspace_aarch64(code: &[u64], stack_phys: u64) -> u64 {
+fn create_aspace_aarch64(code: &[u64], stack_phys: u64, _base: u64, stack_off: u64) -> u64 {
     const TABLE: u64 = 0b11;
     const PAGE_DESC: u64 = 0b11;
     const SH_INNER: u64 = 0b11 << 8;
@@ -557,7 +613,7 @@ fn create_aspace_aarch64(code: &[u64], stack_phys: u64) -> u64 {
         for (i, &phys) in code.iter().enumerate() {
             l3_t[i] = PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RW | PXN;
         }
-        let stack_i = code.len();
+        let stack_i = (stack_off as usize) / PAGE;
         l3_t[stack_i] = PAGE_DESC | (stack_phys & PA) | SH_INNER | AF | AP_RW | PXN | UXN;
     }
     l0
