@@ -26,6 +26,12 @@ fn main() {
         panic!("hello ELF missing at {}", hello_path.display())
     });
 
+    let ok_path = manifest.join("target").join("ok-x86_64-unknown-none");
+    println!("cargo:rerun-if-changed={}", ok_path.display());
+    let ok = std::fs::read(&ok_path).unwrap_or_else(|_| {
+        panic!("ok ELF missing at {}", ok_path.display())
+    });
+
     let limine = fetch_limine(&limine_dir);
     let bootx64 = std::fs::read(limine.bootx64()).expect("BOOTX64.EFI");
     let bios_sys = std::fs::read(limine.bios_sys()).expect("limine-bios.sys");
@@ -38,6 +44,7 @@ fn main() {
         &bootx64,
         Some(&bios_sys),
         &hello,
+        &ok,
     );
     bios_install(&limine.tool(), &bios_path);
 
