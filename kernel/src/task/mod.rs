@@ -390,12 +390,12 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
 
     let (slot, reuse_stack) = {
         let tasks = TASKS.lock();
-        // Prefer dead kernel-thread stacks (task_a/b) so fork never needs a fresh
-        // kernel-heap stack on memory-tight CI (Unused slots would alloc 8 KiB).
+        // Reuse kernel stacks left behind by reaped fork children (stack_base kept
+        // in EMPTY slots) or dead kernel threads — avoids kernel-heap alloc on CI.
         let slot = tasks
             .iter()
             .position(|t| {
-                t.state == State::Dead
+                (t.state == State::Unused || t.state == State::Dead)
                     && t.user_rip == 0
                     && t.aspace == 0
                     && t.stack_base != 0
@@ -406,8 +406,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             irq_restore(flags);
             return None;
         };
-        let reuse = tasks[slot].state == State::Dead && tasks[slot].stack_base != 0;
-        let stack_base = if reuse { tasks[slot].stack_base } else { 0 };
+        let reuse = tasks[slot].stack_base != 0;
+        let stack_base = tasks[slot].stack_base;
         drop(tasks);
         (slot, (reuse, stack_base))
     };
@@ -479,7 +479,11 @@ pub fn wait_child() -> usize {
                 any = true;
             }
             if let Some(i) = reap {
+                let stack_base = tasks[i].stack_base;
                 tasks[i] = EMPTY;
+                if stack_base != 0 {
+                    tasks[i].stack_base = stack_base;
+                }
                 drop(tasks);
                 irq_restore(flags);
                 return i;
