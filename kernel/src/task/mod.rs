@@ -57,8 +57,9 @@ pub struct ForkRegs {
     pub r14: u64,
     #[cfg(target_arch = "x86_64")]
     pub r15: u64,
+    /// Full `lower_sync` frame (x0..x30, elr, spsr, sp_el0). Index 31 unused.
     #[cfg(target_arch = "aarch64")]
-    pub x: [u64; 31],
+    pub frame: [u64; 36],
 }
 
 #[derive(Clone, Copy)]
@@ -80,6 +81,8 @@ struct Task {
     fork_regs: Option<ForkRegs>,
     user_argc: usize,
     user_argv: usize,
+    /// Current program break (end of heap). 0 for kernel threads.
+    brk_cur: u64,
 }
 
 const EMPTY: Task = Task {
@@ -99,6 +102,7 @@ const EMPTY: Task = Task {
     fork_regs: None,
     user_argc: 0,
     user_argv: 0,
+    brk_cur: 0,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -153,6 +157,23 @@ pub fn current_user_map() -> (u64, usize, u64) {
     let out = (t.user_base, t.image_span, t.stack_off);
     irq_restore(flags);
     out
+}
+
+pub fn current_brk() -> u64 {
+    let flags = irq_save();
+    irq_off();
+    let id = CURRENT.load(Ordering::SeqCst);
+    let b = TASKS.lock()[id].brk_cur;
+    irq_restore(flags);
+    b
+}
+
+pub fn set_brk(brk: u64) {
+    with_current_mut(|t| t.brk_cur = brk);
+}
+
+fn heap_base_for(base: u64, stack_off: u64) -> u64 {
+    base + stack_off + crate::user::PAGE as u64
 }
 
 pub fn save_user_context(rip: usize, rsp: usize) {
@@ -291,6 +312,7 @@ pub fn replace_user(
         t.user_argv = user_argv;
         t.fds = [None; MAX_FDS];
         t.fork_regs = None;
+        t.brk_cur = heap_base_for(user_base, stack_off);
     });
     user::switch_aspace(aspace);
     LOADED_ASPACE.store(aspace, Ordering::SeqCst);
@@ -332,7 +354,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (fds, base, span, off, ppid, uargc, uargv) = {
+    let (fds, base, span, off, ppid, uargc, uargv, brk) = {
         let tasks = TASKS.lock();
         let id = CURRENT.load(Ordering::SeqCst);
         let t = tasks[id];
@@ -349,10 +371,11 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             id,
             t.user_argc,
             t.user_argv,
+            t.brk_cur,
         )
     };
 
-    let Some(aspace) = user::copy_user_aspace(base, span, off) else {
+    let Some(aspace) = user::copy_user_aspace(base, span, off, brk) else {
         irq_restore(flags);
         return None;
     };
@@ -364,23 +387,50 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             return None;
         }
     };
-    let stack = unsafe { alloc(layout) };
-    if stack.is_null() {
-        irq_restore(flags);
-        return None;
-    }
-    let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as usize) };
-    let top = stack as usize + STACK_SIZE;
+
+    let (slot, reuse_stack) = {
+        let tasks = TASKS.lock();
+        // Reuse kernel stacks left behind by reaped fork children (stack_base kept
+        // in EMPTY slots) or dead kernel threads — avoids kernel-heap alloc on CI.
+        let slot = tasks
+            .iter()
+            .position(|t| {
+                (t.state == State::Unused || t.state == State::Dead)
+                    && t.user_rip == 0
+                    && t.aspace == 0
+                    && t.stack_base != 0
+            })
+            .or_else(|| tasks.iter().position(|t| t.state == State::Unused));
+        let Some(slot) = slot else {
+            drop(tasks);
+            irq_restore(flags);
+            return None;
+        };
+        let reuse = tasks[slot].stack_base != 0;
+        let stack_base = tasks[slot].stack_base;
+        drop(tasks);
+        (slot, (reuse, stack_base))
+    };
+
+    let (stack_base, sp, top) = if reuse_stack.0 {
+        let sb = reuse_stack.1;
+        let sp = unsafe { seed_stack(sb as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
+        (sb, sp, sb + STACK_SIZE)
+    } else {
+        let stack = unsafe { alloc(layout) };
+        if stack.is_null() {
+            irq_restore(flags);
+            return None;
+        }
+        let sb = stack as usize;
+        let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as *const () as usize) };
+        (sb, sp, sb + STACK_SIZE)
+    };
 
     let mut tasks = TASKS.lock();
-    let Some(slot) = tasks.iter().position(|t| t.state == State::Unused) else {
-        drop(tasks);
-        irq_restore(flags);
-        return None;
-    };
     tasks[slot] = Task {
         state: State::Ready,
-        stack_base: stack as usize,
+        stack_base,
         sp,
         entry: None,
         aspace,
@@ -395,6 +445,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         fork_regs: Some(child_regs),
         user_argc: uargc,
         user_argv: uargv,
+        brk_cur: brk,
     };
     drop(tasks);
     user::note_fork();
@@ -428,7 +479,11 @@ pub fn wait_child() -> usize {
                 any = true;
             }
             if let Some(i) = reap {
+                let stack_base = tasks[i].stack_base;
                 tasks[i] = EMPTY;
+                if stack_base != 0 {
+                    tasks[i].stack_base = stack_base;
+                }
                 drop(tasks);
                 irq_restore(flags);
                 return i;
@@ -470,6 +525,11 @@ fn spawn_inner(
         .iter()
         .position(|t| t.state == State::Unused)
         .expect("no task slot");
+    let brk_cur = if user_rip != 0 {
+        heap_base_for(user_base, stack_off)
+    } else {
+        0
+    };
     tasks[slot] = Task {
         state: State::Ready,
         stack_base: stack as usize,
@@ -487,6 +547,7 @@ fn spawn_inner(
         fork_regs,
         user_argc,
         user_argv,
+        brk_cur,
     };
     drop(tasks);
     irq_restore(flags);

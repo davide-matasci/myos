@@ -319,7 +319,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-cpu")
         .arg("cortex-a72")
         .arg("-m")
-        .arg("512")
+        .arg("1024")
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",

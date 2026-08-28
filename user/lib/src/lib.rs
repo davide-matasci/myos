@@ -1,8 +1,10 @@
 #![no_std]
 
+pub mod alloc;
 pub mod args;
 pub mod runtime;
 
+pub use alloc::Heap;
 pub use args::{arg, argc};
 
 const MAX_EXEC_ARGS: usize = 16;
@@ -74,6 +76,16 @@ pub fn wait() -> Option<usize> {
 /// List bootfs entries (newline-separated) into `buf`. Returns byte count.
 pub fn listdir(buf: &mut [u8]) -> usize {
     unsafe { sys_listdir(buf.as_mut_ptr() as usize, buf.len()) }
+}
+
+/// Adjust the program break. `addr == 0` queries the current break.
+pub fn brk(addr: usize) -> usize {
+    unsafe { sys_brk(addr) }
+}
+
+/// Seed [`Heap`] from the current program break.
+pub fn heap_init() {
+    alloc::heap_init();
 }
 
 /// Read a line from stdin (fd 0), including the trailing `\n` if present.
@@ -249,6 +261,24 @@ unsafe fn sys_listdir(buf: usize, len: usize) -> usize {
     ret
 }
 
+#[cfg(target_arch = "x86_64")]
+unsafe fn sys_brk(addr: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "syscall",
+        in("rax") 9usize,
+        in("rdi") addr,
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        lateout("rdi") _,
+        lateout("rsi") _,
+        lateout("rdx") _,
+        options(nostack),
+    );
+    ret
+}
+
 #[cfg(target_arch = "aarch64")]
 unsafe fn sys_write(ptr: usize, len: usize) {
     core::arch::asm!(
@@ -350,6 +380,18 @@ unsafe fn sys_listdir(buf: usize, len: usize) -> usize {
         in("x8") 8usize,
         inout("x0") buf => ret,
         in("x1") len,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn sys_brk(addr: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "svc #0",
+        in("x8") 9usize,
+        inout("x0") addr => ret,
         options(nostack),
     );
     ret

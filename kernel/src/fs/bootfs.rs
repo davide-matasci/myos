@@ -5,6 +5,7 @@ use spin::Mutex;
 
 use crate::console;
 
+const HEAP_ELF: &[u8] = include_bytes!(env!("USER_HEAP_PATH"));
 const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
 const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
 const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
@@ -99,6 +100,7 @@ fn log_get(name: &str, n: usize) {
 
 pub fn init() {
     let _ = register("ok", OK_ELF);
+    let _ = register("heap", HEAP_ELF);
     let _ = register("sh", SH_ELF);
     let _ = register("echo", ECHO_ELF);
     let _ = register("cat", CAT_ELF);

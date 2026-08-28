@@ -365,7 +365,7 @@ The shell (`user/sh`) is a tiny `#![no_std]` program: it smoke-runs `/ok`
 (fork/exec with argv) for CI, then reads lines from **stdin (fd 0)** and
 fork/exec's built-in utilities (`echo`, `cat`, `ls`, `ok`, …). Shared
 helpers live in `user/lib` (`myos_user`: syscalls, argv, `read_line`,
-`listdir`).
+`listdir`, `brk`, bump [`Heap`](user/lib/src/alloc.rs)).
 
 `user/ok` is its own tiny workspace (same shape as `user/init` /
 `modules/hello`: `panic = "abort"`, `opt-level = "s"`). `kernel/build.rs`
@@ -394,12 +394,31 @@ compiler ports). Errors return `usize::MAX`.
 | 6 | fork | → child pid (parent), 0 (child) |
 | 7 | wait | → reaped child pid |
 | 8 | listdir | buf, len → byte count (bootfs names, newline-separated) |
+| 9 | brk | addr → program break (0 = query). Per-process heap after stack (256 KiB max) |
 
 x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. At `_start`, argc/argv
 are on the user stack (System V). AArch64 `svc`: `x8`=nr, `x0`/`x1`/`x2`=a0/a1/a2.
 At `_start`, the kernel passes **argc in x0, argv in x1** (argv points to
 an array of string pointers). Exec argv strings must live in writable user
 memory (stack); rodata literals are rejected by the kernel copy-in path.
+
+### Userspace heap and `std` bring-up
+
+Syscall **9 (`brk`)** backs a per-process heap region above the stack page.
+`user/lib` exposes `brk`, `heap_init`, and a bump [`GlobalAlloc`](user/lib/src/alloc.rs)
+(`myos_user::Heap`). The `user/heap` ELF smoke-tests it (`alloc ok` on serial).
+
+To port **`std`** (see [OSDev](https://wiki.osdev.org/Porting_Rust_standard_library)),
+copy the in-repo PAL skeleton into a patched Rust tree:
+
+| Path | Role |
+|------|------|
+| `targets/x86_64-unknown-myos.json` | Custom userspace triple (`os = "myos"`) |
+| `std/pal/myos/` | PAL files → `library/std/src/sys/pal/myos/` in rustc |
+| `std/pal/README.md` | `build.rs` / `pal/mod.rs` patch steps, `-Z build-std` |
+
+Full `std` still needs more syscalls (`mmap`, time, …); the skeleton targets
+`println!("std ok")` after patching the pinned nightly.
 
 ## Layout
 
@@ -428,8 +447,11 @@ memory (stack); rodata literals are rejected by the kernel copy-in path.
 | `user/echo` | Print argv (`echo hello`) |
 | `user/cat` | Read a bootfs file to stdout |
 | `user/ls` | List bootfs entries (via `listdir`) |
-| `user/lib` | Shared `myos_user` syscall/argv helpers |
+| `user/lib` | Shared `myos_user` syscall/argv/`Heap` helpers |
+| `user/heap` | `#![no_std]` + `alloc` smoke test (`alloc ok`) |
 | `user/ok` | Second userspace ELF: `user ok`, then reads `/msg`; ESP `boot/ok` |
+| `targets/` | Custom Rust target specs (`x86_64-unknown-myos.json`) |
+| `std/pal/` | Rust `std` PAL skeleton + porting notes |
 | `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, PCI, legacy virtio-blk, isa-debug-exit |
 | `kernel/src/arch/x86/pci.rs` | PCI config via `0xCF8`/`0xCFC`; find virtio-blk |
 | `kernel/src/arch/aarch64/` | PL011, TTBR0 device map, GICv2 timer, lower-EL SVC, virtio-mmio blk, PSCI off |

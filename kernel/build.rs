@@ -73,6 +73,7 @@ fn main() {
     );
     for (crate_rel, bin, td, env_key) in [
         ("../user/sh", "sh", "sh-target", "USER_SH_PATH"),
+        ("../user/heap", "heap", "heap-target", "USER_HEAP_PATH"),
         ("../user/echo", "echo", "echo-target", "USER_ECHO_PATH"),
         ("../user/cat", "cat", "cat-target", "USER_CAT_PATH"),
         ("../user/ls", "ls", "ls-target", "USER_LS_PATH"),

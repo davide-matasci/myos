@@ -23,9 +23,8 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
 
 fn shell() -> ! {
     write(b"sh ok\n");
-    let mut smoke_arg = [0u8; ARG_LEN];
-    smoke_arg[..2].copy_from_slice(b"ok");
-    run_path(b"ok", &[&smoke_arg[..2]]);
+    smoke_fork_ping();
+    smoke_fork(b"ok", &[]);
     let mut line = [0u8; MAX_LINE];
     loop {
         write(PROMPT);
@@ -49,6 +48,45 @@ fn shell() -> ! {
             exit();
         }
         run_path(parts[0], &parts[..argc]);
+    }
+}
+
+/// Minimal fork+wait smoke (no exec in the child).
+fn smoke_fork_ping() {
+    match fork() {
+        Some(0) => exit(),
+        Some(_) => {
+            let _ = wait();
+            write(b"fork ok\n");
+        }
+        None => write(b"fork failed\n"),
+    }
+}
+
+/// Boot smoke via fork+exec+wait (CI covers fork+exec).
+fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
+    let mut path_buf = [0u8; 32];
+    let path = command_path(name, &mut path_buf);
+    let mut arg_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
+    let mut arg_slices: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
+    for (i, p) in parts.iter().enumerate() {
+        let n = p.len().min(ARG_LEN);
+        arg_bufs[i][..n].copy_from_slice(&p[..n]);
+    }
+    for i in 0..parts.len() {
+        let n = parts[i].len().min(ARG_LEN);
+        arg_slices[i] = &arg_bufs[i][..n];
+    }
+    match fork() {
+        Some(0) => {
+            exec(path, &arg_slices[..parts.len()]);
+            exit();
+        }
+        Some(_) => {
+            let _ = wait();
+            write(b"fork exec ok\n");
+        }
+        None => write(b"fork failed\n"),
     }
 }
 

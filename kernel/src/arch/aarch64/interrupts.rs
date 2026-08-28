@@ -206,11 +206,55 @@ sync_el:
 
 exception_hang:
     b exception_hang
+
+    // Fork child resume: same restore path as lower_sync after a syscall.
+    // x0 = pointer to a 16*18 byte frame (x0 patched to 0 by the caller).
+    .global fork_eret_from_frame
+fork_eret_from_frame:
+    mov sp, x0
+    ldp x0, x1, [sp, #16 * 16]
+    ldr x2, [sp, #16 * 17]
+    mrs x3, CurrentEL
+    cmp x3, #8
+    b.lt fork_rest_el1
+    msr elr_el2, x0
+    msr spsr_el2, x1
+    b fork_rest_done
+fork_rest_el1:
+    msr elr_el1, x0
+    msr spsr_el1, x1
+fork_rest_done:
+    msr sp_el0, x2
+    isb
+    ldr x30, [sp, #16 * 15]
+    ldp x28, x29, [sp, #16 * 14]
+    ldp x26, x27, [sp, #16 * 13]
+    ldp x24, x25, [sp, #16 * 12]
+    ldp x22, x23, [sp, #16 * 11]
+    ldp x20, x21, [sp, #16 * 10]
+    ldp x18, x19, [sp, #16 * 9]
+    ldp x16, x17, [sp, #16 * 8]
+    ldp x14, x15, [sp, #16 * 7]
+    ldp x12, x13, [sp, #16 * 6]
+    ldp x10, x11, [sp, #16 * 5]
+    ldp x8, x9, [sp, #16 * 4]
+    ldp x6, x7, [sp, #16 * 3]
+    ldp x4, x5, [sp, #16 * 2]
+    ldp x2, x3, [sp, #16 * 1]
+    ldp x0, x1, [sp, #16 * 0]
+    add sp, sp, #(16 * 18)
+    eret
     "#
 );
 
 unsafe extern "C" {
     fn exception_vectors();
+    fn fork_eret_from_frame(frame: *mut u64) -> !;
+}
+
+/// Resume a forked child by restoring a saved `lower_sync` frame (x0 = 0).
+pub fn fork_eret_to_user(frame: *mut u64) -> ! {
+    unsafe { fork_eret_from_frame(frame) }
 }
 
 fn current_el() -> u64 {

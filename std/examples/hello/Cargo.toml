@@ -1,0 +1,12 @@
+[package]
+name = "std-hello-myos"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "std-hello"
+path = "main.rs"
+
+# Requires a patched Rust sysroot; see std/pal/README.md.
+# This manifest is documentation-only in the stock repo CI.

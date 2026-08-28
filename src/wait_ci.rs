@@ -3,7 +3,7 @@ struct CiExpect {
     qemu_debug_exit: bool,
 }
 
-const CI_NEEDLES: [&str; 11] = [
+const CI_NEEDLES: [&str; 14] = [
     "Hello from myos",
     "heap ok",
     "int ok",
@@ -13,6 +13,9 @@ const CI_NEEDLES: [&str; 11] = [
     "mod ok",
     "limine mod ok",
     "sh ok",
+    "fork ok",
+    "fork exec ok",
+    "alloc ok",
     "user ok",
     "fat ok",
 ];

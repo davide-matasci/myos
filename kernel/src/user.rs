@@ -18,7 +18,9 @@ const SYS_EXEC: usize = 5;
 const SYS_FORK: usize = 6;
 const SYS_WAIT: usize = 7;
 const SYS_LISTDIR: usize = 8;
-const PAGE: usize = 4096;
+const SYS_BRK: usize = 9;
+pub const PAGE: usize = 4096;
+const HEAP_PAGES: usize = 64;
 const MAX_INIT_PAGES: usize = 32;
 const MAX_PATH: usize = 64;
 const MAX_ARGC: usize = 16;
@@ -184,6 +186,60 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     Some((aspace, entry as usize, info.span, stack_off))
 }
 
+/// Scratch for `reload_user_elf` (no kernel-heap alloc; CI exhausts heap after fork).
+const RELOAD_SCRATCH_BYTES: usize = MAX_INIT_PAGES * PAGE;
+static mut RELOAD_SCRATCH: [u8; RELOAD_SCRATCH_BYTES] = [0; RELOAD_SCRATCH_BYTES];
+
+/// Overwrite the current user image in an existing aspace (no new frames).
+/// Keeps `stack_off` so the mapped stack page stays valid. Fails if the new
+/// image needs more bytes than the current mapping span.
+fn reload_user_elf(
+    aspace: u64,
+    bytes: &[u8],
+    base: u64,
+    stack_off: u64,
+    _mapped_span: usize,
+) -> Option<(usize, usize, u64)> {
+    let info = elf::image_span(bytes).ok()?;
+    let n_pages = info.span.div_ceil(PAGE);
+    if n_pages == 0 || n_pages > MAX_INIT_PAGES {
+        return None;
+    }
+    for i in 0..n_pages {
+        if virt_to_phys(aspace, base + (i * PAGE) as u64).is_none() {
+            return None;
+        }
+    }
+    if info.span > RELOAD_SCRATCH_BYTES {
+        return None;
+    }
+    let buf = unsafe { &mut RELOAD_SCRATCH[..info.span] };
+    unsafe {
+        core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
+    }
+    let load_bias = base - info.min_vaddr;
+    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+    for i in 0..n_pages {
+        let va = base + (i * PAGE) as u64;
+        let Some(phys) = virt_to_phys(aspace, va) else {
+            return None;
+        };
+        let off = i * PAGE;
+        let len = core::cmp::min(PAGE, info.span - off);
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf.as_ptr().add(off), mm::hhdm(phys), len);
+            if len < PAGE {
+                core::ptr::write_bytes(mm::hhdm(phys).add(len), 0, PAGE - len);
+            }
+        }
+        sync_icache(mm::hhdm(phys) as usize, PAGE);
+    }
+    Some((entry as usize, info.span, stack_off))
+}
+
 /// SysV-style user stack: `[argc][argv…][NULL][strings]`, 16-byte aligned.
 /// Writes through the user aspace page tables (kernel cannot dereference user VAs).
 fn build_argv_stack(aspace: u64, user_base: u64, stack_off: u64, args: &[&[u8]]) -> Option<(usize, usize)> {
@@ -263,9 +319,8 @@ fn write_user_usize(aspace: u64, va: usize, val: usize) -> bool {
     write_user_bytes(aspace, va, &val.to_le_bytes())
 }
 
-/// Copy this process's user code+stack pages into a new aspace at the same VA.
-/// Copies via the current aspace's page tables + HHDM (not user VAs).
-pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64) -> Option<u64> {
+/// Copy this process's user code+stack+heap pages into a new aspace at the same VA.
+pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) -> Option<u64> {
     let n_pages = span.div_ceil(PAGE);
     if n_pages == 0 || n_pages > MAX_INIT_PAGES {
         return None;
@@ -290,7 +345,37 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64) -> Option<u64> {
     unsafe {
         core::ptr::copy_nonoverlapping(mm::hhdm(stack_phys), mm::hhdm(stack), PAGE);
     }
-    Some(create_aspace(&frames[..n_pages], stack, base, stack_off))
+    let aspace = create_aspace(&frames[..n_pages], stack, base, stack_off);
+    let heap_base = heap_base_va(base, stack_off);
+    let heap_end = align_up_usize(brk_cur as usize, PAGE);
+    let mut va = heap_base as usize;
+    while va < heap_end {
+        if virt_to_phys(src, va as u64).is_some() {
+            let phys = mm::alloc_frame();
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    mm::hhdm(virt_to_phys(src, va as u64)?),
+                    mm::hhdm(phys),
+                    PAGE,
+                );
+            }
+            map_heap_page(aspace, va as u64, phys);
+        }
+        va += PAGE;
+    }
+    Some(aspace)
+}
+
+fn heap_base_va(base: u64, stack_off: u64) -> u64 {
+    base + stack_off + PAGE as u64
+}
+
+fn heap_limit_va(base: u64, stack_off: u64) -> u64 {
+    heap_base_va(base, stack_off) + (HEAP_PAGES * PAGE) as u64
+}
+
+fn align_up_usize(v: usize, align: usize) -> usize {
+    (v + align - 1) & !(align - 1)
 }
 
 fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
@@ -504,22 +589,55 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
 
 #[cfg(target_arch = "aarch64")]
 fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
+    // Load from a stack slot so LLVM cannot reuse rip/argc in one asm block
+    // and reorder mov before msr (CI: exec eret with elr=0).
+    let args = [user_rip as u64, user_rsp as u64, user_argc as u64, user_argv as u64];
+    let p = args.as_ptr();
     unsafe {
+        let rip: u64;
+        let rsp: u64;
         core::arch::asm!(
+            "ldr {rip}, [{p}]",
+            "ldr {rsp}, [{p}, #8]",
             "msr elr_el1, {rip}",
             "msr sp_el0, {rsp}",
             "msr spsr_el1, xzr",
-            "mov x0, {argc}",
-            "mov x1, {argv}",
+            p = in(reg) p,
+            rip = lateout(reg) rip,
+            rsp = lateout(reg) rsp,
+            options(nostack, preserves_flags),
+        );
+        core::arch::asm!(
+            "ldr x0, [{p}, #16]",
+            "ldr x1, [{p}, #24]",
             "isb",
             "eret",
-            rip = in(reg) user_rip,
-            rsp = in(reg) user_rsp,
-            argc = in(reg) user_argc,
-            argv = in(reg) user_argv,
-            options(noreturn),
+            p = in(reg) p,
+            options(noreturn, nostack),
         );
     }
+}
+
+/// Exec from a syscall: copy the saved frame and eret through `fork_eret_from_frame`
+/// (same path as fork children). Patching ELR in place and returning through
+/// `lower_sync` miscompiled for forked children on CI AArch64.
+#[cfg(target_arch = "aarch64")]
+fn try_resume_exec_via_syscall_frame(
+    entry: usize,
+    rsp: usize,
+    argc: usize,
+    argv: usize,
+) {
+    let frame_ptr = unsafe { SYSCALL_FRAME };
+    if frame_ptr.is_null() {
+        return;
+    }
+    let mut frame = copy_fork_syscall_frame(frame_ptr);
+    frame[0] = argc as u64;
+    frame[1] = argv as u64;
+    frame[32] = entry as u64;
+    frame[34] = rsp as u64;
+    crate::arch::fork_eret_to_user(frame.as_mut_ptr());
 }
 
 /// Resume a forked child with the parent's user GPRs (rax/x0 = 0).
@@ -570,60 +688,27 @@ fn enter_fork_x86(regs: task::ForkRegs) -> ! {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
-    // GPR image in a stack local; reload via x0 as base. Program ELR/SP_EL0
-    // *before* the ldrs — otherwise LLVM's in(reg) for rip/rsp can live in
-    // x1..x30 and get overwritten (elr left as ~0xfff… → PC alignment abort).
-    let mut img = regs.x;
-    img[0] = 0;
-    let base = img.as_ptr();
-    let rip = regs.rip;
-    let rsp = regs.rsp;
+fn copy_fork_syscall_frame(src: *const u64) -> [u64; 36] {
+    let mut frame = [0u64; 36];
     unsafe {
-        core::arch::asm!(
-            "msr elr_el1, {rip}",
-            "msr sp_el0, {rsp}",
-            "msr spsr_el1, xzr",
-            "mov x0, {b}",
-            "ldr x1, [x0, #8]",
-            "ldr x2, [x0, #16]",
-            "ldr x3, [x0, #24]",
-            "ldr x4, [x0, #32]",
-            "ldr x5, [x0, #40]",
-            "ldr x6, [x0, #48]",
-            "ldr x7, [x0, #56]",
-            "ldr x8, [x0, #64]",
-            "ldr x9, [x0, #72]",
-            "ldr x10, [x0, #80]",
-            "ldr x11, [x0, #88]",
-            "ldr x12, [x0, #96]",
-            "ldr x13, [x0, #104]",
-            "ldr x14, [x0, #112]",
-            "ldr x15, [x0, #120]",
-            "ldr x16, [x0, #128]",
-            "ldr x17, [x0, #136]",
-            "ldr x18, [x0, #144]",
-            "ldr x19, [x0, #152]",
-            "ldr x20, [x0, #160]",
-            "ldr x21, [x0, #168]",
-            "ldr x22, [x0, #176]",
-            "ldr x23, [x0, #184]",
-            "ldr x24, [x0, #192]",
-            "ldr x25, [x0, #200]",
-            "ldr x26, [x0, #208]",
-            "ldr x27, [x0, #216]",
-            "ldr x28, [x0, #224]",
-            "ldr x29, [x0, #232]",
-            "ldr x30, [x0, #240]",
-            "mov x0, xzr",
-            "isb",
-            "eret",
-            b = in(reg) base,
-            rip = in(reg) rip,
-            rsp = in(reg) rsp,
-            options(noreturn),
-        );
+        for i in 0..=30 {
+            frame[i] = *src.add(i);
+        }
+        frame[32] = *src.add(32);
+        frame[33] = *src.add(33);
+        frame[34] = *src.add(34);
     }
+    frame
+}
+
+#[cfg(target_arch = "aarch64")]
+fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
+    // Resume through the same restore path as `lower_sync` (preserves spsr and
+    // callee-saved state). Rebuilding ELR/SP_EL0 in one asm block miscompiled on
+    // CI and left the child with x0 != 0 → parent+child both blocked in wait.
+    let mut frame = regs.frame;
+    frame[0] = 0;
+    crate::arch::fork_eret_to_user(frame.as_mut_ptr());
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -654,6 +739,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_FORK => sys_fork(user_rip, user_rsp),
         SYS_WAIT => sys_wait(),
         SYS_LISTDIR => sys_listdir(a0, a1),
+        SYS_BRK => sys_brk(a0),
         _ => SYSERR,
     }
 }
@@ -731,15 +817,30 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
         Err(()) => return SYSERR,
     };
     let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
-    let Some((aspace, entry, span, off)) = load_user_elf(bytes) else {
-        return SYSERR;
-    };
     let base = USER_BASE.load(Ordering::SeqCst);
+    let cur_aspace = task::current_aspace();
+    let (base_u, mapped_span, stack_off) = task::current_user_map();
+    let loaded = if cur_aspace != 0 {
+        reload_user_elf(cur_aspace, bytes, base_u, stack_off, mapped_span)
+            .map(|(entry, span, off)| (cur_aspace, entry, span, off))
+    } else {
+        None
+    };
+    let (aspace, entry, span, off) = if let Some(v) = loaded {
+        v
+    } else {
+        let Some(v) = load_user_elf(bytes) else {
+            return SYSERR;
+        };
+        v
+    };
     let Some((rsp, argv)) = build_argv_stack(aspace, base, off, &arg_refs) else {
         return SYSERR;
     };
     let argc = arg_refs.len();
     task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
+    #[cfg(target_arch = "aarch64")]
+    try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
     enter(entry, rsp, argc, argv);
 }
 
@@ -840,17 +941,10 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
         if frame.is_null() {
             return SYSERR;
         }
-        let mut x = [0u64; 31];
-        unsafe {
-            for i in 0..31 {
-                x[i] = *frame.add(i);
-            }
-        }
-        x[0] = 0; // child return value
         task::ForkRegs {
             rip: user_rip,
             rsp: user_rsp,
-            x,
+            frame: copy_fork_syscall_frame(frame),
         }
     };
     match task::fork_current(child) {
@@ -863,6 +957,37 @@ fn sys_wait() -> usize {
     task::wait_child()
 }
 
+fn sys_brk(req: usize) -> usize {
+    let (base, _span, stack_off) = task::current_user_map();
+    let heap_base = heap_base_va(base, stack_off) as usize;
+    let heap_limit = heap_limit_va(base, stack_off) as usize;
+    let cur = task::current_brk() as usize;
+    if req == 0 {
+        return cur;
+    }
+    if req < heap_base || req > heap_limit {
+        return cur;
+    }
+    if req > cur {
+        let aspace = task::current_aspace();
+        let map_end = align_up_usize(req, PAGE);
+        let mut va = if cur == heap_base {
+            heap_base
+        } else {
+            align_up_usize(cur, PAGE)
+        };
+        while va < map_end {
+            if virt_to_phys(aspace, va as u64).is_none() {
+                let frame = mm::alloc_frame();
+                map_heap_page(aspace, va as u64, frame);
+            }
+            va += PAGE;
+        }
+    }
+    task::set_brk(req as u64);
+    req
+}
+
 fn user_range_ok(ptr: usize, len: usize) -> bool {
     let (base, img, stack) = task::current_user_map();
     let base = base as usize;
@@ -873,7 +998,10 @@ fn user_range_ok(ptr: usize, len: usize) -> bool {
     let stack = stack as usize;
     let in_code = ptr >= base && end <= base + img;
     let in_stack = ptr >= base + stack && end <= base + stack + PAGE;
-    in_code || in_stack
+    let heap_base = heap_base_va(base as u64, stack as u64) as usize;
+    let brk = task::current_brk() as usize;
+    let in_heap = brk > heap_base && ptr >= heap_base && end <= brk;
+    in_code || in_stack || in_heap
 }
 
 fn create_aspace(code: &[u64], stack_phys: u64, base: u64, stack_off: u64) -> u64 {
@@ -919,6 +1047,36 @@ fn create_aspace_x86(code: &[u64], stack_phys: u64, base: u64, stack_off: u64) -
         PRESENT | WRITE | USER | NX,
     );
     pml4_phys
+}
+
+#[cfg(target_arch = "x86_64")]
+fn map_heap_page(pml4_phys: u64, va: u64, pa: u64) {
+    const PRESENT: u64 = 1;
+    const WRITE: u64 = 1 << 1;
+    const USER: u64 = 1 << 2;
+    const NX: u64 = 1 << 63;
+    map_page_x86(pml4_phys, va, pa, PRESENT | WRITE | USER | NX);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn map_heap_page(l0_phys: u64, va: u64, pa: u64) {
+    const PAGE_DESC: u64 = 0b11;
+    const SH_INNER: u64 = 0b11 << 8;
+    const AF: u64 = 1 << 10;
+    const AP_RW: u64 = 0b01 << 6;
+    const UXN: u64 = 1 << 54;
+    const PA_MASK: u64 = 0x0000_FFFF_FFFF_F000;
+    let i3 = ((va >> 12) & 0x1ff) as usize;
+    unsafe {
+        let l0 = &*mm::table(l0_phys);
+        let l1_phys = l0[0] & PA_MASK;
+        let l1 = &*mm::table(l1_phys);
+        let l2_phys = l1[1] & PA_MASK;
+        let l2 = &*mm::table(l2_phys);
+        let l3_phys = l2[0] & PA_MASK;
+        let l3 = &mut *mm::table(l3_phys);
+        l3[i3] = (pa & PA_MASK) | PAGE_DESC | SH_INNER | AP_RW | AF | UXN;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
