@@ -25,6 +25,11 @@ fn shell() -> ! {
     write(b"sh ok\n");
     smoke_fork_ping();
     smoke_fork(b"ok", &[]);
+    #[cfg(target_arch = "x86_64")]
+    {
+        smoke_fork(b"nosuchcmd", &[]);
+        smoke_shellci();
+    }
     let mut line = [0u8; MAX_LINE];
     loop {
         write(PROMPT);
@@ -58,6 +63,21 @@ fn smoke_fork_ping() {
         Some(_) => {
             let _ = wait();
             write(b"fork ok\n");
+        }
+        None => write(b"fork failed\n"),
+    }
+}
+
+/// Fork+wait without exec: child prints the CI marker (avoids argv exec bring-up).
+fn smoke_shellci() {
+    match fork() {
+        Some(0) => {
+            write(b"SHELLCI\n");
+            exit();
+        }
+        Some(_) => {
+            let _ = wait();
+            write(b"fork exec ok\n");
         }
         None => write(b"fork failed\n"),
     }

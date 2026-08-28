@@ -836,7 +836,6 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
         Err(()) => return SYSERR,
     };
     let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
-    let base = USER_BASE.load(Ordering::SeqCst);
     let cur_aspace = task::current_aspace();
     let (base_u, mapped_span, stack_off) = task::current_user_map();
     let loaded = if cur_aspace != 0 {
@@ -853,11 +852,11 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
         };
         v
     };
-    let Some((rsp, argv)) = build_argv_stack(aspace, base, off, &arg_refs) else {
+    let Some((rsp, argv)) = build_argv_stack(aspace, base_u, off, &arg_refs) else {
         return SYSERR;
     };
     let argc = arg_refs.len();
-    task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
+    task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     #[cfg(target_arch = "aarch64")]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
     enter(entry, rsp, argc, argv);
