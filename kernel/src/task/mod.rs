@@ -390,17 +390,17 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
 
     let (slot, reuse_stack) = {
         let tasks = TASKS.lock();
+        // Prefer dead kernel-thread stacks (task_a/b) so fork never needs a fresh
+        // kernel-heap stack on memory-tight CI (Unused slots would alloc 8 KiB).
         let slot = tasks
             .iter()
-            .position(|t| t.state == State::Unused)
-            .or_else(|| {
-                tasks.iter().position(|t| {
-                    t.state == State::Dead
-                        && t.user_rip == 0
-                        && t.aspace == 0
-                        && t.stack_base != 0
-                })
-            });
+            .position(|t| {
+                t.state == State::Dead
+                    && t.user_rip == 0
+                    && t.aspace == 0
+                    && t.stack_base != 0
+            })
+            .or_else(|| tasks.iter().position(|t| t.state == State::Unused));
         let Some(slot) = slot else {
             drop(tasks);
             irq_restore(flags);
