@@ -66,7 +66,7 @@ impl FrameBufferWriter<'_> {
         }
     }
 
-    fn put_byte(&mut self, byte: u8) {
+    pub fn put_byte(&mut self, byte: u8) {
         match byte {
             b'\n' => self.newline(),
             b'\r' => self.col = 0,

@@ -1,10 +1,9 @@
 //! bootfs: Limine modules by basename, plus an embedded `/ok` fallback.
 //! Extra files (e.g. `/msg` from the FAT16 module) land here via `register`.
 
-use core::fmt::Write;
 use spin::Mutex;
 
-use crate::arch::SerialPort;
+use crate::console;
 
 const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
 const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
@@ -90,14 +89,12 @@ pub fn count() -> usize {
 }
 
 fn log_reg(name: &str, n: usize, replace: bool) {
-    let mut serial = SerialPort::new();
     let kind = if replace { "rpl" } else { "new" };
-    let _ = writeln!(serial, "vfs {kind} {name} {n}");
+    console::write_str(&alloc::format!("vfs {kind} {name} {n}\n"));
 }
 
 fn log_get(name: &str, n: usize) {
-    let mut serial = SerialPort::new();
-    let _ = writeln!(serial, "vfs get {name} {n}");
+    console::write_str(&alloc::format!("vfs get {name} {n}\n"));
 }
 
 pub fn init() {

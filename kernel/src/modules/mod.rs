@@ -9,9 +9,8 @@
 pub mod elf;
 mod registry;
 
-use crate::arch::SerialPort;
+use crate::console;
 use alloc::alloc::{alloc, dealloc, Layout};
-use core::fmt::Write;
 use myos_abi::{KernelApi, ABI_VERSION};
 
 const HELLO_IMAGE: &[u8] = include_bytes!(env!("HELLO_MODULE_PATH"));
@@ -30,8 +29,7 @@ static API: KernelApi = KernelApi {
 /// Load the hello module that was baked into the kernel at build time.
 pub fn load_embedded_hello() {
     if let Err(e) = load("hello", HELLO_IMAGE) {
-        let mut serial = SerialPort::new();
-        let _ = writeln!(serial, "mod load failed: {e}");
+        console::write_str(&alloc::format!("mod load failed: {e}\n"));
     }
 }
 
@@ -40,8 +38,7 @@ pub fn load_embedded_hello() {
 /// (`fat mod failed`) and is not a kernel panic.
 pub fn load_embedded_fat() {
     if let Err(e) = load("fat", FAT_IMAGE) {
-        let mut serial = SerialPort::new();
-        let _ = writeln!(serial, "fat mod failed: {e}");
+        console::write_str(&alloc::format!("fat mod failed: {e}\n"));
     }
 }
 
@@ -52,7 +49,6 @@ pub fn load_embedded_fat() {
 /// Userspace ELFs in the module list (`MissingInit`) are skipped quietly
 /// so bootfs can reuse the same Limine modules.
 pub fn load_limine_modules() {
-    let mut serial = SerialPort::new();
     let Some(resp) = crate::limine_boot::MODULES.response() else {
         return;
     };
@@ -68,11 +64,11 @@ pub fn load_limine_modules() {
         let name = NAMES.get(i).copied().unwrap_or("hello-limine");
         match load(name, bytes) {
             Ok(()) => {
-                let _ = writeln!(serial, "limine mod ok");
+                console::write_str("limine mod ok\n");
             }
             Err(elf::LoadError::MissingInit) => {}
             Err(e) => {
-                let _ = writeln!(serial, "limine mod failed: {e}");
+                console::write_str(&alloc::format!("limine mod failed: {e}\n"));
             }
         }
     }
@@ -111,9 +107,8 @@ unsafe extern "C" fn api_write_str(ptr: *const u8, len: usize) {
         return;
     }
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
-    let mut serial = SerialPort::new();
     for &b in bytes {
-        serial.write_byte(b);
+        console::write_byte(b);
     }
 }
 

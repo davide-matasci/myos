@@ -3,11 +3,10 @@
 //! `schedule` after EOI).
 
 use alloc::alloc::{alloc, Layout};
-use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
-use crate::arch::SerialPort;
+use crate::console;
 use crate::user;
 
 #[cfg(target_arch = "x86_64")]
@@ -580,8 +579,7 @@ pub fn print(s: &str) {
     irq_off();
     {
         let _hold = SERIAL.lock();
-        let mut serial = SerialPort::new();
-        let _ = serial.write_str(s);
+        console::write_str(s);
     }
     irq_restore(flags);
 }
@@ -594,9 +592,8 @@ pub fn print_bytes(bytes: &[u8]) {
             irq_off();
             {
                 let _hold = SERIAL.lock();
-                let mut serial = SerialPort::new();
                 for &b in bytes {
-                    serial.write_byte(b);
+                    console::write_byte(b);
                 }
             }
             irq_restore(flags);
