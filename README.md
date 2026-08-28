@@ -16,6 +16,11 @@ Multiboot-for-ARM).
 
 Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 
+The kernel runs round-robin **kernel threads** (not userspace: no ring 3 / EL0,
+no syscalls, no per-process page tables). Tasks can `task::yield_now()`
+cooperatively; the timer IRQ also calls the same `task::schedule()` after EOI,
+so the switch is preemptive too. CI checks `task a`, `task b`, and `sched ok`.
+
 ## Prerequisites
 
 - [rustup](https://rustup.rs/) (the `rust-toolchain.toml` in this repo
@@ -120,8 +125,8 @@ cargo run -- aarch64 --ci
 ```
 
 BIOS/UEFI boots with `-display none`, require `Hello from myos`, `heap ok`,
-`int ok`, `mod ok`, and `limine mod ok` on serial, and expect QEMU to exit via `isa-debug-exit`
-(BIOS ~20s, UEFI 60s). AArch64 requires the same five strings and exits
+`int ok`, `task a`, `task b`, `sched ok`, `mod ok`, and `limine mod ok` on serial, and expect QEMU to exit via `isa-debug-exit`
+(BIOS ~20s, UEFI 60s). AArch64 requires the same strings and exits
 via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
 
 ## Modules
@@ -159,7 +164,7 @@ cannot `panic=abort`). Each module crate is its own tiny workspace, like
 x86_64 modules are PIE (`ET_DYN`, `R_X86_64_RELATIVE`). AArch64 modules are
 `ET_EXEC` slid as a unit: prebuilt `libcore` is not PIC, so `-pie` fails to
 link. `module_init` uses PC-relative `ADR`. Both use 4 KiB `max-page-size`
-so they fit on the 128 KiB heap.
+so they fit on the 256 KiB heap.
 
 ### 1. The ELF crate (both paths)
 
@@ -228,10 +233,11 @@ but you still rebuild the **disk image** so the ESP file updates.
 | `src/main.rs` | Host launcher: starts QEMU (BIOS, UEFI, AArch64) |
 | `src/limine_image.rs` | GPT+FAT ESP writer + Limine binary fetch + `limine.conf` |
 | `build.rs` | Fetch Limine, wrap the x86_64 kernel in BIOS+UEFI images |
-| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, load modules, halt |
+| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, kernel threads, load modules, halt |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
 | `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
-| `kernel/src/heap.rs` | 128 KiB `linked_list_allocator` heap from Limine usable+HHDM |
+| `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
+| `kernel/src/task/` | Round-robin kernel threads: `yield_now` + timer preemption |
 | `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
 | `modules/abi` | Shared `KernelApi` / `module_init` C ABI |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
