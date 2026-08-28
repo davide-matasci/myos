@@ -5,6 +5,7 @@
 //! cargo run -- bios
 //! cargo run -- uefi         # x86_64 UEFI (fetches OVMF into target/ovmf)
 //! cargo run -- aarch64      # QEMU virt + AAVMF, serial + ramfb
+//! cargo run -- iso          # write target/myos-x86_64.iso (no QEMU)
 //! cargo run -- --ci         # headless BIOS check
 //! cargo run -- uefi --ci    # headless UEFI check
 //! cargo run -- aarch64 --ci # headless AArch64 check
@@ -12,7 +13,9 @@
 
 mod limine_image;
 
-use limine_image::{fetch_limine, write_esp_image, write_fat_data_image, LIMINE_VERSION};
+use limine_image::{
+    fetch_limine, write_esp_image, write_fat_data_image, write_x86_iso, LIMINE_VERSION,
+};
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -38,11 +41,12 @@ fn main() {
     let ci = args.iter().any(|a| a == "--ci");
     let mode = args
         .iter()
-        .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64"))
+        .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64" | "iso"))
         .map(|s| s.as_str())
         .unwrap_or("bios");
 
     match (mode, ci) {
+        ("iso", _) => run_iso(),
         ("aarch64", true) => run_ci_aarch64(),
         ("aarch64", false) => run_aarch64(),
         ("uefi", true) => run_ci_uefi(uefi_path),
@@ -55,13 +59,43 @@ fn main() {
 fn print_usage() {
     eprintln!(
         "\
-Usage: cargo run -- [bios|uefi|aarch64] [--ci]
+Usage: cargo run -- [bios|uefi|aarch64|iso] [--ci]
 
   bios      Boot the x86_64 Limine BIOS disk image in QEMU (default, graphical)
   uefi      Boot the x86_64 Limine UEFI disk image in QEMU (fetches OVMF on first run)
   aarch64   Boot the AArch64 kernel via Limine on QEMU virt + AAVMF (serial + ramfb)
+  iso       Write target/myos-x86_64.iso (Limine BIOS+UEFI hybrid) and exit; needs xorriso
   --ci      Headless boot; require serial hello/heap/int/mod and a clean QEMU exit",
     );
+}
+
+fn run_iso() {
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+    let kernel = target
+        .join("x86_64-unknown-none")
+        .join(profile)
+        .join("kernel");
+    let hello = target.join("hello-x86_64-unknown-none");
+    let ok = target.join("ok-x86_64-unknown-none");
+    if !kernel.is_file() {
+        panic!("kernel ELF missing at {}", kernel.display());
+    }
+    if !hello.is_file() {
+        panic!("hello ELF missing at {}", hello.display());
+    }
+    if !ok.is_file() {
+        panic!("ok ELF missing at {}", ok.display());
+    }
+    let limine = fetch_limine(Path::new(env!("LIMINE_DIR")));
+    let dest = target.join("myos-x86_64.iso");
+    let iso_root = target.join("iso_root");
+    write_x86_iso(&dest, &iso_root, &kernel, &hello, &ok, &limine);
+    println!("{}", dest.display());
 }
 
 fn fat_img_path() -> PathBuf {
