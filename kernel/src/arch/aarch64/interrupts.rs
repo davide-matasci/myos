@@ -179,12 +179,16 @@ fn init_gic() {
     }
 }
 
-fn init_timer() {
+fn timer_ticks() -> u64 {
     let freq: u64;
     unsafe {
         asm!("mrs {f}, cntfrq_el0", f = out(reg) freq, options(nomem, nostack, preserves_flags));
     }
-    let ticks = (freq / 100).max(1);
+    (freq / 100).max(1)
+}
+
+fn init_timer() {
+    let ticks = timer_ticks();
     unsafe {
         asm!("msr cntv_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
         asm!("msr cntv_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
@@ -194,10 +198,12 @@ fn init_timer() {
     }
 }
 
-fn disable_timers() {
+/// Reload the same interval used at init instead of disabling the timers.
+fn rearm_timers() {
+    let ticks = timer_ticks();
     unsafe {
-        asm!("msr cntp_ctl_el0, {c}", c = in(reg) 0u64, options(nomem, nostack));
-        asm!("msr cntv_ctl_el0, {c}", c = in(reg) 0u64, options(nomem, nostack));
+        asm!("msr cntv_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
+        asm!("msr cntp_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
     }
 }
 
@@ -205,12 +211,16 @@ fn disable_timers() {
 extern "C" fn aarch64_irq_handler() {
     let iar = read32(GICC + 0x0C);
     let id = iar & 0x3FF;
-    if id == PPI_EL1_VIRT || id == PPI_EL1_PHYS {
+    let timer = id == PPI_EL1_VIRT || id == PPI_EL1_PHYS;
+    if timer {
         TIMER_FIRED.store(true, Ordering::SeqCst);
-        disable_timers();
+        rearm_timers();
     }
     if id < 1020 {
         write32(GICC + 0x10, iar);
+    }
+    if timer {
+        crate::task::schedule();
     }
 }
 
