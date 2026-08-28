@@ -211,31 +211,38 @@ pub fn fd_open(data: &'static [u8]) -> Option<usize> {
     })
 }
 
-/// Read from fd 0 (keyboard + serial stdin). `buf` must live in the user map.
+/// Read from fd 0 (keyboard + serial stdin). `buf` must live in the user stack.
 pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
     if len == 0 {
         return 0;
     }
-    with_current_mut(|t| {
-        let base = t.user_base as usize;
-        let end = match buf.checked_add(len) {
-            Some(e) => e,
-            None => return usize::MAX,
-        };
-        let stack = t.stack_off as usize;
-        let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
-        let in_stack = buf >= base + stack && end <= base + stack + stack_bytes;
-        if !in_stack {
-            return usize::MAX;
-        }
-        let mut tmp = [0u8; 128];
-        let want = len.min(tmp.len());
-        let n = crate::input::read(&mut tmp[..want]);
-        unsafe {
-            core::ptr::copy_nonoverlapping(tmp.as_ptr(), buf as *mut u8, n);
-        }
-        n
-    })
+    let (base, stack_off) = {
+        let flags = irq_save();
+        irq_off();
+        let id = CURRENT.load(Ordering::SeqCst);
+        let tasks = TASKS.lock();
+        let t = tasks[id];
+        drop(tasks);
+        irq_restore(flags);
+        (t.user_base as usize, t.stack_off as usize)
+    };
+    let end = match buf.checked_add(len) {
+        Some(e) => e,
+        None => return usize::MAX,
+    };
+    let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
+    let in_stack = buf >= base + stack_off && end <= base + stack_off + stack_bytes;
+    if !in_stack {
+        return usize::MAX;
+    }
+    let mut tmp = [0u8; 128];
+    let want = len.min(tmp.len());
+    // Do not call input::read (may yield) while TASKS is locked — deadlock.
+    let n = crate::input::read(&mut tmp[..want]);
+    unsafe {
+        core::ptr::copy_nonoverlapping(tmp.as_ptr(), buf as *mut u8, n);
+    }
+    n
 }
 
 /// Copy from `fd` into the user buffer at `buf`. `range_ok` must accept the
