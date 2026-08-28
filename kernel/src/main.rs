@@ -5,6 +5,7 @@
 extern crate alloc;
 
 mod arch;
+mod blk;
 mod font;
 mod framebuffer;
 mod fs;
@@ -70,6 +71,9 @@ fn kernel_main() -> ! {
     fs::init();
     modules::load_embedded_hello();
     modules::load_limine_modules();
+
+    blk::init();
+    modules::load_embedded_fat();
 
     user::init();
     user::spawn_init();

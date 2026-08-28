@@ -1,4 +1,5 @@
 //! bootfs: Limine modules by basename, plus an embedded `/ok` fallback.
+//! Extra files (e.g. `/msg` from the FAT16 module) land here via `register`.
 
 use spin::Mutex;
 
@@ -15,9 +16,9 @@ struct Slot {
 
 static FILES: Mutex<[Option<Slot>; MAX_FILES]> = Mutex::new([None; MAX_FILES]);
 
-pub fn register(name: &str, bytes: &'static [u8]) {
+pub fn register(name: &str, bytes: &'static [u8]) -> bool {
     if name.is_empty() {
-        return;
+        return false;
     }
     let len = name.len().min(NAME_CAP);
     let mut n = [0u8; NAME_CAP];
@@ -28,7 +29,7 @@ pub fn register(name: &str, bytes: &'static [u8]) {
         if let Some(s) = slot {
             if s.len == len && s.name[..len] == n[..len] {
                 s.data = bytes;
-                return;
+                return true;
             }
         }
     }
@@ -39,9 +40,10 @@ pub fn register(name: &str, bytes: &'static [u8]) {
                 len,
                 data: bytes,
             });
-            return;
+            return true;
         }
     }
+    false
 }
 
 pub fn lookup(name: &str) -> Option<&'static [u8]> {
@@ -55,7 +57,7 @@ pub fn lookup(name: &str) -> Option<&'static [u8]> {
 }
 
 pub fn init() {
-    register("ok", OK_ELF);
+    let _ = register("ok", OK_ELF);
     let Some(resp) = crate::limine_boot::MODULES.response() else {
         return;
     };
@@ -68,7 +70,7 @@ pub fn init() {
         // Limine keeps module mappings for the life of the kernel.
         let bytes: &'static [u8] =
             unsafe { core::slice::from_raw_parts(data.as_ptr(), data.len()) };
-        register(name, bytes);
+        let _ = register(name, bytes);
     }
 }
 
