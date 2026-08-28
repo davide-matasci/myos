@@ -15,6 +15,7 @@ use core::fmt::Write;
 use myos_abi::{KernelApi, ABI_VERSION};
 
 const HELLO_IMAGE: &[u8] = include_bytes!(env!("HELLO_MODULE_PATH"));
+const FAT_IMAGE: &[u8] = include_bytes!(env!("FAT_MODULE_PATH"));
 
 static API: KernelApi = KernelApi {
     abi_version: ABI_VERSION,
@@ -22,6 +23,8 @@ static API: KernelApi = KernelApi {
     write_str: api_write_str,
     alloc: api_alloc,
     dealloc: api_dealloc,
+    blk_read: api_blk_read,
+    vfs_register: api_vfs_register,
 };
 
 /// Load the hello module that was baked into the kernel at build time.
@@ -29,6 +32,16 @@ pub fn load_embedded_hello() {
     if let Err(e) = load("hello", HELLO_IMAGE) {
         let mut serial = SerialPort::new();
         let _ = writeln!(serial, "mod load failed: {e}");
+    }
+}
+
+/// Load the FAT16 module baked into the kernel. Registers `/msg` via
+/// `vfs_register` after reading the virtio-blk disk. Failure is logged
+/// (`fat mod failed`) and is not a kernel panic.
+pub fn load_embedded_fat() {
+    if let Err(_e) = load("fat", FAT_IMAGE) {
+        let mut serial = SerialPort::new();
+        let _ = writeln!(serial, "fat mod failed");
     }
 }
 
@@ -122,4 +135,47 @@ unsafe extern "C" fn api_dealloc(ptr: *mut u8, size: usize, align: usize) {
         return;
     };
     unsafe { dealloc(ptr, layout) }
+}
+
+unsafe extern "C" fn api_blk_read(lba: u64, buf: *mut u8, len: usize) -> i32 {
+    if len == 0 {
+        return 0;
+    }
+    if buf.is_null() {
+        return -1;
+    }
+    let slice = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+    match crate::blk::read(lba, slice) {
+        Ok(()) => 0,
+        Err(()) => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_register(
+    name: *const u8,
+    name_len: usize,
+    data: *const u8,
+    data_len: usize,
+) -> i32 {
+    if name.is_null() || name_len == 0 {
+        return -1;
+    }
+    if data_len != 0 && data.is_null() {
+        return -1;
+    }
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let Ok(name) = core::str::from_utf8(name_bytes) else {
+        return -1;
+    };
+    let src: &[u8] = if data_len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(data, data_len) }
+    };
+    let leaked: &'static [u8] = alloc::boxed::Box::leak(src.to_vec().into_boxed_slice());
+    if crate::fs::bootfs::register(name, leaked) {
+        0
+    } else {
+        -1
+    }
 }
