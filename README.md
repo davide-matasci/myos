@@ -16,13 +16,17 @@ Multiboot-for-ARM).
 
 Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 
-The kernel runs round-robin **kernel threads** plus two **user processes**.
-Each user process has its own CR3/TTBR0; the kernel/HHDM (and on AArch64 the
-TTBR0 device block for UART/GIC) is mapped into every aspace. Tasks drop to
-ring 3 / EL0 and use `syscall` / `svc` for write and exit. Kernel threads can
-`task::yield_now()` cooperatively; the timer IRQ also calls the same
-`task::schedule()` after EOI, so the switch is preemptive too (including
-user mode). CI checks `task a`, `task b`, `sched ok`, and `user ok`.
+The kernel runs round-robin **kernel threads** plus one **user `init` process**.
+Userspace is a real `#![no_std]` ELF (`user/init`), not a handwritten blob:
+nested cargo like hello, baked in with `include_bytes!`, loaded into
+per-process page tables at `USER_BASE`, write/exit syscalls. It is not a
+kernel module (no `KernelApi`). Init has its own CR3/TTBR0; the kernel/HHDM
+(and on AArch64 the TTBR0 device block for UART/GIC) is mapped into the
+aspace. It drops to ring 3 / EL0 and uses `syscall` / `svc` for write and
+exit. Kernel threads can `task::yield_now()` cooperatively; the timer IRQ
+also calls the same `task::schedule()` after EOI, so the switch is
+preemptive too (including user mode). CI checks `task a`, `task b`,
+`sched ok`, and `user ok`.
 
 ## Prerequisites
 
@@ -230,6 +234,16 @@ already iterates every module Limine listed.
 Changing only a Limine module does not require a new kernel `include_bytes!`,
 but you still rebuild the **disk image** so the ESP file updates.
 
+## Userspace
+
+Userspace is a real `init` ELF (`user/init`), not a handwritten machine-code
+blob. The crate is its own tiny workspace (same shape as `modules/hello`:
+`panic = "abort"`, `opt-level = "s"`). `kernel/build.rs` nested-`cargo
+build`s it; the kernel bakes the ELF with `include_bytes!` and loads
+`PT_LOAD` into per-process page tables at `USER_BASE`, applying the same
+relocs as the module loader. Init is **not** a kernel module: no
+`KernelApi`, no `module_init`. It issues write/exit syscalls (`user ok`).
+
 ## Layout
 
 | Path | Role |
@@ -237,16 +251,17 @@ but you still rebuild the **disk image** so the ESP file updates.
 | `src/main.rs` | Host launcher: starts QEMU (BIOS, UEFI, AArch64) |
 | `src/limine_image.rs` | GPT+FAT ESP writer + Limine binary fetch + `limine.conf` |
 | `build.rs` | Fetch Limine, wrap the x86_64 kernel in BIOS+UEFI images |
-| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, kernel threads, modules, user processes, halt |
+| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, kernel threads, modules, user init, halt |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
 | `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages) |
-| `kernel/src/user.rs` | User blobs, per-process page tables, `syscall`/`svc` write+exit, enter ring 3 / EL0 |
+| `kernel/src/user.rs` | Load `user/init` ELF at `USER_BASE`, per-process page tables, `syscall`/`svc` write+exit, enter ring 3 / EL0 |
 | `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
 | `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
 | `modules/abi` | Shared `KernelApi` / `module_init` C ABI |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
+| `user/init` | Userspace init ELF: prints `user ok` then exits (not a kernel module) |
 | `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, isa-debug-exit |
 | `kernel/src/arch/aarch64/` | PL011, TTBR0 device map, GICv2 timer, lower-EL SVC, PSCI off |
 | `kernel/src/framebuffer.rs` | Pixel writer for a Limine framebuffer |
