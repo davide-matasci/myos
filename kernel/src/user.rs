@@ -535,53 +535,33 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
 
 #[cfg(target_arch = "aarch64")]
 fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
-    // Locals + ELR/SP before argc/argv: LLVM may assign rip/argc to the same
-    // register and reorder mov before msr (CI: exec eret with elr=0).
-    let rip = user_rip;
-    let rsp = user_rsp;
-    let argc = user_argc;
-    let argv = user_argv;
+    // Load from a stack slot so LLVM cannot reuse rip/argc in one asm block
+    // and reorder mov before msr (CI: exec eret with elr=0).
+    let args = [user_rip as u64, user_rsp as u64, user_argc as u64, user_argv as u64];
+    let p = args.as_ptr();
     unsafe {
+        let rip: u64;
+        let rsp: u64;
         core::arch::asm!(
+            "ldr {rip}, [{p}]",
+            "ldr {rsp}, [{p}, #8]",
             "msr elr_el1, {rip}",
             "msr sp_el0, {rsp}",
             "msr spsr_el1, xzr",
-            rip = in(reg) rip,
-            rsp = in(reg) rsp,
+            p = in(reg) p,
+            rip = lateout(reg) rip,
+            rsp = lateout(reg) rsp,
             options(nostack, preserves_flags),
         );
         core::arch::asm!(
-            "mov x0, {argc}",
-            "mov x1, {argv}",
+            "ldr x0, [{p}, #16]",
+            "ldr x1, [{p}, #24]",
             "isb",
             "eret",
-            argc = in(reg) argc,
-            argv = in(reg) argv,
+            p = in(reg) p,
             options(noreturn, nostack),
         );
     }
-}
-
-/// Exec from a syscall: patch the exception frame and return through lower_sync
-/// instead of eret inside the handler (same register-reuse hazard as enter_fork).
-#[cfg(target_arch = "aarch64")]
-fn resume_exec_via_syscall_frame(
-    entry: usize,
-    rsp: usize,
-    argc: usize,
-    argv: usize,
-) -> Option<usize> {
-    let frame = unsafe { SYSCALL_FRAME };
-    if frame.is_null() {
-        return None;
-    }
-    unsafe {
-        // lower_sync frame: elr/spsr at 16*16, sp_el0 at 16*17.
-        *frame.add(32) = entry as u64;
-        *frame.add(34) = rsp as u64;
-        *frame.add(1) = argv as u64;
-    }
-    Some(argc)
 }
 
 /// Resume a forked child with the parent's user GPRs (rax/x0 = 0).
@@ -803,10 +783,6 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     };
     let argc = arg_refs.len();
     task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
-    #[cfg(target_arch = "aarch64")]
-    if let Some(x0) = resume_exec_via_syscall_frame(entry, rsp, argc, argv) {
-        return x0;
-    }
     enter(entry, rsp, argc, argv);
 }
 
