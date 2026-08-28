@@ -24,6 +24,12 @@ jobs:
           prefix-key: limine-8.3-1
       - name: Install xorriso and a C compiler
         run: sudo apt-get update && sudo apt-get install -y xorriso gcc
+
+      - name: Build patched std hello (x86-myos)
+        run: |
+          chmod +x scripts/build-std-hello.sh scripts/prepare-rust-std-myos.sh scripts/myos-rustc.sh
+          ./scripts/build-std-hello.sh
+
       - name: Build x86_64 hybrid ISO
         run: |
           cargo clean -p myos
