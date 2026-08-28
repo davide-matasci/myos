@@ -23,6 +23,7 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
 
 fn shell() -> ! {
     write(b"sh ok\n");
+    smoke_fork_ping();
     let mut smoke_arg = [0u8; ARG_LEN];
     smoke_arg[..2].copy_from_slice(b"ok");
     smoke_fork(b"ok", &[&smoke_arg[..2]]);
@@ -53,7 +54,19 @@ fn shell() -> ! {
     }
 }
 
-/// Boot smoke via fork+exec+wait (CI covers fork).
+/// Minimal fork+wait smoke (no exec in the child).
+fn smoke_fork_ping() {
+    match fork() {
+        Some(0) => exit(),
+        Some(_) => {
+            let _ = wait();
+            write(b"fork ok\n");
+        }
+        None => write(b"fork failed\n"),
+    }
+}
+
+/// Boot smoke via fork+exec+wait (CI covers fork+exec).
 fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     let mut path_buf = [0u8; 32];
     let path = command_path(name, &mut path_buf);
@@ -74,7 +87,7 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
         }
         Some(_) => {
             let _ = wait();
-            write(b"fork ok\n");
+            write(b"fork exec ok\n");
         }
         None => write(b"fork failed\n"),
     }

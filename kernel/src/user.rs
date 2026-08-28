@@ -923,7 +923,12 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
         }
     };
     match task::fork_current(child) {
-        Some(pid) => pid,
+        Some(pid) => {
+            // Run the child before returning to the parent (helps parent+wait
+            // smoke tests on AArch64 CI where the child otherwise starves).
+            task::yield_now();
+            pid
+        }
         None => SYSERR,
     }
 }
