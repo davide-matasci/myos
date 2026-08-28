@@ -1,8 +1,9 @@
 #![no_std]
 #![no_main]
 
-// 8-byte buffer lives in a real frame (`inline(never)`), not `_start` next
-// to `options(nostack)` syscalls. Do not return the array (#103 PF).
+// 8-byte buffer in a real frame. x86 syscall_entry clobbers rdi/rsi/rdx;
+// wrappers must mark those lateout so LLVM reloads rdx=len for sys_read
+// (CI #105: vfs get msg 7 then user n==0 because rdx was left 0).
 
 #[inline(never)]
 fn do_msg() {
@@ -47,6 +48,9 @@ unsafe fn sys_write(ptr: usize, len: usize) {
         in("rsi") len,
         out("rcx") _,
         out("r11") _,
+        lateout("rdi") _,
+        lateout("rsi") _,
+        lateout("rdx") _,
         options(nostack),
     );
 }
@@ -69,6 +73,9 @@ unsafe fn sys_open(ptr: usize, len: usize) -> usize {
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
+        lateout("rdi") _,
+        lateout("rsi") _,
+        lateout("rdx") _,
         options(nostack),
     );
     ret
@@ -81,10 +88,12 @@ unsafe fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
         in("rax") 3usize,
         in("rdi") fd,
         in("rsi") buf,
-        in("rdx") len,
+        inout("rdx") len => _,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
+        lateout("rdi") _,
+        lateout("rsi") _,
         options(nostack),
     );
     ret
@@ -97,6 +106,9 @@ unsafe fn sys_close(fd: usize) {
         in("rdi") fd,
         out("rcx") _,
         out("r11") _,
+        lateout("rdi") _,
+        lateout("rsi") _,
+        lateout("rdx") _,
         options(nostack),
     );
 }
