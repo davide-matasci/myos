@@ -1,0 +1,38 @@
+name: ISO
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  x86_64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-1
+      - name: Install xorriso and a C compiler
+        run: sudo apt-get update && sudo apt-get install -y xorriso gcc
+      - name: Build x86_64 hybrid ISO
+        run: |
+          cargo clean -p myos
+          cargo build
+          cargo run -- iso
+          test -f target/myos-x86_64.iso
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: myos-x86_64-iso
+          path: target/myos-x86_64.iso
+          if-no-files-found: error
