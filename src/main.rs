@@ -70,18 +70,11 @@ Usage: cargo run -- [bios|uefi|aarch64|iso] [--ci]
 }
 
 fn run_iso() {
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
-    let kernel = target
-        .join("x86_64-unknown-none")
-        .join(profile)
-        .join("kernel");
-    let hello = target.join("hello-x86_64-unknown-none");
-    let ok = target.join("ok-x86_64-unknown-none");
+    // Artifact-dep kernel lives at CARGO_BIN_FILE_KERNEL_kernel, not
+    // target/<triple>/debug/kernel (ISO #1 panicked on that missing path).
+    let kernel = Path::new(env!("KERNEL_PATH"));
+    let hello = Path::new(env!("HELLO_PATH"));
+    let ok = Path::new(env!("OK_PATH"));
     if !kernel.is_file() {
         panic!("kernel ELF missing at {}", kernel.display());
     }
@@ -91,10 +84,11 @@ fn run_iso() {
     if !ok.is_file() {
         panic!("ok ELF missing at {}", ok.display());
     }
+    let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
     let limine = fetch_limine(Path::new(env!("LIMINE_DIR")));
     let dest = target.join("myos-x86_64.iso");
     let iso_root = target.join("iso_root");
-    write_x86_iso(&dest, &iso_root, &kernel, &hello, &ok, &limine);
+    write_x86_iso(&dest, &iso_root, kernel, hello, ok, &limine);
     println!("{}", dest.display());
 }
 

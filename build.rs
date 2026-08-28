@@ -62,4 +62,8 @@ fn main() {
     println!("cargo:rustc-env=BIOS_PATH={}", bios_path.display());
     println!("cargo:rustc-env=UEFI_PATH={}", uefi_path.display());
     println!("cargo:rustc-env=LIMINE_DIR={}", limine_dir.display());
+    // Artifact-dep kernel is not at target/<triple>/debug/kernel.
+    println!("cargo:rustc-env=KERNEL_PATH={}", kernel_path.display());
+    println!("cargo:rustc-env=HELLO_PATH={}", hello_path.display());
+    println!("cargo:rustc-env=OK_PATH={}", ok_path.display());
 }
