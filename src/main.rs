@@ -12,7 +12,7 @@
 
 mod limine_image;
 
-use limine_image::{fetch_limine, write_esp_image, LIMINE_VERSION};
+use limine_image::{fetch_limine, write_esp_image, write_fat_data_image, LIMINE_VERSION};
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -64,9 +64,33 @@ Usage: cargo run -- [bios|uefi|aarch64] [--ci]
     );
 }
 
+fn fat_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/fat.img")
+}
+
+fn add_virtio_blk_x86(cmd: &mut Command) {
+    let fat = fat_img_path();
+    cmd.arg("-drive").arg(format!(
+        "if=none,id=vd0,format=raw,file={}",
+        fat.display()
+    ));
+    // Legacy I/O-BAR virtio-blk (kernel talks to BAR0 ports, device 0x1001).
+    cmd.arg("-device")
+        .arg("virtio-blk-pci,drive=vd0,disable-modern=on");
+}
+
+fn add_virtio_blk_aarch64(cmd: &mut Command) {
+    let fat = fat_img_path();
+    cmd.arg("-drive").arg(format!(
+        "if=none,id=vd0,format=raw,file={}",
+        fat.display()
+    ));
+    cmd.arg("-device").arg("virtio-blk-device,drive=vd0");
+}
+
 fn run_bios(bios_path: &str) {
-    let status = Command::new("qemu-system-x86_64")
-        .arg("-cpu")
+    let mut cmd = Command::new("qemu-system-x86_64");
+    cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
         .arg("256")
@@ -77,16 +101,16 @@ fn run_bios(bios_path: &str) {
         .arg("-nic")
         .arg("none")
         .arg("-boot")
-        .arg("order=c,menu=off")
-        .status()
-        .expect("failed to start qemu-system-x86_64");
+        .arg("order=c,menu=off");
+    add_virtio_blk_x86(&mut cmd);
+    let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
 }
 
 fn run_uefi(uefi_path: &str) {
     let (code, vars) = ovmf_files(Arch::X64);
-    let status = Command::new("qemu-system-x86_64")
-        .arg("-cpu")
+    let mut cmd = Command::new("qemu-system-x86_64");
+    cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
         .arg("256")
@@ -105,9 +129,9 @@ fn run_uefi(uefi_path: &str) {
         .arg("-serial")
         .arg("stdio")
         .arg("-nic")
-        .arg("none")
-        .status()
-        .expect("failed to start qemu-system-x86_64");
+        .arg("none");
+    add_virtio_blk_x86(&mut cmd);
+    let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
 }
 
@@ -162,8 +186,8 @@ fn aarch64_firmware() -> (PathBuf, PathBuf) {
 const QEMU_SUCCESS_STATUS: i32 = (0x10 << 1) | 1;
 
 fn run_ci_bios(bios_path: &str) {
-    let child = Command::new("qemu-system-x86_64")
-        .arg("-cpu")
+    let mut cmd = Command::new("qemu-system-x86_64");
+    cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
         .arg("256")
@@ -179,7 +203,9 @@ fn run_ci_bios(bios_path: &str) {
         .arg("none")
         .arg("-boot")
         .arg("order=c,menu=off")
-        .arg("-no-reboot")
+        .arg("-no-reboot");
+    add_virtio_blk_x86(&mut cmd);
+    let child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -195,8 +221,8 @@ fn run_ci_bios(bios_path: &str) {
 
 fn run_ci_uefi(uefi_path: &str) {
     let (code, vars) = ovmf_files(Arch::X64);
-    let child = Command::new("qemu-system-x86_64")
-        .arg("-cpu")
+    let mut cmd = Command::new("qemu-system-x86_64");
+    cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
         .arg("256")
@@ -220,7 +246,9 @@ fn run_ci_uefi(uefi_path: &str) {
         .arg("isa-debug-exit,iobase=0xf4,iosize=0x04")
         .arg("-nic")
         .arg("none")
-        .arg("-no-reboot")
+        .arg("-no-reboot");
+    add_virtio_blk_x86(&mut cmd);
+    let child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -278,6 +306,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
+    add_virtio_blk_aarch64(&mut cmd);
     if ci {
         cmd.arg("-display").arg("none");
     } else {
@@ -311,6 +340,7 @@ fn build_aarch64_image() -> PathBuf {
     let efi = std::fs::read(limine.bootaa64()).expect("BOOTAA64.EFI");
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/aarch64.img");
     write_esp_image(&image, &kernel_bytes, "BOOTAA64.EFI", &efi, None, &hello, &ok);
+    write_fat_data_image(&fat_img_path());
     image
 }
 
