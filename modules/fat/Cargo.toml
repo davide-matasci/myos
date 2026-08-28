@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "fat"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "FAT16 kernel module: reads MSG via KernelApi and vfs_register(msg)."
+
+[[bin]]
+name = "fat"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

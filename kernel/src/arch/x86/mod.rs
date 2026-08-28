@@ -2,7 +2,9 @@
 
 pub mod gdt;
 mod interrupts;
+pub mod pci;
 mod serial;
+mod virtio_blk;
 pub use serial::SerialPort;
 
 pub const QEMU_SUCCESS: u32 = 0x10;
@@ -16,6 +18,14 @@ pub fn init_interrupts() {
 
 pub fn wait_for_interrupt_proof() {
     interrupts::wait_for_interrupt_proof();
+}
+
+pub fn virtio_blk_init() {
+    virtio_blk::init();
+}
+
+pub fn virtio_blk_read(lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+    virtio_blk::read(lba, buf)
 }
 
 /// QEMU `isa-debug-exit` at iobase 0xf4. A no-op if the device was not added.

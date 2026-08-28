@@ -1,4 +1,4 @@
-//! Tiny VFS: a mount table. First backend is bootfs (not virtio, not FAT).
+//! Tiny VFS: a mount table. First backend is bootfs (embed, Limine, vfs_register).
 
 pub mod bootfs;
 

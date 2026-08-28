@@ -1,5 +1,6 @@
 /target
 modules/hello/Cargo.lock
+modules/fat/Cargo.lock
 **/*.rs.bk
 *.swp
 *~
