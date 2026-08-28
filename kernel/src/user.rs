@@ -471,8 +471,14 @@ fn create_aspace_x86(code: &[u64], stack_phys: u64) -> u64 {
     }
 
     let base = USER_BASE.load(Ordering::SeqCst);
+    // RW so sys_read can fill PT_LOAD (user/ok MSG_BUF). Still executable.
     for (i, &phys) in code.iter().enumerate() {
-        map_page_x86(pml4_phys, base + (i * PAGE) as u64, phys, PRESENT | USER);
+        map_page_x86(
+            pml4_phys,
+            base + (i * PAGE) as u64,
+            phys,
+            PRESENT | WRITE | USER,
+        );
     }
     let stack_va = base + STACK_OFF.load(Ordering::SeqCst);
     map_page_x86(
@@ -523,7 +529,6 @@ fn create_aspace_aarch64(code: &[u64], stack_phys: u64) -> u64 {
     const SH_INNER: u64 = 0b11 << 8;
     const AF: u64 = 1 << 10;
     const AP_RW: u64 = 0b01 << 6; // EL1 RW, EL0 RW
-    const AP_RO: u64 = 0b11 << 6; // EL1 RO, EL0 RO
     const PXN: u64 = 1 << 53;
     const UXN: u64 = 1 << 54;
     const PA: u64 = 0x0000_FFFF_FFFF_F000;
@@ -548,8 +553,9 @@ fn create_aspace_aarch64(code: &[u64], stack_phys: u64) -> u64 {
         l1_t[0] = device;
         l1_t[1] = l2 | TABLE;
         l2_t[0] = l3 | TABLE;
+        // AP_RW: EL1 sys_read copies into PT_LOAD. PXN: EL1 cannot execute it.
         for (i, &phys) in code.iter().enumerate() {
-            l3_t[i] = PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RO | PXN;
+            l3_t[i] = PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RW | PXN;
         }
         let stack_i = code.len();
         l3_t[stack_i] = PAGE_DESC | (stack_phys & PA) | SH_INNER | AF | AP_RW | PXN | UXN;
