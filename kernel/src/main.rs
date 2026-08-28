@@ -51,6 +51,7 @@ fn kernel_main() -> ! {
     let _ = writeln!(serial, "int ok");
 
     modules::load_embedded_hello();
+    modules::load_limine_modules();
 
     serial.flush();
     arch::exit_qemu(arch::QEMU_SUCCESS);

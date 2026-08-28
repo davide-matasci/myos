@@ -3,7 +3,13 @@ struct CiExpect {
     qemu_debug_exit: bool,
 }
 
-const CI_NEEDLES: [&str; 4] = ["Hello from myos", "heap ok", "int ok", "mod ok"];
+const CI_NEEDLES: [&str; 5] = [
+    "Hello from myos",
+    "heap ok",
+    "int ok",
+    "mod ok",
+    "limine mod ok",
+];
 
 fn serial_has_all_needles(serial: &str) -> bool {
     CI_NEEDLES.iter().all(|n| serial.contains(n))
@@ -24,7 +30,7 @@ fn wait_ci(mut child: Child, expect: CiExpect) {
                     eprint!("{chunk}");
                     s.push_str(&chunk);
                 }
-                Err(_) => break,
+                Err(_) => break;
             }
         }
         s

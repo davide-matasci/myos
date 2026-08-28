@@ -20,6 +20,12 @@ fn main() {
     println!("cargo:rerun-if-changed=src/limine_dir.rs");
     println!("cargo:rerun-if-changed={}", kernel_path.display());
 
+    let hello_path = manifest.join("target").join("hello-x86_64-unknown-none");
+    println!("cargo:rerun-if-changed={}", hello_path.display());
+    let hello = std::fs::read(&hello_path).unwrap_or_else(|_| {
+        panic!("hello ELF missing at {}", hello_path.display())
+    });
+
     let limine = fetch_limine(&limine_dir);
     let bootx64 = std::fs::read(limine.bootx64()).expect("BOOTX64.EFI");
     let bios_sys = std::fs::read(limine.bios_sys()).expect("limine-bios.sys");
@@ -31,6 +37,7 @@ fn main() {
         "BOOTX64.EFI",
         &bootx64,
         Some(&bios_sys),
+        &hello,
     );
     bios_install(&limine.tool(), &bios_path);
 

@@ -30,6 +30,36 @@ pub fn load_embedded_hello() {
     }
 }
 
+/// Load modules Limine mapped from `module_path` (ESP `boot/hello`).
+///
+/// Uses the same ELF loader as the baked-in image. Does not panic on
+/// failure: embedded hello already proved the loader.
+pub fn load_limine_modules() {
+    let mut serial = SerialPort::new();
+    let Some(resp) = crate::limine_boot::MODULES.response() else {
+        return;
+    };
+    const NAMES: [&str; 4] = [
+        "hello-limine",
+        "hello-limine-1",
+        "hello-limine-2",
+        "hello-limine-3",
+    ];
+    for (i, file) in resp.modules().iter().enumerate() {
+        // Limine already mapped `address..address+size`.
+        let bytes = file.data();
+        let name = NAMES.get(i).copied().unwrap_or("hello-limine");
+        match load(name, bytes) {
+            Ok(()) => {
+                let _ = writeln!(serial, "limine mod ok");
+            }
+            Err(e) => {
+                let _ = writeln!(serial, "limine mod failed: {e}");
+            }
+        }
+    }
+}
+
 /// Load `image` (an ELF file already in memory) and run `module_init`.
 pub fn load(name: &'static str, image: &[u8]) -> Result<(), elf::LoadError> {
     let loaded = elf::load(image)?;

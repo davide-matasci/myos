@@ -63,4 +63,11 @@ fn main() {
         panic!("hello ELF missing at {}", elf.display());
     }
     println!("cargo:rustc-env=HELLO_MODULE_PATH={}", elf.display());
+
+    // Stable path so the host image builder can also put hello on the ESP.
+    let ws_target = Path::new(&manifest_dir).join("../target");
+    std::fs::create_dir_all(&ws_target).expect("workspace target dir");
+    let stable = ws_target.join(format!("hello-{target}"));
+    std::fs::copy(&elf, &stable)
+        .unwrap_or_else(|e| panic!("copy hello ELF to {}: {e}", stable.display()));
 }
