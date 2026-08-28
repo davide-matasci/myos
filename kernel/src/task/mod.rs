@@ -1,12 +1,14 @@
-//! Round-robin kernel threads. Cooperative (`yield_now`) and preemptive
-//! (timer IRQ calls the same `schedule` after EOI). Not userspace.
+//! Round-robin kernel threads plus user processes (own CR3/TTBR0).
+//! Cooperative (`yield_now`) and preemptive (timer IRQ calls the same
+//! `schedule` after EOI).
 
 use alloc::alloc::{alloc, Layout};
 use core::fmt::Write;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::arch::SerialPort;
+use crate::user;
 
 #[cfg(target_arch = "x86_64")]
 mod switch_x86;
@@ -36,6 +38,10 @@ struct Task {
     stack_base: usize,
     sp: usize,
     entry: Option<fn()>,
+    aspace: u64,
+    kernel_stack_top: usize,
+    user_rip: usize,
+    user_rsp: usize,
 }
 
 const EMPTY: Task = Task {
@@ -43,14 +49,23 @@ const EMPTY: Task = Task {
     stack_base: 0,
     sp: 0,
     entry: None,
+    aspace: 0,
+    kernel_stack_top: 0,
+    user_rip: 0,
+    user_rsp: 0,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static PREEMPT_ON: AtomicBool = AtomicBool::new(false);
 static SERIAL: Mutex<()> = Mutex::new(());
+static KERNEL_ASPACE: AtomicU64 = AtomicU64::new(0);
+static LOADED_ASPACE: AtomicU64 = AtomicU64::new(0);
 
 pub fn init() {
+    let a = user::read_aspace();
+    KERNEL_ASPACE.store(a, Ordering::SeqCst);
+    LOADED_ASPACE.store(a, Ordering::SeqCst);
     let mut tasks = TASKS.lock();
     tasks[0].state = State::Running;
     tasks[0].sp = 0;
@@ -61,11 +76,36 @@ pub fn enable_preempt() {
     PREEMPT_ON.store(true, Ordering::SeqCst);
 }
 
+pub fn kernel_aspace() -> u64 {
+    KERNEL_ASPACE.load(Ordering::SeqCst)
+}
+
+#[allow(dead_code)]
+pub fn current_id() -> usize {
+    CURRENT.load(Ordering::SeqCst)
+}
+
+pub fn current_aspace() -> u64 {
+    let id = CURRENT.load(Ordering::SeqCst);
+    TASKS.lock()[id].aspace
+}
+
 pub fn spawn(entry: fn()) {
+    spawn_inner(0, Some(entry), 0, 0);
+}
+
+pub fn spawn_user(aspace: u64, user_rip: usize, user_rsp: usize) {
+    spawn_inner(aspace, None, user_rip, user_rsp);
+}
+
+fn spawn_inner(aspace: u64, entry: Option<fn()>, user_rip: usize, user_rsp: usize) {
+    let flags = irq_save();
+    irq_off();
     let layout = Layout::from_size_align(STACK_SIZE, 16).expect("task stack layout");
     let stack = unsafe { alloc(layout) };
     assert!(!stack.is_null(), "task stack alloc");
     let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as usize) };
+    let top = stack as usize + STACK_SIZE;
 
     let mut tasks = TASKS.lock();
     let slot = tasks
@@ -76,8 +116,14 @@ pub fn spawn(entry: fn()) {
         state: State::Ready,
         stack_base: stack as usize,
         sp,
-        entry: Some(entry),
+        entry,
+        aspace,
+        kernel_stack_top: top,
+        user_rip,
+        user_rsp,
     };
+    drop(tasks);
+    irq_restore(flags);
 }
 
 pub fn yield_now() {
@@ -93,7 +139,7 @@ pub fn schedule() {
         return;
     }
 
-    let (old_sp, new_sp) = {
+    let (old_sp, new_sp, kstack, aspace) = {
         let mut tasks = TASKS.lock();
         let current = CURRENT.load(Ordering::SeqCst);
         match tasks[current].state {
@@ -120,9 +166,27 @@ pub fn schedule() {
         tasks[next].state = State::Running;
         let old_sp = core::ptr::addr_of_mut!(tasks[current].sp);
         let new_sp = tasks[next].sp;
+        let kstack = tasks[next].kernel_stack_top;
+        let aspace = tasks[next].aspace;
         CURRENT.store(next, Ordering::SeqCst);
-        (old_sp, new_sp)
+        (old_sp, new_sp, kstack, aspace)
     };
+
+    if kstack != 0 {
+        user::set_kernel_rsp0(kstack);
+        #[cfg(target_arch = "x86_64")]
+        crate::arch::gdt::set_rsp0(kstack as u64);
+    }
+
+    let want = if aspace == 0 {
+        KERNEL_ASPACE.load(Ordering::SeqCst)
+    } else {
+        aspace
+    };
+    if want != LOADED_ASPACE.load(Ordering::SeqCst) {
+        user::switch_aspace(want);
+        LOADED_ASPACE.store(want, Ordering::SeqCst);
+    }
 
     unsafe {
         task_switch(old_sp, new_sp);
@@ -131,23 +195,46 @@ pub fn schedule() {
 
 /// Serial write used by tasks. Holds a lock so bytes from two tasks cannot
 /// interleave. IRQs off for the write so a timer tick cannot switch while
-/// the UART is mid-character. Panic still fire-and-forgets.
+/// the UART is mid-character. Restores the previous interrupt state so a
+/// syscall (IF already off) does not `sti`.
 pub fn print(s: &str) {
+    let flags = irq_save();
     irq_off();
     {
         let _hold = SERIAL.lock();
         let mut serial = SerialPort::new();
         let _ = serial.write_str(s);
     }
-    irq_on();
+    irq_restore(flags);
+}
+
+pub fn print_bytes(bytes: &[u8]) {
+    match core::str::from_utf8(bytes) {
+        Ok(s) => print(s),
+        Err(_) => {
+            let flags = irq_save();
+            irq_off();
+            {
+                let _hold = SERIAL.lock();
+                let mut serial = SerialPort::new();
+                for &b in bytes {
+                    serial.write_byte(b);
+                }
+            }
+            irq_restore(flags);
+        }
+    }
 }
 
 extern "C" fn trampoline() -> ! {
-    // IRQs are still off from yield/timer; take the lock before unmasking.
-    let entry = {
+    let (entry, user_rip, user_rsp) = {
         let id = CURRENT.load(Ordering::SeqCst);
-        TASKS.lock()[id].entry
+        let t = TASKS.lock()[id];
+        (t.entry, t.user_rip, t.user_rsp)
     };
+    if user_rip != 0 {
+        crate::user::enter(user_rip, user_rsp);
+    }
     irq_on();
     if let Some(f) = entry {
         f();
@@ -155,11 +242,14 @@ extern "C" fn trampoline() -> ! {
     die()
 }
 
-fn die() -> ! {
+pub fn die() -> ! {
     irq_off();
     {
         let mut tasks = TASKS.lock();
         let id = CURRENT.load(Ordering::SeqCst);
+        if tasks[id].user_rip != 0 {
+            user::note_exit();
+        }
         tasks[id].state = State::Dead;
         tasks[id].entry = None;
     }
@@ -169,6 +259,40 @@ fn die() -> ! {
         wait();
         irq_off();
         schedule();
+    }
+}
+
+fn irq_save() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let r: u64;
+        core::arch::asm!("pushfq; pop {r}", r = out(reg) r);
+        r
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let r: u64;
+        core::arch::asm!(
+            "mrs {r}, daif",
+            r = out(reg) r,
+            options(nomem, nostack, preserves_flags)
+        );
+        r
+    }
+}
+
+fn irq_restore(flags: u64) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        if flags & (1 << 9) != 0 {
+            core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+        } else {
+            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("msr daif, {r}", r = in(reg) flags, options(nomem, nostack));
     }
 }
 
