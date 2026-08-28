@@ -13,7 +13,7 @@ fn main() {
         println!("cargo:rustc-link-arg-bins=max-page-size=0x1000");
     }
 
-    // Hello and init are their own tiny workspaces so nested `cargo build`
+    // Hello, init, and ok are their own tiny workspaces so nested `cargo build`
     // does not share the myos lock (and is not an artifact-dep: those panic
     // cargo's resolver when nested under the kernel artifact, and build-deps
     // cannot set panic=abort).
@@ -42,6 +42,18 @@ fn main() {
         "init",
         "init-target",
         "USER_INIT_PATH",
+        &target,
+        &profile,
+        &out,
+        &[],
+    );
+    nested_elf(
+        &cargo,
+        manifest,
+        "../user/ok",
+        "ok",
+        "ok-target",
+        "USER_OK_PATH",
         &target,
         &profile,
         &out,

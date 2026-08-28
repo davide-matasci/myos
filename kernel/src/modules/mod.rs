@@ -36,6 +36,8 @@ pub fn load_embedded_hello() {
 ///
 /// Uses the same ELF loader as the baked-in image. Does not panic on
 /// failure: embedded hello already proved the loader.
+/// Userspace ELFs in the module list (`MissingInit`) are skipped quietly
+/// so bootfs can reuse the same Limine modules.
 pub fn load_limine_modules() {
     let mut serial = SerialPort::new();
     let Some(resp) = crate::limine_boot::MODULES.response() else {
@@ -55,6 +57,7 @@ pub fn load_limine_modules() {
             Ok(()) => {
                 let _ = writeln!(serial, "limine mod ok");
             }
+            Err(elf::LoadError::MissingInit) => {}
             Err(e) => {
                 let _ = writeln!(serial, "limine mod failed: {e}");
             }

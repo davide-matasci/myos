@@ -1,14 +1,14 @@
 [workspace]
 
 [package]
-name = "init"
+name = "ok"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Userspace init: open/exec `/ok` from bootfs."
+description = "Userspace ok: write `user ok` then exit."
 
 [[bin]]
-name = "init"
+name = "ok"
 test = false
 bench = false
 

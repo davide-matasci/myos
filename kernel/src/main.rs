@@ -7,6 +7,7 @@ extern crate alloc;
 mod arch;
 mod font;
 mod framebuffer;
+mod fs;
 mod heap;
 mod limine_boot;
 mod mm;
@@ -66,6 +67,7 @@ fn kernel_main() -> ! {
     }
     let _ = writeln!(serial, "sched ok");
 
+    fs::init();
     modules::load_embedded_hello();
     modules::load_limine_modules();
 
