@@ -646,12 +646,13 @@ fn try_resume_exec_via_syscall_frame(
     if frame_ptr.is_null() {
         return;
     }
-    let mut frame = copy_fork_syscall_frame(frame_ptr);
-    frame[0] = argc as u64;
-    frame[1] = argv as u64;
-    frame[32] = entry as u64;
-    frame[34] = rsp as u64;
-    crate::arch::fork_eret_to_user(frame.as_mut_ptr());
+    unsafe {
+        *frame_ptr.add(0) = argc as u64;
+        *frame_ptr.add(1) = argv as u64;
+        *frame_ptr.add(32) = entry as u64;
+        *frame_ptr.add(34) = rsp as u64;
+        crate::arch::fork_eret_to_user(frame_ptr);
+    }
 }
 
 /// Resume a forked child with the parent's user GPRs (rax/x0 = 0).

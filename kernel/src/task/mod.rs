@@ -20,7 +20,10 @@ mod switch_aarch64;
 use switch_aarch64::{seed_stack, task_switch};
 
 const MAX_TASKS: usize = 8;
-const STACK_SIZE: usize = 8 * 1024;
+/// Exec from a syscall runs `load_user_elf` on the task stack (exception frame +
+/// `[MAX_INIT_PAGES]`/`[USER_STACK_PAGES]` frame arrays). 8 KiB overflowed after
+/// widening the user stack to 64 KiB (AArch64 CI hung in `dealloc`).
+const STACK_SIZE: usize = 16 * 1024;
 const MAX_FDS: usize = 8;
 /// 0 = stdin, 1 = stdout, 2 = stderr (reserved; write uses syscall today).
 const FD_USER_BASE: usize = 3;
