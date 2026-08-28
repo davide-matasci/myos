@@ -120,8 +120,8 @@ cargo run -- aarch64 --ci
 ```
 
 BIOS/UEFI boots with `-display none`, require `Hello from myos`, `heap ok`,
-`int ok`, and `mod ok` on serial, and expect QEMU to exit via `isa-debug-exit`
-(BIOS ~20s, UEFI 60s). AArch64 requires the same four strings and exits
+`int ok`, `mod ok`, and `limine mod ok` on serial, and expect QEMU to exit via `isa-debug-exit`
+(BIOS ~20s, UEFI 60s). AArch64 requires the same five strings and exits
 via PSCI SYSTEM_OFF (must not hang; CI times out at 60s).
 
 ## Modules
@@ -150,6 +150,8 @@ already an artifact of the host crate; nesting another one panics the
 feature resolver) and `[build-dependencies]` (those cannot `panic=abort`).
 After heap and IRQs are up, the loader copies `PT_LOAD` into the heap,
 applies relocs, finds `module_init` in `.symtab`, and calls it.
+Hello is both baked into the kernel and loaded from the ESP via Limine
+`module_path`.
 
 x86_64 hello is a PIE (`ET_DYN`) with `R_X86_64_RELATIVE` relocs.
 AArch64 hello is `ET_EXEC` slid as a unit: prebuilt `libcore` is not PIC,
