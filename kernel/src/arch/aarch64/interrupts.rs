@@ -277,9 +277,10 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     if ec == 0x15 {
         unsafe {
             let nr = *frame.add(8) as usize;
-            let ptr = *frame.add(0) as usize;
-            let len = *frame.add(1) as usize;
-            let ret = crate::user::syscall_dispatch(nr, ptr, len);
+            let a0 = *frame.add(0) as usize;
+            let a1 = *frame.add(1) as usize;
+            let a2 = *frame.add(2) as usize;
+            let ret = crate::user::syscall_dispatch(nr, a0, a1, a2);
             *frame.add(0) = ret as u64;
         }
         return;
