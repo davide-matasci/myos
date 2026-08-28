@@ -180,32 +180,103 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, usize, u64)> {
 }
 
 /// Copy this process's user code+stack pages into a new aspace at the same VA.
+/// Copies via the current aspace's page tables + HHDM (not user VAs).
 pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64) -> Option<u64> {
     let n_pages = span.div_ceil(PAGE);
     if n_pages == 0 || n_pages > MAX_INIT_PAGES {
         return None;
     }
+    let src = task::current_aspace();
+    if src == 0 {
+        return None;
+    }
     let mut frames = [0u64; MAX_INIT_PAGES];
     for i in 0..n_pages {
+        let va = base + (i * PAGE) as u64;
+        let phys = virt_to_phys(src, va)?;
         frames[i] = mm::alloc_frame();
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                (base as usize + i * PAGE) as *const u8,
-                mm::hhdm(frames[i]),
-                PAGE,
-            );
+            core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(frames[i]), PAGE);
         }
         sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
     }
+    let stack_va = base + stack_off;
+    let stack_phys = virt_to_phys(src, stack_va)?;
     let stack = mm::alloc_frame();
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            (base as usize + stack_off as usize) as *const u8,
-            mm::hhdm(stack),
-            PAGE,
-        );
+        core::ptr::copy_nonoverlapping(mm::hhdm(stack_phys), mm::hhdm(stack), PAGE);
     }
     Some(create_aspace(&frames[..n_pages], stack, base, stack_off))
+}
+
+fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        virt_to_phys_x86(aspace, va)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        virt_to_phys_aarch64(aspace, va)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn virt_to_phys_x86(pml4_phys: u64, va: u64) -> Option<u64> {
+    const PRESENT: u64 = 1;
+    const HUGE: u64 = 1 << 7;
+    let i4 = ((va >> 39) & 0x1ff) as usize;
+    let i3 = ((va >> 30) & 0x1ff) as usize;
+    let i2 = ((va >> 21) & 0x1ff) as usize;
+    let i1 = ((va >> 12) & 0x1ff) as usize;
+    unsafe {
+        let pml4 = &*mm::table(pml4_phys);
+        if pml4[i4] & PRESENT == 0 {
+            return None;
+        }
+        let pdpt = &*mm::table(pml4[i4]);
+        if pdpt[i3] & PRESENT == 0 || pdpt[i3] & HUGE != 0 {
+            return None;
+        }
+        let pd = &*mm::table(pdpt[i3]);
+        if pd[i2] & PRESENT == 0 || pd[i2] & HUGE != 0 {
+            return None;
+        }
+        let pt = &*mm::table(pd[i2]);
+        if pt[i1] & PRESENT == 0 {
+            return None;
+        }
+        Some(pt[i1] & 0x000f_ffff_ffff_f000)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn virt_to_phys_aarch64(l0_phys: u64, va: u64) -> Option<u64> {
+    const PA: u64 = 0x0000_FFFF_FFFF_F000;
+    // USER_BASE 0x4000_0000 → L0[0], L1[1], L2[0], L3[page]
+    let i3 = ((va >> 12) & 0x1ff) as usize;
+    unsafe {
+        let l0 = &*mm::table(l0_phys);
+        let l1_phys = l0[0] & PA;
+        if l1_phys == 0 {
+            return None;
+        }
+        let l1 = &*mm::table(l1_phys);
+        let l2_phys = l1[1] & PA;
+        if l2_phys == 0 {
+            return None;
+        }
+        let l2 = &*mm::table(l2_phys);
+        let l3_phys = l2[0] & PA;
+        if l3_phys == 0 {
+            return None;
+        }
+        let l3 = &*mm::table(l3_phys);
+        let pte = l3[i3];
+        if pte & 0b11 != 0b11 {
+            return None;
+        }
+        Some(pte & PA)
+    }
 }
 
 fn pick_user_base() -> u64 {
@@ -378,6 +449,164 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize) -> ! {
     }
 }
 
+/// Resume a forked child with the parent's user GPRs (rax/x0 = 0).
+pub fn enter_fork(regs: task::ForkRegs) -> ! {
+    let a = task::current_aspace();
+    if a != 0 {
+        switch_aspace(a);
+    }
+    #[cfg(target_arch = "x86_64")]
+    enter_fork_x86(regs);
+    #[cfg(target_arch = "aarch64")]
+    enter_fork_aarch64(regs);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn enter_fork_x86(regs: task::ForkRegs) -> ! {
+    let cs = (crate::arch::gdt::user_cs() | 3) as u64;
+    let ss = (crate::arch::gdt::user_ss() | 3) as u64;
+    let rflags: u64 = 0x202;
+    unsafe {
+        core::arch::asm!(
+            "cli",
+            "mov rbx, {rbx}",
+            "mov rbp, {rbp}",
+            "mov r12, {r12}",
+            "mov r13, {r13}",
+            "mov r14, {r14}",
+            "mov r15, {r15}",
+            "push {uss}",
+            "push {ursp}",
+            "push {rf}",
+            "push {ucs}",
+            "push {urip}",
+            "xor rax, rax",
+            "iretq",
+            rbx = in(reg) regs.rbx,
+            rbp = in(reg) regs.rbp,
+            r12 = in(reg) regs.r12,
+            r13 = in(reg) regs.r13,
+            r14 = in(reg) regs.r14,
+            r15 = in(reg) regs.r15,
+            uss = in(reg) ss,
+            ursp = in(reg) regs.rsp,
+            rf = in(reg) rflags,
+            ucs = in(reg) cs,
+            urip = in(reg) regs.rip,
+            options(noreturn),
+        );
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
+    // Keep the GPR image in a stack local and reload via a single base
+    // pointer — restoring thirty `in(reg)` operands does not fit.
+    let mut img = regs.x;
+    img[0] = 0;
+    let base = img.as_ptr();
+    let rip = regs.rip;
+    let rsp = regs.rsp;
+    unsafe {
+        if current_el() >= 2 {
+            core::arch::asm!(
+                "ldr x1, [{b}, #8]",
+                "ldr x2, [{b}, #16]",
+                "ldr x3, [{b}, #24]",
+                "ldr x4, [{b}, #32]",
+                "ldr x5, [{b}, #40]",
+                "ldr x6, [{b}, #48]",
+                "ldr x7, [{b}, #56]",
+                "ldr x8, [{b}, #64]",
+                "ldr x9, [{b}, #72]",
+                "ldr x10, [{b}, #80]",
+                "ldr x11, [{b}, #88]",
+                "ldr x12, [{b}, #96]",
+                "ldr x13, [{b}, #104]",
+                "ldr x14, [{b}, #112]",
+                "ldr x15, [{b}, #120]",
+                "ldr x16, [{b}, #128]",
+                "ldr x17, [{b}, #136]",
+                "ldr x18, [{b}, #144]",
+                "ldr x19, [{b}, #152]",
+                "ldr x20, [{b}, #160]",
+                "ldr x21, [{b}, #168]",
+                "ldr x22, [{b}, #176]",
+                "ldr x23, [{b}, #184]",
+                "ldr x24, [{b}, #192]",
+                "ldr x25, [{b}, #200]",
+                "ldr x26, [{b}, #208]",
+                "ldr x27, [{b}, #216]",
+                "ldr x28, [{b}, #224]",
+                "ldr x29, [{b}, #232]",
+                "ldr x30, [{b}, #240]",
+                "msr elr_el2, {rip}",
+                "msr sp_el0, {rsp}",
+                "msr spsr_el2, xzr",
+                "mov x0, xzr",
+                "isb",
+                "eret",
+                b = in(reg) base,
+                rip = in(reg) rip,
+                rsp = in(reg) rsp,
+                options(noreturn),
+            );
+        } else {
+            core::arch::asm!(
+                "ldr x1, [{b}, #8]",
+                "ldr x2, [{b}, #16]",
+                "ldr x3, [{b}, #24]",
+                "ldr x4, [{b}, #32]",
+                "ldr x5, [{b}, #40]",
+                "ldr x6, [{b}, #48]",
+                "ldr x7, [{b}, #56]",
+                "ldr x8, [{b}, #64]",
+                "ldr x9, [{b}, #72]",
+                "ldr x10, [{b}, #80]",
+                "ldr x11, [{b}, #88]",
+                "ldr x12, [{b}, #96]",
+                "ldr x13, [{b}, #104]",
+                "ldr x14, [{b}, #112]",
+                "ldr x15, [{b}, #120]",
+                "ldr x16, [{b}, #128]",
+                "ldr x17, [{b}, #136]",
+                "ldr x18, [{b}, #144]",
+                "ldr x19, [{b}, #152]",
+                "ldr x20, [{b}, #160]",
+                "ldr x21, [{b}, #168]",
+                "ldr x22, [{b}, #176]",
+                "ldr x23, [{b}, #184]",
+                "ldr x24, [{b}, #192]",
+                "ldr x25, [{b}, #200]",
+                "ldr x26, [{b}, #208]",
+                "ldr x27, [{b}, #216]",
+                "ldr x28, [{b}, #224]",
+                "ldr x29, [{b}, #232]",
+                "ldr x30, [{b}, #240]",
+                "msr elr_el1, {rip}",
+                "msr sp_el0, {rsp}",
+                "msr spsr_el1, xzr",
+                "mov x0, xzr",
+                "isb",
+                "eret",
+                b = in(reg) base,
+                rip = in(reg) rip,
+                rsp = in(reg) rsp,
+                options(noreturn),
+            );
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[cfg(target_arch = "aarch64")]
+static mut SYSCALL_FRAME: *mut u64 = core::ptr::null_mut();
+
+#[cfg(target_arch = "aarch64")]
+pub fn set_syscall_frame(frame: *mut u64) {
+    unsafe { SYSCALL_FRAME = frame; }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn syscall_dispatch(
     nr: usize,
@@ -395,7 +624,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
         SYS_EXEC => sys_exec(a0, a1),
-        SYS_FORK => sys_fork(),
+        SYS_FORK => sys_fork(user_rip, user_rsp),
         SYS_WAIT => sys_wait(),
         _ => SYSERR,
     }
@@ -477,8 +706,64 @@ fn sys_exec(ptr: usize, path_len: usize) -> usize {
     enter(entry, rsp);
 }
 
-fn sys_fork() -> usize {
-    match task::fork_current() {
+fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    let child = {
+        let rbx: u64;
+        let rbp: u64;
+        let r12: u64;
+        let r13: u64;
+        let r14: u64;
+        let r15: u64;
+        // syscall_entry leaves user callee-saved regs in place.
+        unsafe {
+            core::arch::asm!(
+                "mov {rbx}, rbx",
+                "mov {rbp}, rbp",
+                "mov {r12}, r12",
+                "mov {r13}, r13",
+                "mov {r14}, r14",
+                "mov {r15}, r15",
+                rbx = out(reg) rbx,
+                rbp = out(reg) rbp,
+                r12 = out(reg) r12,
+                r13 = out(reg) r13,
+                r14 = out(reg) r14,
+                r15 = out(reg) r15,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        task::ForkRegs {
+            rip: user_rip,
+            rsp: user_rsp,
+            rbx,
+            rbp,
+            r12,
+            r13,
+            r14,
+            r15,
+        }
+    };
+    #[cfg(target_arch = "aarch64")]
+    let child = {
+        let frame = unsafe { SYSCALL_FRAME };
+        if frame.is_null() {
+            return SYSERR;
+        }
+        let mut x = [0u64; 31];
+        unsafe {
+            for i in 0..31 {
+                x[i] = *frame.add(i);
+            }
+        }
+        x[0] = 0; // child return value
+        task::ForkRegs {
+            rip: user_rip,
+            rsp: user_rsp,
+            x,
+        }
+    };
+    match task::fork_current(child) {
         Some(pid) => pid,
         None => SYSERR,
     }
