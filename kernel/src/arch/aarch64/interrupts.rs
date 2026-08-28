@@ -85,14 +85,14 @@ irq_el1h:
     str x30, [sp, #16 * 15]
     mrs x3, CurrentEL
     cmp x3, #8
-    b.lt 1f
+    b.lt irq_save_el1
     mrs x0, elr_el2
     mrs x1, spsr_el2
-    b 2f
-1:
+    b irq_save_done
+irq_save_el1:
     mrs x0, elr_el1
     mrs x1, spsr_el1
-2:
+irq_save_done:
     mrs x2, sp_el0
     stp x0, x1, [sp, #16 * 16]
     str x2, [sp, #16 * 17]
@@ -101,14 +101,14 @@ irq_el1h:
     ldr x2, [sp, #16 * 17]
     mrs x3, CurrentEL
     cmp x3, #8
-    b.lt 1f
+    b.lt irq_rest_el1
     msr elr_el2, x0
     msr spsr_el2, x1
-    b 2f
-1:
+    b irq_rest_done
+irq_rest_el1:
     msr elr_el1, x0
     msr spsr_el1, x1
-2:
+irq_rest_done:
     msr sp_el0, x2
     isb
     ldr x30, [sp, #16 * 15]
@@ -150,14 +150,14 @@ lower_sync:
     str x30, [sp, #16 * 15]
     mrs x3, CurrentEL
     cmp x3, #8
-    b.lt 1f
+    b.lt sync_save_el1
     mrs x0, elr_el2
     mrs x1, spsr_el2
-    b 2f
-1:
+    b sync_save_done
+sync_save_el1:
     mrs x0, elr_el1
     mrs x1, spsr_el1
-2:
+sync_save_done:
     mrs x2, sp_el0
     stp x0, x1, [sp, #16 * 16]
     str x2, [sp, #16 * 17]
@@ -167,14 +167,14 @@ lower_sync:
     ldr x2, [sp, #16 * 17]
     mrs x3, CurrentEL
     cmp x3, #8
-    b.lt 1f
+    b.lt sync_rest_el1
     msr elr_el2, x0
     msr spsr_el2, x1
-    b 2f
-1:
+    b sync_rest_done
+sync_rest_el1:
     msr elr_el1, x0
     msr spsr_el1, x1
-2:
+sync_rest_done:
     msr sp_el0, x2
     isb
     ldr x30, [sp, #16 * 15]
@@ -328,8 +328,14 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     let esr: u64;
     let far: u64;
     unsafe {
-        asm!("mrs {esr}, esr_el1", esr = out(reg) esr, options(nomem, nostack));
-        asm!("mrs {far}, far_el1", far = out(reg) far, options(nomem, nostack));
+        // ESR/FAR are not VHE-aliased: exception to EL2 writes ESR_EL2/FAR_EL2.
+        if current_el() >= 2 {
+            asm!("mrs {esr}, esr_el2", esr = out(reg) esr, options(nomem, nostack));
+            asm!("mrs {far}, far_el2", far = out(reg) far, options(nomem, nostack));
+        } else {
+            asm!("mrs {esr}, esr_el1", esr = out(reg) esr, options(nomem, nostack));
+            asm!("mrs {far}, far_el1", far = out(reg) far, options(nomem, nostack));
+        }
     }
     let ec = (esr >> 26) & 0x3f;
     // Stacked by lower_sync: elr/spsr at 16*16, sp_el0 at 16*17.
@@ -366,13 +372,16 @@ extern "C" fn aarch64_sync_handler() -> ! {
     let elr: u64;
     let far: u64;
     unsafe {
-        asm!("mrs {esr}, esr_el1", esr = out(reg) esr, options(nomem, nostack));
+        // ESR/FAR are not VHE-aliased: exception to EL2 writes ESR_EL2/FAR_EL2.
         if current_el() >= 2 {
+            asm!("mrs {esr}, esr_el2", esr = out(reg) esr, options(nomem, nostack));
             asm!("mrs {elr}, elr_el2", elr = out(reg) elr, options(nomem, nostack));
+            asm!("mrs {far}, far_el2", far = out(reg) far, options(nomem, nostack));
         } else {
+            asm!("mrs {esr}, esr_el1", esr = out(reg) esr, options(nomem, nostack));
             asm!("mrs {elr}, elr_el1", elr = out(reg) elr, options(nomem, nostack));
+            asm!("mrs {far}, far_el1", far = out(reg) far, options(nomem, nostack));
         }
-        asm!("mrs {far}, far_el1", far = out(reg) far, options(nomem, nostack));
     }
     panic!("sync abort esr={esr:#x} elr={elr:#x} far={far:#x}");
 }
