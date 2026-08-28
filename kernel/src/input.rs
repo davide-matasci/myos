@@ -3,7 +3,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
-use crate::arch::SerialPort;
+use crate::console;
 use crate::task;
 
 const RING: usize = 256;
@@ -34,17 +34,15 @@ fn push_byte(raw: u8) {
         let h = HEAD.load(Ordering::SeqCst);
         if t != h {
             TAIL.store((t + RING - 1) % RING, Ordering::SeqCst);
-            let mut serial = SerialPort::new();
-            serial.write_byte(8);
-            serial.write_byte(b' ');
-            serial.write_byte(8);
+            console::write_byte(8);
+            console::write_byte(b' ');
+            console::write_byte(8);
         }
         return;
     }
     if byte >= 0x20 || byte == b'\n' || byte == b'\t' {
         if byte != b'\n' {
-            let mut serial = SerialPort::new();
-            serial.write_byte(byte);
+            console::write_byte(byte);
         }
         let h = HEAD.load(Ordering::SeqCst);
         let next = (h + 1) % RING;
@@ -54,8 +52,7 @@ fn push_byte(raw: u8) {
         BUF.lock()[h] = byte;
         HEAD.store(next, Ordering::SeqCst);
         if byte == b'\n' {
-            let mut serial = SerialPort::new();
-            serial.write_byte(b'\n');
+            console::write_byte(b'\n');
         }
     }
 }

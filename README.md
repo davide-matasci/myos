@@ -173,6 +173,39 @@ cargo run -- uefi
 cargo run -- aarch64
 ```
 
+## Real hardware (not QEMU)
+
+On a physical PC you usually see Limine and then **green text on the
+monitor**. The kernel mirrors serial output to that framebuffer, so boot
+progress (`heap ok`, `sh ok`, `$`, …) should scroll on screen as well as
+on serial.
+
+**The interactive shell still reads and writes serial only** — there is no
+keyboard driver yet. To use `$` and type commands you need a serial link:
+
+| Arch | Port | Settings |
+|------|------|----------|
+| x86_64 | **COM1** (I/O `0x3F8`) | **38400** 8N1 |
+| AArch64 | PL011 UART (board-specific; `0x09000000` on QEMU virt) | 115200 8N1 typical |
+
+On many desktops COM1 is a motherboard header (9-pin) or a rear DB9. Use a
+USB‑serial adapter, connect **GND/RX/TX** (often a null-modem cable to a
+second PC), and open the port in `minicom`, `picocom`, or PuTTY at the baud
+above. Example:
+
+```sh
+picocom -b 38400 /dev/ttyUSB0
+```
+
+Write the Limine disk image to a USB stick or internal drive the same way
+you would for QEMU (`target/bios.img` or UEFI ESP). Attach a **second**
+FAT16 data disk only if you want `/msg` / `fat ok` (virtio-blk is expected;
+bare metal without that disk still boots the shell).
+
+If the **monitor stops at `Hello from myos`** on an old image, the OS was
+still running on serial only — update to a build with framebuffer mirroring
+or connect serial to see the rest.
+
 ## VFS, virtio-blk, and FAT16
 
 A tiny VFS (`kernel/src/fs/`) is a **mount table** with ops/`lookup`. The
@@ -375,8 +408,8 @@ memory (stack); rodata literals are rejected by the kernel copy-in path.
 | `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages, virtqueues) |
 | `kernel/src/blk.rs` | In-kernel virtio-blk: `init` + 512-byte sector `read` |
 | `kernel/src/fs/` | Tiny VFS: mount table + bootfs (Limine modules + embedded `/ok` + `vfs_register`) |
+| `kernel/src/console.rs` | Dual console: serial + Limine framebuffer mirror |
 | `kernel/src/input.rs` | Serial stdin ring buffer (fd 0), echo/backspace |
-| `kernel/src/user.rs` | Load user ELFs at `USER_BASE`, per-process page tables, `syscall`/`svc`, fork/wait/exec, argv |
 | `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
