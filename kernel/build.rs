@@ -13,32 +13,76 @@ fn main() {
         println!("cargo:rustc-link-arg-bins=max-page-size=0x1000");
     }
 
-    // Hello is its own tiny workspace so this nested `cargo build` does not
-    // share the myos lock (and is not an artifact-dep: those panic cargo's
-    // resolver when nested under the kernel artifact, and build-deps cannot
-    // set panic=abort).
-    let hello_dir = Path::new(&manifest_dir).join("../modules/hello");
-    println!("cargo:rerun-if-changed={}/src/main.rs", hello_dir.display());
-    println!("cargo:rerun-if-changed={}/build.rs", hello_dir.display());
-    println!("cargo:rerun-if-changed={}/Cargo.toml", hello_dir.display());
-    println!("cargo:rerun-if-changed={}/../abi/src/lib.rs", hello_dir.display());
-
+    // Hello and init are their own tiny workspaces so nested `cargo build`
+    // does not share the myos lock (and is not an artifact-dep: those panic
+    // cargo's resolver when nested under the kernel artifact, and build-deps
+    // cannot set panic=abort).
     let target = env::var("TARGET").expect("TARGET");
     let out = env::var("OUT_DIR").unwrap();
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".into());
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let hello_td = PathBuf::from(&out).join("hello-target");
+    let manifest = Path::new(&manifest_dir);
 
-    let mut cmd = Command::new(&cargo);
+    nested_elf(
+        &cargo,
+        manifest,
+        "../modules/hello",
+        "hello",
+        "hello-target",
+        "HELLO_MODULE_PATH",
+        &target,
+        &profile,
+        &out,
+        &["../abi/src/lib.rs"],
+    );
+    nested_elf(
+        &cargo,
+        manifest,
+        "../user/init",
+        "init",
+        "init-target",
+        "USER_INIT_PATH",
+        &target,
+        &profile,
+        &out,
+        &[],
+    );
+}
+
+fn nested_elf(
+    cargo: &str,
+    manifest_dir: &Path,
+    crate_rel: &str,
+    bin: &str,
+    td_name: &str,
+    env_key: &str,
+    target: &str,
+    profile: &str,
+    out: &str,
+    extra_rerun: &[&str],
+) {
+    let crate_dir = manifest_dir.join(crate_rel);
+    println!("cargo:rerun-if-changed={}/src/main.rs", crate_dir.display());
+    println!("cargo:rerun-if-changed={}/build.rs", crate_dir.display());
+    println!("cargo:rerun-if-changed={}/Cargo.toml", crate_dir.display());
+    for rel in extra_rerun {
+        println!(
+            "cargo:rerun-if-changed={}",
+            crate_dir.join(rel).display()
+        );
+    }
+
+    let td = PathBuf::from(out).join(td_name);
+    let mut cmd = Command::new(cargo);
     cmd.arg("build")
         .arg("--manifest-path")
-        .arg(hello_dir.join("Cargo.toml"))
+        .arg(crate_dir.join("Cargo.toml"))
         .arg("--target")
-        .arg(&target)
+        .arg(target)
         .arg("--bin")
-        .arg("hello")
+        .arg(bin)
         .arg("--target-dir")
-        .arg(&hello_td);
+        .arg(&td);
     if profile == "release" {
         cmd.arg("--release");
     }
@@ -46,28 +90,28 @@ fn main() {
     cmd.env_remove("CARGO_ENCODED_RUSTFLAGS");
     let status = cmd
         .status()
-        .expect("failed to spawn cargo for hello module");
+        .unwrap_or_else(|e| panic!("failed to spawn cargo for {bin}: {e}"));
     if !status.success() {
-        panic!("hello module failed to build for {target}");
+        panic!("{bin} failed to build for {target}");
     }
 
-    let elf = hello_td
-        .join(&target)
+    let elf = td
+        .join(target)
         .join(if profile == "release" {
             "release"
         } else {
             "debug"
         })
-        .join("hello");
+        .join(bin);
     if !elf.is_file() {
-        panic!("hello ELF missing at {}", elf.display());
+        panic!("{bin} ELF missing at {}", elf.display());
     }
-    println!("cargo:rustc-env=HELLO_MODULE_PATH={}", elf.display());
+    println!("cargo:rustc-env={env_key}={}", elf.display());
 
-    // Stable path so the host image builder can also put hello on the ESP.
-    let ws_target = Path::new(&manifest_dir).join("../target");
+    // Stable path so the host image builder can also put the ELF on the ESP.
+    let ws_target = manifest_dir.join("../target");
     std::fs::create_dir_all(&ws_target).expect("workspace target dir");
-    let stable = ws_target.join(format!("hello-{target}"));
+    let stable = ws_target.join(format!("{bin}-{target}"));
     std::fs::copy(&elf, &stable)
-        .unwrap_or_else(|e| panic!("copy hello ELF to {}: {e}", stable.display()));
+        .unwrap_or_else(|e| panic!("copy {bin} ELF to {}: {e}", stable.display()));
 }

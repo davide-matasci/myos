@@ -3,8 +3,10 @@
 //! There is no filesystem and no dynamic linker against kernel `.dynsym`.
 //! The kernel copies PT_LOAD segments into the heap, applies relative
 //! relocs, looks up `module_init`, and calls it with a [`myos_abi::KernelApi`].
+//! `elf::image_span` / `elf::realize` are also used to load the userspace
+//! `init` ELF (no `module_init`).
 
-mod elf;
+pub mod elf;
 mod registry;
 
 use crate::arch::SerialPort;
