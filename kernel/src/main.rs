@@ -10,15 +10,20 @@ mod framebuffer;
 mod heap;
 mod limine_boot;
 mod modules;
+mod task;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use arch::SerialPort;
 
 const HELLO: &str = "Hello from myos";
+
+static TASK_A_DONE: AtomicBool = AtomicBool::new(false);
+static TASK_B_DONE: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
 extern "C" fn _start() -> ! {
@@ -50,12 +55,31 @@ fn kernel_main() -> ! {
     arch::wait_for_interrupt_proof();
     let _ = writeln!(serial, "int ok");
 
+    task::init();
+    task::spawn(task_a);
+    task::spawn(task_b);
+    task::enable_preempt();
+    while !TASK_A_DONE.load(Ordering::SeqCst) || !TASK_B_DONE.load(Ordering::SeqCst) {
+        task::yield_now();
+    }
+    let _ = writeln!(serial, "sched ok");
+
     modules::load_embedded_hello();
     modules::load_limine_modules();
 
     serial.flush();
     arch::exit_qemu(arch::QEMU_SUCCESS);
     arch::halt();
+}
+
+fn task_a() {
+    task::print("task a\n");
+    TASK_A_DONE.store(true, Ordering::SeqCst);
+}
+
+fn task_b() {
+    task::print("task b\n");
+    TASK_B_DONE.store(true, Ordering::SeqCst);
 }
 
 fn prove_heap(serial: &mut SerialPort) {
