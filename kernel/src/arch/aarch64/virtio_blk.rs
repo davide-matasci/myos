@@ -136,24 +136,31 @@ pub fn init() {
             continue;
         };
         let mut sec = [0u8; 512];
+        let base_copy = dev.base;
         let ok = unsafe {
+            let num = dev.num;
+            let desc = dev.desc;
+            let avail = dev.avail;
+            let used = dev.used;
+            let dma_phys = dev.dma_phys;
+            let dma_va = dev.dma_va;
             virtq::read_buf(
-                dev.num,
-                dev.desc,
-                dev.avail,
-                dev.used,
+                num,
+                desc,
+                avail,
+                used,
                 &mut dev.last_used,
-                dev.dma_phys,
-                dev.dma_va,
+                dma_phys,
+                dma_va,
                 0,
                 &mut sec,
-                || notify_dev(&dev),
+                || notify_raw(base_copy, desc, avail, dma_va),
             )
             .is_ok()
                 && looks_like_fat_boot(&sec)
         };
         if ok {
-            // Reset ring state after the probe read so the FAT module starts clean.
+            // Sync last_used with the probe completion.
             dev.last_used = unsafe { core::ptr::read_volatile(dev.used.add(2) as *const u16) };
             *DEV.lock() = Some(dev);
             return;
@@ -163,7 +170,6 @@ pub fn init() {
 
 fn setup(base: usize) -> Option<Dev> {
     if r32(base, REG_VERSION) != VERSION_2 {
-        // Legacy MMIO v1 is not implemented; QEMU virt uses v2.
         return None;
     }
 
@@ -204,7 +210,6 @@ fn setup(base: usize) -> Option<Dev> {
     write_phys(base, REG_DESC_LO, REG_DESC_HI, desc_phys);
     write_phys(base, REG_AVAIL_LO, REG_AVAIL_HI, avail_phys);
     write_phys(base, REG_USED_LO, REG_USED_HI, used_phys);
-    // Device must see zeroed rings / NO_INTERRUPT before QUEUE_READY.
     dcache_civac(desc_va, 4096);
     dcache_civac(avail_va, 4096);
     dcache_civac(used_va, 4096);
@@ -234,31 +239,10 @@ fn setup(base: usize) -> Option<Dev> {
     })
 }
 
-fn notify_dev(dev: &Dev) {
-    // CPU wrote descriptors / avail / request header — push to PoC.
-    dcache_civac(dev.desc, 4096);
-    dcache_civac(dev.avail, 4096);
-    dcache_civac(dev.dma_va, 512 + 16);
-    compiler_fence(Ordering::SeqCst);
-    dsb();
-    w32(dev.base, REG_QUEUE_NOTIFY, 0);
-    let isr = r32(dev.base, REG_ISR);
-    if isr != 0 {
-        w32(dev.base, REG_ISR_ACK, isr);
-    }
-}
-
-fn notify(base: usize) {
-    // Fallback used by read() after DEV is locked; sync via DEV fields.
-    let guard = DEV.lock();
-    if let Some(dev) = guard.as_ref() {
-        // base must match; ignore mismatch rather than notify the wrong device.
-        if dev.base == base {
-            notify_dev(dev);
-            return;
-        }
-    }
-    drop(guard);
+fn notify_raw(base: usize, desc: *mut u8, avail: *mut u8, dma_va: *mut u8) {
+    dcache_civac(desc, 4096);
+    dcache_civac(avail, 4096);
+    dcache_civac(dma_va, 512 + 16);
     compiler_fence(Ordering::SeqCst);
     dsb();
     w32(base, REG_QUEUE_NOTIFY, 0);
@@ -272,22 +256,25 @@ pub fn read(lba: u64, buf: &mut [u8]) -> Result<(), ()> {
     let mut guard = DEV.lock();
     let dev = guard.as_mut().ok_or(())?;
     let base = dev.base;
+    let desc = dev.desc;
+    let avail = dev.avail;
+    let used = dev.used;
+    let dma_va = dev.dma_va;
     let result = unsafe {
         virtq::read_buf(
             dev.num,
-            dev.desc,
-            dev.avail,
-            dev.used,
+            desc,
+            avail,
+            used,
             &mut dev.last_used,
             dev.dma_phys,
-            dev.dma_va,
+            dma_va,
             lba,
             buf,
-            || notify(base),
+            || notify_raw(base, desc, avail, dma_va),
         )
     };
-    // Device wrote used ring + status + data — drop stale D-cache lines.
-    dcache_civac(dev.used, 4096);
-    dcache_civac(dev.dma_va, 512 + 16);
+    dcache_civac(used, 4096);
+    dcache_civac(dma_va, 512 + 16);
     result
 }
