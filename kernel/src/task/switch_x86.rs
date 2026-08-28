@@ -1,4 +1,7 @@
 //! x86_64: save rbx, rbp, r12-r15 and rsp; swap rsp; ret.
+//!
+//! `global_asm!` defaults to Intel syntax. AT&T (`push %rbx`) fails to
+//! assemble on nightly-2026-07-26 with "unknown token in expression".
 
 use core::arch::global_asm;
 
@@ -6,20 +9,20 @@ global_asm!(
     r#"
     .global task_switch
 task_switch:
-    push %rbx
-    push %rbp
-    push %r12
-    push %r13
-    push %r14
-    push %r15
-    movq %rsp, (%rdi)
-    movq %rsi, %rsp
-    pop %r15
-    pop %r14
-    pop %r13
-    pop %r12
-    pop %rbp
-    pop %rbx
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi], rsp
+    mov rsp, rsi
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
     ret
     "#
 );
