@@ -386,23 +386,50 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             return None;
         }
     };
-    let stack = unsafe { alloc(layout) };
-    if stack.is_null() {
-        irq_restore(flags);
-        return None;
-    }
-    let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as usize) };
-    let top = stack as usize + STACK_SIZE;
+
+    let (slot, reuse_stack) = {
+        let tasks = TASKS.lock();
+        let slot = tasks
+            .iter()
+            .position(|t| t.state == State::Unused)
+            .or_else(|| {
+                tasks.iter().position(|t| {
+                    t.state == State::Dead
+                        && t.user_rip == 0
+                        && t.aspace == 0
+                        && t.stack_base != 0
+                })
+            });
+        let Some(slot) = slot else {
+            drop(tasks);
+            irq_restore(flags);
+            return None;
+        };
+        let reuse = tasks[slot].state == State::Dead && tasks[slot].stack_base != 0;
+        let stack_base = if reuse { tasks[slot].stack_base } else { 0 };
+        drop(tasks);
+        (slot, (reuse, stack_base))
+    };
+
+    let (stack_base, sp, top) = if reuse_stack.0 {
+        let sb = reuse_stack.1;
+        let sp = unsafe { seed_stack(sb as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
+        (sb, sp, sb + STACK_SIZE)
+    } else {
+        let stack = unsafe { alloc(layout) };
+        if stack.is_null() {
+            irq_restore(flags);
+            return None;
+        }
+        let sb = stack as usize;
+        let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as *const () as usize) };
+        (sb, sp, sb + STACK_SIZE)
+    };
 
     let mut tasks = TASKS.lock();
-    let Some(slot) = tasks.iter().position(|t| t.state == State::Unused) else {
-        drop(tasks);
-        irq_restore(flags);
-        return None;
-    };
     tasks[slot] = Task {
         state: State::Ready,
-        stack_base: stack as usize,
+        stack_base,
         sp,
         entry: None,
         aspace,

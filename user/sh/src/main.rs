@@ -25,8 +25,7 @@ fn shell() -> ! {
     write(b"sh ok\n");
     let mut smoke_arg = [0u8; ARG_LEN];
     smoke_arg[..2].copy_from_slice(b"ok");
-    run_path(b"ok", &[&smoke_arg[..2]]);
-    run_path(b"heap", &[]);
+    smoke_exec(b"ok", &[&smoke_arg[..2]]);
     let mut line = [0u8; MAX_LINE];
     loop {
         write(PROMPT);
@@ -51,6 +50,24 @@ fn shell() -> ! {
         }
         run_path(parts[0], &parts[..argc]);
     }
+}
+
+/// Boot smoke: exec in-process (/ok chains to /heap). Avoids fork during CI.
+fn smoke_exec(name: &[u8], parts: &[&[u8]]) -> ! {
+    let mut path_buf = [0u8; 32];
+    let path = command_path(name, &mut path_buf);
+    let mut arg_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
+    let mut arg_slices: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
+    for (i, p) in parts.iter().enumerate() {
+        let n = p.len().min(ARG_LEN);
+        arg_bufs[i][..n].copy_from_slice(&p[..n]);
+    }
+    for i in 0..parts.len() {
+        let n = parts[i].len().min(ARG_LEN);
+        arg_slices[i] = &arg_bufs[i][..n];
+    }
+    exec(path, &arg_slices[..parts.len()]);
+    exit();
 }
 
 fn run_path(name: &[u8], parts: &[&[u8]]) {
