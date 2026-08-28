@@ -30,7 +30,7 @@ fn wait_ci(mut child: Child, expect: CiExpect) {
                     eprint!("{chunk}");
                     s.push_str(&chunk);
                 }
-                Err(_) => break;
+                Err(_) => break,
             }
         }
         s
