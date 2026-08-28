@@ -187,7 +187,7 @@ pub fn fd_open(data: &'static [u8]) -> Option<usize> {
     })
 }
 
-/// Read from fd 0 (serial stdin). `buf` must live in the user map.
+/// Read from fd 0 (keyboard + serial stdin). `buf` must live in the user map.
 pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
     if len == 0 {
         return 0;
