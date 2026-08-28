@@ -2,7 +2,7 @@ mod limine_image {
     include!("src/limine_image.rs");
 }
 
-use limine_image::{bios_install, fetch_limine, write_esp_image, LIMINE_VERSION};
+use limine_image::{bios_install, fetch_limine, write_esp_image, write_fat_data_image, LIMINE_VERSION};
 use std::path::PathBuf;
 
 fn main() {
@@ -55,6 +55,9 @@ fn main() {
     let _ = std::fs::create_dir_all(&target_dir);
     let _ = std::fs::copy(&bios_path, target_dir.join("bios.img"));
     let _ = std::fs::copy(&uefi_path, target_dir.join("uefi.img"));
+
+    let fat_path = target_dir.join("fat.img");
+    write_fat_data_image(&fat_path);
 
     println!("cargo:rustc-env=BIOS_PATH={}", bios_path.display());
     println!("cargo:rustc-env=UEFI_PATH={}", uefi_path.display());
