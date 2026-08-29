@@ -10,9 +10,7 @@ use crate::console;
 use crate::task;
 
 pub fn fatal_line(line: &str) -> ! {
-    console::write_str("exception: ");
-    console::write_str(line);
-    console::write_str("\n");
+    console::status_fail(&format!("exception: {line}"));
     console::flush();
     arch::exit_qemu(arch::QEMU_FAILURE);
     arch::halt();

@@ -46,7 +46,7 @@ fn kernel_main() -> ! {
         }
     }
 
-    console::write_str(HELLO);
+    console::write_banner(HELLO);
     console::write_str("\n");
     let _ = limine_boot::base_revision_supported();
     let _ = limine_boot::DTB.response();
@@ -54,11 +54,10 @@ fn kernel_main() -> ! {
     heap::init();
     prove_heap();
 
-    console::write_str("irq init\n");
+    console::status_progress("interrupts");
     arch::init_interrupts();
-    console::write_str("irq wait\n");
     arch::wait_for_interrupt_proof();
-    console::write_str("int ok\n");
+    console::status_ok("interrupts");
 
     task::init();
     task::spawn(task_a);
@@ -67,7 +66,7 @@ fn kernel_main() -> ! {
     while !TASK_A_DONE.load(Ordering::SeqCst) || !TASK_B_DONE.load(Ordering::SeqCst) {
         task::yield_now();
     }
-    console::write_str("sched ok\n");
+    console::status_ok("scheduler");
 
     fs::init();
     modules::load_embedded_hello();
@@ -79,23 +78,23 @@ fn kernel_main() -> ! {
     // user/ok still read n==0. Re-point `/msg` at kernel rodata so the
     // vnode is not the module's leaked heap slice.
     let _ = fs::bootfs::register("msg", MSG_OK);
-    console::write_str("fat kreg\n");
+    console::status_ok("fat message");
 
     user::init();
     input::init();
     if input::keyboard_present() {
         #[cfg(target_arch = "x86_64")]
-        console::write_str(
+        console::write_info(
             "\nstdin: PS/2 keyboard + serial (COM1 38400 8N1). \
              Output is mirrored to the screen.\n\n",
         );
         #[cfg(target_arch = "aarch64")]
-        console::write_str(
+        console::write_info(
             "\nstdin: virtio keyboard + serial (PL011). \
              Output is mirrored to the screen.\n\n",
         );
     } else {
-        console::write_str(
+        console::write_info(
             "\nstdin: serial (x86 COM1 38400 8N1, AArch64 PL011). \
              Output is mirrored to the screen when a framebuffer exists.\n\
              Connect USB-serial if no keyboard was detected.\n\
@@ -128,12 +127,12 @@ fn prove_heap() {
     v.push(*boxed + 1);
     let _ = boxed;
     let _ = v;
-    console::write_str("heap ok\n");
+    console::status_ok("heap");
 }
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    console::write_str(&alloc::format!("panic: {info}\n"));
+    console::status_fail(&alloc::format!("panic: {info}"));
     console::flush();
     arch::exit_qemu(arch::QEMU_FAILURE);
     arch::halt();

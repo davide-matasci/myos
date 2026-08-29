@@ -93,12 +93,12 @@ pub fn count() -> usize {
 }
 
 fn log_reg(name: &str, n: usize, replace: bool) {
-    let kind = if replace { "rpl" } else { "new" };
-    console::write_str(&alloc::format!("vfs {kind} {name} {n}\n"));
+    let kind = if replace { "replace" } else { "new" };
+    console::status_progress(&alloc::format!("vfs {kind} {name} ({n} bytes)"));
 }
 
 fn log_get(name: &str, n: usize) {
-    console::write_str(&alloc::format!("vfs get {name} {n}\n"));
+    console::status_progress(&alloc::format!("vfs get {name} ({n} bytes)"));
 }
 
 pub fn init() {

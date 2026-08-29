@@ -10,13 +10,13 @@ struct CiExpect {
 
 const CI_NEEDLES: [&str; 14] = [
     "Hello from myos",
-    "heap ok",
-    "int ok",
+    "[ OK ] heap",
+    "[ OK ] interrupts",
     "task a",
     "task b",
-    "sched ok",
+    "[ OK ] scheduler",
     "mod ok",
-    "limine mod ok",
+    "[ OK ] limine module",
     "sh ok",
     "fork ok",
     "fork exec ok",

@@ -347,7 +347,7 @@ pub fn init() {
             *DEV.lock() = Some(dev);
             READY.store(true, Ordering::SeqCst);
             SHIFT.store(false, Ordering::SeqCst);
-            console::write_str("kbd ok\n");
+            console::status_ok("keyboard");
             return;
         }
     }

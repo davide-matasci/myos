@@ -29,7 +29,7 @@ static API: KernelApi = KernelApi {
 /// Load the hello module that was baked into the kernel at build time.
 pub fn load_embedded_hello() {
     if let Err(e) = load("hello", HELLO_IMAGE) {
-        console::write_str(&alloc::format!("mod load failed: {e}\n"));
+        console::status_fail(&alloc::format!("hello module: {e}"));
     }
 }
 
@@ -38,7 +38,7 @@ pub fn load_embedded_hello() {
 /// (`fat mod failed`) and is not a kernel panic.
 pub fn load_embedded_fat() {
     if let Err(e) = load("fat", FAT_IMAGE) {
-        console::write_str(&alloc::format!("fat mod failed: {e}\n"));
+        console::status_fail(&alloc::format!("fat module: {e}"));
     }
 }
 
@@ -64,11 +64,11 @@ pub fn load_limine_modules() {
         let name = NAMES.get(i).copied().unwrap_or("hello-limine");
         match load(name, bytes) {
             Ok(()) => {
-                console::write_str("limine mod ok\n");
+                console::status_ok("limine module");
             }
             Err(elf::LoadError::MissingInit) => {}
             Err(e) => {
-                console::write_str(&alloc::format!("limine mod failed: {e}\n"));
+                console::status_fail(&alloc::format!("limine module: {e}"));
             }
         }
     }
