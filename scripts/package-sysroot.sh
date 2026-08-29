@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package the prebuilt myos sysroot for offline / CI cache distribution.
+# Package the prebuilt myos sysroot for local reuse or CI workflow artifacts.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Obtain a myos sysroot: use an existing install, tarball, URL, or build locally.
+# Obtain a myos sysroot: use an existing install, a local tarball, or build locally.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,14 +12,6 @@ if myos_sysroot_is_current; then
 fi
 
 if [[ -n "${MYOS_SYSROOT_TARBALL:-}" ]]; then
-  if [[ "$MYOS_SYSROOT_TARBALL" == http://* || "$MYOS_SYSROOT_TARBALL" == https://* ]]; then
-    tmp="$(mktemp "${TMPDIR:-/tmp}/myos-sysroot.XXXXXX.tar.zst")"
-    trap 'rm -f "$tmp"' EXIT
-    echo "Downloading sysroot from $MYOS_SYSROOT_TARBALL"
-    curl -fsSL "$MYOS_SYSROOT_TARBALL" -o "$tmp"
-    "$ROOT/scripts/install-sysroot.sh" "$tmp"
-    exit 0
-  fi
   "$ROOT/scripts/install-sysroot.sh" "$MYOS_SYSROOT_TARBALL"
   exit 0
 fi

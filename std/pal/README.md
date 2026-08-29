@@ -17,7 +17,7 @@ Target toolchain: `nightly-2026-07-26` (see root `rust-toolchain.toml`).
 | `../scripts/build-sysroot.sh` | Precompile `std` for both triples into the sysroot |
 | `../scripts/build-std-hello.sh` | Build smoke ELFs using the prebuilt sysroot |
 | `../scripts/myos-sysroot-lib.sh` | Shared version stamp, install helpers, cargo wrappers |
-| `../scripts/package-sysroot.sh` | Tarball the sysroot for distribution |
+| `../scripts/package-sysroot.sh` | Tarball the sysroot for local use or CI artifacts |
 | `../scripts/fetch-sysroot.sh` | Install prebuilt sysroot or build if missing |
 | `../scripts/install-sysroot.sh` | Extract a `.tar.zst` into `target/myos-sysroot` |
 | `../scripts/check-wire-myos.sh` | Verify `wire-myos.py` applies to pinned nightly |
@@ -45,11 +45,10 @@ x86_64 and AArch64 without `-Z build-std` on the app crate.
 ./scripts/package-sysroot.sh        # optional: target/myos-sysroot-<hash>.tar.zst
 ```
 
-Install a CI/release tarball elsewhere:
+Install a local tarball (same machine or copied from CI workflow artifacts — not public releases):
 
 ```sh
-MYOS_SYSROOT_TARBALL=https://github.com/.../releases/download/sysroot-<hash>/myos-sysroot-<hash>.tar.zst \
-  ./scripts/fetch-sysroot.sh
+MYOS_SYSROOT_TARBALL=target/myos-sysroot-<hash>.tar.zst ./scripts/fetch-sysroot.sh
 ```
 
 Copy `std/toolchain/config.toml.example` into your app tree as `.cargo/config.toml`.
@@ -105,4 +104,4 @@ Networking, filesystem, threads, and fork-aware `std` process support are still
 stubs or unsupported paths in libstd.
 
 Long term: upstream `target_os = "myos"` in Rust — see `std/upstream/README.md`.
-Until then, CI publishes versioned sysroot tarballs (`.github/workflows/toolchain.yml`).
+Sysroot tarballs are built locally or cached in CI workflow artifacts only (nothing is published publicly).

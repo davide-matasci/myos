@@ -86,30 +86,3 @@ jobs:
           path: target/myos-upstream-library.patch
           if-no-files-found: error
           retention-days: 30
-
-  publish-release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-    needs: sysroot
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download sysroot tarball
-        uses: actions/download-artifact@v4
-        with:
-          name: myos-sysroot
-          path: artifact
-
-      - name: Publish sysroot to GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tarball="$(ls artifact/myos-sysroot-*.tar.zst)"
-          base="$(basename "$tarball" .tar.zst)"
-          tag="sysroot-${base#myos-sysroot-}"
-          gh release view "$tag" >/dev/null 2>&1 && gh release delete "$tag" -y || true
-          gh release create "$tag" "$tarball" \
-            --title "myos sysroot ${tag#sysroot-}" \
-            --notes "Prebuilt myos sysroot (pinned nightly + PAL). Install with \`MYOS_SYSROOT_TARBALL=<url> ./scripts/fetch-sysroot.sh\`. See std/upstream/README.md."

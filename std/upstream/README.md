@@ -90,14 +90,14 @@ The doc must explain:
 1. **Tier 3 target only (`#![no_core]`)** — teach rustc about `x86_64-unknown-myos` with no `std` changes (breaks the `cc`/`libc`/`std` cycle per tier policy).
 2. **`std` PAL + wiring** — port PAL files + `wire-myos.py` edits as native upstream changes.
 3. **AArch64 triple** — second target spec + PAL is already multi-arch.
-4. **Prebuilt std** (optional) — Rust project may still expect `-Z build-std` for tier 3; myos can keep publishing sysroot tarballs until then.
+4. **Prebuilt std** (optional) — Rust project may still expect `-Z build-std` for tier 3; myos can keep local/CI sysroot tarballs until then.
 
 ## After upstream merge
 
 In myos we can:
 
 1. Drop `wire-myos.py` once wiring lives in rust-lang/rust
-2. Retain `scripts/package-sysroot.sh` only if we still publish prebuilt rlibs
+2. Retain `scripts/package-sysroot.sh` for local installs and CI artifact caching
 3. Switch `MYOS_NIGHTLY` pin to a stable channel when myos reaches tier 2 (long-term)
 4. Keep `myos_user` for minimal `#![no_std]` ELFs embedded by the kernel
 

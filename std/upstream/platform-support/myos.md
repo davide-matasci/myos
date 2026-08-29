@@ -54,7 +54,7 @@ rustup toolchain install nightly --component rust-src
 cargo build -Z build-std=std,panic_abort --target x86_64-unknown-myos
 ```
 
-Prebuilt std artifacts may be published separately until tier 2 promotion.
+Prebuilt std artifacts may remain a private/local sysroot until tier 2 promotion.
 
 ## Testing
 
@@ -79,4 +79,4 @@ the `myos_user` crate used by `#![no_std]` utilities.
 
 - **myos_user** — minimal `#![no_std]` syscall layer for kernel-embedded tools
   (still recommended for tiny ELFs without libstd)
-- **Prebuilt sysroot tarballs** — produced by myos CI (`scripts/package-sysroot.sh`)
+- **Prebuilt sysroot tarballs** — built locally or attached to CI workflow runs (`scripts/package-sysroot.sh`); not published as public releases

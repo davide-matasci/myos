@@ -420,7 +420,7 @@ To build **`std`** programs (see [OSDev](https://wiki.osdev.org/Porting_Rust_sta
 | `std/pal/myos/` | PAL → `library/std/src/sys/pal/myos/` in the patched sysroot |
 | `scripts/build-sysroot.sh` | Precompile `std` into `target/myos-sysroot` (both triples) |
 | `scripts/fetch-sysroot.sh` | Install prebuilt sysroot tarball or build locally |
-| `scripts/package-sysroot.sh` | Tarball the sysroot for offline distribution |
+| `scripts/package-sysroot.sh` | Tarball the sysroot for local reuse or CI artifacts |
 | `scripts/check-wire-myos.sh` | Verify PAL patches apply to pinned nightly |
 | `scripts/export-upstream-patch.sh` | Generate diff for rust-lang/rust submission |
 | `std/upstream/README.md` | Tier 3 upstream checklist for `target_os = "myos"` |
