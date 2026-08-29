@@ -1,0 +1,7 @@
+# Written into target/myos-sysroot/myos-manifest.toml by build-sysroot.sh.
+# Do not edit the installed copy by hand — rebuild the sysroot instead.
+
+channel = "nightly-2026-07-26"
+version = "pending"
+triples = ["x86_64-unknown-myos", "aarch64-unknown-myos"]
+repository = "https://github.com/davide-matasci/myos"
