@@ -29,7 +29,7 @@ const CI_NEEDLES: [&str; 14] = [
 const CI_NEEDLES_STD: [&str; 3] = ["std ok", "std cat ok", "std echo ok"];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 2] = [b"nosuchcmd\n", b"ok\n"];
+const CI_SHELL_COMMANDS: [&[u8]; 3] = [b"nosuchcmd\n", b"ok\n", b"echo\n"];
 
 /// Printed by the interactive shell when `open(path)` fails.
 const CI_SHELL_UNKNOWN_CMD: &str = "sh: command not found";
@@ -79,10 +79,17 @@ fn interactive_ok_cmd_ok(serial: &str) -> bool {
     command_echoed(serial, "ok") && !tail_has_hex_received(serial)
 }
 
+fn interactive_echo_cmd_ok(serial: &str) -> bool {
+    command_echoed(serial, "echo")
+        && !serial.contains("exception:")
+        && at_interactive_prompt(serial)
+}
+
 fn shell_cmd_result_ok(serial: &str, cmd_index: usize) -> bool {
     match cmd_index {
         0 => interactive_unknown_cmd_ok(serial),
         1 => interactive_ok_cmd_ok(serial),
+        2 => interactive_echo_cmd_ok(serial),
         _ => false,
     }
 }
@@ -263,7 +270,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 );
             }
         }
-        if shell_cmd_index >= 1 && !interactive_ok_cmd_ok(&serial) {
+        if shell_cmd_index >= 1 && shell_cmd_index < 2 && !interactive_ok_cmd_ok(&serial) {
             if !command_echoed(&serial, "ok") {
                 eprintln!("error: serial did not echo `$ ok` at the interactive prompt");
             }
@@ -271,6 +278,15 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!(
                     "error: shell reported non-printable input (hex escapes in received:)"
                 );
+            }
+        }
+        if shell_cmd_index >= 2 && !interactive_echo_cmd_ok(&serial) {
+            if !command_echoed(&serial, "echo") {
+                eprintln!("error: serial did not echo `$ echo` at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: interactive `echo` triggered a CPU exception");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after interactive `echo`");
             }
         }
         std::process::exit(1);

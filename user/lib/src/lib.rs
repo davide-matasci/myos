@@ -7,6 +7,23 @@ pub mod runtime;
 pub use alloc::Heap;
 pub use args::{arg, argc};
 
+/// x86 `_start` that captures argc/argv before any call pushes a return address.
+#[macro_export]
+macro_rules! x86_start {
+    ($main:ident) => {
+        #[cfg(target_arch = "x86_64")]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn _start() -> ! {
+            unsafe {
+                let sp: usize;
+                core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack));
+                $crate::args::init_from_sp(sp);
+            }
+            $main()
+        }
+    };
+}
+
 const MAX_EXEC_ARGS: usize = 16;
 
 pub fn write(buf: &[u8]) {
