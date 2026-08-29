@@ -1,4 +1,6 @@
 /target
+std/examples/hello/target
+std/examples/hello/Cargo.lock
 modules/hello/Cargo.lock
 modules/fat/Cargo.lock
 user/*/Cargo.lock

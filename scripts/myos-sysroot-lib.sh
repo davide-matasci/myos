@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Shared myos std/sysroot paths and version stamp for cache invalidation.
+set -euo pipefail
+
+MYOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export MYOS_ROOT
+
+export MYOS_NIGHTLY="${MYOS_NIGHTLY:-nightly-2026-07-26}"
+export MYOS_SYSROOT="${MYOS_SYSROOT:-$MYOS_ROOT/target/myos-sysroot}"
+export MYOS_SYSROOT_VERSION="$MYOS_SYSROOT/.myos-sysroot-version"
+
+MYOS_USER_TRIPLES=(
+  x86_64-unknown-myos
+  aarch64-unknown-myos
+)
+
+myos_sysroot_version_hash() {
+  local h
+  h="$(
+    {
+      echo "toolchain=$MYOS_NIGHTLY"
+      sha256sum "$MYOS_ROOT/std/patches/wire-myos.py"
+      find "$MYOS_ROOT/std/pal" "$MYOS_ROOT/std/sys" "$MYOS_ROOT/std/os" \
+        "$MYOS_ROOT/targets" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_sysroot_is_current() {
+  [[ -f "$MYOS_SYSROOT_VERSION" ]] \
+    && [[ "$(cat "$MYOS_SYSROOT_VERSION")" == "$(myos_sysroot_version_hash)" ]] \
+    && [[ -d "$MYOS_SYSROOT/lib/rustlib/x86_64-unknown-myos/lib" ]] \
+    && [[ -d "$MYOS_SYSROOT/lib/rustlib/aarch64-unknown-myos/lib" ]]
+}
+
+myos_install_target_spec() {
+  local triple="$1"
+  cp "$MYOS_ROOT/targets/${triple}.json" \
+    "$MYOS_SYSROOT/lib/rustlib/${triple}.json"
+}
+
+myos_install_std_rlibs() {
+  local triple="$1"
+  local deps_dir="$2"
+  local dest="$MYOS_SYSROOT/lib/rustlib/${triple}/lib"
+  mkdir -p "$dest"
+  shopt -s nullglob
+  local artifacts=( "$deps_dir"/*.rlib "$deps_dir"/*.rmeta )
+  shopt -u nullglob
+  if ((${#artifacts[@]} == 0)); then
+    echo "error: no std rlibs in $deps_dir" >&2
+    exit 1
+  fi
+  cp -a "${artifacts[@]}" "$dest/"
+  myos_install_target_spec "$triple"
+}
+
+myos_export_toolchain_env() {
+  export RUSTC_BOOTSTRAP=1
+  export MYOS_SYSROOT
+  export RUSTC="$MYOS_ROOT/scripts/myos-rustc.sh"
+}
+
+myos_cargo_build_std() {
+  local triple="$1"
+  local profile="${2:-release}"
+  local target_json="$MYOS_ROOT/targets/${triple}.json"
+  local target_dir="$MYOS_ROOT/target/sysroot-build-${triple}"
+  local manifest="$MYOS_ROOT/std/examples/hello/Cargo.toml"
+  local -a profile_args=()
+  if [[ "$profile" == release ]]; then
+    profile_args=(--release)
+  fi
+
+  myos_export_toolchain_env
+  cargo "+$MYOS_NIGHTLY" build \
+    -Z build-std=std,panic_abort \
+    -Z build-std-features=compiler-builtins-mem \
+    -Z unstable-options \
+    -Z json-target-spec \
+    --target "$target_json" \
+    --target-dir "$target_dir" \
+    "${profile_args[@]}" \
+    --manifest-path "$manifest"
+
+  myos_install_std_rlibs "$triple" "$target_dir/${triple}/${profile}/deps"
+}
+
+myos_cargo_build_app() {
+  local triple="$1"
+  local profile="${2:-release}"
+  local target_json="$MYOS_ROOT/targets/${triple}.json"
+  local target_dir="$3"
+  local manifest="$MYOS_ROOT/std/examples/hello/Cargo.toml"
+  local -a profile_args=()
+  if [[ "$profile" == release ]]; then
+    profile_args=(--release)
+  fi
+
+  myos_export_toolchain_env
+  cargo "+$MYOS_NIGHTLY" build \
+    -Z unstable-options \
+    -Z json-target-spec \
+    --target "$target_json" \
+    --target-dir "$target_dir" \
+    "${profile_args[@]}" \
+    --manifest-path "$manifest"
+}

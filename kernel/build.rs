@@ -92,15 +92,22 @@ fn main() {
         );
     }
 
-    if arch == "x86_64" {
-        embed_std_hello(manifest);
+    if arch == "x86_64" || arch == "aarch64" {
+        embed_std_hello(manifest, &arch);
     }
 }
 
-fn embed_std_hello(manifest_dir: &Path) {
+fn embed_std_hello(manifest_dir: &Path, arch: &str) {
+    let triple = if arch == "x86_64" {
+        "x86_64-unknown-myos"
+    } else if arch == "aarch64" {
+        "aarch64-unknown-myos"
+    } else {
+        return;
+    };
     let stable = manifest_dir
         .join("../target")
-        .join("std-hello-x86_64-unknown-myos");
+        .join(format!("std-hello-{triple}"));
     println!("cargo:rerun-if-changed={}", stable.display());
     if !stable.is_file() {
         panic!(

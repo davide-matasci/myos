@@ -6,20 +6,9 @@ static mut BRK_END: usize = 0;
 static mut BRK_PTR: usize = 0;
 static mut BRK_INIT: bool = false;
 
+#[inline]
 fn brk(addr: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 9usize,
-            in("rdi") addr,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
-    }
-    ret
+    crate::sys::myos::abi::brk(addr)
 }
 
 #[cold]
