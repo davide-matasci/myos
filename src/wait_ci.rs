@@ -4,7 +4,7 @@ use std::process::ChildStdin;
 struct CiExpect {
     timeout: Duration,
     qemu_debug_exit: bool,
-    /// After boot smokes, inject `\n` at the interactive `$` prompt via `-serial stdio`.
+    /// Type an unknown command at the interactive `$` prompt via `-serial stdio`.
     shell_ci: bool,
 }
 
@@ -28,12 +28,15 @@ const CI_NEEDLES: [&str; 14] = [
 /// Extra serial markers required on x86 BIOS/UEFI only (`std` hello is x86-myos today).
 const CI_NEEDLES_X86: [&str; 1] = ["std ok"];
 
-/// Boot smokes cover unknown-command handling and `echo` with argv; keyboard sends enter.
-const CI_SHELL_NEEDLES: [&str; 2] = ["sh: command not found", "SHELLCI"];
+const CI_UNKNOWN_CMD: &[u8] = b"nosuchcmd";
+
+/// Printed by the interactive shell (parent) when `open(path)` fails.
+const CI_SHELL_UNKNOWN_CMD: &str = "sh: command not found";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShellStage {
     WaitPrompt,
+    Typing,
     SentEnter,
     Done,
 }
@@ -42,41 +45,44 @@ fn serial_has_all_needles(serial: &str, extra: &[&str]) -> bool {
     CI_NEEDLES.iter().chain(extra.iter()).all(|n| serial.contains(n))
 }
 
-fn serial_has_shell_needles(serial: &str) -> bool {
-    CI_SHELL_NEEDLES.iter().all(|n| serial.contains(n))
-        && serial_has_keyboard_ack(serial)
-}
-
-/// After an empty interactive command, the shell prints another `$` prompt.
-fn serial_has_keyboard_ack(serial: &str) -> bool {
+fn interactive_tail(serial: &str) -> &str {
     serial
-        .rsplit("SHELLCI")
-        .next()
-        .is_some_and(|tail| tail.matches("$").count() >= 2)
+        .rsplit_once("fork exec ok")
+        .map(|(_, tail)| tail)
+        .unwrap_or(serial)
 }
 
 fn at_interactive_prompt(serial: &str) -> bool {
-    if !serial.contains("SHELLCI") {
-        return false;
-    }
-    let Some(tail) = serial.rsplit("SHELLCI").next() else {
+    let tail = interactive_tail(serial).trim();
+    tail == "$" || tail.ends_with("$")
+}
+
+fn command_echoed(serial: &str) -> bool {
+    interactive_tail(serial).contains("$ nosuchcmd")
+}
+
+fn interactive_unknown_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let Some(idx) = tail.find(CI_SHELL_UNKNOWN_CMD) else {
         return false;
     };
-    let t = tail.trim();
-    t == "$" || t.ends_with("$")
+    tail[..idx].contains("$ nosuchcmd")
 }
 
 fn shell_ready(serial: &str, extra: &[&str]) -> bool {
-    serial_has_all_needles(serial, extra)
-        && serial.contains("sh: command not found")
-        && serial.contains("SHELLCI")
-        && at_interactive_prompt(serial)
+    serial_has_all_needles(serial, extra) && at_interactive_prompt(serial)
+}
+
+fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
+    stdin
+        .write_all(&[byte])
+        .expect("write shell byte to qemu stdin");
+    stdin.flush().ok();
 }
 
 fn send_shell_enter(stdin: &mut ChildStdin) {
-    std::thread::sleep(Duration::from_millis(200));
     stdin
-        .write_all(b"\n")
+        .write_all(b"\r\n")
         .expect("write shell newline to qemu stdin");
     stdin.flush().ok();
 }
@@ -84,6 +90,7 @@ fn send_shell_enter(stdin: &mut ChildStdin) {
 fn advance_shell_ci(
     stdin: &mut Option<ChildStdin>,
     stage: &mut ShellStage,
+    typing: &mut usize,
     acc: &str,
     extra: &[&str],
 ) {
@@ -92,10 +99,21 @@ fn advance_shell_ci(
     };
     match *stage {
         ShellStage::WaitPrompt if shell_ready(acc, extra) => {
-            send_shell_enter(stdin);
-            *stage = ShellStage::SentEnter;
+            *stage = ShellStage::Typing;
+            *typing = 0;
         }
-        ShellStage::SentEnter if serial_has_keyboard_ack(acc) => {
+        ShellStage::Typing => {
+            if *typing < CI_UNKNOWN_CMD.len() {
+                send_shell_byte(stdin, CI_UNKNOWN_CMD[*typing]);
+                *typing += 1;
+                std::thread::sleep(Duration::from_millis(25));
+            } else if command_echoed(acc) {
+                std::thread::sleep(Duration::from_millis(200));
+                send_shell_enter(stdin);
+                *stage = ShellStage::SentEnter;
+            }
+        }
+        ShellStage::SentEnter if interactive_unknown_cmd_ok(acc) => {
             *stage = ShellStage::Done;
         }
         ShellStage::WaitPrompt | ShellStage::SentEnter | ShellStage::Done => {}
@@ -107,7 +125,7 @@ fn ci_complete(acc: &str, extra: &[&str], expect: &CiExpect, stage: ShellStage) 
         return false;
     }
     if expect.shell_ci {
-        serial_has_shell_needles(acc) && stage == ShellStage::Done
+        interactive_unknown_cmd_ok(acc) && stage == ShellStage::Done
     } else {
         true
     }
@@ -155,11 +173,18 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut timed_out = false;
     let mut killed_for_needles = false;
     let mut shell_stage = ShellStage::WaitPrompt;
+    let mut typing = 0usize;
     let status = loop {
         {
             let acc = serial_acc.lock().unwrap().clone();
             if expect.shell_ci {
-                advance_shell_ci(&mut shell_stdin, &mut shell_stage, &acc, extra_needles);
+                advance_shell_ci(
+                    &mut shell_stdin,
+                    &mut shell_stage,
+                    &mut typing,
+                    &acc,
+                    extra_needles,
+                );
             }
             if ci_complete(&acc, extra_needles, &expect, shell_stage) {
                 let _ = child.kill();
@@ -193,29 +218,31 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: serial output did not contain {needle:?}");
             }
         }
-        exit(1);
+        std::process::exit(1);
     }
-    if expect.shell_ci && !serial_has_shell_needles(&serial) {
+    if expect.shell_ci && !interactive_unknown_cmd_ok(&serial) {
         if timed_out {
             eprintln!("error: QEMU timed out after {:?}", expect.timeout);
         }
         eprintln!("error: shell CI stage was {shell_stage:?}");
-        for needle in CI_SHELL_NEEDLES {
-            if !serial.contains(needle) {
-                eprintln!("error: serial output did not contain shell needle {needle:?}");
-            }
+        if !at_interactive_prompt(&serial) && !command_echoed(&serial) {
+            eprintln!("error: serial never reached interactive `$` prompt");
         }
-        if !serial_has_keyboard_ack(&serial) {
-            eprintln!("error: serial output did not show a second `$` prompt after keyboard enter");
+        if !serial.contains(CI_SHELL_UNKNOWN_CMD) {
+            eprintln!("error: serial output did not contain {CI_SHELL_UNKNOWN_CMD:?}");
+        } else if !interactive_unknown_cmd_ok(&serial) {
+            eprintln!(
+                "error: {CI_SHELL_UNKNOWN_CMD:?} did not follow interactive `nosuchcmd`"
+            );
         }
-        exit(1);
+        std::process::exit(1);
     }
     if expect.qemu_debug_exit && !timed_out && !killed_for_needles {
         if status.code() != Some(QEMU_SUCCESS_STATUS) {
             eprintln!(
                 "error: unexpected QEMU exit status {status:?} (want {QEMU_SUCCESS_STATUS} from isa-debug-exit)"
             );
-            exit(1);
+            std::process::exit(1);
         }
     }
 }
