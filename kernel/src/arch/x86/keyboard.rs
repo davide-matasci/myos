@@ -35,13 +35,12 @@ pub fn init() {
     if let Some((dec, translate)) = probe_and_enable() {
         *DECODER.lock() = Some(dec);
         READY.store(true, Ordering::SeqCst);
-        console::write_str("kbd ok (");
-        console::write_str(if translate { "xlate" } else { "raw" });
-        console::write_str(", set 1)\n");
+        let mode = if translate { "xlate" } else { "raw" };
+        console::status_ok(&alloc::format!("keyboard ({mode}, set 1)"));
         if ps2_scancode::self_test() {
-            console::write_str("kbd decode ok\n");
+            console::status_ok("keyboard decode");
         } else {
-            console::write_str("kbd decode FAIL\n");
+            console::status_fail("keyboard decode");
         }
     }
 }

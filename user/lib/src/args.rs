@@ -26,6 +26,12 @@ pub unsafe fn init_from_regs(argc: usize, argv: *const usize) {
     load_argv(argc, argv);
 }
 
+/// x86 SysV entry from [`crate::x86_start`] (`rdi`=argc, `rsi`=argv).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn init_argv_sysv(argc: usize, argv: *const usize) {
+    load_argv(argc, argv);
+}
+
 unsafe fn load_argv(argc: usize, argv: *const usize) {
     ARGC = argc.min(MAX_ARGS);
     for i in 0..ARGC {

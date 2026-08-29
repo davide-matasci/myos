@@ -10,13 +10,13 @@ struct CiExpect {
 
 const CI_NEEDLES: [&str; 14] = [
     "Hello from myos",
-    "heap ok",
-    "int ok",
+    "[ OK ] heap",
+    "[ OK ] interrupts",
     "task a",
     "task b",
-    "sched ok",
+    "[ OK ] scheduler",
     "mod ok",
-    "limine mod ok",
+    "[ OK ] limine module",
     "sh ok",
     "fork ok",
     "fork exec ok",
@@ -90,7 +90,11 @@ fn interactive_echo_cmd_ok(serial: &str) -> bool {
         return false;
     }
     let after = tail.rsplit_once("$ echo test").map(|(_, rest)| rest).unwrap_or("");
-    after.lines().any(|line| line.trim() == "test") && at_interactive_prompt(serial)
+    after
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim() == "test")
+        && at_interactive_prompt(serial)
 }
 
 fn interactive_pipe_cmd_ok(serial: &str) -> bool {
@@ -298,10 +302,20 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
         }
         if shell_cmd_index >= 2 && shell_cmd_index < 3 && !interactive_echo_cmd_ok(&serial) {
-            eprintln!("error: interactive `echo test` failed (want `$ echo test` then `test`)");
+            if !command_echoed(&serial, "echo test") {
+                eprintln!("error: serial did not echo `$ echo test` at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: interactive `echo test` triggered a CPU exception");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after interactive `echo test`");
+            } else {
+                eprintln!("error: interactive `echo test` did not print `test`");
+            }
         }
         if shell_cmd_index >= 3 && !interactive_pipe_cmd_ok(&serial) {
-            eprintln!("error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)");
+            eprintln!(
+                "error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)"
+            );
         }
         std::process::exit(1);
     }

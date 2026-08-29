@@ -344,6 +344,7 @@ fn write_bytes_escaped(bytes: &[u8]) {
     }
 }
 
+
 fn command_path<'a>(name: &[u8], buf: &'a mut [u8]) -> &'a [u8] {
     let (start, src) = if name.first() == Some(&b'/') {
         (0, name)

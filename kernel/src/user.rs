@@ -307,31 +307,30 @@ fn build_argv_stack(aspace: u64, user_base: u64, stack_off: u64, args: &[&[u8]])
         }
         ptrs[i] = sp;
     }
-    sp &= !15;
-    sp = sp.checked_sub(8)?;
+    let block = (args.len() + 2) * core::mem::size_of::<usize>();
+    sp = sp.checked_sub(block)?;
+    let pad = sp & 15;
+    if pad != 0 {
+        sp = sp.checked_sub(pad)?;
+    }
     if sp < stack_bot {
         return None;
+    }
+    let argc_sp = sp;
+    if !write_user_usize(aspace, sp, args.len()) {
+        return None;
+    }
+    sp += core::mem::size_of::<usize>();
+    for i in 0..args.len() {
+        if !write_user_usize(aspace, sp, ptrs[i]) {
+            return None;
+        }
+        sp += core::mem::size_of::<usize>();
     }
     if !write_user_usize(aspace, sp, 0) {
         return None;
     }
-    for i in (0..args.len()).rev() {
-        sp = sp.checked_sub(8)?;
-        if sp < stack_bot {
-            return None;
-        }
-        if !write_user_usize(aspace, sp, ptrs[i]) {
-            return None;
-        }
-    }
-    sp = sp.checked_sub(8)?;
-    if sp < stack_bot {
-        return None;
-    }
-    if !write_user_usize(aspace, sp, args.len()) {
-        return None;
-    }
-    Some((sp, sp + core::mem::size_of::<usize>()))
+    Some((argc_sp, argc_sp + core::mem::size_of::<usize>()))
 }
 
 fn write_user_byte(aspace: u64, va: usize, byte: u8) -> bool {
