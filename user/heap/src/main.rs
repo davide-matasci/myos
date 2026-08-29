@@ -27,7 +27,6 @@ fn main() -> ! {
     let mut v = Vec::new();
     v.extend_from_slice(b"alloc ok\n");
     write(&v);
-    #[cfg(target_arch = "x86_64")]
     exec(b"/stdhello", &[]);
     exit();
 }

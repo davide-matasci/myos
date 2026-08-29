@@ -1,26 +1,20 @@
 #!/usr/bin/env bash
-# Build the patched std hello binary and copy it to the workspace target/ path
-# the x86_64 kernel embeds as /stdhello.
+# Build std-hello for every myos userspace triple using the prebuilt sysroot.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
+# shellcheck source=scripts/myos-sysroot-lib.sh
+source "$ROOT/scripts/myos-sysroot-lib.sh"
 
-"$ROOT/scripts/prepare-rust-std-myos.sh" >/dev/null
-
-export RUSTC_BOOTSTRAP=1
-export MYOS_SYSROOT="${MYOS_SYSROOT:-$ROOT/target/myos-sysroot}"
-export RUSTC="$ROOT/scripts/myos-rustc.sh"
-
-cargo +nightly-2026-07-26 build --release \
-  -Z build-std=std,panic_abort \
-  -Z build-std-features=compiler-builtins-mem \
-  -Z unstable-options -Z json-target-spec \
-  --target "$ROOT/targets/x86_64-unknown-myos.json" \
-  --manifest-path "$ROOT/std/examples/hello/Cargo.toml"
+"$ROOT/scripts/build-sysroot.sh"
 
 mkdir -p "$ROOT/target"
-cp "$ROOT/std/examples/hello/target/x86_64-unknown-myos/release/std-hello" \
-  "$ROOT/target/std-hello-x86_64-unknown-myos"
 
-echo "std-hello -> $ROOT/target/std-hello-x86_64-unknown-myos"
+for triple in "${MYOS_USER_TRIPLES[@]}"; do
+  target_dir="$ROOT/target/std-hello-build-${triple}"
+  echo "==> std-hello ($triple)"
+  myos_cargo_build_app "$triple" release "$target_dir"
+  cp "$target_dir/${triple}/release/std-hello" \
+    "$ROOT/target/std-hello-${triple}"
+  echo "std-hello -> $ROOT/target/std-hello-${triple}"
+done

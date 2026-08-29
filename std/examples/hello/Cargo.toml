@@ -15,7 +15,3 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-
-[unstable]
-build-std = ["std", "panic_abort"]
-build-std-features = ["compiler-builtins-mem"]

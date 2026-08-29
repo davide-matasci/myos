@@ -23,6 +23,7 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, _sigpipe: u8) {
 }
 
 #[cfg(not(test))]
+#[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
     let sp: usize;
@@ -31,6 +32,18 @@ pub unsafe extern "C" fn _start() -> ! {
     let argc = *(sp as *const isize);
     let argv = sp.wrapping_add(core::mem::size_of::<isize>()) as *const *const u8;
 
+    start_main(argc, argv)
+}
+
+#[cfg(not(test))]
+#[cfg(target_arch = "aarch64")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _start(argc: isize, argv: *const *const u8) -> ! {
+    start_main(argc, argv)
+}
+
+#[cfg(not(test))]
+unsafe fn start_main(argc: isize, argv: *const *const u8) -> ! {
     unsafe { init(argc, argv, 0) };
 
     unsafe extern "C" {

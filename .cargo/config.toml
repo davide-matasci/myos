@@ -1,9 +1,19 @@
 [unstable]
 bindeps = true
+json-target-spec = true
 
-# Custom userspace triple for a patched `std` PAL (see std/pal/README.md).
+# Custom userspace triples for the myos patched std sysroot (see std/pal/README.md).
+[env]
+RUSTC_BOOTSTRAP = "1"
+MYOS_SYSROOT = { value = "target/myos-sysroot", relative = true }
+
 [target.x86_64-unknown-myos]
 rustflags = ["-C", "panic=abort"]
+linker = "rust-lld"
+
+[target.aarch64-unknown-myos]
+rustflags = ["-C", "panic=abort"]
+linker = "rust-lld"
 
 # Hello is a no_std artifact; force abort even if cargo picks the
 # build-override profile (panic=unwind by default).

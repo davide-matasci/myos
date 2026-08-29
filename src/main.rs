@@ -248,7 +248,7 @@ fn run_ci_bios(bios_path: &str) {
             qemu_debug_exit: true,
             shell_ci: true,
         },
-        &CI_NEEDLES_X86,
+        &CI_NEEDLES_STD,
     );
 }
 
@@ -296,7 +296,7 @@ fn run_ci_uefi(uefi_path: &str) {
             qemu_debug_exit: true,
             shell_ci: true,
         },
-        &CI_NEEDLES_X86,
+        &CI_NEEDLES_STD,
     );
 }
 
@@ -315,7 +315,7 @@ fn run_ci_aarch64() {
             qemu_debug_exit: false,
             shell_ci: true,
         },
-        &[],
+        &CI_NEEDLES_STD,
     );
 }
 

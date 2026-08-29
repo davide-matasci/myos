@@ -25,8 +25,8 @@ const CI_NEEDLES: [&str; 14] = [
     "fat ok",
 ];
 
-/// Extra serial markers required on x86 BIOS/UEFI only (`std` hello is x86-myos today).
-const CI_NEEDLES_X86: [&str; 1] = ["std ok"];
+/// Extra serial markers for patched `std` hello (x86 and AArch64 myos userspace).
+const CI_NEEDLES_STD: [&str; 1] = ["std ok"];
 
 const CI_UNKNOWN_CMD: &[u8] = b"nosuchcmd\n";
 

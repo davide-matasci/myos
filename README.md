@@ -408,17 +408,23 @@ Syscall **9 (`brk`)** backs a per-process heap region above the stack page.
 `user/lib` exposes `brk`, `heap_init`, and a bump [`GlobalAlloc`](user/lib/src/alloc.rs)
 (`myos_user::Heap`). The `user/heap` ELF smoke-tests it (`alloc ok` on serial).
 
-To port **`std`** (see [OSDev](https://wiki.osdev.org/Porting_Rust_standard_library)),
-copy the in-repo PAL skeleton into a patched Rust tree:
+To build **`std`** programs (see [OSDev](https://wiki.osdev.org/Porting_Rust_standard_library)):
+
+```sh
+./scripts/build-std-hello.sh   # builds sysroot + smoke ELFs for x86_64 and AArch64
+```
 
 | Path | Role |
 |------|------|
-| `targets/x86_64-unknown-myos.json` | Custom userspace triple (`os = "myos"`) |
-| `std/pal/myos/` | PAL files → `library/std/src/sys/pal/myos/` in rustc |
-| `std/pal/README.md` | `build.rs` / `pal/mod.rs` patch steps, `-Z build-std` |
+| `targets/*-unknown-myos.json` | Custom userspace triples (`os = "myos"`) |
+| `std/pal/myos/` | PAL → `library/std/src/sys/pal/myos/` in the patched sysroot |
+| `scripts/build-sysroot.sh` | Precompile `std` into `target/myos-sysroot` (both triples) |
+| `scripts/package-sysroot.sh` | Tarball the sysroot for offline distribution |
+| `std/pal/README.md` | Full sysroot / build docs |
 
-Full `std` still needs more syscalls (`mmap`, time, …); the skeleton targets
-`println!("std ok")` after patching the pinned nightly.
+CI checks `println!("std ok")` on BIOS, UEFI, and AArch64. App crates link against
+the prebuilt sysroot (no `-Z build-std` on each app build). More syscalls (`open`,
+process, time, …) are still needed for real programs beyond the smoke test.
 
 ## Layout
 
