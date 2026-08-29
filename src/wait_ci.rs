@@ -29,7 +29,7 @@ const CI_NEEDLES: [&str; 14] = [
 const CI_NEEDLES_STD: [&str; 3] = ["std ok", "std cat ok", "std echo ok"];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 3] = [b"nosuchcmd\n", b"ok\n", b"echo\n"];
+const CI_SHELL_COMMANDS: [&[u8]; 3] = [b"nosuchcmd\n", b"ok\n", b"echo test\n"];
 
 /// Printed by the interactive shell when `open(path)` fails.
 const CI_SHELL_UNKNOWN_CMD: &str = "sh: command not found";
@@ -80,8 +80,15 @@ fn interactive_ok_cmd_ok(serial: &str) -> bool {
 }
 
 fn interactive_echo_cmd_ok(serial: &str) -> bool {
-    command_echoed(serial, "echo")
-        && !serial.contains("exception:")
+    let tail = interactive_tail(serial);
+    if !tail.contains("$ echo test") || serial.contains("exception:") {
+        return false;
+    }
+    let after = tail.rsplit_once("$ echo test").map(|(_, rest)| rest).unwrap_or("");
+    after
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim() == "test")
         && at_interactive_prompt(serial)
 }
 
@@ -281,12 +288,14 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
         }
         if shell_cmd_index >= 2 && !interactive_echo_cmd_ok(&serial) {
-            if !command_echoed(&serial, "echo") {
-                eprintln!("error: serial did not echo `$ echo` at the interactive prompt");
+            if !command_echoed(&serial, "echo test") {
+                eprintln!("error: serial did not echo `$ echo test` at the interactive prompt");
             } else if serial.contains("exception:") {
-                eprintln!("error: interactive `echo` triggered a CPU exception");
+                eprintln!("error: interactive `echo test` triggered a CPU exception");
             } else if !at_interactive_prompt(&serial) {
-                eprintln!("error: shell did not return to `$` after interactive `echo`");
+                eprintln!("error: shell did not return to `$` after interactive `echo test`");
+            } else {
+                eprintln!("error: interactive `echo test` did not print `test`");
             }
         }
         std::process::exit(1);

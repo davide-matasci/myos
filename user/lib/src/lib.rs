@@ -7,19 +7,22 @@ pub mod runtime;
 pub use alloc::Heap;
 pub use args::{arg, argc};
 
-/// x86 `_start` that captures argc/argv before any call pushes a return address.
+/// x86 `_start`: naked entry reads argc/argv from the stack (same as std `pal/myos`).
 #[macro_export]
 macro_rules! x86_start {
     ($main:ident) => {
         #[cfg(target_arch = "x86_64")]
+        #[unsafe(naked)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn _start() -> ! {
-            unsafe {
-                let sp: usize;
-                core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack));
-                $crate::args::init_from_sp(sp);
-            }
-            $main()
+        pub unsafe extern "C" fn _start() -> ! {
+            core::arch::naked_asm!(
+                "mov rdi, [rsp]",
+                "lea rsi, [rsp + 8]",
+                "call {init}",
+                "call {main}",
+                init = sym $crate::args::init_argv_sysv,
+                main = sym $main,
+            );
         }
     };
 }

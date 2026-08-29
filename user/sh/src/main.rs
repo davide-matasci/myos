@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, exec, exit, fork, open, read_line, wait, write};
+use myos_user::{exec, exit, fork, read_line, wait, write};
 
 const PROMPT: &[u8] = b"$ ";
 const MAX_LINE: usize = 128;
@@ -123,11 +123,6 @@ fn run_path(name: &[u8], parts: &[&[u8]]) {
 
     let mut path_buf = [0u8; 32];
     let path = command_path(name, &mut path_buf);
-    let Some(fd) = open(path) else {
-        cmd_not_found(path, name);
-        return;
-    };
-    close(fd);
     let mut arg_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
     let mut arg_slices: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
     for (i, p) in parts.iter().enumerate() {
