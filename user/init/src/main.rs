@@ -10,7 +10,7 @@ pub extern "C" fn _start() -> ! {
     exit();
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(_argc: usize, _argv: *const usize) -> ! {
     exec(b"/sh", &[]);

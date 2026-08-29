@@ -36,7 +36,7 @@ switch is preemptive too (including user mode). CI checks `task a`,
 
 - [rustup](https://rustup.rs/) (the `rust-toolchain.toml` in this repo
   selects the pinned nightly and the components below)
-- QEMU (`qemu-system-x86_64` and, for AArch64, `qemu-system-aarch64`)
+- QEMU (`qemu-system-x86_64`, `qemu-system-aarch64`, and `qemu-system-misc` for RISC-V)
 - A C compiler (`cc`) to build the Limine host tool (`bios-install`)
 - `curl` to fetch the pinned Limine binary tarball on first build
 - `xorriso` to write the hybrid ISO (`cargo run -- iso` only; Debian package `xorriso`)
@@ -97,6 +97,18 @@ Builds the kernel for `aarch64-unknown-none-softfloat`, writes
 starts `qemu-system-aarch64` on `virt,gic-version=2` (`-cpu cortex-a72`)
 with AAVMF/QEMU_EFI. Serial is on stdio; ramfb gives QEMU a graphical
 window. CI stays serial-only. Close the window or wait for PSCI SYSTEM_OFF.
+
+```sh
+cargo run -- riscv64
+```
+
+Builds the kernel for `riscv64imac-unknown-none-elf`, writes
+`target/riscv64.img` (ESP with `BOOTRISCV64.EFI`, Limine `global_dtb`, Sv39),
+and starts `qemu-system-riscv64` on `virt` with RISC-V UEFI firmware
+(`qemu-efi-riscv64` or `edk2-riscv64`). Serial is on stdio; ramfb is enabled
+for a graphical window. Userspace fork/exec is working; the full CI needle
+set (`user ok`, `fat ok`, interactive shell) is still being brought up on
+RISC-V.
 
 To only build the x86_64 images:
 

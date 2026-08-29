@@ -19,6 +19,11 @@ mod switch_aarch64;
 #[cfg(target_arch = "aarch64")]
 use switch_aarch64::{seed_stack, task_switch};
 
+#[cfg(target_arch = "riscv64")]
+mod switch_riscv64;
+#[cfg(target_arch = "riscv64")]
+use switch_riscv64::{seed_stack, task_switch};
+
 const MAX_TASKS: usize = 8;
 /// Exec from a syscall runs `load_user_elf` on the task stack (exception frame +
 /// `[MAX_INIT_PAGES]`/`[USER_STACK_PAGES]` frame arrays). 8 KiB overflowed after
@@ -62,6 +67,9 @@ pub struct ForkRegs {
     pub r15: u64,
     /// Full `lower_sync` frame (x0..x30, elr, spsr, sp_el0). Index 31 unused.
     #[cfg(target_arch = "aarch64")]
+    pub frame: [u64; 36],
+    /// Trap frame (x0..x31, sepc, sstatus, user sp). Index 35 unused.
+    #[cfg(target_arch = "riscv64")]
     pub frame: [u64; 36],
 }
 
@@ -743,6 +751,16 @@ fn irq_save() -> u64 {
         );
         r
     }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        let r: u64;
+        core::arch::asm!(
+            "csrr {r}, sstatus",
+            r = out(reg) r,
+            options(nomem, nostack, preserves_flags)
+        );
+        r
+    }
 }
 
 fn irq_restore(flags: u64) {
@@ -758,6 +776,14 @@ fn irq_restore(flags: u64) {
     unsafe {
         core::arch::asm!("msr daif, {r}", r = in(reg) flags, options(nomem, nostack));
     }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        if flags & (1 << 1) != 0 {
+            core::arch::asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+        } else {
+            core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+        }
+    }
 }
 
 fn irq_off() {
@@ -768,6 +794,10 @@ fn irq_off() {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!("msr daifset, #3", options(nomem, nostack));
+    }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
     }
 }
 
@@ -780,6 +810,10 @@ fn irq_on() {
     unsafe {
         core::arch::asm!("msr daifclr, #3", options(nomem, nostack));
     }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+    }
 }
 
 fn wait() {
@@ -788,6 +822,10 @@ fn wait() {
         core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
     }
     #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+    }
+    #[cfg(target_arch = "riscv64")]
     unsafe {
         core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
     }

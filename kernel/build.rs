@@ -6,7 +6,7 @@ fn main() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let script = format!("{manifest_dir}/link.ld");
-    if arch == "aarch64" || arch == "x86_64" {
+    if arch == "aarch64" || arch == "x86_64" || arch == "riscv64" {
         println!("cargo:rustc-link-arg-bins=-T{script}");
         println!("cargo:rerun-if-changed={script}");
         println!("cargo:rustc-link-arg-bins=-z");
@@ -100,6 +100,16 @@ fn main() {
         ] {
             embed_std_elf(manifest, &arch, artifact, env_key);
         }
+    } else if arch == "riscv64" {
+        let stub = PathBuf::from(&out).join("std-stub.elf");
+        std::fs::write(&stub, []).expect("write riscv64 std stub");
+        for env_key in [
+            "USER_STD_HELLO_PATH",
+            "USER_STD_CAT_PATH",
+            "USER_STD_ECHO_PATH",
+        ] {
+            println!("cargo:rustc-env={env_key}={}", stub.display());
+        }
     }
 }
 
@@ -148,6 +158,11 @@ fn nested_elf(
     }
 
     let td = PathBuf::from(out).join(td_name);
+    // Nested target dirs reuse myos-user rlibs aggressively; drop deps when
+    // the shared user library changed so fork/exec stubs stay in sync.
+    let profile_dir = if profile == "release" { "release" } else { "debug" };
+    let deps = td.join(target).join(profile_dir).join("deps");
+    let _ = std::fs::remove_dir_all(deps);
     let mut cmd = Command::new(cargo);
     cmd.arg("build")
         .arg("--manifest-path")
@@ -162,6 +177,12 @@ fn nested_elf(
         cmd.arg("--release");
     }
     cmd.env("RUSTFLAGS", "-C panic=abort");
+    if target.contains("riscv64") {
+        cmd.env(
+            "RUSTFLAGS",
+            "-C panic=abort -C relocation-model=static -C code-model=medium",
+        );
+    }
     cmd.env_remove("CARGO_ENCODED_RUSTFLAGS");
     let status = cmd
         .status()

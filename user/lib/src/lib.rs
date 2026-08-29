@@ -7,6 +7,32 @@ pub mod runtime;
 pub use alloc::Heap;
 pub use args::{arg, argc};
 
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    r#"
+    .section .text.sys_fork_raw,"ax",@progbits
+    .global sys_fork_raw
+    .type sys_fork_raw, @function
+sys_fork_raw:
+    li a7, 6
+    ecall
+    ret
+
+    .global sys_wait_raw
+    .type sys_wait_raw, @function
+sys_wait_raw:
+    li a7, 7
+    ecall
+    ret
+"#
+);
+
+#[cfg(target_arch = "riscv64")]
+unsafe extern "C" {
+    fn sys_fork_raw() -> usize;
+    fn sys_wait_raw() -> usize;
+}
+
 /// x86 `_start` that captures argc/argv before any call pushes a return address.
 #[macro_export]
 macro_rules! x86_start {
@@ -447,6 +473,110 @@ unsafe fn sys_brk(addr: usize) -> usize {
         "svc #0",
         in("x8") 9usize,
         inout("x0") addr => ret,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_write(ptr: usize, len: usize) {
+    core::arch::asm!(
+        "ecall",
+        in("a7") 0usize,
+        in("a0") ptr,
+        in("a1") len,
+        options(nostack),
+    );
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_exit() -> ! {
+    core::arch::asm!(
+        "ecall",
+        in("a7") 1usize,
+        options(noreturn, nostack),
+    );
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_open(ptr: usize, len: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "ecall",
+        in("a7") 2usize,
+        inout("a0") ptr => ret,
+        in("a1") len,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "ecall",
+        in("a7") 3usize,
+        inout("a0") fd => ret,
+        in("a1") buf,
+        in("a2") len,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_close(fd: usize) {
+    core::arch::asm!(
+        "ecall",
+        in("a7") 4usize,
+        in("a0") fd,
+        options(nostack),
+    );
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_exec(ptr: usize, len: usize, args: usize) {
+    core::arch::asm!(
+        "ecall",
+        in("a7") 5usize,
+        in("a0") ptr,
+        in("a1") len,
+        in("a2") args,
+        options(nostack),
+    );
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_fork() -> usize {
+    sys_fork_raw()
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_wait() -> usize {
+    sys_wait_raw()
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_listdir(buf: usize, len: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "ecall",
+        in("a7") 8usize,
+        inout("a0") buf => ret,
+        in("a1") len,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_brk(addr: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "ecall",
+        in("a7") 9usize,
+        inout("a0") addr => ret,
         options(nostack),
     );
     ret
