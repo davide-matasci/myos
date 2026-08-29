@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{exec, exit, fork, read_line, wait, write};
+use myos_user::{close, exec, exit, fork, open, read_line, wait, write};
 
 const PROMPT: &[u8] = b"$ ";
 const MAX_LINE: usize = 128;
@@ -33,7 +33,7 @@ fn shell() -> ! {
             continue;
         }
         let mut len = n;
-        if len > 0 && line[len - 1] == b'\n' {
+        while len > 0 && (line[len - 1] == b'\n' || line[len - 1] == b'\r') {
             len -= 1;
         }
         if len == 0 {
@@ -80,6 +80,7 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     match fork() {
         Some(0) => {
             exec(path, &arg_slices[..parts.len()]);
+            write(b"sh: command not found\n");
             exit();
         }
         Some(_) => {
@@ -93,6 +94,11 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
 fn run_path(name: &[u8], parts: &[&[u8]]) {
     let mut path_buf = [0u8; 32];
     let path = command_path(name, &mut path_buf);
+    let Some(fd) = open(path) else {
+        write(b"sh: command not found\n");
+        return;
+    };
+    close(fd);
     let mut arg_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
     let mut arg_slices: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
     for (i, p) in parts.iter().enumerate() {
@@ -106,6 +112,7 @@ fn run_path(name: &[u8], parts: &[&[u8]]) {
     match fork() {
         Some(0) => {
             exec(path, &arg_slices[..parts.len()]);
+            write(b"sh: command not found\n");
             exit();
         }
         Some(_) => {

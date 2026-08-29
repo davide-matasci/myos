@@ -91,22 +91,20 @@ pub fn heap_init() {
 /// Read a line from stdin (fd 0), including the trailing `\n` if present.
 pub fn read_line(buf: &mut [u8]) -> usize {
     let mut n = 0usize;
-    loop {
-        let mut b = [0u8; 1];
-        let r = read(0, &mut b);
-        if r == usize::MAX {
+    let mut tmp = [0u8; 32];
+    while n < buf.len() {
+        let want = tmp.len().min(buf.len() - n);
+        let r = read(0, &mut tmp[..want]);
+        if r == usize::MAX || r == 0 {
             break;
         }
-        if r == 0 {
-            break;
+        for i in 0..r {
+            buf[n + i] = tmp[i];
+            if tmp[i] == b'\n' || tmp[i] == b'\r' {
+                return n + i + 1;
+            }
         }
-        if n < buf.len() {
-            buf[n] = b[0];
-            n += 1;
-        }
-        if b[0] == b'\n' {
-            break;
-        }
+        n += r;
     }
     n
 }

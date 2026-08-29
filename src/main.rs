@@ -225,6 +225,8 @@ fn run_ci_bios(bios_path: &str) {
         .arg("stdio")
         .arg("-display")
         .arg("none")
+        .arg("-monitor")
+        .arg("none")
         .arg("-device")
         .arg("isa-debug-exit,iobase=0xf4,iosize=0x04")
         .arg("-nic")
@@ -234,6 +236,7 @@ fn run_ci_bios(bios_path: &str) {
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
     let child = cmd
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -241,8 +244,9 @@ fn run_ci_bios(bios_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(20),
+            timeout: Duration::from_secs(45),
             qemu_debug_exit: true,
+            shell_ci: true,
         },
         &CI_NEEDLES_X86,
     );
@@ -271,6 +275,8 @@ fn run_ci_uefi(uefi_path: &str) {
         .arg("stdio")
         .arg("-display")
         .arg("none")
+        .arg("-monitor")
+        .arg("none")
         .arg("-device")
         .arg("isa-debug-exit,iobase=0xf4,iosize=0x04")
         .arg("-nic")
@@ -278,6 +284,7 @@ fn run_ci_uefi(uefi_path: &str) {
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
     let child = cmd
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -285,8 +292,9 @@ fn run_ci_uefi(uefi_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_secs(90),
             qemu_debug_exit: true,
+            shell_ci: true,
         },
         &CI_NEEDLES_X86,
     );
@@ -295,6 +303,7 @@ fn run_ci_uefi(uefi_path: &str) {
 fn run_ci_aarch64() {
     let image = build_aarch64_image();
     let child = qemu_aarch64(&image, true)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -302,8 +311,9 @@ fn run_ci_aarch64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_secs(90),
             qemu_debug_exit: false,
+            shell_ci: false,
         },
         &[],
     );

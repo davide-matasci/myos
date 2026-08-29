@@ -211,28 +211,12 @@ pub fn fd_open(data: &'static [u8]) -> Option<usize> {
     })
 }
 
-/// Read from fd 0 (keyboard + serial stdin). `buf` must live in the user stack.
+/// Read from fd 0 (keyboard + serial stdin). `buf` must lie in the user map.
 pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
     if len == 0 {
         return 0;
     }
-    let (base, stack_off) = {
-        let flags = irq_save();
-        irq_off();
-        let id = CURRENT.load(Ordering::SeqCst);
-        let tasks = TASKS.lock();
-        let t = tasks[id];
-        drop(tasks);
-        irq_restore(flags);
-        (t.user_base as usize, t.stack_off as usize)
-    };
-    let end = match buf.checked_add(len) {
-        Some(e) => e,
-        None => return usize::MAX,
-    };
-    let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
-    let in_stack = buf >= base + stack_off && end <= base + stack_off + stack_bytes;
-    if !in_stack {
+    if !user::buffer_ok(buf, len) {
         return usize::MAX;
     }
     let mut tmp = [0u8; 128];

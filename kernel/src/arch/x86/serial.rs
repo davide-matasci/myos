@@ -42,13 +42,9 @@ pub fn read_byte() -> Option<u8> {
     if status & 0x01 == 0 {
         return None;
     }
-    // Drop break/framing/parity/overrun garbage (common with no cable attached).
-    if status & 0x1E != 0 {
-        let _ = inb(COM1);
-        return None;
-    }
+    // Keep the data byte even when the UART reports break/framing/overrun.
+    // QEMU `-serial stdio` often sets those bits on CR/LF.
     let b = inb(COM1);
-    // Floating RX lines often read 0xFF; never treat as input.
     if b == 0xFF {
         return None;
     }

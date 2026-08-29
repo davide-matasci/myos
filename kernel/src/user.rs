@@ -21,7 +21,7 @@ const SYS_LISTDIR: usize = 8;
 const SYS_BRK: usize = 9;
 pub const PAGE: usize = 4096;
 /// User stack mapping below the heap (4 KiB is too small for `std` I/O).
-pub const USER_STACK_PAGES: usize = 16;
+pub const USER_STACK_PAGES: usize = 32;
 const HEAP_PAGES: usize = 64;
 const MAX_INIT_PAGES: usize = 32;
 const MAX_PATH: usize = 64;
@@ -836,7 +836,6 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
         Err(()) => return SYSERR,
     };
     let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
-    let base = USER_BASE.load(Ordering::SeqCst);
     let cur_aspace = task::current_aspace();
     let (base_u, mapped_span, stack_off) = task::current_user_map();
     let loaded = if cur_aspace != 0 {
@@ -853,11 +852,11 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
         };
         v
     };
-    let Some((rsp, argv)) = build_argv_stack(aspace, base, off, &arg_refs) else {
+    let Some((rsp, argv)) = build_argv_stack(aspace, base_u, off, &arg_refs) else {
         return SYSERR;
     };
     let argc = arg_refs.len();
-    task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
+    task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     #[cfg(target_arch = "aarch64")]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
     enter(entry, rsp, argc, argv);
@@ -1007,17 +1006,23 @@ fn sys_brk(req: usize) -> usize {
     req
 }
 
+/// True when `ptr..ptr+len` lies in the current task's user code, stack, or heap.
+pub fn buffer_ok(ptr: usize, len: usize) -> bool {
+    user_range_ok(ptr, len)
+}
+
 fn user_range_ok(ptr: usize, len: usize) -> bool {
-    let (base, _img, stack) = task::current_user_map();
+    let (base, image_span, stack_off) = task::current_user_map();
     let base = base as usize;
     let end = match ptr.checked_add(len) {
         Some(e) => e,
         None => return false,
     };
-    let stack = stack as usize;
-    let in_code = ptr >= base && end <= base + stack;
-    let in_stack = ptr >= base + stack && end <= base + stack + USER_STACK_PAGES * PAGE;
-    let heap_base = heap_base_va(base as u64, stack as u64) as usize;
+    let in_code = ptr >= base && end <= base + image_span;
+    let stack_base = base + stack_off as usize;
+    let in_stack = ptr >= stack_base
+        && end <= stack_base + USER_STACK_PAGES * PAGE;
+    let heap_base = heap_base_va(base as u64, stack_off) as usize;
     let brk = task::current_brk() as usize;
     let in_heap = brk > heap_base && ptr >= heap_base && end <= brk;
     in_code || in_stack || in_heap
