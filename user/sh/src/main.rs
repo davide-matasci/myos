@@ -155,6 +155,6 @@ fn command_path<'a>(name: &[u8], buf: &'a mut [u8]) -> &'a [u8] {
 }
 
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    myos_user::panic_die(info);
 }

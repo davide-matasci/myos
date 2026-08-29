@@ -1,0 +1,64 @@
+//! Log CPU exceptions to serial before halting (used by arch interrupt handlers).
+
+extern crate alloc;
+
+use alloc::format;
+use alloc::string::String;
+
+use crate::arch;
+use crate::console;
+use crate::task;
+
+pub fn fatal_line(line: &str) -> ! {
+    console::write_str("exception: ");
+    console::write_str(line);
+    console::write_str("\n");
+    console::flush();
+    arch::exit_qemu(arch::QEMU_FAILURE);
+    arch::halt();
+}
+
+fn task_ctx() -> String {
+    let id = task::current_id();
+    match task::current_user_pc_sp() {
+        Some((rip, rsp)) => format!(" task={id} user rip={rip:#x} rsp={rsp:#x}"),
+        None => format!(" task={id} kernel"),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn x86_page_fault(cr2: u64, rip: u64, rsp: u64, code: u64, user: bool) -> ! {
+    fatal_line(&format!(
+        "page fault cr2={cr2:#x} rip={rip:#x} rsp={rsp:#x} code={code:#x} {mode}{ctx}",
+        mode = if user { "user" } else { "kernel" },
+        ctx = task_ctx(),
+    ));
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn x86_general_protection(rip: u64, rsp: u64, code: u64) -> ! {
+    fatal_line(&format!(
+        "general protection rip={rip:#x} rsp={rsp:#x} code={code:#x}{ctx}",
+        ctx = task_ctx(),
+    ));
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn x86_double_fault(rip: u64, rsp: u64) -> ! {
+    fatal_line(&format!(
+        "double fault rip={rip:#x} rsp={rsp:#x}{ctx}",
+        ctx = task_ctx(),
+    ));
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn aarch64_sync_abort(kind: &str, esr: u64, elr: u64, far: u64, sp_el0: Option<u64>) -> ! {
+    let ec = (esr >> 26) & 0x3f;
+    let sp = sp_el0
+        .map(|sp| format!(" sp_el0={sp:#x}"))
+        .unwrap_or_default();
+    fatal_line(&format!(
+        "{kind} ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x}{sp}{ctx}",
+        ctx = task_ctx(),
+    ));
+}

@@ -18,6 +18,6 @@ pub extern "C" fn _start(_argc: usize, _argv: *const usize) -> ! {
 }
 
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    myos_user::panic_die(info);
 }

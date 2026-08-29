@@ -6,6 +6,7 @@ extern crate alloc;
 
 mod console;
 mod arch;
+mod exception;
 mod blk;
 mod font;
 mod framebuffer;

@@ -313,7 +313,7 @@ fn run_ci_aarch64() {
         CiExpect {
             timeout: Duration::from_secs(90),
             qemu_debug_exit: false,
-            shell_ci: false,
+            shell_ci: true,
         },
         &[],
     );
@@ -353,6 +353,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     add_virtio_blk_aarch64(&mut cmd);
     if ci {
         cmd.arg("-display").arg("none");
+        cmd.arg("-monitor").arg("none");
     } else {
         cmd.arg("-device").arg("ramfb");
         cmd.arg("-device").arg("virtio-keyboard-device");
