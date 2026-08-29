@@ -1,12 +1,14 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, exec, exit, fork, open, read_line, wait, write};
+use myos_user::{close, dup2, exec, exit, fork, open, pipe, read_line, wait_status, write};
 
 const PROMPT: &[u8] = b"$ ";
 const MAX_LINE: usize = 128;
 const MAX_ARGS: usize = 8;
 const ARG_LEN: usize = 32;
+
+static mut LAST_STATUS: u8 = 0;
 
 #[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
@@ -19,6 +21,12 @@ pub extern "C" fn _start() -> ! {
 pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
     unsafe { myos_user::args::init_from_regs(argc, argv) };
     shell()
+}
+
+struct Segment<'a> {
+    argc: usize,
+    parts: [&'a [u8]; MAX_ARGS],
+    in_path: Option<&'a [u8]>,
 }
 
 fn shell() -> ! {
@@ -39,31 +47,59 @@ fn shell() -> ! {
         if len == 0 {
             continue;
         }
-        let mut parts: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
-        let argc = split_args(&line[..len], &mut parts);
-        if argc == 0 {
+        let mut segs = [
+            Segment {
+                argc: 0,
+                parts: [&[]; MAX_ARGS],
+                in_path: None,
+            },
+            Segment {
+                argc: 0,
+                parts: [&[]; MAX_ARGS],
+                in_path: None,
+            },
+        ];
+        let nseg = parse_line(&line[..len], &mut segs);
+        if nseg == 0 {
             continue;
         }
-        if parts[0] == b"exit" {
+        if segs[0].argc == 1 && segs[0].parts[0] == b"exit" {
             exit();
         }
-        run_path(parts[0], &parts[..argc]);
+        if segs[0].argc == 1 && segs[0].parts[0] == b"$?" {
+            print_status(unsafe { LAST_STATUS });
+            write(b"\n");
+            continue;
+        }
+        if nseg == 2 {
+            run_pipeline(&segs[0], &segs[1]);
+        } else {
+            run_segment(&segs[0]);
+        }
     }
 }
 
-/// Minimal fork+wait smoke (no exec in the child).
+fn print_status(code: u8) {
+    if code >= 100 {
+        write(&[b'0' + code / 100]);
+    }
+    if code >= 10 {
+        write(&[b'0' + (code / 10) % 10]);
+    }
+    write(&[b'0' + code % 10]);
+}
+
 fn smoke_fork_ping() {
     match fork() {
         Some(0) => exit(),
         Some(_) => {
-            let _ = wait();
+            let _ = wait_status();
             write(b"fork ok\n");
         }
         None => write(b"fork failed\n"),
     }
 }
 
-/// Boot smoke via fork+exec+wait (CI covers fork+exec).
 fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     let mut path_buf = [0u8; 32];
     let path = command_path(name, &mut path_buf);
@@ -84,11 +120,212 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
             exit();
         }
         Some(_) => {
-            let _ = wait();
+            let _ = wait_status();
             write(b"fork exec ok\n");
         }
         None => write(b"fork failed\n"),
     }
+}
+
+fn cmd_not_found(path: &[u8], cmd: &[u8]) {
+    write(b"sh: command not found: ");
+    write_bytes_escaped(path);
+    write(b" (received: ");
+    write_bytes_escaped(cmd);
+    write(b")\n");
+}
+
+fn run_segment(seg: &Segment<'_>) {
+    let mut path_buf = [0u8; 32];
+    let mut arg_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
+    let mut arg_slices: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
+    if seg.argc == 0 {
+        return;
+    }
+    let path = command_path(seg.parts[0], &mut path_buf);
+    for (i, p) in seg.parts[..seg.argc].iter().enumerate() {
+        let n = p.len().min(ARG_LEN);
+        arg_bufs[i][..n].copy_from_slice(&p[..n]);
+    }
+    for i in 0..seg.argc {
+        let n = seg.parts[i].len().min(ARG_LEN);
+        arg_slices[i] = &arg_bufs[i][..n];
+    }
+    match fork() {
+        Some(0) => {
+            apply_stdin_redir(seg.in_path);
+            exec(path, &arg_slices[..seg.argc]);
+            cmd_not_found(path, seg.parts[0]);
+            exit();
+        }
+        Some(_) => {
+            if let Some((_, code)) = wait_status() {
+                unsafe { LAST_STATUS = code };
+            }
+        }
+        None => write(b"fork failed\n"),
+    }
+}
+
+fn run_pipeline(left: &Segment<'_>, right: &Segment<'_>) {
+    let Some((rfd, wfd)) = pipe() else {
+        write(b"sh: pipe failed\n");
+        return;
+    };
+    let mut left_path = [0u8; 32];
+    let mut right_path = [0u8; 32];
+    let mut left_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
+    let mut right_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
+    let mut left_slices: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
+    let mut right_slices: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
+    if left.argc == 0 || right.argc == 0 {
+        close(rfd);
+        close(wfd);
+        return;
+    }
+    let lpath = command_path(left.parts[0], &mut left_path);
+    let rpath = command_path(right.parts[0], &mut right_path);
+    for (i, p) in left.parts[..left.argc].iter().enumerate() {
+        let n = p.len().min(ARG_LEN);
+        left_bufs[i][..n].copy_from_slice(&p[..n]);
+    }
+    for (i, p) in right.parts[..right.argc].iter().enumerate() {
+        let n = p.len().min(ARG_LEN);
+        right_bufs[i][..n].copy_from_slice(&p[..n]);
+    }
+    for i in 0..left.argc {
+        let n = left.parts[i].len().min(ARG_LEN);
+        left_slices[i] = &left_bufs[i][..n];
+    }
+    for i in 0..right.argc {
+        let n = right.parts[i].len().min(ARG_LEN);
+        right_slices[i] = &right_bufs[i][..n];
+    }
+    match fork() {
+        Some(0) => {
+            close(rfd);
+            dup2(wfd, 1);
+            close(wfd);
+            apply_stdin_redir(left.in_path);
+            exec(lpath, &left_slices[..left.argc]);
+            cmd_not_found(lpath, left.parts[0]);
+            exit();
+        }
+        None => {
+            close(rfd);
+            close(wfd);
+            write(b"fork failed\n");
+            return;
+        }
+        Some(_left_pid) => {}
+    }
+    match fork() {
+        Some(0) => {
+            close(wfd);
+            dup2(rfd, 0);
+            close(rfd);
+            apply_stdin_redir(right.in_path);
+            exec(rpath, &right_slices[..right.argc]);
+            cmd_not_found(rpath, right.parts[0]);
+            exit();
+        }
+        None => {
+            close(rfd);
+            close(wfd);
+            write(b"fork failed\n");
+            return;
+        }
+        Some(_right_pid) => {}
+    }
+    close(rfd);
+    close(wfd);
+    let _ = wait_status();
+    if let Some((_, code)) = wait_status() {
+        unsafe { LAST_STATUS = code };
+    }
+}
+
+fn apply_stdin_redir(path: Option<&[u8]>) {
+    let Some(p) = path else {
+        return;
+    };
+    let mut path_buf = [0u8; 64];
+    let full = if p.first() == Some(&b'/') {
+        p
+    } else {
+        path_buf[0] = b'/';
+        let n = p.len().min(path_buf.len() - 1);
+        path_buf[1..1 + n].copy_from_slice(&p[..n]);
+        &path_buf[..1 + n]
+    };
+    let Some(fd) = open(full) else {
+        write(b"sh: redirect open failed\n");
+        exit();
+    };
+    dup2(fd, 0);
+    close(fd);
+}
+
+fn parse_line<'a>(line: &'a [u8], segs: &mut [Segment<'a>; 2]) -> usize {
+    let pipe_at = line.iter().position(|&b| b == b'|');
+    let (left, right) = match pipe_at {
+        Some(i) => (&line[..i], Some(&line[i + 1..])),
+        None => (line, None),
+    };
+    segs[0] = parse_segment(left);
+    if let Some(r) = right {
+        segs[1] = parse_segment(r);
+        if segs[0].argc > 0 && segs[1].argc > 0 {
+            2
+        } else {
+            0
+        }
+    } else if segs[0].argc > 0 {
+        1
+    } else {
+        0
+    }
+}
+
+fn parse_segment<'a>(text: &'a [u8]) -> Segment<'a> {
+    let mut seg = Segment {
+        argc: 0,
+        parts: [&[]; MAX_ARGS],
+        in_path: None,
+    };
+    let mut tokens: [&[u8]; MAX_ARGS + 1] = [&[]; MAX_ARGS + 1];
+    let mut nt = 0usize;
+    let mut i = 0usize;
+    while i < text.len() && nt < tokens.len() {
+        while i < text.len() && text[i] == b' ' {
+            i += 1;
+        }
+        if i >= text.len() {
+            break;
+        }
+        let start = i;
+        while i < text.len() && text[i] != b' ' {
+            i += 1;
+        }
+        tokens[nt] = &text[start..i];
+        nt += 1;
+    }
+    let mut j = 0usize;
+    while j < nt && seg.argc < MAX_ARGS {
+        if tokens[j] == b"<" {
+            if j + 1 < nt {
+                seg.in_path = Some(tokens[j + 1]);
+                j += 2;
+            } else {
+                break;
+            }
+        } else {
+            seg.parts[seg.argc] = tokens[j];
+            seg.argc += 1;
+            j += 1;
+        }
+    }
+    seg
 }
 
 fn write_hex_byte(b: u8) {
@@ -105,70 +342,6 @@ fn write_bytes_escaped(bytes: &[u8]) {
             write_hex_byte(b);
         }
     }
-}
-
-fn cmd_not_found(path: &[u8], cmd: &[u8]) {
-    write(b"sh: command not found: ");
-    write_bytes_escaped(path);
-    write(b" (received: ");
-    write_bytes_escaped(cmd);
-    write(b")\n");
-}
-
-fn run_path(name: &[u8], parts: &[&[u8]]) {
-    let mut cmd = [0u8; ARG_LEN];
-    let cmd_len = name.len().min(ARG_LEN);
-    cmd[..cmd_len].copy_from_slice(&name[..cmd_len]);
-    let name = &cmd[..cmd_len];
-
-    let mut path_buf = [0u8; 32];
-    let path = command_path(name, &mut path_buf);
-    let Some(fd) = open(path) else {
-        cmd_not_found(path, name);
-        return;
-    };
-    close(fd);
-    let mut arg_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
-    let mut arg_slices: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
-    for (i, p) in parts.iter().enumerate() {
-        let n = p.len().min(ARG_LEN);
-        arg_bufs[i][..n].copy_from_slice(&p[..n]);
-    }
-    for i in 0..parts.len() {
-        let n = parts[i].len().min(ARG_LEN);
-        arg_slices[i] = &arg_bufs[i][..n];
-    }
-    match fork() {
-        Some(0) => {
-            exec(path, &arg_slices[..parts.len()]);
-            cmd_not_found(path, name);
-            exit();
-        }
-        Some(_) => {
-            let _ = wait();
-        }
-        None => write(b"fork failed\n"),
-    }
-}
-
-fn split_args<'a>(line: &'a [u8], out: &mut [&'a [u8]; MAX_ARGS]) -> usize {
-    let mut n = 0usize;
-    let mut i = 0usize;
-    while i < line.len() && n < MAX_ARGS {
-        while i < line.len() && line[i] == b' ' {
-            i += 1;
-        }
-        if i >= line.len() {
-            break;
-        }
-        let start = i;
-        while i < line.len() && line[i] != b' ' {
-            i += 1;
-        }
-        out[n] = &line[start..i];
-        n += 1;
-    }
-    n
 }
 
 fn command_path<'a>(name: &[u8], buf: &'a mut [u8]) -> &'a [u8] {

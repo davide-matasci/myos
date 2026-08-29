@@ -385,16 +385,18 @@ compiler ports). Errors return `usize::MAX`.
 
 | nr | name | args |
 |----|------|------|
-| 0 | write | ptr, len |
-| 1 | exit | |
-| 2 | open | path, path_len → fd (≥3) |
+| 0 | write | fd, ptr, len |
+| 1 | exit | code |
+| 2 | open | path, path_len → fd |
 | 3 | read | fd, buf, len → n (fd 0 = keyboard + serial stdin) |
 | 4 | close | fd |
 | 5 | exec | path, path_len, args_ptr (0 or `[argc, (ptr,len)...]`) |
 | 6 | fork | → child pid (parent), 0 (child) |
-| 7 | wait | → reaped child pid |
+| 7 | wait | status_ptr (0 = ignore) → reaped child pid; stores exit code byte if ptr set |
 | 8 | listdir | buf, len → byte count (bootfs names, newline-separated) |
 | 9 | brk | addr → program break (0 = query). Per-process heap after stack (256 KiB max) |
+| 10 | pipe | fds_ptr (two usize slots) → 0 or error |
+| 11 | dup2 | oldfd, newfd → 0 or error |
 
 x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. At `_start`, argc/argv
 are on the user stack (System V). AArch64 `svc`: `x8`=nr, `x0`/`x1`/`x2`=a0/a1/a2.
