@@ -16,6 +16,7 @@ mod input;
 mod limine_boot;
 mod mm;
 mod modules;
+mod pipe;
 mod task;
 mod user;
 

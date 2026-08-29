@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::console;
+use crate::pipe;
 use crate::user;
 
 #[cfg(target_arch = "x86_64")]
@@ -25,8 +26,73 @@ const MAX_TASKS: usize = 8;
 /// widening the user stack to 64 KiB (AArch64 CI hung in `dealloc`).
 const STACK_SIZE: usize = 16 * 1024;
 const MAX_FDS: usize = 8;
-/// 0 = stdin, 1 = stdout, 2 = stderr (reserved; write uses syscall today).
-const FD_USER_BASE: usize = 3;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FdEntry {
+    Empty,
+    Stdin,
+    Console,
+    File {
+        data: &'static [u8],
+        pos: usize,
+    },
+    PipeRead(usize),
+    PipeWrite(usize),
+}
+
+fn default_user_fds() -> [FdEntry; MAX_FDS] {
+    let mut fds = [FdEntry::Empty; MAX_FDS];
+    fds[0] = FdEntry::Stdin;
+    fds[1] = FdEntry::Console;
+    fds[2] = FdEntry::Console;
+    fds
+}
+
+fn fd_clone(entry: FdEntry) -> FdEntry {
+    match entry {
+        FdEntry::PipeRead(id) => {
+            pipe::add_reader(id);
+            FdEntry::PipeRead(id)
+        }
+        FdEntry::PipeWrite(id) => {
+            pipe::add_writer(id);
+            FdEntry::PipeWrite(id)
+        }
+        other => other,
+    }
+}
+
+fn fd_drop(entry: FdEntry) {
+    match entry {
+        FdEntry::PipeRead(id) => pipe::drop_reader(id),
+        FdEntry::PipeWrite(id) => pipe::drop_writer(id),
+        _ => {}
+    }
+}
+
+fn user_buf_ok(
+    buf: usize,
+    len: usize,
+    user_base: usize,
+    image_span: usize,
+    stack_off: usize,
+    brk: usize,
+) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let end = match buf.checked_add(len) {
+        Some(e) => e,
+        None => return false,
+    };
+    let stack = stack_off;
+    let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
+    let in_code = buf >= user_base && end <= user_base + image_span;
+    let in_stack = buf >= user_base + stack && end <= user_base + stack + stack_bytes;
+    let heap_base = user_base + stack + stack_bytes;
+    let in_heap = brk > heap_base && buf >= heap_base && end <= brk;
+    in_code || in_stack || in_heap
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -34,12 +100,6 @@ enum State {
     Ready,
     Running,
     Dead,
-}
-
-#[derive(Clone, Copy)]
-struct Fd {
-    data: &'static [u8],
-    pos: usize,
 }
 
 /// User register snapshot so a forked child can resume after the syscall
@@ -76,7 +136,7 @@ struct Task {
     kernel_stack_top: usize,
     user_rip: usize,
     user_rsp: usize,
-    fds: [Option<Fd>; MAX_FDS],
+    fds: [FdEntry; MAX_FDS],
     user_base: u64,
     image_span: usize,
     stack_off: u64,
@@ -86,6 +146,7 @@ struct Task {
     user_argv: usize,
     /// Current program break (end of heap). 0 for kernel threads.
     brk_cur: u64,
+    exit_code: u8,
 }
 
 const EMPTY: Task = Task {
@@ -97,7 +158,7 @@ const EMPTY: Task = Task {
     kernel_stack_top: 0,
     user_rip: 0,
     user_rsp: 0,
-    fds: [None; MAX_FDS],
+    fds: [FdEntry::Empty; MAX_FDS],
     user_base: 0,
     image_span: 0,
     stack_off: 0,
@@ -106,6 +167,7 @@ const EMPTY: Task = Task {
     user_argc: 0,
     user_argv: 0,
     brk_cur: 0,
+    exit_code: 0,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -216,13 +278,61 @@ fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
 
 pub fn fd_open(data: &'static [u8]) -> Option<usize> {
     with_current_mut(|t| {
-        for i in FD_USER_BASE..MAX_FDS {
-            if t.fds[i].is_none() {
-                t.fds[i] = Some(Fd { data, pos: 0 });
+        for i in 0..MAX_FDS {
+            if t.fds[i] == FdEntry::Empty {
+                t.fds[i] = FdEntry::File { data, pos: 0 };
                 return Some(i);
             }
         }
         None
+    })
+}
+
+pub fn pipe_open() -> Option<(usize, usize)> {
+    let id = pipe::alloc()?;
+    let out = with_current_mut(|t| {
+        let mut read_fd = None;
+        let mut write_fd = None;
+        for i in 0..MAX_FDS {
+            if t.fds[i] == FdEntry::Empty {
+                if read_fd.is_none() {
+                    read_fd = Some(i);
+                } else {
+                    write_fd = Some(i);
+                    break;
+                }
+            }
+        }
+        let (Some(r), Some(w)) = (read_fd, write_fd) else {
+            return None;
+        };
+        pipe::add_reader(id);
+        pipe::add_writer(id);
+        t.fds[r] = FdEntry::PipeRead(id);
+        t.fds[w] = FdEntry::PipeWrite(id);
+        Some((r, w))
+    });
+    if out.is_none() {
+        pipe::free(id);
+    }
+    out
+}
+
+pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
+    if oldfd >= MAX_FDS || newfd >= MAX_FDS {
+        return false;
+    }
+    with_current_mut(|t| {
+        let old = t.fds[oldfd];
+        if old == FdEntry::Empty {
+            return false;
+        }
+        if oldfd == newfd {
+            return true;
+        }
+        fd_drop(t.fds[newfd]);
+        t.fds[newfd] = fd_clone(old);
+        true
     })
 }
 
@@ -244,64 +354,175 @@ pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
     n
 }
 
-/// Copy from `fd` into the user buffer at `buf`. `range_ok` must accept the
-/// actual byte count. Bad fd or a failed range check returns `usize::MAX`.
-///
-/// Range checks use this task's map fields under the same lock — do not call
-/// back into `current_user_map` / `TASKS` (non-reentrant spin → hang on read
-/// after fork, CI #121).
-pub fn fd_read(
-    fd: usize,
-    buf: usize,
-    len: usize,
-    _range_ok: fn(usize, usize) -> bool,
-) -> usize {
-    if fd == 0 {
-        return fd_read_stdin(buf, len);
+pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
     }
-    with_current_mut(|t| {
-        let Some(Some(f)) = t.fds.get_mut(fd) else {
-            return usize::MAX;
+    loop {
+        let (entry, map) = {
+            let flags = irq_save();
+            irq_off();
+            let id = CURRENT.load(Ordering::SeqCst);
+            let t = TASKS.lock()[id];
+            irq_restore(flags);
+            (
+                t.fds.get(fd).copied().unwrap_or(FdEntry::Empty),
+                (
+                    t.user_base,
+                    t.image_span,
+                    t.stack_off,
+                    t.brk_cur as usize,
+                ),
+            )
         };
-        let n = len.min(f.data.len().saturating_sub(f.pos));
-        if n != 0 {
-            let base = t.user_base as usize;
-            let end = match buf.checked_add(n) {
-                Some(e) => e,
-                None => return usize::MAX,
-            };
-            let stack = t.stack_off as usize;
-            let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
-            let in_code = buf >= base && end <= base + t.image_span;
-            let in_stack = buf >= base + stack && end <= base + stack + stack_bytes;
-            if !in_code && !in_stack {
-                return usize::MAX;
+        let (user_base, image_span, stack_off, brk) = map;
+        let user_base = user_base as usize;
+        let stack_off = stack_off as usize;
+        if !user_buf_ok(buf, len.min(128), user_base, image_span, stack_off, brk) {
+            return usize::MAX;
+        }
+        match entry {
+            FdEntry::Stdin => return fd_read_stdin(buf, len),
+            FdEntry::File { data, pos } => {
+                return with_current_mut(|t| {
+                    let FdEntry::File { data, pos } = t.fds[fd] else {
+                        return usize::MAX;
+                    };
+                    let n = len.min(data.len().saturating_sub(pos));
+                    if n != 0 {
+                        if !user_buf_ok(
+                            buf,
+                            n,
+                            t.user_base as usize,
+                            t.image_span,
+                            t.stack_off as usize,
+                            t.brk_cur as usize,
+                        ) {
+                            return usize::MAX;
+                        }
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                data.as_ptr().add(pos),
+                                buf as *mut u8,
+                                n,
+                            );
+                        }
+                    }
+                    if let FdEntry::File { pos: p, .. } = &mut t.fds[fd] {
+                        *p += n;
+                    }
+                    n
+                });
             }
-            unsafe {
-                core::ptr::copy_nonoverlapping(f.data.as_ptr().add(f.pos), buf as *mut u8, n);
+            FdEntry::PipeRead(id) => {
+                let mut tmp = [0u8; 128];
+                let want = len.min(tmp.len());
+                let n = pipe::read(id, &mut tmp[..want]);
+                if n == usize::MAX {
+                    return usize::MAX;
+                }
+                if n == 0 && pipe::read_would_block(id) {
+                    yield_now();
+                    continue;
+                }
+                unsafe {
+                    core::ptr::copy_nonoverlapping(tmp.as_ptr(), buf as *mut u8, n);
+                }
+                return n;
+            }
+            FdEntry::Empty | FdEntry::Console | FdEntry::PipeWrite(_) => return usize::MAX,
+        }
+    }
+}
+
+pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let mut total = 0usize;
+    while total < len {
+        let chunk = (len - total).min(128);
+        let (entry, map) = {
+            let flags = irq_save();
+            irq_off();
+            let id = CURRENT.load(Ordering::SeqCst);
+            let t = TASKS.lock()[id];
+            irq_restore(flags);
+            (
+                t.fds.get(fd).copied().unwrap_or(FdEntry::Empty),
+                (
+                    t.user_base,
+                    t.image_span,
+                    t.stack_off,
+                    t.brk_cur as usize,
+                ),
+            )
+        };
+        let (user_base, image_span, stack_off, brk) = map;
+        if !user_buf_ok(
+            buf + total,
+            chunk,
+            user_base as usize,
+            image_span,
+            stack_off as usize,
+            brk,
+        ) {
+            return if total == 0 { usize::MAX } else { total };
+        }
+        let mut tmp = [0u8; 128];
+        unsafe {
+            core::ptr::copy_nonoverlapping((buf + total) as *const u8, tmp.as_mut_ptr(), chunk);
+        }
+        loop {
+            match entry {
+                FdEntry::Console => {
+                    print_bytes(&tmp[..chunk]);
+                    total += chunk;
+                    break;
+                }
+                FdEntry::PipeWrite(id) => {
+                    let n = pipe::write(id, &tmp[..chunk]);
+                    if n == usize::MAX {
+                        return if total == 0 { usize::MAX } else { total };
+                    }
+                    if n == 0 && pipe::write_would_block(id) {
+                        yield_now();
+                        continue;
+                    }
+                    total += n;
+                    break;
+                }
+                _ => return if total == 0 { usize::MAX } else { total },
             }
         }
-        f.pos += n;
-        n
-    })
+    }
+    total
 }
 
 pub fn fd_close(fd: usize) -> bool {
+    if fd >= MAX_FDS {
+        return false;
+    }
     with_current_mut(|t| {
-        let Some(slot) = t.fds.get_mut(fd) else {
+        let entry = t.fds[fd];
+        if entry == FdEntry::Empty {
             return false;
-        };
-        if slot.is_some() {
-            *slot = None;
-            true
-        } else {
-            false
         }
+        fd_drop(entry);
+        t.fds[fd] = if fd == 0 {
+            FdEntry::Stdin
+        } else if fd == 1 || fd == 2 {
+            FdEntry::Console
+        } else {
+            FdEntry::Empty
+        };
+        true
     })
 }
 
 /// In-place exec: replace the current task's user image. Does not spawn,
-/// does not bump USERS_ALIVE, does not note_exit. Resets fds.
+/// does not bump USERS_ALIVE, does not note_exit. Keeps the fd table so
+/// shell redirects and pipes survive exec.
 pub fn replace_user(
     aspace: u64,
     user_rip: usize,
@@ -321,7 +542,6 @@ pub fn replace_user(
         t.stack_off = stack_off;
         t.user_argc = user_argc;
         t.user_argv = user_argv;
-        t.fds = [None; MAX_FDS];
         t.fork_regs = None;
         t.brk_cur = heap_base_for(user_base, stack_off);
     });
@@ -330,7 +550,20 @@ pub fn replace_user(
 }
 
 pub fn spawn(entry: fn()) {
-    spawn_inner(0, Some(entry), 0, 0, 0, 0, 0, 0, 0, 0, [None; MAX_FDS], None);
+    spawn_inner(
+        0,
+        Some(entry),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        [FdEntry::Empty; MAX_FDS],
+        None,
+    );
 }
 
 pub fn spawn_user(
@@ -354,7 +587,7 @@ pub fn spawn_user(
         user_argc,
         user_argv,
         0,
-        [None; MAX_FDS],
+        default_user_fds(),
         None,
     );
 }
@@ -423,6 +656,11 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         (slot, (reuse, stack_base))
     };
 
+    let mut child_fds = default_user_fds();
+    for i in 0..MAX_FDS {
+        child_fds[i] = fd_clone(fds[i]);
+    }
+
     let (stack_base, sp, top) = if reuse_stack.0 {
         let sb = reuse_stack.1;
         let sp = unsafe { seed_stack(sb as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
@@ -448,7 +686,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         kernel_stack_top: top,
         user_rip: child_regs.rip,
         user_rsp: child_regs.rsp,
-        fds,
+        fds: child_fds,
         user_base: base,
         image_span: span,
         stack_off: off,
@@ -457,6 +695,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         user_argc: uargc,
         user_argv: uargv,
         brk_cur: brk,
+        exit_code: 0,
     };
     drop(tasks);
     user::note_fork();
@@ -465,8 +704,9 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
 }
 
 /// Yield until a child has exited, reap it, return its pid.
-/// `usize::MAX` if this task has no children.
-pub fn wait_child() -> usize {
+/// `usize::MAX` if this task has no children. If `status_out` is non-null,
+/// stores the low 8 bits of the child's exit code.
+pub fn wait_child(status_out: *mut u8) -> usize {
     let parent = CURRENT.load(Ordering::SeqCst);
     loop {
         let mut any = false;
@@ -491,12 +731,18 @@ pub fn wait_child() -> usize {
             }
             if let Some(i) = reap {
                 let stack_base = tasks[i].stack_base;
+                let code = tasks[i].exit_code;
                 tasks[i] = EMPTY;
                 if stack_base != 0 {
                     tasks[i].stack_base = stack_base;
                 }
                 drop(tasks);
                 irq_restore(flags);
+                if !status_out.is_null() {
+                    unsafe {
+                        *status_out = code;
+                    }
+                }
                 return i;
             }
             drop(tasks);
@@ -520,7 +766,7 @@ fn spawn_inner(
     user_argc: usize,
     user_argv: usize,
     ppid: usize,
-    fds: [Option<Fd>; MAX_FDS],
+    fds: [FdEntry; MAX_FDS],
     fork_regs: Option<ForkRegs>,
 ) {
     let flags = irq_save();
@@ -559,9 +805,15 @@ fn spawn_inner(
         user_argc,
         user_argv,
         brk_cur,
+        exit_code: 0,
     };
     drop(tasks);
     irq_restore(flags);
+}
+
+pub fn user_exit(code: u8) -> ! {
+    with_current_mut(|t| t.exit_code = code);
+    die();
 }
 
 pub fn yield_now() {
@@ -713,6 +965,10 @@ pub fn die() -> ! {
         let id = CURRENT.load(Ordering::SeqCst);
         if tasks[id].user_rip != 0 {
             user::note_exit();
+            for entry in tasks[id].fds {
+                fd_drop(entry);
+            }
+            tasks[id].fds = [FdEntry::Empty; MAX_FDS];
         }
         tasks[id].state = State::Dead;
         tasks[id].entry = None;

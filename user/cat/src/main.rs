@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, exit, open, read, write};
+use myos_user::{close, exit, open, read, write, write_fd};
 
 myos_user::x86_start!(main);
 
@@ -13,13 +13,25 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
 }
 
 fn main() -> ! {
-    let path = match myos_user::arg(1) {
-        Some(p) => p,
-        None => {
-            write(b"cat: missing file\n");
-            exit();
+    match myos_user::arg(1) {
+        Some(path) => cat_file(path),
+        None => cat_stdin(),
+    }
+}
+
+fn cat_stdin() -> ! {
+    let mut buf = [0u8; 128];
+    loop {
+        let n = read(0, &mut buf);
+        if n == usize::MAX || n == 0 {
+            break;
         }
-    };
+        write_fd(1, &buf[..n]);
+    }
+    exit();
+}
+
+fn cat_file(path: &[u8]) -> ! {
     let mut path_buf = [0u8; 64];
     let full = if path.first() == Some(&b'/') {
         path
