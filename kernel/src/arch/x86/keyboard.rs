@@ -54,8 +54,8 @@ fn decode_scancode(sc: u8) -> Option<u8> {
         PAUSE_SKIP.store(skip - 1, Ordering::SeqCst);
         return None;
     }
-    // Controller / device responses, not key events.
-    if matches!(sc, 0x00 | 0xAA | 0xEE | 0xFA | 0xFC | 0xFD | 0xFE) {
+    // Controller / device responses during init (not key break codes).
+    if matches!(sc, 0x00 | 0xEE | 0xFA | 0xFC | 0xFD | 0xFE) {
         return None;
     }
     if sc == 0xE0 {
@@ -69,8 +69,14 @@ fn decode_scancode(sc: u8) -> Option<u8> {
     }
     let extended = EXTENDED.swap(false, Ordering::SeqCst);
     if extended {
-        // Ignore extended keys for now (arrows, etc.).
-        let _ = sc;
+        if sc & 0x80 != 0 {
+            let code = sc & 0x7F;
+            if matches!(code, 0x2A | 0x36) {
+                SHIFT.store(false, Ordering::SeqCst);
+            }
+        } else if matches!(sc, 0x2A | 0x36) {
+            SHIFT.store(true, Ordering::SeqCst);
+        }
         return None;
     }
     if sc & 0x80 != 0 {

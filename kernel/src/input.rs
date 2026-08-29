@@ -46,7 +46,10 @@ fn push_byte(raw: u8) {
         let t = TAIL.load(Ordering::SeqCst);
         let h = HEAD.load(Ordering::SeqCst);
         if t != h {
-            TAIL.store((t + RING - 1) % RING, Ordering::SeqCst);
+            // Undo the most recently typed character (HEAD side), not the oldest
+            // byte still waiting to be read (TAIL side).
+            let prev = (h + RING - 1) % RING;
+            HEAD.store(prev, Ordering::SeqCst);
             console::write_byte(8);
             console::write_byte(b' ');
             console::write_byte(8);
