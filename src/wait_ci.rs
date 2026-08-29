@@ -25,8 +25,8 @@ const CI_NEEDLES: [&str; 14] = [
     "fat ok",
 ];
 
-/// Extra serial markers for patched `std` examples (x86 and AArch64 myos userspace).
-const CI_NEEDLES_STD: [&str; 3] = ["std ok", "std cat ok", "std echo ok"];
+/// Extra serial markers for patched `std` examples and C smoke ELFs.
+const CI_NEEDLES_STD: [&str; 4] = ["std ok", "std cat ok", "std echo ok", "c ok"];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
 const CI_SHELL_COMMANDS: [&[u8]; 4] = [
