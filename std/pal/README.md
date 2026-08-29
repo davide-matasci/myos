@@ -17,9 +17,14 @@ Target toolchain: `nightly-2026-07-26` (see root `rust-toolchain.toml`).
 | `../scripts/build-sysroot.sh` | Precompile `std` for both triples into the sysroot |
 | `../scripts/build-std-hello.sh` | Build smoke ELFs using the prebuilt sysroot |
 | `../scripts/myos-sysroot-lib.sh` | Shared version stamp, install helpers, cargo wrappers |
-| `../scripts/myos-rustc.sh` | `rustc` wrapper that points at the myos sysroot |
-| `../targets/*.json` | Custom userspace triples (`x86_64-unknown-myos`, `aarch64-unknown-myos`) |
-| `examples/hello/` | `println!("std ok")` smoke binary |
+| `../scripts/package-sysroot.sh` | Tarball the sysroot for distribution |
+| `../scripts/fetch-sysroot.sh` | Install prebuilt sysroot or build if missing |
+| `../scripts/install-sysroot.sh` | Extract a `.tar.zst` into `target/myos-sysroot` |
+| `../scripts/check-wire-myos.sh` | Verify `wire-myos.py` applies to pinned nightly |
+| `../scripts/bump-nightly.sh` | Probe/update pinned nightly when libstd snippets drift |
+| `../scripts/export-upstream-patch.sh` | Export diff for rust-lang/rust PAL PR |
+| `../toolchain/config.toml.example` | Drop-in `.cargo/config.toml` for std apps |
+| `../upstream/README.md` | Tier 3 / `target_os = "myos"` upstream checklist |
 
 ## Quick start
 
@@ -35,9 +40,19 @@ x86_64 and AArch64 without `-Z build-std` on the app crate.
 ### Manual steps
 
 ```sh
-./scripts/build-sysroot.sh          # patch + precompile std (cached by version stamp)
+./scripts/fetch-sysroot.sh          # prebuilt tarball, or build if needed
 ./scripts/build-std-hello.sh        # smoke binaries → target/std-hello-*
+./scripts/package-sysroot.sh        # optional: target/myos-sysroot-<hash>.tar.zst
 ```
+
+Install a CI/release tarball elsewhere:
+
+```sh
+MYOS_SYSROOT_TARBALL=https://github.com/.../releases/download/sysroot-<hash>/myos-sysroot-<hash>.tar.zst \
+  ./scripts/fetch-sysroot.sh
+```
+
+Copy `std/toolchain/config.toml.example` into your app tree as `.cargo/config.toml`.
 
 Build a custom std program against the prebuilt sysroot:
 
@@ -89,5 +104,5 @@ aarch64-unknown-myos (CI checks `"std ok"` on BIOS, UEFI, and AArch64).
 Networking, filesystem, threads, and fork-aware `std` process support are still
 stubs or unsupported paths in libstd.
 
-Long term: upstream `target_os = "myos"` in Rust; until then publish versioned
-sysroot tarballs keyed on the nightly + PAL hash.
+Long term: upstream `target_os = "myos"` in Rust — see `std/upstream/README.md`.
+Until then, CI publishes versioned sysroot tarballs (`.github/workflows/toolchain.yml`).

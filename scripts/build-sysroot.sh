@@ -19,5 +19,7 @@ for triple in "${MYOS_USER_TRIPLES[@]}"; do
   myos_cargo_build_std "$triple" release
 done
 
-myos_sysroot_version_hash >"$MYOS_SYSROOT_VERSION"
+version="$(myos_sysroot_version_hash)"
+echo "$version" >"$MYOS_SYSROOT_VERSION"
+myos_write_sysroot_manifest "$version"
 echo "myos sysroot ready at $MYOS_SYSROOT"

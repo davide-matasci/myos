@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/myos-sysroot-lib.sh
 source "$ROOT/scripts/myos-sysroot-lib.sh"
 
-"$ROOT/scripts/build-sysroot.sh"
+"$ROOT/scripts/fetch-sysroot.sh"
 
 mkdir -p "$ROOT/target"
 
