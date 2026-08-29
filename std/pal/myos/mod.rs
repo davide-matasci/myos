@@ -24,28 +24,31 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, _sigpipe: u8) {
 
 #[cfg(not(test))]
 #[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
-    let sp: usize;
-    core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack));
-
-    let argc = *(sp as *const isize);
-    let argv = sp.wrapping_add(core::mem::size_of::<isize>()) as *const *const u8;
-
-    start_main(argc, argv)
+    core::arch::naked_asm!(
+        "mov rdi, [rsp]",
+        "lea rsi, [rsp + 8]",
+        "push rax",
+        "call {init}",
+        "call {start_main}",
+        init = sym init,
+        start_main = sym start_main,
+    );
 }
 
 #[cfg(not(test))]
 #[cfg(target_arch = "aarch64")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start(argc: isize, argv: *const *const u8) -> ! {
-    start_main(argc, argv)
+    unsafe { init(argc, argv, 0) };
+    start_main()
 }
 
 #[cfg(not(test))]
-unsafe fn start_main(argc: isize, argv: *const *const u8) -> ! {
-    unsafe { init(argc, argv, 0) };
-
+#[inline(never)]
+unsafe fn start_main() -> ! {
     unsafe extern "C" {
         fn main();
     }

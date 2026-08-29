@@ -25,8 +25,8 @@ const CI_NEEDLES: [&str; 14] = [
     "fat ok",
 ];
 
-/// Extra serial markers for patched `std` hello (x86 and AArch64 myos userspace).
-const CI_NEEDLES_STD: [&str; 1] = ["std ok"];
+/// Extra serial markers for patched `std` examples (x86 and AArch64 myos userspace).
+const CI_NEEDLES_STD: [&str; 3] = ["std ok", "std cat ok", "std echo ok"];
 
 const CI_UNKNOWN_CMD: &[u8] = b"nosuchcmd\n";
 
@@ -39,10 +39,6 @@ enum ShellStage {
     Typing,
     Done,
 }
-
-/// Per-byte delay while typing at the `$` prompt so QEMU `-serial stdio` keeps up
-/// with the shell reader.
-const SHELL_TYPE_DELAY: Duration = Duration::from_millis(25);
 
 fn serial_has_all_needles(serial: &str, extra: &[&str]) -> bool {
     CI_NEEDLES.iter().chain(extra.iter()).all(|n| serial.contains(n))
@@ -75,6 +71,10 @@ fn interactive_unknown_cmd_ok(serial: &str) -> bool {
 fn shell_ready(serial: &str, extra: &[&str]) -> bool {
     serial_has_all_needles(serial, extra) && at_interactive_prompt(serial)
 }
+
+/// Per-byte delay while typing at the `$` prompt so QEMU `-serial stdio` keeps up
+/// with the shell reader.
+const SHELL_TYPE_DELAY: Duration = Duration::from_millis(25);
 
 fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
     stdin

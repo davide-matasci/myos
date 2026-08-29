@@ -114,9 +114,10 @@ myos_cargo_build_std() {
 myos_cargo_build_app() {
   local triple="$1"
   local profile="${2:-release}"
-  local target_json="$MYOS_ROOT/targets/${triple}.json"
   local target_dir="$3"
-  local manifest="$MYOS_ROOT/std/examples/hello/Cargo.toml"
+  local manifest="$4"
+  local bin="$5"
+  local target_json="$MYOS_ROOT/targets/${triple}.json"
   local -a profile_args=()
   if [[ "$profile" == release ]]; then
     profile_args=(--release)
@@ -129,5 +130,6 @@ myos_cargo_build_app() {
     --target "$target_json" \
     --target-dir "$target_dir" \
     "${profile_args[@]}" \
-    --manifest-path "$manifest"
+    --manifest-path "$manifest" \
+    --bin "$bin"
 }

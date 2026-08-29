@@ -1,0 +1,17 @@
+[package]
+name = "std-cat-myos"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "std-cat"
+path = "main.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
