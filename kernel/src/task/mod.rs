@@ -272,7 +272,7 @@ pub fn fd_read(
             };
             let stack = t.stack_off as usize;
             let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
-            let in_code = buf >= base && end <= base + stack;
+            let in_code = buf >= base && end <= base + t.image_span;
             let in_stack = buf >= base + stack && end <= base + stack + stack_bytes;
             if !in_code && !in_stack {
                 return usize::MAX;

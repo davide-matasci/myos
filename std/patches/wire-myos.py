@@ -13,6 +13,15 @@ NOT_TRUSTY_OR_MYOS_NEW = '#[cfg(not(any(target_os = "trusty", target_os = "myos"
 
 REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
     (
+        "std/src/lib.rs",
+        [
+            (
+                "#![feature(staged_api)]",
+                "#![feature(staged_api)]\n#![feature(myos_ext)]",
+            ),
+        ],
+    ),
+    (
         "std/build.rs",
         [
             (
@@ -81,6 +90,24 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        "std/src/sys/fs/mod.rs",
+        [
+            (
+                '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }',
+                '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }\n    target_os = "myos" => {\n        mod myos;\n        use myos as imp;\n    }',
+            ),
+        ],
+    ),
+    (
+        "std/src/sys/process/mod.rs",
+        [
+            (
+                '    target_os = "motor" => {\n        mod motor;\n        use motor as imp;\n    }',
+                '    target_os = "motor" => {\n        mod motor;\n        use motor as imp;\n    }\n    target_os = "myos" => {\n        mod myos;\n        use myos as imp;\n    }',
+            ),
+        ],
+    ),
+    (
         "std/src/sys/pal/mod.rs",
         [
             (
@@ -128,8 +155,8 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
                 '    target_os = "hermit",\n    target_os = "myos",',
             ),
             (
-                '        target_os = "hermit",',
-                '        target_os = "hermit",\n        target_os = "myos",',
+                '        target_os = "hermit",\n    ) => {\n        mod unix;\n        pub use unix::*;\n    }',
+                '        target_os = "hermit",\n    ) => {\n        mod unix;\n        pub use unix::*;\n    }\n    target_os = "myos" => {\n        mod myos;\n        pub use myos::*;\n    }',
             ),
         ],
     ),
@@ -282,6 +309,9 @@ def main() -> None:
         (repo / "std/sys/myos/alloc.rs", patch_root / "std/src/sys/alloc/myos.rs"),
         (repo / "std/sys/myos/fd.rs", patch_root / "std/src/sys/fd/myos.rs"),
         (repo / "std/sys/myos/stdio.rs", patch_root / "std/src/sys/stdio/myos.rs"),
+        (repo / "std/sys/args/myos.rs", patch_root / "std/src/sys/args/myos.rs"),
+        (repo / "std/sys/fs/myos.rs", patch_root / "std/src/sys/fs/myos.rs"),
+        (repo / "std/sys/process/myos.rs", patch_root / "std/src/sys/process/myos.rs"),
         (repo / "std/os/myos", patch_root / "std/src/os/myos"),
     ]
     import shutil

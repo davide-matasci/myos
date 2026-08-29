@@ -244,7 +244,7 @@ fn run_ci_bios(bios_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(45),
+            timeout: Duration::from_secs(90),
             qemu_debug_exit: true,
             shell_ci: true,
         },

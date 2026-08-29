@@ -93,11 +93,17 @@ fn main() {
     }
 
     if arch == "x86_64" || arch == "aarch64" {
-        embed_std_hello(manifest, &arch);
+        for (artifact, env_key) in [
+            ("std-hello", "USER_STD_HELLO_PATH"),
+            ("std-cat", "USER_STD_CAT_PATH"),
+            ("std-echo", "USER_STD_ECHO_PATH"),
+        ] {
+            embed_std_elf(manifest, &arch, artifact, env_key);
+        }
     }
 }
 
-fn embed_std_hello(manifest_dir: &Path, arch: &str) {
+fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
     let triple = if arch == "x86_64" {
         "x86_64-unknown-myos"
     } else if arch == "aarch64" {
@@ -107,18 +113,15 @@ fn embed_std_hello(manifest_dir: &Path, arch: &str) {
     };
     let stable = manifest_dir
         .join("../target")
-        .join(format!("std-hello-{triple}"));
+        .join(format!("{artifact}-{triple}"));
     println!("cargo:rerun-if-changed={}", stable.display());
     if !stable.is_file() {
         panic!(
-            "std-hello ELF missing at {} (run ./scripts/build-std-hello.sh)",
+            "{artifact} ELF missing at {} (run ./scripts/build-std-hello.sh)",
             stable.display()
         );
     }
-    println!(
-        "cargo:rustc-env=USER_STD_HELLO_PATH={}",
-        stable.display()
-    );
+    println!("cargo:rustc-env={env_key}={}", stable.display());
 }
 
 fn nested_elf(

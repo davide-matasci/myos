@@ -1,6 +1,11 @@
 /target
+.gitignore
 std/examples/hello/target
 std/examples/hello/Cargo.lock
+std/examples/cat/target
+std/examples/cat/Cargo.lock
+std/examples/echo/target
+std/examples/echo/Cargo.lock
 modules/hello/Cargo.lock
 modules/fat/Cargo.lock
 user/*/Cargo.lock

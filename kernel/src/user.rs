@@ -20,10 +20,13 @@ const SYS_WAIT: usize = 7;
 const SYS_LISTDIR: usize = 8;
 const SYS_BRK: usize = 9;
 pub const PAGE: usize = 4096;
-/// User stack mapping below the heap (4 KiB is too small for `std` I/O).
+/// User stack mapping below the heap (128 KiB).
 pub const USER_STACK_PAGES: usize = 32;
 const HEAP_PAGES: usize = 64;
 const MAX_INIT_PAGES: usize = 32;
+/// Minimum code pages reserved below the user stack so post-fork `exec` can
+/// `reload_user_elf` the largest patched `std` example (today `std-cat`).
+const USER_EXEC_RELOAD_PAGES: usize = 20;
 const MAX_PATH: usize = 64;
 const MAX_ARGC: usize = 16;
 const MAX_ARG_LEN: usize = 128;
@@ -153,10 +156,11 @@ pub fn spawn_init() {
 /// Old frames are leaked on exec (ok).
 fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
-    let n_pages = info.span.div_ceil(PAGE);
-    if n_pages == 0 || n_pages > MAX_INIT_PAGES {
+    let code_pages = info.span.div_ceil(PAGE);
+    if code_pages == 0 || code_pages > MAX_INIT_PAGES {
         return None;
     }
+    let n_pages = code_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_INIT_PAGES);
 
     let base = USER_BASE.load(Ordering::SeqCst);
     let stack_off = (n_pages * PAGE) as u64;
@@ -178,12 +182,22 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     let mut frames = [0u64; MAX_INIT_PAGES];
     for i in 0..n_pages {
         frames[i] = mm::alloc_frame();
-        let off = i * PAGE;
-        let len = core::cmp::min(PAGE, info.span - off);
-        unsafe {
-            core::ptr::copy_nonoverlapping(buf.add(off), mm::hhdm(frames[i]), len);
+        if i < code_pages {
+            let off = i * PAGE;
+            let len = core::cmp::min(PAGE, info.span - off);
+            unsafe {
+                core::ptr::copy_nonoverlapping(buf.add(off), mm::hhdm(frames[i]), len);
+                if len < PAGE {
+                    core::ptr::write_bytes(mm::hhdm(frames[i]).add(len), 0, PAGE - len);
+                }
+            }
+            sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
+        } else {
+            unsafe {
+                core::ptr::write_bytes(mm::hhdm(frames[i]), 0, PAGE);
+            }
+            sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
         }
-        sync_icache(mm::hhdm(frames[i]) as usize, len);
     }
     unsafe { dealloc(buf, layout) };
 
@@ -211,10 +225,11 @@ fn reload_user_elf(
     _mapped_span: usize,
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
-    let n_pages = info.span.div_ceil(PAGE);
-    if n_pages == 0 || n_pages > MAX_INIT_PAGES {
+    let image_pages = info.span.div_ceil(PAGE);
+    if image_pages == 0 || image_pages > MAX_INIT_PAGES {
         return None;
     }
+    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_INIT_PAGES);
     // Code must sit below the mapped stack. Otherwise PT_LOAD pages overlap stack
     // slots (reload saw stack PTEs as "mapped" and clobbered them — heap #10).
     if n_pages * PAGE > stack_off as usize {
@@ -243,11 +258,19 @@ fn reload_user_elf(
             return None;
         };
         let off = i * PAGE;
-        let len = core::cmp::min(PAGE, info.span - off);
-        unsafe {
-            core::ptr::copy_nonoverlapping(buf.as_ptr().add(off), mm::hhdm(phys), len);
-            if len < PAGE {
-                core::ptr::write_bytes(mm::hhdm(phys).add(len), 0, PAGE - len);
+        if i < image_pages {
+            let len = core::cmp::min(PAGE, info.span.saturating_sub(off));
+            unsafe {
+                if len > 0 {
+                    core::ptr::copy_nonoverlapping(buf.as_ptr().add(off), mm::hhdm(phys), len);
+                }
+                if len < PAGE {
+                    core::ptr::write_bytes(mm::hhdm(phys).add(len), 0, PAGE - len);
+                }
+            }
+        } else {
+            unsafe {
+                core::ptr::write_bytes(mm::hhdm(phys), 0, PAGE);
             }
         }
         sync_icache(mm::hhdm(phys) as usize, PAGE);
@@ -837,15 +860,18 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     };
     let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
     let cur_aspace = task::current_aspace();
-    let (base_u, mapped_span, stack_off) = task::current_user_map();
-    let loaded = if cur_aspace != 0 {
-        reload_user_elf(cur_aspace, bytes, base_u, stack_off, mapped_span)
+    let (base_u, _mapped_span, stack_off) = task::current_user_map();
+    let (aspace, entry, span, off) = if cur_aspace != 0 {
+        if let Some(v) = reload_user_elf(cur_aspace, bytes, base_u, stack_off, _mapped_span)
             .map(|(entry, span, off)| (cur_aspace, entry, span, off))
-    } else {
-        None
-    };
-    let (aspace, entry, span, off) = if let Some(v) = loaded {
-        v
+        {
+            v
+        } else {
+            let Some(v) = load_user_elf(bytes) else {
+                return SYSERR;
+            };
+            v
+        }
     } else {
         let Some(v) = load_user_elf(bytes) else {
             return SYSERR;
@@ -1182,6 +1208,16 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
 }
 
 fn sync_icache(start: usize, size: usize) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let cr3: u64;
+        core::arch::asm!(
+            "mov {cr3}, cr3",
+            "mov cr3, {cr3}",
+            cr3 = out(reg) cr3,
+            options(nostack, preserves_flags),
+        );
+    }
     #[cfg(target_arch = "aarch64")]
     unsafe {
         if size == 0 {
@@ -1200,7 +1236,6 @@ fn sync_icache(start: usize, size: usize) {
             addr += 64;
         }
         core::arch::asm!("dsb ish; isb", options(nostack));
-        // Execute VA != HHDM VA; drop the whole I-cache so EL0 sees the image.
         core::arch::asm!("ic ialluis; dsb ish; isb", options(nostack));
     }
     let _ = (start, size);

@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# Build std-hello for every myos userspace triple using the prebuilt sysroot.
+# Build std example ELFs for CI (small smoke binaries).
 set -euo pipefail
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/myos-sysroot-lib.sh
 source "$ROOT/scripts/myos-sysroot-lib.sh"
-
 "$ROOT/scripts/fetch-sysroot.sh"
-
 mkdir -p "$ROOT/target"
-
+build_example() {
+  local name="$1" manifest="$2" bin="$3" triple="$4"
+  local target_dir="$ROOT/target/std-${name}-build-${triple}"
+  echo "==> std-${name} ($triple)"
+  myos_cargo_build_app "$triple" release "$target_dir" "$manifest" "$bin"
+  cp "$target_dir/${triple}/release/${bin}" "$ROOT/target/std-${name}-${triple}"
+  echo "std-${name} -> $ROOT/target/std-${name}-${triple}"
+}
 for triple in "${MYOS_USER_TRIPLES[@]}"; do
-  target_dir="$ROOT/target/std-hello-build-${triple}"
-  echo "==> std-hello ($triple)"
-  myos_cargo_build_app "$triple" release "$target_dir"
-  cp "$target_dir/${triple}/release/std-hello" \
-    "$ROOT/target/std-hello-${triple}"
-  echo "std-hello -> $ROOT/target/std-hello-${triple}"
+  build_example hello "$ROOT/std/examples/hello/Cargo.toml" std-hello "$triple"
+  build_example cat "$ROOT/std/examples/cat/Cargo.toml" std-cat "$triple"
+  build_example echo "$ROOT/std/examples/echo/Cargo.toml" std-echo "$triple"
 done
