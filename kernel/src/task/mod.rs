@@ -142,6 +142,21 @@ pub fn current_id() -> usize {
     CURRENT.load(Ordering::SeqCst)
 }
 
+/// When the running task is a user process, its saved PC and stack pointer.
+pub fn current_user_pc_sp() -> Option<(usize, usize)> {
+    let flags = irq_save();
+    irq_off();
+    let id = CURRENT.load(Ordering::SeqCst);
+    let t = TASKS.lock()[id];
+    let out = if t.user_rip != 0 {
+        Some((t.user_rip, t.user_rsp))
+    } else {
+        None
+    };
+    irq_restore(flags);
+    out
+}
+
 pub fn current_aspace() -> u64 {
     let flags = irq_save();
     irq_off();

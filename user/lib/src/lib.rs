@@ -109,6 +109,37 @@ pub fn read_line(buf: &mut [u8]) -> usize {
     n
 }
 
+/// Print a short panic marker to serial (fd 1) then exit. Use as `#[panic_handler]`.
+pub fn panic_die(info: &core::panic::PanicInfo) -> ! {
+    write(b"user panic");
+    if let Some(loc) = info.location() {
+        write(b" at ");
+        write(loc.file().as_bytes());
+        write(b":");
+        write_u32(loc.line());
+    }
+    write(b"\n");
+    exit();
+}
+
+fn write_u32(mut n: u32) {
+    if n == 0 {
+        write(b"0");
+        return;
+    }
+    let mut buf = [0u8; 10];
+    let mut len = 0usize;
+    while n > 0 {
+        buf[len] = b'0' + (n % 10) as u8;
+        n /= 10;
+        len += 1;
+    }
+    while len > 0 {
+        len -= 1;
+        write(&[buf[len]]);
+    }
+}
+
 // x86 syscall_entry clobbers rdi/rsi/rdx when shuffling args into the
 // System-V dispatch. Wrappers lateout those so LLVM reloads them.
 

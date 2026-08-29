@@ -174,16 +174,37 @@ extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {}
 
 extern "x86-interrupt" fn spurious(_frame: InterruptStackFrame) {}
 
+fn read_cr2() -> u64 {
+    let cr2: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+    }
+    cr2
+}
+
 extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _code: u64) -> ! {
-    panic!("double fault: {frame:?}");
+    crate::exception::x86_double_fault(
+        frame.instruction_pointer.as_u64(),
+        frame.stack_pointer.as_u64(),
+    );
 }
 
 extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, code: u64) {
-    panic!("general protection: code={code:#x} {frame:?}");
+    crate::exception::x86_general_protection(
+        frame.instruction_pointer.as_u64(),
+        frame.stack_pointer.as_u64(),
+        code,
+    );
 }
 
 extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFaultErrorCode) {
-    panic!("page fault: {code:?} {frame:?}");
+    crate::exception::x86_page_fault(
+        read_cr2(),
+        frame.instruction_pointer.as_u64(),
+        frame.stack_pointer.as_u64(),
+        code.bits() as u64,
+        code.contains(PageFaultErrorCode::USER_MODE),
+    );
 }
 
 extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
