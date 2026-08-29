@@ -90,23 +90,32 @@ pub fn heap_init() {
 
 /// Read a line from stdin (fd 0), including the trailing `\n` if present.
 pub fn read_line(buf: &mut [u8]) -> usize {
+    let mut tmp = [0u8; 128];
     let mut n = 0usize;
-    let mut tmp = [0u8; 32];
-    while n < buf.len() {
-        let want = tmp.len().min(buf.len() - n);
-        let r = read(0, &mut tmp[..want]);
+    loop {
+        let mut b = [0u8; 1];
+        let r = read(0, &mut b);
         if r == usize::MAX || r == 0 {
             break;
         }
-        for i in 0..r {
-            buf[n + i] = tmp[i];
-            if tmp[i] == b'\n' || tmp[i] == b'\r' {
-                return n + i + 1;
+        let ch = b[0];
+        if ch == 0x08 || ch == 127 {
+            if n > 0 {
+                n -= 1;
             }
+            continue;
         }
-        n += r;
+        if n < tmp.len() {
+            tmp[n] = ch;
+            n += 1;
+        }
+        if ch == b'\n' || ch == b'\r' {
+            break;
+        }
     }
-    n
+    let out = n.min(buf.len());
+    buf[..out].copy_from_slice(&tmp[..out]);
+    out
 }
 
 /// Print a short panic marker to serial (fd 1) then exit. Use as `#[panic_handler]`.

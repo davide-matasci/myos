@@ -91,10 +91,37 @@ impl FrameBufferWriter<'_> {
         self.col = 0;
         let rows = (self.height / FONT_H).max(1);
         if self.row + 1 >= rows {
-            self.row = 0;
+            self.scroll_up();
         } else {
             self.row += 1;
         }
+    }
+
+    /// Scroll the text viewport up one row when the cursor passes the last line.
+    fn scroll_up(&mut self) {
+        let text_rows = (self.height / FONT_H).max(1);
+        if text_rows <= 1 {
+            self.row = 0;
+            return;
+        }
+        let scroll_px = FONT_H;
+        let visible_px = text_rows * FONT_H;
+        let copy_len = (visible_px - scroll_px) * self.pitch;
+        if copy_len > 0 && copy_len <= self.buffer.len() {
+            unsafe {
+                core::ptr::copy(
+                    self.buffer.as_ptr().add(scroll_px * self.pitch),
+                    self.buffer.as_mut_ptr(),
+                    copy_len,
+                );
+            }
+        }
+        let clear_start = (visible_px - scroll_px) * self.pitch;
+        if clear_start < self.buffer.len() {
+            let clear_len = (scroll_px * self.pitch).min(self.buffer.len() - clear_start);
+            self.buffer[clear_start..clear_start + clear_len].fill(0);
+        }
+        self.row = text_rows - 1;
     }
 
     fn draw_glyph(&mut self, col: usize, row: usize, byte: u8) {

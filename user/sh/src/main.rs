@@ -80,7 +80,7 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     match fork() {
         Some(0) => {
             exec(path, &arg_slices[..parts.len()]);
-            write(b"sh: command not found\n");
+            cmd_not_found(path, name);
             exit();
         }
         Some(_) => {
@@ -91,11 +91,40 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     }
 }
 
+fn write_hex_byte(b: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    write(&[HEX[(b >> 4) as usize], HEX[(b & 0xF) as usize]]);
+}
+
+fn write_bytes_escaped(bytes: &[u8]) {
+    for &b in bytes {
+        if (0x20..0x7E).contains(&b) && b != b'\\' {
+            write(&[b]);
+        } else {
+            write(b"\\x");
+            write_hex_byte(b);
+        }
+    }
+}
+
+fn cmd_not_found(path: &[u8], cmd: &[u8]) {
+    write(b"sh: command not found: ");
+    write_bytes_escaped(path);
+    write(b" (received: ");
+    write_bytes_escaped(cmd);
+    write(b")\n");
+}
+
 fn run_path(name: &[u8], parts: &[&[u8]]) {
+    let mut cmd = [0u8; ARG_LEN];
+    let cmd_len = name.len().min(ARG_LEN);
+    cmd[..cmd_len].copy_from_slice(&name[..cmd_len]);
+    let name = &cmd[..cmd_len];
+
     let mut path_buf = [0u8; 32];
     let path = command_path(name, &mut path_buf);
     let Some(fd) = open(path) else {
-        write(b"sh: command not found\n");
+        cmd_not_found(path, name);
         return;
     };
     close(fd);
@@ -112,7 +141,7 @@ fn run_path(name: &[u8], parts: &[&[u8]]) {
     match fork() {
         Some(0) => {
             exec(path, &arg_slices[..parts.len()]);
-            write(b"sh: command not found\n");
+            cmd_not_found(path, name);
             exit();
         }
         Some(_) => {
