@@ -47,6 +47,36 @@ impl Decoder {
         self.pause_skip = 0;
     }
 
+    pub fn switch_set(&mut self, set: ScancodeSet) {
+        self.set = set;
+        self.reset_modifiers();
+    }
+
+    /// If the host port delivers set-2 break prefixes while we decode set 1, switch.
+    pub fn autodetect_set2_break_prefix(&mut self, sc: u8) -> bool {
+        if self.set == ScancodeSet::Set1 && sc == 0xF0 {
+            self.set = ScancodeSet::Set2;
+            self.set2_break = true;
+            return true;
+        }
+        false
+    }
+
+    /// Raw set-2 make codes while decoding set 1 (translation off / misconfigured).
+    pub fn autodetect_set2_make(&mut self, sc: u8) -> bool {
+        if self.set != ScancodeSet::Set1 {
+            return false;
+        }
+        if matches!(sc, 0xE0 | 0xE1 | 0xF0) || sc & 0x80 != 0 {
+            return false;
+        }
+        if set1_to_ascii(sc, self.shift).is_none() && set2_to_ascii(sc, self.shift).is_some() {
+            self.set = ScancodeSet::Set2;
+            return true;
+        }
+        false
+    }
+
     /// One raw byte from the 8042 data port (after filtering the aux/mouse bit).
     pub fn feed(&mut self, sc: u8) -> Option<u8> {
         if self.pause_skip > 0 {
@@ -361,6 +391,23 @@ mod tests {
     #[test]
     fn self_test_passes() {
         assert!(self_test());
+    }
+
+    #[test]
+    fn autodetect_set2_break_prefix() {
+        let mut dec = Decoder::new(ScancodeSet::Set1);
+        assert!(dec.autodetect_set2_break_prefix(0xF0));
+        assert_eq!(dec.set(), ScancodeSet::Set2);
+        assert_eq!(dec.feed(0x12), None); // shift break
+        assert_eq!(dec.feed(0x44), Some(b'o'));
+    }
+
+    #[test]
+    fn autodetect_set2_make() {
+        let mut dec = Decoder::new(ScancodeSet::Set1);
+        assert!(dec.autodetect_set2_make(0x44));
+        assert_eq!(dec.set(), ScancodeSet::Set2);
+        assert_eq!(dec.feed(0x44), Some(b'o'));
     }
 
     #[test]

@@ -2,6 +2,12 @@
 //!
 //! Works on QEMU i8042 and typical PC hardware (including USB keyboards in
 //! legacy PS/2 mode). If probe/init fails we stay on serial-only stdin.
+//!
+//! Real hardware almost always speaks scancode set 2 on the keyboard wire.
+//! The 8042 can translate that to set 1 for the host (configuration bit 6).
+//! We enable translation when possible and decode set 1 at the port; if the
+//! port still delivers set 2 (translation off), we query the keyboard and
+//! auto-switch on the set-2 break prefix (0xF0).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,19 +23,24 @@ const ST_OUT_FULL: u8 = 1;
 const ST_IN_FULL: u8 = 2;
 const ST_AUX: u8 = 0x20; // data in 0x60 is from mouse/aux port
 
+/// Controller configuration byte bits (8042 RAM byte 0).
+const CFG_KBD_IRQ: u8 = 1 << 0;
+const CFG_MOUSE_IRQ: u8 = 1 << 1;
+const CFG_KBD_CLK_DISABLE: u8 = 1 << 4;
+const CFG_MOUSE_CLK_DISABLE: u8 = 1 << 5;
+const CFG_TRANSLATE: u8 = 1 << 6;
+
 static READY: AtomicBool = AtomicBool::new(false);
 static DECODER: Mutex<Option<Decoder>> = Mutex::new(None);
 
 pub fn init() {
-    if let Some((dec, set)) = probe_and_enable() {
+    if let Some((dec, translate, set)) = probe_and_enable() {
         *DECODER.lock() = Some(dec);
         READY.store(true, Ordering::SeqCst);
-        console::write_str("kbd ok (set ");
-        console::write_str(if set == ScancodeSet::Set1 {
-            "1"
-        } else {
-            "2"
-        });
+        console::write_str("kbd ok (");
+        console::write_str(if translate { "xlate" } else { "raw" });
+        console::write_str(", set ");
+        console::write_str(if set == ScancodeSet::Set1 { "1" } else { "2" });
         console::write_str(")\n");
         if ps2_scancode::self_test() {
             console::write_str("kbd decode ok\n");
@@ -57,10 +68,19 @@ pub fn poll_byte() -> Option<u8> {
         return None;
     }
     let sc = inb(DATA);
-    DECODER.lock().as_mut()?.feed(sc)
+    let mut guard = DECODER.lock();
+    let dec = guard.as_mut()?;
+    if dec.autodetect_set2_break_prefix(sc) {
+        console::write_str("kbd: switched to set 2 (0xF0 prefix)\n");
+        return None;
+    }
+    if dec.autodetect_set2_make(sc) {
+        console::write_str("kbd: switched to set 2 (make code)\n");
+    }
+    dec.feed(sc)
 }
 
-fn probe_and_enable() -> Option<(Decoder, ScancodeSet)> {
+fn probe_and_enable() -> Option<(Decoder, bool, ScancodeSet)> {
     flush_output();
     if !write_cmd(0xAD) || !write_cmd(0xA7) {
         return None;
@@ -70,10 +90,18 @@ fn probe_and_enable() -> Option<(Decoder, ScancodeSet)> {
         return None;
     }
     let cfg = read_data()?;
-    let cfg = (cfg & !0x03 & !0x10) | 0x20;
+    // Enable set-2→set-1 translation at the controller (standard PC behavior).
+    let cfg = (cfg & !(CFG_KBD_IRQ | CFG_MOUSE_IRQ | CFG_KBD_CLK_DISABLE))
+        | CFG_MOUSE_CLK_DISABLE
+        | CFG_TRANSLATE;
     if !write_cmd(0x60) || !write_data(cfg) {
         return None;
     }
+    if !write_cmd(0x20) {
+        return None;
+    }
+    let verified = read_data()?;
+    let translate = verified & CFG_TRANSLATE != 0;
     if !write_cmd(0xAE) {
         return None;
     }
@@ -83,10 +111,11 @@ fn probe_and_enable() -> Option<(Decoder, ScancodeSet)> {
     if read_data() != Some(0xFA) {
         return None;
     }
-    let set = if select_scancode_set_1() {
+    flush_output();
+    let set = if translate {
         ScancodeSet::Set1
     } else {
-        ScancodeSet::Set2
+        query_keyboard_set().unwrap_or(ScancodeSet::Set2)
     };
     let mut dec = Decoder::new(set);
     dec.reset_modifiers();
@@ -94,23 +123,29 @@ fn probe_and_enable() -> Option<(Decoder, ScancodeSet)> {
     let _ = read_data();
     let _ = write_data(0x00);
     let _ = read_data();
-    let _ = write_data(0x00);
-    let _ = read_data();
     flush_output();
-    Some((dec, set))
+    Some((dec, translate, set))
 }
 
-fn select_scancode_set_1() -> bool {
+/// Keyboard command `F0 00`: which scancode set the device emits (when translation is off).
+fn query_keyboard_set() -> Option<ScancodeSet> {
     if !write_data(0xF0) {
-        return false;
+        return None;
     }
     if read_data() != Some(0xFA) {
-        return false;
+        return None;
     }
-    if !write_data(0x01) {
-        return false;
+    if !write_data(0x00) {
+        return None;
     }
-    read_data() == Some(0xFA)
+    if read_data() != Some(0xFA) {
+        return None;
+    }
+    match read_data()? {
+        0x43 => Some(ScancodeSet::Set1),
+        0x41 => Some(ScancodeSet::Set2),
+        _ => Some(ScancodeSet::Set2),
+    }
 }
 
 fn flush_output() {
