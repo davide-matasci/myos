@@ -17,6 +17,8 @@ const ST_AUX: u8 = 0x20; // data in 0x60 is from mouse/aux port
 static READY: AtomicBool = AtomicBool::new(false);
 static SHIFT: AtomicBool = AtomicBool::new(false);
 static EXTENDED: AtomicBool = AtomicBool::new(false);
+/// Set 2 break prefix (next byte is key release).
+static SET2_BREAK: AtomicBool = AtomicBool::new(false);
 static PAUSE_SKIP: AtomicUsize = AtomicUsize::new(0);
 
 pub fn init() {
@@ -58,6 +60,18 @@ fn decode_scancode(sc: u8) -> Option<u8> {
     if matches!(sc, 0x00 | 0xEE | 0xFA | 0xFC | 0xFD | 0xFE) {
         return None;
     }
+    // Scancode set 2 break prefix (real hardware often boots in set 2).
+    if sc == 0xF0 {
+        SET2_BREAK.store(true, Ordering::SeqCst);
+        return None;
+    }
+    if SET2_BREAK.swap(false, Ordering::SeqCst) {
+        match sc {
+            0x12 | 0x59 | 0x2A | 0x36 => SHIFT.store(false, Ordering::SeqCst),
+            _ => {}
+        }
+        return None;
+    }
     if sc == 0xE0 {
         EXTENDED.store(true, Ordering::SeqCst);
         return None;
@@ -81,6 +95,7 @@ fn decode_scancode(sc: u8) -> Option<u8> {
         }
         return None;
     }
+    // Scancode set 1 break (bit 7 set).
     if sc & 0x80 != 0 {
         let code = sc & 0x7F;
         match code {
@@ -94,11 +109,20 @@ fn decode_scancode(sc: u8) -> Option<u8> {
             SHIFT.store(true, Ordering::SeqCst);
             None
         }
+        0x12 | 0x59 if scancode_set1_to_ascii(sc, false).is_none() => {
+            // Set 2 shift keys (set 1 uses 0x12 for 'e').
+            SHIFT.store(true, Ordering::SeqCst);
+            None
+        }
         _ => scancode_to_ascii(sc, SHIFT.load(Ordering::SeqCst)),
     }
 }
 
 fn scancode_to_ascii(sc: u8, shift: bool) -> Option<u8> {
+    scancode_set1_to_ascii(sc, shift).or_else(|| scancode_set2_to_ascii(sc, shift))
+}
+
+fn scancode_set1_to_ascii(sc: u8, shift: bool) -> Option<u8> {
     let pair = match sc {
         0x02 => (b'1', b'!'),
         0x03 => (b'2', b'@'),
@@ -158,6 +182,54 @@ fn scancode_to_ascii(sc: u8, shift: bool) -> Option<u8> {
     Some(if shift { pair.1 } else { pair.0 })
 }
 
+/// Scancode set 2 (common default on PC hardware until switched to set 1).
+fn scancode_set2_to_ascii(sc: u8, shift: bool) -> Option<u8> {
+    let pair = match sc {
+        0x16 => (b'1', b'!'),
+        0x1E => (b'2', b'@'),
+        0x26 => (b'3', b'#'),
+        0x25 => (b'4', b'$'),
+        0x2E => (b'5', b'%'),
+        0x36 => (b'6', b'^'),
+        0x3D => (b'7', b'&'),
+        0x3E => (b'8', b'*'),
+        0x46 => (b'9', b'('),
+        0x45 => (b'0', b')'),
+        0x15 => (b'q', b'Q'),
+        0x1D => (b'w', b'W'),
+        0x24 => (b'e', b'E'),
+        0x2D => (b'r', b'R'),
+        0x2C => (b't', b'T'),
+        0x35 => (b'y', b'Y'),
+        0x3C => (b'u', b'U'),
+        0x43 => (b'i', b'I'),
+        0x44 => (b'o', b'O'),
+        0x4D => (b'p', b'P'),
+        0x1C => (b'a', b'A'),
+        0x1B => (b's', b'S'),
+        0x23 => (b'd', b'D'),
+        0x2B => (b'f', b'F'),
+        0x34 => (b'g', b'G'),
+        0x33 => (b'h', b'H'),
+        0x3B => (b'j', b'J'),
+        0x42 => (b'k', b'K'),
+        0x4B => (b'l', b'L'),
+        0x1A => (b'z', b'Z'),
+        0x22 => (b'x', b'X'),
+        0x21 => (b'c', b'C'),
+        0x2A => (b'v', b'V'),
+        0x32 => (b'b', b'B'),
+        0x31 => (b'n', b'N'),
+        0x3A => (b'm', b'M'),
+        0x58 => return Some(b'\n'),
+        0x66 => return Some(0x08),
+        0x29 => return Some(b' '),
+        0x0D => return Some(b'\t'),
+        _ => return None,
+    };
+    Some(if shift { pair.1 } else { pair.0 })
+}
+
 fn probe_and_enable() -> bool {
     flush_output();
     // Disable keyboard and mouse ports while configuring.
@@ -186,6 +258,8 @@ fn probe_and_enable() -> bool {
     if read_data() != Some(0xFA) {
         return false;
     }
+    // Prefer scancode set 1 (break = OR 0x80). Hardware often defaults to set 2.
+    let _ = select_scancode_set_1();
     // Slow typematic to a minimum (avoid repeat floods on stuck keys).
     let _ = write_data(0xF3);
     let _ = read_data();
@@ -196,8 +270,23 @@ fn probe_and_enable() -> bool {
     flush_output();
     SHIFT.store(false, Ordering::SeqCst);
     EXTENDED.store(false, Ordering::SeqCst);
+    SET2_BREAK.store(false, Ordering::SeqCst);
     PAUSE_SKIP.store(0, Ordering::SeqCst);
     true
+}
+
+/// Host command: scancode set 1 (make/break with bit 7).
+fn select_scancode_set_1() -> bool {
+    if !write_data(0xF0) {
+        return false;
+    }
+    if read_data() != Some(0xFA) {
+        return false;
+    }
+    if !write_data(0x01) {
+        return false;
+    }
+    read_data() == Some(0xFA)
 }
 
 fn flush_output() {
