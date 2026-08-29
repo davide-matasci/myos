@@ -99,12 +99,20 @@ pub fn read_line(buf: &mut [u8]) -> usize {
             break;
         }
         for i in 0..r {
-            buf[n + i] = tmp[i];
-            if tmp[i] == b'\n' || tmp[i] == b'\r' {
-                return n + i + 1;
+            let b = tmp[i];
+            if b == b'\n' || b == b'\r' {
+                buf[n] = b;
+                return n + 1;
             }
+            if b == 0x08 || b == 127 {
+                if n > 0 {
+                    n -= 1;
+                }
+                continue;
+            }
+            buf[n] = b;
+            n += 1;
         }
-        n += r;
     }
     n
 }

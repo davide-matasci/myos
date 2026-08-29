@@ -76,6 +76,8 @@ fn decode_scancode(sc: u8) -> Option<u8> {
             }
         } else if matches!(sc, 0x2A | 0x36) {
             SHIFT.store(true, Ordering::SeqCst);
+        } else if sc == 0x53 {
+            return Some(0x08); // extended Delete
         }
         return None;
     }

@@ -80,7 +80,7 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     match fork() {
         Some(0) => {
             exec(path, &arg_slices[..parts.len()]);
-            write(b"sh: command not found\n");
+            cmd_not_found(path);
             exit();
         }
         Some(_) => {
@@ -91,11 +91,17 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     }
 }
 
+fn cmd_not_found(path: &[u8]) {
+    write(b"sh: command not found: ");
+    write(path);
+    write(b"\n");
+}
+
 fn run_path(name: &[u8], parts: &[&[u8]]) {
     let mut path_buf = [0u8; 32];
     let path = command_path(name, &mut path_buf);
     let Some(fd) = open(path) else {
-        write(b"sh: command not found\n");
+        cmd_not_found(path);
         return;
     };
     close(fd);
@@ -112,7 +118,7 @@ fn run_path(name: &[u8], parts: &[&[u8]]) {
     match fork() {
         Some(0) => {
             exec(path, &arg_slices[..parts.len()]);
-            write(b"sh: command not found\n");
+            cmd_not_found(path);
             exit();
         }
         Some(_) => {

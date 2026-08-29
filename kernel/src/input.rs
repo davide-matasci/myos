@@ -43,17 +43,18 @@ fn push_byte(raw: u8) {
         return;
     }
     if byte == 127 || byte == 8 {
-        let t = TAIL.load(Ordering::SeqCst);
+        // Always deliver backspace to the reader. Bytes already consumed into
+        // userspace are undone in read_line(); the ring is often empty here.
         let h = HEAD.load(Ordering::SeqCst);
-        if t != h {
-            // Undo the most recently typed character (HEAD side), not the oldest
-            // byte still waiting to be read (TAIL side).
-            let prev = (h + RING - 1) % RING;
-            HEAD.store(prev, Ordering::SeqCst);
-            console::write_byte(8);
-            console::write_byte(b' ');
-            console::write_byte(8);
+        let next = (h + 1) % RING;
+        if next == TAIL.load(Ordering::SeqCst) {
+            return;
         }
+        BUF.lock()[h] = 0x08;
+        HEAD.store(next, Ordering::SeqCst);
+        console::write_byte(8);
+        console::write_byte(b' ');
+        console::write_byte(8);
         return;
     }
     let h = HEAD.load(Ordering::SeqCst);
