@@ -41,6 +41,9 @@ jobs:
           chmod +x scripts/*.sh
           ./scripts/build-std-hello.sh
 
+      - name: PS/2 scancode decode unit tests
+        run: cargo test -p ps2-scancode
+
       - name: Build kernel and Limine BIOS+UEFI disk images
         run: |
           cargo clean -p myos

@@ -116,6 +116,11 @@ fn cmd_not_found(path: &[u8], cmd: &[u8]) {
 }
 
 fn run_path(name: &[u8], parts: &[&[u8]]) {
+    let mut cmd = [0u8; ARG_LEN];
+    let cmd_len = name.len().min(ARG_LEN);
+    cmd[..cmd_len].copy_from_slice(&name[..cmd_len]);
+    let name = &cmd[..cmd_len];
+
     let mut path_buf = [0u8; 32];
     let path = command_path(name, &mut path_buf);
     let Some(fd) = open(path) else {

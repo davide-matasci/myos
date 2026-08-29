@@ -4,7 +4,7 @@ use std::process::ChildStdin;
 struct CiExpect {
     timeout: Duration,
     qemu_debug_exit: bool,
-    /// Type an unknown command at the interactive `$` prompt via `-serial stdio`.
+    /// Type commands at the interactive `$` prompt via `-serial stdio`.
     shell_ci: bool,
 }
 
@@ -28,15 +28,17 @@ const CI_NEEDLES: [&str; 14] = [
 /// Extra serial markers for patched `std` examples (x86 and AArch64 myos userspace).
 const CI_NEEDLES_STD: [&str; 3] = ["std ok", "std cat ok", "std echo ok"];
 
-const CI_UNKNOWN_CMD: &[u8] = b"nosuchcmd\n";
+/// Interactive shell commands typed at the `$` prompt (serial stdin).
+const CI_SHELL_COMMANDS: [&[u8]; 2] = [b"nosuchcmd\n", b"ok\n"];
 
-/// Printed by the interactive shell (parent) when `open(path)` fails.
+/// Printed by the interactive shell when `open(path)` fails.
 const CI_SHELL_UNKNOWN_CMD: &str = "sh: command not found";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShellStage {
     WaitPrompt,
     Typing,
+    WaitResult,
     Done,
 }
 
@@ -56,8 +58,13 @@ fn at_interactive_prompt(serial: &str) -> bool {
     tail == "$" || tail.ends_with("$")
 }
 
-fn command_echoed(serial: &str) -> bool {
-    interactive_tail(serial).contains("$ nosuchcmd")
+fn command_echoed(serial: &str, cmd: &str) -> bool {
+    interactive_tail(serial).contains(&format!("$ {cmd}"))
+}
+
+/// Regression for the real-hardware `ok` -> `/???` bug: stderr must not report hex escapes.
+fn tail_has_hex_received(serial: &str) -> bool {
+    interactive_tail(serial).contains("(received: \\x")
 }
 
 fn interactive_unknown_cmd_ok(serial: &str) -> bool {
@@ -65,15 +72,25 @@ fn interactive_unknown_cmd_ok(serial: &str) -> bool {
     let Some(idx) = tail.find(CI_SHELL_UNKNOWN_CMD) else {
         return false;
     };
-    tail[..idx].contains("$ nosuchcmd")
+    tail[..idx].contains("$ nosuchcmd") && !tail_has_hex_received(serial)
+}
+
+fn interactive_ok_cmd_ok(serial: &str) -> bool {
+    command_echoed(serial, "ok") && !tail_has_hex_received(serial)
+}
+
+fn shell_cmd_result_ok(serial: &str, cmd_index: usize) -> bool {
+    match cmd_index {
+        0 => interactive_unknown_cmd_ok(serial),
+        1 => interactive_ok_cmd_ok(serial),
+        _ => false,
+    }
 }
 
 fn shell_ready(serial: &str, extra: &[&str]) -> bool {
     serial_has_all_needles(serial, extra) && at_interactive_prompt(serial)
 }
 
-/// Per-byte delay while typing at the `$` prompt so QEMU `-serial stdio` keeps up
-/// with the shell reader.
 const SHELL_TYPE_DELAY: Duration = Duration::from_millis(25);
 
 fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
@@ -86,6 +103,7 @@ fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
 fn advance_shell_ci(
     stdin: &mut Option<ChildStdin>,
     stage: &mut ShellStage,
+    cmd_index: &mut usize,
     typing: &mut usize,
     acc: &str,
     extra: &[&str],
@@ -96,18 +114,29 @@ fn advance_shell_ci(
     match *stage {
         ShellStage::WaitPrompt if shell_ready(acc, extra) => {
             *stage = ShellStage::Typing;
+            *cmd_index = 0;
             *typing = 0;
         }
         ShellStage::Typing => {
-            if *typing < CI_UNKNOWN_CMD.len() {
-                send_shell_byte(stdin, CI_UNKNOWN_CMD[*typing]);
+            let cmd = CI_SHELL_COMMANDS[*cmd_index];
+            if *typing < cmd.len() {
+                send_shell_byte(stdin, cmd[*typing]);
                 *typing += 1;
                 std::thread::sleep(SHELL_TYPE_DELAY);
-            } else if interactive_unknown_cmd_ok(acc) {
-                *stage = ShellStage::Done;
+            } else {
+                *stage = ShellStage::WaitResult;
             }
         }
-        ShellStage::WaitPrompt | ShellStage::Typing | ShellStage::Done => {}
+        ShellStage::WaitResult if shell_cmd_result_ok(acc, *cmd_index) => {
+            *cmd_index += 1;
+            if *cmd_index >= CI_SHELL_COMMANDS.len() {
+                *stage = ShellStage::Done;
+            } else {
+                *typing = 0;
+                *stage = ShellStage::Typing;
+            }
+        }
+        ShellStage::WaitPrompt | ShellStage::WaitResult | ShellStage::Done => {}
     }
 }
 
@@ -116,7 +145,7 @@ fn ci_complete(acc: &str, extra: &[&str], expect: &CiExpect, stage: ShellStage) 
         return false;
     }
     if expect.shell_ci {
-        interactive_unknown_cmd_ok(acc) && stage == ShellStage::Done
+        stage == ShellStage::Done
     } else {
         true
     }
@@ -164,6 +193,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut timed_out = false;
     let mut killed_for_needles = false;
     let mut shell_stage = ShellStage::WaitPrompt;
+    let mut shell_cmd_index = 0usize;
     let mut typing = 0usize;
     let status = loop {
         {
@@ -172,6 +202,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 advance_shell_ci(
                     &mut shell_stdin,
                     &mut shell_stage,
+                    &mut shell_cmd_index,
                     &mut typing,
                     &acc,
                     extra_needles,
@@ -211,20 +242,36 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         }
         std::process::exit(1);
     }
-    if expect.shell_ci && !interactive_unknown_cmd_ok(&serial) {
+    if expect.shell_ci && shell_stage != ShellStage::Done {
         if timed_out {
             eprintln!("error: QEMU timed out after {:?}", expect.timeout);
         }
-        eprintln!("error: shell CI stage was {shell_stage:?}");
-        if !at_interactive_prompt(&serial) && !command_echoed(&serial) {
+        eprintln!("error: shell CI stage was {shell_stage:?} (cmd {shell_cmd_index})");
+        if !at_interactive_prompt(&serial) && !command_echoed(&serial, "nosuchcmd") {
             eprintln!("error: serial never reached interactive `$` prompt");
         }
-        if !serial.contains(CI_SHELL_UNKNOWN_CMD) {
-            eprintln!("error: serial output did not contain {CI_SHELL_UNKNOWN_CMD:?}");
-        } else if !interactive_unknown_cmd_ok(&serial) {
-            eprintln!(
-                "error: {CI_SHELL_UNKNOWN_CMD:?} did not follow interactive `nosuchcmd`"
-            );
+        if shell_cmd_index == 0 && !interactive_unknown_cmd_ok(&serial) {
+            if !serial.contains(CI_SHELL_UNKNOWN_CMD) {
+                eprintln!("error: serial output did not contain {CI_SHELL_UNKNOWN_CMD:?}");
+            } else if tail_has_hex_received(&serial) {
+                eprintln!(
+                    "error: shell reported non-printable stdin (hex escapes in received:)"
+                );
+            } else {
+                eprintln!(
+                    "error: {CI_SHELL_UNKNOWN_CMD:?} did not follow interactive `nosuchcmd`"
+                );
+            }
+        }
+        if shell_cmd_index >= 1 && !interactive_ok_cmd_ok(&serial) {
+            if !command_echoed(&serial, "ok") {
+                eprintln!("error: serial did not echo `$ ok` at the interactive prompt");
+            }
+            if tail_has_hex_received(&serial) {
+                eprintln!(
+                    "error: shell reported non-printable input (hex escapes in received:)"
+                );
+            }
         }
         std::process::exit(1);
     }

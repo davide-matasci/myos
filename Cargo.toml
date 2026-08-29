@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "modules/abi"]
+members = ["kernel", "modules/abi", "ps2-scancode"]
 default-members = ["."]
 
 [package]

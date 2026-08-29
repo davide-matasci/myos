@@ -18,3 +18,4 @@ limine = "0.6.5"
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_64 = "0.15.2"
 pic8259 = "0.11.0"
+ps2-scancode = { path = "../ps2-scancode" }
