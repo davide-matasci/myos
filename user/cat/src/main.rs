@@ -3,12 +3,7 @@
 
 use myos_user::{close, exit, open, read, write};
 
-#[cfg(target_arch = "x86_64")]
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    unsafe { myos_user::args::init_from_stack() };
-    main()
-}
+myos_user::x86_start!(main);
 
 #[cfg(target_arch = "aarch64")]
 #[unsafe(no_mangle)]
