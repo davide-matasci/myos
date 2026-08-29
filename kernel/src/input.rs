@@ -53,9 +53,6 @@ fn push_byte(raw: u8) {
         }
         return;
     }
-    if byte != b'\n' {
-        console::write_byte(byte);
-    }
     let h = HEAD.load(Ordering::SeqCst);
     let next = (h + 1) % RING;
     if next == TAIL.load(Ordering::SeqCst) {
@@ -65,6 +62,8 @@ fn push_byte(raw: u8) {
     HEAD.store(next, Ordering::SeqCst);
     if byte == b'\n' {
         console::write_byte(b'\n');
+    } else {
+        console::write_byte(byte);
     }
 }
 

@@ -28,7 +28,7 @@ const CI_NEEDLES: [&str; 14] = [
 /// Extra serial markers required on x86 BIOS/UEFI only (`std` hello is x86-myos today).
 const CI_NEEDLES_X86: [&str; 1] = ["std ok"];
 
-const CI_UNKNOWN_CMD: &[u8] = b"nosuchcmd";
+const CI_UNKNOWN_CMD: &[u8] = b"nosuchcmd\n";
 
 /// Printed by the interactive shell (parent) when `open(path)` fails.
 const CI_SHELL_UNKNOWN_CMD: &str = "sh: command not found";
@@ -37,9 +37,12 @@ const CI_SHELL_UNKNOWN_CMD: &str = "sh: command not found";
 enum ShellStage {
     WaitPrompt,
     Typing,
-    SentEnter,
     Done,
 }
+
+/// Per-byte delay while typing at the `$` prompt so QEMU `-serial stdio` keeps up
+/// with the shell reader.
+const SHELL_TYPE_DELAY: Duration = Duration::from_millis(25);
 
 fn serial_has_all_needles(serial: &str, extra: &[&str]) -> bool {
     CI_NEEDLES.iter().chain(extra.iter()).all(|n| serial.contains(n))
@@ -80,13 +83,6 @@ fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
     stdin.flush().ok();
 }
 
-fn send_shell_enter(stdin: &mut ChildStdin) {
-    stdin
-        .write_all(b"\r\n")
-        .expect("write shell newline to qemu stdin");
-    stdin.flush().ok();
-}
-
 fn advance_shell_ci(
     stdin: &mut Option<ChildStdin>,
     stage: &mut ShellStage,
@@ -106,17 +102,12 @@ fn advance_shell_ci(
             if *typing < CI_UNKNOWN_CMD.len() {
                 send_shell_byte(stdin, CI_UNKNOWN_CMD[*typing]);
                 *typing += 1;
-                std::thread::sleep(Duration::from_millis(25));
-            } else if command_echoed(acc) {
-                std::thread::sleep(Duration::from_millis(200));
-                send_shell_enter(stdin);
-                *stage = ShellStage::SentEnter;
+                std::thread::sleep(SHELL_TYPE_DELAY);
+            } else if interactive_unknown_cmd_ok(acc) {
+                *stage = ShellStage::Done;
             }
         }
-        ShellStage::SentEnter if interactive_unknown_cmd_ok(acc) => {
-            *stage = ShellStage::Done;
-        }
-        ShellStage::WaitPrompt | ShellStage::SentEnter | ShellStage::Done => {}
+        ShellStage::WaitPrompt | ShellStage::Typing | ShellStage::Done => {}
     }
 }
 
