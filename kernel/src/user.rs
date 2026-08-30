@@ -28,7 +28,11 @@ pub const PAGE: usize = 4096;
 /// User stack mapping below the heap (128 KiB).
 pub const USER_STACK_PAGES: usize = 32;
 const HEAP_PAGES: usize = 64;
-const MAX_INIT_PAGES: usize = 40;
+/// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy (today
+/// release `uutils-coreutils` ≈197 pages).
+const MAX_INIT_PAGES: usize = 256;
+/// In-place `reload_user_elf` scratch and mapping cap (sbase-cat scale).
+const MAX_RELOAD_PAGES: usize = 40;
 /// Minimum code pages reserved below the user stack so post-fork `exec` can
 /// `reload_user_elf` the largest newlib/sbase ELFs (today `sbase-cat`).
 const USER_EXEC_RELOAD_PAGES: usize = 36;
@@ -257,7 +261,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
 }
 
 /// Scratch for `reload_user_elf` (no kernel-heap alloc; CI exhausts heap after fork).
-const RELOAD_SCRATCH_BYTES: usize = MAX_INIT_PAGES * PAGE;
+const RELOAD_SCRATCH_BYTES: usize = MAX_RELOAD_PAGES * PAGE;
 static mut RELOAD_SCRATCH: [u8; RELOAD_SCRATCH_BYTES] = [0; RELOAD_SCRATCH_BYTES];
 
 /// Overwrite the current user image in an existing aspace (no new frames).
@@ -272,10 +276,10 @@ fn reload_user_elf(
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let image_pages = info.span.div_ceil(PAGE);
-    if image_pages == 0 || image_pages > MAX_INIT_PAGES {
+    if image_pages == 0 || image_pages > MAX_RELOAD_PAGES {
         return None;
     }
-    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_INIT_PAGES);
+    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_RELOAD_PAGES);
     // Code must sit below the mapped stack. Otherwise PT_LOAD pages overlap stack
     // slots (reload saw stack PTEs as "mapped" and clobbered them — heap #10).
     if n_pages * PAGE > stack_off as usize {

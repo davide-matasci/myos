@@ -25,7 +25,10 @@ pub extern "C" fn _start(_argc: usize, _argv: *const usize) -> ! {
 fn run_prog(path: &[u8], args: &[&[u8]]) {
     match fork() {
         None => write(b"fork fail\n"),
-        Some(0) => exec(path, args),
+        Some(0) => {
+            exec(path, args);
+            exit(127);
+        }
         Some(_) => {
             let _ = wait_status();
         }
@@ -35,7 +38,10 @@ fn run_prog(path: &[u8], args: &[&[u8]]) {
 fn run_prog_exit(path: &[u8], args: &[&[u8]], expect: u8, ok_msg: &[u8]) {
     match fork() {
         None => write(b"fork fail\n"),
-        Some(0) => exec(path, args),
+        Some(0) => {
+            exec(path, args);
+            exit(127);
+        }
         Some(_) => {
             if let Some((_, status)) = wait_status() {
                 if status == expect {
