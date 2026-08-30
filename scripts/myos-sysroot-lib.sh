@@ -83,7 +83,6 @@ EOF
 myos_export_toolchain_env() {
   export RUSTC_BOOTSTRAP=1
   export MYOS_SYSROOT
-  export MYOS_RUSTC_FORCE_SYSROOT=1
   export RUSTC="$MYOS_ROOT/scripts/myos-rustc.sh"
 }
 

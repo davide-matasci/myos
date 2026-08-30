@@ -6,7 +6,7 @@ MYOS_SYSROOT = { value = "../../target/myos-sysroot", relative = true }
 RUSTC_BOOTSTRAP = "1"
 
 [build]
-rustc = "../../scripts/myos-rustc.sh"
+rustc = "../../scripts/myos-rustc-cross.sh"
 # uutils release profile sets lto=fat; myos sysroot + static-pie fails LTO bitcode merge.
 rustflags = ["-C", "panic=abort", "-C", "lto=off"]
 
