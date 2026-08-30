@@ -2,6 +2,14 @@
 # Cross-build newlib libc + myos libgloss for x86_64 and AArch64.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/myos-c-userspace-lib.sh
+source "$ROOT/scripts/myos-c-userspace-lib.sh"
+
+if myos_newlib_is_current; then
+  echo "newlib + libgloss up to date"
+  exit 0
+fi
+
 "$ROOT/scripts/fetch-newlib.sh"
 "$ROOT/scripts/patch-newlib-myos.sh"
 "$ROOT/scripts/newlib-tool-wrappers.sh"
@@ -44,3 +52,5 @@ build_one() {
 
 build_one x86_64
 build_one aarch64
+
+echo "$(myos_newlib_version_hash)" >"$MYOS_NEWLIB_VERSION"

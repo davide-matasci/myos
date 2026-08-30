@@ -113,6 +113,7 @@ fn main() {
         ] {
             embed_c_elf(manifest, &arch, artifact, env_key);
         }
+        embed_uutils_elf(manifest, &arch, "USER_UUTILS_COREUTILS_PATH");
     } else if arch == "riscv64" {
         let stub = PathBuf::from(&out).join("std-stub.elf");
         std::fs::write(&stub, []).expect("write riscv64 std stub");
@@ -128,10 +129,32 @@ fn main() {
             "USER_SBASE_FALSE_PATH",
             "USER_SBASE_PWD_PATH",
             "USER_SBASE_BASENAME_PATH",
+            "USER_UUTILS_COREUTILS_PATH",
         ] {
             println!("cargo:rustc-env={env_key}={}", stub.display());
         }
     }
+}
+
+fn embed_uutils_elf(manifest_dir: &Path, arch: &str, env_key: &str) {
+    let triple = if arch == "x86_64" {
+        "x86_64-unknown-myos"
+    } else if arch == "aarch64" {
+        "aarch64-unknown-myos"
+    } else {
+        return;
+    };
+    let stable = manifest_dir
+        .join("../target")
+        .join(format!("uutils-coreutils-{triple}"));
+    println!("cargo:rerun-if-changed={}", stable.display());
+    if !stable.is_file() {
+        panic!(
+            "uutils coreutils ELF missing at {} (run ./scripts/build-uutils-myos.sh)",
+            stable.display()
+        );
+    }
+    println!("cargo:rustc-env={env_key}={}", stable.display());
 }
 
 fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
