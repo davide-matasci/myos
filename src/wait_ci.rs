@@ -25,22 +25,26 @@ const CI_NEEDLES: [&str; 14] = [
     "fat ok",
 ];
 
-/// Extra serial markers for patched `std` examples and C smoke ELFs.
-const CI_NEEDLES_STD: [&str; 6] = [
+/// Extra serial markers for patched `std` / C / sbase / uutils smoke ELFs (via `/heap`).
+const CI_NEEDLES_STD: [&str; 9] = [
     "std ok",
     "std cat ok",
     "std echo ok",
     "c ok",
     "sbase ok",
     "sls ok",
+    "uutils echo ok",
+    "uutils true ok",
+    "uutils false ok",
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 4] = [
+const CI_SHELL_COMMANDS: [&[u8]; 5] = [
     b"nosuchcmd\n",
     b"ok\n",
     b"echo test\n",
     b"echo pipe | cat\n",
+    b"uutils-true\n",
 ];
 
 /// Printed by the interactive shell when `open(path)` fails.
@@ -112,12 +116,19 @@ fn interactive_pipe_cmd_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
+fn interactive_uutils_true_cmd_ok(serial: &str) -> bool {
+    command_echoed(serial, "uutils-true")
+        && !serial.contains("exception:")
+        && at_interactive_prompt(serial)
+}
+
 fn shell_cmd_result_ok(serial: &str, cmd_index: usize) -> bool {
     match cmd_index {
         0 => interactive_unknown_cmd_ok(serial),
         1 => interactive_ok_cmd_ok(serial),
         2 => interactive_echo_cmd_ok(serial),
         3 => interactive_pipe_cmd_ok(serial),
+        4 => interactive_uutils_true_cmd_ok(serial),
         _ => false,
     }
 }
@@ -319,9 +330,14 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `echo test` did not print `test`");
             }
         }
-        if shell_cmd_index >= 3 && !interactive_pipe_cmd_ok(&serial) {
+        if shell_cmd_index >= 3 && shell_cmd_index < 4 && !interactive_pipe_cmd_ok(&serial) {
             eprintln!(
                 "error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)"
+            );
+        }
+        if shell_cmd_index >= 4 && !interactive_uutils_true_cmd_ok(&serial) {
+            eprintln!(
+                "error: interactive `uutils-true` failed (want `$ uutils-true` then `$` prompt)"
             );
         }
         std::process::exit(1);
