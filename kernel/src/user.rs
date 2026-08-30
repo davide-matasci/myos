@@ -7,6 +7,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use crate::fs;
 use crate::mm;
 use crate::modules::elf;
+#[cfg(target_arch = "riscv64")]
+use crate::arch::paging;
 use crate::task;
 
 const SYS_WRITE: usize = 0;
@@ -43,13 +45,16 @@ static DID_SPAWN: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_arch = "x86_64")]
 const DEFAULT_USER_BASE: u64 = 0x0000_0080_0000_0000; // PML4[1]
-#[cfg(target_arch = "aarch64")]
-const DEFAULT_USER_BASE: u64 = 0x4000_0000; // L1[1] on QEMU virt RAM
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+const DEFAULT_USER_BASE: u64 = 0x4000_0000; // Sv39 root[1] / L1[1] on QEMU virt RAM
 
 static USER_BASE: AtomicU64 = AtomicU64::new(DEFAULT_USER_BASE);
 
 #[cfg(target_arch = "x86_64")]
 static mut KERNEL_RSP0: usize = 0;
+
+#[cfg(target_arch = "riscv64")]
+static mut KERNEL_SSCRATCH: usize = 0;
 
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
@@ -489,6 +494,10 @@ fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
     {
         virt_to_phys_aarch64(aspace, va)
     }
+    #[cfg(target_arch = "riscv64")]
+    {
+        virt_to_phys_riscv64(aspace, va)
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -550,6 +559,48 @@ fn virt_to_phys_aarch64(l0_phys: u64, va: u64) -> Option<u64> {
     }
 }
 
+#[cfg(target_arch = "riscv64")]
+fn satp_ppn(satp: u64) -> u64 {
+    paging::satp_root_phys(satp)
+}
+
+#[cfg(target_arch = "riscv64")]
+fn make_satp(root_phys: u64) -> u64 {
+    paging::make_satp(root_phys)
+}
+
+#[cfg(target_arch = "riscv64")]
+fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
+    let root_phys = satp_ppn(satp);
+    let i2 = ((va >> 30) & 0x1ff) as usize;
+    let i1 = ((va >> 21) & 0x1ff) as usize;
+    let i0 = ((va >> 12) & 0x1ff) as usize;
+    unsafe {
+        let root = &*mm::table(root_phys);
+        let mid_pte = root[i2];
+        if mid_pte & paging::PTE_V == 0 {
+            return None;
+        }
+        if mid_pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) != 0 {
+            return Some(paging::pte_phys(mid_pte) | (va & 0x1F_FFFF));
+        }
+        let mid = &*mm::table(paging::pte_phys(mid_pte));
+        let leaf_pte = mid[i1];
+        if leaf_pte & paging::PTE_V == 0 {
+            return None;
+        }
+        if leaf_pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) != 0 {
+            return Some(paging::pte_phys(leaf_pte) | (va & 0xFFF));
+        }
+        let leaf = &*mm::table(paging::pte_phys(leaf_pte));
+        let pte = leaf[i0];
+        if pte & paging::PTE_V == 0 {
+            return None;
+        }
+        Some(paging::pte_phys(pte))
+    }
+}
+
 fn pick_user_base() -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -566,6 +617,10 @@ fn pick_user_base() -> u64 {
         panic!("no free PML4 slot for user");
     }
     #[cfg(target_arch = "aarch64")]
+    {
+        DEFAULT_USER_BASE
+    }
+    #[cfg(target_arch = "riscv64")]
     {
         DEFAULT_USER_BASE
     }
@@ -588,6 +643,10 @@ pub fn set_kernel_rsp0(top: usize) {
     unsafe {
         core::ptr::addr_of_mut!(KERNEL_RSP0).write(top);
     }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(top);
+    }
     let _ = top;
 }
 
@@ -607,6 +666,16 @@ pub fn read_aspace() -> u64 {
         let t: u64;
         core::arch::asm!(
             "mrs {t}, ttbr0_el1",
+            t = out(reg) t,
+            options(nomem, nostack, preserves_flags)
+        );
+        t
+    }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        let t: u64;
+        core::arch::asm!(
+            "csrr {t}, satp",
             t = out(reg) t,
             options(nomem, nostack, preserves_flags)
         );
@@ -638,6 +707,15 @@ pub fn switch_aspace(aspace: u64) {
         }
         core::arch::asm!("dsb sy; isb", options(nostack));
     }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!(
+            "csrw satp, {a}",
+            "sfence.vma",
+            a = in(reg) aspace,
+            options(nostack),
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -662,6 +740,8 @@ pub fn enter(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usiz
     enter_x86(user_rip, user_rsp);
     #[cfg(target_arch = "aarch64")]
     enter_aarch64(user_rip, user_rsp, user_argc, user_argv);
+    #[cfg(target_arch = "riscv64")]
+    enter_riscv64(user_rip, user_rsp, user_argc, user_argv);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -720,10 +800,34 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
     }
 }
 
-/// Exec from a syscall: copy the saved frame and eret through `fork_eret_from_frame`
-/// (same path as fork children). Patching ELR in place and returning through
-/// `lower_sync` miscompiled for forked children on CI AArch64.
-#[cfg(target_arch = "aarch64")]
+#[cfg(target_arch = "riscv64")]
+const USER_SSTATUS: u64 = (2 << 32) | (1 << 5); // UXL=64-bit user, SPIE, SPP=0
+
+#[cfg(target_arch = "riscv64")]
+fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
+    let ksp = unsafe { KERNEL_SSCRATCH };
+    unsafe {
+        core::arch::asm!(
+            "csrw sscratch, {ksp}",
+            "mv sp, {usp}",
+            "mv a0, {argc}",
+            "mv a1, {argv}",
+            "csrw sepc, {rip}",
+            "csrw sstatus, {s}",
+            "sret",
+            ksp = in(reg) ksp,
+            usp = in(reg) user_rsp,
+            argc = in(reg) user_argc,
+            argv = in(reg) user_argv,
+            rip = in(reg) user_rip,
+            s = in(reg) USER_SSTATUS,
+            options(noreturn, nostack),
+        );
+    }
+}
+
+/// Exec from a syscall: copy the saved frame and sret through `fork_sret_from_frame`.
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn try_resume_exec_via_syscall_frame(
     entry: usize,
     rsp: usize,
@@ -735,11 +839,23 @@ fn try_resume_exec_via_syscall_frame(
         return;
     }
     unsafe {
-        *frame_ptr.add(0) = argc as u64;
-        *frame_ptr.add(1) = argv as u64;
-        *frame_ptr.add(32) = entry as u64;
-        *frame_ptr.add(34) = rsp as u64;
-        crate::arch::fork_eret_to_user(frame_ptr);
+        #[cfg(target_arch = "aarch64")]
+        {
+            *frame_ptr.add(0) = argc as u64;
+            *frame_ptr.add(1) = argv as u64;
+            *frame_ptr.add(32) = entry as u64;
+            *frame_ptr.add(34) = rsp as u64;
+            crate::arch::fork_eret_to_user(frame_ptr);
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            *frame_ptr.add(10) = argc as u64;
+            *frame_ptr.add(11) = argv as u64;
+            *frame_ptr.add(32) = entry as u64;
+            *frame_ptr.add(33) = USER_SSTATUS;
+            *frame_ptr.add(34) = rsp as u64;
+            crate::arch::fork_sret_to_user(frame_ptr);
+        }
     }
 }
 
@@ -753,6 +869,8 @@ pub fn enter_fork(regs: task::ForkRegs) -> ! {
     enter_fork_x86(regs);
     #[cfg(target_arch = "aarch64")]
     enter_fork_aarch64(regs);
+    #[cfg(target_arch = "riscv64")]
+    enter_fork_riscv64(regs);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -790,11 +908,11 @@ fn enter_fork_x86(regs: task::ForkRegs) -> ! {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn copy_fork_syscall_frame(src: *const u64) -> [u64; 36] {
     let mut frame = [0u64; 36];
     unsafe {
-        for i in 0..=30 {
+        for i in 0..=31 {
             frame[i] = *src.add(i);
         }
         frame[32] = *src.add(32);
@@ -814,10 +932,18 @@ fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
     crate::arch::fork_eret_to_user(frame.as_mut_ptr());
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(target_arch = "riscv64")]
+fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
+    let mut frame = regs.frame;
+    frame[10] = 0; // a0 = 0 for child
+    frame[32] = regs.rip as u64; // resume past the fork ecall
+    crate::arch::fork_sret_to_user(frame.as_mut_ptr());
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 static mut SYSCALL_FRAME: *mut u64 = core::ptr::null_mut();
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn set_syscall_frame(frame: *mut u64) {
     unsafe { SYSCALL_FRAME = frame; }
 }
@@ -941,6 +1067,8 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     #[cfg(target_arch = "aarch64")]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
+    #[cfg(target_arch = "riscv64")]
+    try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
     enter(entry, rsp, argc, argv);
 }
 
@@ -957,7 +1085,7 @@ fn copy_user_exec_pack(
     {
         copy_user_exec_pack_direct(args_ptr)
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     {
         copy_user_exec_pack_via_aspace(args_ptr)
     }
@@ -1029,7 +1157,7 @@ fn copy_user_exec_pack_direct(
     Ok((args, env))
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn copy_user_exec_pack_via_aspace(
     args_ptr: usize,
 ) -> Result<(alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>), ()> {
@@ -1161,6 +1289,18 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
             frame: copy_fork_syscall_frame(frame),
         }
     };
+    #[cfg(target_arch = "riscv64")]
+    let child = {
+        let frame = unsafe { SYSCALL_FRAME };
+        if frame.is_null() {
+            return SYSERR;
+        }
+        task::ForkRegs {
+            rip: user_rip,
+            rsp: user_rsp,
+            frame: copy_fork_syscall_frame(frame),
+        }
+    };
     match task::fork_current(child) {
         Some(pid) => pid,
         None => SYSERR,
@@ -1259,6 +1399,10 @@ fn create_aspace(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 
     {
         create_aspace_aarch64(code, stack, base, stack_off)
     }
+    #[cfg(target_arch = "riscv64")]
+    {
+        create_aspace_riscv64(code, stack, base, stack_off)
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1324,6 +1468,26 @@ fn map_heap_page(l0_phys: u64, va: u64, pa: u64) {
         let l3_phys = l2[0] & PA_MASK;
         let l3 = &mut *mm::table(l3_phys);
         l3[i3] = (pa & PA_MASK) | PAGE_DESC | SH_INNER | AP_RW | AF | UXN;
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+fn map_heap_page(satp: u64, va: u64, pa: u64) {
+    let flags = paging::PTE_V
+        | paging::PTE_R
+        | paging::PTE_W
+        | paging::PTE_U
+        | paging::PTE_A
+        | paging::PTE_D;
+    let root_phys = paging::satp_root_phys(satp);
+    let i2 = ((va >> 30) & 0x1ff) as usize;
+    let i1 = ((va >> 21) & 0x1ff) as usize;
+    let i0 = ((va >> 12) & 0x1ff) as usize;
+    unsafe {
+        let root = &*mm::table(root_phys);
+        let mid = &*mm::table(paging::pte_phys(root[i2]));
+        let leaf = &mut *mm::table(paging::pte_phys(mid[i1]));
+        leaf[i0] = paging::pte_leaf_4k(pa, flags);
     }
 }
 
@@ -1403,6 +1567,46 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
     l0
 }
 
+#[cfg(target_arch = "riscv64")]
+fn create_aspace_riscv64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64) -> u64 {
+    let code_flags = paging::PTE_V
+        | paging::PTE_R
+        | paging::PTE_W
+        | paging::PTE_U
+        | paging::PTE_X
+        | paging::PTE_A
+        | paging::PTE_D;
+    let stack_flags = paging::PTE_V
+        | paging::PTE_R
+        | paging::PTE_W
+        | paging::PTE_U
+        | paging::PTE_A
+        | paging::PTE_D;
+
+    let k_root_phys = paging::satp_root_phys(task::kernel_aspace());
+    let root = mm::alloc_frame();
+    let mid = mm::alloc_frame();
+    let leaf = mm::alloc_frame();
+
+    unsafe {
+        let k_root = &*mm::table(k_root_phys);
+        let root_t = &mut *mm::table(root);
+        root_t.copy_from_slice(k_root);
+        let mid_t = &mut *mm::table(mid);
+        let leaf_t = &mut *mm::table(leaf);
+        root_t[1] = paging::pte_table(mid);
+        mid_t[0] = paging::pte_table(leaf);
+        for (i, &phys) in code.iter().enumerate() {
+            leaf_t[i] = paging::pte_leaf_4k(phys, code_flags);
+        }
+        let stack_i = (stack_off as usize) / PAGE;
+        for (i, &phys) in stack.iter().enumerate() {
+            leaf_t[stack_i + i] = paging::pte_leaf_4k(phys, stack_flags);
+        }
+    }
+    make_satp(root)
+}
+
 fn sync_icache(start: usize, size: usize) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
@@ -1433,6 +1637,12 @@ fn sync_icache(start: usize, size: usize) {
         }
         core::arch::asm!("dsb ish; isb", options(nostack));
         core::arch::asm!("ic ialluis; dsb ish; isb", options(nostack));
+    }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        if size != 0 {
+            core::arch::asm!("fence.i", options(nostack));
+        }
     }
     let _ = (start, size);
 }

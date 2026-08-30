@@ -44,6 +44,9 @@ impl LimineFiles {
     pub fn bootaa64(&self) -> PathBuf {
         self.dir.join("BOOTAA64.EFI")
     }
+    pub fn bootriscv64(&self) -> PathBuf {
+        self.dir.join("BOOTRISCV64.EFI")
+    }
     pub fn bios_sys(&self) -> PathBuf {
         self.dir.join("limine-bios.sys")
     }
@@ -132,6 +135,7 @@ fn compile_limine_tool(dir: &Path) {
     }
 }
 
+#[derive(Clone)]
 pub struct DiskFile {
     pub path: String,
     pub data: Vec<u8>,
@@ -146,6 +150,20 @@ pub fn write_esp_image(
     bios_sys: Option<&[u8]>,
     hello: &[u8],
     ok: &[u8],
+) {
+    write_esp_image_ex(dest, kernel, efi_name, efi_bytes, bios_sys, hello, ok, LIMINE_CONF, &[]);
+}
+
+pub fn write_esp_image_ex(
+    dest: &Path,
+    kernel: &[u8],
+    efi_name: &str,
+    efi_bytes: &[u8],
+    bios_sys: Option<&[u8]>,
+    hello: &[u8],
+    ok: &[u8],
+    limine_conf: &str,
+    extra: &[DiskFile],
 ) {
     let mut files = vec![
         DiskFile {
@@ -166,17 +184,24 @@ pub fn write_esp_image(
         },
         DiskFile {
             path: "boot/limine/limine.conf".into(),
-            data: LIMINE_CONF.as_bytes().to_vec(),
+            data: limine_conf.as_bytes().to_vec(),
         },
         DiskFile {
             path: "EFI/BOOT/limine.conf".into(),
-            data: LIMINE_CONF.as_bytes().to_vec(),
+            data: limine_conf.as_bytes().to_vec(),
         },
         DiskFile {
             path: "limine.conf".into(),
-            data: LIMINE_CONF.as_bytes().to_vec(),
+            data: limine_conf.as_bytes().to_vec(),
         },
     ];
+    files.extend_from_slice(extra);
+    if efi_name.contains("RISCV") {
+        files.push(DiskFile {
+            path: "startup.nsh".into(),
+            data: format!("\\EFI\\BOOT\\{efi_name}\r\n").into_bytes(),
+        });
+    }
     if let Some(sys) = bios_sys {
         files.push(DiskFile {
             path: "boot/limine/limine-bios.sys".into(),

@@ -60,3 +60,19 @@ pub fn aarch64_sync_abort(kind: &str, esr: u64, elr: u64, far: u64, sp_el0: Opti
         ctx = task_ctx(),
     ));
 }
+
+#[cfg(target_arch = "riscv64")]
+pub fn riscv64_page_fault(kind: &str, stval: u64, sepc: u64, user_sp: u64) -> ! {
+    fatal_line(&format!(
+        "{kind} stval={stval:#x} sepc={sepc:#x} sp={user_sp:#x}{ctx}",
+        ctx = task_ctx(),
+    ));
+}
+
+#[cfg(target_arch = "riscv64")]
+pub fn riscv64_trap(code: u64, sepc: u64, stval: u64) -> ! {
+    fatal_line(&format!(
+        "trap scause={code:#x} sepc={sepc:#x} stval={stval:#x}{ctx}",
+        ctx = task_ctx(),
+    ));
+}

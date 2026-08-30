@@ -31,6 +31,24 @@ const MSG_OK: &[u8] = b"fat ok\n";
 static TASK_A_DONE: AtomicBool = AtomicBool::new(false);
 static TASK_B_DONE: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    r#"
+    .section .text._start,"ax",@progbits
+    .globl _start
+_start:
+    call {main}
+    "#,
+    main = sym kernel_main_riscv64,
+);
+
+#[cfg(target_arch = "riscv64")]
+#[unsafe(no_mangle)]
+extern "C" fn kernel_main_riscv64() -> ! {
+    kernel_main()
+}
+
+#[cfg(not(target_arch = "riscv64"))]
 #[unsafe(no_mangle)]
 extern "C" fn _start() -> ! {
     kernel_main()
