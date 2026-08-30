@@ -375,6 +375,12 @@ fn build_argv_stack(
         }
         env_ptrs[i] = sp;
     }
+    // Gap so the argv pointer table cannot overlap the copied strings (x86 std
+    // `_start` reads argv[] immediately; a tight layout can alias string bytes).
+    sp = sp.checked_sub(16)?;
+    if sp < stack_bot {
+        return None;
+    }
     let words = 1 + args.len() + 1 + env.len() + 1;
     sp = sp.checked_sub(words * core::mem::size_of::<usize>())?;
     let pad = sp & 15;

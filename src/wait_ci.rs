@@ -44,7 +44,7 @@ const CI_SHELL_COMMANDS: [&[u8]; 5] = [
     b"ok\n",
     b"echo test\n",
     b"echo pipe | cat\n",
-    b"uutils-echo uutils shell ok\n",
+    b"uutils-true\n",
 ];
 
 /// Printed by the interactive shell when `open(path)` fails.
@@ -116,19 +116,9 @@ fn interactive_pipe_cmd_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
-fn interactive_uutils_echo_cmd_ok(serial: &str) -> bool {
-    let tail = interactive_tail(serial);
-    if !tail.contains("$ uutils-echo uutils shell ok") || serial.contains("exception:") {
-        return false;
-    }
-    let after = tail
-        .rsplit_once("$ uutils-echo uutils shell ok")
-        .map(|(_, rest)| rest)
-        .unwrap_or("");
-    after
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| line.trim() == "uutils shell ok")
+fn interactive_uutils_true_cmd_ok(serial: &str) -> bool {
+    command_echoed(serial, "uutils-true")
+        && !serial.contains("exception:")
         && at_interactive_prompt(serial)
 }
 
@@ -138,7 +128,7 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize) -> bool {
         1 => interactive_ok_cmd_ok(serial),
         2 => interactive_echo_cmd_ok(serial),
         3 => interactive_pipe_cmd_ok(serial),
-        4 => interactive_uutils_echo_cmd_ok(serial),
+        4 => interactive_uutils_true_cmd_ok(serial),
         _ => false,
     }
 }
@@ -345,9 +335,9 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 "error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)"
             );
         }
-        if shell_cmd_index >= 4 && !interactive_uutils_echo_cmd_ok(&serial) {
+        if shell_cmd_index >= 4 && !interactive_uutils_true_cmd_ok(&serial) {
             eprintln!(
-                "error: interactive `uutils-echo uutils shell ok` failed (want that line then `uutils shell ok`)"
+                "error: interactive `uutils-true` failed (want `$ uutils-true` then `$` prompt)"
             );
         }
         std::process::exit(1);
