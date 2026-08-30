@@ -225,11 +225,17 @@ or connect serial to see the rest.
 
 ## VFS, virtio-blk, and FAT16
 
-A tiny VFS (`kernel/src/fs/`) is a **mount table** with ops/`lookup`. The
-backend is **bootfs**: Limine modules (basename of `file.path()`, stripping
-`boot():` and slashes), an embedded `/ok` ELF fallback, and files
-registered at runtime through `KernelApi::vfs_register`. ESP `boot/ok`
-overwrites the embed when both exist.
+A VFS layer (`kernel/src/fs/vfs.rs`) holds a **mount table**; each mount
+has a name, optional path prefix, and [`MountOps`] (`lookup`, `stat`,
+`listdir`, `register`). Syscalls route through the VFS, which picks the
+longest matching prefix (root mount uses `""` today, so `/ok` and `ok` both
+resolve on bootfs).
+
+**bootfs** is the first mount at `/` (`kernel/src/fs/bootfs.rs`): a flat
+read-only namespace. Embedded user ELFs are registered at boot; Limine ESP
+modules override by basename; loadable modules add files via
+`KernelApi::vfs_register` on the `"bootfs"` mount (e.g. FAT registers
+`msg`). ESP `boot/ok` overwrites the embed when both exist.
 
 **virtio-blk is in-kernel** (`kernel/src/blk.rs`), not a loadable module
 (chicken/egg: the FAT parser needs block I/O to load). x86 uses PCI config
@@ -289,12 +295,14 @@ unsafe extern "C" fn module_exit() // optional
 ```
 
 `KernelApi` (`modules/abi`) is a `#[repr(C)]` table (`write_str`, `alloc`,
-`dealloc`, `blk_read`, `vfs_register`). ABI version is **2**; new pointers
-are appended, never reordered. The kernel fills it and passes `&KernelApi`
-into `module_init`. Modules must not call kernel internals. There is no
-dynamic linker against kernel `.dynsym`. `blk_read` returns 0 or −1.
-`vfs_register` copies into the bootfs table (kernel-owned `'static`) and
-takes a basename without slash (`msg`).
+`dealloc`, `blk_read`, `vfs_register`, `vfs_register_static`, `vfs_mount`).
+ABI version is **3**; new pointers are appended, never reordered. The kernel
+fills it and passes `&KernelApi` into `module_init`. Modules must not call
+kernel internals. There is no dynamic linker against kernel `.dynsym`.
+`blk_read` returns 0 or −1. `vfs_register` copies into the bootfs mount;
+`vfs_register_static` borrows module/rodata bytes without copying.
+`vfs_mount` attaches a [`ModuleVfsOps`] backend at `/prefix/…` (see
+`modules/stubfs` mounting `/disk/ping`).
 
 Do **not** add a module as a cargo artifact-dep of the kernel (that panics
 the feature resolver). Do **not** put it in `[build-dependencies]` (those
@@ -502,7 +510,7 @@ read-only.
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
 | `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages, virtqueues) |
 | `kernel/src/blk.rs` | In-kernel virtio-blk: `init` + 512-byte sector `read` |
-| `kernel/src/fs/` | Tiny VFS: mount table + bootfs (Limine modules + embedded `/ok` + `vfs_register`) |
+| `kernel/src/fs/` | VFS mount table (`vfs.rs`) + bootfs backend mounted at `/` |
 | `kernel/src/console.rs` | Dual console: serial + Limine framebuffer mirror |
 | `kernel/src/input.rs` | Stdin ring buffer: PS/2 keyboard + serial (fd 0) |
 | `kernel/src/arch/x86/keyboard.rs` | PS/2 keyboard via 8042 (poll, US QWERTY set 1) |
@@ -510,8 +518,9 @@ read-only.
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
 | `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
-| `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v2: `blk_read`, `vfs_register`) |
+| `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v3: `vfs_register_static`, `vfs_mount`) |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
+| `modules/stubfs` | Sample prefixed mount: `vfs_mount` at `/disk`, file `/disk/ping` |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
 | `user/init` | PID1-style: baked in, execs `/sh` (not a kernel module) |
 | `user/sh` | Minimal shell: smoke `/ok`, interactive `$` prompt on stdin |

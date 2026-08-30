@@ -38,7 +38,7 @@ enum FdEntry {
     Stdin,
     Console,
     File {
-        data: &'static [u8],
+        node: crate::fs::Vnode,
         pos: usize,
     },
     PipeRead(usize),
@@ -154,6 +154,9 @@ struct Task {
     user_argv: usize,
     /// Current program break (end of heap). 0 for kernel threads.
     brk_cur: u64,
+    /// Basename from the last successful exec (multicall argv[0] fallback).
+    exec_name: [u8; 32],
+    exec_name_len: u8,
     exit_code: u8,
 }
 
@@ -175,6 +178,8 @@ const EMPTY: Task = Task {
     user_argc: 0,
     user_argv: 0,
     brk_cur: 0,
+    exec_name: [0; 32],
+    exec_name_len: 0,
     exit_code: 0,
 };
 
@@ -260,6 +265,26 @@ pub fn set_brk(brk: u64) {
     with_current_mut(|t| t.brk_cur = brk);
 }
 
+pub fn set_exec_name(name: &[u8]) {
+    with_current_mut(|t| {
+        let n = name.len().min(t.exec_name.len());
+        t.exec_name[..n].copy_from_slice(&name[..n]);
+        t.exec_name_len = n as u8;
+    });
+}
+
+pub fn exec_name(out: &mut [u8]) -> usize {
+    let flags = irq_save();
+    irq_off();
+    let id = CURRENT.load(Ordering::SeqCst);
+    let t = TASKS.lock()[id];
+    let n = t.exec_name_len as usize;
+    let n = n.min(out.len()).min(t.exec_name.len());
+    out[..n].copy_from_slice(&t.exec_name[..n]);
+    irq_restore(flags);
+    n
+}
+
 fn heap_base_for(base: u64, stack_off: u64) -> u64 {
     base + stack_off + (crate::user::USER_STACK_PAGES * crate::user::PAGE) as u64
 }
@@ -284,11 +309,11 @@ fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
     out
 }
 
-pub fn fd_open(data: &'static [u8]) -> Option<usize> {
+pub fn fd_open(node: crate::fs::Vnode) -> Option<usize> {
     with_current_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
-                t.fds[i] = FdEntry::File { data, pos: 0 };
+                t.fds[i] = FdEntry::File { node, pos: 0 };
                 return Some(i);
             }
         }
@@ -391,12 +416,14 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         }
         match entry {
             FdEntry::Stdin => return fd_read_stdin(buf, len),
-            FdEntry::File { data, pos } => {
+            FdEntry::File { node, pos: _ } => {
                 return with_current_mut(|t| {
-                    let FdEntry::File { data, pos } = t.fds[fd] else {
+                    let FdEntry::File { node, pos } = t.fds[fd] else {
                         return usize::MAX;
                     };
-                    let n = len.min(data.len().saturating_sub(pos));
+                    let mut tmp = [0u8; 128];
+                    let want = len.min(tmp.len());
+                    let n = crate::fs::read(&node, pos, &mut tmp[..want]);
                     if n != 0 {
                         if !user_buf_ok(
                             buf,
@@ -409,11 +436,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                             return usize::MAX;
                         }
                         unsafe {
-                            core::ptr::copy_nonoverlapping(
-                                data.as_ptr().add(pos),
-                                buf as *mut u8,
-                                n,
-                            );
+                            core::ptr::copy_nonoverlapping(tmp.as_ptr(), buf as *mut u8, n);
                         }
                     }
                     if let FdEntry::File { pos: p, .. } = &mut t.fds[fd] {
@@ -703,6 +726,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         user_argc: uargc,
         user_argv: uargv,
         brk_cur: brk,
+        exec_name: [0; 32],
+        exec_name_len: 0,
         exit_code: 0,
     };
     drop(tasks);
@@ -813,6 +838,8 @@ fn spawn_inner(
         user_argc,
         user_argv,
         brk_cur,
+        exec_name: [0; 32],
+        exec_name_len: 0,
         exit_code: 0,
     };
     drop(tasks);

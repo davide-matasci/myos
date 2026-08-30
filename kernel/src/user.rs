@@ -23,12 +23,13 @@ const SYS_BRK: usize = 9;
 const SYS_PIPE: usize = 10;
 const SYS_DUP2: usize = 11;
 pub const SYS_STAT: usize = 12;
+const SYS_EXECNAME: usize = 13;
 pub const PAGE: usize = 4096;
 /// User stack mapping below the heap (512 KiB — uutils/std init needs more than 128 KiB).
 pub const USER_STACK_PAGES: usize = 128;
-/// Per-process brk heap (uutils/std init needs more than 256 KiB after fork+exec).
-/// Cap keeps AArch64 L3 user slots (<512 pages from USER_BASE) with uutils loaded.
-const HEAP_PAGES: usize = 128;
+/// Per-process brk heap. uutils/clap init needs well over 512 KiB; keep total
+/// user slots (code + stack + heap) under 512 pages on AArch64 L3 tables.
+const HEAP_PAGES: usize = 180;
 /// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy (today
 /// release `uutils-coreutils` ≈197 pages).
 const MAX_INIT_PAGES: usize = 256;
@@ -254,8 +255,24 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
         *frame = mm::alloc_frame();
     }
     let aspace = create_aspace(&frames[..n_pages], &stack_frames, base, stack_off);
+    map_initial_heap_pages(aspace, base, stack_off);
     let mapped_span = n_pages * PAGE;
     Some((aspace, entry as usize, mapped_span, stack_off))
+}
+
+fn map_initial_heap_pages(aspace: u64, base: u64, stack_off: u64) {
+    let heap_base = heap_base_va(base, stack_off);
+    for i in 0..HEAP_PAGES {
+        let va = heap_base + (i * PAGE) as u64;
+        if virt_to_phys(aspace, va).is_some() {
+            continue;
+        }
+        let frame = mm::alloc_frame();
+        unsafe {
+            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
+        }
+        map_heap_page(aspace, va, frame);
+    }
 }
 
 /// Scratch for `load_user_elf` / `reload_user_elf` (no kernel-heap alloc; CI
@@ -367,6 +384,7 @@ fn expand_user_elf(
         }
         map_user_stack_page(aspace, va, frame);
     }
+    map_initial_heap_pages(aspace, base, new_stack_off);
 
     let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
     unsafe {
@@ -1084,17 +1102,18 @@ pub extern "C" fn syscall_dispatch(
     match nr {
         SYS_WRITE => sys_write(a0, a1, a2),
         SYS_EXIT => sys_exit(a0),
-        SYS_OPEN => sys_open(a0, a1),
+        SYS_OPEN => sys_open(a0, a1, a2),
         SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
         SYS_EXEC => sys_exec(a0, a1, a2),
         SYS_FORK => sys_fork(user_rip, user_rsp),
         SYS_WAIT => sys_wait(a0),
-        SYS_LISTDIR => sys_listdir(a0, a1),
+        SYS_LISTDIR => sys_listdir(a0, a1, a2),
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
         SYS_DUP2 => sys_dup2(a0, a1),
         SYS_STAT => sys_stat(a0, a1, a2),
+        SYS_EXECNAME => sys_exec_name(a0, a1),
         _ => SYSERR,
     }
 }
@@ -1122,17 +1141,17 @@ fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
     Some(buf)
 }
 
-fn sys_open(ptr: usize, path_len: usize) -> usize {
+fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
     let Some(buf) = copy_user_path(ptr, path_len) else {
         return SYSERR;
     };
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let Some(data) = fs::lookup(path) else {
+    let Some(node) = fs::open(path, flags as u32) else {
         return SYSERR;
     };
-    match task::fd_open(data) {
+    match task::fd_open(node) {
         Some(fd) => fd,
         None => SYSERR,
     }
@@ -1157,6 +1176,8 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
+    let basename = path.rsplit('/').next().unwrap_or(path).as_bytes();
+    task::set_exec_name(basename);
     let Some(bytes) = fs::lookup(path) else {
         return SYSERR;
     };
@@ -1173,15 +1194,14 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
             .map(|(entry, span, off)| (cur_aspace, entry, span, off))
         {
             v
+        } else if let Some(v) = load_user_elf(bytes) {
+            v
         } else if let Some(v) = expand_user_elf(cur_aspace, bytes, base_u, stack_off)
             .map(|(entry, span, off)| (cur_aspace, entry, span, off))
         {
             v
         } else {
-            let Some(v) = load_user_elf(bytes) else {
-                return SYSERR;
-            };
-            v
+            return SYSERR;
         }
     } else {
         let Some(v) = load_user_elf(bytes) else {
@@ -1353,15 +1373,24 @@ fn copy_user_exec_pack_via_aspace(
     Ok((args, env))
 }
 
-fn sys_listdir(buf: usize, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    if !user_range_ok(buf, len) {
+fn sys_listdir(path_ptr: usize, path_len: usize, buf: usize) -> usize {
+    const LISTDIR_CAP: usize = 512;
+    if buf == 0 || !user_range_ok(buf, LISTDIR_CAP) {
         return SYSERR;
     }
-    let mut kbuf = [0u8; 512];
-    let n = fs::listdir(&mut kbuf).min(kbuf.len()).min(len);
+    let path = if path_len == 0 {
+        alloc::string::String::from("/")
+    } else {
+        let Some(pbuf) = copy_user_path(path_ptr, path_len) else {
+            return SYSERR;
+        };
+        match core::str::from_utf8(&pbuf[..path_len]) {
+            Ok(p) => alloc::string::String::from(p),
+            Err(_) => return SYSERR,
+        }
+    };
+    let mut kbuf = [0u8; LISTDIR_CAP];
+    let n = fs::listdir(&path, &mut kbuf).min(LISTDIR_CAP);
     let aspace = task::current_aspace();
     if !write_user_bytes(aspace, buf, &kbuf[..n]) {
         return SYSERR;
@@ -1509,11 +1538,30 @@ fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     if task::fd_dup2(oldfd, newfd) { 0 } else { SYSERR }
 }
 
+fn sys_exec_name(buf: usize, len: usize) -> usize {
+    if len == 0 || !user_range_ok(buf, len) {
+        return SYSERR;
+    }
+    let mut tmp = [0u8; 32];
+    let n = task::exec_name(&mut tmp).min(len).min(tmp.len());
+    if n == 0 {
+        return 0;
+    }
+    if !write_user_bytes(task::current_aspace(), buf, &tmp[..n]) {
+        return SYSERR;
+    }
+    n
+}
+
 fn sys_brk(req: usize) -> usize {
     let (base, _span, stack_off) = task::current_user_map();
     let heap_base = heap_base_va(base, stack_off) as usize;
     let heap_limit = heap_limit_va(base, stack_off) as usize;
-    let cur = task::current_brk() as usize;
+    let mut cur = task::current_brk() as usize;
+    if cur == 0 {
+        cur = heap_base;
+        task::set_brk(cur as u64);
+    }
     if req == 0 {
         return cur;
     }
@@ -1710,23 +1758,7 @@ fn map_heap_page(pml4_phys: u64, va: u64, pa: u64) {
 
 #[cfg(target_arch = "aarch64")]
 fn map_heap_page(l0_phys: u64, va: u64, pa: u64) {
-    const PAGE_DESC: u64 = 0b11;
-    const SH_INNER: u64 = 0b11 << 8;
-    const AF: u64 = 1 << 10;
-    const AP_RW: u64 = 0b01 << 6;
-    const UXN: u64 = 1 << 54;
-    const PA_MASK: u64 = 0x0000_FFFF_FFFF_F000;
-    let i3 = ((va >> 12) & 0x1ff) as usize;
-    unsafe {
-        let l0 = &*mm::table(l0_phys);
-        let l1_phys = l0[0] & PA_MASK;
-        let l1 = &*mm::table(l1_phys);
-        let l2_phys = l1[1] & PA_MASK;
-        let l2 = &*mm::table(l2_phys);
-        let l3_phys = l2[0] & PA_MASK;
-        let l3 = &mut *mm::table(l3_phys);
-        l3[i3] = (pa & PA_MASK) | PAGE_DESC | SH_INNER | AP_RW | AF | UXN;
-    }
+    map_user_page_aarch64(l0_phys, va, pa, false);
 }
 
 #[cfg(target_arch = "riscv64")]

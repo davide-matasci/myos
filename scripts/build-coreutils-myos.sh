@@ -34,6 +34,10 @@ fi
 mkdir -p "$UUTILS_DIR/.cargo"
 cp "$ROOT/vendor/coreutils-port/cargo-config.toml" "$UUTILS_DIR/.cargo/config.toml"
 
+if [[ -f "$ROOT/patches/coreutils/uucore-myos.patch" ]]; then
+  patch -d "$UUTILS_DIR" -p1 -N <"$ROOT/patches/coreutils/uucore-myos.patch" || true
+fi
+
 echo "==> building coreutils for ${TARGET} (${PROFILE}, features=${FEATURES})"
 cd "$UUTILS_DIR"
 if [[ "$PROFILE" == "release" ]]; then
