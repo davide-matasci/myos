@@ -168,7 +168,7 @@ unsafe extern "C" fn api_vfs_register(
         unsafe { core::slice::from_raw_parts(data, data_len) }
     };
     let leaked: &'static [u8] = alloc::boxed::Box::leak(src.to_vec().into_boxed_slice());
-    if crate::fs::bootfs::register(name, leaked) {
+    if crate::fs::register("bootfs", name, leaked) {
         0
     } else {
         -1

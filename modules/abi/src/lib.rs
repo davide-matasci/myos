@@ -19,6 +19,8 @@ pub struct KernelApi {
     pub alloc: unsafe extern "C" fn(usize, usize) -> *mut u8,
     pub dealloc: unsafe extern "C" fn(*mut u8, usize, usize),
     pub blk_read: unsafe extern "C" fn(lba: u64, buf: *mut u8, len: usize) -> i32,
+    /// Register `name` on the bootfs mount (`/name`). Data is copied into a
+    /// leaked kernel buffer and remains until reboot.
     pub vfs_register: unsafe extern "C" fn(
         name: *const u8,
         name_len: usize,

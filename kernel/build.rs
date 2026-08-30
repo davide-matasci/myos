@@ -59,19 +59,8 @@ fn main() {
         &out,
         &["../lib/src/lib.rs", "../lib/Cargo.toml"],
     );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../user/ok",
-        "ok",
-        "ok-target",
-        "USER_OK_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../lib/src/lib.rs", "../lib/Cargo.toml"],
-    );
     for (crate_rel, bin, td, env_key) in [
+        ("../user/ok", "ok", "ok-target", "USER_OK_PATH"),
         ("../user/sh", "sh", "sh-target", "USER_SH_PATH"),
         ("../user/heap", "heap", "heap-target", "USER_HEAP_PATH"),
         ("../user/echo", "echo", "echo-target", "USER_ECHO_PATH"),
@@ -243,9 +232,9 @@ fn nested_elf(
     if !elf.is_file() {
         panic!("{bin} ELF missing at {}", elf.display());
     }
-    println!("cargo:rustc-env={env_key}={}", elf.display());
-
-    // Stable path so the host image builder can also put the ELF on the ESP.
+    if env_key != "_unused" {
+        println!("cargo:rustc-env={env_key}={}", elf.display());
+    }
     let ws_target = manifest_dir.join("../target");
     std::fs::create_dir_all(&ws_target).expect("workspace target dir");
     let stable = ws_target.join(format!("{bin}-{target}"));

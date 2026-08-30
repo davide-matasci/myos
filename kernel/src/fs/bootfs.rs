@@ -1,9 +1,13 @@
-//! bootfs: Limine modules by basename, plus an embedded `/ok` fallback.
-//! Extra files (e.g. `/msg` from the FAT16 module) land here via `register`.
+//! bootfs: flat read-only namespace mounted at `/` by the VFS.
+//!
+//! Embedded user ELFs are registered at boot via [`init_embedded`]; Limine ESP
+//! modules override via [`init_limine`]. Loadable modules add files through
+//! `KernelApi::vfs_register` (e.g. the FAT module registers `/msg`).
 
 use spin::Mutex;
 
 use crate::console;
+use crate::fs::StatInfo;
 
 const HEAP_ELF: &[u8] = include_bytes!(env!("USER_HEAP_PATH"));
 const STD_HELLO_ELF: &[u8] = include_bytes!(env!("USER_STD_HELLO_PATH"));
@@ -22,6 +26,7 @@ const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
 const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
 const CAT_ELF: &[u8] = include_bytes!(env!("USER_CAT_PATH"));
 const LS_ELF: &[u8] = include_bytes!(env!("USER_LS_PATH"));
+
 const MAX_FILES: usize = 32;
 const NAME_CAP: usize = 32;
 
@@ -103,9 +108,9 @@ const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 
 /// Stat the flat root (`.` / `/` / empty) or a bootfs basename.
-pub fn stat(name: &str) -> Option<super::StatInfo> {
+pub fn stat(name: &str) -> Option<StatInfo> {
     if name.is_empty() || name == "." || name == ".." {
-        return Some(super::StatInfo {
+        return Some(StatInfo {
             mode: S_IFDIR | 0o755,
             size: 0,
             ino: 1,
@@ -115,7 +120,7 @@ pub fn stat(name: &str) -> Option<super::StatInfo> {
     let files = FILES.lock();
     for (i, slot) in files.iter().flatten().enumerate() {
         if slot.len == name.len() && &slot.name[..slot.len] == name.as_bytes() {
-            return Some(super::StatInfo {
+            return Some(StatInfo {
                 mode: S_IFREG | 0o444,
                 size: slot.data.len() as u32,
                 ino: (i as u32) + 2,
@@ -131,7 +136,8 @@ fn log_reg(name: &str, n: usize, replace: bool) {
     console::status_progress(&alloc::format!("vfs {kind} {name} ({n} bytes)"));
 }
 
-pub fn init() {
+/// Register embedded user ELFs (Limine modules loaded later may override).
+pub fn init_embedded() {
     let _ = register("ok", OK_ELF);
     let _ = register("heap", HEAP_ELF);
     let _ = register("stdhello", STD_HELLO_ELF);
@@ -149,6 +155,10 @@ pub fn init() {
     let _ = register("echo", ECHO_ELF);
     let _ = register("cat", CAT_ELF);
     let _ = register("ls", LS_ELF);
+}
+
+/// Register Limine-mapped modules by basename (overrides embedded names).
+pub fn init_limine() {
     let Some(resp) = crate::limine_boot::MODULES.response() else {
         return;
     };
