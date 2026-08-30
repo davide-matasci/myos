@@ -1,0 +1,25 @@
+[package]
+name = "uutils-smoke-myos"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "uutils-echo-smoke"
+path = "exit0.rs"
+
+[[bin]]
+name = "uutils-true-smoke"
+path = "exit0.rs"
+
+[[bin]]
+name = "uutils-false-smoke"
+path = "exit1.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

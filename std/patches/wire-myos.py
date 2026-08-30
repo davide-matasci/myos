@@ -241,15 +241,126 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        "std/src/sys/env/mod.rs",
+        [
+            (
+                '    target_os = "xous",\n))]\nmod common;',
+                '    target_os = "xous",\n    target_os = "myos",\n))]\nmod common;',
+            ),
+            (
+                '    target_os = "xous" => {\n        mod xous;\n        pub use xous::*;\n    }\n    target_os = "zkvm" => {',
+                '    target_os = "xous" => {\n        mod xous;\n        pub use xous::*;\n    }\n    target_os = "myos" => {\n        mod myos;\n        pub use myos::*;\n    }\n    target_os = "zkvm" => {',
+            ),
+        ],
+    ),
+    (
+        "std/src/sys/paths/mod.rs",
+        [
+            (
+                '    target_os = "motor" => {\n        mod motor;\n        #[expect(dead_code)]\n        mod unsupported;\n        mod imp {',
+                '    target_os = "myos" => {\n        mod myos;\n        use myos as imp;\n    }\n    target_os = "motor" => {\n        mod motor;\n        #[expect(dead_code)]\n        mod unsupported;\n        mod imp {',
+            ),
+        ],
+    ),
+    (
         "std/src/sys/random/mod.rs",
         [
             (
-                '        target_os = "vexos",\n    ) => {',
-                '        target_os = "vexos",\n        target_os = "myos",\n    ) => {',
+                '    target_os = "zkvm" => {\n        mod zkvm;\n        pub use zkvm::fill_bytes;\n    }\n    any(',
+                '    target_os = "zkvm" => {\n        mod zkvm;\n        pub use zkvm::fill_bytes;\n    }\n    target_os = "myos" => {\n        mod myos;\n        pub use myos::{fill_bytes, hashmap_random_keys};\n    }\n    any(',
             ),
             (
                 '    target_os = "vexos",\n)))]',
                 '    target_os = "vexos",\n    target_os = "myos"\n)))]',
+            ),
+        ],
+    ),
+    (
+        "alloc/src/raw_vec/mod.rs",
+        [
+            (
+                """        let cap = cmp::max(self.cap.as_inner() * 2, required_cap);
+        let cap = cmp::max(min_non_zero_cap(elem_layout.size()), cap);
+
+        // SAFETY:
+        // - cap >= len + additional
+        // - other preconditions passed to caller
+        let ptr = unsafe { self.finish_grow(cap, elem_layout)? };
+
+        // SAFETY: `finish_grow` would have failed if `cap > isize::MAX`
+        unsafe { self.set_ptr_and_cap(ptr, cap) };
+        Ok(())""",
+                """        let cap = cmp::max(self.cap.as_inner() * 2, required_cap);
+        let cap = cmp::max(min_non_zero_cap(elem_layout.size()), cap);
+
+        // myos: first growth from an empty `RawVec` uses the same path as
+        // `try_allocate_in` (struct literal), not `finish_grow` + `set_ptr_and_cap`.
+        #[cfg(target_os = "myos")]
+        if self.cap.as_inner() == 0 {
+            let layout = match layout_array(cap, elem_layout) {
+                Ok(layout) => layout,
+                Err(_) => return Err(CapacityOverflow.into()),
+            };
+            if layout.size() == 0 {
+                let alloc = unsafe { core::mem::transmute_copy(&self.alloc) };
+                *self = Self::new_in(alloc, elem_layout.alignment());
+                return Ok(());
+            }
+            let ptr = match self.alloc.allocate(layout) {
+                Ok(ptr) => ptr,
+                Err(_) => return Err(AllocError { layout, non_exhaustive: () }.into()),
+            };
+            self.ptr = Unique::from(ptr.cast());
+            self.cap = unsafe { Cap::new_unchecked(cap) };
+            return Ok(());
+        }
+
+        // SAFETY:
+        // - cap >= len + additional
+        // - other preconditions passed to caller
+        let ptr = unsafe { self.finish_grow(cap, elem_layout)? };
+
+        // SAFETY: `finish_grow` would have failed if `cap > isize::MAX`
+        unsafe { self.set_ptr_and_cap(ptr, cap) };
+        Ok(())""",
+            ),
+            (
+                """        let cap = len.checked_add(additional).ok_or(CapacityOverflow)?;
+
+        // SAFETY: preconditions passed to caller
+        let ptr = unsafe { self.finish_grow(cap, elem_layout)? };
+
+        // SAFETY: `finish_grow` would have failed if `cap > isize::MAX`
+        unsafe { self.set_ptr_and_cap(ptr, cap) };
+        Ok(())""",
+                """        let cap = len.checked_add(additional).ok_or(CapacityOverflow)?;
+
+        #[cfg(target_os = "myos")]
+        if self.cap.as_inner() == 0 {
+            let layout = match layout_array(cap, elem_layout) {
+                Ok(layout) => layout,
+                Err(_) => return Err(CapacityOverflow.into()),
+            };
+            if layout.size() == 0 {
+                let alloc = unsafe { core::mem::transmute_copy(&self.alloc) };
+                *self = Self::new_in(alloc, elem_layout.alignment());
+                return Ok(());
+            }
+            let ptr = match self.alloc.allocate(layout) {
+                Ok(ptr) => ptr,
+                Err(_) => return Err(AllocError { layout, non_exhaustive: () }.into()),
+            };
+            self.ptr = Unique::from(ptr.cast());
+            self.cap = unsafe { Cap::new_unchecked(cap) };
+            return Ok(());
+        }
+
+        // SAFETY: preconditions passed to caller
+        let ptr = unsafe { self.finish_grow(cap, elem_layout)? };
+
+        // SAFETY: `finish_grow` would have failed if `cap > isize::MAX`
+        unsafe { self.set_ptr_and_cap(ptr, cap) };
+        Ok(())""",
             ),
         ],
     ),
@@ -310,6 +421,9 @@ def main() -> None:
         (repo / "std/sys/myos/fd.rs", patch_root / "std/src/sys/fd/myos.rs"),
         (repo / "std/sys/myos/stdio.rs", patch_root / "std/src/sys/stdio/myos.rs"),
         (repo / "std/sys/args/myos.rs", patch_root / "std/src/sys/args/myos.rs"),
+        (repo / "std/sys/env/myos.rs", patch_root / "std/src/sys/env/myos.rs"),
+        (repo / "std/sys/paths/myos.rs", patch_root / "std/src/sys/paths/myos.rs"),
+        (repo / "std/sys/random/myos.rs", patch_root / "std/src/sys/random/myos.rs"),
         (repo / "std/sys/fs/myos.rs", patch_root / "std/src/sys/fs/myos.rs"),
         (repo / "std/sys/process/myos.rs", patch_root / "std/src/sys/process/myos.rs"),
         (repo / "std/os/myos", patch_root / "std/src/os/myos"),

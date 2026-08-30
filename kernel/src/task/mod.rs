@@ -154,6 +154,9 @@ struct Task {
     user_argv: usize,
     /// Current program break (end of heap). 0 for kernel threads.
     brk_cur: u64,
+    /// Basename from the last successful exec (multicall argv[0] fallback).
+    exec_name: [u8; 32],
+    exec_name_len: u8,
     exit_code: u8,
 }
 
@@ -175,6 +178,8 @@ const EMPTY: Task = Task {
     user_argc: 0,
     user_argv: 0,
     brk_cur: 0,
+    exec_name: [0; 32],
+    exec_name_len: 0,
     exit_code: 0,
 };
 
@@ -258,6 +263,26 @@ pub fn current_brk() -> u64 {
 
 pub fn set_brk(brk: u64) {
     with_current_mut(|t| t.brk_cur = brk);
+}
+
+pub fn set_exec_name(name: &[u8]) {
+    with_current_mut(|t| {
+        let n = name.len().min(t.exec_name.len());
+        t.exec_name[..n].copy_from_slice(&name[..n]);
+        t.exec_name_len = n as u8;
+    });
+}
+
+pub fn exec_name(out: &mut [u8]) -> usize {
+    let flags = irq_save();
+    irq_off();
+    let id = CURRENT.load(Ordering::SeqCst);
+    let t = TASKS.lock()[id];
+    let n = t.exec_name_len as usize;
+    let n = n.min(out.len()).min(t.exec_name.len());
+    out[..n].copy_from_slice(&t.exec_name[..n]);
+    irq_restore(flags);
+    n
 }
 
 fn heap_base_for(base: u64, stack_off: u64) -> u64 {
@@ -701,6 +726,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         user_argc: uargc,
         user_argv: uargv,
         brk_cur: brk,
+        exec_name: [0; 32],
+        exec_name_len: 0,
         exit_code: 0,
     };
     drop(tasks);
@@ -811,6 +838,8 @@ fn spawn_inner(
         user_argc,
         user_argv,
         brk_cur,
+        exec_name: [0; 32],
+        exec_name_len: 0,
         exit_code: 0,
     };
     drop(tasks);

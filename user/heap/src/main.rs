@@ -98,14 +98,9 @@ fn main() -> ! {
     write(&v);
     #[cfg(not(target_arch = "riscv64"))]
     {
-        run_prog_exit(
-            b"/uutils-echo",
-            &[b"uutils-echo"],
-            0,
-            b"uutils echo ok\n",
-        );
-        run_prog_exit(b"/uutils-true", &[b"uutils-true"], 0, b"uutils true ok\n");
-        run_prog_exit(b"/uutils-false", &[b"uutils-false"], 1, b"uutils false ok\n");
+        run_prog_exit(b"/uutils-echo", &[], 0, b"uutils echo ok\n");
+        run_prog_exit(b"/uutils-true", &[], 0, b"uutils true ok\n");
+        run_prog_exit(b"/uutils-false", &[], 1, b"uutils false ok\n");
     }
     smoke_disk();
     smoke_vfs();
