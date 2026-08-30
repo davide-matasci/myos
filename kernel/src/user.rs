@@ -338,7 +338,8 @@ fn build_argv_stack(
     }
     let stack_top = (user_base + stack_off + (USER_STACK_PAGES * PAGE) as u64) as usize;
     let stack_bot = (user_base + stack_off) as usize;
-    let mut sp = stack_top;
+    // Leave bytes below stack_top: argv strings must not end at stack_top (unmapped).
+    let mut sp = stack_top.checked_sub(64)?;
     let mut arg_ptrs = [0usize; MAX_ARGC];
     for (i, arg) in args.iter().enumerate() {
         if arg.len() > MAX_ARG_LEN {
