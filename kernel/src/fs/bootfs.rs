@@ -17,6 +17,7 @@ const SBASE_LS_ELF: &[u8] = include_bytes!(env!("USER_SBASE_LS_PATH"));
 const SBASE_FALSE_ELF: &[u8] = include_bytes!(env!("USER_SBASE_FALSE_PATH"));
 const SBASE_PWD_ELF: &[u8] = include_bytes!(env!("USER_SBASE_PWD_PATH"));
 const SBASE_BASENAME_ELF: &[u8] = include_bytes!(env!("USER_SBASE_BASENAME_PATH"));
+const UUTILS_COREUTILS_ELF: &[u8] = include_bytes!(env!("USER_UUTILS_COREUTILS_PATH"));
 const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
 const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
 const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
@@ -149,6 +150,10 @@ pub fn init() {
     let _ = register("echo", ECHO_ELF);
     let _ = register("cat", CAT_ELF);
     let _ = register("ls", LS_ELF);
+    // Same multicall ELF; uutils dispatches via argv[0] basename (e.g. uutils-echo -> echo).
+    let _ = register("uutils-echo", UUTILS_COREUTILS_ELF);
+    let _ = register("uutils-true", UUTILS_COREUTILS_ELF);
+    let _ = register("uutils-false", UUTILS_COREUTILS_ELF);
     let Some(resp) = crate::limine_boot::MODULES.response() else {
         return;
     };

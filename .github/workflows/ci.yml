@@ -49,7 +49,6 @@ jobs:
               - 'scripts/fetch-sysroot.sh'
               - 'scripts/package-sysroot.sh'
               - 'scripts/install-sysroot.sh'
-              - 'scripts/myos-rustc.sh'
               - 'scripts/check-wire-myos.sh'
 
   wire-myos:
@@ -186,7 +185,7 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
 
-      - name: Install sysroot and build std/C smoke ELFs
+      - name: Install sysroot and build std/C/sbase/uutils smoke ELFs
         run: |
           chmod +x scripts/*.sh
           if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
@@ -198,6 +197,7 @@ jobs:
           ./scripts/build-std-hello.sh
           ./scripts/build-c-hello.sh
           ./scripts/build-sbase.sh
+          ./scripts/build-uutils-myos.sh
 
       - name: PS/2 scancode decode unit tests
         run: cargo test -p ps2-scancode
@@ -228,6 +228,7 @@ jobs:
             target/std-*
             target/c-hello-*
             target/sbase-*
+            target/uutils-*
             target/limine-v*
           )
           if [ -f target/virt.dtb ]; then
@@ -252,6 +253,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: build
+    if: ${{ needs.build.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:

@@ -5,7 +5,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use myos_user::{exec, exit, fork, heap_init, wait, write, Heap};
+use myos_user::{exec, exit, fork, heap_init, wait_status, write, Heap};
 
 #[global_allocator]
 static GLOBAL: Heap = Heap;
@@ -27,7 +27,21 @@ fn run_prog(path: &[u8], args: &[&[u8]]) {
         None => write(b"fork fail\n"),
         Some(0) => exec(path, args),
         Some(_) => {
-            let _ = wait();
+            let _ = wait_status();
+        }
+    }
+}
+
+fn run_prog_exit(path: &[u8], args: &[&[u8]], expect: u8, ok_msg: &[u8]) {
+    match fork() {
+        None => write(b"fork fail\n"),
+        Some(0) => exec(path, args),
+        Some(_) => {
+            if let Some((_, status)) = wait_status() {
+                if status == expect {
+                    write(ok_msg);
+                }
+            }
         }
     }
 }
@@ -37,6 +51,17 @@ fn main() -> ! {
     let mut v = Vec::new();
     v.extend_from_slice(b"alloc ok\n");
     write(&v);
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        run_prog_exit(
+            b"/uutils-echo",
+            &[b"uutils-echo"],
+            0,
+            b"uutils echo ok\n",
+        );
+        run_prog_exit(b"/uutils-true", &[b"uutils-true"], 0, b"uutils true ok\n");
+        run_prog_exit(b"/uutils-false", &[b"uutils-false"], 1, b"uutils false ok\n");
+    }
     run_prog(b"/stdhello", &[]);
     run_prog(b"/stdcat", &[]);
     run_prog(b"/stdecho", &[]);
