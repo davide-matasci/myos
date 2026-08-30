@@ -445,29 +445,33 @@ CI checks `println!("std ok")` on BIOS, UEFI, and AArch64. App crates link again
 the prebuilt sysroot (no `-Z build-std` on each app build). More syscalls (`open`,
 process, time, …) are still needed for real programs beyond the smoke test.
 
-### C userspace (`libmyos-c`)
+### C userspace (newlib + libgloss)
 
-For small freestanding C programs, myos ships a minimal libc and cross-compile
-scripts (host **clang** + **lld**, not a full musl/newlib port):
+C programs link against **newlib** with a myos **libgloss** port (syscall
+adapters + ENOSYS stubs). Host **clang** cross-compiles; no new kernel syscalls
+required beyond the existing myos ABI.
 
 ```sh
-./scripts/build-c-libc.sh    # libmyos-c.a for x86_64 and AArch64
-./scripts/build-c-hello.sh   # smoke ELFs → target/c-hello-*
+./scripts/build-newlib.sh   # fetch newlib 4.4.0, build libc + libgloss/myos
+./scripts/build-c-hello.sh  # smoke ELFs → target/c-hello-*
 ```
 
 | Path | Role |
 |------|------|
-| `libc/include/` | Tiny headers (`unistd`, `stdio`, `string`, `stdlib`, `myos/syscall.h`) |
-| `libc/src/` | Syscall wrappers, `puts`/`printf`, bump `malloc`, `environ` |
-| `libc/src/crt/` | `_start` + SysV stack (x86) or argc/argv in x0/x1 (AArch64) |
+| `newlib/libgloss/myos/` | libgloss port: `_read`/`_write`/`_open`/… → myos syscalls; stubs return `ENOSYS`/`EROFS` |
+| `scripts/fetch-newlib.sh` | Clone pinned newlib into `target/newlib-src` |
+| `scripts/patch-newlib-myos.sh` | Register `*-unknown-myos`, install libgloss port |
+| `scripts/build-newlib.sh` | Build/install newlib per arch |
+| `scripts/build-libgloss-myos.sh` | Build `libgloss.a` + `crt0.o` (called by build-newlib) |
+| `scripts/build-c-hello.sh` | Link smoke tests with `-lc -lgloss` |
 | `c/hello.c`, `c/echo.c` | Smoke tests (`c ok`, argv echo) |
-| `scripts/build-c-libc.sh` | Build static `libmyos-c.a` per arch |
-| `scripts/build-c-hello.sh` | Link smoke ELFs with `-nostdlib` |
 
-The kernel embeds `/chello` from `target/c-hello-<triple>` (same pattern as
-`/stdhello`). CI checks `c ok` after the Rust `std` smoke tests. A future TCC
-port could target the same syscall ABI; musl/newlib are intentionally out of
-scope until more POSIX syscalls exist.
+Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
+`open` read-only, `close`, `brk`, `fork`, `wait`). Write-only open flags and
+`lseek`/`execve`/… return `EROFS`/`ENOSYS`. Do **not** use
+`-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
+
+The legacy `libc/` tree (`libmyos-c`) remains for reference; CI uses newlib.
 
 The in-tree shell (`user/sh`) supports `export NAME=value`, `env`, pipes, stdin
 redirect (`<`), and `$?`. Output redirect (`>`) is deferred while bootfs stays

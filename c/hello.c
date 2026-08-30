@@ -1,6 +1,7 @@
-#include <stdio.h>
+#include <unistd.h>
 
 int main(void) {
-    puts("c ok");
+    const char msg[] = "c ok\n";
+    write(STDOUT_FILENO, msg, sizeof msg - 1);
     return 0;
 }
