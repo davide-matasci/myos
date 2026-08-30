@@ -43,6 +43,10 @@ cd "$UUTILS_DIR"
 if [[ "$PROFILE" == "release" ]]; then
   export CARGO_PROFILE_RELEASE_LTO=false
 fi
+# build-std-hello / build-sbase leave RUSTC=myos-rustc.sh in the CI shell; that
+# wrapper always uses the myos sysroot and breaks host build scripts. Respect
+# .cargo/config.toml myos-rustc-cross.sh instead.
+unset RUSTC
 cargo +nightly-2026-07-26 build \
   --target "$TARGET_JSON" \
   --no-default-features \
