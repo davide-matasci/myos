@@ -5,14 +5,150 @@ on:
     branches: [master, main]
   pull_request:
     branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      probe_latest_nightly:
+        description: Also test wire-myos against latest nightly (non-blocking)
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  boot:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      sysroot: ${{ steps.filter.outputs.sysroot }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            sysroot:
+              - 'std/**'
+              - 'targets/**'
+              - 'rust-toolchain.toml'
+              - '.cargo/config.toml'
+              - 'scripts/myos-sysroot-lib.sh'
+              - 'scripts/build-sysroot.sh'
+              - 'scripts/prepare-rust-std-myos.sh'
+              - 'scripts/fetch-sysroot.sh'
+              - 'scripts/package-sysroot.sh'
+              - 'scripts/install-sysroot.sh'
+              - 'scripts/myos-rustc.sh'
+              - 'scripts/check-wire-myos.sh'
+
+  wire-myos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly + rust-src
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src
+
+      - name: Verify wire-myos.py on pinned nightly
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/check-wire-myos.sh
+
+      - name: Probe latest nightly (informational)
+        if: github.event_name == 'workflow_dispatch' && inputs.probe_latest_nightly
+        continue-on-error: true
+        run: |
+          rustup toolchain install nightly --component rust-src
+          MYOS_NIGHTLY=nightly ./scripts/check-wire-myos.sh
+
+  sysroot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [changes, wire-myos]
+    if: |
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.sysroot == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, aarch64-unknown-none-softfloat
+
+      - name: Cache myos sysroot
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: myos-sysroot-v1
+          workspaces: .
+          cache-directories: target/myos-sysroot
+
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Build and package sysroot
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build-sysroot.sh
+          ./scripts/package-sysroot.sh
+
+      - name: Upload sysroot tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: myos-sysroot
+          path: target/myos-sysroot-*.tar.zst
+          if-no-files-found: error
+          retention-days: 30
+
+  export-patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: sysroot
+    if: github.event_name == 'push' && needs.sysroot.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly + rust-src
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src
+
+      - name: Export upstream library patch
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/export-upstream-patch.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: myos-upstream-library-patch
+          path: target/myos-upstream-library.patch
+          if-no-files-found: error
+          retention-days: 30
+
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: [wire-myos, sysroot]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.wire-myos.result == 'success' &&
+      (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped')
     steps:
       - uses: actions/checkout@v4
 
@@ -32,13 +168,27 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: limine-8.3-1
+          cache-directories: target/myos-sysroot
 
-      - name: Install QEMU, AArch64/RISC-V UEFI firmware, and build tools
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm qemu-system-misc qemu-efi-aarch64 qemu-efi-riscv64 clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo
+      - name: Download prebuilt sysroot
+        if: needs.sysroot.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: myos-sysroot
+          path: target
 
-      - name: Build myos sysroot, newlib, C smoke ELFs, and sbase (x86 + AArch64)
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
+
+      - name: Install sysroot and build std/C smoke ELFs
         run: |
           chmod +x scripts/*.sh
+          if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
+            export MYOS_SYSROOT_TARBALL="$(ls target/myos-sysroot-*.tar.zst | head -1)"
+            ./scripts/fetch-sysroot.sh
+          else
+            ./scripts/fetch-sysroot.sh
+          fi
           ./scripts/build-std-hello.sh
           ./scripts/build-c-hello.sh
           ./scripts/build-sbase.sh
@@ -50,33 +200,95 @@ jobs:
         run: |
           cargo clean -p myos
           cargo build
+          cargo build -p kernel --target aarch64-unknown-none-softfloat
+          cargo build -p kernel --target riscv64imac-unknown-none-elf
           test -f target/bios.img
           od -An -tx1 -N 16 target/bios.img
 
-      - name: Boot BIOS in QEMU
-        id: bios
-        timeout-minutes: 5
-        continue-on-error: true
-        run: cargo run -- --ci
+      - name: Pack CI build artifacts
+        run: |
+          shopt -s nullglob
+          files=(
+            target/debug/myos
+            target/debug/build/myos-*/out
+            target/bios.img
+            target/uefi.img
+            target/fat.img
+            target/x86_64-unknown-none
+            target/aarch64-unknown-none-softfloat
+            target/riscv64imac-unknown-none-elf
+            target/hello-*
+            target/ok-*
+            target/limine-v*
+          )
+          if [ -f target/virt.dtb ]; then
+            files+=(target/virt.dtb)
+          fi
+          if [ -d target/ovmf ]; then
+            files+=(target/ovmf)
+          fi
+          tar -cf ci-build.tar "${files[@]}"
+          ls -lh ci-build.tar
 
-      - name: Boot UEFI in QEMU
-        id: uefi
-        timeout-minutes: 5
-        continue-on-error: true
-        run: cargo run -- uefi --ci
+      - name: Upload CI build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-build
+          path: ci-build.tar
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Boot AArch64 in QEMU
-        id: aarch64
-        timeout-minutes: 5
-        continue-on-error: true
-        run: cargo run -- aarch64 --ci
+  boot:
+    name: boot (${{ matrix.id }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: bios
+            args: --ci
+            packages: qemu-system-x86
+            needs_rust: false
+            required: true
+          - id: uefi
+            args: uefi --ci
+            packages: qemu-system-x86
+            needs_rust: false
+            required: true
+          - id: aarch64
+            args: aarch64 --ci
+            packages: qemu-system-arm qemu-efi-aarch64
+            needs_rust: true
+            required: true
+          - id: riscv64
+            args: riscv64 --ci
+            packages: qemu-system-misc qemu-efi-riscv64
+            needs_rust: true
+            required: false
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Boot RISC-V64 in QEMU
-        id: riscv64
-        timeout-minutes: 5
-        continue-on-error: true
-        run: cargo run -- riscv64 --ci
+      - name: Install pinned nightly
+        if: matrix.needs_rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
 
-      - name: Fail if any boot failed
-        if: steps.bios.outcome == 'failure' || steps.uefi.outcome == 'failure' || steps.aarch64.outcome == 'failure'
-        run: exit 1
+      - name: Download CI build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-build
+
+      - name: Extract CI build artifacts
+        run: tar -xf ci-build.tar
+
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Boot in QEMU
+        continue-on-error: ${{ !matrix.required }}
+        run: ./target/debug/myos ${{ matrix.args }}
