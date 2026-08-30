@@ -81,6 +81,14 @@ pub fn lookup(name: &str) -> Option<&'static [u8]> {
     None
 }
 
+/// List the flat root when `rel` is empty or `"."`; otherwise return 0.
+pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
+    if !rel.is_empty() && rel != "." {
+        return 0;
+    }
+    listdir(buf)
+}
+
 /// Copy newline-separated basenames into `buf`. Returns bytes written.
 pub fn listdir(buf: &mut [u8]) -> usize {
     let files = FILES.lock();

@@ -65,8 +65,21 @@ unsafe extern "C" fn stub_stat(path: *const u8, path_len: usize, out: *mut VfsSt
     0
 }
 
-unsafe extern "C" fn stub_listdir(buf: *mut u8, buf_len: usize, out_len: *mut usize) -> i32 {
+unsafe extern "C" fn stub_listdir(
+    path: *const u8,
+    path_len: usize,
+    buf: *mut u8,
+    buf_len: usize,
+    out_len: *mut usize,
+) -> i32 {
     if buf.is_null() || out_len.is_null() {
+        return -1;
+    }
+    let rel = match core::str::from_utf8(core::slice::from_raw_parts(path, path_len)) {
+        Ok(p) => p,
+        Err(_) => return -1,
+    };
+    if !rel.is_empty() && rel != "." {
         return -1;
     }
     let mut n = 0usize;

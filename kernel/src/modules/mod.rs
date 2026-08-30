@@ -43,9 +43,9 @@ pub fn load_embedded_stubfs() {
     }
 }
 
-/// Load the FAT16 module baked into the kernel. Registers `/msg` via
-/// `vfs_register` after reading the virtio-blk disk. Failure is logged
-/// (`fat mod failed`) and is not a kernel panic.
+/// Load the FAT16 module baked into the kernel. Mounts `/fat` via vfs_mount
+/// and registers `/msg` on bootfs for CI. Failure is logged (`fat mod failed`)
+/// and is not a kernel panic.
 pub fn load_embedded_fat() {
     if let Err(e) = load("fat", FAT_IMAGE) {
         console::status_fail(&alloc::format!("fat module: {e}"));

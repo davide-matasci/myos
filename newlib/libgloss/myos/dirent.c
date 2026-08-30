@@ -49,7 +49,10 @@ opendir(const char *name)
 
 	memset(&the_dir, 0, sizeof(the_dir));
 	the_dir.len = (unsigned long)myos_syscall3(
-	    MYOS_SYS_LISTDIR, (long)(uintptr_t)the_dir.buf, MYOS_DIRBUF, 0);
+	    MYOS_SYS_LISTDIR,
+	    (long)(uintptr_t)name,
+	    (long)strlen(name),
+	    (long)(uintptr_t)the_dir.buf);
 	if (the_dir.len == (unsigned long)MYOS_SYSERR) {
 		errno = EIO;
 		return NULL;

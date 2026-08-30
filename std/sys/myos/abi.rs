@@ -339,6 +339,7 @@ fn raw_open(ptr: usize, len: usize) -> usize {
             in("rax") SYS_OPEN,
             in("rdi") ptr,
             in("rsi") len,
+            in("rdx") 0usize,
             lateout("rax") ret,
             out("rcx") _,
             out("r11") _,
@@ -361,6 +362,7 @@ fn raw_open(ptr: usize, len: usize) -> usize {
             in("x8") SYS_OPEN,
             in("x0") ptr,
             in("x1") len,
+            in("x2") 0usize,
             lateout("x0") ret,
             options(nostack),
         );

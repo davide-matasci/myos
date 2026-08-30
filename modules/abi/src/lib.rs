@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 /// Stat blob exchanged with module VFS hooks (matches kernel layout).
 #[repr(C)]
@@ -34,7 +34,13 @@ pub struct ModuleVfsOps {
         path_len: usize,
         out: *mut VfsStatInfo,
     ) -> i32,
-    pub listdir: unsafe extern "C" fn(buf: *mut u8, buf_len: usize, out_len: *mut usize) -> i32,
+    pub listdir: unsafe extern "C" fn(
+        path: *const u8,
+        path_len: usize,
+        buf: *mut u8,
+        buf_len: usize,
+        out_len: *mut usize,
+    ) -> i32,
     /// Optional; null if the mount is read-only at runtime.
     pub register: Option<
         unsafe extern "C" fn(

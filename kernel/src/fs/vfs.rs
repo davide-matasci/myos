@@ -36,7 +36,7 @@ impl Vnode {
 pub struct MountOps {
     pub lookup: fn(&str) -> Option<&'static [u8]>,
     pub stat: fn(&str) -> Option<StatInfo>,
-    pub listdir: fn(&mut [u8]) -> usize,
+    pub listdir: fn(&str, &mut [u8]) -> usize,
     pub register: fn(&str, &'static [u8]) -> bool,
 }
 
@@ -89,14 +89,31 @@ pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps) -> bool {
     true
 }
 
+const O_ACCMODE: u32 = 3;
+const O_RDONLY: u32 = 0;
+const O_CREAT: u32 = 0o100;
+
 /// Resolve `path` to a vnode suitable for open/read.
-pub fn open(path: &str) -> Option<Vnode> {
+pub fn open(path: &str, flags: u32) -> Option<Vnode> {
+    if flags & O_ACCMODE != O_RDONLY {
+        return None;
+    }
     let rel = normalize_path(path);
     if rel.is_empty() {
         return None;
     }
-    let (idx, rel) = resolve_index(path)?;
-    backend_lookup(idx, rel)?;
+    if let Some((idx, rel)) = resolve_index(path) {
+        if backend_lookup(idx, rel).is_some() {
+            return Some(make_vnode(idx, rel));
+        }
+    }
+    if flags & O_CREAT != 0 {
+        return None;
+    }
+    None
+}
+
+fn make_vnode(idx: usize, rel: &str) -> Vnode {
     let mut node = Vnode {
         mount: idx as u16,
         path_len: 0,
@@ -105,7 +122,7 @@ pub fn open(path: &str) -> Option<Vnode> {
     let len = rel.len().min(Vnode::PATH_CAP);
     node.path[..len].copy_from_slice(&rel.as_bytes()[..len]);
     node.path_len = len as u16;
-    Some(node)
+    node
 }
 
 /// Look up file bytes for `path` on the best matching mount.
@@ -136,13 +153,16 @@ pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
     n
 }
 
-/// List directory entries on the root mount into `buf` (newline-separated).
-pub fn listdir(buf: &mut [u8]) -> usize {
-    let mounts = MOUNTS.lock();
-    let Some(m) = mounts.first() else {
+/// List directory entries at `path` into `buf` (newline-separated basenames).
+pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
+    let Some((idx, rel)) = resolve_index(path) else {
         return 0;
     };
-    backend_listdir(m, buf)
+    let mounts = MOUNTS.lock();
+    let Some(m) = mounts.get(idx) else {
+        return 0;
+    };
+    backend_listdir(m, rel, buf)
 }
 
 /// Register `name` on mount `mount_name` (copying `bytes` into bootfs storage).
@@ -214,10 +234,10 @@ fn backend_stat(idx: usize, rel: &str) -> Option<StatInfo> {
     }
 }
 
-fn backend_listdir(m: &Mount, buf: &mut [u8]) -> usize {
+fn backend_listdir(m: &Mount, rel: &str, buf: &mut [u8]) -> usize {
     match m.backend {
-        MountBackend::Kernel(ops) => (ops.listdir)(buf),
-        MountBackend::Module(ops) => module_listdir(&ops, buf),
+        MountBackend::Kernel(ops) => (ops.listdir)(rel, buf),
+        MountBackend::Module(ops) => module_listdir(&ops, rel, buf),
     }
 }
 
@@ -278,12 +298,20 @@ fn module_stat(ops: &ModuleVfsOps, rel: &str) -> Option<StatInfo> {
     })
 }
 
-fn module_listdir(ops: &ModuleVfsOps, buf: &mut [u8]) -> usize {
+fn module_listdir(ops: &ModuleVfsOps, rel: &str, buf: &mut [u8]) -> usize {
     if ops.listdir as usize == 0 {
         return 0;
     }
     let mut n: usize = 0;
-    let rc = unsafe { (ops.listdir)(buf.as_mut_ptr(), buf.len(), &mut n) };
+    let rc = unsafe {
+        (ops.listdir)(
+            rel.as_ptr(),
+            rel.len(),
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut n,
+        )
+    };
     if rc != 0 {
         0
     } else {

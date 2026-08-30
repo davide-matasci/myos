@@ -5,7 +5,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use myos_user::{exec, exit, fork, heap_init, open, read, wait, write, Heap};
+use myos_user::{exec, exit, fork, heap_init, listdir, open, read, wait, write, Heap};
 
 #[global_allocator]
 static GLOBAL: Heap = Heap;
@@ -32,6 +32,31 @@ fn run_prog(path: &[u8], args: &[&[u8]]) {
     }
 }
 
+fn buf_has(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+fn smoke_vfs() {
+    let mut buf = [0u8; 512];
+    let n = listdir(b"/disk", &mut buf);
+    if n != usize::MAX && n > 0 && buf_has(&buf[..n], b"ping") {
+        write(b"disk ls ok\n");
+    }
+    let n = listdir(b"/fat", &mut buf);
+    if n != usize::MAX && n > 0 && buf_has(&buf[..n], b"msg") {
+        write(b"fat ls ok\n");
+    }
+    let Some(fd) = open(b"/fat/msg") else {
+        write(b"fat open fail\n");
+        return;
+    };
+    let mut msg = [0u8; 8];
+    let nr = read(fd, &mut msg);
+    if nr >= 7 && &msg[..7] == b"fat ok\n" {
+        write(b"fat read ok\n");
+    }
+}
+
 fn smoke_disk() {
     let Some(fd) = open(b"/disk/ping") else {
         write(b"disk open fail\n");
@@ -50,6 +75,7 @@ fn main() -> ! {
     v.extend_from_slice(b"alloc ok\n");
     write(&v);
     smoke_disk();
+    smoke_vfs();
     run_prog(b"/stdhello", &[]);
     run_prog(b"/stdcat", &[]);
     run_prog(b"/stdecho", &[]);

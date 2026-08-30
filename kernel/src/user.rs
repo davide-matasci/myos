@@ -998,13 +998,13 @@ pub extern "C" fn syscall_dispatch(
     match nr {
         SYS_WRITE => sys_write(a0, a1, a2),
         SYS_EXIT => sys_exit(a0),
-        SYS_OPEN => sys_open(a0, a1),
+        SYS_OPEN => sys_open(a0, a1, a2),
         SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
         SYS_EXEC => sys_exec(a0, a1, a2),
         SYS_FORK => sys_fork(user_rip, user_rsp),
         SYS_WAIT => sys_wait(a0),
-        SYS_LISTDIR => sys_listdir(a0, a1),
+        SYS_LISTDIR => sys_listdir(a0, a1, a2),
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
         SYS_DUP2 => sys_dup2(a0, a1),
@@ -1036,14 +1036,14 @@ fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
     Some(buf)
 }
 
-fn sys_open(ptr: usize, path_len: usize) -> usize {
+fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
     let Some(buf) = copy_user_path(ptr, path_len) else {
         return SYSERR;
     };
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let Some(node) = fs::open(path) else {
+    let Some(node) = fs::open(path, flags as u32) else {
         return SYSERR;
     };
     match task::fd_open(node) {
@@ -1263,15 +1263,24 @@ fn copy_user_exec_pack_via_aspace(
     Ok((args, env))
 }
 
-fn sys_listdir(buf: usize, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    if !user_range_ok(buf, len) {
+fn sys_listdir(path_ptr: usize, path_len: usize, buf: usize) -> usize {
+    const LISTDIR_CAP: usize = 512;
+    if buf == 0 || !user_range_ok(buf, LISTDIR_CAP) {
         return SYSERR;
     }
-    let mut kbuf = [0u8; 512];
-    let n = fs::listdir(&mut kbuf).min(kbuf.len()).min(len);
+    let path = if path_len == 0 {
+        alloc::string::String::from("/")
+    } else {
+        let Some(pbuf) = copy_user_path(path_ptr, path_len) else {
+            return SYSERR;
+        };
+        match core::str::from_utf8(&pbuf[..path_len]) {
+            Ok(p) => alloc::string::String::from(p),
+            Err(_) => return SYSERR,
+        }
+    };
+    let mut kbuf = [0u8; LISTDIR_CAP];
+    let n = fs::listdir(&path, &mut kbuf).min(LISTDIR_CAP);
     let aspace = task::current_aspace();
     if !write_user_bytes(aspace, buf, &kbuf[..n]) {
         return SYSERR;

@@ -6,8 +6,8 @@ mod vfs;
 pub use vfs::{StatInfo, Vnode};
 
 /// Resolve `path` to a vnode for open/read.
-pub fn open(path: &str) -> Option<Vnode> {
-    vfs::open(path)
+pub fn open(path: &str, flags: u32) -> Option<Vnode> {
+    vfs::open(path, flags)
 }
 
 /// Look up `path` on the best matching mount.
@@ -25,9 +25,9 @@ pub fn stat(path: &str) -> Option<StatInfo> {
     vfs::stat(path)
 }
 
-/// List entries on the root mount into `buf` (newline-separated basenames).
-pub fn listdir(buf: &mut [u8]) -> usize {
-    vfs::listdir(buf)
+/// List entries at `path` into `buf` (newline-separated basenames).
+pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
+    vfs::listdir(path, buf)
 }
 
 /// Register `name` on mount `mount_name` (bootfs copies into its table).
@@ -53,7 +53,7 @@ pub fn init() {
         vfs::MountOps {
             lookup: bootfs::lookup,
             stat: bootfs::stat,
-            listdir: bootfs::listdir,
+            listdir: bootfs::listdir_at,
             register: bootfs::register,
         },
     );

@@ -49,7 +49,8 @@ int _open(const char *path, int flags, ...) {
         errno = EROFS;
         return -1;
     }
-    long ret = myos_syscall3(MYOS_SYS_OPEN, (long)(uintptr_t)path, (long)strlen(path), 0);
+    long ret = myos_syscall3(
+        MYOS_SYS_OPEN, (long)(uintptr_t)path, (long)strlen(path), (long)flags);
     if (ret == (long)MYOS_SYSERR) {
         errno = ENOENT;
         return -1;
