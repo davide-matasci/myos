@@ -2,6 +2,14 @@
 # Cross-build a sbase subset with newlib + myos libgloss.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/myos-c-userspace-lib.sh
+source "$ROOT/scripts/myos-c-userspace-lib.sh"
+
+if myos_sbase_is_current; then
+  echo "sbase ELFs up to date"
+  exit 0
+fi
+
 "$ROOT/scripts/prepare-sbase-myos.sh"
 "$ROOT/scripts/build-newlib.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
@@ -103,3 +111,5 @@ build_arch() {
 for arch in x86_64 aarch64; do
   build_arch "$arch"
 done
+
+echo "$(myos_sbase_version_hash)" >"$MYOS_SBASE_VERSION"
