@@ -24,8 +24,8 @@ const SYS_PIPE: usize = 10;
 const SYS_DUP2: usize = 11;
 pub const SYS_STAT: usize = 12;
 pub const PAGE: usize = 4096;
-/// User stack mapping below the heap (128 KiB).
-pub const USER_STACK_PAGES: usize = 32;
+/// User stack mapping below the heap (512 KiB — uutils/std init needs more than 128 KiB).
+pub const USER_STACK_PAGES: usize = 128;
 const HEAP_PAGES: usize = 64;
 /// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy (today
 /// release `uutils-coreutils` ≈197 pages).
