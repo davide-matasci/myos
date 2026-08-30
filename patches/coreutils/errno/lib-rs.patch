@@ -1,0 +1,10 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -22,6 +22,7 @@
+ #[cfg_attr(windows, path = "windows.rs")]
+ #[cfg_attr(target_os = "wasi", path = "wasi.rs")]
+ #[cfg_attr(target_os = "hermit", path = "hermit.rs")]
++#[cfg_attr(target_os = "myos", path = "myos.rs")]
+ mod sys;
+ 
+ use core::fmt;

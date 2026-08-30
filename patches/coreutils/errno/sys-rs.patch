@@ -1,0 +1,14 @@
+--- a/src/sys.rs
++++ b/src/sys.rs
+@@ -8,7 +8,11 @@ compile_error!("The target OS is \"unknown\" or \"none\", so it's unsupported b
+ 
+ // If there is an OS, support may be added.
+-#[cfg(not(any(target_os = "unknown", target_os = "none")))]
++#[cfg(not(any(
++    target_os = "unknown",
++    target_os = "none",
++    target_os = "myos"
++)))]
+ compile_error!("The target OS is not yet supported in the errno crate.");
+ 
+ // The following define the functions of the normal implementations

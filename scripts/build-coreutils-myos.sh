@@ -23,6 +23,8 @@ if [[ ! -d "$ROOT/target/myos-sysroot/lib/rustlib/${TARGET}/lib" ]]; then
   "$ROOT/scripts/build-sysroot.sh"
 fi
 
+"$ROOT/scripts/prepare-coreutils-patches.sh"
+
 if [[ ! -d "$UUTILS_DIR/.git" ]]; then
   echo "Cloning uutils/coreutils ${UUTILS_TAG}..."
   git clone --depth 1 --branch "$UUTILS_TAG" \

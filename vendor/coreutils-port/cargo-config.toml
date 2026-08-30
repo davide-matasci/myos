@@ -20,6 +20,6 @@ linker = "rust-lld"
 lto = false
 
 [patch.crates-io]
-errno = { path = "../../vendor/errno" }
-libc = { path = "../../vendor/libc" }
+errno = { path = "../../target/patched-crates/errno-0.3.14" }
+libc = { path = "../../target/patched-crates/libc-0.2.189" }
 rustix = { path = "../../vendor/myos-rustix-stub" }
