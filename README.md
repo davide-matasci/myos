@@ -390,7 +390,7 @@ compiler ports). Errors return `usize::MAX`.
 | 2 | open | path, path_len → fd |
 | 3 | read | fd, buf, len → n (fd 0 = keyboard + serial stdin) |
 | 4 | close | fd |
-| 5 | exec | path, path_len, args_ptr (0 or `[argc, (ptr,len)...]`) |
+| 5 | exec | path, path_len, args_ptr (0 or `[argc, (ptr,len)...][envc, (ptr,len)...]`) |
 | 6 | fork | → child pid (parent), 0 (child) |
 | 7 | wait | status_ptr (0 = ignore) → reaped child pid; stores exit code byte if ptr set |
 | 8 | listdir | buf, len → byte count (bootfs names, newline-separated) |
@@ -432,6 +432,34 @@ To build **`std`** programs (see [OSDev](https://wiki.osdev.org/Porting_Rust_sta
 CI checks `println!("std ok")` on BIOS, UEFI, and AArch64. App crates link against
 the prebuilt sysroot (no `-Z build-std` on each app build). More syscalls (`open`,
 process, time, …) are still needed for real programs beyond the smoke test.
+
+### C userspace (`libmyos-c`)
+
+For small freestanding C programs, myos ships a minimal libc and cross-compile
+scripts (host **clang** + **lld**, not a full musl/newlib port):
+
+```sh
+./scripts/build-c-libc.sh    # libmyos-c.a for x86_64 and AArch64
+./scripts/build-c-hello.sh   # smoke ELFs → target/c-hello-*
+```
+
+| Path | Role |
+|------|------|
+| `libc/include/` | Tiny headers (`unistd`, `stdio`, `string`, `stdlib`, `myos/syscall.h`) |
+| `libc/src/` | Syscall wrappers, `puts`/`printf`, bump `malloc`, `environ` |
+| `libc/src/crt/` | `_start` + SysV stack (x86) or argc/argv in x0/x1 (AArch64) |
+| `c/hello.c`, `c/echo.c` | Smoke tests (`c ok`, argv echo) |
+| `scripts/build-c-libc.sh` | Build static `libmyos-c.a` per arch |
+| `scripts/build-c-hello.sh` | Link smoke ELFs with `-nostdlib` |
+
+The kernel embeds `/chello` from `target/c-hello-<triple>` (same pattern as
+`/stdhello`). CI checks `c ok` after the Rust `std` smoke tests. A future TCC
+port could target the same syscall ABI; musl/newlib are intentionally out of
+scope until more POSIX syscalls exist.
+
+The in-tree shell (`user/sh`) supports `export NAME=value`, `env`, pipes, stdin
+redirect (`<`), and `$?`. Output redirect (`>`) is deferred while bootfs stays
+read-only.
 
 ## Layout
 

@@ -1,14 +1,19 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, dup2, exec, exit, fork, open, pipe, read_line, wait_status, write};
+use myos_user::{close, dup2, exec_env, exit, fork, open, pipe, read_line, wait_status, write};
 
 const PROMPT: &[u8] = b"$ ";
 const MAX_LINE: usize = 128;
 const MAX_ARGS: usize = 8;
 const ARG_LEN: usize = 32;
+const MAX_ENV: usize = 4;
+const ENV_LEN: usize = 48;
 
 static mut LAST_STATUS: u8 = 0;
+static mut ENV: [[u8; ENV_LEN]; MAX_ENV] = [[0; ENV_LEN]; MAX_ENV];
+static mut ENV_LENS: [usize; MAX_ENV] = [0; MAX_ENV];
+static mut ENV_COUNT: usize = 0;
 
 #[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
@@ -30,6 +35,7 @@ struct Segment<'a> {
 }
 
 fn shell() -> ! {
+    init_env();
     write(b"sh ok\n");
     smoke_fork_ping();
     smoke_fork(b"ok", &[]);
@@ -70,6 +76,16 @@ fn shell() -> ! {
             print_status(unsafe { LAST_STATUS });
             write(b"\n");
             continue;
+        }
+        if segs[0].argc == 1 && segs[0].parts[0] == b"env" {
+            print_env();
+            write(b"\n");
+            continue;
+        }
+        if segs[0].argc >= 2 && segs[0].parts[0] == b"export" {
+            if export_name_value(segs[0].parts[1]) {
+                continue;
+            }
         }
         if nseg == 2 {
             run_pipeline(&segs[0], &segs[1]);
@@ -115,7 +131,7 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     }
     match fork() {
         Some(0) => {
-            exec(path, &arg_slices[..parts.len()]);
+            exec_env(path, &arg_slices[..parts.len()], &env_slices()[..env_slice_count()]);
             cmd_not_found(path, name);
             exit();
         }
@@ -154,7 +170,7 @@ fn run_segment(seg: &Segment<'_>) {
     match fork() {
         Some(0) => {
             apply_stdin_redir(seg.in_path);
-            exec(path, &arg_slices[..seg.argc]);
+            exec_env(path, &arg_slices[..seg.argc], &env_slices()[..env_slice_count()]);
             cmd_not_found(path, seg.parts[0]);
             exit();
         }
@@ -207,7 +223,7 @@ fn run_pipeline(left: &Segment<'_>, right: &Segment<'_>) {
             dup2(wfd, 1);
             close(wfd);
             apply_stdin_redir(left.in_path);
-            exec(lpath, &left_slices[..left.argc]);
+            exec_env(lpath, &left_slices[..left.argc], &env_slices()[..env_slice_count()]);
             cmd_not_found(lpath, left.parts[0]);
             exit();
         }
@@ -225,7 +241,7 @@ fn run_pipeline(left: &Segment<'_>, right: &Segment<'_>) {
             dup2(rfd, 0);
             close(rfd);
             apply_stdin_redir(right.in_path);
-            exec(rpath, &right_slices[..right.argc]);
+            exec_env(rpath, &right_slices[..right.argc], &env_slices()[..env_slice_count()]);
             cmd_not_found(rpath, right.parts[0]);
             exit();
         }
@@ -344,6 +360,67 @@ fn write_bytes_escaped(bytes: &[u8]) {
     }
 }
 
+
+fn init_env() {
+    unsafe {
+        ENV_COUNT = 0;
+        set_env(b"SHLVL=1");
+    }
+}
+
+fn set_env(entry: &[u8]) -> bool {
+    if entry.is_empty() {
+        return false;
+    }
+    unsafe {
+        if ENV_COUNT >= MAX_ENV {
+            return false;
+        }
+        let n = entry.len().min(ENV_LEN);
+        ENV[ENV_COUNT][..n].copy_from_slice(&entry[..n]);
+        ENV_LENS[ENV_COUNT] = n;
+        ENV_COUNT += 1;
+    }
+    true
+}
+
+fn export_name_value(token: &[u8]) -> bool {
+    if let Some(eq) = token.iter().position(|&b| b == b'=') {
+        let name = &token[..eq];
+        if name.is_empty() {
+            return false;
+        }
+        set_env(token)
+    } else {
+        false
+    }
+}
+
+fn env_slices<'a>() -> [&'a [u8]; MAX_ENV] {
+    let mut out: [&'a [u8]; MAX_ENV] = [&[]; MAX_ENV];
+    unsafe {
+        for i in 0..ENV_COUNT {
+            out[i] = &ENV[i][..ENV_LENS[i]];
+        }
+    }
+    out
+}
+
+fn env_slice_count() -> usize {
+    unsafe { ENV_COUNT }
+}
+
+fn print_env() {
+    let slices = env_slices();
+    let mut first = true;
+    for item in &slices[..env_slice_count()] {
+        if !first {
+            write(b"\n");
+        }
+        write(item);
+        first = false;
+    }
+}
 
 fn command_path<'a>(name: &[u8], buf: &'a mut [u8]) -> &'a [u8] {
     let (start, src) = if name.first() == Some(&b'/') {

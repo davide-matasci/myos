@@ -28,6 +28,7 @@ macro_rules! x86_start {
 }
 
 const MAX_EXEC_ARGS: usize = 16;
+const MAX_EXEC_ENV: usize = 8;
 
 pub fn write(buf: &[u8]) {
     write_fd(1, buf);
@@ -65,22 +66,33 @@ pub fn close(fd: usize) {
 /// Exec with argv. `args` are the argument strings (argv[0] is usually the command name).
 /// Returns on failure (command missing or invalid); does not return on success.
 pub fn exec(path: &[u8], args: &[&[u8]]) {
-    let mut pack = [0usize; 1 + MAX_EXEC_ARGS * 2];
-    pack[0] = args.len().min(MAX_EXEC_ARGS);
+    exec_env(path, args, &[]);
+}
+
+/// Like [`exec`], but passes a `KEY=value` environment block to the new image.
+pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
+    let argc = args.len().min(MAX_EXEC_ARGS);
+    let envc = env.len().min(MAX_EXEC_ENV);
+    if argc == 0 && envc == 0 {
+        unsafe {
+            sys_exec(path.as_ptr() as usize, path.len(), 0);
+        }
+        return;
+    }
+    let mut pack = [0usize; 1 + MAX_EXEC_ARGS * 2 + 1 + MAX_EXEC_ENV * 2];
+    pack[0] = argc;
     for (i, a) in args.iter().take(MAX_EXEC_ARGS).enumerate() {
         pack[1 + i * 2] = a.as_ptr() as usize;
         pack[2 + i * 2] = a.len();
     }
+    let env_base = 1 + argc * 2;
+    pack[env_base] = envc;
+    for (i, e) in env.iter().take(MAX_EXEC_ENV).enumerate() {
+        pack[env_base + 1 + i * 2] = e.as_ptr() as usize;
+        pack[env_base + 2 + i * 2] = e.len();
+    }
     unsafe {
-        sys_exec(
-            path.as_ptr() as usize,
-            path.len(),
-            if args.is_empty() {
-                0
-            } else {
-                pack.as_ptr() as usize
-            },
-        );
+        sys_exec(path.as_ptr() as usize, path.len(), pack.as_ptr() as usize);
     }
 }
 

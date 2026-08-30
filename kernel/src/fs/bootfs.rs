@@ -9,6 +9,7 @@ const HEAP_ELF: &[u8] = include_bytes!(env!("USER_HEAP_PATH"));
 const STD_HELLO_ELF: &[u8] = include_bytes!(env!("USER_STD_HELLO_PATH"));
 const STD_CAT_ELF: &[u8] = include_bytes!(env!("USER_STD_CAT_PATH"));
 const STD_ECHO_ELF: &[u8] = include_bytes!(env!("USER_STD_ECHO_PATH"));
+const C_HELLO_ELF: &[u8] = include_bytes!(env!("USER_C_HELLO_PATH"));
 const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
 const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
 const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
@@ -102,6 +103,7 @@ pub fn init() {
     let _ = register("stdhello", STD_HELLO_ELF);
     let _ = register("stdcat", STD_CAT_ELF);
     let _ = register("stdecho", STD_ECHO_ELF);
+    let _ = register("chello", C_HELLO_ELF);
     let _ = register("sh", SH_ELF);
     let _ = register("echo", ECHO_ELF);
     let _ = register("cat", CAT_ELF);

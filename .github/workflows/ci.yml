@@ -34,12 +34,13 @@ jobs:
           prefix-key: limine-8.3-1
 
       - name: Install QEMU, AArch64 UEFI firmware, and a C compiler
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm qemu-efi-aarch64 gcc
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm qemu-efi-aarch64 clang lld binutils-aarch64-linux-gnu
 
-      - name: Build myos sysroot and std hello (x86 + AArch64)
+      - name: Build myos sysroot, std hello, and C smoke ELFs (x86 + AArch64)
         run: |
           chmod +x scripts/*.sh
           ./scripts/build-std-hello.sh
+          ./scripts/build-c-hello.sh
 
       - name: PS/2 scancode decode unit tests
         run: cargo test -p ps2-scancode

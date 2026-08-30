@@ -100,6 +100,7 @@ fn main() {
         ] {
             embed_std_elf(manifest, &arch, artifact, env_key);
         }
+        embed_c_elf(manifest, &arch, "c-hello", "USER_C_HELLO_PATH");
     }
 }
 
@@ -118,6 +119,27 @@ fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str)
     if !stable.is_file() {
         panic!(
             "{artifact} ELF missing at {} (run ./scripts/build-std-hello.sh)",
+            stable.display()
+        );
+    }
+    println!("cargo:rustc-env={env_key}={}", stable.display());
+}
+
+fn embed_c_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
+    let triple = if arch == "x86_64" {
+        "x86_64-unknown-none"
+    } else if arch == "aarch64" {
+        "aarch64-unknown-none"
+    } else {
+        return;
+    };
+    let stable = manifest_dir
+        .join("../target")
+        .join(format!("{artifact}-{triple}"));
+    println!("cargo:rerun-if-changed={}", stable.display());
+    if !stable.is_file() {
+        panic!(
+            "{artifact} ELF missing at {} (run ./scripts/build-c-hello.sh)",
             stable.display()
         );
     }
