@@ -303,3 +303,15 @@ jobs:
       - name: Boot in QEMU
         continue-on-error: ${{ !matrix.required }}
         run: ./target/debug/myos ${{ matrix.args }}
+
+  boot-check:
+    runs-on: ubuntu-latest
+    needs: boot
+    if: always() && needs.boot.result != 'skipped'
+    steps:
+      - name: Require boot matrix success
+        run: |
+          if [ "${{ needs.boot.result }}" != "success" ]; then
+            echo "boot matrix result: ${{ needs.boot.result }}"
+            exit 1
+          fi
