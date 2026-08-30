@@ -74,8 +74,11 @@ fn main() -> ! {
     run_prog(b"/chello", &[]);
     run_prog(b"/strue", &[]);
     run_prog(b"/secho", &[]);
+<<<<<<< HEAD
     run_prog(b"/sls", &[]);
     run_prog(b"/spwd", &[]);
+=======
+>>>>>>> dd8ffd2 (Fix uutils exec: expand in-place mapping and run smoke tests first)
     exit();
 }
 

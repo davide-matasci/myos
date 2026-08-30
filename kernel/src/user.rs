@@ -26,7 +26,9 @@ pub const SYS_STAT: usize = 12;
 pub const PAGE: usize = 4096;
 /// User stack mapping below the heap (512 KiB — uutils/std init needs more than 128 KiB).
 pub const USER_STACK_PAGES: usize = 128;
-const HEAP_PAGES: usize = 64;
+/// Per-process brk heap (uutils/std init needs more than 256 KiB after fork+exec).
+/// Cap keeps AArch64 L3 user slots (<512 pages from USER_BASE) with uutils loaded.
+const HEAP_PAGES: usize = 128;
 /// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy (today
 /// release `uutils-coreutils` ≈197 pages).
 const MAX_INIT_PAGES: usize = 256;
@@ -323,6 +325,83 @@ fn reload_user_elf(
         sync_icache(mm::hhdm(phys) as usize, PAGE);
     }
     Some((entry as usize, n_pages * PAGE, stack_off))
+}
+
+/// Grow the current aspace and load a large ELF (up to [`MAX_INIT_PAGES`]).
+/// Used when [`reload_user_elf`] is too small but we already have an aspace
+/// (post-fork exec of release uutils ≈197 pages).
+fn expand_user_elf(
+    aspace: u64,
+    bytes: &[u8],
+    base: u64,
+    _old_stack_off: u64,
+) -> Option<(usize, usize, u64)> {
+    let info = elf::image_span(bytes).ok()?;
+    let image_pages = info.span.div_ceil(PAGE);
+    if image_pages == 0 || image_pages > MAX_INIT_PAGES {
+        return None;
+    }
+    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_INIT_PAGES);
+    let new_stack_off = (n_pages * PAGE) as u64;
+    if info.span > ELF_SCRATCH_BYTES {
+        return None;
+    }
+
+    for i in 0..n_pages {
+        let va = base + (i * PAGE) as u64;
+        if virt_to_phys(aspace, va).is_none() {
+            let frame = mm::alloc_frame();
+            unsafe {
+                core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
+            }
+            map_user_code_page(aspace, va, frame);
+            sync_icache(mm::hhdm(frame) as usize, PAGE);
+        }
+    }
+    for i in 0..USER_STACK_PAGES {
+        let va = base + new_stack_off + (i * PAGE) as u64;
+        if virt_to_phys(aspace, va).is_none() {
+            let frame = mm::alloc_frame();
+            unsafe {
+                core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
+            }
+            map_user_stack_page(aspace, va, frame);
+        }
+    }
+
+    let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
+    unsafe {
+        core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
+    }
+    let load_bias = base - info.min_vaddr;
+    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+    for i in 0..n_pages {
+        let va = base + (i * PAGE) as u64;
+        let Some(phys) = virt_to_phys(aspace, va) else {
+            return None;
+        };
+        let off = i * PAGE;
+        if i < image_pages {
+            let len = core::cmp::min(PAGE, info.span.saturating_sub(off));
+            unsafe {
+                if len > 0 {
+                    core::ptr::copy_nonoverlapping(buf.as_ptr().add(off), mm::hhdm(phys), len);
+                }
+                if len < PAGE {
+                    core::ptr::write_bytes(mm::hhdm(phys).add(len), 0, PAGE - len);
+                }
+            }
+        } else {
+            unsafe {
+                core::ptr::write_bytes(mm::hhdm(phys), 0, PAGE);
+            }
+        }
+        sync_icache(mm::hhdm(phys) as usize, PAGE);
+    }
+    Some((entry as usize, n_pages * PAGE, new_stack_off))
 }
 
 /// SysV-style user stack: `[argc][argv…][NULL][envp…][NULL][strings]`, 16-byte aligned.
@@ -1095,6 +1174,10 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
             .map(|(entry, span, off)| (cur_aspace, entry, span, off))
         {
             v
+        } else if let Some(v) = expand_user_elf(cur_aspace, bytes, base_u, stack_off)
+            .map(|(entry, span, off)| (cur_aspace, entry, span, off))
+        {
+            v
         } else {
             let Some(v) = load_user_elf(bytes) else {
                 return SYSERR;
@@ -1529,6 +1612,92 @@ fn create_aspace_x86(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> 
         );
     }
     pml4_phys
+}
+
+fn map_user_code_page(aspace: u64, va: u64, pa: u64) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        const PRESENT: u64 = 1;
+        const WRITE: u64 = 1 << 1;
+        const USER: u64 = 1 << 2;
+        map_page_x86(aspace, va, pa, PRESENT | WRITE | USER);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        map_user_page_aarch64(aspace, va, pa, false);
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        map_user_page_riscv64(aspace, va, pa, true);
+    }
+}
+
+fn map_user_stack_page(aspace: u64, va: u64, pa: u64) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        const PRESENT: u64 = 1;
+        const WRITE: u64 = 1 << 1;
+        const USER: u64 = 1 << 2;
+        const NX: u64 = 1 << 63;
+        map_page_x86(aspace, va, pa, PRESENT | WRITE | USER | NX);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        map_user_page_aarch64(aspace, va, pa, true);
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        map_user_page_riscv64(aspace, va, pa, false);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn map_user_page_aarch64(l0_phys: u64, va: u64, pa: u64, stack: bool) {
+    const PAGE_DESC: u64 = 0b11;
+    const SH_INNER: u64 = 0b11 << 8;
+    const AF: u64 = 1 << 10;
+    const AP_RW: u64 = 0b01 << 6;
+    const PXN: u64 = 1 << 53;
+    const UXN: u64 = 1 << 54;
+    const PA: u64 = 0x0000_FFFF_FFFF_F000;
+    let base = USER_BASE.load(Ordering::SeqCst);
+    let i3 = va.saturating_sub(base) as usize / PAGE;
+    unsafe {
+        let l0 = &*mm::table(l0_phys);
+        let l1 = &*mm::table(l0[0] & PA);
+        let l2 = &*mm::table(l1[1] & PA);
+        let l3 = &mut *mm::table(l2[0] & PA);
+        let mut ent = PAGE_DESC | (pa & PA) | SH_INNER | AP_RW | AF | PXN;
+        if stack {
+            ent |= UXN;
+        }
+        l3[i3] = ent;
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+fn map_user_page_riscv64(satp: u64, va: u64, pa: u64, exec: bool) {
+    let mut flags = paging::PTE_V
+        | paging::PTE_R
+        | paging::PTE_W
+        | paging::PTE_U
+        | paging::PTE_A
+        | paging::PTE_D;
+    if exec {
+        flags |= paging::PTE_X;
+    }
+    let root_phys = paging::satp_root_phys(satp);
+    let base = USER_BASE.load(Ordering::SeqCst);
+    let page = (va - base) as usize / PAGE;
+    let i2 = 1usize;
+    let i1 = 0usize;
+    let i0 = page;
+    unsafe {
+        let root = &*mm::table(root_phys);
+        let mid = &*mm::table(paging::pte_phys(root[i2]));
+        let leaf = &mut *mm::table(paging::pte_phys(mid[i1]));
+        leaf[i0] = paging::pte_leaf_4k(pa, flags);
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
