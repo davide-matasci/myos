@@ -23,12 +23,13 @@ jobs:
         with:
           prefix-key: limine-8.3-1
       - name: Install xorriso and a C compiler
-        run: sudo apt-get update && sudo apt-get install -y xorriso gcc
+        run: sudo apt-get update && sudo apt-get install -y xorriso clang lld binutils-aarch64-linux-gnu
 
-      - name: Build myos sysroot and std hello (x86 + AArch64)
+      - name: Build myos sysroot, std hello, and C smoke ELFs (x86 + AArch64)
         run: |
           chmod +x scripts/*.sh
           ./scripts/build-std-hello.sh
+          ./scripts/build-c-hello.sh
 
       - name: Build x86_64 hybrid ISO
         run: |

@@ -41,6 +41,7 @@ fn main() -> ! {
     run_prog(b"/stdhello", &[]);
     run_prog(b"/stdcat", &[]);
     run_prog(b"/stdecho", &[]);
+    run_prog(b"/chello", &[]);
     exit();
 }
 

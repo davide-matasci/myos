@@ -9,6 +9,7 @@ const HEAP_ELF: &[u8] = include_bytes!(env!("USER_HEAP_PATH"));
 const STD_HELLO_ELF: &[u8] = include_bytes!(env!("USER_STD_HELLO_PATH"));
 const STD_CAT_ELF: &[u8] = include_bytes!(env!("USER_STD_CAT_PATH"));
 const STD_ECHO_ELF: &[u8] = include_bytes!(env!("USER_STD_ECHO_PATH"));
+const C_HELLO_ELF: &[u8] = include_bytes!(env!("USER_C_HELLO_PATH"));
 const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
 const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
 const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
@@ -62,7 +63,6 @@ pub fn lookup(name: &str) -> Option<&'static [u8]> {
     let files = FILES.lock();
     for slot in files.iter().flatten() {
         if slot.len == name.len() && &slot.name[..slot.len] == name.as_bytes() {
-            log_get(name, slot.data.len());
             return Some(slot.data);
         }
     }
@@ -93,12 +93,8 @@ pub fn count() -> usize {
 }
 
 fn log_reg(name: &str, n: usize, replace: bool) {
-    let kind = if replace { "rpl" } else { "new" };
-    console::write_str(&alloc::format!("vfs {kind} {name} {n}\n"));
-}
-
-fn log_get(name: &str, n: usize) {
-    console::write_str(&alloc::format!("vfs get {name} {n}\n"));
+    let kind = if replace { "replace" } else { "new" };
+    console::status_progress(&alloc::format!("vfs {kind} {name} ({n} bytes)"));
 }
 
 pub fn init() {
@@ -107,6 +103,7 @@ pub fn init() {
     let _ = register("stdhello", STD_HELLO_ELF);
     let _ = register("stdcat", STD_CAT_ELF);
     let _ = register("stdecho", STD_ECHO_ELF);
+    let _ = register("chello", C_HELLO_ELF);
     let _ = register("sh", SH_ELF);
     let _ = register("echo", ECHO_ELF);
     let _ = register("cat", CAT_ELF);

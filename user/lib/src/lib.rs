@@ -17,47 +17,51 @@ sys_fork_raw:
     li a7, 6
     ecall
     ret
-
-    .global sys_wait_raw
-    .type sys_wait_raw, @function
-sys_wait_raw:
-    li a7, 7
-    ecall
-    ret
 "#
 );
 
 #[cfg(target_arch = "riscv64")]
 unsafe extern "C" {
     fn sys_fork_raw() -> usize;
-    fn sys_wait_raw() -> usize;
 }
 
-/// x86 `_start` that captures argc/argv before any call pushes a return address.
+/// x86 `_start`: naked entry reads argc/argv from the stack (same as std `pal/myos`).
 #[macro_export]
 macro_rules! x86_start {
     ($main:ident) => {
         #[cfg(target_arch = "x86_64")]
+        #[unsafe(naked)]
         #[unsafe(no_mangle)]
-        pub extern "C" fn _start() -> ! {
-            unsafe {
-                let sp: usize;
-                core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack));
-                $crate::args::init_from_sp(sp);
-            }
-            $main()
+        pub unsafe extern "C" fn _start() -> ! {
+            core::arch::naked_asm!(
+                "mov rdi, [rsp]",
+                "lea rsi, [rsp + 8]",
+                "call {init}",
+                "call {main}",
+                init = sym $crate::args::init_argv_sysv,
+                main = sym $main,
+            );
         }
     };
 }
 
 const MAX_EXEC_ARGS: usize = 16;
+const MAX_EXEC_ENV: usize = 8;
 
 pub fn write(buf: &[u8]) {
-    unsafe { sys_write(buf.as_ptr() as usize, buf.len()) }
+    write_fd(1, buf);
+}
+
+pub fn write_fd(fd: usize, buf: &[u8]) {
+    unsafe { sys_write(fd, buf.as_ptr() as usize, buf.len()) };
 }
 
 pub fn exit() -> ! {
-    unsafe { sys_exit() }
+    exit_code(0);
+}
+
+pub fn exit_code(code: u8) -> ! {
+    unsafe { sys_exit(code as usize) }
 }
 
 pub fn open(path: &[u8]) -> Option<usize> {
@@ -78,23 +82,35 @@ pub fn close(fd: usize) {
 }
 
 /// Exec with argv. `args` are the argument strings (argv[0] is usually the command name).
+/// Returns on failure (command missing or invalid); does not return on success.
 pub fn exec(path: &[u8], args: &[&[u8]]) {
-    let mut pack = [0usize; 1 + MAX_EXEC_ARGS * 2];
-    pack[0] = args.len().min(MAX_EXEC_ARGS);
+    exec_env(path, args, &[]);
+}
+
+/// Like [`exec`], but passes a `KEY=value` environment block to the new image.
+pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
+    let argc = args.len().min(MAX_EXEC_ARGS);
+    let envc = env.len().min(MAX_EXEC_ENV);
+    if argc == 0 && envc == 0 {
+        unsafe {
+            sys_exec(path.as_ptr() as usize, path.len(), 0);
+        }
+        return;
+    }
+    let mut pack = [0usize; 1 + MAX_EXEC_ARGS * 2 + 1 + MAX_EXEC_ENV * 2];
+    pack[0] = argc;
     for (i, a) in args.iter().take(MAX_EXEC_ARGS).enumerate() {
         pack[1 + i * 2] = a.as_ptr() as usize;
         pack[2 + i * 2] = a.len();
     }
+    let env_base = 1 + argc * 2;
+    pack[env_base] = envc;
+    for (i, e) in env.iter().take(MAX_EXEC_ENV).enumerate() {
+        pack[env_base + 1 + i * 2] = e.as_ptr() as usize;
+        pack[env_base + 2 + i * 2] = e.len();
+    }
     unsafe {
-        sys_exec(
-            path.as_ptr() as usize,
-            path.len(),
-            if args.is_empty() {
-                0
-            } else {
-                pack.as_ptr() as usize
-            },
-        )
+        sys_exec(path.as_ptr() as usize, path.len(), pack.as_ptr() as usize);
     }
 }
 
@@ -108,12 +124,37 @@ pub fn fork() -> Option<usize> {
 }
 
 pub fn wait() -> Option<usize> {
-    let pid = unsafe { sys_wait() };
+    let pid = unsafe { sys_wait(0) };
     if pid == usize::MAX {
         None
     } else {
         Some(pid)
     }
+}
+
+/// Wait for a child and return `(pid, exit_code)`.
+pub fn wait_status() -> Option<(usize, u8)> {
+    let mut status = 0u8;
+    let pid = unsafe { sys_wait(&mut status as *mut u8 as usize) };
+    if pid == usize::MAX {
+        None
+    } else {
+        Some((pid, status))
+    }
+}
+
+pub fn pipe() -> Option<(usize, usize)> {
+    let mut fds = [0usize; 2];
+    let ret = unsafe { sys_pipe(fds.as_mut_ptr() as usize) };
+    if ret == usize::MAX {
+        None
+    } else {
+        Some((fds[0], fds[1]))
+    }
+}
+
+pub fn dup2(oldfd: usize, newfd: usize) -> bool {
+    unsafe { sys_dup2(oldfd, newfd) != usize::MAX }
 }
 
 /// List bootfs entries (newline-separated) into `buf`. Returns byte count.
@@ -196,12 +237,13 @@ fn write_u32(mut n: u32) {
 // System-V dispatch. Wrappers lateout those so LLVM reloads them.
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sys_write(ptr: usize, len: usize) {
+unsafe fn sys_write(fd: usize, ptr: usize, len: usize) {
     core::arch::asm!(
         "syscall",
         in("rax") 0usize,
-        in("rdi") ptr,
-        in("rsi") len,
+        in("rdi") fd,
+        in("rsi") ptr,
+        in("rdx") len,
         out("rcx") _,
         out("r11") _,
         lateout("rdi") _,
@@ -212,10 +254,11 @@ unsafe fn sys_write(ptr: usize, len: usize) {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sys_exit() -> ! {
+unsafe fn sys_exit(code: usize) -> ! {
     core::arch::asm!(
         "syscall",
         in("rax") 1usize,
+        in("rdi") code,
         options(noreturn, nostack),
     );
 }
@@ -280,7 +323,7 @@ unsafe fn sys_exec(ptr: usize, len: usize, args: usize) {
         in("rax") 5usize,
         in("rdi") ptr,
         in("rsi") len,
-        in("rdx") args,
+        inout("rdx") args => _,
         out("rcx") _,
         out("r11") _,
         lateout("rdi") _,
@@ -307,11 +350,49 @@ unsafe fn sys_fork() -> usize {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sys_wait() -> usize {
+unsafe fn sys_wait(status_ptr: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
         "syscall",
         in("rax") 7usize,
+        in("rdi") status_ptr,
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        lateout("rdi") _,
+        lateout("rsi") _,
+        lateout("rdx") _,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sys_pipe(fds_ptr: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "syscall",
+        in("rax") 10usize,
+        in("rdi") fds_ptr,
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        lateout("rdi") _,
+        lateout("rsi") _,
+        lateout("rdx") _,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "syscall",
+        in("rax") 11usize,
+        in("rdi") oldfd,
+        in("rsi") newfd,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
@@ -361,21 +442,23 @@ unsafe fn sys_brk(addr: usize) -> usize {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn sys_write(ptr: usize, len: usize) {
+unsafe fn sys_write(fd: usize, ptr: usize, len: usize) {
     core::arch::asm!(
         "svc #0",
         in("x8") 0usize,
-        in("x0") ptr,
-        in("x1") len,
+        in("x0") fd,
+        in("x1") ptr,
+        in("x2") len,
         options(nostack),
     );
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn sys_exit() -> ! {
+unsafe fn sys_exit(code: usize) -> ! {
     core::arch::asm!(
         "svc #0",
         in("x8") 1usize,
+        in("x0") code,
         options(noreturn, nostack),
     );
 }
@@ -442,11 +525,39 @@ unsafe fn sys_fork() -> usize {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn sys_wait() -> usize {
+unsafe fn sys_wait(status_ptr: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
         "svc #0",
         in("x8") 7usize,
+        in("x0") status_ptr,
+        lateout("x0") ret,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn sys_pipe(fds_ptr: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "svc #0",
+        in("x8") 10usize,
+        in("x0") fds_ptr,
+        lateout("x0") ret,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "svc #0",
+        in("x8") 11usize,
+        in("x0") oldfd,
+        in("x1") newfd,
         lateout("x0") ret,
         options(nostack),
     );
@@ -479,21 +590,23 @@ unsafe fn sys_brk(addr: usize) -> usize {
 }
 
 #[cfg(target_arch = "riscv64")]
-unsafe fn sys_write(ptr: usize, len: usize) {
+unsafe fn sys_write(fd: usize, ptr: usize, len: usize) {
     core::arch::asm!(
         "ecall",
         in("a7") 0usize,
-        in("a0") ptr,
-        in("a1") len,
+        in("a0") fd,
+        in("a1") ptr,
+        in("a2") len,
         options(nostack),
     );
 }
 
 #[cfg(target_arch = "riscv64")]
-unsafe fn sys_exit() -> ! {
+unsafe fn sys_exit(code: usize) -> ! {
     core::arch::asm!(
         "ecall",
         in("a7") 1usize,
+        in("a0") code,
         options(noreturn, nostack),
     );
 }
@@ -553,8 +666,41 @@ unsafe fn sys_fork() -> usize {
 }
 
 #[cfg(target_arch = "riscv64")]
-unsafe fn sys_wait() -> usize {
-    sys_wait_raw()
+unsafe fn sys_wait(status_ptr: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "ecall",
+        in("a7") 7usize,
+        inout("a0") status_ptr => ret,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_pipe(fds_ptr: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "ecall",
+        in("a7") 10usize,
+        inout("a0") fds_ptr => ret,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "ecall",
+        in("a7") 11usize,
+        in("a0") oldfd,
+        in("a1") newfd,
+        lateout("a0") ret,
+        options(nostack),
+    );
+    ret
 }
 
 #[cfg(target_arch = "riscv64")]

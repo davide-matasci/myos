@@ -163,11 +163,11 @@ pub fn init() {
             // Sync last_used with the probe completion.
             dev.last_used = unsafe { core::ptr::read_volatile(dev.used.add(2) as *const u16) };
             *DEV.lock() = Some(dev);
-            crate::console::write_str("virtio ok\n");
+            crate::console::status_ok("virtio block");
             return;
         }
     }
-    crate::console::write_str("virtio none\n");
+    crate::console::status_fail("virtio block");
 }
 
 fn setup(base: usize) -> Option<Dev> {

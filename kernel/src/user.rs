@@ -21,6 +21,8 @@ const SYS_FORK: usize = 6;
 const SYS_WAIT: usize = 7;
 const SYS_LISTDIR: usize = 8;
 const SYS_BRK: usize = 9;
+const SYS_PIPE: usize = 10;
+const SYS_DUP2: usize = 11;
 pub const PAGE: usize = 4096;
 /// User stack mapping below the heap (128 KiB).
 pub const USER_STACK_PAGES: usize = 32;
@@ -32,6 +34,8 @@ const USER_EXEC_RELOAD_PAGES: usize = 20;
 const MAX_PATH: usize = 64;
 const MAX_ARGC: usize = 16;
 const MAX_ARG_LEN: usize = 128;
+const MAX_ENVC: usize = 8;
+const MAX_ENV_LEN: usize = 128;
 const SYSERR: usize = usize::MAX;
 
 const INIT_ELF: &[u8] = include_bytes!(env!("USER_INIT_PATH"));
@@ -151,7 +155,7 @@ pub fn spawn_init() {
     let base = pick_user_base();
     USER_BASE.store(base, Ordering::SeqCst);
     let (aspace, entry, span, off) = load_user_elf(INIT_ELF).expect("init ELF");
-    let (rsp, argv) = build_argv_stack(aspace, base, off, &[]).expect("init stack");
+    let (rsp, argv) = build_argv_stack(aspace, base, off, &[], &[]).expect("init stack");
     task::spawn_user(aspace, entry, rsp, base, span, off, 0, argv);
     USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
     DID_SPAWN.store(true, Ordering::SeqCst);
@@ -283,16 +287,21 @@ fn reload_user_elf(
     Some((entry as usize, n_pages * PAGE, stack_off))
 }
 
-/// SysV-style user stack: `[argc][argv…][NULL][strings]`, 16-byte aligned.
-/// Writes through the user aspace page tables (kernel cannot dereference user VAs).
-fn build_argv_stack(aspace: u64, user_base: u64, stack_off: u64, args: &[&[u8]]) -> Option<(usize, usize)> {
-    if args.len() > MAX_ARGC {
+/// SysV-style user stack: `[argc][argv…][NULL][envp…][NULL][strings]`, 16-byte aligned.
+fn build_argv_stack(
+    aspace: u64,
+    user_base: u64,
+    stack_off: u64,
+    args: &[&[u8]],
+    env: &[&[u8]],
+) -> Option<(usize, usize)> {
+    if args.len() > MAX_ARGC || env.len() > MAX_ENVC {
         return None;
     }
     let stack_top = (user_base + stack_off + (USER_STACK_PAGES * PAGE) as u64) as usize;
     let stack_bot = (user_base + stack_off) as usize;
     let mut sp = stack_top;
-    let mut ptrs = [0usize; MAX_ARGC];
+    let mut arg_ptrs = [0usize; MAX_ARGC];
     for (i, arg) in args.iter().enumerate() {
         if arg.len() > MAX_ARG_LEN {
             return None;
@@ -308,33 +317,60 @@ fn build_argv_stack(aspace: u64, user_base: u64, stack_off: u64, args: &[&[u8]])
         if !write_user_byte(aspace, sp + arg.len(), 0) {
             return None;
         }
-        ptrs[i] = sp;
+        arg_ptrs[i] = sp;
     }
-    sp &= !15;
-    sp = sp.checked_sub(8)?;
+    let mut env_ptrs = [0usize; MAX_ENVC];
+    for (i, item) in env.iter().enumerate() {
+        if item.len() > MAX_ENV_LEN {
+            return None;
+        }
+        let slen = item.len() + 1;
+        sp = sp.checked_sub(slen)?;
+        if sp < stack_bot {
+            return None;
+        }
+        if !write_user_bytes(aspace, sp, item) {
+            return None;
+        }
+        if !write_user_byte(aspace, sp + item.len(), 0) {
+            return None;
+        }
+        env_ptrs[i] = sp;
+    }
+    let words = 1 + args.len() + 1 + env.len() + 1;
+    sp = sp.checked_sub(words * core::mem::size_of::<usize>())?;
+    let pad = sp & 15;
+    if pad != 0 {
+        sp = sp.checked_sub(pad)?;
+    }
     if sp < stack_bot {
         return None;
+    }
+    let argc_sp = sp;
+    if !write_user_usize(aspace, sp, args.len()) {
+        return None;
+    }
+    sp += core::mem::size_of::<usize>();
+    for i in 0..args.len() {
+        if !write_user_usize(aspace, sp, arg_ptrs[i]) {
+            return None;
+        }
+        sp += core::mem::size_of::<usize>();
     }
     if !write_user_usize(aspace, sp, 0) {
         return None;
     }
-    for i in (0..args.len()).rev() {
-        sp = sp.checked_sub(8)?;
-        if sp < stack_bot {
+    sp += core::mem::size_of::<usize>();
+    for i in 0..env.len() {
+        if !write_user_usize(aspace, sp, env_ptrs[i]) {
             return None;
         }
-        if !write_user_usize(aspace, sp, ptrs[i]) {
-            return None;
-        }
+        sp += core::mem::size_of::<usize>();
     }
-    sp = sp.checked_sub(8)?;
-    if sp < stack_bot {
+    if !write_user_usize(aspace, sp, 0) {
         return None;
     }
-    if !write_user_usize(aspace, sp, args.len()) {
-        return None;
-    }
-    Some((sp, sp + core::mem::size_of::<usize>()))
+    Some((argc_sp, argc_sp + core::mem::size_of::<usize>()))
 }
 
 fn write_user_byte(aspace: u64, va: usize, byte: u8) -> bool {
@@ -360,6 +396,31 @@ fn write_user_bytes(aspace: u64, va: usize, src: &[u8]) -> bool {
 
 fn write_user_usize(aspace: u64, va: usize, val: usize) -> bool {
     write_user_bytes(aspace, va, &val.to_le_bytes())
+}
+
+fn read_user_byte(aspace: u64, va: usize) -> Option<u8> {
+    let page = va & !0xfff;
+    let off = va & 0xfff;
+    let phys = virt_to_phys(aspace, page as u64)?;
+    Some(unsafe { *mm::hhdm(phys).add(off) })
+}
+
+fn read_user_bytes(aspace: u64, va: usize, dst: &mut [u8]) -> bool {
+    for (i, b) in dst.iter_mut().enumerate() {
+        *b = match read_user_byte(aspace, va + i) {
+            Some(v) => v,
+            None => return false,
+        };
+    }
+    true
+}
+
+fn read_user_usize(aspace: u64, va: usize) -> Option<usize> {
+    let mut buf = [0u8; core::mem::size_of::<usize>()];
+    if !read_user_bytes(aspace, va, &mut buf) {
+        return None;
+    }
+    Some(usize::from_le_bytes(buf))
 }
 
 /// Copy this process's user code+stack+heap pages into a new aspace at the same VA.
@@ -898,34 +959,28 @@ pub extern "C" fn syscall_dispatch(
 ) -> usize {
     task::save_user_context(user_rip, user_rsp);
     match nr {
-        SYS_WRITE => sys_write(a0, a1),
-        SYS_EXIT => task::die(),
+        SYS_WRITE => sys_write(a0, a1, a2),
+        SYS_EXIT => sys_exit(a0),
         SYS_OPEN => sys_open(a0, a1),
         SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
         SYS_EXEC => sys_exec(a0, a1, a2),
         SYS_FORK => sys_fork(user_rip, user_rsp),
-        SYS_WAIT => sys_wait(),
+        SYS_WAIT => sys_wait(a0),
         SYS_LISTDIR => sys_listdir(a0, a1),
         SYS_BRK => sys_brk(a0),
+        SYS_PIPE => sys_pipe(a0),
+        SYS_DUP2 => sys_dup2(a0, a1),
         _ => SYSERR,
     }
 }
 
-fn sys_write(ptr: usize, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    let n = len.min(128);
-    if !user_range_ok(ptr, n) {
-        return SYSERR;
-    }
-    let mut buf = [0u8; 128];
-    unsafe {
-        core::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), n);
-    }
-    task::print_bytes(&buf[..n]);
-    len
+fn sys_exit(code: usize) -> ! {
+    task::user_exit(code as u8);
+}
+
+fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
+    task::fd_write(fd, ptr, len)
 }
 
 fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
@@ -959,7 +1014,7 @@ fn sys_open(ptr: usize, path_len: usize) -> usize {
 }
 
 fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
-    task::fd_read(fd, buf, len, user_range_ok)
+    task::fd_read(fd, buf, len)
 }
 
 fn sys_close(fd: usize) -> usize {
@@ -980,11 +1035,12 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let Some(bytes) = fs::lookup(path) else {
         return SYSERR;
     };
-    let arg_bufs = match copy_user_exec_args(args_ptr) {
+    let (arg_bufs, env_bufs) = match copy_user_exec_pack(args_ptr) {
         Ok(v) => v,
         Err(()) => return SYSERR,
     };
     let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
+    let env_refs: Vec<&[u8]> = env_bufs.iter().map(|s| s.as_slice()).collect();
     let cur_aspace = task::current_aspace();
     let (base_u, _mapped_span, stack_off) = task::current_user_map();
     let (aspace, entry, span, off) = if cur_aspace != 0 {
@@ -1004,7 +1060,7 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
         };
         v
     };
-    let Some((rsp, argv)) = build_argv_stack(aspace, base_u, off, &arg_refs) else {
+    let Some((rsp, argv)) = build_argv_stack(aspace, base_u, off, &arg_refs, &env_refs) else {
         return SYSERR;
     };
     let argc = arg_refs.len();
@@ -1016,26 +1072,42 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     enter(entry, rsp, argc, argv);
 }
 
-fn copy_user_exec_args(args_ptr: usize) -> Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, ()> {
+fn copy_user_exec_pack(
+    args_ptr: usize,
+) -> Result<(alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>), ()> {
     if args_ptr == 0 {
-        return Ok(alloc::vec::Vec::new());
+        return Ok((alloc::vec::Vec::new(), alloc::vec::Vec::new()));
     }
     if !user_range_ok(args_ptr, core::mem::size_of::<usize>()) {
         return Err(());
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        copy_user_exec_pack_direct(args_ptr)
+    }
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    {
+        copy_user_exec_pack_via_aspace(args_ptr)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn copy_user_exec_pack_direct(
+    args_ptr: usize,
+) -> Result<(alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>), ()> {
     let argc = unsafe { *(args_ptr as *const usize) };
     if argc > MAX_ARGC {
         return Err(());
     }
-    let mut out = alloc::vec::Vec::with_capacity(argc);
-    let pairs = args_ptr + core::mem::size_of::<usize>();
-    for i in 0..argc {
-        let off = pairs + i * 2 * core::mem::size_of::<usize>();
+    let mut args = alloc::vec::Vec::with_capacity(argc);
+    let mut off = args_ptr + core::mem::size_of::<usize>();
+    for _ in 0..argc {
         if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
             return Err(());
         }
-        let p = unsafe { *((off) as *const usize) };
+        let p = unsafe { *(off as *const usize) };
         let n = unsafe { *((off + core::mem::size_of::<usize>()) as *const usize) };
+        off += 2 * core::mem::size_of::<usize>();
         if n > MAX_ARG_LEN {
             return Err(());
         }
@@ -1049,9 +1121,107 @@ fn copy_user_exec_args(args_ptr: usize) -> Result<alloc::vec::Vec<alloc::vec::Ve
                 core::ptr::copy_nonoverlapping(p as *const u8, v.as_mut_ptr(), n);
             }
         }
-        out.push(v);
+        args.push(v);
     }
-    Ok(out)
+    if !user_range_ok(off, core::mem::size_of::<usize>()) {
+        return Err(());
+    }
+    let envc = unsafe { *(off as *const usize) };
+    off += core::mem::size_of::<usize>();
+    if envc > MAX_ENVC {
+        return Err(());
+    }
+    let mut env = alloc::vec::Vec::with_capacity(envc);
+    for _ in 0..envc {
+        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
+            return Err(());
+        }
+        let p = unsafe { *(off as *const usize) };
+        let n = unsafe { *((off + core::mem::size_of::<usize>()) as *const usize) };
+        off += 2 * core::mem::size_of::<usize>();
+        if n > MAX_ENV_LEN {
+            return Err(());
+        }
+        if n != 0 && !user_range_ok(p, n) {
+            return Err(());
+        }
+        let mut v = alloc::vec::Vec::with_capacity(n);
+        if n != 0 {
+            v.resize(n, 0);
+            unsafe {
+                core::ptr::copy_nonoverlapping(p as *const u8, v.as_mut_ptr(), n);
+            }
+        }
+        env.push(v);
+    }
+    Ok((args, env))
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+fn copy_user_exec_pack_via_aspace(
+    args_ptr: usize,
+) -> Result<(alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>), ()> {
+    let aspace = task::current_aspace();
+    let argc = read_user_usize(aspace, args_ptr).ok_or(())?;
+    if argc > MAX_ARGC {
+        return Err(());
+    }
+    let mut args = alloc::vec::Vec::with_capacity(argc);
+    let mut off = args_ptr + core::mem::size_of::<usize>();
+    for _ in 0..argc {
+        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
+            return Err(());
+        }
+        let p = read_user_usize(aspace, off).ok_or(())?;
+        let n = read_user_usize(aspace, off + core::mem::size_of::<usize>()).ok_or(())?;
+        off += 2 * core::mem::size_of::<usize>();
+        if n > MAX_ARG_LEN {
+            return Err(());
+        }
+        if n != 0 && !user_range_ok(p, n) {
+            return Err(());
+        }
+        let mut v = alloc::vec::Vec::with_capacity(n);
+        if n != 0 {
+            v.resize(n, 0);
+            if !read_user_bytes(aspace, p, &mut v) {
+                return Err(());
+            }
+        }
+        args.push(v);
+    }
+    if !user_range_ok(off, core::mem::size_of::<usize>()) {
+        return Err(());
+    }
+    let envc = read_user_usize(aspace, off).ok_or(())?;
+    off += core::mem::size_of::<usize>();
+    if envc > MAX_ENVC {
+        return Err(());
+    }
+    let mut env = alloc::vec::Vec::with_capacity(envc);
+    for _ in 0..envc {
+        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
+            return Err(());
+        }
+        let p = read_user_usize(aspace, off).ok_or(())?;
+        let n = read_user_usize(aspace, off + core::mem::size_of::<usize>()).ok_or(())?;
+        off += 2 * core::mem::size_of::<usize>();
+        if n > MAX_ENV_LEN {
+            return Err(());
+        }
+        if n != 0 && !user_range_ok(p, n) {
+            return Err(());
+        }
+        let mut v = alloc::vec::Vec::with_capacity(n);
+        if n != 0 {
+            v.resize(n, 0);
+            if !read_user_bytes(aspace, p, &mut v) {
+                return Err(());
+            }
+        }
+        env.push(v);
+    }
+    Ok((args, env))
 }
 
 fn sys_listdir(buf: usize, len: usize) -> usize {
@@ -1137,8 +1307,34 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     }
 }
 
-fn sys_wait() -> usize {
-    task::wait_child()
+fn sys_wait(status_ptr: usize) -> usize {
+    let status_out = if status_ptr == 0 {
+        core::ptr::null_mut()
+    } else {
+        if !user_range_ok(status_ptr, 1) {
+            return SYSERR;
+        }
+        status_ptr as *mut u8
+    };
+    task::wait_child(status_out)
+}
+
+fn sys_pipe(fds_ptr: usize) -> usize {
+    if !user_range_ok(fds_ptr, 2 * core::mem::size_of::<usize>()) {
+        return SYSERR;
+    }
+    let Some((r, w)) = task::pipe_open() else {
+        return SYSERR;
+    };
+    unsafe {
+        *(fds_ptr as *mut usize) = r;
+        *((fds_ptr as *mut usize).add(1)) = w;
+    }
+    0
+}
+
+fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
+    if task::fd_dup2(oldfd, newfd) { 0 } else { SYSERR }
 }
 
 fn sys_brk(req: usize) -> usize {

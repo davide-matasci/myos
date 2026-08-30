@@ -8,8 +8,15 @@ use crate::font;
 
 const FONT_W: usize = 8;
 const FONT_H: usize = 8;
-const FG: (u8, u8, u8) = (0x55, 0xFF, 0x55);
-const BG: (u8, u8, u8) = (0x00, 0x00, 0x00);
+
+/// Soft dark-theme palette (framebuffer only; serial stays plain text).
+pub const BG: (u8, u8, u8) = (0x12, 0x14, 0x1a);
+pub const TEXT: (u8, u8, u8) = (0xc8, 0xd0, 0xd8);
+pub const DIM: (u8, u8, u8) = (0x6b, 0x73, 0x80);
+pub const OK: (u8, u8, u8) = (0x7e, 0xc9, 0x8a);
+pub const FAIL: (u8, u8, u8) = (0xf0, 0x6c, 0x75);
+pub const INFO: (u8, u8, u8) = (0x79, 0xb8, 0xff);
+pub const ACCENT: (u8, u8, u8) = (0x98, 0xc3, 0x79);
 
 pub struct FrameBufferWriter<'a> {
     buffer: &'a mut [u8],
@@ -25,6 +32,7 @@ pub struct FrameBufferWriter<'a> {
     b_size: u8,
     col: usize,
     row: usize,
+    fg: (u8, u8, u8),
 }
 
 impl FrameBufferWriter<'static> {
@@ -45,6 +53,7 @@ impl FrameBufferWriter<'static> {
             b_size: fb.blue_mask_size.max(1),
             col: 0,
             row: 0,
+            fg: TEXT,
         }
     }
 }
@@ -60,6 +69,31 @@ impl FrameBufferWriter<'_> {
         self.row = 0;
     }
 
+    pub fn set_fg(&mut self, fg: (u8, u8, u8)) {
+        self.fg = fg;
+    }
+
+    pub fn put_str_colored(&mut self, s: &str, fg: (u8, u8, u8)) {
+        let saved = self.fg;
+        self.fg = fg;
+        self.put_str(s);
+        self.fg = saved;
+    }
+
+    /// `[ TAG ] label` with semantic tag color and default text for the label.
+    pub fn put_status_line(&mut self, tag: &str, tag_color: (u8, u8, u8), label: &str) {
+        self.put_byte_colored(b'[', DIM);
+        self.put_byte_colored(b' ', DIM);
+        self.put_str_colored(tag, tag_color);
+        self.put_byte_colored(b' ', DIM);
+        self.put_byte_colored(b']', DIM);
+        if !label.is_empty() {
+            self.put_byte(b' ');
+            self.put_str(label);
+        }
+        self.put_byte(b'\n');
+    }
+
     pub fn put_str(&mut self, s: &str) {
         for byte in s.bytes() {
             self.put_byte(byte);
@@ -67,13 +101,17 @@ impl FrameBufferWriter<'_> {
     }
 
     pub fn put_byte(&mut self, byte: u8) {
+        self.put_byte_colored(byte, self.fg);
+    }
+
+    fn put_byte_colored(&mut self, byte: u8, fg: (u8, u8, u8)) {
         match byte {
             b'\n' => self.newline(),
             b'\r' => self.col = 0,
             b'\x08' => {
                 if self.col > 0 {
                     self.col -= 1;
-                    self.draw_glyph(self.col, self.row, b' ');
+                    self.draw_glyph(self.col, self.row, b' ', self.fg);
                 }
             }
             byte => {
@@ -81,7 +119,7 @@ impl FrameBufferWriter<'_> {
                 if self.col >= cols {
                     self.newline();
                 }
-                self.draw_glyph(self.col, self.row, byte);
+                self.draw_glyph(self.col, self.row, byte, fg);
                 self.col += 1;
             }
         }
@@ -116,15 +154,16 @@ impl FrameBufferWriter<'_> {
                 );
             }
         }
-        let clear_start = (visible_px - scroll_px) * self.pitch;
-        if clear_start < self.buffer.len() {
-            let clear_len = (scroll_px * self.pitch).min(self.buffer.len() - clear_start);
-            self.buffer[clear_start..clear_start + clear_len].fill(0);
+        let y0 = visible_px - scroll_px;
+        for y in y0..visible_px {
+            for x in 0..self.width {
+                self.put_pixel(x, y, BG);
+            }
         }
         self.row = text_rows - 1;
     }
 
-    fn draw_glyph(&mut self, col: usize, row: usize, byte: u8) {
+    fn draw_glyph(&mut self, col: usize, row: usize, byte: u8, fg: (u8, u8, u8)) {
         let glyph = font::glyph(if (0x20..0x7F).contains(&byte) {
             byte
         } else {
@@ -135,7 +174,7 @@ impl FrameBufferWriter<'_> {
         for (dy, bits) in glyph.iter().copied().enumerate() {
             for dx in 0..FONT_W {
                 let on = bits & (1 << dx) != 0;
-                self.put_pixel(x0 + dx, y0 + dy, if on { FG } else { BG });
+                self.put_pixel(x0 + dx, y0 + dy, if on { fg } else { BG });
             }
         }
     }

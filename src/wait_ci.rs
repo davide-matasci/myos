@@ -10,13 +10,13 @@ struct CiExpect {
 
 const CI_NEEDLES: [&str; 14] = [
     "Hello from myos",
-    "heap ok",
-    "int ok",
+    "[ OK ] heap",
+    "[ OK ] interrupts",
     "task a",
     "task b",
-    "sched ok",
+    "[ OK ] scheduler",
     "mod ok",
-    "limine mod ok",
+    "[ OK ] limine module",
     "sh ok",
     "fork ok",
     "fork exec ok",
@@ -25,11 +25,16 @@ const CI_NEEDLES: [&str; 14] = [
     "fat ok",
 ];
 
-/// Extra serial markers for patched `std` examples (x86 and AArch64 myos userspace).
-const CI_NEEDLES_STD: [&str; 3] = ["std ok", "std cat ok", "std echo ok"];
+/// Extra serial markers for patched `std` examples and C smoke ELFs.
+const CI_NEEDLES_STD: [&str; 4] = ["std ok", "std cat ok", "std echo ok", "c ok"];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 3] = [b"nosuchcmd\n", b"ok\n", b"echo\n"];
+const CI_SHELL_COMMANDS: [&[u8]; 4] = [
+    b"nosuchcmd\n",
+    b"ok\n",
+    b"echo test\n",
+    b"echo pipe | cat\n",
+];
 
 /// Printed by the interactive shell when `open(path)` fails.
 const CI_SHELL_UNKNOWN_CMD: &str = "sh: command not found";
@@ -80,7 +85,22 @@ fn interactive_ok_cmd_ok(serial: &str) -> bool {
 }
 
 fn interactive_echo_cmd_ok(serial: &str) -> bool {
-    command_echoed(serial, "echo")
+    let tail = interactive_tail(serial);
+    if !tail.contains("$ echo test") || serial.contains("exception:") {
+        return false;
+    }
+    let after = tail.rsplit_once("$ echo test").map(|(_, rest)| rest).unwrap_or("");
+    after
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim() == "test")
+        && at_interactive_prompt(serial)
+}
+
+fn interactive_pipe_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    tail.contains("echo pipe | cat")
+        && tail.lines().any(|line| line.trim() == "pipe")
         && !serial.contains("exception:")
         && at_interactive_prompt(serial)
 }
@@ -90,6 +110,7 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize) -> bool {
         0 => interactive_unknown_cmd_ok(serial),
         1 => interactive_ok_cmd_ok(serial),
         2 => interactive_echo_cmd_ok(serial),
+        3 => interactive_pipe_cmd_ok(serial),
         _ => false,
     }
 }
@@ -280,14 +301,21 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 );
             }
         }
-        if shell_cmd_index >= 2 && !interactive_echo_cmd_ok(&serial) {
-            if !command_echoed(&serial, "echo") {
-                eprintln!("error: serial did not echo `$ echo` at the interactive prompt");
+        if shell_cmd_index >= 2 && shell_cmd_index < 3 && !interactive_echo_cmd_ok(&serial) {
+            if !command_echoed(&serial, "echo test") {
+                eprintln!("error: serial did not echo `$ echo test` at the interactive prompt");
             } else if serial.contains("exception:") {
-                eprintln!("error: interactive `echo` triggered a CPU exception");
+                eprintln!("error: interactive `echo test` triggered a CPU exception");
             } else if !at_interactive_prompt(&serial) {
-                eprintln!("error: shell did not return to `$` after interactive `echo`");
+                eprintln!("error: shell did not return to `$` after interactive `echo test`");
+            } else {
+                eprintln!("error: interactive `echo test` did not print `test`");
             }
+        }
+        if shell_cmd_index >= 3 && !interactive_pipe_cmd_ok(&serial) {
+            eprintln!(
+                "error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)"
+            );
         }
         std::process::exit(1);
     }
