@@ -32,11 +32,17 @@ const R_AARCH64_ABS64: u32 = 257;
 const R_AARCH64_GLOB_DAT: u32 = 1025;
 const R_AARCH64_JUMP_SLOT: u32 = 1026;
 const R_AARCH64_RELATIVE: u32 = 1027;
+const R_RISCV_64: u32 = 2;
+const R_RISCV_GLOB_DAT: u32 = 6;
+const R_RISCV_JUMP_SLOT: u32 = 5;
+const R_RISCV_RELATIVE: u32 = 3;
 
 #[cfg(target_arch = "x86_64")]
 const EXPECT_MACHINE: u16 = 62; // EM_X86_64
 #[cfg(target_arch = "aarch64")]
 const EXPECT_MACHINE: u16 = 183; // EM_AARCH64
+#[cfg(target_arch = "riscv64")]
+const EXPECT_MACHINE: u16 = 243; // EM_RISCV
 
 const PAGE: usize = 4096;
 
@@ -310,7 +316,7 @@ fn apply_relocs(
             let loc = loc_addr as *mut u64;
             match r_type {
                 R_X86_64_NONE => {}
-                R_X86_64_RELATIVE | R_AARCH64_RELATIVE => {
+                R_X86_64_RELATIVE | R_AARCH64_RELATIVE | R_RISCV_RELATIVE => {
                     let a = if rela {
                         addend as u64
                     } else {
@@ -319,9 +325,13 @@ fn apply_relocs(
                     unsafe { loc.write_unaligned(load_bias.wrapping_add(a)) };
                 }
                 R_X86_64_64 | R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT | R_AARCH64_ABS64
-                | R_AARCH64_GLOB_DAT | R_AARCH64_JUMP_SLOT => {
+                | R_AARCH64_GLOB_DAT | R_AARCH64_JUMP_SLOT | R_RISCV_64 | R_RISCV_GLOB_DAT
+                | R_RISCV_JUMP_SLOT => {
                     let s = symbol_value(bytes, symtab_sh, shoff, shentsize, r_sym, load_bias)?;
-                    let val = if r_type == R_X86_64_64 || r_type == R_AARCH64_ABS64 {
+                    let val = if r_type == R_X86_64_64
+                        || r_type == R_AARCH64_ABS64
+                        || r_type == R_RISCV_64
+                    {
                         let a = if rela {
                             addend as u64
                         } else {

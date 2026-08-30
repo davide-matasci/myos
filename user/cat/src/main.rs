@@ -5,7 +5,7 @@ use myos_user::{close, exit, open, read, write, write_fd};
 
 myos_user::x86_start!(main);
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
     unsafe { myos_user::args::init_from_regs(argc, argv) };

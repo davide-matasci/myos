@@ -5,16 +5,19 @@
 //! cargo run -- bios
 //! cargo run -- uefi         # x86_64 UEFI (fetches OVMF into target/ovmf)
 //! cargo run -- aarch64      # QEMU virt + AAVMF, serial + ramfb
+//! cargo run -- riscv64      # QEMU virt + RISC-V UEFI, serial + ramfb
 //! cargo run -- iso          # write target/myos-x86_64.iso (no QEMU)
 //! cargo run -- --ci         # headless BIOS check
 //! cargo run -- uefi --ci    # headless UEFI check
 //! cargo run -- aarch64 --ci # headless AArch64 check
+//! cargo run -- riscv64 --ci # headless RISC-V64 check
 //! ```
 
 mod limine_image;
 
 use limine_image::{
-    fetch_limine, write_esp_image, write_fat_data_image, write_x86_iso, LIMINE_VERSION,
+    fetch_limine, write_esp_image, write_esp_image_ex, write_fat_data_image, write_x86_iso,
+    DiskFile, LIMINE_VERSION,
 };
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use std::io::Read;
@@ -23,6 +26,21 @@ use std::process::{exit, Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const AARCH64_TARGET: &str = "aarch64-unknown-none-softfloat";
+const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
+
+const RISCV_LIMINE_CONF: &str = "\
+serial: yes
+timeout: 0
+randomise_hhdm_base: no
+global_dtb: boot():/boot/virt.dtb
+
+/myos
+    protocol: limine
+    path: boot():/boot/kernel
+    paging_mode: sv39
+    module_path: boot():/boot/hello
+    module_path: boot():/boot/ok
+";
 /// Default qemu64 does not advertise x2APIC (CI #49 panicked, #50 fell back
 /// to PIC and hung). Limine leaves PIC IRQs dead, so the kernel timer proof
 /// needs the x2APIC MSRs.
@@ -41,12 +59,14 @@ fn main() {
     let ci = args.iter().any(|a| a == "--ci");
     let mode = args
         .iter()
-        .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64" | "iso"))
+        .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64" | "riscv64" | "iso"))
         .map(|s| s.as_str())
         .unwrap_or("bios");
 
     match (mode, ci) {
         ("iso", _) => run_iso(),
+        ("riscv64", true) => run_ci_riscv64(),
+        ("riscv64", false) => run_riscv64(),
         ("aarch64", true) => run_ci_aarch64(),
         ("aarch64", false) => run_aarch64(),
         ("uefi", true) => run_ci_uefi(uefi_path),
@@ -59,11 +79,12 @@ fn main() {
 fn print_usage() {
     eprintln!(
         "\
-Usage: cargo run -- [bios|uefi|aarch64|iso] [--ci]
+Usage: cargo run -- [bios|uefi|aarch64|riscv64|iso] [--ci]
 
   bios      Boot the x86_64 Limine BIOS disk image in QEMU (default, graphical)
   uefi      Boot the x86_64 Limine UEFI disk image in QEMU (fetches OVMF on first run)
   aarch64   Boot the AArch64 kernel via Limine on QEMU virt + AAVMF (serial + ramfb)
+  riscv64   Boot the RISC-V64 kernel via Limine on QEMU virt + UEFI (serial + ramfb)
   iso       Write target/myos-x86_64.iso (Limine BIOS+UEFI hybrid) and exit; needs xorriso
   --ci      Headless boot; require serial hello/heap/int/mod and a clean QEMU exit",
     );
@@ -114,6 +135,10 @@ fn add_virtio_blk_aarch64(cmd: &mut Command) {
         fat.display()
     ));
     cmd.arg("-device").arg("virtio-blk-device,drive=vd0");
+}
+
+fn add_virtio_blk_riscv64(cmd: &mut Command) {
+    add_virtio_blk_aarch64(cmd);
 }
 
 fn run_bios(bios_path: &str) {
@@ -428,6 +453,203 @@ fn build_aarch64_kernel() -> PathBuf {
         .join("kernel");
     if !elf.is_file() {
         eprintln!("error: aarch64 kernel ELF missing at {}", elf.display());
+        exit(1);
+    }
+    elf
+}
+
+fn run_riscv64() {
+    let image = build_riscv64_image();
+    let status = qemu_riscv64(&image, false)
+        .status()
+        .expect("failed to start qemu-system-riscv64");
+    exit(status.code().unwrap_or(1));
+}
+
+fn riscv64_firmware() -> (PathBuf, PathBuf) {
+    const CANDIDATES: &[(&str, &str)] = &[
+        (
+            "/usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd",
+            "/usr/share/qemu-efi-riscv64/RISCV_VIRT_VARS.fd",
+        ),
+        (
+            "/usr/share/edk2/riscv64/RISCV_VIRT_CODE.fd",
+            "/usr/share/edk2/riscv64/RISCV_VIRT_VARS.fd",
+        ),
+    ];
+    for (c, v) in CANDIDATES {
+        if Path::new(c).is_file() {
+            return (PathBuf::from(c), PathBuf::from(v));
+        }
+    }
+    panic!(
+        "no RISC-V UEFI firmware found. Install qemu-efi-riscv64 (Debian/Ubuntu) \
+         or edk2-riscv64"
+    );
+}
+
+fn run_ci_riscv64() {
+    let image = build_riscv64_image();
+    let child = qemu_riscv64(&image, true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start qemu-system-riscv64");
+    wait_ci(
+        child,
+        CiExpect {
+            timeout: Duration::from_secs(90),
+            qemu_debug_exit: false,
+            shell_ci: true,
+        },
+        &[],
+    );
+}
+
+fn qemu_riscv64(image: &Path, ci: bool) -> Command {
+    let (code, vars) = riscv64_firmware();
+    let mut cmd = Command::new("qemu-system-riscv64");
+    cmd.arg("-global")
+        .arg("virtio-mmio.force-legacy=false")
+        .arg("-machine")
+        .arg("virt")
+        .arg("-cpu")
+        .arg("rv64")
+        .arg("-m")
+        .arg("1024")
+        .arg("-drive")
+        .arg(format!(
+            "if=pflash,format=raw,unit=0,file={},readonly=on",
+            code.display()
+        ))
+        .arg("-drive")
+        .arg(format!(
+            "if=pflash,format=raw,unit=1,file={},snapshot=on",
+            vars.display()
+        ))
+        .arg("-drive")
+        .arg(format!("if=none,id=hd0,format=raw,file={}", image.display()))
+        .arg("-device")
+        .arg("virtio-blk-device,drive=hd0,bootindex=1")
+        .arg("-serial")
+        .arg("stdio")
+        .arg("-nic")
+        .arg("none")
+        .arg("-no-reboot");
+    add_virtio_blk_riscv64(&mut cmd);
+    if ci {
+        cmd.arg("-display").arg("none");
+        cmd.arg("-monitor").arg("none");
+    } else {
+        cmd.arg("-device").arg("ramfb");
+        cmd.arg("-device").arg("virtio-keyboard-device");
+    }
+    cmd
+}
+
+fn build_riscv64_image() -> PathBuf {
+    let kernel = build_riscv64_kernel();
+    let kernel_bytes = std::fs::read(&kernel).expect("read riscv64 kernel ELF");
+    let hello_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target/hello-riscv64imac-unknown-none-elf");
+    let hello = std::fs::read(&hello_path).unwrap_or_else(|_| {
+        panic!("hello ELF missing at {}", hello_path.display())
+    });
+    let ok_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target/ok-riscv64imac-unknown-none-elf");
+    let ok = std::fs::read(&ok_path).unwrap_or_else(|_| {
+        panic!("ok ELF missing at {}", ok_path.display())
+    });
+    let limine_dir = PathBuf::from(env!("LIMINE_DIR"));
+    let limine = if limine_dir.join("BOOTRISCV64.EFI").is_file() {
+        fetch_limine(&limine_dir)
+    } else {
+        let fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("limine-v{LIMINE_VERSION}"));
+        fetch_limine(&fallback)
+    };
+    let efi = std::fs::read(limine.bootriscv64()).expect("BOOTRISCV64.EFI");
+    let dtb_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/virt.dtb");
+    if !dtb_path.is_file() {
+        let status = Command::new("qemu-system-riscv64")
+            .args([
+                "-machine",
+                "virt,dumpdtb=target/virt.dtb",
+                "-nographic",
+                "-serial",
+                "none",
+            ])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .expect("spawn qemu for virt.dtb");
+        if !status.success() || !dtb_path.is_file() {
+            panic!("failed to generate target/virt.dtb with qemu-system-riscv64");
+        }
+    }
+    let dtb = std::fs::read(&dtb_path).expect("read virt.dtb");
+    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/riscv64.img");
+    write_esp_image_ex(
+        &image,
+        &kernel_bytes,
+        "BOOTRISCV64.EFI",
+        &efi,
+        None,
+        &hello,
+        &ok,
+        RISCV_LIMINE_CONF,
+        &[DiskFile {
+            path: "boot/virt.dtb".into(),
+            data: dtb,
+        }],
+    );
+    write_fat_data_image(&fat_img_path());
+    image
+}
+
+fn build_riscv64_kernel() -> PathBuf {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let mut cmd = Command::new(cargo);
+    cmd.arg("build")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("-p")
+        .arg("kernel")
+        .arg("--bin")
+        .arg("kernel")
+        .arg("--target")
+        .arg(RISCV64_TARGET);
+    cmd.env(
+        "RUSTFLAGS",
+        "-C panic=abort -C relocation-model=static -C code-model=large",
+    );
+    if !cfg!(debug_assertions) {
+        cmd.arg("--release");
+    }
+    let status = cmd
+        .status()
+        .expect("failed to invoke cargo for riscv64 kernel");
+    if !status.success() {
+        eprintln!("error: building riscv64 kernel failed");
+        exit(1);
+    }
+
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
+    let elf = target_dir
+        .join(RISCV64_TARGET)
+        .join(profile)
+        .join("kernel");
+    if !elf.is_file() {
+        eprintln!("error: riscv64 kernel ELF missing at {}", elf.display());
         exit(1);
     }
     elf
