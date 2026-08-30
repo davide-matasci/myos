@@ -25,11 +25,12 @@ jobs:
       - name: Install xorriso and build tools
         run: sudo apt-get update && sudo apt-get install -y xorriso clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo
 
-      - name: Build myos sysroot, newlib, and C smoke ELFs (x86 + AArch64)
+      - name: Build myos sysroot, newlib, C smoke ELFs, and sbase (x86 + AArch64)
         run: |
           chmod +x scripts/*.sh
           ./scripts/build-std-hello.sh
           ./scripts/build-c-hello.sh
+          ./scripts/build-sbase.sh
 
       - name: Build x86_64 hybrid ISO
         run: |

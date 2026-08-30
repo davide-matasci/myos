@@ -36,11 +36,12 @@ jobs:
       - name: Install QEMU, AArch64/RISC-V UEFI firmware, and build tools
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm qemu-system-misc qemu-efi-aarch64 qemu-efi-riscv64 clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo
 
-      - name: Build myos sysroot, newlib, and C smoke ELFs (x86 + AArch64)
+      - name: Build myos sysroot, newlib, C smoke ELFs, and sbase (x86 + AArch64)
         run: |
           chmod +x scripts/*.sh
           ./scripts/build-std-hello.sh
           ./scripts/build-c-hello.sh
+          ./scripts/build-sbase.sh
 
       - name: PS/2 scancode decode unit tests
         run: cargo test -p ps2-scancode

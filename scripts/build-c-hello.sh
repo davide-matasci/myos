@@ -34,5 +34,4 @@ link_prog() {
 
 for arch in x86_64 aarch64; do
   link_prog hello "$ROOT/c/hello.c" "$arch"
-  link_prog echo "$ROOT/c/echo.c" "$arch"
 done

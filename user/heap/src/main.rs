@@ -37,11 +37,12 @@ fn main() -> ! {
     let mut v = Vec::new();
     v.extend_from_slice(b"alloc ok\n");
     write(&v);
-    // Empty argv keeps AArch64 exec working (multi-arg pack can fail today).
     run_prog(b"/stdhello", &[]);
     run_prog(b"/stdcat", &[]);
     run_prog(b"/stdecho", &[]);
     run_prog(b"/chello", &[]);
+    run_prog(b"/strue", &[]);
+    run_prog(b"/secho", &[]);
     exit();
 }
 
