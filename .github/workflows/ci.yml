@@ -140,7 +140,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  boot:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [wire-myos, sysroot]
@@ -177,8 +177,8 @@ jobs:
           name: myos-sysroot
           path: target
 
-      - name: Install QEMU, AArch64/RISC-V UEFI firmware, and build tools
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm qemu-system-misc qemu-efi-aarch64 qemu-efi-riscv64 clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
 
       - name: Install sysroot and build std/C smoke ELFs
         run: |
@@ -200,33 +200,93 @@ jobs:
         run: |
           cargo clean -p myos
           cargo build
+          cargo build -p kernel --target aarch64-unknown-none-softfloat
+          cargo build -p kernel --target riscv64imac-unknown-none-elf
           test -f target/bios.img
           od -An -tx1 -N 16 target/bios.img
 
-      - name: Boot BIOS in QEMU
-        id: bios
-        timeout-minutes: 5
-        continue-on-error: true
-        run: cargo run -- --ci
+      - name: Pack CI build artifacts
+        run: |
+          shopt -s nullglob
+          files=(
+            target/debug/myos
+            target/debug/build/myos-*/out
+            target/bios.img
+            target/uefi.img
+            target/fat.img
+            target/x86_64-unknown-none
+            target/aarch64-unknown-none-softfloat
+            target/riscv64imac-unknown-none-elf
+            target/hello-*
+            target/ok-*
+            target/limine-v*
+            target/virt.dtb
+          )
+          if [ -d target/ovmf ]; then
+            files+=(target/ovmf)
+          fi
+          tar -cf ci-build.tar "${files[@]}"
+          ls -lh ci-build.tar
 
-      - name: Boot UEFI in QEMU
-        id: uefi
-        timeout-minutes: 5
-        continue-on-error: true
-        run: cargo run -- uefi --ci
+      - name: Upload CI build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-build
+          path: ci-build.tar
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Boot AArch64 in QEMU
-        id: aarch64
-        timeout-minutes: 5
-        continue-on-error: true
-        run: cargo run -- aarch64 --ci
+  boot:
+    name: boot (${{ matrix.id }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: bios
+            args: --ci
+            packages: qemu-system-x86
+            needs_rust: false
+            required: true
+          - id: uefi
+            args: uefi --ci
+            packages: qemu-system-x86
+            needs_rust: false
+            required: true
+          - id: aarch64
+            args: aarch64 --ci
+            packages: qemu-system-arm qemu-efi-aarch64
+            needs_rust: true
+            required: true
+          - id: riscv64
+            args: riscv64 --ci
+            packages: qemu-system-misc qemu-efi-riscv64
+            needs_rust: true
+            required: false
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Boot RISC-V64 in QEMU
-        id: riscv64
-        timeout-minutes: 5
-        continue-on-error: true
-        run: cargo run -- riscv64 --ci
+      - name: Install pinned nightly
+        if: matrix.needs_rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
 
-      - name: Fail if any boot failed
-        if: steps.bios.outcome == 'failure' || steps.uefi.outcome == 'failure' || steps.aarch64.outcome == 'failure'
-        run: exit 1
+      - name: Download CI build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-build
+
+      - name: Extract CI build artifacts
+        run: tar -xf ci-build.tar
+
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Boot in QEMU
+        continue-on-error: ${{ !matrix.required }}
+        run: ./target/debug/myos ${{ matrix.args }}
