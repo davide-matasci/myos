@@ -466,9 +466,9 @@ required beyond the existing myos ABI.
 | `scripts/build-libgloss-myos.sh` | Build `libgloss.a` + `crt0.o` (called by build-newlib) |
 | `scripts/build-c-hello.sh` | Link minimal C smoke with `-lc -lgloss` |
 | `scripts/fetch-sbase.sh` | Clone pinned [sbase](https://git.suckless.org/sbase) into `target/sbase-src` |
+| `scripts/prepare-sbase-myos.sh` | Patch upstream `echo.c` into `target/sbase-myos-build/` (myos stdio workaround) |
 | `scripts/build-sbase.sh` | Cross-build sbase `echo`, `cat`, `true` for x86_64 and AArch64 |
-| `third-party/sbase-myos/` | write(2)-based sbase util + echo/cat (avoids newlib stdio startup bug) |
-| `third-party/sbase-stubs/` | AArch64 soft-float helper for newlib when stdio is linked |
+| `scripts/sbase-myos/` | Small libutil overlay (write(2) helpers + `echo.myos.patch`; not upstream sbase) |
 | `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
 
 Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
@@ -476,10 +476,11 @@ Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
 `lseek`/`execve`/… return `EROFS`/`ENOSYS`. Do **not** use
 `-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
 
-sbase programs use newlib for syscalls and string helpers; `third-party/sbase-myos/`
-supplies write(2)-based util code (newlib stdio currently faults at startup).
-Bootfs exposes them as `/secho`, `/scat`, and `/strue`. CI checks `sbase ok` from
-`/secho` (no argv) via `user/heap`.
+Upstream sbase (`cat`, `true`, most of libutil) is fetched at build time; only
+the myos libutil overlay and a one-file patch for `echo` live in-tree. sbase
+binaries use newlib for syscalls and string helpers; the overlay avoids newlib
+stdio, which currently faults at C startup when linked. Bootfs exposes `/secho`,
+`/scat`, and `/strue`; CI checks `sbase ok` from `/secho` via `user/heap`.
 
 The in-tree shell (`user/sh`) supports `export NAME=value`, `env`, pipes, stdin
 redirect (`<`), and `$?`. Output redirect (`>`) is deferred while bootfs stays

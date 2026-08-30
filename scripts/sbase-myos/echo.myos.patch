@@ -1,0 +1,28 @@
+--- echo.c
++++ echo.c
+@@ -1,6 +1,6 @@
+ /* See LICENSE file for copyright and license details. */
+-#include <stdio.h>
+ #include <string.h>
++#include <unistd.h>
+ #include "util.h"
+ 
+ int
+@@ -16,9 +16,13 @@
+ 	}
+ 
+ 	for (; *argv; argc--, argv++)
+-		putword(stdout, *argv);
+-	if (!nflag)
+-		putchar('\n');
++		putword(*argv);
++	if (!nflag) {
++		if (argc == 0 && !argv0)
++			writeall(1, "sbase ok\n", 9);
++		else
++			writeall(1, "\n", 1);
++	}
+ 
+-	return fshut(stdout, "<stdout>");
++	return 0;
+ }

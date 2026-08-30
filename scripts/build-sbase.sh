@@ -2,13 +2,13 @@
 # Cross-build a small sbase subset (echo, cat, true) with newlib + libgloss.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-"$ROOT/scripts/fetch-sbase.sh"
+"$ROOT/scripts/prepare-sbase-myos.sh"
 "$ROOT/scripts/build-newlib.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 SBASE="$ROOT/target/sbase-src"
-MYOS="$ROOT/third-party/sbase-myos"
-STUB="$ROOT/third-party/sbase-stubs/trunctfdf2.c"
+WORK="$ROOT/target/sbase-myos-build"
+MYOS="$ROOT/scripts/sbase-myos"
 CPPFLAGS=(-I"$MYOS" -I"$SBASE" -D_POSIX_C_SOURCE=200809L)
 
 compile() {
@@ -48,8 +48,9 @@ build_arch() {
   mkdir -p "$objdir"
 
   compile "$cc" "$inc" "$MYOS/eprintf.c" "$objdir/eprintf.o"
-  compile "$cc" "$inc" "$MYOS/writeall.c" "$objdir/writeall.o"
-  compile "$cc" "$inc" "$MYOS/concat.c" "$objdir/concat.o"
+  compile "$cc" "$inc" "$SBASE/libutil/writeall.c" "$objdir/writeall.o"
+  compile "$cc" "$inc" "$SBASE/libutil/concat.c" "$objdir/concat.o"
+  compile "$cc" "$inc" "$MYOS/putword.c" "$objdir/putword.o"
 
   local echo_objs=(
     "$objdir/eprintf.o"
@@ -57,8 +58,7 @@ build_arch() {
     "$objdir/putword.o"
     "$objdir/echo.o"
   )
-  compile "$cc" "$inc" "$MYOS/putword.c" "$objdir/putword.o"
-  compile "$cc" "$inc" "$MYOS/echo.c" "$objdir/echo.o"
+  compile "$cc" "$inc" "$WORK/echo.c" "$objdir/echo.o"
 
   local cat_objs=(
     "$objdir/eprintf.o"
@@ -66,13 +66,13 @@ build_arch() {
     "$objdir/concat.o"
     "$objdir/cat.o"
   )
-  compile "$cc" "$inc" "$MYOS/cat.c" "$objdir/cat.o"
+  compile "$cc" "$inc" "$SBASE/cat.c" "$objdir/cat.o"
 
   local true_objs=("$objdir/true.o")
   compile "$cc" "$inc" "$SBASE/true.c" "$objdir/true.o"
 
   if [[ "$arch" == "aarch64" ]]; then
-    compile "$cc" "$inc" "$STUB" "$objdir/trunctfdf2.o"
+    compile "$cc" "$inc" "$MYOS/trunctfdf2.c" "$objdir/trunctfdf2.o"
     echo_objs+=("$objdir/trunctfdf2.o")
     cat_objs+=("$objdir/trunctfdf2.o")
   fi
