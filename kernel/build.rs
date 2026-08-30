@@ -101,6 +101,13 @@ fn main() {
             embed_std_elf(manifest, &arch, artifact, env_key);
         }
         embed_c_elf(manifest, &arch, "c-hello", "USER_C_HELLO_PATH");
+        for (artifact, env_key) in [
+            ("sbase-echo", "USER_SBASE_ECHO_PATH"),
+            ("sbase-cat", "USER_SBASE_CAT_PATH"),
+            ("sbase-true", "USER_SBASE_TRUE_PATH"),
+        ] {
+            embed_c_elf(manifest, &arch, artifact, env_key);
+        }
     } else if arch == "riscv64" {
         let stub = PathBuf::from(&out).join("std-stub.elf");
         std::fs::write(&stub, []).expect("write riscv64 std stub");
@@ -109,6 +116,9 @@ fn main() {
             "USER_STD_CAT_PATH",
             "USER_STD_ECHO_PATH",
             "USER_C_HELLO_PATH",
+            "USER_SBASE_ECHO_PATH",
+            "USER_SBASE_CAT_PATH",
+            "USER_SBASE_TRUE_PATH",
         ] {
             println!("cargo:rustc-env={env_key}={}", stub.display());
         }
@@ -150,7 +160,7 @@ fn embed_c_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
     println!("cargo:rerun-if-changed={}", stable.display());
     if !stable.is_file() {
         panic!(
-            "{artifact} ELF missing at {} (run ./scripts/build-c-hello.sh)",
+            "{artifact} ELF missing at {} (run ./scripts/build-c-hello.sh and ./scripts/build-sbase.sh)",
             stable.display()
         );
     }

@@ -453,7 +453,8 @@ required beyond the existing myos ABI.
 
 ```sh
 ./scripts/build-newlib.sh   # fetch newlib 4.4.0, build libc + libgloss/myos
-./scripts/build-c-hello.sh  # smoke ELFs → target/c-hello-*
+./scripts/build-c-hello.sh  # minimal write() smoke → target/c-hello-*
+./scripts/build-sbase.sh    # suckless sbase echo/cat/true → target/sbase-*
 ```
 
 | Path | Role |
@@ -463,15 +464,23 @@ required beyond the existing myos ABI.
 | `scripts/patch-newlib-myos.sh` | Register `*-unknown-myos`, install libgloss port |
 | `scripts/build-newlib.sh` | Build/install newlib per arch |
 | `scripts/build-libgloss-myos.sh` | Build `libgloss.a` + `crt0.o` (called by build-newlib) |
-| `scripts/build-c-hello.sh` | Link smoke tests with `-lc -lgloss` |
-| `c/hello.c`, `c/echo.c` | Smoke tests (`c ok`, argv echo) |
+| `scripts/build-c-hello.sh` | Link minimal C smoke with `-lc -lgloss` |
+| `scripts/fetch-sbase.sh` | Clone pinned [sbase](https://git.suckless.org/sbase) into `target/sbase-src` |
+| `scripts/prepare-sbase-myos.sh` | Patch upstream `echo.c` into `target/sbase-myos-build/` (myos stdio workaround) |
+| `scripts/build-sbase.sh` | Cross-build sbase `echo`, `cat`, `true` for x86_64 and AArch64 |
+| `scripts/sbase-myos/` | Small libutil overlay (write(2) helpers + `echo.myos.patch`; not upstream sbase) |
+| `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
 
 Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
 `open` read-only, `close`, `brk`, `fork`, `wait`). Write-only open flags and
 `lseek`/`execve`/… return `EROFS`/`ENOSYS`. Do **not** use
 `-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
 
-The legacy `libc/` tree (`libmyos-c`) remains for reference; CI uses newlib.
+Upstream sbase (`cat`, `true`, most of libutil) is fetched at build time; only
+the myos libutil overlay and a one-file patch for `echo` live in-tree. sbase
+binaries use newlib for syscalls and string helpers; the overlay avoids newlib
+stdio, which currently faults at C startup when linked. Bootfs exposes `/secho`,
+`/scat`, and `/strue`; CI checks `sbase ok` from `/secho` via `user/heap`.
 
 The in-tree shell (`user/sh`) supports `export NAME=value`, `env`, pipes, stdin
 redirect (`<`), and `$?`. Output redirect (`>`) is deferred while bootfs stays

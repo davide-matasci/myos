@@ -27,10 +27,10 @@ pub const PAGE: usize = 4096;
 /// User stack mapping below the heap (128 KiB).
 pub const USER_STACK_PAGES: usize = 32;
 const HEAP_PAGES: usize = 64;
-const MAX_INIT_PAGES: usize = 32;
+const MAX_INIT_PAGES: usize = 40;
 /// Minimum code pages reserved below the user stack so post-fork `exec` can
-/// `reload_user_elf` the largest patched `std` example (today `std-cat`).
-const USER_EXEC_RELOAD_PAGES: usize = 20;
+/// `reload_user_elf` the largest newlib/sbase ELFs (today `sbase-cat`).
+const USER_EXEC_RELOAD_PAGES: usize = 36;
 const MAX_PATH: usize = 64;
 const MAX_ARGC: usize = 16;
 const MAX_ARG_LEN: usize = 128;
