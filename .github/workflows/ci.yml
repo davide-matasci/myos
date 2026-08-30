@@ -226,7 +226,7 @@ jobs:
             target/hello-*
             target/ok-*
             target/std-*
-            target/c-*
+            target/c-hello-*
             target/sbase-*
             target/limine-v*
           )
