@@ -5,7 +5,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use myos_user::{exec, exit, fork, heap_init, wait_status, write, Heap};
+use myos_user::{exec, exit, exit_code, fork, heap_init, wait_status, write, Heap};
 
 #[global_allocator]
 static GLOBAL: Heap = Heap;
@@ -27,7 +27,7 @@ fn run_prog(path: &[u8], args: &[&[u8]]) {
         None => write(b"fork fail\n"),
         Some(0) => {
             exec(path, args);
-            exit(127);
+            exit_code(127);
         }
         Some(_) => {
             let _ = wait_status();
@@ -40,7 +40,7 @@ fn run_prog_exit(path: &[u8], args: &[&[u8]], expect: u8, ok_msg: &[u8]) {
         None => write(b"fork fail\n"),
         Some(0) => {
             exec(path, args);
-            exit(127);
+            exit_code(127);
         }
         Some(_) => {
             if let Some((_, status)) = wait_status() {
