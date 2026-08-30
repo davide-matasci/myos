@@ -2,23 +2,46 @@
 set -euo pipefail
 REAL="$(rustc +nightly-2026-07-26 --print sysroot)/bin/rustc"
 
-# Cargo invokes this wrapper for host build scripts and proc-macros too.
-# Those run without --target and need the normal host sysroot (std for
-# x86_64-unknown-linux-gnu). Cross / build-std invocations always pass
-# --target and should keep using the myos sysroot overlay.
-has_target=0
+# Host-side build scripts and proc-macros always need the normal toolchain sysroot.
+host_build=0
 prev=""
 for arg in "$@"; do
-  if [[ "$prev" == "--target" ]] || [[ "$arg" == --target=* ]]; then
-    has_target=1
+  if [[ "$prev" == "--crate-name" && "$arg" == build_script_build ]]; then
+    host_build=1
     break
   fi
+  if [[ "$prev" == "--crate-type" && "$arg" == proc-macro ]]; then
+    host_build=1
+    break
+  fi
+  case "$arg" in
+    --crate-name=build_script_build) host_build=1 ;;
+    --crate-type=proc-macro) host_build=1 ;;
+  esac
   prev="$arg"
 done
 
-if [[ "$has_target" -eq 0 ]]; then
+if [[ "$host_build" -eq 1 ]]; then
   exec "$REAL" "$@"
 fi
 
-SYSROOT="${MYOS_SYSROOT:-$(cd "$(dirname "$0")/.." && pwd)/target/myos-sysroot}"
-exec "$REAL" --sysroot="$SYSROOT" "$@"
+use_myos_sysroot=0
+if [[ -n "${MYOS_RUSTC_FORCE_SYSROOT:-}" ]]; then
+  use_myos_sysroot=1
+else
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--target" ]] || [[ "$arg" == --target=* ]]; then
+      use_myos_sysroot=1
+      break
+    fi
+    prev="$arg"
+  done
+fi
+
+if [[ "$use_myos_sysroot" -eq 1 ]]; then
+  SYSROOT="${MYOS_SYSROOT:-$(cd "$(dirname "$0")/.." && pwd)/target/myos-sysroot}"
+  exec "$REAL" --sysroot="$SYSROOT" "$@"
+fi
+
+exec "$REAL" "$@"
