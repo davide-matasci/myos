@@ -17,9 +17,11 @@ patch_copy() {
 }
 
 patch_copy echo
-patch_copy basename
-patch_copy dirname
-patch_copy pwd
 patch_copy ls
+patch_copy pwd
+
+for base in basename dirname; do
+  cp "$SBASE/${base}.c" "$WORK/${base}.c"
+done
 
 echo "sbase myos tree -> $WORK"

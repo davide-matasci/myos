@@ -9,7 +9,7 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 SBASE="$ROOT/target/sbase-src"
 WORK="$ROOT/target/sbase-myos-build"
 MYOS="$ROOT/scripts/sbase-myos"
-CPPFLAGS=(-I"$MYOS" -I"$SBASE" -D_POSIX_C_SOURCE=200809L)
+CPPFLAGS=(-I"$SBASE" -include sys/myos_extra.h -D_POSIX_C_SOURCE=200809L)
 
 compile() {
   local cc="$1"
@@ -47,13 +47,15 @@ build_arch() {
   local objdir="$ROOT/target/sbase-obj-${arch}"
   mkdir -p "$objdir"
 
-  compile "$cc" "$inc" "$MYOS/eprintf.c" "$objdir/eprintf.o"
+  compile "$cc" "$inc" "$SBASE/libutil/eprintf.c" "$objdir/eprintf.o"
+  compile "$cc" "$inc" "$SBASE/libutil/fshut.c" "$objdir/fshut.o"
   compile "$cc" "$inc" "$SBASE/libutil/writeall.c" "$objdir/writeall.o"
   compile "$cc" "$inc" "$SBASE/libutil/concat.c" "$objdir/concat.o"
-  compile "$cc" "$inc" "$MYOS/putword.c" "$objdir/putword.o"
+  compile "$cc" "$inc" "$SBASE/libutil/putword.c" "$objdir/putword.o"
 
   local util_common=(
     "$objdir/eprintf.o"
+    "$objdir/fshut.o"
     "$objdir/writeall.o"
   )
 
@@ -77,6 +79,7 @@ build_arch() {
 
   compile "$cc" "$inc" "$SBASE/libutil/ealloc.c" "$objdir/ealloc.o"
   compile "$cc" "$inc" "$SBASE/libutil/reallocarray.c" "$objdir/reallocarray.o"
+  compile "$cc" "$inc" "$SBASE/libutil/human.c" "$objdir/human.o"
   compile "$cc" "$inc" "$SBASE/libutf/runetype.c" "$objdir/runetype.o"
   compile "$cc" "$inc" "$SBASE/libutf/rune.c" "$objdir/rune.o"
   compile "$cc" "$inc" "$SBASE/libutf/iscntrlrune.c" "$objdir/iscntrlrune.o"
@@ -84,8 +87,8 @@ build_arch() {
   compile "$cc" "$inc" "$SBASE/libutf/utf.c" "$objdir/utf.o"
   compile "$cc" "$inc" "$WORK/ls.c" "$objdir/ls.o"
   link_prog ls "$arch" "${util_common[@]}" "$objdir/ealloc.o" "$objdir/reallocarray.o" \
-    "$objdir/runetype.o" "$objdir/rune.o" "$objdir/iscntrlrune.o" "$objdir/isprintrune.o" \
-    "$objdir/utf.o" "$objdir/ls.o" "${extra[@]}"
+    "$objdir/human.o" "$objdir/runetype.o" "$objdir/rune.o" "$objdir/iscntrlrune.o" \
+    "$objdir/isprintrune.o" "$objdir/utf.o" "$objdir/ls.o" "${extra[@]}"
 
   compile "$cc" "$inc" "$WORK/pwd.c" "$objdir/pwd.o"
   link_prog pwd "$arch" "${util_common[@]}" "$objdir/pwd.o" "${extra[@]}"

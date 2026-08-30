@@ -16,7 +16,7 @@ rm -rf "$out"
 mkdir -p "$out/obj" "$libdir"
 cp "$ROOT/newlib/libgloss/myos/crt0-${arch}.S" "$PORT/crt0.S"
 
-for f in myos_raw syscalls stubs environ dirent cwd basename dirname; do
+for f in myos_raw syscalls stubs environ dirent cwd basename dirname time pwdgrp readlink; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
@@ -28,4 +28,6 @@ cp "$out/obj/crt0.o" "$libdir/crt0.o"
 mkdir -p "$libdir/specs" "$inc/sys"
 cp "$PORT/myos.specs" "$libdir/specs/myos.specs"
 cp "$ROOT/newlib/libgloss/myos/sys/dirent.h" "$inc/sys/dirent.h"
+cp "$ROOT/newlib/libgloss/myos/sys/sysmacros.h" "$inc/sys/sysmacros.h"
+cp "$ROOT/newlib/libgloss/myos/sys/myos_extra.h" "$inc/sys/myos_extra.h"
 echo "libgloss-myos -> $libdir/libgloss.a"

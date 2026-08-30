@@ -466,9 +466,9 @@ required beyond the existing myos ABI.
 | `scripts/build-libgloss-myos.sh` | Build `libgloss.a` + `crt0.o` (called by build-newlib) |
 | `scripts/build-c-hello.sh` | Link minimal C smoke with `-lc -lgloss` |
 | `scripts/fetch-sbase.sh` | Clone pinned [sbase](https://git.suckless.org/sbase) into `target/sbase-src` |
-| `scripts/prepare-sbase-myos.sh` | Apply myos patches to upstream `echo`, `basename`, `dirname`, `pwd`, `ls` |
+| `scripts/prepare-sbase-myos.sh` | Apply myos patches to upstream `echo`, `pwd`, `ls` |
 | `scripts/build-sbase.sh` | Cross-build sbase `echo`, `cat`, `true`, `false`, `ls`, `pwd`, `basename`, `dirname` |
-| `scripts/sbase-myos/` | libutil overlay, `.myos.patch` files, and `util.h` (not upstream tool sources) |
+| `scripts/sbase-myos/` | Small `.myos.patch` files (CI smoke, exec argv); `trunctfdf2.c` for aarch64 |
 | `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
 
 Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
@@ -478,13 +478,14 @@ flat bootfs. Write-only open flags and `lseek`/`execve`/… return `EROFS`/`ENOS
 Do **not** use `-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
 
 Upstream sbase (`cat`, `true`, `ls`, `pwd`, …) is fetched at build time; only
-the myos libutil overlay and small `.myos.patch` files live in-tree (stdio
-workaround, myos exec argv, CI smoke strings). The upstream `ls` long listing
-(`-l`/`-i`) is disabled until pwd/grp/time support lands.
-binaries use newlib for syscalls and string helpers; the overlay avoids newlib
-stdio, which currently faults at C startup when linked. Bootfs exposes `/secho`,
-`/scat`, `/strue`, `/sls`, `/sfalse`, `/spwd`, and `/sbasename`; CI checks
-`sbase ok` from `/secho` and `sls ok` from `/sls` via `user/heap`.
+small `.myos.patch` files live in-tree (CI smoke strings, myos exec argv quirks).
+Tools use upstream newlib stdio (`puts`, `printf`, `fshut`) and libutil; the
+kernel enables user SIMD/FP (x86_64 SSE, AArch64 NEON) so `-O2` libc code does
+not fault on stdio init.
+Libgloss adds `time`/`localtime`, flat `getpwuid`/`getgrgid` (root), `readlink`
+(`ENOSYS`), and `sys/sysmacros.h` so upstream `ls -l` links. Bootfs exposes
+`/secho`, `/scat`, `/strue`, `/sls`, `/sfalse`, `/spwd`, and `/sbasename`; CI
+checks `sbase ok` from `/secho` and `sls ok` from `/sls` via `user/heap`.
 
 The in-tree shell (`user/sh`) supports `export NAME=value`, `env`, pipes, stdin
 redirect (`<`), and `$?`. Output redirect (`>`) is deferred while bootfs stays

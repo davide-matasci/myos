@@ -98,7 +98,43 @@ unsafe extern "C" {
 
 pub fn init() {
     #[cfg(target_arch = "x86_64")]
-    init_syscall_msrs();
+    {
+        init_syscall_msrs();
+        init_user_sse();
+    }
+    #[cfg(target_arch = "aarch64")]
+    init_user_fp();
+}
+
+/// newlib stdio and -O2 user code use SSE (movaps/xorps). Without OSFXSR/OSXMMEXCPT
+/// and with CR0.TS set, the first SSE insn in userspace raises #NM.
+#[cfg(target_arch = "x86_64")]
+fn init_user_sse() {
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    const CR4_OSXMMEXCPT: u64 = 1 << 10;
+    let (mut cr0, mut cr4): (u64, u64);
+    unsafe {
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        core::arch::asm!("mov {}, cr4", out(reg) cr4);
+        cr0 &= !CR0_TS;
+        cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
+        core::arch::asm!("mov cr0, {}", in(reg) cr0);
+        core::arch::asm!("mov cr4, {}", in(reg) cr4);
+    }
+}
+
+/// newlib stdio init uses NEON (movi v0.2d). With CPACR_EL1.FPEN=0, EL0 traps on SIMD.
+#[cfg(target_arch = "aarch64")]
+fn init_user_fp() {
+    const CPACR_EL1_FPEN: u64 = 3 << 20;
+    unsafe {
+        let mut cpacr: u64;
+        core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr);
+        cpacr |= CPACR_EL1_FPEN;
+        core::arch::asm!("msr cpacr_el1, {}", in(reg) cpacr);
+        core::arch::asm!("isb");
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
