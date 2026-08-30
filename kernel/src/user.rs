@@ -347,26 +347,25 @@ fn expand_user_elf(
         return None;
     }
 
+    // Always install fresh code/stack PTEs. A smaller post-fork image may have
+    // left NX stack or heap mappings in this VA range; reusing them makes the
+    // larger ELF fault on the first instruction fetch (x86 code=0x15).
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
-        if virt_to_phys(aspace, va).is_none() {
-            let frame = mm::alloc_frame();
-            unsafe {
-                core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
-            }
-            map_user_code_page(aspace, va, frame);
-            sync_icache(mm::hhdm(frame) as usize, PAGE);
+        let frame = mm::alloc_frame();
+        unsafe {
+            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
         }
+        map_user_code_page(aspace, va, frame);
+        sync_icache(mm::hhdm(frame) as usize, PAGE);
     }
     for i in 0..USER_STACK_PAGES {
         let va = base + new_stack_off + (i * PAGE) as u64;
-        if virt_to_phys(aspace, va).is_none() {
-            let frame = mm::alloc_frame();
-            unsafe {
-                core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
-            }
-            map_user_stack_page(aspace, va, frame);
+        let frame = mm::alloc_frame();
+        unsafe {
+            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
         }
+        map_user_stack_page(aspace, va, frame);
     }
 
     let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
