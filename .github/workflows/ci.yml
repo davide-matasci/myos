@@ -11,6 +11,10 @@ on:
         description: Also test wire-myos against latest nightly (non-blocking)
         type: boolean
         default: false
+      force_sysroot:
+        description: Force sysroot rebuild and artifact upload (even if std paths unchanged)
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -77,9 +81,8 @@ jobs:
     timeout-minutes: 45
     needs: [changes, wire-myos]
     if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      needs.changes.outputs.sysroot == 'true'
+      needs.changes.outputs.sysroot == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.force_sysroot)
     steps:
       - uses: actions/checkout@v4
 
@@ -101,6 +104,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zstd
 
       - name: Build and package sysroot
+        env:
+          MYOS_SYSROOT_SLIM: "1"
+          MYOS_ZSTD_LEVEL: "3"
         run: |
           chmod +x scripts/*.sh
           ./scripts/build-sysroot.sh
@@ -219,6 +225,9 @@ jobs:
             target/riscv64imac-unknown-none-elf
             target/hello-*
             target/ok-*
+            target/std-*
+            target/c-*
+            target/sbase-*
             target/limine-v*
           )
           if [ -f target/virt.dtb ]; then
