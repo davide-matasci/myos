@@ -43,6 +43,8 @@ fn main() -> ! {
     run_prog(b"/chello", &[]);
     run_prog(b"/strue", &[]);
     run_prog(b"/secho", &[]);
+    run_prog(b"/sls", &[]);
+    run_prog(b"/spwd", &[]);
     exit();
 }
 

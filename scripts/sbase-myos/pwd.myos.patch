@@ -1,0 +1,30 @@
+--- pwd.c
++++ pwd.c
+@@ -33,14 +33,19 @@
+ 	char cwd[PATH_MAX];
+ 	char mode = 'L';
+ 
+-	ARGBEGIN {
+-	case 'L':
+-	case 'P':
+-		mode = ARGC();
+-		break;
+-	default:
+-		usage();
+-	} ARGEND
++	argv0 = *argv;
++	if (argv0)
++		argc--, argv++;
++
++	while (*argv && (*argv)[0] == '-' && (*argv)[1]) {
++		if ((*argv)[1] == 'L' && (*argv)[2] == '\0')
++			mode = 'L';
++		else if ((*argv)[1] == 'P' && (*argv)[2] == '\0')
++			mode = 'P';
++		else
++			usage();
++		argc--, argv++;
++	}
+ 
+ 	if (!getcwd(cwd, sizeof(cwd)))
+ 		eprintf("getcwd:");

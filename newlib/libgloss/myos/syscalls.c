@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
+#include "myos_stat.h"
 
 static int myos_err(long ret) {
     if (ret == (long)MYOS_SYSERR) {
@@ -98,6 +99,61 @@ void *_sbrk(ptrdiff_t incr) {
     return old;
 }
 
+static int myos_is_root_path(const char *path)
+{
+    if (path == NULL || path[0] == '\0') {
+        return 1;
+    }
+    if (strcmp(path, ".") == 0 || strcmp(path, "/") == 0) {
+        return 1;
+    }
+    while (*path == '/') {
+        path++;
+    }
+    return path[0] == '\0';
+}
+
+static int myos_fill_stat(struct stat *st, const struct myos_stat_buf *src)
+{
+    memset(st, 0, sizeof(*st));
+    st->st_mode = src->st_mode;
+    st->st_size = (off_t)src->st_size;
+    st->st_ino = src->st_ino;
+    st->st_nlink = src->st_nlink;
+    st->st_uid = 0;
+    st->st_gid = 0;
+    st->st_blksize = 4096;
+    st->st_blocks = (src->st_size + 511) / 512;
+    return 0;
+}
+
+static int myos_stat_path(const char *path, struct stat *st)
+{
+    struct myos_stat_buf buf;
+
+    if (st == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (myos_is_root_path(path)) {
+        buf.st_mode = S_IFDIR | 0755;
+        buf.st_size = 0;
+        buf.st_ino = 1;
+        buf.st_nlink = 2;
+        return myos_fill_stat(st, &buf);
+    }
+    long ret = myos_syscall3(
+        MYOS_SYS_STAT,
+        (long)(uintptr_t)path,
+        (long)strlen(path),
+        (long)(uintptr_t)&buf);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = ENOENT;
+        return -1;
+    }
+    return myos_fill_stat(st, &buf);
+}
+
 int _fstat(int fd, struct stat *st) {
     if (st == NULL) {
         errno = EINVAL;
@@ -106,20 +162,25 @@ int _fstat(int fd, struct stat *st) {
     memset(st, 0, sizeof(*st));
     if (fd >= 0 && fd <= 2) {
         st->st_mode = S_IFCHR | 0666;
+        st->st_rdev = fd;
+        st->st_nlink = 1;
         return 0;
     }
     st->st_mode = S_IFREG | 0444;
+    st->st_nlink = 1;
     return 0;
 }
 
+int _lstat(const char *path, struct stat *st) {
+    return myos_stat_path(path, st);
+}
+
+int lstat(const char *path, struct stat *st) {
+    return _lstat(path, st);
+}
+
 int _stat(const char *path, struct stat *st) {
-    int fd = _open(path, O_RDONLY, 0);
-    if (fd < 0) {
-        return -1;
-    }
-    int rc = _fstat(fd, st);
-    _close(fd);
-    return rc;
+    return myos_stat_path(path, st);
 }
 
 int _getpid(void) {

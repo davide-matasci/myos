@@ -23,6 +23,7 @@ const SYS_LISTDIR: usize = 8;
 const SYS_BRK: usize = 9;
 const SYS_PIPE: usize = 10;
 const SYS_DUP2: usize = 11;
+pub const SYS_STAT: usize = 12;
 pub const PAGE: usize = 4096;
 /// User stack mapping below the heap (128 KiB).
 pub const USER_STACK_PAGES: usize = 32;
@@ -97,7 +98,43 @@ unsafe extern "C" {
 
 pub fn init() {
     #[cfg(target_arch = "x86_64")]
-    init_syscall_msrs();
+    {
+        init_syscall_msrs();
+        init_user_sse();
+    }
+    #[cfg(target_arch = "aarch64")]
+    init_user_fp();
+}
+
+/// newlib stdio and -O2 user code use SSE (movaps/xorps). Without OSFXSR/OSXMMEXCPT
+/// and with CR0.TS set, the first SSE insn in userspace raises #NM.
+#[cfg(target_arch = "x86_64")]
+fn init_user_sse() {
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    const CR4_OSXMMEXCPT: u64 = 1 << 10;
+    let (mut cr0, mut cr4): (u64, u64);
+    unsafe {
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        core::arch::asm!("mov {}, cr4", out(reg) cr4);
+        cr0 &= !CR0_TS;
+        cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
+        core::arch::asm!("mov cr0, {}", in(reg) cr0);
+        core::arch::asm!("mov cr4, {}", in(reg) cr4);
+    }
+}
+
+/// newlib stdio init uses NEON (movi v0.2d). With CPACR_EL1.FPEN=0, EL0 traps on SIMD.
+#[cfg(target_arch = "aarch64")]
+fn init_user_fp() {
+    const CPACR_EL1_FPEN: u64 = 3 << 20;
+    unsafe {
+        let mut cpacr: u64;
+        core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr);
+        cpacr |= CPACR_EL1_FPEN;
+        core::arch::asm!("msr cpacr_el1, {}", in(reg) cpacr);
+        core::arch::asm!("isb");
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -971,6 +1008,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
         SYS_DUP2 => sys_dup2(a0, a1),
+        SYS_STAT => sys_stat(a0, a1, a2),
         _ => SYSERR,
     }
 }
@@ -991,8 +1029,9 @@ fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
         return None;
     }
     let mut buf = [0u8; MAX_PATH];
-    unsafe {
-        core::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), len);
+    let aspace = task::current_aspace();
+    if !read_user_bytes(aspace, ptr, &mut buf[..len]) {
+        return None;
     }
     Some(buf)
 }
@@ -1233,10 +1272,53 @@ fn sys_listdir(buf: usize, len: usize) -> usize {
     }
     let mut kbuf = [0u8; 512];
     let n = fs::listdir(&mut kbuf).min(kbuf.len()).min(len);
-    unsafe {
-        core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf as *mut u8, n);
+    let aspace = task::current_aspace();
+    if !write_user_bytes(aspace, buf, &kbuf[..n]) {
+        return SYSERR;
     }
     n
+}
+
+#[repr(C)]
+struct MyosStatBuf {
+    st_mode: u32,
+    st_size: u32,
+    st_ino: u32,
+    st_nlink: u32,
+}
+
+fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
+    if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStatBuf>()) {
+        return SYSERR;
+    }
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(info) = fs::stat(path) else {
+        return SYSERR;
+    };
+    let out = MyosStatBuf {
+        st_mode: info.mode,
+        st_size: info.size,
+        st_ino: info.ino,
+        st_nlink: info.nlink,
+    };
+    if !write_user_bytes(
+        task::current_aspace(),
+        out_ptr,
+        unsafe {
+            core::slice::from_raw_parts(
+                &out as *const MyosStatBuf as *const u8,
+                core::mem::size_of::<MyosStatBuf>(),
+            )
+        },
+    ) {
+        return SYSERR;
+    }
+    0
 }
 
 fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {

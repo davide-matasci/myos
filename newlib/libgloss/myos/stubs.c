@@ -72,10 +72,14 @@ clock_t _times(struct tms *buf) {
 }
 
 int _gettimeofday(struct timeval *tv, void *tz) {
-    (void)tv;
     (void)tz;
-    errno = ENOSYS;
-    return -1;
+    if (tv == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    tv->tv_sec = 0;
+    tv->tv_usec = 0;
+    return 0;
 }
 
 int _chown(const char *path, uid_t owner, gid_t group) {

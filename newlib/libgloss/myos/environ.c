@@ -1,6 +1,6 @@
 #include <stddef.h>
 
-char *environ;
+extern char **environ;
 
 void myos_init_environ(int argc, char **argv) {
     (void)argc;
@@ -8,5 +8,5 @@ void myos_init_environ(int argc, char **argv) {
     while (*p) {
         p++;
     }
-    environ = (char *)(p + 1);
+    environ = p + 1;
 }
