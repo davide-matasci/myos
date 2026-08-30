@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "stubfs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Sample prefixed VFS mount at /disk via KernelApi::vfs_mount."
+
+[[bin]]
+name = "stubfs"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

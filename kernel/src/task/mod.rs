@@ -38,7 +38,7 @@ enum FdEntry {
     Stdin,
     Console,
     File {
-        data: &'static [u8],
+        node: crate::fs::Vnode,
         pos: usize,
     },
     PipeRead(usize),
@@ -284,11 +284,11 @@ fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
     out
 }
 
-pub fn fd_open(data: &'static [u8]) -> Option<usize> {
+pub fn fd_open(node: crate::fs::Vnode) -> Option<usize> {
     with_current_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
-                t.fds[i] = FdEntry::File { data, pos: 0 };
+                t.fds[i] = FdEntry::File { node, pos: 0 };
                 return Some(i);
             }
         }
@@ -391,12 +391,14 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         }
         match entry {
             FdEntry::Stdin => return fd_read_stdin(buf, len),
-            FdEntry::File { data, pos } => {
+            FdEntry::File { node, pos: _ } => {
                 return with_current_mut(|t| {
-                    let FdEntry::File { data, pos } = t.fds[fd] else {
+                    let FdEntry::File { node, pos } = t.fds[fd] else {
                         return usize::MAX;
                     };
-                    let n = len.min(data.len().saturating_sub(pos));
+                    let mut tmp = [0u8; 128];
+                    let want = len.min(tmp.len());
+                    let n = crate::fs::read(&node, pos, &mut tmp[..want]);
                     if n != 0 {
                         if !user_buf_ok(
                             buf,
@@ -409,11 +411,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                             return usize::MAX;
                         }
                         unsafe {
-                            core::ptr::copy_nonoverlapping(
-                                data.as_ptr().add(pos),
-                                buf as *mut u8,
-                                n,
-                            );
+                            core::ptr::copy_nonoverlapping(tmp.as_ptr(), buf as *mut u8, n);
                         }
                     }
                     if let FdEntry::File { pos: p, .. } = &mut t.fds[fd] {

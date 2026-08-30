@@ -89,6 +89,7 @@ fn kernel_main() -> ! {
 
     fs::init();
     fs::init_limine();
+    modules::load_embedded_stubfs();
     modules::load_embedded_hello();
     modules::load_limine_modules();
 

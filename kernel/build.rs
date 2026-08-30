@@ -50,6 +50,18 @@ fn main() {
     nested_elf(
         &cargo,
         manifest,
+        "../modules/stubfs",
+        "stubfs",
+        "stubfs-target",
+        "STUBFS_MODULE_PATH",
+        &target,
+        &profile,
+        &out,
+        &["../abi/src/lib.rs"],
+    );
+    nested_elf(
+        &cargo,
+        manifest,
         "../user/init",
         "init",
         "init-target",

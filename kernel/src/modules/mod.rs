@@ -15,6 +15,7 @@ use myos_abi::{KernelApi, ABI_VERSION};
 
 const HELLO_IMAGE: &[u8] = include_bytes!(env!("HELLO_MODULE_PATH"));
 const FAT_IMAGE: &[u8] = include_bytes!(env!("FAT_MODULE_PATH"));
+const STUBFS_IMAGE: &[u8] = include_bytes!(env!("STUBFS_MODULE_PATH"));
 
 static API: KernelApi = KernelApi {
     abi_version: ABI_VERSION,
@@ -24,12 +25,21 @@ static API: KernelApi = KernelApi {
     dealloc: api_dealloc,
     blk_read: api_blk_read,
     vfs_register: api_vfs_register,
+    vfs_register_static: api_vfs_register_static,
+    vfs_mount: api_vfs_mount,
 };
 
 /// Load the hello module that was baked into the kernel at build time.
 pub fn load_embedded_hello() {
     if let Err(e) = load("hello", HELLO_IMAGE) {
         console::status_fail(&alloc::format!("hello module: {e}"));
+    }
+}
+
+/// Load the stubfs module (registers `/disk` via vfs_mount).
+pub fn load_embedded_stubfs() {
+    if let Err(e) = load("stubfs", STUBFS_IMAGE) {
+        console::status_fail(&alloc::format!("stubfs module: {e}"));
     }
 }
 
@@ -169,6 +179,63 @@ unsafe extern "C" fn api_vfs_register(
     };
     let leaked: &'static [u8] = alloc::boxed::Box::leak(src.to_vec().into_boxed_slice());
     if crate::fs::register("bootfs", name, leaked) {
+        0
+    } else {
+        -1
+    }
+}
+
+unsafe extern "C" fn api_vfs_register_static(
+    name: *const u8,
+    name_len: usize,
+    data: *const u8,
+    data_len: usize,
+) -> i32 {
+    if name.is_null() || name_len == 0 {
+        return -1;
+    }
+    if data_len != 0 && data.is_null() {
+        return -1;
+    }
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let Ok(name) = core::str::from_utf8(name_bytes) else {
+        return -1;
+    };
+    let bytes: &'static [u8] = if data_len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(data, data_len) }
+    };
+    if crate::fs::register_static("bootfs", name, bytes) {
+        0
+    } else {
+        -1
+    }
+}
+
+unsafe extern "C" fn api_vfs_mount(
+    name: *const u8,
+    name_len: usize,
+    prefix: *const u8,
+    prefix_len: usize,
+    ops: *const myos_abi::ModuleVfsOps,
+) -> i32 {
+    if name.is_null() || name_len == 0 || prefix.is_null() || ops.is_null() {
+        return -1;
+    }
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let prefix_bytes = unsafe { core::slice::from_raw_parts(prefix, prefix_len) };
+    let Ok(name) = core::str::from_utf8(name_bytes) else {
+        return -1;
+    };
+    let Ok(prefix) = core::str::from_utf8(prefix_bytes) else {
+        return -1;
+    };
+    let ops = unsafe { *ops };
+    if ops.lookup as usize == 0 {
+        return -1;
+    }
+    if crate::fs::mount_module(name, prefix, ops) {
         0
     } else {
         -1

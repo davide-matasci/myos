@@ -295,13 +295,14 @@ unsafe extern "C" fn module_exit() // optional
 ```
 
 `KernelApi` (`modules/abi`) is a `#[repr(C)]` table (`write_str`, `alloc`,
-`dealloc`, `blk_read`, `vfs_register`). ABI version is **2**; new pointers
-are appended, never reordered. The kernel fills it and passes `&KernelApi`
-into `module_init`. Modules must not call kernel internals. There is no
-dynamic linker against kernel `.dynsym`. `blk_read` returns 0 or −1.
-`vfs_register` copies into the bootfs mount (kernel-owned `'static`) and
-takes a basename without slash (`msg`). Future mounts can use a non-empty
-prefix (e.g. `fat/`).
+`dealloc`, `blk_read`, `vfs_register`, `vfs_register_static`, `vfs_mount`).
+ABI version is **3**; new pointers are appended, never reordered. The kernel
+fills it and passes `&KernelApi` into `module_init`. Modules must not call
+kernel internals. There is no dynamic linker against kernel `.dynsym`.
+`blk_read` returns 0 or −1. `vfs_register` copies into the bootfs mount;
+`vfs_register_static` borrows module/rodata bytes without copying.
+`vfs_mount` attaches a [`ModuleVfsOps`] backend at `/prefix/…` (see
+`modules/stubfs` mounting `/disk/ping`).
 
 Do **not** add a module as a cargo artifact-dep of the kernel (that panics
 the feature resolver). Do **not** put it in `[build-dependencies]` (those
@@ -517,8 +518,9 @@ read-only.
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
 | `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
-| `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v2: `blk_read`, `vfs_register`) |
+| `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v3: `vfs_register_static`, `vfs_mount`) |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
+| `modules/stubfs` | Sample prefixed mount: `vfs_mount` at `/disk`, file `/disk/ping` |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
 | `user/init` | PID1-style: baked in, execs `/sh` (not a kernel module) |
 | `user/sh` | Minimal shell: smoke `/ok`, interactive `$` prompt on stdin |

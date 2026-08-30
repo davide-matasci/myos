@@ -1043,10 +1043,10 @@ fn sys_open(ptr: usize, path_len: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let Some(data) = fs::lookup(path) else {
+    let Some(node) = fs::open(path) else {
         return SYSERR;
     };
-    match task::fd_open(data) {
+    match task::fd_open(node) {
         Some(fd) => fd,
         None => SYSERR,
     }

@@ -3,11 +3,21 @@
 pub mod bootfs;
 mod vfs;
 
-pub use vfs::StatInfo;
+pub use vfs::{StatInfo, Vnode};
+
+/// Resolve `path` to a vnode for open/read.
+pub fn open(path: &str) -> Option<Vnode> {
+    vfs::open(path)
+}
 
 /// Look up `path` on the best matching mount.
 pub fn lookup(path: &str) -> Option<&'static [u8]> {
     vfs::lookup(path)
+}
+
+/// Read from an open vnode.
+pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
+    vfs::read(node, pos, out)
 }
 
 /// Stat `path` on the best matching mount.
@@ -20,9 +30,19 @@ pub fn listdir(buf: &mut [u8]) -> usize {
     vfs::listdir(buf)
 }
 
-/// Register `name` on mount `mount_name`.
+/// Register `name` on mount `mount_name` (bootfs copies into its table).
 pub fn register(mount_name: &str, name: &str, bytes: &'static [u8]) -> bool {
     vfs::register(mount_name, name, bytes)
+}
+
+/// Register without copying; `bytes` must outlive the kernel.
+pub fn register_static(mount_name: &str, name: &str, bytes: &'static [u8]) -> bool {
+    vfs::register_static(mount_name, name, bytes)
+}
+
+/// Mount a module-provided backend at `/prefix/…`.
+pub fn mount_module(name: &str, prefix: &str, ops: myos_abi::ModuleVfsOps) -> bool {
+    vfs::mount_module(name, prefix, ops)
 }
 
 /// Mount bootfs at `/` and register embedded user ELFs.
