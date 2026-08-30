@@ -219,6 +219,9 @@ jobs:
             target/riscv64imac-unknown-none-elf
             target/hello-*
             target/ok-*
+            target/std-*
+            target/c-hello-*
+            target/sbase-*
             target/limine-v*
           )
           if [ -f target/virt.dtb ]; then
