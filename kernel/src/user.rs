@@ -1,6 +1,5 @@
 //! Usermode: nested `user/init` ELF, per-process page tables, syscalls.
 
-use alloc::alloc::{alloc_zeroed, dealloc, Layout};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -215,18 +214,17 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     let base = USER_BASE.load(Ordering::SeqCst);
     let stack_off = (n_pages * PAGE) as u64;
 
-    let layout = Layout::from_size_align(info.span.max(1), PAGE).ok()?;
-    let buf = unsafe { alloc_zeroed(layout) };
-    if buf.is_null() {
+    if info.span > ELF_SCRATCH_BYTES {
         return None;
     }
+    let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
+    unsafe {
+        core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
+    }
     let load_bias = base - info.min_vaddr;
-    let entry = match elf::realize(bytes, buf, load_bias) {
+    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
         Ok(e) => e,
-        Err(_) => {
-            unsafe { dealloc(buf, layout) };
-            return None;
-        }
+        Err(_) => return None,
     };
 
     let mut frames = [0u64; MAX_INIT_PAGES];
@@ -236,7 +234,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
             let off = i * PAGE;
             let len = core::cmp::min(PAGE, info.span - off);
             unsafe {
-                core::ptr::copy_nonoverlapping(buf.add(off), mm::hhdm(frames[i]), len);
+                core::ptr::copy_nonoverlapping(buf.as_ptr().add(off), mm::hhdm(frames[i]), len);
                 if len < PAGE {
                     core::ptr::write_bytes(mm::hhdm(frames[i]).add(len), 0, PAGE - len);
                 }
@@ -249,8 +247,6 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
             sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
         }
     }
-    unsafe { dealloc(buf, layout) };
-
     let mut stack_frames = [0u64; USER_STACK_PAGES];
     for frame in &mut stack_frames {
         *frame = mm::alloc_frame();
@@ -260,9 +256,10 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     Some((aspace, entry as usize, mapped_span, stack_off))
 }
 
-/// Scratch for `reload_user_elf` (no kernel-heap alloc; CI exhausts heap after fork).
-const RELOAD_SCRATCH_BYTES: usize = MAX_RELOAD_PAGES * PAGE;
-static mut RELOAD_SCRATCH: [u8; RELOAD_SCRATCH_BYTES] = [0; RELOAD_SCRATCH_BYTES];
+/// Scratch for `load_user_elf` / `reload_user_elf` (no kernel-heap alloc; CI
+/// exhausts the 256 KiB heap after fork — uutils needs ~800 KiB realize buf).
+const ELF_SCRATCH_BYTES: usize = MAX_INIT_PAGES * PAGE;
+static mut ELF_SCRATCH: [u8; ELF_SCRATCH_BYTES] = [0; ELF_SCRATCH_BYTES];
 
 /// Overwrite the current user image in an existing aspace (no new frames).
 /// Keeps `stack_off` so the mapped stack page stays valid. Fails if the new
@@ -290,10 +287,10 @@ fn reload_user_elf(
             return None;
         }
     }
-    if info.span > RELOAD_SCRATCH_BYTES {
+    if info.span > MAX_RELOAD_PAGES * PAGE {
         return None;
     }
-    let buf = unsafe { &mut RELOAD_SCRATCH[..info.span] };
+    let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
