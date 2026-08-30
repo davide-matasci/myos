@@ -187,7 +187,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: limine-8.3-2
+          prefix-key: limine-8.3-3
           cache-directories: |
             target/myos-sysroot
             target/newlib-x86_64
@@ -227,6 +227,9 @@ jobs:
       - name: Build kernel and Limine BIOS+UEFI disk images
         run: |
           cargo clean -p myos
+          # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
+          # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
+          cargo clean -p kernel --target x86_64-unknown-none
           cargo build
           cargo build -p kernel --target aarch64-unknown-none-softfloat
           cargo build -p kernel --target riscv64imac-unknown-none-elf
