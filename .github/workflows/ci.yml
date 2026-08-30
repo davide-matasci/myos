@@ -307,7 +307,7 @@ jobs:
   boot-check:
     runs-on: ubuntu-latest
     needs: boot
-    if: always() && needs.boot.result != 'skipped'
+    if: always()
     steps:
       - name: Require boot matrix success
         run: |
