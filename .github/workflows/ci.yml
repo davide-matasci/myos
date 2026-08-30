@@ -220,8 +220,10 @@ jobs:
             target/hello-*
             target/ok-*
             target/limine-v*
-            target/virt.dtb
           )
+          if [ -f target/virt.dtb ]; then
+            files+=(target/virt.dtb)
+          fi
           if [ -d target/ovmf ]; then
             files+=(target/ovmf)
           fi
