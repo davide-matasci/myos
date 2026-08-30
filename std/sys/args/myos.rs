@@ -43,6 +43,18 @@ pub unsafe fn init(argc: isize, argv: *const *const u8) {
             return;
         }
         ARGC = 0;
+        let mut argc = argc;
+        let mut argv = argv;
+        #[cfg(target_arch = "aarch64")]
+        {
+            if argc > 0 && !argv.is_null() {
+                let first = *argv;
+                if (first as usize) < 0x4000_0000 {
+                    argc = 0;
+                    argv = core::ptr::null();
+                }
+            }
+        }
         if !argv.is_null() && argc > 0 {
             let n = (argc as usize).min(MAX_ARGS);
             for i in 0..n {
