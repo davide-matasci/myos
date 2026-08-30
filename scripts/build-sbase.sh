@@ -75,10 +75,19 @@ build_arch() {
   compile "$cc" "$inc" "$SBASE/false.c" "$objdir/false.o"
   link_prog false "$arch" "$objdir/false.o"
 
-  compile "$cc" "$inc" "$MYOS/ls.c" "$objdir/ls.o"
-  link_prog ls "$arch" "${util_common[@]}" "$objdir/ls.o" "${extra[@]}"
+  compile "$cc" "$inc" "$SBASE/libutil/ealloc.c" "$objdir/ealloc.o"
+  compile "$cc" "$inc" "$SBASE/libutil/reallocarray.c" "$objdir/reallocarray.o"
+  compile "$cc" "$inc" "$SBASE/libutf/runetype.c" "$objdir/runetype.o"
+  compile "$cc" "$inc" "$SBASE/libutf/rune.c" "$objdir/rune.o"
+  compile "$cc" "$inc" "$SBASE/libutf/iscntrlrune.c" "$objdir/iscntrlrune.o"
+  compile "$cc" "$inc" "$SBASE/libutf/isprintrune.c" "$objdir/isprintrune.o"
+  compile "$cc" "$inc" "$SBASE/libutf/utf.c" "$objdir/utf.o"
+  compile "$cc" "$inc" "$WORK/ls.c" "$objdir/ls.o"
+  link_prog ls "$arch" "${util_common[@]}" "$objdir/ealloc.o" "$objdir/reallocarray.o" \
+    "$objdir/runetype.o" "$objdir/rune.o" "$objdir/iscntrlrune.o" "$objdir/isprintrune.o" \
+    "$objdir/utf.o" "$objdir/ls.o" "${extra[@]}"
 
-  compile "$cc" "$inc" "$MYOS/pwd.c" "$objdir/pwd.o"
+  compile "$cc" "$inc" "$WORK/pwd.c" "$objdir/pwd.o"
   link_prog pwd "$arch" "${util_common[@]}" "$objdir/pwd.o" "${extra[@]}"
 
   compile "$cc" "$inc" "$WORK/basename.c" "$objdir/basename.o"

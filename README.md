@@ -466,9 +466,9 @@ required beyond the existing myos ABI.
 | `scripts/build-libgloss-myos.sh` | Build `libgloss.a` + `crt0.o` (called by build-newlib) |
 | `scripts/build-c-hello.sh` | Link minimal C smoke with `-lc -lgloss` |
 | `scripts/fetch-sbase.sh` | Clone pinned [sbase](https://git.suckless.org/sbase) into `target/sbase-src` |
-| `scripts/prepare-sbase-myos.sh` | Patch upstream tools into `target/sbase-myos-build/` (myos stdio workaround) |
+| `scripts/prepare-sbase-myos.sh` | Apply myos patches to upstream `echo`, `basename`, `dirname`, `pwd`, `ls` |
 | `scripts/build-sbase.sh` | Cross-build sbase `echo`, `cat`, `true`, `false`, `ls`, `pwd`, `basename`, `dirname` |
-| `scripts/sbase-myos/` | libutil overlay, `ls.c`/`pwd.c`, and `.myos.patch` files (not upstream sbase) |
+| `scripts/sbase-myos/` | libutil overlay, `.myos.patch` files, and `util.h` (not upstream tool sources) |
 | `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
 
 Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
@@ -477,8 +477,10 @@ Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
 flat bootfs. Write-only open flags and `lseek`/`execve`/… return `EROFS`/`ENOSYS`.
 Do **not** use `-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
 
-Upstream sbase (`cat`, `true`, `basename`, …) is fetched at build time; only
-the myos libutil overlay, `ls.c`, `pwd.c`, and small patches live in-tree. sbase
+Upstream sbase (`cat`, `true`, `ls`, `pwd`, …) is fetched at build time; only
+the myos libutil overlay and small `.myos.patch` files live in-tree (stdio
+workaround, myos exec argv, CI smoke strings). The upstream `ls` long listing
+(`-l`/`-i`) is disabled until pwd/grp/time support lands.
 binaries use newlib for syscalls and string helpers; the overlay avoids newlib
 stdio, which currently faults at C startup when linked. Bootfs exposes `/secho`,
 `/scat`, `/strue`, `/sls`, `/sfalse`, `/spwd`, and `/sbasename`; CI checks

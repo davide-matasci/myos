@@ -1,0 +1,51 @@
+--- pwd.c
++++ pwd.c
+@@ -1,8 +1,7 @@
+ /* See LICENSE file for copyright and license details. */
+ #include <sys/stat.h>
+ 
+-#include <stdio.h>
+-#include <stdlib.h>
++ #include <string.h>
++#include <stdlib.h>
+ #include <unistd.h>
+ 
+ #include "util.h"
+@@ -33,18 +32,26 @@
+ 	char cwd[PATH_MAX];
+ 	char mode = 'L';
+ 
+-	ARGBEGIN {
+-	case 'L':
+-	case 'P':
+-		mode = ARGC();
+-		break;
+-	default:
+-		usage();
+-	} ARGEND
++	const char *out;
++
++	argv0 = *argv;
++	if (argv0)
++		argc--, argv++;
++
++	while (*argv && (*argv)[0] == '-' && (*argv)[1]) {
++		if ((*argv)[1] == 'L' && (*argv)[2] == '\0')
++			mode = 'L';
++		else if ((*argv)[1] == 'P' && (*argv)[2] == '\0')
++			mode = 'P';
++		else
++			usage();
++		argc--, argv++;
++	}
+ 
+ 	if (!getcwd(cwd, sizeof(cwd)))
+ 		eprintf("getcwd:");
+-	puts((mode == 'L') ? getpwd(cwd) : cwd);
+-
+-	return fshut(stdout, "<stdout>");
++	out = (mode == 'L') ? getpwd(cwd) : cwd;
++	writeall(1, out, strlen(out));
++	writeall(1, "\n", 1);
++	return 0;
+ }

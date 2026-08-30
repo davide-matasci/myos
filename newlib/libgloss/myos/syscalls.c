@@ -171,11 +171,15 @@ int _fstat(int fd, struct stat *st) {
     return 0;
 }
 
-int _stat(const char *path, struct stat *st) {
+int _lstat(const char *path, struct stat *st) {
     return myos_stat_path(path, st);
 }
 
-int _lstat(const char *path, struct stat *st) {
+int lstat(const char *path, struct stat *st) {
+    return _lstat(path, st);
+}
+
+int _stat(const char *path, struct stat *st) {
     return myos_stat_path(path, st);
 }
 

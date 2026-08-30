@@ -19,5 +19,7 @@ patch_copy() {
 patch_copy echo
 patch_copy basename
 patch_copy dirname
+patch_copy pwd
+patch_copy ls
 
 echo "sbase myos tree -> $WORK"
