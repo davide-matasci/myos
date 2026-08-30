@@ -5,9 +5,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NEWLIB_SRC="$ROOT/target/newlib-src"
 NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
 
-if [[ -d "$NEWLIB_SRC/newlib" ]]; then
+if [[ -d "$NEWLIB_SRC/newlib" && -f "$NEWLIB_SRC/config.sub" ]]; then
   echo "newlib already present at $NEWLIB_SRC"
   exit 0
+fi
+
+if [[ -e "$NEWLIB_SRC" ]]; then
+  echo "removing incomplete newlib tree at $NEWLIB_SRC" >&2
+  rm -rf "$NEWLIB_SRC"
 fi
 
 echo "==> fetch newlib ($NEWLIB_TAG)"
