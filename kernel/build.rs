@@ -105,6 +105,10 @@ fn main() {
             ("sbase-echo", "USER_SBASE_ECHO_PATH"),
             ("sbase-cat", "USER_SBASE_CAT_PATH"),
             ("sbase-true", "USER_SBASE_TRUE_PATH"),
+            ("sbase-ls", "USER_SBASE_LS_PATH"),
+            ("sbase-false", "USER_SBASE_FALSE_PATH"),
+            ("sbase-pwd", "USER_SBASE_PWD_PATH"),
+            ("sbase-basename", "USER_SBASE_BASENAME_PATH"),
         ] {
             embed_c_elf(manifest, &arch, artifact, env_key);
         }
@@ -119,6 +123,10 @@ fn main() {
             "USER_SBASE_ECHO_PATH",
             "USER_SBASE_CAT_PATH",
             "USER_SBASE_TRUE_PATH",
+            "USER_SBASE_LS_PATH",
+            "USER_SBASE_FALSE_PATH",
+            "USER_SBASE_PWD_PATH",
+            "USER_SBASE_BASENAME_PATH",
         ] {
             println!("cargo:rustc-env={env_key}={}", stub.display());
         }

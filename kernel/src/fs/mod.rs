@@ -18,9 +18,17 @@ static MOUNTS: &[Mount] = &[Mount {
     lookup: bootfs::lookup,
 }];
 
+/// Metadata returned by [`stat`].
+pub struct StatInfo {
+    pub mode: u32,
+    pub size: u32,
+    pub ino: u32,
+    pub nlink: u32,
+}
+
 /// Look up `path` (`/ok` or `ok`) on the first matching mount.
 pub fn lookup(path: &str) -> Option<&'static [u8]> {
-    let name = path.trim_start_matches('/');
+    let name = normalize_path(path);
     if name.is_empty() {
         return None;
     }
@@ -30,6 +38,15 @@ pub fn lookup(path: &str) -> Option<&'static [u8]> {
         }
     }
     None
+}
+
+/// Stat a bootfs basename or the flat root directory (`.` / `/`).
+pub fn stat(path: &str) -> Option<StatInfo> {
+    bootfs::stat(normalize_path(path))
+}
+
+fn normalize_path(path: &str) -> &str {
+    path.trim_start_matches('/')
 }
 
 /// List bootfs basenames into `buf` (newline-separated).

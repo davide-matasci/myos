@@ -23,6 +23,7 @@ const SYS_LISTDIR: usize = 8;
 const SYS_BRK: usize = 9;
 const SYS_PIPE: usize = 10;
 const SYS_DUP2: usize = 11;
+pub const SYS_STAT: usize = 12;
 pub const PAGE: usize = 4096;
 /// User stack mapping below the heap (128 KiB).
 pub const USER_STACK_PAGES: usize = 32;
@@ -971,6 +972,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
         SYS_DUP2 => sys_dup2(a0, a1),
+        SYS_STAT => sys_stat(a0, a1, a2),
         _ => SYSERR,
     }
 }
@@ -991,8 +993,9 @@ fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
         return None;
     }
     let mut buf = [0u8; MAX_PATH];
-    unsafe {
-        core::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), len);
+    let aspace = task::current_aspace();
+    if !read_user_bytes(aspace, ptr, &mut buf[..len]) {
+        return None;
     }
     Some(buf)
 }
@@ -1233,10 +1236,53 @@ fn sys_listdir(buf: usize, len: usize) -> usize {
     }
     let mut kbuf = [0u8; 512];
     let n = fs::listdir(&mut kbuf).min(kbuf.len()).min(len);
-    unsafe {
-        core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf as *mut u8, n);
+    let aspace = task::current_aspace();
+    if !write_user_bytes(aspace, buf, &kbuf[..n]) {
+        return SYSERR;
     }
     n
+}
+
+#[repr(C)]
+struct MyosStatBuf {
+    st_mode: u32,
+    st_size: u32,
+    st_ino: u32,
+    st_nlink: u32,
+}
+
+fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
+    if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStatBuf>()) {
+        return SYSERR;
+    }
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(info) = fs::stat(path) else {
+        return SYSERR;
+    };
+    let out = MyosStatBuf {
+        st_mode: info.mode,
+        st_size: info.size,
+        st_ino: info.ino,
+        st_nlink: info.nlink,
+    };
+    if !write_user_bytes(
+        task::current_aspace(),
+        out_ptr,
+        unsafe {
+            core::slice::from_raw_parts(
+                &out as *const MyosStatBuf as *const u8,
+                core::mem::size_of::<MyosStatBuf>(),
+            )
+        },
+    ) {
+        return SYSERR;
+    }
+    0
 }
 
 fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {

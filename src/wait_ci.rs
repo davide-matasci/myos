@@ -26,12 +26,13 @@ const CI_NEEDLES: [&str; 14] = [
 ];
 
 /// Extra serial markers for patched `std` examples and C smoke ELFs.
-const CI_NEEDLES_STD: [&str; 5] = [
+const CI_NEEDLES_STD: [&str; 6] = [
     "std ok",
     "std cat ok",
     "std echo ok",
     "c ok",
     "sbase ok",
+    "sls ok",
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).

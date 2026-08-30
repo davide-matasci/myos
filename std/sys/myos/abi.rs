@@ -12,6 +12,7 @@ pub const SYS_LISTDIR: usize = 8;
 pub const SYS_BRK: usize = 9;
 pub const SYS_PIPE: usize = 10;
 pub const SYS_DUP2: usize = 11;
+pub const SYS_STAT: usize = 12;
 
 const MAX_EXEC_ARGS: usize = 16;
 const MAX_EXEC_ENV: usize = 8;

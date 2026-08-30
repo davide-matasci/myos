@@ -13,12 +13,16 @@ const C_HELLO_ELF: &[u8] = include_bytes!(env!("USER_C_HELLO_PATH"));
 const SBASE_ECHO_ELF: &[u8] = include_bytes!(env!("USER_SBASE_ECHO_PATH"));
 const SBASE_CAT_ELF: &[u8] = include_bytes!(env!("USER_SBASE_CAT_PATH"));
 const SBASE_TRUE_ELF: &[u8] = include_bytes!(env!("USER_SBASE_TRUE_PATH"));
+const SBASE_LS_ELF: &[u8] = include_bytes!(env!("USER_SBASE_LS_PATH"));
+const SBASE_FALSE_ELF: &[u8] = include_bytes!(env!("USER_SBASE_FALSE_PATH"));
+const SBASE_PWD_ELF: &[u8] = include_bytes!(env!("USER_SBASE_PWD_PATH"));
+const SBASE_BASENAME_ELF: &[u8] = include_bytes!(env!("USER_SBASE_BASENAME_PATH"));
 const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
 const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
 const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
 const CAT_ELF: &[u8] = include_bytes!(env!("USER_CAT_PATH"));
 const LS_ELF: &[u8] = include_bytes!(env!("USER_LS_PATH"));
-const MAX_FILES: usize = 16;
+const MAX_FILES: usize = 32;
 const NAME_CAP: usize = 32;
 
 #[derive(Clone, Copy)]
@@ -95,6 +99,33 @@ pub fn count() -> usize {
     FILES.lock().iter().flatten().count()
 }
 
+const S_IFDIR: u32 = 0o040000;
+const S_IFREG: u32 = 0o100000;
+
+/// Stat the flat root (`.` / `/` / empty) or a bootfs basename.
+pub fn stat(name: &str) -> Option<super::StatInfo> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Some(super::StatInfo {
+            mode: S_IFDIR | 0o755,
+            size: 0,
+            ino: 1,
+            nlink: 2,
+        });
+    }
+    let files = FILES.lock();
+    for (i, slot) in files.iter().flatten().enumerate() {
+        if slot.len == name.len() && &slot.name[..slot.len] == name.as_bytes() {
+            return Some(super::StatInfo {
+                mode: S_IFREG | 0o444,
+                size: slot.data.len() as u32,
+                ino: (i as u32) + 2,
+                nlink: 1,
+            });
+        }
+    }
+    None
+}
+
 fn log_reg(name: &str, n: usize, replace: bool) {
     let kind = if replace { "replace" } else { "new" };
     console::status_progress(&alloc::format!("vfs {kind} {name} ({n} bytes)"));
@@ -110,6 +141,10 @@ pub fn init() {
     let _ = register("secho", SBASE_ECHO_ELF);
     let _ = register("scat", SBASE_CAT_ELF);
     let _ = register("strue", SBASE_TRUE_ELF);
+    let _ = register("sls", SBASE_LS_ELF);
+    let _ = register("sfalse", SBASE_FALSE_ELF);
+    let _ = register("spwd", SBASE_PWD_ELF);
+    let _ = register("sbasename", SBASE_BASENAME_ELF);
     let _ = register("sh", SH_ELF);
     let _ = register("echo", ECHO_ELF);
     let _ = register("cat", CAT_ELF);
