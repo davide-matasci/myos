@@ -2,6 +2,14 @@
 # Cross-compile C smoke ELFs with newlib + myos libgloss.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/myos-c-userspace-lib.sh
+source "$ROOT/scripts/myos-c-userspace-lib.sh"
+
+if myos_c_hello_is_current; then
+  echo "c-hello ELFs up to date"
+  exit 0
+fi
+
 "$ROOT/scripts/build-newlib.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
@@ -35,3 +43,5 @@ link_prog() {
 for arch in x86_64 aarch64; do
   link_prog hello "$ROOT/c/hello.c" "$arch"
 done
+
+echo "$(myos_c_hello_version_hash)" >"$MYOS_C_HELLO_VERSION"
