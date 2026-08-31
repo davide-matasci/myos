@@ -55,8 +55,8 @@ const CI_SHELL_COMMANDS: [&[u8]; 7] = [
     b"/s/ls /s\n",
 ];
 
-/// Printed by the interactive shell when `open(path)` fails.
-const CI_SHELL_UNKNOWN_CMD: &str = "sh: command not found";
+/// Printed by the interactive shell when a command cannot be resolved.
+const CI_SHELL_UNKNOWN_CMD: &str = "not found";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShellStage {
