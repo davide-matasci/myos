@@ -1,0 +1,128 @@
+--- c_sh.c
++++ c_sh.c
+@@ -4,7 +4,6 @@
+  * built-in Bourne commands
+  */
+ 
+-#include <sys/resource.h>
+ #include <sys/stat.h>
+ #include <sys/time.h>
+ 
+@@ -712,15 +711,10 @@
+ int
+ c_times(char **wp)
+ {
+-	struct rusage usage;
+-
+-	(void) getrusage(RUSAGE_SELF, &usage);
+-	p_tv(shl_stdout, 0, &usage.ru_utime, 0, NULL, " ");
+-	p_tv(shl_stdout, 0, &usage.ru_stime, 0, NULL, "\n");
+-
+-	(void) getrusage(RUSAGE_CHILDREN, &usage);
+-	p_tv(shl_stdout, 0, &usage.ru_utime, 0, NULL, " ");
+-	p_tv(shl_stdout, 0, &usage.ru_stime, 0, NULL, "\n");
++	(void)wp;
++	/* myos: no getrusage. */
++	shprintf("0m0.00s 0m0.00s\n");
++	shprintf("0m0.00s 0m0.00s\n");
+ 
+ 	return 0;
+ }
+@@ -731,70 +725,14 @@
+ int
+ timex(struct op *t, int f, volatile int *xerrok)
+ {
+-#define TF_NOARGS	BIT(0)
+-#define TF_NOREAL	BIT(1)		/* don't report real time */
+-#define TF_POSIX	BIT(2)		/* report in posix format */
+-	int rv = 0;
+-	struct rusage ru0, ru1, cru0, cru1;
+-	struct timeval usrtime, systime;
+-	struct timespec ts0, ts1, ts2;
+-	int tf = 0;
+-	extern struct timeval j_usrtime, j_systime; /* computed by j_wait */
+-
+-	clock_gettime(CLOCK_MONOTONIC, &ts0);
+-	getrusage(RUSAGE_SELF, &ru0);
+-	getrusage(RUSAGE_CHILDREN, &cru0);
+-	if (t->left) {
+-		/*
+-		 * Two ways of getting cpu usage of a command: just use t0
+-		 * and t1 (which will get cpu usage from other jobs that
+-		 * finish while we are executing t->left), or get the
+-		 * cpu usage of t->left. at&t ksh does the former, while
+-		 * pdksh tries to do the later (the j_usrtime hack doesn't
+-		 * really work as it only counts the last job).
+-		 */
+-		timerclear(&j_usrtime);
+-		timerclear(&j_systime);
+-		rv = execute(t->left, f | XTIME, xerrok);
+-		if (t->left->type == TCOM)
+-			tf |= t->left->str[0];
+-		clock_gettime(CLOCK_MONOTONIC, &ts1);
+-		getrusage(RUSAGE_SELF, &ru1);
+-		getrusage(RUSAGE_CHILDREN, &cru1);
+-	} else
+-		tf = TF_NOARGS;
+-
+-	if (tf & TF_NOARGS) { /* ksh93 - report shell times (shell+kids) */
+-		tf |= TF_NOREAL;
+-		timeradd(&ru0.ru_utime, &cru0.ru_utime, &usrtime);
+-		timeradd(&ru0.ru_stime, &cru0.ru_stime, &systime);
+-	} else {
+-		timersub(&ru1.ru_utime, &ru0.ru_utime, &usrtime);
+-		timeradd(&usrtime, &j_usrtime, &usrtime);
+-		timersub(&ru1.ru_stime, &ru0.ru_stime, &systime);
+-		timeradd(&systime, &j_systime, &systime);
+-	}
+-
+-	if (!(tf & TF_NOREAL)) {
+-		timespecsub(&ts1, &ts0, &ts2);
+-		if (tf & TF_POSIX)
+-			p_ts(shl_out, 1, &ts2, 5, "real ", "\n");
+-		else
+-			p_ts(shl_out, 0, &ts2, 5, NULL, " real ");
+-	}
+-	if (tf & TF_POSIX)
+-		p_tv(shl_out, 1, &usrtime, 5, "user ", "\n");
+-	else
+-		p_tv(shl_out, 0, &usrtime, 5, NULL, " user ");
+-	if (tf & TF_POSIX)
+-		p_tv(shl_out, 1, &systime, 5, "sys  ", "\n");
+-	else
+-		p_tv(shl_out, 0, &systime, 5, NULL, " system\n");
+-	shf_flush(shl_out);
+-
+-	return rv;
++	/* myos: no clock_gettime/getrusage; still run the command. */
++	(void)f;
++	if (t->left)
++		return execute(t->left, f | XTIME, xerrok);
++	return 0;
+ }
+ 
++
+ void
+ timex_hook(struct op *t, char **volatile *app)
+ {
+@@ -860,17 +798,9 @@
+ 		bi_errorf("too many arguments");
+ 		return 1;
+ 	}
+-	if (Flag(FLOGIN)) {
+-		/* Can't suspend an orphaned process group. */
+-		pid_t parent = getppid();
+-		if (getpgid(parent) == getpgid(0) ||
+-		    getsid(parent) != getsid(0)) {
+-			bi_errorf("can't suspend a login shell");
+-			return 1;
+-		}
+-	}
+-	j_suspend();
+-	return 0;
++	(void)wp;
++	bi_errorf("job control not enabled");
++	return 1;
+ }
+ 
+ /* dummy function, special case in comexec() */
