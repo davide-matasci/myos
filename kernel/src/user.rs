@@ -1194,11 +1194,11 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
             .map(|(entry, span, off)| (cur_aspace, entry, span, off))
         {
             v
-        } else if let Some(v) = load_user_elf(bytes) {
-            v
         } else if let Some(v) = expand_user_elf(cur_aspace, bytes, base_u, stack_off)
             .map(|(entry, span, off)| (cur_aspace, entry, span, off))
         {
+            v
+        } else if let Some(v) = load_user_elf(bytes) {
             v
         } else {
             return SYSERR;

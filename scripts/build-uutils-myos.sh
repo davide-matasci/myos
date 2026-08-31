@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build uutils smoke ELFs for myos CI (and optionally full coreutils for dev).
+# Build uutils coreutils multicall for myos CI.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,6 +8,18 @@ source "$ROOT/scripts/myos-sysroot-lib.sh"
 
 "$ROOT/scripts/fetch-sysroot.sh"
 mkdir -p "$ROOT/target"
+
+build_coreutils() {
+  local triple="$1"
+  echo "==> uutils coreutils ($triple)"
+  MYOS_TARGET="$triple" "$ROOT/scripts/build-coreutils-myos.sh" --release
+  local bin="$ROOT/user/uutils-coreutils/target/${triple}/release/coreutils"
+  cp "$bin" "$ROOT/target/uutils-coreutils-${triple}"
+  cp "$bin" "$ROOT/target/uutils-echo-${triple}"
+  cp "$bin" "$ROOT/target/uutils-true-${triple}"
+  cp "$bin" "$ROOT/target/uutils-false-${triple}"
+  echo "uutils coreutils -> target/uutils-{echo,true,false}-${triple} ($(du -h "$bin" | awk '{print $1}'))"
+}
 
 build_smoke() {
   local triple="$1"
@@ -25,20 +37,20 @@ build_smoke() {
     "$ROOT/target/uutils-true-${triple}"
   cp "$target_dir/${triple}/release/uutils-false-smoke" \
     "$ROOT/target/uutils-false-${triple}"
-  # Legacy path: kernel embed reads one env var; keep echo ELF for tooling.
   cp "$ROOT/target/uutils-echo-${triple}" "$ROOT/target/uutils-coreutils-${triple}"
-  echo "uutils smoke -> target/uutils-{echo,true,false}-${triple}"
 }
 
-for triple in "${MYOS_USER_TRIPLES[@]}"; do
-  build_smoke "$triple"
-done
-
-if [[ "${UUTILS_FULL:-0}" == "1" ]]; then
-  echo "==> also building full uutils coreutils (UUTILS_FULL=1)"
+if [[ "${UUTILS_SMOKE:-0}" == "1" ]]; then
   for triple in "${MYOS_USER_TRIPLES[@]}"; do
-    MYOS_TARGET="$triple" "$ROOT/scripts/build-coreutils-myos.sh" --release
-    cp "$ROOT/user/uutils-coreutils/target/${triple}/release/coreutils" \
-      "$ROOT/target/uutils-coreutils-full-${triple}"
+    build_smoke "$triple"
+  done
+else
+  for triple in "${MYOS_USER_TRIPLES[@]}"; do
+    # Full multicall boots on AArch64; x86 large post-fork exec still faults.
+    if [[ "$triple" == "x86_64-unknown-myos" ]]; then
+      build_smoke "$triple"
+    else
+      build_coreutils "$triple"
+    fi
   done
 fi
