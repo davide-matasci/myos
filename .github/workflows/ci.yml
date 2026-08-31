@@ -242,6 +242,14 @@ jobs:
           test -f target/bios.img
           od -An -tx1 -N 16 target/bios.img
 
+      # Run required x86 boot needles here so CI stays meaningful when artifact
+      # upload is quota-blocked (boot matrix depends on ci-build.tar).
+      - name: Boot smoke (x86 BIOS + UEFI)
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86
+          ./target/debug/myos --ci
+          ./target/debug/myos uefi --ci
+
       - name: Pack CI build artifacts
         run: |
           shopt -s nullglob
@@ -251,9 +259,6 @@ jobs:
             target/bios.img
             target/uefi.img
             target/fat.img
-            target/x86_64-unknown-none
-            target/aarch64-unknown-none-softfloat
-            target/riscv64imac-unknown-none-elf
             target/hello-*
             target/ok-*
             target/std-*
@@ -272,6 +277,7 @@ jobs:
           ls -lh ci-build.tar
 
       - name: Upload CI build artifacts
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ci-build
@@ -321,12 +327,19 @@ jobs:
           targets: x86_64-unknown-none, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
 
       - name: Download CI build artifacts
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: ci-build
 
       - name: Extract CI build artifacts
-        run: tar -xf ci-build.tar
+        continue-on-error: true
+        run: |
+          if [[ -f ci-build.tar ]]; then
+            tar -xf ci-build.tar
+          else
+            echo "ci-build.tar missing (artifact quota?); aarch64/riscv64 may rebuild kernels"
+          fi
 
       - name: Install QEMU
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
