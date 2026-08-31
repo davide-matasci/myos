@@ -1,0 +1,22 @@
+--- shf.c
++++ shf.c
+@@ -53,17 +53,8 @@
+ 		afree(shf, shf->areap);
+ 		return NULL;
+ 	}
+-	if ((sflags & SHF_MAPHI) && fd < FDBASE) {
+-		int nfd;
+-
+-		nfd = fcntl(fd, F_DUPFD, FDBASE);
+-		close(fd);
+-		if (nfd == -1) {
+-			afree(shf, shf->areap);
+-			return NULL;
+-		}
+-		fd = nfd;
+-	}
++	/* myos: no F_DUPFD; keep the original fd. */
++	(void)FDBASE;
+ 	sflags &= ~SHF_ACCMODE;
+ 	sflags |= (oflags & O_ACCMODE) == O_RDONLY ? SHF_RD :
+ 	    ((oflags & O_ACCMODE) == O_WRONLY ? SHF_WR : SHF_RDWR);

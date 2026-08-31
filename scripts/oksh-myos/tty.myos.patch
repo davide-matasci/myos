@@ -1,23 +1,51 @@
 --- tty.c
 +++ tty.c
-@@ -35,19 +35,16 @@
- 
- 	tfd = open("/dev/tty", O_RDWR);
- 	if (tfd == -1) {
- 		tty_devtty = 0;
+@@ -27,44 +27,9 @@
+ void
+ tty_init(int init_ttystate)
+ {
+-	int	do_close = 1;
+-	int	tfd;
+-
++	/* myos: no /dev/tty, F_DUPFD, or termios. Kernel stdin is cooked. */
++	(void)init_ttystate;
+ 	tty_close();
+-	tty_devtty = 1;
+-
+-	tfd = open("/dev/tty", O_RDWR);
+-	if (tfd == -1) {
+-		tty_devtty = 0;
 -		warningf(false, "No controlling tty (open /dev/tty: %s)",
 -		    strerror(errno));
 -
- 		do_close = 0;
- 		if (isatty(0))
- 			tfd = 0;
- 		else if (isatty(2))
- 			tfd = 2;
- 		else {
+-		do_close = 0;
+-		if (isatty(0))
+-			tfd = 0;
+-		else if (isatty(2))
+-			tfd = 2;
+-		else {
 -			warningf(false, "Can't find tty file descriptor");
-+			/* myos: no /dev/tty; stdin is already the console. */
- 			return;
- 		}
- 	}
- #ifdef F_DUPFD_CLOEXEC
- 	if ((tty_fd = fcntl(tfd, F_DUPFD_CLOEXEC, FDBASE)) == -1) {
+-			return;
+-		}
+-	}
+-#ifdef F_DUPFD_CLOEXEC
+-	if ((tty_fd = fcntl(tfd, F_DUPFD_CLOEXEC, FDBASE)) == -1) {
+-		warningf(false, "%s: dup of tty fd failed: %s",
+-		    __func__, strerror(errno));
+-#else
+-	if ((tty_fd = fcntl(tfd, F_DUPFD, FDBASE)) == -1) {
+-		warningf(false, "%s: dup of tty fd failed: %s",
+-		    __func__, strerror(errno));
+-	} else if (fcntl(tty_fd, F_SETFD, FD_CLOEXEC) == -1) {
+-		warningf(false, "%s: set tty fd close-on-exec flag failed: %s",
+-		    __func__, strerror(errno));
+-		close(tty_fd);
+-		tty_fd = -1;
+-#endif
+-	} else if (init_ttystate)
+-		tcgetattr(tty_fd, &tty_state);
+-	if (do_close)
+-		close(tfd);
++	tty_devtty = 0;
++	tty_fd = -1;
+ }
