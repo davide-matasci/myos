@@ -71,6 +71,9 @@ build_arch() {
   if [[ "$arch" == "aarch64" ]]; then
     compile "$cc" "$inc" "$MYOS/trunctfdf2.c" "$objdir/trunctfdf2.o"
     extra=("$objdir/trunctfdf2.o")
+  elif [[ "$arch" == "riscv64" ]]; then
+    compile "$cc" "$inc" "$MYOS/riscv64-softfloat.c" "$objdir/riscv64-softfloat.o"
+    extra=("$objdir/riscv64-softfloat.o")
   fi
 
   compile "$cc" "$inc" "$WORK/echo.c" "$objdir/echo.o"

@@ -630,9 +630,10 @@ fn raw_read(fd: usize, buf: usize, len: usize) -> usize {
         core::arch::asm!(
             "ecall",
             in("a7") SYS_READ,
-            inout("a0") fd => ret,
+            in("a0") fd,
             in("a1") buf,
             in("a2") len,
+            lateout("a0") ret,
             options(nostack),
         );
     }
@@ -648,6 +649,23 @@ fn raw_brk(addr: usize) -> usize {
             "ecall",
             in("a7") SYS_BRK,
             inout("a0") addr => ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_exec_name(buf: usize, len: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_EXECNAME,
+            in("a0") buf,
+            in("a1") len,
+            lateout("a0") ret,
             options(nostack),
         );
     }
