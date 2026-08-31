@@ -277,7 +277,6 @@ jobs:
           ls -lh ci-build.tar
 
       - name: Upload CI build artifacts
-        if: github.event_name != 'pull_request'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -289,7 +288,7 @@ jobs:
   boot:
     name: boot (${{ matrix.id }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     needs: build
     if: ${{ needs.build.result == 'success' }}
     strategy:
@@ -299,33 +298,48 @@ jobs:
           - id: bios
             args: --ci
             packages: qemu-system-x86
-            needs_rust: false
             required: true
           - id: uefi
             args: uefi --ci
             packages: qemu-system-x86
-            needs_rust: false
             required: true
           - id: aarch64
             args: aarch64 --ci
             packages: qemu-system-arm qemu-efi-aarch64
-            needs_rust: true
             required: true
           - id: riscv64
             args: riscv64 --ci
             packages: qemu-system-misc qemu-efi-riscv64
-            needs_rust: true
             required: false
     steps:
       - uses: actions/checkout@v4
 
       - name: Install pinned nightly
-        if: matrix.needs_rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-07-26
           components: rust-src, llvm-tools-preview
-          targets: x86_64-unknown-none, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-4
+          cache-directories: |
+            target/myos-sysroot
+            target/newlib-x86_64
+            target/newlib-aarch64
+            target/newlib-src
+            target/newlib-bin
+            target/sbase-src
+            target/sbase-myos-build
+
+      - name: Download prebuilt sysroot
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: myos-sysroot
+          path: target
 
       - name: Download CI build artifacts
         continue-on-error: true
@@ -333,17 +347,15 @@ jobs:
         with:
           name: ci-build
 
-      - name: Extract CI build artifacts
-        continue-on-error: true
+      - name: Restore or rebuild CI artifacts
         run: |
-          if [[ -f ci-build.tar ]]; then
-            tar -xf ci-build.tar
-          else
-            echo "ci-build.tar missing (artifact quota?); aarch64/riscv64 may rebuild kernels"
-          fi
+          chmod +x scripts/*.sh
+          sudo apt-get update
+          sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
+          ./scripts/ci-restore-or-build.sh
 
       - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+        run: sudo apt-get install -y ${{ matrix.packages }}
 
       - name: Boot in QEMU
         continue-on-error: ${{ !matrix.required }}
