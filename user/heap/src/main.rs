@@ -109,6 +109,8 @@ fn main() -> ! {
     run_prog(b"/s/true", &[]);
     run_prog(b"/s/echo", &[]);
     run_prog(b"/s/ls", &[]);
+    run_prog(b"/s/echo", &[b"echo", b"sbase argv ok"]);
+    run_prog(b"/s/ls", &[b"ls", b"/s"]);
     run_prog(b"/s/pwd", &[]);
     exit();
 }

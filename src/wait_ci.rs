@@ -26,7 +26,7 @@ const CI_NEEDLES: [&str; 14] = [
 ];
 
 /// Extra serial markers for patched `std` / C / sbase / uutils / VFS smoke ELFs (via `/heap`).
-const CI_NEEDLES_STD: [&str; 14] = [
+const CI_NEEDLES_STD: [&str; 15] = [
     "std ok",
     "std cat ok",
     "std echo ok",
@@ -41,15 +41,18 @@ const CI_NEEDLES_STD: [&str; 14] = [
     "uutils echo ok",
     "uutils true ok",
     "uutils false ok",
+    "sbase argv ok",
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 5] = [
+const CI_SHELL_COMMANDS: [&[u8]; 7] = [
     b"nosuchcmd\n",
     b"ok\n",
     b"echo test\n",
     b"echo pipe | cat\n",
     b"c/true\n",
+    b"/s/echo hi\n",
+    b"/s/ls /s\n",
 ];
 
 /// Printed by the interactive shell when `open(path)` fails.
@@ -129,6 +132,29 @@ fn interactive_uutils_true_cmd_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
+fn interactive_sbase_echo_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    if !tail.contains("$ /s/echo hi") || serial.contains("exception:") {
+        return false;
+    }
+    let after = tail
+        .rsplit_once("$ /s/echo hi")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
+    after
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim() == "hi")
+        && at_interactive_prompt(serial)
+}
+
+fn interactive_sbase_ls_cmd_ok(serial: &str) -> bool {
+    command_echoed(serial, "/s/ls /s")
+        && !serial.contains("exception:")
+        && !serial.contains("user panic")
+        && at_interactive_prompt(serial)
+}
+
 fn shell_cmd_result_ok(serial: &str, cmd_index: usize) -> bool {
     match cmd_index {
         0 => interactive_unknown_cmd_ok(serial),
@@ -136,6 +162,8 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize) -> bool {
         2 => interactive_echo_cmd_ok(serial),
         3 => interactive_pipe_cmd_ok(serial),
         4 => interactive_uutils_true_cmd_ok(serial),
+        5 => interactive_sbase_echo_cmd_ok(serial),
+        6 => interactive_sbase_ls_cmd_ok(serial),
         _ => false,
     }
 }
@@ -344,9 +372,25 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 "error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)"
             );
         }
-        if shell_cmd_index >= 4 && !interactive_uutils_true_cmd_ok(&serial) {
+        if shell_cmd_index >= 4 && shell_cmd_index < 5 && !interactive_uutils_true_cmd_ok(&serial) {
             eprintln!(
                 "error: interactive `c/true` failed (want `$ c/true` then `$` prompt)"
+            );
+        }
+        if shell_cmd_index >= 5 && shell_cmd_index < 6 && !interactive_sbase_echo_cmd_ok(&serial) {
+            if !command_echoed(&serial, "/s/echo hi") {
+                eprintln!("error: serial did not echo `$ /s/echo hi` at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: interactive `/s/echo hi` triggered a CPU exception");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after interactive `/s/echo hi`");
+            } else {
+                eprintln!("error: interactive `/s/echo hi` did not print `hi`");
+            }
+        }
+        if shell_cmd_index >= 6 && !interactive_sbase_ls_cmd_ok(&serial) {
+            eprintln!(
+                "error: interactive `/s/ls /s` failed (want `$ /s/ls /s` then `$` prompt)"
             );
         }
         std::process::exit(1);
