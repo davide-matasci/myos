@@ -34,5 +34,6 @@ patch_copy shf
 patch_copy c_sh
 patch_copy lex
 patch_copy c_ksh
+patch_copy mail
 
 echo "oksh myos tree -> $WORK"
