@@ -16,8 +16,8 @@
 -		alarm(0);
 +		/* myos: no alarm(2) */
  	}
- 	s->start = s->str = Xstring(s.xs, xp);
- 	strip_nuls(Xstring(s.xs, xp), Xlength(s.xs, xp));
+ 	s->start = s->str = Xstring(s->xs, xp);
+ 	strip_nuls(Xstring(s->xs, xp), Xlength(s->xs, xp));
 @@ -1282,24 +1282,17 @@
  				strbuf[1] = '\0';
  				break;
