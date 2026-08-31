@@ -143,6 +143,7 @@ fn shell_ready(serial: &str, extra: &[&str]) -> bool {
 }
 
 const SHELL_TYPE_DELAY: Duration = Duration::from_millis(25);
+const SHELL_CMD_DELAY: Duration = Duration::from_millis(100);
 
 fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
     stdin
@@ -184,6 +185,7 @@ fn advance_shell_ci(
                 *stage = ShellStage::Done;
             } else {
                 *typing = 0;
+                std::thread::sleep(SHELL_CMD_DELAY);
                 *stage = ShellStage::Typing;
             }
         }
