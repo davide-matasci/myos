@@ -503,7 +503,7 @@ fn run_ci_riscv64() {
             qemu_debug_exit: false,
             shell_ci: true,
         },
-        &[],
+        &CI_NEEDLES_STD,
     );
 }
 

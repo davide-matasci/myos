@@ -12,13 +12,13 @@ write_wrapper() {
   chmod +x "$BIN/$name"
 }
 
-for arch in x86_64 aarch64; do
+for arch in x86_64 aarch64 riscv64; do
   triple="${arch}-unknown-myos"
   elf="${arch}-unknown-none"
-  if [[ "$arch" == "x86_64" ]]; then
-    ld='ld.lld'
-  else
+  if [[ "$arch" == "aarch64" ]]; then
     ld='aarch64-linux-gnu-ld'
+  else
+    ld='ld.lld'
   fi
   write_wrapper "${triple}-cc" "#!/usr/bin/env bash
 exec clang --target=${elf} -ffreestanding -fPIC \"\$@\"

@@ -40,7 +40,8 @@ myos_newlib_is_current() {
   [[ -f "$MYOS_NEWLIB_VERSION" ]] \
     && [[ "$(cat "$MYOS_NEWLIB_VERSION")" == "$(myos_newlib_version_hash)" ]] \
     && myos_newlib_prefix_ok x86_64 \
-    && myos_newlib_prefix_ok aarch64
+    && myos_newlib_prefix_ok aarch64 \
+    && myos_newlib_prefix_ok riscv64
 }
 
 myos_c_hello_version_hash() {
@@ -59,7 +60,8 @@ myos_c_hello_is_current() {
   [[ -f "$MYOS_C_HELLO_VERSION" ]] \
     && [[ "$(cat "$MYOS_C_HELLO_VERSION")" == "$(myos_c_hello_version_hash)" ]] \
     && [[ -f "$MYOS_ROOT/target/c-hello-x86_64-unknown-none" ]] \
-    && [[ -f "$MYOS_ROOT/target/c-hello-aarch64-unknown-none" ]]
+    && [[ -f "$MYOS_ROOT/target/c-hello-aarch64-unknown-none" ]] \
+    && [[ -f "$MYOS_ROOT/target/c-hello-riscv64-unknown-none" ]]
 }
 
 myos_sbase_version_hash() {
@@ -83,7 +85,7 @@ myos_sbase_is_current() {
     && [[ "$(cat "$MYOS_SBASE_VERSION")" == "$(myos_sbase_version_hash)" ]] \
     || return 1
   for art in "${MYOS_SBASE_ARTIFACTS[@]}"; do
-    for arch in x86_64 aarch64; do
+    for arch in x86_64 aarch64 riscv64; do
       [[ -f "$MYOS_ROOT/target/sbase-${art}-${arch}-unknown-none" ]] || return 1
     done
   done

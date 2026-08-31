@@ -587,3 +587,201 @@ fn raw_exec(path: usize, path_len: usize, args: usize) -> ! {
         core::hint::unreachable_unchecked();
     }
 }
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_close(fd: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_CLOSE,
+            in("a0") fd,
+            lateout("a0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_write(fd: usize, ptr: usize, len: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_WRITE,
+            in("a0") fd,
+            in("a1") ptr,
+            in("a2") len,
+            lateout("a0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_read(fd: usize, buf: usize, len: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_READ,
+            in("a0") fd,
+            in("a1") buf,
+            in("a2") len,
+            lateout("a0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_brk(addr: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_BRK,
+            inout("a0") addr => ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_exec_name(buf: usize, len: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_EXECNAME,
+            in("a0") buf,
+            in("a1") len,
+            lateout("a0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_exit(code: usize) -> ! {
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_EXIT,
+            in("a0") code,
+            options(noreturn),
+        );
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_open(ptr: usize, len: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_OPEN,
+            inout("a0") ptr => ret,
+            in("a1") len,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_fork() -> usize {
+    unsafe extern "C" {
+        fn sys_fork_raw() -> usize;
+    }
+    unsafe { sys_fork_raw() }
+}
+
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    r#"
+    .section .text.sys_fork_raw,"ax",@progbits
+    .global sys_fork_raw
+    .type sys_fork_raw, @function
+sys_fork_raw:
+    li a7, 6
+    ecall
+    ret
+"#
+);
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_wait(status_ptr: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_WAIT,
+            inout("a0") status_ptr => ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_pipe(fds_ptr: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_PIPE,
+            inout("a0") fds_ptr => ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_dup2(oldfd: usize, newfd: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_DUP2,
+            in("a0") oldfd,
+            in("a1") newfd,
+            lateout("a0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_exec(path: usize, path_len: usize, args: usize) -> ! {
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_EXEC,
+            in("a0") path,
+            in("a1") path_len,
+            in("a2") args,
+            options(noreturn),
+        );
+        core::hint::unreachable_unchecked();
+    }
+}

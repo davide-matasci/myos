@@ -40,7 +40,7 @@ link_prog() {
   echo "c-${name} -> $out"
 }
 
-for arch in x86_64 aarch64; do
+for arch in x86_64 aarch64 riscv64; do
   link_prog hello "$ROOT/c/hello.c" "$arch"
 done
 

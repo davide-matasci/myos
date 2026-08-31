@@ -52,5 +52,6 @@ build_one() {
 
 build_one x86_64
 build_one aarch64
+build_one riscv64
 
 echo "$(myos_newlib_version_hash)" >"$MYOS_NEWLIB_VERSION"

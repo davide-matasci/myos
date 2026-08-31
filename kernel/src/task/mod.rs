@@ -381,8 +381,9 @@ pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
     let want = len.min(tmp.len());
     // Do not call input::read (may yield) while TASKS is locked — deadlock.
     let n = crate::input::read(&mut tmp[..want]);
-    unsafe {
-        core::ptr::copy_nonoverlapping(tmp.as_ptr(), buf as *mut u8, n);
+    let aspace = current_aspace();
+    if !user::copy_to_user(aspace, buf, &tmp[..n]) {
+        return usize::MAX;
     }
     n
 }
@@ -435,8 +436,8 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                         ) {
                             return usize::MAX;
                         }
-                        unsafe {
-                            core::ptr::copy_nonoverlapping(tmp.as_ptr(), buf as *mut u8, n);
+                        if !user::copy_to_user(t.aspace, buf, &tmp[..n]) {
+                            return usize::MAX;
                         }
                     }
                     if let FdEntry::File { pos: p, .. } = &mut t.fds[fd] {
@@ -456,8 +457,9 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                     yield_now();
                     continue;
                 }
-                unsafe {
-                    core::ptr::copy_nonoverlapping(tmp.as_ptr(), buf as *mut u8, n);
+                let aspace = current_aspace();
+                if !user::copy_to_user(aspace, buf, &tmp[..n]) {
+                    return usize::MAX;
                 }
                 return n;
             }

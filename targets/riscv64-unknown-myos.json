@@ -1,5 +1,4 @@
 {
-  "abi": "softfloat",
   "arch": "riscv64",
   "crt-objects-fallback": "false",
   "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
@@ -7,12 +6,13 @@
   "features": "+m,+a,+c",
   "linker": "rust-lld",
   "linker-flavor": "gnu-lld",
+  "llvm-abiname": "lp64",
   "llvm-target": "riscv64-unknown-none-elf",
   "max-atomic-width": 128,
   "metadata": {
-    "description": "myos userspace (RISC-V64 softfloat)",
+    "description": "myos userspace (RISC-V64)",
     "host_tools": false,
-    "std": false,
+    "std": true,
     "tier": 3
   },
   "os": "myos",
@@ -22,7 +22,6 @@
   "pre-link-args": {
     "gnu": ["-pie", "-z", "max-page-size=4096"]
   },
-  "rustc-abi": "softfloat",
   "stack-probes": {
     "kind": "inline"
   },

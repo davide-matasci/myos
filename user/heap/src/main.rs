@@ -96,12 +96,9 @@ fn main() -> ! {
     let mut v = Vec::new();
     v.extend_from_slice(b"alloc ok\n");
     write(&v);
-    #[cfg(not(target_arch = "riscv64"))]
-    {
-        run_prog_exit(b"/uutils-echo", &[], 0, b"uutils echo ok\n");
-        run_prog_exit(b"/uutils-true", &[], 0, b"uutils true ok\n");
-        run_prog_exit(b"/uutils-false", &[], 1, b"uutils false ok\n");
-    }
+    run_prog_exit(b"/uutils-echo", &[], 0, b"uutils echo ok\n");
+    run_prog_exit(b"/uutils-true", &[], 0, b"uutils true ok\n");
+    run_prog_exit(b"/uutils-false", &[], 1, b"uutils false ok\n");
     smoke_disk();
     smoke_vfs();
     run_prog(b"/stdhello", &[]);
