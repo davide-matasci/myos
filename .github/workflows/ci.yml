@@ -213,7 +213,7 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
 
-      - name: Install sysroot and build std/C/sbase/uutils smoke ELFs
+      - name: Install sysroot and build std/C/sbase/uutils ELFs
         run: |
           chmod +x scripts/*.sh
           if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
