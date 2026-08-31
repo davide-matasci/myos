@@ -2,6 +2,9 @@ use crate::alloc::Layout;
 
 const PAGE: usize = 4096;
 /// Must match `HEAP_PAGES` in `kernel/src/user.rs`.
+#[cfg(target_arch = "aarch64")]
+const HEAP_PAGES: usize = 180;
+#[cfg(not(target_arch = "aarch64"))]
 const HEAP_PAGES: usize = 256;
 
 static mut BRK_END: usize = 0;
