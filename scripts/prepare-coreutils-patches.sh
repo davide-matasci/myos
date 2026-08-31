@@ -16,11 +16,14 @@ patch_version_hash() {
   {
     echo "errno=$ERRNO_VERSION libc=$LIBC_VERSION rustix=$RUSTIX_VERSION"
     echo "getrandom=$GETRANDOM_02_VERSION,$GETRANDOM_04_VERSION"
+    echo "hostname=$HOSTNAME_VERSION console=$CONSOLE_VERSION"
     sha256sum "$PATCHES/versions.env"
     sha256sum "$PATCHES/errno/"*
     sha256sum "$PATCHES/libc/"*
     sha256sum "$PATCHES/rustix/"*
     sha256sum "$PATCHES/getrandom/"*
+    sha256sum "$PATCHES/hostname/"*
+    sha256sum "$PATCHES/console/"*
   } | sha256sum | awk '{print $1}'
 }
 
@@ -43,6 +46,8 @@ find_registry_crate() {
 }
 
 GETRANDOM_04_SRC="$(find_registry_crate "getrandom-$GETRANDOM_04_VERSION" 2>/dev/null || true)"
+HOSTNAME_SRC="$(find_registry_crate "hostname-$HOSTNAME_VERSION" 2>/dev/null || true)"
+CONSOLE_SRC="$(find_registry_crate "console-$CONSOLE_VERSION" 2>/dev/null || true)"
 
 if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP")" == "$(patch_version_hash)" ]] \
   && [[ -f "$DEST/errno-$ERRNO_VERSION/Cargo.toml" ]] \
@@ -50,12 +55,16 @@ if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP")" == "$(patch_version_hash)" ]] \
   && [[ -f "$DEST/rustix-$RUSTIX_VERSION/Cargo.toml" ]] \
   && [[ -f "$DEST/getrandom-$GETRANDOM_02_VERSION/Cargo.toml" ]] \
   && [[ -n "$GETRANDOM_04_SRC" ]] \
-  && [[ -f "$GETRANDOM_04_SRC/src/backends/myos.rs" ]]; then
+  && [[ -f "$GETRANDOM_04_SRC/src/backends/myos.rs" ]] \
+  && [[ -n "$HOSTNAME_SRC" ]] \
+  && [[ -f "$HOSTNAME_SRC/src/myos.rs" ]] \
+  && [[ -n "$CONSOLE_SRC" ]] \
+  && [[ -f "$CONSOLE_SRC/src/myos_term.rs" ]]; then
   echo "coreutils patched crates up to date at $DEST"
   exit 0
 fi
 
-echo "Fetching errno $ERRNO_VERSION, libc $LIBC_VERSION, rustix $RUSTIX_VERSION, getrandom..."
+echo "Fetching errno $ERRNO_VERSION, libc $LIBC_VERSION, rustix $RUSTIX_VERSION, getrandom, hostname, console..."
 mkdir -p "$FETCH_DIR"
 cat >"$FETCH_DIR/Cargo.toml" <<EOF
 [package]
@@ -75,6 +84,8 @@ libc = "= $LIBC_VERSION"
 rustix = "= $RUSTIX_VERSION"
 getrandom02 = { package = "getrandom", version = "= $GETRANDOM_02_VERSION" }
 getrandom04 = { package = "getrandom", version = "= $GETRANDOM_04_VERSION" }
+hostname = "= $HOSTNAME_VERSION"
+console = "= $CONSOLE_VERSION"
 EOF
 echo '// fetch-only dummy crate' >"$FETCH_DIR/lib.rs"
 
@@ -198,6 +209,7 @@ pub(crate) use crate::myos_term::*;' \
   fi
 }
 
-patch_version_hash >"$STAMP"
 patch_registry_hostile_crates
+
+patch_version_hash >"$STAMP"
 echo "Patched crates ready under $DEST"
