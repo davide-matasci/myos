@@ -118,6 +118,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zstd
 
       - name: Build and package sysroot
+        id: sysroot_build
         env:
           MYOS_SYSROOT_SLIM: "1"
           MYOS_ZSTD_LEVEL: "3"
@@ -126,13 +127,17 @@ jobs:
           ./scripts/build-sysroot.sh
           ./scripts/package-sysroot.sh
 
+      # Artifact quota exhaustion must not fail the pipeline: rust-cache keeps
+      # target/myos-sysroot for the build job; fetch-sysroot rebuilds if needed.
       - name: Upload sysroot tarball
+        if: steps.sysroot_build.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: myos-sysroot
           path: target/myos-sysroot-*.tar.zst
-          if-no-files-found: error
-          retention-days: 30
+          if-no-files-found: warn
+          retention-days: 7
 
   export-patch:
     runs-on: ubuntu-latest
@@ -199,6 +204,7 @@ jobs:
 
       - name: Download prebuilt sysroot
         if: needs.sysroot.result == 'success'
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: myos-sysroot
@@ -207,7 +213,7 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
 
-      - name: Install sysroot and build std/C/sbase/uutils ELFs
+      - name: Install sysroot and build std/C/sbase/uutils smoke ELFs
         run: |
           chmod +x scripts/*.sh
           if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
