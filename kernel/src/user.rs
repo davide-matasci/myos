@@ -25,14 +25,13 @@ const SYS_DUP2: usize = 11;
 pub const SYS_STAT: usize = 12;
 const SYS_EXECNAME: usize = 13;
 pub const PAGE: usize = 4096;
-/// User stack below the heap. x86_64 uses 512 KiB; AArch64 L3 tables cap total
-/// user slots (code + stack + heap) at 512 pages.
+/// User stack below the heap. x86_64 uses 1 MiB; AArch64 uses 512 KiB.
+/// AArch64 user maps spill into L2[1+] when code+stack+heap exceed 512 pages.
 #[cfg(target_arch = "aarch64")]
 pub const USER_STACK_PAGES: usize = 128;
 #[cfg(not(target_arch = "aarch64"))]
 pub const USER_STACK_PAGES: usize = 256;
-/// Per-process brk heap. uutils/clap init needs well over 512 KiB on x86_64;
-/// keep `code_pages + USER_STACK_PAGES + HEAP_PAGES` ≤ 512 on AArch64 L3 tables.
+/// Per-process brk heap. uutils/clap init needs well over 512 KiB on x86_64.
 #[cfg(target_arch = "aarch64")]
 const HEAP_PAGES: usize = 180;
 #[cfg(not(target_arch = "aarch64"))]
