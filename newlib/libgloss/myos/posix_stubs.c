@@ -186,59 +186,6 @@ int dup2(int oldfd, int newfd) {
     return newfd;
 }
 
-/*
- * F_DUPFD: kernel MAX_FDS is 16 and oksh FDBASE is 10. dup2 always clobbers, so
- * bump from max(arg, 10) to hand out distinct high fds. F_GETFL/F_SETFD succeed.
- * Named _fcntl so it does not clash with newlib libc's ENOSYS fcntl().
- */
-int _fcntl(int fd, int cmd, int arg) {
-    static int next_highfd = 10;
-
-    switch (cmd) {
-#ifdef F_DUPFD_CLOEXEC
-    case F_DUPFD_CLOEXEC:
-#endif
-    case F_DUPFD: {
-        int minfd = arg;
-        int n;
-
-        if (minfd < 10) {
-            minfd = 10;
-        }
-        if (minfd < next_highfd) {
-            minfd = next_highfd;
-        }
-        for (n = minfd; n < 16; n++) {
-            if (n == fd) {
-                continue;
-            }
-            if (dup2(fd, n) >= 0) {
-                next_highfd = n + 1;
-                return n;
-            }
-        }
-        errno = EMFILE;
-        return -1;
-    }
-    case F_GETFL:
-        (void)arg;
-        return 0;
-    case F_SETFL:
-        (void)arg;
-        return 0;
-    case F_GETFD:
-        (void)arg;
-        return 0;
-    case F_SETFD:
-        (void)arg;
-        return 0;
-    default:
-        (void)fd;
-        errno = EINVAL;
-        return -1;
-    }
-}
-
 int fchownat(int dirfd, const char *path, uid_t owner, gid_t group, int flags) {
     (void)dirfd;
     (void)path;
@@ -272,6 +219,11 @@ struct group *getgrnam(const char *name) {
     return NULL;
 }
 
+struct passwd *getpwnam(const char *name) {
+    (void)name;
+    errno = ENOENT;
+    return NULL;
+}
 
 int _mkdir(const char *path, mode_t mode) {
     return mkdir(path, mode);
