@@ -18,10 +18,11 @@ Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 
 The kernel runs round-robin **kernel threads** plus **user processes**.
 Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
-`include_bytes!`, spawned as today, then **execs `/sh`**. The shell prints
-`sh ok`, smoke-runs `/ok` (fork/exec with argv), then drops to an
-interactive `$` prompt on **stdin** (PS/2 keyboard when detected, else
-serial). `user/ok` prints `user ok`, reads
+`include_bytes!`, spawned as today, smoke-runs fork/`/ok` for CI needles,
+then **execs `/sh`**. `/sh` is portable OpenBSD ksh
+([oksh](https://github.com/ibara/oksh) 7.9) linked with newlib/libgloss. It
+prints `sh ok` and drops to an interactive `$ ` prompt on **stdin** (PS/2
+keyboard when detected, else serial). `user/ok` prints `user ok`, reads
 `/msg` (FAT16 `MSG` via virtio-blk), prints `fat ok`, and exits.
 Userspace programs are ELFs, not `KernelApi` modules. Nested cargo like
 hello; loaded into per-process page tables at `USER_BASE`. Each process has
@@ -127,10 +128,10 @@ target/fat.img
 Boot a built x86 image yourself with:
 
 ```sh
-qemu-system-x86_64 -m 256 \
-  -drive format=raw,file=target/bios.img \
-  -drive if=none,id=vd0,format=raw,file=target/fat.img \
-  -device virtio-blk-pci,drive=vd0,disable-modern=on \
+qemu-system-x86_64 -m 256 \\
+  -drive format=raw,file=target/bios.img \\
+  -drive if=none,id=vd0,format=raw,file=target/fat.img \\
+  -device virtio-blk-pci,drive=vd0,disable-modern=on \\
   -serial stdio
 ```
 
@@ -380,16 +381,16 @@ but you still rebuild the **disk image** so the ESP file updates.
 ## Userspace
 
 Userspace programs are ELFs, not KernelApi modules. Init is PID1-style:
-baked into the kernel (`user/init`), spawned as today, and **execs `/sh`**.
-The shell (`user/sh`) is a tiny `#![no_std]` program: it smoke-runs `/ok`
-(fork/exec with argv) for CI, then reads lines from **stdin (fd 0)** and
-fork/exec's built-in utilities (`echo`, `cat`, `ls`, `ok`, …). Shared
-helpers live in `user/lib` (`myos_user`: syscalls, argv, `read_line`,
-`listdir`, `brk`, bump [`Heap`](user/lib/src/alloc.rs)).
+baked into the kernel (`user/init`), spawned as today, smoke-runs fork and
+`/ok` (which execs `/heap` for the std/sbase/uutils needles), then
+**execs `/sh`**. The shell is **oksh 7.9** (portable OpenBSD ksh) built
+with newlib/libgloss and embedded as bootfs `sh`. The older tiny
+`user/sh` crate stays in-tree but is not `/sh`. Shared helpers for the
+remaining Rust user programs live in `user/lib`.
 
 `user/ok` is its own tiny workspace (same shape as `user/init` /
 `modules/hello`: `panic = "abort"`, `opt-level = "s"`). `kernel/build.rs`
-nested-`cargo build`s init, sh, ok, echo, cat, ls; init is `include_bytes!`,
+nested-`cargo build`s init, ok, echo, cat, ls (not `sh`); init is `include_bytes!`,
 the rest are embedded as bootfs fallbacks and placed on the ESP as
 `boot/sh`, `boot/ok`, etc. After printing `user ok`, it `open`s `/msg`,
 `read`s the bytes, writes them to serial (`fat ok`), and exits. If `/msg`
@@ -463,6 +464,7 @@ required beyond the existing myos ABI.
 ./scripts/build-newlib.sh   # fetch newlib 4.4.0, build libc + libgloss/myos
 ./scripts/build-c-hello.sh  # minimal write() smoke → target/c-hello-*
 ./scripts/build-sbase.sh    # full suckless sbase → target/sbase-* + manifest
+./scripts/build-oksh.sh     # oksh 7.9 → target/oksh-*-unknown-none (`/sh`)
 ```
 
 | Path | Role |
@@ -477,12 +479,17 @@ required beyond the existing myos ABI.
 | `scripts/prepare-sbase-myos.sh` | Sync upstream tree; apply myos patches; generate `bc.c`/`getconf.h` |
 | `scripts/build-sbase.sh` | Cross-build ~91 upstream sbase utilities per arch (manifest-driven kernel embed) |
 | `scripts/sbase-myos/` | `.myos.patch` files, `bins.txt`, compat headers, arch soft-float shims |
+| `scripts/fetch-oksh.sh` | Clone pinned [oksh](https://github.com/ibara/oksh) 7.9 into `target/oksh-src` |
+| `scripts/prepare-oksh-myos.sh` | Sync upstream tree; apply myos patches; install checked-in `pconfig.h` |
+| `scripts/build-oksh.sh` | Cross-build oksh per arch (`target/oksh-*-unknown-none`) |
+| `scripts/oksh-myos/` | `pconfig.h` (`configure --no-thanks --enable-small --disable-curses`) and `.myos.patch` files |
 | `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
 
 Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
-`open` read-only, `close`, `brk`, `fork`, `wait`, `stat` via **`SYS_STAT` (12)**).
+`open` read-only, `close`, `brk`, `fork`, `wait`/`waitpid`, `pipe`, `dup2`,
+`execve`, `stat` via **`SYS_STAT` (12)**).
 `opendir`/`readdir`/`closedir` and `getcwd`/`chdir` stubs live in libgloss for
-flat bootfs. Write-only open flags and `lseek`/`execve`/… return `EROFS`/`ENOSYS`.
+flat bootfs. Write-only open flags and `lseek` still return `EROFS`/`ENOSYS`.
 Do **not** use `-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
 
 Upstream sbase (`cat`, `true`, `ls`, `pwd`, …) is fetched at build time; only
@@ -490,15 +497,19 @@ small `.myos.patch` files live in-tree (CI smoke strings, myos exec argv quirks)
 Tools use upstream newlib stdio (`puts`, `printf`, `fshut`) and libutil; the
 kernel enables user SIMD/FP (x86_64 SSE, AArch64 NEON) so `-O2` libc code does
 not fault on stdio init.
-Libgloss adds `time`/`localtime`, flat `getpwuid`/`getgrgid` (root), `readlink`
-(`ENOSYS`), POSIX stubs for read-only VFS, and `sys/sysmacros.h` so upstream `ls -l`
-links. The kernel mounts **sbasefs** at `/s/` with one ELF per tool (e.g. `/s/cat`,
-`/s/echo`, `/s/ls` — 91 utilities today); CI checks `sbase ok` from `/s/echo` and
-`sls ok` from `/s/ls` via `user/heap`.
+Libgloss adds `clock_gettime` (libc already owns `time`/`localtime`), flat
+`getpwuid`/`getpwnam`/`getgrgid` (root),
+`fcntl(F_DUPFD)` (high fds for oksh `FDBASE`; link `fcntl.o` so it overrides
+newlib's ENOSYS `fcntl`), no-op `tcgetattr`/`tcsetattr`,
+`readlink` (`ENOSYS`), POSIX stubs for read-only VFS, and `sys/sysmacros.h` so
+upstream `ls -l` links. The kernel mounts **sbasefs** at `/s/` with one ELF per
+tool (e.g. `/s/cat`, `/s/echo`, `/s/ls` — 91 utilities today); CI checks
+`sbase ok` from `/s/echo` and `sls ok` from `/s/ls` via `user/heap`.
 
-The in-tree shell (`user/sh`) supports `export NAME=value`, `env`, pipes, stdin
-redirect (`<`), and `$?`. Output redirect (`>`) is deferred while bootfs stays
-read-only.
+`/sh` is oksh. PATH is `/:/s:/c`. Interactive CI still types at `$ `; unknown
+commands print `not found`. Job control, SIGCHLD, curses, history files, and
+heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
+`waitpid(-1)`). `user/sh` remains in-tree until CI is green.
 
 ## Layout
 
@@ -523,8 +534,9 @@ read-only.
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
 | `modules/stubfs` | Sample prefixed mount: `vfs_mount` at `/disk`, file `/disk/ping` |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
-| `user/init` | PID1-style: baked in, execs `/sh` (not a kernel module) |
-| `user/sh` | Minimal shell: smoke `/ok`, interactive `$` prompt on stdin |
+| `user/init` | PID1-style: baked in, smoke fork/`/ok`, execs `/sh` |
+| `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
+| `scripts/oksh-myos/` | oksh pin patches + `pconfig.h` |
 | `user/echo` | Print argv (`echo hello`) |
 | `user/cat` | Read a bootfs file to stdout |
 | `user/ls` | List bootfs entries (via `listdir`) |
