@@ -97,9 +97,9 @@ fn main() -> ! {
     v.extend_from_slice(b"alloc ok\n");
     write(&v);
     run_prog_exit(b"/bigalloc", &[], 0, b"bigalloc ok\n");
-    run_prog_exit(b"/uutils-echo", &[], 0, b"uutils echo ok\n");
-    run_prog_exit(b"/uutils-true", &[], 0, b"uutils true ok\n");
-    run_prog_exit(b"/uutils-false", &[], 1, b"uutils false ok\n");
+    run_prog_exit(b"/c/echo", &[], 0, b"uutils echo ok\n");
+    run_prog_exit(b"/c/true", &[], 0, b"uutils true ok\n");
+    run_prog_exit(b"/c/false", &[], 1, b"uutils false ok\n");
     smoke_disk();
     smoke_vfs();
     run_prog(b"/stdhello", &[]);

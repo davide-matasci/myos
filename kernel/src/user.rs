@@ -38,8 +38,8 @@ const HEAP_PAGES: usize = 180;
 #[cfg(not(target_arch = "aarch64"))]
 const HEAP_PAGES: usize = 256;
 /// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy (today
-/// release `uutils-coreutils` ≈197 pages).
-const MAX_INIT_PAGES: usize = 256;
+/// release `uutils-coreutils` ≈366 pages).
+const MAX_INIT_PAGES: usize = 384;
 /// In-place `reload_user_elf` scratch and mapping cap (sbase-cat scale).
 const MAX_RELOAD_PAGES: usize = 40;
 /// Minimum code pages reserved below the user stack so post-fork `exec` can
@@ -690,10 +690,49 @@ fn virt_to_phys_x86(pml4_phys: u64, va: u64) -> Option<u64> {
 }
 
 #[cfg(target_arch = "aarch64")]
+const AARCH64_USER_L3_PAGES: usize = 512;
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_user_page_idx(va: u64) -> usize {
+    let base = USER_BASE.load(Ordering::SeqCst);
+    va.saturating_sub(base) as usize / PAGE
+}
+
+/// Return the L3 table for `page` (allocating L2/L3 spill slots as needed).
+#[cfg(target_arch = "aarch64")]
+fn aarch64_l3_table_mut(l0_phys: u64, page: usize) -> Option<*mut [u64; 512]> {
+    const TABLE: u64 = 0b11;
+    const PA: u64 = 0x0000_FFFF_FFFF_F000;
+    let l2_idx = page / AARCH64_USER_L3_PAGES;
+    if l2_idx >= 4 {
+        return None;
+    }
+    unsafe {
+        let l0 = &*mm::table(l0_phys);
+        let l1_phys = l0[0] & PA;
+        if l1_phys == 0 {
+            return None;
+        }
+        let l1 = &*mm::table(l1_phys);
+        let l2_phys = l1[1] & PA;
+        if l2_phys == 0 {
+            return None;
+        }
+        let l2 = &mut *mm::table(l2_phys);
+        if l2[l2_idx] & 0b11 != TABLE {
+            let l3 = mm::alloc_frame();
+            l2[l2_idx] = l3 | TABLE;
+        }
+        Some(mm::table(l2[l2_idx] & PA))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 fn virt_to_phys_aarch64(l0_phys: u64, va: u64) -> Option<u64> {
     const PA: u64 = 0x0000_FFFF_FFFF_F000;
-    // USER_BASE 0x4000_0000 → L0[0], L1[1], L2[0], L3[page]
-    let i3 = ((va >> 12) & 0x1ff) as usize;
+    let page = aarch64_user_page_idx(va);
+    let l3_idx = page % AARCH64_USER_L3_PAGES;
+    let l2_idx = page / AARCH64_USER_L3_PAGES;
     unsafe {
         let l0 = &*mm::table(l0_phys);
         let l1_phys = l0[0] & PA;
@@ -706,12 +745,12 @@ fn virt_to_phys_aarch64(l0_phys: u64, va: u64) -> Option<u64> {
             return None;
         }
         let l2 = &*mm::table(l2_phys);
-        let l3_phys = l2[0] & PA;
+        let l3_phys = l2[l2_idx] & PA;
         if l3_phys == 0 {
             return None;
         }
         let l3 = &*mm::table(l3_phys);
-        let pte = l3[i3];
+        let pte = l3[l3_idx];
         if pte & 0b11 != 0b11 {
             return None;
         }
@@ -1747,19 +1786,18 @@ fn map_user_page_aarch64(l0_phys: u64, va: u64, pa: u64, stack: bool) {
     const PXN: u64 = 1 << 53;
     const UXN: u64 = 1 << 54;
     const PA: u64 = 0x0000_FFFF_FFFF_F000;
-    let base = USER_BASE.load(Ordering::SeqCst);
-    let i3 = va.saturating_sub(base) as usize / PAGE;
-    debug_assert!(i3 < 512, "AArch64 user L3 slot overflow");
+    let page = aarch64_user_page_idx(va);
+    let l3_idx = page % AARCH64_USER_L3_PAGES;
+    let Some(l3) = aarch64_l3_table_mut(l0_phys, page) else {
+        return;
+    };
     unsafe {
-        let l0 = &*mm::table(l0_phys);
-        let l1 = &*mm::table(l0[0] & PA);
-        let l2 = &*mm::table(l1[1] & PA);
-        let l3 = &mut *mm::table(l2[0] & PA);
+        let l3_t = &mut *l3;
         let mut ent = PAGE_DESC | (pa & PA) | SH_INNER | AP_RW | AF | PXN;
         if stack {
             ent |= UXN;
         }
-        l3[i3] = ent;
+        l3_t[l3_idx] = ent;
     }
 }
 
@@ -1880,19 +1918,28 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
         let l0_t = &mut *mm::table(l0);
         let l1_t = &mut *mm::table(l1);
         let l2_t = &mut *mm::table(l2);
-        let l3_t = &mut *mm::table(l3);
         l0_t[0] = l1 | TABLE;
         l1_t[0] = device;
         l1_t[1] = l2 | TABLE;
         l2_t[0] = l3 | TABLE;
         // AP_RW: EL1 sys_read copies into PT_LOAD. PXN: EL1 cannot execute it.
         for (i, &phys) in code.iter().enumerate() {
-            l3_t[i] = PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RW | PXN;
+            let Some(l3p) = aarch64_l3_table_mut(l0, i) else {
+                break;
+            };
+            let l3_t = &mut *l3p;
+            let slot = i % AARCH64_USER_L3_PAGES;
+            l3_t[slot] = PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RW | PXN;
         }
         let stack_i = (stack_off as usize) / PAGE;
         for (i, &phys) in stack.iter().enumerate() {
-            l3_t[stack_i + i] =
-                PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RW | PXN | UXN;
+            let page = stack_i + i;
+            let Some(l3p) = aarch64_l3_table_mut(l0, page) else {
+                break;
+            };
+            let l3_t = &mut *l3p;
+            let slot = page % AARCH64_USER_L3_PAGES;
+            l3_t[slot] = PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RW | PXN | UXN;
         }
     }
     l0

@@ -23,3 +23,4 @@ lto = false
 errno = { path = "../../target/patched-crates/errno-0.3.14" }
 libc = { path = "../../target/patched-crates/libc-0.2.189" }
 rustix = { path = "../../target/patched-crates/rustix-1.1.4" }
+getrandom = { path = "../../target/patched-crates/getrandom-0.2.17" }

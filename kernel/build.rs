@@ -104,13 +104,11 @@ fn main() {
         }
         embed_c_elf(manifest, &arch, "c-hello", "USER_C_HELLO_PATH");
         embed_sbase_manifest(manifest, &arch, Path::new(&out));
-        embed_uutils_elf(manifest, &arch, "uutils-echo", "USER_UUTILS_ECHO_PATH");
-        embed_uutils_elf(manifest, &arch, "uutils-true", "USER_UUTILS_TRUE_PATH");
-        embed_uutils_elf(manifest, &arch, "uutils-false", "USER_UUTILS_FALSE_PATH");
+        embed_coreutils_manifest(manifest, &arch, Path::new(&out));
     }
 }
 
-fn embed_uutils_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
+fn embed_coreutils_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     let triple = if arch == "x86_64" {
         "x86_64-unknown-myos"
     } else if arch == "aarch64" {
@@ -120,17 +118,44 @@ fn embed_uutils_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &s
     } else {
         return;
     };
-    let stable = manifest_dir
+    let elf = manifest_dir
         .join("../target")
-        .join(format!("{artifact}-{triple}"));
-    println!("cargo:rerun-if-changed={}", stable.display());
-    if !stable.is_file() {
+        .join(format!("coreutils-{triple}"));
+    let names_file = manifest_dir
+        .join("../target")
+        .join(format!("coreutils-manifest-{arch}.txt"));
+    println!("cargo:rerun-if-changed={}", elf.display());
+    println!("cargo:rerun-if-changed={}", names_file.display());
+    if !elf.is_file() {
         panic!(
-            "uutils coreutils ELF missing at {} (run ./scripts/build-uutils-myos.sh)",
-            stable.display()
+            "coreutils ELF missing at {} (run ./scripts/build-uutils-myos.sh)",
+            elf.display()
         );
     }
-    println!("cargo:rustc-env={env_key}={}", stable.display());
+    if !names_file.is_file() {
+        panic!(
+            "coreutils manifest missing at {} (run ./scripts/build-uutils-myos.sh)",
+            names_file.display()
+        );
+    }
+    let text = std::fs::read_to_string(&names_file).expect("read coreutils manifest");
+    let mut body = String::from("pub fn register_all() {\n");
+    body.push_str(&format!(
+        "    const COREUTILS_ELF: &[u8] = include_bytes!(r\"{}\");\n",
+        elf.display()
+    ));
+    for line in text.lines() {
+        let name = line.trim();
+        if name.is_empty() || name.starts_with('#') {
+            continue;
+        }
+        body.push_str(&format!(
+            "    let _ = super::register({name:?}, COREUTILS_ELF);\n"
+        ));
+    }
+    body.push_str("}\n");
+    let dest = out_dir.join("coreutils_embed.rs");
+    std::fs::write(&dest, body).expect("write coreutils_embed.rs");
 }
 
 fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {

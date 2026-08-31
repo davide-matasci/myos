@@ -7,7 +7,7 @@ UUTILS_DIR="$ROOT/user/uutils-coreutils"
 UUTILS_TAG="${UUTILS_TAG:-0.10.0}"
 TARGET="${MYOS_TARGET:-x86_64-unknown-myos}"
 TARGET_JSON="$ROOT/targets/${TARGET}.json"
-FEATURES="${COREUTILS_FEATURES:-echo,true,false}"
+FEATURES="${COREUTILS_FEATURES:-echo,true,false,pwd,printf,yes,seq,sleep,wc,head,uniq,cut,tr,env,printenv,basename,dirname}"
 PROFILE="${1:-dev}"
 
 if [[ "$PROFILE" == "--release" ]]; then
@@ -38,6 +38,8 @@ if [[ -f "$ROOT/patches/coreutils/uucore-myos.patch" ]] \
   && ! grep -q 'mod myos_argv' "$UUTILS_DIR/src/uucore/src/lib/lib.rs" 2>/dev/null; then
   patch -d "$UUTILS_DIR" -p1 -N --forward <"$ROOT/patches/coreutils/uucore-myos.patch"
 fi
+"$ROOT/scripts/patch-uucore-myos-unix.sh"
+"$ROOT/scripts/patch-uucore-myos-fs.sh"
 
 echo "==> building coreutils for ${TARGET} (${PROFILE}, features=${FEATURES})"
 cd "$UUTILS_DIR"

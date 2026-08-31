@@ -49,7 +49,7 @@ const CI_SHELL_COMMANDS: [&[u8]; 5] = [
     b"ok\n",
     b"echo test\n",
     b"echo pipe | cat\n",
-    b"uutils-true\n",
+    b"c/true\n",
 ];
 
 /// Printed by the interactive shell when `open(path)` fails.
@@ -124,7 +124,7 @@ fn interactive_pipe_cmd_ok(serial: &str) -> bool {
 }
 
 fn interactive_uutils_true_cmd_ok(serial: &str) -> bool {
-    command_echoed(serial, "uutils-true")
+    command_echoed(serial, "c/true")
         && !serial.contains("exception:")
         && at_interactive_prompt(serial)
 }
@@ -346,7 +346,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         }
         if shell_cmd_index >= 4 && !interactive_uutils_true_cmd_ok(&serial) {
             eprintln!(
-                "error: interactive `uutils-true` failed (want `$ uutils-true` then `$` prompt)"
+                "error: interactive `c/true` failed (want `$ c/true` then `$` prompt)"
             );
         }
         std::process::exit(1);
