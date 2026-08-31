@@ -96,12 +96,14 @@ fn main() -> ! {
     let mut v = Vec::new();
     v.extend_from_slice(b"alloc ok\n");
     write(&v);
+    // Exercise /disk and /fat before fork+exec of large multicall ELFs (AArch64
+    // user maps are tight; heavy exec has been observed to break /fat afterward).
+    smoke_disk();
+    smoke_vfs();
     run_prog_exit(b"/bigalloc", &[], 0, b"bigalloc ok\n");
     run_prog_exit(b"/c/echo", &[], 0, b"uutils echo ok\n");
     run_prog_exit(b"/c/true", &[], 0, b"uutils true ok\n");
     run_prog_exit(b"/c/false", &[], 1, b"uutils false ok\n");
-    smoke_disk();
-    smoke_vfs();
     run_prog(b"/stdhello", &[]);
     run_prog(b"/stdcat", &[]);
     run_prog(b"/stdecho", &[]);
