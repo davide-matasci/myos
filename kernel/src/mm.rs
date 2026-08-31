@@ -1,5 +1,8 @@
-//! Physical frame bump allocator. Starts after the 256 KiB heap and the
-//! loaded kernel image in physical memory.
+//! Physical frame bump allocator. Starts after the kernel heap.
+//!
+//! Skips the Limine-loaded kernel image when it sits inside a usable region
+//! (common on AArch64). Does **not** bump the cursor to `kernel_end` globally —
+//! on x86 that can sit above all usable RAM and starve the allocator.
 //!
 //! `limine_boot::alloc_usable` does not bump, so a second call would overlap
 //! the heap. Page tables and user pages come from here instead.
@@ -33,20 +36,24 @@ fn heap_phys() -> u64 {
     panic!("no usable Limine memory for heap");
 }
 
-/// First physical address safe for the frame bump allocator.
-fn frame_alloc_base() -> u64 {
-    let after_heap = heap_phys() + HEAP_SIZE as u64;
-    let after_kernel = kernel_phys_end();
-    (after_heap.max(after_kernel) + 0xfff) & !0xfff
-}
-
-/// Physical end of the Limine-loaded kernel (page-aligned).
-fn kernel_phys_end() -> u64 {
+/// Physical `[start, end)` of the Limine-loaded kernel image.
+fn kernel_phys_range() -> (u64, u64) {
     unsafe extern "C" {
         static _end: u8;
     }
-    let end_va = core::ptr::addr_of!(_end) as usize;
-    limine_boot::kernel_virt_to_phys(end_va)
+    let r = limine_boot::EXECUTABLE_ADDRESS
+        .response()
+        .expect("Limine executable address");
+    let end_va = core::ptr::addr_of!(_end) as u64;
+    let start = r.physical_base;
+    let end = (end_va - r.virtual_base + r.physical_base + 0xfff) & !0xfff;
+    (start, end)
+}
+
+/// True if `[phys, phys+PAGE)` overlaps the loaded kernel image.
+fn overlaps_kernel(phys: u64) -> bool {
+    let (k0, k1) = kernel_phys_range();
+    phys < k1 && phys.saturating_add(PAGE) > k0
 }
 
 /// Allocate a 4 KiB frame, zero it, return its physical address.
@@ -59,7 +66,7 @@ pub fn alloc_frame() -> u64 {
 
     let mut next = NEXT.load(Ordering::SeqCst);
     if next == 0 {
-        next = frame_alloc_base();
+        next = heap_phys() + HEAP_SIZE as u64;
     }
     next = (next + 0xfff) & !0xfff;
 
@@ -67,12 +74,15 @@ pub fn alloc_frame() -> u64 {
         if e.type_ != memmap::MEMMAP_USABLE {
             continue;
         }
+        let region_end = e.base + e.length;
         let mut phys = e.base.max(next);
         phys = (phys + 0xfff) & !0xfff;
-        if phys < e.base {
-            continue;
-        }
-        if phys.saturating_add(PAGE) <= e.base + e.length {
+        while phys.saturating_add(PAGE) <= region_end {
+            if overlaps_kernel(phys) {
+                let (_, k1) = kernel_phys_range();
+                phys = (k1 + 0xfff) & !0xfff;
+                continue;
+            }
             NEXT.store(phys + PAGE, Ordering::SeqCst);
             unsafe {
                 core::ptr::write_bytes((phys + hhdm) as *mut u8, 0, PAGE as usize);
