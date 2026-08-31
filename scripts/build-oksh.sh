@@ -93,6 +93,12 @@ build_arch() {
     objs+=("$obj")
   done
 
+  "$cc" -ffreestanding -fPIC -O2 -std=gnu99 \
+    -ffunction-sections -fdata-sections \
+    -isystem "$inc" "${CPPFLAGS[@]}" \
+    -c "$MYOS/posix_nops.c" -o "$objdir/posix_nops.o"
+  objs+=("$objdir/posix_nops.o")
+
   if [[ "$arch" == "aarch64" ]]; then
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/scripts/sbase-myos/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
