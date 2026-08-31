@@ -31,6 +31,15 @@ getpwuid(uid_t uid)
     return NULL;
 }
 
+struct passwd *
+getpwnam(const char *name)
+{
+    if (name != NULL && strcmp(name, pwd_root.pw_name) == 0) {
+        return &pwd_root;
+    }
+    return NULL;
+}
+
 struct group *
 getgrgid(gid_t gid)
 {
@@ -38,4 +47,28 @@ getgrgid(gid_t gid)
         return &grp_root;
     }
     return NULL;
+}
+
+static int pwent_done;
+
+void
+setpwent(void)
+{
+    pwent_done = 0;
+}
+
+struct passwd *
+getpwent(void)
+{
+    if (pwent_done) {
+        return NULL;
+    }
+    pwent_done = 1;
+    return &pwd_root;
+}
+
+void
+endpwent(void)
+{
+    pwent_done = 1;
 }

@@ -25,6 +25,7 @@ fi
 ./scripts/build-std-hello.sh
 ./scripts/build-c-hello.sh
 ./scripts/build-sbase.sh
+./scripts/build-oksh.sh
 ./scripts/build-uutils-myos.sh
 
 cargo clean -p myos
