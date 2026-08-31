@@ -204,6 +204,21 @@ mod syscalls {
         ret
     }
 
+    #[cfg(target_arch = "riscv64")]
+    unsafe fn raw_syscall(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
+        let ret: usize;
+        core::arch::asm!(
+            "ecall",
+            in("a7") nr,
+            in("a0") a0,
+            in("a1") a1,
+            in("a2") a2,
+            lateout("a0") ret,
+            options(nostack),
+        );
+        ret
+    }
+
     pub unsafe fn sys_write(fd: c_int, buf: *const c_void, len: size_t) -> ssize_t {
         let ret = raw_syscall(SYS_WRITE, fd as usize, buf as usize, len);
         if ret == usize::MAX {
@@ -393,7 +408,7 @@ pub unsafe extern "C" fn lstat(path: *const c_char, buf: *mut stat) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
+pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_ulong) -> c_int {
     if fd < 0 {
         syscalls::set_errno(EBADF);
         return -1;
@@ -402,7 +417,7 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
         F_GETFL => O_RDONLY,
         F_GETFD => 0,
         F_SETFD => 0,
-        F_DUPFD => arg,
+        F_DUPFD => arg as c_int,
         _ => {
             let _ = arg;
             syscalls::set_errno(EINVAL);
@@ -412,7 +427,7 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn ioctl(_fd: c_int, _request: c_ulong, _arg: c_ulong) -> c_int {
+pub unsafe extern "C" fn ioctl(_fd: c_int, _request: c_ulong, _arg: *mut c_void) -> c_int {
     syscalls::set_errno(ENOSYS);
     -1
 }
@@ -540,3 +555,5 @@ enosys! {
     pub unsafe fn linkat(olddirfd: c_int, oldpath: *const c_char, newdirfd: c_int, newpath: *const c_char, flags: c_int) -> c_int;
     pub unsafe fn renameat(olddirfd: c_int, oldpath: *const c_char, newdirfd: c_int, newpath: *const c_char) -> c_int;
 }
+
+include!("rustix_compat.rs");
