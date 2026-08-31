@@ -2,6 +2,7 @@
     .globl _start
 _start:
     // Kernel passes argc in a0 and argv in a1 across sret.
+    // myos_init_environ walks argv to find envp; a0/a1 are caller-saved.
     mv s0, a0
     mv s1, a1
     mv a0, s0
