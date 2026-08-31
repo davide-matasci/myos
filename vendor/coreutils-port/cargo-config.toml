@@ -8,7 +8,7 @@ RUSTC_BOOTSTRAP = "1"
 [build]
 rustc = "../../scripts/myos-rustc-cross.sh"
 # Real rustix uses the libc backend on myos (os != linux). Explicit cfg documents intent.
-rustflags = ["-C", "panic=abort", "-C", "lto=off", "--cfg=rustix_use_libc", "--cfg=unix"]
+rustflags = ["-C", "panic=abort", "-C", "lto=off", "--cfg=rustix_use_libc"]
 
 [target.x86_64-unknown-myos]
 linker = "rust-lld"

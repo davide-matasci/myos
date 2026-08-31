@@ -204,6 +204,21 @@ mod syscalls {
         ret
     }
 
+    #[cfg(target_arch = "riscv64")]
+    unsafe fn raw_syscall(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
+        let ret: usize;
+        core::arch::asm!(
+            "ecall",
+            in("a7") nr,
+            in("a0") a0,
+            in("a1") a1,
+            in("a2") a2,
+            lateout("a0") ret,
+            options(nostack),
+        );
+        ret
+    }
+
     pub unsafe fn sys_write(fd: c_int, buf: *const c_void, len: size_t) -> ssize_t {
         let ret = raw_syscall(SYS_WRITE, fd as usize, buf as usize, len);
         if ret == usize::MAX {
