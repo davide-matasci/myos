@@ -1,0 +1,68 @@
+--- jobs.c
++++ jobs.c
+@@ -144,6 +144,7 @@
+ static void		put_job(Job *, int);
+ static void		remove_job(Job *, const char *);
+ static int		kill_job(Job *, int);
++static void		j_apply_wait(int, int);
+ 
+ /* initialize job control */
+ void
+@@ -160,8 +161,9 @@
+ 	setsig(&sigtraps[SIGCHLD], j_sigchld,
+ 	    SS_RESTORE_ORIG|SS_FORCE|SS_SHTRAP);
+ 
+-	if (!mflagset && Flag(FTALKING))
+-		Flag(FMONITOR) = 1;
++	(void)mflagset;
++	/* myos: no pgrp/SIGCHLD; keep FMONITOR off even when talking. */
++	Flag(FMONITOR) = 0;
+ 
+ 	/* shl_j is used to do asynchronous notification (used in
+ 	 * an interrupt handler, so need a distinct shf)
+@@ -1000,7 +1002,14 @@
+ 
+ 	while ((volatile int) j->state == PRUNNING ||
+ 	    ((flags & JW_STOPPEDWAIT) && (volatile int) j->state == PSTOPPED)) {
+-		sigsuspend(&sm_default);
++		int status;
++		pid_t wpid;
++
++		/* Kernel wait is wait-any blocking; SIGCHLD is ENOSYS. */
++		wpid = waitpid(-1, &status, 0);
++		if (wpid <= 0)
++			break;
++		j_apply_wait(wpid, status);
+ 		if (fatal_trap) {
+ 			int oldf = j->flags & (JF_WAITING|JF_W_ASYNCNOTIFY);
+ 			j->flags &= ~(JF_WAITING|JF_W_ASYNCNOTIFY);
+@@ -1124,6 +1133,29 @@
+ 	return rv;
+ }
+ 
++static void
++j_apply_wait(int pid, int status)
++{
++	Job	*j;
++	Proc	*p = NULL;
++
++	for (j = job_list; j != NULL; j = j->next)
++		for (p = j->proc_list; p != NULL; p = p->next)
++			if (p->pid == pid)
++				goto found;
++found:
++	if (j == NULL)
++		return;
++	p->status = status;
++	if (WIFSTOPPED(status))
++		p->state = PSTOPPED;
++	else if (WIFSIGNALED(status))
++		p->state = PSIGNALLED;
++	else
++		p->state = PEXITED;
++	check_job(j);
++}
++
+ /* SIGCHLD handler to reap children and update job states
+  *
+  * Expects sigchld to be blocked.

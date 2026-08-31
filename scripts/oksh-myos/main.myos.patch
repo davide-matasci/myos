@@ -1,0 +1,74 @@
+--- main.c
++++ main.c
+@@ -153,7 +153,10 @@
+ 	struct env env;
+ 	pid_t ppid;
+ 
+-	kshname = argv[0];
++	if (argc > 0 && argv != NULL && argv[0] != NULL)
++		kshname = argv[0];
++	else
++		kshname = "sh";
+ 
+ #ifdef HAVE_PLEDGE
+ 	if (issetugid()) { /* could later drop privileges */
+@@ -263,12 +266,7 @@
+ #endif /* SMALL */
+ 	}
+ 
+-	/* Set edit mode to emacs by default, may be overridden
+-	 * by the environment or the user.  Also, we want tab completion
+-	 * on in vi by default. */
+-#if defined(EMACS)
+-	change_flag(FEMACS, OF_SPECIAL, 1);
+-#endif /* EMACS */
++	/* myos: keep cooked kernel stdin; emacs raw mode would double-echo. */
+ #if defined(VI)
+ 	Flag(FVITABCOMPLETE) = 1;
+ #endif /* VI */
+@@ -278,6 +276,12 @@
+ 		for (wp = environ; *wp != NULL; wp++)
+ 			typeset(*wp, IMPORT|EXPORT, 0, 0, 0);
+ 
++	/* Force PATH after environ import (myos bootfs layout). */
++	{
++		struct tbl *vp = global("PATH");
++		setstr(vp, def_path, KSH_RETURN_ERROR);
++	}
++
+ 	kshpid = procpid = getpid();
+ 	typeset(initifs, 0, 0, 0, 0);	/* for security */
+ 
+@@ -325,15 +329,12 @@
+ 
+ 	ksheuid = geteuid();
+ 	init_username();
+-	safe_prompt = ksheuid ? "$ " : "# ";
++	safe_prompt = "$ ";
+ 	{
+ 		struct tbl *vp = global("PS1");
+ 
+-		/* Set PS1 if it isn't set */
+-		if (!(vp->flag & ISSET)) {
+-			/* setstr can't fail here */
+-			setstr(vp, "\\h\\$ ", KSH_RETURN_ERROR);
+-		}
++		/* uid 0 would otherwise be `# ` and break interactive CI. */
++		setstr(vp, "$ ", KSH_RETURN_ERROR);
+ 	}
+ 
+ 	/* Set this before parsing arguments */
+@@ -387,9 +388,13 @@
+ 	i = Flag(FMONITOR) != 127;
+ 	Flag(FMONITOR) = 0;
+ 	j_init(i);
++	Flag(FMONITOR) = 0;
+ 	/* Do this after j_init(), as tty_fd is not initialized 'til then */
+ 	if (Flag(FTALKING))
+ 		x_init();
++	if (Flag(FTALKING)) {
++		write(1, "sh ok\n", 6);
++	}
+ 
+ 	l = genv->loc;
+ 	l->argv = make_argv(argc - (argi - 1), &argv[argi - 1]);
