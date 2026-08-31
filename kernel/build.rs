@@ -73,7 +73,6 @@ fn main() {
     );
     for (crate_rel, bin, td, env_key) in [
         ("../user/ok", "ok", "ok-target", "USER_OK_PATH"),
-        ("../user/sh", "sh", "sh-target", "USER_SH_PATH"),
         ("../user/heap", "heap", "heap-target", "USER_HEAP_PATH"),
         ("../user/echo", "echo", "echo-target", "USER_ECHO_PATH"),
         ("../user/cat", "cat", "cat-target", "USER_CAT_PATH"),
@@ -103,6 +102,7 @@ fn main() {
             embed_std_elf(manifest, &arch, artifact, env_key);
         }
         embed_c_elf(manifest, &arch, "c-hello", "USER_C_HELLO_PATH");
+        embed_oksh_elf(manifest, &arch);
         embed_sbase_manifest(manifest, &arch, Path::new(&out));
         embed_coreutils_manifest(manifest, &arch, Path::new(&out));
     }
@@ -218,6 +218,29 @@ fn embed_sbase_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     body.push_str("}\n");
     let dest = out_dir.join("sbase_embed.rs");
     std::fs::write(&dest, body).expect("write sbase_embed.rs");
+}
+
+fn embed_oksh_elf(manifest_dir: &Path, arch: &str) {
+    let triple = if arch == "x86_64" {
+        "x86_64-unknown-none"
+    } else if arch == "aarch64" {
+        "aarch64-unknown-none"
+    } else if arch == "riscv64" {
+        "riscv64-unknown-none"
+    } else {
+        return;
+    };
+    let stable = manifest_dir
+        .join("../target")
+        .join(format!("oksh-{triple}"));
+    println!("cargo:rerun-if-changed={}", stable.display());
+    if !stable.is_file() {
+        panic!(
+            "oksh ELF missing at {} (run ./scripts/build-oksh.sh)",
+            stable.display()
+        );
+    }
+    println!("cargo:rustc-env=USER_SH_PATH={}", stable.display());
 }
 
 fn embed_c_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
