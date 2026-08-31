@@ -226,7 +226,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     if info.span > ELF_SCRATCH_BYTES {
         return None;
     }
-    let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
+    let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
@@ -270,18 +270,51 @@ fn map_initial_heap_pages(aspace: u64, base: u64, stack_off: u64) {
     let heap_base = heap_base_va(base, stack_off);
     for i in 0..HEAP_PAGES {
         let va = heap_base + (i * PAGE) as u64;
-        let frame = mm::alloc_frame();
-        unsafe {
-            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
-        }
+        let frame = reuse_or_alloc_frame(aspace, va);
         map_heap_page(aspace, va, frame);
     }
 }
 
-/// Scratch for `load_user_elf` / `reload_user_elf` (no kernel-heap alloc; CI
-/// exhausts the 256 KiB heap after fork — uutils needs ~800 KiB realize buf).
+fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
+    if let Some(phys) = virt_to_phys(aspace, va) {
+        phys
+    } else {
+        let frame = mm::alloc_frame();
+        unsafe {
+            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
+        }
+        frame
+    }
+}
+
+/// Scratch for `load_user_elf` / `reload_user_elf` / `expand_user_elf`.
+///
+/// Backed by bump-allocator frames (HHDM-contiguous), not kernel `.bss`.
+/// Putting `MAX_INIT_PAGES` pages in BSS grew the Limine-loaded image by ~1.5
+/// MiB and let the frame bump walk into the kernel physical range on AArch64.
 const ELF_SCRATCH_BYTES: usize = MAX_INIT_PAGES * PAGE;
-static mut ELF_SCRATCH: [u8; ELF_SCRATCH_BYTES] = [0; ELF_SCRATCH_BYTES];
+static ELF_SCRATCH_PHYS: AtomicU64 = AtomicU64::new(0);
+
+fn elf_scratch_mut(len: usize) -> Option<&'static mut [u8]> {
+    if len == 0 || len > ELF_SCRATCH_BYTES {
+        return None;
+    }
+    let mut phys = ELF_SCRATCH_PHYS.load(Ordering::SeqCst);
+    if phys == 0 {
+        let first = mm::alloc_frame();
+        let mut expect = first.wrapping_add(PAGE as u64);
+        for _ in 1..MAX_INIT_PAGES {
+            let p = mm::alloc_frame();
+            if p != expect {
+                return None;
+            }
+            expect = expect.wrapping_add(PAGE as u64);
+        }
+        ELF_SCRATCH_PHYS.store(first, Ordering::SeqCst);
+        phys = first;
+    }
+    Some(unsafe { core::slice::from_raw_parts_mut(mm::hhdm(phys), len) })
+}
 
 /// Overwrite the current user image in an existing aspace (no new frames).
 /// Keeps `stack_off` so the mapped stack page stays valid. Fails if the new
@@ -312,7 +345,7 @@ fn reload_user_elf(
     if info.span > MAX_RELOAD_PAGES * PAGE {
         return None;
     }
-    let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
+    let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
@@ -367,29 +400,24 @@ fn expand_user_elf(
         return None;
     }
 
-    // Always install fresh code/stack PTEs. A smaller post-fork image may have
-    // left NX stack or heap mappings in this VA range; reusing them makes the
-    // larger ELF fault on the first instruction fetch (x86 code=0x15).
+    // Remap code/stack PTEs with correct flags. Reuse existing frames when the
+    // VA is already mapped so post-fork exec of large ELFs does not leak hundreds
+    // of physical pages and walk the bump allocator into the kernel image.
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
-        let frame = mm::alloc_frame();
-        unsafe {
-            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
-        }
+        let frame = reuse_or_alloc_frame(aspace, va);
         map_user_code_page(aspace, va, frame);
         sync_icache(mm::hhdm(frame) as usize, PAGE);
     }
     for i in 0..USER_STACK_PAGES {
         let va = base + new_stack_off + (i * PAGE) as u64;
-        let frame = mm::alloc_frame();
-        unsafe {
-            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
-        }
+        let frame = reuse_or_alloc_frame(aspace, va);
         map_user_stack_page(aspace, va, frame);
     }
     map_initial_heap_pages(aspace, base, new_stack_off);
+    flush_user_tlb();
 
-    let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
+    let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
@@ -1799,6 +1827,22 @@ fn map_user_page_aarch64(l0_phys: u64, va: u64, pa: u64, stack: bool) {
         l3_t[l3_idx] = ent;
     }
 }
+
+#[cfg(target_arch = "aarch64")]
+fn flush_user_tlb() {
+    unsafe {
+        core::arch::asm!("dsb ishst", options(nostack));
+        if current_el() >= 2 {
+            core::arch::asm!("tlbi alle2is", options(nostack));
+        } else {
+            core::arch::asm!("tlbi vmalle1is", options(nostack));
+        }
+        core::arch::asm!("dsb ish; isb", options(nostack));
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn flush_user_tlb() {}
 
 #[cfg(target_arch = "riscv64")]
 fn map_user_page_riscv64(satp: u64, va: u64, pa: u64, exec: bool) {

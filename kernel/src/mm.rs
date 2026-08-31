@@ -1,4 +1,5 @@
-//! Physical frame bump allocator. Starts after the 256 KiB heap.
+//! Physical frame bump allocator. Starts after the 256 KiB heap and the
+//! loaded kernel image in physical memory.
 //!
 //! `limine_boot::alloc_usable` does not bump, so a second call would overlap
 //! the heap. Page tables and user pages come from here instead.
@@ -32,6 +33,22 @@ fn heap_phys() -> u64 {
     panic!("no usable Limine memory for heap");
 }
 
+/// First physical address safe for the frame bump allocator.
+fn frame_alloc_base() -> u64 {
+    let after_heap = heap_phys() + HEAP_SIZE as u64;
+    let after_kernel = kernel_phys_end();
+    (after_heap.max(after_kernel) + 0xfff) & !0xfff
+}
+
+/// Physical end of the Limine-loaded kernel (page-aligned).
+fn kernel_phys_end() -> u64 {
+    unsafe extern "C" {
+        static _end: u8;
+    }
+    let end_va = core::ptr::addr_of!(_end) as usize;
+    limine_boot::kernel_virt_to_phys(end_va)
+}
+
 /// Allocate a 4 KiB frame, zero it, return its physical address.
 pub fn alloc_frame() -> u64 {
     let hhdm = limine_boot::hhdm_offset();
@@ -42,7 +59,7 @@ pub fn alloc_frame() -> u64 {
 
     let mut next = NEXT.load(Ordering::SeqCst);
     if next == 0 {
-        next = heap_phys() + HEAP_SIZE as u64;
+        next = frame_alloc_base();
     }
     next = (next + 0xfff) & !0xfff;
 

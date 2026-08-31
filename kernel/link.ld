@@ -40,6 +40,9 @@ SECTIONS
         *(COMMON)
     } :data
 
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
+    _end = .;
+
     /DISCARD/ : {
         *(.eh_frame*)
         *(.comment)
