@@ -103,17 +103,7 @@ fn main() {
             embed_std_elf(manifest, &arch, artifact, env_key);
         }
         embed_c_elf(manifest, &arch, "c-hello", "USER_C_HELLO_PATH");
-        for (artifact, env_key) in [
-            ("sbase-echo", "USER_SBASE_ECHO_PATH"),
-            ("sbase-cat", "USER_SBASE_CAT_PATH"),
-            ("sbase-true", "USER_SBASE_TRUE_PATH"),
-            ("sbase-ls", "USER_SBASE_LS_PATH"),
-            ("sbase-false", "USER_SBASE_FALSE_PATH"),
-            ("sbase-pwd", "USER_SBASE_PWD_PATH"),
-            ("sbase-basename", "USER_SBASE_BASENAME_PATH"),
-        ] {
-            embed_c_elf(manifest, &arch, artifact, env_key);
-        }
+        embed_sbase_manifest(manifest, &arch, Path::new(&out));
         embed_uutils_elf(manifest, &arch, "uutils-echo", "USER_UUTILS_ECHO_PATH");
         embed_uutils_elf(manifest, &arch, "uutils-true", "USER_UUTILS_TRUE_PATH");
         embed_uutils_elf(manifest, &arch, "uutils-false", "USER_UUTILS_FALSE_PATH");
@@ -164,6 +154,45 @@ fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str)
         );
     }
     println!("cargo:rustc-env={env_key}={}", stable.display());
+}
+
+fn embed_sbase_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
+    let manifest = manifest_dir
+        .join("../target")
+        .join(format!("sbase-manifest-{arch}.txt"));
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    if !manifest.is_file() {
+        panic!(
+            "sbase manifest missing at {} (run ./scripts/build-sbase.sh)",
+            manifest.display()
+        );
+    }
+    let text = std::fs::read_to_string(&manifest).expect("read sbase manifest");
+    let mut body = String::from("pub fn register_all() {\n");
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, path)) = line.split_once(':') else {
+            continue;
+        };
+        let path = Path::new(path);
+        if !path.is_file() {
+            panic!(
+                "sbase ELF missing for {name} at {} (run ./scripts/build-sbase.sh)",
+                path.display()
+            );
+        }
+        println!("cargo:rerun-if-changed={}", path.display());
+        body.push_str(&format!(
+            "    let _ = super::register({name:?}, include_bytes!(r\"{}\"));\n",
+            path.display()
+        ));
+    }
+    body.push_str("}\n");
+    let dest = out_dir.join("sbase_embed.rs");
+    std::fs::write(&dest, body).expect("write sbase_embed.rs");
 }
 
 fn embed_c_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {

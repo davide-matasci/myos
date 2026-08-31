@@ -8,7 +8,9 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/myos_raw.c \
 	%D%/syscalls.c \
 	%D%/stubs.c \
-	%D%/environ.c
+	%D%/posix_stubs.c \
+	%D%/environ.c \
+	%D%/getline.c
 
 %C%_extra_parts = crt0
 

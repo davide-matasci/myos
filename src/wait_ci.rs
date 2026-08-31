@@ -97,7 +97,9 @@ fn interactive_unknown_cmd_ok(serial: &str) -> bool {
 }
 
 fn interactive_ok_cmd_ok(serial: &str) -> bool {
-    command_echoed(serial, "ok") && !tail_has_hex_received(serial)
+    command_echoed(serial, "ok")
+        && !tail_has_hex_received(serial)
+        && at_interactive_prompt(serial)
 }
 
 fn interactive_echo_cmd_ok(serial: &str) -> bool {

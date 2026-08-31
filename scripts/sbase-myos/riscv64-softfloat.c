@@ -110,6 +110,16 @@ double __floatundidf(unsigned long long a)
 	return (double)a;
 }
 
+long long __fixdfdi(double a)
+{
+	return (long long)a;
+}
+
+unsigned long long __fixunsdfdi(double a)
+{
+	return (unsigned long long)a;
+}
+
 int __nedf2(TFtype a, TFtype b)
 {
 	double da = (double)a;

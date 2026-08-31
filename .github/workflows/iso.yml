@@ -31,7 +31,7 @@ jobs:
             target/sbase-src
             target/sbase-myos-build
       - name: Install xorriso and build tools
-        run: sudo apt-get update && sudo apt-get install -y xorriso clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
+        run: sudo apt-get update && sudo apt-get install -y xorriso clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
 
       - name: Build myos sysroot, newlib, C/sbase/uutils ELFs
         run: |
