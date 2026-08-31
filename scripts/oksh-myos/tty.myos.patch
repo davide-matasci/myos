@@ -1,0 +1,23 @@
+--- tty.c
++++ tty.c
+@@ -35,19 +35,16 @@
+ 
+ 	tfd = open("/dev/tty", O_RDWR);
+ 	if (tfd == -1) {
+ 		tty_devtty = 0;
+-		warningf(false, "No controlling tty (open /dev/tty: %s)",
+-		    strerror(errno));
+-
+ 		do_close = 0;
+ 		if (isatty(0))
+ 			tfd = 0;
+ 		else if (isatty(2))
+ 			tfd = 2;
+ 		else {
+-			warningf(false, "Can't find tty file descriptor");
++			/* myos: no /dev/tty; stdin is already the console. */
+ 			return;
+ 		}
+ 	}
+ #ifdef F_DUPFD_CLOEXEC
+ 	if ((tty_fd = fcntl(tfd, F_DUPFD_CLOEXEC, FDBASE)) == -1) {
