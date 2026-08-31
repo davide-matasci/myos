@@ -2,8 +2,8 @@
  * --enable-small --disable-curses` (do not run configure on the myos triple:
  * it tries to execute conftest). HAVE_* flags match newlib 4.4.0.
  *
- * HAVE_CONFSTR is off: skip libc confstr and the portable confstr.c; PATH
- * is forced in main.myos.patch.
+ * HAVE_CONFSTR is off: link oksh's bundled confstr.c (oksh compat, not a
+ * newlib replacement). PATH is still forced in main.myos.patch.
  */
 
 #ifndef __dead

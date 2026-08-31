@@ -17,13 +17,15 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 WORK="$ROOT/target/oksh-myos-build"
 MYOS="$ROOT/scripts/oksh-myos"
 
-# emacs.c / vi.c omitted: cooked kernel stdin, no raw tty. confstr.c omitted:
-# HAVE_CONFSTR is off and main skips confstr. c_ulimit.c is the myos stub.
+# config.h requires EMACS or VI. Keep EMACS (not VI) for size. emacs.c
+# supplies x_* symbols; main.myos.patch still skips x_init (cooked stdin,
+# no raw tty). confstr.c is oksh's portable fallback (HAVE_CONFSTR off).
+# c_ulimit.c is the myos stub.
 OKSH_SRCS=(
-  alloc.c asprintf.c c_ksh.c c_sh.c c_test.c c_ulimit.c edit.c
+  alloc.c asprintf.c c_ksh.c c_sh.c c_test.c c_ulimit.c edit.c emacs.c
   eval.c exec.c expr.c history.c io.c jobs.c lex.c mail.c
   main.c misc.c path.c shf.c syn.c table.c trap.c tree.c tty.c var.c
-  version.c reallocarray.c siglist.c signame.c
+  version.c reallocarray.c siglist.c signame.c confstr.c
   strlcat.c strlcpy.c strtonum.c unvis.c vis.c issetugid.c
 )
 
@@ -32,6 +34,7 @@ CPPFLAGS=(
   -D_GNU_SOURCE
   -D_BSD_SOURCE
   -DSMALL
+  -DEMACS
   -D_PATH_DEFPATH=\"/:/s:/c\"
   -D_PATH_BSHELL=\"/sh\"
   -D_PATH_STDPATH=\"/:/s:/c\"

@@ -46,15 +46,14 @@
 
 /*
  * jobs.c still compiles FMONITOR=0 paths that mention these. Do not add
- * libgloss stubs; skip at compile time.
+ * libgloss stubs; skip at compile time. Do not #define killpg: newlib's
+ * sys/signal.h already declares it, and the macro expanded inside that
+ * prototype. jobs/c_ksh patches drop killpg calls instead.
  */
 #define tcgetattr(fd, t) ((void)(fd), (void)(t), -1)
 #define tcsetattr(fd, a, t) ((void)(fd), (void)(a), (void)(t), 0)
 #define tcgetpgrp(fd) ((void)(fd), (pid_t)-1)
 #define tcsetpgrp(fd, p) ((void)(fd), (void)(p), -1)
 #define setpgid(p, g) ((void)(p), (void)(g), 0)
-#ifndef killpg
-#define killpg(p, s) kill((p), (s))
-#endif
 
 #endif /* _MYOS_OKSH_COMPAT_H_ */
