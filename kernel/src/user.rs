@@ -25,11 +25,18 @@ const SYS_DUP2: usize = 11;
 pub const SYS_STAT: usize = 12;
 const SYS_EXECNAME: usize = 13;
 pub const PAGE: usize = 4096;
-/// User stack mapping below the heap (512 KiB — uutils/std init needs more than 128 KiB).
+/// User stack below the heap. x86_64 uses 512 KiB; AArch64 L3 tables cap total
+/// user slots (code + stack + heap) at 512 pages.
+#[cfg(target_arch = "aarch64")]
 pub const USER_STACK_PAGES: usize = 128;
-/// Per-process brk heap. uutils/clap init needs well over 512 KiB; keep total
-/// user slots (code + stack + heap) under 512 pages on AArch64 L3 tables.
+#[cfg(not(target_arch = "aarch64"))]
+pub const USER_STACK_PAGES: usize = 256;
+/// Per-process brk heap. uutils/clap init needs well over 512 KiB on x86_64;
+/// keep `code_pages + USER_STACK_PAGES + HEAP_PAGES` ≤ 512 on AArch64 L3 tables.
+#[cfg(target_arch = "aarch64")]
 const HEAP_PAGES: usize = 180;
+#[cfg(not(target_arch = "aarch64"))]
+const HEAP_PAGES: usize = 256;
 /// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy (today
 /// release `uutils-coreutils` ≈197 pages).
 const MAX_INIT_PAGES: usize = 256;
@@ -264,9 +271,6 @@ fn map_initial_heap_pages(aspace: u64, base: u64, stack_off: u64) {
     let heap_base = heap_base_va(base, stack_off);
     for i in 0..HEAP_PAGES {
         let va = heap_base + (i * PAGE) as u64;
-        if virt_to_phys(aspace, va).is_some() {
-            continue;
-        }
         let frame = mm::alloc_frame();
         unsafe {
             core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
@@ -1612,6 +1616,9 @@ fn sys_brk(req: usize) -> usize {
         while va < map_end {
             if virt_to_phys(aspace, va as u64).is_none() {
                 let frame = mm::alloc_frame();
+                unsafe {
+                    core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
+                }
                 map_heap_page(aspace, va as u64, frame);
             }
             va += PAGE;
@@ -1742,6 +1749,7 @@ fn map_user_page_aarch64(l0_phys: u64, va: u64, pa: u64, stack: bool) {
     const PA: u64 = 0x0000_FFFF_FFFF_F000;
     let base = USER_BASE.load(Ordering::SeqCst);
     let i3 = va.saturating_sub(base) as usize / PAGE;
+    debug_assert!(i3 < 512, "AArch64 user L3 slot overflow");
     unsafe {
         let l0 = &*mm::table(l0_phys);
         let l1 = &*mm::table(l0[0] & PA);

@@ -18,4 +18,5 @@ for triple in "${MYOS_USER_TRIPLES[@]}"; do
   build_example hello "$ROOT/std/examples/hello/Cargo.toml" std-hello "$triple"
   build_example cat "$ROOT/std/examples/cat/Cargo.toml" std-cat "$triple"
   build_example echo "$ROOT/std/examples/echo/Cargo.toml" std-echo "$triple"
+  build_example bigalloc "$ROOT/std/examples/bigalloc/Cargo.toml" bigalloc "$triple"
 done

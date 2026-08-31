@@ -23,3 +23,10 @@ pub fn argc() -> usize {
 pub fn arg(i: usize) -> Option<&'static OsStr> {
     args::static_args().nth(i)
 }
+
+/// Basename from the last successful `exec` (`SYS_EXECNAME`), when argv is empty.
+#[unstable(feature = "myos_ext", issue = "none")]
+#[inline]
+pub fn exec_basename() -> Option<&'static OsStr> {
+    args::exec_basename()
+}

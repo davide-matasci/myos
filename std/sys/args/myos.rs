@@ -13,6 +13,9 @@ static mut ARGC: usize = 0;
 static mut ARGV_STORAGE: [[u8; MAX_ARG_LEN]; MAX_ARGS] = [[0; MAX_ARG_LEN]; MAX_ARGS];
 static mut ARGV_LENS: [usize; MAX_ARGS] = [0; MAX_ARGS];
 static mut ARGS_READY: bool = false;
+static mut EXEC_NAME: [u8; MAX_ARG_LEN] = [0; MAX_ARG_LEN];
+static mut EXEC_NAME_LEN: usize = 0;
+static mut EXEC_NAME_READY: bool = false;
 
 fn arg_bytes_valid(len: usize, bytes: &[u8]) -> bool {
     len > 0
@@ -33,6 +36,37 @@ fn ensure_arg0_from_exec_name() {
         ARGV_STORAGE[0][..n].copy_from_slice(&name[..n]);
         ARGV_LENS[0] = n;
         ARGC = ARGC.max(1);
+    }
+}
+
+fn ensure_exec_name() {
+    unsafe {
+        if EXEC_NAME_READY {
+            return;
+        }
+        EXEC_NAME_READY = true;
+        let mut name = [0u8; MAX_ARG_LEN];
+        let n = crate::sys::myos::abi::exec_name(&mut name);
+        if n == 0 || n >= MAX_ARG_LEN {
+            return;
+        }
+        if !arg_bytes_valid(n, &name[..n]) {
+            return;
+        }
+        EXEC_NAME[..n].copy_from_slice(&name[..n]);
+        EXEC_NAME_LEN = n;
+    }
+}
+
+/// Basename from the last successful `exec`, without heap allocation.
+#[unstable(feature = "myos_ext", issue = "none")]
+pub fn exec_basename() -> Option<&'static OsStr> {
+    ensure_exec_name();
+    unsafe {
+        if EXEC_NAME_LEN == 0 {
+            return None;
+        }
+        Some(OsStr::from_bytes(&EXEC_NAME[..EXEC_NAME_LEN]))
     }
 }
 

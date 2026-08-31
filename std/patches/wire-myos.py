@@ -201,6 +201,15 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        "std/src/process.rs",
+        [
+            (
+                "pub fn exit(code: i32) -> ! {\n    crate::rt::cleanup();\n    crate::sys::exit::exit(code)\n}",
+                "pub fn exit(code: i32) -> ! {\n    #[cfg(not(target_os = \"myos\"))]\n    crate::rt::cleanup();\n    crate::sys::exit::exit(code)\n}",
+            ),
+        ],
+    ),
+    (
         "std/src/sys/exit.rs",
         [
             (
@@ -293,10 +302,10 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
                 """        let cap = cmp::max(self.cap.as_inner() * 2, required_cap);
         let cap = cmp::max(min_non_zero_cap(elem_layout.size()), cap);
 
-        // myos: first growth from an empty `RawVec` uses the same path as
-        // `try_allocate_in` (struct literal), not `finish_grow` + `set_ptr_and_cap`.
+        // myos: first allocation on an unallocated `RawVec` must use the same
+        // path as `try_allocate_in`; `finish_grow` + `set_ptr_and_cap` aborts.
         #[cfg(target_os = "myos")]
-        if self.cap.as_inner() == 0 {
+        if unsafe { self.current_memory(elem_layout).is_none() } {
             let layout = match layout_array(cap, elem_layout) {
                 Ok(layout) => layout,
                 Err(_) => return Err(CapacityOverflow.into()),
@@ -336,7 +345,7 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
                 """        let cap = len.checked_add(additional).ok_or(CapacityOverflow)?;
 
         #[cfg(target_os = "myos")]
-        if self.cap.as_inner() == 0 {
+        if unsafe { self.current_memory(elem_layout).is_none() } {
             let layout = match layout_array(cap, elem_layout) {
                 Ok(layout) => layout,
                 Err(_) => return Err(CapacityOverflow.into()),
