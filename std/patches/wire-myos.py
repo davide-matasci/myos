@@ -39,7 +39,7 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
             ),
             (
                 '#[cfg(target_os = "hermit")]\npub mod hermit;',
-                '#[cfg(target_os = "hermit")]\npub mod hermit;\n#[cfg(target_os = "myos")]\npub mod myos;',
+                '#[cfg(target_os = "hermit")]\npub mod hermit;\n#[cfg(target_os = "myos")]\npub mod myos;\n#[cfg(target_os = "myos")]\npub mod unix {\n    #![stable(feature = "rust1", since = "1.0.0")]\n    pub mod io {\n        #![stable(feature = "rust1", since = "1.0.0")]\n        #[stable(feature = "rust1", since = "1.0.0")]\n        pub use crate::os::fd::*;\n    }\n    pub mod ffi {\n        #![stable(feature = "rust1", since = "1.0.0")]\n        #[stable(feature = "rust1", since = "1.0.0")]\n        pub use crate::os::myos::ffi::*;\n    }\n}',
             ),
         ],
     ),

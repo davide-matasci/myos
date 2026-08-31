@@ -7,8 +7,8 @@ RUSTC_BOOTSTRAP = "1"
 
 [build]
 rustc = "../../scripts/myos-rustc-cross.sh"
-# uutils release profile sets lto=fat; myos sysroot + static-pie fails LTO bitcode merge.
-rustflags = ["-C", "panic=abort", "-C", "lto=off"]
+# Real rustix uses the libc backend on myos (os != linux). Explicit cfg documents intent.
+rustflags = ["-C", "panic=abort", "-C", "lto=off", "--cfg=rustix_use_libc", "--cfg=unix"]
 
 [target.x86_64-unknown-myos]
 linker = "rust-lld"
@@ -22,4 +22,4 @@ lto = false
 [patch.crates-io]
 errno = { path = "../../target/patched-crates/errno-0.3.14" }
 libc = { path = "../../target/patched-crates/libc-0.2.189" }
-rustix = { path = "../../vendor/myos-rustix-stub" }
+rustix = { path = "../../target/patched-crates/rustix-1.1.4" }

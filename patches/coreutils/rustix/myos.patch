@@ -1,0 +1,68 @@
+--- a/src/maybe_polyfill/std/mod.rs
++++ b/src/maybe_polyfill/std/mod.rs
+@@ -23,6 +23,8 @@ pub mod os {
+ 
+         #[cfg(target_os = "wasi")]
+         pub use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
++        #[cfg(target_os = "myos")]
++        pub use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+         #[cfg(unix)]
+         pub use std::os::unix::io::{
+             AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd,
+--- a/src/backend/libc/net/msghdr.rs
++++ b/src/backend/libc/net/msghdr.rs
+@@ -174,7 +174,7 @@ pub(crate) unsafe fn with_msghdr<R>(
+ }
+ 
+ /// Create a zero-initialized message header struct value.
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ pub(crate) fn zero_msghdr() -> c::msghdr {
+     // SAFETY: We can't initialize all the fields by value because on some
+     // platforms the `msghdr` struct in the libc crate contains private padding
+--- a/src/path/arg.rs
++++ b/src/path/arg.rs
+@@ -17,6 +17,8 @@ use core::{ptr, slice, str};
+ use std::ffi::{OsStr, OsString};
+ #[cfg(all(feature = "std", target_os = "hermit"))]
+ use std::os::hermit::ext::ffi::{OsStrExt, OsStringExt};
++#[cfg(all(feature = "std", target_os = "myos"))]
++use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+ #[cfg(all(feature = "std", unix))]
+ use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+ #[cfg(all(feature = "std", target_os = "vxworks"))]
+--- a/src/path/dec_int.rs
++++ b/src/path/dec_int.rs
+@@ -12,6 +12,8 @@ use core::fmt;
+ use core::hint::unreachable_unchecked;
+ use core::mem::{self, MaybeUninit};
+ use core::num::{NonZeroU8, NonZeroUsize};
++#[cfg(all(feature = "std", target_os = "myos"))]
++use std::os::unix::ffi::OsStrExt;
+ #[cfg(all(feature = "std", unix))]
+ use std::os::unix::ffi::OsStrExt;
+ #[cfg(all(
+--- a/src/ioctl/mod.rs
++++ b/src/ioctl/mod.rs
+@@ -342,6 +342,10 @@ type _Opcode = c::c_uint;
+ #[cfg(windows)]
+ type _Opcode = i32;
+ 
++// myos uses Linux-compatible ioctl encoding (unsigned long).
++#[cfg(all(not(linux_raw), target_os = "myos"))]
++type _Opcode = c::c_ulong;
++
+ #[cfg(linux_raw_dep)]
+ #[cfg(not(any(target_arch = "sparc", target_arch = "sparc64")))]
+ #[cfg(test)]
+--- a/src/backend/libc/fs/syscalls.rs
++++ b/src/backend/libc/fs/syscalls.rs
+@@ -1343,7 +1343,7 @@ pub(crate) fn fcntl_getfl(fd: BorrowedFd<'_>) -> io::Result<OFlags> {
+ }
+ 
+ pub(crate) fn fcntl_getfl(fd: BorrowedFd<'_>) -> io::Result<OFlags> {
+-    let flags = unsafe { ret_c_int(c::fcntl(borrowed_fd(fd), c::F_GETFL))? };
++    let flags = unsafe { ret_c_int(c::fcntl(borrowed_fd(fd), c::F_GETFL, 0))? };
+     Ok(OFlags::from_bits_retain(bitcast!(flags)))
+ }
+ 

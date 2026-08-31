@@ -393,7 +393,7 @@ pub unsafe extern "C" fn lstat(path: *const c_char, buf: *mut stat) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
+pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_ulong) -> c_int {
     if fd < 0 {
         syscalls::set_errno(EBADF);
         return -1;
@@ -402,7 +402,7 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
         F_GETFL => O_RDONLY,
         F_GETFD => 0,
         F_SETFD => 0,
-        F_DUPFD => arg,
+        F_DUPFD => arg as c_int,
         _ => {
             let _ = arg;
             syscalls::set_errno(EINVAL);
@@ -412,7 +412,7 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn ioctl(_fd: c_int, _request: c_ulong, _arg: c_ulong) -> c_int {
+pub unsafe extern "C" fn ioctl(_fd: c_int, _request: c_ulong, _arg: *mut c_void) -> c_int {
     syscalls::set_errno(ENOSYS);
     -1
 }
@@ -540,3 +540,5 @@ enosys! {
     pub unsafe fn linkat(olddirfd: c_int, oldpath: *const c_char, newdirfd: c_int, newpath: *const c_char, flags: c_int) -> c_int;
     pub unsafe fn renameat(olddirfd: c_int, oldpath: *const c_char, newdirfd: c_int, newpath: *const c_char) -> c_int;
 }
+
+include!("rustix_compat.rs");
