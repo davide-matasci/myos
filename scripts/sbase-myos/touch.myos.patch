@@ -1,0 +1,16 @@
+--- touch.c
++++ touch.c
+@@ -89,11 +89,12 @@
+ 
+ 	if (!strptime(str, format, &t))
+ 		eprintf("strptime %s: Invalid date format\n", str);
+-	if (zulu) {
++	if (zulu && 0) {
+ 		t.tm_hour += t.tm_gmtoff / 60;
+ 		t.tm_gmtoff = 0;
+ 		t.tm_zone = "Z";
+ 	}
++	(void)zulu;
+ 
+ 	return mktime(&t);
+ }

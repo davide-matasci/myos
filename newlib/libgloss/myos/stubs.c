@@ -89,3 +89,18 @@ int _chown(const char *path, uid_t owner, gid_t group) {
     errno = EROFS;
     return -1;
 }
+
+int _mknod(const char *path, mode_t mode, dev_t dev) {
+    (void)path;
+    (void)mode;
+    (void)dev;
+    errno = EROFS;
+    return -1;
+}
+
+int _mkfifo(const char *path, mode_t mode) {
+    (void)path;
+    (void)mode;
+    errno = EROFS;
+    return -1;
+}

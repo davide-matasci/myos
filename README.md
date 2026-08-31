@@ -462,7 +462,7 @@ required beyond the existing myos ABI.
 ```sh
 ./scripts/build-newlib.sh   # fetch newlib 4.4.0, build libc + libgloss/myos
 ./scripts/build-c-hello.sh  # minimal write() smoke → target/c-hello-*
-./scripts/build-sbase.sh    # suckless sbase subset → target/sbase-*
+./scripts/build-sbase.sh    # full suckless sbase → target/sbase-* + manifest
 ```
 
 | Path | Role |
@@ -474,9 +474,9 @@ required beyond the existing myos ABI.
 | `scripts/build-libgloss-myos.sh` | Build `libgloss.a` + `crt0.o` (called by build-newlib) |
 | `scripts/build-c-hello.sh` | Link minimal C smoke with `-lc -lgloss` |
 | `scripts/fetch-sbase.sh` | Clone pinned [sbase](https://git.suckless.org/sbase) into `target/sbase-src` |
-| `scripts/prepare-sbase-myos.sh` | Apply myos patches to upstream `echo`, `pwd`, `ls` |
-| `scripts/build-sbase.sh` | Cross-build sbase `echo`, `cat`, `true`, `false`, `ls`, `pwd`, `basename`, `dirname` |
-| `scripts/sbase-myos/` | Small `.myos.patch` files (CI smoke, exec argv); `trunctfdf2.c` for aarch64 |
+| `scripts/prepare-sbase-myos.sh` | Sync upstream tree; apply myos patches; generate `bc.c`/`getconf.h` |
+| `scripts/build-sbase.sh` | Cross-build ~91 upstream sbase utilities per arch (manifest-driven kernel embed) |
+| `scripts/sbase-myos/` | `.myos.patch` files, `bins.txt`, compat headers, arch soft-float shims |
 | `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
 
 Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
@@ -491,9 +491,10 @@ Tools use upstream newlib stdio (`puts`, `printf`, `fshut`) and libutil; the
 kernel enables user SIMD/FP (x86_64 SSE, AArch64 NEON) so `-O2` libc code does
 not fault on stdio init.
 Libgloss adds `time`/`localtime`, flat `getpwuid`/`getgrgid` (root), `readlink`
-(`ENOSYS`), and `sys/sysmacros.h` so upstream `ls -l` links. Bootfs exposes
-`/secho`, `/scat`, `/strue`, `/sls`, `/sfalse`, `/spwd`, and `/sbasename`; CI
-checks `sbase ok` from `/secho` and `sls ok` from `/sls` via `user/heap`.
+(`ENOSYS`), POSIX stubs for read-only VFS, and `sys/sysmacros.h` so upstream `ls -l`
+links. The kernel mounts **sbasefs** at `/s/` with one ELF per tool (e.g. `/s/cat`,
+`/s/echo`, `/s/ls` — 91 utilities today); CI checks `sbase ok` from `/s/echo` and
+`sls ok` from `/s/ls` via `user/heap`.
 
 The in-tree shell (`user/sh`) supports `export NAME=value`, `env`, pipes, stdin
 redirect (`<`), and `$?`. Output redirect (`>`) is deferred while bootfs stays

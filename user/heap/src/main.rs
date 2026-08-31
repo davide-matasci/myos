@@ -106,10 +106,10 @@ fn main() -> ! {
     run_prog(b"/stdcat", &[]);
     run_prog(b"/stdecho", &[]);
     run_prog(b"/chello", &[]);
-    run_prog(b"/strue", &[]);
-    run_prog(b"/secho", &[]);
-    run_prog(b"/sls", &[]);
-    run_prog(b"/spwd", &[]);
+    run_prog(b"/s/true", &[]);
+    run_prog(b"/s/echo", &[]);
+    run_prog(b"/s/ls", &[]);
+    run_prog(b"/s/pwd", &[]);
     exit();
 }
 
