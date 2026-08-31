@@ -6,6 +6,7 @@
 #include <setjmp.h>
 #include <sys/types.h>
 #include <sys/myos_extra.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef sigjmp_buf
@@ -43,6 +44,28 @@
 #ifndef S_ISSOCK
 #define S_ISSOCK(m) (((m) & 0170000) == 0140000)
 #endif
+
+#ifndef CLOCK_REALTIME
+#define CLOCK_REALTIME 0
+#endif
+#ifndef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC 1
+#endif
+
+/* newlib time.h does not declare clock_gettime. Oksh-only fallback to time(). */
+static inline int
+clock_gettime(int clock_id, struct timespec *tp)
+{
+	time_t t;
+
+	(void)clock_id;
+	if (tp == NULL)
+		return -1;
+	t = time(NULL);
+	tp->tv_sec = t;
+	tp->tv_nsec = 0;
+	return 0;
+}
 
 /*
  * jobs.c still compiles FMONITOR=0 paths that mention these. Do not add
