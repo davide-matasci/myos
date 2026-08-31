@@ -34,8 +34,9 @@ fi
 mkdir -p "$UUTILS_DIR/.cargo"
 cp "$ROOT/vendor/coreutils-port/cargo-config.toml" "$UUTILS_DIR/.cargo/config.toml"
 
-if [[ -f "$ROOT/patches/coreutils/uucore-myos.patch" ]]; then
-  patch -d "$UUTILS_DIR" -p1 -N <"$ROOT/patches/coreutils/uucore-myos.patch" || true
+if [[ -f "$ROOT/patches/coreutils/uucore-myos.patch" ]] \
+  && ! grep -q 'mod myos_argv' "$UUTILS_DIR/src/uucore/src/lib/lib.rs" 2>/dev/null; then
+  patch -d "$UUTILS_DIR" -p1 -N --forward <"$ROOT/patches/coreutils/uucore-myos.patch"
 fi
 
 echo "==> building coreutils for ${TARGET} (${PROFILE}, features=${FEATURES})"

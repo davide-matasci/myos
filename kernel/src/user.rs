@@ -484,6 +484,11 @@ fn build_argv_stack(
     if pad != 0 {
         sp = sp.checked_sub(pad)?;
     }
+    // AMD64 psABI: at _start, %rsp ≡ 8 (mod 16) as if the kernel had called it.
+    #[cfg(target_arch = "x86_64")]
+    {
+        sp = sp.checked_sub(8)?;
+    }
     if sp < stack_bot {
         return None;
     }
@@ -890,21 +895,27 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
     let cs = (crate::arch::gdt::user_cs() | 3) as u64;
     let ss = (crate::arch::gdt::user_ss() | 3) as u64;
     let rflags: u64 = 0x202;
+    // Iret frame in memory (RIP, CS, RFLAGS, RSP, SS). Do not feed five `in(reg)`
+    // operands into one asm block: LLVM can reuse a register for CS and corrupt
+    // iretq (post-fork exec of large ELFs → #GP on BIOS).
+    let frame = [
+        user_rip as u64,
+        cs,
+        rflags,
+        user_rsp as u64,
+        ss,
+    ];
+    const CR0_TS: u64 = 1 << 3;
     unsafe {
+        let mut cr0: u64;
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        cr0 &= !CR0_TS;
+        core::arch::asm!("mov cr0, {}", in(reg) cr0);
         core::arch::asm!(
             "cli",
-            "push {uss}",
-            "push {ursp}",
-            "push {rf}",
-            "push {ucs}",
-            "push {urip}",
+            "mov rsp, {f}",
             "iretq",
-            uss = in(reg) ss,
-            ursp = in(reg) user_rsp,
-            rf = in(reg) rflags,
-            ucs = in(reg) cs,
-            urip = in(reg) user_rip,
-            in("rax") 0u64,
+            f = in(reg) frame.as_ptr(),
             options(noreturn),
         );
     }
@@ -982,20 +993,22 @@ fn try_resume_exec_via_syscall_frame(
     unsafe {
         #[cfg(target_arch = "aarch64")]
         {
-            *frame_ptr.add(0) = argc as u64;
-            *frame_ptr.add(1) = argv as u64;
-            *frame_ptr.add(32) = entry as u64;
-            *frame_ptr.add(34) = rsp as u64;
-            crate::arch::fork_eret_to_user(frame_ptr);
+            let frame = frame_ptr as *mut u64;
+            *frame.add(0) = argc as u64;
+            *frame.add(1) = argv as u64;
+            *frame.add(32) = entry as u64;
+            *frame.add(34) = rsp as u64;
+            crate::arch::fork_eret_to_user(frame);
         }
         #[cfg(target_arch = "riscv64")]
         {
-            *frame_ptr.add(10) = argc as u64;
-            *frame_ptr.add(11) = argv as u64;
-            *frame_ptr.add(32) = entry as u64;
-            *frame_ptr.add(33) = USER_SSTATUS;
-            *frame_ptr.add(34) = rsp as u64;
-            crate::arch::fork_sret_to_user(frame_ptr);
+            let frame = frame_ptr as *mut u64;
+            *frame.add(10) = argc as u64;
+            *frame.add(11) = argv as u64;
+            *frame.add(32) = entry as u64;
+            *frame.add(33) = USER_SSTATUS;
+            *frame.add(34) = rsp as u64;
+            crate::arch::fork_sret_to_user(frame);
         }
     }
 }
@@ -1082,11 +1095,11 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-static mut SYSCALL_FRAME: *mut u64 = core::ptr::null_mut();
+static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn set_syscall_frame(frame: *mut u64) {
-    unsafe { SYSCALL_FRAME = frame; }
+    unsafe { SYSCALL_FRAME = frame as *mut usize; }
 }
 
 #[unsafe(no_mangle)]
@@ -1214,9 +1227,7 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     };
     let argc = arg_refs.len();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
-    #[cfg(target_arch = "aarch64")]
-    try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
     enter(entry, rsp, argc, argv);
 }
@@ -1487,7 +1498,7 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
         task::ForkRegs {
             rip: user_rip,
             rsp: user_rsp,
-            frame: copy_fork_syscall_frame(frame),
+            frame: copy_fork_syscall_frame(frame as *const u64),
         }
     };
     #[cfg(target_arch = "riscv64")]
@@ -1499,7 +1510,7 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
         task::ForkRegs {
             rip: user_rip,
             rsp: user_rsp,
-            frame: copy_fork_syscall_frame(frame),
+            frame: copy_fork_syscall_frame(frame as *const u64),
         }
     };
     match task::fork_current(child) {

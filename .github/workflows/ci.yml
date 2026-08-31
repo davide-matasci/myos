@@ -118,6 +118,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zstd
 
       - name: Build and package sysroot
+        id: sysroot_build
         env:
           MYOS_SYSROOT_SLIM: "1"
           MYOS_ZSTD_LEVEL: "3"
@@ -126,13 +127,17 @@ jobs:
           ./scripts/build-sysroot.sh
           ./scripts/package-sysroot.sh
 
+      # Artifact quota exhaustion must not fail the pipeline: rust-cache keeps
+      # target/myos-sysroot for the build job; fetch-sysroot rebuilds if needed.
       - name: Upload sysroot tarball
+        if: steps.sysroot_build.outcome == 'success' && github.event_name != 'pull_request'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: myos-sysroot
           path: target/myos-sysroot-*.tar.zst
-          if-no-files-found: error
-          retention-days: 30
+          if-no-files-found: warn
+          retention-days: 7
 
   export-patch:
     runs-on: ubuntu-latest
@@ -187,7 +192,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: limine-8.3-3
+          prefix-key: limine-8.3-4
           cache-directories: |
             target/myos-sysroot
             target/newlib-x86_64
@@ -199,6 +204,7 @@ jobs:
 
       - name: Download prebuilt sysroot
         if: needs.sysroot.result == 'success'
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: myos-sysroot
@@ -207,7 +213,7 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
 
-      - name: Install sysroot and build std/C/sbase/uutils smoke ELFs
+      - name: Install sysroot and build std/C/sbase/uutils ELFs
         run: |
           chmod +x scripts/*.sh
           if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
@@ -236,6 +242,14 @@ jobs:
           test -f target/bios.img
           od -An -tx1 -N 16 target/bios.img
 
+      # Run required x86 boot needles here so CI stays meaningful when artifact
+      # upload is quota-blocked (boot matrix depends on ci-build.tar).
+      - name: Boot smoke (x86 BIOS + UEFI)
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86
+          ./target/debug/myos --ci
+          ./target/debug/myos uefi --ci
+
       - name: Pack CI build artifacts
         run: |
           shopt -s nullglob
@@ -245,9 +259,6 @@ jobs:
             target/bios.img
             target/uefi.img
             target/fat.img
-            target/x86_64-unknown-none
-            target/aarch64-unknown-none-softfloat
-            target/riscv64imac-unknown-none-elf
             target/hello-*
             target/ok-*
             target/std-*
@@ -266,6 +277,7 @@ jobs:
           ls -lh ci-build.tar
 
       - name: Upload CI build artifacts
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ci-build
@@ -276,7 +288,7 @@ jobs:
   boot:
     name: boot (${{ matrix.id }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     needs: build
     if: ${{ needs.build.result == 'success' }}
     strategy:
@@ -286,44 +298,64 @@ jobs:
           - id: bios
             args: --ci
             packages: qemu-system-x86
-            needs_rust: false
             required: true
           - id: uefi
             args: uefi --ci
             packages: qemu-system-x86
-            needs_rust: false
             required: true
           - id: aarch64
             args: aarch64 --ci
             packages: qemu-system-arm qemu-efi-aarch64
-            needs_rust: true
             required: true
           - id: riscv64
             args: riscv64 --ci
             packages: qemu-system-misc qemu-efi-riscv64
-            needs_rust: true
             required: false
     steps:
       - uses: actions/checkout@v4
 
       - name: Install pinned nightly
-        if: matrix.needs_rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-07-26
           components: rust-src, llvm-tools-preview
-          targets: x86_64-unknown-none, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-4
+          cache-directories: |
+            target/myos-sysroot
+            target/newlib-x86_64
+            target/newlib-aarch64
+            target/newlib-src
+            target/newlib-bin
+            target/sbase-src
+            target/sbase-myos-build
+
+      - name: Download prebuilt sysroot
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: myos-sysroot
+          path: target
 
       - name: Download CI build artifacts
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: ci-build
 
-      - name: Extract CI build artifacts
-        run: tar -xf ci-build.tar
+      - name: Restore or rebuild CI artifacts
+        run: |
+          chmod +x scripts/*.sh
+          sudo apt-get update
+          sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
+          ./scripts/ci-restore-or-build.sh
 
       - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+        run: sudo apt-get install -y ${{ matrix.packages }}
 
       - name: Boot in QEMU
         continue-on-error: ${{ !matrix.required }}
