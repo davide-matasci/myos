@@ -12,7 +12,24 @@
  
  #ifdef HAVE_PLEDGE
  	if (issetugid()) { /* could later drop privileges */
-@@ -263,12 +266,7 @@
+@@ -209,15 +212,7 @@
+ 	init_histvec();
+ 
+ 	def_path = _PATH_DEFPATH;
+-	{
+-		size_t len = confstr(_CS_PATH, NULL, 0);
+-		char *new;
+-
+-		if (len > 0) {
+-			confstr(_CS_PATH, new = alloc(len + 1, APERM), len + 1);
+-			def_path = new;
+-		}
+-	}
++	/* myos: PATH is _PATH_DEFPATH (/:/s:/c); skip confstr. */
+ 
+ 	/* Set PATH to def_path (will set the path global variable).
+ 	 * (import of environment below will probably change this setting).
+@@ -263,12 +258,7 @@
  #endif /* SMALL */
  	}
  
@@ -22,11 +39,11 @@
 -#if defined(EMACS)
 -	change_flag(FEMACS, OF_SPECIAL, 1);
 -#endif /* EMACS */
-+	/* myos: keep cooked kernel stdin; emacs raw mode would double-echo. */
++	/* myos: keep cooked kernel stdin; no emacs/vi raw mode. */
  #if defined(VI)
  	Flag(FVITABCOMPLETE) = 1;
  #endif /* VI */
-@@ -278,6 +276,12 @@
+@@ -278,6 +268,12 @@
  		for (wp = environ; *wp != NULL; wp++)
  			typeset(*wp, IMPORT|EXPORT, 0, 0, 0);
  
@@ -39,7 +56,18 @@
  	kshpid = procpid = getpid();
  	typeset(initifs, 0, 0, 0, 0);	/* for security */
  
-@@ -325,15 +329,12 @@
+@@ -307,8 +303,8 @@
+ 			/* setstr can't fail here */
+ 			setstr(pwd_v, current_wd, KSH_RETURN_ERROR);
+ 	}
+-	ppid = getppid();
+-	setint(global("PPID"), (int64_t) ppid);
++	(void)ppid;
++	setint(global("PPID"), (int64_t) 0);
+ #ifndef SMALL
+ 	/* setstr can't fail here */
+ 	setstr(global(version_param), ksh_version, KSH_RETURN_ERROR);
+@@ -325,19 +321,16 @@
  
  	ksheuid = geteuid();
  	init_username();
@@ -58,17 +86,32 @@
  	}
  
  	/* Set this before parsing arguments */
-@@ -387,9 +388,13 @@
+-	Flag(FPRIVILEGED) = getuid() != ksheuid || getgid() != getegid();
++	Flag(FPRIVILEGED) = 0;
+ 
+ 	/* this to note if monitor is set on command line (see below) */
+ 	Flag(FMONITOR) = 127;
+@@ -387,9 +380,11 @@
  	i = Flag(FMONITOR) != 127;
  	Flag(FMONITOR) = 0;
  	j_init(i);
+-	/* Do this after j_init(), as tty_fd is not initialized 'til then */
+-	if (Flag(FTALKING))
+-		x_init();
 +	Flag(FMONITOR) = 0;
- 	/* Do this after j_init(), as tty_fd is not initialized 'til then */
- 	if (Flag(FTALKING))
- 		x_init();
++	/* myos: skip emacs/vi tty setup (x_init / tcsetattr). */
 +	if (Flag(FTALKING)) {
 +		write(1, "sh ok\n", 6);
 +	}
  
  	l = genv->loc;
  	l->argv = make_argv(argc - (argi - 1), &argv[argi - 1]);
+@@ -449,7 +444,7 @@
+ 
+ 	if (Flag(FTALKING)) {
+ 		hist_init(s);
+-		alarm_init();
++		/* myos: no alarm(2); TMOUT is unused. */
+ 	} else
+ 		Flag(FTRACKALL) = 1;	/* set after ENV */
+ 
