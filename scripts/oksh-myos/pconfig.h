@@ -1,6 +1,9 @@
 /* This file is the checked-in equivalent of oksh `configure --no-thanks
  * --enable-small --disable-curses` (do not run configure on the myos triple:
  * it tries to execute conftest). HAVE_* flags match newlib 4.4.0.
+ *
+ * HAVE_CONFSTR is off: skip libc confstr and the portable confstr.c; PATH
+ * is forced in main.myos.patch.
  */
 
 #ifndef __dead
@@ -10,7 +13,7 @@
 /* #define __attribute__(x) */
 
 #define HAVE_ASPRINTF
-#define HAVE_CONFSTR
+/* #define HAVE_CONFSTR */
 #define NO_CURSES
 /* #define HAVE_ISSETUGID */
 /* #define HAVE_GETAUXVAL */

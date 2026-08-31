@@ -1,11 +1,12 @@
-/* myos extras for oksh that newlib headers hide or omit. */
+/* Extra POSIX/BSD declarations newlib headers hide or omit. Compile-only
+ * for oksh; not copied into the newlib sysroot. */
 #ifndef _MYOS_OKSH_COMPAT_H_
 #define _MYOS_OKSH_COMPAT_H_
 
 #include <setjmp.h>
 #include <sys/types.h>
 #include <sys/myos_extra.h>
-#include <time.h>
+#include <unistd.h>
 
 #ifndef sigjmp_buf
 #define sigjmp_buf jmp_buf
@@ -17,14 +18,9 @@
 #define WCOREDUMP(s) 0
 #endif
 
-#ifndef CLOCK_MONOTONIC
-#define CLOCK_MONOTONIC ((clockid_t)4)
+#ifndef MAXPATHLEN
+#define MAXPATHLEN 1024
 #endif
-#ifndef CLOCK_REALTIME
-#define CLOCK_REALTIME ((clockid_t)1)
-#endif
-
-int clock_gettime(clockid_t clock_id, struct timespec *tp);
 
 #ifndef S_ISCHR
 #define S_ISCHR(m) (((m) & 0170000) == 0020000)
@@ -46,6 +42,19 @@ int clock_gettime(clockid_t clock_id, struct timespec *tp);
 #endif
 #ifndef S_ISSOCK
 #define S_ISSOCK(m) (((m) & 0170000) == 0140000)
+#endif
+
+/*
+ * jobs.c still compiles FMONITOR=0 paths that mention these. Do not add
+ * libgloss stubs; skip at compile time.
+ */
+#define tcgetattr(fd, t) ((void)(fd), (void)(t), -1)
+#define tcsetattr(fd, a, t) ((void)(fd), (void)(a), (void)(t), 0)
+#define tcgetpgrp(fd) ((void)(fd), (pid_t)-1)
+#define tcsetpgrp(fd, p) ((void)(fd), (void)(p), -1)
+#define setpgid(p, g) ((void)(p), (void)(g), 0)
+#ifndef killpg
+#define killpg(p, s) kill((p), (s))
 #endif
 
 #endif /* _MYOS_OKSH_COMPAT_H_ */
