@@ -1,6 +1,8 @@
 use crate::alloc::Layout;
 
 const PAGE: usize = 4096;
+/// Must match `HEAP_PAGES` in `kernel/src/user.rs`.
+const HEAP_PAGES: usize = 256;
 
 static mut BRK_END: usize = 0;
 static mut BRK_PTR: usize = 0;
@@ -20,7 +22,12 @@ fn init_heap() {
         BRK_INIT = true;
         let base = brk(0);
         BRK_PTR = base;
-        BRK_END = base;
+        if let Some(mapped_end) = base.checked_add(HEAP_PAGES * PAGE) {
+            let got = brk(mapped_end);
+            BRK_END = if got >= mapped_end { got } else { base };
+        } else {
+            BRK_END = base;
+        }
     }
 }
 

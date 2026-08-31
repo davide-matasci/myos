@@ -26,10 +26,10 @@ pub const SYS_STAT: usize = 12;
 const SYS_EXECNAME: usize = 13;
 pub const PAGE: usize = 4096;
 /// User stack mapping below the heap (512 KiB — uutils/std init needs more than 128 KiB).
-pub const USER_STACK_PAGES: usize = 128;
+pub const USER_STACK_PAGES: usize = 256;
 /// Per-process brk heap. uutils/clap init needs well over 512 KiB; keep total
 /// user slots (code + stack + heap) under 512 pages on AArch64 L3 tables.
-const HEAP_PAGES: usize = 180;
+const HEAP_PAGES: usize = 256;
 /// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy (today
 /// release `uutils-coreutils` ≈197 pages).
 const MAX_INIT_PAGES: usize = 256;
@@ -264,9 +264,6 @@ fn map_initial_heap_pages(aspace: u64, base: u64, stack_off: u64) {
     let heap_base = heap_base_va(base, stack_off);
     for i in 0..HEAP_PAGES {
         let va = heap_base + (i * PAGE) as u64;
-        if virt_to_phys(aspace, va).is_some() {
-            continue;
-        }
         let frame = mm::alloc_frame();
         unsafe {
             core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
@@ -1612,6 +1609,9 @@ fn sys_brk(req: usize) -> usize {
         while va < map_end {
             if virt_to_phys(aspace, va as u64).is_none() {
                 let frame = mm::alloc_frame();
+                unsafe {
+                    core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
+                }
                 map_heap_page(aspace, va as u64, frame);
             }
             va += PAGE;

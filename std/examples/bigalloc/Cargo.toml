@@ -1,0 +1,17 @@
+[package]
+name = "std-bigalloc-myos"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "bigalloc"
+path = "main.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

@@ -96,6 +96,7 @@ fn main() -> ! {
     let mut v = Vec::new();
     v.extend_from_slice(b"alloc ok\n");
     write(&v);
+    run_prog_exit(b"/bigalloc", &[], 0, b"bigalloc ok\n");
     run_prog_exit(b"/uutils-echo", &[], 0, b"uutils echo ok\n");
     run_prog_exit(b"/uutils-true", &[], 0, b"uutils true ok\n");
     run_prog_exit(b"/uutils-false", &[], 1, b"uutils false ok\n");

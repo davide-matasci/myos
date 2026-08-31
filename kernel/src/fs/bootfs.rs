@@ -13,6 +13,7 @@ const HEAP_ELF: &[u8] = include_bytes!(env!("USER_HEAP_PATH"));
 const STD_HELLO_ELF: &[u8] = include_bytes!(env!("USER_STD_HELLO_PATH"));
 const STD_CAT_ELF: &[u8] = include_bytes!(env!("USER_STD_CAT_PATH"));
 const STD_ECHO_ELF: &[u8] = include_bytes!(env!("USER_STD_ECHO_PATH"));
+const BIGALLOC_ELF: &[u8] = include_bytes!(env!("USER_BIGALLOC_PATH"));
 const C_HELLO_ELF: &[u8] = include_bytes!(env!("USER_C_HELLO_PATH"));
 const SBASE_ECHO_ELF: &[u8] = include_bytes!(env!("USER_SBASE_ECHO_PATH"));
 const SBASE_CAT_ELF: &[u8] = include_bytes!(env!("USER_SBASE_CAT_PATH"));
@@ -154,6 +155,7 @@ pub fn init_embedded() {
     let _ = register("stdhello", STD_HELLO_ELF);
     let _ = register("stdcat", STD_CAT_ELF);
     let _ = register("stdecho", STD_ECHO_ELF);
+    let _ = register("bigalloc", BIGALLOC_ELF);
     let _ = register("chello", C_HELLO_ELF);
     let _ = register("secho", SBASE_ECHO_ELF);
     let _ = register("scat", SBASE_CAT_ELF);

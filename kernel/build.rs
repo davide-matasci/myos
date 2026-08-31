@@ -98,6 +98,7 @@ fn main() {
             ("std-hello", "USER_STD_HELLO_PATH"),
             ("std-cat", "USER_STD_CAT_PATH"),
             ("std-echo", "USER_STD_ECHO_PATH"),
+            ("std-bigalloc", "USER_BIGALLOC_PATH"),
         ] {
             embed_std_elf(manifest, &arch, artifact, env_key);
         }

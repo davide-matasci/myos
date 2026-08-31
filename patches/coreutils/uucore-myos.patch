@@ -1,266 +1,24 @@
-diff --git a/src/bin/coreutils.rs b/src/bin/coreutils.rs
-index c7f8135..98bd712 100644
---- a/src/bin/coreutils.rs
-+++ b/src/bin/coreutils.rs
-@@ -49,96 +49,132 @@ Currently defined functions:
-     }
- }
- 
--#[allow(clippy::cognitive_complexity)]
--fn main() {
--    let utils = util_map();
--    let mut args = uucore::args_os();
--
--    let binary = validation::binary_path(&mut args);
--    let binary_as_util = validation::name(&binary).unwrap_or_else(|| {
--        usage(&utils, "<unknown binary name>");
--        process::exit(0);
--    });
-+#[cfg(target_os = "myos")]
-+fn dispatch_myos(utils: &UtilityMap<core::iter::Empty<OsString>>) {
-+    let binary_as_util = uucore::util_name();
-+    if binary_as_util.is_empty() {
-+        let _ = writeln!(io::stderr(), "coreutils: missing argument");
-+        process::exit(1);
-+    }
- 
--    // binary name ends with util name?
-     let is_coreutils = binary_as_util.ends_with("utils");
-     let matched_util = utils
-         .keys()
-         .filter(|&&u| binary_as_util.ends_with(u) && !is_coreutils)
--        .max_by_key(|u| u.len()); //Prefer stty more than tty. *utils is not ls
--
--    let util_name = if let Some(&util) = matched_util {
--        Some(OsString::from(util))
--    } else if is_coreutils || binary_as_util.ends_with("box") {
--        // todo: Remove support of "*box" from binary
--        uucore::set_utility_is_second_arg();
--        args.next()
--    } else {
--        validation::not_found(&OsString::from(binary_as_util));
--    };
--
--    // 0th argument equals util name?
--    if let Some(util_os) = util_name {
--        let Some(util) = util_os.to_str() else {
--            validation::not_found(&util_os)
-+        .max_by_key(|u| u.len());
-+
-+    if let Some(&util) = matched_util {
-+        if util == "echo" {
-+            process::exit(0);
-+        }
-+        if let Some(&(uumain, _)) = utils.get(util) {
-+            validation::setup_localization_or_exit(util);
-+            // myos std heap: avoid argv OsString/Vec construction in the
-+            // dispatcher; echo/true/false only need an empty tail here.
-+            process::exit(uumain(core::iter::empty()));
-+        }
-+        let _ = writeln!(io::stderr(), "coreutils: unknown program '{util}'");
-+        process::exit(1);
-+    }
-+
-+    let _ = writeln!(io::stderr(), "coreutils: missing argument");
-+    process::exit(1);
-+}
-+
-+#[allow(clippy::cognitive_complexity)]
-+fn main() {
-+    #[cfg(target_os = "myos")]
-+    {
-+        let utils = util_map::<core::iter::Empty<OsString>>();
-+        dispatch_myos(&utils);
-+        return;
-+    }
-+
-+    #[cfg(not(target_os = "myos"))]
-+    {
-+        let utils = util_map();
-+        let mut args = uucore::args_os();
-+        let binary = validation::binary_path(&mut args);
-+        let binary_as_util = validation::name(&binary).unwrap_or_else(|| {
-+            usage(&utils, "<unknown binary name>");
-+            process::exit(0);
-+        });
-+
-+        // binary name ends with util name?
-+        let is_coreutils = binary_as_util.ends_with("utils");
-+        let matched_util = utils
-+            .keys()
-+            .filter(|&&u| binary_as_util.ends_with(u) && !is_coreutils)
-+            .max_by_key(|u| u.len()); //Prefer stty more than tty. *utils is not ls
-+
-+        let util_name = if let Some(&util) = matched_util {
-+            Some(OsString::from(util))
-+        } else if is_coreutils || binary_as_util.ends_with("box") {
-+            // todo: Remove support of "*box" from binary
-+            uucore::set_utility_is_second_arg();
-+            args.next()
-+        } else {
-+            validation::not_found(&OsString::from(binary_as_util));
-         };
- 
--        match util {
--            "--list" => {
--                // we should fail with additional args https://github.com/uutils/coreutils/issues/11383#issuecomment-4082564058
--                if args.next().is_some() {
--                    let _ = writeln!(io::stderr(), "coreutils: invalid argument");
--                    process::exit(1);
-+        // 0th argument equals util name?
-+        if let Some(util_os) = util_name {
-+            let Some(util) = util_os.to_str() else {
-+                validation::not_found(&util_os)
-+            };
-+
-+            match util {
-+                "--list" => {
-+                    // we should fail with additional args https://github.com/uutils/coreutils/issues/11383#issuecomment-4082564058
-+                    if args.next().is_some() {
-+                        let _ = writeln!(io::stderr(), "coreutils: invalid argument");
-+                        process::exit(1);
-+                    }
-+                    let mut out = io::stdout().lock();
-+                    for util in utils.keys() {
-+                        if let Err(e) = writeln!(out, "{util}")
-+                            && e.kind() != io::ErrorKind::BrokenPipe
-+                        {
-+                            let _ = writeln!(io::stderr(), "coreutils: {}", strip_errno(&e));
-+                            process::exit(1);
-+                        }
-+                    }
-+                    process::exit(0);
-                 }
--                let mut out = io::stdout().lock();
--                for util in utils.keys() {
--                    if let Err(e) = writeln!(out, "{util}")
-+                "--version" | "-V" => {
-+                    if let Err(e) = writeln!(io::stdout(), "coreutils {VERSION} (multi-call binary)")
-                         && e.kind() != io::ErrorKind::BrokenPipe
-                     {
-                         let _ = writeln!(io::stderr(), "coreutils: {}", strip_errno(&e));
-                         process::exit(1);
-                     }
-+                    process::exit(0);
-                 }
--                process::exit(0);
-+                // Not a special command: fallthrough to calling a util
-+                _ => {}
-             }
--            "--version" | "-V" => {
--                if let Err(e) = writeln!(io::stdout(), "coreutils {VERSION} (multi-call binary)")
--                    && e.kind() != io::ErrorKind::BrokenPipe
--                {
--                    let _ = writeln!(io::stderr(), "coreutils: {}", strip_errno(&e));
--                    process::exit(1);
--                }
-+
-+            if let Some(&(uumain, _)) = utils.get(util) {
-+                validation::setup_localization_or_exit(util);
-+                process::exit(uumain(vec![util_os].into_iter().chain(args)));
-+            }
-+            // GNU coreutils --help string shows help for coreutils
-+            if util == "--help" || util == "-h" {
-+                usage(&utils, binary_as_util);
-                 process::exit(0);
-+            } else if util.starts_with('-') {
-+                // Argument looks like an option but wasn't recognized
-+                validation::unrecognized_option(binary_as_util, &util_os);
-             }
--            // Not a special command: fallthrough to calling a util
--            _ => {}
--        }
--
--        if let Some(&(uumain, _)) = utils.get(util) {
--            // TODO: plug the deactivation of the translation
--            // and load the English strings directly at compilation time in the
--            // binary to avoid the load of the flt
--            // Could be something like:
--            // #[cfg(not(feature = "only_english"))]
--            validation::setup_localization_or_exit(util);
--            process::exit(uumain(vec![util_os].into_iter().chain(args)));
-+            validation::not_found(&util_os);
-         }
--        // GNU coreutils --help string shows help for coreutils
--        if util == "--help" || util == "-h" {
-+        // GNU just fails, but busybox tests needs usage
-+        // todo: patch the test suite instead
-+        if binary_as_util.ends_with("box") {
-             usage(&utils, binary_as_util);
--            process::exit(0);
--        } else if util.starts_with('-') {
--            // Argument looks like an option but wasn't recognized
--            validation::unrecognized_option(binary_as_util, &util_os);
-+        } else {
-+            let _ = writeln!(io::stderr(), "coreutils: missing argument");
-         }
--        validation::not_found(&util_os);
--    }
--    // GNU just fails, but busybox tests needs usage
--    // todo: patch the test suite instead
--    if binary_as_util.ends_with("box") {
--        usage(&utils, binary_as_util);
--    } else {
--        let _ = writeln!(io::stderr(), "coreutils: missing argument");
-+        process::exit(1);
-     }
--    process::exit(1);
- }
 diff --git a/src/common/validation.rs b/src/common/validation.rs
-index b81cc1b..618b6ef 100644
+index b81cc1b..8e7bc42 100644
 --- a/src/common/validation.rs
 +++ b/src/common/validation.rs
-@@ -71,6 +71,15 @@ fn get_canonical_util_name(util_name: &str) -> &str {
-     }
- }
- 
-+/// Build a [`PathBuf`] without `PathBuf::from(OsString)` (myos aborts with exit 101).
-+fn path_from_name(name: &str) -> PathBuf {
-+    PathBuf::from(name)
-+}
-+
-+fn path_from_osstring(s: &OsString) -> PathBuf {
-+    path_from_name(s.to_str().unwrap_or("coreutils"))
-+}
-+
- /// Gets the binary path from command line arguments
- /// Panics if the binary path cannot be determined
- #[cfg(any(
-@@ -81,9 +90,14 @@ fn get_canonical_util_name(util_name: &str) -> &str {
+@@ -81,6 +81,14 @@ fn get_canonical_util_name(util_name: &str) -> &str {
      target_env = "musl"
  ))]
  pub fn binary_path(args: &mut impl Iterator<Item = OsString>) -> PathBuf {
 +    #[cfg(target_os = "myos")]
 +    {
-+        let _ = uucore::util_name();
-+        return PathBuf::new();
++        match args.next() {
++            Some(s) if !s.is_empty() => PathBuf::from(s),
++            _ => PathBuf::from(uucore::util_name()),
++        }
 +    }
 +    #[cfg(not(target_os = "myos"))]
      match args.next() {
--        Some(ref s) if !s.is_empty() => PathBuf::from(s),
--        // the fallback is valid only for hardlinks
-+        Some(s) if !s.is_empty() => path_from_osstring(&s),
-         _ => std::env::current_exe().unwrap(),
-     }
- }
-@@ -121,7 +135,14 @@ pub fn binary_path(args: &mut impl Iterator<Item = OsString>) -> PathBuf {
- }
- /// Extracts the binary name from a path
- pub fn name(binary_path: &Path) -> Option<&str> {
--    binary_path.file_stem()?.to_str()
-+    #[cfg(target_os = "myos")]
-+    {
-+        return binary_path.to_str();
-+    }
-+    #[cfg(not(target_os = "myos"))]
-+    {
-+        binary_path.file_stem()?.to_str()
-+    }
- }
- 
- #[cfg(test)]
+         Some(ref s) if !s.is_empty() => PathBuf::from(s),
+         // the fallback is valid only for hardlinks
 diff --git a/src/uucore/src/lib/lib.rs b/src/uucore/src/lib/lib.rs
-index aeacfe0..f598b97 100644
+index aeacfe0..1f6f98a 100644
 --- a/src/uucore/src/lib/lib.rs
 +++ b/src/uucore/src/lib/lib.rs
 @@ -6,6 +6,7 @@
@@ -271,7 +29,7 @@ index aeacfe0..f598b97 100644
  
  // * feature-gated external crates (re-shared as public internal modules)
  #[cfg(feature = "libc")]
-@@ -352,29 +353,110 @@ pub fn set_utility_is_second_arg() {
+@@ -352,29 +353,120 @@ pub fn set_utility_is_second_arg() {
  // So if we want only the first arg or so it's overkill. We cache it.
  #[cfg(windows)]
  static ARGV: LazyLock<Vec<OsString>> = LazyLock::new(|| wild::args_os().collect());
@@ -307,6 +65,11 @@ index aeacfe0..f598b97 100644
 +                let n = name.len().min(UTIL_CAP);
 +                UTIL_BUF[..n].copy_from_slice(&name[..n]);
 +                UTIL_LEN = n;
++            } else if let Some(name) = std::os::myos::args::exec_basename() {
++                let bytes = name.as_bytes();
++                let n = bytes.len().min(UTIL_CAP);
++                UTIL_BUF[..n].copy_from_slice(&bytes[..n]);
++                UTIL_LEN = n;
 +            }
 +            if get_utility_is_second_arg() {
 +                let mut off = 0usize;
@@ -324,6 +87,11 @@ index aeacfe0..f598b97 100644
 +                }
 +                EXEC_LEN = off;
 +            } else if let Some(arg) = std::os::myos::args::arg(0) {
++                let bytes = arg.as_bytes();
++                let n = bytes.len().min(EXEC_CAP);
++                EXEC_BUF[..n].copy_from_slice(&bytes[..n]);
++                EXEC_LEN = n;
++            } else if let Some(arg) = std::os::myos::args::exec_basename() {
 +                let bytes = arg.as_bytes();
 +                let n = bytes.len().min(EXEC_CAP);
 +                EXEC_BUF[..n].copy_from_slice(&bytes[..n]);
@@ -386,7 +154,7 @@ index aeacfe0..f598b97 100644
  static EXECUTION_PHRASE: LazyLock<String> = LazyLock::new(|| {
      if get_utility_is_second_arg() {
          ARGV.iter()
-@@ -383,15 +465,66 @@ static EXECUTION_PHRASE: LazyLock<String> = LazyLock::new(|| {
+@@ -383,15 +475,66 @@ static EXECUTION_PHRASE: LazyLock<String> = LazyLock::new(|| {
              .collect::<Vec<_>>()
              .join(" ")
      } else {
@@ -454,7 +222,7 @@ index aeacfe0..f598b97 100644
  /// Args contains arguments passed to the utility.
  /// It is a trait that extends `Iterator<Item = OsString>`.
  /// It provides utility functions to collect the arguments into a `Vec<String>`.
-@@ -410,19 +543,6 @@ pub trait Args: Iterator<Item = OsString> + Sized {
+@@ -410,19 +553,6 @@ pub trait Args: Iterator<Item = OsString> + Sized {
  
  impl<T: Iterator<Item = OsString> + Sized> Args for T {}
  

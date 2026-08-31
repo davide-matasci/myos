@@ -26,10 +26,11 @@ const CI_NEEDLES: [&str; 14] = [
 ];
 
 /// Extra serial markers for patched `std` / C / sbase / uutils / VFS smoke ELFs (via `/heap`).
-const CI_NEEDLES_STD: [&str; 13] = [
+const CI_NEEDLES_STD: [&str; 14] = [
     "std ok",
     "std cat ok",
     "std echo ok",
+    "bigalloc ok",
     "c ok",
     "sbase ok",
     "sls ok",
