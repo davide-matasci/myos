@@ -154,7 +154,7 @@ fn embed_uutils_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &s
     println!("cargo:rerun-if-changed={}", stable.display());
     if !stable.is_file() {
         panic!(
-            "uutils smoke ELF missing at {} (run ./scripts/build-uutils-myos.sh)",
+            "uutils coreutils ELF missing at {} (run ./scripts/build-uutils-myos.sh)",
             stable.display()
         );
     }
