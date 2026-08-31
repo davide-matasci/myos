@@ -484,6 +484,11 @@ fn build_argv_stack(
     if pad != 0 {
         sp = sp.checked_sub(pad)?;
     }
+    // AMD64 psABI: at _start, %rsp ≡ 8 (mod 16) as if the kernel had called it.
+    #[cfg(target_arch = "x86_64")]
+    {
+        sp = sp.checked_sub(8)?;
+    }
     if sp < stack_bot {
         return None;
     }
@@ -900,7 +905,12 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
         user_rsp as u64,
         ss,
     ];
+    const CR0_TS: u64 = 1 << 3;
     unsafe {
+        let mut cr0: u64;
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        cr0 &= !CR0_TS;
+        core::arch::asm!("mov cr0, {}", in(reg) cr0);
         core::arch::asm!(
             "cli",
             "mov rsp, {f}",
@@ -966,21 +976,6 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             options(noreturn, nostack),
         );
     }
-}
-
-/// Exec from a syscall: patch the saved user RSP/RIP on the kernel stack and
-/// return through `syscall_entry` → `sysretq` (same idea as AArch64 eret resume).
-#[cfg(target_arch = "x86_64")]
-fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize) -> bool {
-    let frame = unsafe { SYSCALL_FRAME };
-    if frame.is_null() {
-        return false;
-    }
-    unsafe {
-        *frame = rsp;
-        *frame.add(1) = entry;
-    }
-    true
 }
 
 /// Exec from a syscall: copy the saved frame and sret through `fork_sret_from_frame`.
@@ -1099,7 +1094,7 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
     crate::arch::fork_sret_to_user(frame.as_mut_ptr());
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -1116,15 +1111,6 @@ pub extern "C" fn syscall_dispatch(
     user_rip: usize,
     user_rsp: usize,
 ) -> usize {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let ksp: usize;
-        unsafe {
-            core::arch::asm!("mov {}, rsp", out(reg) ksp, options(nomem, nostack));
-        }
-        // syscall_entry stack: [nr][user_rsp][user_rip][r8][r9][r11]
-        unsafe { SYSCALL_FRAME = (ksp + core::mem::size_of::<usize>()) as *mut usize };
-    }
     task::save_user_context(user_rip, user_rsp);
     match nr {
         SYS_WRITE => sys_write(a0, a1, a2),
@@ -1241,10 +1227,6 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     };
     let argc = arg_refs.len();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
-    #[cfg(target_arch = "x86_64")]
-    if try_resume_exec_via_syscall_frame(entry, rsp) {
-        return 0;
-    }
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
     enter(entry, rsp, argc, argv);

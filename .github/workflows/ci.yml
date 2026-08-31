@@ -130,7 +130,7 @@ jobs:
       # Artifact quota exhaustion must not fail the pipeline: rust-cache keeps
       # target/myos-sysroot for the build job; fetch-sysroot rebuilds if needed.
       - name: Upload sysroot tarball
-        if: steps.sysroot_build.outcome == 'success'
+        if: steps.sysroot_build.outcome == 'success' && github.event_name != 'pull_request'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -277,6 +277,7 @@ jobs:
           ls -lh ci-build.tar
 
       - name: Upload CI build artifacts
+        if: github.event_name != 'pull_request'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:

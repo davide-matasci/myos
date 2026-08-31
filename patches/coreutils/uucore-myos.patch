@@ -1,16 +1,42 @@
 diff --git a/src/common/validation.rs b/src/common/validation.rs
-index b81cc1b..d1efef0 100644
+index b81cc1b..a1b2c3d 100644
 --- a/src/common/validation.rs
 +++ b/src/common/validation.rs
-@@ -83,7 +83,10 @@ fn get_canonical_util_name(util_name: &str) -> &str {
+@@ -71,6 +71,14 @@ fn get_canonical_util_name(util_name: &str) -> &str {
+     }
+ }
+ 
++/// Build a [`PathBuf`] without `PathBuf::from(OsString)` (myos aborts with exit 101).
++fn path_from_name(name: &str) -> PathBuf {
++    PathBuf::from(name)
++}
++
++fn path_from_osstring(s: &OsString) -> PathBuf {
++    path_from_name(s.to_str().unwrap_or("coreutils"))
++}
++
+ /// Gets the binary path from command line arguments
+ /// Panics if the binary path cannot be determined
+ #[cfg(any(
+@@ -81,9 +89,26 @@ fn get_canonical_util_name(util_name: &str) -> &str {
+     target_env = "musl"
+ ))]
  pub fn binary_path(args: &mut impl Iterator<Item = OsString>) -> PathBuf {
++    #[cfg(target_os = "myos")]
++    {
++        if let Some(arg0) = std::env::args().next() {
++            if !arg0.is_empty() {
++                let _ = args.next();
++                return path_from_name(&arg0);
++            }
++        }
++        return PathBuf::from("coreutils");
++    }
++    #[cfg(not(target_os = "myos"))]
      match args.next() {
-         Some(ref s) if !s.is_empty() => PathBuf::from(s),
+-        Some(ref s) if !s.is_empty() => PathBuf::from(s),
 -        // the fallback is valid only for hardlinks
-+        // myos has no `/proc/self/exe`; multicall dispatch must not unwrap here.
-+        #[cfg(target_os = "myos")]
-+        _ => PathBuf::from("coreutils"),
-+        #[cfg(not(target_os = "myos"))]
++        Some(s) if !s.is_empty() => path_from_osstring(&s),
          _ => std::env::current_exe().unwrap(),
      }
  }
@@ -57,7 +83,7 @@ index aeacfe0..c3a1b2d 100644
          .to_string_lossy()
          .into_owned()
  });
-@@ -383,7 +384,9 @@ static EXECUTION_PHRASE: LazyLock<String> = LazyLock::new(|| {
+@@ -383,7 +403,9 @@ static EXECUTION_PHRASE: LazyLock<String> = LazyLock::new(|| {
              .collect::<Vec<_>>()
              .join(" ")
      } else {
