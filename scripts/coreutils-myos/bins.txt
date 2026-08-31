@@ -1,0 +1,18 @@
+# uutils utilities built into the myos multicall ELF (see COREUTILS_FEATURES).
+echo
+true
+false
+pwd
+printf
+yes
+seq
+sleep
+wc
+head
+uniq
+cut
+tr
+env
+printenv
+basename
+dirname

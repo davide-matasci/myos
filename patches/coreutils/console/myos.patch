@@ -1,0 +1,22 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -115,6 +115,8 @@ mod unix_term;
+ mod utils;
+ #[cfg(target_arch = "wasm32")]
+ mod wasm_term;
++#[cfg(target_os = "myos")]
++mod myos_term;
+ #[cfg(windows)]
+ mod windows_term;
+ 
+--- a/src/term.rs
++++ b/src/term.rs
+@@ -681,6 +681,8 @@ impl Read for &Term {
+ 
+ #[cfg(all(unix, not(target_arch = "wasm32")))]
+ pub(crate) use crate::unix_term::*;
++#[cfg(target_os = "myos")]
++pub(crate) use crate::myos_term::*;
+ #[cfg(target_arch = "wasm32")]
+ pub(crate) use crate::wasm_term::*;
+ #[cfg(windows)]

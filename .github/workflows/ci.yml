@@ -265,7 +265,8 @@ jobs:
             target/std-*
             target/c-hello-*
             target/sbase-*
-            target/uutils-*
+            target/coreutils-*
+            target/.myos-coreutils-version
             target/limine-v*
           )
           if [ -f target/virt.dtb ]; then

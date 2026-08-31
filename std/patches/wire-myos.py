@@ -39,7 +39,7 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
             ),
             (
                 '#[cfg(target_os = "hermit")]\npub mod hermit;',
-                '#[cfg(target_os = "hermit")]\npub mod hermit;\n#[cfg(target_os = "myos")]\npub mod myos;\n#[cfg(target_os = "myos")]\npub mod unix {\n    #![stable(feature = "rust1", since = "1.0.0")]\n    pub mod io {\n        #![stable(feature = "rust1", since = "1.0.0")]\n        #[stable(feature = "rust1", since = "1.0.0")]\n        pub use crate::os::fd::*;\n    }\n    pub mod ffi {\n        #![stable(feature = "rust1", since = "1.0.0")]\n        #[stable(feature = "rust1", since = "1.0.0")]\n        pub use crate::os::myos::ffi::*;\n    }\n}',
+                '#[cfg(target_os = "hermit")]\npub mod hermit;\n#[cfg(target_os = "myos")]\npub mod myos;\n#[cfg(target_os = "myos")]\npub mod unix {\n    #![stable(feature = "rust1", since = "1.0.0")]\n    pub mod io {\n        #![stable(feature = "rust1", since = "1.0.0")]\n        #[stable(feature = "rust1", since = "1.0.0")]\n        pub use crate::os::fd::*;\n    }\n    pub mod fs {\n        #![stable(feature = "rust1", since = "1.0.0")]\n        #[stable(feature = "rust1", since = "1.0.0")]\n        pub use crate::os::myos::fs::*;\n    }\n    pub mod ffi {\n        #![stable(feature = "rust1", since = "1.0.0")]\n        #[stable(feature = "rust1", since = "1.0.0")]\n        pub use crate::os::myos::ffi::*;\n    }\n    pub mod prelude {\n        #![stable(feature = "rust1", since = "1.0.0")]\n        #[stable(feature = "rust1", since = "1.0.0")]\n        pub use crate::os::myos::ffi::OsStrExt;\n    }\n}',
             ),
         ],
     ),
@@ -376,6 +376,48 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
 ]
 
 
+def apply_myos_file_fd_impls(path: Path) -> None:
+    marker = "MYOS_FILE_FD_IMPLS"
+    text = path.read_text()
+    if marker in text:
+        return
+    impls = f'''
+// {marker}
+#[stable(feature = "io_safety", since = "1.63.0")]
+#[cfg(target_os = "myos")]
+impl AsFd for crate::fs::File {{
+    #[inline]
+    fn as_fd(&self) -> BorrowedFd<'_> {{
+        crate::sys::AsInner::as_inner(self).as_fd()
+    }}
+}}
+
+#[stable(feature = "io_safety", since = "1.63.0")]
+#[cfg(target_os = "myos")]
+impl From<crate::fs::File> for OwnedFd {{
+    #[inline]
+    fn from(file: crate::fs::File) -> OwnedFd {{
+        crate::sys::IntoInner::into_inner(crate::sys::IntoInner::into_inner(
+            crate::sys::IntoInner::into_inner(file),
+        ))
+    }}
+}}
+
+#[stable(feature = "io_safety", since = "1.63.0")]
+#[cfg(target_os = "myos")]
+impl From<OwnedFd> for crate::fs::File {{
+    #[inline]
+    fn from(owned_fd: OwnedFd) -> crate::fs::File {{
+        crate::sys::FromInner::from_inner(crate::sys::FromInner::from_inner(
+            crate::sys::FromInner::from_inner(owned_fd),
+        ))
+    }}
+}}
+'''
+    path.write_text(text + impls)
+    print(f"added myos File/Stdio fd impls in {path}")
+
+
 def apply_replacements(path: Path, pairs: list[tuple[str, str]]) -> None:
     text = path.read_text()
     original = text
@@ -422,6 +464,7 @@ def main() -> None:
 
     patch_fd_impl_guards(patch_root / "std/src/os/fd/raw.rs")
     patch_fd_impl_guards(patch_root / "std/src/os/fd/owned.rs")
+    apply_myos_file_fd_impls(patch_root / "std/src/os/fd/owned.rs")
 
     overlays = [
         (repo / "std/pal/myos", patch_root / "std/src/sys/pal/myos"),

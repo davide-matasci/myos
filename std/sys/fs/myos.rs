@@ -7,7 +7,7 @@ use crate::path::{Path, PathBuf};
 use crate::sys::fd::FileDesc;
 use crate::sys::myos::abi;
 use crate::sys::time::SystemTime;
-use crate::sys::{cvt, unsupported, unsupported_err};
+use crate::sys::{cvt, unsupported, unsupported_err, AsInner, FromInner, IntoInner};
 use crate::fmt;
 
 #[path = "unsupported.rs"]
@@ -310,6 +310,25 @@ impl File {
 
     pub fn set_times(&self, _times: FileTimes) -> io::Result<()> {
         unsupported()
+    }
+}
+
+impl AsInner<FileDesc> for File {
+    #[inline]
+    fn as_inner(&self) -> &FileDesc {
+        &self.0
+    }
+}
+
+impl IntoInner<FileDesc> for File {
+    fn into_inner(self) -> FileDesc {
+        self.0
+    }
+}
+
+impl FromInner<FileDesc> for File {
+    fn from_inner(file_desc: FileDesc) -> Self {
+        Self(file_desc)
     }
 }
 

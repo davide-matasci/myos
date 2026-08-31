@@ -15,9 +15,6 @@ const STD_CAT_ELF: &[u8] = include_bytes!(env!("USER_STD_CAT_PATH"));
 const STD_ECHO_ELF: &[u8] = include_bytes!(env!("USER_STD_ECHO_PATH"));
 const BIGALLOC_ELF: &[u8] = include_bytes!(env!("USER_BIGALLOC_PATH"));
 const C_HELLO_ELF: &[u8] = include_bytes!(env!("USER_C_HELLO_PATH"));
-const UUTILS_ECHO_ELF: &[u8] = include_bytes!(env!("USER_UUTILS_ECHO_PATH"));
-const UUTILS_TRUE_ELF: &[u8] = include_bytes!(env!("USER_UUTILS_TRUE_PATH"));
-const UUTILS_FALSE_ELF: &[u8] = include_bytes!(env!("USER_UUTILS_FALSE_PATH"));
 const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
 const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
 const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
@@ -154,9 +151,6 @@ pub fn init_embedded() {
     let _ = register("echo", ECHO_ELF);
     let _ = register("cat", CAT_ELF);
     let _ = register("ls", LS_ELF);
-    let _ = register("uutils-echo", UUTILS_ECHO_ELF);
-    let _ = register("uutils-true", UUTILS_TRUE_ELF);
-    let _ = register("uutils-false", UUTILS_FALSE_ELF);
 }
 
 /// Register Limine-mapped modules by basename (overrides embedded names).

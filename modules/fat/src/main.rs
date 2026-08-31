@@ -16,6 +16,7 @@ const FILE_CAP: usize = 4096;
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 
+#[repr(C)]
 struct Entry {
     name: [u8; NAME_CAP],
     name_len: u8,
@@ -25,6 +26,7 @@ struct Entry {
     loaded: bool,
 }
 
+#[repr(C)]
 struct FatVol {
     ready: bool,
     fat_lba: u64,
@@ -170,7 +172,9 @@ unsafe fn init_volume(api: &KernelApi) -> Result<(), i32> {
 
 unsafe fn finish_volume(api: &KernelApi) -> Result<(), i32> {
     let vol = &mut *core::ptr::addr_of_mut!(VOL);
-    for i in 0..vol.count as usize {
+    let nent = (vol.count as usize).min(MAX_ENTRIES);
+    vol.count = nent as u8;
+    for i in 0..nent {
         let cluster = vol.entries[i].cluster;
         let size = vol.entries[i].size as usize;
         let n = read_file(
@@ -207,9 +211,13 @@ fn entry_index(name: &str) -> Option<usize> {
     if !vol.ready {
         return None;
     }
-    for i in 0..vol.count as usize {
+    let nent = (vol.count as usize).min(MAX_ENTRIES);
+    for i in 0..nent {
         let ent = &vol.entries[i];
         let n = ent.name_len as usize;
+        if n == 0 || n > NAME_CAP {
+            continue;
+        }
         if n == name.len() && &ent.name[..n] == name.as_bytes() {
             return Some(i);
         }
@@ -225,7 +233,7 @@ fn entry_bytes(name: &[u8]) -> Option<&'static [u8]> {
     if !ent.loaded {
         return None;
     }
-    let len = ent.size as usize;
+    let len = (ent.size as usize).min(FILE_CAP);
     Some(unsafe { core::slice::from_raw_parts(ent.data.as_ptr(), len) })
 }
 
@@ -299,9 +307,14 @@ unsafe extern "C" fn fat_listdir(
         return -1;
     }
     let mut n = 0usize;
-    for i in 0..vol.count as usize {
+    let nent = (vol.count as usize).min(MAX_ENTRIES);
+    for i in 0..nent {
         let ent = &vol.entries[i];
-        let name = &ent.name[..ent.name_len as usize];
+        let name_len = ent.name_len as usize;
+        if name_len == 0 || name_len > NAME_CAP {
+            continue;
+        }
+        let name = &ent.name[..name_len];
         let need = name.len() + 1;
         if n + need > buf_len {
             break;

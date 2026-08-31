@@ -1,6 +1,7 @@
 //! Tiny VFS facade: syscalls and modules talk to [`vfs`]; bootfs is one mount.
 
 pub mod bootfs;
+mod coreutilsfs;
 mod sbasefs;
 mod vfs;
 
@@ -46,7 +47,7 @@ pub fn mount_module(name: &str, prefix: &str, ops: myos_abi::ModuleVfsOps) -> bo
     vfs::mount_module(name, prefix, ops)
 }
 
-/// Mount bootfs at `/`, sbasefs at `/s/`, and register embedded user ELFs.
+/// Mount bootfs at `/`, sbasefs at `/s/`, coreutilsfs at `/c/`, and register embedded user ELFs.
 pub fn init() {
     vfs::mount(
         "bootfs",
@@ -70,6 +71,17 @@ pub fn init() {
         },
     );
     sbasefs::init_embedded();
+    vfs::mount(
+        "coreutilsfs",
+        "c",
+        vfs::MountOps {
+            lookup: coreutilsfs::lookup,
+            stat: coreutilsfs::stat,
+            listdir: coreutilsfs::listdir_at,
+            register: coreutilsfs::register,
+        },
+    );
+    coreutilsfs::init_embedded();
 }
 
 /// Ingest Limine ESP modules into bootfs (overrides embedded names).

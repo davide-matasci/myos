@@ -1,0 +1,12 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -318,6 +318,8 @@ cfg_if! {
+     } else if #[cfg(all(target_arch = "wasm32", target_os = "wasi"))] {
+         #[path = "wasi.rs"] mod imp;
+     } else if #[cfg(target_os = "hermit")] {
+         #[path = "hermit.rs"] mod imp;
++    } else if #[cfg(target_os = "myos")] {
++        #[path = "myos.rs"] mod imp;
+     } else if #[cfg(target_os = "vxworks")] {
+         mod util_libc;
+         #[path = "vxworks.rs"] mod imp;

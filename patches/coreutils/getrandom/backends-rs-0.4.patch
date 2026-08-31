@@ -1,0 +1,12 @@
+--- a/src/backends.rs
++++ b/src/backends.rs
+@@ -147,6 +147,9 @@ cfg_if! {
+     } else if #[cfg(target_os = "hermit")] {
+         mod hermit;
+         pub use hermit::*;
++    } else if #[cfg(target_os = "myos")] {
++        mod myos;
++        pub use myos::*;
+     } else if #[cfg(all(target_arch = "x86_64", target_os = "motor"))] {
+         mod rdrand;
+         pub use rdrand::*;
