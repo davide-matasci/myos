@@ -28,7 +28,7 @@
  
  	return 0;
  }
-@@ -731,70 +725,14 @@
+@@ -731,70 +725,17 @@
  int
  timex(struct op *t, int f, volatile int *xerrok)
  {
@@ -94,6 +94,9 @@
 -	shf_flush(shl_out);
 -
 -	return rv;
++#define TF_NOARGS	BIT(0)
++#define TF_NOREAL	BIT(1)		/* don't report real time */
++#define TF_POSIX	BIT(2)		/* report in posix format */
 +	/* myos: no clock_gettime/getrusage; still run the command. */
 +	(void)f;
 +	if (t->left)
