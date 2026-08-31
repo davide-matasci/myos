@@ -1,34 +1,47 @@
 #!/usr/bin/env bash
-# Cross-compile small C smoke ELFs with libmyos-c (clang; optional tcc noted in README).
+# Cross-compile C smoke ELFs with newlib + myos libgloss.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-"$ROOT/scripts/build-c-libc.sh"
-INC="$ROOT/libc/include"
-CC="${MYOS_C_CC:-clang}"
+# shellcheck source=scripts/myos-c-userspace-lib.sh
+source "$ROOT/scripts/myos-c-userspace-lib.sh"
+
+if myos_c_hello_is_current; then
+  echo "c-hello ELFs up to date"
+  exit 0
+fi
+
+"$ROOT/scripts/build-newlib.sh"
+export PATH="$ROOT/target/newlib-bin:$PATH"
 
 link_prog() {
   local name="$1"
   local src="$2"
-  local triple="$3"
-  local arch="$4"
-  local lib="$ROOT/target/c-lib-${arch}/libmyos-c.a"
-  local out="$ROOT/target/c-${name}-${triple}"
+  local arch="$3"
+  local triple="${arch}-unknown-myos"
+  local out="$ROOT/target/c-${name}-${arch}-unknown-none"
+  local prefix="$ROOT/target/newlib-${arch}"
+  local inc="$prefix/${triple}/include"
+  local lib="$prefix/${triple}/lib"
   local obj="$ROOT/target/c-${name}-${arch}.o"
-  echo "==> c-${name} ($triple)"
-  "$CC" --target="$triple" -ffreestanding -nostdinc -fPIC -O2 -isystem "$INC" \
-    -c "$src" -o "$obj"
+  local cc="${triple}-cc"
+
+  echo "==> c-${name} ($triple / newlib)"
+  "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$src" -o "$obj"
+
   if [[ "$arch" == "aarch64" ]]; then
     aarch64-linux-gnu-ld -pie --no-dynamic-linker -o "$out" \
-      --entry=_start -z max-page-size=4096 "$obj" "$lib"
+      --entry=_start -z max-page-size=4096 \
+      "$lib/crt0.o" "$obj" -L"$lib" --start-group -lc -lgloss -lg --end-group
   else
     ld.lld -pie --no-dynamic-linker -o "$out" \
-      --entry=_start -z max-page-size=4096 "$obj" "$lib"
+      --entry=_start -z max-page-size=4096 \
+      "$lib/crt0.o" "$obj" -L"$lib" --start-group -lc -lgloss -lg --end-group
   fi
   echo "c-${name} -> $out"
 }
 
-for triple in x86_64-unknown-none aarch64-unknown-none riscv64-unknown-none; do
-  arch="${triple%-unknown-none}"
-  link_prog hello "$ROOT/c/hello.c" "$triple" "$arch"
-  link_prog echo "$ROOT/c/echo.c" "$triple" "$arch"
+for arch in x86_64 aarch64 riscv64; do
+  link_prog hello "$ROOT/c/hello.c" "$arch"
 done
+
+echo "$(myos_c_hello_version_hash)" >"$MYOS_C_HELLO_VERSION"

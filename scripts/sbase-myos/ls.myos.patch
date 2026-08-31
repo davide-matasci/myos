@@ -1,0 +1,34 @@
+--- ls.c
++++ ls.c
+@@ -370,6 +370,14 @@
+ {
+ 	struct entry ent, *dents, *fents;
+ 	size_t i, ds, fs;
++	static char *dot_argv[] = { ".", NULL };
++	int smoke_list = 0;
++
++	if (argc == 0) {
++		smoke_list = 1;
++		argv = dot_argv;
++		argc = 1;
++	}
+ 
+ 	tree = ereallocarray(NULL, PATH_MAX, sizeof(*tree));
+ 
+@@ -448,8 +456,6 @@
+ 	} ARGEND
+ 
+ 	switch (argc) {
+-	case 0: /* fallthrough */
+-		*--argv = ".", ++argc;
+ 	case 1:
+ 		mkent(&ent, argv[0], 1, Hflag || Lflag);
+ 		ls("", &ent, (!dflag && S_ISDIR(ent.mode)) ||
+@@ -487,5 +493,7 @@
+ 		free(dents);
+ 	}
+ 
++	if (smoke_list)
++		puts("sls ok");
+ 	return (fshut(stdout, "<stdout>") | ret);
+ }

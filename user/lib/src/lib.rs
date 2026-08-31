@@ -65,7 +65,11 @@ pub fn exit_code(code: u8) -> ! {
 }
 
 pub fn open(path: &[u8]) -> Option<usize> {
-    let fd = unsafe { sys_open(path.as_ptr() as usize, path.len()) };
+    open_flags(path, 0)
+}
+
+pub fn open_flags(path: &[u8], flags: u32) -> Option<usize> {
+    let fd = unsafe { sys_open(path.as_ptr() as usize, path.len(), flags as usize) };
     if fd == usize::MAX {
         None
     } else {
@@ -87,6 +91,9 @@ pub fn exec(path: &[u8], args: &[&[u8]]) {
     exec_env(path, args, &[]);
 }
 
+const MAX_EXEC_ARG_LEN: usize = 128;
+const MAX_EXEC_ENV_LEN: usize = 128;
+
 /// Like [`exec`], but passes a `KEY=value` environment block to the new image.
 pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
     let argc = args.len().min(MAX_EXEC_ARGS);
@@ -97,17 +104,37 @@ pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
         }
         return;
     }
+    // AArch64 user ELFs are ET_EXEC (no PIE): static slice pointers keep link-time
+    // VAs (~0x0020_xxxx) and the kernel rejects them. Copy onto the stack first.
+    let mut arg_buf = [[0u8; MAX_EXEC_ARG_LEN]; MAX_EXEC_ARGS];
+    let mut arg_ptrs = [0usize; MAX_EXEC_ARGS];
+    let mut arg_lens = [0usize; MAX_EXEC_ARGS];
+    for (i, a) in args.iter().take(MAX_EXEC_ARGS).enumerate() {
+        let n = a.len().min(MAX_EXEC_ARG_LEN);
+        arg_buf[i][..n].copy_from_slice(&a[..n]);
+        arg_ptrs[i] = arg_buf[i].as_ptr() as usize;
+        arg_lens[i] = n;
+    }
+    let mut env_buf = [[0u8; MAX_EXEC_ENV_LEN]; MAX_EXEC_ENV];
+    let mut env_ptrs = [0usize; MAX_EXEC_ENV];
+    let mut env_lens = [0usize; MAX_EXEC_ENV];
+    for (i, e) in env.iter().take(MAX_EXEC_ENV).enumerate() {
+        let n = e.len().min(MAX_EXEC_ENV_LEN);
+        env_buf[i][..n].copy_from_slice(&e[..n]);
+        env_ptrs[i] = env_buf[i].as_ptr() as usize;
+        env_lens[i] = n;
+    }
     let mut pack = [0usize; 1 + MAX_EXEC_ARGS * 2 + 1 + MAX_EXEC_ENV * 2];
     pack[0] = argc;
-    for (i, a) in args.iter().take(MAX_EXEC_ARGS).enumerate() {
-        pack[1 + i * 2] = a.as_ptr() as usize;
-        pack[2 + i * 2] = a.len();
+    for i in 0..argc {
+        pack[1 + i * 2] = arg_ptrs[i];
+        pack[2 + i * 2] = arg_lens[i];
     }
     let env_base = 1 + argc * 2;
     pack[env_base] = envc;
-    for (i, e) in env.iter().take(MAX_EXEC_ENV).enumerate() {
-        pack[env_base + 1 + i * 2] = e.as_ptr() as usize;
-        pack[env_base + 2 + i * 2] = e.len();
+    for i in 0..envc {
+        pack[env_base + 1 + i * 2] = env_ptrs[i];
+        pack[env_base + 2 + i * 2] = env_lens[i];
     }
     unsafe {
         sys_exec(path.as_ptr() as usize, path.len(), pack.as_ptr() as usize);
@@ -157,9 +184,16 @@ pub fn dup2(oldfd: usize, newfd: usize) -> bool {
     unsafe { sys_dup2(oldfd, newfd) != usize::MAX }
 }
 
-/// List bootfs entries (newline-separated) into `buf`. Returns byte count.
-pub fn listdir(buf: &mut [u8]) -> usize {
-    unsafe { sys_listdir(buf.as_mut_ptr() as usize, buf.len()) }
+/// List directory entries at `path` (newline-separated) into `buf`.
+/// `buf` must hold at least 512 bytes (kernel listdir cap).
+pub fn listdir(path: &[u8], buf: &mut [u8]) -> usize {
+    unsafe {
+        sys_listdir(
+            path.as_ptr() as usize,
+            path.len(),
+            buf.as_mut_ptr() as usize,
+        )
+    }
 }
 
 /// Adjust the program break. `addr == 0` queries the current break.
@@ -264,13 +298,14 @@ unsafe fn sys_exit(code: usize) -> ! {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sys_open(ptr: usize, len: usize) -> usize {
+unsafe fn sys_open(ptr: usize, len: usize, flags: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
         "syscall",
         in("rax") 2usize,
         in("rdi") ptr,
         in("rsi") len,
+        in("rdx") flags,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
@@ -405,13 +440,14 @@ unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sys_listdir(buf: usize, len: usize) -> usize {
+unsafe fn sys_listdir(path: usize, path_len: usize, buf: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
         "syscall",
         in("rax") 8usize,
-        in("rdi") buf,
-        in("rsi") len,
+        in("rdi") path,
+        in("rsi") path_len,
+        in("rdx") buf,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
@@ -464,13 +500,14 @@ unsafe fn sys_exit(code: usize) -> ! {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn sys_open(ptr: usize, len: usize) -> usize {
+unsafe fn sys_open(ptr: usize, len: usize, flags: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
         "svc #0",
         in("x8") 2usize,
         inout("x0") ptr => ret,
         in("x1") len,
+        in("x2") flags,
         options(nostack),
     );
     ret
@@ -565,13 +602,14 @@ unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn sys_listdir(buf: usize, len: usize) -> usize {
+unsafe fn sys_listdir(path: usize, path_len: usize, buf: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
         "svc #0",
         in("x8") 8usize,
-        inout("x0") buf => ret,
-        in("x1") len,
+        inout("x0") path => ret,
+        in("x1") path_len,
+        in("x2") buf,
         options(nostack),
     );
     ret
@@ -612,13 +650,14 @@ unsafe fn sys_exit(code: usize) -> ! {
 }
 
 #[cfg(target_arch = "riscv64")]
-unsafe fn sys_open(ptr: usize, len: usize) -> usize {
+unsafe fn sys_open(ptr: usize, len: usize, flags: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
         "ecall",
         in("a7") 2usize,
         inout("a0") ptr => ret,
         in("a1") len,
+        in("a2") flags,
         options(nostack),
     );
     ret
@@ -704,13 +743,14 @@ unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
 }
 
 #[cfg(target_arch = "riscv64")]
-unsafe fn sys_listdir(buf: usize, len: usize) -> usize {
+unsafe fn sys_listdir(path: usize, path_len: usize, buf: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
         "ecall",
         in("a7") 8usize,
-        inout("a0") buf => ret,
-        in("a1") len,
+        inout("a0") path => ret,
+        in("a1") path_len,
+        in("a2") buf,
         options(nostack),
     );
     ret

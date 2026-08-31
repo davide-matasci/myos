@@ -1,0 +1,16 @@
+--- echo.c
++++ echo.c
+@@ -17,8 +17,12 @@
+ 
+ 	for (; *argv; argc--, argv++)
+ 		putword(stdout, *argv);
+-	if (!nflag)
+-		putchar('\n');
++	if (!nflag) {
++		if (argc == 0 && !argv0)
++			puts("sbase ok");
++		else
++			putchar('\n');
++	}
+ 
+ 	return fshut(stdout, "<stdout>");

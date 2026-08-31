@@ -18,9 +18,9 @@ fn init_heap() {
             return;
         }
         BRK_INIT = true;
-        let end = brk(0);
-        BRK_END = end;
-        BRK_PTR = end;
+        let base = brk(0);
+        BRK_PTR = base;
+        BRK_END = base;
     }
 }
 

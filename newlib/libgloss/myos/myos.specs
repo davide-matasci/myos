@@ -1,0 +1,10 @@
+%rename link_gcc_c_sequence                myos_link_gcc_c_sequence
+
+*myos_libgloss:
+-lgloss
+
+*myos_libc:
+-lc
+
+*link_gcc_c_sequence:
+%(myos_link_gcc_c_sequence) --start-group %G %(myos_libc) %(myos_libgloss) --end-group

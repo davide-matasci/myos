@@ -1,43 +1,66 @@
-//! Tiny VFS: a mount table. First backend is bootfs (embed, Limine, vfs_register).
+//! Tiny VFS facade: syscalls and modules talk to [`vfs`]; bootfs is one mount.
 
 pub mod bootfs;
+mod vfs;
 
-/// A file whose bytes live for the life of the kernel (Limine map or embed).
-pub struct File {
-    pub data: &'static [u8],
+pub use vfs::{StatInfo, Vnode};
+
+/// Resolve `path` to a vnode for open/read.
+pub fn open(path: &str, flags: u32) -> Option<Vnode> {
+    vfs::open(path, flags)
 }
 
-struct Mount {
-    #[allow(dead_code)]
-    name: &'static str,
-    lookup: fn(&str) -> Option<&'static [u8]>,
-}
-
-static MOUNTS: &[Mount] = &[Mount {
-    name: "bootfs",
-    lookup: bootfs::lookup,
-}];
-
-/// Look up `path` (`/ok` or `ok`) on the first matching mount.
+/// Look up `path` on the best matching mount.
 pub fn lookup(path: &str) -> Option<&'static [u8]> {
-    let name = path.trim_start_matches('/');
-    if name.is_empty() {
-        return None;
-    }
-    for m in MOUNTS {
-        if let Some(data) = (m.lookup)(name) {
-            return Some(File { data }.data);
-        }
-    }
-    None
+    vfs::lookup(path)
 }
 
-/// List bootfs basenames into `buf` (newline-separated).
-pub fn listdir(buf: &mut [u8]) -> usize {
-    bootfs::listdir(buf)
+/// Read from an open vnode.
+pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
+    vfs::read(node, pos, out)
 }
 
-/// Register the embedded `/ok` fallback, then Limine modules (ESP wins).
+/// Stat `path` on the best matching mount.
+pub fn stat(path: &str) -> Option<StatInfo> {
+    vfs::stat(path)
+}
+
+/// List entries at `path` into `buf` (newline-separated basenames).
+pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
+    vfs::listdir(path, buf)
+}
+
+/// Register `name` on mount `mount_name` (bootfs copies into its table).
+pub fn register(mount_name: &str, name: &str, bytes: &'static [u8]) -> bool {
+    vfs::register(mount_name, name, bytes)
+}
+
+/// Register without copying; `bytes` must outlive the kernel.
+pub fn register_static(mount_name: &str, name: &str, bytes: &'static [u8]) -> bool {
+    vfs::register_static(mount_name, name, bytes)
+}
+
+/// Mount a module-provided backend at `/prefix/…`.
+pub fn mount_module(name: &str, prefix: &str, ops: myos_abi::ModuleVfsOps) -> bool {
+    vfs::mount_module(name, prefix, ops)
+}
+
+/// Mount bootfs at `/` and register embedded user ELFs.
 pub fn init() {
-    bootfs::init();
+    vfs::mount(
+        "bootfs",
+        "",
+        vfs::MountOps {
+            lookup: bootfs::lookup,
+            stat: bootfs::stat,
+            listdir: bootfs::listdir_at,
+            register: bootfs::register,
+        },
+    );
+    bootfs::init_embedded();
+}
+
+/// Ingest Limine ESP modules into bootfs (overrides embedded names).
+pub fn init_limine() {
+    bootfs::init_limine();
 }

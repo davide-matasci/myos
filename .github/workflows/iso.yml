@@ -21,15 +21,26 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: limine-8.3-1
-      - name: Install xorriso and a C compiler
-        run: sudo apt-get update && sudo apt-get install -y xorriso clang lld binutils-aarch64-linux-gnu
+          prefix-key: limine-8.3-2
+          cache-directories: |
+            target/myos-sysroot
+            target/newlib-x86_64
+            target/newlib-aarch64
+            target/newlib-src
+            target/newlib-bin
+            target/sbase-src
+            target/sbase-myos-build
+      - name: Install xorriso and build tools
+        run: sudo apt-get update && sudo apt-get install -y xorriso clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd
 
-      - name: Build myos sysroot, std hello, and C smoke ELFs (x86 + AArch64)
+      - name: Build myos sysroot, newlib, C/sbase/uutils ELFs
         run: |
           chmod +x scripts/*.sh
+          ./scripts/fetch-sysroot.sh
           ./scripts/build-std-hello.sh
           ./scripts/build-c-hello.sh
+          ./scripts/build-sbase.sh
+          ./scripts/build-uutils-myos.sh
 
       - name: Build x86_64 hybrid ISO
         run: |

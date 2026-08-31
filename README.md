@@ -225,11 +225,17 @@ or connect serial to see the rest.
 
 ## VFS, virtio-blk, and FAT16
 
-A tiny VFS (`kernel/src/fs/`) is a **mount table** with ops/`lookup`. The
-backend is **bootfs**: Limine modules (basename of `file.path()`, stripping
-`boot():` and slashes), an embedded `/ok` ELF fallback, and files
-registered at runtime through `KernelApi::vfs_register`. ESP `boot/ok`
-overwrites the embed when both exist.
+A VFS layer (`kernel/src/fs/vfs.rs`) holds a **mount table**; each mount
+has a name, optional path prefix, and [`MountOps`] (`lookup`, `stat`,
+`listdir`, `register`). Syscalls route through the VFS, which picks the
+longest matching prefix (root mount uses `""` today, so `/ok` and `ok` both
+resolve on bootfs).
+
+**bootfs** is the first mount at `/` (`kernel/src/fs/bootfs.rs`): a flat
+read-only namespace. Embedded user ELFs are registered at boot; Limine ESP
+modules override by basename; loadable modules add files via
+`KernelApi::vfs_register` on the `"bootfs"` mount (e.g. FAT registers
+`msg`). ESP `boot/ok` overwrites the embed when both exist.
 
 **virtio-blk is in-kernel** (`kernel/src/blk.rs`), not a loadable module
 (chicken/egg: the FAT parser needs block I/O to load). x86 uses PCI config
@@ -289,12 +295,14 @@ unsafe extern "C" fn module_exit() // optional
 ```
 
 `KernelApi` (`modules/abi`) is a `#[repr(C)]` table (`write_str`, `alloc`,
-`dealloc`, `blk_read`, `vfs_register`). ABI version is **2**; new pointers
-are appended, never reordered. The kernel fills it and passes `&KernelApi`
-into `module_init`. Modules must not call kernel internals. There is no
-dynamic linker against kernel `.dynsym`. `blk_read` returns 0 or −1.
-`vfs_register` copies into the bootfs table (kernel-owned `'static`) and
-takes a basename without slash (`msg`).
+`dealloc`, `blk_read`, `vfs_register`, `vfs_register_static`, `vfs_mount`).
+ABI version is **3**; new pointers are appended, never reordered. The kernel
+fills it and passes `&KernelApi` into `module_init`. Modules must not call
+kernel internals. There is no dynamic linker against kernel `.dynsym`.
+`blk_read` returns 0 or −1. `vfs_register` copies into the bootfs mount;
+`vfs_register_static` borrows module/rodata bytes without copying.
+`vfs_mount` attaches a [`ModuleVfsOps`] backend at `/prefix/…` (see
+`modules/stubfs` mounting `/disk/ping`).
 
 Do **not** add a module as a cargo artifact-dep of the kernel (that panics
 the feature resolver). Do **not** put it in `[build-dependencies]` (those
@@ -445,29 +453,47 @@ CI checks `println!("std ok")` on BIOS, UEFI, and AArch64. App crates link again
 the prebuilt sysroot (no `-Z build-std` on each app build). More syscalls (`open`,
 process, time, …) are still needed for real programs beyond the smoke test.
 
-### C userspace (`libmyos-c`)
+### C userspace (newlib + libgloss)
 
-For small freestanding C programs, myos ships a minimal libc and cross-compile
-scripts (host **clang** + **lld**, not a full musl/newlib port):
+C programs link against **newlib** with a myos **libgloss** port (syscall
+adapters + ENOSYS stubs). Host **clang** cross-compiles; no new kernel syscalls
+required beyond the existing myos ABI.
 
 ```sh
-./scripts/build-c-libc.sh    # libmyos-c.a for x86_64 and AArch64
-./scripts/build-c-hello.sh   # smoke ELFs → target/c-hello-*
+./scripts/build-newlib.sh   # fetch newlib 4.4.0, build libc + libgloss/myos
+./scripts/build-c-hello.sh  # minimal write() smoke → target/c-hello-*
+./scripts/build-sbase.sh    # suckless sbase subset → target/sbase-*
 ```
 
 | Path | Role |
 |------|------|
-| `libc/include/` | Tiny headers (`unistd`, `stdio`, `string`, `stdlib`, `myos/syscall.h`) |
-| `libc/src/` | Syscall wrappers, `puts`/`printf`, bump `malloc`, `environ` |
-| `libc/src/crt/` | `_start` + SysV stack (x86) or argc/argv in x0/x1 (AArch64) |
-| `c/hello.c`, `c/echo.c` | Smoke tests (`c ok`, argv echo) |
-| `scripts/build-c-libc.sh` | Build static `libmyos-c.a` per arch |
-| `scripts/build-c-hello.sh` | Link smoke ELFs with `-nostdlib` |
+| `newlib/libgloss/myos/` | libgloss port: `_read`/`_write`/`_open`/… → myos syscalls; stubs return `ENOSYS`/`EROFS` |
+| `scripts/fetch-newlib.sh` | Clone pinned newlib into `target/newlib-src` |
+| `scripts/patch-newlib-myos.sh` | Register `*-unknown-myos`, install libgloss port |
+| `scripts/build-newlib.sh` | Build/install newlib per arch |
+| `scripts/build-libgloss-myos.sh` | Build `libgloss.a` + `crt0.o` (called by build-newlib) |
+| `scripts/build-c-hello.sh` | Link minimal C smoke with `-lc -lgloss` |
+| `scripts/fetch-sbase.sh` | Clone pinned [sbase](https://git.suckless.org/sbase) into `target/sbase-src` |
+| `scripts/prepare-sbase-myos.sh` | Apply myos patches to upstream `echo`, `pwd`, `ls` |
+| `scripts/build-sbase.sh` | Cross-build sbase `echo`, `cat`, `true`, `false`, `ls`, `pwd`, `basename`, `dirname` |
+| `scripts/sbase-myos/` | Small `.myos.patch` files (CI smoke, exec argv); `trunctfdf2.c` for aarch64 |
+| `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
 
-The kernel embeds `/chello` from `target/c-hello-<triple>` (same pattern as
-`/stdhello`). CI checks `c ok` after the Rust `std` smoke tests. A future TCC
-port could target the same syscall ABI; musl/newlib are intentionally out of
-scope until more POSIX syscalls exist.
+Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
+`open` read-only, `close`, `brk`, `fork`, `wait`, `stat` via **`SYS_STAT` (12)**).
+`opendir`/`readdir`/`closedir` and `getcwd`/`chdir` stubs live in libgloss for
+flat bootfs. Write-only open flags and `lseek`/`execve`/… return `EROFS`/`ENOSYS`.
+Do **not** use `-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
+
+Upstream sbase (`cat`, `true`, `ls`, `pwd`, …) is fetched at build time; only
+small `.myos.patch` files live in-tree (CI smoke strings, myos exec argv quirks).
+Tools use upstream newlib stdio (`puts`, `printf`, `fshut`) and libutil; the
+kernel enables user SIMD/FP (x86_64 SSE, AArch64 NEON) so `-O2` libc code does
+not fault on stdio init.
+Libgloss adds `time`/`localtime`, flat `getpwuid`/`getgrgid` (root), `readlink`
+(`ENOSYS`), and `sys/sysmacros.h` so upstream `ls -l` links. Bootfs exposes
+`/secho`, `/scat`, `/strue`, `/sls`, `/sfalse`, `/spwd`, and `/sbasename`; CI
+checks `sbase ok` from `/secho` and `sls ok` from `/sls` via `user/heap`.
 
 The in-tree shell (`user/sh`) supports `export NAME=value`, `env`, pipes, stdin
 redirect (`<`), and `$?`. Output redirect (`>`) is deferred while bootfs stays
@@ -484,7 +510,7 @@ read-only.
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
 | `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages, virtqueues) |
 | `kernel/src/blk.rs` | In-kernel virtio-blk: `init` + 512-byte sector `read` |
-| `kernel/src/fs/` | Tiny VFS: mount table + bootfs (Limine modules + embedded `/ok` + `vfs_register`) |
+| `kernel/src/fs/` | VFS mount table (`vfs.rs`) + bootfs backend mounted at `/` |
 | `kernel/src/console.rs` | Dual console: serial + Limine framebuffer mirror |
 | `kernel/src/input.rs` | Stdin ring buffer: PS/2 keyboard + serial (fd 0) |
 | `kernel/src/arch/x86/keyboard.rs` | PS/2 keyboard via 8042 (poll, US QWERTY set 1) |
@@ -492,8 +518,9 @@ read-only.
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
 | `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
-| `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v2: `blk_read`, `vfs_register`) |
+| `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v3: `vfs_register_static`, `vfs_mount`) |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
+| `modules/stubfs` | Sample prefixed mount: `vfs_mount` at `/disk`, file `/disk/ping` |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
 | `user/init` | PID1-style: baked in, execs `/sh` (not a kernel module) |
 | `user/sh` | Minimal shell: smoke `/ok`, interactive `$` prompt on stdin |

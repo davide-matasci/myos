@@ -1,6 +1,5 @@
 //! Usermode: nested `user/init` ELF, per-process page tables, syscalls.
 
-use alloc::alloc::{alloc_zeroed, dealloc, Layout};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -23,14 +22,22 @@ const SYS_LISTDIR: usize = 8;
 const SYS_BRK: usize = 9;
 const SYS_PIPE: usize = 10;
 const SYS_DUP2: usize = 11;
+pub const SYS_STAT: usize = 12;
+const SYS_EXECNAME: usize = 13;
 pub const PAGE: usize = 4096;
-/// User stack mapping below the heap (128 KiB).
-pub const USER_STACK_PAGES: usize = 32;
-const HEAP_PAGES: usize = 64;
-const MAX_INIT_PAGES: usize = 32;
+/// User stack mapping below the heap (512 KiB — uutils/std init needs more than 128 KiB).
+pub const USER_STACK_PAGES: usize = 128;
+/// Per-process brk heap. uutils/clap init needs well over 512 KiB; keep total
+/// user slots (code + stack + heap) under 512 pages on AArch64 L3 tables.
+const HEAP_PAGES: usize = 180;
+/// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy (today
+/// release `uutils-coreutils` ≈197 pages).
+const MAX_INIT_PAGES: usize = 256;
+/// In-place `reload_user_elf` scratch and mapping cap (sbase-cat scale).
+const MAX_RELOAD_PAGES: usize = 40;
 /// Minimum code pages reserved below the user stack so post-fork `exec` can
-/// `reload_user_elf` the largest patched `std` example (today `std-cat`).
-const USER_EXEC_RELOAD_PAGES: usize = 20;
+/// `reload_user_elf` the largest newlib/sbase ELFs (today `sbase-cat`).
+const USER_EXEC_RELOAD_PAGES: usize = 36;
 const MAX_PATH: usize = 64;
 const MAX_ARGC: usize = 16;
 const MAX_ARG_LEN: usize = 128;
@@ -97,7 +104,43 @@ unsafe extern "C" {
 
 pub fn init() {
     #[cfg(target_arch = "x86_64")]
-    init_syscall_msrs();
+    {
+        init_syscall_msrs();
+        init_user_sse();
+    }
+    #[cfg(target_arch = "aarch64")]
+    init_user_fp();
+}
+
+/// newlib stdio and -O2 user code use SSE (movaps/xorps). Without OSFXSR/OSXMMEXCPT
+/// and with CR0.TS set, the first SSE insn in userspace raises #NM.
+#[cfg(target_arch = "x86_64")]
+fn init_user_sse() {
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    const CR4_OSXMMEXCPT: u64 = 1 << 10;
+    let (mut cr0, mut cr4): (u64, u64);
+    unsafe {
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        core::arch::asm!("mov {}, cr4", out(reg) cr4);
+        cr0 &= !CR0_TS;
+        cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
+        core::arch::asm!("mov cr0, {}", in(reg) cr0);
+        core::arch::asm!("mov cr4, {}", in(reg) cr4);
+    }
+}
+
+/// newlib stdio init uses NEON (movi v0.2d). With CPACR_EL1.FPEN=0, EL0 traps on SIMD.
+#[cfg(target_arch = "aarch64")]
+fn init_user_fp() {
+    const CPACR_EL1_FPEN: u64 = 3 << 20;
+    unsafe {
+        let mut cpacr: u64;
+        core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr);
+        cpacr |= CPACR_EL1_FPEN;
+        core::arch::asm!("msr cpacr_el1, {}", in(reg) cpacr);
+        core::arch::asm!("isb");
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -174,18 +217,17 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     let base = USER_BASE.load(Ordering::SeqCst);
     let stack_off = (n_pages * PAGE) as u64;
 
-    let layout = Layout::from_size_align(info.span.max(1), PAGE).ok()?;
-    let buf = unsafe { alloc_zeroed(layout) };
-    if buf.is_null() {
+    if info.span > ELF_SCRATCH_BYTES {
         return None;
     }
+    let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
+    unsafe {
+        core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
+    }
     let load_bias = base - info.min_vaddr;
-    let entry = match elf::realize(bytes, buf, load_bias) {
+    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
         Ok(e) => e,
-        Err(_) => {
-            unsafe { dealloc(buf, layout) };
-            return None;
-        }
+        Err(_) => return None,
     };
 
     let mut frames = [0u64; MAX_INIT_PAGES];
@@ -195,7 +237,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
             let off = i * PAGE;
             let len = core::cmp::min(PAGE, info.span - off);
             unsafe {
-                core::ptr::copy_nonoverlapping(buf.add(off), mm::hhdm(frames[i]), len);
+                core::ptr::copy_nonoverlapping(buf.as_ptr().add(off), mm::hhdm(frames[i]), len);
                 if len < PAGE {
                     core::ptr::write_bytes(mm::hhdm(frames[i]).add(len), 0, PAGE - len);
                 }
@@ -208,20 +250,35 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
             sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
         }
     }
-    unsafe { dealloc(buf, layout) };
-
     let mut stack_frames = [0u64; USER_STACK_PAGES];
     for frame in &mut stack_frames {
         *frame = mm::alloc_frame();
     }
     let aspace = create_aspace(&frames[..n_pages], &stack_frames, base, stack_off);
+    map_initial_heap_pages(aspace, base, stack_off);
     let mapped_span = n_pages * PAGE;
     Some((aspace, entry as usize, mapped_span, stack_off))
 }
 
-/// Scratch for `reload_user_elf` (no kernel-heap alloc; CI exhausts heap after fork).
-const RELOAD_SCRATCH_BYTES: usize = MAX_INIT_PAGES * PAGE;
-static mut RELOAD_SCRATCH: [u8; RELOAD_SCRATCH_BYTES] = [0; RELOAD_SCRATCH_BYTES];
+fn map_initial_heap_pages(aspace: u64, base: u64, stack_off: u64) {
+    let heap_base = heap_base_va(base, stack_off);
+    for i in 0..HEAP_PAGES {
+        let va = heap_base + (i * PAGE) as u64;
+        if virt_to_phys(aspace, va).is_some() {
+            continue;
+        }
+        let frame = mm::alloc_frame();
+        unsafe {
+            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
+        }
+        map_heap_page(aspace, va, frame);
+    }
+}
+
+/// Scratch for `load_user_elf` / `reload_user_elf` (no kernel-heap alloc; CI
+/// exhausts the 256 KiB heap after fork — uutils needs ~800 KiB realize buf).
+const ELF_SCRATCH_BYTES: usize = MAX_INIT_PAGES * PAGE;
+static mut ELF_SCRATCH: [u8; ELF_SCRATCH_BYTES] = [0; ELF_SCRATCH_BYTES];
 
 /// Overwrite the current user image in an existing aspace (no new frames).
 /// Keeps `stack_off` so the mapped stack page stays valid. Fails if the new
@@ -235,10 +292,10 @@ fn reload_user_elf(
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let image_pages = info.span.div_ceil(PAGE);
-    if image_pages == 0 || image_pages > MAX_INIT_PAGES {
+    if image_pages == 0 || image_pages > MAX_RELOAD_PAGES {
         return None;
     }
-    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_INIT_PAGES);
+    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_RELOAD_PAGES);
     // Code must sit below the mapped stack. Otherwise PT_LOAD pages overlap stack
     // slots (reload saw stack PTEs as "mapped" and clobbered them — heap #10).
     if n_pages * PAGE > stack_off as usize {
@@ -249,10 +306,10 @@ fn reload_user_elf(
             return None;
         }
     }
-    if info.span > RELOAD_SCRATCH_BYTES {
+    if info.span > MAX_RELOAD_PAGES * PAGE {
         return None;
     }
-    let buf = unsafe { &mut RELOAD_SCRATCH[..info.span] };
+    let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
@@ -287,6 +344,83 @@ fn reload_user_elf(
     Some((entry as usize, n_pages * PAGE, stack_off))
 }
 
+/// Grow the current aspace and load a large ELF (up to [`MAX_INIT_PAGES`]).
+/// Used when [`reload_user_elf`] is too small but we already have an aspace
+/// (post-fork exec of release uutils ≈197 pages).
+fn expand_user_elf(
+    aspace: u64,
+    bytes: &[u8],
+    base: u64,
+    _old_stack_off: u64,
+) -> Option<(usize, usize, u64)> {
+    let info = elf::image_span(bytes).ok()?;
+    let image_pages = info.span.div_ceil(PAGE);
+    if image_pages == 0 || image_pages > MAX_INIT_PAGES {
+        return None;
+    }
+    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_INIT_PAGES);
+    let new_stack_off = (n_pages * PAGE) as u64;
+    if info.span > ELF_SCRATCH_BYTES {
+        return None;
+    }
+
+    // Always install fresh code/stack PTEs. A smaller post-fork image may have
+    // left NX stack or heap mappings in this VA range; reusing them makes the
+    // larger ELF fault on the first instruction fetch (x86 code=0x15).
+    for i in 0..n_pages {
+        let va = base + (i * PAGE) as u64;
+        let frame = mm::alloc_frame();
+        unsafe {
+            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
+        }
+        map_user_code_page(aspace, va, frame);
+        sync_icache(mm::hhdm(frame) as usize, PAGE);
+    }
+    for i in 0..USER_STACK_PAGES {
+        let va = base + new_stack_off + (i * PAGE) as u64;
+        let frame = mm::alloc_frame();
+        unsafe {
+            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
+        }
+        map_user_stack_page(aspace, va, frame);
+    }
+    map_initial_heap_pages(aspace, base, new_stack_off);
+
+    let buf = unsafe { &mut ELF_SCRATCH[..info.span] };
+    unsafe {
+        core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
+    }
+    let load_bias = base - info.min_vaddr;
+    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+    for i in 0..n_pages {
+        let va = base + (i * PAGE) as u64;
+        let Some(phys) = virt_to_phys(aspace, va) else {
+            return None;
+        };
+        let off = i * PAGE;
+        if i < image_pages {
+            let len = core::cmp::min(PAGE, info.span.saturating_sub(off));
+            unsafe {
+                if len > 0 {
+                    core::ptr::copy_nonoverlapping(buf.as_ptr().add(off), mm::hhdm(phys), len);
+                }
+                if len < PAGE {
+                    core::ptr::write_bytes(mm::hhdm(phys).add(len), 0, PAGE - len);
+                }
+            }
+        } else {
+            unsafe {
+                core::ptr::write_bytes(mm::hhdm(phys), 0, PAGE);
+            }
+        }
+        sync_icache(mm::hhdm(phys) as usize, PAGE);
+    }
+    Some((entry as usize, n_pages * PAGE, new_stack_off))
+}
+
 /// SysV-style user stack: `[argc][argv…][NULL][envp…][NULL][strings]`, 16-byte aligned.
 fn build_argv_stack(
     aspace: u64,
@@ -300,7 +434,8 @@ fn build_argv_stack(
     }
     let stack_top = (user_base + stack_off + (USER_STACK_PAGES * PAGE) as u64) as usize;
     let stack_bot = (user_base + stack_off) as usize;
-    let mut sp = stack_top;
+    // Leave bytes below stack_top: argv strings must not end at stack_top (unmapped).
+    let mut sp = stack_top.checked_sub(64)?;
     let mut arg_ptrs = [0usize; MAX_ARGC];
     for (i, arg) in args.iter().enumerate() {
         if arg.len() > MAX_ARG_LEN {
@@ -337,11 +472,22 @@ fn build_argv_stack(
         }
         env_ptrs[i] = sp;
     }
+    // Gap so the argv pointer table cannot overlap the copied strings (x86 std
+    // `_start` reads argv[] immediately; a tight layout can alias string bytes).
+    sp = sp.checked_sub(16)?;
+    if sp < stack_bot {
+        return None;
+    }
     let words = 1 + args.len() + 1 + env.len() + 1;
     sp = sp.checked_sub(words * core::mem::size_of::<usize>())?;
     let pad = sp & 15;
     if pad != 0 {
         sp = sp.checked_sub(pad)?;
+    }
+    // AMD64 psABI: at _start, %rsp ≡ 8 (mod 16) as if the kernel had called it.
+    #[cfg(target_arch = "x86_64")]
+    {
+        sp = sp.checked_sub(8)?;
     }
     if sp < stack_bot {
         return None;
@@ -759,21 +905,27 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
     let cs = (crate::arch::gdt::user_cs() | 3) as u64;
     let ss = (crate::arch::gdt::user_ss() | 3) as u64;
     let rflags: u64 = 0x202;
+    // Iret frame in memory (RIP, CS, RFLAGS, RSP, SS). Do not feed five `in(reg)`
+    // operands into one asm block: LLVM can reuse a register for CS and corrupt
+    // iretq (post-fork exec of large ELFs → #GP on BIOS).
+    let frame = [
+        user_rip as u64,
+        cs,
+        rflags,
+        user_rsp as u64,
+        ss,
+    ];
+    const CR0_TS: u64 = 1 << 3;
     unsafe {
+        let mut cr0: u64;
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        cr0 &= !CR0_TS;
+        core::arch::asm!("mov cr0, {}", in(reg) cr0);
         core::arch::asm!(
             "cli",
-            "push {uss}",
-            "push {ursp}",
-            "push {rf}",
-            "push {ucs}",
-            "push {urip}",
+            "mov rsp, {f}",
             "iretq",
-            uss = in(reg) ss,
-            ursp = in(reg) user_rsp,
-            rf = in(reg) rflags,
-            ucs = in(reg) cs,
-            urip = in(reg) user_rip,
-            in("rax") 0u64,
+            f = in(reg) frame.as_ptr(),
             options(noreturn),
         );
     }
@@ -851,20 +1003,22 @@ fn try_resume_exec_via_syscall_frame(
     unsafe {
         #[cfg(target_arch = "aarch64")]
         {
-            *frame_ptr.add(0) = argc as u64;
-            *frame_ptr.add(1) = argv as u64;
-            *frame_ptr.add(32) = entry as u64;
-            *frame_ptr.add(34) = rsp as u64;
-            crate::arch::fork_eret_to_user(frame_ptr);
+            let frame = frame_ptr as *mut u64;
+            *frame.add(0) = argc as u64;
+            *frame.add(1) = argv as u64;
+            *frame.add(32) = entry as u64;
+            *frame.add(34) = rsp as u64;
+            crate::arch::fork_eret_to_user(frame);
         }
         #[cfg(target_arch = "riscv64")]
         {
-            *frame_ptr.add(10) = argc as u64;
-            *frame_ptr.add(11) = argv as u64;
-            *frame_ptr.add(32) = entry as u64;
-            *frame_ptr.add(33) = USER_SSTATUS;
-            *frame_ptr.add(34) = rsp as u64;
-            crate::arch::fork_sret_to_user(frame_ptr);
+            let frame = frame_ptr as *mut u64;
+            *frame.add(10) = argc as u64;
+            *frame.add(11) = argv as u64;
+            *frame.add(32) = entry as u64;
+            *frame.add(33) = USER_SSTATUS;
+            *frame.add(34) = rsp as u64;
+            crate::arch::fork_sret_to_user(frame);
         }
     }
 }
@@ -950,11 +1104,11 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-static mut SYSCALL_FRAME: *mut u64 = core::ptr::null_mut();
+static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn set_syscall_frame(frame: *mut u64) {
-    unsafe { SYSCALL_FRAME = frame; }
+    unsafe { SYSCALL_FRAME = frame as *mut usize; }
 }
 
 #[unsafe(no_mangle)]
@@ -970,16 +1124,18 @@ pub extern "C" fn syscall_dispatch(
     match nr {
         SYS_WRITE => sys_write(a0, a1, a2),
         SYS_EXIT => sys_exit(a0),
-        SYS_OPEN => sys_open(a0, a1),
+        SYS_OPEN => sys_open(a0, a1, a2),
         SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
         SYS_EXEC => sys_exec(a0, a1, a2),
         SYS_FORK => sys_fork(user_rip, user_rsp),
         SYS_WAIT => sys_wait(a0),
-        SYS_LISTDIR => sys_listdir(a0, a1),
+        SYS_LISTDIR => sys_listdir(a0, a1, a2),
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
         SYS_DUP2 => sys_dup2(a0, a1),
+        SYS_STAT => sys_stat(a0, a1, a2),
+        SYS_EXECNAME => sys_exec_name(a0, a1),
         _ => SYSERR,
     }
 }
@@ -1000,23 +1156,24 @@ fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
         return None;
     }
     let mut buf = [0u8; MAX_PATH];
-    unsafe {
-        core::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), len);
+    let aspace = task::current_aspace();
+    if !read_user_bytes(aspace, ptr, &mut buf[..len]) {
+        return None;
     }
     Some(buf)
 }
 
-fn sys_open(ptr: usize, path_len: usize) -> usize {
+fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
     let Some(buf) = copy_user_path(ptr, path_len) else {
         return SYSERR;
     };
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let Some(data) = fs::lookup(path) else {
+    let Some(node) = fs::open(path, flags as u32) else {
         return SYSERR;
     };
-    match task::fd_open(data) {
+    match task::fd_open(node) {
         Some(fd) => fd,
         None => SYSERR,
     }
@@ -1041,6 +1198,8 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
+    let basename = path.rsplit('/').next().unwrap_or(path).as_bytes();
+    task::set_exec_name(basename);
     let Some(bytes) = fs::lookup(path) else {
         return SYSERR;
     };
@@ -1068,11 +1227,14 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
                     .map(|(entry, span, off)| (cur_aspace, entry, span, off))
                 {
                     v
-                } else {
-                    let Some(v) = load_user_elf(bytes) else {
-                        return SYSERR;
-                    };
+                } else if let Some(v) = expand_user_elf(cur_aspace, bytes, base_u, stack_off)
+                    .map(|(entry, span, off)| (cur_aspace, entry, span, off))
+                {
                     v
+                } else if let Some(v) = load_user_elf(bytes) {
+                    v
+                } else {
+                    return SYSERR;
                 }
             } else {
                 let Some(v) = load_user_elf(bytes) else {
@@ -1087,9 +1249,7 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     };
     let argc = arg_refs.len();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
-    #[cfg(target_arch = "aarch64")]
-    try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
     enter(entry, rsp, argc, argv);
 }
@@ -1246,19 +1406,71 @@ fn copy_user_exec_pack_via_aspace(
     Ok((args, env))
 }
 
-fn sys_listdir(buf: usize, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    if !user_range_ok(buf, len) {
+fn sys_listdir(path_ptr: usize, path_len: usize, buf: usize) -> usize {
+    const LISTDIR_CAP: usize = 512;
+    if buf == 0 || !user_range_ok(buf, LISTDIR_CAP) {
         return SYSERR;
     }
-    let mut kbuf = [0u8; 512];
-    let n = fs::listdir(&mut kbuf).min(kbuf.len()).min(len);
-    unsafe {
-        core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf as *mut u8, n);
+    let path = if path_len == 0 {
+        alloc::string::String::from("/")
+    } else {
+        let Some(pbuf) = copy_user_path(path_ptr, path_len) else {
+            return SYSERR;
+        };
+        match core::str::from_utf8(&pbuf[..path_len]) {
+            Ok(p) => alloc::string::String::from(p),
+            Err(_) => return SYSERR,
+        }
+    };
+    let mut kbuf = [0u8; LISTDIR_CAP];
+    let n = fs::listdir(&path, &mut kbuf).min(LISTDIR_CAP);
+    let aspace = task::current_aspace();
+    if !write_user_bytes(aspace, buf, &kbuf[..n]) {
+        return SYSERR;
     }
     n
+}
+
+#[repr(C)]
+struct MyosStatBuf {
+    st_mode: u32,
+    st_size: u32,
+    st_ino: u32,
+    st_nlink: u32,
+}
+
+fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
+    if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStatBuf>()) {
+        return SYSERR;
+    }
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(info) = fs::stat(path) else {
+        return SYSERR;
+    };
+    let out = MyosStatBuf {
+        st_mode: info.mode,
+        st_size: info.size,
+        st_ino: info.ino,
+        st_nlink: info.nlink,
+    };
+    if !write_user_bytes(
+        task::current_aspace(),
+        out_ptr,
+        unsafe {
+            core::slice::from_raw_parts(
+                &out as *const MyosStatBuf as *const u8,
+                core::mem::size_of::<MyosStatBuf>(),
+            )
+        },
+    ) {
+        return SYSERR;
+    }
+    0
 }
 
 fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
@@ -1308,7 +1520,7 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
         task::ForkRegs {
             rip: user_rip,
             rsp: user_rsp,
-            frame: copy_fork_syscall_frame(frame),
+            frame: copy_fork_syscall_frame(frame as *const u64),
         }
     };
     #[cfg(target_arch = "riscv64")]
@@ -1320,7 +1532,7 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
         task::ForkRegs {
             rip: user_rip,
             rsp: user_rsp,
-            frame: copy_fork_syscall_frame(frame),
+            frame: copy_fork_syscall_frame(frame as *const u64),
         }
     };
     match task::fork_current(child) {
@@ -1359,11 +1571,30 @@ fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     if task::fd_dup2(oldfd, newfd) { 0 } else { SYSERR }
 }
 
+fn sys_exec_name(buf: usize, len: usize) -> usize {
+    if len == 0 || !user_range_ok(buf, len) {
+        return SYSERR;
+    }
+    let mut tmp = [0u8; 32];
+    let n = task::exec_name(&mut tmp).min(len).min(tmp.len());
+    if n == 0 {
+        return 0;
+    }
+    if !write_user_bytes(task::current_aspace(), buf, &tmp[..n]) {
+        return SYSERR;
+    }
+    n
+}
+
 fn sys_brk(req: usize) -> usize {
     let (base, _span, stack_off) = task::current_user_map();
     let heap_base = heap_base_va(base, stack_off) as usize;
     let heap_limit = heap_limit_va(base, stack_off) as usize;
-    let cur = task::current_brk() as usize;
+    let mut cur = task::current_brk() as usize;
+    if cur == 0 {
+        cur = heap_base;
+        task::set_brk(cur as u64);
+    }
     if req == 0 {
         return cur;
     }
@@ -1463,6 +1694,92 @@ fn create_aspace_x86(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> 
     pml4_phys
 }
 
+fn map_user_code_page(aspace: u64, va: u64, pa: u64) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        const PRESENT: u64 = 1;
+        const WRITE: u64 = 1 << 1;
+        const USER: u64 = 1 << 2;
+        map_page_x86(aspace, va, pa, PRESENT | WRITE | USER);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        map_user_page_aarch64(aspace, va, pa, false);
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        map_user_page_riscv64(aspace, va, pa, true);
+    }
+}
+
+fn map_user_stack_page(aspace: u64, va: u64, pa: u64) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        const PRESENT: u64 = 1;
+        const WRITE: u64 = 1 << 1;
+        const USER: u64 = 1 << 2;
+        const NX: u64 = 1 << 63;
+        map_page_x86(aspace, va, pa, PRESENT | WRITE | USER | NX);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        map_user_page_aarch64(aspace, va, pa, true);
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        map_user_page_riscv64(aspace, va, pa, false);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn map_user_page_aarch64(l0_phys: u64, va: u64, pa: u64, stack: bool) {
+    const PAGE_DESC: u64 = 0b11;
+    const SH_INNER: u64 = 0b11 << 8;
+    const AF: u64 = 1 << 10;
+    const AP_RW: u64 = 0b01 << 6;
+    const PXN: u64 = 1 << 53;
+    const UXN: u64 = 1 << 54;
+    const PA: u64 = 0x0000_FFFF_FFFF_F000;
+    let base = USER_BASE.load(Ordering::SeqCst);
+    let i3 = va.saturating_sub(base) as usize / PAGE;
+    unsafe {
+        let l0 = &*mm::table(l0_phys);
+        let l1 = &*mm::table(l0[0] & PA);
+        let l2 = &*mm::table(l1[1] & PA);
+        let l3 = &mut *mm::table(l2[0] & PA);
+        let mut ent = PAGE_DESC | (pa & PA) | SH_INNER | AP_RW | AF | PXN;
+        if stack {
+            ent |= UXN;
+        }
+        l3[i3] = ent;
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+fn map_user_page_riscv64(satp: u64, va: u64, pa: u64, exec: bool) {
+    let mut flags = paging::PTE_V
+        | paging::PTE_R
+        | paging::PTE_W
+        | paging::PTE_U
+        | paging::PTE_A
+        | paging::PTE_D;
+    if exec {
+        flags |= paging::PTE_X;
+    }
+    let root_phys = paging::satp_root_phys(satp);
+    let base = USER_BASE.load(Ordering::SeqCst);
+    let page = (va - base) as usize / PAGE;
+    let i2 = 1usize;
+    let i1 = 0usize;
+    let i0 = page;
+    unsafe {
+        let root = &*mm::table(root_phys);
+        let mid = &*mm::table(paging::pte_phys(root[i2]));
+        let leaf = &mut *mm::table(paging::pte_phys(mid[i1]));
+        leaf[i0] = paging::pte_leaf_4k(pa, flags);
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 fn map_heap_page(pml4_phys: u64, va: u64, pa: u64) {
     const PRESENT: u64 = 1;
@@ -1474,23 +1791,7 @@ fn map_heap_page(pml4_phys: u64, va: u64, pa: u64) {
 
 #[cfg(target_arch = "aarch64")]
 fn map_heap_page(l0_phys: u64, va: u64, pa: u64) {
-    const PAGE_DESC: u64 = 0b11;
-    const SH_INNER: u64 = 0b11 << 8;
-    const AF: u64 = 1 << 10;
-    const AP_RW: u64 = 0b01 << 6;
-    const UXN: u64 = 1 << 54;
-    const PA_MASK: u64 = 0x0000_FFFF_FFFF_F000;
-    let i3 = ((va >> 12) & 0x1ff) as usize;
-    unsafe {
-        let l0 = &*mm::table(l0_phys);
-        let l1_phys = l0[0] & PA_MASK;
-        let l1 = &*mm::table(l1_phys);
-        let l2_phys = l1[1] & PA_MASK;
-        let l2 = &*mm::table(l2_phys);
-        let l3_phys = l2[0] & PA_MASK;
-        let l3 = &mut *mm::table(l3_phys);
-        l3[i3] = (pa & PA_MASK) | PAGE_DESC | SH_INNER | AP_RW | AF | UXN;
-    }
+    map_user_page_aarch64(l0_phys, va, pa, false);
 }
 
 #[cfg(target_arch = "riscv64")]

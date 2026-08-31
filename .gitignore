@@ -10,6 +10,7 @@ modules/hello/Cargo.lock
 modules/fat/Cargo.lock
 user/*/Cargo.lock
 user/*/target
+user/uutils-coreutils/
 **/*.rs.bk
 *.swp
 *~

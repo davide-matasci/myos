@@ -88,6 +88,8 @@ fn kernel_main() -> ! {
     console::status_ok("scheduler");
 
     fs::init();
+    fs::init_limine();
+    modules::load_embedded_stubfs();
     modules::load_embedded_hello();
     modules::load_limine_modules();
 
@@ -96,7 +98,7 @@ fn kernel_main() -> ! {
     // CI #104: FAT copied 7 bytes (`fat n7`) and kfix did not fire, but
     // user/ok still read n==0. Re-point `/msg` at kernel rodata so the
     // vnode is not the module's leaked heap slice.
-    let _ = fs::bootfs::register("msg", MSG_OK);
+    let _ = fs::register("bootfs", "msg", MSG_OK);
     console::status_ok("fat message");
 
     user::init();

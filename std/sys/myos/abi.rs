@@ -12,6 +12,8 @@ pub const SYS_LISTDIR: usize = 8;
 pub const SYS_BRK: usize = 9;
 pub const SYS_PIPE: usize = 10;
 pub const SYS_DUP2: usize = 11;
+pub const SYS_STAT: usize = 12;
+pub const SYS_EXECNAME: usize = 13;
 
 const MAX_EXEC_ARGS: usize = 16;
 const MAX_EXEC_ENV: usize = 8;
@@ -56,6 +58,16 @@ pub fn read(fd: i32, buf: &mut [u8]) -> isize {
 #[inline]
 pub fn brk(addr: usize) -> usize {
     raw_brk(addr)
+}
+
+#[inline]
+pub fn exec_name(buf: &mut [u8]) -> usize {
+    let ret = raw_exec_name(buf.as_mut_ptr() as usize, buf.len());
+    if ret == usize::MAX {
+        0
+    } else {
+        ret
+    }
 }
 
 #[inline]
@@ -304,6 +316,42 @@ fn raw_brk(addr: usize) -> usize {
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
+fn raw_exec_name(buf: usize, len: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_EXECNAME,
+            in("rdi") buf,
+            in("rsi") len,
+            lateout("rax") ret,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn raw_exec_name(buf: usize, len: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") SYS_EXECNAME,
+            in("x0") buf,
+            in("x1") len,
+            lateout("x0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
 fn raw_exit(code: usize) -> ! {
     unsafe {
         core::arch::asm!(
@@ -338,6 +386,7 @@ fn raw_open(ptr: usize, len: usize) -> usize {
             in("rax") SYS_OPEN,
             in("rdi") ptr,
             in("rsi") len,
+            in("rdx") 0usize,
             lateout("rax") ret,
             out("rcx") _,
             out("r11") _,
@@ -360,6 +409,7 @@ fn raw_open(ptr: usize, len: usize) -> usize {
             in("x8") SYS_OPEN,
             in("x0") ptr,
             in("x1") len,
+            in("x2") 0usize,
             lateout("x0") ret,
             options(nostack),
         );
