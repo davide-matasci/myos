@@ -394,6 +394,16 @@ fn write_user_bytes(aspace: u64, va: usize, src: &[u8]) -> bool {
     true
 }
 
+/// Copy bytes from the current user address space into a kernel buffer.
+pub fn copy_from_user(aspace: u64, va: usize, dst: &mut [u8]) -> bool {
+    read_user_bytes(aspace, va, dst)
+}
+
+/// Copy bytes from a kernel buffer into the current user address space.
+pub fn copy_to_user(aspace: u64, va: usize, src: &[u8]) -> bool {
+    write_user_bytes(aspace, va, src)
+}
+
 fn write_user_usize(aspace: u64, va: usize, val: usize) -> bool {
     write_user_bytes(aspace, va, &val.to_le_bytes())
 }
@@ -935,9 +945,8 @@ fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
 #[cfg(target_arch = "riscv64")]
 fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
     let mut frame = regs.frame;
-    frame[10] = 0; // a0 = 0 for child
     frame[32] = regs.rip as u64; // resume past the fork ecall
-    crate::arch::fork_sret_to_user(frame.as_mut_ptr());
+    crate::arch::fork_sret_child_to_user(frame.as_mut_ptr());
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -1043,22 +1052,35 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let env_refs: Vec<&[u8]> = env_bufs.iter().map(|s| s.as_slice()).collect();
     let cur_aspace = task::current_aspace();
     let (base_u, _mapped_span, stack_off) = task::current_user_map();
-    let (aspace, entry, span, off) = if cur_aspace != 0 {
-        if let Some(v) = reload_user_elf(cur_aspace, bytes, base_u, stack_off, _mapped_span)
-            .map(|(entry, span, off)| (cur_aspace, entry, span, off))
+    let (aspace, entry, span, off) = {
+        #[cfg(target_arch = "riscv64")]
         {
-            v
-        } else {
+            let _ = (cur_aspace, stack_off, _mapped_span);
             let Some(v) = load_user_elf(bytes) else {
                 return SYSERR;
             };
             v
         }
-    } else {
-        let Some(v) = load_user_elf(bytes) else {
-            return SYSERR;
-        };
-        v
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            if cur_aspace != 0 {
+                if let Some(v) = reload_user_elf(cur_aspace, bytes, base_u, stack_off, _mapped_span)
+                    .map(|(entry, span, off)| (cur_aspace, entry, span, off))
+                {
+                    v
+                } else {
+                    let Some(v) = load_user_elf(bytes) else {
+                        return SYSERR;
+                    };
+                    v
+                }
+            } else {
+                let Some(v) = load_user_elf(bytes) else {
+                    return SYSERR;
+                };
+                v
+            }
+        }
     };
     let Some((rsp, argv)) = build_argv_stack(aspace, base_u, off, &arg_refs, &env_refs) else {
         return SYSERR;

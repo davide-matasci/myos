@@ -36,7 +36,7 @@ jobs:
       - name: Install QEMU, AArch64/RISC-V UEFI firmware, and a C compiler
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-system-arm qemu-system-misc qemu-efi-aarch64 qemu-efi-riscv64 clang lld binutils-aarch64-linux-gnu
 
-      - name: Build myos sysroot, std hello, and C smoke ELFs (x86 + AArch64)
+      - name: Build myos sysroot, std hello, and C smoke ELFs (x86 + AArch64 + RISC-V)
         run: |
           chmod +x scripts/*.sh
           ./scripts/build-std-hello.sh
@@ -77,5 +77,5 @@ jobs:
         run: cargo run -- riscv64 --ci
 
       - name: Fail if any boot failed
-        if: steps.bios.outcome == 'failure' || steps.uefi.outcome == 'failure' || steps.aarch64.outcome == 'failure'
+        if: steps.bios.outcome == 'failure' || steps.uefi.outcome == 'failure' || steps.aarch64.outcome == 'failure' || steps.riscv64.outcome == 'failure'
         run: exit 1

@@ -47,6 +47,14 @@ pub unsafe extern "C" fn _start(argc: isize, argv: *const *const u8) -> ! {
 }
 
 #[cfg(not(test))]
+#[cfg(target_arch = "riscv64")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _start(argc: isize, argv: *const *const u8) -> ! {
+    unsafe { init(argc, argv, 0) };
+    start_main()
+}
+
+#[cfg(not(test))]
 #[inline(never)]
 unsafe fn start_main() -> ! {
     unsafe extern "C" {

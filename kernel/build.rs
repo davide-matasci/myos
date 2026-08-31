@@ -92,7 +92,7 @@ fn main() {
         );
     }
 
-    if arch == "x86_64" || arch == "aarch64" {
+    if arch == "x86_64" || arch == "aarch64" || arch == "riscv64" {
         for (artifact, env_key) in [
             ("std-hello", "USER_STD_HELLO_PATH"),
             ("std-cat", "USER_STD_CAT_PATH"),
@@ -101,17 +101,6 @@ fn main() {
             embed_std_elf(manifest, &arch, artifact, env_key);
         }
         embed_c_elf(manifest, &arch, "c-hello", "USER_C_HELLO_PATH");
-    } else if arch == "riscv64" {
-        let stub = PathBuf::from(&out).join("std-stub.elf");
-        std::fs::write(&stub, []).expect("write riscv64 std stub");
-        for env_key in [
-            "USER_STD_HELLO_PATH",
-            "USER_STD_CAT_PATH",
-            "USER_STD_ECHO_PATH",
-            "USER_C_HELLO_PATH",
-        ] {
-            println!("cargo:rustc-env={env_key}={}", stub.display());
-        }
     }
 }
 
@@ -120,6 +109,8 @@ fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str)
         "x86_64-unknown-myos"
     } else if arch == "aarch64" {
         "aarch64-unknown-myos"
+    } else if arch == "riscv64" {
+        "riscv64-unknown-myos"
     } else {
         return;
     };
@@ -141,6 +132,8 @@ fn embed_c_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
         "x86_64-unknown-none"
     } else if arch == "aarch64" {
         "aarch64-unknown-none"
+    } else if arch == "riscv64" {
+        "riscv64-unknown-none"
     } else {
         return;
     };

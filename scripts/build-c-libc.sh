@@ -26,3 +26,4 @@ build_lib() {
 
 build_lib x86_64 x86_64-unknown-none "$SRC/crt/x86_64/crt0.S"
 build_lib aarch64 aarch64-unknown-none "$SRC/crt/aarch64/crt0.S"
+build_lib riscv64 riscv64-unknown-none "$SRC/crt/riscv64/crt0.S"

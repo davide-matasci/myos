@@ -27,7 +27,7 @@ link_prog() {
   echo "c-${name} -> $out"
 }
 
-for triple in x86_64-unknown-none aarch64-unknown-none; do
+for triple in x86_64-unknown-none aarch64-unknown-none riscv64-unknown-none; do
   arch="${triple%-unknown-none}"
   link_prog hello "$ROOT/c/hello.c" "$triple" "$arch"
   link_prog echo "$ROOT/c/echo.c" "$triple" "$arch"
