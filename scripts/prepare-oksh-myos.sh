@@ -18,6 +18,8 @@ rsync -a \
   "$OKSH/" "$WORK/"
 
 cp "$MYOS/pconfig.h" "$WORK/pconfig.h"
+# Replace ulimit rather than a 200-line reverse patch (needs getrlimit).
+cp "$MYOS/c_ulimit.c" "$WORK/c_ulimit.c"
 
 patch_copy() {
   local base="$1"
@@ -27,5 +29,9 @@ patch_copy() {
 patch_copy main
 patch_copy jobs
 patch_copy tty
+patch_copy io
+patch_copy shf
+patch_copy c_sh
+patch_copy lex
 
 echo "oksh myos tree -> $WORK"
