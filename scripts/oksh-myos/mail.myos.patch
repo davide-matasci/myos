@@ -9,7 +9,7 @@
  static time_t	mailcheck_interval;
  
  static void	munset(mbox_t *); /* free mlist and mval */
-@@ -42,8 +42,8 @@
+@@ -42,7 +42,7 @@
  mcheck(void)
  {
  	mbox_t		*mbp;
