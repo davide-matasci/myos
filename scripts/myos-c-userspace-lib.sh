@@ -9,6 +9,7 @@ MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
 MYOS_NEWLIB_VERSION="$MYOS_ROOT/target/.myos-newlib-version"
 MYOS_C_HELLO_VERSION="$MYOS_ROOT/target/.myos-c-hello-version"
 MYOS_SBASE_VERSION="$MYOS_ROOT/target/.myos-sbase-version"
+MYOS_OKSH_VERSION="$MYOS_ROOT/target/.myos-oksh-version"
 MYOS_COREUTILS_VERSION="$MYOS_ROOT/target/.myos-coreutils-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
@@ -104,6 +105,31 @@ myos_sbase_is_current() {
       local path="${line#*:}"
       [[ -f "$path" ]] || return 1
     done <"$manifest"
+  done
+}
+
+myos_oksh_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      sha256sum "$MYOS_ROOT/scripts/build-oksh.sh"
+      sha256sum "$MYOS_ROOT/scripts/prepare-oksh-myos.sh"
+      sha256sum "$MYOS_ROOT/scripts/fetch-oksh.sh"
+      find "$MYOS_ROOT/scripts/oksh-myos" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_oksh_is_current() {
+  local arch
+  [[ -f "$MYOS_OKSH_VERSION" ]] \
+    && [[ "$(cat "$MYOS_OKSH_VERSION")" == "$(myos_oksh_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/oksh-${arch}-unknown-none" ]] || return 1
   done
 }
 
