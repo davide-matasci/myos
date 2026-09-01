@@ -5,7 +5,10 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use myos_user::{close, exit, heap_init, listdir, open, read, write, Heap};
+use myos_user::{
+    close, exit, heap_init, listdir, open, open_flags, read, write, write_fd, Heap, O_CREAT,
+    O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
+};
 
 #[global_allocator]
 static GLOBAL: Heap = Heap;
@@ -66,6 +69,58 @@ fn smoke_disk() {
     }
 }
 
+fn smoke_tmp_dev() {
+    let mut buf = [0u8; myos_user::LISTDIR_BUF];
+    let n = listdir(b"/", &mut buf);
+    if n == usize::MAX || !buf_has(&buf[..n], b"tmp") || !buf_has(&buf[..n], b"dev") {
+        write(b"tmpdev ls fail\n");
+        return;
+    }
+
+    // /dev/null: writes discarded, reads return EOF.
+    let Some(dn) = open_flags(b"/dev/null", O_RDWR) else {
+        write(b"devnull open fail\n");
+        return;
+    };
+    if write_fd(dn, b"discard") == usize::MAX {
+        write(b"devnull write fail\n");
+        close(dn);
+        return;
+    }
+    let mut scratch = [0u8; 8];
+    let nr = read(dn, &mut scratch);
+    close(dn);
+    if nr != 0 {
+        write(b"devnull read fail\n");
+        return;
+    }
+    write(b"devnull ok\n");
+
+    // /tmp: create, write, read back.
+    let Some(fd) = open_flags(b"/tmp/ci", O_WRONLY | O_CREAT | O_TRUNC) else {
+        write(b"tmp open fail\n");
+        return;
+    };
+    if write_fd(fd, b"hi\n") == usize::MAX {
+        write(b"tmp write fail\n");
+        close(fd);
+        return;
+    }
+    close(fd);
+    let Some(fd) = open_flags(b"/tmp/ci", O_RDONLY) else {
+        write(b"tmp reopen fail\n");
+        return;
+    };
+    let mut out = [0u8; 8];
+    let n = read(fd, &mut out);
+    close(fd);
+    if n >= 3 && &out[..3] == b"hi\n" {
+        write(b"tmp ok\n");
+    } else {
+        write(b"tmp read fail\n");
+    }
+}
+
 fn main() -> ! {
     heap_init();
     let mut v = Vec::new();
@@ -78,6 +133,7 @@ fn main() -> ! {
 
     smoke_disk();
     smoke_vfs();
+    smoke_tmp_dev();
     exit();
 }
 

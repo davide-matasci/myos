@@ -42,6 +42,8 @@ enum FdEntry {
     File {
         node: crate::fs::Vnode,
         pos: usize,
+        writable: bool,
+        append: bool,
     },
     PipeRead(usize),
     PipeWrite(usize),
@@ -352,11 +354,18 @@ fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
     out
 }
 
-pub fn fd_open(node: crate::fs::Vnode) -> Option<usize> {
+pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
+    let writable = crate::fs::open_writable(flags);
+    let append = crate::fs::open_append(flags);
     with_current_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
-                t.fds[i] = FdEntry::File { node, pos: 0 };
+                t.fds[i] = FdEntry::File {
+                    node,
+                    pos: 0,
+                    writable,
+                    append,
+                };
                 return Some(i);
             }
         }
@@ -480,14 +489,19 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         }
         match entry {
             FdEntry::Stdin => return fd_read_stdin(buf, len),
-            FdEntry::File { node, pos: _ } => {
+            FdEntry::File { node, pos, .. } => {
+                // Snapshot then read without holding TASKS (devfs tty may yield).
+                let mut tmp = [0u8; 128];
+                let want = len.min(tmp.len());
+                let n = crate::fs::read(&node, pos, &mut tmp[..want]);
                 return with_current_mut(|t| {
-                    let FdEntry::File { node, pos } = t.fds[fd] else {
+                    let FdEntry::File {
+                        pos: p,
+                        ..
+                    } = &mut t.fds[fd]
+                    else {
                         return usize::MAX;
                     };
-                    let mut tmp = [0u8; 128];
-                    let want = len.min(tmp.len());
-                    let n = crate::fs::read(&node, pos, &mut tmp[..want]);
                     if n != 0 {
                         if !user_buf_ok(
                             buf,
@@ -503,9 +517,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                             return usize::MAX;
                         }
                     }
-                    if let FdEntry::File { pos: p, .. } = &mut t.fds[fd] {
-                        *p += n;
-                    }
+                    *p += n;
                     n
                 });
             }
@@ -574,6 +586,38 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                 FdEntry::Console => {
                     print_bytes(&tmp[..chunk]);
                     total += chunk;
+                    break;
+                }
+                FdEntry::File {
+                    node,
+                    pos,
+                    writable,
+                    append,
+                } => {
+                    if !writable {
+                        return if total == 0 { usize::MAX } else { total };
+                    }
+                    let write_pos = if append {
+                        crate::fs::size_of(&node).unwrap_or(pos)
+                    } else {
+                        pos
+                    };
+                    let Some(n) = crate::fs::write(&node, write_pos, &tmp[..chunk]) else {
+                        return if total == 0 { usize::MAX } else { total };
+                    };
+                    if n == 0 {
+                        return if total == 0 { usize::MAX } else { total };
+                    }
+                    with_current_mut(|t| {
+                        if let FdEntry::File { pos: p, append: ap, .. } = &mut t.fds[fd] {
+                            if *ap {
+                                *p = write_pos + n;
+                            } else {
+                                *p = write_pos + n;
+                            }
+                        }
+                    });
+                    total += n;
                     break;
                 }
                 FdEntry::PipeWrite(id) => {

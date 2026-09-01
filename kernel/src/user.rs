@@ -1380,7 +1380,7 @@ fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
     let Some(node) = fs::open(&path, flags as u32) else {
         return SYSERR;
     };
-    match task::fd_open(node) {
+    match task::fd_open(node, flags as u32) {
         Some(fd) => fd,
         None => SYSERR,
     }

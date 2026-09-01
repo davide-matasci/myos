@@ -301,7 +301,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: build
-    if: ${{ needs.build.result == 'success' }}
+    # always(): otherwise a skipped sysroot (path filter) propagates through
+    # build and leaves this matrix unexpanded (boot matrix id placeholder)
+    # even when build succeeded — kernel/fs PRs would miss aarch64/riscv64.
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.build.result == 'success'
     strategy:
       fail-fast: false
       matrix:

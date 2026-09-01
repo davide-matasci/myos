@@ -38,6 +38,28 @@ pub struct MountOps {
     pub stat: fn(&str) -> Option<StatInfo>,
     pub listdir: fn(&str, &mut [u8]) -> usize,
     pub register: fn(&str, &'static [u8]) -> bool,
+    /// Create an empty file (no-op success if it already exists).
+    pub create: fn(&str) -> bool,
+    /// Truncate an existing file to zero length.
+    pub truncate: fn(&str) -> bool,
+    /// Read file/device bytes at `pos` into `out`.
+    pub read: fn(&str, usize, &mut [u8]) -> usize,
+    /// Write bytes at `pos`. `None` if the mount rejects the write.
+    pub write: fn(&str, usize, &[u8]) -> Option<usize>,
+    /// Mount accepts write opens / creates.
+    pub writable: bool,
+}
+
+/// Helper for RO backends: copy from a `lookup` result.
+pub fn read_from_static(data: Option<&'static [u8]>, pos: usize, out: &mut [u8]) -> usize {
+    let Some(data) = data else {
+        return 0;
+    };
+    let n = out.len().min(data.len().saturating_sub(pos));
+    if n != 0 {
+        out[..n].copy_from_slice(&data[pos..pos + n]);
+    }
+    n
 }
 
 enum MountBackend {
@@ -91,24 +113,78 @@ pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps) -> bool {
 
 const O_ACCMODE: u32 = 3;
 const O_RDONLY: u32 = 0;
+const O_WRONLY: u32 = 1;
+const O_RDWR: u32 = 2;
 const O_CREAT: u32 = 0o100;
+const O_TRUNC: u32 = 0o1000;
+const O_APPEND: u32 = 0o2000;
 
-/// Resolve `path` to a vnode suitable for open/read.
+const S_IFMT: u32 = 0o170000;
+const S_IFDIR: u32 = 0o040000;
+
+/// True if `flags` request write access.
+pub fn open_writable(flags: u32) -> bool {
+    matches!(flags & O_ACCMODE, O_WRONLY | O_RDWR)
+}
+
+/// True if `flags` include `O_APPEND`.
+pub fn open_append(flags: u32) -> bool {
+    flags & O_APPEND != 0
+}
+
+fn is_dir_mode(mode: u32) -> bool {
+    (mode & S_IFMT) == S_IFDIR
+}
+
+fn backend_openable(idx: usize, rel: &str) -> bool {
+    if backend_lookup(idx, rel).is_some() {
+        return true;
+    }
+    match backend_stat(idx, rel) {
+        Some(st) if !is_dir_mode(st.mode) => true,
+        _ => false,
+    }
+}
+
+/// Resolve `path` to a vnode suitable for open/read/write.
 pub fn open(path: &str, flags: u32) -> Option<Vnode> {
-    if flags & O_ACCMODE != O_RDONLY {
+    let rel_check = normalize_path(path);
+    if rel_check.is_empty() {
         return None;
     }
-    let rel = normalize_path(path);
+    let (idx, rel) = resolve_index(path)?;
     if rel.is_empty() {
         return None;
     }
-    if let Some((idx, rel)) = resolve_index(path) {
-        if backend_lookup(idx, rel).is_some() {
-            return Some(make_vnode(idx, rel));
-        }
-    }
-    if flags & O_CREAT != 0 {
+
+    let acc = flags & O_ACCMODE;
+    if acc > O_RDWR {
         return None;
+    }
+    let wants_write = matches!(acc, O_WRONLY | O_RDWR);
+    let creat = flags & O_CREAT != 0;
+    let trunc = flags & O_TRUNC != 0;
+
+    if backend_openable(idx, rel) {
+        if wants_write {
+            if !backend_has_write(idx) {
+                return None;
+            }
+            if trunc && !backend_truncate(idx, rel) {
+                return None;
+            }
+        }
+        return Some(make_vnode(idx, rel));
+    }
+
+    if creat {
+        if !backend_create(idx, rel) {
+            return None;
+        }
+        if trunc {
+            let _ = backend_truncate(idx, rel);
+        }
+        return Some(make_vnode(idx, rel));
     }
     None
 }
@@ -143,14 +219,17 @@ pub fn stat(path: &str) -> Option<StatInfo> {
 
 /// Read from an open vnode at `pos` into `out`. Returns bytes read.
 pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
-    let Some(data) = backend_lookup(node.mount as usize, node.path_str()) else {
-        return 0;
-    };
-    let n = out.len().min(data.len().saturating_sub(pos));
-    if n != 0 {
-        out[..n].copy_from_slice(&data[pos..pos + n]);
-    }
-    n
+    backend_read(node.mount as usize, node.path_str(), pos, out)
+}
+
+/// Write to an open vnode at `pos`. Returns bytes written, or `None` on error.
+pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
+    backend_write(node.mount as usize, node.path_str(), pos, buf)
+}
+
+/// Current size of the vnode path (for `O_APPEND`), if known.
+pub fn size_of(node: &Vnode) -> Option<usize> {
+    backend_stat(node.mount as usize, node.path_str()).map(|s| s.size as usize)
 }
 
 /// List directory entries at `path` into `buf` (newline-separated basenames).
@@ -273,6 +352,76 @@ fn backend_register(idx: usize, name: &str, bytes: &'static [u8]) -> bool {
     match backend {
         MountBackend::Kernel(ops) => (ops.register)(name, bytes),
         MountBackend::Module(ops) => module_register(&ops, name, bytes),
+    }
+}
+
+fn backend_has_write(idx: usize) -> bool {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return false;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => ops.writable,
+        MountBackend::Module(_) => false,
+    }
+}
+
+fn backend_create(idx: usize, rel: &str) -> bool {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return false;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => (ops.create)(rel),
+        MountBackend::Module(_) => false,
+    }
+}
+
+fn backend_truncate(idx: usize, rel: &str) -> bool {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return false;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => (ops.truncate)(rel),
+        MountBackend::Module(_) => false,
+    }
+}
+
+fn backend_read(idx: usize, rel: &str, pos: usize, out: &mut [u8]) -> usize {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return 0;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => (ops.read)(rel, pos, out),
+        MountBackend::Module(ops) => {
+            read_from_static(module_lookup(&ops, rel), pos, out)
+        }
+    }
+}
+
+fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Option<usize> {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let m = mounts.get(idx)?;
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => (ops.write)(rel, pos, buf),
+        MountBackend::Module(_) => None,
     }
 }
 
