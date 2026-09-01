@@ -15,16 +15,16 @@
  
  	tree = ereallocarray(NULL, PATH_MAX, sizeof(*tree));
  
-@@ -448,8 +456,6 @@
+@@ -448,7 +456,7 @@
  	} ARGEND
  
  	switch (argc) {
 -	case 0: /* fallthrough */
--		*--argv = ".", ++argc;
++	case 0: /* no operands: list cwd (interactive `/s/ls`) */
+ 		*--argv = ".", ++argc;
  	case 1:
  		mkent(&ent, argv[0], 1, Hflag || Lflag);
- 		ls("", &ent, (!dflag && S_ISDIR(ent.mode)) ||
-@@ -487,5 +493,7 @@
+@@ -487,5 +495,7 @@
  		free(dents);
  	}
  

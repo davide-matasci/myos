@@ -1591,7 +1591,8 @@ fn copy_user_exec_pack_via_aspace(
 }
 
 fn sys_listdir(path_ptr: usize, path_len: usize, buf: usize) -> usize {
-    const LISTDIR_CAP: usize = 512;
+    // Match libgloss MYOS_DIRBUF so /s listings (~100 names) are not truncated.
+    const LISTDIR_CAP: usize = 4096;
     if buf == 0 || !user_range_ok(buf, LISTDIR_CAP) {
         return SYSERR;
     }

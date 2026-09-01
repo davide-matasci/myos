@@ -3,6 +3,9 @@
 //! Embedded user ELFs are registered at boot via [`init_embedded`]; Limine ESP
 //! modules override via [`init_limine`]. Loadable modules add files through
 //! `KernelApi::vfs_register` (e.g. the FAT module registers `/msg`).
+//! Handwritten demos that share names with ported tools use a `myos_` prefix
+//! (`myos_ls`, `myos_echo`, `myos_cat`); sbase/coreutils keep short names on
+//! `/s` and `/c`.
 
 use spin::Mutex;
 
@@ -148,9 +151,9 @@ pub fn init_embedded() {
     let _ = register("bigalloc", BIGALLOC_ELF);
     let _ = register("chello", C_HELLO_ELF);
     let _ = register("sh", SH_ELF);
-    let _ = register("echo", ECHO_ELF);
-    let _ = register("cat", CAT_ELF);
-    let _ = register("ls", LS_ELF);
+    let _ = register("myos_echo", ECHO_ELF);
+    let _ = register("myos_cat", CAT_ELF);
+    let _ = register("myos_ls", LS_ELF);
 }
 
 /// Register Limine-mapped modules by basename (overrides embedded names).

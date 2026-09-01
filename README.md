@@ -238,6 +238,13 @@ modules override by basename; loadable modules add files via
 `KernelApi::vfs_register` on the `"bootfs"` mount (e.g. FAT registers
 `msg`). ESP `boot/ok` overwrites the embed when both exist.
 
+**Install layout:** handwritten Rust demos that would collide with ported
+tool names use a `myos_` prefix on bootfs (`/myos_ls`, `/myos_echo`,
+`/myos_cat`). Ported **sbase** keeps short names under `/s/` (PREFIX `/s`);
+**uutils/coreutils** multicall names live under `/c/`. oksh PATH is
+`/:/s:/c`, so bare `ls`/`cat` resolve to sbase (or coreutils) after the
+rename. Root `listdir` also surfaces mount prefixes (`s`, `c`, …).
+
 **virtio-blk is in-kernel** (`kernel/src/blk.rs`), not a loadable module
 (chicken/egg: the FAT parser needs block I/O to load). x86 uses PCI config
 (`0xCF8`/`0xCFC`) to find vendor `0x1AF4` device `0x1001` and talks
@@ -390,7 +397,7 @@ remaining Rust user programs live in `user/lib`.
 
 `user/ok` is its own tiny workspace (same shape as `user/init` /
 `modules/hello`: `panic = "abort"`, `opt-level = "s"`). `kernel/build.rs`
-nested-`cargo build`s init, ok, echo, cat, ls (not `sh`); init is `include_bytes!`,
+nested-`cargo build`s init, ok, myos_echo, myos_cat, myos_ls (not `sh`); init is `include_bytes!`,
 the rest are embedded as bootfs fallbacks and placed on the ESP as
 `boot/sh`, `boot/ok`, etc. After printing `user ok`, it `open`s `/msg`,
 `read`s the bytes, writes them to serial (`fat ok`), and exits. If `/msg`
@@ -537,9 +544,9 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `user/init` | PID1-style: baked in, smoke fork/`/ok`, execs `/sh` |
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
 | `scripts/oksh-myos/` | oksh pin patches + `pconfig.h` |
-| `user/echo` | Print argv (`echo hello`) |
-| `user/cat` | Read a bootfs file to stdout |
-| `user/ls` | List bootfs entries (via `listdir`) |
+| `user/echo` | Print argv; installed as bootfs `/myos_echo` |
+| `user/cat` | Read a bootfs file; installed as bootfs `/myos_cat` |
+| `user/ls` | List bootfs entries; installed as bootfs `/myos_ls` |
 | `user/lib` | Shared `myos_user` syscall/argv/`Heap` helpers |
 | `user/heap` | `#![no_std]` + `alloc` smoke test (`alloc ok`) |
 | `user/ok` | Second userspace ELF: `user ok`, then reads `/msg`; ESP `boot/ok` |
