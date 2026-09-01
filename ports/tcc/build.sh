@@ -16,22 +16,40 @@ is_elf() {
   [[ "$mag" == "7f454c46" ]]
 }
 
+require_elf() {
+  local arch="$1"
+  local out="$ROOT/target/tcc-${arch}-unknown-myos"
+  if ! is_elf "$out"; then
+    echo "error: tcc ELF missing for ${arch} at ${out}" >&2
+    return 1
+  fi
+}
+
 pack_aliases() {
   local arch triple out alias
   for arch in x86_64 aarch64 riscv64; do
+    require_elf "$arch" || exit 1
     triple="${arch}-unknown-myos"
     out="$ROOT/target/tcc-${triple}"
     alias="$ROOT/target/coreutils-tcc-${triple}"
-    if is_elf "$out"; then
-      cp "$out" "$alias"
-    fi
+    cp "$out" "$alias"
   done
 }
 
-if myos_tcc_is_current; then
+all_elfs_ok() {
+  local arch
+  for arch in x86_64 aarch64 riscv64; do
+    is_elf "$ROOT/target/tcc-${arch}-unknown-myos" || return 1
+  done
+}
+
+if myos_tcc_is_current && all_elfs_ok; then
   echo "tcc ELFs up to date"
   pack_aliases
   exit 0
+fi
+if myos_tcc_is_current && ! all_elfs_ok; then
+  echo "error: tcc stamp current but an arch ELF is missing; rebuilding" >&2
 fi
 
 "$ROOT/ports/tcc/prepare.sh"
@@ -62,6 +80,8 @@ build_arch() {
   local out="$ROOT/target/tcc-${triple}"
   local extra=()
   local target_def
+  local libarm="$WORK/lib/lib-arm64.c"
+  local rvsoft="$ROOT/ports/sbase/riscv64-softfloat.c"
 
   target_def="$(tcc_target_def "$arch")"
   rm -rf "$objdir"
@@ -86,18 +106,41 @@ build_arch() {
     -Wno-pointer-sign \
     -c "$WORK/tcc.c" -o "$objdir/tcc.o"
 
-  if [[ "$arch" == "aarch64" && -f "$ROOT/ports/sbase/trunctfdf2.c" ]]; then
-    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
-    extra+=("$objdir/trunctfdf2.o")
-  elif [[ "$arch" == "riscv64" && -f "$ROOT/ports/sbase/riscv64-softfloat.c" ]]; then
-    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$objdir/riscv64-softfloat.o"
+  # No -lm: tcc only needs ldexp/strtold for constant folding.
+  "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
+    -c "$MYOS/host_math.c" -o "$objdir/host_math.o"
+  extra+=("$objdir/host_math.o")
+
+  # clang --target=*-unknown-none uses IEEE-128 long double and emits
+  # compiler-rt __*tf* helpers. TinyCC's lib/lib-arm64.c is the canonical
+  # software implementation (also used for riscv64 libtcc1 upstream).
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
+    if [[ ! -f "$libarm" ]]; then
+      echo "error: TinyCC IEEE-128 helpers missing at ${libarm}" >&2
+      exit 1
+    fi
+    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
+      -c "$libarm" -o "$objdir/lib-arm64.o"
+    extra+=("$objdir/lib-arm64.o")
+  fi
+
+  # riscv64-unknown-none is soft-float; libc strtod may need df helpers.
+  # Rename overlapping __trunctfdf2 so lib-arm64.c owns the IEEE-128 trunc.
+  if [[ "$arch" == "riscv64" ]]; then
+    if [[ ! -f "$rvsoft" ]]; then
+      echo "error: riscv64 softfloat helpers missing at ${rvsoft}" >&2
+      exit 1
+    fi
+    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
+      -D__trunctfdf2=__myos_tcc_unused_trunctfdf2 \
+      -c "$rvsoft" -o "$objdir/riscv64-softfloat.o"
     extra+=("$objdir/riscv64-softfloat.o")
   fi
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
     "$lib/crt0.o" "$objdir/tcc.o" "${extra[@]}" -L"$lib" \
-    --start-group -lc -lm -lgloss -lg --end-group
+    --start-group -lc -lgloss -lg --end-group
 
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
 
@@ -114,9 +157,7 @@ done
 
 missing=0
 for arch in x86_64 aarch64 riscv64; do
-  out="$ROOT/target/tcc-${arch}-unknown-myos"
-  if ! is_elf "$out"; then
-    echo "error: tcc ELF missing for ${arch} at ${out}" >&2
+  if ! require_elf "$arch"; then
     missing=1
   fi
 done
