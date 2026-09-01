@@ -26,6 +26,10 @@
 #define MYOS_SYS_RENAME 20
 #define MYOS_SYS_SYMLINK 21
 #define MYOS_SYS_READLINK 22
+#define MYOS_SYS_MMAP 23
+#define MYOS_SYS_MUNMAP 24
+#define MYOS_SYS_MPROTECT 25
+#define MYOS_SYS_LSEEK 26
 
 #define MYOS_SYSERR ((unsigned long)-1)
 

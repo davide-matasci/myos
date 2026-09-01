@@ -13,7 +13,8 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/more_stubs.c \
 	%D%/ioctl.c \
 	%D%/environ.c \
-	%D%/getline.c
+	%D%/getline.c \
+	%D%/mmap.c
 
 %C%_extra_parts = crt0
 

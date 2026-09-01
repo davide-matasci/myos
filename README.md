@@ -16,7 +16,7 @@ Multiboot-for-ARM).
 
 Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 
-Userspace **ports** live under `ports/` (sbase, ubase, oksh, ripgrep, coreutils; fetched at build, not vendored). **Toolchain** pieces live under `toolchain/` (newlib/libgloss and the Rust `std` PAL/sysroot). `scripts/` keeps thin wrappers so `./scripts/build-sbase.sh` still works.
+Userspace **ports** live under `ports/` (sbase, ubase, oksh, ripgrep, coreutils, tcc; fetched at build, not vendored). **Toolchain** pieces live under `toolchain/` (newlib/libgloss and the Rust `std` PAL/sysroot). `scripts/` keeps thin wrappers so `./scripts/build-sbase.sh` still works.
 
 The kernel runs round-robin **kernel threads** plus **user processes**.
 Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
@@ -31,8 +31,8 @@ newlib/libgloss. It prints `sh ok` and drops to an interactive `$ ` prompt on
 proves `alloc ok`, reads `/msg` (`user ok` / `fat ok`), cheap disk/FAT listdir
 markers, then exits — it no longer execs the heavy carnival. CI types `root`
 at `login: `, an empty password, then `heap` at `$` for
-std/C/sbase/uutils/ripgrep/bigalloc.
-`/c/rg` is BurntSushi ripgrep (fetched at build time, with PCRE2). Userspace programs are ELFs,
+std/C/sbase/uutils/ripgrep/tcc/bigalloc.
+`/c/rg` is BurntSushi ripgrep (fetched at build time, with PCRE2). `/t/tcc` is TinyCC (fetched at build time) with mmap-backed `-run`. Userspace programs are ELFs,
 not `KernelApi` modules. Nested cargo like
 hello; loaded into per-process page tables at `USER_BASE`. Each process has
 its own CR3/TTBR0; the kernel/HHDM (and on AArch64 the TTBR0 device block
@@ -493,6 +493,7 @@ required beyond the existing myos ABI.
 ./ports/sbase/build.sh    # full suckless sbase → target/sbase-* + manifest
 ./ports/ubase/build.sh    # ubase getty+login → target/ubase-* (`/u/…`)
 ./ports/oksh/build.sh     # oksh 7.9 → target/oksh-*-unknown-none (`/sh`)
+./ports/tcc/build.sh      # TinyCC → target/tcc-*-unknown-myos (`/t/tcc`)
 ```
 
 | Path | Role |
@@ -512,14 +513,17 @@ required beyond the existing myos ABI.
 | `ports/oksh/build.sh` | Cross-build oksh per arch (`target/oksh-*-unknown-none`) |
 | `ports/oksh/` | `pconfig.h` (`configure --no-thanks --enable-small --disable-curses`) and `.myos.patch` files |
 | `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
+| `ports/tcc/fetch.sh` | Clone pinned [TinyCC](https://github.com/TinyCC/tinycc) into `target/tcc-src` |
+| `ports/tcc/prepare.sh` | Sync upstream tree; generate `tccdefs_.h`; apply `tccrun` mmap/-run glue |
+| `ports/tcc/build.sh` | Cross-build native tcc per `*-unknown-myos` triple (`target/tcc-*`) |
 
 Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
 `open` (writable on tmpfs/devfs), `close`, `brk`, `fork`, `wait`/`waitpid`, `pipe`, `dup2`,
 `execve`, `stat` via **`SYS_STAT` (12)**, `chdir`/`getcwd` via **`SYS_CHDIR`/`SYS_GETCWD`**,
 `mkdir`/`rmdir`/`unlink`/`rename`/`symlink`/`readlink` via **`SYS_MKDIR`…`SYS_READLINK` (17–22)**
-on writable mounts — today **tmpfs**).
+on writable mounts — today **tmpfs**). Anonymous **`mmap`/`munmap`/`mprotect`** (`SYS_MMAP` 23 … `SYS_MPROTECT` 25) and **`lseek`** (`SYS_LSEEK` 26) back TinyCC `-run`.
 `opendir`/`readdir`/`closedir` use `SYS_LISTDIR`. Relative paths (including `.`)
-are resolved against the per-task cwd in the kernel. `lseek` still returns `ENOSYS`.
+are resolved against the per-task cwd in the kernel.
 Do **not** use `-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
 
 Upstream sbase (`cat`, `true`, `ls`, `pwd`, …) is fetched at build time; only
@@ -569,13 +573,13 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
 | `user/init` | PID1-style: baked in, smoke fork/`/ok`, execs `/sh` |
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
-| `ports/` | Userspace ports (sbase, oksh, ripgrep, coreutils); source fetched at build |
+| `ports/` | Userspace ports (sbase, ubase, oksh, ripgrep, coreutils, tcc); source fetched at build |
 | `ports/oksh/` | oksh pin patches + `pconfig.h` |
 | `user/echo` | Print argv; installed as bootfs `/myos_echo` |
 | `user/cat` | Read a bootfs file; installed as bootfs `/myos_cat` |
 | `user/ls` | List bootfs entries; installed as bootfs `/myos_ls` |
 | `user/lib` | Shared `myos_user` syscall/argv/`Heap` helpers |
-| `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/bigalloc); typed as `heap` at `$` |
+| `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/ripgrep/tcc/bigalloc); typed as `heap` at `$` |
 | `user/ok` | Slim always-on boot smoke (`alloc`/`user`/`fat`/`disk` markers); ESP `boot/ok` |
 | `targets/` | Custom Rust target specs (`x86_64-unknown-myos.json`) |
 | `toolchain/newlib/` | newlib libgloss port + fetch/build scripts |

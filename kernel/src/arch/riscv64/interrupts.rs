@@ -66,7 +66,10 @@ trap_vector:
     sd t0, 272(sp)
     j 3f
 2:
-    sd zero, 272(sp)
+    # S-mode trap (timer nested in a syscall): keep sscratch. Storing zero
+    # here left the next user trap with sp=0 (sepc in flash after `echo pipe | cat`).
+    csrr t0, sscratch
+    sd t0, 272(sp)
 3:
     mv a0, sp
     call riscv64_trap_handler

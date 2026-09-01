@@ -84,25 +84,12 @@ fn fd_drop(entry: FdEntry) {
 fn user_buf_ok(
     buf: usize,
     len: usize,
-    user_base: usize,
-    image_span: usize,
-    stack_off: usize,
-    brk: usize,
+    _user_base: usize,
+    _image_span: usize,
+    _stack_off: usize,
+    _brk: usize,
 ) -> bool {
-    if len == 0 {
-        return true;
-    }
-    let end = match buf.checked_add(len) {
-        Some(e) => e,
-        None => return false,
-    };
-    let stack = stack_off;
-    let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
-    let in_code = buf >= user_base && end <= user_base + image_span;
-    let in_stack = buf >= user_base + stack && end <= user_base + stack + stack_bytes;
-    let heap_base = user_base + stack + stack_bytes;
-    let in_heap = brk > heap_base && buf >= heap_base && end <= brk;
-    in_code || in_stack || in_heap
+    user::buffer_ok(buf, len)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -149,6 +136,21 @@ const fn root_cwd_buf() -> [u8; 64] {
     c
 }
 
+pub const MAX_MMAP_REGIONS: usize = 16;
+
+#[derive(Clone, Copy)]
+pub struct MmapRegion {
+    pub va: u64,
+    pub pages: u32,
+    pub prot: u32,
+}
+
+const EMPTY_MMAP: [MmapRegion; MAX_MMAP_REGIONS] = [MmapRegion {
+    va: 0,
+    pages: 0,
+    prot: 0,
+}; MAX_MMAP_REGIONS];
+
 #[derive(Clone, Copy)]
 struct Task {
     state: State,
@@ -177,6 +179,9 @@ struct Task {
     cwd: [u8; 64],
     cwd_len: u8,
     exit_code: u8,
+    /// Anonymous mmap windows (after the brk heap).
+    mmap: [MmapRegion; MAX_MMAP_REGIONS],
+    mmap_next: u64,
 }
 
 const EMPTY: Task = Task {
@@ -202,6 +207,8 @@ const EMPTY: Task = Task {
     cwd: root_cwd_buf(),
     cwd_len: 1,
     exit_code: 0,
+    mmap: EMPTY_MMAP,
+    mmap_next: 0,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -284,6 +291,127 @@ pub fn current_brk() -> u64 {
 
 pub fn set_brk(brk: u64) {
     with_current_mut(|t| t.brk_cur = brk);
+}
+
+pub fn mmap_regions() -> [MmapRegion; MAX_MMAP_REGIONS] {
+    let flags = irq_save();
+    irq_off();
+    let id = CURRENT.load(Ordering::SeqCst);
+    let r = TASKS.lock()[id].mmap;
+    irq_restore(flags);
+    r
+}
+
+pub fn mmap_contains(ptr: usize, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let end = match ptr.checked_add(len) {
+        Some(e) => e,
+        None => return false,
+    };
+    let flags = irq_save();
+    irq_off();
+    let id = CURRENT.load(Ordering::SeqCst);
+    let mmap = TASKS.lock()[id].mmap;
+    irq_restore(flags);
+    for r in mmap.iter() {
+        if r.pages == 0 {
+            continue;
+        }
+        let lo = r.va as usize;
+        let hi = lo.saturating_add(r.pages as usize * crate::user::PAGE);
+        if ptr >= lo && end <= hi {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn mmap_overlaps(va: usize, len: usize) -> bool {
+    let end = va.saturating_add(len);
+    let flags = irq_save();
+    irq_off();
+    let id = CURRENT.load(Ordering::SeqCst);
+    let mmap = TASKS.lock()[id].mmap;
+    irq_restore(flags);
+    for r in mmap.iter() {
+        if r.pages == 0 {
+            continue;
+        }
+        let lo = r.va as usize;
+        let hi = lo.saturating_add(r.pages as usize * crate::user::PAGE);
+        if va < hi && end > lo {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn mmap_alloc(area_lo: usize, area_hi: usize, len: usize) -> Option<usize> {
+    with_current_mut(|t| {
+        let mut next = t.mmap_next as usize;
+        if next < area_lo || next == 0 {
+            next = area_lo;
+        }
+        next = (next + crate::user::PAGE - 1) & !(crate::user::PAGE - 1);
+        if next.saturating_add(len) > area_hi {
+            return None;
+        }
+        t.mmap_next = (next + len) as u64;
+        Some(next)
+    })
+}
+
+pub fn mmap_add(va: u64, pages: u32, prot: u32) -> bool {
+    with_current_mut(|t| {
+        for r in t.mmap.iter_mut() {
+            if r.pages == 0 {
+                *r = MmapRegion { va, pages, prot };
+                return true;
+            }
+        }
+        false
+    })
+}
+
+pub fn mmap_remove(va: u64, pages: u32) {
+    with_current_mut(|t| {
+        for r in t.mmap.iter_mut() {
+            if r.va == va && r.pages == pages {
+                *r = MmapRegion { va: 0, pages: 0, prot: 0 };
+                return;
+            }
+        }
+        // Partial unmap: drop any region fully covered.
+        let lo = va;
+        let hi = va.saturating_add(pages as u64 * crate::user::PAGE as u64);
+        for r in t.mmap.iter_mut() {
+            if r.pages == 0 {
+                continue;
+            }
+            let rhi = r.va.saturating_add(r.pages as u64 * crate::user::PAGE as u64);
+            if r.va >= lo && rhi <= hi {
+                *r = MmapRegion { va: 0, pages: 0, prot: 0 };
+            }
+        }
+    });
+}
+
+pub fn mmap_set_prot(va: u64, pages: u32, prot: u32) {
+    with_current_mut(|t| {
+        let lo = va;
+        let hi = va.saturating_add(pages as u64 * crate::user::PAGE as u64);
+        for r in t.mmap.iter_mut() {
+            if r.pages == 0 {
+                continue;
+            }
+            let rhi = r.va.saturating_add(r.pages as u64 * crate::user::PAGE as u64);
+            if r.va >= lo && rhi <= hi {
+                r.prot = prot;
+            }
+        }
+    });
 }
 
 pub fn set_exec_name(name: &[u8]) {
@@ -641,6 +769,37 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
     total
 }
 
+pub fn fd_lseek(fd: usize, offset: i64, whence: usize) -> usize {
+    const SEEK_SET: usize = 0;
+    const SEEK_CUR: usize = 1;
+    const SEEK_END: usize = 2;
+    with_current_mut(|t| {
+        if fd >= MAX_FDS {
+            return usize::MAX;
+        }
+        match t.fds[fd] {
+            FdEntry::File { node, pos, .. } => {
+                let size = crate::fs::size_of(&node).unwrap_or(pos) as i64;
+                let cur = pos as i64;
+                let next = match whence {
+                    SEEK_SET => offset,
+                    SEEK_CUR => cur.saturating_add(offset),
+                    SEEK_END => size.saturating_add(offset),
+                    _ => return usize::MAX,
+                };
+                if next < 0 {
+                    return usize::MAX;
+                }
+                if let FdEntry::File { pos: p, .. } = &mut t.fds[fd] {
+                    *p = next as usize;
+                }
+                next as usize
+            }
+            _ => usize::MAX,
+        }
+    })
+}
+
 pub fn fd_close(fd: usize) -> bool {
     if fd >= MAX_FDS {
         return false;
@@ -686,6 +845,8 @@ pub fn replace_user(
         t.user_argv = user_argv;
         t.fork_regs = None;
         t.brk_cur = heap_base_for(user_base, stack_off);
+        t.mmap = EMPTY_MMAP;
+        t.mmap_next = 0;
     });
     user::switch_aspace(aspace);
     LOADED_ASPACE.store(aspace, Ordering::SeqCst);
@@ -740,7 +901,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len) = {
+    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next) = {
         let tasks = TASKS.lock();
         let id = CURRENT.load(Ordering::SeqCst);
         let t = tasks[id];
@@ -760,6 +921,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.brk_cur,
             t.cwd,
             t.cwd_len,
+            t.mmap,
+            t.mmap_next,
         )
     };
 
@@ -844,6 +1007,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         cwd,
         cwd_len,
         exit_code: 0,
+        mmap,
+        mmap_next,
     };
     drop(tasks);
     user::note_fork();
@@ -962,6 +1127,8 @@ fn spawn_inner(
         },
         cwd_len: 1,
         exit_code: 0,
+        mmap: EMPTY_MMAP,
+        mmap_next: 0,
     };
     drop(tasks);
     irq_restore(flags);

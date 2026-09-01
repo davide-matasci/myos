@@ -5,6 +5,7 @@ mod coreutilsfs;
 mod devfs;
 mod sbasefs;
 mod ubasefs;
+mod tccfs;
 mod tmpfs;
 mod vfs;
 
@@ -192,7 +193,7 @@ fn rw_ops(
     }
 }
 
-/// Mount bootfs at `/`, sbasefs at `/s/`, ubasefs at `/u/`, coreutilsfs at `/c/`,
+/// Mount bootfs at `/`, sbasefs at `/s/`, ubasefs at `/u/`, tccfs at `/t/`, coreutilsfs at `/c/`,
 /// tmpfs at `/tmp/`, devfs at `/dev/`, and register embedded user ELFs.
 pub fn init() {
     vfs::mount(
@@ -240,6 +241,21 @@ pub fn init() {
         ),
     );
     ubasefs::init_embedded();
+    vfs::mount(
+        "tccfs",
+        "t",
+        ro_ops(
+            tccfs::lookup,
+            tccfs::stat,
+            tccfs::listdir_at,
+            tccfs::register,
+            tccfs::create,
+            tccfs::truncate,
+            tccfs::read,
+            tccfs::write,
+        ),
+    );
+    tccfs::init_embedded();
     vfs::mount(
         "coreutilsfs",
         "c",

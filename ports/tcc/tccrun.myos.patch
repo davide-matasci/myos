@@ -1,0 +1,47 @@
+--- tccrun.c
++++ tccrun.c
+@@ -140,7 +140,10 @@
+     if (!ptr)
+         return tcc_error_noabort("tccrun: could not allocate memory");
+ #else
+-    ptr = tcc_malloc(size += PAGESIZE); /* one extra page to align malloc memory */
++    /* myos: anonymous RW pages; protect_pages later flips RX. */
++    ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (ptr == MAP_FAILED)
++        return tcc_error_noabort("tccrun: could not map memory");
+ #endif
+     s1->run_ptr = ptr;
+     s1->run_size = size;
+@@ -203,9 +206,7 @@
+ #elif CONFIG_RUNMEM_VIRTUALALLOC
+     VirtualFree(ptr, size, MEM_RELEASE);
+ #else
+-    /* unprotect memory to make it usable for malloc again */
+-    protect_pages((void*)PAGEALIGN(ptr), size - PAGESIZE, 2 /*rw*/);
+-    tcc_free(ptr);
++    munmap(ptr, size);
+ #endif
+ }
+ 
+@@ -233,10 +234,10 @@
+         return 0;
+ 
+     tcc_add_symbol(s1, "__rt_exit", rt_exit);
+-    s1->run_main = "_runmain", top_sym = "main";
++    s1->run_main = "main", top_sym = "main";
+     if (s1->elf_entryname)
+         s1->run_main = top_sym = s1->elf_entryname;
+-    tcc_add_support(s1, "runmain.o");
++    /* myos: no CONFIG_TCCDIR helper objects; call main() directly. */
+ 
+     if (tcc_relocate(s1) < 0)
+         return -1;
+@@ -1558,6 +1559,8 @@
+     TCCSYM(fprintf)
+     TCCSYM(fopen)
+     TCCSYM(fclose)
++    TCCSYM(write)
++    TCCSYM(puts)
+ #undef TCCSYM
+ #endif
+     { NULL, NULL },
