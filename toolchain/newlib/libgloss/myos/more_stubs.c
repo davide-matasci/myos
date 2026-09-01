@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <stdarg.h>
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <limits.h>
@@ -35,7 +36,40 @@ int fchown(int fd, uid_t owner, gid_t group) {
     (void)fd;
     (void)owner;
     (void)group;
-    return myos_rofs();
+    /* Always root; getty fchown on the console tty. */
+    return 0;
+}
+
+int fchmod(int fd, mode_t mode) {
+    (void)fd;
+    (void)mode;
+    return 0;
+}
+
+int vhangup(void) {
+    return 0;
+}
+
+int initgroups(const char *user, gid_t group) {
+    (void)user;
+    (void)group;
+    return 0;
+}
+
+int gethostname(char *name, size_t len) {
+    const char *hn = "myos";
+    size_t n;
+    if (name == NULL || len == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    n = strlen(hn);
+    if (n + 1 > len) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memcpy(name, hn, n + 1);
+    return 0;
 }
 
 int ftruncate(int fd, off_t length) {
@@ -100,9 +134,27 @@ int pclose(FILE *stream) {
 }
 
 int execlp(const char *file, const char *arg, ...) {
-    (void)file;
-    (void)arg;
-    return myos_nosys();
+    char *argv[16];
+    va_list ap;
+    int i = 0;
+
+    if (file == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    argv[i++] = (char *)arg;
+    va_start(ap, arg);
+    while (i < 15) {
+        char *a = va_arg(ap, char *);
+        argv[i] = a;
+        if (a == NULL) {
+            break;
+        }
+        i++;
+    }
+    va_end(ap);
+    argv[15] = NULL;
+    return execvp(file, argv);
 }
 
 char *realpath(const char *path, char *resolved) {

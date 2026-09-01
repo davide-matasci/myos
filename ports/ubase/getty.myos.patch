@@ -1,0 +1,9 @@
+--- getty.c
++++ getty.c
+@@ -136,5 +136,5 @@
+ 		eprintf("login name cannot start with '-'\n");
+ 	if (logname[0] == '\0')
+ 		return 1;
+-	return execlp("/bin/login", "login", "-p", logname, NULL);
++	return execlp("/u/login", "login", "-p", logname, NULL);
+ }

@@ -9,6 +9,9 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/syscalls.c \
 	%D%/stubs.c \
 	%D%/posix_stubs.c \
+	%D%/misc_stubs.c \
+	%D%/more_stubs.c \
+	%D%/ioctl.c \
 	%D%/environ.c \
 	%D%/getline.c
 

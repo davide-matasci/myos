@@ -16,18 +16,22 @@ Multiboot-for-ARM).
 
 Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 
-Userspace **ports** live under `ports/` (sbase, oksh, ripgrep, coreutils; fetched at build, not vendored). **Toolchain** pieces live under `toolchain/` (newlib/libgloss and the Rust `std` PAL/sysroot). `scripts/` keeps thin wrappers so `./scripts/build-sbase.sh` still works.
+Userspace **ports** live under `ports/` (sbase, ubase, oksh, ripgrep, coreutils; fetched at build, not vendored). **Toolchain** pieces live under `toolchain/` (newlib/libgloss and the Rust `std` PAL/sysroot). `scripts/` keeps thin wrappers so `./scripts/build-sbase.sh` still works.
 
 The kernel runs round-robin **kernel threads** plus **user processes**.
 Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
 `include_bytes!`, spawned as today, smoke-runs fork/`/ok` for CI needles,
-then **execs `/sh`**. `/sh` is portable OpenBSD ksh
-([oksh](https://github.com/ibara/oksh) 7.9) linked with newlib/libgloss. It
-prints `sh ok` and drops to an interactive `$ ` prompt on **stdin** (PS/2
-keyboard when detected, else serial). Slim always-on `user/ok` proves
-`alloc ok`, reads `/msg` (`user ok` / `fat ok`), cheap disk/FAT listdir
-markers, then exits — it no longer execs the heavy carnival. CI types
-`heap` at `$` for std/C/sbase/uutils/ripgrep/bigalloc.
+then **stays PID1** and forks **getty** (`/u/getty /dev/console linux`).
+Getty sets up the console, prompts `login: `, and execs **`/u/login`**.
+Login is fake single-user (`root` / empty-or-any password) and execs `/sh`.
+If getty/login/sh exits, init `wait()`s and respawns getty. `/sh` is portable
+OpenBSD ksh ([oksh](https://github.com/ibara/oksh) 7.9) linked with
+newlib/libgloss. It prints `sh ok` and drops to an interactive `$ ` prompt on
+**stdin** (PS/2 keyboard when detected, else serial). Slim always-on `user/ok`
+proves `alloc ok`, reads `/msg` (`user ok` / `fat ok`), cheap disk/FAT listdir
+markers, then exits — it no longer execs the heavy carnival. CI types `root`
+at `login: `, an empty password, then `heap` at `$` for
+std/C/sbase/uutils/ripgrep/bigalloc.
 `/c/rg` is BurntSushi ripgrep (fetched at build time, with PCRE2). Userspace programs are ELFs,
 not `KernelApi` modules. Nested cargo like
 hello; loaded into per-process page tables at `USER_BASE`. Each process has
@@ -394,10 +398,12 @@ but you still rebuild the **disk image** so the ESP file updates.
 
 Userspace programs are ELFs, not KernelApi modules. Init is PID1-style:
 baked into the kernel (`user/init`), spawned as today, smoke-runs fork and
-slim `/ok`, then **execs `/sh`**. The shell is **oksh 7.9** (portable
-OpenBSD ksh) built with newlib/libgloss and embedded as bootfs `sh`. The
-older tiny `user/sh` crate stays in-tree but is not `/sh`. Shared helpers
-for the remaining Rust user programs live in `user/lib`.
+slim `/ok`, then **forks getty** (`/u/getty`) and `wait()`s, respawning if
+it dies. Getty (ubase) prompts for a username and execs `/u/login`; login
+(ubase) accepts fake `root:root` and execs `/sh`. The shell is **oksh 7.9**
+(portable OpenBSD ksh) built with newlib/libgloss and embedded as bootfs
+`sh`. The older tiny `user/sh` crate stays in-tree but is not `/sh`. Shared
+helpers for the remaining Rust user programs live in `user/lib`.
 
 `user/ok` is its own tiny workspace (same shape as `user/init` /
 `modules/hello`: `panic = "abort"`, `opt-level = "s"`). `kernel/build.rs`
@@ -485,6 +491,7 @@ required beyond the existing myos ABI.
 ./toolchain/newlib/build.sh   # fetch newlib 4.4.0, build libc + libgloss/myos
 ./scripts/build-c-hello.sh  # minimal write() smoke → target/c-hello-*
 ./ports/sbase/build.sh    # full suckless sbase → target/sbase-* + manifest
+./ports/ubase/build.sh    # ubase getty+login → target/ubase-* (`/u/…`)
 ./ports/oksh/build.sh     # oksh 7.9 → target/oksh-*-unknown-none (`/sh`)
 ```
 
@@ -530,7 +537,9 @@ tool (e.g. `/s/cat`, `/s/echo`, `/s/ls` — 91 utilities today); CI on all
 arches checks `sbase ok` from `/s/echo` and `sls ok` from `/s/ls` via CI-only
 `/heap` (typed at `$`).
 
-`/sh` is oksh. PATH is `/s:/c:/` (sbase, coreutils, then bootfs root). Interactive CI still types at `$ `; unknown
+`/sh` is oksh. PATH is `/s:/c:/` (sbase, coreutils, then bootfs root). ubase
+getty/login live at `/u/getty` and `/u/login` (not on PATH). Interactive CI
+types `root` at `login: `, then commands at `$ `; unknown
 commands print `not found`. Job control, SIGCHLD, curses, history files, and
 heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 `waitpid(-1)`). `user/sh` remains in-tree until CI is green.

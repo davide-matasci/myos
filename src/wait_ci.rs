@@ -70,6 +70,10 @@ const CI_SHELL_UNKNOWN_CMD: &str = "not found";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShellStage {
+    WaitLogin,
+    TypingUser,
+    WaitPassword,
+    TypingPass,
     WaitPrompt,
     Typing,
     WaitResult,
@@ -90,6 +94,17 @@ fn interactive_tail(serial: &str) -> &str {
 fn at_interactive_prompt(serial: &str) -> bool {
     let tail = interactive_tail(serial).trim();
     tail == "$" || tail.ends_with("$")
+}
+
+const CI_LOGIN_USER: &[u8] = b"root\n";
+const CI_LOGIN_PASS: &[u8] = b"\n";
+
+fn login_prompt_ready(serial: &str) -> bool {
+    serial.contains("fork exec ok") && interactive_tail(serial).contains("login: ")
+}
+
+fn password_prompt_ready(serial: &str) -> bool {
+    interactive_tail(serial).contains("Password:")
 }
 
 fn command_echoed(serial: &str, cmd: &str) -> bool {
@@ -233,6 +248,32 @@ fn advance_shell_ci(
         return;
     };
     match *stage {
+        ShellStage::WaitLogin if login_prompt_ready(acc) => {
+            *stage = ShellStage::TypingUser;
+            *typing = 0;
+        }
+        ShellStage::TypingUser => {
+            if *typing < CI_LOGIN_USER.len() {
+                send_shell_byte(stdin, CI_LOGIN_USER[*typing]);
+                *typing += 1;
+                std::thread::sleep(SHELL_TYPE_DELAY);
+            } else {
+                *stage = ShellStage::WaitPassword;
+            }
+        }
+        ShellStage::WaitPassword if password_prompt_ready(acc) => {
+            *stage = ShellStage::TypingPass;
+            *typing = 0;
+        }
+        ShellStage::TypingPass => {
+            if *typing < CI_LOGIN_PASS.len() {
+                send_shell_byte(stdin, CI_LOGIN_PASS[*typing]);
+                *typing += 1;
+                std::thread::sleep(SHELL_TYPE_DELAY);
+            } else {
+                *stage = ShellStage::WaitPrompt;
+            }
+        }
         ShellStage::WaitPrompt if shell_ready(acc) => {
             *stage = ShellStage::Typing;
             *cmd_index = 0;
@@ -258,7 +299,11 @@ fn advance_shell_ci(
                 *stage = ShellStage::Typing;
             }
         }
-        ShellStage::WaitPrompt | ShellStage::WaitResult | ShellStage::Done => {}
+        ShellStage::WaitLogin
+        | ShellStage::WaitPassword
+        | ShellStage::WaitPrompt
+        | ShellStage::WaitResult
+        | ShellStage::Done => {}
     }
 }
 
@@ -314,7 +359,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let started = Instant::now();
     let mut timed_out = false;
     let mut killed_for_needles = false;
-    let mut shell_stage = ShellStage::WaitPrompt;
+    let mut shell_stage = ShellStage::WaitLogin;
     let mut shell_cmd_index = 0usize;
     let mut typing = 0usize;
     let status = loop {
@@ -369,6 +414,20 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             eprintln!("error: QEMU timed out after {:?}", expect.timeout);
         }
         eprintln!("error: shell CI stage was {shell_stage:?} (cmd {shell_cmd_index})");
+        if matches!(
+            shell_stage,
+            ShellStage::WaitLogin | ShellStage::TypingUser
+        ) && !login_prompt_ready(&serial)
+        {
+            eprintln!("error: serial never reached getty `login: ` prompt");
+        }
+        if matches!(
+            shell_stage,
+            ShellStage::WaitPassword | ShellStage::TypingPass
+        ) && !password_prompt_ready(&serial)
+        {
+            eprintln!("error: serial never reached login `Password:` prompt after `root`");
+        }
         if !at_interactive_prompt(&serial) && !command_echoed(&serial, "nosuchcmd") {
             eprintln!("error: serial never reached interactive `$` prompt");
         }

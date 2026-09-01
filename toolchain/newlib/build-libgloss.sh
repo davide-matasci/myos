@@ -17,7 +17,7 @@ rm -rf "$out"
 mkdir -p "$out/obj" "$libdir"
 cp "$ROOT/toolchain/newlib/libgloss/myos/crt0-${arch}.S" "$PORT/crt0.S"
 
-for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs environ getline dirent cwd basename dirname time pwdgrp readlink; do
+for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
@@ -34,4 +34,5 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/sys/myos_extra.h" "$inc/sys/myos_extra.
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/ioctl.h" "$inc/sys/ioctl.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/socket.h" "$inc/sys/socket.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/utsname.h" "$inc/sys/utsname.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/utmp.h" "$inc/utmp.h"
 echo "libgloss-myos -> $libdir/libgloss.a"
