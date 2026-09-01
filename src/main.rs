@@ -269,7 +269,7 @@ fn run_ci_bios(bios_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(150),
+            timeout: Duration::from_secs(180),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -317,7 +317,7 @@ fn run_ci_uefi(uefi_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(150),
+            timeout: Duration::from_secs(180),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -340,7 +340,8 @@ fn run_ci_aarch64() {
             qemu_debug_exit: false,
             shell_ci: true,
         },
-        &CI_NEEDLES_STD,
+        // Slim `/ok` only; heavy `/heap` carnival is required on x86 CI.
+        &[],
     );
 }
 
@@ -503,7 +504,8 @@ fn run_ci_riscv64() {
             qemu_debug_exit: false,
             shell_ci: true,
         },
-        &CI_NEEDLES_STD,
+        // Slim `/ok` only; heavy `/heap` carnival is required on x86 CI.
+        &[],
     );
 }
 

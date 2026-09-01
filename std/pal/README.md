@@ -93,12 +93,13 @@ Syscall ABI matches `user/lib`: write (0), exit (1), read (3), close (4), brk (9
 | AArch64 | argc in **x0**, argv in **x1** | `svc #0`, nr in **x8** |
 
 The kernel embeds `/stdhello` from `target/std-hello-<triple>` on both architectures.
-`user/heap` execs it after `alloc ok`.
+CI-only `/heap` (typed at `$` on x86) execs it; slim `/ok` covers `alloc ok` at boot.
 
 ## Status
 
 Bring-up scope: **`println!("std ok")`** via patched `std` on x86_64-myos and
-aarch64-unknown-myos (CI checks `"std ok"` on BIOS, UEFI, and AArch64).
+aarch64-unknown-myos (x86 CI checks `"std ok"` via `/heap` at `$`; aarch64 boot
+CI uses slim `/ok` needles only).
 
 Networking, filesystem, threads, and fork-aware `std` process support are still
 stubs or unsupported paths in libstd.

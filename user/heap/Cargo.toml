@@ -5,7 +5,7 @@ name = "heap"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Userspace heap/brk smoke test."
+description = "CI-only heavy smoke (std/C/sbase/uutils/bigalloc); typed at $ by wait_ci."
 
 [[bin]]
 name = "heap"

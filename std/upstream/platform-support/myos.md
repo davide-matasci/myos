@@ -58,14 +58,15 @@ Prebuilt std artifacts may remain a private/local sysroot until tier 2 promotion
 
 ## Testing
 
-Run myos under QEMU; CI checks serial output including `std ok`:
+Run myos under QEMU; x86 CI types `heap` at `$` and checks serial including
+`std ok` (aarch64/riscv64 CI use slim `/ok` markers only):
 
 ```sh
 ./scripts/build-std-hello.sh
 cargo build
-cargo run -- --ci              # x86 BIOS
-cargo run -- uefi --ci         # x86 UEFI
-cargo run -- aarch64 --ci      # AArch64
+cargo run -- --ci              # x86 BIOS (+ heap at $)
+cargo run -- uefi --ci         # x86 UEFI (+ heap at $)
+cargo run -- aarch64 --ci      # AArch64 (slim /ok)
 ```
 
 User ELFs are position-independent executables linked with `rust-lld`.

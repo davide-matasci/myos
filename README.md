@@ -22,9 +22,11 @@ Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
 then **execs `/sh`**. `/sh` is portable OpenBSD ksh
 ([oksh](https://github.com/ibara/oksh) 7.9) linked with newlib/libgloss. It
 prints `sh ok` and drops to an interactive `$ ` prompt on **stdin** (PS/2
-keyboard when detected, else serial). `user/ok` prints `user ok`, reads
-`/msg` (FAT16 `MSG` via virtio-blk), prints `fat ok`, and exits.
-Userspace programs are ELFs, not `KernelApi` modules. Nested cargo like
+keyboard when detected, else serial). Slim always-on `user/ok` proves
+`alloc ok`, reads `/msg` (`user ok` / `fat ok`), cheap disk/FAT listdir
+markers, then exits — it no longer execs the heavy carnival. CI types
+`heap` at `$` for std/C/sbase/uutils/bigalloc. Userspace programs are ELFs,
+not `KernelApi` modules. Nested cargo like
 hello; loaded into per-process page tables at `USER_BASE`. Each process has
 its own CR3/TTBR0; the kernel/HHDM (and on AArch64 the TTBR0 device block
 for UART/GIC) is mapped into the aspace. It drops to ring 3 / EL0 and uses
@@ -389,19 +391,22 @@ but you still rebuild the **disk image** so the ESP file updates.
 
 Userspace programs are ELFs, not KernelApi modules. Init is PID1-style:
 baked into the kernel (`user/init`), spawned as today, smoke-runs fork and
-`/ok` (which execs `/heap` for the std/sbase/uutils needles), then
-**execs `/sh`**. The shell is **oksh 7.9** (portable OpenBSD ksh) built
-with newlib/libgloss and embedded as bootfs `sh`. The older tiny
-`user/sh` crate stays in-tree but is not `/sh`. Shared helpers for the
-remaining Rust user programs live in `user/lib`.
+slim `/ok`, then **execs `/sh`**. The shell is **oksh 7.9** (portable
+OpenBSD ksh) built with newlib/libgloss and embedded as bootfs `sh`. The
+older tiny `user/sh` crate stays in-tree but is not `/sh`. Shared helpers
+for the remaining Rust user programs live in `user/lib`.
 
 `user/ok` is its own tiny workspace (same shape as `user/init` /
 `modules/hello`: `panic = "abort"`, `opt-level = "s"`). `kernel/build.rs`
-nested-`cargo build`s init, ok, myos_echo, myos_cat, myos_ls (not `sh`); init is `include_bytes!`,
-the rest are embedded as bootfs fallbacks and placed on the ESP as
-`boot/sh`, `boot/ok`, etc. After printing `user ok`, it `open`s `/msg`,
-`read`s the bytes, writes them to serial (`fat ok`), and exits. If `/msg`
-is missing it spins (CI then fails the `fat ok` needle).
+nested-`cargo build`s init, ok, heap, myos_echo, myos_cat, myos_ls (not
+`sh`); init is `include_bytes!`, the rest are embedded as bootfs fallbacks
+and placed on the ESP as `boot/sh`, `boot/ok`, etc. Slim `/ok` always runs
+at boot: `heap_init` + `alloc ok`, `user ok`, `/msg` → `fat ok`,
+`/disk/ping` → `disk ok`, cheap `listdir` → `disk ls ok` / `fat ls ok`,
+and `/fat/msg` → `fat read ok`. It does **not** fork the std/C/sbase/uutils
+suite. That carnival lives in bootfs `/heap` and is invoked by x86
+`wait_ci` typing `heap` at the interactive `$` prompt. If `/msg` is missing
+`/ok` exits early (CI then fails the `fat ok` needle).
 
 `PT_LOAD` is realized at `USER_BASE` with the same relocs as the module
 loader. **fork** copies user pages into a new aspace (no COW) and a new
@@ -441,7 +446,8 @@ memory (stack); rodata literals are rejected by the kernel copy-in path.
 
 Syscall **9 (`brk`)** backs a per-process heap region above the stack page.
 `user/lib` exposes `brk`, `heap_init`, and a bump [`GlobalAlloc`](user/lib/src/alloc.rs)
-(`myos_user::Heap`). The `user/heap` ELF smoke-tests it (`alloc ok` on serial).
+(`myos_user::Heap`). Slim `user/ok` smoke-tests it at every boot (`alloc ok`
+on serial). `user/heap` is the CI-only heavy carnival (typed at `$`).
 
 To build **`std`** programs (see [OSDev](https://wiki.osdev.org/Porting_Rust_standard_library)):
 
@@ -516,8 +522,9 @@ Libgloss adds `clock_gettime` (libc already owns `time`/`localtime`), flat
 newlib's ENOSYS `fcntl`), no-op `tcgetattr`/`tcsetattr`,
 `readlink` (`ENOSYS`), POSIX stubs for read-only VFS, and `sys/sysmacros.h` so
 upstream `ls -l` links. The kernel mounts **sbasefs** at `/s/` with one ELF per
-tool (e.g. `/s/cat`, `/s/echo`, `/s/ls` — 91 utilities today); CI checks
-`sbase ok` from `/s/echo` and `sls ok` from `/s/ls` via `user/heap`.
+tool (e.g. `/s/cat`, `/s/echo`, `/s/ls` — 91 utilities today); x86 CI
+checks `sbase ok` from `/s/echo` and `sls ok` from `/s/ls` via CI-only
+`/heap` (typed at `$`).
 
 `/sh` is oksh. PATH is `/s:/c:/` (sbase, coreutils, then bootfs root). Interactive CI still types at `$ `; unknown
 commands print `not found`. Job control, SIGCHLD, curses, history files, and
@@ -554,8 +561,8 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `user/cat` | Read a bootfs file; installed as bootfs `/myos_cat` |
 | `user/ls` | List bootfs entries; installed as bootfs `/myos_ls` |
 | `user/lib` | Shared `myos_user` syscall/argv/`Heap` helpers |
-| `user/heap` | `#![no_std]` + `alloc` smoke test (`alloc ok`) |
-| `user/ok` | Second userspace ELF: `user ok`, then reads `/msg`; ESP `boot/ok` |
+| `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/bigalloc); typed as `heap` at `$` |
+| `user/ok` | Slim always-on boot smoke (`alloc`/`user`/`fat`/`disk` markers); ESP `boot/ok` |
 | `targets/` | Custom Rust target specs (`x86_64-unknown-myos.json`) |
 | `std/pal/` | Rust `std` PAL skeleton + porting notes |
 | `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, PCI, legacy virtio-blk, isa-debug-exit |
