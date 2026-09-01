@@ -111,6 +111,9 @@ enum State {
 
 /// User register snapshot so a forked child can resume after the syscall
 /// with the same callee-saved state the parent had (rax/x0 forced to 0).
+/// `#[repr(C)]` is required: `enter_fork_x86` historically used fixed
+/// offsets into this struct; keep a stable layout even if that path changes.
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ForkRegs {
     pub rip: usize,
