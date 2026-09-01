@@ -90,10 +90,18 @@ fn main() -> ! {
     run_prog(b"/s/echo", &[b"echo", b"sbase argv ok"]);
     run_prog(b"/s/ls", &[b"ls", b"/s"]);
     run_prog(b"/s/pwd", &[]);
-    // TinyCC: write a tiny C file and compile+run it. The needle is printed by
-    // the JIT'd `main` (SYS_WRITE via newlib `write` resolved in tcc -run),
-    // not by heap itself.
-    const HI_C: &[u8] = b"int write(int, const void *, unsigned long);\nint main(void) { write(1, \"tcc ok\\n\", 7); return 0; }\n";
+    // TinyCC JIT: -nostdlib skips libgloss, so hi.c emits SYS_WRITE=0 itself.
+    // Needle is printed by the JIT'd main, not by heap.
+    const HI_C: &[u8] = br#"
+#ifdef __x86_64__
+__asm__(".text\n.globl write\nwrite:\n mov $0, %rax\n syscall\n ret\n");
+#elif defined(__aarch64__)
+__asm__(".text\n.globl write\nwrite:\n mov x8, 0\n .int 0xd4000001\n ret\n");
+#elif defined(__riscv)
+__asm__(".text\n.globl write\nwrite:\n li a7, 0\n ecall\n ret\n");
+#endif
+int main(void) { write(1, "tcc ok\n", 7); return 0; }
+"#;
     if let Some(fd) = open_flags(b"/tmp/hi.c", O_WRONLY | O_CREAT | O_TRUNC) {
         let _ = write_fd(fd, HI_C);
         close(fd);
