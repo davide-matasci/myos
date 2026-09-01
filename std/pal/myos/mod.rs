@@ -27,10 +27,14 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, _sigpipe: u8) {
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
+    // Linux/SysV process entry: %rsp ≡ 0 (mod 16) at _start (iret, no return
+    // address). A bare `call` then yields callee %rsp ≡ 8 as the ABI requires.
+    // Do NOT `push` a dummy pad here: that only matched fe50282's inverted
+    // entry (%rsp ≡ 8), which broke oksh SSE frames; with correct ≡0 entry the
+    // pad leaves callees at ≡0 and large std/uutils ELFs fault in the kernel.
     core::arch::naked_asm!(
         "mov rdi, [rsp]",
         "lea rsi, [rsp + 8]",
-        "push rax",
         "call {init}",
         "call {start_main}",
         init = sym init,

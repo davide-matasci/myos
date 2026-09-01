@@ -501,7 +501,8 @@ fn expand_user_elf(
     Some((entry as usize, n_pages * PAGE, new_stack_off))
 }
 
-/// SysV-style user stack: `[argc][argv…][NULL][envp…][NULL][strings]`, 16-byte aligned.
+/// SysV-style user stack at process entry (`rsp % 16 == 0`):
+/// `[argc][argv…][NULL][envp…][NULL][AT_NULL auxv][gap][strings…]`.
 fn build_argv_stack(
     aspace: u64,
     user_base: u64,
@@ -558,16 +559,17 @@ fn build_argv_stack(
     if sp < stack_bot {
         return None;
     }
-    let words = 1 + args.len() + 1 + env.len() + 1;
+    // argc + argv + NULL + envp + NULL + auxv AT_NULL (type,val).
+    let words = 1 + args.len() + 1 + env.len() + 1 + 2;
     sp = sp.checked_sub(words * core::mem::size_of::<usize>())?;
+    // Linux/SysV AMD64: %rsp ≡ 0 (mod 16) at _start. crt0/`call` then yields
+    // callee %rsp ≡ 8. fe50282 forced ≡8 with an extra `sp -= 8`, which inverted
+    // every frame (oksh pipe #GP) and required a matching dummy `push` in the
+    // Rust PAL; keep ≡0 here and leave PAL without that pad.
     let pad = sp & 15;
     if pad != 0 {
         sp = sp.checked_sub(pad)?;
     }
-    // Linux/SysV AMD64 process entry: %rsp ≡ 0 (mod 16) at _start (iret, no
-    // return address). crt0 then `call`s so callees see %rsp ≡ 8 (mod 16).
-    // fe50282 wrongly forced ≡8 here; that inverted every frame (rbp%16==8) and
-    // #GP'd aligned SSE spills (pshufd/movaps [rbp-0x20]) on oksh pipe children.
     debug_assert_eq!(sp & 15, 0);
     if sp < stack_bot {
         return None;
@@ -593,6 +595,16 @@ fn build_argv_stack(
         }
         sp += core::mem::size_of::<usize>();
     }
+    if !write_user_usize(aspace, sp, 0) {
+        return None;
+    }
+    sp += core::mem::size_of::<usize>();
+    // Minimal auxv terminator (AT_NULL). Fresh stacks are zeroed, but write it
+    // explicitly so crt0/std walkers never read string bytes as aux entries.
+    if !write_user_usize(aspace, sp, 0) {
+        return None;
+    }
+    sp += core::mem::size_of::<usize>();
     if !write_user_usize(aspace, sp, 0) {
         return None;
     }
