@@ -1164,17 +1164,17 @@ fn enter_fork_x86(regs: task::ForkRegs) -> ! {
         ss,
     ]);
     unsafe {
-        // Explicit regs cannot be named (`c = in("rax")` is rejected). Positional
-        // {0}=rax (callee array), {1}=rsi (iret frame).
+        // Explicit-register inputs cannot be named or referenced as {N} in the
+        // template. Pin pointers in rax/rsi and hardcode those names in the asm.
         core::arch::asm!(
             "cli",
-            "mov rbx, [{0}]",
-            "mov rbp, [{0} + 8]",
-            "mov r12, [{0} + 16]",
-            "mov r13, [{0} + 24]",
-            "mov r14, [{0} + 32]",
-            "mov r15, [{0} + 40]",
-            "mov rsp, {1}",
+            "mov rbx, [rax]",
+            "mov rbp, [rax + 8]",
+            "mov r12, [rax + 16]",
+            "mov r13, [rax + 24]",
+            "mov r14, [rax + 32]",
+            "mov r15, [rax + 40]",
+            "mov rsp, rsi",
             "xor rax, rax",
             "iretq",
             in("rax") callee.as_ptr(),
