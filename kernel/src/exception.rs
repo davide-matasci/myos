@@ -61,7 +61,9 @@ pub fn x86_general_protection(rip: u64, rsp: u64, code: u64, rbp: u64) -> ! {
         hex.push_str("unreadable");
     }
     fatal_line(&format!(
-        "general protection rip={rip:#x} rsp={rsp:#x} rbp={rbp:#x} code={code:#x} insn=[{hex}]{ctx}",
+        "general protection rip={rip:#x} rsp={rsp:#x} rbp={rbp:#x} rsp16={} rbp16={} code={code:#x} insn=[{hex}]{ctx}",
+        rsp & 15,
+        rbp & 15,
         ctx = task_ctx(),
     ));
 }

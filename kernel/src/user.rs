@@ -564,11 +564,11 @@ fn build_argv_stack(
     if pad != 0 {
         sp = sp.checked_sub(pad)?;
     }
-    // AMD64 psABI: at _start, %rsp ≡ 8 (mod 16) as if the kernel had called it.
-    #[cfg(target_arch = "x86_64")]
-    {
-        sp = sp.checked_sub(8)?;
-    }
+    // Linux/SysV AMD64 process entry: %rsp ≡ 0 (mod 16) at _start (iret, no
+    // return address). crt0 then `call`s so callees see %rsp ≡ 8 (mod 16).
+    // fe50282 wrongly forced ≡8 here; that inverted every frame (rbp%16==8) and
+    // #GP'd aligned SSE spills (pshufd/movaps [rbp-0x20]) on oksh pipe children.
+    debug_assert_eq!(sp & 15, 0);
     if sp < stack_bot {
         return None;
     }
