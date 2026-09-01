@@ -18,6 +18,8 @@
 #define MYOS_SYS_STAT 12
 #define MYOS_SYS_EXECNAME 13
 #define MYOS_SYS_DUPFD 14
+#define MYOS_SYS_CHDIR 15
+#define MYOS_SYS_GETCWD 16
 
 #define MYOS_SYSERR ((unsigned long)-1)
 

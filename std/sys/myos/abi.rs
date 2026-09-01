@@ -14,9 +14,12 @@ pub const SYS_PIPE: usize = 10;
 pub const SYS_DUP2: usize = 11;
 pub const SYS_STAT: usize = 12;
 pub const SYS_EXECNAME: usize = 13;
+pub const SYS_DUPFD: usize = 14;
+pub const SYS_CHDIR: usize = 15;
+pub const SYS_GETCWD: usize = 16;
 
 const MAX_EXEC_ARGS: usize = 16;
-const MAX_EXEC_ENV: usize = 8;
+const MAX_EXEC_ENV: usize = 32;
 
 pub const STDIN_FILENO: i32 = 0;
 pub const STDOUT_FILENO: i32 = 1;

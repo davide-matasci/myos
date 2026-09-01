@@ -35,9 +35,9 @@ CPPFLAGS=(
   -D_BSD_SOURCE
   -DSMALL
   -DEMACS
-  -D_PATH_DEFPATH=\"/:/s:/c\"
+  -D_PATH_DEFPATH=\"/s:/c:/\"
   -D_PATH_BSHELL=\"/sh\"
-  -D_PATH_STDPATH=\"/:/s:/c\"
+  -D_PATH_STDPATH=\"/s:/c:/\"
   -D_PW_NAME_LEN=32
   -I"$WORK"
   -I"$MYOS"

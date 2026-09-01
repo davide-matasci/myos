@@ -47,6 +47,15 @@ pub fn mount_module(name: &str, prefix: &str, ops: myos_abi::ModuleVfsOps) -> bo
     vfs::mount_module(name, prefix, ops)
 }
 
+
+/// Resolve `path` against the current task cwd into `out` (absolute).
+pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Option<usize> {
+    let mut cwd = [0u8; 64];
+    let n = crate::task::cwd(&mut cwd);
+    let cwd = core::str::from_utf8(&cwd[..n]).unwrap_or("/");
+    vfs::resolve_against_cwd(cwd, path, out)
+}
+
 /// Mount bootfs at `/`, sbasefs at `/s/`, coreutilsfs at `/c/`, and register embedded user ELFs
 /// (custom demos as `myos_*`; ported tools keep short names on `/s` and `/c`).
 pub fn init() {

@@ -66,7 +66,7 @@ int _wait(int *status) {
  */
 #define MYOS_MAX_ARGC 16
 #define MYOS_MAX_ARG_LEN 128
-#define MYOS_MAX_ENVC 8
+#define MYOS_MAX_ENVC 32
 #define MYOS_MAX_ENV_LEN 128
 #define MYOS_MAX_PATH 64
 

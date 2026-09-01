@@ -242,7 +242,7 @@ modules override by basename; loadable modules add files via
 tool names use a `myos_` prefix on bootfs (`/myos_ls`, `/myos_echo`,
 `/myos_cat`). Ported **sbase** keeps short names under `/s/` (PREFIX `/s`);
 **uutils/coreutils** multicall names live under `/c/`. oksh PATH is
-`/:/s:/c`, so bare `ls`/`cat` resolve to sbase (or coreutils) after the
+`/s:/c:/`, so bare `ls`/`cat` resolve to sbase (or coreutils) after the
 rename. Root `listdir` also surfaces mount prefixes (`s`, `c`, …).
 
 **virtio-blk is in-kernel** (`kernel/src/blk.rs`), not a loadable module
@@ -415,16 +415,21 @@ compiler ports). Errors return `usize::MAX`.
 |----|------|------|
 | 0 | write | fd, ptr, len |
 | 1 | exit | code |
-| 2 | open | path, path_len → fd |
+| 2 | open | path, path_len, flags → fd (cwd-aware) |
 | 3 | read | fd, buf, len → n (fd 0 = keyboard + serial stdin) |
 | 4 | close | fd |
 | 5 | exec | path, path_len, args_ptr (0 or `[argc, (ptr,len)...][envc, (ptr,len)...]`) |
 | 6 | fork | → child pid (parent), 0 (child) |
 | 7 | wait | status_ptr (0 = ignore) → reaped child pid; stores exit code byte if ptr set |
-| 8 | listdir | buf, len → byte count (bootfs names, newline-separated) |
+| 8 | listdir | path, path_len, buf → byte count (cwd-aware; newline-separated) |
 | 9 | brk | addr → program break (0 = query). Per-process heap after stack (256 KiB max) |
 | 10 | pipe | fds_ptr (two usize slots) → 0 or error |
 | 11 | dup2 | oldfd, newfd → 0 or error |
+| 12 | stat | path, path_len, out_ptr → 0 or error |
+| 13 | execname | buf, len → basename length |
+| 14 | dupfd | oldfd, minfd → new fd |
+| 15 | chdir | path, path_len → 0 or error (per-task cwd) |
+| 16 | getcwd | buf, buf_len → pathname length (NUL written) |
 
 x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. At `_start`, argc/argv
 are on the user stack (System V). AArch64 `svc`: `x8`=nr, `x0`/`x1`/`x2`=a0/a1/a2.
@@ -494,9 +499,10 @@ required beyond the existing myos ABI.
 
 Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
 `open` read-only, `close`, `brk`, `fork`, `wait`/`waitpid`, `pipe`, `dup2`,
-`execve`, `stat` via **`SYS_STAT` (12)**).
-`opendir`/`readdir`/`closedir` and `getcwd`/`chdir` stubs live in libgloss for
-flat bootfs. Write-only open flags and `lseek` still return `EROFS`/`ENOSYS`.
+`execve`, `stat` via **`SYS_STAT` (12)**, `chdir`/`getcwd` via **`SYS_CHDIR`/`SYS_GETCWD`**).
+`opendir`/`readdir`/`closedir` use `SYS_LISTDIR`. Relative paths (including `.`)
+are resolved against the per-task cwd in the kernel. Write-only open flags and
+`lseek` still return `EROFS`/`ENOSYS`.
 Do **not** use `-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
 
 Upstream sbase (`cat`, `true`, `ls`, `pwd`, …) is fetched at build time; only
@@ -513,7 +519,7 @@ upstream `ls -l` links. The kernel mounts **sbasefs** at `/s/` with one ELF per
 tool (e.g. `/s/cat`, `/s/echo`, `/s/ls` — 91 utilities today); CI checks
 `sbase ok` from `/s/echo` and `sls ok` from `/s/ls` via `user/heap`.
 
-`/sh` is oksh. PATH is `/:/s:/c`. Interactive CI still types at `$ `; unknown
+`/sh` is oksh. PATH is `/s:/c:/` (sbase, coreutils, then bootfs root). Interactive CI still types at `$ `; unknown
 commands print `not found`. Job control, SIGCHLD, curses, history files, and
 heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 `waitpid(-1)`). `user/sh` remains in-tree until CI is green.
