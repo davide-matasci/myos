@@ -392,6 +392,20 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     // Stacked by lower_sync: elr/spsr at 16*16, sp_el0 at 16*17.
     let elr = unsafe { *frame.add(32) };
     let sp_el0 = unsafe { *frame.add(34) };
+    // EC 0x18: trapped AArch64 SYS/MRS (not PSTATE.IL). TinyCC __clear_cache
+    // does `dc cvau` / `ic ivau` at EL0; if SCTLR.UCI is still 0, skip the
+    // insn. Kernel mprotect already cleaned D-cache and invalidated I-cache.
+    // ISS layout matches QEMU syn_aa64_sysregtrap: CRn at [13:10].
+    if ec == 0x18 {
+        let iss = esr & 0x1ff_ffff;
+        let crn = (iss >> 10) & 0xf;
+        if iss != 0 && crn == 7 {
+            unsafe {
+                *frame.add(32) = elr.wrapping_add(4);
+            }
+            return;
+        }
+    }
     if ec == 0x15 {
         unsafe {
             // Keep IRQs masked for the syscall body (x86 syscall_entry does cli).

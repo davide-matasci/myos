@@ -2133,6 +2133,8 @@ fn do_mmap(
         let mut off = 0;
         while off < map_len {
             if let Some(phys) = virt_to_phys(aspace, (va + off) as u64) {
+                // User VA (execute) + HHDM alias (the stores). ic ialluis inside.
+                sync_icache((va + off) as usize, PAGE);
                 sync_icache(mm::hhdm(phys) as usize, PAGE);
             }
             off += PAGE;
@@ -2189,6 +2191,8 @@ fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         };
         map_user_page_prot(aspace, va, phys, prot);
         if prot & PROT_EXEC != 0 {
+            // mprotect RW→RX: clean D-cache, invalidate I-cache for this range.
+            sync_icache(va as usize, PAGE);
             sync_icache(mm::hhdm(phys) as usize, PAGE);
         }
         off += PAGE;
@@ -2314,6 +2318,7 @@ fn map_user_page_prot(aspace: u64, va: u64, pa: u64, prot: usize) {
         };
         unsafe {
             let l3_t = &mut *l3;
+            // UXN=0 iff PROT_EXEC so EL0 can fetch (anonymous RW→RX JIT).
             let mut ent = PAGE_DESC | (pa & PA) | SH_INNER | AF | PXN;
             ent |= if w { AP_RW } else { AP_RO };
             if !x {
@@ -2452,7 +2457,9 @@ fn flush_user_tlb() {
     unsafe {
         core::arch::asm!("dsb ishst", options(nostack));
         if current_el() >= 2 {
+            // VHE EL2&0 uses ALLE2; also drop EL1&0 in case TGE/E2H is off.
             core::arch::asm!("tlbi alle2is", options(nostack));
+            core::arch::asm!("tlbi vmalle1is", options(nostack));
         } else {
             core::arch::asm!("tlbi vmalle1is", options(nostack));
         }

@@ -93,6 +93,8 @@ fn main() -> ! {
     // TinyCC JIT: -nostdlib skips libgloss, so hi.c emits SYS_WRITE=0 itself.
     // Needle is printed by the JIT'd main, not by heap.
     const HI_C: &[u8] = br#"
+__attribute__((used))
+long write(int fd, const void *buf, unsigned long n);
 #ifdef __x86_64__
 __asm__(".text\n.globl write\nwrite:\n mov $0, %rax\n syscall\n ret\n");
 #elif defined(__aarch64__)
