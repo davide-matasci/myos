@@ -17,5 +17,5 @@ if [[ -e "$NEWLIB_SRC" ]]; then
 fi
 
 echo "==> fetch newlib ($NEWLIB_TAG)"
-git clone --depth 1 --branch "$NEWLIB_TAG" \
+"$ROOT/scripts/git-retry.sh" clone --depth 1 --branch "$NEWLIB_TAG" \
   https://sourceware.org/git/newlib-cygwin.git "$NEWLIB_SRC"

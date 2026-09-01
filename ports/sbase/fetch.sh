@@ -19,6 +19,6 @@ if [[ -e "$SBASE_SRC" ]]; then
 fi
 
 echo "==> fetch sbase ($SBASE_REV)"
-git clone --depth 1 https://git.suckless.org/sbase "$SBASE_SRC"
-git -C "$SBASE_SRC" fetch --depth 1 origin "$SBASE_REV"
+"$ROOT/scripts/git-retry.sh" clone --depth 1 https://git.suckless.org/sbase "$SBASE_SRC"
+"$ROOT/scripts/git-retry.sh" -C "$SBASE_SRC" fetch --depth 1 origin "$SBASE_REV"
 git -C "$SBASE_SRC" checkout "$SBASE_REV"

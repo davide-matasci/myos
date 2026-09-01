@@ -28,4 +28,4 @@ if [[ -e "$PCRE2_SRC" ]]; then
 fi
 
 echo "==> fetch pcre2 ($PCRE2_TAG)"
-git clone --depth 1 --branch "$PCRE2_TAG" https://github.com/PCRE2Project/pcre2.git "$PCRE2_SRC"
+"$ROOT/scripts/git-retry.sh" clone --depth 1 --branch "$PCRE2_TAG" https://github.com/PCRE2Project/pcre2.git "$PCRE2_SRC"

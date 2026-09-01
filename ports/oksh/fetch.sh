@@ -25,7 +25,7 @@ if [[ -e "$OKSH_SRC" ]]; then
 fi
 
 echo "==> fetch oksh ($OKSH_TAG / $OKSH_REV)"
-git clone --depth 1 --branch "$OKSH_TAG" https://github.com/ibara/oksh.git "$OKSH_SRC"
+"$ROOT/scripts/git-retry.sh" clone --depth 1 --branch "$OKSH_TAG" https://github.com/ibara/oksh.git "$OKSH_SRC"
 got="$(git -C "$OKSH_SRC" rev-parse HEAD)"
 if [[ "$got" != "$OKSH_REV" ]]; then
   echo "error: oksh HEAD $got does not match pin $OKSH_REV" >&2
