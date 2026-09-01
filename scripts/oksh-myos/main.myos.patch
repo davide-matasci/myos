@@ -114,4 +114,13 @@
 +		/* myos: no alarm(2); TMOUT is unused. */
  	} else
  		Flag(FTRACKALL) = 1;	/* set after ENV */
- 
+@@ -768,7 +768,8 @@
+ 		if (shf)
+ 			shf_close(shf);
+ 		reclaim();
+-		exit(exstat);
++		/* myos: skip libc stdio atexit/flush after fork-child unwind. */
++		_exit(exstat);
+ 	}
+ 	if (shf)
+ 		shf_close(shf);
