@@ -46,6 +46,18 @@ pub struct MountOps {
     pub read: fn(&str, usize, &mut [u8]) -> usize,
     /// Write bytes at `pos`. `None` if the mount rejects the write.
     pub write: fn(&str, usize, &[u8]) -> Option<usize>,
+    /// Create a directory.
+    pub mkdir: fn(&str) -> bool,
+    /// Remove an empty directory.
+    pub rmdir: fn(&str) -> bool,
+    /// Unlink a file or symlink.
+    pub unlink: fn(&str) -> bool,
+    /// Rename within the same mount.
+    pub rename: fn(&str, &str) -> bool,
+    /// Create a symlink at `linkpath` pointing at `target`.
+    pub symlink: fn(&str, &str) -> bool,
+    /// Read symlink target into `buf`; returns bytes written.
+    pub readlink: fn(&str, &mut [u8]) -> Option<usize>,
     /// Mount accepts write opens / creates.
     pub writable: bool,
 }
@@ -121,6 +133,7 @@ const O_APPEND: u32 = 0o2000;
 
 const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
+const S_IFLNK: u32 = 0o120000;
 
 /// True if `flags` request write access.
 pub fn open_writable(flags: u32) -> bool {
@@ -136,12 +149,16 @@ fn is_dir_mode(mode: u32) -> bool {
     (mode & S_IFMT) == S_IFDIR
 }
 
+fn is_lnk_mode(mode: u32) -> bool {
+    (mode & S_IFMT) == S_IFLNK
+}
+
 fn backend_openable(idx: usize, rel: &str) -> bool {
     if backend_lookup(idx, rel).is_some() {
         return true;
     }
     match backend_stat(idx, rel) {
-        Some(st) if !is_dir_mode(st.mode) => true,
+        Some(st) if !is_dir_mode(st.mode) && !is_lnk_mode(st.mode) => true,
         _ => false,
     }
 }
@@ -230,6 +247,88 @@ pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
 /// Current size of the vnode path (for `O_APPEND`), if known.
 pub fn size_of(node: &Vnode) -> Option<usize> {
     backend_stat(node.mount as usize, node.path_str()).map(|s| s.size as usize)
+}
+
+/// Create directory at `path` (must resolve to a writable mount).
+pub fn mkdir(path: &str) -> bool {
+    let Some((idx, rel)) = resolve_index(path) else {
+        return false;
+    };
+    if rel.is_empty() {
+        return false;
+    }
+    if !backend_has_write(idx) {
+        return false;
+    }
+    backend_mkdir(idx, rel)
+}
+
+/// Remove empty directory at `path`.
+pub fn rmdir(path: &str) -> bool {
+    let Some((idx, rel)) = resolve_index(path) else {
+        return false;
+    };
+    if rel.is_empty() {
+        return false;
+    }
+    if !backend_has_write(idx) {
+        return false;
+    }
+    backend_rmdir(idx, rel)
+}
+
+/// Unlink file or symlink at `path`.
+pub fn unlink(path: &str) -> bool {
+    let Some((idx, rel)) = resolve_index(path) else {
+        return false;
+    };
+    if rel.is_empty() {
+        return false;
+    }
+    if !backend_has_write(idx) {
+        return false;
+    }
+    backend_unlink(idx, rel)
+}
+
+/// Rename within a single mount (`old` and `new` must resolve to the same mount).
+pub fn rename(old: &str, new: &str) -> bool {
+    let Some((idx_o, rel_o)) = resolve_index(old) else {
+        return false;
+    };
+    let Some((idx_n, rel_n)) = resolve_index(new) else {
+        return false;
+    };
+    if idx_o != idx_n || rel_o.is_empty() || rel_n.is_empty() {
+        return false;
+    }
+    if !backend_has_write(idx_o) {
+        return false;
+    }
+    backend_rename(idx_o, rel_o, rel_n)
+}
+
+/// Create symlink at `linkpath` with contents `target`.
+pub fn symlink(target: &str, linkpath: &str) -> bool {
+    let Some((idx, rel)) = resolve_index(linkpath) else {
+        return false;
+    };
+    if rel.is_empty() {
+        return false;
+    }
+    if !backend_has_write(idx) {
+        return false;
+    }
+    backend_symlink(idx, target, rel)
+}
+
+/// Read symlink target at `path` into `buf`.
+pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
+    let (idx, rel) = resolve_index(path)?;
+    if rel.is_empty() {
+        return None;
+    }
+    backend_readlink(idx, rel, buf)
 }
 
 /// List directory entries at `path` into `buf` (newline-separated basenames).
@@ -421,6 +520,88 @@ fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Option<usize>
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.write)(rel, pos, buf),
+        MountBackend::Module(_) => None,
+    }
+}
+
+fn backend_mkdir(idx: usize, rel: &str) -> bool {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return false;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => (ops.mkdir)(rel),
+        MountBackend::Module(_) => false,
+    }
+}
+
+fn backend_rmdir(idx: usize, rel: &str) -> bool {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return false;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => (ops.rmdir)(rel),
+        MountBackend::Module(_) => false,
+    }
+}
+
+fn backend_unlink(idx: usize, rel: &str) -> bool {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return false;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => (ops.unlink)(rel),
+        MountBackend::Module(_) => false,
+    }
+}
+
+fn backend_rename(idx: usize, old: &str, new: &str) -> bool {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return false;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => (ops.rename)(old, new),
+        MountBackend::Module(_) => false,
+    }
+}
+
+fn backend_symlink(idx: usize, target: &str, linkpath: &str) -> bool {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return false;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => (ops.symlink)(target, linkpath),
+        MountBackend::Module(_) => false,
+    }
+}
+
+fn backend_readlink(idx: usize, rel: &str, buf: &mut [u8]) -> Option<usize> {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let m = mounts.get(idx)?;
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => (ops.readlink)(rel, buf),
         MountBackend::Module(_) => None,
     }
 }

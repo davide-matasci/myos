@@ -8,7 +8,7 @@ struct CiExpect {
     shell_ci: bool,
 }
 
-const CI_NEEDLES: [&str; 20] = [
+const CI_NEEDLES: [&str; 21] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] interrupts",
@@ -30,6 +30,7 @@ const CI_NEEDLES: [&str; 20] = [
     "fat read ok",
     "devnull ok",
     "tmp ok",
+    "tmpops ok",
 ];
 
 /// Heavy markers from CI-only `/heap` (typed at `$` on every arch).

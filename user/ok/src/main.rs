@@ -6,8 +6,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use myos_user::{
-    close, exit, heap_init, listdir, open, open_flags, read, write, write_fd, Heap, O_CREAT,
-    O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
+    close, exit, heap_init, listdir, mkdir, open, open_flags, read, readlink, rename, rmdir,
+    symlink, unlink, write, write_fd, Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
 };
 
 #[global_allocator]
@@ -118,7 +118,50 @@ fn smoke_tmp_dev() {
         write(b"tmp ok\n");
     } else {
         write(b"tmp read fail\n");
+        return;
     }
+
+    // mkdir / rename / symlink / readlink / unlink / rmdir on tmpfs.
+    if !mkdir(b"/tmp/d") {
+        write(b"mkdir fail\n");
+        return;
+    }
+    let Some(fd) = open_flags(b"/tmp/d/f", O_WRONLY | O_CREAT | O_TRUNC) else {
+        write(b"mkdir file fail\n");
+        return;
+    };
+    if write_fd(fd, b"x") == usize::MAX {
+        write(b"mkdir write fail\n");
+        close(fd);
+        return;
+    }
+    close(fd);
+    if !rename(b"/tmp/d/f", b"/tmp/d/g") {
+        write(b"rename fail\n");
+        return;
+    }
+    if !symlink(b"g", b"/tmp/d/l") {
+        write(b"symlink fail\n");
+        return;
+    }
+    let mut linkbuf = [0u8; 8];
+    let Some(ln) = readlink(b"/tmp/d/l", &mut linkbuf) else {
+        write(b"readlink fail\n");
+        return;
+    };
+    if ln != 1 || linkbuf[0] != b'g' {
+        write(b"readlink bad\n");
+        return;
+    }
+    if !unlink(b"/tmp/d/l") || !unlink(b"/tmp/d/g") {
+        write(b"unlink fail\n");
+        return;
+    }
+    if !rmdir(b"/tmp/d") {
+        write(b"rmdir fail\n");
+        return;
+    }
+    write(b"tmpops ok\n");
 }
 
 fn main() -> ! {

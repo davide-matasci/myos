@@ -17,6 +17,12 @@ pub const SYS_EXECNAME: usize = 13;
 pub const SYS_DUPFD: usize = 14;
 pub const SYS_CHDIR: usize = 15;
 pub const SYS_GETCWD: usize = 16;
+pub const SYS_MKDIR: usize = 17;
+pub const SYS_RMDIR: usize = 18;
+pub const SYS_UNLINK: usize = 19;
+pub const SYS_RENAME: usize = 20;
+pub const SYS_SYMLINK: usize = 21;
+pub const SYS_READLINK: usize = 22;
 
 const MAX_EXEC_ARGS: usize = 16;
 const MAX_EXEC_ENV: usize = 32;

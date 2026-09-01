@@ -27,6 +27,12 @@ const SYS_EXECNAME: usize = 13;
 const SYS_DUPFD: usize = 14;
 const SYS_CHDIR: usize = 15;
 const SYS_GETCWD: usize = 16;
+const SYS_MKDIR: usize = 17;
+const SYS_RMDIR: usize = 18;
+const SYS_UNLINK: usize = 19;
+const SYS_RENAME: usize = 20;
+const SYS_SYMLINK: usize = 21;
+const SYS_READLINK: usize = 22;
 pub const PAGE: usize = 4096;
 /// User stack below the heap. x86_64 uses 1 MiB; AArch64 uses 512 KiB.
 /// AArch64 user maps spill into L2[1+] when code+stack+heap exceed 512 pages.
@@ -1333,6 +1339,12 @@ pub extern "C" fn syscall_dispatch(
         SYS_EXECNAME => sys_exec_name(a0, a1),
         SYS_CHDIR => sys_chdir(a0, a1),
         SYS_GETCWD => sys_getcwd(a0, a1),
+        SYS_MKDIR => sys_mkdir(a0, a1, a2),
+        SYS_RMDIR => sys_rmdir(a0, a1),
+        SYS_UNLINK => sys_unlink(a0, a1),
+        SYS_RENAME => sys_rename(a0, a1, a2),
+        SYS_SYMLINK => sys_symlink(a0, a1, a2),
+        SYS_READLINK => sys_readlink(a0, a1, a2),
         _ => SYSERR,
     }
 }
@@ -1817,6 +1829,117 @@ fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> usize {
     tmp[..n].copy_from_slice(&cwd[..n]);
     tmp[n] = 0;
     if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n + 1]) {
+        return SYSERR;
+    }
+    n
+}
+
+fn copy_resolved_user_path(ptr: usize, len: usize) -> Option<alloc::string::String> {
+    let buf = copy_user_path(ptr, len)?;
+    let path = core::str::from_utf8(&buf[..len]).ok()?;
+    resolve_copied_path(path)
+}
+
+/// Pack two lengths into one register: `(len_a << 16) | len_b` (each <= MAX_PATH).
+fn unpack_two_lens(packed: usize) -> Option<(usize, usize)> {
+    let a = packed >> 16;
+    let b = packed & 0xffff;
+    if a == 0 || a > MAX_PATH || b == 0 || b > MAX_PATH {
+        return None;
+    }
+    Some((a, b))
+}
+
+fn sys_mkdir(path_ptr: usize, path_len: usize, _mode: usize) -> usize {
+    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    if fs::mkdir(&path) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+fn sys_rmdir(path_ptr: usize, path_len: usize) -> usize {
+    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    if fs::rmdir(&path) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+fn sys_unlink(path_ptr: usize, path_len: usize) -> usize {
+    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    if fs::unlink(&path) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+/// `a0`=old_ptr, `a1`=new_ptr, `a2`=(old_len<<16)|new_len
+fn sys_rename(old_ptr: usize, new_ptr: usize, packed_lens: usize) -> usize {
+    let Some((old_len, new_len)) = unpack_two_lens(packed_lens) else {
+        return SYSERR;
+    };
+    let Some(old) = copy_resolved_user_path(old_ptr, old_len) else {
+        return SYSERR;
+    };
+    let Some(new) = copy_resolved_user_path(new_ptr, new_len) else {
+        return SYSERR;
+    };
+    if fs::rename(&old, &new) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+/// `a0`=target_ptr, `a1`=link_ptr, `a2`=(target_len<<16)|link_len
+fn sys_symlink(target_ptr: usize, link_ptr: usize, packed_lens: usize) -> usize {
+    let Some((target_len, link_len)) = unpack_two_lens(packed_lens) else {
+        return SYSERR;
+    };
+    // Target is opaque text (may be relative); do not cwd-resolve it.
+    let Some(tbuf) = copy_user_path(target_ptr, target_len) else {
+        return SYSERR;
+    };
+    let Ok(target) = core::str::from_utf8(&tbuf[..target_len]) else {
+        return SYSERR;
+    };
+    let Some(linkpath) = copy_resolved_user_path(link_ptr, link_len) else {
+        return SYSERR;
+    };
+    if fs::symlink(target, &linkpath) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+/// `a0`=path_ptr, `a1`=buf_ptr, `a2`=(path_len<<16)|buf_len
+fn sys_readlink(path_ptr: usize, buf_ptr: usize, packed: usize) -> usize {
+    let Some((path_len, buf_len)) = unpack_two_lens(packed) else {
+        return SYSERR;
+    };
+    if buf_ptr == 0 || buf_len == 0 || !user_range_ok(buf_ptr, buf_len) {
+        return SYSERR;
+    }
+    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let mut tmp = [0u8; MAX_PATH];
+    let cap = buf_len.min(tmp.len());
+    let Some(n) = fs::readlink(&path, &mut tmp[..cap]) else {
+        return SYSERR;
+    };
+    if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n]) {
         return SYSERR;
     }
     n

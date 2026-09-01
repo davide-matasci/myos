@@ -21,10 +21,48 @@ int _lseek(int fd, off_t pos, int whence) {
 }
 
 int _unlink(const char *path) {
-    (void)path;
-    errno = EROFS;
-    return -1;
+    if (path == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    long ret = myos_syscall3(
+        MYOS_SYS_UNLINK, (long)(uintptr_t)path, (long)strlen(path), 0);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = ENOENT;
+        return -1;
+    }
+    return 0;
 }
+
+int _rename(const char *oldpath, const char *newpath) {
+    size_t old_len;
+    size_t new_len;
+    long packed;
+    long ret;
+
+    if (oldpath == NULL || newpath == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    old_len = strlen(oldpath);
+    new_len = strlen(newpath);
+    if (old_len == 0 || new_len == 0 || old_len > 0xffff || new_len > 0xffff) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    packed = (long)((old_len << 16) | new_len);
+    ret = myos_syscall3(
+        MYOS_SYS_RENAME,
+        (long)(uintptr_t)oldpath,
+        (long)(uintptr_t)newpath,
+        packed);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = ENOENT;
+        return -1;
+    }
+    return 0;
+}
+
 
 int _link(const char *oldpath, const char *newpath) {
     (void)oldpath;
