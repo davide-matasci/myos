@@ -10,8 +10,28 @@ if [[ -f ci-build.tar ]]; then
   tar -xf ci-build.tar
 fi
 
+restore_packed_rg_elves() {
+  # build-ripgrep also writes target/coreutils-rg-* so ci-build.tar (which
+  # already packs target/coreutils-*) carries rg ELFs for boot-matrix rebuilds.
+  shopt -s nullglob
+  local f dest
+  for f in target/coreutils-rg-*; do
+    dest="target/rg-${f#target/coreutils-rg-}"
+    if [[ ! -f "$dest" ]]; then
+      cp "$f" "$dest"
+      echo "restored $dest from $f"
+    fi
+  done
+}
+
 if [[ -x target/debug/myos && -f target/bios.img ]]; then
   echo "CI artifacts ready: $(ls -lh target/debug/myos target/bios.img)"
+  restore_packed_rg_elves
+  if [[ -f target/rg-x86_64-unknown-myos && -f target/rg-aarch64-unknown-myos && -f target/rg-riscv64-unknown-myos ]]; then
+    exit 0
+  fi
+  echo "==> rg ELF(s) missing after restore; building ripgrep"
+  ./scripts/build-ripgrep-myos.sh
   exit 0
 fi
 

@@ -7,6 +7,8 @@ source "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_coreutils_is_current; then
   echo "uutils coreutils up to date"
+  # Still (re)build /c/rg — version pin is independent of coreutils.
+  "$ROOT/scripts/build-ripgrep-myos.sh"
   exit 0
 fi
 

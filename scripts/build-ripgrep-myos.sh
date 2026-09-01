@@ -14,6 +14,13 @@ export PATH="$ROOT/target/newlib-bin:$RUST_LLD_BIN:$PATH"
 
 if myos_ripgrep_is_current; then
   echo "ripgrep ELFs up to date"
+  for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
+    src="$ROOT/target/rg-${triple}"
+    alias="$ROOT/target/coreutils-rg-${triple}"
+    if [[ -f "$src" && ! -f "$alias" ]]; then
+      cp "$src" "$alias"
+    fi
+  done
   exit 0
 fi
 
@@ -64,6 +71,9 @@ build_one() {
     exit 1
   fi
   cp "$bin" "$out"
+  # Packed by CI via the existing `target/coreutils-*` glob (workflow edits
+  # need `workflow` OAuth scope; boot matrix rebuilds aarch64/riscv kernels).
+  cp "$bin" "$ROOT/target/coreutils-rg-${triple}"
   echo "rg -> $out ($(du -h "$out" | awk '{print $1}'))"
 }
 
