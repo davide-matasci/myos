@@ -154,19 +154,36 @@ pub fn init() {
 /// and with CR0.TS set, the first SSE insn in userspace raises #NM.
 #[cfg(target_arch = "x86_64")]
 fn init_user_sse() {
+    const CR0_EM: u64 = 1 << 2;
     const CR0_TS: u64 = 1 << 3;
+    const CR0_MP: u64 = 1 << 1;
     const CR4_OSFXSR: u64 = 1 << 9;
     const CR4_OSXMMEXCPT: u64 = 1 << 10;
     let (mut cr0, mut cr4): (u64, u64);
     unsafe {
         core::arch::asm!("mov {}, cr0", out(reg) cr0);
         core::arch::asm!("mov {}, cr4", out(reg) cr4);
-        cr0 &= !CR0_TS;
+        cr0 &= !(CR0_EM | CR0_TS);
+        cr0 |= CR0_MP;
         cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
         core::arch::asm!("mov cr0, {}", in(reg) cr0);
         core::arch::asm!("mov cr4, {}", in(reg) cr4);
+        // Clean x87/SSE control state so user ldmxcsr/SSE spills see default MXCSR.
+        core::arch::asm!(
+            "fninit",
+            "ldmxcsr [rip + {mxcsr}]",
+            mxcsr = sym USER_MXCSR_DEFAULT,
+            options(nostack),
+        );
     }
 }
+
+/// Default MXCSR (same as post-RESET): flush-to-zero off, all exceptions masked.
+#[cfg(target_arch = "x86_64")]
+#[repr(C, align(16))]
+struct MxcsrCell(u32);
+#[cfg(target_arch = "x86_64")]
+static USER_MXCSR_DEFAULT: MxcsrCell = MxcsrCell(0x1F80);
 
 /// newlib stdio init uses NEON (movi v0.2d). With CPACR_EL1.FPEN=0, EL0 traps on SIMD.
 #[cfg(target_arch = "aarch64")]
@@ -1143,54 +1160,85 @@ pub fn enter_fork(regs: task::ForkRegs) -> ! {
     enter_fork_riscv64(regs);
 }
 
+/// Packed resume image for `fork_iret_to_user` (global_asm). Layout must match
+/// the offsets in that stub — do not reorder fields.
+#[cfg(target_arch = "x86_64")]
+#[repr(C, align(16))]
+struct ForkResumeX86 {
+    rbx: u64,
+    rbp: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    r#"
+    .global fork_iret_to_user
+fork_iret_to_user:
+    cli
+    # Clear CR0.EM|TS (mask ~0xc); set MP.
+    mov rax, cr0
+    and rax, 0xfffffff3
+    or  rax, 0x2
+    mov cr0, rax
+    fninit
+    ldmxcsr [rip + {mxcsr}]
+    # rdi -> ForkResumeX86. Restore user callee-saved, then iret frame.
+    mov rbx, [rdi]
+    mov rbp, [rdi + 8]
+    mov r12, [rdi + 16]
+    mov r13, [rdi + 24]
+    mov r14, [rdi + 32]
+    mov r15, [rdi + 40]
+    lea rsp, [rdi + 48]
+    xor rax, rax
+    iretq
+    "#,
+    mxcsr = sym USER_MXCSR_DEFAULT,
+);
+
+#[cfg(target_arch = "x86_64")]
+unsafe extern "C" {
+    fn fork_iret_to_user(resume: *const ForkResumeX86) -> !;
+}
+
 #[cfg(target_arch = "x86_64")]
 fn enter_fork_x86(regs: task::ForkRegs) -> ! {
     let cs = (crate::arch::gdt::user_cs() | 3) as u64;
     let ss = (crate::arch::gdt::user_ss() | 3) as u64;
     let rflags: u64 = 0x202;
-    // Iret frame in memory (RIP, CS, RFLAGS, RSP, SS). Keep CS/SS/RFLAGS out of
-    // `in(reg)` slots: feeding them alongside callee-saved values once made LLVM
-    // reuse rbx for both user CS and ForkRegs.rbx → push 0 as CS → #GP on iretq
-    // (CI #121).
-    //
-    // Cannot use `in("rbx")` / `in("rbp")`: LLVM forbids rbx (reserved) and rbp
-    // (frame pointer) as asm operands. Materialize callee-saved into a stack
-    // array and load through rax (pointer), then install the iret frame via rsi.
-    // black_box keeps the arrays live so LLVM cannot elide the stores.
-    let callee = core::hint::black_box([
-        regs.rbx, regs.rbp, regs.r12, regs.r13, regs.r14, regs.r15,
-    ]);
-    let frame = core::hint::black_box([
-        regs.rip as u64,
+    // Resume through global_asm — not inline asm. Prior enter_fork_x86 variants
+    // used black_box arrays + as_ptr() / forbidden rbx,rbp constraints; LLVM
+    // could leave the child with garbage callee-saved regs. Identical #GP
+    // rip/rsp across those "fixes" matches a restore that never stuck.
+    // Parent returns via sysret with the same user RSP; child must get the
+    // exact syscall RSP and the FORK_CALLEE snapshot of rbx/rbp/r12–r15.
+    let resume = ForkResumeX86 {
+        rbx: regs.rbx,
+        rbp: regs.rbp,
+        r12: regs.r12,
+        r13: regs.r13,
+        r14: regs.r14,
+        r15: regs.r15,
+        rip: regs.rip as u64,
         cs,
         rflags,
-        regs.rsp as u64,
+        rsp: regs.rsp as u64,
         ss,
-    ]);
+    };
+    // Volatile write so the stores exist in memory before the asm reads them.
+    let mut slot = core::mem::MaybeUninit::<ForkResumeX86>::uninit();
     unsafe {
-        // Match enter_x86: clear TS so the first SSE insn after iretq is not #NM.
-        const CR0_TS: u64 = 1 << 3;
-        let mut cr0: u64;
-        core::arch::asm!("mov {}, cr0", out(reg) cr0);
-        cr0 &= !CR0_TS;
-        core::arch::asm!("mov cr0, {}", in(reg) cr0);
-        // Explicit-register inputs cannot be named or referenced as {N} in the
-        // template. Pin pointers in rax/rsi and hardcode those names in the asm.
-        core::arch::asm!(
-            "cli",
-            "mov rbx, [rax]",
-            "mov rbp, [rax + 8]",
-            "mov r12, [rax + 16]",
-            "mov r13, [rax + 24]",
-            "mov r14, [rax + 32]",
-            "mov r15, [rax + 40]",
-            "mov rsp, rsi",
-            "xor rax, rax",
-            "iretq",
-            in("rax") callee.as_ptr(),
-            in("rsi") frame.as_ptr(),
-            options(noreturn),
-        );
+        core::ptr::write_volatile(slot.as_mut_ptr(), resume);
+        fork_iret_to_user(slot.as_ptr());
     }
 }
 

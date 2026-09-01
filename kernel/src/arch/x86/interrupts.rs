@@ -190,10 +190,21 @@ extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _code: u64) -
 }
 
 extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, code: u64) {
+    // User RBP is still in RBP when #GP arrives from ring 3; the compiler
+    // prologue `push rbp` saves it at [rbp]. Read that for SSE-alignment diagnosis.
+    let user_rbp: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {}, [rbp]",
+            out(reg) user_rbp,
+            options(nostack, preserves_flags),
+        );
+    }
     crate::exception::x86_general_protection(
         frame.instruction_pointer.as_u64(),
         frame.stack_pointer.as_u64(),
         code,
+        user_rbp,
     );
 }
 
