@@ -52,8 +52,8 @@ pub fn write(buf: &[u8]) {
     write_fd(1, buf);
 }
 
-pub fn write_fd(fd: usize, buf: &[u8]) {
-    unsafe { sys_write(fd, buf.as_ptr() as usize, buf.len()) };
+pub fn write_fd(fd: usize, buf: &[u8]) -> usize {
+    unsafe { sys_write(fd, buf.as_ptr() as usize, buf.len()) }
 }
 
 pub fn exit() -> ! {
@@ -63,6 +63,14 @@ pub fn exit() -> ! {
 pub fn exit_code(code: u8) -> ! {
     unsafe { sys_exit(code as usize) }
 }
+
+
+pub const O_RDONLY: u32 = 0;
+pub const O_WRONLY: u32 = 1;
+pub const O_RDWR: u32 = 2;
+pub const O_CREAT: u32 = 0o100;
+pub const O_TRUNC: u32 = 0o1000;
+pub const O_APPEND: u32 = 0o2000;
 
 pub fn open(path: &[u8]) -> Option<usize> {
     open_flags(path, 0)
@@ -313,10 +321,11 @@ fn write_u32(mut n: u32) {
 // System-V dispatch. Wrappers lateout those so LLVM reloads them.
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sys_write(fd: usize, ptr: usize, len: usize) {
+unsafe fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
+    let ret: usize;
     core::arch::asm!(
         "syscall",
-        in("rax") 0usize,
+        inout("rax") 0usize => ret,
         in("rdi") fd,
         in("rsi") ptr,
         in("rdx") len,
@@ -327,6 +336,7 @@ unsafe fn sys_write(fd: usize, ptr: usize, len: usize) {
         lateout("rdx") _,
         options(nostack),
     );
+    ret
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -520,15 +530,17 @@ unsafe fn sys_brk(addr: usize) -> usize {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn sys_write(fd: usize, ptr: usize, len: usize) {
+unsafe fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
+    let mut fd = fd;
     core::arch::asm!(
         "svc #0",
         in("x8") 0usize,
-        in("x0") fd,
+        inout("x0") fd,
         in("x1") ptr,
         in("x2") len,
         options(nostack),
     );
+    fd
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -670,15 +682,17 @@ unsafe fn sys_brk(addr: usize) -> usize {
 }
 
 #[cfg(target_arch = "riscv64")]
-unsafe fn sys_write(fd: usize, ptr: usize, len: usize) {
+unsafe fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
+    let mut fd = fd;
     core::arch::asm!(
         "ecall",
         in("a7") 0usize,
-        in("a0") fd,
+        inout("a0") fd,
         in("a1") ptr,
         in("a2") len,
         options(nostack),
     );
+    fd
 }
 
 #[cfg(target_arch = "riscv64")]

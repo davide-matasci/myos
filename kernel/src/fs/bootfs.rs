@@ -76,6 +76,30 @@ pub fn lookup(name: &str) -> Option<&'static [u8]> {
 }
 
 /// List the flat root when `rel` is empty or `"."`; otherwise return 0.
+
+pub fn create(_name: &str) -> bool {
+    false
+}
+
+pub fn truncate(_name: &str) -> bool {
+    false
+}
+
+pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
+    let Some(data) = lookup(name) else {
+        return 0;
+    };
+    let n = out.len().min(data.len().saturating_sub(pos));
+    if n != 0 {
+        out[..n].copy_from_slice(&data[pos..pos + n]);
+    }
+    n
+}
+
+pub fn write(_name: &str, _pos: usize, _buf: &[u8]) -> Option<usize> {
+    None
+}
+
 pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     if !rel.is_empty() && rel != "." {
         return 0;

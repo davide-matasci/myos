@@ -40,15 +40,12 @@ void _exit(int status) {
 }
 
 int _open(const char *path, int flags, ...) {
-    (void)flags;
     if (path == NULL) {
         errno = ENOENT;
         return -1;
     }
-    if (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND)) {
-        errno = EROFS;
-        return -1;
-    }
+    /* Writable opens are accepted for mounts that support them (tmpfs/devfs).
+     * Read-only mounts are rejected by the kernel; map that to EROFS/ENOENT. */
     long ret = myos_syscall3(
         MYOS_SYS_OPEN, (long)(uintptr_t)path, (long)strlen(path), (long)flags);
     if (ret == (long)MYOS_SYSERR) {
