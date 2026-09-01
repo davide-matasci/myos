@@ -48,6 +48,16 @@ compile() {
   "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" "${CPPFLAGS[@]}" -c "$src" -o "$out"
 }
 
+# True iff path exists and starts with ELF magic. Used so a failed link
+# (undefined symbol) cannot be counted as built when strip's || true hid ld.
+is_elf() {
+  local f="$1"
+  local mag
+  [[ -f "$f" && -s "$f" ]] || return 1
+  mag="$(od -An -N4 -tx1 "$f" 2>/dev/null | tr -d ' \n')"
+  [[ "$mag" == "7f454c46" ]]
+}
+
 link_prog() {
   local out_name="$1"
   local arch="$2"
@@ -59,11 +69,28 @@ link_prog() {
   local lib="$prefix/${triple}/lib"
   local ld="${triple}-ld"
 
-  "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
+  rm -f "$out"
+  # Called from `if ! link_prog`; set -e is disabled, so check ld explicitly.
+  if ! "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
     "$lib/crt0.o" "${objs[@]}" -L"$lib" \
     --start-group -lc -lgloss -lg --end-group
+  then
+    rm -f "$out"
+    return 1
+  fi
+  if ! is_elf "$out"; then
+    rm -f "$out"
+    echo "error: ubase ELF missing for ${out_name} at ${out}" >&2
+    return 1
+  fi
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
+  if ! is_elf "$out"; then
+    rm -f "$out"
+    echo "error: ubase ELF missing for ${out_name} at ${out}" >&2
+    return 1
+  fi
+  return 0
 }
 
 build_arch() {
@@ -106,30 +133,52 @@ build_arch() {
     fi
   fi
 
-  local name
+  local name out expected=0
+  for name in "${UBASE_BINS[@]}"; do
+    [[ -n "$name" ]] || continue
+    expected=$((expected + 1))
+  done
+
   for name in "${UBASE_BINS[@]}"; do
     [[ -n "$name" ]] || continue
     obj="$objdir/prog-${name}.o"
+    out="$ROOT/target/ubase-${name}-${arch}-unknown-none"
     echo "==> ubase-${name} ($triple)"
     if ! compile "$cc" "$inc" "$WORK/${name}.c" "$obj"; then
       failed+=("$name:compile")
+      rm -f "$out"
       continue
     fi
     if ! link_prog "$name" "$arch" "${util_objs[@]}" "$obj" "${extra[@]}"; then
       failed+=("$name:link")
-      rm -f "$ROOT/target/ubase-${name}-${arch}-unknown-none"
+      rm -f "$out"
       continue
     fi
-    echo "${name}:$ROOT/target/ubase-${name}-${arch}-unknown-none" >>"$manifest"
+    if ! is_elf "$out"; then
+      failed+=("$name:missing-elf")
+      rm -f "$out"
+      echo "error: ubase ELF missing for ${name} at ${out}" >&2
+      continue
+    fi
+    # Manifest only for ELFs that actually exist.
+    echo "${name}:${out}" >>"$manifest"
     built=$((built + 1))
   done
 
-  echo "ubase ${arch}: built ${built}/$((${#UBASE_BINS[@]})) (${#failed[@]} failed)"
+  echo "ubase ${arch}: built ${built}/${expected} (${#failed[@]} failed)"
   if ((${#failed[@]} > 0)); then
     printf '  failed: %s\n' "${failed[@]}" >&2
   fi
-  if ((built == 0)); then
-    echo "error: no ubase ELFs built for ${arch}" >&2
+  for name in "${UBASE_BINS[@]}"; do
+    [[ -n "$name" ]] || continue
+    out="$ROOT/target/ubase-${name}-${arch}-unknown-none"
+    if ! is_elf "$out"; then
+      echo "error: ubase ELF missing for ${name} at ${out}" >&2
+      failed+=("$name:missing-elf")
+    fi
+  done
+  if ((${#failed[@]} > 0)) || ((built != expected)); then
+    echo "error: not all ubase ELFs built for ${arch} (${built}/${expected})" >&2
     exit 1
   fi
 }
@@ -137,5 +186,21 @@ build_arch() {
 for arch in x86_64 aarch64 riscv64; do
   build_arch "$arch"
 done
+
+# Stamp only after every bins.txt ELF exists on every arch.
+missing=0
+for arch in x86_64 aarch64 riscv64; do
+  for name in "${UBASE_BINS[@]}"; do
+    [[ -n "$name" ]] || continue
+    out="$ROOT/target/ubase-${name}-${arch}-unknown-none"
+    if ! is_elf "$out"; then
+      echo "error: ubase ELF missing for ${name} at ${out}" >&2
+      missing=1
+    fi
+  done
+done
+if ((missing != 0)); then
+  exit 1
+fi
 
 echo "$(myos_ubase_version_hash)" >"$MYOS_UBASE_VERSION"
