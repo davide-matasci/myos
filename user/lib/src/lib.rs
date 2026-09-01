@@ -220,9 +220,15 @@ pub fn dup2(oldfd: usize, newfd: usize) -> bool {
     unsafe { sys_dup2(oldfd, newfd) != usize::MAX }
 }
 
+/// Must match kernel `SYS_LISTDIR` / libgloss `MYOS_DIRBUF`.
+pub const LISTDIR_BUF: usize = 4096;
+
 /// List directory entries at `path` (newline-separated) into `buf`.
-/// `buf` must hold at least 512 bytes (kernel listdir cap).
+/// `buf` must hold at least [`LISTDIR_BUF`] bytes (kernel listdir cap).
 pub fn listdir(path: &[u8], buf: &mut [u8]) -> usize {
+    if buf.len() < LISTDIR_BUF {
+        return usize::MAX;
+    }
     unsafe {
         sys_listdir(
             path.as_ptr() as usize,

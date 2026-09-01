@@ -59,7 +59,7 @@ fn buf_has(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 fn smoke_vfs() {
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; myos_user::LISTDIR_BUF];
     let n = listdir(b"/disk", &mut buf);
     if n != usize::MAX && n > 0 && buf_has(&buf[..n], b"ping") {
         write(b"disk ls ok\n");
