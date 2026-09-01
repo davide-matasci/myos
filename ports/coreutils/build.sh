@@ -28,7 +28,7 @@ fi
 
 if [[ ! -d "$UUTILS_DIR/.git" ]]; then
   echo "Cloning uutils/coreutils ${UUTILS_TAG}..."
-  git clone --depth 1 --branch "$UUTILS_TAG" \
+  "$ROOT/scripts/git-retry.sh" clone --depth 1 --branch "$UUTILS_TAG" \
     https://github.com/uutils/coreutils "$UUTILS_DIR"
 fi
 

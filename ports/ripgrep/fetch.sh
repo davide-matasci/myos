@@ -24,7 +24,7 @@ if [[ -e "$RG_SRC" ]]; then
 fi
 
 echo "==> fetch ripgrep ($RG_TAG / $RG_REV)"
-git clone --depth 1 --branch "$RG_TAG" https://github.com/BurntSushi/ripgrep.git "$RG_SRC"
+"$ROOT/scripts/git-retry.sh" clone --depth 1 --branch "$RG_TAG" https://github.com/BurntSushi/ripgrep.git "$RG_SRC"
 got="$(git -C "$RG_SRC" rev-parse HEAD)"
 if [[ "$got" != "$RG_REV" ]]; then
   echo "error: ripgrep HEAD $got does not match pin $RG_REV" >&2
