@@ -67,6 +67,29 @@ static USER_BASE: AtomicU64 = AtomicU64::new(DEFAULT_USER_BASE);
 #[cfg(target_arch = "x86_64")]
 static mut KERNEL_RSP0: usize = 0;
 
+/// User callee-saved regs at syscall entry (before Rust can clobber them).
+/// Copied into `ForkRegs` on SYS_FORK so fork-continue children resume correctly.
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+struct ForkCalleeSaved {
+    rbx: u64,
+    rbp: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+static mut FORK_CALLEE: ForkCalleeSaved = ForkCalleeSaved {
+    rbx: 0,
+    rbp: 0,
+    r12: 0,
+    r13: 0,
+    r14: 0,
+    r15: 0,
+};
+
 #[cfg(target_arch = "riscv64")]
 static mut KERNEL_SSCRATCH: usize = 0;
 
@@ -78,6 +101,13 @@ syscall_entry:
     cli
     mov r10, rsp
     mov rsp, [rip + {kernel_rsp0}]
+    # Snapshot user callee-saved before any Rust prologue can reuse them.
+    mov [rip + {fork_callee}], rbx
+    mov [rip + {fork_callee} + 8], rbp
+    mov [rip + {fork_callee} + 16], r12
+    mov [rip + {fork_callee} + 24], r13
+    mov [rip + {fork_callee} + 32], r14
+    mov [rip + {fork_callee} + 40], r15
     push r11
     push r9
     push r8
@@ -101,6 +131,7 @@ syscall_entry:
     sysretq
     "#,
     kernel_rsp0 = sym KERNEL_RSP0,
+    fork_callee = sym FORK_CALLEE,
     dispatch = sym syscall_dispatch,
 );
 
@@ -1113,9 +1144,17 @@ fn enter_fork_x86(regs: task::ForkRegs) -> ! {
     let cs = (crate::arch::gdt::user_cs() | 3) as u64;
     let ss = (crate::arch::gdt::user_ss() | 3) as u64;
     let rflags: u64 = 0x202;
-    // Iret frame in memory (RIP, CS, RFLAGS, RSP, SS). Do not feed eleven
-    // `in(reg)` operands into one asm block: LLVM reused rbx for both user CS
-    // and ForkRegs.rbx, then pushed 0 as CS → #GP(0) on iretq (CI #121).
+    // Iret frame in memory (RIP, CS, RFLAGS, RSP, SS). Keep CS/SS/RFLAGS out of
+    // `in(reg)` slots: feeding them alongside callee-saved values once made LLVM
+    // reuse rbx for both user CS and ForkRegs.rbx → push 0 as CS → #GP on iretq
+    // (CI #121).
+    //
+    // Load callee-saved fields via named register constraints — do NOT read them
+    // through `addr_of!(regs)` + fixed offsets. Without a memory operand tying
+    // the asm to `regs`, LLVM may never materialize the struct to that address,
+    // so the child resumes with stack garbage in rbx/rbp/r12–r15. That matches
+    // the interactive `echo pipe | cat` #GP (fork-continue of deep oksh C state);
+    // fork+exec still "worked" because exec rebuilds the image.
     let frame = [
         regs.rip as u64,
         cs,
@@ -1123,21 +1162,19 @@ fn enter_fork_x86(regs: task::ForkRegs) -> ! {
         regs.rsp as u64,
         ss,
     ];
-    let r = core::ptr::addr_of!(regs);
     unsafe {
         core::arch::asm!(
             "cli",
-            "mov rbx, [{r} + 16]",
-            "mov rbp, [{r} + 24]",
-            "mov r12, [{r} + 32]",
-            "mov r13, [{r} + 40]",
-            "mov r14, [{r} + 48]",
-            "mov r15, [{r} + 56]",
             "mov rsp, {f}",
             "xor rax, rax",
             "iretq",
-            r = in(reg) r,
             f = in(reg) frame.as_ptr(),
+            in("rbx") regs.rbx,
+            in("rbp") regs.rbp,
+            in("r12") regs.r12,
+            in("r13") regs.r13,
+            in("r14") regs.r14,
+            in("r15") regs.r15,
             options(noreturn),
         );
     }
@@ -1548,39 +1585,18 @@ fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
 fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     #[cfg(target_arch = "x86_64")]
     let child = {
-        let rbx: u64;
-        let rbp: u64;
-        let r12: u64;
-        let r13: u64;
-        let r14: u64;
-        let r15: u64;
-        // syscall_entry leaves user callee-saved regs in place.
-        unsafe {
-            core::arch::asm!(
-                "mov {rbx}, rbx",
-                "mov {rbp}, rbp",
-                "mov {r12}, r12",
-                "mov {r13}, r13",
-                "mov {r14}, r14",
-                "mov {r15}, r15",
-                rbx = out(reg) rbx,
-                rbp = out(reg) rbp,
-                r12 = out(reg) r12,
-                r13 = out(reg) r13,
-                r14 = out(reg) r14,
-                r15 = out(reg) r15,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
+        // Use the snapshot from syscall_entry — live rbx/rbp/r12–r15 here may
+        // already be Rust scratch (prologues saved the user values on the stack).
+        let c = unsafe { core::ptr::addr_of!(FORK_CALLEE).read() };
         task::ForkRegs {
             rip: user_rip,
             rsp: user_rsp,
-            rbx,
-            rbp,
-            r12,
-            r13,
-            r14,
-            r15,
+            rbx: c.rbx,
+            rbp: c.rbp,
+            r12: c.r12,
+            r13: c.r13,
+            r14: c.r14,
+            r15: c.r15,
         }
     };
     #[cfg(target_arch = "aarch64")]
