@@ -1,0 +1,21 @@
+# Copy to your myos std application as `.cargo/config.toml`.
+# Requires a prebuilt sysroot (see toolchain/std/pal/README.md or toolchain/std/fetch-sysroot.sh).
+
+[unstable]
+json-target-spec = true
+
+[env]
+# Absolute path, or relative to this manifest:
+MYOS_SYSROOT = { value = "../myos/target/myos-sysroot", relative = true }
+RUSTC_BOOTSTRAP = "1"
+
+[build]
+rustc = "../myos/scripts/myos-rustc.sh"
+
+[target.x86_64-unknown-myos]
+rustflags = ["-C", "panic=abort"]
+linker = "rust-lld"
+
+[target.aarch64-unknown-myos]
+rustflags = ["-C", "panic=abort"]
+linker = "rust-lld"

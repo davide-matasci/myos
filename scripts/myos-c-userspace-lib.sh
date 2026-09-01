@@ -23,12 +23,12 @@ myos_newlib_version_hash() {
   h="$(
     {
       echo "newlib_tag=$MYOS_NEWLIB_TAG"
-      find "$MYOS_ROOT/newlib/libgloss/myos" -type f -print0 2>/dev/null \
+      find "$MYOS_ROOT/toolchain/newlib/libgloss/myos" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      sha256sum "$MYOS_ROOT/scripts/patch-newlib-myos.sh"
-      sha256sum "$MYOS_ROOT/scripts/build-newlib.sh"
-      sha256sum "$MYOS_ROOT/scripts/build-libgloss-myos.sh"
-      sha256sum "$MYOS_ROOT/scripts/newlib-tool-wrappers.sh"
+      sha256sum "$MYOS_ROOT/toolchain/newlib/patch.sh"
+      sha256sum "$MYOS_ROOT/toolchain/newlib/build.sh"
+      sha256sum "$MYOS_ROOT/toolchain/newlib/build-libgloss.sh"
+      sha256sum "$MYOS_ROOT/toolchain/newlib/tool-wrappers.sh"
     } | sha256sum | awk '{print $1}'
   )"
   printf '%s' "$h"
@@ -74,11 +74,11 @@ myos_sbase_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
-      sha256sum "$MYOS_ROOT/scripts/build-sbase.sh"
-      sha256sum "$MYOS_ROOT/scripts/prepare-sbase-myos.sh"
-      sha256sum "$MYOS_ROOT/scripts/fetch-sbase.sh"
-      sha256sum "$MYOS_ROOT/scripts/sbase-myos/bins.txt"
-      find "$MYOS_ROOT/scripts/sbase-myos" -type f -print0 2>/dev/null \
+      sha256sum "$MYOS_ROOT/ports/sbase/build.sh"
+      sha256sum "$MYOS_ROOT/ports/sbase/prepare.sh"
+      sha256sum "$MYOS_ROOT/ports/sbase/fetch.sh"
+      sha256sum "$MYOS_ROOT/ports/sbase/bins.txt"
+      find "$MYOS_ROOT/ports/sbase" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | sha256sum | awk '{print $1}'
   )"
@@ -115,10 +115,10 @@ myos_oksh_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
-      sha256sum "$MYOS_ROOT/scripts/build-oksh.sh"
-      sha256sum "$MYOS_ROOT/scripts/prepare-oksh-myos.sh"
-      sha256sum "$MYOS_ROOT/scripts/fetch-oksh.sh"
-      find "$MYOS_ROOT/scripts/oksh-myos" -type f -print0 2>/dev/null \
+      sha256sum "$MYOS_ROOT/ports/oksh/build.sh"
+      sha256sum "$MYOS_ROOT/ports/oksh/prepare.sh"
+      sha256sum "$MYOS_ROOT/ports/oksh/fetch.sh"
+      find "$MYOS_ROOT/ports/oksh" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | sha256sum | awk '{print $1}'
   )"
@@ -139,14 +139,16 @@ myos_coreutils_version_hash() {
   local h
   h="$(
     {
-      sha256sum "$MYOS_ROOT/scripts/build-uutils-myos.sh"
-      sha256sum "$MYOS_ROOT/scripts/build-coreutils-myos.sh"
-      sha256sum "$MYOS_ROOT/scripts/prepare-coreutils-patches.sh"
-      sha256sum "$MYOS_ROOT/patches/coreutils/versions.env"
-      find "$MYOS_ROOT/patches/coreutils" -type f -print0 2>/dev/null \
+      sha256sum "$MYOS_ROOT/ports/coreutils/build-uutils.sh"
+      sha256sum "$MYOS_ROOT/ports/coreutils/build.sh"
+      sha256sum "$MYOS_ROOT/ports/coreutils/prepare.sh"
+      sha256sum "$MYOS_ROOT/ports/coreutils/versions.env"
+      find "$MYOS_ROOT/ports/coreutils" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      sha256sum "$MYOS_ROOT/scripts/coreutils-myos/bins.txt"
-      sha256sum "$MYOS_ROOT/vendor/coreutils-port/cargo-config.toml"
+      find "$MYOS_ROOT/ports/crates/libc" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      sha256sum "$MYOS_ROOT/ports/coreutils/bins.txt"
+      sha256sum "$MYOS_ROOT/ports/coreutils/cargo-config.toml"
     } | sha256sum | awk '{print $1}'
   )"
   printf '%s' "$h"
@@ -179,14 +181,14 @@ myos_ripgrep_version_hash() {
   local h
   h="$(
     {
-      sha256sum "$MYOS_ROOT/scripts/build-ripgrep-myos.sh"
-      sha256sum "$MYOS_ROOT/scripts/prepare-ripgrep-myos.sh"
-      sha256sum "$MYOS_ROOT/scripts/fetch-ripgrep.sh"
-      sha256sum "$MYOS_ROOT/scripts/fetch-pcre2.sh"
-      sha256sum "$MYOS_ROOT/scripts/build-pcre2-myos.sh"
-      sha256sum "$MYOS_ROOT/patches/ripgrep/versions.env"
-      sha256sum "$MYOS_ROOT/vendor/ripgrep-port/cargo-config.toml"
-      find "$MYOS_ROOT/patches/ripgrep" -type f -print0 2>/dev/null \
+      sha256sum "$MYOS_ROOT/ports/ripgrep/build.sh"
+      sha256sum "$MYOS_ROOT/ports/ripgrep/prepare.sh"
+      sha256sum "$MYOS_ROOT/ports/ripgrep/fetch.sh"
+      sha256sum "$MYOS_ROOT/ports/ripgrep/fetch-pcre2.sh"
+      sha256sum "$MYOS_ROOT/ports/ripgrep/build-pcre2.sh"
+      sha256sum "$MYOS_ROOT/ports/ripgrep/versions.env"
+      sha256sum "$MYOS_ROOT/ports/ripgrep/cargo-config.toml"
+      find "$MYOS_ROOT/ports/ripgrep" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_newlib_version_hash
     } | sha256sum | awk '{print $1}'

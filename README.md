@@ -16,6 +16,8 @@ Multiboot-for-ARM).
 
 Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
 
+Userspace **ports** live under `ports/` (sbase, oksh, ripgrep, coreutils; fetched at build, not vendored). **Toolchain** pieces live under `toolchain/` (newlib/libgloss and the Rust `std` PAL/sysroot). `scripts/` keeps thin wrappers so `./scripts/build-sbase.sh` still works.
+
 The kernel runs round-robin **kernel threads** plus **user processes**.
 Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
 `include_bytes!`, spawned as today, smoke-runs fork/`/ok` for CI needles,
@@ -453,21 +455,21 @@ on serial). `user/heap` is the CI-only heavy carnival (typed at `$`).
 To build **`std`** programs (see [OSDev](https://wiki.osdev.org/Porting_Rust_standard_library)):
 
 ```sh
-./scripts/build-std-hello.sh   # builds sysroot + smoke ELFs for x86_64 and AArch64
+./toolchain/std/build-std-hello.sh   # builds sysroot + smoke ELFs for x86_64 and AArch64
 ```
 
 | Path | Role |
 |------|------|
 | `targets/*-unknown-myos.json` | Custom userspace triples (`os = "myos"`) |
-| `std/pal/myos/` | PAL → `library/std/src/sys/pal/myos/` in the patched sysroot |
-| `scripts/build-sysroot.sh` | Precompile `std` into `target/myos-sysroot` (both triples) |
-| `scripts/fetch-sysroot.sh` | Install prebuilt sysroot tarball or build locally |
-| `scripts/package-sysroot.sh` | Tarball the sysroot for local reuse or CI artifacts |
-| `scripts/check-wire-myos.sh` | Verify PAL patches apply to pinned nightly |
-| `scripts/export-upstream-patch.sh` | Generate diff for rust-lang/rust submission |
-| `std/upstream/README.md` | Tier 3 upstream checklist for `target_os = "myos"` |
-| `std/toolchain/config.toml.example` | Consumer `.cargo/config.toml` template |
-| `std/pal/README.md` | Full sysroot / build docs |
+| `toolchain/std/pal/myos/` | PAL → `library/std/src/sys/pal/myos/` in the patched sysroot |
+| `toolchain/std/build-sysroot.sh` | Precompile `std` into `target/myos-sysroot` (both triples) |
+| `toolchain/std/fetch-sysroot.sh` | Install prebuilt sysroot tarball or build locally |
+| `toolchain/std/package-sysroot.sh` | Tarball the sysroot for local reuse or CI artifacts |
+| `toolchain/std/check-wire.sh` | Verify PAL patches apply to pinned nightly |
+| `toolchain/std/export-upstream-patch.sh` | Generate diff for rust-lang/rust submission |
+| `toolchain/std/upstream/README.md` | Tier 3 upstream checklist for `target_os = "myos"` |
+| `toolchain/std/toolchain/config.toml.example` | Consumer `.cargo/config.toml` template |
+| `toolchain/std/pal/README.md` | Full sysroot / build docs |
 
 CI checks `println!("std ok")` on BIOS, UEFI, and AArch64. App crates link against
 the prebuilt sysroot (no `-Z build-std` on each app build). More syscalls (`open`,
@@ -480,28 +482,28 @@ adapters + ENOSYS stubs). Host **clang** cross-compiles; no new kernel syscalls
 required beyond the existing myos ABI.
 
 ```sh
-./scripts/build-newlib.sh   # fetch newlib 4.4.0, build libc + libgloss/myos
+./toolchain/newlib/build.sh   # fetch newlib 4.4.0, build libc + libgloss/myos
 ./scripts/build-c-hello.sh  # minimal write() smoke → target/c-hello-*
-./scripts/build-sbase.sh    # full suckless sbase → target/sbase-* + manifest
-./scripts/build-oksh.sh     # oksh 7.9 → target/oksh-*-unknown-none (`/sh`)
+./ports/sbase/build.sh    # full suckless sbase → target/sbase-* + manifest
+./ports/oksh/build.sh     # oksh 7.9 → target/oksh-*-unknown-none (`/sh`)
 ```
 
 | Path | Role |
 |------|------|
-| `newlib/libgloss/myos/` | libgloss port: `_read`/`_write`/`_open`/… → myos syscalls; stubs return `ENOSYS`/`EROFS` |
-| `scripts/fetch-newlib.sh` | Clone pinned newlib into `target/newlib-src` |
-| `scripts/patch-newlib-myos.sh` | Register `*-unknown-myos`, install libgloss port |
-| `scripts/build-newlib.sh` | Build/install newlib per arch |
-| `scripts/build-libgloss-myos.sh` | Build `libgloss.a` + `crt0.o` (called by build-newlib) |
+| `toolchain/newlib/libgloss/myos/` | libgloss port: `_read`/`_write`/`_open`/… → myos syscalls; stubs return `ENOSYS`/`EROFS` |
+| `toolchain/newlib/fetch.sh` | Clone pinned newlib into `target/newlib-src` |
+| `toolchain/newlib/patch.sh` | Register `*-unknown-myos`, install libgloss port |
+| `toolchain/newlib/build.sh` | Build/install newlib per arch |
+| `toolchain/newlib/build-libgloss.sh` | Build `libgloss.a` + `crt0.o` (called by build-newlib) |
 | `scripts/build-c-hello.sh` | Link minimal C smoke with `-lc -lgloss` |
-| `scripts/fetch-sbase.sh` | Clone pinned [sbase](https://git.suckless.org/sbase) into `target/sbase-src` |
-| `scripts/prepare-sbase-myos.sh` | Sync upstream tree; apply myos patches; generate `bc.c`/`getconf.h` |
-| `scripts/build-sbase.sh` | Cross-build ~91 upstream sbase utilities per arch (manifest-driven kernel embed) |
-| `scripts/sbase-myos/` | `.myos.patch` files, `bins.txt`, compat headers, arch soft-float shims |
-| `scripts/fetch-oksh.sh` | Clone pinned [oksh](https://github.com/ibara/oksh) 7.9 into `target/oksh-src` |
-| `scripts/prepare-oksh-myos.sh` | Sync upstream tree; apply myos patches; install checked-in `pconfig.h` |
-| `scripts/build-oksh.sh` | Cross-build oksh per arch (`target/oksh-*-unknown-none`) |
-| `scripts/oksh-myos/` | `pconfig.h` (`configure --no-thanks --enable-small --disable-curses`) and `.myos.patch` files |
+| `ports/sbase/fetch.sh` | Clone pinned [sbase](https://git.suckless.org/sbase) into `target/sbase-src` |
+| `ports/sbase/prepare.sh` | Sync upstream tree; apply myos patches; generate `bc.c`/`getconf.h` |
+| `ports/sbase/build.sh` | Cross-build ~91 upstream sbase utilities per arch (manifest-driven kernel embed) |
+| `ports/sbase/` | `.myos.patch` files, `bins.txt`, compat headers, arch soft-float shims |
+| `ports/oksh/fetch.sh` | Clone pinned [oksh](https://github.com/ibara/oksh) 7.9 into `target/oksh-src` |
+| `ports/oksh/prepare.sh` | Sync upstream tree; apply myos patches; install checked-in `pconfig.h` |
+| `ports/oksh/build.sh` | Cross-build oksh per arch (`target/oksh-*-unknown-none`) |
+| `ports/oksh/` | `pconfig.h` (`configure --no-thanks --enable-small --disable-curses`) and `.myos.patch` files |
 | `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
 
 Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
@@ -558,7 +560,8 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
 | `user/init` | PID1-style: baked in, smoke fork/`/ok`, execs `/sh` |
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
-| `scripts/oksh-myos/` | oksh pin patches + `pconfig.h` |
+| `ports/` | Userspace ports (sbase, oksh, ripgrep, coreutils); source fetched at build |
+| `ports/oksh/` | oksh pin patches + `pconfig.h` |
 | `user/echo` | Print argv; installed as bootfs `/myos_echo` |
 | `user/cat` | Read a bootfs file; installed as bootfs `/myos_cat` |
 | `user/ls` | List bootfs entries; installed as bootfs `/myos_ls` |
@@ -566,7 +569,8 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/bigalloc); typed as `heap` at `$` |
 | `user/ok` | Slim always-on boot smoke (`alloc`/`user`/`fat`/`disk` markers); ESP `boot/ok` |
 | `targets/` | Custom Rust target specs (`x86_64-unknown-myos.json`) |
-| `std/pal/` | Rust `std` PAL skeleton + porting notes |
+| `toolchain/newlib/` | newlib libgloss port + fetch/build scripts |
+| `toolchain/std/pal/` | Rust `std` PAL skeleton + porting notes |
 | `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, PCI, legacy virtio-blk, isa-debug-exit |
 | `kernel/src/arch/x86/pci.rs` | PCI config via `0xCF8`/`0xCFC`; find virtio-blk |
 | `kernel/src/arch/aarch64/` | PL011, TTBR0 device map, GICv2 timer, lower-EL SVC, virtio-mmio blk, PSCI off |
@@ -574,6 +578,7 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `kernel/src/font.rs` | Tiny 8x8 bitmap font |
 | `.cargo/config.toml` | `bindeps` (artifact dependencies) |
 | `rust-toolchain.toml` | pinned nightly + `llvm-tools-preview` + rust-src + targets |
+| `scripts/` | Shared helpers (`myos-c-userspace-lib.sh`, rustc wrappers) + thin wrappers for old script names |
 | `.github/workflows/iso.yml` | Manual `workflow_dispatch` x86_64 hybrid ISO artifact |
 
 ## Notes

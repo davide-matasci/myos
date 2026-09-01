@@ -129,13 +129,13 @@ fn embed_coreutils_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     println!("cargo:rerun-if-changed={}", names_file.display());
     if !elf.is_file() {
         panic!(
-            "coreutils ELF missing at {} (run ./scripts/build-uutils-myos.sh)",
+            "coreutils ELF missing at {} (run ./ports/coreutils/build-uutils.sh)",
             elf.display()
         );
     }
     if !names_file.is_file() {
         panic!(
-            "coreutils manifest missing at {} (run ./scripts/build-uutils-myos.sh)",
+            "coreutils manifest missing at {} (run ./ports/coreutils/build-uutils.sh)",
             names_file.display()
         );
     }
@@ -176,7 +176,7 @@ fn embed_ripgrep_elf(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     println!("cargo:rerun-if-changed={}", elf.display());
     if !elf.is_file() {
         panic!(
-            "ripgrep ELF missing at {} (run ./scripts/build-ripgrep-myos.sh)",
+            "ripgrep ELF missing at {} (run ./ports/ripgrep/build.sh)",
             elf.display()
         );
     }
@@ -207,7 +207,7 @@ fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str)
     println!("cargo:rerun-if-changed={}", stable.display());
     if !stable.is_file() {
         panic!(
-            "{artifact} ELF missing at {} (run ./scripts/build-std-hello.sh)",
+            "{artifact} ELF missing at {} (run ./toolchain/std/build-std-hello.sh)",
             stable.display()
         );
     }
@@ -221,7 +221,7 @@ fn embed_sbase_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     println!("cargo:rerun-if-changed={}", manifest.display());
     if !manifest.is_file() {
         panic!(
-            "sbase manifest missing at {} (run ./scripts/build-sbase.sh)",
+            "sbase manifest missing at {} (run ./ports/sbase/build.sh)",
             manifest.display()
         );
     }
@@ -238,7 +238,7 @@ fn embed_sbase_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
         let path = Path::new(path);
         if !path.is_file() {
             panic!(
-                "sbase ELF missing for {name} at {} (run ./scripts/build-sbase.sh)",
+                "sbase ELF missing for {name} at {} (run ./ports/sbase/build.sh)",
                 path.display()
             );
         }
@@ -269,7 +269,7 @@ fn embed_oksh_elf(manifest_dir: &Path, arch: &str) {
     println!("cargo:rerun-if-changed={}", stable.display());
     if !stable.is_file() {
         panic!(
-            "oksh ELF missing at {} (run ./scripts/build-oksh.sh)",
+            "oksh ELF missing at {} (run ./ports/oksh/build.sh)",
             stable.display()
         );
     }
@@ -292,7 +292,7 @@ fn embed_c_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
     println!("cargo:rerun-if-changed={}", stable.display());
     if !stable.is_file() {
         panic!(
-            "{artifact} ELF missing at {} (run ./scripts/build-c-hello.sh and ./scripts/build-sbase.sh)",
+            "{artifact} ELF missing at {} (run ./scripts/build-c-hello.sh and ./ports/sbase/build.sh)",
             stable.display()
         );
     }

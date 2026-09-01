@@ -40,23 +40,27 @@ jobs:
         with:
           filters: |
             sysroot:
-              - 'std/**'
+              - 'toolchain/std/**'
               - 'targets/**'
               - 'rust-toolchain.toml'
               - '.cargo/config.toml'
               - 'scripts/myos-sysroot-lib.sh'
+              - 'scripts/myos-rustc.sh'
+              - 'scripts/myos-rustc-cross.sh'
+              - 'scripts/check-wire-myos.sh'
               - 'scripts/build-sysroot.sh'
               - 'scripts/prepare-rust-std-myos.sh'
               - 'scripts/fetch-sysroot.sh'
               - 'scripts/package-sysroot.sh'
               - 'scripts/install-sysroot.sh'
-              - 'scripts/check-wire-myos.sh'
+              - 'scripts/build-std-hello.sh'
             c_userspace:
-              - 'newlib/**'
+              - 'toolchain/newlib/**'
+              - 'ports/**'
               - 'c/**'
               - 'scripts/myos-c-userspace-lib.sh'
-              - 'scripts/build-newlib.sh'
               - 'scripts/build-c-hello.sh'
+              - 'scripts/build-newlib.sh'
               - 'scripts/build-sbase.sh'
               - 'scripts/build-oksh.sh'
               - 'scripts/fetch-newlib.sh'
@@ -65,10 +69,8 @@ jobs:
               - 'scripts/newlib-tool-wrappers.sh'
               - 'scripts/fetch-sbase.sh'
               - 'scripts/prepare-sbase-myos.sh'
-              - 'scripts/sbase-myos/**'
               - 'scripts/fetch-oksh.sh'
               - 'scripts/prepare-oksh-myos.sh'
-              - 'scripts/oksh-myos/**'
               - 'scripts/fetch-ripgrep.sh'
               - 'scripts/fetch-pcre2.sh'
               - 'scripts/prepare-ripgrep-myos.sh'
@@ -76,9 +78,6 @@ jobs:
               - 'scripts/build-pcre2-myos.sh'
               - 'scripts/build-uutils-myos.sh'
               - 'scripts/build-coreutils-myos.sh'
-              - 'vendor/ripgrep-port/**'
-              - 'patches/ripgrep/**'
-              - 'patches/coreutils/**'
 
   wire-myos:
     runs-on: ubuntu-latest
@@ -94,15 +93,15 @@ jobs:
 
       - name: Verify wire-myos.py on pinned nightly
         run: |
-          chmod +x scripts/*.sh
-          ./scripts/check-wire-myos.sh
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./toolchain/std/check-wire.sh
 
       - name: Probe latest nightly (informational)
         if: github.event_name == 'workflow_dispatch' && inputs.probe_latest_nightly
         continue-on-error: true
         run: |
           rustup toolchain install nightly --component rust-src
-          MYOS_NIGHTLY=nightly ./scripts/check-wire-myos.sh
+          MYOS_NIGHTLY=nightly ./toolchain/std/check-wire.sh
 
   sysroot:
     runs-on: ubuntu-latest
@@ -124,7 +123,7 @@ jobs:
       - name: Cache myos sysroot
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: myos-sysroot-v1
+          prefix-key: myos-sysroot-v2
           workspaces: .
           cache-directories: target/myos-sysroot
 
@@ -137,9 +136,9 @@ jobs:
           MYOS_SYSROOT_SLIM: "1"
           MYOS_ZSTD_LEVEL: "3"
         run: |
-          chmod +x scripts/*.sh
-          ./scripts/build-sysroot.sh
-          ./scripts/package-sysroot.sh
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./toolchain/std/build-sysroot.sh
+          ./toolchain/std/package-sysroot.sh
 
       # Artifact quota exhaustion must not fail the pipeline: rust-cache keeps
       # target/myos-sysroot for the build job; fetch-sysroot rebuilds if needed.
@@ -169,8 +168,8 @@ jobs:
 
       - name: Export upstream library patch
         run: |
-          chmod +x scripts/*.sh
-          ./scripts/export-upstream-patch.sh
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./toolchain/std/export-upstream-patch.sh
 
       - uses: actions/upload-artifact@v4
         continue-on-error: true
@@ -207,7 +206,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: limine-8.3-5
+          prefix-key: limine-8.3-6
           cache-directories: |
             target/myos-sysroot
             target/newlib-x86_64
@@ -259,19 +258,19 @@ jobs:
 
       - name: Install sysroot and build std/C/sbase/oksh/uutils/ripgrep ELFs
         run: |
-          chmod +x scripts/*.sh
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
           if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
             export MYOS_SYSROOT_TARBALL="$(ls target/myos-sysroot-*.tar.zst | head -1)"
-            ./scripts/fetch-sysroot.sh
+            ./toolchain/std/fetch-sysroot.sh
           else
-            ./scripts/fetch-sysroot.sh
+            ./toolchain/std/fetch-sysroot.sh
           fi
-          ./scripts/build-std-hello.sh
+          ./toolchain/std/build-std-hello.sh
           ./scripts/build-c-hello.sh
-          ./scripts/build-sbase.sh
-          ./scripts/build-oksh.sh
-          ./scripts/build-uutils-myos.sh
-          ./scripts/build-ripgrep-myos.sh
+          ./ports/sbase/build.sh
+          ./ports/oksh/build.sh
+          ./ports/coreutils/build-uutils.sh
+          ./ports/ripgrep/build.sh
 
       - name: PS/2 scancode decode unit tests
         run: cargo test -p ps2-scancode
@@ -391,7 +390,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: limine-8.3-5
+          prefix-key: limine-8.3-6
           cache-directories: |
             target/myos-sysroot
             target/newlib-x86_64
@@ -445,7 +444,7 @@ jobs:
 
       - name: Restore or rebuild CI artifacts
         run: |
-          chmod +x scripts/*.sh
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
           sudo apt-get update
           sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
           ./scripts/ci-restore-or-build.sh

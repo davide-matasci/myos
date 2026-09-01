@@ -21,7 +21,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: limine-8.3-2
+          prefix-key: limine-8.3-6
           cache-directories: |
             target/myos-sysroot
             target/newlib-x86_64
@@ -37,13 +37,13 @@ jobs:
 
       - name: Build myos sysroot, newlib, C/sbase/oksh/uutils ELFs
         run: |
-          chmod +x scripts/*.sh
-          ./scripts/fetch-sysroot.sh
-          ./scripts/build-std-hello.sh
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./toolchain/std/fetch-sysroot.sh
+          ./toolchain/std/build-std-hello.sh
           ./scripts/build-c-hello.sh
-          ./scripts/build-sbase.sh
-          ./scripts/build-oksh.sh
-          ./scripts/build-uutils-myos.sh
+          ./ports/sbase/build.sh
+          ./ports/oksh/build.sh
+          ./ports/coreutils/build-uutils.sh
 
       - name: Build x86_64 hybrid ISO
         run: |
