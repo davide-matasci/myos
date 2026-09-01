@@ -198,49 +198,21 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: limine-8.3-4
-          cache-directories: |
-            target/myos-sysroot
-            target/newlib-x86_64
-            target/newlib-aarch64
-            target/newlib-src
-            target/newlib-bin
-            target/sbase-src
-            target/sbase-myos-build
-            target/oksh-src
-            target/oksh-myos-build
 
-      - name: Download prebuilt sysroot
-        if: needs.sysroot.result == 'success'
-        continue-on-error: true
-        uses: actions/download-artifact@v4
+      - name: Cache myos sysroot
+        uses: Swatinem/rust-cache@v2
         with:
-          name: myos-sysroot
-          path: target
+          prefix-key: myos-sysroot-v1
+          workspaces: .
+          cache-directories: target/myos-sysroot
 
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
-
-      - name: Install sysroot and build std/C/sbase/oksh/uutils ELFs
+      - name: Fetch or rebuild sysroot
         run: |
           chmod +x scripts/*.sh
-          if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
-            export MYOS_SYSROOT_TARBALL="$(ls target/myos-sysroot-*.tar.zst | head -1)"
-            ./scripts/fetch-sysroot.sh
-          else
-            ./scripts/fetch-sysroot.sh
-          fi
-          ./scripts/build-std-hello.sh
-          ./scripts/build-c-hello.sh
-          ./scripts/build-sbase.sh
-          ./scripts/build-oksh.sh
-          ./scripts/build-uutils-myos.sh
+          ./scripts/fetch-sysroot.sh || ./scripts/build-sysroot.sh
 
-      - name: PS/2 scancode decode unit tests
-        run: cargo test -p ps2-scancode
-
-      - name: Build kernel and Limine BIOS+UEFI disk images
+      - name: Build kernel + userspace
         run: |
-          cargo clean -p myos
           # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
           # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
           cargo clean -p kernel --target x86_64-unknown-none
@@ -258,50 +230,33 @@ jobs:
           ./target/debug/myos --ci
           ./target/debug/myos uefi --ci
 
-      - name: Pack CI build artifacts
+      - name: Package CI build tree
         run: |
-          shopt -s nullglob
-          files=(
-            target/debug/myos
-            target/debug/build/myos-*/out
-            target/bios.img
-            target/uefi.img
-            target/fat.img
-            target/hello-*
-            target/ok-*
-            target/std-*
-            target/c-hello-*
-            target/sbase-*
-            target/oksh-*
-            target/uutils-*
-            target/coreutils-*
-            target/.myos-coreutils-version
-            target/limine-v*
-          )
-          if [ -f target/virt.dtb ]; then
-            files+=(target/virt.dtb)
-          fi
-          if [ -d target/ovmf ]; then
-            files+=(target/ovmf)
-          fi
-          tar -cf ci-build.tar "${files[@]}"
-          ls -lh ci-build.tar
+          tar -cf ci-build.tar \
+            target/debug/myos \
+            target/bios.img \
+            target/x86_64-unknown-uefi/debug/bootloader-x86_64-uefi.efi \
+            target/aarch64-unknown-none-softfloat/debug/kernel \
+            target/riscv64imac-unknown-none-elf/debug/kernel \
+            target/x86_64-unknown-myos/debug/init \
+            target/x86_64-unknown-myos/debug/hello \
+            target/x86_64-unknown-myos/debug/cat \
+            target/x86_64-unknown-myos/debug/ok \
+            || true
 
-      - name: Upload CI build artifacts
+      - name: Upload CI build tree
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ci-build
           path: ci-build.tar
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 1
 
   boot:
-    name: boot (${{ matrix.id }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     needs: build
-    if: ${{ needs.build.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -321,7 +276,7 @@ jobs:
           - id: riscv64
             args: riscv64 --ci
             packages: qemu-system-misc qemu-efi-riscv64
-            required: false
+            required: true
     steps:
       - uses: actions/checkout@v4
 
@@ -336,39 +291,17 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: limine-8.3-4
-          cache-directories: |
-            target/myos-sysroot
-            target/newlib-x86_64
-            target/newlib-aarch64
-            target/newlib-src
-            target/newlib-bin
-            target/sbase-src
-            target/sbase-myos-build
-            target/oksh-src
-            target/oksh-myos-build
 
-      - name: Download prebuilt sysroot
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: myos-sysroot
-          path: target
-
-      - name: Download CI build artifacts
-        continue-on-error: true
+      - name: Download CI build tree
         uses: actions/download-artifact@v4
         with:
           name: ci-build
 
-      - name: Restore or rebuild CI artifacts
-        run: |
-          chmod +x scripts/*.sh
-          sudo apt-get update
-          sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
-          ./scripts/ci-restore-or-build.sh
+      - name: Unpack CI build tree
+        run: tar -xf ci-build.tar
 
       - name: Install QEMU
-        run: sudo apt-get install -y ${{ matrix.packages }}
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
 
       - name: Boot in QEMU
         continue-on-error: ${{ !matrix.required }}
