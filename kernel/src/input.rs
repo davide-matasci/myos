@@ -1,4 +1,10 @@
 //! Stdin: serial + PS/2 keyboard (when detected), shared ring buffer.
+//!
+//! Interactive input is **canonical** (cooked): printable bytes accumulate in
+//! a private edit buffer and are not visible to `read` until newline. Backspace
+//! / DEL erase the last edit column (and the console glyph) without ever
+//! delivering `0x08` to userspace. That matches oksh's non-`x_init` path, which
+//! expects the kernel line discipline to resolve erase before `shf_getse`.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
@@ -8,18 +14,19 @@ use crate::console;
 use crate::task;
 
 const RING: usize = 256;
+const EDIT: usize = 128;
 
 static BUF: Mutex<[u8; RING]> = Mutex::new([0; RING]);
 static HEAD: AtomicUsize = AtomicUsize::new(0);
 static TAIL: AtomicUsize = AtomicUsize::new(0);
-/// Printable bytes echoed by the kernel since the last newline. Used so
-/// backspace does not erase the userspace prompt (`$ `) when the line is empty.
-static ECHOED_COLS: AtomicUsize = AtomicUsize::new(0);
+/// In-progress line (not yet readable). Length == echoed columns since NL.
+static EDIT_BUF: Mutex<[u8; EDIT]> = Mutex::new([0; EDIT]);
+static EDIT_LEN: AtomicUsize = AtomicUsize::new(0);
 
 pub fn init() {
     HEAD.store(0, Ordering::SeqCst);
     TAIL.store(0, Ordering::SeqCst);
-    ECHOED_COLS.store(0, Ordering::SeqCst);
+    EDIT_LEN.store(0, Ordering::SeqCst);
     arch::serial_flush_rx();
     arch::keyboard_init();
 }
@@ -38,6 +45,17 @@ fn acceptable_input(byte: u8) -> bool {
     byte == b'\n' || byte == b'\t' || byte == 0x08 || byte == 127 || (0x20..=0x7E).contains(&byte)
 }
 
+fn push_committed(byte: u8) -> bool {
+    let h = HEAD.load(Ordering::SeqCst);
+    let next = (h + 1) % RING;
+    if next == TAIL.load(Ordering::SeqCst) {
+        return false;
+    }
+    BUF.lock()[h] = byte;
+    HEAD.store(next, Ordering::SeqCst);
+    true
+}
+
 fn push_byte(raw: u8) {
     let mut byte = raw;
     if byte == b'\r' {
@@ -49,39 +67,38 @@ fn push_byte(raw: u8) {
     if byte == 127 || byte == 8 {
         // Only erase when this kernel echo line still has typed columns.
         // Otherwise BS would wipe the shell prompt (`$ `) drawn via write(2).
-        let cols = ECHOED_COLS.load(Ordering::SeqCst);
-        if cols == 0 {
+        let len = EDIT_LEN.load(Ordering::SeqCst);
+        if len == 0 {
             return;
         }
-        // Deliver backspace so readers that already pulled bytes (read_line)
-        // can undo their buffer; the ring is often empty here.
-        let h = HEAD.load(Ordering::SeqCst);
-        let next = (h + 1) % RING;
-        if next == TAIL.load(Ordering::SeqCst) {
-            return;
-        }
-        BUF.lock()[h] = 0x08;
-        HEAD.store(next, Ordering::SeqCst);
-        ECHOED_COLS.store(cols - 1, Ordering::SeqCst);
+        EDIT_LEN.store(len - 1, Ordering::SeqCst);
         console::write_byte(8);
         console::write_byte(b' ');
         console::write_byte(8);
         return;
     }
-    let h = HEAD.load(Ordering::SeqCst);
-    let next = (h + 1) % RING;
-    if next == TAIL.load(Ordering::SeqCst) {
+    if byte == b'\n' {
+        let len = EDIT_LEN.load(Ordering::SeqCst);
+        {
+            let edit = EDIT_BUF.lock();
+            for i in 0..len {
+                if !push_committed(edit[i]) {
+                    break;
+                }
+            }
+        }
+        EDIT_LEN.store(0, Ordering::SeqCst);
+        let _ = push_committed(b'\n');
+        console::write_byte(b'\n');
         return;
     }
-    BUF.lock()[h] = byte;
-    HEAD.store(next, Ordering::SeqCst);
-    if byte == b'\n' {
-        ECHOED_COLS.store(0, Ordering::SeqCst);
-        console::write_byte(b'\n');
-    } else {
-        ECHOED_COLS.fetch_add(1, Ordering::SeqCst);
-        console::write_byte(byte);
+    let len = EDIT_LEN.load(Ordering::SeqCst);
+    if len >= EDIT {
+        return;
     }
+    EDIT_BUF.lock()[len] = byte;
+    EDIT_LEN.store(len + 1, Ordering::SeqCst);
+    console::write_byte(byte);
 }
 
 fn pop_byte() -> Option<u8> {
@@ -95,6 +112,7 @@ fn pop_byte() -> Option<u8> {
 }
 
 /// Read up to `len` bytes. Blocks until at least one byte is available.
+/// Bytes come from completed lines only (canonical / cooked discipline).
 pub fn read(buf: &mut [u8]) -> usize {
     let mut n = 0;
     while n == 0 {
