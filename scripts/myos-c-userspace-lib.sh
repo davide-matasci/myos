@@ -25,6 +25,7 @@ myos_newlib_version_hash() {
       find "$MYOS_ROOT/newlib/libgloss/myos" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/scripts/patch-newlib-myos.sh"
+      sha256sum "$MYOS_ROOT/scripts/build-newlib.sh"
       sha256sum "$MYOS_ROOT/scripts/build-libgloss-myos.sh"
       sha256sum "$MYOS_ROOT/scripts/newlib-tool-wrappers.sh"
     } | sha256sum | awk '{print $1}'
