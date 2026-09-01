@@ -69,6 +69,16 @@ jobs:
               - 'scripts/fetch-oksh.sh'
               - 'scripts/prepare-oksh-myos.sh'
               - 'scripts/oksh-myos/**'
+              - 'scripts/fetch-ripgrep.sh'
+              - 'scripts/fetch-pcre2.sh'
+              - 'scripts/prepare-ripgrep-myos.sh'
+              - 'scripts/build-ripgrep-myos.sh'
+              - 'scripts/build-pcre2-myos.sh'
+              - 'scripts/build-uutils-myos.sh'
+              - 'scripts/build-coreutils-myos.sh'
+              - 'vendor/ripgrep-port/**'
+              - 'patches/ripgrep/**'
+              - 'patches/coreutils/**'
 
   wire-myos:
     runs-on: ubuntu-latest
@@ -172,7 +182,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: [changes, wire-myos, sysroot]
     if: |
       always() &&
@@ -191,23 +201,50 @@ jobs:
           components: rust-src, llvm-tools-preview
           targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
 
-      # prefix-key busts the poisoned rust-cache from 77c4886: restored target/
-      # mtimes made cargo skip build.rs, so CI booted a stale bios.img with
-      # broken FAT 8.3 names and zero serial.
+      # prefix-key busts poisoned rust-cache (77c4886 FAT 8.3; empty /c/rg
+      # embed from soft-missing ripgrep). Keep build+boot in lockstep.
+      # Do not cache a cargo target that lets kernel build.rs skip.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: limine-8.3-4
+          prefix-key: limine-8.3-5
           cache-directories: |
             target/myos-sysroot
             target/newlib-x86_64
             target/newlib-aarch64
+            target/newlib-riscv64
             target/newlib-src
             target/newlib-bin
             target/sbase-src
             target/sbase-myos-build
             target/oksh-src
             target/oksh-myos-build
+            target/ripgrep-src
+            target/ripgrep-build-x86_64-unknown-myos
+            target/ripgrep-build-aarch64-unknown-myos
+            target/ripgrep-build-riscv64-unknown-myos
+            target/pcre2-src
+            target/pcre2-x86_64
+            target/pcre2-aarch64
+            target/pcre2-riscv64
+            target/patched-crates
+            target/crate-fetch-coreutils
+            target/.myos-newlib-version
+            target/.myos-c-hello-version
+            target/.myos-sbase-version
+            target/.myos-oksh-version
+            target/.myos-coreutils-version
+            target/.myos-ripgrep-version
+            target/.myos-std-hello-version
+            target/sbase-*
+            target/oksh-*
+            target/coreutils-*
+            target/std-*
+            target/hello-*
+            target/ok-*
+            target/c-hello-*
+            target/rg-*
+            target/uutils-*
 
       - name: Download prebuilt sysroot
         if: needs.sysroot.result == 'success'
@@ -220,7 +257,7 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
 
-      - name: Install sysroot and build std/C/sbase/oksh/uutils ELFs
+      - name: Install sysroot and build std/C/sbase/oksh/uutils/ripgrep ELFs
         run: |
           chmod +x scripts/*.sh
           if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
@@ -234,6 +271,7 @@ jobs:
           ./scripts/build-sbase.sh
           ./scripts/build-oksh.sh
           ./scripts/build-uutils-myos.sh
+          ./scripts/build-ripgrep-myos.sh
 
       - name: PS/2 scancode decode unit tests
         run: cargo test -p ps2-scancode
@@ -244,6 +282,8 @@ jobs:
           # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
           # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
           cargo clean -p kernel --target x86_64-unknown-none
+          cargo clean -p kernel --target aarch64-unknown-none-softfloat
+          cargo clean -p kernel --target riscv64imac-unknown-none-elf
           cargo build
           cargo build -p kernel --target aarch64-unknown-none-softfloat
           cargo build -p kernel --target riscv64imac-unknown-none-elf
@@ -275,7 +315,17 @@ jobs:
             target/oksh-*
             target/uutils-*
             target/coreutils-*
+            target/rg-*
+            target/pcre2-x86_64
+            target/pcre2-aarch64
+            target/pcre2-riscv64
+            target/.myos-newlib-version
+            target/.myos-c-hello-version
+            target/.myos-sbase-version
+            target/.myos-oksh-version
             target/.myos-coreutils-version
+            target/.myos-ripgrep-version
+            target/.myos-std-hello-version
             target/limine-v*
           )
           if [ -f target/virt.dtb ]; then
@@ -341,17 +391,44 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: limine-8.3-4
+          prefix-key: limine-8.3-5
           cache-directories: |
             target/myos-sysroot
             target/newlib-x86_64
             target/newlib-aarch64
+            target/newlib-riscv64
             target/newlib-src
             target/newlib-bin
             target/sbase-src
             target/sbase-myos-build
             target/oksh-src
             target/oksh-myos-build
+            target/ripgrep-src
+            target/ripgrep-build-x86_64-unknown-myos
+            target/ripgrep-build-aarch64-unknown-myos
+            target/ripgrep-build-riscv64-unknown-myos
+            target/pcre2-src
+            target/pcre2-x86_64
+            target/pcre2-aarch64
+            target/pcre2-riscv64
+            target/patched-crates
+            target/crate-fetch-coreutils
+            target/.myos-newlib-version
+            target/.myos-c-hello-version
+            target/.myos-sbase-version
+            target/.myos-oksh-version
+            target/.myos-coreutils-version
+            target/.myos-ripgrep-version
+            target/.myos-std-hello-version
+            target/sbase-*
+            target/oksh-*
+            target/coreutils-*
+            target/std-*
+            target/hello-*
+            target/ok-*
+            target/c-hello-*
+            target/rg-*
+            target/uutils-*
 
       - name: Download prebuilt sysroot
         continue-on-error: true
