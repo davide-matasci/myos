@@ -12,10 +12,14 @@ const RING: usize = 256;
 static BUF: Mutex<[u8; RING]> = Mutex::new([0; RING]);
 static HEAD: AtomicUsize = AtomicUsize::new(0);
 static TAIL: AtomicUsize = AtomicUsize::new(0);
+/// Printable bytes echoed by the kernel since the last newline. Used so
+/// backspace does not erase the userspace prompt (`$ `) when the line is empty.
+static ECHOED_COLS: AtomicUsize = AtomicUsize::new(0);
 
 pub fn init() {
     HEAD.store(0, Ordering::SeqCst);
     TAIL.store(0, Ordering::SeqCst);
+    ECHOED_COLS.store(0, Ordering::SeqCst);
     arch::serial_flush_rx();
     arch::keyboard_init();
 }
@@ -43,8 +47,14 @@ fn push_byte(raw: u8) {
         return;
     }
     if byte == 127 || byte == 8 {
-        // Always deliver backspace to the reader. Bytes already consumed into
-        // userspace are undone in read_line(); the ring is often empty here.
+        // Only erase when this kernel echo line still has typed columns.
+        // Otherwise BS would wipe the shell prompt (`$ `) drawn via write(2).
+        let cols = ECHOED_COLS.load(Ordering::SeqCst);
+        if cols == 0 {
+            return;
+        }
+        // Deliver backspace so readers that already pulled bytes (read_line)
+        // can undo their buffer; the ring is often empty here.
         let h = HEAD.load(Ordering::SeqCst);
         let next = (h + 1) % RING;
         if next == TAIL.load(Ordering::SeqCst) {
@@ -52,6 +62,7 @@ fn push_byte(raw: u8) {
         }
         BUF.lock()[h] = 0x08;
         HEAD.store(next, Ordering::SeqCst);
+        ECHOED_COLS.store(cols - 1, Ordering::SeqCst);
         console::write_byte(8);
         console::write_byte(b' ');
         console::write_byte(8);
@@ -65,8 +76,10 @@ fn push_byte(raw: u8) {
     BUF.lock()[h] = byte;
     HEAD.store(next, Ordering::SeqCst);
     if byte == b'\n' {
+        ECHOED_COLS.store(0, Ordering::SeqCst);
         console::write_byte(b'\n');
     } else {
+        ECHOED_COLS.fetch_add(1, Ordering::SeqCst);
         console::write_byte(byte);
     }
 }

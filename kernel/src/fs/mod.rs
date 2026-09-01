@@ -47,7 +47,8 @@ pub fn mount_module(name: &str, prefix: &str, ops: myos_abi::ModuleVfsOps) -> bo
     vfs::mount_module(name, prefix, ops)
 }
 
-/// Mount bootfs at `/`, sbasefs at `/s/`, coreutilsfs at `/c/`, and register embedded user ELFs.
+/// Mount bootfs at `/`, sbasefs at `/s/`, coreutilsfs at `/c/`, and register embedded user ELFs
+/// (custom demos as `myos_*`; ported tools keep short names on `/s` and `/c`).
 pub fn init() {
     vfs::mount(
         "bootfs",

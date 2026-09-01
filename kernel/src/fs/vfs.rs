@@ -154,6 +154,9 @@ pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
 }
 
 /// List directory entries at `path` into `buf` (newline-separated basenames).
+///
+/// When listing the root mount (`/` / `.`), also append other mount prefixes
+/// (e.g. `s`, `c`) so tools like `/s/ls` show bootfs files and mount points.
 pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     let Some((idx, rel)) = resolve_index(path) else {
         return 0;
@@ -162,7 +165,25 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     let Some(m) = mounts.get(idx) else {
         return 0;
     };
-    backend_listdir(m, rel, buf)
+    let mut n = backend_listdir(m, rel, buf);
+    if m.prefix.is_empty() && (rel.is_empty() || rel == ".") {
+        for other in mounts.iter() {
+            let prefix = other.prefix.as_str();
+            if prefix.is_empty() || prefix.contains('/') {
+                continue;
+            }
+            let name = prefix.as_bytes();
+            let need = name.len() + 1;
+            if n + need > buf.len() {
+                break;
+            }
+            buf[n..n + name.len()].copy_from_slice(name);
+            n += name.len();
+            buf[n] = b'\n';
+            n += 1;
+        }
+    }
+    n
 }
 
 /// Register `name` on mount `mount_name` (copying `bytes` into bootfs storage).

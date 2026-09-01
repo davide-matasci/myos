@@ -74,9 +74,9 @@ fn main() {
     for (crate_rel, bin, td, env_key) in [
         ("../user/ok", "ok", "ok-target", "USER_OK_PATH"),
         ("../user/heap", "heap", "heap-target", "USER_HEAP_PATH"),
-        ("../user/echo", "echo", "echo-target", "USER_ECHO_PATH"),
-        ("../user/cat", "cat", "cat-target", "USER_CAT_PATH"),
-        ("../user/ls", "ls", "ls-target", "USER_LS_PATH"),
+        ("../user/echo", "myos_echo", "echo-target", "USER_ECHO_PATH"),
+        ("../user/cat", "myos_cat", "cat-target", "USER_CAT_PATH"),
+        ("../user/ls", "myos_ls", "ls-target", "USER_LS_PATH"),
     ] {
         nested_elf(
             &cargo,

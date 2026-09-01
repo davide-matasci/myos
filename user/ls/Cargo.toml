@@ -1,13 +1,13 @@
 [workspace]
 
 [package]
-name = "ls"
+name = "myos_ls"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [[bin]]
-name = "ls"
+name = "myos_ls"
 test = false
 bench = false
 

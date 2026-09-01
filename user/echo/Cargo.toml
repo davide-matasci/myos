@@ -1,13 +1,13 @@
 [workspace]
 
 [package]
-name = "echo"
+name = "myos_echo"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [[bin]]
-name = "echo"
+name = "myos_echo"
 test = false
 bench = false
 

@@ -52,7 +52,7 @@ const CI_SHELL_COMMANDS: [&[u8]; 7] = [
     b"echo pipe | cat\n",
     b"c/true\n",
     b"/s/echo hi\n",
-    b"/s/ls /s\n",
+    b"/s/ls\n",
 ];
 
 /// Printed by the interactive shell when a command cannot be resolved.
@@ -149,7 +149,7 @@ fn interactive_sbase_echo_cmd_ok(serial: &str) -> bool {
 }
 
 fn interactive_sbase_ls_cmd_ok(serial: &str) -> bool {
-    command_echoed(serial, "/s/ls /s")
+    command_echoed(serial, "/s/ls")
         && !serial.contains("exception:")
         && !serial.contains("user panic")
         && at_interactive_prompt(serial)
@@ -390,7 +390,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         }
         if shell_cmd_index >= 6 && !interactive_sbase_ls_cmd_ok(&serial) {
             eprintln!(
-                "error: interactive `/s/ls /s` failed (want `$ /s/ls /s` then `$` prompt)"
+                "error: interactive `/s/ls` failed (want `$ /s/ls` then `$` prompt)"
             );
         }
         std::process::exit(1);
