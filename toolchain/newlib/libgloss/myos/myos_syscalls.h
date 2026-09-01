@@ -33,4 +33,8 @@ long myos_syscall0(long nr);
 long myos_syscall1(long nr, long a0);
 long myos_syscall3(long nr, long a0, long a1, long a2);
 
+int myos_fd_is_tty(int fd);
+void myos_fd_set_tty(int fd, int on);
+void myos_fd_dup_tty(int oldfd, int newfd);
+
 #endif

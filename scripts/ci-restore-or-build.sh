@@ -67,6 +67,7 @@ fi
 ./scripts/build-c-hello.sh
 ./ports/sbase/build.sh
 ./ports/oksh/build.sh
+./ports/ubase/build.sh
 ./ports/coreutils/build-uutils.sh
 ./ports/ripgrep/build.sh
 

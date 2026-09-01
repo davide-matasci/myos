@@ -24,11 +24,57 @@ static void myos_set_errno_io(void) {
     errno = EIO;
 }
 
+/* fds 0-2 start as the console; extra tty bits come from open(/dev/console). */
+static unsigned myos_tty_mask = 0x7;
+
+int myos_fd_is_tty(int fd) {
+    if (fd >= 0 && fd <= 2) {
+        return 1;
+    }
+    if (fd >= 0 && fd < 32 && (myos_tty_mask & (1u << fd))) {
+        return 1;
+    }
+    return 0;
+}
+
+void myos_fd_set_tty(int fd, int on) {
+    if (fd < 0 || fd >= 32) {
+        return;
+    }
+    if (on) {
+        myos_tty_mask |= (1u << fd);
+    } else {
+        myos_tty_mask &= ~(1u << fd);
+    }
+}
+
+void myos_fd_dup_tty(int oldfd, int newfd) {
+    myos_fd_set_tty(newfd, myos_fd_is_tty(oldfd));
+}
+
+static int myos_path_is_tty(const char *path) {
+    const char *base;
+    if (path == NULL) {
+        return 0;
+    }
+    if (strcmp(path, "/dev/console") == 0 || strcmp(path, "/dev/tty") == 0) {
+        return 1;
+    }
+    base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    return strcmp(base, "console") == 0
+        || strcmp(base, "tty") == 0
+        || strcmp(base, "tty1") == 0;
+}
+
 int _close(int fd) {
     long ret = myos_syscall1(MYOS_SYS_CLOSE, fd);
     if (ret == (long)MYOS_SYSERR) {
         errno = EBADF;
         return -1;
+    }
+    if (fd > 2) {
+        myos_fd_set_tty(fd, 0);
     }
     return 0;
 }
@@ -52,6 +98,9 @@ int _open(const char *path, int flags, ...) {
         errno = ENOENT;
         return -1;
     }
+    if (myos_path_is_tty(path)) {
+        myos_fd_set_tty((int)ret, 1);
+    }
     return (int)ret;
 }
 
@@ -74,7 +123,7 @@ int _write(int fd, const void *buf, size_t cnt) {
 }
 
 int _isatty(int fd) {
-    if (fd >= 0 && fd <= 2) {
+    if (myos_fd_is_tty(fd)) {
         return 1;
     }
     errno = ENOTTY;
@@ -159,9 +208,9 @@ int _fstat(int fd, struct stat *st) {
         return -1;
     }
     memset(st, 0, sizeof(*st));
-    if (fd >= 0 && fd <= 2) {
+    if (myos_fd_is_tty(fd)) {
         st->st_mode = S_IFCHR | 0666;
-        st->st_rdev = fd;
+        st->st_rdev = (dev_t)fd;
         st->st_nlink = 1;
         return 0;
     }

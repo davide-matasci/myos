@@ -63,12 +63,14 @@ jobs:
               - 'scripts/build-newlib.sh'
               - 'scripts/build-sbase.sh'
               - 'scripts/build-oksh.sh'
+              - 'scripts/build-ubase.sh'
               - 'scripts/fetch-newlib.sh'
               - 'scripts/patch-newlib-myos.sh'
               - 'scripts/build-libgloss-myos.sh'
               - 'scripts/newlib-tool-wrappers.sh'
               - 'scripts/fetch-sbase.sh'
               - 'scripts/prepare-sbase-myos.sh'
+              - 'scripts/fetch-ubase.sh'
               - 'scripts/fetch-oksh.sh'
               - 'scripts/prepare-oksh-myos.sh'
               - 'scripts/fetch-ripgrep.sh'
@@ -216,6 +218,8 @@ jobs:
             target/newlib-bin
             target/sbase-src
             target/sbase-myos-build
+            target/ubase-src
+            target/ubase-myos-build
             target/oksh-src
             target/oksh-myos-build
             target/ripgrep-src
@@ -231,11 +235,13 @@ jobs:
             target/.myos-newlib-version
             target/.myos-c-hello-version
             target/.myos-sbase-version
+            target/.myos-ubase-version
             target/.myos-oksh-version
             target/.myos-coreutils-version
             target/.myos-ripgrep-version
             target/.myos-std-hello-version
             target/sbase-*
+            target/ubase-*
             target/oksh-*
             target/coreutils-*
             target/std-*
@@ -256,7 +262,7 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
 
-      - name: Install sysroot and build std/C/sbase/oksh/uutils/ripgrep ELFs
+      - name: Install sysroot and build std/C/sbase/oksh/ubase/uutils/ripgrep ELFs
         run: |
           chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
           if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
@@ -269,6 +275,7 @@ jobs:
           ./scripts/build-c-hello.sh
           ./ports/sbase/build.sh
           ./ports/oksh/build.sh
+          ./ports/ubase/build.sh
           ./ports/coreutils/build-uutils.sh
           ./ports/ripgrep/build.sh
 
@@ -311,6 +318,7 @@ jobs:
             target/std-*
             target/c-hello-*
             target/sbase-*
+            target/ubase-*
             target/oksh-*
             target/uutils-*
             target/coreutils-*
@@ -321,6 +329,7 @@ jobs:
             target/.myos-newlib-version
             target/.myos-c-hello-version
             target/.myos-sbase-version
+            target/.myos-ubase-version
             target/.myos-oksh-version
             target/.myos-coreutils-version
             target/.myos-ripgrep-version
@@ -400,6 +409,8 @@ jobs:
             target/newlib-bin
             target/sbase-src
             target/sbase-myos-build
+            target/ubase-src
+            target/ubase-myos-build
             target/oksh-src
             target/oksh-myos-build
             target/ripgrep-src
@@ -415,11 +426,13 @@ jobs:
             target/.myos-newlib-version
             target/.myos-c-hello-version
             target/.myos-sbase-version
+            target/.myos-ubase-version
             target/.myos-oksh-version
             target/.myos-coreutils-version
             target/.myos-ripgrep-version
             target/.myos-std-hello-version
             target/sbase-*
+            target/ubase-*
             target/oksh-*
             target/coreutils-*
             target/std-*

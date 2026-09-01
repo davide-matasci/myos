@@ -104,6 +104,7 @@ fn main() {
         embed_c_elf(manifest, &arch, "c-hello", "USER_C_HELLO_PATH");
         embed_oksh_elf(manifest, &arch);
         embed_sbase_manifest(manifest, &arch, Path::new(&out));
+        embed_ubase_manifest(manifest, &arch, Path::new(&out));
         embed_coreutils_manifest(manifest, &arch, Path::new(&out));
         embed_ripgrep_elf(manifest, &arch, Path::new(&out));
     }
@@ -251,6 +252,46 @@ fn embed_sbase_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     body.push_str("}\n");
     let dest = out_dir.join("sbase_embed.rs");
     std::fs::write(&dest, body).expect("write sbase_embed.rs");
+}
+
+
+fn embed_ubase_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
+    let manifest = manifest_dir
+        .join("../target")
+        .join(format!("ubase-manifest-{arch}.txt"));
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    if !manifest.is_file() {
+        panic!(
+            "ubase manifest missing at {} (run ./ports/ubase/build.sh)",
+            manifest.display()
+        );
+    }
+    let text = std::fs::read_to_string(&manifest).expect("read ubase manifest");
+    let mut body = String::from("pub fn register_all() {\n");
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, path)) = line.split_once(':') else {
+            continue;
+        };
+        let path = Path::new(path);
+        if !path.is_file() {
+            panic!(
+                "ubase ELF missing for {name} at {} (run ./ports/ubase/build.sh)",
+                path.display()
+            );
+        }
+        println!("cargo:rerun-if-changed={}", path.display());
+        body.push_str(&format!(
+            "    let _ = super::register({name:?}, include_bytes!(r\"{}\"));\n",
+            path.display()
+        ));
+    }
+    body.push_str("}\n");
+    let dest = out_dir.join("ubase_embed.rs");
+    std::fs::write(&dest, body).expect("write ubase_embed.rs");
 }
 
 fn embed_oksh_elf(manifest_dir: &Path, arch: &str) {

@@ -5,7 +5,7 @@ name = "init"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Userspace init: open/exec `/ok` from bootfs."
+description = "Userspace PID1: smoke fork/`/ok`, then respawn getty → login → /sh."
 
 [[bin]]
 name = "init"

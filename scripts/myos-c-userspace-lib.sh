@@ -10,6 +10,7 @@ MYOS_NEWLIB_VERSION="$MYOS_ROOT/target/.myos-newlib-version"
 MYOS_C_HELLO_VERSION="$MYOS_ROOT/target/.myos-c-hello-version"
 MYOS_SBASE_VERSION="$MYOS_ROOT/target/.myos-sbase-version"
 MYOS_OKSH_VERSION="$MYOS_ROOT/target/.myos-oksh-version"
+MYOS_UBASE_VERSION="$MYOS_ROOT/target/.myos-ubase-version"
 MYOS_COREUTILS_VERSION="$MYOS_ROOT/target/.myos-coreutils-version"
 MYOS_RIPGREP_VERSION="$MYOS_ROOT/target/.myos-ripgrep-version"
 
@@ -132,6 +133,40 @@ myos_oksh_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/oksh-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_ubase_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      sha256sum "$MYOS_ROOT/ports/ubase/build.sh"
+      sha256sum "$MYOS_ROOT/ports/ubase/prepare.sh"
+      sha256sum "$MYOS_ROOT/ports/ubase/fetch.sh"
+      sha256sum "$MYOS_ROOT/ports/ubase/bins.txt"
+      find "$MYOS_ROOT/ports/ubase" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_ubase_is_current() {
+  local arch manifest
+  [[ -f "$MYOS_UBASE_VERSION" ]] \
+    && [[ "$(cat "$MYOS_UBASE_VERSION")" == "$(myos_ubase_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    manifest="$MYOS_ROOT/target/ubase-manifest-${arch}.txt"
+    [[ -f "$manifest" ]] || return 1
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      local path="${line#*:}"
+      [[ -f "$path" ]] || return 1
+    done <"$manifest"
+    [[ -f "$MYOS_ROOT/target/ubase-getty-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/ubase-login-${arch}-unknown-none" ]] || return 1
   done
 }
 

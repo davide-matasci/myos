@@ -28,11 +28,34 @@ fn smoke_fork_exec_ok() {
     }
 }
 
+/// Stay PID1: fork getty, wait, respawn. Getty prompts and execs `/u/login`.
+fn spawn_getty_loop() -> ! {
+    loop {
+        match fork() {
+            Some(0) => {
+                exec(
+                    b"/u/getty",
+                    &[b"getty", b"/dev/console", b"linux"],
+                );
+                write(b"getty exec failed\n");
+                exit();
+            }
+            Some(_) => {
+                // Blocking wait; respawn when getty/login/sh exits.
+                let _ = wait_status();
+            }
+            None => {
+                write(b"getty fork failed\n");
+                exit();
+            }
+        }
+    }
+}
+
 fn start() -> ! {
     smoke_fork_ping();
     smoke_fork_exec_ok();
-    exec(b"/sh", &[b"/sh"]);
-    exit();
+    spawn_getty_loop();
 }
 
 #[cfg(target_arch = "x86_64")]

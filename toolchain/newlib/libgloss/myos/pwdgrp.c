@@ -7,7 +7,7 @@
 
 static struct passwd pwd_root = {
     .pw_name = "root",
-    .pw_passwd = "*",
+    .pw_passwd = "",
     .pw_uid = 0,
     .pw_gid = 0,
     .pw_gecos = "root",
@@ -31,10 +31,28 @@ getpwuid(uid_t uid)
     return NULL;
 }
 
+struct passwd *
+getpwnam(const char *name)
+{
+    if (name != NULL && strcmp(name, pwd_root.pw_name) == 0) {
+        return &pwd_root;
+    }
+    return NULL;
+}
+
 struct group *
 getgrgid(gid_t gid)
 {
     if (gid == grp_root.gr_gid) {
+        return &grp_root;
+    }
+    return NULL;
+}
+
+struct group *
+getgrnam(const char *name)
+{
+    if (name != NULL && strcmp(name, grp_root.gr_name) == 0) {
         return &grp_root;
     }
     return NULL;

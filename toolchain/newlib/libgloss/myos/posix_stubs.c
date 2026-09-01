@@ -172,10 +172,15 @@ DIR *fdopendir(int fd) {
     return NULL;
 }
 
+extern char **environ;
+
 int execvp(const char *file, char *const argv[]) {
-    (void)file;
-    (void)argv;
-    return myos_nosys();
+    if (file == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    /* Getty/login pass absolute paths (/u/login, /sh); skip PATH search. */
+    return execve(file, argv, environ);
 }
 
 /*
@@ -255,6 +260,7 @@ int dup2(int oldfd, int newfd) {
         errno = EBADF;
         return -1;
     }
+    myos_fd_dup_tty(oldfd, newfd);
     return newfd;
 }
 
@@ -324,20 +330,11 @@ int setpriority(int which, id_t who, int prio) {
 }
 
 int setsid(void) {
-    return myos_nosys();
+    /* Fake session leader; no real process groups yet. */
+    return 1;
 }
 
-struct group *getgrnam(const char *name) {
-    (void)name;
-    errno = ENOENT;
-    return NULL;
-}
-
-struct passwd *getpwnam(const char *name) {
-    (void)name;
-    errno = ENOENT;
-    return NULL;
-}
+/* getpwnam/getgrnam live in pwdgrp.c (root:root only). */
 
 int _mkdir(const char *path, mode_t mode) {
     return mkdir(path, mode);
