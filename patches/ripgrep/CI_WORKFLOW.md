@@ -22,3 +22,10 @@ Apply these edits on `feat/ripgrep-userspace` (or merge this note into ci.yml):
 
 The full updated file is in the PR branch working tree / this agent’s local checkout
 as `.github/workflows/ci.yml` (not yet on the remote branch tip).
+
+## Workaround without editing `ci.yml`
+
+`scripts/build-uutils-myos.sh` now invokes `build-ripgrep-myos.sh` at the end, so
+existing CI that already runs uutils will produce `target/rg-*` and cache via
+whatever dirs rust-cache already restores. Explicit cache-directory entries for
+ripgrep/pcre2 (documented above) are still recommended for faster CI.
