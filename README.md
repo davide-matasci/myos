@@ -404,8 +404,8 @@ and placed on the ESP as `boot/sh`, `boot/ok`, etc. Slim `/ok` always runs
 at boot: `heap_init` + `alloc ok`, `user ok`, `/msg` → `fat ok`,
 `/disk/ping` → `disk ok`, cheap `listdir` → `disk ls ok` / `fat ls ok`,
 and `/fat/msg` → `fat read ok`. It does **not** fork the std/C/sbase/uutils
-suite. That carnival lives in bootfs `/heap` and is invoked by x86
-`wait_ci` typing `heap` at the interactive `$` prompt. If `/msg` is missing
+suite. That carnival lives in bootfs `/heap` and is invoked by CI
+`wait_ci` typing `heap` at the interactive `$` prompt on x86, aarch64, and riscv64. If `/msg` is missing
 `/ok` exits early (CI then fails the `fat ok` needle).
 
 `PT_LOAD` is realized at `USER_BASE` with the same relocs as the module
@@ -522,8 +522,8 @@ Libgloss adds `clock_gettime` (libc already owns `time`/`localtime`), flat
 newlib's ENOSYS `fcntl`), no-op `tcgetattr`/`tcsetattr`,
 `readlink` (`ENOSYS`), POSIX stubs for read-only VFS, and `sys/sysmacros.h` so
 upstream `ls -l` links. The kernel mounts **sbasefs** at `/s/` with one ELF per
-tool (e.g. `/s/cat`, `/s/echo`, `/s/ls` — 91 utilities today); x86 CI
-checks `sbase ok` from `/s/echo` and `sls ok` from `/s/ls` via CI-only
+tool (e.g. `/s/cat`, `/s/echo`, `/s/ls` — 91 utilities today); CI on all
+arches checks `sbase ok` from `/s/echo` and `sls ok` from `/s/ls` via CI-only
 `/heap` (typed at `$`).
 
 `/sh` is oksh. PATH is `/s:/c:/` (sbase, coreutils, then bootfs root). Interactive CI still types at `$ `; unknown

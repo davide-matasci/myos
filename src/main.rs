@@ -336,12 +336,12 @@ fn run_ci_aarch64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(150),
+            timeout: Duration::from_secs(180),
             qemu_debug_exit: false,
             shell_ci: true,
         },
-        // Slim `/ok` only; heavy `/heap` carnival is required on x86 CI.
-        &[],
+        // Same heavy `/heap` needles as x86 (typed at `$` after slim `/ok`).
+        &CI_NEEDLES_STD,
     );
 }
 
@@ -500,12 +500,12 @@ fn run_ci_riscv64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(150),
+            timeout: Duration::from_secs(180),
             qemu_debug_exit: false,
             shell_ci: true,
         },
-        // Slim `/ok` only; heavy `/heap` carnival is required on x86 CI.
-        &[],
+        // Same heavy `/heap` needles as x86 (typed at `$` after slim `/ok`).
+        &CI_NEEDLES_STD,
     );
 }
 

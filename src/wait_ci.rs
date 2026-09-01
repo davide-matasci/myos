@@ -30,8 +30,8 @@ const CI_NEEDLES: [&str; 18] = [
     "fat read ok",
 ];
 
-/// Heavy markers from CI-only `/heap` (typed at `$` on x86). Not required for
-/// aarch64/riscv64 pre-prompt readiness.
+/// Heavy markers from CI-only `/heap` (typed at `$` on every arch).
+/// Pre-prompt readiness stays slim; these are required after interactive `heap`.
 const CI_NEEDLES_STD: [&str; 11] = [
     "std ok",
     "std cat ok",
@@ -172,17 +172,16 @@ fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
         && !tail.contains("x/s/ls")
 }
 
-/// CI-only `/heap` carnival. When `heavy` is non-empty (x86), require those
-/// needles; aarch64/riscv64 may type `heap` too but only need a clean `$`.
+/// CI-only `/heap` carnival. All arches pass the same `heavy` needles
+/// (`CI_NEEDLES_STD`) and must return to `$` after `smoke ok`.
 fn interactive_heap_cmd_ok(serial: &str, heavy: &[&str]) -> bool {
     if !command_echoed(serial, "heap") || serial.contains("exception:") {
         return false;
     }
-    if !heavy.is_empty() && !heavy.iter().all(|n| serial.contains(*n)) {
+    if !heavy.iter().all(|n| serial.contains(*n)) {
         return false;
     }
-    // Prefer seeing smoke finish when heavy suite is required.
-    if !heavy.is_empty() && !serial.contains("smoke ok") {
+    if !serial.contains("smoke ok") {
         return false;
     }
     at_interactive_prompt(serial)
@@ -387,7 +386,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: serial did not echo `$ heap` at the interactive prompt");
             } else if serial.contains("exception:") {
                 eprintln!("error: interactive `heap` triggered a CPU exception");
-            } else if !extra_needles.is_empty() {
+            } else {
                 for needle in extra_needles {
                     if !serial.contains(*needle) {
                         eprintln!("error: CI-only `/heap` did not print {needle:?}");
@@ -396,8 +395,9 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 if !serial.contains("smoke ok") {
                     eprintln!("error: CI-only `/heap` did not print \"smoke ok\"");
                 }
-            } else if !at_interactive_prompt(&serial) {
-                eprintln!("error: shell did not return to `$` after interactive `heap`");
+                if !at_interactive_prompt(&serial) {
+                    eprintln!("error: shell did not return to `$` after interactive `heap`");
+                }
             }
         }
         if shell_cmd_index >= 2 && shell_cmd_index < 3 && !interactive_ok_cmd_ok(&serial) {
