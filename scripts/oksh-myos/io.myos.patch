@@ -1,41 +1,6 @@
 --- io.c
 +++ io.c
-@@ -257,32 +257,8 @@
- int
- savefd(int fd)
- {
--	int nfd;
--
--	if (fd < FDBASE) {
--#ifdef F_DUPFD_CLOEXEC
--		nfd = fcntl(fd, F_DUPFD_CLOEXEC, FDBASE);
--		if (nfd == -1) {
--			if (errno == EBADF)
--				return -1;
--			else
--				errorf("too many files open in shell");
--		}
--#else
--		nfd = fcntl(fd, F_DUPFD, FDBASE);
--		if (nfd < 0) {
--			if (errno == EBADF)
--				return -1;
--			else
--				errorf("too many files open in shell");
--		}
--		fcntl(nfd, F_SETFD, FD_CLOEXEC);
--#endif
--	} else {
--		nfd = fd;
--		fcntl(nfd, F_SETFD, FD_CLOEXEC);
--	}
--	return nfd;
-+	/* myos: no F_DUPFD. Keep the fd as-is (kernel MAX_FDS is 16). */
-+	return fd;
- }
- 
- void
-@@ -330,25 +306,8 @@
+@@ -330,25 +330,8 @@
  
  	if (isdigit((unsigned char)name[0]) && !name[1]) {
  		fd = name[0] - '0';
