@@ -9,7 +9,6 @@
 
 use spin::Mutex;
 
-use crate::console;
 use crate::fs::StatInfo;
 
 const HEAP_ELF: &[u8] = include_bytes!(env!("USER_HEAP_PATH"));
@@ -49,7 +48,6 @@ pub fn register(name: &str, bytes: &'static [u8]) -> bool {
         if let Some(s) = slot {
             if s.len == len && s.name[..len] == n[..len] {
                 s.data = bytes;
-                log_reg(name, bytes.len(), true);
                 return true;
             }
         }
@@ -61,7 +59,6 @@ pub fn register(name: &str, bytes: &'static [u8]) -> bool {
                 len,
                 data: bytes,
             });
-            log_reg(name, bytes.len(), false);
             return true;
         }
     }
@@ -134,11 +131,6 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         }
     }
     None
-}
-
-fn log_reg(name: &str, n: usize, replace: bool) {
-    let kind = if replace { "replace" } else { "new" };
-    console::status_progress(&alloc::format!("vfs {kind} {name} ({n} bytes)"));
 }
 
 /// Register embedded user ELFs (Limine modules loaded later may override).
