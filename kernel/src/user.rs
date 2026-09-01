@@ -1149,32 +1149,34 @@ fn enter_fork_x86(regs: task::ForkRegs) -> ! {
     // reuse rbx for both user CS and ForkRegs.rbx → push 0 as CS → #GP on iretq
     // (CI #121).
     //
-    // Load callee-saved fields via named register constraints — do NOT read them
-    // through `addr_of!(regs)` + fixed offsets. Without a memory operand tying
-    // the asm to `regs`, LLVM may never materialize the struct to that address,
-    // so the child resumes with stack garbage in rbx/rbp/r12–r15. That matches
-    // the interactive `echo pipe | cat` #GP (fork-continue of deep oksh C state);
-    // fork+exec still "worked" because exec rebuilds the image.
-    let frame = [
+    // Cannot use `in("rbx")` / `in("rbp")`: LLVM forbids rbx (reserved) and rbp
+    // (frame pointer) as asm operands. Materialize callee-saved into a stack
+    // array and load through rax (pointer), then install the iret frame via rsi.
+    // black_box keeps the arrays live so LLVM cannot elide the stores.
+    let callee = core::hint::black_box([
+        regs.rbx, regs.rbp, regs.r12, regs.r13, regs.r14, regs.r15,
+    ]);
+    let frame = core::hint::black_box([
         regs.rip as u64,
         cs,
         rflags,
         regs.rsp as u64,
         ss,
-    ];
+    ]);
     unsafe {
         core::arch::asm!(
             "cli",
+            "mov rbx, [{c}]",
+            "mov rbp, [{c} + 8]",
+            "mov r12, [{c} + 16]",
+            "mov r13, [{c} + 24]",
+            "mov r14, [{c} + 32]",
+            "mov r15, [{c} + 40]",
             "mov rsp, {f}",
             "xor rax, rax",
             "iretq",
-            f = in(reg) frame.as_ptr(),
-            in("rbx") regs.rbx,
-            in("rbp") regs.rbp,
-            in("r12") regs.r12,
-            in("r13") regs.r13,
-            in("r14") regs.r14,
-            in("r15") regs.r15,
+            c = in("rax") callee.as_ptr(),
+            f = in("rsi") frame.as_ptr(),
             options(noreturn),
         );
     }
