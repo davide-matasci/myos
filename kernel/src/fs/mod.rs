@@ -54,6 +54,36 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     vfs::listdir(path, buf)
 }
 
+/// Create a directory.
+pub fn mkdir(path: &str) -> bool {
+    vfs::mkdir(path)
+}
+
+/// Remove an empty directory.
+pub fn rmdir(path: &str) -> bool {
+    vfs::rmdir(path)
+}
+
+/// Unlink a file or symlink.
+pub fn unlink(path: &str) -> bool {
+    vfs::unlink(path)
+}
+
+/// Rename within one mount.
+pub fn rename(old: &str, new: &str) -> bool {
+    vfs::rename(old, new)
+}
+
+/// Create a symbolic link.
+pub fn symlink(target: &str, linkpath: &str) -> bool {
+    vfs::symlink(target, linkpath)
+}
+
+/// Read a symbolic link into `buf`.
+pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
+    vfs::readlink(path, buf)
+}
+
 /// Register `name` on mount `mount_name` (bootfs copies into its table).
 pub fn register(mount_name: &str, name: &str, bytes: &'static [u8]) -> bool {
     vfs::register(mount_name, name, bytes)
@@ -78,6 +108,25 @@ pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Option<usize> {
     vfs::resolve_against_cwd(cwd, path, out)
 }
 
+fn reject_mkdir(_path: &str) -> bool {
+    false
+}
+fn reject_rmdir(_path: &str) -> bool {
+    false
+}
+fn reject_unlink(_path: &str) -> bool {
+    false
+}
+fn reject_rename(_old: &str, _new: &str) -> bool {
+    false
+}
+fn reject_symlink(_target: &str, _linkpath: &str) -> bool {
+    false
+}
+fn reject_readlink(_path: &str, _buf: &mut [u8]) -> Option<usize> {
+    None
+}
+
 fn ro_ops(
     lookup: fn(&str) -> Option<&'static [u8]>,
     stat: fn(&str) -> Option<StatInfo>,
@@ -97,6 +146,12 @@ fn ro_ops(
         truncate,
         read,
         write,
+        mkdir: reject_mkdir,
+        rmdir: reject_rmdir,
+        unlink: reject_unlink,
+        rename: reject_rename,
+        symlink: reject_symlink,
+        readlink: reject_readlink,
         writable: false,
     }
 }
@@ -110,6 +165,12 @@ fn rw_ops(
     truncate: fn(&str) -> bool,
     read: fn(&str, usize, &mut [u8]) -> usize,
     write: fn(&str, usize, &[u8]) -> Option<usize>,
+    mkdir: fn(&str) -> bool,
+    rmdir: fn(&str) -> bool,
+    unlink: fn(&str) -> bool,
+    rename: fn(&str, &str) -> bool,
+    symlink: fn(&str, &str) -> bool,
+    readlink: fn(&str, &mut [u8]) -> Option<usize>,
 ) -> vfs::MountOps {
     vfs::MountOps {
         lookup,
@@ -120,6 +181,12 @@ fn rw_ops(
         truncate,
         read,
         write,
+        mkdir,
+        rmdir,
+        unlink,
+        rename,
+        symlink,
+        readlink,
         writable: true,
     }
 }
@@ -184,8 +251,15 @@ pub fn init() {
             tmpfs::truncate,
             tmpfs::read,
             tmpfs::write,
+            tmpfs::mkdir,
+            tmpfs::rmdir,
+            tmpfs::unlink,
+            tmpfs::rename,
+            tmpfs::symlink,
+            tmpfs::readlink,
         ),
     );
+    // Device nodes are fixed; mutation ops stay rejected.
     vfs::mount(
         "devfs",
         "dev",
@@ -198,6 +272,12 @@ pub fn init() {
             devfs::truncate,
             devfs::read,
             devfs::write,
+            reject_mkdir,
+            reject_rmdir,
+            reject_unlink,
+            reject_rename,
+            reject_symlink,
+            reject_readlink,
         ),
     );
 }

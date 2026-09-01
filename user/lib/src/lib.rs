@@ -246,6 +246,58 @@ pub fn listdir(path: &[u8], buf: &mut [u8]) -> usize {
     }
 }
 
+fn pack_lens(a: usize, b: usize) -> usize {
+    (a << 16) | b
+}
+
+pub fn mkdir(path: &[u8]) -> bool {
+    unsafe { sys3(17, path.as_ptr() as usize, path.len(), 0o755) != usize::MAX }
+}
+
+pub fn rmdir(path: &[u8]) -> bool {
+    unsafe { sys3(18, path.as_ptr() as usize, path.len(), 0) != usize::MAX }
+}
+
+pub fn unlink(path: &[u8]) -> bool {
+    unsafe { sys3(19, path.as_ptr() as usize, path.len(), 0) != usize::MAX }
+}
+
+pub fn rename(old: &[u8], new: &[u8]) -> bool {
+    let packed = pack_lens(old.len(), new.len());
+    unsafe {
+        sys3(20, old.as_ptr() as usize, new.as_ptr() as usize, packed) != usize::MAX
+    }
+}
+
+pub fn symlink(target: &[u8], linkpath: &[u8]) -> bool {
+    let packed = pack_lens(target.len(), linkpath.len());
+    unsafe {
+        sys3(
+            21,
+            target.as_ptr() as usize,
+            linkpath.as_ptr() as usize,
+            packed,
+        ) != usize::MAX
+    }
+}
+
+pub fn readlink(path: &[u8], buf: &mut [u8]) -> Option<usize> {
+    let packed = pack_lens(path.len(), buf.len());
+    let n = unsafe {
+        sys3(
+            22,
+            path.as_ptr() as usize,
+            buf.as_mut_ptr() as usize,
+            packed,
+        )
+    };
+    if n == usize::MAX {
+        None
+    } else {
+        Some(n)
+    }
+}
+
 /// Adjust the program break. `addr == 0` queries the current break.
 pub fn brk(addr: usize) -> usize {
     unsafe { sys_brk(addr) }
@@ -319,6 +371,53 @@ fn write_u32(mut n: u32) {
 
 // x86 syscall_entry clobbers rdi/rsi/rdx when shuffling args into the
 // System-V dispatch. Wrappers lateout those so LLVM reloads them.
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sys3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "syscall",
+        inout("rax") nr => ret,
+        in("rdi") a0,
+        in("rsi") a1,
+        in("rdx") a2,
+        out("rcx") _,
+        out("r11") _,
+        lateout("rdi") _,
+        lateout("rsi") _,
+        lateout("rdx") _,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn sys3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "svc #0",
+        in("x8") nr,
+        inout("x0") a0 => ret,
+        in("x1") a1,
+        in("x2") a2,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "ecall",
+        in("a7") nr,
+        inout("a0") a0 => ret,
+        in("a1") a1,
+        in("a2") a2,
+        options(nostack),
+    );
+    ret
+}
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {

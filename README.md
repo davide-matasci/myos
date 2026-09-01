@@ -504,11 +504,12 @@ required beyond the existing myos ABI.
 | `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
 
 Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
-`open` read-only, `close`, `brk`, `fork`, `wait`/`waitpid`, `pipe`, `dup2`,
-`execve`, `stat` via **`SYS_STAT` (12)**, `chdir`/`getcwd` via **`SYS_CHDIR`/`SYS_GETCWD`**).
+`open` (writable on tmpfs/devfs), `close`, `brk`, `fork`, `wait`/`waitpid`, `pipe`, `dup2`,
+`execve`, `stat` via **`SYS_STAT` (12)**, `chdir`/`getcwd` via **`SYS_CHDIR`/`SYS_GETCWD`**,
+`mkdir`/`rmdir`/`unlink`/`rename`/`symlink`/`readlink` via **`SYS_MKDIR`…`SYS_READLINK` (17–22)**
+on writable mounts — today **tmpfs**).
 `opendir`/`readdir`/`closedir` use `SYS_LISTDIR`. Relative paths (including `.`)
-are resolved against the per-task cwd in the kernel. Write-only open flags and
-`lseek` still return `EROFS`/`ENOSYS`.
+are resolved against the per-task cwd in the kernel. `lseek` still returns `ENOSYS`.
 Do **not** use `-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
 
 Upstream sbase (`cat`, `true`, `ls`, `pwd`, …) is fetched at build time; only

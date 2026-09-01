@@ -37,9 +37,8 @@ int access(const char *path, int mode) {
 }
 
 int creat(const char *path, mode_t mode) {
-    (void)path;
     (void)mode;
-    return myos_rofs();
+    return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 }
 
 int chmod(const char *path, mode_t mode) {
@@ -49,9 +48,18 @@ int chmod(const char *path, mode_t mode) {
 }
 
 int mkdir(const char *path, mode_t mode) {
-    (void)path;
-    (void)mode;
-    return myos_rofs();
+    long ret;
+    if (path == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    ret = myos_syscall3(
+        MYOS_SYS_MKDIR, (long)(uintptr_t)path, (long)strlen(path), (long)mode);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EROFS;
+        return -1;
+    }
+    return 0;
 }
 
 mode_t umask(mode_t mask) {
@@ -62,9 +70,32 @@ mode_t umask(mode_t mask) {
 }
 
 int symlink(const char *target, const char *linkpath) {
-    (void)target;
-    (void)linkpath;
-    return myos_rofs();
+    size_t tlen;
+    size_t llen;
+    long packed;
+    long ret;
+
+    if (target == NULL || linkpath == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    tlen = strlen(target);
+    llen = strlen(linkpath);
+    if (tlen == 0 || llen == 0 || tlen > 0xffff || llen > 0xffff) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    packed = (long)((tlen << 16) | llen);
+    ret = myos_syscall3(
+        MYOS_SYS_SYMLINK,
+        (long)(uintptr_t)target,
+        (long)(uintptr_t)linkpath,
+        packed);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EROFS;
+        return -1;
+    }
+    return 0;
 }
 
 int mknod(const char *path, mode_t mode, dev_t dev) {
@@ -111,11 +142,20 @@ int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
     return stat(path, st);
 }
 
+#ifndef AT_REMOVEDIR
+#define AT_REMOVEDIR 0x200
+#endif
+
 int unlinkat(int dirfd, const char *path, int flags) {
     (void)dirfd;
-    (void)path;
-    (void)flags;
-    return myos_rofs();
+    if (path == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (flags & AT_REMOVEDIR) {
+        return rmdir(path);
+    }
+    return unlink(path);
 }
 
 int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags) {
@@ -228,10 +268,8 @@ int fchownat(int dirfd, const char *path, uid_t owner, gid_t group, int flags) {
 }
 
 int symlinkat(const char *target, int dirfd, const char *path) {
-    (void)target;
     (void)dirfd;
-    (void)path;
-    return myos_rofs();
+    return symlink(target, path);
 }
 
 

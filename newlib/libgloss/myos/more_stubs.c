@@ -51,8 +51,18 @@ int mkfifo(const char *path, mode_t mode) {
 }
 
 int rmdir(const char *path) {
-    (void)path;
-    return myos_rofs();
+    long ret;
+    if (path == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    ret = myos_syscall3(
+        MYOS_SYS_RMDIR, (long)(uintptr_t)path, (long)strlen(path), 0);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EROFS;
+        return -1;
+    }
+    return 0;
 }
 
 int pipe(int fildes[2]) {
