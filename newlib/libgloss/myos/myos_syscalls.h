@@ -16,6 +16,8 @@
 #define MYOS_SYS_PIPE 10
 #define MYOS_SYS_DUP2 11
 #define MYOS_SYS_STAT 12
+#define MYOS_SYS_EXECNAME 13
+#define MYOS_SYS_DUPFD 14
 
 #define MYOS_SYSERR ((unsigned long)-1)
 
