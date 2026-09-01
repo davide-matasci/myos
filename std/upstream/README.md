@@ -82,7 +82,7 @@ The doc must explain:
 ### 4. Maintainer & CI
 
 - Designated target maintainers (CC on target-specific PRs)
-- myos CI already boots x86 BIOS/UEFI + AArch64 with `std ok` needles
+- myos CI boots BIOS/UEFI/aarch64/riscv64 and types `heap` for the same `std ok` needles on every arch
 - Point upstream reviewers at https://github.com/davide-matasci/myos CI
 
 ### 5. Suggested PR sequence

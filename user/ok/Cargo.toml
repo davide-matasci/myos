@@ -5,7 +5,7 @@ name = "ok"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Userspace ok: write `user ok`, read `/msg`, then exit."
+description = "Slim always-on boot smoke: alloc, /msg, disk/FAT listdir; no heavy carnival."
 
 [[bin]]
 name = "ok"

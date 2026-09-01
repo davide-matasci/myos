@@ -8,7 +8,7 @@ struct CiExpect {
     shell_ci: bool,
 }
 
-const CI_NEEDLES: [&str; 14] = [
+const CI_NEEDLES: [&str; 18] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] interrupts",
@@ -23,10 +23,16 @@ const CI_NEEDLES: [&str; 14] = [
     "alloc ok",
     "user ok",
     "fat ok",
+    // Slim always-on `/ok` VFS markers (pre-prompt readiness).
+    "disk ok",
+    "disk ls ok",
+    "fat ls ok",
+    "fat read ok",
 ];
 
-/// Extra serial markers for patched `std` / C / sbase / uutils / VFS smoke ELFs (via `/heap`).
-const CI_NEEDLES_STD: [&str; 15] = [
+/// Heavy markers from CI-only `/heap` (typed at `$` on every arch).
+/// Pre-prompt readiness stays slim; these are required after interactive `heap`.
+const CI_NEEDLES_STD: [&str; 11] = [
     "std ok",
     "std cat ok",
     "std echo ok",
@@ -34,10 +40,6 @@ const CI_NEEDLES_STD: [&str; 15] = [
     "c ok",
     "sbase ok",
     "sls ok",
-    "disk ok",
-    "disk ls ok",
-    "fat ls ok",
-    "fat read ok",
     "uutils echo ok",
     "uutils true ok",
     "uutils false ok",
@@ -45,8 +47,10 @@ const CI_NEEDLES_STD: [&str; 15] = [
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 8] = [
+const CI_SHELL_COMMANDS: [&[u8]; 9] = [
     b"nosuchcmd\n",
+    // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
+    b"heap\n",
     b"ok\n",
     b"echo test\n",
     b"echo pipe | cat\n",
@@ -168,22 +172,39 @@ fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
         && !tail.contains("x/s/ls")
 }
 
-fn shell_cmd_result_ok(serial: &str, cmd_index: usize) -> bool {
+/// CI-only `/heap` carnival. All arches pass the same `heavy` needles
+/// (`CI_NEEDLES_STD`) and must return to `$` after `smoke ok`.
+fn interactive_heap_cmd_ok(serial: &str, heavy: &[&str]) -> bool {
+    if !command_echoed(serial, "heap") || serial.contains("exception:") {
+        return false;
+    }
+    if !heavy.iter().all(|n| serial.contains(*n)) {
+        return false;
+    }
+    if !serial.contains("smoke ok") {
+        return false;
+    }
+    at_interactive_prompt(serial)
+}
+
+fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
     match cmd_index {
         0 => interactive_unknown_cmd_ok(serial),
-        1 => interactive_ok_cmd_ok(serial),
-        2 => interactive_echo_cmd_ok(serial),
-        3 => interactive_pipe_cmd_ok(serial),
-        4 => interactive_uutils_true_cmd_ok(serial),
-        5 => interactive_sbase_echo_cmd_ok(serial),
-        6 => interactive_sbase_ls_cmd_ok(serial),
-        7 => interactive_bs_ls_cmd_ok(serial),
+        1 => interactive_heap_cmd_ok(serial, extra),
+        2 => interactive_ok_cmd_ok(serial),
+        3 => interactive_echo_cmd_ok(serial),
+        4 => interactive_pipe_cmd_ok(serial),
+        5 => interactive_uutils_true_cmd_ok(serial),
+        6 => interactive_sbase_echo_cmd_ok(serial),
+        7 => interactive_sbase_ls_cmd_ok(serial),
+        8 => interactive_bs_ls_cmd_ok(serial),
         _ => false,
     }
 }
 
-fn shell_ready(serial: &str, extra: &[&str]) -> bool {
-    serial_has_all_needles(serial, extra) && at_interactive_prompt(serial)
+fn shell_ready(serial: &str) -> bool {
+    // Pre-prompt: slim `/ok` markers only. Heavy CI_NEEDLES_STD come from `heap`.
+    serial_has_all_needles(serial, &[]) && at_interactive_prompt(serial)
 }
 
 const SHELL_TYPE_DELAY: Duration = Duration::from_millis(25);
@@ -208,7 +229,7 @@ fn advance_shell_ci(
         return;
     };
     match *stage {
-        ShellStage::WaitPrompt if shell_ready(acc, extra) => {
+        ShellStage::WaitPrompt if shell_ready(acc) => {
             *stage = ShellStage::Typing;
             *cmd_index = 0;
             *typing = 0;
@@ -223,7 +244,7 @@ fn advance_shell_ci(
                 *stage = ShellStage::WaitResult;
             }
         }
-        ShellStage::WaitResult if shell_cmd_result_ok(acc, *cmd_index) => {
+        ShellStage::WaitResult if shell_cmd_result_ok(acc, *cmd_index, extra) => {
             *cmd_index += 1;
             if *cmd_index >= CI_SHELL_COMMANDS.len() {
                 *stage = ShellStage::Done;
@@ -360,7 +381,26 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 );
             }
         }
-        if shell_cmd_index >= 1 && shell_cmd_index < 2 && !interactive_ok_cmd_ok(&serial) {
+        if shell_cmd_index >= 1 && shell_cmd_index < 2 && !interactive_heap_cmd_ok(&serial, extra_needles) {
+            if !command_echoed(&serial, "heap") {
+                eprintln!("error: serial did not echo `$ heap` at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: interactive `heap` triggered a CPU exception");
+            } else {
+                for needle in extra_needles {
+                    if !serial.contains(*needle) {
+                        eprintln!("error: CI-only `/heap` did not print {needle:?}");
+                    }
+                }
+                if !serial.contains("smoke ok") {
+                    eprintln!("error: CI-only `/heap` did not print \"smoke ok\"");
+                }
+                if !at_interactive_prompt(&serial) {
+                    eprintln!("error: shell did not return to `$` after interactive `heap`");
+                }
+            }
+        }
+        if shell_cmd_index >= 2 && shell_cmd_index < 3 && !interactive_ok_cmd_ok(&serial) {
             if !command_echoed(&serial, "ok") {
                 eprintln!("error: serial did not echo `$ ok` at the interactive prompt");
             }
@@ -370,7 +410,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 );
             }
         }
-        if shell_cmd_index >= 2 && shell_cmd_index < 3 && !interactive_echo_cmd_ok(&serial) {
+        if shell_cmd_index >= 3 && shell_cmd_index < 4 && !interactive_echo_cmd_ok(&serial) {
             if !command_echoed(&serial, "echo test") {
                 eprintln!("error: serial did not echo `$ echo test` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -381,17 +421,17 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `echo test` did not print `test`");
             }
         }
-        if shell_cmd_index >= 3 && shell_cmd_index < 4 && !interactive_pipe_cmd_ok(&serial) {
+        if shell_cmd_index >= 4 && shell_cmd_index < 5 && !interactive_pipe_cmd_ok(&serial) {
             eprintln!(
                 "error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)"
             );
         }
-        if shell_cmd_index >= 4 && shell_cmd_index < 5 && !interactive_uutils_true_cmd_ok(&serial) {
+        if shell_cmd_index >= 5 && shell_cmd_index < 6 && !interactive_uutils_true_cmd_ok(&serial) {
             eprintln!(
                 "error: interactive `c/true` failed (want `$ c/true` then `$` prompt)"
             );
         }
-        if shell_cmd_index >= 5 && shell_cmd_index < 6 && !interactive_sbase_echo_cmd_ok(&serial) {
+        if shell_cmd_index >= 6 && shell_cmd_index < 7 && !interactive_sbase_echo_cmd_ok(&serial) {
             if !command_echoed(&serial, "/s/echo hi") {
                 eprintln!("error: serial did not echo `$ /s/echo hi` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -402,12 +442,12 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `/s/echo hi` did not print `hi`");
             }
         }
-        if shell_cmd_index >= 6 && shell_cmd_index < 7 && !interactive_sbase_ls_cmd_ok(&serial) {
+        if shell_cmd_index >= 7 && shell_cmd_index < 8 && !interactive_sbase_ls_cmd_ok(&serial) {
             eprintln!(
                 "error: interactive `/s/ls` failed (want `$ /s/ls` then `$` prompt)"
             );
         }
-        if shell_cmd_index >= 7 && !interactive_bs_ls_cmd_ok(&serial) {
+        if shell_cmd_index >= 8 && !interactive_bs_ls_cmd_ok(&serial) {
             eprintln!(
                 "error: interactive `x<BS>/s/ls` failed (canonical backspace must yield `/s/ls`)"
             );
