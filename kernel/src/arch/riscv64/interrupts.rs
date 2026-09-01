@@ -167,50 +167,46 @@ fork_sret_from_frame:
 
     .global fork_sret_child_from_frame
 fork_sret_child_from_frame:
-    mv sp, a0
-    ld t0, 272(sp)
-    csrw sscratch, t0
-    ld t0, 264(sp)
+    # a0 -> copied trap frame (not live stack). Caller must leave sscratch as
+    # this task's kernel stack top (same invariant as enter_riscv64).
+    mv t6, a0
+    ld t0, 264(t6)
     csrw sstatus, t0
-    ld t0, 256(sp)
+    ld t0, 256(t6)
     csrw sepc, t0
-    ld x1, 8(sp)
-    ld x3, 24(sp)
-    ld x4, 32(sp)
-    ld x5, 40(sp)
-    ld x6, 48(sp)
-    ld x7, 56(sp)
-    ld x8, 64(sp)
-    ld x9, 72(sp)
-    ld x11, 88(sp)
-    ld x12, 96(sp)
-    ld x13, 104(sp)
-    ld x14, 112(sp)
-    ld x15, 120(sp)
-    ld x16, 128(sp)
-    ld x17, 136(sp)
-    ld x18, 144(sp)
-    ld x19, 152(sp)
-    ld x20, 160(sp)
-    ld x21, 168(sp)
-    ld x22, 176(sp)
-    ld x23, 184(sp)
-    ld x24, 192(sp)
-    ld x25, 200(sp)
-    ld x26, 208(sp)
-    ld x27, 216(sp)
-    ld x28, 224(sp)
-    ld x29, 232(sp)
-    ld x30, 240(sp)
-    ld x31, 248(sp)
-    addi sp, sp, 280
+    ld x1, 8(t6)
+    ld x3, 24(t6)
+    ld x4, 32(t6)
+    ld x5, 40(t6)
+    ld x6, 48(t6)
+    ld x7, 56(t6)
+    ld x8, 64(t6)
+    ld x9, 72(t6)
+    ld x11, 88(t6)
+    ld x12, 96(t6)
+    ld x13, 104(t6)
+    ld x14, 112(t6)
+    ld x15, 120(t6)
+    ld x16, 128(t6)
+    ld x17, 136(t6)
+    ld x18, 144(t6)
+    ld x19, 152(t6)
+    ld x20, 160(t6)
+    ld x21, 168(t6)
+    ld x22, 176(t6)
+    ld x23, 184(t6)
+    ld x24, 192(t6)
+    ld x25, 200(t6)
+    ld x26, 208(t6)
+    ld x27, 216(t6)
+    ld x28, 224(t6)
+    ld x29, 232(t6)
+    ld x30, 240(t6)
+    # t6 is x31: capture user sp before restoring x31 clobbers the frame pointer.
+    ld t0, 272(t6)
+    ld x31, 248(t6)
+    mv sp, t0
     li x10, 0
-    csrr t0, sstatus
-    andi t0, t0, 0x100
-    bnez t0, 6f
-    csrrw sp, sscratch, sp
-    mv x2, sp
-6:
     sret
     "#
 );

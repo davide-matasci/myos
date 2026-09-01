@@ -1285,7 +1285,16 @@ fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
 fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
     let mut frame = regs.frame;
     frame[32] = regs.rip as u64; // resume past the fork ecall
-    crate::arch::fork_sret_child_to_user(frame.as_mut_ptr());
+    frame[33] = USER_SSTATUS;
+    frame[34] = regs.rsp as u64;
+    let ksp = unsafe { KERNEL_SSCRATCH };
+    unsafe {
+        // Preserve kernel stack top in sscratch across sret (enter_riscv64
+        // invariant). The old child stub left sscratch at frame+280 and the
+        // next user trap smashed the stack — pipe/fork then jumped to garbage.
+        core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
+        crate::arch::fork_sret_child_to_user(frame.as_mut_ptr());
+    }
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -2016,6 +2025,40 @@ fn flush_user_tlb() {
 #[cfg(not(target_arch = "aarch64"))]
 fn flush_user_tlb() {}
 
+/// Allocate Sv39 mid/leaf tables as needed so user maps can spill past one
+/// 2 MiB leaf (code + 256 stack + 256 heap pages exceeds 512 PTEs).
+#[cfg(target_arch = "riscv64")]
+fn ensure_riscv_leaf(satp: u64, va: u64) -> *mut [u64; 512] {
+    let root_phys = paging::satp_root_phys(satp);
+    let i2 = ((va >> 30) & 0x1ff) as usize;
+    let i1 = ((va >> 21) & 0x1ff) as usize;
+    unsafe {
+        let root = &mut *mm::table(root_phys);
+        let mid_pte = root[i2];
+        if mid_pte & paging::PTE_V == 0 {
+            let mid = mm::alloc_frame();
+            root[i2] = paging::pte_table(mid);
+        } else {
+            assert!(
+                mid_pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) == 0,
+                "riscv user map: huge page in the way at L2"
+            );
+        }
+        let mid = &mut *mm::table(paging::pte_phys(root[i2]));
+        let leaf_pte = mid[i1];
+        if leaf_pte & paging::PTE_V == 0 {
+            let leaf = mm::alloc_frame();
+            mid[i1] = paging::pte_table(leaf);
+        } else {
+            assert!(
+                leaf_pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) == 0,
+                "riscv user map: huge page in the way at L1"
+            );
+        }
+        mm::table(paging::pte_phys(mid[i1]))
+    }
+}
+
 #[cfg(target_arch = "riscv64")]
 fn map_user_page_riscv64(satp: u64, va: u64, pa: u64, exec: bool) {
     let mut flags = paging::PTE_V
@@ -2027,17 +2070,10 @@ fn map_user_page_riscv64(satp: u64, va: u64, pa: u64, exec: bool) {
     if exec {
         flags |= paging::PTE_X;
     }
-    let root_phys = paging::satp_root_phys(satp);
-    let base = USER_BASE.load(Ordering::SeqCst);
-    let page = (va - base) as usize / PAGE;
-    let i2 = 1usize;
-    let i1 = 0usize;
-    let i0 = page;
+    let i0 = ((va >> 12) & 0x1ff) as usize;
+    let leaf = ensure_riscv_leaf(satp, va);
     unsafe {
-        let root = &*mm::table(root_phys);
-        let mid = &*mm::table(paging::pte_phys(root[i2]));
-        let leaf = &mut *mm::table(paging::pte_phys(mid[i1]));
-        leaf[i0] = paging::pte_leaf_4k(pa, flags);
+        (*leaf)[i0] = paging::pte_leaf_4k(pa, flags);
     }
 }
 
@@ -2063,15 +2099,10 @@ fn map_heap_page(satp: u64, va: u64, pa: u64) {
         | paging::PTE_U
         | paging::PTE_A
         | paging::PTE_D;
-    let root_phys = paging::satp_root_phys(satp);
-    let i2 = ((va >> 30) & 0x1ff) as usize;
-    let i1 = ((va >> 21) & 0x1ff) as usize;
     let i0 = ((va >> 12) & 0x1ff) as usize;
+    let leaf = ensure_riscv_leaf(satp, va);
     unsafe {
-        let root = &*mm::table(root_phys);
-        let mid = &*mm::table(paging::pte_phys(root[i2]));
-        let leaf = &mut *mm::table(paging::pte_phys(mid[i1]));
-        leaf[i0] = paging::pte_leaf_4k(pa, flags);
+        (*leaf)[i0] = paging::pte_leaf_4k(pa, flags);
     }
 }
 
@@ -2161,43 +2192,27 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
 }
 
 #[cfg(target_arch = "riscv64")]
-fn create_aspace_riscv64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64) -> u64 {
-    let code_flags = paging::PTE_V
-        | paging::PTE_R
-        | paging::PTE_W
-        | paging::PTE_U
-        | paging::PTE_X
-        | paging::PTE_A
-        | paging::PTE_D;
-    let stack_flags = paging::PTE_V
-        | paging::PTE_R
-        | paging::PTE_W
-        | paging::PTE_U
-        | paging::PTE_A
-        | paging::PTE_D;
-
+fn create_aspace_riscv64(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {
     let k_root_phys = paging::satp_root_phys(task::kernel_aspace());
     let root = mm::alloc_frame();
-    let mid = mm::alloc_frame();
-    let leaf = mm::alloc_frame();
 
     unsafe {
         let k_root = &*mm::table(k_root_phys);
         let root_t = &mut *mm::table(root);
         root_t.copy_from_slice(k_root);
-        let mid_t = &mut *mm::table(mid);
-        let leaf_t = &mut *mm::table(leaf);
-        root_t[1] = paging::pte_table(mid);
-        mid_t[0] = paging::pte_table(leaf);
-        for (i, &phys) in code.iter().enumerate() {
-            leaf_t[i] = paging::pte_leaf_4k(phys, code_flags);
-        }
-        let stack_i = (stack_off as usize) / PAGE;
-        for (i, &phys) in stack.iter().enumerate() {
-            leaf_t[stack_i + i] = paging::pte_leaf_4k(phys, stack_flags);
-        }
+        // User lives in Sv39 root[1] (0x4000_0000). Clear any stale kernel
+        // entry so ensure_riscv_leaf owns mid/leaf allocation for this aspace.
+        root_t[1] = 0;
     }
-    make_satp(root)
+    let satp = make_satp(root);
+    for (i, &phys) in code.iter().enumerate() {
+        map_user_page_riscv64(satp, base + (i * PAGE) as u64, phys, true);
+    }
+    let stack_va = base + stack_off;
+    for (i, &phys) in stack.iter().enumerate() {
+        map_user_page_riscv64(satp, stack_va + (i * PAGE) as u64, phys, false);
+    }
+    satp
 }
 
 fn sync_icache(start: usize, size: usize) {
