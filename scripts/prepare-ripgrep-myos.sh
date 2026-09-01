@@ -96,4 +96,12 @@ else
   echo "pcre2-sys build.rs already myos-aware"
 fi
 
+
+# ignore: non-unix from_path returns "unsupported platform" so WalkBuilder never
+# yields explicit file paths on myos. Rewrite stub to use fs::metadata (SYS_STAT).
+IGNORE_WALK="$(find "$RG" -path '*/crates/ignore/src/walk.rs' | head -1)"
+if [[ -n "$IGNORE_WALK" ]]; then
+  python3 "$ROOT/scripts/patch-ignore-myos.py" "$IGNORE_WALK"
+fi
+
 echo "ripgrep myos tree ready at $RG"

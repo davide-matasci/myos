@@ -58,12 +58,22 @@ fn main() -> ! {
     run_prog_exit(b"/c/true", &[], 0, b"uutils true ok\n");
     run_prog_exit(b"/c/false", &[], 1, b"uutils false ok\n");
     // Write a needle under /tmp and search with /c/rg (full ripgrep + PCRE2).
+    // -j1 / --no-mmap / --no-config: myos is single-threaded and has no mmap.
     if let Some(fd) = open_flags(b"/tmp/rg-needle.txt", O_WRONLY | O_CREAT | O_TRUNC) {
         let _ = write_fd(fd, b"hello ripgrep needle world\n");
         close(fd);
         run_prog_exit(
             b"/c/rg",
-            &[b"rg", b"needle", b"/tmp/rg-needle.txt"],
+            &[
+                b"rg",
+                b"-j",
+                b"1",
+                b"--color=never",
+                b"--no-config",
+                b"--no-mmap",
+                b"needle",
+                b"/tmp/rg-needle.txt",
+            ],
             0,
             b"ripgrep ok\n",
         );

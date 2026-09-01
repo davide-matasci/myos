@@ -41,3 +41,19 @@ feature set on nightly-2026-07-26.
 
 - ELF registered as `/c/rg` on coreutilsfs (separate from uutils multicall)
 - `MAX_INIT_PAGES` raised to 1024 so the ~721-page PT_LOAD span loads
+
+## Runtime fixes (myos std + ignore)
+
+CI QEMU smoke initially saw `rg` abort with exit **101** on file search while
+`rg --version` worked. Root causes:
+
+1. **`Instant::now()` panics** on myos (`std` used the unsupported time backend).
+   Fixed by `std/sys/time/myos.rs` (wired in `wire-myos.py`).
+2. **`ignore::WalkBuilder` never yields file paths** on non-unix/non-windows:
+   `DirEntryRaw::from_path` returned "unsupported platform".
+   Fixed at prepare time by `scripts/patch-ignore-myos.py` (uses `fs::metadata`
+   / `SYS_STAT`).
+3. **`fs::metadata` was `unsupported()`** (`FileAttr(!)`). Implemented via
+   `SYS_STAT` in `std/sys/fs/myos.rs` + `abi::stat`.
+
+Heap smoke uses `-j1 --no-mmap --no-config` (myos is `singlethread`, no mmap).

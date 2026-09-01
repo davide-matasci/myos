@@ -99,6 +99,24 @@ pub fn open(path: &[u8]) -> isize {
     }
 }
 
+#[repr(C)]
+pub struct StatBuf {
+    pub st_mode: u32,
+    pub st_size: u32,
+    pub st_ino: u32,
+    pub st_nlink: u32,
+}
+
+#[inline]
+pub fn stat(path: &[u8], out: &mut StatBuf) -> isize {
+    let ret = raw_stat(path.as_ptr() as usize, path.len(), out as *mut StatBuf as usize);
+    if ret == usize::MAX {
+        -1
+    } else {
+        0
+    }
+}
+
 /// Replace the current process image. Does not return on success.
 #[inline]
 pub fn exec(path: &[u8], args: &[&[u8]]) -> ! {
@@ -793,4 +811,63 @@ fn raw_exec(path: usize, path_len: usize, args: usize) -> ! {
         );
         core::hint::unreachable_unchecked();
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn raw_stat(ptr: usize, len: usize, out: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_STAT,
+            in("rdi") ptr,
+            in("rsi") len,
+            in("rdx") out,
+            lateout("rax") ret,
+            out("rcx") _,
+            out("r11") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn raw_stat(ptr: usize, len: usize, out: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") SYS_STAT,
+            in("x0") ptr,
+            in("x1") len,
+            in("x2") out,
+            lateout("x0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_stat(ptr: usize, len: usize, out: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_STAT,
+            in("a0") ptr,
+            in("a1") len,
+            in("a2") out,
+            lateout("a0") ret,
+            options(nostack),
+        );
+    }
+    ret
 }
