@@ -24,6 +24,7 @@ const SYS_PIPE: usize = 10;
 const SYS_DUP2: usize = 11;
 pub const SYS_STAT: usize = 12;
 const SYS_EXECNAME: usize = 13;
+const SYS_DUPFD: usize = 14;
 pub const PAGE: usize = 4096;
 /// User stack below the heap. x86_64 uses 1 MiB; AArch64 uses 512 KiB.
 /// AArch64 user maps spill into L2[1+] when code+stack+heap exceed 512 pages.
@@ -1204,6 +1205,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
         SYS_DUP2 => sys_dup2(a0, a1),
+        SYS_DUPFD => sys_dupfd(a0, a1),
         SYS_STAT => sys_stat(a0, a1, a2),
         SYS_EXECNAME => sys_exec_name(a0, a1),
         _ => SYSERR,
@@ -1639,6 +1641,13 @@ fn sys_pipe(fds_ptr: usize) -> usize {
 
 fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     if task::fd_dup2(oldfd, newfd) { 0 } else { SYSERR }
+}
+
+fn sys_dupfd(oldfd: usize, minfd: usize) -> usize {
+    match task::fd_dup_min(oldfd, minfd) {
+        Some(fd) => fd,
+        None => SYSERR,
+    }
 }
 
 fn sys_exec_name(buf: usize, len: usize) -> usize {
