@@ -1164,19 +1164,21 @@ fn enter_fork_x86(regs: task::ForkRegs) -> ! {
         ss,
     ]);
     unsafe {
+        // Explicit regs cannot be named (`c = in("rax")` is rejected). Positional
+        // {0}=rax (callee array), {1}=rsi (iret frame).
         core::arch::asm!(
             "cli",
-            "mov rbx, [{c}]",
-            "mov rbp, [{c} + 8]",
-            "mov r12, [{c} + 16]",
-            "mov r13, [{c} + 24]",
-            "mov r14, [{c} + 32]",
-            "mov r15, [{c} + 40]",
-            "mov rsp, {f}",
+            "mov rbx, [{0}]",
+            "mov rbp, [{0} + 8]",
+            "mov r12, [{0} + 16]",
+            "mov r13, [{0} + 24]",
+            "mov r14, [{0} + 32]",
+            "mov r15, [{0} + 40]",
+            "mov rsp, {1}",
             "xor rax, rax",
             "iretq",
-            c = in("rax") callee.as_ptr(),
-            f = in("rsi") frame.as_ptr(),
+            in("rax") callee.as_ptr(),
+            in("rsi") frame.as_ptr(),
             options(noreturn),
         );
     }
