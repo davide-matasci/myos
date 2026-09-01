@@ -10,7 +10,7 @@ if myos_c_hello_is_current; then
   exit 0
 fi
 
-"$ROOT/scripts/build-newlib.sh"
+"$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 link_prog() {

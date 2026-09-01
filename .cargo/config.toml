@@ -2,7 +2,7 @@
 bindeps = true
 json-target-spec = true
 
-# Custom userspace triples for the myos patched std sysroot (see std/pal/README.md).
+# Custom userspace triples for the myos patched std sysroot (see toolchain/std/pal/README.md).
 [env]
 RUSTC_BOOTSTRAP = "1"
 MYOS_SYSROOT = { value = "target/myos-sysroot", relative = true }

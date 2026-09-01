@@ -49,7 +49,7 @@ if [[ -x target/debug/myos && -f target/bios.img ]]; then
     exit 0
   fi
   echo "==> rg ELF(s) missing after restore; building ripgrep and rebuilding kernels"
-  ./scripts/build-ripgrep-myos.sh
+  ./ports/ripgrep/build.sh
   rebuild_kernels
   test -x target/debug/myos
   test -f target/bios.img
@@ -57,18 +57,18 @@ if [[ -x target/debug/myos && -f target/bios.img ]]; then
 fi
 
 echo "==> ci-build missing or incomplete; rebuilding (PR artifact skip or quota)"
-chmod +x scripts/*.sh
+chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
 
 if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
   export MYOS_SYSROOT_TARBALL="$(ls target/myos-sysroot-*.tar.zst | head -1)"
 fi
-./scripts/fetch-sysroot.sh
-./scripts/build-std-hello.sh
+./toolchain/std/fetch-sysroot.sh
+./toolchain/std/build-std-hello.sh
 ./scripts/build-c-hello.sh
-./scripts/build-sbase.sh
-./scripts/build-oksh.sh
-./scripts/build-uutils-myos.sh
-./scripts/build-ripgrep-myos.sh
+./ports/sbase/build.sh
+./ports/oksh/build.sh
+./ports/coreutils/build-uutils.sh
+./ports/ripgrep/build.sh
 
 rebuild_kernels
 
