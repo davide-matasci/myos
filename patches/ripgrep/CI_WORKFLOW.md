@@ -1,31 +1,23 @@
-# CI workflow wiring (apply to `.github/workflows/ci.yml`)
+# CI workflow wiring for ripgrep (`/c/rg`)
 
-The OAuth token used for this PR cannot update workflow files (`workflow` scope).
-Apply these edits on `feat/ripgrep-userspace` (or merge this note into ci.yml):
+Applied on `feat/ripgrep-userspace` in `.github/workflows/ci.yml`:
 
-1. **Path filter `c_userspace`** — add:
-   - `scripts/fetch-ripgrep.sh`, `scripts/fetch-pcre2.sh`, `scripts/prepare-ripgrep-myos.sh`
-   - `scripts/build-ripgrep-myos.sh`, `scripts/build-pcre2-myos.sh`
-   - `scripts/build-uutils-myos.sh`, `scripts/build-coreutils-myos.sh`
-   - `vendor/ripgrep-port/**`, `patches/ripgrep/**`, `patches/coreutils/**`
+1. **Path filter `c_userspace`** includes ripgrep/pcre2/uutils scripts and patches.
+2. **Build job** runs `./scripts/build-ripgrep-myos.sh` after uutils, before kernel
+   `cargo build`. Missing `target/rg-*` is a hard error in `kernel/build.rs`.
+3. **ci-build.tar** packs `target/rg-*`, `target/.myos-ripgrep-version`, and
+   pcre2 install prefixes so boot jobs restore prebuilt ELFs (no ripgrep rebuild).
+4. **Boot restore** (`scripts/ci-restore-or-build.sh`): if `myos`+`bios.img` exist
+   but rg ELFs are missing, build ripgrep **and** `cargo clean -p kernel` for all
+   three targets + `cargo build`. Do not exit with a stale image.
+5. **rust-cache** (build + boot, `prefix-key: limine-8.3-5`) also stores:
+   - stamp files `target/.myos-*-version`
+   - built ELFs (`target/sbase-*`, `oksh-*`, `coreutils-*`, `std-*`, `hello-*`,
+     `ok-*`, `c-hello-*`, `rg-*`, `uutils-*`)
+   - ripgrep/pcre2 trees and `target/newlib-riscv64`
+   Nightly stays pinned. Prefix bump drops kernels that embedded an empty `/c/rg`.
 
-2. **`Swatinem/rust-cache` `cache-directories`** (build + boot jobs) — add:
-   - `target/ripgrep-src`, `target/pcre2-src`
-   - `target/pcre2-x86_64`, `target/pcre2-aarch64`, `target/pcre2-riscv64`
-   - `target/ripgrep-build-*-unknown-myos`
-   - `target/patched-crates`, `target/crate-fetch-coreutils`
-
-3. **Build step** — after `./scripts/build-uutils-myos.sh` run:
-   `./scripts/build-ripgrep-myos.sh`
-
-4. **Artifact pack** — include `target/rg-*`, `target/.myos-ripgrep-version`, `target/pcre2-*`
-
-The full updated file is in the PR branch working tree / this agent’s local checkout
-as `.github/workflows/ci.yml` (not yet on the remote branch tip).
-
-## Workaround without editing `ci.yml`
-
-`scripts/build-uutils-myos.sh` now invokes `build-ripgrep-myos.sh` at the end, so
-existing CI that already runs uutils will produce `target/rg-*` and cache via
-whatever dirs rust-cache already restores. Explicit cache-directory entries for
-ripgrep/pcre2 (documented above) are still recommended for faster CI.
+Skip-if-fresh: `myos_*_is_current` in `scripts/myos-c-userspace-lib.sh` /
+`scripts/myos-sysroot-lib.sh` (std-hello, c-hello, sbase, oksh, coreutils,
+ripgrep, newlib). `build-uutils-myos.sh` still chains ripgrep as a fallback;
+the second call is a no-op when stamps+ELFs hit cache.

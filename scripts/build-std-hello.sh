@@ -6,6 +6,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/myos-sysroot-lib.sh"
 "$ROOT/scripts/fetch-sysroot.sh"
 mkdir -p "$ROOT/target"
+
+if myos_std_hello_is_current; then
+  echo "std example ELFs up to date"
+  exit 0
+fi
+
 build_example() {
   local name="$1" manifest="$2" bin="$3" triple="$4"
   local target_dir="$ROOT/target/std-${name}-build-${triple}"
@@ -20,3 +26,4 @@ for triple in "${MYOS_USER_TRIPLES[@]}"; do
   build_example echo "$ROOT/std/examples/echo/Cargo.toml" std-echo "$triple"
   build_example bigalloc "$ROOT/std/examples/bigalloc/Cargo.toml" bigalloc "$triple"
 done
+echo "$(myos_std_hello_version_hash)" >"$MYOS_STD_HELLO_VERSION"
