@@ -2221,8 +2221,11 @@ fn user_range_ok(ptr: usize, len: usize) -> bool {
     let heap_base = heap_base_va(base as u64, stack_off) as usize;
     let brk = task::current_brk() as usize;
     let in_heap = brk > heap_base && ptr >= heap_base && end <= brk;
-    let in_mmap = task::mmap_contains(ptr, len);
-    in_code || in_stack || in_heap || in_mmap
+    if in_code || in_stack || in_heap {
+        return true;
+    }
+    // mmap_contains takes TASKS; skip unless ptr is outside code/stack/heap.
+    task::mmap_contains(ptr, len)
 }
 
 fn create_aspace(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {

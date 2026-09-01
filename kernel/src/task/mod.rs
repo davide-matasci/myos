@@ -81,15 +81,59 @@ fn fd_drop(entry: FdEntry) {
     }
 }
 
+/// Lock-free user-buffer check from a TASKS snapshot.
+///
+/// Must not take `TASKS`: `fd_read` of a file re-checks the dest buffer
+/// inside `with_current_mut`. Routing through `user::buffer_ok` re-locks
+/// (`current_user_map` / `mmap_contains`) and deadlocks the same CPU —
+/// hang after `/ok` prints `user ok`, on the first `read` of `/msg`.
 fn user_buf_ok(
     buf: usize,
     len: usize,
-    _user_base: usize,
-    _image_span: usize,
-    _stack_off: usize,
-    _brk: usize,
+    user_base: usize,
+    image_span: usize,
+    stack_off: usize,
+    brk: usize,
+    mmap: &[MmapRegion],
 ) -> bool {
-    user::buffer_ok(buf, len)
+    if len == 0 {
+        return true;
+    }
+    let end = match buf.checked_add(len) {
+        Some(e) => e,
+        None => return false,
+    };
+    let stack = stack_off;
+    let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
+    let in_code = buf >= user_base && end <= user_base + image_span;
+    let in_stack = buf >= user_base + stack && end <= user_base + stack + stack_bytes;
+    let heap_base = user_base + stack + stack_bytes;
+    let in_heap = brk > heap_base && buf >= heap_base && end <= brk;
+    if in_code || in_stack || in_heap {
+        return true;
+    }
+    mmap_range_in(mmap, buf, len)
+}
+
+fn mmap_range_in(mmap: &[MmapRegion], ptr: usize, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let end = match ptr.checked_add(len) {
+        Some(e) => e,
+        None => return false,
+    };
+    for r in mmap.iter() {
+        if r.pages == 0 {
+            continue;
+        }
+        let lo = r.va as usize;
+        let hi = lo.saturating_add(r.pages as usize * crate::user::PAGE);
+        if ptr >= lo && end <= hi {
+            return true;
+        }
+    }
+    false
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -303,29 +347,12 @@ pub fn mmap_regions() -> [MmapRegion; MAX_MMAP_REGIONS] {
 }
 
 pub fn mmap_contains(ptr: usize, len: usize) -> bool {
-    if len == 0 {
-        return true;
-    }
-    let end = match ptr.checked_add(len) {
-        Some(e) => e,
-        None => return false,
-    };
     let flags = irq_save();
     irq_off();
     let id = CURRENT.load(Ordering::SeqCst);
     let mmap = TASKS.lock()[id].mmap;
     irq_restore(flags);
-    for r in mmap.iter() {
-        if r.pages == 0 {
-            continue;
-        }
-        let lo = r.va as usize;
-        let hi = lo.saturating_add(r.pages as usize * crate::user::PAGE);
-        if ptr >= lo && end <= hi {
-            return true;
-        }
-    }
-    false
+    mmap_range_in(&mmap, ptr, len)
 }
 
 pub fn mmap_overlaps(va: usize, len: usize) -> bool {
@@ -595,7 +622,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         return 0;
     }
     loop {
-        let (entry, map) = {
+        let (entry, map, mmap) = {
             let flags = irq_save();
             irq_off();
             let id = CURRENT.load(Ordering::SeqCst);
@@ -609,12 +636,13 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                     t.stack_off,
                     t.brk_cur as usize,
                 ),
+                t.mmap,
             )
         };
         let (user_base, image_span, stack_off, brk) = map;
         let user_base = user_base as usize;
         let stack_off = stack_off as usize;
-        if !user_buf_ok(buf, len.min(128), user_base, image_span, stack_off, brk) {
+        if !user_buf_ok(buf, len.min(128), user_base, image_span, stack_off, brk, &mmap) {
             return usize::MAX;
         }
         match entry {
@@ -640,6 +668,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                             t.image_span,
                             t.stack_off as usize,
                             t.brk_cur as usize,
+                            &t.mmap,
                         ) {
                             return usize::MAX;
                         }
@@ -680,7 +709,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
     let mut total = 0usize;
     while total < len {
         let chunk = (len - total).min(128);
-        let (entry, map) = {
+        let (entry, map, mmap) = {
             let flags = irq_save();
             irq_off();
             let id = CURRENT.load(Ordering::SeqCst);
@@ -694,6 +723,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                     t.stack_off,
                     t.brk_cur as usize,
                 ),
+                t.mmap,
             )
         };
         let (user_base, image_span, stack_off, brk) = map;
@@ -704,6 +734,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
             image_span,
             stack_off as usize,
             brk,
+            &mmap,
         ) {
             return if total == 0 { usize::MAX } else { total };
         }
