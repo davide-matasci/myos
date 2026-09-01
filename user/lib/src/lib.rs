@@ -94,24 +94,61 @@ pub fn exec(path: &[u8], args: &[&[u8]]) {
 const MAX_EXEC_ARG_LEN: usize = 128;
 const MAX_EXEC_ENV_LEN: usize = 128;
 
+/// Slide ET_EXEC link VAs to the runtime user base (AArch64/RISC-V nested ELFs).
+///
+/// `aarch64-unknown-none` / `riscv64imac-unknown-none-elf` user programs are
+/// ET_EXEC with no relocs; the kernel slides PT_LOAD as a unit to `0x4000_0000`.
+/// ADR'd path refs are already correct, but `&[b"arg"]` fat pointers stored in
+/// `.rodata` keep link VAs (`~0x0020_xxxx` / `~0x0001_xxxx`). Reading them
+/// before this fixup causes an alignment/translation abort (CI FAR=`0x20016f`).
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[inline]
+fn et_exec_fixup_ptr(ptr: usize) -> usize {
+    const USER_BASE: usize = 0x4000_0000;
+    if ptr == 0 || ptr >= USER_BASE {
+        return ptr;
+    }
+    #[cfg(target_arch = "aarch64")]
+    const LINK_BASE: usize = 0x0020_0000;
+    #[cfg(target_arch = "riscv64")]
+    const LINK_BASE: usize = 0x0001_0000;
+    ptr.wrapping_sub(LINK_BASE).wrapping_add(USER_BASE)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn et_exec_fixup_ptr(ptr: usize) -> usize {
+    ptr
+}
+
+#[inline]
+fn copy_exec_bytes(dst: &mut [u8], src: &[u8]) -> usize {
+    let n = src.len().min(dst.len());
+    let src_ptr = et_exec_fixup_ptr(src.as_ptr() as usize) as *const u8;
+    unsafe {
+        core::ptr::copy_nonoverlapping(src_ptr, dst.as_mut_ptr(), n);
+    }
+    n
+}
+
 /// Like [`exec`], but passes a `KEY=value` environment block to the new image.
 pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
     let argc = args.len().min(MAX_EXEC_ARGS);
     let envc = env.len().min(MAX_EXEC_ENV);
+    let path_ptr = et_exec_fixup_ptr(path.as_ptr() as usize);
     if argc == 0 && envc == 0 {
         unsafe {
-            sys_exec(path.as_ptr() as usize, path.len(), 0);
+            sys_exec(path_ptr, path.len(), 0);
         }
         return;
     }
-    // AArch64 user ELFs are ET_EXEC (no PIE): static slice pointers keep link-time
-    // VAs (~0x0020_xxxx) and the kernel rejects them. Copy onto the stack first.
+    // Nested ELFs may be ET_EXEC (no PIE): static slice pointers keep link-time
+    // VAs. Fix them up, then copy onto the stack so the kernel sees user VAs.
     let mut arg_buf = [[0u8; MAX_EXEC_ARG_LEN]; MAX_EXEC_ARGS];
     let mut arg_ptrs = [0usize; MAX_EXEC_ARGS];
     let mut arg_lens = [0usize; MAX_EXEC_ARGS];
     for (i, a) in args.iter().take(MAX_EXEC_ARGS).enumerate() {
-        let n = a.len().min(MAX_EXEC_ARG_LEN);
-        arg_buf[i][..n].copy_from_slice(&a[..n]);
+        let n = copy_exec_bytes(&mut arg_buf[i], a);
         arg_ptrs[i] = arg_buf[i].as_ptr() as usize;
         arg_lens[i] = n;
     }
@@ -119,8 +156,7 @@ pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
     let mut env_ptrs = [0usize; MAX_EXEC_ENV];
     let mut env_lens = [0usize; MAX_EXEC_ENV];
     for (i, e) in env.iter().take(MAX_EXEC_ENV).enumerate() {
-        let n = e.len().min(MAX_EXEC_ENV_LEN);
-        env_buf[i][..n].copy_from_slice(&e[..n]);
+        let n = copy_exec_bytes(&mut env_buf[i], e);
         env_ptrs[i] = env_buf[i].as_ptr() as usize;
         env_lens[i] = n;
     }
@@ -137,7 +173,7 @@ pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
         pack[env_base + 2 + i * 2] = env_lens[i];
     }
     unsafe {
-        sys_exec(path.as_ptr() as usize, path.len(), pack.as_ptr() as usize);
+        sys_exec(path_ptr, path.len(), pack.as_ptr() as usize);
     }
 }
 
