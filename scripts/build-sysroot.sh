@@ -23,3 +23,5 @@ version="$(myos_sysroot_version_hash)"
 echo "$version" >"$MYOS_SYSROOT_VERSION"
 myos_write_sysroot_manifest "$version"
 echo "myos sysroot ready at $MYOS_SYSROOT"
+
+# Touch for CI: ensure boot jobs run when sysroot path filter fires (skip-propagation).

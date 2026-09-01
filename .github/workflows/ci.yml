@@ -321,7 +321,7 @@ jobs:
           - id: riscv64
             args: riscv64 --ci
             packages: qemu-system-misc qemu-efi-riscv64
-            required: false
+            required: true
     steps:
       - uses: actions/checkout@v4
 
