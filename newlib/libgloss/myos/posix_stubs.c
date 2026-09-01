@@ -235,26 +235,19 @@ int symlinkat(const char *target, int dirfd, const char *path) {
 }
 
 
-int fcntl(int fd, int cmd, ...) {
-    va_list ap;
-    int arg = 0;
-
+/* newlib libc exports fcntl() when HAVE_FCNTL; we supply the syscall glue. */
+int _fcntl(int fd, int cmd, int arg) {
     if (cmd == F_DUPFD
 #ifdef F_DUPFD_CLOEXEC
         || cmd == F_DUPFD_CLOEXEC
 #endif
     ) {
-        va_start(ap, cmd);
-        arg = va_arg(ap, int);
-        va_end(ap);
-        {
-            long ret = myos_syscall3(MYOS_SYS_DUPFD, fd, arg, 0);
-            if (ret == (long)MYOS_SYSERR) {
-                errno = EBADF;
-                return -1;
-            }
-            return (int)ret;
+        long ret = myos_syscall3(MYOS_SYS_DUPFD, fd, arg, 0);
+        if (ret == (long)MYOS_SYSERR) {
+            errno = EBADF;
+            return -1;
         }
+        return (int)ret;
     }
 
     switch (cmd) {
@@ -267,15 +260,19 @@ int fcntl(int fd, int cmd, ...) {
         return 0;
     case F_SETFD:
         (void)fd;
+        (void)arg;
         return 0;
     case F_GETFL:
         (void)fd;
+        (void)arg;
         return O_RDWR;
     case F_SETFL:
         (void)fd;
+        (void)arg;
         return 0;
     default:
         (void)fd;
+        (void)arg;
         errno = EINVAL;
         return -1;
     }
