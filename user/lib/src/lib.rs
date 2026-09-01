@@ -46,7 +46,7 @@ macro_rules! x86_start {
 }
 
 const MAX_EXEC_ARGS: usize = 16;
-const MAX_EXEC_ENV: usize = 8;
+const MAX_EXEC_ENV: usize = 32;
 
 pub fn write(buf: &[u8]) {
     write_fd(1, buf);

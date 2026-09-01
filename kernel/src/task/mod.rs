@@ -138,6 +138,13 @@ pub struct ForkRegs {
     pub frame: [u64; 36],
 }
 
+
+const fn root_cwd_buf() -> [u8; 64] {
+    let mut c = [0u8; 64];
+    c[0] = b'/';
+    c
+}
+
 #[derive(Clone, Copy)]
 struct Task {
     state: State,
@@ -162,6 +169,9 @@ struct Task {
     /// Basename from the last successful exec (multicall argv[0] fallback).
     exec_name: [u8; 32],
     exec_name_len: u8,
+    /// Absolute cwd (POSIX). Survives exec; copied on fork. Always starts with `/`.
+    cwd: [u8; 64],
+    cwd_len: u8,
     exit_code: u8,
 }
 
@@ -185,6 +195,8 @@ const EMPTY: Task = Task {
     brk_cur: 0,
     exec_name: [0; 32],
     exec_name_len: 0,
+    cwd: root_cwd_buf(),
+    cwd_len: 1,
     exit_code: 0,
 };
 
@@ -289,6 +301,32 @@ pub fn exec_name(out: &mut [u8]) -> usize {
     irq_restore(flags);
     n
 }
+
+pub fn cwd(out: &mut [u8]) -> usize {
+    let flags = irq_save();
+    irq_off();
+    let id = CURRENT.load(Ordering::SeqCst);
+    let t = TASKS.lock()[id];
+    let n = t.cwd_len as usize;
+    let n = n.min(out.len()).min(t.cwd.len());
+    out[..n].copy_from_slice(&t.cwd[..n]);
+    irq_restore(flags);
+    n
+}
+
+/// Set absolute cwd. `path` must be a canonical absolute path (`/` or `/…`).
+pub fn set_cwd(path: &[u8]) -> bool {
+    if path.is_empty() || path[0] != b'/' || path.len() > 64 {
+        return false;
+    }
+    with_current_mut(|t| {
+        t.cwd = [0; 64];
+        t.cwd[..path.len()].copy_from_slice(path);
+        t.cwd_len = path.len() as u8;
+    });
+    true
+}
+
 
 fn heap_base_for(base: u64, stack_off: u64) -> u64 {
     base + stack_off + (crate::user::USER_STACK_PAGES * crate::user::PAGE) as u64
@@ -656,7 +694,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (fds, base, span, off, ppid, uargc, uargv, brk) = {
+    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len) = {
         let tasks = TASKS.lock();
         let id = CURRENT.load(Ordering::SeqCst);
         let t = tasks[id];
@@ -674,6 +712,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.user_argc,
             t.user_argv,
             t.brk_cur,
+            t.cwd,
+            t.cwd_len,
         )
     };
 
@@ -755,6 +795,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         brk_cur: brk,
         exec_name: [0; 32],
         exec_name_len: 0,
+        cwd,
+        cwd_len,
         exit_code: 0,
     };
     drop(tasks);
@@ -867,6 +909,12 @@ fn spawn_inner(
         brk_cur,
         exec_name: [0; 32],
         exec_name_len: 0,
+        cwd: {
+            let mut c = [0u8; 64];
+            c[0] = b'/';
+            c
+        },
+        cwd_len: 1,
         exit_code: 0,
     };
     drop(tasks);

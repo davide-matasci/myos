@@ -7,10 +7,10 @@
 #define _PATH_BSHELL "/sh"
 #endif
 #ifndef _PATH_DEFPATH
-#define _PATH_DEFPATH "/:/s:/c"
+#define _PATH_DEFPATH "/s:/c:/"
 #endif
 #ifndef _PATH_STDPATH
-#define _PATH_STDPATH "/:/s:/c"
+#define _PATH_STDPATH "/s:/c:/"
 #endif
 #ifndef _CS_PATH
 #define _CS_PATH 1

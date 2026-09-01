@@ -25,6 +25,8 @@ const SYS_DUP2: usize = 11;
 pub const SYS_STAT: usize = 12;
 const SYS_EXECNAME: usize = 13;
 const SYS_DUPFD: usize = 14;
+const SYS_CHDIR: usize = 15;
+const SYS_GETCWD: usize = 16;
 pub const PAGE: usize = 4096;
 /// User stack below the heap. x86_64 uses 1 MiB; AArch64 uses 512 KiB.
 /// AArch64 user maps spill into L2[1+] when code+stack+heap exceed 512 pages.
@@ -48,7 +50,7 @@ const USER_EXEC_RELOAD_PAGES: usize = 36;
 const MAX_PATH: usize = 64;
 const MAX_ARGC: usize = 16;
 const MAX_ARG_LEN: usize = 128;
-const MAX_ENVC: usize = 8;
+const MAX_ENVC: usize = 32;
 const MAX_ENV_LEN: usize = 128;
 const SYSERR: usize = usize::MAX;
 
@@ -1320,6 +1322,8 @@ pub extern "C" fn syscall_dispatch(
         SYS_DUPFD => sys_dupfd(a0, a1),
         SYS_STAT => sys_stat(a0, a1, a2),
         SYS_EXECNAME => sys_exec_name(a0, a1),
+        SYS_CHDIR => sys_chdir(a0, a1),
+        SYS_GETCWD => sys_getcwd(a0, a1),
         _ => SYSERR,
     }
 }
@@ -1330,6 +1334,13 @@ fn sys_exit(code: usize) -> ! {
 
 fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
     task::fd_write(fd, ptr, len)
+}
+
+
+fn resolve_copied_path(path: &str) -> Option<alloc::string::String> {
+    let mut abs = [0u8; MAX_PATH];
+    let n = fs::resolve_user_path(path, &mut abs)?;
+    core::str::from_utf8(&abs[..n]).ok().map(|s| alloc::string::String::from(s))
 }
 
 fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
@@ -1354,7 +1365,10 @@ fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let Some(node) = fs::open(path, flags as u32) else {
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    let Some(node) = fs::open(&path, flags as u32) else {
         return SYSERR;
     };
     match task::fd_open(node) {
@@ -1382,9 +1396,12 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let basename = path.rsplit('/').next().unwrap_or(path).as_bytes();
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    let basename = path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes();
     task::set_exec_name(basename);
-    let Some(bytes) = fs::lookup(path) else {
+    let Some(bytes) = fs::lookup(&path) else {
         return SYSERR;
     };
     let (arg_bufs, env_bufs) = match copy_user_exec_pack(args_ptr) {
@@ -1599,7 +1616,7 @@ fn sys_listdir(path_ptr: usize, path_len: usize, buf: usize) -> usize {
         return SYSERR;
     }
     let path = if path_len == 0 {
-        alloc::string::String::from("/")
+        alloc::string::String::from(".")
     } else {
         let Some(pbuf) = copy_user_path(path_ptr, path_len) else {
             return SYSERR;
@@ -1608,6 +1625,9 @@ fn sys_listdir(path_ptr: usize, path_len: usize, buf: usize) -> usize {
             Ok(p) => alloc::string::String::from(p),
             Err(_) => return SYSERR,
         }
+    };
+    let Some(path) = resolve_copied_path(&path) else {
+        return SYSERR;
     };
     let mut kbuf = [0u8; LISTDIR_CAP];
     let n = fs::listdir(&path, &mut kbuf).min(LISTDIR_CAP);
@@ -1636,7 +1656,10 @@ fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let Some(info) = fs::stat(path) else {
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    let Some(info) = fs::stat(&path) else {
         return SYSERR;
     };
     let out = MyosStatBuf {
@@ -1742,6 +1765,52 @@ fn sys_dupfd(oldfd: usize, minfd: usize) -> usize {
         Some(fd) => fd,
         None => SYSERR,
     }
+}
+
+
+fn sys_chdir(path_ptr: usize, path_len: usize) -> usize {
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    let Some(info) = fs::stat(&path) else {
+        return SYSERR;
+    };
+    const S_IFDIR: u32 = 0o040000;
+    if (info.mode & S_IFDIR) == 0 {
+        return SYSERR;
+    }
+    if !task::set_cwd(path.as_bytes()) {
+        return SYSERR;
+    }
+    0
+}
+
+fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> usize {
+    if buf_ptr == 0 || buf_len == 0 {
+        return SYSERR;
+    }
+    if !user_range_ok(buf_ptr, buf_len) {
+        return SYSERR;
+    }
+    let mut cwd = [0u8; MAX_PATH];
+    let n = task::cwd(&mut cwd);
+    // POSIX getcwd needs room for the pathname and a trailing NUL.
+    if n + 1 > buf_len {
+        return SYSERR;
+    }
+    let mut tmp = [0u8; MAX_PATH + 1];
+    tmp[..n].copy_from_slice(&cwd[..n]);
+    tmp[n] = 0;
+    if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n + 1]) {
+        return SYSERR;
+    }
+    n
 }
 
 fn sys_exec_name(buf: usize, len: usize) -> usize {

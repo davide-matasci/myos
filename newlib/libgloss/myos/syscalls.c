@@ -105,7 +105,8 @@ static int myos_is_root_path(const char *path)
     if (path == NULL || path[0] == '\0') {
         return 1;
     }
-    if (strcmp(path, ".") == 0 || strcmp(path, "/") == 0) {
+    /* "." is cwd-relative; kernel resolves against per-task cwd. */
+    if (strcmp(path, "/") == 0) {
         return 1;
     }
     while (*path == '/') {

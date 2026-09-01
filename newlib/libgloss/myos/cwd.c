@@ -1,35 +1,52 @@
-/* myos libgloss: flat root-only cwd stubs. */
+/* myos libgloss: chdir/getcwd via kernel per-task cwd. */
 
 #include <errno.h>
+#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "myos_syscalls.h"
 
 int
 chdir(const char *path)
 {
-    if (path == NULL) {
-        errno = EFAULT;
-        return -1;
-    }
-    if (path[0] == '\0') {
-        errno = ENOENT;
-        return -1;
-    }
-    return 0;
+	size_t n;
+
+	if (path == NULL) {
+		errno = EFAULT;
+		return -1;
+	}
+	n = strlen(path);
+	if (n == 0) {
+		errno = ENOENT;
+		return -1;
+	}
+	if (n > 64) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	if (myos_syscall3(MYOS_SYS_CHDIR, (long)(uintptr_t)path, (long)n, 0)
+	    == (long)MYOS_SYSERR) {
+		errno = ENOENT;
+		return -1;
+	}
+	return 0;
 }
 
 char *
 getcwd(char *buf, size_t size)
 {
-    if (buf == NULL || size == 0) {
-        errno = ERANGE;
-        return NULL;
-    }
-    if (size < 2) {
-        errno = ERANGE;
-        return NULL;
-    }
-    buf[0] = '/';
-    buf[1] = '\0';
-    return buf;
+	long n;
+
+	if (buf == NULL || size == 0) {
+		errno = EINVAL;
+		return NULL;
+	}
+	n = myos_syscall3(
+	    MYOS_SYS_GETCWD, (long)(uintptr_t)buf, (long)size, 0);
+	if (n == (long)MYOS_SYSERR) {
+		errno = ERANGE;
+		return NULL;
+	}
+	return buf;
 }

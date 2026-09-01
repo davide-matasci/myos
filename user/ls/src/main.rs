@@ -14,7 +14,7 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
 
 fn main() -> ! {
     let mut buf = [0u8; myos_user::LISTDIR_BUF];
-    let n = listdir(b"/", &mut buf);
+    let n = listdir(b".", &mut buf);
     if n != usize::MAX && n > 0 {
         write(&buf[..n]);
     }

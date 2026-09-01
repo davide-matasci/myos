@@ -16,7 +16,8 @@ myos_path_is_root(const char *path)
 	if (path == NULL || path[0] == '\0') {
 		return 1;
 	}
-	if (strcmp(path, ".") == 0 || strcmp(path, "/") == 0) {
+	/* "." is cwd-relative; only absolute root skips pre-stat. */
+	if (strcmp(path, "/") == 0) {
 		return 1;
 	}
 	while (*path == '/') {

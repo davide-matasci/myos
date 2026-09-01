@@ -25,7 +25,7 @@
 -			def_path = new;
 -		}
 -	}
-+	/* myos: PATH is _PATH_DEFPATH (/:/s:/c); skip confstr. */
++	/* myos: PATH is _PATH_DEFPATH (/s:/c:/); skip confstr. */
  
  	/* Set PATH to def_path (will set the path global variable).
  	 * (import of environment below will probably change this setting).
