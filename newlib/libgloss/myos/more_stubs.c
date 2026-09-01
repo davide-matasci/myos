@@ -3,12 +3,15 @@
 #include <fnmatch.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <unistd.h>
+
+#include "myos_syscalls.h"
 
 static int myos_rofs(void) {
     errno = EROFS;
@@ -53,8 +56,26 @@ int rmdir(const char *path) {
 }
 
 int pipe(int fildes[2]) {
-    (void)fildes;
-    return myos_nosys();
+    unsigned long fds[2];
+    long ret;
+
+    if (fildes == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    /* Kernel writes usize[2], not int[2]. */
+    ret = myos_syscall1(MYOS_SYS_PIPE, (long)(uintptr_t)fds);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EMFILE;
+        return -1;
+    }
+    fildes[0] = (int)fds[0];
+    fildes[1] = (int)fds[1];
+    return 0;
+}
+
+int _pipe(int fildes[2]) {
+    return pipe(fildes);
 }
 
 FILE *popen(const char *command, const char *type) {

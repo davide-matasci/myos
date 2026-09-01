@@ -1,0 +1,30 @@
+--- io.c
++++ io.c
+@@ -330,25 +330,8 @@
+ 
+ 	if (isdigit((unsigned char)name[0]) && !name[1]) {
+ 		fd = name[0] - '0';
+-		if ((fl = fcntl(fd, F_GETFL)) == -1) {
+-			if (emsgp)
+-				*emsgp = "bad file descriptor";
+-			return -1;
+-		}
+-		fl &= O_ACCMODE;
+-		/* X_OK is a kludge to disable this check for dups (x<&1):
+-		 * historical shells never did this check (XXX don't know what
+-		 * posix has to say).
+-		 */
+-		if (!(mode & X_OK) && fl != O_RDWR &&
+-		    (((mode & R_OK) && fl != O_RDONLY) ||
+-		    ((mode & W_OK) && fl != O_WRONLY))) {
+-			if (emsgp)
+-				*emsgp = (fl == O_WRONLY) ?
+-				    "fd not open for reading" :
+-				    "fd not open for writing";
+-			return -1;
+-		}
++		(void)fl;
++		(void)mode;
+ 		return fd;
+ 	} else if (name[0] == 'p' && !name[1])
+ 		return coproc_getfd(mode, emsgp);

@@ -1,0 +1,192 @@
+--- jobs.c
++++ jobs.c
+@@ -15,7 +15,6 @@
+  *
+  */
+ 
+-#include <sys/resource.h>
+ #include <sys/stat.h>
+ #include <sys/time.h>
+ #include <sys/wait.h>
+@@ -144,6 +143,7 @@
+ static void		put_job(Job *, int);
+ static void		remove_job(Job *, const char *);
+ static int		kill_job(Job *, int);
++static void		j_apply_wait(int, int);
+ 
+ /* initialize job control */
+ void
+@@ -160,8 +160,9 @@
+ 	setsig(&sigtraps[SIGCHLD], j_sigchld,
+ 	    SS_RESTORE_ORIG|SS_FORCE|SS_SHTRAP);
+ 
+-	if (!mflagset && Flag(FTALKING))
+-		Flag(FMONITOR) = 1;
++	(void)mflagset;
++	/* myos: no pgrp/SIGCHLD; keep FMONITOR off even when talking. */
++	Flag(FMONITOR) = 0;
+ 
+ 	/* shl_j is used to do asynchronous notification (used in
+ 	 * an interrupt handler, so need a distinct shf)
+@@ -182,11 +183,7 @@
+ 		}
+ 	}
+ 
+-	/* j_change() calls tty_init() */
+-	if (Flag(FMONITOR))
+-		j_change();
+-	else if (Flag(FTALKING))
+-		tty_init(true);
++	/* myos: no /dev/tty, F_DUPFD, or termios. stdin is already the console. */
+ }
+ 
+ /* suspend the shell */
+@@ -255,16 +252,10 @@
+ 		    ((j->flags & JF_FG) ||
+ 		    (Flag(FLOGIN) && !Flag(FNOHUP) && procpid == kshpid))))) {
+ 			killed = 1;
+-			if (j->pgrp == 0)
+-				kill_job(j, SIGHUP);
+-			else
+-				killpg(j->pgrp, SIGHUP);
+-			if (j->state == PSTOPPED) {
+-				if (j->pgrp == 0)
+-					kill_job(j, SIGCONT);
+-				else
+-					killpg(j->pgrp, SIGCONT);
+-			}
++			/* myos: no process groups; job control is off. */
++			kill_job(j, SIGHUP);
++			if (j->state == PSTOPPED)
++				kill_job(j, SIGCONT);
+ 		}
+ 	}
+ 	if (killed)
+@@ -499,8 +490,7 @@
+ 				setsig(&sigtraps[tt_sigs[i]], SIG_DFL,
+ 				    SS_RESTORE_DFL|SS_FORCE);
+ 		}
+-		if (Flag(FBGNICE) && (flags & XBGND))
+-			nice(4);
++		/* myos: no nice(2). */
+ 		if ((flags & XBGND) && !Flag(FMONITOR)) {
+ 			setsig(&sigtraps[SIGINT], SIG_IGN,
+ 			    SS_RESTORE_IGN|SS_FORCE);
+@@ -670,18 +660,10 @@
+ 		return 1;
+ 	}
+ 
+-	if (j->pgrp == 0) {	/* started when !Flag(FMONITOR) */
+-		if (kill_job(j, sig) < 0) {
+-			bi_errorf("%s: %s", cp, strerror(errno));
+-			rv = 1;
+-		}
+-	} else {
+-		if (j->state == PSTOPPED && (sig == SIGTERM || sig == SIGHUP))
+-			(void) killpg(j->pgrp, SIGCONT);
+-		if (killpg(j->pgrp, sig) == -1) {
+-			bi_errorf("%s: %s", cp, strerror(errno));
+-			rv = 1;
+-		}
++	/* myos: FMONITOR is off; no killpg. */
++	if (kill_job(j, sig) < 0) {
++		bi_errorf("%s: %s", cp, strerror(errno));
++		rv = 1;
+ 	}
+ 
+ 	sigprocmask(SIG_SETMASK, &omask, NULL);
+@@ -760,7 +742,7 @@
+ 			async_job = NULL;
+ 	}
+ 
+-	if (j->state == PRUNNING && killpg(j->pgrp, SIGCONT) == -1) {
++	if (j->state == PRUNNING && kill_job(j, SIGCONT) == -1) {
+ 		int	err = errno;
+ 
+ 		if (!bg) {
+@@ -1000,7 +982,14 @@
+ 
+ 	while ((volatile int) j->state == PRUNNING ||
+ 	    ((flags & JW_STOPPEDWAIT) && (volatile int) j->state == PSTOPPED)) {
+-		sigsuspend(&sm_default);
++		int status;
++		pid_t wpid;
++
++		/* Kernel wait is wait-any blocking; SIGCHLD is ENOSYS. */
++		wpid = waitpid(-1, &status, 0);
++		if (wpid <= 0)
++			break;
++		j_apply_wait(wpid, status);
+ 		if (fatal_trap) {
+ 			int oldf = j->flags & (JF_WAITING|JF_W_ASYNCNOTIFY);
+ 			j->flags &= ~(JF_WAITING|JF_W_ASYNCNOTIFY);
+@@ -1124,6 +1113,29 @@
+ 	return rv;
+ }
+ 
++static void
++j_apply_wait(int pid, int status)
++{
++	Job	*j;
++	Proc	*p = NULL;
++
++	for (j = job_list; j != NULL; j = j->next)
++		for (p = j->proc_list; p != NULL; p = p->next)
++			if (p->pid == pid)
++				goto found;
++found:
++	if (j == NULL)
++		return;
++	p->status = status;
++	if (WIFSTOPPED(status))
++		p->state = PSTOPPED;
++	else if (WIFSIGNALED(status))
++		p->state = PSIGNALLED;
++	else
++		p->state = PEXITED;
++	check_job(j);
++}
++
+ /* SIGCHLD handler to reap children and update job states
+  *
+  * Expects sigchld to be blocked.
+@@ -1136,7 +1148,6 @@
+ 	Proc		*p = NULL;
+ 	int		pid;
+ 	int		status;
+-	struct rusage	ru0, ru1;
+ 
+ 	/* Don't wait for any processes if a job is partially started.
+ 	 * This is so we don't do away with the process group leader
+@@ -1149,15 +1160,12 @@
+ 			goto finished;
+ 		}
+ 
+-	getrusage(RUSAGE_CHILDREN, &ru0);
+ 	do {
+ 		pid = waitpid(-1, &status, (WNOHANG|WUNTRACED));
+ 
+ 		if (pid <= 0)	/* return if would block (0) ... */
+ 			break;	/* ... or no children or interrupted (-1) */
+ 
+-		getrusage(RUSAGE_CHILDREN, &ru1);
+-
+ 		/* find job and process structures for this pid */
+ 		for (j = job_list; j != NULL; j = j->next)
+ 			for (p = j->proc_list; p != NULL; p = p->next)
+@@ -1169,15 +1177,9 @@
+ 			warningf(true, "bad process waited for (pid = %d)",
+ 				pid);
+ 			 */
+-			ru0 = ru1;
+ 			continue;
+ 		}
+ 
+-		timeradd(&j->usrtime, &ru1.ru_utime, &j->usrtime);
+-		timersub(&j->usrtime, &ru0.ru_utime, &j->usrtime);
+-		timeradd(&j->systime, &ru1.ru_stime, &j->systime);
+-		timersub(&j->systime, &ru0.ru_stime, &j->systime);
+-		ru0 = ru1;
+ 		p->status = status;
+ 		if (WIFSTOPPED(status))
+ 			p->state = PSTOPPED;

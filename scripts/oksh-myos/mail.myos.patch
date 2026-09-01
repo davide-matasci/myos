@@ -1,0 +1,36 @@
+--- mail.c
++++ mail.c
+@@ -31,7 +31,7 @@
+ 
+ static mbox_t	*mplist;
+ static mbox_t	mbox;
+-static struct	timespec mlastchkd;	/* when mail was last checked */
++static time_t		mlastchkd;	/* when mail was last checked */
+ static time_t	mailcheck_interval;
+ 
+ static void	munset(mbox_t *); /* free mlist and mval */
+@@ -42,7 +42,7 @@
+ mcheck(void)
+ {
+ 	mbox_t		*mbp;
+-	struct timespec	 elapsed, now;
++	time_t		 now;
+ 	struct tbl	*vp;
+ 	struct stat	 stbuf;
+ 	static int	 first = 1;
+@@ -56,13 +56,12 @@
+ 	if (mbp == NULL)
+ 		return;
+ 
+-	clock_gettime(CLOCK_MONOTONIC, &now);
++	now = time(NULL);
+ 	if (first) {
+ 		mlastchkd = now;
+ 		first = 0;
+ 	}
+-	timespecsub(&now, &mlastchkd, &elapsed);
+-	if (elapsed.tv_sec >= mailcheck_interval) {
++	if (now - mlastchkd >= mailcheck_interval) {
+ 		mlastchkd = now;
+ 
+ 		while (mbp) {

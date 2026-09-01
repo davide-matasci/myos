@@ -16,13 +16,18 @@ fi
 
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
+# HAVE_FCNTL: libc fcntl() must call _fcntl (libgloss), not return ENOSYS.
+# Needed for oksh savefd/F_DUPFD (pipes). Also set via configure.host; this
+# CFLAGS line is the reliable path.
+TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL"
+
 build_one() {
   local arch="$1"
   local triple="${arch}-unknown-myos"
   local build="$ROOT/target/newlib-build-${arch}"
   local prefix="$ROOT/target/newlib-${arch}"
 
-  echo "==> newlib libc ($triple)"
+  echo "==> newlib libc ($triple) [HAVE_FCNTL]"
   rm -rf "$build"
   mkdir -p "$build"
   cd "$build"
@@ -41,8 +46,8 @@ build_one() {
     AR_FOR_TARGET="${triple}-ar" \
     RANLIB_FOR_TARGET="${triple}-ranlib" \
     NM_FOR_TARGET="${triple}-nm" \
-    CFLAGS_FOR_TARGET="-ffreestanding -fPIC -O2" \
-    CXXFLAGS_FOR_TARGET="-ffreestanding -fPIC -O2"
+    CFLAGS_FOR_TARGET="$TARGET_CFLAGS" \
+    CXXFLAGS_FOR_TARGET="$TARGET_CFLAGS"
 
   make -j"$(nproc)" all-target-newlib
   make install-target-newlib

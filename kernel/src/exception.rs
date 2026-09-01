@@ -34,9 +34,36 @@ pub fn x86_page_fault(cr2: u64, rip: u64, rsp: u64, code: u64, user: bool) -> ! 
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn x86_general_protection(rip: u64, rsp: u64, code: u64) -> ! {
+pub fn x86_general_protection(rip: u64, rsp: u64, code: u64, rbp: u64) -> ! {
+    // Dump faulting bytes so pipe/#GP CI failures are diagnosable without artifacts.
+    let mut insn = [0u8; 16];
+    let mut n = 0usize;
+    let aspace = task::current_aspace();
+    if aspace != 0 {
+        for i in 0..16 {
+            match crate::user::try_read_user_u8(aspace, rip as usize + i) {
+                Some(b) => {
+                    insn[i] = b;
+                    n = i + 1;
+                }
+                None => break,
+            }
+        }
+    }
+    let mut hex = String::new();
+    for i in 0..n {
+        if i > 0 {
+            hex.push(' ');
+        }
+        hex.push_str(&format!("{:02x}", insn[i]));
+    }
+    if hex.is_empty() {
+        hex.push_str("unreadable");
+    }
     fatal_line(&format!(
-        "general protection rip={rip:#x} rsp={rsp:#x} code={code:#x}{ctx}",
+        "general protection rip={rip:#x} rsp={rsp:#x} rbp={rbp:#x} rsp16={} rbp16={} code={code:#x} insn=[{hex}]{ctx}",
+        rsp & 15,
+        rbp & 15,
         ctx = task_ctx(),
     ));
 }

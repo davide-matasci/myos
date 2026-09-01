@@ -1,20 +1,50 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{exec, exit};
+use myos_user::{exec, exit, fork, wait_status, write};
+
+fn smoke_fork_ping() {
+    match fork() {
+        Some(0) => exit(),
+        Some(_) => {
+            let _ = wait_status();
+            write(b"fork ok\n");
+        }
+        None => write(b"fork failed\n"),
+    }
+}
+
+fn smoke_fork_exec_ok() {
+    match fork() {
+        Some(0) => {
+            exec(b"/ok", &[b"ok"]);
+            exit();
+        }
+        Some(_) => {
+            let _ = wait_status();
+            write(b"fork exec ok\n");
+        }
+        None => write(b"fork failed\n"),
+    }
+}
+
+fn start() -> ! {
+    smoke_fork_ping();
+    smoke_fork_exec_ok();
+    exec(b"/sh", &[b"/sh"]);
+    exit();
+}
 
 #[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    exec(b"/sh", &[]);
-    exit();
+    start()
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(_argc: usize, _argv: *const usize) -> ! {
-    exec(b"/sh", &[]);
-    exit();
+    start()
 }
 
 #[panic_handler]

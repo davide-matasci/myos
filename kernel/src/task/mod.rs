@@ -30,7 +30,9 @@ const MAX_TASKS: usize = 8;
 /// `[MAX_INIT_PAGES]`/`[USER_STACK_PAGES]` frame arrays). 8 KiB overflowed after
 /// widening the user stack to 64 KiB (AArch64 CI hung in `dealloc`).
 const STACK_SIZE: usize = 16 * 1024;
-const MAX_FDS: usize = 8;
+/// oksh `FDBASE` is 10 (`fcntl(F_DUPFD)` for tty/script fds). 8 was enough for
+/// the tiny Rust shell; 16 leaves room for stdio + FDBASE + a pipe.
+const MAX_FDS: usize = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FdEntry {
@@ -109,6 +111,9 @@ enum State {
 
 /// User register snapshot so a forked child can resume after the syscall
 /// with the same callee-saved state the parent had (rax/x0 forced to 0).
+/// `#[repr(C)]` is required: `enter_fork_x86` historically used fixed
+/// offsets into this struct; keep a stable layout even if that path changes.
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ForkRegs {
     pub rip: usize,
@@ -366,6 +371,26 @@ pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
         fd_drop(t.fds[newfd]);
         t.fds[newfd] = fd_clone(old);
         true
+    })
+}
+
+/// First free fd >= `minfd` that clones `oldfd` (fcntl F_DUPFD).
+pub fn fd_dup_min(oldfd: usize, minfd: usize) -> Option<usize> {
+    if oldfd >= MAX_FDS || minfd >= MAX_FDS {
+        return None;
+    }
+    with_current_mut(|t| {
+        let old = t.fds[oldfd];
+        if old == FdEntry::Empty {
+            return None;
+        }
+        for i in minfd..MAX_FDS {
+            if t.fds[i] == FdEntry::Empty {
+                t.fds[i] = fd_clone(old);
+                return Some(i);
+            }
+        }
+        None
     })
 }
 

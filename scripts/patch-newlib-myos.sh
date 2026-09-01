@@ -27,11 +27,20 @@ patch_config_sub() {
 patch_configure_host() {
   local f="$NEWLIB_SRC/newlib/configure.host"
   if grep -q '\*-\*-myos\*)' "$f"; then
+    if ! grep -q 'HAVE_FCNTL' "$f"; then
+      # Insert HAVE_FCNTL on the line after syscall_dir=syscalls inside the myos arm.
+      sed -i '/\*-\\*-myos\*)/,/;;/{
+        /syscall_dir=syscalls/a\
+\tnewlib_cflags="${newlib_cflags} -DHAVE_FCNTL"
+      }' "$f"
+      echo "patched newlib/configure.host myos for HAVE_FCNTL"
+    fi
     return
   fi
   sed -i '/^  \*)$/i\
   *-*-myos*)\
 \tsyscall_dir=syscalls\
+\tnewlib_cflags="${newlib_cflags} -DHAVE_FCNTL"\
 \t;;\
 ' "$f"
   echo "patched newlib/configure.host for myos"

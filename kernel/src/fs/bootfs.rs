@@ -123,7 +123,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     for (i, slot) in files.iter().flatten().enumerate() {
         if slot.len == name.len() && &slot.name[..slot.len] == name.as_bytes() {
             return Some(StatInfo {
-                mode: S_IFREG | 0o444,
+                mode: S_IFREG | 0o555,
                 size: slot.data.len() as u32,
                 ino: (i as u32) + 2,
                 nlink: 1,

@@ -24,6 +24,7 @@ const SYS_PIPE: usize = 10;
 const SYS_DUP2: usize = 11;
 pub const SYS_STAT: usize = 12;
 const SYS_EXECNAME: usize = 13;
+const SYS_DUPFD: usize = 14;
 pub const PAGE: usize = 4096;
 /// User stack below the heap. x86_64 uses 1 MiB; AArch64 uses 512 KiB.
 /// AArch64 user maps spill into L2[1+] when code+stack+heap exceed 512 pages.
@@ -66,6 +67,29 @@ static USER_BASE: AtomicU64 = AtomicU64::new(DEFAULT_USER_BASE);
 #[cfg(target_arch = "x86_64")]
 static mut KERNEL_RSP0: usize = 0;
 
+/// User callee-saved regs at syscall entry (before Rust can clobber them).
+/// Copied into `ForkRegs` on SYS_FORK so fork-continue children resume correctly.
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+struct ForkCalleeSaved {
+    rbx: u64,
+    rbp: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+static mut FORK_CALLEE: ForkCalleeSaved = ForkCalleeSaved {
+    rbx: 0,
+    rbp: 0,
+    r12: 0,
+    r13: 0,
+    r14: 0,
+    r15: 0,
+};
+
 #[cfg(target_arch = "riscv64")]
 static mut KERNEL_SSCRATCH: usize = 0;
 
@@ -77,6 +101,13 @@ syscall_entry:
     cli
     mov r10, rsp
     mov rsp, [rip + {kernel_rsp0}]
+    # Snapshot user callee-saved before any Rust prologue can reuse them.
+    mov [rip + {fork_callee}], rbx
+    mov [rip + {fork_callee} + 8], rbp
+    mov [rip + {fork_callee} + 16], r12
+    mov [rip + {fork_callee} + 24], r13
+    mov [rip + {fork_callee} + 32], r14
+    mov [rip + {fork_callee} + 40], r15
     push r11
     push r9
     push r8
@@ -100,6 +131,7 @@ syscall_entry:
     sysretq
     "#,
     kernel_rsp0 = sym KERNEL_RSP0,
+    fork_callee = sym FORK_CALLEE,
     dispatch = sym syscall_dispatch,
 );
 
@@ -122,19 +154,36 @@ pub fn init() {
 /// and with CR0.TS set, the first SSE insn in userspace raises #NM.
 #[cfg(target_arch = "x86_64")]
 fn init_user_sse() {
+    const CR0_EM: u64 = 1 << 2;
     const CR0_TS: u64 = 1 << 3;
+    const CR0_MP: u64 = 1 << 1;
     const CR4_OSFXSR: u64 = 1 << 9;
     const CR4_OSXMMEXCPT: u64 = 1 << 10;
     let (mut cr0, mut cr4): (u64, u64);
     unsafe {
         core::arch::asm!("mov {}, cr0", out(reg) cr0);
         core::arch::asm!("mov {}, cr4", out(reg) cr4);
-        cr0 &= !CR0_TS;
+        cr0 &= !(CR0_EM | CR0_TS);
+        cr0 |= CR0_MP;
         cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
         core::arch::asm!("mov cr0, {}", in(reg) cr0);
         core::arch::asm!("mov cr4, {}", in(reg) cr4);
+        // Clean x87/SSE control state so user ldmxcsr/SSE spills see default MXCSR.
+        core::arch::asm!(
+            "fninit",
+            "ldmxcsr [rip + {mxcsr}]",
+            mxcsr = sym USER_MXCSR_DEFAULT,
+            options(nostack),
+        );
     }
 }
+
+/// Default MXCSR (same as post-RESET): flush-to-zero off, all exceptions masked.
+#[cfg(target_arch = "x86_64")]
+#[repr(C, align(16))]
+struct MxcsrCell(u32);
+#[cfg(target_arch = "x86_64")]
+static USER_MXCSR_DEFAULT: MxcsrCell = MxcsrCell(0x1F80);
 
 /// newlib stdio init uses NEON (movi v0.2d). With CPACR_EL1.FPEN=0, EL0 traps on SIMD.
 #[cfg(target_arch = "aarch64")]
@@ -452,7 +501,8 @@ fn expand_user_elf(
     Some((entry as usize, n_pages * PAGE, new_stack_off))
 }
 
-/// SysV-style user stack: `[argc][argv…][NULL][envp…][NULL][strings]`, 16-byte aligned.
+/// SysV-style user stack at process entry (`rsp % 16 == 0`):
+/// `[argc][argv…][NULL][envp…][NULL][AT_NULL auxv][gap][strings…]`.
 fn build_argv_stack(
     aspace: u64,
     user_base: u64,
@@ -509,17 +559,18 @@ fn build_argv_stack(
     if sp < stack_bot {
         return None;
     }
-    let words = 1 + args.len() + 1 + env.len() + 1;
+    // argc + argv + NULL + envp + NULL + auxv AT_NULL (type,val).
+    let words = 1 + args.len() + 1 + env.len() + 1 + 2;
     sp = sp.checked_sub(words * core::mem::size_of::<usize>())?;
+    // Linux/SysV AMD64: %rsp ≡ 0 (mod 16) at _start. crt0/`call` then yields
+    // callee %rsp ≡ 8. fe50282 forced ≡8 with an extra `sp -= 8`, which inverted
+    // every frame (oksh pipe #GP) and required a matching dummy `push` in the
+    // Rust PAL; keep ≡0 here and leave PAL without that pad.
     let pad = sp & 15;
     if pad != 0 {
         sp = sp.checked_sub(pad)?;
     }
-    // AMD64 psABI: at _start, %rsp ≡ 8 (mod 16) as if the kernel had called it.
-    #[cfg(target_arch = "x86_64")]
-    {
-        sp = sp.checked_sub(8)?;
-    }
+    debug_assert_eq!(sp & 15, 0);
     if sp < stack_bot {
         return None;
     }
@@ -544,6 +595,16 @@ fn build_argv_stack(
         }
         sp += core::mem::size_of::<usize>();
     }
+    if !write_user_usize(aspace, sp, 0) {
+        return None;
+    }
+    sp += core::mem::size_of::<usize>();
+    // Minimal auxv terminator (AT_NULL). Fresh stacks are zeroed, but write it
+    // explicitly so crt0/std walkers never read string bytes as aux entries.
+    if !write_user_usize(aspace, sp, 0) {
+        return None;
+    }
+    sp += core::mem::size_of::<usize>();
     if !write_user_usize(aspace, sp, 0) {
         return None;
     }
@@ -583,6 +644,10 @@ pub fn copy_to_user(aspace: u64, va: usize, src: &[u8]) -> bool {
 
 fn write_user_usize(aspace: u64, va: usize, val: usize) -> bool {
     write_user_bytes(aspace, va, &val.to_le_bytes())
+}
+
+pub fn try_read_user_u8(aspace: u64, va: usize) -> Option<u8> {
+    read_user_byte(aspace, va)
 }
 
 fn read_user_byte(aspace: u64, va: usize) -> Option<u8> {
@@ -1107,38 +1172,86 @@ pub fn enter_fork(regs: task::ForkRegs) -> ! {
     enter_fork_riscv64(regs);
 }
 
+/// Packed resume image for `fork_iret_to_user` (global_asm). Layout must match
+/// the offsets in that stub — do not reorder fields.
+#[cfg(target_arch = "x86_64")]
+#[repr(C, align(16))]
+struct ForkResumeX86 {
+    rbx: u64,
+    rbp: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    r#"
+    .global fork_iret_to_user
+fork_iret_to_user:
+    cli
+    # Clear CR0.EM|TS (mask ~0xc); set MP.
+    mov rax, cr0
+    # ~ (EM|TS)= ~0xc = -13; signed imm32 (0xfffffff3 alone is rejected)
+    and rax, -13
+    or  rax, 2
+    mov cr0, rax
+    fninit
+    ldmxcsr [rip + {mxcsr}]
+    # rdi -> ForkResumeX86. Restore user callee-saved, then iret frame.
+    mov rbx, [rdi]
+    mov rbp, [rdi + 8]
+    mov r12, [rdi + 16]
+    mov r13, [rdi + 24]
+    mov r14, [rdi + 32]
+    mov r15, [rdi + 40]
+    lea rsp, [rdi + 48]
+    xor rax, rax
+    iretq
+    "#,
+    mxcsr = sym USER_MXCSR_DEFAULT,
+);
+
+#[cfg(target_arch = "x86_64")]
+unsafe extern "C" {
+    fn fork_iret_to_user(resume: *const ForkResumeX86) -> !;
+}
+
 #[cfg(target_arch = "x86_64")]
 fn enter_fork_x86(regs: task::ForkRegs) -> ! {
     let cs = (crate::arch::gdt::user_cs() | 3) as u64;
     let ss = (crate::arch::gdt::user_ss() | 3) as u64;
     let rflags: u64 = 0x202;
-    // Iret frame in memory (RIP, CS, RFLAGS, RSP, SS). Do not feed eleven
-    // `in(reg)` operands into one asm block: LLVM reused rbx for both user CS
-    // and ForkRegs.rbx, then pushed 0 as CS → #GP(0) on iretq (CI #121).
-    let frame = [
-        regs.rip as u64,
+    // Resume through global_asm — not inline asm. Prior enter_fork_x86 variants
+    // used black_box arrays + as_ptr() / forbidden rbx,rbp constraints; LLVM
+    // could leave the child with garbage callee-saved regs. Identical #GP
+    // rip/rsp across those "fixes" matches a restore that never stuck.
+    // Parent returns via sysret with the same user RSP; child must get the
+    // exact syscall RSP and the FORK_CALLEE snapshot of rbx/rbp/r12–r15.
+    let resume = ForkResumeX86 {
+        rbx: regs.rbx,
+        rbp: regs.rbp,
+        r12: regs.r12,
+        r13: regs.r13,
+        r14: regs.r14,
+        r15: regs.r15,
+        rip: regs.rip as u64,
         cs,
         rflags,
-        regs.rsp as u64,
+        rsp: regs.rsp as u64,
         ss,
-    ];
-    let r = core::ptr::addr_of!(regs);
+    };
+    // Volatile write so the stores exist in memory before the asm reads them.
+    let mut slot = core::mem::MaybeUninit::<ForkResumeX86>::uninit();
     unsafe {
-        core::arch::asm!(
-            "cli",
-            "mov rbx, [{r} + 16]",
-            "mov rbp, [{r} + 24]",
-            "mov r12, [{r} + 32]",
-            "mov r13, [{r} + 40]",
-            "mov r14, [{r} + 48]",
-            "mov r15, [{r} + 56]",
-            "mov rsp, {f}",
-            "xor rax, rax",
-            "iretq",
-            r = in(reg) r,
-            f = in(reg) frame.as_ptr(),
-            options(noreturn),
-        );
+        core::ptr::write_volatile(slot.as_mut_ptr(), resume);
+        fork_iret_to_user(slot.as_ptr());
     }
 }
 
@@ -1204,6 +1317,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
         SYS_DUP2 => sys_dup2(a0, a1),
+        SYS_DUPFD => sys_dupfd(a0, a1),
         SYS_STAT => sys_stat(a0, a1, a2),
         SYS_EXECNAME => sys_exec_name(a0, a1),
         _ => SYSERR,
@@ -1546,39 +1660,18 @@ fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
 fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     #[cfg(target_arch = "x86_64")]
     let child = {
-        let rbx: u64;
-        let rbp: u64;
-        let r12: u64;
-        let r13: u64;
-        let r14: u64;
-        let r15: u64;
-        // syscall_entry leaves user callee-saved regs in place.
-        unsafe {
-            core::arch::asm!(
-                "mov {rbx}, rbx",
-                "mov {rbp}, rbp",
-                "mov {r12}, r12",
-                "mov {r13}, r13",
-                "mov {r14}, r14",
-                "mov {r15}, r15",
-                rbx = out(reg) rbx,
-                rbp = out(reg) rbp,
-                r12 = out(reg) r12,
-                r13 = out(reg) r13,
-                r14 = out(reg) r14,
-                r15 = out(reg) r15,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
+        // Use the snapshot from syscall_entry — live rbx/rbp/r12–r15 here may
+        // already be Rust scratch (prologues saved the user values on the stack).
+        let c = unsafe { core::ptr::addr_of!(FORK_CALLEE).read() };
         task::ForkRegs {
             rip: user_rip,
             rsp: user_rsp,
-            rbx,
-            rbp,
-            r12,
-            r13,
-            r14,
-            r15,
+            rbx: c.rbx,
+            rbp: c.rbp,
+            r12: c.r12,
+            r13: c.r13,
+            r14: c.r14,
+            r15: c.r15,
         }
     };
     #[cfg(target_arch = "aarch64")]
@@ -1639,6 +1732,13 @@ fn sys_pipe(fds_ptr: usize) -> usize {
 
 fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     if task::fd_dup2(oldfd, newfd) { 0 } else { SYSERR }
+}
+
+fn sys_dupfd(oldfd: usize, minfd: usize) -> usize {
+    match task::fd_dup_min(oldfd, minfd) {
+        Some(fd) => fd,
+        None => SYSERR,
+    }
 }
 
 fn sys_exec_name(buf: usize, len: usize) -> usize {

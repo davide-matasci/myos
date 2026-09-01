@@ -1,0 +1,15 @@
+--- c_ksh.c
++++ c_ksh.c
+@@ -1242,10 +1242,8 @@
+ 			    p);
+ 			rv = 1;
+ 		} else {
+-			/* use killpg if < -1 since -1 does special things for
+-			 * some non-killpg-endowed kills
+-			 */
+-			if ((n < -1 ? killpg(-n, sig) : kill(n, sig)) == -1) {
++			/* myos: no process groups. */
++			if (kill(n < -1 ? -n : n, sig) == -1) {
+ 				bi_errorf("%s: %s", p, strerror(errno));
+ 				rv = 1;
+ 			}
