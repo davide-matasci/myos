@@ -1186,8 +1186,9 @@ fork_iret_to_user:
     cli
     # Clear CR0.EM|TS (mask ~0xc); set MP.
     mov rax, cr0
-    and rax, 0xfffffff3
-    or  rax, 0x2
+    # ~ (EM|TS)= ~0xc = -13; signed imm32 (0xfffffff3 alone is rejected)
+    and rax, -13
+    or  rax, 2
     mov cr0, rax
     fninit
     ldmxcsr [rip + {mxcsr}]
