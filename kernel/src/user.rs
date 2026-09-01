@@ -45,9 +45,9 @@ pub const USER_STACK_PAGES: usize = 256;
 const HEAP_PAGES: usize = 180;
 #[cfg(not(target_arch = "aarch64"))]
 const HEAP_PAGES: usize = 256;
-/// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy (today
-/// release `uutils-coreutils` ≈366 pages).
-const MAX_INIT_PAGES: usize = 384;
+/// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy.
+/// release `uutils-coreutils` ≈366 pages; ripgrep+PCRE2 (opt-level=z, LTO) ≈721.
+const MAX_INIT_PAGES: usize = 1024;
 /// In-place `reload_user_elf` scratch and mapping cap (sbase-cat scale).
 const MAX_RELOAD_PAGES: usize = 40;
 /// Minimum code pages reserved below the user stack so post-fork `exec` can

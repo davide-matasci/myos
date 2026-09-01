@@ -11,6 +11,7 @@ MYOS_C_HELLO_VERSION="$MYOS_ROOT/target/.myos-c-hello-version"
 MYOS_SBASE_VERSION="$MYOS_ROOT/target/.myos-sbase-version"
 MYOS_OKSH_VERSION="$MYOS_ROOT/target/.myos-oksh-version"
 MYOS_COREUTILS_VERSION="$MYOS_ROOT/target/.myos-coreutils-version"
+MYOS_RIPGREP_VERSION="$MYOS_ROOT/target/.myos-ripgrep-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
@@ -170,5 +171,36 @@ myos_coreutils_is_current() {
       return 1
     fi
     [[ -f "$MYOS_ROOT/target/coreutils-${triple}" ]] || return 1
+  done
+}
+
+
+myos_ripgrep_version_hash() {
+  local h
+  h="$(
+    {
+      sha256sum "$MYOS_ROOT/scripts/build-ripgrep-myos.sh"
+      sha256sum "$MYOS_ROOT/scripts/prepare-ripgrep-myos.sh"
+      sha256sum "$MYOS_ROOT/scripts/fetch-ripgrep.sh"
+      sha256sum "$MYOS_ROOT/scripts/fetch-pcre2.sh"
+      sha256sum "$MYOS_ROOT/scripts/build-pcre2-myos.sh"
+      sha256sum "$MYOS_ROOT/patches/ripgrep/versions.env"
+      sha256sum "$MYOS_ROOT/vendor/ripgrep-port/cargo-config.toml"
+      find "$MYOS_ROOT/patches/ripgrep" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      myos_newlib_version_hash
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_ripgrep_is_current() {
+  local arch triple
+  [[ -f "$MYOS_RIPGREP_VERSION" ]] \
+    && [[ "$(cat "$MYOS_RIPGREP_VERSION")" == "$(myos_ripgrep_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    triple="${arch}-unknown-myos"
+    [[ -f "$MYOS_ROOT/target/rg-${triple}" ]] || return 1
   done
 }

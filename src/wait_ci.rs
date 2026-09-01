@@ -35,7 +35,7 @@ const CI_NEEDLES: [&str; 21] = [
 
 /// Heavy markers from CI-only `/heap` (typed at `$` on every arch).
 /// Pre-prompt readiness stays slim; these are required after interactive `heap`.
-const CI_NEEDLES_STD: [&str; 11] = [
+const CI_NEEDLES_STD: [&str; 12] = [
     "std ok",
     "std cat ok",
     "std echo ok",
@@ -46,6 +46,7 @@ const CI_NEEDLES_STD: [&str; 11] = [
     "uutils echo ok",
     "uutils true ok",
     "uutils false ok",
+    "ripgrep ok",
     "sbase argv ok",
 ];
 

@@ -21,7 +21,12 @@ pub use stub::{
 pub struct File(FileDesc);
 
 #[derive(Clone)]
-pub struct FileAttr(!);
+pub struct FileAttr {
+    size: u64,
+    is_dir: bool,
+    is_file: bool,
+    is_symlink: bool,
+}
 
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
@@ -51,12 +56,34 @@ pub fn readdir(_path: &Path) -> io::Result<ReadDir> {
     unsupported()
 }
 
-pub fn stat(_path: &Path) -> io::Result<FileAttr> {
-    unsupported()
+const S_IFMT: u32 = 0o170000;
+const S_IFDIR: u32 = 0o040000;
+const S_IFREG: u32 = 0o100000;
+const S_IFLNK: u32 = 0o120000;
+
+fn stat_path(path: &Path) -> io::Result<FileAttr> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() {
+        return Err(io::const_error!(ErrorKind::InvalidInput, "empty path"));
+    }
+    let mut buf = abi::StatBuf { st_mode: 0, st_size: 0, st_ino: 0, st_nlink: 0 };
+    cvt(abi::stat(bytes, &mut buf))?;
+    let fmt = buf.st_mode & S_IFMT;
+    Ok(FileAttr {
+        size: buf.st_size as u64,
+        is_dir: fmt == S_IFDIR,
+        is_file: fmt == S_IFREG,
+        is_symlink: fmt == S_IFLNK,
+    })
 }
 
-pub fn lstat(_path: &Path) -> io::Result<FileAttr> {
-    unsupported()
+pub fn stat(path: &Path) -> io::Result<FileAttr> {
+    stat_path(path)
+}
+
+pub fn lstat(path: &Path) -> io::Result<FileAttr> {
+    // myos has no distinct lstat yet; same as stat.
+    stat_path(path)
 }
 
 pub fn set_perm(_path: &Path, _perm: FilePermissions) -> io::Result<()> {
@@ -73,7 +100,7 @@ pub fn set_times_nofollow(_path: &Path, _times: FileTimes) -> io::Result<()> {
 
 impl FileAttr {
     pub fn size(&self) -> u64 {
-        self.0
+        self.size
     }
 
     pub fn perm(&self) -> FilePermissions {
@@ -81,19 +108,19 @@ impl FileAttr {
     }
 
     pub fn file_type(&self) -> FileType {
-        FileType { is_file: true }
+        FileType { is_file: self.is_file && !self.is_dir && !self.is_symlink }
     }
 
     pub fn modified(&self) -> io::Result<SystemTime> {
-        self.0
+        unsupported()
     }
 
     pub fn accessed(&self) -> io::Result<SystemTime> {
-        self.0
+        unsupported()
     }
 
     pub fn created(&self) -> io::Result<SystemTime> {
-        self.0
+        unsupported()
     }
 }
 
@@ -218,6 +245,7 @@ impl File {
     }
 
     pub fn file_attr(&self) -> io::Result<FileAttr> {
+        // No fstat yet; unsupported keeps callers on the open/read path.
         unsupported()
     }
 

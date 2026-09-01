@@ -105,6 +105,7 @@ fn main() {
         embed_oksh_elf(manifest, &arch);
         embed_sbase_manifest(manifest, &arch, Path::new(&out));
         embed_coreutils_manifest(manifest, &arch, Path::new(&out));
+        embed_ripgrep_elf(manifest, &arch, Path::new(&out));
     }
 }
 
@@ -156,6 +157,38 @@ fn embed_coreutils_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     body.push_str("}\n");
     let dest = out_dir.join("coreutils_embed.rs");
     std::fs::write(&dest, body).expect("write coreutils_embed.rs");
+}
+
+
+fn embed_ripgrep_elf(manifest_dir: &Path, arch: &str, out_dir: &Path) {
+    let triple = if arch == "x86_64" {
+        "x86_64-unknown-myos"
+    } else if arch == "aarch64" {
+        "aarch64-unknown-myos"
+    } else if arch == "riscv64" {
+        "riscv64-unknown-myos"
+    } else {
+        return;
+    };
+    let elf = manifest_dir
+        .join("../target")
+        .join(format!("rg-{triple}"));
+    println!("cargo:rerun-if-changed={}", elf.display());
+    if !elf.is_file() {
+        panic!(
+            "ripgrep ELF missing at {} (run ./scripts/build-ripgrep-myos.sh)",
+            elf.display()
+        );
+    }
+    let mut body = String::from("pub fn register_all() {\n");
+    body.push_str(&format!(
+        "    const RG_ELF: &[u8] = include_bytes!(r\"{}\");\n",
+        elf.display()
+    ));
+    body.push_str("    let _ = super::register(\"rg\", RG_ELF);\n");
+    body.push_str("}\n");
+    let dest = out_dir.join("ripgrep_embed.rs");
+    std::fs::write(&dest, body).expect("write ripgrep_embed.rs");
 }
 
 fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {

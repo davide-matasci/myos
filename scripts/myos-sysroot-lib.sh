@@ -135,3 +135,30 @@ myos_cargo_build_app() {
     --manifest-path "$manifest" \
     --bin "$bin"
 }
+
+MYOS_STD_HELLO_VERSION="$MYOS_ROOT/target/.myos-std-hello-version"
+
+myos_std_hello_version_hash() {
+  local h
+  h="$(
+    {
+      myos_sysroot_version_hash
+      sha256sum "$MYOS_ROOT/scripts/build-std-hello.sh"
+      find "$MYOS_ROOT/std/examples" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_std_hello_is_current() {
+  local triple name
+  [[ -f "$MYOS_STD_HELLO_VERSION" ]] \
+    && [[ "$(cat "$MYOS_STD_HELLO_VERSION")" == "$(myos_std_hello_version_hash)" ]] \
+    || return 1
+  for triple in "${MYOS_USER_TRIPLES[@]}"; do
+    for name in hello cat echo bigalloc; do
+      [[ -f "$MYOS_ROOT/target/std-${name}-${triple}" ]] || return 1
+    done
+  done
+}

@@ -10,8 +10,49 @@ if [[ -f ci-build.tar ]]; then
   tar -xf ci-build.tar
 fi
 
+restore_packed_rg_elves() {
+  # Prefer real target/rg-* from ci-build.tar. Fall back to the old
+  # target/coreutils-rg-* alias used before the workflow packed rg directly.
+  shopt -s nullglob
+  local f dest
+  for f in target/coreutils-rg-*; do
+    dest="target/rg-${f#target/coreutils-rg-}"
+    if [[ ! -f "$dest" ]]; then
+      cp "$f" "$dest"
+      echo "restored $dest from $f"
+    fi
+  done
+}
+
+rg_elves_ready() {
+  [[ -f target/rg-x86_64-unknown-myos \
+     && -f target/rg-aarch64-unknown-myos \
+     && -f target/rg-riscv64-unknown-myos ]]
+}
+
+rebuild_kernels() {
+  echo "==> rebuilding kernels so include_bytes! picks up /c/rg"
+  cargo clean -p myos
+  cargo clean -p kernel --target x86_64-unknown-none
+  cargo clean -p kernel --target aarch64-unknown-none-softfloat
+  cargo clean -p kernel --target riscv64imac-unknown-none-elf
+  cargo build
+  cargo build -p kernel --target aarch64-unknown-none-softfloat
+  cargo build -p kernel --target riscv64imac-unknown-none-elf
+}
+
 if [[ -x target/debug/myos && -f target/bios.img ]]; then
   echo "CI artifacts ready: $(ls -lh target/debug/myos target/bios.img)"
+  restore_packed_rg_elves
+  if rg_elves_ready; then
+    echo "rg ELFs present: $(ls -lh target/rg-*-unknown-myos)"
+    exit 0
+  fi
+  echo "==> rg ELF(s) missing after restore; building ripgrep and rebuilding kernels"
+  ./scripts/build-ripgrep-myos.sh
+  rebuild_kernels
+  test -x target/debug/myos
+  test -f target/bios.img
   exit 0
 fi
 
@@ -27,12 +68,9 @@ fi
 ./scripts/build-sbase.sh
 ./scripts/build-oksh.sh
 ./scripts/build-uutils-myos.sh
+./scripts/build-ripgrep-myos.sh
 
-cargo clean -p myos
-cargo clean -p kernel --target x86_64-unknown-none
-cargo build
-cargo build -p kernel --target aarch64-unknown-none-softfloat
-cargo build -p kernel --target riscv64imac-unknown-none-elf
+rebuild_kernels
 
 test -x target/debug/myos
 test -f target/bios.img

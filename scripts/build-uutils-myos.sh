@@ -7,6 +7,8 @@ source "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_coreutils_is_current; then
   echo "uutils coreutils up to date"
+  # Still (re)build /c/rg — version pin is independent of coreutils.
+  "$ROOT/scripts/build-ripgrep-myos.sh"
   exit 0
 fi
 
@@ -36,3 +38,6 @@ for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
 done
 
 echo "$(myos_coreutils_version_hash)" >"$MYOS_COREUTILS_VERSION"
+
+# Also build /c/rg (ripgrep+PCRE2) so CI that only invokes uutils still embeds rg.
+"$ROOT/scripts/build-ripgrep-myos.sh"

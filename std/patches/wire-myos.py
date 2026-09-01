@@ -13,6 +13,15 @@ NOT_TRUSTY_OR_MYOS_NEW = '#[cfg(not(any(target_os = "trusty", target_os = "myos"
 
 REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
     (
+        "std/src/sys/time/mod.rs",
+        [
+            (
+                '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }',
+                '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }\n    target_os = "myos" => {\n        mod myos;\n        use myos as imp;\n    }',
+            ),
+        ],
+    ),
+    (
         "std/src/lib.rs",
         [
             (
@@ -478,6 +487,7 @@ def main() -> None:
         (repo / "std/sys/random/myos.rs", patch_root / "std/src/sys/random/myos.rs"),
         (repo / "std/sys/fs/myos.rs", patch_root / "std/src/sys/fs/myos.rs"),
         (repo / "std/sys/process/myos.rs", patch_root / "std/src/sys/process/myos.rs"),
+        (repo / "std/sys/time/myos.rs", patch_root / "std/src/sys/time/myos.rs"),
         (repo / "std/os/myos", patch_root / "std/src/os/myos"),
     ]
     import shutil
