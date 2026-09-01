@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <pwd.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -177,6 +178,37 @@ gid_t getgid(void) {
     return 0;
 }
 
+int setuid(uid_t u) {
+    (void)u;
+    return 0;
+}
+
+int seteuid(uid_t u) {
+    (void)u;
+    return 0;
+}
+
+int setgid(gid_t g) {
+    (void)g;
+    return 0;
+}
+
+int setegid(gid_t g) {
+    (void)g;
+    return 0;
+}
+
+int setgroups(int n, const gid_t *l) {
+    (void)n;
+    (void)l;
+    return 0;
+}
+
+gid_t getegid(void) {
+    return 0;
+}
+
+
 int dup2(int oldfd, int newfd) {
     long ret = myos_syscall3(MYOS_SYS_DUP2, oldfd, newfd, 0);
     if (ret == (long)MYOS_SYSERR) {
@@ -200,6 +232,53 @@ int symlinkat(const char *target, int dirfd, const char *path) {
     (void)dirfd;
     (void)path;
     return myos_rofs();
+}
+
+
+int fcntl(int fd, int cmd, ...) {
+    va_list ap;
+    int arg = 0;
+
+    if (cmd == F_DUPFD
+#ifdef F_DUPFD_CLOEXEC
+        || cmd == F_DUPFD_CLOEXEC
+#endif
+    ) {
+        va_start(ap, cmd);
+        arg = va_arg(ap, int);
+        va_end(ap);
+        {
+            long ret = myos_syscall3(MYOS_SYS_DUPFD, fd, arg, 0);
+            if (ret == (long)MYOS_SYSERR) {
+                errno = EBADF;
+                return -1;
+            }
+            return (int)ret;
+        }
+    }
+
+    switch (cmd) {
+    case F_GETFD:
+        /* Validity only; CLOEXEC not tracked. Accept stdio + shell FDBASE range. */
+        if (fd < 0 || fd >= 16) {
+            errno = EBADF;
+            return -1;
+        }
+        return 0;
+    case F_SETFD:
+        (void)fd;
+        return 0;
+    case F_GETFL:
+        (void)fd;
+        return O_RDWR;
+    case F_SETFL:
+        (void)fd;
+        return 0;
+    default:
+        (void)fd;
+        errno = EINVAL;
+        return -1;
+    }
 }
 
 int setpriority(int which, id_t who, int prio) {
