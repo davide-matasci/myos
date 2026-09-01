@@ -174,39 +174,26 @@ fn embed_ripgrep_elf(manifest_dir: &Path, arch: &str, out_dir: &Path) {
         .join("../target")
         .join(format!("rg-{triple}"));
     println!("cargo:rerun-if-changed={}", elf.display());
-    let mut body = String::from("pub fn register_all() {
-");
+    let mut body = String::from("pub fn register_all() {\n");
     if elf.is_file() {
         body.push_str(&format!(
-            "    const RG_ELF: &[u8] = include_bytes!(r"{}");
-",
+            "    const RG_ELF: &[u8] = include_bytes!(r\"{}\");\n",
             elf.display()
         ));
-        body.push_str("    let _ = super::register("rg", RG_ELF);
-");
+        body.push_str("    let _ = super::register(\"rg\", RG_ELF);\n");
     } else {
-        // CI workflow update may lag (needs `workflow` OAuth scope). Building
-        // without rg keeps the kernel linkable; run build-ripgrep-myos.sh for /c/rg.
+        // Soft-missing: CI may build kernel before ripgrep is wired into the
+        // workflow cache path; run ./scripts/build-ripgrep-myos.sh for /c/rg.
         println!(
             "cargo:warning=ripgrep ELF missing at {} (run ./scripts/build-ripgrep-myos.sh)",
             elf.display()
         );
     }
-    body.push_str("}
-");
+    body.push_str("}\n");
     let dest = out_dir.join("ripgrep_embed.rs");
     std::fs::write(&dest, body).expect("write ripgrep_embed.rs");
 }
 
-ripgrep-myos.sh)",
-            elf.display()
-        );
-    }
-    body.push_str("}
-");
-    let dest = out_dir.join("ripgrep_embed.rs");
-    std::fs::write(&dest, body).expect("write ripgrep_embed.rs");
-}
 fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
     let triple = if arch == "x86_64" {
         "x86_64-unknown-myos"
