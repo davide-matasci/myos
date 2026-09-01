@@ -45,7 +45,7 @@ const CI_NEEDLES_STD: [&str; 15] = [
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 7] = [
+const CI_SHELL_COMMANDS: [&[u8]; 8] = [
     b"nosuchcmd\n",
     b"ok\n",
     b"echo test\n",
@@ -53,6 +53,8 @@ const CI_SHELL_COMMANDS: [&[u8]; 7] = [
     b"c/true\n",
     b"/s/echo hi\n",
     b"/s/ls\n",
+    // Typo then backspaces: canonical stdin must deliver `/s/ls`, not `x/s/ls` or raw BS.
+    b"x\x08/s/ls\n",
 ];
 
 /// Printed by the interactive shell when a command cannot be resolved.
@@ -155,6 +157,17 @@ fn interactive_sbase_ls_cmd_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
+/// `x<BS>/s/ls` must run `/s/ls` (canonical erase), not leave a bogus argv.
+fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    // Echo includes BS-space-BS; do not require a clean `$ /s/ls` substring.
+    !serial.contains("exception:")
+        && !serial.contains("user panic")
+        && at_interactive_prompt(serial)
+        && !tail.contains("/s/ls: not found")
+        && !tail.contains("x/s/ls")
+}
+
 fn shell_cmd_result_ok(serial: &str, cmd_index: usize) -> bool {
     match cmd_index {
         0 => interactive_unknown_cmd_ok(serial),
@@ -164,6 +177,7 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize) -> bool {
         4 => interactive_uutils_true_cmd_ok(serial),
         5 => interactive_sbase_echo_cmd_ok(serial),
         6 => interactive_sbase_ls_cmd_ok(serial),
+        7 => interactive_bs_ls_cmd_ok(serial),
         _ => false,
     }
 }
@@ -388,9 +402,14 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `/s/echo hi` did not print `hi`");
             }
         }
-        if shell_cmd_index >= 6 && !interactive_sbase_ls_cmd_ok(&serial) {
+        if shell_cmd_index >= 6 && shell_cmd_index < 7 && !interactive_sbase_ls_cmd_ok(&serial) {
             eprintln!(
                 "error: interactive `/s/ls` failed (want `$ /s/ls` then `$` prompt)"
+            );
+        }
+        if shell_cmd_index >= 7 && !interactive_bs_ls_cmd_ok(&serial) {
+            eprintln!(
+                "error: interactive `x<BS>/s/ls` failed (canonical backspace must yield `/s/ls`)"
             );
         }
         std::process::exit(1);
