@@ -39,3 +39,19 @@ getgrgid(gid_t gid)
     }
     return NULL;
 }
+
+void
+setpwent(void)
+{
+}
+
+struct passwd *
+getpwent(void)
+{
+    return NULL;
+}
+
+void
+endpwent(void)
+{
+}
