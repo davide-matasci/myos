@@ -27,6 +27,7 @@ fi
 ./scripts/build-sbase.sh
 ./scripts/build-oksh.sh
 ./scripts/build-uutils-myos.sh
+./scripts/build-ripgrep-myos.sh
 
 cargo clean -p myos
 cargo clean -p kernel --target x86_64-unknown-none

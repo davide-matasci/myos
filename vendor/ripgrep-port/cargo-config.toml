@@ -1,0 +1,57 @@
+# Copied into target/ripgrep-src/.cargo/config.toml by build-ripgrep-myos.sh.
+# Paths are relative to target/ripgrep-src/.
+[unstable]
+json-target-spec = true
+
+[env]
+MYOS_SYSROOT = { value = "../../target/myos-sysroot", relative = true }
+RUSTC_BOOTSTRAP = "1"
+
+[build]
+rustc = "../../scripts/myos-rustc-cross.sh"
+
+# PCRE2 C objects need newlib malloc/free/memchr/_sbrk. Rust myos libc also
+# exports some POSIX symbols (e.g. lstat) that overlap libgloss — allow
+# multiples so the Rust definition wins and newlib still provides allocator.
+[target.x86_64-unknown-myos]
+linker = "rust-lld"
+rustflags = [
+  "-C", "panic=abort",
+  "-C", "lto=off",
+  "--cfg=rustix_use_libc",
+  "-C", "link-arg=--allow-multiple-definition",
+  "-C", "link-arg=-L../../target/newlib-x86_64/x86_64-unknown-myos/lib",
+  "-C", "link-arg=-lc",
+  "-C", "link-arg=-lgloss",
+]
+
+[target.aarch64-unknown-myos]
+linker = "rust-lld"
+rustflags = [
+  "-C", "panic=abort",
+  "-C", "lto=off",
+  "--cfg=rustix_use_libc",
+  "-C", "link-arg=--allow-multiple-definition",
+  "-C", "link-arg=-L../../target/newlib-aarch64/aarch64-unknown-myos/lib",
+  "-C", "link-arg=-lc",
+  "-C", "link-arg=-lgloss",
+]
+
+[target.riscv64-unknown-myos]
+linker = "rust-lld"
+rustflags = [
+  "-C", "panic=abort",
+  "-C", "lto=off",
+  "--cfg=rustix_use_libc",
+  "-C", "link-arg=--allow-multiple-definition",
+  "-C", "link-arg=-L../../target/newlib-riscv64/riscv64-unknown-myos/lib",
+  "-C", "link-arg=-lc",
+  "-C", "link-arg=-lgloss",
+]
+
+[profile.release]
+lto = false
+debug = false
+strip = "symbols"
+panic = "abort"
+

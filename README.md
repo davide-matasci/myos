@@ -25,7 +25,8 @@ prints `sh ok` and drops to an interactive `$ ` prompt on **stdin** (PS/2
 keyboard when detected, else serial). Slim always-on `user/ok` proves
 `alloc ok`, reads `/msg` (`user ok` / `fat ok`), cheap disk/FAT listdir
 markers, then exits — it no longer execs the heavy carnival. CI types
-`heap` at `$` for std/C/sbase/uutils/bigalloc. Userspace programs are ELFs,
+`heap` at `$` for std/C/sbase/uutils/ripgrep/bigalloc.
+`/c/rg` is BurntSushi ripgrep (fetched at build time, with PCRE2). Userspace programs are ELFs,
 not `KernelApi` modules. Nested cargo like
 hello; loaded into per-process page tables at `USER_BASE`. Each process has
 its own CR3/TTBR0; the kernel/HHDM (and on AArch64 the TTBR0 device block

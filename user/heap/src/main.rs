@@ -1,10 +1,13 @@
 #![no_std]
 #![no_main]
 
-//! CI-only heavy smoke: std / C / sbase / uutils / bigalloc.
+//! CI-only heavy smoke: std / C / sbase / uutils / ripgrep / bigalloc.
 //! Always-on boot uses slim `/ok` instead; `wait_ci` types `heap` at `$`.
 
-use myos_user::{exec, exit, exit_code, fork, wait_status, write};
+use myos_user::{
+    close, exec, exit, exit_code, fork, open_flags, wait_status, write, write_fd, O_CREAT,
+    O_TRUNC, O_WRONLY,
+};
 
 #[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
@@ -54,6 +57,19 @@ fn main() -> ! {
     run_prog_exit(b"/c/echo", &[], 0, b"uutils echo ok\n");
     run_prog_exit(b"/c/true", &[], 0, b"uutils true ok\n");
     run_prog_exit(b"/c/false", &[], 1, b"uutils false ok\n");
+    // Write a needle under /tmp and search with /c/rg (full ripgrep + PCRE2).
+    if let Some(fd) = open_flags(b"/tmp/rg-needle.txt", O_WRONLY | O_CREAT | O_TRUNC) {
+        let _ = write_fd(fd, b"hello ripgrep needle world\n");
+        close(fd);
+        run_prog_exit(
+            b"/c/rg",
+            &[b"rg", b"needle", b"/tmp/rg-needle.txt"],
+            0,
+            b"ripgrep ok\n",
+        );
+    } else {
+        write(b"ripgrep skip (tmp create fail)\n");
+    }
     run_prog(b"/stdhello", &[]);
     run_prog(b"/stdcat", &[]);
     run_prog(b"/stdecho", &[]);
