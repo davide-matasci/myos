@@ -617,6 +617,10 @@ fn write_user_usize(aspace: u64, va: usize, val: usize) -> bool {
     write_user_bytes(aspace, va, &val.to_le_bytes())
 }
 
+pub fn try_read_user_u8(aspace: u64, va: usize) -> Option<u8> {
+    read_user_byte(aspace, va)
+}
+
 fn read_user_byte(aspace: u64, va: usize) -> Option<u8> {
     let page = va & !0xfff;
     let off = va & 0xfff;
@@ -1164,6 +1168,12 @@ fn enter_fork_x86(regs: task::ForkRegs) -> ! {
         ss,
     ]);
     unsafe {
+        // Match enter_x86: clear TS so the first SSE insn after iretq is not #NM.
+        const CR0_TS: u64 = 1 << 3;
+        let mut cr0: u64;
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        cr0 &= !CR0_TS;
+        core::arch::asm!("mov cr0, {}", in(reg) cr0);
         // Explicit-register inputs cannot be named or referenced as {N} in the
         // template. Pin pointers in rax/rsi and hardcode those names in the asm.
         core::arch::asm!(
