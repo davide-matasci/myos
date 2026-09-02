@@ -54,9 +54,15 @@ pub fn bind(name: &str, dev: u32) -> Option<ModuleVfsOps> {
         }
         found?
     };
-    let mut ops = unsafe { core::mem::zeroed::<ModuleVfsOps>() };
-    let rc = unsafe { (bind_fn)(dev, &mut ops as *mut ModuleVfsOps) };
-    if rc != 0 || ops.lookup as usize == 0 {
+    // Function pointers must not be zero-initialized (invalid bit pattern).
+    let mut ops = core::mem::MaybeUninit::<ModuleVfsOps>::uninit();
+    let rc = unsafe { (bind_fn)(dev, ops.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    // SAFETY: successful bind fills every ModuleVfsOps field.
+    let ops = unsafe { ops.assume_init() };
+    if ops.lookup as usize == 0 {
         None
     } else {
         Some(ops)

@@ -84,15 +84,14 @@ unsafe extern "C" fn fat_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
     if ops.is_null() {
         return -1;
     }
-    let api = API;
-    if api.is_null() {
+    let Some(api) = (unsafe { API.as_ref() }) else {
         return -1;
-    }
+    };
     let vol = unsafe { &mut *core::ptr::addr_of_mut!(VOL) };
     if vol.ready {
         return -8;
     }
-    match unsafe { init_volume(&*api, dev_id) } {
+    match unsafe { init_volume(api, dev_id) } {
         Ok(()) => {
             unsafe {
                 *ops = ModuleVfsOps {
