@@ -42,9 +42,15 @@ require_libtcc1() {
 install_libtcc1() {
   local arch="$1"
   local triple="${arch}-unknown-myos"
-  local dest="$ROOT/target/newlib-${arch}/${triple}/lib/libtcc1.a"
+  local src dest alias
+  src="$(libtcc1_out "$arch")"
+  dest="$ROOT/target/newlib-${arch}/${triple}/lib/libtcc1.a"
+  # Also stage under target/tcc-* so ci-build.tar's tcc-* glob packs it
+  # without a workflow edit (boot jobs lack workflow OAuth scope).
+  alias="$ROOT/target/tcc-libtcc1-${triple}.a"
   mkdir -p "$(dirname "$dest")"
-  cp "$(libtcc1_out "$arch")" "$dest"
+  cp "$src" "$dest"
+  cp "$src" "$alias"
 }
 
 pack_aliases() {
@@ -130,6 +136,7 @@ build_arch() {
     -DONE_SOURCE=1 \
     $target_def \
     -DCONFIG_TCC_STATIC=1 \
+    -DCONFIG_TCC_PIE=1 \
     -D_DEFAULT_SOURCE \
     -D_GNU_SOURCE \
     -Wno-implicit-function-declaration \

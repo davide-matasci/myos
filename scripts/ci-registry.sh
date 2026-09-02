@@ -122,9 +122,12 @@ port_members() {
       ;;
     tcc)
       echo target/.myos-tcc-version
-      for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
+      for arch in x86_64 aarch64 riscv64; do
+        triple="${arch}-unknown-myos"
         echo "target/tcc-${triple}"
         echo "target/coreutils-tcc-${triple}"
+        echo "target/libtcc1-${triple}.a"
+        echo "target/tcc-libtcc1-${triple}.a"
       done
       ;;
     std-hello)

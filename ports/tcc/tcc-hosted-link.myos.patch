@@ -1,0 +1,13 @@
+--- tccelf.c
++++ tccelf.c
+@@ -1854,6 +1854,10 @@
+         if (lpthread)
+             tcc_add_library(s1, "pthread");
+         tcc_add_library(s1, "c");
++        /* myos: no gcc spec --start-group; pull libgloss after libc.
++           TinyCC has no --start-group, so scan libc again for cycles. */
++        tcc_add_library(s1, "gloss");
++        tcc_add_library(s1, "c");
+ #ifdef TCC_LIBGCC
+         if (!s1->static_link) {
+             if (TCC_LIBGCC[0] == '/')

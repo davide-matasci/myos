@@ -39,6 +39,15 @@ tcc_elves_ready() {
      && -f target/tcc-riscv64-unknown-myos ]]
 }
 
+tcc_libtcc1_in_newlib() {
+  local arch
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -s "target/newlib-${arch}/${arch}-unknown-myos/lib/libtcc1.a" ]] || return 1
+  done
+  return 0
+}
+
+
 rg_elves_ready() {
   [[ -f target/rg-x86_64-unknown-myos \
      && -f target/rg-aarch64-unknown-myos \
@@ -73,6 +82,13 @@ if [[ -x target/debug/myos && -f target/bios.img ]]; then
     need_rebuild=1
   else
     echo "tcc ELFs present: $(ls -lh target/tcc-*-unknown-myos)"
+  fi
+  # Hosted tcc -o needs libtcc1.a inside target/newlib-*/.../lib (embedded at
+  # /lib/newlib/lib). GHCR newlib does not carry it; tcc build/pack_aliases does.
+  if ! tcc_libtcc1_in_newlib; then
+    echo "==> libtcc1.a missing from newlib prefixes; running ports/tcc/build.sh"
+    ./ports/tcc/build.sh
+    need_rebuild=1
   fi
   if ((need_rebuild)); then
     rebuild_kernels
