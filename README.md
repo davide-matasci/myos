@@ -29,7 +29,8 @@ OpenBSD ksh ([oksh](https://github.com/ibara/oksh) 7.9) linked with
 newlib/libgloss. It prints `sh ok` and drops to an interactive `$ ` prompt on
 **stdin** (PS/2 keyboard when detected, else serial). Slim always-on `user/ok`
 proves `alloc ok`, reads `/msg` (`user ok` / `fat ok`), cheap disk/FAT listdir
-markers, then exits — it no longer execs the heavy carnival. CI types `root`
+markers and `/proc/mounts` (`proc ok`), then exits — it no longer execs the
+heavy carnival. CI types `root`
 at `login: `, an empty password, then `heap` at `$` for
 std/C/sbase/uutils/ripgrep/tcc/bigalloc.
 `/c/rg` is BurntSushi ripgrep (fetched at build time, with PCRE2). `/t/tcc` is TinyCC (fetched at build time) with mmap-backed `-run`. Userspace programs are ELFs,
@@ -236,10 +237,17 @@ or connect serial to see the rest.
 ## VFS, virtio-blk, and FAT16
 
 A VFS layer (`kernel/src/fs/vfs.rs`) holds a **mount table**; each mount
-has a name, optional path prefix, and [`MountOps`] (`lookup`, `stat`,
-`listdir`, `register`). Syscalls route through the VFS, which picks the
-longest matching prefix (root mount uses `""` today, so `/ok` and `ok` both
-resolve on bootfs).
+has a name (fstype), optional path prefix, a source (`none` or a `/dev/vd*`
+path), and [`MountOps`] (`lookup`, `stat`, `listdir`, `register`). Syscalls
+route through the VFS, which picks the longest matching prefix (root mount
+uses `""` today, so `/ok` and `ok` both resolve on bootfs). `vfs::mounts_text()`
+snapshots the table as Linux-shaped `source target fstype opts 0 0` lines.
+
+**procfs** (`kernel/src/fs/procfs.rs`) is a read-only generated mount at
+`/proc`. The only node today is `/proc/mounts` (not stored bytes): `open` /
+`read` / `cat /proc/mounts` print the current table. `/mount` with no
+arguments is a pretty-printer of that file; `mount <source> <target> <fstype>`
+still issues `SYS_MOUNT`.
 
 **bootfs** is the first mount at `/` (`kernel/src/fs/bootfs.rs`): a flat
 read-only namespace. Embedded user ELFs are registered at boot; Limine ESP
@@ -559,7 +567,7 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
 | `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages, virtqueues) |
 | `kernel/src/blk.rs` | In-kernel virtio-blk: `init` + 512-byte sector `read` |
-| `kernel/src/fs/` | VFS mount table (`vfs.rs`) + bootfs backend mounted at `/` |
+| `kernel/src/fs/` | VFS mount table (`vfs.rs`) + bootfs/tmpfs/devfs/procfs backends |
 | `kernel/src/console.rs` | Dual console: serial + Limine framebuffer mirror |
 | `kernel/src/input.rs` | Stdin ring buffer: PS/2 keyboard + serial (fd 0) |
 | `kernel/src/arch/x86/keyboard.rs` | PS/2 keyboard via 8042 (poll, US QWERTY set 1) |
@@ -580,7 +588,8 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `user/ls` | List bootfs entries; installed as bootfs `/myos_ls` |
 | `user/lib` | Shared `myos_user` syscall/argv/`Heap` helpers |
 | `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/ripgrep/tcc/bigalloc); typed as `heap` at `$` |
-| `user/ok` | Slim always-on boot smoke (`alloc`/`user`/`fat`/`disk` markers); ESP `boot/ok` |
+| `user/ok` | Slim always-on boot smoke (`alloc`/`user`/`fat`/`disk`/`proc` markers); ESP `boot/ok` |
+| `user/mount` | `mount` with no args prints `/proc/mounts`; `mount src tgt fstype` issues `SYS_MOUNT` |
 | `targets/` | Custom Rust target specs (`x86_64-unknown-myos.json`) |
 | `toolchain/newlib/` | newlib libgloss port + fetch/build scripts |
 | `toolchain/std/pal/` | Rust `std` PAL skeleton + porting notes |

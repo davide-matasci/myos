@@ -4,6 +4,7 @@ pub mod bootfs;
 mod coreutilsfs;
 mod devfs;
 mod fstype;
+mod procfs;
 mod sbasefs;
 mod tccfs;
 mod tmpfs;
@@ -99,7 +100,7 @@ pub fn register_static(mount_name: &str, name: &str, bytes: &'static [u8]) -> bo
 
 /// Mount a module-provided backend at `/prefix/…`.
 pub fn mount_module(name: &str, prefix: &str, ops: myos_abi::ModuleVfsOps) -> bool {
-    vfs::mount_module(name, prefix, ops)
+    vfs::mount_module(name, prefix, ops, "none")
 }
 
 /// Register a filesystem type (`fat`, …). `bind` is invoked from `mount(2)`.
@@ -110,14 +111,14 @@ pub fn register_fstype(name: &str, bind: myos_abi::FsBind) -> bool {
 /// Bind `dev` to `fstype` and mount at `prefix` (single path component).
 /// The target directory need not exist. Re-mounting the same prefix replaces
 /// the previous module mount so a later `vd*` can overlay `/fat`.
-pub fn mount_fstype(source_dev: u32, prefix: &str, fstype_name: &str) -> bool {
+pub fn mount_fstype(source_dev: u32, prefix: &str, fstype_name: &str, source: &str) -> bool {
     if prefix.is_empty() || prefix.contains('/') {
         return false;
     }
     let Some(ops) = fstype::bind(fstype_name, source_dev) else {
         return false;
     };
-    vfs::mount_module(fstype_name, prefix, ops)
+    vfs::mount_module(fstype_name, prefix, ops, source)
 }
 
 /// Block-device id for a `/dev/vdX` path, if that disk was probed.
@@ -225,7 +226,7 @@ fn rw_ops(
 }
 
 /// Mount bootfs at `/`, sbasefs at `/s/`, ubasefs at `/u/`, tccfs at `/t/`, coreutilsfs at `/c/`,
-/// tmpfs at `/tmp/`, devfs at `/dev/`, and register embedded user ELFs.
+/// tmpfs at `/tmp/`, devfs at `/dev/`, procfs at `/proc/`, and register embedded user ELFs.
 pub fn init() {
     vfs::mount(
         "bootfs",
@@ -341,6 +342,20 @@ pub fn init() {
             reject_rename,
             reject_symlink,
             reject_readlink,
+        ),
+    );
+    vfs::mount(
+        "procfs",
+        "proc",
+        ro_ops(
+            procfs::lookup,
+            procfs::stat,
+            procfs::listdir_at,
+            procfs::register,
+            procfs::create,
+            procfs::truncate,
+            procfs::read,
+            procfs::write,
         ),
     );
 }

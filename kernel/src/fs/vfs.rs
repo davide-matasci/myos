@@ -89,16 +89,20 @@ impl Clone for MountBackend {
 struct Mount {
     name: String,
     prefix: String,
+    source: String,
     backend: MountBackend,
 }
 
 static MOUNTS: Mutex<Vec<Mount>> = Mutex::new(Vec::new());
 
 /// Attach an in-kernel backend at `prefix` (empty string = root).
+///
+/// Source is `none` (no block device). `name` is the fstype (`bootfs`, `tmpfs`, ...).
 pub fn mount(name: &str, prefix: &str, ops: MountOps) {
     MOUNTS.lock().push(Mount {
         name: String::from(name),
         prefix: String::from(prefix),
+        source: String::from("none"),
         backend: MountBackend::Kernel(ops),
     });
 }
@@ -107,13 +111,16 @@ pub fn mount(name: &str, prefix: &str, ops: MountOps) {
 ///
 /// A second mount with the same prefix replaces the existing one (no umount).
 /// That lets userspace retry `vd*` disks at `/fat` until the right volume is bound.
-pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps) -> bool {
+/// `source` is the userspace path (`/dev/vda`) or `none` when there is no block device.
+pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -> bool {
     if prefix.contains('/') {
         return false;
     }
+    let source = if source.is_empty() { "none" } else { source };
     let mut mounts = MOUNTS.lock();
     if let Some(m) = mounts.iter_mut().find(|m| m.prefix == prefix) {
         m.name = String::from(name);
+        m.source = String::from(source);
         m.backend = MountBackend::Module(ops);
         return true;
     }
@@ -123,9 +130,40 @@ pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps) -> bool {
     mounts.push(Mount {
         name: String::from(name),
         prefix: String::from(prefix),
+        source: String::from(source),
         backend: MountBackend::Module(ops),
     });
     true
+}
+
+/// Linux-shaped `/proc/mounts` snapshot (`source target fstype opts 0 0\n`).
+///
+/// Must not be called while `MOUNTS` is already held (procfs `read`/`stat`
+/// re-lock after `backend_read` / `backend_stat` drop it).
+pub fn mounts_text() -> Vec<u8> {
+    let mounts = MOUNTS.lock();
+    let mut out = Vec::new();
+    for m in mounts.iter() {
+        let source = if m.source.is_empty() {
+            "none"
+        } else {
+            m.source.as_str()
+        };
+        out.extend_from_slice(source.as_bytes());
+        out.push(b' ');
+        out.push(b'/');
+        out.extend_from_slice(m.prefix.as_bytes());
+        out.push(b' ');
+        out.extend_from_slice(m.name.as_bytes());
+        out.push(b' ');
+        let opts: &[u8] = match m.backend {
+            MountBackend::Kernel(ops) if ops.writable => b"rw",
+            _ => b"ro",
+        };
+        out.extend_from_slice(opts);
+        out.extend_from_slice(b" 0 0\n");
+    }
+    out
 }
 
 const O_ACCMODE: u32 = 3;
