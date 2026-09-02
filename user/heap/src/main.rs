@@ -114,6 +114,38 @@ int main(void) { write(1, "tcc ok\n", 7); return 0; }
     } else {
         write(b"tcc skip (tmp create fail)\n");
     }
+    // tcc + newlib: compile to an ELF and exec it (not -run).
+    const STD_C: &[u8] = br#"
+#include <unistd.h>
+int main(void) {
+    const char msg[] = "tcc std ok\n";
+    write(1, msg, sizeof msg - 1);
+    return 0;
+}
+"#;
+    if let Some(fd) = open_flags(b"/tmp/tcc-std.c", O_WRONLY | O_CREAT | O_TRUNC) {
+        let _ = write_fd(fd, STD_C);
+        close(fd);
+        run_prog(
+            b"/t/tcc",
+            &[
+                b"tcc",
+                b"-nostdlib",
+                b"-o",
+                b"/tmp/tcc-hi",
+                b"-I/lib/newlib/include",
+                b"/lib/newlib/lib/crt0.o",
+                b"/tmp/tcc-std.c",
+                b"-L/lib/newlib/lib",
+                b"-lc",
+                b"-lgloss",
+                b"-lg",
+            ],
+        );
+        run_prog(b"/tmp/tcc-hi", &[b"tcc-hi"]);
+    } else {
+        write(b"tcc std skip (tmp create fail)\n");
+    }
     write(b"smoke ok\n");
     exit();
 }
