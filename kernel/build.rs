@@ -723,15 +723,19 @@ fn nested_elf(
     if target.contains("x86_64") && (bin == "ext2" || bin == "virtio_net") {
         rustflags = String::from("-C panic=abort -C relocation-model=pic");
     }
+    if target.contains("aarch64") {
+        // Match .cargo/config.toml; RUSTFLAGS replaces target rustflags entirely.
+        rustflags = String::from("-C panic=abort -C relocation-model=static");
+    }
     if target.contains("riscv64") {
         rustflags = String::from(
             "-C panic=abort -C relocation-model=static -C code-model=medium",
         );
     }
-    // Belt-and-suspenders with user/ping/build.rs: RUSTFLAGS link-arg survives
-    // nested-cargo fingerprint quirks that previously left ping at 0x200000.
+    // Belt-and-suspenders with user/ping/build.rs. Prefer split link-arg form
+    // (equals form alone previously left CI at 0x200000/0x10000).
     if need_image_base {
-        rustflags.push_str(" -C link-arg=--image-base=0x40000000");
+        rustflags.push_str(" -C link-arg=--image-base -C link-arg=0x40000000");
     }
     cmd.env("RUSTFLAGS", rustflags);
     cmd.env_remove("CARGO_ENCODED_RUSTFLAGS");
@@ -756,12 +760,15 @@ fn nested_elf(
     if need_image_base {
         assert_elf_linked_at_user_base(&elf, bin, target);
     }
-    if env_key != "_unused" {
-        println!("cargo:rustc-env={env_key}={}", elf.display());
-    }
     let ws_target = manifest_dir.join("../target");
     std::fs::create_dir_all(&ws_target).expect("workspace target dir");
     let stable = ws_target.join(format!("{bin}-{target}"));
     std::fs::copy(&elf, &stable)
         .unwrap_or_else(|e| panic!("copy {bin} ELF to {}: {e}", stable.display()));
+    // Path string alone is not enough: same USER_*_PATH with new bytes left
+    // bootfs include_bytes! stale. Watch the stable copy like other embeds.
+    println!("cargo:rerun-if-changed={}", stable.display());
+    if env_key != "_unused" {
+        println!("cargo:rustc-env={env_key}={}", stable.display());
+    }
 }
