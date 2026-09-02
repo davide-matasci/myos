@@ -136,33 +136,6 @@ pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -
     true
 }
 
-/// Attach an in-kernel backend at `prefix`, recording `source` (e.g. `/dev/nvme0n1`).
-///
-/// Same prefix replaces the existing mount (module or kernel). `source` empty becomes `none`.
-pub fn mount_kernel(name: &str, prefix: &str, ops: MountOps, source: &str) -> bool {
-    if prefix.contains('/') {
-        return false;
-    }
-    let source = if source.is_empty() { "none" } else { source };
-    let mut mounts = MOUNTS.lock();
-    if let Some(m) = mounts.iter_mut().find(|m| m.prefix == prefix) {
-        m.name = String::from(name);
-        m.source = String::from(source);
-        m.backend = MountBackend::Kernel(ops);
-        return true;
-    }
-    if mounts.iter().any(|m| m.name == name) {
-        return false;
-    }
-    mounts.push(Mount {
-        name: String::from(name),
-        prefix: String::from(prefix),
-        source: String::from(source),
-        backend: MountBackend::Kernel(ops),
-    });
-    true
-}
-
 /// Linux-shaped `/proc/mounts` snapshot (`source target fstype opts 0 0\n`).
 ///
 /// Must not be called while `MOUNTS` is already held (procfs `read`/`stat`
@@ -185,6 +158,7 @@ pub fn mounts_text() -> Vec<u8> {
         out.push(b' ');
         let opts: &[u8] = match m.backend {
             MountBackend::Kernel(ops) if ops.writable => b"rw",
+            MountBackend::Module(ops) if ops.write.is_some() || ops.create.is_some() => b"rw",
             _ => b"ro",
         };
         out.extend_from_slice(opts);
@@ -534,7 +508,7 @@ fn backend_has_write(idx: usize) -> bool {
     };
     match backend {
         MountBackend::Kernel(ops) => ops.writable,
-        MountBackend::Module(_) => false,
+        MountBackend::Module(ops) => ops.write.is_some() || ops.create.is_some(),
     }
 }
 
@@ -548,7 +522,7 @@ fn backend_create(idx: usize, rel: &str) -> bool {
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.create)(rel),
-        MountBackend::Module(_) => false,
+        MountBackend::Module(ops) => module_path_i32(ops.create, rel),
     }
 }
 
@@ -562,7 +536,7 @@ fn backend_truncate(idx: usize, rel: &str) -> bool {
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.truncate)(rel),
-        MountBackend::Module(_) => false,
+        MountBackend::Module(ops) => module_path_i32(ops.truncate, rel),
     }
 }
 
@@ -576,9 +550,7 @@ fn backend_read(idx: usize, rel: &str, pos: usize, out: &mut [u8]) -> usize {
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.read)(rel, pos, out),
-        MountBackend::Module(ops) => {
-            read_from_static(module_lookup(&ops, rel), pos, out)
-        }
+        MountBackend::Module(ops) => module_read(&ops, rel, pos, out),
     }
 }
 
@@ -590,7 +562,7 @@ fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Option<usize>
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.write)(rel, pos, buf),
-        MountBackend::Module(_) => None,
+        MountBackend::Module(ops) => module_write(&ops, rel, pos, buf),
     }
 }
 
@@ -604,7 +576,7 @@ fn backend_mkdir(idx: usize, rel: &str) -> bool {
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.mkdir)(rel),
-        MountBackend::Module(_) => false,
+        MountBackend::Module(ops) => module_path_i32(ops.mkdir, rel),
     }
 }
 
@@ -618,7 +590,7 @@ fn backend_rmdir(idx: usize, rel: &str) -> bool {
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.rmdir)(rel),
-        MountBackend::Module(_) => false,
+        MountBackend::Module(ops) => module_path_i32(ops.rmdir, rel),
     }
 }
 
@@ -632,7 +604,7 @@ fn backend_unlink(idx: usize, rel: &str) -> bool {
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.unlink)(rel),
-        MountBackend::Module(_) => false,
+        MountBackend::Module(ops) => module_path_i32(ops.unlink, rel),
     }
 }
 
@@ -646,7 +618,7 @@ fn backend_rename(idx: usize, old: &str, new: &str) -> bool {
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.rename)(old, new),
-        MountBackend::Module(_) => false,
+        MountBackend::Module(ops) => module_rename(&ops, old, new),
     }
 }
 
@@ -660,7 +632,7 @@ fn backend_symlink(idx: usize, target: &str, linkpath: &str) -> bool {
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.symlink)(target, linkpath),
-        MountBackend::Module(_) => false,
+        MountBackend::Module(ops) => module_symlink(&ops, target, linkpath),
     }
 }
 
@@ -672,7 +644,7 @@ fn backend_readlink(idx: usize, rel: &str, buf: &mut [u8]) -> Option<usize> {
     };
     match backend {
         MountBackend::Kernel(ops) => (ops.readlink)(rel, buf),
-        MountBackend::Module(_) => None,
+        MountBackend::Module(ops) => module_readlink(&ops, rel, buf),
     }
 }
 
@@ -745,6 +717,63 @@ fn module_register(ops: &ModuleVfsOps, name: &str, bytes: &'static [u8]) -> bool
         return false;
     };
     unsafe { (register)(name.as_ptr(), name.len(), bytes.as_ptr(), bytes.len()) == 0 }
+}
+
+fn module_path_i32(f: Option<unsafe extern "C" fn(*const u8, usize) -> i32>, rel: &str) -> bool {
+    let Some(f) = f else {
+        return false;
+    };
+    unsafe { (f)(rel.as_ptr(), rel.len()) == 0 }
+}
+
+fn module_read(ops: &ModuleVfsOps, rel: &str, pos: usize, out: &mut [u8]) -> usize {
+    if let Some(read) = ops.read {
+        let rc = unsafe { (read)(rel.as_ptr(), rel.len(), pos, out.as_mut_ptr(), out.len()) };
+        if rc < 0 {
+            0
+        } else {
+            (rc as usize).min(out.len())
+        }
+    } else {
+        read_from_static(module_lookup(ops, rel), pos, out)
+    }
+}
+
+fn module_write(ops: &ModuleVfsOps, rel: &str, pos: usize, buf: &[u8]) -> Option<usize> {
+    let write = ops.write?;
+    let rc = unsafe { (write)(rel.as_ptr(), rel.len(), pos, buf.as_ptr(), buf.len()) };
+    if rc < 0 { None } else { Some(rc as usize) }
+}
+
+fn module_rename(ops: &ModuleVfsOps, old: &str, new: &str) -> bool {
+    let Some(rename) = ops.rename else {
+        return false;
+    };
+    unsafe { (rename)(old.as_ptr(), old.len(), new.as_ptr(), new.len()) == 0 }
+}
+
+fn module_symlink(ops: &ModuleVfsOps, target: &str, linkpath: &str) -> bool {
+    let Some(symlink) = ops.symlink else {
+        return false;
+    };
+    unsafe {
+        (symlink)(
+            target.as_ptr(),
+            target.len(),
+            linkpath.as_ptr(),
+            linkpath.len(),
+        ) == 0
+    }
+}
+
+fn module_readlink(ops: &ModuleVfsOps, rel: &str, buf: &mut [u8]) -> Option<usize> {
+    let readlink = ops.readlink?;
+    let rc = unsafe { (readlink)(rel.as_ptr(), rel.len(), buf.as_mut_ptr(), buf.len()) };
+    if rc < 0 {
+        None
+    } else {
+        Some((rc as usize).min(buf.len()))
+    }
 }
 
 fn normalize_path(path: &str) -> &str {

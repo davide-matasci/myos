@@ -10,6 +10,7 @@ toolchain/std/examples/bigalloc/target
 toolchain/std/examples/bigalloc/Cargo.lock
 modules/hello/Cargo.lock
 modules/fat/Cargo.lock
+modules/ext2/Cargo.lock
 user/*/Cargo.lock
 user/*/target
 user/uutils-coreutils/

@@ -1,0 +1,3 @@
+# x86 modules are linked -pie; runtime-sized copies need PIC codegen.
+[target.x86_64-unknown-none]
+rustflags = ["-C", "relocation-model=pic"]

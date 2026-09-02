@@ -50,6 +50,18 @@ fn main() {
     nested_elf(
         &cargo,
         manifest,
+        "../modules/ext2",
+        "ext2",
+        "ext2-target",
+        "EXT2_MODULE_PATH",
+        &target,
+        &profile,
+        &out,
+        &["../abi/src/lib.rs"],
+    );
+    nested_elf(
+        &cargo,
+        manifest,
         "../modules/stubfs",
         "stubfs",
         "stubfs-target",
@@ -463,6 +475,10 @@ fn nested_elf(
         cmd.arg("--release");
     }
     cmd.env("RUSTFLAGS", "-C panic=abort");
+    // ext2's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
+    if target.contains("x86_64") && bin == "ext2" {
+        cmd.env("RUSTFLAGS", "-C panic=abort -C relocation-model=pic");
+    }
     if target.contains("riscv64") {
         cmd.env(
             "RUSTFLAGS",

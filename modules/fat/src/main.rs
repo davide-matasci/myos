@@ -99,6 +99,16 @@ unsafe extern "C" fn fat_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
                     stat: fat_stat,
                     listdir: fat_listdir,
                     register: None,
+                    read: None,
+                    write: None,
+                    create: None,
+                    truncate: None,
+                    mkdir: None,
+                    rmdir: None,
+                    unlink: None,
+                    rename: None,
+                    symlink: None,
+                    readlink: None,
                 };
             }
             0

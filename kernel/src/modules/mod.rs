@@ -16,6 +16,7 @@ use myos_abi::{ABI_VERSION, FsBind, KernelApi};
 const HELLO_IMAGE: &[u8] = include_bytes!(env!("HELLO_MODULE_PATH"));
 const FAT_IMAGE: &[u8] = include_bytes!(env!("FAT_MODULE_PATH"));
 const STUBFS_IMAGE: &[u8] = include_bytes!(env!("STUBFS_MODULE_PATH"));
+const EXT2_IMAGE: &[u8] = include_bytes!(env!("EXT2_MODULE_PATH"));
 
 static API: KernelApi = KernelApi {
     abi_version: ABI_VERSION,
@@ -30,6 +31,8 @@ static API: KernelApi = KernelApi {
     blk_write: api_blk_write,
     blk_count: api_blk_count,
     fs_register: api_fs_register,
+    blk_read_at: api_blk_read_at,
+    blk_write_at: api_blk_write_at,
 };
 
 /// Load the hello module that was baked into the kernel at build time.
@@ -51,6 +54,14 @@ pub fn load_embedded_stubfs() {
 pub fn load_embedded_fat() {
     if let Err(e) = load("fat", FAT_IMAGE) {
         console::status_fail(&alloc::format!("fat module: {e}"));
+    }
+}
+
+/// Load the ext2 module baked into the kernel. Registers fstype `"ext2"`;
+/// userspace `mount` binds a disk after `mkfs.ext2`. Failure is logged.
+pub fn load_embedded_ext2() {
+    if let Err(e) = load("ext2", EXT2_IMAGE) {
+        console::status_fail(&alloc::format!("ext2 module: {e}"));
     }
 }
 
@@ -174,6 +185,34 @@ unsafe extern "C" fn api_blk_write(dev: u32, lba: u64, buf: *const u8, len: usiz
 
 unsafe extern "C" fn api_blk_count() -> u32 {
     crate::blk::count()
+}
+
+unsafe extern "C" fn api_blk_read_at(dev: u32, offset: u64, buf: *mut u8, len: usize) -> i32 {
+    if len == 0 {
+        return 0;
+    }
+    if buf.is_null() {
+        return -1;
+    }
+    let slice = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+    match crate::blk::read_bytes(dev, offset, slice) {
+        Ok(n) => n.min(i32::MAX as usize) as i32,
+        Err(()) => -1,
+    }
+}
+
+unsafe extern "C" fn api_blk_write_at(dev: u32, offset: u64, buf: *const u8, len: usize) -> i32 {
+    if len == 0 {
+        return 0;
+    }
+    if buf.is_null() {
+        return -1;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(buf, len) };
+    match crate::blk::write_bytes(dev, offset, slice) {
+        Ok(n) => n.min(i32::MAX as usize) as i32,
+        Err(()) => -1,
+    }
 }
 
 unsafe extern "C" fn api_fs_register(name: *const u8, name_len: usize, bind: FsBind) -> i32 {

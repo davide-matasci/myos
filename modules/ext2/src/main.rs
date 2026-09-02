@@ -1,13 +1,15 @@
-//! In-kernel writable ext2 (rev1, 1024-byte blocks, one block group).
+//! Writable ext2 kernel module (rev1, 1024-byte blocks, one block group).
 //!
-//! Bound via `mount(2)` to a block device after userspace `mkfs.ext2`.
-//! Direct blocks only; no journal, extents, or INCOMPAT_FILETYPE.
+//! Registers fstype `"ext2"`; `mount(2)` binds a block device after userspace
+//! `mkfs.ext2`. Direct blocks only; no journal, extents, or INCOMPAT_FILETYPE.
+//! Bytes are served via the ABI v6 `read` hook (lookup always fails).
 
-use spin::Mutex;
+#![no_std]
+#![no_main]
 
-use crate::blk;
-use crate::fs::StatInfo;
-use crate::fs::vfs::MountOps;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use myos_abi::{ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo};
 
 const BLK: usize = 1024;
 const INODE_SIZE: usize = 128;
@@ -54,7 +56,9 @@ struct Inode {
     direct: [u32; NDIRECT],
 }
 
-static FS: Mutex<Option<Ext2>> = Mutex::new(None);
+static LOCK: AtomicBool = AtomicBool::new(false);
+static mut FS: Option<Ext2> = None;
+static mut API: *const KernelApi = core::ptr::null();
 
 fn le_u16(b: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([b[o], b[o + 1]])
@@ -72,28 +76,53 @@ fn put_u32(b: &mut [u8], o: usize, v: u32) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }
 
+fn api_ref() -> Option<&'static KernelApi> {
+    unsafe { API.as_ref() }
+}
+
+fn blk_at_read(dev: u32, offset: u64, buf: &mut [u8]) -> bool {
+    let Some(api) = api_ref() else {
+        return false;
+    };
+    let rc = unsafe { (api.blk_read_at)(dev, offset, buf.as_mut_ptr(), buf.len()) };
+    rc == buf.len() as i32
+}
+
+fn blk_at_write(dev: u32, offset: u64, buf: &[u8]) -> bool {
+    let Some(api) = api_ref() else {
+        return false;
+    };
+    let rc = unsafe { (api.blk_write_at)(dev, offset, buf.as_ptr(), buf.len()) };
+    rc == buf.len() as i32
+}
+
 fn read_block(dev: u32, block: u32, buf: &mut [u8; BLK]) -> bool {
-    blk::read_bytes(dev, block as u64 * BLK as u64, buf)
-        .map(|n| n == BLK)
-        .unwrap_or(false)
+    blk_at_read(dev, block as u64 * BLK as u64, buf)
 }
 
 fn write_block(dev: u32, block: u32, buf: &[u8; BLK]) -> bool {
-    blk::write_bytes(dev, block as u64 * BLK as u64, buf)
-        .map(|n| n == BLK)
-        .unwrap_or(false)
+    blk_at_write(dev, block as u64 * BLK as u64, buf)
 }
 
 fn read_sb_bytes(dev: u32, buf: &mut [u8; BLK]) -> bool {
-    blk::read_bytes(dev, SB_OFF, buf)
-        .map(|n| n == BLK)
-        .unwrap_or(false)
+    blk_at_read(dev, SB_OFF, buf)
 }
 
 fn write_sb_bytes(dev: u32, buf: &[u8; BLK]) -> bool {
-    blk::write_bytes(dev, SB_OFF, buf)
-        .map(|n| n == BLK)
-        .unwrap_or(false)
+    blk_at_write(dev, SB_OFF, buf)
+}
+
+fn lock() {
+    while LOCK
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+}
+
+fn unlock() {
+    LOCK.store(false, Ordering::Release);
 }
 
 fn bit_get(bm: &[u8], i: u32) -> bool {
@@ -278,7 +307,7 @@ fn alloc_block(fs: &Ext2) -> Option<u32> {
             if !adj_free_blocks(fs, -1) {
                 return None;
             }
-            let mut z = [0u8; BLK];
+            let z = [0u8; BLK];
             if !write_block(fs.dev, i, &z) {
                 return None;
             }
@@ -625,71 +654,66 @@ fn write_data(fs: &Ext2, ino: u32, node: &mut Inode, pos: usize, buf: &[u8]) -> 
 }
 
 fn locked<T>(f: impl FnOnce(&Ext2) -> T) -> Option<T> {
-    let g = FS.lock();
-    g.as_ref().map(f)
+    lock();
+    let r = unsafe { (*core::ptr::addr_of!(FS)).as_ref().map(f) };
+    unlock();
+    r
 }
 
-/// Parse the on-disk superblock and bind this device as the active ext2 mount.
-pub fn bind(dev: u32) -> Option<MountOps> {
+fn bind_dev(dev: u32) -> bool {
     let mut sb = [0u8; BLK];
     if !read_sb_bytes(dev, &mut sb) {
-        return None;
+        return false;
     }
-    let super_ = parse_super(&sb)?;
+    let Some(super_) = parse_super(&sb) else {
+        return false;
+    };
     let mut gd = [0u8; BLK];
     if !read_block(dev, 2, &mut gd) {
-        return None;
+        return false;
     }
-    let group = parse_group(&gd)?;
-    *FS.lock() = Some(Ext2 {
-        dev,
-        sb: super_,
-        gd: group,
-    });
-    Some(MountOps {
-        lookup,
-        stat,
-        listdir,
-        register,
-        create,
-        truncate,
-        read,
-        write,
-        mkdir,
-        rmdir,
-        unlink,
-        rename,
-        symlink,
-        readlink,
-        writable: true,
-    })
+    let Some(group) = parse_group(&gd) else {
+        return false;
+    };
+    lock();
+    unsafe {
+        *core::ptr::addr_of_mut!(FS) = Some(Ext2 {
+            dev,
+            sb: super_,
+            gd: group,
+        });
+    }
+    unlock();
+    true
 }
 
-pub fn lookup(_path: &str) -> Option<&'static [u8]> {
+#[allow(dead_code)]
+fn lookup(_path: &str) -> Option<&'static [u8]> {
     None
 }
 
-pub fn register(_name: &str, _bytes: &'static [u8]) -> bool {
+#[allow(dead_code)]
+fn register(_name: &str, _bytes: &'static [u8]) -> bool {
     false
 }
 
-pub fn rmdir(_path: &str) -> bool {
+fn rmdir(_path: &str) -> bool {
     false
 }
 
-pub fn rename(_old: &str, _new: &str) -> bool {
+fn rename(_old: &str, _new: &str) -> bool {
     false
 }
 
-pub fn symlink(_target: &str, _linkpath: &str) -> bool {
+fn symlink(_target: &str, _linkpath: &str) -> bool {
     false
 }
 
-pub fn readlink(_path: &str, _buf: &mut [u8]) -> Option<usize> {
+fn readlink(_path: &str, _buf: &mut [u8]) -> Option<usize> {
     None
 }
 
-pub fn stat(path: &str) -> Option<StatInfo> {
+fn stat(path: &str) -> Option<VfsStatInfo> {
     locked(|fs| {
         let ino = resolve(fs, path)?;
         let node = read_inode(fs, ino)?;
@@ -698,7 +722,7 @@ pub fn stat(path: &str) -> Option<StatInfo> {
         } else {
             (S_IFREG as u32) | (node.mode as u32 & 0o777)
         };
-        Some(StatInfo {
+        Some(VfsStatInfo {
             mode,
             size: node.size,
             ino,
@@ -707,7 +731,7 @@ pub fn stat(path: &str) -> Option<StatInfo> {
     })?
 }
 
-pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
+fn listdir(path: &str, buf: &mut [u8]) -> usize {
     locked(|fs| {
         let Some(ino) = resolve(fs, path) else {
             return 0;
@@ -738,7 +762,7 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     .unwrap_or(0)
 }
 
-pub fn create(path: &str) -> bool {
+fn create(path: &str) -> bool {
     locked(|fs| {
         let Some((parent, name)) = parent_name(path) else {
             return false;
@@ -773,7 +797,7 @@ pub fn create(path: &str) -> bool {
     .unwrap_or(false)
 }
 
-pub fn mkdir(path: &str) -> bool {
+fn mkdir(path: &str) -> bool {
     locked(|fs| {
         let Some((parent, name)) = parent_name(path) else {
             return false;
@@ -835,7 +859,7 @@ pub fn mkdir(path: &str) -> bool {
     .unwrap_or(false)
 }
 
-pub fn truncate(path: &str) -> bool {
+fn truncate(path: &str) -> bool {
     locked(|fs| {
         let Some(ino) = resolve(fs, path) else {
             return false;
@@ -852,7 +876,7 @@ pub fn truncate(path: &str) -> bool {
     .unwrap_or(false)
 }
 
-pub fn unlink(path: &str) -> bool {
+fn unlink(path: &str) -> bool {
     locked(|fs| {
         let Some((parent, name)) = parent_name(path) else {
             return false;
@@ -895,7 +919,7 @@ pub fn unlink(path: &str) -> bool {
     .unwrap_or(false)
 }
 
-pub fn read(path: &str, pos: usize, out: &mut [u8]) -> usize {
+fn read(path: &str, pos: usize, out: &mut [u8]) -> usize {
     locked(|fs| {
         let Some(ino) = resolve(fs, path) else {
             return 0;
@@ -911,7 +935,7 @@ pub fn read(path: &str, pos: usize, out: &mut [u8]) -> usize {
     .unwrap_or(0)
 }
 
-pub fn write(path: &str, pos: usize, buf: &[u8]) -> Option<usize> {
+fn write(path: &str, pos: usize, buf: &[u8]) -> Option<usize> {
     locked(|fs| {
         let ino = resolve(fs, path)?;
         let mut node = read_inode(fs, ino)?;
@@ -920,4 +944,265 @@ pub fn write(path: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         }
         write_data(fs, ino, &mut node, pos, buf)
     })?
+}
+
+fn rc_bool(ok: bool) -> i32 {
+    if ok { 0 } else { -1 }
+}
+
+unsafe fn c_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
+    if len != 0 && ptr.is_null() {
+        return None;
+    }
+    core::str::from_utf8(unsafe { core::slice::from_raw_parts(ptr, len) }).ok()
+}
+
+unsafe fn c_buf_mut<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
+    if len == 0 {
+        return Some(unsafe {
+            core::slice::from_raw_parts_mut(core::ptr::NonNull::<u8>::dangling().as_ptr(), 0)
+        });
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
+}
+
+unsafe fn c_buf<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
+    if len == 0 {
+        return Some(&[]);
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { core::slice::from_raw_parts(ptr, len) })
+}
+
+unsafe extern "C" fn ext2_lookup(
+    _path: *const u8,
+    _path_len: usize,
+    _out_data: *mut *const u8,
+    _out_len: *mut usize,
+) -> i32 {
+    -1
+}
+
+unsafe extern "C" fn ext2_stat(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    let Some(st) = stat(path) else {
+        return -1;
+    };
+    unsafe { *out = st };
+    0
+}
+
+unsafe extern "C" fn ext2_listdir(
+    path: *const u8,
+    path_len: usize,
+    buf: *mut u8,
+    buf_len: usize,
+    out_len: *mut usize,
+) -> i32 {
+    if buf.is_null() || out_len.is_null() {
+        return -1;
+    }
+    let Some(rel) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    let Some(slice) = (unsafe { c_buf_mut(buf, buf_len) }) else {
+        return -1;
+    };
+    unsafe { *out_len = listdir(rel, slice) };
+    0
+}
+
+unsafe extern "C" fn ext2_read(
+    path: *const u8,
+    path_len: usize,
+    pos: usize,
+    buf: *mut u8,
+    buf_len: usize,
+) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    let Some(out) = (unsafe { c_buf_mut(buf, buf_len) }) else {
+        return -1;
+    };
+    read(path, pos, out) as i32
+}
+
+unsafe extern "C" fn ext2_write(
+    path: *const u8,
+    path_len: usize,
+    pos: usize,
+    buf: *const u8,
+    buf_len: usize,
+) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    let Some(src) = (unsafe { c_buf(buf, buf_len) }) else {
+        return -1;
+    };
+    match write(path, pos, src) {
+        Some(n) => n.min(i32::MAX as usize) as i32,
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn ext2_create(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    rc_bool(create(path))
+}
+
+unsafe extern "C" fn ext2_truncate(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    rc_bool(truncate(path))
+}
+
+unsafe extern "C" fn ext2_mkdir(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    rc_bool(mkdir(path))
+}
+
+unsafe extern "C" fn ext2_rmdir(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    rc_bool(rmdir(path))
+}
+
+unsafe extern "C" fn ext2_unlink(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    rc_bool(unlink(path))
+}
+
+unsafe extern "C" fn ext2_rename(
+    old: *const u8,
+    old_len: usize,
+    new: *const u8,
+    new_len: usize,
+) -> i32 {
+    let Some(old) = (unsafe { c_str(old, old_len) }) else {
+        return -1;
+    };
+    let Some(new) = (unsafe { c_str(new, new_len) }) else {
+        return -1;
+    };
+    rc_bool(rename(old, new))
+}
+
+unsafe extern "C" fn ext2_symlink(
+    target: *const u8,
+    target_len: usize,
+    linkpath: *const u8,
+    linkpath_len: usize,
+) -> i32 {
+    let Some(target) = (unsafe { c_str(target, target_len) }) else {
+        return -1;
+    };
+    let Some(linkpath) = (unsafe { c_str(linkpath, linkpath_len) }) else {
+        return -1;
+    };
+    rc_bool(symlink(target, linkpath))
+}
+
+unsafe extern "C" fn ext2_readlink(
+    path: *const u8,
+    path_len: usize,
+    buf: *mut u8,
+    buf_len: usize,
+) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    let Some(out) = (unsafe { c_buf_mut(buf, buf_len) }) else {
+        return -1;
+    };
+    match readlink(path, out) {
+        Some(n) => n.min(i32::MAX as usize) as i32,
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn ext2_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
+    if ops.is_null() {
+        return -1;
+    }
+    if api_ref().is_none() {
+        return -1;
+    }
+    if !bind_dev(dev_id) {
+        return -1;
+    }
+    unsafe {
+        *ops = ModuleVfsOps {
+            lookup: ext2_lookup,
+            stat: ext2_stat,
+            listdir: ext2_listdir,
+            register: None,
+            read: Some(ext2_read),
+            write: Some(ext2_write),
+            create: Some(ext2_create),
+            truncate: Some(ext2_truncate),
+            mkdir: Some(ext2_mkdir),
+            rmdir: Some(ext2_rmdir),
+            unlink: Some(ext2_unlink),
+            rename: Some(ext2_rename),
+            symlink: Some(ext2_symlink),
+            readlink: Some(ext2_readlink),
+        };
+    }
+    0
+}
+
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
+    unsafe {
+        if api.is_null() {
+            return -1;
+        }
+        let api = &*api;
+        if api.abi_version != ABI_VERSION {
+            return -2;
+        }
+        API = api as *const KernelApi;
+        let rc = (api.fs_register)(b"ext2".as_ptr(), 4, ext2_bind);
+        if rc != 0 {
+            return rc;
+        }
+        let msg = b"ext2 mod ok\n";
+        (api.write_str)(msg.as_ptr(), msg.len());
+        0
+    }
+}
+
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn module_exit() {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    loop {}
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
 }

@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 5;
+pub const ABI_VERSION: u32 = 6;
 
 /// Stat blob exchanged with module VFS hooks (matches kernel layout).
 #[repr(C)]
@@ -45,6 +45,48 @@ pub struct ModuleVfsOps {
             data: *const u8,
             data_len: usize,
         ) -> i32,
+    >,
+    /// Optional read at `pos`. Bytes read (>=0) or negative error.
+    /// If None, the kernel copies from `lookup` (FAT).
+    pub read: Option<
+        unsafe extern "C" fn(
+            path: *const u8,
+            path_len: usize,
+            pos: usize,
+            buf: *mut u8,
+            buf_len: usize,
+        ) -> i32,
+    >,
+    /// Optional write at `pos`. Bytes written (>=0) or negative error.
+    pub write: Option<
+        unsafe extern "C" fn(
+            path: *const u8,
+            path_len: usize,
+            pos: usize,
+            buf: *const u8,
+            buf_len: usize,
+        ) -> i32,
+    >,
+    /// Optional create/truncate/mkdir/rmdir/unlink. 0 ok, negative fail.
+    pub create: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
+    pub truncate: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
+    pub mkdir: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
+    pub rmdir: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
+    pub unlink: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
+    pub rename: Option<
+        unsafe extern "C" fn(old: *const u8, old_len: usize, new: *const u8, new_len: usize) -> i32,
+    >,
+    pub symlink: Option<
+        unsafe extern "C" fn(
+            target: *const u8,
+            target_len: usize,
+            linkpath: *const u8,
+            linkpath_len: usize,
+        ) -> i32,
+    >,
+    /// Optional readlink. Bytes written (>=0) or negative error.
+    pub readlink: Option<
+        unsafe extern "C" fn(path: *const u8, path_len: usize, buf: *mut u8, buf_len: usize) -> i32,
     >,
 }
 
@@ -89,6 +131,11 @@ pub struct KernelApi {
     pub blk_count: unsafe extern "C" fn() -> u32,
     /// Register a filesystem type. `bind` is called from `mount(2)`.
     pub fs_register: unsafe extern "C" fn(name: *const u8, name_len: usize, bind: FsBind) -> i32,
+    /// Byte-granular read at `offset`. Returns bytes copied (>=0) or negative on error.
+    pub blk_read_at: unsafe extern "C" fn(dev: u32, offset: u64, buf: *mut u8, len: usize) -> i32,
+    /// Byte-granular write at `offset`. Returns bytes written (>=0) or negative on error.
+    pub blk_write_at:
+        unsafe extern "C" fn(dev: u32, offset: u64, buf: *const u8, len: usize) -> i32,
 }
 
 /// `module_init` — required. Return 0 on success.

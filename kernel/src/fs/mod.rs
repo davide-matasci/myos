@@ -3,7 +3,6 @@
 pub mod bootfs;
 mod coreutilsfs;
 mod devfs;
-mod ext2;
 mod fstype;
 mod procfs;
 mod sbasefs;
@@ -109,21 +108,12 @@ pub fn register_fstype(name: &str, bind: myos_abi::FsBind) -> bool {
     fstype::register(name, bind)
 }
 
-/// Register an in-kernel filesystem type (`ext2`, …).
-pub fn register_kernel_fstype(name: &str, bind: fstype::KernelBind) -> bool {
-    fstype::register_kernel(name, bind)
-}
-
 /// Bind `dev` to `fstype` and mount at `prefix` (single path component).
 /// The target directory need not exist. Re-mounting the same prefix replaces
 /// the previous module mount so a later `vd*` can overlay `/fat`.
-/// Kernel fstypes (writable `MountOps`) are tried before module `FsBind`s.
 pub fn mount_fstype(source_dev: u32, prefix: &str, fstype_name: &str, source: &str) -> bool {
     if prefix.is_empty() || prefix.contains('/') {
         return false;
-    }
-    if let Some(ops) = fstype::bind_kernel(fstype_name, source_dev) {
-        return vfs::mount_kernel(fstype_name, prefix, ops, source);
     }
     let Some(ops) = fstype::bind(fstype_name, source_dev) else {
         return false;
@@ -354,7 +344,6 @@ pub fn init() {
             reject_readlink,
         ),
     );
-    let _ = register_kernel_fstype("ext2", ext2::bind);
     vfs::mount(
         "procfs",
         "proc",
