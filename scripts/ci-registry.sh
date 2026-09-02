@@ -332,7 +332,7 @@ cmd_pull() {
 
 cmd_push() {
   local port="$1"
-  local hash ref tmp archive list status
+  local hash ref tmp list status
   if ! can_push; then
     echo "registry skip push (disabled)"
     return 0
@@ -361,12 +361,14 @@ cmd_push() {
     echo "registry skip push ${port}: nothing to pack"
     return 0
   fi
-  archive="$tmp/${port}.tar.zst"
-  tar -C "$ROOT" --zstd -cf "$archive" -T "$list"
+  tar -C "$ROOT" --zstd -cf "$tmp/${port}.tar.zst" -T "$list"
+  # oras push rejects absolute file paths; push from $tmp with a relative name.
   set +e
-  oras push "$ref" \
-    --artifact-type "$ORAS_ARTIFACT_TYPE" \
-    "${archive}:${ORAS_LAYER_TYPE}" >/dev/null 2>"$tmp/oras.err"
+  (
+    cd "$tmp" && oras push "$ref" \
+      --artifact-type "$ORAS_ARTIFACT_TYPE" \
+      "${port}.tar.zst:${ORAS_LAYER_TYPE}" >/dev/null
+  ) 2>"$tmp/oras.err"
   status=$?
   set -e
   if (( status != 0 )); then
