@@ -333,6 +333,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
         *frame = mm::alloc_frame();
     }
     let aspace = create_aspace(&frames[..n_pages], &stack_frames, base, stack_off);
+    apply_elf_load_prots(aspace, bytes, base, code_pages);
     map_initial_heap_pages(aspace, base, stack_off);
     let mapped_span = n_pages * PAGE;
     Some((aspace, entry as usize, mapped_span, stack_off))
@@ -345,6 +346,39 @@ fn map_initial_heap_pages(aspace: u64, base: u64, stack_off: u64) {
         let frame = reuse_or_alloc_frame(aspace, va);
         map_heap_page(aspace, va, frame);
     }
+}
+
+/// Remap the loaded image so PT_LOAD `p_flags` control R/W/X.
+///
+/// `load_user_elf` / expand initially map the whole span executable (and often
+/// writable). That let a bad jump into `.data.rel.ro` become an illegal
+/// instruction (`scause=0x2` on zeros) instead of an instruction page fault.
+fn apply_elf_load_prots(aspace: u64, bytes: &[u8], base: u64, image_pages: usize) {
+    let Ok(info) = elf::image_span(bytes) else {
+        return;
+    };
+    let min_v = info.min_vaddr;
+    for i in 0..image_pages {
+        let va = base + (i * PAGE) as u64;
+        let Some(phys) = virt_to_phys(aspace, va) else {
+            continue;
+        };
+        let page_lo = min_v + (i * PAGE) as u64;
+        let page_hi = page_lo + PAGE as u64;
+        let mut prot = 0usize;
+        let _ = elf::for_each_load_segment(bytes, |seg| {
+            let seg_lo = seg.vaddr;
+            let seg_hi = seg.vaddr.saturating_add(seg.memsz);
+            if page_lo < seg_hi && page_hi > seg_lo {
+                prot |= elf::pf_to_prot(seg.flags);
+            }
+        });
+        if prot == 0 {
+            prot = PROT_READ;
+        }
+        map_user_page_prot(aspace, va, phys, prot);
+    }
+    flush_user_tlb();
 }
 
 fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
@@ -451,6 +485,7 @@ fn reload_user_elf(
         }
         sync_icache(mm::hhdm(phys) as usize, PAGE);
     }
+    apply_elf_load_prots(aspace, bytes, base, image_pages);
     Some((entry as usize, n_pages * PAGE, stack_off))
 }
 
@@ -523,6 +558,7 @@ fn expand_user_elf(
         }
         sync_icache(mm::hhdm(phys) as usize, PAGE);
     }
+    apply_elf_load_prots(aspace, bytes, base, image_pages);
     Some((entry as usize, n_pages * PAGE, new_stack_off))
 }
 
@@ -1825,15 +1861,14 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
 }
 
 fn sys_wait(status_ptr: usize) -> usize {
-    let status_out = if status_ptr == 0 {
-        core::ptr::null_mut()
+    if status_ptr != 0 && !user_range_ok(status_ptr, 1) {
+        return SYSERR;
+    }
+    task::wait_child(if status_ptr == 0 {
+        None
     } else {
-        if !user_range_ok(status_ptr, 1) {
-            return SYSERR;
-        }
-        status_ptr as *mut u8
-    };
-    task::wait_child(status_out)
+        Some(status_ptr)
+    })
 }
 
 fn sys_pipe(fds_ptr: usize) -> usize {
@@ -1843,9 +1878,11 @@ fn sys_pipe(fds_ptr: usize) -> usize {
     let Some((r, w)) = task::pipe_open() else {
         return SYSERR;
     };
-    unsafe {
-        *(fds_ptr as *mut usize) = r;
-        *((fds_ptr as *mut usize).add(1)) = w;
+    let mut buf = [0u8; 2 * core::mem::size_of::<usize>()];
+    buf[..core::mem::size_of::<usize>()].copy_from_slice(&r.to_le_bytes());
+    buf[core::mem::size_of::<usize>()..].copy_from_slice(&w.to_le_bytes());
+    if !copy_to_user(task::current_aspace(), fds_ptr, &buf) {
+        return SYSERR;
     }
     0
 }
