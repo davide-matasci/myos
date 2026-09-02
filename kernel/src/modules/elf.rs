@@ -17,6 +17,9 @@ const ELFDATA2LSB: u8 = 1;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 const PT_LOAD: u32 = 1;
+const PF_X: u32 = 1;
+const PF_W: u32 = 2;
+const PF_R: u32 = 4;
 const SHT_SYMTAB: u32 = 2;
 const SHT_RELA: u32 = 4;
 const SHT_REL: u32 = 9;
@@ -142,6 +145,59 @@ fn parse_ehdr(bytes: &[u8]) -> Result<Ehdr, LoadError> {
         e_shentsize,
         e_shnum: u16_at(bytes, 60)? as usize,
     })
+}
+
+/// One PT_LOAD segment (file vaddrs, `p_flags`).
+#[derive(Clone, Copy, Debug)]
+pub struct LoadSegment {
+    pub vaddr: u64,
+    pub memsz: u64,
+    pub flags: u32,
+}
+
+/// Visit each PT_LOAD in `bytes`. Returns the number of segments walked.
+pub fn for_each_load_segment(
+    bytes: &[u8],
+    mut f: impl FnMut(LoadSegment),
+) -> Result<usize, LoadError> {
+    let hdr = parse_ehdr(bytes)?;
+    let mut n = 0usize;
+    for i in 0..hdr.e_phnum {
+        let p = hdr
+            .e_phoff
+            .checked_add(i.checked_mul(hdr.e_phentsize).ok_or(LoadError::Truncated)?)
+            .ok_or(LoadError::Truncated)?;
+        if u32_at(bytes, p)? != PT_LOAD {
+            continue;
+        }
+        let flags = u32_at(bytes, p + 4)?;
+        let vaddr = u64_at(bytes, p + 16)?;
+        let memsz = u64_at(bytes, p + 40)?;
+        f(LoadSegment {
+            vaddr,
+            memsz,
+            flags,
+        });
+        n += 1;
+    }
+    Ok(n)
+}
+
+pub fn pf_to_prot(flags: u32) -> usize {
+    let mut prot = 0usize;
+    if flags & PF_R != 0 {
+        prot |= 1; // PROT_READ
+    }
+    if flags & PF_W != 0 {
+        prot |= 2; // PROT_WRITE
+    }
+    if flags & PF_X != 0 {
+        prot |= 4; // PROT_EXEC
+    }
+    if prot == 0 {
+        prot = 1;
+    }
+    prot
 }
 
 pub fn image_span(bytes: &[u8]) -> Result<ImageSpan, LoadError> {
