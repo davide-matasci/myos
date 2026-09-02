@@ -74,6 +74,18 @@ fn main() {
     nested_elf(
         &cargo,
         manifest,
+        "../modules/virtio_net",
+        "virtio_net",
+        "virtio-net-target",
+        "VIRTIO_NET_MODULE_PATH",
+        &target,
+        &profile,
+        &out,
+        &["../abi/src/lib.rs"],
+    );
+    nested_elf(
+        &cargo,
+        manifest,
         "../user/init",
         "init",
         "init-target",
@@ -660,7 +672,7 @@ fn nested_elf(
     }
     cmd.env("RUSTFLAGS", "-C panic=abort");
     // ext2's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
-    if target.contains("x86_64") && bin == "ext2" {
+    if target.contains("x86_64") && (bin == "ext2" || bin == "virtio_net") {
         cmd.env("RUSTFLAGS", "-C panic=abort -C relocation-model=pic");
     }
     if target.contains("riscv64") {

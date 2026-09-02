@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "virtio_net"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "virtio-net kernel module: poll-mode /dev/net0 Ethernet frames."
+
+[[bin]]
+name = "virtio_net"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

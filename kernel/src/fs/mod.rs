@@ -117,6 +117,11 @@ pub fn register_fstype(name: &str, bind: myos_abi::FsBind) -> bool {
     fstype::register(name, bind)
 }
 
+/// Register a module character device under `/dev/<name>` (`S_IFCHR | 0666`).
+pub fn register_chrdev(name: &str, ops: myos_abi::ModuleChrOps) -> bool {
+    devfs::register_chrdev(name, ops)
+}
+
 /// Bind `dev` to `fstype` and mount at `prefix` (single path component).
 /// The target directory need not exist. Re-mounting the same prefix replaces
 /// the previous module mount so a later `vd*` can overlay `/fat`.

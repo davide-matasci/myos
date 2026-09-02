@@ -190,6 +190,11 @@ fn add_virtio_blk_riscv64(cmd: &mut Command) {
     add_virtio_blk_aarch64(cmd);
 }
 
+fn add_virtio_net(cmd: &mut Command) {
+    cmd.arg("-netdev").arg("user,id=net0");
+    cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
+}
+
 fn run_bios(bios_path: &str) {
     let mut cmd = Command::new("qemu-system-x86_64");
     cmd.arg("-cpu")
@@ -205,6 +210,7 @@ fn run_bios(bios_path: &str) {
         .arg("-boot")
         .arg("order=c,menu=off");
     add_virtio_blk_x86(&mut cmd);
+    add_virtio_net(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
 }
@@ -233,6 +239,7 @@ fn run_uefi(uefi_path: &str) {
         .arg("-nic")
         .arg("none");
     add_virtio_blk_x86(&mut cmd);
+    add_virtio_net(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
 }
@@ -309,6 +316,7 @@ fn run_ci_bios(bios_path: &str) {
         .arg("order=c,menu=off")
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
+    add_virtio_net(&mut cmd);
     let child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -357,6 +365,7 @@ fn run_ci_uefi(uefi_path: &str) {
         .arg("none")
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
+    add_virtio_net(&mut cmd);
     let child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -420,6 +429,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         ));
     // Data disks first so they become /dev/vda and /dev/vdb; ESP boots via bootindex.
     add_virtio_blk_aarch64(&mut cmd);
+    add_virtio_net(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(
             "if=none,id=hd0,format=raw,file={}",
@@ -589,6 +599,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
             vars.display()
         ));
     add_virtio_blk_riscv64(&mut cmd);
+    add_virtio_net(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(
             "if=none,id=hd0,format=raw,file={}",

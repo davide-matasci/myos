@@ -62,6 +62,9 @@ fn smoke_vfs() {
         return;
     }
     write(b"vda ok\n");
+    if buf_has(&buf[..n], b"net0") {
+        write(b"net0 ok\n");
+    }
     if buf_has(&buf[..n], b"vdb") {
         write(b"vdb ok\n");
     }
