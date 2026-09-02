@@ -16,16 +16,24 @@ out="$ROOT/target/libgloss-myos-${arch}"
 rm -rf "$out"
 mkdir -p "$out/obj" "$libdir"
 cp "$ROOT/toolchain/newlib/libgloss/myos/crt0-${arch}.S" "$PORT/crt0.S"
+cp "$ROOT/toolchain/newlib/libgloss/myos/crti-${arch}.S" "$PORT/crti.S"
+cp "$ROOT/toolchain/newlib/libgloss/myos/crtn-${arch}.S" "$PORT/crtn.S"
 
 for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
 "$CC" -c "$PORT/crt0.S" -o "$out/obj/crt0.o"
+"$CC" -c "$PORT/crti.S" -o "$out/obj/crti.o"
+"$CC" -c "$PORT/crtn.S" -o "$out/obj/crtn.o"
 
+# crt*.o are standalone CRT objects, not members of libgloss.a
 ar rcs "$out/libgloss.a" "$out/obj"/*.o
+ar d "$out/libgloss.a" crt0.o crti.o crtn.o 2>/dev/null || true
 cp "$out/libgloss.a" "$libdir/libgloss.a"
 cp "$out/obj/crt0.o" "$libdir/crt0.o"
+cp "$out/obj/crti.o" "$libdir/crti.o"
+cp "$out/obj/crtn.o" "$libdir/crtn.o"
 mkdir -p "$libdir/specs" "$inc/sys"
 cp "$PORT/myos.specs" "$libdir/specs/myos.specs"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/dirent.h" "$inc/sys/dirent.h"
