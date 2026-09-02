@@ -56,7 +56,7 @@ const CI_NEEDLES_STD: [&str; 13] = [
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 9] = [
+const CI_SHELL_COMMANDS: [&[u8]; 10] = [
     b"nosuchcmd\n",
     // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
     b"heap\n",
@@ -68,6 +68,8 @@ const CI_SHELL_COMMANDS: [&[u8]; 9] = [
     b"/s/ls\n",
     // Typo then backspaces: canonical stdin must deliver `/s/ls`, not `x/s/ls` or raw BS.
     b"x\x08/s/ls\n",
+    // oksh redirect uses newlib O_CREAT; must create on tmpfs (not only `/ok`).
+    b"echo test > /tmp/aaa; cat /tmp/aaa\n",
 ];
 
 /// Printed by the interactive shell when a command cannot be resolved.
@@ -190,6 +192,23 @@ fn interactive_sbase_ls_cmd_ok(serial: &str) -> bool {
 }
 
 /// `x<BS>/s/ls` must run `/s/ls` (canonical erase), not leave a bogus argv.
+fn interactive_tmp_redir_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let echoed = "$ echo test > /tmp/aaa; cat /tmp/aaa";
+    if !tail.contains(echoed) || serial.contains("exception:") {
+        return false;
+    }
+    if tail.contains("cannot create") {
+        return false;
+    }
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    after
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim() == "test")
+        && at_interactive_prompt(serial)
+}
+
 fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     // Echo includes BS-space-BS; do not require a clean `$ /s/ls` substring.
@@ -232,6 +251,7 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
         6 => interactive_sbase_echo_cmd_ok(serial),
         7 => interactive_sbase_ls_cmd_ok(serial),
         8 => interactive_bs_ls_cmd_ok(serial),
+        9 => interactive_tmp_redir_ok(serial),
         _ => false,
     }
 }
@@ -526,9 +546,14 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         if shell_cmd_index >= 7 && shell_cmd_index < 8 && !interactive_sbase_ls_cmd_ok(&serial) {
             eprintln!("error: interactive `/s/ls` failed (want `$ /s/ls` then `$` prompt)");
         }
-        if shell_cmd_index >= 8 && !interactive_bs_ls_cmd_ok(&serial) {
+        if shell_cmd_index >= 8 && shell_cmd_index < 9 && !interactive_bs_ls_cmd_ok(&serial) {
             eprintln!(
                 "error: interactive `x<BS>/s/ls` failed (canonical backspace must yield `/s/ls`)"
+            );
+        }
+        if shell_cmd_index >= 9 && !interactive_tmp_redir_ok(&serial) {
+            eprintln!(
+                "error: interactive `echo test > /tmp/aaa; cat /tmp/aaa` failed (want `test`, no cannot create)"
             );
         }
         std::process::exit(1);
