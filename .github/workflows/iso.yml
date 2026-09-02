@@ -9,7 +9,7 @@ env:
 jobs:
   x86_64:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned nightly
@@ -17,7 +17,7 @@ jobs:
         with:
           toolchain: nightly-2026-07-26
           components: rust-src, llvm-tools-preview
-          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat
+          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -26,16 +26,51 @@ jobs:
             target/myos-sysroot
             target/newlib-x86_64
             target/newlib-aarch64
+            target/newlib-riscv64
             target/newlib-src
             target/newlib-bin
             target/sbase-src
             target/sbase-myos-build
+            target/ubase-src
+            target/ubase-myos-build
             target/oksh-src
             target/oksh-myos-build
+            target/ripgrep-src
+            target/ripgrep-build-x86_64-unknown-myos
+            target/ripgrep-build-aarch64-unknown-myos
+            target/ripgrep-build-riscv64-unknown-myos
+            target/pcre2-src
+            target/pcre2-x86_64
+            target/pcre2-aarch64
+            target/pcre2-riscv64
+            target/tcc-src
+            target/tcc-myos-build
+            target/patched-crates
+            target/crate-fetch-coreutils
+            target/.myos-newlib-version
+            target/.myos-c-hello-version
+            target/.myos-sbase-version
+            target/.myos-ubase-version
+            target/.myos-oksh-version
+            target/.myos-coreutils-version
+            target/.myos-ripgrep-version
+            target/.myos-tcc-version
+            target/.myos-std-hello-version
+            target/sbase-*
+            target/ubase-*
+            target/oksh-*
+            target/coreutils-*
+            target/std-*
+            target/hello-*
+            target/ok-*
+            target/c-hello-*
+            target/rg-*
+            target/uutils-*
+            target/tcc-*
       - name: Install xorriso and build tools
         run: sudo apt-get update && sudo apt-get install -y xorriso clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
 
-      - name: Build myos sysroot, newlib, C/sbase/oksh/uutils ELFs
+      - name: Build myos sysroot and userspace ELFs
         run: |
           chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
           ./toolchain/std/fetch-sysroot.sh
@@ -44,6 +79,9 @@ jobs:
           ./ports/sbase/build.sh
           ./ports/oksh/build.sh
           ./ports/coreutils/build-uutils.sh
+          ./ports/ubase/build.sh
+          ./ports/ripgrep/build.sh
+          ./ports/tcc/build.sh
 
       - name: Build x86_64 hybrid ISO
         run: |

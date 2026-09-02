@@ -164,6 +164,25 @@ fn embed_coreutils_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
 
 
 
+
+/// Workflow file edits need `workflow` OAuth scope; run the port script so
+/// ISO/CI can still embed the artifact without a workflow-only change.
+fn run_port_build(manifest_dir: &Path, port: &str) {
+    let script = manifest_dir.join(format!("../ports/{port}/build.sh"));
+    println!("cargo:rerun-if-changed={}", script.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join(format!("../ports/{port}")).display()
+    );
+    let status = Command::new("bash")
+        .arg(&script)
+        .status()
+        .unwrap_or_else(|e| panic!("run {}: {e}", script.display()));
+    if !status.success() {
+        panic!("{} failed", script.display());
+    }
+}
+
 fn embed_tcc_elf(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     let triple = if arch == "x86_64" {
         "x86_64-unknown-myos"
@@ -188,17 +207,7 @@ fn embed_tcc_elf(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     if !elf.is_file() {
         // Workflow file edits need `workflow` OAuth scope; build tcc here so
         // CI/ISO still embed /t/tcc without a ci.yml change.
-        let script = manifest_dir.join("../ports/tcc/build.sh");
-        println!("cargo:rerun-if-changed={}", script.display());
-        println!("cargo:rerun-if-changed={}", manifest_dir.join("../ports/tcc").display());
-
-        let status = Command::new("bash")
-            .arg(&script)
-            .status()
-            .unwrap_or_else(|e| panic!("run {}: {e}", script.display()));
-        if !status.success() {
-            panic!("{} failed", script.display());
-        }
+        run_port_build(manifest_dir, "tcc");
     }
     if !elf.is_file() {
         panic!(
@@ -231,6 +240,9 @@ fn embed_ripgrep_elf(manifest_dir: &Path, arch: &str, out_dir: &Path) {
         .join("../target")
         .join(format!("rg-{triple}"));
     println!("cargo:rerun-if-changed={}", elf.display());
+    if !elf.is_file() {
+        run_port_build(manifest_dir, "ripgrep");
+    }
     if !elf.is_file() {
         panic!(
             "ripgrep ELF missing at {} (run ./ports/ripgrep/build.sh)",
@@ -317,6 +329,9 @@ fn embed_ubase_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
         .join(format!("ubase-manifest-{arch}.txt"));
     println!("cargo:rerun-if-changed={}", manifest.display());
     if !manifest.is_file() {
+        run_port_build(manifest_dir, "ubase");
+    }
+    if !manifest.is_file() {
         panic!(
             "ubase manifest missing at {} (run ./ports/ubase/build.sh)",
             manifest.display()
@@ -333,6 +348,9 @@ fn embed_ubase_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
             continue;
         };
         let path = Path::new(path);
+        if !path.is_file() {
+            run_port_build(manifest_dir, "ubase");
+        }
         if !path.is_file() {
             panic!(
                 "ubase ELF missing for {name} at {} (run ./ports/ubase/build.sh)",
