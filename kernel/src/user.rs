@@ -2253,7 +2253,7 @@ fn sys_mount(args_ptr: usize) -> usize {
     if prefix.is_empty() || prefix.contains('/') || fstype.is_empty() {
         return SYSERR;
     }
-    if fs::mount_fstype(dev, prefix, fstype) {
+    if fs::mount_fstype(dev, prefix, fstype, &src) {
         0
     } else {
         SYSERR

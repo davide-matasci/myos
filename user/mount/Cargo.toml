@@ -5,7 +5,7 @@ name = "mount"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Userspace mount(2): mount /dev/vda /mnt fat"
+description = "Userspace mount: no args prints /proc/mounts; else mount src tgt fstype"
 
 [[bin]]
 name = "mount"

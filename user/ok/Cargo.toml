@@ -5,7 +5,7 @@ name = "ok"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Slim always-on boot smoke: alloc, /msg, disk/FAT listdir; no heavy carnival."
+description = "Slim always-on boot smoke: alloc, /msg, disk/FAT listdir, /proc/mounts; no heavy carnival."
 
 [[bin]]
 name = "ok"

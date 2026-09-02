@@ -126,7 +126,11 @@ fn smoke_disk() {
 fn smoke_tmp_dev() {
     let mut buf = [0u8; myos_user::LISTDIR_BUF];
     let n = listdir(b"/", &mut buf);
-    if n == usize::MAX || !buf_has(&buf[..n], b"tmp") || !buf_has(&buf[..n], b"dev") {
+    if n == usize::MAX
+        || !buf_has(&buf[..n], b"tmp")
+        || !buf_has(&buf[..n], b"dev")
+        || !buf_has(&buf[..n], b"proc")
+    {
         write(b"tmpdev ls fail\n");
         return;
     }
@@ -216,6 +220,48 @@ fn smoke_tmp_dev() {
         return;
     }
     write(b"tmpops ok\n");
+
+    smoke_proc(&mut buf);
+}
+
+fn smoke_proc(buf: &mut [u8]) {
+    let n = listdir(b"/proc", buf);
+    if n == usize::MAX || !buf_has(&buf[..n], b"mounts") {
+        write(b"proc ls fail\n");
+        return;
+    }
+    let Some(fd) = open(b"/proc/mounts") else {
+        write(b"proc open fail\n");
+        return;
+    };
+    // fd_read copies at most 128 bytes per syscall; concatenate until EOF.
+    let mut nr = 0usize;
+    loop {
+        if nr >= buf.len() {
+            break;
+        }
+        let n = read(fd, &mut buf[nr..]);
+        if n == usize::MAX {
+            close(fd);
+            write(b"proc read fail\n");
+            return;
+        }
+        if n == 0 {
+            break;
+        }
+        nr += n;
+    }
+    close(fd);
+    if !buf_has(&buf[..nr], b"tmpfs")
+        || !buf_has(&buf[..nr], b"devfs")
+        || !buf_has(&buf[..nr], b"procfs")
+        || !buf_has(&buf[..nr], b"fat")
+        || !buf_has(&buf[..nr], b"/dev/vd")
+    {
+        write(b"proc read fail\n");
+        return;
+    }
+    write(b"proc ok\n");
 }
 
 fn main() -> ! {
