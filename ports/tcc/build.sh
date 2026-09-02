@@ -136,6 +136,7 @@ build_arch() {
     -DONE_SOURCE=1 \
     $target_def \
     -DCONFIG_TCC_STATIC=1 \
+    -DCONFIG_TCC_PIE=1 \
     -D_DEFAULT_SOURCE \
     -D_GNU_SOURCE \
     -Wno-implicit-function-declaration \

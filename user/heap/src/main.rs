@@ -114,7 +114,7 @@ int main(void) { write(1, "tcc ok\n", 7); return 0; }
     } else {
         write(b"tcc skip (tmp create fail)\n");
     }
-    // Hosted tcc: default crt + libc + libgloss, static ELF, then exec.
+    // Hosted tcc: default crt + libc + libgloss, PIE (ET_DYN) ELF, then exec.
     // Needle is printed by the compiled program, not by heap.
     const STD_C: &[u8] = br#"
 #include <stdio.h>

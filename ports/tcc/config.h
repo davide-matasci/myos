@@ -4,6 +4,7 @@
 #endif
 #define CONFIG_TCCDIR "/t"
 #define CONFIG_TCC_STATIC 1
+#define CONFIG_TCC_PIE 1
 #define CONFIG_TCC_SEMLOCK 0
 #define CONFIG_TCC_BCHECK 0
 #define CONFIG_TCC_BACKTRACE 0
