@@ -108,7 +108,8 @@ pub fn register_fstype(name: &str, bind: myos_abi::FsBind) -> bool {
 }
 
 /// Bind `dev` to `fstype` and mount at `prefix` (single path component).
-/// The target directory need not exist.
+/// The target directory need not exist. Re-mounting the same prefix replaces
+/// the previous module mount so a later `vd*` can overlay `/fat`.
 pub fn mount_fstype(source_dev: u32, prefix: &str, fstype_name: &str) -> bool {
     if prefix.is_empty() || prefix.contains('/') {
         return false;

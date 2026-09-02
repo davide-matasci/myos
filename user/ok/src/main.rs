@@ -34,6 +34,20 @@ fn buf_has(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
+fn is_vd(name: &[u8]) -> bool {
+    name.len() == 3 && name[0] == b'v' && name[1] == b'd' && (b'a'..=b'z').contains(&name[2])
+}
+
+fn fat_msg_ok() -> bool {
+    let Some(fd) = open(b"/fat/msg") else {
+        return false;
+    };
+    let mut msg = [0u8; 8];
+    let nr = read(fd, &mut msg);
+    close(fd);
+    nr >= 7 && &msg[..7] == b"fat ok\n"
+}
+
 fn smoke_vfs() {
     let mut buf = [0u8; myos_user::LISTDIR_BUF];
     let n = listdir(b"/disk", &mut buf);
@@ -51,7 +65,31 @@ fn smoke_vfs() {
         write(b"vdb ok\n");
     }
 
-    if !mount(b"/dev/vda", b"/fat", b"fat") {
+    // ESP/empty can be vda on aarch64/riscv; try every vd* until /fat/msg is ours.
+    let mut vds = [[0u8; 3]; 8];
+    let mut nv = 0usize;
+    for name in buf[..n].split(|&b| b == b'\n') {
+        if is_vd(name) && nv < vds.len() {
+            vds[nv].copy_from_slice(name);
+            nv += 1;
+        }
+    }
+
+    let mut found = false;
+    for i in 0..nv {
+        let name = &vds[i];
+        let mut src = [0u8; 8];
+        src[..5].copy_from_slice(b"/dev/");
+        src[5..8].copy_from_slice(name);
+        if !mount(&src, b"/fat", b"fat") {
+            continue;
+        }
+        if fat_msg_ok() {
+            found = true;
+            break;
+        }
+    }
+    if !found {
         write(b"fat mount fail\n");
         return;
     }

@@ -88,9 +88,9 @@ unsafe extern "C" fn fat_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
         return -1;
     };
     let vol = unsafe { &mut *core::ptr::addr_of_mut!(VOL) };
-    if vol.ready {
-        return -8;
-    }
+    // Re-bind is allowed: CI may mount twice, and /ok retries every vd*.
+    vol.ready = false;
+    vol.count = 0;
     match unsafe { init_volume(api, dev_id) } {
         Ok(()) => {
             unsafe {
