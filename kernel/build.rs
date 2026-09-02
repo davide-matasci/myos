@@ -666,6 +666,29 @@ fn assert_elf_linked_at_user_base(elf: &Path, bin: &str, target: &str) {
             "{bin} for {target} entry {entry:#x} is below USER_BASE {USER_BASE:#x};              --image-base did not apply (absolute vtables would fault after slide)"
         );
     }
+    // e_entry alone is not enough (--section-start .text can raise entry while
+    // rodata/vtables stay at 0x200000 / 0x10000).
+    let phoff = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
+    let phentsize = u16::from_le_bytes(bytes[54..56].try_into().unwrap()) as usize;
+    let phnum = u16::from_le_bytes(bytes[56..58].try_into().unwrap()) as usize;
+    let mut min_vaddr = u64::MAX;
+    for i in 0..phnum {
+        let p = phoff + i * phentsize;
+        if p + 40 > bytes.len() {
+            break;
+        }
+        let p_type = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+        if p_type != 1 {
+            continue; // PT_LOAD
+        }
+        let vaddr = u64::from_le_bytes(bytes[p + 16..p + 24].try_into().unwrap());
+        min_vaddr = min_vaddr.min(vaddr);
+    }
+    if min_vaddr == u64::MAX || min_vaddr < USER_BASE {
+        panic!(
+            "{bin} for {target} min PT_LOAD p_vaddr {min_vaddr:#x} is below USER_BASE              {USER_BASE:#x}; abs data would still fault after slide (entry was {entry:#x})"
+        );
+    }
 }
 
 fn nested_elf(
