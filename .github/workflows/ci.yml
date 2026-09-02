@@ -23,6 +23,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -80,6 +81,7 @@ jobs:
               - 'scripts/build-pcre2-myos.sh'
               - 'scripts/build-uutils-myos.sh'
               - 'scripts/build-coreutils-myos.sh'
+              - 'scripts/ci-registry.sh'
 
   wire-myos:
     runs-on: ubuntu-latest
@@ -205,51 +207,15 @@ jobs:
       # prefix-key busts poisoned rust-cache (77c4886 FAT 8.3; empty /c/rg
       # embed from soft-missing ripgrep). Keep build+boot in lockstep.
       # Do not cache a cargo target that lets kernel build.rs skip.
+      # C/userspace outputs live in GHCR (scripts/ci-registry.sh), not rust-cache.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: limine-8.3-6
           cache-directories: |
             target/myos-sysroot
-            target/newlib-x86_64
-            target/newlib-aarch64
-            target/newlib-riscv64
-            target/newlib-src
-            target/newlib-bin
-            target/sbase-src
-            target/sbase-myos-build
-            target/ubase-src
-            target/ubase-myos-build
-            target/oksh-src
-            target/oksh-myos-build
-            target/ripgrep-src
-            target/ripgrep-build-x86_64-unknown-myos
-            target/ripgrep-build-aarch64-unknown-myos
-            target/ripgrep-build-riscv64-unknown-myos
-            target/pcre2-src
-            target/pcre2-x86_64
-            target/pcre2-aarch64
-            target/pcre2-riscv64
             target/patched-crates
             target/crate-fetch-coreutils
-            target/.myos-newlib-version
-            target/.myos-c-hello-version
-            target/.myos-sbase-version
-            target/.myos-ubase-version
-            target/.myos-oksh-version
-            target/.myos-coreutils-version
-            target/.myos-ripgrep-version
-            target/.myos-std-hello-version
-            target/sbase-*
-            target/ubase-*
-            target/oksh-*
-            target/coreutils-*
-            target/std-*
-            target/hello-*
-            target/ok-*
-            target/c-hello-*
-            target/rg-*
-            target/uutils-*
 
       - name: Download prebuilt sysroot
         if: needs.sysroot.result == 'success'
@@ -262,7 +228,10 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
 
-      - name: Install sysroot and build std/C/sbase/oksh/ubase/uutils/ripgrep ELFs
+      - name: Install sysroot and build std/C/sbase/oksh/ubase/uutils/ripgrep/tcc ELFs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
           if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
@@ -271,6 +240,15 @@ jobs:
           else
             ./toolchain/std/fetch-sysroot.sh
           fi
+          ./scripts/ci-registry.sh pull newlib || true
+          ./scripts/ci-registry.sh pull std-hello || true
+          ./scripts/ci-registry.sh pull c-hello || true
+          ./scripts/ci-registry.sh pull sbase || true
+          ./scripts/ci-registry.sh pull oksh || true
+          ./scripts/ci-registry.sh pull ubase || true
+          ./scripts/ci-registry.sh pull coreutils || true
+          ./scripts/ci-registry.sh pull ripgrep || true
+          ./scripts/ci-registry.sh pull tcc || true
           ./toolchain/std/build-std-hello.sh
           ./scripts/build-c-hello.sh
           ./ports/sbase/build.sh
@@ -278,6 +256,16 @@ jobs:
           ./ports/ubase/build.sh
           ./ports/coreutils/build-uutils.sh
           ./ports/ripgrep/build.sh
+          ./ports/tcc/build.sh
+          ./scripts/ci-registry.sh push newlib || true
+          ./scripts/ci-registry.sh push std-hello || true
+          ./scripts/ci-registry.sh push c-hello || true
+          ./scripts/ci-registry.sh push sbase || true
+          ./scripts/ci-registry.sh push oksh || true
+          ./scripts/ci-registry.sh push ubase || true
+          ./scripts/ci-registry.sh push coreutils || true
+          ./scripts/ci-registry.sh push ripgrep || true
+          ./scripts/ci-registry.sh push tcc || true
 
       - name: PS/2 scancode decode unit tests
         run: cargo test -p ps2-scancode
@@ -295,14 +283,6 @@ jobs:
           cargo build -p kernel --target riscv64imac-unknown-none-elf
           test -f target/bios.img
           od -An -tx1 -N 16 target/bios.img
-
-      # Run required x86 boot needles here so CI stays meaningful when artifact
-      # upload is quota-blocked (boot matrix depends on ci-build.tar).
-      - name: Boot smoke (x86 BIOS + UEFI)
-        run: |
-          sudo apt-get update && sudo apt-get install -y qemu-system-x86
-          ./target/debug/myos --ci
-          ./target/debug/myos uefi --ci
 
       - name: Pack CI build artifacts
         run: |
@@ -323,6 +303,7 @@ jobs:
             target/uutils-*
             target/coreutils-*
             target/rg-*
+            target/tcc-*
             target/pcre2-x86_64
             target/pcre2-aarch64
             target/pcre2-riscv64
@@ -333,6 +314,7 @@ jobs:
             target/.myos-oksh-version
             target/.myos-coreutils-version
             target/.myos-ripgrep-version
+            target/.myos-tcc-version
             target/.myos-std-hello-version
             target/limine-v*
           )
@@ -402,45 +384,8 @@ jobs:
           prefix-key: limine-8.3-6
           cache-directories: |
             target/myos-sysroot
-            target/newlib-x86_64
-            target/newlib-aarch64
-            target/newlib-riscv64
-            target/newlib-src
-            target/newlib-bin
-            target/sbase-src
-            target/sbase-myos-build
-            target/ubase-src
-            target/ubase-myos-build
-            target/oksh-src
-            target/oksh-myos-build
-            target/ripgrep-src
-            target/ripgrep-build-x86_64-unknown-myos
-            target/ripgrep-build-aarch64-unknown-myos
-            target/ripgrep-build-riscv64-unknown-myos
-            target/pcre2-src
-            target/pcre2-x86_64
-            target/pcre2-aarch64
-            target/pcre2-riscv64
             target/patched-crates
             target/crate-fetch-coreutils
-            target/.myos-newlib-version
-            target/.myos-c-hello-version
-            target/.myos-sbase-version
-            target/.myos-ubase-version
-            target/.myos-oksh-version
-            target/.myos-coreutils-version
-            target/.myos-ripgrep-version
-            target/.myos-std-hello-version
-            target/sbase-*
-            target/ubase-*
-            target/oksh-*
-            target/coreutils-*
-            target/std-*
-            target/hello-*
-            target/ok-*
-            target/c-hello-*
-            target/rg-*
-            target/uutils-*
 
       - name: Download prebuilt sysroot
         continue-on-error: true
@@ -456,11 +401,32 @@ jobs:
           name: ci-build
 
       - name: Restore or rebuild CI artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
           sudo apt-get update
           sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
+          ./scripts/ci-registry.sh pull newlib || true
+          ./scripts/ci-registry.sh pull std-hello || true
+          ./scripts/ci-registry.sh pull c-hello || true
+          ./scripts/ci-registry.sh pull sbase || true
+          ./scripts/ci-registry.sh pull oksh || true
+          ./scripts/ci-registry.sh pull ubase || true
+          ./scripts/ci-registry.sh pull coreutils || true
+          ./scripts/ci-registry.sh pull ripgrep || true
+          ./scripts/ci-registry.sh pull tcc || true
           ./scripts/ci-restore-or-build.sh
+          ./scripts/ci-registry.sh push newlib || true
+          ./scripts/ci-registry.sh push std-hello || true
+          ./scripts/ci-registry.sh push c-hello || true
+          ./scripts/ci-registry.sh push sbase || true
+          ./scripts/ci-registry.sh push oksh || true
+          ./scripts/ci-registry.sh push ubase || true
+          ./scripts/ci-registry.sh push coreutils || true
+          ./scripts/ci-registry.sh push ripgrep || true
+          ./scripts/ci-registry.sh push tcc || true
 
       - name: Install QEMU
         run: sudo apt-get install -y ${{ matrix.packages }}
