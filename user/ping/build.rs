@@ -21,6 +21,7 @@ fn main() {
         // absolute pointers (smoltcp vtables) match the load address.
         // Split form + warning: CI previously still linked at 0x200000/0x10000
         // despite the equals form alone in build.rs.
+        // Host launcher cleans aarch64/riscv kernels each boot CI run.
         println!("cargo:warning=ping: --image-base=0x40000000 for {arch}");
         println!("cargo:rustc-link-arg=--image-base");
         println!("cargo:rustc-link-arg=0x40000000");
