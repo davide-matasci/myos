@@ -650,6 +650,24 @@ fn embed_c_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
     println!("cargo:rustc-env={env_key}={}", stable.display());
 }
 
+
+/// Ping on AArch64/RISC-V is ET_EXEC with absolute smoltcp vtables. It must be
+/// linked at USER_BASE (0x4000_0000); the kernel slides PT_LOAD without abs relocs.
+fn assert_elf_linked_at_user_base(elf: &Path, bin: &str, target: &str) {
+    const USER_BASE: u64 = 0x4000_0000;
+    let bytes = std::fs::read(elf).unwrap_or_else(|e| panic!("read {bin} ELF: {e}"));
+    if bytes.len() < 64 || &bytes[0..4] != b"\x7fELF" {
+        panic!("{bin} for {target} is not ELF");
+    }
+    // e_entry at offset 24 (ELF64)
+    let entry = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
+    if entry < USER_BASE {
+        panic!(
+            "{bin} for {target} entry {entry:#x} is below USER_BASE {USER_BASE:#x};              --image-base did not apply (absolute vtables would fault after slide)"
+        );
+    }
+}
+
 fn nested_elf(
     cargo: &str,
     manifest_dir: &Path,
@@ -677,8 +695,16 @@ fn nested_elf(
     // Nested target dirs reuse myos-user rlibs aggressively; drop deps when
     // the shared user library changed so fork/exec stubs stay in sync.
     let profile_dir = if profile == "release" { "release" } else { "debug" };
-    let deps = td.join(target).join(profile_dir).join("deps");
-    let _ = std::fs::remove_dir_all(deps);
+    // smoltcp (ping) needs a clean link for --image-base; deps-only wipe can
+    // leave a stale ET_EXEC at the default 0x200000 / 0x10000 link base.
+    let need_image_base = bin == "ping"
+        && (target.contains("aarch64") || target.contains("riscv64"));
+    if need_image_base {
+        let _ = std::fs::remove_dir_all(&td);
+    } else {
+        let deps = td.join(target).join(profile_dir).join("deps");
+        let _ = std::fs::remove_dir_all(deps);
+    }
     let mut cmd = Command::new(cargo);
     cmd.arg("build")
         .arg("--manifest-path")
@@ -692,17 +718,22 @@ fn nested_elf(
     if profile == "release" {
         cmd.arg("--release");
     }
-    cmd.env("RUSTFLAGS", "-C panic=abort");
+    let mut rustflags = String::from("-C panic=abort");
     // ext2's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
     if target.contains("x86_64") && (bin == "ext2" || bin == "virtio_net") {
-        cmd.env("RUSTFLAGS", "-C panic=abort -C relocation-model=pic");
+        rustflags = String::from("-C panic=abort -C relocation-model=pic");
     }
     if target.contains("riscv64") {
-        cmd.env(
-            "RUSTFLAGS",
+        rustflags = String::from(
             "-C panic=abort -C relocation-model=static -C code-model=medium",
         );
     }
+    // Belt-and-suspenders with user/ping/build.rs: RUSTFLAGS link-arg survives
+    // nested-cargo fingerprint quirks that previously left ping at 0x200000.
+    if need_image_base {
+        rustflags.push_str(" -C link-arg=--image-base=0x40000000");
+    }
+    cmd.env("RUSTFLAGS", rustflags);
     cmd.env_remove("CARGO_ENCODED_RUSTFLAGS");
     let status = cmd
         .status()
@@ -721,6 +752,9 @@ fn nested_elf(
         .join(bin);
     if !elf.is_file() {
         panic!("{bin} ELF missing at {}", elf.display());
+    }
+    if need_image_base {
+        assert_elf_linked_at_user_base(&elf, bin, target);
     }
     if env_key != "_unused" {
         println!("cargo:rustc-env={env_key}={}", elf.display());
