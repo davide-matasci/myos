@@ -29,7 +29,7 @@ done
 
 # crt*.o are standalone CRT objects, not members of libgloss.a
 ar rcs "$out/libgloss.a" "$out/obj"/*.o
-ar d "$out/libgloss.a" crt0.o crti.o crtn.o 2>/dev/null || true
+ar d "$out/libgloss.a" crti.o crtn.o 2>/dev/null || true
 cp "$out/libgloss.a" "$libdir/libgloss.a"
 cp "$out/obj/crt0.o" "$libdir/crt0.o"
 cp "$out/obj/crti.o" "$libdir/crti.o"
