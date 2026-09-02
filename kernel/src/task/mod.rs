@@ -1048,9 +1048,9 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
 }
 
 /// Yield until a child has exited, reap it, return its pid.
-/// `usize::MAX` if this task has no children. If `status_out` is non-null,
-/// stores the low 8 bits of the child's exit code.
-pub fn wait_child(status_out: *mut u8) -> usize {
+/// `usize::MAX` if this task has no children. If `status_out` is `Some(va)`,
+/// stores the low 8 bits of the child's exit code at that user address.
+pub fn wait_child(status_out: Option<usize>) -> usize {
     let parent = CURRENT.load(Ordering::SeqCst);
     loop {
         let mut any = false;
@@ -1082,10 +1082,8 @@ pub fn wait_child(status_out: *mut u8) -> usize {
                 }
                 drop(tasks);
                 irq_restore(flags);
-                if !status_out.is_null() {
-                    unsafe {
-                        *status_out = code;
-                    }
+                if let Some(va) = status_out {
+                    let _ = user::copy_to_user(current_aspace(), va, &[code]);
                 }
                 return i;
             }
@@ -1234,6 +1232,12 @@ pub fn schedule() {
         user::set_kernel_rsp0(kstack);
         #[cfg(target_arch = "x86_64")]
         crate::arch::gdt::set_rsp0(kstack as u64);
+        // Keep the live sscratch CSR in sync with KERNEL_SSCRATCH so a nested
+        // trap after preempt still swaps onto this task's kernel stack.
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) kstack, options(nostack));
+        }
     }
 
     let want = if aspace == 0 {

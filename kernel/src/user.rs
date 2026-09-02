@@ -1825,15 +1825,14 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
 }
 
 fn sys_wait(status_ptr: usize) -> usize {
-    let status_out = if status_ptr == 0 {
-        core::ptr::null_mut()
+    if status_ptr != 0 && !user_range_ok(status_ptr, 1) {
+        return SYSERR;
+    }
+    task::wait_child(if status_ptr == 0 {
+        None
     } else {
-        if !user_range_ok(status_ptr, 1) {
-            return SYSERR;
-        }
-        status_ptr as *mut u8
-    };
-    task::wait_child(status_out)
+        Some(status_ptr)
+    })
 }
 
 fn sys_pipe(fds_ptr: usize) -> usize {
@@ -1843,9 +1842,11 @@ fn sys_pipe(fds_ptr: usize) -> usize {
     let Some((r, w)) = task::pipe_open() else {
         return SYSERR;
     };
-    unsafe {
-        *(fds_ptr as *mut usize) = r;
-        *((fds_ptr as *mut usize).add(1)) = w;
+    let mut buf = [0u8; 2 * core::mem::size_of::<usize>()];
+    buf[..core::mem::size_of::<usize>()].copy_from_slice(&r.to_le_bytes());
+    buf[core::mem::size_of::<usize>()..].copy_from_slice(&w.to_le_bytes());
+    if !copy_to_user(task::current_aspace(), fds_ptr, &buf) {
+        return SYSERR;
     }
     0
 }
