@@ -19,6 +19,10 @@ fn main() {
         // ET_EXEC (libcore is not PIC, so -pie fails). Kernel slides PT_LOAD
         // to USER_BASE without applying abs relocs. Link at USER_BASE so
         // absolute pointers (smoltcp vtables) match the load address.
-        println!("cargo:rustc-link-arg=--image-base=0x40000000");
+        // Split form + warning: CI previously still linked at 0x200000/0x10000
+        // despite the equals form alone in build.rs.
+        println!("cargo:warning=ping: --image-base=0x40000000 for {arch}");
+        println!("cargo:rustc-link-arg=--image-base");
+        println!("cargo:rustc-link-arg=0x40000000");
     }
 }
