@@ -25,6 +25,28 @@ require_elf() {
   fi
 }
 
+libtcc1_out() {
+  echo "$ROOT/target/libtcc1-${1}-unknown-myos.a"
+}
+
+require_libtcc1() {
+  local arch="$1"
+  local f
+  f="$(libtcc1_out "$arch")"
+  if [[ ! -f "$f" || ! -s "$f" ]]; then
+    echo "error: libtcc1.a missing for ${arch} at ${f}" >&2
+    return 1
+  fi
+}
+
+install_libtcc1() {
+  local arch="$1"
+  local triple="${arch}-unknown-myos"
+  local dest="$ROOT/target/newlib-${arch}/${triple}/lib/libtcc1.a"
+  mkdir -p "$(dirname "$dest")"
+  cp "$(libtcc1_out "$arch")" "$dest"
+}
+
 pack_aliases() {
   local arch triple out alias
   for arch in x86_64 aarch64 riscv64; do
@@ -33,6 +55,8 @@ pack_aliases() {
     out="$ROOT/target/tcc-${triple}"
     alias="$ROOT/target/coreutils-tcc-${triple}"
     cp "$out" "$alias"
+    require_libtcc1 "$arch" || exit 1
+    install_libtcc1 "$arch"
   done
 }
 
@@ -43,8 +67,16 @@ all_elfs_ok() {
   done
 }
 
-if myos_tcc_is_current && all_elfs_ok; then
-  echo "tcc ELFs up to date"
+all_libtcc1_ok() {
+  local arch f
+  for arch in x86_64 aarch64 riscv64; do
+    f="$(libtcc1_out "$arch")"
+    [[ -f "$f" && -s "$f" ]] || return 1
+  done
+}
+
+if myos_tcc_is_current && all_elfs_ok && all_libtcc1_ok; then
+  echo "tcc ELFs + libtcc1.a up to date"
   pack_aliases
   exit 0
 fi
@@ -149,6 +181,56 @@ build_arch() {
     exit 1
   fi
   echo "tcc -> $out ($(du -h "$out" | awk '{print $1}'))"
+  build_libtcc1 "$arch"
+}
+
+# Guest compiler runtime (TinyCC lib/), not libc. Matches tcc's lib/Makefile
+# unix/cross set with CONFIG_bcheck=0 CONFIG_backtrace=0. Compiled with the
+# myos cross cc like the rest of the port (upstream default is tcc itself).
+build_libtcc1() {
+  local arch="$1"
+  local triple="${arch}-unknown-myos"
+  local prefix="$ROOT/target/newlib-${arch}"
+  local inc="$prefix/${triple}/include"
+  local cc="${triple}-cc"
+  local src="$WORK/lib"
+  local odir="$ROOT/target/tcc-libtcc1-obj-${arch}"
+  local out
+  out="$(libtcc1_out "$arch")"
+  local srcs=()
+  local f obj objs=()
+
+  rm -rf "$odir"
+  mkdir -p "$odir"
+  rm -f "$out"
+
+  srcs+=(stdatomic.c atomic.S builtin.c dsohandle.c)
+  case "$arch" in
+    x86_64)
+      srcs+=(libtcc1.c alloca.S va_list.c)
+      ;;
+    aarch64|riscv64)
+      srcs+=(lib-arm64.c armflush.c)
+      ;;
+    *)
+      echo "error: unknown arch $arch" >&2
+      return 1
+      ;;
+  esac
+
+  echo "==> libtcc1.a ($triple)"
+  for f in "${srcs[@]}"; do
+    if [[ ! -f "$src/$f" ]]; then
+      echo "error: TinyCC lib/$f missing at ${src}/${f}" >&2
+      return 1
+    fi
+    obj="$odir/${f%.*}.o"
+    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -I"$WORK" -I"$src"       -c "$src/$f" -o "$obj"
+    objs+=("$obj")
+  done
+  ar rcs "$out" "${objs[@]}"
+  install_libtcc1 "$arch"
+  echo "libtcc1.a -> $out ($(du -h "$out" | awk '{print $1}'))"
 }
 
 for arch in x86_64 aarch64 riscv64; do
