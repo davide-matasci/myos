@@ -324,7 +324,12 @@ fn embed_lib_sysroot(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     // includes them; tcc does not have GCC builtins.
     let tcc_inc = manifest_dir.join("../target/tcc-src/include");
     println!("cargo:rerun-if-changed={}", tcc_inc.display());
-    if !tcc_inc.is_dir() {
+    // Require stddef.h, not merely an include/ directory. An empty
+    // target/tcc-src/include (stub from a partial tree packed via
+    // target/tcc-* in ci-build.tar) would skip prepare and omit TCC
+    // freestanding headers; newlib's sys/cdefs.h then fails hosted tcc -o.
+    let stddef = tcc_inc.join("stddef.h");
+    if !stddef.is_file() {
         let prep = manifest_dir.join("../ports/tcc/prepare.sh");
         let status = Command::new("bash")
             .arg(&prep)
@@ -334,12 +339,12 @@ fn embed_lib_sysroot(manifest_dir: &Path, arch: &str, out_dir: &Path) {
             panic!("{} failed", prep.display());
         }
     }
-    if tcc_inc.is_dir() {
+    if stddef.is_file() {
         collect_dir(&tcc_inc, "newlib/include", &mut entries);
     } else {
         panic!(
-            "tcc include/ missing at {} (run ./ports/tcc/prepare.sh)",
-            tcc_inc.display()
+            "tcc include/stddef.h missing at {} (run ./ports/tcc/prepare.sh)",
+            stddef.display()
         );
     }
     if let Some((_, crt0)) = entries.iter().find(|(p, _)| p == "newlib/lib/crt0.o") {
