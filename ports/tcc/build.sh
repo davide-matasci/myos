@@ -198,6 +198,7 @@ build_libtcc1() {
   local out
   out="$(libtcc1_out "$arch")"
   local srcs=()
+  local extra_src=()
   local f obj objs=()
 
   rm -rf "$odir"
@@ -210,7 +211,8 @@ build_libtcc1() {
       srcs+=(libtcc1.c alloca.S va_list.c)
       ;;
     aarch64|riscv64)
-      srcs+=(lib-arm64.c armflush.c)
+      srcs+=(lib-arm64.c)
+      extra_src+=("$MYOS/clear_cache.c")
       ;;
     *)
       echo "error: unknown arch $arch" >&2
@@ -226,6 +228,11 @@ build_libtcc1() {
     fi
     obj="$odir/${f%.*}.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -I"$WORK" -I"$src"       -c "$src/$f" -o "$obj"
+    objs+=("$obj")
+  done
+  for f in "${extra_src[@]}"; do
+    obj="$odir/$(basename "${f%.*}").o"
+    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -I"$WORK" -c "$f" -o "$obj"
     objs+=("$obj")
   done
   ar rcs "$out" "${objs[@]}"
