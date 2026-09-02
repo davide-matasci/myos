@@ -6,10 +6,17 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   x86_64:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned nightly
@@ -24,56 +31,27 @@ jobs:
           prefix-key: limine-8.3-6
           cache-directories: |
             target/myos-sysroot
-            target/newlib-x86_64
-            target/newlib-aarch64
-            target/newlib-riscv64
-            target/newlib-src
-            target/newlib-bin
-            target/sbase-src
-            target/sbase-myos-build
-            target/ubase-src
-            target/ubase-myos-build
-            target/oksh-src
-            target/oksh-myos-build
-            target/ripgrep-src
-            target/ripgrep-build-x86_64-unknown-myos
-            target/ripgrep-build-aarch64-unknown-myos
-            target/ripgrep-build-riscv64-unknown-myos
-            target/pcre2-src
-            target/pcre2-x86_64
-            target/pcre2-aarch64
-            target/pcre2-riscv64
-            target/tcc-src
-            target/tcc-myos-build
             target/patched-crates
             target/crate-fetch-coreutils
-            target/.myos-newlib-version
-            target/.myos-c-hello-version
-            target/.myos-sbase-version
-            target/.myos-ubase-version
-            target/.myos-oksh-version
-            target/.myos-coreutils-version
-            target/.myos-ripgrep-version
-            target/.myos-tcc-version
-            target/.myos-std-hello-version
-            target/sbase-*
-            target/ubase-*
-            target/oksh-*
-            target/coreutils-*
-            target/std-*
-            target/hello-*
-            target/ok-*
-            target/c-hello-*
-            target/rg-*
-            target/uutils-*
-            target/tcc-*
       - name: Install xorriso and build tools
         run: sudo apt-get update && sudo apt-get install -y xorriso clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
 
       - name: Build myos sysroot and userspace ELFs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: "true"
         run: |
           chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
           ./toolchain/std/fetch-sysroot.sh
+          ./scripts/ci-registry.sh pull newlib || true
+          ./scripts/ci-registry.sh pull std-hello || true
+          ./scripts/ci-registry.sh pull c-hello || true
+          ./scripts/ci-registry.sh pull sbase || true
+          ./scripts/ci-registry.sh pull oksh || true
+          ./scripts/ci-registry.sh pull ubase || true
+          ./scripts/ci-registry.sh pull coreutils || true
+          ./scripts/ci-registry.sh pull ripgrep || true
+          ./scripts/ci-registry.sh pull tcc || true
           ./toolchain/std/build-std-hello.sh
           ./scripts/build-c-hello.sh
           ./ports/sbase/build.sh
@@ -82,6 +60,15 @@ jobs:
           ./ports/ubase/build.sh
           ./ports/ripgrep/build.sh
           ./ports/tcc/build.sh
+          ./scripts/ci-registry.sh push newlib || true
+          ./scripts/ci-registry.sh push std-hello || true
+          ./scripts/ci-registry.sh push c-hello || true
+          ./scripts/ci-registry.sh push sbase || true
+          ./scripts/ci-registry.sh push oksh || true
+          ./scripts/ci-registry.sh push ubase || true
+          ./scripts/ci-registry.sh push coreutils || true
+          ./scripts/ci-registry.sh push ripgrep || true
+          ./scripts/ci-registry.sh push tcc || true
 
       - name: Build x86_64 hybrid ISO
         run: |
