@@ -12,7 +12,7 @@ use crate::fs::StatInfo;
 const MAX_ENTRIES: usize = 64;
 const COMP_CAP: usize = 32;
 const PATH_CAP: usize = 64;
-const FILE_CAP: usize = 8192;
+const FILE_CAP: usize = 262144;
 const LINK_CAP: usize = 64;
 
 const S_IFDIR: u32 = 0o040000;
