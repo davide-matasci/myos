@@ -30,7 +30,7 @@ pub fn map_devices() {
         let l0_phys = limine_boot::kernel_virt_to_phys(l0 as usize);
 
         (*l0).0[0] = l1_phys | TABLE;
-        // 0x0000_0000-0x3fff_ffff: devices (UART, GIC)
+        // 0x0000_0000-0x3fff_ffff: devices (UART, GIC, PCI ECAM/MMIO)
         (*l1).0[0] = 0x0000_0000 | BLOCK | ATTR_DEVICE | SH_OUTER | AF | PXN | UXN;
 
         let mut mair: u64;
@@ -85,4 +85,60 @@ fn enable_el0_cache_ops() {
             asm!("msr sctlr_el2, {s}", "isb", s = in(reg) sctlr, options(nostack));
         }
     }
+}
+
+const PA: u64 = 0x0000_FFFF_FFFF_F000;
+const DEV_BLOCK: u64 = BLOCK | ATTR_DEVICE | SH_OUTER | AF | PXN | UXN;
+
+fn tlbi() {
+    unsafe {
+        let el: u64;
+        asm!("mrs {el}, CurrentEL", el = out(reg) el, options(nomem, nostack, preserves_flags));
+        let el = (el >> 2) & 3;
+        if el >= 2 {
+            asm!("tlbi alle2is", options(nostack));
+        } else {
+            asm!("tlbi vmalle1", options(nostack));
+        }
+        asm!("dsb sy; isb", options(nostack));
+    }
+}
+
+fn map_block_1g(pa: u64) -> Option<()> {
+    let i0 = ((pa >> 39) & 0x1ff) as usize;
+    let i1 = ((pa >> 30) & 0x1ff) as usize;
+    let block_pa = pa & !0x3FFF_FFFF;
+    unsafe {
+        let l0 = &raw mut L0;
+        if (*l0).0[i0] & 0b11 != TABLE {
+            let l1phys = crate::mm::alloc_frame();
+            (*l0).0[i0] = l1phys | TABLE;
+        }
+        let l1phys = (*l0).0[i0] & PA;
+        let l1 = crate::mm::table(l1phys);
+        let cur = (*l1)[i1];
+        if cur == 0 {
+            (*l1)[i1] = block_pa | DEV_BLOCK;
+        }
+    }
+    Some(())
+}
+
+/// Identity-map device MMIO. The 0–1 GiB window is already mapped.
+/// Extra 1 GiB device blocks are installed if a BAR sits above that.
+pub fn map_mmio(phys: u64, size: u64) -> Option<usize> {
+    if size == 0 {
+        return None;
+    }
+    let end = phys.checked_add(size)?;
+    if phys < 0x4000_0000 && end <= 0x4000_0000 {
+        return Some(phys as usize);
+    }
+    let mut pa = phys & !0x3FFF_FFFF;
+    while pa < end {
+        map_block_1g(pa)?;
+        pa = pa.checked_add(0x4000_0000)?;
+    }
+    tlbi();
+    Some(phys as usize)
 }

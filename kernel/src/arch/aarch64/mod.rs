@@ -3,6 +3,7 @@
 mod interrupts;
 mod keyboard;
 mod paging;
+pub mod pci;
 mod serial;
 mod virtio_blk;
 mod virtio_input;

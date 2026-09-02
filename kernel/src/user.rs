@@ -2669,7 +2669,6 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
     let k_l0_t = unsafe { &*mm::table(k_l0) };
     let k_l1_phys = k_l0_t[0] & PA;
     let k_l1 = unsafe { &*mm::table(k_l1_phys) };
-    let device = k_l1[0];
 
     let l0 = mm::alloc_frame();
     let l1 = mm::alloc_frame();
@@ -2680,8 +2679,18 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
         let l0_t = &mut *mm::table(l0);
         let l1_t = &mut *mm::table(l1);
         let l2_t = &mut *mm::table(l2);
+        // Copy kernel TTBR0 extras (high PCI) and L1 device blocks. L1[1] is user.
+        for i in 0..512 {
+            if i != 0 && k_l0_t[i] != 0 {
+                l0_t[i] = k_l0_t[i];
+            }
+        }
         l0_t[0] = l1 | TABLE;
-        l1_t[0] = device;
+        for i in 0..512 {
+            if i != 1 && k_l1[i] != 0 {
+                l1_t[i] = k_l1[i];
+            }
+        }
         l1_t[1] = l2 | TABLE;
         l2_t[0] = l3 | TABLE;
         // AP_RW: EL1 sys_read copies into PT_LOAD. PXN: EL1 cannot execute it.

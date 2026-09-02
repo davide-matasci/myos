@@ -1,9 +1,13 @@
-//! PCI config via `0xCF8` / `0xCFC`. Enough to find virtio-blk and map BAR0.
+//! PCI config via `0xCF8` / `0xCFC`. Enough to find virtio-blk and NVMe.
 
 use x86_64::instructions::port::Port;
 
 const CONFIG_ADDR: u16 = 0xCF8;
 const CONFIG_DATA: u16 = 0xCFC;
+
+pub const MAX_BUS: u8 = 255;
+/// Fallback MMIO window if firmware left BAR0 at 0.
+pub const MMIO_ASSIGN: u64 = 0xF000_0000;
 
 const VENDOR_VIRTIO: u16 = 0x1AF4;
 const DEV_BLK_LEGACY: u16 = 0x1001;
@@ -83,7 +87,11 @@ pub fn bar0(bdf: Bdf) -> Option<Bar> {
             addr: u64::from(bar & 0xFFFC),
         })
     } else {
-        let addr = u64::from(bar & 0xFFFF_FFF0);
+        let mut addr = u64::from(bar & 0xFFFF_FFF0);
+        if (bar & 0x6) == 0x4 {
+            let hi = config_read32(bdf, 0x14);
+            addr |= u64::from(hi) << 32;
+        }
         Some(Bar { io: false, addr })
     }
 }
@@ -125,4 +133,16 @@ pub fn find_virtio_blk_legacy_io(out: &mut [Bdf]) -> usize {
         }
     }
     n
+}
+
+pub fn cfg_read32(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
+    config_read32(Bdf { bus, slot, func }, offset)
+}
+
+pub fn cfg_write32(bus: u8, slot: u8, func: u8, offset: u8, value: u32) {
+    config_write32(Bdf { bus, slot, func }, offset, value)
+}
+
+pub fn map_mmio(phys: u64, size: u64) -> Option<usize> {
+    super::paging::map_mmio(phys, size)
 }

@@ -59,7 +59,7 @@ unsafe fn install_mid_root(root: &mut [u64; 512]) {
     root[0] = pte_table(mid_phys);
 }
 
-/// Identity-map the low 1 GiB for UART, CLINT, PLIC, and virtio-MMIO.
+/// Identity-map the low 1 GiB for UART, CLINT, PLIC, virtio-MMIO, and PCI ECAM.
 pub fn map_devices() {
     unsafe {
         let satp: u64;
@@ -82,4 +82,61 @@ pub fn map_devices() {
         }
         asm!("sfence.vma", options(nostack));
     }
+}
+
+/// Sv39 root[1] is user space (`0x4000_0000`). Relocate that window's BAR.
+const RELOC_VA: u64 = 0x1_0000_0000;
+
+fn map_2m(root: &mut [u64; 512], pa: u64, va: u64) {
+    let i2 = ((va >> 30) & 0x1ff) as usize;
+    let i1 = ((va >> 21) & 0x1ff) as usize;
+    let mid_pte = root[i2];
+    if mid_pte & PTE_V == 0 {
+        let mid = crate::mm::alloc_frame();
+        root[i2] = pte_table(mid);
+    } else if mid_pte & (PTE_R | PTE_W | PTE_X) != 0 {
+        return;
+    }
+    let mid = unsafe { &mut *crate::mm::table(pte_phys(root[i2])) };
+    if mid[i1] & PTE_V == 0 {
+        mid[i1] = pte_leaf_2m(pa & !0x1F_FFFF, DEV);
+    }
+}
+
+/// Identity-map device MMIO. If `phys` sits in the user gigabyte, map it at
+/// [`RELOC_VA`] instead so syscalls (user satp) can still reach the BAR.
+pub fn map_mmio(phys: u64, size: u64) -> Option<usize> {
+    if size == 0 {
+        return None;
+    }
+    let end = phys.checked_add(size)?;
+    if phys < 0x4000_0000 && end <= 0x4000_0000 {
+        return Some(phys as usize);
+    }
+    let satp: u64;
+    unsafe {
+        asm!("csrr {s}, satp", s = out(reg) satp, options(nomem, nostack, preserves_flags));
+    }
+    if satp >> 60 != 8 {
+        return None;
+    }
+    let root = unsafe { &mut *crate::mm::table(satp_root_phys(satp)) };
+    let conflict = phys < 0x8000_0000 && end > 0x4000_0000;
+    let pa0 = phys & !0x1F_FFFF;
+    let va_base = if conflict {
+        RELOC_VA + (phys - pa0)
+    } else {
+        phys
+    };
+    let pa_end = (end + 0x1F_FFFF) & !0x1F_FFFF;
+    let mut pa = pa0;
+    while pa < pa_end {
+        let va = if conflict { RELOC_VA + (pa - pa0) } else { pa };
+        map_2m(root, pa, va);
+        pa += 0x20_0000;
+    }
+    unsafe {
+        asm!("sfence.vma", options(nostack));
+    }
+    Some(va_base as usize)
 }
