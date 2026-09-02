@@ -242,6 +242,28 @@ fn embed_lib_sysroot(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
     collect_dir(&include_dir, "newlib/include", &mut entries);
     collect_dir(&lib_dir, "newlib/lib", &mut entries);
+    // Compiler headers (stddef.h, stdarg.h, float.h, …). newlib's sys/cdefs.h
+    // includes them; tcc does not have GCC builtins.
+    let tcc_inc = manifest_dir.join("../target/tcc-src/include");
+    println!("cargo:rerun-if-changed={}", tcc_inc.display());
+    if !tcc_inc.is_dir() {
+        let prep = manifest_dir.join("../ports/tcc/prepare.sh");
+        let status = Command::new("bash")
+            .arg(&prep)
+            .status()
+            .unwrap_or_else(|e| panic!("run {}: {e}", prep.display()));
+        if !status.success() {
+            panic!("{} failed", prep.display());
+        }
+    }
+    if tcc_inc.is_dir() {
+        collect_dir(&tcc_inc, "newlib/include", &mut entries);
+    } else {
+        panic!(
+            "tcc include/ missing at {} (run ./ports/tcc/prepare.sh)",
+            tcc_inc.display()
+        );
+    }
     if let Some((_, crt0)) = entries.iter().find(|(p, _)| p == "newlib/lib/crt0.o") {
         let bytes = crt0.clone();
         if !entries.iter().any(|(p, _)| p == "newlib/lib/crt1.o") {
@@ -302,6 +324,9 @@ fn collect_dir(dir: &Path, rel: &str, out: &mut Vec<(String, Vec<u8>)>) {
             continue;
         }
         if name.ends_with(".la") || name.ends_with(".txt") || name == "libm.a" {
+            continue;
+        }
+        if out.iter().any(|(p, _)| p == &child_rel) {
             continue;
         }
         match std::fs::read(&path) {
