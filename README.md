@@ -604,7 +604,25 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `.cargo/config.toml` | `bindeps` (artifact dependencies) |
 | `rust-toolchain.toml` | pinned nightly + `llvm-tools-preview` + rust-src + targets |
 | `scripts/` | Shared helpers (`myos-c-userspace-lib.sh`, rustc wrappers) + thin wrappers for old script names |
+| `scripts/ci-registry.sh` | GHCR pull/push of userspace port outputs (oras), keyed by stamp hash |
+| `.github/workflows/ci.yml` | PR/push CI: rust-cache is cargo-only; userspace ELFs come from GHCR |
 | `.github/workflows/iso.yml` | Manual `workflow_dispatch` x86_64 hybrid ISO artifact |
+
+## CI
+
+GitHub Actions caches Cargo's registry/`target` with Swatinem/rust-cache
+(`prefix-key: limine-8.3-6`). Userspace port **outputs** (newlib prefixes,
+sbase/oksh/ubase/ripgrep/tcc/uutils ELFs, stamps) are **not** in rust-cache.
+They are OCI artifacts on GHCR, one package per port, tagged with the stamp
+hash from `scripts/myos-c-userspace-lib.sh` (e.g.
+`ghcr.io/davide-matasci/myos/ci-sbase:<sha256>`). `skip-if-fresh`
+(`myos_*_is_current`) is still the local truth after a pull. Source
+checkouts (`*-src`) are never cached.
+
+The first run after a stamp change is a miss, then a push. Later runs with
+the same hashes hit. Packages should be **public** so fork PRs can pull;
+the first push creates them. If they stay private, set visibility once in
+GitHub → Packages → each `myos/ci-*` → Change visibility → public.
 
 ## Notes
 
