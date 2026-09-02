@@ -18,7 +18,6 @@ MYOS_TCC_VERSION="$MYOS_ROOT/target/.myos-tcc-version"
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
 MYOS_SBASE_MIN_BUILT=90
-MYOS_COREUTILS_MIN_BUILT=20
 
 myos_newlib_version_hash() {
   local h
@@ -91,6 +90,13 @@ myos_sbase_manifest_count() {
   local manifest="$1"
   [[ -f "$manifest" ]] || return 1
   wc -l <"$manifest" | tr -d ' '
+}
+
+# Names that land in a port manifest (skip blanks and # comments).
+myos_bins_txt_count() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  grep -E -cve '^[[:space:]]*(#|$)' "$file"
 }
 
 myos_sbase_is_current() {
@@ -197,7 +203,7 @@ myos_coreutils_manifest_count() {
 }
 
 myos_coreutils_is_current() {
-  local arch manifest count triple
+  local arch manifest count expected triple
   [[ -f "$MYOS_COREUTILS_VERSION" ]] \
     && [[ "$(cat "$MYOS_COREUTILS_VERSION")" == "$(myos_coreutils_version_hash)" ]] \
     || return 1
@@ -205,7 +211,8 @@ myos_coreutils_is_current() {
     triple="${arch}-unknown-myos"
     manifest="$MYOS_ROOT/target/coreutils-manifest-${arch}.txt"
     count="$(myos_coreutils_manifest_count "$manifest")" || return 1
-    if ((count < MYOS_COREUTILS_MIN_BUILT)); then
+    expected="$(myos_bins_txt_count "$MYOS_ROOT/ports/coreutils/bins.txt")" || return 1
+    if ((count < expected)); then
       return 1
     fi
     [[ -f "$MYOS_ROOT/target/coreutils-${triple}" ]] || return 1
