@@ -1,3 +1,33 @@
+--- libtcc.c
++++ libtcc.c
+@@ -908,6 +908,17 @@
+     s->ppfp = stdout;
+     /* might be used in error() before preprocess_start() */
+     s->include_stack_ptr = s->include_stack;
++    /* myos: no guest ld.so; default tcc hello.c -o to a static ELF.
++       Link at USER_BASE so absolute addresses match the loader bias
++       (x86_64: 0x8000000000; aarch64/riscv64: 0x40000000). TinyCC's
++       default ELF_START_ADDR (0x400000 / 0x10000) page-faults under
++       myos because ET_EXEC has no runtime RELATIVE relocs. */
++    s->static_link = 1;
++#if defined(TCC_TARGET_X86_64)
++    s->text_addr = 0x8000000000ULL;
++#elif defined(TCC_TARGET_ARM64) || defined(TCC_TARGET_RISCV64)
++    s->text_addr = 0x40000000ULL;
++#endif
++    s->has_text_addr = 1;
+ 
+     tcc_set_lib_path(s, CONFIG_TCCDIR);
+ #ifdef CONFIG_TCC_SWITCHES /* predefined options */
+@@ -1996,6 +2007,8 @@
+                 s->cversion = 201112;
+             break;
+         case TCC_OPTION_shared:
++            s->static_link = 0; /* explicit -shared still produces a DSO */
++            s->has_text_addr = 0;
+             x = TCC_OUTPUT_DLL;
+             goto set_output_type;
+         case TCC_OPTION_soname:
 --- tccelf.c
 +++ tccelf.c
 @@ -1854,6 +1854,10 @@

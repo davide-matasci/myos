@@ -203,6 +203,50 @@ fn run_port_build(manifest_dir: &Path, port: &str) {
 }
 
 
+
+fn ensure_libtcc1_in_sysroot(manifest_dir: &Path, arch: &str, lib_dir: &Path) {
+    let dest = lib_dir.join("libtcc1.a");
+    let src_primary = manifest_dir
+        .join("../target")
+        .join(format!("libtcc1-{arch}-unknown-myos.a"));
+    let src_alias = manifest_dir
+        .join("../target")
+        .join(format!("tcc-libtcc1-{arch}-unknown-myos.a"));
+
+    let try_copy = |src: &Path| -> bool {
+        if !src.is_file() {
+            return false;
+        }
+        std::fs::create_dir_all(lib_dir).expect("mkdir newlib lib");
+        std::fs::copy(src, &dest).unwrap_or_else(|e| {
+            panic!("copy {} -> {}: {e}", src.display(), dest.display())
+        });
+        println!("cargo:rerun-if-changed={}", src.display());
+        true
+    };
+
+    if dest.is_file() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+        return;
+    }
+    if try_copy(&src_primary) || try_copy(&src_alias) {
+        return;
+    }
+    // Boot jobs may restore tcc ELFs without libtcc1.a; rebuild installs it.
+    run_port_build(manifest_dir, "tcc");
+    if dest.is_file() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+        return;
+    }
+    if try_copy(&src_primary) || try_copy(&src_alias) {
+        return;
+    }
+    panic!(
+        "libtcc1.a missing for {arch} at {} (tried {} and {})",
+        dest.display(),
+        src_primary.display(),
+        src_alias.display()
+    );
+}
+
 fn embed_lib_sysroot(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     let triple = if arch == "x86_64" {
         "x86_64-unknown-myos"
@@ -238,6 +282,11 @@ fn embed_lib_sysroot(manifest_dir: &Path, arch: &str, out_dir: &Path) {
             prefix.display()
         );
     }
+
+    // Guest tcc looks for libtcc1.a on CONFIG_TCC_LIBPATHS (/lib/newlib/lib).
+    // newlib GHCR cache does not include it; tcc build installs into the prefix
+    // and also leaves target/libtcc1-*-unknown-myos.a for boot-job rebuilds.
+    ensure_libtcc1_in_sysroot(manifest_dir, arch, &lib_dir);
 
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
     collect_dir(&include_dir, "newlib/include", &mut entries);
