@@ -543,9 +543,11 @@ fn ensure_ping_at_user_base(cargo: &str, target: &str) {
 
     for profile in ["debug", "release"] {
         let base = target_dir.join(target).join(profile);
-        for sub in ["build", ".fingerprint"] {
+        for sub in ["build", ".fingerprint", "incremental"] {
             let dir = base.join(sub);
-            if let Ok(rd) = std::fs::read_dir(&dir) {
+            if sub == "incremental" {
+                let _ = std::fs::remove_dir_all(&dir);
+            } else if let Ok(rd) = std::fs::read_dir(&dir) {
                 for ent in rd.flatten() {
                     let name = ent.file_name();
                     if name.to_string_lossy().starts_with("kernel-") {
@@ -557,9 +559,13 @@ fn ensure_ping_at_user_base(cargo: &str, target: &str) {
         }
         // Host build-script units for the kernel package.
         let host = target_dir.join(profile);
-        for sub in ["build", ".fingerprint"] {
+        for sub in ["build", ".fingerprint", "incremental"] {
             let dir = host.join(sub);
-            if let Ok(rd) = std::fs::read_dir(&dir) {
+            if sub == "incremental" {
+                // Host incremental can keep include_bytes!(PING) after cargo
+                // clean -p kernel (artifact-dep). Drop it so bootfs re-embeds.
+                let _ = std::fs::remove_dir_all(&dir);
+            } else if let Ok(rd) = std::fs::read_dir(&dir) {
                 for ent in rd.flatten() {
                     let name = ent.file_name();
                     if name.to_string_lossy().starts_with("kernel-") {
@@ -613,10 +619,50 @@ fn ensure_ping_at_user_base(cargo: &str, target: &str) {
         eprintln!("error: copy ping to {}: {e}", stable.display());
         exit(1);
     });
+    stamp_ping_into_kernel_outs(&elf, target);
     eprintln!(
         "ping prelink ok: {} linked at USER_BASE (min PT_LOAD verified)",
         stable.display()
     );
+}
+
+/// rust-cache restores kernel OUT_DIR copies of /ping. Overwrite them so a
+/// skipped build.rs still include_bytes! the USER_BASE ELF.
+fn stamp_ping_into_kernel_outs(good: &Path, target: &str) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+    for profile in ["debug", "release"] {
+        for build_root in [
+            root.join(target).join(profile).join("build"),
+            root.join(profile).join("build"),
+        ] {
+            let Ok(rd) = std::fs::read_dir(&build_root) else {
+                continue;
+            };
+            for ent in rd.flatten() {
+                if !ent.file_name().to_string_lossy().starts_with("kernel-") {
+                    continue;
+                }
+                let out = ent.path().join("out");
+                let nested = out
+                    .join("ping-target")
+                    .join(target)
+                    .join(profile)
+                    .join("ping");
+                if nested.is_file() {
+                    let _ = std::fs::copy(good, &nested);
+                }
+                if let Ok(files) = std::fs::read_dir(&out) {
+                    for f in files.flatten() {
+                        let n = f.file_name();
+                        let ns = n.to_string_lossy();
+                        if ns.starts_with("ping-") && ns.ends_with(".elf") {
+                            let _ = std::fs::copy(good, f.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn build_aarch64_kernel() -> PathBuf {

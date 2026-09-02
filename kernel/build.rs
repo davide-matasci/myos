@@ -791,7 +791,23 @@ fn nested_elf(
     // Path string alone is not enough: same USER_*_PATH with new bytes left
     // bootfs include_bytes! stale. Watch the stable copy like other embeds.
     println!("cargo:rerun-if-changed={}", stable.display());
-    if env_key != "_unused" {
+    if bin == "ping" {
+        // Hash in rustc-env so bootfs.rs env!("USER_PING_HASH") dirties the
+        // crate when rust-cache reused a fingerprint but /ping bytes changed.
+        let bytes = std::fs::read(&elf).unwrap_or_default();
+        let mut hash = 0xcbf29ce484222325u64;
+        for b in &bytes {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x1000_0000_01b3);
+        }
+        let hashed = PathBuf::from(out).join(format!("ping-{hash:016x}.elf"));
+        std::fs::write(&hashed, &bytes)
+            .unwrap_or_else(|e| panic!("write hashed ping: {e}"));
+        println!("cargo:rustc-env=USER_PING_HASH={hash:016x}");
+        if env_key != "_unused" {
+            println!("cargo:rustc-env={env_key}={}", hashed.display());
+        }
+    } else if env_key != "_unused" {
         println!("cargo:rustc-env={env_key}={}", stable.display());
     }
 }
