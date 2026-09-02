@@ -15,8 +15,10 @@ fn main() {
         // x86_64-unknown-none already prefers PIE; be explicit.
         println!("cargo:rustc-link-arg=-pie");
         println!("cargo:rustc-link-arg=-nostdlib");
+    } else if arch == "aarch64" || arch == "riscv64" {
+        // ET_EXEC (libcore is not PIC, so -pie fails). Kernel slides PT_LOAD
+        // to USER_BASE without applying abs relocs. Link at USER_BASE so
+        // absolute pointers (smoltcp vtables) match the load address.
+        println!("cargo:rustc-link-arg=--image-base=0x40000000");
     }
-    // AArch64: prebuilt libcore is not PIC, so `-pie` fails to link
-    // (`R_AARCH64_ABS64` in libcore). Produce ET_EXEC; the kernel slides
-    // PT_LOAD as a unit. Prefer PC-relative for `_start`.
 }
