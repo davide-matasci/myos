@@ -85,6 +85,32 @@ void _exit(int status) {
     }
 }
 
+/*
+ * Kernel SYS_OPEN flags are Linux-shaped (O_CREAT 0100, O_TRUNC 01000,
+ * O_APPEND 02000). newlib <fcntl.h> is BSD-shaped (O_CREAT 0x0200,
+ * O_TRUNC 0x0400, O_APPEND 0x0008). O_ACCMODE already matches.
+ *
+ * Passing newlib bits through made `echo > /tmp/file` fail: the kernel never
+ * saw O_CREAT (and treated 0x0200 as O_TRUNC). Map here; this is syscall glue.
+ */
+#define MYOS_K_O_CREAT  0x40
+#define MYOS_K_O_TRUNC  0x200
+#define MYOS_K_O_APPEND 0x400
+
+static long myos_kernel_oflags(int flags) {
+    long k = (long)(flags & O_ACCMODE);
+    if (flags & O_CREAT) {
+        k |= MYOS_K_O_CREAT;
+    }
+    if (flags & O_TRUNC) {
+        k |= MYOS_K_O_TRUNC;
+    }
+    if (flags & O_APPEND) {
+        k |= MYOS_K_O_APPEND;
+    }
+    return k;
+}
+
 int _open(const char *path, int flags, ...) {
     if (path == NULL) {
         errno = ENOENT;
@@ -93,7 +119,8 @@ int _open(const char *path, int flags, ...) {
     /* Writable opens are accepted for mounts that support them (tmpfs/devfs).
      * Read-only mounts are rejected by the kernel; map that to EROFS/ENOENT. */
     long ret = myos_syscall3(
-        MYOS_SYS_OPEN, (long)(uintptr_t)path, (long)strlen(path), (long)flags);
+        MYOS_SYS_OPEN, (long)(uintptr_t)path, (long)strlen(path),
+        myos_kernel_oflags(flags));
     if (ret == (long)MYOS_SYSERR) {
         errno = ENOENT;
         return -1;
