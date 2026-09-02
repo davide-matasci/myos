@@ -1470,8 +1470,19 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     };
     let basename = path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes();
     task::set_exec_name(basename);
-    let Some(bytes) = fs::lookup(&path) else {
-        return SYSERR;
+    // Static lookup for bootfs/`/t/tcc`; VFS read for tmpfs `tcc -o` output.
+    const EXEC_FILE_MAX: usize = 512 * 1024;
+    let owned;
+    let bytes: &[u8] = if let Some(b) = fs::lookup(&path) {
+        b
+    } else {
+        match fs::read_all(&path, EXEC_FILE_MAX) {
+            Some(v) => {
+                owned = v;
+                &owned
+            }
+            None => return SYSERR,
+        }
     };
     let (arg_bufs, env_bufs) = match copy_user_exec_pack(args_ptr) {
         Ok(v) => v,

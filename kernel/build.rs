@@ -127,6 +127,7 @@ fn main() {
         embed_coreutils_manifest(manifest, &arch, Path::new(&out));
         embed_ripgrep_elf(manifest, &arch, Path::new(&out));
         embed_tcc_elf(manifest, &arch, Path::new(&out));
+        embed_lib_sysroot(manifest, &arch, Path::new(&out));
     }
 }
 
@@ -198,6 +199,140 @@ fn run_port_build(manifest_dir: &Path, port: &str) {
         .unwrap_or_else(|e| panic!("run {}: {e}", script.display()));
     if !status.success() {
         panic!("{} failed", script.display());
+    }
+}
+
+
+fn embed_lib_sysroot(manifest_dir: &Path, arch: &str, out_dir: &Path) {
+    let triple = if arch == "x86_64" {
+        "x86_64-unknown-myos"
+    } else if arch == "aarch64" {
+        "aarch64-unknown-myos"
+    } else if arch == "riscv64" {
+        "riscv64-unknown-myos"
+    } else {
+        return;
+    };
+    let prefix = manifest_dir
+        .join("../target")
+        .join(format!("newlib-{arch}"))
+        .join(triple);
+    let include_dir = prefix.join("include");
+    let lib_dir = prefix.join("lib");
+    println!("cargo:rerun-if-changed={}", include_dir.display());
+    println!("cargo:rerun-if-changed={}", lib_dir.display());
+    if !include_dir.is_dir() || !lib_dir.is_dir() {
+        let script = manifest_dir.join("../toolchain/newlib/build.sh");
+        println!("cargo:rerun-if-changed={}", script.display());
+        let status = Command::new("bash")
+            .arg(&script)
+            .status()
+            .unwrap_or_else(|e| panic!("run {}: {e}", script.display()));
+        if !status.success() {
+            panic!("{} failed", script.display());
+        }
+    }
+    if !include_dir.is_dir() || !lib_dir.is_dir() {
+        panic!(
+            "newlib sysroot missing at {} (run ./toolchain/newlib/build.sh)",
+            prefix.display()
+        );
+    }
+
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    collect_dir(&include_dir, "newlib/include", &mut entries);
+    collect_dir(&lib_dir, "newlib/lib", &mut entries);
+    // Compiler headers (stddef.h, stdarg.h, float.h, …). newlib's sys/cdefs.h
+    // includes them; tcc does not have GCC builtins.
+    let tcc_inc = manifest_dir.join("../target/tcc-src/include");
+    println!("cargo:rerun-if-changed={}", tcc_inc.display());
+    if !tcc_inc.is_dir() {
+        let prep = manifest_dir.join("../ports/tcc/prepare.sh");
+        let status = Command::new("bash")
+            .arg(&prep)
+            .status()
+            .unwrap_or_else(|e| panic!("run {}: {e}", prep.display()));
+        if !status.success() {
+            panic!("{} failed", prep.display());
+        }
+    }
+    if tcc_inc.is_dir() {
+        collect_dir(&tcc_inc, "newlib/include", &mut entries);
+    } else {
+        panic!(
+            "tcc include/ missing at {} (run ./ports/tcc/prepare.sh)",
+            tcc_inc.display()
+        );
+    }
+    if let Some((_, crt0)) = entries.iter().find(|(p, _)| p == "newlib/lib/crt0.o") {
+        let bytes = crt0.clone();
+        if !entries.iter().any(|(p, _)| p == "newlib/lib/crt1.o") {
+            entries.push(("newlib/lib/crt1.o".into(), bytes));
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut blob = Vec::new();
+    let mut table: Vec<(String, usize, usize)> = Vec::new();
+    for (rel, bytes) in entries {
+        if rel.len() > 96 {
+            eprintln!("libfs skip (path too long): {rel}");
+            continue;
+        }
+        let off = blob.len();
+        let len = bytes.len();
+        blob.extend_from_slice(&bytes);
+        table.push((rel, off, len));
+    }
+    let blob_path = out_dir.join("lib_sysroot.bin");
+    std::fs::write(&blob_path, &blob).expect("write lib_sysroot.bin");
+
+    let mut body = String::from(
+        "pub fn register_all() {\n    const BLOB: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/lib_sysroot.bin\"));\n",
+    );
+    for (i, (rel, off, len)) in table.iter().enumerate() {
+        body.push_str(&format!(
+            "    let _ = super::register({rel:?}, &BLOB[{off}..{end}]);\n",
+            end = off + len
+        ));
+        let _ = i;
+    }
+    body.push_str("}\n");
+    std::fs::write(out_dir.join("lib_embed.rs"), body).expect("write lib_embed.rs");
+}
+
+fn collect_dir(dir: &Path, rel: &str, out: &mut Vec<(String, Vec<u8>)>) {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let mut names: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+    names.sort_by_key(|e| e.file_name());
+    for ent in names {
+        let name = ent.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = ent.path();
+        let child_rel = format!("{rel}/{name}");
+        if path.is_dir() {
+            collect_dir(&path, &child_rel, out);
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        if name.ends_with(".la") || name.ends_with(".txt") || name == "libm.a" {
+            continue;
+        }
+        if out.iter().any(|(p, _)| p == &child_rel) {
+            continue;
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => out.push((child_rel, bytes)),
+            Err(_) => {}
+        }
     }
 }
 

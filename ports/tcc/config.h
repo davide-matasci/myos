@@ -8,3 +8,6 @@
 #define CONFIG_TCC_BCHECK 0
 #define CONFIG_TCC_BACKTRACE 0
 #define CONFIG_TCC_PREDEFS 1
+#define CONFIG_TCC_SYSINCLUDEPATHS "/lib/newlib/include"
+#define CONFIG_TCC_LIBPATHS "/lib/newlib/lib"
+#define CONFIG_TCC_CRTPREFIX "/lib/newlib/lib"

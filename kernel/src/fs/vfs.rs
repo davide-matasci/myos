@@ -24,7 +24,7 @@ pub struct Vnode {
 }
 
 impl Vnode {
-    pub const PATH_CAP: usize = 64;
+    pub const PATH_CAP: usize = 96;
 
     pub fn path_str(&self) -> &str {
         core::str::from_utf8(&self.path[..self.path_len as usize]).unwrap_or("")
@@ -270,6 +270,35 @@ pub fn lookup(path: &str) -> Option<&'static [u8]> {
     }
     let (idx, rel) = resolve_index(path)?;
     backend_lookup(idx, rel)
+}
+
+/// Whole-file read for exec of non-static mounts (tmpfs, ext2).
+pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
+    if let Some(b) = lookup(path) {
+        if b.len() > max {
+            return None;
+        }
+        return Some(b.to_vec());
+    }
+    let (idx, rel) = resolve_index(path)?;
+    if rel.is_empty() {
+        return None;
+    }
+    let st = backend_stat(idx, rel)?;
+    if is_dir_mode(st.mode) {
+        return None;
+    }
+    let size = st.size as usize;
+    if size == 0 || size > max {
+        return None;
+    }
+    let mut buf = alloc::vec![0u8; size];
+    let n = backend_read(idx, rel, 0, &mut buf);
+    if n == 0 {
+        return None;
+    }
+    buf.truncate(n);
+    Some(buf)
 }
 
 /// Stat `path` on the best matching mount.
