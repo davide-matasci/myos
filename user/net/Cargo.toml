@@ -1,0 +1,39 @@
+[workspace]
+
+[package]
+name = "myos-net"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Userspace smoltcp Device over /dev/net0, reusable by netd."
+
+[lib]
+name = "myos_net"
+path = "src/lib.rs"
+
+[dependencies]
+myos-user = { path = "../lib" }
+smoltcp = { version = "0.12", default-features = false, features = [
+  "alloc",
+  "medium-ethernet",
+  "proto-ipv4",
+  "proto-dhcpv4",
+  "proto-dns",
+  "socket-icmp",
+  "socket-udp",
+  "socket-tcp",
+  "socket-dhcpv4",
+  "socket-dns",
+] }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "ping"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "DHCP then ICMP echo to QEMU slirp gateway 10.0.2.2 via smoltcp."
+
+[[bin]]
+name = "ping"
+test = false
+bench = false
+
+[dependencies]
+myos-user = { path = "../lib" }
+myos-net = { path = "../net" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

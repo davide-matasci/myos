@@ -598,6 +598,10 @@ pub fn fd_dup_min(oldfd: usize, minfd: usize) -> Option<usize> {
     })
 }
 
+/// File/chr copy size. DHCP ~300B was truncated at 128, so TX chunks became
+/// separate Ethernet frames. Match virtio-net ETH_MAX (~2036).
+const FILE_IO_TMP: usize = 2048;
+
 /// Read from fd 0 (keyboard + serial stdin). `buf` must lie in the user map.
 pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
     if len == 0 {
@@ -642,14 +646,14 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         let (user_base, image_span, stack_off, brk) = map;
         let user_base = user_base as usize;
         let stack_off = stack_off as usize;
-        if !user_buf_ok(buf, len.min(128), user_base, image_span, stack_off, brk, &mmap) {
+        if !user_buf_ok(buf, len.min(FILE_IO_TMP), user_base, image_span, stack_off, brk, &mmap) {
             return usize::MAX;
         }
         match entry {
             FdEntry::Stdin => return fd_read_stdin(buf, len),
             FdEntry::File { node, pos, .. } => {
                 // Snapshot then read without holding TASKS (devfs tty may yield).
-                let mut tmp = [0u8; 128];
+                let mut tmp = [0u8; FILE_IO_TMP];
                 let want = len.min(tmp.len());
                 let n = crate::fs::read(&node, pos, &mut tmp[..want]);
                 return with_current_mut(|t| {
@@ -708,7 +712,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
     }
     let mut total = 0usize;
     while total < len {
-        let chunk = (len - total).min(128);
+        let chunk = (len - total).min(FILE_IO_TMP);
         let (entry, map, mmap) = {
             let flags = irq_save();
             irq_off();
@@ -738,7 +742,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
         ) {
             return if total == 0 { usize::MAX } else { total };
         }
-        let mut tmp = [0u8; 128];
+        let mut tmp = [0u8; FILE_IO_TMP];
         unsafe {
             core::ptr::copy_nonoverlapping((buf + total) as *const u8, tmp.as_mut_ptr(), chunk);
         }

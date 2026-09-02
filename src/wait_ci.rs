@@ -40,7 +40,7 @@ const CI_NEEDLES: [&str; 26] = [
 
 /// Heavy markers from CI-only `/heap` (typed at `$` on every arch).
 /// Pre-prompt readiness stays slim; these are required after interactive `heap`.
-const CI_NEEDLES_STD: [&str; 14] = [
+const CI_NEEDLES_STD: [&str; 15] = [
     "std ok",
     "std cat ok",
     "std echo ok",
@@ -55,6 +55,7 @@ const CI_NEEDLES_STD: [&str; 14] = [
     "sbase argv ok",
     "tcc ok",
     "tcc std ok",
+    "ping ok",
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).

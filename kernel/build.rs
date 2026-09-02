@@ -122,6 +122,23 @@ fn main() {
             &["../lib/src/lib.rs", "../lib/Cargo.toml"],
         );
     }
+    nested_elf(
+        &cargo,
+        manifest,
+        "../user/ping",
+        "ping",
+        "ping-target",
+        "USER_PING_PATH",
+        &target,
+        &profile,
+        &out,
+        &[
+            "../lib/src/lib.rs",
+            "../lib/Cargo.toml",
+            "../net/src/lib.rs",
+            "../net/Cargo.toml",
+        ],
+    );
 
     if arch == "x86_64" || arch == "aarch64" || arch == "riscv64" {
         for (artifact, env_key) in [
