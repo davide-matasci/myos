@@ -39,7 +39,7 @@ myos_newlib_prefix_ok() {
   local arch="$1"
   local triple="${arch}-unknown-myos"
   local prefix="$MYOS_ROOT/target/newlib-${arch}/${triple}/lib"
-  [[ -f "$prefix/libc.a" && -f "$prefix/libgloss.a" && -f "$prefix/crt0.o" ]]
+  [[ -f "$prefix/libc.a" && -f "$prefix/libgloss.a" && -f "$prefix/crt0.o" && -f "$prefix/crti.o" && -f "$prefix/crtn.o" ]]
 }
 
 myos_newlib_is_current() {
@@ -275,5 +275,6 @@ myos_tcc_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     triple="${arch}-unknown-myos"
     [[ -f "$MYOS_ROOT/target/tcc-${triple}" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/libtcc1-${triple}.a" ]] || return 1
   done
 }

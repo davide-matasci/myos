@@ -1,6 +1,8 @@
 multilibtool_DATA += \
 	%D%/myos.specs \
-	%D%/crt0.o
+	%D%/crt0.o \
+	%D%/crti.o \
+	%D%/crtn.o
 
 multilibtool_LIBRARIES += %D%/libgloss.a
 %C%_libgloss_a_CPPFLAGS = -I$(srcdir)/%D%
@@ -16,6 +18,6 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/getline.c \
 	%D%/mmap.c
 
-%C%_extra_parts = crt0
+%C%_extra_parts = crt0 crti crtn
 
 %C%_crt0_SOURCES = %D%/crt0.S
