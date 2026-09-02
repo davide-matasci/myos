@@ -6,8 +6,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use myos_user::{
-    Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, close, exit, heap_init, listdir, mkdir,
-    mount, open, open_flags, read, readlink, rename, rmdir, symlink, unlink, write, write_fd,
+    Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, close, exec, exit, exit_code, fork,
+    heap_init, listdir, mkdir, mount, open, open_flags, read, readlink, rename, rmdir, symlink,
+    unlink, wait_status, write, write_fd,
 };
 
 #[global_allocator]
@@ -71,6 +72,7 @@ fn smoke_vfs() {
             let _ = read(fd, &mut sec);
             close(fd);
         }
+        smoke_ext2();
     } else {
         write(b"nvme missing\n");
     }
@@ -117,6 +119,53 @@ fn smoke_vfs() {
     close(fd);
     if nr >= 7 && &msg[..7] == b"fat ok\n" {
         write(b"fat read ok\n");
+    }
+}
+
+fn smoke_ext2() {
+    match fork() {
+        Some(0) => {
+            exec(b"/mkfs.ext2", &[b"mkfs.ext2", b"/dev/nvme0n1"]);
+            write(b"ext2 mkfs exec fail\n");
+            exit_code(1);
+        }
+        Some(_) => match wait_status() {
+            Some((_, 0)) => {}
+            _ => {
+                write(b"ext2 mkfs fail\n");
+                return;
+            }
+        },
+        None => {
+            write(b"ext2 fork fail\n");
+            return;
+        }
+    }
+    if !mount(b"/dev/nvme0n1", b"/ext2", b"ext2") {
+        write(b"ext2 mount fail\n");
+        return;
+    }
+    let Some(fd) = open_flags(b"/ext2/msg", O_WRONLY | O_CREAT | O_TRUNC) else {
+        write(b"ext2 open fail\n");
+        return;
+    };
+    if write_fd(fd, b"ext2 ok\n") == usize::MAX {
+        write(b"ext2 write fail\n");
+        close(fd);
+        return;
+    }
+    close(fd);
+    let Some(fd) = open_flags(b"/ext2/msg", O_RDONLY) else {
+        write(b"ext2 reopen fail\n");
+        return;
+    };
+    let mut msg = [0u8; 16];
+    let nr = read(fd, &mut msg);
+    close(fd);
+    if nr >= 8 && &msg[..8] == b"ext2 ok\n" {
+        write(b"ext2 ok\n");
+    } else {
+        write(b"ext2 read fail\n");
     }
 }
 

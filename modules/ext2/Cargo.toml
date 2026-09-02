@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "ext2"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "ext2 kernel module: registers fstype ext2; mount(2) binds a block device."
+
+[[bin]]
+name = "ext2"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

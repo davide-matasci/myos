@@ -296,6 +296,8 @@ the FAT16 cluster chain, and register `/msg`. Root-only, no subdirs, no
 FAT32. This is **not** FUSE or a userspace FAT parser, and virtio is
 **not** in a module.
 
+**ext2 is a kernel module** (`modules/ext2`) like FAT, using writable VFS ABI v6 (`ModuleVfsOps` plus byte-granular `blk_read_at`/`blk_write_at`).
+
 ## Modules
 
 Kernel modules are still ELFs the kernel already has in RAM (not loaded
@@ -321,7 +323,7 @@ unsafe extern "C" fn module_exit() // optional
 
 `KernelApi` (`modules/abi`) is a `#[repr(C)]` table (`write_str`, `alloc`,
 `dealloc`, `blk_read`, `vfs_register`, `vfs_register_static`, `vfs_mount`).
-ABI version is **3**; new pointers are appended, never reordered. The kernel
+ABI version is **6**; new pointers are appended, never reordered. The kernel
 fills it and passes `&KernelApi` into `module_init`. Modules must not call
 kernel internals. There is no dynamic linker against kernel `.dynsym`.
 `blk_read` returns 0 or −1. `vfs_register` copies into the bootfs mount;
@@ -575,10 +577,11 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
 | `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
 | `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
-| `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v3: `vfs_register_static`, `vfs_mount`) |
+| `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v6: writable `ModuleVfsOps`, `blk_read_at`) |
 | `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
 | `modules/stubfs` | Sample prefixed mount: `vfs_mount` at `/disk`, file `/disk/ping` |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
+| `modules/ext2` | writable ext2 (rev1, 1KiB): ABI v6 `ModuleVfsOps`, bind at `mount(2)` |
 | `user/init` | PID1-style: baked in, smoke fork/`/ok`, execs `/sh` |
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
 | `ports/` | Userspace ports (sbase, ubase, oksh, ripgrep, coreutils, tcc); source fetched at build |
