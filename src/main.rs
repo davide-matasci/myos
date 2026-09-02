@@ -487,13 +487,146 @@ fn build_aarch64_image() -> PathBuf {
     image
 }
 
+
+/// rust-lld default image base (AArch64 0x200000, RISC-V 0x10000). Ping is
+/// ET_EXEC with absolute smoltcp vtables; the kernel slides PT_LOAD to
+/// USER_BASE without fixing abs relocs, so /ping must be linked at 0x40000000.
+const USER_BASE: u64 = 0x4000_0000;
+
+fn assert_ping_linked_at_user_base(elf: &Path, target: &str) {
+    let bytes = std::fs::read(elf).unwrap_or_else(|e| {
+        eprintln!("error: read ping ELF {}: {e}", elf.display());
+        exit(1);
+    });
+    if bytes.len() < 64 || &bytes[0..4] != b"\x7fELF" {
+        eprintln!("error: ping for {target} is not ELF64");
+        exit(1);
+    }
+    let entry = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
+    let phoff = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
+    let phentsize = u16::from_le_bytes(bytes[54..56].try_into().unwrap()) as usize;
+    let phnum = u16::from_le_bytes(bytes[56..58].try_into().unwrap()) as usize;
+    let mut min_vaddr = u64::MAX;
+    for i in 0..phnum {
+        let p = phoff + i * phentsize;
+        if p + 40 > bytes.len() {
+            break;
+        }
+        let p_type = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+        if p_type != 1 {
+            continue;
+        }
+        let vaddr = u64::from_le_bytes(bytes[p + 16..p + 24].try_into().unwrap());
+        min_vaddr = min_vaddr.min(vaddr);
+    }
+    if entry < USER_BASE || min_vaddr == u64::MAX || min_vaddr < USER_BASE {
+        eprintln!(
+            "error: ping for {target} entry {entry:#x} min PT_LOAD {min_vaddr:#x} below USER_BASE {USER_BASE:#x}"
+        );
+        exit(1);
+    }
+}
+
+/// Force a correctly-linked `target/ping-$target` before the kernel build.
+///
+/// Boot CI does `cargo clean -p kernel --target`, but that can leave the
+/// kernel build-script fingerprint/output "fresh". The reused
+/// `USER_PING_PATH` then `include_bytes!` a rust-cache `ping-*` still linked
+/// at 0x200000/0x10000 → instruction abort at 0x202218 / 0x11e6a after slide.
+/// Prefilling the stable path fixes the embed even when build.rs is skipped;
+/// wiping fingerprints makes build.rs re-run nested link when it can.
+fn ensure_ping_at_user_base(cargo: &str, target: &str) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target_dir = root.join("target");
+    let stable = target_dir.join(format!("ping-{target}"));
+    let _ = std::fs::remove_file(&stable);
+
+    for profile in ["debug", "release"] {
+        let base = target_dir.join(target).join(profile);
+        for sub in ["build", ".fingerprint"] {
+            let dir = base.join(sub);
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for ent in rd.flatten() {
+                    let name = ent.file_name();
+                    if name.to_string_lossy().starts_with("kernel-") {
+                        let _ = std::fs::remove_dir_all(ent.path());
+                        let _ = std::fs::remove_file(ent.path());
+                    }
+                }
+            }
+        }
+        // Host build-script units for the kernel package.
+        let host = target_dir.join(profile);
+        for sub in ["build", ".fingerprint"] {
+            let dir = host.join(sub);
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for ent in rd.flatten() {
+                    let name = ent.file_name();
+                    if name.to_string_lossy().starts_with("kernel-") {
+                        let _ = std::fs::remove_dir_all(ent.path());
+                        let _ = std::fs::remove_file(ent.path());
+                    }
+                }
+            }
+        }
+    }
+
+    let td = target_dir.join(format!("ping-prelink-{target}"));
+    let _ = std::fs::remove_dir_all(&td);
+    let mut rustflags = if target.contains("aarch64") {
+        String::from("-C panic=abort -C relocation-model=static")
+    } else {
+        String::from("-C panic=abort -C relocation-model=static -C code-model=medium")
+    };
+    rustflags.push_str(" -C link-arg=--image-base -C link-arg=0x40000000");
+    let status = Command::new(cargo)
+        .args([
+            "build",
+            "--manifest-path",
+            root.join("user/ping/Cargo.toml").to_str().unwrap(),
+            "--target",
+            target,
+            "--bin",
+            "ping",
+            "--target-dir",
+        ])
+        .arg(&td)
+        .env("RUSTFLAGS", &rustflags)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("error: spawn ping prelink for {target}: {e}");
+            exit(1);
+        });
+    if !status.success() {
+        eprintln!("error: ping prelink failed for {target}");
+        exit(1);
+    }
+    let elf = td.join(target).join("debug").join("ping");
+    if !elf.is_file() {
+        eprintln!("error: ping prelink ELF missing at {}", elf.display());
+        exit(1);
+    }
+    assert_ping_linked_at_user_base(&elf, target);
+    std::fs::create_dir_all(&target_dir).expect("target dir");
+    std::fs::copy(&elf, &stable).unwrap_or_else(|e| {
+        eprintln!("error: copy ping to {}: {e}", stable.display());
+        exit(1);
+    });
+    eprintln!(
+        "ping prelink ok: {} linked at USER_BASE (min PT_LOAD verified)",
+        stable.display()
+    );
+}
+
 fn build_aarch64_kernel() -> PathBuf {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    // aarch64 kernels are not packed in ci-build.tar. rust-cache keys are
-    // immutable across commits, so a cache hit can keep a pre--image-base
-    // /ping (ET_EXEC at 0x200000) and fault at 0x202218 after slide to
-    // USER_BASE. Always clean so kernel/build.rs re-links ping at 0x40000000.
+    // aarch64 kernels are not packed in ci-build.tar. rust-cache can keep a
+    // pre--image-base /ping (ET_EXEC at 0x200000) and cargo clean -p kernel
+    // alone may skip build.rs — include_bytes! then embeds the bad ELF
+    // (fault at 0x202218). Prelink ping at USER_BASE and invalidate fingerprints.
+    ensure_ping_at_user_base(&cargo, AARCH64_TARGET);
     let clean = Command::new(&cargo)
         .args(["clean", "-p", "kernel", "--target", AARCH64_TARGET])
         .status()
@@ -695,7 +828,8 @@ fn build_riscv64_image() -> PathBuf {
 fn build_riscv64_kernel() -> PathBuf {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    // Same rust-cache / missing-artifact trap as aarch64 (fault at 0x11e6a).
+    // Same rust-cache trap as aarch64 (fault at 0x11e6a).
+    ensure_ping_at_user_base(&cargo, RISCV64_TARGET);
     let clean = Command::new(&cargo)
         .args(["clean", "-p", "kernel", "--target", RISCV64_TARGET])
         .status()
