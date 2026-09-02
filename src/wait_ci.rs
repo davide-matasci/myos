@@ -8,7 +8,7 @@ struct CiExpect {
     shell_ci: bool,
 }
 
-const CI_NEEDLES: [&str; 25] = [
+const CI_NEEDLES: [&str; 26] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] interrupts",
@@ -24,6 +24,7 @@ const CI_NEEDLES: [&str; 25] = [
     "user ok",
     "fat ok",
     "vda ok",
+    "net0 ok",
     "nvme ok",
     "ext2 ok",
     // Slim always-on `/ok` VFS markers (pre-prompt readiness).

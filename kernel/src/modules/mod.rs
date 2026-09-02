@@ -11,12 +11,13 @@ mod registry;
 
 use crate::console;
 use alloc::alloc::{Layout, alloc, dealloc};
-use myos_abi::{ABI_VERSION, FsBind, KernelApi};
+use myos_abi::{ABI_VERSION, FsBind, KernelApi, ModuleChrOps};
 
 const HELLO_IMAGE: &[u8] = include_bytes!(env!("HELLO_MODULE_PATH"));
 const FAT_IMAGE: &[u8] = include_bytes!(env!("FAT_MODULE_PATH"));
 const STUBFS_IMAGE: &[u8] = include_bytes!(env!("STUBFS_MODULE_PATH"));
 const EXT2_IMAGE: &[u8] = include_bytes!(env!("EXT2_MODULE_PATH"));
+const VIRTIO_NET_IMAGE: &[u8] = include_bytes!(env!("VIRTIO_NET_MODULE_PATH"));
 
 static API: KernelApi = KernelApi {
     abi_version: ABI_VERSION,
@@ -33,6 +34,13 @@ static API: KernelApi = KernelApi {
     fs_register: api_fs_register,
     blk_read_at: api_blk_read_at,
     blk_write_at: api_blk_write_at,
+    pci_cfg_read32: api_pci_cfg_read32,
+    pci_cfg_write32: api_pci_cfg_write32,
+    pci_enable: api_pci_enable,
+    pci_find: api_pci_find,
+    pci_bar_map: api_pci_bar_map,
+    dma_alloc: api_dma_alloc,
+    dev_register: api_dev_register,
 };
 
 /// Load the hello module that was baked into the kernel at build time.
@@ -62,6 +70,13 @@ pub fn load_embedded_fat() {
 pub fn load_embedded_ext2() {
     if let Err(e) = load("ext2", EXT2_IMAGE) {
         console::status_fail(&alloc::format!("ext2 module: {e}"));
+    }
+}
+
+/// Load the virtio-net module. Probes modern virtio-pci and registers `/dev/net0`.
+pub fn load_embedded_virtio_net() {
+    if let Err(e) = load("virtio_net", VIRTIO_NET_IMAGE) {
+        console::status_fail(&alloc::format!("virtio-net module: {e}"));
     }
 }
 
@@ -310,6 +325,100 @@ unsafe extern "C" fn api_vfs_mount(
         return -1;
     }
     if crate::fs::mount_module(name, prefix, ops) {
+        0
+    } else {
+        -1
+    }
+}
+
+unsafe extern "C" fn api_pci_cfg_read32(bus: u8, slot: u8, func: u8, off: u8) -> u32 {
+    crate::pci::cfg_read32(bus, slot, func, off)
+}
+
+unsafe extern "C" fn api_pci_cfg_write32(bus: u8, slot: u8, func: u8, off: u8, val: u32) {
+    crate::pci::cfg_write32(bus, slot, func, off, val)
+}
+
+unsafe extern "C" fn api_pci_enable(bus: u8, slot: u8, func: u8) {
+    crate::pci::enable(bus, slot, func)
+}
+
+unsafe extern "C" fn api_pci_find(
+    vendor: u16,
+    device: u16,
+    index: u32,
+    bus: *mut u8,
+    slot: *mut u8,
+    func: *mut u8,
+) -> i32 {
+    if bus.is_null() || slot.is_null() || func.is_null() {
+        return -1;
+    }
+    match crate::pci::find(vendor, device, index) {
+        Some(bdf) => {
+            unsafe {
+                *bus = bdf.bus;
+                *slot = bdf.slot;
+                *func = bdf.func;
+            }
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_pci_bar_map(
+    bus: u8,
+    slot: u8,
+    func: u8,
+    bar: u8,
+    va: *mut usize,
+    size: *mut u64,
+) -> i32 {
+    if va.is_null() || size.is_null() {
+        return -1;
+    }
+    match crate::pci::bar_map(bus, slot, func, bar) {
+        Some((mapped, sz)) => {
+            unsafe {
+                *va = mapped;
+                *size = sz;
+            }
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_dma_alloc(n_pages: usize, phys: *mut u64) -> *mut u8 {
+    if phys.is_null() {
+        return core::ptr::null_mut();
+    }
+    match crate::blk::virtq::alloc_pages(n_pages) {
+        Some((p, va)) => {
+            unsafe {
+                *phys = p;
+            }
+            va
+        }
+        None => core::ptr::null_mut(),
+    }
+}
+
+unsafe extern "C" fn api_dev_register(
+    name: *const u8,
+    name_len: usize,
+    ops: *const ModuleChrOps,
+) -> i32 {
+    if name.is_null() || name_len == 0 || ops.is_null() {
+        return -1;
+    }
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let Ok(name) = core::str::from_utf8(name_bytes) else {
+        return -1;
+    };
+    let ops = unsafe { *ops };
+    if crate::fs::register_chrdev(name, ops) {
         0
     } else {
         -1

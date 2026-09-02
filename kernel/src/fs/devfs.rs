@@ -16,6 +16,62 @@ enum Node {
     Console,
     Block(u32),
     Nvme(u32),
+    Chr(usize),
+}
+
+const MAX_CHR: usize = 4;
+const CHR_NAME_MAX: usize = 16;
+
+#[derive(Clone, Copy)]
+struct ChrDev {
+    name: [u8; CHR_NAME_MAX],
+    name_len: u8,
+    ops: myos_abi::ModuleChrOps,
+}
+
+static mut CHR: [Option<ChrDev>; MAX_CHR] = [None; MAX_CHR];
+
+fn chr_table() -> &'static mut [Option<ChrDev>; MAX_CHR] {
+    unsafe { &mut *core::ptr::addr_of_mut!(CHR) }
+}
+
+/// Register a module character device as `/dev/<name>`.
+pub fn register_chrdev(name: &str, ops: myos_abi::ModuleChrOps) -> bool {
+    if name.is_empty() || name.len() > CHR_NAME_MAX || name.contains('/') {
+        return false;
+    }
+    let table = chr_table();
+    for slot in table.iter() {
+        if let Some(c) = slot {
+            if &c.name[..c.name_len as usize] == name.as_bytes() {
+                return false;
+            }
+        }
+    }
+    for slot in table.iter_mut() {
+        if slot.is_none() {
+            let mut n = [0u8; CHR_NAME_MAX];
+            n[..name.len()].copy_from_slice(name.as_bytes());
+            *slot = Some(ChrDev {
+                name: n,
+                name_len: name.len() as u8,
+                ops,
+            });
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_chr(name: &str) -> Option<usize> {
+    for (i, slot) in chr_table().iter().enumerate() {
+        if let Some(c) = slot {
+            if &c.name[..c.name_len as usize] == name.as_bytes() {
+                return Some(i);
+            }
+        }
+    }
+    None
 }
 
 fn vd_name(id: u32) -> Option<[u8; 3]> {
@@ -63,8 +119,9 @@ fn parse(name: &str) -> Option<Node> {
         "null" => Some(Node::Null),
         "tty" => Some(Node::Tty),
         "console" => Some(Node::Console),
-        _ => parse_vd(name)
-            .map(Node::Block)
+        _ => parse_chr(name)
+            .map(Node::Chr)
+            .or_else(|| parse_vd(name).map(Node::Block))
             .or_else(|| parse_nvme(name).map(Node::Nvme)),
     }
 }
@@ -110,6 +167,16 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
         Some(Node::Nvme(ctrl)) => {
             blk::read_bytes(blk::NVME_ID_BASE + ctrl, pos as u64, out).unwrap_or(0)
         }
+        Some(Node::Chr(i)) => {
+            let _ = pos;
+            match chr_table().get(i).and_then(|s| *s) {
+                Some(c) => {
+                    let n = unsafe { (c.ops.read)(out.as_mut_ptr(), out.len()) };
+                    if n < 0 { 0 } else { n as usize }
+                }
+                None => 0,
+            }
+        }
         None => 0,
     }
 }
@@ -123,6 +190,16 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         }
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
         Some(Node::Nvme(ctrl)) => blk::write_bytes(blk::NVME_ID_BASE + ctrl, pos as u64, buf).ok(),
+        Some(Node::Chr(i)) => {
+            let _ = pos;
+            match chr_table().get(i).and_then(|s| *s) {
+                Some(c) => {
+                    let n = unsafe { (c.ops.write)(buf.as_ptr(), buf.len()) };
+                    if n < 0 { None } else { Some(n as usize) }
+                }
+                None => None,
+            }
+        }
         None => None,
     }
 }
@@ -170,6 +247,20 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
             break;
         }
         buf[n..n + name.len()].copy_from_slice(&name);
+        n += name.len();
+        buf[n] = b'\n';
+        n += 1;
+    }
+    for slot in chr_table().iter() {
+        let Some(c) = slot else {
+            continue;
+        };
+        let name = &c.name[..c.name_len as usize];
+        let need = name.len() + 1;
+        if n + need > buf.len() {
+            break;
+        }
+        buf[n..n + name.len()].copy_from_slice(name);
         n += name.len();
         buf[n] = b'\n';
         n += 1;
@@ -234,5 +325,11 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 nlink: 1,
             })
         }
+        Node::Chr(i) => Some(StatInfo {
+            mode: S_IFCHR | 0o666,
+            size: 0,
+            ino: 30 + i as u32,
+            nlink: 1,
+        }),
     }
 }

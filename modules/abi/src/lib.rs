@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 6;
+pub const ABI_VERSION: u32 = 7;
 
 /// Stat blob exchanged with module VFS hooks (matches kernel layout).
 #[repr(C)]
@@ -93,7 +93,18 @@ pub struct ModuleVfsOps {
 /// Bind `dev_id` to a filesystem and fill `ops`. Return 0 on success.
 pub type FsBind = unsafe extern "C" fn(dev_id: u32, ops: *mut ModuleVfsOps) -> i32;
 
+/// Module-provided character device ops for `/dev` nodes.
+/// Kernel forces `S_IFCHR | 0666`. `read`/`write` return bytes (>=0) or a
+/// negative error. `read` may return 0 when no data is ready (poll).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ModuleChrOps {
+    pub read: unsafe extern "C" fn(buf: *mut u8, buf_len: usize) -> i32,
+    pub write: unsafe extern "C" fn(buf: *const u8, buf_len: usize) -> i32,
+}
+
 /// Kernel services visible to a module.
+
 ///
 /// Layout is frozen by `repr(C)`. New functions are appended; never reorder.
 #[repr(C)]
@@ -136,6 +147,31 @@ pub struct KernelApi {
     /// Byte-granular write at `offset`. Returns bytes written (>=0) or negative on error.
     pub blk_write_at:
         unsafe extern "C" fn(dev: u32, offset: u64, buf: *const u8, len: usize) -> i32,
+    pub pci_cfg_read32: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, off: u8) -> u32,
+    pub pci_cfg_write32: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, off: u8, val: u32),
+    pub pci_enable: unsafe extern "C" fn(bus: u8, slot: u8, func: u8),
+    pub pci_find: unsafe extern "C" fn(
+        vendor: u16,
+        device: u16,
+        index: u32,
+        bus: *mut u8,
+        slot: *mut u8,
+        func: *mut u8,
+    ) -> i32,
+    pub pci_bar_map: unsafe extern "C" fn(
+        bus: u8,
+        slot: u8,
+        func: u8,
+        bar: u8,
+        va: *mut usize,
+        size: *mut u64,
+    ) -> i32,
+    pub dma_alloc: unsafe extern "C" fn(n_pages: usize, phys: *mut u64) -> *mut u8,
+    pub dev_register: unsafe extern "C" fn(
+        name: *const u8,
+        name_len: usize,
+        ops: *const ModuleChrOps,
+    ) -> i32,
 }
 
 /// `module_init` — required. Return 0 on success.

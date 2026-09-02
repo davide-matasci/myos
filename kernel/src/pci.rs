@@ -134,3 +134,54 @@ pub fn scan_nvme() {
         }
     }
 }
+
+pub fn cfg_read32(bus: u8, slot: u8, func: u8, off: u8) -> u32 {
+    read32(Bdf { bus, slot, func }, off)
+}
+
+pub fn cfg_write32(bus: u8, slot: u8, func: u8, off: u8, val: u32) {
+    write32(Bdf { bus, slot, func }, off, val)
+}
+
+pub fn enable(bus: u8, slot: u8, func: u8) {
+    enable_mem_master(Bdf { bus, slot, func })
+}
+
+/// Map BAR `bar` as MMIO. Returns (VA, size).
+pub fn bar_map(bus: u8, slot: u8, func: u8, bar: u8) -> Option<(usize, u64)> {
+    let bdf = Bdf { bus, slot, func };
+    let (phys, size) = bar_mmio(bdf, bar)?;
+    let va = arch_pci::map_mmio(phys, size)?;
+    Some((va, size))
+}
+
+/// Nth PCI function matching `vend`/`dev` (0-based), walking like NVMe scan.
+pub fn find(vend: u16, dev: u16, nth: u32) -> Option<Bdf> {
+    let mut seen = 0u32;
+    for bus in 0u8..=MAX_BUS {
+        for slot in 0u8..32 {
+            let bdf0 = Bdf { bus, slot, func: 0 };
+            if vendor(bdf0) == 0xFFFF {
+                continue;
+            }
+            let funcs = if header_type(bdf0) & 0x80 != 0 { 8 } else { 1 };
+            for func in 0..funcs {
+                let bdf = Bdf { bus, slot, func };
+                if vendor(bdf) == 0xFFFF {
+                    continue;
+                }
+                let id = read32(bdf, 0);
+                let v = id as u16;
+                let d = (id >> 16) as u16;
+                if v != vend || d != dev {
+                    continue;
+                }
+                if seen == nth {
+                    return Some(bdf);
+                }
+                seen += 1;
+            }
+        }
+    }
+    None
+}
