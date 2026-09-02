@@ -1,1 +1,444 @@
-PLACEHOLDER
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      probe_latest_nightly:
+        description: Also test wire-myos against latest nightly (non-blocking)
+        type: boolean
+        default: false
+      force_sysroot:
+        description: Force sysroot rebuild and artifact upload (even if std paths unchanged)
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      sysroot: ${{ steps.filter.outputs.sysroot }}
+      c_userspace: ${{ steps.filter.outputs.c_userspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            sysroot:
+              - 'toolchain/std/**'
+              - 'targets/**'
+              - 'rust-toolchain.toml'
+              - '.cargo/config.toml'
+              - 'scripts/myos-sysroot-lib.sh'
+              - 'scripts/myos-rustc.sh'
+              - 'scripts/myos-rustc-cross.sh'
+              - 'scripts/check-wire-myos.sh'
+              - 'scripts/build-sysroot.sh'
+              - 'scripts/prepare-rust-std-myos.sh'
+              - 'scripts/fetch-sysroot.sh'
+              - 'scripts/package-sysroot.sh'
+              - 'scripts/install-sysroot.sh'
+              - 'scripts/build-std-hello.sh'
+            c_userspace:
+              - 'toolchain/newlib/**'
+              - 'ports/**'
+              - 'c/**'
+              - 'scripts/myos-c-userspace-lib.sh'
+              - 'scripts/build-c-hello.sh'
+              - 'scripts/build-newlib.sh'
+              - 'scripts/build-sbase.sh'
+              - 'scripts/build-oksh.sh'
+              - 'scripts/build-ubase.sh'
+              - 'scripts/fetch-newlib.sh'
+              - 'scripts/patch-newlib-myos.sh'
+              - 'scripts/build-libgloss-myos.sh'
+              - 'scripts/newlib-tool-wrappers.sh'
+              - 'scripts/fetch-sbase.sh'
+              - 'scripts/prepare-sbase-myos.sh'
+              - 'scripts/fetch-ubase.sh'
+              - 'scripts/fetch-oksh.sh'
+              - 'scripts/prepare-oksh-myos.sh'
+              - 'scripts/fetch-ripgrep.sh'
+              - 'scripts/fetch-pcre2.sh'
+              - 'scripts/prepare-ripgrep-myos.sh'
+              - 'scripts/build-ripgrep-myos.sh'
+              - 'scripts/build-pcre2-myos.sh'
+              - 'scripts/build-uutils-myos.sh'
+              - 'scripts/build-coreutils-myos.sh'
+              - 'scripts/ci-registry.sh'
+
+  wire-myos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly + rust-src
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src
+
+      - name: Verify wire-myos.py on pinned nightly
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./toolchain/std/check-wire.sh
+
+      - name: Probe latest nightly (informational)
+        if: github.event_name == 'workflow_dispatch' && inputs.probe_latest_nightly
+        continue-on-error: true
+        run: |
+          rustup toolchain install nightly --component rust-src
+          MYOS_NIGHTLY=nightly ./toolchain/std/check-wire.sh
+
+  sysroot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [changes, wire-myos]
+    if: |
+      needs.changes.outputs.sysroot == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.force_sysroot)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, aarch64-unknown-none-softfloat
+
+      - name: Cache myos sysroot
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: myos-sysroot-v2
+          workspaces: .
+          cache-directories: target/myos-sysroot
+
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Build and package sysroot
+        id: sysroot_build
+        env:
+          MYOS_SYSROOT_SLIM: "1"
+          MYOS_ZSTD_LEVEL: "3"
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./toolchain/std/build-sysroot.sh
+          ./toolchain/std/package-sysroot.sh
+
+      # Artifact quota exhaustion must not fail the pipeline: rust-cache keeps
+      # target/myos-sysroot for the build job; fetch-sysroot rebuilds if needed.
+      - name: Upload sysroot tarball
+        if: steps.sysroot_build.outcome == 'success' && github.event_name != 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: myos-sysroot
+          path: target/myos-sysroot-*.tar.zst
+          if-no-files-found: warn
+          retention-days: 7
+
+  export-patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: sysroot
+    if: github.event_name == 'push' && needs.sysroot.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly + rust-src
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src
+
+      - name: Export upstream library patch
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./toolchain/std/export-upstream-patch.sh
+
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: myos-upstream-library-patch
+          path: target/myos-upstream-library.patch
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [changes, wire-myos, sysroot]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.wire-myos.result == 'success' &&
+      (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped')
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned: floating nightly fails to link bootloader leftovers / keep the
+      # known-good toolchain until an explicit unpin.
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+
+      # prefix-key busts poisoned rust-cache (77c4886 FAT 8.3; empty /c/rg
+      # embed from soft-missing ripgrep). Keep build+boot in lockstep.
+      # Do not cache a cargo target that lets kernel build.rs skip.
+      # C/userspace outputs live in GHCR (scripts/ci-registry.sh), not rust-cache.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-6
+          cache-directories: |
+            target/myos-sysroot
+            target/patched-crates
+            target/crate-fetch-coreutils
+
+      - name: Download prebuilt sysroot
+        if: needs.sysroot.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: myos-sysroot
+          path: target
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
+
+      - name: Install sysroot and build std/C/sbase/oksh/ubase/uutils/ripgrep/tcc ELFs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
+            export MYOS_SYSROOT_TARBALL="$(ls target/myos-sysroot-*.tar.zst | head -1)"
+            ./toolchain/std/fetch-sysroot.sh
+          else
+            ./toolchain/std/fetch-sysroot.sh
+          fi
+          ./scripts/ci-registry.sh pull newlib || true
+          ./scripts/ci-registry.sh pull std-hello || true
+          ./scripts/ci-registry.sh pull c-hello || true
+          ./scripts/ci-registry.sh pull sbase || true
+          ./scripts/ci-registry.sh pull oksh || true
+          ./scripts/ci-registry.sh pull ubase || true
+          ./scripts/ci-registry.sh pull coreutils || true
+          ./scripts/ci-registry.sh pull ripgrep || true
+          ./scripts/ci-registry.sh pull tcc || true
+          ./toolchain/std/build-std-hello.sh
+          ./scripts/build-c-hello.sh
+          ./ports/sbase/build.sh
+          ./ports/oksh/build.sh
+          ./ports/ubase/build.sh
+          ./ports/coreutils/build-uutils.sh
+          ./ports/ripgrep/build.sh
+          ./ports/tcc/build.sh
+          ./scripts/ci-registry.sh push newlib || true
+          ./scripts/ci-registry.sh push std-hello || true
+          ./scripts/ci-registry.sh push c-hello || true
+          ./scripts/ci-registry.sh push sbase || true
+          ./scripts/ci-registry.sh push oksh || true
+          ./scripts/ci-registry.sh push ubase || true
+          ./scripts/ci-registry.sh push coreutils || true
+          ./scripts/ci-registry.sh push ripgrep || true
+          ./scripts/ci-registry.sh push tcc || true
+
+      - name: PS/2 scancode decode unit tests
+        run: cargo test -p ps2-scancode
+
+      - name: Build kernel and Limine BIOS+UEFI disk images
+        run: |
+          cargo clean -p myos
+          # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
+          # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
+          cargo clean -p kernel --target x86_64-unknown-none
+          cargo clean -p kernel --target aarch64-unknown-none-softfloat
+          cargo clean -p kernel --target riscv64imac-unknown-none-elf
+          cargo build
+          cargo build -p kernel --target aarch64-unknown-none-softfloat
+          cargo build -p kernel --target riscv64imac-unknown-none-elf
+          test -f target/bios.img
+          od -An -tx1 -N 16 target/bios.img
+
+      # Run required x86 boot needles here so CI stays meaningful when artifact
+      # upload is quota-blocked (boot matrix depends on ci-build.tar).
+      - name: Boot smoke (x86 BIOS + UEFI)
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86
+          ./target/debug/myos --ci
+          ./target/debug/myos uefi --ci
+
+      - name: Pack CI build artifacts
+        run: |
+          shopt -s nullglob
+          files=(
+            target/debug/myos
+            target/debug/build/myos-*/out
+            target/bios.img
+            target/uefi.img
+            target/fat.img
+            target/hello-*
+            target/ok-*
+            target/std-*
+            target/c-hello-*
+            target/sbase-*
+            target/ubase-*
+            target/oksh-*
+            target/uutils-*
+            target/coreutils-*
+            target/rg-*
+            target/tcc-*
+            target/pcre2-x86_64
+            target/pcre2-aarch64
+            target/pcre2-riscv64
+            target/.myos-newlib-version
+            target/.myos-c-hello-version
+            target/.myos-sbase-version
+            target/.myos-ubase-version
+            target/.myos-oksh-version
+            target/.myos-coreutils-version
+            target/.myos-ripgrep-version
+            target/.myos-tcc-version
+            target/.myos-std-hello-version
+            target/limine-v*
+          )
+          if [ -f target/virt.dtb ]; then
+            files+=(target/virt.dtb)
+          fi
+          if [ -d target/ovmf ]; then
+            files+=(target/ovmf)
+          fi
+          tar -cf ci-build.tar "${files[@]}"
+          ls -lh ci-build.tar
+
+      - name: Upload CI build artifacts
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-build
+          path: ci-build.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  boot:
+    name: boot (${{ matrix.id }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build
+    # always(): otherwise a skipped sysroot (path filter) propagates through
+    # build and leaves this matrix unexpanded (boot matrix id placeholder)
+    # even when build succeeded — kernel/fs PRs would miss aarch64/riscv64.
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.build.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: bios
+            args: --ci
+            packages: qemu-system-x86
+            required: true
+          - id: uefi
+            args: uefi --ci
+            packages: qemu-system-x86
+            required: true
+          - id: aarch64
+            args: aarch64 --ci
+            packages: qemu-system-arm qemu-efi-aarch64
+            required: true
+          - id: riscv64
+            args: riscv64 --ci
+            packages: qemu-system-misc qemu-efi-riscv64
+            required: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-6
+          cache-directories: |
+            target/myos-sysroot
+            target/patched-crates
+            target/crate-fetch-coreutils
+
+      - name: Download prebuilt sysroot
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: myos-sysroot
+          path: target
+
+      - name: Download CI build artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-build
+
+      - name: Restore or rebuild CI artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          sudo apt-get update
+          sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
+          ./scripts/ci-registry.sh pull newlib || true
+          ./scripts/ci-registry.sh pull std-hello || true
+          ./scripts/ci-registry.sh pull c-hello || true
+          ./scripts/ci-registry.sh pull sbase || true
+          ./scripts/ci-registry.sh pull oksh || true
+          ./scripts/ci-registry.sh pull ubase || true
+          ./scripts/ci-registry.sh pull coreutils || true
+          ./scripts/ci-registry.sh pull ripgrep || true
+          ./scripts/ci-registry.sh pull tcc || true
+          ./scripts/ci-restore-or-build.sh
+          ./scripts/ci-registry.sh push newlib || true
+          ./scripts/ci-registry.sh push std-hello || true
+          ./scripts/ci-registry.sh push c-hello || true
+          ./scripts/ci-registry.sh push sbase || true
+          ./scripts/ci-registry.sh push oksh || true
+          ./scripts/ci-registry.sh push ubase || true
+          ./scripts/ci-registry.sh push coreutils || true
+          ./scripts/ci-registry.sh push ripgrep || true
+          ./scripts/ci-registry.sh push tcc || true
+
+      - name: Install QEMU
+        run: sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Boot in QEMU
+        continue-on-error: ${{ !matrix.required }}
+        run: ./target/debug/myos ${{ matrix.args }}
