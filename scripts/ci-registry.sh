@@ -152,14 +152,15 @@ repo_lower() {
 
 registry_ref() {
   local port="$1" hash="$2"
-  printf 'ghcr.io/%s/ci-%s:%s' "$(repo_lower)" "$port" "$hash"
+  # GHCR repository names must be lowercase; stamp hashes may contain hex.
+  printf 'ghcr.io/%s/ci-%s:%s' "$(repo_lower)" "${port,,}" "$hash"
 }
 
 package_name() {
   local port="$1"
   local repo
   repo="$(repo_lower)"
-  printf '%s/ci-%s' "${repo#*/}" "$port"
+  printf '%s/ci-%s' "${repo#*/}" "${port,,}"
 }
 
 ensure_oras() {
@@ -191,14 +192,26 @@ ensure_oras() {
 }
 
 oras_login() {
-  local user token
+  local user token err
   token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-  [[ -n "$token" ]] || return 0
   user="${GITHUB_ACTOR:-${GITHUB_REPOSITORY_OWNER:-${GITHUB_REPOSITORY%%/*}}}"
-  [[ -n "$user" ]] || return 0
-  if ! printf '%s' "$token" | oras login ghcr.io -u "$user" --password-stdin >/dev/null 2>&1; then
-    return 0
+  user="${user,,}"
+  if [[ -z "$token" || -z "$user" ]]; then
+    echo "registry login failed: missing GITHUB_TOKEN or username"
+    echo "registry login failed: missing GITHUB_TOKEN or username" >&2
+    return 1
   fi
+  err="$(mktemp "${TMPDIR:-/tmp}/oras-login.XXXXXX")"
+  # stdin password (oras login -u USER --password-stdin); do not hide failures.
+  if ! printf '%s' "$token" | oras login ghcr.io -u "$user" --password-stdin >"$err" 2>&1; then
+    echo "registry login failed (user=${user})"
+    echo "registry login failed (user=${user})" >&2
+    cat "$err"
+    cat "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
 }
 
 can_push() {
@@ -278,7 +291,8 @@ cmd_pull() {
   hash="$(port_hash "$port")"
   ref="$(registry_ref "$port" "$hash")"
   ensure_oras
-  oras_login
+  # Anonymous fetch is fine when login fails (public packages / empty GHCR).
+  oras_login || true
   if ! oras manifest fetch "$ref" >/dev/null 2>&1; then
     echo "registry miss ${port}; building"
     return 0
@@ -320,16 +334,23 @@ cmd_push() {
   local port="$1"
   local hash ref tmp archive list status
   if ! can_push; then
+    echo "registry skip push (disabled)"
     return 0
   fi
   if ! port_is_current "$port"; then
+    echo "registry skip push ${port}: not current"
     return 0
   fi
   hash="$(port_hash "$port")"
   ref="$(registry_ref "$port" "$hash")"
   ensure_oras
-  oras_login
+  if ! oras_login; then
+    echo "registry push failed ${port}: login failed"
+    echo "registry push failed ${port}: login failed" >&2
+    return 1
+  fi
   if oras manifest fetch "$ref" >/dev/null 2>&1; then
+    echo "registry skip push ${port}: already present"
     return 0
   fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/myos-ci-reg.XXXXXX")"
@@ -337,6 +358,7 @@ cmd_push() {
   existing_members "$port" >"$list"
   if [[ ! -s "$list" ]]; then
     rm -rf "$tmp"
+    echo "registry skip push ${port}: nothing to pack"
     return 0
   fi
   archive="$tmp/${port}.tar.zst"
@@ -348,8 +370,14 @@ cmd_push() {
   status=$?
   set -e
   if (( status != 0 )); then
+    echo "registry push failed ${port}"
+    echo "registry push failed ${port}" >&2
+    if [[ -s "$tmp/oras.err" ]]; then
+      cat "$tmp/oras.err"
+      cat "$tmp/oras.err" >&2
+    fi
     rm -rf "$tmp"
-    return 0
+    return 1
   fi
   try_public_package "$port"
   rm -rf "$tmp"
