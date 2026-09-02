@@ -1232,12 +1232,11 @@ pub fn schedule() {
         user::set_kernel_rsp0(kstack);
         #[cfg(target_arch = "x86_64")]
         crate::arch::gdt::set_rsp0(kstack as u64);
-        // Keep the live sscratch CSR in sync with KERNEL_SSCRATCH so a nested
-        // trap after preempt still swaps onto this task's kernel stack.
-        #[cfg(target_arch = "riscv64")]
-        unsafe {
-            core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) kstack, options(nostack));
-        }
+        // Do not csrw sscratch here: during a nested S-mode trap (timer in a
+        // syscall) sscratch holds the interrupted kernel SP / user SP swap
+        // slot. Overwriting it with the next task's stack top corrupts return
+        // and can sret to sepc=0. KERNEL_SSCRATCH is still updated above for
+        // enter_riscv64 / fork_sret paths that install sscratch explicitly.
     }
 
     let want = if aspace == 0 {
