@@ -114,12 +114,12 @@ int main(void) { write(1, "tcc ok\n", 7); return 0; }
     } else {
         write(b"tcc skip (tmp create fail)\n");
     }
-    // tcc + newlib: compile to an ELF and exec it (not -run).
+    // Hosted tcc: default crt + libc + libgloss, static ELF, then exec.
+    // Needle is printed by the compiled program, not by heap.
     const STD_C: &[u8] = br#"
-#include <unistd.h>
+#include <stdio.h>
 int main(void) {
-    const char msg[] = "tcc std ok\n";
-    write(1, msg, sizeof msg - 1);
+    puts("tcc std ok");
     return 0;
 }
 "#;
@@ -128,20 +128,7 @@ int main(void) {
         close(fd);
         run_prog(
             b"/t/tcc",
-            &[
-                b"tcc",
-                b"-nostdlib",
-                b"-pie",
-                b"-o",
-                b"/tmp/tcc-hi",
-                b"-I/lib/newlib/include",
-                b"/lib/newlib/lib/crt0.o",
-                b"/tmp/tcc-std.c",
-                b"-L/lib/newlib/lib",
-                b"-lc",
-                b"-lgloss",
-                b"-lg",
-            ],
+            &[b"tcc", b"-o", b"/tmp/tcc-hi", b"/tmp/tcc-std.c"],
         );
         run_prog(b"/tmp/tcc-hi", &[b"tcc-hi"]);
     } else {

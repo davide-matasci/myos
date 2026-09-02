@@ -21,6 +21,7 @@ rsync -a \
 cp "$MYOS/config.h" "$WORK/config.h"
 
 patch -d "$WORK" -p0 --forward --batch < "$MYOS/tccrun.myos.patch"
+patch -d "$WORK" -p0 --forward --batch < "$MYOS/tcc-hosted-link.myos.patch"
 
 # tccdefs_.h is a C string table generated from include/tccdefs.h (CONFIG_TCC_PREDEFS).
 HOSTCC="${HOSTCC:-cc}"
