@@ -131,6 +131,7 @@ int main(void) {
             &[
                 b"tcc",
                 b"-nostdlib",
+                b"-pie",
                 b"-o",
                 b"/tmp/tcc-hi",
                 b"-I/lib/newlib/include",
