@@ -6,10 +6,18 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
 source "$ROOT/scripts/myos-c-userspace-lib.sh"
 
+build_follow_on_ports() {
+  # rg + tcc have their own stamps. The CI build job already runs this script
+  # before GHCR push; chaining tcc here means a successful build can
+  # `registry push tcc` without editing .github/workflows (needs `workflow` scope).
+  # tcc also writes target/coreutils-tcc-* so ci-build.tar's coreutils-* glob packs it.
+  "$ROOT/ports/ripgrep/build.sh"
+  "$ROOT/ports/tcc/build.sh"
+}
+
 if myos_coreutils_is_current; then
   echo "uutils coreutils up to date"
-  # Still (re)build /c/rg — version pin is independent of coreutils.
-  "$ROOT/ports/ripgrep/build.sh"
+  build_follow_on_ports
   exit 0
 fi
 
@@ -40,5 +48,5 @@ done
 
 echo "$(myos_coreutils_version_hash)" >"$MYOS_COREUTILS_VERSION"
 
-# Also build /c/rg (ripgrep+PCRE2) so CI that only invokes uutils still embeds rg.
-"$ROOT/ports/ripgrep/build.sh"
+# Also build /c/rg and tcc so CI that only invokes uutils still embeds them.
+build_follow_on_ports
