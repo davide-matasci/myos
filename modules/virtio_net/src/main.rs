@@ -427,7 +427,7 @@ unsafe extern "C" fn net_read(buf: *mut u8, buf_len: usize) -> i32 {
         return -1;
     }
     let net = unsafe {
-        match NET.as_mut() {
+        match (*core::ptr::addr_of_mut!(NET)).as_mut() {
             Some(n) => n,
             None => return -1,
         }
@@ -465,7 +465,7 @@ unsafe extern "C" fn net_write(buf: *const u8, buf_len: usize) -> i32 {
         return -1;
     }
     let net = unsafe {
-        match NET.as_mut() {
+        match (*core::ptr::addr_of_mut!(NET)).as_mut() {
             Some(n) => n,
             None => return -1,
         }
@@ -510,10 +510,10 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         }
         match probe(api) {
             Some(net) => {
-                NET = Some(net);
+                *core::ptr::addr_of_mut!(NET) = Some(net);
                 let rc = (api.dev_register)(b"net0".as_ptr(), 4, &OPS);
                 if rc != 0 {
-                    NET = None;
+                    *core::ptr::addr_of_mut!(NET) = None;
                     write_str(api, b"virtio-net skip\n");
                     return 0;
                 }
