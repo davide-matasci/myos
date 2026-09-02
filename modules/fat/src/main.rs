@@ -1,12 +1,12 @@
-//! FAT16 root reader mounted at `/fat` via `KernelApi::vfs_mount`.
+//! FAT16 root reader. Registers fstype `"fat"`; `mount(2)` binds a blk id.
 //!
-//! Root-only, FAT16 only (no subdirs, no FAT32). Also registers `/msg` on
-//! bootfs so existing CI (`user/ok` → `fat ok`) keeps working.
+//! Root-only, FAT16 only (no subdirs, no FAT32). Does not automount.
+//! `/msg` on bootfs is provided by the kernel, not this module.
 
 #![no_std]
 #![no_main]
 
-use myos_abi::{KernelApi, ModuleVfsOps, VfsStatInfo, ABI_VERSION};
+use myos_abi::{ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo};
 
 const SECTOR: usize = 512;
 const MAX_ENTRIES: usize = 32;
@@ -29,6 +29,7 @@ struct Entry {
 #[repr(C)]
 struct FatVol {
     ready: bool,
+    dev: u32,
     fat_lba: u64,
     data_lba: u64,
     spc: u8,
@@ -38,12 +39,15 @@ struct FatVol {
 
 static mut VOL: FatVol = FatVol {
     ready: false,
+    dev: 0,
     fat_lba: 0,
     data_lba: 0,
     spc: 0,
     count: 0,
     entries: unsafe { core::mem::MaybeUninit::zeroed().assume_init() },
 };
+
+static mut API: *const KernelApi = core::ptr::null();
 
 #[inline(never)]
 #[unsafe(no_mangle)]
@@ -68,32 +72,45 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
 }
 
 unsafe fn run(api: &KernelApi) -> Result<(), i32> {
-    init_volume(api)?;
-    let ops = ModuleVfsOps {
-        lookup: fat_lookup,
-        stat: fat_stat,
-        listdir: fat_listdir,
-        register: None,
-    };
-    let rc = (api.vfs_mount)(
-        b"fat".as_ptr(),
-        3,
-        b"fat".as_ptr(),
-        3,
-        &ops as *const ModuleVfsOps,
-    );
+    API = api as *const KernelApi;
+    let rc = (api.fs_register)(b"fat".as_ptr(), 3, fat_bind);
     if rc != 0 {
         return Err(rc);
-    }
-    if let Some(data) = entry_bytes(b"msg") {
-        vfs_register(api, b"msg", data)?;
     }
     Ok(())
 }
 
-unsafe fn init_volume(api: &KernelApi) -> Result<(), i32> {
+unsafe extern "C" fn fat_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
+    if ops.is_null() {
+        return -1;
+    }
+    let api = API;
+    if api.is_null() {
+        return -1;
+    }
+    let vol = unsafe { &mut *core::ptr::addr_of_mut!(VOL) };
+    if vol.ready {
+        return -8;
+    }
+    match unsafe { init_volume(&*api, dev_id) } {
+        Ok(()) => {
+            unsafe {
+                *ops = ModuleVfsOps {
+                    lookup: fat_lookup,
+                    stat: fat_stat,
+                    listdir: fat_listdir,
+                    register: None,
+                };
+            }
+            0
+        }
+        Err(e) => e,
+    }
+}
+
+unsafe fn init_volume(api: &KernelApi, dev: u32) -> Result<(), i32> {
     let mut sec = [0u8; SECTOR];
-    blk_read(api, 0, &mut sec)?;
+    blk_read(api, dev, 0, &mut sec)?;
 
     let bps = u16_le(&sec, 11) as usize;
     if bps != SECTOR {
@@ -125,13 +142,14 @@ unsafe fn init_volume(api: &KernelApi) -> Result<(), i32> {
     let data_lba = root_lba + u64::from(root_sectors);
 
     let vol = &mut *core::ptr::addr_of_mut!(VOL);
+    vol.dev = dev;
     vol.fat_lba = reserved;
     vol.data_lba = data_lba;
     vol.spc = spc;
     vol.count = 0;
 
     for s in 0..root_sectors {
-        blk_read(api, root_lba + u64::from(s), &mut sec)?;
+        blk_read(api, dev, root_lba + u64::from(s), &mut sec)?;
         let mut i = 0;
         while i + 32 <= SECTOR {
             let ent = &sec[i..i + 32];
@@ -179,6 +197,7 @@ unsafe fn finish_volume(api: &KernelApi) -> Result<(), i32> {
         let size = vol.entries[i].size as usize;
         let n = read_file(
             api,
+            vol.dev,
             vol.fat_lba,
             vol.data_lba,
             vol.spc,
@@ -330,6 +349,7 @@ unsafe extern "C" fn fat_listdir(
 
 unsafe fn read_file(
     api: &KernelApi,
+    dev: u32,
     fat_lba: u64,
     data_lba: u64,
     spc: u8,
@@ -348,12 +368,12 @@ unsafe fn read_file(
             if copied >= file_size {
                 break;
             }
-            blk_read(api, lba + u64::from(s), &mut sec)?;
+            blk_read(api, dev, lba + u64::from(s), &mut sec)?;
             let n = (file_size - copied).min(SECTOR);
             out[copied..copied + n].copy_from_slice(&sec[..n]);
             copied += n;
         }
-        cluster = fat_next(api, fat_lba, cluster)?;
+        cluster = fat_next(api, dev, fat_lba, cluster)?;
     }
     if copied != file_size {
         return Err(-5);
@@ -361,30 +381,17 @@ unsafe fn read_file(
     Ok(copied)
 }
 
-unsafe fn fat_next(api: &KernelApi, fat_lba: u64, cluster: u16) -> Result<u16, i32> {
+unsafe fn fat_next(api: &KernelApi, dev: u32, fat_lba: u64, cluster: u16) -> Result<u16, i32> {
     let off = cluster as u64 * 2;
     let mut sec = [0u8; SECTOR];
-    blk_read(api, fat_lba + off / SECTOR as u64, &mut sec)?;
+    blk_read(api, dev, fat_lba + off / SECTOR as u64, &mut sec)?;
     let e = (off as usize) % SECTOR;
     Ok(u16_le(&sec, e))
 }
 
-unsafe fn blk_read(api: &KernelApi, lba: u64, buf: &mut [u8; SECTOR]) -> Result<(), i32> {
-    let rc = (api.blk_read)(lba, buf.as_mut_ptr(), SECTOR);
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(-1)
-    }
-}
-
-unsafe fn vfs_register(api: &KernelApi, name: &[u8], data: &[u8]) -> Result<(), i32> {
-    let rc = (api.vfs_register)(name.as_ptr(), name.len(), data.as_ptr(), data.len());
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(-7)
-    }
+unsafe fn blk_read(api: &KernelApi, dev: u32, lba: u64, buf: &mut [u8; SECTOR]) -> Result<(), i32> {
+    let rc = (api.blk_read)(dev, lba, buf.as_mut_ptr(), SECTOR);
+    if rc == 0 { Ok(()) } else { Err(-1) }
 }
 
 fn u16_le(b: &[u8], o: usize) -> u16 {

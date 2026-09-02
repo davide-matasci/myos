@@ -48,8 +48,20 @@ pub fn virtio_blk_init() {
     virtio_blk::init();
 }
 
-pub fn virtio_blk_read(lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-    virtio_blk::read(lba, buf)
+pub fn virtio_blk_count() -> u32 {
+    virtio_blk::count()
+}
+
+pub fn virtio_blk_capacity(dev: u32) -> Option<u64> {
+    virtio_blk::capacity(dev)
+}
+
+pub fn virtio_blk_read(dev: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+    virtio_blk::read(dev, lba, buf)
+}
+
+pub fn virtio_blk_write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
+    virtio_blk::write(dev, lba, buf)
 }
 
 fn current_el() -> u64 {

@@ -8,7 +8,7 @@ struct CiExpect {
     shell_ci: bool,
 }
 
-const CI_NEEDLES: [&str; 21] = [
+const CI_NEEDLES: [&str; 22] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] interrupts",
@@ -23,6 +23,7 @@ const CI_NEEDLES: [&str; 21] = [
     "alloc ok",
     "user ok",
     "fat ok",
+    "vda ok",
     // Slim always-on `/ok` VFS markers (pre-prompt readiness).
     "disk ok",
     "disk ls ok",
@@ -82,7 +83,10 @@ enum ShellStage {
 }
 
 fn serial_has_all_needles(serial: &str, extra: &[&str]) -> bool {
-    CI_NEEDLES.iter().chain(extra.iter()).all(|n| serial.contains(n))
+    CI_NEEDLES
+        .iter()
+        .chain(extra.iter())
+        .all(|n| serial.contains(n))
 }
 
 fn interactive_tail(serial: &str) -> &str {
@@ -126,9 +130,7 @@ fn interactive_unknown_cmd_ok(serial: &str) -> bool {
 }
 
 fn interactive_ok_cmd_ok(serial: &str) -> bool {
-    command_echoed(serial, "ok")
-        && !tail_has_hex_received(serial)
-        && at_interactive_prompt(serial)
+    command_echoed(serial, "ok") && !tail_has_hex_received(serial) && at_interactive_prompt(serial)
 }
 
 fn interactive_echo_cmd_ok(serial: &str) -> bool {
@@ -136,7 +138,10 @@ fn interactive_echo_cmd_ok(serial: &str) -> bool {
     if !tail.contains("$ echo test") || serial.contains("exception:") {
         return false;
     }
-    let after = tail.rsplit_once("$ echo test").map(|(_, rest)| rest).unwrap_or("");
+    let after = tail
+        .rsplit_once("$ echo test")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
     after
         .lines()
         .find(|line| !line.trim().is_empty())
@@ -210,9 +215,7 @@ fn interactive_heap_cmd_ok(serial: &str, heavy: &[&str]) -> bool {
 /// Heap printed `smoke ok` and returned to `$`. Missing heavy needles can
 /// fail immediately instead of waiting out the 180s timeout.
 fn interactive_heap_returned(serial: &str) -> bool {
-    command_echoed(serial, "heap")
-        && serial.contains("smoke ok")
-        && at_interactive_prompt(serial)
+    command_echoed(serial, "heap") && serial.contains("smoke ok") && at_interactive_prompt(serial)
 }
 
 fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
@@ -433,10 +436,8 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             eprintln!("error: QEMU timed out after {:?}", expect.timeout);
         }
         eprintln!("error: shell CI stage was {shell_stage:?} (cmd {shell_cmd_index})");
-        if matches!(
-            shell_stage,
-            ShellStage::WaitLogin | ShellStage::TypingUser
-        ) && !login_prompt_ready(&serial)
+        if matches!(shell_stage, ShellStage::WaitLogin | ShellStage::TypingUser)
+            && !login_prompt_ready(&serial)
         {
             eprintln!("error: serial never reached getty `login: ` prompt");
         }
@@ -454,16 +455,15 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             if !serial.contains(CI_SHELL_UNKNOWN_CMD) {
                 eprintln!("error: serial output did not contain {CI_SHELL_UNKNOWN_CMD:?}");
             } else if tail_has_hex_received(&serial) {
-                eprintln!(
-                    "error: shell reported non-printable stdin (hex escapes in received:)"
-                );
+                eprintln!("error: shell reported non-printable stdin (hex escapes in received:)");
             } else {
-                eprintln!(
-                    "error: {CI_SHELL_UNKNOWN_CMD:?} did not follow interactive `nosuchcmd`"
-                );
+                eprintln!("error: {CI_SHELL_UNKNOWN_CMD:?} did not follow interactive `nosuchcmd`");
             }
         }
-        if shell_cmd_index >= 1 && shell_cmd_index < 2 && !interactive_heap_cmd_ok(&serial, extra_needles) {
+        if shell_cmd_index >= 1
+            && shell_cmd_index < 2
+            && !interactive_heap_cmd_ok(&serial, extra_needles)
+        {
             if !command_echoed(&serial, "heap") {
                 eprintln!("error: serial did not echo `$ heap` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -487,9 +487,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: serial did not echo `$ ok` at the interactive prompt");
             }
             if tail_has_hex_received(&serial) {
-                eprintln!(
-                    "error: shell reported non-printable input (hex escapes in received:)"
-                );
+                eprintln!("error: shell reported non-printable input (hex escapes in received:)");
             }
         }
         if shell_cmd_index >= 3 && shell_cmd_index < 4 && !interactive_echo_cmd_ok(&serial) {
@@ -509,9 +507,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             );
         }
         if shell_cmd_index >= 5 && shell_cmd_index < 6 && !interactive_uutils_true_cmd_ok(&serial) {
-            eprintln!(
-                "error: interactive `c/true` failed (want `$ c/true` then `$` prompt)"
-            );
+            eprintln!("error: interactive `c/true` failed (want `$ c/true` then `$` prompt)");
         }
         if shell_cmd_index >= 6 && shell_cmd_index < 7 && !interactive_sbase_echo_cmd_ok(&serial) {
             if !command_echoed(&serial, "/s/echo hi") {
@@ -525,9 +521,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
         }
         if shell_cmd_index >= 7 && shell_cmd_index < 8 && !interactive_sbase_ls_cmd_ok(&serial) {
-            eprintln!(
-                "error: interactive `/s/ls` failed (want `$ /s/ls` then `$` prompt)"
-            );
+            eprintln!("error: interactive `/s/ls` failed (want `$ /s/ls` then `$` prompt)");
         }
         if shell_cmd_index >= 8 && !interactive_bs_ls_cmd_ok(&serial) {
             eprintln!(

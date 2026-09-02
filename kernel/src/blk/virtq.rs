@@ -1,6 +1,6 @@
 //! Split virtqueue helpers (legacy contiguous or modern split both work).
 
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::{Ordering, compiler_fence};
 
 pub const DESC_F_NEXT: u16 = 1;
 pub const DESC_F_WRITE: u16 = 2;
@@ -107,14 +107,7 @@ pub unsafe fn read_one(
         core::ptr::write_volatile(dma_va.add(4) as *mut u32, 0);
         core::ptr::write_volatile(dma_va.add(8) as *mut u64, lba);
         core::ptr::write_volatile(dma_va.add(crate::blk::DMA_STATUS), 0xFFu8);
-        write_desc(
-            desc,
-            0,
-            dma_phys,
-            16,
-            DESC_F_NEXT,
-            1,
-        );
+        write_desc(desc, 0, dma_phys, 16, DESC_F_NEXT, 1);
         write_desc(
             desc,
             1,
@@ -170,6 +163,98 @@ pub unsafe fn read_buf(
     for chunk in buf.chunks_mut(crate::blk::SECTOR) {
         unsafe {
             read_one(
+                num,
+                desc,
+                avail,
+                used,
+                last_used,
+                dma_phys,
+                dma_va,
+                lba,
+                chunk,
+                || notify(),
+            )?;
+        }
+        lba += 1;
+    }
+    Ok(())
+}
+
+/// One-sector OUT: header at `dma_phys+0`, data at +512, status at +16.
+pub unsafe fn write_one(
+    num: u16,
+    desc: *mut u8,
+    avail: *mut u8,
+    used: *mut u8,
+    last_used: &mut u16,
+    dma_phys: u64,
+    dma_va: *mut u8,
+    lba: u64,
+    data: &[u8],
+    notify: impl FnOnce(),
+) -> Result<(), ()> {
+    debug_assert!(data.len() == crate::blk::SECTOR);
+    unsafe {
+        core::ptr::write_volatile(dma_va as *mut u32, crate::blk::VIRTIO_BLK_T_OUT);
+        core::ptr::write_volatile(dma_va.add(4) as *mut u32, 0);
+        core::ptr::write_volatile(dma_va.add(8) as *mut u64, lba);
+        core::ptr::write_volatile(dma_va.add(crate::blk::DMA_STATUS), 0xFFu8);
+        core::ptr::copy_nonoverlapping(
+            data.as_ptr(),
+            dma_va.add(crate::blk::DMA_DATA),
+            crate::blk::SECTOR,
+        );
+        write_desc(desc, 0, dma_phys, 16, DESC_F_NEXT, 1);
+        write_desc(
+            desc,
+            1,
+            dma_phys + crate::blk::DMA_DATA as u64,
+            crate::blk::SECTOR as u32,
+            DESC_F_NEXT,
+            2,
+        );
+        write_desc(
+            desc,
+            2,
+            dma_phys + crate::blk::DMA_STATUS as u64,
+            1,
+            DESC_F_WRITE,
+            0,
+        );
+        push_and_wait(num, avail, used, last_used, 0, notify)?;
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mut addr = dma_va as usize & !63;
+            let end = dma_va as usize + 512 + 16;
+            while addr < end {
+                core::arch::asm!("dc civac, {x}", x = in(reg) addr, options(nostack));
+                addr += 64;
+            }
+            core::arch::asm!("dsb sy", options(nostack));
+        }
+        let status = core::ptr::read_volatile(dma_va.add(crate::blk::DMA_STATUS));
+        if status != 0 {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+pub unsafe fn write_buf(
+    num: u16,
+    desc: *mut u8,
+    avail: *mut u8,
+    used: *mut u8,
+    last_used: &mut u16,
+    dma_phys: u64,
+    dma_va: *mut u8,
+    mut lba: u64,
+    buf: &[u8],
+    mut notify: impl FnMut(),
+) -> Result<(), ()> {
+    for chunk in buf.chunks(crate::blk::SECTOR) {
+        unsafe {
+            write_one(
                 num,
                 desc,
                 avail,

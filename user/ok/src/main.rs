@@ -6,8 +6,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use myos_user::{
-    close, exit, heap_init, listdir, mkdir, open, open_flags, read, readlink, rename, rmdir,
-    symlink, unlink, write, write_fd, Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
+    Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, close, exit, heap_init, listdir, mkdir,
+    mount, open, open_flags, read, readlink, rename, rmdir, symlink, unlink, write, write_fd,
 };
 
 #[global_allocator]
@@ -40,6 +40,22 @@ fn smoke_vfs() {
     if n != usize::MAX && n > 0 && buf_has(&buf[..n], b"ping") {
         write(b"disk ls ok\n");
     }
+
+    let n = listdir(b"/dev", &mut buf);
+    if n == usize::MAX || n == 0 || !buf_has(&buf[..n], b"vda") {
+        write(b"vda missing\n");
+        return;
+    }
+    write(b"vda ok\n");
+    if buf_has(&buf[..n], b"vdb") {
+        write(b"vdb ok\n");
+    }
+
+    if !mount(b"/dev/vda", b"/fat", b"fat") {
+        write(b"fat mount fail\n");
+        return;
+    }
+
     let n = listdir(b"/fat", &mut buf);
     if n != usize::MAX && n > 0 && buf_has(&buf[..n], b"msg") {
         write(b"fat ls ok\n");

@@ -7,7 +7,6 @@ const CONFIG_DATA: u16 = 0xCFC;
 
 const VENDOR_VIRTIO: u16 = 0x1AF4;
 const DEV_BLK_LEGACY: u16 = 0x1001;
-const DEV_BLK_MODERN: u16 = 0x1042;
 
 #[derive(Clone, Copy)]
 pub struct Bdf {
@@ -89,10 +88,13 @@ pub fn bar0(bdf: Bdf) -> Option<Bar> {
     }
 }
 
-/// Scan for virtio-blk: vendor `0x1AF4`, device `0x1001` (legacy/transitional)
-/// or `0x1042` (modern 1.0). Prefers `0x1001` if both exist.
-pub fn find_virtio_blk() -> Option<(Bdf, u16)> {
-    let mut modern = None;
+/// Collect every transitional virtio-blk (`0x1001`) whose BAR0 is I/O.
+/// Modern `0x1042` devices are skipped (no MMIO driver).
+pub fn find_virtio_blk_legacy_io(out: &mut [Bdf]) -> usize {
+    let mut n = 0usize;
+    if out.is_empty() {
+        return 0;
+    }
     for bus in 0u8..=255 {
         for slot in 0u8..32 {
             let bdf0 = Bdf { bus, slot, func: 0 };
@@ -105,17 +107,22 @@ pub fn find_virtio_blk() -> Option<(Bdf, u16)> {
             for func in 0..funcs {
                 let bdf = Bdf { bus, slot, func };
                 let (v, d) = vendor_device(bdf);
-                if v != VENDOR_VIRTIO {
+                if v != VENDOR_VIRTIO || d != DEV_BLK_LEGACY {
                     continue;
                 }
-                if d == DEV_BLK_LEGACY {
-                    return Some((bdf, d));
+                let Some(bar) = bar0(bdf) else {
+                    continue;
+                };
+                if !bar.io {
+                    continue;
                 }
-                if d == DEV_BLK_MODERN && modern.is_none() {
-                    modern = Some((bdf, d));
+                out[n] = bdf;
+                n += 1;
+                if n == out.len() {
+                    return n;
                 }
             }
         }
     }
-    modern
+    n
 }

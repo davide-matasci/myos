@@ -10,8 +10,8 @@ pub mod elf;
 mod registry;
 
 use crate::console;
-use alloc::alloc::{alloc, dealloc, Layout};
-use myos_abi::{KernelApi, ABI_VERSION};
+use alloc::alloc::{Layout, alloc, dealloc};
+use myos_abi::{ABI_VERSION, FsBind, KernelApi};
 
 const HELLO_IMAGE: &[u8] = include_bytes!(env!("HELLO_MODULE_PATH"));
 const FAT_IMAGE: &[u8] = include_bytes!(env!("FAT_MODULE_PATH"));
@@ -27,6 +27,9 @@ static API: KernelApi = KernelApi {
     vfs_register: api_vfs_register,
     vfs_register_static: api_vfs_register_static,
     vfs_mount: api_vfs_mount,
+    blk_write: api_blk_write,
+    blk_count: api_blk_count,
+    fs_register: api_fs_register,
 };
 
 /// Load the hello module that was baked into the kernel at build time.
@@ -43,9 +46,8 @@ pub fn load_embedded_stubfs() {
     }
 }
 
-/// Load the FAT16 module baked into the kernel. Mounts `/fat` via vfs_mount
-/// and registers `/msg` on bootfs for CI. Failure is logged (`fat mod failed`)
-/// and is not a kernel panic.
+/// Load the FAT16 module baked into the kernel. Registers fstype `"fat"`;
+/// userspace `mount` binds a disk. Failure is logged and is not a panic.
 pub fn load_embedded_fat() {
     if let Err(e) = load("fat", FAT_IMAGE) {
         console::status_fail(&alloc::format!("fat module: {e}"));
@@ -110,7 +112,7 @@ pub fn load(name: &'static str, image: &[u8]) -> Result<(), elf::LoadError> {
     Ok(())
 }
 
-pub use registry::{by_name, count, LoadedModule};
+pub use registry::{LoadedModule, by_name, count};
 
 unsafe extern "C" fn api_write_str(ptr: *const u8, len: usize) {
     if ptr.is_null() || len == 0 {
@@ -142,7 +144,7 @@ unsafe extern "C" fn api_dealloc(ptr: *mut u8, size: usize, align: usize) {
     unsafe { dealloc(ptr, layout) }
 }
 
-unsafe extern "C" fn api_blk_read(lba: u64, buf: *mut u8, len: usize) -> i32 {
+unsafe extern "C" fn api_blk_read(dev: u32, lba: u64, buf: *mut u8, len: usize) -> i32 {
     if len == 0 {
         return 0;
     }
@@ -150,9 +152,42 @@ unsafe extern "C" fn api_blk_read(lba: u64, buf: *mut u8, len: usize) -> i32 {
         return -1;
     }
     let slice = unsafe { core::slice::from_raw_parts_mut(buf, len) };
-    match crate::blk::read(lba, slice) {
+    match crate::blk::read(dev, lba, slice) {
         Ok(()) => 0,
         Err(()) => -1,
+    }
+}
+
+unsafe extern "C" fn api_blk_write(dev: u32, lba: u64, buf: *const u8, len: usize) -> i32 {
+    if len == 0 {
+        return 0;
+    }
+    if buf.is_null() {
+        return -1;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(buf, len) };
+    match crate::blk::write(dev, lba, slice) {
+        Ok(()) => 0,
+        Err(()) => -1,
+    }
+}
+
+unsafe extern "C" fn api_blk_count() -> u32 {
+    crate::blk::count()
+}
+
+unsafe extern "C" fn api_fs_register(name: *const u8, name_len: usize, bind: FsBind) -> i32 {
+    if name.is_null() || name_len == 0 {
+        return -1;
+    }
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let Ok(name) = core::str::from_utf8(name_bytes) else {
+        return -1;
+    };
+    if crate::fs::register_fstype(name, bind) {
+        0
+    } else {
+        -1
     }
 }
 

@@ -4,10 +4,10 @@
 
 extern crate alloc;
 
-mod console;
 mod arch;
-mod exception;
 mod blk;
+mod console;
+mod exception;
 mod font;
 mod framebuffer;
 mod fs;
@@ -95,9 +95,7 @@ fn kernel_main() -> ! {
 
     blk::init();
     modules::load_embedded_fat();
-    // CI #104: FAT copied 7 bytes (`fat n7`) and kfix did not fire, but
-    // user/ok still read n==0. Re-point `/msg` at kernel rodata so the
-    // vnode is not the module's leaked heap slice.
+    // /msg lives on bootfs; /ok mounts /dev/vda as fat at /fat.
     let _ = fs::register("bootfs", "msg", MSG_OK);
     console::status_ok("fat message");
 

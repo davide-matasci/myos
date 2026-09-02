@@ -3,10 +3,11 @@
 pub mod bootfs;
 mod coreutilsfs;
 mod devfs;
+mod fstype;
 mod sbasefs;
-mod ubasefs;
 mod tccfs;
 mod tmpfs;
+mod ubasefs;
 mod vfs;
 
 pub use vfs::{StatInfo, Vnode};
@@ -101,6 +102,35 @@ pub fn mount_module(name: &str, prefix: &str, ops: myos_abi::ModuleVfsOps) -> bo
     vfs::mount_module(name, prefix, ops)
 }
 
+/// Register a filesystem type (`fat`, …). `bind` is invoked from `mount(2)`.
+pub fn register_fstype(name: &str, bind: myos_abi::FsBind) -> bool {
+    fstype::register(name, bind)
+}
+
+/// Bind `dev` to `fstype` and mount at `prefix` (single path component).
+/// The target directory need not exist.
+pub fn mount_fstype(source_dev: u32, prefix: &str, fstype_name: &str) -> bool {
+    if prefix.is_empty() || prefix.contains('/') {
+        return false;
+    }
+    let Some(ops) = fstype::bind(fstype_name, source_dev) else {
+        return false;
+    };
+    vfs::mount_module(fstype_name, prefix, ops)
+}
+
+/// Block-device id for a `/dev/vdX` path, if that disk was probed.
+pub fn blk_id_from_path(path: &str) -> Option<u32> {
+    let path = path.trim_start_matches('/');
+    let name = path.strip_prefix("dev/")?;
+    if name.contains('/') {
+        return None;
+    }
+    devfs::blk_id(name)
+}
+
+pub const S_IFBLK: u32 = 0o060000;
+pub const S_IFMT: u32 = 0o170000;
 
 /// Resolve `path` against the current task cwd into `out` (absolute).
 pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Option<usize> {

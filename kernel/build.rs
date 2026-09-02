@@ -77,6 +77,7 @@ fn main() {
         ("../user/echo", "myos_echo", "echo-target", "USER_ECHO_PATH"),
         ("../user/cat", "myos_cat", "cat-target", "USER_CAT_PATH"),
         ("../user/ls", "myos_ls", "ls-target", "USER_LS_PATH"),
+        ("../user/mount", "mount", "mount-target", "USER_MOUNT_PATH"),
     ] {
         nested_elf(
             &cargo,

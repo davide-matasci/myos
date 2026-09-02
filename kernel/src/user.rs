@@ -3,11 +3,11 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+#[cfg(target_arch = "riscv64")]
+use crate::arch::paging;
 use crate::fs;
 use crate::mm;
 use crate::modules::elf;
-#[cfg(target_arch = "riscv64")]
-use crate::arch::paging;
 use crate::task;
 
 const SYS_WRITE: usize = 0;
@@ -37,6 +37,7 @@ const SYS_MMAP: usize = 23;
 const SYS_MUNMAP: usize = 24;
 const SYS_MPROTECT: usize = 25;
 const SYS_LSEEK: usize = 26;
+const SYS_MOUNT: usize = 27;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -402,7 +403,9 @@ fn reload_user_elf(
     if image_pages == 0 || image_pages > MAX_RELOAD_PAGES {
         return None;
     }
-    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_RELOAD_PAGES);
+    let n_pages = image_pages
+        .max(USER_EXEC_RELOAD_PAGES)
+        .min(MAX_RELOAD_PAGES);
     // Code must sit below the mapped stack. Otherwise PT_LOAD pages overlap stack
     // slots (reload saw stack PTEs as "mapped" and clobbered them — heap #10).
     if n_pages * PAGE > stack_off as usize {
@@ -1098,13 +1101,7 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
     // Iret frame in memory (RIP, CS, RFLAGS, RSP, SS). Do not feed five `in(reg)`
     // operands into one asm block: LLVM can reuse a register for CS and corrupt
     // iretq (post-fork exec of large ELFs → #GP on BIOS).
-    let frame = [
-        user_rip as u64,
-        cs,
-        rflags,
-        user_rsp as u64,
-        ss,
-    ];
+    let frame = [user_rip as u64, cs, rflags, user_rsp as u64, ss];
     const CR0_TS: u64 = 1 << 3;
     unsafe {
         let mut cr0: u64;
@@ -1125,7 +1122,12 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
 fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
     // Load from a stack slot so LLVM cannot reuse rip/argc in one asm block
     // and reorder mov before msr (CI: exec eret with elr=0).
-    let args = [user_rip as u64, user_rsp as u64, user_argc as u64, user_argv as u64];
+    let args = [
+        user_rip as u64,
+        user_rsp as u64,
+        user_argc as u64,
+        user_argv as u64,
+    ];
     let p = args.as_ptr();
     unsafe {
         let rip: u64;
@@ -1180,12 +1182,7 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
 
 /// Exec from a syscall: copy the saved frame and sret through `fork_sret_from_frame`.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-fn try_resume_exec_via_syscall_frame(
-    entry: usize,
-    rsp: usize,
-    argc: usize,
-    argv: usize,
-) {
+fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv: usize) {
     let frame_ptr = unsafe { SYSCALL_FRAME };
     if frame_ptr.is_null() {
         return;
@@ -1355,7 +1352,9 @@ static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn set_syscall_frame(frame: *mut u64) {
-    unsafe { SYSCALL_FRAME = frame as *mut usize; }
+    unsafe {
+        SYSCALL_FRAME = frame as *mut usize;
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1396,6 +1395,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_MUNMAP => sys_munmap(a0, a1),
         SYS_MPROTECT => sys_mprotect(a0, a1, a2),
         SYS_LSEEK => sys_lseek(a0, a1, a2),
+        SYS_MOUNT => sys_mount(a0),
         _ => SYSERR,
     }
 }
@@ -1408,11 +1408,12 @@ fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
     task::fd_write(fd, ptr, len)
 }
 
-
 fn resolve_copied_path(path: &str) -> Option<alloc::string::String> {
     let mut abs = [0u8; MAX_PATH];
     let n = fs::resolve_user_path(path, &mut abs)?;
-    core::str::from_utf8(&abs[..n]).ok().map(|s| alloc::string::String::from(s))
+    core::str::from_utf8(&abs[..n])
+        .ok()
+        .map(|s| alloc::string::String::from(s))
 }
 
 fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
@@ -1454,11 +1455,7 @@ fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
 }
 
 fn sys_close(fd: usize) -> usize {
-    if task::fd_close(fd) {
-        0
-    } else {
-        SYSERR
-    }
+    if task::fd_close(fd) { 0 } else { SYSERR }
 }
 
 fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
@@ -1529,7 +1526,13 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
 
 fn copy_user_exec_pack(
     args_ptr: usize,
-) -> Result<(alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>), ()> {
+) -> Result<
+    (
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    ),
+    (),
+> {
     if args_ptr == 0 {
         return Ok((alloc::vec::Vec::new(), alloc::vec::Vec::new()));
     }
@@ -1549,7 +1552,13 @@ fn copy_user_exec_pack(
 #[cfg(target_arch = "x86_64")]
 fn copy_user_exec_pack_direct(
     args_ptr: usize,
-) -> Result<(alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>), ()> {
+) -> Result<
+    (
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    ),
+    (),
+> {
     let argc = unsafe { *(args_ptr as *const usize) };
     if argc > MAX_ARGC {
         return Err(());
@@ -1615,7 +1624,13 @@ fn copy_user_exec_pack_direct(
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn copy_user_exec_pack_via_aspace(
     args_ptr: usize,
-) -> Result<(alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>), ()> {
+) -> Result<
+    (
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    ),
+    (),
+> {
     let aspace = task::current_aspace();
     let argc = read_user_usize(aspace, args_ptr).ok_or(())?;
     if argc > MAX_ARGC {
@@ -1740,16 +1755,12 @@ fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
         st_ino: info.ino,
         st_nlink: info.nlink,
     };
-    if !write_user_bytes(
-        task::current_aspace(),
-        out_ptr,
-        unsafe {
-            core::slice::from_raw_parts(
-                &out as *const MyosStatBuf as *const u8,
-                core::mem::size_of::<MyosStatBuf>(),
-            )
-        },
-    ) {
+    if !write_user_bytes(task::current_aspace(), out_ptr, unsafe {
+        core::slice::from_raw_parts(
+            &out as *const MyosStatBuf as *const u8,
+            core::mem::size_of::<MyosStatBuf>(),
+        )
+    }) {
         return SYSERR;
     }
     0
@@ -1829,7 +1840,11 @@ fn sys_pipe(fds_ptr: usize) -> usize {
 }
 
 fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
-    if task::fd_dup2(oldfd, newfd) { 0 } else { SYSERR }
+    if task::fd_dup2(oldfd, newfd) {
+        0
+    } else {
+        SYSERR
+    }
 }
 
 fn sys_dupfd(oldfd: usize, minfd: usize) -> usize {
@@ -1838,7 +1853,6 @@ fn sys_dupfd(oldfd: usize, minfd: usize) -> usize {
         None => SYSERR,
     }
 }
-
 
 fn sys_chdir(path_ptr: usize, path_len: usize) -> usize {
     let Some(buf) = copy_user_path(path_ptr, path_len) else {
@@ -1905,33 +1919,21 @@ fn sys_mkdir(path_ptr: usize, path_len: usize, _mode: usize) -> usize {
     let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
         return SYSERR;
     };
-    if fs::mkdir(&path) {
-        0
-    } else {
-        SYSERR
-    }
+    if fs::mkdir(&path) { 0 } else { SYSERR }
 }
 
 fn sys_rmdir(path_ptr: usize, path_len: usize) -> usize {
     let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
         return SYSERR;
     };
-    if fs::rmdir(&path) {
-        0
-    } else {
-        SYSERR
-    }
+    if fs::rmdir(&path) { 0 } else { SYSERR }
 }
 
 fn sys_unlink(path_ptr: usize, path_len: usize) -> usize {
     let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
         return SYSERR;
     };
-    if fs::unlink(&path) {
-        0
-    } else {
-        SYSERR
-    }
+    if fs::unlink(&path) { 0 } else { SYSERR }
 }
 
 /// `a0`=old_ptr, `a1`=new_ptr, `a2`=(old_len<<16)|new_len
@@ -1945,11 +1947,7 @@ fn sys_rename(old_ptr: usize, new_ptr: usize, packed_lens: usize) -> usize {
     let Some(new) = copy_resolved_user_path(new_ptr, new_len) else {
         return SYSERR;
     };
-    if fs::rename(&old, &new) {
-        0
-    } else {
-        SYSERR
-    }
+    if fs::rename(&old, &new) { 0 } else { SYSERR }
 }
 
 /// `a0`=target_ptr, `a1`=link_ptr, `a2`=(target_len<<16)|link_len
@@ -2073,14 +2071,7 @@ fn sys_mmap(args_ptr: usize) -> usize {
     do_mmap(hint, len, prot, flags, fd, offset)
 }
 
-fn do_mmap(
-    hint: usize,
-    len: usize,
-    prot: usize,
-    flags: usize,
-    fd: isize,
-    offset: usize,
-) -> usize {
+fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: isize, offset: usize) -> usize {
     if len == 0 {
         return SYSERR;
     }
@@ -2206,6 +2197,69 @@ fn sys_lseek(fd: usize, offset: usize, whence: usize) -> usize {
     task::fd_lseek(fd, offset as i64, whence)
 }
 
+/// `a0` points at `{src_ptr, src_len, tgt_ptr, tgt_len, fstype_ptr, fstype_len}`.
+fn sys_mount(args_ptr: usize) -> usize {
+    const N: usize = 6 * core::mem::size_of::<usize>();
+    if !user_range_ok(args_ptr, N) {
+        return SYSERR;
+    }
+    let mut raw = [0u8; N];
+    if !read_user_bytes(task::current_aspace(), args_ptr, &mut raw) {
+        return SYSERR;
+    }
+    let mut words = [0usize; 6];
+    for i in 0..6 {
+        let o = i * core::mem::size_of::<usize>();
+        words[i] = usize::from_le_bytes(
+            raw[o..o + core::mem::size_of::<usize>()]
+                .try_into()
+                .unwrap(),
+        );
+    }
+    let Some(src_buf) = copy_user_path(words[0], words[1]) else {
+        return SYSERR;
+    };
+    let Some(tgt_buf) = copy_user_path(words[2], words[3]) else {
+        return SYSERR;
+    };
+    let Some(fs_buf) = copy_user_path(words[4], words[5]) else {
+        return SYSERR;
+    };
+    let Ok(src) = core::str::from_utf8(&src_buf[..words[1]]) else {
+        return SYSERR;
+    };
+    let Ok(tgt) = core::str::from_utf8(&tgt_buf[..words[3]]) else {
+        return SYSERR;
+    };
+    let Ok(fstype) = core::str::from_utf8(&fs_buf[..words[5]]) else {
+        return SYSERR;
+    };
+    let Some(src) = resolve_copied_path(src) else {
+        return SYSERR;
+    };
+    let Some(tgt) = resolve_copied_path(tgt) else {
+        return SYSERR;
+    };
+    let Some(st) = fs::stat(&src) else {
+        return SYSERR;
+    };
+    if st.mode & fs::S_IFMT != fs::S_IFBLK {
+        return SYSERR;
+    }
+    let Some(dev) = fs::blk_id_from_path(&src) else {
+        return SYSERR;
+    };
+    let prefix = tgt.trim_start_matches('/');
+    if prefix.is_empty() || prefix.contains('/') || fstype.is_empty() {
+        return SYSERR;
+    }
+    if fs::mount_fstype(dev, prefix, fstype) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
 /// True when `ptr..ptr+len` lies in the current task's user code, stack, heap, or mmap.
 pub fn buffer_ok(ptr: usize, len: usize) -> bool {
     user_range_ok(ptr, len)
@@ -2220,8 +2274,7 @@ fn user_range_ok(ptr: usize, len: usize) -> bool {
     };
     let in_code = ptr >= base && end <= base + image_span;
     let stack_base = base + stack_off as usize;
-    let in_stack = ptr >= stack_base
-        && end <= stack_base + USER_STACK_PAGES * PAGE;
+    let in_stack = ptr >= stack_base && end <= stack_base + USER_STACK_PAGES * PAGE;
     let heap_base = heap_base_va(base as u64, stack_off) as usize;
     let brk = task::current_brk() as usize;
     let in_heap = brk > heap_base && ptr >= heap_base && end <= brk;
@@ -2329,7 +2382,8 @@ fn map_user_page_prot(aspace: u64, va: u64, pa: u64, prot: usize) {
     }
     #[cfg(target_arch = "riscv64")]
     {
-        let mut flags = paging::PTE_V | paging::PTE_U | paging::PTE_A | paging::PTE_D | paging::PTE_R;
+        let mut flags =
+            paging::PTE_V | paging::PTE_U | paging::PTE_A | paging::PTE_D | paging::PTE_R;
         if w {
             flags |= paging::PTE_W;
         }
