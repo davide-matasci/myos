@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "mkfs-ext2"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Userspace mkfs.ext2: format a block device as rev1 1KiB-block ext2"
+
+[[bin]]
+name = "mkfs_ext2"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+myos-user = { path = "../lib" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

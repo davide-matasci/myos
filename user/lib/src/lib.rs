@@ -301,6 +301,15 @@ pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
     unsafe { sys3(27, pack.as_ptr() as usize, 0, 0) != usize::MAX }
 }
 
+pub const SEEK_SET: usize = 0;
+pub const SEEK_CUR: usize = 1;
+pub const SEEK_END: usize = 2;
+
+/// Reposition the file offset. Returns the resulting offset, or `usize::MAX` on error.
+pub fn lseek(fd: usize, offset: usize, whence: usize) -> usize {
+    unsafe { sys3(26, fd, offset, whence) }
+}
+
 /// Adjust the program break. `addr == 0` queries the current break.
 pub fn brk(addr: usize) -> usize {
     unsafe { sys_brk(addr) }

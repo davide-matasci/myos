@@ -78,6 +78,12 @@ fn main() {
         ("../user/cat", "myos_cat", "cat-target", "USER_CAT_PATH"),
         ("../user/ls", "myos_ls", "ls-target", "USER_LS_PATH"),
         ("../user/mount", "mount", "mount-target", "USER_MOUNT_PATH"),
+        (
+            "../user/mkfs.ext2",
+            "mkfs_ext2",
+            "mkfs-ext2-target",
+            "USER_MKFS_EXT2_PATH",
+        ),
     ] {
         nested_elf(
             &cargo,

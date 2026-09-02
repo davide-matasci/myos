@@ -136,6 +136,33 @@ pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -
     true
 }
 
+/// Attach an in-kernel backend at `prefix`, recording `source` (e.g. `/dev/nvme0n1`).
+///
+/// Same prefix replaces the existing mount (module or kernel). `source` empty becomes `none`.
+pub fn mount_kernel(name: &str, prefix: &str, ops: MountOps, source: &str) -> bool {
+    if prefix.contains('/') {
+        return false;
+    }
+    let source = if source.is_empty() { "none" } else { source };
+    let mut mounts = MOUNTS.lock();
+    if let Some(m) = mounts.iter_mut().find(|m| m.prefix == prefix) {
+        m.name = String::from(name);
+        m.source = String::from(source);
+        m.backend = MountBackend::Kernel(ops);
+        return true;
+    }
+    if mounts.iter().any(|m| m.name == name) {
+        return false;
+    }
+    mounts.push(Mount {
+        name: String::from(name),
+        prefix: String::from(prefix),
+        source: String::from(source),
+        backend: MountBackend::Kernel(ops),
+    });
+    true
+}
+
 /// Linux-shaped `/proc/mounts` snapshot (`source target fstype opts 0 0\n`).
 ///
 /// Must not be called while `MOUNTS` is already held (procfs `read`/`stat`
