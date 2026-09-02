@@ -30,6 +30,7 @@
 #define MYOS_SYS_MUNMAP 24
 #define MYOS_SYS_MPROTECT 25
 #define MYOS_SYS_LSEEK 26
+#define MYOS_SYS_MOUNT 27
 
 #define MYOS_SYSERR ((unsigned long)-1)
 

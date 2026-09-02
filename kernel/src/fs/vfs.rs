@@ -104,18 +104,23 @@ pub fn mount(name: &str, prefix: &str, ops: MountOps) {
 }
 
 /// Attach a module backend at `prefix`. `ops` must live for the kernel lifetime.
+///
+/// A second mount with the same prefix replaces the existing one (no umount).
+/// That lets userspace retry `vd*` disks at `/fat` until the right volume is bound.
 pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps) -> bool {
     if prefix.contains('/') {
         return false;
     }
-    if MOUNTS
-        .lock()
-        .iter()
-        .any(|m| m.name == name || m.prefix == prefix)
-    {
+    let mut mounts = MOUNTS.lock();
+    if let Some(m) = mounts.iter_mut().find(|m| m.prefix == prefix) {
+        m.name = String::from(name);
+        m.backend = MountBackend::Module(ops);
+        return true;
+    }
+    if mounts.iter().any(|m| m.name == name) {
         return false;
     }
-    MOUNTS.lock().push(Mount {
+    mounts.push(Mount {
         name: String::from(name),
         prefix: String::from(prefix),
         backend: MountBackend::Module(ops),

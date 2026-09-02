@@ -2,7 +2,7 @@
 //!
 //! Embedded user ELFs are registered at boot via [`init_embedded`]; Limine ESP
 //! modules override via [`init_limine`]. Loadable modules add files through
-//! `KernelApi::vfs_register` (e.g. the FAT module registers `/msg`).
+//! `KernelApi::vfs_register`.
 //! Handwritten demos that share names with ported tools use a `myos_` prefix
 //! (`myos_ls`, `myos_echo`, `myos_cat`); sbase/coreutils keep short names on
 //! `/s` and `/c`.
@@ -22,6 +22,7 @@ const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
 const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
 const CAT_ELF: &[u8] = include_bytes!(env!("USER_CAT_PATH"));
 const LS_ELF: &[u8] = include_bytes!(env!("USER_LS_PATH"));
+const MOUNT_ELF: &[u8] = include_bytes!(env!("USER_MOUNT_PATH"));
 
 const MAX_FILES: usize = 32;
 const NAME_CAP: usize = 32;
@@ -170,6 +171,7 @@ pub fn init_embedded() {
     let _ = register("myos_echo", ECHO_ELF);
     let _ = register("myos_cat", CAT_ELF);
     let _ = register("myos_ls", LS_ELF);
+    let _ = register("mount", MOUNT_ELF);
 }
 
 /// Register Limine-mapped modules by basename (overrides embedded names).

@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 /// Stat blob exchanged with module VFS hooks (matches kernel layout).
 #[repr(C)]
@@ -29,11 +29,7 @@ pub struct ModuleVfsOps {
         out_data: *mut *const u8,
         out_len: *mut usize,
     ) -> i32,
-    pub stat: unsafe extern "C" fn(
-        path: *const u8,
-        path_len: usize,
-        out: *mut VfsStatInfo,
-    ) -> i32,
+    pub stat: unsafe extern "C" fn(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32,
     pub listdir: unsafe extern "C" fn(
         path: *const u8,
         path_len: usize,
@@ -52,6 +48,9 @@ pub struct ModuleVfsOps {
     >,
 }
 
+/// Bind `dev_id` to a filesystem and fill `ops`. Return 0 on success.
+pub type FsBind = unsafe extern "C" fn(dev_id: u32, ops: *mut ModuleVfsOps) -> i32;
+
 /// Kernel services visible to a module.
 ///
 /// Layout is frozen by `repr(C)`. New functions are appended; never reorder.
@@ -62,7 +61,7 @@ pub struct KernelApi {
     pub write_str: unsafe extern "C" fn(*const u8, usize),
     pub alloc: unsafe extern "C" fn(usize, usize) -> *mut u8,
     pub dealloc: unsafe extern "C" fn(*mut u8, usize, usize),
-    pub blk_read: unsafe extern "C" fn(lba: u64, buf: *mut u8, len: usize) -> i32,
+    pub blk_read: unsafe extern "C" fn(dev: u32, lba: u64, buf: *mut u8, len: usize) -> i32,
     /// Register `name` on the bootfs mount (`/name`). Data is copied into a
     /// leaked kernel buffer and remains until reboot.
     pub vfs_register: unsafe extern "C" fn(
@@ -86,6 +85,10 @@ pub struct KernelApi {
         prefix_len: usize,
         ops: *const ModuleVfsOps,
     ) -> i32,
+    pub blk_write: unsafe extern "C" fn(dev: u32, lba: u64, buf: *const u8, len: usize) -> i32,
+    pub blk_count: unsafe extern "C" fn() -> u32,
+    /// Register a filesystem type. `bind` is called from `mount(2)`.
+    pub fs_register: unsafe extern "C" fn(name: *const u8, name_len: usize, bind: FsBind) -> i32,
 }
 
 /// `module_init` — required. Return 0 on success.

@@ -16,13 +16,13 @@
 mod limine_image;
 
 use limine_image::{
-    fetch_limine, write_esp_image, write_esp_image_ex, write_fat_data_image, write_x86_iso,
-    DiskFile, LIMINE_VERSION,
+    DiskFile, LIMINE_VERSION, fetch_limine, write_esp_image, write_esp_image_ex,
+    write_fat_data_image, write_x86_iso,
 };
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{exit, Child, Command, Stdio};
+use std::process::{Child, Command, Stdio, exit};
 use std::time::{Duration, Instant};
 
 const AARCH64_TARGET: &str = "aarch64-unknown-none-softfloat";
@@ -117,24 +117,48 @@ fn fat_img_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/fat.img")
 }
 
+fn empty_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/empty.img")
+}
+
+fn write_empty_blk_image() {
+    let dest = empty_img_path();
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&dest, vec![0u8; 64 * 1024])
+        .unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+}
+
 fn add_virtio_blk_x86(cmd: &mut Command) {
+    write_empty_blk_image();
     let fat = fat_img_path();
-    cmd.arg("-drive").arg(format!(
-        "if=none,id=vd0,format=raw,file={}",
-        fat.display()
-    ));
+    let empty = empty_img_path();
+    cmd.arg("-drive")
+        .arg(format!("if=none,id=vd0,format=raw,file={}", fat.display()));
     // Legacy I/O-BAR virtio-blk (kernel talks to BAR0 ports, device 0x1001).
     cmd.arg("-device")
         .arg("virtio-blk-pci,drive=vd0,disable-modern=on");
+    cmd.arg("-drive").arg(format!(
+        "if=none,id=vd1,format=raw,file={}",
+        empty.display()
+    ));
+    cmd.arg("-device")
+        .arg("virtio-blk-pci,drive=vd1,disable-modern=on");
 }
 
 fn add_virtio_blk_aarch64(cmd: &mut Command) {
+    write_empty_blk_image();
     let fat = fat_img_path();
-    cmd.arg("-drive").arg(format!(
-        "if=none,id=vd0,format=raw,file={}",
-        fat.display()
-    ));
+    let empty = empty_img_path();
+    cmd.arg("-drive")
+        .arg(format!("if=none,id=vd0,format=raw,file={}", fat.display()));
     cmd.arg("-device").arg("virtio-blk-device,drive=vd0");
+    cmd.arg("-drive").arg(format!(
+        "if=none,id=vd1,format=raw,file={}",
+        empty.display()
+    ));
+    cmd.arg("-device").arg("virtio-blk-device,drive=vd1");
 }
 
 fn add_virtio_blk_riscv64(cmd: &mut Command) {
@@ -368,15 +392,21 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg(format!(
             "if=pflash,format=raw,unit=1,file={},snapshot=on",
             vars.display()
+        ));
+    // Data disks first so they become /dev/vda and /dev/vdb; ESP boots via bootindex.
+    add_virtio_blk_aarch64(&mut cmd);
+    cmd.arg("-drive")
+        .arg(format!(
+            "if=none,id=hd0,format=raw,file={}",
+            image.display()
         ))
-        .arg("-drive")
-        .arg(format!("format=raw,file={}", image.display()))
+        .arg("-device")
+        .arg("virtio-blk-device,drive=hd0,bootindex=1")
         .arg("-serial")
         .arg("stdio")
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
-    add_virtio_blk_aarch64(&mut cmd);
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg("none");
@@ -392,14 +422,12 @@ fn build_aarch64_image() -> PathBuf {
     let kernel_bytes = std::fs::read(&kernel).expect("read aarch64 kernel ELF");
     let hello_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target/hello-aarch64-unknown-none-softfloat");
-    let hello = std::fs::read(&hello_path).unwrap_or_else(|_| {
-        panic!("hello ELF missing at {}", hello_path.display())
-    });
-    let ok_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/ok-aarch64-unknown-none-softfloat");
-    let ok = std::fs::read(&ok_path).unwrap_or_else(|_| {
-        panic!("ok ELF missing at {}", ok_path.display())
-    });
+    let hello = std::fs::read(&hello_path)
+        .unwrap_or_else(|_| panic!("hello ELF missing at {}", hello_path.display()));
+    let ok_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ok-aarch64-unknown-none-softfloat");
+    let ok = std::fs::read(&ok_path)
+        .unwrap_or_else(|_| panic!("ok ELF missing at {}", ok_path.display()));
     let limine_dir = PathBuf::from(env!("LIMINE_DIR"));
     let limine = if limine_dir.join("BOOTAA64.EFI").is_file() {
         fetch_limine(&limine_dir)
@@ -411,7 +439,15 @@ fn build_aarch64_image() -> PathBuf {
     };
     let efi = std::fs::read(limine.bootaa64()).expect("BOOTAA64.EFI");
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/aarch64.img");
-    write_esp_image(&image, &kernel_bytes, "BOOTAA64.EFI", &efi, None, &hello, &ok);
+    write_esp_image(
+        &image,
+        &kernel_bytes,
+        "BOOTAA64.EFI",
+        &efi,
+        None,
+        &hello,
+        &ok,
+    );
     write_fat_data_image(&fat_img_path());
     image
 }
@@ -448,10 +484,7 @@ fn build_aarch64_kernel() -> PathBuf {
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
-    let elf = target_dir
-        .join(AARCH64_TARGET)
-        .join(profile)
-        .join("kernel");
+    let elf = target_dir.join(AARCH64_TARGET).join(profile).join("kernel");
     if !elf.is_file() {
         eprintln!("error: aarch64 kernel ELF missing at {}", elf.display());
         exit(1);
@@ -529,9 +562,13 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg(format!(
             "if=pflash,format=raw,unit=1,file={},snapshot=on",
             vars.display()
+        ));
+    add_virtio_blk_riscv64(&mut cmd);
+    cmd.arg("-drive")
+        .arg(format!(
+            "if=none,id=hd0,format=raw,file={}",
+            image.display()
         ))
-        .arg("-drive")
-        .arg(format!("if=none,id=hd0,format=raw,file={}", image.display()))
         .arg("-device")
         .arg("virtio-blk-device,drive=hd0,bootindex=1")
         .arg("-serial")
@@ -539,7 +576,6 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
-    add_virtio_blk_riscv64(&mut cmd);
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg("none");
@@ -553,16 +589,14 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
 fn build_riscv64_image() -> PathBuf {
     let kernel = build_riscv64_kernel();
     let kernel_bytes = std::fs::read(&kernel).expect("read riscv64 kernel ELF");
-    let hello_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/hello-riscv64imac-unknown-none-elf");
-    let hello = std::fs::read(&hello_path).unwrap_or_else(|_| {
-        panic!("hello ELF missing at {}", hello_path.display())
-    });
-    let ok_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/ok-riscv64imac-unknown-none-elf");
-    let ok = std::fs::read(&ok_path).unwrap_or_else(|_| {
-        panic!("ok ELF missing at {}", ok_path.display())
-    });
+    let hello_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/hello-riscv64imac-unknown-none-elf");
+    let hello = std::fs::read(&hello_path)
+        .unwrap_or_else(|_| panic!("hello ELF missing at {}", hello_path.display()));
+    let ok_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ok-riscv64imac-unknown-none-elf");
+    let ok = std::fs::read(&ok_path)
+        .unwrap_or_else(|_| panic!("ok ELF missing at {}", ok_path.display()));
     let limine_dir = PathBuf::from(env!("LIMINE_DIR"));
     let limine = if limine_dir.join("BOOTRISCV64.EFI").is_file() {
         fetch_limine(&limine_dir)
@@ -646,10 +680,7 @@ fn build_riscv64_kernel() -> PathBuf {
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
-    let elf = target_dir
-        .join(RISCV64_TARGET)
-        .join(profile)
-        .join("kernel");
+    let elf = target_dir.join(RISCV64_TARGET).join(profile).join("kernel");
     if !elf.is_file() {
         eprintln!("error: riscv64 kernel ELF missing at {}", elf.display());
         exit(1);

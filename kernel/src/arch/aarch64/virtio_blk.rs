@@ -1,19 +1,18 @@
 //! Modern virtio-mmio v2 block device on QEMU `virt`.
 //!
 //! Transports sit at `0x0a000000`, stride `0x200`. Version 2 is required
-//! (QEMU's default). The boot disk may already occupy a slot as virtio-blk;
-//! we probe every device-id-2 transport and keep the one whose LBA 0 looks
-//! like a FAT12/16 boot sector (the second QEMU disk). Polling only; no
-//! virtio IRQ.
+//! (QEMU's default). Every device-id-2 transport is probed (cap 8) and
+//! exposed as `/dev/vd*`. Polling only; no virtio IRQ.
 //!
 //! DMA buffers live in cacheable HHDM RAM. QEMU TCG still needs D-cache
 //! clean/invalidate around device-visible reads/writes or `used`/`status`
 //! stay stale and every read times out (`fat mod failed`).
 
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::{Ordering, compiler_fence};
 
 use spin::Mutex;
 
+use crate::blk::MAX_DISKS;
 use crate::blk::virtq;
 
 const MMIO_BASE: usize = 0x0A00_0000;
@@ -61,11 +60,12 @@ struct Dev {
     last_used: u16,
     dma_phys: u64,
     dma_va: *mut u8,
+    capacity: u64,
 }
 
 unsafe impl Send for Dev {}
 
-static DEV: Mutex<Option<Dev>> = Mutex::new(None);
+static DEVS: Mutex<[Option<Dev>; MAX_DISKS]> = Mutex::new([const { None }; MAX_DISKS]);
 
 fn r32(base: usize, off: u32) -> u32 {
     unsafe { core::ptr::read_volatile((base + off as usize) as *const u32) }
@@ -102,29 +102,13 @@ fn write_phys(base: usize, lo: u32, hi: u32, phys: u64) {
     w32(base, hi, (phys >> 32) as u32);
 }
 
-fn looks_like_fat_boot(sec: &[u8; 512]) -> bool {
-    if sec[510] != 0x55 || sec[511] != 0xAA {
-        return false;
-    }
-    let bps = u16::from_le_bytes([sec[11], sec[12]]) as usize;
-    if bps != 512 {
-        return false;
-    }
-    let spc = sec[13];
-    if spc == 0 {
-        return false;
-    }
-    let fats = sec[16];
-    if fats == 0 {
-        return false;
-    }
-    let fat_sz16 = u16::from_le_bytes([sec[22], sec[23]]);
-    fat_sz16 != 0
-}
-
 pub fn init() {
-    // Prefer higher slots (the data disk is usually after the boot disk).
-    for i in (0..MMIO_SLOTS).rev() {
+    let mut table = DEVS.lock();
+    let mut slot = 0usize;
+    for i in 0..MMIO_SLOTS {
+        if slot == MAX_DISKS {
+            break;
+        }
         let base = MMIO_BASE + i * MMIO_STRIDE;
         if r32(base, REG_MAGIC) != MAGIC {
             continue;
@@ -132,42 +116,15 @@ pub fn init() {
         if r32(base, REG_DEVICE_ID) != DEV_BLK {
             continue;
         }
-        let Some(mut dev) = setup(base) else {
+        let Some(dev) = setup(base) else {
             continue;
         };
-        let mut sec = [0u8; 512];
-        let base_copy = dev.base;
-        let ok = unsafe {
-            let num = dev.num;
-            let desc = dev.desc;
-            let avail = dev.avail;
-            let used = dev.used;
-            let dma_phys = dev.dma_phys;
-            let dma_va = dev.dma_va;
-            virtq::read_buf(
-                num,
-                desc,
-                avail,
-                used,
-                &mut dev.last_used,
-                dma_phys,
-                dma_va,
-                0,
-                &mut sec,
-                || notify_raw(base_copy, desc, avail, dma_va),
-            )
-            .is_ok()
-                && looks_like_fat_boot(&sec)
-        };
-        if ok {
-            // Sync last_used with the probe completion.
-            dev.last_used = unsafe { core::ptr::read_volatile(dev.used.add(2) as *const u16) };
-            *DEV.lock() = Some(dev);
-            crate::console::status_ok("virtio block");
-            return;
-        }
+        table[slot] = Some(dev);
+        slot += 1;
     }
-    crate::console::status_fail("virtio block");
+    if slot > 0 {
+        crate::console::status_ok("virtio block");
+    }
 }
 
 fn setup(base: usize) -> Option<Dev> {
@@ -229,6 +186,10 @@ fn setup(base: usize) -> Option<Dev> {
     );
     dsb();
 
+    let lo = r32(base, 0x100);
+    let hi = r32(base, 0x104);
+    let capacity = (u64::from(hi) << 32) | u64::from(lo);
+
     Some(Dev {
         base,
         num,
@@ -238,6 +199,7 @@ fn setup(base: usize) -> Option<Dev> {
         last_used: 0,
         dma_phys,
         dma_va,
+        capacity,
     })
 }
 
@@ -254,22 +216,61 @@ fn notify_raw(base: usize, desc: *mut u8, avail: *mut u8, dma_va: *mut u8) {
     }
 }
 
-pub fn read(lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-    let mut guard = DEV.lock();
-    let dev = guard.as_mut().ok_or(())?;
-    let base = dev.base;
-    let desc = dev.desc;
-    let avail = dev.avail;
-    let used = dev.used;
-    let dma_va = dev.dma_va;
+pub fn count() -> u32 {
+    let table = DEVS.lock();
+    table.iter().filter(|d| d.is_some()).count() as u32
+}
+
+pub fn capacity(dev: u32) -> Option<u64> {
+    let table = DEVS.lock();
+    table.get(dev as usize)?.as_ref().map(|d| d.capacity)
+}
+
+pub fn read(dev: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+    let mut table = DEVS.lock();
+    let slot = table.get_mut(dev as usize).ok_or(())?;
+    let d = slot.as_mut().ok_or(())?;
+    let base = d.base;
+    let desc = d.desc;
+    let avail = d.avail;
+    let used = d.used;
+    let dma_va = d.dma_va;
     let result = unsafe {
         virtq::read_buf(
-            dev.num,
+            d.num,
             desc,
             avail,
             used,
-            &mut dev.last_used,
-            dev.dma_phys,
+            &mut d.last_used,
+            d.dma_phys,
+            dma_va,
+            lba,
+            buf,
+            || notify_raw(base, desc, avail, dma_va),
+        )
+    };
+    dcache_civac(used, 4096);
+    dcache_civac(dma_va, 512 + 16);
+    result
+}
+
+pub fn write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
+    let mut table = DEVS.lock();
+    let slot = table.get_mut(dev as usize).ok_or(())?;
+    let d = slot.as_mut().ok_or(())?;
+    let base = d.base;
+    let desc = d.desc;
+    let avail = d.avail;
+    let used = d.used;
+    let dma_va = d.dma_va;
+    let result = unsafe {
+        virtq::write_buf(
+            d.num,
+            desc,
+            avail,
+            used,
+            &mut d.last_used,
+            d.dma_phys,
             dma_va,
             lba,
             buf,

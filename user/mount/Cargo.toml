@@ -1,19 +1,19 @@
 [workspace]
 
 [package]
-name = "fat"
+name = "mount"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "FAT16 kernel module: registers fstype fat; mount(2) binds a block device."
+description = "Userspace mount(2): mount /dev/vda /mnt fat"
 
 [[bin]]
-name = "fat"
+name = "mount"
 test = false
 bench = false
 
 [dependencies]
-myos-abi = { path = "../abi" }
+myos-user = { path = "../lib" }
 
 [profile.dev]
 panic = "abort"

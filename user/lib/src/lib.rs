@@ -64,7 +64,6 @@ pub fn exit_code(code: u8) -> ! {
     unsafe { sys_exit(code as usize) }
 }
 
-
 pub const O_RDONLY: u32 = 0;
 pub const O_WRONLY: u32 = 1;
 pub const O_RDWR: u32 = 2;
@@ -78,11 +77,7 @@ pub fn open(path: &[u8]) -> Option<usize> {
 
 pub fn open_flags(path: &[u8], flags: u32) -> Option<usize> {
     let fd = unsafe { sys_open(path.as_ptr() as usize, path.len(), flags as usize) };
-    if fd == usize::MAX {
-        None
-    } else {
-        Some(fd)
-    }
+    if fd == usize::MAX { None } else { Some(fd) }
 }
 
 pub fn read(fd: usize, buf: &mut [u8]) -> usize {
@@ -187,20 +182,12 @@ pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
 
 pub fn fork() -> Option<usize> {
     let pid = unsafe { sys_fork() };
-    if pid == usize::MAX {
-        None
-    } else {
-        Some(pid)
-    }
+    if pid == usize::MAX { None } else { Some(pid) }
 }
 
 pub fn wait() -> Option<usize> {
     let pid = unsafe { sys_wait(0) };
-    if pid == usize::MAX {
-        None
-    } else {
-        Some(pid)
-    }
+    if pid == usize::MAX { None } else { Some(pid) }
 }
 
 /// Wait for a child and return `(pid, exit_code)`.
@@ -264,9 +251,7 @@ pub fn unlink(path: &[u8]) -> bool {
 
 pub fn rename(old: &[u8], new: &[u8]) -> bool {
     let packed = pack_lens(old.len(), new.len());
-    unsafe {
-        sys3(20, old.as_ptr() as usize, new.as_ptr() as usize, packed) != usize::MAX
-    }
+    unsafe { sys3(20, old.as_ptr() as usize, new.as_ptr() as usize, packed) != usize::MAX }
 }
 
 pub fn symlink(target: &[u8], linkpath: &[u8]) -> bool {
@@ -291,11 +276,29 @@ pub fn readlink(path: &[u8], buf: &mut [u8]) -> Option<usize> {
             packed,
         )
     };
-    if n == usize::MAX {
-        None
-    } else {
-        Some(n)
+    if n == usize::MAX { None } else { Some(n) }
+}
+
+/// Mount `src` (a `/dev/vd*` node) at `tgt` using `fstype` (`fat`).
+pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
+    const CAP: usize = 128;
+    let mut src_buf = [0u8; CAP];
+    let mut tgt_buf = [0u8; CAP];
+    let mut fs_buf = [0u8; 32];
+    let sn = copy_exec_bytes(&mut src_buf, src);
+    let tn = copy_exec_bytes(&mut tgt_buf, tgt);
+    let fn_ = copy_exec_bytes(&mut fs_buf, fstype);
+    if sn == 0 || tn == 0 || fn_ == 0 {
+        return false;
     }
+    let mut pack = [0usize; 6];
+    pack[0] = src_buf.as_ptr() as usize;
+    pack[1] = sn;
+    pack[2] = tgt_buf.as_ptr() as usize;
+    pack[3] = tn;
+    pack[4] = fs_buf.as_ptr() as usize;
+    pack[5] = fn_;
+    unsafe { sys3(27, pack.as_ptr() as usize, 0, 0) != usize::MAX }
 }
 
 /// Adjust the program break. `addr == 0` queries the current break.
