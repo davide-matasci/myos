@@ -1,4 +1,4 @@
-//! devfs: device nodes at `/dev/…` (`null`, `tty`, `console`, `vd*`).
+//! devfs: device nodes at `/dev/…` (`null`, `tty`, `console`, `vd*`, `nvme*n1`).
 
 use crate::blk;
 use crate::fs::StatInfo;
@@ -15,6 +15,7 @@ enum Node {
     Tty,
     Console,
     Block(u32),
+    Nvme(u32),
 }
 
 fn vd_name(id: u32) -> Option<[u8; 3]> {
@@ -37,18 +38,43 @@ fn parse_vd(name: &str) -> Option<u32> {
     if id < blk::count() { Some(id) } else { None }
 }
 
+fn parse_nvme(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("nvme")?;
+    let (ctrl, ns) = rest.split_once('n')?;
+    if ns != "1" || ctrl.is_empty() {
+        return None;
+    }
+    let mut id = 0u32;
+    for b in ctrl.bytes() {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        id = id.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+    }
+    if id < crate::nvme::count() {
+        Some(id)
+    } else {
+        None
+    }
+}
+
 fn parse(name: &str) -> Option<Node> {
     match name {
         "null" => Some(Node::Null),
         "tty" => Some(Node::Tty),
         "console" => Some(Node::Console),
-        _ => parse_vd(name).map(Node::Block),
+        _ => parse_vd(name)
+            .map(Node::Block)
+            .or_else(|| parse_nvme(name).map(Node::Nvme)),
     }
 }
 
-/// Block-device id for `/dev/vdX`, if `name` is a probed disk.
+/// Block-device id for `/dev/vdX` or `/dev/nvmeXn1`.
 pub fn blk_id(name: &str) -> Option<u32> {
-    parse_vd(name)
+    if let Some(id) = parse_vd(name) {
+        return Some(id);
+    }
+    parse_nvme(name).map(|c| crate::blk::NVME_ID_BASE + c)
 }
 
 /// No static file bytes; open uses [`stat`] / custom read-write.
@@ -81,6 +107,9 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
             }
         }
         Some(Node::Block(id)) => blk::read_bytes(id, pos as u64, out).unwrap_or(0),
+        Some(Node::Nvme(ctrl)) => {
+            blk::read_bytes(blk::NVME_ID_BASE + ctrl, pos as u64, out).unwrap_or(0)
+        }
         None => 0,
     }
 }
@@ -93,6 +122,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
             Some(buf.len())
         }
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
+        Some(Node::Nvme(ctrl)) => blk::write_bytes(blk::NVME_ID_BASE + ctrl, pos as u64, buf).ok(),
         None => None,
     }
 }
@@ -118,6 +148,23 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         let Some(name) = vd_name(id) else {
             break;
         };
+        let need = name.len() + 1;
+        if n + need > buf.len() {
+            break;
+        }
+        buf[n..n + name.len()].copy_from_slice(&name);
+        n += name.len();
+        buf[n] = b'\n';
+        n += 1;
+    }
+    let nvme = crate::nvme::count();
+    for id in 0..nvme {
+        // nvme{id}n1, id < 10 (MAX_CTRL is 4)
+        let mut name = [0u8; 7];
+        name[..4].copy_from_slice(b"nvme");
+        name[4] = b'0' + id as u8;
+        name[5] = b'n';
+        name[6] = b'1';
         let need = name.len() + 1;
         if n + need > buf.len() {
             break;
@@ -170,6 +217,20 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 mode: S_IFBLK | 0o666,
                 size,
                 ino: 10 + id,
+                nlink: 1,
+            })
+        }
+        Node::Nvme(ctrl) => {
+            let bytes = blk::nvme_capacity_bytes(ctrl).unwrap_or(0);
+            let size = if bytes > u32::MAX as u64 {
+                u32::MAX
+            } else {
+                bytes as u32
+            };
+            Some(StatInfo {
+                mode: S_IFBLK | 0o666,
+                size,
+                ino: 20 + ctrl,
                 nlink: 1,
             })
         }

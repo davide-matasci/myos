@@ -130,6 +130,29 @@ fn write_empty_blk_image() {
         .unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
 }
 
+fn nvme_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/nvme.img")
+}
+
+fn write_nvme_blk_image() {
+    let dest = nvme_img_path();
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&dest, vec![0u8; 4 * 1024 * 1024])
+        .unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+}
+
+fn add_nvme(cmd: &mut Command) {
+    write_nvme_blk_image();
+    let img = nvme_img_path();
+    cmd.arg("-drive").arg(format!(
+        "if=none,id=nvme0,format=raw,file={}",
+        img.display()
+    ));
+    cmd.arg("-device").arg("nvme,drive=nvme0,serial=myos");
+}
+
 fn add_virtio_blk_x86(cmd: &mut Command) {
     write_empty_blk_image();
     let fat = fat_img_path();
@@ -145,6 +168,7 @@ fn add_virtio_blk_x86(cmd: &mut Command) {
     ));
     cmd.arg("-device")
         .arg("virtio-blk-pci,drive=vd1,disable-modern=on");
+    add_nvme(cmd);
 }
 
 fn add_virtio_blk_aarch64(cmd: &mut Command) {
@@ -159,6 +183,7 @@ fn add_virtio_blk_aarch64(cmd: &mut Command) {
         empty.display()
     ));
     cmd.arg("-device").arg("virtio-blk-device,drive=vd1");
+    add_nvme(cmd);
 }
 
 fn add_virtio_blk_riscv64(cmd: &mut Command) {
@@ -378,7 +403,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     cmd.arg("-global")
         .arg("virtio-mmio.force-legacy=false")
         .arg("-machine")
-        .arg("virt,gic-version=2")
+        .arg("virt,gic-version=2,highmem-ecam=off,highmem-mmio=off")
         .arg("-cpu")
         .arg("cortex-a72")
         .arg("-m")

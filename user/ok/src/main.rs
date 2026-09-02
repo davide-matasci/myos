@@ -64,6 +64,16 @@ fn smoke_vfs() {
     if buf_has(&buf[..n], b"vdb") {
         write(b"vdb ok\n");
     }
+    if buf_has(&buf[..n], b"nvme0n1") {
+        write(b"nvme ok\n");
+        if let Some(fd) = open(b"/dev/nvme0n1") {
+            let mut sec = [0u8; 512];
+            let _ = read(fd, &mut sec);
+            close(fd);
+        }
+    } else {
+        write(b"nvme missing\n");
+    }
 
     // ESP/empty can be vda on aarch64/riscv; try every vd* until /fat/msg is ours.
     let mut vds = [[0u8; 3]; 8];

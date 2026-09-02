@@ -15,6 +15,8 @@ mod heap;
 mod input;
 mod limine_boot;
 mod mm;
+mod nvme;
+mod pci;
 mod modules;
 mod pipe;
 mod task;
@@ -94,6 +96,7 @@ fn kernel_main() -> ! {
     modules::load_limine_modules();
 
     blk::init();
+    nvme::init();
     modules::load_embedded_fat();
     // /msg lives on bootfs; /ok mounts /dev/vda as fat at /fat.
     let _ = fs::register("bootfs", "msg", MSG_OK);

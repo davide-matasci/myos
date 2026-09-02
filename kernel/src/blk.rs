@@ -8,6 +8,8 @@
 pub(crate) mod virtq;
 
 pub const MAX_DISKS: usize = 8;
+/// Block ids for `/dev/nvme*`; virtio stays `0..count()`.
+pub const NVME_ID_BASE: u32 = 0x100;
 
 pub fn init() {
     crate::arch::virtio_blk_init();
@@ -20,6 +22,9 @@ pub fn count() -> u32 {
 
 /// Disk size in 512-byte sectors, if the virtio config exposed it.
 pub fn capacity_sectors(dev: u32) -> Option<u64> {
+    if dev >= NVME_ID_BASE {
+        return crate::nvme::capacity_sectors(dev - NVME_ID_BASE);
+    }
     crate::arch::virtio_blk_capacity(dev)
 }
 
@@ -37,6 +42,9 @@ pub fn read(dev: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
     if buf.is_empty() {
         return Ok(());
     }
+    if dev >= NVME_ID_BASE {
+        return crate::nvme::read(dev - NVME_ID_BASE, lba, buf);
+    }
     crate::arch::virtio_blk_read(dev, lba, buf)
 }
 
@@ -48,6 +56,9 @@ pub fn write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
     }
     if buf.is_empty() {
         return Ok(());
+    }
+    if dev >= NVME_ID_BASE {
+        return crate::nvme::write(dev - NVME_ID_BASE, lba, buf);
     }
     crate::arch::virtio_blk_write(dev, lba, buf)
 }
@@ -122,3 +133,19 @@ pub(crate) const DMA_DATA: usize = 512;
 pub(crate) const SECTOR: usize = 512;
 pub(crate) const VIRTIO_BLK_T_IN: u32 = 0;
 pub(crate) const VIRTIO_BLK_T_OUT: u32 = 1;
+
+pub fn nvme_read(ctrl: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+    crate::nvme::read(ctrl, lba, buf)
+}
+
+pub fn nvme_write(ctrl: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
+    crate::nvme::write(ctrl, lba, buf)
+}
+
+pub fn nvme_count() -> u32 {
+    crate::nvme::count()
+}
+
+pub fn nvme_capacity_bytes(ctrl: u32) -> Option<u64> {
+    crate::nvme::capacity_sectors(ctrl).map(|s| s.saturating_mul(SECTOR as u64))
+}

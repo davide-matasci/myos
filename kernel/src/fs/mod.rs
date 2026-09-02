@@ -121,7 +121,7 @@ pub fn mount_fstype(source_dev: u32, prefix: &str, fstype_name: &str, source: &s
     vfs::mount_module(fstype_name, prefix, ops, source)
 }
 
-/// Block-device id for a `/dev/vdX` path, if that disk was probed.
+/// Block-device id for a `/dev/vdX` or `/dev/nvmeXn1` path, if probed.
 pub fn blk_id_from_path(path: &str) -> Option<u32> {
     let path = path.trim_start_matches('/');
     let name = path.strip_prefix("dev/")?;
