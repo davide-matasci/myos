@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-//! CI-only heavy smoke: std / C / sbase / uutils / ripgrep / bigalloc.
+//! CI-only heavy smoke: std / C / sbase / uutils / ripgrep / tcc / bigalloc.
 //! Always-on boot uses slim `/ok` instead; `wait_ci` types `heap` at `$`.
 
 use myos_user::{
@@ -58,7 +58,7 @@ fn main() -> ! {
     run_prog_exit(b"/c/true", &[], 0, b"uutils true ok\n");
     run_prog_exit(b"/c/false", &[], 1, b"uutils false ok\n");
     // Write a needle under /tmp and search with /c/rg (full ripgrep + PCRE2).
-    // -j1 / --no-mmap / --no-config: myos is single-threaded and has no mmap.
+    // -j1 / --no-mmap / --no-config: myos is single-threaded; rg mmap is optional.
     if let Some(fd) = open_flags(b"/tmp/rg-needle.txt", O_WRONLY | O_CREAT | O_TRUNC) {
         let _ = write_fd(fd, b"hello ripgrep needle world\n");
         close(fd);
@@ -90,6 +90,30 @@ fn main() -> ! {
     run_prog(b"/s/echo", &[b"echo", b"sbase argv ok"]);
     run_prog(b"/s/ls", &[b"ls", b"/s"]);
     run_prog(b"/s/pwd", &[]);
+    // TinyCC JIT: -nostdlib skips libgloss, so hi.c emits SYS_WRITE=0 itself.
+    // Needle is printed by the JIT'd main, not by heap.
+    const HI_C: &[u8] = br#"
+__attribute__((used))
+long write(int fd, const void *buf, unsigned long n);
+#ifdef __x86_64__
+__asm__(".text\n.globl write\nwrite:\n mov $0, %rax\n syscall\n ret\n");
+#elif defined(__aarch64__)
+__asm__(".text\n.globl write\nwrite:\n mov x8, 0\n .int 0xd4000001\n ret\n");
+#elif defined(__riscv)
+__asm__(".text\n.globl write\nwrite:\n li a7, 0\n ecall\n ret\n");
+#endif
+int main(void) { write(1, "tcc ok\n", 7); return 0; }
+"#;
+    if let Some(fd) = open_flags(b"/tmp/hi.c", O_WRONLY | O_CREAT | O_TRUNC) {
+        let _ = write_fd(fd, HI_C);
+        close(fd);
+        run_prog(
+            b"/t/tcc",
+            &[b"tcc", b"-nostdlib", b"-run", b"/tmp/hi.c"],
+        );
+    } else {
+        write(b"tcc skip (tmp create fail)\n");
+    }
     write(b"smoke ok\n");
     exit();
 }

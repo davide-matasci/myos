@@ -13,6 +13,7 @@ MYOS_OKSH_VERSION="$MYOS_ROOT/target/.myos-oksh-version"
 MYOS_UBASE_VERSION="$MYOS_ROOT/target/.myos-ubase-version"
 MYOS_COREUTILS_VERSION="$MYOS_ROOT/target/.myos-coreutils-version"
 MYOS_RIPGREP_VERSION="$MYOS_ROOT/target/.myos-ripgrep-version"
+MYOS_TCC_VERSION="$MYOS_ROOT/target/.myos-tcc-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
@@ -239,5 +240,33 @@ myos_ripgrep_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     triple="${arch}-unknown-myos"
     [[ -f "$MYOS_ROOT/target/rg-${triple}" ]] || return 1
+  done
+}
+
+
+myos_tcc_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      sha256sum "$MYOS_ROOT/ports/tcc/build.sh"
+      sha256sum "$MYOS_ROOT/ports/tcc/prepare.sh"
+      sha256sum "$MYOS_ROOT/ports/tcc/fetch.sh"
+      sha256sum "$MYOS_ROOT/ports/tcc/versions.env"
+      find "$MYOS_ROOT/ports/tcc" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_tcc_is_current() {
+  local arch triple
+  [[ -f "$MYOS_TCC_VERSION" ]] \
+    && [[ "$(cat "$MYOS_TCC_VERSION")" == "$(myos_tcc_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    triple="${arch}-unknown-myos"
+    [[ -f "$MYOS_ROOT/target/tcc-${triple}" ]] || return 1
   done
 }

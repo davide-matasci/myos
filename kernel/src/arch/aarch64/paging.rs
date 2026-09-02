@@ -57,4 +57,32 @@ pub fn map_devices() {
         }
         asm!("dsb sy; isb", options(nostack));
     }
+    enable_el0_cache_ops();
+}
+
+/// Allow EL0 `DC CVAU` / `IC IVAU` / `MRS CTR_EL0` (TinyCC `__clear_cache`).
+///
+/// SCTLR.UCI=0 traps those SYS insns from EL0 with ESR.EC=0x18 (CI aarch64
+/// tcc -run: `dc cvau` in libgcc __clear_cache right after mprotect RX).
+/// Write both EL1 and EL2 banks: Limine may be at EL1 or EL2+VHE (TGE uses
+/// SCTLR_EL2 for EL0).
+fn enable_el0_cache_ops() {
+    const UCI: u64 = 1 << 26;
+    const UCT: u64 = 1 << 15;
+    const DZE: u64 = 1 << 14;
+    const BITS: u64 = UCI | UCT | DZE;
+    unsafe {
+        let el: u64;
+        asm!("mrs {el}, CurrentEL", el = out(reg) el, options(nomem, nostack, preserves_flags));
+        let el = (el >> 2) & 3;
+        let mut sctlr: u64;
+        asm!("mrs {s}, sctlr_el1", s = out(reg) sctlr, options(nomem, nostack, preserves_flags));
+        sctlr |= BITS;
+        asm!("msr sctlr_el1, {s}", "isb", s = in(reg) sctlr, options(nostack));
+        if el >= 2 {
+            asm!("mrs {s}, sctlr_el2", s = out(reg) sctlr, options(nomem, nostack, preserves_flags));
+            sctlr |= BITS;
+            asm!("msr sctlr_el2, {s}", "isb", s = in(reg) sctlr, options(nostack));
+        }
+    }
 }

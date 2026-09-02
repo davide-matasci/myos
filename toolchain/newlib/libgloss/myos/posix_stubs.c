@@ -205,6 +205,20 @@ pid_t waitpid(pid_t pid, int *status, int options) {
 }
 
 long sysconf(int name) {
+#ifdef _SC_PAGESIZE
+    if (name == _SC_PAGESIZE) {
+        return 4096;
+    }
+#endif
+#ifdef _SC_PAGE_SIZE
+    if (name == _SC_PAGE_SIZE) {
+        return 4096;
+    }
+#endif
+    /* Common numeric values if headers did not expose _SC_PAGESIZE. */
+    if (name == 8 || name == 11 || name == 30 || name == 39) {
+        return 4096;
+    }
     (void)name;
     errno = ENOSYS;
     return -1;

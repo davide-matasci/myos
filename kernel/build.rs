@@ -107,6 +107,7 @@ fn main() {
         embed_ubase_manifest(manifest, &arch, Path::new(&out));
         embed_coreutils_manifest(manifest, &arch, Path::new(&out));
         embed_ripgrep_elf(manifest, &arch, Path::new(&out));
+        embed_tcc_elf(manifest, &arch, Path::new(&out));
     }
 }
 
@@ -160,6 +161,60 @@ fn embed_coreutils_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     std::fs::write(&dest, body).expect("write coreutils_embed.rs");
 }
 
+
+
+fn embed_tcc_elf(manifest_dir: &Path, arch: &str, out_dir: &Path) {
+    let triple = if arch == "x86_64" {
+        "x86_64-unknown-myos"
+    } else if arch == "aarch64" {
+        "aarch64-unknown-myos"
+    } else if arch == "riscv64" {
+        "riscv64-unknown-myos"
+    } else {
+        return;
+    };
+    let elf = manifest_dir
+        .join("../target")
+        .join(format!("tcc-{triple}"));
+    let alias = manifest_dir
+        .join("../target")
+        .join(format!("coreutils-tcc-{triple}"));
+    println!("cargo:rerun-if-changed={}", elf.display());
+    println!("cargo:rerun-if-changed={}", alias.display());
+    if !elf.is_file() && alias.is_file() {
+        let _ = std::fs::copy(&alias, &elf);
+    }
+    if !elf.is_file() {
+        // Workflow file edits need `workflow` OAuth scope; build tcc here so
+        // CI/ISO still embed /t/tcc without a ci.yml change.
+        let script = manifest_dir.join("../ports/tcc/build.sh");
+        println!("cargo:rerun-if-changed={}", script.display());
+        println!("cargo:rerun-if-changed={}", manifest_dir.join("../ports/tcc").display());
+
+        let status = Command::new("bash")
+            .arg(&script)
+            .status()
+            .unwrap_or_else(|e| panic!("run {}: {e}", script.display()));
+        if !status.success() {
+            panic!("{} failed", script.display());
+        }
+    }
+    if !elf.is_file() {
+        panic!(
+            "tcc ELF missing at {} (run ./ports/tcc/build.sh)",
+            elf.display()
+        );
+    }
+    let mut body = String::from("pub fn register_all() {\n");
+    body.push_str(&format!(
+        "    const TCC_ELF: &[u8] = include_bytes!(r\"{}\");\n",
+        elf.display()
+    ));
+    body.push_str("    let _ = super::register(\"tcc\", TCC_ELF);\n");
+    body.push_str("}\n");
+    let dest = out_dir.join("tcc_embed.rs");
+    std::fs::write(&dest, body).expect("write tcc_embed.rs");
+}
 
 fn embed_ripgrep_elf(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     let triple = if arch == "x86_64" {

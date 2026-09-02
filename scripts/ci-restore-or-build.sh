@@ -22,6 +22,21 @@ restore_packed_rg_elves() {
       echo "restored $dest from $f"
     fi
   done
+  # Same packing trick for tcc (workflow edits need `workflow` scope).
+  for f in target/coreutils-tcc-*; do
+    dest="target/tcc-${f#target/coreutils-tcc-}"
+    if [[ ! -f "$dest" ]]; then
+      cp "$f" "$dest"
+      echo "restored $dest from $f"
+    fi
+  done
+}
+
+
+tcc_elves_ready() {
+  [[ -f target/tcc-x86_64-unknown-myos \
+     && -f target/tcc-aarch64-unknown-myos \
+     && -f target/tcc-riscv64-unknown-myos ]]
 }
 
 rg_elves_ready() {
@@ -44,13 +59,24 @@ rebuild_kernels() {
 if [[ -x target/debug/myos && -f target/bios.img ]]; then
   echo "CI artifacts ready: $(ls -lh target/debug/myos target/bios.img)"
   restore_packed_rg_elves
-  if rg_elves_ready; then
+  need_rebuild=0
+  if ! rg_elves_ready; then
+    echo "==> rg ELF(s) missing after restore; building ripgrep"
+    ./ports/ripgrep/build.sh
+    need_rebuild=1
+  else
     echo "rg ELFs present: $(ls -lh target/rg-*-unknown-myos)"
-    exit 0
   fi
-  echo "==> rg ELF(s) missing after restore; building ripgrep and rebuilding kernels"
-  ./ports/ripgrep/build.sh
-  rebuild_kernels
+  if ! tcc_elves_ready; then
+    echo "==> tcc ELF(s) missing after restore; building tcc"
+    ./ports/tcc/build.sh
+    need_rebuild=1
+  else
+    echo "tcc ELFs present: $(ls -lh target/tcc-*-unknown-myos)"
+  fi
+  if ((need_rebuild)); then
+    rebuild_kernels
+  fi
   test -x target/debug/myos
   test -f target/bios.img
   exit 0
@@ -70,6 +96,7 @@ fi
 ./ports/ubase/build.sh
 ./ports/coreutils/build-uutils.sh
 ./ports/ripgrep/build.sh
+./ports/tcc/build.sh
 
 rebuild_kernels
 

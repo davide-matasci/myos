@@ -33,6 +33,20 @@ const SYS_UNLINK: usize = 19;
 const SYS_RENAME: usize = 20;
 const SYS_SYMLINK: usize = 21;
 const SYS_READLINK: usize = 22;
+const SYS_MMAP: usize = 23;
+const SYS_MUNMAP: usize = 24;
+const SYS_MPROTECT: usize = 25;
+const SYS_LSEEK: usize = 26;
+
+/// Linux mmap prot/flags (newlib + tcc).
+const PROT_READ: usize = 1;
+const PROT_WRITE: usize = 2;
+const PROT_EXEC: usize = 4;
+const MAP_PRIVATE: usize = 0x02;
+const MAP_FIXED: usize = 0x10;
+const MAP_ANON: usize = 0x20;
+/// Anonymous mmap region after the brk heap.
+const MMAP_AREA_PAGES: usize = 256;
 pub const PAGE: usize = 4096;
 /// User stack below the heap. x86_64 uses 1 MiB; AArch64 uses 512 KiB.
 /// AArch64 user maps spill into L2[1+] when code+stack+heap exceed 512 pages.
@@ -42,7 +56,7 @@ pub const USER_STACK_PAGES: usize = 128;
 pub const USER_STACK_PAGES: usize = 256;
 /// Per-process brk heap. uutils/clap init needs well over 512 KiB on x86_64.
 #[cfg(target_arch = "aarch64")]
-const HEAP_PAGES: usize = 180;
+const HEAP_PAGES: usize = 256;
 #[cfg(not(target_arch = "aarch64"))]
 const HEAP_PAGES: usize = 256;
 /// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy.
@@ -730,6 +744,7 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
         }
         va += PAGE;
     }
+    copy_mmap_pages(src, aspace);
     Some(aspace)
 }
 
@@ -739,6 +754,38 @@ fn heap_base_va(base: u64, stack_off: u64) -> u64 {
 
 fn heap_limit_va(base: u64, stack_off: u64) -> u64 {
     heap_base_va(base, stack_off) + (HEAP_PAGES * PAGE) as u64
+}
+
+fn mmap_base_va(base: u64, stack_off: u64) -> u64 {
+    heap_limit_va(base, stack_off)
+}
+
+fn mmap_limit_va(base: u64, stack_off: u64) -> u64 {
+    mmap_base_va(base, stack_off) + (MMAP_AREA_PAGES * PAGE) as u64
+}
+
+fn copy_mmap_pages(src: u64, dst: u64) {
+    let regions = task::mmap_regions();
+    for r in regions.iter() {
+        if r.pages == 0 {
+            continue;
+        }
+        let mut va = r.va;
+        let end = r.va.saturating_add(r.pages as u64 * PAGE as u64);
+        while va < end {
+            if let Some(phys) = virt_to_phys(src, va) {
+                let frame = mm::alloc_frame();
+                unsafe {
+                    core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(frame), PAGE);
+                }
+                if r.prot & PROT_EXEC as u32 != 0 {
+                    sync_icache(mm::hhdm(frame) as usize, PAGE);
+                }
+                map_user_page_prot(dst, va, frame, r.prot as usize);
+            }
+            va += PAGE as u64;
+        }
+    }
 }
 
 fn align_up_usize(v: usize, align: usize) -> usize {
@@ -1345,6 +1392,10 @@ pub extern "C" fn syscall_dispatch(
         SYS_RENAME => sys_rename(a0, a1, a2),
         SYS_SYMLINK => sys_symlink(a0, a1, a2),
         SYS_READLINK => sys_readlink(a0, a1, a2),
+        SYS_MMAP => sys_mmap(a0),
+        SYS_MUNMAP => sys_munmap(a0, a1),
+        SYS_MPROTECT => sys_mprotect(a0, a1, a2),
+        SYS_LSEEK => sys_lseek(a0, a1, a2),
         _ => SYSERR,
     }
 }
@@ -1998,7 +2049,164 @@ fn sys_brk(req: usize) -> usize {
     req
 }
 
-/// True when `ptr..ptr+len` lies in the current task's user code, stack, or heap.
+/// `a0` points at a user `myos_mmap_args` {addr,len,prot,flags,fd,offset}.
+fn sys_mmap(args_ptr: usize) -> usize {
+    const N: usize = 6 * core::mem::size_of::<u64>();
+    if !user_range_ok(args_ptr, N) {
+        return SYSERR;
+    }
+    let mut raw = [0u8; N];
+    if !read_user_bytes(task::current_aspace(), args_ptr, &mut raw) {
+        return SYSERR;
+    }
+    let mut words = [0u64; 6];
+    for i in 0..6 {
+        let o = i * 8;
+        words[i] = u64::from_le_bytes(raw[o..o + 8].try_into().unwrap());
+    }
+    let hint = words[0] as usize;
+    let len = words[1] as usize;
+    let prot = words[2] as usize;
+    let flags = words[3] as usize;
+    let fd = words[4] as isize;
+    let offset = words[5] as usize;
+    do_mmap(hint, len, prot, flags, fd, offset)
+}
+
+fn do_mmap(
+    hint: usize,
+    len: usize,
+    prot: usize,
+    flags: usize,
+    fd: isize,
+    offset: usize,
+) -> usize {
+    if len == 0 {
+        return SYSERR;
+    }
+    let anon = flags & MAP_ANON != 0;
+    if !anon {
+        // File-backed is optional; anonymous MAP_ANON|MAP_PRIVATE is the must-have.
+        return SYSERR;
+    }
+    if flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
+        // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
+        return SYSERR;
+    }
+    let (base, _span, stack_off) = task::current_user_map();
+    let area_lo = mmap_base_va(base, stack_off) as usize;
+    let area_hi = mmap_limit_va(base, stack_off) as usize;
+    let pages = len.div_ceil(PAGE);
+    if pages == 0 || pages > MMAP_AREA_PAGES {
+        return SYSERR;
+    }
+    let map_len = pages * PAGE;
+    let va = if flags & MAP_FIXED != 0 {
+        if hint == 0 || hint % PAGE != 0 {
+            return SYSERR;
+        }
+        if hint < area_lo || hint.saturating_add(map_len) > area_hi {
+            return SYSERR;
+        }
+        hint
+    } else {
+        match task::mmap_alloc(area_lo, area_hi, map_len) {
+            Some(v) => v,
+            None => return SYSERR,
+        }
+    };
+    if task::mmap_overlaps(va, map_len) {
+        return SYSERR;
+    }
+    let aspace = task::current_aspace();
+    let mut mapped = 0usize;
+    while mapped < map_len {
+        let page_va = (va + mapped) as u64;
+        let frame = mm::alloc_frame();
+        unsafe {
+            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
+        }
+        map_user_page_prot(aspace, page_va, frame, prot);
+        mapped += PAGE;
+    }
+    if prot & PROT_EXEC != 0 {
+        let mut off = 0;
+        while off < map_len {
+            if let Some(phys) = virt_to_phys(aspace, (va + off) as u64) {
+                // User VA (execute) + HHDM alias (the stores). ic ialluis inside.
+                sync_icache((va + off) as usize, PAGE);
+                sync_icache(mm::hhdm(phys) as usize, PAGE);
+            }
+            off += PAGE;
+        }
+    }
+    let _ = (fd, offset);
+    if !task::mmap_add(va as u64, pages as u32, prot as u32) {
+        // Region table full: unmap what we just added.
+        let _ = sys_munmap(va, map_len);
+        return SYSERR;
+    }
+    flush_user_tlb();
+    va
+}
+
+fn sys_munmap(addr: usize, len: usize) -> usize {
+    if addr % PAGE != 0 || len == 0 {
+        return SYSERR;
+    }
+    let pages = len.div_ceil(PAGE);
+    let map_len = pages * PAGE;
+    if !task::mmap_contains(addr, map_len) && !user_range_ok(addr, map_len) {
+        return SYSERR;
+    }
+    let aspace = task::current_aspace();
+    let mut off = 0;
+    while off < map_len {
+        unmap_user_page(aspace, (addr + off) as u64);
+        off += PAGE;
+    }
+    task::mmap_remove(addr as u64, pages as u32);
+    flush_user_tlb();
+    0
+}
+
+fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
+    if addr % PAGE != 0 || len == 0 {
+        return SYSERR;
+    }
+    let pages = len.div_ceil(PAGE);
+    let map_len = pages * PAGE;
+    let (base, _span, stack_off) = task::current_user_map();
+    let lo = base as usize;
+    let hi = mmap_limit_va(base, stack_off) as usize;
+    if addr < lo || addr.saturating_add(map_len) > hi {
+        return SYSERR;
+    }
+    let aspace = task::current_aspace();
+    let mut off = 0;
+    while off < map_len {
+        let va = (addr + off) as u64;
+        let Some(phys) = virt_to_phys(aspace, va) else {
+            return SYSERR;
+        };
+        map_user_page_prot(aspace, va, phys, prot);
+        if prot & PROT_EXEC != 0 {
+            // mprotect RW→RX: clean D-cache, invalidate I-cache for this range.
+            sync_icache(va as usize, PAGE);
+            sync_icache(mm::hhdm(phys) as usize, PAGE);
+        }
+        off += PAGE;
+    }
+    task::mmap_set_prot(addr as u64, pages as u32, prot as u32);
+    flush_user_tlb();
+    0
+}
+
+fn sys_lseek(fd: usize, offset: usize, whence: usize) -> usize {
+    task::fd_lseek(fd, offset as i64, whence)
+}
+
+/// True when `ptr..ptr+len` lies in the current task's user code, stack, heap, or mmap.
 pub fn buffer_ok(ptr: usize, len: usize) -> bool {
     user_range_ok(ptr, len)
 }
@@ -2017,7 +2225,11 @@ fn user_range_ok(ptr: usize, len: usize) -> bool {
     let heap_base = heap_base_va(base as u64, stack_off) as usize;
     let brk = task::current_brk() as usize;
     let in_heap = brk > heap_base && ptr >= heap_base && end <= brk;
-    in_code || in_stack || in_heap
+    if in_code || in_stack || in_heap {
+        return true;
+    }
+    // mmap_contains takes TASKS; skip unless ptr is outside code/stack/heap.
+    task::mmap_contains(ptr, len)
 }
 
 fn create_aspace(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {
@@ -2069,6 +2281,114 @@ fn create_aspace_x86(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> 
         );
     }
     pml4_phys
+}
+
+fn map_user_page_prot(aspace: u64, va: u64, pa: u64, prot: usize) {
+    let w = prot & PROT_WRITE != 0;
+    let x = prot & PROT_EXEC != 0;
+    #[cfg(target_arch = "x86_64")]
+    {
+        const PRESENT: u64 = 1;
+        const WRITE: u64 = 1 << 1;
+        const USER: u64 = 1 << 2;
+        const NX: u64 = 1 << 63;
+        let mut flags = PRESENT | USER;
+        if w {
+            flags |= WRITE;
+        }
+        if !x {
+            flags |= NX;
+        }
+        map_page_x86(aspace, va, pa, flags);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        const PAGE_DESC: u64 = 0b11;
+        const SH_INNER: u64 = 0b11 << 8;
+        const AF: u64 = 1 << 10;
+        const AP_RW: u64 = 0b01 << 6;
+        const AP_RO: u64 = 0b11 << 6;
+        const PXN: u64 = 1 << 53;
+        const UXN: u64 = 1 << 54;
+        const PA: u64 = 0x0000_FFFF_FFFF_F000;
+        let page = aarch64_user_page_idx(va);
+        let l3_idx = page % AARCH64_USER_L3_PAGES;
+        let Some(l3) = aarch64_l3_table_mut(aspace, page) else {
+            return;
+        };
+        unsafe {
+            let l3_t = &mut *l3;
+            // UXN=0 iff PROT_EXEC so EL0 can fetch (anonymous RW→RX JIT).
+            let mut ent = PAGE_DESC | (pa & PA) | SH_INNER | AF | PXN;
+            ent |= if w { AP_RW } else { AP_RO };
+            if !x {
+                ent |= UXN;
+            }
+            l3_t[l3_idx] = ent;
+        }
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        let mut flags = paging::PTE_V | paging::PTE_U | paging::PTE_A | paging::PTE_D | paging::PTE_R;
+        if w {
+            flags |= paging::PTE_W;
+        }
+        if x {
+            flags |= paging::PTE_X;
+        }
+        let i0 = ((va >> 12) & 0x1ff) as usize;
+        let leaf = ensure_riscv_leaf(aspace, va);
+        unsafe {
+            (*leaf)[i0] = paging::pte_leaf_4k(pa, flags);
+        }
+    }
+}
+
+fn unmap_user_page(aspace: u64, va: u64) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        const PRESENT: u64 = 1;
+        const HUGE: u64 = 1 << 7;
+        let i4 = ((va >> 39) & 0x1ff) as usize;
+        let i3 = ((va >> 30) & 0x1ff) as usize;
+        let i2 = ((va >> 21) & 0x1ff) as usize;
+        let i1 = ((va >> 12) & 0x1ff) as usize;
+        unsafe {
+            let pml4 = &*mm::table(aspace);
+            if pml4[i4] & PRESENT == 0 {
+                return;
+            }
+            let pdpt = &*mm::table(pml4[i4]);
+            if pdpt[i3] & PRESENT == 0 || pdpt[i3] & HUGE != 0 {
+                return;
+            }
+            let pd = &*mm::table(pdpt[i3]);
+            if pd[i2] & PRESENT == 0 || pd[i2] & HUGE != 0 {
+                return;
+            }
+            let pt = &mut *mm::table(pd[i2]);
+            pt[i1] = 0;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let page = aarch64_user_page_idx(va);
+        let l3_idx = page % AARCH64_USER_L3_PAGES;
+        let Some(l3) = aarch64_l3_table_mut(aspace, page) else {
+            return;
+        };
+        unsafe {
+            (*l3)[l3_idx] = 0;
+        }
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        let i0 = ((va >> 12) & 0x1ff) as usize;
+        let leaf = ensure_riscv_leaf(aspace, va);
+        unsafe {
+            (*leaf)[i0] = 0;
+        }
+    }
 }
 
 fn map_user_code_page(aspace: u64, va: u64, pa: u64) {
@@ -2137,7 +2457,9 @@ fn flush_user_tlb() {
     unsafe {
         core::arch::asm!("dsb ishst", options(nostack));
         if current_el() >= 2 {
+            // VHE EL2&0 uses ALLE2; also drop EL1&0 in case TGE/E2H is off.
             core::arch::asm!("tlbi alle2is", options(nostack));
+            core::arch::asm!("tlbi vmalle1is", options(nostack));
         } else {
             core::arch::asm!("tlbi vmalle1is", options(nostack));
         }
@@ -2145,8 +2467,25 @@ fn flush_user_tlb() {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
-fn flush_user_tlb() {}
+#[cfg(target_arch = "x86_64")]
+fn flush_user_tlb() {
+    unsafe {
+        let cr3: u64;
+        core::arch::asm!(
+            "mov {cr3}, cr3",
+            "mov cr3, {cr3}",
+            cr3 = out(reg) cr3,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+fn flush_user_tlb() {
+    unsafe {
+        core::arch::asm!("sfence.vma zero, zero", options(nostack));
+    }
+}
 
 /// Allocate Sv39 mid/leaf tables as needed so user maps can spill past one
 /// 2 MiB leaf (code + 256 stack + 256 heap pages exceeds 512 PTEs).

@@ -35,7 +35,7 @@ const CI_NEEDLES: [&str; 21] = [
 
 /// Heavy markers from CI-only `/heap` (typed at `$` on every arch).
 /// Pre-prompt readiness stays slim; these are required after interactive `heap`.
-const CI_NEEDLES_STD: [&str; 12] = [
+const CI_NEEDLES_STD: [&str; 13] = [
     "std ok",
     "std cat ok",
     "std echo ok",
@@ -48,6 +48,7 @@ const CI_NEEDLES_STD: [&str; 12] = [
     "uutils false ok",
     "ripgrep ok",
     "sbase argv ok",
+    "tcc ok",
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
@@ -204,6 +205,14 @@ fn interactive_heap_cmd_ok(serial: &str, heavy: &[&str]) -> bool {
         return false;
     }
     at_interactive_prompt(serial)
+}
+
+/// Heap printed `smoke ok` and returned to `$`. Missing heavy needles can
+/// fail immediately instead of waiting out the 180s timeout.
+fn interactive_heap_returned(serial: &str) -> bool {
+    command_echoed(serial, "heap")
+        && serial.contains("smoke ok")
+        && at_interactive_prompt(serial)
 }
 
 fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
@@ -374,6 +383,16 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     &acc,
                     extra_needles,
                 );
+                // `/heap` always prints `smoke ok` after tcc exits (even on
+                // JIT failure). Don't sit on the 180s timeout for `tcc ok`.
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == 1
+                    && interactive_heap_returned(&acc)
+                    && !interactive_heap_cmd_ok(&acc, extra_needles)
+                {
+                    let _ = child.kill();
+                    break child.wait().expect("wait after heap fail-fast kill");
+                }
             }
             if ci_complete(&acc, extra_needles, &expect, shell_stage) {
                 let _ = child.kill();
