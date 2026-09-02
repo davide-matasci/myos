@@ -490,7 +490,19 @@ fn build_aarch64_image() -> PathBuf {
 fn build_aarch64_kernel() -> PathBuf {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    let mut cmd = Command::new(cargo);
+    // aarch64 kernels are not packed in ci-build.tar. rust-cache keys are
+    // immutable across commits, so a cache hit can keep a pre--image-base
+    // /ping (ET_EXEC at 0x200000) and fault at 0x202218 after slide to
+    // USER_BASE. Always clean so kernel/build.rs re-links ping at 0x40000000.
+    let clean = Command::new(&cargo)
+        .args(["clean", "-p", "kernel", "--target", AARCH64_TARGET])
+        .status()
+        .expect("failed to clean aarch64 kernel");
+    if !clean.success() {
+        eprintln!("error: cleaning aarch64 kernel failed");
+        exit(1);
+    }
+    let mut cmd = Command::new(&cargo);
     cmd.arg("build")
         .arg("--manifest-path")
         .arg(&manifest)
@@ -683,7 +695,16 @@ fn build_riscv64_image() -> PathBuf {
 fn build_riscv64_kernel() -> PathBuf {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    let mut cmd = Command::new(cargo);
+    // Same rust-cache / missing-artifact trap as aarch64 (fault at 0x11e6a).
+    let clean = Command::new(&cargo)
+        .args(["clean", "-p", "kernel", "--target", RISCV64_TARGET])
+        .status()
+        .expect("failed to clean riscv64 kernel");
+    if !clean.success() {
+        eprintln!("error: cleaning riscv64 kernel failed");
+        exit(1);
+    }
+    let mut cmd = Command::new(&cargo);
     cmd.arg("build")
         .arg("--manifest-path")
         .arg(&manifest)
