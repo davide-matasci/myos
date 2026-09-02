@@ -6,6 +6,7 @@ mod devfs;
 mod fstype;
 mod procfs;
 mod sbasefs;
+mod libfs;
 mod tccfs;
 mod tmpfs;
 mod ubasefs;
@@ -26,6 +27,14 @@ pub fn lookup(path: &str) -> Option<&'static [u8]> {
 /// Read from an open vnode.
 pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
     vfs::read(node, pos, out)
+}
+
+/// Read a whole file by path (static lookup first, then VFS read).
+///
+/// Needed so `exec` can load a `tcc -o` ELF off tmpfs/ext2, where `lookup`
+/// is not `'static`.
+pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
+    vfs::read_all(path, max)
 }
 
 /// Write to an open vnode.
@@ -226,7 +235,8 @@ fn rw_ops(
 }
 
 /// Mount bootfs at `/`, sbasefs at `/s/`, ubasefs at `/u/`, tccfs at `/t/`, coreutilsfs at `/c/`,
-/// tmpfs at `/tmp/`, devfs at `/dev/`, procfs at `/proc/`, and register embedded user ELFs.
+/// libfs at `/lib/` (newlib sysroot), tmpfs at `/tmp/`, devfs at `/dev/`, procfs at `/proc/`,
+/// and register embedded user ELFs.
 pub fn init() {
     vfs::mount(
         "bootfs",
@@ -303,6 +313,21 @@ pub fn init() {
         ),
     );
     coreutilsfs::init_embedded();
+    vfs::mount(
+        "libfs",
+        "lib",
+        ro_ops(
+            libfs::lookup,
+            libfs::stat,
+            libfs::listdir_at,
+            libfs::register,
+            libfs::create,
+            libfs::truncate,
+            libfs::read,
+            libfs::write,
+        ),
+    );
+    libfs::init_embedded();
     vfs::mount(
         "tmpfs",
         "tmp",
