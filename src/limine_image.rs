@@ -124,14 +124,15 @@ fn compile_limine_tool(dir: &Path) {
         return;
     }
     let c = dir.join("limine.c");
-    let status = Command::new("cc")
+    let cc = std::env::var("CC").unwrap_or_else(|_| "clang".to_string());
+    let status = Command::new(&cc)
         .args(["-std=c99", "-O2", "-D_FILE_OFFSET_BITS=64", "-o"])
         .arg(&out)
         .arg(&c)
         .status()
-        .expect("failed to spawn cc for limine host tool");
+        .unwrap_or_else(|e| panic!("failed to spawn {cc} for limine host tool: {e}"));
     if !status.success() {
-        panic!("failed to compile limine host tool (need a C compiler)");
+        panic!("failed to compile limine host tool with {cc} (need clang or $CC)");
     }
 }
 
