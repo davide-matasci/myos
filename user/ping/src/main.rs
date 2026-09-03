@@ -1,28 +1,11 @@
 #![no_std]
 #![no_main]
 
-extern crate alloc;
+use myos_user::{close, exit, exit_code, open, open_flags, read, write, write_fd, O_RDWR, O_WRONLY};
 
-use alloc::vec;
-use alloc::vec::Vec;
-
-use myos_net::smoltcp::iface::SocketSet;
-use myos_net::smoltcp::phy::Device;
-use myos_net::smoltcp::socket::{dhcpv4, icmp};
-use myos_net::smoltcp::wire::{
-    Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr,
-};
-use myos_net::{build_interface, Net0Device, VirtualInstant};
-use myos_user::{exit, exit_code, heap_init, Heap, write};
-
-#[global_allocator]
-static GLOBAL: Heap = Heap;
-
-const GATEWAY: IpAddress = IpAddress::v4(10, 0, 2, 2);
-const ICMP_IDENT: u16 = 0x22b;
-const DHCP_POLLS: usize = 3000;
-const ICMP_POLLS: usize = 2000;
-const TICK_MS: u64 = 100;
+const GATEWAY_CTL: &[u8] = b"connect 10.0.2.2";
+const STATUS_POLLS: usize = 8000;
+const DATA_POLLS: usize = 8000;
 
 #[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
@@ -41,95 +24,126 @@ fn fail(msg: &[u8]) -> ! {
     exit_code(1);
 }
 
-fn main() -> ! {
-    heap_init();
+fn parse_id(buf: &[u8]) -> Option<u16> {
+    let mut n = 0u32;
+    let mut any = false;
+    for &b in buf {
+        if b == b'\n' || b == b'\r' || b == b' ' {
+            break;
+        }
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        any = true;
+        n = n.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+        if n > 65535 {
+            return None;
+        }
+    }
+    if any { Some(n as u16) } else { None }
+}
 
-    let Some(mut device) = Net0Device::open() else {
-        fail(b"open /dev/net0 fail\n");
+fn put_dec(buf: &mut [u8], mut n: u16) -> usize {
+    let mut tmp = [0u8; 6];
+    let mut i = tmp.len();
+    if n == 0 {
+        i -= 1;
+        tmp[i] = b'0';
+    } else {
+        while n != 0 && i > 0 {
+            i -= 1;
+            tmp[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+    }
+    let digits = &tmp[i..];
+    buf[..digits.len()].copy_from_slice(digits);
+    digits.len()
+}
+
+fn conv_path(out: &mut [u8], id: u16, leaf: &[u8]) -> usize {
+    let mut n = 0usize;
+    let prefix = b"/net/icmp/";
+    out[n..n + prefix.len()].copy_from_slice(prefix);
+    n += prefix.len();
+    n += put_dec(&mut out[n..], id);
+    out[n] = b'/';
+    n += 1;
+    out[n..n + leaf.len()].copy_from_slice(leaf);
+    n += leaf.len();
+    n
+}
+
+fn buf_has(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+fn main() -> ! {
+    let Some(clone) = open(b"/net/icmp/clone") else {
+        fail(b"open /net/icmp/clone fail\n");
+    };
+    let mut idbuf = [0u8; 16];
+    let n = read(clone, &mut idbuf);
+    close(clone);
+    if n == 0 || n == usize::MAX {
+        fail(b"read clone fail\n");
+    }
+    let Some(id) = parse_id(&idbuf[..n]) else {
+        fail(b"clone id fail\n");
     };
 
-    let mut clock = VirtualInstant::new();
-    let mut iface = build_interface(&mut device, clock.now());
+    let mut path = [0u8; 40];
+    let pn = conv_path(&mut path, id, b"ctl");
+    let Some(ctl) = open_flags(&path[..pn], O_WRONLY) else {
+        fail(b"open ctl fail\n");
+    };
+    if write_fd(ctl, GATEWAY_CTL) == usize::MAX {
+        close(ctl);
+        fail(b"write ctl fail\n");
+    }
+    close(ctl);
 
-    let mut sockets = SocketSet::new(Vec::new());
-    let dhcp_handle = sockets.add(dhcpv4::Socket::new());
-
-    let mut dhcp_ok = false;
-    for _ in 0..DHCP_POLLS {
-        clock.bump(TICK_MS);
-        let now = clock.now();
-        iface.poll(now, &mut device, &mut sockets);
-
-        let (addr, router) = match sockets.get_mut::<dhcpv4::Socket>(dhcp_handle).poll() {
-            Some(dhcpv4::Event::Configured(cfg)) => (Some(cfg.address), cfg.router),
-            Some(dhcpv4::Event::Deconfigured) => {
-                iface.update_ip_addrs(|addrs| addrs.clear());
-                iface.routes_mut().remove_default_ipv4_route();
-                (None, None)
-            }
-            None => (None, None),
+    let sn = conv_path(&mut path, id, b"status");
+    let mut connected = false;
+    for _ in 0..STATUS_POLLS {
+        let Some(st) = open(&path[..sn]) else {
+            continue;
         };
-        if let Some(addr) = addr {
-            iface.update_ip_addrs(|addrs| {
-                addrs.clear();
-                let _ = addrs.push(IpCidr::Ipv4(addr));
-            });
-            if let Some(router) = router {
-                let _ = iface.routes_mut().add_default_ipv4_route(router);
-            } else {
-                iface.routes_mut().remove_default_ipv4_route();
-            }
-            dhcp_ok = true;
+        let mut sbuf = [0u8; 64];
+        let nr = read(st, &mut sbuf);
+        close(st);
+        if nr != 0 && nr != usize::MAX && buf_has(&sbuf[..nr], b"connected") {
+            connected = true;
             break;
         }
     }
-    if !dhcp_ok {
-        fail(b"dhcp fail\n");
+    if !connected {
+        fail(b"icmp status timeout\n");
     }
 
-    let icmp_rx = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
-    let icmp_tx = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
-    let icmp_handle = sockets.add(icmp::Socket::new(icmp_rx, icmp_tx));
-
-    let mut sent = false;
-    for _ in 0..ICMP_POLLS {
-        clock.bump(TICK_MS);
-        let now = clock.now();
-        iface.poll(now, &mut device, &mut sockets);
-
-        let checksum = device.capabilities().checksum;
-        let socket = sockets.get_mut::<icmp::Socket>(icmp_handle);
-        if !socket.is_open() {
-            let _ = socket.bind(icmp::Endpoint::Ident(ICMP_IDENT));
-        }
-        if !sent && socket.can_send() {
-            let echo = Icmpv4Repr::EchoRequest {
-                ident: ICMP_IDENT,
-                seq_no: 1,
-                data: b"ping",
-            };
-            if let Ok(payload) = socket.send(echo.buffer_len(), GATEWAY) {
-                let mut pkt = Icmpv4Packet::new_unchecked(payload);
-                echo.emit(&mut pkt, &checksum);
-                sent = true;
-            }
-        }
-        if socket.can_recv() {
-            if let Ok((payload, _)) = socket.recv() {
-                if let Ok(pkt) = Icmpv4Packet::new_checked(payload) {
-                    if let Ok(Icmpv4Repr::EchoReply { ident, seq_no, .. }) =
-                        Icmpv4Repr::parse(&pkt, &checksum)
-                    {
-                        if ident == ICMP_IDENT && seq_no == 1 {
-                            write(b"ping ok\n");
-                            exit();
-                        }
-                    }
-                }
-            }
+    let dn = conv_path(&mut path, id, b"data");
+    let Some(data) = open_flags(&path[..dn], O_RDWR) else {
+        fail(b"open data fail\n");
+    };
+    if write_fd(data, b"ping") == usize::MAX {
+        close(data);
+        fail(b"write data fail\n");
+    }
+    let mut got = false;
+    for _ in 0..DATA_POLLS {
+        let mut rbuf = [0u8; 64];
+        let nr = read(data, &mut rbuf);
+        if nr != 0 && nr != usize::MAX {
+            got = true;
+            break;
         }
     }
-    fail(b"icmp fail\n");
+    close(data);
+    if !got {
+        fail(b"icmp data timeout\n");
+    }
+    write(b"ping ok\n");
+    exit();
 }
 
 #[panic_handler]

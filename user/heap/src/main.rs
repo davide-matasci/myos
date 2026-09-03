@@ -134,7 +134,7 @@ int main(void) {
     } else {
         write(b"tcc std skip (tmp create fail)\n");
     }
-    // Userspace smoltcp DHCP + ICMP echo; needle is printed by /ping, not heap.
+    // ICMP echo via /net/icmp (netd); needle is printed by /ping, not heap.
     run_prog(b"/ping", &[b"ping"]);
     write(b"smoke ok\n");
     exit();

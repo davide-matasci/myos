@@ -86,6 +86,18 @@ fn main() {
     nested_elf(
         &cargo,
         manifest,
+        "../modules/netfs",
+        "netfs",
+        "netfs-target",
+        "NETFS_MODULE_PATH",
+        &target,
+        &profile,
+        &out,
+        &["../abi/src/lib.rs"],
+    );
+    nested_elf(
+        &cargo,
+        manifest,
         "../user/init",
         "init",
         "init-target",
@@ -129,6 +141,18 @@ fn main() {
         "ping",
         "ping-target",
         "USER_PING_PATH",
+        &target,
+        &profile,
+        &out,
+        &["../lib/src/lib.rs", "../lib/Cargo.toml"],
+    );
+    nested_elf(
+        &cargo,
+        manifest,
+        "../user/netd",
+        "netd",
+        "netd-target",
+        "USER_NETD_PATH",
         &target,
         &profile,
         &out,
@@ -651,8 +675,8 @@ fn embed_c_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
 }
 
 
-/// Ping on AArch64/RISC-V is ET_EXEC with absolute smoltcp vtables. It must be
-/// linked at USER_BASE (0x4000_0000); the kernel slides PT_LOAD without abs relocs.
+/// Ping/netd on AArch64/RISC-V are ET_EXEC. netd has absolute smoltcp vtables;
+/// ping keeps the same link base. Kernel slides PT_LOAD without abs relocs.
 fn assert_elf_linked_at_user_base(elf: &Path, bin: &str, target: &str) {
     const USER_BASE: u64 = 0x4000_0000;
     let bytes = std::fs::read(elf).unwrap_or_else(|e| panic!("read {bin} ELF: {e}"));
@@ -720,7 +744,7 @@ fn nested_elf(
     let profile_dir = if profile == "release" { "release" } else { "debug" };
     // smoltcp (ping) needs a clean link for --image-base; deps-only wipe can
     // leave a stale ET_EXEC at the default 0x200000 / 0x10000 link base.
-    let need_image_base = bin == "ping"
+    let need_image_base = (bin == "ping" || bin == "netd")
         && (target.contains("aarch64") || target.contains("riscv64"));
     if need_image_base {
         let _ = std::fs::remove_dir_all(&td);
@@ -743,7 +767,7 @@ fn nested_elf(
     }
     let mut rustflags = String::from("-C panic=abort");
     // ext2's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
-    if target.contains("x86_64") && (bin == "ext2" || bin == "virtio_net") {
+    if target.contains("x86_64") && (bin == "ext2" || bin == "virtio_net" || bin == "netfs") {
         rustflags = String::from("-C panic=abort -C relocation-model=pic");
     }
     if target.contains("aarch64") {
@@ -791,19 +815,24 @@ fn nested_elf(
     // Path string alone is not enough: same USER_*_PATH with new bytes left
     // bootfs include_bytes! stale. Watch the stable copy like other embeds.
     println!("cargo:rerun-if-changed={}", stable.display());
-    if bin == "ping" {
-        // Hash in rustc-env so bootfs.rs env!("USER_PING_HASH") dirties the
-        // crate when rust-cache reused a fingerprint but /ping bytes changed.
+    if bin == "ping" || bin == "netd" {
+        // Hash in rustc-env so bootfs.rs env!("USER_*_HASH") dirties the
+        // crate when rust-cache reused a fingerprint but ELF bytes changed.
         let bytes = std::fs::read(&elf).unwrap_or_default();
         let mut hash = 0xcbf29ce484222325u64;
         for b in &bytes {
             hash ^= u64::from(*b);
             hash = hash.wrapping_mul(0x1000_0000_01b3);
         }
-        let hashed = PathBuf::from(out).join(format!("ping-{hash:016x}.elf"));
+        let hashed = PathBuf::from(out).join(format!("{bin}-{hash:016x}.elf"));
         std::fs::write(&hashed, &bytes)
-            .unwrap_or_else(|e| panic!("write hashed ping: {e}"));
-        println!("cargo:rustc-env=USER_PING_HASH={hash:016x}");
+            .unwrap_or_else(|e| panic!("write hashed {bin}: {e}"));
+        let hash_key = if bin == "ping" {
+            "USER_PING_HASH"
+        } else {
+            "USER_NETD_HASH"
+        };
+        println!("cargo:rustc-env={hash_key}={hash:016x}");
         if env_key != "_unused" {
             println!("cargo:rustc-env={env_key}={}", hashed.display());
         }

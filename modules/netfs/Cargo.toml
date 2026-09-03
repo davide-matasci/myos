@@ -1,19 +1,19 @@
 [workspace]
 
 [package]
-name = "ping"
+name = "netfs"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "ICMP echo to 10.0.2.2 via Plan 9 /net/icmp (netd)."
+description = "Plan 9 /net kernel module: vfs_mount at /net plus /dev/netd channel to netd."
 
 [[bin]]
-name = "ping"
+name = "netfs"
 test = false
 bench = false
 
 [dependencies]
-myos-user = { path = "../lib" }
+myos-abi = { path = "../abi" }
 
 [profile.dev]
 panic = "abort"

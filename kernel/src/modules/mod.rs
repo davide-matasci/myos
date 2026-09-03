@@ -18,6 +18,7 @@ const FAT_IMAGE: &[u8] = include_bytes!(env!("FAT_MODULE_PATH"));
 const STUBFS_IMAGE: &[u8] = include_bytes!(env!("STUBFS_MODULE_PATH"));
 const EXT2_IMAGE: &[u8] = include_bytes!(env!("EXT2_MODULE_PATH"));
 const VIRTIO_NET_IMAGE: &[u8] = include_bytes!(env!("VIRTIO_NET_MODULE_PATH"));
+const NETFS_IMAGE: &[u8] = include_bytes!(env!("NETFS_MODULE_PATH"));
 
 static API: KernelApi = KernelApi {
     abi_version: ABI_VERSION,
@@ -77,6 +78,13 @@ pub fn load_embedded_ext2() {
 pub fn load_embedded_virtio_net() {
     if let Err(e) = load("virtio_net", VIRTIO_NET_IMAGE) {
         console::status_fail(&alloc::format!("virtio-net module: {e}"));
+    }
+}
+
+/// Load netfs: Plan 9 `/net` plus `/dev/netd` channel for userspace netd.
+pub fn load_embedded_netfs() {
+    if let Err(e) = load("netfs", NETFS_IMAGE) {
+        console::status_fail(&alloc::format!("netfs module: {e}"));
     }
 }
 

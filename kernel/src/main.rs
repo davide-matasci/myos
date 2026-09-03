@@ -98,6 +98,7 @@ fn kernel_main() -> ! {
     blk::init();
     nvme::init();
     modules::load_embedded_virtio_net();
+    modules::load_embedded_netfs();
     modules::load_embedded_fat();
     modules::load_embedded_ext2();
     // /msg lives on bootfs; /ok mounts /dev/vda as fat at /fat.
