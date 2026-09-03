@@ -8,7 +8,9 @@ source "$HERE/versions.env"
 TCC_SRC="$ROOT/target/tcc-src"
 TCC_REV="${TCC_REV:-2ba12e83b3599ca8f5d50c179fe5138fe956f0c9}"
 
-if [[ -d "$TCC_SRC/.git" && -f "$TCC_SRC/tcc.c" ]]; then
+# Also require include/stddef.h: an empty include/ stub (e.g. from
+# packing target/tcc-* into ci-build.tar) must not count as present.
+if [[ -d "$TCC_SRC/.git" && -f "$TCC_SRC/tcc.c" && -f "$TCC_SRC/include/stddef.h" ]]; then
   got="$(git -C "$TCC_SRC" rev-parse HEAD)"
   if [[ "$got" == "$TCC_REV" ]]; then
     echo "tinycc already present at $TCC_SRC ($TCC_REV)"

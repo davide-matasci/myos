@@ -122,6 +122,23 @@ fn main() {
             &["../lib/src/lib.rs", "../lib/Cargo.toml"],
         );
     }
+    nested_elf(
+        &cargo,
+        manifest,
+        "../user/ping",
+        "ping",
+        "ping-target",
+        "USER_PING_PATH",
+        &target,
+        &profile,
+        &out,
+        &[
+            "../lib/src/lib.rs",
+            "../lib/Cargo.toml",
+            "../net/src/lib.rs",
+            "../net/Cargo.toml",
+        ],
+    );
 
     if arch == "x86_64" || arch == "aarch64" || arch == "riscv64" {
         for (artifact, env_key) in [
@@ -307,7 +324,12 @@ fn embed_lib_sysroot(manifest_dir: &Path, arch: &str, out_dir: &Path) {
     // includes them; tcc does not have GCC builtins.
     let tcc_inc = manifest_dir.join("../target/tcc-src/include");
     println!("cargo:rerun-if-changed={}", tcc_inc.display());
-    if !tcc_inc.is_dir() {
+    // Require stddef.h, not merely an include/ directory. An empty
+    // target/tcc-src/include (stub from a partial tree packed via
+    // target/tcc-* in ci-build.tar) would skip prepare and omit TCC
+    // freestanding headers; newlib's sys/cdefs.h then fails hosted tcc -o.
+    let stddef = tcc_inc.join("stddef.h");
+    if !stddef.is_file() {
         let prep = manifest_dir.join("../ports/tcc/prepare.sh");
         let status = Command::new("bash")
             .arg(&prep)
@@ -317,12 +339,12 @@ fn embed_lib_sysroot(manifest_dir: &Path, arch: &str, out_dir: &Path) {
             panic!("{} failed", prep.display());
         }
     }
-    if tcc_inc.is_dir() {
+    if stddef.is_file() {
         collect_dir(&tcc_inc, "newlib/include", &mut entries);
     } else {
         panic!(
-            "tcc include/ missing at {} (run ./ports/tcc/prepare.sh)",
-            tcc_inc.display()
+            "tcc include/stddef.h missing at {} (run ./ports/tcc/prepare.sh)",
+            stddef.display()
         );
     }
     if let Some((_, crt0)) = entries.iter().find(|(p, _)| p == "newlib/lib/crt0.o") {
@@ -628,6 +650,47 @@ fn embed_c_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str) {
     println!("cargo:rustc-env={env_key}={}", stable.display());
 }
 
+
+/// Ping on AArch64/RISC-V is ET_EXEC with absolute smoltcp vtables. It must be
+/// linked at USER_BASE (0x4000_0000); the kernel slides PT_LOAD without abs relocs.
+fn assert_elf_linked_at_user_base(elf: &Path, bin: &str, target: &str) {
+    const USER_BASE: u64 = 0x4000_0000;
+    let bytes = std::fs::read(elf).unwrap_or_else(|e| panic!("read {bin} ELF: {e}"));
+    if bytes.len() < 64 || &bytes[0..4] != b"\x7fELF" {
+        panic!("{bin} for {target} is not ELF");
+    }
+    // e_entry at offset 24 (ELF64)
+    let entry = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
+    if entry < USER_BASE {
+        panic!(
+            "{bin} for {target} entry {entry:#x} is below USER_BASE {USER_BASE:#x};              --image-base did not apply (absolute vtables would fault after slide)"
+        );
+    }
+    // e_entry alone is not enough (--section-start .text can raise entry while
+    // rodata/vtables stay at 0x200000 / 0x10000).
+    let phoff = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
+    let phentsize = u16::from_le_bytes(bytes[54..56].try_into().unwrap()) as usize;
+    let phnum = u16::from_le_bytes(bytes[56..58].try_into().unwrap()) as usize;
+    let mut min_vaddr = u64::MAX;
+    for i in 0..phnum {
+        let p = phoff + i * phentsize;
+        if p + 40 > bytes.len() {
+            break;
+        }
+        let p_type = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+        if p_type != 1 {
+            continue; // PT_LOAD
+        }
+        let vaddr = u64::from_le_bytes(bytes[p + 16..p + 24].try_into().unwrap());
+        min_vaddr = min_vaddr.min(vaddr);
+    }
+    if min_vaddr == u64::MAX || min_vaddr < USER_BASE {
+        panic!(
+            "{bin} for {target} min PT_LOAD p_vaddr {min_vaddr:#x} is below USER_BASE              {USER_BASE:#x}; abs data would still fault after slide (entry was {entry:#x})"
+        );
+    }
+}
+
 fn nested_elf(
     cargo: &str,
     manifest_dir: &Path,
@@ -655,8 +718,16 @@ fn nested_elf(
     // Nested target dirs reuse myos-user rlibs aggressively; drop deps when
     // the shared user library changed so fork/exec stubs stay in sync.
     let profile_dir = if profile == "release" { "release" } else { "debug" };
-    let deps = td.join(target).join(profile_dir).join("deps");
-    let _ = std::fs::remove_dir_all(deps);
+    // smoltcp (ping) needs a clean link for --image-base; deps-only wipe can
+    // leave a stale ET_EXEC at the default 0x200000 / 0x10000 link base.
+    let need_image_base = bin == "ping"
+        && (target.contains("aarch64") || target.contains("riscv64"));
+    if need_image_base {
+        let _ = std::fs::remove_dir_all(&td);
+    } else {
+        let deps = td.join(target).join(profile_dir).join("deps");
+        let _ = std::fs::remove_dir_all(deps);
+    }
     let mut cmd = Command::new(cargo);
     cmd.arg("build")
         .arg("--manifest-path")
@@ -670,17 +741,26 @@ fn nested_elf(
     if profile == "release" {
         cmd.arg("--release");
     }
-    cmd.env("RUSTFLAGS", "-C panic=abort");
+    let mut rustflags = String::from("-C panic=abort");
     // ext2's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
     if target.contains("x86_64") && (bin == "ext2" || bin == "virtio_net") {
-        cmd.env("RUSTFLAGS", "-C panic=abort -C relocation-model=pic");
+        rustflags = String::from("-C panic=abort -C relocation-model=pic");
+    }
+    if target.contains("aarch64") {
+        // Match .cargo/config.toml; RUSTFLAGS replaces target rustflags entirely.
+        rustflags = String::from("-C panic=abort -C relocation-model=static");
     }
     if target.contains("riscv64") {
-        cmd.env(
-            "RUSTFLAGS",
+        rustflags = String::from(
             "-C panic=abort -C relocation-model=static -C code-model=medium",
         );
     }
+    // Belt-and-suspenders with user/ping/build.rs. Prefer split link-arg form
+    // (equals form alone previously left CI at 0x200000/0x10000).
+    if need_image_base {
+        rustflags.push_str(" -C link-arg=--image-base -C link-arg=0x40000000");
+    }
+    cmd.env("RUSTFLAGS", rustflags);
     cmd.env_remove("CARGO_ENCODED_RUSTFLAGS");
     let status = cmd
         .status()
@@ -700,12 +780,34 @@ fn nested_elf(
     if !elf.is_file() {
         panic!("{bin} ELF missing at {}", elf.display());
     }
-    if env_key != "_unused" {
-        println!("cargo:rustc-env={env_key}={}", elf.display());
+    if need_image_base {
+        assert_elf_linked_at_user_base(&elf, bin, target);
     }
     let ws_target = manifest_dir.join("../target");
     std::fs::create_dir_all(&ws_target).expect("workspace target dir");
     let stable = ws_target.join(format!("{bin}-{target}"));
     std::fs::copy(&elf, &stable)
         .unwrap_or_else(|e| panic!("copy {bin} ELF to {}: {e}", stable.display()));
+    // Path string alone is not enough: same USER_*_PATH with new bytes left
+    // bootfs include_bytes! stale. Watch the stable copy like other embeds.
+    println!("cargo:rerun-if-changed={}", stable.display());
+    if bin == "ping" {
+        // Hash in rustc-env so bootfs.rs env!("USER_PING_HASH") dirties the
+        // crate when rust-cache reused a fingerprint but /ping bytes changed.
+        let bytes = std::fs::read(&elf).unwrap_or_default();
+        let mut hash = 0xcbf29ce484222325u64;
+        for b in &bytes {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x1000_0000_01b3);
+        }
+        let hashed = PathBuf::from(out).join(format!("ping-{hash:016x}.elf"));
+        std::fs::write(&hashed, &bytes)
+            .unwrap_or_else(|e| panic!("write hashed ping: {e}"));
+        println!("cargo:rustc-env=USER_PING_HASH={hash:016x}");
+        if env_key != "_unused" {
+            println!("cargo:rustc-env={env_key}={}", hashed.display());
+        }
+    } else if env_key != "_unused" {
+        println!("cargo:rustc-env={env_key}={}", stable.display());
+    }
 }
