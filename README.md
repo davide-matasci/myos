@@ -1,180 +1,75 @@
 # myos
 
-A small, readable kernel in Rust. It boots in QEMU and prints
-`Hello from myos` on serial (and to a framebuffer when Limine provides one).
-This is a starting point to grow into a real OS, not a feature dump.
+**A minimal, readable operating system kernel written in Rust.**
 
-Both x86_64 and AArch64 boot through **[Limine](https://github.com/limine-bootloader/limine)**
-(protocol base revision 6, `limine` crate 0.6.5). The host crate fetches a
-pinned Limine binary release (`v12.6.1`), builds a GPT+FAT ESP with
-`BOOTX64.EFI` / `BOOTAA64.EFI`, `limine.conf`, and the kernel ELF, and (on
-x86) runs `limine bios-install` so the same image is BIOS+UEFI.
+myos boots in QEMU on **x86_64**, **AArch64**, and **RISC-V** through [Limine](https://github.com/limine-bootloader/limine), and reaches a fully interactive shell with a login prompt, userspace programs, and a modular VFS — in under 33 000 lines of Rust and C.
 
-There is no rust-osdev `bootloader` 0.11 path and no QEMU `-kernel` stub.
-Multiboot is not used (the spec is i386/MIPS32; there is no merged
-Multiboot-for-ARM).
+This is a starting point to grow into a real OS, not a feature dump. Everything is kept readable and self-contained.
 
-Nightly is **pinned** (`nightly-2026-07-26`). Do not unpin it in this pass.
+---
 
-Userspace **ports** live under `ports/` (sbase, ubase, oksh, ripgrep, coreutils, tcc; fetched at build, not vendored). **Toolchain** pieces live under `toolchain/` (newlib/libgloss and the Rust `std` PAL/sysroot). `scripts/` keeps thin wrappers so `./scripts/build-sbase.sh` still works.
+## Features
 
-The kernel runs round-robin **kernel threads** plus **user processes**.
-Init (`user/init`) is PID1-style: a real `#![no_std]` ELF, baked in with
-`include_bytes!`, spawned as today, smoke-runs fork/`/ok` for CI needles,
-then **stays PID1** and forks **getty** (`/u/getty /dev/console linux`).
-Getty sets up the console, prompts `login: `, and execs **`/u/login`**.
-Login is fake single-user (`root` / empty-or-any password) and execs `/sh`.
-If getty/login/sh exits, init `wait()`s and respawns getty. `/sh` is portable
-OpenBSD ksh ([oksh](https://github.com/ibara/oksh) 7.9) linked with
-newlib/libgloss. It prints `sh ok` and drops to an interactive `$ ` prompt on
-**stdin** (PS/2 keyboard when detected, else serial). Slim always-on `user/ok`
-proves `alloc ok`, reads `/msg` (`user ok` / `fat ok`), cheap disk/FAT listdir
-markers and `/proc/mounts` (`proc ok`), then exits — it no longer execs the
-heavy carnival. CI types `root`
-at `login: `, an empty password, then `heap` at `$` for
-std/C/sbase/uutils/ripgrep/tcc/bigalloc.
-`/c/rg` is BurntSushi ripgrep (fetched at build time, with PCRE2). `/t/tcc` is TinyCC (fetched at build time) with mmap-backed `-run`. Userspace programs are ELFs,
-not `KernelApi` modules. Nested cargo like
-hello; loaded into per-process page tables at `USER_BASE`. Each process has
-its own CR3/TTBR0; the kernel/HHDM (and on AArch64 the TTBR0 device block
-for UART/GIC) is mapped into the aspace. It drops to ring 3 / EL0 and uses
-`syscall` / `svc`. Kernel threads can `task::yield_now()` cooperatively;
-the timer IRQ also calls the same `task::schedule()` after EOI, so the
-switch is preemptive too (including user mode). CI checks `task a`,
-`task b`, `sched ok`, `sh ok`, `user ok`, and `fat ok`.
+- **Multi-arch boot** — x86_64 (BIOS + UEFI), AArch64, and RISC-V all boot through Limine protocol revision 6
+- **Interactive shell** — getty → login (`root`, empty password) → [oksh](https://github.com/ibara/oksh) 7.9 (portable OpenBSD ksh)
+- **Rust kernel** — `#![no_std]`, higher-half link, HHDM memory, preemptive round-robin scheduler
+- **Kernel modules** — one ELF loader for all modules; FAT16, ext2, virtio-net, and netfs are all loadable
+- **VFS with multiple backends** — bootfs (embedded ELFs), tmpfs, devfs, procfs, FAT16, ext2
+- **Userspace ELFs** — Rust `#![no_std]` programs baked in or loaded from ESP; also Rust `std` smoke and full newlib/libgloss C toolchain
+- **Ported userspace** — sbase (~91 utilities), ubase (getty/login), uutils coreutils, ripgrep, TinyCC, all fetched and built at compile time
+- **Networking** — virtio-net kernel module + smoltcp in userspace via `/dev/net0`; `/ping` works on all arches
+- **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
+
+---
 
 ## Prerequisites
 
-- [rustup](https://rustup.rs/) (the `rust-toolchain.toml` in this repo
-  selects the pinned nightly and the components below)
-- QEMU (`qemu-system-x86_64`, `qemu-system-aarch64`, and `qemu-system-misc` for RISC-V)
-- A C compiler (`cc`) to build the Limine host tool (`bios-install`)
-- `curl` to fetch the pinned Limine binary tarball on first build
-- `xorriso` to write the hybrid ISO (`cargo run -- iso` only; Debian package `xorriso`)
-- For AArch64: UEFI firmware (the launcher tries `ovmf-prebuilt`, then
-  distro AAVMF paths such as `/usr/share/AAVMF/AAVMF_CODE.fd`)
+- [rustup](https://rustup.rs/) — `rust-toolchain.toml` pins **nightly-2026-07-26** and installs the needed components automatically
+- QEMU (`qemu-system-x86`, `qemu-system-arm`, `qemu-efi-aarch64`, `qemu-efi-riscv64`)
+- A C compiler (`cc`) for the Limine host tool (`bios-install`)
+- `curl` to fetch the Limine binary tarball on first build
+- `xorriso` for hybrid ISO output (`cargo run -- iso`)
 
-Nightly components / targets (installed automatically by rustup from
-`rust-toolchain.toml`):
+Nightly components (installed automatically from `rust-toolchain.toml`):
 
-- `llvm-tools-preview`
-- `rust-src`
-- `x86_64-unknown-none` — x86_64 kernel target
-- `x86_64-unknown-uefi` — unused by the kernel now, kept for toolchain stability
-- `aarch64-unknown-none-softfloat` — AArch64 kernel target (softfloat so we
-  do not touch NEON/FP before the CPU is set up)
-
-```sh
-# rustup reads rust-toolchain.toml on the first cargo invocation
-# and installs the pinned nightly + components + targets.
-
-# Debian/Ubuntu:  sudo apt install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 gcc
-# ISO only:       sudo apt install xorriso
-# Fedora:         sudo dnf install qemu-system-x86 qemu-system-aarch64 edk2-aarch64 gcc
-# macOS:          brew install qemu
-# Arch:           sudo pacman -S qemu-system-x86 qemu-system-aarch64 gcc
+```
+llvm-tools-preview
+rust-src
+x86_64-unknown-none
+aarch64-unknown-none-softfloat
 ```
 
-On Ubuntu, `qemu-system-aarch64` is in the `qemu-system-arm` package and
-AArch64 UEFI firmware is `qemu-efi-aarch64`.
+On Ubuntu:
 
-## Build and run
+```sh
+sudo apt install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 gcc xorriso
+```
 
-From the repo root:
+On macOS:
+
+```sh
+brew install qemu
+```
+
+---
+
+## Quick Start
 
 ```sh
 cargo run
 ```
 
-That compiles the kernel for `x86_64-unknown-none`, wraps it in a Limine
-GPT+FAT disk (BIOS stages installed), writes `target/fat.img` (FAT16 data
-disk), and starts QEMU with a second virtio-blk device. You should see a
-green `Hello from myos` on a black screen when a framebuffer is present.
-Close the QEMU window to exit.
+This builds the x86_64 kernel, wraps it in a Limine GPT+FAT ESP (BIOS + UEFI), writes `target/fat.img` as a second virtio-blk disk, and starts QEMU. You should see green `Hello from myos` on a black screen; close the window to exit.
 
 ```sh
-cargo run -- uefi
+cargo run -- uefi        # same image over UEFI (OVMF fetched on first run)
+cargo run -- aarch64     # AArch64 on qemu-system-aarch64 + AAVMF
+cargo run -- riscv64     # RISC-V on qemu-system-riscv64 + RISC-V UEFI firmware
+cargo run -- iso         # write target/myos-x86_64.iso (needs xorriso)
+cargo run --release      # release builds (smaller, faster)
 ```
 
-Same x86_64 image over UEFI (OVMF firmware is fetched on first run into
-`target/ovmf`).
-
-```sh
-cargo run -- aarch64
-```
-
-Builds the kernel for `aarch64-unknown-none-softfloat`, writes
-`target/aarch64.img` (ESP with `BOOTAA64.EFI`) and `target/fat.img`, and
-starts `qemu-system-aarch64` on `virt,gic-version=2` (`-cpu cortex-a72`)
-with AAVMF/QEMU_EFI. Serial is on stdio; ramfb gives QEMU a graphical
-window. CI stays serial-only. Close the window or wait for PSCI SYSTEM_OFF.
-
-```sh
-cargo run -- riscv64
-```
-
-Builds the kernel for `riscv64imac-unknown-none-elf`, writes
-`target/riscv64.img` (ESP with `BOOTRISCV64.EFI`, Limine `global_dtb`, Sv39),
-and starts `qemu-system-riscv64` on `virt` with RISC-V UEFI firmware
-(`qemu-efi-riscv64` or `edk2-riscv64`). Serial is on stdio; ramfb is enabled
-for a graphical window. Userspace fork/exec is working; the full CI needle
-set (`user ok`, `fat ok`, interactive shell) is still being brought up on
-RISC-V.
-
-To only build the x86_64 images:
-
-```sh
-cargo build
-```
-
-Copies also land at:
-
-```
-target/bios.img
-target/uefi.img
-target/fat.img
-```
-
-Boot a built x86 image yourself with:
-
-```sh
-qemu-system-x86_64 -m 256 \\
-  -drive format=raw,file=target/bios.img \\
-  -drive if=none,id=vd0,format=raw,file=target/fat.img \\
-  -device virtio-blk-pci,drive=vd0,disable-modern=on \\
-  -serial stdio
-```
-
-Write a BIOS+UEFI hybrid ISO (needs `xorriso`; does not start QEMU):
-
-```sh
-cargo run -- iso
-```
-
-That writes `target/myos-x86_64.iso`. GitHub Actions → ISO → Run workflow
-uploads the same artifact. It does not run on push. Optional QEMU:
-
-```sh
-qemu-system-x86_64 -m 256 -cdrom target/myos-x86_64.iso -serial stdio
-```
-
-`target/fat.img` is still a separate virtio-blk disk; attach it as in the
-BIOS command above if you want `/msg`.
-
-The AArch64 ELF is at:
-
-```
-target/aarch64-unknown-none-softfloat/debug/kernel
-```
-
-Release build:
-
-```sh
-cargo run --release
-cargo run --release -- aarch64
-```
-
-Headless checks (what CI runs):
+**Headless / CI mode** — the same commands with `-- --ci` at the end kill QEMU once all boot needles are seen (BIOS/UEFI/AArch64 all work headless):
 
 ```sh
 cargo run -- --ci
@@ -182,471 +77,410 @@ cargo run -- uefi --ci
 cargo run -- aarch64 --ci
 ```
 
-BIOS/UEFI boots with `-display none`, require `Hello from myos`, `heap ok`,
-`int ok`, `task a`, `task b`, `sched ok`, `mod ok`, `limine mod ok`,
-`sh ok`, `user ok`, and `fat ok` on serial. CI kills QEMU once all needles
-are seen (the shell would otherwise block on stdin). AArch64 requires the
-same strings and exits the same way (CI times out at 60s if needles are
-missing).
-
-Interactive use (keyboard on x86 in QEMU window, or serial on a TTY):
-
-```sh
-cargo run          # x86 BIOS — type at `$` (keyboard or serial)
-cargo run -- uefi
-cargo run -- aarch64   # serial only for now
+Expected headless output on x86_64 and AArch64:
+```
+Hello from myos
+heap ok
+int ok
+task a
+task b
+sched ok
+mod ok
+limine mod ok
+sh ok
+user ok
+fat ok
 ```
 
-## Real hardware (not QEMU)
+On RISC-V the full needle set is still being brought up; the boot kernel smoke (`sh ok`, `user ok`) is required.
 
-On a physical PC you usually see Limine and then **green text on the
-monitor**. The kernel mirrors serial output to that framebuffer, so boot
-progress (`heap ok`, `kbd ok`, `sh ok`, `$`, …) should scroll on screen as
-well as on serial.
+**Interactive use** — type at the `$` prompt (PS/2 keyboard in the QEMU window on x86; serial on all arches):
 
-**stdin (fd 0)** merges **PS/2 keyboard** (x86, when the 8042 responds) and
-**serial**. If probe succeeds the kernel prints `kbd ok` and you can type at
-`$` on a directly attached keyboard (USB keyboards usually work in legacy
-PS/2 mode). Serial remains available at the same time.
+```sh
+# x86 BIOS — keyboard or serial at $
+cargo run
 
-If no keyboard is detected, use serial only:
+# x86 UEFI
+cargo run -- uefi
 
-| Arch | Port | Settings |
-|------|------|----------|
-| x86_64 | **COM1** (I/O `0x3F8`) | **38400** 8N1 |
-| AArch64 | PL011 UART (board-specific; `0x09000000` on QEMU virt) | 115200 8N1 typical |
+# AArch64 — serial only for now
+cargo run -- aarch64
+```
 
-On many desktops COM1 is a motherboard header (9-pin) or a rear DB9. Use a
-USB‑serial adapter, connect **GND/RX/TX** (often a null-modem cable to a
-second PC), and open the port in `minicom`, `picocom`, or PuTTY at the baud
-above. Example:
+CI types `root` at `login: `, then commands at `$ ` (password is empty).
+
+---
+
+## Architecture Overview
+
+```
+Boot (Limine)
+  └─ Limine HHDM + memory map + framebuffer + modules
+       └─ Kernel (higher-half, #![no_std])
+            ├─ Heap (256 KiB linked-list allocator)
+            ├─ Scheduler (round-robin kernel threads + user tasks)
+            ├─ VFS (mount table → bootfs / tmpfs / devfs / procfs / ext2 / netfs)
+            ├─ virtio-blk (in-kernel, x86 PCI legacy / AArch64 MMIO)
+            ├─ Modules: FAT16, ext2, virtio-net, netfs
+            └─ Userspace (ELF processes)
+                 ├─ /ok smoke (always-on, alloc / user / fat / disk / proc markers)
+                 ├─ /netd (smoltcp over /dev/net0; only opener of net0)
+                 ├─ getty → login → /sh (oksh 7.9 via newlib/libgloss)
+                 └─ CI /heap: std / C / sbase / uutils / ripgrep / tcc
+```
+
+### Boot
+
+Limine protocol base revision 6 (`limine` crate 0.6.5). The host tool fetches pinned Limine binary `v12.6.1`, writes a GPT+FAT ESP (`BOOTX64.EFI` / `BOOTAA64.EFI`, `BOOTRISCV64.EFI`), writes `limine.conf`, and copies the kernel ELF and any module ELFs onto the ESP. On x86, `limine bios-install` is run so the image boots natively on both BIOS and UEFI machines.
+
+No `bootloader` crate. No QEMU `-kernel`. No Multiboot.
+
+### Memory
+
+Kernel is linked in the higher half (`0xffffffff80000000` on x86_64). Limine provides an HHDM offset; all usable memory is accessed as `phys + HHDM`. Page tables are allocated from the bump allocator after the heap.
+
+On AArch64 the 1 GiB device block (UART at `0x09000000`, GICv2 at `0x08000000`, virtio-mmio at `0x0a000000`) is identity-mapped via `TTBR0` since it is not included in the HHDM at Limine base revision 3+.
+
+### Scheduling
+
+Round-robin kernel threads plus user tasks. Tasks call `task::yield_now()` cooperatively; the timer IRQ also calls `task::schedule()` after EOI, making the switch preemptive even in user mode.
+
+x86_64: local xAPIC timer. AArch64: GICv2 generic physical timer (PPI 30). RISC-V: ACLINT.
+
+### Interrupt handling
+
+Each process has its own CR3/TTBR0 page table. The kernel/HHDM is mapped into every address space. On x86_64 the user page table has no kernel mappings (separate kernel CR3); on AArch64 TTBR0_EL1 points to the kernel page table and TTBR0_EL2 maps the device block.
+
+### Console and input
+
+Dual console: serial (COM1 / PL011) and Limine framebuffer (mirrored, so real hardware shows green text on screen). Stdin (fd 0) merges PS/2 keyboard (x86, 8042 probe) and serial simultaneously.
+
+---
+
+## Repository Layout
+
+| Path | Role |
+|------|------|
+| `src/main.rs` | Host launcher: starts QEMU (BIOS/UEFI/AArch64/RISC-V) + second virtio-blk disk |
+| `src/limine_image.rs` | GPT+FAT ESP writer + Limine binary fetch + `limine.conf` + `fat.img` |
+| `build.rs` | Fetch Limine; wrap x86_64 kernel in BIOS+UEFI images; write `fat.img` |
+| `kernel/src/main.rs` | `#![no_std]` Limine entry: heap, IRQs, scheduler, bootfs, modules, virtio-blk, fat, user init, halt |
+| `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, framebuffer, modules, executable addr) |
+| `kernel/src/mm.rs` | Physical frame allocator (after the 256 KiB heap; page tables, user pages, virtqueues) |
+| `kernel/src/blk.rs` | In-kernel virtio-blk: legacy I/O-BAR (x86) and virtio-mmio (AArch64) |
+| `kernel/src/arch/x86/` | COM1, GDT/TSS/IDT/xAPIC, PCI (0xCF8/0xCFC), PS/2 keyboard |
+| `kernel/src/arch/aarch64/` | PL011, GICv2, lower-EL SVC, virtio-mmio blk, PSCI off |
+| `kernel/src/arch/riscv/` | CLINT, PLIC, UART16550 for RISC-V |
+| `kernel/src/console.rs` | Dual console: serial + framebuffer mirror |
+| `kernel/src/input.rs` | Stdin ring buffer: PS/2 keyboard + serial merged into fd 0 |
+| `kernel/src/framebuffer.rs` | Pixel writer for a Limine framebuffer |
+| `kernel/src/font.rs` | Tiny 8×8 bitmap font |
+| `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable + HHDM memory |
+| `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now`, timer preemption, fork/exec/wait syscalls |
+| `kernel/src/fs/` | VFS (`vfs.rs`) + bootfs / tmpfs / devfs / procfs backends |
+| `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
+| `modules/abi` | Shared `#[repr(C)]` KernelApi (v7: PCI/DMA/`dev_register` after v6 VFS) |
+| `modules/hello` | Sample module: built both embedded (`include_bytes!`) and on ESP via Limine |
+| `modules/stubfs` | Sample prefixed mount via `vfs_mount` at `/disk` |
+| `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
+| `modules/ext2` | Writable ext2 (rev1, 1 KiB blocks): `ModuleVfsOps`, bound at `mount(2)` |
+| `modules/virtio_net` | Modern virtio-pci net: poll-mode RX/TX, `/dev/net0` Ethernet frames |
+| `modules/netfs` | Plan 9 `/net` + `/dev/netd` channel to userspace netd |
+| `user/init` | PID1: smoke fork/`/ok`, fork `/netd`, exec `/sh`; `include_bytes!` baked in |
+| `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree for reference) |
+| `user/ok` | Slim always-on boot smoke (alloc / user / fat / disk / proc); loaded from ESP |
+| `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/ripgrep/tcc/bigalloc); typed as `heap` at `$` |
+| `user/netd` | Userspace smoltcp over `/dev/net0`; only process that opens net0 |
+| `user/lib` | Shared `myos_user` syscall wrappers, argv parser, `Heap` allocator |
+| `user/echo` | Print argv; installed as `/myos_echo` on bootfs |
+| `user/cat` | Read a bootfs file; installed as `/myos_cat` |
+| `user/ls` | List bootfs entries; installed as `/myos_ls` |
+| `user/mount` | `mount` with no args prints `/proc/mounts`; `mount src tgt fstype` issues `SYS_MOUNT` |
+| `ports/` | Userspace ports: source fetched at build time, not vendored |
+| `ports/sbase/` | ~91 suckless sbase utilities; `.myos.patch` files, `bins.txt`, compat headers |
+| `ports/ubase/` | getty + login; `.myos.patch` files |
+| `ports/oksh/` | oksh 7.9; `pconfig.h` (no curses, no jobs, `--enable-small`), `.myos.patch` files |
+| `ports/tcc/` | TinyCC; `tccrun` mmap/`-run` glue |
+| `ports/ripgrep/` | ripgrep; PCRE2 support via `/c/rg` |
+| `ports/coreutils/` | uutils coreutils multicall binaries under `/c/` |
+| `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters; fetch/build scripts |
+| `toolchain/std/` | Rust `std` PAL skeleton, sysroot build scripts, upstream OSDev notes |
+| `targets/` | Custom Rust target specs (`x86_64-unknown-myos`, `aarch64-unknown-myos`, `riscv64imac-unknown-myos`) |
+| `scripts/` | Thin wrappers for all port builds; CI registry (`myos-c-userspace-lib.sh`) |
+
+---
+
+## Build & Run in Detail
+
+### Build only
+
+```sh
+cargo build
+```
+
+Produces:
+- `target/bios.img` — BIOS+UEFI hybrid disk
+- `target/uefi.img` — UEFI-only ESP
+- `target/fat.img` — 20 MiB FAT16 data disk (second virtio-blk device)
+- `target/aarch64.img` — AArch64 ESP
+- `target/riscv64.img` — RISC-V ESP
+
+### x86_64 BIOS boot
+
+```sh
+qemu-system-x86_64 -m 256 \
+  -drive format=raw,file=target/bios.img \
+  -drive if=none,id=vd0,format=raw,file=target/fat.img \
+  -device virtio-blk-pci,drive=vd0,disable-modern=on \
+  -serial stdio
+```
+
+### x86_64 UEFI boot
+
+```sh
+qemu-system-x86_64 -m 256 \
+  -drive format=raw,file=target/uefi.img \
+  -drive if=none,id=vd0,format=raw,file=target/fat.img \
+  -device virtio-blk-pci,drive=vd0,disable-modern=on \
+  -serial stdio
+```
+
+### AArch64
+
+```sh
+qemu-system-aarch64 -m 256 \
+  -cpu cortex-a72 \
+  -machine virt,gic-version=2 \
+  -drive format=raw,file=target/aarch64.img \
+  -drive if=none,id=vd0,format=raw,file=target/fat.img \
+  -device virtio-blk-device,drive=vd0 \
+  -bios /usr/share/AAVMF/AAVMF_CODE.fd \
+  -serial stdio
+```
+
+The launcher fetches OVFIM firmware (`ovmf-prebuilt`) on first run; distro AAVMF paths are also tried.
+
+### RISC-V
+
+```sh
+qemu-system-riscv64 -m 256 \
+  -machine virt \
+  -drive format=raw,file=target/riscv64.img \
+  -bios /usr/share/qemu/ovmf-bin/Edk2-riscv64.fd \
+  -serial stdio
+```
+
+### ISO (hybrid BIOS+UEFI)
+
+```sh
+cargo run -- iso          # writes target/myos-x86_64.iso (no QEMU)
+qemu-system-x86_64 -m 256 -cdrom target/myos-x86_64.iso -serial stdio
+```
+
+### Second disk (`target/fat.img`)
+
+All QEMU invocations attach `target/fat.img` as a second virtio-blk disk. It is not the boot drive — it holds `/msg` so `user/ok` can print `fat ok`. Bare metal without this disk still boots to the shell.
+
+---
+
+## Real Hardware
+
+Write the Limine disk image to a USB stick or internal drive as you would for QEMU (`target/bios.img` for BIOS, `target/uefi.img` for UEFI). On real hardware the kernel mirrors serial output to the framebuffer, so boot progress scrolls on screen as well as serial.
+
+**stdin** merges PS/2 keyboard and serial. If the 8042 probe succeeds, `kbd ok` is printed and you can type at the shell prompt on a directly attached keyboard. Serial is always available.
+
+| Arch | Serial port | Baud rate |
+|------|-------------|-----------|
+| x86_64 | COM1 (I/O `0x3F8`) | 38400 8N1 |
+| AArch64 | PL011 UART (board-specific; `0x09000000` on QEMU virt) | 115200 8N1 |
+| RISC-V | UART (board-specific; `0x10000000` on QEMU virt) | 115200 8N1 |
+
+On many desktops COM1 is a motherboard header (9-pin) or rear DB9. Use a USB‑serial adapter, connect **GND/RX/TX**, and open the port in `picocom`, `minicom`, or PuTTY:
 
 ```sh
 picocom -b 38400 /dev/ttyUSB0
 ```
 
-Write the Limine disk image to a USB stick or internal drive the same way
-you would for QEMU (`target/bios.img` or UEFI ESP). Attach a **second**
-FAT16 data disk only if you want `/msg` / `fat ok` (virtio-blk is expected;
-bare metal without that disk still boots the shell).
+If the monitor stops at `Hello from myos`, the OS was still running on serial only — connect serial or update to a build with framebuffer mirroring.
 
-If the **monitor stops at `Hello from myos`** on an old image, the OS was
-still running on serial only — update to a build with framebuffer mirroring
-or connect serial to see the rest.
+---
 
-## VFS, virtio-blk, and FAT16
+## VFS and Filesystems
 
-A VFS layer (`kernel/src/fs/vfs.rs`) holds a **mount table**; each mount
-has a name (fstype), optional path prefix, a source (`none` or a `/dev/vd*`
-path), and [`MountOps`] (`lookup`, `stat`, `listdir`, `register`). Syscalls
-route through the VFS, which picks the longest matching prefix (root mount
-uses `""` today, so `/ok` and `ok` both resolve on bootfs). `vfs::mounts_text()`
-snapshots the table as Linux-shaped `source target fstype opts 0 0` lines.
+### VFS layer
 
-**procfs** (`kernel/src/fs/procfs.rs`) is a read-only generated mount at
-`/proc`. The only node today is `/proc/mounts` (not stored bytes): `open` /
-`read` / `cat /proc/mounts` print the current table. `/mount` with no
-arguments is a pretty-printer of that file; `mount <source> <target> <fstype>`
-still issues `SYS_MOUNT`.
+`kernel/src/fs/vfs.rs` holds a mount table. Each mount has a name (fstype), an optional path prefix, a source, and a set of operations (`lookup`, `stat`, `listdir`, `register`). The kernel routes all file syscalls through VFS, which picks the longest matching prefix. `vfs::mounts_text()` snapshots the table as Linux-shaped `source target fstype opts 0 0` lines.
 
-**bootfs** is the first mount at `/` (`kernel/src/fs/bootfs.rs`): a flat
-read-only namespace. Embedded user ELFs are registered at boot; Limine ESP
-modules override by basename; loadable modules add files via
-`KernelApi::vfs_register` on the `"bootfs"` mount (e.g. FAT registers
-`msg`). ESP `boot/ok` overwrites the embed when both exist.
+### Bootfs
 
-**Install layout:** handwritten Rust demos that would collide with ported
-tool names use a `myos_` prefix on bootfs (`/myos_ls`, `/myos_echo`,
-`/myos_cat`). Ported **sbase** keeps short names under `/s/` (PREFIX `/s`);
-**uutils/coreutils** multicall names live under `/c/`. oksh PATH is
-`/s:/c:/`, so bare `ls`/`cat` resolve to sbase (or coreutils) after the
-rename. Root `listdir` also surfaces mount prefixes (`s`, `c`, …).
+Read-only embedded namespace at `/`. User ELFs are registered at boot. Limine ESP modules add files by basename. Loadable modules register files via `KernelApi::vfs_register`. This is the first mount (prefix `""`).
 
-**virtio-blk is in-kernel** (`kernel/src/blk.rs`), not a loadable module
-(chicken/egg: the FAT parser needs block I/O to load). x86 uses PCI config
-(`0xCF8`/`0xCFC`) to find vendor `0x1AF4` device `0x1001` and talks
-**legacy I/O-BAR** virtio-blk (QEMU `disable-modern=on`). AArch64 probes
-**virtio-mmio v2** at `0x0a000000` (stride `0x200`, device id 2) for
-`-device virtio-blk-device`. Guest DMA addresses are HHDM VA minus
-`hhdm_offset()` (frame phys from `mm::alloc_frame`), not
-`kernel_virt_to_phys`.
+Layout convention:
+- Handwritten Rust demos: `myos_` prefix (`/myos_echo`, `/myos_cat`, `/myos_ls`)
+- sbase: `/s/` (sbase `PREFIX /s`; bare `ls`/`cat` resolve here)
+- uutils coreutils: `/c/` (multicall binaries)
+- oksh: `/sh` (the shell)
+- getty/login: `/u/getty`, `/u/login` (not on PATH)
 
-The second QEMU disk is `target/fat.img` (~20 MiB raw FAT16 so the
-existing `format_and_write_fat16` writer stays in the FAT16 cluster
-range). It is **not** the boot drive. All launcher QEMU invocations add:
+### procfs
 
-x86:
+Read-only generated mount at `/proc`. The only node today is `/proc/mounts`. `cat /proc/mounts` or the `mount` command with no arguments prints the current mount table.
 
-```
--drive if=none,id=vd0,format=raw,file=<fat.img>
--device virtio-blk-pci,drive=vd0,disable-modern=on
-```
+### tmpfs and devfs
 
-aarch64:
+Both are in-kernel backends. tmpfs is the default writable mount for `open` with `O_CREAT` (no storage backing). devfs is reserved for device nodes.
 
-```
--drive if=none,id=vd0,format=raw,file=<fat.img>
--device virtio-blk-device,drive=vd0
-```
+### virtio-blk
 
-**FAT16 is a kernel module** (`modules/fat`), same shape as hello, loaded
-from an embed after virtio init. It uses KernelApi only (`blk_read` /
-`vfs_register`): parse the BPB, scan the root directory for `MSG`, walk
-the FAT16 cluster chain, and register `/msg`. Root-only, no subdirs, no
-FAT32. This is **not** FUSE or a userspace FAT parser, and virtio is
-**not** in a module.
+**In-kernel**, not loadable (chicken-and-egg: the FAT parser needs block I/O to load the FAT module). x86 uses PCI config space (`0xCF8`/`0xCFC`) to find VirtIO vendor/device and talks legacy I/O-BAR virtio-blk. AArch64 probes virtio-mmio v2 at `0x0a000000` (stride `0x200`, device id 2). Guest DMA uses HHDM VAs minus `hhdm_offset()` — frame physical addresses from `mm::alloc_frame`, not `kernel_virt_to_phys`.
 
-**ext2 is a kernel module** (`modules/ext2`) like FAT, using writable VFS ABI (`ModuleVfsOps` plus byte-granular `blk_read_at`/`blk_write_at`).
+### FAT16 module (`modules/fat`)
 
-**virtio-net is a kernel module** (`modules/virtio_net`) like FAT/ext2: modern virtio 1.0 PCI, poll-mode RX/TX, `/dev/net0` Ethernet frames (no IP). Loaded after NVMe. QEMU adds `-netdev user,id=net0 -device virtio-net-pci,netdev=net0` on every arch (keeps `-nic none`).
+A kernel module using only `KernelApi` (`blk_read` / `vfs_register`): parses the BPB, scans the root directory for `MSG`, walks the FAT16 cluster chain, and registers `/msg`. Root-only, no subdirectories, no FAT32. The image at `target/fat.img` is FAT16 so the existing writer stays in the cluster range.
 
-**netfs** (`modules/netfs`) mounts Plan 9 `/net` (`tcp`/`udp`/`icmp` clone + conv `ctl`/`data`/`status`) and registers `/dev/netd`. **netd** (`user/netd`) is the only process that opens `/dev/net0`; it runs smoltcp (DHCP + ICMP/UDP/TCP) in userspace and talks to the kernel over `/dev/netd` (poll-style read 0, no `socket()` syscall, no pipe IPC). Init forks `/netd` after `/ok`. `/ping` uses `/net/icmp` only.
+### ext2 module (`modules/ext2`)
 
-## Modules
+A kernel module like FAT16, but writable. Uses `ModuleVfsOps` with byte-granular `blk_read_at`/`blk_write_at`. Bound at `mount(2)` with `fstype ext2`.
 
-Kernel modules are still ELFs the kernel already has in RAM (not loaded
-through open/exec). **One loader** (`kernel/src/modules`) copies `PT_LOAD`,
-applies relocs, and calls `module_init`. `/hello` is still the kernel hello
-module. The two names below are only **how the bytes got into RAM**:
+### virtio-net, netfs, and netd
+
+**virtio-net** (`modules/virtio_net`) is a modern virtio-pci network module: poll-mode RX/TX, registers `/dev/net0` as raw Ethernet frames. No IP stack in the kernel.
+
+**netfs** (`modules/netfs`) mounts Plan 9 `/net` (`tcp`/`udp`/`icmp` clone + `conv` of `ctl`/`data`/`status`) and registers `/dev/netd`.
+
+**netd** (`user/netd`) is the only process that opens `/dev/net0`. It runs smoltcp in userspace (DHCP + ICMP + UDP + TCP) and talks to the kernel over `/dev/netd` using poll-style reads (no `socket()` syscall, no pipe IPC).
+
+**`/ping <ipv4>`** uses `/net/icmp` only. CI pings `10.0.2.2` (the QEMU SLIRP gateway). Interactive use can ping `1.1.1.1`.
+
+QEMU adds `-netdev user,id=net0 -device virtio-net-pci,netdev=net0` on every arch (replacing the default NIC with `-nic none`).
+
+---
+
+## Kernel Modules
+
+Kernel modules are ELFs the kernel already has in RAM. One loader (`kernel/src/modules`) copies `PT_LOAD`, applies relocations, and calls `module_init`. They are not loaded through `open`/`exec` — the kernel already holds their bytes.
+
+Two ways to get bytes into RAM:
 
 | | Embedded | Limine |
 |---|---|---|
-| Bytes live in | the kernel binary (`include_bytes!`) | a file on the ESP (`boot/foo`) |
+| Bytes live in | the kernel binary (`include_bytes!`) | a file on the ESP |
 | Who maps them | the compiler | Limine, from `module_path` in `limine.conf` |
-| Kernel hook | `modules::load("foo", FOO_IMAGE)` | `modules::load_limine_modules()` (already walks every Limine module) |
-| Rebuild | kernel | disk image (`bios.img` / `uefi.img` / `aarch64.img`) |
-| Hello today | yes (`mod ok`) | yes (`mod ok`, then kernel prints `limine mod ok`) |
-| FAT16 today | yes (`modules/fat`, registers `/msg`) | no (embed is enough; a Limine copy would print `limine mod ok` twice) |
+| Kernel hook | `modules::load("name", IMAGE)` | `modules::load_limine_modules()` (auto-walks every Limine module) |
+| Rebuild trigger | kernel build | disk image rebuild |
+| `/msg` at boot | yes | no (limine copy would print `mod ok` twice) |
 
-A module is a `#![no_std]` crate that exports:
+A module exports:
 
 ```rust
 unsafe extern "C" fn module_init(api: *const KernelApi) -> i32
 unsafe extern "C" fn module_exit() // optional
 ```
 
-`KernelApi` (`modules/abi`) is a `#[repr(C)]` table (`write_str`, `alloc`,
-`dealloc`, `blk_read`, `vfs_register`, `vfs_register_static`, `vfs_mount`).
-ABI version is **7**; new pointers are appended, never reordered. The kernel
-fills it and passes `&KernelApi` into `module_init`. Modules must not call
-kernel internals. There is no dynamic linker against kernel `.dynsym`.
-`blk_read` returns 0 or −1. `vfs_register` copies into the bootfs mount;
-`vfs_register_static` borrows module/rodata bytes without copying.
-`vfs_mount` attaches a [`ModuleVfsOps`] backend at `/prefix/…` (see
-`modules/stubfs` mounting `/disk/ping`).
+`KernelApi` (`modules/abi`) is a `#[repr(C)]` table. ABI version is **7**. Pointers are appended, never reordered. The kernel fills it and passes `&KernelApi` to `module_init`.
 
-Do **not** add a module as a cargo artifact-dep of the kernel (that panics
-the feature resolver). Do **not** put it in `[build-dependencies]` (those
-cannot `panic=abort`). Each module crate is its own tiny workspace, like
-`modules/hello`.
+Modules must not call kernel internals. There is no dynamic linker.
 
-x86_64 modules are PIE (`ET_DYN`, `R_X86_64_RELATIVE`). AArch64 modules are
-`ET_EXEC` slid as a unit: prebuilt `libcore` is not PIC, so `-pie` fails to
-link. `module_init` uses PC-relative `ADR`. Both use 4 KiB `max-page-size`
-so they fit on the 256 KiB heap.
+### Adding a new module
 
-### 1. The ELF crate (both paths)
+Copy `modules/hello` to `modules/foo`. Keep `panic = "abort"`, `opt-level = "s"`, `myos-abi = { path = "../abi" }`, and the link flags in `build.rs` (`-z max-page-size=4096`, `-u module_init`, `-pie -nostdlib` on x86 only).
 
-Copy `modules/hello` to `modules/foo`. Keep:
+**Embedded:** add a nested `cargo build` in `kernel/build.rs`, then `const FOO_IMAGE: &[u8] = include_bytes!(env!("FOO_MODULE_PATH"))` in `kernel/src/modules/mod.rs`, and call `modules::load("foo", FOO_IMAGE)` after heap and IRQs are up.
 
-- `[workspace]` and `panic = "abort"` in `Cargo.toml` (`opt-level = "s"`,
-  `debug = false`, `strip = "debuginfo"`)
-- `myos-abi = { path = "../abi" }`
-- `module_init` / optional `module_exit`, a `_start` stub, a panic handler
-- the link flags in `modules/hello/build.rs` (`-z max-page-size=4096`,
-  `-u module_init` / `-u module_exit`, and `-pie -nostdlib` on x86 only;
-  never `--export-dynamic`)
+**Limine:** build the ELF, copy it to `target/` with the expected name, add `module_path: boot():/boot/foo` to `LIMINE_CONF` in `src/limine_image.rs`, then rebuild the disk image. No kernel rebuild needed.
 
-Then choose embedded, Limine, or both (hello uses both).
-
-### 2. Embedded: bake it into the kernel
-
-The kernel build script compiles the crate and the ELF becomes part of the
-kernel image. No ESP file, no `limine.conf` line.
-
-1. In `kernel/build.rs`, nested-`cargo build` `modules/foo` the same way as
-   hello: own `--target-dir` under `OUT_DIR`, `--target $TARGET`,
-   `RUSTFLAGS=-C panic=abort`. `cargo:rerun-if-changed` its sources.
-2. Point the kernel at that ELF:
-   `println!("cargo:rustc-env=FOO_MODULE_PATH={}", elf.display());`
-3. In `kernel/src/modules/mod.rs`:
-   `const FOO_IMAGE: &[u8] = include_bytes!(env!("FOO_MODULE_PATH"));`
-4. After heap and IRQs are up (see `kernel/src/main.rs`):
-   `modules::load("foo", FOO_IMAGE);`
-
-That is exactly `load_embedded_hello()` for `modules/hello`, and
-`load_embedded_fat()` for `modules/fat` (after `blk::init()`).
-
-### 3. Limine: put it on the ESP
-
-Limine loads extra files at boot and hands the kernel a pointer + size.
-The kernel still uses the same ELF loader. You do **not** need a new
-`include_bytes!` if you only want the Limine path: `load_limine_modules()`
-already iterates every module Limine listed. Userspace ELFs in that list
-(`MissingInit`) are skipped so they can live on bootfs instead.
-
-1. Build the ELF the same way as hello. `kernel/build.rs` also copies hello
-   to a stable path the host can find:
-   `target/hello-x86_64-unknown-none` and
-   `target/hello-aarch64-unknown-none-softfloat`.
-2. Write those bytes onto the ESP as `boot/foo`.
-   `write_esp_image` in `src/limine_image.rs` already does this for hello
-   (`boot/hello`) and `ok` (`boot/ok`). Host `build.rs` (x86) and
-   `build_aarch64_image` in `src/main.rs` pass the files in.
-3. Add a line under `/myos` in `LIMINE_CONF` (`src/limine_image.rs`):
-
-   ```
-   module_path: boot():/boot/foo
-   ```
-
-   Hello’s line is `module_path: boot():/boot/hello`. `ok` is
-   `module_path: boot():/boot/ok`. You can repeat `module_path` for more
-   files. FAT 8.3: keep names short (`ok`, `hello`) so they are not LFN.
-4. Reboot. On success the kernel prints `limine mod ok` (hello’s own
-   `module_init` still prints `mod ok`).
-
-Changing only a Limine module does not require a new kernel `include_bytes!`,
-but you still rebuild the **disk image** so the ESP file updates.
+---
 
 ## Userspace
 
-Userspace programs are ELFs, not KernelApi modules. Init is PID1-style:
-baked into the kernel (`user/init`), spawned as today, smoke-runs fork and
-slim `/ok`, then **forks getty** (`/u/getty`) and `wait()`s, respawning if
-it dies. Getty (ubase) prompts for a username and execs `/u/login`; login
-(ubase) accepts fake `root:root` and execs `/sh`. The shell is **oksh 7.9**
-(portable OpenBSD ksh) built with newlib/libgloss and embedded as bootfs
-`sh`. The older tiny `user/sh` crate stays in-tree but is not `/sh`. Shared
-helpers for the remaining Rust user programs live in `user/lib`.
+### Syscall table
 
-`user/ok` is its own tiny workspace (same shape as `user/init` /
-`modules/hello`: `panic = "abort"`, `opt-level = "s"`). `kernel/build.rs`
-nested-`cargo build`s init, ok, heap, myos_echo, myos_cat, myos_ls (not
-`sh`); init is `include_bytes!`, the rest are embedded as bootfs fallbacks
-and placed on the ESP as `boot/sh`, `boot/ok`, etc. Slim `/ok` always runs
-at boot: `heap_init` + `alloc ok`, `user ok`, `/msg` → `fat ok`,
-`/disk/ping` → `disk ok`, cheap `listdir` → `disk ls ok` / `fat ls ok`,
-and `/fat/msg` → `fat read ok`. It does **not** fork the std/C/sbase/uutils
-suite. That carnival lives in bootfs `/heap` and is invoked by CI
-`wait_ci` typing `heap` at the interactive `$` prompt on x86, aarch64, and riscv64. If `/msg` is missing
-`/ok` exits early (CI then fails the `fat ok` needle).
+Syscall numbers are append-only. Errors return `usize::MAX`.
 
-`PT_LOAD` is realized at `USER_BASE` with the same relocs as the module
-loader. **fork** copies user pages into a new aspace (no COW) and a new
-task; the parent gets the child pid (task slot), the child gets 0.
-**exec** replaces the calling task's image (no second `USERS_ALIVE` /
-`note_exit`) and accepts an optional argv pack. **wait** reaps a zombie
-child. Syscall numbers are **append-only** (reserved for future libc /
-compiler ports). Errors return `usize::MAX`.
-
-| nr | name | args |
-|----|------|------|
+| nr | name | Description |
+|----|------|-------------|
 | 0 | write | fd, ptr, len |
-| 1 | exit | code |
-| 2 | open | path, path_len, flags → fd (cwd-aware) |
-| 3 | read | fd, buf, len → n (fd 0 = keyboard + serial stdin) |
+| 1 | exit | exit code |
+| 2 | open | path, flags → fd (cwd-aware) |
+| 3 | read | fd, buf, len (fd 0 = keyboard + serial) |
 | 4 | close | fd |
-| 5 | exec | path, path_len, args_ptr (0 or `[argc, (ptr,len)...][envc, (ptr,len)...]`) |
+| 5 | exec | path, argv, envp (0 or `[argc, (ptr,len)...][envc, ...]`) |
 | 6 | fork | → child pid (parent), 0 (child) |
-| 7 | wait | status_ptr (0 = ignore) → reaped child pid; stores exit code byte if ptr set |
-| 8 | listdir | path, path_len, buf → byte count (cwd-aware; newline-separated) |
-| 9 | brk | addr → program break (0 = query). Per-process heap after stack (256 KiB max) |
-| 10 | pipe | fds_ptr (two usize slots) → 0 or error |
-| 11 | dup2 | oldfd, newfd → 0 or error |
-| 12 | stat | path, path_len, out_ptr → 0 or error |
+| 7 | wait | status_ptr → reaped pid; stores exit byte if ptr set |
+| 8 | listdir | path, buf → byte count (cwd-aware; newline-separated) |
+| 9 | brk | addr → program break (0 = query) |
+| 10 | pipe | fds_ptr → 0 or error |
+| 11 | dup2 | oldfd, newfd |
+| 12 | stat | path, out_ptr → 0 or error |
 | 13 | execname | buf, len → basename length |
-| 14 | dupfd | oldfd, minfd → new fd |
-| 15 | chdir | path, path_len → 0 or error (per-task cwd) |
-| 16 | getcwd | buf, buf_len → pathname length (NUL written) |
+| 14 | dupfd | oldfd, minfd |
+| 15 | chdir | path → 0 or error (per-task cwd) |
+| 16 | getcwd | buf, len → pathname length (NUL written) |
+| 17 | mkdir | path → 0 or error (writable mount) |
+| 18 | rmdir | path → 0 or error |
+| 19 | unlink | path → 0 or error |
+| 20 | rename | old, new → 0 or error |
+| 21 | symlink | target, link → 0 or error |
+| 22 | readlink | path, buf → byte count |
+| 23 | mmap | addr, len, prot, flags, fd, offset → va or error |
+| 24 | munmap | addr, len → 0 or error |
+| 25 | mprotect | addr, len, prot → 0 or error |
+| 26 | lseek | fd, offset, whence → position |
 
-x86 `syscall`: `rax`=nr, `rdi`/`rsi`/`rdx`=a0/a1/a2. At `_start`, argc/argv
-are on the user stack (System V). AArch64 `svc`: `x8`=nr, `x0`/`x1`/`x2`=a0/a1/a2.
-At `_start`, the kernel passes **argc in x0, argv in x1** (argv points to
-an array of string pointers). Exec argv strings must live in writable user
-memory (stack); rodata literals are rejected by the kernel copy-in path.
+x86_64: `syscall`, `rax`=nr, `rdi/rsi/rdx`=a0/a1/a2. AArch64: `svc`, `x8`=nr, `x0/x1/x2`=a0/a1/a2. At `_start`, argc is in `x0` and argv in `x1` (AArch64) or on the user stack (x86_64, System V).
 
-### Userspace heap and `std` bring-up
+### Init and the shell
 
-Syscall **9 (`brk`)** backs a per-process heap region above the stack page.
-`user/lib` exposes `brk`, `heap_init`, and a bump [`GlobalAlloc`](user/lib/src/alloc.rs)
-(`myos_user::Heap`). Slim `user/ok` smoke-tests it at every boot (`alloc ok`
-on serial). `user/heap` is the CI-only heavy carnival (typed at `$`).
+`user/init` is PID1: baked in with `include_bytes!`, spawned at boot. It smoke-tests fork and slim `/ok`, forks `/netd`, then forks `/u/getty` and `wait()`s/respawns it. Getty prompts `login: ` and execs `/u/login`; login accepts `root` with an empty password and execs `/sh`. `/sh` is oksh 7.9 with PATH `/s:/c:/`.
 
-To build **`std`** programs (see [OSDev](https://wiki.osdev.org/Porting_Rust_standard_library)):
+The tiny `user/sh` crate stays in-tree but is not `/sh`.
+
+### Rust userspace heap and `std`
+
+Syscall 9 (`brk`) backs a per-process heap. `user/lib` exposes `brk`, `heap_init`, and a bump `GlobalAlloc`. `user/ok` smoke-tests it every boot (`alloc ok`). `user/heap` runs the heavy CI suite.
+
+To build `std` programs, prebuild the sysroot:
 
 ```sh
-./toolchain/std/build-std-hello.sh   # builds sysroot + smoke ELFs for x86_64 and AArch64
+./toolchain/std/build-sysroot.sh    # builds sysroot for x86_64 and AArch64
 ```
 
-| Path | Role |
-|------|------|
-| `targets/*-unknown-myos.json` | Custom userspace triples (`os = "myos"`) |
-| `toolchain/std/pal/myos/` | PAL → `library/std/src/sys/pal/myos/` in the patched sysroot |
-| `toolchain/std/build-sysroot.sh` | Precompile `std` into `target/myos-sysroot` (both triples) |
-| `toolchain/std/fetch-sysroot.sh` | Install prebuilt sysroot tarball or build locally |
-| `toolchain/std/package-sysroot.sh` | Tarball the sysroot for local reuse or CI artifacts |
-| `toolchain/std/check-wire.sh` | Verify PAL patches apply to pinned nightly |
-| `toolchain/std/export-upstream-patch.sh` | Generate diff for rust-lang/rust submission |
-| `toolchain/std/upstream/README.md` | Tier 3 upstream checklist for `target_os = "myos"` |
-| `toolchain/std/toolchain/config.toml.example` | Consumer `.cargo/config.toml` template |
-| `toolchain/std/pal/README.md` | Full sysroot / build docs |
-
-CI checks `println!("std ok")` on BIOS, UEFI, and AArch64. App crates link against
-the prebuilt sysroot (no `-Z build-std` on each app build). More syscalls (`open`,
-process, time, …) are still needed for real programs beyond the smoke test.
+Then link against it (`toolchain/std/toolchain/config.toml.example` shows the `.cargo/config.toml` needed). More syscalls are still needed for real `std` programs.
 
 ### C userspace (newlib + libgloss)
 
-C programs link against **newlib** with a myos **libgloss** port (syscall
-adapters + ENOSYS stubs). Host **clang** cross-compiles; no new kernel syscalls
-required beyond the existing myos ABI.
+C programs link against newlib with a myos libgloss port (syscall adapters + ENOSYS stubs). No new kernel syscalls are needed.
 
 ```sh
-./toolchain/newlib/build.sh   # fetch newlib 4.4.0, build libc + libgloss/myos
-./scripts/build-c-hello.sh  # minimal write() smoke → target/c-hello-*
-./ports/sbase/build.sh    # full suckless sbase → target/sbase-* + manifest
-./ports/ubase/build.sh    # ubase getty+login → target/ubase-* (`/u/…`)
-./ports/oksh/build.sh     # oksh 7.9 → target/oksh-*-unknown-none (`/sh`)
-./ports/tcc/build.sh      # TinyCC → target/tcc-*-unknown-myos (`/t/tcc`)
+./toolchain/newlib/build.sh    # fetch newlib 4.4.0, build libc + libgloss/myos
+./scripts/build-c-hello.sh     # minimal write() smoke test
+./ports/sbase/build.sh          # ~91 sbase utilities under /s/
+./ports/ubase/build.sh          # getty + login under /u/
+./ports/oksh/build.sh           # oksh 7.9 as /sh
+./ports/tcc/build.sh            # TinyCC as /t/tcc (-run support)
+./ports/ripgrep/build.sh        # ripgrep + PCRE2 as /c/rg
 ```
 
-| Path | Role |
-|------|------|
-| `toolchain/newlib/libgloss/myos/` | libgloss port: `_read`/`_write`/`_open`/… → myos syscalls; stubs return `ENOSYS`/`EROFS` |
-| `toolchain/newlib/fetch.sh` | Clone pinned newlib into `target/newlib-src` |
-| `toolchain/newlib/patch.sh` | Register `*-unknown-myos`, install libgloss port |
-| `toolchain/newlib/build.sh` | Build/install newlib per arch |
-| `toolchain/newlib/build-libgloss.sh` | Build `libgloss.a` + `crt0.o` (called by build-newlib) |
-| `scripts/build-c-hello.sh` | Link minimal C smoke with `-lc -lgloss` |
-| `ports/sbase/fetch.sh` | Clone pinned [sbase](https://git.suckless.org/sbase) into `target/sbase-src` |
-| `ports/sbase/prepare.sh` | Sync upstream tree; apply myos patches; generate `bc.c`/`getconf.h` |
-| `ports/sbase/build.sh` | Cross-build ~91 upstream sbase utilities per arch (manifest-driven kernel embed) |
-| `ports/sbase/` | `.myos.patch` files, `bins.txt`, compat headers, arch soft-float shims |
-| `ports/oksh/fetch.sh` | Clone pinned [oksh](https://github.com/ibara/oksh) 7.9 into `target/oksh-src` |
-| `ports/oksh/prepare.sh` | Sync upstream tree; apply myos patches; install checked-in `pconfig.h` |
-| `ports/oksh/build.sh` | Cross-build oksh per arch (`target/oksh-*-unknown-none`) |
-| `ports/oksh/` | `pconfig.h` (`configure --no-thanks --enable-small --disable-curses`) and `.myos.patch` files |
-| `c/hello.c` | Minimal newlib smoke (`c ok` via `write()`) |
-| `ports/tcc/fetch.sh` | Clone pinned [TinyCC](https://github.com/TinyCC/tinycc) into `target/tcc-src` |
-| `ports/tcc/prepare.sh` | Sync upstream tree; generate `tccdefs_.h`; apply `tccrun` mmap/-run glue |
-| `ports/tcc/build.sh` | Cross-build native tcc per `*-unknown-myos` triple (`target/tcc-*`) |
+**Implemented libgloss hooks** call real syscalls where they exist: `write`, `read`, `open` (writable on tmpfs/devfs), `close`, `brk`, `fork`, `wait`/`waitpid`, `pipe`, `dup2`, `execve`, `stat`, `chdir`/`getcwd`, `mkdir`/`rmdir`/`unlink`/`rename`/`symlink`/`readlink` (on writable mounts), `mmap`/`munmap`/`mprotect`, `lseek`. Stubs return ENOSYS/EROFS for unimplemented calls.
 
-Implemented libgloss hooks call real syscalls where they exist (`write`, `read`,
-`open` (writable on tmpfs/devfs), `close`, `brk`, `fork`, `wait`/`waitpid`, `pipe`, `dup2`,
-`execve`, `stat` via **`SYS_STAT` (12)**, `chdir`/`getcwd` via **`SYS_CHDIR`/`SYS_GETCWD`**,
-`mkdir`/`rmdir`/`unlink`/`rename`/`symlink`/`readlink` via **`SYS_MKDIR`…`SYS_READLINK` (17–22)**
-on writable mounts — today **tmpfs**). Anonymous **`mmap`/`munmap`/`mprotect`** (`SYS_MMAP` 23 … `SYS_MPROTECT` 25) and **`lseek`** (`SYS_LSEEK` 26) back TinyCC `-run`.
-`opendir`/`readdir`/`closedir` use `SYS_LISTDIR`. Relative paths (including `.`)
-are resolved against the per-task cwd in the kernel.
-Do **not** use `-DMISSING_SYSCALL_NAMES` (libgloss exports `_write`, not `write`).
+CI on all arches checks `sbase ok` from `/s/echo` and `sls ok` from `/s/ls` via `/heap`.
 
-Upstream sbase (`cat`, `true`, `ls`, `pwd`, …) is fetched at build time; only
-small `.myos.patch` files live in-tree (CI smoke strings, myos exec argv quirks).
-Tools use upstream newlib stdio (`puts`, `printf`, `fshut`) and libutil; the
-kernel enables user SIMD/FP (x86_64 SSE, AArch64 NEON) so `-O2` libc code does
-not fault on stdio init.
-Libgloss adds `clock_gettime` (libc already owns `time`/`localtime`), flat
-`getpwuid`/`getpwnam`/`getgrgid` (root),
-`fcntl(F_DUPFD)` (high fds for oksh `FDBASE`; link `fcntl.o` so it overrides
-newlib's ENOSYS `fcntl`), no-op `tcgetattr`/`tcsetattr`,
-`readlink` (`ENOSYS`), POSIX stubs for read-only VFS, and `sys/sysmacros.h` so
-upstream `ls -l` links. The kernel mounts **sbasefs** at `/s/` with one ELF per
-tool (e.g. `/s/cat`, `/s/echo`, `/s/ls` — 91 utilities today); CI on all
-arches checks `sbase ok` from `/s/echo` and `sls ok` from `/s/ls` via CI-only
-`/heap` (typed at `$`).
-
-`/sh` is oksh. PATH is `/s:/c:/` (sbase, coreutils, then bootfs root). ubase
-getty/login live at `/u/getty` and `/u/login` (not on PATH). Interactive CI
-types `root` at `login: `, then commands at `$ `; unknown
-commands print `not found`. Job control, SIGCHLD, curses, history files, and
-heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
-`waitpid(-1)`). `user/sh` remains in-tree until CI is green.
-
-## Layout
-
-| Path | Role |
-|------|------|
-| `src/main.rs` | Host launcher: starts QEMU (BIOS, UEFI, AArch64) + second virtio-blk disk |
-| `src/limine_image.rs` | GPT+FAT ESP writer + Limine binary fetch + `limine.conf` + `fat.img` |
-| `build.rs` | Fetch Limine, wrap the x86_64 kernel in BIOS+UEFI images, write `fat.img` |
-| `kernel/src/main.rs` | `no_std` Limine entry: hello, heap, timer IRQ, kernel threads, bootfs, modules, virtio-blk, fat, user init, halt |
-| `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
-| `kernel/src/mm.rs` | Physical frame bump after the 256 KiB heap (page tables, user pages, virtqueues) |
-| `kernel/src/blk.rs` | In-kernel virtio-blk: `init` + 512-byte sector `read` |
-| `kernel/src/fs/` | VFS mount table (`vfs.rs`) + bootfs/tmpfs/devfs/procfs backends |
-| `kernel/src/console.rs` | Dual console: serial + Limine framebuffer mirror |
-| `kernel/src/input.rs` | Stdin ring buffer: PS/2 keyboard + serial (fd 0) |
-| `kernel/src/arch/x86/keyboard.rs` | PS/2 keyboard via 8042 (poll, US QWERTY set 1) |
-| `kernel/link.ld` | Higher-half (`0xffffffff80000000`) linker script |
-| `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap from Limine usable+HHDM |
-| `kernel/src/task/` | Round-robin kernel threads + user tasks: `yield_now` + timer preemption |
-| `kernel/src/modules/` | ELF64 loader, `KernelApi` wrappers, loaded-module registry |
-| `modules/abi` | Shared `KernelApi` / `module_init` C ABI (v7: PCI/DMA/`dev_register` after v6 VFS) |
-| `modules/hello` | Sample module: embedded **and** ESP `boot/hello` via Limine |
-| `modules/stubfs` | Sample prefixed mount: `vfs_mount` at `/disk`, file `/disk/ping` |
-| `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
-| `modules/ext2` | writable ext2 (rev1, 1KiB): `ModuleVfsOps`, bind at `mount(2)` |
-| `modules/virtio_net` | modern virtio-pci net, poll RX/TX, `/dev/net0` Ethernet frames |
-| `modules/netfs` | Plan 9 `/net` + `/dev/netd` channel to userspace netd |
-| `user/netd` | Userspace smoltcp over `/dev/net0`; only opener of net0 |
-| `user/init` | PID1-style: baked in, smoke fork/`/ok`, forks `/netd`, execs `/sh` |
-| `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
-| `ports/` | Userspace ports (sbase, ubase, oksh, ripgrep, coreutils, tcc); source fetched at build |
-| `ports/oksh/` | oksh pin patches + `pconfig.h` |
-| `user/echo` | Print argv; installed as bootfs `/myos_echo` |
-| `user/cat` | Read a bootfs file; installed as bootfs `/myos_cat` |
-| `user/ls` | List bootfs entries; installed as bootfs `/myos_ls` |
-| `user/lib` | Shared `myos_user` syscall/argv/`Heap` helpers |
-| `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/ripgrep/tcc/bigalloc); typed as `heap` at `$` |
-| `user/ok` | Slim always-on boot smoke (`alloc`/`user`/`fat`/`disk`/`proc` markers); ESP `boot/ok` |
-| `user/mount` | `mount` with no args prints `/proc/mounts`; `mount src tgt fstype` issues `SYS_MOUNT` |
-| `targets/` | Custom Rust target specs (`x86_64-unknown-myos.json`) |
-| `toolchain/newlib/` | newlib libgloss port + fetch/build scripts |
-| `toolchain/std/pal/` | Rust `std` PAL skeleton + porting notes |
-| `kernel/src/arch/x86/` | COM1, GDT (user segs)/TSS RSP0/IDT/xAPIC, PCI, legacy virtio-blk, isa-debug-exit |
-| `kernel/src/arch/x86/pci.rs` | PCI config via `0xCF8`/`0xCFC`; find virtio-blk |
-| `kernel/src/arch/aarch64/` | PL011, TTBR0 device map, GICv2 timer, lower-EL SVC, virtio-mmio blk, PSCI off |
-| `kernel/src/framebuffer.rs` | Pixel writer for a Limine framebuffer |
-| `kernel/src/font.rs` | Tiny 8x8 bitmap font |
-| `.cargo/config.toml` | `bindeps` (artifact dependencies) |
-| `rust-toolchain.toml` | pinned nightly + `llvm-tools-preview` + rust-src + targets |
-| `scripts/` | Shared helpers (`myos-c-userspace-lib.sh`, rustc wrappers) + thin wrappers for old script names |
-| `scripts/ci-registry.sh` | GHCR pull/push of userspace port outputs (oras), keyed by stamp hash |
-| `.github/workflows/ci.yml` | PR/push CI: rust-cache is cargo-only; userspace ELFs come from GHCR |
-| `.github/workflows/iso.yml` | Manual `workflow_dispatch` x86_64 hybrid ISO artifact |
+---
 
 ## CI
 
-GitHub Actions caches Cargo's registry/`target` with Swatinem/rust-cache
-(`prefix-key: limine-8.3-6`). Userspace port **outputs** (newlib prefixes,
-sbase/oksh/ubase/ripgrep/tcc/uutils ELFs, stamps) are **not** in rust-cache.
-They are OCI artifacts on GHCR, one package per port, tagged with the stamp
-hash from `scripts/myos-c-userspace-lib.sh` (e.g.
-`ghcr.io/davide-matasci/myos/ci-sbase:<sha256>`). `skip-if-fresh`
-(`myos_*_is_current`) is still the local truth after a pull. Source
-checkouts (`*-src`) are never cached.
+GitHub Actions caches Cargo's registry and `target` with Swatinem/rust-cache (`prefix-key: limine-8.3-6`). Userspace port **outputs** (newlib prefixes, sbase/oksh/ubase/ripgrep/tcc/uutils ELFs, stamps) are OCI artifacts on GHCR, one package per port, tagged with the stamp hash from `scripts/myos-c-userspace-lib.sh`. The first run after a stamp change is a cache miss; later runs with the same hashes hit. Packages should be **public** so fork PRs can pull.
 
-The first run after a stamp change is a miss, then a push. Later runs with
-the same hashes hit. Packages should be **public** so fork PRs can pull;
-the first push creates them. If they stay private, set visibility once in
-GitHub → Packages → each `myos/ci-*` → Change visibility → public.
+Source checkouts (`*-src`) are never cached.
+
+---
 
 ## Notes
 
-- On x86_64 the CPU is halted with `hlt` after printing (QEMU stays open
-  unless you pass `--ci`, which attaches `isa-debug-exit` so QEMU exits).
-- On AArch64 the kernel issues PSCI `SYSTEM_OFF` after printing (HVC at
-  EL1, SMC at EL2), which QEMU treats as a shutdown.
-- The kernel is linked in the higher half. Limine sets the stack, enables
-  the MMU, and provides an HHDM. Usable memory is accessed as `phys + HHDM`.
-- AArch64 device MMIO (PL011 `0x09000000`, GICv2 `0x08000000`/`0x08010000`,
-  virtio-mmio `0x0a000000`) is not in the HHDM at base revision 3+, so the
-  kernel identity-maps a 1 GiB device block on `TTBR0`.
-- Interrupts: x86_64 uses the local xAPIC timer. AArch64 uses GICv2
-  (`-machine virt,gic-version=2`) and the generic physical timer (PPI 30).
-- Modules run from the HHDM heap (Limine HHDM mappings are rwx). The loader
-  flushes the I-cache on AArch64 after copying.
-- Limine binaries are downloaded from GitHub release `v12.6.1` (sha256-pinned)
-  into `target/limine-v12.6.1`. Not a git submodule.
-- virtio-blk init does not panic if the device is missing (earlier CI
-  needles can still print); `/msg` is then absent and CI fails on `fat ok`.
+- On x86_64 the CPU halts with `hlt` after boot (QEMU stays open; `--ci` attaches `isa-debug-exit` so QEMU exits cleanly).
+- On AArch64 the kernel issues PSCI `SYSTEM_OFF` after boot (QEMU treats this as a shutdown).
+- The kernel is linked in the higher half. Limine sets the stack, enables the MMU, and provides the HHDM.
+- AArch64 device MMIO is identity-mapped on `TTBR0` since it is not in the HHDM at Limine base revision 3+.
+- Modules run from the HHDM heap (rwx). The loader flushes the I-cache on AArch64 after copying.
+- Limine binaries are downloaded from GitHub release `v12.6.1` (sha256-pinned) into `target/limine-v12.6.1`. Not a git submodule.
+- `user/ok` exits early if `/msg` is absent (the FAT disk is not present); CI then fails on `fat ok`.

@@ -135,7 +135,8 @@ int main(void) {
         write(b"tcc std skip (tmp create fail)\n");
     }
     // ICMP echo via /net/icmp (netd); needle is printed by /ping, not heap.
-    run_prog(b"/ping", &[b"ping"]);
+    // 10.0.2.2 is QEMU slirp gateway; 1.1.1.1 often fails through -netdev user.
+    run_prog(b"/ping", &[b"ping", b"10.0.2.2"]);
     write(b"smoke ok\n");
     exit();
 }
