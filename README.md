@@ -48,7 +48,9 @@ switch is preemptive too (including user mode). CI checks `task a`,
 - [rustup](https://rustup.rs/) (the `rust-toolchain.toml` in this repo
   selects the pinned nightly and the components below)
 - QEMU (`qemu-system-x86_64`, `qemu-system-aarch64`, and `qemu-system-misc` for RISC-V)
-- A C compiler (`cc`) to build the Limine host tool (`bios-install`)
+- `clang` (or `$CC`) to build the Limine host tool (`bios-install`)
+- `lld` (`ld.lld`) to link freestanding C userspace on every arch
+- `libc6-dev` for the host CRT (`Scrt1.o`) when compiling that Limine tool
 - `curl` to fetch the pinned Limine binary tarball on first build
 - `xorriso` to write the hybrid ISO (`cargo run -- iso` only; Debian package `xorriso`)
 - For AArch64: UEFI firmware (the launcher tries `ovmf-prebuilt`, then
@@ -68,11 +70,12 @@ Nightly components / targets (installed automatically by rustup from
 # rustup reads rust-toolchain.toml on the first cargo invocation
 # and installs the pinned nightly + components + targets.
 
-# Debian/Ubuntu:  sudo apt install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 gcc
+# Debian/Ubuntu:  sudo apt install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 clang lld libc6-dev
+# C ports:        sudo apt install autoconf automake libtool texinfo bison rsync
 # ISO only:       sudo apt install xorriso
-# Fedora:         sudo dnf install qemu-system-x86 qemu-system-aarch64 edk2-aarch64 gcc
-# macOS:          brew install qemu
-# Arch:           sudo pacman -S qemu-system-x86 qemu-system-aarch64 gcc
+# Fedora:         sudo dnf install qemu-system-x86 qemu-system-aarch64 edk2-aarch64 clang lld
+# macOS:          brew install qemu llvm
+# Arch:           sudo pacman -S qemu-system-x86 qemu-system-aarch64 clang lld
 ```
 
 On Ubuntu, `qemu-system-aarch64` is in the `qemu-system-arm` package and

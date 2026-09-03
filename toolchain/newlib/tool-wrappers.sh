@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Emit cross-tool wrappers for newlib (clang + lld / aarch64-linux-gnu-ld).
+# Emit cross-tool wrappers for newlib (clang + ld.lld on every arch).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -16,11 +16,7 @@ write_wrapper() {
 for arch in x86_64 aarch64 riscv64; do
   triple="${arch}-unknown-myos"
   elf="${arch}-unknown-none"
-  if [[ "$arch" == "aarch64" ]]; then
-    ld='aarch64-linux-gnu-ld'
-  else
-    ld='ld.lld'
-  fi
+  ld='ld.lld'
   write_wrapper "${triple}-cc" "#!/usr/bin/env bash
 exec clang --target=${elf} -ffreestanding -fPIC \"\$@\"
 "

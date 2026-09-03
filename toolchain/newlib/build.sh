@@ -38,8 +38,8 @@ build_one() {
     --target="$triple" \
     --prefix="$prefix" \
     --disable-multilib \
-    CC=gcc \
-    CXX=g++ \
+    CC="${CC:-clang}" \
+    CXX="${CXX:-clang++}" \
     CC_FOR_TARGET="${triple}-cc" \
     CXX_FOR_TARGET="${triple}-c++" \
     AS_FOR_TARGET="${triple}-as" \
