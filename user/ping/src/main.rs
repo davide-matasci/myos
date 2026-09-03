@@ -12,8 +12,8 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
     main()
 }
 
-const STATUS_POLLS: usize = 8000;
-const DATA_POLLS: usize = 8000;
+const STATUS_POLLS: usize = 100_000;
+const DATA_POLLS: usize = 100_000;
 
 fn usage() -> ! {
     write(b"usage: ping <ipv4>\n");
