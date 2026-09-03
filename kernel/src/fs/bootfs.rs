@@ -25,8 +25,10 @@ const LS_ELF: &[u8] = include_bytes!(env!("USER_LS_PATH"));
 const MOUNT_ELF: &[u8] = include_bytes!(env!("USER_MOUNT_PATH"));
 const MKFS_EXT2_ELF: &[u8] = include_bytes!(env!("USER_MKFS_EXT2_PATH"));
 const PING_ELF: &[u8] = include_bytes!(env!("USER_PING_PATH"));
-// Forces rustc to rebuild bootfs when kernel/build.rs hashes a new /ping.
+const NETD_ELF: &[u8] = include_bytes!(env!("USER_NETD_PATH"));
+// Forces rustc to rebuild bootfs when kernel/build.rs hashes a new /ping or /netd.
 const _: &str = env!("USER_PING_HASH");
+const _: &str = env!("USER_NETD_HASH");
 
 const MAX_FILES: usize = 32;
 const NAME_CAP: usize = 32;
@@ -178,6 +180,7 @@ pub fn init_embedded() {
     let _ = register("mount", MOUNT_ELF);
     let _ = register("mkfs.ext2", MKFS_EXT2_ELF);
     let _ = register("ping", PING_ELF);
+    let _ = register("netd", NETD_ELF);
 }
 
 /// Register Limine-mapped modules by basename (overrides embedded names).

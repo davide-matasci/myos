@@ -28,6 +28,17 @@ fn smoke_fork_exec_ok() {
     }
 }
 
+fn spawn_netd() {
+    match fork() {
+        Some(0) => {
+            exec(b"/netd", &[b"netd"]);
+            exit();
+        }
+        Some(_) => {}
+        None => write(b"netd fork failed\n"),
+    }
+}
+
 /// Stay PID1: fork getty, wait, respawn. Getty prompts and execs `/u/login`.
 fn spawn_getty_loop() -> ! {
     loop {
@@ -42,6 +53,7 @@ fn spawn_getty_loop() -> ! {
             }
             Some(_) => {
                 // Blocking wait; respawn when getty/login/sh exits.
+                // Also reaps netd if it exits (do not wait for netd at spawn).
                 let _ = wait_status();
             }
             None => {
@@ -55,6 +67,7 @@ fn spawn_getty_loop() -> ! {
 fn start() -> ! {
     smoke_fork_ping();
     smoke_fork_exec_ok();
+    spawn_netd();
     spawn_getty_loop();
 }
 

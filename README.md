@@ -300,6 +300,8 @@ FAT32. This is **not** FUSE or a userspace FAT parser, and virtio is
 
 **virtio-net is a kernel module** (`modules/virtio_net`) like FAT/ext2: modern virtio 1.0 PCI, poll-mode RX/TX, `/dev/net0` Ethernet frames (no IP). Loaded after NVMe. QEMU adds `-netdev user,id=net0 -device virtio-net-pci,netdev=net0` on every arch (keeps `-nic none`).
 
+**netfs** (`modules/netfs`) mounts Plan 9 `/net` (`tcp`/`udp`/`icmp` clone + conv `ctl`/`data`/`status`) and registers `/dev/netd`. **netd** (`user/netd`) is the only process that opens `/dev/net0`; it runs smoltcp (DHCP + ICMP/UDP/TCP) in userspace and talks to the kernel over `/dev/netd` (poll-style read 0, no `socket()` syscall, no pipe IPC). Init forks `/netd` after `/ok`. `/ping` uses `/net/icmp` only.
+
 ## Modules
 
 Kernel modules are still ELFs the kernel already has in RAM (not loaded
@@ -585,7 +587,9 @@ heredoc `/tmp` are stubbed for v1 (`--enable-small`, jobs wait via blocking
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` from root `MSG` |
 | `modules/ext2` | writable ext2 (rev1, 1KiB): `ModuleVfsOps`, bind at `mount(2)` |
 | `modules/virtio_net` | modern virtio-pci net, poll RX/TX, `/dev/net0` Ethernet frames |
-| `user/init` | PID1-style: baked in, smoke fork/`/ok`, execs `/sh` |
+| `modules/netfs` | Plan 9 `/net` + `/dev/netd` channel to userspace netd |
+| `user/netd` | Userspace smoltcp over `/dev/net0`; only opener of net0 |
+| `user/init` | PID1-style: baked in, smoke fork/`/ok`, forks `/netd`, execs `/sh` |
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
 | `ports/` | Userspace ports (sbase, ubase, oksh, ripgrep, coreutils, tcc); source fetched at build |
 | `ports/oksh/` | oksh pin patches + `pconfig.h` |

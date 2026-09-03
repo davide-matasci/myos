@@ -1,19 +1,20 @@
 [workspace]
 
 [package]
-name = "ping"
+name = "netd"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "ICMP echo to 10.0.2.2 via Plan 9 /net/icmp (netd)."
+description = "Userspace netd: smoltcp over /dev/net0, Plan 9 /net via /dev/netd."
 
 [[bin]]
-name = "ping"
+name = "netd"
 test = false
 bench = false
 
 [dependencies]
 myos-user = { path = "../lib" }
+myos-net = { path = "../net" }
 
 [profile.dev]
 panic = "abort"
