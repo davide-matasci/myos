@@ -300,7 +300,7 @@ FAT32. This is **not** FUSE or a userspace FAT parser, and virtio is
 
 **virtio-net is a kernel module** (`modules/virtio_net`) like FAT/ext2: modern virtio 1.0 PCI, poll-mode RX/TX, `/dev/net0` Ethernet frames (no IP). Loaded after NVMe. QEMU adds `-netdev user,id=net0 -device virtio-net-pci,netdev=net0` on every arch (keeps `-nic none`).
 
-**netfs** (`modules/netfs`) mounts Plan 9 `/net` (`tcp`/`udp`/`icmp` clone + conv `ctl`/`data`/`status`) and registers `/dev/netd`. **netd** (`user/netd`) is the only process that opens `/dev/net0`; it runs smoltcp (DHCP + ICMP/UDP/TCP) in userspace and talks to the kernel over `/dev/netd` (poll-style read 0, no `socket()` syscall, no pipe IPC). Init forks `/netd` after `/ok`. `/ping` uses `/net/icmp` only.
+**netfs** (`modules/netfs`) mounts Plan 9 `/net` (`tcp`/`udp`/`icmp` clone + conv `ctl`/`data`/`status`) and registers `/dev/netd`. **netd** (`user/netd`) is the only process that opens `/dev/net0`; it runs smoltcp (DHCP + ICMP/UDP/TCP) in userspace and talks to the kernel over `/dev/netd` (poll-style read 0, no `socket()` syscall, no pipe IPC). Init forks `/netd` after `/ok`. `/ping <ipv4>` uses `/net/icmp` only (CI heap pings `10.0.2.2`; `1.1.1.1` is for interactive use).
 
 ## Modules
 

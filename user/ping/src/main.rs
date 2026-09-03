@@ -3,25 +3,64 @@
 
 use myos_user::{close, exit, exit_code, open, open_flags, read, write, write_fd, O_RDWR, O_WRONLY};
 
-const GATEWAY_CTL: &[u8] = b"connect 10.0.2.2";
-const STATUS_POLLS: usize = 8000;
-const DATA_POLLS: usize = 8000;
-
-#[cfg(target_arch = "x86_64")]
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    main()
-}
+myos_user::x86_start!(main);
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(_argc: usize, _argv: *const usize) -> ! {
+pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
+    unsafe { myos_user::args::init_from_regs(argc, argv) };
     main()
+}
+
+const STATUS_POLLS: usize = 8000;
+const DATA_POLLS: usize = 8000;
+
+fn usage() -> ! {
+    write(b"usage: ping <ipv4>\n");
+    exit_code(1);
 }
 
 fn fail(msg: &[u8]) -> ! {
     write(msg);
     exit_code(1);
+}
+
+/// Dotted IPv4 `a.b.c.d`; each octet 0..=255, no extra bytes.
+fn parse_ipv4(s: &[u8]) -> bool {
+    let mut i = 0usize;
+    for part in 0..4 {
+        if i >= s.len() || !s[i].is_ascii_digit() {
+            return false;
+        }
+        let mut n = 0u16;
+        let mut digits = 0u8;
+        while i < s.len() && s[i].is_ascii_digit() {
+            digits += 1;
+            if digits > 3 {
+                return false;
+            }
+            n = n * 10 + (s[i] - b'0') as u16;
+            if n > 255 {
+                return false;
+            }
+            i += 1;
+        }
+        if part != 3 {
+            if i >= s.len() || s[i] != b'.' {
+                return false;
+            }
+            i += 1;
+        }
+    }
+    i == s.len()
+}
+
+fn connect_ctl(ip: &[u8], out: &mut [u8]) -> usize {
+    let prefix = b"connect ";
+    let n = prefix.len() + ip.len();
+    out[..prefix.len()].copy_from_slice(prefix);
+    out[prefix.len()..n].copy_from_slice(ip);
+    n
 }
 
 fn parse_id(buf: &[u8]) -> Option<u16> {
@@ -79,6 +118,13 @@ fn buf_has(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 fn main() -> ! {
+    let Some(ip) = myos_user::arg(1) else {
+        usage();
+    };
+    if !parse_ipv4(ip) {
+        usage();
+    }
+
     let Some(clone) = open(b"/net/icmp/clone") else {
         fail(b"open /net/icmp/clone fail\n");
     };
@@ -97,7 +143,9 @@ fn main() -> ! {
     let Some(ctl) = open_flags(&path[..pn], O_WRONLY) else {
         fail(b"open ctl fail\n");
     };
-    if write_fd(ctl, GATEWAY_CTL) == usize::MAX {
+    let mut ctl_cmd = [0u8; 24];
+    let cn = connect_ctl(ip, &mut ctl_cmd);
+    if write_fd(ctl, &ctl_cmd[..cn]) == usize::MAX {
         close(ctl);
         fail(b"write ctl fail\n");
     }
