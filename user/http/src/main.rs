@@ -156,14 +156,14 @@ fn main() -> ! {
     let Some(ip_str) = myos_user::arg(1) else {
         usage();
     };
-    let ip_bytes = ip_str.as_bytes();
+    let ip_bytes = ip_str;
     if !parse_ipv4(ip_bytes) {
         fail(b"bad ipv4\n");
     }
     // Parse optional port argument.
     let port: u16 = match myos_user::arg(2) {
         Some(p) => {
-            let p_bytes = p.as_bytes();
+            let p_bytes = p;
             if !parse_port(p_bytes) {
                 fail(b"bad port\n");
             }
@@ -178,7 +178,7 @@ fn main() -> ! {
     // Parse optional path argument (must start with '/').
     let path: &[u8] = match myos_user::arg(3) {
         Some(p) => {
-            let p_bytes = p.as_bytes();
+            let p_bytes = p;
             if p_bytes.is_empty() || p_bytes[0] != b'/' {
                 fail(b"path must start with /\n");
             }
