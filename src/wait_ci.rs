@@ -40,7 +40,7 @@ const CI_NEEDLES: [&str; 26] = [
 
 /// Heavy markers from CI-only `/heap` (typed at `$` on every arch).
 /// Pre-prompt readiness stays slim; these are required after interactive `heap`.
-const CI_NEEDLES_STD: [&str; 15] = [
+const CI_NEEDLES_STD: [&str; 16] = [
     "std ok",
     "std cat ok",
     "std echo ok",
@@ -56,10 +56,11 @@ const CI_NEEDLES_STD: [&str; 15] = [
     "tcc ok",
     "tcc std ok",
     "ping ok",
+    "dns ok",
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 10] = [
+const CI_SHELL_COMMANDS: [&[u8]; 11] = [
     b"nosuchcmd\n",
     // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
     b"heap\n",
@@ -73,6 +74,8 @@ const CI_SHELL_COMMANDS: [&[u8]; 10] = [
     b"x\x08/s/ls\n",
     // oksh redirect uses newlib O_CREAT; must create on tmpfs (not only `/ok`).
     b"echo test > /tmp/aaa; cat /tmp/aaa\n",
+    // DNS resolution test (requires network).
+    b"dns www.google.com\n",
 ];
 
 /// Printed by the interactive shell when a command cannot be resolved.
@@ -212,6 +215,20 @@ fn interactive_tmp_redir_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
+/// DNS resolution test: `dns www.google.com` should print `IP: x.x.x.x` and return to `$`.
+fn interactive_dns_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    if !tail.contains("$ dns www.google.com") || serial.contains("exception:") {
+        return false;
+    }
+    // DNS command should print `IP: x.x.x.x` followed by `dns ok` and return to prompt.
+    if !tail.contains("IP: ") || !tail.contains("dns ok") {
+        return false;
+    }
+    at_interactive_prompt(serial)
+}
+
+
 fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     // Echo includes BS-space-BS; do not require a clean `$ /s/ls` substring.
@@ -255,6 +272,7 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
         7 => interactive_sbase_ls_cmd_ok(serial),
         8 => interactive_bs_ls_cmd_ok(serial),
         9 => interactive_tmp_redir_ok(serial),
+        10 => interactive_dns_cmd_ok(serial),
         _ => false,
     }
 }
@@ -554,10 +572,21 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 "error: interactive `x<BS>/s/ls` failed (canonical backspace must yield `/s/ls`)"
             );
         }
-        if shell_cmd_index >= 9 && !interactive_tmp_redir_ok(&serial) {
+        if shell_cmd_index == 9 && !interactive_tmp_redir_ok(&serial) {
             eprintln!(
                 "error: interactive `echo test > /tmp/aaa; cat /tmp/aaa` failed (want `test`, no cannot create)"
             );
+        }
+        if shell_cmd_index == 10 && !interactive_dns_cmd_ok(&serial) {
+            if !command_echoed(&serial, "dns www.google.com") {
+                eprintln!("error: serial did not echo `$ dns www.google.com` at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: interactive `dns www.google.com` triggered a CPU exception");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after interactive `dns www.google.com`");
+            } else {
+                eprintln!("error: interactive `dns www.google.com` did not print `IP: x.x.x.x` and `dns ok`");
+            }
         }
         std::process::exit(1);
     }
