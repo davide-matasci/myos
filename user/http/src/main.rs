@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, exit, exit_code, open, open_flags, read, write, write_fd, O_RDWR, O_WRONLY};
+use myos_user::{close, exit, open, open_flags, read, write, write_fd, O_RDWR, O_WRONLY};
 
 myos_user::x86_start!(main);
 
@@ -12,8 +12,6 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
     main()
 }
 
-/// Exit codes baked into main — reuse across similar tools.
-const MAX_POLLS: usize = 200_000;
 const STATUS_POLLS: usize = 200_000;
 const DATA_POLLS: usize = 400_000;
 const BUF: usize = 1024;
@@ -21,16 +19,14 @@ const BUF: usize = 1024;
 fn usage() -> ! {
     write(b"usage: http <ipv4> [port] [path]\n");
     write(b"  default port 80, default path /\n");
-    exit_code(1);
+    exit();
 }
 
 fn fail(msg: &[u8]) -> ! {
     write(msg);
-    exit_code(1);
+    exit();
 }
 
-/// Parse dotted-quad IPv4. Returns true iff the byte slice has exactly 4 parts,
-/// each 0–255, separated by single dots with no leading zeros >1 digit.
 fn parse_ipv4(s: &[u8]) -> bool {
     let mut i = 0usize;
     let mut parts = 0;
@@ -53,18 +49,15 @@ fn parse_ipv4(s: &[u8]) -> bool {
         }
         parts += 1;
         if parts != 4 {
-            // Must see a dot separator (unless we're already at end, which fails)
             if i >= s.len() || s[i] != b'.' {
                 return false;
             }
-            i += 1; // skip dot
+            i += 1;
         }
     }
     parts == 4 && i == s.len()
 }
 
-/// Parse a port number string. Returns true iff every char is a digit,
-/// value is in 1..=65535, and the string is non-empty.
 fn parse_port(s: &[u8]) -> bool {
     if s.is_empty() || s.len() > 5 {
         return false;
@@ -79,29 +72,6 @@ fn parse_port(s: &[u8]) -> bool {
     0 < n && n <= 65535
 }
 
-/// Parse a plain unsigned decimal id from a read buffer.
-fn parse_id(buf: &[u8]) -> Option<u16> {
-    let mut n = 0u32;
-    let mut any = false;
-    for &b in buf {
-        match b {
-            b'\n' | b'\r' | b' ' | b'\0' => break,
-            _ => {
-                if !b.is_ascii_digit() {
-                    return None;
-                }
-                any = true;
-                n = n.checked_mul(10)?.checked_add((b - b'0') as u32)?;
-                if n > 65535 {
-                    return None;
-                }
-            }
-        }
-    }
-    if any { Some(n as u16) } else { None }
-}
-
-/// Format a u16 as decimal into a buffer, return chars written.
 fn put_dec(buf: &mut [u8], mut n: u16) -> usize {
     let mut tmp = [0u8; 6];
     let mut i = tmp.len();
@@ -120,7 +90,6 @@ fn put_dec(buf: &mut [u8], mut n: u16) -> usize {
     digits.len()
 }
 
-/// Build a path like /net/tcp/<id>/ctl (or /data /status).
 fn conv_path(out: &mut [u8], id: u16, leaf: &[u8]) -> usize {
     let prefix = b"/net/tcp/";
     let mut n = 0usize;
@@ -134,12 +103,10 @@ fn conv_path(out: &mut [u8], id: u16, leaf: &[u8]) -> usize {
     n
 }
 
-/// Does a byte slice contain the given needle anywhere (windowed check)?
 fn buf_has(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// Write a `connect ip!port` ctl command for a TCP conversation.
 fn connect_ctl(ip: &[u8], port: u16, out: &mut [u8]) -> usize {
     let prefix = b"connect ";
     let mut n = prefix.len();
@@ -160,36 +127,30 @@ fn main() -> ! {
     if !parse_ipv4(ip_bytes) {
         fail(b"bad ipv4\n");
     }
-    // Parse optional port argument.
     let port: u16 = match myos_user::arg(2) {
         Some(p) => {
-            let p_bytes = p;
-            if !parse_port(p_bytes) {
+            if !parse_port(p) {
                 fail(b"bad port\n");
             }
             let mut n = 0u32;
-            for &b in p_bytes {
+            for &b in p {
                 n = n * 10 + (b - b'0') as u32;
             }
             n as u16
         }
         None => 80,
     };
-    // Parse optional path argument (must start with '/').
     let path: &[u8] = match myos_user::arg(3) {
         Some(p) => {
-            let p_bytes = p;
-            if p_bytes.is_empty() || p_bytes[0] != b'/' {
+            if p.is_empty() || p[0] != b'/' {
                 fail(b"path must start with /\n");
             }
-            p_bytes
+            p
         }
         None => b"/",
     };
 
-    // ------------------------------------------------------------------
-    // Step 1: clone a TCP conversation from /net/tcp/clone
-    // ------------------------------------------------------------------
+    // Step 1: clone a TCP conversation
     let Some(clone) = open(b"/net/tcp/clone") else {
         fail(b"open /net/tcp/clone fail\n");
     };
@@ -199,46 +160,57 @@ fn main() -> ! {
     if n == 0 || n == usize::MAX {
         fail(b"read clone fail\n");
     }
-    let Some(id) = parse_id(&idbuf[..n]) else {
+    // Parse the conv id from clone response (digits before newline)
+    let mut id: u16 = 0;
+    let mut any = false;
+    for &b in &idbuf[..n] {
+        match b {
+            b'\n' | b'\r' | b' ' => break,
+            _ => {
+                if !b.is_ascii_digit() {
+                    fail(b"clone id fail\n");
+                }
+                any = true;
+                id = match id.checked_mul(10) {
+                    Some(x) => match x.checked_add((b - b'0') as u16) {
+                        Some(y) => y,
+                        None => { fail(b"clone id fail\n"); }
+                    },
+                    None => { fail(b"clone id fail\n"); }
+                };
+            }
+        }
+    }
+    if !any {
         fail(b"clone id fail\n");
-    };
+    }
 
-    // ------------------------------------------------------------------
-    // Step 2: ctl — connect ip!port
-    // ------------------------------------------------------------------
-    let mut cbuf = [0u8; 40];
-    let cn = conv_path(&mut cbuf, id, b"ctl");
-    let Some(ctl) = open_flags(&cbuf[..cn], O_WRONLY) else {
+    // Step 2: send connect ip!port
+    let mut pbuf = [0u8; 40];
+    let pn = conv_path(&mut pbuf, id, b"ctl");
+    let Some(ctl) = open_flags(&pbuf[..pn], O_WRONLY) else {
         fail(b"open ctl fail\n");
     };
-    let mut ctl_cmd = [0u8; 40];
-    let cm = connect_ctl(ip_bytes, port, &mut ctl_cmd);
-    if write_fd(ctl, &ctl_cmd[..cm]) == usize::MAX {
+    let mut cmd = [0u8; 40];
+    let cm = connect_ctl(ip_bytes, port, &mut cmd);
+    if write_fd(ctl, &cmd[..cm]) == usize::MAX {
         close(ctl);
         fail(b"write ctl fail\n");
     }
     close(ctl);
 
-    // ------------------------------------------------------------------
-    // Step 3: wait for handshake — status says "connected"
-    // ------------------------------------------------------------------
-    let mut sbuf = [0u8; 64];
-    let sn = conv_path(&mut cbuf, id, b"status");
+    // Step 3: wait for connected status
+    let sn = conv_path(&mut pbuf, id, b"status");
     let mut connected = false;
     for _ in 0..STATUS_POLLS {
-        let Some(st) = open(&cbuf[..sn]) else {
-            // Briefly yield so the daemon isn't starved; keep polling.
+        let Some(st) = open(&pbuf[..sn]) else {
             continue;
         };
+        let mut sbuf = [0u8; 64];
         let nr = read(st, &mut sbuf);
         close(st);
         if nr > 0 && nr <= 64 && buf_has(&sbuf[..nr], b"connected") {
             connected = true;
-            break;
-        }
-        // If read returns 0 that just means the channel was momentarily empty;
-        // keep polling.  If it returns usize::MAX that's an error — break.
-        if nr == usize::MAX {
             break;
         }
     }
@@ -246,65 +218,75 @@ fn main() -> ! {
         fail(b"tcp connect timeout\n");
     }
 
-    // ------------------------------------------------------------------
-    // Step 4: data — send the HTTP GET request
-    // ------------------------------------------------------------------
-    let mut dbuf = [0u8; 40];
-    let dn = conv_path(&mut dbuf, id, b"data");
-    let Some(data) = open_flags(&dbuf[..dn], O_RDWR) else {
+    // Step 4: open data, send HTTP request
+    let dn = conv_path(&mut pbuf, id, b"data");
+    let Some(data) = open_flags(&pbuf[..dn], O_RDWR) else {
         fail(b"open data fail\n");
     };
 
-    // Build: "GET /path HTTP/1.1\r\nHost: ip\r\nConnection: close\r\n\r\n"
-    let need = 4 + ip_bytes.len() + 15 + path.len() + 19;
+    // Build: GET <path> HTTP/1.1\r\nHost: <ip>\r\nConnection: close\r\n\r\n
     let mut req = [0u8; 256];
-    if need > req.len() {
-        close(data);
-        fail(b"request too long\n");
-    }
     let mut q = 0usize;
-    req[q..q + 4].copy_from_slice(b"GET ");
+
+    // "GET "
+    req[q] = b'G'; req[q+1] = b'E'; req[q+2] = b'T'; req[q+3] = b' ';
     q += 4;
+
+    // path
+    if q + path.len() > 256 { close(data); fail(b"path too long\n"); }
     req[q..q + path.len()].copy_from_slice(path);
     q += path.len();
-    req[q..q + 15].copy_from_slice(b" HTTP/1.1\r\nHost: ");
-    q += 15;
+
+    // " HTTP/1.1\r\n"
+    let http_line = b" HTTP/1.1\r\n";
+    if q + http_line.len() > 256 { close(data); fail(b"path too long\n"); }
+    req[q..q + http_line.len()].copy_from_slice(http_line);
+    q += http_line.len();
+
+    // "Host: "
+    let host_line = b"Host: ";
+    if q + host_line.len() + ip_bytes.len() + 2 > 256 { close(data); fail(b"host too long\n"); }
+    req[q..q + host_line.len()].copy_from_slice(host_line);
+    q += host_line.len();
+
+    // ip
     req[q..q + ip_bytes.len()].copy_from_slice(ip_bytes);
     q += ip_bytes.len();
-    req[q..q + 19].copy_from_slice(b"\r\nConnection: close\r\n\r\n");
-    q += 19;
+
+    // "\r\n"
+    req[q] = b'\r'; req[q+1] = b'\n';
+    q += 2;
+
+    // "Connection: close\r\n\r\n"
+    let end_headers = b"Connection: close\r\n\r\n";
+    if q + end_headers.len() > 256 { close(data); fail(b"headers too long\n"); }
+    req[q..q + end_headers.len()].copy_from_slice(end_headers);
+    q += end_headers.len();
+
     if write_fd(data, &req[..q]) == usize::MAX {
         close(data);
-        fail(b"write data fail\n");
+        fail(b"write request fail\n");
     }
 
-    // ------------------------------------------------------------------
-    // Step 5: read the response until peer closes or we run out of polls.
-    // NOTE: netfs read() returns 0 when the buffer is momentarily empty
-    // (not EOF).  We loop on 0 and only bail on error (usize::MAX) or budget exhaustion.
-    // ------------------------------------------------------------------
+    // Step 5: read response
     let mut got = false;
-    let mut total = 0usize;
     let mut rbuf = [0u8; BUF];
     for _ in 0..DATA_POLLS {
         let nr = read(data, &mut rbuf);
         if nr == usize::MAX {
-            break; // kernel error
+            break;
         }
         if nr == 0 {
-            continue; // momentarily empty; keep waiting
+            continue;
         }
         got = true;
-        total += nr;
         write(&rbuf[..nr]);
     }
     close(data);
     if !got {
         fail(b"http no data\n");
     }
-    write(b"\n");
-    write(b"http ok\n");
-    // (total is just for diagnostics; not printed to avoid extra syscalls)
+    write(b"\nhttp ok\n");
     exit();
 }
 
