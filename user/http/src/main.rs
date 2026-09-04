@@ -270,9 +270,11 @@ fn main() -> ! {
             break; // kernel error
         }
         if nr == 0 {
-            empty_polls += 1;
-            if empty_polls > 50 {
-                break; // too many empty polls; peer likely closed
+            if got {
+                empty_polls += 1;
+                if empty_polls > 10000 {
+                    break; // long idle after data = peer closed
+                }
             }
             continue; // momentarily empty; keep waiting
         }
