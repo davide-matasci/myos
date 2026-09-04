@@ -113,10 +113,37 @@ fn encode_name(dst: &mut [u8], name: &[u8]) -> usize {
 }
 
 fn parse_ipv4(buf: &[u8]) -> Option<[u8; 4]> {
-    for window in buf.windows(4) {
-        if window.len() == 4 {
-            return Some([window[0], window[1], window[2], window[3]]);
-        }
+    // DNS response structure:
+    // - Header: transaction_id(2) + flags(2) + counts(8) = 12 bytes
+    // - Question: name + qtype(2) + qclass(2)
+    // - Answer: name pointer or inline + type(2) + class(2) + ttl(4) + rdlength(2) + rdata(4)
+    const HEADER_LEN: usize = 12;
+    const MIN_RESPONSE: usize = HEADER_LEN + 5; // header + name + type + class + TTL + rdlen + IP
+
+    if buf.len() < MIN_RESPONSE {
+        return None;
+    }
+
+    // Skip header and question section to find the answer section
+    // The answer starts after: header(12) + question name + 4 bytes (qtype+qclass)
+    let mut pos = HEADER_LEN;
+    while pos < buf.len() && buf[pos] != 0 {
+        pos += 1; // skip label length
+    }
+    pos += 5; // skip null byte + qtype(2) + qclass(2)
+
+    // Now we're at the answer section
+    // Type A: 2 bytes, Class IN: 2 bytes, TTL: 4 bytes, RDLENGTH: 2 bytes, RDATA: 4 bytes
+    if pos + 10 > buf.len() {
+        return None;
+    }
+    pos += 8; // skip type(2) + class(2) + TTL(4)
+
+    let rdlen = ((buf[pos] as usize) << 8) | (buf[pos + 1] as usize);
+    pos += 2;
+
+    if rdlen == 4 && pos + 4 <= buf.len() {
+        return Some([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
     }
     None
 }
