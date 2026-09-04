@@ -160,7 +160,6 @@ fn main() -> ! {
     if n == 0 || n == usize::MAX {
         fail(b"read clone fail\n");
     }
-    // Parse the conv id from clone response (digits before newline)
     let mut id: u16 = 0;
     let mut any = false;
     for &b in &idbuf[..n] {
@@ -228,36 +227,29 @@ fn main() -> ! {
     let mut req = [0u8; 256];
     let mut q = 0usize;
 
-    // "GET "
     req[q] = b'G'; req[q+1] = b'E'; req[q+2] = b'T'; req[q+3] = b' ';
     q += 4;
 
-    // path
     if q + path.len() > 256 { close(data); fail(b"path too long\n"); }
     req[q..q + path.len()].copy_from_slice(path);
     q += path.len();
 
-    // " HTTP/1.1\r\n"
     let http_line = b" HTTP/1.1\r\n";
     if q + http_line.len() > 256 { close(data); fail(b"path too long\n"); }
     req[q..q + http_line.len()].copy_from_slice(http_line);
     q += http_line.len();
 
-    // "Host: "
     let host_line = b"Host: ";
     if q + host_line.len() + ip_bytes.len() + 2 > 256 { close(data); fail(b"host too long\n"); }
     req[q..q + host_line.len()].copy_from_slice(host_line);
     q += host_line.len();
 
-    // ip
     req[q..q + ip_bytes.len()].copy_from_slice(ip_bytes);
     q += ip_bytes.len();
 
-    // "\r\n"
     req[q] = b'\r'; req[q+1] = b'\n';
     q += 2;
 
-    // "Connection: close\r\n\r\n"
     let end_headers = b"Connection: close\r\n\r\n";
     if q + end_headers.len() > 256 { close(data); fail(b"headers too long\n"); }
     req[q..q + end_headers.len()].copy_from_slice(end_headers);
@@ -270,14 +262,19 @@ fn main() -> ! {
 
     // Step 5: read response
     let mut got = false;
+    let mut empty_polls = 0usize;
     let mut rbuf = [0u8; BUF];
     for _ in 0..DATA_POLLS {
         let nr = read(data, &mut rbuf);
         if nr == usize::MAX {
-            break;
+            break; // kernel error
         }
         if nr == 0 {
-            continue;
+            empty_polls += 1;
+            if empty_polls > 50 {
+                break; // too many empty polls; peer likely closed
+            }
+            continue; // momentarily empty; keep waiting
         }
         got = true;
         write(&rbuf[..nr]);
@@ -286,7 +283,8 @@ fn main() -> ! {
     if !got {
         fail(b"http no data\n");
     }
-    write(b"\nhttp ok\n");
+    write(b"\n");
+    write(b"http ok\n");
     exit();
 }
 
