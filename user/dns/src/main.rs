@@ -58,6 +58,30 @@ fn put_dec(buf: &mut [u8], mut n: u16) -> usize {
     digits.len()
 }
 
+/// Debug: print raw bytes as hex for troubleshooting DNS responses
+fn dump_hex(label: &[u8], data: &[u8]) {
+    write(label);
+    let mut pos = 0usize;
+    let mut out = [0u8; 128];
+    for &b in data {
+        if pos + 3 > out.len() - 1 {
+            out[pos] = b'.';
+            out[pos + 1] = b'.';
+            out[pos + 2] = b'.';
+            pos += 3;
+            break;
+        }
+        let h = b >> 4;
+        let l = b & 0xF;
+        out[pos] = if h < 10 { b'0' + h } else { b'a' + h - 10 };
+        out[pos + 1] = if l < 10 { b'0' + l } else { b'a' + l - 10 };
+        out[pos + 2] = b' ';
+        pos += 3;
+    }
+    write(&out[..pos]);
+    write(b"\n");
+}
+
 fn conv_path(out: &mut [u8], id: u16, leaf: &[u8]) -> usize {
     let prefix = b"/net/udp/";
     let mut n = 0usize;
@@ -118,23 +142,64 @@ fn parse_ipv4(buf: &[u8]) -> Option<[u8; 4]> {
     // - Question: name + qtype(2) + qclass(2)
     // - Answer: name pointer or inline + type(2) + class(2) + ttl(4) + rdlength(2) + rdata(4)
     const HEADER_LEN: usize = 12;
-    const MIN_RESPONSE: usize = HEADER_LEN + 5; // header + name + type + class + TTL + rdlen + IP
 
-    if buf.len() < MIN_RESPONSE {
+    if buf.len() < HEADER_LEN + 16 {
         return None;
     }
 
-    // Skip header and question section to find the answer section
-    // The answer starts after: header(12) + question name + 4 bytes (qtype+qclass)
+    // Skip header
     let mut pos = HEADER_LEN;
-    while pos < buf.len() && buf[pos] != 0 {
-        pos += 1; // skip label length
+
+    // Skip question section: name (handling compression pointers) + qtype(2) + qclass(2)
+    // First handle any compression pointers in the question name
+    let question_end = loop {
+        if pos >= buf.len() {
+            return None;
+        }
+        // Check if this is a compression pointer (high 2 bits are 11)
+        if (buf[pos] & 0xC0) == 0xC0 {
+            // Pointer: 2 bytes, skip them
+            pos += 2;
+            break;
+        }
+        // Regular label: 1 byte length + N bytes of data
+        let label_len = buf[pos] as usize;
+        pos += 1 + label_len;
+        // If we hit a null byte, the name is complete
+        if buf[pos] == 0 {
+            pos += 1; // skip null
+            break;
+        }
+    };
+
+    // Skip qtype(2) + qclass(2)
+    if question_end + 4 > buf.len() {
+        return None;
     }
-    pos += 5; // skip null byte + qtype(2) + qclass(2)
+    pos = question_end + 4;
 
     // Now we're at the answer section
-    // Type A: 2 bytes, Class IN: 2 bytes, TTL: 4 bytes, RDLENGTH: 2 bytes, RDATA: 4 bytes
-    if pos + 10 > buf.len() {
+    // The answer name can be inline labels or a compression pointer
+    // Skip the answer name: either inline or 2-byte pointer
+    if pos >= buf.len() {
+        return None;
+    }
+    if (buf[pos] & 0xC0) == 0xC0 {
+        // Compression pointer - skip 2 bytes
+        pos += 2;
+    } else {
+        // Inline labels - skip until null
+        while pos < buf.len() && buf[pos] != 0 {
+            let label_len = buf[pos] as usize;
+            pos += 1 + label_len;
+        }
+        if pos < buf.len() {
+            pos += 1; // skip null
+        }
+    }
+
+    // Now at type(2) + class(2) + ttl(4) + rdlength(2)
+    if pos + 8 > buf.len() {
         return None;
     }
     pos += 8; // skip type(2) + class(2) + TTL(4)
@@ -286,6 +351,8 @@ fn main() -> ! {
             continue;
         }
         got = true;
+        // Debug: dump raw response bytes
+        dump_hex(b"dns resp (", &rbuf[..nr]);
         // Parse DNS response for A records
         if let Some(ip) = parse_ipv4(&rbuf[..nr]) {
             write(b"IP: ");
