@@ -160,7 +160,7 @@ fn parse_ipv4(buf: &[u8]) -> Option<[u8; 4]> {
         if (buf[pos] & 0xC0) == 0xC0 {
             // Pointer: 2 bytes, skip them
             pos += 2;
-            break;
+            break pos;
         }
         // Regular label: 1 byte length + N bytes of data
         let label_len = buf[pos] as usize;
@@ -168,7 +168,7 @@ fn parse_ipv4(buf: &[u8]) -> Option<[u8; 4]> {
         // If we hit a null byte, the name is complete
         if buf[pos] == 0 {
             pos += 1; // skip null
-            break;
+            break pos;
         }
     };
 
