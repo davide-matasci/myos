@@ -26,10 +26,12 @@ const MOUNT_ELF: &[u8] = include_bytes!(env!("USER_MOUNT_PATH"));
 const MKFS_EXT2_ELF: &[u8] = include_bytes!(env!("USER_MKFS_EXT2_PATH"));
 const PING_ELF: &[u8] = include_bytes!(env!("USER_PING_PATH"));
 const HTTP_ELF: &[u8] = include_bytes!(env!("USER_HTTP_PATH"));
+const DNS_ELF: &[u8] = include_bytes!(env!("USER_DNS_PATH"));
 const NETD_ELF: &[u8] = include_bytes!(env!("USER_NETD_PATH"));
 // Forces rustc to rebuild bootfs when kernel/build.rs hashes a new /ping or /netd.
 const _: &str = env!("USER_PING_HASH");
 const _: &str = env!("USER_HTTP_HASH");
+const _: &str = env!("USER_DNS_HASH");
 const _: &str = env!("USER_NETD_HASH");
 
 const MAX_FILES: usize = 32;
@@ -183,6 +185,7 @@ pub fn init_embedded() {
     let _ = register("mkfs.ext2", MKFS_EXT2_ELF);
     let _ = register("ping", PING_ELF);
     let _ = register("http", HTTP_ELF);
+    let _ = register("dns", DNS_ELF);
     let _ = register("netd", NETD_ELF);
 }
 
