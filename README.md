@@ -26,12 +26,24 @@ This is a starting point to grow into a real OS, not a feature dump.
 
 - [rustup](https://rustup.rs/) — `rust-toolchain.toml` pins **nightly-2026-07-26** and installs components automatically
 - QEMU (`qemu-system-x86`, `qemu-system-arm`, `qemu-efi-aarch64`, `qemu-efi-riscv64`)
-- A C compiler (`cc`/`clang`) for the Limine host tool (`bios-install`)
-- `curl` to fetch Limine binary on first build
-- `xorriso` for hybrid ISO output
+- `clang` + `lld` — cross-compiler and linker for C userspace on every arch (`ld.lld`)
+- `make` — newlib build
+- `git` — fetching upstream port sources
+- `gh` — GitHub CLI (CI registry pulls)
+- `libc6-dev` — host CRT (`Scrt1.o`) for the Limine host tool
+- `rsync` — preparing oksh/sbase build trees
+- `patch` — applying `.myos.patch` files
+- `curl` — fetching the pinned Limine binary on first build
+- `xorriso` — hybrid ISO output (`cargo run -- iso` only)
 
-On Ubuntu: `sudo apt install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 gcc xorriso`  
-On macOS: `brew install qemu`
+On Ubuntu:
+
+```sh
+sudo apt install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
+  clang lld make git gh libc6-dev rsync patch curl xorriso
+```
+
+On macOS: `brew install qemu llvm`
 
 ---
 
@@ -52,33 +64,21 @@ cargo run --release      # release build
 ```
 
 **Headless / CI mode** — add `-- --ci` to kill QEMU after all boot needles:
+
 ```sh
 cargo run -- --ci
 cargo run -- uefi --ci
 cargo run -- aarch64 --ci
 ```
 
-Expected headless output (x86_64 / AArch64):
-```
-Hello from myos
-heap ok
-int ok
-task a
-task b
-sched ok
-mod ok
-limine mod ok
-sh ok
-user ok
-fat ok
-```
-
 **Interactive use** — type at `$` prompt (PS/2 keyboard in QEMU window on x86; serial on all arches):
+
 ```sh
 cargo run          # x86 BIOS — keyboard or serial
 cargo run -- uefi  # x86 UEFI
 cargo run -- aarch64   # serial only for now
 ```
+
 CI types `root` at `login: `, then commands at `$ ` (password is empty).
 
 ---

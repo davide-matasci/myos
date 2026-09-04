@@ -28,15 +28,9 @@ link_prog() {
   echo "==> c-${name} ($triple / newlib)"
   "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$src" -o "$obj"
 
-  if [[ "$arch" == "aarch64" ]]; then
-    aarch64-linux-gnu-ld -pie --no-dynamic-linker -o "$out" \
-      --entry=_start -z max-page-size=4096 \
-      "$lib/crt0.o" "$obj" -L"$lib" --start-group -lc -lgloss -lg --end-group
-  else
-    ld.lld -pie --no-dynamic-linker -o "$out" \
-      --entry=_start -z max-page-size=4096 \
-      "$lib/crt0.o" "$obj" -L"$lib" --start-group -lc -lgloss -lg --end-group
-  fi
+  ld.lld -pie --no-dynamic-linker -o "$out" \
+    --entry=_start -z max-page-size=4096 \
+    "$lib/crt0.o" "$obj" -L"$lib" --start-group -lc -lgloss -lg --end-group
   echo "c-${name} -> $out"
 }
 
