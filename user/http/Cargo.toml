@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "http"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "HTTP GET to an IPv4:port via Plan 9 /net/tcp (netd)."
+
+[[bin]]
+name = "http"
+test = false
+bench = false
+
+[dependencies]
+myos-user = { path = "../lib" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

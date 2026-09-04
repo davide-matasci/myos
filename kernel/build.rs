@@ -149,6 +149,18 @@ fn main() {
     nested_elf(
         &cargo,
         manifest,
+        "../user/http",
+        "http",
+        "http-target",
+        "USER_HTTP_PATH",
+        &target,
+        &profile,
+        &out,
+        &["../lib/src/lib.rs", "../lib/Cargo.toml"],
+    );
+    nested_elf(
+        &cargo,
+        manifest,
         "../user/netd",
         "netd",
         "netd-target",
@@ -744,7 +756,7 @@ fn nested_elf(
     let profile_dir = if profile == "release" { "release" } else { "debug" };
     // smoltcp (ping) needs a clean link for --image-base; deps-only wipe can
     // leave a stale ET_EXEC at the default 0x200000 / 0x10000 link base.
-    let need_image_base = (bin == "ping" || bin == "netd")
+    let need_image_base = (bin == "ping" || bin == "netd" || bin == "http")
         && (target.contains("aarch64") || target.contains("riscv64"));
     if need_image_base {
         let _ = std::fs::remove_dir_all(&td);
@@ -815,7 +827,7 @@ fn nested_elf(
     // Path string alone is not enough: same USER_*_PATH with new bytes left
     // bootfs include_bytes! stale. Watch the stable copy like other embeds.
     println!("cargo:rerun-if-changed={}", stable.display());
-    if bin == "ping" || bin == "netd" {
+    if bin == "ping" || bin == "netd" || bin == "http" {
         // Hash in rustc-env so bootfs.rs env!("USER_*_HASH") dirties the
         // crate when rust-cache reused a fingerprint but ELF bytes changed.
         let bytes = std::fs::read(&elf).unwrap_or_default();
@@ -829,6 +841,8 @@ fn nested_elf(
             .unwrap_or_else(|e| panic!("write hashed {bin}: {e}"));
         let hash_key = if bin == "ping" {
             "USER_PING_HASH"
+        } else if bin == "http" {
+            "USER_HTTP_HASH"
         } else {
             "USER_NETD_HASH"
         };
