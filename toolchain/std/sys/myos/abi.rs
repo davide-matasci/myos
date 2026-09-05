@@ -723,6 +723,12 @@ fn raw_open(ptr: usize, len: usize) -> usize {
             in("a7") SYS_OPEN,
             inout("a0") ptr => ret,
             in("a1") len,
+            // SYS_OPEN flags (a2). Must be 0 for std File::open — unlike
+            // myos_user/libc which pass flags explicitly. Leaving a2 unset
+            // reused leftover register state (e.g. StatBuf* from SYS_STAT),
+            // so uutils cat after metadata() failed with a bogus open on
+            // riscv64 only ("operation successful" via generic error_string).
+            in("a2") 0usize,
             options(nostack),
         );
     }
