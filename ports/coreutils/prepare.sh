@@ -66,6 +66,7 @@ if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP")" == "$(patch_version_hash)" ]] \
   && [[ -f "$HOSTNAME_SRC/src/myos.rs" ]] \
   && [[ -n "$CONSOLE_SRC" ]] \
   && [[ -f "$CONSOLE_SRC/src/myos_term.rs" ]] \
+  && grep -A40 'pub fn family' "$CONSOLE_SRC/src/term.rs" | grep -q 'target_os = "myos"' \
   && [[ -n "$FILETIME_SRC" ]] \
   && [[ -f "$FILETIME_SRC/src/myos.rs" ]] \
   && grep -q 'target_os = "myos"' "$FILETIME_SRC/src/lib.rs" \
@@ -214,23 +215,21 @@ pub(crate) use crate::myos_term::*;' \
       "$console_src/src/term.rs"
   fi
   # myos is not unix/windows/wasm — family() needs an explicit arm or it returns ().
-  if ! grep -q 'target_os = "myos"' "$console_src/src/term.rs" || ! grep -A20 'pub fn family' "$console_src/src/term.rs" | grep -q 'TermFamily::Dummy'; then
+  # NOTE: do not key off bare "target_os = myos" in term.rs (myos_term use already
+  # adds that) or TermFamily::Dummy (wasm already has Dummy). Require myos *inside* family().
+  if ! grep -A40 'pub fn family' "$console_src/src/term.rs" | grep -q 'target_os = "myos"'; then
     python3 - "$console_src/src/term.rs" <<'PYTERM'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
 text = p.read_text()
-start = text.index("    pub fn family(&self) -> TermFamily {")
-end = text.index("\n    }\n}\n", start) + len("\n    }\n")
-fixed = """    pub fn family(&self) -> TermFamily {
-        if !self.is_attended() {
-            return TermFamily::File;
-        }
-        #[cfg(windows)]
+needle = """        #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
-            TermFamily::WindowsConsole
+            TermFamily::UnixTerm
         }
-        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        #[cfg(target_arch = "wasm32")]
+"""
+insert = """        #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             TermFamily::UnixTerm
         }
@@ -239,13 +238,14 @@ fixed = """    pub fn family(&self) -> TermFamily {
             TermFamily::Dummy
         }
         #[cfg(target_arch = "wasm32")]
-        {
-            TermFamily::Dummy
-        }
-    }
 """
-p.write_text(text[:start] + fixed + text[end:])
-print("console family myos arm applied")
+if needle not in text:
+    raise SystemExit("console family(): expected unix/wasm arms not found")
+if 'target_os = "myos"' in text[text.index("pub fn family") : text.index("pub fn family") + 500]:
+    print("console family myos arm already present")
+else:
+    p.write_text(text.replace(needle, insert, 1))
+    print("console family myos arm applied")
 PYTERM
   fi
 
