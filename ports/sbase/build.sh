@@ -12,6 +12,11 @@ if myos_sbase_is_current; then
 fi
 
 "$ROOT/ports/sbase/prepare.sh"
+# sbase compiles newlib's regex sources (REGEX_SRCS) directly from the
+# newlib source tree, so the source must be present even when newlib
+# *outputs* are cached (CI pulls them from GHCR and build.sh exits early).
+# fetch.sh is idempotent and cheap when the tree already exists.
+"$ROOT/toolchain/newlib/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
