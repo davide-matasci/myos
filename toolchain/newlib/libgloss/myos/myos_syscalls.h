@@ -32,6 +32,10 @@
 #define MYOS_SYS_LSEEK 26
 #define MYOS_SYS_MOUNT 27
 #define MYOS_SYS_IOCTL 28
+#define MYOS_SYS_SETSID 29
+#define MYOS_SYS_SETPGID 30
+#define MYOS_SYS_GETPGID 31
+#define MYOS_SYS_GETSID 32
 
 #define MYOS_SYSERR ((unsigned long)-1)
 

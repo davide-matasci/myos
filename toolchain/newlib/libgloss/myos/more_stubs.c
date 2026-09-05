@@ -193,7 +193,7 @@ int getpriority(int which, id_t who) {
 }
 
 pid_t getpgrp(void) {
-    return 0;
+    return getpgid(0);
 }
 
 char *getlogin(void) {

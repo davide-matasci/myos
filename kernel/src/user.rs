@@ -39,6 +39,10 @@ const SYS_MPROTECT: usize = 25;
 const SYS_LSEEK: usize = 26;
 const SYS_MOUNT: usize = 27;
 const SYS_IOCTL: usize = 28;
+const SYS_SETSID: usize = 29;
+const SYS_SETPGID: usize = 30;
+const SYS_GETPGID: usize = 31;
+const SYS_GETSID: usize = 32;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -1434,6 +1438,10 @@ pub extern "C" fn syscall_dispatch(
         SYS_LSEEK => sys_lseek(a0, a1, a2),
         SYS_MOUNT => sys_mount(a0),
         SYS_IOCTL => sys_ioctl(a0, a1, a2),
+        SYS_SETSID => sys_setsid(),
+        SYS_SETPGID => sys_setpgid(a0, a1),
+        SYS_GETPGID => sys_getpgid(a0),
+        SYS_GETSID => sys_getsid(a0),
         _ => SYSERR,
     }
 }
@@ -1498,6 +1506,38 @@ fn sys_close(fd: usize) -> usize {
 
 fn sys_ioctl(fd: usize, request: usize, arg: usize) -> usize {
     task::fd_ioctl(fd, request, arg)
+}
+
+/// Become a session leader: `sid = pid` (task slot), new process group
+/// (`pgid = pid`), clear controlling tty.
+/// Fails with SYSERR if the caller is already a session leader (`sid == pid`).
+fn sys_setsid() -> usize {
+    match task::setsid() {
+        Some(sid) => sid,
+        None => SYSERR,
+    }
+}
+
+fn sys_setpgid(pid: usize, pgid: usize) -> usize {
+    if task::setpgid(pid, pgid) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+fn sys_getpgid(pid: usize) -> usize {
+    match task::getpgid(pid) {
+        Some(pgid) => pgid,
+        None => SYSERR,
+    }
+}
+
+fn sys_getsid(pid: usize) -> usize {
+    match task::getsid(pid) {
+        Some(sid) => sid,
+        None => SYSERR,
+    }
 }
 
 fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {

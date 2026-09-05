@@ -1,4 +1,5 @@
-/* myos libgloss: tty ioctl via SYS_IOCTL (getty/login). */
+/* myos libgloss: tty ioctl via SYS_IOCTL (getty/login).
+ * TIOCSCTTY is implemented in the kernel (sets the process ctty). */
 #include <errno.h>
 #include <stdarg.h>
 #include <sys/ioctl.h>

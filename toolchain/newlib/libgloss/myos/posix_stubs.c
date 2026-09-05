@@ -344,8 +344,46 @@ int setpriority(int which, id_t who, int prio) {
 }
 
 int setsid(void) {
-    /* Fake session leader; no real process groups yet. */
-    return 1;
+    /* SYS_SETSID: become session leader (sid = pid / task slot), join a new
+     * process group (pgid = pid), and clear the controlling tty. Kernel
+     * returns the new sid, or SYSERR if already a session leader (EPERM). */
+    long ret = myos_syscall0(MYOS_SYS_SETSID);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EPERM;
+        return -1;
+    }
+    return (int)ret;
+}
+
+int setpgid(pid_t pid, pid_t pgid) {
+    /* SYS_SETPGID: move pid (0 = self) into process group pgid (0 = create
+     * group with the target's pid). Phase-1: same session; self or direct
+     * child only; new pgid must be target pid or an existing group in the
+     * session. */
+    long ret = myos_syscall3(MYOS_SYS_SETPGID, (long)pid, (long)pgid, 0);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+pid_t getpgid(pid_t pid) {
+    long ret = myos_syscall1(MYOS_SYS_GETPGID, (long)pid);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = ESRCH;
+        return (pid_t)-1;
+    }
+    return (pid_t)ret;
+}
+
+pid_t getsid(pid_t pid) {
+    long ret = myos_syscall1(MYOS_SYS_GETSID, (long)pid);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = ESRCH;
+        return (pid_t)-1;
+    }
+    return (pid_t)ret;
 }
 
 /* getpwnam/getgrnam live in pwdgrp.c (root:root only). */

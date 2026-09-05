@@ -24,7 +24,8 @@ static void myos_set_errno_io(void) {
     errno = EIO;
 }
 
-/* fds 0-2 start as the console; extra tty bits come from open(/dev/console). */
+/* fds 0-2 start as the hardware console; open(/dev/console) and a successful
+ * open(/dev/tty) (requires ctty) also mark the returned fd as a tty. */
 static unsigned myos_tty_mask = 0x7;
 
 int myos_fd_is_tty(int fd) {
@@ -52,6 +53,9 @@ void myos_fd_dup_tty(int oldfd, int newfd) {
     myos_fd_set_tty(newfd, myos_fd_is_tty(oldfd));
 }
 
+/* True if `path` names a tty device node (for isatty bookkeeping after open).
+ * `/dev/console` = hardware console; `/dev/tty` = controlling tty (kernel
+ * may reject open with ENXIO when the process has no ctty). */
 static int myos_path_is_tty(const char *path) {
     const char *base;
     if (path == NULL) {
@@ -65,6 +69,10 @@ static int myos_path_is_tty(const char *path) {
     return strcmp(base, "console") == 0
         || strcmp(base, "tty") == 0
         || strcmp(base, "tty1") == 0;
+}
+
+static int myos_path_is_dev_tty(const char *path) {
+    return path != NULL && strcmp(path, "/dev/tty") == 0;
 }
 
 int _close(int fd) {
@@ -122,7 +130,8 @@ int _open(const char *path, int flags, ...) {
         MYOS_SYS_OPEN, (long)(uintptr_t)path, (long)strlen(path),
         myos_kernel_oflags(flags));
     if (ret == (long)MYOS_SYSERR) {
-        errno = ENOENT;
+        /* No controlling terminal → ENXIO (Linux open(/dev/tty) semantics). */
+        errno = myos_path_is_dev_tty(path) ? ENXIO : ENOENT;
         return -1;
     }
     if (myos_path_is_tty(path)) {
