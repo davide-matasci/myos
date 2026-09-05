@@ -23,6 +23,7 @@ pub const SYS_UNLINK: usize = 19;
 pub const SYS_RENAME: usize = 20;
 pub const SYS_SYMLINK: usize = 21;
 pub const SYS_READLINK: usize = 22;
+pub const SYS_IOCTL: usize = 28;
 
 const MAX_EXEC_ARGS: usize = 16;
 const MAX_EXEC_ENV: usize = 32;

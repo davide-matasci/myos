@@ -310,6 +310,11 @@ pub fn lseek(fd: usize, offset: usize, whence: usize) -> usize {
     unsafe { sys3(26, fd, offset, whence) }
 }
 
+/// Device ioctl (SYS_IOCTL = 28). Returns 0 on success, `usize::MAX` on error.
+pub fn ioctl(fd: usize, request: usize, arg: usize) -> usize {
+    unsafe { sys3(28, fd, request, arg) }
+}
+
 /// Adjust the program break. `addr == 0` queries the current break.
 pub fn brk(addr: usize) -> usize {
     unsafe { sys_brk(addr) }

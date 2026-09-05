@@ -5,7 +5,7 @@ name = "virtio_net"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "virtio-net kernel module: poll-mode /dev/net0 Ethernet frames."
+description = "virtio-net kernel module: poll-mode /dev/netN Ethernet frames."
 
 [[bin]]
 name = "virtio_net"

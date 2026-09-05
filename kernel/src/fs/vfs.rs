@@ -31,6 +31,19 @@ impl Vnode {
     }
 }
 
+/// Result of a filesystem/device ioctl before any userspace copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IoctlResult {
+    /// Success; syscall returns 0.
+    Ok,
+    /// TIOCGWINSZ: caller copies `{row,col}` winsize to user `arg`.
+    Winsize { row: u16, col: u16 },
+    /// Not a tty / no handler (ENOTTY → SYSERR).
+    Notty,
+    /// Bad argument or device error (SYSERR).
+    Bad,
+}
+
 /// Operations provided by an in-kernel filesystem backend.
 #[derive(Clone, Copy)]
 pub struct MountOps {
@@ -58,6 +71,10 @@ pub struct MountOps {
     pub symlink: fn(&str, &str) -> bool,
     /// Read symlink target into `buf`; returns bytes written.
     pub readlink: fn(&str, &mut [u8]) -> Option<usize>,
+    /// Optional ioctl on a path relative to this mount. `None` → ENOTTY.
+    /// Args: (rel_path, request, arg). Pointer args are not copied here —
+    /// return [`IoctlResult::Winsize`] and let the syscall layer copy_to_user.
+    pub ioctl: Option<fn(&str, usize, usize) -> IoctlResult>,
     /// Mount accepts write opens / creates.
     pub writable: bool,
 }
@@ -315,6 +332,11 @@ pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
 /// Write to an open vnode at `pos`. Returns bytes written, or `None` on error.
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     backend_write(node.mount as usize, node.path_str(), pos, buf)
+}
+
+/// Device/filesystem ioctl on an open vnode.
+pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
+    backend_ioctl(node.mount as usize, node.path_str(), request, arg)
 }
 
 /// Current size of the vnode path (for `O_APPEND`), if known.
@@ -628,6 +650,24 @@ fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Option<usize>
     match backend {
         MountBackend::Kernel(ops) => (ops.write)(rel, pos, buf),
         MountBackend::Module(ops) => module_write(&ops, rel, pos, buf),
+    }
+}
+
+fn backend_ioctl(idx: usize, rel: &str, request: usize, arg: usize) -> IoctlResult {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return IoctlResult::Notty;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => match ops.ioctl {
+            Some(f) => f(rel, request, arg),
+            None => IoctlResult::Notty,
+        },
+        // Module VFS mounts have no ioctl hook yet.
+        MountBackend::Module(_) => IoctlResult::Notty,
     }
 }
 

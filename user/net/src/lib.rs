@@ -1,13 +1,13 @@
 #![no_std]
 
-//! Userspace smoltcp PHY over `/dev/net0`.
+//! Userspace smoltcp PHY over `/dev/netN`.
 //!
 //! Structured so a later `netd` can reuse [`Net0Device`], [`build_interface`],
 //! and [`VirtualInstant`]. No `panic_handler` (this is a lib).
 
 extern crate alloc;
 
-use myos_user::{open_flags, read, write_fd, O_RDWR};
+use myos_user::{ioctl, open_flags, read, write_fd, O_RDWR};
 use smoltcp::iface::{Config, Interface};
 use smoltcp::phy::{
     Checksum, ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken,
@@ -26,9 +26,13 @@ pub const FRAME_BUF: usize = 2048;
 pub const MTU: usize = 1514;
 
 /// QEMU `virtio-net-pci` default MAC when no `mac=` is passed.
-/// ioctl/sysfs MAC query comes later; do not invent a MAC-from-read protocol.
+/// Used only if [`MYOS_IOCTL_NET_GETMAC`] fails.
 pub const QEMU_DEFAULT_MAC: EthernetAddress =
     EthernetAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
+
+/// Copy 6-byte MAC to the userspace pointer in `arg`.
+/// Keep in sync with `myos_abi::MYOS_IOCTL_NET_GETMAC`.
+pub const MYOS_IOCTL_NET_GETMAC: usize = 0x4d01;
 
 /// Virtual clock: `u64` milliseconds bumped each poll (no clock syscall yet).
 #[derive(Clone, Copy, Debug, Default)]
@@ -64,7 +68,12 @@ pub struct Net0Device {
 impl Net0Device {
     /// Open `/dev/net0` read/write. Returns `None` if the chrdev is missing.
     pub fn open() -> Option<Self> {
-        let fd = open_flags(b"/dev/net0", O_RDWR)?;
+        Self::open_path(b"/dev/net0")
+    }
+
+    /// Open an arbitrary net chrdev path (e.g. `/dev/net1`).
+    pub fn open_path(path: &[u8]) -> Option<Self> {
+        let fd = open_flags(path, O_RDWR)?;
         Some(Self {
             fd,
             rx: [0; FRAME_BUF],
@@ -72,17 +81,42 @@ impl Net0Device {
         })
     }
 
+    /// Open `/dev/netN` for `n` in 0..=9.
+    pub fn open_nth(n: usize) -> Option<Self> {
+        if n > 9 {
+            return None;
+        }
+        let mut path = *b"/dev/net0";
+        path[8] = b'0' + (n as u8);
+        Self::open_path(&path)
+    }
+
     pub fn fd(&self) -> usize {
         self.fd
     }
+
+    /// Hardware MAC via ioctl; falls back to [`QEMU_DEFAULT_MAC`] on failure.
+    pub fn mac(&self) -> EthernetAddress {
+        let mut mac = [0u8; 6];
+        if ioctl(self.fd, MYOS_IOCTL_NET_GETMAC, mac.as_mut_ptr() as usize) != usize::MAX {
+            EthernetAddress(mac)
+        } else {
+            QEMU_DEFAULT_MAC
+        }
+    }
 }
 
-/// Build an Ethernet `Interface` with the QEMU default MAC, software checksums,
+/// Build an Ethernet `Interface` with the device MAC (ioctl), software checksums,
 /// and the given timestamp.
 pub fn build_interface(device: &mut Net0Device, now: Instant) -> Interface {
-    let mut config = Config::new(HardwareAddress::Ethernet(QEMU_DEFAULT_MAC));
-    // Stable seed; not cryptographic. Enough to vary DHCP xid vs all-zero.
-    config.random_seed = 0x5254_0012_3456;
+    let mac = device.mac();
+    let mut config = Config::new(HardwareAddress::Ethernet(mac));
+    // Stable seed derived from MAC; not cryptographic.
+    let mut seed = 0u64;
+    for (i, b) in mac.0.iter().enumerate() {
+        seed |= (*b as u64) << (8 * i);
+    }
+    config.random_seed = seed;
     Interface::new(config, device, now)
 }
 

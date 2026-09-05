@@ -13,7 +13,7 @@ mod tmpfs;
 mod ubasefs;
 mod vfs;
 
-pub use vfs::{StatInfo, Vnode};
+pub use vfs::{IoctlResult, StatInfo, Vnode};
 
 /// Resolve `path` to a vnode for open/read/write.
 pub fn open(path: &str, flags: u32) -> Option<Vnode> {
@@ -41,6 +41,16 @@ pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
 /// Write to an open vnode.
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     vfs::write(node, pos, buf)
+}
+
+/// Device/filesystem ioctl on an open vnode.
+pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
+    vfs::ioctl(node, request, arg)
+}
+
+/// Shared tty ioctl helper (Stdin/Console and `/dev/tty`/`/dev/console`).
+pub fn tty_ioctl(request: usize) -> IoctlResult {
+    devfs::tty_ioctl(request)
 }
 
 /// Size of an open vnode (for `O_APPEND`).
@@ -201,6 +211,7 @@ fn ro_ops(
         rename: reject_rename,
         symlink: reject_symlink,
         readlink: reject_readlink,
+        ioctl: None,
         writable: false,
     }
 }
@@ -236,6 +247,7 @@ fn rw_ops(
         rename,
         symlink,
         readlink,
+        ioctl: None,
         writable: true,
     }
 }
@@ -372,10 +384,8 @@ pub fn init() {
         ),
     );
     // Device nodes are fixed; mutation ops stay rejected.
-    vfs::mount(
-        "devfs",
-        "dev",
-        rw_ops(
+    {
+        let mut ops = rw_ops(
             devfs::lookup,
             devfs::stat,
             devfs::listdir_at,
@@ -390,8 +400,10 @@ pub fn init() {
             reject_rename,
             reject_symlink,
             reject_readlink,
-        ),
-    );
+        );
+        ops.ioctl = Some(devfs::ioctl);
+        vfs::mount("devfs", "dev", ops);
+    }
     vfs::mount(
         "procfs",
         "proc",

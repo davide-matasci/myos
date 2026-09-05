@@ -7,8 +7,8 @@ use alloc::vec::Vec;
 
 use myos_user::{
     Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, close, exec, exit, exit_code, fork,
-    heap_init, listdir, mkdir, mount, open, open_flags, read, readlink, rename, rmdir, symlink,
-    unlink, wait_status, write, write_fd,
+    heap_init, ioctl, listdir, mkdir, mount, open, open_flags, pipe, read, readlink, rename, rmdir,
+    symlink, unlink, wait_status, write, write_fd,
 };
 
 #[global_allocator]
@@ -64,6 +64,15 @@ fn smoke_vfs() {
     write(b"vda ok\n");
     if buf_has(&buf[..n], b"net0") {
         write(b"net0 ok\n");
+        if let Some(fd) = open_flags(b"/dev/net0", O_RDWR) {
+            let mut mac = [0u8; 6];
+            // Keep in sync with myos_abi::MYOS_IOCTL_NET_GETMAC.
+            const MYOS_IOCTL_NET_GETMAC: usize = 0x4d01;
+            if ioctl(fd, MYOS_IOCTL_NET_GETMAC, mac.as_mut_ptr() as usize) != usize::MAX {
+                write(b"netmac ok\n");
+            }
+            close(fd);
+        }
     }
     if buf_has(&buf[..n], b"vdb") {
         write(b"vdb ok\n");
@@ -286,6 +295,62 @@ fn smoke_tmp_dev() {
     smoke_proc(&mut buf);
 }
 
+fn smoke_ioctl() {
+    const TIOCGWINSZ: usize = 0x5413;
+    let mut ws = [0u16; 4];
+
+    // Prefer /dev/tty; also exercise Console fd 1.
+    let tty_fd = open(b"/dev/tty");
+    let fd = tty_fd.unwrap_or(1);
+    if ioctl(fd, TIOCGWINSZ, ws.as_mut_ptr() as usize) == usize::MAX
+        || ws[0] != 24
+        || ws[1] != 80
+    {
+        if tty_fd.is_some() {
+            close(fd);
+        }
+        write(b"ioctl tty fail\n");
+        return;
+    }
+    if let Some(fd) = tty_fd {
+        close(fd);
+    }
+
+    let mut ws1 = [0u16; 4];
+    if ioctl(1, TIOCGWINSZ, ws1.as_mut_ptr() as usize) == usize::MAX
+        || ws1[0] != 24
+        || ws1[1] != 80
+    {
+        write(b"ioctl fd1 fail\n");
+        return;
+    }
+
+    let Some(dn) = open(b"/dev/null") else {
+        write(b"ioctl null open fail\n");
+        return;
+    };
+    let r = ioctl(dn, TIOCGWINSZ, ws.as_mut_ptr() as usize);
+    close(dn);
+    if r != usize::MAX {
+        write(b"ioctl null should fail\n");
+        return;
+    }
+
+    let Some((rfd, wfd)) = pipe() else {
+        write(b"ioctl pipe open fail\n");
+        return;
+    };
+    let r = ioctl(rfd, TIOCGWINSZ, ws.as_mut_ptr() as usize);
+    close(rfd);
+    close(wfd);
+    if r != usize::MAX {
+        write(b"ioctl pipe should fail\n");
+        return;
+    }
+
+    write(b"ioctl ok\n");
+}
+
 fn smoke_proc(buf: &mut [u8]) {
     let n = listdir(b"/proc", buf);
     if n == usize::MAX || !buf_has(&buf[..n], b"mounts") {
@@ -339,6 +404,7 @@ fn main() -> ! {
     smoke_disk();
     smoke_vfs();
     smoke_tmp_dev();
+    smoke_ioctl();
     exit();
 }
 
