@@ -725,10 +725,14 @@ fn raw_open(ptr: usize, len: usize) -> usize {
             in("a1") len,
             // SYS_OPEN flags (a2). Must be 0 for std File::open — unlike
             // myos_user/libc which pass flags explicitly. Leaving a2 unset
-            // reused leftover register state (e.g. StatBuf* from SYS_STAT),
-            // so uutils cat after metadata() failed with a bogus open on
-            // riscv64 only ("operation successful" via generic error_string).
+            // reused leftover register state (e.g. StatBuf* / listdir buf),
+            // so open can fail when (flags & O_ACCMODE) == 3.
+            // Consumers (uutils) statically link libstd: coreutils stamp must
+            // include myos_sysroot_version_hash or CI skips rebuild
+            // ("uutils coreutils up to date") and this fix never ships.
             in("a2") 0usize,
+            lateout("a1") _,
+            lateout("a2") _,
             options(nostack),
         );
     }

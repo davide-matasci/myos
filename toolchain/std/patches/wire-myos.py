@@ -195,8 +195,8 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         "std/src/sys/io/error/mod.rs",
         [
             (
-                '        target_os = "trusty",\n    ) => {\n        mod generic;',
-                '        target_os = "trusty",\n        target_os = "myos",\n    ) => {\n        mod generic;',
+                '    target_os = "xous" => {\n        mod xous;\n        pub use xous::*;\n    }',
+                '    target_os = "xous" => {\n        mod xous;\n        pub use xous::*;\n    }\n    target_os = "myos" => {\n        mod myos;\n        pub use myos::*;\n    }',
             ),
         ],
     ),
@@ -488,6 +488,7 @@ def main() -> None:
         (repo / "toolchain/std/sys/fs/myos.rs", patch_root / "std/src/sys/fs/myos.rs"),
         (repo / "toolchain/std/sys/process/myos.rs", patch_root / "std/src/sys/process/myos.rs"),
         (repo / "toolchain/std/sys/time/myos.rs", patch_root / "std/src/sys/time/myos.rs"),
+        (repo / "toolchain/std/sys/io/error/myos.rs", patch_root / "std/src/sys/io/error/myos.rs"),
         (repo / "toolchain/std/os/myos", patch_root / "std/src/os/myos"),
     ]
     import shutil
