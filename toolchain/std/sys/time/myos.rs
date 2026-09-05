@@ -36,7 +36,10 @@ impl SystemTime {
     pub const MIN: SystemTime = SystemTime(Duration::ZERO);
 
     pub fn now() -> SystemTime {
-        UNIX_EPOCH
+        // Not a real clock, but far enough past UNIX_EPOCH that `now() - months`
+        // in uutils `ls` (TextOutput::recent_time_range) does not underflow/panic.
+        // ~2023-11-14 UTC.
+        SystemTime(Duration::from_secs(1_700_000_000))
     }
 
     pub fn sub_time(&self, other: &SystemTime) -> Result<Duration, Duration> {

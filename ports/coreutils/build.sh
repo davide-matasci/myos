@@ -45,6 +45,7 @@ fi
 "$ROOT/ports/coreutils/patch-uu-touch.sh"
 "$ROOT/ports/coreutils/patch-uu-ln.sh"
 "$ROOT/ports/coreutils/patch-uu-cat.sh"
+"$ROOT/ports/coreutils/patch-uu-ls.sh"
 
 echo "==> building coreutils for ${TARGET} (${PROFILE}, features=${FEATURES})"
 cd "$UUTILS_DIR"
