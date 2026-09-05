@@ -14,6 +14,7 @@
 //! ```
 
 mod limine_image;
+mod initramfs;
 
 use limine_image::{
     DiskFile, LIMINE_VERSION, fetch_limine, write_esp_image, write_esp_image_ex,
@@ -40,6 +41,7 @@ global_dtb: boot():/boot/virt.dtb
     paging_mode: sv39
     module_path: boot():/boot/hello
     module_path: boot():/boot/ok
+    module_path: boot():/boot/initramfs
 ";
 /// Default qemu64 does not advertise x2APIC (CI #49 panicked, #50 fell back
 /// to PIC and hung). Limine leaves PIC IRQs dead, so the kernel timer proof
@@ -105,11 +107,15 @@ fn run_iso() {
     if !ok.is_file() {
         panic!("ok ELF missing at {}", ok.display());
     }
-    let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target = manifest.join("target");
+    let initramfs_path = target.join("initramfs-x86_64.cpio");
+    std::fs::write(&initramfs_path, initramfs::build_initramfs(&manifest, "x86_64"))
+        .expect("write target/initramfs-x86_64.cpio");
     let limine = fetch_limine(Path::new(env!("LIMINE_DIR")));
     let dest = target.join("myos-x86_64.iso");
     let iso_root = target.join("iso_root");
-    write_x86_iso(&dest, &iso_root, kernel, hello, ok, &limine);
+    write_x86_iso(&dest, &iso_root, kernel, hello, ok, &initramfs_path, &limine);
     println!("{}", dest.display());
 }
 
@@ -474,6 +480,8 @@ fn build_aarch64_image() -> PathBuf {
     };
     let efi = std::fs::read(limine.bootaa64()).expect("BOOTAA64.EFI");
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/aarch64.img");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let initramfs = initramfs::build_initramfs(&manifest, "aarch64");
     write_esp_image(
         &image,
         &kernel_bytes,
@@ -482,6 +490,7 @@ fn build_aarch64_image() -> PathBuf {
         None,
         &hello,
         &ok,
+        &initramfs,
     );
     write_fat_data_image(&fat_img_path());
     image
@@ -847,6 +856,8 @@ fn build_riscv64_image() -> PathBuf {
     }
     let dtb = std::fs::read(&dtb_path).expect("read virt.dtb");
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/riscv64.img");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let initramfs = initramfs::build_initramfs(&manifest, "riscv64");
     write_esp_image_ex(
         &image,
         &kernel_bytes,
@@ -855,6 +866,7 @@ fn build_riscv64_image() -> PathBuf {
         None,
         &hello,
         &ok,
+        &initramfs,
         RISCV_LIMINE_CONF,
         &[DiskFile {
             path: "boot/virt.dtb".into(),

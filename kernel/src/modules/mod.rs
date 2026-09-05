@@ -107,6 +107,12 @@ pub fn load_limine_modules() {
     for (i, file) in resp.modules().iter().enumerate() {
         // Limine already mapped `address..address+size`.
         let bytes = file.data();
+        // The initramfs module is a newc cpio archive, not a kernel module:
+        // fs::init_limine (bootfs) parses it and registers userspace into the
+        // /bin and /lib mounts. Skip it here so it is not probed as ELF.
+        if file.path().rsplit('/').next() == Some("initramfs") {
+            continue;
+        }
         let name = NAMES.get(i).copied().unwrap_or("hello-limine");
         match load(name, bytes) {
             Ok(()) => {

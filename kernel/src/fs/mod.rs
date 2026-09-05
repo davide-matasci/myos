@@ -2,15 +2,16 @@
 
 pub mod binfs;
 pub mod bootfs;
-mod coreutilsfs;
+pub mod coreutilsfs;
+pub mod cpio;
 mod devfs;
 mod fstype;
 mod procfs;
-mod sbasefs;
-mod libfs;
-mod tccfs;
+pub mod sbasefs;
+pub mod libfs;
+pub mod tccfs;
 mod tmpfs;
-mod ubasefs;
+pub mod ubasefs;
 mod vfs;
 
 pub use vfs::{StatInfo, Vnode};
