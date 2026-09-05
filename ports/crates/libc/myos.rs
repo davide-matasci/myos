@@ -148,6 +148,7 @@ mod syscalls {
     const SYS_BRK: usize = 9;
     const SYS_PIPE: usize = 10;
     const SYS_DUP2: usize = 11;
+    const SYS_STAT: usize = 12;
     const SYS_IOCTL: usize = 28;
 
     static mut MYOS_ERRNO: c_int = 0;
@@ -317,6 +318,49 @@ mod syscalls {
             0
         }
     }
+
+    /// Kernel `MyosStatBuf` layout (must match `kernel/src/user.rs`).
+    #[repr(C)]
+    struct KernelStat {
+        st_mode: u32,
+        st_size: u32,
+        st_ino: u32,
+        st_nlink: u32,
+    }
+
+    /// Path-based stat via SYS_STAT. Unlike open+fstat, this works for directories
+    /// (VFS refuses to open dirs, which broke rustix/uutils `ls`).
+    pub unsafe fn sys_stat(path: *const c_char, buf: *mut super::stat) -> c_int {
+        if path.is_null() || buf.is_null() {
+            set_errno(EINVAL);
+            return -1;
+        }
+        let len = cstr_len(path);
+        let mut kstat = KernelStat {
+            st_mode: 0,
+            st_size: 0,
+            st_ino: 0,
+            st_nlink: 0,
+        };
+        let ret = raw_syscall(SYS_STAT, path as usize, len, &mut kstat as *mut _ as usize);
+        if ret == usize::MAX {
+            set_errno(ENOENT);
+            return -1;
+        }
+        core::ptr::write_bytes(buf as *mut u8, 0, core::mem::size_of::<super::stat>());
+        (*buf).st_dev = 1;
+        (*buf).st_ino = kstat.st_ino as ino_t;
+        (*buf).st_mode = kstat.st_mode;
+        (*buf).st_nlink = if kstat.st_nlink == 0 {
+            1
+        } else {
+            kstat.st_nlink as nlink_t
+        };
+        (*buf).st_size = kstat.st_size as off_t;
+        (*buf).st_blksize = 4096;
+        (*buf).st_blocks = ((kstat.st_size as u64).div_ceil(512)) as blkcnt_t;
+        0
+    }
 }
 
 pub const ECHILD: c_int = 10;
@@ -406,18 +450,13 @@ pub unsafe extern "C" fn fstat(fd: c_int, buf: *mut stat) -> c_int {
 
 #[no_mangle]
 pub unsafe extern "C" fn stat(path: *const c_char, buf: *mut stat) -> c_int {
-    let fd = open(path, O_RDONLY, 0);
-    if fd < 0 {
-        return -1;
-    }
-    let r = fstat(fd, buf);
-    let _ = close(fd);
-    r
+    syscalls::sys_stat(path, buf)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn lstat(path: *const c_char, buf: *mut stat) -> c_int {
-    stat(path, buf)
+    // No distinct lstat yet; same as stat (tmpfs symlinks still report as links).
+    syscalls::sys_stat(path, buf)
 }
 
 #[no_mangle]
