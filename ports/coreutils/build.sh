@@ -8,7 +8,7 @@ UUTILS_DIR="$ROOT/user/uutils-coreutils"
 UUTILS_TAG="${UUTILS_TAG:-0.10.0}"
 TARGET="${MYOS_TARGET:-x86_64-unknown-myos}"
 TARGET_JSON="$ROOT/targets/${TARGET}.json"
-FEATURES="${COREUTILS_FEATURES:-echo,true,false,pwd,printf,yes,seq,sleep,wc,head,uniq,cut,tr,env,printenv,basename,dirname}"
+FEATURES="${COREUTILS_FEATURES:-base32,base64,basename,basenc,cat,cksum,b2sum,md5sum,sha1sum,sha224sum,sha256sum,sha384sum,sha512sum,comm,cp,csplit,cut,date,dd,dir,dircolors,dirname,du,echo,env,expand,factor,false,fmt,fold,head,join,link,ln,ls,mkdir,mktemp,mv,nl,numfmt,od,paste,pathchk,pr,printenv,printf,ptx,pwd,readlink,realpath,rm,rmdir,seq,shred,shuf,sleep,sort,sum,tee,touch,tr,true,truncate,tsort,unexpand,uniq,unlink,vdir,wc,yes,arch,hostname,nproc,uname}"
 PROFILE="${1:-dev}"
 
 if [[ "$PROFILE" == "--release" ]]; then
@@ -41,12 +41,17 @@ if [[ -f "$ROOT/ports/coreutils/uucore-myos.patch" ]] \
 fi
 "$ROOT/ports/coreutils/patch-uucore-unix.sh"
 "$ROOT/ports/coreutils/patch-uucore-fs.sh"
+"$ROOT/ports/coreutils/patch-uu-mv.sh"
+"$ROOT/ports/coreutils/patch-uu-touch.sh"
+"$ROOT/ports/coreutils/patch-uu-ln.sh"
+"$ROOT/ports/coreutils/patch-uu-cat.sh"
 
 echo "==> building coreutils for ${TARGET} (${PROFILE}, features=${FEATURES})"
 cd "$UUTILS_DIR"
 if [[ "$PROFILE" == "release" ]]; then
   export CARGO_PROFILE_RELEASE_LTO=false
 fi
+
 # build-std-hello / build-sbase leave RUSTC=myos-rustc.sh in the CI shell; that
 # wrapper always uses the myos sysroot and breaks host build scripts. Respect
 # .cargo/config.toml myos-rustc-cross.sh instead.

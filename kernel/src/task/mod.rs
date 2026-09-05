@@ -174,8 +174,8 @@ pub struct ForkRegs {
 }
 
 
-const fn root_cwd_buf() -> [u8; 64] {
-    let mut c = [0u8; 64];
+const fn root_cwd_buf() -> [u8; 256] {
+    let mut c = [0u8; 256];
     c[0] = b'/';
     c
 }
@@ -220,8 +220,8 @@ struct Task {
     exec_name: [u8; 32],
     exec_name_len: u8,
     /// Absolute cwd (POSIX). Survives exec; copied on fork. Always starts with `/`.
-    cwd: [u8; 64],
-    cwd_len: u8,
+    cwd: [u8; 256],
+    cwd_len: u16,
     exit_code: u8,
     /// Anonymous mmap windows (after the brk heap).
     mmap: [MmapRegion; MAX_MMAP_REGIONS],
@@ -475,13 +475,13 @@ pub fn cwd(out: &mut [u8]) -> usize {
 
 /// Set absolute cwd. `path` must be a canonical absolute path (`/` or `/…`).
 pub fn set_cwd(path: &[u8]) -> bool {
-    if path.is_empty() || path[0] != b'/' || path.len() > 64 {
+    if path.is_empty() || path[0] != b'/' || path.len() > 256 {
         return false;
     }
     with_current_mut(|t| {
-        t.cwd = [0; 64];
+        t.cwd = [0; 256];
         t.cwd[..path.len()].copy_from_slice(path);
-        t.cwd_len = path.len() as u8;
+        t.cwd_len = path.len() as u16;
     });
     true
 }
@@ -1193,7 +1193,7 @@ fn spawn_inner(
         exec_name: [0; 32],
         exec_name_len: 0,
         cwd: {
-            let mut c = [0u8; 64];
+            let mut c = [0u8; 256];
             c[0] = b'/';
             c
         },

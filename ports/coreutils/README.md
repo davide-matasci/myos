@@ -33,7 +33,7 @@ ports/coreutils/
   cargo-config.toml      # patches errno + libc + rustix; --cfg=rustix_use_libc
   crates/errno/ …
   crates/rustix/         # target_os = "myos" wiring (BorrowedFd, zero_msghdr, …)
-  crates/getrandom/ hostname/ console/
+  crates/getrandom/ hostname/ console/ filetime/ ctrlc/
   prepare.sh             # fetch + patch; also sed-fixes rustix fcntl call sites
 ports/crates/libc/
   myos.rs                # real syscalls + ENOSYS macro
@@ -56,9 +56,8 @@ Generated output (gitignored): `target/patched-crates/{errno,libc,rustix}-*`.
 
 | Utilities | Build | Runtime on myos |
 |-----------|-------|-----------------|
-| `echo`, `true`, `false` | **yes** (~648K ELF) | works (PR #25 / #38 path) |
-| `cat`, `ls` | **next** | needs real `read`/`getdents`/`rustix::fs`, not just stubs |
-| Full `feat_common_core` | **no** | `getrandom`, `hostname`, broad POSIX surface |
+| Most of `feat_common_core` + tier1 extras | **yes** (~11M ELF) | cat/ls/cp/rm/mkdir/du via `std::fs::read_dir` + SYS_LISTDIR |
+| Dropped for now | `more`, `whoami`, `tac`, `tail`, `df`, `sync`, `test`, `split`, `tty`, `expr` | see `bins.txt` header |
 
 ## std changes for rustix
 
@@ -66,7 +65,6 @@ Generated output (gitignored): `target/patched-crates/{errno,libc,rustix}-*`.
 
 ## Recommended next steps
 
-1. CI: keep boot needles for echo/true/false; optionally add a **compile-only** job that builds real rustix + minimal features.
-2. Implement syscalls as utilities need them (`lseek`, `getdents64`, env, …) — replace individual ENOSYS stubs in `myos.rs`.
-3. Try `COREUTILS_FEATURES=cat` then `cat,ls`; fix the first real runtime failure.
-4. Upstream `target_os = "myos"` pieces to `errno` / `libc` when the ABI stabilizes.
+1. Implement remaining ENOSYS stubs as utilities need them (`symlink`, richer `stat`, …).
+2. Revisit dropped utils (`tail`/`whoami`/`expr`/…) once onig/crossterm/getpw stubs exist.
+3. Upstream `target_os = "myos"` pieces to `errno` / `libc` when the ABI stabilizes.

@@ -94,6 +94,8 @@ pub const ENOTEMPTY: c_int = 39;
 pub const ELOOP: c_int = 40;
 pub const ENAMETOOLONG: c_int = 36;
 pub const EOVERFLOW: c_int = 75;
+pub const TIMER_ABSTIME: c_int = 1;
+pub const LC_CTYPE: c_int = 0;
 
 pub const O_RDONLY: c_int = 0;
 pub const O_WRONLY: c_int = 1;
@@ -558,6 +560,8 @@ enosys! {
     pub unsafe fn execvp(file: *const c_char, argv: *const *const c_char) -> c_int;
     pub unsafe fn _exit(status: c_int) -> c_int;
     pub unsafe fn nanosleep(req: *const timespec, rem: *mut timespec) -> c_int;
+    pub unsafe fn clock_nanosleep(clock_id: clockid_t, flags: c_int, req: *const timespec, rem: *mut timespec) -> c_int;
+    pub unsafe fn sched_yield() -> c_int;
     pub unsafe fn usleep(usec: c_uint) -> c_int;
     pub unsafe fn sleep(secs: c_uint) -> c_uint;
     pub unsafe fn gettimeofday(tv: *mut timeval, tz: *mut c_void) -> c_int;
@@ -568,6 +572,30 @@ enosys! {
     pub unsafe fn mkdirat(dirfd: c_int, path: *const c_char, mode: mode_t) -> c_int;
     pub unsafe fn linkat(olddirfd: c_int, oldpath: *const c_char, newdirfd: c_int, newpath: *const c_char, flags: c_int) -> c_int;
     pub unsafe fn renameat(olddirfd: c_int, oldpath: *const c_char, newdirfd: c_int, newpath: *const c_char) -> c_int;
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn setlocale(_category: c_int, _locale: *const c_char) -> *mut c_char {
+    core::ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tolower(c: c_int) -> c_int {
+    if (b'A' as c_int) <= c && c <= (b'Z' as c_int) {
+        c + 32
+    } else {
+        c
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn toupper(c: c_int) -> c_int {
+    if (b'a' as c_int) <= c && c <= (b'z' as c_int) {
+        c - 32
+    } else {
+        c
+    }
 }
 
 include!("rustix_compat.rs");

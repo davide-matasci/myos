@@ -69,7 +69,7 @@ const MAX_RELOAD_PAGES: usize = 40;
 /// Minimum code pages reserved below the user stack so post-fork `exec` can
 /// `reload_user_elf` the largest newlib/sbase ELFs (today `sbase-cat`).
 const USER_EXEC_RELOAD_PAGES: usize = 36;
-const MAX_PATH: usize = 64;
+const MAX_PATH: usize = 256;
 const MAX_ARGC: usize = 16;
 const MAX_ARG_LEN: usize = 128;
 const MAX_ENVC: usize = 32;
