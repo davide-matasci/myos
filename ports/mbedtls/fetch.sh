@@ -19,14 +19,12 @@ else
   trap 'rm -rf "$tmp"' EXIT
   echo "fetch mbedtls $WANT"
   curl -fsSL "$MBEDTLS_URL" -o "$tmp/mbedtls.tgz"
-  # sha optional — CI may be offline-cached; verify when sha256sum present
   if command -v sha256sum >/dev/null && [[ -n "${MBEDTLS_SHA256:-}" ]]; then
     echo "${MBEDTLS_SHA256}  $tmp/mbedtls.tgz" | sha256sum -c -
   fi
   mkdir -p "$tmp/extract"
   tar -xzf "$tmp/mbedtls.tgz" -C "$tmp/extract"
   mv "$tmp/extract"/mbedtls-* "$SRC"
-  # Drop programs/tests — not needed for static libs
   rm -rf "$SRC/programs" "$SRC/tests" "$SRC/docs"
   echo "$WANT" >"$STAMP"
 fi

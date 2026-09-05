@@ -25,30 +25,41 @@ fn main() {
 
     let lib = root.join(format!("target/mbedtls-{arch}/lib"));
     let inc = root.join(format!("target/mbedtls-{arch}/include"));
+    let newlib_inc = root.join(format!("target/newlib-{arch}/{arch}-unknown-myos/include"));
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=static=mbedtls");
     println!("cargo:rustc-link-lib=static=mbedx509");
     println!("cargo:rustc-link-lib=static=mbedcrypto");
     println!("cargo:rerun-if-changed={}", lib.join("libmbedtls.a").display());
 
-    // Compile platform glue (entropy/time hooks + thin C API).
     let glue = manifest.join("src/platform.c");
     println!("cargo:rerun-if-changed={}", glue.display());
-    let mut cc = Command::new("clang");
-    let triple = format!("{arch}-unknown-none");
-    cc.arg("--target").arg(&triple)
-        .arg("-ffreestanding").arg("-fno-builtin").arg("-fPIC").arg("-Os")
-        .arg("-I").arg(&inc)
-        .arg("-I").arg(root.join("ports/mbedtls"))
-        .arg("-DMBEDTLS_CONFIG_FILE=\"mbedtls_config.h\"")
-        .arg("-c").arg(&glue)
-        .arg("-o").arg(env::var("OUT_DIR").unwrap() + "/platform.o");
-    if arch == "riscv64" {
-        cc.arg("-march=rv64imac").arg("-mabi=lp64");
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let obj = format!("{out_dir}/platform.o");
+    // Prefer myos clang wrapper when available (newlib headers).
+    let cc = format!("{arch}-unknown-myos-cc");
+    let mut cmd = Command::new(&cc);
+    if Command::new(&cc).arg("--version").output().is_err() {
+        cmd = Command::new("clang");
+        cmd.arg(format!("--target={arch}-unknown-none"));
     }
-    let st = cc.status().expect("compile platform.c");
+    cmd.arg("-ffreestanding")
+        .arg("-fPIC")
+        .arg("-Os")
+        .arg("-isystem")
+        .arg(&newlib_inc)
+        .arg("-I")
+        .arg(&inc)
+        .arg("-I")
+        .arg(root.join("ports/mbedtls"))
+        .arg("-DMBEDTLS_CONFIG_FILE=\"mbedtls_config.h\"")
+        .arg("-c")
+        .arg(&glue)
+        .arg("-o")
+        .arg(&obj);
+    let st = cmd.status().expect("compile platform.c");
     if !st.success() {
         panic!("platform.c compile failed");
     }
-    println!("cargo:rustc-link-arg={}/platform.o", env::var("OUT_DIR").unwrap());
+    println!("cargo:rustc-link-arg={obj}");
 }
