@@ -10,7 +10,7 @@ echo "mbedtls: HERE=$HERE ROOT=$ROOT version=$MBEDTLS_VERSION"
 
 hash_mbedtls() {
   echo "$MBEDTLS_VERSION"
-  sha256sum "$HERE/mbedtls_config.h" "$HERE/build.sh" "$HERE/fetch.sh" "$HERE/versions.env" || true
+  sha256sum "$HERE/myos_mbedtls_config.h" "$HERE/build.sh" "$HERE/fetch.sh" "$HERE/versions.env" || true
   if [[ -f "$ROOT/target/cacert.pem" ]]; then
     sha256sum "$ROOT/target/cacert.pem" || true
   fi
@@ -39,7 +39,7 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 echo "mbedtls: PATH has newlib-bin; cc=$(command -v x86_64-unknown-myos-cc || echo MISSING)"
 
 SRC="$ROOT/target/mbedtls-src"
-CFG="$HERE/mbedtls_config.h"
+CFG="$HERE/myos_mbedtls_config.h"
 
 python3 - <<'PY' "$ROOT/target/cacert.pem" "$ROOT/target/mbedtls-ca_bundle.c"
 import pathlib, sys
@@ -80,7 +80,7 @@ build_arch() {
     -isystem "$inc"
     -I"$SRC/include"
     -I"$HERE"
-    -DMBEDTLS_CONFIG_FILE='"mbedtls_config.h"'
+    -DMBEDTLS_CONFIG_FILE='"myos_mbedtls_config.h"'
   )
 
   echo "mbedtls: building $arch with $cc"
@@ -104,7 +104,7 @@ build_arch() {
   cp "$lib/libmbedcrypto.a" "$lib/libmbedx509.a"
   mkdir -p "$out/include"
   cp -a "$SRC/include/mbedtls" "$out/include/"
-  cp "$CFG" "$out/include/mbedtls_config.h"
+  cp "$CFG" "$out/include/myos_mbedtls_config.h"
   echo "mbedtls $arch: ${#objs[@]} objs"
 }
 
