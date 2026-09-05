@@ -108,6 +108,8 @@ build_arch() {
   cp "$lib/libmbedcrypto.a" "$lib/libmbedx509.a"
   mkdir -p "$out/include"
   cp -a "$SRC/include/mbedtls" "$out/include/"
+  # mbedtls 3.6 ssl.h unconditionally #includes psa/crypto.h
+  cp -a "$SRC/include/psa" "$out/include/"
   cp "$CFG" "$out/include/myos_mbedtls_config.h"
   echo "mbedtls $arch: ${#objs[@]} objs"
 }
