@@ -14,13 +14,26 @@ fn main() {
     println!("cargo:rerun-if-changed={}", build_sh.display());
     println!("cargo:rerun-if-changed={}", root.join("ports/mbedtls").display());
 
-    let status = Command::new("bash")
+    // Ensure newlib wrappers are on PATH for the port script.
+    let newlib_bin = root.join("target/newlib-bin");
+    let path = env::var("PATH").unwrap_or_default();
+    let path = format!("{}:{}", newlib_bin.display(), path);
+
+    let output = Command::new("bash")
         .arg(&build_sh)
         .current_dir(&root)
-        .status()
+        .env("PATH", &path)
+        .output()
         .expect("run ports/mbedtls/build.sh");
-    if !status.success() {
-        panic!("ports/mbedtls/build.sh failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    print!("{stdout}");
+    eprint!("{stderr}");
+    if !output.status.success() {
+        panic!(
+            "ports/mbedtls/build.sh failed (status {:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+            output.status.code()
+        );
     }
 
     let lib = root.join(format!("target/mbedtls-{arch}/lib"));
@@ -36,14 +49,21 @@ fn main() {
     println!("cargo:rerun-if-changed={}", glue.display());
     let out_dir = env::var("OUT_DIR").unwrap();
     let obj = format!("{out_dir}/platform.o");
-    // Prefer myos clang wrapper when available (newlib headers).
     let cc = format!("{arch}-unknown-myos-cc");
     let mut cmd = Command::new(&cc);
-    if Command::new(&cc).arg("--version").output().is_err() {
+    cmd.env("PATH", &path);
+    if Command::new("bash")
+        .args(["-lc", &format!("command -v {cc}")])
+        .env("PATH", &path)
+        .status()
+        .map(|s| !s.success())
+        .unwrap_or(true)
+    {
         cmd = Command::new("clang");
         cmd.arg(format!("--target={arch}-unknown-none"));
     }
-    cmd.arg("-ffreestanding")
+    let status = cmd
+        .arg("-ffreestanding")
         .arg("-fPIC")
         .arg("-Os")
         .arg("-isystem")
@@ -56,9 +76,11 @@ fn main() {
         .arg("-c")
         .arg(&glue)
         .arg("-o")
-        .arg(&obj);
-    let st = cmd.status().expect("compile platform.c");
-    if !st.success() {
+        .arg(&obj)
+        .env("PATH", &path)
+        .status()
+        .expect("compile platform.c");
+    if !status.success() {
         panic!("platform.c compile failed");
     }
     println!("cargo:rustc-link-arg={obj}");
