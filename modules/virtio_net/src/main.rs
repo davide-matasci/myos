@@ -7,7 +7,7 @@
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use myos_abi::{ABI_VERSION, KernelApi, ModuleChrOps, MYOS_IOCTL_NET_GETMAC};
+use myos_abi::{ABI_VERSION, KernelApi, MYOS_IOCTL_NET_GETMAC, ModuleChrOps};
 
 const VENDOR: u16 = 0x1AF4;
 const DEV_NET_MODERN: u16 = 0x1041;
@@ -81,7 +81,7 @@ struct Net {
 }
 
 static mut NETS: [Option<Net>; MAX_NET] = [None, None, None, None];
-static mut API: *const KernelApi = core::ptr::null();
+static mut API: Option<&'static KernelApi> = None;
 
 unsafe extern "C" fn net0_read(buf: *mut u8, buf_len: usize) -> i32 {
     net_read_n(0, buf, buf_len)
@@ -213,12 +213,7 @@ fn dma_alloc(api: &KernelApi, n_pages: usize) -> Option<(*mut u8, u64)> {
     }
 }
 
-fn pci_find_at(
-    api: &KernelApi,
-    vendor: u16,
-    device: u16,
-    index: u32,
-) -> Option<(u8, u8, u8)> {
+fn pci_find_at(api: &KernelApi, vendor: u16, device: u16, index: u32) -> Option<(u8, u8, u8)> {
     let mut bus = 0u8;
     let mut slot = 0u8;
     let mut func = 0u8;
@@ -324,8 +319,9 @@ fn walk_caps(api: &KernelApi, bus: u8, slot: u8, func: u8) -> Option<Caps> {
                         VIRTIO_PCI_CAP_COMMON => common = mmio,
                         VIRTIO_PCI_CAP_NOTIFY => {
                             notify = mmio;
-                            notify_mult =
-                                unsafe { (api.pci_cfg_read32)(bus, slot, func, cap.wrapping_add(16)) };
+                            notify_mult = unsafe {
+                                (api.pci_cfg_read32)(bus, slot, func, cap.wrapping_add(16))
+                            };
                         }
                         VIRTIO_PCI_CAP_DEVICE => device = mmio,
                         VIRTIO_PCI_CAP_ISR => {}
@@ -478,10 +474,7 @@ fn probe(api: &KernelApi, pci_index: u32) -> Option<Net> {
     w32(common + C_DRIVER_FEATURE_SELECT, 1);
     w32(common + C_DRIVER_FEATURE, VIRTIO_F_VERSION_1);
 
-    w8(
-        common + C_DEVICE_STATUS,
-        ACKNOWLEDGE | DRIVER | FEATURES_OK,
-    );
+    w8(common + C_DEVICE_STATUS, ACKNOWLEDGE | DRIVER | FEATURES_OK);
     dma_wmb();
     if r8(common + C_DEVICE_STATUS) & FEATURES_OK == 0 {
         return None;
@@ -535,16 +528,18 @@ fn net_slot(idx: usize) -> Option<&'static mut Net> {
     if idx >= MAX_NET {
         return None;
     }
-    unsafe { (*core::ptr::addr_of_mut!(NETS)).get_mut(idx).and_then(|s| s.as_mut()) }
+    // Index the live static slot directly so the pointer is always in-bounds
+    // (CodeQL rust/access-invalid-pointer on `*addr_of_mut!(NETS)`).
+    unsafe {
+        let slot = &mut *core::ptr::addr_of_mut!(NETS[idx]);
+        slot.as_mut()
+    }
 }
 
 fn api_ref() -> Option<&'static KernelApi> {
-    let p = unsafe { API };
-    if p.is_null() {
-        None
-    } else {
-        Some(unsafe { &*p })
-    }
+    // Stored as Option<&'static _> (never a nullable raw pointer) so CodeQL
+    // rust/access-invalid-pointer does not treat the init-time null as live.
+    unsafe { core::ptr::addr_of!(API).read() }
 }
 
 fn net_ioctl_n(idx: usize, request: u64, arg: usize) -> i32 {
@@ -563,11 +558,7 @@ fn net_ioctl_n(idx: usize, request: u64, arg: usize) -> i32 {
         None => return -1,
     };
     let rc = unsafe { (api.copy_to_user)(arg, net.mac.as_ptr(), 6) };
-    if rc < 0 {
-        -1
-    } else {
-        0
-    }
+    if rc < 0 { -1 } else { 0 }
 }
 
 fn net_read_n(idx: usize, buf: *mut u8, buf_len: usize) -> i32 {
@@ -594,7 +585,10 @@ fn net_read_n(idx: usize, buf: *mut u8, buf_len: usize) -> i32 {
     };
     let copy = if pkt_len < buf_len { pkt_len } else { buf_len };
     let src = unsafe { net.rx_buf_va.add(id as usize * BUF_SIZE + HDR_SIZE) };
-    dcache_civac(unsafe { net.rx_buf_va.add(id as usize * BUF_SIZE) }, BUF_SIZE);
+    dcache_civac(
+        unsafe { net.rx_buf_va.add(id as usize * BUF_SIZE) },
+        BUF_SIZE,
+    );
     if copy != 0 {
         unsafe { core::ptr::copy_nonoverlapping(src, buf, copy) };
     }
@@ -648,23 +642,23 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         if api.is_null() {
             return -1;
         }
-        let api = &*api;
+        let api: &'static KernelApi = &*api;
         if api.abi_version != ABI_VERSION {
             return -2;
         }
-        API = api as *const KernelApi;
+        core::ptr::addr_of_mut!(API).write(Some(api));
         let mut registered = 0usize;
         let mut pci_index = 0u32;
         while registered < MAX_NET {
             match probe(api, pci_index) {
                 Some(net) => {
                     let slot = registered;
-                    (*core::ptr::addr_of_mut!(NETS))[slot] = Some(net);
+                    *core::ptr::addr_of_mut!(NETS[slot]) = Some(net);
                     let mut name = *b"net0";
                     name[3] = b'0' + (slot as u8);
                     let rc = (api.dev_register)(name.as_ptr(), 4, &OPS[slot]);
                     if rc != 0 {
-                        (*core::ptr::addr_of_mut!(NETS))[slot] = None;
+                        *core::ptr::addr_of_mut!(NETS[slot]) = None;
                         // Slot full or name clash — stop trying further NICs.
                         break;
                     }
