@@ -305,6 +305,16 @@ mod syscalls {
         let ret = raw_syscall(SYS_BRK, addr as usize, 0, 0);
         ret as *mut c_void
     }
+
+    pub unsafe fn sys_gettimeofday(tv: *mut timeval) -> c_int {
+        let ret = raw_syscall(SYS_GETTIMEOFDAY, tv as usize, 0, 0);
+        if ret == usize::MAX {
+            set_errno(EIO);
+            -1
+        } else {
+            0
+        }
+    }
 }
 
 pub const ECHILD: c_int = 10;
@@ -318,16 +328,6 @@ macro_rules! enosys {
             (-1isize) as $ret
         }
     )*};
-    pub unsafe fn sys_gettimeofday(tv: *mut timeval) -> c_int {
-        let ret = raw_syscall(SYS_GETTIMEOFDAY, tv as usize, 0, 0);
-        if ret == usize::MAX {
-            set_errno(EIO);
-            -1
-        } else {
-            0
-        }
-    }
-
 }
 
 // Implemented syscalls.
