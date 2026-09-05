@@ -11,6 +11,7 @@
 // `bin/coreutils/echo`, `lib/newlib/include/…`, and so on.
 
 use std::path::Path;
+use std::process::Command;
 
 /// Per-arch triples for the three flavors of user ELF in `target/`:
 /// `(kernel_triple, none_triple, myos_triple)`.
@@ -244,12 +245,31 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     let sysroot = target.join(format!("newlib-{arch}")).join(myos_triple);
     collect_tree(&sysroot.join("include"), "lib/newlib/include", &mut entries);
     collect_tree(&sysroot.join("lib"), "lib/newlib/lib", &mut entries);
-    // Compiler headers (stddef.h, stdarg.h, …) from the tcc source tree.
-    collect_tree(
-        &target.join("tcc-src/include"),
-        "lib/newlib/include",
-        &mut entries,
-    );
+    // Compiler headers (stddef.h, stdarg.h, float.h, …) come from the tcc
+    // source tree: newlib's sys/cdefs.h includes them, but tcc has no GCC
+    // builtins, so they must exist in the archive. On CI tcc is pulled as a
+    // cached GHCR output and target/tcc-src is absent, so prepare it here and
+    // fail loudly rather than silently omitting the headers (which would only
+    // surface later when hosted tcc compiles a program at boot).
+    let tcc_inc = target.join("tcc-src/include");
+    let stddef = tcc_inc.join("stddef.h");
+    if !stddef.is_file() {
+        let prep = manifest_dir.join("ports/tcc/prepare.sh");
+        let status = Command::new("bash")
+            .arg(&prep)
+            .status()
+            .unwrap_or_else(|e| panic!("run {}: {e}", prep.display()));
+        if !status.success() {
+            panic!("{} failed", prep.display());
+        }
+    }
+    if !stddef.is_file() {
+        panic!(
+            "tcc include/stddef.h missing at {} (run ./ports/tcc/prepare.sh)",
+            stddef.display()
+        );
+    }
+    collect_tree(&tcc_inc, "lib/newlib/include", &mut entries);
     // Hosted tcc wants crt1.o; newlib only ships crt0.o. Mirror build.rs.
     let crt0 = entries
         .iter()
