@@ -622,9 +622,15 @@ fn net_write_n(idx: usize, buf: *const u8, buf_len: usize) -> i32 {
     push(&net.tx, 0);
     notify(net, &net.tx, 1);
 
+    // Syscalls run with interrupts masked (SIE clear on RISC-V). The old
+    // 50e6-spin wait could freeze the guest for tens of seconds when the used
+    // ring lagged, so CI hung after `tcc std ok` with no ping timeout printed.
+    // Cap well above normal QEMU completion (usually <<1k spins) but far below
+    // a multi-second IRQ-off stall.
+    const TX_SPIN: u32 = 50_000;
     let want = net.tx.last_used.wrapping_add(1);
     let mut spins = 0u32;
-    while spins < 50_000_000 {
+    while spins < TX_SPIN {
         if used_idx(&net.tx) == want {
             net.tx.last_used = want;
             return frame as i32;
