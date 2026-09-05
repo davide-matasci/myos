@@ -58,17 +58,16 @@ fn put_dec(buf: &mut [u8], mut n: u16) -> usize {
     digits.len()
 }
 
-/// Debug: print raw bytes as hex for troubleshooting DNS responses
+/// Debug: print raw bytes as hex for troubleshooting DNS responses.
+/// Bounds-safe: leaves 3 bytes for a trailing "..." and never writes past
+/// the buffer (CI hit `out[pos + 2]` OOB on large responses).
 fn dump_hex(label: &[u8], data: &[u8]) {
     write(label);
+    const OUT: usize = 128;
+    let mut out = [0u8; OUT];
     let mut pos = 0usize;
-    let mut out = [0u8; 128];
     for &b in data {
-        if pos + 3 > out.len() - 1 {
-            out[pos] = b'.';
-            out[pos + 1] = b'.';
-            out[pos + 2] = b'.';
-            pos += 3;
+        if pos + 3 > OUT - 3 {
             break;
         }
         let h = b >> 4;
@@ -78,6 +77,10 @@ fn dump_hex(label: &[u8], data: &[u8]) {
         out[pos + 2] = b' ';
         pos += 3;
     }
+    out[pos] = b'.';
+    out[pos + 1] = b'.';
+    out[pos + 2] = b'.';
+    pos += 3;
     write(&out[..pos]);
     write(b"\n");
 }

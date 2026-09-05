@@ -40,7 +40,13 @@ const CI_NEEDLES: [&str; 26] = [
 
 /// Heavy markers from CI-only `/heap` (typed at `$` on every arch).
 /// Pre-prompt readiness stays slim; these are required after interactive `heap`.
-const CI_NEEDLES_STD: [&str; 16] = [
+///
+/// Note: `dns ok` is intentionally NOT here. `dns` is a separate interactive
+/// command (index 10) run *after* `heap`; it never prints during `/heap`, so
+/// including it here would make the `/heap` completion check and its fail-fast
+/// heuristic abort the whole run before the DNS command is ever typed. DNS is
+/// verified by `interactive_dns_cmd_ok`, which requires `IP:` and `dns ok`.
+const CI_NEEDLES_STD: [&str; 15] = [
     "std ok",
     "std cat ok",
     "std echo ok",
@@ -56,7 +62,6 @@ const CI_NEEDLES_STD: [&str; 16] = [
     "tcc ok",
     "tcc std ok",
     "ping ok",
-    "dns ok",
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
