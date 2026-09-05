@@ -237,6 +237,20 @@ fn interactive_dns_cmd_ok(serial: &str) -> bool {
 }
 
 
+/// HTTPS GET: `http https://example.com/` should include `Example Domain` and `https ok`.
+/// Note: `https ok` must NOT be added to CI_NEEDLES_STD (same trap as `dns ok`).
+fn interactive_https_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    if !tail.contains("$ http https://example.com/") || serial.contains("exception:") {
+        return false;
+    }
+    if !tail.contains("Example Domain") || !tail.contains("https ok") {
+        return false;
+    }
+    at_interactive_prompt(serial)
+}
+
+
 fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     // Echo includes BS-space-BS; do not require a clean `$ /s/ls` substring.
