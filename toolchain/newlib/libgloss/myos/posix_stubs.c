@@ -344,10 +344,15 @@ int setpriority(int which, id_t who, int prio) {
 }
 
 int setsid(void) {
-    /* Phase-1: userspace stub. Kernel has Task.sid / has_ctty; a real
-     * SYS_SETSID (clear ctty, become session leader) is deferred. Getty
-     * still reaches a working ctty via open(console) + TIOCSCTTY. */
-    return 1;
+    /* SYS_SETSID: become session leader (sid = pid / task slot) and clear
+     * the controlling tty. Kernel returns the new sid, or SYSERR if the
+     * caller is already a session leader (EPERM). */
+    long ret = myos_syscall0(MYOS_SYS_SETSID);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EPERM;
+        return -1;
+    }
+    return (int)ret;
 }
 
 /* getpwnam/getgrnam live in pwdgrp.c (root:root only). */

@@ -39,6 +39,7 @@ const SYS_MPROTECT: usize = 25;
 const SYS_LSEEK: usize = 26;
 const SYS_MOUNT: usize = 27;
 const SYS_IOCTL: usize = 28;
+const SYS_SETSID: usize = 29;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -1434,6 +1435,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_LSEEK => sys_lseek(a0, a1, a2),
         SYS_MOUNT => sys_mount(a0),
         SYS_IOCTL => sys_ioctl(a0, a1, a2),
+        SYS_SETSID => sys_setsid(),
         _ => SYSERR,
     }
 }
@@ -1498,6 +1500,15 @@ fn sys_close(fd: usize) -> usize {
 
 fn sys_ioctl(fd: usize, request: usize, arg: usize) -> usize {
     task::fd_ioctl(fd, request, arg)
+}
+
+/// Become a session leader: `sid = pid` (task slot), clear controlling tty.
+/// Fails with SYSERR if the caller is already a session leader (`sid == pid`).
+fn sys_setsid() -> usize {
+    match task::setsid() {
+        Some(sid) => sid,
+        None => SYSERR,
+    }
 }
 
 fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {

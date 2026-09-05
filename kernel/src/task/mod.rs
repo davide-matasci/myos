@@ -227,10 +227,11 @@ struct Task {
     mmap: [MmapRegion; MAX_MMAP_REGIONS],
     mmap_next: u64,
     /// Session id (task slot of the session leader). Inherited on fork.
-    /// Light field for future setsid; TIOCSCTTY does not require it yet.
+    /// New spawns start as their own session (`sid == slot`); `setsid` creates
+    /// a fresh session for a forked child.
     sid: usize,
     /// Controlling terminal attached (phase-1: system console only).
-    /// Inherited on fork; set by TIOCSCTTY; cleared by setsid when wired.
+    /// Inherited on fork; set by TIOCSCTTY; cleared by SYS_SETSID.
     has_ctty: bool,
 }
 
@@ -879,6 +880,28 @@ pub fn set_ctty() {
     with_current_mut(|t| {
         t.has_ctty = true;
     });
+}
+
+/// Create a new session: caller becomes session leader (`sid = pid` / task slot)
+/// and loses any controlling terminal (`has_ctty = false`).
+///
+/// Phase-1 vs full POSIX:
+/// - No process-group / `setpgid` yet. Failure is only when the caller is
+///   already a session leader (`sid == pid`), which covers the usual getty
+///   path (forked child inherits the parent's sid, so the first `setsid`
+///   succeeds). Full POSIX also rejects process-group leaders that are not
+///   session leaders; without `pgid` we cannot distinguish that case.
+/// - Returns the new session id (task slot) on success, or `None` (EPERM).
+pub fn setsid() -> Option<usize> {
+    with_current_mut(|t| {
+        let pid = CURRENT.load(Ordering::SeqCst);
+        if t.sid == pid {
+            return None;
+        }
+        t.sid = pid;
+        t.has_ctty = false;
+        Some(pid)
+    })
 }
 
 fn fd_is_console_tty(entry: FdEntry) -> bool {
