@@ -90,8 +90,11 @@ link_prog() {
   "$ld" -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
     "$lib/crt0.o" "${objs[@]}" -L"$lib" \
-    --start-group -lc -lgloss -lg --end-group
+    --start-group -lc -lgloss -lg --end-group || return 1
 
+  # Strip only after a successful link. `|| true` here must not mask the ld
+  # status above (that would let a failed link into the manifest and panic
+  # the kernel build on a missing ELF).
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
 }
 
