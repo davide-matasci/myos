@@ -38,6 +38,7 @@ const SYS_MUNMAP: usize = 24;
 const SYS_MPROTECT: usize = 25;
 const SYS_LSEEK: usize = 26;
 const SYS_MOUNT: usize = 27;
+const SYS_IOCTL: usize = 28;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -1432,6 +1433,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_MPROTECT => sys_mprotect(a0, a1, a2),
         SYS_LSEEK => sys_lseek(a0, a1, a2),
         SYS_MOUNT => sys_mount(a0),
+        SYS_IOCTL => sys_ioctl(a0, a1, a2),
         _ => SYSERR,
     }
 }
@@ -1492,6 +1494,10 @@ fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
 
 fn sys_close(fd: usize) -> usize {
     if task::fd_close(fd) { 0 } else { SYSERR }
+}
+
+fn sys_ioctl(fd: usize, request: usize, arg: usize) -> usize {
+    task::fd_ioctl(fd, request, arg)
 }
 
 fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {

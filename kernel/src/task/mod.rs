@@ -856,6 +856,55 @@ pub fn fd_close(fd: usize) -> bool {
     })
 }
 
+/// Linux-compatible tty ioctls (getty/login). Non-tty → SYSERR (ENOTTY).
+pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
+    const TCGETS: usize = 0x5401;
+    const TCSETS: usize = 0x5402;
+    const TCFLSH: usize = 0x540B;
+    const TIOCSCTTY: usize = 0x540E;
+    const TIOCGWINSZ: usize = 0x5413;
+    const TIOCSWINSZ: usize = 0x5414;
+
+    let entry = {
+        let flags = irq_save();
+        irq_off();
+        let id = CURRENT.load(Ordering::SeqCst);
+        let t = TASKS.lock()[id];
+        irq_restore(flags);
+        t.fds.get(fd).copied().unwrap_or(FdEntry::Empty)
+    };
+
+    let is_tty = match entry {
+        FdEntry::Stdin | FdEntry::Console => true,
+        FdEntry::File { node, .. } => {
+            let p = node.path_str();
+            p == "tty" || p == "console"
+        }
+        _ => false,
+    };
+    if !is_tty {
+        return usize::MAX;
+    }
+
+    match request {
+        TCGETS | TCSETS | TCFLSH | TIOCSCTTY | TIOCSWINSZ => 0,
+        TIOCGWINSZ => {
+            if arg == 0 {
+                return usize::MAX;
+            }
+            let mut buf = [0u8; 8];
+            buf[0..2].copy_from_slice(&24u16.to_ne_bytes());
+            buf[2..4].copy_from_slice(&80u16.to_ne_bytes());
+            let aspace = current_aspace();
+            if !user::copy_to_user(aspace, arg, &buf) {
+                return usize::MAX;
+            }
+            0
+        }
+        _ => usize::MAX,
+    }
+}
+
 /// In-place exec: replace the current task's user image. Does not spawn,
 /// does not bump USERS_ALIVE, does not note_exit. Keeps the fd table so
 /// shell redirects and pipes survive exec.

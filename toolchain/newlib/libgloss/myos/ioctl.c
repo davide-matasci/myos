@@ -1,11 +1,14 @@
-/* myos libgloss: tty ioctl nops getty/login need (no real session yet). */
+/* myos libgloss: tty ioctl via SYS_IOCTL (getty/login). */
 #include <errno.h>
 #include <stdarg.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include "myos_syscalls.h"
+
 int ioctl(int fd, unsigned long request, ...) {
     va_list ap;
+    void *arg;
 
     if (fd < 0) {
         errno = EBADF;
@@ -13,36 +16,24 @@ int ioctl(int fd, unsigned long request, ...) {
     }
 
     va_start(ap, request);
+    arg = va_arg(ap, void *);
+    va_end(ap);
+
     switch (request) {
     case TIOCSCTTY:
-        (void)va_arg(ap, void *);
-        va_end(ap);
-        return 0;
     case TCFLSH:
-        (void)va_arg(ap, void *);
-        va_end(ap);
-        return 0;
-    case TIOCGWINSZ: {
-        struct winsize *ws = va_arg(ap, struct winsize *);
-        va_end(ap);
-        if (ws == NULL) {
-            errno = EFAULT;
-            return -1;
-        }
-        ws->ws_row = 24;
-        ws->ws_col = 80;
-        ws->ws_xpixel = 0;
-        ws->ws_ypixel = 0;
-        return 0;
-    }
+    case TIOCGWINSZ:
     case TCGETS:
     case TCSETS:
-        (void)va_arg(ap, void *);
-        va_end(ap);
-        return 0;
+        break;
     default:
-        va_end(ap);
         errno = ENOTTY;
         return -1;
     }
+
+    if ((unsigned long)myos_syscall3(MYOS_SYS_IOCTL, fd, (long)request, (long)arg) == MYOS_SYSERR) {
+        errno = ENOTTY;
+        return -1;
+    }
+    return 0;
 }
