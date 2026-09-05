@@ -114,7 +114,6 @@ fn mac_usable(mac: &[u8; 6]) -> bool {
     if mac.iter().all(|&b| b == 0) {
         return false;
     }
-    // I/G bit: multicast/broadcast.
     mac[0] & 1 == 0
 }
 
@@ -204,19 +203,7 @@ impl TxToken for Net0TxToken {
         let n = len.min(FRAME_BUF);
         let r = f(&mut buf[..n]);
         if n != 0 {
-            // virtio-net may return 0 while a prior TX DMA buffer is still
-            // outstanding (poll-style). Retry after a cheap reclaim read.
-            for _ in 0..256 {
-                let w = write_fd(self.fd, &buf[..n]);
-                if w == n {
-                    break;
-                }
-                if w == usize::MAX {
-                    break;
-                }
-                let mut sink = [0u8; 1];
-                let _ = read(self.fd, &mut sink);
-            }
+            let _ = write_fd(self.fd, &buf[..n]);
         }
         r
     }

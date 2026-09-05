@@ -78,9 +78,6 @@ struct Net {
     tx_buf_va: *mut u8,
     tx_buf_phys: u64,
     mac: [u8; 6],
-    /// Outstanding TX descriptor (single slot). Syscalls run with SIE clear on
-    /// RISC-V, so we must not busy-wait for completion for unbounded time.
-    tx_inflight: bool,
 }
 
 static mut NETS: [Option<Net>; MAX_NET] = [None, None, None, None];
@@ -509,7 +506,6 @@ fn probe(api: &KernelApi, pci_index: u32) -> Option<Net> {
         tx_buf_va,
         tx_buf_phys,
         mac,
-        tx_inflight: false,
     };
 
     let n = net.rx.num;
@@ -565,22 +561,6 @@ fn net_ioctl_n(idx: usize, request: u64, arg: usize) -> i32 {
     if rc < 0 { -1 } else { 0 }
 }
 
-/// Finish a prior TX if the device has written the used ring. Returns true when
-/// the TX slot is free for a new frame.
-fn tx_reclaim(net: &mut Net) -> bool {
-    if !net.tx_inflight {
-        return true;
-    }
-    let want = net.tx.last_used.wrapping_add(1);
-    if used_idx(&net.tx) == want {
-        net.tx.last_used = want;
-        net.tx_inflight = false;
-        true
-    } else {
-        false
-    }
-}
-
 fn net_read_n(idx: usize, buf: *mut u8, buf_len: usize) -> i32 {
     if buf.is_null() {
         return -1;
@@ -589,8 +569,6 @@ fn net_read_n(idx: usize, buf: *mut u8, buf_len: usize) -> i32 {
         Some(n) => n,
         None => return -1,
     };
-    // Opportunistically free the TX slot so a later write does not stall.
-    let _ = tx_reclaim(net);
     let used = used_idx(&net.rx);
     if used == net.rx.last_used {
         return 0;
@@ -630,12 +608,6 @@ fn net_write_n(idx: usize, buf: *const u8, buf_len: usize) -> i32 {
         Some(n) => n,
         None => return -1,
     };
-    // Prior TX still in flight: do not overwrite the DMA buffer. Poll semantics
-    // (0) so netd retries on the next iface.poll — never a multi-second IRQ-off
-    // spin (RISC-V syscalls run with SIE clear; 50e6 spins froze CI).
-    if !tx_reclaim(net) {
-        return 0;
-    }
     let frame = if buf_len > ETH_MAX { ETH_MAX } else { buf_len };
     unsafe {
         core::ptr::write_bytes(net.tx_buf_va, 0, HDR_SIZE);
@@ -650,10 +622,12 @@ fn net_write_n(idx: usize, buf: *const u8, buf_len: usize) -> i32 {
     push(&net.tx, 0);
     notify(net, &net.tx, 1);
 
-    // Brief poll only: QEMU usually completes within a few iterations. If not,
-    // mark inflight and return success — buffer stays owned until reclaim.
-    // Cap is deliberately tiny so a stuck used ring cannot hang the guest.
-    const TX_SPIN: u32 = 10_000;
+    // Syscalls run with interrupts masked (SIE clear on RISC-V). The old
+    // 50e6-spin wait could freeze the guest for tens of seconds when the used
+    // ring lagged, so CI hung after `tcc std ok` with no ping timeout printed.
+    // Cap well above normal QEMU completion (usually <<1k spins) but far below
+    // a multi-second IRQ-off stall.
+    const TX_SPIN: u32 = 250_000;
     let want = net.tx.last_used.wrapping_add(1);
     let mut spins = 0u32;
     while spins < TX_SPIN {
@@ -664,8 +638,7 @@ fn net_write_n(idx: usize, buf: *const u8, buf_len: usize) -> i32 {
         core::hint::spin_loop();
         spins += 1;
     }
-    net.tx_inflight = true;
-    frame as i32
+    -1
 }
 
 #[inline(never)]
