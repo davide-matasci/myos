@@ -226,6 +226,12 @@ struct Task {
     /// Anonymous mmap windows (after the brk heap).
     mmap: [MmapRegion; MAX_MMAP_REGIONS],
     mmap_next: u64,
+    /// Session id (task slot of the session leader). Inherited on fork.
+    /// Light field for future setsid; TIOCSCTTY does not require it yet.
+    sid: usize,
+    /// Controlling terminal attached (phase-1: system console only).
+    /// Inherited on fork; set by TIOCSCTTY; cleared by setsid when wired.
+    has_ctty: bool,
 }
 
 const EMPTY: Task = Task {
@@ -253,6 +259,8 @@ const EMPTY: Task = Task {
     exit_code: 0,
     mmap: EMPTY_MMAP,
     mmap_next: 0,
+    sid: 0,
+    has_ctty: false,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -856,10 +864,40 @@ pub fn fd_close(fd: usize) -> bool {
     })
 }
 
+/// Whether the current task has a controlling terminal.
+pub fn has_ctty() -> bool {
+    let flags = irq_save();
+    irq_off();
+    let id = CURRENT.load(Ordering::SeqCst);
+    let t = TASKS.lock()[id];
+    irq_restore(flags);
+    t.has_ctty
+}
+
+/// Mark the system console as this task's controlling terminal (TIOCSCTTY).
+pub fn set_ctty() {
+    with_current_mut(|t| {
+        t.has_ctty = true;
+    });
+}
+
+fn fd_is_console_tty(entry: FdEntry) -> bool {
+    match entry {
+        FdEntry::Stdin | FdEntry::Console => true,
+        FdEntry::File { node, .. } => {
+            let p = node.path_str();
+            p == "tty" || p == "console"
+        }
+        _ => false,
+    }
+}
+
 /// Generic ioctl dispatch. Tty/console keep Linux getty semantics; other
 /// open File vnodes go through [`crate::fs::ioctl`] (devfs → chrdevs like net0).
 pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
     use crate::fs::IoctlResult;
+
+    const TIOCSCTTY: usize = 0x540E;
 
     let entry = {
         let flags = irq_save();
@@ -869,6 +907,16 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         irq_restore(flags);
         t.fds.get(fd).copied().unwrap_or(FdEntry::Empty)
     };
+
+    // Real TIOCSCTTY: attach the system console as the caller's ctty.
+    // Getty passes a non-null arg (force); phase-1 accepts either.
+    if request == TIOCSCTTY {
+        if !fd_is_console_tty(entry) {
+            return usize::MAX;
+        }
+        set_ctty();
+        return 0;
+    }
 
     let result = match entry {
         FdEntry::Empty | FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) => IoctlResult::Notty,
@@ -975,7 +1023,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next) = {
+    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, has_ctty) = {
         let tasks = TASKS.lock();
         let id = CURRENT.load(Ordering::SeqCst);
         let t = tasks[id];
@@ -997,6 +1045,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.cwd_len,
             t.mmap,
             t.mmap_next,
+            t.sid,
+            t.has_ctty,
         )
     };
 
@@ -1083,6 +1133,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         exit_code: 0,
         mmap,
         mmap_next,
+        sid,
+        has_ctty,
     };
     drop(tasks);
     user::note_fork();
@@ -1201,6 +1253,8 @@ fn spawn_inner(
         exit_code: 0,
         mmap: EMPTY_MMAP,
         mmap_next: 0,
+        sid: slot,
+        has_ctty: false,
     };
     drop(tasks);
     irq_restore(flags);

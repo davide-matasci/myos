@@ -15,8 +15,23 @@ mod vfs;
 
 pub use vfs::{IoctlResult, StatInfo, Vnode};
 
+fn path_is_dev_tty(path: &str) -> bool {
+    let path = path.trim_start_matches('/');
+    path == "dev/tty"
+}
+
 /// Resolve `path` to a vnode for open/read/write.
+///
+/// `/dev/console` is always the hardware console. `/dev/tty` resolves to that
+/// console only when the caller has a controlling terminal (ENXIO otherwise).
 pub fn open(path: &str, flags: u32) -> Option<Vnode> {
+    if path_is_dev_tty(path) {
+        if !crate::task::has_ctty() {
+            return None;
+        }
+        // Phase-1: the only ctty is the system console.
+        return vfs::open("/dev/console", flags);
+    }
     vfs::open(path, flags)
 }
 
@@ -48,7 +63,8 @@ pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
     vfs::ioctl(node, request, arg)
 }
 
-/// Shared tty ioctl helper (Stdin/Console and `/dev/tty`/`/dev/console`).
+/// Shared tty ioctl helper (Stdin/Console and `/dev/console`).
+/// `TIOCSCTTY` is handled in [`crate::task::fd_ioctl`], not here.
 pub fn tty_ioctl(request: usize) -> IoctlResult {
     devfs::tty_ioctl(request)
 }

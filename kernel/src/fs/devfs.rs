@@ -1,4 +1,8 @@
 //! devfs: device nodes at `/dev/…` (`null`, `tty`, `console`, `vd*`, `nvme*n1`).
+//!
+//! `/dev/console` is the hardware console (serial+fb). `/dev/tty` is the
+//! process controlling terminal: open is gated in [`crate::fs::open`] and
+//! aliases to console when a ctty is set.
 
 use crate::blk;
 use crate::fs::{IoctlResult, StatInfo};
@@ -334,17 +338,19 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     }
 }
 
-/// Linux-compatible tty ioctls shared by Stdin/Console and `/dev/tty`/`console`.
+/// Linux-compatible tty ioctls for the hardware console (`/dev/console`).
+///
+/// `TIOCSCTTY` is handled in [`crate::task::fd_ioctl`] (sets `Task.has_ctty`).
+/// `/dev/tty` open is gated there too; when allowed it aliases to console.
 pub fn tty_ioctl(request: usize) -> IoctlResult {
     const TCGETS: usize = 0x5401;
     const TCSETS: usize = 0x5402;
     const TCFLSH: usize = 0x540B;
-    const TIOCSCTTY: usize = 0x540E;
     const TIOCGWINSZ: usize = 0x5413;
     const TIOCSWINSZ: usize = 0x5414;
 
     match request {
-        TCGETS | TCSETS | TCFLSH | TIOCSCTTY | TIOCSWINSZ => IoctlResult::Ok,
+        TCGETS | TCSETS | TCFLSH | TIOCSWINSZ => IoctlResult::Ok,
         TIOCGWINSZ => IoctlResult::Winsize { row: 24, col: 80 },
         _ => IoctlResult::Notty,
     }
@@ -356,6 +362,7 @@ pub fn tty_ioctl(request: usize) -> IoctlResult {
 /// Modules must not deref userspace `arg` — use `KernelApi::copy_to_user`.
 pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
     match parse(name) {
+        // `/dev/tty` open aliases to console; keep both for leftover/stat paths.
         Some(Node::Tty) | Some(Node::Console) => tty_ioctl(request),
         Some(Node::Chr(i)) => {
             match chr_table().get(i).and_then(|s| *s) {

@@ -344,7 +344,9 @@ int setpriority(int which, id_t who, int prio) {
 }
 
 int setsid(void) {
-    /* Fake session leader; no real process groups yet. */
+    /* Phase-1: userspace stub. Kernel has Task.sid / has_ctty; a real
+     * SYS_SETSID (clear ctty, become session leader) is deferred. Getty
+     * still reaches a working ctty via open(console) + TIOCSCTTY. */
     return 1;
 }
 
