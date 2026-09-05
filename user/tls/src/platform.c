@@ -65,6 +65,9 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
 static void ensure_mem(void) {
     if (!g_mem_ready) {
         mbedtls_memory_buffer_alloc_init(g_heap, sizeof(g_heap));
+        mbedtls_platform_set_calloc_free(
+            mbedtls_memory_buffer_alloc_calloc,
+            mbedtls_memory_buffer_alloc_free);
         g_mem_ready = 1;
     }
 }

@@ -39,10 +39,9 @@ fn main() {
     let lib = root.join(format!("target/mbedtls-{arch}/lib"));
     let inc = root.join(format!("target/mbedtls-{arch}/include"));
     let newlib_inc = root.join(format!("target/newlib-{arch}/{arch}-unknown-myos/include"));
-    println!("cargo:rustc-link-search=native={}", lib.display());
-    println!("cargo:rustc-link-lib=static=mbedtls");
-    println!("cargo:rustc-link-lib=static=mbedx509");
-    println!("cargo:rustc-link-lib=static=mbedcrypto");
+    let newlib_lib = root.join(format!(
+        "target/newlib-{arch}/{arch}-unknown-myos/lib"
+    ));
     println!("cargo:rerun-if-changed={}", lib.join("libmbedtls.a").display());
 
     let glue = manifest.join("src/platform.c");
@@ -106,6 +105,16 @@ fn main() {
     if !ar_status.success() {
         panic!("ar libmyos_tls_plat.a failed");
     }
+    // Link order: dependents before providers (plat → mbedtls → newlib).
     println!("cargo:rustc-link-search=native={out_dir}");
     println!("cargo:rustc-link-lib=static=myos_tls_plat");
+    println!("cargo:rustc-link-search=native={}", lib.display());
+    println!("cargo:rustc-link-lib=static=mbedtls");
+    println!("cargo:rustc-link-lib=static=mbedx509");
+    println!("cargo:rustc-link-lib=static=mbedcrypto");
+    // mbedtls needs libc string/time/alloc; reuse newlib+libgloss (no crt0).
+    println!("cargo:rustc-link-search=native={}", newlib_lib.display());
+    println!("cargo:rustc-link-lib=static=c");
+    println!("cargo:rustc-link-lib=static=gloss");
+    println!("cargo:rustc-link-lib=static=g");
 }
