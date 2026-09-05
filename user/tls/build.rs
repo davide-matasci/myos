@@ -62,6 +62,16 @@ fn main() {
         cmd = Command::new("clang");
         cmd.arg(format!("--target={arch}-unknown-none"));
     }
+    let clang_res = Command::new("clang")
+        .arg("-print-resource-dir")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| format!("{}/include", s.trim()))
+        .unwrap_or_default();
+    if !clang_res.is_empty() {
+        cmd.arg("-isystem").arg(&clang_res);
+    }
     let status = cmd
         .arg("-ffreestanding")
         .arg("-fPIC")

@@ -75,8 +75,11 @@ build_arch() {
   local out="$ROOT/target/mbedtls-${arch}"
   local obj="$out/obj"
   local lib="$out/lib"
+  local clang_res
+  clang_res="$(clang -print-resource-dir)/include"
   local cflags=(
     -ffreestanding -fPIC -Os -g0 -nostdinc
+    -isystem "$clang_res"
     -I"$HERE/include"
     -isystem "$inc"
     -I"$SRC/include"
