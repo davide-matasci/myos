@@ -85,7 +85,7 @@ fn main() {
         .arg(&inc)
         .arg("-I")
         .arg(root.join("ports/mbedtls"))
-        .arg("-DMBEDTLS_CONFIG_FILE=\"myos_myos_mbedtls_config.h\"")
+        .arg("-DMBEDTLS_CONFIG_FILE=\"myos_mbedtls_config.h\"")
         .arg("-c")
         .arg(&glue)
         .arg("-o")
