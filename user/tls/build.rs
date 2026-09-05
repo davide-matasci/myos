@@ -96,5 +96,16 @@ fn main() {
     if !status.success() {
         panic!("platform.c compile failed");
     }
-    println!("cargo:rustc-link-arg={obj}");
+    // Archive into a static lib so the .o is linked into dependents of this
+    // rlib (cargo:rustc-link-arg on a bare .o does not propagate from libs).
+    let archive = format!("{out_dir}/libmyos_tls_plat.a");
+    let ar_status = Command::new("ar")
+        .args(["rcs", &archive, &obj])
+        .status()
+        .expect("ar platform.o");
+    if !ar_status.success() {
+        panic!("ar libmyos_tls_plat.a failed");
+    }
+    println!("cargo:rustc-link-search=native={out_dir}");
+    println!("cargo:rustc-link-lib=static=myos_tls_plat");
 }
