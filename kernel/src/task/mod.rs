@@ -856,14 +856,10 @@ pub fn fd_close(fd: usize) -> bool {
     })
 }
 
-/// Linux-compatible tty ioctls (getty/login). Non-tty → SYSERR (ENOTTY).
+/// Generic ioctl dispatch. Tty/console keep Linux getty semantics; other
+/// open File vnodes go through [`crate::fs::ioctl`] (devfs → chrdevs like net0).
 pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
-    const TCGETS: usize = 0x5401;
-    const TCSETS: usize = 0x5402;
-    const TCFLSH: usize = 0x540B;
-    const TIOCSCTTY: usize = 0x540E;
-    const TIOCGWINSZ: usize = 0x5413;
-    const TIOCSWINSZ: usize = 0x5414;
+    use crate::fs::IoctlResult;
 
     let entry = {
         let flags = irq_save();
@@ -874,34 +870,28 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         t.fds.get(fd).copied().unwrap_or(FdEntry::Empty)
     };
 
-    let is_tty = match entry {
-        FdEntry::Stdin | FdEntry::Console => true,
-        FdEntry::File { node, .. } => {
-            let p = node.path_str();
-            p == "tty" || p == "console"
-        }
-        _ => false,
+    let result = match entry {
+        FdEntry::Empty | FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) => IoctlResult::Notty,
+        FdEntry::Stdin | FdEntry::Console => crate::fs::tty_ioctl(request),
+        FdEntry::File { node, .. } => crate::fs::ioctl(&node, request, arg),
     };
-    if !is_tty {
-        return usize::MAX;
-    }
 
-    match request {
-        TCGETS | TCSETS | TCFLSH | TIOCSCTTY | TIOCSWINSZ => 0,
-        TIOCGWINSZ => {
+    match result {
+        IoctlResult::Ok => 0,
+        IoctlResult::Winsize { row, col } => {
             if arg == 0 {
                 return usize::MAX;
             }
             let mut buf = [0u8; 8];
-            buf[0..2].copy_from_slice(&24u16.to_ne_bytes());
-            buf[2..4].copy_from_slice(&80u16.to_ne_bytes());
+            buf[0..2].copy_from_slice(&row.to_ne_bytes());
+            buf[2..4].copy_from_slice(&col.to_ne_bytes());
             let aspace = current_aspace();
             if !user::copy_to_user(aspace, arg, &buf) {
                 return usize::MAX;
             }
             0
         }
-        _ => usize::MAX,
+        IoctlResult::Notty | IoctlResult::Bad => usize::MAX,
     }
 }
 

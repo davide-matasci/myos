@@ -1,7 +1,7 @@
 //! devfs: device nodes at `/dev/…` (`null`, `tty`, `console`, `vd*`, `nvme*n1`).
 
 use crate::blk;
-use crate::fs::StatInfo;
+use crate::fs::{IoctlResult, StatInfo};
 use crate::input;
 use crate::task;
 
@@ -331,5 +331,49 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 30 + i as u32,
             nlink: 1,
         }),
+    }
+}
+
+/// Linux-compatible tty ioctls shared by Stdin/Console and `/dev/tty`/`console`.
+pub fn tty_ioctl(request: usize) -> IoctlResult {
+    const TCGETS: usize = 0x5401;
+    const TCSETS: usize = 0x5402;
+    const TCFLSH: usize = 0x540B;
+    const TIOCSCTTY: usize = 0x540E;
+    const TIOCGWINSZ: usize = 0x5413;
+    const TIOCSWINSZ: usize = 0x5414;
+
+    match request {
+        TCGETS | TCSETS | TCFLSH | TIOCSCTTY | TIOCSWINSZ => IoctlResult::Ok,
+        TIOCGWINSZ => IoctlResult::Winsize { row: 24, col: 80 },
+        _ => IoctlResult::Notty,
+    }
+}
+
+/// MountOps ioctl callback for `/dev/*`.
+///
+/// Module chrdevs may register [`myos_abi::ModuleChrOps::ioctl`]; `None` → ENOTTY.
+/// Modules must not deref userspace `arg` pointers (no kernel copy helper yet).
+pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
+    match parse(name) {
+        Some(Node::Tty) | Some(Node::Console) => tty_ioctl(request),
+        Some(Node::Chr(i)) => {
+            match chr_table().get(i).and_then(|s| *s) {
+                Some(c) => match c.ops.ioctl {
+                    // Modules must not copy_to_user themselves; integer-ish ops only for v1.
+                    Some(f) => {
+                        let rc = unsafe { f(request as u64, arg) };
+                        if rc < 0 {
+                            IoctlResult::Bad
+                        } else {
+                            IoctlResult::Ok
+                        }
+                    }
+                    None => IoctlResult::Notty,
+                },
+                None => IoctlResult::Notty,
+            }
+        }
+        Some(Node::Null) | Some(Node::Block(_)) | Some(Node::Nvme(_)) | None => IoctlResult::Notty,
     }
 }

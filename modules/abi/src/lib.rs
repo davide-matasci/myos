@@ -101,6 +101,10 @@ pub type FsBind = unsafe extern "C" fn(dev_id: u32, ops: *mut ModuleVfsOps) -> i
 pub struct ModuleChrOps {
     pub read: unsafe extern "C" fn(buf: *mut u8, buf_len: usize) -> i32,
     pub write: unsafe extern "C" fn(buf: *const u8, buf_len: usize) -> i32,
+    /// Optional. `None` → ENOTTY. `request` is a Linux ioctl code; `arg` is a
+    /// userspace pointer/value — module must not deref user pointers (v1:
+    /// integer-ish ops only, or return ENOTTY for pointer ops).
+    pub ioctl: Option<unsafe extern "C" fn(request: u64, arg: usize) -> i32>,
 }
 
 /// Kernel services visible to a module.

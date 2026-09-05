@@ -89,7 +89,6 @@ pub const EFAULT: c_int = 14;
 pub const EEXIST: c_int = 17;
 pub const ENOTDIR: c_int = 20;
 pub const EINVAL: c_int = 22;
-pub const ENOTTY: c_int = 25;
 pub const ENOSYS: c_int = 38;
 pub const ENOTEMPTY: c_int = 39;
 pub const ELOOP: c_int = 40;

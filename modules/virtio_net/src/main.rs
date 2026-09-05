@@ -80,6 +80,7 @@ static mut NET: Option<Net> = None;
 static OPS: ModuleChrOps = ModuleChrOps {
     read: net_read,
     write: net_write,
+    ioctl: None,
 };
 
 fn r8(p: usize) -> u8 {
