@@ -700,6 +700,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     let chr = ModuleChrOps {
         read: chr_read,
         write: chr_write,
+        ioctl: None,
     };
     let chr_rc = unsafe { (api.dev_register)(b"netd".as_ptr(), 4, &chr) };
     // Stay loaded even if one hook fails: InitFailed would free the image while

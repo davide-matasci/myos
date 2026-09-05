@@ -146,7 +146,8 @@ mod syscalls {
     const SYS_BRK: usize = 9;
     const SYS_PIPE: usize = 10;
     const SYS_DUP2: usize = 11;
-    const SYS_GETTIMEOFDAY: usize = 28;
+    const SYS_IOCTL: usize = 28;
+    const SYS_GETTIMEOFDAY: usize = 29;
 
     static mut MYOS_ERRNO: c_int = 0;
 
@@ -306,6 +307,16 @@ mod syscalls {
         ret as *mut c_void
     }
 
+    pub unsafe fn sys_ioctl(fd: c_int, request: c_ulong, arg: *mut c_void) -> c_int {
+        let ret = raw_syscall(SYS_IOCTL, fd as usize, request as usize, arg as usize);
+        if ret == usize::MAX {
+            set_errno(ENOTTY);
+            -1
+        } else {
+            0
+        }
+    }
+
     pub unsafe fn sys_gettimeofday(tv: *mut timeval) -> c_int {
         let ret = raw_syscall(SYS_GETTIMEOFDAY, tv as usize, 0, 0);
         if ret == usize::MAX {
@@ -438,9 +449,12 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_ulong) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn ioctl(_fd: c_int, _request: c_ulong, _arg: *mut c_void) -> c_int {
-    syscalls::set_errno(ENOSYS);
-    -1
+pub unsafe extern "C" fn ioctl(fd: c_int, request: c_ulong, arg: *mut c_void) -> c_int {
+    if fd < 0 {
+        syscalls::set_errno(EBADF);
+        return -1;
+    }
+    syscalls::sys_ioctl(fd, request, arg)
 }
 
 #[no_mangle]

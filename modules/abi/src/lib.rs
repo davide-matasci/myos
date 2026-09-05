@@ -6,7 +6,11 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 7;
+pub const ABI_VERSION: u32 = 8;
+
+/// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
+/// Keep in sync with `user/net` / `user/lib` duplicates.
+pub const MYOS_IOCTL_NET_GETMAC: u64 = 0x4d01;
 
 /// Stat blob exchanged with module VFS hooks (matches kernel layout).
 #[repr(C)]
@@ -101,6 +105,10 @@ pub type FsBind = unsafe extern "C" fn(dev_id: u32, ops: *mut ModuleVfsOps) -> i
 pub struct ModuleChrOps {
     pub read: unsafe extern "C" fn(buf: *mut u8, buf_len: usize) -> i32,
     pub write: unsafe extern "C" fn(buf: *const u8, buf_len: usize) -> i32,
+    /// Optional. `None` → ENOTTY. `request` is an ioctl code; `arg` is a
+    /// userspace pointer/value. Modules must not deref user pointers directly —
+    /// use [`KernelApi::copy_to_user`] instead.
+    pub ioctl: Option<unsafe extern "C" fn(request: u64, arg: usize) -> i32>,
 }
 
 /// Kernel services visible to a module.
@@ -172,6 +180,9 @@ pub struct KernelApi {
         name_len: usize,
         ops: *const ModuleChrOps,
     ) -> i32,
+    /// Copy `len` bytes from kernel `src` to userspace address `dst_user`.
+    /// Valid only during a syscall on the current task. 0 ok, negative on fault.
+    pub copy_to_user: unsafe extern "C" fn(dst_user: usize, src: *const u8, len: usize) -> i32,
 }
 
 /// `module_init` — required. Return 0 on success.

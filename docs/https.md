@@ -2,7 +2,7 @@
 
 ## Architecture
 
-**Wall clock:** `SYS_GETTIMEOFDAY` (28) backed by platform RTC (CMOS / PL031 / goldfish).
+**Wall clock:** `SYS_GETTIMEOFDAY` (29) backed by platform RTC (CMOS / PL031 / goldfish).
 Required for X.509 notBefore/notAfter checks — not a workaround.
 
 **TLS:** build-time **mbedtls** port (`ports/mbedtls/`) + reusable **`user/tls`** Rust FFI

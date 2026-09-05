@@ -12,6 +12,11 @@ if myos_sbase_is_current; then
 fi
 
 "$ROOT/ports/sbase/prepare.sh"
+# sbase compiles newlib's regex sources (REGEX_SRCS) directly from the
+# newlib source tree, so the source must be present even when newlib
+# *outputs* are cached (CI pulls them from GHCR and build.sh exits early).
+# fetch.sh is idempotent and cheap when the tree already exists.
+"$ROOT/toolchain/newlib/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
@@ -85,7 +90,12 @@ link_prog() {
   "$ld" -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
     "$lib/crt0.o" "${objs[@]}" -L"$lib" \
-    --start-group -lc -lgloss -lg --end-group
+    --start-group -lc -lgloss -lg --end-group || return 1
+
+  # Strip only after a successful link. `|| true` here must not mask the ld
+  # status above (that would let a failed link into the manifest and panic
+  # the kernel build on a missing ELF).
+  "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
 }
 
 build_arch() {

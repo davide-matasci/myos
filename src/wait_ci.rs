@@ -8,7 +8,7 @@ struct CiExpect {
     shell_ci: bool,
 }
 
-const CI_NEEDLES: [&str; 26] = [
+const CI_NEEDLES: [&str; 28] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] interrupts",
@@ -25,6 +25,7 @@ const CI_NEEDLES: [&str; 26] = [
     "fat ok",
     "vda ok",
     "net0 ok",
+    "netmac ok",
     "nvme ok",
     "ext2 ok",
     // Slim always-on `/ok` VFS markers (pre-prompt readiness).
@@ -36,6 +37,7 @@ const CI_NEEDLES: [&str; 26] = [
     "tmp ok",
     "tmpops ok",
     "proc ok",
+    "ioctl ok",
 ];
 
 /// Heavy markers from CI-only `/heap` (typed at `$` on every arch).
@@ -229,19 +231,6 @@ fn interactive_dns_cmd_ok(serial: &str) -> bool {
     }
     // DNS command should print `IP: x.x.x.x` followed by `dns ok` and return to prompt.
     if !tail.contains("IP: ") || !tail.contains("dns ok") {
-        return false;
-    }
-    at_interactive_prompt(serial)
-}
-
-/// HTTPS GET: `http https://example.com/` should include `Example Domain` and `https ok`.
-/// Note: `https ok` must NOT be added to CI_NEEDLES_STD (same trap as `dns ok`).
-fn interactive_https_cmd_ok(serial: &str) -> bool {
-    let tail = interactive_tail(serial);
-    if !tail.contains("$ http https://example.com/") || serial.contains("exception:") {
-        return false;
-    }
-    if !tail.contains("Example Domain") || !tail.contains("https ok") {
         return false;
     }
     at_interactive_prompt(serial)

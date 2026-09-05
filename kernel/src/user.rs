@@ -38,7 +38,8 @@ const SYS_MUNMAP: usize = 24;
 const SYS_MPROTECT: usize = 25;
 const SYS_LSEEK: usize = 26;
 const SYS_MOUNT: usize = 27;
-const SYS_GETTIMEOFDAY: usize = 28;
+const SYS_IOCTL: usize = 28;
+const SYS_GETTIMEOFDAY: usize = 29;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -1433,6 +1434,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_MPROTECT => sys_mprotect(a0, a1, a2),
         SYS_LSEEK => sys_lseek(a0, a1, a2),
         SYS_MOUNT => sys_mount(a0),
+        SYS_IOCTL => sys_ioctl(a0, a1, a2),
         SYS_GETTIMEOFDAY => sys_gettimeofday(a0, a1),
         _ => SYSERR,
     }
@@ -1496,6 +1498,31 @@ fn sys_close(fd: usize) -> usize {
     if task::fd_close(fd) { 0 } else { SYSERR }
 }
 
+fn sys_ioctl(fd: usize, request: usize, arg: usize) -> usize {
+    task::fd_ioctl(fd, request, arg)
+}
+
+
+/// `a0` = user pointer to `{i64 tv_sec; i64 tv_usec}`, `a1` = tz (ignored).
+fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
+    const N: usize = 16; // two i64s
+    if tv_ptr == 0 || !user_range_ok(tv_ptr, N) {
+        return SYSERR;
+    }
+    let Some(secs) = crate::time::unix_seconds() else {
+        return SYSERR;
+    };
+    let mut raw = [0u8; N];
+    raw[..8].copy_from_slice(&secs.to_le_bytes());
+    // usec unknown from RTC second resolution
+    raw[8..16].copy_from_slice(&0i64.to_le_bytes());
+    if !write_user_bytes(task::current_aspace(), tv_ptr, &raw) {
+        return SYSERR;
+    }
+    0
+}
+
+
 fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let Some(buf) = copy_user_path(ptr, path_len) else {
         return SYSERR;
@@ -1531,15 +1558,14 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let cur_aspace = task::current_aspace();
     let (base_u, _mapped_span, stack_off) = task::current_user_map();
     let (aspace, entry, span, off) = {
-        #[cfg(target_arch = "riscv64")]
-        {
-            let _ = (cur_aspace, stack_off, _mapped_span);
-            let Some(v) = load_user_elf(bytes) else {
-                return SYSERR;
-            };
-            v
-        }
-        #[cfg(not(target_arch = "riscv64"))]
+        // Reuse the current aspace in place (reload / expand) so post-fork
+        // `exec` does not leak the prior aspace + its frames on every exec.
+        // riscv64 previously always took the `load_user_elf` fresh-aspace path
+        // (introduced in 887caf5 for RISC-V CI parity), which leaked hundreds of
+        // physical pages per exec (a 700+ page ripgrep ELF after `uutils false ok`
+        // in `/heap`) and walked the bump allocator forward past the heavyweight
+        // smoke ELFs. Keep the same in-place reload/expand/lazy-load sequence the
+        // other arches use so the mapping/stack reservation logic is identical.
         {
             if cur_aspace != 0 {
                 if let Some(v) = reload_user_elf(cur_aspace, bytes, base_u, stack_off, _mapped_span)
@@ -2245,26 +2271,6 @@ fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
 
 fn sys_lseek(fd: usize, offset: usize, whence: usize) -> usize {
     task::fd_lseek(fd, offset as i64, whence)
-}
-
-
-/// `a0` = user pointer to `{i64 tv_sec; i64 tv_usec}`, `a1` = tz (ignored).
-fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
-    const N: usize = 16; // two i64s
-    if tv_ptr == 0 || !user_range_ok(tv_ptr, N) {
-        return SYSERR;
-    }
-    let Some(secs) = crate::time::unix_seconds() else {
-        return SYSERR;
-    };
-    let mut raw = [0u8; N];
-    raw[..8].copy_from_slice(&secs.to_le_bytes());
-    // usec unknown from RTC second resolution
-    raw[8..16].copy_from_slice(&0i64.to_le_bytes());
-    if !write_user_bytes(task::current_aspace(), tv_ptr, &raw) {
-        return SYSERR;
-    }
-    0
 }
 
 /// `a0` points at `{src_ptr, src_len, tgt_ptr, tgt_len, fstype_ptr, fstype_len}`.

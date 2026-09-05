@@ -303,10 +303,10 @@ pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
 }
 
 
-/// Wall-clock time (`SYS_GETTIMEOFDAY` = 28). Returns `(sec, usec)` or `None`.
+/// Wall-clock time (`SYS_GETTIMEOFDAY` = 29). Returns `(sec, usec)` or `None`.
 pub fn gettimeofday() -> Option<(i64, i64)> {
     let mut tv = [0i64; 2];
-    let ret = unsafe { sys3(28, tv.as_mut_ptr() as usize, 0, 0) };
+    let ret = unsafe { sys3(29, tv.as_mut_ptr() as usize, 0, 0) };
     if ret == usize::MAX {
         None
     } else {
@@ -321,6 +321,11 @@ pub const SEEK_END: usize = 2;
 /// Reposition the file offset. Returns the resulting offset, or `usize::MAX` on error.
 pub fn lseek(fd: usize, offset: usize, whence: usize) -> usize {
     unsafe { sys3(26, fd, offset, whence) }
+}
+
+/// Device ioctl (SYS_IOCTL = 28). Returns 0 on success, `usize::MAX` on error.
+pub fn ioctl(fd: usize, request: usize, arg: usize) -> usize {
+    unsafe { sys3(28, fd, request, arg) }
 }
 
 /// Adjust the program break. `addr == 0` queries the current break.

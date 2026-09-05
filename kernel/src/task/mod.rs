@@ -856,6 +856,45 @@ pub fn fd_close(fd: usize) -> bool {
     })
 }
 
+/// Generic ioctl dispatch. Tty/console keep Linux getty semantics; other
+/// open File vnodes go through [`crate::fs::ioctl`] (devfs → chrdevs like net0).
+pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
+    use crate::fs::IoctlResult;
+
+    let entry = {
+        let flags = irq_save();
+        irq_off();
+        let id = CURRENT.load(Ordering::SeqCst);
+        let t = TASKS.lock()[id];
+        irq_restore(flags);
+        t.fds.get(fd).copied().unwrap_or(FdEntry::Empty)
+    };
+
+    let result = match entry {
+        FdEntry::Empty | FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) => IoctlResult::Notty,
+        FdEntry::Stdin | FdEntry::Console => crate::fs::tty_ioctl(request),
+        FdEntry::File { node, .. } => crate::fs::ioctl(&node, request, arg),
+    };
+
+    match result {
+        IoctlResult::Ok => 0,
+        IoctlResult::Winsize { row, col } => {
+            if arg == 0 {
+                return usize::MAX;
+            }
+            let mut buf = [0u8; 8];
+            buf[0..2].copy_from_slice(&row.to_ne_bytes());
+            buf[2..4].copy_from_slice(&col.to_ne_bytes());
+            let aspace = current_aspace();
+            if !user::copy_to_user(aspace, arg, &buf) {
+                return usize::MAX;
+            }
+            0
+        }
+        IoctlResult::Notty | IoctlResult::Bad => usize::MAX,
+    }
+}
+
 /// In-place exec: replace the current task's user image. Does not spawn,
 /// does not bump USERS_ALIVE, does not note_exit. Keeps the fd table so
 /// shell redirects and pipes survive exec.

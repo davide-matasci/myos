@@ -31,7 +31,8 @@
 #define MYOS_SYS_MPROTECT 25
 #define MYOS_SYS_LSEEK 26
 #define MYOS_SYS_MOUNT 27
-#define MYOS_SYS_GETTIMEOFDAY 28
+#define MYOS_SYS_IOCTL 28
+#define MYOS_SYS_GETTIMEOFDAY 29
 
 #define MYOS_SYSERR ((unsigned long)-1)
 

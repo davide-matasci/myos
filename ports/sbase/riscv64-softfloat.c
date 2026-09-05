@@ -133,3 +133,52 @@ int __unorddf2(TFtype a, TFtype b)
 	double db = (double)b;
 	return da != da || db != db ? 1 : 0;
 }
+
+/*
+ * Single-precision soft-float compare helpers.
+ * newlib libm (sf_fpclassify.c and friends) calls these on the
+ * soft-float riscv64imac target; without them the tcc link fails with
+ * "undefined symbol: __eqsf2".
+ *
+ * Implemented with an integer ordering key so clang never emits a
+ * recursive __*sf2 call: IEEE-754 float bits are total-ordered by
+ * flipping the sign bit for positives and inverting all bits for
+ * negatives (same trick as __eqdf2's TF path, but for float).
+ */
+typedef union { float f; unsigned int u; } __myos_sf_bits;
+
+static unsigned int __myos_sf_key(float a)
+{
+	unsigned int x = ((__myos_sf_bits){a}).u;
+	return (x & 0x80000000u) ? ~x : (x | 0x80000000u);
+}
+
+int __eqsf2(float a, float b)
+{
+	return __myos_sf_key(a) == __myos_sf_key(b) ? 0 : -1;
+}
+
+int __nesf2(float a, float b)
+{
+	return __myos_sf_key(a) != __myos_sf_key(b) ? 1 : 0;
+}
+
+int __ltsf2(float a, float b)
+{
+	return __myos_sf_key(a) < __myos_sf_key(b) ? 1 : 0;
+}
+
+int __gtsf2(float a, float b)
+{
+	return __myos_sf_key(a) > __myos_sf_key(b) ? 1 : 0;
+}
+
+int __lesf2(float a, float b)
+{
+	return __myos_sf_key(a) <= __myos_sf_key(b) ? 1 : 0;
+}
+
+int __gesf2(float a, float b)
+{
+	return __myos_sf_key(a) >= __myos_sf_key(b) ? 1 : 0;
+}
