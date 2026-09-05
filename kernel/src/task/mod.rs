@@ -230,6 +230,10 @@ struct Task {
     /// New spawns start as their own session (`sid == slot`); `setsid` creates
     /// a fresh session for a forked child.
     sid: usize,
+    /// Process group id (task slot of the group leader). Inherited on fork.
+    /// New spawns start in their own group (`pgid == slot`); `setsid` also
+    /// puts the caller in a new group (`pgid = pid`).
+    pgid: usize,
     /// Controlling terminal attached (phase-1: system console only).
     /// Inherited on fork; set by TIOCSCTTY; cleared by SYS_SETSID.
     has_ctty: bool,
@@ -261,6 +265,7 @@ const EMPTY: Task = Task {
     mmap: EMPTY_MMAP,
     mmap_next: 0,
     sid: 0,
+    pgid: 0,
     has_ctty: false,
 };
 
@@ -882,15 +887,15 @@ pub fn set_ctty() {
     });
 }
 
-/// Create a new session: caller becomes session leader (`sid = pid` / task slot)
-/// and loses any controlling terminal (`has_ctty = false`).
+/// Create a new session: caller becomes session leader (`sid = pid` / task slot),
+/// joins a new process group (`pgid = pid`), and loses any controlling terminal
+/// (`has_ctty = false`).
 ///
 /// Phase-1 vs full POSIX:
-/// - No process-group / `setpgid` yet. Failure is only when the caller is
-///   already a session leader (`sid == pid`), which covers the usual getty
-///   path (forked child inherits the parent's sid, so the first `setsid`
-///   succeeds). Full POSIX also rejects process-group leaders that are not
-///   session leaders; without `pgid` we cannot distinguish that case.
+/// - Fails when the caller is already a session leader (`sid == pid`). Full
+///   POSIX also rejects process-group leaders that are not session leaders; we
+///   approximate by requiring `sid != pid` only (a group leader that is not a
+///   session leader can still call `setsid` and becomes both).
 /// - Returns the new session id (task slot) on success, or `None` (EPERM).
 pub fn setsid() -> Option<usize> {
     with_current_mut(|t| {
@@ -899,9 +904,120 @@ pub fn setsid() -> Option<usize> {
             return None;
         }
         t.sid = pid;
+        t.pgid = pid;
         t.has_ctty = false;
         Some(pid)
     })
+}
+
+fn task_exists(t: &Task) -> bool {
+    t.state != State::Unused
+}
+
+/// `getpgid(pid)`: `pid == 0` means the caller. Returns the process group id,
+/// or `None` if `pid` does not name an existing task (ESRCH).
+pub fn getpgid(pid: usize) -> Option<usize> {
+    let flags = irq_save();
+    irq_off();
+    let caller = CURRENT.load(Ordering::SeqCst);
+    let target = if pid == 0 { caller } else { pid };
+    let out = if target >= MAX_TASKS {
+        None
+    } else {
+        let t = TASKS.lock()[target];
+        if task_exists(&t) {
+            Some(t.pgid)
+        } else {
+            None
+        }
+    };
+    irq_restore(flags);
+    out
+}
+
+/// `getsid(pid)`: `pid == 0` means the caller. Returns the session id, or
+/// `None` if `pid` does not name an existing task (ESRCH).
+pub fn getsid(pid: usize) -> Option<usize> {
+    let flags = irq_save();
+    irq_off();
+    let caller = CURRENT.load(Ordering::SeqCst);
+    let target = if pid == 0 { caller } else { pid };
+    let out = if target >= MAX_TASKS {
+        None
+    } else {
+        let t = TASKS.lock()[target];
+        if task_exists(&t) {
+            Some(t.sid)
+        } else {
+            None
+        }
+    };
+    irq_restore(flags);
+    out
+}
+
+/// `setpgid(pid, pgid)` — phase-1 process groups for shells later.
+///
+/// Semantics (approximate POSIX):
+/// - `pid == 0` → caller; `pgid == 0` → use the *target* process id as the new
+///   group id (create a group led by that process).
+/// - Target must exist and share the caller's session.
+/// - Caller may change only itself or a direct child (`ppid == caller`).
+///   Full POSIX also requires the child not to have `exec`'d yet; we do not
+///   track post-exec and allow any same-session direct child.
+/// - New `pgid` must be the target's pid (new group) or an existing `pgid` in
+///   the same session. Session leaders may not leave their group (EPERM)
+///   except a no-op that keeps the current `pgid`.
+///
+/// Returns `true` on success, `false` on ESRCH/EPERM/EINVAL (all mapped to
+/// SYSERR in the syscall layer).
+pub fn setpgid(pid: usize, pgid: usize) -> bool {
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    let caller = CURRENT.load(Ordering::SeqCst);
+    let target = if pid == 0 { caller } else { pid };
+
+    let ok = (|| {
+        if target >= MAX_TASKS || !task_exists(&tasks[target]) {
+            return false;
+        }
+        if !task_exists(&tasks[caller]) {
+            return false;
+        }
+        if tasks[target].sid != tasks[caller].sid {
+            return false;
+        }
+        if target != caller && tasks[target].ppid != caller {
+            return false;
+        }
+
+        let new_pgid = if pgid == 0 { target } else { pgid };
+        if new_pgid >= MAX_TASKS {
+            return false;
+        }
+        if new_pgid == tasks[target].pgid {
+            return true; // no-op
+        }
+        // Session leader cannot move to a different process group.
+        if tasks[target].sid == target {
+            return false;
+        }
+        let same_sid = tasks[target].sid;
+        let allowed = new_pgid == target
+            || tasks.iter().any(|t| {
+                task_exists(t) && t.sid == same_sid && t.pgid == new_pgid
+            });
+        if !allowed {
+            return false;
+        }
+        tasks[target].pgid = new_pgid;
+        true
+    })();
+
+    drop(tasks);
+    irq_restore(flags);
+    ok
 }
 
 fn fd_is_console_tty(entry: FdEntry) -> bool {
@@ -1046,7 +1162,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, has_ctty) = {
+    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, pgid, has_ctty) = {
         let tasks = TASKS.lock();
         let id = CURRENT.load(Ordering::SeqCst);
         let t = tasks[id];
@@ -1069,6 +1185,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.mmap,
             t.mmap_next,
             t.sid,
+            t.pgid,
             t.has_ctty,
         )
     };
@@ -1157,6 +1274,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         mmap,
         mmap_next,
         sid,
+        pgid,
         has_ctty,
     };
     drop(tasks);
@@ -1277,6 +1395,7 @@ fn spawn_inner(
         mmap: EMPTY_MMAP,
         mmap_next: 0,
         sid: slot,
+        pgid: slot,
         has_ctty: false,
     };
     drop(tasks);
