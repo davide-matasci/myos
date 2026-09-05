@@ -76,7 +76,8 @@ build_arch() {
   local obj="$out/obj"
   local lib="$out/lib"
   local cflags=(
-    -ffreestanding -fPIC -Os -g0
+    -ffreestanding -fPIC -Os -g0 -nostdinc
+    -I"$HERE/include"
     -isystem "$inc"
     -I"$SRC/include"
     -I"$HERE"
