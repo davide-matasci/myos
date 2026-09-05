@@ -1529,15 +1529,14 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let cur_aspace = task::current_aspace();
     let (base_u, _mapped_span, stack_off) = task::current_user_map();
     let (aspace, entry, span, off) = {
-        #[cfg(target_arch = "riscv64")]
-        {
-            let _ = (cur_aspace, stack_off, _mapped_span);
-            let Some(v) = load_user_elf(bytes) else {
-                return SYSERR;
-            };
-            v
-        }
-        #[cfg(not(target_arch = "riscv64"))]
+        // Reuse the current aspace in place (reload / expand) so post-fork
+        // `exec` does not leak the prior aspace + its frames on every exec.
+        // riscv64 previously always took the `load_user_elf` fresh-aspace path
+        // (introduced in 887caf5 for RISC-V CI parity), which leaked hundreds of
+        // physical pages per exec (a 700+ page ripgrep ELF after `uutils false ok`
+        // in `/heap`) and walked the bump allocator forward past the heavyweight
+        // smoke ELFs. Keep the same in-place reload/expand/lazy-load sequence the
+        // other arches use so the mapping/stack reservation logic is identical.
         {
             if cur_aspace != 0 {
                 if let Some(v) = reload_user_elf(cur_aspace, bytes, base_u, stack_off, _mapped_span)
