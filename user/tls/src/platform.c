@@ -1,0 +1,204 @@
+/* myos TLS platform glue: entropy, time, and a thin client API over an fd. */
+#include <stddef.h>
+#include <stdint.h>
+
+#include "mbedtls/platform.h"
+#include "mbedtls/ctr_drbg.h"
+#include "mbedtls/entropy.h"
+#include "mbedtls/error.h"
+#include "mbedtls/memory_buffer_alloc.h"
+#include "mbedtls/ssl.h"
+#include "mbedtls/x509_crt.h"
+
+/* From ca_bundle.o linked into libmbedx509.a */
+extern const char myos_ca_bundle_pem[];
+extern const unsigned myos_ca_bundle_pem_len;
+
+/* Rust syscall wrappers */
+extern int myos_tls_gettimeofday_sec(int64_t *sec);
+extern int myos_tls_fd_read(int fd, unsigned char *buf, size_t len);
+extern int myos_tls_fd_write(int fd, const unsigned char *buf, size_t len);
+
+static unsigned char g_heap[256 * 1024];
+static int g_mem_ready;
+
+mbedtls_time_t myos_mbedtls_time(mbedtls_time_t *t) {
+    int64_t sec = 0;
+    if (myos_tls_gettimeofday_sec(&sec) != 0) {
+        sec = 0;
+    }
+    if (t) {
+        *t = (mbedtls_time_t)sec;
+    }
+    return (mbedtls_time_t)sec;
+}
+
+int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen) {
+    (void)data;
+    int64_t sec = 0;
+    (void)myos_tls_gettimeofday_sec(&sec);
+    /* Mix wall clock + ASLR-ish addresses into a simple xorshift stream. */
+    uint64_t s = (uint64_t)sec;
+    s ^= (uint64_t)(uintptr_t)output << 7;
+    s ^= (uint64_t)(uintptr_t)&s << 13;
+    s ^= 0xA5A5F00DDEADBEEFULL;
+    for (size_t i = 0; i < len; i++) {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s += 0x9E3779B97F4A7C15ULL;
+        output[i] = (unsigned char)(s >> 32);
+    }
+    if (olen) {
+        *olen = len;
+    }
+    return 0;
+}
+
+static void ensure_mem(void) {
+    if (!g_mem_ready) {
+        mbedtls_memory_buffer_alloc_init(g_heap, sizeof(g_heap));
+        g_mem_ready = 1;
+    }
+}
+
+typedef struct {
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_x509_crt cacert;
+    int fd;
+    int ready;
+} myos_tls_conn;
+
+static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
+    myos_tls_conn *c = (myos_tls_conn *)ctx;
+    int n = myos_tls_fd_write(c->fd, buf, len);
+    if (n < 0) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+    if (n == 0) {
+        return MBEDTLS_ERR_SSL_WANT_WRITE;
+    }
+    return n;
+}
+
+static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
+    myos_tls_conn *c = (myos_tls_conn *)ctx;
+    int n = myos_tls_fd_read(c->fd, buf, len);
+    if (n < 0) {
+        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    }
+    if (n == 0) {
+        return MBEDTLS_ERR_SSL_WANT_READ;
+    }
+    return n;
+}
+
+int myos_tls_handshake(myos_tls_conn *c, int fd, const char *sni_host) {
+    int ret;
+    const char *pers = "myos-tls";
+
+    ensure_mem();
+    mbedtls_platform_set_time(myos_mbedtls_time);
+
+    mbedtls_ssl_init(&c->ssl);
+    mbedtls_ssl_config_init(&c->conf);
+    mbedtls_entropy_init(&c->entropy);
+    mbedtls_ctr_drbg_init(&c->ctr_drbg);
+    mbedtls_x509_crt_init(&c->cacert);
+    c->fd = fd;
+    c->ready = 0;
+
+    ret = mbedtls_ctr_drbg_seed(&c->ctr_drbg, mbedtls_entropy_func, &c->entropy,
+                                (const unsigned char *)pers, 8);
+    if (ret != 0) {
+        return ret;
+    }
+
+    ret = mbedtls_x509_crt_parse(&c->cacert, (const unsigned char *)myos_ca_bundle_pem,
+                                 myos_ca_bundle_pem_len + 1);
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_CLIENT,
+                                      MBEDTLS_SSL_TRANSPORT_STREAM,
+                                      MBEDTLS_SSL_PRESET_DEFAULT);
+    if (ret != 0) {
+        return ret;
+    }
+    mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+    mbedtls_ssl_conf_ca_chain(&c->conf, &c->cacert, NULL);
+    mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->ctr_drbg);
+
+    ret = mbedtls_ssl_setup(&c->ssl, &c->conf);
+    if (ret != 0) {
+        return ret;
+    }
+    if (sni_host && sni_host[0]) {
+        ret = mbedtls_ssl_set_hostname(&c->ssl, sni_host);
+        if (ret != 0) {
+            return ret;
+        }
+    }
+    mbedtls_ssl_set_bio(&c->ssl, c, bio_send, bio_recv, NULL);
+
+    while ((ret = mbedtls_ssl_handshake(&c->ssl)) != 0) {
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+            return ret;
+        }
+    }
+    if (mbedtls_ssl_get_verify_result(&c->ssl) != 0) {
+        return MBEDTLS_ERR_X509_CERT_VERIFY_FAILED;
+    }
+    c->ready = 1;
+    return 0;
+}
+
+int myos_tls_write(myos_tls_conn *c, const unsigned char *buf, size_t len) {
+    if (!c || !c->ready) {
+        return -1;
+    }
+    int ret;
+    while ((ret = mbedtls_ssl_write(&c->ssl, buf, len)) <= 0) {
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+            return ret;
+        }
+    }
+    return ret;
+}
+
+int myos_tls_read(myos_tls_conn *c, unsigned char *buf, size_t len) {
+    if (!c || !c->ready) {
+        return -1;
+    }
+    int ret = mbedtls_ssl_read(&c->ssl, buf, len);
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        return 0;
+    }
+    if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+        return 0;
+    }
+    return ret;
+}
+
+void myos_tls_close(myos_tls_conn *c) {
+    if (!c) {
+        return;
+    }
+    if (c->ready) {
+        mbedtls_ssl_close_notify(&c->ssl);
+    }
+    mbedtls_x509_crt_free(&c->cacert);
+    mbedtls_ssl_free(&c->ssl);
+    mbedtls_ssl_config_free(&c->conf);
+    mbedtls_ctr_drbg_free(&c->ctr_drbg);
+    mbedtls_entropy_free(&c->entropy);
+    c->ready = 0;
+}
+
+size_t myos_tls_conn_size(void) {
+    return sizeof(myos_tls_conn);
+}

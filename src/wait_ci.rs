@@ -41,11 +41,10 @@ const CI_NEEDLES: [&str; 26] = [
 /// Heavy markers from CI-only `/heap` (typed at `$` on every arch).
 /// Pre-prompt readiness stays slim; these are required after interactive `heap`.
 ///
-/// Note: `dns ok` is intentionally NOT here. `dns` is a separate interactive
-/// command (index 10) run *after* `heap`; it never prints during `/heap`, so
-/// including it here would make the `/heap` completion check and its fail-fast
-/// heuristic abort the whole run before the DNS command is ever typed. DNS is
-/// verified by `interactive_dns_cmd_ok`, which requires `IP:` and `dns ok`.
+/// Note: `dns ok` / `https ok` are intentionally NOT here. They are separate
+/// interactive commands (indices 10/11) run *after* `heap`; they never print
+/// during `/heap`, so including them here would abort before those commands
+/// are typed. Verified by `interactive_dns_cmd_ok` / `interactive_https_cmd_ok`.
 const CI_NEEDLES_STD: [&str; 15] = [
     "std ok",
     "std cat ok",
@@ -65,7 +64,7 @@ const CI_NEEDLES_STD: [&str; 15] = [
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 11] = [
+const CI_SHELL_COMMANDS: [&[u8]; 12] = [
     b"nosuchcmd\n",
     // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
     b"heap\n",
@@ -81,6 +80,8 @@ const CI_SHELL_COMMANDS: [&[u8]; 11] = [
     b"echo test > /tmp/aaa; cat /tmp/aaa\n",
     // DNS resolution test (requires network).
     b"dns www.google.com\n",
+    // HTTPS GET (requires network + wall clock + mbedtls).
+    b"http https://example.com/\n",
 ];
 
 /// Printed by the interactive shell when a command cannot be resolved.
@@ -233,6 +234,19 @@ fn interactive_dns_cmd_ok(serial: &str) -> bool {
     at_interactive_prompt(serial)
 }
 
+/// HTTPS GET: `http https://example.com/` should include `Example Domain` and `https ok`.
+/// Note: `https ok` must NOT be added to CI_NEEDLES_STD (same trap as `dns ok`).
+fn interactive_https_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    if !tail.contains("$ http https://example.com/") || serial.contains("exception:") {
+        return false;
+    }
+    if !tail.contains("Example Domain") || !tail.contains("https ok") {
+        return false;
+    }
+    at_interactive_prompt(serial)
+}
+
 
 fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
@@ -278,6 +292,7 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
         8 => interactive_bs_ls_cmd_ok(serial),
         9 => interactive_tmp_redir_ok(serial),
         10 => interactive_dns_cmd_ok(serial),
+        11 => interactive_https_cmd_ok(serial),
         _ => false,
     }
 }
@@ -591,6 +606,17 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: shell did not return to `$` after interactive `dns www.google.com`");
             } else {
                 eprintln!("error: interactive `dns www.google.com` did not print `IP: x.x.x.x` and `dns ok`");
+            }
+        }
+        if shell_cmd_index == 11 && !interactive_https_cmd_ok(&serial) {
+            if !command_echoed(&serial, "http https://example.com/") {
+                eprintln!("error: serial did not echo `$ http https://example.com/` at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: interactive `http https://example.com/` triggered a CPU exception");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after interactive HTTPS");
+            } else {
+                eprintln!("error: interactive HTTPS did not print `Example Domain` and `https ok`");
             }
         }
         std::process::exit(1);

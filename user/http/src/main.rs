@@ -1,7 +1,16 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, exit, open, open_flags, read, write, write_fd, O_RDWR, O_WRONLY};
+extern crate alloc;
+
+use myos_tls::TlsConn;
+use myos_user::dns::{format_ipv4, resolve_a};
+use myos_user::{
+    close, exit, heap_init, open, open_flags, read, write, write_fd, Heap, O_RDWR, O_WRONLY,
+};
+
+#[global_allocator]
+static GLOBAL: Heap = Heap;
 
 myos_user::x86_start!(main);
 
@@ -17,8 +26,8 @@ const DATA_POLLS: usize = 400_000;
 const BUF: usize = 1024;
 
 fn usage() -> ! {
-    write(b"usage: http <ipv4> [port] [path]\n");
-    write(b"  default port 80, default path /\n");
+    write(b"usage: http <url|ipv4> [port] [path]\n");
+    write(b"  https://host[/path]  http://host[/path]  host  ipv4\n");
     exit();
 }
 
@@ -56,20 +65,6 @@ fn parse_ipv4(s: &[u8]) -> bool {
         }
     }
     parts == 4 && i == s.len()
-}
-
-fn parse_port(s: &[u8]) -> bool {
-    if s.is_empty() || s.len() > 5 {
-        return false;
-    }
-    let mut n = 0u32;
-    for &b in s {
-        if !b.is_ascii_digit() {
-            return false;
-        }
-        n = n.checked_mul(10).unwrap_or(u32::MAX).saturating_add((b - b'0') as u32);
-    }
-    0 < n && n <= 65535
 }
 
 fn put_dec(buf: &mut [u8], mut n: u16) -> usize {
@@ -119,38 +114,143 @@ fn connect_ctl(ip: &[u8], port: u16, out: &mut [u8]) -> usize {
     n
 }
 
-fn main() -> ! {
-    let Some(ip_str) = myos_user::arg(1) else {
-        usage();
-    };
-    let ip_bytes = ip_str;
-    if !parse_ipv4(ip_bytes) {
-        fail(b"bad ipv4\n");
+struct Target {
+    https: bool,
+    host: [u8; 128],
+    host_len: usize,
+    ip: [u8; 16],
+    ip_len: usize,
+    port: u16,
+    path: [u8; 128],
+    path_len: usize,
+}
+
+fn copy_to(dst: &mut [u8], src: &[u8]) -> usize {
+    let n = src.len().min(dst.len());
+    dst[..n].copy_from_slice(&src[..n]);
+    n
+}
+
+fn parse_port_num(s: &[u8]) -> Option<u16> {
+    if s.is_empty() || s.len() > 5 {
+        return None;
     }
-    let port: u16 = match myos_user::arg(2) {
-        Some(p) => {
-            if !parse_port(p) {
-                fail(b"bad port\n");
-            }
-            let mut n = 0u32;
-            for &b in p {
-                n = n * 10 + (b - b'0') as u32;
-            }
-            n as u16
+    let mut n = 0u32;
+    for &b in s {
+        if !b.is_ascii_digit() {
+            return None;
         }
-        None => 80,
+        n = n.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+    }
+    if n == 0 || n > 65535 {
+        None
+    } else {
+        Some(n as u16)
+    }
+}
+
+fn parse_target(arg: &[u8], port_arg: Option<&[u8]>, path_arg: Option<&[u8]>) -> Target {
+    let mut t = Target {
+        https: false,
+        host: [0; 128],
+        host_len: 0,
+        ip: [0; 16],
+        ip_len: 0,
+        port: 80,
+        path: [0; 128],
+        path_len: 0,
     };
-    let path: &[u8] = match myos_user::arg(3) {
-        Some(p) => {
+
+    let mut rest = arg;
+    if rest.starts_with(b"https://") {
+        t.https = true;
+        t.port = 443;
+        rest = &rest[8..];
+    } else if rest.starts_with(b"http://") {
+        t.https = false;
+        t.port = 80;
+        rest = &rest[7..];
+    }
+
+    // split host[:port][/path]
+    let mut hostpart = rest;
+    let mut pathpart: &[u8] = b"/";
+    if let Some(i) = rest.iter().position(|&b| b == b'/') {
+        hostpart = &rest[..i];
+        pathpart = &rest[i..];
+    }
+
+    let mut host_only = hostpart;
+    if let Some(i) = hostpart.iter().position(|&b| b == b':') {
+        host_only = &hostpart[..i];
+        if let Some(p) = parse_port_num(&hostpart[i + 1..]) {
+            t.port = p;
+            if p == 443 {
+                t.https = true;
+            }
+        } else {
+            fail(b"bad port in url\n");
+        }
+    }
+
+    if host_only.is_empty() {
+        fail(b"missing host\n");
+    }
+
+    // Legacy: http <ipv4> [port] [path]
+    if parse_ipv4(arg) {
+        t.https = false;
+        t.port = 80;
+        t.host_len = copy_to(&mut t.host, arg);
+        t.ip_len = copy_to(&mut t.ip, arg);
+        if let Some(p) = port_arg {
+            t.port = parse_port_num(p).unwrap_or_else(|| fail(b"bad port\n"));
+            if t.port == 443 {
+                t.https = true;
+            }
+        }
+        if let Some(p) = path_arg {
             if p.is_empty() || p[0] != b'/' {
                 fail(b"path must start with /\n");
             }
-            p
+            t.path_len = copy_to(&mut t.path, p);
+        } else {
+            t.path_len = copy_to(&mut t.path, b"/");
         }
-        None => b"/",
-    };
+        return t;
+    }
 
-    // Step 1: clone a TCP conversation
+    if let Some(p) = port_arg {
+        // If first arg was URL, extra args are unusual; allow override.
+        t.port = parse_port_num(p).unwrap_or_else(|| fail(b"bad port\n"));
+    }
+    if let Some(p) = path_arg {
+        if p.is_empty() || p[0] != b'/' {
+            fail(b"path must start with /\n");
+        }
+        pathpart = p;
+    }
+
+    t.host_len = copy_to(&mut t.host, host_only);
+    t.path_len = copy_to(&mut t.path, pathpart);
+    if t.path_len == 0 {
+        t.path_len = copy_to(&mut t.path, b"/");
+    }
+
+    if parse_ipv4(host_only) {
+        t.ip_len = copy_to(&mut t.ip, host_only);
+    } else {
+        match resolve_a(host_only) {
+            Ok(ip) => {
+                t.ip_len = format_ipv4(ip, &mut t.ip);
+            }
+            Err(_) => fail(b"dns resolve fail\n"),
+        }
+    }
+    t
+}
+
+fn tcp_connect(ip: &[u8], port: u16) -> (u16, usize) {
     let Some(clone) = open(b"/net/tcp/clone") else {
         fail(b"open /net/tcp/clone fail\n");
     };
@@ -170,12 +270,9 @@ fn main() -> ! {
                     fail(b"clone id fail\n");
                 }
                 any = true;
-                id = match id.checked_mul(10) {
-                    Some(x) => match x.checked_add((b - b'0') as u16) {
-                        Some(y) => y,
-                        None => { fail(b"clone id fail\n"); }
-                    },
-                    None => { fail(b"clone id fail\n"); }
+                id = match id.checked_mul(10).and_then(|x| x.checked_add((b - b'0') as u16)) {
+                    Some(y) => y,
+                    None => fail(b"clone id fail\n"),
                 };
             }
         }
@@ -184,21 +281,19 @@ fn main() -> ! {
         fail(b"clone id fail\n");
     }
 
-    // Step 2: send connect ip!port
     let mut pbuf = [0u8; 40];
     let pn = conv_path(&mut pbuf, id, b"ctl");
     let Some(ctl) = open_flags(&pbuf[..pn], O_WRONLY) else {
         fail(b"open ctl fail\n");
     };
     let mut cmd = [0u8; 40];
-    let cm = connect_ctl(ip_bytes, port, &mut cmd);
+    let cm = connect_ctl(ip, port, &mut cmd);
     if write_fd(ctl, &cmd[..cm]) == usize::MAX {
         close(ctl);
         fail(b"write ctl fail\n");
     }
     close(ctl);
 
-    // Step 3: wait for connected status
     let sn = conv_path(&mut pbuf, id, b"status");
     let mut connected = false;
     for _ in 0..STATUS_POLLS {
@@ -217,66 +312,114 @@ fn main() -> ! {
         fail(b"tcp connect timeout\n");
     }
 
-    // Step 4: open data, send HTTP request
     let dn = conv_path(&mut pbuf, id, b"data");
     let Some(data) = open_flags(&pbuf[..dn], O_RDWR) else {
         fail(b"open data fail\n");
     };
+    (id, data)
+}
 
-    // Build: GET <path> HTTP/1.1\r\nHost: <ip>\r\nConnection: close\r\n\r\n
-    let mut req = [0u8; 256];
+fn build_request(t: &Target, out: &mut [u8]) -> usize {
     let mut q = 0usize;
+    let put = |out: &mut [u8], q: &mut usize, s: &[u8]| {
+        if *q + s.len() > out.len() {
+            fail(b"request too long\n");
+        }
+        out[*q..*q + s.len()].copy_from_slice(s);
+        *q += s.len();
+    };
+    put(out, &mut q, b"GET ");
+    put(out, &mut q, &t.path[..t.path_len]);
+    put(out, &mut q, b" HTTP/1.1\r\nHost: ");
+    put(out, &mut q, &t.host[..t.host_len]);
+    put(out, &mut q, b"\r\nConnection: close\r\n\r\n");
+    q
+}
 
-    req[q] = b'G'; req[q+1] = b'E'; req[q+2] = b'T'; req[q+3] = b' ';
-    q += 4;
+fn main() -> ! {
+    heap_init();
 
-    if q + path.len() > 256 { close(data); fail(b"path too long\n"); }
-    req[q..q + path.len()].copy_from_slice(path);
-    q += path.len();
+    let Some(arg1) = myos_user::arg(1) else {
+        usage();
+    };
+    let t = parse_target(arg1, myos_user::arg(2), myos_user::arg(3));
 
-    let http_line = b" HTTP/1.1\r\n";
-    if q + http_line.len() > 256 { close(data); fail(b"path too long\n"); }
-    req[q..q + http_line.len()].copy_from_slice(http_line);
-    q += http_line.len();
+    let (_id, data) = tcp_connect(&t.ip[..t.ip_len], t.port);
+    let mut req = [0u8; 512];
+    let q = build_request(&t, &mut req);
 
-    let host_line = b"Host: ";
-    if q + host_line.len() + ip_bytes.len() + 2 > 256 { close(data); fail(b"host too long\n"); }
-    req[q..q + host_line.len()].copy_from_slice(host_line);
-    q += host_line.len();
+    if t.https {
+        let mut sni = [0u8; 129];
+        if t.host_len >= sni.len() {
+            close(data);
+            fail(b"host too long\n");
+        }
+        sni[..t.host_len].copy_from_slice(&t.host[..t.host_len]);
+        // NUL already present
 
-    req[q..q + ip_bytes.len()].copy_from_slice(ip_bytes);
-    q += ip_bytes.len();
+        let mut tls = TlsConn::new();
+        if let Err(_e) = tls.handshake(data, &sni[..t.host_len + 1]) {
+            close(data);
+            fail(b"tls handshake fail\n");
+        }
+        if tls.write_all(&req[..q]).is_err() {
+            tls.close();
+            close(data);
+            fail(b"tls write fail\n");
+        }
 
-    req[q] = b'\r'; req[q+1] = b'\n';
-    q += 2;
+        let mut got = false;
+        let mut empty_polls = 0usize;
+        let mut rbuf = [0u8; BUF];
+        for _ in 0..DATA_POLLS {
+            match tls.read(&mut rbuf) {
+                Ok(0) => {
+                    if got {
+                        empty_polls += 1;
+                        if empty_polls > 10000 {
+                            break;
+                        }
+                    }
+                }
+                Ok(n) => {
+                    got = true;
+                    empty_polls = 0;
+                    write(&rbuf[..n]);
+                }
+                Err(_) => break,
+            }
+        }
+        tls.close();
+        close(data);
+        if !got {
+            fail(b"https no data\n");
+        }
+        write(b"\n");
+        write(b"https ok\n");
+        exit();
+    }
 
-    let end_headers = b"Connection: close\r\n\r\n";
-    if q + end_headers.len() > 256 { close(data); fail(b"headers too long\n"); }
-    req[q..q + end_headers.len()].copy_from_slice(end_headers);
-    q += end_headers.len();
-
+    // Plain HTTP
     if write_fd(data, &req[..q]) == usize::MAX {
         close(data);
         fail(b"write request fail\n");
     }
-
-    // Step 5: read response
     let mut got = false;
     let mut empty_polls = 0usize;
     let mut rbuf = [0u8; BUF];
     for _ in 0..DATA_POLLS {
         let nr = read(data, &mut rbuf);
         if nr == usize::MAX {
-            break; // kernel error
+            break;
         }
         if nr == 0 {
             if got {
                 empty_polls += 1;
                 if empty_polls > 10000 {
-                    break; // long idle after data = peer closed
+                    break;
                 }
             }
-            continue; // momentarily empty; keep waiting
+            continue;
         }
         got = true;
         write(&rbuf[..nr]);

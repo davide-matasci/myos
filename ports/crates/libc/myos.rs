@@ -146,6 +146,7 @@ mod syscalls {
     const SYS_BRK: usize = 9;
     const SYS_PIPE: usize = 10;
     const SYS_DUP2: usize = 11;
+    const SYS_GETTIMEOFDAY: usize = 28;
 
     static mut MYOS_ERRNO: c_int = 0;
 
@@ -317,6 +318,16 @@ macro_rules! enosys {
             (-1isize) as $ret
         }
     )*};
+    pub unsafe fn sys_gettimeofday(tv: *mut timeval) -> c_int {
+        let ret = raw_syscall(SYS_GETTIMEOFDAY, tv as usize, 0, 0);
+        if ret == usize::MAX {
+            set_errno(EIO);
+            -1
+        } else {
+            0
+        }
+    }
+
 }
 
 // Implemented syscalls.
@@ -496,14 +507,27 @@ pub unsafe extern "C" fn __errno_location() -> *mut c_int {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut c_void) -> c_int {
+    if tv.is_null() {
+        syscalls::set_errno(EINVAL);
+        return -1;
+    }
+    unsafe { syscalls::sys_gettimeofday(tv) }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn clock_gettime(_clk: clockid_t, tp: *mut timespec) -> c_int {
     if tp.is_null() {
         syscalls::set_errno(EINVAL);
         return -1;
     }
+    let mut tv = timeval { tv_sec: 0, tv_usec: 0 };
+    if unsafe { gettimeofday(&mut tv, core::ptr::null_mut()) } != 0 {
+        return -1;
+    }
     unsafe {
-        (*tp).tv_sec = 0;
-        (*tp).tv_nsec = 0;
+        (*tp).tv_sec = tv.tv_sec;
+        (*tp).tv_nsec = tv.tv_usec.saturating_mul(1000);
     }
     0
 }
@@ -546,7 +570,6 @@ enosys! {
     pub unsafe fn nanosleep(req: *const timespec, rem: *mut timespec) -> c_int;
     pub unsafe fn usleep(usec: c_uint) -> c_int;
     pub unsafe fn sleep(secs: c_uint) -> c_uint;
-    pub unsafe fn gettimeofday(tv: *mut timeval, tz: *mut c_void) -> c_int;
     pub unsafe fn symlinkat(target: *const c_char, newdirfd: c_int, linkpath: *const c_char) -> c_int;
     pub unsafe fn readlinkat(dirfd: c_int, path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t;
     pub unsafe fn fstatat(dirfd: c_int, path: *const c_char, buf: *mut stat, flags: c_int) -> c_int;

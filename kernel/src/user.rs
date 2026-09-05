@@ -38,6 +38,7 @@ const SYS_MUNMAP: usize = 24;
 const SYS_MPROTECT: usize = 25;
 const SYS_LSEEK: usize = 26;
 const SYS_MOUNT: usize = 27;
+const SYS_GETTIMEOFDAY: usize = 28;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -1432,6 +1433,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_MPROTECT => sys_mprotect(a0, a1, a2),
         SYS_LSEEK => sys_lseek(a0, a1, a2),
         SYS_MOUNT => sys_mount(a0),
+        SYS_GETTIMEOFDAY => sys_gettimeofday(a0, a1),
         _ => SYSERR,
     }
 }
@@ -2243,6 +2245,26 @@ fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
 
 fn sys_lseek(fd: usize, offset: usize, whence: usize) -> usize {
     task::fd_lseek(fd, offset as i64, whence)
+}
+
+
+/// `a0` = user pointer to `{i64 tv_sec; i64 tv_usec}`, `a1` = tz (ignored).
+fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
+    const N: usize = 16; // two i64s
+    if tv_ptr == 0 || !user_range_ok(tv_ptr, N) {
+        return SYSERR;
+    }
+    let Some(secs) = crate::time::unix_seconds() else {
+        return SYSERR;
+    };
+    let mut raw = [0u8; N];
+    raw[..8].copy_from_slice(&secs.to_le_bytes());
+    // usec unknown from RTC second resolution
+    raw[8..16].copy_from_slice(&0i64.to_le_bytes());
+    if !write_user_bytes(task::current_aspace(), tv_ptr, &raw) {
+        return SYSERR;
+    }
+    0
 }
 
 /// `a0` points at `{src_ptr, src_len, tgt_ptr, tgt_len, fstype_ptr, fstype_len}`.
