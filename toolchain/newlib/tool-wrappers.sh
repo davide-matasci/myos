@@ -41,7 +41,17 @@ exec objdump \"\$@\"
   write_wrapper "${triple}-ranlib" "#!/usr/bin/env bash
 exec ranlib \"\$@\"
 "
+  # Host GNU strip cannot recognise aarch64/riscv64 ELFs and exits non-zero,
+  # which the ports' `|| true` silently swallows — so "stripped" ELFs were
+  # never actually stripped on non-x86. Use llvm-strip from the pinned nightly
+  # (llvm-tools-preview component, present in CI) for every arch.
   write_wrapper "${triple}-strip" "#!/usr/bin/env bash
+SYSROOT=\"\$(rustc +nightly-2026-07-26 --print sysroot 2>/dev/null)\"
+HOST=\"\$(rustc +nightly-2026-07-26 -vV | awk '/host:/{print \$2}' 2>/dev/null)\"
+LLVM_STRIP=\"\$SYSROOT/lib/rustlib/\$HOST/bin/llvm-strip\"
+if [ -x \"\$LLVM_STRIP\" ]; then
+  exec \"\$LLVM_STRIP\" \"\$@\"
+fi
 exec strip \"\$@\"
 "
   write_wrapper "${triple}-ar" "#!/usr/bin/env bash

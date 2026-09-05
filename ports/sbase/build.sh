@@ -91,6 +91,8 @@ link_prog() {
     --entry=_start -z max-page-size=4096 \
     "$lib/crt0.o" "${objs[@]}" -L"$lib" \
     --start-group -lc -lgloss -lg --end-group
+
+  "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
 }
 
 build_arch() {
