@@ -6,28 +6,37 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
 source "$HERE/versions.env"
 
+echo "mbedtls: HERE=$HERE ROOT=$ROOT version=$MBEDTLS_VERSION"
+
 hash_mbedtls() {
-  {
-    echo "$MBEDTLS_VERSION"
-    sha256sum "$HERE/mbedtls_config.h" "$HERE/build.sh" "$HERE/fetch.sh" "$HERE/versions.env"
-    [[ -f "$ROOT/target/cacert.pem" ]] && sha256sum "$ROOT/target/cacert.pem"
-  } | sha256sum | awk '{print $1}'
+  echo "$MBEDTLS_VERSION"
+  sha256sum "$HERE/mbedtls_config.h" "$HERE/build.sh" "$HERE/fetch.sh" "$HERE/versions.env" || true
+  if [[ -f "$ROOT/target/cacert.pem" ]]; then
+    sha256sum "$ROOT/target/cacert.pem" || true
+  fi
 }
 
 STAMP="$ROOT/target/.myos-mbedtls-version"
-WANT="$(hash_mbedtls)"
+WANT="$(hash_mbedtls | sha256sum | awk '{print $1}')"
+echo "mbedtls: stamp want=$WANT"
+
 need=0
 for arch in x86_64 aarch64 riscv64; do
-  [[ -f "$ROOT/target/mbedtls-${arch}/lib/libmbedtls.a" ]] || need=1
+  if [[ ! -f "$ROOT/target/mbedtls-${arch}/lib/libmbedtls.a" ]]; then
+    need=1
+  fi
 done
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$WANT" && "$need" -eq 0 && -f "$ROOT/target/mbedtls-ca_bundle.c" ]]; then
   echo "mbedtls libs up to date"
   exit 0
 fi
 
+echo "mbedtls: fetching..."
 "$HERE/fetch.sh"
+echo "mbedtls: ensuring newlib..."
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
+echo "mbedtls: PATH has newlib-bin; cc=$(command -v x86_64-unknown-myos-cc || echo MISSING)"
 
 SRC="$ROOT/target/mbedtls-src"
 CFG="$HERE/mbedtls_config.h"
@@ -36,7 +45,6 @@ python3 - <<'PY' "$ROOT/target/cacert.pem" "$ROOT/target/mbedtls-ca_bundle.c"
 import pathlib, sys
 pem = pathlib.Path(sys.argv[1]).read_bytes().replace(b"\r", b"")
 out = pathlib.Path(sys.argv[2])
-# Latin-1 so non-ASCII comments in PEM headers (if any) survive.
 text = pem.decode("latin-1")
 esc = text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
 step = 12000
@@ -50,7 +58,6 @@ out.write_text(
 print("ca bundle", len(pem), "bytes")
 PY
 
-# Core library sources for a TLS1.2 client (skip PSA / unused).
 NAMES=(
   aes asn1parse asn1write base64 bignum bignum_core cipher cipher_wrap
   constant_time ctr_drbg ecdh ecdsa ecp ecp_curves entropy error gcm md
@@ -76,6 +83,8 @@ build_arch() {
     -DMBEDTLS_CONFIG_FILE='"mbedtls_config.h"'
   )
 
+  echo "mbedtls: building $arch with $cc"
+  command -v "$cc" >/dev/null || { echo "missing compiler $cc"; exit 1; }
   rm -rf "$out"
   mkdir -p "$obj" "$lib"
   local name src o
