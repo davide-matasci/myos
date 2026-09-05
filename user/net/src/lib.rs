@@ -95,15 +95,26 @@ impl Net0Device {
         self.fd
     }
 
-    /// Hardware MAC via ioctl; falls back to [`QEMU_DEFAULT_MAC`] on failure.
+    /// Hardware MAC via ioctl; falls back to [`QEMU_DEFAULT_MAC`] on failure
+    /// or an unusable address (all-zero / multicast).
     pub fn mac(&self) -> EthernetAddress {
         let mut mac = [0u8; 6];
-        if ioctl(self.fd, MYOS_IOCTL_NET_GETMAC, mac.as_mut_ptr() as usize) != usize::MAX {
+        if ioctl(self.fd, MYOS_IOCTL_NET_GETMAC, mac.as_mut_ptr() as usize) != usize::MAX
+            && mac_usable(&mac)
+        {
             EthernetAddress(mac)
         } else {
             QEMU_DEFAULT_MAC
         }
     }
+}
+
+/// Unicast, non-zero MAC. All-zero or multicast breaks smoltcp RX filtering.
+fn mac_usable(mac: &[u8; 6]) -> bool {
+    if mac.iter().all(|&b| b == 0) {
+        return false;
+    }
+    mac[0] & 1 == 0
 }
 
 /// Build an Ethernet `Interface` with the device MAC (ioctl), software checksums,
