@@ -72,11 +72,11 @@ const CI_SHELL_COMMANDS: [&[u8]; 11] = [
     b"ok\n",
     b"echo test\n",
     b"echo pipe | cat\n",
-    b"c/true\n",
-    b"/s/echo hi\n",
-    b"/s/ls\n",
+    b"/bin/coreutils/true\n",
+    b"/bin/sbase/echo hi\n",
+    b"/bin/sbase/ls\n",
     // Typo then backspaces: canonical stdin must deliver `/s/ls`, not `x/s/ls` or raw BS.
-    b"x\x08/s/ls\n",
+    b"x\x08/bin/sbase/ls\n",
     // oksh redirect uses newlib O_CREAT; must create on tmpfs (not only `/ok`).
     b"echo test > /tmp/aaa; cat /tmp/aaa\n",
     // DNS resolution test (requires network).
@@ -174,18 +174,18 @@ fn interactive_pipe_cmd_ok(serial: &str) -> bool {
 }
 
 fn interactive_uutils_true_cmd_ok(serial: &str) -> bool {
-    command_echoed(serial, "c/true")
+    command_echoed(serial, "/bin/coreutils/true")
         && !serial.contains("exception:")
         && at_interactive_prompt(serial)
 }
 
 fn interactive_sbase_echo_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    if !tail.contains("$ /s/echo hi") || serial.contains("exception:") {
+    if !tail.contains("$ /bin/sbase/echo hi") || serial.contains("exception:") {
         return false;
     }
     let after = tail
-        .rsplit_once("$ /s/echo hi")
+        .rsplit_once("$ /bin/sbase/echo hi")
         .map(|(_, rest)| rest)
         .unwrap_or("");
     after
@@ -196,7 +196,7 @@ fn interactive_sbase_echo_cmd_ok(serial: &str) -> bool {
 }
 
 fn interactive_sbase_ls_cmd_ok(serial: &str) -> bool {
-    command_echoed(serial, "/s/ls")
+    command_echoed(serial, "/bin/sbase/ls")
         && !serial.contains("exception:")
         && !serial.contains("user panic")
         && at_interactive_prompt(serial)
@@ -240,8 +240,8 @@ fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
     !serial.contains("exception:")
         && !serial.contains("user panic")
         && at_interactive_prompt(serial)
-        && !tail.contains("/s/ls: not found")
-        && !tail.contains("x/s/ls")
+        && !tail.contains("/bin/sbase/ls: not found")
+        && !tail.contains("x/bin/sbase/ls")
 }
 
 /// CI-only `/heap` carnival. All arches pass the same `heavy` needles
@@ -556,21 +556,21 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             );
         }
         if shell_cmd_index >= 5 && shell_cmd_index < 6 && !interactive_uutils_true_cmd_ok(&serial) {
-            eprintln!("error: interactive `c/true` failed (want `$ c/true` then `$` prompt)");
+            eprintln!("error: interactive `/bin/coreutils/true` failed (want `$ /bin/coreutils/true` then `$` prompt)");
         }
         if shell_cmd_index >= 6 && shell_cmd_index < 7 && !interactive_sbase_echo_cmd_ok(&serial) {
-            if !command_echoed(&serial, "/s/echo hi") {
-                eprintln!("error: serial did not echo `$ /s/echo hi` at the interactive prompt");
+            if !command_echoed(&serial, "/bin/sbase/echo hi") {
+                eprintln!("error: serial did not echo `$ /bin/sbase/echo hi` at the interactive prompt");
             } else if serial.contains("exception:") {
-                eprintln!("error: interactive `/s/echo hi` triggered a CPU exception");
+                eprintln!("error: interactive `/bin/sbase/echo hi` triggered a CPU exception");
             } else if !at_interactive_prompt(&serial) {
-                eprintln!("error: shell did not return to `$` after interactive `/s/echo hi`");
+                eprintln!("error: shell did not return to `$` after interactive `/bin/sbase/echo hi`");
             } else {
-                eprintln!("error: interactive `/s/echo hi` did not print `hi`");
+                eprintln!("error: interactive `/bin/sbase/echo hi` did not print `hi`");
             }
         }
         if shell_cmd_index >= 7 && shell_cmd_index < 8 && !interactive_sbase_ls_cmd_ok(&serial) {
-            eprintln!("error: interactive `/s/ls` failed (want `$ /s/ls` then `$` prompt)");
+            eprintln!("error: interactive `/bin/sbase/ls` failed (want `$ /bin/sbase/ls` then `$` prompt)");
         }
         if shell_cmd_index >= 8 && shell_cmd_index < 9 && !interactive_bs_ls_cmd_ok(&serial) {
             eprintln!(

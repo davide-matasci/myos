@@ -20,7 +20,7 @@ BINS_FILE="$ROOT/ports/sbase/bins.txt"
 mapfile -t SBASE_BINS <"$BINS_FILE"
 
 CPPFLAGS=(
-  -DPREFIX=\"/s\"
+  -DPREFIX=\"/bin\"
   -D_DEFAULT_SOURCE
   -D_GNU_SOURCE
   -D_NETBSD_SOURCE

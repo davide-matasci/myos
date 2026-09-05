@@ -12,7 +12,7 @@ static struct passwd pwd_root = {
     .pw_gid = 0,
     .pw_gecos = "root",
     .pw_dir = "/",
-    .pw_shell = "/sh",
+    .pw_shell = "/bin/custom/sh",
 };
 
 static struct group grp_root = {

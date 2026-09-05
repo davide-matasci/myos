@@ -417,13 +417,39 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
         return 0;
     };
     let mut n = backend_listdir(m, rel, buf);
-    if m.prefix.is_empty() && (rel.is_empty() || rel == ".") {
+    // Surface mount points that live below the listed directory, so the tree
+    // is browsable even though mount prefixes are virtual (issue #79): `/` shows
+    // top-level mounts (`bin`, …), `/bin` shows the port categories, etc.
+    if rel.is_empty() || rel == "." {
         for other in mounts.iter() {
-            let prefix = other.prefix.as_str();
-            if prefix.is_empty() || prefix.contains('/') {
+            if other.prefix.is_empty() {
                 continue;
             }
-            let name = prefix.as_bytes();
+            // The next path segment of `other` relative to this mount.
+            let child = if m.prefix.is_empty() {
+                match other.prefix.split_once('/') {
+                    Some((head, _)) => head,
+                    None => other.prefix.as_str(),
+                }
+            } else if other.prefix.starts_with(&m.prefix)
+                && other.prefix.as_bytes().get(m.prefix.len()) == Some(&b'/')
+            {
+                let rest = &other.prefix[m.prefix.len() + 1..];
+                match rest.split_once('/') {
+                    Some((head, _)) => head,
+                    None => rest,
+                }
+            } else {
+                continue;
+            };
+            if child.is_empty() || child.contains('\n') {
+                continue;
+            }
+            // Skip if the backend has already listed this name.
+            if buf_contains_entry(&buf[..n], child) {
+                continue;
+            }
+            let name = child.as_bytes();
             let need = name.len() + 1;
             if n + need > buf.len() {
                 break;
@@ -435,6 +461,16 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
         }
     }
     n
+}
+
+/// True if `dir_buf` (newline-separated basenames) already contains `child`.
+fn buf_contains_entry(dir_buf: &[u8], child: &str) -> bool {
+    for line in dir_buf.split(|b| *b == b'\n') {
+        if line == child.as_bytes() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Register `name` on mount `mount_name` (copying `bytes` into bootfs storage).

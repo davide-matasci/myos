@@ -1,38 +1,12 @@
 //! bootfs: flat read-only namespace mounted at `/` by the VFS.
 //!
-//! Embedded user ELFs are registered at boot via [`init_embedded`]; Limine ESP
-//! modules override via [`init_limine`]. Loadable modules add files through
-//! `KernelApi::vfs_register`.
-//! Handwritten demos that share names with ported tools use a `myos_` prefix
-//! (`myos_ls`, `myos_echo`, `myos_cat`); sbase/coreutils keep short names on
-//! `/s` and `/c`.
+//! Embedded user ELFs were moved to the nested `/bin/<category>/…` tree in
+//! [`binfs`] (issue #79), so bootfs now only holds Limine-mapped modules and
+//! anything loaded at runtime via `KernelApi::vfs_register`.
 
 use spin::Mutex;
 
 use crate::fs::StatInfo;
-
-const HEAP_ELF: &[u8] = include_bytes!(env!("USER_HEAP_PATH"));
-const STD_HELLO_ELF: &[u8] = include_bytes!(env!("USER_STD_HELLO_PATH"));
-const STD_CAT_ELF: &[u8] = include_bytes!(env!("USER_STD_CAT_PATH"));
-const STD_ECHO_ELF: &[u8] = include_bytes!(env!("USER_STD_ECHO_PATH"));
-const BIGALLOC_ELF: &[u8] = include_bytes!(env!("USER_BIGALLOC_PATH"));
-const C_HELLO_ELF: &[u8] = include_bytes!(env!("USER_C_HELLO_PATH"));
-const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
-const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
-const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
-const CAT_ELF: &[u8] = include_bytes!(env!("USER_CAT_PATH"));
-const LS_ELF: &[u8] = include_bytes!(env!("USER_LS_PATH"));
-const MOUNT_ELF: &[u8] = include_bytes!(env!("USER_MOUNT_PATH"));
-const MKFS_EXT2_ELF: &[u8] = include_bytes!(env!("USER_MKFS_EXT2_PATH"));
-const PING_ELF: &[u8] = include_bytes!(env!("USER_PING_PATH"));
-const HTTP_ELF: &[u8] = include_bytes!(env!("USER_HTTP_PATH"));
-const DNS_ELF: &[u8] = include_bytes!(env!("USER_DNS_PATH"));
-const NETD_ELF: &[u8] = include_bytes!(env!("USER_NETD_PATH"));
-// Forces rustc to rebuild bootfs when kernel/build.rs hashes a new /ping or /netd.
-const _: &str = env!("USER_PING_HASH");
-const _: &str = env!("USER_HTTP_HASH");
-const _: &str = env!("USER_DNS_HASH");
-const _: &str = env!("USER_NETD_HASH");
 
 const MAX_FILES: usize = 32;
 const NAME_CAP: usize = 32;
@@ -168,28 +142,15 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     None
 }
 
-/// Register embedded user ELFs (Limine modules loaded later may override).
-pub fn init_embedded() {
-    let _ = register("ok", OK_ELF);
-    let _ = register("heap", HEAP_ELF);
-    let _ = register("stdhello", STD_HELLO_ELF);
-    let _ = register("stdcat", STD_CAT_ELF);
-    let _ = register("stdecho", STD_ECHO_ELF);
-    let _ = register("bigalloc", BIGALLOC_ELF);
-    let _ = register("chello", C_HELLO_ELF);
-    let _ = register("sh", SH_ELF);
-    let _ = register("myos_echo", ECHO_ELF);
-    let _ = register("myos_cat", CAT_ELF);
-    let _ = register("myos_ls", LS_ELF);
-    let _ = register("mount", MOUNT_ELF);
-    let _ = register("mkfs.ext2", MKFS_EXT2_ELF);
-    let _ = register("ping", PING_ELF);
-    let _ = register("http", HTTP_ELF);
-    let _ = register("dns", DNS_ELF);
-    let _ = register("netd", NETD_ELF);
-}
+/// Nothing embedded anymore: builtin ELFs live in [`binfs`] under `/bin/…`.
+pub fn init_embedded() {}
 
-/// Register Limine-mapped modules by basename (overrides embedded names).
+/// Register Limine-mapped modules under `/bin/…` (remapped in issue #79).
+///
+/// The bios/uefi image embeds `boot/hello` (the hello demo module, e.g. the
+/// LF `modules/hello` tree) and `boot/ok` (user/ok). These land in their
+/// `/bin` category now instead of the flat root: `hello` -> `/bin/modules/hello`,
+/// everything else -> `/bin/custom/<basename>`.
 pub fn init_limine() {
     let Some(resp) = crate::limine_boot::MODULES.response() else {
         return;
@@ -203,7 +164,12 @@ pub fn init_limine() {
         // Limine keeps module mappings for the life of the kernel.
         let bytes: &'static [u8] =
             unsafe { core::slice::from_raw_parts(data.as_ptr(), data.len()) };
-        let _ = register(name, bytes);
+        let rel = if name == "hello" {
+            alloc::format!("modules/{name}")
+        } else {
+            alloc::format!("custom/{name}")
+        };
+        let _ = crate::fs::binfs::register(&rel, bytes);
     }
 }
 

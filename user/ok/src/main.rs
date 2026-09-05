@@ -128,7 +128,7 @@ fn smoke_vfs() {
 fn smoke_ext2() {
     match fork() {
         Some(0) => {
-            exec(b"/mkfs.ext2", &[b"mkfs.ext2", b"/dev/nvme0n1"]);
+            exec(b"/bin/custom/mkfs.ext2", &[b"mkfs.ext2", b"/dev/nvme0n1"]);
             write(b"ext2 mkfs exec fail\n");
             exit_code(1);
         }

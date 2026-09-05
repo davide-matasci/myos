@@ -17,7 +17,7 @@ fn smoke_fork_ping() {
 fn smoke_fork_exec_ok() {
     match fork() {
         Some(0) => {
-            exec(b"/ok", &[b"ok"]);
+            exec(b"/bin/custom/ok", &[b"ok"]);
             exit();
         }
         Some(_) => {
@@ -31,7 +31,7 @@ fn smoke_fork_exec_ok() {
 fn spawn_netd() {
     match fork() {
         Some(0) => {
-            exec(b"/netd", &[b"netd"]);
+            exec(b"/bin/custom/netd", &[b"netd"]);
             exit();
         }
         Some(_) => {}
@@ -45,7 +45,7 @@ fn spawn_getty_loop() -> ! {
         match fork() {
             Some(0) => {
                 exec(
-                    b"/u/getty",
+                    b"/bin/ubase/getty",
                     &[b"getty", b"/dev/console", b"linux"],
                 );
                 write(b"getty exec failed\n");

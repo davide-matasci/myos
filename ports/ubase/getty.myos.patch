@@ -5,5 +5,5 @@
  	if (logname[0] == '\0')
  		return 1;
 -	return execlp("/bin/login", "login", "-p", logname, NULL);
-+	return execlp("/u/login", "login", "-p", logname, NULL);
++	return execlp("/bin/ubase/login", "login", "-p", logname, NULL);
  }
