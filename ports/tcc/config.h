@@ -2,7 +2,7 @@
 #ifndef TCC_VERSION
 #define TCC_VERSION "0.9.28rc"
 #endif
-#define CONFIG_TCCDIR "/t"
+#define CONFIG_TCCDIR "/bin/tcc"
 #define CONFIG_TCC_STATIC 1
 #define CONFIG_TCC_PIE 1
 #define CONFIG_TCC_SEMLOCK 0

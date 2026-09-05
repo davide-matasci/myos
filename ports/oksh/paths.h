@@ -4,13 +4,13 @@
 #define _PATHS_H_
 
 #ifndef _PATH_BSHELL
-#define _PATH_BSHELL "/sh"
+#define _PATH_BSHELL "/bin/custom/sh"
 #endif
 #ifndef _PATH_DEFPATH
-#define _PATH_DEFPATH "/s:/c:/"
+#define _PATH_DEFPATH "/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc"
 #endif
 #ifndef _PATH_STDPATH
-#define _PATH_STDPATH "/s:/c:/"
+#define _PATH_STDPATH "/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc"
 #endif
 #ifndef _CS_PATH
 #define _CS_PATH 1

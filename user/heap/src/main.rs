@@ -53,17 +53,17 @@ fn run_prog_exit(path: &[u8], args: &[&[u8]], expect: u8, ok_msg: &[u8]) {
 
 fn main() -> ! {
     write(b"smoke start\n");
-    run_prog_exit(b"/bigalloc", &[], 0, b"bigalloc ok\n");
-    run_prog_exit(b"/c/echo", &[], 0, b"uutils echo ok\n");
-    run_prog_exit(b"/c/true", &[], 0, b"uutils true ok\n");
-    run_prog_exit(b"/c/false", &[], 1, b"uutils false ok\n");
+    run_prog_exit(b"/bin/std/bigalloc", &[], 0, b"bigalloc ok\n");
+    run_prog_exit(b"/bin/coreutils/echo", &[], 0, b"uutils echo ok\n");
+    run_prog_exit(b"/bin/coreutils/true", &[], 0, b"uutils true ok\n");
+    run_prog_exit(b"/bin/coreutils/false", &[], 1, b"uutils false ok\n");
     // Write a needle under /tmp and search with /c/rg (full ripgrep + PCRE2).
     // -j1 / --no-mmap / --no-config: myos is single-threaded; rg mmap is optional.
     if let Some(fd) = open_flags(b"/tmp/rg-needle.txt", O_WRONLY | O_CREAT | O_TRUNC) {
         let _ = write_fd(fd, b"hello ripgrep needle world\n");
         close(fd);
         run_prog_exit(
-            b"/c/rg",
+            b"/bin/coreutils/rg",
             &[
                 b"rg",
                 b"-j",
@@ -80,16 +80,16 @@ fn main() -> ! {
     } else {
         write(b"ripgrep skip (tmp create fail)\n");
     }
-    run_prog(b"/stdhello", &[]);
-    run_prog(b"/stdcat", &[]);
-    run_prog(b"/stdecho", &[]);
-    run_prog(b"/chello", &[]);
-    run_prog(b"/s/true", &[]);
-    run_prog(b"/s/echo", &[]);
-    run_prog(b"/s/ls", &[]);
-    run_prog(b"/s/echo", &[b"echo", b"sbase argv ok"]);
-    run_prog(b"/s/ls", &[b"ls", b"/s"]);
-    run_prog(b"/s/pwd", &[]);
+    run_prog(b"/bin/std/hello", &[]);
+    run_prog(b"/bin/std/cat", &[]);
+    run_prog(b"/bin/std/echo", &[]);
+    run_prog(b"/bin/etc/hello", &[]);
+    run_prog(b"/bin/sbase/true", &[]);
+    run_prog(b"/bin/sbase/echo", &[]);
+    run_prog(b"/bin/sbase/ls", &[]);
+    run_prog(b"/bin/sbase/echo", &[b"echo", b"sbase argv ok"]);
+    run_prog(b"/bin/sbase/ls", &[b"ls", b"/bin/sbase"]);
+    run_prog(b"/bin/sbase/pwd", &[]);
     // TinyCC JIT: -nostdlib skips libgloss, so hi.c emits SYS_WRITE=0 itself.
     // Needle is printed by the JIT'd main, not by heap.
     const HI_C: &[u8] = br#"
@@ -108,7 +108,7 @@ int main(void) { write(1, "tcc ok\n", 7); return 0; }
         let _ = write_fd(fd, HI_C);
         close(fd);
         run_prog(
-            b"/t/tcc",
+            b"/bin/tcc/tcc",
             &[b"tcc", b"-nostdlib", b"-run", b"/tmp/hi.c"],
         );
     } else {
@@ -127,7 +127,7 @@ int main(void) {
         let _ = write_fd(fd, STD_C);
         close(fd);
         run_prog(
-            b"/t/tcc",
+            b"/bin/tcc/tcc",
             &[b"tcc", b"-o", b"/tmp/tcc-hi", b"/tmp/tcc-std.c"],
         );
         run_prog(b"/tmp/tcc-hi", &[b"tcc-hi"]);
@@ -136,7 +136,7 @@ int main(void) {
     }
     // ICMP echo via /net/icmp (netd); needle is printed by /ping, not heap.
     // 10.0.2.2 is QEMU slirp gateway; 1.1.1.1 often fails through -netdev user.
-    run_prog(b"/ping", &[b"ping", b"10.0.2.2"]);
+    run_prog(b"/bin/custom/ping", &[b"ping", b"10.0.2.2"]);
     write(b"smoke ok\n");
     exit();
 }

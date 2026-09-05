@@ -1,5 +1,6 @@
 //! Tiny VFS facade: syscalls and modules talk to [`vfs`]; bootfs is one mount.
 
+pub mod binfs;
 pub mod bootfs;
 mod coreutilsfs;
 mod devfs;
@@ -239,9 +240,11 @@ fn rw_ops(
     }
 }
 
-/// Mount bootfs at `/`, sbasefs at `/s/`, ubasefs at `/u/`, tccfs at `/t/`, coreutilsfs at `/c/`,
-/// libfs at `/lib/` (newlib sysroot), tmpfs at `/tmp/`, devfs at `/dev/`, procfs at `/proc/`,
-/// and register embedded user ELFs.
+/// Mount bootfs at `/`, binfs at `/bin/`, and the port trees under typed
+/// `/bin/…` prefixes (sbasefs at `/bin/sbase/`, ubasefs at `/bin/ubase/`,
+/// tccfs at `/bin/tcc/`, coreutilsfs at `/bin/coreutils/`), plus libfs at
+/// `/lib/`, tmpfs at `/tmp/`, devfs at `/dev/`, procfs at `/proc/`.
+/// Embedded user ELFs live under `/bin/<category>/…` (see binfs).
 pub fn init() {
     vfs::mount(
         "bootfs",
@@ -259,8 +262,23 @@ pub fn init() {
     );
     bootfs::init_embedded();
     vfs::mount(
+        "binfs",
+        "bin",
+        ro_ops(
+            binfs::lookup,
+            binfs::stat,
+            binfs::listdir_at,
+            binfs::register,
+            binfs::create,
+            binfs::truncate,
+            binfs::read,
+            binfs::write,
+        ),
+    );
+    binfs::init_embedded();
+    vfs::mount(
         "sbasefs",
-        "s",
+        "bin/sbase",
         ro_ops(
             sbasefs::lookup,
             sbasefs::stat,
@@ -275,7 +293,7 @@ pub fn init() {
     sbasefs::init_embedded();
     vfs::mount(
         "ubasefs",
-        "u",
+        "bin/ubase",
         ro_ops(
             ubasefs::lookup,
             ubasefs::stat,
@@ -290,7 +308,7 @@ pub fn init() {
     ubasefs::init_embedded();
     vfs::mount(
         "tccfs",
-        "t",
+        "bin/tcc",
         ro_ops(
             tccfs::lookup,
             tccfs::stat,
@@ -305,7 +323,7 @@ pub fn init() {
     tccfs::init_embedded();
     vfs::mount(
         "coreutilsfs",
-        "c",
+        "bin/coreutils",
         ro_ops(
             coreutilsfs::lookup,
             coreutilsfs::stat,
