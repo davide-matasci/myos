@@ -303,10 +303,10 @@ pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
 }
 
 
-/// Wall-clock time (`SYS_GETTIMEOFDAY` = 29). Returns `(sec, usec)` or `None`.
+/// Wall-clock time (`SYS_GETTIMEOFDAY` = 33). Returns `(sec, usec)` or `None`.
 pub fn gettimeofday() -> Option<(i64, i64)> {
     let mut tv = [0i64; 2];
-    let ret = unsafe { sys3(29, tv.as_mut_ptr() as usize, 0, 0) };
+    let ret = unsafe { sys3(33, tv.as_mut_ptr() as usize, 0, 0) };
     if ret == usize::MAX {
         None
     } else {

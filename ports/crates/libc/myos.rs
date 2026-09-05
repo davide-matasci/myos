@@ -147,7 +147,7 @@ mod syscalls {
     const SYS_PIPE: usize = 10;
     const SYS_DUP2: usize = 11;
     const SYS_IOCTL: usize = 28;
-    const SYS_GETTIMEOFDAY: usize = 29;
+    const SYS_GETTIMEOFDAY: usize = 33;
 
     static mut MYOS_ERRNO: c_int = 0;
 

@@ -1,11 +1,11 @@
 //! Wall clock / monotonic for myos.
 //!
-//! `SystemTime::now` reads `SYS_GETTIMEOFDAY` (29). Instant has no monotonic
+//! `SystemTime::now` reads `SYS_GETTIMEOFDAY` (33). Instant has no monotonic
 //! source yet and stays at zero so callers (e.g. ripgrep) do not panic.
 
 use crate::time::Duration;
 
-const SYS_GETTIMEOFDAY: usize = 29;
+const SYS_GETTIMEOFDAY: usize = 33;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct Instant(Duration);
