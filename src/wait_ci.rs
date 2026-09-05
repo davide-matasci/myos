@@ -630,3 +630,4 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         }
     }
 }
+// HTTPS interactive CI needle lives in interactive_https_cmd_ok (not CI_NEEDLES_STD).
