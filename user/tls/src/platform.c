@@ -33,6 +33,13 @@ mbedtls_time_t myos_mbedtls_time(mbedtls_time_t *t) {
     return (mbedtls_time_t)sec;
 }
 
+mbedtls_ms_time_t mbedtls_ms_time(void) {
+    int64_t sec = 0;
+    (void)myos_tls_gettimeofday_sec(&sec);
+    return (mbedtls_ms_time_t)sec * 1000;
+}
+
+
 int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen) {
     (void)data;
     int64_t sec = 0;
