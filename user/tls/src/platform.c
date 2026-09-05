@@ -81,28 +81,39 @@ typedef struct {
     int ready;
 } myos_tls_conn;
 
+/* /net TCP reads return 0 when the rx queue is empty (non-blocking style).
+ * Returning WANT_READ/WRITE immediately makes mbedtls busy-loop in userspace
+ * and starves netd on a single core. Poll with real read/write syscalls
+ * (same approach as user/dns DATA_POLLS) so the scheduler can run netd.
+ */
+enum { BIO_POLLS = 400000 };
+
 static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
     myos_tls_conn *c = (myos_tls_conn *)ctx;
-    int n = myos_tls_fd_write(c->fd, buf, len);
-    if (n < 0) {
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    for (int i = 0; i < BIO_POLLS; i++) {
+        int n = myos_tls_fd_write(c->fd, buf, len);
+        if (n < 0) {
+            return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+        }
+        if (n > 0) {
+            return n;
+        }
     }
-    if (n == 0) {
-        return MBEDTLS_ERR_SSL_WANT_WRITE;
-    }
-    return n;
+    return MBEDTLS_ERR_SSL_TIMEOUT;
 }
 
 static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
     myos_tls_conn *c = (myos_tls_conn *)ctx;
-    int n = myos_tls_fd_read(c->fd, buf, len);
-    if (n < 0) {
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+    for (int i = 0; i < BIO_POLLS; i++) {
+        int n = myos_tls_fd_read(c->fd, buf, len);
+        if (n < 0) {
+            return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+        }
+        if (n > 0) {
+            return n;
+        }
     }
-    if (n == 0) {
-        return MBEDTLS_ERR_SSL_WANT_READ;
-    }
-    return n;
+    return MBEDTLS_ERR_SSL_TIMEOUT;
 }
 
 int myos_tls_handshake(myos_tls_conn *c, int fd, const char *sni_host) {
