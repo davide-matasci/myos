@@ -56,8 +56,9 @@ Generated output (gitignored): `target/patched-crates/{errno,libc,rustix}-*`.
 
 | Utilities | Build | Runtime on myos |
 |-----------|-------|-----------------|
-| Most of `feat_common_core` + tier1 extras | **yes** (~11M ELF) | cat/ls/cp/rm/mkdir/du via `std::fs::read_dir` + SYS_LISTDIR |
-| Dropped for now | `more`, `whoami`, `tac`, `tail`, `df`, `sync`, `test`, `split`, `tty`, `expr` | see `bins.txt` header |
+| Slim filesystem + classic set (~30 utils) | **yes** (keep under ~4 MiB / 1024 pages) | cat/ls/cp/rm/mkdir/du via `std::fs::read_dir` + SYS_LISTDIR |
+| Dropped for size | full `feat_common_core` checksums/encodings/large text utils (~11 MiB OOM'd CI) | see `bins.txt` header |
+| Also dropped | `more`, `whoami`, `tac`, `tail`, `df`, `sync`, `test`, `split`, `tty`, `expr` | see `bins.txt` header |
 
 ## std changes for rustix
 

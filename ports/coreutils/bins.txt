@@ -1,78 +1,39 @@
 # uutils utilities built into the myos multicall ELF (see COREUTILS_FEATURES).
-# Target: feat_common_core + feat_tier1 extras that compile on myos.
-# Dropped: more (crossterm), whoami, tac, tail, df, sync, test, split, tty, expr (onig→malloc/free).
-# b2sum included (blake3 forced pure/portable on myos — no arm_neon.h).
-base32
-base64
+# Keep the PT_LOAD image under ~1024 pages (~4 MiB) so expand/fork leaks fit in
+# QEMU 256 MiB (x86). Full feat_common_core was ~2.4k pages / ~11 MiB and OOMed.
+# Includes filesystem utils needed for CI (cat/ls) + cp/rm/mkdir/du; drops heavy
+# checksums (blake3/sha*), encodings, and large text utilities.
+# Dropped vs feat_common_core: checksums, base32/64/basenc, csplit, date, dd, dir*,
+# factor/fmt/fold/join/link/nl/numfmt/od/paste/pathchk/pr/ptx, shred/shuf/sort/sum,
+# tee/truncate/tsort/unexpand/vdir/expand/comm, tier1 arch/hostname/nproc/uname.
 basename
-basenc
 cat
-cksum
-b2sum
-md5sum
-sha1sum
-sha224sum
-sha256sum
-sha384sum
-sha512sum
-comm
 cp
-csplit
 cut
-date
-dd
-dir
-dircolors
 dirname
 du
 echo
 env
-expand
-factor
 false
-fmt
-fold
 head
-join
-link
 ln
 ls
 mkdir
 mktemp
 mv
-nl
-numfmt
-od
-paste
-pathchk
-pr
 printenv
 printf
-ptx
 pwd
 readlink
 realpath
 rm
 rmdir
 seq
-shred
-shuf
 sleep
-sort
-sum
-tee
 touch
 tr
 true
-truncate
-tsort
-unexpand
 uniq
 unlink
-vdir
 wc
 yes
-arch
-hostname
-nproc
-uname

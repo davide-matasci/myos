@@ -8,7 +8,7 @@ UUTILS_DIR="$ROOT/user/uutils-coreutils"
 UUTILS_TAG="${UUTILS_TAG:-0.10.0}"
 TARGET="${MYOS_TARGET:-x86_64-unknown-myos}"
 TARGET_JSON="$ROOT/targets/${TARGET}.json"
-FEATURES="${COREUTILS_FEATURES:-base32,base64,basename,basenc,cat,cksum,b2sum,md5sum,sha1sum,sha224sum,sha256sum,sha384sum,sha512sum,comm,cp,csplit,cut,date,dd,dir,dircolors,dirname,du,echo,env,expand,factor,false,fmt,fold,head,join,link,ln,ls,mkdir,mktemp,mv,nl,numfmt,od,paste,pathchk,pr,printenv,printf,ptx,pwd,readlink,realpath,rm,rmdir,seq,shred,shuf,sleep,sort,sum,tee,touch,tr,true,truncate,tsort,unexpand,uniq,unlink,vdir,wc,yes,arch,hostname,nproc,uname}"
+FEATURES="${COREUTILS_FEATURES:-basename,cat,cp,cut,dirname,du,echo,env,false,head,ln,ls,mkdir,mktemp,mv,printenv,printf,pwd,readlink,realpath,rm,rmdir,seq,sleep,touch,tr,true,uniq,unlink,wc,yes}"
 PROFILE="${1:-dev}"
 
 if [[ "$PROFILE" == "--release" ]]; then

@@ -61,9 +61,20 @@ pub const USER_STACK_PAGES: usize = 256;
 const HEAP_PAGES: usize = 256;
 #[cfg(not(target_arch = "aarch64"))]
 const HEAP_PAGES: usize = 256;
-/// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy.
-/// feat_common_core uutils multicall ≈2.0–2.4k pages (x86_64 largest); ripgrep+PCRE2 ≈721.
-const MAX_INIT_PAGES: usize = 3072;
+/// Cap for fresh `load_user_elf` (init + typical programs) and on-stack frame arrays.
+/// Keep modest: bumping this also sizes `[u64; N]` on the task stack and used to
+/// force `elf_scratch_mut` to grab N contiguous frames before init could run.
+const MAX_INIT_PAGES: usize = 1024;
+/// Cap for in-place `expand_user_elf` of larger bootfs ELFs (uutils / ripgrep).
+/// Must stay within QEMU RAM given leaked post-exec frames (x86 CI is 256 MiB).
+/// Full feat_common_core (~2.4k pages) OOMed; ship a smaller multicall instead.
+const MAX_EXPAND_PAGES: usize = 1024;
+/// Largest image we may map, fork-copy, or stage in ELF scratch.
+const MAX_ELF_PAGES: usize = if MAX_EXPAND_PAGES > MAX_INIT_PAGES {
+    MAX_EXPAND_PAGES
+} else {
+    MAX_INIT_PAGES
+};
 /// In-place `reload_user_elf` scratch and mapping cap (sbase-cat scale).
 const MAX_RELOAD_PAGES: usize = 40;
 /// Minimum code pages reserved below the user stack so post-fork `exec` can
@@ -397,27 +408,36 @@ fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
 /// Scratch for `load_user_elf` / `reload_user_elf` / `expand_user_elf`.
 ///
 /// Backed by bump-allocator frames (HHDM-contiguous), not kernel `.bss`.
-/// Putting `MAX_INIT_PAGES` pages in BSS grew the Limine-loaded image by ~1.5
+/// Putting `MAX_ELF_PAGES` pages in BSS grew the Limine-loaded image by ~1.5
 /// MiB and let the frame bump walk into the kernel physical range on AArch64.
-const ELF_SCRATCH_BYTES: usize = MAX_INIT_PAGES * PAGE;
+///
+/// Allocate only as many contiguous frames as this call needs (grow on demand
+/// up to [`MAX_ELF_PAGES`]). Always grabbing the max made UEFI init fail when
+/// `MAX_INIT_PAGES` was raised to 3072 for feat_common_core uutils.
+const ELF_SCRATCH_BYTES: usize = MAX_ELF_PAGES * PAGE;
 static ELF_SCRATCH_PHYS: AtomicU64 = AtomicU64::new(0);
+static ELF_SCRATCH_PAGES: AtomicUsize = AtomicUsize::new(0);
 
 fn elf_scratch_mut(len: usize) -> Option<&'static mut [u8]> {
     if len == 0 || len > ELF_SCRATCH_BYTES {
         return None;
     }
+    let need_pages = len.div_ceil(PAGE);
     let mut phys = ELF_SCRATCH_PHYS.load(Ordering::SeqCst);
-    if phys == 0 {
+    let have = ELF_SCRATCH_PAGES.load(Ordering::SeqCst);
+    if phys == 0 || need_pages > have {
         let first = mm::alloc_frame();
         let mut expect = first.wrapping_add(PAGE as u64);
-        for _ in 1..MAX_INIT_PAGES {
+        for _ in 1..need_pages {
             let p = mm::alloc_frame();
             if p != expect {
                 return None;
             }
             expect = expect.wrapping_add(PAGE as u64);
         }
+        // Prior smaller scratch is leaked (bump allocator cannot free).
         ELF_SCRATCH_PHYS.store(first, Ordering::SeqCst);
+        ELF_SCRATCH_PAGES.store(need_pages, Ordering::SeqCst);
         phys = first;
     }
     Some(unsafe { core::slice::from_raw_parts_mut(mm::hhdm(phys), len) })
@@ -490,9 +510,9 @@ fn reload_user_elf(
     Some((entry as usize, n_pages * PAGE, stack_off))
 }
 
-/// Grow the current aspace and load a large ELF (up to [`MAX_INIT_PAGES`]).
+/// Grow the current aspace and load a large ELF (up to [`MAX_EXPAND_PAGES`]).
 /// Used when [`reload_user_elf`] is too small but we already have an aspace
-/// (post-fork exec of release uutils ≈197 pages).
+/// (post-fork exec of release uutils / ripgrep).
 fn expand_user_elf(
     aspace: u64,
     bytes: &[u8],
@@ -501,10 +521,10 @@ fn expand_user_elf(
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let image_pages = info.span.div_ceil(PAGE);
-    if image_pages == 0 || image_pages > MAX_INIT_PAGES {
+    if image_pages == 0 || image_pages > MAX_EXPAND_PAGES {
         return None;
     }
-    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_INIT_PAGES);
+    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_EXPAND_PAGES);
     let new_stack_off = (n_pages * PAGE) as u64;
     if info.span > ELF_SCRATCH_BYTES {
         return None;
@@ -740,14 +760,14 @@ fn read_user_usize(aspace: u64, va: usize) -> Option<usize> {
 /// Copy this process's user code+stack+heap pages into a new aspace at the same VA.
 pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) -> Option<u64> {
     let n_pages = span.div_ceil(PAGE);
-    if n_pages == 0 || n_pages > MAX_INIT_PAGES {
+    if n_pages == 0 || n_pages > MAX_ELF_PAGES {
         return None;
     }
     let src = task::current_aspace();
     if src == 0 {
         return None;
     }
-    let mut frames = [0u64; MAX_INIT_PAGES];
+    let mut frames = [0u64; MAX_ELF_PAGES];
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
         let phys = virt_to_phys(src, va)?;

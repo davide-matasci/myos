@@ -31,8 +31,7 @@ const MAX_TASKS: usize = 8;
 /// 8 KiB overflowed after widening the user stack to 64 KiB; 16 KiB then overflowed
 /// once `MAX_INIT_PAGES` grew to 1024 for ripgrep (`[u64; 1024]` is 8 KiB alone,
 /// plus stack frames and a nested timer IRQ). Overflow hangs with no serial.
-/// 64 KiB is tight for feat_common_core uutils (`[u64; 3072]` ≈ 24 KiB); use 128 KiB.
-const STACK_SIZE: usize = 128 * 1024;
+const STACK_SIZE: usize = 64 * 1024;
 /// oksh `FDBASE` is 10 (`fcntl(F_DUPFD)` for tty/script fds). 8 was enough for
 /// the tiny Rust shell; 16 leaves room for stdio + FDBASE + a pipe.
 const MAX_FDS: usize = 16;
