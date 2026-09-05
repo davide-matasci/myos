@@ -68,7 +68,10 @@ fn smoke_vfs() {
             let mut mac = [0u8; 6];
             // Keep in sync with myos_abi::MYOS_IOCTL_NET_GETMAC.
             const MYOS_IOCTL_NET_GETMAC: usize = 0x4d01;
-            if ioctl(fd, MYOS_IOCTL_NET_GETMAC, mac.as_mut_ptr() as usize) != usize::MAX {
+            if ioctl(fd, MYOS_IOCTL_NET_GETMAC, mac.as_mut_ptr() as usize) != usize::MAX
+                && mac.iter().any(|&b| b != 0)
+                && mac[0] & 1 == 0
+            {
                 write(b"netmac ok\n");
             }
             close(fd);

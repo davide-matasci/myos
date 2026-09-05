@@ -1,7 +1,9 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, exit, exit_code, open, open_flags, read, write, write_fd, O_RDWR, O_WRONLY};
+use myos_user::{
+    close, exit, exit_code, fork, open, open_flags, read, wait, write, write_fd, O_RDWR, O_WRONLY,
+};
 
 myos_user::x86_start!(main);
 
@@ -12,8 +14,12 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
     main()
 }
 
-const STATUS_POLLS: usize = 100_000;
-const DATA_POLLS: usize = 100_000;
+// Wall-clock budget is dominated by open/read/close cost on slow riscv QEMU.
+// Keep fds open and give netd CPU via fork/exit/wait yields so a missed ICMP
+// fails with "icmp * timeout" instead of burning the full CI 180s hang.
+const STATUS_POLLS: usize = 50_000;
+const DATA_POLLS: usize = 50_000;
+const YIELD_EVERY: usize = 512;
 
 fn usage() -> ! {
     write(b"usage: ping <ipv4>\n");
@@ -117,6 +123,18 @@ fn buf_has(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
+fn yield_to_netd() {
+    // No sched_yield yet: a short-lived child forces a schedule so netd can
+    // drain /dev/netd and pump virtio-net while we poll.
+    match fork() {
+        Some(0) => exit(),
+        Some(_) => {
+            let _ = wait();
+        }
+        None => {}
+    }
+}
+
 fn main() -> ! {
     let Some(ip) = myos_user::arg(1) else {
         usage();
@@ -152,19 +170,22 @@ fn main() -> ! {
     close(ctl);
 
     let sn = conv_path(&mut path, id, b"status");
+    let Some(st) = open(&path[..sn]) else {
+        fail(b"open status fail\n");
+    };
     let mut connected = false;
-    for _ in 0..STATUS_POLLS {
-        let Some(st) = open(&path[..sn]) else {
-            continue;
-        };
+    for i in 0..STATUS_POLLS {
         let mut sbuf = [0u8; 64];
         let nr = read(st, &mut sbuf);
-        close(st);
         if nr != 0 && nr != usize::MAX && buf_has(&sbuf[..nr], b"connected") {
             connected = true;
             break;
         }
+        if i % YIELD_EVERY == YIELD_EVERY - 1 {
+            yield_to_netd();
+        }
     }
+    close(st);
     if !connected {
         fail(b"icmp status timeout\n");
     }
@@ -178,12 +199,15 @@ fn main() -> ! {
         fail(b"write data fail\n");
     }
     let mut got = false;
-    for _ in 0..DATA_POLLS {
+    for i in 0..DATA_POLLS {
         let mut rbuf = [0u8; 64];
         let nr = read(data, &mut rbuf);
         if nr != 0 && nr != usize::MAX {
             got = true;
             break;
+        }
+        if i % YIELD_EVERY == YIELD_EVERY - 1 {
+            yield_to_netd();
         }
     }
     close(data);
