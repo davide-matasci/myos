@@ -1,4 +1,4 @@
-//! virtio-net: modern virtio 1.0 PCI, poll-mode `/dev/net0`.
+//! virtio-net: modern virtio 1.0 PCI, poll-mode `/dev/netN`.
 //!
 //! Speaks only through [`myos_abi::KernelApi`]. Ethernet frames only; no IP.
 
@@ -7,7 +7,7 @@
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use myos_abi::{ABI_VERSION, KernelApi, ModuleChrOps};
+use myos_abi::{ABI_VERSION, KernelApi, ModuleChrOps, MYOS_IOCTL_NET_GETMAC};
 
 const VENDOR: u16 = 0x1AF4;
 const DEV_NET_MODERN: u16 = 0x1041;
@@ -26,6 +26,10 @@ const DRIVER_OK: u8 = 4;
 const FEATURES_OK: u8 = 8;
 
 const VIRTIO_F_VERSION_1: u32 = 1; // bit 32, features dword 1
+const VIRTIO_NET_F_MAC: u32 = 1 << 5;
+const MAX_NET: usize = 4;
+/// Fallback when the device does not advertise MAC (matches QEMU default).
+const DEFAULT_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
 
 const DESC_F_WRITE: u16 = 2;
@@ -73,15 +77,71 @@ struct Net {
     rx_buf_phys: u64,
     tx_buf_va: *mut u8,
     tx_buf_phys: u64,
+    mac: [u8; 6],
 }
 
-static mut NET: Option<Net> = None;
+static mut NETS: [Option<Net>; MAX_NET] = [None, None, None, None];
+static mut API: *const KernelApi = core::ptr::null();
 
-static OPS: ModuleChrOps = ModuleChrOps {
-    read: net_read,
-    write: net_write,
-    ioctl: None,
-};
+unsafe extern "C" fn net0_read(buf: *mut u8, buf_len: usize) -> i32 {
+    net_read_n(0, buf, buf_len)
+}
+unsafe extern "C" fn net0_write(buf: *const u8, buf_len: usize) -> i32 {
+    net_write_n(0, buf, buf_len)
+}
+unsafe extern "C" fn net0_ioctl(request: u64, arg: usize) -> i32 {
+    net_ioctl_n(0, request, arg)
+}
+unsafe extern "C" fn net1_read(buf: *mut u8, buf_len: usize) -> i32 {
+    net_read_n(1, buf, buf_len)
+}
+unsafe extern "C" fn net1_write(buf: *const u8, buf_len: usize) -> i32 {
+    net_write_n(1, buf, buf_len)
+}
+unsafe extern "C" fn net1_ioctl(request: u64, arg: usize) -> i32 {
+    net_ioctl_n(1, request, arg)
+}
+unsafe extern "C" fn net2_read(buf: *mut u8, buf_len: usize) -> i32 {
+    net_read_n(2, buf, buf_len)
+}
+unsafe extern "C" fn net2_write(buf: *const u8, buf_len: usize) -> i32 {
+    net_write_n(2, buf, buf_len)
+}
+unsafe extern "C" fn net2_ioctl(request: u64, arg: usize) -> i32 {
+    net_ioctl_n(2, request, arg)
+}
+unsafe extern "C" fn net3_read(buf: *mut u8, buf_len: usize) -> i32 {
+    net_read_n(3, buf, buf_len)
+}
+unsafe extern "C" fn net3_write(buf: *const u8, buf_len: usize) -> i32 {
+    net_write_n(3, buf, buf_len)
+}
+unsafe extern "C" fn net3_ioctl(request: u64, arg: usize) -> i32 {
+    net_ioctl_n(3, request, arg)
+}
+
+static OPS: [ModuleChrOps; MAX_NET] = [
+    ModuleChrOps {
+        read: net0_read,
+        write: net0_write,
+        ioctl: Some(net0_ioctl),
+    },
+    ModuleChrOps {
+        read: net1_read,
+        write: net1_write,
+        ioctl: Some(net1_ioctl),
+    },
+    ModuleChrOps {
+        read: net2_read,
+        write: net2_write,
+        ioctl: Some(net2_ioctl),
+    },
+    ModuleChrOps {
+        read: net3_read,
+        write: net3_write,
+        ioctl: Some(net3_ioctl),
+    },
+];
 
 fn r8(p: usize) -> u8 {
     unsafe { core::ptr::read_volatile(p as *const u8) }
@@ -153,15 +213,16 @@ fn dma_alloc(api: &KernelApi, n_pages: usize) -> Option<(*mut u8, u64)> {
     }
 }
 
-fn pci_find(
+fn pci_find_at(
     api: &KernelApi,
     vendor: u16,
     device: u16,
+    index: u32,
 ) -> Option<(u8, u8, u8)> {
     let mut bus = 0u8;
     let mut slot = 0u8;
     let mut func = 0u8;
-    let rc = unsafe { (api.pci_find)(vendor, device, 0, &mut bus, &mut slot, &mut func) };
+    let rc = unsafe { (api.pci_find)(vendor, device, index, &mut bus, &mut slot, &mut func) };
     if rc == 0 {
         Some((bus, slot, func))
     } else {
@@ -169,10 +230,39 @@ fn pci_find(
     }
 }
 
+/// Enumerate modern virtio-net first, then transitional, by logical index.
+fn pci_find_net(api: &KernelApi, index: u32) -> Option<(u8, u8, u8)> {
+    let mut seen = 0u32;
+    for i in 0..8u32 {
+        match pci_find_at(api, VENDOR, DEV_NET_MODERN, i) {
+            Some(bdf) => {
+                if seen == index {
+                    return Some(bdf);
+                }
+                seen += 1;
+            }
+            None => break,
+        }
+    }
+    for i in 0..8u32 {
+        match pci_find_at(api, VENDOR, DEV_NET_TRANS, i) {
+            Some(bdf) => {
+                if seen == index {
+                    return Some(bdf);
+                }
+                seen += 1;
+            }
+            None => break,
+        }
+    }
+    None
+}
+
 struct Caps {
     common: usize,
     notify: usize,
     notify_mult: u32,
+    device: usize,
 }
 
 fn map_bar(
@@ -212,6 +302,7 @@ fn walk_caps(api: &KernelApi, bus: u8, slot: u8, func: u8) -> Option<Caps> {
     let mut common = 0usize;
     let mut notify = 0usize;
     let mut notify_mult = 0u32;
+    let mut device = 0usize;
     let mut hops = 0u8;
     while cap != 0 && hops < 64 {
         hops += 1;
@@ -236,7 +327,8 @@ fn walk_caps(api: &KernelApi, bus: u8, slot: u8, func: u8) -> Option<Caps> {
                             notify_mult =
                                 unsafe { (api.pci_cfg_read32)(bus, slot, func, cap.wrapping_add(16)) };
                         }
-                        VIRTIO_PCI_CAP_ISR | VIRTIO_PCI_CAP_DEVICE => {}
+                        VIRTIO_PCI_CAP_DEVICE => device = mmio,
+                        VIRTIO_PCI_CAP_ISR => {}
                         _ => {}
                     }
                 }
@@ -254,6 +346,7 @@ fn walk_caps(api: &KernelApi, bus: u8, slot: u8, func: u8) -> Option<Caps> {
         common,
         notify,
         notify_mult,
+        device,
     })
 }
 
@@ -355,9 +448,8 @@ fn post_rx(net: &Net, i: u16) {
     push(&net.rx, i);
 }
 
-fn probe(api: &KernelApi) -> Option<Net> {
-    let (bus, slot, func) = pci_find(api, VENDOR, DEV_NET_MODERN)
-        .or_else(|| pci_find(api, VENDOR, DEV_NET_TRANS))?;
+fn probe(api: &KernelApi, pci_index: u32) -> Option<Net> {
+    let (bus, slot, func) = pci_find_net(api, pci_index)?;
 
     unsafe { (api.pci_enable)(bus, slot, func) };
 
@@ -370,13 +462,19 @@ fn probe(api: &KernelApi) -> Option<Net> {
     w8(common + C_DEVICE_STATUS, ACKNOWLEDGE | DRIVER);
     w16(common + C_MSIX_CONFIG, VIRTIO_MSI_NO_VECTOR);
 
+    w32(common + C_DEVICE_FEATURE_SELECT, 0);
+    let f0 = r32(common + C_DEVICE_FEATURE);
     w32(common + C_DEVICE_FEATURE_SELECT, 1);
     let f1 = r32(common + C_DEVICE_FEATURE);
     if f1 & VIRTIO_F_VERSION_1 == 0 {
         return None;
     }
+    let mut driver_f0 = 0u32;
+    if f0 & VIRTIO_NET_F_MAC != 0 {
+        driver_f0 |= VIRTIO_NET_F_MAC;
+    }
     w32(common + C_DRIVER_FEATURE_SELECT, 0);
-    w32(common + C_DRIVER_FEATURE, 0);
+    w32(common + C_DRIVER_FEATURE, driver_f0);
     w32(common + C_DRIVER_FEATURE_SELECT, 1);
     w32(common + C_DRIVER_FEATURE, VIRTIO_F_VERSION_1);
 
@@ -387,6 +485,15 @@ fn probe(api: &KernelApi) -> Option<Net> {
     dma_wmb();
     if r8(common + C_DEVICE_STATUS) & FEATURES_OK == 0 {
         return None;
+    }
+
+    let mut mac = DEFAULT_MAC;
+    if caps.device != 0 && (f0 & VIRTIO_NET_F_MAC) != 0 {
+        let mut i = 0usize;
+        while i < 6 {
+            mac[i] = r8(caps.device + i);
+            i += 1;
+        }
     }
 
     let rx = setup_queue(api, common, 0)?;
@@ -405,6 +512,7 @@ fn probe(api: &KernelApi) -> Option<Net> {
         rx_buf_phys,
         tx_buf_va,
         tx_buf_phys,
+        mac,
     };
 
     let n = net.rx.num;
@@ -423,15 +531,52 @@ fn probe(api: &KernelApi) -> Option<Net> {
     Some(net)
 }
 
-unsafe extern "C" fn net_read(buf: *mut u8, buf_len: usize) -> i32 {
+fn net_slot(idx: usize) -> Option<&'static mut Net> {
+    if idx >= MAX_NET {
+        return None;
+    }
+    unsafe { (*core::ptr::addr_of_mut!(NETS)).get_mut(idx).and_then(|s| s.as_mut()) }
+}
+
+fn api_ref() -> Option<&'static KernelApi> {
+    let p = unsafe { API };
+    if p.is_null() {
+        None
+    } else {
+        Some(unsafe { &*p })
+    }
+}
+
+fn net_ioctl_n(idx: usize, request: u64, arg: usize) -> i32 {
+    if request != MYOS_IOCTL_NET_GETMAC {
+        return -1;
+    }
+    if arg == 0 {
+        return -1;
+    }
+    let net = match net_slot(idx) {
+        Some(n) => n,
+        None => return -1,
+    };
+    let api = match api_ref() {
+        Some(a) => a,
+        None => return -1,
+    };
+    let rc = unsafe { (api.copy_to_user)(arg, net.mac.as_ptr(), 6) };
+    if rc < 0 {
+        -1
+    } else {
+        0
+    }
+}
+
+fn net_read_n(idx: usize, buf: *mut u8, buf_len: usize) -> i32 {
     if buf.is_null() {
         return -1;
     }
-    let net = unsafe {
-        match (*core::ptr::addr_of_mut!(NET)).as_mut() {
-            Some(n) => n,
-            None => return -1,
-        }
+    let net = match net_slot(idx) {
+        Some(n) => n,
+        None => return -1,
     };
     let used = used_idx(&net.rx);
     if used == net.rx.last_used {
@@ -458,18 +603,16 @@ unsafe extern "C" fn net_read(buf: *mut u8, buf_len: usize) -> i32 {
     copy as i32
 }
 
-unsafe extern "C" fn net_write(buf: *const u8, buf_len: usize) -> i32 {
+fn net_write_n(idx: usize, buf: *const u8, buf_len: usize) -> i32 {
     if buf_len == 0 {
         return 0;
     }
     if buf.is_null() {
         return -1;
     }
-    let net = unsafe {
-        match (*core::ptr::addr_of_mut!(NET)).as_mut() {
-            Some(n) => n,
-            None => return -1,
-        }
+    let net = match net_slot(idx) {
+        Some(n) => n,
+        None => return -1,
     };
     let frame = if buf_len > ETH_MAX { ETH_MAX } else { buf_len };
     unsafe {
@@ -509,23 +652,34 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         if api.abi_version != ABI_VERSION {
             return -2;
         }
-        match probe(api) {
-            Some(net) => {
-                *core::ptr::addr_of_mut!(NET) = Some(net);
-                let rc = (api.dev_register)(b"net0".as_ptr(), 4, &OPS);
-                if rc != 0 {
-                    *core::ptr::addr_of_mut!(NET) = None;
-                    write_str(api, b"virtio-net skip\n");
-                    return 0;
+        API = api as *const KernelApi;
+        let mut registered = 0usize;
+        let mut pci_index = 0u32;
+        while registered < MAX_NET {
+            match probe(api, pci_index) {
+                Some(net) => {
+                    let slot = registered;
+                    (*core::ptr::addr_of_mut!(NETS))[slot] = Some(net);
+                    let mut name = *b"net0";
+                    name[3] = b'0' + (slot as u8);
+                    let rc = (api.dev_register)(name.as_ptr(), 4, &OPS[slot]);
+                    if rc != 0 {
+                        (*core::ptr::addr_of_mut!(NETS))[slot] = None;
+                        // Slot full or name clash — stop trying further NICs.
+                        break;
+                    }
+                    registered += 1;
+                    pci_index += 1;
                 }
-                write_str(api, b"virtio-net mod ok\n");
-                0
-            }
-            None => {
-                write_str(api, b"virtio-net skip\n");
-                0
+                None => break,
             }
         }
+        if registered == 0 {
+            write_str(api, b"virtio-net skip\n");
+        } else {
+            write_str(api, b"virtio-net mod ok\n");
+        }
+        0
     }
 }
 

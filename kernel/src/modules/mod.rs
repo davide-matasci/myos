@@ -42,6 +42,7 @@ static API: KernelApi = KernelApi {
     pci_bar_map: api_pci_bar_map,
     dma_alloc: api_dma_alloc,
     dev_register: api_dev_register,
+    copy_to_user: api_copy_to_user,
 };
 
 /// Load the hello module that was baked into the kernel at build time.
@@ -74,7 +75,7 @@ pub fn load_embedded_ext2() {
     }
 }
 
-/// Load the virtio-net module. Probes modern virtio-pci and registers `/dev/net0`.
+/// Load the virtio-net module. Probes virtio-pci and registers `/dev/netN`.
 pub fn load_embedded_virtio_net() {
     if let Err(e) = load("virtio_net", VIRTIO_NET_IMAGE) {
         console::status_fail(&alloc::format!("virtio-net module: {e}"));
@@ -427,6 +428,22 @@ unsafe extern "C" fn api_dev_register(
     };
     let ops = unsafe { *ops };
     if crate::fs::register_chrdev(name, ops) {
+        0
+    } else {
+        -1
+    }
+}
+
+unsafe extern "C" fn api_copy_to_user(dst_user: usize, src: *const u8, len: usize) -> i32 {
+    if dst_user == 0 || src.is_null() {
+        return -1;
+    }
+    if len == 0 {
+        return 0;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(src, len) };
+    let aspace = crate::task::current_aspace();
+    if crate::user::copy_to_user(aspace, dst_user, slice) {
         0
     } else {
         -1

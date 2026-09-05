@@ -64,6 +64,15 @@ fn smoke_vfs() {
     write(b"vda ok\n");
     if buf_has(&buf[..n], b"net0") {
         write(b"net0 ok\n");
+        if let Some(fd) = open_flags(b"/dev/net0", O_RDWR) {
+            let mut mac = [0u8; 6];
+            // Keep in sync with myos_abi::MYOS_IOCTL_NET_GETMAC.
+            const MYOS_IOCTL_NET_GETMAC: usize = 0x4d01;
+            if ioctl(fd, MYOS_IOCTL_NET_GETMAC, mac.as_mut_ptr() as usize) != usize::MAX {
+                write(b"netmac ok\n");
+            }
+            close(fd);
+        }
     }
     if buf_has(&buf[..n], b"vdb") {
         write(b"vdb ok\n");

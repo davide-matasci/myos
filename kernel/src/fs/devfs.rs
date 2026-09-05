@@ -353,14 +353,13 @@ pub fn tty_ioctl(request: usize) -> IoctlResult {
 /// MountOps ioctl callback for `/dev/*`.
 ///
 /// Module chrdevs may register [`myos_abi::ModuleChrOps::ioctl`]; `None` → ENOTTY.
-/// Modules must not deref userspace `arg` pointers (no kernel copy helper yet).
+/// Modules must not deref userspace `arg` — use `KernelApi::copy_to_user`.
 pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
     match parse(name) {
         Some(Node::Tty) | Some(Node::Console) => tty_ioctl(request),
         Some(Node::Chr(i)) => {
             match chr_table().get(i).and_then(|s| *s) {
                 Some(c) => match c.ops.ioctl {
-                    // Modules must not copy_to_user themselves; integer-ish ops only for v1.
                     Some(f) => {
                         let rc = unsafe { f(request as u64, arg) };
                         if rc < 0 {
