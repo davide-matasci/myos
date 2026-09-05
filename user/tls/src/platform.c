@@ -19,7 +19,8 @@ extern int myos_tls_gettimeofday_sec(int64_t *sec);
 extern int myos_tls_fd_read(int fd, unsigned char *buf, size_t len);
 extern int myos_tls_fd_write(int fd, const unsigned char *buf, size_t len);
 
-static unsigned char g_heap[256 * 1024];
+/* Full Mozilla CA parse + TLS 1.2 buffers need well over 256 KiB. */
+static unsigned char g_heap[2 * 1024 * 1024];
 static int g_mem_ready;
 
 mbedtls_time_t myos_mbedtls_time(mbedtls_time_t *t) {
@@ -110,6 +111,14 @@ int myos_tls_handshake(myos_tls_conn *c, int fd, const char *sni_host) {
 
     ensure_mem();
     mbedtls_platform_set_time(myos_mbedtls_time);
+    {
+        mbedtls_time_t now = myos_mbedtls_time(NULL);
+        /* Certs for public sites are not valid in 1970; refuse early with a
+         * distinctive code so CI can tell RTC mapping/time apart from TLS. */
+        if (now < (mbedtls_time_t)1700000000) { /* ~2023-11-14 */
+            return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+        }
+    }
 
     mbedtls_ssl_init(&c->ssl);
     mbedtls_ssl_config_init(&c->conf);
@@ -137,6 +146,8 @@ int myos_tls_handshake(myos_tls_conn *c, int fd, const char *sni_host) {
     if (ret != 0) {
         return ret;
     }
+    mbedtls_ssl_conf_min_tls_version(&c->conf, MBEDTLS_SSL_VERSION_TLS1_2);
+    mbedtls_ssl_conf_max_tls_version(&c->conf, MBEDTLS_SSL_VERSION_TLS1_2);
     mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
     mbedtls_ssl_conf_ca_chain(&c->conf, &c->cacert, NULL);
     mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->ctr_drbg);

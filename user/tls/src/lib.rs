@@ -61,14 +61,14 @@ pub unsafe extern "C" fn myos_tls_fd_write(fd: i32, buf: *const u8, len: usize) 
 
 /// Fixed-capacity TLS session storage (must hold `myos_tls_conn`).
 pub struct TlsConn {
-    raw: [u8; 48 * 1024],
+    raw: [u8; 96 * 1024],
     live: bool,
 }
 
 impl TlsConn {
     pub const fn new() -> Self {
         Self {
-            raw: [0; 48 * 1024],
+            raw: [0; 96 * 1024],
             live: false,
         }
     }
