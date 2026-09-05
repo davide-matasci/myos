@@ -152,19 +152,19 @@ fn main() -> ! {
     close(ctl);
 
     let sn = conv_path(&mut path, id, b"status");
-    let Some(st) = open(&path[..sn]) else {
-        fail(b"open status fail\n");
-    };
     let mut connected = false;
     for _ in 0..STATUS_POLLS {
+        let Some(st) = open(&path[..sn]) else {
+            continue;
+        };
         let mut sbuf = [0u8; 64];
         let nr = read(st, &mut sbuf);
+        close(st);
         if nr != 0 && nr != usize::MAX && buf_has(&sbuf[..nr], b"connected") {
             connected = true;
             break;
         }
     }
-    close(st);
     if !connected {
         fail(b"icmp status timeout\n");
     }

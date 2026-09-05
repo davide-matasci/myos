@@ -627,7 +627,7 @@ fn net_write_n(idx: usize, buf: *const u8, buf_len: usize) -> i32 {
     // ring lagged, so CI hung after `tcc std ok` with no ping timeout printed.
     // Cap well above normal QEMU completion (usually <<1k spins) but far below
     // a multi-second IRQ-off stall.
-    const TX_SPIN: u32 = 250_000;
+    const TX_SPIN: u32 = 50_000;
     let want = net.tx.last_used.wrapping_add(1);
     let mut spins = 0u32;
     while spins < TX_SPIN {
