@@ -61,6 +61,11 @@ fn push_byte(raw: u8) {
     if byte == b'\r' {
         byte = b'\n';
     }
+    // ^C must be handled before `acceptable_input` (which drops 0x03).
+    if byte == 0x03 {
+        crate::signal::handle_ctrl_c();
+        return;
+    }
     if !acceptable_input(byte) {
         return;
     }
@@ -114,8 +119,13 @@ fn pop_byte() -> Option<u8> {
 /// Read up to `len` bytes. Blocks until at least one byte is available.
 /// Bytes come from completed lines only (canonical / cooked discipline).
 pub fn read(buf: &mut [u8]) -> usize {
+    crate::signal::enter_input_read();
     let mut n = 0;
     while n == 0 {
+        // Pending fatal/actionable signal: break so deliver_due can exit.
+        if crate::signal::current_should_wake() {
+            break;
+        }
         poll();
         while n < buf.len() {
             match pop_byte() {
@@ -127,9 +137,15 @@ pub fn read(buf: &mut [u8]) -> usize {
             }
         }
         if n == 0 {
+            if crate::signal::current_should_wake() {
+                break;
+            }
             task::yield_now();
         }
     }
+    crate::signal::leave_input_read();
+    // If we woke for a signal with no bytes, still return 0 so the syscall
+    // path can run `deliver_due` and terminate with 128+sig.
     n
 }
 

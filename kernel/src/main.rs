@@ -19,6 +19,7 @@ mod nvme;
 mod pci;
 mod modules;
 mod pipe;
+mod signal;
 mod task;
 mod time;
 mod user;

@@ -6,9 +6,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use myos_user::{
-    Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, close, exec, exit, exit_code, fork,
-    heap_init, ioctl, listdir, mkdir, mount, open, open_flags, pipe, read, readlink, rename, rmdir,
-    symlink, unlink, wait_status, write, write_fd,
+    Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SIGTERM, close, exec, exit, exit_code, fork,
+    heap_init, ioctl, kill, listdir, mkdir, mount, open, open_flags, pipe, read, readlink, rename,
+    rmdir, symlink, unlink, wait_status, write, write_fd,
 };
 
 #[global_allocator]
@@ -298,6 +298,38 @@ fn smoke_tmp_dev() {
     smoke_proc(&mut buf);
 }
 
+
+fn smoke_signal() {
+    match fork() {
+        None => {
+            write(b"signal fork fail\n");
+            return;
+        }
+        Some(0) => {
+            // Block in stdin read until SIGTERM; input::read wakes on pending.
+            let mut b = [0u8; 1];
+            let _ = read(0, &mut b);
+            exit_code(99);
+        }
+        Some(child) => {
+            if !kill(child, SIGTERM) {
+                write(b"signal kill fail\n");
+                return;
+            }
+            match wait_status() {
+                Some((_, status)) if status == (128 + SIGTERM as u8) => {
+                    write(b"signal ok\n");
+                }
+                Some((_, status)) => {
+                    write(b"signal bad status\n");
+                    let _ = status;
+                }
+                None => write(b"signal wait fail\n"),
+            }
+        }
+    }
+}
+
 fn smoke_ioctl() {
     const TIOCGWINSZ: usize = 0x5413;
     let mut ws = [0u16; 4];
@@ -408,6 +440,7 @@ fn main() -> ! {
     smoke_vfs();
     smoke_tmp_dev();
     smoke_ioctl();
+    smoke_signal();
     exit();
 }
 

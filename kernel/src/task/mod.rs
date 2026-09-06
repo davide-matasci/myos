@@ -237,6 +237,10 @@ struct Task {
     /// Controlling terminal attached (phase-1: system console only).
     /// Inherited on fork; set by TIOCSCTTY; cleared by SYS_SETSID.
     has_ctty: bool,
+    /// Pending signals bitmask (bit N = signal N, N in 1..31). See `signal`.
+    sig_pending: u32,
+    /// Ignored signals bitmask (SIGKILL cannot be ignored). See `signal`.
+    sig_ignored: u32,
 }
 
 const EMPTY: Task = Task {
@@ -267,6 +271,8 @@ const EMPTY: Task = Task {
     sid: 0,
     pgid: 0,
     has_ctty: false,
+    sig_pending: 0,
+    sig_ignored: 0,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -881,6 +887,155 @@ pub fn fd_close(fd: usize) -> bool {
 }
 
 /// Whether the current task has a controlling terminal.
+
+/// Slot count for iterating tasks (signals, process groups).
+pub fn task_slots() -> usize {
+    MAX_TASKS
+}
+
+/// Live user process: has a user image and is not Unused/Dead.
+pub fn is_live_user(id: usize) -> bool {
+    if id >= MAX_TASKS {
+        return false;
+    }
+    let flags = irq_save();
+    irq_off();
+    let t = TASKS.lock()[id];
+    let ok = t.user_rip != 0 && matches!(t.state, State::Ready | State::Running);
+    irq_restore(flags);
+    ok
+}
+
+pub fn task_pgid(id: usize) -> Option<usize> {
+    if id >= MAX_TASKS {
+        return None;
+    }
+    let flags = irq_save();
+    irq_off();
+    let t = TASKS.lock()[id];
+    let out = if t.user_rip != 0 && t.state != State::Unused {
+        Some(t.pgid)
+    } else {
+        None
+    };
+    irq_restore(flags);
+    out
+}
+
+pub fn current_pgid() -> Option<usize> {
+    task_pgid(CURRENT.load(Ordering::SeqCst))
+}
+
+pub fn task_has_ctty(id: usize) -> bool {
+    if id >= MAX_TASKS {
+        return false;
+    }
+    let flags = irq_save();
+    irq_off();
+    let t = TASKS.lock()[id];
+    let out = t.user_rip != 0
+        && matches!(t.state, State::Ready | State::Running)
+        && t.has_ctty;
+    irq_restore(flags);
+    out
+}
+
+pub fn signal_is_ignored(id: usize, bit: u32) -> bool {
+    if id >= MAX_TASKS {
+        return false;
+    }
+    let flags = irq_save();
+    irq_off();
+    let t = TASKS.lock()[id];
+    let out = (t.sig_ignored & bit) != 0;
+    irq_restore(flags);
+    out
+}
+
+pub fn signal_set_pending(id: usize, bit: u32) {
+    if id >= MAX_TASKS {
+        return;
+    }
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    if tasks[id].user_rip != 0 && matches!(tasks[id].state, State::Ready | State::Running) {
+        tasks[id].sig_pending |= bit;
+    }
+    drop(tasks);
+    irq_restore(flags);
+}
+
+pub fn signal_clear_pending(id: usize, bit: u32) {
+    if id >= MAX_TASKS {
+        return;
+    }
+    let flags = irq_save();
+    irq_off();
+    TASKS.lock()[id].sig_pending &= !bit;
+    irq_restore(flags);
+}
+
+pub fn signal_set_ignored(id: usize, bit: u32, ign: bool) {
+    if id >= MAX_TASKS {
+        return;
+    }
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    if ign {
+        tasks[id].sig_ignored |= bit;
+    } else {
+        tasks[id].sig_ignored &= !bit;
+    }
+    drop(tasks);
+    irq_restore(flags);
+}
+
+/// True if `id` has any pending bit that is not ignored (SIGKILL bit always counts).
+pub fn signal_pending_actionable(id: usize) -> bool {
+    if id >= MAX_TASKS {
+        return false;
+    }
+    let flags = irq_save();
+    irq_off();
+    let t = TASKS.lock()[id];
+    // SIGKILL = 9 cannot be ignored even if the bit is set in ignored.
+    let kill_bit = 1u32 << 9;
+    let pending = t.sig_pending;
+    let effective = (pending & !t.sig_ignored) | (pending & kill_bit);
+    let out = effective != 0;
+    irq_restore(flags);
+    out
+}
+
+/// Take the lowest-numbered default-fatal pending signal (SIGINT/KILL/TERM),
+/// clearing its pending bit. Returns `None` if none.
+pub fn signal_take_fatal(id: usize) -> Option<u32> {
+    if id >= MAX_TASKS {
+        return None;
+    }
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    let t = &mut tasks[id];
+    let kill_bit = 1u32 << 9;
+    let effective = (t.sig_pending & !t.sig_ignored) | (t.sig_pending & kill_bit);
+    const FATAL: [u32; 3] = [2, 9, 15]; // SIGINT, SIGKILL, SIGTERM
+    let mut found = None;
+    for sig in FATAL {
+        let bit = 1u32 << sig;
+        if effective & bit != 0 {
+            t.sig_pending &= !bit;
+            found = Some(sig);
+            break;
+        }
+    }
+    drop(tasks);
+    irq_restore(flags);
+    found
+}
+
 pub fn has_ctty() -> bool {
     let flags = irq_save();
     irq_off();
@@ -1118,6 +1273,9 @@ pub fn replace_user(
         t.brk_cur = heap_base_for(user_base, stack_off);
         t.mmap = EMPTY_MMAP;
         t.mmap_next = 0;
+        // v1: reset dispositions on exec (ignored → DFL, drop pending).
+        t.sig_pending = 0;
+        t.sig_ignored = 0;
     });
     user::switch_aspace(aspace);
     LOADED_ASPACE.store(aspace, Ordering::SeqCst);
@@ -1172,7 +1330,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, pgid, has_ctty) = {
+    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, pgid, has_ctty, sig_ignored) = {
         let tasks = TASKS.lock();
         let id = CURRENT.load(Ordering::SeqCst);
         let t = tasks[id];
@@ -1197,6 +1355,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.sid,
             t.pgid,
             t.has_ctty,
+            t.sig_ignored,
         )
     };
 
@@ -1286,6 +1445,9 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         sid,
         pgid,
         has_ctty,
+        // POSIX-ish: inherit ignored mask; clear pending in the child.
+        sig_pending: 0,
+        sig_ignored,
     };
     drop(tasks);
     user::note_fork();
@@ -1407,6 +1569,8 @@ fn spawn_inner(
         sid: slot,
         pgid: slot,
         has_ctty: false,
+        sig_pending: 0,
+        sig_ignored: 0,
     };
     drop(tasks);
     irq_restore(flags);

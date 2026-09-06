@@ -328,6 +328,26 @@ pub fn ioctl(fd: usize, request: usize, arg: usize) -> usize {
     unsafe { sys3(28, fd, request, arg) }
 }
 
+/// Must match newlib `<signal.h>` / kernel `signal.rs` / rustix_compat.
+pub const SIGINT: u32 = 2;
+pub const SIGKILL: u32 = 9;
+pub const SIGTERM: u32 = 15;
+
+/// `getpid` (SYS_GETPID = 36): current task id.
+pub fn getpid() -> usize {
+    unsafe { sys3(36, 0, 0, 0) }
+}
+
+/// `kill(pid, sig)` (SYS_KILL = 34). Returns `true` on success.
+pub fn kill(pid: usize, sig: u32) -> bool {
+    unsafe { sys3(34, pid, sig as usize, 0) != usize::MAX }
+}
+
+/// `raise(sig)` via kill(getpid(), sig).
+pub fn raise(sig: u32) -> bool {
+    kill(getpid(), sig)
+}
+
 /// Adjust the program break. `addr == 0` queries the current break.
 pub fn brk(addr: usize) -> usize {
     unsafe { sys_brk(addr) }

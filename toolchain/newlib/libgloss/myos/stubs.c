@@ -73,10 +73,17 @@ int _link(const char *oldpath, const char *newpath) {
 }
 
 int _kill(int pid, int sig) {
-    (void)pid;
-    (void)sig;
-    errno = ENOSYS;
-    return -1;
+    /* Signal numbers must match newlib <signal.h> / kernel signal.rs. */
+    if (sig <= 0 || sig > 31) {
+        errno = EINVAL;
+        return -1;
+    }
+    long ret = myos_syscall3(MYOS_SYS_KILL, (long)pid, (long)sig, 0);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = ESRCH;
+        return -1;
+    }
+    return 0;
 }
 
 int _fork(void) {
