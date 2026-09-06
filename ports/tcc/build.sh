@@ -172,6 +172,9 @@ build_arch() {
     fi
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -D__trunctfdf2=__myos_tcc_unused_trunctfdf2 \
+      -D__extenddftf2=__myos_tcc_unused_extenddftf2 \
+      -D__extendsftf2=__myos_tcc_unused_extendsftf2 \
+      -D__trunctfsf2=__myos_tcc_unused_trunctfsf2 \
       -c "$rvsoft" -o "$objdir/riscv64-softfloat.o"
     extra+=("$objdir/riscv64-softfloat.o")
   fi

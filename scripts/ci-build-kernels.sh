@@ -28,6 +28,8 @@ PORT_STAMPS=(
   target/.myos-coreutils-version
   target/.myos-ripgrep-version
   target/.myos-tcc-version
+  target/.myos-vim-version
+  target/.myos-ncurses-version
   target/.myos-newlib-version
 )
 

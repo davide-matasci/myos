@@ -240,6 +240,19 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         "bin/custom/sh",
         read(&target.join(format!("oksh-{none_triple}"))),
     );
+    // vim (FEAT_TINY) -> bin/custom/vim (none triple, like oksh).
+    // Fail loud once CI always builds vim (iso.yml / ci.yml); silent skip hid
+    // missing ELFs from the ISO for too long.
+    {
+        let vim_path = target.join(format!("vim-{none_triple}"));
+        let vim_bytes = std::fs::read(&vim_path).unwrap_or_else(|e| {
+            panic!(
+                "initramfs: required bin/custom/vim missing at {} ({e}); run ./ports/vim/build.sh",
+                vim_path.display()
+            )
+        });
+        add(&mut entries, "bin/custom/vim", Some(vim_bytes));
+    }
 
     // newlib sysroot -> lib/newlib/include/… and lib/newlib/lib/….
     let sysroot = target.join(format!("newlib-{arch}")).join(myos_triple);

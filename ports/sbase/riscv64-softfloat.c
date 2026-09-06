@@ -6,6 +6,23 @@ double __trunctfdf2(TFtype a)
 	return (double)a;
 }
 
+TFtype __extenddftf2(double a)
+{
+	return (TFtype)a;
+}
+
+TFtype __extendsftf2(float a)
+{
+	return (TFtype)a;
+}
+
+float __trunctfsf2(TFtype a)
+{
+	return (float)a;
+}
+
+
+
 int __eqdf2(TFtype a, TFtype b)
 {
 	double da = (double)a;
