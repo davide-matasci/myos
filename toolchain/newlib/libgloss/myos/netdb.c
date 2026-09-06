@@ -178,6 +178,10 @@ static int resolve_a(const char *host, unsigned char ip[4]) {
     for (i = 0; i < DATA_POLLS; i++) {
         nr = recv(sock, rbuf, sizeof rbuf, 0);
         if (nr < 0) {
+            /* Empty /net RX is EAGAIN after the curl SSL-EOF fix; keep polling. */
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
             break;
         }
         if (nr == 0) {
