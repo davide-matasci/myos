@@ -21,6 +21,7 @@ mod modules;
 mod pipe;
 mod signal;
 mod task;
+mod time;
 mod user;
 
 use alloc::boxed::Box;

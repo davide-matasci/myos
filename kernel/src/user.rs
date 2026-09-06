@@ -43,9 +43,10 @@ const SYS_SETSID: usize = 29;
 const SYS_SETPGID: usize = 30;
 const SYS_GETPGID: usize = 31;
 const SYS_GETSID: usize = 32;
-const SYS_KILL: usize = 33;
-const SYS_SIGACTION: usize = 34;
-const SYS_GETPID: usize = 35;
+const SYS_GETTIMEOFDAY: usize = 33;
+const SYS_KILL: usize = 34;
+const SYS_SIGACTION: usize = 35;
+const SYS_GETPID: usize = 36;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -1465,6 +1466,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_SETPGID => sys_setpgid(a0, a1),
         SYS_GETPGID => sys_getpgid(a0),
         SYS_GETSID => sys_getsid(a0),
+        SYS_GETTIMEOFDAY => sys_gettimeofday(a0, a1),
         SYS_KILL => sys_kill(a0, a1),
         SYS_SIGACTION => sys_sigaction(a0, a1, a2),
         SYS_GETPID => sys_getpid(),
@@ -1540,6 +1542,25 @@ fn sys_ioctl(fd: usize, request: usize, arg: usize) -> usize {
 /// Become a session leader: `sid = pid` (task slot), new process group
 /// (`pgid = pid`), clear controlling tty.
 /// Fails with SYSERR if the caller is already a session leader (`sid == pid`).
+
+fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
+    const N: usize = 16; // two i64s
+    if tv_ptr == 0 || !user_range_ok(tv_ptr, N) {
+        return SYSERR;
+    }
+    let Some(secs) = crate::time::unix_seconds() else {
+        return SYSERR;
+    };
+    let mut raw = [0u8; N];
+    raw[..8].copy_from_slice(&secs.to_le_bytes());
+    // usec unknown from RTC second resolution
+    raw[8..16].copy_from_slice(&0i64.to_le_bytes());
+    if !write_user_bytes(task::current_aspace(), tv_ptr, &raw) {
+        return SYSERR;
+    }
+    0
+}
+
 fn sys_setsid() -> usize {
     match task::setsid() {
         Some(sid) => sid,

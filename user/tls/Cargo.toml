@@ -1,20 +1,18 @@
 [workspace]
 
 [package]
-name = "http"
+name = "myos-tls"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "curl-like HTTP/HTTPS GET via Plan 9 /net/tcp + user/tls (mbedtls)."
+description = "Reusable TLS client (mbedtls FFI) for myos userspace; /net/tls can adopt later."
 
-[[bin]]
-name = "http"
-test = false
-bench = false
+[lib]
+name = "myos_tls"
+path = "src/lib.rs"
 
 [dependencies]
 myos-user = { path = "../lib" }
-myos-tls = { path = "../tls" }
 
 [profile.dev]
 panic = "abort"

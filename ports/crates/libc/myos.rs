@@ -79,7 +79,6 @@ s! {
 
 // Linux x86_64 errno values (subset).
 pub const EPERM: c_int = 1;
-pub const ESRCH: c_int = 3;
 pub const ENOENT: c_int = 2;
 pub const EINTR: c_int = 4;
 pub const EIO: c_int = 5;
@@ -151,9 +150,10 @@ mod syscalls {
     const SYS_DUP2: usize = 11;
     const SYS_STAT: usize = 12;
     const SYS_IOCTL: usize = 28;
-    const SYS_KILL: usize = 33;
-    const SYS_SIGACTION: usize = 34;
-    const SYS_GETPID: usize = 35;
+    const SYS_GETTIMEOFDAY: usize = 33;
+    const SYS_KILL: usize = 34;
+    const SYS_SIGACTION: usize = 35;
+    const SYS_GETPID: usize = 36;
 
     static mut MYOS_ERRNO: c_int = 0;
 
@@ -323,6 +323,16 @@ mod syscalls {
         }
     }
 
+    pub unsafe fn sys_gettimeofday(tv: *mut timeval) -> c_int {
+        let ret = raw_syscall(SYS_GETTIMEOFDAY, tv as usize, 0, 0);
+        if ret == usize::MAX {
+            set_errno(EIO);
+            -1
+        } else {
+            0
+        }
+    }
+
     pub unsafe fn sys_kill(pid: pid_t, sig: c_int) -> c_int {
         if sig <= 0 || sig > 31 {
             set_errno(EINVAL);
@@ -355,7 +365,6 @@ mod syscalls {
         let ret = raw_syscall(SYS_GETPID, 0, 0, 0);
         ret as pid_t
     }
-
 
     /// Kernel `MyosStatBuf` layout (must match `kernel/src/user.rs`).
     #[repr(C)]
@@ -607,6 +616,16 @@ pub unsafe extern "C" fn __errno_location() -> *mut c_int {
     _myos_errno_location()
 }
 
+
+#[no_mangle]
+pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut c_void) -> c_int {
+    if tv.is_null() {
+        syscalls::set_errno(EINVAL);
+        return -1;
+    }
+    unsafe { syscalls::sys_gettimeofday(tv) }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn clock_gettime(_clk: clockid_t, tp: *mut timespec) -> c_int {
     if tp.is_null() {
@@ -657,7 +676,6 @@ enosys! {
     pub unsafe fn sched_yield() -> c_int;
     pub unsafe fn usleep(usec: c_uint) -> c_int;
     pub unsafe fn sleep(secs: c_uint) -> c_uint;
-    pub unsafe fn gettimeofday(tv: *mut timeval, tz: *mut c_void) -> c_int;
     pub unsafe fn symlinkat(target: *const c_char, newdirfd: c_int, linkpath: *const c_char) -> c_int;
     pub unsafe fn readlinkat(dirfd: c_int, path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t;
     pub unsafe fn fstatat(dirfd: c_int, path: *const c_char, buf: *mut stat, flags: c_int) -> c_int;

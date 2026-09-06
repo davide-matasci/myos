@@ -2,6 +2,7 @@
 
 pub mod alloc;
 pub mod args;
+pub mod dns;
 pub mod runtime;
 
 pub use alloc::Heap;
@@ -301,6 +302,18 @@ pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
     unsafe { sys3(27, pack.as_ptr() as usize, 0, 0) != usize::MAX }
 }
 
+
+/// Wall-clock time (`SYS_GETTIMEOFDAY` = 33). Returns `(sec, usec)` or `None`.
+pub fn gettimeofday() -> Option<(i64, i64)> {
+    let mut tv = [0i64; 2];
+    let ret = unsafe { sys3(33, tv.as_mut_ptr() as usize, 0, 0) };
+    if ret == usize::MAX {
+        None
+    } else {
+        Some((tv[0], tv[1]))
+    }
+}
+
 pub const SEEK_SET: usize = 0;
 pub const SEEK_CUR: usize = 1;
 pub const SEEK_END: usize = 2;
@@ -320,14 +333,14 @@ pub const SIGINT: u32 = 2;
 pub const SIGKILL: u32 = 9;
 pub const SIGTERM: u32 = 15;
 
-/// `getpid` (SYS_GETPID = 35): current task id.
+/// `getpid` (SYS_GETPID = 36): current task id.
 pub fn getpid() -> usize {
-    unsafe { sys3(35, 0, 0, 0) }
+    unsafe { sys3(36, 0, 0, 0) }
 }
 
-/// `kill(pid, sig)` (SYS_KILL = 33). Returns `true` on success.
+/// `kill(pid, sig)` (SYS_KILL = 34). Returns `true` on success.
 pub fn kill(pid: usize, sig: u32) -> bool {
-    unsafe { sys3(33, pid, sig as usize, 0) != usize::MAX }
+    unsafe { sys3(34, pid, sig as usize, 0) != usize::MAX }
 }
 
 /// `raise(sig)` via kill(getpid(), sig).

@@ -207,8 +207,12 @@ int _gettimeofday(struct timeval *tv, void *tz) {
         errno = EINVAL;
         return -1;
     }
-    tv->tv_sec = 0;
-    tv->tv_usec = 0;
+    long ret = myos_syscall3(
+        MYOS_SYS_GETTIMEOFDAY, (long)(uintptr_t)tv, 0, 0);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EIO;
+        return -1;
+    }
     return 0;
 }
 
