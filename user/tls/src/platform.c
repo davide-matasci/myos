@@ -86,6 +86,10 @@ typedef struct {
  * and starves netd on a single core. Poll with real read/write syscalls
  * (same approach as user/dns DATA_POLLS) so the scheduler can run netd.
  */
+/* Budget for empty /net TCP I/O. Writes usually complete in 1 syscall
+ * (netfs enqueues REQ_SEND). Recv must wait for netd to TX ClientHello and
+ * pump ServerHello/certs into DATA — cert chains need headroom under load.
+ */
 enum { BIO_POLLS = 800000 };
 
 static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
@@ -99,7 +103,8 @@ static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
             return n;
         }
     }
-    return MBEDTLS_ERR_SSL_TIMEOUT;
+    /* Distinct from recv timeout so CI/logs show which side stuck. */
+    return -0x004E; /* MBEDTLS_ERR_NET_SEND_FAILED: bio_send poll exhausted */
 }
 
 static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
