@@ -64,13 +64,11 @@ pub const PAGE: usize = 4096;
 pub const USER_STACK_PAGES: usize = 128;
 #[cfg(not(target_arch = "aarch64"))]
 pub const USER_STACK_PAGES: usize = 256;
-/// Per-process brk heap. Must fit the runtime mbedtls TLS arena (~2 MiB) plus
-/// general userspace allocs. AArch64 stays under the 4×512-page L3 spill cap
-/// (image + stack + heap ≲ 2048 pages from USER_BASE).
+/// Per-process brk heap. uutils/clap init needs well over 512 KiB on x86_64.
 #[cfg(target_arch = "aarch64")]
-const HEAP_PAGES: usize = 768;
+const HEAP_PAGES: usize = 256;
 #[cfg(not(target_arch = "aarch64"))]
-const HEAP_PAGES: usize = 1024;
+const HEAP_PAGES: usize = 256;
 /// Cap for fresh `load_user_elf` (init + typical programs) and on-stack frame arrays.
 /// Keep modest: bumping this also sizes `[u64; N]` on the task stack and used to
 /// force `elf_scratch_mut` to grab N contiguous frames before init could run.
@@ -361,10 +359,13 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     Some((aspace, entry as usize, mapped_span, stack_off))
 }
 
-fn map_initial_heap_pages(_aspace: u64, _base: u64, _stack_off: u64) {
-    // Do not pre-map the full HEAP_PAGES window. `sys_brk` maps pages on demand
-    // up to `heap_limit`; pre-mapping 4 MiB per process starved x86 CI at
-    // `-m 256` after the TLS arena moved from BSS onto brk (HEAP_PAGES raised).
+fn map_initial_heap_pages(aspace: u64, base: u64, stack_off: u64) {
+    let heap_base = heap_base_va(base, stack_off);
+    for i in 0..HEAP_PAGES {
+        let va = heap_base + (i * PAGE) as u64;
+        let frame = reuse_or_alloc_frame(aspace, va);
+        map_heap_page(aspace, va, frame);
+    }
 }
 
 /// Remap the loaded image so PT_LOAD `p_flags` control R/W/X.

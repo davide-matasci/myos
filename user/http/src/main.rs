@@ -3,8 +3,6 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-
 use myos_tls::TlsConn;
 use myos_user::dns::{format_ipv4, resolve_a};
 use myos_user::{status_ok, 
@@ -359,7 +357,7 @@ fn main() -> ! {
         sni[..t.host_len].copy_from_slice(&t.host[..t.host_len]);
         // NUL already present
 
-        let mut tls = Box::new(TlsConn::new());
+        let mut tls = TlsConn::new();
         if let Err(e) = tls.handshake(data, &sni[..t.host_len + 1]) {
             close(data);
             write(b"tls err ");
