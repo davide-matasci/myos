@@ -34,14 +34,14 @@ const REP_ERR: u8 = 4;
 
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
-const MSG_CAP: usize = 512;
+const MSG_CAP: usize = 2048;
 const MAX_CONV: usize = 8;
 const FILE_IO: usize = 2048;
 const DHCP_POLLS: usize = 3000;
 const TICK_MS: u64 = 100;
 const ICMP_IDENT_BASE: u16 = 0x22b;
-const TCP_RX: usize = 1024;
-const TCP_TX: usize = 1024;
+const TCP_RX: usize = 4096;
+const TCP_TX: usize = 4096;
 const UDP_BUF: usize = 512;
 
 #[cfg(target_arch = "x86_64")]
@@ -516,7 +516,7 @@ fn pump_sockets(
                     reply(chan, REP_STATUS, conv, 0, b"connected");
                 }
                 if s.can_recv() {
-                    let mut tmp = [0u8; 256];
+                    let mut tmp = [0u8; 1400];
                     if let Ok(n) = s.recv_slice(&mut tmp) {
                         if n != 0 {
                             reply(chan, REP_DATA, conv, 0, &tmp[..n]);
