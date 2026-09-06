@@ -84,6 +84,7 @@ int _close(int fd) {
     if (fd > 2) {
         myos_fd_set_tty(fd, 0);
     }
+    myos_fd_path_clear(fd);
     return 0;
 }
 
@@ -137,6 +138,7 @@ int _open(const char *path, int flags, ...) {
     if (myos_path_is_tty(path)) {
         myos_fd_set_tty((int)ret, 1);
     }
+    myos_fd_path_set((int)ret, path);
     return (int)ret;
 }
 
