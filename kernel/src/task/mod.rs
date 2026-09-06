@@ -992,7 +992,12 @@ pub fn signal_set_ignored(id: usize, bit: u32, ign: bool) {
     irq_restore(flags);
 }
 
-/// True if `id` has any pending bit that is not ignored (SIGKILL bit always counts).
+/// True if `id` has a pending default-fatal signal (`SIGINT`/`SIGKILL`/`SIGTERM`).
+///
+/// Must stay aligned with [`signal_take_fatal`]: waking `input::read` on a
+/// non-fatal pending bit (e.g. `SIGHUP` at `SIG_DFL`) would return 0 to
+/// userspace without `deliver_due` exiting the task — getty treats that as
+/// EOF, exits, and init respawns another `login: ` on the same line.
 pub fn signal_pending_actionable(id: usize) -> bool {
     if id >= MAX_TASKS {
         return false;
@@ -1004,7 +1009,8 @@ pub fn signal_pending_actionable(id: usize) -> bool {
     let kill_bit = 1u32 << 9;
     let pending = t.sig_pending;
     let effective = (pending & !t.sig_ignored) | (pending & kill_bit);
-    let out = effective != 0;
+    const FATAL: [u32; 3] = [2, 9, 15]; // SIGINT, SIGKILL, SIGTERM
+    let out = FATAL.iter().any(|sig| effective & (1u32 << sig) != 0);
     irq_restore(flags);
     out
 }

@@ -32,6 +32,7 @@ fn spawn_netd() {
     match fork() {
         Some(0) => {
             exec(b"/bin/custom/netd", &[b"netd"]);
+            write(b"netd exec failed\n");
             exit();
         }
         Some(_) => {}
@@ -39,7 +40,11 @@ fn spawn_netd() {
     }
 }
 
-/// Stay PID1: fork getty, wait, respawn. Getty prompts and execs `/u/login`.
+/// Stay PID1: fork getty, wait for *that* child, respawn.
+///
+/// Other children (notably netd) must not trigger another getty: a second
+/// getty on the same `/dev/console` reprints `login: ` on the same line and
+/// steals stdin bytes so login is unusable.
 fn spawn_getty_loop() -> ! {
     loop {
         match fork() {
@@ -51,10 +56,14 @@ fn spawn_getty_loop() -> ! {
                 write(b"getty exec failed\n");
                 exit();
             }
-            Some(_) => {
-                // Blocking wait; respawn when getty/login/sh exits.
-                // Also reaps netd if it exits (do not wait for netd at spawn).
-                let _ = wait_status();
+            Some(getty_pid) => {
+                loop {
+                    match wait_status() {
+                        Some((pid, _)) if pid == getty_pid => break,
+                        Some(_) => {}
+                        None => break,
+                    }
+                }
             }
             None => {
                 write(b"getty fork failed\n");
