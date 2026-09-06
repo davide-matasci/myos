@@ -125,12 +125,12 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         });
     }
     let files = FILES.lock();
-    for (i, slot) in files.iter().flatten().enumerate() {
+    for slot in files.iter().flatten() {
         if slot.len == name.len() && &slot.name[..slot.len] == name.as_bytes() {
             return Some(StatInfo {
                 mode: S_IFREG | 0o555,
                 size: slot.data.len() as u32,
-                ino: (i as u32) + 2,
+                ino: crate::fs::vfs::data_ino(slot.data),
                 nlink: 1,
                 dev: 0,
             });
