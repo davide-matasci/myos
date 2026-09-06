@@ -204,6 +204,24 @@ pub fn status_fail(api: &KernelApi, label: &str) {
     }
 }
 
+/// Emit `[ INFO ] label\n` via `KernelApi::write_str`.
+pub fn status_info(api: &KernelApi, label: &str) {
+    unsafe {
+        (api.write_str)(b"[ INFO ] ".as_ptr(), 9);
+        (api.write_str)(label.as_bytes().as_ptr(), label.len());
+        (api.write_str)(b"\n".as_ptr(), 1);
+    }
+}
+
+/// Emit `[ WARN ] label\n` via `KernelApi::write_str`.
+pub fn status_warn(api: &KernelApi, label: &str) {
+    unsafe {
+        (api.write_str)(b"[ WARN ] ".as_ptr(), 9);
+        (api.write_str)(label.as_bytes().as_ptr(), label.len());
+        (api.write_str)(b"\n".as_ptr(), 1);
+    }
+}
+
 /// `module_init` — required. Return 0 on success.
 pub type ModuleInit = unsafe extern "C" fn(*const KernelApi) -> i32;
 

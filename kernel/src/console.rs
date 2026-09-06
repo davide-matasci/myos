@@ -63,6 +63,16 @@ pub fn status_fail(label: &str) {
     write_status("FAIL", framebuffer::FAIL, label);
 }
 
+/// `[ INFO ] label` — informational status (blue tag on the framebuffer).
+pub fn status_info(label: &str) {
+    write_status("INFO", framebuffer::INFO, label);
+}
+
+/// `[ WARN ] label` — warning (amber tag on the framebuffer).
+pub fn status_warn(label: &str) {
+    write_status("WARN", framebuffer::WARN, label);
+}
+
 /// `[ .. ] label` — in-progress boot step (blue tag on the framebuffer).
 pub fn status_progress(label: &str) {
     write_status("..", framebuffer::INFO, label);

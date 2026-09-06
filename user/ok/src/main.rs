@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use myos_user::{
     Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SIGTERM, close, exec, exit, exit_code, fork,
     heap_init, ioctl, kill, listdir, mkdir, mount, open, open_flags, pipe, read, readlink, rename,
-    rmdir, status_ok, symlink, unlink, wait_status, write, write_fd,
+    rmdir, status_fail, status_ok, status_warn, symlink, unlink, wait_status, write_fd,
 };
 
 #[global_allocator]
@@ -17,17 +17,17 @@ static GLOBAL: Heap = Heap;
 #[inline(never)]
 fn do_msg() {
     let Some(fd) = open(b"/msg") else {
-        miss(b"fat nofd\n");
+        miss("fat nofd");
     };
     let mut buf = [0u8; 16];
     let n = read(fd, &mut buf);
     close(fd);
     if n == usize::MAX {
-        miss(b"fat nread\n");
+        miss("fat nread");
     }
     const WANT: &[u8] = b"fat-msg\n";
     if n < WANT.len() || &buf[..WANT.len()] != WANT {
-        miss(b"fat badmsg\n");
+        miss("fat badmsg");
     }
     status_ok("msg");
 }
@@ -60,7 +60,7 @@ fn smoke_vfs() {
 
     let n = listdir(b"/dev", &mut buf);
     if n == usize::MAX || n == 0 || !buf_has(&buf[..n], b"vda") {
-        write(b"vda missing\n");
+        status_warn("vda missing");
         return;
     }
     status_ok("vda");
@@ -91,7 +91,7 @@ fn smoke_vfs() {
         }
         smoke_ext2();
     } else {
-        write(b"nvme missing\n");
+        status_warn("nvme missing");
     }
 
     // ESP/empty can be vda on aarch64/riscv; try every vd* until /fat/msg is ours.
@@ -119,7 +119,7 @@ fn smoke_vfs() {
         }
     }
     if !found {
-        write(b"fat mount fail\n");
+        status_fail("fat mount fail");
         return;
     }
 
@@ -128,7 +128,7 @@ fn smoke_vfs() {
         status_ok("fat ls");
     }
     let Some(fd) = open(b"/fat/msg") else {
-        write(b"fat open fail\n");
+        status_fail("fat open fail");
         return;
     };
     let mut msg = [0u8; 16];
@@ -144,37 +144,37 @@ fn smoke_ext2() {
     match fork() {
         Some(0) => {
             exec(b"/bin/custom/mkfs.ext2", &[b"mkfs.ext2", b"/dev/nvme0n1"]);
-            write(b"ext2 mkfs exec fail\n");
+            status_fail("ext2 mkfs exec fail");
             exit_code(1);
         }
         Some(_) => match wait_status() {
             Some((_, 0)) => {}
             _ => {
-                write(b"ext2 mkfs fail\n");
+                status_fail("ext2 mkfs fail");
                 return;
             }
         },
         None => {
-            write(b"ext2 fork fail\n");
+            status_fail("ext2 fork fail");
             return;
         }
     }
     if !mount(b"/dev/nvme0n1", b"/ext2", b"ext2") {
-        write(b"ext2 mount fail\n");
+        status_fail("ext2 mount fail");
         return;
     }
     let Some(fd) = open_flags(b"/ext2/msg", O_WRONLY | O_CREAT | O_TRUNC) else {
-        write(b"ext2 open fail\n");
+        status_fail("ext2 open fail");
         return;
     };
     if write_fd(fd, b"ext2-msg\n") == usize::MAX {
-        write(b"ext2 write fail\n");
+        status_fail("ext2 write fail");
         close(fd);
         return;
     }
     close(fd);
     let Some(fd) = open_flags(b"/ext2/msg", O_RDONLY) else {
-        write(b"ext2 reopen fail\n");
+        status_fail("ext2 reopen fail");
         return;
     };
     let mut msg = [0u8; 16];
@@ -184,13 +184,13 @@ fn smoke_ext2() {
     if nr >= WANT.len() && &msg[..WANT.len()] == WANT {
         status_ok("ext2 rw");
     } else {
-        write(b"ext2 read fail\n");
+        status_fail("ext2 read fail");
     }
 }
 
 fn smoke_disk() {
     let Some(fd) = open(b"/disk/ping") else {
-        write(b"disk open fail\n");
+        status_fail("disk open fail");
         return;
     };
     let mut buf = [0u8; 16];
@@ -210,17 +210,17 @@ fn smoke_tmp_dev() {
         || !buf_has(&buf[..n], b"dev")
         || !buf_has(&buf[..n], b"proc")
     {
-        write(b"tmpdev ls fail\n");
+        status_fail("tmpdev ls fail");
         return;
     }
 
     // /dev/null: writes discarded, reads return EOF.
     let Some(dn) = open_flags(b"/dev/null", O_RDWR) else {
-        write(b"devnull open fail\n");
+        status_fail("devnull open fail");
         return;
     };
     if write_fd(dn, b"discard") == usize::MAX {
-        write(b"devnull write fail\n");
+        status_fail("devnull write fail");
         close(dn);
         return;
     }
@@ -228,24 +228,24 @@ fn smoke_tmp_dev() {
     let nr = read(dn, &mut scratch);
     close(dn);
     if nr != 0 {
-        write(b"devnull read fail\n");
+        status_fail("devnull read fail");
         return;
     }
     status_ok("devnull");
 
     // /tmp: create, write, read back.
     let Some(fd) = open_flags(b"/tmp/ci", O_WRONLY | O_CREAT | O_TRUNC) else {
-        write(b"tmp open fail\n");
+        status_fail("tmp open fail");
         return;
     };
     if write_fd(fd, b"hi\n") == usize::MAX {
-        write(b"tmp write fail\n");
+        status_fail("tmp write fail");
         close(fd);
         return;
     }
     close(fd);
     let Some(fd) = open_flags(b"/tmp/ci", O_RDONLY) else {
-        write(b"tmp reopen fail\n");
+        status_fail("tmp reopen fail");
         return;
     };
     let mut out = [0u8; 8];
@@ -254,48 +254,48 @@ fn smoke_tmp_dev() {
     if n >= 3 && &out[..3] == b"hi\n" {
         status_ok("tmp");
     } else {
-        write(b"tmp read fail\n");
+        status_fail("tmp read fail");
         return;
     }
 
     // mkdir / rename / symlink / readlink / unlink / rmdir on tmpfs.
     if !mkdir(b"/tmp/d") {
-        write(b"mkdir fail\n");
+        status_fail("mkdir fail");
         return;
     }
     let Some(fd) = open_flags(b"/tmp/d/f", O_WRONLY | O_CREAT | O_TRUNC) else {
-        write(b"mkdir file fail\n");
+        status_fail("mkdir file fail");
         return;
     };
     if write_fd(fd, b"x") == usize::MAX {
-        write(b"mkdir write fail\n");
+        status_fail("mkdir write fail");
         close(fd);
         return;
     }
     close(fd);
     if !rename(b"/tmp/d/f", b"/tmp/d/g") {
-        write(b"rename fail\n");
+        status_fail("rename fail");
         return;
     }
     if !symlink(b"g", b"/tmp/d/l") {
-        write(b"symlink fail\n");
+        status_fail("symlink fail");
         return;
     }
     let mut linkbuf = [0u8; 8];
     let Some(ln) = readlink(b"/tmp/d/l", &mut linkbuf) else {
-        write(b"readlink fail\n");
+        status_fail("readlink fail");
         return;
     };
     if ln != 1 || linkbuf[0] != b'g' {
-        write(b"readlink bad\n");
+        status_fail("readlink bad");
         return;
     }
     if !unlink(b"/tmp/d/l") || !unlink(b"/tmp/d/g") {
-        write(b"unlink fail\n");
+        status_fail("unlink fail");
         return;
     }
     if !rmdir(b"/tmp/d") {
-        write(b"rmdir fail\n");
+        status_fail("rmdir fail");
         return;
     }
     status_ok("tmpops");
@@ -307,7 +307,7 @@ fn smoke_tmp_dev() {
 fn smoke_signal() {
     match fork() {
         None => {
-            write(b"signal fork fail\n");
+            status_fail("signal fork fail");
             return;
         }
         Some(0) => {
@@ -318,7 +318,7 @@ fn smoke_signal() {
         }
         Some(child) => {
             if !kill(child, SIGTERM) {
-                write(b"signal kill fail\n");
+                status_fail("signal kill fail");
                 return;
             }
             match wait_status() {
@@ -326,10 +326,10 @@ fn smoke_signal() {
                     status_ok("signal");
                 }
                 Some((_, status)) => {
-                    write(b"signal bad status\n");
+                    status_fail("signal bad status");
                     let _ = status;
                 }
-                None => write(b"signal wait fail\n"),
+                None => status_fail("signal wait fail"),
             }
         }
     }
@@ -349,7 +349,7 @@ fn smoke_ioctl() {
         if tty_fd.is_some() {
             close(fd);
         }
-        write(b"ioctl tty fail\n");
+        status_fail("ioctl tty fail");
         return;
     }
     if let Some(fd) = tty_fd {
@@ -361,30 +361,30 @@ fn smoke_ioctl() {
         || ws1[0] != 24
         || ws1[1] != 80
     {
-        write(b"ioctl fd1 fail\n");
+        status_fail("ioctl fd1 fail");
         return;
     }
 
     let Some(dn) = open(b"/dev/null") else {
-        write(b"ioctl null open fail\n");
+        status_fail("ioctl null open fail");
         return;
     };
     let r = ioctl(dn, TIOCGWINSZ, ws.as_mut_ptr() as usize);
     close(dn);
     if r != usize::MAX {
-        write(b"ioctl null should fail\n");
+        status_fail("ioctl null should fail");
         return;
     }
 
     let Some((rfd, wfd)) = pipe() else {
-        write(b"ioctl pipe open fail\n");
+        status_fail("ioctl pipe open fail");
         return;
     };
     let r = ioctl(rfd, TIOCGWINSZ, ws.as_mut_ptr() as usize);
     close(rfd);
     close(wfd);
     if r != usize::MAX {
-        write(b"ioctl pipe should fail\n");
+        status_fail("ioctl pipe should fail");
         return;
     }
 
@@ -394,11 +394,11 @@ fn smoke_ioctl() {
 fn smoke_proc(buf: &mut [u8]) {
     let n = listdir(b"/proc", buf);
     if n == usize::MAX || !buf_has(&buf[..n], b"mounts") {
-        write(b"proc ls fail\n");
+        status_fail("proc ls fail");
         return;
     }
     let Some(fd) = open(b"/proc/mounts") else {
-        write(b"proc open fail\n");
+        status_fail("proc open fail");
         return;
     };
     // fd_read copies at most 128 bytes per syscall; concatenate until EOF.
@@ -410,7 +410,7 @@ fn smoke_proc(buf: &mut [u8]) {
         let n = read(fd, &mut buf[nr..]);
         if n == usize::MAX {
             close(fd);
-            write(b"proc read fail\n");
+            status_fail("proc read fail");
             return;
         }
         if n == 0 {
@@ -425,7 +425,7 @@ fn smoke_proc(buf: &mut [u8]) {
         || !buf_has(&buf[..nr], b"fat")
         || !buf_has(&buf[..nr], b"/dev/vd")
     {
-        write(b"proc read fail\n");
+        status_fail("proc read fail");
         return;
     }
     status_ok("proc");
@@ -462,8 +462,8 @@ pub extern "C" fn _start(_argc: usize, _argv: *const usize) -> ! {
     main()
 }
 
-fn miss(m: &[u8]) -> ! {
-    write(m);
+fn miss(label: &str) -> ! {
+    status_fail(label);
     exit();
 }
 

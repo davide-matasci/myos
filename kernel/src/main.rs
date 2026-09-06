@@ -138,12 +138,12 @@ fn kernel_main() -> ! {
 }
 
 fn task_a() {
-    task::print("task a\n");
+    console::status_info("task a");
     TASK_A_DONE.store(true, Ordering::SeqCst);
 }
 
 fn task_b() {
-    task::print("task b\n");
+    console::status_info("task b");
     TASK_B_DONE.store(true, Ordering::SeqCst);
 }
 
