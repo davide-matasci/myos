@@ -3,8 +3,8 @@
  * Choice: hand-written minimal config (not host `./configure`). Host configure
  * probes Linux/glibc/ncurses and enables TERMINFO/TGETENT/select/sysinfo/etc.
  * that myos newlib+libgloss do not provide. We keep FEAT_TINY + UNIX and only
- * the HAVE_* flags that match available newlib/libgloss symbols. Builtin
- * termcap (++builtin_terms) is used — no ncurses.
+ * the HAVE_* flags that match available newlib/libgloss + ncurses symbols.
+ * HAVE_TGETENT uses ports/ncurses (static lib); no TERMINFO database.
  */
 #ifndef MYOS_VIM_CONFIG_H_
 #define MYOS_VIM_CONFIG_H_
@@ -14,16 +14,16 @@
 /* #undef HAVE_WAYLAND */
 /* #undef FEAT_WAYLAND_CLIPBOARD_FS */
 
-/* No ncurses/terminfo — vim builtin termcap. */
+/* ncurses termcap API (ports/ncurses); no full TERMINFO DB. */
 /* #undef TERMINFO */
-/* #undef HAVE_OSPEED */
-/* #undef OSPEED_EXTERN */
-/* #undef HAVE_UP_BC_PC */
-/* #undef UP_BC_PC_EXTERN */
+#define HAVE_OSPEED 1
+#define OSPEED_EXTERN 1
+#define HAVE_UP_BC_PC 1
+#define UP_BC_PC_EXTERN 1
 /* #undef HAVE_OUTFUNTYPE */
 /* #undef HAVE_DEL_CURTERM */
-/* #undef HAVE_TGETENT */
-/* #undef HAVE_TERMCAP_H */
+#define HAVE_TGETENT 1
+#define HAVE_TERMCAP_H 1
 
 #define HAVE_DATE_TIME 1
 #define HAVE_ATTRIBUTE_UNUSED 1

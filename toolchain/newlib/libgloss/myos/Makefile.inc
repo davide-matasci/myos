@@ -17,7 +17,8 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/environ.c \
 	%D%/getline.c \
 	%D%/mmap.c \
-	%D%/fd_path.c
+	%D%/fd_path.c \
+	%D%/termios.c
 
 %C%_extra_parts = crt0 crti crtn
 

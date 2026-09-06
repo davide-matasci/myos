@@ -49,6 +49,12 @@ tcc_libtcc1_in_newlib() {
 
 
 
+ncurses_libs_ready() {
+  [[ -f target/ncurses-x86_64/lib/libncurses.a \
+     && -f target/ncurses-aarch64/lib/libncurses.a \
+     && -f target/ncurses-riscv64/lib/libncurses.a ]]
+}
+
 vim_elves_ready() {
   [[ -f target/vim-x86_64-unknown-none \
      && -f target/vim-aarch64-unknown-none \
@@ -97,6 +103,12 @@ if [[ -x target/debug/myos && -f target/bios.img \
     ./ports/tcc/build.sh
     need_rebuild=1
   fi
+  if ! ncurses_libs_ready; then
+    echo "==> ncurses lib(s) missing after restore; building ncurses"
+    ./ports/ncurses/build.sh
+  else
+    echo "ncurses libs present: $(ls -lh target/ncurses-*/lib/libncurses.a)"
+  fi
   if ! vim_elves_ready; then
     echo "==> vim ELF(s) missing after restore; building vim"
     ./ports/vim/build.sh
@@ -127,6 +139,7 @@ fi
 ./ports/coreutils/build-uutils.sh
 ./ports/ripgrep/build.sh
 ./ports/tcc/build.sh
+./ports/ncurses/build.sh
 ./ports/vim/build.sh
 
 rebuild_kernels

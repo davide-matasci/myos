@@ -14,12 +14,14 @@ inc="$prefix/${triple}/include"
 out="$ROOT/target/libgloss-myos-${arch}"
 
 rm -rf "$out"
-mkdir -p "$out/obj" "$libdir"
+mkdir -p "$out/obj" "$libdir" "$inc" "$inc/sys"
 cp "$ROOT/toolchain/newlib/libgloss/myos/crt0-${arch}.S" "$PORT/crt0.S"
 cp "$ROOT/toolchain/newlib/libgloss/myos/crti-${arch}.S" "$PORT/crti.S"
 cp "$ROOT/toolchain/newlib/libgloss/myos/crtn-${arch}.S" "$PORT/crtn.S"
+# termios.c needs <termios.h> in the sysroot before compile.
+cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
 
-for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path; do
+for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
@@ -44,4 +46,5 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/sys/socket.h" "$inc/sys/socket.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/utsname.h" "$inc/sys/utsname.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/mman.h" "$inc/sys/mman.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/utmp.h" "$inc/utmp.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
 echo "libgloss-myos -> $libdir/libgloss.a"

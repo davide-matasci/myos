@@ -1,5 +1,6 @@
-/* Compile-only termios for Vim on myos (not installed into newlib sysroot).
- * Mirrors ports/oksh/termios.h — kernel stdin stays cooked. */
+/* myos libgloss: POSIX termios types/APIs for oksh/vim/etc.
+ * Kernel stdin stays cooked; tcgetattr fails / tcsetattr succeeds as no-ops
+ * (see termios.c). Installed into the newlib sysroot as <termios.h>. */
 #ifndef _TERMIOS_H_
 #define _TERMIOS_H_
 
@@ -49,9 +50,16 @@
 #define CREAD 0000200
 #define CLOCAL 0004000
 
+/* Queue selectors / flow — also in sys/ioctl.h; keep matching values. */
+#ifndef TCIFLUSH
 #define TCIFLUSH 0
+#endif
+#ifndef TCOFLUSH
 #define TCOFLUSH 1
+#endif
+#ifndef TCIOFLUSH
 #define TCIOFLUSH 2
+#endif
 #define TCOOFF 0
 #define TCOON 1
 #define TCIOFF 2
@@ -60,6 +68,28 @@
 #ifndef _POSIX_VDISABLE
 #define _POSIX_VDISABLE '\0'
 #endif
+
+
+/* Baud-rate constants (for ncurses/tinfo; unused by kernel stubs). */
+#define B0 0
+#define B50 1
+#define B75 2
+#define B110 3
+#define B134 4
+#define B150 5
+#define B200 6
+#define B300 7
+#define B600 8
+#define B1200 9
+#define B1800 10
+#define B2400 11
+#define B4800 12
+#define B9600 13
+#define B19200 14
+#define B38400 15
+#define B57600 16
+#define B115200 17
+#define B230400 18
 
 typedef unsigned char cc_t;
 typedef unsigned int tcflag_t;

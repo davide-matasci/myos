@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-build Vim (FEAT_TINY) with newlib + myos libgloss.
+# Cross-build Vim (FEAT_TINY) with newlib + myos libgloss + ncurses termcap.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -12,6 +12,7 @@ if myos_vim_is_current; then
 fi
 
 "$ROOT/ports/vim/prepare.sh"
+"$ROOT/ports/ncurses/build.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
@@ -43,19 +44,6 @@ VIM_SRCS=(
   myos_stubs.c
 )
 
-CPPFLAGS=(
-  -DHAVE_CONFIG_H
-  -DFEAT_TINY
-  -D_DEFAULT_SOURCE
-  -D_GNU_SOURCE
-  -D_BSD_SOURCE
-  -I"$WORK"
-  -I"$WORK/proto"
-  -I"$MYOS/include" -I"$MYOS"
-  -I"$ROOT/toolchain/newlib/libgloss/myos"
-  -include myos_compat.h
-)
-
 link_prog() {
   local arch="$1"
   shift
@@ -64,12 +52,13 @@ link_prog() {
   local out="$ROOT/target/vim-${arch}-unknown-none"
   local prefix="$ROOT/target/newlib-${arch}"
   local lib="$prefix/${triple}/lib"
+  local nclib="$ROOT/target/ncurses-${arch}/lib"
   local ld="${triple}-ld"
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]}" -L"$lib" \
-    --start-group -lc -lm -lgloss -lg --end-group
+    "$lib/crt0.o" "${objs[@]}" -L"$lib" -L"$nclib" \
+    --start-group -lncurses -lc -lm -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
   echo "vim -> $out"
   if command -v llvm-size >/dev/null 2>&1; then
@@ -84,11 +73,25 @@ build_arch() {
   local triple="${arch}-unknown-myos"
   local prefix="$ROOT/target/newlib-${arch}"
   local inc="$prefix/${triple}/include"
+  local ncinc="$ROOT/target/ncurses-${arch}/include"
   local cc="${triple}-cc"
   local objdir="$ROOT/target/vim-obj-${arch}"
   local extra=()
   local src base obj
   local objs=()
+  local cppflags=(
+    -DHAVE_CONFIG_H
+    -DFEAT_TINY
+    -D_DEFAULT_SOURCE
+    -D_GNU_SOURCE
+    -D_BSD_SOURCE
+    -I"$WORK"
+    -I"$WORK/proto"
+    -I"$MYOS/include" -I"$MYOS"
+    -I"$ROOT/toolchain/newlib/libgloss/myos"
+    -I"$ncinc"
+    -include myos_compat.h
+  )
 
   rm -rf "$objdir"
   mkdir -p "$objdir"
@@ -101,7 +104,7 @@ build_arch() {
       -ffunction-sections -fdata-sections \
       -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
       -Wno-pointer-sign -Wno-missing-field-initializers \
-      -isystem "$inc" "${CPPFLAGS[@]}" \
+      -isystem "$inc" "${cppflags[@]}" \
       -c "$WORK/$src" -o "$obj"
     objs+=("$obj")
   done
