@@ -73,6 +73,10 @@ struct Conv {
     ident: u16,
     seq: u16,
     connected: bool,
+    /// REQ_SEND payload deferred when the smoltcp socket could not accept it.
+    /// Without this, netfs already reported write success and the bytes vanish.
+    pending_len: u16,
+    pending: [u8; MSG_CAP],
 }
 
 impl Conv {
@@ -85,6 +89,8 @@ impl Conv {
         ident: 0,
         seq: 0,
         connected: false,
+        pending_len: 0,
+        pending: [0; MSG_CAP],
     };
 }
 
@@ -460,7 +466,27 @@ fn handle_send(
             };
             let s = sockets.get_mut::<tcp::Socket>(h);
             if s.can_send() {
-                let _ = s.send_slice(payload);
+                match s.send_slice(payload) {
+                    Ok(n) if n < payload.len() => {
+                        // Partial accept — stash the rest for pump_sockets.
+                        let rest = &payload[n..];
+                        let m = rest.len().min(MSG_CAP);
+                        convs[i].pending[..m].copy_from_slice(&rest[..m]);
+                        convs[i].pending_len = m as u16;
+                    }
+                    Ok(_) => {
+                        convs[i].pending_len = 0;
+                    }
+                    Err(_) => {
+                        let m = payload.len().min(MSG_CAP);
+                        convs[i].pending[..m].copy_from_slice(&payload[..m]);
+                        convs[i].pending_len = m as u16;
+                    }
+                }
+            } else {
+                let m = payload.len().min(MSG_CAP);
+                convs[i].pending[..m].copy_from_slice(&payload[..m]);
+                convs[i].pending_len = m as u16;
             }
         }
         Kind::Empty => reply(chan, REP_ERR, conv, -1, b"no conv"),
@@ -510,6 +536,25 @@ fn pump_sockets(
                 let Some(h) = convs[i].handle else {
                     continue;
                 };
+                let pend_len = convs[i].pending_len as usize;
+                if pend_len != 0 {
+                    let mut tmp_pend = [0u8; MSG_CAP];
+                    tmp_pend[..pend_len].copy_from_slice(&convs[i].pending[..pend_len]);
+                    let s = sockets.get_mut::<tcp::Socket>(h);
+                    if s.can_send() {
+                        match s.send_slice(&tmp_pend[..pend_len]) {
+                            Ok(n) if n >= pend_len => {
+                                convs[i].pending_len = 0;
+                            }
+                            Ok(n) if n > 0 => {
+                                let left = pend_len - n;
+                                convs[i].pending.copy_within(n..pend_len, 0);
+                                convs[i].pending_len = left as u16;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 let s = sockets.get_mut::<tcp::Socket>(h);
                 if s.is_active() && s.may_send() && !convs[i].connected {
                     convs[i].connected = true;
@@ -604,11 +649,13 @@ fn main() -> ! {
 
         let mut req = [0u8; FILE_IO];
         // Drain a few queued reqs per tick (ring is 8); 0 = nothing ready.
+        let mut got_req = false;
         for _ in 0..8 {
             let n = read(chan, &mut req);
             if n == 0 || n == usize::MAX {
                 break;
             }
+            got_req = true;
             handle_req(
                 &mut convs,
                 &mut sockets,
@@ -617,6 +664,13 @@ fn main() -> ! {
                 chan,
                 &req[..n],
             );
+        }
+
+        // Push any newly queued TCP segments (e.g. TLS ClientHello) out the NIC
+        // in this same tick instead of waiting for the next VirtualInstant bump.
+        if got_req {
+            let now = clock.now();
+            iface.poll(now, &mut device, &mut sockets);
         }
 
         pump_sockets(&mut convs, &mut sockets, &device, chan);
