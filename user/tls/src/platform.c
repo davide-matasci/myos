@@ -19,8 +19,24 @@ extern int myos_tls_gettimeofday_sec(int64_t *sec);
 extern int myos_tls_fd_read(int fd, unsigned char *buf, size_t len);
 extern int myos_tls_fd_write(int fd, const unsigned char *buf, size_t len);
 
-/* Full Mozilla CA parse + TLS 1.2 buffers need well over 256 KiB. */
-static unsigned char g_heap[2 * 1024 * 1024];
+/* Full Mozilla CA parse + TLS 1.2 buffers need ~2 MiB.
+ *
+ * x86_64 keeps the arena in ELF BSS: moving it onto brk previously failed
+ * bios/uefi HTTPS with mbedtls ALLOC_FAILED (-32512) even at -m 1024.
+ *
+ * aarch64/riscv64 allocate via myos_tls_alloc_heap (brk, page-aligned) so the
+ * arena is NOT ELF BSS. A 2 MiB BSS sat in the image immediately before the
+ * user stack; an MPI over-read could walk image→stack→brk-heap and fault at
+ * heap_limit after corrupting on-stack TLS state (riscv64 master CI after #100).
+ */
+enum { MYOS_TLS_HEAP_SIZE = 2 * 1024 * 1024 };
+#if defined(__x86_64__)
+static unsigned char g_heap_bss[MYOS_TLS_HEAP_SIZE];
+static unsigned char *g_heap = g_heap_bss;
+#else
+static unsigned char *g_heap;
+extern void *myos_tls_alloc_heap(size_t len);
+#endif
 static int g_mem_ready;
 
 mbedtls_time_t myos_mbedtls_time(mbedtls_time_t *t) {
@@ -65,8 +81,15 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
 
 static void ensure_mem(void) {
     if (!g_mem_ready) {
+#if !defined(__x86_64__)
+        g_heap = (unsigned char *)myos_tls_alloc_heap(MYOS_TLS_HEAP_SIZE);
+        if (!g_heap) {
+            /* Leave g_mem_ready clear; handshake will fail on calloc. */
+            return;
+        }
+#endif
         /* init also installs mbedtls_calloc/free to the buffer allocator */
-        mbedtls_memory_buffer_alloc_init(g_heap, sizeof(g_heap));
+        mbedtls_memory_buffer_alloc_init(g_heap, MYOS_TLS_HEAP_SIZE);
         g_mem_ready = 1;
     }
 }
