@@ -525,26 +525,49 @@ fn reload_user_elf(
         sync_icache(mm::hhdm(phys) as usize, PAGE);
     }
     apply_elf_load_prots(aspace, bytes, base, image_pages);
+    // Drop inherited brk pages so the next image starts with an empty on-demand
+    // heap (see `free_abandoned_stack_heap`). Reload keeps `stack_off` fixed so
+    // expand's reclaim would otherwise no-op on the heap window.
+    free_heap_window(aspace, base, stack_off);
     Some((entry as usize, n_pages * PAGE, stack_off))
+}
+
+/// Unmap+free every mapped page in the brk window for `stack_off`.
+fn free_heap_window(aspace: u64, base: u64, stack_off: u64) {
+    let mut va = heap_base_va(base, stack_off);
+    let lim = heap_limit_va(base, stack_off);
+    while va < lim {
+        free_mapped_page(aspace, va);
+        va += PAGE as u64;
+    }
 }
 
 /// Grow the current aspace and load a large ELF (up to [`MAX_EXPAND_PAGES`]).
 /// Used when [`reload_user_elf`] is too small but we already have an aspace
 /// (post-fork exec of release uutils / ripgrep).
-/// Free stack/heap pages from a prior expand/load when the stack window moves.
+/// Free stack/heap pages from a prior expand/load when the stack window moves,
+/// and **always** drop the old heap window on in-place exec.
+///
 /// Pages that fall inside the new code span `[base, base+new_stack_off)` are
-/// kept for `reuse_or_alloc_frame` to turn into code. Without this, each
-/// uutils→rg-sized expand abandons `USER_STACK_PAGES + HEAP_PAGES` frames and
-/// riscv UEFI walks the freelist dry → classic `sepc=0` after the next ecall.
+/// kept for `reuse_or_alloc_frame` to turn into code. Without stack reclaim,
+/// each uutils→rg-sized expand abandons `USER_STACK_PAGES + HEAP_PAGES` frames
+/// and riscv UEFI walks the freelist dry → classic `sepc=0` after the next ecall.
+///
+/// Heap is freed even when `stack_off` is unchanged: in-place reload/expand used
+/// to leave prior brk pages mapped while `replace_user` reset `brk_cur` to
+/// `heap_base`, so exec-heavy smoke accumulated anonymous heap and freelist
+/// pressure until later HTTPS faults looked "random".
 fn free_abandoned_stack_heap(aspace: u64, base: u64, old_stack_off: u64, new_stack_off: u64) {
-    if old_stack_off == 0 || old_stack_off == new_stack_off {
+    if old_stack_off == 0 {
         return;
     }
     let new_code_end = base + new_stack_off;
-    for i in 0..USER_STACK_PAGES {
-        let va = base + old_stack_off + (i * PAGE) as u64;
-        if va >= new_code_end {
-            free_mapped_page(aspace, va);
+    if old_stack_off != new_stack_off {
+        for i in 0..USER_STACK_PAGES {
+            let va = base + old_stack_off + (i * PAGE) as u64;
+            if va >= new_code_end {
+                free_mapped_page(aspace, va);
+            }
         }
     }
     let mut va = heap_base_va(base, old_stack_off);
@@ -2276,6 +2299,7 @@ fn sys_brk(req: usize) -> usize {
         } else {
             align_up_usize(cur, PAGE)
         };
+        let mut mapped_any = false;
         while va < map_end {
             if virt_to_phys(aspace, va as u64).is_none() {
                 let frame = mm::alloc_frame();
@@ -2283,8 +2307,16 @@ fn sys_brk(req: usize) -> usize {
                     core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
                 }
                 map_heap_page(aspace, va as u64, frame);
+                mapped_any = true;
             }
             va += PAGE;
+        }
+        // RISC-V requires SFENCE.VMA after invalid→valid PTE updates. mmap /
+        // expand already flush; brk used to skip it. With on-demand heap (and
+        // the 2 MiB TLS arena on aarch64/riscv) that left stale non-present
+        // TLB entries → intermittent load faults mid-heap (HTTPS montmul).
+        if mapped_any {
+            flush_user_tlb();
         }
     }
     task::set_brk(req as u64);
@@ -2391,13 +2423,18 @@ fn sys_munmap(addr: usize, len: usize) -> usize {
     }
     let pages = len.div_ceil(PAGE);
     let map_len = pages * PAGE;
-    if !task::mmap_contains(addr, map_len) && !user_range_ok(addr, map_len) {
+    // Only anonymous mmap regions. Allowing munmap of brk/code/stack punched
+    // holes while brk_cur still covered them (load faults) and — worse —
+    // `unmap_user_page` alone never returned frames to the freelist, which
+    // drained riscv UEFI RAM across exec-heavy smoke and surfaced as random
+    // user exceptions under HTTPS.
+    if !task::mmap_contains(addr, map_len) {
         return SYSERR;
     }
     let aspace = task::current_aspace();
     let mut off = 0;
     while off < map_len {
-        unmap_user_page(aspace, (addr + off) as u64);
+        free_mapped_page(aspace, (addr + off) as u64);
         off += PAGE;
     }
     task::mmap_remove(addr as u64, pages as u32);
