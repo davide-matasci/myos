@@ -154,7 +154,39 @@ do_clean_and_build() {
 
 mkdir -p target
 
+# Subcommands for scripts/ci-registry.sh kernels port.
+case "${1:-}" in
+  --print-hash)
+    kernel_inputs_hash
+    printf '\n'
+    exit 0
+    ;;
+  --print-members)
+    echo target/.myos-ci-kernel-version
+    echo target/debug/myos
+    echo target/bios.img
+    echo target/uefi.img
+    echo target/fat.img
+    echo target/aarch64-unknown-none-softfloat/debug/kernel
+    echo target/riscv64imac-unknown-none-elf/debug/kernel
+    exit 0
+    ;;
+  --is-current)
+    want="$(kernel_inputs_hash)"
+    if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP")" == "$want" ]] && artifacts_ready; then
+      exit 0
+    fi
+    exit 1
+    ;;
+esac
+
 want="$(kernel_inputs_hash)"
+
+# GHCR pull (same content-hash philosophy as ports). Ignore pull failures.
+if [[ -x "$ROOT/scripts/ci-registry.sh" ]]; then
+  "$ROOT/scripts/ci-registry.sh" pull kernels || true
+fi
+
 have=""
 if [[ -f "$STAMP" ]]; then
   have="$(cat "$STAMP")"
@@ -194,3 +226,9 @@ fi
 echo "kernels built; stamp $want"
 test -f target/bios.img
 od -An -tx1 -N 16 target/bios.img
+
+# Persist stamp+artifacts to GHCR so the next CI re-run is a true no-op
+# (rust-cache does not re-save on an exact key hit).
+if [[ -x "$ROOT/scripts/ci-registry.sh" ]]; then
+  "$ROOT/scripts/ci-registry.sh" push kernels || true
+fi

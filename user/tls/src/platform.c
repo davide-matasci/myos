@@ -19,9 +19,18 @@ extern int myos_tls_gettimeofday_sec(int64_t *sec);
 extern int myos_tls_fd_read(int fd, unsigned char *buf, size_t len);
 extern int myos_tls_fd_write(int fd, const unsigned char *buf, size_t len);
 
-/* Full Mozilla CA parse + TLS 1.2 buffers need well over 256 KiB. */
-static unsigned char g_heap[2 * 1024 * 1024];
+/* Full Mozilla CA parse + TLS 1.2 buffers need ~2 MiB.
+ * Allocated at runtime via myos_tls_alloc_heap (brk, page-aligned) so the
+ * arena is NOT ELF BSS. A 2 MiB BSS sat in the image immediately before the
+ * user stack: an MPI over-read could walk image→stack→brk-heap and fault at
+ * heap_limit after corrupting on-stack TLS state (intermittent riscv64 CI).
+ */
+enum { MYOS_TLS_HEAP_SIZE = 2 * 1024 * 1024 };
+static unsigned char *g_heap;
 static int g_mem_ready;
+
+/* Rust: page-aligned brk bump coordinated with myos_user::Heap. */
+extern void *myos_tls_alloc_heap(size_t len);
 
 mbedtls_time_t myos_mbedtls_time(mbedtls_time_t *t) {
     int64_t sec = 0;
@@ -65,8 +74,13 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
 
 static void ensure_mem(void) {
     if (!g_mem_ready) {
+        g_heap = (unsigned char *)myos_tls_alloc_heap(MYOS_TLS_HEAP_SIZE);
+        if (!g_heap) {
+            /* Leave g_mem_ready clear; handshake will fail on calloc. */
+            return;
+        }
         /* init also installs mbedtls_calloc/free to the buffer allocator */
-        mbedtls_memory_buffer_alloc_init(g_heap, sizeof(g_heap));
+        mbedtls_memory_buffer_alloc_init(g_heap, MYOS_TLS_HEAP_SIZE);
         g_mem_ready = 1;
     }
 }
@@ -126,6 +140,9 @@ int myos_tls_handshake(myos_tls_conn *c, int fd, const char *sni_host) {
     const char *pers = "myos-tls";
 
     ensure_mem();
+    if (!g_mem_ready) {
+        return MBEDTLS_ERR_SSL_ALLOC_FAILED;
+    }
     mbedtls_platform_set_time(myos_mbedtls_time);
     {
         mbedtls_time_t now = myos_mbedtls_time(NULL);

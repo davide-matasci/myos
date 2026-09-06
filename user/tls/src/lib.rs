@@ -59,6 +59,14 @@ pub unsafe extern "C" fn myos_tls_fd_write(fd: i32, buf: *const u8, len: usize) 
     }
 }
 
+
+/// Page-aligned brk arena for mbedtls (see platform.c). Must run after
+/// `myos_user::heap_init` so the bump allocator has observed the break.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn myos_tls_alloc_heap(len: usize) -> *mut u8 {
+    myos_user::alloc::alloc_aligned(len, 4096)
+}
+
 /// Fixed-capacity TLS session storage (must hold `myos_tls_conn`).
 pub struct TlsConn {
     raw: [u8; 96 * 1024],

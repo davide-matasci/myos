@@ -64,11 +64,13 @@ pub const PAGE: usize = 4096;
 pub const USER_STACK_PAGES: usize = 128;
 #[cfg(not(target_arch = "aarch64"))]
 pub const USER_STACK_PAGES: usize = 256;
-/// Per-process brk heap. uutils/clap init needs well over 512 KiB on x86_64.
+/// Per-process brk heap. Must fit the runtime mbedtls TLS arena (~2 MiB) plus
+/// general userspace allocs. AArch64 stays under the 4×512-page L3 spill cap
+/// (image + stack + heap ≲ 2048 pages from USER_BASE).
 #[cfg(target_arch = "aarch64")]
-const HEAP_PAGES: usize = 256;
+const HEAP_PAGES: usize = 768;
 #[cfg(not(target_arch = "aarch64"))]
-const HEAP_PAGES: usize = 256;
+const HEAP_PAGES: usize = 1024;
 /// Cap for fresh `load_user_elf` (init + typical programs) and on-stack frame arrays.
 /// Keep modest: bumping this also sizes `[u64; N]` on the task stack and used to
 /// force `elf_scratch_mut` to grab N contiguous frames before init could run.
