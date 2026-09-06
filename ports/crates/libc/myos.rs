@@ -151,6 +151,9 @@ mod syscalls {
     const SYS_STAT: usize = 12;
     const SYS_IOCTL: usize = 28;
     const SYS_GETTIMEOFDAY: usize = 33;
+    const SYS_KILL: usize = 34;
+    const SYS_SIGACTION: usize = 35;
+    const SYS_GETPID: usize = 36;
 
     static mut MYOS_ERRNO: c_int = 0;
 
@@ -330,6 +333,39 @@ mod syscalls {
         }
     }
 
+    pub unsafe fn sys_kill(pid: pid_t, sig: c_int) -> c_int {
+        if sig <= 0 || sig > 31 {
+            set_errno(EINVAL);
+            return -1;
+        }
+        let ret = raw_syscall(SYS_KILL, pid as usize, sig as usize, 0);
+        if ret == usize::MAX {
+            set_errno(ESRCH);
+            -1
+        } else {
+            0
+        }
+    }
+
+    pub unsafe fn sys_sigaction(sig: c_int, act: *const c_void, oact: *mut c_void) -> c_int {
+        if sig <= 0 || sig > 31 {
+            set_errno(EINVAL);
+            return -1;
+        }
+        let ret = raw_syscall(SYS_SIGACTION, sig as usize, act as usize, oact as usize);
+        if ret == usize::MAX {
+            set_errno(ENOSYS);
+            -1
+        } else {
+            0
+        }
+    }
+
+    pub unsafe fn sys_getpid() -> pid_t {
+        let ret = raw_syscall(SYS_GETPID, 0, 0, 0);
+        ret as pid_t
+    }
+
     /// Kernel `MyosStatBuf` layout (must match `kernel/src/user.rs`).
     #[repr(C)]
     struct KernelStat {
@@ -506,7 +542,26 @@ pub unsafe extern "C" fn lseek(_fd: c_int, _offset: off_t, _whence: c_int) -> of
 
 #[no_mangle]
 pub unsafe extern "C" fn getpid() -> pid_t {
-    1
+    syscalls::sys_getpid()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kill(pid: pid_t, sig: c_int) -> c_int {
+    syscalls::sys_kill(pid, sig)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn raise(sig: c_int) -> c_int {
+    let pid = syscalls::sys_getpid();
+    syscalls::sys_kill(pid, sig)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn sigaction(sig: c_int, act: *const c_void, oldact: *mut c_void) -> c_int {
+    // Kernel expects {handler, flags, mask} usizes. Callers using newlib layout
+    // should go through libgloss; rustix/ctrlc typically pass opaque pointers —
+    // we forward as-is when non-null (first word = handler).
+    syscalls::sys_sigaction(sig, act, oldact)
 }
 
 #[no_mangle]
@@ -612,9 +667,6 @@ enosys! {
     pub unsafe fn readv(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t;
     pub unsafe fn writev(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t;
     pub unsafe fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
-    pub unsafe fn kill(pid: pid_t, sig: c_int) -> c_int;
-    pub unsafe fn raise(sig: c_int) -> c_int;
-    pub unsafe fn sigaction(sig: c_int, act: *const c_void, oldact: *mut c_void) -> c_int;
     pub unsafe fn sigprocmask(how: c_int, set: *const sigset_t, oldset: *mut sigset_t) -> c_int;
     pub unsafe fn execve(path: *const c_char, argv: *const *const c_char, envp: *const *const c_char) -> c_int;
     pub unsafe fn execvp(file: *const c_char, argv: *const *const c_char) -> c_int;

@@ -44,6 +44,9 @@ const SYS_SETPGID: usize = 30;
 const SYS_GETPGID: usize = 31;
 const SYS_GETSID: usize = 32;
 const SYS_GETTIMEOFDAY: usize = 33;
+const SYS_KILL: usize = 34;
+const SYS_SIGACTION: usize = 35;
+const SYS_GETPID: usize = 36;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -1429,7 +1432,7 @@ pub extern "C" fn syscall_dispatch(
     user_rsp: usize,
 ) -> usize {
     task::save_user_context(user_rip, user_rsp);
-    match nr {
+    let ret = match nr {
         SYS_WRITE => sys_write(a0, a1, a2),
         SYS_EXIT => sys_exit(a0),
         SYS_OPEN => sys_open(a0, a1, a2),
@@ -1464,8 +1467,14 @@ pub extern "C" fn syscall_dispatch(
         SYS_GETPGID => sys_getpgid(a0),
         SYS_GETSID => sys_getsid(a0),
         SYS_GETTIMEOFDAY => sys_gettimeofday(a0, a1),
+        SYS_KILL => sys_kill(a0, a1),
+        SYS_SIGACTION => sys_sigaction(a0, a1, a2),
+        SYS_GETPID => sys_getpid(),
         _ => SYSERR,
-    }
+    };
+    // Deliver default-fatal pending signals before returning to userspace.
+    crate::signal::deliver_due();
+    ret
 }
 
 fn sys_exit(code: usize) -> ! {
@@ -1578,6 +1587,30 @@ fn sys_getsid(pid: usize) -> usize {
     match task::getsid(pid) {
         Some(sid) => sid,
         None => SYSERR,
+    }
+}
+
+fn sys_getpid() -> usize {
+    task::current_id()
+}
+
+/// `kill(pid, sig)` — `pid` is interpreted as signed (`isize`) for pgid rules.
+fn sys_kill(pid: usize, sig: usize) -> usize {
+    if crate::signal::kill(pid as isize, sig as u32) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+/// `sigaction(sig, act, oact)` with minimal `{handler, flags, mask}` user structs.
+fn sys_sigaction(sig: usize, act: usize, oact: usize) -> usize {
+    let act = if act == 0 { None } else { Some(act) };
+    let oact = if oact == 0 { None } else { Some(oact) };
+    if crate::signal::sigaction(sig as u32, act, oact) {
+        0
+    } else {
+        SYSERR
     }
 }
 
