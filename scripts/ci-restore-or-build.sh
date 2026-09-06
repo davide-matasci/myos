@@ -55,14 +55,10 @@ rg_elves_ready() {
 }
 
 rebuild_kernels() {
-  echo "==> rebuilding kernels so include_bytes! picks up /c/rg"
-  cargo clean -p myos
-  cargo clean -p kernel --target x86_64-unknown-none
-  cargo clean -p kernel --target aarch64-unknown-none-softfloat
-  cargo clean -p kernel --target riscv64imac-unknown-none-elf
-  cargo build
-  cargo build -p kernel --target aarch64-unknown-none-softfloat
-  cargo build -p kernel --target riscv64imac-unknown-none-elf
+  # Hash-gated: same script as the CI "Build kernel..." step. No-op when
+  # inputs/artifacts already match target/.myos-ci-kernel-version.
+  echo "==> rebuild_kernels via scripts/ci-build-kernels.sh"
+  ./scripts/ci-build-kernels.sh
 }
 
 if [[ -x target/debug/myos && -f target/bios.img \
