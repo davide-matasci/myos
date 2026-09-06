@@ -1,4 +1,5 @@
-//! myos has no signals; compile-time stub for ctrlc (used by uu_sort).
+//! Phase-1 signals exist (`kill`/`SIGINT`), but ctrlc still parks: no handler
+//! registration / thread wake yet. Compile-time stub for ctrlc (uu_sort).
 use crate::error::Error as CtrlcError;
 use std::fmt;
 
@@ -24,7 +25,8 @@ pub unsafe fn init_os_handler(_overwrite: bool) -> Result<(), Error> {
 }
 
 pub unsafe fn block_ctrl_c() -> Result<(), CtrlcError> {
-    // No SIGINT delivery on myos; park so the ctrlc helper thread stays quiet.
+    // Real kill/SIGINT exist in-kernel; handler registration for ctrlc is deferred.
+    // Park so the ctrlc helper thread stays quiet until that lands.
     loop {
         std::thread::park();
     }

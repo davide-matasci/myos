@@ -268,5 +268,9 @@ int _stat(const char *path, struct stat *st) {
 }
 
 int _getpid(void) {
-    return 1;
+    long ret = myos_syscall0(MYOS_SYS_GETPID);
+    if (ret == (long)MYOS_SYSERR) {
+        return 1;
+    }
+    return (int)ret;
 }
