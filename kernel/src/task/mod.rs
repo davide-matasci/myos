@@ -367,6 +367,16 @@ pub fn set_brk(brk: u64) {
     with_current_mut(|t| t.brk_cur = brk);
 }
 
+/// Drop the current task's mmap table without freeing frames (caller already
+/// reclaimed them). Used after in-place exec frees anonymous maps before
+/// `expand_user_elf` so a later `reclaim_user_aspace` / exit cannot double-free.
+pub fn clear_mmap() {
+    with_current_mut(|t| {
+        t.mmap = EMPTY_MMAP;
+        t.mmap_next = 0;
+    });
+}
+
 pub fn mmap_regions() -> [MmapRegion; MAX_MMAP_REGIONS] {
     let flags = irq_save();
     irq_off();
