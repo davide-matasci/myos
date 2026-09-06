@@ -73,6 +73,8 @@ struct Conv {
     ident: u16,
     seq: u16,
     connected: bool,
+    /// Peer closed (or socket inactive); status hangup already sent once.
+    hungup: bool,
     /// REQ_SEND payload deferred when the smoltcp socket could not accept it.
     /// Without this, netfs already reported write success and the bytes vanish.
     pending_len: u16,
@@ -89,6 +91,7 @@ impl Conv {
         ident: 0,
         seq: 0,
         connected: false,
+        hungup: false,
         pending_len: 0,
         pending: [0; MSG_CAP],
     };
@@ -556,7 +559,7 @@ fn pump_sockets(
                     }
                 }
                 let s = sockets.get_mut::<tcp::Socket>(h);
-                if s.is_active() && s.may_send() && !convs[i].connected {
+                if s.is_active() && s.may_send() && !convs[i].connected && !convs[i].hungup {
                     convs[i].connected = true;
                     reply(chan, REP_STATUS, conv, 0, b"connected");
                 }
@@ -567,6 +570,17 @@ fn pump_sockets(
                             reply(chan, REP_DATA, conv, 0, &tmp[..n]);
                         }
                     }
+                }
+                // Peer FIN / inactive: surface hangup so blocking recv gets EOF.
+                // CloseWait with drained RX has may_recv()==false; Closed is !active.
+                let s = sockets.get_mut::<tcp::Socket>(h);
+                if convs[i].connected
+                    && !convs[i].hungup
+                    && !s.can_recv()
+                    && (!s.is_active() || !s.may_recv())
+                {
+                    convs[i].hungup = true;
+                    reply(chan, REP_STATUS, conv, 0, b"hangup");
                 }
             }
         }

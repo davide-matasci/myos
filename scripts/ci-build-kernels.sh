@@ -33,6 +33,25 @@ PORT_STAMPS=(
   target/.myos-newlib-version
 )
 
+# Source-controlled curl/mbedtls inputs (NOT target/.myos-{curl,mbedtls}-version).
+# Those stamps are rewritten by ports/*/build.sh during this same job (and mbedtls
+# WANT also shifts when target/cacert.pem appears mid-fetch), which made
+# kernel_inputs_hash drift after build. Hash pins + config/patches instead.
+CURL_MBEDTLS_INPUTS=(
+  ports/mbedtls/versions.env
+  ports/mbedtls/myos_mbedtls_config.h
+  ports/mbedtls/build.sh
+  ports/mbedtls/fetch.sh
+  ports/curl/versions.env
+  ports/curl/config-myos.h
+  ports/curl/build.sh
+  ports/curl/fetch.sh
+  ports/curl/build-softfloat-riscv64.sh
+  ports/curl/myos_curl_platform.c
+  ports/curl/mbedtls.c.myos.patch
+  ports/curl/tool_cfgable.h.myos.patch
+)
+
 hash_tree() {
   # Checkout-stable: relative paths, sorted, no abs paths, no target/ junk.
   local dir="$1"
@@ -86,6 +105,14 @@ kernel_inputs_hash() {
             printf 'stamp-missing:%s\n' "$stamp"
           fi
         done
+        # curl/mbedtls: digest checkout-stable sources only (see CURL_MBEDTLS_INPUTS).
+        for f in "${CURL_MBEDTLS_INPUTS[@]}"; do
+          if [[ -f "$f" ]]; then
+            sha256sum "$f"
+          else
+            printf 'input-missing:%s\n' "$f"
+          fi
+        done
       } | sha256sum | awk '{print $1}'
     )
   )"
@@ -97,6 +124,10 @@ kernel_inputs_hash() {
 # packages that omit them made master boot jobs panic with "hello ELF missing"
 # after a kernels cache hit (PR builds were fine because they did a full cargo
 # build). Keep them in artifacts_ready + --print-members.
+#
+# socket_smoke + curl: same class of bug for #109 — build job must produce and
+# pack them or aarch64/riscv initramfs skips and `[ OK ] socket` / interactive
+# curl fail. Canonical names plus coreutils-* pack aliases (ci.yml glob).
 HELLO_OK_ELFS=(
   target/hello-x86_64-unknown-none
   target/hello-aarch64-unknown-none-softfloat
@@ -104,14 +135,45 @@ HELLO_OK_ELFS=(
   target/ok-x86_64-unknown-none
   target/ok-aarch64-unknown-none-softfloat
   target/ok-riscv64imac-unknown-none-elf
+  target/c-socket_smoke-x86_64-unknown-none
+  target/c-socket_smoke-aarch64-unknown-none
+  target/c-socket_smoke-riscv64-unknown-none
+  target/curl-x86_64-unknown-none
+  target/curl-aarch64-unknown-none
+  target/curl-riscv64-unknown-none
+  target/coreutils-c-socket_smoke-x86_64-unknown-none
+  target/coreutils-c-socket_smoke-aarch64-unknown-none
+  target/coreutils-c-socket_smoke-riscv64-unknown-none
+  target/coreutils-curl-x86_64-unknown-none
+  target/coreutils-curl-aarch64-unknown-none
+  target/coreutils-curl-riscv64-unknown-none
 )
 
+# Mozilla CA bundle -> initramfs lib/cacert.pem (curl CURL_CA_BUNDLE).
+# Pack via coreutils-cacert.pem alias (existing ci.yml `target/coreutils-*` glob;
+# workflow edits need `workflow` scope). initramfs falls back to the alias.
+CACERT_PEM=target/cacert.pem
+CACERT_PACK_ALIAS=target/coreutils-cacert.pem
+
+ensure_cacert_pack_alias() {
+  if [[ -f "$CACERT_PEM" ]]; then
+    cp "$CACERT_PEM" "$CACERT_PACK_ALIAS"
+  elif [[ -f "$CACERT_PACK_ALIAS" ]]; then
+    cp "$CACERT_PACK_ALIAS" "$CACERT_PEM"
+  else
+    return 1
+  fi
+  return 0
+}
+
 artifacts_ready() {
+  ensure_cacert_pack_alias || return 1
   [[ -x target/debug/myos ]] \
     && [[ -f target/bios.img ]] \
     && [[ -f target/uefi.img ]] \
     && [[ -f target/aarch64-unknown-none-softfloat/debug/kernel ]] \
     && [[ -f target/riscv64imac-unknown-none-elf/debug/kernel ]] \
+    && [[ -f "$CACERT_PACK_ALIAS" ]] \
     || return 1
   local f
   for f in "${HELLO_OK_ELFS[@]}"; do
@@ -122,6 +184,8 @@ artifacts_ready() {
 
 do_clean_and_build() {
   echo "==> kernel inputs changed or artifacts missing; clean + build"
+  # Ensure socket_smoke + curl exist before initramfs/cargo (x86 bios embeds them).
+  "$ROOT/scripts/build-c-hello.sh"
   cargo clean -p myos
   # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
   # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
@@ -153,6 +217,8 @@ case "${1:-}" in
     for f in "${HELLO_OK_ELFS[@]}"; do
       echo "$f"
     done
+    echo "$CACERT_PEM"
+    echo "$CACERT_PACK_ALIAS"
     exit 0
     ;;
   --is-current)

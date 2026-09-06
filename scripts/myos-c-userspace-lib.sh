@@ -62,6 +62,7 @@ myos_c_hello_version_hash() {
     {
       myos_newlib_version_hash
       sha256sum "$MYOS_ROOT/c/hello.c"
+      sha256sum "$MYOS_ROOT/c/socket_smoke.c"
       sha256sum "$MYOS_ROOT/scripts/build-c-hello.sh"
     } | sha256sum | awk '{print $1}'
   )"
@@ -73,7 +74,10 @@ myos_c_hello_is_current() {
     && [[ "$(cat "$MYOS_C_HELLO_VERSION")" == "$(myos_c_hello_version_hash)" ]] \
     && [[ -f "$MYOS_ROOT/target/c-hello-x86_64-unknown-none" ]] \
     && [[ -f "$MYOS_ROOT/target/c-hello-aarch64-unknown-none" ]] \
-    && [[ -f "$MYOS_ROOT/target/c-hello-riscv64-unknown-none" ]]
+    && [[ -f "$MYOS_ROOT/target/c-hello-riscv64-unknown-none" ]] \
+    && [[ -f "$MYOS_ROOT/target/c-socket_smoke-x86_64-unknown-none" ]] \
+    && [[ -f "$MYOS_ROOT/target/c-socket_smoke-aarch64-unknown-none" ]] \
+    && [[ -f "$MYOS_ROOT/target/c-socket_smoke-riscv64-unknown-none" ]]
 }
 
 myos_sbase_version_hash() {

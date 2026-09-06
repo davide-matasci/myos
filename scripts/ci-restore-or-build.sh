@@ -30,6 +30,31 @@ restore_packed_rg_elves() {
       echo "restored $dest from $f"
     fi
   done
+  # socket_smoke + curl: packed via coreutils-* so aarch64/riscv boot initramfs
+  # finds them without a ci.yml glob edit.
+  for f in target/coreutils-c-socket_smoke-*; do
+    dest="target/c-socket_smoke-${f#target/coreutils-c-socket_smoke-}"
+    if [[ ! -f "$dest" ]]; then
+      cp "$f" "$dest"
+      echo "restored $dest from $f"
+    fi
+  done
+  for f in target/coreutils-curl-*; do
+    dest="target/curl-${f#target/coreutils-curl-}"
+    if [[ ! -f "$dest" ]]; then
+      cp "$f" "$dest"
+      echo "restored $dest from $f"
+    fi
+  done
+  # Mozilla CA: pack alias is coreutils-cacert.pem (ci.yml coreutils-* glob).
+  # Emit canonical target/cacert.pem so initramfs does not skip lib/cacert.pem.
+  if [[ -f target/coreutils-cacert.pem && ! -f target/cacert.pem ]]; then
+    cp target/coreutils-cacert.pem target/cacert.pem
+    echo "restored target/cacert.pem from target/coreutils-cacert.pem"
+  elif [[ -f target/cacert.pem && ! -f target/coreutils-cacert.pem ]]; then
+    cp target/cacert.pem target/coreutils-cacert.pem
+    echo "restored target/coreutils-cacert.pem from target/cacert.pem"
+  fi
 }
 
 
@@ -65,6 +90,18 @@ rg_elves_ready() {
   [[ -f target/rg-x86_64-unknown-myos \
      && -f target/rg-aarch64-unknown-myos \
      && -f target/rg-riscv64-unknown-myos ]]
+}
+
+socket_smoke_elves_ready() {
+  [[ -f target/c-socket_smoke-x86_64-unknown-none \
+     && -f target/c-socket_smoke-aarch64-unknown-none \
+     && -f target/c-socket_smoke-riscv64-unknown-none ]]
+}
+
+curl_elves_ready() {
+  [[ -f target/curl-x86_64-unknown-none \
+     && -f target/curl-aarch64-unknown-none \
+     && -f target/curl-riscv64-unknown-none ]]
 }
 
 rebuild_kernels() {
@@ -116,6 +153,20 @@ if [[ -x target/debug/myos && -f target/bios.img \
   else
     echo "vim ELFs present: $(ls -lh target/vim-*-unknown-none)"
   fi
+  if ! socket_smoke_elves_ready; then
+    echo "==> c-socket_smoke ELF(s) missing after restore; building c-hello/socket_smoke"
+    ./scripts/build-c-hello.sh
+    need_rebuild=1
+  else
+    echo "socket_smoke ELFs present: $(ls -lh target/c-socket_smoke-*-unknown-none)"
+  fi
+  if ! curl_elves_ready; then
+    echo "==> curl ELF(s) missing after restore; building curl"
+    ./ports/curl/build.sh
+    need_rebuild=1
+  else
+    echo "curl ELFs present: $(ls -lh target/curl-*-unknown-none)"
+  fi
   if ((need_rebuild)); then
     rebuild_kernels
   fi
@@ -141,6 +192,7 @@ fi
 ./ports/tcc/build.sh
 ./ports/ncurses/build.sh
 ./ports/vim/build.sh
+./ports/curl/build.sh
 
 rebuild_kernels
 

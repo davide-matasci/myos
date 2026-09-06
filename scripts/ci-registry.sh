@@ -173,6 +173,9 @@ port_members() {
       echo target/.myos-c-hello-version
       for arch in x86_64 aarch64 riscv64; do
         echo "target/c-hello-${arch}-unknown-none"
+        echo "target/c-socket_smoke-${arch}-unknown-none"
+        # Pack alias for ci-build.tar `coreutils-*` glob (no workflow edit).
+        echo "target/coreutils-c-socket_smoke-${arch}-unknown-none"
       done
       ;;
     kernels)

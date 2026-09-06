@@ -176,6 +176,8 @@ int main(void) {
     // ICMP echo via /net/icmp (netd); needle is printed by /ping, not heap.
     // 10.0.2.2 is QEMU slirp gateway; 1.1.1.1 often fails through -netdev user.
     run_prog(b"/bin/custom/ping", &[b"ping", b"10.0.2.2"]);
+    // Userspace BSD sockets over /net/tcp (no socket syscall).
+    run_prog(b"/bin/etc/socket_smoke", &[b"socket_smoke"]);
     status_ok("smoke");
     exit();
 }

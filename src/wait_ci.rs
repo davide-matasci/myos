@@ -52,7 +52,7 @@ const CI_NEEDLES: [&str; 32] = [
 /// print during `/heap`, so including them here would abort before those
 /// commands are typed. Verified by `interactive_dns_cmd_ok` /
 /// `interactive_https_cmd_ok`.
-const CI_NEEDLES_STD: [&str; 19] = [
+const CI_NEEDLES_STD: [&str; 20] = [
     "[ OK ] std",
     "[ OK ] std cat",
     "[ OK ] std echo",
@@ -72,10 +72,11 @@ const CI_NEEDLES_STD: [&str; 19] = [
     "[ OK ] tcc",
     "[ OK ] tcc std",
     "[ OK ] ping",
+    "[ OK ] socket",
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 13] = [
+const CI_SHELL_COMMANDS: [&[u8]; 14] = [
     b"nosuchcmd\n",
     // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
     b"heap\n",
@@ -95,6 +96,8 @@ const CI_SHELL_COMMANDS: [&[u8]; 13] = [
     b"dns www.google.com\n",
     // HTTPS GET (requires network + wall clock + mbedtls).
     b"http https://example.com/\n",
+    // curl over userspace sockets + mbedtls (same URL as https smoke).
+    b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n",
 ];
 
 /// Printed by the interactive shell when a command cannot be resolved.
@@ -280,6 +283,47 @@ fn interactive_https_cmd_ok(serial: &str) -> bool {
     at_interactive_prompt(serial)
 }
 
+
+/// curl HTTPS GET via userspace sockets: file should contain Example Domain.
+/// Scope failure checks to output *after* the curl echo so earlier interactive
+/// `nosuchcmd: not found` does not permanently fail this stage.
+fn interactive_curl_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let echoed = "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/";
+    if !tail.contains(echoed) || serial.contains("exception:") {
+        return false;
+    }
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    if interactive_curl_after_failed(after) {
+        return false;
+    }
+    // Prefer Example Domain from curl's cat output (after the command), not the
+    // earlier interactive `http` HTTPS response.
+    if !after.contains("Example Domain") {
+        return false;
+    }
+    at_interactive_prompt(serial)
+}
+
+/// curl printed an error after the interactive command (e.g. `curl: (4) …`).
+fn interactive_curl_after_failed(after: &str) -> bool {
+    after.contains("not found")
+        || after.contains("curl: (")
+        || (after.contains("curl:")
+            && (after.contains("error") || after.contains("failed") || after.contains("mbedtls:")))
+}
+
+/// Hard fail so we do not burn the full QEMU timeout after a printed curl error.
+fn interactive_curl_cmd_failed(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let echoed = "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/";
+    if !tail.contains(echoed) {
+        return false;
+    }
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    interactive_curl_after_failed(after)
+}
+
 /// Hard fail so we do not burn the full QEMU timeout after a printed TLS error.
 fn interactive_https_cmd_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
@@ -338,6 +382,7 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
         10 => interactive_which_ls_cmd_ok(serial),
         11 => interactive_dns_cmd_ok(serial),
         12 => interactive_https_cmd_ok(serial),
+        13 => interactive_curl_cmd_ok(serial),
         _ => false,
     }
 }
@@ -517,6 +562,15 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     let _ = child.kill();
                     break child.wait().expect("wait after https fail-fast kill");
                 }
+                // curl: printed `curl: (N) …` — don't wait 180s for Example Domain.
+                // Index 13 == interactive curl HTTPS smoke.
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == 13
+                    && interactive_curl_cmd_failed(&acc)
+                {
+                    let _ = child.kill();
+                    break child.wait().expect("wait after curl fail-fast kill");
+                }
             }
             if ci_complete(&acc, extra_needles, &expect, shell_stage) {
                 let _ = child.kill();
@@ -669,6 +723,18 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             } else {
                 eprintln!("error: interactive `dns www.google.com` did not print `IP: x.x.x.x` and `[ OK ] dns`");
             }
+        }
+        if shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
+            if !command_echoed(&serial, "curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/") {
+                eprintln!("error: serial did not echo curl HTTPS command at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: interactive curl triggered a CPU exception");
+            } else if interactive_curl_cmd_failed(&serial) {
+                eprintln!("error: interactive curl failed (curl printed an error)");
+            } else {
+                eprintln!("error: interactive curl did not print `Example Domain` and return to `$`");
+            }
+            std::process::exit(1);
         }
         if shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
             if !command_echoed(&serial, "http https://example.com/") {
