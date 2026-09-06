@@ -80,6 +80,10 @@ static int myos_path_is_dev_tty(const char *path) {
 void myos_socket_on_close(int fd) __attribute__((weak));
 void myos_socket_on_close(int fd) { (void)fd; }
 
+/* Empty /net data read: 0=not socket, 1=EAGAIN, 2=hangup EOF. */
+int myos_socket_empty_read(int fd) __attribute__((weak));
+int myos_socket_empty_read(int fd) { (void)fd; return 0; }
+
 int _close(int fd) {
     myos_socket_on_close(fd);
     long ret = myos_syscall1(MYOS_SYS_CLOSE, fd);
@@ -153,6 +157,14 @@ int _read(int fd, void *buf, size_t cnt) {
     if (ret == (long)MYOS_SYSERR) {
         errno = EBADF;
         return -1;
+    }
+    /* /net data returns 0 when empty; curl/mbedtls need EAGAIN, not EOF. */
+    if (ret == 0) {
+        int kind = myos_socket_empty_read(fd);
+        if (kind == 1) {
+            errno = EAGAIN;
+            return -1;
+        }
     }
     return (int)ret;
 }

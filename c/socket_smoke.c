@@ -1,4 +1,5 @@
 /* Prove outbound TCP via userspace BSD sockets (no socket syscall). */
+#include <errno.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -55,16 +56,21 @@ int main(void) {
     for (i = 0; i < 400000; i++) {
         n = recv(fd, buf, sizeof buf, 0);
         if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* Empty RX while still connected — same budget as old n==0 spin. */
+                if (got) {
+                    empty++;
+                    if (empty > 10000) {
+                        break;
+                    }
+                }
+                continue;
+            }
             break;
         }
         if (n == 0) {
-            if (got) {
-                empty++;
-                if (empty > 10000) {
-                    break;
-                }
-            }
-            continue;
+            /* True hangup/EOF from the shim. */
+            break;
         }
         got = 1;
         empty = 0;

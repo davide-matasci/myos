@@ -158,6 +158,45 @@ static int wait_connected(struct myos_sock *s) {
     return -1;
 }
 
+/* True EOF vs empty: /net data returns 0 when the smoltcp RX queue is empty
+ * (non-blocking). curl/mbedtls treat read/recv 0 as peer close (SSL EOF).
+ * Map empty-but-still-connected to EAGAIN; only hangup is real EOF. */
+static int status_is_hangup(struct myos_sock *s) {
+    char path[64];
+    char sbuf[64];
+    int st;
+    ssize_t nr;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "status") < 0) {
+        return 0;
+    }
+    st = open(path, O_RDONLY);
+    if (st < 0) {
+        return 0;
+    }
+    nr = read(st, sbuf, sizeof sbuf);
+    close(st);
+    if (nr <= 0) {
+        return 0;
+    }
+    return buf_has(sbuf, (size_t)nr, "hangup")
+        || buf_has(sbuf, (size_t)nr, "error");
+}
+
+/*
+ * Called from _read when the kernel returned 0 bytes on a tracked socket fd.
+ * Returns: 0 = not our socket (keep 0), 1 = empty/EAGAIN, 2 = hangup/EOF.
+ */
+int myos_socket_empty_read(int fd) {
+    struct myos_sock *s = sock_by_fd(fd);
+    if (s == NULL || s->state != SOCK_CONNECTED) {
+        return 0;
+    }
+    if (status_is_hangup(s)) {
+        return 2;
+    }
+    return 1;
+}
+
 static int hangup_sock(struct myos_sock *s) {
     char path[64];
     int ctl;
@@ -494,8 +533,18 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
 }
 
 ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
+    ssize_t n;
     (void)flags;
-    return read(sockfd, buf, len);
+    n = read(sockfd, buf, len);
+    if (n == 0) {
+        int kind = myos_socket_empty_read(sockfd);
+        if (kind == 1) {
+            errno = EAGAIN;
+            return -1;
+        }
+        /* kind 0/2: plain 0 or true hangup EOF */
+    }
+    return n;
 }
 
 ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
@@ -515,6 +564,13 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
     ssize_t n;
     (void)flags;
     n = read(sockfd, buf, len);
+    if (n == 0) {
+        int kind = myos_socket_empty_read(sockfd);
+        if (kind == 1) {
+            errno = EAGAIN;
+            return -1;
+        }
+    }
     if (n >= 0 && src_addr != NULL && addrlen != NULL) {
         struct myos_sock *s = sock_by_fd(sockfd);
         if (s != NULL && s->peer_set) {

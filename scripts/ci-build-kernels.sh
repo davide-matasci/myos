@@ -149,12 +149,31 @@ HELLO_OK_ELFS=(
   target/coreutils-curl-riscv64-unknown-none
 )
 
+# Mozilla CA bundle -> initramfs lib/cacert.pem (curl CURL_CA_BUNDLE).
+# Pack via coreutils-cacert.pem alias (existing ci.yml `target/coreutils-*` glob;
+# workflow edits need `workflow` scope). initramfs falls back to the alias.
+CACERT_PEM=target/cacert.pem
+CACERT_PACK_ALIAS=target/coreutils-cacert.pem
+
+ensure_cacert_pack_alias() {
+  if [[ -f "$CACERT_PEM" ]]; then
+    cp "$CACERT_PEM" "$CACERT_PACK_ALIAS"
+  elif [[ -f "$CACERT_PACK_ALIAS" ]]; then
+    cp "$CACERT_PACK_ALIAS" "$CACERT_PEM"
+  else
+    return 1
+  fi
+  return 0
+}
+
 artifacts_ready() {
+  ensure_cacert_pack_alias || return 1
   [[ -x target/debug/myos ]] \
     && [[ -f target/bios.img ]] \
     && [[ -f target/uefi.img ]] \
     && [[ -f target/aarch64-unknown-none-softfloat/debug/kernel ]] \
     && [[ -f target/riscv64imac-unknown-none-elf/debug/kernel ]] \
+    && [[ -f "$CACERT_PACK_ALIAS" ]] \
     || return 1
   local f
   for f in "${HELLO_OK_ELFS[@]}"; do
@@ -198,6 +217,8 @@ case "${1:-}" in
     for f in "${HELLO_OK_ELFS[@]}"; do
       echo "$f"
     done
+    echo "$CACERT_PEM"
+    echo "$CACERT_PACK_ALIAS"
     exit 0
     ;;
   --is-current)
