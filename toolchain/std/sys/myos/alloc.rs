@@ -1,7 +1,9 @@
 use crate::alloc::Layout;
 
 const PAGE: usize = 4096;
-/// Must match `HEAP_PAGES` in `kernel/src/user.rs`.
+/// Soft cap for std's eager brk claim. Kernel `HEAP_PAGES` is the hard limit
+/// (aarch64 768 / riscv64 1024 / x86_64 256). Keep std's claim modest — std
+/// programs do not host the mbedtls arena.
 #[cfg(target_arch = "aarch64")]
 const HEAP_PAGES: usize = 180;
 #[cfg(not(target_arch = "aarch64"))]
