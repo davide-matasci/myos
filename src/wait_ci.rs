@@ -48,7 +48,7 @@ const CI_NEEDLES: [&str; 32] = [
 /// Pre-prompt readiness stays slim; these are required after interactive `heap`.
 ///
 /// Note: `[ OK ] dns` / `[ OK ] https` are intentionally NOT here. They are
-/// separate interactive commands (indices 10/11) run *after* `heap`; they never
+/// separate interactive commands (indices 11/12) run *after* `heap`; they never
 /// print during `/heap`, so including them here would abort before those
 /// commands are typed. Verified by `interactive_dns_cmd_ok` /
 /// `interactive_https_cmd_ok`.
@@ -507,6 +507,15 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 {
                     let _ = child.kill();
                     break child.wait().expect("wait after heap fail-fast kill");
+                }
+                // HTTPS: printed tls/dns/tcp failure — don't burn the 180s timeout.
+                // Index 12 == `http https://example.com/` (shifted when `which` landed).
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == 12
+                    && interactive_https_cmd_failed(&acc)
+                {
+                    let _ = child.kill();
+                    break child.wait().expect("wait after https fail-fast kill");
                 }
             }
             if ci_complete(&acc, extra_needles, &expect, shell_stage) {
