@@ -2628,14 +2628,6 @@ pub fn reclaim_user_aspace(
         va += PAGE as u64;
     }
     free_mmap_regions(aspace, mmap);
-    // Sweep the rest of the user mmap window in case a region was mapped
-    // without a table entry (or the table was cleared early on in-place exec).
-    let mmap_lim = mmap_limit_va(base, stack_off);
-    va = mmap_base_va(base, stack_off);
-    while va < mmap_lim {
-        free_mapped_page(aspace, va);
-        va += PAGE as u64;
-    }
     free_user_page_tables(aspace);
     flush_user_tlb();
 }
@@ -2655,12 +2647,17 @@ fn free_user_page_tables(aspace: u64) {
 /// Tear down Sv39 tables owned by a user aspace.
 ///
 /// `create_aspace_riscv64` clones the kernel root then clears `root[1]` and
-/// allocates mid/leaf tables under VPN[2]=1 (VA `0x4000_0000`). Only that
-/// private tree (leaf tables → mid → root) is freed here.
+/// allocates private mid/leaf tables under VPN[2]=1 (VA `0x4000_0000`). Only
+/// that private tree is freed (leaf → mid → root). Other root slots are
+/// value-copies of kernel PTEs and must not be freed.
 #[cfg(target_arch = "riscv64")]
 fn free_user_page_tables_riscv(satp: u64) {
     let root_phys = paging::satp_root_phys(satp);
     if root_phys == 0 {
+        return;
+    }
+    // Never free the live kernel root.
+    if root_phys == paging::satp_root_phys(task::kernel_aspace()) {
         return;
     }
     unsafe {
@@ -2850,10 +2847,25 @@ fn unmap_user_page(aspace: u64, va: u64) {
     }
     #[cfg(target_arch = "riscv64")]
     {
+        // Walk without allocating — reclaim must not grow tables while tearing
+        // them down (ensure_riscv_leaf would silently alloc mid/leaf).
+        let root_phys = paging::satp_root_phys(aspace);
+        let i2 = ((va >> 30) & 0x1ff) as usize;
+        let i1 = ((va >> 21) & 0x1ff) as usize;
         let i0 = ((va >> 12) & 0x1ff) as usize;
-        let leaf = ensure_riscv_leaf(aspace, va);
         unsafe {
-            (*leaf)[i0] = 0;
+            let root = &*mm::table(root_phys);
+            let mid_pte = root[i2];
+            if mid_pte & paging::PTE_V == 0 || !paging::pte_is_table(mid_pte) {
+                return;
+            }
+            let mid = &*mm::table(paging::pte_phys(mid_pte));
+            let leaf_pte = mid[i1];
+            if leaf_pte & paging::PTE_V == 0 || !paging::pte_is_table(leaf_pte) {
+                return;
+            }
+            let leaf = &mut *mm::table(paging::pte_phys(leaf_pte));
+            leaf[i0] = 0;
         }
     }
 }
