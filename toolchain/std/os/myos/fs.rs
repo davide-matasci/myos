@@ -90,3 +90,12 @@ impl MetadataExt for Metadata {
         0
     }
 }
+
+use crate::io;
+use crate::path::Path;
+
+/// Create a new symbolic link on the filesystem.
+#[stable(feature = "symlink", since = "1.1.0")]
+pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> io::Result<()> {
+    crate::sys::fs::symlink(original.as_ref(), link.as_ref())
+}

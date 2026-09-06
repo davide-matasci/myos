@@ -47,7 +47,7 @@ const CI_NEEDLES: [&str; 28] = [
 /// interactive commands (indices 10/11) run *after* `heap`; they never print
 /// during `/heap`, so including them here would abort before those commands
 /// are typed. Verified by `interactive_dns_cmd_ok` / `interactive_https_cmd_ok`.
-const CI_NEEDLES_STD: [&str; 15] = [
+const CI_NEEDLES_STD: [&str; 19] = [
     "std ok",
     "std cat ok",
     "std echo ok",
@@ -58,6 +58,10 @@ const CI_NEEDLES_STD: [&str; 15] = [
     "uutils echo ok",
     "uutils true ok",
     "uutils false ok",
+    "find ok",
+    "/tmp/findnest/a/b/c",
+    "uutils cat ok",
+    "uutils ls ok",
     "ripgrep ok",
     "sbase argv ok",
     "tcc ok",

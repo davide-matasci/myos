@@ -177,7 +177,7 @@ pub const S_IFMT: u32 = 0o170000;
 
 /// Resolve `path` against the current task cwd into `out` (absolute).
 pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Option<usize> {
-    let mut cwd = [0u8; 64];
+    let mut cwd = [0u8; 256];
     let n = crate::task::cwd(&mut cwd);
     let cwd = core::str::from_utf8(&cwd[..n]).unwrap_or("/");
     vfs::resolve_against_cwd(cwd, path, out)

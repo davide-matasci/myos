@@ -2,13 +2,16 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
 
 #include "myos_syscalls.h"
 
-static DIR the_dir;
-static int dir_open;
+#define MYOS_DIR_POOL 16
+
+static DIR dir_pool[MYOS_DIR_POOL];
+static unsigned char dir_used[MYOS_DIR_POOL];
 
 static int
 myos_path_is_root(const char *path)
@@ -29,12 +32,30 @@ myos_path_is_root(const char *path)
 	return 0;
 }
 
+static int
+dir_slot_index(DIR *d)
+{
+	if (d == NULL) {
+		return -1;
+	}
+	if (d < &dir_pool[0] || d >= &dir_pool[MYOS_DIR_POOL]) {
+		return -1;
+	}
+	return (int)(d - &dir_pool[0]);
+}
+
 DIR *
 opendir(const char *name)
 {
 	struct stat st;
+	int i;
 
-	if (dir_open) {
+	for (i = 0; i < MYOS_DIR_POOL; i++) {
+		if (!dir_used[i]) {
+			break;
+		}
+	}
+	if (i >= MYOS_DIR_POOL) {
 		errno = EMFILE;
 		return NULL;
 	}
@@ -48,25 +69,27 @@ opendir(const char *name)
 		}
 	}
 
-	memset(&the_dir, 0, sizeof(the_dir));
-	the_dir.len = (unsigned long)myos_syscall3(
+	memset(&dir_pool[i], 0, sizeof(dir_pool[i]));
+	dir_pool[i].len = (unsigned long)myos_syscall3(
 	    MYOS_SYS_LISTDIR,
 	    (long)(uintptr_t)name,
 	    (long)strlen(name),
-	    (long)(uintptr_t)the_dir.buf);
-	if (the_dir.len == (unsigned long)MYOS_SYSERR) {
+	    (long)(uintptr_t)dir_pool[i].buf);
+	if (dir_pool[i].len == (unsigned long)MYOS_SYSERR) {
 		errno = EIO;
 		return NULL;
 	}
-	the_dir.pos = 0;
-	dir_open = 1;
-	return &the_dir;
+	dir_pool[i].pos = 0;
+	dir_used[i] = 1;
+	return &dir_pool[i];
 }
 
 struct dirent *
 readdir(DIR *d)
 {
-	if (d == NULL || d != &the_dir || !dir_open) {
+	int slot = dir_slot_index(d);
+
+	if (slot < 0 || !dir_used[slot]) {
 		errno = EBADF;
 		return NULL;
 	}
@@ -87,7 +110,10 @@ readdir(DIR *d)
 		}
 		memcpy(d->ent.d_name, d->buf + start, n);
 		d->ent.d_name[n] = '\0';
-		if (d->ent.d_name[0] == '.') {
+		/* Skip only "." and ".." — not every name starting with '.'. */
+		if (d->ent.d_name[0] == '.'
+		    && (d->ent.d_name[1] == '\0'
+			|| (d->ent.d_name[1] == '.' && d->ent.d_name[2] == '\0'))) {
 			continue;
 		}
 		d->ent.d_ino = 0;
@@ -100,10 +126,12 @@ readdir(DIR *d)
 int
 closedir(DIR *d)
 {
-	if (d == NULL || d != &the_dir || !dir_open) {
+	int slot = dir_slot_index(d);
+
+	if (slot < 0 || !dir_used[slot]) {
 		errno = EBADF;
 		return -1;
 	}
-	dir_open = 0;
+	dir_used[slot] = 0;
 	return 0;
 }
