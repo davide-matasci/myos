@@ -312,7 +312,7 @@ jobs:
             target/pcre2-riscv64
             target/.myos-newlib-version
             # Guest newlib prefixes: aarch64/riscv boot rebuilds initramfs and
-            needs crt*.o from here (x86 bios/uefi images already embed them).
+            # needs crt*.o from here (x86 bios/uefi images already embed them).
             target/newlib-x86_64
             target/newlib-aarch64
             target/newlib-riscv64
