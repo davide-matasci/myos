@@ -48,7 +48,7 @@ const CI_NEEDLES: [&str; 32] = [
 /// Pre-prompt readiness stays slim; these are required after interactive `heap`.
 ///
 /// Note: `[ OK ] dns` / `[ OK ] https` are intentionally NOT here. They are
-/// separate interactive commands (indices 10/11) run *after* `heap`; they never
+/// separate interactive commands (indices 11/12) run *after* `heap`; they never
 /// print during `/heap`, so including them here would abort before those
 /// commands are typed. Verified by `interactive_dns_cmd_ok` /
 /// `interactive_https_cmd_ok`.
