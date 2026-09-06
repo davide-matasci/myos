@@ -13,6 +13,47 @@ pub struct StatInfo {
     pub size: u32,
     pub ino: u32,
     pub nlink: u32,
+    /// Filesystem device id for this mount (`st_dev`). Distinct per mount so
+    /// `(st_dev, st_ino)` identities do not collide across VFS roots that all
+    /// use `ino == 1`. Assigned by [`backend_stat`] as `mount_index + 1`.
+    pub dev: u32,
+}
+
+/// Stable inode for a directory path relative to a mount root.
+///
+/// Nested RO trees (binfs/libfs) used to return `ino == 1` for every directory,
+/// so find(1) treated `/bin/std` as `/bin` and `/lib/newlib` as `/lib`. Hash the
+/// relative path and force the high bit so values never collide with the mount
+/// root (`ino == 1`) or file inodes from [`data_ino`].
+pub(crate) fn dir_ino(path: &str) -> u32 {
+    let mut h: u32 = 0x811c_9dc5; // FNV-1a offset basis
+    for &b in path.as_bytes() {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    (h & 0x7fff_ffff) | 0x8000_0000
+}
+
+/// Stable inode for a file's backing bytes.
+///
+/// Cpio multicall aliases reuse the same `'static` slice (same pointer), so
+/// they share an inode the way hardlinks should. Distinct files stay distinct.
+/// Values stay in the low half so they never collide with [`dir_ino`].
+pub(crate) fn data_ino(data: &[u8]) -> u32 {
+    let p = data.as_ptr() as u64;
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in &p.to_le_bytes() {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    for &b in &(data.len() as u32).to_le_bytes() {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    match h & 0x7fff_ffff {
+        0 | 1 => 2,
+        x => x,
+    }
 }
 
 /// Open file identity: mount index + path relative to that mount.
@@ -225,15 +266,15 @@ fn backend_openable(idx: usize, rel: &str) -> bool {
 }
 
 /// Resolve `path` to a vnode suitable for open/read/write.
+///
+/// Directories (including mount roots like `/bin/sbase`) may be opened
+/// read-only so userspace `*at(dirfd, …)` and `which` PATH walks work.
 pub fn open(path: &str, flags: u32) -> Option<Vnode> {
     let rel_check = normalize_path(path);
     if rel_check.is_empty() {
         return None;
     }
     let (idx, rel) = resolve_index(path)?;
-    if rel.is_empty() {
-        return None;
-    }
 
     let acc = flags & O_ACCMODE;
     if acc > O_RDWR {
@@ -242,6 +283,16 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
     let wants_write = matches!(acc, O_WRONLY | O_RDWR);
     let creat = flags & O_CREAT != 0;
     let trunc = flags & O_TRUNC != 0;
+
+    // Directory open: read-only. Mount roots have empty `rel` but still stat as dirs.
+    if let Some(st) = backend_stat(idx, rel) {
+        if is_dir_mode(st.mode) {
+            if wants_write || creat || trunc {
+                return None;
+            }
+            return Some(make_vnode(idx, rel));
+        }
+    }
 
     if backend_openable(idx, rel) {
         if wants_write {
@@ -256,6 +307,9 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
     }
 
     if creat {
+        if rel.is_empty() {
+            return None;
+        }
         if !backend_create(idx, rel) {
             return None;
         }
@@ -558,10 +612,14 @@ fn backend_stat(idx: usize, rel: &str) -> Option<StatInfo> {
         let m = mounts.get(idx)?;
         m.backend
     };
-    match backend {
-        MountBackend::Kernel(ops) => (ops.stat)(rel),
-        MountBackend::Module(ops) => module_stat(&ops, rel),
-    }
+    let mut info = match backend {
+        MountBackend::Kernel(ops) => (ops.stat)(rel)?,
+        MountBackend::Module(ops) => module_stat(&ops, rel)?,
+    };
+    // POSIX: each mount is a distinct device. Roots often share ino==1, so
+    // find(1)/du(1)/rm(1) loop detection needs distinct st_dev per mount.
+    info.dev = (idx as u32).wrapping_add(1);
+    Some(info)
 }
 
 fn backend_listdir(m: &Mount, rel: &str, buf: &mut [u8]) -> usize {
@@ -793,6 +851,7 @@ fn module_stat(ops: &ModuleVfsOps, rel: &str) -> Option<StatInfo> {
         size: out.size,
         ino: out.ino,
         nlink: out.nlink,
+        dev: 0,
     })
 }
 

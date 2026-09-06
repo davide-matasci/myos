@@ -51,4 +51,9 @@ int myos_fd_is_tty(int fd);
 void myos_fd_set_tty(int fd, int on);
 void myos_fd_dup_tty(int oldfd, int newfd);
 
+void myos_fd_path_set(int fd, const char *path);
+void myos_fd_path_clear(int fd);
+void myos_fd_path_dup(int oldfd, int newfd);
+int myos_fd_path_resolve(int dirfd, const char *path, char *out, size_t outsz);
+
 #endif

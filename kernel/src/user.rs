@@ -1697,24 +1697,39 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
                 if let Some(v) = reload_user_elf(cur_aspace, bytes, base_u, stack_off, _mapped_span)
                     .map(|(entry, span, off)| (cur_aspace, entry, span, off))
                 {
-                    v
-                } else if let Some(v) = expand_user_elf(cur_aspace, bytes, base_u, stack_off)
-                    .map(|(entry, span, off)| (cur_aspace, entry, span, off))
-                {
-                    v
-                } else if let Some(v) = load_user_elf(bytes) {
-                    // Fresh aspace: reclaim the abandoned prior mapping.
-                    reclaim_user_aspace(
-                        cur_aspace,
-                        base_u,
-                        _mapped_span,
-                        stack_off,
-                        old_brk,
-                        &old_mmap,
-                    );
+                    // POSIX exec drops anonymous maps. In-place reload used to
+                    // clear the mmap table in `replace_user` without freeing
+                    // frames — a quiet freelist leak (and, when expand later
+                    // grows into the old mmap window, `reuse_or_alloc_frame`
+                    // would adopt those pages as code then double-free them).
+                    free_mmap_regions(cur_aspace, &old_mmap);
+                    flush_user_tlb();
                     v
                 } else {
-                    return SYSERR;
+                    // Free anonymous maps *before* expand remaps: when
+                    // `stack_off` grows, the new code span can overlap the old
+                    // mmap window and reuse_or_alloc would steal those frames.
+                    free_mmap_regions(cur_aspace, &old_mmap);
+                    task::clear_mmap();
+                    flush_user_tlb();
+                    if let Some(v) = expand_user_elf(cur_aspace, bytes, base_u, stack_off)
+                        .map(|(entry, span, off)| (cur_aspace, entry, span, off))
+                    {
+                        v
+                    } else if let Some(v) = load_user_elf(bytes) {
+                        // Fresh aspace: reclaim code/stack/heap (mmap already freed).
+                        reclaim_user_aspace(
+                            cur_aspace,
+                            base_u,
+                            _mapped_span,
+                            stack_off,
+                            old_brk,
+                            &[],
+                        );
+                        v
+                    } else {
+                        return SYSERR;
+                    }
                 }
             } else {
                 let Some(v) = load_user_elf(bytes) else {
@@ -1941,6 +1956,7 @@ struct MyosStatBuf {
     st_size: u32,
     st_ino: u32,
     st_nlink: u32,
+    st_dev: u32,
 }
 
 fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
@@ -1964,6 +1980,7 @@ fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
         st_size: info.size,
         st_ino: info.ino,
         st_nlink: info.nlink,
+        st_dev: info.dev,
     };
     if !write_user_bytes(task::current_aspace(), out_ptr, unsafe {
         core::slice::from_raw_parts(
@@ -2497,6 +2514,19 @@ fn user_range_ok(ptr: usize, len: usize) -> bool {
 }
 
 
+/// Unmap and free anonymous mmap pages for `aspace` (table entries are left
+/// to the caller). Shared by in-place exec and [`reclaim_user_aspace`].
+fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
+    for r in mmap.iter() {
+        if r.pages == 0 || r.va == 0 {
+            continue;
+        }
+        for i in 0..r.pages as usize {
+            free_mapped_page(aspace, r.va + (i * PAGE) as u64);
+        }
+    }
+}
+
 /// Free user data frames for `aspace` (code / stack / heap / mmap). Page tables
 /// are left allocated (small). Used on process exit and when `load_user_elf`
 /// abandons a prior aspace so `/heap` can fork+exec large ELFs repeatedly
@@ -2540,14 +2570,7 @@ pub fn reclaim_user_aspace(
         free_mapped_page(aspace, va);
         va += PAGE as u64;
     }
-    for r in mmap.iter() {
-        if r.pages == 0 || r.va == 0 {
-            continue;
-        }
-        for i in 0..r.pages as usize {
-            free_mapped_page(aspace, r.va + (i * PAGE) as u64);
-        }
-    }
+    free_mmap_regions(aspace, mmap);
     flush_user_tlb();
 }
 

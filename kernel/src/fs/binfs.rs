@@ -152,26 +152,29 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             size: 0,
             ino: 1,
             nlink: 2,
+            dev: 0,
         });
     }
     if !valid_rel(name) {
         return None;
     }
     let files = FILES.lock();
-    if let Some((i, e)) = files.iter().enumerate().find(|(_, e)| e.path == name) {
+    if let Some(e) = files.iter().find(|e| e.path == name) {
         return Some(StatInfo {
             mode: S_IFREG | 0o555,
             size: e.data.len() as u32,
-            ino: (i as u32) + 2,
+            ino: crate::fs::vfs::data_ino(e.data),
             nlink: 1,
+            dev: 0,
         });
     }
     if is_dir_path(&files, name) {
         return Some(StatInfo {
             mode: S_IFDIR | 0o755,
             size: 0,
-            ino: 1,
+            ino: crate::fs::vfs::dir_ino(name),
             nlink: 2,
+            dev: 0,
         });
     }
     None

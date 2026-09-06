@@ -84,6 +84,7 @@ int _close(int fd) {
     if (fd > 2) {
         myos_fd_set_tty(fd, 0);
     }
+    myos_fd_path_clear(fd);
     return 0;
 }
 
@@ -137,6 +138,7 @@ int _open(const char *path, int flags, ...) {
     if (myos_path_is_tty(path)) {
         myos_fd_set_tty((int)ret, 1);
     }
+    myos_fd_path_set((int)ret, path);
     return (int)ret;
 }
 
@@ -182,21 +184,6 @@ void *_sbrk(ptrdiff_t incr) {
     return old;
 }
 
-static int myos_is_root_path(const char *path)
-{
-    if (path == NULL || path[0] == '\0') {
-        return 1;
-    }
-    /* "." is cwd-relative; kernel resolves against per-task cwd. */
-    if (strcmp(path, "/") == 0) {
-        return 1;
-    }
-    while (*path == '/') {
-        path++;
-    }
-    return path[0] == '\0';
-}
-
 static int myos_fill_stat(struct stat *st, const struct myos_stat_buf *src)
 {
     memset(st, 0, sizeof(*st));
@@ -204,6 +191,7 @@ static int myos_fill_stat(struct stat *st, const struct myos_stat_buf *src)
     st->st_size = (off_t)src->st_size;
     st->st_ino = src->st_ino;
     st->st_nlink = src->st_nlink;
+    st->st_dev = (dev_t)src->st_dev;
     st->st_uid = 0;
     st->st_gid = 0;
     st->st_blksize = 4096;
@@ -219,13 +207,7 @@ static int myos_stat_path(const char *path, struct stat *st)
         errno = EINVAL;
         return -1;
     }
-    if (myos_is_root_path(path)) {
-        buf.st_mode = S_IFDIR | 0755;
-        buf.st_size = 0;
-        buf.st_ino = 1;
-        buf.st_nlink = 2;
-        return myos_fill_stat(st, &buf);
-    }
+    /* Always ask the kernel so st_dev is mount-specific (find loop checks). */
     long ret = myos_syscall3(
         MYOS_SYS_STAT,
         (long)(uintptr_t)path,

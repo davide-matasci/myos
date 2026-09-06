@@ -119,27 +119,51 @@ int lchown(const char *path, uid_t owner, gid_t group) {
     return myos_rofs();
 }
 
+#ifndef AT_FDCWD
+#define AT_FDCWD (-100)
+#endif
+
 int openat(int dirfd, const char *path, int flags, ...) {
-    (void)dirfd;
-    (void)path;
-    (void)flags;
-    return myos_nosys();
+    char full[512];
+    mode_t mode = 0;
+    va_list ap;
+
+    if (path == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
+        return -1;
+    }
+    if (flags & O_CREAT) {
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+        return open(full, flags, mode);
+    }
+    return open(full, flags);
 }
 
 int faccessat(int dirfd, const char *path, int mode, int flags) {
-    (void)dirfd;
+    char full[512];
     (void)flags;
-    return access(path, mode);
+    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
+        return -1;
+    }
+    return access(full, mode);
 }
 
 int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
-    (void)dirfd;
+    char full[512];
     (void)flags;
     if (st == NULL) {
         errno = EINVAL;
         return -1;
     }
-    return stat(path, st);
+    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
+        return -1;
+    }
+    return stat(full, st);
 }
 
 #ifndef AT_REMOVEDIR
@@ -147,15 +171,18 @@ int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
 #endif
 
 int unlinkat(int dirfd, const char *path, int flags) {
-    (void)dirfd;
+    char full[512];
     if (path == NULL) {
         errno = ENOENT;
         return -1;
     }
-    if (flags & AT_REMOVEDIR) {
-        return rmdir(path);
+    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
+        return -1;
     }
-    return unlink(path);
+    if (flags & AT_REMOVEDIR) {
+        return rmdir(full);
+    }
+    return unlink(full);
 }
 
 int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags) {
@@ -275,6 +302,7 @@ int dup2(int oldfd, int newfd) {
         return -1;
     }
     myos_fd_dup_tty(oldfd, newfd);
+    myos_fd_path_dup(oldfd, newfd);
     return newfd;
 }
 
@@ -288,8 +316,15 @@ int fchownat(int dirfd, const char *path, uid_t owner, gid_t group, int flags) {
 }
 
 int symlinkat(const char *target, int dirfd, const char *path) {
-    (void)dirfd;
-    return symlink(target, path);
+    char full[512];
+    if (path == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
+        return -1;
+    }
+    return symlink(target, full);
 }
 
 
@@ -305,6 +340,8 @@ int _fcntl(int fd, int cmd, int arg) {
             errno = EBADF;
             return -1;
         }
+        myos_fd_dup_tty(fd, (int)ret);
+        myos_fd_path_dup(fd, (int)ret);
         return (int)ret;
     }
 

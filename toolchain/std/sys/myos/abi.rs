@@ -107,6 +107,7 @@ pub struct StatBuf {
     pub st_size: u32,
     pub st_ino: u32,
     pub st_nlink: u32,
+    pub st_dev: u32,
 }
 
 #[inline]

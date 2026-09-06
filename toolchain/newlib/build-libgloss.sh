@@ -19,7 +19,7 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/crt0-${arch}.S" "$PORT/crt0.S"
 cp "$ROOT/toolchain/newlib/libgloss/myos/crti-${arch}.S" "$PORT/crti.S"
 cp "$ROOT/toolchain/newlib/libgloss/myos/crtn-${arch}.S" "$PORT/crtn.S"
 
-for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount; do
+for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
