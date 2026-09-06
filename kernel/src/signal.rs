@@ -128,6 +128,10 @@ pub fn handle_ctrl_c() {
 pub fn deliver_due() {
     let id = task::current_id();
     if let Some(sig) = task::signal_take_fatal(id) {
+        // `user_exit` never returns to the trap epilogue that clears
+        // `SYSCALL_FRAME`; drop it here so a later fork/exec cannot read a
+        // dangling frame on the dying task's kernel stack.
+        crate::user::set_syscall_frame(core::ptr::null_mut());
         task::user_exit(128u8.wrapping_add(sig as u8));
     }
 }

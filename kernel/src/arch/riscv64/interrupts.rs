@@ -309,7 +309,11 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             let a1 = unsafe { *frame.add(11) } as usize;
             let a2 = unsafe { *frame.add(12) } as usize;
             unsafe {
-                asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack)); // SIE during dispatch
+                // Keep SIE clear for the syscall body (x86 cli / aarch64 daifset).
+                // Enabling SIE here raced with the global SYSCALL_FRAME and with
+                // signal-driven user_exit (deliver_due → die without clearing the
+                // frame pointer), which corrupted kernel stacks on riscv and
+                // showed up as illegal insn in HHDM/.rodata at getty login.
                 crate::user::set_syscall_frame(frame);
                 let ret = crate::user::syscall_dispatch(
                     nr,

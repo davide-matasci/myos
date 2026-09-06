@@ -1443,12 +1443,19 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
 
+/// Record the live trap frame for fork/exec resume (aarch64/riscv).
+///
+/// x86 forks via the iret path and does not use this; provide a no-op so
+/// `signal::deliver_due` can clear the frame on every arch before `user_exit`.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn set_syscall_frame(frame: *mut u64) {
     unsafe {
         SYSCALL_FRAME = frame as *mut usize;
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+pub fn set_syscall_frame(_frame: *mut u64) {}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn syscall_dispatch(
