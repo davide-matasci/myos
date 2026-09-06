@@ -31,9 +31,25 @@ PORT_STAMPS=(
   target/.myos-vim-version
   target/.myos-ncurses-version
   target/.myos-newlib-version
-  # curl statically links mbedtls; stamp changes must invalidate bios/initramfs.
-  target/.myos-mbedtls-version
-  target/.myos-curl-version
+)
+
+# Source-controlled curl/mbedtls inputs (NOT target/.myos-{curl,mbedtls}-version).
+# Those stamps are rewritten by ports/*/build.sh during this same job (and mbedtls
+# WANT also shifts when target/cacert.pem appears mid-fetch), which made
+# kernel_inputs_hash drift after build. Hash pins + config/patches instead.
+CURL_MBEDTLS_INPUTS=(
+  ports/mbedtls/versions.env
+  ports/mbedtls/myos_mbedtls_config.h
+  ports/mbedtls/build.sh
+  ports/mbedtls/fetch.sh
+  ports/curl/versions.env
+  ports/curl/config-myos.h
+  ports/curl/build.sh
+  ports/curl/fetch.sh
+  ports/curl/build-softfloat-riscv64.sh
+  ports/curl/myos_curl_platform.c
+  ports/curl/mbedtls.c.myos.patch
+  ports/curl/tool_cfgable.h.myos.patch
 )
 
 hash_tree() {
@@ -87,6 +103,14 @@ kernel_inputs_hash() {
             printf '\n'
           else
             printf 'stamp-missing:%s\n' "$stamp"
+          fi
+        done
+        # curl/mbedtls: digest checkout-stable sources only (see CURL_MBEDTLS_INPUTS).
+        for f in "${CURL_MBEDTLS_INPUTS[@]}"; do
+          if [[ -f "$f" ]]; then
+            sha256sum "$f"
+          else
+            printf 'input-missing:%s\n' "$f"
           fi
         done
       } | sha256sum | awk '{print $1}'
