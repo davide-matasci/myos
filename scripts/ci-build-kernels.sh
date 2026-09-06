@@ -41,7 +41,7 @@ hash_tree() {
     \( -name target -o -path '*/target/*' \) -prune -o \
     -type f \( \
       -name '*.rs' -o -name '*.c' -o -name '*.h' -o -name '*.S' -o \
-      -name 'Cargo.toml' -o -name 'Cargo.lock' -o -name 'build.rs' -o \
+      -name 'Cargo.toml' -o -name 'build.rs' -o \
       -name 'link.ld' -o -name '*.ld' -o -name '*.json' -o -name '*.txt' \
     \) -print0 2>/dev/null \
     | sort -z | xargs -0 -r sha256sum
@@ -58,7 +58,9 @@ kernel_inputs_hash() {
         hash_tree modules
         hash_tree user
         # Host myos bits that bake kernel/initramfs into bios/uefi images.
-        sha256sum build.rs Cargo.toml Cargo.lock 2>/dev/null || true
+        # Do not hash Cargo.lock: **/Cargo.lock is gitignored and appears after
+        # the first cargo build, which made pull-tag ≠ post-build stamp.
+        sha256sum build.rs Cargo.toml 2>/dev/null || true
         sha256sum \
           src/limine_image.rs \
           src/limine_gpt.rs \
