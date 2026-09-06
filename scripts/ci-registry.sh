@@ -8,11 +8,11 @@
 # Usage:
 #   ./scripts/ci-registry.sh pull PORT
 #   ./scripts/ci-registry.sh push PORT
-# PORT is one of: newlib sbase oksh ubase coreutils ripgrep tcc std-hello c-hello
-# or "all" (newlib first).
+# PORT is one of: sysroot newlib sbase oksh ubase coreutils ripgrep tcc std-hello c-hello kernels
+# or "all" (sysroot + newlib first).
 #
 # Env:
-#   GITHUB_TOKEN              required to login; pull still tries anonymous on miss
+#   GITHUB_TOKEN              required for private GHCR; pull is anonymous only when unset
 #   GITHUB_ACTOR              oras login user (fallback: GITHUB_REPOSITORY_OWNER)
 #   GITHUB_REPOSITORY         owner/repo (default davide-matasci/myos)
 #   MYOS_CI_REGISTRY_PUSH     false/0 skips push (fork PRs)
@@ -30,8 +30,8 @@ ORAS_LINUX_ARM64_SHA256="ac7156f93a21e903f7ad606c792f3560f17e0cd0e36365634701b1e
 ORAS_ARTIFACT_TYPE="application/vnd.myos.ci.port.v1"
 ORAS_LAYER_TYPE="application/vnd.myos.ci.port.layer.v1.tar+zst"
 
-# newlib first: everyone else depends on it.
-ALL_PORTS=(newlib std-hello c-hello sbase oksh ubase coreutils ripgrep tcc)
+# sysroot (rust std) then newlib (C): dependents pull after.
+ALL_PORTS=(sysroot newlib std-hello c-hello sbase oksh ubase coreutils ripgrep tcc kernels)
 
 usage() {
   echo "usage: $0 pull|push PORT" >&2
@@ -41,6 +41,7 @@ usage() {
 
 port_hash() {
   case "$1" in
+    sysroot) myos_sysroot_version_hash ;;
     newlib) myos_newlib_version_hash ;;
     sbase) myos_sbase_version_hash ;;
     oksh) myos_oksh_version_hash ;;
@@ -50,12 +51,14 @@ port_hash() {
     tcc) myos_tcc_version_hash ;;
     std-hello) myos_std_hello_version_hash ;;
     c-hello) myos_c_hello_version_hash ;;
+    kernels) "$ROOT/scripts/ci-build-kernels.sh" --print-hash | tr -d '\n' ;;
     *) echo "error: unknown port $1" >&2; return 2 ;;
   esac
 }
 
 port_is_current() {
   case "$1" in
+    sysroot) myos_sysroot_is_current ;;
     newlib) myos_newlib_is_current ;;
     sbase) myos_sbase_is_current ;;
     oksh) myos_oksh_is_current ;;
@@ -65,6 +68,7 @@ port_is_current() {
     tcc) myos_tcc_is_current ;;
     std-hello) myos_std_hello_is_current ;;
     c-hello) myos_c_hello_is_current ;;
+    kernels) "$ROOT/scripts/ci-build-kernels.sh" --is-current ;;
     *) return 2 ;;
   esac
 }
@@ -75,6 +79,16 @@ port_members() {
   local port="$1"
   local arch triple
   case "$port" in
+    sysroot)
+      # Slim pack (MYOS_SYSROOT_SLIM=1 shape): stamps + precompiled rlibs +
+      # target specs. Never the patched library/ source tree under rustlib/src.
+      echo target/myos-sysroot/.myos-sysroot-version
+      echo target/myos-sysroot/myos-manifest.toml
+      for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
+        echo "target/myos-sysroot/lib/rustlib/${triple}"
+        echo "target/myos-sysroot/lib/rustlib/${triple}.json"
+      done
+      ;;
     newlib)
       echo target/.myos-newlib-version
       echo target/newlib-bin
@@ -143,6 +157,9 @@ port_members() {
       for arch in x86_64 aarch64 riscv64; do
         echo "target/c-hello-${arch}-unknown-none"
       done
+      ;;
+    kernels)
+      "$ROOT/scripts/ci-build-kernels.sh" --print-members
       ;;
     *) return 2 ;;
   esac
@@ -288,22 +305,57 @@ try_public_package() {
   done
 }
 
+force_replace_marker() {
+  local port="$1"
+  # Prefer runner temp /tmp — never under target/ (builds may wipe it).
+  local base="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+  printf '%s' "${base%/}/myos-ci-registry-replace-${port}"
+}
+
+mark_force_replace() {
+  local port="$1" hash="$2"
+  printf '%s\n' "$hash" >"$(force_replace_marker "$port")"
+}
+
+clear_force_replace() {
+  local port="$1"
+  rm -f "$(force_replace_marker "$port")"
+}
+
+needs_force_replace() {
+  local port="$1" hash="$2" marker
+  marker="$(force_replace_marker "$port")"
+  # Presence alone: pull may have stored a different hash if stamps used to be
+  # non-deterministic across the same job.
+  [[ -f "$marker" ]]
+}
+
 cmd_pull() {
   local port="$1"
   local hash ref tmp tarball
   hash="$(port_hash "$port")"
   ref="$(registry_ref "$port" "$hash")"
+  clear_force_replace "$port"
   ensure_oras
-  # Anonymous fetch is fine when login fails (public packages / empty GHCR).
-  oras_login || true
+  # Token present: require login so private GHCR packages are visible.
+  # Anonymous fetch only when no token (public packages / empty GHCR).
+  if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
+    if ! oras_login; then
+      mark_force_replace "$port" "$hash"
+      echo "registry miss ${port}: login failed ${hash}"
+      return 0
+    fi
+  fi
   if ! oras manifest fetch "$ref" >/dev/null 2>&1; then
-    echo "registry miss ${port}; building"
+    mark_force_replace "$port" "$hash"
+    echo "registry miss ${port}: no manifest ${hash}"
     return 0
   fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/myos-ci-reg.XXXXXX")"
   if ! oras pull "$ref" -o "$tmp" >/dev/null 2>&1; then
     rm -rf "$tmp"
-    echo "registry miss ${port}; building"
+    mark_force_replace "$port" "$hash"
+    echo "registry miss ${port}: pull failed ${hash}"
     return 0
   fi
   tarball=""
@@ -315,21 +367,25 @@ cmd_pull() {
   done
   if [[ -z "$tarball" ]]; then
     rm -rf "$tmp"
-    echo "registry miss ${port}; building"
+    mark_force_replace "$port" "$hash"
+    echo "registry miss ${port}: no tarball ${hash}"
     return 0
   fi
   mkdir -p "$ROOT/target"
   if ! tar -C "$ROOT" --zstd --no-same-owner -xf "$tarball" 2>/dev/null; then
     rm -rf "$tmp"
-    echo "registry miss ${port}; building"
+    mark_force_replace "$port" "$hash"
+    echo "registry miss ${port}: extract failed ${hash}"
     return 0
   fi
   rewrite_manifest_paths "$port"
   rm -rf "$tmp"
   if port_is_current "$port"; then
+    clear_force_replace "$port"
     echo "registry hit ${port} ${hash}"
   else
-    echo "registry miss ${port}; building"
+    mark_force_replace "$port" "$hash"
+    echo "registry miss ${port}: not current after extract ${hash}"
   fi
 }
 
@@ -353,8 +409,14 @@ cmd_push() {
     return 1
   fi
   if oras manifest fetch "$ref" >/dev/null 2>&1; then
-    echo "registry skip push ${port}: already present"
-    return 0
+    if needs_force_replace "$port" "$hash"; then
+      echo "registry replace ${port}: remote present but pull marked replace ${hash}"
+      # Drop the poisoned tag so the subsequent push publishes a fresh package.
+      oras manifest delete "$ref" --force >/dev/null 2>&1 || true
+    else
+      echo "registry skip push ${port}: already present ${hash}"
+      return 0
+    fi
   fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/myos-ci-reg.XXXXXX")"
   list="$tmp/members.txt"
@@ -385,6 +447,7 @@ cmd_push() {
     return 1
   fi
   try_public_package "$port"
+  clear_force_replace "$port"
   rm -rf "$tmp"
   echo "registry push ${port} ${hash}"
 }

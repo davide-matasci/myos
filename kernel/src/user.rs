@@ -74,7 +74,7 @@ const HEAP_PAGES: usize = 256;
 /// force `elf_scratch_mut` to grab N contiguous frames before init could run.
 const MAX_INIT_PAGES: usize = 1024;
 /// Cap for in-place `expand_user_elf` of larger bootfs ELFs (uutils / ripgrep).
-/// Must stay within QEMU RAM given leaked post-exec frames (x86 CI is 256 MiB).
+/// Must stay within QEMU RAM given leaked post-exec frames (x86 CI is 1024 MiB).
 /// Full feat_common_core (~2.4k pages) OOMed; ship a smaller multicall instead.
 const MAX_EXPAND_PAGES: usize = 1024;
 /// Largest image we may map, fork-copy, or stage in ELF scratch.

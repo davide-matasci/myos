@@ -9,6 +9,9 @@ Required for X.509 notBefore/notAfter checks — not a workaround.
 crate. Chosen over Plan 9 `/net/tls` in netfs+netd because it is the smaller modular path;
 `/net/tls` can wrap the same library later.
 
+**TLS heap:** ~2 MiB mbedtls arena in `user/tls` ELF BSS (`g_heap`), fed to
+`mbedtls_memory_buffer_alloc_init`.
+
 **DNS:** shared helper in `user/lib/src/dns.rs` used by both `dns` and `http` (no parser
 duplication).
 

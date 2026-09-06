@@ -26,15 +26,22 @@ MYOS_USER_TRIPLES=(
 )
 
 myos_sysroot_version_hash() {
+  # Content + stable relative paths (checkout-independent). xargs -r avoids
+  # sha256sum reading stdin when find matches nothing.
   local h
   h="$(
-    {
-      echo "toolchain=$MYOS_NIGHTLY"
-      sha256sum "$MYOS_ROOT/toolchain/std/patches/wire-myos.py"
-      find "$MYOS_ROOT/toolchain/std/pal" "$MYOS_ROOT/toolchain/std/sys" "$MYOS_ROOT/toolchain/std/os" \
-        "$MYOS_ROOT/targets" -type f -print0 2>/dev/null \
-        | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    (
+      cd "$MYOS_ROOT"
+      {
+        echo "toolchain=$MYOS_NIGHTLY"
+        sha256sum "toolchain/std/patches/wire-myos.py"
+        # Sources only; prune any nested cargo target/ dirs if present.
+        find toolchain/std/pal toolchain/std/sys toolchain/std/os targets \
+          \( -name target -o -path '*/target/*' \) -prune -o \
+          -type f -print0 2>/dev/null \
+          | sort -z | xargs -0 -r sha256sum
+      } | sha256sum | awk '{print $1}'
+    )
   )"
   printf '%s' "$h"
 }
@@ -141,12 +148,20 @@ MYOS_STD_HELLO_VERSION="$MYOS_ROOT/target/.myos-std-hello-version"
 myos_std_hello_version_hash() {
   local h
   h="$(
-    {
-      myos_sysroot_version_hash
-      sha256sum "$MYOS_ROOT/toolchain/std/build-std-hello.sh"
-      find "$MYOS_ROOT/toolchain/std/examples" -type f -print0 2>/dev/null \
-        | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    (
+      cd "$MYOS_ROOT"
+      {
+        myos_sysroot_version_hash
+        sha256sum "toolchain/std/build-std-hello.sh"
+        # Sources only: Cargo.toml + *.rs. Ignore cargo outputs under
+        # examples (target/, Cargo.lock, *.rlib, etc.) so the stamp is
+        # stable across build-std-hello.sh within one CI job.
+        find toolchain/std/examples \
+          \( -name target -o -path '*/target/*' \) -prune -o \
+          -type f \( -name 'Cargo.toml' -o -name '*.rs' \) -print0 2>/dev/null \
+          | sort -z | xargs -0 -r sha256sum
+      } | sha256sum | awk '{print $1}'
+    )
   )"
   printf '%s' "$h"
 }

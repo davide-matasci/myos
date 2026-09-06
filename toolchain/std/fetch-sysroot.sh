@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Obtain a myos sysroot: use an existing install, a local tarball, or build locally.
+# Obtain a myos sysroot: use an existing install, GHCR (ci-registry), a local
+# tarball, or build locally. GHCR is the branch-independent source of truth by
+# content hash; the path-filter sysroot job / workflow artifact is optional.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,6 +12,14 @@ source "$ROOT/toolchain/std/lib.sh"
 if myos_sysroot_is_current; then
   echo "myos sysroot already installed at $MYOS_SYSROOT"
   exit 0
+fi
+
+# Prefer GHCR by myos_sysroot_version_hash (scripts/ci-registry.sh port sysroot).
+if [[ -x "$ROOT/scripts/ci-registry.sh" ]]; then
+  "$ROOT/scripts/ci-registry.sh" pull sysroot || true
+  if myos_sysroot_is_current; then
+    exit 0
+  fi
 fi
 
 if [[ -n "${MYOS_SYSROOT_TARBALL:-}" ]]; then
@@ -35,3 +45,9 @@ done
 
 echo "No prebuilt sysroot found; building locally..."
 "$ROOT/toolchain/std/build-sysroot.sh"
+
+# Publish slim sysroot when CI enables registry push (inherits GITHUB_TOKEN /
+# MYOS_CI_REGISTRY_PUSH from the build job). No-op locally / when disabled.
+if [[ -x "$ROOT/scripts/ci-registry.sh" ]]; then
+  "$ROOT/scripts/ci-registry.sh" push sysroot || true
+fi
