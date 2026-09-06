@@ -21,7 +21,7 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/crtn-${arch}.S" "$PORT/crtn.S"
 # termios.c needs <termios.h> in the sysroot before compile.
 cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
 
-for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios; do
+for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
@@ -47,4 +47,9 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/sys/utsname.h" "$inc/sys/utsname.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/mman.h" "$inc/sys/mman.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/utmp.h" "$inc/utmp.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
+mkdir -p "$inc/arpa" "$inc/netinet"
+cp "$ROOT/toolchain/newlib/libgloss/myos/arpa/inet.h" "$inc/arpa/inet.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/netinet/in.h" "$inc/netinet/in.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/netdb.h" "$inc/netdb.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/poll.h" "$inc/poll.h"
 echo "libgloss-myos -> $libdir/libgloss.a"

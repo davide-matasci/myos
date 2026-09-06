@@ -141,6 +141,7 @@ fi
 ./ports/tcc/build.sh
 ./ports/ncurses/build.sh
 ./ports/vim/build.sh
+./ports/curl/build.sh
 
 rebuild_kernels
 

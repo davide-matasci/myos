@@ -75,7 +75,13 @@ static int myos_path_is_dev_tty(const char *path) {
     return path != NULL && strcmp(path, "/dev/tty") == 0;
 }
 
+/* Hangup /net conversations tracked by userspace BSD sockets (socket.c).
+ * Weak stub so programs that never pull socket.o still link. */
+void myos_socket_on_close(int fd) __attribute__((weak));
+void myos_socket_on_close(int fd) { (void)fd; }
+
 int _close(int fd) {
+    myos_socket_on_close(fd);
     long ret = myos_syscall1(MYOS_SYS_CLOSE, fd);
     if (ret == (long)MYOS_SYSERR) {
         errno = EBADF;

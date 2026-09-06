@@ -207,6 +207,20 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         read(&target.join(format!("c-hello-{none_triple}"))),
     );
 
+    // userspace BSD sockets smoke -> bin/etc/socket_smoke.
+    add(
+        &mut entries,
+        "bin/etc/socket_smoke",
+        read(&target.join(format!("c-socket_smoke-{none_triple}"))),
+    );
+
+    // trimmed curl (HTTPS GET + -o) over userspace sockets + mbedtls.
+    add(
+        &mut entries,
+        "bin/etc/curl",
+        read(&target.join(format!("curl-{none_triple}"))),
+    );
+
     // hello demo module -> bin/modules/hello.
     add(
         &mut entries,
