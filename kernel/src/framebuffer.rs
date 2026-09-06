@@ -16,6 +16,7 @@ pub const DIM: (u8, u8, u8) = (0x6b, 0x73, 0x80);
 pub const OK: (u8, u8, u8) = (0x7e, 0xc9, 0x8a);
 pub const FAIL: (u8, u8, u8) = (0xf0, 0x6c, 0x75);
 pub const INFO: (u8, u8, u8) = (0x79, 0xb8, 0xff);
+pub const WARN: (u8, u8, u8) = (0xe5, 0xc0, 0x7b);
 pub const ACCENT: (u8, u8, u8) = (0x98, 0xc3, 0x79);
 
 pub struct FrameBufferWriter<'a> {
@@ -33,6 +34,11 @@ pub struct FrameBufferWriter<'a> {
     col: usize,
     row: usize,
     fg: (u8, u8, u8),
+    /// True when the next byte starts a logical line (after newline / clear).
+    line_start: bool,
+    /// Buffered bytes while matching a `[ TAG ] ` status prefix across writes.
+    prefix_buf: [u8; 9],
+    prefix_len: u8,
 }
 
 impl FrameBufferWriter<'static> {
@@ -54,6 +60,9 @@ impl FrameBufferWriter<'static> {
             col: 0,
             row: 0,
             fg: TEXT,
+            line_start: true,
+            prefix_buf: [0; 9],
+            prefix_len: 0,
         }
     }
 }
@@ -67,6 +76,8 @@ impl FrameBufferWriter<'_> {
         }
         self.col = 0;
         self.row = 0;
+        self.line_start = true;
+        self.prefix_len = 0;
     }
 
     pub fn set_fg(&mut self, fg: (u8, u8, u8)) {
@@ -76,22 +87,38 @@ impl FrameBufferWriter<'_> {
     pub fn put_str_colored(&mut self, s: &str, fg: (u8, u8, u8)) {
         let saved = self.fg;
         self.fg = fg;
-        self.put_str(s);
+        // Colored helpers bypass status-prefix detection.
+        self.prefix_len = 0;
+        self.line_start = false;
+        for byte in s.bytes() {
+            self.put_byte_colored(byte, fg);
+        }
         self.fg = saved;
+        if s.as_bytes().last() == Some(&0x0a) {
+            self.line_start = true;
+        }
     }
 
     /// `[ TAG ] label` with semantic tag color and default text for the label.
     pub fn put_status_line(&mut self, tag: &str, tag_color: (u8, u8, u8), label: &str) {
+        // Bypass prefix detection: render directly then start a fresh line.
+        self.prefix_len = 0;
+        self.line_start = false;
         self.put_byte_colored(b'[', DIM);
         self.put_byte_colored(b' ', DIM);
-        self.put_str_colored(tag, tag_color);
+        for byte in tag.bytes() {
+            self.put_byte_colored(byte, tag_color);
+        }
         self.put_byte_colored(b' ', DIM);
         self.put_byte_colored(b']', DIM);
         if !label.is_empty() {
-            self.put_byte(b' ');
-            self.put_str(label);
+            self.put_byte_colored(b' ', TEXT);
+            for byte in label.bytes() {
+                self.put_byte_colored(byte, TEXT);
+            }
         }
-        self.put_byte(b'\n');
+        self.newline();
+        self.line_start = true;
     }
 
     pub fn put_str(&mut self, s: &str) {
@@ -101,7 +128,71 @@ impl FrameBufferWriter<'_> {
     }
 
     pub fn put_byte(&mut self, byte: u8) {
+        // Color status tags that arrive via the plain byte path (modules +
+        // userspace `write_str`), including when the prefix is split across
+        // writes. Serial stays plain.
+        if byte == b'\n' {
+            self.flush_prefix_plain();
+            self.put_byte_colored(b'\n', self.fg);
+            self.line_start = true;
+            return;
+        }
+        if self.line_start || self.prefix_len > 0 {
+            self.push_status_prefix_byte(byte);
+            return;
+        }
         self.put_byte_colored(byte, self.fg);
+    }
+
+    fn flush_prefix_plain(&mut self) {
+        if self.prefix_len == 0 {
+            return;
+        }
+        let n = self.prefix_len as usize;
+        let buf = self.prefix_buf;
+        self.prefix_len = 0;
+        self.line_start = false;
+        for &b in &buf[..n] {
+            self.put_byte_colored(b, self.fg);
+        }
+    }
+
+    fn push_status_prefix_byte(&mut self, byte: u8) {
+        if self.prefix_len as usize >= self.prefix_buf.len() {
+            self.flush_prefix_plain();
+            self.put_byte_colored(byte, self.fg);
+            return;
+        }
+        self.prefix_buf[self.prefix_len as usize] = byte;
+        self.prefix_len += 1;
+        let n = self.prefix_len as usize;
+        let buf = &self.prefix_buf[..n];
+        match match_status_prefix(buf) {
+            PrefixMatch::Complete(tag, color) => {
+                self.prefix_len = 0;
+                self.line_start = false;
+                self.emit_status_tag(tag, color);
+                self.fg = TEXT;
+            }
+            PrefixMatch::Partial => {}
+            PrefixMatch::None => {
+                // Unexpected byte mid-tag: drop the buffered prefix as plain
+                // text and clear parser state so the next line can match again.
+                self.flush_prefix_plain();
+                debug_assert_eq!(self.prefix_len, 0);
+            }
+        }
+    }
+
+    fn emit_status_tag(&mut self, tag: &str, tag_color: (u8, u8, u8)) {
+        self.put_byte_colored(b'[', DIM);
+        self.put_byte_colored(b' ', DIM);
+        for byte in tag.bytes() {
+            self.put_byte_colored(byte, tag_color);
+        }
+        self.put_byte_colored(b' ', DIM);
+        self.put_byte_colored(b']', DIM);
+        self.put_byte_colored(b' ', TEXT);
     }
 
     fn put_byte_colored(&mut self, byte: u8, fg: (u8, u8, u8)) {
@@ -194,6 +285,42 @@ impl FrameBufferWriter<'_> {
         let bytes = val.to_le_bytes();
         let n = pixel.len().min(4);
         pixel[..n].copy_from_slice(&bytes[..n]);
+    }
+}
+
+
+enum PrefixMatch {
+    /// Full `[ TAG ] ` consumed; paint tag then label in TEXT.
+    Complete(&'static str, (u8, u8, u8)),
+    /// Still a prefix of at least one known status tag.
+    Partial,
+    /// Cannot be a status tag — flush as plain text.
+    None,
+}
+
+fn match_status_prefix(buf: &[u8]) -> PrefixMatch {
+    // Keep spacing identical to console::status_*: `[ TAG ] ` (space after `]`).
+    const TAGS: &[(&str, &str, (u8, u8, u8))] = &[
+        ("[ OK ] ", "OK", OK),
+        ("[ FAIL ] ", "FAIL", FAIL),
+        ("[ INFO ] ", "INFO", INFO),
+        ("[ WARN ] ", "WARN", WARN),
+        ("[ .. ] ", "..", INFO),
+    ];
+    let mut partial = false;
+    for &(full, tag, color) in TAGS {
+        let bytes = full.as_bytes();
+        if buf == bytes {
+            return PrefixMatch::Complete(tag, color);
+        }
+        if bytes.starts_with(buf) {
+            partial = true;
+        }
+    }
+    if partial {
+        PrefixMatch::Partial
+    } else {
+        PrefixMatch::None
     }
 }
 

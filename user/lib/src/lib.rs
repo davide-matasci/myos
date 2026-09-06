@@ -66,6 +66,20 @@ pub fn status_fail(label: &str) {
     write(b"\n");
 }
 
+/// `[ INFO ] label` — same spacing as kernel `console::status_info`.
+pub fn status_info(label: &str) {
+    write(b"[ INFO ] ");
+    write(label.as_bytes());
+    write(b"\n");
+}
+
+/// `[ WARN ] label` — same spacing as kernel `console::status_warn`.
+pub fn status_warn(label: &str) {
+    write(b"[ WARN ] ");
+    write(label.as_bytes());
+    write(b"\n");
+}
+
 
 pub fn write_fd(fd: usize, buf: &[u8]) -> usize {
     unsafe { sys_write(fd, buf.as_ptr() as usize, buf.len()) }

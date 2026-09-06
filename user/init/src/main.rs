@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{status_ok, exec, exit, fork, wait_status, write};
+use myos_user::{exec, exit, fork, status_fail, status_ok, wait_status};
 
 fn smoke_fork_ping() {
     match fork() {
@@ -10,7 +10,7 @@ fn smoke_fork_ping() {
             let _ = wait_status();
             status_ok("fork");
         }
-        None => write(b"fork failed\n"),
+        None => status_fail("fork failed"),
     }
 }
 
@@ -24,7 +24,7 @@ fn smoke_fork_exec_ok() {
             let _ = wait_status();
             status_ok("fork exec");
         }
-        None => write(b"fork failed\n"),
+        None => status_fail("fork failed"),
     }
 }
 
@@ -32,11 +32,11 @@ fn spawn_netd() {
     match fork() {
         Some(0) => {
             exec(b"/bin/custom/netd", &[b"netd"]);
-            write(b"netd exec failed\n");
+            status_fail("netd exec failed");
             exit();
         }
         Some(_) => {}
-        None => write(b"netd fork failed\n"),
+        None => status_fail("netd fork failed"),
     }
 }
 
@@ -53,7 +53,7 @@ fn spawn_getty_loop() -> ! {
                     b"/bin/ubase/getty",
                     &[b"getty", b"/dev/console", b"linux"],
                 );
-                write(b"getty exec failed\n");
+                status_fail("getty exec failed");
                 exit();
             }
             Some(getty_pid) => {
@@ -66,7 +66,7 @@ fn spawn_getty_loop() -> ! {
                 }
             }
             None => {
-                write(b"getty fork failed\n");
+                status_fail("getty fork failed");
                 exit();
             }
         }

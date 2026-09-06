@@ -88,6 +88,9 @@ fn kernel_main() -> ! {
     while !TASK_A_DONE.load(Ordering::SeqCst) || !TASK_B_DONE.load(Ordering::SeqCst) {
         task::yield_now();
     }
+    // Print after both tasks finish so concurrent status_* cannot garble serial/FB.
+    console::status_info("task a");
+    console::status_info("task b");
     console::status_ok("scheduler");
 
     fs::init();
@@ -138,12 +141,10 @@ fn kernel_main() -> ! {
 }
 
 fn task_a() {
-    task::print("task a\n");
     TASK_A_DONE.store(true, Ordering::SeqCst);
 }
 
 fn task_b() {
-    task::print("task b\n");
     TASK_B_DONE.store(true, Ordering::SeqCst);
 }
 

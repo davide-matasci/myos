@@ -774,6 +774,7 @@ fn run_ci_riscv64() {
 fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     let (code, vars) = riscv64_firmware();
     let mut cmd = Command::new("qemu-system-riscv64");
+    // 2G: initramfs + /heap find/cat/ls→rg pressure used to trip sepc=0 under 1G.
     cmd.arg("-global")
         .arg("virtio-mmio.force-legacy=false")
         .arg("-machine")
@@ -781,7 +782,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-cpu")
         .arg("rv64")
         .arg("-m")
-        .arg("1024")
+        .arg("2048")
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
