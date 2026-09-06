@@ -1,9 +1,28 @@
 --- getty.c
 +++ getty.c
-@@ -136,5 +136,5 @@
+@@ -124,8 +124,11 @@
+ 		n = read(0, &c, 1);
+ 		if (n < 0)
+ 			eprintf("read:");
+-		if (n == 0)
++		if (n == 0) {
++			printf("\n");
++			fflush(stdout);
+ 			return 1;
++		}
+ 		if (i >= sizeof(logname) - 1)
+ 			eprintf("login name too long\n");
+ 		if (c == '\n' || c == '\r')
+@@ -134,7 +137,10 @@
+ 	}
+ 	if (logname[0] == '-')
  		eprintf("login name cannot start with '-'\n");
- 	if (logname[0] == '\0')
+-	if (logname[0] == '\0')
++	if (logname[0] == '\0') {
++		printf("\n");
++		fflush(stdout);
  		return 1;
 -	return execlp("/bin/login", "login", "-p", logname, NULL);
++	}
 +	return execlp("/bin/ubase/login", "login", "-p", logname, NULL);
  }
