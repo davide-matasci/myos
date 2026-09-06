@@ -10,38 +10,38 @@ struct CiExpect {
 
 const CI_NEEDLES: [&str; 32] = [
     "Hello from myos",
-    "[ OK ] heap\n",
-    "[ OK ] interrupts\n",
+    "[ OK ] heap",
+    "[ OK ] interrupts",
     "task a",
     "task b",
-    "[ OK ] scheduler\n",
-    "[ OK ] hello\n",
-    "[ OK ] stubfs\n",
-    "[ OK ] limine module\n",
-    "[ OK ] sh\n",
-    "[ OK ] fork\n",
-    "[ OK ] fork exec\n",
-    "[ OK ] alloc\n",
-    "[ OK ] user\n",
-    "[ OK ] msg\n",
-    "[ OK ] fat\n",
-    "[ OK ] vda\n",
-    "[ OK ] net0\n",
-    "[ OK ] netmac\n",
-    "[ OK ] nvme\n",
-    "[ OK ] ext2\n",
-    "[ OK ] ext2 rw\n",
+    "[ OK ] scheduler",
+    "[ OK ] hello",
+    "[ OK ] stubfs",
+    "[ OK ] limine module",
+    "[ OK ] sh",
+    "[ OK ] fork",
+    "[ OK ] fork exec",
+    "[ OK ] alloc",
+    "[ OK ] user",
+    "[ OK ] msg",
+    "[ OK ] fat",
+    "[ OK ] vda",
+    "[ OK ] net0",
+    "[ OK ] netmac",
+    "[ OK ] nvme",
+    "[ OK ] ext2",
+    "[ OK ] ext2 rw",
     // Slim always-on `/ok` VFS markers (pre-prompt readiness).
-    "[ OK ] disk\n",
-    "[ OK ] disk ls\n",
-    "[ OK ] fat ls\n",
-    "[ OK ] fat read\n",
-    "[ OK ] devnull\n",
-    "[ OK ] tmp\n",
-    "[ OK ] tmpops\n",
-    "[ OK ] proc\n",
-    "[ OK ] ioctl\n",
-    "[ OK ] signal\n",
+    "[ OK ] disk",
+    "[ OK ] disk ls",
+    "[ OK ] fat ls",
+    "[ OK ] fat read",
+    "[ OK ] devnull",
+    "[ OK ] tmp",
+    "[ OK ] tmpops",
+    "[ OK ] proc",
+    "[ OK ] ioctl",
+    "[ OK ] signal",
 ];
 
 /// Heavy markers from CI-only `/heap` (typed at `$` on every arch).
@@ -53,25 +53,25 @@ const CI_NEEDLES: [&str; 32] = [
 /// commands are typed. Verified by `interactive_dns_cmd_ok` /
 /// `interactive_https_cmd_ok`.
 const CI_NEEDLES_STD: [&str; 19] = [
-    "[ OK ] std\n",
-    "[ OK ] std cat\n",
-    "[ OK ] std echo\n",
-    "[ OK ] bigalloc\n",
-    "[ OK ] c\n",
-    "[ OK ] sbase\n",
-    "[ OK ] sls\n",
-    "[ OK ] uutils echo\n",
-    "[ OK ] uutils true\n",
-    "[ OK ] uutils false\n",
-    "[ OK ] find\n",
+    "[ OK ] std",
+    "[ OK ] std cat",
+    "[ OK ] std echo",
+    "[ OK ] bigalloc",
+    "[ OK ] c",
+    "[ OK ] sbase",
+    "[ OK ] sls",
+    "[ OK ] uutils echo",
+    "[ OK ] uutils true",
+    "[ OK ] uutils false",
+    "[ OK ] find",
     "/tmp/findnest/a/b/c",
-    "[ OK ] uutils cat\n",
-    "[ OK ] uutils ls\n",
-    "[ OK ] ripgrep\n",
-    "[ OK ] sbase argv\n",
-    "[ OK ] tcc\n",
-    "[ OK ] tcc std\n",
-    "[ OK ] ping\n",
+    "[ OK ] uutils cat",
+    "[ OK ] uutils ls",
+    "[ OK ] ripgrep",
+    "[ OK ] sbase argv",
+    "[ OK ] tcc",
+    "[ OK ] tcc std",
+    "[ OK ] ping",
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
@@ -133,7 +133,7 @@ const CI_LOGIN_USER: &[u8] = b"root\n";
 const CI_LOGIN_PASS: &[u8] = b"\n";
 
 fn login_prompt_ready(serial: &str) -> bool {
-    serial.contains("[ OK ] fork exec\n") && interactive_tail(serial).contains("login: ")
+    serial.contains("[ OK ] fork exec") && interactive_tail(serial).contains("login: ")
 }
 
 fn password_prompt_ready(serial: &str) -> bool {
@@ -239,7 +239,7 @@ fn interactive_dns_cmd_ok(serial: &str) -> bool {
         return false;
     }
     // DNS command should print `IP: x.x.x.x` followed by `[ OK ] dns` and return to prompt.
-    if !tail.contains("IP: ") || !tail.contains("[ OK ] dns\n") {
+    if !tail.contains("IP: ") || !tail.contains("[ OK ] dns") {
         return false;
     }
     at_interactive_prompt(serial)
@@ -252,7 +252,7 @@ fn interactive_https_cmd_ok(serial: &str) -> bool {
     if !tail.contains("$ http https://example.com/") || serial.contains("exception:") {
         return false;
     }
-    if !tail.contains("Example Domain") || !tail.contains("[ OK ] https\n") {
+    if !tail.contains("Example Domain") || !tail.contains("[ OK ] https") {
         return false;
     }
     at_interactive_prompt(serial)
@@ -289,7 +289,7 @@ fn interactive_heap_cmd_ok(serial: &str, heavy: &[&str]) -> bool {
     if !heavy.iter().all(|n| serial.contains(*n)) {
         return false;
     }
-    if !serial.contains("[ OK ] smoke\n") {
+    if !serial.contains("[ OK ] smoke") {
         return false;
     }
     at_interactive_prompt(serial)
@@ -298,7 +298,7 @@ fn interactive_heap_cmd_ok(serial: &str, heavy: &[&str]) -> bool {
 /// Heap printed `[ OK ] smoke` and returned to `$`. Missing heavy needles can
 /// fail immediately instead of waiting out the 180s timeout.
 fn interactive_heap_returned(serial: &str) -> bool {
-    command_echoed(serial, "heap") && serial.contains("[ OK ] smoke\n") && at_interactive_prompt(serial)
+    command_echoed(serial, "heap") && serial.contains("[ OK ] smoke") && at_interactive_prompt(serial)
 }
 
 fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
@@ -447,7 +447,10 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]);
                     eprint!("{chunk}");
-                    acc_reader.lock().unwrap().push_str(&chunk);
+                    // QEMU -serial stdio often delivers CRLF; status needles
+                    // must not fail on CR vs LF. Normalize CR to LF.
+                    let normalized = chunk.replace("\r\n", "\n").replace('\r', "\n");
+                    acc_reader.lock().unwrap().push_str(&normalized);
                 }
                 Err(_) => break,
             }
@@ -560,7 +563,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                         eprintln!("error: CI-only `/heap` did not print {needle:?}");
                     }
                 }
-                if !serial.contains("[ OK ] smoke\n") {
+                if !serial.contains("[ OK ] smoke") {
                     eprintln!("error: CI-only `/heap` did not print \"[ OK ] smoke\"");
                 }
                 if !at_interactive_prompt(&serial) {
