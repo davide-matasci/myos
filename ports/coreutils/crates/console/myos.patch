@@ -1,28 +1,17 @@
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -116,6 +116,8 @@
+@@ -115,6 +115,8 @@ mod unix_term;
  mod utils;
- #[cfg(all(feature = "std", target_arch = "wasm32"))]
+ #[cfg(target_arch = "wasm32")]
  mod wasm_term;
 +#[cfg(target_os = "myos")]
 +mod myos_term;
- #[cfg(all(feature = "std", windows))]
+ #[cfg(windows)]
  mod windows_term;
  
 --- a/src/term.rs
 +++ b/src/term.rs
-@@ -139,6 +139,10 @@
-         {
-             TermFamily::UnixTerm
-         }
-+        #[cfg(target_os = "myos")]
-+        {
-+            TermFamily::Dummy
-+        }
-         #[cfg(target_arch = "wasm32")]
-         {
-             TermFamily::Dummy
-@@ -681,6 +685,8 @@
+@@ -681,6 +681,8 @@ impl Read for &Term {
  
  #[cfg(all(unix, not(target_arch = "wasm32")))]
  pub(crate) use crate::unix_term::*;

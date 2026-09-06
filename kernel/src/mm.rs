@@ -1,17 +1,11 @@
-//! Physical frame bump allocator with a free-list for reclaimed user pages.
+//! Physical frame bump allocator. Starts after the kernel heap.
 //!
-//! Starts after the kernel heap. Skips the Limine-loaded kernel image when it
-//! sits inside a usable region (common on AArch64). Does **not** bump the
-//! cursor to `kernel_end` globally — on x86 that can sit above all usable RAM
-//! and starve the allocator.
+//! Skips the Limine-loaded kernel image when it sits inside a usable region
+//! (common on AArch64). Does **not** bump the cursor to `kernel_end` globally —
+//! on x86 that can sit above all usable RAM and starve the allocator.
 //!
 //! `limine_boot::alloc_usable` does not bump, so a second call would overlap
 //! the heap. Page tables and user pages come from here instead.
-//!
-//! Freed user frames (process exit / abandoned exec aspace) go onto an
-//! intrusive freelist so the `/heap` smoke can fork+exec large ELFs many times
-//! without walking the bump allocator into garbage (riscv64 `sepc=0` after
-//! find+cat+ls+rg — same class as #84).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -24,9 +18,6 @@ const PAGE: u64 = 4096;
 const SKIP: u64 = 64 * 1024;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
-/// Intrusive freelist head (physical address), or 0. Each free page stores the
-/// next phys at offset 0 via HHDM.
-static FREE_HEAD: AtomicU64 = AtomicU64::new(0);
 
 fn heap_phys() -> u64 {
     let entries = limine_boot::MEMMAP
@@ -65,51 +56,9 @@ fn overlaps_kernel(phys: u64) -> bool {
     phys < k1 && phys.saturating_add(PAGE) > k0
 }
 
-/// Return a previously freed frame to the allocator (page need not be zeroed).
-pub fn free_frame(phys: u64) {
-    if phys == 0 || phys & 0xfff != 0 {
-        return;
-    }
-    if overlaps_kernel(phys) {
-        return;
-    }
-    let hhdm = limine_boot::hhdm_offset();
-    loop {
-        let head = FREE_HEAD.load(Ordering::SeqCst);
-        unsafe {
-            core::ptr::write_unaligned((phys + hhdm) as *mut u64, head);
-        }
-        if FREE_HEAD
-            .compare_exchange(head, phys, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            return;
-        }
-    }
-}
-
 /// Allocate a 4 KiB frame, zero it, return its physical address.
 pub fn alloc_frame() -> u64 {
     let hhdm = limine_boot::hhdm_offset();
-
-    // Prefer reclaimed user frames (process exit / abandoned exec).
-    loop {
-        let head = FREE_HEAD.load(Ordering::SeqCst);
-        if head == 0 {
-            break;
-        }
-        let next = unsafe { core::ptr::read_unaligned((head + hhdm) as *const u64) };
-        if FREE_HEAD
-            .compare_exchange(head, next, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            unsafe {
-                core::ptr::write_bytes((head + hhdm) as *mut u8, 0, PAGE as usize);
-            }
-            return head;
-        }
-    }
-
     let entries = limine_boot::MEMMAP
         .response()
         .expect("Limine memmap")

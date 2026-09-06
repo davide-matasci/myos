@@ -23,7 +23,7 @@ fi
 
 BINS_FILE="$ROOT/ports/coreutils/bins.txt"
 mapfile -t COREUTILS_BINS <"$BINS_FILE"
-FEATURES="${COREUTILS_FEATURES:-basename,cat,cp,cut,dirname,du,echo,env,false,head,ln,ls,mkdir,mktemp,mv,printenv,printf,pwd,readlink,realpath,rm,rmdir,seq,sleep,touch,tr,true,uniq,unlink,wc,yes}"
+FEATURES="${COREUTILS_FEATURES:-echo,true,false,pwd,printf,yes,seq,sleep,wc,head,uniq,cut,tr,env,printenv,basename,dirname}"
 
 build_coreutils() {
   local triple="$1"

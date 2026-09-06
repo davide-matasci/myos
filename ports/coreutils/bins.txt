@@ -1,39 +1,18 @@
 # uutils utilities built into the myos multicall ELF (see COREUTILS_FEATURES).
-# Keep the PT_LOAD image under ~1024 pages (~4 MiB) so expand/fork leaks fit in
-# QEMU 256 MiB (x86). Full feat_common_core was ~2.4k pages / ~11 MiB and OOMed.
-# Includes filesystem utils needed for CI (cat/ls) + cp/rm/mkdir/du; drops heavy
-# checksums (blake3/sha*), encodings, and large text utilities.
-# Dropped vs feat_common_core: checksums, base32/64/basenc, csplit, date, dd, dir*,
-# factor/fmt/fold/join/link/nl/numfmt/od/paste/pathchk/pr/ptx, shred/shuf/sort/sum,
-# tee/truncate/tsort/unexpand/vdir/expand/comm, tier1 arch/hostname/nproc/uname.
-basename
-cat
-cp
-cut
-dirname
-du
 echo
-env
+true
 false
-head
-ln
-ls
-mkdir
-mktemp
-mv
-printenv
-printf
 pwd
-readlink
-realpath
-rm
-rmdir
+printf
+yes
 seq
 sleep
-touch
-tr
-true
-uniq
-unlink
 wc
-yes
+head
+uniq
+cut
+tr
+env
+printenv
+basename
+dirname

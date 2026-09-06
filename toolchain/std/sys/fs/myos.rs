@@ -46,35 +46,14 @@ pub struct FilePermissions {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct FileType {
-    is_dir: bool,
     is_file: bool,
-    is_symlink: bool,
 }
 
-pub struct ReadDir {
-    root: PathBuf,
-    buf: [u8; abi::LISTDIR_CAP],
-    len: usize,
-    pos: usize,
-}
+pub struct ReadDir(!);
+pub struct DirEntry(!);
 
-pub struct DirEntry {
-    root: PathBuf,
-    file_name: OsString,
-}
-
-pub fn readdir(path: &Path) -> io::Result<ReadDir> {
-    let bytes = path.as_os_str().as_bytes();
-    // Empty path is cwd; kernel/libgloss treat "" like "/".
-    let path_bytes = if bytes.is_empty() { b".".as_slice() } else { bytes };
-    let mut buf = [0u8; abi::LISTDIR_CAP];
-    let n = cvt(abi::listdir(path_bytes, &mut buf))? as usize;
-    Ok(ReadDir {
-        root: path.to_path_buf(),
-        buf,
-        len: n,
-        pos: 0,
-    })
+pub fn readdir(_path: &Path) -> io::Result<ReadDir> {
+    unsupported()
 }
 
 const S_IFMT: u32 = 0o170000;
@@ -129,11 +108,7 @@ impl FileAttr {
     }
 
     pub fn file_type(&self) -> FileType {
-        FileType {
-            is_dir: self.is_dir,
-            is_file: self.is_file && !self.is_dir && !self.is_symlink,
-            is_symlink: self.is_symlink,
-        }
+        FileType { is_file: self.is_file && !self.is_dir && !self.is_symlink }
     }
 
     pub fn modified(&self) -> io::Result<SystemTime> {
@@ -164,7 +139,7 @@ impl FileTimes {
 
 impl FileType {
     pub fn is_dir(&self) -> bool {
-        self.is_dir
+        !self.is_file
     }
 
     pub fn is_file(&self) -> bool {
@@ -172,7 +147,7 @@ impl FileType {
     }
 
     pub fn is_symlink(&self) -> bool {
-        self.is_symlink
+        false
     }
 }
 
@@ -410,8 +385,8 @@ impl IntoRawFd for File {
 }
 
 impl fmt::Debug for ReadDir {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.root, f)
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0
     }
 }
 
@@ -419,46 +394,24 @@ impl Iterator for ReadDir {
     type Item = io::Result<DirEntry>;
 
     fn next(&mut self) -> Option<io::Result<DirEntry>> {
-        while self.pos < self.len {
-            let start = self.pos;
-            while self.pos < self.len && self.buf[self.pos] != b'\n' {
-                self.pos += 1;
-            }
-            let end = self.pos;
-            if self.pos < self.len {
-                self.pos += 1; // skip newline
-            }
-            if end == start {
-                continue;
-            }
-            let name = &self.buf[start..end];
-            // Skip only "." and ".."
-            if name == b"." || name == b".." {
-                continue;
-            }
-            return Some(Ok(DirEntry {
-                root: self.root.clone(),
-                file_name: OsStr::from_bytes(name).to_os_string(),
-            }));
-        }
-        None
+        self.0
     }
 }
 
 impl DirEntry {
     pub fn path(&self) -> PathBuf {
-        self.root.join(self.file_name.as_os_str())
+        self.0
     }
 
     pub fn file_name(&self) -> OsString {
-        self.file_name.clone()
+        self.0
     }
 
     pub fn metadata(&self) -> io::Result<FileAttr> {
-        stat_path(&self.path())
+        self.0
     }
 
     pub fn file_type(&self) -> io::Result<FileType> {
-        self.metadata().map(|m| m.file_type())
+        self.0
     }
 }

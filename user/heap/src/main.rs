@@ -5,7 +5,7 @@
 //! Always-on boot uses slim `/ok` instead; `wait_ci` types `heap` at `$`.
 
 use myos_user::{
-    close, exec, exit, exit_code, fork, mkdir, open_flags, wait_status, write, write_fd, O_CREAT,
+    close, exec, exit, exit_code, fork, open_flags, wait_status, write, write_fd, O_CREAT,
     O_TRUNC, O_WRONLY,
 };
 
@@ -34,12 +34,9 @@ fn run_prog(path: &[u8], args: &[&[u8]]) {
     }
 }
 
-fn run_prog_exit(path: &[u8], args: &[&[u8]], expect: u8, ok_msg: &[u8]) -> bool {
+fn run_prog_exit(path: &[u8], args: &[&[u8]], expect: u8, ok_msg: &[u8]) {
     match fork() {
-        None => {
-            write(b"fork fail\n");
-            false
-        }
+        None => write(b"fork fail\n"),
         Some(0) => {
             exec(path, args);
             exit_code(127);
@@ -48,60 +45,24 @@ fn run_prog_exit(path: &[u8], args: &[&[u8]], expect: u8, ok_msg: &[u8]) -> bool
             if let Some((_, status)) = wait_status() {
                 if status == expect {
                     write(ok_msg);
-                    return true;
                 }
-                write(b"prog bad status\n");
-            } else {
-                write(b"prog wait fail\n");
             }
-            false
         }
     }
 }
 
 fn main() -> ! {
     write(b"smoke start\n");
-    let _ = run_prog_exit(b"/bin/std/bigalloc", &[], 0, b"bigalloc ok\n");
-    let _ = run_prog_exit(b"/bin/coreutils/echo", &[], 0, b"uutils echo ok\n");
-    let _ = run_prog_exit(b"/bin/coreutils/true", &[], 0, b"uutils true ok\n");
-    let _ = run_prog_exit(b"/bin/coreutils/false", &[], 1, b"uutils false ok\n");
-    // Recursive sbase find: needs multi-DIR libgloss (nested opendir while walking).
-    if mkdir(b"/tmp/findnest")
-        && mkdir(b"/tmp/findnest/a")
-        && mkdir(b"/tmp/findnest/a/b")
-    {
-        if let Some(fd) = open_flags(b"/tmp/findnest/a/b/c", O_WRONLY | O_CREAT | O_TRUNC) {
-            let _ = write_fd(fd, b"nest\n");
-            close(fd);
-            let _ = run_prog_exit(
-                b"/bin/sbase/find",
-                &[b"find", b"/tmp/findnest"],
-                0,
-                b"find ok\n",
-            );
-        }
-    } else {
-        write(b"find skip (mkdir fail)\n");
-    }
-    // Also walk from / — should print nested mount paths without EMFILE.
-    run_prog(b"/bin/sbase/find", &[b"find", b"/tmp"]);
-    // Newly-ported uutils that need std::fs::read_dir / open.
-    if !run_prog_exit(
-        b"/bin/coreutils/cat",
-        &[b"cat", b"/tmp/findnest/a/b/c"],
-        0,
-        b"uutils cat ok\n",
-    ) {
-        write(b"uutils cat findnest failed; retry /msg\n");
-        let _ = run_prog_exit(b"/bin/coreutils/cat", &[b"cat", b"/msg"], 0, b"uutils cat ok\n");
-    }
-    let _ = run_prog_exit(b"/bin/coreutils/ls", &[b"ls", b"/tmp/findnest"], 0, b"uutils ls ok\n");
+    run_prog_exit(b"/bin/std/bigalloc", &[], 0, b"bigalloc ok\n");
+    run_prog_exit(b"/bin/coreutils/echo", &[], 0, b"uutils echo ok\n");
+    run_prog_exit(b"/bin/coreutils/true", &[], 0, b"uutils true ok\n");
+    run_prog_exit(b"/bin/coreutils/false", &[], 1, b"uutils false ok\n");
     // Write a needle under /tmp and search with /c/rg (full ripgrep + PCRE2).
     // -j1 / --no-mmap / --no-config: myos is single-threaded; rg mmap is optional.
     if let Some(fd) = open_flags(b"/tmp/rg-needle.txt", O_WRONLY | O_CREAT | O_TRUNC) {
         let _ = write_fd(fd, b"hello ripgrep needle world\n");
         close(fd);
-        let _ = run_prog_exit(
+        run_prog_exit(
             b"/bin/coreutils/rg",
             &[
                 b"rg",
