@@ -9,7 +9,6 @@
 +	setenv("TERMCAP", "/lib/termcap", 1);
  
  	setsid();
- 
 @@ -124,8 +126,11 @@
  		n = read(0, &c, 1);
  		if (n < 0)
