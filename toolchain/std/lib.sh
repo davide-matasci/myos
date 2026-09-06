@@ -35,7 +35,9 @@ myos_sysroot_version_hash() {
       {
         echo "toolchain=$MYOS_NIGHTLY"
         sha256sum "toolchain/std/patches/wire-myos.py"
+        # Sources only; prune any nested cargo target/ dirs if present.
         find toolchain/std/pal toolchain/std/sys toolchain/std/os targets \
+          \( -name target -o -path '*/target/*' \) -prune -o \
           -type f -print0 2>/dev/null \
           | sort -z | xargs -0 -r sha256sum
       } | sha256sum | awk '{print $1}'
@@ -151,7 +153,12 @@ myos_std_hello_version_hash() {
       {
         myos_sysroot_version_hash
         sha256sum "toolchain/std/build-std-hello.sh"
-        find toolchain/std/examples -type f -print0 2>/dev/null \
+        # Sources only: Cargo.toml + *.rs. Ignore cargo outputs under
+        # examples (target/, Cargo.lock, *.rlib, etc.) so the stamp is
+        # stable across build-std-hello.sh within one CI job.
+        find toolchain/std/examples \
+          \( -name target -o -path '*/target/*' \) -prune -o \
+          -type f \( -name 'Cargo.toml' -o -name '*.rs' \) -print0 2>/dev/null \
           | sort -z | xargs -0 -r sha256sum
       } | sha256sum | awk '{print $1}'
     )
