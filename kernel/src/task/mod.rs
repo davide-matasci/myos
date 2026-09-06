@@ -284,6 +284,16 @@ pub fn kernel_aspace() -> u64 {
     KERNEL_ASPACE.load(Ordering::SeqCst)
 }
 
+/// Switch the CPU to the kernel aspace if `aspace` is currently loaded.
+pub fn unload_user_aspace(aspace: u64) {
+    if aspace != 0 && LOADED_ASPACE.load(Ordering::SeqCst) == aspace {
+        let k = KERNEL_ASPACE.load(Ordering::SeqCst);
+        user::switch_aspace(k);
+        LOADED_ASPACE.store(k, Ordering::SeqCst);
+    }
+}
+
+
 #[allow(dead_code)]
 pub fn current_id() -> usize {
     CURRENT.load(Ordering::SeqCst)
@@ -1355,18 +1365,38 @@ extern "C" fn trampoline() -> ! {
 
 pub fn die() -> ! {
     irq_off();
-    {
+    let reclaim = {
         let mut tasks = TASKS.lock();
         let id = CURRENT.load(Ordering::SeqCst);
+        let mut out = None;
         if tasks[id].user_rip != 0 {
             user::note_exit();
             for entry in tasks[id].fds {
                 fd_drop(entry);
             }
             tasks[id].fds = [FdEntry::Empty; MAX_FDS];
+            let aspace = tasks[id].aspace;
+            let base = tasks[id].user_base;
+            let span = tasks[id].image_span;
+            let off = tasks[id].stack_off;
+            let brk = tasks[id].brk_cur;
+            let mmap = tasks[id].mmap;
+            tasks[id].aspace = 0;
+            tasks[id].user_base = 0;
+            tasks[id].image_span = 0;
+            tasks[id].stack_off = 0;
+            tasks[id].brk_cur = 0;
+            tasks[id].mmap = EMPTY_MMAP;
+            if aspace != 0 {
+                out = Some((aspace, base, span, off, brk, mmap));
+            }
         }
         tasks[id].state = State::Dead;
         tasks[id].entry = None;
+        out
+    };
+    if let Some((aspace, base, span, off, brk, mmap)) = reclaim {
+        user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
     }
     schedule();
     loop {

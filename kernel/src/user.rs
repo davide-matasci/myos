@@ -295,7 +295,7 @@ pub fn spawn_init() {
 }
 
 /// Realize `bytes` at USER_BASE: frames, stack page, aspace.
-/// Old frames are leaked on exec (ok).
+/// Callers that abandon a prior aspace must [`reclaim_user_aspace`] it.
 fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let code_pages = info.span.div_ceil(PAGE);
@@ -1554,6 +1554,8 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let env_refs: Vec<&[u8]> = env_bufs.iter().map(|s| s.as_slice()).collect();
     let cur_aspace = task::current_aspace();
     let (base_u, _mapped_span, stack_off) = task::current_user_map();
+    let old_brk = task::current_brk();
+    let old_mmap = task::mmap_regions();
     let (aspace, entry, span, off) = {
         // Reuse the current aspace in place (reload / expand) so post-fork
         // `exec` does not leak the prior aspace + its frames on every exec.
@@ -1574,6 +1576,15 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
                 {
                     v
                 } else if let Some(v) = load_user_elf(bytes) {
+                    // Fresh aspace: reclaim the abandoned prior mapping.
+                    reclaim_user_aspace(
+                        cur_aspace,
+                        base_u,
+                        _mapped_span,
+                        stack_off,
+                        old_brk,
+                        &old_mmap,
+                    );
                     v
                 } else {
                     return SYSERR;
@@ -2356,6 +2367,73 @@ fn user_range_ok(ptr: usize, len: usize) -> bool {
     }
     // mmap_contains takes TASKS; skip unless ptr is outside code/stack/heap.
     task::mmap_contains(ptr, len)
+}
+
+
+/// Free user data frames for `aspace` (code / stack / heap / mmap). Page tables
+/// are left allocated (small). Used on process exit and when `load_user_elf`
+/// abandons a prior aspace so `/heap` can fork+exec large ELFs repeatedly
+/// without bump-allocator exhaustion (riscv64 `sepc=0` after find+cat+ls).
+pub fn reclaim_user_aspace(
+    aspace: u64,
+    base: u64,
+    image_span: usize,
+    stack_off: u64,
+    brk_cur: u64,
+    mmap: &[task::MmapRegion],
+) {
+    if aspace == 0 || base == 0 {
+        return;
+    }
+    // Must not free pages while they may still be walked via this aspace.
+    task::unload_user_aspace(aspace);
+    let n_code = image_span.div_ceil(PAGE);
+    for i in 0..n_code {
+        let va = base + (i * PAGE) as u64;
+        free_mapped_page(aspace, va);
+    }
+    for i in 0..USER_STACK_PAGES {
+        let va = base + stack_off + (i * PAGE) as u64;
+        free_mapped_page(aspace, va);
+    }
+    let heap_base = heap_base_va(base, stack_off);
+    let heap_end = if brk_cur > heap_base {
+        align_up_u64(brk_cur, PAGE as u64)
+    } else {
+        heap_base
+    };
+    let heap_lim = heap_limit_va(base, stack_off);
+    let mut va = heap_base;
+    while va < heap_end.min(heap_lim) {
+        free_mapped_page(aspace, va);
+        va += PAGE as u64;
+    }
+    // Also drop any remaining mapped initial heap pages beyond brk.
+    while va < heap_lim {
+        free_mapped_page(aspace, va);
+        va += PAGE as u64;
+    }
+    for r in mmap.iter() {
+        if r.pages == 0 || r.va == 0 {
+            continue;
+        }
+        for i in 0..r.pages as usize {
+            free_mapped_page(aspace, r.va + (i * PAGE) as u64);
+        }
+    }
+    flush_user_tlb();
+}
+
+fn free_mapped_page(aspace: u64, va: u64) {
+    let Some(phys) = virt_to_phys(aspace, va) else {
+        return;
+    };
+    unmap_user_page(aspace, va);
+    mm::free_frame(phys);
+}
+
+fn align_up_u64(x: u64, a: u64) -> u64 {
+    (x + a - 1) & !(a - 1)
 }
 
 fn create_aspace(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {
