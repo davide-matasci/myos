@@ -302,12 +302,13 @@ try_public_package() {
 
 force_replace_marker() {
   local port="$1"
-  printf '%s' "$ROOT/target/.ci-registry-replace-${port}"
+  # Prefer runner temp /tmp — never under target/ (builds may wipe it).
+  local base="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+  printf '%s' "${base%/}/myos-ci-registry-replace-${port}"
 }
 
 mark_force_replace() {
   local port="$1" hash="$2"
-  mkdir -p "$ROOT/target"
   printf '%s\n' "$hash" >"$(force_replace_marker "$port")"
 }
 
@@ -319,8 +320,9 @@ clear_force_replace() {
 needs_force_replace() {
   local port="$1" hash="$2" marker
   marker="$(force_replace_marker "$port")"
-  [[ -f "$marker" ]] || return 1
-  [[ "$(cat "$marker")" == "$hash" ]]
+  # Presence alone: pull may have stored a different hash if stamps used to be
+  # non-deterministic across the same job.
+  [[ -f "$marker" ]]
 }
 
 cmd_pull() {
@@ -403,11 +405,11 @@ cmd_push() {
   fi
   if oras manifest fetch "$ref" >/dev/null 2>&1; then
     if needs_force_replace "$port" "$hash"; then
-      echo "registry replace ${port}: remote present but was not current after pull"
+      echo "registry replace ${port}: remote present but pull marked replace ${hash}"
       # Drop the poisoned tag so the subsequent push publishes a fresh package.
       oras manifest delete "$ref" --force >/dev/null 2>&1 || true
     else
-      echo "registry skip push ${port}: already present"
+      echo "registry skip push ${port}: already present ${hash}"
       return 0
     fi
   fi
