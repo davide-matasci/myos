@@ -724,6 +724,16 @@ fn raw_open(ptr: usize, len: usize) -> usize {
             in("a7") SYS_OPEN,
             inout("a0") ptr => ret,
             in("a1") len,
+            // SYS_OPEN flags (a2). Must be 0 for std File::open — unlike
+            // myos_user/libc which pass flags explicitly. Leaving a2 unset
+            // reused leftover register state (e.g. StatBuf* / listdir buf),
+            // so open can fail when (flags & O_ACCMODE) == 3.
+            // Consumers (uutils) statically link libstd: coreutils stamp must
+            // include myos_sysroot_version_hash or CI skips rebuild
+            // ("uutils coreutils up to date") and this fix never ships.
+            in("a2") 0usize,
+            lateout("a1") _,
+            lateout("a2") _,
             options(nostack),
         );
     }
@@ -867,6 +877,83 @@ fn raw_stat(ptr: usize, len: usize, out: usize) -> usize {
             in("a0") ptr,
             in("a1") len,
             in("a2") out,
+            lateout("a0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// Must match kernel `LISTDIR_CAP` / libgloss `MYOS_DIRBUF`.
+pub const LISTDIR_CAP: usize = 4096;
+
+/// List directory entries at `path` (newline-separated basenames) into `buf`.
+/// `buf` must be at least [`LISTDIR_CAP`] bytes. Returns byte count, or `-1` on error.
+#[inline]
+pub fn listdir(path: &[u8], buf: &mut [u8]) -> isize {
+    if buf.len() < LISTDIR_CAP {
+        return -1;
+    }
+    let ret = raw_listdir(path.as_ptr() as usize, path.len(), buf.as_mut_ptr() as usize);
+    if ret == usize::MAX {
+        -1
+    } else {
+        ret as isize
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn raw_listdir(ptr: usize, len: usize, buf: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_LISTDIR,
+            in("rdi") ptr,
+            in("rsi") len,
+            in("rdx") buf,
+            lateout("rax") ret,
+            out("rcx") _,
+            out("r11") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn raw_listdir(ptr: usize, len: usize, buf: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") SYS_LISTDIR,
+            in("x0") ptr,
+            in("x1") len,
+            in("x2") buf,
+            lateout("x0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_listdir(ptr: usize, len: usize, buf: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_LISTDIR,
+            in("a0") ptr,
+            in("a1") len,
+            in("a2") buf,
             lateout("a0") ret,
             options(nostack),
         );

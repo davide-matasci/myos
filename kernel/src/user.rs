@@ -66,15 +66,26 @@ pub const USER_STACK_PAGES: usize = 256;
 const HEAP_PAGES: usize = 256;
 #[cfg(not(target_arch = "aarch64"))]
 const HEAP_PAGES: usize = 256;
-/// Largest PT_LOAD span we map for a fresh `load_user_elf` / fork copy.
-/// release `uutils-coreutils` ≈366 pages; ripgrep+PCRE2 (opt-level=z, LTO) ≈721.
+/// Cap for fresh `load_user_elf` (init + typical programs) and on-stack frame arrays.
+/// Keep modest: bumping this also sizes `[u64; N]` on the task stack and used to
+/// force `elf_scratch_mut` to grab N contiguous frames before init could run.
 const MAX_INIT_PAGES: usize = 1024;
+/// Cap for in-place `expand_user_elf` of larger bootfs ELFs (uutils / ripgrep).
+/// Must stay within QEMU RAM given leaked post-exec frames (x86 CI is 256 MiB).
+/// Full feat_common_core (~2.4k pages) OOMed; ship a smaller multicall instead.
+const MAX_EXPAND_PAGES: usize = 1024;
+/// Largest image we may map, fork-copy, or stage in ELF scratch.
+const MAX_ELF_PAGES: usize = if MAX_EXPAND_PAGES > MAX_INIT_PAGES {
+    MAX_EXPAND_PAGES
+} else {
+    MAX_INIT_PAGES
+};
 /// In-place `reload_user_elf` scratch and mapping cap (sbase-cat scale).
 const MAX_RELOAD_PAGES: usize = 40;
 /// Minimum code pages reserved below the user stack so post-fork `exec` can
 /// `reload_user_elf` the largest newlib/sbase ELFs (today `sbase-cat`).
 const USER_EXEC_RELOAD_PAGES: usize = 36;
-const MAX_PATH: usize = 64;
+const MAX_PATH: usize = 256;
 const MAX_ARGC: usize = 16;
 const MAX_ARG_LEN: usize = 128;
 const MAX_ENVC: usize = 32;
@@ -289,7 +300,7 @@ pub fn spawn_init() {
 }
 
 /// Realize `bytes` at USER_BASE: frames, stack page, aspace.
-/// Old frames are leaked on exec (ok).
+/// Callers that abandon a prior aspace must [`reclaim_user_aspace`] it.
 fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let code_pages = info.span.div_ceil(PAGE);
@@ -402,27 +413,36 @@ fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
 /// Scratch for `load_user_elf` / `reload_user_elf` / `expand_user_elf`.
 ///
 /// Backed by bump-allocator frames (HHDM-contiguous), not kernel `.bss`.
-/// Putting `MAX_INIT_PAGES` pages in BSS grew the Limine-loaded image by ~1.5
+/// Putting `MAX_ELF_PAGES` pages in BSS grew the Limine-loaded image by ~1.5
 /// MiB and let the frame bump walk into the kernel physical range on AArch64.
-const ELF_SCRATCH_BYTES: usize = MAX_INIT_PAGES * PAGE;
+///
+/// Allocate only as many contiguous frames as this call needs (grow on demand
+/// up to [`MAX_ELF_PAGES`]). Always grabbing the max made UEFI init fail when
+/// `MAX_INIT_PAGES` was raised to 3072 for feat_common_core uutils.
+const ELF_SCRATCH_BYTES: usize = MAX_ELF_PAGES * PAGE;
 static ELF_SCRATCH_PHYS: AtomicU64 = AtomicU64::new(0);
+static ELF_SCRATCH_PAGES: AtomicUsize = AtomicUsize::new(0);
 
 fn elf_scratch_mut(len: usize) -> Option<&'static mut [u8]> {
     if len == 0 || len > ELF_SCRATCH_BYTES {
         return None;
     }
+    let need_pages = len.div_ceil(PAGE);
     let mut phys = ELF_SCRATCH_PHYS.load(Ordering::SeqCst);
-    if phys == 0 {
+    let have = ELF_SCRATCH_PAGES.load(Ordering::SeqCst);
+    if phys == 0 || need_pages > have {
         let first = mm::alloc_frame();
         let mut expect = first.wrapping_add(PAGE as u64);
-        for _ in 1..MAX_INIT_PAGES {
+        for _ in 1..need_pages {
             let p = mm::alloc_frame();
             if p != expect {
                 return None;
             }
             expect = expect.wrapping_add(PAGE as u64);
         }
+        // Prior smaller scratch is leaked (bump allocator cannot free).
         ELF_SCRATCH_PHYS.store(first, Ordering::SeqCst);
+        ELF_SCRATCH_PAGES.store(need_pages, Ordering::SeqCst);
         phys = first;
     }
     Some(unsafe { core::slice::from_raw_parts_mut(mm::hhdm(phys), len) })
@@ -495,9 +515,9 @@ fn reload_user_elf(
     Some((entry as usize, n_pages * PAGE, stack_off))
 }
 
-/// Grow the current aspace and load a large ELF (up to [`MAX_INIT_PAGES`]).
+/// Grow the current aspace and load a large ELF (up to [`MAX_EXPAND_PAGES`]).
 /// Used when [`reload_user_elf`] is too small but we already have an aspace
-/// (post-fork exec of release uutils ≈197 pages).
+/// (post-fork exec of release uutils / ripgrep).
 fn expand_user_elf(
     aspace: u64,
     bytes: &[u8],
@@ -506,10 +526,10 @@ fn expand_user_elf(
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let image_pages = info.span.div_ceil(PAGE);
-    if image_pages == 0 || image_pages > MAX_INIT_PAGES {
+    if image_pages == 0 || image_pages > MAX_EXPAND_PAGES {
         return None;
     }
-    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_INIT_PAGES);
+    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_EXPAND_PAGES);
     let new_stack_off = (n_pages * PAGE) as u64;
     if info.span > ELF_SCRATCH_BYTES {
         return None;
@@ -745,14 +765,14 @@ fn read_user_usize(aspace: u64, va: usize) -> Option<usize> {
 /// Copy this process's user code+stack+heap pages into a new aspace at the same VA.
 pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) -> Option<u64> {
     let n_pages = span.div_ceil(PAGE);
-    if n_pages == 0 || n_pages > MAX_INIT_PAGES {
+    if n_pages == 0 || n_pages > MAX_ELF_PAGES {
         return None;
     }
     let src = task::current_aspace();
     if src == 0 {
         return None;
     }
-    let mut frames = [0u64; MAX_INIT_PAGES];
+    let mut frames = [0u64; MAX_ELF_PAGES];
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
         let phys = virt_to_phys(src, va)?;
@@ -1513,6 +1533,25 @@ fn sys_ioctl(fd: usize, request: usize, arg: usize) -> usize {
 /// Become a session leader: `sid = pid` (task slot), new process group
 /// (`pgid = pid`), clear controlling tty.
 /// Fails with SYSERR if the caller is already a session leader (`sid == pid`).
+
+fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
+    const N: usize = 16; // two i64s
+    if tv_ptr == 0 || !user_range_ok(tv_ptr, N) {
+        return SYSERR;
+    }
+    let Some(secs) = crate::time::unix_seconds() else {
+        return SYSERR;
+    };
+    let mut raw = [0u8; N];
+    raw[..8].copy_from_slice(&secs.to_le_bytes());
+    // usec unknown from RTC second resolution
+    raw[8..16].copy_from_slice(&0i64.to_le_bytes());
+    if !write_user_bytes(task::current_aspace(), tv_ptr, &raw) {
+        return SYSERR;
+    }
+    0
+}
+
 fn sys_setsid() -> usize {
     match task::setsid() {
         Some(sid) => sid,
@@ -1540,25 +1579,6 @@ fn sys_getsid(pid: usize) -> usize {
         Some(sid) => sid,
         None => SYSERR,
     }
-}
-
-
-fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
-    const N: usize = 16; // two i64s
-    if tv_ptr == 0 || !user_range_ok(tv_ptr, N) {
-        return SYSERR;
-    }
-    let Some(secs) = crate::time::unix_seconds() else {
-        return SYSERR;
-    };
-    let mut raw = [0u8; N];
-    raw[..8].copy_from_slice(&secs.to_le_bytes());
-    // usec unknown from RTC second resolution
-    raw[8..16].copy_from_slice(&0i64.to_le_bytes());
-    if !write_user_bytes(task::current_aspace(), tv_ptr, &raw) {
-        return SYSERR;
-    }
-    0
 }
 
 fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
@@ -1595,6 +1615,8 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let env_refs: Vec<&[u8]> = env_bufs.iter().map(|s| s.as_slice()).collect();
     let cur_aspace = task::current_aspace();
     let (base_u, _mapped_span, stack_off) = task::current_user_map();
+    let old_brk = task::current_brk();
+    let old_mmap = task::mmap_regions();
     let (aspace, entry, span, off) = {
         // Reuse the current aspace in place (reload / expand) so post-fork
         // `exec` does not leak the prior aspace + its frames on every exec.
@@ -1615,6 +1637,15 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
                 {
                     v
                 } else if let Some(v) = load_user_elf(bytes) {
+                    // Fresh aspace: reclaim the abandoned prior mapping.
+                    reclaim_user_aspace(
+                        cur_aspace,
+                        base_u,
+                        _mapped_span,
+                        stack_off,
+                        old_brk,
+                        &old_mmap,
+                    );
                     v
                 } else {
                     return SYSERR;
@@ -2397,6 +2428,73 @@ fn user_range_ok(ptr: usize, len: usize) -> bool {
     }
     // mmap_contains takes TASKS; skip unless ptr is outside code/stack/heap.
     task::mmap_contains(ptr, len)
+}
+
+
+/// Free user data frames for `aspace` (code / stack / heap / mmap). Page tables
+/// are left allocated (small). Used on process exit and when `load_user_elf`
+/// abandons a prior aspace so `/heap` can fork+exec large ELFs repeatedly
+/// without bump-allocator exhaustion (riscv64 `sepc=0` after find+cat+ls).
+pub fn reclaim_user_aspace(
+    aspace: u64,
+    base: u64,
+    image_span: usize,
+    stack_off: u64,
+    brk_cur: u64,
+    mmap: &[task::MmapRegion],
+) {
+    if aspace == 0 || base == 0 {
+        return;
+    }
+    // Must not free pages while they may still be walked via this aspace.
+    task::unload_user_aspace(aspace);
+    let n_code = image_span.div_ceil(PAGE);
+    for i in 0..n_code {
+        let va = base + (i * PAGE) as u64;
+        free_mapped_page(aspace, va);
+    }
+    for i in 0..USER_STACK_PAGES {
+        let va = base + stack_off + (i * PAGE) as u64;
+        free_mapped_page(aspace, va);
+    }
+    let heap_base = heap_base_va(base, stack_off);
+    let heap_end = if brk_cur > heap_base {
+        align_up_u64(brk_cur, PAGE as u64)
+    } else {
+        heap_base
+    };
+    let heap_lim = heap_limit_va(base, stack_off);
+    let mut va = heap_base;
+    while va < heap_end.min(heap_lim) {
+        free_mapped_page(aspace, va);
+        va += PAGE as u64;
+    }
+    // Also drop any remaining mapped initial heap pages beyond brk.
+    while va < heap_lim {
+        free_mapped_page(aspace, va);
+        va += PAGE as u64;
+    }
+    for r in mmap.iter() {
+        if r.pages == 0 || r.va == 0 {
+            continue;
+        }
+        for i in 0..r.pages as usize {
+            free_mapped_page(aspace, r.va + (i * PAGE) as u64);
+        }
+    }
+    flush_user_tlb();
+}
+
+fn free_mapped_page(aspace: u64, va: u64) {
+    let Some(phys) = virt_to_phys(aspace, va) else {
+        return;
+    };
+    unmap_user_page(aspace, va);
+    mm::free_frame(phys);
+}
+
+fn align_up_u64(x: u64, a: u64) -> u64 {
+    (x + a - 1) & !(a - 1)
 }
 
 fn create_aspace(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {

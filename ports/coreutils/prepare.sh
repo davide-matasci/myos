@@ -18,7 +18,7 @@ patch_version_hash() {
   {
     echo "errno=$ERRNO_VERSION libc=$LIBC_VERSION rustix=$RUSTIX_VERSION"
     echo "getrandom=$GETRANDOM_02_VERSION,$GETRANDOM_04_VERSION"
-    echo "hostname=$HOSTNAME_VERSION console=$CONSOLE_VERSION"
+    echo "hostname=$HOSTNAME_VERSION console=$CONSOLE_VERSION filetime=$FILETIME_VERSION ctrlc=$CTRLC_VERSION blake3=$BLAKE3_VERSION"
     sha256sum "$HERE/versions.env"
     sha256sum "$CRATES/errno/"*
     sha256sum "$LIBC/"*
@@ -26,6 +26,8 @@ patch_version_hash() {
     sha256sum "$CRATES/getrandom/"*
     sha256sum "$CRATES/hostname/"*
     sha256sum "$CRATES/console/"*
+    sha256sum "$CRATES/filetime/"*
+    sha256sum "$CRATES/ctrlc/"*
   } | sha256sum | awk '{print $1}'
 }
 
@@ -50,6 +52,8 @@ find_registry_crate() {
 GETRANDOM_04_SRC="$(find_registry_crate "getrandom-$GETRANDOM_04_VERSION" 2>/dev/null || true)"
 HOSTNAME_SRC="$(find_registry_crate "hostname-$HOSTNAME_VERSION" 2>/dev/null || true)"
 CONSOLE_SRC="$(find_registry_crate "console-$CONSOLE_VERSION" 2>/dev/null || true)"
+FILETIME_SRC="$(find_registry_crate "filetime-$FILETIME_VERSION" 2>/dev/null || true)"
+CTRLC_SRC="$(find_registry_crate "ctrlc-$CTRLC_VERSION" 2>/dev/null || true)"
 
 if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP")" == "$(patch_version_hash)" ]] \
   && [[ -f "$DEST/errno-$ERRNO_VERSION/Cargo.toml" ]] \
@@ -61,12 +65,18 @@ if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP")" == "$(patch_version_hash)" ]] \
   && [[ -n "$HOSTNAME_SRC" ]] \
   && [[ -f "$HOSTNAME_SRC/src/myos.rs" ]] \
   && [[ -n "$CONSOLE_SRC" ]] \
-  && [[ -f "$CONSOLE_SRC/src/myos_term.rs" ]]; then
+  && [[ -f "$CONSOLE_SRC/src/myos_term.rs" ]] \
+  && grep -A40 'pub fn family' "$CONSOLE_SRC/src/term.rs" | grep -q 'target_os = "myos"' \
+  && [[ -n "$FILETIME_SRC" ]] \
+  && [[ -f "$FILETIME_SRC/src/myos.rs" ]] \
+  && grep -q 'target_os = "myos"' "$FILETIME_SRC/src/lib.rs" \
+  && [[ -n "$CTRLC_SRC" ]] \
+  && [[ -f "$CTRLC_SRC/src/platform/myos.rs" ]]; then
   echo "coreutils patched crates up to date at $DEST"
   exit 0
 fi
 
-echo "Fetching errno $ERRNO_VERSION, libc $LIBC_VERSION, rustix $RUSTIX_VERSION, getrandom, hostname, console..."
+echo "Fetching errno $ERRNO_VERSION, libc $LIBC_VERSION, rustix $RUSTIX_VERSION, getrandom, hostname, console, filetime, ctrlc..."
 mkdir -p "$FETCH_DIR"
 cat >"$FETCH_DIR/Cargo.toml" <<EOF
 [package]
@@ -88,6 +98,9 @@ getrandom02 = { package = "getrandom", version = "= $GETRANDOM_02_VERSION" }
 getrandom04 = { package = "getrandom", version = "= $GETRANDOM_04_VERSION" }
 hostname = "= $HOSTNAME_VERSION"
 console = "= $CONSOLE_VERSION"
+filetime = "= $FILETIME_VERSION"
+ctrlc = { version = "= $CTRLC_VERSION", features = ["termination"] }
+blake3 = "= $BLAKE3_VERSION"
 EOF
 echo '// fetch-only dummy crate' >"$FETCH_DIR/lib.rs"
 
@@ -201,13 +214,136 @@ mod myos_term;' "$console_src/src/lib.rs"
 pub(crate) use crate::myos_term::*;' \
       "$console_src/src/term.rs"
   fi
-  if ! grep -q 'target_os = "myos"' "$console_src/src/term.rs" || ! grep -A3 'pub fn family' "$console_src/src/term.rs" | grep -q myos; then
-    sed -i '/#\[cfg(all(unix, not(target_arch = "wasm32")))\]/,/TermFamily::UnixTerm/{ /TermFamily::UnixTerm/a\
-        #[cfg(target_os = "myos")]\
-        {\
-            return TermFamily::Dummy;\
+  # myos is not unix/windows/wasm — family() needs an explicit arm or it returns ().
+  # NOTE: do not key off bare "target_os = myos" in term.rs (myos_term use already
+  # adds that) or TermFamily::Dummy (wasm already has Dummy). Require myos *inside* family().
+  if ! grep -A40 'pub fn family' "$console_src/src/term.rs" | grep -q 'target_os = "myos"'; then
+    python3 - "$console_src/src/term.rs" <<'PYTERM'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+needle = """        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            TermFamily::UnixTerm
         }
-}' "$console_src/src/term.rs"
+        #[cfg(target_arch = "wasm32")]
+"""
+insert = """        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            TermFamily::UnixTerm
+        }
+        #[cfg(target_os = "myos")]
+        {
+            TermFamily::Dummy
+        }
+        #[cfg(target_arch = "wasm32")]
+"""
+if needle not in text:
+    raise SystemExit("console family(): expected unix/wasm arms not found")
+if 'target_os = "myos"' in text[text.index("pub fn family") : text.index("pub fn family") + 500]:
+    print("console family myos arm already present")
+else:
+    p.write_text(text.replace(needle, insert, 1))
+    print("console family myos arm applied")
+PYTERM
+  fi
+
+  echo "==> patching filetime-$FILETIME_VERSION (registry in-place)"
+  filetime_src="$(find_registry_crate "filetime-$FILETIME_VERSION")"
+  cp "$CRATES/filetime/myos.rs" "$filetime_src/src/myos.rs"
+  if ! grep -q 'target_os = "myos"' "$filetime_src/src/lib.rs"; then
+    python3 - "$filetime_src/src/lib.rs" <<'PYFT'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+needle = """    } else if #[cfg(all(target_family = "wasm", not(target_os = "emscripten")))] {
+        #[path = "wasm.rs"]
+        mod imp;
+    } else {"""
+insert = """    } else if #[cfg(all(target_family = "wasm", not(target_os = "emscripten")))] {
+        #[path = "wasm.rs"]
+        mod imp;
+    } else if #[cfg(target_os = "myos")] {
+        #[path = "myos.rs"]
+        mod imp;
+    } else {"""
+if needle not in text:
+    raise SystemExit("filetime cfg_if arm not found")
+p.write_text(text.replace(needle, insert, 1))
+print("filetime myos arm applied")
+PYFT
+  fi
+
+  echo "==> patching ctrlc-$CTRLC_VERSION (registry in-place)"
+  ctrlc_src="$(find_registry_crate "ctrlc-$CTRLC_VERSION")"
+  mkdir -p "$ctrlc_src/src/platform"
+  cp "$CRATES/ctrlc/myos.rs" "$ctrlc_src/src/platform/myos.rs"
+  if ! grep -q 'target_os = "myos"' "$ctrlc_src/src/platform/mod.rs"; then
+    python3 - "$ctrlc_src/src/platform/mod.rs" <<'PYCC'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = """#[cfg(unix)]
+mod unix;
+
+#[cfg(windows)]
+mod windows;
+
+#[cfg(unix)]
+pub use self::unix::*;
+
+#[cfg(windows)]
+pub use self::windows::*;
+"""
+new = """#[cfg(unix)]
+mod unix;
+
+#[cfg(windows)]
+mod windows;
+
+#[cfg(target_os = "myos")]
+mod myos;
+
+#[cfg(unix)]
+pub use self::unix::*;
+
+#[cfg(windows)]
+pub use self::windows::*;
+
+#[cfg(target_os = "myos")]
+pub use self::myos::*;
+"""
+if old not in text:
+    raise SystemExit("ctrlc platform mod pattern not found")
+p.write_text(text.replace(old, new, 1))
+print("ctrlc myos platform arm applied")
+PYCC
+  fi
+
+  echo "==> patching blake3-$BLAKE3_VERSION (registry in-place, disable NEON on myos)"
+  blake3_src="$(find_registry_crate "blake3-$BLAKE3_VERSION")"
+  if ! grep -q 'Ok("myos")' "$blake3_src/build.rs"; then
+    python3 - "$blake3_src/build.rs" <<'PYB3'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+old = """fn is_pure() -> bool {
+    defined("CARGO_FEATURE_PURE")
+}"""
+new = """fn is_pure() -> bool {
+    // myos freestanding clang has no arm_neon.h; force portable Rust path.
+    defined("CARGO_FEATURE_PURE")
+        || std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("myos")
+}"""
+if old not in text:
+    raise SystemExit("blake3 is_pure() not found")
+p.write_text(text.replace(old, new, 1))
+print("blake3 myos pure path applied")
+PYB3
   fi
 }
 

@@ -47,7 +47,7 @@ const CI_NEEDLES: [&str; 28] = [
 /// interactive commands (indices 10/11) run *after* `heap`; they never print
 /// during `/heap`, so including them here would abort before those commands
 /// are typed. Verified by `interactive_dns_cmd_ok` / `interactive_https_cmd_ok`.
-const CI_NEEDLES_STD: [&str; 15] = [
+const CI_NEEDLES_STD: [&str; 19] = [
     "std ok",
     "std cat ok",
     "std echo ok",
@@ -58,6 +58,10 @@ const CI_NEEDLES_STD: [&str; 15] = [
     "uutils echo ok",
     "uutils true ok",
     "uutils false ok",
+    "find ok",
+    "/tmp/findnest/a/b/c",
+    "uutils cat ok",
+    "uutils ls ok",
     "ripgrep ok",
     "sbase argv ok",
     "tcc ok",
@@ -236,7 +240,6 @@ fn interactive_dns_cmd_ok(serial: &str) -> bool {
     at_interactive_prompt(serial)
 }
 
-
 /// HTTPS GET: `http https://example.com/` should include `Example Domain` and `https ok`.
 /// Note: `https ok` must NOT be added to CI_NEEDLES_STD (same trap as `dns ok`).
 fn interactive_https_cmd_ok(serial: &str) -> bool {
@@ -259,6 +262,7 @@ fn interactive_https_cmd_failed(serial: &str) -> bool {
             || tail.contains("dns resolve fail")
             || tail.contains("tcp connect timeout"))
 }
+
 
 
 fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
@@ -473,14 +477,6 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     let _ = child.kill();
                     break child.wait().expect("wait after heap fail-fast kill");
                 }
-                // HTTPS: printed tls/dns/tcp failure — don't burn the 180s timeout.
-                if shell_stage == ShellStage::WaitResult
-                    && shell_cmd_index == 11
-                    && interactive_https_cmd_failed(&acc)
-                {
-                    let _ = child.kill();
-                    break child.wait().expect("wait after https fail-fast kill");
-                }
             }
             if ci_complete(&acc, extra_needles, &expect, shell_stage) {
                 let _ = child.kill();
@@ -641,6 +637,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             } else {
                 eprintln!("error: interactive HTTPS did not print `Example Domain` and `https ok`");
             }
+            std::process::exit(1);
         }
         std::process::exit(1);
     }
@@ -653,4 +650,3 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         }
     }
 }
-// HTTPS interactive CI needle lives in interactive_https_cmd_ok (not CI_NEEDLES_STD).

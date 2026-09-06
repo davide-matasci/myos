@@ -19,6 +19,10 @@ MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
 MYOS_SBASE_MIN_BUILT=90
 
+# Rust std is statically linked into uutils/ripgrep; include sysroot stamp.
+# shellcheck source=toolchain/std/lib.sh
+source "$MYOS_ROOT/toolchain/std/lib.sh"
+
 myos_newlib_version_hash() {
   local h
   h="$(
@@ -181,6 +185,9 @@ myos_coreutils_version_hash() {
   local h
   h="$(
     {
+      # uutils links libstd from the myos sysroot — abi.rs etc. must bust this stamp
+      # (d72287e a2=0 fix was skipped in CI: "uutils coreutils up to date").
+      myos_sysroot_version_hash
       sha256sum "$MYOS_ROOT/ports/coreutils/build-uutils.sh"
       sha256sum "$MYOS_ROOT/ports/coreutils/build.sh"
       sha256sum "$MYOS_ROOT/ports/coreutils/prepare.sh"
@@ -233,6 +240,7 @@ myos_ripgrep_version_hash() {
       sha256sum "$MYOS_ROOT/ports/ripgrep/cargo-config.toml"
       find "$MYOS_ROOT/ports/ripgrep" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
+      myos_sysroot_version_hash
       myos_newlib_version_hash
     } | sha256sum | awk '{print $1}'
   )"

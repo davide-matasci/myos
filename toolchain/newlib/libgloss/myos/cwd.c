@@ -21,7 +21,7 @@ chdir(const char *path)
 		errno = ENOENT;
 		return -1;
 	}
-	if (n > 64) {
+	if (n > 256) {
 		errno = ENAMETOOLONG;
 		return -1;
 	}

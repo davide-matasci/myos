@@ -320,6 +320,16 @@ mod syscalls {
         }
     }
 
+    pub unsafe fn sys_gettimeofday(tv: *mut timeval) -> c_int {
+        let ret = raw_syscall(SYS_GETTIMEOFDAY, tv as usize, 0, 0);
+        if ret == usize::MAX {
+            set_errno(EIO);
+            -1
+        } else {
+            0
+        }
+    }
+
     /// Kernel `MyosStatBuf` layout (must match `kernel/src/user.rs`).
     #[repr(C)]
     struct KernelStat {
@@ -362,21 +372,6 @@ mod syscalls {
         (*buf).st_blocks = ((kstat.st_size as u64).div_ceil(512)) as blkcnt_t;
         0
     }
-
-    pub unsafe fn sys_gettimeofday(tv: *mut timeval) -> c_int {
-        if tv.is_null() {
-            set_errno(EINVAL);
-            return -1;
-        }
-        let ret = raw_syscall(SYS_GETTIMEOFDAY, tv as usize, 0, 0);
-        if ret == usize::MAX {
-            set_errno(EIO);
-            -1
-        } else {
-            0
-        }
-    }
-
 }
 
 pub const ECHILD: c_int = 10;
@@ -566,7 +561,6 @@ pub unsafe extern "C" fn __errno_location() -> *mut c_int {
     _myos_errno_location()
 }
 
-#[no_mangle]
 
 #[no_mangle]
 pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut c_void) -> c_int {
@@ -577,6 +571,7 @@ pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut c_void) -> c_i
     unsafe { syscalls::sys_gettimeofday(tv) }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn clock_gettime(_clk: clockid_t, tp: *mut timespec) -> c_int {
     if tp.is_null() {
         syscalls::set_errno(EINVAL);
