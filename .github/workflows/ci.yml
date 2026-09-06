@@ -293,6 +293,9 @@ jobs:
             target/bios.img
             target/uefi.img
             target/fat.img
+            # aarch64/riscv kernels (boot jobs used to cargo-build these every time)
+            target/aarch64-unknown-none-softfloat/debug/kernel
+            target/riscv64imac-unknown-none-elf/debug/kernel
             target/hello-*
             target/ok-*
             target/std-*
@@ -371,7 +374,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download CI build artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-build
+
+      # Happy path: extract ci-build.tar and skip rust/clang entirely.
+      # Rebuild path (artifact missing/quota): install toolchain and rebuild.
+      - name: Restore CI artifacts
+        id: restore
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          if [[ -f ci-build.tar ]]; then
+            echo "==> extracting ci-build.tar"
+            tar -xf ci-build.tar
+          fi
+          if [[ -x target/debug/myos && -f target/bios.img \
+                && -f target/aarch64-unknown-none-softfloat/debug/kernel \
+                && -f target/riscv64imac-unknown-none-elf/debug/kernel ]]; then
+            touch target/.myos-ci-prebuilt-kernels
+            echo "CI artifacts ready (prebuilt kernels): $(ls -lh target/debug/myos target/bios.img)"
+            echo "mode=prebuilt" >> "$GITHUB_OUTPUT"
+          else
+            echo "CI artifacts incomplete; will rebuild"
+            echo "mode=rebuild" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install pinned nightly
+        if: steps.restore.outputs.mode == 'rebuild'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-07-26
@@ -379,6 +410,7 @@ jobs:
           targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
 
       - name: Cache cargo
+        if: steps.restore.outputs.mode == 'rebuild'
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: limine-8.3-6
@@ -388,24 +420,19 @@ jobs:
             target/crate-fetch-coreutils
 
       - name: Download prebuilt sysroot
+        if: steps.restore.outputs.mode == 'rebuild'
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: myos-sysroot
           path: target
 
-      - name: Download CI build artifacts
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-build
-
-      - name: Restore or rebuild CI artifacts
+      - name: Rebuild CI artifacts
+        if: steps.restore.outputs.mode == 'rebuild'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
-          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
           sudo apt-get update
           sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
           ./scripts/ci-registry.sh pull newlib || true
@@ -429,8 +456,14 @@ jobs:
           ./scripts/ci-registry.sh push tcc || true
 
       - name: Install QEMU
-        run: sudo apt-get install -y ${{ matrix.packages }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
 
       - name: Boot in QEMU
         continue-on-error: ${{ !matrix.required }}
+        env:
+          # Kernels come from ci-build.tar (or the rebuild step above). Skip the
+          # aarch64/riscv64 cargo clean+build inside --ci (was multi-minute).
+          MYOS_SKIP_KERNEL_REBUILD: "1"
         run: ./target/debug/myos ${{ matrix.args }}
