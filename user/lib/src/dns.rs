@@ -5,7 +5,7 @@
 
 use crate::{close, open, open_flags, read, write_fd, O_RDWR, O_WRONLY};
 
-const STATUS_POLLS: usize = 200_000;
+const STATUS_POLLS: usize = 400_000;
 const DATA_POLLS: usize = 400_000;
 const BUF: usize = 1024;
 
@@ -258,10 +258,14 @@ pub fn resolve_a(host: &[u8]) -> Result<[u8; 4], ResolveError> {
         close(ctl);
         return Err(ResolveError::Write);
     }
-    close(ctl);
-
+    // Keep ctl open until connected so netd sees a live conversation (and so
+    // a short-lived write is less likely to race a starved netd). Close after.
     let sn = conv_path(&mut pbuf, id, b"status");
     let mut connected = false;
+    let mut last = [0u8; 64];
+    let mut last_n = 0usize;
+    // "connected" on the stack — avoid relying on rodata string merging for the needle.
+    let want = *b"connected";
     for _ in 0..STATUS_POLLS {
         let Some(st) = open(&pbuf[..sn]) else {
             continue;
@@ -269,12 +273,31 @@ pub fn resolve_a(host: &[u8]) -> Result<[u8; 4], ResolveError> {
         let mut sbuf = [0u8; 64];
         let nr = read(st, &mut sbuf);
         close(st);
-        if nr > 0 && nr <= 64 && buf_has(&sbuf[..nr], b"connected") {
-            connected = true;
-            break;
+        if nr > 0 && nr <= 64 {
+            last_n = nr;
+            last[..nr].copy_from_slice(&sbuf[..nr]);
+            if buf_has(&sbuf[..nr], &want) {
+                connected = true;
+                break;
+            }
         }
     }
+    close(ctl);
     if !connected {
+        // Best-effort hangup so the conv slot is freed for later HTTPS DNS.
+        let pn = conv_path(&mut pbuf, id, b"ctl");
+        if let Some(h) = open_flags(&pbuf[..pn], O_WRONLY) {
+            let _ = write_fd(h, b"hangup");
+            close(h);
+        }
+        // Diagnose: print last status so CI logs show cloned/bad ctl/empty/etc.
+        crate::write(b"dns status: ");
+        if last_n == 0 {
+            crate::write(b"<empty>");
+        } else {
+            crate::write(&last[..last_n]);
+        }
+        crate::write(b"\n");
         return Err(ResolveError::Timeout);
     }
 
