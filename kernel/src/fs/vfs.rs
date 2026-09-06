@@ -19,6 +19,43 @@ pub struct StatInfo {
     pub dev: u32,
 }
 
+/// Stable inode for a directory path relative to a mount root.
+///
+/// Nested RO trees (binfs/libfs) used to return `ino == 1` for every directory,
+/// so find(1) treated `/bin/std` as `/bin` and `/lib/newlib` as `/lib`. Hash the
+/// relative path and force the high bit so values never collide with the mount
+/// root (`ino == 1`) or file inodes from [`data_ino`].
+pub(crate) fn dir_ino(path: &str) -> u32 {
+    let mut h: u32 = 0x811c_9dc5; // FNV-1a offset basis
+    for &b in path.as_bytes() {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    (h & 0x7fff_ffff) | 0x8000_0000
+}
+
+/// Stable inode for a file's backing bytes.
+///
+/// Cpio multicall aliases reuse the same `'static` slice (same pointer), so
+/// they share an inode the way hardlinks should. Distinct files stay distinct.
+/// Values stay in the low half so they never collide with [`dir_ino`].
+pub(crate) fn data_ino(data: &[u8]) -> u32 {
+    let p = data.as_ptr() as u64;
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in &p.to_le_bytes() {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    for &b in &(data.len() as u32).to_le_bytes() {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    match h & 0x7fff_ffff {
+        0 | 1 => 2,
+        x => x,
+    }
+}
+
 /// Open file identity: mount index + path relative to that mount.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Vnode {
