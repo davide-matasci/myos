@@ -86,7 +86,7 @@ typedef struct {
  * and starves netd on a single core. Poll with real read/write syscalls
  * (same approach as user/dns DATA_POLLS) so the scheduler can run netd.
  */
-enum { BIO_POLLS = 400000 };
+enum { BIO_POLLS = 800000 };
 
 static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
     myos_tls_conn *c = (myos_tls_conn *)ctx;
