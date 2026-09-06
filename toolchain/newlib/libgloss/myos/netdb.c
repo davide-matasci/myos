@@ -175,10 +175,11 @@ static int resolve_a(const char *host, unsigned char ip[4]) {
         close(sock);
         return -1;
     }
+    /* Bound the DNS wait: nonblock + poll EAGAIN (blocking recv would wait forever). */
+    (void)fcntl(sock, F_SETFL, O_NONBLOCK);
     for (i = 0; i < DATA_POLLS; i++) {
         nr = recv(sock, rbuf, sizeof rbuf, 0);
         if (nr < 0) {
-            /* Empty /net RX is EAGAIN after the curl SSL-EOF fix; keep polling. */
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 continue;
             }

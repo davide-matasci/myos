@@ -1,7 +1,8 @@
 /*
  * poll/select for myos: no kernel poll syscall.
- * /net data fds already return 0 when empty (non-blocking). Always report
- * readiness so curl busy-waits like the existing http helper.
+ * Tracked /net sockets report real POLLIN via netfs st_size / hangup status.
+ * Other fds keep the legacy always-ready busy-wait (matches http helper).
+ * Timeouts use gettimeofday so select(0,...,tv) can sleep without a spin budget.
  */
 #include <errno.h>
 #include <poll.h>
@@ -10,39 +11,39 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+#include "myos_syscalls.h"
+
+static long elapsed_ms(const struct timeval *start) {
+    struct timeval now;
+    if (gettimeofday(&now, NULL) != 0) {
+        return 0;
+    }
+    return (now.tv_sec - start->tv_sec) * 1000L
+        + (now.tv_usec - start->tv_usec) / 1000L;
+}
+
+static int scan_once(struct pollfd *fds, nfds_t nfds) {
     nfds_t i;
     int ready = 0;
-    int spins;
-    int s;
-
-    if (fds == NULL && nfds != 0) {
-        errno = EFAULT;
-        return -1;
-    }
-
-    if (timeout < 0) {
-        spins = 200000;
-    } else if (timeout == 0) {
-        spins = 1;
-    } else {
-        spins = timeout * 200;
-        if (spins < 1) {
-            spins = 1;
+    for (i = 0; i < nfds; i++) {
+        short rev = 0;
+        int sock;
+        if (fds[i].fd < 0) {
+            fds[i].revents = 0;
+            continue;
         }
-        if (spins > 400000) {
-            spins = 400000;
+        sock = myos_socket_poll(fds[i].fd, fds[i].events, &rev);
+        if (sock == 1) {
+            fds[i].revents = rev;
+            ready++;
+            continue;
         }
-    }
-
-    for (s = 0; s < spins; s++) {
-        ready = 0;
-        for (i = 0; i < nfds; i++) {
-            short rev = 0;
-            if (fds[i].fd < 0) {
-                fds[i].revents = 0;
-                continue;
-            }
+        if (sock == -2) {
+            return -1;
+        }
+        /* Not a tracked socket (or not ready): legacy always-ready for non-sockets. */
+        if (sock < 0) {
+            rev = 0;
             if (fds[i].events & (POLLIN | POLLPRI | POLLRDNORM)) {
                 rev |= POLLIN;
             }
@@ -56,15 +57,50 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
             if (rev) {
                 ready++;
             }
+        } else {
+            fds[i].revents = 0;
+        }
+    }
+    return ready;
+}
+
+int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+    struct timeval start;
+    int ready;
+
+    if (fds == NULL && nfds != 0) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    if (timeout == 0) {
+        ready = scan_once(fds, nfds);
+        return ready < 0 ? -1 : ready;
+    }
+
+    if (gettimeofday(&start, NULL) != 0) {
+        /* Clock missing: single scan (best effort). */
+        ready = scan_once(fds, nfds);
+        return ready < 0 ? -1 : ready;
+    }
+
+    for (;;) {
+        ready = scan_once(fds, nfds);
+        if (ready < 0) {
+            return -1;
         }
         if (ready > 0) {
             return ready;
         }
+        if (timeout > 0 && elapsed_ms(&start) >= timeout) {
+            nfds_t i;
+            for (i = 0; i < nfds; i++) {
+                fds[i].revents = 0;
+            }
+            return 0;
+        }
+        /* timeout < 0: block forever until ready (preemption lets netd run). */
     }
-    for (i = 0; i < nfds; i++) {
-        fds[i].revents = 0;
-    }
-    return 0;
 }
 
 int select(int nfds, fd_set *readfds, fd_set *writefds,
@@ -107,6 +143,25 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
         if (ms < 0) {
             ms = 0;
         }
+    }
+
+    /* Pure sleep: select(0, NULL, NULL, NULL, &tv) used by curl tool_sleep. */
+    if (n == 0) {
+        struct timeval start;
+        if (ms == 0) {
+            return 0;
+        }
+        if (ms < 0) {
+            /* Sleep forever — park in a gettimeofday loop (preemptible). */
+            for (;;) {
+            }
+        }
+        if (gettimeofday(&start, NULL) != 0) {
+            return 0;
+        }
+        while (elapsed_ms(&start) < ms) {
+        }
+        return 0;
     }
 
     pr = poll(pfds, (nfds_t)n, ms);

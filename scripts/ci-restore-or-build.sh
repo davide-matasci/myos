@@ -46,6 +46,15 @@ restore_packed_rg_elves() {
       echo "restored $dest from $f"
     fi
   done
+  # Mozilla CA: pack alias is coreutils-cacert.pem (ci.yml coreutils-* glob).
+  # Emit canonical target/cacert.pem so initramfs does not skip lib/cacert.pem.
+  if [[ -f target/coreutils-cacert.pem && ! -f target/cacert.pem ]]; then
+    cp target/coreutils-cacert.pem target/cacert.pem
+    echo "restored target/cacert.pem from target/coreutils-cacert.pem"
+  elif [[ -f target/cacert.pem && ! -f target/coreutils-cacert.pem ]]; then
+    cp target/cacert.pem target/coreutils-cacert.pem
+    echo "restored target/coreutils-cacert.pem from target/cacert.pem"
+  fi
 }
 
 

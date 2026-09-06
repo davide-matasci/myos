@@ -80,9 +80,21 @@ static int myos_path_is_dev_tty(const char *path) {
 void myos_socket_on_close(int fd) __attribute__((weak));
 void myos_socket_on_close(int fd) { (void)fd; }
 
-/* Empty /net data read: 0=not socket, 1=EAGAIN, 2=hangup EOF. */
+/* Empty /net data read: 0=not socket, 1=EAGAIN, 2=hangup EOF, 3=retry. */
 int myos_socket_empty_read(int fd) __attribute__((weak));
 int myos_socket_empty_read(int fd) { (void)fd; return 0; }
+
+int myos_socket_fcntl(int fd, int cmd, int arg) __attribute__((weak));
+int myos_socket_fcntl(int fd, int cmd, int arg) {
+    (void)fd; (void)cmd; (void)arg;
+    return -1;
+}
+
+int myos_socket_poll(int fd, short events, short *revents) __attribute__((weak));
+int myos_socket_poll(int fd, short events, short *revents) {
+    (void)fd; (void)events; (void)revents;
+    return -1;
+}
 
 int _close(int fd) {
     myos_socket_on_close(fd);
@@ -153,20 +165,28 @@ int _open(const char *path, int flags, ...) {
 }
 
 int _read(int fd, void *buf, size_t cnt) {
-    long ret = myos_syscall3(MYOS_SYS_READ, fd, (long)(uintptr_t)buf, (long)cnt);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = EBADF;
-        return -1;
-    }
-    /* /net data returns 0 when empty; curl/mbedtls need EAGAIN, not EOF. */
-    if (ret == 0) {
-        int kind = myos_socket_empty_read(fd);
-        if (kind == 1) {
-            errno = EAGAIN;
+    for (;;) {
+        long ret = myos_syscall3(MYOS_SYS_READ, fd, (long)(uintptr_t)buf, (long)cnt);
+        if (ret == (long)MYOS_SYSERR) {
+            errno = EBADF;
             return -1;
         }
+        /* /net data returns 0 when empty. Nonblock -> EAGAIN; blocking waits. */
+        if (ret == 0) {
+            int kind = myos_socket_empty_read(fd);
+            if (kind == 1) {
+                errno = EAGAIN;
+                return -1;
+            }
+            if (kind == 2) {
+                return 0; /* hangup EOF */
+            }
+            if (kind == 3) {
+                continue; /* blocking wait finished; retry syscall */
+            }
+        }
+        return (int)ret;
     }
-    return (int)ret;
 }
 
 int _write(int fd, const void *buf, size_t cnt) {

@@ -55,6 +55,21 @@ fn read(path: &Path) -> Option<Vec<u8>> {
     }
 }
 
+/// Like `read`, but tries several paths and only logs skips if all miss.
+fn read_any(paths: &[&Path]) -> Option<Vec<u8>> {
+    let mut errors: Vec<(String, String)> = Vec::new();
+    for path in paths {
+        match std::fs::read(path) {
+            Ok(v) => return Some(v),
+            Err(e) => errors.push((path.display().to_string(), e.to_string())),
+        }
+    }
+    for (path, e) in errors {
+        eprintln!("initramfs: skip {path} ({e})");
+    }
+    None
+}
+
 fn add(entries: &mut Vec<Entry>, rel: &str, data: Option<Vec<u8>>) {
     if let Some(d) = data {
         entries.push(Entry {
@@ -234,11 +249,12 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     // Mozilla CA bundle for curl's mbedtls backend (CURL_CA_BUNDLE=/lib/cacert.pem).
     // Same PEM mbedtls/fetch.sh downloads and embeds as myos_ca_bundle_pem for `http`.
     // Fallback: coreutils-cacert.pem pack alias (ci-build.tar glob is target/coreutils-*).
+    let cacert_canon = target.join("cacert.pem");
+    let cacert_alias = target.join("coreutils-cacert.pem");
     add(
         &mut entries,
         "lib/cacert.pem",
-        read(&target.join("cacert.pem"))
-            .or_else(|| read(&target.join("coreutils-cacert.pem"))),
+        read_any(&[&cacert_canon, &cacert_alias]),
     );
 
     // hello demo module -> bin/modules/hello.

@@ -5,7 +5,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include "myos_fmt.h"
+#include <poll.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <arpa/inet.h>
@@ -15,7 +18,7 @@
 #include "myos_syscalls.h"
 
 #define MYOS_MAX_SOCKS 16
-#define STATUS_POLLS   400000
+#define CONNECT_TIMEOUT_MS 30000
 
 enum {
     SOCK_UNUSED = 0,
@@ -29,6 +32,7 @@ struct myos_sock {
     int type;       /* SOCK_STREAM / SOCK_DGRAM */
     int data_fd;    /* returned to the app; /net/.../data */
     int ctl_fd;     /* kept open through connect */
+    int nonblock;   /* O_NONBLOCK via fcntl F_SETFL (userspace-tracked) */
     unsigned short conv;
     char proto_path[16]; /* "/net/tcp" or "/net/udp" */
     struct sockaddr_in peer;
@@ -132,14 +136,27 @@ static int parse_clone_id(const char *buf, size_t n, unsigned short *out) {
     return 0;
 }
 
+static long elapsed_ms(const struct timeval *start) {
+    struct timeval now;
+    if (gettimeofday(&now, NULL) != 0) {
+        return 0;
+    }
+    return (now.tv_sec - start->tv_sec) * 1000L
+        + (now.tv_usec - start->tv_usec) / 1000L;
+}
+
 static int wait_connected(struct myos_sock *s) {
     char path[64];
     char sbuf[64];
-    int i;
+    struct timeval start;
     if (conv_path(path, sizeof path, s->proto_path, s->conv, "status") < 0) {
         return -1;
     }
-    for (i = 0; i < STATUS_POLLS; i++) {
+    if (gettimeofday(&start, NULL) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    for (;;) {
         int st = open(path, O_RDONLY);
         if (st >= 0) {
             ssize_t nr = read(st, sbuf, sizeof sbuf);
@@ -153,14 +170,15 @@ static int wait_connected(struct myos_sock *s) {
                 return -1;
             }
         }
+        if (elapsed_ms(&start) >= CONNECT_TIMEOUT_MS) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
     }
-    errno = ETIMEDOUT;
-    return -1;
 }
 
-/* True EOF vs empty: /net data returns 0 when the smoltcp RX queue is empty
- * (non-blocking). curl/mbedtls treat read/recv 0 as peer close (SSL EOF).
- * Map empty-but-still-connected to EAGAIN; only hangup is real EOF. */
+/* True EOF vs empty: /net data returns 0 when the smoltcp RX queue is empty.
+ * curl/mbedtls treat read/recv 0 as peer close (SSL EOF). */
 static int status_is_hangup(struct myos_sock *s) {
     char path[64];
     char sbuf[64];
@@ -182,19 +200,129 @@ static int status_is_hangup(struct myos_sock *s) {
         || buf_has(sbuf, (size_t)nr, "error");
 }
 
+/* netfs reports RX queue length as st_size on /net/.../data. */
+static int data_pending(struct myos_sock *s) {
+    char path[64];
+    struct stat st;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "data") < 0) {
+        return 0;
+    }
+    if (stat(path, &st) < 0) {
+        return 0;
+    }
+    return st.st_size > 0;
+}
+
+/* Block until RX data, hangup, or (timeout_ms>=0) deadline.
+ * Returns 0=data ready, 1=hangup, -1=timeout (errno ETIMEDOUT). */
+static int wait_readable(struct myos_sock *s, int timeout_ms) {
+    struct timeval start;
+    if (gettimeofday(&start, NULL) != 0) {
+        /* Fall through to untimed spin if clock missing. */
+        timeout_ms = -1;
+    }
+    for (;;) {
+        if (status_is_hangup(s)) {
+            return 1;
+        }
+        if (data_pending(s)) {
+            return 0;
+        }
+        if (timeout_ms >= 0 && elapsed_ms(&start) >= timeout_ms) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+    }
+}
+
 /*
  * Called from _read when the kernel returned 0 bytes on a tracked socket fd.
- * Returns: 0 = not our socket (keep 0), 1 = empty/EAGAIN, 2 = hangup/EOF.
+ * Returns:
+ *   0 = not our socket (keep 0)
+ *   1 = empty + nonblocking -> EAGAIN
+ *   2 = hangup/EOF
+ *   3 = blocking wait done, data should be available -> retry read
  */
 int myos_socket_empty_read(int fd) {
     struct myos_sock *s = sock_by_fd(fd);
+    int wr;
     if (s == NULL || s->state != SOCK_CONNECTED) {
         return 0;
     }
     if (status_is_hangup(s)) {
         return 2;
     }
-    return 1;
+    if (s->nonblock) {
+        return 1;
+    }
+    /* BSD: empty read on a blocking TCP socket waits for data or hangup. */
+    wr = wait_readable(s, -1);
+    if (wr == 1) {
+        return 2;
+    }
+    return 3;
+}
+
+/* fcntl F_GETFL / F_SETFL for tracked sockets. Returns -1 if not a socket. */
+int myos_socket_fcntl(int fd, int cmd, int arg) {
+    struct myos_sock *s = sock_by_fd(fd);
+    if (s == NULL) {
+        return -1;
+    }
+    if (cmd == F_GETFL) {
+        return O_RDWR | (s->nonblock ? O_NONBLOCK : 0);
+    }
+    if (cmd == F_SETFL) {
+        s->nonblock = (arg & O_NONBLOCK) ? 1 : 0;
+        return 0;
+    }
+    errno = EINVAL;
+    return -2;
+}
+
+/*
+ * poll readiness for a tracked socket.
+ * Returns: 1 = filled *revents (ready or hangup), 0 = not ready, -1 = not socket.
+ */
+int myos_socket_poll(int fd, short events, short *revents) {
+    struct myos_sock *s = sock_by_fd(fd);
+    short rev = 0;
+    int want_in;
+    int want_out;
+    if (s == NULL) {
+        return -1;
+    }
+    if (revents == NULL) {
+        errno = EINVAL;
+        return -2;
+    }
+    want_in = events & (POLLIN | POLLPRI | POLLRDNORM);
+    want_out = events & (POLLOUT | POLLWRNORM);
+    if (s->state == SOCK_CONNECTED && status_is_hangup(s)) {
+        if (want_in) {
+            rev |= POLLIN | POLLHUP;
+        } else {
+            rev |= POLLHUP;
+        }
+        if (want_out) {
+            rev |= POLLOUT;
+        }
+        *revents = rev;
+        return 1;
+    }
+    if (want_in && s->state == SOCK_CONNECTED && data_pending(s)) {
+        rev |= POLLIN;
+    }
+    if (want_out) {
+        /* TX is usually writable, but if the caller also asked for POLLIN and
+         * RX is empty, withhold POLLOUT so poll can block for TLS/data instead
+         * of busy-spinning on always-writable + read EAGAIN. */
+        if (!want_in || (rev & POLLIN) || s->state != SOCK_CONNECTED) {
+            rev |= POLLOUT;
+        }
+    }
+    *revents = rev;
+    return rev ? 1 : 0;
 }
 
 static int hangup_sock(struct myos_sock *s) {
@@ -534,16 +662,19 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
 
 ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
     ssize_t n;
-    (void)flags;
-    n = read(sockfd, buf, len);
-    if (n == 0) {
-        int kind = myos_socket_empty_read(sockfd);
-        if (kind == 1) {
-            errno = EAGAIN;
-            return -1;
-        }
-        /* kind 0/2: plain 0 or true hangup EOF */
+    struct myos_sock *s = sock_by_fd(sockfd);
+    int restore = 0;
+    /* MSG_DONTWAIT: force nonblock for this call only (read path checks s->nonblock). */
+    if (s != NULL && (flags & MSG_DONTWAIT) && !s->nonblock) {
+        s->nonblock = 1;
+        restore = 1;
     }
+    n = read(sockfd, buf, len);
+    if (restore) {
+        s->nonblock = 0;
+    }
+    /* _read already maps empty connected reads (EAGAIN / block / hangup EOF). */
+    (void)flags;
     return n;
 }
 
@@ -562,17 +693,19 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
 ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
     struct sockaddr *src_addr, socklen_t *addrlen) {
     ssize_t n;
-    (void)flags;
+    struct myos_sock *s;
+    int restore = 0;
+    s = sock_by_fd(sockfd);
+    if (s != NULL && (flags & MSG_DONTWAIT) && !s->nonblock) {
+        s->nonblock = 1;
+        restore = 1;
+    }
     n = read(sockfd, buf, len);
-    if (n == 0) {
-        int kind = myos_socket_empty_read(sockfd);
-        if (kind == 1) {
-            errno = EAGAIN;
-            return -1;
-        }
+    if (restore) {
+        s->nonblock = 0;
     }
     if (n >= 0 && src_addr != NULL && addrlen != NULL) {
-        struct myos_sock *s = sock_by_fd(sockfd);
+        s = sock_by_fd(sockfd);
         if (s != NULL && s->peer_set) {
             if (*addrlen > sizeof s->peer) {
                 *addrlen = sizeof s->peer;
@@ -580,5 +713,6 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
             memcpy(src_addr, &s->peer, *addrlen);
         }
     }
+    (void)flags;
     return n;
 }

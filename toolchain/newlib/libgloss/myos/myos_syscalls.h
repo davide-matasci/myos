@@ -56,4 +56,10 @@ void myos_fd_path_clear(int fd);
 void myos_fd_path_dup(int oldfd, int newfd);
 int myos_fd_path_resolve(int dirfd, const char *path, char *out, size_t outsz);
 
+/* Userspace BSD sockets (socket.c); weak stubs in syscalls.c. */
+void myos_socket_on_close(int fd);
+int myos_socket_empty_read(int fd);
+int myos_socket_fcntl(int fd, int cmd, int arg);
+int myos_socket_poll(int fd, short events, short *revents);
+
 #endif

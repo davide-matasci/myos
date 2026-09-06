@@ -97,7 +97,7 @@ const CI_SHELL_COMMANDS: [&[u8]; 14] = [
     // HTTPS GET (requires network + wall clock + mbedtls).
     b"http https://example.com/\n",
     // curl over userspace sockets + mbedtls (same URL as https smoke).
-    b"curl -fsS -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n",
+    b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n",
 ];
 
 /// Printed by the interactive shell when a command cannot be resolved.
@@ -289,7 +289,7 @@ fn interactive_https_cmd_ok(serial: &str) -> bool {
 /// `nosuchcmd: not found` does not permanently fail this stage.
 fn interactive_curl_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    let echoed = "$ curl -fsS -o /tmp/curl-ex.html https://example.com/";
+    let echoed = "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/";
     if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
@@ -316,7 +316,7 @@ fn interactive_curl_after_failed(after: &str) -> bool {
 /// Hard fail so we do not burn the full QEMU timeout after a printed curl error.
 fn interactive_curl_cmd_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    let echoed = "$ curl -fsS -o /tmp/curl-ex.html https://example.com/";
+    let echoed = "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/";
     if !tail.contains(echoed) {
         return false;
     }
@@ -725,7 +725,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
         }
         if shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
-            if !command_echoed(&serial, "curl -fsS -o /tmp/curl-ex.html https://example.com/") {
+            if !command_echoed(&serial, "curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/") {
                 eprintln!("error: serial did not echo curl HTTPS command at the interactive prompt");
             } else if serial.contains("exception:") {
                 eprintln!("error: interactive curl triggered a CPU exception");

@@ -18,7 +18,7 @@ sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.
 | `socket(AF_INET, SOCK_STREAM, …)` | open `/net/tcp/clone`, read conv id, open `ctl` + `data`; return **data fd** |
 | `socket(…, SOCK_DGRAM, …)` | same with `/net/udp` |
 | `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` to ctl; poll `status` for `connected` |
-| `send`/`recv`/`read`/`write` | ordinary fd I/O on the data file (empty read → 0) |
+| `send`/`recv`/`read`/`write` | ordinary fd I/O on data; empty connected read blocks unless `O_NONBLOCK` (then EAGAIN); hangup → EOF |
 | `close` | hangup via ctl (`hangup`) then close data (hook from `_close`) |
 | `getaddrinfo` | DNS A lookup over `/net/udp` to QEMU DNS `10.0.2.3:53` (same as `user/lib/dns.rs`) |
 | `poll`/`select` | userspace busy-wait; reports readiness (matches existing http busy-poll) |
@@ -40,7 +40,7 @@ Outbound TCP/UDP first. `listen`/`accept` return `EOPNOTSUPP`. Most `SO_*`/`TCP_
 - DNS: `getaddrinfo` in libgloss
 - Clock: existing `gettimeofday` / RTC path (same as `/http`)
 - Guest: `/bin/etc/curl`; CI types
-  `curl -fsS -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html`
+  `curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html`
 - riscv64 links a small soft-float helper archive (`ports/curl/build-softfloat-riscv64.sh`)
 
 ### Build
@@ -55,6 +55,6 @@ Outbound TCP/UDP first. `listen`/`accept` return `EOPNOTSUPP`. Most `SO_*`/`TCP_
 ### Known gaps
 
 - No inbound listen/accept; no IPv6; incomplete `getsockname` (returns INADDR_ANY)
-- poll/select always-ready busy-wait (no kernel poll)
+- poll/select: sockets use netfs RX size / hangup; other fds still always-ready
 - curl still a large ELF (~0.6–1.2MB stripped); many protocols disabled but not a tiny client
 - Full QEMU smoke may not have been run on the builder box — rely on CI
