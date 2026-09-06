@@ -76,7 +76,7 @@ const HEAP_PAGES: usize = 1024;
 /// force `elf_scratch_mut` to grab N contiguous frames before init could run.
 const MAX_INIT_PAGES: usize = 1024;
 /// Cap for in-place `expand_user_elf` of larger bootfs ELFs (uutils / ripgrep).
-/// Must stay within QEMU RAM given leaked post-exec frames (x86 CI is 256 MiB).
+/// Must stay within QEMU RAM given leaked post-exec frames (x86 CI is 1024 MiB).
 /// Full feat_common_core (~2.4k pages) OOMed; ship a smaller multicall instead.
 const MAX_EXPAND_PAGES: usize = 1024;
 /// Largest image we may map, fork-copy, or stage in ELF scratch.
@@ -361,13 +361,10 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     Some((aspace, entry as usize, mapped_span, stack_off))
 }
 
-fn map_initial_heap_pages(aspace: u64, base: u64, stack_off: u64) {
-    let heap_base = heap_base_va(base, stack_off);
-    for i in 0..HEAP_PAGES {
-        let va = heap_base + (i * PAGE) as u64;
-        let frame = reuse_or_alloc_frame(aspace, va);
-        map_heap_page(aspace, va, frame);
-    }
+fn map_initial_heap_pages(_aspace: u64, _base: u64, _stack_off: u64) {
+    // Do not pre-map the full HEAP_PAGES window. `sys_brk` maps pages on demand
+    // up to `heap_limit`; pre-mapping 4 MiB per process starved x86 CI at
+    // `-m 256` after the TLS arena moved from BSS onto brk (HEAP_PAGES raised).
 }
 
 /// Remap the loaded image so PT_LOAD `p_flags` control R/W/X.
