@@ -2,6 +2,7 @@
 
 pub mod alloc;
 pub mod args;
+pub mod dns;
 pub mod runtime;
 
 pub use alloc::Heap;
@@ -299,6 +300,18 @@ pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
     pack[4] = fs_buf.as_ptr() as usize;
     pack[5] = fn_;
     unsafe { sys3(27, pack.as_ptr() as usize, 0, 0) != usize::MAX }
+}
+
+
+/// Wall-clock time (`SYS_GETTIMEOFDAY` = 33). Returns `(sec, usec)` or `None`.
+pub fn gettimeofday() -> Option<(i64, i64)> {
+    let mut tv = [0i64; 2];
+    let ret = unsafe { sys3(33, tv.as_mut_ptr() as usize, 0, 0) };
+    if ret == usize::MAX {
+        None
+    } else {
+        Some((tv[0], tv[1]))
+    }
 }
 
 pub const SEEK_SET: usize = 0;

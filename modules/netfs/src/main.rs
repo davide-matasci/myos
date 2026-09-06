@@ -27,11 +27,13 @@ const REP_ERR: u8 = 4;
 
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
-/// Cap matches kernel `FILE_IO_TMP`; keep slots smaller so the module image fits.
-const MSG_CAP: usize = 512;
+/// Cap matches kernel `FILE_IO_TMP` (2048). TLS ClientHello / cert fragments
+/// need more than the old 512-byte slots (HTTPS handshake timed out in CI).
+const MSG_CAP: usize = 2048;
 const RING: usize = 8;
 const MAX_CONV: usize = 8;
-const DATA_CAP: usize = 512;
+/// Per-conversation RX staging. Cert chains exceed 512; drop = TLS timeout.
+const DATA_CAP: usize = 8192;
 const STATUS_CAP: usize = 64;
 
 #[derive(Clone, Copy)]

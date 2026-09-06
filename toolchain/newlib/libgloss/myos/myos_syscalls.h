@@ -36,6 +36,7 @@
 #define MYOS_SYS_SETPGID 30
 #define MYOS_SYS_GETPGID 31
 #define MYOS_SYS_GETSID 32
+#define MYOS_SYS_GETTIMEOFDAY 33
 
 #define MYOS_SYSERR ((unsigned long)-1)
 

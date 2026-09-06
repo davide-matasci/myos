@@ -20,6 +20,7 @@ mod pci;
 mod modules;
 mod pipe;
 mod task;
+mod time;
 mod user;
 
 use alloc::boxed::Box;

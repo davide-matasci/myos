@@ -156,7 +156,15 @@ fn main() {
         &target,
         &profile,
         &out,
-        &["../lib/src/lib.rs", "../lib/Cargo.toml"],
+        &[
+            "../lib/src/lib.rs",
+            "../lib/Cargo.toml",
+            "../lib/src/dns.rs",
+            "../tls/src/lib.rs",
+            "../tls/src/platform.c",
+            "../tls/Cargo.toml",
+            "../tls/build.rs",
+        ],
     );
     nested_elf(
         &cargo,
@@ -168,7 +176,7 @@ fn main() {
         &target,
         &profile,
         &out,
-        &["../lib/src/lib.rs", "../lib/Cargo.toml"],
+        &["../lib/src/lib.rs", "../lib/Cargo.toml", "../lib/src/dns.rs"],
     );
     nested_elf(
         &cargo,

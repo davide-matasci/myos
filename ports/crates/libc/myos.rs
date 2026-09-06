@@ -150,6 +150,7 @@ mod syscalls {
     const SYS_DUP2: usize = 11;
     const SYS_STAT: usize = 12;
     const SYS_IOCTL: usize = 28;
+    const SYS_GETTIMEOFDAY: usize = 33;
 
     static mut MYOS_ERRNO: c_int = 0;
 
@@ -313,6 +314,16 @@ mod syscalls {
         let ret = raw_syscall(SYS_IOCTL, fd as usize, request as usize, arg as usize);
         if ret == usize::MAX {
             set_errno(ENOTTY);
+            -1
+        } else {
+            0
+        }
+    }
+
+    pub unsafe fn sys_gettimeofday(tv: *mut timeval) -> c_int {
+        let ret = raw_syscall(SYS_GETTIMEOFDAY, tv as usize, 0, 0);
+        if ret == usize::MAX {
+            set_errno(EIO);
             -1
         } else {
             0
@@ -550,6 +561,16 @@ pub unsafe extern "C" fn __errno_location() -> *mut c_int {
     _myos_errno_location()
 }
 
+
+#[no_mangle]
+pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut c_void) -> c_int {
+    if tv.is_null() {
+        syscalls::set_errno(EINVAL);
+        return -1;
+    }
+    unsafe { syscalls::sys_gettimeofday(tv) }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn clock_gettime(_clk: clockid_t, tp: *mut timespec) -> c_int {
     if tp.is_null() {
@@ -603,7 +624,6 @@ enosys! {
     pub unsafe fn sched_yield() -> c_int;
     pub unsafe fn usleep(usec: c_uint) -> c_int;
     pub unsafe fn sleep(secs: c_uint) -> c_uint;
-    pub unsafe fn gettimeofday(tv: *mut timeval, tz: *mut c_void) -> c_int;
     pub unsafe fn symlinkat(target: *const c_char, newdirfd: c_int, linkpath: *const c_char) -> c_int;
     pub unsafe fn readlinkat(dirfd: c_int, path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t;
     pub unsafe fn fstatat(dirfd: c_int, path: *const c_char, buf: *mut stat, flags: c_int) -> c_int;
