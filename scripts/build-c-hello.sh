@@ -7,12 +7,15 @@ source "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 pack_socket_smoke_aliases() {
   # CI packs via existing `target/coreutils-*` glob (workflow edits need workflow scope).
+  # Keep canonical and pack-alias names in sync either way (same as curl aliases).
   local arch src alias
   for arch in x86_64 aarch64 riscv64; do
     src="$ROOT/target/c-socket_smoke-${arch}-unknown-none"
     alias="$ROOT/target/coreutils-c-socket_smoke-${arch}-unknown-none"
     if [[ -f "$src" ]]; then
       cp "$src" "$alias"
+    elif [[ -f "$alias" ]]; then
+      cp "$alias" "$src"
     fi
   done
 }

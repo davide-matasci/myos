@@ -31,6 +31,9 @@ PORT_STAMPS=(
   target/.myos-vim-version
   target/.myos-ncurses-version
   target/.myos-newlib-version
+  # curl statically links mbedtls; stamp changes must invalidate bios/initramfs.
+  target/.myos-mbedtls-version
+  target/.myos-curl-version
 )
 
 hash_tree() {

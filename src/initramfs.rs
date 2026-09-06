@@ -231,6 +231,14 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         curl_elf,
     );
 
+    // Mozilla CA bundle for curl's mbedtls backend (CURL_CA_BUNDLE=/lib/cacert.pem).
+    // Same PEM mbedtls/fetch.sh downloads and embeds as myos_ca_bundle_pem for `http`.
+    add(
+        &mut entries,
+        "lib/cacert.pem",
+        read(&target.join("cacert.pem")),
+    );
+
     // hello demo module -> bin/modules/hello.
     add(
         &mut entries,

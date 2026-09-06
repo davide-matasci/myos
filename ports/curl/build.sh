@@ -13,6 +13,11 @@ hash_curl() {
   {
     echo "$CURL_VERSION"
     sha256sum "$HERE/build.sh" "$HERE/fetch.sh" "$HERE/versions.env" "$HERE/config-myos.h" || true
+    # Statically links mbedtls: rebuild when CA/FS config changes.
+    sha256sum "$ROOT/ports/mbedtls/myos_mbedtls_config.h" || true
+    if [[ -f "$ROOT/target/.myos-mbedtls-version" ]]; then
+      sha256sum "$ROOT/target/.myos-mbedtls-version" || true
+    fi
     myos_newlib_version_hash
   } | sha256sum | awk '{print $1}'
 }
@@ -20,12 +25,16 @@ WANT="$(hash_curl)"
 
 pack_curl_aliases() {
   # CI packs via existing `target/coreutils-*` glob (workflow edits need workflow scope).
+  # Keep canonical curl-* and pack-alias coreutils-curl-* in sync either way so
+  # aarch64/riscv initramfs does not log "skip curl-*" when only the alias landed.
   local arch src alias
   for arch in x86_64 aarch64 riscv64; do
     src="$ROOT/target/curl-${arch}-unknown-none"
     alias="$ROOT/target/coreutils-curl-${arch}-unknown-none"
     if [[ -f "$src" ]]; then
       cp "$src" "$alias"
+    elif [[ -f "$alias" ]]; then
+      cp "$alias" "$src"
     fi
   done
 }

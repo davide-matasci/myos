@@ -26,6 +26,12 @@
 #define MBEDTLS_SHA384_C
 #define MBEDTLS_SHA512_C
 
+/* Filesystem I/O: curl loads CURL_CA_BUNDLE (/lib/cacert.pem) via
+ * mbedtls_x509_crt_parse_file. The same Mozilla PEM is also compiled
+ * into libmbedtls as myos_ca_bundle_pem for the in-process `http` TLS
+ * path; curl uses the on-disk copy shipped in initramfs. */
+#define MBEDTLS_FS_IO
+
 /* PK / X509 */
 #define MBEDTLS_BIGNUM_C
 #define MBEDTLS_OID_C

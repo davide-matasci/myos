@@ -294,9 +294,7 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
         return false;
     }
     let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
-    if after.contains("not found")
-        || (after.contains("curl:") && (after.contains("error") || after.contains("failed")))
-    {
+    if interactive_curl_after_failed(after) {
         return false;
     }
     // Prefer Example Domain from curl's cat output (after the command), not the
@@ -305,6 +303,25 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
         return false;
     }
     at_interactive_prompt(serial)
+}
+
+/// curl printed an error after the interactive command (e.g. `curl: (4) …`).
+fn interactive_curl_after_failed(after: &str) -> bool {
+    after.contains("not found")
+        || after.contains("curl: (")
+        || (after.contains("curl:")
+            && (after.contains("error") || after.contains("failed") || after.contains("mbedtls:")))
+}
+
+/// Hard fail so we do not burn the full QEMU timeout after a printed curl error.
+fn interactive_curl_cmd_failed(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let echoed = "$ curl -fsS -o /tmp/curl-ex.html https://example.com/";
+    if !tail.contains(echoed) {
+        return false;
+    }
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    interactive_curl_after_failed(after)
 }
 
 /// Hard fail so we do not burn the full QEMU timeout after a printed TLS error.
@@ -545,6 +562,15 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     let _ = child.kill();
                     break child.wait().expect("wait after https fail-fast kill");
                 }
+                // curl: printed `curl: (N) …` — don't wait 180s for Example Domain.
+                // Index 13 == interactive curl HTTPS smoke.
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == 13
+                    && interactive_curl_cmd_failed(&acc)
+                {
+                    let _ = child.kill();
+                    break child.wait().expect("wait after curl fail-fast kill");
+                }
             }
             if ci_complete(&acc, extra_needles, &expect, shell_stage) {
                 let _ = child.kill();
@@ -703,6 +729,8 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: serial did not echo curl HTTPS command at the interactive prompt");
             } else if serial.contains("exception:") {
                 eprintln!("error: interactive curl triggered a CPU exception");
+            } else if interactive_curl_cmd_failed(&serial) {
+                eprintln!("error: interactive curl failed (curl printed an error)");
             } else {
                 eprintln!("error: interactive curl did not print `Example Domain` and return to `$`");
             }
