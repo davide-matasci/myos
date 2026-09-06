@@ -434,15 +434,9 @@ fn elf_scratch_mut(len: usize) -> Option<&'static mut [u8]> {
     let mut phys = ELF_SCRATCH_PHYS.load(Ordering::SeqCst);
     let have = ELF_SCRATCH_PAGES.load(Ordering::SeqCst);
     if phys == 0 || need_pages > have {
-        let first = mm::alloc_frame();
-        let mut expect = first.wrapping_add(PAGE as u64);
-        for _ in 1..need_pages {
-            let p = mm::alloc_frame();
-            if p != expect {
-                return None;
-            }
-            expect = expect.wrapping_add(PAGE as u64);
-        }
+        // Contiguous bump only — freelist pages are rarely adjacent and would
+        // make grow-on-demand fail spuriously (see `alloc_contiguous_frames`).
+        let first = mm::alloc_contiguous_frames(need_pages)?;
         // Prior smaller scratch is leaked (bump allocator cannot free).
         ELF_SCRATCH_PHYS.store(first, Ordering::SeqCst);
         ELF_SCRATCH_PAGES.store(need_pages, Ordering::SeqCst);
@@ -564,6 +558,19 @@ fn expand_user_elf(
         return None;
     }
 
+    // Realize into scratch *before* touching the live aspace. Growing scratch
+    // (or a realize error) must not leave the caller with a half-rewritten
+    // mapping and a SYSERR return into wiped user text (ISO login rip=0).
+    let buf = elf_scratch_mut(info.span)?;
+    unsafe {
+        core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
+    }
+    let load_bias = base - info.min_vaddr;
+    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+
     free_abandoned_stack_heap(aspace, base, old_stack_off, new_stack_off);
 
     // Remap code/stack PTEs with correct flags. Reuse existing frames when the
@@ -583,15 +590,6 @@ fn expand_user_elf(
     map_initial_heap_pages(aspace, base, new_stack_off);
     flush_user_tlb();
 
-    let buf = elf_scratch_mut(info.span)?;
-    unsafe {
-        core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
-    }
-    let load_bias = base - info.min_vaddr;
-    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
-        Ok(e) => e,
-        Err(_) => return None,
-    };
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
         let Some(phys) = virt_to_phys(aspace, va) else {

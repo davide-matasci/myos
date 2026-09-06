@@ -89,6 +89,65 @@ pub fn free_frame(phys: u64) {
 }
 
 /// Allocate a 4 KiB frame, zero it, return its physical address.
+
+/// Allocate `n` physically contiguous zeroed frames from the bump cursor only
+/// (skip the freelist). Needed for ELF scratch: HHDM byte slices require
+/// contiguous phys, but freelist pages are typically scattered — mixing them
+/// into a contiguous grab made `elf_scratch_mut` return `None` after
+/// `expand_user_elf` had already rewritten the aspace (ISO login → rip=0).
+///
+/// Returns the physical address of the first frame, or `None` if no usable
+/// contiguous run of `n` pages remains.
+pub fn alloc_contiguous_frames(n: usize) -> Option<u64> {
+    if n == 0 {
+        return None;
+    }
+    let hhdm = limine_boot::hhdm_offset();
+    let entries = limine_boot::MEMMAP
+        .response()
+        .expect("Limine memmap")
+        .entries();
+
+    let mut next = NEXT.load(Ordering::SeqCst);
+    if next == 0 {
+        next = heap_phys() + HEAP_SIZE as u64;
+    }
+    next = (next + 0xfff) & !0xfff;
+    let need = (n as u64).saturating_mul(PAGE);
+
+    for e in entries {
+        if e.type_ != memmap::MEMMAP_USABLE {
+            continue;
+        }
+        let region_end = e.base + e.length;
+        let mut phys = e.base.max(next);
+        phys = (phys + 0xfff) & !0xfff;
+        while phys.saturating_add(need) <= region_end {
+            // Skip runs that overlap the kernel image.
+            let mut ok = true;
+            let mut p = phys;
+            for _ in 0..n {
+                if overlaps_kernel(p) {
+                    ok = false;
+                    let (_, k1) = kernel_phys_range();
+                    phys = (k1 + 0xfff) & !0xfff;
+                    break;
+                }
+                p = p.wrapping_add(PAGE);
+            }
+            if !ok {
+                continue;
+            }
+            NEXT.store(phys + need, Ordering::SeqCst);
+            unsafe {
+                core::ptr::write_bytes((phys + hhdm) as *mut u8, 0, need as usize);
+            }
+            return Some(phys);
+        }
+    }
+    None
+}
+
 pub fn alloc_frame() -> u64 {
     let hhdm = limine_boot::hhdm_offset();
 
