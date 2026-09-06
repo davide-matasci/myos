@@ -250,6 +250,17 @@ fn parse_target(arg: &[u8], port_arg: Option<&[u8]>, path_arg: Option<&[u8]>) ->
     t
 }
 
+/// Abort the /net conversation so netd drops the smoltcp PCB.
+/// `close(data)` alone does not enqueue REQ_CLOSE — only ctl `hangup` does.
+fn tcp_hangup(id: u16) {
+    let mut pbuf = [0u8; 40];
+    let pn = conv_path(&mut pbuf, id, b"ctl");
+    if let Some(h) = open_flags(&pbuf[..pn], O_WRONLY) {
+        let _ = write_fd(h, b"hangup");
+        close(h);
+    }
+}
+
 fn tcp_connect(ip: &[u8], port: u16) -> (u16, usize) {
     let Some(clone) = open(b"/net/tcp/clone") else {
         fail(b"open /net/tcp/clone fail\n");
@@ -344,13 +355,14 @@ fn main() -> ! {
     };
     let t = parse_target(arg1, myos_user::arg(2), myos_user::arg(3));
 
-    let (_id, data) = tcp_connect(&t.ip[..t.ip_len], t.port);
+    let (id, data) = tcp_connect(&t.ip[..t.ip_len], t.port);
     let mut req = [0u8; 512];
     let q = build_request(&t, &mut req);
 
     if t.https {
         let mut sni = [0u8; 129];
         if t.host_len >= sni.len() {
+            tcp_hangup(id);
             close(data);
             fail(b"host too long\n");
         }
@@ -359,6 +371,11 @@ fn main() -> ! {
 
         let mut tls = TlsConn::new();
         if let Err(e) = tls.handshake(data, &sni[..t.host_len + 1]) {
+            // Success path: tls.close() then close(data). Fail used to close(data)
+            // and exit() with the TCP PCB still live in netd — virtual-clock
+            // retransmits then IRQ-off virtio TX-starved the shell for ~minutes.
+            tls.close();
+            tcp_hangup(id);
             close(data);
             write(b"tls err ");
             let mut v = e;
@@ -387,6 +404,7 @@ fn main() -> ! {
         }
         if tls.write_all(&req[..q]).is_err() {
             tls.close();
+            tcp_hangup(id);
             close(data);
             fail(b"tls write fail\n");
         }
@@ -413,6 +431,7 @@ fn main() -> ! {
             }
         }
         tls.close();
+        tcp_hangup(id);
         close(data);
         if !got {
             fail(b"https no data\n");
@@ -424,6 +443,7 @@ fn main() -> ! {
 
     // Plain HTTP
     if write_fd(data, &req[..q]) == usize::MAX {
+        tcp_hangup(id);
         close(data);
         fail(b"write request fail\n");
     }
@@ -447,6 +467,7 @@ fn main() -> ! {
         got = true;
         write(&rbuf[..nr]);
     }
+    tcp_hangup(id);
     close(data);
     if !got {
         fail(b"http no data\n");

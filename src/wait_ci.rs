@@ -508,6 +508,15 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     let _ = child.kill();
                     break child.wait().expect("wait after heap fail-fast kill");
                 }
+                // HTTPS: printed tls/dns/tcp failure — don't burn the 180s timeout.
+                // Index 12 == `http https://example.com/` (shifted when `which` landed).
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == 12
+                    && interactive_https_cmd_failed(&acc)
+                {
+                    let _ = child.kill();
+                    break child.wait().expect("wait after https fail-fast kill");
+                }
             }
             if ci_complete(&acc, extra_needles, &expect, shell_stage) {
                 let _ = child.kill();

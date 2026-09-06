@@ -147,20 +147,20 @@ int myos_tls_handshake(myos_tls_conn *c, int fd, const char *sni_host) {
     ret = mbedtls_ctr_drbg_seed(&c->ctr_drbg, mbedtls_entropy_func, &c->entropy,
                                 (const unsigned char *)pers, 8);
     if (ret != 0) {
-        return ret;
+        goto fail;
     }
 
     ret = mbedtls_x509_crt_parse(&c->cacert, (const unsigned char *)myos_ca_bundle_pem,
                                  myos_ca_bundle_pem_len + 1);
     if (ret < 0) {
-        return ret;
+        goto fail;
     }
 
     ret = mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_CLIENT,
                                       MBEDTLS_SSL_TRANSPORT_STREAM,
                                       MBEDTLS_SSL_PRESET_DEFAULT);
     if (ret != 0) {
-        return ret;
+        goto fail;
     }
     mbedtls_ssl_conf_min_tls_version(&c->conf, MBEDTLS_SSL_VERSION_TLS1_2);
     mbedtls_ssl_conf_max_tls_version(&c->conf, MBEDTLS_SSL_VERSION_TLS1_2);
@@ -170,26 +170,39 @@ int myos_tls_handshake(myos_tls_conn *c, int fd, const char *sni_host) {
 
     ret = mbedtls_ssl_setup(&c->ssl, &c->conf);
     if (ret != 0) {
-        return ret;
+        goto fail;
     }
     if (sni_host && sni_host[0]) {
         ret = mbedtls_ssl_set_hostname(&c->ssl, sni_host);
         if (ret != 0) {
-            return ret;
+            goto fail;
         }
     }
     mbedtls_ssl_set_bio(&c->ssl, c, bio_send, bio_recv, NULL);
 
     while ((ret = mbedtls_ssl_handshake(&c->ssl)) != 0) {
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-            return ret;
+            goto fail;
         }
     }
     if (mbedtls_ssl_get_verify_result(&c->ssl) != 0) {
-        return MBEDTLS_ERR_X509_CERT_VERIFY_FAILED;
+        ret = MBEDTLS_ERR_X509_CERT_VERIFY_FAILED;
+        goto fail;
     }
     c->ready = 1;
     return 0;
+
+fail:
+    /* Match success-path myos_tls_close free (no close_notify: ready==0).
+     * Leaving mbedtls live across close(fd)+exit used to leak session state
+     * while the TCP PCB stayed open in netd. */
+    mbedtls_x509_crt_free(&c->cacert);
+    mbedtls_ssl_free(&c->ssl);
+    mbedtls_ssl_config_free(&c->conf);
+    mbedtls_ctr_drbg_free(&c->ctr_drbg);
+    mbedtls_entropy_free(&c->entropy);
+    c->ready = 0;
+    return ret;
 }
 
 int myos_tls_write(myos_tls_conn *c, const unsigned char *buf, size_t len) {
