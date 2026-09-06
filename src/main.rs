@@ -780,8 +780,9 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("virt")
         .arg("-cpu")
         .arg("rv64")
+        // 2048 MiB: initramfs + /heap find/cat/ls/rg (sepc=0 class, #84/#78)
         .arg("-m")
-        .arg("1024")
+        .arg("2048")
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
