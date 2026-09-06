@@ -48,7 +48,7 @@ const CI_NEEDLES: [&str; 28] = [
 /// including it here would make the `/heap` completion check and its fail-fast
 /// heuristic abort the whole run before the DNS command is ever typed. DNS is
 /// verified by `interactive_dns_cmd_ok`, which requires `IP:` and `dns ok`.
-const CI_NEEDLES_STD: [&str; 15] = [
+const CI_NEEDLES_STD: [&str; 19] = [
     "std ok",
     "std cat ok",
     "std echo ok",
@@ -59,6 +59,10 @@ const CI_NEEDLES_STD: [&str; 15] = [
     "uutils echo ok",
     "uutils true ok",
     "uutils false ok",
+    "find ok",
+    "/tmp/findnest/a/b/c",
+    "uutils cat ok",
+    "uutils ls ok",
     "ripgrep ok",
     "sbase argv ok",
     "tcc ok",
