@@ -250,6 +250,16 @@ fn interactive_https_cmd_ok(serial: &str) -> bool {
     at_interactive_prompt(serial)
 }
 
+/// Hard fail so we do not burn the full QEMU timeout after a printed TLS error.
+fn interactive_https_cmd_failed(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    tail.contains("$ http https://example.com/")
+        && (tail.contains("tls handshake fail")
+            || tail.contains("tls err ")
+            || tail.contains("dns resolve fail")
+            || tail.contains("tcp connect timeout"))
+}
+
 
 fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
@@ -463,6 +473,14 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     let _ = child.kill();
                     break child.wait().expect("wait after heap fail-fast kill");
                 }
+                // HTTPS: printed tls/dns/tcp failure — don't burn the 180s timeout.
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == 11
+                    && interactive_https_cmd_failed(&acc)
+                {
+                    let _ = child.kill();
+                    break child.wait().expect("wait after https fail-fast kill");
+                }
             }
             if ci_complete(&acc, extra_needles, &expect, shell_stage) {
                 let _ = child.kill();
@@ -616,6 +634,8 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: serial did not echo `$ http https://example.com/` at the interactive prompt");
             } else if serial.contains("exception:") {
                 eprintln!("error: interactive `http https://example.com/` triggered a CPU exception");
+            } else if interactive_https_cmd_failed(&serial) {
+                eprintln!("error: interactive HTTPS failed (tls/dns/tcp error printed)");
             } else if !at_interactive_prompt(&serial) {
                 eprintln!("error: shell did not return to `$` after interactive HTTPS");
             } else {
