@@ -234,6 +234,8 @@ jobs:
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          # GHCR is source of truth by content hash; path-filter sysroot job is optional.
+          ./scripts/ci-registry.sh pull sysroot || true
           if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
             export MYOS_SYSROOT_TARBALL="$(ls target/myos-sysroot-*.tar.zst | head -1)"
             ./toolchain/std/fetch-sysroot.sh
@@ -257,6 +259,7 @@ jobs:
           ./ports/coreutils/build-uutils.sh
           ./ports/ripgrep/build.sh
           ./ports/tcc/build.sh
+          ./scripts/ci-registry.sh push sysroot || true
           ./scripts/ci-registry.sh push newlib || true
           ./scripts/ci-registry.sh push std-hello || true
           ./scripts/ci-registry.sh push c-hello || true
@@ -440,6 +443,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
+          ./scripts/ci-registry.sh pull sysroot || true
           ./scripts/ci-registry.sh pull newlib || true
           ./scripts/ci-registry.sh pull std-hello || true
           ./scripts/ci-registry.sh pull c-hello || true
@@ -450,6 +454,7 @@ jobs:
           ./scripts/ci-registry.sh pull ripgrep || true
           ./scripts/ci-registry.sh pull tcc || true
           ./scripts/ci-restore-or-build.sh
+          ./scripts/ci-registry.sh push sysroot || true
           ./scripts/ci-registry.sh push newlib || true
           ./scripts/ci-registry.sh push std-hello || true
           ./scripts/ci-registry.sh push c-hello || true
