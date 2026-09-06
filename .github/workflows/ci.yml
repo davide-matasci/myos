@@ -271,18 +271,9 @@ jobs:
         run: cargo test -p ps2-scancode
 
       - name: Build kernel and Limine BIOS+UEFI disk images
-        run: |
-          cargo clean -p myos
-          # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
-          # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
-          cargo clean -p kernel --target x86_64-unknown-none
-          cargo clean -p kernel --target aarch64-unknown-none-softfloat
-          cargo clean -p kernel --target riscv64imac-unknown-none-elf
-          cargo build
-          cargo build -p kernel --target aarch64-unknown-none-softfloat
-          cargo build -p kernel --target riscv64imac-unknown-none-elf
-          test -f target/bios.img
-          od -An -tx1 -N 16 target/bios.img
+        # Hash-gated: re-run is a no-op when inputs+artifacts match.
+        # (scripts/ci-build-kernels.sh; see docs/ci/ci.yml.boot-perf-desired)
+        run: ./scripts/ci-build-kernels.sh
 
       - name: Pack CI build artifacts
         run: |
@@ -324,6 +315,7 @@ jobs:
             target/.myos-ripgrep-version
             target/.myos-tcc-version
             target/.myos-std-hello-version
+            target/.myos-ci-kernel-version
             target/limine-v*
           )
           if [ -f target/virt.dtb ]; then
