@@ -1,6 +1,7 @@
 /* myos libgloss: POSIX termios types/APIs for oksh/vim/etc.
- * Kernel stdin stays cooked; tcgetattr fails / tcsetattr succeeds as no-ops
- * (see termios.c). Installed into the newlib sysroot as <termios.h>. */
+ * tcgetattr/tcsetattr use TCGETS/TCSETS; the kernel maintains per-console
+ * termios and honors ICANON/ECHO/ISIG/ICRNL in the line discipline.
+ * Installed into the newlib sysroot as <termios.h>. */
 #ifndef _TERMIOS_H_
 #define _TERMIOS_H_
 

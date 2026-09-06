@@ -29,6 +29,18 @@ pub fn has_fb() -> bool {
     FB.get().is_some()
 }
 
+/// Character-cell winsize for tty `TIOCGWINSZ`.
+///
+/// Uses the framebuffer geometry (`width/FONT_W` × `height/FONT_H`) when a
+/// Limine FB is present; otherwise falls back to the classic 24×80.
+pub fn winsize() -> (u16, u16) {
+    if let Some(fb) = FB.get() {
+        fb.lock().winsize()
+    } else {
+        (24, 80)
+    }
+}
+
 pub fn write_byte(byte: u8) {
     let _guard = OUT.lock();
     write_byte_unlocked(byte);

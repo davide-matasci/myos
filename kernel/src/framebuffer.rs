@@ -98,6 +98,10 @@ pub struct FrameBufferWriter<'a> {
     csi_private: bool,
     saved_col: usize,
     saved_row: usize,
+    /// Inclusive scroll-region top row (0-based).
+    scroll_top: usize,
+    /// Inclusive scroll-region bottom row (0-based); `usize::MAX` = last row.
+    scroll_bottom: usize,
 }
 
 impl FrameBufferWriter<'static> {
@@ -131,6 +135,8 @@ impl FrameBufferWriter<'static> {
             csi_private: false,
             saved_col: 0,
             saved_row: 0,
+            scroll_top: 0,
+            scroll_bottom: usize::MAX,
         }
     }
 }
@@ -142,6 +148,20 @@ impl FrameBufferWriter<'_> {
 
     fn rows(&self) -> usize {
         (self.height / FONT_H).max(1)
+    }
+
+    /// Character-cell geometry for `TIOCGWINSZ`.
+    pub fn winsize(&self) -> (u16, u16) {
+        (self.rows() as u16, self.cols() as u16)
+    }
+
+    fn scroll_bottom_row(&self) -> usize {
+        self.scroll_bottom.min(self.rows().saturating_sub(1))
+    }
+
+    fn reset_scroll_region(&mut self) {
+        self.scroll_top = 0;
+        self.scroll_bottom = usize::MAX;
     }
 
     pub fn clear(&mut self) {
@@ -266,7 +286,16 @@ impl FrameBufferWriter<'_> {
                 self.set_cursor(self.saved_row, self.saved_col);
                 self.ansi_state = AnsiState::Normal;
             }
-            // Ignore other short ESC forms (e.g. ESC c RIS, ESC D IND).
+            // RIS — reset to initial state (full screen, default colors).
+            b'c' => {
+                self.fg = TEXT;
+                self.bg = BG;
+                self.bold = false;
+                self.reset_scroll_region();
+                self.clear();
+                self.ansi_state = AnsiState::Normal;
+            }
+            // Ignore other short ESC forms (e.g. ESC D IND).
             _ => {
                 self.ansi_state = AnsiState::Normal;
             }
@@ -414,6 +443,42 @@ impl FrameBufferWriter<'_> {
             // SGR — select graphic rendition
             b'm' => {
                 self.apply_sgr();
+            }
+            // DECSTBM — set scrolling region (1-based); bare CSI r resets.
+            b'r' => {
+                let rows = self.rows();
+                if self.csi_param_count == 0 {
+                    self.reset_scroll_region();
+                } else {
+                    let top = (self.csi_param(0, 1) as usize).saturating_sub(1);
+                    let bot = (self.csi_param(1, rows as u16) as usize).saturating_sub(1);
+                    if top < bot && bot < rows {
+                        self.scroll_top = top;
+                        self.scroll_bottom = bot;
+                    } else {
+                        self.reset_scroll_region();
+                    }
+                }
+                // VT100: DECSTBM homes the cursor.
+                self.set_cursor(0, 0);
+            }
+            // SU — scroll up n lines inside the region
+            b'S' => {
+                let n = self.csi_param(0, 1) as usize;
+                let top = self.scroll_top.min(self.scroll_bottom_row());
+                let bot = self.scroll_bottom_row();
+                for _ in 0..n {
+                    self.scroll_up_region(top, bot);
+                }
+            }
+            // SD — scroll down n lines inside the region
+            b'T' => {
+                let n = self.csi_param(0, 1) as usize;
+                let top = self.scroll_top.min(self.scroll_bottom_row());
+                let bot = self.scroll_bottom_row();
+                for _ in 0..n {
+                    self.scroll_down_region(top, bot);
+                }
             }
             // Ignore unsupported finals (still consumed).
             _ => {}
@@ -640,40 +705,69 @@ impl FrameBufferWriter<'_> {
 
     fn newline(&mut self) {
         self.col = 0;
-        let rows = self.rows();
-        if self.row + 1 >= rows {
-            self.scroll_up();
+        let top = self.scroll_top.min(self.scroll_bottom_row());
+        let bot = self.scroll_bottom_row();
+        if self.row >= bot {
+            // Newline at bottom of scroll region scrolls within the region.
+            self.scroll_up_region(top, bot);
+            self.row = bot;
+        } else if self.row < top {
+            self.row = top;
         } else {
             self.row += 1;
         }
     }
 
-    /// Scroll the text viewport up one row when the cursor passes the last line.
-    fn scroll_up(&mut self) {
-        let text_rows = self.rows();
-        if text_rows <= 1 {
-            self.row = 0;
+    /// Scroll text rows `[top, bottom]` up by one row (region-aware).
+    fn scroll_up_region(&mut self, top: usize, bottom: usize) {
+        if bottom <= top {
             return;
         }
-        let scroll_px = FONT_H;
-        let visible_px = text_rows * FONT_H;
-        let copy_len = (visible_px - scroll_px) * self.pitch;
-        if copy_len > 0 && copy_len <= self.buffer.len() {
+        let src_y = (top + 1) * FONT_H;
+        let dst_y = top * FONT_H;
+        let height_px = (bottom - top) * FONT_H;
+        let copy_len = height_px * self.pitch;
+        let src_off = src_y * self.pitch;
+        let dst_off = dst_y * self.pitch;
+        if copy_len > 0
+            && src_off + copy_len <= self.buffer.len()
+            && dst_off + copy_len <= self.buffer.len()
+        {
             unsafe {
                 core::ptr::copy(
-                    self.buffer.as_ptr().add(scroll_px * self.pitch),
-                    self.buffer.as_mut_ptr(),
+                    self.buffer.as_ptr().add(src_off),
+                    self.buffer.as_mut_ptr().add(dst_off),
                     copy_len,
                 );
             }
         }
-        let y0 = visible_px - scroll_px;
-        for y in y0..visible_px {
-            for x in 0..self.width {
-                self.put_pixel(x, y, self.bg);
+        self.clear_region(0, bottom, self.cols(), bottom + 1);
+    }
+
+    /// Scroll text rows `[top, bottom]` down by one row (region-aware).
+    fn scroll_down_region(&mut self, top: usize, bottom: usize) {
+        if bottom <= top {
+            return;
+        }
+        let src_y = top * FONT_H;
+        let dst_y = (top + 1) * FONT_H;
+        let height_px = (bottom - top) * FONT_H;
+        let copy_len = height_px * self.pitch;
+        let src_off = src_y * self.pitch;
+        let dst_off = dst_y * self.pitch;
+        if copy_len > 0
+            && src_off + copy_len <= self.buffer.len()
+            && dst_off + copy_len <= self.buffer.len()
+        {
+            unsafe {
+                core::ptr::copy(
+                    self.buffer.as_ptr().add(src_off),
+                    self.buffer.as_mut_ptr().add(dst_off),
+                    copy_len,
+                );
             }
         }
-        self.row = text_rows - 1;
+        self.clear_region(0, top, self.cols(), top + 1);
     }
 
     fn draw_glyph(&mut self, col: usize, row: usize, byte: u8, fg: (u8, u8, u8)) {

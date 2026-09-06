@@ -1238,6 +1238,32 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         return 0;
     }
 
+    // TCGETS / TCSETS: maintain per-console termios (raw vs cooked for vim).
+    const TCGETS: usize = 0x5401;
+    const TCSETS: usize = 0x5402;
+    if request == TCGETS || request == TCSETS {
+        if !fd_is_console_tty(entry) {
+            return usize::MAX;
+        }
+        if arg == 0 {
+            return usize::MAX;
+        }
+        let aspace = current_aspace();
+        if request == TCGETS {
+            let buf = crate::input::termios_get_bytes();
+            if !user::copy_to_user(aspace, arg, &buf) {
+                return usize::MAX;
+            }
+        } else {
+            let mut buf = [0u8; crate::input::TERMIOS_LEN];
+            if !user::copy_from_user(aspace, arg, &mut buf) {
+                return usize::MAX;
+            }
+            crate::input::termios_set_bytes(&buf);
+        }
+        return 0;
+    }
+
     let result = match entry {
         FdEntry::Empty | FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) => IoctlResult::Notty,
         FdEntry::Stdin | FdEntry::Console => crate::fs::tty_ioctl(request),
