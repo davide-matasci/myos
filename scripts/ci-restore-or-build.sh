@@ -65,8 +65,12 @@ rebuild_kernels() {
   cargo build -p kernel --target riscv64imac-unknown-none-elf
 }
 
-if [[ -x target/debug/myos && -f target/bios.img ]]; then
+if [[ -x target/debug/myos && -f target/bios.img \
+     && -f target/aarch64-unknown-none-softfloat/debug/kernel \
+     && -f target/riscv64imac-unknown-none-elf/debug/kernel ]]; then
   echo "CI artifacts ready: $(ls -lh target/debug/myos target/bios.img)"
+  echo "prebuilt kernels: $(ls -lh target/aarch64-unknown-none-softfloat/debug/kernel target/riscv64imac-unknown-none-elf/debug/kernel)"
+  touch target/.myos-ci-prebuilt-kernels
   restore_packed_rg_elves
   need_rebuild=0
   if ! rg_elves_ready; then

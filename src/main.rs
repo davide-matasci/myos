@@ -668,12 +668,48 @@ fn stamp_user_into_kernel_outs(good: &Path, target: &str, bin: &str) {
     }
 }
 
+
+/// Boot CI packs aarch64/riscv64 kernels in `ci-build.tar`. When the restore
+/// step sets `MYOS_SKIP_KERNEL_REBUILD=1`, use those ELFs instead of
+/// `cargo clean` + `cargo build` (was the multi-minute compile inside boot).
+fn skip_kernel_rebuild() -> bool {
+    matches!(
+        std::env::var("MYOS_SKIP_KERNEL_REBUILD").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+fn prebuilt_kernel(target: &str) -> PathBuf {
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
+    target_dir.join(target).join(profile).join("kernel")
+}
+
 fn build_aarch64_kernel() -> PathBuf {
+    let elf = prebuilt_kernel(AARCH64_TARGET);
+    if skip_kernel_rebuild() {
+        if !elf.is_file() {
+            eprintln!(
+                "error: MYOS_SKIP_KERNEL_REBUILD set but aarch64 kernel missing at {}",
+                elf.display()
+            );
+            exit(1);
+        }
+        eprintln!("using prebuilt aarch64 kernel {}", elf.display());
+        return elf;
+    }
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    // aarch64 kernels are not packed in ci-build.tar. rust-cache can keep a
-    // pre--image-base ET_EXEC at 0x200000; cargo clean -p kernel alone may skip
-    // build.rs. Prelink ping/netd at USER_BASE and invalidate fingerprints.
+    // rust-cache can keep a pre--image-base ET_EXEC at 0x200000; cargo clean -p
+    // kernel alone may skip build.rs. Prelink ping/netd at USER_BASE and
+    // invalidate fingerprints. (CI boot prefers packed kernels via
+    // MYOS_SKIP_KERNEL_REBUILD.)
     ensure_user_at_user_base(&cargo, AARCH64_TARGET, "ping");
     ensure_user_at_user_base(&cargo, AARCH64_TARGET, "netd");
     let clean = Command::new(&cargo)
@@ -879,6 +915,18 @@ fn build_riscv64_image() -> PathBuf {
 }
 
 fn build_riscv64_kernel() -> PathBuf {
+    let elf = prebuilt_kernel(RISCV64_TARGET);
+    if skip_kernel_rebuild() {
+        if !elf.is_file() {
+            eprintln!(
+                "error: MYOS_SKIP_KERNEL_REBUILD set but riscv64 kernel missing at {}",
+                elf.display()
+            );
+            exit(1);
+        }
+        eprintln!("using prebuilt riscv64 kernel {}", elf.display());
+        return elf;
+    }
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     // Same rust-cache trap as aarch64 (fault at 0x11e6a).
