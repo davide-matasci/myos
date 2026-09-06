@@ -1076,6 +1076,11 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
         if pte & paging::PTE_V == 0 {
             return None;
         }
+        // Must be a leaf PTE (any of R/W/X). A table descriptor here would make
+        // reclaim free_frame a page-table phys as if it were user data.
+        if pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) == 0 {
+            return None;
+        }
         Some(paging::pte_phys(pte))
     }
 }
@@ -2688,6 +2693,11 @@ fn free_mapped_page(aspace: u64, va: u64) {
         return;
     };
     unmap_user_page(aspace, va);
+    // If unmap failed to clear, refuse to free — avoids freelist double-free when
+    // reclaim walks overlapping VA ranges (code span vs heap/mmap).
+    if virt_to_phys(aspace, va).is_some() {
+        return;
+    }
     mm::free_frame(phys);
 }
 
@@ -2847,25 +2857,10 @@ fn unmap_user_page(aspace: u64, va: u64) {
     }
     #[cfg(target_arch = "riscv64")]
     {
-        // Walk without allocating — reclaim must not grow tables while tearing
-        // them down (ensure_riscv_leaf would silently alloc mid/leaf).
-        let root_phys = paging::satp_root_phys(aspace);
-        let i2 = ((va >> 30) & 0x1ff) as usize;
-        let i1 = ((va >> 21) & 0x1ff) as usize;
         let i0 = ((va >> 12) & 0x1ff) as usize;
+        let leaf = ensure_riscv_leaf(aspace, va);
         unsafe {
-            let root = &*mm::table(root_phys);
-            let mid_pte = root[i2];
-            if mid_pte & paging::PTE_V == 0 || !paging::pte_is_table(mid_pte) {
-                return;
-            }
-            let mid = &*mm::table(paging::pte_phys(mid_pte));
-            let leaf_pte = mid[i1];
-            if leaf_pte & paging::PTE_V == 0 || !paging::pte_is_table(leaf_pte) {
-                return;
-            }
-            let leaf = &mut *mm::table(paging::pte_phys(leaf_pte));
-            leaf[i0] = 0;
+            (*leaf)[i0] = 0;
         }
     }
 }
