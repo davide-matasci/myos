@@ -1,14 +1,14 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{exec, exit, fork, wait_status, write};
+use myos_user::{status_ok, exec, exit, fork, wait_status, write};
 
 fn smoke_fork_ping() {
     match fork() {
         Some(0) => exit(),
         Some(_) => {
             let _ = wait_status();
-            write(b"fork ok\n");
+            status_ok("fork");
         }
         None => write(b"fork failed\n"),
     }
@@ -22,7 +22,7 @@ fn smoke_fork_exec_ok() {
         }
         Some(_) => {
             let _ = wait_status();
-            write(b"fork exec ok\n");
+            status_ok("fork exec");
         }
         None => write(b"fork failed\n"),
     }

@@ -4,7 +4,7 @@
 //! CI-only heavy smoke: std / C / sbase / uutils / ripgrep / tcc / bigalloc.
 //! Always-on boot uses slim `/ok` instead; `wait_ci` types `heap` at `$`.
 
-use myos_user::{
+use myos_user::{status_ok, 
     close, exec, exit, exit_code, fork, mkdir, open_flags, wait_status, write, write_fd, O_CREAT,
     O_TRUNC, O_WRONLY,
 };
@@ -61,10 +61,10 @@ fn run_prog_exit(path: &[u8], args: &[&[u8]], expect: u8, ok_msg: &[u8]) -> bool
 
 fn main() -> ! {
     write(b"smoke start\n");
-    let _ = run_prog_exit(b"/bin/std/bigalloc", &[], 0, b"bigalloc ok\n");
-    let _ = run_prog_exit(b"/bin/coreutils/echo", &[], 0, b"uutils echo ok\n");
-    let _ = run_prog_exit(b"/bin/coreutils/true", &[], 0, b"uutils true ok\n");
-    let _ = run_prog_exit(b"/bin/coreutils/false", &[], 1, b"uutils false ok\n");
+    let _ = run_prog_exit(b"/bin/std/bigalloc", &[], 0, b"[ OK ] bigalloc\n");
+    let _ = run_prog_exit(b"/bin/coreutils/echo", &[], 0, b"[ OK ] uutils echo\n");
+    let _ = run_prog_exit(b"/bin/coreutils/true", &[], 0, b"[ OK ] uutils true\n");
+    let _ = run_prog_exit(b"/bin/coreutils/false", &[], 1, b"[ OK ] uutils false\n");
     // Recursive sbase find: needs multi-DIR libgloss (nested opendir while walking).
     if mkdir(b"/tmp/findnest")
         && mkdir(b"/tmp/findnest/a")
@@ -77,7 +77,7 @@ fn main() -> ! {
                 b"/bin/sbase/find",
                 &[b"find", b"/tmp/findnest"],
                 0,
-                b"find ok\n",
+                b"[ OK ] find\n",
             );
         }
     } else {
@@ -90,12 +90,12 @@ fn main() -> ! {
         b"/bin/coreutils/cat",
         &[b"cat", b"/tmp/findnest/a/b/c"],
         0,
-        b"uutils cat ok\n",
+        b"[ OK ] uutils cat\n",
     ) {
         write(b"uutils cat findnest failed; retry /msg\n");
-        let _ = run_prog_exit(b"/bin/coreutils/cat", &[b"cat", b"/msg"], 0, b"uutils cat ok\n");
+        let _ = run_prog_exit(b"/bin/coreutils/cat", &[b"cat", b"/msg"], 0, b"[ OK ] uutils cat\n");
     }
-    let _ = run_prog_exit(b"/bin/coreutils/ls", &[b"ls", b"/tmp/findnest"], 0, b"uutils ls ok\n");
+    let _ = run_prog_exit(b"/bin/coreutils/ls", &[b"ls", b"/tmp/findnest"], 0, b"[ OK ] uutils ls\n");
     // Write a needle under /tmp and search with /c/rg (full ripgrep + PCRE2).
     // -j1 / --no-mmap / --no-config: myos is single-threaded; rg mmap is optional.
     if let Some(fd) = open_flags(b"/tmp/rg-needle.txt", O_WRONLY | O_CREAT | O_TRUNC) {
@@ -114,7 +114,7 @@ fn main() -> ! {
                 b"/tmp/rg-needle.txt",
             ],
             0,
-            b"ripgrep ok\n",
+            b"[ OK ] ripgrep\n",
         );
     } else {
         write(b"ripgrep skip (tmp create fail)\n");
@@ -126,7 +126,7 @@ fn main() -> ! {
     run_prog(b"/bin/sbase/true", &[]);
     run_prog(b"/bin/sbase/echo", &[]);
     run_prog(b"/bin/sbase/ls", &[]);
-    run_prog(b"/bin/sbase/echo", &[b"echo", b"sbase argv ok"]);
+    run_prog(b"/bin/sbase/echo", &[b"echo", b"[ OK ] sbase argv"]);
     run_prog(b"/bin/sbase/ls", &[b"ls", b"/bin/sbase"]);
     run_prog(b"/bin/sbase/pwd", &[]);
     // TinyCC JIT: -nostdlib skips libgloss, so hi.c emits SYS_WRITE=0 itself.
@@ -141,7 +141,7 @@ __asm__(".text\n.globl write\nwrite:\n mov x8, 0\n .int 0xd4000001\n ret\n");
 #elif defined(__riscv)
 __asm__(".text\n.globl write\nwrite:\n li a7, 0\n ecall\n ret\n");
 #endif
-int main(void) { write(1, "tcc ok\n", 7); return 0; }
+int main(void) { write(1, "[ OK ] tcc\n", 11); return 0; }
 "#;
     if let Some(fd) = open_flags(b"/tmp/hi.c", O_WRONLY | O_CREAT | O_TRUNC) {
         let _ = write_fd(fd, HI_C);
@@ -158,7 +158,7 @@ int main(void) { write(1, "tcc ok\n", 7); return 0; }
     const STD_C: &[u8] = br#"
 #include <stdio.h>
 int main(void) {
-    puts("tcc std ok");
+    puts("[ OK ] tcc std");
     return 0;
 }
 "#;
@@ -176,7 +176,7 @@ int main(void) {
     // ICMP echo via /net/icmp (netd); needle is printed by /ping, not heap.
     // 10.0.2.2 is QEMU slirp gateway; 1.1.1.1 often fails through -netdev user.
     run_prog(b"/bin/custom/ping", &[b"ping", b"10.0.2.2"]);
-    write(b"smoke ok\n");
+    status_ok("smoke");
     exit();
 }
 

@@ -2,5 +2,5 @@
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main() {
-    println!("std ok");
+    println!("[ OK ] std");
 }

@@ -101,7 +101,7 @@
 +	Flag(FMONITOR) = 0;
 +	/* myos: skip emacs/vi tty setup (x_init / tcsetattr). */
 +	if (Flag(FTALKING)) {
-+		write(1, "sh ok\n", 6);
++		write(1, "[ OK ] sh\n", 9);
 +	}
  
  	l = genv->loc;

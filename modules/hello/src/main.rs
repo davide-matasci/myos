@@ -16,8 +16,6 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         if api.abi_version != ABI_VERSION {
             return -2;
         }
-        let msg = b"mod ok\n";
-        (api.write_str)(msg.as_ptr(), msg.len());
         0
     }
 }

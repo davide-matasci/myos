@@ -2,7 +2,7 @@
 #![no_main]
 
 use myos_user::dns::{format_ipv4, resolve_a, ResolveError};
-use myos_user::{exit, write};
+use myos_user::{status_ok, exit, write};
 
 myos_user::x86_start!(main);
 
@@ -35,7 +35,7 @@ fn main() -> ! {
             let n = format_ipv4(ip, &mut ip_str);
             write(&ip_str[..n]);
             write(b"\n");
-            write(b"dns ok\n");
+            status_ok("dns");
             exit();
         }
         Err(ResolveError::Name) => fail(b"name too long\n"),

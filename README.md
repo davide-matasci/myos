@@ -204,7 +204,7 @@ qemu-system-x86_64 -m 256 -cdrom target/myos-x86_64.iso -serial stdio
 ```
 
 ### Second disk (`target/fat.img`)
-Attached as second virtio-blk in all QEMU runs. Holds `/msg` for `fat ok` marker. Bare metal without it still boots to shell.
+Attached as second virtio-blk in all QEMU runs. Holds `/msg` for `[ OK ] fat` / msg markers. Bare metal without it still boots to shell.
 
 ---
 
@@ -212,7 +212,7 @@ Attached as second virtio-blk in all QEMU runs. Holds `/msg` for `fat ok` marker
 
 Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `target/uefi.img` for UEFI). Framebuffer mirrors serial — boot progress scrolls on screen.
 
-**stdin** merges PS/2 keyboard and serial. If 8042 probe succeeds, `kbd ok` prints and keyboard works. Serial always available.
+**stdin** merges PS/2 keyboard and serial. If 8042 probe succeeds, keyboard works. Serial always available.
 
 | Arch | Serial port | Baud rate |
 |------|-------------|-----------|
@@ -303,4 +303,4 @@ GitHub Actions caches Cargo with Swatinem/rust-cache (`prefix-key: limine-8.3-6`
 - AArch64 device MMIO identity-mapped on `TTBR0` (not in HHDM at Limine base rev 3+)
 - Modules run from HHDM heap (rwx); loader flushes I-cache on AArch64 after copy
 - Limine binaries downloaded from GitHub release `v12.6.1` (sha256-pinned) into `target/limine-v12.6.1`
-- `user/ok` exits early if `/msg` absent (FAT disk not present); CI fails on `fat ok`
+- `user/ok` exits early if `/msg` absent (FAT disk not present); CI fails if `[ OK ] msg` / fat markers are missing

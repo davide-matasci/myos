@@ -52,6 +52,20 @@ const MAX_EXEC_ENV: usize = 32;
 pub fn write(buf: &[u8]) {
     write_fd(1, buf);
 }
+/// `[ OK ] label` — same spacing as kernel `console::status_ok`.
+pub fn status_ok(label: &str) {
+    write(b"[ OK ] ");
+    write(label.as_bytes());
+    write(b"\n");
+}
+
+/// `[ FAIL ] label` — same spacing as kernel `console::status_fail`.
+pub fn status_fail(label: &str) {
+    write(b"[ FAIL ] ");
+    write(label.as_bytes());
+    write(b"\n");
+}
+
 
 pub fn write_fd(fd: usize, buf: &[u8]) -> usize {
     unsafe { sys_write(fd, buf.as_ptr() as usize, buf.len()) }

@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, dup2, exec_env, exit, fork, open, pipe, read_line, wait_status, write};
+use myos_user::{status_ok, close, dup2, exec_env, exit, fork, open, pipe, read_line, wait_status, write};
 
 const PROMPT: &[u8] = b"$ ";
 const MAX_LINE: usize = 128;
@@ -36,7 +36,7 @@ struct Segment<'a> {
 
 fn shell() -> ! {
     init_env();
-    write(b"sh ok\n");
+    status_ok("sh");
     smoke_fork_ping();
     smoke_fork(b"ok", &[]);
     let mut line = [0u8; MAX_LINE];
@@ -110,7 +110,7 @@ fn smoke_fork_ping() {
         Some(0) => exit(),
         Some(_) => {
             let _ = wait_status();
-            write(b"fork ok\n");
+            status_ok("fork");
         }
         None => write(b"fork failed\n"),
     }
@@ -137,7 +137,7 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
         }
         Some(_) => {
             let _ = wait_status();
-            write(b"fork exec ok\n");
+            status_ok("fork exec");
         }
         None => write(b"fork failed\n"),
     }

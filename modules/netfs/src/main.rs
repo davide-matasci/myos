@@ -6,7 +6,7 @@
 #![no_std]
 #![no_main]
 
-use myos_abi::{ABI_VERSION, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo};
+use myos_abi::{status_ok, ABI_VERSION, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo};
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
@@ -708,8 +708,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     // Stay loaded even if one hook fails: InitFailed would free the image while
     // the other hook still points at it.
     if mount_rc == 0 && chr_rc == 0 {
-        let msg = b"netfs mod ok\n";
-        unsafe { (api.write_str)(msg.as_ptr(), msg.len()) };
+        unsafe { status_ok(api, "netfs") };
     }
     0
 }

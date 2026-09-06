@@ -29,6 +29,6 @@
  	}
  
 +	if (smoke_list)
-+		puts("sls ok");
++		puts("[ OK ] sls");
  	return (fshut(stdout, "<stdout>") | ret);
  }

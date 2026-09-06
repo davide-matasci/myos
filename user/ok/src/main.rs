@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use myos_user::{
     Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SIGTERM, close, exec, exit, exit_code, fork,
     heap_init, ioctl, kill, listdir, mkdir, mount, open, open_flags, pipe, read, readlink, rename,
-    rmdir, symlink, unlink, wait_status, write, write_fd,
+    rmdir, status_ok, symlink, unlink, wait_status, write, write_fd,
 };
 
 #[global_allocator]
@@ -19,16 +19,17 @@ fn do_msg() {
     let Some(fd) = open(b"/msg") else {
         miss(b"fat nofd\n");
     };
-    let mut buf = [0u8; 8];
+    let mut buf = [0u8; 16];
     let n = read(fd, &mut buf);
     close(fd);
     if n == usize::MAX {
         miss(b"fat nread\n");
     }
-    if n == 0 {
-        miss(b"fat empty\n");
+    const WANT: &[u8] = b"fat-msg\n";
+    if n < WANT.len() || &buf[..WANT.len()] != WANT {
+        miss(b"fat badmsg\n");
     }
-    write(&buf[..n]);
+    status_ok("msg");
 }
 
 fn buf_has(hay: &[u8], needle: &[u8]) -> bool {
@@ -43,17 +44,18 @@ fn fat_msg_ok() -> bool {
     let Some(fd) = open(b"/fat/msg") else {
         return false;
     };
-    let mut msg = [0u8; 8];
+    let mut msg = [0u8; 16];
     let nr = read(fd, &mut msg);
     close(fd);
-    nr >= 7 && &msg[..7] == b"fat ok\n"
+    const WANT: &[u8] = b"fat-msg\n";
+    nr >= WANT.len() && &msg[..WANT.len()] == WANT
 }
 
 fn smoke_vfs() {
     let mut buf = [0u8; myos_user::LISTDIR_BUF];
     let n = listdir(b"/disk", &mut buf);
     if n != usize::MAX && n > 0 && buf_has(&buf[..n], b"ping") {
-        write(b"disk ls ok\n");
+        status_ok("disk ls");
     }
 
     let n = listdir(b"/dev", &mut buf);
@@ -61,9 +63,9 @@ fn smoke_vfs() {
         write(b"vda missing\n");
         return;
     }
-    write(b"vda ok\n");
+    status_ok("vda");
     if buf_has(&buf[..n], b"net0") {
-        write(b"net0 ok\n");
+        status_ok("net0");
         if let Some(fd) = open_flags(b"/dev/net0", O_RDWR) {
             let mut mac = [0u8; 6];
             // Keep in sync with myos_abi::MYOS_IOCTL_NET_GETMAC.
@@ -72,16 +74,16 @@ fn smoke_vfs() {
                 && mac.iter().any(|&b| b != 0)
                 && mac[0] & 1 == 0
             {
-                write(b"netmac ok\n");
+                status_ok("netmac");
             }
             close(fd);
         }
     }
     if buf_has(&buf[..n], b"vdb") {
-        write(b"vdb ok\n");
+        status_ok("vdb");
     }
     if buf_has(&buf[..n], b"nvme0n1") {
-        write(b"nvme ok\n");
+        status_ok("nvme");
         if let Some(fd) = open(b"/dev/nvme0n1") {
             let mut sec = [0u8; 512];
             let _ = read(fd, &mut sec);
@@ -123,17 +125,18 @@ fn smoke_vfs() {
 
     let n = listdir(b"/fat", &mut buf);
     if n != usize::MAX && n > 0 && buf_has(&buf[..n], b"msg") {
-        write(b"fat ls ok\n");
+        status_ok("fat ls");
     }
     let Some(fd) = open(b"/fat/msg") else {
         write(b"fat open fail\n");
         return;
     };
-    let mut msg = [0u8; 8];
+    let mut msg = [0u8; 16];
     let nr = read(fd, &mut msg);
     close(fd);
-    if nr >= 7 && &msg[..7] == b"fat ok\n" {
-        write(b"fat read ok\n");
+    const WANT: &[u8] = b"fat-msg\n";
+    if nr >= WANT.len() && &msg[..WANT.len()] == WANT {
+        status_ok("fat read");
     }
 }
 
@@ -164,7 +167,7 @@ fn smoke_ext2() {
         write(b"ext2 open fail\n");
         return;
     };
-    if write_fd(fd, b"ext2 ok\n") == usize::MAX {
+    if write_fd(fd, b"ext2-msg\n") == usize::MAX {
         write(b"ext2 write fail\n");
         close(fd);
         return;
@@ -177,8 +180,9 @@ fn smoke_ext2() {
     let mut msg = [0u8; 16];
     let nr = read(fd, &mut msg);
     close(fd);
-    if nr >= 8 && &msg[..8] == b"ext2 ok\n" {
-        write(b"ext2 ok\n");
+    const WANT: &[u8] = b"ext2-msg\n";
+    if nr >= WANT.len() && &msg[..WANT.len()] == WANT {
+        status_ok("ext2 rw");
     } else {
         write(b"ext2 read fail\n");
     }
@@ -192,8 +196,9 @@ fn smoke_disk() {
     let mut buf = [0u8; 16];
     let n = read(fd, &mut buf);
     close(fd);
-    if n >= 8 && &buf[..8] == b"disk ok\n" {
-        write(b"disk ok\n");
+    const WANT: &[u8] = b"disk-msg\n";
+    if n >= WANT.len() && &buf[..WANT.len()] == WANT {
+        status_ok("disk");
     }
 }
 
@@ -226,7 +231,7 @@ fn smoke_tmp_dev() {
         write(b"devnull read fail\n");
         return;
     }
-    write(b"devnull ok\n");
+    status_ok("devnull");
 
     // /tmp: create, write, read back.
     let Some(fd) = open_flags(b"/tmp/ci", O_WRONLY | O_CREAT | O_TRUNC) else {
@@ -247,7 +252,7 @@ fn smoke_tmp_dev() {
     let n = read(fd, &mut out);
     close(fd);
     if n >= 3 && &out[..3] == b"hi\n" {
-        write(b"tmp ok\n");
+        status_ok("tmp");
     } else {
         write(b"tmp read fail\n");
         return;
@@ -293,7 +298,7 @@ fn smoke_tmp_dev() {
         write(b"rmdir fail\n");
         return;
     }
-    write(b"tmpops ok\n");
+    status_ok("tmpops");
 
     smoke_proc(&mut buf);
 }
@@ -318,7 +323,7 @@ fn smoke_signal() {
             }
             match wait_status() {
                 Some((_, status)) if status == (128 + SIGTERM as u8) => {
-                    write(b"signal ok\n");
+                    status_ok("signal");
                 }
                 Some((_, status)) => {
                     write(b"signal bad status\n");
@@ -383,7 +388,7 @@ fn smoke_ioctl() {
         return;
     }
 
-    write(b"ioctl ok\n");
+    status_ok("ioctl");
 }
 
 fn smoke_proc(buf: &mut [u8]) {
@@ -423,18 +428,19 @@ fn smoke_proc(buf: &mut [u8]) {
         write(b"proc read fail\n");
         return;
     }
-    write(b"proc ok\n");
+    status_ok("proc");
 }
 
 fn main() -> ! {
     heap_init();
     let mut v = Vec::new();
-    v.extend_from_slice(b"alloc ok\n");
-    write(&v);
+    v.extend_from_slice(b"probe");
+    let _ = v;
+    status_ok("alloc");
 
-    write(b"user ok\n");
+    status_ok("user");
+    // Echoes bootfs /msg (`[ OK ] fat`); no duplicate status line.
     do_msg();
-    write(b"fat ok\n");
 
     smoke_disk();
     smoke_vfs();

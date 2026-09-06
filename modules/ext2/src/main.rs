@@ -1187,8 +1187,6 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         if rc != 0 {
             return rc;
         }
-        let msg = b"ext2 mod ok\n";
-        (api.write_str)(msg.as_ptr(), msg.len());
         0
     }
 }

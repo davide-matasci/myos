@@ -18,6 +18,6 @@ fn run() -> io::Result<()> {
     if n == 0 {
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
-    println!("std cat ok");
+    println!("[ OK ] std cat");
     Ok(())
 }

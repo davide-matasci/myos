@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{close, exit, exit_code, open, open_flags, read, write, write_fd, O_RDWR, O_WRONLY};
+use myos_user::{status_ok, close, exit, exit_code, open, open_flags, read, write, write_fd, O_RDWR, O_WRONLY};
 
 myos_user::x86_start!(main);
 
@@ -190,7 +190,7 @@ fn main() -> ! {
     if !got {
         fail(b"icmp data timeout\n");
     }
-    write(b"ping ok\n");
+    status_ok("ping");
     exit();
 }
 
