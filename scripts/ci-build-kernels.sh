@@ -90,12 +90,32 @@ kernel_inputs_hash() {
   printf '%s' "$h"
 }
 
+# Host `myos aarch64/riscv64 --ci` rebuilds the guest disk image and reads these
+# Limine modules from disk (not from the prebuilt kernel ELF). GHCR kernels
+# packages that omit them made master boot jobs panic with "hello ELF missing"
+# after a kernels cache hit (PR builds were fine because they did a full cargo
+# build). Keep them in artifacts_ready + --print-members.
+HELLO_OK_ELFS=(
+  target/hello-x86_64-unknown-none
+  target/hello-aarch64-unknown-none-softfloat
+  target/hello-riscv64imac-unknown-none-elf
+  target/ok-x86_64-unknown-none
+  target/ok-aarch64-unknown-none-softfloat
+  target/ok-riscv64imac-unknown-none-elf
+)
+
 artifacts_ready() {
   [[ -x target/debug/myos ]] \
     && [[ -f target/bios.img ]] \
     && [[ -f target/uefi.img ]] \
     && [[ -f target/aarch64-unknown-none-softfloat/debug/kernel ]] \
-    && [[ -f target/riscv64imac-unknown-none-elf/debug/kernel ]]
+    && [[ -f target/riscv64imac-unknown-none-elf/debug/kernel ]] \
+    || return 1
+  local f
+  for f in "${HELLO_OK_ELFS[@]}"; do
+    [[ -f "$f" ]] || return 1
+  done
+  return 0
 }
 
 do_clean_and_build() {
@@ -128,6 +148,9 @@ case "${1:-}" in
     echo target/fat.img
     echo target/aarch64-unknown-none-softfloat/debug/kernel
     echo target/riscv64imac-unknown-none-elf/debug/kernel
+    for f in "${HELLO_OK_ELFS[@]}"; do
+      echo "$f"
+    done
     exit 0
     ;;
   --is-current)

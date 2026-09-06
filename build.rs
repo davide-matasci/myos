@@ -68,14 +68,19 @@ fn main() {
 
     let target_dir = manifest.join("target");
     let _ = std::fs::create_dir_all(&target_dir);
-    let _ = std::fs::copy(&bios_path, target_dir.join("bios.img"));
-    let _ = std::fs::copy(&uefi_path, target_dir.join("uefi.img"));
+    // Stable paths for CI prebuilt boots: GHCR `kernels` restores these, but not
+    // cargo's hashed OUT_DIR. Baking OUT_DIR into BIOS_PATH made master boot
+    // jobs fail with "Could not open .../build/myos-*/out/bios.img" on a cache hit.
+    let bios_stable = target_dir.join("bios.img");
+    let uefi_stable = target_dir.join("uefi.img");
+    std::fs::copy(&bios_path, &bios_stable).expect("copy bios.img to target/");
+    std::fs::copy(&uefi_path, &uefi_stable).expect("copy uefi.img to target/");
 
     let fat_path = target_dir.join("fat.img");
     write_fat_data_image(&fat_path);
 
-    println!("cargo:rustc-env=BIOS_PATH={}", bios_path.display());
-    println!("cargo:rustc-env=UEFI_PATH={}", uefi_path.display());
+    println!("cargo:rustc-env=BIOS_PATH={}", bios_stable.display());
+    println!("cargo:rustc-env=UEFI_PATH={}", uefi_stable.display());
     println!("cargo:rustc-env=LIMINE_DIR={}", limine_dir.display());
     // Artifact-dep kernel is not at target/<triple>/debug/kernel.
     println!("cargo:rustc-env=KERNEL_PATH={}", kernel_path.display());
