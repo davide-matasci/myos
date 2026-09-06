@@ -208,17 +208,27 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     );
 
     // userspace BSD sockets smoke -> bin/etc/socket_smoke.
+    // Fallback: coreutils-* pack alias when ci-build.tar omitted the canonical name
+    // (workflow glob is `target/c-hello-*`, not `c-socket_smoke-*`).
     add(
         &mut entries,
         "bin/etc/socket_smoke",
-        read(&target.join(format!("c-socket_smoke-{none_triple}"))),
+        read(&target.join(format!("c-socket_smoke-{none_triple}"))).or_else(|| {
+            read(&target.join(format!("coreutils-c-socket_smoke-{none_triple}")))
+        }),
     );
 
     // trimmed curl (HTTPS GET + -o) over userspace sockets + mbedtls.
-    add(
+    // Canonical guest path is /bin/etc/curl ($PATH includes /bin/etc). Also install
+    // /bin/custom/curl next to ping/http/dns (hardlink group = one ELF in the archive).
+    // Fallback to coreutils-curl-* pack alias when ci-build.tar omitted the canonical name.
+    let curl_elf = read(&target.join(format!("curl-{none_triple}"))).or_else(|| {
+        read(&target.join(format!("coreutils-curl-{none_triple}")))
+    });
+    add_hardlink_group(
         &mut entries,
-        "bin/etc/curl",
-        read(&target.join(format!("curl-{none_triple}"))),
+        &["bin/etc/curl".to_string(), "bin/custom/curl".to_string()],
+        curl_elf,
     );
 
     // hello demo module -> bin/modules/hello.

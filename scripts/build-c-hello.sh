@@ -5,8 +5,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
 source "$ROOT/scripts/myos-c-userspace-lib.sh"
 
+pack_socket_smoke_aliases() {
+  # CI packs via existing `target/coreutils-*` glob (workflow edits need workflow scope).
+  local arch src alias
+  for arch in x86_64 aarch64 riscv64; do
+    src="$ROOT/target/c-socket_smoke-${arch}-unknown-none"
+    alias="$ROOT/target/coreutils-c-socket_smoke-${arch}-unknown-none"
+    if [[ -f "$src" ]]; then
+      cp "$src" "$alias"
+    fi
+  done
+}
+
 if myos_c_hello_is_current; then
   echo "c-hello ELFs up to date"
+  pack_socket_smoke_aliases
+  # Curl is required for interactive CI smoke; build job does not call it directly.
+  "$ROOT/ports/curl/build.sh"
   exit 0
 fi
 
@@ -48,3 +63,5 @@ for arch in x86_64 aarch64 riscv64; do
 done
 
 echo "$(myos_c_hello_version_hash)" >"$MYOS_C_HELLO_VERSION"
+pack_socket_smoke_aliases
+"$ROOT/ports/curl/build.sh"

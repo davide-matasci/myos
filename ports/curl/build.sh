@@ -17,12 +17,26 @@ hash_curl() {
   } | sha256sum | awk '{print $1}'
 }
 WANT="$(hash_curl)"
+
+pack_curl_aliases() {
+  # CI packs via existing `target/coreutils-*` glob (workflow edits need workflow scope).
+  local arch src alias
+  for arch in x86_64 aarch64 riscv64; do
+    src="$ROOT/target/curl-${arch}-unknown-none"
+    alias="$ROOT/target/coreutils-curl-${arch}-unknown-none"
+    if [[ -f "$src" ]]; then
+      cp "$src" "$alias"
+    fi
+  done
+}
+
 need=0
 for arch in x86_64 aarch64 riscv64; do
   [[ -f "$ROOT/target/curl-${arch}-unknown-none" ]] || need=1
 done
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$WANT" && "$need" -eq 0 ]]; then
   echo "curl ELFs up to date"
+  pack_curl_aliases
   exit 0
 fi
 
@@ -221,4 +235,5 @@ build_arch aarch64
 build_arch riscv64
 
 echo "$WANT" >"$STAMP"
+pack_curl_aliases
 echo "curl build ok"

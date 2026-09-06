@@ -97,6 +97,10 @@ kernel_inputs_hash() {
 # packages that omit them made master boot jobs panic with "hello ELF missing"
 # after a kernels cache hit (PR builds were fine because they did a full cargo
 # build). Keep them in artifacts_ready + --print-members.
+#
+# socket_smoke + curl: same class of bug for #109 — build job must produce and
+# pack them or aarch64/riscv initramfs skips and `[ OK ] socket` / interactive
+# curl fail. Canonical names plus coreutils-* pack aliases (ci.yml glob).
 HELLO_OK_ELFS=(
   target/hello-x86_64-unknown-none
   target/hello-aarch64-unknown-none-softfloat
@@ -104,6 +108,18 @@ HELLO_OK_ELFS=(
   target/ok-x86_64-unknown-none
   target/ok-aarch64-unknown-none-softfloat
   target/ok-riscv64imac-unknown-none-elf
+  target/c-socket_smoke-x86_64-unknown-none
+  target/c-socket_smoke-aarch64-unknown-none
+  target/c-socket_smoke-riscv64-unknown-none
+  target/curl-x86_64-unknown-none
+  target/curl-aarch64-unknown-none
+  target/curl-riscv64-unknown-none
+  target/coreutils-c-socket_smoke-x86_64-unknown-none
+  target/coreutils-c-socket_smoke-aarch64-unknown-none
+  target/coreutils-c-socket_smoke-riscv64-unknown-none
+  target/coreutils-curl-x86_64-unknown-none
+  target/coreutils-curl-aarch64-unknown-none
+  target/coreutils-curl-riscv64-unknown-none
 )
 
 artifacts_ready() {
@@ -122,6 +138,8 @@ artifacts_ready() {
 
 do_clean_and_build() {
   echo "==> kernel inputs changed or artifacts missing; clean + build"
+  # Ensure socket_smoke + curl exist before initramfs/cargo (x86 bios embeds them).
+  "$ROOT/scripts/build-c-hello.sh"
   cargo clean -p myos
   # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
   # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.

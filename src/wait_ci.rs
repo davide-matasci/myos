@@ -285,17 +285,23 @@ fn interactive_https_cmd_ok(serial: &str) -> bool {
 
 
 /// curl HTTPS GET via userspace sockets: file should contain Example Domain.
+/// Scope failure checks to output *after* the curl echo so earlier interactive
+/// `nosuchcmd: not found` does not permanently fail this stage.
 fn interactive_curl_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    if !tail.contains("$ curl -fsS -o /tmp/curl-ex.html https://example.com/") || serial.contains("exception:") {
+    let echoed = "$ curl -fsS -o /tmp/curl-ex.html https://example.com/";
+    if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
-    if !tail.contains("Example Domain") {
-        return false;
-    }
-    if (tail.contains("curl:") && (tail.contains("error") || tail.contains("failed")))
-        || tail.contains("not found")
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    if after.contains("not found")
+        || (after.contains("curl:") && (after.contains("error") || after.contains("failed")))
     {
+        return false;
+    }
+    // Prefer Example Domain from curl's cat output (after the command), not the
+    // earlier interactive `http` HTTPS response.
+    if !after.contains("Example Domain") {
         return false;
     }
     at_interactive_prompt(serial)
