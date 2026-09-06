@@ -75,7 +75,7 @@ const CI_NEEDLES_STD: [&str; 19] = [
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 12] = [
+const CI_SHELL_COMMANDS: [&[u8]; 13] = [
     b"nosuchcmd\n",
     // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
     b"heap\n",
@@ -89,6 +89,8 @@ const CI_SHELL_COMMANDS: [&[u8]; 12] = [
     b"x\x08/bin/sbase/ls\n",
     // oksh redirect uses newlib O_CREAT; must create on tmpfs (not only `/ok`).
     b"echo test > /tmp/aaa; cat /tmp/aaa\n",
+    // `which` walks $PATH via fstatat(dirfd, name); must print a real PATH hit.
+    b"which ls\n",
     // DNS resolution test (requires network).
     b"dns www.google.com\n",
     // HTTPS GET (requires network + wall clock + mbedtls).
@@ -232,6 +234,26 @@ fn interactive_tmp_redir_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
+
+/// `which ls` must resolve via $PATH (not cwd): print an absolute `…/ls` path.
+fn interactive_which_ls_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    if !tail.contains("$ which ls") || serial.contains("exception:") {
+        return false;
+    }
+    if tail.contains("not an external command") {
+        return false;
+    }
+    let after = tail.rsplit_once("$ which ls").map(|(_, rest)| rest).unwrap_or("");
+    let path_line = after
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('$'));
+    path_line.is_some_and(|line| {
+        line.starts_with('/') && (line.ends_with("/ls") || line == "/ls")
+    }) && at_interactive_prompt(serial)
+}
+
 /// DNS resolution test: `dns www.google.com` should print `IP: x.x.x.x` and return to `$`.
 fn interactive_dns_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
@@ -313,8 +335,9 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
         7 => interactive_sbase_ls_cmd_ok(serial),
         8 => interactive_bs_ls_cmd_ok(serial),
         9 => interactive_tmp_redir_ok(serial),
-        10 => interactive_dns_cmd_ok(serial),
-        11 => interactive_https_cmd_ok(serial),
+        10 => interactive_which_ls_cmd_ok(serial),
+        11 => interactive_dns_cmd_ok(serial),
+        12 => interactive_https_cmd_ok(serial),
         _ => false,
     }
 }
@@ -622,7 +645,12 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 "error: interactive `echo test > /tmp/aaa; cat /tmp/aaa` failed (want `test`, no cannot create)"
             );
         }
-        if shell_cmd_index == 10 && !interactive_dns_cmd_ok(&serial) {
+        if shell_cmd_index == 10 && !interactive_which_ls_cmd_ok(&serial) {
+            eprintln!(
+                "error: interactive `which ls` failed (want absolute PATH hit like `/bin/sbase/ls`, not `not an external command`)"
+            );
+        }
+        if shell_cmd_index == 11 && !interactive_dns_cmd_ok(&serial) {
             if !command_echoed(&serial, "dns www.google.com") {
                 eprintln!("error: serial did not echo `$ dns www.google.com` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -633,7 +661,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `dns www.google.com` did not print `IP: x.x.x.x` and `[ OK ] dns`");
             }
         }
-        if shell_cmd_index == 11 && !interactive_https_cmd_ok(&serial) {
+        if shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
             if !command_echoed(&serial, "http https://example.com/") {
                 eprintln!("error: serial did not echo `$ http https://example.com/` at the interactive prompt");
             } else if serial.contains("exception:") {
