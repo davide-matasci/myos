@@ -151,6 +151,12 @@ pub fn init_embedded() {}
 /// LF `modules/hello` tree) and `boot/ok` (user/ok). These land in their
 /// `/bin` category now instead of the flat root: `hello` -> `/bin/modules/hello`,
 /// everything else -> `/bin/custom/<basename>`.
+///
+/// The `boot/initramfs` module is special: it is a newc archive of the
+/// userspace ELFs (sbase, coreutils, ripgrep, tcc, std, custom, and the newlib
+/// sysroot). It is parsed by [`crate::fs::cpio`] and each entry is registered
+/// into the matching mount, overriding the small embedded fallback so the cpio
+/// is the primary source of userspace.
 pub fn init_limine() {
     let Some(resp) = crate::limine_boot::MODULES.response() else {
         return;
@@ -164,6 +170,11 @@ pub fn init_limine() {
         // Limine keeps module mappings for the life of the kernel.
         let bytes: &'static [u8] =
             unsafe { core::slice::from_raw_parts(data.as_ptr(), data.len()) };
+        if name == "initramfs" {
+            let n = crate::fs::cpio::parse(bytes);
+            crate::console::status_ok(&alloc::format!("initramfs: {n} files"));
+            continue;
+        }
         let rel = if name == "hello" {
             alloc::format!("modules/{name}")
         } else {

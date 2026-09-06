@@ -21,6 +21,7 @@ timeout: 0
     path: boot():/boot/kernel
     module_path: boot():/boot/hello
     module_path: boot():/boot/ok
+    module_path: boot():/boot/initramfs
 ";
 
 const SECTOR: usize = 512;
@@ -151,8 +152,11 @@ pub fn write_esp_image(
     bios_sys: Option<&[u8]>,
     hello: &[u8],
     ok: &[u8],
+    initramfs: &[u8],
 ) {
-    write_esp_image_ex(dest, kernel, efi_name, efi_bytes, bios_sys, hello, ok, LIMINE_CONF, &[]);
+    write_esp_image_ex(
+        dest, kernel, efi_name, efi_bytes, bios_sys, hello, ok, initramfs, LIMINE_CONF, &[],
+    );
 }
 
 pub fn write_esp_image_ex(
@@ -163,6 +167,7 @@ pub fn write_esp_image_ex(
     bios_sys: Option<&[u8]>,
     hello: &[u8],
     ok: &[u8],
+    initramfs: &[u8],
     limine_conf: &str,
     extra: &[DiskFile],
 ) {
@@ -182,6 +187,10 @@ pub fn write_esp_image_ex(
         DiskFile {
             path: "boot/ok".into(),
             data: ok.to_vec(),
+        },
+        DiskFile {
+            path: "boot/initramfs".into(),
+            data: initramfs.to_vec(),
         },
         DiskFile {
             path: "boot/limine/limine.conf".into(),
@@ -258,6 +267,7 @@ pub fn write_x86_iso(
     kernel: &Path,
     hello: &Path,
     ok: &Path,
+    initramfs: &Path,
     limine: &LimineFiles,
 ) {
     for p in [limine.bios_cd(), limine.uefi_cd()] {
@@ -281,6 +291,7 @@ pub fn write_x86_iso(
     copy(kernel, "boot/kernel");
     copy(hello, "boot/hello");
     copy(ok, "boot/ok");
+    copy(initramfs, "boot/initramfs");
     copy(&limine.bios_sys(), "boot/limine/limine-bios.sys");
     copy(&limine.bios_cd(), "boot/limine/limine-bios-cd.bin");
     copy(&limine.uefi_cd(), "boot/limine/limine-uefi-cd.bin");

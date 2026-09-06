@@ -2,6 +2,10 @@ mod limine_image {
     include!("src/limine_image.rs");
 }
 
+mod initramfs {
+    include!("src/initramfs.rs");
+}
+
 use limine_image::{bios_install, fetch_limine, write_esp_image, write_fat_data_image, LIMINE_VERSION};
 use std::path::PathBuf;
 
@@ -18,7 +22,17 @@ fn main() {
     println!("cargo:rerun-if-changed=src/limine_gpt.rs");
     println!("cargo:rerun-if-changed=src/limine_fat.rs");
     println!("cargo:rerun-if-changed=src/limine_dir.rs");
+    println!("cargo:rerun-if-changed=src/initramfs.rs");
     println!("cargo:rerun-if-changed={}", kernel_path.display());
+
+    // Userspace ships as a newc cpio module. The kernel rebuilds whenever any
+    // user ELF changes (its build.rs rerun-if-changed on every stable copy), so
+    // the image (and thus the cpio) is rebuilt transitively here.
+    let initramfs_bytes = initramfs::build_initramfs(&manifest, "x86_64");
+    let initramfs_path = manifest.join("target/initramfs-x86_64.cpio");
+    std::fs::write(&initramfs_path, &initramfs_bytes)
+        .expect("write target/initramfs-x86_64.cpio");
+    println!("cargo:rerun-if-changed={}", initramfs_path.display());
 
     let hello_path = manifest.join("target").join("hello-x86_64-unknown-none");
     println!("cargo:rerun-if-changed={}", hello_path.display());
@@ -45,6 +59,7 @@ fn main() {
         Some(&bios_sys),
         &hello,
         &ok,
+        &initramfs_bytes,
     );
     bios_install(&limine.tool(), &bios_path);
 
