@@ -344,6 +344,37 @@ jobs:
           if [ -d target/ovmf ]; then
             files+=(target/ovmf)
           fi
+          # Required for every boot job. nullglob above would silently omit
+          # missing hello/ok ELFs after a kernels GHCR hit that predated those
+          # members (master c4101fc: all four boots panicked "hello ELF missing").
+          required=(
+            target/debug/myos
+            target/bios.img
+            target/uefi.img
+            target/aarch64-unknown-none-softfloat/debug/kernel
+            target/riscv64imac-unknown-none-elf/debug/kernel
+            target/hello-x86_64-unknown-none
+            target/hello-aarch64-unknown-none-softfloat
+            target/hello-riscv64imac-unknown-none-elf
+            target/ok-x86_64-unknown-none
+            target/ok-aarch64-unknown-none-softfloat
+            target/ok-riscv64imac-unknown-none-elf
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [[ ! -e "$f" ]]; then
+              echo "::error::required CI artifact missing: $f"
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            echo "target/ listing (hello/ok/kernels):"
+            ls -la target/hello-* target/ok-* \
+              target/aarch64-unknown-none-softfloat/debug/kernel \
+              target/riscv64imac-unknown-none-elf/debug/kernel \
+              target/bios.img target/uefi.img target/debug/myos 2>&1 || true
+            exit 1
+          fi
           tar -cf ci-build.tar "${files[@]}"
           ls -lh ci-build.tar
 
