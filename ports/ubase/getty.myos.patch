@@ -1,6 +1,16 @@
 --- getty.c
 +++ getty.c
-@@ -124,8 +124,11 @@
+@@ -54,6 +54,8 @@
+ 	sigemptyset(&sa.sa_mask);
+ 	sigaction(SIGHUP, &sa, NULL);
+ 
+ 	setenv("TERM", term, 1);
++	/* myos: ncurses termcap DB at /lib/termcap (initramfs libfs). */
++	setenv("TERMCAP", "/lib/termcap", 1);
+ 
+ 	setsid();
+ 
+@@ -124,8 +126,11 @@
  		n = read(0, &c, 1);
  		if (n < 0)
  			eprintf("read:");
@@ -13,7 +23,7 @@
  		if (i >= sizeof(logname) - 1)
  			eprintf("login name too long\n");
  		if (c == '\n' || c == '\r')
-@@ -134,7 +137,10 @@
+@@ -134,7 +139,10 @@
  	}
  	if (logname[0] == '-')
  		eprintf("login name cannot start with '-'\n");

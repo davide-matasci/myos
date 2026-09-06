@@ -1,0 +1,60 @@
+# Minimal termcap for myos framebuffer ANSI/VT100 (kernel CSI subset).
+# Packed into initramfs as /lib/termcap; getty sets TERMCAP=/lib/termcap.
+# co/li are defaults — real size comes from TIOCGWINSZ (FB width/8 × height/8).
+linux|linux console:\
+	:am:xenl:mir:\
+	:co#80:li#24:\
+	:bs:\
+	:cl=\E[H\E[J:cd=\E[J:ce=\E[K:\
+	:cm=\E[%i%d;%dH:ho=\E[H:\
+	:up=\E[A:do=\E[B:nd=\E[C:le=\E[D:\
+	:ku=\E[A:kd=\E[B:kl=\E[D:kr=\E[C:\
+	:kb=\177:kD=\E[3~:\
+	:cs=\E[%i%d;%dr:\
+	:sf=\n:sr=\EM:\
+	:SF=\E[%dS:SR=\E[%dT:\
+	:al=\E[L:dl=\E[M:\
+	:mr=\E[7m:me=\E[0m:md=\E[1m:\
+	:so=\E[7m:se=\E[0m:\
+	:us=\E[4m:ue=\E[0m:\
+	:op=\E[39;49m:\
+	:AF=\E[3%dm:AB=\E[4%dm:\
+	:vi=\E[?25l:ve=\E[?25h:\
+	:ti=:te=:\
+	:ms:
+
+ansi|ansi/pc-term compatible with color:\
+	:am:\
+	:co#80:li#24:\
+	:bs:\
+	:cl=\E[H\E[J:cd=\E[J:ce=\E[K:\
+	:cm=\E[%i%d;%dH:ho=\E[H:\
+	:up=\E[A:do=\E[B:nd=\E[C:le=\E[D:\
+	:ku=\E[A:kd=\E[B:kl=\E[D:kr=\E[C:\
+	:kb=\177:\
+	:cs=\E[%i%d;%dr:\
+	:sf=\n:\
+	:SF=\E[%dS:SR=\E[%dT:\
+	:mr=\E[7m:me=\E[0m:md=\E[1m:\
+	:so=\E[7m:se=\E[0m:\
+	:AF=\E[3%dm:AB=\E[4%dm:\
+	:ms:
+
+vt100|vt100-am:\
+	:am:xenl:\
+	:co#80:li#24:\
+	:cl=\E[H\E[J:ce=\E[K:\
+	:cm=\E[%i%d;%dH:ho=\E[H:\
+	:up=\E[A:do=\n:nd=\E[C:\
+	:ku=\E[A:kd=\E[B:kl=\E[D:kr=\E[C:\
+	:cs=\E[%i%d;%dr:\
+	:sf=\n:sr=\EM:\
+	:mr=\E[7m:me=\E[0m:md=\E[1m:\
+	:ms:
+
+dumb|80-column dumb tty:\
+	:am:\
+	:co#80:li#24:\
+	:bs:\
+	:cl=^L:cm=:\
+	:do=^J:sf=^J:
