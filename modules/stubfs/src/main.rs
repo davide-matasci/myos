@@ -5,7 +5,7 @@
 
 use myos_abi::{KernelApi, ModuleVfsOps, VfsStatInfo, ABI_VERSION};
 
-const FILES: &[(&str, &[u8])] = &[("ping", b"disk ok\n")];
+const FILES: &[(&str, &[u8])] = &[("ping", b"disk-msg\n")];
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
@@ -138,8 +138,6 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     if rc != 0 {
         return rc;
     }
-    let msg = b"stubfs mod ok\n";
-    unsafe { (api.write_str)(msg.as_ptr(), msg.len()) };
     0
 }
 

@@ -8,7 +8,7 @@
 -		putchar('\n');
 +	if (!nflag) {
 +		if (argc == 0 && !argv0)
-+			puts("sbase ok");
++			puts("[ OK ] sbase");
 +		else
 +			putchar('\n');
 +	}

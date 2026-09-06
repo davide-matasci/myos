@@ -185,6 +185,25 @@ pub struct KernelApi {
     pub copy_to_user: unsafe extern "C" fn(dst_user: usize, src: *const u8, len: usize) -> i32,
 }
 
+
+/// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).
+pub fn status_ok(api: &KernelApi, label: &str) {
+    unsafe {
+        (api.write_str)(b"[ OK ] ".as_ptr(), 7);
+        (api.write_str)(label.as_bytes().as_ptr(), label.len());
+        (api.write_str)(b"\n".as_ptr(), 1);
+    }
+}
+
+/// Emit `[ FAIL ] label\n` via `KernelApi::write_str`.
+pub fn status_fail(api: &KernelApi, label: &str) {
+    unsafe {
+        (api.write_str)(b"[ FAIL ] ".as_ptr(), 9);
+        (api.write_str)(label.as_bytes().as_ptr(), label.len());
+        (api.write_str)(b"\n".as_ptr(), 1);
+    }
+}
+
 /// `module_init` — required. Return 0 on success.
 pub type ModuleInit = unsafe extern "C" fn(*const KernelApi) -> i32;
 

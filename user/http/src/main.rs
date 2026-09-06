@@ -5,7 +5,7 @@ extern crate alloc;
 
 use myos_tls::TlsConn;
 use myos_user::dns::{format_ipv4, resolve_a};
-use myos_user::{
+use myos_user::{status_ok, 
     close, exit, heap_init, open, open_flags, read, write, write_fd, Heap, O_RDWR, O_WRONLY,
 };
 
@@ -418,7 +418,7 @@ fn main() -> ! {
             fail(b"https no data\n");
         }
         write(b"\n");
-        write(b"https ok\n");
+        status_ok("https");
         exit();
     }
 
@@ -452,7 +452,7 @@ fn main() -> ! {
         fail(b"http no data\n");
     }
     write(b"\n");
-    write(b"http ok\n");
+    status_ok("http");
     exit();
 }
 

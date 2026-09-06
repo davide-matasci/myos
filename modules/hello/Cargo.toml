@@ -5,7 +5,7 @@ name = "hello"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Sample loadable module: prints `mod ok` through KernelApi."
+description = "Sample loadable module; kernel prints `[ OK ] hello` on load."
 
 [[bin]]
 name = "hello"

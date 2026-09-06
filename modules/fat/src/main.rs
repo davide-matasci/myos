@@ -61,11 +61,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
             return -2;
         }
         match run(api) {
-            Ok(()) => {
-                let msg = b"fat mod ok\n";
-                (api.write_str)(msg.as_ptr(), msg.len());
-                0
-            }
+            Ok(()) => 0,
             Err(e) => e,
         }
     }

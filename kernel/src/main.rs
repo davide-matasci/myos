@@ -30,7 +30,7 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const HELLO: &str = "Hello from myos";
-const MSG_OK: &[u8] = b"fat ok\n";
+const MSG_OK: &[u8] = b"fat-msg\n";
 
 static TASK_A_DONE: AtomicBool = AtomicBool::new(false);
 static TASK_B_DONE: AtomicBool = AtomicBool::new(false);
@@ -77,7 +77,6 @@ fn kernel_main() -> ! {
     heap::init();
     prove_heap();
 
-    console::status_progress("interrupts");
     arch::init_interrupts();
     arch::wait_for_interrupt_proof();
     console::status_ok("interrupts");

@@ -47,36 +47,41 @@ static API: KernelApi = KernelApi {
 
 /// Load the hello module that was baked into the kernel at build time.
 pub fn load_embedded_hello() {
-    if let Err(e) = load("hello", HELLO_IMAGE) {
-        console::status_fail(&alloc::format!("hello module: {e}"));
+    match load("hello", HELLO_IMAGE) {
+        Ok(()) => console::status_ok("hello"),
+        Err(e) => console::status_fail(&alloc::format!("hello module: {e}")),
     }
 }
 
 /// Load the stubfs module (registers `/disk` via vfs_mount).
 pub fn load_embedded_stubfs() {
-    if let Err(e) = load("stubfs", STUBFS_IMAGE) {
-        console::status_fail(&alloc::format!("stubfs module: {e}"));
+    match load("stubfs", STUBFS_IMAGE) {
+        Ok(()) => console::status_ok("stubfs"),
+        Err(e) => console::status_fail(&alloc::format!("stubfs module: {e}")),
     }
 }
 
 /// Load the FAT16 module baked into the kernel. Registers fstype `"fat"`;
 /// userspace `mount` binds a disk. Failure is logged and is not a panic.
 pub fn load_embedded_fat() {
-    if let Err(e) = load("fat", FAT_IMAGE) {
-        console::status_fail(&alloc::format!("fat module: {e}"));
+    match load("fat", FAT_IMAGE) {
+        Ok(()) => console::status_ok("fat"),
+        Err(e) => console::status_fail(&alloc::format!("fat module: {e}")),
     }
 }
 
 /// Load the ext2 module baked into the kernel. Registers fstype `"ext2"`;
 /// userspace `mount` binds a disk after `mkfs.ext2`. Failure is logged.
 pub fn load_embedded_ext2() {
-    if let Err(e) = load("ext2", EXT2_IMAGE) {
-        console::status_fail(&alloc::format!("ext2 module: {e}"));
+    match load("ext2", EXT2_IMAGE) {
+        Ok(()) => console::status_ok("ext2"),
+        Err(e) => console::status_fail(&alloc::format!("ext2 module: {e}")),
     }
 }
 
 /// Load the virtio-net module. Probes virtio-pci and registers `/dev/netN`.
 pub fn load_embedded_virtio_net() {
+    // Module self-reports `[ OK ] virtio-net` only when a NIC is registered.
     if let Err(e) = load("virtio_net", VIRTIO_NET_IMAGE) {
         console::status_fail(&alloc::format!("virtio-net module: {e}"));
     }
@@ -84,6 +89,7 @@ pub fn load_embedded_virtio_net() {
 
 /// Load netfs: Plan 9 `/net` plus `/dev/netd` channel for userspace netd.
 pub fn load_embedded_netfs() {
+    // Module self-reports `[ OK ] netfs` only when both hooks register.
     if let Err(e) = load("netfs", NETFS_IMAGE) {
         console::status_fail(&alloc::format!("netfs module: {e}"));
     }

@@ -231,14 +231,14 @@ pub fn write_esp_image_ex(
 }
 
 /// Raw FAT16 volume (no GPT) for the second QEMU virtio-blk disk.
-/// Root file `MSG` contains exactly `fat ok\n`.
+/// Root file `MSG` contains exactly `fat-msg\n`.
 pub fn write_fat_data_image(dest: &Path) {
     let mut part = vec![0u8; FAT_DATA_IMAGE_BYTES];
     format_and_write_fat16(
         &mut part,
         &[DiskFile {
             path: "MSG".into(),
-            data: b"fat ok\n".to_vec(),
+            data: b"fat-msg\n".to_vec(),
         }],
     );
     if let Some(parent) = dest.parent() {

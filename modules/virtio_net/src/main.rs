@@ -7,7 +7,7 @@
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use myos_abi::{ABI_VERSION, KernelApi, MYOS_IOCTL_NET_GETMAC, ModuleChrOps};
+use myos_abi::{status_ok, ABI_VERSION, KernelApi, MYOS_IOCTL_NET_GETMAC, ModuleChrOps};
 
 const VENDOR: u16 = 0x1AF4;
 const DEV_NET_MODERN: u16 = 0x1041;
@@ -677,7 +677,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         if registered == 0 {
             write_str(api, b"virtio-net skip\n");
         } else {
-            write_str(api, b"virtio-net mod ok\n");
+            status_ok(api, "virtio-net");
         }
         0
     }
