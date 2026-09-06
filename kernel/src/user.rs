@@ -518,11 +518,37 @@ fn reload_user_elf(
 /// Grow the current aspace and load a large ELF (up to [`MAX_EXPAND_PAGES`]).
 /// Used when [`reload_user_elf`] is too small but we already have an aspace
 /// (post-fork exec of release uutils / ripgrep).
+/// Free stack/heap pages from a prior expand/load when the stack window moves.
+/// Pages that fall inside the new code span `[base, base+new_stack_off)` are
+/// kept for `reuse_or_alloc_frame` to turn into code. Without this, each
+/// uutils→rg-sized expand abandons `USER_STACK_PAGES + HEAP_PAGES` frames and
+/// riscv UEFI walks the freelist dry → classic `sepc=0` after the next ecall.
+fn free_abandoned_stack_heap(aspace: u64, base: u64, old_stack_off: u64, new_stack_off: u64) {
+    if old_stack_off == 0 || old_stack_off == new_stack_off {
+        return;
+    }
+    let new_code_end = base + new_stack_off;
+    for i in 0..USER_STACK_PAGES {
+        let va = base + old_stack_off + (i * PAGE) as u64;
+        if va >= new_code_end {
+            free_mapped_page(aspace, va);
+        }
+    }
+    let mut va = heap_base_va(base, old_stack_off);
+    let lim = heap_limit_va(base, old_stack_off);
+    while va < lim {
+        if va >= new_code_end {
+            free_mapped_page(aspace, va);
+        }
+        va += PAGE as u64;
+    }
+}
+
 fn expand_user_elf(
     aspace: u64,
     bytes: &[u8],
     base: u64,
-    _old_stack_off: u64,
+    old_stack_off: u64,
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let image_pages = info.span.div_ceil(PAGE);
@@ -534,6 +560,8 @@ fn expand_user_elf(
     if info.span > ELF_SCRATCH_BYTES {
         return None;
     }
+
+    free_abandoned_stack_heap(aspace, base, old_stack_off, new_stack_off);
 
     // Remap code/stack PTEs with correct flags. Reuse existing frames when the
     // VA is already mapped so post-fork exec of large ELFs does not leak hundreds
