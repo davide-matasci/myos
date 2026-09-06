@@ -225,15 +225,15 @@ fn backend_openable(idx: usize, rel: &str) -> bool {
 }
 
 /// Resolve `path` to a vnode suitable for open/read/write.
+///
+/// Directories (including mount roots like `/bin/sbase`) may be opened
+/// read-only so userspace `*at(dirfd, …)` and `which` PATH walks work.
 pub fn open(path: &str, flags: u32) -> Option<Vnode> {
     let rel_check = normalize_path(path);
     if rel_check.is_empty() {
         return None;
     }
     let (idx, rel) = resolve_index(path)?;
-    if rel.is_empty() {
-        return None;
-    }
 
     let acc = flags & O_ACCMODE;
     if acc > O_RDWR {
@@ -242,6 +242,16 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
     let wants_write = matches!(acc, O_WRONLY | O_RDWR);
     let creat = flags & O_CREAT != 0;
     let trunc = flags & O_TRUNC != 0;
+
+    // Directory open: read-only. Mount roots have empty `rel` but still stat as dirs.
+    if let Some(st) = backend_stat(idx, rel) {
+        if is_dir_mode(st.mode) {
+            if wants_write || creat || trunc {
+                return None;
+            }
+            return Some(make_vnode(idx, rel));
+        }
+    }
 
     if backend_openable(idx, rel) {
         if wants_write {
@@ -256,6 +266,9 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
     }
 
     if creat {
+        if rel.is_empty() {
+            return None;
+        }
         if !backend_create(idx, rel) {
             return None;
         }
