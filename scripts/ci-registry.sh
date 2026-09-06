@@ -12,7 +12,7 @@
 # or "all" (sysroot + newlib first).
 #
 # Env:
-#   GITHUB_TOKEN              required to login; pull still tries anonymous on miss
+#   GITHUB_TOKEN              required for private GHCR; pull is anonymous only when unset
 #   GITHUB_ACTOR              oras login user (fallback: GITHUB_REPOSITORY_OWNER)
 #   GITHUB_REPOSITORY         owner/repo (default davide-matasci/myos)
 #   MYOS_CI_REGISTRY_PUSH     false/0 skips push (fork PRs)
@@ -330,9 +330,17 @@ cmd_pull() {
   ref="$(registry_ref "$port" "$hash")"
   clear_force_replace "$port"
   ensure_oras
-  # Anonymous fetch is fine when login fails (public packages / empty GHCR).
-  oras_login || true
+  # Token present: require login so private GHCR packages are visible.
+  # Anonymous fetch only when no token (public packages / empty GHCR).
+  if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
+    if ! oras_login; then
+      mark_force_replace "$port" "$hash"
+      echo "registry miss ${port}: login failed ${hash}"
+      return 0
+    fi
+  fi
   if ! oras manifest fetch "$ref" >/dev/null 2>&1; then
+    mark_force_replace "$port" "$hash"
     echo "registry miss ${port}: no manifest ${hash}"
     return 0
   fi
