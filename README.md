@@ -148,7 +148,7 @@ Dual console: serial + Limine framebuffer (mirrored). Stdin (fd 0) merges PS/2 k
 | `user/lib` | Shared `myos_user` syscall wrappers, argv parser, `Heap` allocator |
 | `user/echo/cat/ls` | Bootfs demos (`/myos_echo`, `/myos_cat`, `/myos_ls`) |
 | `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` |
-| `ports/` | Userspace ports: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc) |
+| `ports/` | Userspace ports: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, vim) |
 | `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters |
 | `toolchain/std/` | Rust `std` PAL skeleton, sysroot build scripts |
 | `targets/` | Custom Rust target specs (`x86_64-unknown-myos`, `aarch64-unknown-myos`, `riscv64imac-unknown-myos`) |
@@ -267,7 +267,7 @@ unsafe extern "C" fn module_exit() // optional
 `write`, `exit`, `open`, `read` (fd 0 = keyboard+serial), `close`, `exec`, `fork`, `wait`, `listdir`, `brk`, `pipe`, `dup2`, `stat`, `execname`, `dupfd`, `chdir`, `getcwd`, `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `readlink`, `mmap`, `munmap`, `mprotect`, `lseek`.
 
 ### Init & Shell
-`user/init` = PID1: baked in, smoke-tests fork/`/ok`, forks `/netd`, forks `/u/getty` and `wait()`/respawns. Getty prompts `login: ` → execs `/u/login` → accepts `root`/empty → execs `/sh`. `/sh` = oksh 7.9 with PATH `/s:/c:/`.
+`user/init` = PID1: baked in, smoke-tests fork/`/ok`, forks `/netd`, forks `/u/getty` and `wait()`/respawns. Getty prompts `login: ` → execs `/u/login` → accepts `root`/empty → execs `/sh`. `/sh` = oksh 7.9 with PATH `/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc`. Editor: `vim` → `/bin/custom/vim` (FEAT_TINY; see `ports/vim/README.md`).
 
 ### Rust Userspace
 Syscall 9 (`brk`) backs per-process heap. `user/lib` exposes `brk`, `heap_init`, bump `GlobalAlloc`. `user/ok` smoke-tests every boot. `user/heap` = CI-only heavy suite. `std` programs link prebuilt sysroot (`toolchain/std/build-sysroot.sh`).
@@ -281,6 +281,7 @@ Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs). No ne
 ./ports/sbase/build.sh              # ~91 sbase utilities under /s/
 ./ports/ubase/build.sh              # getty + login under /u/
 ./ports/oksh/build.sh               # oksh 7.9 as /sh
+./ports/vim/build.sh                # vim FEAT_TINY as /bin/custom/vim
 ./ports/tcc/build.sh                # TinyCC as /t/tcc (-run support)
 ./ports/ripgrep/build.sh            # ripgrep + PCRE2 as /c/rg
 ```

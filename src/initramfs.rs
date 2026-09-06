@@ -240,6 +240,12 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         "bin/custom/sh",
         read(&target.join(format!("oksh-{none_triple}"))),
     );
+    // vim (FEAT_TINY) -> bin/custom/vim (none triple, like oksh).
+    add(
+        &mut entries,
+        "bin/custom/vim",
+        read(&target.join(format!("vim-{none_triple}"))),
+    );
 
     // newlib sysroot -> lib/newlib/include/… and lib/newlib/lib/….
     let sysroot = target.join(format!("newlib-{arch}")).join(myos_triple);

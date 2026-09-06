@@ -48,6 +48,13 @@ tcc_libtcc1_in_newlib() {
 }
 
 
+
+vim_elves_ready() {
+  [[ -f target/vim-x86_64-unknown-none \
+     && -f target/vim-aarch64-unknown-none \
+     && -f target/vim-riscv64-unknown-none ]]
+}
+
 rg_elves_ready() {
   [[ -f target/rg-x86_64-unknown-myos \
      && -f target/rg-aarch64-unknown-myos \
@@ -90,6 +97,13 @@ if [[ -x target/debug/myos && -f target/bios.img \
     ./ports/tcc/build.sh
     need_rebuild=1
   fi
+  if ! vim_elves_ready; then
+    echo "==> vim ELF(s) missing after restore; building vim"
+    ./ports/vim/build.sh
+    need_rebuild=1
+  else
+    echo "vim ELFs present: $(ls -lh target/vim-*-unknown-none)"
+  fi
   if ((need_rebuild)); then
     rebuild_kernels
   fi
@@ -113,6 +127,7 @@ fi
 ./ports/coreutils/build-uutils.sh
 ./ports/ripgrep/build.sh
 ./ports/tcc/build.sh
+./ports/vim/build.sh
 
 rebuild_kernels
 

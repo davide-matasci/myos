@@ -14,6 +14,7 @@ MYOS_UBASE_VERSION="$MYOS_ROOT/target/.myos-ubase-version"
 MYOS_COREUTILS_VERSION="$MYOS_ROOT/target/.myos-coreutils-version"
 MYOS_RIPGREP_VERSION="$MYOS_ROOT/target/.myos-ripgrep-version"
 MYOS_TCC_VERSION="$MYOS_ROOT/target/.myos-tcc-version"
+MYOS_VIM_VERSION="$MYOS_ROOT/target/.myos-vim-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
@@ -284,5 +285,32 @@ myos_tcc_is_current() {
     triple="${arch}-unknown-myos"
     [[ -f "$MYOS_ROOT/target/tcc-${triple}" ]] || return 1
     [[ -f "$MYOS_ROOT/target/libtcc1-${triple}.a" ]] || return 1
+  done
+}
+
+
+myos_vim_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      sha256sum "$MYOS_ROOT/ports/vim/build.sh"
+      sha256sum "$MYOS_ROOT/ports/vim/prepare.sh"
+      sha256sum "$MYOS_ROOT/ports/vim/fetch.sh"
+      sha256sum "$MYOS_ROOT/ports/vim/versions.env"
+      find "$MYOS_ROOT/ports/vim" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_vim_is_current() {
+  local arch
+  [[ -f "$MYOS_VIM_VERSION" ]] \
+    && [[ "$(cat "$MYOS_VIM_VERSION")" == "$(myos_vim_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/vim-${arch}-unknown-none" ]] || return 1
   done
 }
