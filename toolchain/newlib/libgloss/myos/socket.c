@@ -222,11 +222,12 @@ static int wait_readable(struct myos_sock *s, int timeout_ms) {
         timeout_ms = -1;
     }
     for (;;) {
-        if (status_is_hangup(s)) {
-            return 1;
-        }
+        /* Drain remaining RX before treating hangup as EOF (BSD half-close). */
         if (data_pending(s)) {
             return 0;
+        }
+        if (status_is_hangup(s)) {
+            return 1;
         }
         if (timeout_ms >= 0 && elapsed_ms(&start) >= timeout_ms) {
             errno = ETIMEDOUT;
