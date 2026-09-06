@@ -3,12 +3,13 @@
 #
 # Same content-hash philosophy as ports/sysroot: if inputs are unchanged and
 # required artifacts exist, exit 0 without cargo clean/build (CI re-run no-op).
-# If inputs changed (kernel/host sources, or userspace ELF bytes that
-# include_bytes! / initramfs bake in), clean + rebuild like before.
+# If inputs changed (kernel/host sources, or port registry stamps that encode
+# userspace content identity for include_bytes! / initramfs), clean + rebuild.
 #
-# Artifact-dep kernels skip build.rs when ELF paths are stable but bytes
-# change; unconditional clean used to paper over that. The stamp + digests
-# below replace that every-run clean.
+# Hash must be stable across a clean→build cycle: do NOT digest target/ ELFs or
+# manifests (those change or appear after cargo build). Port stamps already
+# capture userspace identity; hashing ELF bytes caused pull-tag ≠ push-tag in
+# the same CI job (GHCR miss on re-run → full kernel recompile).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -68,9 +69,9 @@ kernel_inputs_hash() {
         if [[ -f .cargo/config.toml ]]; then
           sha256sum .cargo/config.toml
         fi
-        # Port registry stamps (source-hash philosophy) + ELF digests so
-        # include_bytes! / initramfs freshness is not lost when bytes move
-        # without a cargo fingerprint bump.
+        # Port registry stamps encode userspace content identity (source-hash
+        # philosophy). Do not hash target/ ELFs or manifests: those change or
+        # appear after cargo clean/build and would make pull-tag ≠ push-tag.
         for stamp in "${PORT_STAMPS[@]}"; do
           if [[ -f "$stamp" ]]; then
             # Label + contents: relative path in the stream.
@@ -81,50 +82,6 @@ kernel_inputs_hash() {
             printf 'stamp-missing:%s\n' "$stamp"
           fi
         done
-        shopt -s nullglob
-        # Relative-path digests only (never hash manifest files: they embed
-        # absolute $ROOT paths and would make the stamp machine-dependent).
-        for f in \
-          target/std-hello-*-unknown-myos \
-          target/std-cat-*-unknown-myos \
-          target/std-echo-*-unknown-myos \
-          target/std-bigalloc-*-unknown-myos \
-          target/c-hello-*-unknown-none \
-          target/oksh-*-unknown-none \
-          target/coreutils-*-unknown-myos \
-          target/rg-*-unknown-myos \
-          target/tcc-*-unknown-myos
-        do
-          [[ -f "$f" ]] || continue
-          sha256sum "$f"
-        done
-        # Manifests may list abs paths; record name + content digest only.
-        for f in target/ubase-manifest-*.txt target/sbase-manifest-*.txt \
-                 target/coreutils-manifest-*.txt; do
-          [[ -f "$f" ]] || continue
-          # Label by basename (arch) so abs path to the manifest is not hashed.
-          printf 'manifest:%s\n' "$(basename "$f")"
-          while IFS= read -r line; do
-            line="${line#"${line%%[![:space:]]*}"}"
-            [[ -z "$line" || "$line" == \#* ]] && continue
-            if [[ "$line" == *:* ]]; then
-              name="${line%%:*}"
-              path="${line#*:}"
-            else
-              name="$line"
-              path=""
-            fi
-            if [[ -n "$path" && -f "$path" ]]; then
-              printf '%s:%s\n' "$name" "$(sha256sum "$path" | awk '{print $1}')"
-            elif [[ -z "$path" ]]; then
-              # coreutils-manifest is names-only; ELF hashed via glob above.
-              printf 'name:%s\n' "$name"
-            else
-              printf '%s:missing\n' "$name"
-            fi
-          done <"$f"
-        done
-        shopt -u nullglob
       } | sha256sum | awk '{print $1}'
     )
   )"
@@ -210,9 +167,15 @@ fi
 
 do_clean_and_build
 
-# Recompute after build in case digests of newly-written nested stable copies
-# are not part of the stamp (nested ELFs are outputs). Stamp is inputs-only.
-want="$(kernel_inputs_hash)"
+# Stamp the pre-build want: must match the GHCR pull/push tag from --print-hash
+# (ci-registry.sh). Never recompute after build — ELF appearance under target/
+# must not change the hash.
+after="$(kernel_inputs_hash)"
+if [[ "$after" != "$want" ]]; then
+  echo "error: kernel_inputs_hash drifted after build (before ${want:0:12}…, after ${after:0:12}…)" >&2
+  echo "error: hashing must be inputs-only (sources + port stamps); refusing to stamp" >&2
+  exit 1
+fi
 printf '%s\n' "$want" >"$STAMP"
 
 if ! artifacts_ready; then
