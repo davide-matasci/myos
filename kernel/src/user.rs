@@ -1076,6 +1076,11 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
         if pte & paging::PTE_V == 0 {
             return None;
         }
+        // Must be a leaf PTE (any of R/W/X). A table descriptor here would make
+        // reclaim free_frame a page-table phys as if it were user data.
+        if pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) == 0 {
+            return None;
+        }
         Some(paging::pte_phys(pte))
     }
 }
@@ -2580,10 +2585,14 @@ fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
     }
 }
 
-/// Free user data frames for `aspace` (code / stack / heap / mmap). Page tables
-/// are left allocated (small). Used on process exit and when `load_user_elf`
-/// abandons a prior aspace so `/heap` can fork+exec large ELFs repeatedly
-/// without bump-allocator exhaustion (riscv64 `sepc=0` after find+cat+ls).
+/// Free user data frames for `aspace` (code / stack / heap / mmap), then the
+/// private page tables that owned them.
+///
+/// Used on process exit and when `load_user_elf` abandons a prior aspace so
+/// `/heap` can fork+exec large ELFs repeatedly without freelist exhaustion
+/// (riscv64 `sepc=0` after find+cat+ls). Leaving Sv39 mid/leaf/root tables
+/// allocated used to leak several frames per fork forever — the remaining
+/// "random" riscv OOM class after data-page reclaim was patched.
 pub fn reclaim_user_aspace(
     aspace: u64,
     base: u64,
@@ -2624,7 +2633,59 @@ pub fn reclaim_user_aspace(
         va += PAGE as u64;
     }
     free_mmap_regions(aspace, mmap);
+    free_user_page_tables(aspace);
     flush_user_tlb();
+}
+
+/// Free private user page tables for an abandoned aspace.
+///
+/// Data pages must already be unmapped/freed. Kernel table frames that were
+/// only *referenced* by a copied root (x86/aarch64/riscv root clone) are not
+/// freed — only tables allocated for this aspace.
+fn free_user_page_tables(aspace: u64) {
+    #[cfg(target_arch = "riscv64")]
+    free_user_page_tables_riscv(aspace);
+    #[cfg(not(target_arch = "riscv64"))]
+    let _ = aspace;
+}
+
+/// Tear down Sv39 tables owned by a user aspace.
+///
+/// `create_aspace_riscv64` clones the kernel root then clears `root[1]` and
+/// allocates private mid/leaf tables under VPN[2]=1 (VA `0x4000_0000`). Only
+/// that private tree is freed (leaf → mid → root). Other root slots are
+/// value-copies of kernel PTEs and must not be freed.
+#[cfg(target_arch = "riscv64")]
+fn free_user_page_tables_riscv(satp: u64) {
+    let root_phys = paging::satp_root_phys(satp);
+    if root_phys == 0 {
+        return;
+    }
+    // Never free the live kernel root.
+    if root_phys == paging::satp_root_phys(task::kernel_aspace()) {
+        return;
+    }
+    unsafe {
+        let root = &mut *mm::table(root_phys);
+        // User image lives in root[1] (DEFAULT_USER_BASE = 0x4000_0000).
+        const USER_ROOT_IDX: usize = 1;
+        let mid_pte = root[USER_ROOT_IDX];
+        if mid_pte & paging::PTE_V != 0 && paging::pte_is_table(mid_pte) {
+            let mid_phys = paging::pte_phys(mid_pte);
+            let mid = &mut *mm::table(mid_phys);
+            for i in 0..512 {
+                let leaf_pte = mid[i];
+                if leaf_pte & paging::PTE_V != 0 && paging::pte_is_table(leaf_pte) {
+                    mm::free_frame(paging::pte_phys(leaf_pte));
+                    mid[i] = 0;
+                }
+            }
+            mm::free_frame(mid_phys);
+            root[USER_ROOT_IDX] = 0;
+        }
+        // Private root copy (kernel PTEs were value-copies into this frame).
+        mm::free_frame(root_phys);
+    }
 }
 
 fn free_mapped_page(aspace: u64, va: u64) {
@@ -2632,6 +2693,11 @@ fn free_mapped_page(aspace: u64, va: u64) {
         return;
     };
     unmap_user_page(aspace, va);
+    // If unmap failed to clear, refuse to free — avoids freelist double-free when
+    // reclaim walks overlapping VA ranges (code span vs heap/mmap).
+    if virt_to_phys(aspace, va).is_some() {
+        return;
+    }
     mm::free_frame(phys);
 }
 
