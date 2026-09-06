@@ -373,6 +373,7 @@ mod syscalls {
         st_size: u32,
         st_ino: u32,
         st_nlink: u32,
+        st_dev: u32,
     }
 
     /// Path-based stat via SYS_STAT. Unlike open+fstat, this works for directories
@@ -388,6 +389,7 @@ mod syscalls {
             st_size: 0,
             st_ino: 0,
             st_nlink: 0,
+            st_dev: 0,
         };
         let ret = raw_syscall(SYS_STAT, path as usize, len, &mut kstat as *mut _ as usize);
         if ret == usize::MAX {
@@ -395,7 +397,7 @@ mod syscalls {
             return -1;
         }
         core::ptr::write_bytes(buf as *mut u8, 0, core::mem::size_of::<super::stat>());
-        (*buf).st_dev = 1;
+        (*buf).st_dev = kstat.st_dev as dev_t;
         (*buf).st_ino = kstat.st_ino as ino_t;
         (*buf).st_mode = kstat.st_mode;
         (*buf).st_nlink = if kstat.st_nlink == 0 {

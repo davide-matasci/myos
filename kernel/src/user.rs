@@ -1941,6 +1941,7 @@ struct MyosStatBuf {
     st_size: u32,
     st_ino: u32,
     st_nlink: u32,
+    st_dev: u32,
 }
 
 fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
@@ -1964,6 +1965,7 @@ fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
         st_size: info.size,
         st_ino: info.ino,
         st_nlink: info.nlink,
+        st_dev: info.dev,
     };
     if !write_user_bytes(task::current_aspace(), out_ptr, unsafe {
         core::slice::from_raw_parts(

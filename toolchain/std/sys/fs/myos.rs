@@ -87,7 +87,7 @@ fn stat_path(path: &Path) -> io::Result<FileAttr> {
     if bytes.is_empty() {
         return Err(io::const_error!(ErrorKind::InvalidInput, "empty path"));
     }
-    let mut buf = abi::StatBuf { st_mode: 0, st_size: 0, st_ino: 0, st_nlink: 0 };
+    let mut buf = abi::StatBuf { st_mode: 0, st_size: 0, st_ino: 0, st_nlink: 0, st_dev: 0 };
     cvt(abi::stat(bytes, &mut buf))?;
     let fmt = buf.st_mode & S_IFMT;
     Ok(FileAttr {

@@ -279,6 +279,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             size: 0,
             ino: 1,
             nlink: 2,
+            dev: 0,
         });
     }
     let node = parse(name)?;
@@ -288,18 +289,21 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             size: 0,
             ino: 2,
             nlink: 1,
+            dev: 0,
         }),
         Node::Tty => Some(StatInfo {
             mode: S_IFCHR | 0o666,
             size: 0,
             ino: 3,
             nlink: 1,
+            dev: 0,
         }),
         Node::Console => Some(StatInfo {
             mode: S_IFCHR | 0o666,
             size: 0,
             ino: 4,
             nlink: 1,
+            dev: 0,
         }),
         Node::Block(id) => {
             let bytes = blk::capacity_bytes(id).unwrap_or(0);
@@ -313,6 +317,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 size,
                 ino: 10 + id,
                 nlink: 1,
+                dev: 0,
             })
         }
         Node::Nvme(ctrl) => {
@@ -327,6 +332,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 size,
                 ino: 20 + ctrl,
                 nlink: 1,
+                dev: 0,
             })
         }
         Node::Chr(i) => Some(StatInfo {
@@ -334,6 +340,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             size: 0,
             ino: 30 + i as u32,
             nlink: 1,
+            dev: 0,
         }),
     }
 }

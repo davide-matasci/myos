@@ -13,6 +13,10 @@ pub struct StatInfo {
     pub size: u32,
     pub ino: u32,
     pub nlink: u32,
+    /// Filesystem device id for this mount (`st_dev`). Distinct per mount so
+    /// `(st_dev, st_ino)` identities do not collide across VFS roots that all
+    /// use `ino == 1`. Assigned by [`backend_stat`] as `mount_index + 1`.
+    pub dev: u32,
 }
 
 /// Open file identity: mount index + path relative to that mount.
@@ -558,10 +562,14 @@ fn backend_stat(idx: usize, rel: &str) -> Option<StatInfo> {
         let m = mounts.get(idx)?;
         m.backend
     };
-    match backend {
-        MountBackend::Kernel(ops) => (ops.stat)(rel),
-        MountBackend::Module(ops) => module_stat(&ops, rel),
-    }
+    let mut info = match backend {
+        MountBackend::Kernel(ops) => (ops.stat)(rel)?,
+        MountBackend::Module(ops) => module_stat(&ops, rel)?,
+    };
+    // POSIX: each mount is a distinct device. Roots often share ino==1, so
+    // find(1)/du(1)/rm(1) loop detection needs distinct st_dev per mount.
+    info.dev = (idx as u32).wrapping_add(1);
+    Some(info)
 }
 
 fn backend_listdir(m: &Mount, rel: &str, buf: &mut [u8]) -> usize {
@@ -793,6 +801,7 @@ fn module_stat(ops: &ModuleVfsOps, rel: &str) -> Option<StatInfo> {
         size: out.size,
         ino: out.ino,
         nlink: out.nlink,
+        dev: 0,
     })
 }
 

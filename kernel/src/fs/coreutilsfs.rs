@@ -123,6 +123,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             size: 0,
             ino: 1,
             nlink: 2,
+            dev: 0,
         });
     }
     let files = FILES.lock();
@@ -133,6 +134,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 size: slot.data.len() as u32,
                 ino: (i as u32) + 2,
                 nlink: 1,
+                dev: 0,
             });
         }
     }

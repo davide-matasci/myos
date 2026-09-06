@@ -44,11 +44,53 @@ dir_slot_index(DIR *d)
 	return (int)(d - &dir_pool[0]);
 }
 
+/*
+ * Fill d_ino (and d_type when known) from stat(2) so tools that trust
+ * dirent.d_ino see the same inode as lstat of the joined path.
+ */
+static void
+myos_fill_dirent_meta(DIR *d, unsigned long namelen)
+{
+	char full[512];
+	struct stat st;
+	size_t plen;
+	int need_slash;
+
+	d->ent.d_ino = 0;
+	d->ent.d_type = DT_UNKNOWN;
+
+	plen = strlen(d->path);
+	while (plen > 1 && d->path[plen - 1] == '/') {
+		plen--;
+	}
+	need_slash = !(plen == 0 || (plen == 1 && d->path[0] == '/'));
+	if (plen + (need_slash ? 1u : 0u) + namelen + 1u > sizeof(full)) {
+		return;
+	}
+	memcpy(full, d->path, plen);
+	if (need_slash) {
+		full[plen++] = '/';
+	}
+	memcpy(full + plen, d->ent.d_name, namelen);
+	full[plen + namelen] = '\0';
+
+	if (stat(full, &st) != 0) {
+		return;
+	}
+	d->ent.d_ino = st.st_ino;
+	if (S_ISDIR(st.st_mode)) {
+		d->ent.d_type = DT_DIR;
+	} else if (S_ISREG(st.st_mode)) {
+		d->ent.d_type = DT_REG;
+	}
+}
+
 DIR *
 opendir(const char *name)
 {
 	struct stat st;
 	int i;
+	size_t n;
 
 	for (i = 0; i < MYOS_DIR_POOL; i++) {
 		if (!dir_used[i]) {
@@ -70,6 +112,14 @@ opendir(const char *name)
 	}
 
 	memset(&dir_pool[i], 0, sizeof(dir_pool[i]));
+	if (name != NULL) {
+		n = strlen(name);
+		if (n >= sizeof(dir_pool[i].path)) {
+			n = sizeof(dir_pool[i].path) - 1;
+		}
+		memcpy(dir_pool[i].path, name, n);
+		dir_pool[i].path[n] = '\0';
+	}
 	dir_pool[i].len = (unsigned long)myos_syscall3(
 	    MYOS_SYS_LISTDIR,
 	    (long)(uintptr_t)name,
@@ -116,8 +166,7 @@ readdir(DIR *d)
 			|| (d->ent.d_name[1] == '.' && d->ent.d_name[2] == '\0'))) {
 			continue;
 		}
-		d->ent.d_ino = 0;
-		d->ent.d_type = DT_UNKNOWN;
+		myos_fill_dirent_meta(d, n);
 		return &d->ent;
 	}
 	return NULL;
