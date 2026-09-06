@@ -30,6 +30,7 @@ struct dirent {
 
 typedef struct {
 	char buf[MYOS_DIRBUF];
+	char path[256];
 	unsigned long len;
 	unsigned long pos;
 	struct dirent ent;

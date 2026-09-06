@@ -9,6 +9,7 @@ struct myos_stat_buf {
     uint32_t st_size;
     uint32_t st_ino;
     uint32_t st_nlink;
+    uint32_t st_dev;
 };
 
 #endif

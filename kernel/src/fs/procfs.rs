@@ -54,6 +54,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             size: 0,
             ino: 1,
             nlink: 2,
+            dev: 0,
         });
     }
     if name != "mounts" {
@@ -65,6 +66,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         size: u32::try_from(text.len()).unwrap_or(u32::MAX),
         ino: 2,
         nlink: 1,
+        dev: 0,
     })
 }
 

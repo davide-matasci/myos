@@ -382,6 +382,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             size: 0,
             ino: 1,
             nlink: 2,
+            dev: 0,
         });
     }
     if !valid_rel_path(name) {
@@ -399,5 +400,6 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         size,
         ino: (i as u32) + 2,
         nlink,
+        dev: 0,
     })
 }
