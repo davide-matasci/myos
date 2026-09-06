@@ -176,7 +176,10 @@ impl FrameBufferWriter<'_> {
             }
             PrefixMatch::Partial => {}
             PrefixMatch::None => {
+                // Unexpected byte mid-tag: drop the buffered prefix as plain
+                // text and clear parser state so the next line can match again.
                 self.flush_prefix_plain();
+                debug_assert_eq!(self.prefix_len, 0);
             }
         }
     }

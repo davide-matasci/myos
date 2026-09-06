@@ -6,6 +6,10 @@
 //!
 //! Boot status lines use a structured `[ TAG ] label` form. Serial is plain
 //! text; the framebuffer renders tags and labels in a soft dark-theme palette.
+//!
+//! All console output (status lines, write_str/write_byte, banners) takes a
+//! single `OUT` mutex for the whole operation so concurrent tasks cannot
+//! interleave serial bytes or confuse the framebuffer status-prefix parser.
 
 use core::fmt::{self, Write};
 use spin::{Mutex, Once};
@@ -14,6 +18,8 @@ use crate::arch::SerialPort;
 use crate::framebuffer::{self, FrameBufferWriter};
 
 static FB: Once<Mutex<FrameBufferWriter<'static>>> = Once::new();
+/// Serializes every console write end-to-end (serial + FB).
+static OUT: Mutex<()> = Mutex::new(());
 
 pub fn init_fb(writer: FrameBufferWriter<'static>) {
     let _ = FB.call_once(|| Mutex::new(writer));
@@ -24,6 +30,11 @@ pub fn has_fb() -> bool {
 }
 
 pub fn write_byte(byte: u8) {
+    let _guard = OUT.lock();
+    write_byte_unlocked(byte);
+}
+
+fn write_byte_unlocked(byte: u8) {
     SerialPort::new().write_byte(byte);
     if byte == b'\r' {
         return;
@@ -39,6 +50,7 @@ pub fn write_str(s: &str) {
 
 /// Banner line (e.g. `Hello from myos`) in accent color on the framebuffer.
 pub fn write_banner(s: &str) {
+    let _guard = OUT.lock();
     SerialPort::new().write_str(s).ok();
     if let Some(fb) = FB.get() {
         fb.lock().put_str_colored(s, framebuffer::ACCENT);
@@ -47,6 +59,7 @@ pub fn write_banner(s: &str) {
 
 /// Dim informational text (stdin hints, etc.).
 pub fn write_info(s: &str) {
+    let _guard = OUT.lock();
     SerialPort::new().write_str(s).ok();
     if let Some(fb) = FB.get() {
         fb.lock().put_str_colored(s, framebuffer::DIM);
@@ -79,6 +92,9 @@ pub fn status_progress(label: &str) {
 }
 
 fn write_status(tag: &str, tag_color: (u8, u8, u8), label: &str) {
+    // Hold OUT across every serial fragment + the FB line so one
+    // `[ TAG ] label\n` is atomic w.r.t. other console writers.
+    let _guard = OUT.lock();
     let mut serial = SerialPort::new();
     let _ = serial.write_str("[ ");
     let _ = serial.write_str(tag);
@@ -94,6 +110,7 @@ fn write_status(tag: &str, tag_color: (u8, u8, u8), label: &str) {
 }
 
 pub fn flush() {
+    let _guard = OUT.lock();
     SerialPort::new().flush();
 }
 
@@ -101,6 +118,7 @@ struct Console;
 
 impl Write for Console {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        let _guard = OUT.lock();
         SerialPort::new().write_str(s)?;
         if let Some(fb) = FB.get() {
             fb.lock().write_str(s)?;
