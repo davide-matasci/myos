@@ -39,13 +39,24 @@ fn triples(arch: &str) -> (&'static str, &'static str, &'static str) {
 /// One archive entry. `ino`/`nlink` are used for hardlinked multicall aliases
 /// so the shared ELF is stored once in the archive.
 
-/// Active Cargo features. Cargo exposes the enabled set (comma-joined, including
-/// `default` and any expanded members) to build scripts via CARGO_CFG_FEATURE.
-/// The host `myos` binary receives the same set at runtime via MYOS_FEATURES
-/// (build.rs prints `cargo:rustc-env=`), which is what wait_ci.rs uses to gate
-/// the smoke-test needles. Here we read the build-script var directly.
+/// Active Cargo features. Two contexts call into this file:
+///
+/// - The build script (`build.rs`, which `include!`s this file) runs while
+///   Cargo has `CARGO_CFG_FEATURE` set (comma-joined, including `default` and
+///   any expanded members). `MYOS_FEATURES` is not baked into the build script.
+/// - The host `myos` binary packs the initramfs at runtime (e.g. the prebuilt
+///   CI boot jobs), where `CARGO_CFG_FEATURE` is NOT set — only the
+///   compile-time `MYOS_FEATURES` that `build.rs` prints as `cargo:rustc-env=`
+///   survives. Reading `std::env::var("CARGO_CFG_FEATURE")` there returns empty
+///   and every gate silently turns off (see the 162-vs-311 initramfs gap).
+///
+/// So prefer the compile-time baked `MYOS_FEATURES` (present in the runtime
+/// binary), and fall back to `CARGO_CFG_FEATURE` for the build-script context.
 pub fn active_features() -> Vec<String> {
-    let raw = std::env::var("CARGO_CFG_FEATURE").unwrap_or("".to_string());
+    let raw = option_env!("MYOS_FEATURES")
+        .map(str::to_string)
+        .or_else(|| std::env::var("CARGO_CFG_FEATURE").ok())
+        .unwrap_or_default();
     raw.split(',')
         .map(|p| p.trim().to_string())
         .filter_map(|p| if p.is_empty() { None } else { Some(p) })
