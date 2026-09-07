@@ -46,7 +46,7 @@ pub fn make_satp(root_phys: u64) -> u64 {
     (8_u64 << 60) | (root_phys >> 12)
 }
 
-fn pte_is_table(pte: u64) -> bool {
+pub fn pte_is_table(pte: u64) -> bool {
     pte & PTE_V != 0 && pte & (PTE_R | PTE_W | PTE_X) == 0
 }
 
