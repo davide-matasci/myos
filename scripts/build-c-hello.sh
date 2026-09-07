@@ -23,8 +23,6 @@ pack_socket_smoke_aliases() {
 if myos_c_hello_is_current; then
   echo "c-hello ELFs up to date"
   pack_socket_smoke_aliases
-  # Curl is required for interactive CI smoke; build job does not call it directly.
-  "$ROOT/ports/curl/build.sh"
   exit 0
 fi
 
@@ -67,4 +65,3 @@ done
 
 echo "$(myos_c_hello_version_hash)" >"$MYOS_C_HELLO_VERSION"
 pack_socket_smoke_aliases
-"$ROOT/ports/curl/build.sh"

@@ -247,6 +247,9 @@ jobs:
           - port: c-hello
             script: ./scripts/build-c-hello.sh
             pull: c-hello
+          - port: curl
+            script: ./ports/curl/build.sh
+            pull: curl
           - port: std-hello
             script: ./toolchain/std/build-std-hello.sh
             pull: std-hello
@@ -407,6 +410,7 @@ jobs:
           ./scripts/ci-registry.sh pull newlib || true
           ./scripts/ci-registry.sh pull std-hello || true
           ./scripts/ci-registry.sh pull c-hello || true
+          ./scripts/ci-registry.sh pull curl || true
           ./scripts/ci-registry.sh pull sbase || true
           ./scripts/ci-registry.sh pull oksh || true
           ./scripts/ci-registry.sh pull ubase || true
@@ -422,6 +426,7 @@ jobs:
           ./scripts/ci-registry.sh push newlib || true
           ./scripts/ci-registry.sh push std-hello || true
           ./scripts/ci-registry.sh push c-hello || true
+          ./scripts/ci-registry.sh push curl || true
           ./scripts/ci-registry.sh push sbase || true
           ./scripts/ci-registry.sh push oksh || true
           ./scripts/ci-registry.sh push ubase || true
@@ -629,6 +634,7 @@ jobs:
           ./scripts/ci-registry.sh pull newlib || true
           ./scripts/ci-registry.sh pull std-hello || true
           ./scripts/ci-registry.sh pull c-hello || true
+          ./scripts/ci-registry.sh pull curl || true
           ./scripts/ci-registry.sh pull sbase || true
           ./scripts/ci-registry.sh pull oksh || true
           ./scripts/ci-registry.sh pull ubase || true
@@ -645,6 +651,7 @@ jobs:
           ./scripts/ci-registry.sh push newlib || true
           ./scripts/ci-registry.sh push std-hello || true
           ./scripts/ci-registry.sh push c-hello || true
+          ./scripts/ci-registry.sh push curl || true
           ./scripts/ci-registry.sh push sbase || true
           ./scripts/ci-registry.sh push oksh || true
           ./scripts/ci-registry.sh push ubase || true

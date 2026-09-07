@@ -31,7 +31,7 @@ ORAS_ARTIFACT_TYPE="application/vnd.myos.ci.port.v1"
 ORAS_LAYER_TYPE="application/vnd.myos.ci.port.layer.v1.tar+zst"
 
 # sysroot (rust std) then newlib (C): dependents pull after.
-ALL_PORTS=(sysroot newlib std-hello c-hello sbase oksh ubase coreutils ripgrep tcc ncurses vim zlib git lynx kernels)
+ALL_PORTS=(sysroot newlib std-hello c-hello sbase oksh ubase coreutils ripgrep tcc ncurses vim zlib git lynx curl kernels)
 
 usage() {
   echo "usage: $0 pull|push PORT" >&2
@@ -56,6 +56,7 @@ port_hash() {
     lynx) myos_lynx_version_hash ;;
     std-hello) myos_std_hello_version_hash ;;
     c-hello) myos_c_hello_version_hash ;;
+    curl) myos_curl_version_hash ;;
     kernels) "$ROOT/scripts/ci-build-kernels.sh" --print-hash | tr -d '\n' ;;
     *) echo "error: unknown port $1" >&2; return 2 ;;
   esac
@@ -78,6 +79,7 @@ port_is_current() {
     lynx) myos_lynx_is_current ;;
     std-hello) myos_std_hello_is_current ;;
     c-hello) myos_c_hello_is_current ;;
+    curl) myos_curl_is_current ;;
     kernels) "$ROOT/scripts/ci-build-kernels.sh" --is-current ;;
     *) return 2 ;;
   esac
@@ -201,6 +203,14 @@ port_members() {
         echo "target/c-socket_smoke-${arch}-unknown-none"
         # Pack alias for ci-build.tar `coreutils-*` glob (no workflow edit).
         echo "target/coreutils-c-socket_smoke-${arch}-unknown-none"
+      done
+      ;;
+    curl)
+      echo target/.myos-curl-version
+      for arch in x86_64 aarch64 riscv64; do
+        echo "target/curl-${arch}-unknown-none"
+        # Pack alias for ci-build.tar `coreutils-*` glob (no workflow edit).
+        echo "target/coreutils-curl-${arch}-unknown-none"
       done
       ;;
     kernels)
