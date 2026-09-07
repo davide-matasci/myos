@@ -77,5 +77,6 @@ git log
 - Built with `NO_MMAP` (file-backed mmap is not implemented; git uses read+malloc).
 - `_fstat` must report real `st_size` via the open-path table (a zero size made config rewrite crash).
 - Newlib must be built with `HAVE_RENAME` so `rename()` uses libgloss `_rename` (not `link`+`unlink`; `_link` is still EROFS).
+- tmpfs `rename` must replace an existing non-directory dest (POSIX); git config updates are lock+rename onto `.git/config`.
 - No pthreads; FSMonitor / background helpers disabled.
 - Full QEMU smoke of git porcelain is optional; cross-build + `cargo check` covered.
