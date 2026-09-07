@@ -324,13 +324,13 @@ int myos_socket_poll(int fd, short events, short *revents) {
         *revents = rev;
         return 1;
     }
-    if (want_out) {
-        /* TX is usually writable, but if the caller also asked for POLLIN and
-         * RX is empty, withhold POLLOUT so poll can block for TLS/data instead
-         * of busy-spinning on always-writable + read EAGAIN. */
-        if (!want_in || (rev & POLLIN) || s->state != SOCK_CONNECTED) {
-            rev |= POLLOUT;
-        }
+    /* Connected TCP is writable unless we track a full TX buffer (we don't).
+     * Never withhold POLLOUT when POLLIN is also requested: curl/mbedtls need
+     * POLLOUT to send ClientHello while also watching for ServerHello. The old
+     * withhold deadlocked HTTPS (curl:7 after ~15s in the connect/TLS phase).
+     * Unconnected sockets must not report POLLOUT. */
+    if (want_out && s->state == SOCK_CONNECTED) {
+        rev |= POLLOUT;
     }
     *revents = rev;
     return rev ? 1 : 0;
