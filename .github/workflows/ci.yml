@@ -230,6 +230,8 @@ jobs:
           ./scripts/ci-registry.sh pull tcc || true
           ./scripts/ci-registry.sh pull ncurses || true
           ./scripts/ci-registry.sh pull vim || true
+          ./scripts/ci-registry.sh pull zlib || true
+          ./scripts/ci-registry.sh pull git || true
           ./toolchain/std/build-std-hello.sh
           ./scripts/build-c-hello.sh
           ./ports/sbase/build.sh
@@ -240,6 +242,8 @@ jobs:
           ./ports/tcc/build.sh
           ./ports/ncurses/build.sh
           ./ports/vim/build.sh
+          ./ports/zlib/build.sh
+          ./ports/git/build.sh
           ./scripts/ci-registry.sh push sysroot || true
           ./scripts/ci-registry.sh push newlib || true
           ./scripts/ci-registry.sh push std-hello || true
@@ -252,6 +256,8 @@ jobs:
           ./scripts/ci-registry.sh push tcc || true
           ./scripts/ci-registry.sh push ncurses || true
           ./scripts/ci-registry.sh push vim || true
+          ./scripts/ci-registry.sh push zlib || true
+          ./scripts/ci-registry.sh push git || true
 
       - name: PS/2 scancode decode unit tests
         run: cargo test -p ps2-scancode
@@ -286,6 +292,8 @@ jobs:
             target/tcc-*
             target/vim-*
             target/ncurses-*
+            target/zlib-*
+            target/git-*
             target/libncurses-*
             target/pcre2-x86_64
             target/pcre2-aarch64
@@ -303,6 +311,8 @@ jobs:
             target/.myos-tcc-version
             target/.myos-vim-version
             target/.myos-ncurses-version
+            target/.myos-zlib-version
+            target/.myos-git-version
             target/.myos-std-hello-version
             target/.myos-ci-kernel-version
             target/limine-v*
@@ -456,6 +466,8 @@ jobs:
           ./scripts/ci-registry.sh pull tcc || true
           ./scripts/ci-registry.sh pull ncurses || true
           ./scripts/ci-registry.sh pull vim || true
+          ./scripts/ci-registry.sh pull zlib || true
+          ./scripts/ci-registry.sh pull git || true
           ./scripts/ci-restore-or-build.sh
           ./scripts/ci-registry.sh push sysroot || true
           ./scripts/ci-registry.sh push newlib || true
@@ -469,6 +481,8 @@ jobs:
           ./scripts/ci-registry.sh push tcc || true
           ./scripts/ci-registry.sh push ncurses || true
           ./scripts/ci-registry.sh push vim || true
+          ./scripts/ci-registry.sh push zlib || true
+          ./scripts/ci-registry.sh push git || true
 
       - name: Install QEMU
         run: |

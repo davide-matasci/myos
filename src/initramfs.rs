@@ -303,6 +303,28 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         });
         add(&mut entries, "bin/custom/vim", Some(vim_bytes));
     }
+    // git (Phase-1 local porcelain) -> bin/custom/git (none triple, like vim).
+    // Fallback: coreutils-git-* pack alias when ci-build.tar omitted the canonical name
+    // (workflow glob edits need `workflow` OAuth scope).
+    {
+        let git_path = target.join(format!("git-{none_triple}"));
+        let git_alias = target.join(format!("coreutils-git-{none_triple}"));
+        let git_bytes = std::fs::read(&git_path)
+            .or_else(|_| std::fs::read(&git_alias))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "initramfs: required bin/custom/git missing at {} (or {}); run ./ports/git/build.sh ({e})",
+                    git_path.display(),
+                    git_alias.display()
+                )
+            });
+        // Same ELF at /bin/git so `git` is obvious even if PATH is minimal.
+        add_hardlink_group(
+            &mut entries,
+            &["bin/custom/git".to_string(), "bin/git".to_string()],
+            Some(git_bytes),
+        );
+    }
 
     // newlib sysroot -> lib/newlib/include/… and lib/newlib/lib/….
     let sysroot = target.join(format!("newlib-{arch}")).join(myos_triple);

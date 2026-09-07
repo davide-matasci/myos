@@ -268,7 +268,7 @@ unsafe extern "C" fn module_exit() // optional
 `write`, `exit`, `open`, `read` (fd 0 = keyboard+serial), `close`, `exec`, `fork`, `wait`, `listdir`, `brk`, `pipe`, `dup2`, `stat`, `execname`, `dupfd`, `chdir`, `getcwd`, `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `readlink`, `mmap`, `munmap`, `mprotect`, `lseek`.
 
 ### Init & Shell
-`user/init` = PID1: baked in, smoke-tests fork/`/ok`, forks `/netd`, forks `/u/getty` and `wait()`/respawns. Getty prompts `login: ` → execs `/u/login` → accepts `root`/empty → execs `/sh`. `/sh` = oksh 7.9 with PATH `/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc`. Editor: `vim` → `/bin/custom/vim` (FEAT_TINY; see `ports/vim/README.md`). Framebuffer CSI includes scroll regions; `TIOCGWINSZ` reports FB cells; `TERMCAP=/lib/termcap` (`ports/termcap`) + termios raw mode for full-screen TUI.
+`user/init` = PID1: baked in, smoke-tests fork/`/ok`, forks `/netd`, forks `/u/getty` and `wait()`/respawns. Getty prompts `login: ` → execs `/u/login` → accepts `root`/empty → execs `/sh`. `/sh` = oksh 7.9 with PATH `/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc`. Editor: `vim` → `/bin/custom/vim` (FEAT_TINY; see `ports/vim/README.md`). VCS: `git` → `/bin/custom/git` (Phase-1 local porcelain; see `ports/git/README.md`). Framebuffer CSI includes scroll regions; `TIOCGWINSZ` reports FB cells; `TERMCAP=/lib/termcap` (`ports/termcap`) + termios raw mode for full-screen TUI.
 
 ### Rust Userspace
 Syscall 9 (`brk`) backs per-process heap. `user/lib` exposes `brk`, `heap_init`, bump `GlobalAlloc`. `user/ok` smoke-tests every boot. `user/heap` = CI-only heavy suite. `std` programs link prebuilt sysroot (`toolchain/std/build-sysroot.sh`).
@@ -283,6 +283,8 @@ Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs). No ne
 ./ports/ubase/build.sh              # getty + login under /u/
 ./ports/oksh/build.sh               # oksh 7.9 as /sh
 ./ports/vim/build.sh                # vim FEAT_TINY as /bin/custom/vim
+./ports/zlib/build.sh               # static libz.a for git
+./ports/git/build.sh                # git Phase-1 local as /bin/custom/git
 ./ports/tcc/build.sh                # TinyCC as /t/tcc (-run support)
 ./ports/ripgrep/build.sh            # ripgrep + PCRE2 as /c/rg
 ```

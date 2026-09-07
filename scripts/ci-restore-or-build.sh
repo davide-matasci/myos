@@ -86,6 +86,18 @@ vim_elves_ready() {
      && -f target/vim-riscv64-unknown-none ]]
 }
 
+zlib_libs_ready() {
+  [[ -f target/zlib-x86_64/lib/libz.a \
+     && -f target/zlib-aarch64/lib/libz.a \
+     && -f target/zlib-riscv64/lib/libz.a ]]
+}
+
+git_elves_ready() {
+  [[ -f target/git-x86_64-unknown-none \
+     && -f target/git-aarch64-unknown-none \
+     && -f target/git-riscv64-unknown-none ]]
+}
+
 rg_elves_ready() {
   [[ -f target/rg-x86_64-unknown-myos \
      && -f target/rg-aarch64-unknown-myos \
@@ -153,6 +165,19 @@ if [[ -x target/debug/myos && -f target/bios.img \
   else
     echo "vim ELFs present: $(ls -lh target/vim-*-unknown-none)"
   fi
+  if ! zlib_libs_ready; then
+    echo "==> zlib lib(s) missing after restore; building zlib"
+    ./ports/zlib/build.sh
+  else
+    echo "zlib libs present: $(ls -lh target/zlib-*/lib/libz.a)"
+  fi
+  if ! git_elves_ready; then
+    echo "==> git ELF(s) missing after restore; building git"
+    ./ports/git/build.sh
+    need_rebuild=1
+  else
+    echo "git ELFs present: $(ls -lh target/git-*-unknown-none)"
+  fi
   if ! socket_smoke_elves_ready; then
     echo "==> c-socket_smoke ELF(s) missing after restore; building c-hello/socket_smoke"
     ./scripts/build-c-hello.sh
@@ -192,6 +217,8 @@ fi
 ./ports/tcc/build.sh
 ./ports/ncurses/build.sh
 ./ports/vim/build.sh
+./ports/zlib/build.sh
+./ports/git/build.sh
 ./ports/curl/build.sh
 
 rebuild_kernels

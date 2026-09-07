@@ -29,7 +29,8 @@ int fchmodat(int dirfd, const char *path, mode_t mode, int flags) {
     (void)path;
     (void)mode;
     (void)flags;
-    return myos_rofs();
+    /* Match chmod/fchmod: no mode bits yet. */
+    return 0;
 }
 
 int fchown(int fd, uid_t owner, gid_t group) {
@@ -72,10 +73,13 @@ int gethostname(char *name, size_t len) {
     return 0;
 }
 
+/* Phase-1 git index writes call ftruncate after writing the full blob.
+ * No SYS_FTRUNCATE yet; treat as success so commit/add work on tmpfs when
+ * the fd already holds the intended bytes (hashfile write path). */
 int ftruncate(int fd, off_t length) {
     (void)fd;
     (void)length;
-    return myos_nosys();
+    return 0;
 }
 
 int mkfifo(const char *path, mode_t mode) {

@@ -65,7 +65,8 @@ pub const USER_STACK_PAGES: usize = 128;
 #[cfg(not(target_arch = "aarch64"))]
 pub const USER_STACK_PAGES: usize = 256;
 /// Per-process brk heap.
-/// - x86_64: TLS arena stays in ELF BSS; 256 pages is enough for uutils/clap.
+/// - x86_64: TLS arena stays in ELF BSS; raise to 512 pages (2 MiB) so git
+///   Phase-1 object writes can malloc ≥1 MiB without OOM (256 pages = exactly 1 MiB).
 /// - aarch64/riscv64: TLS arena is a 2 MiB brk allocation — window must fit
 ///   that plus headroom. aarch64 stays under the 4×512-page L2 spill cap
 ///   (image + stack + heap ≲ 2048 pages from USER_BASE).
@@ -74,15 +75,17 @@ const HEAP_PAGES: usize = 768;
 #[cfg(target_arch = "riscv64")]
 const HEAP_PAGES: usize = 1024;
 #[cfg(target_arch = "x86_64")]
-const HEAP_PAGES: usize = 256;
+const HEAP_PAGES: usize = 512;
 /// Cap for fresh `load_user_elf` (init + typical programs) and on-stack frame arrays.
 /// Keep modest: bumping this also sizes `[u64; N]` on the task stack and used to
 /// force `elf_scratch_mut` to grab N contiguous frames before init could run.
 const MAX_INIT_PAGES: usize = 1024;
-/// Cap for in-place `expand_user_elf` of larger bootfs ELFs (uutils / ripgrep).
+/// Cap for in-place `expand_user_elf` of larger bootfs ELFs (uutils / ripgrep / git).
 /// Must stay within QEMU RAM given leaked post-exec frames (x86 CI is 1024 MiB).
 /// Full feat_common_core (~2.4k pages) OOMed; ship a smaller multicall instead.
-const MAX_EXPAND_PAGES: usize = 1024;
+/// Phase-1 git static-pie spans ~1080 pages (BSS included); keep ≤1152 so
+/// aarch64 image+stack+heap stays within the 4×512 L2 spill cap (2048 pages).
+const MAX_EXPAND_PAGES: usize = 1152;
 /// Largest image we may map, fork-copy, or stage in ELF scratch.
 const MAX_ELF_PAGES: usize = if MAX_EXPAND_PAGES > MAX_INIT_PAGES {
     MAX_EXPAND_PAGES
