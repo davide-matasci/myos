@@ -340,11 +340,12 @@ fn smoke_ioctl() {
     let mut ws = [0u16; 4];
 
     // Prefer /dev/tty; also exercise Console fd 1.
+    // Winsize is FB character cells when a framebuffer is present (else 24×80).
     let tty_fd = open(b"/dev/tty");
     let fd = tty_fd.unwrap_or(1);
     if ioctl(fd, TIOCGWINSZ, ws.as_mut_ptr() as usize) == usize::MAX
-        || ws[0] != 24
-        || ws[1] != 80
+        || ws[0] == 0
+        || ws[1] == 0
     {
         if tty_fd.is_some() {
             close(fd);
@@ -358,8 +359,8 @@ fn smoke_ioctl() {
 
     let mut ws1 = [0u16; 4];
     if ioctl(1, TIOCGWINSZ, ws1.as_mut_ptr() as usize) == usize::MAX
-        || ws1[0] != 24
-        || ws1[1] != 80
+        || ws1[0] != ws[0]
+        || ws1[1] != ws[1]
     {
         status_fail("ioctl fd1 fail");
         return;

@@ -299,6 +299,14 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         }
     }
 
+    // Minimal termcap (linux/ansi/vt100/dumb) for ncurses tgetent — see
+    // ports/termcap/README.md. Served at /lib/termcap; getty sets TERMCAP.
+    add(
+        &mut entries,
+        "lib/termcap",
+        read(&manifest_dir.join("ports/termcap/termcap")),
+    );
+
     // Sort + dedupe by path (later duplicates win for the same path).
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries.dedup_by(|a, b| a.name == b.name);

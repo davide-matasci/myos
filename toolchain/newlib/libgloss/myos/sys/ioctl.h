@@ -3,7 +3,7 @@
 
 #include <sys/types.h>
 
-/* Linux tty ioctls used by ubase getty/login (success nops in libgloss). */
+/* Linux tty ioctls used by ubase getty/login and termios (kernel-backed). */
 #define TCGETS 0x5401
 #define TCSETS 0x5402
 #define TCFLSH 0x540B

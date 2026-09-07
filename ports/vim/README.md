@@ -17,7 +17,9 @@ Thin wrappers: `scripts/fetch-vim.sh`, `scripts/build-vim.sh`.
 
 `config.h` is **hand-written** for freestanding myos (not host `./configure`).
 `HAVE_TGETENT` / `HAVE_TERMCAP_H` use `ports/ncurses` (static `libncurses.a`,
-fallbacks `dumb`/`ansi`/`vt100`); no TERMINFO database in the image.
+fallbacks `dumb`/`ansi`/`vt100`/`linux`). The image also ships
+`/lib/termcap` (`ports/termcap/termcap`); getty sets `TERMCAP=/lib/termcap`
+with `TERM=linux`. No full TERMINFO database.
 
 ## termios
 
@@ -34,7 +36,8 @@ Missing ELF is a **hard error** at image pack time (CI always builds vim).
 
 - Kernel stdin is **cooked**; libgloss `<termios.h>` stubs (`tcgetattr` fails /
   `tcsetattr` no-op success). Raw/visual mode and single-key input are limited.
-- ncurses without a terminfo DB — fallbacks only; prefer `TERM=dumb` or `ansi`.
+- Framebuffer ANSI CSI includes DECSTBM (`CSI r`) + SU/SD (`CSI S`/`CSI T`);
+  `TIOCGWINSZ` reports FB character cells; termios raw mode via TCGETS/TCSETS.
 - `select()` is a tiny stub (zero-timeout → idle; otherwise stdin “ready”).
 - Interactive editing on serial/FB may be awkward; opening a file and `:q!`
   should work.

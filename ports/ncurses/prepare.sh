@@ -15,8 +15,9 @@ WORK="$ROOT/target/ncurses-myos-build"
 # shellcheck source=ports/ncurses/versions.env
 source "$HERE/versions.env"
 STAMP="$WORK/.myos-prepare-version"
+EXPECTED_STAMP="$NCURSES_VERSION:$NCURSES_SHA256:fallbacks=dumb,ansi,vt100,linux"
 if [[ -f "$WORK/include/ncurses_cfg.h" && -f "$WORK/ncurses/Makefile" && -f "$STAMP" ]] \
-  && [[ "$(cat "$STAMP")" == "$NCURSES_VERSION:$NCURSES_SHA256" ]]; then
+  && [[ "$(cat "$STAMP")" == "$EXPECTED_STAMP" ]]; then
   echo "ncurses prepare tree up to date ($WORK)"
   exit 0
 fi
@@ -32,7 +33,7 @@ echo "==> configure ncurses $NCURSES_VERSION (host tools; myos cross later)"
   --without-progs --without-tests --without-debug --without-profile \
   --without-gpm --disable-rpath \
   --disable-home-terminfo --disable-db-install --disable-database \
-  --enable-termcap --disable-widec --with-fallbacks=dumb,ansi,vt100
+  --enable-termcap --disable-widec --with-fallbacks=dumb,ansi,vt100,linux
 
 CFG="$WORK/include/ncurses_cfg.h"
 # Drop host-only features before generating headers. edit_cfg.sh greps for the
@@ -63,5 +64,5 @@ PY
 # Generate include/ headers (curses.h, term.h, …) against the patched cfg.
 make -C include
 
-echo "$NCURSES_VERSION:$NCURSES_SHA256" >"$STAMP"
+echo "$NCURSES_VERSION:$NCURSES_SHA256:fallbacks=dumb,ansi,vt100,linux" >"$STAMP"
 echo "ncurses prepare -> $WORK"
