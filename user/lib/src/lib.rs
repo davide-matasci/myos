@@ -397,6 +397,46 @@ pub fn read_line(buf: &mut [u8]) -> usize {
             break;
         }
         let ch = b[0];
+        // Handle arrow-key and other escape sequences (ESC + `[` + letter).
+        if ch == 0x1B {
+            // Read the next two bytes of the escape sequence.
+            let mut seq = [0u8; 2];
+            let mut got_seq = false;
+            loop {
+                let mut sb = [0u8; 1];
+                let sr = read(0, &mut sb);
+                if sr == usize::MAX || sr == 0 {
+                    break;
+                }
+                if n < tmp.len() {
+                    tmp[n] = sb[0];
+                    n += 1;
+                }
+                if sb[0] == b'[' {
+                    got_seq = true;
+                    break;
+                }
+            }
+            if got_seq {
+                // Read the final character (A/B/C/D for arrows, etc.).
+                let mut db = [0u8; 1];
+                let dr = read(0, &mut db);
+                if dr != usize::MAX && dr != 0 {
+                    if n < tmp.len() {
+                        tmp[n] = db[0];
+                        n += 1;
+                    }
+                }
+                // Consume the sequence; do not interpret further.
+                continue;
+            }
+            // If we didn't get a valid escape sequence, treat ESC as a regular character.
+            if n < tmp.len() {
+                tmp[n] = ch;
+                n += 1;
+            }
+            continue;
+        }
         if ch == 0x08 || ch == 127 {
             if n > 0 {
                 n -= 1;
@@ -414,7 +454,7 @@ pub fn read_line(buf: &mut [u8]) -> usize {
     let out = n.min(buf.len());
     buf[..out].copy_from_slice(&tmp[..out]);
     out
-}
+}}
 
 /// Print a short panic marker to serial (fd 1) then exit. Use as `#[panic_handler]`.
 pub fn panic_die(info: &core::panic::PanicInfo) -> ! {
