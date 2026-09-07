@@ -397,6 +397,33 @@ pub fn read_line(buf: &mut [u8]) -> usize {
             break;
         }
         let ch = b[0];
+        // Handle arrow keys and other escape sequences (ESC + '[' + letter).
+        if ch == 0x1B {
+            // Read the next byte - it should be '[' for arrow keys.
+            let mut sb = [0u8; 1];
+            let sr = read(0, &mut sb);
+            if sr == usize::MAX || sr == 0 || sb[0] != b'[' {
+                // Not a valid escape sequence; treat ESC as regular char.
+                if n < tmp.len() {
+                    tmp[n] = ch;
+                    n += 1;
+                }
+                continue;
+            }
+            // Read the final character (A/B/C/D for up/down/right/left arrows).
+            let mut db = [0u8; 1];
+            let dr = read(0, &mut db);
+            if dr != usize::MAX && dr != 0 {
+                // Consume the arrow key sequence entirely; do not store.
+            } else {
+                // Incomplete sequence; store ESC and '[' we already read.
+                if n < tmp.len() {
+                    tmp[n] = b'[';
+                    n += 1;
+                }
+            }
+            continue;
+        }
         if ch == 0x08 || ch == 127 {
             if n > 0 {
                 n -= 1;
