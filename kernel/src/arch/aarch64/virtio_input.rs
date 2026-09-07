@@ -69,6 +69,7 @@ unsafe impl Send for Dev {}
 static DEV: Mutex<Option<Dev>> = Mutex::new(None);
 static READY: AtomicBool = AtomicBool::new(false);
 static SHIFT: AtomicBool = AtomicBool::new(false);
+static ALTGR: AtomicBool = AtomicBool::new(false);
 static PENDING: Mutex<Option<u8>> = Mutex::new(None);
 
 fn r32(base: usize, off: u32) -> u32 {
@@ -172,81 +173,38 @@ fn handle_event(type_: u16, code: u16, value: u32) {
     if type_ != EV_KEY {
         return;
     }
+    // Linux KEY_* codes match PS/2 set-1 makes for the keys we map.
+    const KEY_LEFTSHIFT: u16 = 42;
+    const KEY_RIGHTSHIFT: u16 = 54;
+    const KEY_RIGHTALT: u16 = 100; // AltGr
     if value == 0 {
         match code {
-            42 | 54 => SHIFT.store(false, Ordering::SeqCst),
+            KEY_LEFTSHIFT | KEY_RIGHTSHIFT => SHIFT.store(false, Ordering::SeqCst),
+            KEY_RIGHTALT => ALTGR.store(false, Ordering::SeqCst),
             _ => {}
         }
         return;
     }
     match code {
-        42 | 54 => {
+        KEY_LEFTSHIFT | KEY_RIGHTSHIFT => {
             SHIFT.store(true, Ordering::SeqCst);
         }
+        KEY_RIGHTALT => {
+            ALTGR.store(true, Ordering::SeqCst);
+        }
         _ => {
-            if let Some(b) = keycode_to_ascii(code, SHIFT.load(Ordering::SeqCst)) {
+            if code > 127 {
+                return;
+            }
+            if let Some(b) = crate::keymap::translate(
+                code as u8,
+                SHIFT.load(Ordering::SeqCst),
+                ALTGR.load(Ordering::SeqCst),
+            ) {
                 *PENDING.lock() = Some(b);
             }
         }
     }
-}
-
-fn keycode_to_ascii(code: u16, shift: bool) -> Option<u8> {
-    let pair = match code {
-        2 => (b'1', b'!'),
-        3 => (b'2', b'@'),
-        4 => (b'3', b'#'),
-        5 => (b'4', b'$'),
-        6 => (b'5', b'%'),
-        7 => (b'6', b'^'),
-        8 => (b'7', b'&'),
-        9 => (b'8', b'*'),
-        10 => (b'9', b'('),
-        11 => (b'0', b')'),
-        12 => (b'-', b'_'),
-        13 => (b'=', b'+'),
-        16 => (b'q', b'Q'),
-        17 => (b'w', b'W'),
-        18 => (b'e', b'E'),
-        19 => (b'r', b'R'),
-        20 => (b't', b'T'),
-        21 => (b'y', b'Y'),
-        22 => (b'u', b'U'),
-        23 => (b'i', b'I'),
-        24 => (b'o', b'O'),
-        25 => (b'p', b'P'),
-        26 => (b'[', b'{'),
-        27 => (b']', b'}'),
-        28 => return Some(b'\n'),
-        30 => (b'a', b'A'),
-        31 => (b's', b'S'),
-        32 => (b'd', b'D'),
-        33 => (b'f', b'F'),
-        34 => (b'g', b'G'),
-        35 => (b'h', b'H'),
-        36 => (b'j', b'J'),
-        37 => (b'k', b'K'),
-        38 => (b'l', b'L'),
-        39 => (b';', b':'),
-        40 => (b'\'', b'"'),
-        41 => (b'`', b'~'),
-        43 => (b'\\', b'|'),
-        44 => (b'z', b'Z'),
-        45 => (b'x', b'X'),
-        46 => (b'c', b'C'),
-        47 => (b'v', b'V'),
-        48 => (b'b', b'B'),
-        49 => (b'n', b'N'),
-        50 => (b'm', b'M'),
-        51 => (b',', b'<'),
-        52 => (b'.', b'>'),
-        53 => (b'/', b'?'),
-        57 => return Some(b' '),
-        14 => return Some(0x08),
-        15 => return Some(b'\t'),
-        _ => return None,
-    };
-    Some(if shift { pair.1 } else { pair.0 })
 }
 
 fn setup(base: usize) -> Option<Dev> {
@@ -347,6 +305,7 @@ pub fn init() {
             *DEV.lock() = Some(dev);
             READY.store(true, Ordering::SeqCst);
             SHIFT.store(false, Ordering::SeqCst);
+            ALTGR.store(false, Ordering::SeqCst);
             console::status_ok("keyboard");
             return;
         }

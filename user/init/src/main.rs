@@ -1,7 +1,32 @@
 #![no_std]
 #![no_main]
 
-use myos_user::{exec, exit, fork, status_fail, status_ok, wait_status};
+use myos_user::{
+    close, exit, fork, ioctl, open, read, status_fail, status_ok, wait_status, exec,
+};
+
+/// Default keymap path in the initramfs. Switch to US with:
+/// `b"/etc/kbd/us.map"`.
+const DEFAULT_KEYMAP: &[u8] = b"/etc/kbd/ch.map";
+
+/// `ioctl` load request — must match `kernel::keymap::KDSKMAP`.
+const KDSKMAP: usize = 0x5480;
+
+fn load_keymap(path: &[u8]) -> bool {
+    let Some(kfd) = open(path) else {
+        return false;
+    };
+    // Packet: { len: u32 NE, data: [u8; len] } — see docs/keymap.md / KDSKMAP.
+    let mut packet = [0u8; 4 + 4096];
+    let n = read(kfd, &mut packet[4..]);
+    close(kfd);
+    if n == 0 || n > 4096 {
+        return false;
+    }
+    packet[0..4].copy_from_slice(&(n as u32).to_ne_bytes());
+    // fd 1 is the console tty (FdEntry::Console) from PID1 setup.
+    ioctl(1, KDSKMAP, packet.as_ptr() as usize) != usize::MAX
+}
 
 fn smoke_fork_ping() {
     match fork() {
@@ -74,6 +99,11 @@ fn spawn_getty_loop() -> ! {
 }
 
 fn start() -> ! {
+    if load_keymap(DEFAULT_KEYMAP) {
+        status_ok("keymap ch");
+    } else {
+        status_fail("keymap ch");
+    }
     smoke_fork_ping();
     smoke_fork_exec_ok();
     spawn_netd();

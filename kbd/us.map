@@ -1,0 +1,60 @@
+# myos keymap v1 — US QWERTY (ANSI)
+# keycode N = base Shift AltGr Shift+AltGr
+# See docs/keymap.md
+
+keycode 0x02 = 1 ! none none
+keycode 0x03 = 2 @ none none
+keycode 0x04 = 3 # none none
+keycode 0x05 = 4 $ none none
+keycode 0x06 = 5 % none none
+keycode 0x07 = 6 ^ none none
+keycode 0x08 = 7 & none none
+keycode 0x09 = 8 * none none
+keycode 0x0A = 9 ( none none
+keycode 0x0B = 0 ) none none
+keycode 0x0C = - _ none none
+keycode 0x0D = = + none none
+keycode 0x0E = BKSP BKSP BKSP BKSP
+keycode 0x0F = TAB TAB TAB TAB
+
+keycode 0x10 = q Q none none
+keycode 0x11 = w W none none
+keycode 0x12 = e E none none
+keycode 0x13 = r R none none
+keycode 0x14 = t T none none
+keycode 0x15 = y Y none none
+keycode 0x16 = u U none none
+keycode 0x17 = i I none none
+keycode 0x18 = o O none none
+keycode 0x19 = p P none none
+keycode 0x1A = [ { none none
+keycode 0x1B = ] } none none
+keycode 0x1C = ENTER ENTER ENTER ENTER
+
+keycode 0x1E = a A none none
+keycode 0x1F = s S none none
+keycode 0x20 = d D none none
+keycode 0x21 = f F none none
+keycode 0x22 = g G none none
+keycode 0x23 = h H none none
+keycode 0x24 = j J none none
+keycode 0x25 = k K none none
+keycode 0x26 = l L none none
+keycode 0x27 = ; : none none
+keycode 0x28 = ' " none none
+keycode 0x29 = ` ~ none none
+keycode 0x2B = \ | none none
+
+keycode 0x2C = z Z none none
+keycode 0x2D = x X none none
+keycode 0x2E = c C none none
+keycode 0x2F = v V none none
+keycode 0x30 = b B none none
+keycode 0x31 = n N none none
+keycode 0x32 = m M none none
+keycode 0x33 = , < none none
+keycode 0x34 = . > none none
+keycode 0x35 = / ? none none
+keycode 0x39 = SPACE SPACE SPACE SPACE
+keycode 0x53 = BKSP BKSP BKSP BKSP
+keycode 0x56 = < > none none

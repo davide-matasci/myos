@@ -1264,6 +1264,41 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         return 0;
     }
 
+    // KDSKMAP / KDGKMAP: loadable keyboard map (see crate::keymap, docs/keymap.md).
+    if request == crate::keymap::KDSKMAP || request == crate::keymap::KDGKMAP {
+        if !fd_is_console_tty(entry) {
+            return usize::MAX;
+        }
+        if arg == 0 {
+            return usize::MAX;
+        }
+        let aspace = current_aspace();
+        if request == crate::keymap::KDGKMAP {
+            let v: u32 = if crate::keymap::is_loaded() { 1 } else { 0 };
+            if !user::copy_to_user(aspace, arg, &v.to_ne_bytes()) {
+                return usize::MAX;
+            }
+            return 0;
+        }
+        // KDSKMAP: arg → { len: u32, data: [u8; len] } (len little-endian, max 8 KiB).
+        let mut len_buf = [0u8; 4];
+        if !user::copy_from_user(aspace, arg, &mut len_buf) {
+            return usize::MAX;
+        }
+        let len = u32::from_ne_bytes(len_buf) as usize;
+        if len == 0 || len > 8192 {
+            return usize::MAX;
+        }
+        let mut data = alloc::vec![0u8; len];
+        if !user::copy_from_user(aspace, arg + 4, &mut data) {
+            return usize::MAX;
+        }
+        match crate::keymap::load_from_text(&data) {
+            Ok(()) => return 0,
+            Err(_) => return usize::MAX,
+        }
+    }
+
     let result = match entry {
         FdEntry::Empty | FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) => IoctlResult::Notty,
         FdEntry::Stdin | FdEntry::Console => crate::fs::tty_ioctl(request),

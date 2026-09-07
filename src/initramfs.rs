@@ -357,6 +357,19 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         read(&manifest_dir.join("ports/termcap/termcap")),
     );
 
+    // Loadable keyboard maps (Swiss German default; US alternate).
+    // Served at /etc/kbd/*.map via bootfs (cpio etc/ → bootfs).
+    add(
+        &mut entries,
+        "etc/kbd/ch.map",
+        read(&manifest_dir.join("kbd/ch.map")),
+    );
+    add(
+        &mut entries,
+        "etc/kbd/us.map",
+        read(&manifest_dir.join("kbd/us.map")),
+    );
+
     // Sort + dedupe by path (later duplicates win for the same path).
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries.dedup_by(|a, b| a.name == b.name);
