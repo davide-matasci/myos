@@ -5,27 +5,71 @@ use myos_user::{
     close, exit, fork, ioctl, open, read, status_fail, status_ok, wait_status, exec,
 };
 
-/// Default keymap path in the initramfs. Switch to US with:
-/// `b"/etc/kbd/us.map"`.
-const DEFAULT_KEYMAP: &[u8] = b"/etc/kbd/ch.map";
+/// Default keymap path in the initramfs (libfs nested tree). Switch to US with:
+/// `b"/lib/kbd/us.map"`.
+const DEFAULT_KEYMAP: &[u8] = b"/lib/kbd/ch.map";
+const FALLBACK_KEYMAP: &[u8] = b"/lib/kbd/us.map";
 
 /// `ioctl` load request — must match `kernel::keymap::KDSKMAP`.
 const KDSKMAP: usize = 0x5480;
 
-fn load_keymap(path: &[u8]) -> bool {
+#[derive(Clone, Copy)]
+enum KeymapErr {
+    Open,
+    Read,
+    Ioctl,
+}
+
+fn load_keymap(path: &[u8]) -> Result<(), KeymapErr> {
     let Some(kfd) = open(path) else {
-        return false;
+        return Err(KeymapErr::Open);
     };
     // Packet: { len: u32 NE, data: [u8; len] } — see docs/keymap.md / KDSKMAP.
     let mut packet = [0u8; 4 + 4096];
     let n = read(kfd, &mut packet[4..]);
     close(kfd);
     if n == 0 || n > 4096 {
-        return false;
+        return Err(KeymapErr::Read);
     }
     packet[0..4].copy_from_slice(&(n as u32).to_ne_bytes());
-    // fd 1 is the console tty (FdEntry::Console) from PID1 setup.
-    ioctl(1, KDSKMAP, packet.as_ptr() as usize) != usize::MAX
+    // Open /dev/console explicitly — do not assume fd 1 is the tty.
+    let Some(cfd) = open(b"/dev/console") else {
+        return Err(KeymapErr::Ioctl);
+    };
+    let ok = ioctl(cfd, KDSKMAP, packet.as_ptr() as usize) != usize::MAX;
+    close(cfd);
+    if ok {
+        Ok(())
+    } else {
+        Err(KeymapErr::Ioctl)
+    }
+}
+
+fn fail_keymap(which: &str, err: KeymapErr) {
+    // Static labels only (no_std init has no formatting helpers here).
+    match (which, err) {
+        ("ch", KeymapErr::Open) => status_fail("keymap open ch"),
+        ("ch", KeymapErr::Read) => status_fail("keymap read ch"),
+        ("ch", KeymapErr::Ioctl) => status_fail("keymap ioctl ch"),
+        (_, KeymapErr::Open) => status_fail("keymap open us"),
+        (_, KeymapErr::Read) => status_fail("keymap read us"),
+        (_, KeymapErr::Ioctl) => status_fail("keymap ioctl us"),
+    }
+}
+
+/// Prefer Swiss German; fall back to US so the PS/2 keyboard is never bricked.
+fn load_default_keymap() {
+    match load_keymap(DEFAULT_KEYMAP) {
+        Ok(()) => {
+            status_ok("keymap ch");
+            return;
+        }
+        Err(e) => fail_keymap("ch", e),
+    }
+    match load_keymap(FALLBACK_KEYMAP) {
+        Ok(()) => status_ok("keymap us"),
+        Err(e) => fail_keymap("us", e),
+    }
 }
 
 fn smoke_fork_ping() {
@@ -99,11 +143,7 @@ fn spawn_getty_loop() -> ! {
 }
 
 fn start() -> ! {
-    if load_keymap(DEFAULT_KEYMAP) {
-        status_ok("keymap ch");
-    } else {
-        status_fail("keymap ch");
-    }
+    load_default_keymap();
     smoke_fork_ping();
     smoke_fork_exec_ok();
     spawn_netd();

@@ -358,15 +358,17 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     );
 
     // Loadable keyboard maps (Swiss German default; US alternate).
-    // Served at /etc/kbd/*.map via bootfs (cpio etc/ → bootfs).
+    // Served at /lib/kbd/*.map via libfs (cpio lib/ → libfs nested tree).
+    // Do NOT pack under etc/ — bootfs is flat (MAX_FILES=32) and register
+    // failures are ignored, so /etc/kbd/*.map never appears on the guest.
     add(
         &mut entries,
-        "etc/kbd/ch.map",
+        "lib/kbd/ch.map",
         read(&manifest_dir.join("kbd/ch.map")),
     );
     add(
         &mut entries,
-        "etc/kbd/us.map",
+        "lib/kbd/us.map",
         read(&manifest_dir.join("kbd/us.map")),
     );
 

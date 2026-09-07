@@ -100,7 +100,7 @@ fn route(name: &str, bytes: &'static [u8]) {
     } else if let Some(rest) = name.strip_prefix("bin/") {
         let _ = binfs::register(rest, bytes);
     } else if let Some(rest) = name.strip_prefix("etc/") {
-        // Nested path on bootfs (e.g. etc/kbd/ch.map → /etc/kbd/ch.map).
+        // Flat bootfs name (prefer libfs for nested data; bootfs MAX_FILES=32).
         let _ = bootfs::register(&alloc::format!("etc/{rest}"), bytes);
     }
 }

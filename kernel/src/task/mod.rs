@@ -1295,7 +1295,10 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         }
         match crate::keymap::load_from_text(&data) {
             Ok(()) => return 0,
-            Err(_) => return usize::MAX,
+            Err(e) => {
+                crate::console::status_fail(&alloc::format!("keymap: {e}"));
+                return usize::MAX;
+            }
         }
     }
 

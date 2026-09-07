@@ -13,12 +13,18 @@ positions). Characters come from a keymap loaded at runtime.
 - `user/init` loads the default map early (before getty):
 
 ```rust
-const DEFAULT_KEYMAP: &[u8] = b"/etc/kbd/ch.map";
+const DEFAULT_KEYMAP: &[u8] = b"/lib/kbd/ch.map";
 ```
 
-Switch the default to US by pointing that constant at `/etc/kbd/us.map`.
+Switch the default to US by pointing that constant at `/lib/kbd/us.map`.
 
-Both maps ship in the initramfs under `/etc/kbd/`.
+Both maps ship in the initramfs under `/lib/kbd/` (libfs nested tree — not
+bootfs/`/etc`, which is flat and too small for reliable packing).
+
+`user/init` loads CH first; on open/read/ioctl failure it prints a distinct
+`[ FAIL ] keymap {open|read|ioctl} ch` line and falls back to `us.map` so the
+PS/2 keyboard is never left without a map. Success prints `[ OK ] keymap ch`
+or `[ OK ] keymap us`.
 
 ## ioctl API (`/dev/console`, also stdin/stdout tty fds)
 
@@ -28,7 +34,8 @@ Both maps ship in the initramfs under `/etc/kbd/`.
 | `KDGKMAP` | `0x5481` | Pointer to `u32` out: `1` if a map is loaded, else `0`. |
 
 `KDSKMAP` replaces any previously loaded map. On parse failure the previous
-map is left unchanged and the syscall returns an error.
+map is left unchanged, the syscall returns an error, and the kernel prints
+`[ FAIL ] keymap: <reason>` on the console (serial/FB).
 
 Numbers sit next to the existing termios ioctls (`TCGETS`/`TCSETS` =
 `0x5401`/`0x5402`).
