@@ -83,7 +83,7 @@ build_arch() {
     CFLAGS="-ffreestanding -fPIC -O2" \
     LDFLAGS="" \
     ZLIB_PATH="$ROOT/target/zlib-${arch}" \
-    prefix=/usr \
+    prefix=/bin/custom \
     git
 
   if [[ ! -f "$WORK/git" ]]; then

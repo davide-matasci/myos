@@ -318,7 +318,12 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
                     git_alias.display()
                 )
             });
-        add(&mut entries, "bin/custom/git", Some(git_bytes));
+        // Same ELF at /bin/git so `git` is obvious even if PATH is minimal.
+        add_hardlink_group(
+            &mut entries,
+            &["bin/custom/git".to_string(), "bin/git".to_string()],
+            Some(git_bytes),
+        );
     }
 
     // newlib sysroot -> lib/newlib/include/… and lib/newlib/lib/….

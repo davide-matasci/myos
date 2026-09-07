@@ -79,10 +79,12 @@ const HEAP_PAGES: usize = 256;
 /// Keep modest: bumping this also sizes `[u64; N]` on the task stack and used to
 /// force `elf_scratch_mut` to grab N contiguous frames before init could run.
 const MAX_INIT_PAGES: usize = 1024;
-/// Cap for in-place `expand_user_elf` of larger bootfs ELFs (uutils / ripgrep).
+/// Cap for in-place `expand_user_elf` of larger bootfs ELFs (uutils / ripgrep / git).
 /// Must stay within QEMU RAM given leaked post-exec frames (x86 CI is 1024 MiB).
 /// Full feat_common_core (~2.4k pages) OOMed; ship a smaller multicall instead.
-const MAX_EXPAND_PAGES: usize = 1024;
+/// Phase-1 git static-pie spans ~1080 pages (BSS included); keep ≤1152 so
+/// aarch64 image+stack+heap stays within the 4×512 L2 spill cap (2048 pages).
+const MAX_EXPAND_PAGES: usize = 1152;
 /// Largest image we may map, fork-copy, or stage in ELF scratch.
 const MAX_ELF_PAGES: usize = if MAX_EXPAND_PAGES > MAX_INIT_PAGES {
     MAX_EXPAND_PAGES

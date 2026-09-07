@@ -53,3 +53,13 @@ DEFAULT_EDITOR = vim
 DEFAULT_PAGER = cat
 COMPUTE_HEADER_DEPENDENCIES = no
 INSTALL_SYMLINKS =
+
+# Guest install layout: single multicall binary at /bin/custom/git (and /bin/git).
+# Absolute gitexecdir so setup_path / dashed lookup never uses missing
+# /usr/libexec/git-core (classic ENOENT when a non-builtin is dispatched).
+# Builtins for Phase-1 porcelain stay linked into the one binary
+# (SKIP_DASHED_BUILT_INS above); no dashed helper ELFs are packed.
+prefix = /bin/custom
+bindir = /bin/custom
+gitexecdir = /bin/custom
+template_dir = /bin/custom/templates

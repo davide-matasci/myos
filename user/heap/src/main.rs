@@ -173,6 +173,71 @@ int main(void) {
     } else {
         write(b"tcc std skip (tmp create fail)\n");
     }
+    // Phase-1 git porcelain (offline): init/add/commit/log on tmpfs.
+    // Absolute /bin/custom/git — PATH is fine at login, but heap execs by path.
+    if mkdir(b"/tmp/gittest") {
+        let _ = run_prog_exit(
+            b"/bin/custom/git",
+            &[b"git", b"-C", b"/tmp/gittest", b"init"],
+            0,
+            b"[ OK ] git\n",
+        );
+        run_prog(
+            b"/bin/custom/git",
+            &[
+                b"git",
+                b"-C",
+                b"/tmp/gittest",
+                b"config",
+                b"user.email",
+                b"ci@myos",
+            ],
+        );
+        run_prog(
+            b"/bin/custom/git",
+            &[
+                b"git",
+                b"-C",
+                b"/tmp/gittest",
+                b"config",
+                b"user.name",
+                b"myos-ci",
+            ],
+        );
+        if let Some(fd) = open_flags(b"/tmp/gittest/f.txt", O_WRONLY | O_CREAT | O_TRUNC) {
+            let _ = write_fd(fd, b"hello git\n");
+            close(fd);
+            run_prog(
+                b"/bin/custom/git",
+                &[b"git", b"-C", b"/tmp/gittest", b"add", b"f.txt"],
+            );
+            let _ = run_prog_exit(
+                b"/bin/custom/git",
+                &[
+                    b"git",
+                    b"-C",
+                    b"/tmp/gittest",
+                    b"commit",
+                    b"-m",
+                    b"t",
+                ],
+                0,
+                b"[ OK ] git commit\n",
+            );
+            run_prog(
+                b"/bin/custom/git",
+                &[b"git", b"-C", b"/tmp/gittest", b"log", b"--oneline"],
+            );
+            run_prog(
+                b"/bin/custom/git",
+                &[b"git", b"-C", b"/tmp/gittest", b"status"],
+            );
+        } else {
+            write(b"git skip (create f.txt fail)\n");
+        }
+    } else {
+        write(b"git skip (mkdir fail)\n");
+    }
     // ICMP echo via /net/icmp (netd); needle is printed by /ping, not heap.
     // 10.0.2.2 is QEMU slirp gateway; 1.1.1.1 often fails through -netdev user.
     run_prog(b"/bin/custom/ping", &[b"ping", b"10.0.2.2"]);

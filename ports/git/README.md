@@ -42,10 +42,17 @@ Patches and compat live only under `ports/git/` — sources are fetched, never v
 
 ## Image path
 
-Packed into initramfs as `/bin/custom/git` (on `PATH` via `/bin/custom`, like vim/oksh).
-Missing ELF is a **hard error** at image pack time (CI always builds git).
+Packed into initramfs as `/bin/custom/git` and `/bin/git` (hardlink group; on
+`PATH` via `/bin/custom`, like vim/oksh). Missing ELF is a **hard error** at
+image pack time (CI always builds git).
+
+`gitexecdir` / `prefix` bake to `/bin/custom` so the multicall binary never
+looks for missing `/usr/libexec/git-core` helpers.
 
 Guest `SHELL_PATH` baked as `/bin/custom/sh` (oksh).
+
+CI `/heap` smoke: `git -C /tmp/gittest init` + config + add + commit + log/status
+(`[ OK ] git` / `[ OK ] git commit`).
 
 ## Try after login
 
@@ -60,8 +67,11 @@ git log
 
 ## Known gaps
 
+- Guest exec of the full Phase-1 binary needs `MAX_EXPAND_PAGES` ≥ ~1080 (image
+  span with BSS). Smaller caps made `execve` fail with ENOENT (`git: no such
+  file or directory` from oksh) even though `/bin/custom/git` was packed.
 - No network remotes (no curl/openssl in this port).
-- `ftruncate` in libgloss is currently `ENOSYS` — some pack/index paths may fail.
+- `ftruncate` is a successful no-op in libgloss (no SYS_FTRUNCATE yet); enough for Phase-1 index write-after-fill.
 - `getrandom` is a software LCG stand-in (not cryptographic).
 - `utimensat` may be ROFS-stubbed depending on path; timestamps may not stick.
 - No pthreads; FSMonitor / background helpers disabled.
