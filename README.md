@@ -18,6 +18,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase, ubase, uutils coreutils, ripgrep, TinyCC (all fetched at build)
 - **Networking** — virtio-net kernel module + smoltcp in userspace; `/ping` works on all arches
+- **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET
 - **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
 
 ---

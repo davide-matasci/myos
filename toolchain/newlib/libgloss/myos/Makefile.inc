@@ -18,7 +18,11 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/getline.c \
 	%D%/mmap.c \
 	%D%/fd_path.c \
-	%D%/termios.c
+	%D%/termios.c \
+	%D%/socket.c \
+	%D%/inet.c \
+	%D%/netdb.c \
+	%D%/pollselect.c
 
 %C%_extra_parts = crt0 crti crtn
 

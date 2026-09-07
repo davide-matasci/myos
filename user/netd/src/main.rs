@@ -35,7 +35,7 @@ const REP_ERR: u8 = 4;
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
 const MSG_CAP: usize = 2048;
-const MAX_CONV: usize = 8;
+const MAX_CONV: usize = 16;
 const FILE_IO: usize = 2048;
 const DHCP_POLLS: usize = 3000;
 const TICK_MS: u64 = 100;
@@ -43,6 +43,19 @@ const ICMP_IDENT_BASE: u16 = 0x22b;
 const TCP_RX: usize = 4096;
 const TCP_TX: usize = 4096;
 const UDP_BUF: usize = 512;
+/// Ephemeral local ports for outbound TCP/UDP (avoid sticky 49152+conv reuse).
+const LOCAL_PORT_BASE: u16 = 49152;
+
+fn next_local_port(counter: &mut u16) -> u16 {
+    let p = *counter;
+    let next = p.wrapping_add(1);
+    *counter = if next < LOCAL_PORT_BASE {
+        LOCAL_PORT_BASE
+    } else {
+        next
+    };
+    p
+}
 
 #[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
@@ -73,6 +86,8 @@ struct Conv {
     ident: u16,
     seq: u16,
     connected: bool,
+    /// Peer closed (or socket inactive); status hangup already sent once.
+    hungup: bool,
     /// REQ_SEND payload deferred when the smoltcp socket could not accept it.
     /// Without this, netfs already reported write success and the bytes vanish.
     pending_len: u16,
@@ -89,6 +104,7 @@ impl Conv {
         ident: 0,
         seq: 0,
         connected: false,
+        hungup: false,
         pending_len: 0,
         pending: [0; MSG_CAP],
     };
@@ -325,6 +341,7 @@ fn handle_ctl(
     chan: usize,
     conv: u16,
     payload: &[u8],
+    local_ports: &mut u16,
 ) {
     let i = conv as usize;
     if i >= MAX_CONV {
@@ -371,7 +388,7 @@ fn handle_ctl(
             if let Some(h) = convs[i].handle {
                 let s = sockets.get_mut::<udp::Socket>(h);
                 if !s.is_open() {
-                    let local = 49152u16.wrapping_add(conv);
+                    let local = next_local_port(local_ports);
                     let _ = s.bind(local);
                 }
             }
@@ -389,7 +406,7 @@ fn handle_ctl(
             convs[i].remote4 = addr;
             convs[i].remote_port = p;
             convs[i].have_remote = true;
-            let local = 49152u16.wrapping_add(conv);
+            let local = next_local_port(local_ports);
             let remote = IpEndpoint::new(IpAddress::Ipv4(addr), p);
             if let Some(h) = convs[i].handle {
                 let s = sockets.get_mut::<tcp::Socket>(h);
@@ -556,7 +573,15 @@ fn pump_sockets(
                     }
                 }
                 let s = sockets.get_mut::<tcp::Socket>(h);
-                if s.is_active() && s.may_send() && !convs[i].connected {
+                // Only Established (may_send && may_recv). CloseWait has may_send but
+                // may_recv==false once RX is empty — never advertise "connected" there
+                // or wait_connected races into hangup (curl:7 / socket_smoke no data).
+                if s.is_active()
+                    && s.may_send()
+                    && s.may_recv()
+                    && !convs[i].connected
+                    && !convs[i].hungup
+                {
                     convs[i].connected = true;
                     reply(chan, REP_STATUS, conv, 0, b"connected");
                 }
@@ -567,6 +592,17 @@ fn pump_sockets(
                             reply(chan, REP_DATA, conv, 0, &tmp[..n]);
                         }
                     }
+                }
+                // Peer FIN / inactive: hangup only after RX drained into REP_DATA.
+                // CloseWait + empty RX => may_recv false; Closed => !active.
+                let s = sockets.get_mut::<tcp::Socket>(h);
+                if convs[i].connected
+                    && !convs[i].hungup
+                    && !s.can_recv()
+                    && (!s.is_active() || !s.may_recv())
+                {
+                    convs[i].hungup = true;
+                    reply(chan, REP_STATUS, conv, 0, b"hangup");
                 }
             }
         }
@@ -580,6 +616,7 @@ fn handle_req(
     device: &Net0Device,
     chan: usize,
     msg: &[u8],
+    local_ports: &mut u16,
 ) {
     if msg.len() < REQ_HDR {
         return;
@@ -597,7 +634,7 @@ fn handle_req(
             handle_clone(convs, sockets, proto, conv);
             reply(chan, REP_CLONE_OK, conv, 0, &[]);
         }
-        REQ_CTL => handle_ctl(convs, sockets, iface, chan, conv, payload),
+        REQ_CTL => handle_ctl(convs, sockets, iface, chan, conv, payload, local_ports),
         REQ_SEND => handle_send(convs, sockets, device, chan, conv, payload),
         REQ_CLOSE => {
             drop_conv(convs, sockets, conv as usize);
@@ -616,6 +653,7 @@ fn main() -> ! {
     let mut sockets = SocketSet::new(Vec::new());
     let dhcp = sockets.add(dhcpv4::Socket::new());
     let mut convs = [Conv::EMPTY; MAX_CONV];
+    let mut local_ports = LOCAL_PORT_BASE;
     let mut dhcp_ok = poll_dhcp(&mut iface, &mut device, &mut sockets, dhcp, &mut clock);
 
     // Daemon poll: nic, /dev/netd requests, sockets. Bound work per tick.
@@ -663,6 +701,7 @@ fn main() -> ! {
                 &device,
                 chan,
                 &req[..n],
+                &mut local_ports,
             );
         }
 

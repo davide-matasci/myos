@@ -55,6 +55,21 @@ fn read(path: &Path) -> Option<Vec<u8>> {
     }
 }
 
+/// Like `read`, but tries several paths and only logs skips if all miss.
+fn read_any(paths: &[&Path]) -> Option<Vec<u8>> {
+    let mut errors: Vec<(String, String)> = Vec::new();
+    for path in paths {
+        match std::fs::read(path) {
+            Ok(v) => return Some(v),
+            Err(e) => errors.push((path.display().to_string(), e.to_string())),
+        }
+    }
+    for (path, e) in errors {
+        eprintln!("initramfs: skip {path} ({e})");
+    }
+    None
+}
+
 fn add(entries: &mut Vec<Entry>, rel: &str, data: Option<Vec<u8>>) {
     if let Some(d) = data {
         entries.push(Entry {
@@ -205,6 +220,41 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         &mut entries,
         "bin/etc/hello",
         read(&target.join(format!("c-hello-{none_triple}"))),
+    );
+
+    // userspace BSD sockets smoke -> bin/etc/socket_smoke.
+    // Fallback: coreutils-* pack alias when ci-build.tar omitted the canonical name
+    // (workflow glob is `target/c-hello-*`, not `c-socket_smoke-*`).
+    add(
+        &mut entries,
+        "bin/etc/socket_smoke",
+        read(&target.join(format!("c-socket_smoke-{none_triple}"))).or_else(|| {
+            read(&target.join(format!("coreutils-c-socket_smoke-{none_triple}")))
+        }),
+    );
+
+    // trimmed curl (HTTPS GET + -o) over userspace sockets + mbedtls.
+    // Canonical guest path is /bin/etc/curl ($PATH includes /bin/etc). Also install
+    // /bin/custom/curl next to ping/http/dns (hardlink group = one ELF in the archive).
+    // Fallback to coreutils-curl-* pack alias when ci-build.tar omitted the canonical name.
+    let curl_elf = read(&target.join(format!("curl-{none_triple}"))).or_else(|| {
+        read(&target.join(format!("coreutils-curl-{none_triple}")))
+    });
+    add_hardlink_group(
+        &mut entries,
+        &["bin/etc/curl".to_string(), "bin/custom/curl".to_string()],
+        curl_elf,
+    );
+
+    // Mozilla CA bundle for curl's mbedtls backend (CURL_CA_BUNDLE=/lib/cacert.pem).
+    // Same PEM mbedtls/fetch.sh downloads and embeds as myos_ca_bundle_pem for `http`.
+    // Fallback: coreutils-cacert.pem pack alias (ci-build.tar glob is target/coreutils-*).
+    let cacert_canon = target.join("cacert.pem");
+    let cacert_alias = target.join("coreutils-cacert.pem");
+    add(
+        &mut entries,
+        "lib/cacert.pem",
+        read_any(&[&cacert_canon, &cacert_alias]),
     );
 
     // hello demo module -> bin/modules/hello.

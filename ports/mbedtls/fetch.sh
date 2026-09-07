@@ -34,4 +34,6 @@ if [[ ! -f "$CA" ]]; then
   echo "fetch CA bundle"
   curl -fsSL "$CACERT_URL" -o "$CA"
 fi
+# Pack alias: ci-build.tar already globs target/coreutils-* (no workflow edit).
+cp "$CA" "$ROOT/target/coreutils-cacert.pem"
 echo "mbedtls fetch ok"

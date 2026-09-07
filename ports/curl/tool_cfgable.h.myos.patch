@@ -1,0 +1,10 @@
+--- a/src/tool_cfgable.h
++++ b/src/tool_cfgable.h
+@@ -24,6 +24,7 @@
+  *
+  ***************************************************************************/
+ #include "tool_setup.h"
++#include "dynbuf.h"
+ #include "tool_sdecls.h"
+ #include "tool_urlglob.h"
+ #include "var.h"

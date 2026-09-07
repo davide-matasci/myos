@@ -357,14 +357,27 @@ int _fcntl(int fd, int cmd, int arg) {
         (void)fd;
         (void)arg;
         return 0;
-    case F_GETFL:
-        (void)fd;
+    case F_GETFL: {
+        int sockfl = myos_socket_fcntl(fd, F_GETFL, 0);
+        if (sockfl >= 0) {
+            return sockfl;
+        }
         (void)arg;
         return O_RDWR;
-    case F_SETFL:
+    }
+    case F_SETFL: {
+        int sockfl = myos_socket_fcntl(fd, F_SETFL, arg);
+        if (sockfl == 0) {
+            return 0;
+        }
+        if (sockfl == -2) {
+            return -1;
+        }
+        /* Non-socket: accept and ignore (kernel has no O_NONBLOCK). */
         (void)fd;
         (void)arg;
         return 0;
+    }
     default:
         (void)fd;
         (void)arg;
