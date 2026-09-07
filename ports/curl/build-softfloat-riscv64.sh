@@ -5,7 +5,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$ROOT/target/libsoftfloat-riscv64.a"
 SRC="$ROOT/target/compiler-rt-sf"
 OBJ="$SRC/obj"
-BASE=https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-19.1.7/compiler-rt/lib/builtins
+# Prefer jsDelivr (same llvmorg tag) — raw.githubusercontent.com 429s on burst ISO fetches.
+BASE_JSDELIVR=https://cdn.jsdelivr.net/gh/llvm/llvm-project@llvmorg-19.1.7/compiler-rt/lib/builtins
+BASE_GITHUB=https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-19.1.7/compiler-rt/lib/builtins
 export PATH="$ROOT/target/newlib-bin:$PATH"
 cc=riscv64-unknown-myos-cc
 inc="$ROOT/target/newlib-riscv64/riscv64-unknown-myos/include"
@@ -29,8 +31,29 @@ FILES=(
   fp_extend_impl.inc fp_trunc_impl.inc fp_extend.h fp_trunc.h
   int_to_fp_impl.inc fp_fixint_impl.inc fp_fixuint_impl.inc fp_compare_impl.inc
 )
+# Prefer jsDelivr; fall back to GitHub raw with retries (ISO hit HTTP 429 on raw bursts).
+fetch_one() {
+  local out="$1"; shift
+  local url attempt delay
+  for url in "$@"; do
+    for attempt in 1 2 3 4 5; do
+      if curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 \
+           -o "${out}.partial" "$url"; then
+        mv "${out}.partial" "$out"
+        return 0
+      fi
+      delay=$((attempt * 2))
+      echo "softfloat fetch retry ${attempt}/5 (${url##*/}) after ${delay}s" >&2
+      sleep "$delay"
+    done
+  done
+  echo "softfloat fetch failed: $(basename "$out")" >&2
+  return 1
+}
 for f in "${FILES[@]}"; do
-  [[ -f "$SRC/$f" ]] || curl -fsSL -o "$SRC/$f" "$BASE/$f"
+  if [[ ! -f "$SRC/$f" ]]; then
+    fetch_one "$SRC/$f" "$BASE_JSDELIVR/$f" "$BASE_GITHUB/$f"
+  fi
 done
 cat > "$SRC/fe_stubs.c" <<'C'
 int __fe_getround(void) { return 0; }
