@@ -250,6 +250,11 @@ int myos_socket_empty_read(int fd) {
     if (s == NULL || s->state != SOCK_CONNECTED) {
         return 0;
     }
+    /* Prefer pending RX over hangup (BSD half-close). _read returned 0, but
+     * REP_DATA may have landed after the syscall; never EOF while st_size > 0. */
+    if (data_pending(s)) {
+        return 3;
+    }
     if (status_is_hangup(s)) {
         return 2;
     }
@@ -259,6 +264,10 @@ int myos_socket_empty_read(int fd) {
     /* BSD: empty read on a blocking TCP socket waits for data or hangup. */
     wr = wait_readable(s, -1);
     if (wr == 1) {
+        /* Re-check RX: hangup can race with a late REP_DATA. */
+        if (data_pending(s)) {
+            return 3;
+        }
         return 2;
     }
     return 3;
@@ -299,6 +308,10 @@ int myos_socket_poll(int fd, short events, short *revents) {
     }
     want_in = events & (POLLIN | POLLPRI | POLLRDNORM);
     want_out = events & (POLLOUT | POLLWRNORM);
+    /* Drain RX before surfacing hangup as the only POLLIN (half-close). */
+    if (want_in && s->state == SOCK_CONNECTED && data_pending(s)) {
+        rev |= POLLIN;
+    }
     if (s->state == SOCK_CONNECTED && status_is_hangup(s)) {
         if (want_in) {
             rev |= POLLIN | POLLHUP;
@@ -310,9 +323,6 @@ int myos_socket_poll(int fd, short events, short *revents) {
         }
         *revents = rev;
         return 1;
-    }
-    if (want_in && s->state == SOCK_CONNECTED && data_pending(s)) {
-        rev |= POLLIN;
     }
     if (want_out) {
         /* TX is usually writable, but if the caller also asked for POLLIN and
