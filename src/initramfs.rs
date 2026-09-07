@@ -38,6 +38,24 @@ fn triples(arch: &str) -> (&'static str, &'static str, &'static str) {
 
 /// One archive entry. `ino`/`nlink` are used for hardlinked multicall aliases
 /// so the shared ELF is stored once in the archive.
+
+/// Active Cargo features. Cargo exposes the enabled set (comma-joined, including
+/// `default` and any expanded members) to build scripts via CARGO_CFG_FEATURE.
+/// The host `myos` binary receives the same set at runtime via MYOS_FEATURES
+/// (build.rs prints `cargo:rustc-env=`), which is what wait_ci.rs uses to gate
+/// the smoke-test needles. Here we read the build-script var directly.
+pub fn active_features() -> Vec<String> {
+    let raw = std::env::var("CARGO_CFG_FEATURE").unwrap_or("".to_string());
+    raw.split(',')
+        .map(|p| p.trim().to_string())
+        .filter_map(|p| if p.is_empty() { None } else { Some(p) })
+        .collect()
+}
+
+/// True when the given feature (e.g. `port_vim`) is in the active set.
+pub fn feature_enabled(feature: &str) -> bool {
+    active_features().iter().any(|f| *f == feature)
+}
 struct Entry {
     name: String,
     data: Vec<u8>,
@@ -149,7 +167,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     let mut entries: Vec<Entry> = Vec::new();
 
     // sbase manifest: `name:/path/to/sbase-name-<triple>` -> bin/sbase/<name>.
-    if let Some(text) = read(&target.join(format!("sbase-manifest-{arch}.txt"))) {
+    if feature_enabled("port_sbase")
+        && let Some(text) = read(&target.join(format!("sbase-manifest-{arch}.txt"))) {
         let text = String::from_utf8_lossy(&text);
         for line in text.lines() {
             let line = line.trim();
@@ -163,7 +182,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     }
 
     // ubase manifest -> bin/ubase/<name>.
-    if let Some(text) = read(&target.join(format!("ubase-manifest-{arch}.txt"))) {
+    if feature_enabled("port_ubase")
+        && let Some(text) = read(&target.join(format!("ubase-manifest-{arch}.txt"))) {
         let text = String::from_utf8_lossy(&text);
         for line in text.lines() {
             let line = line.trim();
@@ -179,7 +199,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     // coreutils: one multicall ELF aliased under every name -> bin/coreutils/<name>.
     // Stored once via a hardlink group.
     let coreutils_elf = read(&target.join(format!("coreutils-{myos_triple}")));
-    if let Some(text) = read(&target.join(format!("coreutils-manifest-{arch}.txt"))) {
+    if feature_enabled("port_coreutils")
+        && let Some(text) = read(&target.join(format!("coreutils-manifest-{arch}.txt"))) {
         let text = String::from_utf8_lossy(&text);
         let mut names: Vec<String> = Vec::new();
         for line in text.lines() {
@@ -193,34 +214,42 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     }
 
     // ripgrep -> bin/coreutils/rg.
-    add(
-        &mut entries,
-        "bin/coreutils/rg",
-        read(&target.join(format!("rg-{myos_triple}"))),
-    );
-
-    // tcc -> bin/tcc/tcc.
-    add(
-        &mut entries,
-        "bin/tcc/tcc",
-        read(&target.join(format!("tcc-{myos_triple}"))),
-    );
-
-    // std programs -> bin/std/<name>.
-    for name in ["hello", "cat", "echo", "bigalloc"] {
+    if feature_enabled("port_ripgrep") {
         add(
             &mut entries,
-            &format!("bin/std/{name}"),
-            read(&target.join(format!("std-{name}-{myos_triple}"))),
+            "bin/coreutils/rg",
+            read(&target.join(format!("rg-{myos_triple}"))),
         );
     }
 
+    // tcc -> bin/tcc/tcc.
+    if feature_enabled("port_tcc") {
+        add(
+            &mut entries,
+            "bin/tcc/tcc",
+            read(&target.join(format!("tcc-{myos_triple}"))),
+        );
+    }
+
+    // std programs -> bin/std/<name>.
+    if feature_enabled("std") {
+        for name in ["hello", "cat", "echo", "bigalloc"] {
+            add(
+                &mut entries,
+                &format!("bin/std/{name}"),
+                read(&target.join(format!("std-{name}-{myos_triple}"))),
+            );
+        }
+    }
+
     // c-hello -> bin/etc/hello.
-    add(
-        &mut entries,
-        "bin/etc/hello",
-        read(&target.join(format!("c-hello-{none_triple}"))),
-    );
+    if feature_enabled("c_hello") {
+        add(
+            &mut entries,
+            "bin/etc/hello",
+            read(&target.join(format!("c-hello-{none_triple}"))),
+        );
+    }
 
     // userspace BSD sockets smoke -> bin/etc/socket_smoke.
     // Fallback: coreutils-* pack alias when ci-build.tar omitted the canonical name
@@ -285,15 +314,16 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         );
     }
     // oksh -> bin/custom/sh (none triple).
-    add(
-        &mut entries,
-        "bin/custom/sh",
-        read(&target.join(format!("oksh-{none_triple}"))),
-    );
+    if feature_enabled("port_oksh") {
+        add(
+            &mut entries,
+            "bin/custom/sh",
+            read(&target.join(format!("oksh-{none_triple}"))),
+        );
+    }
     // vim (FEAT_TINY) -> bin/custom/vim (none triple, like oksh).
-    // Fail loud once CI always builds vim (iso.yml / ci.yml); silent skip hid
-    // missing ELFs from the ISO for too long.
-    {
+    // Gated on the port_vim feature: exclude with --no-default-features.
+    if feature_enabled("port_vim") {
         let vim_path = target.join(format!("vim-{none_triple}"));
         let vim_bytes = std::fs::read(&vim_path).unwrap_or_else(|e| {
             panic!(
@@ -305,7 +335,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     }
     // lynx (text browser) -> bin/custom/lynx (none triple).
     // HTTPS via ports/lynx/tidy_tls.c over mbedtls; sockets via libgloss /net.
-    {
+    // Gated on the port_lynx feature.
+    if feature_enabled("port_lynx") {
         let lynx_path = target.join(format!("lynx-{none_triple}"));
         let lynx_bytes = std::fs::read(&lynx_path).unwrap_or_else(|e| {
             panic!(
@@ -323,9 +354,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         );
     }
     // git (Phase-1 local porcelain) -> bin/custom/git (none triple, like vim).
-    // Fallback: coreutils-git-* pack alias when ci-build.tar omitted the canonical name
-    // (workflow glob edits need `workflow` OAuth scope).
-    {
+    // Gated on the port_git feature.
+    if feature_enabled("port_git") {
         let git_path = target.join(format!("git-{none_triple}"));
         let git_alias = target.join(format!("coreutils-git-{none_triple}"));
         let git_bytes = std::fs::read(&git_path)
@@ -346,15 +376,15 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     }
 
     // newlib sysroot -> lib/newlib/include/… and lib/newlib/lib/….
+    // libc is always required (every port links against it), so it is not gated.
     let sysroot = target.join(format!("newlib-{arch}")).join(myos_triple);
     collect_tree(&sysroot.join("include"), "lib/newlib/include", &mut entries);
     collect_tree(&sysroot.join("lib"), "lib/newlib/lib", &mut entries);
     // Compiler headers (stddef.h, stdarg.h, float.h, …) come from the tcc
     // source tree: newlib's sys/cdefs.h includes them, but tcc has no GCC
-    // builtins, so they must exist in the archive. On CI tcc is pulled as a
-    // cached GHCR output and target/tcc-src is absent, so prepare it here and
-    // fail loudly rather than silently omitting the headers (which would only
-    // surface later when hosted tcc compiles a program at boot).
+    // builtins, so they must exist in the archive. Only stricter when tcc is
+    // enabled; without tcc nothing compiles on the guest so they are unneeded.
+    if feature_enabled("port_tcc") {
     let tcc_inc = target.join("tcc-src/include");
     let stddef = tcc_inc.join("stddef.h");
     if !stddef.is_file() {
@@ -388,6 +418,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
                 nlink: 1,
             });
         }
+    }
     }
 
     // Minimal termcap (linux/ansi/vt100/dumb) for ncurses tgetent — see

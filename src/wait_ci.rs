@@ -118,10 +118,15 @@ enum ShellStage {
 }
 
 fn serial_has_all_needles(serial: &str, extra: &[&str]) -> bool {
-    CI_NEEDLES
-        .iter()
-        .chain(extra.iter())
-        .all(|n| serial.contains(n))
+    for n in CI_NEEDLES.iter().chain(extra.iter()) {
+        if !needle_for_enabled_port(*n) {
+            continue;
+        }
+        if !serial.contains(*n) {
+            return false;
+        }
+    }
+    true
 }
 
 fn interactive_tail(serial: &str) -> &str {
@@ -348,14 +353,54 @@ fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
         && !tail.contains("x/bin/sbase/ls")
 }
 
+/// Enabled Cargo features, baked at compile time by build.rs via
+/// `cargo:rustc-env=MYOS_FEATURES` (comma-joined, including `default` and
+/// expanded members). It is NOT a runtime process env var — `cargo:rustc-env`
+/// is only readable with the `env!()` compile-time macro, so never use
+/// `std::env::var` here. Empty list means "default ports" (the fallback below
+/// never weakens the tests on omission).
+fn active_features() -> Vec<String> {
+    env!("MYOS_FEATURES")
+        .split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// True when the given feature (e.g. `port_tcc`) is in the active set. Falls
+/// through (returns true) when MYOS_FEATURES is unset so default builds require
+/// every port, matching pre-feature behavior.
+fn port_enabled(feature: &str) -> bool {
+    let fs = active_features();
+    fs.is_empty() || fs.iter().any(|f| *f == feature)
+}
+
+/// Some heavy needles only print when their port is packed into the initramfs
+/// (tcc, git). When that port feature is disabled, the needle must not be
+/// required, or `--ci` would hang waiting for a marker that never appears.
+fn needle_for_enabled_port(n: &str) -> bool {
+    if n == "[ OK ] tcc" || n == "[ OK ] tcc std" {
+        return port_enabled("port_tcc");
+    }
+    if n == "[ OK ] git" || n == "[ OK ] git commit" {
+        return port_enabled("port_git");
+    }
+    true
+}
+
 /// CI-only `/heap` carnival. All arches pass the same `heavy` needles
 /// (`CI_NEEDLES_STD`) and must return to `$` after `[ OK ] smoke`.
 fn interactive_heap_cmd_ok(serial: &str, heavy: &[&str]) -> bool {
     if !command_echoed(serial, "heap") || serial.contains("exception:") {
         return false;
     }
-    if !heavy.iter().all(|n| serial.contains(*n)) {
-        return false;
+    for n in heavy.iter() {
+        if !needle_for_enabled_port(*n) {
+            continue;
+        }
+        if !serial.contains(*n) {
+            return false;
+        }
     }
     if !serial.contains("[ OK ] smoke") {
         return false;
@@ -602,6 +647,11 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
         }
         for needle in CI_NEEDLES.iter().chain(extra_needles.iter()) {
+            // Only report needles for ports that are actually enabled; a disabled
+            // port (e.g. git/vim excluded by feature) prints no marker by design.
+            if !needle_for_enabled_port(*needle) {
+                continue;
+            }
             if !serial.contains(*needle) {
                 eprintln!("error: serial output did not contain {needle:?}");
             }
