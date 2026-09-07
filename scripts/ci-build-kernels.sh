@@ -15,6 +15,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Phase-1 git depends on zlib; build before cargo packs initramfs (workflow
+# edits need `workflow` OAuth scope — keep this script as the CI hook).
+if [[ "${1:-}" != "--print-hash" && "${1:-}" != "--is-current" && "${1:-}" != "--print-members" ]]; then
+  ./ports/zlib/build.sh
+  ./ports/git/build.sh
+fi
+
 STAMP="target/.myos-ci-kernel-version"
 
 # Stable ELF copies that kernel/build.rs embed via include_bytes! / rustc-env,
@@ -30,6 +37,8 @@ PORT_STAMPS=(
   target/.myos-tcc-version
   target/.myos-vim-version
   target/.myos-ncurses-version
+  target/.myos-zlib-version
+  target/.myos-git-version
   target/.myos-newlib-version
 )
 

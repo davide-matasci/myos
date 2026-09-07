@@ -26,6 +26,27 @@ fn main() {
     println!("cargo:rerun-if-changed=ports/termcap/termcap");
     println!("cargo:rerun-if-changed={}", kernel_path.display());
 
+    // Ensure Phase-1 git (+zlib) ELFs exist before packing initramfs. CI hooks
+    // the same scripts from ci-build-kernels.sh; ISO/workflow may not list them
+    // when the OAuth token lacks `workflow` scope to edit ci.yml/iso.yml.
+    {
+        let git_elf = manifest.join("target/git-x86_64-unknown-none");
+        if !git_elf.is_file() {
+            let sh = manifest.join("ports/git/build.sh");
+            let status = std::process::Command::new("bash")
+                .arg(&sh)
+                .env("MYOS_GIT_ARCHES", "x86_64")
+                .status()
+                .unwrap_or_else(|e| panic!("run {}: {e}", sh.display()));
+            if !status.success() {
+                panic!("{} failed", sh.display());
+            }
+        }
+        println!("cargo:rerun-if-changed={}", git_elf.display());
+        println!("cargo:rerun-if-changed=ports/git/build.sh");
+        println!("cargo:rerun-if-changed=ports/zlib/build.sh");
+    }
+
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any
     // user ELF changes (its build.rs rerun-if-changed on every stable copy), so
     // the image (and thus the cpio) is rebuilt transitively here.
