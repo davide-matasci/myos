@@ -13,6 +13,43 @@ publish = false
 [dependencies]
 ovmf-prebuilt = "0.2.9"
 
+# Per-port feature gates. Each optional port can be excluded from the image
+# (and its build skipped) with `--no-default-features` (or by building with a
+# custom feature set). Default = the curated, boot-tested set; the build script
+# (build.rs) reads the active set via CARGO_CFG_FEATURE.
+#
+#   cargo build                          # default set (everything shipped today)
+#   cargo build --no-default-features --features port_sbase,port_coreutils \
+#                                          # lean image, only the listed ports
+[features]
+default = [
+    "core",
+    "port_vim", "port_lynx", "port_git",
+]
+
+# Boot-required core: these are load-bearing (kernel smoke tests + shell PATH
+# depend on them) and stay on unless explicitly rebuilt without "core".
+core = [
+    "std", "c_hello",
+    "port_sbase", "port_ubase", "port_coreutils", "port_ripgrep", "port_tcc",
+    "port_oksh",
+]
+
+# Individual ports. Optional ones pull their build deps.
+std = []
+c_hello = []
+port_sbase = []
+port_ubase = []
+port_coreutils = []
+port_ripgrep = []
+port_tcc = []
+port_oksh = []
+port_ncurses = []
+port_zlib = []
+port_vim = ["port_ncurses"]
+port_git = ["port_zlib"]
+port_lynx = []
+
 [build-dependencies]
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 

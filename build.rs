@@ -32,7 +32,8 @@ fn main() {
     // Ensure Phase-1 git (+zlib) ELFs exist before packing initramfs. CI hooks
     // the same scripts from ci-build-kernels.sh; ISO/workflow may not list them
     // when the OAuth token lacks `workflow` scope to edit ci.yml/iso.yml.
-    {
+    // Gated on the port_git feature: build --no-default-features excludes it.
+    if initramfs::feature_enabled("port_git") {
         let git_elf = manifest.join("target/git-x86_64-unknown-none");
         if !git_elf.is_file() {
             let sh = manifest.join("ports/git/build.sh");
@@ -111,4 +112,8 @@ fn main() {
     println!("cargo:rustc-env=KERNEL_PATH={}", kernel_path.display());
     println!("cargo:rustc-env=HELLO_PATH={}", hello_path.display());
     println!("cargo:rustc-env=OK_PATH={}", ok_path.display());
+    // Hand the active feature set to the host binary so wait_ci.rs can gate the
+    // smoke-test needles at runtime (build scripts can't use #[cfg] on a
+    // separate binary; the crate can, but this keeps one source of truth).
+    println!("cargo:rustc-env=MYOS_FEATURES={}", initramfs::active_features().join(","));
 }

@@ -167,15 +167,200 @@ jobs:
           retention-days: 7
 
 
-  build:
+  newlib:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: [changes, wire-myos, sysroot]
+    needs: [changes, wire-myos]
     if: |
       always() &&
       !cancelled() &&
       needs.wire-myos.result == 'success' &&
-      (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped')
+      needs.changes.outputs.c_userspace == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly (llvm-tools for strip wrappers)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: llvm-tools-preview
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: myos-c-userspace
+          workspaces: .
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld texinfo bison autoconf automake libtool zstd
+
+      - name: Build and push newlib sysroot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./scripts/ci-registry.sh pull newlib || true
+          ./toolchain/newlib/build.sh
+          ./scripts/ci-registry.sh push newlib || true
+
+  ports-base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [changes, wire-myos, sysroot, newlib]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.wire-myos.result == 'success' &&
+      (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped') &&
+      (needs.newlib.result == 'success' || needs.newlib.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - port: sbase
+            script: ./ports/sbase/build.sh
+            pull: sbase
+          - port: ubase
+            script: ./ports/ubase/build.sh
+            pull: ubase
+          - port: oksh
+            script: ./ports/oksh/build.sh
+            pull: oksh
+          - port: coreutils
+            script: ./ports/coreutils/build-uutils.sh
+            pull: coreutils
+            needs_sysroot: "1"
+          - port: ripgrep
+            script: ./ports/ripgrep/build.sh
+            pull: ripgrep
+            needs_sysroot: "1"
+          - port: tcc
+            script: ./ports/tcc/build.sh
+            pull: tcc
+          - port: ncurses
+            script: ./ports/ncurses/build.sh
+            pull: ncurses
+          - port: zlib
+            script: ./ports/zlib/build.sh
+            pull: zlib
+          - port: c-hello
+            script: ./scripts/build-c-hello.sh
+            pull: c-hello
+          - port: std-hello
+            script: ./toolchain/std/build-std-hello.sh
+            pull: std-hello
+            needs_sysroot: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-6
+          cache-directories: |
+            target/myos-sysroot
+            target/patched-crates
+            target/crate-fetch-coreutils
+
+      - name: Download prebuilt sysroot
+        if: matrix.needs_sysroot == '1'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: myos-sysroot
+          path: target
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
+
+      - name: Build port (${{ matrix.port }})
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./scripts/ci-registry.sh pull newlib || true
+          ./scripts/ci-registry.sh pull ${{ matrix.pull }} || true
+          if [[ "${{ matrix.needs_sysroot }}" == "1" ]] && compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
+            export MYOS_SYSROOT_TARBALL="$(ls target/myos-sysroot-*.tar.zst | head -1)"
+            ./toolchain/std/fetch-sysroot.sh
+          elif [[ "${{ matrix.needs_sysroot }}" == "1" ]]; then
+            ./toolchain/std/fetch-sysroot.sh
+          fi
+          ${{ matrix.script }}
+          ./scripts/ci-registry.sh push ${{ matrix.pull }} || true
+
+  ports-advanced:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [changes, wire-myos, sysroot, newlib, ports-base]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.wire-myos.result == 'success' &&
+      (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped') &&
+      (needs.newlib.result == 'success' || needs.newlib.result == 'skipped') &&
+      needs.ports-base.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - port: vim
+            script: ./ports/vim/build.sh
+            pull: vim
+            dep_port: ncurses
+          - port: git
+            script: ./ports/git/build.sh
+            pull: git
+            dep_port: zlib
+          - port: lynx
+            script: ./ports/lynx/build.sh
+            pull: lynx
+            dep_port: ncurses
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: llvm-tools-preview
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
+
+      - name: Build port (${{ matrix.port }})
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./scripts/ci-registry.sh pull newlib || true
+          ./scripts/ci-registry.sh pull ${{ matrix.dep_port }} || true
+          ./scripts/ci-registry.sh pull ${{ matrix.pull }} || true
+          ${{ matrix.script }}
+          ./scripts/ci-registry.sh push ${{ matrix.pull }} || true
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [changes, wire-myos, sysroot, newlib, ports-base, ports-advanced]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.wire-myos.result == 'success' &&
+      (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped') &&
+      (needs.newlib.result == 'success' || needs.newlib.result == 'skipped') &&
+      needs.ports-base.result == 'success' &&
+      needs.ports-advanced.result == 'success'
     steps:
       - uses: actions/checkout@v4
 
@@ -206,7 +391,7 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
 
-      - name: Install sysroot and build std/C/sbase/oksh/ubase/uutils/ripgrep/tcc/ncurses/vim/lynx ELFs
+      - name: Pull prebuilt ports and build kernels
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -233,19 +418,6 @@ jobs:
           ./scripts/ci-registry.sh pull zlib || true
           ./scripts/ci-registry.sh pull git || true
           ./scripts/ci-registry.sh pull lynx || true
-          ./toolchain/std/build-std-hello.sh
-          ./scripts/build-c-hello.sh
-          ./ports/sbase/build.sh
-          ./ports/oksh/build.sh
-          ./ports/ubase/build.sh
-          ./ports/coreutils/build-uutils.sh
-          ./ports/ripgrep/build.sh
-          ./ports/tcc/build.sh
-          ./ports/ncurses/build.sh
-          ./ports/vim/build.sh
-          ./ports/zlib/build.sh
-          ./ports/git/build.sh
-          ./ports/lynx/build.sh
           ./scripts/ci-registry.sh push sysroot || true
           ./scripts/ci-registry.sh push newlib || true
           ./scripts/ci-registry.sh push std-hello || true
@@ -261,15 +433,10 @@ jobs:
           ./scripts/ci-registry.sh push zlib || true
           ./scripts/ci-registry.sh push git || true
           ./scripts/ci-registry.sh push lynx || true
+          ./scripts/ci-build-kernels.sh
 
       - name: PS/2 scancode decode unit tests
         run: cargo test -p ps2-scancode
-
-      - name: Build kernel and Limine BIOS+UEFI disk images
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        run: ./scripts/ci-build-kernels.sh
 
       - name: Pack CI build artifacts
         run: |
@@ -367,7 +534,6 @@ jobs:
           path: ci-build.tar
           if-no-files-found: error
           retention-days: 1
-
   boot:
     name: boot (${{ matrix.id }})
     runs-on: ubuntu-latest
