@@ -286,11 +286,15 @@ myos_curl_version_hash() {
         "$MYOS_ROOT/ports/curl/fetch.sh" \
         "$MYOS_ROOT/ports/curl/versions.env" \
         "$MYOS_ROOT/ports/curl/config-myos.h" || true
-      # Statically links mbedtls: rebuild when CA/FS config changes.
-      sha256sum "$MYOS_ROOT/ports/mbedtls/myos_mbedtls_config.h" || true
-      if [[ -f "$MYOS_ROOT/target/.myos-mbedtls-version" ]]; then
-        sha256sum "$MYOS_ROOT/target/.myos-mbedtls-version" || true
-      fi
+      # Statically links mbedtls: rebuild when CA/FS config changes. Hash mbedtls
+      # SOURCES only (never target/.myos-mbedtls-version, a build output) so the
+      # registry tag is deterministic at pull time on a fresh workspace.
+      sha256sum "$MYOS_ROOT/ports/mbedtls/build.sh" \
+        "$MYOS_ROOT/ports/mbedtls/fetch.sh" \
+        "$MYOS_ROOT/ports/mbedtls/versions.env" \
+        "$MYOS_ROOT/ports/mbedtls/myos_mbedtls_config.h" || true
+      find "$MYOS_ROOT/ports/mbedtls/include" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum 2>/dev/null || true
       myos_newlib_version_hash
     } | sha256sum | awk '{print $1}'
   )"
