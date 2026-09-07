@@ -24,6 +24,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/limine_dir.rs");
     println!("cargo:rerun-if-changed=src/initramfs.rs");
     println!("cargo:rerun-if-changed=ports/termcap/termcap");
+    println!("cargo:rerun-if-changed=ports/lynx/lynx.cfg");
     println!("cargo:rerun-if-changed={}", kernel_path.display());
 
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any

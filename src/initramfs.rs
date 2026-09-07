@@ -314,6 +314,12 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             )
         });
         add(&mut entries, "bin/custom/lynx", Some(lynx_bytes));
+        // System lynx.cfg (LYNX_CFG_FILE); lynx exits if this path is missing.
+        add(
+            &mut entries,
+            "etc/lynx.cfg",
+            read(&manifest_dir.join("ports/lynx/lynx.cfg")),
+        );
     }
 
     // newlib sysroot -> lib/newlib/include/… and lib/newlib/lib/….
