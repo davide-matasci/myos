@@ -1,22 +1,30 @@
-/* myos libgloss: termios stubs (kernel stdin is cooked). */
+/* myos libgloss: termios via TCGETS/TCSETS (kernel line discipline). */
 #include <errno.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
 int tcgetattr(int fd, struct termios *t) {
-    (void)fd;
-    if (t)
-        memset(t, 0, sizeof(*t));
-    errno = ENOTTY;
-    return -1;
+    if (!t) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (ioctl(fd, TCGETS, t) < 0) {
+        return -1;
+    }
+    return 0;
 }
 
 int tcsetattr(int fd, int optional_actions, const struct termios *t) {
-    (void)fd;
-    (void)optional_actions;
-    (void)t;
-    /* Pretend success so callers believe cooked/raw switches worked. */
+    (void)optional_actions; /* TCSANOW / DRAIN / FLUSH: kernel applies immediately */
+    if (!t) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (ioctl(fd, TCSETS, (void *)t) < 0) {
+        return -1;
+    }
     return 0;
 }
 
@@ -32,8 +40,9 @@ int tcdrain(int fd) {
 }
 
 int tcflush(int fd, int queue_selector) {
-    (void)fd;
-    (void)queue_selector;
+    if (ioctl(fd, TCFLSH, (void *)(long)queue_selector) < 0) {
+        return -1;
+    }
     return 0;
 }
 
@@ -57,23 +66,23 @@ int tcsetpgrp(int fd, pid_t pgrp) {
 }
 
 speed_t cfgetispeed(const struct termios *t) {
-    (void)t;
-    return 0;
+    return t ? t->c_ispeed : 0;
 }
 
 speed_t cfgetospeed(const struct termios *t) {
-    (void)t;
-    return 0;
+    return t ? t->c_ospeed : 0;
 }
 
 int cfsetispeed(struct termios *t, speed_t speed) {
-    (void)t;
-    (void)speed;
+    if (!t)
+        return -1;
+    t->c_ispeed = speed;
     return 0;
 }
 
 int cfsetospeed(struct termios *t, speed_t speed) {
-    (void)t;
-    (void)speed;
+    if (!t)
+        return -1;
+    t->c_ospeed = speed;
     return 0;
 }
