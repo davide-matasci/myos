@@ -421,10 +421,16 @@ myos_lynx_version_hash() {
       sha256sum "$MYOS_ROOT/ports/lynx/build.sh"
       sha256sum "$MYOS_ROOT/ports/lynx/prepare.sh"
       sha256sum "$MYOS_ROOT/ports/lynx/fetch.sh"
-      sha256sum "$MYOS_ROOT/ports/mbedtls/myos_mbedtls_config.h" || true
-      if [[ -f "$MYOS_ROOT/target/.myos-mbedtls-version" ]]; then
-        sha256sum "$MYOS_ROOT/target/.myos-mbedtls-version" || true
-      fi
+      # mbedtls is a lynx build dependency. Hash its checkout-stable SOURCE inputs,
+      # NOT the post-build target/.myos-mbedtls-version stamp: that stamp exists
+      # when lynx builds mbedtls itself but is absent in a downstream ``build`` job
+      # that only pulls the artifact, which made the push-pull tag drift and CI
+      # fail with ``registry miss lynx: no manifest`` (initramfs missing lynx ELF).
+      sha256sum "$MYOS_ROOT/ports/mbedtls/build.sh" "$MYOS_ROOT/ports/mbedtls/fetch.sh" \
+        "$MYOS_ROOT/ports/mbedtls/versions.env" "$MYOS_ROOT/ports/mbedtls/myos_mbedtls_config.h" \
+        2>/dev/null || true
+      find "$MYOS_ROOT/ports/mbedtls/include" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum 2>/dev/null || true
       find "$MYOS_ROOT/ports/lynx" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | sha256sum | awk '{print $1}'
