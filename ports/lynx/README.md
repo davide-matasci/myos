@@ -27,7 +27,7 @@ we must not add a second TLS stack. We keep lynx’s existing **`USE_GNUTLS_INCL
 **ports/mbedtls** — the same library curl and `user/tls` already use. CA bundle
 path: `/lib/cacert.pem` (shipped for curl).
 
-Default config is `ports/lynx/lynx.cfg`, packed as `/etc/lynx.cfg` (Lynx exits if that path is missing).
+Default config is `ports/lynx/lynx.cfg`, packed as `/lib/lynx.cfg` (myos has no `/etc` mount; cpio only registers `bin/*` and `lib/*`). Lynx is built with `LYNX_CFG_FILE=/lib/lynx.cfg` and exits if that file is missing.
 
 ## Reuse (no duplication)
 

@@ -93,9 +93,9 @@
 #define SSL_CERT_FILE_DEFAULT "/lib/cacert.pem"
 
 /* Paths in the initramfs image */
-#define LYNX_CFG_FILE "/etc/lynx.cfg"
-#define LYNX_CFG_PATH "/etc"
-#define LYNX_LSS_FILE "/etc/lynx.lss"
+#define LYNX_CFG_FILE "/lib/lynx.cfg"
+#define LYNX_CFG_PATH "/lib"
+#define LYNX_LSS_FILE "/lib/lynx.lss"
 
 /* Trim protocols / features myos does not need for a first port */
 #define DISABLE_NEWS 1

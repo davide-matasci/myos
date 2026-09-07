@@ -314,10 +314,11 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             )
         });
         add(&mut entries, "bin/custom/lynx", Some(lynx_bytes));
-        // System lynx.cfg (LYNX_CFG_FILE); lynx exits if this path is missing.
+        // System lynx.cfg (LYNX_CFG_FILE=/lib/lynx.cfg). cpio only routes
+        // bin/* and lib/* — there is no /etc mount, so etc/* was dropped.
         add(
             &mut entries,
-            "etc/lynx.cfg",
+            "lib/lynx.cfg",
             read(&manifest_dir.join("ports/lynx/lynx.cfg")),
         );
     }
