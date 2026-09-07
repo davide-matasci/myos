@@ -73,6 +73,6 @@ git log
 - No network remotes (no curl/openssl in this port).
 - `ftruncate` is a successful no-op in libgloss (no SYS_FTRUNCATE yet); enough for Phase-1 index write-after-fill.
 - `getrandom` is a software LCG stand-in (not cryptographic).
-- `utimensat` may be ROFS-stubbed depending on path; timestamps may not stick.
+- `chmod` / `fchmodat` / `utimensat` are successful no-ops (VFS has no mode/mtime yet); needed so git config lock + commit touches succeed.
 - No pthreads; FSMonitor / background helpers disabled.
 - Full QEMU smoke of git porcelain is optional; cross-build + `cargo check` covered.

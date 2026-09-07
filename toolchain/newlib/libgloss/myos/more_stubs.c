@@ -29,7 +29,8 @@ int fchmodat(int dirfd, const char *path, mode_t mode, int flags) {
     (void)path;
     (void)mode;
     (void)flags;
-    return myos_rofs();
+    /* Match chmod/fchmod: no mode bits yet. */
+    return 0;
 }
 
 int fchown(int fd, uid_t owner, gid_t group) {

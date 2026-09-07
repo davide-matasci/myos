@@ -44,7 +44,8 @@ int creat(const char *path, mode_t mode) {
 int chmod(const char *path, mode_t mode) {
     (void)path;
     (void)mode;
-    return myos_rofs();
+    /* No mode bits in VFS yet; succeed so git config lock chmod works. */
+    return 0;
 }
 
 int mkdir(const char *path, mode_t mode) {
@@ -190,7 +191,8 @@ int utimensat(int dirfd, const char *path, const struct timespec times[2], int f
     (void)path;
     (void)times;
     (void)flags;
-    return myos_rofs();
+    /* Timestamps are not stored; succeed so git commit/index touches work. */
+    return 0;
 }
 
 DIR *fdopendir(int fd) {
