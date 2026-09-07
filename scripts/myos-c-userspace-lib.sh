@@ -8,6 +8,7 @@ export MYOS_ROOT
 MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
 MYOS_NEWLIB_VERSION="$MYOS_ROOT/target/.myos-newlib-version"
 MYOS_C_HELLO_VERSION="$MYOS_ROOT/target/.myos-c-hello-version"
+MYOS_CURL_VERSION="$MYOS_ROOT/target/.myos-curl-version"
 MYOS_SBASE_VERSION="$MYOS_ROOT/target/.myos-sbase-version"
 MYOS_OKSH_VERSION="$MYOS_ROOT/target/.myos-oksh-version"
 MYOS_UBASE_VERSION="$MYOS_ROOT/target/.myos-ubase-version"
@@ -264,6 +265,49 @@ myos_ripgrep_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     triple="${arch}-unknown-myos"
     [[ -f "$MYOS_ROOT/target/rg-${triple}" ]] || return 1
+  done
+}
+
+
+myos_curl_version_hash() {
+  # curl's hash_curl() includes the CURL_VERSION value from versions.env.
+  # Source it here so the registry stamp matches curl/build.sh's own gate.
+  if [[ -f "$MYOS_ROOT/ports/curl/versions.env" ]]; then
+    # shellcheck disable=SC1091
+    source "$MYOS_ROOT/ports/curl/versions.env"
+  fi
+  local h
+  h="$(
+    {
+      # Mirror ports/curl/build.sh hash_curl() exactly so the registry stamp
+      # matches the script's own short-circuit.
+      echo "$CURL_VERSION"
+      sha256sum "$MYOS_ROOT/ports/curl/build.sh" \
+        "$MYOS_ROOT/ports/curl/fetch.sh" \
+        "$MYOS_ROOT/ports/curl/versions.env" \
+        "$MYOS_ROOT/ports/curl/config-myos.h" || true
+      # Statically links mbedtls: rebuild when CA/FS config changes. Hash mbedtls
+      # SOURCES only (never target/.myos-mbedtls-version, a build output) so the
+      # registry tag is deterministic at pull time on a fresh workspace.
+      sha256sum "$MYOS_ROOT/ports/mbedtls/build.sh" \
+        "$MYOS_ROOT/ports/mbedtls/fetch.sh" \
+        "$MYOS_ROOT/ports/mbedtls/versions.env" \
+        "$MYOS_ROOT/ports/mbedtls/myos_mbedtls_config.h" || true
+      find "$MYOS_ROOT/ports/mbedtls/include" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum 2>/dev/null || true
+      myos_newlib_version_hash
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_curl_is_current() {
+  local arch
+  [[ -f "$MYOS_CURL_VERSION" ]] \
+    && [[ "$(cat "$MYOS_CURL_VERSION")" == "$(myos_curl_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/curl-${arch}-unknown-none" ]] || return 1
   done
 }
 

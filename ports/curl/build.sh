@@ -8,20 +8,7 @@ source "$HERE/versions.env"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
 source "$ROOT/scripts/myos-c-userspace-lib.sh"
 
-STAMP="$ROOT/target/.myos-curl-version"
-hash_curl() {
-  {
-    echo "$CURL_VERSION"
-    sha256sum "$HERE/build.sh" "$HERE/fetch.sh" "$HERE/versions.env" "$HERE/config-myos.h" || true
-    # Statically links mbedtls: rebuild when CA/FS config changes.
-    sha256sum "$ROOT/ports/mbedtls/myos_mbedtls_config.h" || true
-    if [[ -f "$ROOT/target/.myos-mbedtls-version" ]]; then
-      sha256sum "$ROOT/target/.myos-mbedtls-version" || true
-    fi
-    myos_newlib_version_hash
-  } | sha256sum | awk '{print $1}'
-}
-WANT="$(hash_curl)"
+STAMP="$MYOS_CURL_VERSION"
 
 pack_curl_aliases() {
   # CI packs via existing `target/coreutils-*` glob (workflow edits need workflow scope).
@@ -39,11 +26,7 @@ pack_curl_aliases() {
   done
 }
 
-need=0
-for arch in x86_64 aarch64 riscv64; do
-  [[ -f "$ROOT/target/curl-${arch}-unknown-none" ]] || need=1
-done
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$WANT" && "$need" -eq 0 ]]; then
+if myos_curl_is_current; then
   echo "curl ELFs up to date"
   pack_curl_aliases
   exit 0
@@ -243,6 +226,6 @@ build_arch x86_64
 build_arch aarch64
 build_arch riscv64
 
-echo "$WANT" >"$STAMP"
+echo "$(myos_curl_version_hash)" >"$STAMP"
 pack_curl_aliases
 echo "curl build ok"
