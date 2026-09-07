@@ -24,11 +24,24 @@ fn load_keymap(path: &[u8]) -> Result<(), KeymapErr> {
     let Some(kfd) = open(path) else {
         return Err(KeymapErr::Open);
     };
-    // Packet: { len: u32 NE, data: [u8; len] } — see docs/keymap.md / KDSKMAP.
-    let mut packet = [0u8; 4 + 4096];
-    let n = read(kfd, &mut packet[4..]);
+    // Packet: { len: u32 NE, data: [u8; len] }. fd_read caps at FILE_IO_TMP=2048
+    // per call, so loop until EOF (ch.map is >2048).
+    const MAX_MAP: usize = 8192;
+    let mut packet = [0u8; 4 + MAX_MAP];
+    let mut n = 0usize;
+    loop {
+        let got = read(kfd, &mut packet[4 + n..]);
+        if got == 0 {
+            break;
+        }
+        n += got;
+        if n >= MAX_MAP {
+            close(kfd);
+            return Err(KeymapErr::Read);
+        }
+    }
     close(kfd);
-    if n == 0 || n > 4096 {
+    if n == 0 {
         return Err(KeymapErr::Read);
     }
     packet[0..4].copy_from_slice(&(n as u32).to_ne_bytes());

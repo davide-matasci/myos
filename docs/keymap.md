@@ -33,6 +33,8 @@ or `[ OK ] keymap us`.
 | `KDSKMAP` | `0x5480` | Pointer to `{ len: u32, data: [u8; len] }` — map **text** (little-endian `len`, max 8 KiB). |
 | `KDGKMAP` | `0x5481` | Pointer to `u32` out: `1` if a map is loaded, else `0`. |
 
+Loaders must **loop `read`** until EOF: kernel `fd_read` caps each call at `FILE_IO_TMP` (2048), while maps may be larger (e.g. `ch.map` ≈ 2051).
+
 `KDSKMAP` replaces any previously loaded map. On parse failure the previous
 map is left unchanged, the syscall returns an error, and the kernel prints
 `[ FAIL ] keymap: <reason>` on the console (serial/FB).
