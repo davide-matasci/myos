@@ -17,10 +17,11 @@ fi
 
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
-# HAVE_FCNTL: libc fcntl() must call _fcntl (libgloss), not return ENOSYS.
-# Needed for oksh savefd/F_DUPFD (pipes). Also set via configure.host; this
-# CFLAGS line is the reliable path.
-TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL"
+# HAVE_FCNTL: libc fcntl() must call _fcntl (libgloss), not return ENOSYS
+# (oksh savefd / F_DUPFD). HAVE_RENAME: libc rename() must call _rename
+# (SYS_RENAME), not link+unlink — our _link stub is EROFS and that broke
+# git init's commit_lock_file. Also set via configure.host; CFLAGS is reliable.
+TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL -DHAVE_RENAME"
 
 build_one() {
   local arch="$1"
@@ -28,7 +29,7 @@ build_one() {
   local build="$ROOT/target/newlib-build-${arch}"
   local prefix="$ROOT/target/newlib-${arch}"
 
-  echo "==> newlib libc ($triple) [HAVE_FCNTL]"
+  echo "==> newlib libc ($triple) [HAVE_FCNTL HAVE_RENAME]"
   rm -rf "$build"
   mkdir -p "$build"
   cd "$build"
