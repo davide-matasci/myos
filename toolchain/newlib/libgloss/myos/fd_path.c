@@ -37,6 +37,13 @@ void myos_fd_path_set(int fd, const char *path) {
     fd_path_set[fd] = 1;
 }
 
+const char *myos_fd_path_get(int fd) {
+    if (fd < 0 || fd >= MYOS_FD_PATH_MAX || !fd_path_set[fd]) {
+        return NULL;
+    }
+    return fd_paths[fd];
+}
+
 void myos_fd_path_clear(int fd) {
     if (fd < 0 || fd >= MYOS_FD_PATH_MAX) {
         return;

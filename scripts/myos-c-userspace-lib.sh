@@ -16,6 +16,8 @@ MYOS_RIPGREP_VERSION="$MYOS_ROOT/target/.myos-ripgrep-version"
 MYOS_TCC_VERSION="$MYOS_ROOT/target/.myos-tcc-version"
 MYOS_VIM_VERSION="$MYOS_ROOT/target/.myos-vim-version"
 MYOS_NCURSES_VERSION="$MYOS_ROOT/target/.myos-ncurses-version"
+MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
+MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
@@ -349,6 +351,62 @@ myos_ncurses_is_current() {
   done
 }
 
+
+myos_zlib_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      sha256sum "$MYOS_ROOT/ports/zlib/build.sh"
+      sha256sum "$MYOS_ROOT/ports/zlib/fetch.sh"
+      sha256sum "$MYOS_ROOT/ports/zlib/versions.env"
+      find "$MYOS_ROOT/ports/zlib" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_zlib_is_current() {
+  local arch
+  [[ -f "$MYOS_ZLIB_VERSION" ]] \
+    && [[ "$(cat "$MYOS_ZLIB_VERSION")" == "$(myos_zlib_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/zlib-${arch}/lib/libz.a" ]] || return 1
+  done
+}
+
+myos_git_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_zlib_version_hash
+      sha256sum "$MYOS_ROOT/ports/git/build.sh"
+      sha256sum "$MYOS_ROOT/ports/git/prepare.sh"
+      sha256sum "$MYOS_ROOT/ports/git/fetch.sh"
+      sha256sum "$MYOS_ROOT/ports/git/versions.env"
+      find "$MYOS_ROOT/ports/git" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_git_elfs_present() {
+  local arch
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/git-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_git_is_current() {
+  [[ -f "$MYOS_GIT_VERSION" ]] \
+    && [[ "$(cat "$MYOS_GIT_VERSION")" == "$(myos_git_version_hash)" ]] \
+    || return 1
+  myos_git_elfs_present
+}
 
 myos_lynx_version_hash() {
   local h

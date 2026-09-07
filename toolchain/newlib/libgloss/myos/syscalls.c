@@ -259,17 +259,27 @@ static int myos_stat_path(const char *path, struct stat *st)
 }
 
 int _fstat(int fd, struct stat *st) {
+    const char *path;
+
     if (st == NULL) {
         errno = EINVAL;
         return -1;
     }
-    memset(st, 0, sizeof(*st));
     if (myos_fd_is_tty(fd)) {
+        memset(st, 0, sizeof(*st));
         st->st_mode = S_IFCHR | 0666;
         st->st_rdev = (dev_t)fd;
         st->st_nlink = 1;
         return 0;
     }
+    /* Prefer path-based SYS_STAT so st_size/mode match the open file.
+     * A stub size of 0 made git's config mmap path treat MAP_FAILED+len0 as
+     * NULL and then page-fault while rewriting .git/config (cr2≈0x23). */
+    path = myos_fd_path_get(fd);
+    if (path != NULL) {
+        return myos_stat_path(path, st);
+    }
+    memset(st, 0, sizeof(*st));
     st->st_mode = S_IFREG | 0444;
     st->st_nlink = 1;
     return 0;

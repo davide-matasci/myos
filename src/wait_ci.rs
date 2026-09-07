@@ -52,7 +52,7 @@ const CI_NEEDLES: [&str; 32] = [
 /// print during `/heap`, so including them here would abort before those
 /// commands are typed. Verified by `interactive_dns_cmd_ok` /
 /// `interactive_https_cmd_ok`.
-const CI_NEEDLES_STD: [&str; 20] = [
+const CI_NEEDLES_STD: [&str; 22] = [
     "[ OK ] std",
     "[ OK ] std cat",
     "[ OK ] std echo",
@@ -71,6 +71,8 @@ const CI_NEEDLES_STD: [&str; 20] = [
     "[ OK ] sbase argv",
     "[ OK ] tcc",
     "[ OK ] tcc std",
+    "[ OK ] git",
+    "[ OK ] git commit",
     "[ OK ] ping",
     "[ OK ] socket",
 ];

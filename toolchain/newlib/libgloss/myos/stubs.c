@@ -65,6 +65,8 @@ int _rename(const char *oldpath, const char *newpath) {
 }
 
 
+/* Hardlink not implemented. Newlib rename() must use HAVE_RENAME → _rename;
+ * without that it falls back to link+unlink and surfaces EROFS on git init. */
 int _link(const char *oldpath, const char *newpath) {
     (void)oldpath;
     (void)newpath;

@@ -9,9 +9,9 @@ use spin::Mutex;
 
 use crate::fs::StatInfo;
 
-const MAX_ENTRIES: usize = 64;
-const COMP_CAP: usize = 32;
-const PATH_CAP: usize = 64;
+const MAX_ENTRIES: usize = 256;
+const COMP_CAP: usize = 64;
+const PATH_CAP: usize = 128;
 const FILE_CAP: usize = 262144;
 const LINK_CAP: usize = 64;
 
@@ -249,14 +249,29 @@ pub fn rename(old: &str, new: &str) -> bool {
     let Some(old_i) = find_index(&entries, old) else {
         return false;
     };
-    if find_index(&entries, new).is_some() {
-        return false;
+    let is_dir = matches!(entries[old_i].kind, Kind::Dir);
+
+    // POSIX: file/symlink rename may replace an existing non-directory dest.
+    // Without this, git init dies on the second config write (config.lock →
+    // config) after core.repositoryformatversion already created config —
+    // commit_lock_file rename failed with ENOENT on all boot arches.
+    if let Some(new_i) = find_index(&entries, new) {
+        if is_dir || matches!(entries[new_i].kind, Kind::Dir) {
+            return false;
+        }
+        if old_i == new_i {
+            return true;
+        }
+        entries.remove(new_i);
+        let old_i = if new_i < old_i { old_i - 1 } else { old_i };
+        entries[old_i].path = String::from(new);
+        return true;
     }
+
     if !parent_ok(&entries, new) {
         return false;
     }
 
-    let is_dir = matches!(entries[old_i].kind, Kind::Dir);
     if is_dir {
         let mut idxs: Vec<usize> = Vec::new();
         for (i, e) in entries.iter().enumerate() {
