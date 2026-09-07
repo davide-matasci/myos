@@ -116,6 +116,12 @@ curl_elves_ready() {
      && -f target/curl-riscv64-unknown-none ]]
 }
 
+lynx_elves_ready() {
+  [[ -f target/lynx-x86_64-unknown-none \
+     && -f target/lynx-aarch64-unknown-none \
+     && -f target/lynx-riscv64-unknown-none ]]
+}
+
 rebuild_kernels() {
   # Hash-gated: same script as the CI "Build kernel..." step. No-op when
   # inputs/artifacts already match target/.myos-ci-kernel-version.
@@ -192,6 +198,13 @@ if [[ -x target/debug/myos && -f target/bios.img \
   else
     echo "curl ELFs present: $(ls -lh target/curl-*-unknown-none)"
   fi
+  if ! lynx_elves_ready; then
+    echo "==> lynx ELF(s) missing after restore; building lynx"
+    ./ports/lynx/build.sh
+    need_rebuild=1
+  else
+    echo "lynx ELFs present: $(ls -lh target/lynx-*-unknown-none)"
+  fi
   if ((need_rebuild)); then
     rebuild_kernels
   fi
@@ -220,6 +233,7 @@ fi
 ./ports/zlib/build.sh
 ./ports/git/build.sh
 ./ports/curl/build.sh
+./ports/lynx/build.sh
 
 rebuild_kernels
 

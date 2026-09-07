@@ -56,6 +56,7 @@ jobs:
           ./scripts/ci-registry.sh pull vim || true
           ./scripts/ci-registry.sh pull zlib || true
           ./scripts/ci-registry.sh pull git || true
+          ./scripts/ci-registry.sh pull lynx || true
           ./toolchain/std/build-std-hello.sh
           ./scripts/build-c-hello.sh
           ./ports/sbase/build.sh
@@ -68,6 +69,7 @@ jobs:
           ./ports/vim/build.sh
           ./ports/zlib/build.sh
           ./ports/git/build.sh
+          ./ports/lynx/build.sh
           ./scripts/ci-registry.sh push newlib || true
           ./scripts/ci-registry.sh push std-hello || true
           ./scripts/ci-registry.sh push c-hello || true
@@ -81,6 +83,7 @@ jobs:
           ./scripts/ci-registry.sh push vim || true
           ./scripts/ci-registry.sh push zlib || true
           ./scripts/ci-registry.sh push git || true
+          ./scripts/ci-registry.sh push lynx || true
 
       - name: Build x86_64 hybrid ISO
         run: |

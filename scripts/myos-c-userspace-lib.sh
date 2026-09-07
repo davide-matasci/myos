@@ -18,6 +18,7 @@ MYOS_VIM_VERSION="$MYOS_ROOT/target/.myos-vim-version"
 MYOS_NCURSES_VERSION="$MYOS_ROOT/target/.myos-ncurses-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
+MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
@@ -407,3 +408,36 @@ myos_git_is_current() {
   myos_git_elfs_present
 }
 
+myos_lynx_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_ncurses_version_hash
+      # versions.env content hashed below
+      # shellcheck source=ports/lynx/versions.env
+      # LYNX_VERSION may be unset when called from registry; hash the env file.
+      sha256sum "$MYOS_ROOT/ports/lynx/versions.env"
+      sha256sum "$MYOS_ROOT/ports/lynx/build.sh"
+      sha256sum "$MYOS_ROOT/ports/lynx/prepare.sh"
+      sha256sum "$MYOS_ROOT/ports/lynx/fetch.sh"
+      sha256sum "$MYOS_ROOT/ports/mbedtls/myos_mbedtls_config.h" || true
+      if [[ -f "$MYOS_ROOT/target/.myos-mbedtls-version" ]]; then
+        sha256sum "$MYOS_ROOT/target/.myos-mbedtls-version" || true
+      fi
+      find "$MYOS_ROOT/ports/lynx" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_lynx_is_current() {
+  local arch
+  [[ -f "$MYOS_LYNX_VERSION" ]] \
+    && [[ "$(cat "$MYOS_LYNX_VERSION")" == "$(myos_lynx_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/lynx-${arch}-unknown-none" ]] || return 1
+  done
+}

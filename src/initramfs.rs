@@ -303,6 +303,25 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         });
         add(&mut entries, "bin/custom/vim", Some(vim_bytes));
     }
+    // lynx (text browser) -> bin/custom/lynx (none triple).
+    // HTTPS via ports/lynx/tidy_tls.c over mbedtls; sockets via libgloss /net.
+    {
+        let lynx_path = target.join(format!("lynx-{none_triple}"));
+        let lynx_bytes = std::fs::read(&lynx_path).unwrap_or_else(|e| {
+            panic!(
+                "initramfs: required bin/custom/lynx missing at {} ({e}); run ./ports/lynx/build.sh",
+                lynx_path.display()
+            )
+        });
+        add(&mut entries, "bin/custom/lynx", Some(lynx_bytes));
+        // System lynx.cfg (LYNX_CFG_FILE=/lib/lynx.cfg). Prefer /lib like
+        // cacert/termcap/kbd maps (bootfs /etc exists now, but lynx is built for /lib).
+        add(
+            &mut entries,
+            "lib/lynx.cfg",
+            read(&manifest_dir.join("ports/lynx/lynx.cfg")),
+        );
+    }
     // git (Phase-1 local porcelain) -> bin/custom/git (none triple, like vim).
     // Fallback: coreutils-git-* pack alias when ci-build.tar omitted the canonical name
     // (workflow glob edits need `workflow` OAuth scope).

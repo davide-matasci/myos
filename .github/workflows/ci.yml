@@ -206,7 +206,7 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
 
-      - name: Install sysroot and build std/C/sbase/oksh/ubase/uutils/ripgrep/tcc/ncurses/vim ELFs
+      - name: Install sysroot and build std/C/sbase/oksh/ubase/uutils/ripgrep/tcc/ncurses/vim/lynx ELFs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -232,6 +232,7 @@ jobs:
           ./scripts/ci-registry.sh pull vim || true
           ./scripts/ci-registry.sh pull zlib || true
           ./scripts/ci-registry.sh pull git || true
+          ./scripts/ci-registry.sh pull lynx || true
           ./toolchain/std/build-std-hello.sh
           ./scripts/build-c-hello.sh
           ./ports/sbase/build.sh
@@ -244,6 +245,7 @@ jobs:
           ./ports/vim/build.sh
           ./ports/zlib/build.sh
           ./ports/git/build.sh
+          ./ports/lynx/build.sh
           ./scripts/ci-registry.sh push sysroot || true
           ./scripts/ci-registry.sh push newlib || true
           ./scripts/ci-registry.sh push std-hello || true
@@ -258,6 +260,7 @@ jobs:
           ./scripts/ci-registry.sh push vim || true
           ./scripts/ci-registry.sh push zlib || true
           ./scripts/ci-registry.sh push git || true
+          ./scripts/ci-registry.sh push lynx || true
 
       - name: PS/2 scancode decode unit tests
         run: cargo test -p ps2-scancode
@@ -291,6 +294,7 @@ jobs:
             target/rg-*
             target/tcc-*
             target/vim-*
+            target/lynx-*
             target/ncurses-*
             target/zlib-*
             target/git-*
@@ -310,6 +314,7 @@ jobs:
             target/.myos-ripgrep-version
             target/.myos-tcc-version
             target/.myos-vim-version
+            target/.myos-lynx-version
             target/.myos-ncurses-version
             target/.myos-zlib-version
             target/.myos-git-version
@@ -468,6 +473,7 @@ jobs:
           ./scripts/ci-registry.sh pull vim || true
           ./scripts/ci-registry.sh pull zlib || true
           ./scripts/ci-registry.sh pull git || true
+          ./scripts/ci-registry.sh pull lynx || true
           ./scripts/ci-restore-or-build.sh
           ./scripts/ci-registry.sh push sysroot || true
           ./scripts/ci-registry.sh push newlib || true
@@ -483,6 +489,7 @@ jobs:
           ./scripts/ci-registry.sh push vim || true
           ./scripts/ci-registry.sh push zlib || true
           ./scripts/ci-registry.sh push git || true
+          ./scripts/ci-registry.sh push lynx || true
 
       - name: Install QEMU
         run: |

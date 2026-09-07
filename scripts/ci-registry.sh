@@ -8,7 +8,7 @@
 # Usage:
 #   ./scripts/ci-registry.sh pull PORT
 #   ./scripts/ci-registry.sh push PORT
-# PORT is one of: sysroot newlib sbase oksh ubase coreutils ripgrep tcc ncurses vim zlib git std-hello c-hello kernels
+# PORT is one of: sysroot newlib sbase oksh ubase coreutils ripgrep tcc ncurses vim zlib git lynx std-hello c-hello kernels
 # or "all" (sysroot + newlib first).
 #
 # Env:
@@ -31,7 +31,7 @@ ORAS_ARTIFACT_TYPE="application/vnd.myos.ci.port.v1"
 ORAS_LAYER_TYPE="application/vnd.myos.ci.port.layer.v1.tar+zst"
 
 # sysroot (rust std) then newlib (C): dependents pull after.
-ALL_PORTS=(sysroot newlib std-hello c-hello sbase oksh ubase coreutils ripgrep tcc ncurses vim zlib git kernels)
+ALL_PORTS=(sysroot newlib std-hello c-hello sbase oksh ubase coreutils ripgrep tcc ncurses vim zlib git lynx kernels)
 
 usage() {
   echo "usage: $0 pull|push PORT" >&2
@@ -53,6 +53,7 @@ port_hash() {
     vim) myos_vim_version_hash ;;
     zlib) myos_zlib_version_hash ;;
     git) myos_git_version_hash ;;
+    lynx) myos_lynx_version_hash ;;
     std-hello) myos_std_hello_version_hash ;;
     c-hello) myos_c_hello_version_hash ;;
     kernels) "$ROOT/scripts/ci-build-kernels.sh" --print-hash | tr -d '\n' ;;
@@ -74,6 +75,7 @@ port_is_current() {
     vim) myos_vim_is_current ;;
     zlib) myos_zlib_is_current ;;
     git) myos_git_is_current ;;
+    lynx) myos_lynx_is_current ;;
     std-hello) myos_std_hello_is_current ;;
     c-hello) myos_c_hello_is_current ;;
     kernels) "$ROOT/scripts/ci-build-kernels.sh" --is-current ;;
@@ -176,6 +178,12 @@ port_members() {
       echo target/.myos-git-version
       for arch in x86_64 aarch64 riscv64; do
         echo "target/git-${arch}-unknown-none"
+      done
+      ;;
+    lynx)
+      echo target/.myos-lynx-version
+      for arch in x86_64 aarch64 riscv64; do
+        echo "target/lynx-${arch}-unknown-none"
       done
       ;;
     std-hello)
