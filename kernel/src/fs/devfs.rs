@@ -357,8 +357,9 @@ pub fn tty_ioctl(request: usize) -> IoctlResult {
     const TIOCSWINSZ: usize = 0x5414;
 
     match request {
-        // TCGETS/TCSETS are handled in `task::fd_ioctl` (copy termios).
+        // TCGETS/TCSETS and KDSKMAP/KDGKMAP are handled in `task::fd_ioctl`.
         TCGETS | TCSETS | TCFLSH | TIOCSWINSZ => IoctlResult::Ok,
+        x if x == crate::keymap::KDSKMAP || x == crate::keymap::KDGKMAP => IoctlResult::Ok,
         TIOCGWINSZ => {
             let (row, col) = crate::console::winsize();
             IoctlResult::Winsize { row, col }

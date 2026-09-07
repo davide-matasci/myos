@@ -2,14 +2,14 @@
 //!
 //! The archive layout mirrors the VFS tree: `bin/<category>/<name>` entries are
 //! registered into the matching `/bin/…` mount (binfs, sbasefs, ubasefs,
-//! coreutilsfs, tccfs) and `lib/…` entries into libfs. Longest-prefix routing
+//! coreutilsfs, tccfs) and `lib/…` entries into libfs, and `etc/…` into bootfs at `/etc/…`. Longest-prefix routing
 //! preserves each mount's capacity and the `/bin/<category>/<name>` layout the
 //! shell's `_PATH_DEFPATH` expects.
 //!
 //! The module buffer is Limine-mapped for the kernel's lifetime, so each entry's
 //! bytes are `'static` and can be handed to `register()` without copying.
 
-use crate::fs::{binfs, coreutilsfs, libfs, sbasefs, tccfs, ubasefs};
+use crate::fs::{binfs, bootfs, coreutilsfs, libfs, sbasefs, tccfs, ubasefs};
 use alloc::vec::Vec;
 
 fn hex(s: &[u8]) -> usize {
@@ -99,5 +99,8 @@ fn route(name: &str, bytes: &'static [u8]) {
         let _ = libfs::register(rest, bytes);
     } else if let Some(rest) = name.strip_prefix("bin/") {
         let _ = binfs::register(rest, bytes);
+    } else if let Some(rest) = name.strip_prefix("etc/") {
+        // Flat bootfs name (prefer libfs for nested data; bootfs MAX_FILES=32).
+        let _ = bootfs::register(&alloc::format!("etc/{rest}"), bytes);
     }
 }

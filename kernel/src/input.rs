@@ -1,4 +1,7 @@
-//! Stdin: serial + PS/2 keyboard (when detected), shared ring buffer.
+//! Stdin: serial + keyboard (when detected), shared ring buffer.
+//!
+//! Keyboard bytes are keycode→character via the loadable [`crate::keymap`]
+//! (empty until userspace loads a map). Serial is unaffected.
 //!
 //! Line discipline follows the console termios (`ICANON` / `ECHO` / `ISIG` /
 //! `ICRNL`). Default is **canonical** (cooked): printable bytes accumulate in

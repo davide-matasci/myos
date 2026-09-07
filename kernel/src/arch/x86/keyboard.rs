@@ -6,6 +6,9 @@
 //! Real hardware almost always speaks scancode set 2 on the keyboard wire.
 //! The 8042 can translate that to set 1 for the host (configuration bit 6).
 //! We enable translation when possible and always decode set 1 at the port.
+//!
+//! Scancodes become **keycodes** in `ps2-scancode`; ASCII comes from the
+//! loadable kernel keymap (empty until userspace ioctl-loads one).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,6 +16,7 @@ use ps2_scancode::{Decoder, ScancodeSet};
 use spin::Mutex;
 
 use crate::console;
+use crate::keymap;
 
 const DATA: u16 = 0x60;
 const STATUS: u16 = 0x64;
@@ -49,7 +53,9 @@ pub fn present() -> bool {
     READY.load(Ordering::SeqCst)
 }
 
-/// Non-blocking: one translated byte from the keyboard, if any.
+/// Non-blocking: one keymap-translated byte from the keyboard, if any.
+///
+/// Returns `None` while no keymap is loaded (serial stdin still works).
 pub fn poll_byte() -> Option<u8> {
     if !READY.load(Ordering::SeqCst) {
         return None;
@@ -63,7 +69,10 @@ pub fn poll_byte() -> Option<u8> {
         return None;
     }
     let sc = inb(DATA);
-    DECODER.lock().as_mut()?.feed(sc)
+    let mut guard = DECODER.lock();
+    let dec = guard.as_mut()?;
+    let kc = dec.feed(sc)?;
+    keymap::translate(kc, dec.shift(), dec.altgr())
 }
 
 fn probe_and_enable() -> Option<(Decoder, bool)> {

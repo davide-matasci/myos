@@ -213,7 +213,7 @@ Attached as second virtio-blk in all QEMU runs. Holds `/msg` for `[ OK ] fat` / 
 
 Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `target/uefi.img` for UEFI). Framebuffer mirrors serial — boot progress scrolls on screen.
 
-**stdin** merges PS/2 keyboard and serial. If 8042 probe succeeds, keyboard works. Serial always available.
+**stdin** merges keyboard and serial. Keyboard characters come from a **loadable keymap** (default Swiss German via `user/init` → `/lib/kbd/ch.map`, US fallback; see `docs/keymap.md`). Serial always available and does not need a map.
 
 | Arch | Serial port | Baud rate |
 |------|-------------|-----------|
