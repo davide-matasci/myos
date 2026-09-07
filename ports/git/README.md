@@ -74,6 +74,8 @@ git log
 - `ftruncate` is a successful no-op in libgloss (no SYS_FTRUNCATE yet); enough for Phase-1 index write-after-fill.
 - `getrandom` is a software LCG stand-in (not cryptographic).
 - `chmod` / `fchmodat` / `utimensat` are successful no-ops (VFS has no mode/mtime yet); needed so git config lock + commit touches succeed.
+- Built with `NO_MMAP` (file-backed mmap is not implemented; git uses read+malloc).
+- `_fstat` must report real `st_size` via the open-path table (a zero size made config rewrite crash).
 - Newlib must be built with `HAVE_RENAME` so `rename()` uses libgloss `_rename` (not `link`+`unlink`; `_link` is still EROFS).
 - No pthreads; FSMonitor / background helpers disabled.
 - Full QEMU smoke of git porcelain is optional; cross-build + `cargo check` covered.

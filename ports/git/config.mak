@@ -18,6 +18,7 @@ NO_UNIX_SOCKETS = YesPlease
 NO_IPV6 = YesPlease
 NO_NSEC = YesPlease
 NO_PREAD = YesPlease
+NO_MMAP = YesPlease
 NO_GETPAGESIZE = YesPlease
 SKIP_DASHED_BUILT_INS = YesPlease
 
