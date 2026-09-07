@@ -23,6 +23,7 @@
 enum {
     SOCK_UNUSED = 0,
     SOCK_OPEN,
+    SOCK_CONNECTING, /* nonblock connect in flight; wait for Established */
     SOCK_CONNECTED,
 };
 
@@ -33,6 +34,7 @@ struct myos_sock {
     int data_fd;    /* returned to the app; /net/.../data */
     int ctl_fd;     /* kept open through connect */
     int nonblock;   /* O_NONBLOCK via fcntl F_SETFL (userspace-tracked) */
+    int so_error;   /* pending SO_ERROR (connect failure); cleared on read */
     unsigned short conv;
     char proto_path[16]; /* "/net/tcp" or "/net/udp" */
     struct sockaddr_in peer;
@@ -145,30 +147,62 @@ static long elapsed_ms(const struct timeval *start) {
         + (now.tv_usec - start->tv_usec) / 1000L;
 }
 
-static int wait_connected(struct myos_sock *s) {
+/* Read /net/.../status for an in-flight connect.
+ * Returns 1=Established ("connected"), -1=error/hangup (errno set), 0=still waiting.
+ * Note: "connecting" must not match "connected" (memcmp length check in buf_has). */
+static int connect_status(struct myos_sock *s) {
     char path[64];
     char sbuf[64];
-    struct timeval start;
+    int st;
+    ssize_t nr;
     if (conv_path(path, sizeof path, s->proto_path, s->conv, "status") < 0) {
+        errno = EIO;
         return -1;
     }
+    st = open(path, O_RDONLY);
+    if (st < 0) {
+        return 0;
+    }
+    nr = read(st, sbuf, sizeof sbuf);
+    close(st);
+    if (nr <= 0) {
+        return 0;
+    }
+    if (buf_has(sbuf, (size_t)nr, "connected")) {
+        return 1;
+    }
+    if (buf_has(sbuf, (size_t)nr, "error")
+            || buf_has(sbuf, (size_t)nr, "hangup")) {
+        errno = ECONNREFUSED;
+        return -1;
+    }
+    return 0;
+}
+
+/* Complete a successful handshake: drop ctl, mark peer, SOCK_CONNECTED. */
+static void finish_connect(struct myos_sock *s) {
+    if (s->ctl_fd >= 0) {
+        close(s->ctl_fd);
+        s->ctl_fd = -1;
+    }
+    s->peer_set = 1;
+    s->so_error = 0;
+    s->state = SOCK_CONNECTED;
+}
+
+static int wait_connected(struct myos_sock *s) {
+    struct timeval start;
     if (gettimeofday(&start, NULL) != 0) {
         errno = EIO;
         return -1;
     }
     for (;;) {
-        int st = open(path, O_RDONLY);
-        if (st >= 0) {
-            ssize_t nr = read(st, sbuf, sizeof sbuf);
-            close(st);
-            if (nr > 0 && buf_has(sbuf, (size_t)nr, "connected")) {
-                return 0;
-            }
-            if (nr > 0 && (buf_has(sbuf, (size_t)nr, "error")
-                    || buf_has(sbuf, (size_t)nr, "hangup"))) {
-                errno = ECONNREFUSED;
-                return -1;
-            }
+        int st = connect_status(s);
+        if (st > 0) {
+            return 0;
+        }
+        if (st < 0) {
+            return -1;
         }
         if (elapsed_ms(&start) >= CONNECT_TIMEOUT_MS) {
             errno = ETIMEDOUT;
@@ -308,6 +342,44 @@ int myos_socket_poll(int fd, short events, short *revents) {
     }
     want_in = events & (POLLIN | POLLPRI | POLLRDNORM);
     want_out = events & (POLLOUT | POLLWRNORM);
+
+    /* Nonblocking connect: curl waits for POLLOUT (then SO_ERROR) until
+     * netd advertises Established ("connected"). Do not report POLLOUT while
+     * still SynSent / "connecting". */
+    if (s->state == SOCK_CONNECTING) {
+        int st = connect_status(s);
+        if (st > 0) {
+            finish_connect(s);
+            if (want_out) {
+                rev |= POLLOUT;
+            }
+            if (want_in && data_pending(s)) {
+                rev |= POLLIN;
+            }
+            *revents = rev;
+            return rev ? 1 : 0;
+        }
+        if (st < 0) {
+            s->so_error = errno ? errno : ECONNREFUSED;
+            s->state = SOCK_OPEN;
+            if (s->ctl_fd >= 0) {
+                close(s->ctl_fd);
+                s->ctl_fd = -1;
+            }
+            rev |= POLLERR;
+            if (want_out) {
+                rev |= POLLOUT; /* wake curl to read SO_ERROR */
+            }
+            if (want_in) {
+                rev |= POLLIN | POLLHUP;
+            }
+            *revents = rev;
+            return 1;
+        }
+        *revents = 0;
+        return 0;
+    }
+
     /* Drain RX before surfacing hangup as the only POLLIN (half-close). */
     if (want_in && s->state == SOCK_CONNECTED && data_pending(s)) {
         rev |= POLLIN;
@@ -328,7 +400,7 @@ int myos_socket_poll(int fd, short events, short *revents) {
      * Never withhold POLLOUT when POLLIN is also requested: curl/mbedtls need
      * POLLOUT to send ClientHello while also watching for ServerHello. The old
      * withhold deadlocked HTTPS (curl:7 after ~15s in the connect/TLS phase).
-     * Unconnected sockets must not report POLLOUT. */
+     * Unconnected / connecting sockets must not report POLLOUT here. */
     if (want_out && s->state == SOCK_CONNECTED) {
         rev |= POLLOUT;
     }
@@ -497,6 +569,10 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         errno = EISCONN;
         return -1;
     }
+    if (s->state == SOCK_CONNECTING) {
+        errno = EALREADY;
+        return -1;
+    }
     if (addr == NULL || addr->sa_family != AF_INET) {
         errno = EAFNOSUPPORT;
         return -1;
@@ -530,15 +606,30 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         errno = EIO;
         return -1;
     }
+    /* Stash peer early; peer_set stays 0 until Established (getpeername). */
+    s->peer = *in;
+    s->so_error = 0;
+
+    if (s->nonblock) {
+        int st = connect_status(s);
+        if (st > 0) {
+            /* UDP (and rare fast TCP): already Established after ctl write. */
+            finish_connect(s);
+            return 0;
+        }
+        if (st < 0) {
+            return -1;
+        }
+        /* TCP handshake in progress — curl polls for POLLOUT / SO_ERROR. */
+        s->state = SOCK_CONNECTING;
+        errno = EINPROGRESS;
+        return -1;
+    }
+
     if (wait_connected(s) < 0) {
         return -1;
     }
-    /* Match dns helper: close ctl after connected; hangup reopens ctl. */
-    close(s->ctl_fd);
-    s->ctl_fd = -1;
-    s->peer = *in;
-    s->peer_set = 1;
-    s->state = SOCK_CONNECTED;
+    finish_connect(s);
     return 0;
 }
 
@@ -604,8 +695,24 @@ int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optl
             errno = EINVAL;
             return -1;
         }
-        *(int *)optval = 0;
+        /* If still connecting, sample status once so a racing Established is
+         * visible before curl reads SO_ERROR after POLLOUT. */
+        if (s->state == SOCK_CONNECTING) {
+            int st = connect_status(s);
+            if (st > 0) {
+                finish_connect(s);
+            } else if (st < 0) {
+                s->so_error = errno ? errno : ECONNREFUSED;
+                s->state = SOCK_OPEN;
+                if (s->ctl_fd >= 0) {
+                    close(s->ctl_fd);
+                    s->ctl_fd = -1;
+                }
+            }
+        }
+        *(int *)optval = s->so_error;
         *optlen = sizeof(int);
+        s->so_error = 0;
         return 0;
     }
     if (optname == SO_TYPE) {

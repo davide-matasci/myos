@@ -17,11 +17,11 @@ sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.
 |----------|----------------|
 | `socket(AF_INET, SOCK_STREAM, …)` | open `/net/tcp/clone`, read conv id, open `ctl` + `data`; return **data fd** |
 | `socket(…, SOCK_DGRAM, …)` | same with `/net/udp` |
-| `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` to ctl; poll `status` for `connected` |
+| `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` to ctl; blocking waits for `connected`; **O_NONBLOCK** → `EINPROGRESS`, then `poll`/`select` **POLLOUT** (+ `SO_ERROR`) when netd reports Established |
 | `send`/`recv`/`read`/`write` | ordinary fd I/O on data; empty connected read blocks unless `O_NONBLOCK` (then EAGAIN); hangup → EOF |
 | `close` | hangup via ctl (`hangup`) then close data (hook from `_close`) |
 | `getaddrinfo` | DNS A lookup over `/net/udp` to QEMU DNS `10.0.2.3:53` (same as `user/lib/dns.rs`) |
-| `poll`/`select` | userspace busy-wait; reports readiness (matches existing http busy-poll) |
+| `poll`/`select` | userspace busy-wait; **POLLOUT** only when `SOCK_CONNECTED` (or connect finished); **POLLIN** from netfs RX size / hangup (drain RX before hangup EOF) |
 
 Outbound TCP/UDP first. `listen`/`accept` return `EOPNOTSUPP`. Most `SO_*`/`TCP_*` are ignored.
 
