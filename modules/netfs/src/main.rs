@@ -31,7 +31,7 @@ const REP_HDR: usize = 9;
 /// need more than the old 512-byte slots (HTTPS handshake timed out in CI).
 const MSG_CAP: usize = 2048;
 const RING: usize = 8;
-const MAX_CONV: usize = 8;
+const MAX_CONV: usize = 16;
 /// Per-conversation RX staging. Cert chains exceed 512; drop = TLS timeout.
 const DATA_CAP: usize = 8192;
 const STATUS_CAP: usize = 64;
@@ -250,10 +250,32 @@ fn enqueue_req(typ: u8, conv: u16, proto: u8, payload: &[u8]) -> bool {
     state().req.push(&tmp[..n])
 }
 
+fn status_is(c: &Conv, needle: &[u8]) -> bool {
+    let s = &c.status[..c.status_len as usize];
+    s.windows(needle.len()).any(|w| w == needle)
+}
+
 fn alloc_conv(proto: u8) -> Option<u16> {
     let st = state();
+    // First pass: truly free slots.
     for i in 0..MAX_CONV {
         if !st.convs[i].used {
+            st.convs[i] = Conv {
+                used: true,
+                proto,
+                data_len: 0,
+                data: [0; DATA_CAP],
+                status_len: 0,
+                status: [0; STATUS_CAP],
+            };
+            return Some(i as u16);
+        }
+    }
+    // Second pass: reclaim peer-hangup slots with no pending RX (client forgot
+    // ctl hangup). Without this, curl after https can starve at MAX_CONV.
+    for i in 0..MAX_CONV {
+        let c = &st.convs[i];
+        if c.used && c.data_len == 0 && (status_is(c, b"hangup") || status_is(c, b"error")) {
             st.convs[i] = Conv {
                 used: true,
                 proto,
