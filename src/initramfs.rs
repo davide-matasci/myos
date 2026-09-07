@@ -303,6 +303,18 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         });
         add(&mut entries, "bin/custom/vim", Some(vim_bytes));
     }
+    // lynx (text browser) -> bin/custom/lynx (none triple).
+    // HTTPS via ports/lynx/tidy_tls.c over mbedtls; sockets via libgloss /net.
+    {
+        let lynx_path = target.join(format!("lynx-{none_triple}"));
+        let lynx_bytes = std::fs::read(&lynx_path).unwrap_or_else(|e| {
+            panic!(
+                "initramfs: required bin/custom/lynx missing at {} ({e}); run ./ports/lynx/build.sh",
+                lynx_path.display()
+            )
+        });
+        add(&mut entries, "bin/custom/lynx", Some(lynx_bytes));
+    }
 
     // newlib sysroot -> lib/newlib/include/… and lib/newlib/lib/….
     let sysroot = target.join(format!("newlib-{arch}")).join(myos_triple);

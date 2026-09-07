@@ -1,0 +1,16 @@
+--- a/WWW/Library/Implementation/HTTLS.c
++++ b/WWW/Library/Implementation/HTTLS.c
+@@ -20,9 +20,10 @@
+ #include <openssl/x509v3.h>
+ #endif
+ 
+-#ifdef USE_GNUTLS_INCL
+-#include <gnutls/x509.h>
+-#endif
++/* myos: tidy_tls is mbedtls-backed; do not pull real GnuTLS headers. */
++#if defined(USE_GNUTLS_INCL) && !defined(MYOS_MBEDTLS_TIDY_TLS)
++#include <gnutls/x509.h>
++#endif
+ 
+ #if defined(LIBRESSL_VERSION_NUMBER)
+ /* OpenSSL and LibreSSL version numbers do not correspond */

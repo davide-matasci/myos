@@ -199,3 +199,14 @@ int __gesf2(float a, float b)
 {
 	return __myos_sf_key(a) >= __myos_sf_key(b) ? 1 : 0;
 }
+
+
+float __floatdisf(long long a)
+{
+	return (float)a;
+}
+
+float __floatundisf(unsigned long long a)
+{
+	return (float)a;
+}

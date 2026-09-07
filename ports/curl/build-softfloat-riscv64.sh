@@ -18,8 +18,11 @@ fi
 mkdir -p "$SRC" "$OBJ"
 FILES=(
   adddf3.c subdf3.c muldf3.c divdf3.c comparedf2.c comparesf2.c
+  addsf3.c subsf3.c mulsf3.c divsf3.c
   fixdfsi.c fixdfdi.c fixunsdfsi.c fixunsdfdi.c
+  fixsfsi.c fixunssfsi.c
   floatsidf.c floatdidf.c floatunsidf.c floatundidf.c
+  floatsisf.c floatunsisf.c
   truncdfsf2.c extendsfdf2.c ashldi3.c ashrdi3.c lshrdi3.c
   int_lib.h int_types.h int_util.h int_endianness.h int_math.h
   fp_lib.h fp_mode.h fp_add_impl.inc fp_div_impl.inc fp_mul_impl.inc
