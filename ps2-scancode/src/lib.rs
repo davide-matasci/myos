@@ -1,7 +1,11 @@
-//! PS/2 keyboard scancode set 1 and set 2 → ASCII translation.
+//! PS/2 keyboard scancode set 1 and set 2 → stable keycodes (not ASCII).
 //!
 //! The kernel picks one active set at init (set 1 preferred). Never fall back
 //! between sets: the same byte means different keys in set 1 vs set 2.
+//!
+//! Keycodes are **PS/2 set-1 make codes** (and a few extended make codes such
+//! as Delete `0x53`). Layout → character translation is the kernel's loadable
+//! keymap — this crate only tracks modifiers and emits key positions.
 
 #![no_std]
 
@@ -16,6 +20,7 @@ pub enum ScancodeSet {
 pub struct Decoder {
     set: ScancodeSet,
     shift: bool,
+    altgr: bool,
     extended: bool,
     set2_break: bool,
     pause_skip: u8,
@@ -26,6 +31,7 @@ impl Decoder {
         Self {
             set,
             shift: false,
+            altgr: false,
             extended: false,
             set2_break: false,
             pause_skip: 0,
@@ -40,8 +46,13 @@ impl Decoder {
         self.shift
     }
 
+    pub fn altgr(&self) -> bool {
+        self.altgr
+    }
+
     pub fn reset_modifiers(&mut self) {
         self.shift = false;
+        self.altgr = false;
         self.extended = false;
         self.set2_break = false;
         self.pause_skip = 0;
@@ -70,7 +81,8 @@ impl Decoder {
         if matches!(sc, 0xE0 | 0xE1 | 0xF0) || sc & 0x80 != 0 {
             return false;
         }
-        if set1_to_ascii(sc, self.shift).is_none() && set2_to_ascii(sc, self.shift).is_some() {
+        // Known set-2 letter make that is unmapped as a set-1 make.
+        if set1_make_to_keycode(sc).is_none() && set2_make_to_keycode(sc).is_some() {
             self.set = ScancodeSet::Set2;
             return true;
         }
@@ -78,6 +90,10 @@ impl Decoder {
     }
 
     /// One raw byte from the 8042 data port (after filtering the aux/mouse bit).
+    ///
+    /// Returns a **keycode** on key make for keys that may produce characters
+    /// (letters, digits, Enter, Tab, Backspace, Space, ISO 102nd, Delete, …).
+    /// Modifier makes/breaks update internal state and return `None`.
     pub fn feed(&mut self, sc: u8) -> Option<u8> {
         if self.pause_skip > 0 {
             self.pause_skip -= 1;
@@ -93,10 +109,17 @@ impl Decoder {
         }
         if self.set2_break {
             self.set2_break = false;
+            let extended = core::mem::replace(&mut self.extended, false);
             if self.set == ScancodeSet::Set2 {
-                match sc {
-                    0x12 | 0x59 => self.shift = false,
-                    _ => {}
+                if extended {
+                    if sc == 0x11 {
+                        self.altgr = false;
+                    }
+                } else {
+                    match sc {
+                        0x12 | 0x59 => self.shift = false,
+                        _ => {}
+                    }
                 }
             }
             return None;
@@ -128,19 +151,44 @@ impl Decoder {
     }
 
     fn decode_extended(&mut self, sc: u8) -> Option<u8> {
-        if self.set == ScancodeSet::Set1 {
-            if sc & 0x80 != 0 {
-                let code = sc & 0x7F;
-                if matches!(code, 0x2A | 0x36) {
-                    self.shift = false;
+        match self.set {
+            ScancodeSet::Set1 => {
+                if sc & 0x80 != 0 {
+                    let code = sc & 0x7F;
+                    match code {
+                        0x2A | 0x36 => self.shift = false,
+                        0x38 => self.altgr = false,
+                        _ => {}
+                    }
+                    None
+                } else {
+                    match sc {
+                        0x2A | 0x36 => {
+                            self.shift = true;
+                            None
+                        }
+                        0x38 => {
+                            self.altgr = true;
+                            None
+                        }
+                        // Delete → keycode 0x53 (map typically binds to BS).
+                        0x53 => Some(0x53),
+                        _ => None,
+                    }
                 }
-            } else if matches!(sc, 0x2A | 0x36) {
-                self.shift = true;
-            } else if sc == 0x53 {
-                return Some(0x08);
+            }
+            ScancodeSet::Set2 => {
+                match sc {
+                    0x11 => {
+                        self.altgr = true;
+                        None
+                    }
+                    // Extended Delete (E0 71).
+                    0x71 => Some(0x53),
+                    _ => None,
+                }
             }
         }
-        None
     }
 
     fn decode_set1_make(&mut self, sc: u8) -> Option<u8> {
@@ -149,7 +197,11 @@ impl Decoder {
                 self.shift = true;
                 None
             }
-            _ => set1_to_ascii(sc, self.shift),
+            // Left Alt — not AltGr; ignore for character path.
+            0x38 => None,
+            0x1D => None, // Left Ctrl
+            0x3A => None, // Caps
+            _ => set1_make_to_keycode(sc),
         }
     }
 
@@ -159,124 +211,97 @@ impl Decoder {
                 self.shift = true;
                 None
             }
-            _ => set2_to_ascii(sc, self.shift),
+            0x11 => None, // Left Alt (non-extended)
+            0x14 => None, // Left Ctrl
+            0x58 => None, // Caps
+            _ => set2_make_to_keycode(sc),
         }
     }
 }
 
-pub fn set1_to_ascii(sc: u8, shift: bool) -> Option<u8> {
-    let pair = match sc {
-        0x02 => (b'1', b'!'),
-        0x03 => (b'2', b'@'),
-        0x04 => (b'3', b'#'),
-        0x05 => (b'4', b'$'),
-        0x06 => (b'5', b'%'),
-        0x07 => (b'6', b'^'),
-        0x08 => (b'7', b'&'),
-        0x09 => (b'8', b'*'),
-        0x0A => (b'9', b'('),
-        0x0B => (b'0', b')'),
-        0x0C => (b'-', b'_'),
-        0x0D => (b'=', b'+'),
-        0x10 => (b'q', b'Q'),
-        0x11 => (b'w', b'W'),
-        0x12 => (b'e', b'E'),
-        0x13 => (b'r', b'R'),
-        0x14 => (b't', b'T'),
-        0x15 => (b'y', b'Y'),
-        0x16 => (b'u', b'U'),
-        0x17 => (b'i', b'I'),
-        0x18 => (b'o', b'O'),
-        0x19 => (b'p', b'P'),
-        0x1A => (b'[', b'{'),
-        0x1B => (b']', b'}'),
-        0x1C => return Some(b'\n'),
-        0x1D => return None,
-        0x1E => (b'a', b'A'),
-        0x1F => (b's', b'S'),
-        0x20 => (b'd', b'D'),
-        0x21 => (b'f', b'F'),
-        0x22 => (b'g', b'G'),
-        0x23 => (b'h', b'H'),
-        0x24 => (b'j', b'J'),
-        0x25 => (b'k', b'K'),
-        0x26 => (b'l', b'L'),
-        0x27 => (b';', b':'),
-        0x28 => (b'\'', b'"'),
-        0x29 => (b'`', b'~'),
-        0x2B => (b'\\', b'|'),
-        0x2C => (b'z', b'Z'),
-        0x2D => (b'x', b'X'),
-        0x2E => (b'c', b'C'),
-        0x2F => (b'v', b'V'),
-        0x30 => (b'b', b'B'),
-        0x31 => (b'n', b'N'),
-        0x32 => (b'm', b'M'),
-        0x33 => (b',', b'<'),
-        0x34 => (b'.', b'>'),
-        0x35 => (b'/', b'?'),
-        0x37 => return None,
-        0x39 => return Some(b' '),
-        0x0E => return Some(0x08),
-        0x0F => return Some(b'\t'),
-        _ => return None,
-    };
-    Some(if shift { pair.1 } else { pair.0 })
+/// Set-1 make → keycode (identity for the keys we care about).
+pub fn set1_make_to_keycode(sc: u8) -> Option<u8> {
+    match sc {
+        0x01..=0x0D => Some(sc), // Esc + number row
+        0x0E => Some(0x0E),      // Backspace
+        0x0F => Some(0x0F),      // Tab
+        0x10..=0x1C => Some(sc), // q–Enter
+        0x1E..=0x29 => Some(sc), // a–grave
+        0x2B => Some(0x2B),      // \ |
+        0x2C..=0x35 => Some(sc), // z–/
+        0x37 => None,            // keypad *
+        0x39 => Some(0x39),      // Space
+        0x56 => Some(0x56),      // ISO 102nd (< > on CH)
+        _ => None,
+    }
 }
 
-pub fn set2_to_ascii(sc: u8, shift: bool) -> Option<u8> {
-    let pair = match sc {
-        0x16 => (b'1', b'!'),
-        0x1E => (b'2', b'@'),
-        0x26 => (b'3', b'#'),
-        0x25 => (b'4', b'$'),
-        0x2E => (b'5', b'%'),
-        0x36 => (b'6', b'^'),
-        0x3D => (b'7', b'&'),
-        0x3E => (b'8', b'*'),
-        0x46 => (b'9', b'('),
-        0x45 => (b'0', b')'),
-        0x15 => (b'q', b'Q'),
-        0x1D => (b'w', b'W'),
-        0x24 => (b'e', b'E'),
-        0x2D => (b'r', b'R'),
-        0x2C => (b't', b'T'),
-        0x35 => (b'y', b'Y'),
-        0x3C => (b'u', b'U'),
-        0x43 => (b'i', b'I'),
-        0x44 => (b'o', b'O'),
-        0x4D => (b'p', b'P'),
-        0x1C => (b'a', b'A'),
-        0x1B => (b's', b'S'),
-        0x23 => (b'd', b'D'),
-        0x2B => (b'f', b'F'),
-        0x34 => (b'g', b'G'),
-        0x33 => (b'h', b'H'),
-        0x3B => (b'j', b'J'),
-        0x42 => (b'k', b'K'),
-        0x4B => (b'l', b'L'),
-        0x1A => (b'z', b'Z'),
-        0x22 => (b'x', b'X'),
-        0x21 => (b'c', b'C'),
-        0x2A => (b'v', b'V'),
-        0x32 => (b'b', b'B'),
-        0x31 => (b'n', b'N'),
-        0x3A => (b'm', b'M'),
-        0x58 => return Some(b'\n'),
-        0x66 => return Some(0x08),
-        0x29 => return Some(b' '),
-        0x0D => return Some(b'\t'),
+/// Set-2 make → set-1-style keycode.
+pub fn set2_make_to_keycode(sc: u8) -> Option<u8> {
+    Some(match sc {
+        0x76 => 0x01, // Esc
+        0x16 => 0x02,
+        0x1E => 0x03,
+        0x26 => 0x04,
+        0x25 => 0x05,
+        0x2E => 0x06,
+        0x36 => 0x07,
+        0x3D => 0x08,
+        0x3E => 0x09,
+        0x46 => 0x0A,
+        0x45 => 0x0B,
+        0x4E => 0x0C,
+        0x55 => 0x0D,
+        0x66 => 0x0E, // Backspace
+        0x0D => 0x0F, // Tab
+        0x15 => 0x10, // q
+        0x1D => 0x11,
+        0x24 => 0x12,
+        0x2D => 0x13,
+        0x2C => 0x14,
+        0x35 => 0x15,
+        0x3C => 0x16,
+        0x43 => 0x17,
+        0x44 => 0x18,
+        0x4D => 0x19,
+        0x54 => 0x1A,
+        0x5B => 0x1B,
+        0x5A => 0x1C, // Enter
+        0x1C => 0x1E, // a
+        0x1B => 0x1F,
+        0x23 => 0x20,
+        0x2B => 0x21,
+        0x34 => 0x22,
+        0x33 => 0x23,
+        0x3B => 0x24,
+        0x42 => 0x25,
+        0x4B => 0x26,
+        0x4C => 0x27,
+        0x52 => 0x28,
+        0x0E => 0x29, // `
+        0x5D => 0x2B, // \ |
+        0x1A => 0x2C, // z
+        0x22 => 0x2D,
+        0x21 => 0x2E,
+        0x2A => 0x2F,
+        0x32 => 0x30,
+        0x31 => 0x31,
+        0x3A => 0x32,
+        0x41 => 0x33,
+        0x49 => 0x34,
+        0x4A => 0x35,
+        0x29 => 0x39, // Space
+        0x61 => 0x56, // ISO 102nd
         _ => return None,
-    };
-    Some(if shift { pair.1 } else { pair.0 })
+    })
 }
 
-/// Decode a byte sequence and append translated bytes to `out`.
+/// Decode a byte sequence and append keycodes to `out`.
 pub fn decode_sequence(set: ScancodeSet, bytes: &[u8], out: &mut allocless::Vec) {
     let mut dec = Decoder::new(set);
     for &b in bytes {
-        if let Some(ch) = dec.feed(b) {
-            out.push(ch);
+        if let Some(kc) = dec.feed(b) {
+            out.push(kc);
         }
     }
 }
@@ -311,28 +336,45 @@ pub mod allocless {
 
 /// Built-in vectors for kernel boot and host `cargo test`.
 pub fn self_test() -> bool {
-    regression_set2_ok() && regression_set1_ok() && regression_no_cross_decode()
+    regression_set2_ok() && regression_set1_ok() && regression_no_cross_decode() && regression_altgr()
 }
 
 fn regression_set2_ok() -> bool {
-    // Set 2 make codes for o, k, Enter (real-hardware default before F0 01).
-    let bytes = [0x44, 0x42, 0x58];
+    // Set 2 make codes for o, k, Enter → keycodes 0x18, 0x25, 0x1C.
+    let bytes = [0x44, 0x42, 0x5A];
     let mut out = allocless::Vec::new();
     decode_sequence(ScancodeSet::Set2, &bytes, &mut out);
-    out.as_slice() == b"ok\n"
+    out.as_slice() == [0x18, 0x25, 0x1C]
 }
 
 fn regression_set1_ok() -> bool {
     let bytes = [0x18, 0x25, 0x1C];
     let mut out = allocless::Vec::new();
     decode_sequence(ScancodeSet::Set1, &bytes, &mut out);
-    out.as_slice() == b"ok\n"
+    out.as_slice() == [0x18, 0x25, 0x1C]
 }
 
 fn regression_no_cross_decode() -> bool {
-    // 0x44 is 'o' in set 2 but unmapped in set 1 — must not decode when set 1 is active.
+    // 0x44 is 'o' make in set 2 but unmapped in set 1.
     let mut dec = Decoder::new(ScancodeSet::Set1);
     dec.feed(0x44).is_none()
+}
+
+fn regression_altgr() -> bool {
+    let mut dec = Decoder::new(ScancodeSet::Set1);
+    if dec.feed(0xE0).is_some() || dec.feed(0x38).is_some() {
+        return false;
+    }
+    if !dec.altgr() {
+        return false;
+    }
+    if dec.feed(0x03) != Some(0x03) {
+        return false;
+    }
+    if dec.feed(0xE0).is_some() || dec.feed(0xB8).is_some() {
+        return false;
+    }
+    !dec.altgr()
 }
 
 #[cfg(test)]
@@ -346,20 +388,26 @@ mod tests {
     }
 
     #[test]
-    fn set2_ok_enter() {
-        assert_eq!(decode_all(ScancodeSet::Set2, &[0x44, 0x42, 0x58]).as_slice(), b"ok\n");
+    fn set2_ok_enter_keycodes() {
+        assert_eq!(
+            decode_all(ScancodeSet::Set2, &[0x44, 0x42, 0x5A]).as_slice(),
+            &[0x18, 0x25, 0x1C]
+        );
     }
 
     #[test]
-    fn set1_ok_enter() {
-        assert_eq!(decode_all(ScancodeSet::Set1, &[0x18, 0x25, 0x1C]).as_slice(), b"ok\n");
+    fn set1_ok_enter_keycodes() {
+        assert_eq!(
+            decode_all(ScancodeSet::Set1, &[0x18, 0x25, 0x1C]).as_slice(),
+            &[0x18, 0x25, 0x1C]
+        );
     }
 
     #[test]
     fn set1_does_not_use_set2_table() {
         let mut dec = Decoder::new(ScancodeSet::Set1);
         assert_eq!(dec.feed(0x44), None);
-        assert_eq!(dec.feed(0x18), Some(b'o'));
+        assert_eq!(dec.feed(0x18), Some(0x18));
     }
 
     #[test]
@@ -382,10 +430,11 @@ mod tests {
     }
 
     #[test]
-    fn set2_0x12_is_shift_not_e() {
+    fn set2_0x12_is_shift_not_keycode() {
         let mut dec = Decoder::new(ScancodeSet::Set2);
         assert_eq!(dec.feed(0x12), None);
-        assert_eq!(dec.feed(0x24), Some(b'E'));
+        assert!(dec.shift());
+        assert_eq!(dec.feed(0x24), Some(0x12)); // e keycode
     }
 
     #[test]
@@ -399,7 +448,7 @@ mod tests {
         assert!(dec.autodetect_set2_break_prefix(0xF0));
         assert_eq!(dec.set(), ScancodeSet::Set2);
         assert_eq!(dec.feed(0x12), None); // shift break
-        assert_eq!(dec.feed(0x44), Some(b'o'));
+        assert_eq!(dec.feed(0x44), Some(0x18));
     }
 
     #[test]
@@ -407,15 +456,29 @@ mod tests {
         let mut dec = Decoder::new(ScancodeSet::Set1);
         assert!(dec.autodetect_set2_make(0x44));
         assert_eq!(dec.set(), ScancodeSet::Set2);
-        assert_eq!(dec.feed(0x44), Some(b'o'));
+        assert_eq!(dec.feed(0x44), Some(0x18));
     }
 
     #[test]
-    fn dual_decode_regression() {
-        // Old bug: set1 decoder fell through to set2 for 0x44 → spurious 'o'.
+    fn altgr_set1() {
         let mut dec = Decoder::new(ScancodeSet::Set1);
-        let wrongly = set2_to_ascii(0x44, false);
-        assert_eq!(wrongly, Some(b'o'));
-        assert_ne!(dec.feed(0x44), wrongly);
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x38), None);
+        assert!(dec.altgr());
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0xB8), None);
+        assert!(!dec.altgr());
+    }
+
+    #[test]
+    fn altgr_set2() {
+        let mut dec = Decoder::new(ScancodeSet::Set2);
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x11), None);
+        assert!(dec.altgr());
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0xF0), None);
+        assert_eq!(dec.feed(0x11), None);
+        assert!(!dec.altgr());
     }
 }

@@ -314,8 +314,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             )
         });
         add(&mut entries, "bin/custom/lynx", Some(lynx_bytes));
-        // System lynx.cfg (LYNX_CFG_FILE=/lib/lynx.cfg). cpio only routes
-        // bin/* and lib/* — there is no /etc mount, so etc/* was dropped.
+        // System lynx.cfg (LYNX_CFG_FILE=/lib/lynx.cfg). Prefer /lib like
+        // cacert/termcap/kbd maps (bootfs /etc exists now, but lynx is built for /lib).
         add(
             &mut entries,
             "lib/lynx.cfg",
@@ -374,6 +374,21 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         &mut entries,
         "lib/termcap",
         read(&manifest_dir.join("ports/termcap/termcap")),
+    );
+
+    // Loadable keyboard maps (Swiss German default; US alternate).
+    // Served at /lib/kbd/*.map via libfs (cpio lib/ → libfs nested tree).
+    // Do NOT pack under etc/ — bootfs is flat (MAX_FILES=32) and register
+    // failures are ignored, so /etc/kbd/*.map never appears on the guest.
+    add(
+        &mut entries,
+        "lib/kbd/ch.map",
+        read(&manifest_dir.join("kbd/ch.map")),
+    );
+    add(
+        &mut entries,
+        "lib/kbd/us.map",
+        read(&manifest_dir.join("kbd/us.map")),
     );
 
     // Sort + dedupe by path (later duplicates win for the same path).
