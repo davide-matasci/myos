@@ -26,8 +26,17 @@ pub const HANDLER_IGN: usize = 1;
 /// Task id currently blocked in [`crate::input::read`], or `usize::MAX` if none.
 ///
 /// Phase-1 foreground for `^C`: prefer this task's process group; if nobody is
-/// in a console read, fall back to every live user task with `has_ctty`.
+/// in a console read, fall back to the last console reader's process group
+/// (so `^C` still reaches a foreground child while the shell is blocked in
+/// `wait`), then to every live user task with `has_ctty`.
 static INPUT_READER: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Process group of the last task that blocked in `input::read`, or `usize::MAX`
+/// if none so far. Kept across [`leave_input_read`] so a `^C` typed while a
+/// foreground child runs (nobody is reading the console) still interrupts
+/// the shell's process group — the shell ignores SIGINT (interactive oksh) and
+/// the child dies, exactly like a real tty foreground job.
+static LAST_INPUT_PGID: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 #[inline]
 fn sig_bit(sig: u32) -> Option<u32> {
@@ -39,10 +48,15 @@ fn sig_bit(sig: u32) -> Option<u32> {
 
 /// Mark the current task as blocked in console `input::read` (for `^C` fg).
 pub fn enter_input_read() {
-    INPUT_READER.store(task::current_id(), Ordering::SeqCst);
+    let id = task::current_id();
+    INPUT_READER.store(id, Ordering::SeqCst);
+    if let Some(pgid) = task::task_pgid(id) {
+        LAST_INPUT_PGID.store(pgid, Ordering::SeqCst);
+    }
 }
 
-/// Clear the console-read marker.
+/// Clear the console-read marker. [`LAST_INPUT_PGID`] persists so `^C` keeps
+/// working while a foreground child runs (see its doc comment).
 pub fn leave_input_read() {
     INPUT_READER.store(usize::MAX, Ordering::SeqCst);
 }
@@ -114,6 +128,14 @@ pub fn handle_ctrl_c() {
             let _ = kill_pg(pgid, SIGINT);
             return;
         }
+    }
+    let last = LAST_INPUT_PGID.load(Ordering::SeqCst);
+    if last != usize::MAX {
+        // Foreground child phase: nobody is blocked on the console (the shell
+        // sits in `wait`, the child in a socket/pipe poll). Interrupt the
+        // shell's group — the shell ignores SIGINT, the child dies.
+        let _ = kill_pg(last, SIGINT);
+        return;
     }
     for id in 0..task::task_slots() {
         if task::task_has_ctty(id) {
