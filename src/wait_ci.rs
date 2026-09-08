@@ -78,7 +78,7 @@ const CI_NEEDLES_STD: [&str; 22] = [
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 15] = [
+const CI_SHELL_COMMANDS: [&[u8]; 17] = [
     b"nosuchcmd\n",
     // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
     b"heap\n",
@@ -107,12 +107,27 @@ const CI_SHELL_COMMANDS: [&[u8]; 15] = [
     // wait wakes on a pending fatal signal; see `interactive_interrupt_cmd_ok`
     // and the interrupt handling in `advance_shell_ci`.
     b"cat | cat\n",
+    // Seed a distinct history entry for the arrow-key test that follows.
+    b"echo histrecall_zz\n",
+    // Arrow-key editing: at the emacs-raw prompt, Up (ESC [ A) must recall the
+    // previous `echo histrecall_zz`, Left (ESC [ D) moves the cursor off the end,
+    // `3` inserts, and Enter runs the edited line -> `echo histrecall_z3z` prints
+    // `histrecall_z3z`. If raw mode / the editor are broken the kernels cooked
+    // gate swallows the CSI bytes and the recalled+edited command never runs;
+    // `histrecall_z3z` then never appears.
+    b"\x1b[A\x1b[D3\n",
 ];
 
 /// Index into [`CI_SHELL_COMMANDS`] of the ^C interrupt test. While waiting on
 /// this command the harness sends `0x03` (VINTR) once and requires the shell
 /// to survive and return to the prompt.
 const INTERRUPT_CMD_IDX: usize = 14;
+
+/// Index into [`CI_SHELL_COMMANDS`] of the history seed for the arrow test.
+const ARROW_SEED_IDX: usize = 15;
+
+/// Index into [`CI_SHELL_COMMANDS`] of the Up/Left arrow-key editing test.
+const ARROW_EDIT_IDX: usize = 16;
 
 /// Printed by the interactive shell when a command cannot be resolved.
 const CI_SHELL_UNKNOWN_CMD: &str = "not found";
@@ -343,6 +358,30 @@ fn interactive_interrupt_cmd_ok(serial: &str) -> bool {
     at_interactive_prompt(serial)
 }
 
+/// History seed for the arrow test: `echo histrecall_zz` must run and print
+/// `histrecall_zz` so the following arrow command can recall it via Up.
+fn interactive_arrow_seed_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    !serial.contains("exception:")
+        && !serial.contains("histrecall_zz: not found")
+        && tail.contains("histrecall_zz")
+        && at_interactive_prompt(serial)
+}
+
+/// Arrow-key editing test: Up (ESC [ A) recalls the seeded history entry,
+/// Left (ESC [ D) backs the cursor off the end, `3` inserts, Enter runs the
+/// edited line -> `echo histrecall_z3z` prints `histrecall_z3z`. The needle
+/// only appears if the emacs editor recognised the CSI bytes on the raw tty:
+/// with a cooked/single-line shell the escaped sequence is swallowed (kernel
+/// canonical mode) or printed as garbage and `histrecall_z3z` never runs.
+fn interactive_arrow_edit_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    !serial.contains("exception:")
+        && !tail.contains("histrecall_z3z: not found")
+        && tail.contains("histrecall_z3z")
+        && at_interactive_prompt(serial)
+}
+
 /// curl errored after the interactive command (e.g. `curl: (4) …`).
 fn interactive_curl_after_failed(after: &str) -> bool {
     after.contains("not found")
@@ -462,6 +501,8 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
         12 => interactive_https_cmd_ok(serial),
         13 => interactive_curl_cmd_ok(serial),
         INTERRUPT_CMD_IDX => interactive_interrupt_cmd_ok(serial),
+        ARROW_SEED_IDX => interactive_arrow_seed_ok(serial),
+        ARROW_EDIT_IDX => interactive_arrow_edit_ok(serial),
         _ => false,
     }
 }
@@ -858,6 +899,25 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: Ctrl+C did not interrupt the foreground `cat | cat`");
             }
             std::process::exit(1);
+        }
+        if shell_cmd_index == ARROW_SEED_IDX && !interactive_arrow_seed_ok(&serial) {
+            eprintln!(
+                "error: arrow history seed `echo histrecall_zz` failed (want `histrecall_zz`, no exception)"
+            );
+        }
+        if shell_cmd_index == ARROW_EDIT_IDX && !interactive_arrow_edit_ok(&serial) {
+            if !serial.contains("histrecall_z3z")
+                && !serial.contains("histrecall_zz3")
+                && !serial.contains("histrecall_zz: not found")
+            {
+                eprintln!(
+                    "error: arrow keys dead at the prompt — Up/Left did not recall+edit `echo histrecall_zz`"
+                );
+            } else {
+                eprintln!(
+                    "error: arrow recall/insert produced unexpected argv (want `echo histrecall_z3z`)"
+                );
+            }
         }
         std::process::exit(1);
     }
