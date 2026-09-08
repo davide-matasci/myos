@@ -10,6 +10,7 @@ use spin::Mutex;
 
 use crate::blk::virtq;
 use crate::console;
+use crate::kbd::{self, ByteFifo};
 
 const MMIO_BASE: usize = 0x0A00_0000;
 const MMIO_STRIDE: usize = 0x200;
@@ -70,7 +71,34 @@ static DEV: Mutex<Option<Dev>> = Mutex::new(None);
 static READY: AtomicBool = AtomicBool::new(false);
 static SHIFT: AtomicBool = AtomicBool::new(false);
 static ALTGR: AtomicBool = AtomicBool::new(false);
-static PENDING: Mutex<Option<u8>> = Mutex::new(None);
+static CTRL: AtomicBool = AtomicBool::new(false);
+/// Bytes (single or multi-byte CSI sequences) waiting to drain from `poll_byte`.
+static FIFO: Mutex<ByteFifo> = Mutex::new(ByteFifo::new());
+
+/// Linux `KEY_*` codes for arrows (these differ from PS/2 set-1 makes).
+const KEY_LEFT: u16 = 105;
+const KEY_UP: u16 = 103;
+const KEY_RIGHT: u16 = 106;
+const KEY_DOWN: u16 = 108;
+
+/// Map a virtio/Linux `KEY_*` code to the kernel's canonical set-1 space.
+fn canonical(code: u16) -> Option<u8> {
+    // Most Linux codes match PS/2 set-1 makes; arrows differ, so handle them
+    // explicitly first.
+    match code {
+        KEY_UP => Some(kbd::KEY_UP),
+        KEY_DOWN => Some(kbd::KEY_DOWN),
+        KEY_LEFT => Some(kbd::KEY_LEFT),
+        KEY_RIGHT => Some(kbd::KEY_RIGHT),
+        _ => {
+            if code > 127 {
+                None
+            } else {
+                Some(code as u8)
+            }
+        }
+    }
+}
 
 fn r32(base: usize, off: u32) -> u32 {
     unsafe { core::ptr::read_volatile((base + off as usize) as *const u32) }
@@ -173,14 +201,17 @@ fn handle_event(type_: u16, code: u16, value: u32) {
     if type_ != EV_KEY {
         return;
     }
-    // Linux KEY_* codes match PS/2 set-1 makes for the keys we map.
+    // Linux KEY_* codes for modifiers.
     const KEY_LEFTSHIFT: u16 = 42;
     const KEY_RIGHTSHIFT: u16 = 54;
+    const KEY_LEFTCTRL: u16 = 29;
+    const KEY_RIGHTCTRL: u16 = 97;
     const KEY_RIGHTALT: u16 = 100; // AltGr
     if value == 0 {
         match code {
             KEY_LEFTSHIFT | KEY_RIGHTSHIFT => SHIFT.store(false, Ordering::SeqCst),
             KEY_RIGHTALT => ALTGR.store(false, Ordering::SeqCst),
+            KEY_LEFTCTRL | KEY_RIGHTCTRL => CTRL.store(false, Ordering::SeqCst),
             _ => {}
         }
         return;
@@ -192,16 +223,20 @@ fn handle_event(type_: u16, code: u16, value: u32) {
         KEY_RIGHTALT => {
             ALTGR.store(true, Ordering::SeqCst);
         }
+        KEY_LEFTCTRL | KEY_RIGHTCTRL => {
+            CTRL.store(true, Ordering::SeqCst);
+        }
         _ => {
-            if code > 127 {
+            let Some(kc) = canonical(code) else {
                 return;
-            }
-            if let Some(b) = crate::keymap::translate(
-                code as u8,
+            };
+            if let Some(kb) = kbd::translate(
+                kc,
                 SHIFT.load(Ordering::SeqCst),
                 ALTGR.load(Ordering::SeqCst),
+                CTRL.load(Ordering::SeqCst),
             ) {
-                *PENDING.lock() = Some(b);
+                FIFO.lock().push_bytes(kb.as_slice());
             }
         }
     }
@@ -306,6 +341,7 @@ pub fn init() {
             READY.store(true, Ordering::SeqCst);
             SHIFT.store(false, Ordering::SeqCst);
             ALTGR.store(false, Ordering::SeqCst);
+            CTRL.store(false, Ordering::SeqCst);
             console::status_ok("keyboard");
             return;
         }
@@ -320,12 +356,11 @@ pub fn poll_byte() -> Option<u8> {
     if !READY.load(Ordering::SeqCst) {
         return None;
     }
-    if let Some(b) = PENDING.lock().take() {
-        return Some(b);
+    {
+        let mut guard = DEV.lock();
+        if let Some(dev) = guard.as_mut() {
+            unsafe { drain_events(dev) };
+        }
     }
-    let mut guard = DEV.lock();
-    if let Some(dev) = guard.as_mut() {
-        unsafe { drain_events(dev) };
-    }
-    PENDING.lock().take()
+    FIFO.lock().pop()
 }

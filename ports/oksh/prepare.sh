@@ -30,6 +30,7 @@ patch_copy() {
 patch_copy main
 patch_copy jobs
 patch_copy tty
+patch_copy trap
 patch_copy io
 patch_copy shf
 patch_copy c_sh

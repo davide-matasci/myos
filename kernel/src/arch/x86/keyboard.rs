@@ -16,7 +16,7 @@ use ps2_scancode::{Decoder, ScancodeSet};
 use spin::Mutex;
 
 use crate::console;
-use crate::keymap;
+use crate::kbd::{self, ByteFifo};
 
 const DATA: u16 = 0x60;
 const STATUS: u16 = 0x64;
@@ -34,6 +34,8 @@ const CFG_TRANSLATE: u8 = 1 << 6;
 
 static READY: AtomicBool = AtomicBool::new(false);
 static DECODER: Mutex<Option<Decoder>> = Mutex::new(None);
+/// Multi-byte sequences (CSI arrows) ready to drain from `poll_byte`.
+static FIFO: Mutex<ByteFifo> = Mutex::new(ByteFifo::new());
 
 pub fn init() {
     if let Some((dec, translate)) = probe_and_enable() {
@@ -53,12 +55,16 @@ pub fn present() -> bool {
     READY.load(Ordering::SeqCst)
 }
 
-/// Non-blocking: one keymap-translated byte from the keyboard, if any.
+/// Non-blocking: one keyboard byte from the keyboard, if any.
 ///
-/// Returns `None` while no keymap is loaded (serial stdin still works).
+/// Drains the multi-byte FIFO first, then decodes fresh scancodes. Returns
+/// `None` while no keymap is loaded or no key is pending (serial still works).
 pub fn poll_byte() -> Option<u8> {
     if !READY.load(Ordering::SeqCst) {
         return None;
+    }
+    if let Some(b) = FIFO.lock().pop() {
+        return Some(b);
     }
     let status = inb(STATUS);
     if status & ST_OUT_FULL == 0 {
@@ -72,7 +78,16 @@ pub fn poll_byte() -> Option<u8> {
     let mut guard = DECODER.lock();
     let dec = guard.as_mut()?;
     let kc = dec.feed(sc)?;
-    keymap::translate(kc, dec.shift(), dec.altgr())
+    if let Some(kb) = kbd::translate(kc, dec.shift(), dec.altgr(), dec.ctrl()) {
+        let bytes = kb.as_slice();
+        if bytes.len() <= 1 {
+            return bytes.first().copied();
+        }
+        FIFO.lock().push_bytes(bytes);
+        FIFO.lock().pop()
+    } else {
+        None
+    }
 }
 
 fn probe_and_enable() -> Option<(Decoder, bool)> {

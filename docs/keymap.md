@@ -84,4 +84,26 @@ keycode 0x35 = - _ none none
 | aarch64 | virtio-input | Linux `KEY_*` (same numbers for alphanumerics) |
 | riscv64 | virtio-input | same as aarch64                        |
 
-Modifiers tracked: **Shift**, **AltGr** (Right Alt). Caps Lock is ignored in v1.
+Modifiers tracked: **Shift**, **AltGr** (Right Alt), **Ctrl** (Left/Right).
+Caps Lock is ignored in v1.
+
+## Reserved keys (not keymap-driven)
+
+A few keys are handled by the kernel before the loadable keymap, so they work
+regardless of which map is loaded and are not bound in `us.map` / `ch.map`:
+
+| Key          | Keycode | Output bytes            |
+|--------------|---------|-------------------------|
+| Esc          | `0x01`  | `0x1b`                  |
+| Up arrow     | `0x48`  | `ESC [ A` (3 bytes)     |
+| Down arrow   | `0x50`  | `ESC [ B`               |
+| Right arrow  | `0x4D`  | `ESC [ C`               |
+| Left arrow   | `0x4B`  | `ESC [ D`               |
+
+**Ctrl + letter** produces the control byte (`ch & 0x1f`), so `Ctrl+C` → `0x03`
+and hits the kernel's `ISIG` ^C path in both cooked and raw mode.
+
+In **cooked** (canonical) mode the kernel swallows complete ESC/CSI sequences
+(arrows, function keys) so `[` + letters never leak into the command line; a
+lone Esc is dropped like bash. In **raw** mode (vim) the real ESC bytes are
+delivered untouched.

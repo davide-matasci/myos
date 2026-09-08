@@ -4,10 +4,22 @@
 //! between sets: the same byte means different keys in set 1 vs set 2.
 //!
 //! Keycodes are **PS/2 set-1 make codes** (and a few extended make codes such
-//! as Delete `0x53`). Layout → character translation is the kernel's loadable
-//! keymap — this crate only tracks modifiers and emits key positions.
+//! as Delete `0x53` or the arrow keys `0x48/0x50/0x4B/0x4D`). Layout →
+//! character translation is the kernel's loadable keymap — this crate only
+//! tracks modifiers and emits key positions.
 
 #![no_std]
+
+/// Esc (set-1 make `0x01`, set-2 `0x76`).
+pub const KEY_ESC: u8 = 0x01;
+/// Up arrow — canonical PS/2 set-1 make code.
+pub const KEY_UP: u8 = 0x48;
+/// Down arrow — canonical PS/2 set-1 make code.
+pub const KEY_DOWN: u8 = 0x50;
+/// Left arrow — canonical PS/2 set-1 make code.
+pub const KEY_LEFT: u8 = 0x4B;
+/// Right arrow — canonical PS/2 set-1 make code.
+pub const KEY_RIGHT: u8 = 0x4D;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScancodeSet {
@@ -21,6 +33,7 @@ pub struct Decoder {
     set: ScancodeSet,
     shift: bool,
     altgr: bool,
+    ctrl: bool,
     extended: bool,
     set2_break: bool,
     pause_skip: u8,
@@ -32,6 +45,7 @@ impl Decoder {
             set,
             shift: false,
             altgr: false,
+            ctrl: false,
             extended: false,
             set2_break: false,
             pause_skip: 0,
@@ -50,9 +64,15 @@ impl Decoder {
         self.altgr
     }
 
+    /// True while a Ctrl key (left or right) is held down.
+    pub fn ctrl(&self) -> bool {
+        self.ctrl
+    }
+
     pub fn reset_modifiers(&mut self) {
         self.shift = false;
         self.altgr = false;
+        self.ctrl = false;
         self.extended = false;
         self.set2_break = false;
         self.pause_skip = 0;
@@ -112,12 +132,15 @@ impl Decoder {
             let extended = core::mem::replace(&mut self.extended, false);
             if self.set == ScancodeSet::Set2 {
                 if extended {
-                    if sc == 0x11 {
-                        self.altgr = false;
+                    match sc {
+                        0x11 => self.altgr = false,
+                        0x14 => self.ctrl = false, // Right Ctrl
+                        _ => {}
                     }
                 } else {
                     match sc {
                         0x12 | 0x59 => self.shift = false,
+                        0x14 => self.ctrl = false, // Left Ctrl
                         _ => {}
                     }
                 }
@@ -140,6 +163,7 @@ impl Decoder {
             let code = sc & 0x7F;
             match code {
                 0x2A | 0x36 => self.shift = false,
+                0x1D => self.ctrl = false, // Left Ctrl
                 _ => {}
             }
             return None;
@@ -158,6 +182,7 @@ impl Decoder {
                     match code {
                         0x2A | 0x36 => self.shift = false,
                         0x38 => self.altgr = false,
+                        0x1D => self.ctrl = false, // Right Ctrl (E0 9D)
                         _ => {}
                     }
                     None
@@ -171,8 +196,17 @@ impl Decoder {
                             self.altgr = true;
                             None
                         }
+                        0x1D => {
+                            self.ctrl = true; // Right Ctrl (E0 1D)
+                            None
+                        }
                         // Delete → keycode 0x53 (map typically binds to BS).
                         0x53 => Some(0x53),
+                        // Arrow keys → canonical set-1 keycodes (vt100 CSI).
+                        0x48 => Some(KEY_UP),
+                        0x50 => Some(KEY_DOWN),
+                        0x4B => Some(KEY_LEFT),
+                        0x4D => Some(KEY_RIGHT),
                         _ => None,
                     }
                 }
@@ -183,8 +217,17 @@ impl Decoder {
                         self.altgr = true;
                         None
                     }
+                    0x14 => {
+                        self.ctrl = true; // Right Ctrl (E0 14)
+                        None
+                    }
                     // Extended Delete (E0 71).
                     0x71 => Some(0x53),
+                    // Arrow keys → canonical set-1 keycodes.
+                    0x75 => Some(KEY_UP),
+                    0x72 => Some(KEY_DOWN),
+                    0x6B => Some(KEY_LEFT),
+                    0x74 => Some(KEY_RIGHT),
                     _ => None,
                 }
             }
@@ -199,7 +242,10 @@ impl Decoder {
             }
             // Left Alt — not AltGr; ignore for character path.
             0x38 => None,
-            0x1D => None, // Left Ctrl
+            0x1D => {
+                self.ctrl = true; // Left Ctrl
+                None
+            }
             0x3A => None, // Caps
             _ => set1_make_to_keycode(sc),
         }
@@ -212,7 +258,10 @@ impl Decoder {
                 None
             }
             0x11 => None, // Left Alt (non-extended)
-            0x14 => None, // Left Ctrl
+            0x14 => {
+                self.ctrl = true; // Left Ctrl
+                None
+            }
             0x58 => None, // Caps
             _ => set2_make_to_keycode(sc),
         }
@@ -480,5 +529,99 @@ mod tests {
         assert_eq!(dec.feed(0xF0), None);
         assert_eq!(dec.feed(0x11), None);
         assert!(!dec.altgr());
+    }
+
+    #[test]
+    fn set1_ctrl_tracking() {
+        let mut dec = Decoder::new(ScancodeSet::Set1);
+        // Left Ctrl make (0x1D) sets ctrl, no keycode.
+        assert_eq!(dec.feed(0x1D), None);
+        assert!(dec.ctrl());
+        // c follows through while ctrl held.
+        assert_eq!(dec.feed(0x2E), Some(0x2E));
+        assert!(dec.ctrl());
+        // Left Ctrl break (0x9D) clears it.
+        assert_eq!(dec.feed(0x9D), None);
+        assert!(!dec.ctrl());
+    }
+
+    #[test]
+    fn set1_right_ctrl_tracking() {
+        let mut dec = Decoder::new(ScancodeSet::Set1);
+        // Right Ctrl extended make (E0 1D) sets ctrl.
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x1D), None);
+        assert!(dec.ctrl());
+        assert_eq!(dec.feed(0x2E), Some(0x2E));
+        // Right Ctrl extended break (E0 9D) clears it.
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x9D), None);
+        assert!(!dec.ctrl());
+    }
+
+    #[test]
+    fn set2_ctrl_tracking() {
+        let mut dec = Decoder::new(ScancodeSet::Set2);
+        // Left Ctrl set-2 make (0x14).
+        assert_eq!(dec.feed(0x14), None);
+        assert!(dec.ctrl());
+        assert_eq!(dec.feed(0x24), Some(0x12)); // e
+        // Break: F0 14.
+        assert_eq!(dec.feed(0xF0), None);
+        assert_eq!(dec.feed(0x14), None);
+        assert!(!dec.ctrl());
+    }
+
+    #[test]
+    fn set2_right_ctrl_extended_tracking() {
+        let mut dec = Decoder::new(ScancodeSet::Set2);
+        // Right Ctrl: E0 14.
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x14), None);
+        assert!(dec.ctrl());
+        // Break: E0 F0 14.
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0xF0), None);
+        assert_eq!(dec.feed(0x14), None);
+        assert!(!dec.ctrl());
+    }
+
+    #[test]
+    fn set1_arrows_extended() {
+        // Set-1 extended arrows: Up/Down/Left/Right = E0 48/50/4B/4D.
+        let mut dec = Decoder::new(ScancodeSet::Set1);
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x48), Some(KEY_UP));
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x50), Some(KEY_DOWN));
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x4B), Some(KEY_LEFT));
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x4D), Some(KEY_RIGHT));
+    }
+
+    #[test]
+    fn set2_arrows_extended() {
+        // Set-2 extended arrows: Up/Down/Left/Right = E0 75/72/6B/74.
+        let mut dec = Decoder::new(ScancodeSet::Set2);
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x75), Some(KEY_UP));
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x72), Some(KEY_DOWN));
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x6B), Some(KEY_LEFT));
+        assert_eq!(dec.feed(0xE0), None);
+        assert_eq!(dec.feed(0x74), Some(KEY_RIGHT));
+    }
+
+    #[test]
+    fn ctrl_c_produces_c_control_byte_via_keymap_path() {
+        // Ctrl+C in set-1: ctrl held, then 'c' key (0x2E). The kernel maps the
+        // resulting char with ctrl held to 0x03 (see kbd.rs). Here we assert the
+        // decoder tracks ctrl through the letter so the kernel sees both.
+        let mut dec = Decoder::new(ScancodeSet::Set1);
+        assert_eq!(dec.feed(0x1D), None);
+        assert!(dec.ctrl());
+        assert_eq!(dec.feed(0x2E), Some(0x2E));
     }
 }

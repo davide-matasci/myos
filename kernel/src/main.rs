@@ -13,6 +13,7 @@ mod framebuffer;
 mod fs;
 mod heap;
 mod input;
+mod kbd;
 mod keymap;
 mod limine_boot;
 mod mm;

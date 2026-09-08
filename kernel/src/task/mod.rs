@@ -732,6 +732,12 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                     return usize::MAX;
                 }
                 if n == 0 && pipe::read_would_block(id) {
+                    // A pending fatal/actionable signal must break this wait so
+                    // the generic `deliver_due` at syscall exit can kill the task
+                    // (Ctrl+C while a `cat`/`yes` pipe read is blocked).
+                    if crate::signal::current_should_wake() {
+                        return 0;
+                    }
                     yield_now();
                     continue;
                 }
@@ -831,6 +837,11 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                         return if total == 0 { usize::MAX } else { total };
                     }
                     if n == 0 && pipe::write_would_block(id) {
+                        // See PipeRead wait: a pending fatal signal breaks the
+                        // full-pipe wait so `deliver_due` can terminate the task.
+                        if crate::signal::current_should_wake() {
+                            return if total == 0 { usize::MAX } else { total };
+                        }
                         yield_now();
                         continue;
                     }
@@ -1579,6 +1590,13 @@ pub fn wait_child(status_out: Option<usize>) -> usize {
             irq_restore(flags);
         }
         if !any {
+            return usize::MAX;
+        }
+        // A pending fatal signal must interrupt `wait` so `deliver_due` can kill
+        // an interactive shell waiting on a foreground child (Ctrl-C while a
+        // child like `curl` is running). Ignored SIGINT is never pending, so an
+        // interactive oksh that ignores SIGINT during `wait` survives.
+        if crate::signal::current_should_wake() {
             return usize::MAX;
         }
         yield_now();
