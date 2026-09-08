@@ -32,4 +32,3 @@ jobs:
           file: Dockerfile
           push: true
           tags: ghcr.io/davide-matasci/myos-ci:latest
-          cache-from: type=gha
