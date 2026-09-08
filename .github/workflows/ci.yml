@@ -109,6 +109,8 @@ jobs:
 
   sysroot:
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
+
     timeout-minutes: 45
     needs: [changes, wire-myos]
     if: |
@@ -131,8 +133,6 @@ jobs:
           workspaces: .
           cache-directories: target/myos-sysroot
 
-      - name: Install zstd
-        run: sudo apt-get update && sudo apt-get install -y zstd
 
       - name: Build and package sysroot
         id: sysroot_build
@@ -169,6 +169,8 @@ jobs:
 
   newlib:
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
+
     timeout-minutes: 45
     needs: [changes, wire-myos]
     if: |
@@ -190,10 +192,6 @@ jobs:
         with:
           prefix-key: myos-c-userspace
           workspaces: .
-
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld texinfo bison autoconf automake libtool zstd
-
       - name: Build and push newlib sysroot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -206,6 +204,8 @@ jobs:
 
   ports-base:
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
+
     timeout-minutes: 45
     needs: [changes, wire-myos, sysroot, newlib]
     if: |
@@ -280,10 +280,6 @@ jobs:
         with:
           name: myos-sysroot
           path: target
-
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
-
       - name: Build port (${{ matrix.port }})
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -303,6 +299,8 @@ jobs:
 
   ports-advanced:
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
+
     timeout-minutes: 45
     needs: [changes, wire-myos, sysroot, newlib, ports-base]
     if: |
@@ -336,10 +334,6 @@ jobs:
         with:
           toolchain: nightly-2026-07-26
           components: llvm-tools-preview
-
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
-
       - name: Build port (${{ matrix.port }})
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -354,6 +348,8 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
+
     timeout-minutes: 45
     needs: [changes, wire-myos, sysroot, newlib, ports-base, ports-advanced]
     if: |
@@ -390,10 +386,6 @@ jobs:
         with:
           name: myos-sysroot
           path: target
-
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
-
       - name: Pull prebuilt ports and build kernels
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -542,6 +534,8 @@ jobs:
   boot:
     name: boot (${{ matrix.id }})
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
+
     timeout-minutes: 30
     needs: build
     if: |
@@ -554,19 +548,15 @@ jobs:
         include:
           - id: bios
             args: --ci
-            packages: qemu-system-x86
             required: true
           - id: uefi
             args: uefi --ci
-            packages: qemu-system-x86
             required: true
           - id: aarch64
             args: aarch64 --ci
-            packages: qemu-system-arm qemu-efi-aarch64
             required: true
           - id: riscv64
             args: riscv64 --ci
-            packages: qemu-system-misc qemu-efi-riscv64
             required: true
     steps:
       - uses: actions/checkout@v4
@@ -663,11 +653,6 @@ jobs:
           ./scripts/ci-registry.sh push zlib || true
           ./scripts/ci-registry.sh push git || true
           ./scripts/ci-registry.sh push lynx || true
-
-      - name: Install QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.packages }}
 
       - name: Boot in QEMU
         continue-on-error: ${{ !matrix.required }}
