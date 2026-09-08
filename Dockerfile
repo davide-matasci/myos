@@ -30,6 +30,8 @@ RUN apt-get update \
         # Common developer utilities
         git curl wget file patch bc \
         sudo \
+        # CA certificates for SSL/TLS (required by git for GitHub access)
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Add a non-privileged user for CI steps
