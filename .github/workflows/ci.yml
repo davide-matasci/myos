@@ -29,11 +29,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push CI image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ghcr.io/davide-matasci/myos-ci:latest
+
   changes:
     runs-on: ubuntu-latest
     outputs:
       sysroot: ${{ steps.filter.outputs.sysroot }}
       c_userspace: ${{ steps.filter.outputs.c_userspace }}
+    needs: build-image
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -112,7 +134,7 @@ jobs:
     container: ghcr.io/davide-matasci/myos-ci:latest
 
     timeout-minutes: 45
-    needs: [changes, wire-myos]
+    needs: [changes, wire-myos, build-image]
     if: |
       needs.changes.outputs.sysroot == 'true' ||
       (github.event_name == 'workflow_dispatch' && inputs.force_sysroot)
@@ -172,7 +194,7 @@ jobs:
     container: ghcr.io/davide-matasci/myos-ci:latest
 
     timeout-minutes: 45
-    needs: [changes, wire-myos]
+    needs: [changes, wire-myos, build-image]
     if: |
       always() &&
       !cancelled() &&
@@ -207,7 +229,7 @@ jobs:
     container: ghcr.io/davide-matasci/myos-ci:latest
 
     timeout-minutes: 45
-    needs: [changes, wire-myos, sysroot, newlib]
+    needs: [changes, wire-myos, sysroot, newlib, build-image]
     if: |
       always() &&
       !cancelled() &&
@@ -302,7 +324,7 @@ jobs:
     container: ghcr.io/davide-matasci/myos-ci:latest
 
     timeout-minutes: 45
-    needs: [changes, wire-myos, sysroot, newlib, ports-base]
+    needs: [changes, wire-myos, sysroot, newlib, ports-base, build-image]
     if: |
       always() &&
       !cancelled() &&
@@ -351,7 +373,7 @@ jobs:
     container: ghcr.io/davide-matasci/myos-ci:latest
 
     timeout-minutes: 45
-    needs: [changes, wire-myos, sysroot, newlib, ports-base, ports-advanced]
+    needs: [changes, wire-myos, sysroot, newlib, ports-base, ports-advanced, build-image]
     if: |
       always() &&
       !cancelled() &&
@@ -537,7 +559,7 @@ jobs:
     container: ghcr.io/davide-matasci/myos-ci:latest
 
     timeout-minutes: 30
-    needs: build
+    needs: [build, build-image]
     if: |
       always() &&
       !cancelled() &&
