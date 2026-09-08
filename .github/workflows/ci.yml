@@ -15,6 +15,10 @@ on:
         description: Force sysroot rebuild and artifact upload (even if std paths unchanged)
         type: boolean
         default: false
+      build_iso:
+        description: Build a distributable x86_64 hybrid ISO from the build job's outputs (manual only)
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -666,3 +670,56 @@ jobs:
         env:
           MYOS_SKIP_KERNEL_REBUILD: "1"
         run: ./target/debug/myos ${{ matrix.args }}
+
+  iso:
+    # Optional, manual-only distributable CD image. Folds the former standalone
+    # iso.yml workflow into the CI pipeline: it REUSES the build job's packed
+    # outputs (sysroot/newlib/ports/hello/ok/limine) instead of re-running the
+    # whole toolchain/port build. Only `cargo build` runs here, which rebuilds
+    # the small host `myos` binary + x86_64 kernel artifact from source.
+    name: iso (x86_64 hybrid)
+    runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
+    timeout-minutes: 30
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.build_iso
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download CI build artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-build
+
+      - name: Restore CI artifacts
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          if [[ -f ci-build.tar ]]; then
+            echo "==> extracting ci-build.tar"
+            tar -xf ci-build.tar
+          fi
+          test -x target/debug/myos && echo "host myos present; reusing build outputs"
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, x86_64-unknown-uefi
+
+      - name: Build x86_64 hybrid ISO
+        run: |
+          cargo clean -p myos
+          cargo build
+          cargo run -- iso
+          test -f target/myos-x86_64.iso
+
+      - name: Upload ISO
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: myos-x86_64-iso
+          path: target/myos-x86_64.iso
+          if-no-files-found: error
+          retention-days: 3
