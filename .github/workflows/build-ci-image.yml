@@ -33,4 +33,3 @@ jobs:
           push: true
           tags: ghcr.io/davide-matasci/myos-ci:latest
           cache-from: type=gha
-          cache-to: type=gha,mode=max
