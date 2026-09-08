@@ -28,6 +28,13 @@ if [[ "${1:-}" != "--print-hash" && "${1:-}" != "--is-current" && "${1:-}" != "-
   ./ports/zlib/build.sh
   ./ports/git/build.sh
   ./toolchain/newlib/build.sh
+  # tcc installs libtcc1.a into target/newlib-*/<triple>/lib/ (pack_aliases /
+  # install_libtcc1) which the initramfs builder packs as /lib/newlib/lib.
+  # On a run where the newlib/tcc jobs were skipped only the tcc ELF +
+  # target/libtcc1-*.a are restored by the registry pull, so the newlib-lib
+  # copy is missing and the guest `tcc std` boot needle fails. Build (idempotent,
+  # early-exits when current) so the initramfs includes libtcc1.a.
+  ./ports/tcc/build.sh
 fi
 
 STAMP="target/.myos-ci-kernel-version"
