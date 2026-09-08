@@ -78,7 +78,7 @@ const CI_NEEDLES_STD: [&str; 22] = [
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 14] = [
+const CI_SHELL_COMMANDS: [&[u8]; 15] = [
     b"nosuchcmd\n",
     // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
     b"heap\n",
@@ -100,7 +100,18 @@ const CI_SHELL_COMMANDS: [&[u8]; 14] = [
     b"http https://example.com/\n",
     // curl over userspace sockets + mbedtls (same URL as https smoke).
     b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n",
+    // ^C interrupt test: run a foreground `cat` (blocked on console read) and
+    // interrupt it. The shell must survive (ignore SIGINT) while the child
+    // dies, returning to `$` (no getty/login respawn). See
+    // `interactive_interrupt_cmd_ok` and the interrupt handling in
+    // `advance_shell_ci`.
+    b"/bin/sbase/cat\n",
 ];
+
+/// Index into [`CI_SHELL_COMMANDS`] of the ^C interrupt test. While waiting on
+/// this command the harness sends `0x03` (VINTR) once and requires the shell
+/// to survive and return to the prompt.
+const INTERRUPT_CMD_IDX: usize = 14;
 
 /// Printed by the interactive shell when a command cannot be resolved.
 const CI_SHELL_UNKNOWN_CMD: &str = "not found";
@@ -312,7 +323,25 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
     at_interactive_prompt(serial)
 }
 
-/// curl printed an error after the interactive command (e.g. `curl: (4) …`).
+/// ^C interrupt test: a foreground `cat` (blocked on console read) was
+/// interrupted with VINTR (`0x03`). The child must have died and the shell
+/// must have survived (ignored SIGINT), returning to `$` — not respawned via
+/// getty/login.
+fn interactive_interrupt_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let echoed = "$ /bin/sbase/cat";
+    if !tail.contains(echoed) || serial.contains("exception:") {
+        return false;
+    }
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    // No getty/login respawn: the shell itself survived the interrupt.
+    if after.contains("login: ") {
+        return false;
+    }
+    at_interactive_prompt(serial)
+}
+
+/// curl errored after the interactive command (e.g. `curl: (4) …`).
 fn interactive_curl_after_failed(after: &str) -> bool {
     after.contains("not found")
         || after.contains("curl: (")
@@ -430,6 +459,7 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
         11 => interactive_dns_cmd_ok(serial),
         12 => interactive_https_cmd_ok(serial),
         13 => interactive_curl_cmd_ok(serial),
+        INTERRUPT_CMD_IDX => interactive_interrupt_cmd_ok(serial),
         _ => false,
     }
 }
@@ -454,6 +484,7 @@ fn advance_shell_ci(
     stage: &mut ShellStage,
     cmd_index: &mut usize,
     typing: &mut usize,
+    interrupt_sent: &mut bool,
     acc: &str,
     extra: &[&str],
 ) {
@@ -501,6 +532,14 @@ fn advance_shell_ci(
             } else {
                 *stage = ShellStage::WaitResult;
             }
+        }
+        ShellStage::WaitResult if *cmd_index == INTERRUPT_CMD_IDX && !*interrupt_sent => {
+            // Give the `cat` child a beat to fork/exec and block on console
+            // read before sending VINTR (^C), so the signal lands on the child
+            // (via INPUT_READER's pgid) rather than racing its startup.
+            std::thread::sleep(Duration::from_millis(800));
+            send_shell_byte(stdin, 0x03);
+            *interrupt_sent = true;
         }
         ShellStage::WaitResult if shell_cmd_result_ok(acc, *cmd_index, extra) => {
             *cmd_index += 1;
@@ -578,6 +617,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut shell_stage = ShellStage::WaitLogin;
     let mut shell_cmd_index = 0usize;
     let mut typing = 0usize;
+    let mut interrupt_sent = false;
     let status = loop {
         {
             let acc = serial_acc.lock().unwrap().clone();
@@ -587,6 +627,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     &mut shell_stage,
                     &mut shell_cmd_index,
                     &mut typing,
+                    &mut interrupt_sent,
                     &acc,
                     extra_needles,
                 );
@@ -799,6 +840,20 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: shell did not return to `$` after interactive HTTPS");
             } else {
                 eprintln!("error: interactive HTTPS did not print `Example Domain` and `[ OK ] https`");
+            }
+            std::process::exit(1);
+        }
+        if shell_cmd_index == INTERRUPT_CMD_IDX && !interactive_interrupt_cmd_ok(&serial) {
+            if !command_echoed(&serial, "/bin/sbase/cat") {
+                eprintln!("error: serial did not echo `$ /bin/sbase/cat` at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: interactive Ctrl+C on `cat` triggered a CPU exception");
+            } else if serial.contains("login: ") {
+                eprintln!("error: shell did not survive Ctrl+C (getty/login respawned — SIGINT killed the shell)");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after Ctrl+C interrupt of `cat`");
+            } else {
+                eprintln!("error: Ctrl+C did not interrupt the foreground `cat`");
             }
             std::process::exit(1);
         }
