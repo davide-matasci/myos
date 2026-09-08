@@ -129,6 +129,12 @@ const ARROW_SEED_IDX: usize = 15;
 /// Index into [`CI_SHELL_COMMANDS`] of the Up/Left arrow-key editing test.
 const ARROW_EDIT_IDX: usize = 16;
 
+/// Interactive curl prompt echo. The full `$ curl -fsS --connect-timeout 30 …`
+/// line is >80 cols, and the oksh emacs editor wraps it on a narrow (80-col
+/// serial) console, splitting the echo across lines with redraw artifacts. Match
+/// only the first, never-wrapped prefix on the prompt line.
+const CURL_ECHO_PREFIX: &str = "$ curl -fsS --connect-timeout 30";
+
 /// Printed by the interactive shell when a command cannot be resolved.
 const CI_SHELL_UNKNOWN_CMD: &str = "not found";
 
@@ -323,11 +329,13 @@ fn interactive_https_cmd_ok(serial: &str) -> bool {
 /// `nosuchcmd: not found` does not permanently fail this stage.
 fn interactive_curl_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    let echoed = "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/";
-    if !tail.contains(echoed) || serial.contains("exception:") {
+    if !tail.contains(CURL_ECHO_PREFIX) || serial.contains("exception:") {
         return false;
     }
-    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    // Scope to output after the prompt echo; the rest of the echoed command
+    // may be wrapped over multiple lines on an 80-col console, which is why we
+    // match only the short prefix above.
+    let after = tail.rsplit_once(CURL_ECHO_PREFIX).map(|(_, rest)| rest).unwrap_or("");
     if interactive_curl_after_failed(after) {
         return false;
     }
@@ -393,11 +401,10 @@ fn interactive_curl_after_failed(after: &str) -> bool {
 /// Hard fail so we do not burn the full QEMU timeout after a printed curl error.
 fn interactive_curl_cmd_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    let echoed = "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/";
-    if !tail.contains(echoed) {
+    if !tail.contains(CURL_ECHO_PREFIX) {
         return false;
     }
-    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    let after = tail.rsplit_once(CURL_ECHO_PREFIX).map(|(_, rest)| rest).unwrap_or("");
     interactive_curl_after_failed(after)
 }
 
@@ -861,7 +868,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
         }
         if shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
-            if !command_echoed(&serial, "curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/") {
+            if !serial.contains(CURL_ECHO_PREFIX) {
                 eprintln!("error: serial did not echo curl HTTPS command at the interactive prompt");
             } else if serial.contains("exception:") {
                 eprintln!("error: interactive curl triggered a CPU exception");
