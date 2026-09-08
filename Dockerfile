@@ -32,6 +32,7 @@ RUN apt-get update \
         sudo \
         # CA certificates for SSL/TLS (required by git for GitHub access)
         ca-certificates \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Add a non-privileged user for CI steps
