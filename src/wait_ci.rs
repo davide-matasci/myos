@@ -100,12 +100,13 @@ const CI_SHELL_COMMANDS: [&[u8]; 15] = [
     b"http https://example.com/\n",
     // curl over userspace sockets + mbedtls (same URL as https smoke).
     b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n",
-    // ^C interrupt test: run a foreground `cat` (blocked on console read) and
-    // interrupt it. The shell must survive (ignore SIGINT) while the child
-    // dies, returning to `$` (no getty/login respawn). See
-    // `interactive_interrupt_cmd_ok` and the interrupt handling in
-    // `advance_shell_ci`.
-    b"/bin/sbase/cat\n",
+    // ^C interrupt test: run a foreground `cat | cat` (the right cat blocks on
+    // a kernel pipe read, the left one on the console) and interrupt it. The shell
+    // must survive (ignore SIGINT) while both children die, returning to `$`
+    // (no getty/login respawn. The right cat only dies weil the kernel's pipe-read
+    // wait wakes on a pending fatal signal; see `interactive_interrupt_cmd_ok`
+    // and the interrupt handling in `advance_shell_ci`.
+    b"cat | cat\n",
 ];
 
 /// Index into [`CI_SHELL_COMMANDS`] of the ^C interrupt test. While waiting on
@@ -323,18 +324,19 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
     at_interactive_prompt(serial)
 }
 
-/// ^C interrupt test: a foreground `cat` (blocked on console read) was
-/// interrupted with VINTR (`0x03`). The child must have died and the shell
-/// must have survived (ignored SIGINT), returning to `$` — not respawned via
-/// getty/login.
+/// ^C interrupt test: a foreground `cat | cat` (right cat blocked on a kernel
+/// pipe read, left cat on the console) was interrupted with VINTR (`0x03`).
+/// Both children must have died (the pipe-blocked one via the signal-wakeable
+/// pipe-read wait) and the shell must have survived (ignored SIGINT,, returning
+/// to `$` — not respawned via getty/login.
 fn interactive_interrupt_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    let echoed = "$ /bin/sbase/cat";
+    let echoed = "$ cat | cat";
     if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
     let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
-    // No getty/login respawn: the shell itself survived the interrupt.
+    // No getty/login respawn:the shell itself survived the interrupt.
     if after.contains("login: ") {
         return false;
     }
@@ -844,16 +846,16 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             std::process::exit(1);
         }
         if shell_cmd_index == INTERRUPT_CMD_IDX && !interactive_interrupt_cmd_ok(&serial) {
-            if !command_echoed(&serial, "/bin/sbase/cat") {
-                eprintln!("error: serial did not echo `$ /bin/sbase/cat` at the interactive prompt");
+            if !command_echoed(&serial, "cat | cat") {
+                eprintln!("error: serial did not echo `$ cat | cat` at the interactive prompt");
             } else if serial.contains("exception:") {
-                eprintln!("error: interactive Ctrl+C on `cat` triggered a CPU exception");
+                eprintln!("error: interactive Ctrl+C on `cat | cat` triggered a CPU exception");
             } else if serial.contains("login: ") {
                 eprintln!("error: shell did not survive Ctrl+C (getty/login respawned — SIGINT killed the shell)");
             } else if !at_interactive_prompt(&serial) {
-                eprintln!("error: shell did not return to `$` after Ctrl+C interrupt of `cat`");
+                eprintln!("error: shell did not return to `$` after Ctrl+C interrupt of `cat | cat`");
             } else {
-                eprintln!("error: Ctrl+C did not interrupt the foreground `cat`");
+                eprintln!("error: Ctrl+C did not interrupt the foreground `cat | cat`");
             }
             std::process::exit(1);
         }
