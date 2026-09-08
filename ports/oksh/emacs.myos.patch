@@ -1,0 +1,19 @@
+--- emacs.c
++++ emacs.c
+@@ -792,7 +792,6 @@
+ static int
+ x_newline(int c)
+ {
+-	x_e_putc('\r');
+ 	x_e_putc('\n');
+ 	x_flush();
+ 	*xep++ = '\n';
+@@ -803,7 +802,6 @@
+ x_end_of_text(int c)
+ {
+ 	x_zotc(edchars.eof);
+-	x_putc('\r');
+ 	x_putc('\n');
+ 	x_flush();
+ 	return KEOL;
+

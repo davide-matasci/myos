@@ -130,10 +130,14 @@ const ARROW_SEED_IDX: usize = 15;
 const ARROW_EDIT_IDX: usize = 16;
 
 /// Interactive curl prompt echo. The full `$ curl -fsS --connect-timeout 30 …`
-/// line is >80 cols, and the oksh emacs editor wraps it on a narrow (80-col
-/// serial) console, splitting the echo across lines with redraw artifacts. Match
-/// only the first, never-wrapped prefix on the prompt line.
-const CURL_ECHO_PREFIX: &str = "$ curl -fsS --connect-timeout 30";
+/// command must echo as ONE clean line: oksh's emacs editor sizes the prompt
+/// from the device winsize, and the kernel reports a wide (160-col) console on
+/// every boot, so the line no longer wraps with redraw artifacts on the
+/// aarch64/riscv64 serial boots (the old 24x80 fallback did). Keep a strict
+/// full-line needle (including the `; cat` tail) so a wrapped/redraw-corrupted
+/// echo must NOT match.
+const CURL_ECHO: &str =
+    "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html";
 
 /// Printed by the interactive shell when a command cannot be resolved.
 const CI_SHELL_UNKNOWN_CMD: &str = "not found";
@@ -329,22 +333,25 @@ fn interactive_https_cmd_ok(serial: &str) -> bool {
 /// `nosuchcmd: not found` does not permanently fail this stage.
 fn interactive_curl_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    if !tail.contains(CURL_ECHO_PREFIX) || serial.contains("exception:") {
+    if !tail.contains(CURL_ECHO) || serial.contains("exception:") {
         return false;
     }
-    // Scope to output after the prompt echo; the rest of the echoed command
-    // may be wrapped over multiple lines on an 80-col console, which is why we
-    // match only the short prefix above.
-    let after = tail.rsplit_once(CURL_ECHO_PREFIX).map(|(_, rest)| rest).unwrap_or("");
+    let after = tail.rsplit_once(CURL_ECHO).map(|(_, rest)| rest).unwrap_or("");
     if interactive_curl_after_failed(after) {
         return false;
     }
-    // Prefer Example Domain from curl's cat output (after the command), not the
-    // earlier interactive `http` HTTPS response.
-    if !after.contains("Example Domain") {
-        return false;
-    }
-    at_interactive_prompt(serial)
+    // The echoed command must be one clean line: `after` begins straight with
+    // the downloaded HTML (or a curl error), never with a blank line. A blank
+    // line there is the `\r\r\n` double-newline regression from the editor.
+    let first = after
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty());
+    let ok = match first {
+        Some(l) if l.contains("Example Domain") || l.contains("curl:") => true,
+        _ => false,
+    };
+    ok && !after.starts_with("\n\n") && at_interactive_prompt(serial)
 }
 
 /// ^C interrupt test: a foreground `cat | cat` (right cat blocked on a kernel
@@ -370,10 +377,22 @@ fn interactive_interrupt_cmd_ok(serial: &str) -> bool {
 /// `histrecall_zz` so the following arrow command can recall it via Up.
 fn interactive_arrow_seed_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    !serial.contains("exception:")
-        && !serial.contains("histrecall_zz: not found")
-        && tail.contains("histrecall_zz")
-        && at_interactive_prompt(serial)
+    if serial.contains("exception:")
+        || serial.contains("histrecall_zz: not found")
+        || !tail.contains("$ echo histrecall_zz")
+    {
+        return false;
+    }
+    let after = tail
+        .rsplit_once("$ echo histrecall_zz")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
+    // The prompt's Enter must produce exactly one newline before the output:
+    // the double-newline regression shows up as a blank line (`\r\r\n`), which
+    // makes `after` start with a blank line instead of `histrecall_zz`.
+    let ok = after.starts_with("\nhistrecall_zz")
+        && at_interactive_prompt(serial);
+    ok
 }
 
 /// Arrow-key editing test: Up (ESC [ A) recalls the seeded history entry,
@@ -384,10 +403,19 @@ fn interactive_arrow_seed_ok(serial: &str) -> bool {
 /// canonical mode) or printed as garbage and `histrecall_z3z` never runs.
 fn interactive_arrow_edit_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    !serial.contains("exception:")
-        && !tail.contains("histrecall_z3z: not found")
-        && tail.contains("histrecall_z3z")
-        && at_interactive_prompt(serial)
+    if serial.contains("exception:")
+        || tail.contains("histrecall_z3z: not found")
+        || !tail.contains("$ echo histrecall_z3z")
+    {
+        return false;
+    }
+    let after = tail
+        .rsplit_once("$ echo histrecall_z3z")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
+    // Same single-clean-line guarantee as the seed: no blank line between the
+    // recalled+edited prompt echo and its output.
+    after.starts_with("\nhistrecall_z3z") && at_interactive_prompt(serial)
 }
 
 /// curl errored after the interactive command (e.g. `curl: (4) …`).
@@ -401,10 +429,10 @@ fn interactive_curl_after_failed(after: &str) -> bool {
 /// Hard fail so we do not burn the full QEMU timeout after a printed curl error.
 fn interactive_curl_cmd_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    if !tail.contains(CURL_ECHO_PREFIX) {
+    if !tail.contains(CURL_ECHO) {
         return false;
     }
-    let after = tail.rsplit_once(CURL_ECHO_PREFIX).map(|(_, rest)| rest).unwrap_or("");
+    let after = tail.rsplit_once(CURL_ECHO).map(|(_, rest)| rest).unwrap_or("");
     interactive_curl_after_failed(after)
 }
 
@@ -868,8 +896,8 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
         }
         if shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
-            if !serial.contains(CURL_ECHO_PREFIX) {
-                eprintln!("error: serial did not echo curl HTTPS command at the interactive prompt");
+            if !serial.contains(CURL_ECHO) {
+                eprintln!("error: serial did not echo the curl HTTPS command on one clean line at the interactive prompt");
             } else if serial.contains("exception:") {
                 eprintln!("error: interactive curl triggered a CPU exception");
             } else if interactive_curl_cmd_failed(&serial) {

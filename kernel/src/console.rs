@@ -32,12 +32,17 @@ pub fn has_fb() -> bool {
 /// Character-cell winsize for tty `TIOCGWINSZ`.
 ///
 /// Uses the framebuffer geometry (`width/FONT_W` × `height/FONT_H`) when a
-/// Limine FB is present; otherwise falls back to the classic 24×80.
+/// Limine FB is present; otherwise falls back to the serial console geometry.
+/// A serial console has no intrinsic width, so stay consistent with the
+/// framebuffer boots (x86 CI reports 160×100) instead of the old fixed 80-char
+/// default: 80 made oksh's emacs editor wrap long commands (the interactive
+/// curl line) with redraw artifacts, while the same command stayed on one clean
+/// line on the framebuffer arches.
 pub fn winsize() -> (u16, u16) {
     if let Some(fb) = FB.get() {
         fb.lock().winsize()
     } else {
-        (24, 80)
+        (100, 160)
     }
 }
 
