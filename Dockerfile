@@ -13,12 +13,11 @@ ENV CI=true \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        # QEMU / emulators for all CI targets (bios/uefi/aarch64/riscv64) 
+        # QEMU / emulators for all CI targets (bios/uefi/aarch64/riscv64)
         qemu-system-x86 \
         qemu-system-arm \
         qemu-system-misc \
         qemu-efi-aarch64 \
-        qemu-efi-riscv64 \
         # Build toolchain + cross toolchains used by kernel/port builds
         clang lld \
         binutils-aarch64-linux-gnu \
