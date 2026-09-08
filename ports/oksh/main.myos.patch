@@ -29,20 +29,6 @@
  
  	/* Set PATH to def_path (will set the path global variable).
  	 * (import of environment below will probably change this setting).
-@@ -263,12 +258,7 @@
- #endif /* SMALL */
- 	}
- 
--	/* Set edit mode to emacs by default, may be overridden
--	 * by the environment or the user.  Also, we want tab completion
--	 * on in vi by default. */
--#if defined(EMACS)
--	change_flag(FEMACS, OF_SPECIAL, 1);
--#endif /* EMACS */
-+	/* myos: keep cooked kernel stdin; no emacs/vi raw mode. */
- #if defined(VI)
- 	Flag(FVITABCOMPLETE) = 1;
- #endif /* VI */
 @@ -278,6 +268,12 @@
  		for (wp = environ; *wp != NULL; wp++)
  			typeset(*wp, IMPORT|EXPORT, 0, 0, 0);
@@ -95,13 +81,12 @@
  	i = Flag(FMONITOR) != 127;
  	Flag(FMONITOR) = 0;
  	j_init(i);
--	/* Do this after j_init(), as tty_fd is not initialized 'til then */
+ 	/* Do this after j_init(), as tty_fd is not initialized 'til then */
 -	if (Flag(FTALKING))
 -		x_init();
-+	Flag(FMONITOR) = 0;
-+	/* myos: skip emacs/vi tty setup (x_init / tcsetattr). */
 +	if (Flag(FTALKING)) {
-+		write(1, "[ OK ] sh\n", 9);
++		write(1, "[ OK ] sh\n", 9);	/* CI readiness marker */
++		x_init();	/* emacs line editor on a raw-mode console tty */
 +	}
  
  	l = genv->loc;

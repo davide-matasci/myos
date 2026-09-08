@@ -19,8 +19,9 @@ WORK="$ROOT/target/oksh-myos-build"
 MYOS="$ROOT/ports/oksh"
 
 # config.h requires EMACS or VI. Keep EMACS (not VI) for size. emacs.c
-# supplies x_* symbols; main.myos.patch still skips x_init (cooked stdin,
-# no raw tty). confstr.c is oksh's portable fallback (HAVE_CONFSTR off).
+# supplies x_* symbols; main.myos.patch runs x_init() so the emacs line
+# editor drives a raw-mode console tty (raw edit, arrows navigate history /
+# cursor). confstr.c is oksh's portable fallback (HAVE_CONFSTR off).
 # c_ulimit.c is the myos stub.
 OKSH_SRCS=(
   alloc.c asprintf.c c_ksh.c c_sh.c c_test.c c_ulimit.c edit.c emacs.c

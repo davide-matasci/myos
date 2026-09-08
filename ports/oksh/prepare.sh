@@ -21,6 +21,8 @@ rsync -a \
 cp "$MYOS/pconfig.h" "$WORK/pconfig.h"
 # Replace ulimit rather than a 200-line reverse patch (needs getrlimit).
 cp "$MYOS/c_ulimit.c" "$WORK/c_ulimit.c"
+# Replace tty.c wholesale: no /dev/tty, F_DUPFD, or job-control termios here.
+cp "$MYOS/tty.c" "$WORK/tty.c"
 
 patch_copy() {
   local base="$1"
@@ -29,7 +31,6 @@ patch_copy() {
 
 patch_copy main
 patch_copy jobs
-patch_copy tty
 patch_copy trap
 patch_copy io
 patch_copy shf
