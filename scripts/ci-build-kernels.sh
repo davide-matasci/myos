@@ -137,6 +137,22 @@ kernel_inputs_hash() {
             printf 'input-missing:%s\n' "$f"
           fi
         done
+        # tcc's libtcc1.a is installed into target/newlib-*/<triple>/lib by the
+        # settle tcc build and baked into the x86 initramfs (initramfs
+        # collect_tree => /lib/newlib/lib/libtcc1.a). It is not covered by the
+        # newlib stamp, so hash it explicitly or a kernels artifact whose
+        # initramfs lacks libtcc1.a would be reused forever (guest `tcc -o`
+        # fails with 'libtcc1.a not found'). Produced before this hash snapshot
+        # and never touched by cargo builds, so it cannot drift.
+        for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
+          if [[ -f "target/libtcc1-${triple}.a" ]]; then
+            printf 'libtcc1:%s:' "$triple"
+            sha256sum "target/libtcc1-${triple}.a" | awk '{print $1}'
+            printf '\n'
+          else
+            printf 'libtcc1-missing:%s\n' "$triple"
+          fi
+        done
       } | sha256sum | awk '{print $1}'
     )
   )"
@@ -186,6 +202,14 @@ kernel_inputs_diag() {
         sha256sum "$f" | awk -v p="$f" '{print $1" "p}'
       else
         printf 'MISSING %s\n' "$f"
+      fi
+    done
+    for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
+      if [[ -f "target/libtcc1-${triple}.a" ]]; then
+        sha256sum "target/libtcc1-${triple}.a" \
+          | awk -v t="$triple" '{print $1" libtcc1:"t}'
+      else
+        printf 'MISSING libtcc1:%s\n' "$triple"
       fi
     done
   ) | sort
