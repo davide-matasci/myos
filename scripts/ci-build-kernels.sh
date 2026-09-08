@@ -17,9 +17,24 @@ cd "$ROOT"
 
 # Phase-1 git depends on zlib; build before cargo packs initramfs (workflow
 # edits need `workflow` OAuth scope — keep this script as the CI hook).
+# Then build newlib and settle target/.myos-newlib-version BEFORE the inputs
+# hash is snapshotted below. On a PR where the newlib job was skipped (no
+# toolchain/newlib changes) its stamp is absent and a registry pull misses;
+# a lazy port-build inside the cargo build then creates the stamp mid-build,
+# which tripped the kernel_inputs_hash drift guard. newlib/build.sh is
+# idempotent (early-exits when current), so this is a no-op on runs that
+# already onboarded newlib.
 if [[ "${1:-}" != "--print-hash" && "${1:-}" != "--is-current" && "${1:-}" != "--print-members" ]]; then
   ./ports/zlib/build.sh
   ./ports/git/build.sh
+  ./toolchain/newlib/build.sh
+  # tcc installs libtcc1.a into target/newlib-*/<triple>/lib/ (pack_aliases /
+  # install_libtcc1) which the initramfs builder packs as /lib/newlib/lib.
+  # On a run where the newlib/tcc jobs were skipped only the tcc ELF +
+  # target/libtcc1-*.a are restored by the registry pull, so the newlib-lib
+  # copy is missing and the guest `tcc std` boot needle fails. Build (idempotent,
+  # early-exits when current) so the initramfs includes libtcc1.a.
+  ./ports/tcc/build.sh
 fi
 
 STAMP="target/.myos-ci-kernel-version"
@@ -122,10 +137,82 @@ kernel_inputs_hash() {
             printf 'input-missing:%s\n' "$f"
           fi
         done
+        # tcc's libtcc1.a is installed into target/newlib-*/<triple>/lib by the
+        # settle tcc build and baked into the x86 initramfs (initramfs
+        # collect_tree => /lib/newlib/lib/libtcc1.a). It is not covered by the
+        # newlib stamp, so hash it explicitly or a kernels artifact whose
+        # initramfs lacks libtcc1.a would be reused forever (guest `tcc -o`
+        # fails with 'libtcc1.a not found'). Produced before this hash snapshot
+        # and never touched by cargo builds, so it cannot drift.
+        for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
+          if [[ -f "target/libtcc1-${triple}.a" ]]; then
+            printf 'libtcc1:%s:' "$triple"
+            sha256sum "target/libtcc1-${triple}.a" | awk '{print $1}'
+            printf '\n'
+          else
+            printf 'libtcc1-missing:%s\n' "$triple"
+          fi
+        done
       } | sha256sum | awk '{print $1}'
     )
   )"
   printf '%s' "$h"
+}
+
+# Diagnostics: one "<hash> <tag>" line per hashed contribution so a
+# kernel_inputs_hash drift can be pinned to the exact input that changed.
+# Purely additive — does NOT change kernel_inputs_hash, so the kernels registry
+# pull/push tag stays byte-identical.
+kernel_inputs_diag() {
+  (
+    cd "$ROOT"
+    tree_diag() {
+      local dir="$1"
+      if [[ ! -d "$dir" ]]; then echo "MISSING-DIR $dir"; return 0; fi
+      find "$dir" \
+        \( -name target -o -path '*/target/*' \) -prune -o \
+        -type f \( \
+          -name '*.rs' -o -name '*.c' -o -name '*.h' -o -name '*.S' -o \
+          -name 'Cargo.toml' -o -name 'build.rs' -o \
+          -name 'link.ld' -o -name '*.ld' -o -name '*.json' -o -name '*.txt' \
+        \) -print0 2>/dev/null \
+        | sort -z | xargs -0 -r sha256sum
+    }
+    tree_diag kernel | sha256sum | awk -v d='tree:kernel' '{print $1" "d}'
+    tree_diag modules | sha256sum | awk -v d='tree:modules' '{print $1" "d}'
+    tree_diag user | sha256sum | awk -v d='tree:user' '{print $1" "d}'
+    {
+      sha256sum build.rs Cargo.toml 2>/dev/null || true
+      sha256sum src/limine_image.rs src/limine_gpt.rs src/limine_fat.rs \
+        src/limine_dir.rs src/initramfs.rs 2>/dev/null || true
+    } | sha256sum | awk -v d='group:root-src' '{print $1" "d}'
+    if [[ -f .cargo/config.toml ]]; then
+      sha256sum .cargo/config.toml | awk -v d='file:.cargo/config.toml' '{print $1" "d}'
+    fi
+    for stamp in "${PORT_STAMPS[@]}"; do
+      if [[ -f "$stamp" ]]; then
+        { printf 'stamp:%s:' "$stamp"; cat "$stamp"; printf '\n'; } \
+          | sha256sum | awk -v s="$stamp" '{print $1" "s}'
+      else
+        printf 'MISSING %s\n' "$stamp"
+      fi
+    done
+    for f in "${CURL_MBEDTLS_INPUTS[@]}"; do
+      if [[ -f "$f" ]]; then
+        sha256sum "$f" | awk -v p="$f" '{print $1" "p}'
+      else
+        printf 'MISSING %s\n' "$f"
+      fi
+    done
+    for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
+      if [[ -f "target/libtcc1-${triple}.a" ]]; then
+        sha256sum "target/libtcc1-${triple}.a" \
+          | awk -v t="$triple" '{print $1" libtcc1:"t}'
+      else
+        printf 'MISSING libtcc1:%s\n' "$triple"
+      fi
+    done
+  ) | sort
 }
 
 # Host `myos aarch64/riscv64 --ci` rebuilds the guest disk image and reads these
@@ -240,6 +327,7 @@ case "${1:-}" in
 esac
 
 want="$(kernel_inputs_hash)"
+diag_before="$(kernel_inputs_diag)"
 
 # GHCR pull (same content-hash philosophy as ports). Ignore pull failures.
 if [[ -x "$ROOT/scripts/ci-registry.sh" ]]; then
@@ -276,6 +364,8 @@ after="$(kernel_inputs_hash)"
 if [[ "$after" != "$want" ]]; then
   echo "error: kernel_inputs_hash drifted after build (before ${want:0:12}…, after ${after:0:12}…)" >&2
   echo "error: hashing must be inputs-only (sources + port stamps); refusing to stamp" >&2
+  echo "error: changed input members (hash <tag>):" >&2
+  diff <(printf '%s\n' "$diag_before") <(printf '%s\n' "$(kernel_inputs_diag)") >&2 || true
   exit 1
 fi
 printf '%s\n' "$want" >"$STAMP"

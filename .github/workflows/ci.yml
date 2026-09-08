@@ -15,6 +15,10 @@ on:
         description: Force sysroot rebuild and artifact upload (even if std paths unchanged)
         type: boolean
         default: false
+      build_iso:
+        description: Build a distributable x86_64 hybrid ISO from the build job's outputs (manual only)
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -27,6 +31,18 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+
+# CRITICAL: GitHub defaults `run` steps inside a `container:` job to `sh`
+# instead of `bash`. Every multi-line run block below uses bashisms (`[[ ]]`,
+# arrays, `shopt`) — most importantly the `if [[ "1" == "1" ]]` gate that
+# must reach ./toolchain/std/fetch-sysroot.sh in ports-base/coreutils+ripgrep.
+# Under `sh` that `[[` silently fails and the myos sysroot (rust-std for the
+# *-unknown-myos targets) is never built -> `E0463: can't find crate for core`.
+# Override the default so steps behave identically to a stock runner. The
+# ubuntu:24.04 image ships bash, so this is always available.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   changes:
@@ -109,6 +125,7 @@ jobs:
 
   sysroot:
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
     timeout-minutes: 45
     needs: [changes, wire-myos]
     if: |
@@ -130,9 +147,6 @@ jobs:
           prefix-key: myos-sysroot-v2
           workspaces: .
           cache-directories: target/myos-sysroot
-
-      - name: Install zstd
-        run: sudo apt-get update && sudo apt-get install -y zstd
 
       - name: Build and package sysroot
         id: sysroot_build
@@ -169,6 +183,7 @@ jobs:
 
   newlib:
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
     timeout-minutes: 45
     needs: [changes, wire-myos]
     if: |
@@ -191,9 +206,6 @@ jobs:
           prefix-key: myos-c-userspace
           workspaces: .
 
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld texinfo bison autoconf automake libtool zstd
-
       - name: Build and push newlib sysroot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -206,6 +218,7 @@ jobs:
 
   ports-base:
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
     timeout-minutes: 45
     needs: [changes, wire-myos, sysroot, newlib]
     if: |
@@ -281,9 +294,6 @@ jobs:
           name: myos-sysroot
           path: target
 
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
-
       - name: Build port (${{ matrix.port }})
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -303,6 +313,7 @@ jobs:
 
   ports-advanced:
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
     timeout-minutes: 45
     needs: [changes, wire-myos, sysroot, newlib, ports-base]
     if: |
@@ -337,9 +348,6 @@ jobs:
           toolchain: nightly-2026-07-26
           components: llvm-tools-preview
 
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
-
       - name: Build port (${{ matrix.port }})
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -354,6 +362,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
     timeout-minutes: 45
     needs: [changes, wire-myos, sysroot, newlib, ports-base, ports-advanced]
     if: |
@@ -390,9 +399,6 @@ jobs:
         with:
           name: myos-sysroot
           path: target
-
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
 
       - name: Pull prebuilt ports and build kernels
         env:
@@ -542,6 +548,7 @@ jobs:
   boot:
     name: boot (${{ matrix.id }})
     runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
     timeout-minutes: 30
     needs: build
     if: |
@@ -554,19 +561,15 @@ jobs:
         include:
           - id: bios
             args: --ci
-            packages: qemu-system-x86
             required: true
           - id: uefi
             args: uefi --ci
-            packages: qemu-system-x86
             required: true
           - id: aarch64
             args: aarch64 --ci
-            packages: qemu-system-arm qemu-efi-aarch64
             required: true
           - id: riscv64
             args: riscv64 --ci
-            packages: qemu-system-misc qemu-efi-riscv64
             required: true
     steps:
       - uses: actions/checkout@v4
@@ -628,8 +631,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld binutils-aarch64-linux-gnu autoconf automake libtool texinfo zstd bison rsync
           ./scripts/ci-registry.sh pull sysroot || true
           ./scripts/ci-registry.sh pull newlib || true
           ./scripts/ci-registry.sh pull std-hello || true
@@ -664,13 +665,61 @@ jobs:
           ./scripts/ci-registry.sh push git || true
           ./scripts/ci-registry.sh push lynx || true
 
-      - name: Install QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.packages }}
-
       - name: Boot in QEMU
         continue-on-error: ${{ !matrix.required }}
         env:
           MYOS_SKIP_KERNEL_REBUILD: "1"
         run: ./target/debug/myos ${{ matrix.args }}
+
+  iso:
+    # Optional, manual-only distributable CD image. Folds the former standalone
+    # iso.yml workflow into the CI pipeline: it REUSES the build job's packed
+    # outputs (sysroot/newlib/ports/hello/ok/limine) instead of re-running the
+    # whole toolchain/port build. Only `cargo build` runs here, which rebuilds
+    # the small host `myos` binary + x86_64 kernel artifact from source.
+    name: iso (x86_64 hybrid)
+    runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
+    timeout-minutes: 30
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.build_iso
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download CI build artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-build
+
+      - name: Restore CI artifacts
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          if [[ -f ci-build.tar ]]; then
+            echo "==> extracting ci-build.tar"
+            tar -xf ci-build.tar
+          fi
+          test -x target/debug/myos && echo "host myos present; reusing build outputs"
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, x86_64-unknown-uefi
+
+      - name: Build x86_64 hybrid ISO
+        run: |
+          cargo clean -p myos
+          cargo build
+          cargo run -- iso
+          test -f target/myos-x86_64.iso
+
+      - name: Upload ISO
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: myos-x86_64-iso
+          path: target/myos-x86_64.iso
+          if-no-files-found: error
+          retention-days: 3

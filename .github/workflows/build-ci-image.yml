@@ -1,0 +1,52 @@
+# Build (and push) the reusable CI container image from the repo-root
+# Dockerfile. Kept as an INDEPENDENT workflow on purpose:
+#   - push to master/main + workflow_dispatch: build AND push
+#     ghcr.io/davide-matasci/myos-ci:latest (with gha layer cache).
+#   - pull_request: build ONLY (no push, no GHCR login) so the Dockerfile is
+#     validated on every PR without mutating the shared image registry.
+#
+# ci.yml does NOT `needs:` this job, so the PR pipeline never blocks on the
+# image build and never depends on a docker push.
+name: Build CI Container Image
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR (push only)
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/davide-matasci/myos-ci:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
