@@ -403,19 +403,15 @@ fn interactive_arrow_seed_ok(serial: &str) -> bool {
 /// canonical mode) or printed as garbage and `histrecall_z3z` never runs.
 fn interactive_arrow_edit_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    if serial.contains("exception:")
-        || tail.contains("histrecall_z3z: not found")
-        || !tail.contains("$ echo histrecall_z3z")
-    {
-        return false;
-    }
-    let after = tail
-        .rsplit_once("$ echo histrecall_z3z")
-        .map(|(_, rest)| rest)
-        .unwrap_or("");
-    // Same single-clean-line guarantee as the seed: no blank line between the
-    // recalled+edited prompt echo and its output.
-    after.starts_with("\nhistrecall_z3z") && at_interactive_prompt(serial)
+    // The recalled `echo histrecall_zz` line is edited in place (Left + insert),
+    // so the editor's echo carries redraw bytes (backspaces/`3`) rather than a
+    // re-rendered contiguous `$ echo histrecall_z3z`. Only the *output* line
+    // `histrecall_z3z` is a clean needle. (The no-blank-line assertion lives on
+    // the seed, which is a plain typed command with a clean echo.)
+    !serial.contains("exception:")
+        && !tail.contains("histrecall_z3z: not found")
+        && tail.contains("histrecall_z3z")
+        && at_interactive_prompt(serial)
 }
 
 /// curl errored after the interactive command (e.g. `curl: (4) …`).
