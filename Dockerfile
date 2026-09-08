@@ -67,7 +67,10 @@ RUN apt-get update \
 # We intentionally do NOT `USER ciuser`: GitHub runs container jobs as root and
 # sets HOME=/github/home, and the repo scripts rely on root-writable workspace
 # + HOME semantics identical to a stock runner.
-RUN useradd -m -u 1000 -s /bin/bash ciuser \
+# uid/gid 1001: the stock ubuntu:24.04 image already owns uid/gid 1000 with
+# its built-in `ubuntu` user, and `useradd -u 1000 ciuser` errors out (exit 4)
+# on that collision — so use a free id.
+RUN useradd -m -u 1001 -s /bin/bash ciuser \
     && echo 'ciuser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ciuser
 
 WORKDIR /workspace
