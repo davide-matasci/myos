@@ -35,7 +35,7 @@ env:
 # Under `sh` that `[[` silently fails and the myos sysroot (rust-std for the
 # *-unknown-myos targets) is never built -> `E0463: can't find crate for core`.
 # Override the default so steps behave identically to a stock runner. The
-# ubuntu:22.04 image ships bash, so this is always available.
+# ubuntu:24.04 image ships bash, so this is always available.
 defaults:
   run:
     shell: bash

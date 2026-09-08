@@ -6,14 +6,23 @@
 # (rust-toolchain.toml), so each job installs it via dtolnay/rust-toolchain and
 # stays reproducible against that exact toolchain.
 #
-# NOTE on riscv64 binutils (differs from the reverted #121):
-#   #121 shipped `binutils-riscv64-linux-gnu`. The package DOES exist on jammy
-#   (2.38), but nothing in this repo invokes any `riscv64-linux-gnu-*` binary:
-#   both riscv64 targets (kernel `riscv64imac-unknown-none-elf` and userspace
+# NOTE on the base image vs the reverted #121:
+#   Base is ubuntu:24.04 (noble), NOT 22.04. The riscv64 boot job needs RISC-V
+#   UEFI firmware, and src/main.rs::riscv64_firmware() hard-requires either
+#   /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd or /usr/share/edk2/riscv64/
+#   (no download fallback). qemu-efi-riscv64 does not exist on 22.04, so a
+#   jammy container cannot pass the riscv64 boot. 24.04 is also what the
+#   ubuntu-latest runner currently ships, so clang/lld/qemu versions in the
+#   image match the versions the jobs were verified against on the runner.
+#
+# NOTE on riscv64 binutils (differs from #121):
+#   #121 shipped `binutils-riscv64-linux-gnu`. It exists on jammy+noble, but
+#   nothing in this repo invokes any `riscv64-linux-gnu-*` binary: both riscv64
+#   targets (kernel `riscv64imac-unknown-none-elf` and userspace
 #   `riscv64-unknown-myos`) link with `rust-lld` (targets/*.json set
 #   `linker = "rust-lld"`), and the C ports build riscv object files with clang.
-#   The GNU riscv binutils are therefore dead weight (~9 MB) and are dropped.
-FROM --platform=$BUILDPLATFORM ubuntu:22.04
+#   The GNU riscv binutils are therefore dead weight and are dropped.
+FROM --platform=$BUILDPLATFORM ubuntu:24.04
 
 ARG TARGETARCH
 ARG TARGETOS=linux
