@@ -17,9 +17,17 @@ cd "$ROOT"
 
 # Phase-1 git depends on zlib; build before cargo packs initramfs (workflow
 # edits need `workflow` OAuth scope — keep this script as the CI hook).
+# Then build newlib and settle target/.myos-newlib-version BEFORE the inputs
+# hash is snapshotted below. On a PR where the newlib job was skipped (no
+# toolchain/newlib changes) its stamp is absent and a registry pull misses;
+# a lazy port-build inside the cargo build then creates the stamp mid-build,
+# which tripped the kernel_inputs_hash drift guard. newlib/build.sh is
+# idempotent (early-exits when current), so this is a no-op on runs that
+# already onboarded newlib.
 if [[ "${1:-}" != "--print-hash" && "${1:-}" != "--is-current" && "${1:-}" != "--print-members" ]]; then
   ./ports/zlib/build.sh
   ./ports/git/build.sh
+  ./toolchain/newlib/build.sh
 fi
 
 STAMP="target/.myos-ci-kernel-version"
