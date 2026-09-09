@@ -106,13 +106,12 @@ kernel_inputs_hash() {
         # Do not hash Cargo.lock: **/Cargo.lock is gitignored and appears after
         # the first cargo build, which made pull-tag ≠ post-build stamp.
         sha256sum build.rs Cargo.toml 2>/dev/null || true
-        sha256sum \
-          src/limine_image.rs \
-          src/limine_gpt.rs \
-          src/limine_fat.rs \
-          src/limine_dir.rs \
-          src/initramfs.rs \
-          2>/dev/null || true
+        # Whole host-bin crate (src/): target/debug/myos is the CI harness
+        # (wait_ci) and the pack list ships it in ci-build.tar, so ANY src
+        # change — not just the limine/initramfs files — must bust the stamp.
+        # Existence-only artifacts_ready() made a rust-cache-restored binary
+        # from an older commit pass freshness and boot stale harness needles.
+        hash_tree src
         if [[ -f .cargo/config.toml ]]; then
           sha256sum .cargo/config.toml
         fi
