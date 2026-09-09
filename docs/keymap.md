@@ -104,6 +104,33 @@ regardless of which map is loaded and are not bound in `us.map` / `ch.map`:
 and hits the kernel's `ISIG` ^C path in both cooked and raw mode.
 
 In **cooked** (canonical) mode the kernel swallows complete ESC/CSI sequences
-(arrows, function keys) so `[` + letters never leak into the command line; a
-lone Esc is dropped like bash. In **raw** mode (vim) the real ESC bytes are
-delivered untouched.
+(arrows, function keys) so `[` + letters never leak into a plain, canonical
+command line; a lone Esc is dropped like bash. Cooked mode is what non-editing
+readers see.
+
+In **raw** mode (ICANON cleared) the real ESC bytes are delivered untouched —
+this is how TUIs like `vim` and the shell's line editor get their keys.
+
+## oksh: Emacs line editing on the raw console
+
+The interactive shell (`ports/oksh`) does **not** read cooked canonical lines
+anymore. At the `$` prompt it puts the console tty into raw/cbreak mode
+(clears `ICANON`\|`ECHO`, keeps `ISIG` via `tcsetattr` → kernel `TCSETS`) and
+runs its bundled **Emacs** line editor (`emacs.c`) over the raw bytes. The
+kernel delivers the `ESC [ A/B/C/D` bytes the keyboard drivers produce directly
+(no cooked swallowing in raw mode), and oksh maps them naturally:
+
+| Key          | Bytes       | Emacs binding     | Effect        |
+|--------------|-------------|-------------------|---------------|
+| Up arrow     | `ESC [ A`   | `x_prev_com`      | history Up    |
+| Down arrow   | `ESC [ B`   | `x_next_com`      | history Down  |
+| Right arrow  | `ESC [ C`   | `x_mv_forw`       | cursor right  |
+| Left arrow   | `ESC [ D`   | `x_mv_back`       | cursor left   |
+| Home / End   | `ESC [ H/F` | `x_mv_begin/end`  | line start/end |
+
+Because raw mode disables kernel echo, oksh's editor owns echo and redraw
+(`x_zots`/`x_redraw`), so typed characters, cursor movement, and history recall
+all render directly on the console. The editor is active only while the shell
+is editing at the prompt; before/after (e.g. while a foreground child runs) the
+kernel tty is restored to cooked mode, so `^C` (ISIG) still kills the
+foreground child and the shell survives (see the Ctrl+C docs and `trap.c`).

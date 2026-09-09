@@ -28,19 +28,6 @@
  
  	/* shl_j is used to do asynchronous notification (used in
  	 * an interrupt handler, so need a distinct shf)
-@@ -182,11 +183,7 @@
- 		}
- 	}
- 
--	/* j_change() calls tty_init() */
--	if (Flag(FMONITOR))
--		j_change();
--	else if (Flag(FTALKING))
--		tty_init(true);
-+	/* myos: no /dev/tty, F_DUPFD, or termios. stdin is already the console. */
- }
- 
- /* suspend the shell */
 @@ -255,16 +252,10 @@
  		    ((j->flags & JF_FG) ||
  		    (Flag(FLOGIN) && !Flag(FNOHUP) && procpid == kshpid))))) {

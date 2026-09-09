@@ -78,7 +78,7 @@ const CI_NEEDLES_STD: [&str; 22] = [
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 15] = [
+const CI_SHELL_COMMANDS: [&[u8]; 17] = [
     b"nosuchcmd\n",
     // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
     b"heap\n",
@@ -107,12 +107,37 @@ const CI_SHELL_COMMANDS: [&[u8]; 15] = [
     // wait wakes on a pending fatal signal; see `interactive_interrupt_cmd_ok`
     // and the interrupt handling in `advance_shell_ci`.
     b"cat | cat\n",
+    // Seed a distinct history entry for the arrow-key test that follows.
+    b"echo histrecall_zz\n",
+    // Arrow-key editing: at the emacs-raw prompt, Up (ESC [ A) must recall the
+    // previous `echo histrecall_zz`, Left (ESC [ D) moves the cursor off the end,
+    // `3` inserts, and Enter runs the edited line -> `echo histrecall_z3z` prints
+    // `histrecall_z3z`. If raw mode / the editor are broken the kernels cooked
+    // gate swallows the CSI bytes and the recalled+edited command never runs;
+    // `histrecall_z3z` then never appears.
+    b"\x1b[A\x1b[D3\n",
 ];
 
 /// Index into [`CI_SHELL_COMMANDS`] of the ^C interrupt test. While waiting on
 /// this command the harness sends `0x03` (VINTR) once and requires the shell
 /// to survive and return to the prompt.
 const INTERRUPT_CMD_IDX: usize = 14;
+
+/// Index into [`CI_SHELL_COMMANDS`] of the history seed for the arrow test.
+const ARROW_SEED_IDX: usize = 15;
+
+/// Index into [`CI_SHELL_COMMANDS`] of the Up/Left arrow-key editing test.
+const ARROW_EDIT_IDX: usize = 16;
+
+/// Interactive curl prompt echo. The full `$ curl -fsS --connect-timeout 30 …`
+/// command must echo as ONE clean line: oksh's emacs editor sizes the prompt
+/// from the device winsize, and the kernel reports a wide (160-col) console on
+/// every boot, so the line no longer wraps with redraw artifacts on the
+/// aarch64/riscv64 serial boots (the old 24x80 fallback did). Keep a strict
+/// full-line needle (including the `; cat` tail) so a wrapped/redraw-corrupted
+/// echo must NOT match.
+const CURL_ECHO: &str =
+    "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html";
 
 /// Printed by the interactive shell when a command cannot be resolved.
 const CI_SHELL_UNKNOWN_CMD: &str = "not found";
@@ -308,20 +333,25 @@ fn interactive_https_cmd_ok(serial: &str) -> bool {
 /// `nosuchcmd: not found` does not permanently fail this stage.
 fn interactive_curl_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    let echoed = "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/";
-    if !tail.contains(echoed) || serial.contains("exception:") {
+    if !tail.contains(CURL_ECHO) || serial.contains("exception:") {
         return false;
     }
-    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    let after = tail.rsplit_once(CURL_ECHO).map(|(_, rest)| rest).unwrap_or("");
     if interactive_curl_after_failed(after) {
         return false;
     }
-    // Prefer Example Domain from curl's cat output (after the command), not the
-    // earlier interactive `http` HTTPS response.
-    if !after.contains("Example Domain") {
-        return false;
-    }
-    at_interactive_prompt(serial)
+    // The echoed command must be one clean line: `after` begins straight with
+    // the downloaded HTML (or a curl error), never with a blank line. A blank
+    // line there is the `\r\r\n` double-newline regression from the editor.
+    let first = after
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty());
+    let ok = match first {
+        Some(l) if l.contains("Example Domain") || l.contains("curl:") => true,
+        _ => false,
+    };
+    ok && !after.starts_with("\n\n") && at_interactive_prompt(serial)
 }
 
 /// ^C interrupt test: a foreground `cat | cat` (right cat blocked on a kernel
@@ -343,6 +373,47 @@ fn interactive_interrupt_cmd_ok(serial: &str) -> bool {
     at_interactive_prompt(serial)
 }
 
+/// History seed for the arrow test: `echo histrecall_zz` must run and print
+/// `histrecall_zz` so the following arrow command can recall it via Up.
+fn interactive_arrow_seed_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    if serial.contains("exception:")
+        || serial.contains("histrecall_zz: not found")
+        || !tail.contains("$ echo histrecall_zz")
+    {
+        return false;
+    }
+    let after = tail
+        .rsplit_once("$ echo histrecall_zz")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
+    // The prompt's Enter must produce exactly one newline before the output:
+    // the double-newline regression shows up as a blank line (`\r\r\n`), which
+    // makes `after` start with a blank line instead of `histrecall_zz`.
+    let ok = after.starts_with("\nhistrecall_zz")
+        && at_interactive_prompt(serial);
+    ok
+}
+
+/// Arrow-key editing test: Up (ESC [ A) recalls the seeded history entry,
+/// Left (ESC [ D) backs the cursor off the end, `3` inserts, Enter runs the
+/// edited line -> `echo histrecall_z3z` prints `histrecall_z3z`. The needle
+/// only appears if the emacs editor recognised the CSI bytes on the raw tty:
+/// with a cooked/single-line shell the escaped sequence is swallowed (kernel
+/// canonical mode) or printed as garbage and `histrecall_z3z` never runs.
+fn interactive_arrow_edit_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    // The recalled `echo histrecall_zz` line is edited in place (Left + insert),
+    // so the editor's echo carries redraw bytes (backspaces/`3`) rather than a
+    // re-rendered contiguous `$ echo histrecall_z3z`. Only the *output* line
+    // `histrecall_z3z` is a clean needle. (The no-blank-line assertion lives on
+    // the seed, which is a plain typed command with a clean echo.)
+    !serial.contains("exception:")
+        && !tail.contains("histrecall_z3z: not found")
+        && tail.contains("histrecall_z3z")
+        && at_interactive_prompt(serial)
+}
+
 /// curl errored after the interactive command (e.g. `curl: (4) …`).
 fn interactive_curl_after_failed(after: &str) -> bool {
     after.contains("not found")
@@ -354,11 +425,10 @@ fn interactive_curl_after_failed(after: &str) -> bool {
 /// Hard fail so we do not burn the full QEMU timeout after a printed curl error.
 fn interactive_curl_cmd_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    let echoed = "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/";
-    if !tail.contains(echoed) {
+    if !tail.contains(CURL_ECHO) {
         return false;
     }
-    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    let after = tail.rsplit_once(CURL_ECHO).map(|(_, rest)| rest).unwrap_or("");
     interactive_curl_after_failed(after)
 }
 
@@ -462,6 +532,8 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
         12 => interactive_https_cmd_ok(serial),
         13 => interactive_curl_cmd_ok(serial),
         INTERRUPT_CMD_IDX => interactive_interrupt_cmd_ok(serial),
+        ARROW_SEED_IDX => interactive_arrow_seed_ok(serial),
+        ARROW_EDIT_IDX => interactive_arrow_edit_ok(serial),
         _ => false,
     }
 }
@@ -706,6 +778,25 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             eprintln!("error: QEMU timed out after {:?}", expect.timeout);
         }
         eprintln!("error: shell CI stage was {shell_stage:?} (cmd {shell_cmd_index})");
+        {
+            // Escaped byte-level dump of the serial tail at failure: needles
+            // match on the exact `acc` bytes, so the raw tail (backspaces,
+            // CR/LF, editor redraw bytes) is what decides pass/fail.
+            let tail: String = serial
+                .chars()
+                .rev()
+                .take(240)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            eprintln!("debug: serial tail (escaped): {tail:?}");
+            eprintln!(
+                "debug: at_interactive_prompt={} arrow_edit_ok={}",
+                at_interactive_prompt(&serial),
+                interactive_arrow_edit_ok(&serial)
+            );
+        }
         if matches!(shell_stage, ShellStage::WaitLogin | ShellStage::TypingUser)
             && !login_prompt_ready(&serial)
         {
@@ -820,8 +911,8 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
         }
         if shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
-            if !command_echoed(&serial, "curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/") {
-                eprintln!("error: serial did not echo curl HTTPS command at the interactive prompt");
+            if !serial.contains(CURL_ECHO) {
+                eprintln!("error: serial did not echo the curl HTTPS command on one clean line at the interactive prompt");
             } else if serial.contains("exception:") {
                 eprintln!("error: interactive curl triggered a CPU exception");
             } else if interactive_curl_cmd_failed(&serial) {
@@ -858,6 +949,25 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: Ctrl+C did not interrupt the foreground `cat | cat`");
             }
             std::process::exit(1);
+        }
+        if shell_cmd_index == ARROW_SEED_IDX && !interactive_arrow_seed_ok(&serial) {
+            eprintln!(
+                "error: arrow history seed `echo histrecall_zz` failed (want `histrecall_zz`, no exception)"
+            );
+        }
+        if shell_cmd_index == ARROW_EDIT_IDX && !interactive_arrow_edit_ok(&serial) {
+            if !serial.contains("histrecall_z3z")
+                && !serial.contains("histrecall_zz3")
+                && !serial.contains("histrecall_zz: not found")
+            {
+                eprintln!(
+                    "error: arrow keys dead at the prompt — Up/Left did not recall+edit `echo histrecall_zz`"
+                );
+            } else {
+                eprintln!(
+                    "error: arrow recall/insert produced unexpected argv (want `echo histrecall_z3z`)"
+                );
+            }
         }
         std::process::exit(1);
     }
