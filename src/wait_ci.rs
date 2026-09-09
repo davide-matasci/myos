@@ -778,6 +778,25 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             eprintln!("error: QEMU timed out after {:?}", expect.timeout);
         }
         eprintln!("error: shell CI stage was {shell_stage:?} (cmd {shell_cmd_index})");
+        {
+            // Escaped byte-level dump of the serial tail at failure: needles
+            // match on the exact `acc` bytes, so the raw tail (backspaces,
+            // CR/LF, editor redraw bytes) is what decides pass/fail.
+            let tail: String = serial
+                .chars()
+                .rev()
+                .take(240)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            eprintln!("debug: serial tail (escaped): {tail:?}");
+            eprintln!(
+                "debug: at_interactive_prompt={} arrow_edit_ok={}",
+                at_interactive_prompt(&serial),
+                interactive_arrow_edit_ok(&serial)
+            );
+        }
         if matches!(shell_stage, ShellStage::WaitLogin | ShellStage::TypingUser)
             && !login_prompt_ready(&serial)
         {
