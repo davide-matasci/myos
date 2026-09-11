@@ -430,6 +430,7 @@ jobs:
           ./scripts/ci-registry.sh pull curl || true
           ./scripts/ci-registry.sh pull sbase || true
           ./scripts/ci-registry.sh pull oksh || true
+          ./scripts/ci-registry.sh pull make || true
           ./scripts/ci-registry.sh pull ubase || true
           ./scripts/ci-registry.sh pull coreutils || true
           ./scripts/ci-registry.sh pull ripgrep || true
@@ -446,6 +447,7 @@ jobs:
           ./scripts/ci-registry.sh push curl || true
           ./scripts/ci-registry.sh push sbase || true
           ./scripts/ci-registry.sh push oksh || true
+          ./scripts/ci-registry.sh push make || true
           ./scripts/ci-registry.sh push ubase || true
           ./scripts/ci-registry.sh push coreutils || true
           ./scripts/ci-registry.sh push ripgrep || true
