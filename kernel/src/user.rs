@@ -65,8 +65,9 @@ pub const USER_STACK_PAGES: usize = 128;
 #[cfg(not(target_arch = "aarch64"))]
 pub const USER_STACK_PAGES: usize = 256;
 /// Per-process brk heap.
-/// - x86_64: TLS arena stays in ELF BSS; raise to 512 pages (2 MiB) so git
-///   Phase-1 object writes can malloc ≥1 MiB without OOM (256 pages = exactly 1 MiB).
+/// - x86_64: TLS arena stays in ELF BSS; git Phase-1 object writes need ≥1 MiB
+///   and GNU make's os-test parsing xmallocs well past the old 512-page cap
+///   ("make: *** virtual memory exhausted"), so use 4096 pages (16 MiB).
 /// - aarch64/riscv64: TLS arena is a 2 MiB brk allocation — window must fit
 ///   that plus headroom. aarch64 stays under the 4×512-page L2 spill cap
 ///   (image + stack + heap ≲ 2048 pages from USER_BASE).
@@ -75,7 +76,7 @@ const HEAP_PAGES: usize = 768;
 #[cfg(target_arch = "riscv64")]
 const HEAP_PAGES: usize = 1024;
 #[cfg(target_arch = "x86_64")]
-const HEAP_PAGES: usize = 512;
+const HEAP_PAGES: usize = 4096;
 /// Cap for fresh `load_user_elf` (init + typical programs) and on-stack frame arrays.
 /// Keep modest: bumping this also sizes `[u64; N]` on the task stack and used to
 /// force `elf_scratch_mut` to grab N contiguous frames before init could run.

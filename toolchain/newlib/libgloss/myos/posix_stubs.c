@@ -6,6 +6,7 @@
 #include <grp.h>
 #include <pwd.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -57,7 +58,16 @@ int mkdir(const char *path, mode_t mode) {
     ret = myos_syscall3(
         MYOS_SYS_MKDIR, (long)(uintptr_t)path, (long)strlen(path), (long)mode);
     if (ret == (long)MYOS_SYSERR) {
-        errno = EROFS;
+        /* The kernel folds every failure into one generic error. Distinguish
+         * EEXIST (path already exists as a directory) so `mkdir -p` works: it
+         * only tolerates EEXIST, and a generic EROFS made it abort on any
+         * pre-existing directory. */
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            errno = EEXIST;
+        } else {
+            errno = EROFS;
+        }
         return -1;
     }
     return 0;
@@ -204,12 +214,63 @@ DIR *fdopendir(int fd) {
 extern char **environ;
 
 int execvp(const char *file, char *const argv[]) {
+    const char *path;
+    char cand[512];
+    const char *p, *end;
+
     if (file == NULL) {
         errno = ENOENT;
         return -1;
     }
-    /* Getty/login pass absolute paths (/u/login, /sh); skip PATH search. */
-    return execve(file, argv, environ);
+    /* Getty/login pass absolute paths (/u/login, /sh); absolute/contain-slash
+     * names go straight to execve. Everything else gets a POSIX PATH search
+     * (GNU make execvp()s bare recipe commands like `echo`). */
+    if (file[0] == '/') {
+        return execve(file, argv, environ);
+    }
+    if (strchr(file, '/') != NULL) {
+        return execve(file, argv, environ);
+    }
+    path = getenv("PATH");
+    if (path == NULL) {
+        path = "/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc";
+    }
+    for (p = path; *p != '\0'; p = (*end == ':') ? end + 1 : end) {
+        end = strchr(p, ':');
+        if (end == NULL) {
+            end = p + strlen(p);
+        }
+        size_t dirlen = (size_t)(end - p);
+        if (dirlen == 0) {
+            /* POSIX: empty PATH entry means the current directory. */
+            if (1 + strlen(file) + 1 > sizeof(cand)) {
+                continue;
+            }
+            cand[0] = '.';
+            cand[1] = '/';
+            memcpy(cand + 2, file, strlen(file) + 1);
+            execve(cand, argv, environ);
+            if (errno != ENOENT && errno != ENOTDIR && errno != EACCES) {
+                return -1;
+            }
+            continue;
+        }
+        if (dirlen + 1 + strlen(file) + 1 > sizeof(cand)) {
+            continue;
+        }
+        memcpy(cand, p, dirlen);
+        if (dirlen > 0 && cand[dirlen - 1] != '/') {
+            cand[dirlen] = '/';
+            dirlen++;
+        }
+        memcpy(cand + dirlen, file, strlen(file) + 1);
+        execve(cand, argv, environ);
+        if (errno != ENOENT && errno != ENOTDIR && errno != EACCES) {
+            return -1;
+        }
+    }
+    errno = ENOENT;
+    return -1;
 }
 
 /*

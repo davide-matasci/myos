@@ -9,7 +9,9 @@ use spin::Mutex;
 
 use crate::fs::StatInfo;
 
-const MAX_ENTRIES: usize = 256;
+// os-test alone is ~6.5k files; cp -R of a port tree must not hit an
+// arbitrary cap (creat fails with ENOENT once mkdir stops succeeding).
+const MAX_ENTRIES: usize = 16384;
 const COMP_CAP: usize = 64;
 const PATH_CAP: usize = 128;
 const FILE_CAP: usize = 262144;
@@ -407,7 +409,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     let i = find_index(&entries, name)?;
     let (mode, size, nlink) = match &entries[i].kind {
         Kind::Dir => (S_IFDIR | 0o755, 0u32, 2u32),
-        Kind::File(data) => (S_IFREG | 0o644, data.len() as u32, 1u32),
+        Kind::File(data) => (S_IFREG | 0o755, data.len() as u32, 1u32),
         Kind::Symlink(t) => (S_IFLNK | 0o777, t.len() as u32, 1u32),
     };
     Some(StatInfo {

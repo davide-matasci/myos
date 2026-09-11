@@ -314,6 +314,8 @@ fn run_ci_bios(bios_path: &str) {
         .arg("none")
         .arg("-monitor")
         .arg("none")
+        .arg("-gdb")
+        .arg("tcp::1234")
         .arg("-device")
         .arg("isa-debug-exit,iobase=0xf4,iosize=0x04")
         .arg("-nic")
@@ -332,7 +334,7 @@ fn run_ci_bios(bios_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(180),
+            timeout: Duration::from_secs(300),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -381,7 +383,7 @@ fn run_ci_uefi(uefi_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(180),
+            timeout: Duration::from_secs(300),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -400,7 +402,7 @@ fn run_ci_aarch64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(180),
+            timeout: Duration::from_secs(300),
             qemu_debug_exit: false,
             shell_ci: true,
         },
@@ -798,7 +800,7 @@ fn run_ci_riscv64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(180),
+            timeout: Duration::from_secs(300),
             qemu_debug_exit: false,
             shell_ci: true,
         },

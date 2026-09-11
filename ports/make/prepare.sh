@@ -27,6 +27,24 @@ done
 cp "$HERE/config.h" "$WORK/config.h"
 cp "$HERE/myos_compat.h" "$WORK/myos_compat.h"
 
+# myos crt0 calls main(argc, argv) only: rdx (envp) is garbage on entry,
+ # and main.c walks envp[] to import environment variables. Declare envp
+ # from the real environ unconditionally (upstream guards it under MK_OS_ZOS).
+ python3 - "$WORK/main.c" <<'PYEOF'
+import sys
+p=sys.argv[1]
+s=open(p).read()
+old="#ifdef MK_OS_ZOS\n  char **envp = environ;\n#endif\n"
+assert old in s, "envp guard not found"
+s=s.replace(old,"  char **envp = environ;\n",1)
+# main's third parameter (envp) would now collide with the local above.
+old2="main (int argc, char **argv, char **envp)"
+assert old2 in s, "main signature not found"
+s=s.replace(old2,"main (int argc, char **argv, char **envp_unused)",1)
+open(p,'w').write(s)
+print("main.c envp patched")
+PYEOF
+
 # newlib's <glob.h> is a bare subset (no GLOB_NOMATCH), so bundle make's
 # own gnulib glob/fnmatch: -I$WORK precedes -isystem newlib include.
 cp "$SRCROOT/lib/glob.c" "$SRCROOT/lib/fnmatch.c" "$WORK/"
