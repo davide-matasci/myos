@@ -99,32 +99,6 @@ jobs:
               - 'scripts/build-coreutils-myos.sh'
               - 'scripts/ci-registry.sh'
 
-  iso-gate:
-    # Job-level `if` expressions referencing workflow_dispatch boolean inputs
-    # evaluated false even when the input was true (verified: the raw event
-    # payload carried build_iso: true while the iso job still skipped).
-    # Decide the ISO gate HERE, in a step, where the inputs context provably
-    # resolves, and let the iso job consume the string output.
-    runs-on: ubuntu-latest
-    if: always() && github.event_name == 'workflow_dispatch'
-    outputs:
-      iso: ${{ steps.gate.outputs.iso }}
-    steps:
-      - name: Evaluate ISO gate
-        id: gate
-        env:
-          EVENT_INPUTS: ${{ toJSON(github.event.inputs) }}
-        run: |
-          echo "dispatch event inputs: $EVENT_INPUTS"
-          # build_iso is a typed boolean input; the raw event payload renders
-          # it as the string "true"/"false" (with quotes and spacing). Match
-          # with a regex tolerant of both.
-          if echo "$EVENT_INPUTS" | grep -q '"build_iso": *"true"'; then
-            echo "iso=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "iso=false" >> "$GITHUB_OUTPUT"
-          fi
-
   wire-myos:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -707,8 +681,8 @@ jobs:
     runs-on: ubuntu-latest
     container: ghcr.io/davide-matasci/myos-ci:latest
     timeout-minutes: 30
-    needs: [build, iso-gate]
-    if: needs.build.result == 'success' && needs.iso-gate.outputs.iso == 'true'
+    needs: build
+    if: needs.build.result == 'success' && github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
@@ -735,7 +709,18 @@ jobs:
           targets: x86_64-unknown-none, x86_64-unknown-uefi
 
       - name: Build x86_64 hybrid ISO
+        env:
+          EVENT_INPUTS: ${{ toJSON(github.event.inputs) }}
         run: |
+          # Job-level if expressions unreliably resolve workflow_dispatch
+          # boolean inputs (iso skipped even with the payload carrying
+          # build_iso: true), so the decision happens HERE, in the step,
+          # where toJSON(github.event.inputs) provably resolves.
+          echo "dispatch event inputs: $EVENT_INPUTS"
+          if ! echo "$EVENT_INPUTS" | grep -q '"build_iso": *"true"'; then
+            echo "ISO not requested (build_iso != true); nothing to do"
+            exit 0
+          fi
           # Regenerate the newlib clang wrappers (x86_64-unknown-myos-cc & co):
           # ci-build.tar ships target/newlib-* (headers/libs) but not
           # target/newlib-bin, and rebuilding the kernel from source re-runs
@@ -749,7 +734,7 @@ jobs:
           test -f target/myos-x86_64.iso
 
       - name: Upload ISO
-        continue-on-error: true
+        if: hashFiles('target/myos-x86_64.iso') != ''
         uses: actions/upload-artifact@v4
         with:
           name: myos-x86_64-iso
