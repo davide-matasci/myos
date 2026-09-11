@@ -10,7 +10,9 @@ use spin::Mutex;
 use crate::fs::StatInfo;
 
 const PATH_CAP: usize = 96;
-const MAX_FILES: usize = 2048;
+// os-test alone contributes ~6.5k lib/ files; the old 2048 cap silently
+// dropped every later registration, leaving most of the tree unreadable.
+const MAX_FILES: usize = 16384;
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
@@ -21,6 +23,17 @@ struct File {
 }
 
 static FILES: Mutex<Vec<File>> = Mutex::new(Vec::new());
+// Lazy-sort flag: registrations arrive in arbitrary order at boot; the first
+// lookup sorts once, after which every read path is binary search.
+static SORTED: Mutex<bool> = Mutex::new(false);
+
+fn ensure_sorted(files: &mut Vec<File>) {
+    let mut sorted = SORTED.lock();
+    if !*sorted {
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        *sorted = true;
+    }
+}
 
 fn valid_rel(path: &str) -> bool {
     !path.is_empty()
@@ -35,8 +48,9 @@ pub fn register(name: &str, bytes: &'static [u8]) -> bool {
         return false;
     }
     let mut files = FILES.lock();
-    if let Some(e) = files.iter_mut().find(|e| e.path == name) {
-        e.data = bytes;
+    ensure_sorted(&mut files);
+    if let Ok(i) = files.binary_search_by(|e| e.path.as_str().cmp(name)) {
+        files[i].data = bytes;
         return true;
     }
     if files.len() >= MAX_FILES {
@@ -46,6 +60,8 @@ pub fn register(name: &str, bytes: &'static [u8]) -> bool {
         path: String::from(name),
         data: bytes,
     });
+    // Inserted out of order; the next read path re-sorts once.
+    *SORTED.lock() = false;
     true
 }
 
@@ -53,8 +69,12 @@ pub fn lookup(name: &str) -> Option<&'static [u8]> {
     if !valid_rel(name) {
         return None;
     }
-    let files = FILES.lock();
-    files.iter().find(|e| e.path == name).map(|e| e.data)
+    let mut files = FILES.lock();
+    ensure_sorted(&mut files);
+    files
+        .binary_search_by(|e| e.path.as_str().cmp(name))
+        .ok()
+        .map(|i| files[i].data)
 }
 
 pub fn create(_name: &str) -> bool {
@@ -84,10 +104,19 @@ fn is_dir_path(files: &[File], dir: &str) -> bool {
     if dir.is_empty() {
         return true;
     }
-    files.iter().any(|e| {
-        e.path == dir
-            || (e.path.starts_with(dir) && e.path.as_bytes().get(dir.len()) == Some(&b'/'))
-    })
+    // Exact entry...
+    let idx = files.partition_point(|e| e.path.as_str() < dir);
+    if files.get(idx).map(|e| e.path.as_str()) == Some(dir) {
+        return true;
+    }
+    // ...or any child below dir/ (sorted, so a prefix partition point suffices).
+    let mut prefix = String::from(dir);
+    prefix.push('/');
+    let idx = files.partition_point(|e| e.path.as_str() < prefix.as_str());
+    files
+        .get(idx)
+        .map(|e| e.path.starts_with(prefix.as_str()))
+        .unwrap_or(false)
 }
 
 pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
@@ -103,28 +132,39 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         return 0;
     }
     let mut n = 0;
-    let mut seen: Vec<&str> = Vec::new();
-    for e in files.iter() {
-        let child = if dir.is_empty() {
-            match e.path.split_once('/') {
-                Some((head, _)) => head,
-                None => e.path.as_str(),
-            }
-        } else if e.path.starts_with(dir)
-            && e.path.as_bytes().get(dir.len()) == Some(&b'/')
-        {
-            let rest = &e.path[dir.len() + 1..];
-            match rest.split_once('/') {
-                Some((head, _)) => head,
-                None => rest,
-            }
+    // Sorted paths: children of dir are contiguous; identical first
+    // components are adjacent, so tracking the previous child suffices
+    // (the old seen-Vec dedup was O(n^2) over 6.5k files).
+    let prefix = if dir.is_empty() {
+        String::from("")
+    } else {
+        let mut p = String::from(dir);
+        p.push('/');
+        p
+    };
+    let start = if prefix.is_empty() {
+        0
+    } else {
+        files.partition_point(|e| e.path.as_str() < prefix.as_str())
+    };
+    let mut last_child: Option<&str> = None;
+    for e in files[start..].iter() {
+        let rest = if prefix.is_empty() {
+            e.path.as_str()
         } else {
-            continue;
+            match e.path.strip_prefix(prefix.as_str()) {
+                Some(r) => r,
+                None => break,
+            }
         };
-        if seen.iter().any(|s| *s == child) {
+        let child = match rest.split_once('/') {
+            Some((head, _)) => head,
+            None => rest,
+        };
+        if last_child == Some(child) {
             continue;
         }
-        seen.push(child);
+        last_child = Some(child);
         let name = child.as_bytes();
         let need = name.len() + 1;
         if n + need > buf.len() {
@@ -151,8 +191,10 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     if !valid_rel(name) {
         return None;
     }
-    let files = FILES.lock();
-    if let Some(e) = files.iter().find(|e| e.path == name) {
+    let mut files = FILES.lock();
+    ensure_sorted(&mut files);
+    if let Ok(i) = files.binary_search_by(|e| e.path.as_str().cmp(name)) {
+        let e = &files[i];
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
             size: e.data.len() as u32,
