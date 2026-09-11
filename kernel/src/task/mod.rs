@@ -25,7 +25,7 @@ mod switch_riscv64;
 #[cfg(target_arch = "riscv64")]
 use switch_riscv64::{seed_stack, task_switch};
 
-const MAX_TASKS: usize = 8;
+const MAX_TASKS: usize = 32;
 /// Exec from a syscall runs `load_user_elf` / `copy_user_aspace` on the task
 /// stack (exception frame + `[MAX_INIT_PAGES]`/`[USER_STACK_PAGES]` frame arrays).
 /// 8 KiB overflowed after widening the user stack to 64 KiB; 16 KiB then overflowed

@@ -454,6 +454,19 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         read(&manifest_dir.join("ports/termcap/termcap")),
     );
 
+    // os-test (POSIX compliance test suite) -> lib/os-test, run manually on
+    // the guest with the GNU make port: cd /lib/os-test && make.
+    // Sources are fetched at build time by ports/os-test/fetch.sh (pinned
+    // sortix/os-test rev + myos GNU-make harness overlay); nothing vendored.
+    // Gated on the port_os_test feature.
+    if feature_enabled("port_os_test") {
+        collect_tree(
+            &manifest_dir.join("target/os-test-embed"),
+            "lib/os-test",
+            &mut entries,
+        );
+    }
+
     // Vim system vimrc (pathdef.c points default_vim_dir at /lib/vim):
     // without it vim starts in Vi-compatible mode, which turns 'esckeys' off
     // (arrow keys dead in insert mode) and empties 'backspace' (BS cannot

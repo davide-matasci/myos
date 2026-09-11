@@ -63,4 +63,10 @@
 #define DT_SOCK 12
 #endif
 
+/* NLS is off, but main.c calls bindtextdomain()/textdomain() anyway; the
+ * link resolves them somewhere weak-ish and the first call faults on the
+ * guest. Compile them out entirely. */
+#define bindtextdomain(domain, dir) ((void)0)
+#define textdomain(domain) ((void)0)
+
 #endif /* _MYOS_MAKE_COMPAT_H_ */

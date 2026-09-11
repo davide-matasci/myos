@@ -49,6 +49,7 @@ port_zlib = []
 port_vim = ["port_ncurses"]
 port_git = ["port_zlib"]
 port_lynx = []
+port_os_test = []
 port_make = []
 
 [build-dependencies]
