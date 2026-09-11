@@ -24,7 +24,7 @@ ovmf-prebuilt = "0.2.9"
 [features]
 default = [
     "core",
-    "port_vim", "port_lynx", "port_git",
+    "port_vim", "port_lynx", "port_git", "port_make",
 ]
 
 # Boot-required core: these are load-bearing (kernel smoke tests + shell PATH
@@ -49,6 +49,7 @@ port_zlib = []
 port_vim = ["port_ncurses"]
 port_git = ["port_zlib"]
 port_lynx = []
+port_make = []
 
 [build-dependencies]
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }

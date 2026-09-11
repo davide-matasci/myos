@@ -326,9 +326,11 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     }
     // oksh -> bin/custom/sh (none triple).
     if feature_enabled("port_oksh") {
-        add(
+        // Also serve the shell at /bin/sh: PATH-independent consumers (GNU
+        // make's default SHELL=/bin/sh) need it at the canonical location.
+        add_hardlink_group(
             &mut entries,
-            "bin/custom/sh",
+            &["bin/custom/sh".to_string(), "bin/sh".to_string()],
             read(&target.join(format!("oksh-{none_triple}"))),
         );
     }
@@ -343,6 +345,18 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             )
         });
         add(&mut entries, "bin/custom/vim", Some(vim_bytes));
+    }
+    // GNU make -> bin/custom/make (none triple).
+    // Gated on the port_make feature.
+    if feature_enabled("port_make") {
+        let make_path = target.join(format!("make-{none_triple}"));
+        let make_bytes = std::fs::read(&make_path).unwrap_or_else(|e| {
+            panic!(
+                "initramfs: required bin/custom/make missing at {} ({e}); run ./ports/make/build.sh",
+                make_path.display()
+            )
+        });
+        add(&mut entries, "bin/custom/make", Some(make_bytes));
     }
     // lynx (text browser) -> bin/custom/lynx (none triple).
     // HTTPS via ports/lynx/tidy_tls.c over mbedtls; sockets via libgloss /net.
