@@ -460,11 +460,20 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     // sortix/os-test rev + myos GNU-make harness overlay); nothing vendored.
     // Gated on the port_os_test feature.
     if feature_enabled("port_os_test") {
-        collect_tree(
-            &manifest_dir.join("target/os-test-embed"),
-            "lib/os-test",
-            &mut entries,
-        );
+        let embed = manifest_dir.join("target/os-test-embed");
+        if !embed.is_dir() {
+            let fetch = manifest_dir.join("ports/os-test/fetch.sh");
+            let status = std::process::Command::new(&fetch)
+                .current_dir(manifest_dir)
+                .status();
+            match status {
+                Ok(st) if st.success() => {}
+                other => {
+                    panic!("os-test fetch failed ({other:?}); run {} manually", fetch.display())
+                }
+            }
+        }
+        collect_tree(&embed, "lib/os-test", &mut entries);
     }
 
     // Vim system vimrc (pathdef.c points default_vim_dir at /lib/vim):
