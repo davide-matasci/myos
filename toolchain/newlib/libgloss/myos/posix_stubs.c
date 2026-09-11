@@ -58,7 +58,16 @@ int mkdir(const char *path, mode_t mode) {
     ret = myos_syscall3(
         MYOS_SYS_MKDIR, (long)(uintptr_t)path, (long)strlen(path), (long)mode);
     if (ret == (long)MYOS_SYSERR) {
-        errno = EROFS;
+        /* The kernel folds every failure into one generic error. Distinguish
+         * EEXIST (path already exists as a directory) so `mkdir -p` works: it
+         * only tolerates EEXIST, and a generic EROFS made it abort on any
+         * pre-existing directory. */
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            errno = EEXIST;
+        } else {
+            errno = EROFS;
+        }
         return -1;
     }
     return 0;
