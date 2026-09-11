@@ -31,7 +31,7 @@ ORAS_ARTIFACT_TYPE="application/vnd.myos.ci.port.v1"
 ORAS_LAYER_TYPE="application/vnd.myos.ci.port.layer.v1.tar+zst"
 
 # sysroot (rust std) then newlib (C): dependents pull after.
-ALL_PORTS=(sysroot newlib std-hello c-hello sbase oksh ubase coreutils ripgrep tcc ncurses vim zlib git lynx curl kernels)
+ALL_PORTS=(sysroot newlib std-hello c-hello sbase oksh make ubase coreutils ripgrep tcc ncurses vim zlib git lynx curl kernels)
 
 usage() {
   echo "usage: $0 pull|push PORT" >&2
@@ -45,6 +45,7 @@ port_hash() {
     newlib) myos_newlib_version_hash ;;
     sbase) myos_sbase_version_hash ;;
     oksh) myos_oksh_version_hash ;;
+    make) myos_make_version_hash ;;
     ubase) myos_ubase_version_hash ;;
     coreutils) myos_coreutils_version_hash ;;
     ripgrep) myos_ripgrep_version_hash ;;
@@ -68,6 +69,7 @@ port_is_current() {
     newlib) myos_newlib_is_current ;;
     sbase) myos_sbase_is_current ;;
     oksh) myos_oksh_is_current ;;
+    make) myos_make_is_current ;;
     ubase) myos_ubase_is_current ;;
     coreutils) myos_coreutils_is_current ;;
     ripgrep) myos_ripgrep_is_current ;;
@@ -120,6 +122,12 @@ port_members() {
       echo target/.myos-oksh-version
       for arch in x86_64 aarch64 riscv64; do
         echo "target/oksh-${arch}-unknown-none"
+      done
+      ;;
+    make)
+      echo target/.myos-make-version
+      for arch in x86_64 aarch64 riscv64; do
+        echo "target/make-${arch}-unknown-none"
       done
       ;;
     ubase)
