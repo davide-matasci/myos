@@ -99,6 +99,18 @@ jobs:
               - 'scripts/build-coreutils-myos.sh'
               - 'scripts/ci-registry.sh'
 
+  dispatch-debug:
+    # Temporary diagnostic: dumps the raw dispatch payload so job-level
+    # input checks can be verified against what GitHub actually delivered.
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Dump dispatch inputs
+        run: |
+          echo "inputs context: ${{ toJSON(inputs) }}"
+          echo "event inputs: ${{ toJSON(github.event.inputs) }}"
+          echo "event_name: ${{ github.event_name }}"
+
   wire-myos:
     runs-on: ubuntu-latest
     timeout-minutes: 15
