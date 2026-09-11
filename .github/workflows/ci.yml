@@ -5,8 +5,16 @@ on:
     branches: [master, main]
   pull_request:
     branches: [master, main]
+  schedule:
+    # Daily full-boot test run (the boot jobs only run here or on manual
+    # dispatch with the full_boot flag; every other run gets boot-mini).
+    - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
+      full_boot:
+        description: Run the full boot jobs (http/curl smokes included)
+        type: boolean
+        default: false
       probe_latest_nightly:
         description: Also test wire-myos against latest nightly (non-blocking)
         type: boolean
@@ -555,6 +563,8 @@ jobs:
       always() &&
       !cancelled() &&
       needs.build.result == 'success' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' && inputs.full_boot == true)) &&
       !(github.event_name == 'workflow_dispatch' && inputs.build_iso == true)
     strategy:
       fail-fast: false
@@ -670,6 +680,136 @@ jobs:
         continue-on-error: ${{ !matrix.required }}
         env:
           MYOS_SKIP_KERNEL_REBUILD: "1"
+        run: ./target/debug/myos ${{ matrix.args }}
+  boot-mini:
+    name: boot-mini (${{ matrix.id }})
+    runs-on: ubuntu-latest
+    container: ghcr.io/davide-matasci/myos-ci:latest
+    timeout-minutes: 30
+    needs: build
+    # Reduced-testing boots: everything except the HTTPS/curl smokes
+    # (MYOS_CI_MINI=1). Runs on every build; skipped when a manual dispatch
+    # selects full_boot (the full boot jobs cover it) or the ISO option.
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.build.result == 'success' &&
+      !(github.event_name == 'workflow_dispatch' && (inputs.build_iso == true || inputs.full_boot == true))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: bios
+            args: --ci
+            required: true
+          - id: uefi
+            args: uefi --ci
+            required: true
+          - id: aarch64
+            args: aarch64 --ci
+            required: true
+          - id: riscv64
+            args: riscv64 --ci
+            required: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download CI build artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-build
+
+      - name: Restore CI artifacts
+        id: restore
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          if [[ -f ci-build.tar ]]; then
+            echo "==> extracting ci-build.tar"
+            tar -xf ci-build.tar
+          fi
+          if [[ -x target/debug/myos && -f target/bios.img \
+                && -f target/aarch64-unknown-none-softfloat/debug/kernel \
+                && -f target/riscv64imac-unknown-none-elf/debug/kernel ]]; then
+            touch target/.myos-ci-prebuilt-kernels
+            echo "CI artifacts ready (prebuilt kernels): $(ls -lh target/debug/myos target/bios.img)"
+            echo "mode=prebuilt" >> "$GITHUB_OUTPUT"
+          else
+            echo "CI artifacts incomplete; will rebuild"
+            echo "mode=rebuild" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install pinned nightly
+        if: steps.restore.outputs.mode == 'rebuild'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+
+      - name: Cache cargo
+        if: steps.restore.outputs.mode == 'rebuild'
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-6
+          cache-directories: |
+            target/myos-sysroot
+            target/patched-crates
+            target/crate-fetch-coreutils
+
+      - name: Download prebuilt sysroot
+        if: steps.restore.outputs.mode == 'rebuild'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: myos-sysroot
+          path: target
+
+      - name: Rebuild CI artifacts
+        if: steps.restore.outputs.mode == 'rebuild'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          ./scripts/ci-registry.sh pull sysroot || true
+          ./scripts/ci-registry.sh pull newlib || true
+          ./scripts/ci-registry.sh pull std-hello || true
+          ./scripts/ci-registry.sh pull c-hello || true
+          ./scripts/ci-registry.sh pull curl || true
+          ./scripts/ci-registry.sh pull sbase || true
+          ./scripts/ci-registry.sh pull oksh || true
+          ./scripts/ci-registry.sh pull ubase || true
+          ./scripts/ci-registry.sh pull coreutils || true
+          ./scripts/ci-registry.sh pull ripgrep || true
+          ./scripts/ci-registry.sh pull tcc || true
+          ./scripts/ci-registry.sh pull ncurses || true
+          ./scripts/ci-registry.sh pull vim || true
+          ./scripts/ci-registry.sh pull zlib || true
+          ./scripts/ci-registry.sh pull git || true
+          ./scripts/ci-registry.sh pull lynx || true
+          ./scripts/ci-restore-or-build.sh
+          ./scripts/ci-registry.sh push sysroot || true
+          ./scripts/ci-registry.sh push newlib || true
+          ./scripts/ci-registry.sh push std-hello || true
+          ./scripts/ci-registry.sh push c-hello || true
+          ./scripts/ci-registry.sh push curl || true
+          ./scripts/ci-registry.sh push sbase || true
+          ./scripts/ci-registry.sh push oksh || true
+          ./scripts/ci-registry.sh push ubase || true
+          ./scripts/ci-registry.sh push coreutils || true
+          ./scripts/ci-registry.sh push ripgrep || true
+          ./scripts/ci-registry.sh push tcc || true
+          ./scripts/ci-registry.sh push ncurses || true
+          ./scripts/ci-registry.sh push vim || true
+          ./scripts/ci-registry.sh push zlib || true
+          ./scripts/ci-registry.sh push git || true
+          ./scripts/ci-registry.sh push lynx || true
+
+      - name: Boot in QEMU
+        continue-on-error: ${{ !matrix.required }}
+        env:
+          MYOS_SKIP_KERNEL_REBUILD: "1"
+          MYOS_CI_MINI: "1"
         run: ./target/debug/myos ${{ matrix.args }}
 
   iso:

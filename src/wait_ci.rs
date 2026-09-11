@@ -78,56 +78,91 @@ const CI_NEEDLES_STD: [&str; 22] = [
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).
-const CI_SHELL_COMMANDS: [&[u8]; 17] = [
-    b"nosuchcmd\n",
-    // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
-    b"heap\n",
-    b"ok\n",
-    b"echo test\n",
-    b"echo pipe | cat\n",
-    b"/bin/coreutils/true\n",
-    b"/bin/sbase/echo hi\n",
-    b"/bin/sbase/ls\n",
-    // Typo then backspaces: canonical stdin must deliver `/s/ls`, not `x/s/ls` or raw BS.
-    b"x\x08/bin/sbase/ls\n",
-    // oksh redirect uses newlib O_CREAT; must create on tmpfs (not only `/ok`).
-    b"echo test > /tmp/aaa; cat /tmp/aaa\n",
-    // `which` walks $PATH via fstatat(dirfd, name); must print a real PATH hit.
-    b"which ls\n",
-    // DNS resolution test (requires network).
-    b"dns www.google.com\n",
-    // HTTPS GET (requires network + wall clock + mbedtls).
-    b"http https://example.com/\n",
-    // curl over userspace sockets + mbedtls (same URL as https smoke).
-    b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n",
-    // ^C interrupt test: run a foreground `cat | cat` (the right cat blocks on
-    // a kernel pipe read, the left one on the console) and interrupt it. The shell
-    // must survive (ignore SIGINT) while both children die, returning to `$`
-    // (no getty/login respawn. The right cat only dies weil the kernel's pipe-read
-    // wait wakes on a pending fatal signal; see `interactive_interrupt_cmd_ok`
-    // and the interrupt handling in `advance_shell_ci`.
-    b"cat | cat\n",
-    // Seed a distinct history entry for the arrow-key test that follows.
-    b"echo histrecall_zz\n",
-    // Arrow-key editing: at the emacs-raw prompt, Up (ESC [ A) must recall the
-    // previous `echo histrecall_zz`, Left (ESC [ D) moves the cursor off the end,
-    // `3` inserts, and Enter runs the edited line -> `echo histrecall_z3z` prints
-    // `histrecall_z3z`. If raw mode / the editor are broken the kernels cooked
-    // gate swallows the CSI bytes and the recalled+edited command never runs;
-    // `histrecall_z3z` then never appears.
-    b"\x1b[A\x1b[D3\n",
-];
+///
+/// Full mode: base commands + HTTPS GET + curl + interrupt/arrow tests.
+/// Mini mode (`MYOS_CI_MINI=1`): base commands only (no http, no curl), for
+/// the fast boot-mini CI jobs; interrupt/seed/arrow still run.
+const CMD_NOSUCH: &[u8] = b"nosuchcmd\n";
+const CMD_HEAP: &[u8] = b"heap\n";
+const CMD_OK: &[u8] = b"ok\n";
+const CMD_ECHO: &[u8] = b"echo test\n";
+const CMD_PIPE: &[u8] = b"echo pipe | cat\n";
+const CMD_TRUE: &[u8] = b"/bin/coreutils/true\n";
+const CMD_SBASE_ECHO: &[u8] = b"/bin/sbase/echo hi\n";
+const CMD_SBASE_LS: &[u8] = b"/bin/sbase/ls\n";
+// Typo then backspaces: canonical stdin must deliver `/s/ls`, not `x/s/ls` or raw BS.
+const CMD_BS_LS: &[u8] = b"x\x08/bin/sbase/ls\n";
+// oksh redirect uses newlib O_CREAT; must create on tmpfs (not only `/ok`).
+const CMD_TMP_REDIR: &[u8] = b"echo test > /tmp/aaa; cat /tmp/aaa\n";
+// `which` walks $PATH via fstatat(dirfd, name); must print a real PATH hit.
+const CMD_WHICH: &[u8] = b"which ls\n";
+// DNS resolution test (requires network).
+const CMD_DNS: &[u8] = b"dns www.google.com\n";
+// HTTPS GET (requires network + wall clock + mbedtls).
+const CMD_HTTP: &[u8] = b"http https://example.com/\n";
+// curl over userspace sockets + mbedtls (same URL as https smoke).
+const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n";
+// ^C interrupt test: run a foreground `cat | cat` (the right cat blocks on
+// a kernel pipe read, the left one on the console) and interrupt it. The shell
+// must survive (ignore SIGINT) while both children die, returning to `$`
+// (no getty/login respawn. The right cat only dies weil the kernel's pipe-read
+// wait wakes on a pending fatal signal; see `interactive_interrupt_cmd_ok`
+// and the interrupt handling in `advance_shell_ci`.
+const CMD_INTERRUPT: &[u8] = b"cat | cat\n";
+// Seed a distinct history entry for the arrow-key test that follows.
+const CMD_HIST_SEED: &[u8] = b"echo histrecall_zz\n";
+// Arrow-key editing: at the emacs-raw prompt, Up (ESC [ A) must recall the
+// previous `echo histrecall_zz`, Left (ESC [ D) moves the cursor off the end,
+// `3` inserts, and Enter runs the edited line -> `echo histrecall_z3z` prints
+// `histrecall_z3z`. If raw mode / the editor are broken the kernels cooked
+// gate swallows the CSI bytes and the recalled+edited command never runs;
+// `histrecall_z3z` then never appears.
+const CMD_ARROW: &[u8] = b"\x1b[A\x1b[D3\n";
 
-/// Index into [`CI_SHELL_COMMANDS`] of the ^C interrupt test. While waiting on
-/// this command the harness sends `0x03` (VINTR) once and requires the shell
-/// to survive and return to the prompt.
-const INTERRUPT_CMD_IDX: usize = 14;
+/// True when the harness runs in boot-mini mode: skip the HTTPS GET and curl
+/// smokes (the two long network stages); everything else is unchanged.
+pub fn ci_mini() -> bool {
+    std::env::var_os("MYOS_CI_MINI").map(|v| v == "1").unwrap_or(false)
+}
 
-/// Index into [`CI_SHELL_COMMANDS`] of the history seed for the arrow test.
-const ARROW_SEED_IDX: usize = 15;
+fn ci_shell_commands() -> Vec<&'static [u8]> {
+    let mut cmds: Vec<&'static [u8]> = vec![
+        CMD_NOSUCH,
+        // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
+        CMD_HEAP,
+        CMD_OK,
+        CMD_ECHO,
+        CMD_PIPE,
+        CMD_TRUE,
+        CMD_SBASE_ECHO,
+        CMD_SBASE_LS,
+        CMD_BS_LS,
+        CMD_TMP_REDIR,
+        CMD_WHICH,
+        CMD_DNS,
+    ];
+    if !ci_mini() {
+        cmds.push(CMD_HTTP);
+        cmds.push(CMD_CURL);
+    }
+    cmds.push(CMD_INTERRUPT);
+    cmds.push(CMD_HIST_SEED);
+    cmds.push(CMD_ARROW);
+    cmds
+}
 
-/// Index into [`CI_SHELL_COMMANDS`] of the Up/Left arrow-key editing test.
-const ARROW_EDIT_IDX: usize = 16;
+/// The last three commands are always the ^C interrupt test, the history
+/// seed and the arrow-key editing test; their indexes depend on whether the
+/// HTTPS/curl smokes were dropped in mini mode.
+fn interrupt_cmd_idx(cmds: &[&[u8]]) -> usize {
+    cmds.len() - 3
+}
+fn arrow_seed_idx(cmds: &[&[u8]]) -> usize {
+    cmds.len() - 2
+}
+fn arrow_edit_idx(cmds: &[&[u8]]) -> usize {
+    cmds.len() - 1
+}
 
 /// Interactive curl prompt echo. The full `$ curl -fsS --connect-timeout 30 …`
 /// command must echo as ONE clean line: oksh's emacs editor sizes the prompt
@@ -515,7 +550,7 @@ fn interactive_heap_returned(serial: &str) -> bool {
     command_echoed(serial, "heap") && serial.contains("[ OK ] smoke") && at_interactive_prompt(serial)
 }
 
-fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
+fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[&str]) -> bool {
     match cmd_index {
         0 => interactive_unknown_cmd_ok(serial),
         1 => interactive_heap_cmd_ok(serial, extra),
@@ -529,11 +564,13 @@ fn shell_cmd_result_ok(serial: &str, cmd_index: usize, extra: &[&str]) -> bool {
         9 => interactive_tmp_redir_ok(serial),
         10 => interactive_which_ls_cmd_ok(serial),
         11 => interactive_dns_cmd_ok(serial),
-        12 => interactive_https_cmd_ok(serial),
-        13 => interactive_curl_cmd_ok(serial),
-        INTERRUPT_CMD_IDX => interactive_interrupt_cmd_ok(serial),
-        ARROW_SEED_IDX => interactive_arrow_seed_ok(serial),
-        ARROW_EDIT_IDX => interactive_arrow_edit_ok(serial),
+        // HTTPS/curl smokes only exist in full mode; in mini those slots are
+        // the interrupt/seed/arrow tail (matched by position below).
+        12 if cmds.len() == 17 => interactive_https_cmd_ok(serial),
+        13 if cmds.len() == 17 => interactive_curl_cmd_ok(serial),
+        i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
+        i if i == arrow_seed_idx(cmds) => interactive_arrow_seed_ok(serial),
+        i if i == arrow_edit_idx(cmds) => interactive_arrow_edit_ok(serial),
         _ => false,
     }
 }
@@ -555,6 +592,7 @@ fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
 
 fn advance_shell_ci(
     stdin: &mut Option<ChildStdin>,
+    cmds: &[&[u8]],
     stage: &mut ShellStage,
     cmd_index: &mut usize,
     typing: &mut usize,
@@ -598,7 +636,7 @@ fn advance_shell_ci(
             *typing = 0;
         }
         ShellStage::Typing => {
-            let cmd = CI_SHELL_COMMANDS[*cmd_index];
+            let cmd = cmds[*cmd_index];
             if *typing < cmd.len() {
                 send_shell_byte(stdin, cmd[*typing]);
                 *typing += 1;
@@ -607,7 +645,7 @@ fn advance_shell_ci(
                 *stage = ShellStage::WaitResult;
             }
         }
-        ShellStage::WaitResult if *cmd_index == INTERRUPT_CMD_IDX && !*interrupt_sent => {
+        ShellStage::WaitResult if *cmd_index == interrupt_cmd_idx(cmds) && !*interrupt_sent => {
             // Give the `cat` child a beat to fork/exec and block on console
             // read before sending VINTR (^C), so the signal lands on the child
             // (via INPUT_READER's pgid) rather than racing its startup.
@@ -615,9 +653,9 @@ fn advance_shell_ci(
             send_shell_byte(stdin, 0x03);
             *interrupt_sent = true;
         }
-        ShellStage::WaitResult if shell_cmd_result_ok(acc, *cmd_index, extra) => {
+        ShellStage::WaitResult if shell_cmd_result_ok(acc, cmds, *cmd_index, extra) => {
             *cmd_index += 1;
-            if *cmd_index >= CI_SHELL_COMMANDS.len() {
+            if *cmd_index >= cmds.len() {
                 *stage = ShellStage::Done;
             } else {
                 *typing = 0;
@@ -685,6 +723,8 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         }
     });
 
+    let cmds = ci_shell_commands();
+    let mini = ci_mini();
     let started = Instant::now();
     let mut timed_out = false;
     let mut killed_for_needles = false;
@@ -698,6 +738,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             if expect.shell_ci {
                 advance_shell_ci(
                     &mut shell_stdin,
+                    &cmds,
                     &mut shell_stage,
                     &mut shell_cmd_index,
                     &mut typing,
@@ -716,8 +757,10 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     break child.wait().expect("wait after heap fail-fast kill");
                 }
                 // HTTPS: printed tls/dns/tcp failure — don't burn the 180s timeout.
-                // Index 12 == `http https://example.com/` (shifted when `which` landed).
+                // Index 12 == `http https://example.com/` (full mode only; mini
+                // drops the HTTPS/curl smokes and 12 is the interrupt test).
                 if shell_stage == ShellStage::WaitResult
+                    && !mini
                     && shell_cmd_index == 12
                     && interactive_https_cmd_failed(&acc)
                 {
@@ -725,8 +768,9 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     break child.wait().expect("wait after https fail-fast kill");
                 }
                 // curl: printed `curl: (N) …` — don't wait 180s for Example Domain.
-                // Index 13 == interactive curl HTTPS smoke.
+                // Index 13 == interactive curl HTTPS smoke (full mode only).
                 if shell_stage == ShellStage::WaitResult
+                    && !mini
                     && shell_cmd_index == 13
                     && interactive_curl_cmd_failed(&acc)
                 {
@@ -910,7 +954,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `dns www.google.com` did not print `IP: x.x.x.x` and `[ OK ] dns`");
             }
         }
-        if shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
+        if cmds.len() == 17 && shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
             if !serial.contains(CURL_ECHO) {
                 eprintln!("error: serial did not echo the curl HTTPS command on one clean line at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -922,7 +966,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
+        if cmds.len() == 17 && shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
             if !command_echoed(&serial, "http https://example.com/") {
                 eprintln!("error: serial did not echo `$ http https://example.com/` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -936,7 +980,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if shell_cmd_index == INTERRUPT_CMD_IDX && !interactive_interrupt_cmd_ok(&serial) {
+        if shell_cmd_index == interrupt_cmd_idx(&cmds) && !interactive_interrupt_cmd_ok(&serial) {
             if !command_echoed(&serial, "cat | cat") {
                 eprintln!("error: serial did not echo `$ cat | cat` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -950,12 +994,12 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if shell_cmd_index == ARROW_SEED_IDX && !interactive_arrow_seed_ok(&serial) {
+        if shell_cmd_index == arrow_seed_idx(&cmds) && !interactive_arrow_seed_ok(&serial) {
             eprintln!(
                 "error: arrow history seed `echo histrecall_zz` failed (want `histrecall_zz`, no exception)"
             );
         }
-        if shell_cmd_index == ARROW_EDIT_IDX && !interactive_arrow_edit_ok(&serial) {
+        if shell_cmd_index == arrow_edit_idx(&cmds) && !interactive_arrow_edit_ok(&serial) {
             if !serial.contains("histrecall_z3z")
                 && !serial.contains("histrecall_zz3")
                 && !serial.contains("histrecall_zz: not found")
