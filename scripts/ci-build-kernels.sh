@@ -136,11 +136,6 @@ kernel_inputs_hash() {
             printf 'input-missing:%s\n' "$f"
           fi
         done
-        # Extra kernel Cargo features (e.g. MYOS_KERNEL_FEATURES=port_os_test
-        # from a workflow_dispatch input) change the initramfs contents, so
-        # include them in the inputs hash or a stale kernels artifact would be
-        # reused across runs with different feature sets.
-        printf 'kernel-features:%s\n' "${MYOS_KERNEL_FEATURES:-}"
         # tcc's libtcc1.a is installed into target/newlib-*/<triple>/lib by the
         # settle tcc build and baked into the x86 initramfs (initramfs
         # collect_tree => /lib/newlib/lib/libtcc1.a). It is not covered by the
@@ -292,13 +287,9 @@ do_clean_and_build() {
   cargo clean -p kernel --target x86_64-unknown-none
   cargo clean -p kernel --target aarch64-unknown-none-softfloat
   cargo clean -p kernel --target riscv64imac-unknown-none-elf
-  local feat_args=()
-  if [[ -n "${MYOS_KERNEL_FEATURES:-}" ]]; then
-    feat_args=(--features "$MYOS_KERNEL_FEATURES")
-  fi
-  cargo build "${feat_args[@]}"
-  cargo build -p kernel "${feat_args[@]}" --target aarch64-unknown-none-softfloat
-  cargo build -p kernel "${feat_args[@]}" --target riscv64imac-unknown-none-elf
+  cargo build
+  cargo build -p kernel --target aarch64-unknown-none-softfloat
+  cargo build -p kernel --target riscv64imac-unknown-none-elf
 }
 
 mkdir -p target

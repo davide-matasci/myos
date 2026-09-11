@@ -458,8 +458,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     // the guest with the GNU make port: cd /lib/os-test && make.
     // Sources are fetched at build time by ports/os-test/fetch.sh (pinned
     // sortix/os-test rev + myos GNU-make harness overlay); nothing vendored.
-    // Gated on the port_os_test feature.
-    if feature_enabled("port_os_test") {
+    // Always embedded.
+    {
         let embed = manifest_dir.join("target/os-test-embed");
         if !embed.is_dir() {
             let fetch = manifest_dir.join("ports/os-test/fetch.sh");

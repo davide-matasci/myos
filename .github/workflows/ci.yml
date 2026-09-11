@@ -27,10 +27,6 @@ on:
         description: Build a distributable x86_64 hybrid ISO from the build job's outputs (manual only)
         type: boolean
         default: false
-      port_os_test:
-        description: Embed the os-test POSIX compliance suite at /lib/os-test (run manually on the guest with make)
-        type: boolean
-        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -126,9 +122,6 @@ jobs:
       - name: Verify wire-myos.py on pinned nightly
         run: |
           chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.port_os_test }}" == "true" ]]; then
-            export MYOS_KERNEL_FEATURES="${MYOS_KERNEL_FEATURES:+$MYOS_KERNEL_FEATURES,}port_os_test"
-          fi
           ./toolchain/std/check-wire.sh
 
       - name: Probe latest nightly (informational)
