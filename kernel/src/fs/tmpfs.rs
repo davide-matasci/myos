@@ -9,7 +9,9 @@ use spin::Mutex;
 
 use crate::fs::StatInfo;
 
-const MAX_ENTRIES: usize = 256;
+// os-test alone is ~6.5k files; cp -R of a port tree must not hit an
+// arbitrary cap (creat fails with ENOENT once mkdir stops succeeding).
+const MAX_ENTRIES: usize = 16384;
 const COMP_CAP: usize = 64;
 const PATH_CAP: usize = 128;
 const FILE_CAP: usize = 262144;
