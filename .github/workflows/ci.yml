@@ -248,6 +248,9 @@ jobs:
           - port: oksh
             script: ./ports/oksh/build.sh
             pull: oksh
+          - port: make
+            script: ./ports/make/build.sh
+            pull: make
           - port: coreutils
             script: ./ports/coreutils/build-uutils.sh
             pull: coreutils
