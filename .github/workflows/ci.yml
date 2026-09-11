@@ -688,13 +688,13 @@ jobs:
     timeout-minutes: 30
     needs: build
     # Reduced-testing boots: everything except the HTTPS/curl smokes
-    # (MYOS_CI_MINI=1). Runs on every build; the full boot jobs above only run
-    # on the daily scheduled run or a manual dispatch with full_boot.
+    # (MYOS_CI_MINI=1). Runs on every build; skipped when a manual dispatch
+    # selects full_boot (the full boot jobs cover it) or the ISO option.
     if: |
       always() &&
       !cancelled() &&
       needs.build.result == 'success' &&
-      !(github.event_name == 'workflow_dispatch' && inputs.build_iso == true)
+      !(github.event_name == 'workflow_dispatch' && (inputs.build_iso == true || inputs.full_boot == true))
     strategy:
       fail-fast: false
       matrix:
