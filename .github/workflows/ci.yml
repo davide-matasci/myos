@@ -116,7 +116,10 @@ jobs:
           EVENT_INPUTS: ${{ toJSON(github.event.inputs) }}
         run: |
           echo "dispatch event inputs: $EVENT_INPUTS"
-          if [[ "$EVENT_INPUTS" == *'"build_iso": true'* || "$EVENT_INPUTS" == *'"build_iso":"true"'* ]]; then
+          # build_iso is a typed boolean input; the raw event payload renders
+          # it as the string "true"/"false" (with quotes and spacing). Match
+          # with a regex tolerant of both.
+          if echo "$EVENT_INPUTS" | grep -q '"build_iso": *"true"'; then
             echo "iso=true" >> "$GITHUB_OUTPUT"
           else
             echo "iso=false" >> "$GITHUB_OUTPUT"
