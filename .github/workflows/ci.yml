@@ -99,17 +99,28 @@ jobs:
               - 'scripts/build-coreutils-myos.sh'
               - 'scripts/ci-registry.sh'
 
-  dispatch-debug:
-    # Temporary diagnostic: dumps the raw dispatch payload so job-level
-    # input checks can be verified against what GitHub actually delivered.
+  iso-gate:
+    # Job-level `if` expressions referencing workflow_dispatch boolean inputs
+    # evaluated false even when the input was true (verified: the raw event
+    # payload carried build_iso: true while the iso job still skipped).
+    # Decide the ISO gate HERE, in a step, where the inputs context provably
+    # resolves, and let the iso job consume the string output.
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'workflow_dispatch'
+    outputs:
+      iso: ${{ steps.gate.outputs.iso }}
     steps:
-      - name: Dump dispatch inputs
+      - name: Evaluate ISO gate
+        id: gate
+        env:
+          EVENT_INPUTS: ${{ toJSON(github.event.inputs) }}
         run: |
-          echo "inputs context: ${{ toJSON(inputs) }}"
-          echo "event inputs: ${{ toJSON(github.event.inputs) }}"
-          echo "event_name: ${{ github.event_name }}"
+          echo "dispatch event inputs: $EVENT_INPUTS"
+          if [[ "$EVENT_INPUTS" == *'"build_iso": true'* || "$EVENT_INPUTS" == *'"build_iso":"true"'* ]]; then
+            echo "iso=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "iso=false" >> "$GITHUB_OUTPUT"
+          fi
 
   wire-myos:
     runs-on: ubuntu-latest
@@ -693,10 +704,8 @@ jobs:
     runs-on: ubuntu-latest
     container: ghcr.io/davide-matasci/myos-ci:latest
     timeout-minutes: 30
-    needs: build
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      (inputs.build_iso == true || github.event.inputs.build_iso == 'true' || github.event.inputs.build_iso == true)
+    needs: [build, iso-gate]
+    if: needs.build.result == 'success' && needs.iso-gate.outputs.iso == 'true'
     steps:
       - uses: actions/checkout@v4
 
