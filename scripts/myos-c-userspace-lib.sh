@@ -281,7 +281,8 @@ myos_curl_version_hash() {
   h="$(
     {
       # Mirror ports/curl/build.sh hash_curl() exactly so the registry stamp
-      # matches the script's own short-circuit.
+      # matches the script own short-circuit (no apostrophes in comments:
+      # macOS bash 3.2 mis-parses quotes inside command substitutions).
       echo "$CURL_VERSION"
       sha256sum "$MYOS_ROOT/ports/curl/build.sh" \
         "$MYOS_ROOT/ports/curl/fetch.sh" \
