@@ -48,11 +48,32 @@ pub fn register(name: &str, bytes: &'static [u8]) -> bool {
         return false;
     }
     let mut files = FILES.lock();
-    ensure_sorted(&mut files);
-    if let Ok(i) = files.binary_search_by(|e| e.path.as_str().cmp(name)) {
-        files[i].data = bytes;
-        return true;
+    let mut sorted = SORTED.lock();
+    if *sorted {
+        // Sorted: binary-search dup check and keep order after insertion.
+        match files.binary_search_by(|e| e.path.as_str().cmp(name)) {
+            Ok(i) => {
+                files[i].data = bytes;
+                return true;
+            }
+            Err(i) => {
+                if files.len() >= MAX_FILES {
+                    return false;
+                }
+                files.insert(
+                    i,
+                    File {
+                        path: String::from(name),
+                        data: bytes,
+                    },
+                );
+                return true;
+            }
+        }
     }
+    // Unsorted (boot registration stream): append and let the first read
+    // path sort once. No per-register resort here — that was O(n^2 log n)
+    // over the ~6.8k os-test registrations.
     if files.len() >= MAX_FILES {
         return false;
     }
@@ -60,8 +81,6 @@ pub fn register(name: &str, bytes: &'static [u8]) -> bool {
         path: String::from(name),
         data: bytes,
     });
-    // Inserted out of order; the next read path re-sorts once.
-    *SORTED.lock() = false;
     true
 }
 
@@ -127,7 +146,9 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     } else {
         return 0;
     };
-    let files = FILES.lock();
+    let mut files = FILES.lock();
+    // partition_point below requires sorted paths; sort lazily on first read.
+    ensure_sorted(&mut files);
     if !dir.is_empty() && !is_dir_path(&files, dir) {
         return 0;
     }
