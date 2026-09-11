@@ -710,6 +710,13 @@ jobs:
 
       - name: Build x86_64 hybrid ISO
         run: |
+          # Regenerate the newlib clang wrappers (x86_64-unknown-myos-cc & co):
+          # ci-build.tar ships target/newlib-* (headers/libs) but not
+          # target/newlib-bin, and rebuilding the kernel from source re-runs
+          # user/tls build.rs -> ports/mbedtls/build.sh, which needs the
+          # wrapper on PATH.
+          ./toolchain/newlib/tool-wrappers.sh
+          export PATH="$PWD/target/newlib-bin:$PATH"
           cargo clean -p myos
           cargo build
           cargo run -- iso
