@@ -687,9 +687,12 @@ impl FrameBufferWriter<'_> {
             b'\n' => self.newline(),
             b'\r' => self.col = 0,
             b'\x08' => {
+                // BS moves the cursor left only — never erase. Erasing is the
+                // caller's job via the classic `BS SP BS` overwrite sequence
+                // (kernel cooked erase echo, oksh x_del_back). Erasing here
+                // made oksh's left-arrow (a bare BS) delete screen characters.
                 if self.col > 0 {
                     self.col -= 1;
-                    self.draw_glyph(self.col, self.row, b' ', self.fg);
                 }
             }
             byte => {
