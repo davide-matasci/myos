@@ -36,7 +36,7 @@ const DESC_F_WRITE: u16 = 2;
 const AVAIL_F_NO_INTERRUPT: u16 = 1;
 const DESC_SIZE: usize = 16;
 
-const QSIZE: u16 = 16;
+const QSIZE: u16 = 64;
 const PAGE: usize = 4096;
 const BUF_SIZE: usize = 2048;
 /// virtio 1.0 + VERSION_1 includes `num_buffers` (12 bytes). Userspace sees
@@ -172,6 +172,14 @@ fn dma_wmb() {
     unsafe {
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
     }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        // Order avail-ring/descriptor writes (normal mem) against device DMA.
+        // Matches virtio_blk's riscv64 dsb(). Missing here (aarch64-only
+        // barrier) left riscv64 net DMA unordered -> stale/dropped RX frames
+        // -> TLS record-length misparse / lost FIN (net-only ~5% flake).
+        core::arch::asm!("fence rw,rw", options(nostack, preserves_flags));
+    }
 }
 
 fn dma_rmb() {
@@ -179,6 +187,11 @@ fn dma_rmb() {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        // Order device DMA writes (used ring / frame payload) vs CPU reads.
+        core::arch::asm!("fence rw,rw", options(nostack, preserves_flags));
     }
 }
 

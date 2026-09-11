@@ -6,13 +6,12 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use myos_net::smoltcp::iface::{Interface, SocketHandle, SocketSet};
-use myos_net::smoltcp::phy::Device;
+use myos_net::smoltcp::iface::{Interface, SocketHandle, SocketSet};use myos_net::smoltcp::phy::Device;
 use myos_net::smoltcp::socket::{dhcpv4, icmp, tcp, udp};
 use myos_net::smoltcp::wire::{
     Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, IpEndpoint, Ipv4Address,
 };
-use myos_net::{build_interface, Net0Device, VirtualInstant};
+use myos_net::{build_interface, Net0Device, VirtualInstant, RX_BYTES, RX_FRAMES};
 use myos_user::{close, heap_init, open_flags, read, write, write_fd, Heap, O_RDWR};
 
 #[global_allocator]
@@ -92,6 +91,8 @@ struct Conv {
     /// Without this, netfs already reported write success and the bytes vanish.
     pending_len: u16,
     pending: [u8; MSG_CAP],
+    /// diagnostics: pump iterations while connected & not hung up
+    spin: u32,
 }
 
 impl Conv {
@@ -107,6 +108,7 @@ impl Conv {
         hungup: false,
         pending_len: 0,
         pending: [0; MSG_CAP],
+        spin: 0,
     };
 }
 
@@ -215,6 +217,29 @@ fn reply(fd: usize, typ: u8, conv: u16, status: i32, payload: &[u8]) {
     let Some(n) = encode_rep(typ, conv, status, payload, &mut tmp) else {
         return;
     };
+    if typ == REP_DATA && !payload.is_empty() && false {
+        // diagnostics (strip before PR): checksum every data reply
+        let mut h: u32 = 0x811c9dc5;
+        for &b in payload {
+            h ^= b as u32;
+            h = h.wrapping_mul(0x01000193);
+        }
+        let mut buf = *b"nd d c00 l00000 f00000000\n";
+        let c = conv as usize;
+        buf[3] = b'0' + (c / 100 % 10) as u8;
+        buf[4] = b'0' + (c / 10 % 10) as u8;
+        buf[5] = b'0' + (c % 10) as u8;
+        let mut v = payload.len();
+        for k in (0..5).rev() {
+            buf[8 + k] = b'0' + (v % 10) as u8;
+            v /= 10;
+        }
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for sh in (0..32).step_by(4).rev() {
+            buf[24 - sh / 4] = HEX[((h >> sh) & 0xf) as usize];
+        }
+        let _ = write(&buf);
+    }
     let _ = write_fd(fd, &tmp[..n]);
 }
 
@@ -516,6 +541,20 @@ fn pump_sockets(
     device: &Net0Device,
     chan: usize,
 ) {
+    // diagnostics (strip before PR): log NIC counters periodically
+    {
+        let fr = unsafe { RX_FRAMES };
+        let by = unsafe { RX_BYTES };
+        if fr & 0x1ff == 0 {
+            let mut buf = *b"rx f000000000000000 b00000000000000000\n";
+            const HD: &[u8; 16] = b"0123456789abcdef";
+            for k in 0..8 {
+                buf[5 + (7 - k)] = HD[((fr >> (4 * k)) & 0xf) as usize];
+                buf[20 + (7 - k)] = HD[((by >> (4 * k)) & 0xf) as usize];
+            }
+            let _ = write(&buf);
+        }
+    }
     let checksum = device.capabilities().checksum;
     for i in 0..MAX_CONV {
         let conv = i as u16;
@@ -603,6 +642,26 @@ fn pump_sockets(
                 {
                     convs[i].hungup = true;
                     reply(chan, REP_STATUS, conv, 0, b"hangup");
+                }
+                // diagnostics (strip before PR): spin-state logging — why no hangup
+                if false && convs[i].connected && !convs[i].hungup {
+                    convs[i].spin = convs[i].spin.wrapping_add(1);
+                    if convs[i].spin == 2000 || convs[i].spin == 50000 {
+                        let mut buf = *b"hu c00 sp000000 ar0 mr0 cr0\n";
+                        buf[5] = b'0' + (i / 10) as u8;
+                        buf[6] = b'0' + (i % 10) as u8;
+                        let v = convs[i].spin;
+                        const HD: &[u8; 16] = b"0123456789abcdef";
+                        for k in 0..6 {
+                            buf[13 - k] = HD[((v >> (4 * k)) & 0xf) as usize];
+                        }
+                        buf[17] = b'0' + s.is_active() as u8;
+                        buf[21] = b'0' + s.may_recv() as u8;
+                        buf[25] = b'0' + s.can_recv() as u8;
+                        let _ = write(&buf);
+                    }
+                } else {
+                    convs[i].spin = 0;
                 }
             }
         }

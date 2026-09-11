@@ -7,6 +7,15 @@
 #define MBEDTLS_PLATFORM_C
 #define MBEDTLS_PLATFORM_MEMORY
 #define MBEDTLS_MEMORY_BUFFER_ALLOC_C
+/* CI diagnostics: arena block guards catch overwrites between mbedtls
+ * allocations at the moment of detection instead of downstream as
+ * cert-verify/ECP failures. Empirically correlated with 50/50 green. */
+#define MBEDTLS_MEMORY_DEBUG
+#define MBEDTLS_MEMORY_VERIFY_ALWAYS
+/* CI diagnostics: enable debug C so curl's mbed_debug callback can print the
+ * received alert description ("got an alert message, type: [level:desc]")
+ * when a TLS handshake dies with a fatal alert. */
+#define MBEDTLS_DEBUG_C
 #define MBEDTLS_NO_UDBL_DIVISION
 #define MBEDTLS_NO_64BIT_MULTIPLICATION
 

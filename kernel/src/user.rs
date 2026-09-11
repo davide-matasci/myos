@@ -5,10 +5,12 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 #[cfg(target_arch = "riscv64")]
 use crate::arch::paging;
+use crate::console;
 use crate::fs;
 use crate::mm;
 use crate::modules::elf;
 use crate::task;
+use spin::Mutex;
 
 const SYS_WRITE: usize = 0;
 const SYS_EXIT: usize = 1;
@@ -58,6 +60,11 @@ const MAP_ANON: usize = 0x20;
 /// Anonymous mmap region after the brk heap.
 const MMAP_AREA_PAGES: usize = 256;
 pub const PAGE: usize = 4096;
+/// CI diagnostic: brk window size in pages (riscv64 HEAP_PAGES).
+#[cfg(target_arch = "riscv64")]
+pub const HEAP_WINDOW_PAGES: usize = 1024;
+#[cfg(not(target_arch = "riscv64"))]
+pub const HEAP_WINDOW_PAGES: usize = 768;
 /// User stack below the heap. x86_64 uses 1 MiB; AArch64 uses 512 KiB.
 /// AArch64 user maps spill into L2[1+] when code+stack+heap exceed 512 pages.
 #[cfg(target_arch = "aarch64")]
@@ -531,7 +538,18 @@ fn reload_user_elf(
     // Drop inherited brk pages so the next image starts with an empty on-demand
     // heap (see `free_abandoned_stack_heap`). Reload keeps `stack_off` fixed so
     // expand's reclaim would otherwise no-op on the heap window.
+    //
+    // On riscv64 the syscall keeps the *user* root loaded in satp for the whole
+    // syscall (kernel maps live in the same Sv39 root), so sret back to user
+    // does not flush the TLB the way the x86 cr3 swap does. Without this
+    // sfence the task returns to user mode with stale VA→PA entries for the
+    // freed brk window; later sys_brk writes then hit recycled frames
+    // belonging to other tasks — the random git-object/TLS/ra=0 corruption
+    // seen in the riscv64 CI boot flake. munmap, brk-shrink, expand and the
+    // exec wrapper all flush after their unmaps; this path was the only one
+    // that skipped it.
     free_heap_window(aspace, base, stack_off);
+    flush_user_tlb();
     Some((entry as usize, n_pages * PAGE, stack_off))
 }
 
@@ -812,6 +830,9 @@ fn read_user_byte(aspace: u64, va: usize) -> Option<u8> {
     let page = va & !0xfff;
     let off = va & 0xfff;
     let phys = virt_to_phys(aspace, page as u64)?;
+    if phys == 0 {
+        return None;
+    }
     Some(unsafe { *mm::hhdm(phys).add(off) })
 }
 
@@ -890,6 +911,40 @@ fn heap_base_va(base: u64, stack_off: u64) -> u64 {
 
 fn heap_limit_va(base: u64, stack_off: u64) -> u64 {
     heap_base_va(base, stack_off) + (HEAP_PAGES * PAGE) as u64
+}
+
+/// Diagnostics for near-NULL user faults: did sys_brk refuse a growth?
+static BRK_REFUSED: AtomicU64 = AtomicU64::new(0);
+static BRK_REFUSED_LAST: AtomicU64 = AtomicU64::new(0);
+
+/// Failure-path diagnostic ring: last 8 brk requests (req, returned cur).
+/// Dumped only when a user page faults at/above brk_cur — cannot perturb
+/// passing runs.
+static BRK_LOG: Mutex<[(usize, usize); 8]> = Mutex::new([(0, 0); 8]);
+static BRK_LOG_IDX: AtomicUsize = AtomicUsize::new(0);
+
+fn brk_log(req: usize, ret: usize) {
+    let i = BRK_LOG_IDX.fetch_add(1, Ordering::Relaxed) % 8;
+    BRK_LOG.lock()[i] = (req, ret);
+}
+
+#[cfg(target_arch = "riscv64")]
+pub fn report_heap_diag() {
+    let (base, _span, stack_off) = task::current_user_map();
+    if base == 0 {
+        return;
+    }
+    let heap_base = heap_base_va(base, stack_off);
+    let limit = heap_limit_va(base, stack_off);
+    console::status_fail(&alloc::format!(
+        "heap-diag: brk={:#x} heap_base={:#x} heap_limit={:#x} refused={} last_refused_req={:#x}\n",
+        task::current_brk(),
+        heap_base,
+        limit,
+        BRK_REFUSED.load(Ordering::Relaxed),
+        BRK_REFUSED_LAST.load(Ordering::Relaxed),
+    ));
+    console::flush();
 }
 
 fn mmap_base_va(base: u64, stack_off: u64) -> u64 {
@@ -1064,7 +1119,14 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
             return None;
         }
         if mid_pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) != 0 {
-            return Some(paging::pte_phys(mid_pte) | (va & 0x1F_FFFF));
+            // A leaf mapping at L2 with a zeroed physical address is corruption
+            // (never legitimate: phys 0 is not RAM we hand out). Reject it so
+            // callers see a fault instead of dereferencing hhdm(0) in kernel.
+            let phys = paging::pte_phys(mid_pte);
+            if phys == 0 {
+                return None;
+            }
+            return Some(phys | (va & 0x1F_FFFF));
         }
         let mid = &*mm::table(paging::pte_phys(mid_pte));
         let leaf_pte = mid[i1];
@@ -1072,7 +1134,13 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
             return None;
         }
         if leaf_pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) != 0 {
-            return Some(paging::pte_phys(leaf_pte) | (va & 0xFFF));
+            // Same guard as above: V set with a zeroed physical address is a
+            // corrupt descriptor; report unmapped so callers re-map cleanly.
+            let phys = paging::pte_phys(leaf_pte);
+            if phys == 0 {
+                return None;
+            }
+            return Some(phys | (va & 0xFFF));
         }
         let leaf = &*mm::table(paging::pte_phys(leaf_pte));
         let pte = leaf[i0];
@@ -1084,7 +1152,14 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
         if pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) == 0 {
             return None;
         }
-        Some(paging::pte_phys(pte))
+        let phys = paging::pte_phys(pte);
+        if phys == 0 {
+            // V set with a zeroed physical address is never a legitimate user
+            // mapping. Treat as absent so callers re-map cleanly instead of
+            // the kernel dereferencing hhdm(0) (riscv64 CI kernel page fault).
+            return None;
+        }
+        Some(phys)
     }
 }
 
@@ -1343,6 +1418,17 @@ fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv
             *frame.add(32) = entry as u64;
             *frame.add(33) = USER_SSTATUS;
             *frame.add(34) = rsp as u64;
+            // fork_sret_from_frame srets WITHOUT touching sscratch, and the
+            // live syscall frame's slot 272 holds the OLD program's user sp
+            // (entry swap), not the kernel top. Leaving sscratch there made
+            // every later trap of this task build its kernel frame on the
+            // user stack (frame addr drift per sret) — the riscv64 CI
+            // corruption family (kernel ra=0 jumps, zeroed user ra slots).
+            // Same invariant as enter_fork_riscv64: sscratch = kernel top.
+            let ksp = unsafe { KERNEL_SSCRATCH };
+            unsafe {
+                core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
+            }
             crate::arch::fork_sret_to_user(frame);
         }
     }
@@ -1499,6 +1585,12 @@ pub fn set_syscall_frame(frame: *mut u64) {
     }
 }
 
+/// Read-only access for fault-path diagnostics (frame-dump on sepc=0).
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub fn syscall_frame_ptr() -> *mut usize {
+    unsafe { SYSCALL_FRAME }
+}
+
 #[cfg(target_arch = "x86_64")]
 pub fn set_syscall_frame(_frame: *mut u64) {}
 
@@ -1512,6 +1604,7 @@ pub extern "C" fn syscall_dispatch(
     user_rsp: usize,
 ) -> usize {
     task::save_user_context(user_rip, user_rsp);
+    task::record_syscall(nr, a0, a1, a2);
     let ret = match nr {
         SYS_WRITE => sys_write(a0, a1, a2),
         SYS_EXIT => sys_exit(a0),
@@ -2297,6 +2390,9 @@ fn sys_brk(req: usize) -> usize {
         return cur;
     }
     if req < heap_base || req > heap_limit {
+        BRK_REFUSED.fetch_add(1, Ordering::Relaxed);
+        BRK_REFUSED_LAST.store(req as u64, Ordering::Relaxed);
+        brk_log(req, cur);
         return cur;
     }
     if req > cur {
@@ -2328,7 +2424,39 @@ fn sys_brk(req: usize) -> usize {
         }
     }
     task::set_brk(req as u64);
+    brk_log(req, req);
     req
+}
+
+/// Failure-path-only: dump the brk ring + heap state when a user fault lands
+/// at/above the current break (wild pointer / heap exhaustion signature).
+#[cfg(target_arch = "riscv64")]
+pub fn report_brk_boundary_fault(stval: usize, aspace: u64) {
+    let (base, _span, stack_off) = task::current_user_map();
+    if base == 0 {
+        return;
+    }
+    let heap_base = heap_base_va(base, stack_off) as usize;
+    let brk_cur = task::current_brk() as usize;
+    if stval < brk_cur || stval >= brk_cur + PAGE {
+        return;
+    }
+    let prev_mapped = virt_to_phys(aspace, (brk_cur - PAGE) as u64).is_some();
+    let fault_mapped = virt_to_phys(aspace, stval as u64).is_some();
+    let mut l = alloc::format!(
+        "brk-boundary: brk_cur={brk_cur:#x} heap_base={heap_base:#x} prev_page_mapped={prev_mapped} fault_page_mapped={fault_mapped} refused={} last_refused={:#x}\nbrk-log (req->ret):\n",
+        BRK_REFUSED.load(Ordering::Relaxed),
+        BRK_REFUSED_LAST.load(Ordering::Relaxed)
+    );
+    let idx = BRK_LOG_IDX.load(Ordering::Relaxed);
+    for k in 0..8 {
+        let i = (idx + 7 - k) % 8;
+        let (r, ret) = BRK_LOG.lock()[i];
+        if r != 0 {
+            l.push_str(&alloc::format!("  {r:#x} -> {ret:#x}\n"));
+        }
+    }
+    console::status_fail(&l);
 }
 
 /// `a0` points at a user `myos_mmap_args` {addr,len,prot,flags,fd,offset}.

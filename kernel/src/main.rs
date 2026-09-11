@@ -77,6 +77,7 @@ fn kernel_main() -> ! {
     let _ = limine_boot::DTB.response();
 
     heap::init();
+    mm::init_frame_bitmap();
     prove_heap();
 
     arch::init_interrupts();

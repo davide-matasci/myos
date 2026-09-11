@@ -28,6 +28,118 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 /// next phys at offset 0 via HHDM.
 static FREE_HEAD: AtomicU64 = AtomicU64::new(0);
 
+// --- Frame-ownership bitmap (double-free / double-alloc detector) ---
+// One bit per RAM frame: 1 = allocated (in use), 0 = free/never allocated.
+// Catches the freelist-cycle corruption class (free_frame called twice on the
+// same phys → freelist node points at itself → the same frame handed out
+// twice → two owners scribble over each other: corrupted TLS handshakes,
+// git objects, user data) at the allocator, before the damage spreads.
+static FB_READY: AtomicU64 = AtomicU64::new(0); // 0=uninit 1=ready
+static FB_BITS: AtomicU64 = AtomicU64::new(0); // phys of bitmap (via HHDM)
+static FB_WORDS: AtomicU64 = AtomicU64::new(0);
+static FB_RAM_MIN: AtomicU64 = AtomicU64::new(0);
+
+/// Allocate and arm the frame bitmap. Call once, after heap::init.
+pub fn init_frame_bitmap() {
+    if FB_READY.load(Ordering::SeqCst) != 0 {
+        return;
+    }
+    let entries = limine_boot::MEMMAP
+        .response()
+        .expect("Limine memmap")
+        .entries();
+    let mut min = u64::MAX;
+    let mut max = 0u64;
+    for e in entries {
+        if e.type_ != memmap::MEMMAP_USABLE {
+            continue;
+        }
+        if e.base < min {
+            min = e.base;
+        }
+        if e.base.saturating_add(e.length) > max {
+            max = e.base.saturating_add(e.length);
+        }
+    }
+    if min == u64::MAX {
+        return;
+    }
+    let pages = ((max - min) / PAGE).div_ceil(64) as usize / (PAGE as usize / 8) + 1;
+    let Some(bit_phys) = alloc_contiguous_frames(pages) else {
+        return;
+    };
+    FB_BITS.store(bit_phys, Ordering::SeqCst);
+    FB_WORDS.store((((max - min) / PAGE).div_ceil(64)) as u64, Ordering::SeqCst);
+    FB_RAM_MIN.store(min, Ordering::SeqCst);
+    // Mark the bitmap's own frames allocated (alloc_contiguous skipped marking
+    // because the bitmap was not armed yet).
+    for i in 0..pages as u64 {
+        fb_mark(bit_phys + i * PAGE);
+    }
+    FB_READY.store(1, Ordering::SeqCst);
+}
+
+#[inline]
+fn fb_word(phys: u64) -> Option<(usize, u64)> {
+    if FB_READY.load(Ordering::SeqCst) == 0 {
+        return None;
+    }
+    let min = FB_RAM_MIN.load(Ordering::SeqCst);
+    let words = FB_WORDS.load(Ordering::SeqCst) as usize;
+    if phys < min || phys & 0xfff != 0 {
+        return None;
+    }
+    let idx = (phys - min) / PAGE;
+    let w = (idx / 64) as usize;
+    if w >= words {
+        return None;
+    }
+    let bit = 1u64 << (idx % 64);
+    Some((w, bit))
+}
+
+/// Mark a frame allocated; panic if it already was.
+fn fb_mark(phys: u64) {
+    let Some((w, bit)) = fb_word(phys) else {
+        return;
+    };
+    let base = (FB_BITS.load(Ordering::SeqCst) + limine_boot::hhdm_offset()) as *mut u64;
+    let cell = unsafe { &*(base.wrapping_add(w) as *const AtomicU64) };
+    loop {
+        let cur = cell.load(Ordering::SeqCst);
+        if cur & bit != 0 {
+            panic!("mm: double alloc of frame {:#x}", phys);
+        }
+        if cell
+            .compare_exchange(cur, cur | bit, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return;
+        }
+    }
+}
+
+/// Mark a frame free; panic if it was already free (double free).
+fn fb_unmark(phys: u64) {
+    let Some((w, bit)) = fb_word(phys) else {
+        return;
+    };
+    let base = (FB_BITS.load(Ordering::SeqCst) + limine_boot::hhdm_offset()) as *mut u64;
+    let cell = unsafe { &*(base.wrapping_add(w) as *const AtomicU64) };
+    loop {
+        let cur = cell.load(Ordering::SeqCst);
+        if cur & bit == 0 {
+            panic!("mm: double free of frame {:#x}", phys);
+        }
+        if cell
+            .compare_exchange(cur, cur & !bit, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return;
+        }
+    }
+}
+
 fn heap_phys() -> u64 {
     let entries = limine_boot::MEMMAP
         .response()
@@ -73,6 +185,10 @@ pub fn free_frame(phys: u64) {
     if overlaps_kernel(phys) {
         return;
     }
+    // Double-free detection BEFORE touching the frame: a second free would
+    // overwrite the live freelist node's next-ptr (self-cycle → same frame
+    // handed out twice → two owners, random data corruption).
+    fb_unmark(phys);
     let hhdm = limine_boot::hhdm_offset();
     loop {
         let head = FREE_HEAD.load(Ordering::SeqCst);
@@ -148,6 +264,11 @@ pub fn alloc_contiguous_frames(n: usize) -> Option<u64> {
             unsafe {
                 core::ptr::write_bytes((phys + hhdm) as *mut u8, 0, need as usize);
             }
+            if FB_READY.load(Ordering::SeqCst) != 0 {
+                for i in 0..n as u64 {
+                    fb_mark(phys + i * PAGE);
+                }
+            }
             return Some(phys);
         }
     }
@@ -219,6 +340,7 @@ pub fn alloc_frame() -> u64 {
             unsafe {
                 core::ptr::write_bytes((head + hhdm) as *mut u8, 0, PAGE as usize);
             }
+            fb_mark(head);
             return head;
         }
     }
@@ -251,6 +373,7 @@ pub fn alloc_frame() -> u64 {
             unsafe {
                 core::ptr::write_bytes((phys + hhdm) as *mut u8, 0, PAGE as usize);
             }
+            fb_mark(phys);
             return phys;
         }
     }

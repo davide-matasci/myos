@@ -73,10 +73,15 @@ trap_vector:
 3:
     mv a0, sp
     call riscv64_trap_handler
+    # Mask SIE BEFORE restoring sscratch: a timer nesting in the window where
+    # sscratch already holds the user sp would trap in with sp = user sp and
+    # build a kernel frame on the user stack (silent user-memory corruption).
+    ld t0, 264(sp)
+    andi t0, t0, -3      # clear SIE
+    ori t0, t0, 0x20     # set SPIE (sret: SIE <- SPIE)
+    csrw sstatus, t0
     ld t0, 272(sp)
     csrw sscratch, t0
-    ld t0, 264(sp)
-    csrw sstatus, t0
     ld t0, 256(sp)
     csrw sepc, t0
     ld x0, 0(sp)
@@ -122,6 +127,13 @@ trap_vector:
     .global fork_sret_from_frame
 fork_sret_from_frame:
     mv sp, a0
+    ld t0, 264(sp)
+    # Mask SIE BEFORE touching sscratch: with sscratch already = user sp, a
+    # nested timer would trap in with sp = user sp and build a kernel frame
+    # on the user stack (silent user-memory corruption, riscv64-only).
+    andi t0, t0, -3      # clear SIE
+    ori t0, t0, 0x20     # set SPIE (sret: SIE <- SPIE)
+    csrw sstatus, t0
     ld t0, 272(sp)
     csrw sscratch, t0
     ld t0, 264(sp)
@@ -174,6 +186,8 @@ fork_sret_child_from_frame:
     # this task's kernel stack top (same invariant as enter_riscv64).
     mv t6, a0
     ld t0, 264(t6)
+    andi t0, t0, -3      # clear SIE; sret applies SIE <- SPIE atomically
+    ori t0, t0, 0x20
     csrw sstatus, t0
     ld t0, 256(t6)
     csrw sepc, t0
@@ -227,6 +241,34 @@ pub fn fork_sret_to_user(frame: *mut u64) -> ! {
 pub fn fork_sret_child_to_user(frame: *mut u64) -> ! {
     unsafe { fork_sret_child_from_frame(frame) }
 }
+
+/// Canary-sscratch probe: (hits, last_sepc, last_scause). The trap-entry asm
+/// probe was removed — it clobbered t5/t6 before the frame save. The handler
+/// reads the live CSR instead; hits stays 0.
+pub fn sscratch_canary() -> (u64, u64, u64) {
+    let s: u64;
+    unsafe {
+        core::arch::asm!("csrr {s}, sscratch", s = out(reg) s, options(nomem, nostack, preserves_flags));
+    }
+    (0, s, 0)
+}
+
+// Canary probe storage (drop before PR).
+core::arch::global_asm!(
+    r#"
+    .section .data
+    .global scratch_canary
+    scratch_canary: .quad 0x535441434b4f4b45
+    .global sscratch_canary_hits
+    sscratch_canary_hits: .quad 0
+    .global sscratch_canary_sepc
+    sscratch_canary_sepc: .quad 0
+    .global sscratch_canary_ra
+    sscratch_canary_ra: .quad 0
+    .global LAST_SRET
+    LAST_SRET: .quad 0
+    "#
+);
 
 pub fn init() {
     let v = trap_vector as *const () as usize;
@@ -337,7 +379,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
                 13 => "load page fault",
                 _ => "store page fault",
             };
-            crate::exception::riscv64_page_fault(kind, stval, sepc, user_sp);
+            crate::exception::riscv64_page_fault(kind, stval, sepc, user_sp, frame);
         }
         _ => {
             let sepc = unsafe { *frame.add(32) };

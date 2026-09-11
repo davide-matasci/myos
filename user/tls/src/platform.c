@@ -1,5 +1,6 @@
 /* myos TLS platform glue: entropy, time, and a thin client API over an fd. */
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 
 #include "mbedtls/platform.h"
@@ -130,6 +131,9 @@ static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
     return -0x004E; /* MBEDTLS_ERR_NET_SEND_FAILED: bio_send poll exhausted */
 }
 
+static unsigned char g_last_recv[32];
+static size_t g_last_recv_len;
+
 static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
     myos_tls_conn *c = (myos_tls_conn *)ctx;
     for (int i = 0; i < BIO_POLLS; i++) {
@@ -138,6 +142,12 @@ static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
             return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
         }
         if (n > 0) {
+            /* Failure-path diagnostic capture: remember the most recent
+             * bytes received so a failed handshake can dump the alert. */
+            g_last_recv_len = (size_t)n < sizeof g_last_recv ? (size_t)n : sizeof g_last_recv;
+            for (size_t k = 0; k < g_last_recv_len; k++) {
+                g_last_recv[k] = buf[k];
+            }
             return n;
         }
     }
@@ -205,6 +215,33 @@ int myos_tls_handshake(myos_tls_conn *c, int fd, const char *sni_host) {
 
     while ((ret = mbedtls_ssl_handshake(&c->ssl)) != 0) {
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+            /* Failure-path-only diagnostic (fires only on already-failing
+             * handshakes): dump verify flags + the rejected chain's issuer
+             * DN, plus the last bytes received. Identifies whether the
+             * server sent a chain our bundle doesn't trust (rotation) or
+             * the stream was corrupted. */
+            {
+                myos_tls_fd_write(2, "TLSFAIL ", 8);
+                char hdr[160];
+                int hl = 0;
+                hl += snprintf(hdr + hl, sizeof hdr - hl, "hs=%d ", ret);
+                if (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
+                    uint32_t vflags = mbedtls_ssl_get_verify_result(&c->ssl);
+                    hl += snprintf(hdr + hl, sizeof hdr - hl, "vflags=0x%08x ", vflags);
+                    const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&c->ssl);
+                    if (peer) {
+                        char dn[80];
+                        mbedtls_x509_dn_gets(dn, sizeof dn, &peer->issuer);
+                        hl += snprintf(hdr + hl, sizeof hdr - hl, "leaf-issuer=%s ", dn);
+                    }
+                }
+                size_t show = g_last_recv_len < 24 ? g_last_recv_len : 24;
+                for (size_t k = 0; k < show; k++) {
+                    hl += snprintf(hdr + hl, sizeof hdr - hl, "%02x", g_last_recv[k]);
+                }
+                hdr[hl] = '\n';
+                myos_tls_fd_write(2, hdr, hl);
+            }
             goto fail;
         }
     }

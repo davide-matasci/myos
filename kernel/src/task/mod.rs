@@ -4,9 +4,11 @@
 
 use alloc::alloc::{alloc, Layout};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use limine::memmap;
 use spin::Mutex;
 
 use crate::console;
+use crate::limine_boot;
 use crate::pipe;
 use crate::user;
 
@@ -26,6 +28,146 @@ mod switch_riscv64;
 use switch_riscv64::{seed_stack, task_switch};
 
 const MAX_TASKS: usize = 8;
+
+/// Dedicated kernel-stack pool canary. Stacks used to come from the kernel
+/// heap via `alloc::alloc`, making them heap-adjacent: a kernel-stack
+/// overflow (deep syscall chain + fd_read's 2 KiB staging buffer + the
+/// 280-byte ISR frame) wrote into neighboring heap blocks — tmpfs file
+/// Vecs, netfs buffers — and any heap-block overwrite landed in a live
+/// trap frame. Both directions produce exactly the random user-memory
+/// corruption of the riscv64 CI flake. Pool slots are frame-backed and
+/// adjacent only to each other, so an overflow lands in the next slot's
+/// unused top region; a bottom canary turns it into an attributed fault.
+const STACK_CANARY: u64 = 0x5354_4143_4B4F_4B45; // "STACKOKE"
+static mut STACK_POOL: [usize; MAX_TASKS] = [0; MAX_TASKS];
+static mut STACK_POOL_USED: [bool; MAX_TASKS] = [false; MAX_TASKS];
+static STACK_POOL_READY: AtomicBool = AtomicBool::new(false);
+
+pub fn init_stack_pool() {
+    // Place the pool at the TOP of the highest usable RAM region. The bump
+    // cursor grows upward from the heap (low RAM) and the space just above it
+    // holds Limine-loaded module images — a large contiguous grab there
+    // collided with the initramfs (boot fault at 0x80180000). Top-down keeps
+    // the pool clear of the bump cursor, kernel, and Limine data.
+    let frames = STACK_SIZE.div_ceil(4096) * MAX_TASKS;
+    let bytes = (frames * 4096) as u64;
+    let entries = limine_boot::MEMMAP
+        .response()
+        .expect("Limine memmap")
+        .entries();
+    let mut pool_phys = 0u64;
+    for e in entries.iter().rev() {
+        if e.type_ != memmap::MEMMAP_USABLE {
+            continue;
+        }
+        let end = (e.base + e.length) & !0xfff;
+        let cand = end.checked_sub(bytes).unwrap_or(0) & !0xfff;
+        if cand >= e.base && cand + bytes <= end {
+            pool_phys = cand;
+            break;
+        }
+    }
+    if pool_phys == 0 {
+        console::status_fail("stack pool alloc failed; stacks fall back to heap");
+        return;
+    }
+    unsafe {
+        let hhdm = limine_boot::hhdm_offset();
+        for i in 0..MAX_TASKS {
+            // Store HHDM VAs: the heap allocator's addresses were HHDM too, and
+            // all stack writes (seed/canary/trap frames) deref them directly.
+            STACK_POOL[i] = (pool_phys + (i as u64) * STACK_SIZE as u64 + hhdm) as usize;
+        }
+    }
+    STACK_POOL_READY.store(true, Ordering::SeqCst);
+    console::status_ok("stack pool");
+}
+
+/// Take a pooled stack (canary armed at the base) or fall back to the heap.
+fn stack_take() -> usize {
+    unsafe {
+        if STACK_POOL_READY.load(Ordering::SeqCst) {
+            for i in 0..MAX_TASKS {
+                if !STACK_POOL_USED[i] {
+                    STACK_POOL_USED[i] = true;
+                    let sb = STACK_POOL[i];
+                    // CI diagnostic: pattern-fill the whole slot so a periodic
+                    // scan can measure the real high-water mark (deepest
+                    // kernel usage) and attribute underflows to this task.
+                    let p = sb as *mut u8;
+                    for off in 8..STACK_SIZE {
+                        p.add(off).write(0xA5);
+                    }
+                    (sb as *mut u64).write(STACK_CANARY);
+                    return sb;
+                }
+            }
+        }
+    }
+    let layout = Layout::from_size_align(STACK_SIZE, 16).expect("task stack layout");
+    let stack = unsafe { alloc(layout) };
+    assert!(!stack.is_null(), "task stack alloc");
+    unsafe {
+        (stack as *mut u64).write(STACK_CANARY);
+    }
+    stack as usize
+}
+
+/// CI diagnostic: at fault time, scan every pool slot bottom for the 0xA5
+/// fill; a trampled bottom = that task's kernel usage reached (or a wild
+/// kernel write crossed) into the neighbor's live-frame region.
+pub fn diagnose_stack_pool() {
+    if !STACK_POOL_READY.load(Ordering::SeqCst) {
+        return;
+    }
+    unsafe {
+        for i in 0..MAX_TASKS {
+            if !STACK_POOL_USED[i] {
+                continue;
+            }
+            let sb = STACK_POOL[i];
+            let p = sb as *const u8;
+            let mut deep = 8usize;
+            while deep < 32768 && p.add(deep).read_volatile() == 0xA5 {
+                deep += 8;
+            }
+            let mut name = [0u8; 33];
+            if let Some(mut tasks) = TASKS.try_lock() {
+                let t = &tasks[i];
+                let n = t.exec_name_len.min(32) as usize;
+                name[..n].copy_from_slice(&t.exec_name[..n]);
+            }
+            let nm = core::str::from_utf8(&name[..name.iter().position(|&c| c == 0).unwrap_or(32)]).unwrap_or("?");
+            console::status_fail(&alloc::format!(
+                "pool-slot {}: task used-to-bottom {:#x} ({} {})\n",
+                i, deep, nm, if deep < 8192 { "<-- UNDERFLOW SUSPECT" } else { "" }
+            ));
+        }
+        // Also scan each slot's TOP 64 bytes for the canary/sentinel state.
+        for i in 0..MAX_TASKS {
+            if !STACK_POOL_USED[i] {
+                continue;
+            }
+            let top = STACK_POOL[i] + STACK_SIZE;
+            let last = unsafe { ((top - 8) as *const u64).read_volatile() };
+            if last != 0 {
+                console::status_fail(&alloc::format!(
+                    "pool-slot {} top-8 = {:#x} ({} )\n",
+                    i, last, if last == STACK_CANARY { "CANARY?! overlapping take" } else { "data" }
+                ));
+            }
+        }
+    }
+    console::flush();
+}
+
+/// True if the task's kernel stack canary is intact (no overflow past base).
+fn stack_canary_ok(stack_base: usize) -> bool {
+    if stack_base == 0 {
+        return true;
+    }
+    unsafe { (stack_base as *const u64).read_volatile() == STACK_CANARY }
+}
 /// Exec from a syscall runs `load_user_elf` / `copy_user_aspace` on the task
 /// stack (exception frame + `[MAX_INIT_PAGES]`/`[USER_STACK_PAGES]` frame arrays).
 /// 8 KiB overflowed after widening the user stack to 64 KiB; 16 KiB then overflowed
@@ -206,6 +348,8 @@ struct Task {
     kernel_stack_top: usize,
     user_rip: usize,
     user_rsp: usize,
+    /// CI diagnostic: lowest user sp ever seen (0 = none). Overflow probe.
+    min_sp: u64,
     fds: [FdEntry; MAX_FDS],
     user_base: u64,
     image_span: usize,
@@ -252,6 +396,7 @@ const EMPTY: Task = Task {
     kernel_stack_top: 0,
     user_rip: 0,
     user_rsp: 0,
+        min_sp: 0,
     fds: [FdEntry::Empty; MAX_FDS],
     user_base: 0,
     image_span: 0,
@@ -283,6 +428,7 @@ static KERNEL_ASPACE: AtomicU64 = AtomicU64::new(0);
 static LOADED_ASPACE: AtomicU64 = AtomicU64::new(0);
 
 pub fn init() {
+    init_stack_pool();
     let a = user::read_aspace();
     KERNEL_ASPACE.store(a, Ordering::SeqCst);
     LOADED_ASPACE.store(a, Ordering::SeqCst);
@@ -535,7 +681,82 @@ pub fn save_user_context(rip: usize, rsp: usize) {
     with_current_mut(|t| {
         t.user_rip = rip;
         t.user_rsp = rsp;
+        // CI diagnostic: track the lowest user sp ever seen for this task; a
+        // value approaching the stack bottom (user_base + stack_off) proves
+        // user-stack overflow into the image as the corruption source.
+        if rsp != 0 && (t.min_sp == 0 || (rsp as u64) < t.min_sp) {
+            t.min_sp = rsp as u64;
+        }
     });
+}
+
+/// Lowest user sp ever observed for the current task (0 if none).
+pub fn current_min_user_sp() -> u64 {
+    with_current_mut(|t| t.min_sp)
+}
+
+/// CI diagnostic: current task's (heap_base, brk_cur, heap_limit) for
+/// classifying user page faults inside the brk window.
+pub fn current_brk_info() -> (u64, u64) {
+    with_current_mut(|t| (t.user_base + t.stack_off + (crate::user::USER_STACK_PAGES * crate::user::PAGE) as u64, t.brk_cur))
+}
+
+/// Per-task syscall history ring for fault-path diagnostics. Written on every
+/// syscall (cheap, no allocation); dumped when the task takes a fatal user
+/// exception so the syscall feeding a wild pointer is identifiable.
+const SYSCALL_HIST: usize = 16;
+static SYSCALL_HIST_BUF: [AtomicU64; SYSCALL_HIST * 4] =
+    [const { AtomicU64::new(0) }; SYSCALL_HIST * 4];
+static SYSCALL_HIST_IDX: AtomicUsize = AtomicUsize::new(0);
+
+pub fn record_syscall(nr: usize, a0: usize, a1: usize, a2: usize) {
+    let slot = SYSCALL_HIST_IDX.fetch_add(1, Ordering::Relaxed) % SYSCALL_HIST;
+    let base = slot * 4;
+    SYSCALL_HIST_BUF[base].store(nr as u64, Ordering::Relaxed);
+    SYSCALL_HIST_BUF[base + 1].store(a0 as u64, Ordering::Relaxed);
+    SYSCALL_HIST_BUF[base + 2].store(a1 as u64, Ordering::Relaxed);
+    SYSCALL_HIST_BUF[base + 3].store(a2 as u64, Ordering::Relaxed);
+}
+
+pub fn dump_syscall_history() {
+    let start = SYSCALL_HIST_IDX.load(Ordering::Relaxed);
+    let mut out = alloc::format!("syscall-history (oldest→newest):\n");
+    for k in 0..SYSCALL_HIST {
+        let slot = (start + k) % SYSCALL_HIST;
+        let base = slot * 4;
+        let nr = SYSCALL_HIST_BUF[base].load(Ordering::Relaxed);
+        if nr == 0 {
+            continue;
+        }
+        let a0 = SYSCALL_HIST_BUF[base + 1].load(Ordering::Relaxed);
+        let a1 = SYSCALL_HIST_BUF[base + 2].load(Ordering::Relaxed);
+        let a2 = SYSCALL_HIST_BUF[base + 3].load(Ordering::Relaxed);
+        let fdname = fd_name(a0 as usize);
+        out.push_str(&alloc::format!(
+            "  nr={} a0={:#x}{} a1={:#x} a2={:#x}\n",
+            nr, a0, fdname, a1, a2
+        ));
+    }
+    crate::console::status_fail(&out);
+    crate::console::flush();
+}
+
+/// Best-effort fd → path for the syscall-history dump (fds only; a0 for
+/// open/read/write/close is the fd).
+fn fd_name(fd: usize) -> alloc::string::String {
+    if fd > 31 {
+        return alloc::string::String::new();
+    }
+    let name = with_current_mut(|t| {
+        match t.fds.get(fd).copied().unwrap_or(FdEntry::Empty) {
+            FdEntry::File { node, .. } => {
+                alloc::format!("({})", node.path_str())
+            }
+            FdEntry::Empty => alloc::format!("(empty)"),
+            _ => alloc::format!("(non-file)"),
+        }
+    });
+    name
 }
 
 fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
@@ -1494,16 +1715,14 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
 
     let (stack_base, sp, top) = if reuse_stack.0 {
         let sb = reuse_stack.1;
+        unsafe {
+            (sb as *mut u64).write(STACK_CANARY);
+        }
         let sp = unsafe { seed_stack(sb as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
         (sb, sp, sb + STACK_SIZE)
     } else {
-        let stack = unsafe { alloc(layout) };
-        if stack.is_null() {
-            irq_restore(flags);
-            return None;
-        }
-        let sb = stack as usize;
-        let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as *const () as usize) };
+        let sb = stack_take();
+        let sp = unsafe { seed_stack(sb as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
         (sb, sp, sb + STACK_SIZE)
     };
 
@@ -1517,6 +1736,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         kernel_stack_top: top,
         user_rip: child_regs.rip,
         user_rsp: child_regs.rsp,
+        min_sp: 0,
         fds: child_fds,
         user_base: base,
         image_span: span,
@@ -1619,11 +1839,9 @@ fn spawn_inner(
 ) {
     let flags = irq_save();
     irq_off();
-    let layout = Layout::from_size_align(STACK_SIZE, 16).expect("task stack layout");
-    let stack = unsafe { alloc(layout) };
-    assert!(!stack.is_null(), "task stack alloc");
-    let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as usize) };
-    let top = stack as usize + STACK_SIZE;
+    let sb = stack_take();
+    let sp = unsafe { seed_stack(sb as *mut u8, STACK_SIZE, trampoline as usize) };
+    let top = sb + STACK_SIZE;
 
     let mut tasks = TASKS.lock();
     let slot = tasks
@@ -1637,13 +1855,14 @@ fn spawn_inner(
     };
     tasks[slot] = Task {
         state: State::Ready,
-        stack_base: stack as usize,
+        stack_base: sb,
         sp,
         entry,
         aspace,
         kernel_stack_top: top,
         user_rip,
         user_rsp,
+        min_sp: 0,
         fds,
         user_base,
         image_span,
@@ -1696,6 +1915,45 @@ pub fn schedule() {
         return;
     }
 
+    // CI diagnostic: kernel-stack underflow watermark. Every 256 switches,
+    // scan the bottom 8 KiB of each USED pool slot for the 0xA5 fill; the
+    // first non-pattern byte from the bottom = deepest kernel usage. A slot
+    // with < 2 KiB headroom is about to underflow into its neighbor's live
+    // frame (the corruption source); report attributed and stop.
+    static SCAN_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    if STACK_POOL_READY.load(Ordering::SeqCst)
+        && SCAN_COUNT.fetch_add(1, Ordering::Relaxed) % 256 == 0
+    {
+        unsafe {
+            for i in 0..MAX_TASKS {
+                if !STACK_POOL_USED[i] {
+                    continue;
+                }
+                let sb = STACK_POOL[i];
+                let p = sb as *const u8;
+                let mut deep = 8usize;
+                while deep < 8192 && p.add(deep).read_volatile() == 0xA5 {
+                    deep += 8;
+                }
+                if deep < 2048 {
+                    let mut name = [0u8; 33];
+                    if let Some(mut tasks) = TASKS.try_lock() {
+                        let t = &tasks[i];
+                        let n = t.exec_name_len.min(32) as usize;
+                        name[..n].copy_from_slice(&t.exec_name[..n]);
+                    }
+                    let nm = core::str::from_utf8(&name[..name.iter().position(|&c| c == 0).unwrap_or(32)]).unwrap_or("?");
+                    console::status_fail(&alloc::format!(
+                        "stack-underflow: task {} ({nm}) used down to {deep:#x} from slot base — overflowing neighbor slot\n",
+                        i
+                    ));
+                    console::flush();
+                    panic!("stack-underflow: task {} used down to {deep:#x}", i);
+                }
+            }
+        }
+    }
+
     // Hold IF off across TASKS + switch. Caller may already have IF clear
     // (timer, yield); save/restore so we never leave IF on while locked.
     let flags = irq_save();
@@ -1724,6 +1982,17 @@ pub fn schedule() {
             }
             None
         } else {
+            // Canary check on the task being switched out: catches a
+            // kernel-stack overflow at the moment it becomes detectable.
+            let cur_base = tasks[current].stack_base;
+            if !stack_canary_ok(cur_base) {
+                crate::console::status_fail(&alloc::format!(
+                    "kernel stack overflow: task {} base={:#x}\n",
+                    current, cur_base
+                ));
+                crate::console::flush();
+                panic!("kernel stack canary smashed");
+            }
             tasks[next].state = State::Running;
             let old_sp = core::ptr::addr_of_mut!(tasks[current].sp);
             let new_sp = tasks[next].sp;

@@ -43,7 +43,7 @@ pub fn wait_for_interrupt_proof() {
     interrupts::wait_for_interrupt_proof();
 }
 
-pub use interrupts::{fork_sret_child_to_user, fork_sret_to_user};
+pub use interrupts::{fork_sret_child_to_user, fork_sret_to_user, sscratch_canary};
 
 pub fn virtio_blk_init() {
     virtio_blk::init();

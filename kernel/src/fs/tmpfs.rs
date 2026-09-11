@@ -19,6 +19,21 @@ const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 const S_IFLNK: u32 = 0o120000;
 
+// CI diagnostic: last-write content snapshot per tmpfs file (name → clone).
+// Every read verifies its chunk against the snapshot so chunked stdio reads
+// (git's 2 KB index.lock reads) also prove whether tmpfs bytes changed
+// underneath us — distinguishes kernel-heap corruption from a userspace
+// parser bug.
+static TFS_HASH: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+
+fn fnv(b: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &x in b {
+        h = (h ^ x as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
 #[derive(Clone)]
 enum Kind {
     Dir,
@@ -149,6 +164,18 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     let n = out.len().min(data.len().saturating_sub(pos));
     if n != 0 {
         out[..n].copy_from_slice(&data[pos..pos + n]);
+        // Chunk-level verify: every read range must match the last-write
+        // snapshot; a mismatch proves kernel-side corruption of the Vec.
+        if let Some(snap) = TFS_HASH.lock().iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()) {
+            let end = pos + n;
+            if snap.len() >= end && snap[pos..end] != data[pos..end] {
+                crate::console::status_fail(&alloc::format!(
+                    "tmpfs: chunk mismatch for {name} at {pos}..{end}\n"
+                ));
+                crate::console::flush();
+                panic!("tmpfs: chunk mismatch");
+            }
+        }
     }
     n
 }
@@ -175,6 +202,20 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         data.resize(end, 0);
     }
     data[pos..end].copy_from_slice(buf);
+    // CI diagnostic: remember the content hash so the next full read can
+    // prove whether tmpfs bytes changed underneath us (kernel-heap
+    // corruption of the backing Vec) — distinguishes kernel-side corruption
+    // from a userspace parser bug.
+    {
+        let mut hs = TFS_HASH.lock();
+        let key = String::from(name);
+        let snap = data[..end].to_vec();
+        if let Some(slot) = hs.iter_mut().find(|(k, _)| *k == key) {
+            slot.1 = snap;
+        } else {
+            hs.push((key, snap));
+        }
+    }
     Some(buf.len())
 }
 

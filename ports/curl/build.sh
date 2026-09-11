@@ -48,6 +48,38 @@ fi
 # curl checks the *value* macro as #ifdef (always true in mbedtls 3.6 headers).
 sed -i 's/#ifdef MBEDTLS_SSL_TLS1_3_SIGNAL_NEW_SESSION_TICKETS_ENABLED/#if defined(MBEDTLS_SSL_PROTO_TLS1_3) \&\& defined(MBEDTLS_SSL_SESSION_TICKETS)/'   "$SRC/lib/vtls/mbedtls.c" || true
 
+# myos CI diagnostic: always register the mbedtls debug callback (threshold 2)
+# and print only alert lines (e.g. "got an alert message, type: [1:40]" ->
+# description 40 = handshake_failure) to stderr, so a TLS fatal alert is
+# identifiable in CI serial without curl -v noise.
+python3 - "$SRC/lib/vtls/mbedtls.c" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace("#  ifdef MBEDTLS_DEBUG\n", "#  if 1\n")
+s = s.replace("#ifdef MBEDTLS_DEBUG\n",
+              "#if 1 /* myos: always conf_dbg; mbed_debug filters to alert lines */\n")
+s = s.replace("mbedtls_debug_set_threshold(4);", "mbedtls_debug_set_threshold(2);")
+old = """  if(data) {
+    size_t len = strlen(line);"""
+new = """  if(data) {
+    /* myos CI diagnostic: surface mbedtls alert description on stderr */
+    if(strstr(line, "got an alert message")) { /* received fatal alert only; ignore close_notify */
+      fputs(line, stderr);
+    }
+    size_t len = strlen(line);"""
+if old in s:
+    s = s.replace(old, new, 1)
+elif "myos CI diagnostic: surface mbedtls alert" in s:
+    # upgrade a previously-applied filter (e.g. broader "alert" match)
+    import re
+    s = re.sub(r'if\(strstr\(line, "[^"]*"\)\) \{\n(\s*/\* received fatal alert only[^*]*\*/\n)?',
+               'if(strstr(line, "got an alert message")) {\n    /* received fatal alert only; ignore close_notify */\n', s, count=1)
+elif True:
+    raise SystemExit("mbed_debug body not found")
+open(p, "w").write(s)
+PY
+
 # Expand CSOURCES from Makefile.inc
 mapfile -t LIB_SRCS < <(python3 - "$SRC/lib/Makefile.inc" <<'PY'
 import re, sys

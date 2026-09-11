@@ -40,6 +40,10 @@ pub struct VirtualInstant {
     millis: u64,
 }
 
+// diagnostics (strip before PR): NIC-boundary frame/byte counters
+pub static mut RX_FRAMES: u64 = 0;
+pub static mut RX_BYTES: u64 = 0;
+
 impl VirtualInstant {
     pub const fn new() -> Self {
         Self { millis: 0 }
@@ -168,6 +172,11 @@ impl Device for Net0Device {
             return None;
         }
         self.rx_len = n.min(FRAME_BUF);
+        // diagnostics (strip before PR): count frames + bytes at NIC boundary
+        unsafe {
+            RX_FRAMES += 1;
+            RX_BYTES += self.rx_len as u64;
+        }
         Some((
             Net0RxToken {
                 buf: &self.rx[..self.rx_len],

@@ -96,6 +96,8 @@ struct Conv {
     used: bool,
     proto: u8,
     data_len: u16,
+    in_fnv: u64,
+    out_fnv: u64,
     data: [u8; DATA_CAP],
     status_len: u16,
     status: [u8; STATUS_CAP],
@@ -106,6 +108,8 @@ impl Conv {
         used: false,
         proto: 0,
         data_len: 0,
+        in_fnv: 0,
+        out_fnv: 0,
         data: [0; DATA_CAP],
         status_len: 0,
         status: [0; STATUS_CAP],
@@ -264,6 +268,8 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 used: true,
                 proto,
                 data_len: 0,
+                in_fnv: 0,
+                out_fnv: 0,
                 data: [0; DATA_CAP],
                 status_len: 0,
                 status: [0; STATUS_CAP],
@@ -273,18 +279,26 @@ fn alloc_conv(proto: u8) -> Option<u16> {
     }
     // Second pass: reclaim peer-hangup slots with no pending RX (client forgot
     // ctl hangup). Without this, curl after https can starve at MAX_CONV.
+    // The reclaimed slot MUST be dropped on the netd side too: netd keeps its
+    // socket keyed by conv id and would keep pushing the OLD connection's
+    // packets into the reused conv — cross-connection stream corruption
+    // (TLS cert-verify failures / server fatal alerts on the second
+    // connection). Queue REQ_CLOSE before the reset; if the request queue is
+    // full, refuse the reuse rather than silently corrupting the stream.
     for i in 0..MAX_CONV {
         let c = &st.convs[i];
         if c.used && c.data_len == 0 && (status_is(c, b"hangup") || status_is(c, b"error")) {
-            st.convs[i] = Conv {
-                used: true,
-                proto,
-                data_len: 0,
-                data: [0; DATA_CAP],
-                status_len: 0,
-                status: [0; STATUS_CAP],
-            };
-            return Some(i as u16);
+            let id = i as u16;
+            let old_proto = c.proto;
+            // Queue the teardown but DO NOT reuse the slot immediately: netd
+            // processes REQ_CLOSE on its next tick, and any old-socket data
+            // it flushes in that window must not land in a new connection.
+            // The slot becomes reusable only after netd confirms the drop
+            // (REP_STATUS "hangup" while status is "dropreq" -> used=false).
+            if !enqueue_req(REQ_CLOSE, id, old_proto, &[]) {
+                return None;
+            }
+            set_status(&mut st.convs[i], b"dropreq");
         }
     }
     None
@@ -318,9 +332,36 @@ fn append_data(c: &mut Conv, src: &[u8]) {
     if n == 0 {
         return;
     }
+    diag_log(b"wr", c.proto, conv_id_of(c), src.len(), fnv1a(src));
+    let f = fnv1a(src);
+    c.in_fnv = (c.in_fnv ^ (f as u64)).wrapping_mul(0x01000193) ^ (src.len() as u64);
     c.data[have..have + n].copy_from_slice(&src[..n]);
     c.data_len = (have + n) as u16;
 }
+
+// ---- diagnostics (strip before PR) ----
+static mut API: *const KernelApi = core::ptr::null();
+static mut SEQ: u32 = 0;
+
+fn fnv1a(data: &[u8]) -> u32 {
+    let mut h: u32 = 0x811c9dc5;
+    for &b in data {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x01000193);
+    }
+    h
+}
+
+fn conv_id_of(c: &Conv) -> usize {
+    let base = unsafe { core::ptr::addr_of!(state().convs[0]) as usize };
+    (core::ptr::addr_of!(*c) as usize - base) / core::mem::size_of::<Conv>()
+}
+
+fn diag_log(tag: &[u8; 2], proto: u8, id: usize, len: usize, fnv: u32) {
+    diag_log2(tag, proto, id, len, 0, fnv as u64);
+}
+
+fn diag_log2(_tag: &[u8; 2], _proto: u8, _id: usize, _len: usize, _a: u64, _b: u64) { /* diagnostics disabled (CI curl stage asserts first output line == HTML) */ }
 
 fn apply_reply(buf: &[u8]) {
     if buf.len() < REP_HDR {
@@ -345,7 +386,13 @@ fn apply_reply(buf: &[u8]) {
         }
         REP_DATA => append_data(c, payload),
         REP_STATUS => {
-            if payload.is_empty() {
+            if payload == b"hangup" && status_is(c, b"dropreq") {
+                // netd confirmed the drop for a reclaimed conv: the slot is
+                // now safe to hand to a new connection (used=false so the
+                // first alloc pass picks it up).
+                c.used = false;
+                set_status(c, b"dropped");
+            } else if payload.is_empty() {
                 set_status(c, b"connected");
             } else {
                 set_status(c, payload);
@@ -568,6 +615,9 @@ unsafe extern "C" fn net_read(
             }
             let n = out.len().min(have);
             out[..n].copy_from_slice(&c.data[..n]);
+            c.out_fnv = (c.out_fnv ^ (fnv1a(&out[..n]) as u64)).wrapping_mul(0x01000193)
+                ^ (n as u64);
+            diag_log2(b"rd", p, id as usize, n, c.in_fnv, c.out_fnv);
             if n < have {
                 c.data.copy_within(n..have, 0);
             }
@@ -691,6 +741,9 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         return -1;
     }
     let api = unsafe { &*api };
+    unsafe {
+        core::ptr::addr_of_mut!(API).write(api);
+    }
     if api.abi_version != ABI_VERSION {
         return -2;
     }
