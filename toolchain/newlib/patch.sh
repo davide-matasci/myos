@@ -16,6 +16,40 @@ rm -rf "$NEWLIB_SRC/libgloss/myos"
 mkdir -p "$NEWLIB_SRC/libgloss/myos"
 cp -a "$PORT"/. "$NEWLIB_SRC/libgloss/myos/"
 
+patch_string_h_basename() {
+  # tcc (non-GCC) does not define __GNUC__, so newlib's cdefs.h never defines
+  # __ASMNAME. string.h's basename alias then expands to
+  # `__asm__(__ASMNAME("__gnu_basename"))` with __ASMNAME unresolved, and tcc's
+  # asm-label parser fails with "string constant expected" (seen compiling
+  # os-test basic/pwd/setpwent). Guard the alias on __ASMNAME being defined.
+  local f="$NEWLIB_SRC/newlib/libc/include/string.h"
+  if grep -q 'basename (const char \*) __asm__(__ASMNAME' "$f" \
+     && ! grep -q 'basename-asmname-guard' "$f"; then
+    python3 - "$f" <<'EOF'
+import sys
+f = sys.argv[1]
+s = open(f).read()
+old = '''#if __GNU_VISIBLE && !defined(basename)
+# define basename basename
+char\t*__nonnull ((1)) basename (const char *) __asm__(__ASMNAME("__gnu_basename"));
+#endif'''
+new = '''#if __GNU_VISIBLE && !defined(basename)
+# define basename basename
+/* basename-asmname-guard: only GCC defines __ASMNAME (via cdefs.h); plain
+   compilers get the plain declaration. */
+#ifdef __ASMNAME
+char\t*__nonnull ((1)) basename (const char *) __asm__(__ASMNAME("__gnu_basename"));
+#else
+char\t*__nonnull ((1)) basename (const char *);
+#endif
+#endif'''
+assert old in s, "string.h basename block not found"
+open(f, 'w').write(s.replace(old, new, 1))
+EOF
+    echo "patched string.h: guard basename asm alias on __ASMNAME"
+  fi
+}
+
 patch_config_sub() {
   local f="$NEWLIB_SRC/config.sub"
   if grep -q 'midnightbsd\* | amdhsa\* | unleashed\* | emscripten\* | wasi\* \\' "$f" \
@@ -54,5 +88,6 @@ patch_configure_host() {
 
 patch_config_sub
 patch_configure_host
+patch_string_h_basename
 
 echo "myos newlib patches applied"
