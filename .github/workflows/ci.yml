@@ -99,6 +99,28 @@ jobs:
               - 'scripts/build-coreutils-myos.sh'
               - 'scripts/ci-registry.sh'
 
+  dispatch-test-plain:
+    # Temporary GitHub behavior test: does a standalone job run on dispatch?
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - run: echo "plain ran"
+
+  dispatch-test-inputs:
+    # Temporary: does a job-level if resolve the typed input?
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.build_iso == true
+    steps:
+      - run: echo "inputs-check ran"
+
+  dispatch-test-needs:
+    # Temporary: does a needs-gated job with the same if as `iso` run?
+    needs: build
+    runs-on: ubuntu-latest
+    if: needs.build.result == 'success' && github.event_name == 'workflow_dispatch'
+    steps:
+      - run: echo "needs-gated ran"
+
   wire-myos:
     runs-on: ubuntu-latest
     timeout-minutes: 15
