@@ -480,6 +480,7 @@ jobs:
             target/sbase-*
             target/ubase-*
             target/oksh-*
+            target/make-*
             target/uutils-*
             target/coreutils-*
             target/rg-*
@@ -501,6 +502,7 @@ jobs:
             target/.myos-sbase-version
             target/.myos-ubase-version
             target/.myos-oksh-version
+            target/.myos-make-version
             target/.myos-coreutils-version
             target/.myos-ripgrep-version
             target/.myos-tcc-version
