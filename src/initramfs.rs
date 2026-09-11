@@ -440,6 +440,16 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         read(&manifest_dir.join("ports/termcap/termcap")),
     );
 
+    // Vim system vimrc (pathdef.c points default_vim_dir at /lib/vim):
+    // without it vim starts in Vi-compatible mode, which turns 'esckeys' off
+    // (arrow keys dead in insert mode) and empties 'backspace' (BS cannot
+    // erase before the insert start) — "arrows/backspace don't work in vim".
+    add(
+        &mut entries,
+        "lib/vim/vimrc",
+        read(&manifest_dir.join("ports/vim/vimrc")),
+    );
+
     // Loadable keyboard maps (Swiss German default; US alternate).
     // Served at /lib/kbd/*.map via libfs (cpio lib/ → libfs nested tree).
     // Do NOT pack under etc/ — bootfs is flat (MAX_FILES=32) and register

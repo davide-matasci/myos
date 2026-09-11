@@ -687,11 +687,19 @@ impl FrameBufferWriter<'_> {
             b'\n' => self.newline(),
             b'\r' => self.col = 0,
             b'\x08' => {
+                // BS moves the cursor left only — never erase. Erasing is the
+                // caller's job via the classic `BS SP BS` overwrite sequence
+                // (kernel cooked erase echo, oksh x_del_back). Erasing here
+                // made oksh's left-arrow (a bare BS) delete screen characters.
                 if self.col > 0 {
                     self.col -= 1;
-                    self.draw_glyph(self.col, self.row, b' ', self.fg);
                 }
             }
+            // Other control bytes (BEL 0x07, tab-adjacent forms, …) are not
+            // glyphs: never paint them, or the font cell for the control code
+            // shows up as a stray '?' — e.g. oksh's emacs bell (x_error) on an
+            // empty prompt with Down/Backspace.
+            0x00..=0x1f | 0x7f => {}
             byte => {
                 let cols = self.cols();
                 if self.col >= cols {
