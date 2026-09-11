@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 #[cfg(target_arch = "riscv64")]
 use crate::arch::paging;
+use crate::console;
 use crate::fs;
 use crate::mm;
 use crate::modules::elf;
@@ -1596,6 +1597,7 @@ fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
         return SYSERR;
     };
     let Some(path) = resolve_copied_path(path) else {
+        console::write_str("[exec] resolve failed\n");
         return SYSERR;
     };
     let Some(node) = fs::open(&path, flags as u32) else {
@@ -1717,7 +1719,16 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
                 owned = v;
                 &owned
             }
-            None => return SYSERR,
+            None => {
+                console::write_str("[exec] read_all failed (by ");
+                let mut nm = [0u8; 32];
+                let n = task::exec_name(&mut nm);
+                console::write_str(core::str::from_utf8(&nm[..n]).unwrap_or("?"));
+                console::write_str("): ");
+                console::write_str(&path);
+                console::write_str("\n");
+                return SYSERR;
+            }
         }
     };
     let (arg_bufs, env_bufs) = match copy_user_exec_pack(args_ptr) {

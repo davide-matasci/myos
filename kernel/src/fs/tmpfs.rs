@@ -407,7 +407,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     let i = find_index(&entries, name)?;
     let (mode, size, nlink) = match &entries[i].kind {
         Kind::Dir => (S_IFDIR | 0o755, 0u32, 2u32),
-        Kind::File(data) => (S_IFREG | 0o644, data.len() as u32, 1u32),
+        Kind::File(data) => (S_IFREG | 0o755, data.len() as u32, 1u32),
         Kind::Symlink(t) => (S_IFLNK | 0o777, t.len() as u32, 1u32),
     };
     Some(StatInfo {
