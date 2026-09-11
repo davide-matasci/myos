@@ -695,6 +695,11 @@ impl FrameBufferWriter<'_> {
                     self.col -= 1;
                 }
             }
+            // Other control bytes (BEL 0x07, tab-adjacent forms, …) are not
+            // glyphs: never paint them, or the font cell for the control code
+            // shows up as a stray '?' — e.g. oksh's emacs bell (x_error) on an
+            // empty prompt with Down/Backspace.
+            0x00..=0x1f | 0x7f => {}
             byte => {
                 let cols = self.cols();
                 if self.col >= cols {

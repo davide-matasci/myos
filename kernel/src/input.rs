@@ -35,9 +35,6 @@ const VMIN: usize = 6;
 
 const ICRNL: u32 = 0o000400;
 
-/// Maximum bytes of a CSI escape sequence we will swallow in cooked mode
-/// (ESC `[` + up to 6 parameter/intermediate bytes + 1 final byte 0x40..=0x7e).
-const ESC_SWALLOW_MAX: usize = 8;
 
 const OPOST: u32 = 0o000001;
 const ONLCR: u32 = 0o000004;
@@ -123,15 +120,11 @@ static TAIL: AtomicUsize = AtomicUsize::new(0);
 /// In-progress line (not yet readable). Length == echoed columns since NL.
 static EDIT_BUF: Mutex<[u8; EDIT]> = Mutex::new([0; EDIT]);
 static EDIT_LEN: AtomicUsize = AtomicUsize::new(0);
-/// Escape-sequence swallowing state (cooked mode): `0` = idle,
-/// `1` = saw ESC, `N` = swallowed N bytes since ESC (excluding the ESC).
-static SWALLOW: AtomicUsize = AtomicUsize::new(0);
 
 pub fn init() {
     HEAD.store(0, Ordering::SeqCst);
     TAIL.store(0, Ordering::SeqCst);
     EDIT_LEN.store(0, Ordering::SeqCst);
-    SWALLOW.store(0, Ordering::SeqCst);
     *TERMIOS.lock() = Termios::cooked();
     arch::serial_flush_rx();
     arch::keyboard_init();
@@ -152,7 +145,6 @@ pub fn termios_set_bytes(buf: &[u8; TERMIOS_LEN]) {
     // other keys are not stuck behind an unfinished buffer.
     if was_canon && !now_canon {
         EDIT_LEN.store(0, Ordering::SeqCst);
-        SWALLOW.store(0, Ordering::SeqCst);
     }
 }
 
@@ -195,50 +187,19 @@ fn push_byte(raw: u8) {
     }
 
     // ^C / VINTR: honor ISIG in both cooked and raw (takes priority over ESC
-    // swallowing so a ^C during a partial sequence still kills the foreground).
+    // handling so a ^C during a partial sequence still kills the foreground).
     if lflag & ISIG != 0 && byte == 0x03 {
         crate::signal::handle_ctrl_c();
         return;
     }
 
-    // Cooked-mode escape swallowing: drops arrow/function-key CSI sequences so
-    // '[' and letters no longer leak into the edit line. Raw mode is untouched
-    // (vim gets the real ESC bytes).
-    if lflag & ICANON != 0 {
-        let n = SWALLOW.load(Ordering::SeqCst);
-        if n == 0 {
-            // Idle: a lone ESC starts swallowing (arrows/function keys arrive as
-            // CSI; a lone ESC is dropped like bash does, not delivered to the shell).
-            if byte == 0x1b {
-                SWALLOW.store(1, Ordering::SeqCst);
-                return;
-            }
-        } else if n == 1 {
-            if byte == b'[' {
-                // CSI continues; keep swallowing until the final byte.
-                SWALLOW.store(2, Ordering::SeqCst);
-                return;
-            } else {
-                // ESC + non-'[' (Alt+key): drop the following byte too.
-                SWALLOW.store(0, Ordering::SeqCst);
-                return;
-            }
-        } else {
-            // In the middle of a CSI sequence.
-            if (0x40..=0x7e).contains(&byte) {
-                // Final byte — the whole sequence is consumed.
-                SWALLOW.store(0, Ordering::SeqCst);
-                return;
-            }
-            if n >= ESC_SWALLOW_MAX {
-                // Overlong / unbounded: give up and drop the tail.
-                SWALLOW.store(0, Ordering::SeqCst);
-                return;
-            }
-            SWALLOW.store(n + 1, Ordering::SeqCst);
-            return;
-        }
-    }
+    // No CSI/escape special-casing here: canonical mode follows termios
+    // semantics — every byte that is not an editing character goes into the
+    // edit line and is delivered to the reader on newline. Swallowing arrow
+    // CSI sequences in cooked mode was an oksh-specific hack that made every
+    // OTHER canonical reader (login, cat, …) silently lose keys; apps that
+    // want cursor keys set raw mode (oksh x_mode, vim), which delivers the
+    // real ESC [ A/B/C/D bytes.
 
     if lflag & ICANON == 0 {
         // Raw / cbreak: deliver key bytes immediately (ESC, arrows CSI, …).
