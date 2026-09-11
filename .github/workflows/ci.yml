@@ -554,7 +554,8 @@ jobs:
     if: |
       always() &&
       !cancelled() &&
-      needs.build.result == 'success'
+      needs.build.result == 'success' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.build_iso == true)
     strategy:
       fail-fast: false
       matrix:
@@ -682,7 +683,11 @@ jobs:
     container: ghcr.io/davide-matasci/myos-ci:latest
     timeout-minutes: 30
     needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.build_iso
+    if: >-
+      always() &&
+      needs.build.result == 'success' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.build_iso == true
     steps:
       - uses: actions/checkout@v4
 
@@ -710,13 +715,20 @@ jobs:
 
       - name: Build x86_64 hybrid ISO
         run: |
+          # Regenerate the newlib clang wrappers (x86_64-unknown-myos-cc & co):
+          # ci-build.tar ships target/newlib-* (headers/libs) but not
+          # target/newlib-bin, and rebuilding the kernel from source re-runs
+          # user/tls build.rs -> ports/mbedtls/build.sh, which needs the
+          # wrapper on PATH.
+          ./toolchain/newlib/tool-wrappers.sh
+          export PATH="$PWD/target/newlib-bin:$PATH"
           cargo clean -p myos
           cargo build
           cargo run -- iso
           test -f target/myos-x86_64.iso
 
       - name: Upload ISO
-        continue-on-error: true
+        if: hashFiles('target/myos-x86_64.iso') != ''
         uses: actions/upload-artifact@v4
         with:
           name: myos-x86_64-iso
