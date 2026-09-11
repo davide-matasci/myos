@@ -1,0 +1,6 @@
+" myos system defaults: sourced when no user vimrc exists, so Vim starts
+" with full Vim behavior instead of Vi-compatible mode.
+" Vi-compatible mode disables 'esckeys' (arrow keys dead in insert mode)
+" and empties 'backspace' (BS cannot erase before the insert start).
+set nocompatible
+set backspace=indent,eol,start
