@@ -682,7 +682,9 @@ jobs:
     container: ghcr.io/davide-matasci/myos-ci:latest
     timeout-minutes: 30
     needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.build_iso
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.build_iso == true || github.event.inputs.build_iso == 'true' || github.event.inputs.build_iso == true)
     steps:
       - uses: actions/checkout@v4
 
