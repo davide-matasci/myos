@@ -38,6 +38,24 @@ build_arch() {
   # make never regenerates it — leaving _nc_fallback undefined at link time.
   rm -f "$WORK"/objects/*.o "$WORK/lib/libncurses.a" "$WORK/ncurses/fallback.c"
 
+  # Generate fallback.c up front. Apple's ancient /usr/bin/tic cannot compile
+  # every entry in terminfo.src (e.g. mintty), and MKfallback.sh runs with
+  # set -e, which would fail the whole build. If the full fallback list fails,
+  # regenerate with an empty list — MKfallback.sh emits the _nc_fallback /
+  # _nc_fallback2 stubs unconditionally, so the library still links.
+  local fb_sh="$ROOT/target/ncurses-src/ncurses/tinfo/MKfallback.sh"
+  local fb_src="$ROOT/target/ncurses-src/misc/terminfo.src"
+  local fb_info="$ROOT/target/ncurses-prefix/share/terminfo"
+  local tic_path infocmp_path
+  tic_path="$(sed -n 's/^TIC_PATH[[:space:]]*=[[:space:]]*//p' "$WORK/ncurses/Makefile")"
+  infocmp_path="$(sed -n 's/^INFOCMP_PATH[[:space:]]*=[[:space:]]*//p' "$WORK/ncurses/Makefile")"
+  if ! make -C "$WORK/ncurses" ./fallback.c >/dev/null 2>&1 \
+     || ! grep -q "_nc_fallback" "$WORK/ncurses/fallback.c"; then
+    echo "warning: host tic could not compile terminfo.src; building ncurses without embedded fallback entries" >&2
+    ( cd "$WORK/ncurses" && /bin/sh -e "$fb_sh" "$fb_info" "$fb_src" "$tic_path" "$infocmp_path" > ./fallback.c )
+  fi
+  touch "$WORK/ncurses/fallback.c"
+
   # Build only the archive — `make libs` also builds host report_offsets.
   # Keep BUILD_* free of -nostdinc / myos -isystem (those break host helpers).
   # ncurses' Makefile uses plain `ar` unless told otherwise; Apple's BSD ar
