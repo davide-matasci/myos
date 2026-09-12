@@ -523,7 +523,7 @@ cmd_push() {
 run_many() {
   local cmd="$1"
   local port
-  for port in "${ALL_PORTS[@]}"; do
+  for port in "${ALL_PORTS[@]+"${ALL_PORTS[@]}"}"; do
     "cmd_${cmd}" "$port"
   done
 }

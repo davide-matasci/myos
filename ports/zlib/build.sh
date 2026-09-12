@@ -56,15 +56,15 @@ build_arch() {
   rm -rf "$out"
   mkdir -p "$obj" "$lib" "$out/include"
 
-  for name in "${ZLIB_SRCS[@]}"; do
+  for name in "${ZLIB_SRCS[@]+"${ZLIB_SRCS[@]}"}"; do
     src="$SRC/$name"
     [[ -f "$src" ]] || { echo "missing $src"; exit 1; }
     o="$obj/${name%.c}.o"
     echo "  CC $arch $name"
-    "$cc" "${cflags[@]}" -c "$src" -o "$o"
+    "$cc" "${cflags[@]+"${cflags[@]}"}" -c "$src" -o "$o"
     objs+=("$o")
   done
-  ar rcs "$lib/libz.a" "${objs[@]}"
+  ar rcs "$lib/libz.a" "${objs[@]+"${objs[@]}"}"
   cp "$SRC/zlib.h" "$SRC/zconf.h" "$out/include/"
   cp "$lib/libz.a" "$ROOT/target/zlib-libz-${triple}.a"
   echo "zlib $arch: ${#objs[@]} objs -> $lib/libz.a"

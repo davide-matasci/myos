@@ -46,7 +46,7 @@ myos_git() {
     if (( is_clone )) && [[ -n "$dest" && "$dest" != "/" && "$dest" != *://* ]]; then
       rm -rf -- "$dest"
     fi
-    git "${auth[@]}" "$@" && return 0
+    git "${auth[@]+"${auth[@]}"}" "$@" && return 0
     rc=$?
     if (( attempt >= max )); then
       echo "error: git $* failed after ${attempt} attempts (exit ${rc})" >&2

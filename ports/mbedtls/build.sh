@@ -93,20 +93,20 @@ build_arch() {
   mkdir -p "$obj" "$lib"
   local name src o
   local objs=()
-  for name in "${NAMES[@]}"; do
+  for name in "${NAMES[@]+"${NAMES[@]}"}"; do
     src="$SRC/library/${name}.c"
     [[ -f "$src" ]] || continue
     o="$obj/${name}.o"
     echo "  CC $arch $name"
-    "$cc" "${cflags[@]}" -c "$src" -o "$o"
+    "$cc" "${cflags[@]+"${cflags[@]}"}" -c "$src" -o "$o"
     objs+=("$o")
   done
-  "$cc" "${cflags[@]}" -c "$ROOT/target/mbedtls-ca_bundle.c" -o "$obj/ca_bundle.o"
+  "$cc" "${cflags[@]+"${cflags[@]}"}" -c "$ROOT/target/mbedtls-ca_bundle.c" -o "$obj/ca_bundle.o"
   objs+=("$obj/ca_bundle.o")
   # Apple BSD ar symbol tables are unreadable by rust-lld for ELF targets;
   # prefer llvm-ar (brew llvm / nightly rust sysroot) when available.
   AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
-  "$AR_BIN" rcs "$lib/libmbedcrypto.a" "${objs[@]}"
+  "$AR_BIN" rcs "$lib/libmbedcrypto.a" "${objs[@]+"${objs[@]}"}"
   cp "$lib/libmbedcrypto.a" "$lib/libmbedtls.a"
   cp "$lib/libmbedcrypto.a" "$lib/libmbedx509.a"
   mkdir -p "$out/include"

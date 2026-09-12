@@ -15,7 +15,7 @@ fi
 echo "Building myos sysroot (toolchain $MYOS_NIGHTLY)..."
 "$ROOT/toolchain/std/prepare.sh"
 
-for triple in "${MYOS_USER_TRIPLES[@]}"; do
+for triple in "${MYOS_USER_TRIPLES[@]+"${MYOS_USER_TRIPLES[@]}"}"; do
   echo "==> prebuilding std for $triple"
   myos_cargo_build_std "$triple" release
 done

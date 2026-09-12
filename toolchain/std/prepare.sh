@@ -21,7 +21,7 @@ cp -a "$TOOLCHAIN" "$MYOS_SYSROOT"
 cp -a "$PATCH_DIR/." "$MYOS_SYSROOT/lib/rustlib/src/rust/library/"
 chmod +x "$ROOT/scripts/myos-rustc.sh"
 
-for triple in "${MYOS_USER_TRIPLES[@]}"; do
+for triple in "${MYOS_USER_TRIPLES[@]+"${MYOS_USER_TRIPLES[@]}"}"; do
   myos_install_target_spec "$triple"
 done
 

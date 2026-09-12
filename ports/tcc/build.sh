@@ -181,7 +181,7 @@ build_arch() {
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "$objdir/tcc.o" "${extra[@]}" -L"$lib" \
+    "$lib/crt0.o" "$objdir/tcc.o" "${extra[@]+"${extra[@]}"}" -L"$lib" \
     --start-group -lc -lgloss -lg --end-group
 
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
@@ -231,7 +231,7 @@ build_libtcc1() {
   esac
 
   echo "==> libtcc1.a ($triple)"
-  for f in "${srcs[@]}"; do
+  for f in "${srcs[@]+"${srcs[@]}"}"; do
     if [[ ! -f "$src/$f" ]]; then
       echo "error: TinyCC lib/$f missing at ${src}/${f}" >&2
       return 1
@@ -240,13 +240,13 @@ build_libtcc1() {
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -I"$WORK" -I"$src"       -c "$src/$f" -o "$obj"
     objs+=("$obj")
   done
-  for f in "${extra_src[@]}"; do
+  for f in "${extra_src[@]+"${extra_src[@]}"}"; do
     obj="$odir/$(basename "${f%.*}").o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -I"$WORK" -c "$f" -o "$obj"
     objs+=("$obj")
   done
   AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
-  "$AR_BIN" rcs "$out" "${objs[@]}"
+  "$AR_BIN" rcs "$out" "${objs[@]+"${objs[@]}"}"
   install_libtcc1 "$arch"
   echo "libtcc1.a -> $out ($(du -h "$out" | awk '{print $1}'))"
 }

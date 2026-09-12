@@ -57,7 +57,7 @@ link_prog() {
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]}" -L"$lib" -L"$nclib" \
+    "$lib/crt0.o" "${objs[@]+"${objs[@]}"}" -L"$lib" -L"$nclib" \
     --start-group -lncurses -lc -lm -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
   echo "vim -> $out"
@@ -97,14 +97,14 @@ build_arch() {
   mkdir -p "$objdir"
 
   echo "==> vim ($triple)"
-  for src in "${VIM_SRCS[@]}"; do
+  for src in "${VIM_SRCS[@]+"${VIM_SRCS[@]}"}"; do
     base="$(basename "$src" .c)"
     obj="$objdir/${base}.o"
     "$cc" -ffreestanding -fPIC -O2 -std=gnu99 \
       -ffunction-sections -fdata-sections \
       -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
       -Wno-pointer-sign -Wno-missing-field-initializers \
-      -isystem "$inc" "${cppflags[@]}" \
+      -isystem "$inc" "${cppflags[@]+"${cppflags[@]}"}" \
       -c "$WORK/$src" -o "$obj"
     objs+=("$obj")
   done
@@ -119,7 +119,7 @@ build_arch() {
     extra+=("$objdir/riscv64-softfloat.o")
   fi
 
-  link_prog "$arch" "${objs[@]}" "${extra[@]}"
+  link_prog "$arch" "${objs[@]+"${objs[@]}"}" "${extra[@]+"${extra[@]}"}"
 }
 
 for arch in x86_64 aarch64 riscv64; do
