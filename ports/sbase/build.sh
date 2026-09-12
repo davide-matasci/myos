@@ -171,7 +171,7 @@ build_arch() {
       failed+=("$name:compile")
       return 1
     fi
-    if ! link_prog "$name" "$arch" "${libs[@]}" "${extra_objs[@]}" "$obj" ""${extra[@]+"${extra[@]}"}""; then
+    if ! link_prog "$name" "$arch" "${libs[@]}" "${extra_objs[@]+"${extra_objs[@]}"}" "$obj" "${extra[@]+"${extra[@]}"}"; then
       failed+=("$name:link")
       rm -f "$out" "$obj"
       return 1
@@ -190,7 +190,7 @@ build_arch() {
           [[ "$o" == *libutil-ealloc.o ]] && continue
           make_libs+=("$o")
         done
-        if link_prog make "$arch" ""${make_libs[@]+"${make_libs[@]}"}"" ""${make_objs[@]+"${make_objs[@]}"}"" ""${extra[@]+"${extra[@]}"}""; then
+        if link_prog make "$arch" "${make_libs[@]+"${make_libs[@]}"}" "${make_objs[@]+"${make_objs[@]}"}" "${extra[@]+"${extra[@]}"}"; then
           echo "make:$ROOT/target/sbase-make-${arch}-unknown-none" >>"$manifest"
           built=$((built + 1))
         else
