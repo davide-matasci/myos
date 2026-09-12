@@ -81,7 +81,7 @@ link_prog() {
   local out_name="$1"
   local arch="$2"
   shift 2
-  local objs=("$@")
+  local objs=(${@+"$@"})
   local triple="${arch}-unknown-myos"
   local out="$ROOT/target/sbase-${out_name}-${arch}-unknown-none"
   local prefix="$ROOT/target/newlib-${arch}"
@@ -163,7 +163,7 @@ build_arch() {
     local name="$1"
     local src_rel="$2"
     shift 2
-    local extra_objs=("$@")
+    local extra_objs=(${@+"$@"})
     local out="$ROOT/target/sbase-${name}-${arch}-unknown-none"
     local obj="$objdir/prog-${name}.o"
     echo "==> sbase-${name} ($triple)"

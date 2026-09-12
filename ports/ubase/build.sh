@@ -63,7 +63,7 @@ link_prog() {
   local out_name="$1"
   local arch="$2"
   shift 2
-  local objs=("$@")
+  local objs=(${@+"$@"})
   local triple="${arch}-unknown-myos"
   local out="$ROOT/target/ubase-${out_name}-${arch}-unknown-none"
   local prefix="$ROOT/target/newlib-${arch}"

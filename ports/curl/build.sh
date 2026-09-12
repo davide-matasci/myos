@@ -37,6 +37,7 @@ fi
 "$ROOT/ports/mbedtls/build.sh"
 "$HERE/build-softfloat-riscv64.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
+myos_ensure_llvm_bin
 
 SRC="$ROOT/target/curl-src"
 cp "$HERE/config-myos.h" "$SRC/lib/curl_config.h"

@@ -28,6 +28,7 @@ fi
 
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
+myos_ensure_llvm_bin
 
 link_prog() {
   local name="$1"

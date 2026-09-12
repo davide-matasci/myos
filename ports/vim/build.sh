@@ -47,7 +47,7 @@ VIM_SRCS=(
 link_prog() {
   local arch="$1"
   shift
-  local objs=("$@")
+  local objs=(${@+"$@"})
   local triple="${arch}-unknown-myos"
   local out="$ROOT/target/vim-${arch}-unknown-none"
   local prefix="$ROOT/target/newlib-${arch}"
