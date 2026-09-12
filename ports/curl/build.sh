@@ -37,19 +37,36 @@ fi
 "$ROOT/ports/mbedtls/build.sh"
 "$HERE/build-softfloat-riscv64.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
+myos_ensure_llvm_bin
 
 SRC="$ROOT/target/curl-src"
 cp "$HERE/config-myos.h" "$SRC/lib/curl_config.h"
 # tool_cfgable.h uses curlx_dynbuf without including dynbuf.h (curlx.h omits it).
 if ! grep -q 'dynbuf.h' "$SRC/src/tool_cfgable.h"; then
-  sed -i '/#include "tool_setup.h"/a#include "dynbuf.h"' "$SRC/src/tool_cfgable.h" || true
+  python3 - "$SRC/src/tool_cfgable.h" <<'PYEDIT'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = '#include "tool_setup.h"'
+if 'dynbuf.h' not in s and old in s:
+    open(p, 'w').write(s.replace(old, old + '\n#include "dynbuf.h"', 1))
+PYEDIT
 fi
 # Fix curl checking the *value* macro as an ifdef (always true in mbedtls 3.6 headers).
 # curl checks the *value* macro as #ifdef (always true in mbedtls 3.6 headers).
-sed -i 's/#ifdef MBEDTLS_SSL_TLS1_3_SIGNAL_NEW_SESSION_TICKETS_ENABLED/#if defined(MBEDTLS_SSL_PROTO_TLS1_3) \&\& defined(MBEDTLS_SSL_SESSION_TICKETS)/'   "$SRC/lib/vtls/mbedtls.c" || true
+python3 - "$SRC/lib/vtls/mbedtls.c" <<'PYEDIT'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = '#ifdef MBEDTLS_SSL_TLS1_3_SIGNAL_NEW_SESSION_TICKETS_ENABLED'
+new = '#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_SESSION_TICKETS)'
+if old in s:
+    open(p, 'w').write(s.replace(old, new, 1))
+PYEDIT
 
 # Expand CSOURCES from Makefile.inc
-mapfile -t LIB_SRCS < <(python3 - "$SRC/lib/Makefile.inc" <<'PY'
+LIB_SRCS=()
+  while IFS= read -r line; do LIB_SRCS+=("$line"); done < <(python3 - "$SRC/lib/Makefile.inc" <<'PY'
 import re, sys
 text = open(sys.argv[1]).read()
 vars = {}
@@ -114,14 +131,14 @@ build_arch() {
   local objs=()
   local f o
   local compiled=0 skipped=0 failed=0
-  for f in "${LIB_SRCS[@]}"; do
+  for f in "${LIB_SRCS[@]+"${LIB_SRCS[@]}"}"; do
     if skip_src "$f"; then
       skipped=$((skipped+1))
       continue
     fi
     [[ -f "$SRC/lib/$f" ]] || continue
     o="$objdir/$(echo "$f" | tr '/' '_').o"
-    if "$cc" "${cflags[@]}" -c "$SRC/lib/$f" -o "$o" 2>"$objdir/$(echo "$f" | tr '/' '_').err"; then
+    if "$cc" "${cflags[@]+"${cflags[@]}"}" -c "$SRC/lib/$f" -o "$o" 2>"$objdir/$(echo "$f" | tr '/' '_').err"; then
       objs+=("$o")
       compiled=$((compiled+1))
     else
@@ -134,7 +151,8 @@ build_arch() {
   echo "  lib: compiled=$compiled skipped=$skipped"
 
   # tool: parse CURL_CFILES
-  mapfile -t TOOL_SRCS < <(python3 - "$SRC/src/Makefile.inc" <<'PY'
+  TOOL_SRCS=()
+  while IFS= read -r line; do TOOL_SRCS+=("$line"); done < <(python3 - "$SRC/src/Makefile.inc" <<'PY'
 import re, sys
 text = open(sys.argv[1]).read()
 vars = {}
@@ -155,21 +173,21 @@ PY
   fi
 
   local tool_objs=()
-  local tool_cflags=("${cflags[@]}")
+  local tool_cflags=("${cflags[@]+"${cflags[@]}"}")
   # tool is not BUILDING_LIBCURL
   local tcflags=()
   local x
-  for x in "${cflags[@]}"; do
+  for x in "${cflags[@]+"${cflags[@]}"}"; do
     [[ "$x" == "-DBUILDING_LIBCURL" ]] && continue
     tcflags+=("$x")
   done
   tcflags+=(-I"$SRC/src" -UBUILDING_LIBCURL)
 
-  for f in "${TOOL_SRCS[@]}"; do
+  for f in "${TOOL_SRCS[@]+"${TOOL_SRCS[@]}"}"; do
     local path="$SRC/src/$f"
     [[ -f "$path" ]] || continue
     o="$objdir/tool/$(basename "$f" .c).o"
-    if "$cc" "${tcflags[@]}" -c "$path" -o "$o" 2>"$objdir/tool/$(basename "$f").err"; then
+    if "$cc" "${tcflags[@]+"${tcflags[@]}"}" -c "$path" -o "$o" 2>"$objdir/tool/$(basename "$f").err"; then
       tool_objs+=("$o")
     else
       echo "FAIL tool $f" >&2
@@ -181,7 +199,7 @@ PY
   for f in base64.c dynbuf.c; do
     [[ -f "$SRC/lib/$f" ]] || continue
     o="$objdir/tool/curlx_${f%.c}.o"
-    if "$cc" "${tcflags[@]}" -c "$SRC/lib/$f" -o "$o" 2>"$objdir/tool/curlx_${f%.c}.err"; then
+    if "$cc" "${tcflags[@]+"${tcflags[@]}"}" -c "$SRC/lib/$f" -o "$o" 2>"$objdir/tool/curlx_${f%.c}.err"; then
       tool_objs+=("$o")
     else
       echo "FAIL curlx $f" >&2
@@ -208,13 +226,13 @@ PY
 
   # mbedtls entropy/time glue
   o="$objdir/myos_curl_platform.o"
-  "$cc" "${cflags[@]}" -c "$HERE/myos_curl_platform.c" -o "$o"
+  "$cc" "${cflags[@]+"${cflags[@]}"}" -c "$HERE/myos_curl_platform.c" -o "$o"
   objs+=("$o")
 
   echo "  LD curl"
   ld.lld -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${tool_objs[@]}" "${objs[@]}" "${extra[@]}" \
+    "$lib/crt0.o" "${tool_objs[@]+"${tool_objs[@]}"}" "${objs[@]+"${objs[@]}"}" "${extra[@]+"${extra[@]}"}" \
     -L"$lib" -L"$mbed/lib" \
     --start-group -lmbedtls -lmbedx509 -lmbedcrypto -lc -lgloss -lg --end-group
 

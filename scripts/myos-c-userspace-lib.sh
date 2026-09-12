@@ -30,6 +30,33 @@ MYOS_SBASE_MIN_BUILT=90
 # shellcheck source=toolchain/std/lib.sh
 source "$MYOS_ROOT/toolchain/std/lib.sh"
 
+# macOS bash 3.2 helpers live here; scripts source this file.
+# Homebrew's llvm is keg-only, so ld.lld is often not on PATH. Probe the
+# standard keg locations once, up front.
+myos_ensure_llvm_bin() {
+  if ! command -v ld.lld >/dev/null 2>&1; then
+    local d
+    for d in /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin; do
+      if [ -x "$d/ld.lld" ]; then
+        PATH="$d:$PATH"
+        export PATH
+        return 0
+      fi
+    done
+    # Custom HOMEBREW_PREFIX or other brew location: ask brew itself.
+    if command -v brew >/dev/null 2>&1; then
+      d="$(brew --prefix llvm 2>/dev/null)/bin"
+      if [ -x "$d/ld.lld" ]; then
+        PATH="$d:$PATH"
+        export PATH
+        return 0
+      fi
+    fi
+    echo 'ld.lld not found: brew install llvm, then export PATH="$(brew --prefix llvm)/bin:$PATH"' >&2
+    return 1
+  fi
+}
+
 myos_newlib_version_hash() {
   local h
   h="$(
@@ -281,7 +308,8 @@ myos_curl_version_hash() {
   h="$(
     {
       # Mirror ports/curl/build.sh hash_curl() exactly so the registry stamp
-      # matches the script's own short-circuit.
+      # matches the script own short-circuit (no apostrophes in comments:
+      # macOS bash 3.2 mis-parses quotes inside command substitutions).
       echo "$CURL_VERSION"
       sha256sum "$MYOS_ROOT/ports/curl/build.sh" \
         "$MYOS_ROOT/ports/curl/fetch.sh" \

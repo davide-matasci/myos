@@ -22,7 +22,8 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 
 WORK="$ROOT/target/sbase-myos-build"
 BINS_FILE="$ROOT/ports/sbase/bins.txt"
-mapfile -t SBASE_BINS <"$BINS_FILE"
+SBASE_BINS=()
+while IFS= read -r line; do SBASE_BINS+=("$line"); done <"$BINS_FILE"
 
 CPPFLAGS=(
   -DPREFIX=\"/bin\"
@@ -73,14 +74,14 @@ compile() {
   local inc="$2"
   local src="$3"
   local out="$4"
-  "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" "${CPPFLAGS[@]}" -c "$src" -o "$out"
+  "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" "${CPPFLAGS[@]+"${CPPFLAGS[@]}"}" -c "$src" -o "$out"
 }
 
 link_prog() {
   local out_name="$1"
   local arch="$2"
   shift 2
-  local objs=("$@")
+  local objs=(${@+"$@"})
   local triple="${arch}-unknown-myos"
   local out="$ROOT/target/sbase-${out_name}-${arch}-unknown-none"
   local prefix="$ROOT/target/newlib-${arch}"
@@ -89,7 +90,7 @@ link_prog() {
 
   "$ld" -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]}" -L"$lib" \
+    "$lib/crt0.o" "${objs[@]+"${objs[@]}"}" -L"$lib" \
     --start-group -lc -lgloss -lg --end-group || return 1
 
   # Strip only after a successful link. `|| true` here must not mask the ld
@@ -116,7 +117,7 @@ build_arch() {
 
   local util_objs=()
   local src base obj
-  for src in "${LIBUTIL_SRCS[@]}"; do
+  for src in "${LIBUTIL_SRCS[@]+"${LIBUTIL_SRCS[@]}"}"; do
     base="$(basename "$src" .c)"
     obj="$objdir/libutil-${base}.o"
     compile "$cc" "$inc" "$WORK/$src" "$obj"
@@ -124,7 +125,7 @@ build_arch() {
   done
 
   local utf_objs=()
-  for src in "${LIBUTF_SRCS[@]}"; do
+  for src in "${LIBUTF_SRCS[@]+"${LIBUTF_SRCS[@]}"}"; do
     base="$(basename "$src" .c)"
     obj="$objdir/libutf-${base}.o"
     compile "$cc" "$inc" "$WORK/$src" "$obj"
@@ -132,14 +133,14 @@ build_arch() {
   done
 
   local regex_objs=()
-  for src in "${REGEX_SRCS[@]}"; do
+  for src in "${REGEX_SRCS[@]+"${REGEX_SRCS[@]}"}"; do
     base="$(basename "$src" .c)"
     obj="$objdir/regex-${base}.o"
     compile "$cc" "$inc" "$ROOT/target/newlib-src/newlib/libc/$src" "$obj"
     regex_objs+=("$obj")
   done
 
-  local libs=("${util_objs[@]}" "${utf_objs[@]}" "${regex_objs[@]}")
+  local libs=("${util_objs[@]+"${util_objs[@]}"}" "${utf_objs[@]+"${utf_objs[@]}"}" "${regex_objs[@]+"${regex_objs[@]}"}")
 
   local extra=()
   if [[ "$arch" == "aarch64" ]]; then
@@ -151,7 +152,7 @@ build_arch() {
   fi
 
   local make_objs=()
-  for src in "${MAKE_SRCS[@]}"; do
+  for src in "${MAKE_SRCS[@]+"${MAKE_SRCS[@]}"}"; do
     base="$(basename "$src" .c)"
     obj="$objdir/make-${base}.o"
     compile "$cc" "$inc" "$WORK/$src" "$obj"
@@ -162,7 +163,7 @@ build_arch() {
     local name="$1"
     local src_rel="$2"
     shift 2
-    local extra_objs=("$@")
+    local extra_objs=(${@+"$@"})
     local out="$ROOT/target/sbase-${name}-${arch}-unknown-none"
     local obj="$objdir/prog-${name}.o"
     echo "==> sbase-${name} ($triple)"
@@ -170,7 +171,7 @@ build_arch() {
       failed+=("$name:compile")
       return 1
     fi
-    if ! link_prog "$name" "$arch" "${libs[@]}" "${extra_objs[@]}" "$obj" "${extra[@]}"; then
+    if ! link_prog "$name" "$arch" "${libs[@]+"${libs[@]}"}" "${extra_objs[@]+"${extra_objs[@]+"${extra_objs[@]}"}"}" "$obj" "${extra[@]+"${extra[@]+"${extra[@]}"}"}"; then
       failed+=("$name:link")
       rm -f "$out" "$obj"
       return 1
@@ -180,16 +181,16 @@ build_arch() {
     return 0
   }
 
-  for name in "${SBASE_BINS[@]}"; do
+  for name in "${SBASE_BINS[@]+"${SBASE_BINS[@]}"}"; do
     case "$name" in
       make)
         echo "==> sbase-make ($triple)"
         local make_libs=()
-        for o in "${libs[@]}"; do
+        for o in "${libs[@]+"${libs[@]}"}"; do
           [[ "$o" == *libutil-ealloc.o ]] && continue
           make_libs+=("$o")
         done
-        if link_prog make "$arch" "${make_libs[@]}" "${make_objs[@]}" "${extra[@]}"; then
+        if link_prog make "$arch" "${make_libs[@]+"${make_libs[@]+"${make_libs[@]}"}"}" "${make_objs[@]+"${make_objs[@]+"${make_objs[@]}"}"}" "${extra[@]+"${extra[@]+"${extra[@]}"}"}"; then
           echo "make:$ROOT/target/sbase-make-${arch}-unknown-none" >>"$manifest"
           built=$((built + 1))
         else
@@ -218,7 +219,7 @@ build_arch() {
 
   echo "sbase ${arch}: built ${built}/$((${#SBASE_BINS[@]})) (${#failed[@]} failed)"
   if ((${#failed[@]} > 0)); then
-    printf '  failed: %s\n' "${failed[@]}" >&2
+    printf '  failed: %s\n' "${failed[@]+"${failed[@]}"}" >&2
   fi
   if ((built == 0)); then
     echo "error: no sbase ELFs built for ${arch}" >&2

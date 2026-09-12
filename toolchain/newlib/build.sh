@@ -51,7 +51,10 @@ build_one() {
     CFLAGS_FOR_TARGET="$TARGET_CFLAGS" \
     CXXFLAGS_FOR_TARGET="$TARGET_CFLAGS"
 
-  make -j"$(nproc)" all-target-newlib
+  # Portable core count: nproc is GNU coreutils and absent on macOS.
+  local jobs
+  jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+  make -j"$jobs" all-target-newlib
   make install-target-newlib
   "$ROOT/toolchain/newlib/build-libgloss.sh" "$arch" "$prefix"
   echo "newlib + libgloss -> $prefix"

@@ -12,7 +12,8 @@ if myos_coreutils_is_current; then
 fi
 
 BINS_FILE="$ROOT/ports/coreutils/bins.txt"
-mapfile -t COREUTILS_BINS <"$BINS_FILE"
+COREUTILS_BINS=()
+while IFS= read -r line; do COREUTILS_BINS+=("$line"); done <"$BINS_FILE"
 FEATURES="${COREUTILS_FEATURES:-basename,cat,cp,cut,dirname,du,echo,env,false,head,ln,ls,mkdir,mktemp,mv,printenv,printf,pwd,readlink,realpath,rm,rmdir,seq,sleep,touch,tr,true,uniq,unlink,wc,yes}"
 
 build_coreutils() {
@@ -25,7 +26,7 @@ build_coreutils() {
   cp "$bin" "$ROOT/target/coreutils-${triple}"
   local manifest="$ROOT/target/coreutils-manifest-${arch}.txt"
   : >"$manifest"
-  for name in "${COREUTILS_BINS[@]}"; do
+  for name in "${COREUTILS_BINS[@]+"${COREUTILS_BINS[@]}"}"; do
     [[ -n "$name" && "$name" != \#* ]] || continue
     echo "$name" >>"$manifest"
   done

@@ -56,4 +56,4 @@ for arg in "$@"; do
 done
 
 SYSROOT="${MYOS_SYSROOT:-$(cd "$(dirname "$0")/.." && pwd)/target/myos-sysroot}"
-exec "$REAL" --sysroot="$SYSROOT" "${filtered[@]}"
+exec "$REAL" --sysroot="$SYSROOT" "${filtered[@]+"${filtered[@]}"}"

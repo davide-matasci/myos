@@ -21,7 +21,7 @@ build_example() {
   cp "$target_dir/${triple}/release/${bin}" "$ROOT/target/std-${name}-${triple}"
   echo "std-${name} -> $ROOT/target/std-${name}-${triple}"
 }
-for triple in "${MYOS_USER_TRIPLES[@]}"; do
+for triple in "${MYOS_USER_TRIPLES[@]+"${MYOS_USER_TRIPLES[@]}"}"; do
   build_example hello "$ROOT/toolchain/std/examples/hello/Cargo.toml" std-hello "$triple"
   build_example cat "$ROOT/toolchain/std/examples/cat/Cargo.toml" std-cat "$triple"
   build_example echo "$ROOT/toolchain/std/examples/echo/Cargo.toml" std-echo "$triple"

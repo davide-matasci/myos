@@ -17,7 +17,8 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 
 WORK="$ROOT/target/ubase-myos-build"
 BINS_FILE="$ROOT/ports/ubase/bins.txt"
-mapfile -t UBASE_BINS <"$BINS_FILE"
+UBASE_BINS=()
+while IFS= read -r line; do UBASE_BINS+=("$line"); done <"$BINS_FILE"
 MYOS="$ROOT/ports/ubase"
 
 CPPFLAGS=(
@@ -45,7 +46,7 @@ compile() {
   local inc="$2"
   local src="$3"
   local out="$4"
-  "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" "${CPPFLAGS[@]}" -c "$src" -o "$out"
+  "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" "${CPPFLAGS[@]+"${CPPFLAGS[@]}"}" -c "$src" -o "$out"
 }
 
 # True iff path exists and starts with ELF magic. Used so a failed link
@@ -62,7 +63,7 @@ link_prog() {
   local out_name="$1"
   local arch="$2"
   shift 2
-  local objs=("$@")
+  local objs=(${@+"$@"})
   local triple="${arch}-unknown-myos"
   local out="$ROOT/target/ubase-${out_name}-${arch}-unknown-none"
   local prefix="$ROOT/target/newlib-${arch}"
@@ -73,7 +74,7 @@ link_prog() {
   # Called from `if ! link_prog`; set -e is disabled, so check ld explicitly.
   if ! "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]}" -L"$lib" \
+    "$lib/crt0.o" "${objs[@]+"${objs[@]}"}" -L"$lib" \
     --start-group -lc -lgloss -lg --end-group
   then
     rm -f "$out"
@@ -111,7 +112,7 @@ build_arch() {
 
   local util_objs=()
   local src base obj
-  for src in "${LIBUTIL_SRCS[@]}"; do
+  for src in "${LIBUTIL_SRCS[@]+"${LIBUTIL_SRCS[@]}"}"; do
     base="$(basename "$src" .c)"
     obj="$objdir/libutil-${base}.o"
     compile "$cc" "$inc" "$WORK/$src" "$obj"
@@ -134,12 +135,12 @@ build_arch() {
   fi
 
   local name out expected=0
-  for name in "${UBASE_BINS[@]}"; do
+  for name in "${UBASE_BINS[@]+"${UBASE_BINS[@]}"}"; do
     [[ -n "$name" ]] || continue
     expected=$((expected + 1))
   done
 
-  for name in "${UBASE_BINS[@]}"; do
+  for name in "${UBASE_BINS[@]+"${UBASE_BINS[@]}"}"; do
     [[ -n "$name" ]] || continue
     obj="$objdir/prog-${name}.o"
     out="$ROOT/target/ubase-${name}-${arch}-unknown-none"
@@ -149,7 +150,7 @@ build_arch() {
       rm -f "$out"
       continue
     fi
-    if ! link_prog "$name" "$arch" "${util_objs[@]}" "$obj" "${extra[@]}"; then
+    if ! link_prog "$name" "$arch" "${util_objs[@]+"${util_objs[@]}"}" "$obj" "${extra[@]+"${extra[@]}"}"; then
       failed+=("$name:link")
       rm -f "$out"
       continue
@@ -167,9 +168,9 @@ build_arch() {
 
   echo "ubase ${arch}: built ${built}/${expected} (${#failed[@]} failed)"
   if ((${#failed[@]} > 0)); then
-    printf '  failed: %s\n' "${failed[@]}" >&2
+    printf '  failed: %s\n' "${failed[@]+"${failed[@]}"}" >&2
   fi
-  for name in "${UBASE_BINS[@]}"; do
+  for name in "${UBASE_BINS[@]+"${UBASE_BINS[@]}"}"; do
     [[ -n "$name" ]] || continue
     out="$ROOT/target/ubase-${name}-${arch}-unknown-none"
     if ! is_elf "$out"; then
@@ -190,7 +191,7 @@ done
 # Stamp only after every bins.txt ELF exists on every arch.
 missing=0
 for arch in x86_64 aarch64 riscv64; do
-  for name in "${UBASE_BINS[@]}"; do
+  for name in "${UBASE_BINS[@]+"${UBASE_BINS[@]}"}"; do
     [[ -n "$name" ]] || continue
     out="$ROOT/target/ubase-${name}-${arch}-unknown-none"
     if ! is_elf "$out"; then

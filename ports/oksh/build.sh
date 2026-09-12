@@ -50,7 +50,7 @@ CPPFLAGS=(
 link_prog() {
   local arch="$1"
   shift
-  local objs=("$@")
+  local objs=(${@+"$@"})
   local triple="${arch}-unknown-myos"
   local out="$ROOT/target/oksh-${arch}-unknown-none"
   local prefix="$ROOT/target/newlib-${arch}"
@@ -59,7 +59,7 @@ link_prog() {
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]}" -L"$lib" \
+    "$lib/crt0.o" "${objs[@]+"${objs[@]}"}" -L"$lib" \
     --start-group -lc -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
   echo "oksh -> $out"
@@ -85,12 +85,12 @@ build_arch() {
   mkdir -p "$objdir"
 
   echo "==> oksh ($triple)"
-  for src in "${OKSH_SRCS[@]}"; do
+  for src in "${OKSH_SRCS[@]+"${OKSH_SRCS[@]}"}"; do
     base="$(basename "$src" .c)"
     obj="$objdir/${base}.o"
     "$cc" -ffreestanding -fPIC -O2 -std=gnu99 \
       -ffunction-sections -fdata-sections \
-      -isystem "$inc" "${CPPFLAGS[@]}" \
+      -isystem "$inc" "${CPPFLAGS[@]+"${CPPFLAGS[@]}"}" \
       -c "$WORK/$src" -o "$obj"
     objs+=("$obj")
   done
@@ -105,7 +105,7 @@ build_arch() {
     extra+=("$objdir/riscv64-softfloat.o")
   fi
 
-  link_prog "$arch" "${objs[@]}" "${extra[@]}"
+  link_prog "$arch" "${objs[@]+"${objs[@]}"}" "${extra[@]+"${extra[@]}"}"
 }
 
 for arch in x86_64 aarch64 riscv64; do

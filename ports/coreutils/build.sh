@@ -62,7 +62,7 @@ cargo +nightly-2026-07-26 build \
   --no-default-features \
   --features "$FEATURES" \
   --bin coreutils \
-  "${PROFILE_ARGS[@]}"
+  "${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"}"
 
 OUT="$UUTILS_DIR/target/${TARGET}/${PROFILE}/coreutils"
 echo "Built: $OUT ($(du -h "$OUT" | awk '{print $1}'))"

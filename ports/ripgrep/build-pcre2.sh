@@ -66,15 +66,15 @@ build_arch() {
     -DPCRE2_CODE_UNIT_WIDTH=8 -DPCRE2_STATIC -DHAVE_CONFIG_H
     -I"$out/include" -I"$SRC/src" -isystem "$inc"
   )
-  for src in "${PCRE2_SRCS[@]}"; do
+  for src in "${PCRE2_SRCS[@]+"${PCRE2_SRCS[@]}"}"; do
     base="${src%.c}"
     obj="$objdir/${base}.o"
-    "$cc" "${cflags[@]}" -c "$SRC/src/$src" -o "$obj"
+    "$cc" "${cflags[@]+"${cflags[@]}"}" -c "$SRC/src/$src" -o "$obj"
     objs+=("$obj")
   done
-  "$cc" "${cflags[@]}" -c "$out/src/pcre2_chartables.c" -o "$objdir/pcre2_chartables.o"
+  "$cc" "${cflags[@]+"${cflags[@]}"}" -c "$out/src/pcre2_chartables.c" -o "$objdir/pcre2_chartables.o"
   objs+=("$objdir/pcre2_chartables.o")
-  ar rcs "$out/lib/libpcre2-8.a" "${objs[@]}"
+  ar rcs "$out/lib/libpcre2-8.a" "${objs[@]+"${objs[@]}"}"
   cat >"$out/lib/pkgconfig/libpcre2-8.pc" <<PC
 prefix=$out
 libdir=\${prefix}/lib
