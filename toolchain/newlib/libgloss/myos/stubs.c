@@ -98,10 +98,18 @@ int _fork(void) {
 }
 
 int _wait(int *status) {
-    long ret = myos_syscall1(MYOS_SYS_WAIT, (long)(uintptr_t)status);
+    unsigned char code = 0;
+    long ret = myos_syscall1(MYOS_SYS_WAIT, (long)(uintptr_t)&code);
     if (ret == (long)MYOS_SYSERR) {
         errno = ECHILD;
         return -1;
+    }
+    /* Kernel writes only the raw exit-code byte; the caller's int keeps its
+     * old stack bytes in bits 8+. Convert to a POSIX status like the waitpid
+     * wrapper in posix_stubs.c, or WEXITSTATUS() reads garbage (GNU make
+     * reported flaky "Error 181" on recipes that exited 0). */
+    if (status != NULL) {
+        *status = ((int)code) << 8;
     }
     return (int)ret;
 }
