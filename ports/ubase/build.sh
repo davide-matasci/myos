@@ -17,7 +17,8 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 
 WORK="$ROOT/target/ubase-myos-build"
 BINS_FILE="$ROOT/ports/ubase/bins.txt"
-mapfile -t UBASE_BINS <"$BINS_FILE"
+UBASE_BINS=()
+while IFS= read -r line; do UBASE_BINS+=("$line"); done <"$BINS_FILE"
 MYOS="$ROOT/ports/ubase"
 
 CPPFLAGS=(

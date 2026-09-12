@@ -42,14 +42,30 @@ SRC="$ROOT/target/curl-src"
 cp "$HERE/config-myos.h" "$SRC/lib/curl_config.h"
 # tool_cfgable.h uses curlx_dynbuf without including dynbuf.h (curlx.h omits it).
 if ! grep -q 'dynbuf.h' "$SRC/src/tool_cfgable.h"; then
-  sed -i '/#include "tool_setup.h"/a#include "dynbuf.h"' "$SRC/src/tool_cfgable.h" || true
+  python3 - "$SRC/src/tool_cfgable.h" <<'PYEDIT'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = '#include "tool_setup.h"'
+if 'dynbuf.h' not in s and old in s:
+    open(p, 'w').write(s.replace(old, old + '\n#include "dynbuf.h"', 1))
+PYEDIT
 fi
 # Fix curl checking the *value* macro as an ifdef (always true in mbedtls 3.6 headers).
 # curl checks the *value* macro as #ifdef (always true in mbedtls 3.6 headers).
-sed -i 's/#ifdef MBEDTLS_SSL_TLS1_3_SIGNAL_NEW_SESSION_TICKETS_ENABLED/#if defined(MBEDTLS_SSL_PROTO_TLS1_3) \&\& defined(MBEDTLS_SSL_SESSION_TICKETS)/'   "$SRC/lib/vtls/mbedtls.c" || true
+python3 - "$SRC/lib/vtls/mbedtls.c" <<'PYEDIT'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = '#ifdef MBEDTLS_SSL_TLS1_3_SIGNAL_NEW_SESSION_TICKETS_ENABLED'
+new = '#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_SESSION_TICKETS)'
+if old in s:
+    open(p, 'w').write(s.replace(old, new, 1))
+PYEDIT
 
 # Expand CSOURCES from Makefile.inc
-mapfile -t LIB_SRCS < <(python3 - "$SRC/lib/Makefile.inc" <<'PY'
+LIB_SRCS=()
+  while IFS= read -r line; do LIB_SRCS+=("$line"); done < <(python3 - "$SRC/lib/Makefile.inc" <<'PY'
 import re, sys
 text = open(sys.argv[1]).read()
 vars = {}
@@ -134,7 +150,8 @@ build_arch() {
   echo "  lib: compiled=$compiled skipped=$skipped"
 
   # tool: parse CURL_CFILES
-  mapfile -t TOOL_SRCS < <(python3 - "$SRC/src/Makefile.inc" <<'PY'
+  TOOL_SRCS=()
+  while IFS= read -r line; do TOOL_SRCS+=("$line"); done < <(python3 - "$SRC/src/Makefile.inc" <<'PY'
 import re, sys
 text = open(sys.argv[1]).read()
 vars = {}

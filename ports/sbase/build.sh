@@ -22,7 +22,8 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 
 WORK="$ROOT/target/sbase-myos-build"
 BINS_FILE="$ROOT/ports/sbase/bins.txt"
-mapfile -t SBASE_BINS <"$BINS_FILE"
+SBASE_BINS=()
+while IFS= read -r line; do SBASE_BINS+=("$line"); done <"$BINS_FILE"
 
 CPPFLAGS=(
   -DPREFIX=\"/bin\"
@@ -170,7 +171,7 @@ build_arch() {
       failed+=("$name:compile")
       return 1
     fi
-    if ! link_prog "$name" "$arch" "${libs[@]}" "${extra_objs[@]}" "$obj" "${extra[@]}"; then
+    if ! link_prog "$name" "$arch" "${libs[@]}" "${extra_objs[@]}" "$obj" ""${extra[@]+"${extra[@]}"}""; then
       failed+=("$name:link")
       rm -f "$out" "$obj"
       return 1
@@ -189,7 +190,7 @@ build_arch() {
           [[ "$o" == *libutil-ealloc.o ]] && continue
           make_libs+=("$o")
         done
-        if link_prog make "$arch" "${make_libs[@]}" "${make_objs[@]}" "${extra[@]}"; then
+        if link_prog make "$arch" ""${make_libs[@]+"${make_libs[@]}"}"" ""${make_objs[@]+"${make_objs[@]}"}"" ""${extra[@]+"${extra[@]}"}""; then
           echo "make:$ROOT/target/sbase-make-${arch}-unknown-none" >>"$manifest"
           built=$((built + 1))
         else

@@ -54,7 +54,7 @@ link_prog() {
 
   ld.lld -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "$obj" "${extra[@]}" -L"$lib" --start-group -lc -lgloss -lg --end-group
+    "$lib/crt0.o" "$obj" "${extra[@]+"${extra[@]}"}" -L"$lib" --start-group -lc -lgloss -lg --end-group
   echo "c-${name} -> $out"
 }
 
