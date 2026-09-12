@@ -84,7 +84,10 @@ const CI_NEEDLES_STD: [&str; 22] = [
 /// the fast boot-mini CI jobs; interrupt/seed/arrow still run.
 const CMD_NOSUCH: &[u8] = b"nosuchcmd\n";
 const CMD_HEAP: &[u8] = b"heap\n";
+const CMD_HEAP_MINI: &[u8] = b"heap mini\n";
 const CMD_OK: &[u8] = b"ok\n";
+// boot-mini passes `heap mini` so the heavy git porcelain stage stays in the
+// full boot jobs; full mode runs plain `heap`.
 const CMD_ECHO: &[u8] = b"echo test\n";
 const CMD_PIPE: &[u8] = b"echo pipe | cat\n";
 const CMD_TRUE: &[u8] = b"/bin/coreutils/true\n";
@@ -129,7 +132,8 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     let mut cmds: Vec<&'static [u8]> = vec![
         CMD_NOSUCH,
         // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
-        CMD_HEAP,
+        // boot-mini passes `heap mini` so the heavy git stage stays in the full boot jobs.
+        if ci_mini() { CMD_HEAP_MINI } else { CMD_HEAP },
         CMD_OK,
         CMD_ECHO,
         CMD_PIPE,
@@ -519,7 +523,9 @@ fn needle_for_enabled_port(n: &str) -> bool {
         return port_enabled("port_tcc");
     }
     if n == "[ OK ] git" || n == "[ OK ] git commit" {
-        return port_enabled("port_git");
+        // In boot-mini the harness types `heap mini`, which skips the git
+        // stage entirely; those markers must not be required there.
+        return port_enabled("port_git") && !ci_mini();
     }
     true
 }
