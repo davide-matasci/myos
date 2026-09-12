@@ -73,7 +73,7 @@ myos_install_std_rlibs() {
     echo "error: no std rlibs in $deps_dir" >&2
     exit 1
   fi
-  cp -a "${artifacts[@]}" "$dest/"
+  cp -a "${artifacts[@]+"${artifacts[@]}"}" "$dest/"
   myos_install_target_spec "$triple"
 }
 
@@ -114,7 +114,7 @@ myos_cargo_build_std() {
     -Z json-target-spec \
     --target "$target_json" \
     --target-dir "$target_dir" \
-    "${profile_args[@]}" \
+    "${profile_args[@]+"${profile_args[@]}"}" \
     --manifest-path "$manifest"
 
   myos_install_std_rlibs "$triple" "$target_dir/${triple}/${profile}/deps"
@@ -138,7 +138,7 @@ myos_cargo_build_app() {
     -Z json-target-spec \
     --target "$target_json" \
     --target-dir "$target_dir" \
-    "${profile_args[@]}" \
+    "${profile_args[@]+"${profile_args[@]}"}" \
     --manifest-path "$manifest" \
     --bin "$bin"
 }
@@ -171,7 +171,7 @@ myos_std_hello_is_current() {
   [[ -f "$MYOS_STD_HELLO_VERSION" ]] \
     && [[ "$(cat "$MYOS_STD_HELLO_VERSION")" == "$(myos_std_hello_version_hash)" ]] \
     || return 1
-  for triple in "${MYOS_USER_TRIPLES[@]}"; do
+  for triple in "${MYOS_USER_TRIPLES[@]+"${MYOS_USER_TRIPLES[@]}"}"; do
     for name in hello cat echo bigalloc; do
       [[ -f "$MYOS_ROOT/target/std-${name}-${triple}" ]] || return 1
     done

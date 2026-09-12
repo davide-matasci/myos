@@ -44,7 +44,18 @@ sudo apt install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
   clang lld make git gh libc6-dev rsync patch curl xorriso
 ```
 
-On macOS: `brew install qemu llvm`
+On macOS (Homebrew):
+
+```sh
+brew install qemu llvm lld texinfo coreutils
+# Homebrew's llvm is keg-only (no ld.lld on PATH) — the newlib/ports cross
+# wrappers exec ld.lld, so prepend it:
+export PATH="/opt/homebrew/opt/llvm/bin:$PATH"   # /usr/local/opt/llvm/bin on Intel
+```
+
+Notes:
+- `llvm` provides `llvm-strip`/`llvm-ar` used by the cross wrappers; `lld` provides `ld.lld` (the ELF linker — on current Homebrew the `llvm` formula alone no longer includes it); `texinfo` provides `makeinfo` (newlib docs; its `missing` shim only warns, but installing keeps the build log clean); `coreutils` provides `nproc` (also made optional in `toolchain/newlib/build.sh`).
+- macOS's stock `/bin/bash` is 3.2 (2007). `brew install bash` with Homebrew's bin first in `PATH` avoids bash-3.2 parser quirks in build scripts.
 
 ---
 

@@ -29,7 +29,7 @@ if [[ "${MYOS_SYSROOT_SLIM:-}" == "1" ]]; then
   trap 'rm -rf "$tmp"' EXIT
   mkdir -p "$tmp/myos-sysroot/lib/rustlib"
   cp "$MYOS_SYSROOT/myos-manifest.toml" "$MYOS_SYSROOT/.myos-sysroot-version" "$tmp/myos-sysroot/"
-  for triple in "${MYOS_USER_TRIPLES[@]}"; do
+  for triple in "${MYOS_USER_TRIPLES[@]+"${MYOS_USER_TRIPLES[@]}"}"; do
     cp -a "$MYOS_SYSROOT/lib/rustlib/${triple}" "$tmp/myos-sysroot/lib/rustlib/"
     cp "$MYOS_SYSROOT/lib/rustlib/${triple}.json" "$tmp/myos-sysroot/lib/rustlib/"
   done

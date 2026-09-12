@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Install the in-tree myos libgloss port into a fetched newlib source tree.
+# NOTE: no `sed -i` here — GNU and BSD sed disagree about -i syntax and
+# multiline a/i commands, which broke macOS builds ("extra characters at the
+# end of d command"). All in-place edits go through patch_edit (python3).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -16,11 +19,45 @@ rm -rf "$NEWLIB_SRC/libgloss/myos"
 mkdir -p "$NEWLIB_SRC/libgloss/myos"
 cp -a "$PORT"/. "$NEWLIB_SRC/libgloss/myos/"
 
+patch_edit_all() {
+  # Replace EVERY occurrence (>=1 required). Args: file old new
+  python3 - "$@" <<'PYEDIT'
+import sys
+path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(path).read()
+assert old in s, f"{path}: pattern not found: {old[:60]!r}"
+open(path, "w").write(s.replace(old, new))
+PYEDIT
+}
+
+patch_edit() {
+  # Portable in-place edit. Args: file old new count
+  # python3 is a build prerequisite on every host (Linux CI + macOS).
+  python3 - "$@" <<'PYEDIT'
+import sys
+path, old, new, count = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+s = open(path).read()
+got = s.count(old)
+assert got >= count, f"{path}: expected >= {count} occurrence(s) of {old[:60]!r}, found {got}"
+if got > count:
+    # Replace only the first `count` occurrences (e.g. configure.host has
+    # several '  *)' catch-alls; only the first insertion point is wanted).
+    parts = s.split(old)
+    s = old.join(parts[:count]) + new + old.join(parts[count:])
+    open(path, "w").write(s)
+else:
+    open(path, "w").write(s.replace(old, new))
+PYEDIT
+}
+
 patch_config_sub() {
   local f="$NEWLIB_SRC/config.sub"
   if grep -q 'midnightbsd\* | amdhsa\* | unleashed\* | emscripten\* | wasi\* \\' "$f" \
      && ! grep -q 'myos\*' "$f"; then
-    sed -i 's/midnightbsd\* | amdhsa\* | unleashed\* | emscripten\* | wasi\* \\/&\n\t     | myos* \\/' "$f"
+    patch_edit "$f" \
+      'unleashed* | emscripten* | wasi* \' \
+      'unleashed* | emscripten* | wasi* \
+	     | myos* \' 1
     echo "patched config.sub for myos"
   fi
 }
@@ -29,26 +66,30 @@ patch_configure_host() {
   local f="$NEWLIB_SRC/newlib/configure.host"
   if grep -q '\*-\*-myos\*)' "$f"; then
     if grep -q 'HAVE_FCNTL' "$f" && ! grep -q 'HAVE_RENAME' "$f"; then
-      sed -i 's/-DHAVE_FCNTL/-DHAVE_FCNTL -DHAVE_RENAME/g' "$f"
+      patch_edit "$f" '-DHAVE_FCNTL' '-DHAVE_FCNTL -DHAVE_RENAME' 1
       echo "patched newlib/configure.host myos: added HAVE_RENAME"
       return
     fi
     if ! grep -q 'HAVE_FCNTL' "$f"; then
       # Insert flags after syscall_dir=syscalls inside the myos arm.
-      sed -i '/\*-\\*-myos\*)/,/;;/{
-        /syscall_dir=syscalls/a\
-\tnewlib_cflags="${newlib_cflags} -DHAVE_FCNTL -DHAVE_RENAME"
-      }' "$f"
+      patch_edit "$f" 'syscall_dir=syscalls' \
+        'syscall_dir=syscalls\
+	newlib_cflags="${newlib_cflags} -DHAVE_FCNTL -DHAVE_RENAME"' 1
       echo "patched newlib/configure.host myos for HAVE_FCNTL HAVE_RENAME"
     fi
     return
   fi
-  sed -i '/^  \*)$/i\
-  *-*-myos*)\
-\tsyscall_dir=syscalls\
-\tnewlib_cflags="${newlib_cflags} -DHAVE_FCNTL -DHAVE_RENAME"\
-\t;;\
-' "$f"
+  # configure.host has several case blocks; the old GNU sed inserted the
+  # myos arm before EVERY '  *)' catch-all and CI depended on the arm in the
+  # final (newlib_cflags / syscall_dir) block. Keep inserting before all of
+  # them so every block handles myos like it did on Linux CI.
+  patch_edit_all "$f" \
+    '  *)' \
+    '  *-*-myos*)\
+	syscall_dir=syscalls\
+	newlib_cflags="${newlib_cflags} -DHAVE_FCNTL -DHAVE_RENAME"\
+	;;\
+  *)'
   echo "patched newlib/configure.host for myos"
 }
 

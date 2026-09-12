@@ -118,7 +118,7 @@ kernel_inputs_hash() {
         # Port registry stamps encode userspace content identity (source-hash
         # philosophy). Do not hash target/ ELFs or manifests: those change or
         # appear after cargo clean/build and would make pull-tag ≠ push-tag.
-        for stamp in "${PORT_STAMPS[@]}"; do
+        for stamp in "${PORT_STAMPS[@]+"${PORT_STAMPS[@]}"}"; do
           if [[ -f "$stamp" ]]; then
             # Label + contents: relative path in the stream.
             printf 'stamp:%s:' "$stamp"
@@ -129,7 +129,7 @@ kernel_inputs_hash() {
           fi
         done
         # curl/mbedtls: digest checkout-stable sources only (see CURL_MBEDTLS_INPUTS).
-        for f in "${CURL_MBEDTLS_INPUTS[@]}"; do
+        for f in "${CURL_MBEDTLS_INPUTS[@]+"${CURL_MBEDTLS_INPUTS[@]}"}"; do
           if [[ -f "$f" ]]; then
             sha256sum "$f"
           else
@@ -188,7 +188,7 @@ kernel_inputs_diag() {
     if [[ -f .cargo/config.toml ]]; then
       sha256sum .cargo/config.toml | awk -v d='file:.cargo/config.toml' '{print $1" "d}'
     fi
-    for stamp in "${PORT_STAMPS[@]}"; do
+    for stamp in "${PORT_STAMPS[@]+"${PORT_STAMPS[@]}"}"; do
       if [[ -f "$stamp" ]]; then
         { printf 'stamp:%s:' "$stamp"; cat "$stamp"; printf '\n'; } \
           | sha256sum | awk -v s="$stamp" '{print $1" "s}'
@@ -196,7 +196,7 @@ kernel_inputs_diag() {
         printf 'MISSING %s\n' "$stamp"
       fi
     done
-    for f in "${CURL_MBEDTLS_INPUTS[@]}"; do
+    for f in "${CURL_MBEDTLS_INPUTS[@]+"${CURL_MBEDTLS_INPUTS[@]}"}"; do
       if [[ -f "$f" ]]; then
         sha256sum "$f" | awk -v p="$f" '{print $1" "p}'
       else
@@ -271,7 +271,7 @@ artifacts_ready() {
     && [[ -f "$CACERT_PACK_ALIAS" ]] \
     || return 1
   local f
-  for f in "${HELLO_OK_ELFS[@]}"; do
+  for f in "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
     [[ -f "$f" ]] || return 1
   done
   return 0
@@ -309,7 +309,7 @@ case "${1:-}" in
     echo target/fat.img
     echo target/aarch64-unknown-none-softfloat/debug/kernel
     echo target/riscv64imac-unknown-none-elf/debug/kernel
-    for f in "${HELLO_OK_ELFS[@]}"; do
+    for f in "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
       echo "$f"
     done
     echo "$CACERT_PEM"

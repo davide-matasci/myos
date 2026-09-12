@@ -50,7 +50,7 @@ fetch_one() {
   echo "softfloat fetch failed: $(basename "$out")" >&2
   return 1
 }
-for f in "${FILES[@]}"; do
+for f in "${FILES[@]+"${FILES[@]}"}"; do
   if [[ ! -f "$SRC/$f" ]]; then
     fetch_one "$SRC/$f" "$BASE_JSDELIVR/$f" "$BASE_GITHUB/$f"
   fi

@@ -58,7 +58,7 @@ LYNX_SRCS=(
 link_prog() {
   local arch="$1"
   shift
-  local objs=("$@")
+  local objs=(${@+"$@"})
   local triple="${arch}-unknown-myos"
   local out="$ROOT/target/lynx-${arch}-unknown-none"
   local prefix="$ROOT/target/newlib-${arch}"
@@ -89,7 +89,7 @@ link_prog() {
   echo "  LD lynx ($triple)"
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]}" "${extra[@]}" \
+    "$lib/crt0.o" "${objs[@]+"${objs[@]}"}" "${extra[@]+"${extra[@]}"}" \
     -L"$lib" -L"$nclib" -L"$mbed" \
     --start-group -lncurses -lmbedtls -lmbedx509 -lmbedcrypto -lc -lm -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
@@ -145,10 +145,10 @@ build_arch() {
   ln -sfn curses.h "$ncinc/ncurses.h"
 
   echo "==> lynx ($triple)"
-  for f in "${WWW_SRCS[@]}"; do
+  for f in "${WWW_SRCS[@]+"${WWW_SRCS[@]}"}"; do
     [[ -f "$WWW/$f" ]] || { echo "missing WWW $f" >&2; return 1; }
     o="$objdir/www/$(basename "$f" .c).o"
-    if ! "$cc" "${cflags[@]}" "${cppflags[@]}" -c "$WWW/$f" -o "$o" 2>"$objdir/www/$(basename "$f" .c).err"; then
+    if ! "$cc" "${cflags[@]+"${cflags[@]}"}" "${cppflags[@]+"${cppflags[@]}"}" -c "$WWW/$f" -o "$o" 2>"$objdir/www/$(basename "$f" .c).err"; then
       echo "FAIL www/$f" >&2
       head -20 "$objdir/www/$(basename "$f" .c).err" >&2 || true
       return 1
@@ -156,10 +156,10 @@ build_arch() {
     objs+=("$o")
   done
 
-  for f in "${LYNX_SRCS[@]}"; do
+  for f in "${LYNX_SRCS[@]+"${LYNX_SRCS[@]}"}"; do
     [[ -f "$SRC/$f" ]] || { echo "missing src/$f" >&2; return 1; }
     o="$objdir/src/$(basename "$f" .c).o"
-    if ! "$cc" "${cflags[@]}" "${cppflags[@]}" -c "$SRC/$f" -o "$o" 2>"$objdir/src/$(basename "$f" .c).err"; then
+    if ! "$cc" "${cflags[@]+"${cflags[@]}"}" "${cppflags[@]+"${cppflags[@]}"}" -c "$SRC/$f" -o "$o" 2>"$objdir/src/$(basename "$f" .c).err"; then
       echo "FAIL src/$f" >&2
       head -20 "$objdir/src/$(basename "$f" .c).err" >&2 || true
       return 1
@@ -167,7 +167,7 @@ build_arch() {
     objs+=("$o")
   done
 
-  link_prog "$arch" "${objs[@]}"
+  link_prog "$arch" "${objs[@]+"${objs[@]}"}"
 }
 
 ARCHES="${MYOS_LYNX_ARCHES:-x86_64 aarch64 riscv64}"

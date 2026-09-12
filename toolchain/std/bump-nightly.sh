@@ -42,7 +42,13 @@ if [[ "$WRITE" -eq 0 ]]; then
 fi
 
 file="$ROOT/rust-toolchain.toml"
-sed -i "s/^channel = \".*\"/channel = \"$PROBE\"/" "$file"
+python3 - "$file" "$PROBE" <<'PYEDIT'
+import re, sys
+p, probe = sys.argv[1], sys.argv[2]
+t = open(p).read()
+t = re.sub(r'^channel = ".*"', 'channel = "' + probe + '"', t, count=1, flags=re.M)
+open(p, "w").write(t)
+PYEDIT
 echo "Updated $file"
 rm -f "$MYOS_SYSROOT/.myos-sysroot-version"
 echo "Removed sysroot version stamp — run ./toolchain/std/build-sysroot.sh next."

@@ -74,7 +74,12 @@ build_arch() {
   export MYOS_GIT_EXTRA_OBJ="${extra_obj[*]}"
 
   # Build only the main multi-call binary (no dashed builtins / scripts).
+  # git's config.mak.uname probes the HOST uname; on macOS (Darwin) it sets
+  # HAVE_BSD_SYSCTL and Darwin-specific flags that break the newlib cross
+  # build (sys/sysctl.h does not exist). Pin uname_S so every host takes the
+  # Linux branch, matching CI.
   make -C "$WORK" -j"$make_jobs" \
+    uname_S=Linux \
     SHELL=/bin/bash \
     SHELL_PATH=/bin/bash \
     CC="$cc" \

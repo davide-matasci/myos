@@ -38,7 +38,7 @@ CPPFLAGS=(
 link_prog() {
   local arch="$1"
   shift
-  local objs=("$@")
+  local objs=(${@+"$@"})
   local triple="${arch}-unknown-myos"
   local out="$ROOT/target/make-${arch}-unknown-none"
   local lib="$ROOT/target/newlib-${arch}/${triple}/lib"
@@ -46,7 +46,7 @@ link_prog() {
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]}" -L"$lib" \
+    "$lib/crt0.o" "${objs[@]+"${objs[@]}"}" -L"$lib" \
     --start-group -lc -lgloss -lg --end-group
   true
   echo "make -> $out"
@@ -71,14 +71,14 @@ build_arch() {
   mkdir -p "$objdir"
 
   echo "==> make ($triple)"
-  for src in "${MAKE_SRCS[@]}"; do
+  for src in "${MAKE_SRCS[@]+"${MAKE_SRCS[@]}"}"; do
     base="$(basename "$src" .c)"
     obj="$objdir/${base}.o"
     "$cc" -ffreestanding -fPIC -O2 -std=gnu99 \
       -ffunction-sections -fdata-sections \
       -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
       -Wno-pointer-sign -Wno-missing-field-initializers \
-      -isystem "$inc" "${CPPFLAGS[@]}" \
+      -isystem "$inc" "${CPPFLAGS[@]+"${CPPFLAGS[@]}"}" \
       -c "$WORK/$src" -o "$obj"
     objs+=("$obj")
   done
@@ -94,13 +94,13 @@ build_arch() {
   fi
 
   # myos gap shims (dup, vfork, getloadavg) + guile stubs.
-  "$cc" -ffreestanding -fPIC -O2 -std=gnu99 -isystem "$inc" "${CPPFLAGS[@]}" \
+  "$cc" -ffreestanding -fPIC -O2 -std=gnu99 -isystem "$inc" "${CPPFLAGS[@]+"${CPPFLAGS[@]}"}" \
     -c "$ROOT/ports/make/myos_shims.c" -o "$objdir/myos_shims.o"
-  "$cc" -ffreestanding -fPIC -O2 -std=gnu99 -isystem "$inc" "${CPPFLAGS[@]}" \
+  "$cc" -ffreestanding -fPIC -O2 -std=gnu99 -isystem "$inc" "${CPPFLAGS[@]+"${CPPFLAGS[@]}"}" \
     -c "$WORK/guile.c" -o "$objdir/guile.o"
   objs+=("$objdir/myos_shims.o" "$objdir/guile.o")
 
-  link_prog "$arch" "${objs[@]}"
+  link_prog "$arch" "${objs[@]+"${objs[@]}"}"
 }
 
 for arch in x86_64 aarch64 riscv64; do
