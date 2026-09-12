@@ -42,6 +42,7 @@ build_arch() {
   make -C "$WORK/ncurses" \
     AR="$(command -v llvm-ar 2>/dev/null || echo ar)" \
     ARFLAGS=rcs \
+    RANLIB="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)" \
     CC="$cc" \
     BUILD_CC=gcc \
     BUILD_CFLAGS="-O2" \
