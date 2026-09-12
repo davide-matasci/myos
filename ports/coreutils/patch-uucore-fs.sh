@@ -12,20 +12,59 @@ fsext="$ROOT/user/uutils-coreutils/src/uucore/src/lib/features/fsext.rs"
 stamp="$(dirname "$fs")/.myos-fs-patch-done"
 [[ -f "$stamp" ]] && exit 0
 
-sed -i \
-  -e 's/#\[cfg(unix)\]/#[cfg(any(unix, target_os = "myos"))]/g' \
-  -e 's/#\[cfg(not(unix))\]/#[cfg(not(any(unix, target_os = "myos")))]/g' \
-  -e 's/#\[cfg(all(unix,/#[cfg(all(any(unix, target_os = "myos"),/g' \
-  -e 's/#\[cfg(any(unix,/#[cfg(any(unix, target_os = "myos",/g' \
-  "$fs"
+# Portable in-place edits: GNU and BSD sed disagree about -i syntax, so use
+# python3 (same convention as prepare.sh and toolchain/newlib/patch.sh).
+python3 - "$fs" <<'PYFS'
+from pathlib import Path
+import sys
 
-sed -i '/#\[cfg(windows)\]/,/return self.0.number_of_links();/{ /return self.0.number_of_links();/a\
-        #[cfg(target_os = "myos")]\
-        return self.0.st_nlink;
-}' "$fs"
+p = Path(sys.argv[1])
+text = p.read_text()
+repls = [
+    ('#[cfg(unix)]', '#[cfg(any(unix, target_os = "myos"))]'),
+    ('#[cfg(not(unix))]', '#[cfg(not(any(unix, target_os = "myos")))]'),
+    ('#[cfg(all(unix,', '#[cfg(all(any(unix, target_os = "myos"),'),
+    ('#[cfg(any(unix,', '#[cfg(any(unix, target_os = "myos",'),
+]
+for old, new in repls:
+    text = text.replace(old, new)
+p.write_text(text)
+PYFS
+
+python3 - "$fs" <<'PYFSNLINK'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+lines = p.read_text().splitlines(keepends=True)
+insert = [
+    '        #[cfg(target_os = "myos")]\n',
+    '        return self.0.st_nlink;\n',
+]
+in_windows = False
+for i, line in enumerate(lines):
+    if '#[cfg(windows)]' in line:
+        in_windows = True
+    if in_windows and 'return self.0.number_of_links();' in line:
+        lines[i + 1 : i + 1] = insert
+        break
+else:
+    raise SystemExit("fs.rs: number_of_links() return after #[cfg(windows)] not found")
+p.write_text("".join(lines))
+PYFSNLINK
 
 if [[ -f "$fsext" ]] && ! grep -q 'target_os = "myos"' "$fsext"; then
-  sed -i 's/target_os = "aix",/target_os = "aix",\n        target_os = "myos",/' "$fsext"
+  python3 - "$fsext" <<'PYFSEXT'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+text = p.read_text()
+needle = 'target_os = "aix",'
+if needle not in text:
+    raise SystemExit("fsext.rs: aix cfg arm not found")
+p.write_text(text.replace(needle, 'target_os = "aix",\n        target_os = "myos",', 1))
+PYFSEXT
 fi
 
 touch "$stamp"
