@@ -228,22 +228,27 @@ port_members() {
   esac
 }
 
+# macOS bash 3.2 has no ${var,,}; use tr.
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 repo_lower() {
   local repo="${GITHUB_REPOSITORY:-davide-matasci/myos}"
-  printf '%s' "${repo,,}"
+  lower "$repo"
 }
 
 registry_ref() {
   local port="$1" hash="$2"
   # GHCR repository names must be lowercase; stamp hashes may contain hex.
-  printf 'ghcr.io/%s/ci-%s:%s' "$(repo_lower)" "${port,,}" "$hash"
+  printf 'ghcr.io/%s/ci-%s:%s' "$(repo_lower)" "$(lower "$port")" "$hash"
 }
 
 package_name() {
   local port="$1"
   local repo
   repo="$(repo_lower)"
-  printf '%s/ci-%s' "${repo#*/}" "${port,,}"
+  printf '%s/ci-%s' "${repo#*/}" "$(lower "$port")"
 }
 
 ensure_oras() {
@@ -278,7 +283,7 @@ oras_login() {
   local user token err
   token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
   user="${GITHUB_ACTOR:-${GITHUB_REPOSITORY_OWNER:-${GITHUB_REPOSITORY%%/*}}}"
-  user="${user,,}"
+  user="$(lower "$user")"
   if [[ -z "$token" || -z "$user" ]]; then
     echo "registry login failed: missing GITHUB_TOKEN or username"
     echo "registry login failed: missing GITHUB_TOKEN or username" >&2
