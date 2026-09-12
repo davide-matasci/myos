@@ -120,7 +120,17 @@ const CMD_OS_TEST_PREP: &[u8] =
 /// non-empty too. `ls` first so a missing out/ tree is visible on serial.
 /// The quotes in SETPWENT-"FAIL"/SETPWENT-"OK" keep the echoed command line
 /// from ever containing the plain markers the checker matches on output.
-const CMD_OS_TEST_RESULT: &[u8] = b"ls out/basic/pwd; cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out; test -s out/basic/pwd/setpwent.out -o -s out/basic/pwd/setpwent.err && echo SETPWENT-\"FAIL\" || echo SETPWENT-\"OK\"\n";
+// Split into two SHORT quote-free commands: the old single 104+-char line
+// (with $f vars and quoted markers) shattered in the oksh emacs redraw on
+// the 160-col console (wrap + BS storm, even an unterminated-quote
+// continuation prompt), which broke the strict echo match. Both stay under
+// ~80 chars like the known-clean echoes. .out is the verdict file: success
+// leaves it empty (setpwent returns 0 silently); failures ("compile_error",
+// "exit: N") leave it non-empty.
+const CMD_OS_TEST_CAT: &[u8] =
+    b"cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out\n";
+const CMD_OS_TEST_RESULT: &[u8] =
+    b"test -s out/basic/pwd/setpwent.out && echo SETPWENT-FAIL || echo SETPWENT-OK\n";
 // ^C interrupt test: run a foreground `cat | cat` (the right cat blocks on
 // a kernel pipe read, the left one on the console) and interrupt it. The shell
 // must survive (ignore SIGINT) while both children die, returning to `$`
@@ -168,6 +178,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         // then cat the .err/.out and verdict marker (full boot only; too slow
         // for the boot-mini window).
         cmds.push(CMD_OS_TEST_PREP);
+        cmds.push(CMD_OS_TEST_CAT);
         cmds.push(CMD_OS_TEST_RESULT);
     }
     cmds.push(CMD_INTERRUPT);
@@ -438,18 +449,29 @@ fn interactive_ostest_prep_ok(serial: &str) -> bool {
 /// `SETPWENT-FAIL`) after the echoed command; the quoted markers inside the
 /// echo cannot collide with the plain ones. Also refuse "not found" from the
 /// cat (missing .err/.out => prep did not actually produce them).
-fn interactive_ostest_result_ok(serial: &str) -> bool {
+fn interactive_ostest_cat_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    let echoed = "$ ls out/basic/pwd; cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out; test -s out/basic/pwd/setpwent.out -o -s out/basic/pwd/setpwent.err && echo SETPWENT-\"FAIL\" || echo SETPWENT-\"OK\"";
+    let echoed = "$ cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out";
     if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
     let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
-    after.contains("\nSETPWENT-OK")
-        && !after.contains("\nSETPWENT-FAIL")
-        && !after.contains("not found")
+    !after.contains("not found")
         && !after.contains("cannot create")
         && at_interactive_prompt(serial)
+}
+
+/// Verdict: plain `SETPWENT-OK` (and never plain `SETPWENT-FAIL`) after the
+/// echoed command; the echoed line itself contains the marker text mid-line
+/// (not newline-prefixed), so it cannot collide with the real output.
+fn interactive_ostest_result_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let echoed = "$ test -s out/basic/pwd/setpwent.out && echo SETPWENT-FAIL || echo SETPWENT-OK";
+    if !tail.contains(echoed) || serial.contains("exception:") {
+        return false;
+    }
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    after.contains("\nSETPWENT-OK") && !after.contains("\nSETPWENT-FAIL")
 }
 
 /// ^C interrupt test: a foreground `cat | cat` (right cat blocked on a kernel
@@ -632,12 +654,14 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         // HTTPS/curl smokes and the os-test setpwent stage only exist in full
         // mode; in mini those slots are the interrupt/seed/arrow tail (matched
         // by position below). Full-mode length is 19, mini is 15.
-        12 if cmds.len() == 19 => interactive_https_cmd_ok(serial),
-        13 if cmds.len() == 19 => interactive_curl_cmd_ok(serial),
-        12 if cmds.len() == 17 => interactive_ostest_prep_ok(serial), // TEMP skip-net local test
-        13 if cmds.len() == 17 => interactive_ostest_result_ok(serial), // TEMP skip-net local test
-        14 if cmds.len() == 19 => interactive_ostest_prep_ok(serial),
-        15 if cmds.len() == 19 => interactive_ostest_result_ok(serial),
+        // HTTPS/curl smokes and the os-test setpwent stage only exist in full
+        // mode; in mini those slots are the interrupt/seed/arrow tail (matched
+        // by position below). Full-mode length is 20, mini is 15.
+        12 if cmds.len() == 20 => interactive_https_cmd_ok(serial),
+        13 if cmds.len() == 20 => interactive_curl_cmd_ok(serial),
+        14 if cmds.len() == 20 => interactive_ostest_prep_ok(serial),
+        15 if cmds.len() == 20 => interactive_ostest_cat_ok(serial),
+        16 if cmds.len() == 20 => interactive_ostest_result_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
         i if i == arrow_seed_idx(cmds) => interactive_arrow_seed_ok(serial),
         i if i == arrow_edit_idx(cmds) => interactive_arrow_edit_ok(serial),
