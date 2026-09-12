@@ -103,7 +103,10 @@ build_arch() {
   done
   "$cc" "${cflags[@]}" -c "$ROOT/target/mbedtls-ca_bundle.c" -o "$obj/ca_bundle.o"
   objs+=("$obj/ca_bundle.o")
-  ar rcs "$lib/libmbedcrypto.a" "${objs[@]}"
+  # Apple BSD ar symbol tables are unreadable by rust-lld for ELF targets;
+  # prefer llvm-ar (brew llvm / nightly rust sysroot) when available.
+  AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
+  "$AR_BIN" rcs "$lib/libmbedcrypto.a" "${objs[@]}"
   cp "$lib/libmbedcrypto.a" "$lib/libmbedtls.a"
   cp "$lib/libmbedcrypto.a" "$lib/libmbedx509.a"
   mkdir -p "$out/include"

@@ -245,7 +245,8 @@ build_libtcc1() {
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -I"$WORK" -c "$f" -o "$obj"
     objs+=("$obj")
   done
-  ar rcs "$out" "${objs[@]}"
+  AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
+  "$AR_BIN" rcs "$out" "${objs[@]}"
   install_libtcc1 "$arch"
   echo "libtcc1.a -> $out ($(du -h "$out" | awk '{print $1}'))"
 }

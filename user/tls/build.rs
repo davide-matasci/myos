@@ -98,7 +98,14 @@ fn main() {
     // Archive into a static lib so the .o is linked into dependents of this
     // rlib (cargo:rustc-link-arg on a bare .o does not propagate from libs).
     let archive = format!("{out_dir}/libmyos_tls_plat.a");
-    let ar_status = Command::new("ar")
+    // Apple's BSD ar writes ELF archive symbol tables rust-lld cannot index
+    // (same failure as libc.a: members never get pulled in), so prefer
+    // llvm-ar (brew llvm on PATH, else the pinned nightly rust sysroot).
+    let ar_bin = ["llvm-ar", "ar"]
+        .into_iter()
+        .find(|b| Command::new(b).arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false))
+        .expect("no usable ar (llvm-ar or BSD/GNU ar) found");
+    let ar_status = Command::new(ar_bin)
         .args(["rcs", &archive, &obj])
         .status()
         .expect("ar platform.o");
