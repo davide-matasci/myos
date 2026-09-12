@@ -28,6 +28,9 @@ patch_version_hash() {
     sha256sum "$CRATES/console/"*
     sha256sum "$CRATES/filetime/"*
     sha256sum "$CRATES/ctrlc/"*
+    # Bust the stamp whenever this script changes (e.g. a patched-in-place
+    # registry crate needs re-patching with new heal logic).
+    sha256sum "$HERE/prepare.sh"
   } | sha256sum | awk '{print $1}'
 }
 
@@ -47,6 +50,22 @@ find_registry_crate() {
   done
   echo "error: could not find $name_ver in cargo registry (run cargo fetch)" >&2
   return 1
+}
+
+# In-place registry patching must be deterministic: restore the crate from
+# the cargo download cache first so a crate dir corrupted by an earlier
+# buggy patch pass (or double-patched by overlapping hunks) always heals.
+reset_registry_crate() {
+  local name_ver="$1" dir="$2" cache
+  cache="$(dirname "$dir")/../../cache/$(basename "$(dirname "$dir")")/$name_ver.crate"
+  if [[ -f "$cache" ]]; then
+    rm -rf "$dir"
+    tar -xzf "$cache" -C "$(dirname "$dir")"
+    # Restore cargo's extraction marker — without it cargo silently
+    # re-extracts the pristine crate on the next build, wiping the
+    # in-place patches we just applied.
+    printf '{"v":1}' >"$dir/.cargo-ok"
+  fi
 }
 
 GETRANDOM_04_SRC="$(find_registry_crate "getrandom-$GETRANDOM_04_VERSION" 2>/dev/null || true)"
@@ -165,6 +184,7 @@ apply_patches "$GETRANDOM_02_SRC" "getrandom-$GETRANDOM_02_VERSION" "$CRATES/get
 # getrandom 0.4.x is a separate semver line; patch the registry copy in-place
 # (Cargo [patch.crates-io] can only redirect one getrandom source).
 echo "==> patching getrandom-$GETRANDOM_04_VERSION (registry in-place)"
+reset_registry_crate "getrandom-$GETRANDOM_04_VERSION" "$GETRANDOM_04_SRC"
 cp "$CRATES/getrandom/myos-0.4.rs" "$GETRANDOM_04_SRC/src/backends/myos.rs"
 if ! grep -q 'target_os = "myos"' "$GETRANDOM_04_SRC/src/backends.rs"; then
   patch -d "$GETRANDOM_04_SRC" -p1 --forward <"$CRATES/getrandom/backends-rs-0.4.patch"
@@ -212,6 +232,8 @@ patch_registry_hostile_crates() {
   local hostname_src console_src
   hostname_src="$(find_registry_crate "hostname-$HOSTNAME_VERSION")"
   console_src="$(find_registry_crate "console-$CONSOLE_VERSION")"
+  reset_registry_crate "hostname-$HOSTNAME_VERSION" "$hostname_src"
+  reset_registry_crate "console-$CONSOLE_VERSION" "$console_src"
 
   echo "==> patching hostname-$HOSTNAME_VERSION (registry in-place)"
   cp "$CRATES/hostname/myos.rs" "$hostname_src/src/myos.rs"
@@ -316,6 +338,7 @@ PYTERM
 
   echo "==> patching filetime-$FILETIME_VERSION (registry in-place)"
   filetime_src="$(find_registry_crate "filetime-$FILETIME_VERSION")"
+  reset_registry_crate "filetime-$FILETIME_VERSION" "$filetime_src"
   cp "$CRATES/filetime/myos.rs" "$filetime_src/src/myos.rs"
   if ! grep -q 'target_os = "myos"' "$filetime_src/src/lib.rs"; then
     python3 - "$filetime_src/src/lib.rs" <<'PYFT'
@@ -343,6 +366,7 @@ PYFT
 
   echo "==> patching ctrlc-$CTRLC_VERSION (registry in-place)"
   ctrlc_src="$(find_registry_crate "ctrlc-$CTRLC_VERSION")"
+  reset_registry_crate "ctrlc-$CTRLC_VERSION" "$ctrlc_src"
   mkdir -p "$ctrlc_src/src/platform"
   cp "$CRATES/ctrlc/myos.rs" "$ctrlc_src/src/platform/myos.rs"
   if ! grep -q 'target_os = "myos"' "$ctrlc_src/src/platform/mod.rs"; then
