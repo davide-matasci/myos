@@ -28,6 +28,9 @@ patch_version_hash() {
     sha256sum "$CRATES/console/"*
     sha256sum "$CRATES/filetime/"*
     sha256sum "$CRATES/ctrlc/"*
+    # Bust the stamp whenever this script changes (e.g. a patched-in-place
+    # registry crate needs re-patching with new heal logic).
+    sha256sum "$HERE/prepare.sh"
   } | sha256sum | awk '{print $1}'
 }
 
@@ -47,6 +50,22 @@ find_registry_crate() {
   done
   echo "error: could not find $name_ver in cargo registry (run cargo fetch)" >&2
   return 1
+}
+
+# In-place registry patching must be deterministic: restore the crate from
+# the cargo download cache first so a crate dir corrupted by an earlier
+# buggy patch pass (or double-patched by overlapping hunks) always heals.
+reset_registry_crate() {
+  local name_ver="$1" dir="$2" cache
+  cache="$(dirname "$dir")/../../cache/$(basename "$(dirname "$dir")")/$name_ver.crate"
+  if [[ -f "$cache" ]]; then
+    rm -rf "$dir"
+    tar -xzf "$cache" -C "$(dirname "$dir")"
+    # Restore cargo's extraction marker — without it cargo silently
+    # re-extracts the pristine crate on the next build, wiping the
+    # in-place patches we just applied.
+    printf '{"v":1}' >"$dir/.cargo-ok"
+  fi
 }
 
 GETRANDOM_04_SRC="$(find_registry_crate "getrandom-$GETRANDOM_04_VERSION" 2>/dev/null || true)"
@@ -165,6 +184,7 @@ apply_patches "$GETRANDOM_02_SRC" "getrandom-$GETRANDOM_02_VERSION" "$CRATES/get
 # getrandom 0.4.x is a separate semver line; patch the registry copy in-place
 # (Cargo [patch.crates-io] can only redirect one getrandom source).
 echo "==> patching getrandom-$GETRANDOM_04_VERSION (registry in-place)"
+reset_registry_crate "getrandom-$GETRANDOM_04_VERSION" "$GETRANDOM_04_SRC"
 cp "$CRATES/getrandom/myos-0.4.rs" "$GETRANDOM_04_SRC/src/backends/myos.rs"
 if ! grep -q 'target_os = "myos"' "$GETRANDOM_04_SRC/src/backends.rs"; then
   patch -d "$GETRANDOM_04_SRC" -p1 --forward <"$CRATES/getrandom/backends-rs-0.4.patch"
@@ -177,42 +197,109 @@ for f in \
   "$RUSTIX_OUT/src/backend/libc/fs/syscalls.rs" \
   "$RUSTIX_OUT/src/backend/libc/process/syscalls.rs"; do
   [[ -f "$f" ]] || continue
-  sed -i \
-    -e 's/c::fcntl(borrowed_fd(fd), c::F_GETFD))/c::fcntl(borrowed_fd(fd), c::F_GETFD, 0))/g' \
-    -e 's/c::F_SETFL, flags.bits())/c::F_SETFL, flags.bits() as c::c_ulong)/g' \
-    -e 's/c::F_SETFD, flags.bits())/c::F_SETFD, flags.bits() as c::c_ulong)/g' \
-    -e 's/c::F_GETLK, \&mut curr_lock)/c::F_GETLK, (\&mut curr_lock as *mut c::flock as c::c_ulong))/g' \
-    -e 's/(\&mut curr_lock as \*mut c::flock).cast()/(\&mut curr_lock as *mut c::flock as c::c_ulong)/g' \
-    -e 's/c::fcntl(borrowed_fd(fd), cmd, \&lock)/c::fcntl(borrowed_fd(fd), cmd, (\&lock as *const c::flock as c::c_ulong))/g' \
-    -e 's/(\&lock as \*const c::flock).cast()/(\&lock as *const c::flock as c::c_ulong)/g' \
-    -e 's/c::F_DUPFD_CLOEXEC, min)/c::F_DUPFD_CLOEXEC, min as c::c_ulong)/g' \
-    "$f"
+  # Portable in-place edit (BSD sed -i differs from GNU).
+  python3 - "$f" <<'PYRUSTIX'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+text = p.read_text()
+repls = [
+    ("c::fcntl(borrowed_fd(fd), c::F_GETFD))",
+     "c::fcntl(borrowed_fd(fd), c::F_GETFD, 0))"),
+    ("c::F_SETFL, flags.bits())",
+     "c::F_SETFL, flags.bits() as c::c_ulong)"),
+    ("c::F_SETFD, flags.bits())",
+     "c::F_SETFD, flags.bits() as c::c_ulong)"),
+    ("c::F_GETLK, &mut curr_lock)",
+     "c::F_GETLK, (&mut curr_lock as *mut c::flock as c::c_ulong))"),
+    ("(&mut curr_lock as *mut c::flock).cast()",
+     "(&mut curr_lock as *mut c::flock as c::c_ulong)"),
+    ("c::fcntl(borrowed_fd(fd), cmd, &lock)",
+     "c::fcntl(borrowed_fd(fd), cmd, (&lock as *const c::flock as c::c_ulong))"),
+    ("(&lock as *const c::flock).cast()",
+     "(&lock as *const c::flock as c::c_ulong)"),
+    ("c::F_DUPFD_CLOEXEC, min)",
+     "c::F_DUPFD_CLOEXEC, min as c::c_ulong)"),
+]
+for old, new in repls:
+    text = text.replace(old, new)
+p.write_text(text)
+PYRUSTIX
 done
 
 patch_registry_hostile_crates() {
   local hostname_src console_src
   hostname_src="$(find_registry_crate "hostname-$HOSTNAME_VERSION")"
   console_src="$(find_registry_crate "console-$CONSOLE_VERSION")"
+  reset_registry_crate "hostname-$HOSTNAME_VERSION" "$hostname_src"
+  reset_registry_crate "console-$CONSOLE_VERSION" "$console_src"
 
   echo "==> patching hostname-$HOSTNAME_VERSION (registry in-place)"
   cp "$CRATES/hostname/myos.rs" "$hostname_src/src/myos.rs"
   if ! grep -q 'target_os = "myos"' "$hostname_src/src/lib.rs"; then
-    sed -i '/use crate::nix as sys;/a\    } else if #[cfg(target_os = "myos")] {\n        mod myos;\n        use crate::myos as sys;' \
-      "$hostname_src/src/lib.rs"
+    python3 - "$hostname_src/src/lib.rs" <<'PYHOST'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+lines = p.read_text().splitlines(keepends=True)
+insert = [
+    '    } else if #[cfg(target_os = "myos")] {\n',
+    '        mod myos;\n',
+    '        use crate::myos as sys;\n',
+]
+for i, line in enumerate(lines):
+    if 'use crate::nix as sys;' in line:
+        lines[i + 1 : i + 1] = insert
+        break
+else:
+    raise SystemExit("hostname: 'use crate::nix as sys;' line not found")
+p.write_text("".join(lines))
+PYHOST
   fi
 
   echo "==> patching console-$CONSOLE_VERSION (registry in-place)"
   cp "$CRATES/console/myos_term.rs" "$console_src/src/myos_term.rs"
   if ! grep -q 'mod myos_term' "$console_src/src/lib.rs"; then
-    sed -i '/^mod wasm_term;$/a\
-#[cfg(target_os = "myos")]\
-mod myos_term;' "$console_src/src/lib.rs"
+    python3 - "$console_src/src/lib.rs" <<'PYCONSOLE'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+lines = p.read_text().splitlines(keepends=True)
+insert = [
+    '#[cfg(target_os = "myos")]\n',
+    'mod myos_term;\n',
+]
+for i, line in enumerate(lines):
+    if line.rstrip() == 'mod wasm_term;':
+        lines[i + 1 : i + 1] = insert
+        break
+else:
+    raise SystemExit("console: 'mod wasm_term;' line not found")
+p.write_text("".join(lines))
+PYCONSOLE
   fi
   if ! grep -q 'pub(crate) use crate::myos_term' "$console_src/src/term.rs"; then
-    sed -i '/pub(crate) use crate::unix_term::\*;/a\
-#[cfg(target_os = "myos")]\
-pub(crate) use crate::myos_term::*;' \
-      "$console_src/src/term.rs"
+    python3 - "$console_src/src/term.rs" <<'PYTERMUSE'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+lines = p.read_text().splitlines(keepends=True)
+insert = [
+    '#[cfg(target_os = "myos")]\n',
+    'pub(crate) use crate::myos_term::*;\n',
+]
+for i, line in enumerate(lines):
+    if line.rstrip() == 'pub(crate) use crate::unix_term::*;':
+        lines[i + 1 : i + 1] = insert
+        break
+else:
+    raise SystemExit("console: 'pub(crate) use crate::unix_term::*;' line not found")
+p.write_text("".join(lines))
+PYTERMUSE
   fi
   # myos is not unix/windows/wasm — family() needs an explicit arm or it returns ().
   # NOTE: do not key off bare "target_os = myos" in term.rs (myos_term use already
@@ -251,6 +338,7 @@ PYTERM
 
   echo "==> patching filetime-$FILETIME_VERSION (registry in-place)"
   filetime_src="$(find_registry_crate "filetime-$FILETIME_VERSION")"
+  reset_registry_crate "filetime-$FILETIME_VERSION" "$filetime_src"
   cp "$CRATES/filetime/myos.rs" "$filetime_src/src/myos.rs"
   if ! grep -q 'target_os = "myos"' "$filetime_src/src/lib.rs"; then
     python3 - "$filetime_src/src/lib.rs" <<'PYFT'
@@ -278,6 +366,7 @@ PYFT
 
   echo "==> patching ctrlc-$CTRLC_VERSION (registry in-place)"
   ctrlc_src="$(find_registry_crate "ctrlc-$CTRLC_VERSION")"
+  reset_registry_crate "ctrlc-$CTRLC_VERSION" "$ctrlc_src"
   mkdir -p "$ctrlc_src/src/platform"
   cp "$CRATES/ctrlc/myos.rs" "$ctrlc_src/src/platform/myos.rs"
   if ! grep -q 'target_os = "myos"' "$ctrlc_src/src/platform/mod.rs"; then

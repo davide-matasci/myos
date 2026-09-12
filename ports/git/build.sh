@@ -80,6 +80,7 @@ build_arch() {
   # Linux branch, matching CI.
   make -C "$WORK" -j"$make_jobs" \
     uname_S=Linux \
+    PROFILE= \
     SHELL=/bin/bash \
     SHELL_PATH=/bin/bash \
     CC="$cc" \
