@@ -9,6 +9,32 @@ mod initramfs {
 use limine_image::{bios_install, fetch_limine, write_esp_image, write_fat_data_image, LIMINE_VERSION};
 use std::path::PathBuf;
 
+/// Build a feature-gated port when its artifact is missing. Port build
+/// scripts are stamped and early-exit when current, so this is cheap for
+/// up-to-date trees. Ports whose feature is disabled are never built.
+fn ensure_feature_port(manifest: &PathBuf, feature: &str, artifact: &str, script: &str) {
+    if !initramfs::feature_enabled(feature) {
+        return;
+    }
+    println!("cargo:rerun-if-changed={}", manifest.join(script).display());
+    let artifact_path = manifest.join(artifact);
+    if artifact_path.is_file() {
+        return;
+    }
+    eprintln!("==> cargo: {feature} artifact missing ({artifact}); running {script}");
+    // Strip cargo-injected env so the nested cargo probes targets cleanly.
+    let status = std::process::Command::new("bash")
+        .arg(manifest.join(script))
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .status()
+        .unwrap_or_else(|e| panic!("run {script}: {e}"));
+    if !status.success() {
+        panic!("{script} failed");
+    }
+}
+
 fn main() {
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let kernel_path = PathBuf::from(std::env::var_os("CARGO_BIN_FILE_KERNEL_kernel").unwrap());
@@ -50,6 +76,19 @@ fn main() {
         println!("cargo:rerun-if-changed=ports/git/build.sh");
         println!("cargo:rerun-if-changed=ports/zlib/build.sh");
     }
+
+    // Auto-build feature-gated ports when their artifacts are missing. Ports
+    // whose feature is disabled are skipped entirely (no build, no error);
+    // each port build.sh handles its own deps and early-exits when current.
+    // (std / c_hello / oksh are ensured in kernel/build.rs — the kernel embeds
+    // them via env!(), and the kernel package has no feature knowledge.)
+    ensure_feature_port(&manifest, "port_sbase", "target/sbase-manifest-x86_64.txt", "ports/sbase/build.sh");
+    ensure_feature_port(&manifest, "port_coreutils", "target/coreutils-manifest-x86_64.txt", "ports/coreutils/build.sh");
+    ensure_feature_port(&manifest, "port_tcc", "target/tcc-x86_64-unknown-myos", "ports/tcc/build.sh");
+    ensure_feature_port(&manifest, "port_ripgrep", "target/rg-x86_64-unknown-myos", "ports/ripgrep/build.sh");
+    ensure_feature_port(&manifest, "port_vim", "target/vim-x86_64-unknown-none", "ports/vim/build.sh");
+    ensure_feature_port(&manifest, "port_make", "target/make-x86_64-unknown-none", "ports/make/build.sh");
+    ensure_feature_port(&manifest, "port_lynx", "target/lynx-x86_64-unknown-none", "ports/lynx/build.sh");
 
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any
     // user ELF changes (its build.rs rerun-if-changed on every stable copy), so
