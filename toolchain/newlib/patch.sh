@@ -27,8 +27,15 @@ import sys
 path, old, new, count = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 s = open(path).read()
 got = s.count(old)
-assert got == count, f"{path}: expected {count} occurrence(s) of {old[:60]!r}, found {got}"
-open(path, "w").write(s.replace(old, new))
+assert got >= count, f"{path}: expected >= {count} occurrence(s) of {old[:60]!r}, found {got}"
+if got > count:
+    # Replace only the first `count` occurrences (e.g. configure.host has
+    # several '  *)' catch-alls; only the first insertion point is wanted).
+    parts = s.split(old)
+    s = old.join(parts[:count]) + new + old.join(parts[count:])
+    open(path, "w").write(s)
+else:
+    open(path, "w").write(s.replace(old, new))
 PYEDIT
 }
 
