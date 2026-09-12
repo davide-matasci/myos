@@ -9,16 +9,19 @@ use myos_user::{status_ok,
     O_TRUNC, O_WRONLY,
 };
 
-#[cfg(target_arch = "x86_64")]
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    main()
-}
+myos_user::x86_start!(main);
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(_argc: usize, _argv: *const usize) -> ! {
+pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
+    unsafe { myos_user::args::init_from_regs(argc, argv) };
     main()
+}
+
+/// boot-mini passes `heap mini`: the mini boots keep their fast turnaround,
+/// so the heavy git porcelain stage only runs in the full boot jobs.
+fn mini_mode() -> bool {
+    (0..myos_user::argc()).any(|i| myos_user::arg(i) == Some(b"mini" as &[u8]))
 }
 
 fn run_prog(path: &[u8], args: &[&[u8]]) {
@@ -175,7 +178,11 @@ int main(void) {
     }
     // Phase-1 git porcelain (offline): init/add/commit/log on tmpfs.
     // Absolute /bin/custom/git — PATH is fine at login, but heap execs by path.
-    if mkdir(b"/tmp/gittest") {
+    // Skipped in boot-mini (`heap mini`): git testing belongs to the full boot
+    // jobs, which have time for the Phase-1 exec pages.
+    if mini_mode() {
+        write(b"git skip (boot-mini)\n");
+    } else if mkdir(b"/tmp/gittest") {
         let _ = run_prog_exit(
             b"/bin/custom/git",
             &[b"git", b"-C", b"/tmp/gittest", b"init"],
