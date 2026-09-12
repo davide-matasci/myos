@@ -2,6 +2,41 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+
+/// Build a port script when its repo-root-relative artifact is missing.
+/// Port build scripts are stamped and early-exit when current, so this is
+/// cheap for up-to-date trees. The kernel package has no [features]
+/// (CARGO_CFG_FEATURE is empty here); feature gating for the initramfs-only
+/// ports lives in the root package build.rs, which has the real feature set.
+fn ensure_artifact(manifest: &Path, artifact: &str, script: &str) {
+    let root = manifest.parent().expect("repo root");
+    let script_path = root.join(script);
+    println!("cargo:rerun-if-changed={}", script_path.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        script_path.parent().expect("script parent dir").display()
+    );
+    if root.join(artifact).is_file() {
+        return;
+    }
+    eprintln!("==> cargo: {artifact} missing; running {script}");
+    // Strip the cargo-injected environment (RUSTC, TARGET, CARGO_CFG_*,
+    // LD_LIBRARY_PATH, ...) — it leaks into the nested cargo invocation and
+    // breaks target probing ("failed to run `rustc` to learn about
+    // target-specific information").
+    let status = Command::new("bash")
+        .arg(&script_path)
+        .current_dir(root)
+        .env_clear()
+        .env("PATH", env::var("PATH").unwrap_or_default())
+        .env("HOME", env::var("HOME").unwrap_or_default())
+        .status()
+        .unwrap_or_else(|e| panic!("run {script}: {e}"));
+    if !status.success() {
+        panic!("{script} failed");
+    }
+}
+
 fn main() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -197,6 +232,12 @@ fn main() {
     );
 
     if arch == "x86_64" || arch == "aarch64" || arch == "riscv64" {
+        // Auto-build artifacts the kernel embeds unconditionally (binfs.rs
+        // uses env!(); the kernel package has no feature gates). These are
+        // cheap when present — the scripts early-exit when current.
+        ensure_artifact(manifest, &format!("target/std-hello-{arch}-unknown-myos"), "toolchain/std/build-std-hello.sh");
+        ensure_artifact(manifest, &format!("target/c-hello-{arch}-unknown-none"), "scripts/build-c-hello.sh");
+        ensure_artifact(manifest, &format!("target/oksh-{arch}-unknown-none"), "ports/oksh/build.sh");
         for (artifact, env_key) in [
             ("std-hello", "USER_STD_HELLO_PATH"),
             ("std-cat", "USER_STD_CAT_PATH"),
