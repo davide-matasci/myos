@@ -36,7 +36,12 @@ build_arch() {
 
   # Build only the archive — `make libs` also builds host report_offsets.
   # Keep BUILD_* free of -nostdinc / myos -isystem (those break host helpers).
+  # ncurses' Makefile uses plain `ar` unless told otherwise; Apple's BSD ar
+  # writes ELF archive symbol tables rust-lld cannot index (members like
+  # fallback.o/_nc_fallback never get pulled in at link time), so pin AR/ARFLAGS.
   make -C "$WORK/ncurses" \
+    AR="$(command -v llvm-ar 2>/dev/null || echo ar)" \
+    ARFLAGS=rcs \
     CC="$cc" \
     BUILD_CC=gcc \
     BUILD_CFLAGS="-O2" \
