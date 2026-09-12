@@ -128,8 +128,7 @@ fn add_hardlink_group(entries: &mut Vec<Entry>, names: &[String], data: Option<V
 }
 
 /// Recursively collect a directory tree into `entries` under `rel/…`,
-/// mirroring `kernel/build.rs::collect_dir` (skip dotfiles, `.la`, `.txt`,
-/// `libm.a`).
+/// mirroring `kernel/build.rs::collect_dir` (skip dotfiles, `.la`, `.txt`).
 fn collect_tree(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         eprintln!("initramfs: no sysroot tree at {}", dir.display());
@@ -152,7 +151,7 @@ fn collect_tree(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
         if !path.is_file() {
             continue;
         }
-        if name.ends_with(".la") || name.ends_with(".txt") || name == "libm.a" {
+        if name.ends_with(".la") || name.ends_with(".txt") {
             continue;
         }
         if entries.iter().any(|e| e.name == child_rel) {

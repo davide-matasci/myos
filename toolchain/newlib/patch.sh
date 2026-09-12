@@ -132,3 +132,35 @@ patch_configure_host
 patch_string_h_basename
 
 echo "myos newlib patches applied"
+patch_valist() {
+  # tcc does not define __GNUC__, so newlib's stdio.h / wchar.h fall back to
+  # '#define __VALIST char*'. But our tcc provides a GCC-compatible va_list
+  # (struct __va_list_tag[1] from tccdefs.h), so the fallback type is wrong:
+  # every vfprintf/vfwprintf-style call warns "assignment from incompatible
+  # pointer type". Always use __gnuc_va_list, which both tcc's stdarg.h and
+  # GNU/clang stdarg.h define consistently.
+  for f in "$NEWLIB_SRC/newlib/libc/include/stdio.h" \
+           "$NEWLIB_SRC/newlib/libc/include/wchar.h"; do
+    grep -q '#define __VALIST char\*' "$f" || continue
+    python3 - "$f" <<'PYVALIST'
+import sys
+f = sys.argv[1]
+s = open(f).read()
+old = """#ifndef __VALIST
+#ifdef __GNUC__
+#define __VALIST __gnuc_va_list
+#else
+#define __VALIST char*
+#endif
+#endif"""
+new = """#ifndef __VALIST
+#define __VALIST __gnuc_va_list
+#endif"""
+assert old in s, f"{f}: __VALIST block not found"
+open(f, "w").write(s.replace(old, new, 1))
+PYVALIST
+    echo "patched $(basename "$f"): __VALIST always __gnuc_va_list (tcc has no __GNUC__)"
+  done
+}
+
+patch_valist
