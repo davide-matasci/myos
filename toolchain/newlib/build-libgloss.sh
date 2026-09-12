@@ -20,6 +20,14 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/crti-${arch}.S" "$PORT/crti.S"
 cp "$ROOT/toolchain/newlib/libgloss/myos/crtn-${arch}.S" "$PORT/crtn.S"
 # termios.c needs <termios.h> in the sysroot before compile.
 cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
+# Sync ALL current libgloss sources into the fetched newlib tree before
+# compiling: the build compiles from $PORT (the fetched copy), and without
+# this a source edit under toolchain/newlib/libgloss/myos/ never reaches
+# libgloss.a (pwdgrp.c sat stale here for a week, shipping a getpwent()
+# that returned NULL — the os-test setpwent regression).
+for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c; do
+  cp "$src_f" "$PORT/"
+done
 
 for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
