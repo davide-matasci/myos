@@ -43,7 +43,16 @@ myos_ensure_llvm_bin() {
         return 0
       fi
     done
-    echo 'ld.lld not found: brew install llvm, then export PATH="/opt/homebrew/opt/llvm/bin:$PATH"' >&2
+    # Custom HOMEBREW_PREFIX or other brew location: ask brew itself.
+    if command -v brew >/dev/null 2>&1; then
+      d="$(brew --prefix llvm 2>/dev/null)/bin"
+      if [ -x "$d/ld.lld" ]; then
+        PATH="$d:$PATH"
+        export PATH
+        return 0
+      fi
+    fi
+    echo 'ld.lld not found: brew install llvm, then export PATH="$(brew --prefix llvm)/bin:$PATH"' >&2
     return 1
   fi
 }
