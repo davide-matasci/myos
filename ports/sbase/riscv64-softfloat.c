@@ -144,6 +144,24 @@ int __nedf2(TFtype a, TFtype b)
 	return da != db ? 1 : 0;
 }
 
+/*
+ * TF (128-bit) unordered check. Apple clang recognizes the NaN-check idiom
+ * in __unorddf2 above ((double)a != (double)a) and canonicalizes it into a
+ * direct TF comparison, emitting a call to __unordtf2 — observed on the
+ * macOS host; Linux gcc keeps the double comparison, which is why this
+ * only links there. Implemented with integer bit inspection (TF is NaN
+ * iff the exponent bits are all ones and the mantissa is nonzero) so the
+ * compiler never emits a recursive __*tf2 call here.
+ */
+int __unordtf2(TFtype a, TFtype b)
+{
+	union { TFtype f; unsigned __int128 u; } ua = { a };
+	union { TFtype f; unsigned __int128 u; } ub = { b };
+	const unsigned __int128 mant = (~(unsigned __int128)0) >> 15;
+	return (((ua.u >> 112) == 0x7fff) && (ua.u & mant) != 0) ||
+	       (((ub.u >> 112) == 0x7fff) && (ub.u & mant) != 0);
+}
+
 int __unorddf2(TFtype a, TFtype b)
 {
 	double da = (double)a;

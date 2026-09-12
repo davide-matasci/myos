@@ -12,10 +12,24 @@ stamp="$(dirname "$io")/.myos-io-patch-done"
 [[ -f "$stamp" ]] && exit 0
 
 # Match WASI: convert OwnedFd -> File -> Stdio on myos.
-sed -i \
-  -e 's/#\[cfg(not(target_os = "wasi"))\]/#[cfg(not(any(target_os = "wasi", target_os = "myos")))]/g' \
-  -e 's/#\[cfg(target_os = "wasi")\]/#[cfg(any(target_os = "wasi", target_os = "myos"))]/g' \
-  -e 's/#\[cfg(any(unix, target_os = "wasi"))\]/#[cfg(any(unix, target_os = "wasi", target_os = "myos"))]/g' \
-  "$io"
+# Portable in-place edit (GNU and BSD sed disagree about -i syntax).
+python3 - "$io" <<'PYIO'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+text = p.read_text()
+repls = [
+    ('#[cfg(not(target_os = "wasi"))]',
+     '#[cfg(not(any(target_os = "wasi", target_os = "myos")))]'),
+    ('#[cfg(target_os = "wasi")]',
+     '#[cfg(any(target_os = "wasi", target_os = "myos"))]'),
+    ('#[cfg(any(unix, target_os = "wasi"))]',
+     '#[cfg(any(unix, target_os = "wasi", target_os = "myos"))]'),
+]
+for old, new in repls:
+    text = text.replace(old, new)
+p.write_text(text)
+PYIO
 
 touch "$stamp"
