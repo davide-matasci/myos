@@ -59,7 +59,7 @@ jobs:
       sysroot: ${{ steps.filter.outputs.sysroot }}
       c_userspace: ${{ steps.filter.outputs.c_userspace }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -111,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install pinned nightly + rust-src
         uses: dtolnay/rust-toolchain@master
@@ -140,7 +140,7 @@ jobs:
       needs.changes.outputs.sysroot == 'true' ||
       (github.event_name == 'workflow_dispatch' && inputs.force_sysroot)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install pinned nightly
         uses: dtolnay/rust-toolchain@master
@@ -181,7 +181,7 @@ jobs:
       - name: Upload sysroot tarball
         if: steps.sysroot_build.outcome == 'success' && github.event_name != 'pull_request'
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: myos-sysroot
           path: target/myos-sysroot-*.tar.zst
@@ -200,7 +200,7 @@ jobs:
       needs.wire-myos.result == 'success' &&
       needs.changes.outputs.c_userspace == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install pinned nightly (llvm-tools for strip wrappers)
         uses: dtolnay/rust-toolchain@master
@@ -279,7 +279,7 @@ jobs:
             pull: std-hello
             needs_sysroot: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install pinned nightly
         uses: dtolnay/rust-toolchain@master
@@ -300,7 +300,7 @@ jobs:
       - name: Download prebuilt sysroot
         if: matrix.needs_sysroot == '1'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: myos-sysroot
           path: target
@@ -351,7 +351,7 @@ jobs:
             pull: lynx
             dep_port: ncurses
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install pinned nightly
         uses: dtolnay/rust-toolchain@master
@@ -385,7 +385,7 @@ jobs:
       needs.ports-base.result == 'success' &&
       needs.ports-advanced.result == 'success'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install pinned nightly
         uses: dtolnay/rust-toolchain@master
@@ -406,7 +406,7 @@ jobs:
       - name: Download prebuilt sysroot
         if: needs.sysroot.result == 'success'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: myos-sysroot
           path: target
@@ -554,7 +554,7 @@ jobs:
 
       - name: Upload CI build artifacts
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-build
           path: ci-build.tar
@@ -590,11 +590,11 @@ jobs:
             args: riscv64 --ci
             required: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download CI build artifacts
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ci-build
 
@@ -638,7 +638,7 @@ jobs:
       - name: Download prebuilt sysroot
         if: steps.restore.outputs.mode == 'rebuild'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: myos-sysroot
           path: target
@@ -719,11 +719,11 @@ jobs:
             args: riscv64 --ci
             required: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download CI build artifacts
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ci-build
 
@@ -767,7 +767,7 @@ jobs:
       - name: Download prebuilt sysroot
         if: steps.restore.outputs.mode == 'rebuild'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: myos-sysroot
           path: target
@@ -836,11 +836,11 @@ jobs:
       github.event_name == 'workflow_dispatch' &&
       inputs.build_iso == true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download CI build artifacts
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ci-build
 
@@ -876,7 +876,7 @@ jobs:
 
       - name: Upload ISO
         if: hashFiles('target/myos-x86_64.iso') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: myos-x86_64-iso
           path: target/myos-x86_64.iso
