@@ -12,7 +12,10 @@ SUITES := basic limits io malloc paths process signal stdio
 CC = /bin/tcc/tcc
 CFLAGS = -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE
 
-SOURCES := $(shell find $(SUITES) -name '*.c' | sed 's,^\./,,' | sort)
+# Note: no $(shell ...) — make's $(shell) forks a pipe reader and hangs on
+# myos (pipe EOF never reaches the reader). $(wildcard) is pure make, no fork.
+# Depth: suite/<dir>/<test>.c and suite/<test>.c both allowed.
+SOURCES := $(sort $(foreach s,$(SUITES),$(wildcard $(s)/*.c $(s)/*/*.c)))
 OUTS := $(patsubst %.c,out/%.out,$(SOURCES))
 
 .PHONY: all test report clean debug

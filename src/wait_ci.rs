@@ -105,6 +105,22 @@ const CMD_DNS: &[u8] = b"dns www.google.com\n";
 const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 // curl over userspace sockets + mbedtls (same URL as https smoke).
 const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n";
+
+/// os-test regression (full boot only). `basic/pwd/setpwent` must compile AND
+/// run through the REAL harness path: make invokes misc/myos-run.sh, which
+/// links with tcc against the packed newlib sysroot (libc.a + libm.a, the
+/// #138 fix) and runs the binary. /lib/os-test is read-only (initramfs), so
+/// the make target needs a writable copy first. Kept as two commands so each
+/// typed line stays a single clean echo on the 160-col console.
+const CMD_OS_TEST_PREP: &[u8] =
+    b"cp -r /lib/os-test /tmp/o && cd /tmp/o && make out/basic/pwd/setpwent.out; echo PREP-RC=$?\n";
+/// Success shape per misc/myos-run.sh: on pass, .err is empty AND .out is
+/// empty (setpwent returns 0 silently); both failure modes ("compile_error"
+/// and "exit: N") leave .out non-empty, and a botched compile can leave .err
+/// non-empty too. `ls` first so a missing out/ tree is visible on serial.
+/// The quotes in SETPWENT-"FAIL"/SETPWENT-"OK" keep the echoed command line
+/// from ever containing the plain markers the checker matches on output.
+const CMD_OS_TEST_RESULT: &[u8] = b"ls out/basic/pwd; cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out; test -s out/basic/pwd/setpwent.out -o -s out/basic/pwd/setpwent.err && echo SETPWENT-\"FAIL\" || echo SETPWENT-\"OK\"\n";
 // ^C interrupt test: run a foreground `cat | cat` (the right cat blocks on
 // a kernel pipe read, the left one on the console) and interrupt it. The shell
 // must survive (ignore SIGINT) while both children die, returning to `$`
@@ -148,6 +164,11 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     if !ci_mini() {
         cmds.push(CMD_HTTP);
         cmds.push(CMD_CURL);
+        // os-test setpwent regression: real make -> myos-run.sh -> tcc link,
+        // then cat the .err/.out and verdict marker (full boot only; too slow
+        // for the boot-mini window).
+        cmds.push(CMD_OS_TEST_PREP);
+        cmds.push(CMD_OS_TEST_RESULT);
     }
     cmds.push(CMD_INTERRUPT);
     cmds.push(CMD_HIST_SEED);
@@ -393,6 +414,44 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
     ok && !after.starts_with("\n\n") && at_interactive_prompt(serial)
 }
 
+/// os-test setpwent, stage 1: writable copy + targeted make must finish with
+/// a clean exit (no make error, no fs failure, no missing commands). Scope
+/// failure patterns to the output after the echoed command so earlier stages
+/// (e.g. nosuchcmd) can't poison this check.
+fn interactive_ostest_prep_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let echoed = "$ cp -r /lib/os-test /tmp/o && cd /tmp/o && make out/basic/pwd/setpwent.out; echo PREP-RC=$?";
+    if !tail.contains(echoed) || serial.contains("exception:") {
+        return false;
+    }
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    // A make failure is NOT a prep-stage failure: PREP-RC plus the follow-up
+    // cat turn the actual tcc/harness error into the stage verdict.
+    !after.contains("cannot create")
+        && !after.contains("not found")
+        && !after.contains("Read-only file system")
+        && at_interactive_prompt(serial)
+}
+
+/// os-test setpwent, stage 2: cat the produced .err/.out and print the
+/// verdict marker. Pass = plain `SETPWENT-OK` (and never plain
+/// `SETPWENT-FAIL`) after the echoed command; the quoted markers inside the
+/// echo cannot collide with the plain ones. Also refuse "not found" from the
+/// cat (missing .err/.out => prep did not actually produce them).
+fn interactive_ostest_result_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let echoed = "$ ls out/basic/pwd; cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out; test -s out/basic/pwd/setpwent.out -o -s out/basic/pwd/setpwent.err && echo SETPWENT-\"FAIL\" || echo SETPWENT-\"OK\"";
+    if !tail.contains(echoed) || serial.contains("exception:") {
+        return false;
+    }
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    after.contains("\nSETPWENT-OK")
+        && !after.contains("\nSETPWENT-FAIL")
+        && !after.contains("not found")
+        && !after.contains("cannot create")
+        && at_interactive_prompt(serial)
+}
+
 /// ^C interrupt test: a foreground `cat | cat` (right cat blocked on a kernel
 /// pipe read, left cat on the console) was interrupted with VINTR (`0x03`).
 /// Both children must have died (the pipe-blocked one via the signal-wakeable
@@ -570,10 +629,15 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         9 => interactive_tmp_redir_ok(serial),
         10 => interactive_which_ls_cmd_ok(serial),
         11 => interactive_dns_cmd_ok(serial),
-        // HTTPS/curl smokes only exist in full mode; in mini those slots are
-        // the interrupt/seed/arrow tail (matched by position below).
-        12 if cmds.len() == 17 => interactive_https_cmd_ok(serial),
-        13 if cmds.len() == 17 => interactive_curl_cmd_ok(serial),
+        // HTTPS/curl smokes and the os-test setpwent stage only exist in full
+        // mode; in mini those slots are the interrupt/seed/arrow tail (matched
+        // by position below). Full-mode length is 19, mini is 15.
+        12 if cmds.len() == 19 => interactive_https_cmd_ok(serial),
+        13 if cmds.len() == 19 => interactive_curl_cmd_ok(serial),
+        12 if cmds.len() == 17 => interactive_ostest_prep_ok(serial), // TEMP skip-net local test
+        13 if cmds.len() == 17 => interactive_ostest_result_ok(serial), // TEMP skip-net local test
+        14 if cmds.len() == 19 => interactive_ostest_prep_ok(serial),
+        15 if cmds.len() == 19 => interactive_ostest_result_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
         i if i == arrow_seed_idx(cmds) => interactive_arrow_seed_ok(serial),
         i if i == arrow_edit_idx(cmds) => interactive_arrow_edit_ok(serial),
