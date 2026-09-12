@@ -19,6 +19,17 @@ rm -rf "$NEWLIB_SRC/libgloss/myos"
 mkdir -p "$NEWLIB_SRC/libgloss/myos"
 cp -a "$PORT"/. "$NEWLIB_SRC/libgloss/myos/"
 
+patch_edit_all() {
+  # Replace EVERY occurrence (>=1 required). Args: file old new
+  python3 - "$@" <<'PYEDIT'
+import sys
+path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(path).read()
+assert old in s, f"{path}: pattern not found: {old[:60]!r}"
+open(path, "w").write(s.replace(old, new))
+PYEDIT
+}
+
 patch_edit() {
   # Portable in-place edit. Args: file old new count
   # python3 is a build prerequisite on every host (Linux CI + macOS).
@@ -68,13 +79,17 @@ patch_configure_host() {
     fi
     return
   fi
-  patch_edit "$f" \
+  # configure.host has several case blocks; the old GNU sed inserted the
+  # myos arm before EVERY '  *)' catch-all and CI depended on the arm in the
+  # final (newlib_cflags / syscall_dir) block. Keep inserting before all of
+  # them so every block handles myos like it did on Linux CI.
+  patch_edit_all "$f" \
     '  *)' \
     '  *-*-myos*)\
 	syscall_dir=syscalls\
 	newlib_cflags="${newlib_cflags} -DHAVE_FCNTL -DHAVE_RENAME"\
 	;;\
-  *)' 1
+  *)'
   echo "patched newlib/configure.host for myos"
 }
 
