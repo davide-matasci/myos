@@ -54,8 +54,29 @@ if [ -x \"\$LLVM_STRIP\" ]; then
 fi
 exec strip \"\$@\"
 "
+  # Apple's BSD ar writes ELF archive symbol tables that rust-lld cannot
+  # index (undefined getpid/write/sbrk pulled from libc.a members), so
+  # prefer llvm-ar/llvm-ranlib (brew llvm or the pinned rust sysroot) and
+  # fall back to plain ar on GNU/Linux hosts.
   write_wrapper "${triple}-ar" "#!/usr/bin/env bash
+LLVM_AR=\"\$(command -v llvm-ar 2>/dev/null || true)\"
+if [ -z \"\$LLVM_AR\" ]; then
+  SYSROOT=\"\$(rustc +nightly-2026-07-26 --print sysroot 2>/dev/null)\"
+  HOST=\"\$(rustc +nightly-2026-07-26 -vV 2>/dev/null | awk '/host:/{print \$2}')\"
+  [ -n \"\$SYSROOT\" ] && [ -n \"\$HOST\" ] && LLVM_AR=\"\$SYSROOT/lib/rustlib/\$HOST/bin/llvm-ar\"
+fi
+if [ -n \"\$LLVM_AR\" ] && [ -x \"\$LLVM_AR\" ]; then exec \"\$LLVM_AR\" \"\$@\"; fi
 exec ar \"\$@\"
+"
+  write_wrapper "${triple}-ranlib" "#!/usr/bin/env bash
+LLVM_RANLIB=\"\$(command -v llvm-ranlib 2>/dev/null || true)\"
+if [ -z \"\$LLVM_RANLIB\" ]; then
+  SYSROOT=\"\$(rustc +nightly-2026-07-26 --print sysroot 2>/dev/null)\"
+  HOST=\"\$(rustc +nightly-2026-07-26 -vV 2>/dev/null | awk '/host:/{print \$2}')\"
+  [ -n \"\$SYSROOT\" ] && [ -n \"\$HOST\" ] && LLVM_RANLIB=\"\$SYSROOT/lib/rustlib/\$HOST/bin/llvm-ranlib\"
+fi
+if [ -n \"\$LLVM_RANLIB\" ] && [ -x \"\$LLVM_RANLIB\" ]; then exec \"\$LLVM_RANLIB\" \"\$@\"; fi
+exec ranlib \"\$@\"
 "
 done
 
