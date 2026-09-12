@@ -13,7 +13,16 @@ RG="$ROOT/target/ripgrep-src"
 mkdir -p "$RG/.cargo"
 cp "$ROOT/ports/ripgrep/cargo-config.toml" "$RG/.cargo/config.toml"
 # Absolute newlib link paths (cargo cwd is ripgrep-src; relative ../../ can break).
-sed -i "s|-L../../target/newlib-|-L$ROOT/target/newlib-|g" "$RG/.cargo/config.toml"
+# Portable in-place edit (GNU and BSD sed disagree about -i syntax).
+python3 - "$RG/.cargo/config.toml" "$ROOT" <<'PYRGCFG'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+text = p.read_text()
+text = text.replace("-L../../target/newlib-", "-L" + sys.argv[2] + "/target/newlib-")
+p.write_text(text)
+PYRGCFG
 
 
 # Size profile for myos embedding (PT_LOAD must fit MAX_INIT_PAGES).
