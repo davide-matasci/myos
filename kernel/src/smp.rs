@@ -100,8 +100,9 @@ fn hw_cpu_id() -> u64 {
                 options(nomem, preserves_flags)
             );
         }
-        // Aff3:Aff2:Aff1:Aff0 — match Limine's bsp_mpidr comparison style.
-        mpidr & 0xFF00_FFFF_FFFF_FFFF
+        // Aff3:Aff2:Aff1:Aff0; clear [31:24] (MT/U) — Linux MPIDR_HWID_BITMASK /
+        // Limine MPIDR_AFFINITY_MASK so MRS matches MpInfo::mpidr.
+        mpidr & 0xFF_00FF_FFFF
     }
     #[cfg(target_arch = "riscv64")]
     {
@@ -293,6 +294,18 @@ pub fn init() {
     let mp_cpus = resp.cpus();
     if mp_cpus.len() <= 1 {
         console::status_ok("smp: 1 CPU");
+        return;
+    }
+
+    // aarch64: Limine lists APs but goto_address handoff never enters the
+    // kernel entry on QEMU virt+UEFI (observed: AP_PROGRESS=0 forever). Skip
+    // release so boot-mini does not spin for minutes then hang the CI job.
+    #[cfg(target_arch = "aarch64")]
+    {
+        console::status_ok(&alloc::format!(
+            "smp: 1 CPU ({} parked)",
+            mp_cpus.len().saturating_sub(1)
+        ));
         return;
     }
 

@@ -2087,6 +2087,8 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     irq_restore(flags);
     crate::smp::mark_running(logical);
     enable_preempt();
+    // ap_init may leave IRQs masked (aarch64); enable only after CURRENT/ONLINE.
+    irq_on();
     // Jump into the seeded stack so the first schedule has a valid save area.
     // Until then, run the idle body directly.
     ap_idle_body();

@@ -322,9 +322,9 @@ pub fn ap_init() {
     write32(GICC, 3);
     write32(GICC + 0x004, 0xFF);
     init_timer();
+    // Leave DAIF masked until ap_idle_loop installs CURRENT / ONLINE.
     unsafe {
         asm!("dsb sy", options(nomem, nostack));
-        asm!("msr daifclr, #3", options(nomem, nostack));
     }
 }
 
