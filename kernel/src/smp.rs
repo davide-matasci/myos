@@ -416,15 +416,32 @@ pub fn init() {
     }
 
     let want = next;
+    // aarch64 TCG: if Limine never runs goto_address, AP_PROGRESS stays 0 —
+    // fail fast instead of spinning for minutes (CI boot-mini timeout).
+    let max_spins: u32 = {
+        #[cfg(target_arch = "aarch64")]
+        {
+            2_000_000
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            20_000_000
+        }
+    };
     let mut spins = 0u32;
-    // Bound the wait: TCG aarch64 is slow, but never block CI for minutes.
-    while online_count() < want && spins < 20_000_000 {
+    while online_count() < want && spins < max_spins {
         core::hint::spin_loop();
         spins += 1;
         #[cfg(target_arch = "aarch64")]
-        if spins % 1_000_000 == 0 {
-            unsafe {
-                core::arch::asm!("sev", options(nostack));
+        {
+            if spins == 100_000 && AP_PROGRESS.load(Ordering::SeqCst) == 0 {
+                // Still no AP entry — further waiting is futile on this platform.
+                break;
+            }
+            if spins % 100_000 == 0 {
+                unsafe {
+                    core::arch::asm!("dsb sy; sev", options(nostack));
+                }
             }
         }
     }
