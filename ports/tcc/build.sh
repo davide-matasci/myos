@@ -223,6 +223,20 @@ build_libtcc1() {
     aarch64|riscv64)
       srcs+=(lib-arm64.c)
       extra_src+=("$MYOS/clear_cache.c")
+      if [[ "$arch" == "riscv64" ]]; then
+        # Guest links need the soft-float DF/SF helpers (rv64imac target).
+        # The TF* symbols are renamed away: lib-arm64.o owns IEEE-128.
+        # The implementations are integer-only (see the file header) so
+        # guest programs never recurse into them.
+        obj="$odir/riscv64-softfloat.o"
+        "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -I"$WORK" \
+          -D__trunctfdf2=__myos_tcc_unused_trunctfdf2 \
+          -D__extenddftf2=__myos_tcc_unused_extenddftf2 \
+          -D__extendsftf2=__myos_tcc_unused_extendsftf2 \
+          -D__trunctfsf2=__myos_tcc_unused_trunctfsf2 \
+          -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$obj"
+        objs+=("$obj")
+      fi
       ;;
     *)
       echo "error: unknown arch $arch" >&2
