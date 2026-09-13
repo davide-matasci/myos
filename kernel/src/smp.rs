@@ -382,6 +382,19 @@ pub fn init() {
         return;
     }
 
+    // aarch64: Limine lists APs but goto_address never reaches the kernel
+    // entry on QEMU virt+UEFI (AP_PROGRESS stays 0). Skip release so
+    // boot-mini cannot hang; IPI/GIC paths remain ready for when Limine
+    // handoff works. MPIDR affinity mask above stays correct.
+    #[cfg(target_arch = "aarch64")]
+    {
+        console::status_ok(&alloc::format!(
+            "smp: 1 CPU ({} parked)",
+            mp_cpus.len().saturating_sub(1)
+        ));
+        return;
+    }
+
     let mut next = 1usize;
     for cpu in mp_cpus.iter() {
         #[cfg(target_arch = "x86_64")]

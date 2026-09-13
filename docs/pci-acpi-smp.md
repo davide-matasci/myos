@@ -44,7 +44,7 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 | Arch | CPU id | AP init | Timer / IRQ | IPI |
 |------|--------|---------|-------------|-----|
 | x86_64 | TSC_AUX / APIC id | Per-CPU GDT+TSS, GS → syscall state, xAPIC timer | LVT timer → `schedule` | xAPIC ICR all-excl-self (vec 33 TLB, 34 resched) |
-| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | `VBAR`, `use_spx`, banked GICC, timers | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
+| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | `VBAR`, `use_spx`, banked GICC, timers (APs still Limine-parked on QEMU virt) | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
 | riscv64 | `tp` / Limine `hartid` | `stvec` / `sie` (STIE+SSIE) / `stimecmp` | S-mode timer → `schedule` | SBI IPI ext → SSIP; soft reason bits in `smp` |
 
 Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
