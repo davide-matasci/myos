@@ -100,7 +100,7 @@ pub fn cpu_id() -> usize {
         unsafe {
             core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
         }
-        if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
+        if tp < MAX_CPUS {
             return tp;
         }
     }
@@ -114,8 +114,27 @@ pub fn cpu_id() -> usize {
                 options(nomem, nostack, preserves_flags)
             );
         }
-        if tpidr < MAX_CPUS && ONLINE[tpidr].load(Ordering::SeqCst) {
+        if tpidr < MAX_CPUS {
             return tpidr;
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Logical id written to IA32_TSC_AUX in interrupt init / AP entry.
+        // Use RDMSR (not RDTSCP) — qemu64 may lack the RDTSCP feature.
+        let lo: u32;
+        unsafe {
+            core::arch::asm!(
+                "rdmsr",
+                in("ecx") 0xC000_0103u32,
+                out("eax") lo,
+                out("edx") _,
+                options(nostack, preserves_flags),
+            );
+        }
+        let id = lo as usize;
+        if id < MAX_CPUS {
+            return id;
         }
     }
     let hw = hw_cpu_id();
