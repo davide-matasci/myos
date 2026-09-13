@@ -49,9 +49,10 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 
 Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
 Kernel tasks use `affinity: None` (smoke `sched mask=0x3`). On **x86_64** with
-more than one CPU online, user tasks pin to CPU 1 so ring3 hits per-CPU
-TSS/GS/`EFER.NXE` (concurrent multi-CPU user still races reclaim). **aarch64** /
-**riscv64** leave user floating. `note_schedule` → `/proc/cpuinfo`. QEMU `-smp 2`.
+more than one CPU online, user tasks still pin to CPU 1 (true float still races
+reclaim/TLB — NX/#PF and mmap VA overflow under concurrent teardown). Reclaim
+VA walks use checked math; unload TLB-shootdowns. **aarch64** / **riscv64**
+leave user floating. `note_schedule` → `/proc/cpuinfo`. QEMU `-smp 2`.
 
 Per-CPU ring3↔ring0 state:
 

@@ -2750,8 +2750,17 @@ fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
         if r.pages == 0 || r.va == 0 {
             continue;
         }
-        for i in 0..r.pages as usize {
-            free_mapped_page(aspace, r.va + (i * PAGE) as u64);
+        // Concurrent SMP float once saw a torn/corrupt region and
+        // `va + i*PAGE` overflow-panicked in debug. Bound + checked math.
+        let pages = (r.pages as usize).min(MMAP_AREA_PAGES);
+        for i in 0..pages {
+            let Some(off) = (i as u64).checked_mul(PAGE as u64) else {
+                break;
+            };
+            let Some(va) = r.va.checked_add(off) else {
+                break;
+            };
+            free_mapped_page(aspace, va);
         }
     }
 }
@@ -2777,13 +2786,20 @@ pub fn reclaim_user_aspace(
     }
     // Must not free pages while they may still be walked via this aspace.
     task::unload_user_aspace(aspace);
-    let n_code = image_span.div_ceil(PAGE);
+    let n_code = image_span.div_ceil(PAGE).min(MAX_ELF_PAGES);
     for i in 0..n_code {
-        let va = base + (i * PAGE) as u64;
+        let Some(va) = base.checked_add((i * PAGE) as u64) else {
+            break;
+        };
         free_mapped_page(aspace, va);
     }
     for i in 0..USER_STACK_PAGES {
-        let va = base + stack_off + (i * PAGE) as u64;
+        let Some(va) = base
+            .checked_add(stack_off)
+            .and_then(|s| s.checked_add((i * PAGE) as u64))
+        else {
+            break;
+        };
         free_mapped_page(aspace, va);
     }
     let heap_base = heap_base_va(base, stack_off);

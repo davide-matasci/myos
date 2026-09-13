@@ -339,18 +339,10 @@ pub fn init() {
     irq_restore(flags);
 }
 
-pub fn current_kernel_stack_top() -> usize {
-    let flags = irq_save();
-    irq_off();
-    let id = current_slot();
-    let top = TASKS.lock()[id].kernel_stack_top;
-    irq_restore(flags);
-    top
-}
-
 /// x86: pin user to AP when SMP is online so ring3 exercises per-CPU TSS/GS/NXE.
-/// Concurrent multi-CPU user (migration / split affinities) still races global
-/// reclaim paths; keep one home CPU for all user tasks for now. Other arches float.
+/// True float (`affinity: None`) still hits migration/reclaim races (NX/#PF /
+/// overflow under concurrent mmap teardown); keep one home CPU for now.
+/// Other arches float. Reclaim uses checked VA math + TLB shootdown on unload.
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -374,12 +366,19 @@ pub fn kernel_aspace() -> u64 {
     KERNEL_ASPACE.load(Ordering::SeqCst)
 }
 
-/// Switch the CPU to the kernel aspace if `aspace` is currently loaded.
+/// Switch the CPU to the kernel aspace if `aspace` is currently loaded, then
+/// TLB-shootdown so remotes drop stale translations before reclaim frees frames.
 pub fn unload_user_aspace(aspace: u64) {
-    if aspace != 0 && loaded_aspace() == aspace {
+    if aspace == 0 {
+        return;
+    }
+    if loaded_aspace() == aspace {
         let k = KERNEL_ASPACE.load(Ordering::SeqCst);
         user::switch_aspace(k);
         set_loaded_aspace(k);
+    }
+    if crate::smp::online_count() > 1 {
+        crate::smp::tlb_shootdown();
     }
 }
 
