@@ -1,11 +1,13 @@
 //! Multi-core bring-up via Limine MP + cross-CPU scheduling hooks.
 //!
 //! The scheduler itself lives in `task/`; this module tracks online CPUs,
-//! AP entry, and `/proc/cpuinfo` content. See `docs/pci-acpi-smp.md`.
+//! AP entry, IPI TLB shootdown / reschedule, and `/proc/cpuinfo`.
+//! See `docs/pci-acpi-smp.md`.
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
+use crate::arch;
 use crate::console;
 use crate::limine_boot;
 
@@ -23,52 +25,21 @@ static CPUS: Mutex<[CpuInfo; MAX_CPUS]> = Mutex::new(
         hw_id: 0,
     }; MAX_CPUS],
 );
-static ONLINE: [AtomicBool; MAX_CPUS] = [
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-];
-static HW_IDS: [AtomicU64; MAX_CPUS] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static SCHED_TICKS: [AtomicU64; MAX_CPUS] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
+static ONLINE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+static HW_IDS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static SCHED_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 /// Logical CPU index stashed for arches that use `tp` (riscv) / until hw id works.
 static BOOT_CPU: AtomicUsize = AtomicUsize::new(0);
 static AP_PROGRESS: AtomicUsize = AtomicUsize::new(0);
 
-static PARKED: AtomicBool = AtomicBool::new(false);
+/// TLB shootdown barrier: sender sets remaining, each remote IPI decrements.
+static TLB_REMAINING: AtomicUsize = AtomicUsize::new(0);
+static TLB_LOCK: Mutex<()> = Mutex::new(());
 
-/// After bring-up smoke, freeze APs so they cannot touch shared TSS/rsp0 or
-/// race the BSP through userspace (no per-CPU TSS yet).
-pub fn park_aps() {
-    PARKED.store(true, Ordering::SeqCst);
-}
-
-pub fn aps_parked() -> bool {
-    PARKED.load(Ordering::SeqCst)
-}
-
+/// Soft IPI reason bits (riscv software interrupt carries no vector).
+pub const IPI_BIT_TLB: u64 = 1;
+pub const IPI_BIT_RESCHED: u64 = 2;
+static IPI_BITS: AtomicU64 = AtomicU64::new(0);
 
 fn hw_cpu_id() -> u64 {
     #[cfg(target_arch = "x86_64")]
@@ -133,6 +104,38 @@ pub fn cpu_id() -> usize {
             return tp;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let tpidr: usize;
+        unsafe {
+            core::arch::asm!(
+                "mrs {0}, tpidr_el1",
+                out(reg) tpidr,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        if tpidr < MAX_CPUS && ONLINE[tpidr].load(Ordering::SeqCst) {
+            return tpidr;
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Prefer TSC_AUX (logical id) when programmed by interrupt init / AP entry.
+        let aux: u32;
+        unsafe {
+            core::arch::asm!(
+                "rdtscp",
+                out("eax") _,
+                out("edx") _,
+                out("ecx") aux,
+                options(nostack, preserves_flags),
+            );
+        }
+        let id = aux as usize;
+        if id < MAX_CPUS && ONLINE[id].load(Ordering::SeqCst) {
+            return id;
+        }
+    }
     let hw = hw_cpu_id();
     for i in 0..MAX_CPUS {
         if ONLINE[i].load(Ordering::SeqCst) && HW_IDS[i].load(Ordering::SeqCst) == hw {
@@ -140,6 +143,18 @@ pub fn cpu_id() -> usize {
         }
     }
     BOOT_CPU.load(Ordering::SeqCst)
+}
+
+pub fn cpu_online(i: usize) -> bool {
+    i < MAX_CPUS && ONLINE[i].load(Ordering::SeqCst)
+}
+
+pub fn cpu_hw_id(i: usize) -> u64 {
+    if i < MAX_CPUS {
+        HW_IDS[i].load(Ordering::SeqCst)
+    } else {
+        0
+    }
 }
 
 pub fn online_count() -> usize {
@@ -159,32 +174,94 @@ pub fn note_schedule() {
     }
 }
 
+pub fn ipi_mark_tlb() {
+    IPI_BITS.fetch_or(IPI_BIT_TLB, Ordering::SeqCst);
+}
+
+pub fn ipi_mark_resched() {
+    IPI_BITS.fetch_or(IPI_BIT_RESCHED, Ordering::SeqCst);
+}
+
+pub fn ipi_is_tlb() -> bool {
+    IPI_BITS.load(Ordering::SeqCst) & IPI_BIT_TLB != 0
+}
+
+pub fn ipi_is_resched() -> bool {
+    IPI_BITS.load(Ordering::SeqCst) & IPI_BIT_RESCHED != 0
+}
+
+fn ipi_clear_handled() {
+    // Clear both; senders re-set before each blast. Slightly coarse but safe.
+    IPI_BITS.store(0, Ordering::SeqCst);
+}
+
+pub fn tlb_ipi_ack() {
+    let _ = TLB_REMAINING.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+        Some(v.saturating_sub(1))
+    });
+    #[cfg(target_arch = "riscv64")]
+    {
+        // Soft IPI reason consumed.
+        IPI_BITS.fetch_and(!(IPI_BIT_TLB), Ordering::SeqCst);
+    }
+}
+
+/// Invalidate this CPU's user TLB and ask every other online CPU to do the same.
+pub fn tlb_shootdown() {
+    let _guard = TLB_LOCK.lock();
+    let others = online_count().saturating_sub(1);
+    if others == 0 {
+        return;
+    }
+    TLB_REMAINING.store(others, Ordering::SeqCst);
+    #[cfg(target_arch = "riscv64")]
+    ipi_mark_tlb();
+    arch::ipi_tlb_shootdown();
+    let mut spins = 0u32;
+    while TLB_REMAINING.load(Ordering::SeqCst) > 0 && spins < 50_000_000 {
+        core::hint::spin_loop();
+        spins += 1;
+    }
+    #[cfg(target_arch = "riscv64")]
+    ipi_clear_handled();
+}
+
+/// Wake idle CPUs so they notice newly-ready tasks.
+pub fn kick_cpus() {
+    if online_count() <= 1 {
+        return;
+    }
+    #[cfg(target_arch = "riscv64")]
+    ipi_mark_resched();
+    arch::ipi_reschedule();
+}
+
 pub fn cpuinfo_text() -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::new();
     let n = online_count();
-    let arch = {
+    let arch_name = {
         #[cfg(target_arch = "x86_64")]
-        { "x86_64" }
+        {
+            "x86_64"
+        }
         #[cfg(target_arch = "aarch64")]
-        { "aarch64" }
+        {
+            "aarch64"
+        }
         #[cfg(target_arch = "riscv64")]
-        { "riscv64" }
+        {
+            "riscv64"
+        }
     };
     push_str(&mut out, "processor_count: ");
     push_dec(&mut out, n as u64);
-    push_str(&mut out, "
-arch: ");
-    push_str(&mut out, arch);
-    push_str(&mut out, "
-scheduler: smp-rr
-");
+    push_str(&mut out, "\narch: ");
+    push_str(&mut out, arch_name);
+    push_str(&mut out, "\nscheduler: smp-rr\n");
     let cpus = CPUS.lock();
     for i in 0..MAX_CPUS {
         let online = ONLINE[i].load(Ordering::SeqCst);
         if !online && i != 0 {
-            continue;
-        }
-        if i > 0 && !online {
             continue;
         }
         let c = cpus[i];
@@ -193,20 +270,15 @@ scheduler: smp-rr
         } else {
             HW_IDS[i].load(Ordering::SeqCst)
         };
-        push_str(&mut out, "
-processor	: ");
+        push_str(&mut out, "\nprocessor\t: ");
         push_dec(&mut out, i as u64);
-        push_str(&mut out, "
-hw_id		: 0x");
+        push_str(&mut out, "\nhw_id\t\t: 0x");
         push_hex(&mut out, hw);
-        push_str(&mut out, "
-online		: ");
+        push_str(&mut out, "\nonline\t\t: ");
         push_str(&mut out, if online || i == 0 { "yes" } else { "no" });
-        push_str(&mut out, "
-schedules	: ");
+        push_str(&mut out, "\nschedules\t: ");
         push_dec(&mut out, SCHED_TICKS[i].load(Ordering::Relaxed));
-        push_str(&mut out, "
-");
+        push_str(&mut out, "\n");
         if !ONLINE[0].load(Ordering::SeqCst) && i == 0 {
             break;
         }
@@ -259,6 +331,10 @@ pub fn init() {
     unsafe {
         core::arch::asm!("mv tp, zero", options(nomem, nostack, preserves_flags));
     }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("msr tpidr_el1, xzr", options(nomem, nostack));
+    }
 
     let hw = {
         #[cfg(target_arch = "riscv64")]
@@ -297,26 +373,8 @@ pub fn init() {
         return;
     }
 
-    // aarch64: Limine lists APs but goto_address handoff never enters the
-    // kernel entry on QEMU virt+UEFI (observed: AP_PROGRESS=0 forever). Skip
-    // release so boot-mini does not spin for minutes then hang the CI job.
-    #[cfg(target_arch = "aarch64")]
-    {
-        console::status_ok(&alloc::format!(
-            "smp: 1 CPU ({} parked)",
-            mp_cpus.len().saturating_sub(1)
-        ));
-        return;
-    }
-
     let mut next = 1usize;
-    let raw = mp_cpus.as_ptr() as *const usize;
-    for i in 0..mp_cpus.len() {
-        let cpu_addr = unsafe { *raw.add(i) };
-        if cpu_addr == 0 {
-            continue;
-        }
-        let cpu = unsafe { &*(cpu_addr as *const limine::mp::MpInfo) };
+    for cpu in mp_cpus.iter() {
         #[cfg(target_arch = "x86_64")]
         let (is_bsp, hw_id) = (cpu.lapic_id == resp.bsp_lapic_id, u64::from(cpu.lapic_id));
         #[cfg(target_arch = "aarch64")]
@@ -340,16 +398,34 @@ pub fn init() {
         }
         core::sync::atomic::fence(Ordering::SeqCst);
         cpu.bootstrap(AP_ENTRY_PTR, logical as u64);
+        // aarch64 Limine park loops often use WFE; SEV helps the Release store wake them.
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("dsb sy; sev", options(nostack));
+        }
         next += 1;
     }
 
     let want = next;
     let mut spins = 0u32;
-    while online_count() < want && spins < 50_000_000 {
+    // Bound the wait: TCG aarch64 is slow, but never block CI for minutes.
+    while online_count() < want && spins < 20_000_000 {
         core::hint::spin_loop();
         spins += 1;
+        #[cfg(target_arch = "aarch64")]
+        if spins % 1_000_000 == 0 {
+            unsafe {
+                core::arch::asm!("sev", options(nostack));
+            }
+        }
     }
     let got = online_count();
+    if got < want {
+        console::status_info(&alloc::format!(
+            "smp: {got}/{want} CPUs (AP progress={})",
+            AP_PROGRESS.load(Ordering::SeqCst)
+        ));
+    }
     console::status_ok(&alloc::format!("smp: {got} CPUs online"));
 }
 
@@ -385,6 +461,14 @@ pub unsafe extern "C" fn myos_smp_ap_entry(info: &limine::mp::MpInfo) -> ! {
             "mv tp, {0}",
             in(reg) logical,
             options(nomem, nostack, preserves_flags)
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "msr tpidr_el1, {0}",
+            in(reg) logical,
+            options(nomem, nostack)
         );
     }
 

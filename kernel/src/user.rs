@@ -117,12 +117,10 @@ const DEFAULT_USER_BASE: u64 = 0x4000_0000; // Sv39 root[1] / L1[1] on QEMU virt
 
 static USER_BASE: AtomicU64 = AtomicU64::new(DEFAULT_USER_BASE);
 
-#[cfg(target_arch = "x86_64")]
-static mut KERNEL_RSP0: usize = 0;
-
 /// User callee-saved regs at syscall entry (before Rust can clobber them).
 /// Copied into `ForkRegs` on SYS_FORK so fork-continue children resume correctly.
 #[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct ForkCalleeSaved {
     rbx: u64,
@@ -133,18 +131,33 @@ struct ForkCalleeSaved {
     r15: u64,
 }
 
+/// Per-CPU syscall state. `IA32_GS_BASE` points at the current CPU's element so
+/// `syscall_entry` can load RSP0 without clobbering SYSCALL's RCX (user RIP).
 #[cfg(target_arch = "x86_64")]
-static mut FORK_CALLEE: ForkCalleeSaved = ForkCalleeSaved {
-    rbx: 0,
-    rbp: 0,
-    r12: 0,
-    r13: 0,
-    r14: 0,
-    r15: 0,
-};
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+struct CpuSyscallState {
+    kernel_rsp0: usize,
+    fork: ForkCalleeSaved,
+}
+
+#[cfg(target_arch = "x86_64")]
+static mut CPU_SYSCALL: [CpuSyscallState; crate::smp::MAX_CPUS] = [
+    CpuSyscallState {
+        kernel_rsp0: 0,
+        fork: ForkCalleeSaved {
+            rbx: 0,
+            rbp: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+        },
+    }; crate::smp::MAX_CPUS
+];
 
 #[cfg(target_arch = "riscv64")]
-static mut KERNEL_SSCRATCH: usize = 0;
+static mut KERNEL_SSCRATCH: [usize; crate::smp::MAX_CPUS] = [0; crate::smp::MAX_CPUS];
 
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
@@ -153,14 +166,15 @@ core::arch::global_asm!(
 syscall_entry:
     cli
     mov r10, rsp
-    mov rsp, [rip + {kernel_rsp0}]
+    # GS_BASE -> &CPU_SYSCALL[cpu] (set in load_percpu_gs)
+    mov rsp, qword ptr gs:[0]
     # Snapshot user callee-saved before any Rust prologue can reuse them.
-    mov [rip + {fork_callee}], rbx
-    mov [rip + {fork_callee} + 8], rbp
-    mov [rip + {fork_callee} + 16], r12
-    mov [rip + {fork_callee} + 24], r13
-    mov [rip + {fork_callee} + 32], r14
-    mov [rip + {fork_callee} + 40], r15
+    mov gs:[8], rbx
+    mov gs:[16], rbp
+    mov gs:[24], r12
+    mov gs:[32], r13
+    mov gs:[40], r14
+    mov gs:[48], r15
     push r11
     push r9
     push r8
@@ -183,8 +197,6 @@ syscall_entry:
     mov rsp, r10
     sysretq
     "#,
-    kernel_rsp0 = sym KERNEL_RSP0,
-    fork_callee = sym FORK_CALLEE,
     dispatch = sym syscall_dispatch,
 );
 
@@ -194,6 +206,17 @@ unsafe extern "C" {
 }
 
 pub fn init() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        init_syscall_msrs();
+        init_user_sse();
+    }
+    #[cfg(target_arch = "aarch64")]
+    init_user_fp();
+}
+
+/// Per-CPU user-mode enable (SSE / FP / syscall MSRs are per-hart).
+pub fn ap_init() {
     #[cfg(target_arch = "x86_64")]
     {
         init_syscall_msrs();
@@ -1162,15 +1185,33 @@ pub fn note_fork() {
 }
 
 pub fn set_kernel_rsp0(top: usize) {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        core::ptr::addr_of_mut!(KERNEL_RSP0).write(top);
+        core::ptr::addr_of_mut!(CPU_SYSCALL[cpu].kernel_rsp0).write(top);
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {
-        core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(top);
+        core::ptr::addr_of_mut!(KERNEL_SSCRATCH[cpu]).write(top);
     }
     let _ = top;
+}
+
+/// Point GS at this CPU's syscall state (x86). Called from BSP/AP interrupt init.
+#[cfg(target_arch = "x86_64")]
+pub fn load_percpu_gs(cpu: usize) {
+    const IA32_GS_BASE: u32 = 0xC000_0101;
+    let cpu = cpu.min(crate::smp::MAX_CPUS - 1);
+    let ptr = unsafe { core::ptr::addr_of!(CPU_SYSCALL[cpu]) as u64 };
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") IA32_GS_BASE,
+            in("eax") ptr as u32,
+            in("edx") (ptr >> 32) as u32,
+            options(nostack, preserves_flags),
+        );
+    }
 }
 
 pub fn read_aspace() -> u64 {
@@ -1333,7 +1374,7 @@ const USER_SSTATUS: u64 = (2 << 32) | (1 << 5); // UXL=64-bit user, SPIE, SPP=0
 
 #[cfg(target_arch = "riscv64")]
 fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
-    let ksp = unsafe { KERNEL_SSCRATCH };
+    let ksp = unsafe { KERNEL_SSCRATCH[crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1)] };
     unsafe {
         core::arch::asm!(
             "csrw sscratch, {ksp}",
@@ -1357,7 +1398,8 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
 /// Exec from a syscall: copy the saved frame and sret through `fork_sret_from_frame`.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv: usize) {
-    let frame_ptr = unsafe { SYSCALL_FRAME };
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    let frame_ptr = unsafe { SYSCALL_FRAME[cpu] };
     if frame_ptr.is_null() {
         return;
     }
@@ -1385,7 +1427,7 @@ fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv
             // this task build its kernel frame on the user stack — the riscv64
             // CI corruption family (sepc=0, zeroed user ra). Same invariant as
             // enter_fork_riscv64: sscratch = kernel top.
-            let ksp = unsafe { KERNEL_SSCRATCH };
+            let ksp = unsafe { KERNEL_SSCRATCH[crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1)] };
             unsafe {
                 core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
             }
@@ -1521,7 +1563,7 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
     frame[32] = regs.rip as u64; // resume past the fork ecall
     frame[33] = USER_SSTATUS;
     frame[34] = regs.rsp as u64;
-    let ksp = unsafe { KERNEL_SSCRATCH };
+    let ksp = unsafe { KERNEL_SSCRATCH[crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1)] };
     unsafe {
         // Preserve kernel stack top in sscratch across sret (enter_riscv64
         // invariant). The old child stub left sscratch at frame+280 and the
@@ -1532,7 +1574,8 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
+static mut SYSCALL_FRAME: [*mut usize; crate::smp::MAX_CPUS] =
+    [core::ptr::null_mut(); crate::smp::MAX_CPUS];
 
 /// Record the live trap frame for fork/exec resume (aarch64/riscv).
 ///
@@ -1540,8 +1583,9 @@ static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
 /// `signal::deliver_due` can clear the frame on every arch before `user_exit`.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn set_syscall_frame(frame: *mut u64) {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     unsafe {
-        SYSCALL_FRAME = frame as *mut usize;
+        SYSCALL_FRAME[cpu] = frame as *mut usize;
     }
 }
 
@@ -2091,7 +2135,8 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     let child = {
         // Use the snapshot from syscall_entry — live rbx/rbp/r12–r15 here may
         // already be Rust scratch (prologues saved the user values on the stack).
-        let c = unsafe { core::ptr::addr_of!(FORK_CALLEE).read() };
+        let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+        let c = unsafe { core::ptr::addr_of!(CPU_SYSCALL[cpu].fork).read() };
         task::ForkRegs {
             rip: user_rip,
             rsp: user_rsp,
@@ -2105,7 +2150,8 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     };
     #[cfg(target_arch = "aarch64")]
     let child = {
-        let frame = unsafe { SYSCALL_FRAME };
+        let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+        let frame = unsafe { SYSCALL_FRAME[cpu] };
         if frame.is_null() {
             return SYSERR;
         }
@@ -2117,7 +2163,8 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     };
     #[cfg(target_arch = "riscv64")]
     let child = {
-        let frame = unsafe { SYSCALL_FRAME };
+        let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+        let frame = unsafe { SYSCALL_FRAME[cpu] };
         if frame.is_null() {
             return SYSERR;
         }
@@ -2988,7 +3035,10 @@ fn flush_user_tlb() {
         }
         core::arch::asm!("dsb ish; isb", options(nostack));
     }
+
+    crate::smp::tlb_shootdown();
 }
+
 
 #[cfg(target_arch = "x86_64")]
 fn flush_user_tlb() {
@@ -3001,14 +3051,20 @@ fn flush_user_tlb() {
             options(nostack, preserves_flags),
         );
     }
+
+    crate::smp::tlb_shootdown();
 }
+
 
 #[cfg(target_arch = "riscv64")]
 fn flush_user_tlb() {
     unsafe {
         core::arch::asm!("sfence.vma zero, zero", options(nostack));
     }
+
+    crate::smp::tlb_shootdown();
 }
+
 
 /// Allocate Sv39 mid/leaf tables as needed so user maps can spill past one
 /// 2 MiB leaf (code + 256 stack + 256 heap pages exceeds 512 PTEs).

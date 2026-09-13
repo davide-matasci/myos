@@ -99,8 +99,7 @@ fn kernel_main() -> ! {
     smp::init();
     // Prove cross-CPU scheduling: spawn workers that record cpu_id.
     smp_smoke();
-    // Freeze APs before VFS/userspace: shared TSS/syscall stacks are BSP-only.
-    smp::park_aps();
+    // APs stay online into userspace (per-CPU TSS / stacks / IPIs).
     for _ in 0..1000 {
         task::yield_now();
     }

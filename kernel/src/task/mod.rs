@@ -332,7 +332,7 @@ pub fn init() {
     let mut tasks = TASKS.lock();
     tasks[0].state = State::Running;
     tasks[0].sp = 0;
-    // Must stay on the BSP: APs must not steal kernel_main (no per-CPU TSS yet).
+    // BSP keeps kernel_main; user/kernel workers may run anywhere.
     tasks[0].affinity = Some(0);
     set_current_slot(0);
     drop(tasks);
@@ -1582,8 +1582,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        // User tasks stay on BSP until per-CPU TSS / syscall paths exist on APs.
-        affinity: Some(0),
+        affinity: None,
     };
     drop(tasks);
     user::note_fork();
@@ -1714,11 +1713,12 @@ fn spawn_inner(
         has_ctty: false,
         sig_pending: 0,
         sig_ignored: 0,
-        // Kernel threads: any CPU. User threads: BSP only (no AP TSS yet).
-        affinity: if aspace != 0 { Some(0) } else { None },
+        // Kernel and user threads: any CPU (per-CPU TSS / stacks are online).
+        affinity: None,
     };
     drop(tasks);
     irq_restore(flags);
+    crate::smp::kick_cpus();
 }
 
 pub fn user_exit(code: u8) -> ! {
@@ -1742,11 +1742,6 @@ pub fn schedule() {
     if !PREEMPT_ON.load(Ordering::SeqCst) {
         return;
     }
-    // Parked APs must not run the shared ready set (TSS/rsp0 are BSP-only).
-    if crate::smp::cpu_id() != 0 && crate::smp::aps_parked() {
-        return;
-    }
-
     // Hold IF off across TASKS + switch. Caller may already have IF clear
     // (timer, yield); save/restore so we never leave IF on while locked.
     let flags = irq_save();
@@ -1773,11 +1768,6 @@ pub fn schedule() {
                     continue;
                 }
             }
-            // x86 APs skip TSS (Busy descriptor); user mode needs per-CPU TSS.
-            // Keep user tasks on the BSP until that exists on all arches.
-            if tasks[i].aspace != 0 && cpu != 0 {
-                continue;
-            }
             next = i;
             break;
         }
@@ -1803,9 +1793,7 @@ pub fn schedule() {
         return;
     };
 
-    // Shared TSS / KERNEL_RSP0 are BSP-only until per-CPU TSS exists.
-    // APs must not clobber them or the next BSP syscall uses the wrong stack.
-    if kstack != 0 && crate::smp::cpu_id() == 0 {
+    if kstack != 0 {
         user::set_kernel_rsp0(kstack);
         #[cfg(target_arch = "x86_64")]
         crate::arch::gdt::set_rsp0(kstack as u64);
@@ -2100,13 +2088,6 @@ pub fn ap_idle_loop(logical: usize) -> ! {
 
 fn ap_idle_body() {
     loop {
-        if crate::smp::aps_parked() {
-            // Halt forever with IRQs masked so we never re-enter schedule.
-            irq_off();
-            loop {
-                wait();
-            }
-        }
         yield_now();
         crate::arch::wait_interrupt();
     }

@@ -14,6 +14,8 @@ const GICD: usize = 0x0800_0000;
 const GICC: usize = 0x0801_0000;
 const PPI_EL1_VIRT: u32 = 27; // CNTV
 const PPI_EL1_PHYS: u32 = 30; // CNTP
+const SGI_TLB: u32 = 0;
+const SGI_RESCHED: u32 = 1;
 
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
 
@@ -300,6 +302,7 @@ pub fn init() {
         if current_el() >= 2 {
             asm!("msr vbar_el2, {v}", "isb", v = in(reg) v, options(nostack));
         }
+        asm!("msr tpidr_el1, xzr", options(nostack));
     }
     init_gic();
     init_timer();
@@ -310,13 +313,16 @@ pub fn init() {
 }
 
 /// Secondary CPU: vectors already set globally; enable GICC + timers.
-pub fn ap_init() {
+pub fn ap_init(logical: usize) {
+    use_spx();
     let v = exception_vectors as *const () as usize;
     unsafe {
         asm!("msr vbar_el1, {v}", "isb", v = in(reg) v, options(nostack));
         if current_el() >= 2 {
             asm!("msr vbar_el2, {v}", "isb", v = in(reg) v, options(nostack));
         }
+        // Logical CPU id for per-CPU syscall / stack state.
+        asm!("msr tpidr_el1, {id}", id = in(reg) logical, options(nostack));
     }
     // GICv2 CPU interface is banked per-CPU.
     write32(GICC, 3);
@@ -340,8 +346,12 @@ fn init_gic() {
     write32(GICD, 3); // GICD_CTLR enable group 0+1
     write32(GICC, 3); // GICC_CTLR enable group 0+1
     write32(GICC + 0x004, 0xFF); // PMR: accept all
-    write32(GICD + 0x100, (1 << PPI_EL1_VIRT) | (1 << PPI_EL1_PHYS));
-    for id in [PPI_EL1_VIRT, PPI_EL1_PHYS] {
+    // Enable SGIs 0/1 (IPI) + timer PPIs.
+    write32(
+        GICD + 0x100,
+        (1 << SGI_TLB) | (1 << SGI_RESCHED) | (1 << PPI_EL1_VIRT) | (1 << PPI_EL1_PHYS),
+    );
+    for id in [SGI_TLB, SGI_RESCHED, PPI_EL1_VIRT, PPI_EL1_PHYS] {
         unsafe {
             core::ptr::write_volatile((GICD + 0x400 + id as usize) as *mut u8, 0x80);
         }
@@ -381,16 +391,48 @@ extern "C" fn aarch64_irq_handler() {
     let iar = read32(GICC + 0x0C);
     let id = iar & 0x3FF;
     let timer = id == PPI_EL1_VIRT || id == PPI_EL1_PHYS;
+    let tlb = id == SGI_TLB;
+    let resched = id == SGI_RESCHED;
     if timer {
         TIMER_FIRED.store(true, Ordering::SeqCst);
         rearm_timers();
     }
+    if tlb {
+        flush_tlb_local();
+        crate::smp::tlb_ipi_ack();
+    }
     if id < 1020 {
         write32(GICC + 0x10, iar);
     }
-    if timer {
+    if timer || resched {
         crate::task::schedule();
     }
+}
+
+fn flush_tlb_local() {
+    unsafe {
+        asm!("dsb ishst", options(nostack));
+        if current_el() >= 2 {
+            asm!("tlbi alle2is", options(nostack));
+            asm!("tlbi vmalle1is", options(nostack));
+        } else {
+            asm!("tlbi vmalle1is", options(nostack));
+        }
+        asm!("dsb ish; isb", options(nostack));
+    }
+}
+
+fn send_sgi(id: u32) {
+    // GICD_SGIR: target filter = all except self (bits 25:24 = 01).
+    write32(GICD + 0xF00, (0b01 << 24) | (id & 0xf));
+}
+
+pub fn ipi_tlb_shootdown() {
+    send_sgi(SGI_TLB);
+}
+
+pub fn ipi_reschedule() {
+    send_sgi(SGI_RESCHED);
 }
 
 #[unsafe(no_mangle)]

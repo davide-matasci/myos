@@ -1,6 +1,7 @@
 //! AArch64: Limine on QEMU `virt` (UEFI). MMU is already on.
 
 mod interrupts;
+pub use interrupts::{ipi_reschedule, ipi_tlb_shootdown};
 mod keyboard;
 mod paging;
 pub mod pci;
@@ -75,8 +76,9 @@ fn current_el() -> u64 {
 
 /// PSCI SYSTEM_OFF. EL1 uses HVC (QEMU virt conduit); EL2 uses SMC.
 
-pub fn ap_init(_logical: usize) {
-    interrupts::ap_init();
+pub fn ap_init(logical: usize) {
+    interrupts::ap_init(logical);
+    crate::user::ap_init();
 }
 
 pub fn wait_interrupt() {

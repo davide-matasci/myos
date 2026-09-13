@@ -2,6 +2,7 @@
 
 pub mod gdt;
 mod interrupts;
+pub use interrupts::{ipi_reschedule, ipi_tlb_shootdown};
 mod keyboard;
 mod paging;
 pub mod pci;
@@ -64,8 +65,9 @@ pub fn virtio_blk_write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
 
 /// QEMU `isa-debug-exit` at iobase 0xf4. A no-op if the device was not added.
 
-pub fn ap_init(_logical: usize) {
-    interrupts::ap_init();
+pub fn ap_init(logical: usize) {
+    interrupts::ap_init(logical);
+    crate::user::ap_init();
 }
 
 /// Brief halt until the next interrupt (idle loop).
