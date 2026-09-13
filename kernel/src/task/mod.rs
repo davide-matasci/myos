@@ -339,6 +339,19 @@ pub fn init() {
     irq_restore(flags);
 }
 
+/// x86 AP user enter still hits a deterministic kernel PF; keep user on BSP
+/// there. aarch64/riscv use per-CPU exception stacks and can run user anywhere.
+fn user_affinity() -> Option<usize> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        Some(0)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        None
+    }
+}
+
 pub fn enable_preempt() {
     PREEMPT_ON.store(true, Ordering::SeqCst);
 }
@@ -1582,7 +1595,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        affinity: None,
+        affinity: user_affinity(),
     };
     drop(tasks);
     user::note_fork();
@@ -1713,8 +1726,7 @@ fn spawn_inner(
         has_ctty: false,
         sig_pending: 0,
         sig_ignored: 0,
-        // Kernel and user threads: any CPU (per-CPU TSS / stacks are online).
-        affinity: None,
+        affinity: if aspace != 0 { user_affinity() } else { None },
     };
     drop(tasks);
     irq_restore(flags);
@@ -1767,6 +1779,11 @@ pub fn schedule() {
                 if aff != cpu {
                     continue;
                 }
+            }
+            // x86: match user_affinity() — do not run user on APs yet.
+            #[cfg(target_arch = "x86_64")]
+            if tasks[i].aspace != 0 && cpu != 0 {
+                continue;
             }
             next = i;
             break;

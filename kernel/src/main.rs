@@ -156,24 +156,33 @@ fn kernel_main() -> ! {
 fn smp_smoke() {
     use core::sync::atomic::{AtomicU64, Ordering};
     static SEEN: AtomicU64 = AtomicU64::new(0);
+    static STOP: AtomicU64 = AtomicU64::new(0);
     for _ in 0..4 {
         task::spawn(|| {
-            let id = smp::cpu_id() as u64;
-            SEEN.fetch_or(1u64 << id, Ordering::SeqCst);
+            while STOP.load(Ordering::SeqCst) == 0 {
+                let id = smp::cpu_id() as u64;
+                SEEN.fetch_or(1u64 << id, Ordering::SeqCst);
+                task::yield_now();
+            }
         });
     }
-    // Yield so APs / BSP can run the workers.
-    for _ in 0..10_000 {
+    for _ in 0..50_000 {
         task::yield_now();
         let bits = SEEN.load(Ordering::SeqCst);
         if bits.count_ones() >= smp::online_count().min(2) as u32 {
             break;
         }
     }
+    STOP.store(1, Ordering::SeqCst);
+    for _ in 0..1000 {
+        task::yield_now();
+    }
     let bits = SEEN.load(Ordering::SeqCst);
     console::status_info(&alloc::format!(
-        "smp sched mask={bits:#x} cpus={}",
-        smp::online_count()
+        "smp sched mask={bits:#x} cpus={} ticks0={} ticks1={}",
+        smp::online_count(),
+        smp::sched_ticks(0),
+        smp::sched_ticks(1),
     ));
 }
 

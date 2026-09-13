@@ -263,27 +263,41 @@ fn lapic_r(off: u32) -> u32 {
     unsafe { core::ptr::read_volatile((b + off as usize) as *const u32) }
 }
 
-fn send_ipi_all_excl_self(vector: u8) {
+const ICR_HIGH: u32 = 0x310;
+
+fn send_ipi_apic(apic_id: u32, vector: u8) {
     if LAPIC.load(Ordering::SeqCst) == 0 {
         return;
     }
-    // Wait for idle ICR.
     while lapic_r(ICR_LOW) & (1 << 12) != 0 {
         core::hint::spin_loop();
     }
-    // Delivery mode Fixed, shorthand All Excluding Self (bits 19:18 = 11).
-    lapic_w(ICR_LOW, u32::from(vector) | (0b11 << 18));
+    // Destination in ICR high bits 31:24 (xAPIC).
+    lapic_w(ICR_HIGH, apic_id << 24);
+    // Fixed delivery, physical mode, assert.
+    lapic_w(ICR_LOW, u32::from(vector) | (1 << 14));
     while lapic_r(ICR_LOW) & (1 << 12) != 0 {
         core::hint::spin_loop();
+    }
+}
+
+fn send_ipi_others(vector: u8) {
+    let self_id = crate::smp::cpu_id();
+    for i in 0..crate::smp::MAX_CPUS {
+        if i == self_id || !crate::smp::cpu_online(i) {
+            continue;
+        }
+        let apic = crate::smp::cpu_hw_id(i) as u32;
+        send_ipi_apic(apic, vector);
     }
 }
 
 pub fn ipi_tlb_shootdown() {
-    send_ipi_all_excl_self(IPI_TLB_VECTOR);
+    send_ipi_others(IPI_TLB_VECTOR);
 }
 
 pub fn ipi_reschedule() {
-    send_ipi_all_excl_self(IPI_RESCHED_VECTOR);
+    send_ipi_others(IPI_RESCHED_VECTOR);
 }
 
 fn flush_tlb_local() {

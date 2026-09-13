@@ -168,6 +168,14 @@ pub fn online_count() -> usize {
     n.max(1)
 }
 
+pub fn sched_ticks(cpu: usize) -> u64 {
+    if cpu < MAX_CPUS {
+        SCHED_TICKS[cpu].load(Ordering::Relaxed)
+    } else {
+        0
+    }
+}
+
 pub fn note_schedule() {
     let id = cpu_id();
     if id < MAX_CPUS {

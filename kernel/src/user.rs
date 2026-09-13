@@ -1187,8 +1187,12 @@ pub fn note_fork() {
 pub fn set_kernel_rsp0(top: usize) {
     let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::ptr::addr_of_mut!(CPU_SYSCALL[cpu].kernel_rsp0).write(top);
+    {
+        // Keep GS_BASE coherent with cpu_id() before publishing rsp0.
+        load_percpu_gs(cpu);
+        unsafe {
+            core::ptr::addr_of_mut!(CPU_SYSCALL[cpu].kernel_rsp0).write(top);
+        }
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {

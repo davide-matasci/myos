@@ -48,9 +48,11 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 | riscv64 | `tp` / Limine `hartid` | `stvec` / `sie` (STIE+SSIE) / `stimecmp` | S-mode timer → `schedule` | SBI IPI ext → SSIP; soft reason bits in `smp` |
 
 Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
-User and kernel tasks use `affinity: None` and may run on any online CPU.
-`note_schedule` counts per-CPU ticks exposed in `/proc/cpuinfo`. QEMU launches
-use `-smp 2`.
+Kernel tasks use `affinity: None` and run on any online CPU (smoke shows
+`sched mask=0x3`). User tasks currently stay on the BSP on **x86_64** (AP
+ring3 entry still under investigation); **aarch64** / **riscv64** leave user
+`affinity: None`. `note_schedule` counts per-CPU ticks in `/proc/cpuinfo`.
+QEMU launches use `-smp 2`.
 
 Per-CPU ring3↔ring0 state:
 
