@@ -21,6 +21,10 @@ rsync -a \
 cp "$MYOS/pconfig.h" "$WORK/pconfig.h"
 # Replace ulimit rather than a 200-line reverse patch (needs getrlimit).
 cp "$MYOS/c_ulimit.c" "$WORK/c_ulimit.c"
+# shf.c stays pristine stock: F_DUPFD/SYS_DUPFD is implemented, so SHF_MAPHI
+# remaps low fds above FDBASE (needed so pipeline/redirection shf handles do
+# not collide with 0/1/2 — the old "no F_DUPFD" stub made `cat | cat` race).
+
 # tty.c stays pristine stock: myos implements /dev/tty, F_DUPFD/F_DUPFD_CLOEXEC
 # and libgloss termios, so oksh's real tty_init (dup console via F_DUPFD into
 # tty_fd at FDBASE) works unchanged — no replacement shim needed.
@@ -33,9 +37,9 @@ patch_copy() {
 patch_copy main
 patch_copy jobs
 patch_copy emacs
+patch_copy edit
 patch_copy trap
 patch_copy io
-patch_copy shf
 patch_copy c_sh
 patch_copy lex
 patch_copy c_ksh

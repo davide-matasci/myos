@@ -1,19 +1,24 @@
 --- trap.c
 +++ trap.c
-@@ -65,8 +65,14 @@
+@@ -65,11 +65,18 @@
  	sigtraps[SIGCHLD].flags |= TF_SHELL_USES;
  
  	/* these are always caught so we can clean up any temporary files. */
 -	setsig(&sigtraps[SIGINT], trapsig, SS_RESTORE_ORIG);
 -	setsig(&sigtraps[SIGQUIT], trapsig, SS_RESTORE_ORIG);
-+	/* myos: no userland trap handlers (kernel supports SIG_DFL/SIG_IGN only),
-+	 * so an interactive shell cannot install `trapsig`. Ignore ^C (SIGINT) /
-+	 * ^\ (SIGQUIT) so the shell survives them while waiting on a foreground
-+	 * child or editing at the prompt. Children reset to SIG_DFL on exec
-+	 * (kernel replace_user clears the inherited ignored mask), so the
-+	 * foreground process still dies on ^C. */
+-	setsig(&sigtraps[SIGTERM], trapsig, SS_RESTORE_ORIG);
+-	setsig(&sigtraps[SIGHUP], trapsig, SS_RESTORE_ORIG);
++	/* myos: no userland trap trampoline (kernel supports SIG_DFL/SIG_IGN
++	 * only). Ignore SIGINT/SIGQUIT so an interactive shell survives ^C/^\\
++	 * while waiting on a foreground child or editing at the prompt.
++	 * Children reset to SIG_DFL on exec (kernel replace_user clears the
++	 * inherited ignored mask), so the foreground process still dies on ^C.
++	 * Same for SIGTERM/SIGHUP: custom `trapsig` would ENOSYS and leave
++	 * cursig pointing at a never-installed handler. */
 +	setsig(&sigtraps[SIGINT], SIG_IGN, SS_RESTORE_ORIG);
 +	setsig(&sigtraps[SIGQUIT], SIG_IGN, SS_RESTORE_ORIG);
- 	setsig(&sigtraps[SIGTERM], trapsig, SS_RESTORE_ORIG);
- 	setsig(&sigtraps[SIGHUP], trapsig, SS_RESTORE_ORIG);
++	setsig(&sigtraps[SIGTERM], SIG_IGN, SS_RESTORE_ORIG);
++	setsig(&sigtraps[SIGHUP], SIG_IGN, SS_RESTORE_ORIG);
  }
+ 
+ void

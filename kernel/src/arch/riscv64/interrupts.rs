@@ -337,7 +337,12 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
                 13 => "load page fault",
                 _ => "store page fault",
             };
-            crate::exception::riscv64_page_fault(kind, stval, sepc, user_sp);
+            // U-mode faults: kill the task (SIGSEGV convention) instead of
+            // halting QEMU — same policy as aarch64 lower_sync data/insn aborts.
+            crate::exception::user_fault_kill(
+                kind,
+                &alloc::format!("stval={stval:#x} sepc={sepc:#x} sp={user_sp:#x}"),
+            );
         }
         _ => {
             let sepc = unsafe { *frame.add(32) };

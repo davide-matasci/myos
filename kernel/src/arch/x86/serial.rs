@@ -20,10 +20,21 @@ impl SerialPort {
     }
 
     pub fn write_byte(&mut self, byte: u8) {
+        // UART ONLCR: turn LF into CRLF for serial terminals. If the writer
+        // already sent CR (oksh emacs historically emitted CR+LF), do not inject
+        // another CR — that became CR CR LF, which wait_ci normalizes to a blank
+        // line and flakes the histrecall seed needle.
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static LAST_WAS_CR: AtomicBool = AtomicBool::new(false);
         if byte == b'\n' {
-            self.write_byte_raw(b'\r');
+            if !LAST_WAS_CR.swap(false, Ordering::Relaxed) {
+                self.write_byte_raw(b'\r');
+            }
+            self.write_byte_raw(b'\n');
+        } else {
+            LAST_WAS_CR.store(byte == b'\r', Ordering::Relaxed);
+            self.write_byte_raw(byte);
         }
-        self.write_byte_raw(byte);
     }
 
     fn write_byte_raw(&mut self, byte: u8) {
