@@ -133,6 +133,30 @@ fn main() {
     nested_elf(
         &cargo,
         manifest,
+        "../modules/pci_enum",
+        "pci_enum",
+        "pci-enum-target",
+        "PCI_ENUM_MODULE_PATH",
+        &target,
+        &profile,
+        &out,
+        &["../abi/src/lib.rs"],
+    );
+    nested_elf(
+        &cargo,
+        manifest,
+        "../modules/acpi",
+        "acpi",
+        "acpi-target",
+        "ACPI_MODULE_PATH",
+        &target,
+        &profile,
+        &out,
+        &["../abi/src/lib.rs"],
+    );
+    nested_elf(
+        &cargo,
+        manifest,
         "../user/init",
         "init",
         "init-target",
@@ -494,7 +518,7 @@ fn nested_elf(
     }
     let mut rustflags = String::from("-C panic=abort");
     // ext2's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
-    if target.contains("x86_64") && (bin == "ext2" || bin == "virtio_net" || bin == "netfs") {
+    if target.contains("x86_64") && (bin == "ext2" || bin == "virtio_net" || bin == "netfs" || bin == "pci_enum" || bin == "acpi") {
         rustflags = String::from("-C panic=abort -C relocation-model=pic");
     }
     if target.contains("aarch64") {
