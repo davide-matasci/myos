@@ -1,0 +1,25 @@
+# Boot CI smoke subset — paths relative to basic/ (no .c).
+# Included by Makefile when TESTLIST=… is set (`TESTS +=` one path per line).
+# Do not use $(shell) to read this file on myos.
+TESTS += pwd/setpwent
+TESTS += pwd/getpwuid
+TESTS += grp/setgrent
+TESTS += grp/getgrgid
+TESTS += ctype/isalpha
+TESTS += ctype/isdigit
+TESTS += string/strlen
+TESTS += string/strcmp
+TESTS += strings/strcasecmp
+TESTS += stdlib/atoi
+TESTS += stdlib/malloc
+TESTS += stdio/fflush
+TESTS += unistd/getpid
+TESTS += unistd/getuid
+TESTS += signal/raise
+TESTS += sys_stat/stat
+TESTS += dirent/opendir
+TESTS += time/time
+TESTS += fcntl/open
+TESTS += setjmp/setjmp
+TESTS += libgen/basename
+TESTS += arpa_inet/htons

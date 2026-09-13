@@ -7,6 +7,8 @@ set -u
 CC="$1"; CFLAGS="$2"; SRC="$3"; T="$4"
 OUT="out/$T.out"
 BIN="$T"
+# Progress for serial CI (unbuffered line so long suites are not silent).
+echo "os-test: $T"
 mkdir -p "${OUT%/*}" "${BIN%/*}" || echo "myos-run: mkdir failed rc=$? dir=${OUT%/*}"
 rm -f -- "$OUT" "$BIN"
 if ! "$CC" $CFLAGS "$SRC" -o "$BIN" -lm 2> "out/$T.err"; then
