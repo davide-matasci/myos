@@ -118,24 +118,6 @@ pub fn cpu_id() -> usize {
             return tpidr;
         }
     }
-    #[cfg(target_arch = "x86_64")]
-    {
-        // Prefer TSC_AUX (logical id) when programmed by interrupt init / AP entry.
-        let aux: u32;
-        unsafe {
-            core::arch::asm!(
-                "rdtscp",
-                out("eax") _,
-                out("edx") _,
-                out("ecx") aux,
-                options(nostack, preserves_flags),
-            );
-        }
-        let id = aux as usize;
-        if id < MAX_CPUS && ONLINE[id].load(Ordering::SeqCst) {
-            return id;
-        }
-    }
     let hw = hw_cpu_id();
     for i in 0..MAX_CPUS {
         if ONLINE[i].load(Ordering::SeqCst) && HW_IDS[i].load(Ordering::SeqCst) == hw {
