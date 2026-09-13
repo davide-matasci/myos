@@ -1739,7 +1739,9 @@ fn spawn_inner(
     };
     drop(tasks);
     irq_restore(flags);
-    crate::smp::kick_cpus();
+    if crate::smp::online_count() > 1 {
+        crate::smp::kick_cpus();
+    }
 }
 
 pub fn user_exit(code: u8) -> ! {

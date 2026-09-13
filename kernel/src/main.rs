@@ -157,11 +157,17 @@ fn smp_smoke() {
     use core::sync::atomic::{AtomicU64, Ordering};
     static SEEN: AtomicU64 = AtomicU64::new(0);
     static STOP: AtomicU64 = AtomicU64::new(0);
+    let n = smp::online_count();
     for _ in 0..4 {
         task::spawn(|| {
+            // Stay runnable until every online CPU has been observed, so APs
+            // get a chance before BSP drains the ready list.
             while STOP.load(Ordering::SeqCst) == 0 {
                 let id = smp::cpu_id() as u64;
                 SEEN.fetch_or(1u64 << id, Ordering::SeqCst);
+                if SEEN.load(Ordering::SeqCst).count_ones() as usize >= n.min(2) {
+                    break;
+                }
                 task::yield_now();
             }
         });
@@ -169,12 +175,12 @@ fn smp_smoke() {
     for _ in 0..50_000 {
         task::yield_now();
         let bits = SEEN.load(Ordering::SeqCst);
-        if bits.count_ones() >= smp::online_count().min(2) as u32 {
+        if bits.count_ones() as usize >= n.min(2) {
             break;
         }
     }
     STOP.store(1, Ordering::SeqCst);
-    for _ in 0..1000 {
+    for _ in 0..1_000 {
         task::yield_now();
     }
     let bits = SEEN.load(Ordering::SeqCst);

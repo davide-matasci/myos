@@ -1403,8 +1403,7 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
 /// Exec from a syscall: copy the saved frame and sret through `fork_sret_from_frame`.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv: usize) {
-    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-    let frame_ptr = unsafe { SYSCALL_FRAME[cpu] };
+    let frame_ptr = unsafe { SYSCALL_FRAME };
     if frame_ptr.is_null() {
         return;
     }
@@ -1579,8 +1578,7 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-static mut SYSCALL_FRAME: [*mut usize; crate::smp::MAX_CPUS] =
-    [core::ptr::null_mut(); crate::smp::MAX_CPUS];
+static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
 
 /// Record the live trap frame for fork/exec resume (aarch64/riscv).
 ///
@@ -1588,9 +1586,8 @@ static mut SYSCALL_FRAME: [*mut usize; crate::smp::MAX_CPUS] =
 /// `signal::deliver_due` can clear the frame on every arch before `user_exit`.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn set_syscall_frame(frame: *mut u64) {
-    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     unsafe {
-        SYSCALL_FRAME[cpu] = frame as *mut usize;
+        SYSCALL_FRAME = frame as *mut usize;
     }
 }
 
@@ -2155,8 +2152,7 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     };
     #[cfg(target_arch = "aarch64")]
     let child = {
-        let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-        let frame = unsafe { SYSCALL_FRAME[cpu] };
+        let frame = unsafe { SYSCALL_FRAME };
         if frame.is_null() {
             return SYSERR;
         }
@@ -2168,8 +2164,7 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     };
     #[cfg(target_arch = "riscv64")]
     let child = {
-        let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-        let frame = unsafe { SYSCALL_FRAME[cpu] };
+        let frame = unsafe { SYSCALL_FRAME };
         if frame.is_null() {
             return SYSERR;
         }
@@ -3040,7 +3035,6 @@ fn flush_user_tlb() {
         }
         core::arch::asm!("dsb ish; isb", options(nostack));
     }
-
     crate::smp::tlb_shootdown();
 }
 
@@ -3056,7 +3050,6 @@ fn flush_user_tlb() {
             options(nostack, preserves_flags),
         );
     }
-
     crate::smp::tlb_shootdown();
 }
 
@@ -3066,7 +3059,6 @@ fn flush_user_tlb() {
     unsafe {
         core::arch::asm!("sfence.vma zero, zero", options(nostack));
     }
-
     crate::smp::tlb_shootdown();
 }
 
