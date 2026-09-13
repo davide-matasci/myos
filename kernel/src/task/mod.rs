@@ -292,7 +292,26 @@ static CURRENT: [AtomicUsize; crate::smp::MAX_CPUS] = [
 static PREEMPT_ON: AtomicBool = AtomicBool::new(false);
 static SERIAL: Mutex<()> = Mutex::new(());
 static KERNEL_ASPACE: AtomicU64 = AtomicU64::new(0);
-static LOADED_ASPACE: AtomicU64 = AtomicU64::new(0);
+static LOADED_ASPACE: [AtomicU64; crate::smp::MAX_CPUS] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+fn loaded_aspace() -> u64 {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    LOADED_ASPACE[cpu].load(Ordering::SeqCst)
+}
+
+fn set_loaded_aspace(a: u64) {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    LOADED_ASPACE[cpu].store(a, Ordering::SeqCst);
+}
 
 fn current_slot() -> usize {
     let cpu = crate::smp::cpu_id();
@@ -307,13 +326,14 @@ fn set_current_slot(slot: usize) {
 pub fn init() {
     let a = user::read_aspace();
     KERNEL_ASPACE.store(a, Ordering::SeqCst);
-    LOADED_ASPACE.store(a, Ordering::SeqCst);
+    set_loaded_aspace(a);
     let flags = irq_save();
     irq_off();
     let mut tasks = TASKS.lock();
     tasks[0].state = State::Running;
     tasks[0].sp = 0;
-    tasks[0].affinity = None;
+    // Must stay on the BSP: APs must not steal kernel_main (no per-CPU TSS yet).
+    tasks[0].affinity = Some(0);
     set_current_slot(0);
     drop(tasks);
     irq_restore(flags);
@@ -329,10 +349,10 @@ pub fn kernel_aspace() -> u64 {
 
 /// Switch the CPU to the kernel aspace if `aspace` is currently loaded.
 pub fn unload_user_aspace(aspace: u64) {
-    if aspace != 0 && LOADED_ASPACE.load(Ordering::SeqCst) == aspace {
+    if aspace != 0 && loaded_aspace() == aspace {
         let k = KERNEL_ASPACE.load(Ordering::SeqCst);
         user::switch_aspace(k);
-        LOADED_ASPACE.store(k, Ordering::SeqCst);
+        set_loaded_aspace(k);
     }
 }
 
@@ -1392,7 +1412,7 @@ pub fn replace_user(
         t.sig_ignored = 0;
     });
     user::switch_aspace(aspace);
-    LOADED_ASPACE.store(aspace, Ordering::SeqCst);
+    set_loaded_aspace(aspace);
 }
 
 pub fn spawn(entry: fn()) {
@@ -1562,7 +1582,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        affinity: None,
+        // User tasks stay on BSP until per-CPU TSS / syscall paths exist on APs.
+        affinity: Some(0),
     };
     drop(tasks);
     user::note_fork();
@@ -1693,7 +1714,8 @@ fn spawn_inner(
         has_ctty: false,
         sig_pending: 0,
         sig_ignored: 0,
-        affinity: None,
+        // Kernel threads: any CPU. User threads: BSP only (no AP TSS yet).
+        affinity: if aspace != 0 { Some(0) } else { None },
     };
     drop(tasks);
     irq_restore(flags);
@@ -1718,6 +1740,10 @@ pub fn yield_now() {
 /// IRQ proof does not leave the Limine stack.
 pub fn schedule() {
     if !PREEMPT_ON.load(Ordering::SeqCst) {
+        return;
+    }
+    // Parked APs must not run the shared ready set (TSS/rsp0 are BSP-only).
+    if crate::smp::cpu_id() != 0 && crate::smp::aps_parked() {
         return;
     }
 
@@ -1747,6 +1773,11 @@ pub fn schedule() {
                     continue;
                 }
             }
+            // x86 APs skip TSS (Busy descriptor); user mode needs per-CPU TSS.
+            // Keep user tasks on the BSP until that exists on all arches.
+            if tasks[i].aspace != 0 && cpu != 0 {
+                continue;
+            }
             next = i;
             break;
         }
@@ -1772,7 +1803,9 @@ pub fn schedule() {
         return;
     };
 
-    if kstack != 0 {
+    // Shared TSS / KERNEL_RSP0 are BSP-only until per-CPU TSS exists.
+    // APs must not clobber them or the next BSP syscall uses the wrong stack.
+    if kstack != 0 && crate::smp::cpu_id() == 0 {
         user::set_kernel_rsp0(kstack);
         #[cfg(target_arch = "x86_64")]
         crate::arch::gdt::set_rsp0(kstack as u64);
@@ -1783,9 +1816,9 @@ pub fn schedule() {
     } else {
         aspace
     };
-    if want != LOADED_ASPACE.load(Ordering::SeqCst) {
+    if want != loaded_aspace() {
         user::switch_aspace(want);
-        LOADED_ASPACE.store(want, Ordering::SeqCst);
+        set_loaded_aspace(want);
     }
 
     unsafe {
@@ -2065,6 +2098,13 @@ pub fn ap_idle_loop(logical: usize) -> ! {
 
 fn ap_idle_body() {
     loop {
+        if crate::smp::aps_parked() {
+            // Halt forever with IRQs masked so we never re-enter schedule.
+            irq_off();
+            loop {
+                wait();
+            }
+        }
         yield_now();
         crate::arch::wait_interrupt();
     }

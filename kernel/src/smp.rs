@@ -57,6 +57,19 @@ static SCHED_TICKS: [AtomicU64; MAX_CPUS] = [
 static BOOT_CPU: AtomicUsize = AtomicUsize::new(0);
 static AP_PROGRESS: AtomicUsize = AtomicUsize::new(0);
 
+static PARKED: AtomicBool = AtomicBool::new(false);
+
+/// After bring-up smoke, freeze APs so they cannot touch shared TSS/rsp0 or
+/// race the BSP through userspace (no per-CPU TSS yet).
+pub fn park_aps() {
+    PARKED.store(true, Ordering::SeqCst);
+}
+
+pub fn aps_parked() -> bool {
+    PARKED.load(Ordering::SeqCst)
+}
+
+
 fn hw_cpu_id() -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
