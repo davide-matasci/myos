@@ -71,6 +71,19 @@ trap_vector:
     csrr t0, sscratch
     sd t0, 272(sp)
 3:
+    # RISC-V ABI: tp (x4) is the user TLS pointer. smp::cpu_id()/hw_cpu_id()
+    # read tp as the logical CPU index, so leaving user tp live through the
+    # trap/syscall body made current_slot()/LOADED_ASPACE/set_kernel_rsp0 hit
+    # the wrong per-CPU cell (and skip the BSP-only KERNEL_SSCRATCH update)
+    # whenever user TLS was a small integer or an AP was ONLINE. Pin tp to the
+    # BSP logical id on U-mode entry; the epilogue restores user x4 from the
+    # frame. Nested S-mode traps keep the hart's kernel tp (AP idle threads
+    # stash their logical id in tp at bring-up).
+    csrr t1, sstatus
+    andi t1, t1, 0x100
+    bnez t1, 5f
+    mv tp, zero
+5:
     mv a0, sp
     call riscv64_trap_handler
     # Mask SIE BEFORE restoring sscratch: a timer nesting in the window where

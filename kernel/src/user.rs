@@ -1389,8 +1389,18 @@ const USER_SSTATUS: u64 = (2 << 32) | (1 << 5); // UXL=64-bit user, SPIE, SPP=0
 
 #[cfg(target_arch = "riscv64")]
 fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
-    let ksp = unsafe { KERNEL_SSCRATCH };
+    let ksp = {
+        let t = task::current_kernel_stack_top();
+        if t != 0 {
+            t
+        } else {
+            unsafe { KERNEL_SSCRATCH }
+        }
+    };
     unsafe {
+        // Install user context FIRST, then scrub remaining GPRs. Zeroing before
+        // the moves would clobber LLVM's `in(reg)` temporaries (usp/argc/…) and
+        // sret with sp/a0/sepc = 0 — instant sepc=0 IPF on first enter.
         core::arch::asm!(
             "csrw sscratch, {ksp}",
             "mv sp, {usp}",
@@ -1398,6 +1408,34 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             "mv a1, {argv}",
             "csrw sepc, {rip}",
             "csrw sstatus, {s}",
+            "mv ra, zero",
+            "mv gp, zero",
+            "mv tp, zero",
+            "mv t0, zero",
+            "mv t1, zero",
+            "mv t2, zero",
+            "mv s0, zero",
+            "mv s1, zero",
+            "mv a2, zero",
+            "mv a3, zero",
+            "mv a4, zero",
+            "mv a5, zero",
+            "mv a6, zero",
+            "mv a7, zero",
+            "mv s2, zero",
+            "mv s3, zero",
+            "mv s4, zero",
+            "mv s5, zero",
+            "mv s6, zero",
+            "mv s7, zero",
+            "mv s8, zero",
+            "mv s9, zero",
+            "mv s10, zero",
+            "mv s11, zero",
+            "mv t3, zero",
+            "mv t4, zero",
+            "mv t5, zero",
+            "mv t6, zero",
             "sret",
             ksp = in(reg) ksp,
             usp = in(reg) user_rsp,
@@ -1430,19 +1468,30 @@ fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv
         #[cfg(target_arch = "riscv64")]
         {
             let frame = frame_ptr as *mut u64;
-            *frame.add(10) = argc as u64;
-            *frame.add(11) = argv as u64;
+            // Definitive exec frame: argc/argv/sp/sepc/sstatus only. Zero every
+            // other GPR so in-place expand cannot resume the new image with the
+            // previous program's ra/tp/gp (null-call → instruction page fault
+            // stval=0 sepc=0 — the ripgrep boot-mini signature after uutils ls).
+            for i in 0..32usize {
+                *frame.add(i) = 0;
+            }
+            *frame.add(10) = argc as u64; // a0
+            *frame.add(11) = argv as u64; // a1
             *frame.add(32) = entry as u64;
             *frame.add(33) = USER_SSTATUS;
             *frame.add(34) = rsp as u64;
-            // fork_sret_from_frame now preserves sscratch (child-style). The
-            // live syscall frame's slot 34 holds the *new* user sp; leaving
-            // sscratch as the old user sp / frame+280 made every later trap of
-            // this task build its kernel frame on the user stack — the riscv64
-            // CI corruption family (sepc=0, zeroed user ra). Same invariant as
-            // enter_fork_riscv64: sscratch = kernel top.
-            let ksp = unsafe { KERNEL_SSCRATCH };
-            unsafe {
+            // Publish this task's kernel stack top into both the static and the
+            // CSR — schedule updating only the static left the CSR stale.
+            let ksp = {
+                let t = task::current_kernel_stack_top();
+                if t != 0 {
+                    t
+                } else {
+                    KERNEL_SSCRATCH
+                }
+            };
+            if ksp != 0 {
+                core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(ksp);
                 core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
             }
             crate::arch::fork_sret_to_user(frame);
@@ -1577,12 +1626,22 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
     frame[32] = regs.rip as u64; // resume past the fork ecall
     frame[33] = USER_SSTATUS;
     frame[34] = regs.rsp as u64;
-    let ksp = unsafe { KERNEL_SSCRATCH };
+    let ksp = {
+        let t = task::current_kernel_stack_top();
+        if t != 0 {
+            t
+        } else {
+            unsafe { KERNEL_SSCRATCH }
+        }
+    };
     unsafe {
         // Preserve kernel stack top in sscratch across sret (enter_riscv64
         // invariant). The old child stub left sscratch at frame+280 and the
         // next user trap smashed the stack — pipe/fork then jumped to garbage.
-        core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
+        if ksp != 0 {
+            core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(ksp);
+            core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
+        }
         crate::arch::fork_sret_child_to_user(frame.as_mut_ptr());
     }
 }
@@ -1892,6 +1951,12 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
         return SYSERR;
     };
     let argc = arg_refs.len();
+    // A zero entry is never a valid userspace image (would sret to NULL → the
+    // classic riscv64 `instruction page fault stval=0 sepc=0`). Refuse rather
+    // than resume a corrupt realize/expand result.
+    if entry == 0 {
+        return SYSERR;
+    }
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);

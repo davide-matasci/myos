@@ -413,6 +413,16 @@ pub fn current_aspace() -> u64 {
     a
 }
 
+/// Kernel stack top for the running task (riscv64 sscratch / x86 rsp0).
+pub fn current_kernel_stack_top() -> usize {
+    let flags = irq_save();
+    irq_off();
+    let id = current_slot();
+    let t = TASKS.lock()[id].kernel_stack_top;
+    irq_restore(flags);
+    t
+}
+
 /// Per-task user map: (USER_BASE, IMAGE_SPAN, STACK_OFF).
 pub fn current_user_map() -> (u64, usize, u64) {
     let flags = irq_save();
@@ -1825,6 +1835,14 @@ pub fn schedule() {
         user::set_kernel_rsp0(kstack);
         #[cfg(target_arch = "x86_64")]
         crate::arch::gdt::set_rsp0(kstack as u64);
+        // Keep the sscratch CSR in lockstep with the static. Updating only the
+        // static left the CSR holding a previous task's top (or user sp) across
+        // schedule→trampoline→exec races; the next user trap then built its
+        // kernel frame on the wrong stack (riscv64 sepc=0 / zeroed ra family).
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            core::arch::asm!("csrw sscratch, {k}", k = in(reg) kstack, options(nostack));
+        }
     }
 
     let want = if aspace == 0 {

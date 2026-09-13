@@ -21,7 +21,7 @@ sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.
 | `send`/`recv`/`read`/`write` | ordinary fd I/O on data; empty connected read blocks unless `O_NONBLOCK` (then EAGAIN); hangup → EOF |
 | `close` | hangup via ctl (`hangup`) then close data (hook from `_close`) |
 | `getaddrinfo` | DNS A lookup over `/net/udp` to QEMU DNS `10.0.2.3:53` (same as `user/lib/dns.rs`) |
-| `poll`/`select` | userspace busy-wait; **POLLOUT** only when `SOCK_CONNECTED` (or connect finished); **POLLIN** from netfs RX size / hangup (drain RX before hangup EOF) |
+| `poll`/`select` | userspace busy-wait; **POLLOUT** only when `SOCK_CONNECTED` (or connect finished); **POLLIN** from netfs RX size / hangup (drain RX before hangup EOF); tty **POLLIN** is not always-ready (no FIONREAD) |
 
 Outbound TCP/UDP first. `listen`/`accept` return `EOPNOTSUPP`. Most `SO_*`/`TCP_*` are ignored.
 
@@ -55,6 +55,6 @@ Outbound TCP/UDP first. `listen`/`accept` return `EOPNOTSUPP`. Most `SO_*`/`TCP_
 ### Known gaps
 
 - No inbound listen/accept; no IPv6; incomplete `getsockname` (returns INADDR_ANY)
-- poll/select: sockets use netfs RX size / hangup; other fds still always-ready
+- poll/select: sockets use netfs RX size / hangup; regular files still always-ready; tty POLLIN is not (no FIONREAD — lynx interrupt-check must not block)
 - curl still a large ELF (~0.6–1.2MB stripped); many protocols disabled but not a tiny client
 - Full QEMU smoke may not have been run on the builder box — rely on CI
