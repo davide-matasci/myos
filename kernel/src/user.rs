@@ -157,7 +157,7 @@ static mut CPU_SYSCALL: [CpuSyscallState; crate::smp::MAX_CPUS] = [
 ];
 
 #[cfg(target_arch = "riscv64")]
-static mut KERNEL_SSCRATCH: [usize; crate::smp::MAX_CPUS] = [0; crate::smp::MAX_CPUS];
+static mut KERNEL_SSCRATCH: usize = 0;
 
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
@@ -1196,7 +1196,8 @@ pub fn set_kernel_rsp0(top: usize) {
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {
-        core::ptr::addr_of_mut!(KERNEL_SSCRATCH[cpu]).write(top);
+        let _ = cpu;
+        core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(top);
     }
     let _ = top;
 }
@@ -1378,14 +1379,7 @@ const USER_SSTATUS: u64 = (2 << 32) | (1 << 5); // UXL=64-bit user, SPIE, SPP=0
 
 #[cfg(target_arch = "riscv64")]
 fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
-    let ksp = {
-        let top = crate::task::current_kernel_stack_top();
-        if top != 0 {
-            top
-        } else {
-            unsafe { KERNEL_SSCRATCH[crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1)] }
-        }
-    };
+    let ksp = unsafe { KERNEL_SSCRATCH };
     unsafe {
         core::arch::asm!(
             "csrw sscratch, {ksp}",
@@ -1438,14 +1432,7 @@ fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv
             // this task build its kernel frame on the user stack — the riscv64
             // CI corruption family (sepc=0, zeroed user ra). Same invariant as
             // enter_fork_riscv64: sscratch = kernel top.
-            let ksp = {
-        let top = crate::task::current_kernel_stack_top();
-        if top != 0 {
-            top
-        } else {
-            unsafe { KERNEL_SSCRATCH[crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1)] }
-        }
-    };
+            let ksp = unsafe { KERNEL_SSCRATCH };
             unsafe {
                 core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
             }
@@ -1581,14 +1568,7 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
     frame[32] = regs.rip as u64; // resume past the fork ecall
     frame[33] = USER_SSTATUS;
     frame[34] = regs.rsp as u64;
-    let ksp = {
-        let top = crate::task::current_kernel_stack_top();
-        if top != 0 {
-            top
-        } else {
-            unsafe { KERNEL_SSCRATCH[crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1)] }
-        }
-    };
+    let ksp = unsafe { KERNEL_SSCRATCH };
     unsafe {
         // Preserve kernel stack top in sscratch across sret (enter_riscv64
         // invariant). The old child stub left sscratch at frame+280 and the
