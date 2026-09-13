@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "pci_enum"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Full PCI bus enumeration; publishes /proc/pci."
+
+[[bin]]
+name = "pci_enum"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

@@ -207,6 +207,8 @@ fn run_bios(bios_path: &str) {
         .arg(X86_CPU)
         .arg("-m")
         .arg("1024")
+        .arg("-smp")
+        .arg("2")
         .arg("-drive")
         .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
@@ -228,6 +230,8 @@ fn run_uefi(uefi_path: &str) {
         .arg(X86_CPU)
         .arg("-m")
         .arg("1024")
+        .arg("-smp")
+        .arg("2")
         .arg("-drive")
         .arg(format!("format=raw,file={uefi_path}"))
         .arg("-drive")
@@ -306,6 +310,8 @@ fn run_ci_bios(bios_path: &str) {
         .arg(X86_CPU)
         .arg("-m")
         .arg("1024")
+        .arg("-smp")
+        .arg("2")
         .arg("-drive")
         .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
@@ -349,6 +355,8 @@ fn run_ci_uefi(uefi_path: &str) {
         .arg(X86_CPU)
         .arg("-m")
         .arg("1024")
+        .arg("-smp")
+        .arg("2")
         .arg("-drive")
         .arg(format!("format=raw,file={uefi_path}"))
         .arg("-drive")
@@ -425,6 +433,8 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("cortex-a72")
         .arg("-m")
         .arg("1024")
+        .arg("-smp")
+        .arg("2")
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
@@ -821,6 +831,8 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("rv64")
         .arg("-m")
         .arg("2048")
+        .arg("-smp")
+        .arg("2")
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",

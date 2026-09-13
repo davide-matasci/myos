@@ -66,6 +66,17 @@ pub fn virtio_blk_write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
 }
 
 /// SBI System Reset extension shutdown (QEMU virt).
+
+pub fn ap_init(_logical: usize) {
+    interrupts::ap_init();
+}
+
+pub fn wait_interrupt() {
+    unsafe {
+        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+    }
+}
+
 pub fn exit_qemu(_code: u32) {
     const SBI_SRST: u64 = 0x5352_5354; // "SRST"
     unsafe {

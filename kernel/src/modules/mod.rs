@@ -19,6 +19,8 @@ const STUBFS_IMAGE: &[u8] = include_bytes!(env!("STUBFS_MODULE_PATH"));
 const EXT2_IMAGE: &[u8] = include_bytes!(env!("EXT2_MODULE_PATH"));
 const VIRTIO_NET_IMAGE: &[u8] = include_bytes!(env!("VIRTIO_NET_MODULE_PATH"));
 const NETFS_IMAGE: &[u8] = include_bytes!(env!("NETFS_MODULE_PATH"));
+const PCI_ENUM_IMAGE: &[u8] = include_bytes!(env!("PCI_ENUM_MODULE_PATH"));
+const ACPI_IMAGE: &[u8] = include_bytes!(env!("ACPI_MODULE_PATH"));
 
 static API: KernelApi = KernelApi {
     abi_version: ABI_VERSION,
@@ -43,6 +45,9 @@ static API: KernelApi = KernelApi {
     dma_alloc: api_dma_alloc,
     dev_register: api_dev_register,
     copy_to_user: api_copy_to_user,
+    proc_register: api_proc_register,
+    acpi_rsdp: api_acpi_rsdp,
+    hhdm_offset: api_hhdm_offset,
 };
 
 /// Load the hello module that was baked into the kernel at build time.
@@ -50,6 +55,20 @@ pub fn load_embedded_hello() {
     match load("hello", HELLO_IMAGE) {
         Ok(()) => console::status_ok("hello"),
         Err(e) => console::status_fail(&alloc::format!("hello module: {e}")),
+    }
+}
+
+pub fn load_embedded_pci_enum() {
+    match load("pci_enum", PCI_ENUM_IMAGE) {
+        Ok(()) => {}
+        Err(e) => console::status_fail(&alloc::format!("pci_enum module: {e}")),
+    }
+}
+
+pub fn load_embedded_acpi() {
+    match load("acpi", ACPI_IMAGE) {
+        Ok(()) => {}
+        Err(e) => console::status_fail(&alloc::format!("acpi module: {e}")),
     }
 }
 
@@ -460,4 +479,41 @@ unsafe extern "C" fn api_copy_to_user(dst_user: usize, src: *const u8, len: usiz
     } else {
         -1
     }
+}
+
+unsafe extern "C" fn api_proc_register(
+    name: *const u8,
+    name_len: usize,
+    data: *const u8,
+    data_len: usize,
+) -> i32 {
+    if name.is_null() || name_len == 0 {
+        return -1;
+    }
+    if data_len != 0 && data.is_null() {
+        return -1;
+    }
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let Ok(name) = core::str::from_utf8(name_bytes) else {
+        return -1;
+    };
+    let src: &[u8] = if data_len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(data, data_len) }
+    };
+    let leaked: &'static [u8] = alloc::boxed::Box::leak(src.to_vec().into_boxed_slice());
+    if crate::fs::procfs_register(name, leaked) {
+        0
+    } else {
+        -1
+    }
+}
+
+unsafe extern "C" fn api_acpi_rsdp() -> usize {
+    crate::limine_boot::rsdp_va().unwrap_or(0)
+}
+
+unsafe extern "C" fn api_hhdm_offset() -> u64 {
+    crate::limine_boot::hhdm_offset()
 }

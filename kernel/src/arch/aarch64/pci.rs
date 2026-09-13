@@ -20,10 +20,18 @@ fn ecam(bus: u8, slot: u8, func: u8, offset: u8) -> usize {
 }
 
 pub fn cfg_read32(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
+    // Low ECAM is only 16 MiB (buses 0..=15). pci_enum scans up to bus 31;
+    // do not touch 0x40000000+ (RAM / unmapped TTBR0).
+    if bus > MAX_BUS {
+        return 0xFFFF_FFFF;
+    }
     unsafe { core::ptr::read_volatile(ecam(bus, slot, func, offset) as *const u32) }
 }
 
 pub fn cfg_write32(bus: u8, slot: u8, func: u8, offset: u8, value: u32) {
+    if bus > MAX_BUS {
+        return;
+    }
     unsafe { core::ptr::write_volatile(ecam(bus, slot, func, offset) as *mut u32, value) }
 }
 

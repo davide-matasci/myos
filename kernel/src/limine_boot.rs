@@ -1,9 +1,9 @@
-//! Limine boot protocol requests. Shared by x86_64 and aarch64.
+//! Limine boot protocol requests. Shared by x86_64, aarch64, and riscv64.
 
 use limine::memmap;
 use limine::request::{
     DtbRequest, ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemmapRequest,
-    ModulesRequest,
+    ModulesRequest, MpRequest, RsdpRequest,
 };
 use limine::{BaseRevision, RequestsEndMarker, RequestsStartMarker};
 
@@ -38,6 +38,16 @@ pub static DTB: DtbRequest = DtbRequest::new();
 #[used]
 #[unsafe(link_section = ".limine_requests")]
 pub static MODULES: ModulesRequest = ModulesRequest::new();
+
+/// Multi-processor: Limine parks APs until `MpInfo::bootstrap`.
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+pub static MP: MpRequest = MpRequest::new(0);
+
+/// ACPI RSDP (virtual address under base revision ≥ 4 / current MAX).
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+pub static RSDP: RsdpRequest = RsdpRequest::new();
 
 #[used]
 #[unsafe(link_section = ".limine_requests_end")]
@@ -77,4 +87,15 @@ pub fn alloc_usable(size: usize) -> usize {
         }
     }
     panic!("no usable Limine memory for heap");
+}
+
+/// Limine RSDP virtual address, or `None` when firmware has no ACPI.
+pub fn rsdp_va() -> Option<usize> {
+    let resp = RSDP.response()?;
+    let p = resp.address as usize;
+    if p == 0 {
+        None
+    } else {
+        Some(p)
+    }
 }

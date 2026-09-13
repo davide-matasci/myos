@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 8;
+pub const ABI_VERSION: u32 = 9;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
@@ -112,7 +112,6 @@ pub struct ModuleChrOps {
 }
 
 /// Kernel services visible to a module.
-
 ///
 /// Layout is frozen by `repr(C)`. New functions are appended; never reorder.
 #[repr(C)]
@@ -183,8 +182,21 @@ pub struct KernelApi {
     /// Copy `len` bytes from kernel `src` to userspace address `dst_user`.
     /// Valid only during a syscall on the current task. 0 ok, negative on fault.
     pub copy_to_user: unsafe extern "C" fn(dst_user: usize, src: *const u8, len: usize) -> i32,
+    /// Register or replace a generated `/proc/<name>` text node.
+    /// `name` may contain a single `/` for a subdirectory (e.g. `acpi/tables`).
+    /// Data is copied into a leaked kernel buffer. 0 ok, negative on error.
+    pub proc_register: unsafe extern "C" fn(
+        name: *const u8,
+        name_len: usize,
+        data: *const u8,
+        data_len: usize,
+    ) -> i32,
+    /// Limine RSDP virtual address, or 0 if unavailable (non-ACPI firmware).
+    pub acpi_rsdp: unsafe extern "C" fn() -> usize,
+    /// HHDM offset for phys→virt of ACPI tables when needed. 0 on arches
+    /// that identity-map low memory already.
+    pub hhdm_offset: unsafe extern "C" fn() -> u64,
 }
-
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).
 pub fn status_ok(api: &KernelApi, label: &str) {

@@ -22,6 +22,7 @@ mod pci;
 mod modules;
 mod pipe;
 mod signal;
+mod smp;
 mod task;
 mod time;
 mod user;
@@ -95,10 +96,21 @@ fn kernel_main() -> ! {
     console::status_info("task b");
     console::status_ok("scheduler");
 
+    smp::init();
+    // Prove cross-CPU scheduling: spawn workers that record cpu_id.
+    smp_smoke();
+    // Freeze APs before VFS/userspace: shared TSS/syscall stacks are BSP-only.
+    smp::park_aps();
+    for _ in 0..1000 {
+        task::yield_now();
+    }
+
     fs::init();
     fs::init_limine();
     modules::load_embedded_stubfs();
     modules::load_embedded_hello();
+    modules::load_embedded_pci_enum();
+    modules::load_embedded_acpi();
     modules::load_limine_modules();
 
     blk::init();
@@ -140,6 +152,30 @@ fn kernel_main() -> ! {
     console::flush();
     arch::exit_qemu(arch::QEMU_SUCCESS);
     arch::halt();
+}
+
+fn smp_smoke() {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static SEEN: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..4 {
+        task::spawn(|| {
+            let id = smp::cpu_id() as u64;
+            SEEN.fetch_or(1u64 << id, Ordering::SeqCst);
+        });
+    }
+    // Yield so APs / BSP can run the workers.
+    for _ in 0..10_000 {
+        task::yield_now();
+        let bits = SEEN.load(Ordering::SeqCst);
+        if bits.count_ones() >= smp::online_count().min(2) as u32 {
+            break;
+        }
+    }
+    let bits = SEEN.load(Ordering::SeqCst);
+    console::status_info(&alloc::format!(
+        "smp sched mask={bits:#x} cpus={}",
+        smp::online_count()
+    ));
 }
 
 fn task_a() {

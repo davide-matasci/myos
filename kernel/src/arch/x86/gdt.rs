@@ -63,6 +63,19 @@ pub fn init() {
     }
 }
 
+pub fn load_for_ap() {
+    let (gdt, sel) = GDT.get().expect("GDT");
+    gdt.load();
+    unsafe {
+        CS::set_reg(sel.code);
+        SS::set_reg(sel.data);
+        // Do NOT load_tss here: the TSS descriptor is Busy after BSP
+        // `ltr`, and a second `ltr` of the same selector #GPs the AP.
+        // APs only run kernel threads in v1; user mode needs per-CPU TSS.
+        let _ = sel.tss;
+    }
+}
+
 pub fn set_rsp0(rsp: u64) {
     let p = TSS_PTR.load(Ordering::SeqCst) as *mut TaskStateSegment;
     assert!(!p.is_null(), "TSS");

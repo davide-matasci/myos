@@ -1,0 +1,412 @@
+//! Multi-core bring-up via Limine MP + cross-CPU scheduling hooks.
+//!
+//! The scheduler itself lives in `task/`; this module tracks online CPUs,
+//! AP entry, and `/proc/cpuinfo` content. See `docs/pci-acpi-smp.md`.
+
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use spin::Mutex;
+
+use crate::console;
+use crate::limine_boot;
+
+pub const MAX_CPUS: usize = 8;
+
+#[derive(Clone, Copy)]
+struct CpuInfo {
+    online: bool,
+    hw_id: u64,
+}
+
+static CPUS: Mutex<[CpuInfo; MAX_CPUS]> = Mutex::new(
+    [CpuInfo {
+        online: false,
+        hw_id: 0,
+    }; MAX_CPUS],
+);
+static ONLINE: [AtomicBool; MAX_CPUS] = [
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
+static HW_IDS: [AtomicU64; MAX_CPUS] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+static SCHED_TICKS: [AtomicU64; MAX_CPUS] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+/// Logical CPU index stashed for arches that use `tp` (riscv) / until hw id works.
+static BOOT_CPU: AtomicUsize = AtomicUsize::new(0);
+static AP_PROGRESS: AtomicUsize = AtomicUsize::new(0);
+
+static PARKED: AtomicBool = AtomicBool::new(false);
+
+/// After bring-up smoke, freeze APs so they cannot touch shared TSS/rsp0 or
+/// race the BSP through userspace (no per-CPU TSS yet).
+pub fn park_aps() {
+    PARKED.store(true, Ordering::SeqCst);
+}
+
+pub fn aps_parked() -> bool {
+    PARKED.load(Ordering::SeqCst)
+}
+
+
+fn hw_cpu_id() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let apic: u32;
+        unsafe {
+            core::arch::asm!(
+                "mov eax, 1",
+                "push rbx",
+                "cpuid",
+                "mov {apic:e}, ebx",
+                "pop rbx",
+                out("eax") _,
+                apic = out(reg) apic,
+                out("ecx") _,
+                out("edx") _,
+                options(preserves_flags),
+            );
+        }
+        u64::from(apic >> 24)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mpidr: u64;
+        unsafe {
+            core::arch::asm!(
+                "mrs {0}, mpidr_el1",
+                out(reg) mpidr,
+                options(nomem, preserves_flags)
+            );
+        }
+        // Aff3:Aff2:Aff1:Aff0; clear [31:24] (MT/U) — Linux MPIDR_HWID_BITMASK /
+        // Limine MPIDR_AFFINITY_MASK so MRS matches MpInfo::mpidr.
+        mpidr & 0xFF_00FF_FFFF
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        // S-mode: no mhartid. Logical index lives in `tp` (set at AP entry / BSP init).
+        let tp: usize;
+        unsafe {
+            core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
+        }
+        if tp < MAX_CPUS {
+            let id = HW_IDS[tp].load(Ordering::SeqCst);
+            if id != 0 {
+                return id;
+            }
+        }
+        HW_IDS[0].load(Ordering::SeqCst)
+    }
+}
+
+/// Logical CPU index for the caller (0 = BSP).
+pub fn cpu_id() -> usize {
+    #[cfg(target_arch = "riscv64")]
+    {
+        let tp: usize;
+        unsafe {
+            core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
+        }
+        if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
+            return tp;
+        }
+    }
+    let hw = hw_cpu_id();
+    for i in 0..MAX_CPUS {
+        if ONLINE[i].load(Ordering::SeqCst) && HW_IDS[i].load(Ordering::SeqCst) == hw {
+            return i;
+        }
+    }
+    BOOT_CPU.load(Ordering::SeqCst)
+}
+
+pub fn online_count() -> usize {
+    let mut n = 0usize;
+    for i in 0..MAX_CPUS {
+        if ONLINE[i].load(Ordering::SeqCst) {
+            n += 1;
+        }
+    }
+    n.max(1)
+}
+
+pub fn note_schedule() {
+    let id = cpu_id();
+    if id < MAX_CPUS {
+        SCHED_TICKS[id].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub fn cpuinfo_text() -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::new();
+    let n = online_count();
+    let arch = {
+        #[cfg(target_arch = "x86_64")]
+        { "x86_64" }
+        #[cfg(target_arch = "aarch64")]
+        { "aarch64" }
+        #[cfg(target_arch = "riscv64")]
+        { "riscv64" }
+    };
+    push_str(&mut out, "processor_count: ");
+    push_dec(&mut out, n as u64);
+    push_str(&mut out, "
+arch: ");
+    push_str(&mut out, arch);
+    push_str(&mut out, "
+scheduler: smp-rr
+");
+    let cpus = CPUS.lock();
+    for i in 0..MAX_CPUS {
+        let online = ONLINE[i].load(Ordering::SeqCst);
+        if !online && i != 0 {
+            continue;
+        }
+        if i > 0 && !online {
+            continue;
+        }
+        let c = cpus[i];
+        let hw = if c.hw_id != 0 {
+            c.hw_id
+        } else {
+            HW_IDS[i].load(Ordering::SeqCst)
+        };
+        push_str(&mut out, "
+processor	: ");
+        push_dec(&mut out, i as u64);
+        push_str(&mut out, "
+hw_id		: 0x");
+        push_hex(&mut out, hw);
+        push_str(&mut out, "
+online		: ");
+        push_str(&mut out, if online || i == 0 { "yes" } else { "no" });
+        push_str(&mut out, "
+schedules	: ");
+        push_dec(&mut out, SCHED_TICKS[i].load(Ordering::Relaxed));
+        push_str(&mut out, "
+");
+        if !ONLINE[0].load(Ordering::SeqCst) && i == 0 {
+            break;
+        }
+    }
+    out
+}
+
+fn push_str(out: &mut alloc::vec::Vec<u8>, s: &str) {
+    out.extend_from_slice(s.as_bytes());
+}
+
+fn push_dec(out: &mut alloc::vec::Vec<u8>, mut v: u64) {
+    if v == 0 {
+        out.push(b'0');
+        return;
+    }
+    let mut tmp = [0u8; 20];
+    let mut t = 0;
+    while v > 0 {
+        tmp[t] = b'0' + (v % 10) as u8;
+        v /= 10;
+        t += 1;
+    }
+    while t > 0 {
+        t -= 1;
+        out.push(tmp[t]);
+    }
+}
+
+fn push_hex(out: &mut alloc::vec::Vec<u8>, mut v: u64) {
+    let mut tmp = [b'0'; 16];
+    for i in (0..16).rev() {
+        let n = (v & 0xf) as u8;
+        tmp[i] = if n < 10 { b'0' + n } else { b'a' + (n - 10) };
+        v >>= 4;
+    }
+    let mut s = 0;
+    while s < 15 && tmp[s] == b'0' {
+        s += 1;
+    }
+    out.extend_from_slice(&tmp[s..]);
+}
+
+/// Linker-relocated AP entry pointer (fn-item casts are unreliable at runtime).
+static AP_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_ap_entry;
+
+/// Record BSP and bring secondary CPUs online via Limine MP.
+pub fn init() {
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("mv tp, zero", options(nomem, nostack, preserves_flags));
+    }
+
+    let hw = {
+        #[cfg(target_arch = "riscv64")]
+        {
+            // Prefer Limine BSP hartid when available.
+            if let Some(resp) = limine_boot::MP.response() {
+                resp.bsp_hartid
+            } else {
+                0
+            }
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            hw_cpu_id()
+        }
+    };
+    HW_IDS[0].store(hw, Ordering::SeqCst);
+    ONLINE[0].store(true, Ordering::SeqCst);
+    BOOT_CPU.store(0, Ordering::SeqCst);
+    {
+        let mut cpus = CPUS.lock();
+        cpus[0] = CpuInfo {
+            online: true,
+            hw_id: hw,
+        };
+    }
+
+    console::status_progress("smp");
+    let Some(resp) = limine_boot::MP.response() else {
+        console::status_info("smp: no Limine MP (UP)");
+        return;
+    };
+    let mp_cpus = resp.cpus();
+    if mp_cpus.len() <= 1 {
+        console::status_ok("smp: 1 CPU");
+        return;
+    }
+
+    // aarch64: Limine lists APs but goto_address handoff never enters the
+    // kernel entry on QEMU virt+UEFI (observed: AP_PROGRESS=0 forever). Skip
+    // release so boot-mini does not spin for minutes then hang the CI job.
+    #[cfg(target_arch = "aarch64")]
+    {
+        console::status_ok(&alloc::format!(
+            "smp: 1 CPU ({} parked)",
+            mp_cpus.len().saturating_sub(1)
+        ));
+        return;
+    }
+
+    let mut next = 1usize;
+    let raw = mp_cpus.as_ptr() as *const usize;
+    for i in 0..mp_cpus.len() {
+        let cpu_addr = unsafe { *raw.add(i) };
+        if cpu_addr == 0 {
+            continue;
+        }
+        let cpu = unsafe { &*(cpu_addr as *const limine::mp::MpInfo) };
+        #[cfg(target_arch = "x86_64")]
+        let (is_bsp, hw_id) = (cpu.lapic_id == resp.bsp_lapic_id, u64::from(cpu.lapic_id));
+        #[cfg(target_arch = "aarch64")]
+        let (is_bsp, hw_id) = (cpu.mpidr == resp.bsp_mpidr, cpu.mpidr);
+        #[cfg(target_arch = "riscv64")]
+        let (is_bsp, hw_id) = (cpu.hartid == resp.bsp_hartid, cpu.hartid);
+        if is_bsp {
+            continue;
+        }
+        if next >= MAX_CPUS {
+            break;
+        }
+        let logical = next;
+        HW_IDS[logical].store(hw_id, Ordering::SeqCst);
+        {
+            let mut guard = CPUS.lock();
+            guard[logical] = CpuInfo {
+                online: false,
+                hw_id,
+            };
+        }
+        core::sync::atomic::fence(Ordering::SeqCst);
+        cpu.bootstrap(AP_ENTRY_PTR, logical as u64);
+        next += 1;
+    }
+
+    let want = next;
+    let mut spins = 0u32;
+    while online_count() < want && spins < 50_000_000 {
+        core::hint::spin_loop();
+        spins += 1;
+    }
+    let got = online_count();
+    console::status_ok(&alloc::format!("smp: {got} CPUs online"));
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn myos_smp_ap_entry(info: &limine::mp::MpInfo) -> ! {
+    AP_PROGRESS.store(1, Ordering::SeqCst);
+    // Mask IRQs until this CPU's IDT/timer are programmed.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("msr daifset, #3", options(nomem, nostack));
+    }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+    }
+    AP_PROGRESS.store(2, Ordering::SeqCst);
+
+    let logical = info.extra_argument() as usize;
+    AP_PROGRESS.store(3 + logical, Ordering::SeqCst);
+    if logical == 0 || logical >= MAX_CPUS {
+        loop {
+            crate::arch::wait_interrupt();
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!(
+            "mv tp, {0}",
+            in(reg) logical,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    AP_PROGRESS.store(10, Ordering::SeqCst);
+    crate::arch::ap_init(logical);
+    AP_PROGRESS.store(20, Ordering::SeqCst);
+
+    {
+        let mut cpus = CPUS.lock();
+        cpus[logical].online = true;
+    }
+    ONLINE[logical].store(true, Ordering::SeqCst);
+    AP_PROGRESS.store(30, Ordering::SeqCst);
+    core::sync::atomic::fence(Ordering::SeqCst);
+
+    crate::task::ap_idle_loop(logical)
+}
+
+pub fn mark_running(logical: usize) {
+    if logical < MAX_CPUS {
+        ONLINE[logical].store(true, Ordering::SeqCst);
+        let mut cpus = CPUS.lock();
+        cpus[logical].online = true;
+    }
+}

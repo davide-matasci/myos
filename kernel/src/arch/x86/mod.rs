@@ -63,6 +63,18 @@ pub fn virtio_blk_write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
 }
 
 /// QEMU `isa-debug-exit` at iobase 0xf4. A no-op if the device was not added.
+
+pub fn ap_init(_logical: usize) {
+    interrupts::ap_init();
+}
+
+/// Brief halt until the next interrupt (idle loop).
+pub fn wait_interrupt() {
+    unsafe {
+        core::arch::asm!("sti; hlt", options(nomem, nostack));
+    }
+}
+
 pub fn exit_qemu(code: u32) {
     unsafe {
         core::arch::asm!(

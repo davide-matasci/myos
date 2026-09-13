@@ -441,3 +441,9 @@ pub fn init() {
 pub fn init_limine() {
     bootfs::init_limine();
 }
+
+
+/// Register a generated `/proc/<name>` node (used by loadable modules).
+pub fn procfs_register(name: &str, data: &'static [u8]) -> bool {
+    procfs::register_dynamic(name, data)
+}
