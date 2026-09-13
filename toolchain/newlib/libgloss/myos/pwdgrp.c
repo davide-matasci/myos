@@ -58,18 +58,29 @@ getgrnam(const char *name)
     return NULL;
 }
 
+/* One-entry user database (root): setpwent rewinds, getpwent enumerates it
+ * exactly once per pass, endpwent resets. Matches the os-test setpwent
+ * contract (getpwent + setpwent rewind must find the current uid twice). */
+static int pwd_pos = 0;
+
 void
 setpwent(void)
 {
+    pwd_pos = 0;
 }
 
 struct passwd *
 getpwent(void)
 {
+    if (pwd_pos == 0) {
+        pwd_pos = 1;
+        return &pwd_root;
+    }
     return NULL;
 }
 
 void
 endpwent(void)
 {
+    pwd_pos = 0;
 }
