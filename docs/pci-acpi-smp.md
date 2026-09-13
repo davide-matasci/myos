@@ -60,10 +60,17 @@ Per-CPU ring3↔ring0 state:
   points at that CPU's `CpuSyscallState` (`kernel_rsp0` + fork callee snapshot).
 - **aarch64** — banked `SP_ELx` after `use_spx`; exception frames live on the
   current task's kernel stack.
-- **riscv64** — per-CPU `sscratch` kernel stack top updated on every schedule.
+- **riscv64** — `sscratch` holds the current task's kernel stack top (updated on
+  every schedule). Per-hart cells are deferred until multi-hart Limine bring-up
+  is reliable on QEMU.
 
-TLB shootdown: local invalidate, then IPI the other online CPUs and wait for
-acks (`smp::tlb_shootdown`). Reschedule IPI wakes idle CPUs after `spawn`.
+TLB shootdown: local invalidate, then IPI the other online CPUs and wait
+briefly for acks (`smp::tlb_shootdown`, try-lock + bounded spin). Reschedule
+IPI wakes idle CPUs after `spawn` when `online_count() > 1`.
+
+AP bring-up: IRQs stay masked and `ONLINE` is clear until `ap_idle_loop`
+installs `CURRENT` and migrates onto the AP's own 64KiB idle stack (Limine
+AP stacks are too small for nested timer/IPI frames).
 
 ## `/proc` nodes
 
