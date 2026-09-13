@@ -16,6 +16,22 @@ pub fn fatal_line(line: &str) -> ! {
     arch::halt();
 }
 
+/// Terminate the current user task after a synchronous fault in EL0/U-mode.
+///
+/// Prefer this over [`fatal_line`] for translation/permission faults at FAR=0
+/// and friends: a userspace null deref must not halt the whole machine (that
+/// turned `cat | cat` + ^C into a CI `[ FAIL ] exception` on aarch64). Exit
+/// status matches the shell convention for SIGSEGV (`128 + 11`).
+pub fn user_fault_kill(kind: &str, detail: &str) -> ! {
+    // Avoid the substring `exception:` so wait_ci interrupt/arrow needles that
+    // treat any `exception:` as a hard fail stay quiet when a *child* faults.
+    console::status_warn(&format!("user fault: {kind} {detail}"));
+    console::flush();
+    crate::user::set_syscall_frame(core::ptr::null_mut());
+    task::user_exit(128u8.wrapping_add(11));
+}
+
+
 fn task_ctx() -> String {
     let id = task::current_id();
     match task::current_user_pc_sp() {

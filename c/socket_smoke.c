@@ -15,9 +15,17 @@ static void die(const char *msg) {
     _exit(1);
 }
 
+/* Busy-wait backoff — no usleep in the freestanding guest. */
+static void backoff(int attempt) {
+    volatile unsigned n = 50000u * (unsigned)(attempt + 1) * (unsigned)(attempt + 1);
+    while (n--) {
+        /* spin */
+    }
+}
+
 int main(void) {
     struct addrinfo hints, *res = NULL;
-    int fd;
+    int fd = -1;
     const char *req =
         "GET / HTTP/1.1\r\n"
         "Host: example.com\r\n"
@@ -28,6 +36,7 @@ int main(void) {
     int got = 0;
     int i;
     int empty = 0;
+    int attempt;
 
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
@@ -36,13 +45,21 @@ int main(void) {
         die("getaddrinfo fail");
     }
 
-    fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (fd < 0) {
-        freeaddrinfo(res);
-        die("socket fail");
-    }
-    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
+    /* CI bios sometimes loses the first SYN right after /ping — retry. */
+    for (attempt = 0; attempt < 8; attempt++) {
+        fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (fd < 0) {
+            backoff(attempt);
+            continue;
+        }
+        if (connect(fd, res->ai_addr, res->ai_addrlen) == 0) {
+            break;
+        }
         close(fd);
+        fd = -1;
+        backoff(attempt);
+    }
+    if (fd < 0) {
         freeaddrinfo(res);
         die("connect fail");
     }
@@ -57,7 +74,6 @@ int main(void) {
         n = recv(fd, buf, sizeof buf, 0);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                /* Empty RX while still connected — same budget as old n==0 spin. */
                 if (got) {
                     empty++;
                     if (empty > 10000) {
@@ -69,7 +85,6 @@ int main(void) {
             break;
         }
         if (n == 0) {
-            /* True hangup/EOF from the shim. */
             break;
         }
         got = 1;

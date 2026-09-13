@@ -1,0 +1,13 @@
+--- edit.c
++++ edit.c
+@@ -183,7 +183,9 @@
+ 		edchars.werase = cb.c_cc[VWERASE];
+ #endif
+ 		cb.c_iflag &= ~(INLCR|ICRNL);
+-		cb.c_lflag &= ~(ISIG|ICANON|ECHO);
++		/* myos: keep ISIG so kernel ^C (VINTR) still fires in raw edit
++		 * mode; the editor does not install a userspace SIGINT trampoline. */
++		cb.c_lflag &= ~(ICANON|ECHO);
+ #ifdef VLNEXT
+ 		/* osf/1 processes lnext when ~icanon */
+ 		cb.c_cc[VLNEXT] = _POSIX_VDISABLE;

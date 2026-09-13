@@ -73,10 +73,15 @@ trap_vector:
 3:
     mv a0, sp
     call riscv64_trap_handler
+    # Mask SIE BEFORE restoring sscratch: a timer nesting in the window where
+    # sscratch already holds the user sp would trap in with sp = user sp and
+    # build a kernel frame on the user stack (silent user-memory corruption).
+    ld t0, 264(sp)
+    andi t0, t0, -3      # clear SIE
+    ori t0, t0, 0x20     # set SPIE (sret: SIE <- SPIE)
+    csrw sstatus, t0
     ld t0, 272(sp)
     csrw sscratch, t0
-    ld t0, 264(sp)
-    csrw sstatus, t0
     ld t0, 256(sp)
     csrw sepc, t0
     ld x0, 0(sp)
@@ -121,51 +126,51 @@ trap_vector:
 
     .global fork_sret_from_frame
 fork_sret_from_frame:
-    mv sp, a0
-    ld t0, 272(sp)
-    csrw sscratch, t0
-    ld t0, 264(sp)
+    # Exec resume: a0 -> live syscall trap frame. Caller must leave sscratch
+    # as this task's kernel stack top (same invariant as enter_fork_riscv64 /
+    # enter_riscv64). Do NOT park user sp in sscratch then csrrw — that left
+    # sscratch at frame+280 (or the old program's user sp) and the next user
+    # trap built its kernel frame on the user stack (sepc=0 / zeroed ra).
+    mv t6, a0
+    ld t0, 264(t6)
+    andi t0, t0, -3      # clear SIE; sret applies SIE <- SPIE atomically
+    ori t0, t0, 0x20     # set SPIE
     csrw sstatus, t0
-    ld t0, 256(sp)
+    ld t0, 256(t6)
     csrw sepc, t0
-    ld x0, 0(sp)
-    ld x1, 8(sp)
-    ld x2, 16(sp)
-    ld x3, 24(sp)
-    ld x4, 32(sp)
-    ld x5, 40(sp)
-    ld x6, 48(sp)
-    ld x7, 56(sp)
-    ld x8, 64(sp)
-    ld x9, 72(sp)
-    ld x10, 80(sp)
-    ld x11, 88(sp)
-    ld x12, 96(sp)
-    ld x13, 104(sp)
-    ld x14, 112(sp)
-    ld x15, 120(sp)
-    ld x16, 128(sp)
-    ld x17, 136(sp)
-    ld x18, 144(sp)
-    ld x19, 152(sp)
-    ld x20, 160(sp)
-    ld x21, 168(sp)
-    ld x22, 176(sp)
-    ld x23, 184(sp)
-    ld x24, 192(sp)
-    ld x25, 200(sp)
-    ld x26, 208(sp)
-    ld x27, 216(sp)
-    ld x28, 224(sp)
-    ld x29, 232(sp)
-    ld x30, 240(sp)
-    ld x31, 248(sp)
-    addi sp, sp, 280
-    csrr t0, sstatus
-    andi t0, t0, 0x100
-    bnez t0, 5f
-    csrrw sp, sscratch, sp
-5:
+    ld x1, 8(t6)
+    ld x3, 24(t6)
+    ld x4, 32(t6)
+    ld x5, 40(t6)
+    ld x6, 48(t6)
+    ld x7, 56(t6)
+    ld x8, 64(t6)
+    ld x9, 72(t6)
+    ld x10, 80(t6)
+    ld x11, 88(t6)
+    ld x12, 96(t6)
+    ld x13, 104(t6)
+    ld x14, 112(t6)
+    ld x15, 120(t6)
+    ld x16, 128(t6)
+    ld x17, 136(t6)
+    ld x18, 144(t6)
+    ld x19, 152(t6)
+    ld x20, 160(t6)
+    ld x21, 168(t6)
+    ld x22, 176(t6)
+    ld x23, 184(t6)
+    ld x24, 192(t6)
+    ld x25, 200(t6)
+    ld x26, 208(t6)
+    ld x27, 216(t6)
+    ld x28, 224(t6)
+    ld x29, 232(t6)
+    ld x30, 240(t6)
+    # t6 is x31: capture user sp (slot 34) before restoring x31.
+    ld t0, 272(t6)
+    ld x31, 248(t6)
+    mv sp, t0
     sret
 
     .global fork_sret_child_from_frame
@@ -174,6 +179,8 @@ fork_sret_child_from_frame:
     # this task's kernel stack top (same invariant as enter_riscv64).
     mv t6, a0
     ld t0, 264(t6)
+    andi t0, t0, -3      # clear SIE; sret applies SIE <- SPIE atomically
+    ori t0, t0, 0x20
     csrw sstatus, t0
     ld t0, 256(t6)
     csrw sepc, t0
@@ -337,7 +344,12 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
                 13 => "load page fault",
                 _ => "store page fault",
             };
-            crate::exception::riscv64_page_fault(kind, stval, sepc, user_sp);
+            // U-mode faults: kill the task (SIGSEGV convention) instead of
+            // halting QEMU — same policy as aarch64 lower_sync data/insn aborts.
+            crate::exception::user_fault_kill(
+                kind,
+                &alloc::format!("stval={stval:#x} sepc={sepc:#x} sp={user_sp:#x}"),
+            );
         }
         _ => {
             let sepc = unsafe { *frame.add(32) };

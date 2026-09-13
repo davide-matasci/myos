@@ -428,6 +428,15 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
         }
         return;
     }
+    // EC 0x20/0x24: insn/data abort from EL0. Kill the faulting task (SIGSEGV
+    // convention) instead of halting QEMU — a userspace null deref during
+    // `cat | cat` must not be a machine-wide `[ FAIL ] exception`.
+    if ec == 0x20 || ec == 0x24 {
+        crate::exception::user_fault_kill(
+            if ec == 0x20 { "insn abort" } else { "data abort" },
+            &alloc::format!("ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x} sp_el0={sp_el0:#x}"),
+        );
+    }
     crate::exception::aarch64_sync_abort("user sync abort", esr, elr, far, Some(sp_el0));
 }
 
