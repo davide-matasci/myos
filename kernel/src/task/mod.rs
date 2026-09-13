@@ -341,6 +341,15 @@ pub fn init() {
 
 /// x86 AP user enter still hits a deterministic kernel PF; keep user on BSP
 /// there. aarch64/riscv use per-CPU exception stacks and can run user anywhere.
+pub fn current_kernel_stack_top() -> usize {
+    let flags = irq_save();
+    irq_off();
+    let id = current_slot();
+    let top = TASKS.lock()[id].kernel_stack_top;
+    irq_restore(flags);
+    top
+}
+
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
     {
