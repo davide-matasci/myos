@@ -92,7 +92,9 @@ pub fn load_for_ap(cpu: usize) {
 
 pub fn set_rsp0(rsp: u64) {
     let cpu = smp::cpu_id().min(smp::MAX_CPUS - 1);
-    assert!(READY[cpu].load(Ordering::SeqCst), "TSS");
+    if !READY[cpu].load(Ordering::SeqCst) {
+        return;
+    }
     let tss = unsafe { TSS[cpu].assume_init_mut() };
     unsafe {
         core::ptr::write_unaligned(

@@ -2100,14 +2100,21 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     };
     drop(tasks);
     set_current_slot(slot);
+    // APs boot on Limine's CR3; record kernel aspace so the first schedule
+    // does not treat LOADED=0 as a switch that races TLB shootdowns.
+    set_loaded_aspace(KERNEL_ASPACE.load(Ordering::SeqCst));
     irq_restore(flags);
     crate::smp::mark_running(logical);
     enable_preempt();
     // ap_init may leave IRQs masked (aarch64); enable only after CURRENT/ONLINE.
     irq_on();
-    // Jump into the seeded stack so the first schedule has a valid save area.
-    // Until then, run the idle body directly.
-    ap_idle_body();
+    // Migrate off Limine's tiny AP stack onto the 64KiB idle stack before any
+    // timer/IPI nesting (UEFI path overflowed Limine stacks → kernel PF).
+    let mut discard_sp: usize = 0;
+    unsafe {
+        task_switch(core::ptr::addr_of_mut!(discard_sp), sp);
+    }
+    // ap_idle_trampoline never returns.
     loop {
         yield_now();
         crate::arch::wait_interrupt();

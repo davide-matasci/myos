@@ -217,17 +217,23 @@ pub fn tlb_ipi_ack() {
 
 /// Invalidate this CPU's user TLB and ask every other online CPU to do the same.
 pub fn tlb_shootdown() {
-    let _guard = TLB_LOCK.lock();
     let others = online_count().saturating_sub(1);
     if others == 0 {
         return;
     }
+    // Serialize shootdowns; skip if another CPU is already blasting (local
+    // flush already done by the caller).
+    let Some(_guard) = TLB_LOCK.try_lock() else {
+        return;
+    };
     TLB_REMAINING.store(others, Ordering::SeqCst);
     #[cfg(target_arch = "riscv64")]
     ipi_mark_tlb();
     arch::ipi_tlb_shootdown();
+    // Cap the wait — a remote CPU inside `schedule` (IF off) cannot EOI until
+    // it returns; unbounded spin deadlocks SMP bring-up under UEFI timing.
     let mut spins = 0u32;
-    while TLB_REMAINING.load(Ordering::SeqCst) > 0 && spins < 50_000_000 {
+    while TLB_REMAINING.load(Ordering::SeqCst) > 0 && spins < 2_000_000 {
         core::hint::spin_loop();
         spins += 1;
     }
