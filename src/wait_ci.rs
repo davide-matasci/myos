@@ -106,29 +106,19 @@ const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 // curl over userspace sockets + mbedtls (same URL as https smoke).
 const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n";
 
-/// os-test regression (full boot only). `basic/pwd/setpwent` must compile AND
-/// run through the REAL harness path: make invokes misc/myos-run.sh, which
-/// links with tcc against the packed newlib sysroot (libc.a + libm.a, the
-/// #138 fix) and runs the binary. /lib/os-test is read-only (initramfs), so
-/// the make target needs a writable copy first. Kept as two commands so each
-/// typed line stays a single clean echo on the 160-col console.
+/// os-test basic suite (full boot only). Writable copy + `make SUITES=basic
+/// report` runs the whole upstream basic suite through the REAL harness
+/// (misc/myos-run.sh → tcc + packed newlib). Report prints `pass_rate=NN%
+/// (P/T)`; CI asserts the harness finished but does NOT fail on pass_rate<80.
+/// Follow-up short quote-free commands still require setpwent success.
+/// /lib/os-test is read-only (initramfs), so we copy first. Commands stay
+/// under ~80 chars / quote-free for the 160-col oksh emacs redraw.
 const CMD_OS_TEST_PREP: &[u8] =
-    b"cp -r /lib/os-test /tmp/o && cd /tmp/o && make out/basic/pwd/setpwent.out; echo PREP-RC=$?\n";
-/// Success shape per misc/myos-run.sh: on pass, .err is empty AND .out is
-/// empty (setpwent returns 0 silently); both failure modes ("compile_error"
-/// and "exit: N") leave .out non-empty, and a botched compile can leave .err
-/// non-empty too. `ls` first so a missing out/ tree is visible on serial.
-/// The quotes in SETPWENT-"FAIL"/SETPWENT-"OK" keep the echoed command line
-/// from ever containing the plain markers the checker matches on output.
-// Split into two SHORT quote-free commands: the old single 104+-char line
-// (with $f vars and quoted markers) shattered in the oksh emacs redraw on
-// the 160-col console (wrap + BS storm, even an unterminated-quote
-// continuation prompt), which broke the strict echo match. Both stay under
-// ~80 chars like the known-clean echoes. .out is the verdict file: success
-// leaves it empty (setpwent returns 0 silently); failures ("compile_error",
-// "exit: N") leave it non-empty.
+    b"cp -r /lib/os-test /tmp/o && cd /tmp/o && make SUITES=basic report; echo PREP-RC=$?\n";
+/// After the suite report: cat setpwent .err/.out (success leaves .out empty).
 const CMD_OS_TEST_CAT: &[u8] =
     b"cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out\n";
+/// setpwent gate: non-empty .out means compile_error / exit:N → SETPWENT-FAIL.
 const CMD_OS_TEST_RESULT: &[u8] =
     b"test -s out/basic/pwd/setpwent.out && echo SETPWENT-FAIL || echo SETPWENT-OK\n";
 // ^C interrupt test: run a foreground `cat | cat` (the right cat blocks on
@@ -174,9 +164,8 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     if !ci_mini() {
         cmds.push(CMD_HTTP);
         cmds.push(CMD_CURL);
-        // os-test setpwent regression: real make -> myos-run.sh -> tcc link,
-        // then cat the .err/.out and verdict marker (full boot only; too slow
-        // for the boot-mini window).
+        // os-test basic suite report + setpwent gate (full boot only; too
+        // slow for the boot-mini window). pass_rate is reported, not gated.
         cmds.push(CMD_OS_TEST_PREP);
         cmds.push(CMD_OS_TEST_CAT);
         cmds.push(CMD_OS_TEST_RESULT);
@@ -425,27 +414,27 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
     ok && !after.starts_with("\n\n") && at_interactive_prompt(serial)
 }
 
-/// os-test setpwent, stage 1: writable copy + targeted make must finish with
-/// a clean exit (no make error, no fs failure, no missing commands). Scope
-/// failure patterns to the output after the echoed command so earlier stages
-/// (e.g. nosuchcmd) can't poison this check.
+/// os-test basic suite, stage 1: writable copy + `make SUITES=basic report`
+/// must finish (harness printed `pass_rate=`). Scope failure patterns to the
+/// output after the echoed command. Do NOT fail on pass_rate < 80 — report
+/// only; the setpwent stages below remain the hard libc gate.
 fn interactive_ostest_prep_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    let echoed = "$ cp -r /lib/os-test /tmp/o && cd /tmp/o && make out/basic/pwd/setpwent.out; echo PREP-RC=$?";
+    let echoed =
+        "$ cp -r /lib/os-test /tmp/o && cd /tmp/o && make SUITES=basic report; echo PREP-RC=$?";
     if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
     let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
-    // A make failure is NOT a prep-stage failure: PREP-RC plus the follow-up
-    // cat turn the actual tcc/harness error into the stage verdict.
-    !after.contains("cannot create")
-        && !after.contains("not found")
+    // Harness finished: myos-report.sh always emits pass_rate=NN% (P/T).
+    // Low pass rates are informational only — never a CI hard-fail here.
+    after.contains("pass_rate=")
+        && !after.contains("cannot create")
         && !after.contains("Read-only file system")
         && at_interactive_prompt(serial)
 }
 
-/// os-test setpwent, stage 2: cat the produced .err/.out and print the
-/// verdict marker. Pass = plain `SETPWENT-OK` (and never plain
+/// os-test setpwent, stage 2: cat the produced .err/.out (after full basic). Pass = plain `SETPWENT-OK` (and never plain
 /// `SETPWENT-FAIL`) after the echoed command; the quoted markers inside the
 /// echo cannot collide with the plain ones. Also refuse "not found" from the
 /// cat (missing .err/.out => prep did not actually produce them).
@@ -1048,7 +1037,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `dns www.google.com` did not print `IP: x.x.x.x` and `[ OK ] dns`");
             }
         }
-        if cmds.len() == 17 && shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
+        if cmds.len() == 20 && shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
             if !serial.contains(CURL_ECHO) {
                 eprintln!("error: serial did not echo the curl HTTPS command on one clean line at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1060,7 +1049,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if cmds.len() == 17 && shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
+        if cmds.len() == 20 && shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
             if !command_echoed(&serial, "http https://example.com/") {
                 eprintln!("error: serial did not echo `$ http https://example.com/` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1072,6 +1061,24 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             } else {
                 eprintln!("error: interactive HTTPS did not print `Example Domain` and `[ OK ] https`");
             }
+            std::process::exit(1);
+        }
+        if cmds.len() == 20 && shell_cmd_index == 14 && !interactive_ostest_prep_ok(&serial) {
+            eprintln!(
+                "error: os-test basic `make SUITES=basic report` did not finish (want pass_rate= line, then `$`)"
+            );
+            std::process::exit(1);
+        }
+        if cmds.len() == 20 && shell_cmd_index == 15 && !interactive_ostest_cat_ok(&serial) {
+            eprintln!(
+                "error: os-test setpwent cat stage failed (missing out/basic/pwd/setpwent.err/.out?)"
+            );
+            std::process::exit(1);
+        }
+        if cmds.len() == 20 && shell_cmd_index == 16 && !interactive_ostest_result_ok(&serial) {
+            eprintln!(
+                "error: os-test setpwent gate failed (want SETPWENT-OK; .out must be empty on pass)"
+            );
             std::process::exit(1);
         }
         if shell_cmd_index == interrupt_cmd_idx(&cmds) && !interactive_interrupt_cmd_ok(&serial) {

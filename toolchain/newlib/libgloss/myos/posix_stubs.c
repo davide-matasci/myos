@@ -305,9 +305,23 @@ long sysconf(int name) {
         return 4096;
     }
 #endif
+#ifdef _SC_GETPW_R_SIZE_MAX
+    if (name == _SC_GETPW_R_SIZE_MAX) {
+        return 1024;
+    }
+#endif
+#ifdef _SC_GETGR_R_SIZE_MAX
+    if (name == _SC_GETGR_R_SIZE_MAX) {
+        return 1024;
+    }
+#endif
     /* Common numeric values if headers did not expose _SC_PAGESIZE. */
     if (name == 8 || name == 11 || name == 30 || name == 39) {
         return 4096;
+    }
+    /* newlib: _SC_GETGR_R_SIZE_MAX=50, _SC_GETPW_R_SIZE_MAX=51 */
+    if (name == 50 || name == 51) {
+        return 1024;
     }
     (void)name;
     errno = ENOSYS;

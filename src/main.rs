@@ -340,7 +340,7 @@ fn run_ci_bios(bios_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: Duration::from_secs(5400),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -391,7 +391,7 @@ fn run_ci_uefi(uefi_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: Duration::from_secs(5400),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -410,7 +410,7 @@ fn run_ci_aarch64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: Duration::from_secs(5400),
             qemu_debug_exit: false,
             shell_ci: true,
         },
@@ -810,7 +810,7 @@ fn run_ci_riscv64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: Duration::from_secs(5400),
             qemu_debug_exit: false,
             shell_ci: true,
         },
