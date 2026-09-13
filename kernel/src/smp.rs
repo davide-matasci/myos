@@ -466,6 +466,10 @@ pub fn init() {
         ));
     }
     console::status_ok(&alloc::format!("smp: {got} CPUs online"));
+    #[cfg(target_arch = "riscv64")]
+    if got > 1 {
+        crate::arch::enable_ipi();
+    }
 }
 
 #[unsafe(no_mangle)]

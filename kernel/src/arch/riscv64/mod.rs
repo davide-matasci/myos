@@ -1,7 +1,7 @@
 //! RISC-V64: Limine on QEMU `virt` (UEFI). Sv39 MMU is already on.
 
 mod interrupts;
-pub use interrupts::{ipi_reschedule, ipi_tlb_shootdown};
+pub use interrupts::{enable_ipi, ipi_reschedule, ipi_tlb_shootdown};
 mod keyboard;
 pub mod paging;
 pub mod pci;

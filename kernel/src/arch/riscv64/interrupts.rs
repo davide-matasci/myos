@@ -239,11 +239,19 @@ pub fn init() {
     let v = trap_vector as *const () as usize;
     unsafe {
         asm!("csrw stvec, {v}", v = in(reg) v, options(nostack));
-        // STIE (timer) + SSIE (software / IPI)
-        asm!("csrs sie, {}", in(reg) (1 << 5) | (1 << 1), options(nostack));
+        // Timer only on BSP bring-up. SSIE (IPI) is enabled in ap_init /
+        // enable_ipi once secondaries are online — enabling it too early
+        // raced with empty sscratch on the first user enter (sepc=-2).
+        asm!("csrs sie, {}", in(reg) 1 << 5, options(nostack)); // STIE
         asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack)); // SIE
     }
     init_timer();
+}
+
+pub fn enable_ipi() {
+    unsafe {
+        asm!("csrs sie, {}", in(reg) 1 << 1, options(nostack)); // SSIE
+    }
 }
 
 pub fn ap_init(_logical: usize) {
