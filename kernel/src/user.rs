@@ -281,9 +281,12 @@ fn init_syscall_msrs() {
     const IA32_LSTAR: u32 = 0xC000_0082;
     const IA32_FMASK: u32 = 0xC000_0084;
     const SCE: u64 = 1;
+    // NXE must be set on every CPU: user stacks / MMIO maps use PTE bit 63.
+    // Limine enables it on the BSP; APs that miss it #PF (RSVD) on CR3 switch.
+    const NXE: u64 = 1 << 11;
 
     let mut efer = rdmsr(IA32_EFER);
-    efer |= SCE;
+    efer |= SCE | NXE;
     wrmsr(IA32_EFER, efer);
 
     let star = ((crate::arch::gdt::user_ss() as u64 - 8) << 48)
@@ -1315,6 +1318,13 @@ pub fn enter(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usiz
 
 #[cfg(target_arch = "x86_64")]
 fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
+    // Refresh per-CPU ring0 state in case this CPU never scheduled the task
+    // (or GS/TSS drifted). Required before the first AP iretq into ring3.
+    let ktop = crate::task::current_kernel_stack_top();
+    if ktop != 0 {
+        set_kernel_rsp0(ktop);
+        crate::arch::gdt::set_rsp0(ktop as u64);
+    }
     let cs = (crate::arch::gdt::user_cs() | 3) as u64;
     let ss = (crate::arch::gdt::user_ss() | 3) as u64;
     let rflags: u64 = 0x202;

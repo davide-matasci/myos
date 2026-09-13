@@ -339,8 +339,6 @@ pub fn init() {
     irq_restore(flags);
 }
 
-/// x86 AP user enter still hits a deterministic kernel PF; keep user on BSP
-/// there. aarch64/riscv use per-CPU exception stacks and can run user anywhere.
 pub fn current_kernel_stack_top() -> usize {
     let flags = irq_save();
     irq_off();
@@ -350,10 +348,17 @@ pub fn current_kernel_stack_top() -> usize {
     top
 }
 
+/// x86: pin user to AP when SMP is online so ring3 exercises per-CPU TSS/GS/NXE.
+/// Concurrent multi-CPU user (migration / split affinities) still races global
+/// reclaim paths; keep one home CPU for all user tasks for now. Other arches float.
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
     {
-        Some(0)
+        if crate::smp::online_count() > 1 {
+            Some(1)
+        } else {
+            Some(0)
+        }
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -1790,11 +1795,6 @@ pub fn schedule() {
                 if aff != cpu {
                     continue;
                 }
-            }
-            // x86: match user_affinity() — do not run user on APs yet.
-            #[cfg(target_arch = "x86_64")]
-            if tasks[i].aspace != 0 && cpu != 0 {
-                continue;
             }
             next = i;
             break;

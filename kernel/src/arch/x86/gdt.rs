@@ -105,6 +105,10 @@ pub fn set_rsp0(rsp: u64) {
 }
 
 fn selectors() -> &'static Selectors {
+    let cpu = smp::cpu_id().min(smp::MAX_CPUS - 1);
+    if READY[cpu].load(Ordering::SeqCst) {
+        return unsafe { SEL[cpu].assume_init_ref() };
+    }
     SHARED_SEL.get().expect("GDT")
 }
 

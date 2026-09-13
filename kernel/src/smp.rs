@@ -183,6 +183,7 @@ pub fn note_schedule() {
     }
 }
 
+
 pub fn ipi_mark_tlb() {
     IPI_BITS.fetch_or(IPI_BIT_TLB, Ordering::SeqCst);
 }
@@ -388,10 +389,10 @@ pub fn init() {
         return;
     }
 
-    // aarch64: Limine lists APs but goto_address never reaches the kernel
-    // entry on QEMU virt+UEFI (AP_PROGRESS stays 0). Skip release so
-    // boot-mini cannot hang; IPI/GIC paths remain ready for when Limine
-    // handoff works. MPIDR affinity mask above stays correct.
+    // aarch64: Limine lists APs but writing goto_address still does not
+    // reliably enter myos_smp_ap_entry on QEMU virt+UEFI (BSP then waits /
+    // hangs under release). Keep APs parked for boot-mini; GIC SGI IPI stubs
+    // remain. Retry handoff when Limine/QEMU park loop is proven.
     #[cfg(target_arch = "aarch64")]
     {
         console::status_ok(&alloc::format!(
@@ -426,10 +427,24 @@ pub fn init() {
         }
         core::sync::atomic::fence(Ordering::SeqCst);
         cpu.bootstrap(AP_ENTRY_PTR, logical as u64);
-        // aarch64 Limine park loops often use WFE; SEV helps the Release store wake them.
+        // Limine aarch64 park uses LDAR on goto_addr (not WFE). Clean the
+        // MpInfo cache line to PoC so an AP that briefly had D-cache off
+        // (or a non-coherent view) observes the Release store; DSB+SEV for
+        // any WFE path.
         #[cfg(target_arch = "aarch64")]
         unsafe {
-            core::arch::asm!("dsb sy; sev", options(nostack));
+            // `cpu` is &&MpInfo; clean the MpInfo (goto_addr @ +24).
+            let p = core::ptr::from_ref(*cpu) as usize;
+            let goto = p + 24;
+            core::arch::asm!(
+                "dc cvac, {0}",
+                "dc cvac, {1}",
+                "dsb sy",
+                "sev",
+                in(reg) p,
+                in(reg) goto,
+                options(nostack),
+            );
         }
         next += 1;
     }

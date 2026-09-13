@@ -44,22 +44,23 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 | Arch | CPU id | AP init | Timer / IRQ | IPI |
 |------|--------|---------|-------------|-----|
 | x86_64 | TSC_AUX / APIC id | Per-CPU GDT+TSS, GS → syscall state, xAPIC timer | LVT timer → `schedule` | xAPIC ICR all-excl-self (vec 33 TLB, 34 resched) |
-| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | `VBAR`, `use_spx`, banked GICC, timers (APs still Limine-parked on QEMU virt) | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
+| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | `VBAR`, `use_spx`, banked GICC, timers; APs still Limine-parked on QEMU virt+UEFI | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
 | riscv64 | `tp` / Limine `hartid` | `stvec` / `sie` (STIE+SSIE) / `stimecmp` | S-mode timer → `schedule` | SBI IPI ext → SSIP; soft reason bits in `smp` |
 
 Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
-Kernel tasks use `affinity: None` and run on any online CPU (smoke shows
-`sched mask=0x3`). User tasks currently stay on the BSP on **x86_64** (AP
-ring3 entry still under investigation); **aarch64** / **riscv64** leave user
-`affinity: None`. `note_schedule` counts per-CPU ticks in `/proc/cpuinfo`.
-QEMU launches use `-smp 2`.
+Kernel tasks use `affinity: None` (smoke `sched mask=0x3`). On **x86_64** with
+more than one CPU online, user tasks pin to CPU 1 so ring3 hits per-CPU
+TSS/GS/`EFER.NXE` (concurrent multi-CPU user still races reclaim). **aarch64** /
+**riscv64** leave user floating. `note_schedule` → `/proc/cpuinfo`. QEMU `-smp 2`.
 
 Per-CPU ring3↔ring0 state:
 
-- **x86_64** — each CPU has its own GDT+TSS (`rsp0` / DF IST). `IA32_GS_BASE`
-  points at that CPU's `CpuSyscallState` (`kernel_rsp0` + fork callee snapshot).
+- **x86_64** — each CPU has its own GDT+TSS (`rsp0` / DF IST). `IA32_EFER.NXE`
+  and `IA32_GS_BASE` → `CpuSyscallState` are programmed on BSP and every AP
+  (`kernel_rsp0` + fork callee snapshot). User CS/SS come from the CPU's GDT.
 - **aarch64** — banked `SP_ELx` after `use_spx`; exception frames live on the
-  current task's kernel stack.
+  current task's kernel stack. Limine `goto_address` handoff on QEMU virt+UEFI
+  still does not enter the kernel AP stub; APs stay parked (SGI paths ready).
 - **riscv64** — `sscratch` holds the current task's kernel stack top (updated on
   every schedule). Per-hart cells are deferred until multi-hart Limine bring-up
   is reliable on QEMU.
