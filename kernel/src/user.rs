@@ -532,7 +532,18 @@ fn reload_user_elf(
     // Drop inherited brk pages so the next image starts with an empty on-demand
     // heap (see `free_abandoned_stack_heap`). Reload keeps `stack_off` fixed so
     // expand's reclaim would otherwise no-op on the heap window.
+    //
+    // On riscv64 the syscall keeps the *user* root loaded in satp for the whole
+    // syscall (kernel maps live in the same Sv39 root), so sret back to user
+    // does not flush the TLB the way the x86 cr3 swap does. Without this
+    // sfence the task returns to user mode with stale VA→PA entries for the
+    // freed brk window; later sys_brk writes then hit recycled frames
+    // belonging to other tasks — the random git-object/TLS/ra=0 / sepc=0
+    // corruption seen in the riscv64 CI boot flake. munmap, brk-shrink, expand
+    // and the exec wrapper all flush after their unmaps; this path was the
+    // only one that skipped it.
     free_heap_window(aspace, base, stack_off);
+    flush_user_tlb();
     Some((entry as usize, n_pages * PAGE, stack_off))
 }
 
@@ -813,6 +824,10 @@ fn read_user_byte(aspace: u64, va: usize) -> Option<u8> {
     let page = va & !0xfff;
     let off = va & 0xfff;
     let phys = virt_to_phys(aspace, page as u64)?;
+    if phys == 0 {
+        // V-set/phys-0 leaf (corrupt PTE): never dereference hhdm(0).
+        return None;
+    }
     Some(unsafe { *mm::hhdm(phys).add(off) })
 }
 
@@ -1065,7 +1080,14 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
             return None;
         }
         if mid_pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) != 0 {
-            return Some(paging::pte_phys(mid_pte) | (va & 0x1F_FFFF));
+            // A leaf mapping at L2 with a zeroed physical address is corruption
+            // (never legitimate: phys 0 is not RAM we hand out). Reject it so
+            // callers see a fault instead of dereferencing hhdm(0) in kernel.
+            let phys = paging::pte_phys(mid_pte);
+            if phys == 0 {
+                return None;
+            }
+            return Some(phys | (va & 0x1F_FFFF));
         }
         let mid = &*mm::table(paging::pte_phys(mid_pte));
         let leaf_pte = mid[i1];
@@ -1073,7 +1095,13 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
             return None;
         }
         if leaf_pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) != 0 {
-            return Some(paging::pte_phys(leaf_pte) | (va & 0xFFF));
+            // Same guard: V set with a zeroed physical address is a corrupt
+            // descriptor; report unmapped so callers (sys_brk) re-map cleanly.
+            let phys = paging::pte_phys(leaf_pte);
+            if phys == 0 {
+                return None;
+            }
+            return Some(phys | (va & 0xFFF));
         }
         let leaf = &*mm::table(paging::pte_phys(leaf_pte));
         let pte = leaf[i0];
@@ -1085,7 +1113,14 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
         if pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) == 0 {
             return None;
         }
-        Some(paging::pte_phys(pte))
+        let phys = paging::pte_phys(pte);
+        if phys == 0 {
+            // V set with a zeroed physical address is never a legitimate user
+            // mapping. Treat as absent so callers re-map cleanly instead of
+            // the kernel dereferencing hhdm(0) (riscv64 CI kernel page fault).
+            return None;
+        }
+        Some(phys)
     }
 }
 
@@ -1344,6 +1379,16 @@ fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv
             *frame.add(32) = entry as u64;
             *frame.add(33) = USER_SSTATUS;
             *frame.add(34) = rsp as u64;
+            // fork_sret_from_frame now preserves sscratch (child-style). The
+            // live syscall frame's slot 34 holds the *new* user sp; leaving
+            // sscratch as the old user sp / frame+280 made every later trap of
+            // this task build its kernel frame on the user stack — the riscv64
+            // CI corruption family (sepc=0, zeroed user ra). Same invariant as
+            // enter_fork_riscv64: sscratch = kernel top.
+            let ksp = unsafe { KERNEL_SSCRATCH };
+            unsafe {
+                core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
+            }
             crate::arch::fork_sret_to_user(frame);
         }
     }

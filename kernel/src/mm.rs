@@ -79,6 +79,12 @@ pub fn free_frame(phys: u64) {
         unsafe {
             core::ptr::write_unaligned((phys + hhdm) as *mut u64, head);
         }
+        // Sentinel-fill the remainder so stray writes into a freed frame
+        // are detectable (a popped frame's next-ptr landing misaligned
+        // means something scribbled here while it sat on the freelist).
+        unsafe {
+            core::ptr::write_bytes((phys + hhdm + 8) as *mut u8, 0x5A, (PAGE - 8) as usize);
+        }
         if FREE_HEAD
             .compare_exchange(head, phys, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
@@ -148,6 +154,40 @@ pub fn alloc_contiguous_frames(n: usize) -> Option<u64> {
     None
 }
 
+/// True if `phys` lies in a usable memmap region (for freelist validation).
+fn frame_in_usable_memmap(phys: u64) -> bool {
+    let entries = limine_boot::MEMMAP
+        .response()
+        .expect("Limine memmap")
+        .entries();
+    for e in entries {
+        if e.type_ == memmap::MEMMAP_USABLE
+            && phys >= e.base
+            && phys.saturating_add(PAGE) <= e.base.saturating_add(e.length)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Freelist-node sanity: page-aligned, usable memmap, not kernel image.
+/// A bad head means something wrote into a frame while it sat on the
+/// freelist (stale mapping / DMA into freed memory) — panic with the value
+/// so the culprit's write pattern is diagnosable instead of spreading as
+/// random data corruption (git objects / TLS transcripts / sepc=0).
+fn validate_free_frame(phys: u64) {
+    if phys & 0xfff != 0 || overlaps_kernel(phys) || !frame_in_usable_memmap(phys) {
+        panic!(
+            "mm: freelist head corrupt: phys={:#x} aligned={} kernel={} usable={}",
+            phys,
+            phys & 0xfff == 0,
+            overlaps_kernel(phys),
+            frame_in_usable_memmap(phys),
+        );
+    }
+}
+
 pub fn alloc_frame() -> u64 {
     let hhdm = limine_boot::hhdm_offset();
 
@@ -157,7 +197,21 @@ pub fn alloc_frame() -> u64 {
         if head == 0 {
             break;
         }
+        validate_free_frame(head);
         let next = unsafe { core::ptr::read_unaligned((head + hhdm) as *const u64) };
+        if next != 0
+            && (next & 0xfff != 0 || overlaps_kernel(next) || !frame_in_usable_memmap(next))
+        {
+            // head's own next-ptr was corrupted while it sat on the freelist.
+            panic!(
+                "mm: freelist node corrupt: head={:#x} next={:#x} aligned={} kernel={} usable={}",
+                head,
+                next,
+                next & 0xfff == 0,
+                overlaps_kernel(next),
+                frame_in_usable_memmap(next),
+            );
+        }
         if FREE_HEAD
             .compare_exchange(head, next, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
