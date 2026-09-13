@@ -1,7 +1,9 @@
 /*
  * poll/select for myos: no kernel poll syscall.
  * Tracked /net sockets report real POLLIN via netfs st_size / hangup status.
- * Other fds keep the legacy always-ready busy-wait (matches http helper).
+ * Regular files stay always-ready (POSIX). TTY POLLIN is not: there is no
+ * FIONREAD, and lying "ready" made lynx HTCheckForInterrupt block in LYgetch
+ * at "Looking up … first" before libgloss DNS (same getaddrinfo path as curl).
  * Timeouts use gettimeofday so select(0,...,tv) can sleep without a spin budget.
  */
 #include <errno.h>
@@ -41,17 +43,30 @@ static int scan_once(struct pollfd *fds, nfds_t nfds) {
         if (sock == -2) {
             return -1;
         }
-        /* Not a tracked socket (or not ready): legacy always-ready for non-sockets. */
+        /* Not a tracked socket (or not ready).
+         * Regular files: POSIX always-ready.
+         * TTY POLLIN: do NOT lie. Lynx HTCheckForInterrupt does
+         * select(stdin, timeout=0) after painting "Looking up … first";
+         * always-ready made it call blocking LYgetch() and never reach
+         * gethostbyname / getaddrinfo. No FIONREAD yet, so report not-ready
+         * (false negative: 'z' during a transfer is missed) rather than hang.
+         */
         if (sock < 0) {
             rev = 0;
-            if (fds[i].events & (POLLIN | POLLPRI | POLLRDNORM)) {
-                rev |= POLLIN;
-            }
             if (fds[i].events & (POLLOUT | POLLWRNORM)) {
                 rev |= POLLOUT;
             }
+            if (fds[i].events & (POLLIN | POLLPRI | POLLRDNORM)) {
+                if (!isatty(fds[i].fd)) {
+                    rev |= POLLIN;
+                }
+            }
             if (rev == 0 && fds[i].events == 0) {
-                rev = POLLIN | POLLOUT;
+                if (!isatty(fds[i].fd)) {
+                    rev = POLLIN | POLLOUT;
+                } else {
+                    rev = POLLOUT;
+                }
             }
             fds[i].revents = rev;
             if (rev) {
