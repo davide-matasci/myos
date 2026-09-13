@@ -309,6 +309,25 @@ pub fn init() {
     }
 }
 
+/// Secondary CPU: vectors already set globally; enable GICC + timers.
+pub fn ap_init() {
+    let v = exception_vectors as *const () as usize;
+    unsafe {
+        asm!("msr vbar_el1, {v}", "isb", v = in(reg) v, options(nostack));
+        if current_el() >= 2 {
+            asm!("msr vbar_el2, {v}", "isb", v = in(reg) v, options(nostack));
+        }
+    }
+    // GICv2 CPU interface is banked per-CPU.
+    write32(GICC, 3);
+    write32(GICC + 0x004, 0xFF);
+    init_timer();
+    unsafe {
+        asm!("dsb sy", options(nomem, nostack));
+        asm!("msr daifclr, #3", options(nomem, nostack));
+    }
+}
+
 pub fn wait_for_interrupt_proof() {
     while !TIMER_FIRED.load(Ordering::SeqCst) {
         unsafe {

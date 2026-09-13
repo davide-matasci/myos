@@ -164,6 +164,36 @@ pub fn init() {
     x86_64::instructions::interrupts::enable();
 }
 
+
+/// Secondary CPU: IDT already built by BSP; enable this CPU's local APIC timer.
+pub fn ap_init() {
+    x86_64::instructions::interrupts::disable();
+    if let Some(idt) = IDT.get() {
+        idt.load();
+    }
+    // GDT: reuse BSP tables; TSS rsp0 is refreshed on schedule.
+    super::gdt::load_for_ap();
+
+    let mut base = rdmsr(IA32_APIC_BASE);
+    base |= APIC_EN;
+    base &= !APIC_EXTD;
+    wrmsr(IA32_APIC_BASE, base);
+    let phys = base & 0xffff_f000;
+    // LAPIC MMIO already mapped by BSP at the same phys (CPU-local view).
+    if LAPIC.load(Ordering::SeqCst) == 0 {
+        let va = map_lapic(phys);
+        LAPIC.store(va, Ordering::SeqCst);
+    }
+    lapic_w(SVR, 0x100 | u32::from(SPURIOUS_VECTOR));
+    lapic_w(TPR, 0);
+    lapic_w(LVT_LINT0, 1 << 16);
+    lapic_w(LVT_LINT1, 1 << 16);
+    lapic_w(DIV, 0xB);
+    lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 17));
+    lapic_w(INIT_COUNT, 100_000);
+    x86_64::instructions::interrupts::enable();
+}
+
 pub fn wait_for_interrupt_proof() {
     while !TIMER_FIRED.load(Ordering::SeqCst) {
         x86_64::instructions::hlt();

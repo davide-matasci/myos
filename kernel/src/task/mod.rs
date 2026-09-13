@@ -241,6 +241,8 @@ struct Task {
     sig_pending: u32,
     /// Ignored signals bitmask (SIGKILL cannot be ignored). See `signal`.
     sig_ignored: u32,
+    /// `None` = runnable on any CPU; `Some(cpu)` = pinned (idle threads).
+    affinity: Option<usize>,
 }
 
 const EMPTY: Task = Task {
@@ -273,14 +275,34 @@ const EMPTY: Task = Task {
     has_ctty: false,
     sig_pending: 0,
     sig_ignored: 0,
+    affinity: None,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
-static CURRENT: AtomicUsize = AtomicUsize::new(0);
+static CURRENT: [AtomicUsize; crate::smp::MAX_CPUS] = [
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+];
 static PREEMPT_ON: AtomicBool = AtomicBool::new(false);
 static SERIAL: Mutex<()> = Mutex::new(());
 static KERNEL_ASPACE: AtomicU64 = AtomicU64::new(0);
 static LOADED_ASPACE: AtomicU64 = AtomicU64::new(0);
+
+fn current_slot() -> usize {
+    let cpu = crate::smp::cpu_id();
+    CURRENT[cpu.min(crate::smp::MAX_CPUS - 1)].load(Ordering::SeqCst)
+}
+
+fn set_current_slot(slot: usize) {
+    let cpu = crate::smp::cpu_id();
+    CURRENT[cpu.min(crate::smp::MAX_CPUS - 1)].store(slot, Ordering::SeqCst);
+}
 
 pub fn init() {
     let a = user::read_aspace();
@@ -291,7 +313,8 @@ pub fn init() {
     let mut tasks = TASKS.lock();
     tasks[0].state = State::Running;
     tasks[0].sp = 0;
-    CURRENT.store(0, Ordering::SeqCst);
+    tasks[0].affinity = None;
+    set_current_slot(0);
     drop(tasks);
     irq_restore(flags);
 }
@@ -316,14 +339,14 @@ pub fn unload_user_aspace(aspace: u64) {
 
 #[allow(dead_code)]
 pub fn current_id() -> usize {
-    CURRENT.load(Ordering::SeqCst)
+    current_slot()
 }
 
 /// When the running task is a user process, its saved PC and stack pointer.
 pub fn current_user_pc_sp() -> Option<(usize, usize)> {
     let flags = irq_save();
     irq_off();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let t = TASKS.lock()[id];
     let out = if t.user_rip != 0 {
         Some((t.user_rip, t.user_rsp))
@@ -337,7 +360,7 @@ pub fn current_user_pc_sp() -> Option<(usize, usize)> {
 pub fn current_aspace() -> u64 {
     let flags = irq_save();
     irq_off();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let a = TASKS.lock()[id].aspace;
     irq_restore(flags);
     a
@@ -347,7 +370,7 @@ pub fn current_aspace() -> u64 {
 pub fn current_user_map() -> (u64, usize, u64) {
     let flags = irq_save();
     irq_off();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let t = TASKS.lock()[id];
     let out = (t.user_base, t.image_span, t.stack_off);
     irq_restore(flags);
@@ -357,7 +380,7 @@ pub fn current_user_map() -> (u64, usize, u64) {
 pub fn current_brk() -> u64 {
     let flags = irq_save();
     irq_off();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let b = TASKS.lock()[id].brk_cur;
     irq_restore(flags);
     b
@@ -380,7 +403,7 @@ pub fn clear_mmap() {
 pub fn mmap_regions() -> [MmapRegion; MAX_MMAP_REGIONS] {
     let flags = irq_save();
     irq_off();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let r = TASKS.lock()[id].mmap;
     irq_restore(flags);
     r
@@ -389,7 +412,7 @@ pub fn mmap_regions() -> [MmapRegion; MAX_MMAP_REGIONS] {
 pub fn mmap_contains(ptr: usize, len: usize) -> bool {
     let flags = irq_save();
     irq_off();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let mmap = TASKS.lock()[id].mmap;
     irq_restore(flags);
     mmap_range_in(&mmap, ptr, len)
@@ -399,7 +422,7 @@ pub fn mmap_overlaps(va: usize, len: usize) -> bool {
     let end = va.saturating_add(len);
     let flags = irq_save();
     irq_off();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let mmap = TASKS.lock()[id].mmap;
     irq_restore(flags);
     for r in mmap.iter() {
@@ -492,7 +515,7 @@ pub fn set_exec_name(name: &[u8]) {
 pub fn exec_name(out: &mut [u8]) -> usize {
     let flags = irq_save();
     irq_off();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let t = TASKS.lock()[id];
     let n = t.exec_name_len as usize;
     let n = n.min(out.len()).min(t.exec_name.len());
@@ -504,7 +527,7 @@ pub fn exec_name(out: &mut [u8]) -> usize {
 pub fn cwd(out: &mut [u8]) -> usize {
     let flags = irq_save();
     irq_off();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let t = TASKS.lock()[id];
     let n = t.cwd_len as usize;
     let n = n.min(out.len()).min(t.cwd.len());
@@ -544,7 +567,7 @@ fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
     let flags = irq_save();
     irq_off();
     let mut tasks = TASKS.lock();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let out = f(&mut tasks[id]);
     drop(tasks);
     irq_restore(flags);
@@ -669,7 +692,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         let (entry, map, mmap) = {
             let flags = irq_save();
             irq_off();
-            let id = CURRENT.load(Ordering::SeqCst);
+            let id = current_slot();
             let t = TASKS.lock()[id];
             irq_restore(flags);
             (
@@ -762,7 +785,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
         let (entry, map, mmap) = {
             let flags = irq_save();
             irq_off();
-            let id = CURRENT.load(Ordering::SeqCst);
+            let id = current_slot();
             let t = TASKS.lock()[id];
             irq_restore(flags);
             (
@@ -944,7 +967,7 @@ pub fn task_pgid(id: usize) -> Option<usize> {
 }
 
 pub fn current_pgid() -> Option<usize> {
-    task_pgid(CURRENT.load(Ordering::SeqCst))
+    task_pgid(current_slot())
 }
 
 pub fn task_has_ctty(id: usize) -> bool {
@@ -1066,7 +1089,7 @@ pub fn signal_take_fatal(id: usize) -> Option<u32> {
 pub fn has_ctty() -> bool {
     let flags = irq_save();
     irq_off();
-    let id = CURRENT.load(Ordering::SeqCst);
+    let id = current_slot();
     let t = TASKS.lock()[id];
     irq_restore(flags);
     t.has_ctty
@@ -1091,7 +1114,7 @@ pub fn set_ctty() {
 /// - Returns the new session id (task slot) on success, or `None` (EPERM).
 pub fn setsid() -> Option<usize> {
     with_current_mut(|t| {
-        let pid = CURRENT.load(Ordering::SeqCst);
+        let pid = current_slot();
         if t.sid == pid {
             return None;
         }
@@ -1111,7 +1134,7 @@ fn task_exists(t: &Task) -> bool {
 pub fn getpgid(pid: usize) -> Option<usize> {
     let flags = irq_save();
     irq_off();
-    let caller = CURRENT.load(Ordering::SeqCst);
+    let caller = current_slot();
     let target = if pid == 0 { caller } else { pid };
     let out = if target >= MAX_TASKS {
         None
@@ -1132,7 +1155,7 @@ pub fn getpgid(pid: usize) -> Option<usize> {
 pub fn getsid(pid: usize) -> Option<usize> {
     let flags = irq_save();
     irq_off();
-    let caller = CURRENT.load(Ordering::SeqCst);
+    let caller = current_slot();
     let target = if pid == 0 { caller } else { pid };
     let out = if target >= MAX_TASKS {
         None
@@ -1167,7 +1190,7 @@ pub fn setpgid(pid: usize, pgid: usize) -> bool {
     let flags = irq_save();
     irq_off();
     let mut tasks = TASKS.lock();
-    let caller = CURRENT.load(Ordering::SeqCst);
+    let caller = current_slot();
     let target = if pid == 0 { caller } else { pid };
 
     let ok = (|| {
@@ -1233,7 +1256,7 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
     let entry = {
         let flags = irq_save();
         irq_off();
-        let id = CURRENT.load(Ordering::SeqCst);
+        let id = current_slot();
         let t = TASKS.lock()[id];
         irq_restore(flags);
         t.fds.get(fd).copied().unwrap_or(FdEntry::Empty)
@@ -1423,7 +1446,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
 
     let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, pgid, has_ctty, sig_ignored) = {
         let tasks = TASKS.lock();
-        let id = CURRENT.load(Ordering::SeqCst);
+        let id = current_slot();
         let t = tasks[id];
         if t.user_rip == 0 {
             drop(tasks);
@@ -1539,6 +1562,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
+        affinity: None,
     };
     drop(tasks);
     user::note_fork();
@@ -1550,7 +1574,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
 /// `usize::MAX` if this task has no children. If `status_out` is `Some(va)`,
 /// stores the low 8 bits of the child's exit code at that user address.
 pub fn wait_child(status_out: Option<usize>) -> usize {
-    let parent = CURRENT.load(Ordering::SeqCst);
+    let parent = current_slot();
     loop {
         let mut any = false;
         let mut reap = None;
@@ -1669,6 +1693,7 @@ fn spawn_inner(
         has_ctty: false,
         sig_pending: 0,
         sig_ignored: 0,
+        affinity: None,
     };
     drop(tasks);
     irq_restore(flags);
@@ -1703,19 +1728,27 @@ pub fn schedule() {
 
     let switch = {
         let mut tasks = TASKS.lock();
-        let current = CURRENT.load(Ordering::SeqCst);
+        let current = current_slot();
         match tasks[current].state {
             State::Running => tasks[current].state = State::Ready,
             State::Dead | State::Ready | State::Unused => {}
         }
 
+        crate::smp::note_schedule();
+        let cpu = crate::smp::cpu_id();
         let mut next = current;
         for off in 1..MAX_TASKS {
             let i = (current + off) % MAX_TASKS;
-            if tasks[i].state == State::Ready {
-                next = i;
-                break;
+            if tasks[i].state != State::Ready {
+                continue;
             }
+            if let Some(aff) = tasks[i].affinity {
+                if aff != cpu {
+                    continue;
+                }
+            }
+            next = i;
+            break;
         }
 
         if next == current {
@@ -1729,7 +1762,7 @@ pub fn schedule() {
             let new_sp = tasks[next].sp;
             let kstack = tasks[next].kernel_stack_top;
             let aspace = tasks[next].aspace;
-            CURRENT.store(next, Ordering::SeqCst);
+            set_current_slot(next);
             Some((old_sp, new_sp, kstack, aspace))
         }
     };
@@ -1792,7 +1825,7 @@ extern "C" fn trampoline() -> ! {
     let (entry, user_rip, user_rsp, user_argc, user_argv, fork_regs) = {
         let flags = irq_save();
         irq_off();
-        let id = CURRENT.load(Ordering::SeqCst);
+        let id = current_slot();
         let mut tasks = TASKS.lock();
         let t = &mut tasks[id];
         let fr = t.fork_regs.take();
@@ -1825,7 +1858,7 @@ pub fn die() -> ! {
     irq_off();
     let reclaim = {
         let mut tasks = TASKS.lock();
-        let id = CURRENT.load(Ordering::SeqCst);
+        let id = current_slot();
         let mut out = None;
         if tasks[id].user_rip != 0 {
             user::note_exit();
@@ -1960,4 +1993,83 @@ fn wait() {
     unsafe {
         core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
     }
+}
+
+
+/// Idle loop for a secondary CPU brought up by [`crate::smp`].
+///
+/// Allocates a pinned idle task so `schedule` can leave and return to this CPU.
+pub fn ap_idle_loop(logical: usize) -> ! {
+    let flags = irq_save();
+    irq_off();
+    let layout = Layout::from_size_align(STACK_SIZE, 16).expect("ap idle stack");
+    let stack = unsafe { alloc(layout) };
+    assert!(!stack.is_null(), "ap idle stack alloc");
+    // Seed a stack that simply returns into this function's loop via trampoline
+    // is awkward; instead park this CPU's "current" as a Running idle task with
+    // sp=0 meaning "already on stack" — we never switch TO an idle with sp=0
+    // from another CPU because affinity pins it. When we yield, we save our
+    // real sp via task_switch.
+    let sp = unsafe { seed_stack(stack, STACK_SIZE, ap_idle_trampoline as usize) };
+    let top = stack as usize + STACK_SIZE;
+    let mut tasks = TASKS.lock();
+    let slot = tasks
+        .iter()
+        .position(|t| t.state == State::Unused)
+        .expect("no AP idle slot");
+    tasks[slot] = Task {
+        state: State::Running,
+        stack_base: stack as usize,
+        sp,
+        entry: Some(ap_idle_body),
+        aspace: 0,
+        kernel_stack_top: top,
+        user_rip: 0,
+        user_rsp: 0,
+        fds: [FdEntry::Empty; MAX_FDS],
+        user_base: 0,
+        image_span: 0,
+        stack_off: 0,
+        ppid: 0,
+        fork_regs: None,
+        user_argc: 0,
+        user_argv: 0,
+        brk_cur: 0,
+        exec_name: [0; 32],
+        exec_name_len: 0,
+        cwd: root_cwd_buf(),
+        cwd_len: 1,
+        exit_code: 0,
+        mmap: EMPTY_MMAP,
+        mmap_next: 0,
+        sid: slot,
+        pgid: slot,
+        has_ctty: false,
+        sig_pending: 0,
+        sig_ignored: 0,
+        affinity: Some(logical),
+    };
+    drop(tasks);
+    set_current_slot(slot);
+    irq_restore(flags);
+    crate::smp::mark_running(logical);
+    enable_preempt();
+    // Jump into the seeded stack so the first schedule has a valid save area.
+    // Until then, run the idle body directly.
+    ap_idle_body();
+    loop {
+        yield_now();
+        crate::arch::wait_interrupt();
+    }
+}
+
+fn ap_idle_body() {
+    loop {
+        yield_now();
+        crate::arch::wait_interrupt();
+    }
+}
+
+fn ap_idle_trampoline() {
+    ap_idle_body();
 }

@@ -238,6 +238,16 @@ pub fn init() {
     init_timer();
 }
 
+pub fn ap_init() {
+    let v = trap_vector as *const () as usize;
+    unsafe {
+        asm!("csrw stvec, {v}", v = in(reg) v, options(nostack));
+        asm!("csrs sie, {}", in(reg) 1 << 5, options(nostack));
+        asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack));
+    }
+    init_timer();
+}
+
 pub fn wait_for_interrupt_proof() {
     while !TIMER_FIRED.load(Ordering::SeqCst) {
         unsafe {

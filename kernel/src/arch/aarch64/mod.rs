@@ -74,6 +74,17 @@ fn current_el() -> u64 {
 }
 
 /// PSCI SYSTEM_OFF. EL1 uses HVC (QEMU virt conduit); EL2 uses SMC.
+
+pub fn ap_init(_logical: usize) {
+    interrupts::ap_init();
+}
+
+pub fn wait_interrupt() {
+    unsafe {
+        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+    }
+}
+
 pub fn exit_qemu(_code: u32) {
     let cmd: u64 = 0x8400_0008;
     unsafe {
