@@ -201,7 +201,9 @@ pub fn ap_init(logical: usize) {
     lapic_w(DIV, 0xB);
     lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 17));
     lapic_w(INIT_COUNT, 100_000);
-    x86_64::instructions::interrupts::enable();
+    // Leave IF clear — `task::ap_idle_loop` enables IRQs only after CURRENT
+    // and the idle task exist (otherwise an early IPI/timer schedules with
+    // CURRENT==0 and corrupts the BSP's task 0).
 }
 
 pub fn wait_for_interrupt_proof() {

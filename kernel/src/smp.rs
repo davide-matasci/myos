@@ -524,13 +524,8 @@ pub unsafe extern "C" fn myos_smp_ap_entry(info: &limine::mp::MpInfo) -> ! {
     AP_PROGRESS.store(10, Ordering::SeqCst);
     crate::arch::ap_init(logical);
     AP_PROGRESS.store(20, Ordering::SeqCst);
-
-    {
-        let mut cpus = CPUS.lock();
-        cpus[logical].online = true;
-    }
-    ONLINE[logical].store(true, Ordering::SeqCst);
-    AP_PROGRESS.store(30, Ordering::SeqCst);
+    // ONLINE is set inside ap_idle_loop once CURRENT/idle exist — marking
+    // online earlier let the BSP IPI us into schedule with CURRENT==0.
     core::sync::atomic::fence(Ordering::SeqCst);
 
     crate::task::ap_idle_loop(logical)

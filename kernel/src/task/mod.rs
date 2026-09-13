@@ -2059,7 +2059,7 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     // sp=0 meaning "already on stack" — we never switch TO an idle with sp=0
     // from another CPU because affinity pins it. When we yield, we save our
     // real sp via task_switch.
-    let sp = unsafe { seed_stack(stack, STACK_SIZE, ap_idle_trampoline as usize) };
+    let sp = unsafe { seed_stack(stack, STACK_SIZE, ap_idle_trampoline as *const () as usize) };
     let top = stack as usize + STACK_SIZE;
     let mut tasks = TASKS.lock();
     let slot = tasks
@@ -2106,7 +2106,7 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     irq_restore(flags);
     crate::smp::mark_running(logical);
     enable_preempt();
-    // ap_init may leave IRQs masked (aarch64); enable only after CURRENT/ONLINE.
+    // IRQs only after CURRENT/idle exist (see smp::myos_smp_ap_entry).
     irq_on();
     // Migrate off Limine's tiny AP stack onto the 64KiB idle stack before any
     // timer/IPI nesting (UEFI path overflowed Limine stacks → kernel PF).
@@ -2114,11 +2114,7 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     unsafe {
         task_switch(core::ptr::addr_of_mut!(discard_sp), sp);
     }
-    // ap_idle_trampoline never returns.
-    loop {
-        yield_now();
-        crate::arch::wait_interrupt();
-    }
+    unreachable!()
 }
 
 fn ap_idle_body() {

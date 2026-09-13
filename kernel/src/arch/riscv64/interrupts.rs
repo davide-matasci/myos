@@ -258,8 +258,8 @@ pub fn ap_init(_logical: usize) {
     let v = trap_vector as *const () as usize;
     unsafe {
         asm!("csrw stvec, {v}", v = in(reg) v, options(nostack));
+        // Program STIE+SSIE but leave SIE clear until ap_idle_loop.
         asm!("csrs sie, {}", in(reg) (1 << 5) | (1 << 1), options(nostack));
-        asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack));
     }
     init_timer();
 }
