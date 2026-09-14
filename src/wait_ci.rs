@@ -48,7 +48,7 @@ const CI_NEEDLES: [&str; 32] = [
 /// Pre-prompt readiness stays slim; these are required after interactive `heap`.
 ///
 /// Note: `[ OK ] dns` / `[ OK ] https` are intentionally NOT here. They are
-/// separate interactive commands (indices 11/15) run *after* `heap`; they never
+/// separate interactive commands (indices 11/12) run *after* `heap`; they never
 /// print during `/heap`, so including them here would abort before those
 /// commands are typed. Verified by `interactive_dns_cmd_ok` /
 /// `interactive_https_cmd_ok`.
@@ -164,15 +164,13 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         CMD_DNS,
     ];
     if !ci_mini() {
+        cmds.push(CMD_HTTP);
+        cmds.push(CMD_CURL);
         // os-test basic smoke (TESTLIST) + setpwent gate (full boot only;
-        // too slow for boot-mini). Run before http/curl so the thin suite
-        // keeps remaining wall budget and cleaner RAM on slow x86 TCG.
-        // pass_rate is reported, not gated.
+        // too slow for boot-mini). pass_rate is reported, not gated.
         cmds.push(CMD_OS_TEST_PREP);
         cmds.push(CMD_OS_TEST_CAT);
         cmds.push(CMD_OS_TEST_RESULT);
-        cmds.push(CMD_HTTP);
-        cmds.push(CMD_CURL);
     }
     cmds.push(CMD_INTERRUPT);
     cmds.push(CMD_HIST_SEED);
@@ -182,7 +180,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
 
 /// The last three commands are always the ^C interrupt test, the history
 /// seed and the arrow-key editing test; their indexes depend on whether the
-/// os-test/HTTPS/curl smokes were dropped in mini mode.
+/// HTTPS/curl smokes were dropped in mini mode.
 fn interrupt_cmd_idx(cmds: &[&[u8]]) -> usize {
     cmds.len() - 3
 }
@@ -191,23 +189,6 @@ fn arrow_seed_idx(cmds: &[&[u8]]) -> usize {
 }
 fn arrow_edit_idx(cmds: &[&[u8]]) -> usize {
     cmds.len() - 1
-}
-
-/// Full-mode-only indices (cmds.len() == 20). Mini drops os-test/http/curl.
-fn ostest_prep_idx(cmds: &[&[u8]]) -> Option<usize> {
-    if cmds.len() == 20 { Some(12) } else { None }
-}
-fn ostest_cat_idx(cmds: &[&[u8]]) -> Option<usize> {
-    if cmds.len() == 20 { Some(13) } else { None }
-}
-fn ostest_result_idx(cmds: &[&[u8]]) -> Option<usize> {
-    if cmds.len() == 20 { Some(14) } else { None }
-}
-fn https_cmd_idx(cmds: &[&[u8]]) -> Option<usize> {
-    if cmds.len() == 20 { Some(15) } else { None }
-}
-fn curl_cmd_idx(cmds: &[&[u8]]) -> Option<usize> {
-    if cmds.len() == 20 { Some(16) } else { None }
 }
 
 /// Interactive curl prompt echo. The full `$ curl -fsS --connect-timeout 30 …`
@@ -661,15 +642,17 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         9 => interactive_tmp_redir_ok(serial),
         10 => interactive_which_ls_cmd_ok(serial),
         11 => interactive_dns_cmd_ok(serial),
-        // os-test then HTTPS/curl only exist in full mode; in mini those slots
-        // are the interrupt/seed/arrow tail (matched by position below).
-        // Full-mode length is 20, mini is 15.
-        // 12–14: ostest prep/cat/result; 15–16: http/curl.
-        12 if cmds.len() == 20 => interactive_ostest_prep_ok(serial),
-        13 if cmds.len() == 20 => interactive_ostest_cat_ok(serial),
-        14 if cmds.len() == 20 => interactive_ostest_result_ok(serial),
-        15 if cmds.len() == 20 => interactive_https_cmd_ok(serial),
-        16 if cmds.len() == 20 => interactive_curl_cmd_ok(serial),
+        // HTTPS/curl smokes and the os-test setpwent stage only exist in full
+        // mode; in mini those slots are the interrupt/seed/arrow tail (matched
+        // by position below). Full-mode length is 19, mini is 15.
+        // HTTPS/curl smokes and the os-test setpwent stage only exist in full
+        // mode; in mini those slots are the interrupt/seed/arrow tail (matched
+        // by position below). Full-mode length is 20, mini is 15.
+        12 if cmds.len() == 20 => interactive_https_cmd_ok(serial),
+        13 if cmds.len() == 20 => interactive_curl_cmd_ok(serial),
+        14 if cmds.len() == 20 => interactive_ostest_prep_ok(serial),
+        15 if cmds.len() == 20 => interactive_ostest_cat_ok(serial),
+        16 if cmds.len() == 20 => interactive_ostest_result_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
         i if i == arrow_seed_idx(cmds) => interactive_arrow_seed_ok(serial),
         i if i == arrow_edit_idx(cmds) => interactive_arrow_edit_ok(serial),
@@ -689,9 +672,6 @@ const SHELL_CMD_DELAY: Duration = Duration::from_millis(100);
 const ARROW_STAGE_BOUND: Duration = Duration::from_secs(20);
 /// Same idea for the ^C interrupt stage (`cat | cat` + VINTR).
 const INTERRUPT_STAGE_BOUND: Duration = Duration::from_secs(30);
-/// Thin os-test basic smoke (~22 tests × ~2s). Bound hangs like htons on x86 TCG
-/// instead of burning the full wait_ci budget after heap.
-const OSTEST_STAGE_BOUND: Duration = Duration::from_secs(180);
 
 fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
     stdin
@@ -834,6 +814,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     });
 
     let cmds = ci_shell_commands();
+    let mini = ci_mini();
     let started = Instant::now();
     let mut timed_out = false;
     let mut killed_for_needles = false;
@@ -841,8 +822,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut shell_cmd_index = 0usize;
     let mut typing = 0usize;
     let mut interrupt_sent = false;
-    // Wall clock for fail-fast bounds on ostest / interrupt / arrow WaitResult.
-    let mut ostest_wait_started: Option<Instant> = None;
+    // Wall clock for fail-fast bounds on interrupt / arrow WaitResult stages.
     let mut interrupt_wait_started: Option<Instant> = None;
     let mut arrow_wait_started: Option<Instant> = None;
     let status = loop {
@@ -869,37 +849,22 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     let _ = child.kill();
                     break child.wait().expect("wait after heap fail-fast kill");
                 }
-                // os-test prep: hang fail-fast (e.g. htons stall on x86 TCG).
+                // HTTPS: printed tls/dns/tcp failure — don't burn the 180s timeout.
+                // Index 12 == `http https://example.com/` (full mode only; mini
+                // drops the HTTPS/curl smokes and 12 is the interrupt test).
                 if shell_stage == ShellStage::WaitResult
-                    && ostest_prep_idx(&cmds) == Some(shell_cmd_index)
-                {
-                    let started_at = ostest_wait_started.get_or_insert_with(Instant::now);
-                    if started_at.elapsed() > OSTEST_STAGE_BOUND
-                        && !interactive_ostest_prep_ok(&acc)
-                    {
-                        eprintln!(
-                            "error: os-test prep stage timed out after {:?} (want pass_rate= then `$`)",
-                            OSTEST_STAGE_BOUND
-                        );
-                        let _ = child.kill();
-                        break child.wait().expect("wait after ostest fail-fast kill");
-                    }
-                } else {
-                    ostest_wait_started = None;
-                }
-                // HTTPS: printed tls/dns/tcp failure — don't burn the timeout.
-                // Full mode only: index 15 == `http https://example.com/`.
-                if shell_stage == ShellStage::WaitResult
-                    && https_cmd_idx(&cmds) == Some(shell_cmd_index)
+                    && !mini
+                    && shell_cmd_index == 12
                     && interactive_https_cmd_failed(&acc)
                 {
                     let _ = child.kill();
                     break child.wait().expect("wait after https fail-fast kill");
                 }
-                // curl: printed `curl: (N) …` — don't wait for Example Domain.
-                // Full mode only: index 16 == interactive curl HTTPS smoke.
+                // curl: printed `curl: (N) …` — don't wait 180s for Example Domain.
+                // Index 13 == interactive curl HTTPS smoke (full mode only).
                 if shell_stage == ShellStage::WaitResult
-                    && curl_cmd_idx(&cmds) == Some(shell_cmd_index)
+                    && !mini
+                    && shell_cmd_index == 13
                     && interactive_curl_cmd_failed(&acc)
                 {
                     let _ = child.kill();
@@ -1121,7 +1086,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `dns www.google.com` did not print `IP: x.x.x.x` and `[ OK ] dns`");
             }
         }
-        if curl_cmd_idx(&cmds) == Some(shell_cmd_index) && !interactive_curl_cmd_ok(&serial) {
+        if cmds.len() == 20 && shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
             if !serial.contains(CURL_ECHO) {
                 eprintln!("error: serial did not echo the curl HTTPS command on one clean line at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1133,7 +1098,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if https_cmd_idx(&cmds) == Some(shell_cmd_index) && !interactive_https_cmd_ok(&serial) {
+        if cmds.len() == 20 && shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
             if !command_echoed(&serial, "http https://example.com/") {
                 eprintln!("error: serial did not echo `$ http https://example.com/` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1147,19 +1112,19 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if ostest_prep_idx(&cmds) == Some(shell_cmd_index) && !interactive_ostest_prep_ok(&serial) {
+        if cmds.len() == 20 && shell_cmd_index == 14 && !interactive_ostest_prep_ok(&serial) {
             eprintln!(
                 "error: os-test basic smoke (ci-smoke-copy + TESTLIST make report) did not finish (want pass_rate= line, then `$`)"
             );
             std::process::exit(1);
         }
-        if ostest_cat_idx(&cmds) == Some(shell_cmd_index) && !interactive_ostest_cat_ok(&serial) {
+        if cmds.len() == 20 && shell_cmd_index == 15 && !interactive_ostest_cat_ok(&serial) {
             eprintln!(
                 "error: os-test setpwent cat stage failed (missing out/basic/pwd/setpwent.err/.out?)"
             );
             std::process::exit(1);
         }
-        if ostest_result_idx(&cmds) == Some(shell_cmd_index) && !interactive_ostest_result_ok(&serial) {
+        if cmds.len() == 20 && shell_cmd_index == 16 && !interactive_ostest_result_ok(&serial) {
             eprintln!(
                 "error: os-test setpwent gate failed (want SETPWENT-OK; .out must be empty on pass)"
             );
