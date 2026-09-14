@@ -499,8 +499,8 @@ fn interactive_arrow_seed_ok(serial: &str) -> bool {
         .map(|(_, rest)| rest)
         .unwrap_or("");
     // The prompt's Enter must produce exactly one newline before the output:
-    // the double-newline regression shows up as a blank line (`\r\r\n`), which
-    // makes `after` start with a blank line instead of `histrecall_zz`.
+    // a real double-CR (`\r\r\n`) or a split-CRLF normalize bug both show up
+    // as a blank line, which makes `after` start with `\n` before `histrecall_zz`.
     let ok = after.starts_with("\nhistrecall_zz")
         && at_interactive_prompt(serial);
     ok
@@ -670,6 +670,9 @@ const SHELL_CMD_DELAY: Duration = Duration::from_millis(100);
 /// Wall-time bound while CMD_ARROW is active waiting for `histrecall_z3z`.
 /// riscv64 #866 hung here until the GHA 90m cancel — fail ourselves instead.
 const ARROW_STAGE_BOUND: Duration = Duration::from_secs(20);
+/// Same idea for the histrecall *seed* WaitResult: if `echo histrecall_zz`
+/// never satisfies the seed check, do not burn the full QEMU timeout.
+const ARROW_SEED_STAGE_BOUND: Duration = Duration::from_secs(20);
 /// Same idea for the ^C interrupt stage (`cat | cat` + VINTR).
 const INTERRUPT_STAGE_BOUND: Duration = Duration::from_secs(30);
 
@@ -797,15 +800,30 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut stdout = child.stdout.take().expect("qemu stdout");
     let reader_handle = std::thread::spawn(move || {
         let mut buf = [0u8; 256];
+        // Carry a trailing CR across read() chunks. Naively doing
+        // replace("\r\n","\n").replace('\r','\n') per chunk turns a split
+        // CRLF (`…\r` then `\n…`) into `\n\n`, which falsely trips the
+        // histrecall seed blank-line check on bios (CI #34804761142).
+        let mut pending_cr = false;
         loop {
             match stdout.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]);
                     eprint!("{chunk}");
+                    let mut raw = String::new();
+                    if pending_cr {
+                        raw.push('\r');
+                        pending_cr = false;
+                    }
+                    raw.push_str(&chunk);
+                    if raw.ends_with('\r') {
+                        pending_cr = true;
+                        raw.pop();
+                    }
                     // QEMU -serial stdio often delivers CRLF; status needles
                     // must not fail on CR vs LF. Normalize CR to LF.
-                    let normalized = chunk.replace("\r\n", "\n").replace('\r', "\n");
+                    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
                     acc_reader.lock().unwrap().push_str(&normalized);
                 }
                 Err(_) => break,
@@ -824,6 +842,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut interrupt_sent = false;
     // Wall clock for fail-fast bounds on interrupt / arrow WaitResult stages.
     let mut interrupt_wait_started: Option<Instant> = None;
+    let mut arrow_seed_wait_started: Option<Instant> = None;
     let mut arrow_wait_started: Option<Instant> = None;
     let status = loop {
         {
@@ -888,6 +907,25 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     }
                 } else {
                     interrupt_wait_started = None;
+                }
+                // Histrecall seed: do not burn the full QEMU timeout when the
+                // seed check never passes (CI #34804761142 bios sat 600s).
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == arrow_seed_idx(&cmds)
+                {
+                    let started_at = arrow_seed_wait_started.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() > ARROW_SEED_STAGE_BOUND
+                        && !interactive_arrow_seed_ok(&acc)
+                    {
+                        eprintln!(
+                            "error: arrow history seed timed out after {:?} (want `histrecall_zz`, no blank line)",
+                            ARROW_SEED_STAGE_BOUND
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after arrow-seed fail-fast kill");
+                    }
+                } else {
+                    arrow_seed_wait_started = None;
                 }
                 // Arrow/histrecall: after CMD_ARROW, require `histrecall_z3z`
                 // within a short bound. #866 riscv64 hung here after a good
