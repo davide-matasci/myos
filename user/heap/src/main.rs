@@ -104,7 +104,10 @@ fn main() -> ! {
     if let Some(fd) = open_flags(b"/tmp/rg-needle.txt", O_WRONLY | O_CREAT | O_TRUNC) {
         let _ = write_fd(fd, b"hello ripgrep needle world\n");
         close(fd);
-        let _ = run_prog_exit(
+        // Hard-fail: a silent "prog bad status" after sepc=0 IPF let heap continue
+        // and only the host needle missed the regression. Keep running rg — do not
+        // skip on fault — but stop the suite if the child dies.
+        if !run_prog_exit(
             b"/bin/coreutils/rg",
             &[
                 b"rg",
@@ -118,7 +121,10 @@ fn main() -> ! {
             ],
             0,
             b"[ OK ] ripgrep\n",
-        );
+        ) {
+            write(b"ripgrep failed (expect sepc=0 IPF if kernel exec/tp broken)\n");
+            exit_code(1);
+        }
     } else {
         write(b"ripgrep skip (tmp create fail)\n");
     }

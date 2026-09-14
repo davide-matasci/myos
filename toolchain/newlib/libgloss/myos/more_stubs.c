@@ -201,7 +201,21 @@ pid_t getpgrp(void) {
 }
 
 char *getlogin(void) {
-    return NULL;
+    return "root";
+}
+
+int getlogin_r(char *buf, size_t bufsize) {
+    const char *name = "root";
+    size_t n;
+    if (buf == NULL || bufsize == 0) {
+        return EINVAL;
+    }
+    n = strlen(name) + 1;
+    if (bufsize < n) {
+        return ERANGE;
+    }
+    memcpy(buf, name, n);
+    return 0;
 }
 
 uid_t geteuid(void) {

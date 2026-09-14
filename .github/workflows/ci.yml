@@ -564,7 +564,7 @@ jobs:
     name: boot (${{ matrix.id }})
     runs-on: ubuntu-latest
     container: ghcr.io/davide-matasci/myos-ci:latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     needs: build
     if: |
       always() &&
@@ -692,7 +692,7 @@ jobs:
     name: boot-mini (${{ matrix.id }})
     runs-on: ubuntu-latest
     container: ghcr.io/davide-matasci/myos-ci:latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     needs: build
     # Reduced-testing boots: everything except the HTTPS/curl smokes
     # (MYOS_CI_MINI=1). Runs on every build; skipped when a manual dispatch

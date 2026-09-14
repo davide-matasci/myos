@@ -2,9 +2,94 @@
 //!
 //! Used by `SYS_GETTIMEOFDAY` so userspace TLS can verify certificate
 //! notBefore/notAfter against real Unix time.
+//!
+//! ## Performance (CI #873)
+//!
+//! Userspace `poll`/`select`/connect timeouts busy-wait on `gettimeofday`
+//! (`pollselect.c`, `socket.c`). Returning `tv_usec = 0` made those loops
+//! only observe second edges, so they called the syscall as fast as TCG
+//! would run until the RTC second flipped — fine on aarch64 (one MMIO
+//! load) but catastrophic on x86: each call did up to 10_000 CMOS port
+//! I/O waits for the UIP bit, then 8 more `in`/`out`s. That is the main
+//! reason x86 TCG spent minutes in `git commit` / https / the first
+//! os-test `tcc` while aarch64 finished the same work in seconds.
+//!
+//! Timer IRQs call [`note_tick`]; we cache RTC seconds and synthesize
+//! `tv_usec` from the tick counter so busy-waits advance within a second
+//! without hammering the CMOS.
 
-/// Read Unix seconds since 1970-01-01 UTC from the platform RTC.
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+
+/// Monotonic tick count (timer IRQ). Not wall-calibrated; used for cache
+/// freshness and approximate sub-second timestamps.
+static TICKS: AtomicU64 = AtomicU64::new(0);
+static CACHE_VALID: AtomicBool = AtomicBool::new(false);
+static CACHED_SECS: AtomicI64 = AtomicI64::new(0);
+/// Tick value when `CACHED_SECS` was last refreshed from the RTC.
+static CACHED_AT_TICK: AtomicU64 = AtomicU64::new(0);
+/// Tick value when `CACHED_SECS` last changed (start of this second, approx).
+static SEC_START_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// Rough timer rate used only to bound cache lifetime and map ticks→usec.
+/// LAPIC/arch timers are "several kHz" in QEMU; being off by 2–3× only
+/// skews timeout busy-waits, which is far better than second granularity.
+const APPROX_TICKS_PER_SEC: u64 = 4_000;
+/// Re-read the RTC at most this often (≈50 ms at APPROX_TICKS_PER_SEC).
+const CACHE_TTL_TICKS: u64 = APPROX_TICKS_PER_SEC / 20;
+
+/// Called from each arch timer IRQ (before `schedule`).
+#[inline]
+pub fn note_tick() {
+    TICKS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn ticks() -> u64 {
+    TICKS.load(Ordering::Relaxed)
+}
+
+/// Read Unix seconds since 1970-01-01 UTC from the platform RTC (cached).
 pub fn unix_seconds() -> Option<i64> {
+    timeval().map(|(s, _)| s)
+}
+
+/// `(tv_sec, tv_usec)` for `SYS_GETTIMEOFDAY`. `tv_usec` is synthesized
+/// from timer ticks so userspace elapsed-time loops make progress inside
+/// a wall-clock second without re-entering the RTC path every call.
+pub fn timeval() -> Option<(i64, i64)> {
+    let now = ticks();
+    let secs = cached_unix_seconds(now)?;
+    let start = SEC_START_TICK.load(Ordering::Relaxed);
+    let delta = now.saturating_sub(start);
+    let usec = if APPROX_TICKS_PER_SEC == 0 {
+        0
+    } else {
+        let u = (delta % APPROX_TICKS_PER_SEC) * 1_000_000 / APPROX_TICKS_PER_SEC;
+        core::cmp::min(u, 999_999) as i64
+    };
+    Some((secs, usec))
+}
+
+fn cached_unix_seconds(now: u64) -> Option<i64> {
+    if CACHE_VALID.load(Ordering::Relaxed) {
+        let at = CACHED_AT_TICK.load(Ordering::Relaxed);
+        if now.saturating_sub(at) < CACHE_TTL_TICKS {
+            return Some(CACHED_SECS.load(Ordering::Relaxed));
+        }
+    }
+    let secs = read_rtc_seconds()?;
+    let prev = CACHED_SECS.load(Ordering::Relaxed);
+    let was = CACHE_VALID.load(Ordering::Relaxed);
+    CACHED_SECS.store(secs, Ordering::Relaxed);
+    CACHED_AT_TICK.store(now, Ordering::Relaxed);
+    if !was || secs != prev {
+        SEC_START_TICK.store(now, Ordering::Relaxed);
+    }
+    CACHE_VALID.store(true, Ordering::Relaxed);
+    Some(secs)
+}
+
+fn read_rtc_seconds() -> Option<i64> {
     #[cfg(target_arch = "x86_64")]
     {
         cmos::unix_seconds()
@@ -79,8 +164,12 @@ mod cmos {
     }
 
     pub fn unix_seconds() -> Option<i64> {
-        // Wait briefly for update-in-progress to clear.
-        for _ in 0..10000 {
+        // UIP wait: keep this tiny. Under QEMU TCG each `in`/`out` is
+        // expensive; the old 10_000-iteration spin dominated every
+        // gettimeofday when UIP looked set (or when callers hammered us).
+        // A few polls is enough — if UIP is still set we read anyway
+        // (worst case a torn BCD field, corrected on the next cache refresh).
+        for _ in 0..32 {
             if cmos_read(0x0a) & 0x80 == 0 {
                 break;
             }

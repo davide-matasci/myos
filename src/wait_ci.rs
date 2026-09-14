@@ -106,29 +106,21 @@ const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 // curl over userspace sockets + mbedtls (same URL as https smoke).
 const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n";
 
-/// os-test regression (full boot only). `basic/pwd/setpwent` must compile AND
-/// run through the REAL harness path: make invokes misc/myos-run.sh, which
-/// links with tcc against the packed newlib sysroot (libc.a + libm.a, the
-/// #138 fix) and runs the binary. /lib/os-test is read-only (initramfs), so
-/// the make target needs a writable copy first. Kept as two commands so each
-/// typed line stays a single clean echo on the 160-col console.
+/// os-test basic smoke (full boot only). Thin writable copy via
+/// `misc/ci-smoke-copy.sh` (Makefile + misc/ + basic.h + TESTLIST sources
+/// only — not `cp -r` of the whole suite) then
+/// `make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report` (~22 tests).
+/// NOT the full ~1187 basic suite (#860 timed out; #866 still burned 90m on
+/// full-tree copy + SMP). Report prints `pass_rate=NN% (P/T)`; CI asserts the
+/// harness finished but does NOT fail on pass_rate<80. Follow-up short
+/// quote-free commands still require setpwent success. Commands stay
+/// quote-free for oksh redraw.
 const CMD_OS_TEST_PREP: &[u8] =
-    b"cp -r /lib/os-test /tmp/o && cd /tmp/o && make out/basic/pwd/setpwent.out; echo PREP-RC=$?\n";
-/// Success shape per misc/myos-run.sh: on pass, .err is empty AND .out is
-/// empty (setpwent returns 0 silently); both failure modes ("compile_error"
-/// and "exit: N") leave .out non-empty, and a botched compile can leave .err
-/// non-empty too. `ls` first so a missing out/ tree is visible on serial.
-/// The quotes in SETPWENT-"FAIL"/SETPWENT-"OK" keep the echoed command line
-/// from ever containing the plain markers the checker matches on output.
-// Split into two SHORT quote-free commands: the old single 104+-char line
-// (with $f vars and quoted markers) shattered in the oksh emacs redraw on
-// the 160-col console (wrap + BS storm, even an unterminated-quote
-// continuation prompt), which broke the strict echo match. Both stay under
-// ~80 chars like the known-clean echoes. .out is the verdict file: success
-// leaves it empty (setpwent returns 0 silently); failures ("compile_error",
-// "exit: N") leave it non-empty.
+    b"sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?\n";
+/// After the suite report: cat setpwent .err/.out (success leaves .out empty).
 const CMD_OS_TEST_CAT: &[u8] =
     b"cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out\n";
+/// setpwent gate: non-empty .out means compile_error / exit:N → SETPWENT-FAIL.
 const CMD_OS_TEST_RESULT: &[u8] =
     b"test -s out/basic/pwd/setpwent.out && echo SETPWENT-FAIL || echo SETPWENT-OK\n";
 // ^C interrupt test: run a foreground `cat | cat` (the right cat blocks on
@@ -174,9 +166,8 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     if !ci_mini() {
         cmds.push(CMD_HTTP);
         cmds.push(CMD_CURL);
-        // os-test setpwent regression: real make -> myos-run.sh -> tcc link,
-        // then cat the .err/.out and verdict marker (full boot only; too slow
-        // for the boot-mini window).
+        // os-test basic smoke (TESTLIST) + setpwent gate (full boot only;
+        // too slow for boot-mini). pass_rate is reported, not gated.
         cmds.push(CMD_OS_TEST_PREP);
         cmds.push(CMD_OS_TEST_CAT);
         cmds.push(CMD_OS_TEST_RESULT);
@@ -425,27 +416,27 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
     ok && !after.starts_with("\n\n") && at_interactive_prompt(serial)
 }
 
-/// os-test setpwent, stage 1: writable copy + targeted make must finish with
-/// a clean exit (no make error, no fs failure, no missing commands). Scope
-/// failure patterns to the output after the echoed command so earlier stages
-/// (e.g. nosuchcmd) can't poison this check.
+/// os-test basic smoke, stage 1: writable copy + thin TESTLIST make report
+/// must finish (harness printed `pass_rate=`). Scope failure patterns to the
+/// output after the echoed command. Do NOT fail on pass_rate < 80 — report
+/// only; the setpwent stages below remain the hard libc gate.
 fn interactive_ostest_prep_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    let echoed = "$ cp -r /lib/os-test /tmp/o && cd /tmp/o && make out/basic/pwd/setpwent.out; echo PREP-RC=$?";
+    let echoed =
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
     if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
     let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
-    // A make failure is NOT a prep-stage failure: PREP-RC plus the follow-up
-    // cat turn the actual tcc/harness error into the stage verdict.
-    !after.contains("cannot create")
-        && !after.contains("not found")
+    // Harness finished: myos-report.sh always emits pass_rate=NN% (P/T).
+    // Low pass rates are informational only — never a CI hard-fail here.
+    after.contains("pass_rate=")
+        && !after.contains("cannot create")
         && !after.contains("Read-only file system")
         && at_interactive_prompt(serial)
 }
 
-/// os-test setpwent, stage 2: cat the produced .err/.out and print the
-/// verdict marker. Pass = plain `SETPWENT-OK` (and never plain
+/// os-test setpwent, stage 2: cat the produced .err/.out (after smoke subset). Pass = plain `SETPWENT-OK` (and never plain
 /// `SETPWENT-FAIL`) after the echoed command; the quoted markers inside the
 /// echo cannot collide with the plain ones. Also refuse "not found" from the
 /// cat (missing .err/.out => prep did not actually produce them).
@@ -508,8 +499,8 @@ fn interactive_arrow_seed_ok(serial: &str) -> bool {
         .map(|(_, rest)| rest)
         .unwrap_or("");
     // The prompt's Enter must produce exactly one newline before the output:
-    // the double-newline regression shows up as a blank line (`\r\r\n`), which
-    // makes `after` start with a blank line instead of `histrecall_zz`.
+    // a real double-CR (`\r\r\n`) or a split-CRLF normalize bug both show up
+    // as a blank line, which makes `after` start with `\n` before `histrecall_zz`.
     let ok = after.starts_with("\nhistrecall_zz")
         && at_interactive_prompt(serial);
     ok
@@ -676,6 +667,14 @@ fn shell_ready(serial: &str) -> bool {
 
 const SHELL_TYPE_DELAY: Duration = Duration::from_millis(25);
 const SHELL_CMD_DELAY: Duration = Duration::from_millis(100);
+/// Wall-time bound while CMD_ARROW is active waiting for `histrecall_z3z`.
+/// riscv64 #866 hung here until the GHA 90m cancel — fail ourselves instead.
+const ARROW_STAGE_BOUND: Duration = Duration::from_secs(20);
+/// Same idea for the histrecall *seed* WaitResult: if `echo histrecall_zz`
+/// never satisfies the seed check, do not burn the full QEMU timeout.
+const ARROW_SEED_STAGE_BOUND: Duration = Duration::from_secs(20);
+/// Same idea for the ^C interrupt stage (`cat | cat` + VINTR).
+const INTERRUPT_STAGE_BOUND: Duration = Duration::from_secs(30);
 
 fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
     stdin
@@ -801,15 +800,30 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut stdout = child.stdout.take().expect("qemu stdout");
     let reader_handle = std::thread::spawn(move || {
         let mut buf = [0u8; 256];
+        // Carry a trailing CR across read() chunks. Naively doing
+        // replace("\r\n","\n").replace('\r','\n') per chunk turns a split
+        // CRLF (`…\r` then `\n…`) into `\n\n`, which falsely trips the
+        // histrecall seed blank-line check on bios (CI #34804761142).
+        let mut pending_cr = false;
         loop {
             match stdout.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]);
                     eprint!("{chunk}");
+                    let mut raw = String::new();
+                    if pending_cr {
+                        raw.push('\r');
+                        pending_cr = false;
+                    }
+                    raw.push_str(&chunk);
+                    if raw.ends_with('\r') {
+                        pending_cr = true;
+                        raw.pop();
+                    }
                     // QEMU -serial stdio often delivers CRLF; status needles
                     // must not fail on CR vs LF. Normalize CR to LF.
-                    let normalized = chunk.replace("\r\n", "\n").replace('\r', "\n");
+                    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
                     acc_reader.lock().unwrap().push_str(&normalized);
                 }
                 Err(_) => break,
@@ -826,6 +840,10 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut shell_cmd_index = 0usize;
     let mut typing = 0usize;
     let mut interrupt_sent = false;
+    // Wall clock for fail-fast bounds on interrupt / arrow WaitResult stages.
+    let mut interrupt_wait_started: Option<Instant> = None;
+    let mut arrow_seed_wait_started: Option<Instant> = None;
+    let mut arrow_wait_started: Option<Instant> = None;
     let status = loop {
         {
             let acc = serial_acc.lock().unwrap().clone();
@@ -870,6 +888,64 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 {
                     let _ = child.kill();
                     break child.wait().expect("wait after curl fail-fast kill");
+                }
+                // Interrupt stage: if `cat | cat` + ^C never returns to `$`, do
+                // not sit until QEMU/GHA timeout (same idea as curl/TLS hard-fail).
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == interrupt_cmd_idx(&cmds)
+                {
+                    let started_at = interrupt_wait_started.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() > INTERRUPT_STAGE_BOUND
+                        && !interactive_interrupt_cmd_ok(&acc)
+                    {
+                        eprintln!(
+                            "error: interrupt stage timed out after {:?} (want prompt after ^C on `cat | cat`)",
+                            INTERRUPT_STAGE_BOUND
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after interrupt fail-fast kill");
+                    }
+                } else {
+                    interrupt_wait_started = None;
+                }
+                // Histrecall seed: do not burn the full QEMU timeout when the
+                // seed check never passes (CI #34804761142 bios sat 600s).
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == arrow_seed_idx(&cmds)
+                {
+                    let started_at = arrow_seed_wait_started.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() > ARROW_SEED_STAGE_BOUND
+                        && !interactive_arrow_seed_ok(&acc)
+                    {
+                        eprintln!(
+                            "error: arrow history seed timed out after {:?} (want `histrecall_zz`, no blank line)",
+                            ARROW_SEED_STAGE_BOUND
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after arrow-seed fail-fast kill");
+                    }
+                } else {
+                    arrow_seed_wait_started = None;
+                }
+                // Arrow/histrecall: after CMD_ARROW, require `histrecall_z3z`
+                // within a short bound. #866 riscv64 hung here after a good
+                // smoke + SETPWENT-OK until the 90m GHA cancel.
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == arrow_edit_idx(&cmds)
+                {
+                    let started_at = arrow_wait_started.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() > ARROW_STAGE_BOUND
+                        && !interactive_arrow_edit_ok(&acc)
+                    {
+                        eprintln!(
+                            "error: arrow/histrecall stage timed out after {:?} (want `histrecall_z3z` after Up/Left/insert)",
+                            ARROW_STAGE_BOUND
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after arrow fail-fast kill");
+                    }
+                } else {
+                    arrow_wait_started = None;
                 }
             }
             if ci_complete(&acc, extra_needles, &expect, shell_stage) {
@@ -1048,7 +1124,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `dns www.google.com` did not print `IP: x.x.x.x` and `[ OK ] dns`");
             }
         }
-        if cmds.len() == 17 && shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
+        if cmds.len() == 20 && shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
             if !serial.contains(CURL_ECHO) {
                 eprintln!("error: serial did not echo the curl HTTPS command on one clean line at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1060,7 +1136,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if cmds.len() == 17 && shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
+        if cmds.len() == 20 && shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
             if !command_echoed(&serial, "http https://example.com/") {
                 eprintln!("error: serial did not echo `$ http https://example.com/` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1072,6 +1148,24 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             } else {
                 eprintln!("error: interactive HTTPS did not print `Example Domain` and `[ OK ] https`");
             }
+            std::process::exit(1);
+        }
+        if cmds.len() == 20 && shell_cmd_index == 14 && !interactive_ostest_prep_ok(&serial) {
+            eprintln!(
+                "error: os-test basic smoke (ci-smoke-copy + TESTLIST make report) did not finish (want pass_rate= line, then `$`)"
+            );
+            std::process::exit(1);
+        }
+        if cmds.len() == 20 && shell_cmd_index == 15 && !interactive_ostest_cat_ok(&serial) {
+            eprintln!(
+                "error: os-test setpwent cat stage failed (missing out/basic/pwd/setpwent.err/.out?)"
+            );
+            std::process::exit(1);
+        }
+        if cmds.len() == 20 && shell_cmd_index == 16 && !interactive_ostest_result_ok(&serial) {
+            eprintln!(
+                "error: os-test setpwent gate failed (want SETPWENT-OK; .out must be empty on pass)"
+            );
             std::process::exit(1);
         }
         if shell_cmd_index == interrupt_cmd_idx(&cmds) && !interactive_interrupt_cmd_ok(&serial) {

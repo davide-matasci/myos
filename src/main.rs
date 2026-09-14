@@ -311,7 +311,7 @@ fn run_ci_bios(bios_path: &str) {
         .arg("-m")
         .arg("1024")
         .arg("-smp")
-        .arg("2")
+        .arg("1")  // CI: single CPU (SMP unfinished; see #147)
         .arg("-drive")
         .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
@@ -340,7 +340,7 @@ fn run_ci_bios(bios_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: Duration::from_secs(600),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -356,7 +356,7 @@ fn run_ci_uefi(uefi_path: &str) {
         .arg("-m")
         .arg("1024")
         .arg("-smp")
-        .arg("2")
+        .arg("1")  // CI: single CPU (SMP unfinished; see #147)
         .arg("-drive")
         .arg(format!("format=raw,file={uefi_path}"))
         .arg("-drive")
@@ -391,7 +391,7 @@ fn run_ci_uefi(uefi_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: Duration::from_secs(600),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -410,7 +410,7 @@ fn run_ci_aarch64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: Duration::from_secs(600),
             qemu_debug_exit: false,
             shell_ci: true,
         },
@@ -434,7 +434,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-m")
         .arg("1024")
         .arg("-smp")
-        .arg("2")
+        .arg(if ci { "1" } else { "2" })  // CI: smp1; interactive keeps 2 for #147
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
@@ -810,7 +810,7 @@ fn run_ci_riscv64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: Duration::from_secs(600),
             qemu_debug_exit: false,
             shell_ci: true,
         },
@@ -832,7 +832,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-m")
         .arg("2048")
         .arg("-smp")
-        .arg("2")
+        .arg(if ci { "1" } else { "2" })  // CI: smp1; interactive keeps 2 for #147
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",

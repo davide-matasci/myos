@@ -1198,9 +1198,12 @@ pub fn set_kernel_rsp0(top: usize) {
         }
     }
     #[cfg(target_arch = "riscv64")]
-    unsafe {
-        let _ = cpu;
-        core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(top);
+    {
+        // Keep stack footer + static coherent for trap-time tp reload.
+        task::stamp_stack_cpu(top, cpu);
+        unsafe {
+            core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(top);
+        }
     }
     let _ = top;
 }
@@ -1389,6 +1392,7 @@ const USER_SSTATUS: u64 = (2 << 32) | (1 << 5); // UXL=64-bit user, SPIE, SPP=0
 
 #[cfg(target_arch = "riscv64")]
 fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
+    crate::smp::sync_tp_for_kernel();
     let ksp = {
         let t = task::current_kernel_stack_top();
         if t != 0 {
@@ -1397,6 +1401,7 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             unsafe { KERNEL_SSCRATCH }
         }
     };
+    task::stamp_stack_cpu(ksp, crate::smp::cpu_id());
     unsafe {
         // Install user context FIRST, then scrub remaining GPRs. Zeroing before
         // the moves would clobber LLVM's `in(reg)` temporaries (usp/argc/…) and
@@ -1482,6 +1487,10 @@ fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv
             *frame.add(34) = rsp as u64;
             // Publish this task's kernel stack top into both the static and the
             // CSR — schedule updating only the static left the CSR stale.
+            // sync_tp: expand_user_elf of a large rg ELF is deep enough that LLVM
+            // may clobber tp; without ONLINE gating that selected the wrong
+            // CURRENT[] and left sscratch/sepc resume corrupt (sepc=0 IPF).
+            crate::smp::sync_tp_for_kernel();
             let ksp = {
                 let t = task::current_kernel_stack_top();
                 if t != 0 {
@@ -1491,6 +1500,8 @@ fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv
                 }
             };
             if ksp != 0 {
+                let cpu = crate::smp::cpu_id();
+                task::stamp_stack_cpu(ksp, cpu);
                 core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(ksp);
                 core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
             }
@@ -1626,6 +1637,7 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
     frame[32] = regs.rip as u64; // resume past the fork ecall
     frame[33] = USER_SSTATUS;
     frame[34] = regs.rsp as u64;
+    crate::smp::sync_tp_for_kernel();
     let ksp = {
         let t = task::current_kernel_stack_top();
         if t != 0 {
@@ -1639,6 +1651,7 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
         // invariant). The old child stub left sscratch at frame+280 and the
         // next user trap smashed the stack — pipe/fork then jumped to garbage.
         if ksp != 0 {
+            task::stamp_stack_cpu(ksp, crate::smp::cpu_id());
             core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(ksp);
             core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
         }
@@ -1789,13 +1802,12 @@ fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
     if tv_ptr == 0 || !user_range_ok(tv_ptr, N) {
         return SYSERR;
     }
-    let Some(secs) = crate::time::unix_seconds() else {
+    let Some((secs, usec)) = crate::time::timeval() else {
         return SYSERR;
     };
     let mut raw = [0u8; N];
     raw[..8].copy_from_slice(&secs.to_le_bytes());
-    // usec unknown from RTC second resolution
-    raw[8..16].copy_from_slice(&0i64.to_le_bytes());
+    raw[8..16].copy_from_slice(&usec.to_le_bytes());
     if !write_user_bytes(task::current_aspace(), tv_ptr, &raw) {
         return SYSERR;
     }
@@ -1887,6 +1899,9 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     };
     let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
     let env_refs: Vec<&[u8]> = env_bufs.iter().map(|s| s.as_slice()).collect();
+    // Large in-place expand (ripgrep) can clobber tp; re-sync before any
+    // current_slot()-backed lookup so we expand/replace the running task.
+    crate::smp::sync_tp_for_kernel();
     let cur_aspace = task::current_aspace();
     let (base_u, _mapped_span, stack_off) = task::current_user_map();
     let old_brk = task::current_brk();

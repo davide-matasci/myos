@@ -82,7 +82,7 @@ fn hw_cpu_id() -> u64 {
         unsafe {
             core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
         }
-        if tp < MAX_CPUS {
+        if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
             let id = HW_IDS[tp].load(Ordering::SeqCst);
             if id != 0 {
                 return id;
@@ -100,7 +100,14 @@ pub fn cpu_id() -> usize {
         unsafe {
             core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
         }
-        if tp < MAX_CPUS {
+        // #146 required ONLINE[tp]. #147 dropped it so APs could read tp before
+        // mark_running — but that also trusts a *clobbered* tp in 1..MAX_CPUS-1
+        // (LLVM may use x4 as a temporary; user TLS can be a small integer).
+        // Under -smp 1 only CPU 0 is ONLINE, so a clobber of tp=2 during a deep
+        // expand_user_elf (ripgrep) made current_slot()/LOADED_ASPACE hit
+        // CURRENT[2]==0 and exec resume with the wrong task / sscratch → recurring
+        // instruction page fault stval=0 sepc=0 after uutils ls. Require ONLINE.
+        if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
             return tp;
         }
     }
@@ -145,6 +152,30 @@ pub fn cpu_id() -> usize {
     }
     BOOT_CPU.load(Ordering::SeqCst)
 }
+
+/// Force `tp` back to a sane kernel CPU id after a long Rust path may have
+/// clobbered x4. Safe under UP (tp=0) and after AP `mark_running`.
+#[cfg(target_arch = "riscv64")]
+pub fn sync_tp_for_kernel() {
+    let tp: usize;
+    unsafe {
+        core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
+    }
+    if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
+        return;
+    }
+    let id = if online_count() <= 1 {
+        0
+    } else {
+        BOOT_CPU.load(Ordering::SeqCst)
+    };
+    unsafe {
+        core::arch::asm!("mv tp, {0}", in(reg) id, options(nomem, nostack, preserves_flags));
+    }
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+pub fn sync_tp_for_kernel() {}
 
 pub fn cpu_online(i: usize) -> bool {
     i < MAX_CPUS && ONLINE[i].load(Ordering::SeqCst)

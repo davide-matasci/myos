@@ -11,7 +11,13 @@ for f in $(find out -name '*.out' | sort); do
     *) pass=$((pass+1)) ;;
   esac
 done
+if [ "$total" -gt 0 ]; then
+  pass_rate=$((pass * 100 / total))
+else
+  pass_rate=0
+fi
 echo "=== os-test: $total tests, $pass pass, $fail fail, $cerr compile_error ==="
+echo "pass_rate=${pass_rate}% ($pass/$total)"
 echo "--- failures and compile errors ---"
 for f in $(find out -name '*.out' | sort); do
   case "$(cat "$f")" in
