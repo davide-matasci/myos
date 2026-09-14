@@ -339,18 +339,17 @@ pub fn init() {
     irq_restore(flags);
 }
 
-/// x86: pin user to AP when SMP is online so ring3 exercises per-CPU TSS/GS/NXE.
-/// True float (`affinity: None`) still hits migration/reclaim races (NX/#PF /
-/// overflow under concurrent mmap teardown); keep one home CPU for now.
-/// Other arches float. Reclaim uses checked VA math + TLB shootdown on unload.
+/// x86: round-robin home CPU when SMP is online so user work spreads across
+/// cores. Live migration (`None`) still unstable. Other arches float.
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
     {
-        if crate::smp::online_count() > 1 {
-            Some(1)
-        } else {
-            Some(0)
+        let n = crate::smp::online_count();
+        if n <= 1 {
+            return Some(0);
         }
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        Some(NEXT.fetch_add(1, Ordering::SeqCst) % n)
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -366,18 +365,35 @@ pub fn kernel_aspace() -> u64 {
     KERNEL_ASPACE.load(Ordering::SeqCst)
 }
 
-/// Switch the CPU to the kernel aspace if `aspace` is currently loaded, then
-/// TLB-shootdown so remotes drop stale translations before reclaim frees frames.
+/// Drop `aspace` from every CPU that has it loaded, then TLB-shootdown before
+/// reclaim frees frames.
 pub fn unload_user_aspace(aspace: u64) {
     if aspace == 0 {
         return;
     }
+    let k = KERNEL_ASPACE.load(Ordering::SeqCst);
+    // Local first.
     if loaded_aspace() == aspace {
-        let k = KERNEL_ASPACE.load(Ordering::SeqCst);
         user::switch_aspace(k);
         set_loaded_aspace(k);
     }
+    // Remotes: if they still list this root, force kernel aspace via a
+    // reschedule kick and a short wait (schedule switches CR3 before Ready).
     if crate::smp::online_count() > 1 {
+        for _ in 0..100_000u32 {
+            let mut live = false;
+            for i in 0..crate::smp::MAX_CPUS {
+                if LOADED_ASPACE[i].load(Ordering::SeqCst) == aspace {
+                    live = true;
+                    break;
+                }
+            }
+            if !live {
+                break;
+            }
+            crate::smp::kick_cpus();
+            core::hint::spin_loop();
+        }
         crate::smp::tlb_shootdown();
     }
 }
@@ -1618,11 +1634,15 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        affinity: user_affinity(),
+        // Co-locate with parent: cross-CPU fork+exec/wait hangs under remote
+        // TLB shootdown vs waiter cli. RR at spawn_user still spreads
+        // independent top-level tasks across CPUs.
+        affinity: tasks[ppid].affinity,
     };
     drop(tasks);
     user::note_fork();
     irq_restore(flags);
+    crate::smp::kick_cpus();
     Some(slot)
 }
 
@@ -1787,10 +1807,9 @@ pub fn schedule() {
     let switch = {
         let mut tasks = TASKS.lock();
         let current = current_slot();
-        match tasks[current].state {
-            State::Running => tasks[current].state = State::Ready,
-            State::Dead | State::Ready | State::Unused => {}
-        }
+        // Switch aspace/rsp0 before Ready so a peer cannot reclaim while this
+        // CPU still has the old CR3. x86 user tasks are CPU-affine (RR), so
+        // Ready-before-task_switch cannot be picked by another core.
 
         crate::smp::note_schedule();
         let cpu = crate::smp::cpu_id();
@@ -1815,44 +1834,48 @@ pub fn schedule() {
             }
             None
         } else {
-            tasks[next].state = State::Running;
             let old_sp = core::ptr::addr_of_mut!(tasks[current].sp);
             let new_sp = tasks[next].sp;
             let kstack = tasks[next].kernel_stack_top;
             let aspace = tasks[next].aspace;
+
+            if kstack != 0 {
+                user::set_kernel_rsp0(kstack);
+                #[cfg(target_arch = "x86_64")]
+                crate::arch::gdt::set_rsp0(kstack as u64);
+                // Keep the sscratch CSR in lockstep with the static. Updating only the
+                // static left the CSR holding a previous task's top (or user sp) across
+                // schedule→trampoline→exec races; the next user trap then built its
+                // kernel frame on the wrong stack (riscv64 sepc=0 / zeroed ra family).
+                #[cfg(target_arch = "riscv64")]
+                unsafe {
+                    core::arch::asm!("csrw sscratch, {k}", k = in(reg) kstack, options(nostack));
+                }
+            }
+
+            let want = if aspace == 0 {
+                KERNEL_ASPACE.load(Ordering::SeqCst)
+            } else {
+                aspace
+            };
+            if want != loaded_aspace() {
+                user::switch_aspace(want);
+                set_loaded_aspace(want);
+            }
+
+            if tasks[current].state == State::Running {
+                tasks[current].state = State::Ready;
+            }
+            tasks[next].state = State::Running;
             set_current_slot(next);
-            Some((old_sp, new_sp, kstack, aspace))
+            Some((old_sp, new_sp))
         }
     };
 
-    let Some((old_sp, new_sp, kstack, aspace)) = switch else {
+    let Some((old_sp, new_sp)) = switch else {
         irq_restore(flags);
         return;
     };
-
-    if kstack != 0 {
-        user::set_kernel_rsp0(kstack);
-        #[cfg(target_arch = "x86_64")]
-        crate::arch::gdt::set_rsp0(kstack as u64);
-        // Keep the sscratch CSR in lockstep with the static. Updating only the
-        // static left the CSR holding a previous task's top (or user sp) across
-        // schedule→trampoline→exec races; the next user trap then built its
-        // kernel frame on the wrong stack (riscv64 sepc=0 / zeroed ra family).
-        #[cfg(target_arch = "riscv64")]
-        unsafe {
-            core::arch::asm!("csrw sscratch, {k}", k = in(reg) kstack, options(nostack));
-        }
-    }
-
-    let want = if aspace == 0 {
-        KERNEL_ASPACE.load(Ordering::SeqCst)
-    } else {
-        aspace
-    };
-    if want != loaded_aspace() {
-        user::switch_aspace(want);
-        set_loaded_aspace(want);
-    }
 
     unsafe {
         task_switch(old_sp, new_sp);

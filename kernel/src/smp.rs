@@ -222,17 +222,25 @@ pub fn tlb_shootdown() {
     if others == 0 {
         return;
     }
-    // Serialize shootdowns; skip if another CPU is already blasting (local
-    // flush already done by the caller).
-    let Some(_guard) = TLB_LOCK.try_lock() else {
-        return;
+    // Serialize shootdowns. Spin on the lock instead of dropping the flush:
+    // reclaim must not free frames while a peer may still cache translations.
+    // Bounded — a remote inside `schedule` (IF off) cannot EOI until it
+    // returns; unbounded wait deadlocked SMP bring-up under UEFI timing.
+    let mut lock_spins = 0u32;
+    let _guard = loop {
+        if let Some(g) = TLB_LOCK.try_lock() {
+            break g;
+        }
+        lock_spins += 1;
+        if lock_spins >= 2_000_000 {
+            return;
+        }
+        core::hint::spin_loop();
     };
     TLB_REMAINING.store(others, Ordering::SeqCst);
     #[cfg(target_arch = "riscv64")]
     ipi_mark_tlb();
     arch::ipi_tlb_shootdown();
-    // Cap the wait — a remote CPU inside `schedule` (IF off) cannot EOI until
-    // it returns; unbounded spin deadlocks SMP bring-up under UEFI timing.
     let mut spins = 0u32;
     while TLB_REMAINING.load(Ordering::SeqCst) > 0 && spins < 2_000_000 {
         core::hint::spin_loop();
