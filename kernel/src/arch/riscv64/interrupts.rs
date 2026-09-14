@@ -71,17 +71,23 @@ trap_vector:
     csrr t0, sscratch
     sd t0, 272(sp)
 3:
-    # RISC-V ABI: tp (x4) is the user TLS pointer. smp::cpu_id()/hw_cpu_id()
-    # read tp as the logical CPU index, so leaving user tp live through the
-    # trap/syscall body made current_slot()/LOADED_ASPACE/set_kernel_rsp0 hit
-    # the wrong per-CPU cell (and skip the BSP-only KERNEL_SSCRATCH update)
-    # whenever user TLS was a small integer or an AP was ONLINE. Pin tp to the
-    # BSP logical id on U-mode entry; the epilogue restores user x4 from the
-    # frame. Nested S-mode traps keep the hart's kernel tp (AP idle threads
-    # stash their logical id in tp at bring-up).
+    # RISC-V ABI: tp (x4) is the user TLS pointer. smp::cpu_id() reads tp as the
+    # logical CPU index, so leaving user tp live through the trap/syscall body
+    # made current_slot()/LOADED_ASPACE hit the wrong per-CPU cell whenever
+    # user TLS was a small integer. #146 pinned tp=0 (BSP); that is wrong on an
+    # AP and also insufficient once #147 trusted any tp < MAX_CPUS without an
+    # ONLINE check — a clobbered tp during expand_user_elf (ripgrep) selected
+    # CURRENT[N] for a never-scheduled CPU. Reload tp from the kernel-stack
+    # footer stamped by schedule/spawn (word 0 at kstack_top - STACK_SIZE).
+    # sp is currently kstack_top - 280. Nested S-mode traps keep the hart tp.
     csrr t1, sstatus
     andi t1, t1, 0x100
     bnez t1, 5f
+    li t1, 65256
+    sub t1, sp, t1
+    ld tp, 0(t1)
+    li t2, 8
+    bltu tp, t2, 5f
     mv tp, zero
 5:
     mv a0, sp

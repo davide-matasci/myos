@@ -31,10 +31,28 @@ const MAX_TASKS: usize = 32;
 /// 8 KiB overflowed after widening the user stack to 64 KiB; 16 KiB then overflowed
 /// once `MAX_INIT_PAGES` grew to 1024 for ripgrep (`[u64; 1024]` is 8 KiB alone,
 /// plus stack frames and a nested timer IRQ). Overflow hangs with no serial.
-const STACK_SIZE: usize = 64 * 1024;
+pub const STACK_SIZE: usize = 64 * 1024;
 /// oksh `FDBASE` is 10 (`fcntl(F_DUPFD)` for tty/script fds). 8 was enough for
 /// the tiny Rust shell; 16 leaves room for stdio + FDBASE + a pipe.
 const MAX_FDS: usize = 16;
+
+/// Stamp the owning logical CPU id at the base of a kernel stack so U-mode
+/// trap entry can reload `tp` without trusting user TLS (see riscv64 trap
+/// vector). Word 0 of the stack allocation is reserved for this footer.
+#[cfg(target_arch = "riscv64")]
+pub fn stamp_stack_cpu(kstack_top: usize, cpu: usize) {
+    if kstack_top < STACK_SIZE {
+        return;
+    }
+    let cpu = cpu.min(crate::smp::MAX_CPUS - 1);
+    unsafe {
+        ((kstack_top - STACK_SIZE) as *mut usize).write(cpu);
+    }
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+pub fn stamp_stack_cpu(_kstack_top: usize, _cpu: usize) {}
+
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FdEntry {
@@ -1611,6 +1629,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as *const () as usize) };
         (sb, sp, sb + STACK_SIZE)
     };
+    stamp_stack_cpu(top, crate::smp::cpu_id());
 
     let mut tasks = TASKS.lock();
     tasks[slot] = Task {
@@ -1734,6 +1753,8 @@ fn spawn_inner(
     assert!(!stack.is_null(), "task stack alloc");
     let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as usize) };
     let top = stack as usize + STACK_SIZE;
+    // BSP-created tasks start on CPU 0; schedule restamps on migrate.
+    stamp_stack_cpu(top, 0);
 
     let mut tasks = TASKS.lock();
     let slot = tasks
@@ -1866,6 +1887,8 @@ pub fn schedule() {
     };
 
     if kstack != 0 {
+        let cpu = crate::smp::cpu_id();
+        stamp_stack_cpu(kstack, cpu);
         user::set_kernel_rsp0(kstack);
         #[cfg(target_arch = "x86_64")]
         crate::arch::gdt::set_rsp0(kstack as u64);
@@ -2121,6 +2144,7 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     // real sp via task_switch.
     let sp = unsafe { seed_stack(stack, STACK_SIZE, ap_idle_trampoline as *const () as usize) };
     let top = stack as usize + STACK_SIZE;
+    stamp_stack_cpu(top, logical);
     let mut tasks = TASKS.lock();
     let slot = tasks
         .iter()
