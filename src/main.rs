@@ -208,7 +208,7 @@ fn run_bios(bios_path: &str) {
         .arg("-m")
         .arg("1024")
         .arg("-smp")
-        .arg("2")
+        .arg("4")
         .arg("-drive")
         .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
@@ -231,7 +231,7 @@ fn run_uefi(uefi_path: &str) {
         .arg("-m")
         .arg("1024")
         .arg("-smp")
-        .arg("2")
+        .arg("4")
         .arg("-drive")
         .arg(format!("format=raw,file={uefi_path}"))
         .arg("-drive")
@@ -311,7 +311,7 @@ fn run_ci_bios(bios_path: &str) {
         .arg("-m")
         .arg("1024")
         .arg("-smp")
-        .arg("1")  // CI: single CPU (SMP unfinished; see #147)
+        .arg("4")  // ≥2 APs for post-exec RR re-home / make -j
         .arg("-drive")
         .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
@@ -356,7 +356,7 @@ fn run_ci_uefi(uefi_path: &str) {
         .arg("-m")
         .arg("1024")
         .arg("-smp")
-        .arg("1")  // CI: single CPU (SMP unfinished; see #147)
+        .arg("4")  // ≥2 APs for post-exec RR re-home / make -j
         .arg("-drive")
         .arg(format!("format=raw,file={uefi_path}"))
         .arg("-drive")
@@ -434,7 +434,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-m")
         .arg("1024")
         .arg("-smp")
-        .arg(if ci { "1" } else { "2" })  // CI: smp1; interactive keeps 2 for #147
+        .arg("4")  // APs still parked for userspace; keep boot-green under -smp 4
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
@@ -832,7 +832,9 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-m")
         .arg("2048")
         .arg("-smp")
-        .arg(if ci { "1" } else { "2" })  // CI: smp1; interactive keeps 2 for #147
+        // Limine EDK2 path panics with -smp 4: "missing struct riscv_hart for BSP".
+        // Keep 2 so boot stays green; userspace remains effectively UP.
+        .arg("2")
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",

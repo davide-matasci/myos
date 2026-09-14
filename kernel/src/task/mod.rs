@@ -360,8 +360,22 @@ pub fn init() {
 /// x86: round-robin home CPU across APs when SMP is online. Skip CPU 0 —
 /// BSP shares irq/console/kernel_main with user under RR and CI bios hung
 /// after histrecall (`80c6ff1`, `-smp 2`). With two CPUs this is pin-to-AP
-/// (last green); with more CPUs work still spreads for make -j tops.
-/// Live migration (`None`) still unstable. Other arches float.
+/// (last green); with `-smp 4` (≥2 APs) post-exec re-home spreads make -j
+/// workers. Used at `spawn_user` and again in `replace_user` after exec
+/// (fork still inherits parent affinity). Live migration (`None`) still
+/// unstable. Other arches float.
+
+fn sticky_exec_name(name: &[u8]) -> bool {
+    // Prefer sticky homes for the interactive session and netd so console
+    // IRQs stay co-located with the reader. Compilers (tcc/cc1/…) still get
+    // a fresh AP RR home after exec. Cross-CPU exit reclaim is safe once
+    // `die` runs TLB shootdown with IF on.
+    matches!(
+        name,
+        b"netd" | b"getty" | b"login" | b"sh" | b"oksh" | b"init"
+    )
+}
+
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -1490,6 +1504,22 @@ pub fn replace_user(
         // v1: reset dispositions on exec (ignored → DFL, drop pending).
         t.sig_pending = 0;
         t.sig_ignored = 0;
+        // Post-exec re-home: fork kids inherit parent affinity (avoids the
+        // cross-CPU fork+exec/wait hang under remote TLB shootdown vs waiter
+        // cli). After a successful exec the new image gets a fresh RR home
+        // across APs only (skip BSP) so `make -j` workers spread under -smp 4.
+        // Keep long-lived console/net daemons sticky: netd on a remote AP
+        // triple-faults under -smp 4 (virtio/IRQ affinity); getty/login/sh
+        // stay with the parent session CPU for the same reason.
+        // Post-exec re-home: fork kids inherit parent affinity (avoids the
+        // cross-CPU fork+exec/wait hang under remote TLB shootdown vs waiter
+        // cli). After a successful exec the new image gets a fresh RR home
+        // across APs only (skip BSP) so `make -j` workers spread under -smp 4.
+        // Boot/session binaries stay sticky — remote-AP `/ok` triple-faulted
+        // bios bring-up before the die()/IRQ fix below.
+        if !sticky_exec_name(&t.exec_name[..t.exec_name_len as usize]) {
+            t.affinity = user_affinity();
+        }
     });
     user::switch_aspace(aspace);
     set_loaded_aspace(aspace);
@@ -1663,9 +1693,10 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        // Co-locate with parent: cross-CPU fork+exec/wait hangs under remote
-        // TLB shootdown vs waiter cli. RR at spawn_user still spreads
-        // independent top-level tasks across CPUs.
+        // Co-locate with parent through fork: cross-CPU fork+exec/wait hangs
+        // under remote TLB shootdown vs waiter cli. `replace_user` (post-exec)
+        // re-homes with RR across APs so make -j workers spread; spawn_user
+        // still RR-assigns independent top-level tasks.
         affinity: tasks[ppid].affinity,
     };
     drop(tasks);
@@ -1913,6 +1944,10 @@ pub fn schedule() {
     }
 
     // CR3 is `next`'s — safe to publish Ready on `old`.
+    // Do NOT IPI-kick here: Ready is visible while we still run on `old`'s
+    // stack until task_switch; a peer running `old` early NX-faulted under
+    // -smp 4. AP timers pick up foreign-affinity Ready; `replace_user` kicks
+    // when re-homing a still-Running post-exec task.
     {
         let mut tasks = TASKS.lock();
         if tasks[old].state == State::Running {
@@ -2018,9 +2053,16 @@ pub fn die() -> ! {
         tasks[id].entry = None;
         out
     };
+    // Reclaim/TLB shootdown must run with IF on: remotes ACK the shootdown
+    // IPI only after sti. Holding cli here deadlocked a parent waiter that was
+    // also briefly cli (schedule/wait_child) when the child had been re-homed
+    // onto another AP — bios triple-faulted under -smp 4 after the first
+    // remote-AP exit.
+    irq_on();
     if let Some((aspace, base, span, off, brk, mmap)) = reclaim {
         user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
     }
+    irq_off();
     schedule();
     loop {
         irq_on();

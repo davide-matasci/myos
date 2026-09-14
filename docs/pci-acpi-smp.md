@@ -51,11 +51,18 @@ Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
 Kernel tasks use `affinity: None` (smoke `sched mask=0x3`). On **x86_64** with
 more than one CPU online, new user tasks round-robin across APs (skip BSP); fork
 children inherit the parent's affinity (cross-CPU fork+exec/wait still hangs
-under remote TLB shootdown vs syscall `cli`). True `affinity: None` live
-migration remains unstable (NX #PF / leave races). `schedule` switches aspace/rsp0 before publishing Ready (old stays Running
-across the CR3 write, lock not held during switch); `unload_user_aspace`
-briefly kicks remotes then TLB-shootdowns; fork kicks idle CPUs. **aarch64** / **riscv64** leave user
-floating. `note_schedule` → `/proc/cpuinfo`. QEMU `-smp 2`.
+under remote TLB shootdown vs syscall `cli`). After a successful **exec**,
+`replace_user` re-homes the new image with the same AP-only RR policy so
+`make -j` workers (tcc/cc1/…) spread across APs under `-smp 4` (≥2 APs).
+Boot/session binaries (`netd`, `getty`, `login`, `sh`/`oksh`, `init`) stay
+sticky on the inherited CPU. `die` enables IRQs before reclaim/TLB
+shootdown so a re-homed child's exit no longer deadlocks a cli waiter. True `affinity: None` live migration remains unstable (NX #PF /
+leave races). `schedule` switches aspace/rsp0 before publishing Ready (old
+stays Running across the CR3 write, lock not held during switch);
+`unload_user_aspace` briefly kicks remotes then TLB-shootdowns; fork kicks
+idle CPUs. **aarch64** / **riscv64**
+leave user floating (APs may stay parked). `note_schedule` → `/proc/cpuinfo`.
+QEMU `-smp 4` on x86/aarch64 (interactive + CI); riscv stays `-smp 2` (Limine panics `missing struct riscv_hart for BSP` at 4).
 
 Per-CPU ring3↔ring0 state:
 

@@ -54,8 +54,8 @@ pass_rate=NN% (P/T)
 Full-boot shell CI (`src/wait_ci.rs`, non-mini) runs a **thin curated subset**
 of upstream `basic/` — a little of everything, not all ~1187 tests (CI run
 #860 timed out on the full suite; #866 still hit the GHA 90m cancel on x86
-under `-smp 2` heap/git + a full-tree `cp -r`, while aarch64 with one online
-CPU finished the thin smoke in ~4m).
+under `-smp 2` heap/git + a full-tree `cp -r` before the thin copy +
+fail-fast fixes; aarch64 finished the thin smoke in ~4m).
 
 Guest staging uses a thin copy (not the whole suite):
 
@@ -76,10 +76,12 @@ make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report
 It **must** include `pwd/setpwent` (hard gate). It deliberately avoids
 pthread / aio / math / wchar / spawn / socket for this boot window.
 
-CI launcher notes (lesson from #866):
+CI launcher notes:
 
-- Full-boot QEMU helpers use **`-smp 1`** (interactive runners keep `-smp 2`
-  so unfinished SMP / #147 can still be exercised manually).
+- QEMU helpers use **`-smp 4`** on x86/aarch64 (interactive + CI mini/full) so
+  x86 has ≥2 APs for post-exec RR re-home / `make -j` spread; riscv stays
+  **`-smp 2`** (Limine hart table panic at 4). aarch64/riscv userspace may
+  still be UP.
 - wait_ci overall QEMU wait is ~10m (600s), and the arrow/histrecall stage
   fail-fasts in ~20s if `histrecall_z3z` never appears (riscv64 #866 hung
   there after a good smoke + SETPWENT-OK).
