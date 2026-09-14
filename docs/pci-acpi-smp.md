@@ -53,11 +53,14 @@ more than one CPU online, new user tasks round-robin across APs (skip BSP); fork
 children inherit the parent's affinity (cross-CPU fork+exec/wait still hangs
 under remote TLB shootdown vs syscall `cli`). After a successful **exec**,
 `replace_user` re-homes the new image with the same AP-only RR policy so
-`make -j` workers spread across APs under `-smp 4` (≥2 APs). True
-`affinity: None` live migration remains unstable (NX #PF / leave races).
-`schedule` switches aspace/rsp0 before publishing Ready (old stays Running
-across the CR3 write, lock not held during switch); `unload_user_aspace` briefly kicks
-remotes then TLB-shootdowns; fork and post-exec re-home kick idle CPUs. **aarch64** / **riscv64**
+`make -j` workers (tcc/cc1/…) spread across APs under `-smp 4` (≥2 APs).
+Boot/session binaries (`ok`, `netd`, `getty`, `login`, `sh`/`oksh`, `init`)
+stay sticky on the inherited CPU — remote-AP `/ok` triple-faulted bios
+bring-up. True `affinity: None` live migration remains unstable (NX #PF /
+leave races). `schedule` switches aspace/rsp0 before publishing Ready (old
+stays Running across the CR3 write, lock not held during switch);
+`unload_user_aspace` briefly kicks remotes then TLB-shootdowns; fork kicks
+idle CPUs. **aarch64** / **riscv64**
 leave user floating (APs may stay parked). `note_schedule` → `/proc/cpuinfo`.
 QEMU `-smp 4` on all launch paths (interactive + CI mini/full).
 

@@ -364,6 +364,17 @@ pub fn init() {
 /// workers. Used at `spawn_user` and again in `replace_user` after exec
 /// (fork still inherits parent affinity). Live migration (`None`) still
 /// unstable. Other arches float.
+
+fn sticky_exec_name(name: &[u8]) -> bool {
+    // Session/console/net path must not migrate after exec under -smp>2:
+    // remote-AP /ok + netd has triple-faulted the bios bring-up. make -j
+    // compilers (tcc, cc1, …) still get a fresh RR home.
+    matches!(
+        name,
+        b"netd" | b"getty" | b"login" | b"sh" | b"oksh" | b"ok" | b"init"
+    )
+}
+
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -1476,7 +1487,6 @@ pub fn replace_user(
     user_argc: usize,
     user_argv: usize,
 ) {
-    let mut new_aff = None;
     with_current_mut(|t| {
         t.aspace = aspace;
         t.user_rip = user_rip;
@@ -1497,18 +1507,15 @@ pub fn replace_user(
         // cross-CPU fork+exec/wait hang under remote TLB shootdown vs waiter
         // cli). After a successful exec the new image gets a fresh RR home
         // across APs only (skip BSP) so `make -j` workers spread under -smp 4.
-        t.affinity = user_affinity();
-        new_aff = t.affinity;
+        // Keep long-lived console/net daemons sticky: netd on a remote AP
+        // triple-faults under -smp 4 (virtio/IRQ affinity); getty/login/sh
+        // stay with the parent session CPU for the same reason.
+        if !sticky_exec_name(&t.exec_name[..t.exec_name_len as usize]) {
+            t.affinity = user_affinity();
+        }
     });
     user::switch_aspace(aspace);
     set_loaded_aspace(aspace);
-    // Wake the new home if we re-homed off this CPU; next preempt/yield
-    // publishes Ready and the AP picks the task up.
-    if let Some(aff) = new_aff {
-        if aff != crate::smp::cpu_id() {
-            crate::smp::kick_cpus();
-        }
-    }
 }
 
 pub fn spawn(entry: fn()) {
