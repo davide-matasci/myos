@@ -366,12 +366,13 @@ pub fn init() {
 /// unstable. Other arches float.
 
 fn sticky_exec_name(name: &[u8]) -> bool {
-    // Session/console/net path must not migrate after exec under -smp>2:
-    // remote-AP /ok + netd has triple-faulted the bios bring-up. make -j
-    // compilers (tcc, cc1, …) still get a fresh RR home.
+    // Prefer sticky homes for the interactive session and netd so console
+    // IRQs stay co-located with the reader. Compilers (tcc/cc1/…) still get
+    // a fresh AP RR home after exec. Cross-CPU exit reclaim is safe once
+    // `die` runs TLB shootdown with IF on.
     matches!(
         name,
-        b"netd" | b"getty" | b"login" | b"sh" | b"oksh" | b"ok" | b"init"
+        b"netd" | b"getty" | b"login" | b"sh" | b"oksh" | b"init"
     )
 }
 
@@ -1510,6 +1511,12 @@ pub fn replace_user(
         // Keep long-lived console/net daemons sticky: netd on a remote AP
         // triple-faults under -smp 4 (virtio/IRQ affinity); getty/login/sh
         // stay with the parent session CPU for the same reason.
+        // Post-exec re-home: fork kids inherit parent affinity (avoids the
+        // cross-CPU fork+exec/wait hang under remote TLB shootdown vs waiter
+        // cli). After a successful exec the new image gets a fresh RR home
+        // across APs only (skip BSP) so `make -j` workers spread under -smp 4.
+        // Boot/session binaries stay sticky — remote-AP `/ok` triple-faulted
+        // bios bring-up before the die()/IRQ fix below.
         if !sticky_exec_name(&t.exec_name[..t.exec_name_len as usize]) {
             t.affinity = user_affinity();
         }
@@ -2046,9 +2053,16 @@ pub fn die() -> ! {
         tasks[id].entry = None;
         out
     };
+    // Reclaim/TLB shootdown must run with IF on: remotes ACK the shootdown
+    // IPI only after sti. Holding cli here deadlocked a parent waiter that was
+    // also briefly cli (schedule/wait_child) when the child had been re-homed
+    // onto another AP — bios triple-faulted under -smp 4 after the first
+    // remote-AP exit.
+    irq_on();
     if let Some((aspace, base, span, off, brk, mmap)) = reclaim {
         user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
     }
+    irq_off();
     schedule();
     loop {
         irq_on();
