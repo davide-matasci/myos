@@ -1,6 +1,7 @@
 //! RISC-V64: Limine on QEMU `virt` (UEFI). Sv39 MMU is already on.
 
 mod interrupts;
+pub use interrupts::{enable_ipi, ipi_reschedule, ipi_tlb_shootdown};
 mod keyboard;
 pub mod paging;
 pub mod pci;
@@ -67,8 +68,9 @@ pub fn virtio_blk_write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
 
 /// SBI System Reset extension shutdown (QEMU virt).
 
-pub fn ap_init(_logical: usize) {
-    interrupts::ap_init();
+pub fn ap_init(logical: usize) {
+    interrupts::ap_init(logical);
+    crate::user::ap_init();
 }
 
 pub fn wait_interrupt() {

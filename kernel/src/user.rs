@@ -117,12 +117,10 @@ const DEFAULT_USER_BASE: u64 = 0x4000_0000; // Sv39 root[1] / L1[1] on QEMU virt
 
 static USER_BASE: AtomicU64 = AtomicU64::new(DEFAULT_USER_BASE);
 
-#[cfg(target_arch = "x86_64")]
-static mut KERNEL_RSP0: usize = 0;
-
 /// User callee-saved regs at syscall entry (before Rust can clobber them).
 /// Copied into `ForkRegs` on SYS_FORK so fork-continue children resume correctly.
 #[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct ForkCalleeSaved {
     rbx: u64,
@@ -133,15 +131,30 @@ struct ForkCalleeSaved {
     r15: u64,
 }
 
+/// Per-CPU syscall state. `IA32_GS_BASE` points at the current CPU's element so
+/// `syscall_entry` can load RSP0 without clobbering SYSCALL's RCX (user RIP).
 #[cfg(target_arch = "x86_64")]
-static mut FORK_CALLEE: ForkCalleeSaved = ForkCalleeSaved {
-    rbx: 0,
-    rbp: 0,
-    r12: 0,
-    r13: 0,
-    r14: 0,
-    r15: 0,
-};
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+struct CpuSyscallState {
+    kernel_rsp0: usize,
+    fork: ForkCalleeSaved,
+}
+
+#[cfg(target_arch = "x86_64")]
+static mut CPU_SYSCALL: [CpuSyscallState; crate::smp::MAX_CPUS] = [
+    CpuSyscallState {
+        kernel_rsp0: 0,
+        fork: ForkCalleeSaved {
+            rbx: 0,
+            rbp: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+        },
+    }; crate::smp::MAX_CPUS
+];
 
 #[cfg(target_arch = "riscv64")]
 static mut KERNEL_SSCRATCH: usize = 0;
@@ -153,14 +166,15 @@ core::arch::global_asm!(
 syscall_entry:
     cli
     mov r10, rsp
-    mov rsp, [rip + {kernel_rsp0}]
+    # GS_BASE -> &CPU_SYSCALL[cpu] (set in load_percpu_gs)
+    mov rsp, qword ptr gs:[0]
     # Snapshot user callee-saved before any Rust prologue can reuse them.
-    mov [rip + {fork_callee}], rbx
-    mov [rip + {fork_callee} + 8], rbp
-    mov [rip + {fork_callee} + 16], r12
-    mov [rip + {fork_callee} + 24], r13
-    mov [rip + {fork_callee} + 32], r14
-    mov [rip + {fork_callee} + 40], r15
+    mov gs:[8], rbx
+    mov gs:[16], rbp
+    mov gs:[24], r12
+    mov gs:[32], r13
+    mov gs:[40], r14
+    mov gs:[48], r15
     push r11
     push r9
     push r8
@@ -183,8 +197,6 @@ syscall_entry:
     mov rsp, r10
     sysretq
     "#,
-    kernel_rsp0 = sym KERNEL_RSP0,
-    fork_callee = sym FORK_CALLEE,
     dispatch = sym syscall_dispatch,
 );
 
@@ -194,6 +206,17 @@ unsafe extern "C" {
 }
 
 pub fn init() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        init_syscall_msrs();
+        init_user_sse();
+    }
+    #[cfg(target_arch = "aarch64")]
+    init_user_fp();
+}
+
+/// Per-CPU user-mode enable (SSE / FP / syscall MSRs are per-hart).
+pub fn ap_init() {
     #[cfg(target_arch = "x86_64")]
     {
         init_syscall_msrs();
@@ -258,9 +281,12 @@ fn init_syscall_msrs() {
     const IA32_LSTAR: u32 = 0xC000_0082;
     const IA32_FMASK: u32 = 0xC000_0084;
     const SCE: u64 = 1;
+    // NXE must be set on every CPU: user stacks / MMIO maps use PTE bit 63.
+    // Limine enables it on the BSP; APs that miss it #PF (RSVD) on CR3 switch.
+    const NXE: u64 = 1 << 11;
 
     let mut efer = rdmsr(IA32_EFER);
-    efer |= SCE;
+    efer |= SCE | NXE;
     wrmsr(IA32_EFER, efer);
 
     let star = ((crate::arch::gdt::user_ss() as u64 - 8) << 48)
@@ -1162,15 +1188,38 @@ pub fn note_fork() {
 }
 
 pub fn set_kernel_rsp0(top: usize) {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::ptr::addr_of_mut!(KERNEL_RSP0).write(top);
+    {
+        // Keep GS_BASE coherent with cpu_id() before publishing rsp0.
+        load_percpu_gs(cpu);
+        unsafe {
+            core::ptr::addr_of_mut!(CPU_SYSCALL[cpu].kernel_rsp0).write(top);
+        }
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {
+        let _ = cpu;
         core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(top);
     }
     let _ = top;
+}
+
+/// Point GS at this CPU's syscall state (x86). Called from BSP/AP interrupt init.
+#[cfg(target_arch = "x86_64")]
+pub fn load_percpu_gs(cpu: usize) {
+    const IA32_GS_BASE: u32 = 0xC000_0101;
+    let cpu = cpu.min(crate::smp::MAX_CPUS - 1);
+    let ptr = unsafe { core::ptr::addr_of!(CPU_SYSCALL[cpu]) as u64 };
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") IA32_GS_BASE,
+            in("eax") ptr as u32,
+            in("edx") (ptr >> 32) as u32,
+            options(nostack, preserves_flags),
+        );
+    }
 }
 
 pub fn read_aspace() -> u64 {
@@ -1269,6 +1318,13 @@ pub fn enter(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usiz
 
 #[cfg(target_arch = "x86_64")]
 fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
+    // Refresh per-CPU ring0 state in case this CPU never scheduled the task
+    // (or GS/TSS drifted). Required before the first AP iretq into ring3.
+    let ktop = crate::task::current_kernel_stack_top();
+    if ktop != 0 {
+        set_kernel_rsp0(ktop);
+        crate::arch::gdt::set_rsp0(ktop as u64);
+    }
     let cs = (crate::arch::gdt::user_cs() | 3) as u64;
     let ss = (crate::arch::gdt::user_ss() | 3) as u64;
     let rflags: u64 = 0x202;
@@ -1333,8 +1389,18 @@ const USER_SSTATUS: u64 = (2 << 32) | (1 << 5); // UXL=64-bit user, SPIE, SPP=0
 
 #[cfg(target_arch = "riscv64")]
 fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
-    let ksp = unsafe { KERNEL_SSCRATCH };
+    let ksp = {
+        let t = task::current_kernel_stack_top();
+        if t != 0 {
+            t
+        } else {
+            unsafe { KERNEL_SSCRATCH }
+        }
+    };
     unsafe {
+        // Install user context FIRST, then scrub remaining GPRs. Zeroing before
+        // the moves would clobber LLVM's `in(reg)` temporaries (usp/argc/…) and
+        // sret with sp/a0/sepc = 0 — instant sepc=0 IPF on first enter.
         core::arch::asm!(
             "csrw sscratch, {ksp}",
             "mv sp, {usp}",
@@ -1342,6 +1408,34 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             "mv a1, {argv}",
             "csrw sepc, {rip}",
             "csrw sstatus, {s}",
+            "mv ra, zero",
+            "mv gp, zero",
+            "mv tp, zero",
+            "mv t0, zero",
+            "mv t1, zero",
+            "mv t2, zero",
+            "mv s0, zero",
+            "mv s1, zero",
+            "mv a2, zero",
+            "mv a3, zero",
+            "mv a4, zero",
+            "mv a5, zero",
+            "mv a6, zero",
+            "mv a7, zero",
+            "mv s2, zero",
+            "mv s3, zero",
+            "mv s4, zero",
+            "mv s5, zero",
+            "mv s6, zero",
+            "mv s7, zero",
+            "mv s8, zero",
+            "mv s9, zero",
+            "mv s10, zero",
+            "mv s11, zero",
+            "mv t3, zero",
+            "mv t4, zero",
+            "mv t5, zero",
+            "mv t6, zero",
             "sret",
             ksp = in(reg) ksp,
             usp = in(reg) user_rsp,
@@ -1374,19 +1468,30 @@ fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv
         #[cfg(target_arch = "riscv64")]
         {
             let frame = frame_ptr as *mut u64;
-            *frame.add(10) = argc as u64;
-            *frame.add(11) = argv as u64;
+            // Definitive exec frame: argc/argv/sp/sepc/sstatus only. Zero every
+            // other GPR so in-place expand cannot resume the new image with the
+            // previous program's ra/tp/gp (null-call → instruction page fault
+            // stval=0 sepc=0 — the ripgrep boot-mini signature after uutils ls).
+            for i in 0..32usize {
+                *frame.add(i) = 0;
+            }
+            *frame.add(10) = argc as u64; // a0
+            *frame.add(11) = argv as u64; // a1
             *frame.add(32) = entry as u64;
             *frame.add(33) = USER_SSTATUS;
             *frame.add(34) = rsp as u64;
-            // fork_sret_from_frame now preserves sscratch (child-style). The
-            // live syscall frame's slot 34 holds the *new* user sp; leaving
-            // sscratch as the old user sp / frame+280 made every later trap of
-            // this task build its kernel frame on the user stack — the riscv64
-            // CI corruption family (sepc=0, zeroed user ra). Same invariant as
-            // enter_fork_riscv64: sscratch = kernel top.
-            let ksp = unsafe { KERNEL_SSCRATCH };
-            unsafe {
+            // Publish this task's kernel stack top into both the static and the
+            // CSR — schedule updating only the static left the CSR stale.
+            let ksp = {
+                let t = task::current_kernel_stack_top();
+                if t != 0 {
+                    t
+                } else {
+                    KERNEL_SSCRATCH
+                }
+            };
+            if ksp != 0 {
+                core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(ksp);
                 core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
             }
             crate::arch::fork_sret_to_user(frame);
@@ -1521,12 +1626,22 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
     frame[32] = regs.rip as u64; // resume past the fork ecall
     frame[33] = USER_SSTATUS;
     frame[34] = regs.rsp as u64;
-    let ksp = unsafe { KERNEL_SSCRATCH };
+    let ksp = {
+        let t = task::current_kernel_stack_top();
+        if t != 0 {
+            t
+        } else {
+            unsafe { KERNEL_SSCRATCH }
+        }
+    };
     unsafe {
         // Preserve kernel stack top in sscratch across sret (enter_riscv64
         // invariant). The old child stub left sscratch at frame+280 and the
         // next user trap smashed the stack — pipe/fork then jumped to garbage.
-        core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
+        if ksp != 0 {
+            core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(ksp);
+            core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
+        }
         crate::arch::fork_sret_child_to_user(frame.as_mut_ptr());
     }
 }
@@ -1836,6 +1951,12 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
         return SYSERR;
     };
     let argc = arg_refs.len();
+    // A zero entry is never a valid userspace image (would sret to NULL → the
+    // classic riscv64 `instruction page fault stval=0 sepc=0`). Refuse rather
+    // than resume a corrupt realize/expand result.
+    if entry == 0 {
+        return SYSERR;
+    }
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
@@ -2091,7 +2212,8 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     let child = {
         // Use the snapshot from syscall_entry — live rbx/rbp/r12–r15 here may
         // already be Rust scratch (prologues saved the user values on the stack).
-        let c = unsafe { core::ptr::addr_of!(FORK_CALLEE).read() };
+        let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+        let c = unsafe { core::ptr::addr_of!(CPU_SYSCALL[cpu].fork).read() };
         task::ForkRegs {
             rip: user_rip,
             rsp: user_rsp,
@@ -2628,8 +2750,17 @@ fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
         if r.pages == 0 || r.va == 0 {
             continue;
         }
-        for i in 0..r.pages as usize {
-            free_mapped_page(aspace, r.va + (i * PAGE) as u64);
+        // Concurrent SMP float once saw a torn/corrupt region and
+        // `va + i*PAGE` overflow-panicked in debug. Bound + checked math.
+        let pages = (r.pages as usize).min(MMAP_AREA_PAGES);
+        for i in 0..pages {
+            let Some(off) = (i as u64).checked_mul(PAGE as u64) else {
+                break;
+            };
+            let Some(va) = r.va.checked_add(off) else {
+                break;
+            };
+            free_mapped_page(aspace, va);
         }
     }
 }
@@ -2655,13 +2786,20 @@ pub fn reclaim_user_aspace(
     }
     // Must not free pages while they may still be walked via this aspace.
     task::unload_user_aspace(aspace);
-    let n_code = image_span.div_ceil(PAGE);
+    let n_code = image_span.div_ceil(PAGE).min(MAX_ELF_PAGES);
     for i in 0..n_code {
-        let va = base + (i * PAGE) as u64;
+        let Some(va) = base.checked_add((i * PAGE) as u64) else {
+            break;
+        };
         free_mapped_page(aspace, va);
     }
     for i in 0..USER_STACK_PAGES {
-        let va = base + stack_off + (i * PAGE) as u64;
+        let Some(va) = base
+            .checked_add(stack_off)
+            .and_then(|s| s.checked_add((i * PAGE) as u64))
+        else {
+            break;
+        };
         free_mapped_page(aspace, va);
     }
     let heap_base = heap_base_va(base, stack_off);
@@ -2988,7 +3126,9 @@ fn flush_user_tlb() {
         }
         core::arch::asm!("dsb ish; isb", options(nostack));
     }
+    crate::smp::tlb_shootdown();
 }
+
 
 #[cfg(target_arch = "x86_64")]
 fn flush_user_tlb() {
@@ -3001,14 +3141,18 @@ fn flush_user_tlb() {
             options(nostack, preserves_flags),
         );
     }
+    crate::smp::tlb_shootdown();
 }
+
 
 #[cfg(target_arch = "riscv64")]
 fn flush_user_tlb() {
     unsafe {
         core::arch::asm!("sfence.vma zero, zero", options(nostack));
     }
+    crate::smp::tlb_shootdown();
 }
+
 
 /// Allocate Sv39 mid/leaf tables as needed so user maps can spill past one
 /// 2 MiB leaf (code + 256 stack + 256 heap pages exceeds 512 PTEs).

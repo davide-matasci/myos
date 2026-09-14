@@ -13,14 +13,18 @@ use super::gdt;
 use crate::limine_boot;
 
 const TIMER_VECTOR: u8 = 32;
+const IPI_TLB_VECTOR: u8 = 33;
+const IPI_RESCHED_VECTOR: u8 = 34;
 const SPURIOUS_VECTOR: u8 = 0xFF;
 const IA32_APIC_BASE: u32 = 0x1B;
+const IA32_TSC_AUX: u32 = 0xC000_0103;
 const APIC_EN: u64 = 1 << 11;
 const APIC_EXTD: u64 = 1 << 10;
 
 const SVR: u32 = 0xF0;
 const TPR: u32 = 0x80;
 const EOI: u32 = 0xB0;
+const ICR_LOW: u32 = 0x300;
 const LVT_TIMER: u32 = 0x320;
 const LVT_LINT0: u32 = 0x350;
 const LVT_LINT1: u32 = 0x360;
@@ -138,10 +142,15 @@ pub fn init() {
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
         idt[TIMER_VECTOR].set_handler_fn(timer);
+        idt[IPI_TLB_VECTOR].set_handler_fn(ipi_tlb);
+        idt[IPI_RESCHED_VECTOR].set_handler_fn(ipi_resched);
         idt[SPURIOUS_VECTOR].set_handler_fn(spurious);
         idt
     });
     idt.load();
+
+    wrmsr(IA32_TSC_AUX, 0);
+    crate::user::load_percpu_gs(0);
 
     let mut base = rdmsr(IA32_APIC_BASE);
     base |= APIC_EN;
@@ -166,13 +175,14 @@ pub fn init() {
 
 
 /// Secondary CPU: IDT already built by BSP; enable this CPU's local APIC timer.
-pub fn ap_init() {
+pub fn ap_init(logical: usize) {
     x86_64::instructions::interrupts::disable();
     if let Some(idt) = IDT.get() {
         idt.load();
     }
-    // GDT: reuse BSP tables; TSS rsp0 is refreshed on schedule.
-    super::gdt::load_for_ap();
+    super::gdt::load_for_ap(logical);
+    wrmsr(IA32_TSC_AUX, logical as u64);
+    crate::user::load_percpu_gs(logical);
 
     let mut base = rdmsr(IA32_APIC_BASE);
     base |= APIC_EN;
@@ -191,7 +201,9 @@ pub fn ap_init() {
     lapic_w(DIV, 0xB);
     lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 17));
     lapic_w(INIT_COUNT, 100_000);
-    x86_64::instructions::interrupts::enable();
+    // Leave IF clear — `task::ap_idle_loop` enables IRQs only after CURRENT
+    // and the idle task exist (otherwise an early IPI/timer schedules with
+    // CURRENT==0 and corrupts the BSP's task 0).
 }
 
 pub fn wait_for_interrupt_proof() {
@@ -246,6 +258,71 @@ extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFault
         code.bits() as u64,
         code.contains(PageFaultErrorCode::USER_MODE),
     );
+}
+
+fn lapic_r(off: u32) -> u32 {
+    let b = LAPIC.load(Ordering::SeqCst);
+    unsafe { core::ptr::read_volatile((b + off as usize) as *const u32) }
+}
+
+const ICR_HIGH: u32 = 0x310;
+
+fn send_ipi_apic(apic_id: u32, vector: u8) {
+    if LAPIC.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    while lapic_r(ICR_LOW) & (1 << 12) != 0 {
+        core::hint::spin_loop();
+    }
+    // Destination in ICR high bits 31:24 (xAPIC).
+    lapic_w(ICR_HIGH, apic_id << 24);
+    // Fixed delivery, physical mode, assert.
+    lapic_w(ICR_LOW, u32::from(vector) | (1 << 14));
+    while lapic_r(ICR_LOW) & (1 << 12) != 0 {
+        core::hint::spin_loop();
+    }
+}
+
+fn send_ipi_others(vector: u8) {
+    let self_id = crate::smp::cpu_id();
+    for i in 0..crate::smp::MAX_CPUS {
+        if i == self_id || !crate::smp::cpu_online(i) {
+            continue;
+        }
+        let apic = crate::smp::cpu_hw_id(i) as u32;
+        send_ipi_apic(apic, vector);
+    }
+}
+
+pub fn ipi_tlb_shootdown() {
+    send_ipi_others(IPI_TLB_VECTOR);
+}
+
+pub fn ipi_reschedule() {
+    send_ipi_others(IPI_RESCHED_VECTOR);
+}
+
+fn flush_tlb_local() {
+    unsafe {
+        let cr3: u64;
+        core::arch::asm!(
+            "mov {cr3}, cr3",
+            "mov cr3, {cr3}",
+            cr3 = out(reg) cr3,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+extern "x86-interrupt" fn ipi_tlb(_frame: InterruptStackFrame) {
+    flush_tlb_local();
+    crate::smp::tlb_ipi_ack();
+    lapic_w(EOI, 0);
+}
+
+extern "x86-interrupt" fn ipi_resched(_frame: InterruptStackFrame) {
+    lapic_w(EOI, 0);
+    crate::task::schedule();
 }
 
 extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {

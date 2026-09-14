@@ -332,11 +332,33 @@ pub fn init() {
     let mut tasks = TASKS.lock();
     tasks[0].state = State::Running;
     tasks[0].sp = 0;
-    // Must stay on the BSP: APs must not steal kernel_main (no per-CPU TSS yet).
+    // BSP keeps kernel_main; user/kernel workers may run anywhere.
     tasks[0].affinity = Some(0);
     set_current_slot(0);
     drop(tasks);
     irq_restore(flags);
+}
+
+/// x86: round-robin home CPU across APs when SMP is online. Skip CPU 0 —
+/// BSP shares irq/console/kernel_main with user under RR and CI bios hung
+/// after histrecall (`80c6ff1`, `-smp 2`). With two CPUs this is pin-to-AP
+/// (last green); with more CPUs work still spreads for make -j tops.
+/// Live migration (`None`) still unstable. Other arches float.
+fn user_affinity() -> Option<usize> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let n = crate::smp::online_count();
+        if n <= 1 {
+            return Some(0);
+        }
+        // RR over [1, n): never assign user to BSP.
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        Some(1 + NEXT.fetch_add(1, Ordering::SeqCst) % (n - 1))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        None
+    }
 }
 
 pub fn enable_preempt() {
@@ -347,12 +369,42 @@ pub fn kernel_aspace() -> u64 {
     KERNEL_ASPACE.load(Ordering::SeqCst)
 }
 
-/// Switch the CPU to the kernel aspace if `aspace` is currently loaded.
+/// Drop `aspace` from every CPU that has it loaded, then TLB-shootdown before
+/// reclaim frees frames.
 pub fn unload_user_aspace(aspace: u64) {
-    if aspace != 0 && loaded_aspace() == aspace {
-        let k = KERNEL_ASPACE.load(Ordering::SeqCst);
+    if aspace == 0 {
+        return;
+    }
+    let k = KERNEL_ASPACE.load(Ordering::SeqCst);
+    // Local first.
+    if loaded_aspace() == aspace {
         user::switch_aspace(k);
         set_loaded_aspace(k);
+    }
+    // Remotes: if they still list this root, nudge a reschedule so `schedule`
+    // drops the CR3 (aspace switch happens before Ready). Cap kicks — blasting
+    // 100k IPIs livelocked the peer under CI bios timing (shell stuck after
+    // histrecall with RR home CPUs).
+    if crate::smp::online_count() > 1 {
+        let mut kicks = 0u32;
+        for spin in 0..50_000u32 {
+            let mut live = false;
+            for i in 0..crate::smp::MAX_CPUS {
+                if LOADED_ASPACE[i].load(Ordering::SeqCst) == aspace {
+                    live = true;
+                    break;
+                }
+            }
+            if !live {
+                break;
+            }
+            if kicks < 8 && (spin == 0 || spin % 64 == 0) {
+                crate::smp::kick_cpus();
+                kicks += 1;
+            }
+            core::hint::spin_loop();
+        }
+        crate::smp::tlb_shootdown();
     }
 }
 
@@ -384,6 +436,16 @@ pub fn current_aspace() -> u64 {
     let a = TASKS.lock()[id].aspace;
     irq_restore(flags);
     a
+}
+
+/// Kernel stack top for the running task (riscv64 sscratch / x86 rsp0).
+pub fn current_kernel_stack_top() -> usize {
+    let flags = irq_save();
+    irq_off();
+    let id = current_slot();
+    let t = TASKS.lock()[id].kernel_stack_top;
+    irq_restore(flags);
+    t
 }
 
 /// Per-task user map: (USER_BASE, IMAGE_SPAN, STACK_OFF).
@@ -1582,12 +1644,15 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        // User tasks stay on BSP until per-CPU TSS / syscall paths exist on APs.
-        affinity: Some(0),
+        // Co-locate with parent: cross-CPU fork+exec/wait hangs under remote
+        // TLB shootdown vs waiter cli. RR at spawn_user still spreads
+        // independent top-level tasks across CPUs.
+        affinity: tasks[ppid].affinity,
     };
     drop(tasks);
     user::note_fork();
     irq_restore(flags);
+    crate::smp::kick_cpus();
     Some(slot)
 }
 
@@ -1714,11 +1779,13 @@ fn spawn_inner(
         has_ctty: false,
         sig_pending: 0,
         sig_ignored: 0,
-        // Kernel threads: any CPU. User threads: BSP only (no AP TSS yet).
-        affinity: if aspace != 0 { Some(0) } else { None },
+        affinity: if aspace != 0 { user_affinity() } else { None },
     };
     drop(tasks);
     irq_restore(flags);
+    if crate::smp::online_count() > 1 {
+        crate::smp::kick_cpus();
+    }
 }
 
 pub fn user_exit(code: u8) -> ! {
@@ -1742,23 +1809,21 @@ pub fn schedule() {
     if !PREEMPT_ON.load(Ordering::SeqCst) {
         return;
     }
-    // Parked APs must not run the shared ready set (TSS/rsp0 are BSP-only).
-    if crate::smp::cpu_id() != 0 && crate::smp::aps_parked() {
-        return;
-    }
-
     // Hold IF off across TASKS + switch. Caller may already have IF clear
     // (timer, yield); save/restore so we never leave IF on while locked.
     let flags = irq_save();
     irq_off();
 
+    // Pick `next` under TASKS, but do NOT mark the previous task Ready and do
+    // NOT switch CR3 while holding the lock:
+    // - Ready-before-aspace let a peer reclaim while this CPU still had CR3
+    //   (NX #PF / mmap tear) — keep old as Running until after the switch.
+    // - aspace/rsp0 under TASKS held the global scheduler lock across CR3 and
+    //   IPI-heavy unload drains; with RR home CPUs that livelocked CI bios at
+    //   the histrecall/arrow stage (peer IF-off spinning on TASKS).
     let switch = {
         let mut tasks = TASKS.lock();
         let current = current_slot();
-        match tasks[current].state {
-            State::Running => tasks[current].state = State::Ready,
-            State::Dead | State::Ready | State::Unused => {}
-        }
 
         crate::smp::note_schedule();
         let cpu = crate::smp::cpu_id();
@@ -1773,11 +1838,6 @@ pub fn schedule() {
                     continue;
                 }
             }
-            // x86 APs skip TSS (Busy descriptor); user mode needs per-CPU TSS.
-            // Keep user tasks on the BSP until that exists on all arches.
-            if tasks[i].aspace != 0 && cpu != 0 {
-                continue;
-            }
             next = i;
             break;
         }
@@ -1788,27 +1848,35 @@ pub fn schedule() {
             }
             None
         } else {
-            tasks[next].state = State::Running;
             let old_sp = core::ptr::addr_of_mut!(tasks[current].sp);
             let new_sp = tasks[next].sp;
             let kstack = tasks[next].kernel_stack_top;
             let aspace = tasks[next].aspace;
+            // Leave `current` Running so peers cannot pick/reclaim it until we
+            // have switched CR3 below. Publish next + CURRENT now.
+            tasks[next].state = State::Running;
             set_current_slot(next);
-            Some((old_sp, new_sp, kstack, aspace))
+            Some((old_sp, new_sp, kstack, aspace, current))
         }
     };
 
-    let Some((old_sp, new_sp, kstack, aspace)) = switch else {
+    let Some((old_sp, new_sp, kstack, aspace, old)) = switch else {
         irq_restore(flags);
         return;
     };
 
-    // Shared TSS / KERNEL_RSP0 are BSP-only until per-CPU TSS exists.
-    // APs must not clobber them or the next BSP syscall uses the wrong stack.
-    if kstack != 0 && crate::smp::cpu_id() == 0 {
+    if kstack != 0 {
         user::set_kernel_rsp0(kstack);
         #[cfg(target_arch = "x86_64")]
         crate::arch::gdt::set_rsp0(kstack as u64);
+        // Keep the sscratch CSR in lockstep with the static. Updating only the
+        // static left the CSR holding a previous task's top (or user sp) across
+        // schedule→trampoline→exec races; the next user trap then built its
+        // kernel frame on the wrong stack (riscv64 sepc=0 / zeroed ra family).
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            core::arch::asm!("csrw sscratch, {k}", k = in(reg) kstack, options(nostack));
+        }
     }
 
     let want = if aspace == 0 {
@@ -1819,6 +1887,14 @@ pub fn schedule() {
     if want != loaded_aspace() {
         user::switch_aspace(want);
         set_loaded_aspace(want);
+    }
+
+    // CR3 is `next`'s — safe to publish Ready on `old`.
+    {
+        let mut tasks = TASKS.lock();
+        if tasks[old].state == State::Running {
+            tasks[old].state = State::Ready;
+        }
     }
 
     unsafe {
@@ -2043,7 +2119,7 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     // sp=0 meaning "already on stack" — we never switch TO an idle with sp=0
     // from another CPU because affinity pins it. When we yield, we save our
     // real sp via task_switch.
-    let sp = unsafe { seed_stack(stack, STACK_SIZE, ap_idle_trampoline as usize) };
+    let sp = unsafe { seed_stack(stack, STACK_SIZE, ap_idle_trampoline as *const () as usize) };
     let top = stack as usize + STACK_SIZE;
     let mut tasks = TASKS.lock();
     let slot = tasks
@@ -2084,29 +2160,25 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     };
     drop(tasks);
     set_current_slot(slot);
+    // APs boot on Limine's CR3; record kernel aspace so the first schedule
+    // does not treat LOADED=0 as a switch that races TLB shootdowns.
+    set_loaded_aspace(KERNEL_ASPACE.load(Ordering::SeqCst));
     irq_restore(flags);
     crate::smp::mark_running(logical);
     enable_preempt();
-    // ap_init may leave IRQs masked (aarch64); enable only after CURRENT/ONLINE.
+    // IRQs only after CURRENT/idle exist (see smp::myos_smp_ap_entry).
     irq_on();
-    // Jump into the seeded stack so the first schedule has a valid save area.
-    // Until then, run the idle body directly.
-    ap_idle_body();
-    loop {
-        yield_now();
-        crate::arch::wait_interrupt();
+    // Migrate off Limine's tiny AP stack onto the 64KiB idle stack before any
+    // timer/IPI nesting (UEFI path overflowed Limine stacks → kernel PF).
+    let mut discard_sp: usize = 0;
+    unsafe {
+        task_switch(core::ptr::addr_of_mut!(discard_sp), sp);
     }
+    unreachable!()
 }
 
 fn ap_idle_body() {
     loop {
-        if crate::smp::aps_parked() {
-            // Halt forever with IRQs masked so we never re-enter schedule.
-            irq_off();
-            loop {
-                wait();
-            }
-        }
         yield_now();
         crate::arch::wait_interrupt();
     }
