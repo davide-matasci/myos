@@ -405,6 +405,9 @@ extern "C" fn aarch64_irq_handler() {
     if id < 1020 {
         write32(GICC + 0x10, iar);
     }
+    if timer && crate::smp::cpu_id() == 0 {
+        crate::input::drain_uart_irq();
+    }
     if timer || resched {
         crate::task::schedule();
     }

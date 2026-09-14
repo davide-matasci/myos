@@ -665,7 +665,7 @@ fn shell_ready(serial: &str) -> bool {
     serial_has_all_needles(serial, &[]) && at_interactive_prompt(serial)
 }
 
-const SHELL_TYPE_DELAY: Duration = Duration::from_millis(25);
+const SHELL_TYPE_DELAY: Duration = Duration::from_millis(40);
 const SHELL_CMD_DELAY: Duration = Duration::from_millis(100);
 /// Wall-time bound while CMD_ARROW is active waiting for `histrecall_z3z`.
 /// riscv64 #866 hung here until the GHA 90m cancel — fail ourselves instead.
@@ -675,6 +675,8 @@ const ARROW_STAGE_BOUND: Duration = Duration::from_secs(20);
 const ARROW_SEED_STAGE_BOUND: Duration = Duration::from_secs(20);
 /// Same idea for the ^C interrupt stage (`cat | cat` + VINTR).
 const INTERRUPT_STAGE_BOUND: Duration = Duration::from_secs(30);
+/// `which ls` mistyped as `which s` (serial drop) used to sit until QEMU 600s.
+const WHICH_STAGE_BOUND: Duration = Duration::from_secs(30);
 
 fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
     stdin
@@ -689,6 +691,7 @@ fn advance_shell_ci(
     stage: &mut ShellStage,
     cmd_index: &mut usize,
     typing: &mut usize,
+    echo_stalls: &mut u32,
     interrupt_sent: &mut bool,
     acc: &str,
     extra: &[&str],
@@ -703,10 +706,27 @@ fn advance_shell_ci(
         }
         ShellStage::TypingUser => {
             if *typing < CI_LOGIN_USER.len() {
+                if *typing > 0 {
+                    let prefix = &CI_LOGIN_USER[..*typing];
+                    // Match against the current `login: …` line only — a bare
+                    // `contains("r")` would hit boot log noise.
+                    let want = format!("login: {}", String::from_utf8_lossy(prefix));
+                    if !interactive_tail(acc).contains(&want) {
+                        *echo_stalls += 1;
+                        if *echo_stalls >= 25 {
+                            send_shell_byte(stdin, CI_LOGIN_USER[*typing - 1]);
+                            *echo_stalls = 0;
+                        }
+                        std::thread::sleep(SHELL_TYPE_DELAY);
+                        return;
+                    }
+                }
+                *echo_stalls = 0;
                 send_shell_byte(stdin, CI_LOGIN_USER[*typing]);
                 *typing += 1;
                 std::thread::sleep(SHELL_TYPE_DELAY);
             } else {
+                *echo_stalls = 0;
                 *stage = ShellStage::WaitPassword;
             }
         }
@@ -727,14 +747,43 @@ fn advance_shell_ci(
             *stage = ShellStage::Typing;
             *cmd_index = 0;
             *typing = 0;
+            *echo_stalls = 0;
         }
         ShellStage::Typing => {
             let cmd = cmds[*cmd_index];
             if *typing < cmd.len() {
+                // Echo-sync printable prefixes so a dropped UART byte cannot leave
+                // us typing ahead into a corrupt line (`which ls` → `which s`).
+                // Skip for CSI/controls (arrow, backspace smoke) where echo is
+                // redraw-shaped rather than a literal prefix.
+                if *typing > 0 {
+                    let prefix = &cmd[..*typing];
+                    let syncable = prefix
+                        .iter()
+                        .all(|b| (0x20..=0x7e).contains(b) || *b == b'\t');
+                    if syncable {
+                        let want = String::from_utf8_lossy(prefix);
+                        let tail = interactive_tail(acc);
+                        let line = tail.rsplit('$').next().unwrap_or(tail);
+                        if !line.contains(want.as_ref()) {
+                            *echo_stalls += 1;
+                            // After ~1s with no echo, resend the last byte once
+                            // (true drop). Avoid rapid resend which duplicates.
+                            if *echo_stalls >= 25 {
+                                send_shell_byte(stdin, cmd[*typing - 1]);
+                                *echo_stalls = 0;
+                            }
+                            std::thread::sleep(SHELL_TYPE_DELAY);
+                            return;
+                        }
+                    }
+                }
+                *echo_stalls = 0;
                 send_shell_byte(stdin, cmd[*typing]);
                 *typing += 1;
                 std::thread::sleep(SHELL_TYPE_DELAY);
             } else {
+                *echo_stalls = 0;
                 *stage = ShellStage::WaitResult;
             }
         }
@@ -752,6 +801,7 @@ fn advance_shell_ci(
                 *stage = ShellStage::Done;
             } else {
                 *typing = 0;
+                *echo_stalls = 0;
                 std::thread::sleep(SHELL_CMD_DELAY);
                 *stage = ShellStage::Typing;
             }
@@ -839,11 +889,13 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut shell_stage = ShellStage::WaitLogin;
     let mut shell_cmd_index = 0usize;
     let mut typing = 0usize;
+    let mut echo_stalls = 0u32;
     let mut interrupt_sent = false;
     // Wall clock for fail-fast bounds on interrupt / arrow WaitResult stages.
     let mut interrupt_wait_started: Option<Instant> = None;
     let mut arrow_seed_wait_started: Option<Instant> = None;
     let mut arrow_wait_started: Option<Instant> = None;
+    let mut which_wait_started: Option<Instant> = None;
     let status = loop {
         {
             let acc = serial_acc.lock().unwrap().clone();
@@ -854,6 +906,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     &mut shell_stage,
                     &mut shell_cmd_index,
                     &mut typing,
+                    &mut echo_stalls,
                     &mut interrupt_sent,
                     &acc,
                     extra_needles,
@@ -888,6 +941,35 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 {
                     let _ = child.kill();
                     break child.wait().expect("wait after curl fail-fast kill");
+                }
+                // `which ls` (cmd 10): serial drop (`which s`) or PATH miss used
+                // to sit in WaitResult until the 600s QEMU timeout (CI #34824642315).
+                if shell_stage == ShellStage::WaitResult && shell_cmd_index == 10 {
+                    let tail = interactive_tail(&acc);
+                    let which_hard_fail = tail.contains("not an external command")
+                        || (tail.contains("$ which ")
+                            && !tail.contains("$ which ls")
+                            && at_interactive_prompt(&acc));
+                    if which_hard_fail {
+                        eprintln!(
+                            "error: interactive `which ls` failed early (want absolute PATH hit; serial drop or PATH miss)"
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after which fail-fast kill");
+                    }
+                    let started_at = which_wait_started.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() > WHICH_STAGE_BOUND
+                        && !interactive_which_ls_cmd_ok(&acc)
+                    {
+                        eprintln!(
+                            "error: which stage timed out after {:?} (want `$ which ls` → `/…/ls`)",
+                            WHICH_STAGE_BOUND
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after which timeout kill");
+                    }
+                } else {
+                    which_wait_started = None;
                 }
                 // Interrupt stage: if `cat | cat` + ^C never returns to `$`, do
                 // not sit until QEMU/GHA timeout (same idea as curl/TLS hard-fail).

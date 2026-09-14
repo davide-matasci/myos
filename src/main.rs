@@ -28,6 +28,10 @@ use std::time::{Duration, Instant};
 
 const AARCH64_TARGET: &str = "aarch64-unknown-none-softfloat";
 const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
+/// QEMU `-smp` for riscv64. Must match the `virt.dtb` packed into the ESP:
+/// Limine `global_dtb` is a single-hart dump when generated without `-smp`, and
+/// OpenSBI may pick BSP hartid=1 → `PANIC: riscv: missing struct riscv_hart for BSP`.
+const RISCV_SMP: &str = "2";
 
 const RISCV_LIMINE_CONF: &str = "\
 serial: yes
@@ -834,7 +838,8 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-smp")
         // Limine EDK2 path panics with -smp 4: "missing struct riscv_hart for BSP".
         // Keep 2 so boot stays green; userspace remains effectively UP.
-        .arg("2")
+        // DTB dump below MUST use the same count (see build_riscv64_image).
+        .arg(RISCV_SMP)
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
@@ -891,21 +896,24 @@ fn build_riscv64_image() -> PathBuf {
     };
     let efi = std::fs::read(limine.bootriscv64()).expect("BOOTRISCV64.EFI");
     let dtb_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/virt.dtb");
-    if !dtb_path.is_file() {
-        let status = Command::new("qemu-system-riscv64")
-            .args([
-                "-machine",
-                "virt,dumpdtb=target/virt.dtb",
-                "-nographic",
-                "-serial",
-                "none",
-            ])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .status()
-            .expect("spawn qemu for virt.dtb");
-        if !status.success() || !dtb_path.is_file() {
-            panic!("failed to generate target/virt.dtb with qemu-system-riscv64");
-        }
+    // Always regenerate with the same `-smp` as qemu_riscv64. A cached single-hart
+    // dump (no -smp) only lists cpu@0; when OpenSBI boots on hart 1 Limine panics
+    // "missing struct riscv_hart for BSP" before the kernel runs (CI #34824642315).
+    let status = Command::new("qemu-system-riscv64")
+        .args([
+            "-machine",
+            "virt,dumpdtb=target/virt.dtb",
+            "-smp",
+            RISCV_SMP,
+            "-nographic",
+            "-serial",
+            "none",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .expect("spawn qemu for virt.dtb");
+    if !status.success() || !dtb_path.is_file() {
+        panic!("failed to generate target/virt.dtb with qemu-system-riscv64 -smp {RISCV_SMP}");
     }
     let dtb = std::fs::read(&dtb_path).expect("read virt.dtb");
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/riscv64.img");
