@@ -1,9 +1,10 @@
 #!/bin/sh
 # Thin writable staging for boot CI os-test smoke.
 # Copies only Makefile + misc/ + basic/basic.h + each path in
-# misc/ci-basic-smoke.tests into DEST — not the full /lib/os-test tree
-# (full `cp -r` was slow enough under unfinished SMP to burn the 90m window;
-# see CI #866). Quote-free invocation for oksh:
+# misc/ci-basic-smoke.tests (+ matching prebuilt/ ELFs when present)
+# into DEST — not the full /lib/os-test tree (full `cp -r` was slow enough
+# under unfinished SMP to burn the 90m window; see CI #866). Quote-free
+# invocation for oksh:
 #   sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o
 set -u
 SRC=/lib/os-test
@@ -52,6 +53,20 @@ while IFS= read -r line || [ -n "$line" ]; do
 			;;
 		esac
 		cp "$src" "$DEST/basic/$path.c" || exit 1
+		# Host-prebuilt ELF (optional): guest runs this and skips tcc.
+		pre="$SRC/prebuilt/basic/$path"
+		if [ -f "$pre" ]; then
+			case "$path" in
+			*/*)
+				mkdir -p "$DEST/prebuilt/basic/${path%/*}" || exit 1
+				;;
+			*)
+				mkdir -p "$DEST/prebuilt/basic" || exit 1
+				;;
+			esac
+			cp "$pre" "$DEST/prebuilt/basic/$path" || exit 1
+			chmod +x "$DEST/prebuilt/basic/$path" || true
+		fi
 		;;
 	esac
 done < "$LIST"

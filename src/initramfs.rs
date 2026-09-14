@@ -473,6 +473,29 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             }
         }
         collect_tree(&embed, "lib/os-test", &mut entries);
+        // Host-prebuilt boot-CI smoke ELFs -> /lib/os-test/prebuilt/…
+        // Guest myos-run.sh prefers these so x86 TCG need not tcc each test.
+        let pre = manifest_dir.join(format!("target/os-test-prebuilt/{arch}"));
+        if !pre.is_dir() {
+            let sh = manifest_dir.join("ports/os-test/prebuild-basic-smoke.sh");
+            let status = std::process::Command::new("bash")
+                .arg(&sh)
+                .current_dir(manifest_dir)
+                .status();
+            match status {
+                Ok(st) if st.success() => {}
+                other => {
+                    panic!(
+                        "os-test prebuild failed ({other:?}); run {} manually",
+                        sh.display()
+                    )
+                }
+            }
+        }
+        let pre = manifest_dir.join(format!("target/os-test-prebuilt/{arch}"));
+        if pre.is_dir() {
+            collect_tree(&pre, "lib/os-test/prebuilt", &mut entries);
+        }
     }
 
     // Vim system vimrc (pathdef.c points default_vim_dir at /lib/vim):

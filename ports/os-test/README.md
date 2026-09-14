@@ -92,11 +92,26 @@ CI checks:
 
 Boot-mini skips this stage (too slow for the mini window).
 
-## Full basic / prebuild / nightly (follow-up)
+## Boot CI host-prebuild (thin smoke)
+
+The ~22-test boot smoke list is **host-prebuilt** into
+`target/os-test-prebuilt/<arch>/basic/…` by
+`ports/os-test/prebuild-basic-smoke.sh` (same newlib/libgloss link as
+`scripts/build-c-hello.sh`). `initramfs.rs` packs them at
+`/lib/os-test/prebuilt/…`. `ci-smoke-copy.sh` stages matching ELFs; 
+`myos-run.sh` runs `prebuilt/$T` when present and **skips guest tcc**.
+
+Root cause: guest `tcc … -lm` of a real os-test source under x86 TCG is
+~60–100× slower than heap's tiny tcc (GHA ~90–120s/test vs ~1.5s on
+aarch64). 22 guest compiles cannot fit the 600s QEMU budget; host-prebuild
+keeps the smoke as real ELF exec + libc without guest compile cost.
+Manual/full suite on the guest still uses tcc when prebuilts are absent.
+
+## Full basic / nightly (follow-up)
 
 Full `make SUITES=basic report` (~1187 tests) remains available manually on
 the guest (`cp -r /lib/os-test /tmp/o` then make) and is the intended target
-for a future prebuild or nightly job outside the interactive boot window.
+for a future nightly job outside the interactive boot window.
 Not wired into wait_ci yet.
 
 ## Deferred 80% gate
@@ -115,4 +130,5 @@ the setpwent regression, not on the percentage.
   `os-test: <path>` progress before each compile).
 - `overlay/misc/myos-report.sh` — pass/fail/compile_error + `pass_rate=` summary.
 - `overlay/misc/ci-basic-smoke.tests` — boot CI smoke list (`TESTS +=` paths).
-- `overlay/misc/ci-smoke-copy.sh` — thin writable staging for boot CI.
+- `overlay/misc/ci-smoke-copy.sh` — thin writable staging for boot CI (copies prebuilts when present).
+- `prebuild-basic-smoke.sh` — host-build smoke ELFs into `target/os-test-prebuilt/`.

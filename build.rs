@@ -90,6 +90,25 @@ fn main() {
     ensure_feature_port(&manifest, "port_make", "target/make-x86_64-unknown-none", "ports/make/build.sh");
     ensure_feature_port(&manifest, "port_lynx", "target/lynx-x86_64-unknown-none", "ports/lynx/build.sh");
 
+    // os-test boot-CI smoke prebuilts (guest runs; skips tcc under TCG).
+    {
+        let marker = manifest.join("target/os-test-prebuilt/x86_64/basic/arpa_inet/htons");
+        if !marker.is_file() {
+            let sh = manifest.join("ports/os-test/prebuild-basic-smoke.sh");
+            let status = std::process::Command::new("bash")
+                .arg(&sh)
+                .status()
+                .unwrap_or_else(|e| panic!("run {}: {e}", sh.display()));
+            if !status.success() {
+                panic!("{} failed", sh.display());
+            }
+        }
+        println!("cargo:rerun-if-changed=ports/os-test/prebuild-basic-smoke.sh");
+        println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/ci-basic-smoke.tests");
+        println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/myos-run.sh");
+        println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/ci-smoke-copy.sh");
+    }
+
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any
     // user ELF changes (its build.rs rerun-if-changed on every stable copy), so
     // the image (and thus the cpio) is rebuilt transitively here.
