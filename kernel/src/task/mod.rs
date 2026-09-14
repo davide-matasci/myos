@@ -1498,7 +1498,7 @@ pub fn replace_user(
     user_argc: usize,
     user_argv: usize,
 ) {
-    with_current_mut(|t| {
+    let rehomed = with_current_mut(|t| {
         t.aspace = aspace;
         t.user_rip = user_rip;
         t.user_rsp = user_rsp;
