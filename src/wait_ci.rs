@@ -722,6 +722,9 @@ const INTERRUPT_STAGE_BOUND: Duration = Duration::from_secs(30);
 /// `which ls` mistyped as `which s` (serial drop) used to sit until QEMU 600s.
 const WHICH_STAGE_BOUND: Duration = Duration::from_secs(30);
 /// getty login typing (incl. delayed AP echo) — fail fast vs sticky `rroooo…`.
+/// Clock starts only after `[ OK ] fork exec` (see wait loop): UEFI OVMF alone
+/// can burn ~40s before that marker, so counting from harness start killed
+/// WaitLogin with typed="" on CI boot-mini (run 34886420580).
 const LOGIN_STAGE_BOUND: Duration = Duration::from_secs(45);
 
 fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
@@ -1029,6 +1032,9 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     break child.wait().expect("wait after curl fail-fast kill");
                 }
                 // Login: never burn 600s on sticky UART echo (`rroooo…`).
+                // Do not start the bound until late boot — OVMF + Limine on UEFI
+                // often exceeds 45s before getty; the sticky-key failure mode is
+                // post-prompt typing, not firmware wait (CI #34886420580).
                 if matches!(
                     shell_stage,
                     ShellStage::WaitLogin
@@ -1036,15 +1042,18 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                         | ShellStage::WaitPassword
                         | ShellStage::TypingPass
                 ) {
-                    let started_at = login_wait_started.get_or_insert_with(Instant::now);
-                    if started_at.elapsed() > LOGIN_STAGE_BOUND {
-                        eprintln!(
-                            "error: login stage timed out after {:?} (stage={shell_stage:?}, typed={:?})",
-                            LOGIN_STAGE_BOUND,
-                            login_line_typed(&acc)
-                        );
-                        let _ = child.kill();
-                        break child.wait().expect("wait after login fail-fast kill");
+                    let late_boot = acc.contains("[ OK ] fork exec") || login_prompt_ready(&acc);
+                    if late_boot {
+                        let started_at = login_wait_started.get_or_insert_with(Instant::now);
+                        if started_at.elapsed() > LOGIN_STAGE_BOUND {
+                            eprintln!(
+                                "error: login stage timed out after {:?} (stage={shell_stage:?}, typed={:?})",
+                                LOGIN_STAGE_BOUND,
+                                login_line_typed(&acc)
+                            );
+                            let _ = child.kill();
+                            break child.wait().expect("wait after login fail-fast kill");
+                        }
                     }
                 } else {
                     login_wait_started = None;
