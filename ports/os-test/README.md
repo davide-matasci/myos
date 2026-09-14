@@ -53,12 +53,19 @@ pass_rate=NN% (P/T)
 
 Full-boot shell CI (`src/wait_ci.rs`, non-mini) runs a **thin curated subset**
 of upstream `basic/` — a little of everything, not all ~1187 tests (CI run
-#860 timed out when the boot job tried the full suite in the 90m window):
+#860 timed out on the full suite; #866 still hit the GHA 90m cancel on x86
+under `-smp 2` heap/git + a full-tree `cp -r`, while aarch64 with one online
+CPU finished the thin smoke in ~4m).
+
+Guest staging uses a thin copy (not the whole suite):
 
 ```sh
-cp -r /lib/os-test /tmp/o && cd /tmp/o
+sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o
 make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report
 ```
+
+`ci-smoke-copy.sh` stages only `Makefile` + `misc/` + `basic/basic.h` + each
+`.c` listed in `misc/ci-basic-smoke.tests`.
 
 `misc/ci-basic-smoke.tests` (~22 paths) spans:
 
@@ -68,6 +75,14 @@ make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report
 
 It **must** include `pwd/setpwent` (hard gate). It deliberately avoids
 pthread / aio / math / wchar / spawn / socket for this boot window.
+
+CI launcher notes (lesson from #866):
+
+- Full-boot QEMU helpers use **`-smp 1`** (interactive runners keep `-smp 2`
+  so unfinished SMP / #147 can still be exercised manually).
+- wait_ci overall QEMU wait is ~10m (600s), and the arrow/histrecall stage
+  fail-fasts in ~20s if `histrecall_z3z` never appears (riscv64 #866 hung
+  there after a good smoke + SETPWENT-OK).
 
 CI checks:
 
@@ -80,8 +95,9 @@ Boot-mini skips this stage (too slow for the mini window).
 ## Full basic / prebuild / nightly (follow-up)
 
 Full `make SUITES=basic report` (~1187 tests) remains available manually on
-the guest and is the intended target for a future prebuild or nightly job
-outside the interactive 90m boot window. Not wired into wait_ci yet.
+the guest (`cp -r /lib/os-test /tmp/o` then make) and is the intended target
+for a future prebuild or nightly job outside the interactive boot window.
+Not wired into wait_ci yet.
 
 ## Deferred 80% gate
 
@@ -99,3 +115,4 @@ the setpwent regression, not on the percentage.
   `os-test: <path>` progress before each compile).
 - `overlay/misc/myos-report.sh` — pass/fail/compile_error + `pass_rate=` summary.
 - `overlay/misc/ci-basic-smoke.tests` — boot CI smoke list (`TESTS +=` paths).
+- `overlay/misc/ci-smoke-copy.sh` — thin writable staging for boot CI.

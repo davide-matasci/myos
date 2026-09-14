@@ -106,16 +106,17 @@ const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 // curl over userspace sockets + mbedtls (same URL as https smoke).
 const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n";
 
-/// os-test basic smoke (full boot only). Writable copy + thin curated subset
-/// via `make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report` (~22
-/// tests spanning pwd/grp/ctype/string/stdlib/stdio/unistd/signal/stat/… —
-/// NOT the full ~1187 basic suite; that timed out CI #860 in the 90m window).
-/// Report prints `pass_rate=NN% (P/T)` for the subset; CI asserts the harness
-/// finished but does NOT fail on pass_rate<80. Follow-up short quote-free
-/// commands still require setpwent success. /lib/os-test is read-only
-/// (initramfs), so we copy first. Commands stay quote-free for oksh redraw.
+/// os-test basic smoke (full boot only). Thin writable copy via
+/// `misc/ci-smoke-copy.sh` (Makefile + misc/ + basic.h + TESTLIST sources
+/// only — not `cp -r` of the whole suite) then
+/// `make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report` (~22 tests).
+/// NOT the full ~1187 basic suite (#860 timed out; #866 still burned 90m on
+/// full-tree copy + SMP). Report prints `pass_rate=NN% (P/T)`; CI asserts the
+/// harness finished but does NOT fail on pass_rate<80. Follow-up short
+/// quote-free commands still require setpwent success. Commands stay
+/// quote-free for oksh redraw.
 const CMD_OS_TEST_PREP: &[u8] =
-    b"cp -r /lib/os-test /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?\n";
+    b"sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?\n";
 /// After the suite report: cat setpwent .err/.out (success leaves .out empty).
 const CMD_OS_TEST_CAT: &[u8] =
     b"cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out\n";
@@ -422,7 +423,7 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
 fn interactive_ostest_prep_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     let echoed =
-        "$ cp -r /lib/os-test /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
     if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
@@ -666,6 +667,11 @@ fn shell_ready(serial: &str) -> bool {
 
 const SHELL_TYPE_DELAY: Duration = Duration::from_millis(25);
 const SHELL_CMD_DELAY: Duration = Duration::from_millis(100);
+/// Wall-time bound while CMD_ARROW is active waiting for `histrecall_z3z`.
+/// riscv64 #866 hung here until the GHA 90m cancel — fail ourselves instead.
+const ARROW_STAGE_BOUND: Duration = Duration::from_secs(20);
+/// Same idea for the ^C interrupt stage (`cat | cat` + VINTR).
+const INTERRUPT_STAGE_BOUND: Duration = Duration::from_secs(30);
 
 fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
     stdin
@@ -816,6 +822,9 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut shell_cmd_index = 0usize;
     let mut typing = 0usize;
     let mut interrupt_sent = false;
+    // Wall clock for fail-fast bounds on interrupt / arrow WaitResult stages.
+    let mut interrupt_wait_started: Option<Instant> = None;
+    let mut arrow_wait_started: Option<Instant> = None;
     let status = loop {
         {
             let acc = serial_acc.lock().unwrap().clone();
@@ -860,6 +869,45 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 {
                     let _ = child.kill();
                     break child.wait().expect("wait after curl fail-fast kill");
+                }
+                // Interrupt stage: if `cat | cat` + ^C never returns to `$`, do
+                // not sit until QEMU/GHA timeout (same idea as curl/TLS hard-fail).
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == interrupt_cmd_idx(&cmds)
+                {
+                    let started_at = interrupt_wait_started.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() > INTERRUPT_STAGE_BOUND
+                        && !interactive_interrupt_cmd_ok(&acc)
+                    {
+                        eprintln!(
+                            "error: interrupt stage timed out after {:?} (want prompt after ^C on `cat | cat`)",
+                            INTERRUPT_STAGE_BOUND
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after interrupt fail-fast kill");
+                    }
+                } else {
+                    interrupt_wait_started = None;
+                }
+                // Arrow/histrecall: after CMD_ARROW, require `histrecall_z3z`
+                // within a short bound. #866 riscv64 hung here after a good
+                // smoke + SETPWENT-OK until the 90m GHA cancel.
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == arrow_edit_idx(&cmds)
+                {
+                    let started_at = arrow_wait_started.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() > ARROW_STAGE_BOUND
+                        && !interactive_arrow_edit_ok(&acc)
+                    {
+                        eprintln!(
+                            "error: arrow/histrecall stage timed out after {:?} (want `histrecall_z3z` after Up/Left/insert)",
+                            ARROW_STAGE_BOUND
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after arrow fail-fast kill");
+                    }
+                } else {
+                    arrow_wait_started = None;
                 }
             }
             if ci_complete(&acc, extra_needles, &expect, shell_stage) {
@@ -1066,7 +1114,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         }
         if cmds.len() == 20 && shell_cmd_index == 14 && !interactive_ostest_prep_ok(&serial) {
             eprintln!(
-                "error: os-test basic smoke `make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report` did not finish (want pass_rate= line, then `$`)"
+                "error: os-test basic smoke (ci-smoke-copy + TESTLIST make report) did not finish (want pass_rate= line, then `$`)"
             );
             std::process::exit(1);
         }
