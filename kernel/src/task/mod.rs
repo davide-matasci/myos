@@ -1930,22 +1930,15 @@ pub fn schedule() {
     }
 
     // CR3 is `next`'s — safe to publish Ready on `old`.
-    // If post-exec re-home moved affinity off this CPU, kick so the home AP
-    // leaves WFI and picks the task up (timer alone can lag under load).
-    let mut kick_foreign = false;
+    // Do NOT IPI-kick here: Ready is visible while we still run on `old`'s
+    // stack until task_switch; a peer running `old` early NX-faulted under
+    // -smp 4. AP timers pick up foreign-affinity Ready; `replace_user` kicks
+    // when re-homing a still-Running post-exec task.
     {
         let mut tasks = TASKS.lock();
         if tasks[old].state == State::Running {
             tasks[old].state = State::Ready;
         }
-        if let Some(aff) = tasks[old].affinity {
-            if aff != crate::smp::cpu_id() {
-                kick_foreign = true;
-            }
-        }
-    }
-    if kick_foreign {
-        crate::smp::kick_cpus();
     }
 
     unsafe {

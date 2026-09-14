@@ -56,9 +56,8 @@ under remote TLB shootdown vs syscall `cli`). After a successful **exec**,
 `make -j` workers spread across APs under `-smp 4` (≥2 APs). True
 `affinity: None` live migration remains unstable (NX #PF / leave races).
 `schedule` switches aspace/rsp0 before publishing Ready (old stays Running
-across the CR3 write, lock not held during switch); publishing Ready for a
-foreign-affinity task kicks idle CPUs; `unload_user_aspace` briefly kicks
-remotes then TLB-shootdowns; fork kicks idle CPUs. **aarch64** / **riscv64**
+across the CR3 write, lock not held during switch); `unload_user_aspace` briefly kicks
+remotes then TLB-shootdowns; fork and post-exec re-home kick idle CPUs. **aarch64** / **riscv64**
 leave user floating (APs may stay parked). `note_schedule` → `/proc/cpuinfo`.
 QEMU `-smp 4` on all launch paths (interactive + CI mini/full).
 
