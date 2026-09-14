@@ -62,7 +62,7 @@ stays Running across the CR3 write, lock not held during switch);
 `unload_user_aspace` briefly kicks remotes then TLB-shootdowns; fork kicks
 idle CPUs. **aarch64** / **riscv64**
 leave user floating (APs may stay parked). `note_schedule` → `/proc/cpuinfo`.
-QEMU `-smp 4` on x86/aarch64 (interactive + CI); riscv stays `-smp 2` (Limine panics `missing struct riscv_hart for BSP` at 4). The packed `boot/virt.dtb` must be dumped with the same `-smp` — a single-hart DTB plus OpenSBI BSP hartid=1 reproduces that panic even at `-smp 2`. Timer IRQs drain UART RX on every CPU (`input::drain_uart_irq`) so a starved shell under `-smp 4` TCG cannot overrun the COM1 FIFO.
+QEMU `-smp 4` on x86/aarch64 (interactive + CI); riscv stays `-smp 2` (Limine panics `missing struct riscv_hart for BSP` at 4). The packed `boot/virt.dtb` must be dumped with the same `-smp` — a single-hart DTB plus OpenSBI BSP hartid=1 reproduces that panic even at `-smp 2`. On x86, the BSP timer drains UART RX (`input::drain_uart_irq`) so a starved shell under `-smp 4` TCG cannot overrun the COM1 FIFO.
 
 Per-CPU ring3↔ring0 state:
 

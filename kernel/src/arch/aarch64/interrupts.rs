@@ -405,9 +405,8 @@ extern "C" fn aarch64_irq_handler() {
     if id < 1020 {
         write32(GICC + 0x10, iar);
     }
-    if timer && crate::smp::cpu_id() == 0 {
-        crate::input::drain_uart_irq();
-    }
+    // UART drain stays x86-only for now (bios FIFO overrun). aarch64 boot-mini
+    // was already green without it; keep timer path lean.
     if timer || resched {
         crate::task::schedule();
     }

@@ -140,6 +140,7 @@ pub fn init() {
     *TERMIOS.lock() = Termios::cooked();
     arch::serial_flush_rx();
     arch::keyboard_init();
+    DRAIN_ENABLED.store(true, Ordering::Relaxed);
 }
 
 pub fn termios_get_bytes() -> [u8; TERMIOS_LEN] {
@@ -171,6 +172,8 @@ fn iflag() -> u32 {
 /// Serializes hardware UART RX across timer IRQs and `poll` (multi-CPU TCG
 /// otherwise races two `inb(COM1)` and drops chars — e.g. `root` → `oot`).
 static UART_RX_LOCK: Mutex<()> = Mutex::new(());
+/// Set true from `init` so early timer ticks (before stdin setup) no-op.
+static DRAIN_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Drain UART hardware into the lock-free IRQ staging ring.
 ///
@@ -178,6 +181,9 @@ static UART_RX_LOCK: Mutex<()> = Mutex::new(());
 /// `read` fold these bytes into the cooked/raw discipline. Prevents COM1 FIFO
 /// overrun when the interactive shell's CPU is starved under `-smp 4` TCG.
 pub fn drain_uart_irq() {
+    if !DRAIN_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     let Some(_guard) = UART_RX_LOCK.try_lock() else {
         return;
     };

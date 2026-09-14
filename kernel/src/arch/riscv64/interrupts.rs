@@ -353,9 +353,8 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             TIMER_FIRED.store(true, Ordering::SeqCst);
             crate::time::note_tick();
             rearm_timer();
-            if crate::smp::cpu_id() == 0 {
-                crate::input::drain_uart_irq();
-            }
+            // Do not drain UART from the riscv timer: CI #150 hung after
+            // `[ OK ] fork` with sepc=0 once this ran on every tick.
             crate::task::schedule();
         }
         return;
