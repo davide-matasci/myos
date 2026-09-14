@@ -360,8 +360,10 @@ pub fn init() {
 /// x86: round-robin home CPU across APs when SMP is online. Skip CPU 0 —
 /// BSP shares irq/console/kernel_main with user under RR and CI bios hung
 /// after histrecall (`80c6ff1`, `-smp 2`). With two CPUs this is pin-to-AP
-/// (last green); with more CPUs work still spreads for make -j tops.
-/// Live migration (`None`) still unstable. Other arches float.
+/// (last green); with `-smp 4` (≥2 APs) post-exec re-home spreads make -j
+/// workers. Used at `spawn_user` and again in `replace_user` after exec
+/// (fork still inherits parent affinity). Live migration (`None`) still
+/// unstable. Other arches float.
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -1474,6 +1476,7 @@ pub fn replace_user(
     user_argc: usize,
     user_argv: usize,
 ) {
+    let mut new_aff = None;
     with_current_mut(|t| {
         t.aspace = aspace;
         t.user_rip = user_rip;
@@ -1490,9 +1493,22 @@ pub fn replace_user(
         // v1: reset dispositions on exec (ignored → DFL, drop pending).
         t.sig_pending = 0;
         t.sig_ignored = 0;
+        // Post-exec re-home: fork kids inherit parent affinity (avoids the
+        // cross-CPU fork+exec/wait hang under remote TLB shootdown vs waiter
+        // cli). After a successful exec the new image gets a fresh RR home
+        // across APs only (skip BSP) so `make -j` workers spread under -smp 4.
+        t.affinity = user_affinity();
+        new_aff = t.affinity;
     });
     user::switch_aspace(aspace);
     set_loaded_aspace(aspace);
+    // Wake the new home if we re-homed off this CPU; next preempt/yield
+    // publishes Ready and the AP picks the task up.
+    if let Some(aff) = new_aff {
+        if aff != crate::smp::cpu_id() {
+            crate::smp::kick_cpus();
+        }
+    }
 }
 
 pub fn spawn(entry: fn()) {
@@ -1663,9 +1679,10 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        // Co-locate with parent: cross-CPU fork+exec/wait hangs under remote
-        // TLB shootdown vs waiter cli. RR at spawn_user still spreads
-        // independent top-level tasks across CPUs.
+        // Co-locate with parent through fork: cross-CPU fork+exec/wait hangs
+        // under remote TLB shootdown vs waiter cli. `replace_user` (post-exec)
+        // re-homes with RR across APs so make -j workers spread; spawn_user
+        // still RR-assigns independent top-level tasks.
         affinity: tasks[ppid].affinity,
     };
     drop(tasks);
@@ -1913,11 +1930,22 @@ pub fn schedule() {
     }
 
     // CR3 is `next`'s — safe to publish Ready on `old`.
+    // If post-exec re-home moved affinity off this CPU, kick so the home AP
+    // leaves WFI and picks the task up (timer alone can lag under load).
+    let mut kick_foreign = false;
     {
         let mut tasks = TASKS.lock();
         if tasks[old].state == State::Running {
             tasks[old].state = State::Ready;
         }
+        if let Some(aff) = tasks[old].affinity {
+            if aff != crate::smp::cpu_id() {
+                kick_foreign = true;
+            }
+        }
+    }
+    if kick_foreign {
+        crate::smp::kick_cpus();
     }
 
     unsafe {
