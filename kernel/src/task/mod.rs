@@ -377,10 +377,13 @@ pub fn unload_user_aspace(aspace: u64) {
         user::switch_aspace(k);
         set_loaded_aspace(k);
     }
-    // Remotes: if they still list this root, force kernel aspace via a
-    // reschedule kick and a short wait (schedule switches CR3 before Ready).
+    // Remotes: if they still list this root, nudge a reschedule so `schedule`
+    // drops the CR3 (aspace switch happens before Ready). Cap kicks — blasting
+    // 100k IPIs livelocked the peer under CI bios timing (shell stuck after
+    // histrecall with RR home CPUs).
     if crate::smp::online_count() > 1 {
-        for _ in 0..100_000u32 {
+        let mut kicks = 0u32;
+        for spin in 0..50_000u32 {
             let mut live = false;
             for i in 0..crate::smp::MAX_CPUS {
                 if LOADED_ASPACE[i].load(Ordering::SeqCst) == aspace {
@@ -391,7 +394,10 @@ pub fn unload_user_aspace(aspace: u64) {
             if !live {
                 break;
             }
-            crate::smp::kick_cpus();
+            if kicks < 8 && (spin == 0 || spin % 64 == 0) {
+                crate::smp::kick_cpus();
+                kicks += 1;
+            }
             core::hint::spin_loop();
         }
         crate::smp::tlb_shootdown();
@@ -1804,12 +1810,16 @@ pub fn schedule() {
     let flags = irq_save();
     irq_off();
 
+    // Pick `next` under TASKS, but do NOT mark the previous task Ready and do
+    // NOT switch CR3 while holding the lock:
+    // - Ready-before-aspace let a peer reclaim while this CPU still had CR3
+    //   (NX #PF / mmap tear) — keep old as Running until after the switch.
+    // - aspace/rsp0 under TASKS held the global scheduler lock across CR3 and
+    //   IPI-heavy unload drains; with RR home CPUs that livelocked CI bios at
+    //   the histrecall/arrow stage (peer IF-off spinning on TASKS).
     let switch = {
         let mut tasks = TASKS.lock();
         let current = current_slot();
-        // Switch aspace/rsp0 before Ready so a peer cannot reclaim while this
-        // CPU still has the old CR3. x86 user tasks are CPU-affine (RR), so
-        // Ready-before-task_switch cannot be picked by another core.
 
         crate::smp::note_schedule();
         let cpu = crate::smp::cpu_id();
@@ -1838,44 +1848,50 @@ pub fn schedule() {
             let new_sp = tasks[next].sp;
             let kstack = tasks[next].kernel_stack_top;
             let aspace = tasks[next].aspace;
-
-            if kstack != 0 {
-                user::set_kernel_rsp0(kstack);
-                #[cfg(target_arch = "x86_64")]
-                crate::arch::gdt::set_rsp0(kstack as u64);
-                // Keep the sscratch CSR in lockstep with the static. Updating only the
-                // static left the CSR holding a previous task's top (or user sp) across
-                // schedule→trampoline→exec races; the next user trap then built its
-                // kernel frame on the wrong stack (riscv64 sepc=0 / zeroed ra family).
-                #[cfg(target_arch = "riscv64")]
-                unsafe {
-                    core::arch::asm!("csrw sscratch, {k}", k = in(reg) kstack, options(nostack));
-                }
-            }
-
-            let want = if aspace == 0 {
-                KERNEL_ASPACE.load(Ordering::SeqCst)
-            } else {
-                aspace
-            };
-            if want != loaded_aspace() {
-                user::switch_aspace(want);
-                set_loaded_aspace(want);
-            }
-
-            if tasks[current].state == State::Running {
-                tasks[current].state = State::Ready;
-            }
+            // Leave `current` Running so peers cannot pick/reclaim it until we
+            // have switched CR3 below. Publish next + CURRENT now.
             tasks[next].state = State::Running;
             set_current_slot(next);
-            Some((old_sp, new_sp))
+            Some((old_sp, new_sp, kstack, aspace, current))
         }
     };
 
-    let Some((old_sp, new_sp)) = switch else {
+    let Some((old_sp, new_sp, kstack, aspace, old)) = switch else {
         irq_restore(flags);
         return;
     };
+
+    if kstack != 0 {
+        user::set_kernel_rsp0(kstack);
+        #[cfg(target_arch = "x86_64")]
+        crate::arch::gdt::set_rsp0(kstack as u64);
+        // Keep the sscratch CSR in lockstep with the static. Updating only the
+        // static left the CSR holding a previous task's top (or user sp) across
+        // schedule→trampoline→exec races; the next user trap then built its
+        // kernel frame on the wrong stack (riscv64 sepc=0 / zeroed ra family).
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            core::arch::asm!("csrw sscratch, {k}", k = in(reg) kstack, options(nostack));
+        }
+    }
+
+    let want = if aspace == 0 {
+        KERNEL_ASPACE.load(Ordering::SeqCst)
+    } else {
+        aspace
+    };
+    if want != loaded_aspace() {
+        user::switch_aspace(want);
+        set_loaded_aspace(want);
+    }
+
+    // CR3 is `next`'s — safe to publish Ready on `old`.
+    {
+        let mut tasks = TASKS.lock();
+        if tasks[old].state == State::Running {
+            tasks[old].state = State::Ready;
+        }
+    }
 
     unsafe {
         task_switch(old_sp, new_sp);

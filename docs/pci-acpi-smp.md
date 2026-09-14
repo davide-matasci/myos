@@ -52,9 +52,9 @@ Kernel tasks use `affinity: None` (smoke `sched mask=0x3`). On **x86_64** with
 more than one CPU online, new user tasks take a round-robin home CPU; fork
 children inherit the parent's affinity (cross-CPU fork+exec/wait still hangs
 under remote TLB shootdown vs syscall `cli`). True `affinity: None` live
-migration remains unstable (NX #PF / leave races). `schedule` switches
-aspace/rsp0 before Ready; `unload_user_aspace` drains `LOADED_ASPACE` then
-TLB-shootdowns; fork kicks idle CPUs. **aarch64** / **riscv64** leave user
+migration remains unstable (NX #PF / leave races). `schedule` switches aspace/rsp0 before publishing Ready (old stays Running
+across the CR3 write, lock not held during switch); `unload_user_aspace`
+briefly kicks remotes then TLB-shootdowns; fork kicks idle CPUs. **aarch64** / **riscv64** leave user
 floating. `note_schedule` → `/proc/cpuinfo`. QEMU `-smp 2`.
 
 Per-CPU ring3↔ring0 state:
