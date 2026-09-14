@@ -180,14 +180,18 @@ static DRAIN_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::Atomi
 /// Safe from timer IRQs on any CPU (`try_lock` — never spins in IRQ). `poll` /
 /// `read` fold these bytes into the cooked/raw discipline. Prevents COM1 FIFO
 /// overrun when the interactive shell's CPU is starved under `-smp 4` TCG.
-pub fn drain_uart_irq() {
+/// Returns true if at least one UART byte was staged (caller may kick the
+/// console reader's CPU so ECHO is not delayed under `-smp` TCG).
+pub fn drain_uart_irq() -> bool {
     if !DRAIN_ENABLED.load(Ordering::Relaxed) {
-        return;
+        return false;
     }
     let Some(_guard) = UART_RX_LOCK.try_lock() else {
-        return;
+        return false;
     };
+    let mut got = false;
     while let Some(b) = arch::serial_read_byte() {
+        got = true;
         let h = IRQ_HEAD.load(Ordering::Relaxed);
         let next = (h + 1) % IRQ_RING;
         if next == IRQ_TAIL.load(Ordering::Acquire) {
@@ -198,6 +202,7 @@ pub fn drain_uart_irq() {
         IRQ_BUF[h].store(b, Ordering::Relaxed);
         IRQ_HEAD.store(next, Ordering::Release);
     }
+    got
 }
 
 fn fold_irq_rx() {
