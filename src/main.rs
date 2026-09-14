@@ -200,11 +200,25 @@ fn add_virtio_blk_riscv64(cmd: &mut Command) {
     add_virtio_blk_aarch64(cmd);
 }
 
+/// True when local stress (or similar) already has `python3 -m http.server 8765`
+/// listening. QEMU `guestfwd=…-tcp:127.0.0.1:8765` aborts at startup with
+/// "Connection refused" if nothing is bound — CI boot-mini does not start :8765.
+fn host_http_8765_listening() -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8765));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+}
+
 fn add_virtio_net(cmd: &mut Command) {
-    // Local boot-stress packs a guestfwd socket_smoke (10.0.2.100:80 → host
-    // :8765). Harmless for CI's example.com smoke (different destination).
-    cmd.arg("-netdev")
-        .arg("user,id=net0,guestfwd=tcp:10.0.2.100:80-tcp:127.0.0.1:8765");
+    // Local boot-stress packs socket_smoke → 10.0.2.100:80 with host http.server
+    // on :8765 and starts that server *before* QEMU. Only add guestfwd when the
+    // host port is already listening so CI (example.com via user-net, no :8765)
+    // does not abort QEMU before the kernel runs.
+    let mut netdev = String::from("user,id=net0");
+    if host_http_8765_listening() {
+        netdev.push_str(",guestfwd=tcp:10.0.2.100:80-tcp:127.0.0.1:8765");
+    }
+    cmd.arg("-netdev").arg(netdev);
     cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
 }
 
