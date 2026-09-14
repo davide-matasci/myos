@@ -832,7 +832,9 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-m")
         .arg("2048")
         .arg("-smp")
-        .arg("4")  // multi-hart bring-up still limited; keep boot-green under -smp 4
+        // Limine EDK2 path panics with -smp 4: "missing struct riscv_hart for BSP".
+        // Keep 2 so boot stays green; userspace remains effectively UP.
+        .arg("2")
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",

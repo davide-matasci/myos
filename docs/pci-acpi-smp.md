@@ -62,7 +62,7 @@ stays Running across the CR3 write, lock not held during switch);
 `unload_user_aspace` briefly kicks remotes then TLB-shootdowns; fork kicks
 idle CPUs. **aarch64** / **riscv64**
 leave user floating (APs may stay parked). `note_schedule` → `/proc/cpuinfo`.
-QEMU `-smp 4` on all launch paths (interactive + CI mini/full).
+QEMU `-smp 4` on x86/aarch64 (interactive + CI); riscv stays `-smp 2` (Limine panics `missing struct riscv_hart for BSP` at 4).
 
 Per-CPU ring3↔ring0 state:
 

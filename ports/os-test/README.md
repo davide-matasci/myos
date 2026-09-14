@@ -78,9 +78,10 @@ pthread / aio / math / wchar / spawn / socket for this boot window.
 
 CI launcher notes:
 
-- QEMU helpers use **`-smp 4`** on all arches (interactive + CI mini/full) so
-  x86 has ≥2 APs for post-exec RR re-home / `make -j` spread; aarch64/riscv
-  stay boot-green even if userspace is still UP.
+- QEMU helpers use **`-smp 4`** on x86/aarch64 (interactive + CI mini/full) so
+  x86 has ≥2 APs for post-exec RR re-home / `make -j` spread; riscv stays
+  **`-smp 2`** (Limine hart table panic at 4). aarch64/riscv userspace may
+  still be UP.
 - wait_ci overall QEMU wait is ~10m (600s), and the arrow/histrecall stage
   fail-fasts in ~20s if `histrecall_z3z` never appears (riscv64 #866 hung
   there after a good smoke + SETPWENT-OK).
