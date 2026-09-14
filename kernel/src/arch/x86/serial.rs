@@ -24,6 +24,8 @@ impl SerialPort {
         // already sent CR (oksh emacs historically emitted CR+LF), do not inject
         // another CR — that became CR CR LF, which wait_ci normalizes to a blank
         // line and flakes the histrecall seed needle.
+        // Also coalesce runs of CR: two writer CRs before LF used to reach
+        // the wire as `\r\r\n` (LAST_WAS_CR only suppressed the *injected* CR).
         use core::sync::atomic::{AtomicBool, Ordering};
         static LAST_WAS_CR: AtomicBool = AtomicBool::new(false);
         if byte == b'\n' {
@@ -31,8 +33,12 @@ impl SerialPort {
                 self.write_byte_raw(b'\r');
             }
             self.write_byte_raw(b'\n');
+        } else if byte == b'\r' {
+            if !LAST_WAS_CR.swap(true, Ordering::Relaxed) {
+                self.write_byte_raw(b'\r');
+            }
         } else {
-            LAST_WAS_CR.store(byte == b'\r', Ordering::Relaxed);
+            LAST_WAS_CR.store(false, Ordering::Relaxed);
             self.write_byte_raw(byte);
         }
     }

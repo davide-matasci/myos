@@ -188,7 +188,11 @@ fn push_byte(raw: u8) {
 
     // ^C / VINTR: honor ISIG in both cooked and raw (takes priority over ESC
     // handling so a ^C during a partial sequence still kills the foreground).
+    // Discard any in-progress cooked edit line (POSIX-ish NOFLSH clear of the
+    // line discipline buffer) so a partial line cannot leak into the next
+    // reader after the interrupt stage (`cat | cat` + ^C).
     if lflag & ISIG != 0 && byte == 0x03 {
+        EDIT_LEN.store(0, Ordering::SeqCst);
         crate::signal::handle_ctrl_c();
         return;
     }
