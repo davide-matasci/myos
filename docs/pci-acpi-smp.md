@@ -49,7 +49,7 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 
 Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
 Kernel tasks use `affinity: None` (smoke `sched mask=0x3`). On **x86_64** with
-more than one CPU online, new user tasks take a round-robin home CPU; fork
+more than one CPU online, new user tasks round-robin across APs (skip BSP); fork
 children inherit the parent's affinity (cross-CPU fork+exec/wait still hangs
 under remote TLB shootdown vs syscall `cli`). True `affinity: None` live
 migration remains unstable (NX #PF / leave races). `schedule` switches aspace/rsp0 before publishing Ready (old stays Running

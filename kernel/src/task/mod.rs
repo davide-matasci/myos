@@ -339,8 +339,11 @@ pub fn init() {
     irq_restore(flags);
 }
 
-/// x86: round-robin home CPU when SMP is online so user work spreads across
-/// cores. Live migration (`None`) still unstable. Other arches float.
+/// x86: round-robin home CPU across APs when SMP is online. Skip CPU 0 —
+/// BSP shares irq/console/kernel_main with user under RR and CI bios hung
+/// after histrecall (`80c6ff1`, `-smp 2`). With two CPUs this is pin-to-AP
+/// (last green); with more CPUs work still spreads for make -j tops.
+/// Live migration (`None`) still unstable. Other arches float.
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -348,8 +351,9 @@ fn user_affinity() -> Option<usize> {
         if n <= 1 {
             return Some(0);
         }
+        // RR over [1, n): never assign user to BSP.
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        Some(NEXT.fetch_add(1, Ordering::SeqCst) % n)
+        Some(1 + NEXT.fetch_add(1, Ordering::SeqCst) % (n - 1))
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
