@@ -12,6 +12,7 @@
 //! interleave serial bytes or confuse the framebuffer status-prefix parser.
 
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::{Mutex, Once};
 
 use crate::arch::SerialPort;
@@ -20,13 +21,30 @@ use crate::framebuffer::{self, FrameBufferWriter};
 static FB: Once<Mutex<FrameBufferWriter<'static>>> = Once::new();
 /// Serializes every console write end-to-end (serial + FB).
 static OUT: Mutex<()> = Mutex::new(());
+/// When false, high-volume `write_byte`/`write_str` stay serial-only.
+/// Boot `status_*` / banners still paint the FB. Oversized GOP (typical
+/// UEFI 1280×800+) makes every newline memmove megabytes under TCG; that
+/// was the ~6× BIOS→UEFI gap on prebuilt os-test (CI #34814552381).
+static MIRROR_BYTES: AtomicBool = AtomicBool::new(true);
+
 
 pub fn init_fb(writer: FrameBufferWriter<'static>) {
+    // ~800×600×4bpp ≈ 1.8MiB; above that, skip per-byte mirroring.
+    let bytes = writer.fb_bytes();
+    // Keep winsize from the full GOP (so oksh curl line stays ≤160 cols) but
+    // skip per-byte FB mirror when the buffer is huge — newline scroll under
+    // TCG was the UEFI~6× BIOS gap (CI #34814552381).
+    let mirror = bytes <= 2 * 1024 * 1024;
+    MIRROR_BYTES.store(mirror, Ordering::Relaxed);
     let _ = FB.call_once(|| Mutex::new(writer));
 }
 
 pub fn has_fb() -> bool {
     FB.get().is_some()
+}
+
+pub fn mirrors_bytes() -> bool {
+    MIRROR_BYTES.load(Ordering::Relaxed)
 }
 
 /// Character-cell winsize for tty `TIOCGWINSZ`.
@@ -56,8 +74,10 @@ fn write_byte_unlocked(byte: u8) {
     if byte == b'\r' {
         return;
     }
-    if let Some(fb) = FB.get() {
-        fb.lock().put_byte(byte);
+    if MIRROR_BYTES.load(Ordering::Relaxed) {
+        if let Some(fb) = FB.get() {
+            fb.lock().put_byte(byte);
+        }
     }
 }
 
@@ -137,8 +157,10 @@ impl Write for Console {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let _guard = OUT.lock();
         SerialPort::new().write_str(s)?;
-        if let Some(fb) = FB.get() {
-            fb.lock().write_str(s)?;
+        if MIRROR_BYTES.load(Ordering::Relaxed) {
+            if let Some(fb) = FB.get() {
+                fb.lock().write_str(s)?;
+            }
         }
         Ok(())
     }

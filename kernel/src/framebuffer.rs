@@ -142,6 +142,11 @@ impl FrameBufferWriter<'static> {
 }
 
 impl FrameBufferWriter<'_> {
+    /// Raw framebuffer size in bytes (pitch × height).
+    pub fn fb_bytes(&self) -> usize {
+        self.pitch.saturating_mul(self.height)
+    }
+
     fn cols(&self) -> usize {
         (self.width / FONT_W).max(1)
     }

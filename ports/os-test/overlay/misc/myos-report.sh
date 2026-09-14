@@ -1,16 +1,26 @@
 # Summarize every out/**.out: pass = ran and exited 0; compile_error = tcc
 # could not build it; everything else failed at runtime.
-# Enumerate with find, not a glob: suites are nested (out/basic/pwd/*.out)
-# and the guest shell does not glob across levels.
+# Enumerate with find -print (one path per line), not $(find | sort):
+# oksh/make command-substitution over a pipe can hang on myos when the
+# writer side's EOF never wakes the reader (same class as Makefile
+# $(shell find …) which we already banned). Sort is unnecessary for the
+# counters; failure listing order is best-effort.
+# Do not use pipelines inside $(…) here.
 total=0; pass=0; cerr=0; fail=0
-for f in $(find out -name '*.out' | sort); do
+if [ -d out ]; then
+  find out -name '*.out' -print > /tmp/os-test-outs.list 2>/dev/null || true
+else
+  : > /tmp/os-test-outs.list
+fi
+while IFS= read -r f || [ -n "$f" ]; do
+  [ -z "$f" ] && continue
   total=$((total+1))
-  case "$(cat "$f")" in
+  case "$(cat "$f" 2>/dev/null)" in
     compile_error) cerr=$((cerr+1)) ;;
     *"exit: "*) fail=$((fail+1)) ;;
     *) pass=$((pass+1)) ;;
   esac
-done
+done < /tmp/os-test-outs.list
 if [ "$total" -gt 0 ]; then
   pass_rate=$((pass * 100 / total))
 else
@@ -19,9 +29,10 @@ fi
 echo "=== os-test: $total tests, $pass pass, $fail fail, $cerr compile_error ==="
 echo "pass_rate=${pass_rate}% ($pass/$total)"
 echo "--- failures and compile errors ---"
-for f in $(find out -name '*.out' | sort); do
-  case "$(cat "$f")" in
+while IFS= read -r f || [ -n "$f" ]; do
+  [ -z "$f" ] && continue
+  case "$(cat "$f" 2>/dev/null)" in
     compile_error) echo "CE  ${f#out/}" ;;
     *"exit: "*) echo "F   ${f#out/} $(tail -1 "$f")" ;;
   esac
-done
+done < /tmp/os-test-outs.list
