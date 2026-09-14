@@ -201,7 +201,10 @@ fn add_virtio_blk_riscv64(cmd: &mut Command) {
 }
 
 fn add_virtio_net(cmd: &mut Command) {
-    cmd.arg("-netdev").arg("user,id=net0");
+    // Local boot-stress packs a guestfwd socket_smoke (10.0.2.100:80 → host
+    // :8765). Harmless for CI's example.com smoke (different destination).
+    cmd.arg("-netdev")
+        .arg("user,id=net0,guestfwd=tcp:10.0.2.100:80-tcp:127.0.0.1:8765");
     cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
 }
 
