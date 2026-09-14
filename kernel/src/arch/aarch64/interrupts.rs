@@ -395,6 +395,7 @@ extern "C" fn aarch64_irq_handler() {
     let resched = id == SGI_RESCHED;
     if timer {
         TIMER_FIRED.store(true, Ordering::SeqCst);
+        crate::time::note_tick();
         rearm_timers();
     }
     if tlb {

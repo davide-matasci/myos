@@ -1789,13 +1789,12 @@ fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
     if tv_ptr == 0 || !user_range_ok(tv_ptr, N) {
         return SYSERR;
     }
-    let Some(secs) = crate::time::unix_seconds() else {
+    let Some((secs, usec)) = crate::time::timeval() else {
         return SYSERR;
     };
     let mut raw = [0u8; N];
     raw[..8].copy_from_slice(&secs.to_le_bytes());
-    // usec unknown from RTC second resolution
-    raw[8..16].copy_from_slice(&0i64.to_le_bytes());
+    raw[8..16].copy_from_slice(&usec.to_le_bytes());
     if !write_user_bytes(task::current_aspace(), tv_ptr, &raw) {
         return SYSERR;
     }

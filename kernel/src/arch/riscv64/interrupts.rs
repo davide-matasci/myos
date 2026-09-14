@@ -345,6 +345,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
         if code == 5 {
             // Supervisor timer
             TIMER_FIRED.store(true, Ordering::SeqCst);
+            crate::time::note_tick();
             rearm_timer();
             crate::task::schedule();
         }
