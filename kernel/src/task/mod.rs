@@ -367,12 +367,22 @@ pub fn init() {
 
 fn sticky_exec_name(name: &[u8]) -> bool {
     // Prefer sticky homes for the interactive session and netd so console
-    // IRQs stay co-located with the reader. Compilers (tcc/cc1/…) still get
-    // a fresh AP RR home after exec. Cross-CPU exit reclaim is safe once
+    // IRQs stay co-located with the reader. Cross-CPU exit reclaim is safe once
     // `die` runs TLB shootdown with IF on.
     matches!(
         name,
         b"netd" | b"getty" | b"login" | b"sh" | b"oksh" | b"init"
+    )
+}
+
+/// Parallel build workers that should RR across APs after exec. Everything else
+/// keeps the fork-inherited home so parent `wait_child` stays same-CPU —
+/// blanket re-home of smoke ELFs (std/cat, rg, …) hung bios mid-`/heap` under
+/// `-smp 4` once UART drain fixed the earlier `which ls` flake (PR #150 CI).
+fn rehome_exec_name(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"tcc" | b"cc1" | b"cc1plus" | b"as" | b"ld" | b"collect2" | b"make"
     )
 }
 
@@ -1504,23 +1514,26 @@ pub fn replace_user(
         // v1: reset dispositions on exec (ignored → DFL, drop pending).
         t.sig_pending = 0;
         t.sig_ignored = 0;
-        // Post-exec re-home: fork kids inherit parent affinity (avoids the
-        // cross-CPU fork+exec/wait hang under remote TLB shootdown vs waiter
-        // cli). After a successful exec the new image gets a fresh RR home
-        // across APs only (skip BSP) so `make -j` workers spread under -smp 4.
-        // Keep long-lived console/net daemons sticky: netd on a remote AP
-        // triple-faults under -smp 4 (virtio/IRQ affinity); getty/login/sh
-        // stay with the parent session CPU for the same reason.
-        // Post-exec re-home: fork kids inherit parent affinity (avoids the
-        // cross-CPU fork+exec/wait hang under remote TLB shootdown vs waiter
-        // cli). After a successful exec the new image gets a fresh RR home
-        // across APs only (skip BSP) so `make -j` workers spread under -smp 4.
-        // Boot/session binaries stay sticky — remote-AP `/ok` triple-faulted
-        // bios bring-up before the die()/IRQ fix below.
-        if !sticky_exec_name(&t.exec_name[..t.exec_name_len as usize]) {
-            t.affinity = user_affinity();
+        // Post-exec re-home (narrow): fork kids inherit parent affinity so
+        // sequential smoke `wait_child` stays same-CPU. Only parallel build
+        // tools (`rehome_exec_name`) take a fresh AP RR home for `make -j`.
+        // Session binaries stay sticky (remote-AP netd/getty triple-faulted).
+        let name = &t.exec_name[..t.exec_name_len as usize];
+        let mut rehomed = false;
+        if !sticky_exec_name(name) && rehome_exec_name(name) {
+            let next = user_affinity();
+            if t.affinity != next {
+                t.affinity = next;
+                rehomed = true;
+            }
         }
+        rehomed
     });
+    if rehomed {
+        // Comment at schedule(): AP timers may eventually pick Ready, but a
+        // still-Running post-exec task needs an IPI so the new home CPU wakes.
+        crate::smp::kick_cpus();
+    }
     user::switch_aspace(aspace);
     set_loaded_aspace(aspace);
 }

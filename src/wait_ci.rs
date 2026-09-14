@@ -921,6 +921,20 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     let _ = child.kill();
                     break child.wait().expect("wait after heap fail-fast kill");
                 }
+                // Heap exited back to `$` without `[ OK ] smoke` (e.g. riscv
+                // ripgrep sepc=0 → `exit_code(1)`). Fail fast vs QEMU 600s.
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == 1
+                    && command_echoed(&acc, "heap")
+                    && at_interactive_prompt(&acc)
+                    && !acc.contains("[ OK ] smoke")
+                {
+                    eprintln!(
+                        "error: interactive `heap` returned to prompt without `[ OK ] smoke`"
+                    );
+                    let _ = child.kill();
+                    break child.wait().expect("wait after heap early-exit kill");
+                }
                 // HTTPS: printed tls/dns/tcp failure — don't burn the 180s timeout.
                 // Index 12 == `http https://example.com/` (full mode only; mini
                 // drops the HTTPS/curl smokes and 12 is the interrupt test).

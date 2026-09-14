@@ -28,9 +28,9 @@ use std::time::{Duration, Instant};
 
 const AARCH64_TARGET: &str = "aarch64-unknown-none-softfloat";
 const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
-/// QEMU `-smp` for riscv64. Must match the `virt.dtb` packed into the ESP:
-/// Limine `global_dtb` is a single-hart dump when generated without `-smp`, and
-/// OpenSBI may pick BSP hartid=1 → `PANIC: riscv: missing struct riscv_hart for BSP`.
+/// Interactive QEMU `-smp` for riscv64 (CI uses 1). Packed `virt.dtb` is always
+/// dumped with this count: a single-hart DTB plus OpenSBI BSP hartid=1 →
+/// `PANIC: riscv: missing struct riscv_hart for BSP` even at `-smp 2`.
 const RISCV_SMP: &str = "2";
 
 const RISCV_LIMINE_CONF: &str = "\
@@ -837,9 +837,11 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("2048")
         .arg("-smp")
         // Limine EDK2 path panics with -smp 4: "missing struct riscv_hart for BSP".
-        // Keep 2 so boot stays green; userspace remains effectively UP.
-        // DTB dump below MUST use the same count (see build_riscv64_image).
-        .arg(RISCV_SMP)
+        // Interactive keeps 2 (dual-hart DTB + parked AP). CI uses 1 — that was
+        // last green for ripgrep/`/heap` before #148; at -smp 2 with APs parked
+        // ripgrep still dies sepc=0 IPF (PR #150). DTB stays dual-hart so an
+        // interactive -smp 2 boot never hits the single-hart Limine panic.
+        .arg(if ci { "1" } else { RISCV_SMP })
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
