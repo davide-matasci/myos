@@ -61,11 +61,50 @@ extern "C" fn _start() -> ! {
     kernel_main()
 }
 
+
+fn fb_geom_msg(buf: &mut [u8], w: usize, h: usize) -> usize {
+    // "fb WxH\n"
+    let mut i = 0;
+    for b in b"fb " {
+        buf[i] = *b; i += 1;
+    }
+    i = push_usize(buf, i, w);
+    buf[i] = b'x'; i += 1;
+    i = push_usize(buf, i, h);
+    buf[i] = b'\n'; i += 1;
+    i
+}
+
+fn push_usize(buf: &mut [u8], mut i: usize, mut v: usize) -> usize {
+    let mut tmp = [0u8; 20];
+    let mut n = 0;
+    if v == 0 {
+        tmp[0] = b'0';
+        n = 1;
+    } else {
+        while v > 0 {
+            tmp[n] = b'0' + (v % 10) as u8;
+            v /= 10;
+            n += 1;
+        }
+    }
+    while n > 0 {
+        n -= 1;
+        buf[i] = tmp[n];
+        i += 1;
+    }
+    i
+}
+
 fn kernel_main() -> ! {
     arch::early_init();
 
+    let mut fb_w = 0usize;
+    let mut fb_h = 0usize;
     if let Some(resp) = limine_boot::FRAMEBUFFER.response() {
         if let Some(fb) = resp.framebuffers().first() {
+            fb_w = fb.width as usize;
+            fb_h = fb.height as usize;
             let mut writer = framebuffer::FrameBufferWriter::from_limine(fb);
             writer.clear();
             console::init_fb(writer);
@@ -74,6 +113,17 @@ fn kernel_main() -> ! {
 
     console::write_banner(HELLO);
     console::write_str("\n");
+    if fb_w != 0 {
+        // Keep this on serial so CI logs show GOP vs VBE size + mirror mode.
+        let mut buf = [0u8; 64];
+        let n = fb_geom_msg(&mut buf, fb_w, fb_h);
+        console::write_str(core::str::from_utf8(&buf[..n]).unwrap_or("fb?\n"));
+        if console::mirrors_bytes() {
+            console::write_str("fb mirror=on\n");
+        } else {
+            console::write_str("fb mirror=off\n");
+        }
+    }
     let _ = limine_boot::base_revision_supported();
     let _ = limine_boot::DTB.response();
 

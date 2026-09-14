@@ -5,7 +5,7 @@ extern crate alloc;
 
 use myos_tls::TlsConn;
 use myos_user::dns::{format_ipv4, resolve_a};
-use myos_user::{status_ok, 
+use myos_user::{status_ok, gettimeofday,
     close, exit, heap_init, open, open_flags, read, write, write_fd, Heap, O_RDWR, O_WRONLY,
 };
 
@@ -412,6 +412,11 @@ fn main() -> ! {
         let mut got = false;
         let mut empty_polls = 0usize;
         let mut rbuf = [0u8; BUF];
+        // After the last response byte, drain until EOF/error or ~500ms idle.
+        // Fixed 10000 empty spins was ~40s BIOS / ~107s UEFI under TCG and
+        // ate the os-test budget (CI #34814552381).
+        let mut idle_start: Option<(i64, i64)> = None;
+        const IDLE_USEC: i64 = 500_000;
         for _ in 0..DATA_POLLS {
             match tls.read(&mut rbuf) {
                 Ok(0) => {
@@ -420,11 +425,21 @@ fn main() -> ! {
                         if empty_polls > 10000 {
                             break;
                         }
+                        if idle_start.is_none() {
+                            idle_start = gettimeofday();
+                        }
+                        if let (Some((s0, u0)), Some((s1, u1))) = (idle_start, gettimeofday()) {
+                            let elapsed = (s1 - s0) * 1_000_000 + (u1 - u0);
+                            if elapsed >= IDLE_USEC {
+                                break;
+                            }
+                        }
                     }
                 }
                 Ok(n) => {
                     got = true;
                     empty_polls = 0;
+                    idle_start = None;
                     write(&rbuf[..n]);
                 }
                 Err(_) => break,
@@ -450,6 +465,8 @@ fn main() -> ! {
     let mut got = false;
     let mut empty_polls = 0usize;
     let mut rbuf = [0u8; BUF];
+    let mut idle_start: Option<(i64, i64)> = None;
+    const IDLE_USEC: i64 = 500_000;
     for _ in 0..DATA_POLLS {
         let nr = read(data, &mut rbuf);
         if nr == usize::MAX {
@@ -461,10 +478,20 @@ fn main() -> ! {
                 if empty_polls > 10000 {
                     break;
                 }
+                if idle_start.is_none() {
+                    idle_start = gettimeofday();
+                }
+                if let (Some((s0, u0)), Some((s1, u1))) = (idle_start, gettimeofday()) {
+                    let elapsed = (s1 - s0) * 1_000_000 + (u1 - u0);
+                    if elapsed >= IDLE_USEC {
+                        break;
+                    }
+                }
             }
             continue;
         }
         got = true;
+        idle_start = None;
         write(&rbuf[..nr]);
     }
     tcp_hangup(id);
