@@ -8,7 +8,7 @@
 | Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Pure discovery; talks only through `KernelApi` |
 | ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP |
 | Limine RSDP / MP requests | `kernel/src/limine_boot.rs` | Boot protocol |
-| AP bring-up + `/proc/cpuinfo` | `kernel/src/smp.rs` | Must run before modules; owns CPU-local state |
+| AP bring-up + `/proc/cpuinfo` | `kernel/src/smp.rs` | Must run before modules; owns CPU-local state + IPI helpers |
 | Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, shared ready set |
 | Proc exporters | `kernel/src/fs/procfs.rs` | Built-ins: `mounts`, `cpuinfo`; dynamic via `proc_register` ABI |
 
@@ -39,17 +39,43 @@ beyond the above are **not** executed — scan-only.
 ## SMP model per architecture
 
 All three arches use **Limine `MpRequest`**: the bootloader parks APs until
-`MpInfo::bootstrap(ap_entry, logical_cpu)`.
+`MpInfo::bootstrap(ap_entry, logical_cpu)`. APs stay online into userspace.
 
-| Arch | CPU id | AP init | Timer / IRQ |
-|------|--------|---------|-------------|
-| x86_64 | CPUID.1 APIC id | Load GDT/IDT, enable this CPU's xAPIC timer | Existing LVT timer → `schedule` |
-| aarch64 | `MPIDR_EL1` | `VBAR`, banked GICC, generic timers | PPI timer → `schedule` |
-| riscv64 | Limine `hartid` (logical in `tp`) | `stvec` / `sie` / `stimecmp` | S-mode timer → `schedule` |
+| Arch | CPU id | AP init | Timer / IRQ | IPI |
+|------|--------|---------|-------------|-----|
+| x86_64 | TSC_AUX / APIC id | Per-CPU GDT+TSS, GS → syscall state, xAPIC timer | LVT timer → `schedule` | xAPIC ICR all-excl-self (vec 33 TLB, 34 resched) |
+| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | `VBAR`, `use_spx`, banked GICC, timers; APs still Limine-parked on QEMU virt+UEFI | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
+| riscv64 | `tp` / Limine `hartid` | `stvec` / `sie` (STIE+SSIE) / `stimecmp` | S-mode timer → `schedule` | SBI IPI ext → SSIP; soft reason bits in `smp` |
 
 Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
-Any CPU may run `affinity: None` tasks; `note_schedule` counts per-CPU ticks
-exposed in `/proc/cpuinfo`. QEMU launches use `-smp 2`.
+Kernel tasks use `affinity: None` (smoke `sched mask=0x3`). On **x86_64** with
+more than one CPU online, new user tasks round-robin across APs (skip BSP); fork
+children inherit the parent's affinity (cross-CPU fork+exec/wait still hangs
+under remote TLB shootdown vs syscall `cli`). True `affinity: None` live
+migration remains unstable (NX #PF / leave races). `schedule` switches aspace/rsp0 before publishing Ready (old stays Running
+across the CR3 write, lock not held during switch); `unload_user_aspace`
+briefly kicks remotes then TLB-shootdowns; fork kicks idle CPUs. **aarch64** / **riscv64** leave user
+floating. `note_schedule` → `/proc/cpuinfo`. QEMU `-smp 2`.
+
+Per-CPU ring3↔ring0 state:
+
+- **x86_64** — each CPU has its own GDT+TSS (`rsp0` / DF IST). `IA32_EFER.NXE`
+  and `IA32_GS_BASE` → `CpuSyscallState` are programmed on BSP and every AP
+  (`kernel_rsp0` + fork callee snapshot). User CS/SS come from the CPU's GDT.
+- **aarch64** — banked `SP_ELx` after `use_spx`; exception frames live on the
+  current task's kernel stack. Limine `goto_address` handoff on QEMU virt+UEFI
+  still does not enter the kernel AP stub; APs stay parked (SGI paths ready).
+- **riscv64** — `sscratch` holds the current task's kernel stack top (updated on
+  every schedule). Per-hart cells are deferred until multi-hart Limine bring-up
+  is reliable on QEMU.
+
+TLB shootdown: local invalidate, then IPI the other online CPUs and wait
+briefly for acks (`smp::tlb_shootdown`, try-lock + bounded spin). Reschedule
+IPI wakes idle CPUs after `spawn` when `online_count() > 1`.
+
+AP bring-up: IRQs stay masked and `ONLINE` is clear until `ap_idle_loop`
+installs `CURRENT` and migrates onto the AP's own 64KiB idle stack (Limine
+AP stacks are too small for nested timer/IPI frames).
 
 ## `/proc` nodes
 
@@ -60,4 +86,4 @@ exposed in `/proc/cpuinfo`. QEMU launches use `-smp 2`.
 
 ## Out of scope
 
-ACPICA, full OSPM/sleep, IPI TLB shootdown, per-CPU TSS/GDT, Wayland, guest rustc.
+ACPICA, full OSPM/sleep, Wayland, guest rustc.

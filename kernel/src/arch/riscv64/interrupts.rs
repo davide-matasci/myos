@@ -252,18 +252,27 @@ pub fn init() {
     let v = trap_vector as *const () as usize;
     unsafe {
         asm!("csrw stvec, {v}", v = in(reg) v, options(nostack));
+        // Timer only on BSP bring-up. SSIE (IPI) is enabled in ap_init /
+        // enable_ipi once secondaries are online — enabling it too early
+        // raced with empty sscratch on the first user enter (sepc=-2).
         asm!("csrs sie, {}", in(reg) 1 << 5, options(nostack)); // STIE
         asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack)); // SIE
     }
     init_timer();
 }
 
-pub fn ap_init() {
+pub fn enable_ipi() {
+    unsafe {
+        asm!("csrs sie, {}", in(reg) 1 << 1, options(nostack)); // SSIE
+    }
+}
+
+pub fn ap_init(_logical: usize) {
     let v = trap_vector as *const () as usize;
     unsafe {
         asm!("csrw stvec, {v}", v = in(reg) v, options(nostack));
-        asm!("csrs sie, {}", in(reg) 1 << 5, options(nostack));
-        asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack));
+        // Program STIE+SSIE but leave SIE clear until ap_idle_loop.
+        asm!("csrs sie, {}", in(reg) (1 << 5) | (1 << 1), options(nostack));
     }
     init_timer();
 }
@@ -316,6 +325,23 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
     if scause >> 63 != 0 {
         // Interrupt
         let code = scause & 0xfff;
+        if code == 1 {
+            // Supervisor software interrupt (SBI IPI). Clear SSIP.
+            unsafe {
+                asm!("csrc sip, {}", in(reg) 1 << 1, options(nostack));
+            }
+            // Bit0 of SSCRATCH-less mailbox: generation in smp; always flush + schedule.
+            if crate::smp::ipi_is_tlb() {
+                unsafe {
+                    asm!("sfence.vma zero, zero", options(nostack));
+                }
+                crate::smp::tlb_ipi_ack();
+            }
+            if crate::smp::ipi_is_resched() {
+                crate::task::schedule();
+            }
+            return;
+        }
         if code == 5 {
             // Supervisor timer
             TIMER_FIRED.store(true, Ordering::SeqCst);
@@ -379,4 +405,58 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             crate::exception::riscv64_trap(code, sepc, stval);
         }
     }
+}
+
+
+const SBI_EXT_IPI: u64 = 0x7350_4949; // "IPI\0"
+const SBI_IPI_SEND: u64 = 0;
+
+fn sbi_send_ipi(hart_mask: u64, hart_mask_base: u64) {
+    let mut _err: i64;
+    let mut _val: i64;
+    unsafe {
+        asm!(
+            "ecall",
+            in("a7") SBI_EXT_IPI,
+            in("a6") SBI_IPI_SEND,
+            inout("a0") hart_mask as i64 => _err,
+            inout("a1") hart_mask_base as i64 => _val,
+            options(nostack),
+        );
+    }
+}
+
+/// Send a software IPI to every online hart except self (logical indices).
+fn ipi_others() {
+    let self_id = crate::smp::cpu_id();
+    let mut mask = 0u64;
+    let mut base = u64::MAX;
+    for i in 0..crate::smp::MAX_CPUS {
+        if i == self_id || !crate::smp::cpu_online(i) {
+            continue;
+        }
+        let hart = crate::smp::cpu_hw_id(i);
+        if base == u64::MAX {
+            base = hart;
+        }
+        if hart >= base && hart < base + 64 {
+            mask |= 1u64 << (hart - base);
+        } else {
+            // Hart id outside current window — send a singleton.
+            sbi_send_ipi(1, hart);
+        }
+    }
+    if mask != 0 && base != u64::MAX {
+        sbi_send_ipi(mask, base);
+    }
+}
+
+pub fn ipi_tlb_shootdown() {
+    crate::smp::ipi_mark_tlb();
+    ipi_others();
+}
+
+pub fn ipi_reschedule() {
+    crate::smp::ipi_mark_resched();
+    ipi_others();
 }
