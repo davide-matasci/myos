@@ -98,6 +98,15 @@ pub struct FrameBufferWriter<'a> {
     csi_private: bool,
     saved_col: usize,
     saved_row: usize,
+    /// DECTCEM (CSI ?25h / ?25l): userspace may hide the cursor (vim).
+    cursor_visible: bool,
+    /// True while the inverted block is painted at (row, col).
+    cursor_on: bool,
+    /// Cursor rendering is only meaningful while the console mirrors bytes to
+    /// this framebuffer: otherwise (oversized GOP, mirror=off) the painted
+    /// text freezes at boot status lines while the console row/col keeps
+    /// advancing on serial, so a drawn cursor would float over stale pixels.
+    pub(crate) cursor_active: bool,
     /// Inclusive scroll-region top row (0-based).
     scroll_top: usize,
     /// Inclusive scroll-region bottom row (0-based); `usize::MAX` = last row.
@@ -135,6 +144,9 @@ impl FrameBufferWriter<'static> {
             csi_private: false,
             saved_col: 0,
             saved_row: 0,
+            cursor_visible: true,
+            cursor_on: false,
+            cursor_active: true,
             scroll_top: 0,
             scroll_bottom: usize::MAX,
         }
@@ -176,6 +188,8 @@ impl FrameBufferWriter<'_> {
         self.line_start = true;
         self.prefix_len = 0;
         self.reset_ansi_parser();
+        self.cursor_on = false;
+        self.cursor_in();
     }
 
     fn reset_ansi_parser(&mut self) {
@@ -380,8 +394,27 @@ impl FrameBufferWriter<'_> {
     }
 
     fn dispatch_csi(&mut self, final_byte: u8) {
-        // Ignore private-mode sequences (CSI ? … h/l etc.) — consume only.
+        // Private modes: only DECTCEM (CSI ?25h / ?25l, cursor show/hide) —
+        // vim hides the cursor while redrawing and shows it again after.
         if self.csi_private {
+            if final_byte == b'h' || final_byte == b'l' {
+                let mut has_25 = false;
+                for i in 0..self.csi_param_count as usize {
+                    if self.csi_params[i] == 25 {
+                        has_25 = true;
+                        break;
+                    }
+                }
+                if has_25 {
+                    if final_byte == b'h' {
+                        self.cursor_visible = true;
+                        self.cursor_in();
+                    } else {
+                        self.cursor_out();
+                        self.cursor_visible = false;
+                    }
+                }
+            }
             return;
         }
         // Cursor save/restore via CSI (ANSI.SYS / xterm): s / u
@@ -402,32 +435,40 @@ impl FrameBufferWriter<'_> {
             // CUU — cursor up
             b'A' => {
                 let n = self.csi_param(0, 1) as usize;
+                self.cursor_out();
                 self.row = self.row.saturating_sub(n);
                 self.line_start = false;
                 self.prefix_len = 0;
+                self.cursor_in();
             }
             // CUD — cursor down
             b'B' => {
                 let n = self.csi_param(0, 1) as usize;
                 let max_row = self.rows().saturating_sub(1);
+                self.cursor_out();
                 self.row = (self.row + n).min(max_row);
                 self.line_start = false;
                 self.prefix_len = 0;
+                self.cursor_in();
             }
             // CUF — cursor forward
             b'C' => {
                 let n = self.csi_param(0, 1) as usize;
                 let max_col = self.cols().saturating_sub(1);
+                self.cursor_out();
                 self.col = (self.col + n).min(max_col);
                 self.line_start = false;
                 self.prefix_len = 0;
+                self.cursor_in();
             }
             // CUB — cursor back
             b'D' => {
                 let n = self.csi_param(0, 1) as usize;
+                self.cursor_out();
                 self.col = self.col.saturating_sub(n);
                 self.line_start = false;
                 self.prefix_len = 0;
+                self.cursor_in();
             }
             // CUP / HVP — cursor position (1-based)
             b'H' | b'f' => {
@@ -490,16 +531,86 @@ impl FrameBufferWriter<'_> {
         }
     }
 
+    /// XOR-invert every pixel of the cell at (row, col). Self-inverse, so the
+    /// same op paints and unpaints the block cursor — but only valid while the
+    /// cell is untouched since the last inversion (any overwrite must go
+    /// through [`Self::cursor_out`] first).
+    fn invert_cell(&mut self, row: usize, col: usize) {
+        let cols = self.cols();
+        let rows = self.rows();
+        if row >= rows || col >= cols {
+            return;
+        }
+        let mut mask = 0u32;
+        mask |= (((1u32 << self.r_size) - 1) & 0xff) << self.r_shift;
+        mask |= (((1u32 << self.g_size) - 1) & 0xff) << self.g_shift;
+        mask |= (((1u32 << self.b_size) - 1) & 0xff) << self.b_shift;
+        let x0 = col * FONT_W;
+        let y0 = row * FONT_H;
+        for dy in 0..FONT_H {
+            for dx in 0..FONT_W {
+                let x = x0 + dx;
+                let y = y0 + dy;
+                if x >= self.width || y >= self.height {
+                    continue;
+                }
+                let offset = y * self.pitch + x * self.bytes_per_pixel;
+                let Some(pixel) = self.buffer.get_mut(offset..offset + self.bytes_per_pixel) else {
+                    continue;
+                };
+                let n = pixel.len().min(4);
+                let mut tmp = [0u8; 4];
+                tmp[..n].copy_from_slice(&pixel[..n]);
+                let val = u32::from_le_bytes(tmp) ^ mask;
+                let out = val.to_le_bytes();
+                pixel[..n].copy_from_slice(&out[..n]);
+            }
+        }
+    }
+
+    /// Unpaint the block cursor if painted (must precede any pixel mutation).
+    fn cursor_out(&mut self) {
+        if self.cursor_on {
+            let (r, c) = (self.row, self.col);
+            self.cursor_on = false;
+            self.invert_cell(r, c);
+        }
+    }
+
+    /// Timer-driven blink phase: toggle the painted block (DECTCEM-hidden
+    /// cursors stay hidden). Callers must already hold the FB lock.
+    pub fn blink_toggle(&mut self) {
+        if self.cursor_active && self.cursor_visible {
+            if self.cursor_on {
+                self.cursor_out();
+            } else {
+                self.cursor_in();
+            }
+        }
+    }
+
+    /// Paint the block cursor at the current cell when userspace allows it.
+    fn cursor_in(&mut self) {
+        if self.cursor_active && self.cursor_visible && !self.cursor_on {
+            let (r, c) = (self.row, self.col);
+            self.cursor_on = true;
+            self.invert_cell(r, c);
+        }
+    }
+
     fn set_cursor(&mut self, row: usize, col: usize) {
+        self.cursor_out();
         let max_row = self.rows().saturating_sub(1);
         let max_col = self.cols().saturating_sub(1);
         self.row = row.min(max_row);
         self.col = col.min(max_col);
         self.line_start = self.col == 0;
         self.prefix_len = 0;
+        self.cursor_in();
     }
 
     fn clear_region(&mut self, col0: usize, row0: usize, col1: usize, row1: usize) {
+        self.cursor_out();
         let cols = self.cols();
         let rows = self.rows();
         let c0 = col0.min(cols);
@@ -518,6 +629,7 @@ impl FrameBufferWriter<'_> {
                 }
             }
         }
+        self.cursor_in();
     }
 
     fn erase_display(&mut self, mode: u16) {
@@ -688,6 +800,7 @@ impl FrameBufferWriter<'_> {
     }
 
     fn put_byte_colored(&mut self, byte: u8, fg: (u8, u8, u8)) {
+        self.cursor_out();
         match byte {
             b'\n' => self.newline(),
             b'\r' => self.col = 0,
@@ -714,9 +827,11 @@ impl FrameBufferWriter<'_> {
                 self.col += 1;
             }
         }
+        self.cursor_in();
     }
 
     fn newline(&mut self) {
+        self.cursor_out();
         self.col = 0;
         let top = self.scroll_top.min(self.scroll_bottom_row());
         let bot = self.scroll_bottom_row();
@@ -729,10 +844,12 @@ impl FrameBufferWriter<'_> {
         } else {
             self.row += 1;
         }
+        self.cursor_in();
     }
 
     /// Scroll text rows `[top, bottom]` up by one row (region-aware).
     fn scroll_up_region(&mut self, top: usize, bottom: usize) {
+        self.cursor_out();
         if bottom <= top {
             return;
         }
@@ -755,10 +872,12 @@ impl FrameBufferWriter<'_> {
             }
         }
         self.clear_region(0, bottom, self.cols(), bottom + 1);
+        self.cursor_in();
     }
 
     /// Scroll text rows `[top, bottom]` down by one row (region-aware).
     fn scroll_down_region(&mut self, top: usize, bottom: usize) {
+        self.cursor_out();
         if bottom <= top {
             return;
         }
@@ -781,6 +900,7 @@ impl FrameBufferWriter<'_> {
             }
         }
         self.clear_region(0, top, self.cols(), top + 1);
+        self.cursor_in();
     }
 
     fn draw_glyph(&mut self, col: usize, row: usize, byte: u8, fg: (u8, u8, u8)) {
