@@ -359,12 +359,14 @@ pub fn init() {
 
 /// x86: round-robin home CPU across APs when SMP is online. Skip CPU 0 —
 /// BSP shares irq/console/kernel_main with user under RR and CI bios hung
-/// after histrecall (`80c6ff1`, `-smp 2`). With `-smp 4` (≥2 APs) post-exec
-/// re-home spreads *all* user images (make -j workers and session binaries)
-/// without basename allowlists. Fork still inherits parent affinity until
-/// exec; cross-CPU wait is kept safe by `die` IF-on reclaim + soft TLB
-/// service in `schedule`. Live migration (`affinity: None`) remains off.
-/// Other arches float.
+/// after histrecall (`80c6ff1`, `-smp 2`). With `-smp 4` (≥2 APs):
+/// `spawn_user` RR-assigns top-level tasks; fork inherits unless the parent
+/// already has an active child (parallel `make -j` / pipelines) — then the
+/// new child takes a fresh AP RR home. Exec does **not** re-home: sequential
+/// shell/smoke fork+exec+wait stays same-CPU (blanket post-exec RR made UEFI
+/// CI burn the 600s QEMU wall). Cross-CPU wait (pipelines / make) stays safe
+/// via `die` IF-on reclaim + soft TLB service in `schedule`. Live migration
+/// (`affinity: None`) remains off. Other arches float.
 
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
@@ -381,6 +383,23 @@ fn user_affinity() -> Option<usize> {
     {
         None
     }
+}
+
+
+/// True if `ppid` already has a Ready/Running user child. Used at fork to
+/// distinguish sequential shell/smoke (inherit) from parallel make -j /
+/// pipelines (RR-spread the new child) without basename allowlists.
+fn parent_has_active_child(tasks: &[Task; MAX_TASKS], ppid: usize) -> bool {
+    for i in 0..MAX_TASKS {
+        if i == ppid || tasks[i].ppid != ppid || tasks[i].user_rip == 0 {
+            continue;
+        }
+        match tasks[i].state {
+            State::Ready | State::Running => return true,
+            State::Unused | State::Dead => {}
+        }
+    }
+    false
 }
 
 pub fn enable_preempt() {
@@ -1481,7 +1500,7 @@ pub fn replace_user(
     user_argc: usize,
     user_argv: usize,
 ) {
-    let rehomed = with_current_mut(|t| {
+    with_current_mut(|t| {
         t.aspace = aspace;
         t.user_rip = user_rip;
         t.user_rsp = user_rsp;
@@ -1497,21 +1516,10 @@ pub fn replace_user(
         // v1: reset dispositions on exec (ignored → DFL, drop pending).
         t.sig_pending = 0;
         t.sig_ignored = 0;
-        // Post-exec re-home for every user image: fork kids inherit parent
-        // affinity (short same-CPU window before exec), then the new image
-        // gets a fresh AP-only RR home so make -j spreads without a basename
-        // allowlist. No sticky_exec_name / rehome_exec_name — session and
-        // build tools share the same policy; races are fixed in die/TLB.
-        let next = user_affinity();
-        let rehomed = t.affinity != next;
-        t.affinity = next;
-        rehomed
+        // Keep fork-assigned affinity across exec. Spreading for make -j /
+        // pipelines happens at fork when a sibling is already active — not
+        // via basename allowlists or blanket post-exec RR.
     });
-    if rehomed {
-        // Comment at schedule(): AP timers may eventually pick Ready, but a
-        // still-Running post-exec task needs an IPI so the new home CPU wakes.
-        crate::smp::kick_cpus();
-    }
     user::switch_aspace(aspace);
     set_loaded_aspace(aspace);
 }
@@ -1684,11 +1692,16 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        // Co-locate with parent through fork until exec. Cross-CPU wait after
-        // post-exec re-home is safe: die() enables IRQs before reclaim and
-        // schedule() soft-ACKs TLB shootdowns while IF-off. spawn_user still
-        // RR-assigns independent top-level tasks across APs.
-        affinity: tasks[ppid].affinity,
+        // Sequential fork+exec+wait (shell, smoke): inherit parent home so
+        // wait_child stays same-CPU. Parallel fork (parent already has an
+        // active child — make -j / pipelines): fresh AP RR home. Exec keeps
+        // this affinity (no post-exec re-home). Cross-CPU wait is safe via
+        // die() IF-on reclaim + schedule() soft TLB ACK.
+        affinity: if parent_has_active_child(&tasks, ppid) {
+            user_affinity()
+        } else {
+            tasks[ppid].affinity
+        },
     };
     drop(tasks);
     user::note_fork();
@@ -1940,8 +1953,8 @@ pub fn schedule() {
     // CR3 is `next`'s — safe to publish Ready on `old`.
     // Do NOT IPI-kick here: Ready is visible while we still run on `old`'s
     // stack until task_switch; a peer running `old` early NX-faulted under
-    // -smp 4. AP timers pick up foreign-affinity Ready; `replace_user` kicks
-    // when re-homing a still-Running post-exec task.
+    // -smp 4. AP timers pick up foreign-affinity Ready; fork kicks when a
+    // parallel child is RR-homed onto another AP.
     {
         let mut tasks = TASKS.lock();
         if tasks[old].state == State::Running {

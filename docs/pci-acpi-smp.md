@@ -49,15 +49,16 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 
 Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
 Kernel tasks use `affinity: None` (smoke `sched mask=0x3`). On **x86_64** with
-more than one CPU online, new user tasks round-robin across APs (skip BSP); fork
-children inherit the parent's affinity until **exec**. After a successful exec,
-`replace_user` always re-homes the new image with the same AP-only RR policy
-(no basename sticky/rehome allowlists) so `make -j` workers and session
-binaries alike spread under `-smp 4` (≥2 APs). Cross-CPU exit reclaim is kept
-safe by: (1) `die` enabling IRQs before reclaim/TLB shootdown, (2) epoch-based
-TLB shootdown with soft `tlb_service` from `schedule` while IF-off (IRQ-only
-ACK previously deadlocked a cli waiter). True `affinity: None` live migration
-remains off (NX #PF / leave races). `schedule` switches aspace/rsp0 before
+more than one CPU online, `spawn_user` round-robins across APs (skip BSP). Fork
+inherits the parent home for sequential fork+exec+wait (shell/smoke stay
+same-CPU); if the parent already has a Ready/Running child (parallel `make -j`
+/ pipelines), the new child takes a fresh AP RR home instead. Exec keeps that
+affinity — no basename sticky/rehome allowlists and no blanket post-exec RR
+(blanket re-home burned the UEFI 600s QEMU wall under CI). Cross-CPU exit
+reclaim is kept safe by: (1) `die` enabling IRQs before reclaim/TLB shootdown,
+(2) epoch-based TLB shootdown with soft `tlb_service` from `schedule` while
+IF-off (IRQ-only ACK previously deadlocked a cli waiter). True `affinity: None`
+live migration remains off (NX #PF / leave races). `schedule` switches aspace/rsp0 before
 publishing Ready (old stays Running across the CR3 write, lock not held during
 switch); `unload_user_aspace` briefly kicks remotes then TLB-shootdowns; fork
 kicks idle CPUs. **aarch64** / **riscv64** leave user floating (APs may stay
