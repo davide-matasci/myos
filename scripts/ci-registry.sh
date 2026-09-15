@@ -31,7 +31,7 @@ ORAS_ARTIFACT_TYPE="application/vnd.myos.ci.port.v1"
 ORAS_LAYER_TYPE="application/vnd.myos.ci.port.layer.v1.tar+zst"
 
 # sysroot (rust std) then newlib (C): dependents pull after.
-ALL_PORTS=(sysroot newlib std-hello c-hello sbase oksh make ubase coreutils ripgrep tcc ncurses vim zlib git lynx curl kernels)
+ALL_PORTS=(sysroot newlib std-hello c-hello sbase oksh make ubase coreutils ripgrep tcc ncurses vim zlib git lynx curl lua kernels)
 
 usage() {
   echo "usage: $0 pull|push PORT" >&2
@@ -55,6 +55,7 @@ port_hash() {
     zlib) myos_zlib_version_hash ;;
     git) myos_git_version_hash ;;
     lynx) myos_lynx_version_hash ;;
+    lua) myos_lua_version_hash ;;
     std-hello) myos_std_hello_version_hash ;;
     c-hello) myos_c_hello_version_hash ;;
     curl) myos_curl_version_hash ;;
@@ -194,6 +195,12 @@ port_members() {
       echo target/.myos-lynx-version
       for arch in x86_64 aarch64 riscv64; do
         echo "target/lynx-${arch}-unknown-none"
+      done
+      ;;
+    lua)
+      echo target/.myos-lua-version
+      for arch in x86_64 aarch64 riscv64; do
+        echo "target/lua-${arch}-unknown-none"
       done
       ;;
     std-hello)

@@ -120,6 +120,11 @@ lynx_elves_ready() {
   [[ -f target/lynx-x86_64-unknown-none \
      && -f target/lynx-aarch64-unknown-none \
      && -f target/lynx-riscv64-unknown-none ]]
+
+lua_elves_ready() {
+  [[ -f target/lua-x86_64-unknown-none \
+     && -f target/lua-aarch64-unknown-none \
+     && -f target/lua-riscv64-unknown-none ]]
 }
 
 rebuild_kernels() {
@@ -205,6 +210,13 @@ if [[ -x target/debug/myos && -f target/bios.img \
   else
     echo "lynx ELFs present: $(ls -lh target/lynx-*-unknown-none)"
   fi
+  if ! lua_elves_ready; then
+    echo "==> lua ELF(s) missing after restore; building lua"
+    ./ports/lua/build.sh
+    need_rebuild=1
+  else
+    echo "lua ELFs present: $(ls -lh target/lua-*-unknown-none)"
+  fi
   if ((need_rebuild)); then
     rebuild_kernels
   fi
@@ -234,6 +246,7 @@ fi
 ./ports/git/build.sh
 ./ports/curl/build.sh
 ./ports/lynx/build.sh
+./ports/lua/build.sh
 
 rebuild_kernels
 
