@@ -37,10 +37,16 @@ const APPROX_TICKS_PER_SEC: u64 = 4_000;
 /// Re-read the RTC at most this often (≈50 ms at APPROX_TICKS_PER_SEC).
 const CACHE_TTL_TICKS: u64 = APPROX_TICKS_PER_SEC / 20;
 
+/// Blink phase flip cadence (≈500 ms at APPROX_TICKS_PER_SEC ≈ 4 kHz).
+const BLINK_INTERVAL_TICKS: u64 = APPROX_TICKS_PER_SEC / 2;
+
 /// Called from each arch timer IRQ (before `schedule`).
 #[inline]
 pub fn note_tick() {
-    TICKS.fetch_add(1, Ordering::Relaxed);
+    let n = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+    if n % BLINK_INTERVAL_TICKS == 0 {
+        crate::console::cursor_blink();
+    }
 }
 
 #[inline]

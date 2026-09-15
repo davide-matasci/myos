@@ -36,6 +36,8 @@ pub fn init_fb(writer: FrameBufferWriter<'static>) {
     // TCG was the UEFI~6× BIOS gap (CI #34814552381).
     let mirror = bytes <= 2 * 1024 * 1024;
     MIRROR_BYTES.store(mirror, Ordering::Relaxed);
+    let mut writer = writer;
+    writer.cursor_active = mirror;
     let _ = FB.call_once(|| Mutex::new(writer));
 }
 
@@ -45,6 +47,17 @@ pub fn has_fb() -> bool {
 
 pub fn mirrors_bytes() -> bool {
     MIRROR_BYTES.load(Ordering::Relaxed)
+}
+
+/// Timer-IRQ blink for the framebuffer block cursor. Non-blocking: if the FB
+/// mutex is held by a mainline paint, this phase is skipped and the next tick
+/// re-syncs (the cursor cell is only mutated under the FB lock).
+pub fn cursor_blink() {
+    if let Some(fb) = FB.get() {
+        if let Some(mut writer) = fb.try_lock() {
+            writer.blink_toggle();
+        }
+    }
 }
 
 /// Character-cell winsize for tty `TIOCGWINSZ`.
