@@ -28,6 +28,12 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 /// next phys at offset 0 via HHDM.
 static FREE_HEAD: AtomicU64 = AtomicU64::new(0);
 
+/// Diagnostics for the frame allocator: total 4 KiB frames handed out vs
+/// returned to the freelist. Printed verbatim in the `out of usable memory`
+/// panic so an exhaustion can be attributed to a leak vs a small memmap.
+pub static FRAME_ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static FRAME_FREE_COUNT: AtomicU64 = AtomicU64::new(0);
+
 fn heap_phys() -> u64 {
     let entries = limine_boot::MEMMAP
         .response()
@@ -89,6 +95,7 @@ pub fn free_frame(phys: u64) {
             .compare_exchange(head, phys, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
+            FRAME_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
             return;
         }
     }
@@ -219,6 +226,7 @@ pub fn alloc_frame() -> u64 {
             unsafe {
                 core::ptr::write_bytes((head + hhdm) as *mut u8, 0, PAGE as usize);
             }
+            FRAME_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             return head;
         }
     }
@@ -251,10 +259,29 @@ pub fn alloc_frame() -> u64 {
             unsafe {
                 core::ptr::write_bytes((phys + hhdm) as *mut u8, 0, PAGE as usize);
             }
+            FRAME_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             return phys;
         }
     }
-    panic!("out of usable memory");
+    let top = limine_boot::MEMMAP
+        .response()
+        .map(|r| {
+            r.entries()
+                .iter()
+                .filter(|e| e.type_ == memmap::MEMMAP_USABLE)
+                .map(|e| e.base + e.length)
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    panic!(
+        "out of usable memory: alloc={} free={} live={} next={:#x} usable_top={:#x}",
+        FRAME_ALLOC_COUNT.load(Ordering::Relaxed),
+        FRAME_FREE_COUNT.load(Ordering::Relaxed),
+        FRAME_ALLOC_COUNT.load(Ordering::Relaxed) - FRAME_FREE_COUNT.load(Ordering::Relaxed),
+        NEXT.load(Ordering::SeqCst),
+        top,
+    );
 }
 
 pub fn hhdm(phys: u64) -> *mut u8 {
