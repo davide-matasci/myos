@@ -380,6 +380,10 @@ fn push_hex(out: &mut alloc::vec::Vec<u8>, mut v: u64) {
 /// Linker-relocated AP entry pointer (fn-item casts are unreliable at runtime).
 static AP_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_ap_entry;
 
+/// Quiet WFI park for riscv Limine APs (never marked ONLINE).
+#[cfg(target_arch = "riscv64")]
+static AP_PARK_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_ap_park;
+
 /// Record BSP and bring secondary CPUs online via Limine MP.
 pub fn init() {
     #[cfg(target_arch = "riscv64")]
@@ -430,18 +434,57 @@ pub fn init() {
 
     // aarch64: Limine lists APs but writing goto_address still does not
     // reliably enter myos_smp_ap_entry on QEMU virt+UEFI (BSP then waits /
-    // hangs under release). Keep APs parked for boot-mini; GIC SGI IPI stubs
-    // remain. Retry handoff when Limine/QEMU park loop is proven.
-    //
-    // riscv64: with a correct multi-hart `virt.dtb` (needed so OpenSBI BSP
-    // hartid=1 does not Limine-panic), bringing APs online hangs boot-mini
-    // after `[ OK ] smp: 2 CPUs` / mid-`/ok` (PR #150). Park APs like aarch64;
-    // QEMU stays at -smp 2 so the DTB still lists both harts.
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    // hangs under release). Keep APs Limine-parked for boot-mini; GIC SGI
+    // IPI stubs remain. Retry handoff when Limine/QEMU park loop is proven.
+    #[cfg(target_arch = "aarch64")]
     {
         console::status_ok(&alloc::format!(
             "smp: 1 CPU ({} parked)",
             mp_cpus.len().saturating_sub(1)
+        ));
+        return;
+    }
+
+    // riscv64: dual-hart DTB is required (OpenSBI BSP hartid=1 otherwise
+    // Limine-panics). Full AP bring-up (ONLINE + ap_idle_loop) hung mid-`/ok`
+    // (PR #150). Leaving APs in Limine's busy-spin still hit the ripgrep
+    // `sepc=0` IPF under `-smp 2`. Hand each AP a SIE-masked WFI loop in
+    // myos text *without* marking ONLINE — quiet park, no scheduler/IPI.
+    #[cfg(target_arch = "riscv64")]
+    {
+        let mut parked = 0usize;
+        for cpu in mp_cpus.iter() {
+            let is_bsp = cpu.hartid == resp.bsp_hartid;
+            if is_bsp {
+                continue;
+            }
+            if parked + 1 >= MAX_CPUS {
+                break;
+            }
+            let logical = parked + 1;
+            HW_IDS[logical].store(cpu.hartid, Ordering::SeqCst);
+            {
+                let mut guard = CPUS.lock();
+                guard[logical] = CpuInfo {
+                    online: false,
+                    hw_id: cpu.hartid,
+                };
+            }
+            core::sync::atomic::fence(Ordering::SeqCst);
+            // extra_argument is ignored by the park stub; pass logical for symmetry.
+            cpu.bootstrap(AP_PARK_ENTRY_PTR, logical as u64);
+            parked += 1;
+        }
+        // Brief wait so APs leave Limine before BSP continues into userspace.
+        for _ in 0..200_000 {
+            if AP_PROGRESS.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        console::status_ok(&alloc::format!(
+            "smp: 1 CPU ({} wfi-parked)",
+            parked
         ));
         return;
     }
@@ -534,6 +577,21 @@ pub fn init() {
     #[cfg(target_arch = "riscv64")]
     if got > 1 {
         crate::arch::enable_ipi();
+    }
+}
+
+/// SIE-masked WFI forever. Used when we must silence Limine's AP busy-spin
+/// without joining the scheduler (ONLINE stays false — no IPI / sscratch races).
+#[cfg(target_arch = "riscv64")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn myos_smp_ap_park(_info: &limine::mp::MpInfo) -> ! {
+    AP_PROGRESS.store(1, Ordering::SeqCst);
+    unsafe {
+        // Clear SIE; WFI still blocks until an interrupt is *pending*.
+        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+    }
+    loop {
+        crate::arch::wait_interrupt();
     }
 }
 
