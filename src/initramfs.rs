@@ -393,6 +393,18 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             read(&manifest_dir.join("ports/lynx/lynx.cfg")),
         );
     }
+    // lua (Lua 5.4 interpreter) -> bin/custom/lua (none triple, like vim).
+    // Gated on the port_lua feature.
+    if feature_enabled("port_lua") {
+        let lua_path = target.join(format!("lua-{none_triple}"));
+        let lua_bytes = std::fs::read(&lua_path).unwrap_or_else(|e| {
+            panic!(
+                "initramfs: required bin/custom/lua missing at {} ({e}); run ./ports/lua/build.sh",
+                lua_path.display()
+            )
+        });
+        add(&mut entries, "bin/custom/lua", Some(lua_bytes));
+    }
     // git (Phase-1 local porcelain) -> bin/custom/git (none triple, like vim).
     // Gated on the port_git feature.
     if feature_enabled("port_git") {
