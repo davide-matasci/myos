@@ -51,6 +51,10 @@ global_dtb: boot():/boot/virt.dtb
 /// to PIC and hung). Limine leaves PIC IRQs dead, so the kernel timer proof
 /// needs the x2APIC MSRs.
 const X86_CPU: &str = "qemu64,+x2apic";
+/// x86 bios/uefi `--ci` QEMU wall. True SMP (no name affinity) pushes GitHub
+/// runners past 600s mid interactive smoke with no panic; local MYOS_CI_MINI
+/// still finishes under 600s. aarch64/riscv64 keep 600s (APs parked / faster).
+const X86_CI_TIMEOUT_SECS: u64 = 900;
 
 fn main() {
     let bios_path = env!("BIOS_PATH");
@@ -361,7 +365,7 @@ fn run_ci_bios(bios_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(600),
+            timeout: Duration::from_secs(X86_CI_TIMEOUT_SECS),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -412,7 +416,7 @@ fn run_ci_uefi(uefi_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(600),
+            timeout: Duration::from_secs(X86_CI_TIMEOUT_SECS),
             qemu_debug_exit: true,
             shell_ci: true,
         },
