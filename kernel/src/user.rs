@@ -3040,6 +3040,13 @@ fn create_aspace_x86(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> 
         let src_t = &*mm::table(src);
         let dst_t = &mut *mm::table(pml4_phys);
         dst_t.copy_from_slice(src_t);
+        // User lives at PML4[1] (DEFAULT_USER_BASE = 0x80_0000_0000). Clear any
+        // kernel/Limine entry so ensure_user allocates a *private* PDPT/PD/PT
+        // tree for this aspace — same discipline as create_aspace_riscv64.
+        // Reusing a non-empty PML4[1] shared tables across processes; the first
+        // free_user_page_tables_x86 then tore them down for everyone (UEFI
+        // often leaves that slot occupied; bios sometimes does not).
+        dst_t[1] = 0;
     }
 
     // RW so sys_read can fill PT_LOAD (user/ok MSG_BUF). Still executable.
