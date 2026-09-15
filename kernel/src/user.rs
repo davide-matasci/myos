@@ -2891,8 +2891,8 @@ fn free_user_page_tables_x86(pml4_phys: u64) {
     const PRESENT: u64 = 1;
     const HUGE: u64 = 1 << 7;
     const PHYS_MASK: u64 = 0x000f_ffff_ffff_f000;
-    // USER_BASE = 0x0000_0080_0000_0000 → PML4 index 1.
-    const USER_PML4_IDX: usize = 1;
+    // Tear down the slot that holds USER_BASE (pinned to PML4[1] / DEFAULT).
+    let user_pml4_idx = ((USER_BASE.load(Ordering::SeqCst) >> 39) & 0x1ff) as usize;
     if pml4_phys == 0 {
         return;
     }
@@ -2902,7 +2902,7 @@ fn free_user_page_tables_x86(pml4_phys: u64) {
     }
     unsafe {
         let pml4 = &mut *mm::table(pml4_phys);
-        let pml4e = pml4[USER_PML4_IDX];
+        let pml4e = pml4[user_pml4_idx];
         if pml4e & PRESENT != 0 && pml4e & HUGE == 0 {
             let pdpt_phys = pml4e & PHYS_MASK;
             let pdpt = &mut *mm::table(pdpt_phys);
@@ -2935,7 +2935,7 @@ fn free_user_page_tables_x86(pml4_phys: u64) {
                 pdpt[i3] = 0;
             }
             mm::free_frame(pdpt_phys);
-            pml4[USER_PML4_IDX] = 0;
+            pml4[user_pml4_idx] = 0;
         }
         mm::free_frame(pml4_phys);
     }
