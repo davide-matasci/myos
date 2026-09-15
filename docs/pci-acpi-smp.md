@@ -60,7 +60,10 @@ post-exec RR (blanket re-home burned the UEFI 600s QEMU wall under CI; plain
 page-faulted after fork exec). Cross-CPU exit reclaim is kept safe by: (1)
 `die` enabling IRQs before reclaim/TLB shootdown, (2) epoch-based TLB
 shootdown with soft `tlb_service` from `schedule` while IF-off (IRQ-only ACK
-previously deadlocked a cli waiter). True `affinity: None` live migration
+previously deadlocked a cli waiter), (3) x86 `flush_user_tlb` / unload skip
+the remote IPI barrier when affinity pin guarantees the aspace was never
+loaded elsewhere — full shootdowns after every map/unmap doubled MYOS_CI_MINI
+under `-smp 4` TCG (600s wall); do not paper with a longer QEMU timeout. True `affinity: None` live migration
 remains off (NX #PF / leave races). `schedule` switches aspace/rsp0 before
 publishing Ready (old stays Running across the CR3 write, lock not held during
 switch); `unload_user_aspace` briefly kicks remotes then TLB-shootdowns; fork

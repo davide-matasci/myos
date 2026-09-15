@@ -447,8 +447,9 @@ pub fn unload_user_aspace(aspace: u64) {
     // histrecall with RR home CPUs).
     if crate::smp::online_count() > 1 {
         let mut kicks = 0u32;
+        let mut live = false;
         for spin in 0..50_000u32 {
-            let mut live = false;
+            live = false;
             for i in 0..crate::smp::MAX_CPUS {
                 if LOADED_ASPACE[i].load(Ordering::SeqCst) == aspace {
                     live = true;
@@ -459,7 +460,7 @@ pub fn unload_user_aspace(aspace: u64) {
                 break;
             }
             // Soft-ACK while waiting so a peer IF-off in schedule still
-            // progresses the shootdown we are about to issue.
+            // progresses a shootdown if we must issue one below.
             crate::smp::tlb_service();
             if kicks < 8 && (spin == 0 || spin % 64 == 0) {
                 crate::smp::kick_cpus();
@@ -467,7 +468,20 @@ pub fn unload_user_aspace(aspace: u64) {
             }
             core::hint::spin_loop();
         }
-        crate::smp::tlb_shootdown();
+        // x86: affinity pin ⇒ once no CPU lists this root in LOADED_ASPACE,
+        // no remote TLB holds it (local CR3 switch above already flushed us).
+        // Skip the global IPI barrier — it dominated exit/reclaim cost under
+        // -smp 4 TCG. Still shoot down if a remote refused to drop the root
+        // (float / bug), and on other arches that may migrate.
+        #[cfg(target_arch = "x86_64")]
+        if live {
+            crate::smp::tlb_shootdown();
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = live;
+            crate::smp::tlb_shootdown();
+        }
     }
 }
 
