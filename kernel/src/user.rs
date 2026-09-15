@@ -652,6 +652,10 @@ fn expand_user_elf(
     };
 
     free_abandoned_stack_heap(aspace, base, old_stack_off, new_stack_off);
+    // Drop stale VA→PA before reuse_or_alloc / remap. Without this, a recycled
+    // frame can still be reachable via TLB while the PTE walk already sees the
+    // clear — classic freelist/PTE skew behind sepc=0 after expand (ripgrep).
+    flush_user_tlb();
 
     // Remap code/stack PTEs with correct flags. Reuse existing frames when the
     // VA is already mapped so post-fork exec of large ELFs does not leak hundreds
@@ -1113,7 +1117,8 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
             if phys == 0 {
                 return None;
             }
-            return Some(phys | (va & 0x1F_FFFF));
+            // Sv39 L2 leaf = 1 GiB page: offset is VPN[1]|VPN[0]|page-off.
+            return Some(phys | (va & 0x3FFF_FFFF));
         }
         let mid = &*mm::table(paging::pte_phys(mid_pte));
         let leaf_pte = mid[i1];
@@ -1127,7 +1132,8 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
             if phys == 0 {
                 return None;
             }
-            return Some(phys | (va & 0xFFF));
+            // Sv39 L1 leaf = 2 MiB page: offset is VPN[0]|page-off.
+            return Some(phys | (va & 0x1F_FFFF));
         }
         let leaf = &*mm::table(paging::pte_phys(leaf_pte));
         let pte = leaf[i0];
@@ -1199,10 +1205,15 @@ pub fn set_kernel_rsp0(top: usize) {
     }
     #[cfg(target_arch = "riscv64")]
     {
-        // Keep stack footer + static coherent for trap-time tp reload.
+        // Keep stack footer + static + CSR coherent. Updating only the static
+        // left sscratch holding a previous task top across schedule races
+        // (riscv64 sepc=0 / zeroed-ra family).
         task::stamp_stack_cpu(top, cpu);
         unsafe {
             core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(top);
+            if top != 0 {
+                core::arch::asm!("csrw sscratch, {k}", k = in(reg) top, options(nostack));
+            }
         }
     }
     let _ = top;

@@ -83,11 +83,11 @@ trap_vector:
     csrr t1, sstatus
     andi t1, t1, 0x100
     bnez t1, 5f
-    li t1, 65256
-    sub t1, sp, t1
-    ld tp, 0(t1)
-    li t2, 8
-    bltu tp, t2, 5f
+    # Userspace is BSP-only while Limine/WFI APs stay !ONLINE. Pin tp=0 so a
+    # clobbered x4 (or corrupt stack footer) cannot make cpu_id()/LOADED_ASPACE
+    # select a never-scheduled CURRENT[] slot — that was the ripgrep sepc=0
+    # signature after uutils ls (#146/#150). When APs are truly ONLINE for
+    # userspace, reload from the stack footer instead of hard zero.
     mv tp, zero
 5:
     mv a0, sp

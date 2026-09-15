@@ -28,9 +28,9 @@ use std::time::{Duration, Instant};
 
 const AARCH64_TARGET: &str = "aarch64-unknown-none-softfloat";
 const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
-/// Interactive QEMU `-smp` for riscv64 (CI uses 1). Packed `virt.dtb` is always
-/// dumped with this count: a single-hart DTB plus OpenSBI BSP hartid=1 →
-/// `PANIC: riscv: missing struct riscv_hart for BSP` even at `-smp 2`.
+/// QEMU `-smp` for riscv64 (CI and interactive). Packed `virt.dtb` must use the
+/// same count: a single-hart DTB plus OpenSBI BSP hartid=1 →
+/// `PANIC: riscv: missing struct riscv_hart for BSP`.
 const RISCV_SMP: &str = "2";
 
 const RISCV_LIMINE_CONF: &str = "\
@@ -854,11 +854,9 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("2048")
         .arg("-smp")
         // Limine EDK2 path panics with -smp 4: "missing struct riscv_hart for BSP".
-        // Interactive keeps 2 (dual-hart DTB + parked AP). CI uses 1 — that was
-        // last green for ripgrep/`/heap` before #148; at -smp 2 with APs parked
-        // ripgrep still dies sepc=0 IPF (PR #150). DTB stays dual-hart so an
-        // interactive -smp 2 boot never hits the single-hart Limine panic.
-        .arg(if ci { "1" } else { RISCV_SMP })
+        // Keep 2 + dual-hart DTB + parked APs (OpenSBI may pick hartid=1 as BSP).
+        // Do not drop CI to -smp 1 to hide the ripgrep sepc=0 IPF — fix the kernel.
+        .arg(RISCV_SMP)
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
