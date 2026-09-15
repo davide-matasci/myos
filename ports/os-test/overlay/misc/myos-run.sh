@@ -12,22 +12,47 @@ set -u
 CC="$1"; CFLAGS="$2"; SRC="$3"; T="$4"
 OUT="out/$T.out"
 BIN="$T"
-PREBUILT="prebuilt/$T"
+# Prebuilt ELFs live read-only in the initramfs; exec in place (no tmpfs copy
+# — hundreds of cp/chmod forks stalled the TCG boot window). Writable cwd
+# copies remain supported for manual/debug runs.
+PREBUILT=""
+PREBUILT_RO=0
+if [ -x "prebuilt/$T" ]; then
+	PREBUILT="prebuilt/$T"
+# libfs registers initramfs files mode 0444, so /lib/os-test/prebuilt ELFs
+# are readable but not executable: test readability, copy to the writable
+# BIN path and chmod there (exec-in-place fails with EACCES → sh 126).
+elif [ -r "/lib/os-test/prebuilt/$T" ]; then
+	PREBUILT="/lib/os-test/prebuilt/$T"
+	PREBUILT_RO=1
+fi
 mkdir -p "${OUT%/*}" "${BIN%/*}" || echo "myos-run: mkdir failed rc=$? dir=${OUT%/*}"
 rm -f -- "$OUT" "$BIN"
 
-if [ -x "$PREBUILT" ]; then
+if [ -n "$PREBUILT" ]; then
 	# Progress for serial CI (unbuffered line so long suites are not silent).
 	echo "os-test: $T (prebuilt)"
-	# Install at the same path tcc would write so tests that open("$T") or
-	# sibling paths behave like the compile+run flow.
-	cp "$PREBUILT" "$BIN" || exit 0
-	chmod +x "$BIN" || true
-	if "./$BIN" > "$OUT" 2>&1; then
-		exit 0
+	if [ "$PREBUILT_RO" = 1 ]; then
+		# Read-only initramfs source: copy to the writable tcc target path
+		# (tests that open("$T") or sibling paths behave like compile+run).
+		cp "$PREBUILT" "$BIN" || exit 0
+		chmod +x "$BIN" || true
+		RUN="$BIN"
+	else
+		# Writable copy at the tcc target path so tests that open("$T") or
+		# sibling paths behave like the compile+run flow.
+		cp "$PREBUILT" "$BIN" || exit 0
+		chmod +x "$BIN" || true
+		RUN="$BIN"
 	fi
+	"$RUN" > "$OUT" 2>&1
 	CODE=$?
-	echo "exit: $CODE" >> "$OUT"
+	# Capture $ ? before any if-statement: oksh resets $? to the if
+	# statement's own status (0 when the condition fails and there is no
+	# else), which reported every failed test as "exit: 0".
+	if [ "$CODE" -ne 0 ]; then
+		echo "exit: $CODE" >> "$OUT"
+	fi
 	exit 0
 fi
 

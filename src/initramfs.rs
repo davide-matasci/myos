@@ -72,6 +72,11 @@ struct Entry {
     data: Vec<u8>,
     ino: u64,
     nlink: u32,
+    // Full st_mode (S_IFREG | perm). Defaults to 0644 for callers that don't
+    // set it; prebuilt smoke ELFs must be 0755 or the guest shell refuses to
+    // exec them ("Permission denied") and every smoke test falls back to a
+    // minutes-long guest tcc compile.
+    mode: u32,
 }
 
 fn read(path: &Path) -> Option<Vec<u8>> {
@@ -106,6 +111,7 @@ fn add(entries: &mut Vec<Entry>, rel: &str, data: Option<Vec<u8>>) {
             data: d,
             ino: entries.len() as u64 + 1,
             nlink: 1,
+            mode: 0o100755,
         });
     }
 }
@@ -123,6 +129,7 @@ fn add_hardlink_group(entries: &mut Vec<Entry>, names: &[String], data: Option<V
             data: if i == 0 { data.clone() } else { Vec::new() },
             ino,
             nlink,
+            mode: 0o100755,
         });
     }
 }
@@ -158,11 +165,20 @@ fn collect_tree(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
             continue;
         }
         if let Some(bytes) = read(&path) {
+            // Preserve the host exec bit: /lib/os-test/prebuilt ELFs must be
+            // 0755 in the guest or the shell refuses to exec them.
+            let exec = {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::metadata(&path)
+                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+            };
             entries.push(Entry {
                 name: child_rel,
                 data: bytes,
                 ino: entries.len() as u64 + 1,
                 nlink: 1,
+                mode: if exec { 0o100755 } else { 0o100644 },
             });
         }
     }
@@ -440,6 +456,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
                 data: crt0,
                 ino: entries.len() as u64 + 1,
                 nlink: 1,
+                mode: 0o100644,
             });
         }
     }
@@ -540,6 +557,7 @@ fn write_newc(entries: &[Entry]) -> Vec<u8> {
         data: Vec::new(),
         ino: 0,
         nlink: 1,
+        mode: 0o100644,
     });
     out
 }
@@ -549,7 +567,7 @@ fn write_entry(out: &mut Vec<u8>, e: &Entry) {
     let mut hdr = String::from("070701");
     for field in [
         e.ino,        // ino
-        0o100644,     // mode (regular file)
+        e.mode as u64, // mode (S_IFREG | perm, per entry)
         0,            // uid
         0,            // gid
         e.nlink as u64, // nlink

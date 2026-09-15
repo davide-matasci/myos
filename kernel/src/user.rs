@@ -47,6 +47,7 @@ const SYS_GETTIMEOFDAY: usize = 33;
 const SYS_KILL: usize = 34;
 const SYS_SIGACTION: usize = 35;
 const SYS_GETPID: usize = 36;
+const SYS_SIGPROCMASK: usize = 37;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -1735,6 +1736,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_KILL => sys_kill(a0, a1),
         SYS_SIGACTION => sys_sigaction(a0, a1, a2),
         SYS_GETPID => sys_getpid(),
+        SYS_SIGPROCMASK => sys_sigprocmask(a0, a1, a2),
         _ => SYSERR,
     };
     // Deliver default-fatal pending signals before returning to userspace.
@@ -1878,6 +1880,16 @@ fn sys_sigaction(sig: usize, act: usize, oact: usize) -> usize {
     }
 }
 
+fn sys_sigprocmask(how: usize, set: usize, oset: usize) -> usize {
+    let set = if set == 0 { None } else { Some(set) };
+    let oset = if oset == 0 { None } else { Some(oset) };
+    if crate::signal::sigprocmask(how, set, oset) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
 fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let Some(buf) = copy_user_path(ptr, path_len) else {
         return SYSERR;
@@ -1895,14 +1907,35 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let owned;
     let bytes: &[u8] = if let Some(b) = fs::lookup(&path) {
         b
+    } else if let Some(v) = fs::read_all(&path, EXEC_FILE_MAX) {
+        owned = v;
+        &owned
     } else {
-        match fs::read_all(&path, EXEC_FILE_MAX) {
-            Some(v) => {
-                owned = v;
-                &owned
-            }
-            None => return SYSERR,
+        // /lib-style read-only mounts expose files through the vnode path
+        // (open + size + read) even where the read_all direct-backend shortcut
+        // fails; use it before giving up. Without this, every exec of a
+        // prebuilt ELF under /lib/os-test/prebuilt fails with EACCES and the
+        // boot smoke silently falls back to guest tcc.
+        let Some(node) = fs::open(&path, 0) else {
+            return SYSERR;
+        };
+        let Some(size) = fs::size_of(&node) else {
+            return SYSERR;
+        };
+        if size == 0 || size > EXEC_FILE_MAX {
+            return SYSERR;
         }
+        let mut v = alloc::vec![0u8; size];
+        let mut pos = 0usize;
+        while pos < size {
+            let n = fs::read(&node, pos, &mut v[pos..]);
+            if n == 0 {
+                return SYSERR;
+            }
+            pos += n;
+        }
+        owned = v;
+        &owned
     };
     let (arg_bufs, env_bufs) = match copy_user_exec_pack(args_ptr) {
         Ok(v) => v,

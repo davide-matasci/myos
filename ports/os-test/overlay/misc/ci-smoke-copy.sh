@@ -53,20 +53,9 @@ while IFS= read -r line || [ -n "$line" ]; do
 			;;
 		esac
 		cp "$src" "$DEST/basic/$path.c" || exit 1
-		# Host-prebuilt ELF (optional): guest runs this and skips tcc.
-		pre="$SRC/prebuilt/basic/$path"
-		if [ -f "$pre" ]; then
-			case "$path" in
-			*/*)
-				mkdir -p "$DEST/prebuilt/basic/${path%/*}" || exit 1
-				;;
-			*)
-				mkdir -p "$DEST/prebuilt/basic" || exit 1
-				;;
-			esac
-			cp "$pre" "$DEST/prebuilt/basic/$path" || exit 1
-			chmod +x "$DEST/prebuilt/basic/$path" || true
-		fi
+		# Prebuilt ELFs are exec'd in place from the read-only initramfs
+		# (misc/myos-run.sh falls back to $SRC/prebuilt) — copying 18 MB of
+		# binaries into tmpfs fork-by-fork stalls the TCG boot window.
 		;;
 	esac
 done < "$LIST"

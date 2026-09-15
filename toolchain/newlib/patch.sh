@@ -127,11 +127,139 @@ patch_configure_host() {
   echo "patched newlib/configure.host for myos"
 }
 
+# <endian.h> shim: newlib ships <sys/endian.h> (htobe*/le*/bswap* macros +
+# __bswap builtins via <machine/endian.h>) but no top-level <endian.h>, so
+# os-test's endian/*.c fall back to the HOST /usr/include/endian.h and die on
+# glibc's bits/wordsize.h. glibc/musl both expose <endian.h> as the primary
+# header — provide the same (a real wrapper, no re-implementation).
+install_endian_h() {
+  local f="$NEWLIB_SRC/newlib/libc/include/endian.h"
+  if [[ ! -f "$f" ]]; then
+    cat > "$f" <<'EOH'
+/* myos: <endian.h> is the primary public header (glibc/musl convention).
+ * newlib's implementations live in <sys/endian.h>. */
+#ifndef _MYOS_ENDIAN_H_
+#define _MYOS_ENDIAN_H_
+#include <sys/endian.h>
+#endif
+EOH
+    echo "installed endian.h shim (-> sys/endian.h)"
+  fi
+}
+
+# regex.h uses off_t (regoff_t) without pulling in <sys/types.h>; standalone
+# inclusion fails with "unknown type name off_t".
+patch_regex_h() {
+  local f="$NEWLIB_SRC/newlib/libc/include/regex.h"
+  if grep -q 'typedef off_t regoff_t' "$f" && ! grep -q 'regex-sys-types' "$f"; then
+    patch_edit "$f" 'typedef off_t regoff_t;' \
+'#include <sys/types.h> /* regex-sys-types: regoff_t needs off_t */
+typedef off_t regoff_t;' 1
+    echo "patched regex.h: include <sys/types.h>"
+  fi
+}
+
+# POSIX sigsetjmp/siglongjmp: newlib gates the sigjmp_buf typedef + macros on
+# (__CYGWIN__ || __rtems__) && __POSIX_VISIBLE. Enable them for myos targets
+# too (kernel implements SYS_SIGPROCMASK; macros are the POSIX implementation).
+patch_setjmp_h() {
+  local f="$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h"
+  if grep -q '#if (defined(__CYGWIN__) || defined(__rtems__)) && __POSIX_VISIBLE' "$f" \
+     && ! grep -q 'setjmp-myos-posix' "$f"; then
+    patch_edit "$f" \
+      '#if (defined(__CYGWIN__) || defined(__rtems__)) && __POSIX_VISIBLE' \
+      '#if __POSIX_VISIBLE /* setjmp-myos-posix: enable on every target; newlib gates this on CYGWIN/RTEMS but POSIX requires it everywhere */' 1
+    echo "patched machine/setjmp.h: enable sigsetjmp/siglongjmp for myos"
+  fi
+  # features.h must be in scope for __POSIX_VISIBLE when <setjmp.h> is the
+  # first include; sys/cdefs.h pulls it in but only via _ansi.h ordering.
+  # Ensure visibility by including <sys/features.h> before the guarded block.
+  if ! grep -q 'setjmp-features' "$f"; then
+    patch_edit "$f" '/* POSIX sigsetjmp/siglongjmp macros */' \
+'#include <sys/features.h> /* setjmp-features: __POSIX_VISIBLE must be defined */
+
+/* POSIX sigsetjmp/siglongjmp macros */' 1
+    echo "patched machine/setjmp.h: include <sys/features.h>"
+  fi
+}
+
+# search.h (newlib) lacks lsearch/lfind/insque/remque + struct qelem that
+# POSIX puts in <search.h>; os-test search/*.c need them. Declare them and
+# implement in libgloss myos search.c.
+patch_search_h() {
+  local f="$NEWLIB_SRC/newlib/libc/include/search.h"
+  if ! grep -q 'search-lsearch-qelem' "$f"; then
+    patch_edit "$f" '__END_DECLS' \
+'/* search-lsearch-qelem: POSIX lsearch/lfind/insque/remque (libgloss myos). */
+struct qelem {
+	struct qelem *q_forw;
+	struct qelem *q_back;
+	char *q_data;
+};
+
+void	insque(void *, void *);
+void	remque(void *);
+void	*lfind(const void *, const void *, size_t *, size_t,
+	    int (*)(const void *, const void *));
+void	*lsearch(const void *, void *, size_t *, size_t,
+	    int (*)(const void *, const void *));
+
+__END_DECLS' 1
+    echo "patched search.h: qelem + lsearch/insque declarations"
+  fi
+}
+
 patch_config_sub
 patch_configure_host
 patch_string_h_basename
+install_endian_h
+patch_search_h
+patch_regex_h
+patch_setjmp_h
 
 echo "myos newlib patches applied"
+
+# tmpfile (newlib) unlinks immediately; the myos kernel drops tmpfs content
+# with the last name, so later writes on the fd fail (stdio/fflush: EIO).
+# POSIX only requires the file be discarded at program termination: defer the
+# unlink to atexit (myos-tmpfile-defer).
+patch_tmpfile () {
+  local f="$NEWLIB_SRC/newlib/libc/stdio/tmpfile.c"
+  if ! grep -q 'myos-tmpfile-defer' "$f"; then
+    python3 - "$f" <<'PYTMPFILE'
+import sys
+f = sys.argv[1]
+s = open(f).read()
+anchor = "FILE *\n_tmpfile_r (struct _reent *ptr)"
+prelude = """/* myos-tmpfile-defer: keep the name until program exit; the kernel
+ * drops tmpfs content when the last link disappears, which breaks later
+ * writes on the tmpfile fd. POSIX requires discard at termination only. */
+#include <stdlib.h>
+static char myos_tmpfile_keep[L_tmpnam];
+static void myos_tmpfile_unlink (void) { remove (myos_tmpfile_keep); }
+
+FILE *
+_tmpfile_r (struct _reent *ptr)"""
+assert anchor in s, f"{f}: _tmpfile_r anchor not found"
+s = s.replace(anchor, prelude, 1)
+old = "  (void) _remove_r (ptr, f);"
+new = """  {
+    size_t k = 0;
+    while (f[k] != '\0' && k < sizeof (myos_tmpfile_keep) - 1) {
+      myos_tmpfile_keep[k] = f[k];
+      k++;
+    }
+    myos_tmpfile_keep[k] = '\0';
+    atexit (myos_tmpfile_unlink);
+  }"""
+assert old in s, f"{f}: _remove_r line not found"
+s = s.replace(old, new, 1)
+open(f, "w").write(s)
+PYTMPFILE
+    echo "patched tmpfile.c: defer unlink to exit (myos-tmpfile-defer)"
+  fi
+}
+
 patch_valist() {
   # tcc does not define __GNUC__, so newlib's stdio.h / wchar.h fall back to
   # '#define __VALIST char*'. But our tcc provides a GCC-compatible va_list

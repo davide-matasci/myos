@@ -268,7 +268,11 @@ fn login_line_typed(serial: &str) -> &str {
 /// Bytes already echoed on the current shell input line (after the last `$`).
 fn shell_line_typed(serial: &str) -> &str {
     let tail = interactive_tail(serial);
-    let after = tail.rsplit('$').next().unwrap_or(tail);
+    // Split on the `$ ` prompt token, NOT a bare '$': a typed command may
+    // itself contain `$` (e.g. `echo PREP-RC=$?`), which made rsplit('$')
+    // return the tail after the command's own `$` and echo-sync stall forever
+    // on that command.
+    let after = tail.rsplit("$ ").next().unwrap_or(tail);
     // Prompt is `$ ` — strip a single leading space from the echoed command.
     let line = after.lines().next().unwrap_or(after);
     line.strip_prefix(' ').unwrap_or(line).trim_end_matches('\r')

@@ -40,6 +40,7 @@
 #define MYOS_SYS_KILL 34
 #define MYOS_SYS_SIGACTION 35
 #define MYOS_SYS_GETPID 36
+#define MYOS_SYS_SIGPROCMASK 37
 
 #define MYOS_SYSERR ((unsigned long)-1)
 

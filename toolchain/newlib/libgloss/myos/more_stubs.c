@@ -237,10 +237,15 @@ int linkat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath,
     return myos_rofs();
 }
 
+/* Real SYS_SIGPROCMASK: kernel keeps a per-task blocked mask and returns the
+ * old mask in *oset. sigset_t is one unsigned long (sys/_sigset.h). */
 int sigprocmask(int how, const sigset_t *restrict set, sigset_t *restrict oset) {
-    (void)how;
-    (void)set;
-    (void)oset;
+    long ret = myos_syscall3(MYOS_SYS_SIGPROCMASK, (long)how,
+                             (long)(uintptr_t)set, (long)(uintptr_t)oset);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EINVAL;
+        return -1;
+    }
     return 0;
 }
 
