@@ -432,7 +432,12 @@ pub fn init() {
     // reliably enter myos_smp_ap_entry on QEMU virt+UEFI (BSP then waits /
     // hangs under release). Keep APs parked for boot-mini; GIC SGI IPI stubs
     // remain. Retry handoff when Limine/QEMU park loop is proven.
-    #[cfg(target_arch = "aarch64")]
+    //
+    // riscv64: with a correct multi-hart `virt.dtb` (needed so OpenSBI BSP
+    // hartid=1 does not Limine-panic), bringing APs online hangs boot-mini
+    // after `[ OK ] smp: 2 CPUs` / mid-`/ok` (PR #150). Park APs like aarch64;
+    // QEMU stays at -smp 2 so the DTB still lists both harts.
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     {
         console::status_ok(&alloc::format!(
             "smp: 1 CPU ({} parked)",

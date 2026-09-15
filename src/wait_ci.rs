@@ -244,11 +244,55 @@ const CI_LOGIN_USER: &[u8] = b"root\n";
 const CI_LOGIN_PASS: &[u8] = b"\n";
 
 fn login_prompt_ready(serial: &str) -> bool {
-    serial.contains("[ OK ] fork exec") && interactive_tail(serial).contains("login: ")
+    // Require an empty typed suffix so garble-recovery (`\n` + WaitLogin) does
+    // not immediately re-enter TypingUser on the still-visible old `login: rr…`
+    // line before getty reprints a fresh prompt.
+    serial.contains("[ OK ] fork exec")
+        && interactive_tail(serial).contains("login: ")
+        && login_line_typed(serial).is_empty()
 }
 
 fn password_prompt_ready(serial: &str) -> bool {
     interactive_tail(serial).contains("Password:")
+}
+
+/// Bytes already echoed on the current getty `login: ` line (after the prompt).
+fn login_line_typed(serial: &str) -> &str {
+    let tail = interactive_tail(serial);
+    match tail.rsplit_once("login: ") {
+        Some((_, rest)) => rest.lines().next().unwrap_or("").trim_end_matches('\r'),
+        None => "",
+    }
+}
+
+/// Bytes already echoed on the current shell input line (after the last `$`).
+fn shell_line_typed(serial: &str) -> &str {
+    let tail = interactive_tail(serial);
+    let after = tail.rsplit('$').next().unwrap_or(tail);
+    // Prompt is `$ ` — strip a single leading space from the echoed command.
+    let line = after.lines().next().unwrap_or(after);
+    line.strip_prefix(' ').unwrap_or(line).trim_end_matches('\r')
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EchoSync {
+    /// Echo matches the bytes we have already sent.
+    Synced,
+    /// Echo is a proper prefix — still catching up (do NOT resend).
+    Waiting,
+    /// Extra/wrong bytes (duplicate resend or drop garble).
+    Garble,
+}
+
+fn echo_sync_state(got: &str, sent_prefix: &[u8]) -> EchoSync {
+    let want = String::from_utf8_lossy(sent_prefix);
+    if got.as_bytes() == sent_prefix {
+        EchoSync::Synced
+    } else if want.as_ref().starts_with(got) {
+        EchoSync::Waiting
+    } else {
+        EchoSync::Garble
+    }
 }
 
 fn command_echoed(serial: &str, cmd: &str) -> bool {
@@ -665,7 +709,7 @@ fn shell_ready(serial: &str) -> bool {
     serial_has_all_needles(serial, &[]) && at_interactive_prompt(serial)
 }
 
-const SHELL_TYPE_DELAY: Duration = Duration::from_millis(25);
+const SHELL_TYPE_DELAY: Duration = Duration::from_millis(40);
 const SHELL_CMD_DELAY: Duration = Duration::from_millis(100);
 /// Wall-time bound while CMD_ARROW is active waiting for `histrecall_z3z`.
 /// riscv64 #866 hung here until the GHA 90m cancel — fail ourselves instead.
@@ -675,6 +719,13 @@ const ARROW_STAGE_BOUND: Duration = Duration::from_secs(20);
 const ARROW_SEED_STAGE_BOUND: Duration = Duration::from_secs(20);
 /// Same idea for the ^C interrupt stage (`cat | cat` + VINTR).
 const INTERRUPT_STAGE_BOUND: Duration = Duration::from_secs(30);
+/// `which ls` mistyped as `which s` (serial drop) used to sit until QEMU 600s.
+const WHICH_STAGE_BOUND: Duration = Duration::from_secs(30);
+/// getty login typing (incl. delayed AP echo) — fail fast vs sticky `rroooo…`.
+/// Clock starts only after `[ OK ] fork exec` (see wait loop): UEFI OVMF alone
+/// can burn ~40s before that marker, so counting from harness start killed
+/// WaitLogin with typed="" on CI boot-mini (run 34886420580).
+const LOGIN_STAGE_BOUND: Duration = Duration::from_secs(45);
 
 fn send_shell_byte(stdin: &mut ChildStdin, byte: u8) {
     stdin
@@ -689,6 +740,7 @@ fn advance_shell_ci(
     stage: &mut ShellStage,
     cmd_index: &mut usize,
     typing: &mut usize,
+    echo_stalls: &mut u32,
     interrupt_sent: &mut bool,
     acc: &str,
     extra: &[&str],
@@ -703,10 +755,42 @@ fn advance_shell_ci(
         }
         ShellStage::TypingUser => {
             if *typing < CI_LOGIN_USER.len() {
+                if *typing > 0 {
+                    // Exact suffix sync on the current login line. Never resend:
+                    // BSP UART drain already preserves RX bytes; resending on a
+                    // delayed AP echo produced `login: rr` then sticky
+                    // `rrooooo…` / `roootttt…` under -smp 4 (PR #150 stress).
+                    let prefix = &CI_LOGIN_USER[..*typing];
+                    // Newline is not echoed onto the login line — only sync printable.
+                    let sync_prefix = if prefix.last() == Some(&b'\n') {
+                        &prefix[..prefix.len() - 1]
+                    } else {
+                        prefix
+                    };
+                    match echo_sync_state(login_line_typed(acc), sync_prefix) {
+                        EchoSync::Synced => {}
+                        EchoSync::Waiting => {
+                            *echo_stalls = echo_stalls.saturating_add(1);
+                            std::thread::sleep(SHELL_TYPE_DELAY);
+                            return;
+                        }
+                        EchoSync::Garble => {
+                            // Clear the bad attempt and wait for a fresh prompt.
+                            *echo_stalls = 0;
+                            *typing = 0;
+                            send_shell_byte(stdin, b'\n');
+                            *stage = ShellStage::WaitLogin;
+                            std::thread::sleep(SHELL_TYPE_DELAY);
+                            return;
+                        }
+                    }
+                }
+                *echo_stalls = 0;
                 send_shell_byte(stdin, CI_LOGIN_USER[*typing]);
                 *typing += 1;
                 std::thread::sleep(SHELL_TYPE_DELAY);
             } else {
+                *echo_stalls = 0;
                 *stage = ShellStage::WaitPassword;
             }
         }
@@ -727,14 +811,53 @@ fn advance_shell_ci(
             *stage = ShellStage::Typing;
             *cmd_index = 0;
             *typing = 0;
+            *echo_stalls = 0;
         }
         ShellStage::Typing => {
             let cmd = cmds[*cmd_index];
             if *typing < cmd.len() {
+                // Echo-sync printable prefixes so we never type ahead of a
+                // starved AP's ECHO. Skip CSI/controls (arrow/backspace smoke).
+                // Do NOT resend on stall: IRQ UART drain preserves bytes; a
+                // resend duplicates and `contains`-style sync then sticky-loops.
+                if *typing > 0 {
+                    let prefix = &cmd[..*typing];
+                    let syncable = prefix
+                        .iter()
+                        .all(|b| (0x20..=0x7e).contains(b) || *b == b'\t');
+                    if syncable {
+                        let sync_prefix = if prefix.last() == Some(&b'\n') {
+                            &prefix[..prefix.len() - 1]
+                        } else {
+                            prefix
+                        };
+                        match echo_sync_state(shell_line_typed(acc), sync_prefix) {
+                            EchoSync::Synced => {}
+                            EchoSync::Waiting => {
+                                *echo_stalls = echo_stalls.saturating_add(1);
+                                std::thread::sleep(SHELL_TYPE_DELAY);
+                                return;
+                            }
+                            EchoSync::Garble => {
+                                // Kill the line (oksh/cooked VERASE won't help for
+                                // extras mid-line); submit and let WaitResult fail
+                                // fast rather than spam forever.
+                                *echo_stalls = 0;
+                                send_shell_byte(stdin, b'\n');
+                                *typing = cmd.len();
+                                *stage = ShellStage::WaitResult;
+                                std::thread::sleep(SHELL_TYPE_DELAY);
+                                return;
+                            }
+                        }
+                    }
+                }
+                *echo_stalls = 0;
                 send_shell_byte(stdin, cmd[*typing]);
                 *typing += 1;
                 std::thread::sleep(SHELL_TYPE_DELAY);
             } else {
+                *echo_stalls = 0;
                 *stage = ShellStage::WaitResult;
             }
         }
@@ -752,6 +875,7 @@ fn advance_shell_ci(
                 *stage = ShellStage::Done;
             } else {
                 *typing = 0;
+                *echo_stalls = 0;
                 std::thread::sleep(SHELL_CMD_DELAY);
                 *stage = ShellStage::Typing;
             }
@@ -839,11 +963,14 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut shell_stage = ShellStage::WaitLogin;
     let mut shell_cmd_index = 0usize;
     let mut typing = 0usize;
+    let mut echo_stalls = 0u32;
     let mut interrupt_sent = false;
     // Wall clock for fail-fast bounds on interrupt / arrow WaitResult stages.
     let mut interrupt_wait_started: Option<Instant> = None;
     let mut arrow_seed_wait_started: Option<Instant> = None;
     let mut arrow_wait_started: Option<Instant> = None;
+    let mut which_wait_started: Option<Instant> = None;
+    let mut login_wait_started: Option<Instant> = None;
     let status = loop {
         {
             let acc = serial_acc.lock().unwrap().clone();
@@ -854,6 +981,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     &mut shell_stage,
                     &mut shell_cmd_index,
                     &mut typing,
+                    &mut echo_stalls,
                     &mut interrupt_sent,
                     &acc,
                     extra_needles,
@@ -867,6 +995,20 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 {
                     let _ = child.kill();
                     break child.wait().expect("wait after heap fail-fast kill");
+                }
+                // Heap exited back to `$` without `[ OK ] smoke` (e.g. riscv
+                // ripgrep sepc=0 → `exit_code(1)`). Fail fast vs QEMU 600s.
+                if shell_stage == ShellStage::WaitResult
+                    && shell_cmd_index == 1
+                    && command_echoed(&acc, "heap")
+                    && at_interactive_prompt(&acc)
+                    && !acc.contains("[ OK ] smoke")
+                {
+                    eprintln!(
+                        "error: interactive `heap` returned to prompt without `[ OK ] smoke`"
+                    );
+                    let _ = child.kill();
+                    break child.wait().expect("wait after heap early-exit kill");
                 }
                 // HTTPS: printed tls/dns/tcp failure — don't burn the 180s timeout.
                 // Index 12 == `http https://example.com/` (full mode only; mini
@@ -888,6 +1030,62 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 {
                     let _ = child.kill();
                     break child.wait().expect("wait after curl fail-fast kill");
+                }
+                // Login: never burn 600s on sticky UART echo (`rroooo…`).
+                // Do not start the bound until late boot — OVMF + Limine on UEFI
+                // often exceeds 45s before getty; the sticky-key failure mode is
+                // post-prompt typing, not firmware wait (CI #34886420580).
+                if matches!(
+                    shell_stage,
+                    ShellStage::WaitLogin
+                        | ShellStage::TypingUser
+                        | ShellStage::WaitPassword
+                        | ShellStage::TypingPass
+                ) {
+                    let late_boot = acc.contains("[ OK ] fork exec") || login_prompt_ready(&acc);
+                    if late_boot {
+                        let started_at = login_wait_started.get_or_insert_with(Instant::now);
+                        if started_at.elapsed() > LOGIN_STAGE_BOUND {
+                            eprintln!(
+                                "error: login stage timed out after {:?} (stage={shell_stage:?}, typed={:?})",
+                                LOGIN_STAGE_BOUND,
+                                login_line_typed(&acc)
+                            );
+                            let _ = child.kill();
+                            break child.wait().expect("wait after login fail-fast kill");
+                        }
+                    }
+                } else {
+                    login_wait_started = None;
+                }
+                // `which ls` (cmd 10): serial drop (`which s`) or PATH miss used
+                // to sit in WaitResult until the 600s QEMU timeout (CI #34824642315).
+                if shell_stage == ShellStage::WaitResult && shell_cmd_index == 10 {
+                    let tail = interactive_tail(&acc);
+                    let which_hard_fail = tail.contains("not an external command")
+                        || (tail.contains("$ which ")
+                            && !tail.contains("$ which ls")
+                            && at_interactive_prompt(&acc));
+                    if which_hard_fail {
+                        eprintln!(
+                            "error: interactive `which ls` failed early (want absolute PATH hit; serial drop or PATH miss)"
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after which fail-fast kill");
+                    }
+                    let started_at = which_wait_started.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() > WHICH_STAGE_BOUND
+                        && !interactive_which_ls_cmd_ok(&acc)
+                    {
+                        eprintln!(
+                            "error: which stage timed out after {:?} (want `$ which ls` → `/…/ls`)",
+                            WHICH_STAGE_BOUND
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after which timeout kill");
+                    }
+                } else {
+                    which_wait_started = None;
                 }
                 // Interrupt stage: if `cat | cat` + ^C never returns to `$`, do
                 // not sit until QEMU/GHA timeout (same idea as curl/TLS hard-fail).
@@ -1012,7 +1210,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             );
         }
         if matches!(shell_stage, ShellStage::WaitLogin | ShellStage::TypingUser)
-            && !login_prompt_ready(&serial)
+            && !interactive_tail(&serial).contains("login: ")
         {
             eprintln!("error: serial never reached getty `login: ` prompt");
         }

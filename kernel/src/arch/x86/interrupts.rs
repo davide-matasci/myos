@@ -328,6 +328,14 @@ extern "x86-interrupt" fn ipi_resched(_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
     TIMER_FIRED.store(true, Ordering::SeqCst);
     crate::time::note_tick();
+    // BSP drains COM1 so a starved shell CPU cannot overrun the FIFO
+    // (bios `which ls`→`which s` under -smp 4 TCG). x86-only.
+    // When bytes land, IPI other CPUs: getty lives on an AP, and ECHO only
+    // runs from that reader's poll — without a kick, host echo-sync waits
+    // then resends, sticky-keying `login: rroooo…` / `roootttt…`.
+    if crate::smp::cpu_id() == 0 && crate::input::drain_uart_irq() {
+        crate::smp::kick_cpus();
+    }
     lapic_w(EOI, 0);
     crate::task::schedule();
 }
