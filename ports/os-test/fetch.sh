@@ -21,6 +21,10 @@ fi
 if [[ ! -d "$OSTEST_SRC" ]]; then
   echo "==> fetch os-test ($OSTEST_REV)"
   "$ROOT/scripts/git-retry.sh" clone https://gitlab.com/sortix/os-test.git "$OSTEST_SRC"
+  # Upstream default-branch tip moves; pin is a fixed SHA. Checkout explicitly
+  # (plain clone left HEAD at tip and failed the equality check once gitlab
+  # advanced past 0415c457 — CI build red unrelated to the mm leak fix).
+  git -C "$OSTEST_SRC" checkout --detach "$OSTEST_REV"
   got="$(git -C "$OSTEST_SRC" rev-parse HEAD)"
   if [[ "$got" != "$OSTEST_REV" ]]; then
     echo "error: os-test HEAD $got != pinned $OSTEST_REV" >&2
