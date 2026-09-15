@@ -1148,13 +1148,29 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
 }
 
 fn pick_user_base() -> u64 {
-    // Always DEFAULT_USER_BASE. On x86, create_aspace_x86 clears PML4[1] after
-    // cloning the kernel root so each process gets a *private* PDPT under slot 1
-    // (USER_BASE = 0x80_0000_0000), and free_user_page_tables_x86 tears down that
-    // same index. Picking an alternate slot when Limine left kernel PML4[1]
-    // occupied (common on UEFI) made reclaim free the wrong tree and leak every
-    // user page-table frame — the remaining UEFI OOM after the heap pre-map fix.
-    DEFAULT_USER_BASE
+    // Prefer DEFAULT (PML4[1]). If Limine already occupied that slot (common on
+    // UEFI), pick another free low-half slot. create_aspace_x86 clears *this*
+    // index after the kernel PML4 clone, and free_user_page_tables_x86 tears
+    // down the same index via USER_BASE — never hardcode slot 1 for both map
+    // and reclaim while pick walks away from it.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let src = task::kernel_aspace() & !0xfff;
+        let pml4 = unsafe { &*mm::table(src) };
+        if pml4[1] == 0 {
+            return DEFAULT_USER_BASE;
+        }
+        for i in 1..256 {
+            if pml4[i] == 0 {
+                return (i as u64) << 39;
+            }
+        }
+        panic!("no free PML4 slot for user");
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        DEFAULT_USER_BASE
+    }
 }
 
 pub fn both_exited() -> bool {
@@ -3025,13 +3041,13 @@ fn create_aspace_x86(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> 
         let src_t = &*mm::table(src);
         let dst_t = &mut *mm::table(pml4_phys);
         dst_t.copy_from_slice(src_t);
-        // User lives at PML4[1] (DEFAULT_USER_BASE = 0x80_0000_0000). Clear any
-        // kernel/Limine entry so ensure_user allocates a *private* PDPT/PD/PT
-        // tree for this aspace — same discipline as create_aspace_riscv64.
-        // Reusing a non-empty PML4[1] shared tables across processes; the first
-        // free_user_page_tables_x86 then tore them down for everyone (UEFI
-        // often leaves that slot occupied; bios sometimes does not).
-        dst_t[1] = 0;
+        // Clear the USER_BASE PML4 slot so ensure_user owns a private PDPT
+        // tree (same discipline as create_aspace_riscv64). Must match
+        // pick_user_base() — hardcoding [1] while pick moved to another slot
+        // left reclaim freeing the wrong tree (UEFI OOM) or clearing a
+        // Limine-owned slot still needed on the user CR3 (early #PF).
+        let user_idx = ((USER_BASE.load(Ordering::SeqCst) >> 39) & 0x1ff) as usize;
+        dst_t[user_idx] = 0;
     }
 
     // RW so sys_read can fill PT_LOAD (user/ok MSG_BUF). Still executable.
