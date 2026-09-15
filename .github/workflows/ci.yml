@@ -443,7 +443,7 @@ jobs:
           ./scripts/ci-registry.sh pull zlib || true
           ./scripts/ci-registry.sh pull git || true
           ./scripts/ci-registry.sh pull lynx || true
-  ./scripts/ci-registry.sh pull lua || true
+          ./scripts/ci-registry.sh pull lua || true
           ./scripts/ci-registry.sh push sysroot || true
           ./scripts/ci-registry.sh push newlib || true
           ./scripts/ci-registry.sh push std-hello || true
@@ -461,7 +461,7 @@ jobs:
           ./scripts/ci-registry.sh push zlib || true
           ./scripts/ci-registry.sh push git || true
           ./scripts/ci-registry.sh push lynx || true
-  ./scripts/ci-registry.sh push lua || true
+          ./scripts/ci-registry.sh push lua || true
           ./scripts/ci-build-kernels.sh
 
       - name: PS/2 scancode decode unit tests
@@ -672,7 +672,7 @@ jobs:
           ./scripts/ci-registry.sh pull zlib || true
           ./scripts/ci-registry.sh pull git || true
           ./scripts/ci-registry.sh pull lynx || true
-  ./scripts/ci-registry.sh pull lua || true
+          ./scripts/ci-registry.sh pull lua || true
           ./scripts/ci-restore-or-build.sh
           ./scripts/ci-registry.sh push sysroot || true
           ./scripts/ci-registry.sh push newlib || true
@@ -690,7 +690,7 @@ jobs:
           ./scripts/ci-registry.sh push zlib || true
           ./scripts/ci-registry.sh push git || true
           ./scripts/ci-registry.sh push lynx || true
-  ./scripts/ci-registry.sh push lua || true
+          ./scripts/ci-registry.sh push lua || true
 
       - name: Boot in QEMU
         continue-on-error: ${{ !matrix.required }}
@@ -803,7 +803,7 @@ jobs:
           ./scripts/ci-registry.sh pull zlib || true
           ./scripts/ci-registry.sh pull git || true
           ./scripts/ci-registry.sh pull lynx || true
-  ./scripts/ci-registry.sh pull lua || true
+          ./scripts/ci-registry.sh pull lua || true
           ./scripts/ci-restore-or-build.sh
           ./scripts/ci-registry.sh push sysroot || true
           ./scripts/ci-registry.sh push newlib || true
@@ -821,7 +821,7 @@ jobs:
           ./scripts/ci-registry.sh push zlib || true
           ./scripts/ci-registry.sh push git || true
           ./scripts/ci-registry.sh push lynx || true
-  ./scripts/ci-registry.sh push lua || true
+          ./scripts/ci-registry.sh push lua || true
 
       - name: Boot in QEMU
         continue-on-error: ${{ !matrix.required }}
