@@ -65,10 +65,10 @@ pub const PAGE: usize = 4096;
 pub const USER_STACK_PAGES: usize = 128;
 #[cfg(not(target_arch = "aarch64"))]
 pub const USER_STACK_PAGES: usize = 256;
-/// Per-process brk heap.
+/// Per-process brk heap capacity (mapped on demand by `sys_brk`).
 /// - x86_64: TLS arena stays in ELF BSS; git Phase-1 object writes need ≥1 MiB
 ///   and GNU make's os-test parsing xmallocs well past the old 512-page cap
-///   ("make: *** virtual memory exhausted"), so use 4096 pages (16 MiB).
+///   ("make: *** virtual memory exhausted"), so allow 4096 pages (16 MiB).
 /// - aarch64/riscv64: TLS arena is a 2 MiB brk allocation — window must fit
 ///   that plus headroom. aarch64 stays under the 4×512-page L2 spill cap
 ///   (image + stack + heap ≲ 2048 pages from USER_BASE).
@@ -397,22 +397,12 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
 }
 
 fn map_initial_heap_pages(aspace: u64, base: u64, stack_off: u64) {
-    // On aarch64/riscv the TLS arena lives on brk and HEAP_PAGES is 768–1024.
-    // Pre-mapping that window up front wastes frames; `sys_brk` maps on demand.
-    // x86 keeps a small pre-mapped window (TLS stays in BSS).
-    #[cfg(target_arch = "x86_64")]
-    {
-        let heap_base = heap_base_va(base, stack_off);
-        for i in 0..HEAP_PAGES {
-            let va = heap_base + (i * PAGE) as u64;
-            let frame = reuse_or_alloc_frame(aspace, va);
-            map_heap_page(aspace, va, frame);
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let _ = (aspace, base, stack_off);
-    }
+    // All arches map the brk window on demand via `sys_brk`. Eagerly pre-mapping
+    // HEAP_PAGES on x86 (historically a "small" 256-page window) became a 16 MiB
+    // per-load/expand allocation storm after HEAP_PAGES rose to 4096 for GNU make,
+    // and dominated the bios/uefi full-boot OOM (fault0 site ≈96% of live frames)
+    // across the 137-case os-test smoke. aarch64/riscv already used on-demand.
+    let _ = (aspace, base, stack_off);
 }
 
 /// Remap the loaded image so PT_LOAD `p_flags` control R/W/X.
@@ -2836,7 +2826,9 @@ fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
 /// `/heap` can fork+exec large ELFs repeatedly without freelist exhaustion
 /// (riscv64 `sepc=0` after find+cat+ls). Leaving Sv39 mid/leaf/root tables
 /// allocated used to leak several frames per fork forever — the remaining
-/// "random" riscv OOM class after data-page reclaim was patched.
+/// "random" riscv OOM class after data-page reclaim was patched. x86 likewise
+/// leaked its private PML4[1] PDPT/PD/PT tree (and any orphan leaves outside
+/// the windowed walks) until `free_user_page_tables_x86` mirrored that teardown.
 pub fn reclaim_user_aspace(
     aspace: u64,
     base: u64,
@@ -2896,8 +2888,72 @@ pub fn reclaim_user_aspace(
 fn free_user_page_tables(aspace: u64) {
     #[cfg(target_arch = "riscv64")]
     free_user_page_tables_riscv(aspace);
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(target_arch = "x86_64")]
+    free_user_page_tables_x86(aspace);
+    #[cfg(target_arch = "aarch64")]
     let _ = aspace;
+}
+
+/// Tear down 4-level tables owned by a user aspace (x86_64).
+///
+/// `create_aspace_x86` clones the kernel PML4 then allocates a private PDPT/PD/PT
+/// tree under PML4[1] (VA `0x80_0000_0000`). Free any remaining present leaf
+/// pages under that index (catches orphans outside the code/stack/heap/mmap
+/// windows), then free the private tables and the cloned PML4. Other PML4
+/// slots are value-copies of kernel entries and must not be freed.
+#[cfg(target_arch = "x86_64")]
+fn free_user_page_tables_x86(pml4_phys: u64) {
+    const PRESENT: u64 = 1;
+    const HUGE: u64 = 1 << 7;
+    const PHYS_MASK: u64 = 0x000f_ffff_ffff_f000;
+    // USER_BASE = 0x0000_0080_0000_0000 → PML4 index 1.
+    const USER_PML4_IDX: usize = 1;
+    if pml4_phys == 0 {
+        return;
+    }
+    let k = task::kernel_aspace() & !0xfff;
+    if pml4_phys == k {
+        return;
+    }
+    unsafe {
+        let pml4 = &mut *mm::table(pml4_phys);
+        let pml4e = pml4[USER_PML4_IDX];
+        if pml4e & PRESENT != 0 && pml4e & HUGE == 0 {
+            let pdpt_phys = pml4e & PHYS_MASK;
+            let pdpt = &mut *mm::table(pdpt_phys);
+            for i3 in 0..512 {
+                let pdpte = pdpt[i3];
+                if pdpte & PRESENT == 0 || pdpte & HUGE != 0 {
+                    continue;
+                }
+                let pd_phys = pdpte & PHYS_MASK;
+                let pd = &mut *mm::table(pd_phys);
+                for i2 in 0..512 {
+                    let pde = pd[i2];
+                    if pde & PRESENT == 0 || pde & HUGE != 0 {
+                        continue;
+                    }
+                    let pt_phys = pde & PHYS_MASK;
+                    let pt = &mut *mm::table(pt_phys);
+                    for i1 in 0..512 {
+                        let pte = pt[i1];
+                        if pte & PRESENT != 0 {
+                            // Orphan leaf still present after windowed reclaim.
+                            mm::free_frame(pte & PHYS_MASK);
+                            pt[i1] = 0;
+                        }
+                    }
+                    mm::free_frame(pt_phys);
+                    pd[i2] = 0;
+                }
+                mm::free_frame(pd_phys);
+                pdpt[i3] = 0;
+            }
+            mm::free_frame(pdpt_phys);
+            pml4[USER_PML4_IDX] = 0;
+        }
+        mm::free_frame(pml4_phys);
+    }
 }
 
 /// Tear down Sv39 tables owned by a user aspace.
