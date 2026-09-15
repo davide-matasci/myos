@@ -20,19 +20,44 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/crti-${arch}.S" "$PORT/crti.S"
 cp "$ROOT/toolchain/newlib/libgloss/myos/crtn-${arch}.S" "$PORT/crtn.S"
 # termios.c needs <termios.h> in the sysroot before compile.
 cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
+# Sync the patched libc headers (search.h qelem/lsearch, endian.h shim,
+# regex.h sys/types, machine/setjmp.h sigsetjmp) into the sysroot so
+# host-prebuilds and guest tcc see the same declarations as libgloss.a.
+for hdr in search.h endian.h regex.h; do
+  if [[ -f "$NEWLIB_SRC/newlib/libc/include/$hdr" ]]; then
+    cp "$NEWLIB_SRC/newlib/libc/include/$hdr" "$inc/$hdr"
+  fi
+done
+if [[ -f "$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h" ]]; then
+  mkdir -p "$inc/machine"
+  cp "$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h" "$inc/machine/setjmp.h"
+fi
 # Sync ALL current libgloss sources into the fetched newlib tree before
 # compiling: the build compiles from $PORT (the fetched copy), and without
 # this a source edit under toolchain/newlib/libgloss/myos/ never reaches
 # libgloss.a (pwdgrp.c sat stale here for a week, shipping a getpwent()
 # that returned NULL — the os-test setpwent regression).
-for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c; do
+for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c "$ROOT"/toolchain/newlib/libgloss/myos/*.h; do
   cp "$src_f" "$PORT/"
 done
 
-for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect; do
+for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect search; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
+
+# POSIX regex (regcomp/regexec/regerror/regfree + engine) from newlib's own
+# libc/posix — not wired into this newlib target's libc build, but os-test
+# regex/*.c need the full API. Compile the upstream sources verbatim.
+if [[ -d "$NEWLIB_SRC/newlib/libc/posix" ]]; then
+  # collate.c + collcmp.c back the locale hooks regex uses
+  # (__collate_load_error, __collate_range_cmp); same -I as the regex sources.
+  for rf in regcomp regexec regerror regfree collate collcmp; do
+    "$CC" -ffreestanding -fPIC -O2 -isystem "$inc" \
+      -I"$NEWLIB_SRC/newlib/libc/posix" \
+      -c "$NEWLIB_SRC/newlib/libc/posix/${rf}.c" -o "$out/obj/${rf}.o"
+  done
+fi
 "$CC" -c "$PORT/crt0.S" -o "$out/obj/crt0.o"
 "$CC" -c "$PORT/crti.S" -o "$out/obj/crti.o"
 "$CC" -c "$PORT/crtn.S" -o "$out/obj/crtn.o"

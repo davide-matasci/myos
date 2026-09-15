@@ -259,6 +259,10 @@ struct Task {
     sig_pending: u32,
     /// Ignored signals bitmask (SIGKILL cannot be ignored). See `signal`.
     sig_ignored: u32,
+    /// Blocked signal mask (SYS_SIGPROCMASK, `SIG_BLOCK`/`SIG_SETMASK`).
+    /// Blocked does not mean discarded: still accumulates in `sig_pending`,
+    /// delivered when unblocked.
+    sig_blocked: u32,
     /// `None` = runnable on any CPU; `Some(cpu)` = pinned (idle threads).
     affinity: Option<usize>,
 }
@@ -293,6 +297,7 @@ const EMPTY: Task = Task {
     has_ctty: false,
     sig_pending: 0,
     sig_ignored: 0,
+    sig_blocked: 0,
     affinity: None,
 };
 
@@ -1078,13 +1083,10 @@ pub fn fd_close(fd: usize) -> bool {
             return false;
         }
         fd_drop(entry);
-        t.fds[fd] = if fd == 0 {
-            FdEntry::Stdin
-        } else if fd == 1 || fd == 2 {
-            FdEntry::Console
-        } else {
-            FdEntry::Empty
-        };
+        // POSIX close semantics: the slot must become free so the next
+        // open/pipe/socket reuses the lowest fd (os-test stdio/puts does
+        // close(0); close(1); pipe() and expects the pipe on 0,1).
+        t.fds[fd] = FdEntry::Empty;
         true
     })
 }
@@ -1195,6 +1197,51 @@ pub fn signal_set_ignored(id: usize, bit: u32, ign: bool) {
     irq_restore(flags);
 }
 
+pub fn signal_blocked(id: usize) -> u32 {
+    if id >= MAX_TASKS {
+        return 0;
+    }
+    let flags = irq_save();
+    irq_off();
+    let out = TASKS.lock()[id].sig_blocked;
+    irq_restore(flags);
+    out
+}
+
+pub fn signal_block(id: usize, bits: u32) {
+    if id >= MAX_TASKS {
+        return;
+    }
+    let flags = irq_save();
+    irq_off();
+    TASKS.lock()[id].sig_blocked |= bits;
+    irq_restore(flags);
+}
+
+pub fn signal_set_blocked_mask(id: usize, mask: u32) {
+    if id >= MAX_TASKS {
+        return;
+    }
+    let flags = irq_save();
+    irq_off();
+    TASKS.lock()[id].sig_blocked = mask;
+    irq_restore(flags);
+}
+
+/// Effective delivery mask: pending minus blocked, with `SIGKILL` never blockable.
+pub fn signal_effective(id: usize) -> u32 {
+    if id >= MAX_TASKS {
+        return 0;
+    }
+    let flags = irq_save();
+    irq_off();
+    let t = TASKS.lock()[id];
+    let kill_bit = 1u32 << 9;
+    let out = (t.sig_pending & !t.sig_blocked) | (t.sig_pending & kill_bit);
+    irq_restore(flags);
+    out
+}
+
 /// True if `id` has a pending default-fatal signal (`SIGINT`/`SIGKILL`/`SIGTERM`).
 ///
 /// Must stay aligned with [`signal_take_fatal`]: waking `input::read` on a
@@ -1229,7 +1276,9 @@ pub fn signal_take_fatal(id: usize) -> Option<u32> {
     let mut tasks = TASKS.lock();
     let t = &mut tasks[id];
     let kill_bit = 1u32 << 9;
-    let effective = (t.sig_pending & !t.sig_ignored) | (t.sig_pending & kill_bit);
+    let effective = ((t.sig_pending & !t.sig_ignored) | (t.sig_pending & kill_bit))
+        & !t.sig_blocked
+        | (t.sig_pending & kill_bit);
     const FATAL: [u32; 3] = [2, 9, 15]; // SIGINT, SIGKILL, SIGTERM
     let mut found = None;
     for sig in FATAL {
@@ -1726,6 +1775,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
+        sig_blocked: 0,
         // Sequential / init→getty (no ctty): inherit. Ctty parent with an
         // active sibling (make -j / pipelines): fresh AP RR home. Exec keeps
         // this affinity. Cross-CPU wait: die() IF-on + schedule() soft TLB.
@@ -1866,6 +1916,7 @@ fn spawn_inner(
         has_ctty: false,
         sig_pending: 0,
         sig_ignored: 0,
+        sig_blocked: 0,
         affinity: if aspace != 0 { user_affinity() } else { None },
     };
     drop(tasks);
@@ -2260,6 +2311,7 @@ pub fn ap_idle_loop(logical: usize) -> ! {
         has_ctty: false,
         sig_pending: 0,
         sig_ignored: 0,
+        sig_blocked: 0,
         affinity: Some(logical),
     };
     drop(tasks);

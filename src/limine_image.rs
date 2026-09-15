@@ -25,7 +25,10 @@ timeout: 0
 ";
 
 const SECTOR: usize = 512;
-const IMAGE_BYTES: usize = 64 * 1024 * 1024;
+// 64 MiB no longer fits the packed boot images (55 MiB initramfs + kernels +
+// limine-bios.sys twice): the FAT16 writer ran out of clusters. 128 MiB keeps
+// headroom as the test suite and prebuilts grow.
+const IMAGE_BYTES: usize = 128 * 1024 * 1024;
 const BIOS_BOOT_START_LBA: u64 = 2048;
 const BIOS_BOOT_END_LBA: u64 = 4095;
 const ESP_START_LBA: u64 = 4096;

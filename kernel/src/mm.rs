@@ -28,6 +28,29 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 /// next phys at offset 0 via HHDM.
 static FREE_HEAD: AtomicU64 = AtomicU64::new(0);
 
+/// Diagnostics for the frame allocator: total 4 KiB frames handed out vs
+/// returned to the freelist. Printed verbatim in the `out of usable memory`
+/// panic so an exhaustion can be attributed to a leak vs a small memmap.
+pub static FRAME_ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static FRAME_FREE_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Per-call-site allocation attribution (leak triage). Sites:
+/// 0=virtq 1=fault-zero 2=exec-copy 3=pagetable 4=mmap 5=other-explicit
+pub static FRAME_SITE_COUNTS: [AtomicU64; 6] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+
+/// Allocate one frame and attribute it to a leak-triage call site.
+#[inline(always)]
+pub fn alloc_frame_site(site: usize) -> u64 {
+    let f = alloc_frame();
+    if site < FRAME_SITE_COUNTS.len() {
+        FRAME_SITE_COUNTS[site].fetch_add(1, Ordering::Relaxed);
+    }
+    f
+}
+
 fn heap_phys() -> u64 {
     let entries = limine_boot::MEMMAP
         .response()
@@ -89,6 +112,7 @@ pub fn free_frame(phys: u64) {
             .compare_exchange(head, phys, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
+            FRAME_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
             return;
         }
     }
@@ -219,6 +243,7 @@ pub fn alloc_frame() -> u64 {
             unsafe {
                 core::ptr::write_bytes((head + hhdm) as *mut u8, 0, PAGE as usize);
             }
+            FRAME_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             return head;
         }
     }
@@ -251,10 +276,35 @@ pub fn alloc_frame() -> u64 {
             unsafe {
                 core::ptr::write_bytes((phys + hhdm) as *mut u8, 0, PAGE as usize);
             }
+            FRAME_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             return phys;
         }
     }
-    panic!("out of usable memory");
+    let top = limine_boot::MEMMAP
+        .response()
+        .map(|r| {
+            r.entries()
+                .iter()
+                .filter(|e| e.type_ == memmap::MEMMAP_USABLE)
+                .map(|e| e.base + e.length)
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    panic!(
+        "out of usable memory: alloc={} free={} live={} next={:#x} usable_top={:#x} sites virtq={} fault0={} exec={} pt={} mmap={} other={}",
+        FRAME_ALLOC_COUNT.load(Ordering::Relaxed),
+        FRAME_FREE_COUNT.load(Ordering::Relaxed),
+        FRAME_ALLOC_COUNT.load(Ordering::Relaxed) - FRAME_FREE_COUNT.load(Ordering::Relaxed),
+        NEXT.load(Ordering::SeqCst),
+        top,
+        FRAME_SITE_COUNTS[0].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[1].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[2].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[3].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[4].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[5].load(Ordering::Relaxed),
+    );
 }
 
 pub fn hhdm(phys: u64) -> *mut u8 {

@@ -74,6 +74,9 @@ kicks idle CPUs only when a child was RR-homed onto another AP. **aarch64** /
 `boot/virt.dtb` is always dumped with `-smp 2` so OpenSBI BSP hartid=1 still
 has a hart node. riscv APs are WFI-parked in-kernel without ONLINE (Limine
 busy-spin left the ripgrep `sepc=0` IPF; full ONLINE bring-up hung mid-`/ok`).
+The park stub also clears `sie`, retires `stimecmp`/`SSIP`, and handshakes
+`AP_PROGRESS=2` so WFI actually sleeps — pending STIP with only `SIE` clear
+turns WFI into another busy-spin and reopens the expand flake.
 On x86 the BSP timer also drains UART RX (`input::drain_uart_irq`) and kicks
 APs so a starved shell under `-smp 4` TCG cannot overrun the COM1 FIFO /
 sticky-key login.

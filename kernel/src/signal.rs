@@ -149,6 +149,11 @@ pub fn handle_ctrl_c() {
 /// when breaking out of `input::read`.
 pub fn deliver_due() {
     let id = task::current_id();
+    // Blocked signals stay pending; only the effective (unblocked) set delivers.
+    // `signal_take_fatal` already honors the block mask (SIGKILL never blockable).
+    if task::signal_effective(id) == 0 {
+        return;
+    }
     if let Some(sig) = task::signal_take_fatal(id) {
         // `user_exit` never returns to the trap epilogue that clears
         // `SYSCALL_FRAME`; drop it here so a later fork/exec cannot read a
@@ -164,6 +169,44 @@ pub fn deliver_due() {
 /// (libgloss packs newlib `struct sigaction` into this). Handler `0` = DFL,
 /// `1` = IGN; any other handler is rejected (`false` → ENOSYS in userspace).
 /// `SIGKILL` cannot be ignored (DFL only).
+/// `sigprocmask(how, set, oset)` — per-task blocked-signal mask.
+/// `SIG_BLOCK=1` ors, `SIG_SETMASK=0` replaces, `SIG_UNBLOCK=2` clears.
+/// `SIGKILL` can never be blocked. libgloss packs `sigset_t` as one `u32`.
+pub fn sigprocmask(how: usize, set: Option<usize>, oset: Option<usize>) -> bool {
+    let id = task::current_id();
+    if !task::is_live_user(id) {
+        return false;
+    }
+    if let Some(out) = oset {
+        let old = task::signal_blocked(id);
+        if !crate::user::copy_to_user(
+            task::current_aspace(),
+            out,
+            &old.to_le_bytes(),
+        ) {
+            return false;
+        }
+    }
+    if let Some(inp) = set {
+        let mut buf = [0u8; 4];
+        if !crate::user::copy_from_user(task::current_aspace(), inp, &mut buf) {
+            return false;
+        }
+        let mask = u32::from_le_bytes(buf) & !(1u32 << 9); // SIGKILL never blockable
+        match how {
+            // newlib signal.h: SIG_SETMASK=0, SIG_BLOCK=1, SIG_UNBLOCK=2.
+            0 => task::signal_set_blocked_mask(id, mask),
+            1 => task::signal_block(id, mask),
+            2 => { // SIG_UNBLOCK
+                let cur = task::signal_blocked(id);
+                task::signal_set_blocked_mask(id, cur & !mask);
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 pub fn sigaction(sig: u32, act: Option<usize>, oact: Option<usize>) -> bool {
     let Some(bit) = sig_bit(sig) else {
         return false;

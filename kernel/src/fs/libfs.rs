@@ -217,7 +217,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     if let Ok(i) = files.binary_search_by(|e| e.path.as_str().cmp(name)) {
         let e = &files[i];
         return Some(StatInfo {
-            mode: S_IFREG | 0o444,
+            mode: S_IFREG | 0o755,
             size: e.data.len() as u32,
             ino: crate::fs::vfs::data_ino(e.data),
             nlink: 1,

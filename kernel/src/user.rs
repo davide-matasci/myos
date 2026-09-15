@@ -47,6 +47,7 @@ const SYS_GETTIMEOFDAY: usize = 33;
 const SYS_KILL: usize = 34;
 const SYS_SIGACTION: usize = 35;
 const SYS_GETPID: usize = 36;
+const SYS_SIGPROCMASK: usize = 37;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -64,10 +65,10 @@ pub const PAGE: usize = 4096;
 pub const USER_STACK_PAGES: usize = 128;
 #[cfg(not(target_arch = "aarch64"))]
 pub const USER_STACK_PAGES: usize = 256;
-/// Per-process brk heap.
+/// Per-process brk heap capacity (mapped on demand by `sys_brk`).
 /// - x86_64: TLS arena stays in ELF BSS; git Phase-1 object writes need ≥1 MiB
 ///   and GNU make's os-test parsing xmallocs well past the old 512-page cap
-///   ("make: *** virtual memory exhausted"), so use 4096 pages (16 MiB).
+///   ("make: *** virtual memory exhausted"), so allow 4096 pages (16 MiB).
 /// - aarch64/riscv64: TLS arena is a 2 MiB brk allocation — window must fit
 ///   that plus headroom. aarch64 stays under the 4×512-page L2 spill cap
 ///   (image + stack + heap ≲ 2048 pages from USER_BASE).
@@ -366,7 +367,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
 
     let mut frames = [0u64; MAX_INIT_PAGES];
     for i in 0..n_pages {
-        frames[i] = mm::alloc_frame();
+        frames[i] = mm::alloc_frame_site(2);
         if i < code_pages {
             let off = i * PAGE;
             let len = core::cmp::min(PAGE, info.span - off);
@@ -386,7 +387,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     }
     let mut stack_frames = [0u64; USER_STACK_PAGES];
     for frame in &mut stack_frames {
-        *frame = mm::alloc_frame();
+        *frame = mm::alloc_frame_site(5);
     }
     let aspace = create_aspace(&frames[..n_pages], &stack_frames, base, stack_off);
     apply_elf_load_prots(aspace, bytes, base, code_pages);
@@ -396,22 +397,12 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
 }
 
 fn map_initial_heap_pages(aspace: u64, base: u64, stack_off: u64) {
-    // On aarch64/riscv the TLS arena lives on brk and HEAP_PAGES is 768–1024.
-    // Pre-mapping that window up front wastes frames; `sys_brk` maps on demand.
-    // x86 keeps a small pre-mapped window (TLS stays in BSS).
-    #[cfg(target_arch = "x86_64")]
-    {
-        let heap_base = heap_base_va(base, stack_off);
-        for i in 0..HEAP_PAGES {
-            let va = heap_base + (i * PAGE) as u64;
-            let frame = reuse_or_alloc_frame(aspace, va);
-            map_heap_page(aspace, va, frame);
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let _ = (aspace, base, stack_off);
-    }
+    // All arches map the brk window on demand via `sys_brk`. Eagerly pre-mapping
+    // HEAP_PAGES on x86 (historically a "small" 256-page window) became a 16 MiB
+    // per-load/expand allocation storm after HEAP_PAGES rose to 4096 for GNU make,
+    // and dominated the bios/uefi full-boot OOM (fault0 site ≈96% of live frames)
+    // across the 137-case os-test smoke. aarch64/riscv already used on-demand.
+    let _ = (aspace, base, stack_off);
 }
 
 /// Remap the loaded image so PT_LOAD `p_flags` control R/W/X.
@@ -451,7 +442,7 @@ fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
     if let Some(phys) = virt_to_phys(aspace, va) {
         phys
     } else {
-        let frame = mm::alloc_frame();
+        let frame = mm::alloc_frame_site(1);
         unsafe {
             core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
         }
@@ -893,7 +884,7 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
         let phys = virt_to_phys(src, va)?;
-        frames[i] = mm::alloc_frame();
+        frames[i] = mm::alloc_frame_site(2);
         unsafe {
             core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(frames[i]), PAGE);
         }
@@ -903,7 +894,7 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     let mut stack_frames = [0u64; USER_STACK_PAGES];
     for i in 0..USER_STACK_PAGES {
         let phys = virt_to_phys(src, stack_va + (i * PAGE) as u64)?;
-        stack_frames[i] = mm::alloc_frame();
+        stack_frames[i] = mm::alloc_frame_site(2);
         unsafe {
             core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(stack_frames[i]), PAGE);
         }
@@ -914,7 +905,7 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     let mut va = heap_base as usize;
     while va < heap_end {
         if virt_to_phys(src, va as u64).is_some() {
-            let phys = mm::alloc_frame();
+            let phys = mm::alloc_frame_site(2);
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     mm::hhdm(virt_to_phys(src, va as u64)?),
@@ -956,7 +947,7 @@ fn copy_mmap_pages(src: u64, dst: u64) {
         let end = r.va.saturating_add(r.pages as u64 * PAGE as u64);
         while va < end {
             if let Some(phys) = virt_to_phys(src, va) {
-                let frame = mm::alloc_frame();
+                let frame = mm::alloc_frame_site(2);
                 unsafe {
                     core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(frame), PAGE);
                 }
@@ -1049,7 +1040,7 @@ fn aarch64_l3_table_mut(l0_phys: u64, page: usize) -> Option<*mut [u64; 512]> {
         }
         let l2 = &mut *mm::table(l2_phys);
         if l2[l2_idx] & 0b11 != TABLE {
-            let l3 = mm::alloc_frame();
+            let l3 = mm::alloc_frame_site(3);
             l2[l2_idx] = l3 | TABLE;
         }
         Some(mm::table(l2[l2_idx] & PA))
@@ -1157,6 +1148,11 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
 }
 
 fn pick_user_base() -> u64 {
+    // Prefer DEFAULT (PML4[1]). If Limine already occupied that slot (common on
+    // UEFI), pick another free low-half slot. create_aspace_x86 clears *this*
+    // index after the kernel PML4 clone, and free_user_page_tables_x86 tears
+    // down the same index via USER_BASE — never hardcode slot 1 for both map
+    // and reclaim while pick walks away from it.
     #[cfg(target_arch = "x86_64")]
     {
         let src = task::kernel_aspace() & !0xfff;
@@ -1171,11 +1167,7 @@ fn pick_user_base() -> u64 {
         }
         panic!("no free PML4 slot for user");
     }
-    #[cfg(target_arch = "aarch64")]
-    {
-        DEFAULT_USER_BASE
-    }
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(not(target_arch = "x86_64"))]
     {
         DEFAULT_USER_BASE
     }
@@ -1735,6 +1727,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_KILL => sys_kill(a0, a1),
         SYS_SIGACTION => sys_sigaction(a0, a1, a2),
         SYS_GETPID => sys_getpid(),
+        SYS_SIGPROCMASK => sys_sigprocmask(a0, a1, a2),
         _ => SYSERR,
     };
     // Deliver default-fatal pending signals before returning to userspace.
@@ -1878,6 +1871,16 @@ fn sys_sigaction(sig: usize, act: usize, oact: usize) -> usize {
     }
 }
 
+fn sys_sigprocmask(how: usize, set: usize, oset: usize) -> usize {
+    let set = if set == 0 { None } else { Some(set) };
+    let oset = if oset == 0 { None } else { Some(oset) };
+    if crate::signal::sigprocmask(how, set, oset) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
 fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let Some(buf) = copy_user_path(ptr, path_len) else {
         return SYSERR;
@@ -1895,14 +1898,35 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let owned;
     let bytes: &[u8] = if let Some(b) = fs::lookup(&path) {
         b
+    } else if let Some(v) = fs::read_all(&path, EXEC_FILE_MAX) {
+        owned = v;
+        &owned
     } else {
-        match fs::read_all(&path, EXEC_FILE_MAX) {
-            Some(v) => {
-                owned = v;
-                &owned
-            }
-            None => return SYSERR,
+        // /lib-style read-only mounts expose files through the vnode path
+        // (open + size + read) even where the read_all direct-backend shortcut
+        // fails; use it before giving up. Without this, every exec of a
+        // prebuilt ELF under /lib/os-test/prebuilt fails with EACCES and the
+        // boot smoke silently falls back to guest tcc.
+        let Some(node) = fs::open(&path, 0) else {
+            return SYSERR;
+        };
+        let Some(size) = fs::size_of(&node) else {
+            return SYSERR;
+        };
+        if size == 0 || size > EXEC_FILE_MAX {
+            return SYSERR;
         }
+        let mut v = alloc::vec![0u8; size];
+        let mut pos = 0usize;
+        while pos < size {
+            let n = fs::read(&node, pos, &mut v[pos..]);
+            if n == 0 {
+                return SYSERR;
+            }
+            pos += n;
+        }
+        owned = v;
+        &owned
     };
     let (arg_bufs, env_bufs) = match copy_user_exec_pack(args_ptr) {
         Ok(v) => v,
@@ -1983,6 +2007,11 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     if entry == 0 {
         return SYSERR;
     }
+    // expand_user_elf / reload of a large ELF (ripgrep) is deep enough that
+    // LLVM may have clobbered tp since the sync above. replace_user and
+    // set_loaded_aspace go through current_slot()/cpu_id() — re-pin before
+    // mutating the running task and resuming.
+    crate::smp::sync_tp_for_kernel();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
@@ -2504,7 +2533,7 @@ fn sys_brk(req: usize) -> usize {
         let mut mapped_any = false;
         while va < map_end {
             if virt_to_phys(aspace, va as u64).is_none() {
-                let frame = mm::alloc_frame();
+                let frame = mm::alloc_frame_site(4);
                 unsafe {
                     core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
                 }
@@ -2591,7 +2620,7 @@ fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: isize, offset
     let mut mapped = 0usize;
     while mapped < map_len {
         let page_va = (va + mapped) as u64;
-        let frame = mm::alloc_frame();
+        let frame = mm::alloc_frame_site(4);
         unsafe {
             core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
         }
@@ -2798,7 +2827,9 @@ fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
 /// `/heap` can fork+exec large ELFs repeatedly without freelist exhaustion
 /// (riscv64 `sepc=0` after find+cat+ls). Leaving Sv39 mid/leaf/root tables
 /// allocated used to leak several frames per fork forever — the remaining
-/// "random" riscv OOM class after data-page reclaim was patched.
+/// "random" riscv OOM class after data-page reclaim was patched. x86 likewise
+/// leaked its private PML4[1] PDPT/PD/PT tree (and any orphan leaves outside
+/// the windowed walks) until `free_user_page_tables_x86` mirrored that teardown.
 pub fn reclaim_user_aspace(
     aspace: u64,
     base: u64,
@@ -2858,8 +2889,72 @@ pub fn reclaim_user_aspace(
 fn free_user_page_tables(aspace: u64) {
     #[cfg(target_arch = "riscv64")]
     free_user_page_tables_riscv(aspace);
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(target_arch = "x86_64")]
+    free_user_page_tables_x86(aspace);
+    #[cfg(target_arch = "aarch64")]
     let _ = aspace;
+}
+
+/// Tear down 4-level tables owned by a user aspace (x86_64).
+///
+/// `create_aspace_x86` clones the kernel PML4 then allocates a private PDPT/PD/PT
+/// tree under PML4[1] (VA `0x80_0000_0000`). Free any remaining present leaf
+/// pages under that index (catches orphans outside the code/stack/heap/mmap
+/// windows), then free the private tables and the cloned PML4. Other PML4
+/// slots are value-copies of kernel entries and must not be freed.
+#[cfg(target_arch = "x86_64")]
+fn free_user_page_tables_x86(pml4_phys: u64) {
+    const PRESENT: u64 = 1;
+    const HUGE: u64 = 1 << 7;
+    const PHYS_MASK: u64 = 0x000f_ffff_ffff_f000;
+    // Tear down the slot that holds USER_BASE (pinned to PML4[1] / DEFAULT).
+    let user_pml4_idx = ((USER_BASE.load(Ordering::SeqCst) >> 39) & 0x1ff) as usize;
+    if pml4_phys == 0 {
+        return;
+    }
+    let k = task::kernel_aspace() & !0xfff;
+    if pml4_phys == k {
+        return;
+    }
+    unsafe {
+        let pml4 = &mut *mm::table(pml4_phys);
+        let pml4e = pml4[user_pml4_idx];
+        if pml4e & PRESENT != 0 && pml4e & HUGE == 0 {
+            let pdpt_phys = pml4e & PHYS_MASK;
+            let pdpt = &mut *mm::table(pdpt_phys);
+            for i3 in 0..512 {
+                let pdpte = pdpt[i3];
+                if pdpte & PRESENT == 0 || pdpte & HUGE != 0 {
+                    continue;
+                }
+                let pd_phys = pdpte & PHYS_MASK;
+                let pd = &mut *mm::table(pd_phys);
+                for i2 in 0..512 {
+                    let pde = pd[i2];
+                    if pde & PRESENT == 0 || pde & HUGE != 0 {
+                        continue;
+                    }
+                    let pt_phys = pde & PHYS_MASK;
+                    let pt = &mut *mm::table(pt_phys);
+                    for i1 in 0..512 {
+                        let pte = pt[i1];
+                        if pte & PRESENT != 0 {
+                            // Orphan leaf still present after windowed reclaim.
+                            mm::free_frame(pte & PHYS_MASK);
+                            pt[i1] = 0;
+                        }
+                    }
+                    mm::free_frame(pt_phys);
+                    pd[i2] = 0;
+                }
+                mm::free_frame(pd_phys);
+                pdpt[i3] = 0;
+            }
+            mm::free_frame(pdpt_phys);
+            pml4[user_pml4_idx] = 0;
+        }
+        mm::free_frame(pml4_phys);
+    }
 }
 
 /// Tear down Sv39 tables owned by a user aspace.
@@ -2941,11 +3036,18 @@ fn create_aspace_x86(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> 
     const NX: u64 = 1 << 63;
 
     let src = task::kernel_aspace() & !0xfff;
-    let pml4_phys = mm::alloc_frame();
+    let pml4_phys = mm::alloc_frame_site(3);
     unsafe {
         let src_t = &*mm::table(src);
         let dst_t = &mut *mm::table(pml4_phys);
         dst_t.copy_from_slice(src_t);
+        // Clear the USER_BASE PML4 slot so ensure_user owns a private PDPT
+        // tree (same discipline as create_aspace_riscv64). Must match
+        // pick_user_base() — hardcoding [1] while pick moved to another slot
+        // left reclaim freeing the wrong tree (UEFI OOM) or clearing a
+        // Limine-owned slot still needed on the user CR3 (early #PF).
+        let user_idx = ((USER_BASE.load(Ordering::SeqCst) >> 39) & 0x1ff) as usize;
+        dst_t[user_idx] = 0;
     }
 
     // RW so sys_read can fill PT_LOAD (user/ok MSG_BUF). Still executable.
@@ -3197,7 +3299,7 @@ fn ensure_riscv_leaf(satp: u64, va: u64) -> *mut [u64; 512] {
         let root = &mut *mm::table(root_phys);
         let mid_pte = root[i2];
         if mid_pte & paging::PTE_V == 0 {
-            let mid = mm::alloc_frame();
+            let mid = mm::alloc_frame_site(3);
             root[i2] = paging::pte_table(mid);
         } else {
             assert!(
@@ -3208,7 +3310,7 @@ fn ensure_riscv_leaf(satp: u64, va: u64) -> *mut [u64; 512] {
         let mid = &mut *mm::table(paging::pte_phys(root[i2]));
         let leaf_pte = mid[i1];
         if leaf_pte & paging::PTE_V == 0 {
-            let leaf = mm::alloc_frame();
+            let leaf = mm::alloc_frame_site(3);
             mid[i1] = paging::pte_table(leaf);
         } else {
             assert!(
@@ -3294,7 +3396,7 @@ fn ensure_user(entry: &mut u64, table_flags: u64, huge: u64) -> *mut [u64; 512] 
         assert!(*entry & huge == 0, "user map: huge page in the way");
         return mm::table(*entry);
     }
-    let phys = mm::alloc_frame();
+    let phys = mm::alloc_frame_site(3);
     *entry = phys | table_flags;
     mm::table(phys)
 }
@@ -3315,10 +3417,10 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
     let k_l1_phys = k_l0_t[0] & PA;
     let k_l1 = unsafe { &*mm::table(k_l1_phys) };
 
-    let l0 = mm::alloc_frame();
-    let l1 = mm::alloc_frame();
-    let l2 = mm::alloc_frame();
-    let l3 = mm::alloc_frame();
+    let l0 = mm::alloc_frame_site(3);
+    let l1 = mm::alloc_frame_site(3);
+    let l2 = mm::alloc_frame_site(3);
+    let l3 = mm::alloc_frame_site(3);
 
     unsafe {
         let l0_t = &mut *mm::table(l0);
@@ -3364,7 +3466,7 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
 #[cfg(target_arch = "riscv64")]
 fn create_aspace_riscv64(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {
     let k_root_phys = paging::satp_root_phys(task::kernel_aspace());
-    let root = mm::alloc_frame();
+    let root = mm::alloc_frame_site(5);
 
     unsafe {
         let k_root = &*mm::table(k_root_phys);

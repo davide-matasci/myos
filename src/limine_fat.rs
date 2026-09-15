@@ -3,8 +3,24 @@ fn format_and_write_fat16(part: &mut [u8], files: &[DiskFile]) -> () {
     let reserved = 1u16;
     let fats = 2u8;
     let root_entries = 512u16;
-    let spc = 8u8;
+    // Cluster size: keep the classic 8-sector (4 KiB) default; only grow it
+    // (powers of two) when the volume is large enough to overflow the FAT16
+    // cluster range. Never go below 8: smaller clusters change the BPB layout
+    // the in-kernel FAT driver expects (spc=1 on the 20 MiB data disk made
+    // every guest mount fail). 8 sectors fits both the 20 MiB data disk and
+    // the 128 MiB boot volume (≈32k clusters, well under 65524).
     let root_sectors = (root_entries as u32 * 32).div_ceil(SECTOR as u32);
+    let mut spc = 8u8;
+    loop {
+        let data_sectors = total_sectors
+            .saturating_sub(reserved as u32)
+            .saturating_sub(fats as u32 * 128)
+            .saturating_sub(root_sectors);
+        if data_sectors / spc as u32 <= 65524 || spc >= 128 {
+            break;
+        }
+        spc *= 2;
+    }
     let mut fat_sectors = 128u32;
     for _ in 0..8 {
         let data_sectors = total_sectors
@@ -22,7 +38,7 @@ fn format_and_write_fat16(part: &mut [u8], files: &[DiskFile]) -> () {
     let data_sectors = total_sectors - data_start;
     let clusters = data_sectors / spc as u32;
     if clusters < 4085 || clusters > 65524 {
-        panic!("FAT16 cluster count {clusters} out of range (fat_sectors={fat_sectors})");
+        panic!("FAT16 cluster count {clusters} out of range (fat_sectors={fat_sectors}, spc={spc})");
     }
     part[0] = 0xEB;
     part[1] = 0x3C;

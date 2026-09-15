@@ -100,6 +100,13 @@ fn hw_cpu_id() -> u64 {
 pub fn cpu_id() -> usize {
     #[cfg(target_arch = "riscv64")]
     {
+        // BSP-only userspace (Limine/WFI APs stay !ONLINE): ignore tp entirely.
+        // LLVM freely uses x4 as a temporary during deep expand_user_elf
+        // (ripgrep); trusting a clobbered-but-ONLINE-looking tp reopened the
+        // sepc=0 IPF after #151 even with WFI-park. Single ONLINE hart → BOOT.
+        if online_count() <= 1 {
+            return BOOT_CPU.load(Ordering::SeqCst);
+        }
         let tp: usize;
         unsafe {
             core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
@@ -107,10 +114,7 @@ pub fn cpu_id() -> usize {
         // #146 required ONLINE[tp]. #147 dropped it so APs could read tp before
         // mark_running — but that also trusts a *clobbered* tp in 1..MAX_CPUS-1
         // (LLVM may use x4 as a temporary; user TLS can be a small integer).
-        // Under -smp 1 only CPU 0 is ONLINE, so a clobber of tp=2 during a deep
-        // expand_user_elf (ripgrep) made current_slot()/LOADED_ASPACE hit
-        // CURRENT[2]==0 and exec resume with the wrong task / sscratch → recurring
-        // instruction page fault stval=0 sepc=0 after uutils ls. Require ONLINE.
+        // Require ONLINE once multiple harts are scheduled.
         if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
             return tp;
         }
@@ -161,16 +165,19 @@ pub fn cpu_id() -> usize {
 /// clobbered x4. Safe under UP (tp=0) and after AP `mark_running`.
 #[cfg(target_arch = "riscv64")]
 pub fn sync_tp_for_kernel() {
-    let tp: usize;
-    unsafe {
-        core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
-    }
-    if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
-        return;
-    }
+    // Always rewrite tp when only the BSP is ONLINE: a "valid" tp==0 early in a
+    // long expand can still be clobbered later, and callers that skip sync after
+    // the first check would then see garbage. Force the known-good id.
     let id = if online_count() <= 1 {
-        0
+        BOOT_CPU.load(Ordering::SeqCst)
     } else {
+        let tp: usize;
+        unsafe {
+            core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
+        }
+        if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
+            return;
+        }
         BOOT_CPU.load(Ordering::SeqCst)
     };
     unsafe {
@@ -540,9 +547,12 @@ pub fn init() {
             cpu.bootstrap(AP_PARK_ENTRY_PTR, logical as u64);
             parked += 1;
         }
-        // Brief wait so APs leave Limine before BSP continues into userspace.
-        for _ in 0..200_000 {
-            if AP_PROGRESS.load(Ordering::SeqCst) >= 1 {
+        // Wait until each AP has finished quieting (sie/stimecmp) and entered
+        // the WFI loop — AP_PROGRESS 1 = entered stub, 2 = interrupts retired.
+        // Continuing into userspace while an AP still busy-spins on pending STIP
+        // is exactly the Limine-spin contention #151 meant to kill.
+        for _ in 0..2_000_000 {
+            if AP_PROGRESS.load(Ordering::SeqCst) >= 2 {
                 break;
             }
             core::hint::spin_loop();
@@ -652,11 +662,28 @@ pub fn init() {
 pub unsafe extern "C" fn myos_smp_ap_park(_info: &limine::mp::MpInfo) -> ! {
     AP_PROGRESS.store(1, Ordering::SeqCst);
     unsafe {
-        // Clear SIE; WFI still blocks until an interrupt is *pending*.
-        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+        // Quiet park must make WFI *sleep*, not busy-spin. RISC-V WFI is allowed
+        // to complete whenever an interrupt is *pending*, even with SIE clear.
+        // Limine/OpenSBI often leave STIE + a pending timer (STIP) on secondary
+        // harts — clearing only sstatus.SIE then turns this loop into another
+        // satp-visible RAM hammer, which reopens the ripgrep sepc=0 expand flake
+        // under QEMU -smp 2 (seen again on PR #153 tip after mm site tags).
+        // Retire enables, push stimecmp to infinity (sstc), and clear SSIP.
+        core::arch::asm!(
+            "csrc sstatus, {sie_bit}",
+            "csrw sie, zero",
+            "csrw stimecmp, {far}",
+            "csrc sip, {ssip}",
+            sie_bit = in(reg) 1u64 << 1,
+            far = in(reg) u64::MAX,
+            ssip = in(reg) 1u64 << 1,
+            options(nomem, nostack),
+        );
     }
+    // Publish "quiet" so BSP does not enter userspace while we still drain STIP.
+    AP_PROGRESS.store(2, Ordering::SeqCst);
     loop {
-        crate::arch::wait_interrupt();
+        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
     }
 }
 
