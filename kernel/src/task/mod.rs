@@ -359,32 +359,19 @@ pub fn init() {
 
 /// x86: round-robin home CPU across APs when SMP is online. Skip CPU 0 —
 /// BSP shares irq/console/kernel_main with user under RR and CI bios hung
-/// after histrecall (`80c6ff1`, `-smp 2`). With two CPUs this is pin-to-AP
-/// (last green); with `-smp 4` (≥2 APs) post-exec re-home spreads make -j
-/// workers. Used at `spawn_user` and again in `replace_user` after exec
-/// (fork still inherits parent affinity). Live migration (`None`) still
-/// unstable. Other arches float.
-
-fn sticky_exec_name(name: &[u8]) -> bool {
-    // Prefer sticky homes for the interactive session and netd so console
-    // IRQs stay co-located with the reader. Cross-CPU exit reclaim is safe once
-    // `die` runs TLB shootdown with IF on.
-    matches!(
-        name,
-        b"netd" | b"getty" | b"login" | b"sh" | b"oksh" | b"init"
-    )
-}
-
-/// Parallel build workers that should RR across APs after exec. Everything else
-/// keeps the fork-inherited home so parent `wait_child` stays same-CPU —
-/// blanket re-home of smoke ELFs (std/cat, rg, …) hung bios mid-`/heap` under
-/// `-smp 4` once UART drain fixed the earlier `which ls` flake (PR #150 CI).
-fn rehome_exec_name(name: &[u8]) -> bool {
-    matches!(
-        name,
-        b"tcc" | b"cc1" | b"cc1plus" | b"as" | b"ld" | b"collect2" | b"make"
-    )
-}
+/// after histrecall (`80c6ff1`, `-smp 2`). With `-smp 4` (≥2 APs):
+/// `spawn_user` RR-assigns top-level tasks; fork inherits unless the parent
+/// has a controlling tty **and** already has an active child (interactive
+/// `make -j` / pipelines) — then the new child takes a fresh AP RR home.
+/// The ctty gate matters: init forks long-lived `netd` then `getty`; without
+/// it, `parent_has_active_child` treated netd as parallel work and RR-spread
+/// getty onto a remote AP (UEFI user #PF cr2=kernel after fork exec; bios
+/// burned the 600s wall mid interactive). Exec does **not** re-home:
+/// sequential shell/smoke fork+exec+wait stays same-CPU (blanket post-exec
+/// RR made UEFI CI burn the 600s QEMU wall). Cross-CPU wait (pipelines /
+/// make) stays safe via `die` IF-on reclaim + soft TLB service in
+/// `schedule`. Live migration (`affinity: None`) remains off. Other arches
+/// float.
 
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
@@ -400,6 +387,37 @@ fn user_affinity() -> Option<usize> {
     #[cfg(not(target_arch = "x86_64"))]
     {
         None
+    }
+}
+
+
+/// True if `ppid` already has a Ready/Running user child. Combined with a
+/// ctty check at fork: interactive shells parallel-fork (`make -j`,
+/// pipelines) RR-spread; init/netd (no ctty) always inherit so getty/login
+/// stay with the session home — no basename sticky allowlists.
+fn parent_has_active_child(tasks: &[Task; MAX_TASKS], ppid: usize) -> bool {
+    for i in 0..MAX_TASKS {
+        if i == ppid || tasks[i].ppid != ppid || tasks[i].user_rip == 0 {
+            continue;
+        }
+        match tasks[i].state {
+            State::Ready | State::Running => return true,
+            State::Unused | State::Dead => {}
+        }
+    }
+    false
+}
+
+/// Fork affinity: inherit, or RR-spread when a ctty-bearing parent already
+/// has an active child (parallel jobs). Returns `(affinity, kick)` — kick
+/// only when the child was placed on a different home than the parent.
+fn fork_child_affinity(tasks: &[Task; MAX_TASKS], ppid: usize) -> (Option<usize>, bool) {
+    let parent_aff = tasks[ppid].affinity;
+    if tasks[ppid].has_ctty && parent_has_active_child(tasks, ppid) {
+        let next = user_affinity();
+        (next, next != parent_aff)
+    } else {
+        (parent_aff, false)
     }
 }
 
@@ -429,8 +447,9 @@ pub fn unload_user_aspace(aspace: u64) {
     // histrecall with RR home CPUs).
     if crate::smp::online_count() > 1 {
         let mut kicks = 0u32;
+        let mut live = false;
         for spin in 0..50_000u32 {
-            let mut live = false;
+            live = false;
             for i in 0..crate::smp::MAX_CPUS {
                 if LOADED_ASPACE[i].load(Ordering::SeqCst) == aspace {
                     live = true;
@@ -440,13 +459,29 @@ pub fn unload_user_aspace(aspace: u64) {
             if !live {
                 break;
             }
+            // Soft-ACK while waiting so a peer IF-off in schedule still
+            // progresses a shootdown if we must issue one below.
+            crate::smp::tlb_service();
             if kicks < 8 && (spin == 0 || spin % 64 == 0) {
                 crate::smp::kick_cpus();
                 kicks += 1;
             }
             core::hint::spin_loop();
         }
-        crate::smp::tlb_shootdown();
+        // x86: affinity pin ⇒ once no CPU lists this root in LOADED_ASPACE,
+        // no remote TLB holds it (local CR3 switch above already flushed us).
+        // Skip the global IPI barrier — it dominated exit/reclaim cost under
+        // -smp 4 TCG. Still shoot down if a remote refused to drop the root
+        // (float / bug), and on other arches that may migrate.
+        #[cfg(target_arch = "x86_64")]
+        if live {
+            crate::smp::tlb_shootdown();
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = live;
+            crate::smp::tlb_shootdown();
+        }
     }
 }
 
@@ -1498,7 +1533,7 @@ pub fn replace_user(
     user_argc: usize,
     user_argv: usize,
 ) {
-    let rehomed = with_current_mut(|t| {
+    with_current_mut(|t| {
         t.aspace = aspace;
         t.user_rip = user_rip;
         t.user_rsp = user_rsp;
@@ -1514,26 +1549,10 @@ pub fn replace_user(
         // v1: reset dispositions on exec (ignored → DFL, drop pending).
         t.sig_pending = 0;
         t.sig_ignored = 0;
-        // Post-exec re-home (narrow): fork kids inherit parent affinity so
-        // sequential smoke `wait_child` stays same-CPU. Only parallel build
-        // tools (`rehome_exec_name`) take a fresh AP RR home for `make -j`.
-        // Session binaries stay sticky (remote-AP netd/getty triple-faulted).
-        let name = &t.exec_name[..t.exec_name_len as usize];
-        let mut rehomed = false;
-        if !sticky_exec_name(name) && rehome_exec_name(name) {
-            let next = user_affinity();
-            if t.affinity != next {
-                t.affinity = next;
-                rehomed = true;
-            }
-        }
-        rehomed
+        // Keep fork-assigned affinity across exec. Spreading for make -j /
+        // pipelines happens at fork when a sibling is already active — not
+        // via basename allowlists or blanket post-exec RR.
     });
-    if rehomed {
-        // Comment at schedule(): AP timers may eventually pick Ready, but a
-        // still-Running post-exec task needs an IPI so the new home CPU wakes.
-        crate::smp::kick_cpus();
-    }
     user::switch_aspace(aspace);
     set_loaded_aspace(aspace);
 }
@@ -1675,6 +1694,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     stamp_stack_cpu(top, crate::smp::cpu_id());
 
     let mut tasks = TASKS.lock();
+    let (child_aff, kick) = fork_child_affinity(&tasks, ppid);
     tasks[slot] = Task {
         state: State::Ready,
         stack_base,
@@ -1706,16 +1726,18 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        // Co-locate with parent through fork: cross-CPU fork+exec/wait hangs
-        // under remote TLB shootdown vs waiter cli. `replace_user` (post-exec)
-        // re-homes with RR across APs so make -j workers spread; spawn_user
-        // still RR-assigns independent top-level tasks.
-        affinity: tasks[ppid].affinity,
+        // Sequential / init→getty (no ctty): inherit. Ctty parent with an
+        // active sibling (make -j / pipelines): fresh AP RR home. Exec keeps
+        // this affinity. Cross-CPU wait: die() IF-on + schedule() soft TLB.
+        affinity: child_aff,
     };
     drop(tasks);
     user::note_fork();
     irq_restore(flags);
-    crate::smp::kick_cpus();
+    // Only wake peers when the child was RR-homed onto another AP.
+    if kick {
+        crate::smp::kick_cpus();
+    }
     Some(slot)
 }
 
@@ -1878,6 +1900,9 @@ pub fn schedule() {
     // (timer, yield); save/restore so we never leave IF on while locked.
     let flags = irq_save();
     irq_off();
+    // Soft-ACK pending TLB shootdowns while IF is off so a peer in die()
+    // reclaim cannot spin forever waiting for an IPI we cannot take yet.
+    crate::smp::tlb_service();
 
     // Pick `next` under TASKS, but do NOT mark the previous task Ready and do
     // NOT switch CR3 while holding the lock:
@@ -1959,8 +1984,8 @@ pub fn schedule() {
     // CR3 is `next`'s — safe to publish Ready on `old`.
     // Do NOT IPI-kick here: Ready is visible while we still run on `old`'s
     // stack until task_switch; a peer running `old` early NX-faulted under
-    // -smp 4. AP timers pick up foreign-affinity Ready; `replace_user` kicks
-    // when re-homing a still-Running post-exec task.
+    // -smp 4. AP timers pick up foreign-affinity Ready; fork kicks when a
+    // parallel child is RR-homed onto another AP.
     {
         let mut tasks = TASKS.lock();
         if tasks[old].state == State::Running {

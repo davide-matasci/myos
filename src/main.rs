@@ -332,7 +332,7 @@ fn run_ci_bios(bios_path: &str) {
         .arg("-m")
         .arg("1024")
         .arg("-smp")
-        .arg("4")  // ≥2 APs for post-exec RR re-home / make -j
+        .arg("4")  // ≥2 APs for parallel-fork RR / make -j
         .arg("-drive")
         .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
@@ -377,7 +377,7 @@ fn run_ci_uefi(uefi_path: &str) {
         .arg("-m")
         .arg("1024")
         .arg("-smp")
-        .arg("4")  // ≥2 APs for post-exec RR re-home / make -j
+        .arg("4")  // ≥2 APs for parallel-fork RR / make -j
         .arg("-drive")
         .arg(format!("format=raw,file={uefi_path}"))
         .arg("-drive")
