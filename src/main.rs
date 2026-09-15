@@ -330,7 +330,10 @@ fn run_ci_bios(bios_path: &str) {
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
-        .arg("1024")
+        // 2048: smoke staging of 137 ELFs into the tmpfs-backed /tmp
+        // exhausts the frame allocator at 1024 MiB ("out of usable memory",
+        // kernel/src/mm.rs). riscv64 CI already runs 2048.
+        .arg("2048")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
         .arg("-drive")
@@ -375,7 +378,10 @@ fn run_ci_uefi(uefi_path: &str) {
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
-        .arg("1024")
+        // 2048: smoke staging of 137 ELFs into the tmpfs-backed /tmp
+        // exhausts the frame allocator at 1024 MiB ("out of usable memory",
+        // kernel/src/mm.rs). riscv64 CI already runs 2048.
+        .arg("2048")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
         .arg("-drive")
