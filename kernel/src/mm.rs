@@ -42,9 +42,12 @@ pub static FRAME_SITE_COUNTS: [AtomicU64; 6] = [
 ];
 
 /// Allocate one frame and attribute it to a leak-triage call site.
+#[inline(always)]
 pub fn alloc_frame_site(site: usize) -> u64 {
     let f = alloc_frame();
-    FRAME_SITE_COUNTS[site].fetch_add(1, Ordering::Relaxed);
+    if site < FRAME_SITE_COUNTS.len() {
+        FRAME_SITE_COUNTS[site].fetch_add(1, Ordering::Relaxed);
+    }
     f
 }
 

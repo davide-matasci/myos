@@ -2016,6 +2016,11 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     if entry == 0 {
         return SYSERR;
     }
+    // expand_user_elf / reload of a large ELF (ripgrep) is deep enough that
+    // LLVM may have clobbered tp since the sync above. replace_user and
+    // set_loaded_aspace go through current_slot()/cpu_id() — re-pin before
+    // mutating the running task and resuming.
+    crate::smp::sync_tp_for_kernel();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
