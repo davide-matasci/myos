@@ -32,8 +32,12 @@ static SCHED_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CP
 static BOOT_CPU: AtomicUsize = AtomicUsize::new(0);
 static AP_PROGRESS: AtomicUsize = AtomicUsize::new(0);
 
-/// TLB shootdown barrier: sender sets remaining, each remote IPI decrements.
-static TLB_REMAINING: AtomicUsize = AtomicUsize::new(0);
+/// TLB shootdown epoch: sender bumps, every CPU (IPI or soft `tlb_service`)
+/// advances `TLB_SEEN[cpu]` after a local flush. Soft service lets remotes
+/// that are briefly IF-off inside `schedule`/`wait_child` still ACK — the
+/// old remaining-counter + IRQ-only ACK deadlocked cross-CPU exit reclaim.
+static TLB_EPOCH: AtomicU64 = AtomicU64::new(0);
+static TLB_SEEN: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static TLB_LOCK: Mutex<()> = Mutex::new(());
 
 /// Soft IPI reason bits (riscv software interrupt carries no vector).
@@ -236,44 +240,104 @@ fn ipi_clear_handled() {
     IPI_BITS.store(0, Ordering::SeqCst);
 }
 
-pub fn tlb_ipi_ack() {
-    let _ = TLB_REMAINING.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
-        Some(v.saturating_sub(1))
+fn flush_tlb_local() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let cr3: u64;
+        core::arch::asm!(
+            "mov {cr3}, cr3",
+            "mov cr3, {cr3}",
+            cr3 = out(reg) cr3,
+            options(nostack, preserves_flags),
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb ishst", options(nostack));
+        core::arch::asm!("tlbi vmalle1is", options(nostack));
+        core::arch::asm!("dsb ish; isb", options(nostack));
+    }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("sfence.vma zero, zero", options(nostack));
+    }
+}
+
+/// Flush this CPU's TLB if a shootdown epoch is pending. Safe with IF off —
+/// call from `schedule` so remotes ACK without needing the IPI handler.
+pub fn tlb_service() {
+    let cpu = cpu_id();
+    if cpu >= MAX_CPUS {
+        return;
+    }
+    let epoch = TLB_EPOCH.load(Ordering::SeqCst);
+    let seen = TLB_SEEN[cpu].load(Ordering::SeqCst);
+    if seen >= epoch {
+        return;
+    }
+    flush_tlb_local();
+    let _ = TLB_SEEN[cpu].fetch_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
+        if s >= epoch {
+            None
+        } else {
+            Some(epoch)
+        }
     });
     #[cfg(target_arch = "riscv64")]
     {
-        // Soft IPI reason consumed.
-        IPI_BITS.fetch_and(!(IPI_BIT_TLB), Ordering::SeqCst);
+        IPI_BITS.fetch_and(!IPI_BIT_TLB, Ordering::SeqCst);
     }
+}
+
+/// IPI handler entry: same as soft service (idempotent on epoch).
+pub fn tlb_ipi_ack() {
+    tlb_service();
+}
+
+fn tlb_all_seen(epoch: u64) -> bool {
+    for i in 0..MAX_CPUS {
+        if !ONLINE[i].load(Ordering::SeqCst) {
+            continue;
+        }
+        if TLB_SEEN[i].load(Ordering::SeqCst) < epoch {
+            return false;
+        }
+    }
+    true
 }
 
 /// Invalidate this CPU's user TLB and ask every other online CPU to do the same.
 pub fn tlb_shootdown() {
     let others = online_count().saturating_sub(1);
     if others == 0 {
+        flush_tlb_local();
         return;
     }
     // Serialize shootdowns. Spin on the lock instead of dropping the flush:
     // reclaim must not free frames while a peer may still cache translations.
-    // Bounded — a remote inside `schedule` (IF off) cannot EOI until it
-    // returns; unbounded wait deadlocked SMP bring-up under UEFI timing.
+    // Bounded lock wait — then proceed under the epoch barrier anyway.
     let mut lock_spins = 0u32;
     let _guard = loop {
         if let Some(g) = TLB_LOCK.try_lock() {
-            break g;
+            break Some(g);
         }
+        // Help the holder: remotes IF-off in schedule still need to ACK.
+        tlb_service();
         lock_spins += 1;
         if lock_spins >= 2_000_000 {
-            return;
+            break None;
         }
         core::hint::spin_loop();
     };
-    TLB_REMAINING.store(others, Ordering::SeqCst);
+    let epoch = TLB_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+    tlb_service();
     #[cfg(target_arch = "riscv64")]
     ipi_mark_tlb();
     arch::ipi_tlb_shootdown();
     let mut spins = 0u32;
-    while TLB_REMAINING.load(Ordering::SeqCst) > 0 && spins < 2_000_000 {
+    while !tlb_all_seen(epoch) && spins < 2_000_000 {
+        // Soft-ACK path for peers stuck briefly cli in schedule/wait.
+        tlb_service();
         core::hint::spin_loop();
         spins += 1;
     }
@@ -412,6 +476,7 @@ pub fn init() {
     };
     HW_IDS[0].store(hw, Ordering::SeqCst);
     ONLINE[0].store(true, Ordering::SeqCst);
+    TLB_SEEN[0].store(TLB_EPOCH.load(Ordering::SeqCst), Ordering::SeqCst);
     BOOT_CPU.store(0, Ordering::SeqCst);
     {
         let mut cpus = CPUS.lock();
@@ -650,6 +715,9 @@ pub unsafe extern "C" fn myos_smp_ap_entry(info: &limine::mp::MpInfo) -> ! {
 
 pub fn mark_running(logical: usize) {
     if logical < MAX_CPUS {
+        // Catch up to the current shootdown epoch before advertising ONLINE so
+        // an in-flight tlb_all_seen wait cannot hang on SEEN=0 forever.
+        TLB_SEEN[logical].store(TLB_EPOCH.load(Ordering::SeqCst), Ordering::SeqCst);
         ONLINE[logical].store(true, Ordering::SeqCst);
         let mut cpus = CPUS.lock();
         cpus[logical].online = true;

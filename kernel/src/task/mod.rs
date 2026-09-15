@@ -359,32 +359,12 @@ pub fn init() {
 
 /// x86: round-robin home CPU across APs when SMP is online. Skip CPU 0 —
 /// BSP shares irq/console/kernel_main with user under RR and CI bios hung
-/// after histrecall (`80c6ff1`, `-smp 2`). With two CPUs this is pin-to-AP
-/// (last green); with `-smp 4` (≥2 APs) post-exec re-home spreads make -j
-/// workers. Used at `spawn_user` and again in `replace_user` after exec
-/// (fork still inherits parent affinity). Live migration (`None`) still
-/// unstable. Other arches float.
-
-fn sticky_exec_name(name: &[u8]) -> bool {
-    // Prefer sticky homes for the interactive session and netd so console
-    // IRQs stay co-located with the reader. Cross-CPU exit reclaim is safe once
-    // `die` runs TLB shootdown with IF on.
-    matches!(
-        name,
-        b"netd" | b"getty" | b"login" | b"sh" | b"oksh" | b"init"
-    )
-}
-
-/// Parallel build workers that should RR across APs after exec. Everything else
-/// keeps the fork-inherited home so parent `wait_child` stays same-CPU —
-/// blanket re-home of smoke ELFs (std/cat, rg, …) hung bios mid-`/heap` under
-/// `-smp 4` once UART drain fixed the earlier `which ls` flake (PR #150 CI).
-fn rehome_exec_name(name: &[u8]) -> bool {
-    matches!(
-        name,
-        b"tcc" | b"cc1" | b"cc1plus" | b"as" | b"ld" | b"collect2" | b"make"
-    )
-}
+/// after histrecall (`80c6ff1`, `-smp 2`). With `-smp 4` (≥2 APs) post-exec
+/// re-home spreads *all* user images (make -j workers and session binaries)
+/// without basename allowlists. Fork still inherits parent affinity until
+/// exec; cross-CPU wait is kept safe by `die` IF-on reclaim + soft TLB
+/// service in `schedule`. Live migration (`affinity: None`) remains off.
+/// Other arches float.
 
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
@@ -440,6 +420,9 @@ pub fn unload_user_aspace(aspace: u64) {
             if !live {
                 break;
             }
+            // Soft-ACK while waiting so a peer IF-off in schedule still
+            // progresses the shootdown we are about to issue.
+            crate::smp::tlb_service();
             if kicks < 8 && (spin == 0 || spin % 64 == 0) {
                 crate::smp::kick_cpus();
                 kicks += 1;
@@ -1514,19 +1497,14 @@ pub fn replace_user(
         // v1: reset dispositions on exec (ignored → DFL, drop pending).
         t.sig_pending = 0;
         t.sig_ignored = 0;
-        // Post-exec re-home (narrow): fork kids inherit parent affinity so
-        // sequential smoke `wait_child` stays same-CPU. Only parallel build
-        // tools (`rehome_exec_name`) take a fresh AP RR home for `make -j`.
-        // Session binaries stay sticky (remote-AP netd/getty triple-faulted).
-        let name = &t.exec_name[..t.exec_name_len as usize];
-        let mut rehomed = false;
-        if !sticky_exec_name(name) && rehome_exec_name(name) {
-            let next = user_affinity();
-            if t.affinity != next {
-                t.affinity = next;
-                rehomed = true;
-            }
-        }
+        // Post-exec re-home for every user image: fork kids inherit parent
+        // affinity (short same-CPU window before exec), then the new image
+        // gets a fresh AP-only RR home so make -j spreads without a basename
+        // allowlist. No sticky_exec_name / rehome_exec_name — session and
+        // build tools share the same policy; races are fixed in die/TLB.
+        let next = user_affinity();
+        let rehomed = t.affinity != next;
+        t.affinity = next;
         rehomed
     });
     if rehomed {
@@ -1706,10 +1684,10 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        // Co-locate with parent through fork: cross-CPU fork+exec/wait hangs
-        // under remote TLB shootdown vs waiter cli. `replace_user` (post-exec)
-        // re-homes with RR across APs so make -j workers spread; spawn_user
-        // still RR-assigns independent top-level tasks.
+        // Co-locate with parent through fork until exec. Cross-CPU wait after
+        // post-exec re-home is safe: die() enables IRQs before reclaim and
+        // schedule() soft-ACKs TLB shootdowns while IF-off. spawn_user still
+        // RR-assigns independent top-level tasks across APs.
         affinity: tasks[ppid].affinity,
     };
     drop(tasks);
@@ -1878,6 +1856,9 @@ pub fn schedule() {
     // (timer, yield); save/restore so we never leave IF on while locked.
     let flags = irq_save();
     irq_off();
+    // Soft-ACK pending TLB shootdowns while IF is off so a peer in die()
+    // reclaim cannot spin forever waiting for an IPI we cannot take yet.
+    crate::smp::tlb_service();
 
     // Pick `next` under TASKS, but do NOT mark the previous task Ready and do
     // NOT switch CR3 while holding the lock:

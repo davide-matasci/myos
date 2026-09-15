@@ -50,19 +50,25 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
 Kernel tasks use `affinity: None` (smoke `sched mask=0x3`). On **x86_64** with
 more than one CPU online, new user tasks round-robin across APs (skip BSP); fork
-children inherit the parent's affinity (cross-CPU fork+exec/wait still hangs
-under remote TLB shootdown vs syscall `cli`). After a successful **exec**,
-`replace_user` re-homes the new image with the same AP-only RR policy so
-`make -j` workers (tcc/cc1/…) spread across APs under `-smp 4` (≥2 APs).
-Boot/session binaries (`netd`, `getty`, `login`, `sh`/`oksh`, `init`) stay
-sticky on the inherited CPU. `die` enables IRQs before reclaim/TLB
-shootdown so a re-homed child's exit no longer deadlocks a cli waiter. True `affinity: None` live migration remains unstable (NX #PF /
-leave races). `schedule` switches aspace/rsp0 before publishing Ready (old
-stays Running across the CR3 write, lock not held during switch);
-`unload_user_aspace` briefly kicks remotes then TLB-shootdowns; fork kicks
-idle CPUs. **aarch64** / **riscv64**
-leave user floating (APs may stay parked). `note_schedule` → `/proc/cpuinfo`.
-QEMU `-smp 4` on x86/aarch64 (interactive + CI); riscv stays `-smp 2` (Limine panics `missing struct riscv_hart for BSP` at 4). The packed `boot/virt.dtb` is always dumped with `-smp 2` so OpenSBI BSP hartid=1 still has a hart node. riscv APs are WFI-parked in-kernel without ONLINE (Limine busy-spin left the ripgrep `sepc=0` IPF; full ONLINE bring-up hung mid-`/ok`). On x86, post-exec RR re-home is limited to parallel build tools (tcc/make/…) so sequential `/heap` wait stays same-CPU; the BSP timer also drains UART RX (`input::drain_uart_irq`) so a starved shell under `-smp 4` TCG cannot overrun the COM1 FIFO.
+children inherit the parent's affinity until **exec**. After a successful exec,
+`replace_user` always re-homes the new image with the same AP-only RR policy
+(no basename sticky/rehome allowlists) so `make -j` workers and session
+binaries alike spread under `-smp 4` (≥2 APs). Cross-CPU exit reclaim is kept
+safe by: (1) `die` enabling IRQs before reclaim/TLB shootdown, (2) epoch-based
+TLB shootdown with soft `tlb_service` from `schedule` while IF-off (IRQ-only
+ACK previously deadlocked a cli waiter). True `affinity: None` live migration
+remains off (NX #PF / leave races). `schedule` switches aspace/rsp0 before
+publishing Ready (old stays Running across the CR3 write, lock not held during
+switch); `unload_user_aspace` briefly kicks remotes then TLB-shootdowns; fork
+kicks idle CPUs. **aarch64** / **riscv64** leave user floating (APs may stay
+parked). `note_schedule` → `/proc/cpuinfo`. QEMU `-smp 4` on x86/aarch64
+(interactive + CI); riscv stays `-smp 2` (Limine panics `missing struct
+riscv_hart for BSP` at 4). The packed `boot/virt.dtb` is always dumped with
+`-smp 2` so OpenSBI BSP hartid=1 still has a hart node. riscv APs are
+WFI-parked in-kernel without ONLINE (Limine busy-spin left the ripgrep
+`sepc=0` IPF; full ONLINE bring-up hung mid-`/ok`). On x86 the BSP timer also
+drains UART RX (`input::drain_uart_irq`) and kicks APs so a starved shell
+under `-smp 4` TCG cannot overrun the COM1 FIFO / sticky-key login.
 
 Per-CPU ring3↔ring0 state:
 
