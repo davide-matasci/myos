@@ -378,10 +378,11 @@ fn run_ci_uefi(uefi_path: &str) {
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
-        // 2048: smoke staging of 137 ELFs into the tmpfs-backed /tmp
-        // exhausts the frame allocator at 1024 MiB ("out of usable memory",
-        // kernel/src/mm.rs). riscv64 CI already runs 2048.
-        .arg("2048")
+        // 2560: UEFI+GOP leaves less usable RAM than BIOS at the same -m.
+        // After x86 page-table reclaim, 2048 still OOM'd mid os-test report
+        // dump on workflow 34993401424; give UEFI a little headroom without
+        // papering over leaks on the bios job (stays 2048).
+        .arg("2560")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
         .arg("-drive")

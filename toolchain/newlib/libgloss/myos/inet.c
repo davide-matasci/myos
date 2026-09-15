@@ -98,7 +98,8 @@ static int parse_ipv4(const char *src, unsigned char out[4]) {
 
 static int parse_ipv4_strict(const char *src, unsigned char out[4]) {
     /* inet_pton: strict dotted-quad decimal per POSIX — no hex/octal, no
-     * leading zeros (os-test requires "1.2.3.0000" rejected). */
+     * leading zeros (os-test requires "1.2.3.0000" rejected). Also used for
+     * the IPv4 tail of IPv4-mapped IPv6 addresses. */
     const char *p = src;
     for (int i = 0; i < 4; i++) {
         unsigned v = 0;
@@ -126,6 +127,132 @@ static int parse_ipv4_strict(const char *src, unsigned char out[4]) {
         }
     }
     return *p == '\0';
+}
+
+/* RFC 4291 / POSIX inet_pton(AF_INET6). Based on Paul Vixie / ISC, with:
+ * - max 4 hex digits per group (os-test rejects "04567")
+ * - IPv4-mapped tail via parse_ipv4_strict (reject leading zeros)
+ * Returns 1 on success, 0 on invalid presentation. */
+static int parse_ipv6(const char *src, unsigned char out[16]) {
+    unsigned char tmp[16];
+    unsigned char *tp;
+    unsigned char *endp;
+    unsigned char *colonp;
+    const char *curtok;
+    int ch;
+    int saw_xdigit;
+    int digits;
+    unsigned val;
+
+    if (src == NULL) {
+        return 0;
+    }
+    for (int i = 0; i < 16; i++) {
+        tmp[i] = 0;
+    }
+    tp = tmp;
+    endp = tmp + 16;
+    colonp = NULL;
+    if (*src == ':') {
+        if (*++src != ':') {
+            return 0;
+        }
+    }
+    curtok = src;
+    saw_xdigit = 0;
+    digits = 0;
+    val = 0;
+    while ((ch = (unsigned char)*src++) != '\0') {
+        int d = -1;
+        if (ch >= '0' && ch <= '9') {
+            d = ch - '0';
+        } else if (ch >= 'a' && ch <= 'f') {
+            d = ch - 'a' + 10;
+        } else if (ch >= 'A' && ch <= 'F') {
+            d = ch - 'A' + 10;
+        }
+        if (d >= 0) {
+            if (++digits > 4) {
+                return 0;
+            }
+            val = (val << 4) | (unsigned)d;
+            if (val > 0xffff) {
+                return 0;
+            }
+            saw_xdigit = 1;
+            continue;
+        }
+        if (ch == ':') {
+            curtok = src;
+            if (!saw_xdigit) {
+                if (colonp) {
+                    return 0;
+                }
+                colonp = tp;
+                continue;
+            }
+            if (tp + 2 > endp) {
+                return 0;
+            }
+            *tp++ = (unsigned char)(val >> 8);
+            *tp++ = (unsigned char)(val & 0xff);
+            saw_xdigit = 0;
+            digits = 0;
+            val = 0;
+            continue;
+        }
+        if (ch == '.' && (tp + 4) <= endp && parse_ipv4_strict(curtok, tp)) {
+            tp += 4;
+            saw_xdigit = 0;
+            digits = 0;
+            break;
+        }
+        return 0;
+    }
+    if (saw_xdigit) {
+        if (tp + 2 > endp) {
+            return 0;
+        }
+        *tp++ = (unsigned char)(val >> 8);
+        *tp++ = (unsigned char)(val & 0xff);
+    }
+    if (colonp != NULL) {
+        int n = (int)(tp - colonp);
+        int i;
+        for (i = 1; i <= n; i++) {
+            endp[-i] = colonp[n - i];
+            colonp[n - i] = 0;
+        }
+        tp = endp;
+    }
+    if (tp != endp) {
+        return 0;
+    }
+    for (int i = 0; i < 16; i++) {
+        out[i] = tmp[i];
+    }
+    return 1;
+}
+
+int inet_pton(int af, const char *src, void *dst) {
+    unsigned char b4[4];
+    unsigned char b16[16];
+    if (af == AF_INET) {
+        if (src == NULL || dst == NULL || !parse_ipv4_strict(src, b4)) {
+            return 0;
+        }
+        memcpy(dst, b4, 4);
+        return 1;
+    }
+    if (af == AF_INET6) {
+        if (src == NULL || dst == NULL || !parse_ipv6(src, b16)) {
+            return 0;
+        }
+        memcpy(dst, b16, 16);
+        return 1;
+    }
+    errno = EAFNOSUPPORT;
+    return -1;
 }
 
 static int fmt_ipv4(char *dst, size_t size, const unsigned char b[4]) {
@@ -172,19 +299,6 @@ char *inet_ntoa(struct in_addr in) {
         buf[0] = '\0';
     }
     return buf;
-}
-
-int inet_pton(int af, const char *src, void *dst) {
-    unsigned char b[4];
-    if (af != AF_INET) {
-        errno = EAFNOSUPPORT;
-        return -1;
-    }
-    if (src == NULL || dst == NULL || !parse_ipv4_strict(src, b)) {
-        return 0;
-    }
-    memcpy(dst, b, 4);
-    return 1;
 }
 
 const char *inet_ntop(int af, const void *src, char *dst, size_t size) {

@@ -219,6 +219,38 @@ patch_setjmp_h
 
 echo "myos newlib patches applied"
 
+
+# x86_64 newlib longjmp(env, 0) must make setjmp return 1 (POSIX). Upstream
+# setjmp.S just moves rsi→rax, so longjmp(buf, 0) looks like a first setjmp
+# return — os-test basic/setjmp/longjmp and the savemask=0 half of siglongjmp
+# fail. aarch64 (cinc) and riscv (seqz+add) already handle this.
+patch_x86_longjmp_val0() {
+  local f="$NEWLIB_SRC/newlib/libc/machine/x86_64/setjmp.S"
+  if [[ -f "$f" ]] && ! grep -q 'longjmp-myos-val0' "$f"; then
+    python3 - "$f" <<'PYLJ'
+import sys
+f = sys.argv[1]
+s = open(f).read()
+old = """SYM (longjmp):
+  movq    rsi, rax        /* Return value */
+
+  movq     8 (rdi), rbp"""
+new = """SYM (longjmp):
+  movq    rsi, rax        /* Return value */
+  /* longjmp-myos-val0: POSIX — longjmp(env, 0) makes setjmp return 1 */
+  testq   rax, rax
+  jnz     .Lmyos_lj_ok
+  movq    $1, rax
+.Lmyos_lj_ok:
+
+  movq     8 (rdi), rbp"""
+assert old in s, f"{f}: longjmp prolog not found"
+open(f, "w").write(s.replace(old, new, 1))
+PYLJ
+    echo "patched x86_64 setjmp.S: longjmp(env,0) -> setjmp returns 1"
+  fi
+}
+
 # tmpfile (newlib) unlinks immediately; the myos kernel drops tmpfs content
 # with the last name, so later writes on the fd fail (stdio/fflush: EIO).
 # POSIX only requires the file be discarded at program termination: defer the
@@ -292,3 +324,5 @@ PYVALIST
 }
 
 patch_valist
+patch_tmpfile
+patch_x86_longjmp_val0

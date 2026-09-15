@@ -1148,28 +1148,13 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
 }
 
 fn pick_user_base() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let src = task::kernel_aspace() & !0xfff;
-        let pml4 = unsafe { &*mm::table(src) };
-        if pml4[1] == 0 {
-            return DEFAULT_USER_BASE;
-        }
-        for i in 1..256 {
-            if pml4[i] == 0 {
-                return (i as u64) << 39;
-            }
-        }
-        panic!("no free PML4 slot for user");
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        DEFAULT_USER_BASE
-    }
-    #[cfg(target_arch = "riscv64")]
-    {
-        DEFAULT_USER_BASE
-    }
+    // Always DEFAULT_USER_BASE. On x86, create_aspace_x86 clears PML4[1] after
+    // cloning the kernel root so each process gets a *private* PDPT under slot 1
+    // (USER_BASE = 0x80_0000_0000), and free_user_page_tables_x86 tears down that
+    // same index. Picking an alternate slot when Limine left kernel PML4[1]
+    // occupied (common on UEFI) made reclaim free the wrong tree and leak every
+    // user page-table frame — the remaining UEFI OOM after the heap pre-map fix.
+    DEFAULT_USER_BASE
 }
 
 pub fn both_exited() -> bool {
