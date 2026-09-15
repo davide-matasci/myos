@@ -34,6 +34,20 @@ static FREE_HEAD: AtomicU64 = AtomicU64::new(0);
 pub static FRAME_ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static FRAME_FREE_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Per-call-site allocation attribution (leak triage). Sites:
+/// 0=virtq 1=fault-zero 2=exec-copy 3=pagetable 4=mmap 5=other-explicit
+pub static FRAME_SITE_COUNTS: [AtomicU64; 6] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+
+/// Allocate one frame and attribute it to a leak-triage call site.
+pub fn alloc_frame_site(site: usize) -> u64 {
+    let f = alloc_frame();
+    FRAME_SITE_COUNTS[site].fetch_add(1, Ordering::Relaxed);
+    f
+}
+
 fn heap_phys() -> u64 {
     let entries = limine_boot::MEMMAP
         .response()
@@ -275,12 +289,18 @@ pub fn alloc_frame() -> u64 {
         })
         .unwrap_or(0);
     panic!(
-        "out of usable memory: alloc={} free={} live={} next={:#x} usable_top={:#x}",
+        "out of usable memory: alloc={} free={} live={} next={:#x} usable_top={:#x} sites virtq={} fault0={} exec={} pt={} mmap={} other={}",
         FRAME_ALLOC_COUNT.load(Ordering::Relaxed),
         FRAME_FREE_COUNT.load(Ordering::Relaxed),
         FRAME_ALLOC_COUNT.load(Ordering::Relaxed) - FRAME_FREE_COUNT.load(Ordering::Relaxed),
         NEXT.load(Ordering::SeqCst),
         top,
+        FRAME_SITE_COUNTS[0].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[1].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[2].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[3].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[4].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[5].load(Ordering::Relaxed),
     );
 }
 

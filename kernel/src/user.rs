@@ -367,7 +367,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
 
     let mut frames = [0u64; MAX_INIT_PAGES];
     for i in 0..n_pages {
-        frames[i] = mm::alloc_frame();
+        frames[i] = mm::alloc_frame_site(2);
         if i < code_pages {
             let off = i * PAGE;
             let len = core::cmp::min(PAGE, info.span - off);
@@ -387,7 +387,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     }
     let mut stack_frames = [0u64; USER_STACK_PAGES];
     for frame in &mut stack_frames {
-        *frame = mm::alloc_frame();
+        *frame = mm::alloc_frame_site(5);
     }
     let aspace = create_aspace(&frames[..n_pages], &stack_frames, base, stack_off);
     apply_elf_load_prots(aspace, bytes, base, code_pages);
@@ -452,7 +452,7 @@ fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
     if let Some(phys) = virt_to_phys(aspace, va) {
         phys
     } else {
-        let frame = mm::alloc_frame();
+        let frame = mm::alloc_frame_site(1);
         unsafe {
             core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
         }
@@ -894,7 +894,7 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
         let phys = virt_to_phys(src, va)?;
-        frames[i] = mm::alloc_frame();
+        frames[i] = mm::alloc_frame_site(2);
         unsafe {
             core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(frames[i]), PAGE);
         }
@@ -904,7 +904,7 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     let mut stack_frames = [0u64; USER_STACK_PAGES];
     for i in 0..USER_STACK_PAGES {
         let phys = virt_to_phys(src, stack_va + (i * PAGE) as u64)?;
-        stack_frames[i] = mm::alloc_frame();
+        stack_frames[i] = mm::alloc_frame_site(2);
         unsafe {
             core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(stack_frames[i]), PAGE);
         }
@@ -915,7 +915,7 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     let mut va = heap_base as usize;
     while va < heap_end {
         if virt_to_phys(src, va as u64).is_some() {
-            let phys = mm::alloc_frame();
+            let phys = mm::alloc_frame_site(2);
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     mm::hhdm(virt_to_phys(src, va as u64)?),
@@ -957,7 +957,7 @@ fn copy_mmap_pages(src: u64, dst: u64) {
         let end = r.va.saturating_add(r.pages as u64 * PAGE as u64);
         while va < end {
             if let Some(phys) = virt_to_phys(src, va) {
-                let frame = mm::alloc_frame();
+                let frame = mm::alloc_frame_site(2);
                 unsafe {
                     core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(frame), PAGE);
                 }
@@ -1050,7 +1050,7 @@ fn aarch64_l3_table_mut(l0_phys: u64, page: usize) -> Option<*mut [u64; 512]> {
         }
         let l2 = &mut *mm::table(l2_phys);
         if l2[l2_idx] & 0b11 != TABLE {
-            let l3 = mm::alloc_frame();
+            let l3 = mm::alloc_frame_site(3);
             l2[l2_idx] = l3 | TABLE;
         }
         Some(mm::table(l2[l2_idx] & PA))
@@ -2537,7 +2537,7 @@ fn sys_brk(req: usize) -> usize {
         let mut mapped_any = false;
         while va < map_end {
             if virt_to_phys(aspace, va as u64).is_none() {
-                let frame = mm::alloc_frame();
+                let frame = mm::alloc_frame_site(4);
                 unsafe {
                     core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
                 }
@@ -2624,7 +2624,7 @@ fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: isize, offset
     let mut mapped = 0usize;
     while mapped < map_len {
         let page_va = (va + mapped) as u64;
-        let frame = mm::alloc_frame();
+        let frame = mm::alloc_frame_site(4);
         unsafe {
             core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
         }
@@ -2974,7 +2974,7 @@ fn create_aspace_x86(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> 
     const NX: u64 = 1 << 63;
 
     let src = task::kernel_aspace() & !0xfff;
-    let pml4_phys = mm::alloc_frame();
+    let pml4_phys = mm::alloc_frame_site(3);
     unsafe {
         let src_t = &*mm::table(src);
         let dst_t = &mut *mm::table(pml4_phys);
@@ -3230,7 +3230,7 @@ fn ensure_riscv_leaf(satp: u64, va: u64) -> *mut [u64; 512] {
         let root = &mut *mm::table(root_phys);
         let mid_pte = root[i2];
         if mid_pte & paging::PTE_V == 0 {
-            let mid = mm::alloc_frame();
+            let mid = mm::alloc_frame_site(3);
             root[i2] = paging::pte_table(mid);
         } else {
             assert!(
@@ -3241,7 +3241,7 @@ fn ensure_riscv_leaf(satp: u64, va: u64) -> *mut [u64; 512] {
         let mid = &mut *mm::table(paging::pte_phys(root[i2]));
         let leaf_pte = mid[i1];
         if leaf_pte & paging::PTE_V == 0 {
-            let leaf = mm::alloc_frame();
+            let leaf = mm::alloc_frame_site(3);
             mid[i1] = paging::pte_table(leaf);
         } else {
             assert!(
@@ -3327,7 +3327,7 @@ fn ensure_user(entry: &mut u64, table_flags: u64, huge: u64) -> *mut [u64; 512] 
         assert!(*entry & huge == 0, "user map: huge page in the way");
         return mm::table(*entry);
     }
-    let phys = mm::alloc_frame();
+    let phys = mm::alloc_frame_site(3);
     *entry = phys | table_flags;
     mm::table(phys)
 }
@@ -3348,10 +3348,10 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
     let k_l1_phys = k_l0_t[0] & PA;
     let k_l1 = unsafe { &*mm::table(k_l1_phys) };
 
-    let l0 = mm::alloc_frame();
-    let l1 = mm::alloc_frame();
-    let l2 = mm::alloc_frame();
-    let l3 = mm::alloc_frame();
+    let l0 = mm::alloc_frame_site(3);
+    let l1 = mm::alloc_frame_site(3);
+    let l2 = mm::alloc_frame_site(3);
+    let l3 = mm::alloc_frame_site(3);
 
     unsafe {
         let l0_t = &mut *mm::table(l0);
@@ -3397,7 +3397,7 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
 #[cfg(target_arch = "riscv64")]
 fn create_aspace_riscv64(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {
     let k_root_phys = paging::satp_root_phys(task::kernel_aspace());
-    let root = mm::alloc_frame();
+    let root = mm::alloc_frame_site(5);
 
     unsafe {
         let k_root = &*mm::table(k_root_phys);

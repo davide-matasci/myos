@@ -278,9 +278,9 @@ pub fn alloc_pages(n: usize) -> Option<(u64, *mut u8)> {
     if n == 0 {
         return None;
     }
-    let first = crate::mm::alloc_frame();
+    let first = crate::mm::alloc_frame_site(0);
     for i in 1..n {
-        let p = crate::mm::alloc_frame();
+        let p = crate::mm::alloc_frame_site(0);
         if p != first + (i as u64) * 4096 {
             return None;
         }
