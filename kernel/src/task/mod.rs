@@ -361,12 +361,17 @@ pub fn init() {
 /// BSP shares irq/console/kernel_main with user under RR and CI bios hung
 /// after histrecall (`80c6ff1`, `-smp 2`). With `-smp 4` (≥2 APs):
 /// `spawn_user` RR-assigns top-level tasks; fork inherits unless the parent
-/// already has an active child (parallel `make -j` / pipelines) — then the
-/// new child takes a fresh AP RR home. Exec does **not** re-home: sequential
-/// shell/smoke fork+exec+wait stays same-CPU (blanket post-exec RR made UEFI
-/// CI burn the 600s QEMU wall). Cross-CPU wait (pipelines / make) stays safe
-/// via `die` IF-on reclaim + soft TLB service in `schedule`. Live migration
-/// (`affinity: None`) remains off. Other arches float.
+/// has a controlling tty **and** already has an active child (interactive
+/// `make -j` / pipelines) — then the new child takes a fresh AP RR home.
+/// The ctty gate matters: init forks long-lived `netd` then `getty`; without
+/// it, `parent_has_active_child` treated netd as parallel work and RR-spread
+/// getty onto a remote AP (UEFI user #PF cr2=kernel after fork exec; bios
+/// burned the 600s wall mid interactive). Exec does **not** re-home:
+/// sequential shell/smoke fork+exec+wait stays same-CPU (blanket post-exec
+/// RR made UEFI CI burn the 600s QEMU wall). Cross-CPU wait (pipelines /
+/// make) stays safe via `die` IF-on reclaim + soft TLB service in
+/// `schedule`. Live migration (`affinity: None`) remains off. Other arches
+/// float.
 
 fn user_affinity() -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
@@ -386,9 +391,10 @@ fn user_affinity() -> Option<usize> {
 }
 
 
-/// True if `ppid` already has a Ready/Running user child. Used at fork to
-/// distinguish sequential shell/smoke (inherit) from parallel make -j /
-/// pipelines (RR-spread the new child) without basename allowlists.
+/// True if `ppid` already has a Ready/Running user child. Combined with a
+/// ctty check at fork: interactive shells parallel-fork (`make -j`,
+/// pipelines) RR-spread; init/netd (no ctty) always inherit so getty/login
+/// stay with the session home — no basename sticky allowlists.
 fn parent_has_active_child(tasks: &[Task; MAX_TASKS], ppid: usize) -> bool {
     for i in 0..MAX_TASKS {
         if i == ppid || tasks[i].ppid != ppid || tasks[i].user_rip == 0 {
@@ -400,6 +406,19 @@ fn parent_has_active_child(tasks: &[Task; MAX_TASKS], ppid: usize) -> bool {
         }
     }
     false
+}
+
+/// Fork affinity: inherit, or RR-spread when a ctty-bearing parent already
+/// has an active child (parallel jobs). Returns `(affinity, kick)` — kick
+/// only when the child was placed on a different home than the parent.
+fn fork_child_affinity(tasks: &[Task; MAX_TASKS], ppid: usize) -> (Option<usize>, bool) {
+    let parent_aff = tasks[ppid].affinity;
+    if tasks[ppid].has_ctty && parent_has_active_child(tasks, ppid) {
+        let next = user_affinity();
+        (next, next != parent_aff)
+    } else {
+        (parent_aff, false)
+    }
 }
 
 pub fn enable_preempt() {
@@ -1661,6 +1680,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     stamp_stack_cpu(top, crate::smp::cpu_id());
 
     let mut tasks = TASKS.lock();
+    let (child_aff, kick) = fork_child_affinity(&tasks, ppid);
     tasks[slot] = Task {
         state: State::Ready,
         stack_base,
@@ -1692,21 +1712,18 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
-        // Sequential fork+exec+wait (shell, smoke): inherit parent home so
-        // wait_child stays same-CPU. Parallel fork (parent already has an
-        // active child — make -j / pipelines): fresh AP RR home. Exec keeps
-        // this affinity (no post-exec re-home). Cross-CPU wait is safe via
-        // die() IF-on reclaim + schedule() soft TLB ACK.
-        affinity: if parent_has_active_child(&tasks, ppid) {
-            user_affinity()
-        } else {
-            tasks[ppid].affinity
-        },
+        // Sequential / init→getty (no ctty): inherit. Ctty parent with an
+        // active sibling (make -j / pipelines): fresh AP RR home. Exec keeps
+        // this affinity. Cross-CPU wait: die() IF-on + schedule() soft TLB.
+        affinity: child_aff,
     };
     drop(tasks);
     user::note_fork();
     irq_restore(flags);
-    crate::smp::kick_cpus();
+    // Only wake peers when the child was RR-homed onto another AP.
+    if kick {
+        crate::smp::kick_cpus();
+    }
     Some(slot)
 }
 
