@@ -23,7 +23,9 @@ mod modules;
 mod pipe;
 mod signal;
 mod smp;
+mod pty;
 mod task;
+mod tty;
 mod time;
 mod user;
 

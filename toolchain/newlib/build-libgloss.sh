@@ -41,7 +41,7 @@ for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c "$ROOT"/toolchain/newlib
   cp "$src_f" "$PORT/"
 done
 
-for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect search; do
+for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect pty search; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
@@ -88,4 +88,5 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/arpa/inet.h" "$inc/arpa/inet.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/netinet/in.h" "$inc/netinet/in.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/netdb.h" "$inc/netdb.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/poll.h" "$inc/poll.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/pty.h" "$inc/pty.h"
 echo "libgloss-myos -> $libdir/libgloss.a"

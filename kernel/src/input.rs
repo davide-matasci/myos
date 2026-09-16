@@ -4,7 +4,10 @@
 //! (empty until userspace loads a map). Serial is unaffected.
 //!
 //! Line discipline follows the console termios (`ICANON` / `ECHO` / `ISIG` /
-//! `ICRNL`). Default is **canonical** (cooked): printable bytes accumulate in
+//! `ICRNL`). The discipline core (termios + edit/ring processing) lives in
+//! [`crate::tty`] and is shared with pty slave inputs; this module owns the
+//! console instance and its hardware drain paths. Default is **canonical**
+//! (cooked): printable bytes accumulate in
 //! a private edit buffer and are not visible to `read` until newline. Backspace
 //! / DEL erase the last edit column (and the console glyph) without ever
 //! delivering `0x08` to userspace. That matches oksh's non-`x_init` path, which
@@ -21,8 +24,6 @@ use crate::arch;
 use crate::console;
 use crate::task;
 
-const RING: usize = 256;
-const EDIT: usize = 128;
 /// Lock-free UART RX staging drained from timer IRQs on every CPU.
 /// Without this, a starved shell under `-smp 4` TCG can miss COM1 FIFO bytes
 /// (`which ls` → `which s` on CI #34824642315).
@@ -34,139 +35,26 @@ static IRQ_BUF: [AtomicU8; IRQ_RING] = {
     [ZERO; IRQ_RING]
 };
 
-/// Matches libgloss `<termios.h>` `struct termios` layout (56 bytes).
-pub const TERMIOS_LEN: usize = 56;
+/// The console tty: one input line-discipline instance (termios + rings).
+pub const TERMIOS_LEN: usize = crate::tty::TERMIOS_LEN;
 
-const VINTR: usize = 0;
-const VERASE: usize = 2;
-const VEOF: usize = 4;
-const VTIME: usize = 5;
-const VMIN: usize = 6;
-
-const ICRNL: u32 = 0o000400;
-
-
-const OPOST: u32 = 0o000001;
-const ONLCR: u32 = 0o000004;
-
-const ISIG: u32 = 0o000001;
-const ICANON: u32 = 0o000002;
-const ECHO: u32 = 0o000010;
-const ECHOE: u32 = 0o000020;
-const ECHOK: u32 = 0o000040;
-const IEXTEN: u32 = 0o001000;
-
-const CS8: u32 = 0o000060;
-const CREAD: u32 = 0o000200;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Termios {
-    pub c_iflag: u32,
-    pub c_oflag: u32,
-    pub c_cflag: u32,
-    pub c_lflag: u32,
-    pub c_cc: [u8; 32],
-    pub c_ispeed: u32,
-    pub c_ospeed: u32,
-}
-
-impl Termios {
-    const fn cooked() -> Self {
-        let mut cc = [0u8; 32];
-        cc[VINTR] = 0x03; // ^C
-        cc[VERASE] = 0x7f; // DEL
-        cc[VEOF] = 0x04; // ^D
-        cc[VMIN] = 1;
-        cc[VTIME] = 0;
-        Self {
-            c_iflag: ICRNL,
-            c_oflag: OPOST | ONLCR,
-            c_cflag: CS8 | CREAD,
-            c_lflag: ISIG | ICANON | ECHO | ECHOE | ECHOK | IEXTEN,
-            c_cc: cc,
-            c_ispeed: 0,
-            c_ospeed: 0,
-        }
-    }
-
-    fn as_bytes(&self) -> [u8; TERMIOS_LEN] {
-        let mut buf = [0u8; TERMIOS_LEN];
-        buf[0..4].copy_from_slice(&self.c_iflag.to_ne_bytes());
-        buf[4..8].copy_from_slice(&self.c_oflag.to_ne_bytes());
-        buf[8..12].copy_from_slice(&self.c_cflag.to_ne_bytes());
-        buf[12..16].copy_from_slice(&self.c_lflag.to_ne_bytes());
-        buf[16..48].copy_from_slice(&self.c_cc);
-        buf[48..52].copy_from_slice(&self.c_ispeed.to_ne_bytes());
-        buf[52..56].copy_from_slice(&self.c_ospeed.to_ne_bytes());
-        buf
-    }
-
-    fn from_bytes(buf: &[u8; TERMIOS_LEN]) -> Self {
-        let u32_at = |off: usize| {
-            let mut b = [0u8; 4];
-            b.copy_from_slice(&buf[off..off + 4]);
-            u32::from_ne_bytes(b)
-        };
-        let mut cc = [0u8; 32];
-        cc.copy_from_slice(&buf[16..48]);
-        Self {
-            c_iflag: u32_at(0),
-            c_oflag: u32_at(4),
-            c_cflag: u32_at(8),
-            c_lflag: u32_at(12),
-            c_cc: cc,
-            c_ispeed: u32_at(48),
-            c_ospeed: u32_at(52),
-        }
-    }
-}
-
-static TERMIOS: Mutex<Termios> = Mutex::new(Termios::cooked());
-
-static BUF: Mutex<[u8; RING]> = Mutex::new([0; RING]);
-static HEAD: AtomicUsize = AtomicUsize::new(0);
-static TAIL: AtomicUsize = AtomicUsize::new(0);
-/// In-progress line (not yet readable). Length == echoed columns since NL.
-static EDIT_BUF: Mutex<[u8; EDIT]> = Mutex::new([0; EDIT]);
-static EDIT_LEN: AtomicUsize = AtomicUsize::new(0);
+static TTY: Mutex<crate::tty::TtyIn> = Mutex::new(crate::tty::TtyIn::new());
 
 pub fn init() {
-    HEAD.store(0, Ordering::SeqCst);
-    TAIL.store(0, Ordering::SeqCst);
-    EDIT_LEN.store(0, Ordering::SeqCst);
     IRQ_HEAD.store(0, Ordering::SeqCst);
     IRQ_TAIL.store(0, Ordering::SeqCst);
-    *TERMIOS.lock() = Termios::cooked();
+    *TTY.lock() = crate::tty::TtyIn::new();
     arch::serial_flush_rx();
     arch::keyboard_init();
     DRAIN_ENABLED.store(true, Ordering::Relaxed);
 }
 
-pub fn termios_get_bytes() -> [u8; TERMIOS_LEN] {
-    TERMIOS.lock().as_bytes()
+pub fn termios_get_bytes() -> [u8; crate::tty::TERMIOS_LEN] {
+    TTY.lock().termios.as_bytes()
 }
 
-pub fn termios_set_bytes(buf: &[u8; TERMIOS_LEN]) {
-    let next = Termios::from_bytes(buf);
-    let mut t = TERMIOS.lock();
-    let was_canon = t.c_lflag & ICANON != 0;
-    let now_canon = next.c_lflag & ICANON != 0;
-    *t = next;
-    drop(t);
-    // Entering raw/cbreak: drop any in-progress cooked edit line so ESC and
-    // other keys are not stuck behind an unfinished buffer.
-    if was_canon && !now_canon {
-        EDIT_LEN.store(0, Ordering::SeqCst);
-    }
-}
-
-fn lflag() -> u32 {
-    TERMIOS.lock().c_lflag
-}
-
-fn iflag() -> u32 {
-    TERMIOS.lock().c_iflag
+pub fn termios_set_bytes(buf: &[u8; crate::tty::TERMIOS_LEN]) {
+    TTY.lock().set_termios(crate::tty::Termios::from_bytes(buf));
 }
 
 /// Serializes hardware UART RX across timer IRQs and `poll` (multi-CPU TCG
@@ -229,124 +117,23 @@ pub fn poll() {
     }
 }
 
-fn push_committed(byte: u8) -> bool {
-    let h = HEAD.load(Ordering::SeqCst);
-    let next = (h + 1) % RING;
-    if next == TAIL.load(Ordering::SeqCst) {
-        return false;
-    }
-    BUF.lock()[h] = byte;
-    HEAD.store(next, Ordering::SeqCst);
-    true
+/// Console echo sink: every discipline-shown byte lands on the console.
+/// Called with the TTY lock held; the console lock never re-enters the tty.
+fn console_echo(b: u8) {
+    console::write_byte(b);
 }
 
 fn push_byte(raw: u8) {
-    let lflag = lflag();
-    let iflag = iflag();
-    let mut byte = raw;
-
-    if byte == b'\r' && iflag & ICRNL != 0 {
-        byte = b'\n';
-    }
-
-    // ^C / VINTR: honor ISIG in both cooked and raw (takes priority over ESC
-    // handling so a ^C during a partial sequence still kills the foreground).
-    // Discard any in-progress cooked edit line (POSIX-ish NOFLSH clear of the
-    // line discipline buffer) so a partial line cannot leak into the next
-    // reader after the interrupt stage (`cat | cat` + ^C).
-    if lflag & ISIG != 0 && byte == 0x03 {
-        EDIT_LEN.store(0, Ordering::SeqCst);
+    let vintr = {
+        let mut t = TTY.lock();
+        t.push_raw(raw, &mut console_echo)
+    };
+    if vintr {
+        // Console foreground group (signal.rs resolves reader/last-input pgid).
         crate::signal::handle_ctrl_c();
-        return;
-    }
-
-    // No CSI/escape special-casing here: canonical mode follows termios
-    // semantics — every byte that is not an editing character goes into the
-    // edit line and is delivered to the reader on newline. Swallowing arrow
-    // CSI sequences in cooked mode was an oksh-specific hack that made every
-    // OTHER canonical reader (login, cat, …) silently lose keys; apps that
-    // want cursor keys set raw mode (oksh x_mode, vim), which delivers the
-    // real ESC [ A/B/C/D bytes.
-
-    if lflag & ICANON == 0 {
-        // Raw / cbreak: deliver key bytes immediately (ESC, arrows CSI, …).
-        let _ = push_committed(byte);
-        if lflag & ECHO != 0 && byte != 0x1b {
-            // Avoid echoing ESC (starts CSI); printable/controls only.
-            if byte == b'\n' || byte == b'\t' || (0x20..=0x7e).contains(&byte) {
-                console::write_byte(byte);
-            }
-        }
-        return;
-    }
-
-    // Cooked: keep the prior line-editing discipline.
-    if !(byte == b'\n'
-        || byte == b'\t'
-        || byte == 0x08
-        || byte == 127
-        || (0x20..=0x7e).contains(&byte))
-    {
-        return;
-    }
-
-    if byte == 127 || byte == 8 {
-        // Only erase when this kernel echo line still has typed columns.
-        // Otherwise BS would wipe the shell prompt (`$ `) drawn via write(2).
-        let len = EDIT_LEN.load(Ordering::SeqCst);
-        if len == 0 {
-            return;
-        }
-        EDIT_LEN.store(len - 1, Ordering::SeqCst);
-        if lflag & ECHO != 0 {
-            console::write_byte(8);
-            console::write_byte(b' ');
-            console::write_byte(8);
-        }
-        return;
-    }
-    if byte == b'\n' {
-        let len = EDIT_LEN.load(Ordering::SeqCst);
-        {
-            let edit = EDIT_BUF.lock();
-            for i in 0..len {
-                if !push_committed(edit[i]) {
-                    break;
-                }
-            }
-        }
-        EDIT_LEN.store(0, Ordering::SeqCst);
-        let _ = push_committed(b'\n');
-        if lflag & ECHO != 0 {
-            console::write_byte(b'\n');
-        }
-        return;
-    }
-    let len = EDIT_LEN.load(Ordering::SeqCst);
-    if len >= EDIT {
-        return;
-    }
-    EDIT_BUF.lock()[len] = byte;
-    EDIT_LEN.store(len + 1, Ordering::SeqCst);
-    if lflag & ECHO != 0 {
-        console::write_byte(byte);
     }
 }
 
-fn pop_byte() -> Option<u8> {
-    let t = TAIL.load(Ordering::SeqCst);
-    if t == HEAD.load(Ordering::SeqCst) {
-        return None;
-    }
-    let b = BUF.lock()[t];
-    TAIL.store((t + 1) % RING, Ordering::SeqCst);
-    Some(b)
-}
-
-/// Read up to `len` bytes. Blocks until at least one byte is available.
-///
-/// In canonical mode, bytes come from completed lines only. In raw mode,
-/// whatever has been pushed (including ESC) is returned immediately.
 pub fn read(buf: &mut [u8]) -> usize {
     crate::signal::enter_input_read();
     let mut n = 0;
@@ -357,13 +144,11 @@ pub fn read(buf: &mut [u8]) -> usize {
         }
         poll();
         while n < buf.len() {
-            match pop_byte() {
-                Some(b) => {
-                    buf[n] = b;
-                    n += 1;
-                }
-                None => break,
-            }
+            let Some(b) = TTY.lock().pop() else {
+                break;
+            };
+            buf[n] = b;
+            n += 1;
         }
         if n == 0 {
             if crate::signal::current_should_wake() {
