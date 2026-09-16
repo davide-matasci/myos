@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <unistd.h>
 
 #define LISTEN_PORT 2323
@@ -46,14 +47,32 @@ int main(void) {
         return 1;
     }
     char buf[64];
-    ssize_t n = read(c, buf, sizeof buf);
+    ssize_t n = 0;
+    /* Data may lag the accept: netfs data reads return 0 when empty.
+     * select(0,...) sleeps without spinning (libgloss pollselect). */
+    for (int tries = 0; tries < 100; tries++) {
+        n = read(c, buf, sizeof buf);
+        if (n > 0) {
+            break;
+        }
+        struct timeval tv = {0, 100 * 1000};
+        select(0, NULL, NULL, NULL, &tv);
+    }
     if (n <= 0 || memcmp(buf, "ping", 4) != 0) {
-        printf("[ FAIL ] listen read (n=%zd)\n", n);
+        printf("[ FAIL ] listen read (n=%d errno=%d)\n", (int)n, errno);
         return 1;
     }
     if (write(c, "pong\n", 5) != 5) {
         printf("[ FAIL ] listen write\n");
         return 1;
+    }
+    /* Give netd's poll loop a beat to flush the queued TX before closing
+     * (closing immediately can drop the queued pong with the FIN). */
+    {
+        volatile unsigned spin = 0;
+        while (spin < 2000000u) {
+            spin++;
+        }
     }
     close(c);
     close(l);
