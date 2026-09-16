@@ -10,6 +10,12 @@ OSTEST_REV="${OSTEST_REV:-0415c45723798a0ebc150c3990c529a2ff322513}"
 OSTEST_SRC="$ROOT/target/os-test-src"
 EMBED="$ROOT/target/os-test-embed"
 
+# The embed tree lives under $ROOT (target/), which may be a git repository
+# owned by a different uid in CI containers (bind-mounted runner workspace).
+# safe.directory is only honored from system/global config, never from -c or
+# env config, so record it globally (harmless no-op if already trusted).
+git config --global --add safe.directory "$ROOT" >/dev/null 2>&1 || true
+
 if [[ -d "$OSTEST_SRC/.git" ]]; then
   got="$(git -C "$OSTEST_SRC" rev-parse HEAD)"
   if [[ "$got" != "$OSTEST_REV" ]]; then
