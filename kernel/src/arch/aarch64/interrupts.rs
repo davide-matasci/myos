@@ -396,6 +396,7 @@ extern "C" fn aarch64_irq_handler() {
     if timer {
         TIMER_FIRED.store(true, Ordering::SeqCst);
         crate::time::note_tick();
+    crate::rng::stir_tick();
         rearm_timers();
     }
     if tlb {

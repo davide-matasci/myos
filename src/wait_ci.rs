@@ -103,6 +103,9 @@ const CMD_WHICH: &[u8] = b"which ls\n";
 const CMD_DNS: &[u8] = b"dns www.google.com\n";
 // pty boot-CI smoke (openpty/forkpty, echo round-trip, EIO on session end).
 const CMD_PTY: &[u8] = b"/bin/etc/pty_smoke 2\n";
+// urandom boot-CI smoke (kernel CSPRNG via /dev/urandom: non-zero, distinct,
+// successive reads differ).
+const CMD_URANDOM: &[u8] = b"/bin/etc/urandom_smoke\n";
 // HTTPS GET (requires network + wall clock + mbedtls).
 const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 // curl over userspace sockets + mbedtls (same URL as https smoke).
@@ -174,6 +177,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         cmds.push(CMD_OS_TEST_CAT);
         cmds.push(CMD_OS_TEST_RESULT);
         cmds.push(CMD_PTY);
+        cmds.push(CMD_URANDOM);
     }
     cmds.push(CMD_INTERRUPT);
     cmds.push(CMD_HIST_SEED);
@@ -422,6 +426,19 @@ fn interactive_dns_cmd_ok(serial: &str) -> bool {
     }
     // DNS command should print `IP: x.x.x.x` followed by `[ OK ] dns` and return to prompt.
     if !tail.contains("IP: ") || !tail.contains("[ OK ] dns") {
+        return false;
+    }
+    at_interactive_prompt(serial)
+}
+
+/// urandom smoke: `/bin/etc/urandom_smoke` prints `[ INFO ] urandom <hex>
+/// <hex>` and `[ OK ] urandom`, then returns to `$`.
+fn interactive_urandom_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    if !tail.contains("$ /bin/etc/urandom_smoke") || serial.contains("exception:") {
+        return false;
+    }
+    if !tail.contains("[ OK ] urandom") || !tail.contains("[ INFO ] urandom ") {
         return false;
     }
     at_interactive_prompt(serial)
@@ -714,12 +731,13 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         // mode; in mini those slots are the interrupt/seed/arrow tail (matched
         // by position below). Full-mode length is 20 (21 with the pty smoke),
         // mini is 15.
-        12 if cmds.len() == 20 || cmds.len() == 21 => interactive_https_cmd_ok(serial),
-        13 if cmds.len() == 20 || cmds.len() == 21 => interactive_curl_cmd_ok(serial),
-        14 if cmds.len() == 20 || cmds.len() == 21 => interactive_ostest_prep_ok(serial),
-        15 if cmds.len() == 20 || cmds.len() == 21 => interactive_ostest_cat_ok(serial),
-        16 if cmds.len() == 20 || cmds.len() == 21 => interactive_ostest_result_ok(serial),
-        17 if cmds.len() == 21 => interactive_pty_cmd_ok(serial),
+        12 if cmds.len() >= 20 => interactive_https_cmd_ok(serial),
+        13 if cmds.len() >= 20 => interactive_curl_cmd_ok(serial),
+        14 if cmds.len() >= 20 => interactive_ostest_prep_ok(serial),
+        15 if cmds.len() >= 20 => interactive_ostest_cat_ok(serial),
+        16 if cmds.len() >= 20 => interactive_ostest_result_ok(serial),
+        17 if cmds.len() == 21 || cmds.len() == 22 => interactive_pty_cmd_ok(serial),
+        18 if cmds.len() == 22 => interactive_urandom_cmd_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
         i if i == arrow_seed_idx(cmds) => interactive_arrow_seed_ok(serial),
         i if i == arrow_edit_idx(cmds) => interactive_arrow_edit_ok(serial),
@@ -1389,7 +1407,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             );
             std::process::exit(1);
         }
-        if cmds.len() == 21 && shell_cmd_index == 17 && !interactive_pty_cmd_ok(&serial) {
+        if cmds.len() >= 21 && shell_cmd_index == 17 && !interactive_pty_cmd_ok(&serial) {
             if !command_echoed(&serial, "/bin/etc/pty_smoke") {
                 eprintln!("error: serial did not echo `$ /bin/etc/pty_smoke` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1398,6 +1416,18 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: shell did not return to `$` after interactive pty_smoke");
             } else {
                 eprintln!("error: interactive pty_smoke did not print `/dev/pts/` and `[ OK ] pty`");
+            }
+            std::process::exit(1);
+        }
+        if cmds.len() >= 22 && shell_cmd_index == 18 && !interactive_urandom_cmd_ok(&serial) {
+            if !command_echoed(&serial, "/bin/etc/urandom_smoke") {
+                eprintln!("error: serial did not echo `$ /bin/etc/urandom_smoke` at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: interactive urandom_smoke triggered a CPU exception");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after interactive urandom_smoke");
+            } else {
+                eprintln!("error: interactive urandom_smoke did not print `[ OK ] urandom`");
             }
             std::process::exit(1);
         }
