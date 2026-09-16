@@ -80,6 +80,7 @@ port_is_current() {
     zlib) myos_zlib_is_current ;;
     git) myos_git_is_current ;;
     lynx) myos_lynx_is_current ;;
+    lua) myos_lua_is_current ;;
     std-hello) myos_std_hello_is_current ;;
     c-hello) myos_c_hello_is_current ;;
     curl) myos_curl_is_current ;;
