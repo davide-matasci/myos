@@ -350,6 +350,16 @@ fn run_ci_bios(bios_path: &str) {
         .arg("2048")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
+        .args({
+            // MYOS_TCG_SINGLE=1: single-threaded TCG — far friendlier on a
+            // loaded 4-core host where MTTCG vCPU threads starve each other
+            // and the boot stalls mid-CI with no serial output.
+            if std::env::var("MYOS_TCG_SINGLE").as_deref() == Ok("1") {
+                vec!["-accel", "tcg,thread=single"]
+            } else {
+                vec![]
+            }
+        })
         .arg("-drive")
         .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
