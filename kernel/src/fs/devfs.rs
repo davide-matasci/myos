@@ -19,6 +19,8 @@ enum Node {
     Tty,
     Console,
     Ptmx,
+    Urandom,
+    Random,
     Block(u32),
     Nvme(u32),
     Chr(usize),
@@ -125,6 +127,7 @@ fn parse(name: &str) -> Option<Node> {
         "tty" => Some(Node::Tty),
         "console" => Some(Node::Console),
         "ptmx" => Some(Node::Ptmx),
+        "urandom" | "random" => Some(Node::Urandom),
         _ => parse_chr(name)
             .map(Node::Chr)
             .or_else(|| parse_vd(name).map(Node::Block))
@@ -172,6 +175,18 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
         // ptmx I/O routes through FdEntry::PtyMaster in crate::task; a plain
         // VFS read on the node itself has no peer session — report EIO-ish 0.
         Some(Node::Ptmx) => 0,
+        // /dev/urandom and /dev/random share the kernel CSPRNG pool (phase-1
+        // has no blocking distinction; pos is ignored — it is a stream).
+        Some(Node::Urandom) => {
+            let _ = pos;
+            crate::rng::fill(out);
+            out.len()
+        }
+        Some(Node::Random) => {
+            let _ = pos;
+            crate::rng::fill(out);
+            out.len()
+        }
         Some(Node::Block(id)) => blk::read_bytes(id, pos as u64, out).unwrap_or(0),
         Some(Node::Nvme(ctrl)) => {
             blk::read_bytes(blk::NVME_ID_BASE + ctrl, pos as u64, out).unwrap_or(0)
@@ -198,6 +213,8 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
             Some(buf.len())
         }
         Some(Node::Ptmx) => None,
+        // Writes to the RNG pool are ignored (no RNDADDENTROPY ioctl yet).
+        Some(Node::Urandom) | Some(Node::Random) => Some(buf.len()),
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
         Some(Node::Nvme(ctrl)) => blk::write_bytes(blk::NVME_ID_BASE + ctrl, pos as u64, buf).ok(),
         Some(Node::Chr(i)) => {
@@ -218,7 +235,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     if !rel.is_empty() && rel != "." {
         return 0;
     }
-    const NAMES: &[&[u8]] = &[b"null", b"tty", b"console", b"ptmx"];
+    const NAMES: &[&[u8]] = &[b"null", b"tty", b"console", b"ptmx", b"urandom", b"random"];
     let mut n = 0;
     for name in NAMES {
         let need = name.len() + 1;
@@ -311,6 +328,13 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
         }),
+        Node::Urandom | Node::Random => Some(StatInfo {
+            mode: S_IFCHR | 0o666,
+            size: 0,
+            ino: 6,
+            nlink: 1,
+            dev: 0,
+        }),
         Node::Ptmx => Some(StatInfo {
             mode: S_IFCHR | 0o666,
             size: 0,
@@ -392,6 +416,7 @@ pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
         // pty pair ioctls are handled per-fd in crate::task (they need
         // userspace copies); the bare node has no pair attached.
         Some(Node::Ptmx) => IoctlResult::Notty,
+        Some(Node::Urandom) | Some(Node::Random) => IoctlResult::Notty,
         Some(Node::Chr(i)) => {
             match chr_table().get(i).and_then(|s| *s) {
                 Some(c) => match c.ops.ioctl {

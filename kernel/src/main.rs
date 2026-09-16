@@ -21,6 +21,7 @@ mod nvme;
 mod pci;
 mod modules;
 mod pipe;
+mod rng;
 mod signal;
 mod smp;
 mod pty;
@@ -158,6 +159,7 @@ fn kernel_main() -> ! {
 
     fs::init();
     fs::init_limine();
+    rng::init();
     modules::load_embedded_stubfs();
     modules::load_embedded_hello();
     modules::load_embedded_pci_enum();

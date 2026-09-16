@@ -352,6 +352,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             // Supervisor timer
             TIMER_FIRED.store(true, Ordering::SeqCst);
             crate::time::note_tick();
+    crate::rng::stir_tick();
             rearm_timer();
             // Do not drain UART from the riscv timer: CI #150 hung after
             // `[ OK ] fork` with sepc=0 once this ran on every tick.
