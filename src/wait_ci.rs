@@ -117,7 +117,7 @@ static LISTEN_PONGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// When the listen smoke stage first began (bounds the ping/pong retry loop).
 static LISTEN_STAGE_START: std::sync::OnceLock<std::time::Instant> =
     std::sync::OnceLock::new();
-const LISTEN_STAGE_BOUND: Duration = Duration::from_secs(420);
+const LISTEN_STAGE_BOUND: Duration = Duration::from_secs(120);
 /// Shared serial accumulator, so failure paths can dump fresh output.
 static SERIAL_ACC: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<String>>> =
     std::sync::OnceLock::new();

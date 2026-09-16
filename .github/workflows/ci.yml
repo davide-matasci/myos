@@ -492,6 +492,7 @@ jobs:
             target/ok-*
             target/std-*
             target/c-hello-*
+            target/tcp-listen-smoke-*
             target/sbase-*
             target/ubase-*
             target/oksh-*
