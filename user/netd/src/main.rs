@@ -98,6 +98,8 @@ struct Conv {
     accept_wait: bool,
     /// Accepted connection parked for the next ctl "accept": new conv id.
     accepted: Option<u16>,
+    /// Graceful close in flight: close() sent, socket removed once Closed.
+    closing: bool,
 }
 
 impl Conv {
@@ -116,6 +118,7 @@ impl Conv {
         listen_port: 0,
         accept_wait: false,
         accepted: None,
+        closing: false,
     };
 }
 
@@ -377,6 +380,17 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
         return;
     }
     if let Some(h) = convs[i].handle.take() {
+        // Graceful close for live TCP sockets: close() drains queued TX and
+        // sends FIN; sockets.remove() would discard pending data (the peer
+        // sees a bare FIN/RST and loses bytes written just before close).
+        let live = matches!(convs[i].kind, Kind::Tcp)
+            && !matches!(sockets.get_mut::<tcp::Socket>(h).state(), tcp::State::Closed);
+        if live {
+            sockets.get_mut::<tcp::Socket>(h).close();
+            convs[i].handle = Some(h);
+            convs[i].closing = true;
+            return;
+        }
         sockets.remove(h);
     }
     convs[i] = Conv::EMPTY;
@@ -579,6 +593,14 @@ fn pump_accepts(
             connected: true,
             ..Conv::EMPTY
         };
+        // Tell netfs about the new conv: it only allocates convs on clone, so
+        // without this the guest cannot open /net/tcp/<n>/data (conv_ok
+        // fails) and accept() dies with EIO.
+        reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
+        // Introduce the new conv to netfs: pump-accepted convs bypass clone,
+        // so without this netfs never marks the slot used and the client's
+        // open of /net/tcp/<n>/data fails.
+        reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
         // Re-arm a fresh listener on the same port for the next connection.
         let rx = tcp::SocketBuffer::new(vec![0; TCP_RX]);
         let tx = tcp::SocketBuffer::new(vec![0; TCP_TX]);
@@ -589,6 +611,9 @@ fn pump_accepts(
         }
         convs[i].handle = Some(nh);
         convs[i].accepted = Some(n as u16);
+        // Tell netfs about the new conv: the guest never cloned it, so its
+        // slot is unused there and opening /net/tcp/<n>/data would fail.
+        reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
         if convs[i].accept_wait {
             convs[i].accept_wait = false;
             let rep = accept_reply(convs, n as u16);
@@ -892,6 +917,25 @@ fn main() -> ! {
 
         pump_accepts(&mut convs, &mut sockets, chan);
         pump_sockets(&mut convs, &mut sockets, &device, chan);
+        // Finish graceful closes: once a closing socket reaches Closed, free it.
+        for i in 0..MAX_CONV {
+            if !convs[i].closing {
+                continue;
+            }
+            let closed = match convs[i].handle {
+                Some(h) => matches!(
+                    sockets.get_mut::<tcp::Socket>(h).state(),
+                    tcp::State::Closed
+                ),
+                None => true,
+            };
+            if closed {
+                if let Some(h) = convs[i].handle.take() {
+                    sockets.remove(h);
+                }
+                convs[i] = Conv::EMPTY;
+            }
+        }
     }
 }
 
