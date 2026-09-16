@@ -67,6 +67,11 @@ enum FdEntry {
     },
     PipeRead(usize),
     PipeWrite(usize),
+    /// PTY master end (`/dev/ptmx`): writes feed slave input, reads drain
+    /// slave output. Refcounted like pipes.
+    PtyMaster(usize),
+    /// PTY slave end (`/dev/pts/N`): the session-side tty.
+    PtySlave(usize),
 }
 
 fn default_user_fds() -> [FdEntry; MAX_FDS] {
@@ -87,6 +92,14 @@ fn fd_clone(entry: FdEntry) -> FdEntry {
             pipe::add_writer(id);
             FdEntry::PipeWrite(id)
         }
+        FdEntry::PtyMaster(id) => {
+            crate::pty::master_ref(id);
+            FdEntry::PtyMaster(id)
+        }
+        FdEntry::PtySlave(id) => {
+            crate::pty::slave_ref(id);
+            FdEntry::PtySlave(id)
+        }
         other => other,
     }
 }
@@ -95,6 +108,8 @@ fn fd_drop(entry: FdEntry) {
     match entry {
         FdEntry::PipeRead(id) => pipe::drop_reader(id),
         FdEntry::PipeWrite(id) => pipe::drop_writer(id),
+        FdEntry::PtyMaster(id) => crate::pty::drop_master(id),
+        FdEntry::PtySlave(id) => crate::pty::drop_slave(id),
         _ => {}
     }
 }
@@ -787,6 +802,47 @@ pub fn pipe_open() -> Option<(usize, usize)> {
     out
 }
 
+/// Open `/dev/ptmx`: allocate a pty pair, take the master fd.
+pub fn fd_open_pty_master() -> Option<usize> {
+    let id = crate::pty::alloc()?;
+    let out = with_current_mut(|t| {
+        for i in 0..MAX_FDS {
+            if t.fds[i] == FdEntry::Empty {
+                t.fds[i] = FdEntry::PtyMaster(id);
+                return Some(i);
+            }
+        }
+        None
+    });
+    if out.is_none() {
+        crate::pty::drop_master(id);
+    }
+    out
+}
+
+/// Open `/dev/pts/N`: take a slave fd on an existing pair. Opening does NOT
+/// claim the controlling-terminal session (Linux only binds a ctty via
+/// `TIOCSCTTY`); `fd_open_pty_slave` deliberately skips `claim_session` so a
+/// plain `openpty` can never scope SIGHUP/^C to a foreign process group.
+pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
+    if !crate::pty::slave_exists(id) {
+        return None;
+    }
+    let out = with_current_mut(|t| {
+        for i in 0..MAX_FDS {
+            if t.fds[i] == FdEntry::Empty {
+                t.fds[i] = FdEntry::PtySlave(id);
+                return Some(i);
+            }
+        }
+        None
+    });
+    if out.is_some() {
+        crate::pty::slave_ref(id);
+    }
+    out
+}
+
 pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
     if oldfd >= MAX_FDS || newfd >= MAX_FDS {
         return false;
@@ -828,6 +884,16 @@ pub fn fd_dup_min(oldfd: usize, minfd: usize) -> Option<usize> {
 /// File/chr copy size. DHCP ~300B was truncated at 128, so TX chunks became
 /// separate Ethernet frames. Match virtio-net ETH_MAX (~2036).
 const FILE_IO_TMP: usize = 2048;
+
+/// Read/write on a pty end whose peer has hung up. `usize::MAX` stays the
+/// generic SYSERR (EBADF in libgloss); this distinct value lets libgloss map
+/// the hangup to `EIO` (Linux: read on a hung-up pty returns EIO).
+pub const SYSERR_EIO: usize = usize::MAX - 1;
+
+/// Distinct syscall error for pty peer-gone (`EIO`): `usize::MAX` is the
+/// generic SYSERR (libgloss maps it to EBADF), so read/write return `MAX-1`
+/// on pty hangup and libgloss translates that to `errno = EIO` — the Linux
+/// semantic `forkpty`/session consumers rely on.
 
 /// Read from fd 0 (keyboard + serial stdin). `buf` must lie in the user map.
 pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
@@ -934,6 +1000,34 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 }
                 return n;
             }
+            FdEntry::PtyMaster(id) => {
+                // pty::master_read blocks (yield loop) and returns EIO once
+                // the last slave fd closed and output drained.
+                let mut tmp = [0u8; 128];
+                let want = len.min(tmp.len());
+                let n = crate::pty::master_read(id, &mut tmp[..want]);
+                if n == usize::MAX {
+                    return SYSERR_EIO;
+                }
+                let aspace = current_aspace();
+                if !user::copy_to_user(aspace, buf, &tmp[..n]) {
+                    return usize::MAX;
+                }
+                return n;
+            }
+            FdEntry::PtySlave(id) => {
+                let mut tmp = [0u8; 128];
+                let want = len.min(tmp.len());
+                let n = crate::pty::slave_read(id, &mut tmp[..want]);
+                if n == usize::MAX {
+                    return SYSERR_EIO;
+                }
+                let aspace = current_aspace();
+                if !user::copy_to_user(aspace, buf, &tmp[..n]) {
+                    return usize::MAX;
+                }
+                return n;
+            }
             FdEntry::Empty | FdEntry::Console | FdEntry::PipeWrite(_) => return usize::MAX,
         }
     }
@@ -1031,6 +1125,25 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                         }
                         yield_now();
                         continue;
+                    }
+                    total += n;
+                    break;
+                }
+                FdEntry::PtyMaster(id) => {
+                    // Master write → slave input discipline; processes every
+                    // byte (echo back into the output ring).
+                    let n = crate::pty::master_write(id, &tmp[..chunk]);
+                    if n == usize::MAX {
+                        return if total == 0 { SYSERR_EIO } else { total };
+                    }
+                    total += n;
+                    break;
+                }
+                FdEntry::PtySlave(id) => {
+                    // Slave write → output processing → master-readable ring.
+                    let n = crate::pty::slave_write(id, &tmp[..chunk]);
+                    if n == usize::MAX {
+                        return if total == 0 { SYSERR_EIO } else { total };
                     }
                     total += n;
                     break;
@@ -1470,6 +1583,87 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         t.fds.get(fd).copied().unwrap_or(FdEntry::Empty)
     };
 
+    // PTY fd ioctls: per-pair termios (shared across both ends, Linux model),
+    // winsize propagation, TIOCGPTN/TIOCSPTLCK on the master, TIOCSCTTY on the
+    // slave (session-leader claim). Handled here because they copy user data.
+    const TIOCGPTN: usize = 0x8004_5430;
+    const TIOCSPTLCK: usize = 0x4004_5431;
+    const TIOCGWINSZ: usize = 0x5413;
+    const TIOCSWINSZ: usize = 0x5414;
+    const TCGETS: usize = 0x5401;
+    const TCSETS: usize = 0x5402;
+    match (request, entry) {
+        (TIOCGPTN, FdEntry::PtyMaster(id)) => {
+            if arg == 0 {
+                return usize::MAX;
+            }
+            let Some(id) = crate::pty::index(id) else {
+                return usize::MAX;
+            };
+            if !user::copy_to_user(current_aspace(), arg, &id.to_ne_bytes()) {
+                return usize::MAX;
+            }
+            return 0;
+        }
+        (TIOCSPTLCK, FdEntry::PtyMaster(_)) => return 0,
+        (TIOCSCTTY, FdEntry::PtySlave(id)) => {
+            // Session leader claims (or re-affirms) this pty as its ctty.
+            crate::pty::claim_session(id);
+            return 0;
+        }
+        (TIOCGWINSZ, FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
+            let Some((row, col)) = crate::pty::winsize(id) else {
+                return usize::MAX;
+            };
+            if arg == 0 {
+                return usize::MAX;
+            }
+            let mut buf = [0u8; 8]; // {row: u16, col: u16, xpixel: u16, ypixel: u16}
+            buf[0..2].copy_from_slice(&row.to_ne_bytes());
+            buf[2..4].copy_from_slice(&col.to_ne_bytes());
+            if !user::copy_to_user(current_aspace(), arg, &buf) {
+                return usize::MAX;
+            }
+            return 0;
+        }
+        (TIOCSWINSZ, FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
+            if arg == 0 {
+                return usize::MAX;
+            }
+            let aspace = current_aspace();
+            let mut ws = [0u8; 8]; // {row: u16, col: u16, xpixel: u16, ypixel: u16}
+            if !user::copy_from_user(aspace, arg, &mut ws) {
+                return usize::MAX;
+            }
+            let row = u16::from_ne_bytes([ws[0], ws[1]]);
+            let col = u16::from_ne_bytes([ws[2], ws[3]]);
+            crate::pty::set_winsize(id, row, col);
+            return 0;
+        }
+        (req @ (TCGETS | TCSETS), FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
+            if arg == 0 {
+                return usize::MAX;
+            }
+            let aspace = current_aspace();
+            if req == TCGETS {
+                let Some(buf) = crate::pty::termios_get_bytes(id) else {
+                    return usize::MAX;
+                };
+                if !user::copy_to_user(aspace, arg, &buf) {
+                    return usize::MAX;
+                }
+            } else {
+                let mut buf = [0u8; crate::tty::TERMIOS_LEN];
+                if !user::copy_from_user(aspace, arg, &mut buf) {
+                    return usize::MAX;
+                }
+                crate::pty::termios_set_bytes(id, &buf);
+            }
+            return 0;
+        }
+        _ => {}
+    }
+
     // Real TIOCSCTTY: attach the system console as the caller's ctty.
     // Getty passes a non-null arg (force); phase-1 accepts either.
     if request == TIOCSCTTY {
@@ -1481,8 +1675,6 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
     }
 
     // TCGETS / TCSETS: maintain per-console termios (raw vs cooked for vim).
-    const TCGETS: usize = 0x5401;
-    const TCSETS: usize = 0x5402;
     if request == TCGETS || request == TCSETS {
         if !fd_is_console_tty(entry) {
             return usize::MAX;
@@ -1545,7 +1737,13 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
     }
 
     let result = match entry {
-        FdEntry::Empty | FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) => IoctlResult::Notty,
+        FdEntry::Empty
+        | FdEntry::PipeRead(_)
+        | FdEntry::PipeWrite(_)
+        // pty-pair ioctls (TCGETS/TCSETS/winsize/TIOCSCTTY/TIOCGPTN) are all
+        // handled above with userspace copies; nothing falls through here.
+        | FdEntry::PtyMaster(_)
+        | FdEntry::PtySlave(_) => IoctlResult::Notty,
         FdEntry::Stdin | FdEntry::Console => crate::fs::tty_ioctl(request),
         FdEntry::File { node, .. } => crate::fs::ioctl(&node, request, arg),
     };

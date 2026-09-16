@@ -24,6 +24,8 @@ int ioctl(int fd, unsigned long request, ...) {
     case TIOCSCTTY:
     case TCFLSH:
     case TIOCGWINSZ:
+    case TIOCGPTN:
+    case TIOCSPTLCK:
     case TCGETS:
     case TCSETS:
         break;

@@ -43,6 +43,9 @@
 #define MYOS_SYS_SIGPROCMASK 37
 
 #define MYOS_SYSERR ((unsigned long)-1)
+/* Distinct pty peer-gone error (kernel/src/task/mod.rs SYSERR_EIO): read or
+ * write on a hung-up pty end. Mapped to errno = EIO by read/write wrappers. */
+#define MYOS_EIO ((unsigned long)-2)
 
 long myos_syscall0(long nr);
 long myos_syscall1(long nr, long a0);

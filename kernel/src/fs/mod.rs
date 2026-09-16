@@ -5,6 +5,7 @@ pub mod bootfs;
 pub mod coreutilsfs;
 pub mod cpio;
 mod devfs;
+pub mod ptsfs;
 mod fstype;
 mod procfs;
 pub mod sbasefs;
@@ -421,6 +422,21 @@ pub fn init() {
         ops.ioctl = Some(devfs::ioctl);
         vfs::mount("devfs", "dev", ops);
     }
+    // pty slave nodes: /dev/pts/N (stat/list only; fds route via crate::task).
+    vfs::mount(
+        "ptsfs",
+        "dev/pts",
+        ro_ops(
+            ptsfs::lookup,
+            ptsfs::stat,
+            ptsfs::listdir_at,
+            ptsfs::register,
+            ptsfs::create,
+            ptsfs::truncate,
+            ptsfs::read,
+            ptsfs::write,
+        ),
+    );
     vfs::mount(
         "procfs",
         "proc",

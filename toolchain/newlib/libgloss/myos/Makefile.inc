@@ -23,6 +23,7 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/inet.c \
 	%D%/netdb.c \
 	%D%/pollselect.c
+	%D%/pty.c
 
 %C%_extra_parts = crt0 crti crtn
 

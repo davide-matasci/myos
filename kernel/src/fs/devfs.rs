@@ -18,6 +18,7 @@ enum Node {
     Null,
     Tty,
     Console,
+    Ptmx,
     Block(u32),
     Nvme(u32),
     Chr(usize),
@@ -123,6 +124,7 @@ fn parse(name: &str) -> Option<Node> {
         "null" => Some(Node::Null),
         "tty" => Some(Node::Tty),
         "console" => Some(Node::Console),
+        "ptmx" => Some(Node::Ptmx),
         _ => parse_chr(name)
             .map(Node::Chr)
             .or_else(|| parse_vd(name).map(Node::Block))
@@ -167,6 +169,9 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
                 input::read(out)
             }
         }
+        // ptmx I/O routes through FdEntry::PtyMaster in crate::task; a plain
+        // VFS read on the node itself has no peer session — report EIO-ish 0.
+        Some(Node::Ptmx) => 0,
         Some(Node::Block(id)) => blk::read_bytes(id, pos as u64, out).unwrap_or(0),
         Some(Node::Nvme(ctrl)) => {
             blk::read_bytes(blk::NVME_ID_BASE + ctrl, pos as u64, out).unwrap_or(0)
@@ -192,6 +197,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
             task::print_bytes(buf);
             Some(buf.len())
         }
+        Some(Node::Ptmx) => None,
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
         Some(Node::Nvme(ctrl)) => blk::write_bytes(blk::NVME_ID_BASE + ctrl, pos as u64, buf).ok(),
         Some(Node::Chr(i)) => {
@@ -212,7 +218,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     if !rel.is_empty() && rel != "." {
         return 0;
     }
-    const NAMES: &[&[u8]] = &[b"null", b"tty", b"console"];
+    const NAMES: &[&[u8]] = &[b"null", b"tty", b"console", b"ptmx"];
     let mut n = 0;
     for name in NAMES {
         let need = name.len() + 1;
@@ -305,6 +311,13 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
         }),
+        Node::Ptmx => Some(StatInfo {
+            mode: S_IFCHR | 0o666,
+            size: 0,
+            ino: 5,
+            nlink: 1,
+            dev: 0,
+        }),
         Node::Block(id) => {
             let bytes = blk::capacity_bytes(id).unwrap_or(0);
             let size = if bytes > u32::MAX as u64 {
@@ -376,6 +389,9 @@ pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
     match parse(name) {
         // `/dev/tty` open aliases to console; keep both for leftover/stat paths.
         Some(Node::Tty) | Some(Node::Console) => tty_ioctl(request),
+        // pty pair ioctls are handled per-fd in crate::task (they need
+        // userspace copies); the bare node has no pair attached.
+        Some(Node::Ptmx) => IoctlResult::Notty,
         Some(Node::Chr(i)) => {
             match chr_table().get(i).and_then(|s| *s) {
                 Some(c) => match c.ops.ioctl {

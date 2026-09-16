@@ -167,6 +167,10 @@ int _open(const char *path, int flags, ...) {
 int _read(int fd, void *buf, size_t cnt) {
     for (;;) {
         long ret = myos_syscall3(MYOS_SYS_READ, fd, (long)(uintptr_t)buf, (long)cnt);
+        if (ret == (long)MYOS_EIO) {
+            errno = EIO; /* pty peer gone */
+            return -1;
+        }
         if (ret == (long)MYOS_SYSERR) {
             errno = EBADF;
             return -1;
@@ -191,6 +195,10 @@ int _read(int fd, void *buf, size_t cnt) {
 
 int _write(int fd, const void *buf, size_t cnt) {
     long ret = myos_syscall3(MYOS_SYS_WRITE, fd, (long)(uintptr_t)buf, (long)cnt);
+    if (ret == (long)MYOS_EIO) {
+        errno = EIO; /* pty peer gone */
+        return -1;
+    }
     if (ret == (long)MYOS_SYSERR) {
         myos_set_errno_io();
         return -1;

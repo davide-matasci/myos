@@ -1776,6 +1776,21 @@ fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
+    // pty nodes: /dev/ptmx (master, allocates a pair) and /dev/pts/N (slave).
+    // Existence is still validated through the VFS tree; the resulting fd is
+    // a pty fd, not a plain file fd (I/O routes via crate::pty).
+    let path_rel = path.trim_start_matches('/');
+    if path_rel == "dev/ptmx" {
+        if fs::open("/dev/ptmx", flags as u32).is_none() {
+            return SYSERR;
+        }
+        return task::fd_open_pty_master().unwrap_or(SYSERR);
+    }
+    if let Some(rest) = path_rel.strip_prefix("dev/pts/") {
+        if let Ok(id) = rest.parse::<usize>() {
+            return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
+        }
+    }
     let Some(node) = fs::open(&path, flags as u32) else {
         return SYSERR;
     };
