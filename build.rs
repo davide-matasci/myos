@@ -95,6 +95,22 @@ fn main() {
     {
         let marker = manifest.join("target/os-test-prebuilt/x86_64/basic/arpa_inet/htons");
         if !marker.is_file() {
+            // The embed tree is restored from caches/pulls and can be stale or
+            // partial; prebuild-basic-smoke.sh needs upstream sources. Refetch
+            // (idempotent: reuses target/os-test-src at the pinned rev) whenever
+            // a required source is absent, exactly like src/initramfs.rs does.
+            let probe = manifest.join("target/os-test-embed/basic/ctype/isalnum.c");
+            if !probe.is_file() {
+                let fetch = manifest.join("ports/os-test/fetch.sh");
+                let status = std::process::Command::new("bash")
+                    .arg(&fetch)
+                    .current_dir(&manifest)
+                    .status()
+                    .unwrap_or_else(|e| panic!("run {}: {e}", fetch.display()));
+                if !status.success() {
+                    panic!("{} failed", fetch.display());
+                }
+            }
             let sh = manifest.join("ports/os-test/prebuild-basic-smoke.sh");
             let status = std::process::Command::new("bash")
                 .arg(&sh)
