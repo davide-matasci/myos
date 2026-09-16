@@ -133,7 +133,9 @@ jobs:
 
   sysroot:
     runs-on: ubuntu-latest
-    container: ghcr.io/davide-matasci/myos-ci:latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 45
     needs: [changes, wire-myos]
     if: |
@@ -191,7 +193,9 @@ jobs:
 
   newlib:
     runs-on: ubuntu-latest
-    container: ghcr.io/davide-matasci/myos-ci:latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 45
     needs: [changes, wire-myos]
     if: |
@@ -226,7 +230,9 @@ jobs:
 
   ports-base:
     runs-on: ubuntu-latest
-    container: ghcr.io/davide-matasci/myos-ci:latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 45
     needs: [changes, wire-myos, sysroot, newlib]
     if: |
@@ -324,7 +330,9 @@ jobs:
 
   ports-advanced:
     runs-on: ubuntu-latest
-    container: ghcr.io/davide-matasci/myos-ci:latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 45
     needs: [changes, wire-myos, sysroot, newlib, ports-base]
     if: |
@@ -376,7 +384,9 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    container: ghcr.io/davide-matasci/myos-ci:latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 45
     needs: [changes, wire-myos, sysroot, newlib, ports-base, ports-advanced]
     if: |
@@ -570,7 +580,9 @@ jobs:
   boot:
     name: boot (${{ matrix.id }})
     runs-on: ubuntu-latest
-    container: ghcr.io/davide-matasci/myos-ci:latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 90
     needs: build
     if: |
@@ -700,7 +712,9 @@ jobs:
   boot-mini:
     name: boot-mini (${{ matrix.id }})
     runs-on: ubuntu-latest
-    container: ghcr.io/davide-matasci/myos-ci:latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 90
     needs: build
     # Reduced-testing boots: everything except the HTTPS/curl smokes
@@ -838,7 +852,9 @@ jobs:
     # the small host `myos` binary + x86_64 kernel artifact from source.
     name: iso (x86_64 hybrid)
     runs-on: ubuntu-latest
-    container: ghcr.io/davide-matasci/myos-ci:latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 30
     needs: build
     if: >-
