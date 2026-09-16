@@ -755,13 +755,13 @@ fn interactive_heap_returned(serial: &str) -> bool {
     command_echoed(serial, "heap") && serial.contains("[ OK ] smoke") && at_interactive_prompt(serial)
 }
 
-/// Guest listener announced and the harness completed the ping/pong.
+/// Listener command echoed and the runner-side ping/pong succeeded. The
+/// smoke's own output goes to /tmp/listen.out (never the serial console).
 fn interactive_listen_bg_ok(serial: &str) -> bool {
     if !LISTEN_PONGED.load(std::sync::atomic::Ordering::SeqCst) {
         return false;
     }
     command_echoed(serial, "/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 &")
-        && serial.contains("[ INFO ] listening on 2323")
         && at_interactive_prompt(serial)
 }
 
@@ -975,15 +975,13 @@ fn advance_shell_ci(
             *interrupt_sent = true;
         }
         ShellStage::WaitResult if cmds[*cmd_index] == CMD_LISTEN_BG && !LISTEN_PONGED.load(std::sync::atomic::Ordering::SeqCst) => {
-            // Guest listener announced; complete the runner-side ping/pong
-            // before judging this command. Bounded: fail fast instead of
-            // hanging until the whole-run timeout.
+            // Smoke output is redirected to /tmp/listen.out (the `cat` stage
+            // surfaces it), so the serial console never shows the announce.
+            // Just poke the listener until it accepts (bounded below).
             if LISTEN_STAGE_START.get().is_none() {
                 let _ = LISTEN_STAGE_START.set(std::time::Instant::now());
             }
-            if acc.contains("[ INFO ] listening on 2323")
-                && poke_listener()
-            {
+            if poke_listener() {
                 LISTEN_PONGED.store(true, std::sync::atomic::Ordering::SeqCst);
                 return;
             }
