@@ -118,6 +118,9 @@ static LISTEN_PONGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 static LISTEN_STAGE_START: std::sync::OnceLock<std::time::Instant> =
     std::sync::OnceLock::new();
 const LISTEN_STAGE_BOUND: Duration = Duration::from_secs(120);
+/// Shared serial accumulator, so failure paths can dump fresh output.
+static SERIAL_ACC: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<String>>> =
+    std::sync::OnceLock::new();
 
 /// Runner-side half of the listen/accept smoke: connect to the guest listener
 /// through hostfwd, send "ping", expect "pong". One attempt per call; the
@@ -986,9 +989,19 @@ fn advance_shell_ci(
                 return;
             }
             if LISTEN_STAGE_START.get().unwrap().elapsed() > LISTEN_STAGE_BOUND {
+                // Surface the smoke's own output (redirected to
+                // /tmp/listen.out) before bailing.
+                for ch in "cat /tmp/listen.out\n".bytes() {
+                    send_shell_byte(stdin, ch);
+                }
+                std::thread::sleep(Duration::from_secs(4));
+                let fresh = SERIAL_ACC
+                    .get()
+                    .and_then(|a| a.lock().ok().map(|g| g.clone()))
+                    .unwrap_or_default();
                 eprintln!(
-                    "error: listen smoke never completed within {LISTEN_STAGE_BOUND:?}; last serial:\n---\n{}\n---",
-                    acc.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>()
+                    "error: listen smoke never completed within {LISTEN_STAGE_BOUND:?}; listen.out + last serial:\n---\n{}\n---",
+                    fresh.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>()
                 );
                 std::process::exit(1);
             }
@@ -1044,6 +1057,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     });
 
     let serial_acc = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let _ = SERIAL_ACC.set(serial_acc.clone());
     let acc_reader = serial_acc.clone();
 
     let mut stdout = child.stdout.take().expect("qemu stdout");
