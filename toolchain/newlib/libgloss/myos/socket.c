@@ -4,7 +4,6 @@
  */
 #include <errno.h>
 #include <fcntl.h>
-#include <stdio.h>
 #include "myos_fmt.h"
 #include <poll.h>
 #include <string.h>
@@ -631,27 +630,25 @@ int listen(int sockfd, int backlog) {
     }
     unsigned short p = s->bind_port;
     unsigned short hp = (unsigned short)((p >> 8) | (p << 8)); /* net order -> host */
-    /* myos_u16_dec lives in socket.c's translation unit; format by hand. */
-    char dp[6];
-    int dn = 0;
-    if (hp == 0) {
-        dp[dn++] = '0';
-    } else {
-        char tmp[6];
-        int tn = 0;
-        while (hp > 0) {
-            tmp[tn++] = (char)('0' + hp % 10);
-            hp /= 10;
-        }
-        while (tn > 0) {
-            dp[dn++] = tmp[--tn];
-        }
+    /* Hand-format "announce <port>" via myos_u16_dec: pulling snprintf into
+     * this TU drags newlib's float printf machinery into the riscv64
+     * soft-float link (undefined __adddf3 et al.). */
+    size_t cmd_pos = 0;
+    {
+        const char ann[] = "announce ";
+        memcpy(cmd + cmd_pos, ann, sizeof ann - 1);
+        cmd_pos += sizeof ann - 1;
     }
-    dp[dn] = '\0';
-    if (snprintf(cmd, sizeof cmd, "announce %s", dp) >= (int)sizeof cmd) {
-        errno = EINVAL;
-        return -1;
+    {
+        size_t used = myos_u16_dec(cmd + cmd_pos, sizeof cmd - cmd_pos - 1,
+            (unsigned)hp);
+        if (used == 0) {
+            errno = EINVAL;
+            return -1;
+        }
+        cmd_pos += used;
     }
+    cmd[cmd_pos] = '\0';
     if (listener_ctl(s, cmd) < 0) {
         return -1;
     }
