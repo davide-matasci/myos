@@ -4,6 +4,7 @@
  */
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include "myos_fmt.h"
 #include <poll.h>
 #include <string.h>
@@ -25,6 +26,7 @@ enum {
     SOCK_OPEN,
     SOCK_CONNECTING, /* nonblock connect in flight; wait for Established */
     SOCK_CONNECTED,
+    SOCK_LISTENING,  /* announced (bound + listening); accept() incoming */
 };
 
 struct myos_sock {
@@ -39,6 +41,7 @@ struct myos_sock {
     char proto_path[16]; /* "/net/tcp" or "/net/udp" */
     struct sockaddr_in peer;
     int peer_set;
+    unsigned short bind_port; /* listener port after bind() */
 };
 
 static struct myos_sock socks[MYOS_MAX_SOCKS];
@@ -542,15 +545,253 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         errno = ENOTSOCK;
         return -1;
     }
-    /* Outbound-only: accept INADDR_ANY / unspecified as no-op. */
     if (addr != NULL && addr->sa_family == AF_INET) {
         const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
+        /* INADDR_ANY / unspecified only (netd owns the single interface). */
         if (in->sin_addr.s_addr != INADDR_ANY && in->sin_addr.s_addr != 0) {
             errno = EOPNOTSUPP;
             return -1;
         }
+        /* Remember the port; the listener is started by listen(). */
+        s->bind_port = in->sin_port; /* already network order; netd wants text */
     }
     return 0;
+}
+
+/* Listener ctl helper: write a command to the conv's ctl file. */
+static int listener_ctl(struct myos_sock *s, const char *cmd) {
+    char path[64];
+    int ctl;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "ctl") < 0) {
+        return -1;
+    }
+    ctl = open(path, O_WRONLY);
+    if (ctl < 0) {
+        errno = EIO;
+        return -1;
+    }
+    if (write(ctl, cmd, strlen(cmd)) < 0) {
+        close(ctl);
+        errno = EIO;
+        return -1;
+    }
+    close(ctl);
+    return 0;
+}
+
+/* Read the listener conv's status text ("listening" / "accepted <N> <ip>!<p>"). */
+static int listener_status(struct myos_sock *s, char *out, size_t cap) {
+    char path[64];
+    char sbuf[80];
+    int st;
+    ssize_t nr;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "status") < 0) {
+        return -1;
+    }
+    st = open(path, O_RDONLY);
+    if (st < 0) {
+        return -1;
+    }
+    nr = read(st, sbuf, sizeof sbuf - 1);
+    close(st);
+    if (nr <= 0) {
+        return -1;
+    }
+    sbuf[nr] = '\0';
+    size_t i = 0;
+    while (i < (size_t)nr && (sbuf[i] == ' ' || sbuf[i] == '\n' || sbuf[i] == '\r')) {
+        i++;
+    }
+    size_t o = 0;
+    while (i < (size_t)nr && o + 1 < cap && sbuf[i] != '\n' && sbuf[i] != '\r') {
+        out[o++] = sbuf[i++];
+    }
+    out[o] = '\0';
+    return 0;
+}
+
+static int accept_from_status(struct myos_sock *ls, const char *status,
+    struct sockaddr *addr, socklen_t *addrlen);
+
+int listen(int sockfd, int backlog) {
+    struct myos_sock *s = sock_by_fd(sockfd);
+    char cmd[32];
+    (void)backlog; /* netd keeps a one-connection ready queue (smoltcp listener) */
+    if (s == NULL) {
+        errno = ENOTSOCK;
+        return -1;
+    }
+    if (s->type != SOCK_STREAM) {
+        errno = EOPNOTSUPP;
+        return -1;
+    }
+    if (s->bind_port == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    unsigned short p = s->bind_port;
+    unsigned short hp = (unsigned short)((p >> 8) | (p << 8)); /* net order -> host */
+    /* myos_u16_dec lives in socket.c's translation unit; format by hand. */
+    char dp[6];
+    int dn = 0;
+    if (hp == 0) {
+        dp[dn++] = '0';
+    } else {
+        char tmp[6];
+        int tn = 0;
+        while (hp > 0) {
+            tmp[tn++] = (char)('0' + hp % 10);
+            hp /= 10;
+        }
+        while (tn > 0) {
+            dp[dn++] = tmp[--tn];
+        }
+    }
+    dp[dn] = '\0';
+    if (snprintf(cmd, sizeof cmd, "announce %s", dp) >= (int)sizeof cmd) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (listener_ctl(s, cmd) < 0) {
+        return -1;
+    }
+    s->state = SOCK_LISTENING;
+    return 0;
+}
+
+int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    struct myos_sock *ls = sock_by_fd(sockfd);
+    struct timeval start;
+    if (ls == NULL) {
+        errno = ENOTSOCK;
+        return -1;
+    }
+    if (ls->state != SOCK_LISTENING) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (ls->nonblock) {
+        /* Nonblocking accept: one check, EAGAIN when nothing is pending. */
+        char stbuf[80];
+        if (listener_status(ls, stbuf, sizeof stbuf) < 0) {
+            errno = EAGAIN;
+            return -1;
+        }
+        if (strncmp(stbuf, "accepted", 8) != 0) {
+            errno = EAGAIN;
+            return -1;
+        }
+        return accept_from_status(ls, stbuf, addr, addrlen);
+    }
+    if (gettimeofday(&start, NULL) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    /* Blocking accept: arm netd once, then poll the listener status until it
+     * reports "accepted <N>" (REP_STATUS lands asynchronously from netd). */
+    if (listener_ctl(ls, "accept") < 0) {
+        return -1;
+    }
+    for (;;) {
+        char stbuf[80];
+        if (listener_status(ls, stbuf, sizeof stbuf) == 0
+            && strncmp(stbuf, "accepted", 8) == 0) {
+            return accept_from_status(ls, stbuf, addr, addrlen);
+        }
+        if (elapsed_ms(&start) >= 120000L) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+    }
+}
+
+/* Parse "accepted <N>[ <ip>!<port>]" and open the new conv as a socket fd. */
+static int accept_from_status(struct myos_sock *ls, const char *status,
+    struct sockaddr *addr, socklen_t *addrlen) {
+    char path[64];
+    int data_fd;
+    unsigned int n = 0;
+    const char *p = status + 8; /* skip "accepted" */
+    while (*p == ' ') {
+        p++;
+    }
+    if (*p < '0' || *p > '9') {
+        errno = EIO;
+        return -1;
+    }
+    while (*p >= '0' && *p <= '9') {
+        n = n * 10 + (unsigned)(*p - '0');
+        p++;
+    }
+    struct myos_sock *s = sock_alloc();
+    if (s == NULL) {
+        errno = EMFILE;
+        return -1;
+    }
+    strncpy(s->proto_path, ls->proto_path, sizeof s->proto_path - 1);
+    s->proto_path[sizeof s->proto_path - 1] = '\0';
+    s->conv = (unsigned short)n;
+    s->ctl_fd = -1;
+    s->type = SOCK_STREAM;
+    s->state = SOCK_CONNECTED;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "data") < 0) {
+        sock_free(s);
+        errno = EIO;
+        return -1;
+    }
+    data_fd = open(path, O_RDWR);
+    if (data_fd < 0) {
+        sock_free(s);
+        errno = EIO;
+        return -1;
+    }
+    s->data_fd = data_fd;
+    /* Optional peer from "accepted <N> <ip>!<port>" — best effort. */
+    while (*p == ' ') {
+        p++;
+    }
+    if (*p != '\0') {
+        unsigned b[4] = {0, 0, 0, 0};
+        int port = 0;
+        int k = 0;
+        int ok = 1;
+        for (const char *q = p; *q; q++) {
+            if (*q >= '0' && *q <= '9') {
+                if (k == 4) {
+                    port = port * 10 + (*q - '0');
+                } else {
+                    b[k] = b[k] * 10 + (*q - '0');
+                }
+            } else if (*q == '.') {
+                k++;
+                if (k > 3) {
+                    ok = 0;
+                    break;
+                }
+            } else if (*q == '!') {
+                k = 4;
+            } else {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok && k == 4) {
+            s->peer_set = 1;
+            if (addr != NULL) {
+                struct sockaddr_in sa;
+                memset(&sa, 0, sizeof sa);
+                sa.sin_family = AF_INET;
+                sa.sin_port = (unsigned short)((port >> 8) | ((port & 0xff) << 8));
+                sa.sin_addr.s_addr = (b[0]) | ((unsigned)b[1] << 8)
+                    | ((unsigned)b[2] << 16) | ((unsigned)b[3] << 24);
+                memcpy(addr, &sa, sizeof sa);
+                if (addrlen != NULL) {
+                    *addrlen = (socklen_t)sizeof sa;
+                }
+            }
+        }
+    }
+    return data_fd;
 }
 
 int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
@@ -631,27 +872,6 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     }
     finish_connect(s);
     return 0;
-}
-
-int listen(int sockfd, int backlog) {
-    (void)backlog;
-    if (sock_by_fd(sockfd) == NULL) {
-        errno = ENOTSOCK;
-        return -1;
-    }
-    errno = EOPNOTSUPP;
-    return -1;
-}
-
-int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-    (void)addr;
-    (void)addrlen;
-    if (sock_by_fd(sockfd) == NULL) {
-        errno = ENOTSOCK;
-        return -1;
-    }
-    errno = EOPNOTSUPP;
-    return -1;
 }
 
 int shutdown(int sockfd, int how) {

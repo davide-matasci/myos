@@ -296,6 +296,14 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         read(&target.join(format!("pty-smoke-{none_triple}"))),
     );
 
+    // tcp listen/accept boot-CI smoke -> bin/etc/tcp_listen_smoke (netd
+    // announce/accept over /net/tcp; see c/tcp_listen_smoke.c).
+    add(
+        &mut entries,
+        "bin/etc/tcp_listen_smoke",
+        read(&target.join(format!("tcp-listen-smoke-{none_triple}"))),
+    );
+
     // urandom boot-CI smoke -> bin/etc/urandom_smoke (kernel CSPRNG via
     // /dev/urandom; see c/urandom_smoke.c).
     add(
