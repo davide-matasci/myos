@@ -106,6 +106,9 @@ kernel_inputs_hash() {
         # Do not hash Cargo.lock: **/Cargo.lock is gitignored and appears after
         # the first cargo build, which made pull-tag ≠ post-build stamp.
         sha256sum build.rs Cargo.toml 2>/dev/null || true
+        # tcp-listen smoke: built by ci-build-kernels (initramfs embeds it); a
+        # source change must bust the kernel stamp so the ELF gets rebuilt.
+        sha256sum c/tcp_listen_smoke.c scripts/build-tcp-listen-smoke.sh 2>/dev/null || true
         # Whole host-bin crate (src/): target/debug/myos is the CI harness
         # (wait_ci) and the pack list ships it in ci-build.tar, so ANY src
         # change — not just the limine/initramfs files — must bust the stamp.
@@ -274,6 +277,11 @@ artifacts_ready() {
   for f in "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
     [[ -f "$f" ]] || return 1
   done
+  for f in target/tcp-listen-smoke-x86_64-unknown-none \
+           target/tcp-listen-smoke-aarch64-unknown-none \
+           target/tcp-listen-smoke-riscv64-unknown-none; do
+    [[ -f "$f" ]] || return 1
+  done
   return 0
 }
 
@@ -281,6 +289,11 @@ do_clean_and_build() {
   echo "==> kernel inputs changed or artifacts missing; clean + build"
   # Ensure socket_smoke + curl exist before initramfs/cargo (x86 bios embeds them).
   "$ROOT/scripts/build-c-hello.sh"
+  # tcp listen/accept smoke: wait_ci runs it in EVERY boot mode (unlike
+  # pty/urandom, which are full/local-only), so CI must produce it or the
+  # initramfs silently omits it (initramfs read() skips missing files) and
+  # the guest fails with "/bin/etc/tcp_listen_smoke: not found".
+  "$ROOT/scripts/build-tcp-listen-smoke.sh"
   cargo clean -p myos
   # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
   # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
