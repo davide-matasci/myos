@@ -114,6 +114,10 @@ const CMD_LISTEN_BG: &[u8] = b"/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 
 const CMD_LISTEN_CAT: &[u8] = b"cat /tmp/listen.out\n";
 /// Harness-side flag: the ping/pong exchange through hostfwd succeeded.
 static LISTEN_PONGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// When the listen smoke stage first began (bounds the ping/pong retry loop).
+static LISTEN_STAGE_START: std::sync::OnceLock<std::time::Instant> =
+    std::sync::OnceLock::new();
+const LISTEN_STAGE_BOUND: Duration = Duration::from_secs(120);
 
 /// Runner-side half of the listen/accept smoke: connect to the guest listener
 /// through hostfwd, send "ping", expect "pong". One attempt per call; the
@@ -972,11 +976,23 @@ fn advance_shell_ci(
         }
         ShellStage::WaitResult if cmds[*cmd_index] == CMD_LISTEN_BG && !LISTEN_PONGED.load(std::sync::atomic::Ordering::SeqCst) => {
             // Guest listener announced; complete the runner-side ping/pong
-            // before judging this command. Retry until the stage timeout.
+            // before judging this command. Bounded: fail fast instead of
+            // hanging until the whole-run timeout.
+            if LISTEN_STAGE_START.get().is_none() {
+                let _ = LISTEN_STAGE_START.set(std::time::Instant::now());
+            }
             if acc.contains("[ INFO ] listening on 2323")
                 && poke_listener()
             {
                 LISTEN_PONGED.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+            if LISTEN_STAGE_START.get().unwrap().elapsed() > LISTEN_STAGE_BOUND {
+                eprintln!(
+                    "error: listen smoke never completed within {LISTEN_STAGE_BOUND:?}; last serial:\n---\n{}\n---",
+                    acc.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>()
+                );
+                std::process::exit(1);
             }
             return;
         }
