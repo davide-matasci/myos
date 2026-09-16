@@ -21,6 +21,7 @@ MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
+MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
@@ -519,6 +520,31 @@ myos_lynx_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/lynx-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_lua_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      sha256sum "$MYOS_ROOT/ports/lua/versions.env"
+      sha256sum "$MYOS_ROOT/ports/lua/build.sh"
+      sha256sum "$MYOS_ROOT/ports/lua/fetch.sh"
+      find "$MYOS_ROOT/ports/lua" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_lua_is_current() {
+  local arch
+  [[ -f "$MYOS_LUA_VERSION" ]] \
+    && [[ "$(cat "$MYOS_LUA_VERSION")" == "$(myos_lua_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/lua-${arch}-unknown-none" ]] || return 1
   done
 }
 
