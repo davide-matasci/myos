@@ -233,7 +233,12 @@ pub fn init() {
 /// Stir the pool with fresh timer/cycle jitter. Cheap enough to call from
 /// the timer tick path (a couple of cycles + adds, no mixing).
 pub fn stir_tick() {
-    let mut rng = RNG.lock();
+    // IRQ context: never block on the pool lock. If a CPU holds it (init /
+    // fill), this tick simply skips stirring — entropy comes on later ticks.
+    let Some(mut rng) = RNG.try_lock() else {
+        STIRS.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
     #[cfg(target_arch = "x86_64")]
     let jit = {
         let lo: u32;
