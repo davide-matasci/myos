@@ -209,6 +209,13 @@ fn host_http_8765_listening() -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
 }
 
+/// True when something already listens on host :2323 (listen smoke fwd port).
+fn host_listen_2323() -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    let addr = SocketAddr::from(([127, 0, 0, 1], 2323));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+}
+
 fn add_virtio_net(cmd: &mut Command) {
     // Local boot-stress packs socket_smoke → 10.0.2.100:80 with host http.server
     // on :8765 and starts that server *before* QEMU. Only add guestfwd when the
@@ -217,6 +224,13 @@ fn add_virtio_net(cmd: &mut Command) {
     let mut netdev = String::from("user,id=net0");
     if host_http_8765_listening() {
         netdev.push_str(",guestfwd=tcp:10.0.2.100:80-tcp:127.0.0.1:8765");
+    }
+    // Listen/accept smoke (wait_ci): the guest announces TCP 2323 and the
+    // harness connects back through slirp hostfwd. Only add when the host
+    // port is free so a locally-running listener does not abort QEMU at
+    // startup (same guard as guestfwd above).
+    if !host_listen_2323() {
+        netdev.push_str(",hostfwd=tcp::2323-:2323");
     }
     cmd.arg("-netdev").arg(netdev);
     cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
@@ -336,6 +350,16 @@ fn run_ci_bios(bios_path: &str) {
         .arg("2048")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
+        .args({
+            // MYOS_TCG_SINGLE=1: single-threaded TCG — far friendlier on a
+            // loaded 4-core host where MTTCG vCPU threads starve each other
+            // and the boot stalls mid-CI with no serial output.
+            if std::env::var("MYOS_TCG_SINGLE").as_deref() == Ok("1") {
+                vec!["-accel", "tcg,thread=single"]
+            } else {
+                vec![]
+            }
+        })
         .arg("-drive")
         .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")

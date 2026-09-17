@@ -106,6 +106,50 @@ const CMD_PTY: &[u8] = b"/bin/etc/pty_smoke 2\n";
 // urandom boot-CI smoke (kernel CSPRNG via /dev/urandom: non-zero, distinct,
 // successive reads differ).
 const CMD_URANDOM: &[u8] = b"/bin/etc/urandom_smoke\n";
+// netd listen/accept smoke: the guest announces TCP 2323 in the background;
+// the harness connects back through slirp hostfwd (see add_virtio_net in
+// src/main.rs), sends "ping", and expects "pong". Then `cat` must show
+// `[ OK ] listen` from the redirected output.
+const CMD_LISTEN_BG: &[u8] = b"/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 &\n";
+const CMD_LISTEN_CAT: &[u8] = b"cat /tmp/listen.out\n";
+/// Harness-side flag: the ping/pong exchange through hostfwd succeeded.
+static LISTEN_PONGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// When the listen smoke stage first began (bounds the ping/pong retry loop).
+static LISTEN_STAGE_START: std::sync::OnceLock<std::time::Instant> =
+    std::sync::OnceLock::new();
+const LISTEN_STAGE_BOUND: Duration = Duration::from_secs(120);
+/// Shared serial accumulator, so failure paths can dump fresh output.
+static SERIAL_ACC: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<String>>> =
+    std::sync::OnceLock::new();
+
+/// Runner-side half of the listen/accept smoke: connect to the guest listener
+/// through hostfwd, send "ping", expect "pong". One attempt per call; the
+/// stage machine retries while the guest listener is announcing.
+fn poke_listener() -> bool {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+    let addr = SocketAddr::from(([127, 0, 0, 1], 2323));
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5))
+    else {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(15)));
+    if stream.write_all(b"ping").is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 8];
+    let mut got = 0usize;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while got < 5 && std::time::Instant::now() < deadline {
+        match stream.read(&mut buf[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(_) => break,
+        }
+    }
+    got >= 5 && &buf[..5] == b"pong\n"
+}
 // HTTPS GET (requires network + wall clock + mbedtls).
 const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 // curl over userspace sockets + mbedtls (same URL as https smoke).
@@ -179,6 +223,10 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         cmds.push(CMD_PTY);
         cmds.push(CMD_URANDOM);
     }
+    // netd listen/accept smoke runs in every mode (network is up; the
+    // harness completes the ping/pong through slirp hostfwd).
+    cmds.push(CMD_LISTEN_BG);
+    cmds.push(CMD_LISTEN_CAT);
     cmds.push(CMD_INTERRUPT);
     cmds.push(CMD_HIST_SEED);
     cmds.push(CMD_ARROW);
@@ -710,6 +758,23 @@ fn interactive_heap_returned(serial: &str) -> bool {
     command_echoed(serial, "heap") && serial.contains("[ OK ] smoke") && at_interactive_prompt(serial)
 }
 
+/// Listener command echoed and the runner-side ping/pong succeeded. The
+/// smoke's own output goes to /tmp/listen.out (never the serial console).
+fn interactive_listen_bg_ok(serial: &str) -> bool {
+    if !LISTEN_PONGED.load(std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    command_echoed(serial, "/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 &")
+        && at_interactive_prompt(serial)
+}
+
+/// Redirected smoke output shows the accepted-connection round trip.
+fn interactive_listen_cat_ok(serial: &str) -> bool {
+    command_echoed(serial, "cat /tmp/listen.out")
+        && serial.contains("[ OK ] listen")
+        && at_interactive_prompt(serial)
+}
+
 fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[&str]) -> bool {
     match cmd_index {
         0 => interactive_unknown_cmd_ok(serial),
@@ -736,8 +801,10 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         14 if cmds.len() >= 20 => interactive_ostest_prep_ok(serial),
         15 if cmds.len() >= 20 => interactive_ostest_cat_ok(serial),
         16 if cmds.len() >= 20 => interactive_ostest_result_ok(serial),
-        17 if cmds.len() == 21 || cmds.len() == 22 => interactive_pty_cmd_ok(serial),
-        18 if cmds.len() == 22 => interactive_urandom_cmd_ok(serial),
+        i if cmds.len() >= 20 && cmds[i] == CMD_PTY => interactive_pty_cmd_ok(serial),
+        i if cmds[i] == CMD_URANDOM => interactive_urandom_cmd_ok(serial),
+        i if cmds[i] == CMD_LISTEN_BG => interactive_listen_bg_ok(serial),
+        i if cmds[i] == CMD_LISTEN_CAT => interactive_listen_cat_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
         i if i == arrow_seed_idx(cmds) => interactive_arrow_seed_ok(serial),
         i if i == arrow_edit_idx(cmds) => interactive_arrow_edit_ok(serial),
@@ -910,6 +977,36 @@ fn advance_shell_ci(
             send_shell_byte(stdin, 0x03);
             *interrupt_sent = true;
         }
+        ShellStage::WaitResult if cmds[*cmd_index] == CMD_LISTEN_BG && !LISTEN_PONGED.load(std::sync::atomic::Ordering::SeqCst) => {
+            // Smoke output is redirected to /tmp/listen.out (the `cat` stage
+            // surfaces it), so the serial console never shows the announce.
+            // Just poke the listener until it accepts (bounded below).
+            if LISTEN_STAGE_START.get().is_none() {
+                let _ = LISTEN_STAGE_START.set(std::time::Instant::now());
+            }
+            if poke_listener() {
+                LISTEN_PONGED.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+            if LISTEN_STAGE_START.get().unwrap().elapsed() > LISTEN_STAGE_BOUND {
+                // Surface the smoke's own output (redirected to
+                // /tmp/listen.out) before bailing.
+                for ch in "cat /tmp/listen.out\n".bytes() {
+                    send_shell_byte(stdin, ch);
+                }
+                std::thread::sleep(Duration::from_secs(4));
+                let fresh = SERIAL_ACC
+                    .get()
+                    .and_then(|a| a.lock().ok().map(|g| g.clone()))
+                    .unwrap_or_default();
+                eprintln!(
+                    "error: listen smoke never completed within {LISTEN_STAGE_BOUND:?}; listen.out + last serial:\n---\n{}\n---",
+                    fresh.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>()
+                );
+                std::process::exit(1);
+            }
+            return;
+        }
         ShellStage::WaitResult if shell_cmd_result_ok(acc, cmds, *cmd_index, extra) => {
             *cmd_index += 1;
             if *cmd_index >= cmds.len() {
@@ -960,6 +1057,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     });
 
     let serial_acc = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let _ = SERIAL_ACC.set(serial_acc.clone());
     let acc_reader = serial_acc.clone();
 
     let mut stdout = child.stdout.take().expect("qemu stdout");

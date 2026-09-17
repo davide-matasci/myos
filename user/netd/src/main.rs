@@ -92,6 +92,14 @@ struct Conv {
     /// Without this, netfs already reported write success and the bytes vanish.
     pending_len: u16,
     pending: [u8; MSG_CAP],
+    /// TCP listener (Plan 9 "announce"): nonzero = advertised port.
+    listen_port: u16,
+    /// A ctl "accept" arrived and is parked until a connection lands.
+    accept_wait: bool,
+    /// Accepted connection parked for the next ctl "accept": new conv id.
+    accepted: Option<u16>,
+    /// Graceful close in flight: close() sent, socket removed once Closed.
+    closing: bool,
 }
 
 impl Conv {
@@ -107,6 +115,10 @@ impl Conv {
         hungup: false,
         pending_len: 0,
         pending: [0; MSG_CAP],
+        listen_port: 0,
+        accept_wait: false,
+        accepted: None,
+        closing: false,
     };
 }
 
@@ -174,6 +186,45 @@ fn parse_connect(cmd: &[u8]) -> Option<(Ipv4Address, Option<u16>)> {
     }
     let port = parse_port(&rest[1..])?;
     Some((addr, Some(port)))
+}
+
+/// Status payload for an accepted connection: "accepted <N> <ip>!<port>".
+/// Hand-rolled decimal formatting keeps the image free of fmt/memcpy deps.
+fn accept_reply(convs: &mut [Conv; MAX_CONV], n: u16) -> alloc::vec::Vec<u8> {
+    fn push_dec(out: &mut alloc::vec::Vec<u8>, mut v: u32) {
+        let mut tmp = [0u8; 10];
+        let mut i = 0;
+        if v == 0 {
+            out.push(b'0');
+            return;
+        }
+        while v > 0 {
+            tmp[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            i += 1;
+        }
+        while i > 0 {
+            i -= 1;
+            out.push(tmp[i]);
+        }
+    }
+    let mut out = alloc::vec::Vec::with_capacity(32);
+    out.extend_from_slice(b"accepted ");
+    push_dec(&mut out, n as u32);
+    let c = &convs[n as usize];
+    if c.have_remote {
+        let o = c.remote4.octets();
+        out.push(b' ');
+        for (k, b) in o.iter().enumerate() {
+            if k > 0 {
+                out.push(b'.');
+            }
+            push_dec(&mut out, *b as u32);
+        }
+        out.push(b'!');
+        push_dec(&mut out, c.remote_port as u32);
+    }
+    out
 }
 
 fn trim(s: &[u8]) -> &[u8] {
@@ -329,6 +380,17 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
         return;
     }
     if let Some(h) = convs[i].handle.take() {
+        // Graceful close for live TCP sockets: close() drains queued TX and
+        // sends FIN; sockets.remove() would discard pending data (the peer
+        // sees a bare FIN/RST and loses bytes written just before close).
+        let live = matches!(convs[i].kind, Kind::Tcp)
+            && !matches!(sockets.get_mut::<tcp::Socket>(h).state(), tcp::State::Closed);
+        if live {
+            sockets.get_mut::<tcp::Socket>(h).close();
+            convs[i].handle = Some(h);
+            convs[i].closing = true;
+            return;
+        }
         sockets.remove(h);
     }
     convs[i] = Conv::EMPTY;
@@ -350,8 +412,61 @@ fn handle_ctl(
     }
     let cmd = trim(payload);
     if cmd == b"hangup" {
+        // A parked accept on a closing listener fails loudly.
+        if convs[i].accept_wait {
+            reply(chan, REP_ERR, conv, -1, b"hangup");
+        }
         drop_conv(convs, sockets, i);
         reply(chan, REP_STATUS, conv, 0, b"hangup");
+        return;
+    }
+    // Plan 9 announce: start a TCP listener on this conv ("announce <port>").
+    if let Some(rest) = cmd.strip_prefix(b"announce") {
+        let port = match parse_port(trim(rest)) {
+            Some(p) if p != 0 => p,
+            _ => {
+                reply(chan, REP_ERR, conv, -1, b"need port");
+                return;
+            }
+        };
+        match convs[i].kind {
+            Kind::Tcp => {
+                let Some(h) = convs[i].handle else {
+                    reply(chan, REP_ERR, conv, -1, b"no conv");
+                    return;
+                };
+                let s = sockets.get_mut::<tcp::Socket>(h);
+                match s.listen(port) {
+                    Ok(()) => {
+                        convs[i].listen_port = port;
+                        reply(chan, REP_STATUS, conv, 0, b"listening");
+                    }
+                    Err(_) => reply(chan, REP_ERR, conv, -1, b"listen"),
+                }
+            }
+            _ => reply(chan, REP_ERR, conv, -1, b"tcp only"),
+        }
+        return;
+    }
+    // Accept a pending connection on this listener. One parked wait max.
+    if cmd == b"accept" {
+        match convs[i].kind {
+            Kind::Tcp if convs[i].listen_port != 0 => {}
+            _ => {
+                reply(chan, REP_ERR, conv, -1, b"not listening");
+                return;
+            }
+        }
+        if let Some(n) = convs[i].accepted.take() {
+            let rep = accept_reply(convs, n);
+            reply(chan, REP_STATUS, conv, 0, &rep);
+            return;
+        }
+        if convs[i].accept_wait {
+            reply(chan, REP_ERR, conv, -1, b"accept busy");
+            return;
+        }
+        convs[i].accept_wait = true; // parked; replied from the poll pump
         return;
     }
     let Some((addr, port)) = parse_connect(cmd) else {
@@ -415,6 +530,94 @@ fn handle_ctl(
                     Err(_) => reply(chan, REP_ERR, conv, -1, b"tcp connect"),
                 }
             }
+        }
+    }
+}
+
+/// Poll TCP listeners: when smoltcp moved a listening socket out of the
+/// Listen state, an incoming connection landed. Hand it to a fresh conv,
+/// re-arm a listener on the same port, and complete any parked "accept".
+fn pump_accepts(
+    convs: &mut [Conv; MAX_CONV],
+    sockets: &mut SocketSet<'_>,
+    chan: usize,
+) {
+    for i in 0..MAX_CONV {
+        if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port == 0 {
+            continue;
+        }
+        let Some(h) = convs[i].handle else {
+            continue;
+        };
+        let arrived = {
+            let s = sockets.get_mut::<tcp::Socket>(h);
+            if s.state() == tcp::State::Listen {
+                false
+            } else {
+                true
+            }
+        };
+        if !arrived {
+            continue;
+        }
+        // Peer endpoint captured from the connected socket.
+        let (remote4, remote_port) = {
+            let s = sockets.get_mut::<tcp::Socket>(h);
+            match s.remote_endpoint() {
+                Some(e) => match e.addr {
+                    IpAddress::Ipv4(a) => (a, e.port),
+                    _ => (Ipv4Address::new(0, 0, 0, 0), 0),
+                },
+                None => (Ipv4Address::new(0, 0, 0, 0), 0),
+            }
+        };
+        // Move the connected socket to a free conv.
+        let slot = (0..MAX_CONV)
+            .find(|&n| matches!(convs[n].kind, Kind::Empty) && n != i);
+        let Some(n) = slot else {
+            // Backlog full: hold the connection in the listener socket until
+            // a conv frees up (checked again next tick).
+            if convs[i].accept_wait {
+                // Only fail a parked wait on real exhaustion; keep waiting.
+                continue;
+            }
+            continue;
+        };
+        let port = convs[i].listen_port;
+        convs[n] = Conv {
+            kind: Kind::Tcp,
+            handle: Some(h),
+            remote4,
+            remote_port,
+            have_remote: true,
+            connected: true,
+            ..Conv::EMPTY
+        };
+        // Tell netfs about the new conv: it only allocates convs on clone, so
+        // without this the guest cannot open /net/tcp/<n>/data (conv_ok
+        // fails) and accept() dies with EIO.
+        reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
+        // Introduce the new conv to netfs: pump-accepted convs bypass clone,
+        // so without this netfs never marks the slot used and the client's
+        // open of /net/tcp/<n>/data fails.
+        reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
+        // Re-arm a fresh listener on the same port for the next connection.
+        let rx = tcp::SocketBuffer::new(vec![0; TCP_RX]);
+        let tx = tcp::SocketBuffer::new(vec![0; TCP_TX]);
+        let nh = sockets.add(tcp::Socket::new(rx, tx));
+        {
+            let ls = sockets.get_mut::<tcp::Socket>(nh);
+            let _ = ls.listen(port);
+        }
+        convs[i].handle = Some(nh);
+        convs[i].accepted = Some(n as u16);
+        // Tell netfs about the new conv: the guest never cloned it, so its
+        // slot is unused there and opening /net/tcp/<n>/data would fail.
+        reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
+        if convs[i].accept_wait {
+            convs[i].accept_wait = false;
+            let rep = accept_reply(convs, n as u16);
+            reply(chan, REP_STATUS, i as u16, 0, &rep);
         }
     }
 }
@@ -712,7 +915,27 @@ fn main() -> ! {
             iface.poll(now, &mut device, &mut sockets);
         }
 
+        pump_accepts(&mut convs, &mut sockets, chan);
         pump_sockets(&mut convs, &mut sockets, &device, chan);
+        // Finish graceful closes: once a closing socket reaches Closed, free it.
+        for i in 0..MAX_CONV {
+            if !convs[i].closing {
+                continue;
+            }
+            let closed = match convs[i].handle {
+                Some(h) => matches!(
+                    sockets.get_mut::<tcp::Socket>(h).state(),
+                    tcp::State::Closed
+                ),
+                None => true,
+            };
+            if closed {
+                if let Some(h) = convs[i].handle.take() {
+                    sockets.remove(h);
+                }
+                convs[i] = Conv::EMPTY;
+            }
+        }
     }
 }
 

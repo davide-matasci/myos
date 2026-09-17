@@ -334,11 +334,72 @@ fn apply_reply(buf: &[u8]) {
         return;
     }
     let payload = &buf[REP_HDR..REP_HDR + plen];
+    // Server-introduced convs (netd pump-accept) bypass clone, so netfs has
+    // no state for them yet: allocate the exact index before anything else.
+    if typ == REP_CLONE_OK && conv_mut(conv).is_none() {
+        if conv >= MAX_CONV as u16 || state().convs[conv as usize].used {
+            return;
+        }
+        let proto = match core::str::from_utf8(payload) {
+            Ok("udp") => PROTO_UDP,
+            Ok("icmp") => PROTO_ICMP,
+            _ => PROTO_TCP,
+        };
+        state().convs[conv as usize] = Conv {
+            used: true,
+            proto,
+            data_len: 0,
+            data: [0; DATA_CAP],
+            status_len: 0,
+            status: [0; STATUS_CAP],
+        };
+    }
     let Some(c) = conv_mut(conv) else {
         return;
     };
     match typ {
         REP_CLONE_OK => {
+            if conv_mut(conv).is_none() {
+                // netd created this conv server-side (accepted-connection
+                // pump); register it on the fly so its data/status files
+                // resolve. Payload carries the protocol name.
+                let proto = if payload == b"udp" {
+                    PROTO_UDP
+                } else {
+                    PROTO_TCP
+                };
+                if (conv as usize) < MAX_CONV && !state().convs[conv as usize].used {
+                    state().convs[conv as usize] = Conv {
+                        used: true,
+                        proto,
+                        data_len: 0,
+                        data: [0; DATA_CAP],
+                        status_len: 0,
+                        status: [0; STATUS_CAP],
+                    };
+                }
+            }
+            let c = match conv_mut(conv) {
+                Some(c) => c,
+                // Server-created conv (netd accepted an incoming connection
+                // on a listener and moved it into a fresh slot): the guest
+                // never cloned it, so allocate exactly this slot here.
+                None => {
+                    if conv as usize >= MAX_CONV || state().convs[conv as usize].used {
+                        return;
+                    }
+                    let c = &mut state().convs[conv as usize];
+                    *c = Conv {
+                        used: true,
+                        proto: PROTO_TCP,
+                        data_len: 0,
+                        data: [0; DATA_CAP],
+                        status_len: 0,
+                        status: [0; STATUS_CAP],
+                    };
+                    c
+                }
+            };
             if c.status_len == 0 {
                 set_status(c, b"cloned");
             }
