@@ -378,10 +378,18 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     // hint if the ELF is missing (silent skip = "dropbear not available").
     if feature_enabled("port_dropbear") {
         for bin in ["dropbear", "dbclient", "dropbearkey"] {
-            let path = target.join(format!("{bin}-{none_triple}"));
+            // Prefer the canonical ELF; fall back to the coreutils-* pack alias
+            // used when ci.yml cannot gain new globs (OAuth lacks workflow scope).
+            let canonical = target.join(format!("{bin}-{none_triple}"));
+            let alias = target.join(format!("coreutils-{bin}-{none_triple}"));
+            let path = if canonical.is_file() {
+                canonical
+            } else {
+                alias.clone()
+            };
             let bytes = std::fs::read(&path).unwrap_or_else(|e| {
                 panic!(
-                    "dropbear: missing {path:?} ({e}); run ports/dropbear/build.sh"
+                    "dropbear: missing {path:?} (also tried {alias:?}) ({e}); run ports/dropbear/build.sh"
                 )
             });
             add(&mut entries, &format!("bin/custom/{bin}"), Some(bytes));
