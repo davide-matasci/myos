@@ -164,7 +164,7 @@ static SSH_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 static SSH_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SSH_ERR: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 static SSH_STAGE_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-const SSH_STAGE_BOUND: Duration = Duration::from_secs(120);
+const SSH_STAGE_BOUND: Duration = Duration::from_secs(180);
 const SSH_HOST_PORT: &str = "2222";
 
 fn dropbear_testkey_src() -> PathBuf {
@@ -319,9 +319,12 @@ fn start_ssh_smoke_worker() {
                 return;
             }
         };
+        // Stage clock starts here (post-apt) so the outer WaitResult bound
+        // matches the worker's retry window.
+        let start = std::time::Instant::now();
+        let _ = SSH_STAGE_START.set(start);
         // Brief settle so guest dropbear has bound :22 after the shell `&`.
         std::thread::sleep(Duration::from_millis(500));
-        let start = std::time::Instant::now();
         let mut last_err = String::from("ssh smoke never attempted");
         while start.elapsed() < SSH_STAGE_BOUND {
             match poke_ssh_two_clients(&key) {
@@ -699,7 +702,9 @@ fn interactive_pty_cmd_ok(serial: &str) -> bool {
     if !tail.contains("$ /bin/etc/pty_smoke 2") || serial.contains("exception:") {
         return false;
     }
-    if !tail.contains("/dev/pts/") || !tail.contains("[ OK ] s2 EIO") {
+    // Stage 2 is the openpty round-trip + EIO path; it does not print a
+    // `/dev/pts/N` path (that is stage 0/1). Match the `[ OK ] s2 EIO` marker.
+    if !tail.contains("[ OK ] s2 EIO") {
         return false;
     }
     at_interactive_prompt(serial)
@@ -1218,10 +1223,9 @@ fn advance_shell_ci(
         {
             // Guest sshd is backgrounded with output redirected; host clients
             // connect via hostfwd. Kick a worker once and wait for both
-            // concurrent sessions to exit cleanly.
-            if SSH_STAGE_START.get().is_none() {
-                let _ = SSH_STAGE_START.set(std::time::Instant::now());
-            }
+            // concurrent sessions to exit cleanly. The stage clock starts
+            // inside the worker *after* ensure_host_ssh (apt) so install
+            // time does not burn the connect/retry budget.
             start_ssh_smoke_worker();
             if SSH_DONE.load(std::sync::atomic::Ordering::SeqCst) {
                 if SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1245,7 +1249,10 @@ fn advance_shell_ci(
                 );
                 std::process::exit(1);
             }
-            if SSH_STAGE_START.get().unwrap().elapsed() > SSH_STAGE_BOUND {
+            if SSH_STAGE_START
+                .get()
+                .is_some_and(|t| t.elapsed() > SSH_STAGE_BOUND)
+            {
                 for ch in "cat /tmp/dropbear.out\n".bytes() {
                     send_shell_byte(stdin, ch);
                 }
@@ -1772,7 +1779,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             } else if !at_interactive_prompt(&serial) {
                 eprintln!("error: shell did not return to `$` after interactive pty_smoke");
             } else {
-                eprintln!("error: interactive pty_smoke did not print `/dev/pts/` and `[ OK ] pty`");
+                eprintln!("error: interactive pty_smoke did not print `[ OK ] s2 EIO`");
             }
             std::process::exit(1);
         }
