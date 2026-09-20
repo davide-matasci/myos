@@ -92,6 +92,11 @@ pub struct ModuleVfsOps {
     pub readlink: Option<
         unsafe extern "C" fn(path: *const u8, path_len: usize, buf: *mut u8, buf_len: usize) -> i32,
     >,
+    /// Optional: last open fd on this path was closed (fork-safe close).
+    /// Socket-like backends must tear their conv down here, not on any
+    /// mid-life close: after fork() several fds share one conv, and the
+    /// parent's close must not kill the child's connection.
+    pub release: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
 }
 
 /// Bind `dev_id` to a filesystem and fill `ops`. Return 0 on success.

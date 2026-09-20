@@ -18,6 +18,29 @@ const PROTO_ICMP: u8 = 3;
 const REQ_CLONE: u8 = 1;
 const REQ_CTL: u8 = 2;
 const REQ_SEND: u8 = 3;
+
+/// TEMP DEBUG (revert): emit a raw string via the kernel console API.
+static mut DBG_API: Option<&'static KernelApi> = None;
+fn write_uint(buf: &mut [u8], mut v: u32) -> usize {
+    let mut tmp = [0u8; 10];
+    let mut n = 0;
+    loop {
+        tmp[n] = b'0' + (v % 10) as u8;
+        n += 1;
+        v /= 10;
+        if v == 0 { break; }
+    }
+    for i in 0..n { buf[i] = tmp[n - 1 - i]; }
+    n
+}
+
+fn dbg_out(s: &str) {
+    let api = unsafe { core::ptr::addr_of!(DBG_API).read() };
+    if let Some(a) = api {
+        unsafe { (a.write_str)(s.as_bytes().as_ptr(), s.as_bytes().len()); }
+    }
+}
+
 const REQ_CLOSE: u8 = 4;
 
 const REP_CLONE_OK: u8 = 1;
@@ -676,6 +699,43 @@ fn trim_ctl(buf: &[u8]) -> &[u8] {
     s
 }
 
+/// Last fd on a /net/tcp/<id>/... path closed: tear the conv down once.
+/// Called by the kernel when the per-(mount,path) open count reaches zero,
+/// so a forked child sharing the fd keeps the connection alive until it too
+/// closes (dropbear forks and the parent closes its copy immediately).
+unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    let Some(node) = parse_path(path) else {
+        return -1;
+    };
+    let (p, id) = match node {
+        Node::Ctl(p, id) | Node::Data(p, id) | Node::Status(p, id) => (p, id),
+        _ => return 0,
+    };
+    if !conv_ok(id, p) {
+        return 0;
+    }
+    teardown_conv(id);
+    0
+}
+
+fn teardown_conv(id: u16) {
+    let i = id as usize;
+    if i >= MAX_CONV {
+        return;
+    }
+    let st = state();
+    if !st.convs[i].used {
+        return;
+    }
+    dbg_out("[netfs-dbg] teardown\n");
+    set_status(&mut st.convs[i], b"hangup");
+    let _ = enqueue_req(REQ_CLOSE, id, st.convs[i].proto, &[]);
+    st.convs[i].used = false;
+}
+
 unsafe extern "C" fn net_write(
     path: *const u8,
     path_len: usize,
@@ -699,6 +759,7 @@ unsafe extern "C" fn net_write(
             }
             let cmd = trim_ctl(src);
             if cmd == b"hangup" {
+                dbg_out("[netfs-dbg] ctl-hangup\n");
                 set_status(&mut state().convs[id as usize], b"hangup");
                 if !enqueue_req(REQ_CLOSE, id, p, &[]) {
                     return -1;
@@ -711,12 +772,28 @@ unsafe extern "C" fn net_write(
         }
         Node::Data(p, id) => {
             if !conv_ok(id, p) {
+                let st = state();
+                let c = &st.convs[id as usize];
+                let mut d = [0u8; 128];
+                let mut n = 0;
+                for b in b"[netfs-dbg] conv_ok fail id=" { d[n] = *b; n += 1; }
+                n += write_uint(&mut d[n..], id as u32);
+                for b in b" used=" { d[n] = *b; n += 1; }
+                d[n] = b'0' + c.used as u8; n += 1;
+                for b in b" proto=" { d[n] = *b; n += 1; }
+                d[n] = c.proto as u8; n += 1;
+                for b in b" want=" { d[n] = *b; n += 1; }
+                d[n] = p as u8; n += 1;
+                d[n] = b'\n'; n += 1;
+                dbg_out(core::str::from_utf8(&d[..n]).unwrap_or("?"));
                 return -1;
             }
             if src.len() > MSG_CAP - REQ_HDR {
+                dbg_out("[netfs-dbg] data write too long\n");
                 return -1;
             }
             if !enqueue_req(REQ_SEND, id, p, src) {
+                dbg_out("[netfs-dbg] data write ring full\n");
                 return -1;
             }
             src.len() as i32
@@ -730,7 +807,23 @@ unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
         return -1;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(buf, buf_len) };
-    state().req.pop(out) as i32
+    let n = state().req.pop(out);
+    {
+        static mut CR: u32 = 0;
+        let c = unsafe { &mut *core::ptr::addr_of_mut!(CR) };
+        if *c < 40 {
+            let mut d = [0u8; 48];
+            let mut k = 0;
+            for b in b"[cr] " { d[k] = *b; k += 1; }
+            k += write_uint(&mut d[k..], n as u32);
+            for b in b" typ=" { d[k] = *b; k += 1; }
+            if n >= 1 { k += write_uint(&mut d[k..], out[0] as u32); }
+            d[k] = b'\n'; k += 1;
+            dbg_out(core::str::from_utf8(&d[..k]).unwrap_or("?"));
+            *c += 1;
+        }
+    }
+    n as i32
 }
 
 unsafe extern "C" fn chr_write(buf: *const u8, buf_len: usize) -> i32 {
@@ -771,6 +864,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         unlink: None,
         rename: None,
         symlink: None,
+        release: Some(net_release),
         readlink: None,
     };
     let mount_rc = unsafe {
@@ -793,6 +887,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     if mount_rc == 0 && chr_rc == 0 {
         unsafe { status_ok(api, "netfs") };
     }
+    unsafe { core::ptr::addr_of_mut!(DBG_API).write(Some(&*(api as *const KernelApi))); }
     0
 }
 

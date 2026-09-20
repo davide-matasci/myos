@@ -13,7 +13,7 @@ pub mod libfs;
 pub mod tccfs;
 mod tmpfs;
 pub mod ubasefs;
-mod vfs;
+pub mod vfs;
 
 pub use vfs::{IoctlResult, StatInfo, Vnode};
 

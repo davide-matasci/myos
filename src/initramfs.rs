@@ -373,6 +373,59 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             read(&target.join(format!("oksh-{none_triple}"))),
         );
     }
+    // dropbear sshd + dbclient -> bin/custom/{dropbear,dbclient} (none triple,
+    // like oksh). Gated on the port_dropbear feature; panic with the build
+    // hint if the ELF is missing (silent skip = "dropbear not available").
+    if feature_enabled("port_dropbear") {
+        for bin in ["dropbear", "dbclient", "dropbearkey"] {
+            let path = target.join(format!("{bin}-{none_triple}"));
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                panic!(
+                    "dropbear: missing {path:?} ({e}); run ports/dropbear/build.sh"
+                )
+            });
+            add(&mut entries, &format!("bin/custom/{bin}"), Some(bytes));
+        }
+        // Test-only authorized key for CI/E2E SSH login (private key is
+        // committed next to the port and labeled NOT A SECRET — demo OS).
+        let ak = manifest_dir.join("ports/dropbear/testkey.pub");
+        let ak_bytes = std::fs::read(&ak).unwrap_or_else(|e| {
+            panic!("dropbear: missing testkey.pub ({e})")
+        });
+        add(&mut entries, "root/.ssh/authorized_keys", Some(ak_bytes));
+        // Server host key (generated with host-built dropbearkey; private key
+        // committed next to the port, demo OS — NOT a secret).
+        let hk = manifest_dir.join("ports/dropbear/testkey.host");
+        let hk_bytes = std::fs::read(&hk).unwrap_or_else(|e| {
+            panic!("dropbear: missing testkey.host ({e})")
+        });
+        add(&mut entries, "etc/dropbear/ed25519_hostkey", Some(hk_bytes));
+        // /etc/shells: dropbear's check_shell() rejects auth unless the
+        // passwd shell is listed here (root's pw_shell is /bin/custom/sh).
+        add(
+            &mut entries,
+            "etc/shells",
+            Some(b"/bin/custom/sh\n/bin/sh\n".to_vec()),
+        );
+        // TEMP DEBUG: fork smoke (revert before commit)
+        let fs_path = target.join(format!("tcp-fork-smoke-{none_triple}"));
+        let fs_bytes = std::fs::read(&fs_path).unwrap_or_else(|e| {
+            panic!("dropbear: missing tcp-fork-smoke ({e})")
+        });
+        add(&mut entries, "bin/etc/tcp_fork_smoke", Some(fs_bytes));
+        // TEMP DEBUG: exec test (revert before commit)
+        let xt_path = target.join(format!("exectest-{none_triple}"));
+        let xt_bytes = std::fs::read(&xt_path).unwrap_or_else(|e| {
+            panic!("dropbear: missing exectest ({e})")
+        });
+        add(&mut entries, "bin/etc/exectest", Some(xt_bytes));
+        // TEMP DEBUG: stdio test (revert before commit)
+        let sv_path = target.join(format!("svftest-{none_triple}"));
+        let sv_bytes = std::fs::read(&sv_path).unwrap_or_else(|e| {
+            panic!("dropbear: missing svftest ({e})")
+        });
+        add(&mut entries, "bin/etc/svftest", Some(sv_bytes));
+    }
     // vim (FEAT_TINY) -> bin/custom/vim (none triple, like oksh).
     // Gated on the port_vim feature: exclude with --no-default-features.
     if feature_enabled("port_vim") {
