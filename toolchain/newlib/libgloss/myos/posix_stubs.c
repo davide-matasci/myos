@@ -388,7 +388,8 @@ int usleep(useconds_t usec) {
     return 0;
 }
 
-unsigned alarm(unsigned seconds) {
+/* Weak: ports/git myos_stubs.c also provides alarm(); prefer that when linked. */
+unsigned __attribute__((weak)) alarm(unsigned seconds) {
     /* Hang-timeout helper for tests; no async delivery yet. */
     (void)seconds;
     return 0;
