@@ -113,6 +113,12 @@ done
 
 require target/cacert.pem target/coreutils-cacert.pem || missing=1
 
+# os-test: aarch64/riscv host myos re-packs initramfs under SKIP_KERNEL_REBUILD.
+require target/os-test-embed/basic/ctype/isalnum.c || missing=1
+for arch in x86_64 aarch64 riscv64; do
+  require "target/os-test-prebuilt/${arch}/basic/arpa_inet/htons" || missing=1
+done
+
 if [[ "$missing" -ne 0 ]]; then
   echo "::error::ci-build.tar is incomplete for boot/boot-mini."
   echo "::error::The build job must pack these via scripts/ci-build-kernels.sh --print-members"

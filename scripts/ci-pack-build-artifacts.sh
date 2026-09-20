@@ -57,7 +57,11 @@ files=(
   target/.myos-git-version
   target/.myos-std-hello-version
   target/.myos-dropbear-version
+  target/.myos-os-test-version
   target/.myos-ci-kernel-version
+  # Exact dirs — never glob target/os-test-* (matches -src / -prebuilt-obj).
+  target/os-test-embed
+  target/os-test-prebuilt
   target/limine-v*
 )
 # Exact ELF names only — never glob target/dropbear-* (matches
@@ -128,6 +132,18 @@ for arch in x86_64 aarch64 riscv64; do
   require_one "target/urandom-smoke-${arch}-${n}" "target/coreutils-urandom-smoke-${arch}-${n}" || missing=1
 done
 require_one target/cacert.pem target/coreutils-cacert.pem || missing=1
+# os-test embed + host-prebuilt smoke ELFs (initramfs always packs them).
+if [[ ! -f target/os-test-embed/basic/ctype/isalnum.c ]]; then
+  echo "::error::required CI artifact missing: target/os-test-embed (run ports/os-test/build.sh)"
+  missing=1
+fi
+for arch in x86_64 aarch64 riscv64; do
+  m="target/os-test-prebuilt/${arch}/basic/arpa_inet/htons"
+  if [[ ! -f "$m" ]]; then
+    echo "::error::required CI artifact missing: $m"
+    missing=1
+  fi
+done
 if [[ "$missing" -ne 0 ]]; then
   echo "target/ listing (hello/ok/kernels/ports):"
   ls -la target/hello-* target/ok-* \

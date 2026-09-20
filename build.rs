@@ -92,39 +92,46 @@ fn main() {
     ensure_feature_port(&manifest, "port_lua", "target/lua-x86_64-unknown-none", "ports/lua/build.sh");
     ensure_feature_port(&manifest, "port_dropbear", "target/dropbear-x86_64-unknown-none", "ports/dropbear/build.sh");
 
-    // os-test boot-CI smoke prebuilts (guest runs; skips tcc under TCG).
+    // os-test (always embedded): consume ports-base artifacts. CI restores via
+    // ci-registry; local-dev runs ports/os-test/build.sh when missing (same
+    // pattern as ensure_feature_port). Do not fetch/prebuild inline here.
     {
         let marker = manifest.join("target/os-test-prebuilt/x86_64/basic/arpa_inet/htons");
-        if !marker.is_file() {
-            // The embed tree is restored from caches/pulls and can be stale or
-            // partial; prebuild-basic-smoke.sh needs upstream sources. Refetch
-            // (idempotent: reuses target/os-test-src at the pinned rev) whenever
-            // a required source is absent, exactly like src/initramfs.rs does.
-            let probe = manifest.join("target/os-test-embed/basic/ctype/isalnum.c");
-            if !probe.is_file() {
-                let fetch = manifest.join("ports/os-test/fetch.sh");
-                let status = std::process::Command::new("bash")
-                    .arg(&fetch)
-                    .current_dir(&manifest)
-                    .status()
-                    .unwrap_or_else(|e| panic!("run {}: {e}", fetch.display()));
-                if !status.success() {
-                    panic!("{} failed", fetch.display());
-                }
-            }
-            let sh = manifest.join("ports/os-test/prebuild-basic-smoke.sh");
-            let status = std::process::Command::new("bash")
-                .arg(&sh)
-                .status()
-                .unwrap_or_else(|e| panic!("run {}: {e}", sh.display()));
-            if !status.success() {
-                panic!("{} failed", sh.display());
-            }
-        }
+        let probe = manifest.join("target/os-test-embed/basic/ctype/isalnum.c");
+        println!("cargo:rerun-if-changed=ports/os-test/build.sh");
+        println!("cargo:rerun-if-changed=ports/os-test/fetch.sh");
         println!("cargo:rerun-if-changed=ports/os-test/prebuild-basic-smoke.sh");
+        println!("cargo:rerun-if-changed=ports/os-test/versions.env");
         println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/ci-basic-smoke.tests");
         println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/myos-run.sh");
         println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/ci-smoke-copy.sh");
+        if !marker.is_file() || !probe.is_file() {
+            let sh = manifest.join("ports/os-test/build.sh");
+            eprintln!(
+                "==> cargo: os-test artifacts missing; running {} (or restore from ports CI)",
+                sh.display()
+            );
+            let status = std::process::Command::new("bash")
+                .arg(&sh)
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", std::env::var("HOME").unwrap_or_default())
+                .status()
+                .unwrap_or_else(|e| panic!("run {}: {e}", sh.display()));
+            if !status.success() {
+                panic!(
+                    "{} failed; for local builds run: ./ports/os-test/build.sh",
+                    sh.display()
+                );
+            }
+            if !marker.is_file() || !probe.is_file() {
+                panic!(
+                    "os-test artifacts still missing after build.sh; expected {} and {}",
+                    marker.display(),
+                    probe.display()
+                );
+            }
+        }
     }
 
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any

@@ -23,6 +23,7 @@ MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
 MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
 MYOS_DROPBEAR_VERSION_STAMP="$MYOS_ROOT/target/.myos-dropbear-version"
+MYOS_OS_TEST_VERSION="$MYOS_ROOT/target/.myos-os-test-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
@@ -606,5 +607,35 @@ myos_make_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/make-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_os_test_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      sha256sum "$MYOS_ROOT/ports/os-test/versions.env"
+      sha256sum "$MYOS_ROOT/ports/os-test/build.sh"
+      sha256sum "$MYOS_ROOT/ports/os-test/fetch.sh"
+      sha256sum "$MYOS_ROOT/ports/os-test/prebuild-basic-smoke.sh"
+      find "$MYOS_ROOT/ports/os-test/overlay" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      sha256sum "$MYOS_ROOT/ports/sbase/trunctfdf2.c" 2>/dev/null
+      sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_os_test_is_current() {
+  local arch marker
+  [[ -f "$MYOS_OS_TEST_VERSION" ]] \
+    && [[ "$(cat "$MYOS_OS_TEST_VERSION")" == "$(myos_os_test_version_hash)" ]] \
+    || return 1
+  [[ -f "$MYOS_ROOT/target/os-test-embed/basic/ctype/isalnum.c" ]] || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    marker="$MYOS_ROOT/target/os-test-prebuilt/${arch}/basic/arpa_inet/htons"
+    [[ -f "$marker" ]] || return 1
   done
 }
