@@ -332,7 +332,11 @@ fn start_ssh_smoke_worker() {
                 }
                 Err(e) => {
                     last_err = e;
-                    std::thread::sleep(Duration::from_millis(1000));
+                    // Back off harder than 1s: each failed attempt can leave a
+                    // SynReceived orphan in netd until handshake-age reclaim
+                    // (~10s). Flooding SYNs every second filled MAX_CONV on
+                    // riscv64 before dropbear could accept a live session.
+                    std::thread::sleep(Duration::from_secs(3));
                 }
             }
         }
