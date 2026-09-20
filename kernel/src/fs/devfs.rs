@@ -16,6 +16,7 @@ const S_IFBLK: u32 = 0o060000;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Node {
     Null,
+    Zero,
     Tty,
     Console,
     Ptmx,
@@ -124,6 +125,7 @@ fn parse_nvme(name: &str) -> Option<u32> {
 fn parse(name: &str) -> Option<Node> {
     match name {
         "null" => Some(Node::Null),
+        "zero" => Some(Node::Zero),
         "tty" => Some(Node::Tty),
         "console" => Some(Node::Console),
         "ptmx" => Some(Node::Ptmx),
@@ -164,6 +166,10 @@ pub fn truncate(name: &str) -> bool {
 pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     match parse(name) {
         Some(Node::Null) => 0,
+        Some(Node::Zero) => {
+            out.fill(0);
+            out.len()
+        }
         Some(Node::Tty) | Some(Node::Console) => {
             if out.is_empty() {
                 0
@@ -208,6 +214,7 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
     match parse(name) {
         Some(Node::Null) => Some(buf.len()),
+        Some(Node::Zero) => Some(buf.len()),
         Some(Node::Tty) | Some(Node::Console) => {
             task::print_bytes(buf);
             Some(buf.len())
@@ -235,7 +242,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     if !rel.is_empty() && rel != "." {
         return 0;
     }
-    const NAMES: &[&[u8]] = &[b"null", b"tty", b"console", b"ptmx", b"urandom", b"random"];
+    const NAMES: &[&[u8]] = &[b"null", b"zero", b"tty", b"console", b"ptmx", b"urandom", b"random"];
     let mut n = 0;
     for name in NAMES {
         let need = name.len() + 1;
@@ -307,10 +314,10 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     }
     let node = parse(name)?;
     match node {
-        Node::Null => Some(StatInfo {
+        Node::Null | Node::Zero => Some(StatInfo {
             mode: S_IFCHR | 0o666,
             size: 0,
-            ino: 2,
+            ino: if matches!(node, Node::Zero) { 7 } else { 2 },
             nlink: 1,
             dev: 0,
         }),
@@ -433,6 +440,6 @@ pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
                 None => IoctlResult::Notty,
             }
         }
-        Some(Node::Null) | Some(Node::Block(_)) | Some(Node::Nvme(_)) | None => IoctlResult::Notty,
+        Some(Node::Null) | Some(Node::Zero) | Some(Node::Block(_)) | Some(Node::Nvme(_)) | None => IoctlResult::Notty,
     }
 }

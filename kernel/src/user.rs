@@ -1713,7 +1713,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_LISTDIR => sys_listdir(a0, a1, a2),
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
-        SYS_DUP2 => sys_dup2(a0, a1),
+        SYS_DUP2 => sys_dup2(a0, a1, a2),
         SYS_DUPFD => sys_dupfd(a0, a1),
         SYS_STAT => sys_stat(a0, a1, a2),
         SYS_EXECNAME => sys_exec_name(a0, a1),
@@ -2404,8 +2404,8 @@ fn sys_sigchld_take_inner() -> usize {
     }
 }
 
-fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
-    if task::fd_dup2(oldfd, newfd) {
+fn sys_dup2(oldfd: usize, newfd: usize, flags: usize) -> usize {
+    if task::fd_dup2_flags(oldfd, newfd, flags) {
         0
     } else {
         SYSERR

@@ -91,6 +91,10 @@ pub fn current_should_wake() -> bool {
 ///
 /// Returns `false` if `sig` is invalid or no matching live user task was found.
 pub fn kill(pid: isize, sig: u32) -> bool {
+    // POSIX: sig == 0 performs error checking only (existence probe).
+    if sig == 0 {
+        return kill_exists(pid);
+    }
     let Some(bit) = sig_bit(sig) else {
         return false;
     };
@@ -108,8 +112,34 @@ pub fn kill(pid: isize, sig: u32) -> bool {
     kill_pg(pgid, sig)
 }
 
+/// Existence probe for `kill(pid, 0)`.
+fn kill_exists(pid: isize) -> bool {
+    if pid > 0 {
+        return task::is_live_user(pid as usize);
+    }
+    if pid == 0 {
+        let Some(pgid) = task::current_pgid() else {
+            return false;
+        };
+        return pg_has_live(pgid);
+    }
+    pg_has_live((-pid) as usize)
+}
+
+fn pg_has_live(pgid: usize) -> bool {
+    for id in 0..task::task_slots() {
+        if task::task_pgid(id) == Some(pgid) && task::is_live_user(id) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Deliver `sig` to every live user task in process group `pgid`.
 pub fn kill_pg(pgid: usize, sig: u32) -> bool {
+    if sig == 0 {
+        return pg_has_live(pgid);
+    }
     let Some(bit) = sig_bit(sig) else {
         return false;
     };

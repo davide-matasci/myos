@@ -942,9 +942,22 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         errno = ENOTSOCK;
         return -1;
     }
+    /* POSIX: connect(AF_UNSPEC) dissolves the association (UDP "unconnect"). */
+    if (addr != NULL && addr->sa_family == AF_UNSPEC) {
+        memset(&s->peer, 0, sizeof(s->peer));
+        s->peer_set = 0;
+        if (s->state == SOCK_CONNECTED || s->state == SOCK_CONNECTING) {
+            s->state = SOCK_OPEN;
+        }
+        return 0;
+    }
     if (s->state == SOCK_CONNECTED) {
-        errno = EISCONN;
-        return -1;
+        /* TCP: EISCONN. UDP: allow reconnect to a new peer. */
+        if (s->type != SOCK_DGRAM) {
+            errno = EISCONN;
+            return -1;
+        }
+        /* fall through and replace the peer */
     }
     if (s->state == SOCK_CONNECTING) {
         errno = EALREADY;

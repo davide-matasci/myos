@@ -277,6 +277,8 @@ struct Task {
     /// Controlling terminal attached (phase-1: system console only).
     /// Inherited on fork; set by TIOCSCTTY; cleared by SYS_SETSID.
     has_ctty: bool,
+    /// Bit i set ⇒ close fd i in the child after fork (POSIX O_CLOFORK).
+    fd_clofork_mask: u64,
     /// Pending signals bitmask (bit N = signal N, N in 1..31). See `signal`.
     sig_pending: u32,
     /// Ignored signals bitmask (SIGKILL cannot be ignored). See `signal`.
@@ -317,6 +319,7 @@ const EMPTY: Task = Task {
     sid: 0,
     pgid: 0,
     has_ctty: false,
+    fd_clofork_mask: 0,
     sig_pending: 0,
     sig_ignored: 0,
     sig_blocked: 0,
@@ -805,6 +808,9 @@ fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
 pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
     let writable = crate::fs::open_writable(flags);
     let append = crate::fs::open_append(flags);
+    // Match libgloss MYOS_K_O_CLOFORK / POSIX O_CLOFORK.
+    const O_CLOFORK: u32 = 0x0100_0000;
+    let clofork = (flags & O_CLOFORK) != 0;
     with_current_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
@@ -815,6 +821,11 @@ pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
                     append,
                 };
                 crate::fs::vfs::open_ref(&node);
+                if clofork {
+                    t.fd_clofork_mask |= 1u64 << i;
+                } else {
+                    t.fd_clofork_mask &= !(1u64 << i);
+                }
                 return Some(i);
             }
         }
@@ -935,6 +946,12 @@ pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
 }
 
 pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
+    fd_dup2_flags(oldfd, newfd, 0)
+}
+
+/// `flags` may include O_CLOFORK (0x01000000) — set/clear on `newfd`.
+pub fn fd_dup2_flags(oldfd: usize, newfd: usize, flags: usize) -> bool {
+    const O_CLOFORK: usize = 0x0100_0000;
     if oldfd >= MAX_FDS || newfd >= MAX_FDS {
         return false;
     }
@@ -947,7 +964,14 @@ pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
             return true;
         }
         fd_drop(t.fds[newfd]);
+        t.fd_clofork_mask &= !(1u64 << newfd);
         t.fds[newfd] = fd_clone(old);
+        if (flags & O_CLOFORK) != 0 {
+            t.fd_clofork_mask |= 1u64 << newfd;
+        } else if t.fd_clofork_mask & (1u64 << oldfd) != 0 {
+            // Inherit parent's CLOFORK when no explicit flags (plain dup2).
+            t.fd_clofork_mask |= 1u64 << newfd;
+        }
         true
     })
 }
@@ -1293,6 +1317,7 @@ pub fn fd_close(fd: usize) -> bool {
         // open/pipe/socket reuses the lowest fd (os-test stdio/puts does
         // close(0); close(1); pipe() and expects the pipe on 0,1).
         t.fds[fd] = FdEntry::Empty;
+        t.fd_clofork_mask &= !(1u64 << fd);
         true
     })
 }
@@ -1965,7 +1990,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, pgid, has_ctty, sig_ignored) = {
+    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, pgid, has_ctty, fd_clofork_mask, sig_ignored) = {
         let tasks = TASKS.lock();
         let id = current_slot();
         let t = tasks[id];
@@ -1990,6 +2015,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.sid,
             t.pgid,
             t.has_ctty,
+            t.fd_clofork_mask,
             t.sig_ignored,
         )
     };
@@ -2034,6 +2060,15 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let mut child_fds = default_user_fds();
     for i in 0..MAX_FDS {
         child_fds[i] = fd_clone(fds[i]);
+    }
+    // POSIX O_CLOFORK: close marked fds in the child only (parent keeps them).
+    if fd_clofork_mask != 0 {
+        for i in 0..MAX_FDS {
+            if fd_clofork_mask & (1u64 << i) != 0 {
+                fd_drop(child_fds[i]);
+                child_fds[i] = FdEntry::Empty;
+            }
+        }
     }
 
     let (stack_base, sp, top) = if reuse_stack.0 {
@@ -2082,6 +2117,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         sid,
         pgid,
         has_ctty,
+        fd_clofork_mask: 0,
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
@@ -2258,6 +2294,7 @@ fn spawn_inner(
         sid: slot,
         pgid: slot,
         has_ctty: false,
+        fd_clofork_mask: 0,
         sig_pending: 0,
         sig_ignored: 0,
         sig_blocked: 0,
@@ -2662,6 +2699,7 @@ pub fn ap_idle_loop(logical: usize) -> ! {
         sid: slot,
         pgid: slot,
         has_ctty: false,
+        fd_clofork_mask: 0,
         sig_pending: 0,
         sig_ignored: 0,
         sig_blocked: 0,

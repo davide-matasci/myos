@@ -210,6 +210,7 @@ void _exit(int status) {
 #define MYOS_K_O_CREAT  0x40
 #define MYOS_K_O_TRUNC  0x200
 #define MYOS_K_O_APPEND 0x400
+#define MYOS_K_O_CLOFORK 0x01000000
 
 static long myos_kernel_oflags(int flags) {
     long k = (long)(flags & O_ACCMODE);
@@ -221,6 +222,9 @@ static long myos_kernel_oflags(int flags) {
     }
     if (flags & O_APPEND) {
         k |= MYOS_K_O_APPEND;
+    }
+    if (flags & O_CLOFORK) {
+        k |= MYOS_K_O_CLOFORK;
     }
     return k;
 }

@@ -617,13 +617,17 @@ int dup3(int oldfd, int newfd, int flags) {
         errno = EINVAL;
         return -1;
     }
-    /* Kernel dup2 onto newfd (closes newfd first). */
-    ret = dup2(oldfd, newfd);
-    if (ret < 0) {
-        return -1;
+    /* Kernel dup2 onto newfd; pass O_CLOFORK so close-on-fork is recorded
+     * in the task (userspace bitmap alone is not enough after fork CoW). */
+    {
+        long kret = myos_syscall3(MYOS_SYS_DUP2, oldfd, newfd, flags & O_CLOFORK);
+        if (kret == (long)MYOS_SYSERR) {
+            errno = EBADF;
+            return -1;
+        }
+        ret = (int)kret;
     }
     myos_fd_clofork_set(newfd, (flags & O_CLOFORK) != 0);
-    /* CLOEXEC not tracked yet; accept the flag for ABI completeness. */
     (void)(flags & O_CLOEXEC);
     return newfd;
 }

@@ -62,7 +62,18 @@ run_in_suite() {
 if [ -n "$PREBUILT" ]; then
 	# Progress for serial CI (unbuffered line so long suites are not silent).
 	echo "os-test: $T (prebuilt)"
-	run_in_suite "$PREBUILT"
+	# Place a symlink at suite/rel so tests that open("$REL") / fopen / stat
+	# the test binary itself (basic/fcntl/open, stdio/fopen, sys_stat/stat)
+	# resolve like the compile+run flow — without copying ELF bytes into tmpfs.
+	mkdir -p "${BIN%/*}" || true
+	rm -f -- "$BIN"
+	if ln -s "$PREBUILT" "$BIN" 2>/dev/null; then
+		:
+	else
+		cp "$PREBUILT" "$BIN" || exit 0
+		chmod +x "$BIN" || true
+	fi
+	run_in_suite "$BIN"
 	CODE=$?
 	# Capture $? before any if-statement: oksh resets $? to the if
 	# statement's own status (0 when the condition fails and there is no
@@ -70,6 +81,7 @@ if [ -n "$PREBUILT" ]; then
 	if [ "$CODE" -ne 0 ]; then
 		echo "exit: $CODE" >> "$OUT"
 	fi
+	rm -f -- "$BIN"
 	exit 0
 fi
 
