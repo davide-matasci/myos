@@ -160,6 +160,7 @@ fn kernel_main() -> ! {
     fs::init();
     fs::init_limine();
     rng::init();
+    console::status_ok("urandom");
     modules::load_embedded_stubfs();
     modules::load_embedded_hello();
     modules::load_embedded_pci_enum();

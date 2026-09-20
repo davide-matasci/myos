@@ -8,13 +8,14 @@ struct CiExpect {
     shell_ci: bool,
 }
 
-const CI_NEEDLES: [&str; 32] = [
+const CI_NEEDLES: [&str; 33] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] interrupts",
     "task a",
     "task b",
     "[ OK ] scheduler",
+    "[ OK ] urandom",
     "[ OK ] hello",
     "[ OK ] stubfs",
     "[ OK ] limine module",
