@@ -2369,7 +2369,10 @@ fn sys_pipe(fds_ptr: usize) -> usize {
 }
 
 fn sys_pollfd(fd: usize) -> usize {
-    task::fd_poll_bits(fd) as usize
+    match task::fd_poll_bits(fd) {
+        Some(bits) => bits as usize,
+        None => SYSERR,
+    }
 }
 
 fn sys_sigchld_take() -> usize {

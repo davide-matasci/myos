@@ -120,11 +120,20 @@ lynx_elves_ready() {
   [[ -f target/lynx-x86_64-unknown-none \
      && -f target/lynx-aarch64-unknown-none \
      && -f target/lynx-riscv64-unknown-none ]]
+}
 
 lua_elves_ready() {
   [[ -f target/lua-x86_64-unknown-none \
      && -f target/lua-aarch64-unknown-none \
      && -f target/lua-riscv64-unknown-none ]]
+}
+
+dropbear_elves_ready() {
+  [[ -f target/dropbear-x86_64-unknown-none \
+     && -f target/dropbear-aarch64-unknown-none \
+     && -f target/dropbear-riscv64-unknown-none \
+     && -f target/dbclient-x86_64-unknown-none \
+     && -f target/dropbearkey-x86_64-unknown-none ]]
 }
 
 rebuild_kernels() {
@@ -203,6 +212,13 @@ if [[ -x target/debug/myos && -f target/bios.img \
   else
     echo "curl ELFs present: $(ls -lh target/curl-*-unknown-none)"
   fi
+  if ! dropbear_elves_ready; then
+    echo "==> dropbear ELF(s) missing after restore; building dropbear"
+    ./ports/dropbear/build.sh
+    need_rebuild=1
+  else
+    echo "dropbear ELFs present: $(ls -lh target/dropbear-*-unknown-none)"
+  fi
   if ! lynx_elves_ready; then
     echo "==> lynx ELF(s) missing after restore; building lynx"
     ./ports/lynx/build.sh
@@ -245,6 +261,7 @@ fi
 ./ports/zlib/build.sh
 ./ports/git/build.sh
 ./ports/curl/build.sh
+./ports/dropbear/build.sh
 ./ports/lynx/build.sh
 ./ports/lua/build.sh
 

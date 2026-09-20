@@ -104,12 +104,15 @@ static int scan_once(struct pollfd *fds, nfds_t nfds) {
                  * readable, so dropbear's select() returns >0 with
                  * signal_pipe[0] set and it reaps the child/sends exit-status.
                  * The handler ran earlier this iteration (poll() dispatches
-                 * before scanning), so its write fd is captured. */
+                 * before scanning), so its write fd is captured. Only the
+                 * peer read end is forced — never every pathless fd (that
+                 * used to wake the drain on an empty pipe). */
                 long wfd = myos_sigchld_wfd;
                 long peer = (wfd >= 0)
                     ? myos_syscall1(MYOS_SYS_PIPE_PEER, wfd) : (long)MYOS_SYSERR;
-                if (wfd < 0 || peer == (long)MYOS_SYSERR || peer == (long)fds[i].fd) {
-                                        rev = POLLIN;
+                if (wfd >= 0 && peer != (long)MYOS_SYSERR
+                    && peer == (long)fds[i].fd) {
+                    rev = POLLIN;
                 }
             }
             fds[i].revents = rev;

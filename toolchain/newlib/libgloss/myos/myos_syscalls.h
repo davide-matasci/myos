@@ -73,3 +73,10 @@ int myos_socket_fcntl(int fd, int cmd, int arg);
 int myos_socket_poll(int fd, short events, short *revents);
 
 #endif
+
+/* Userspace O_NONBLOCK tracking for pipes (kernel pipes are always blocking). */
+void myos_fd_nonblock_set(int fd, int on);
+int myos_fd_nonblock_get(int fd);
+void myos_fd_nonblock_clear(int fd);
+void myos_fd_nonblock_dup(int from, int to);
+

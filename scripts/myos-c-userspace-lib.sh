@@ -300,6 +300,10 @@ myos_ripgrep_is_current() {
 
 
 myos_dropbear_version_hash() {
+  if [[ -f "$MYOS_ROOT/ports/dropbear/versions.env" ]]; then
+    # shellcheck disable=SC1091
+    source "$MYOS_ROOT/ports/dropbear/versions.env"
+  fi
   local h
   h="$(
     {
@@ -311,7 +315,8 @@ myos_dropbear_version_hash() {
         "$MYOS_ROOT/ports/dropbear/localoptions.h" \
         "$MYOS_ROOT/ports/dropbear/myos_compat.h" \
         "$MYOS_ROOT/ports/dropbear/prepare.sh" \
-        "$MYOS_ROOT/ports/dropbear/myos_shims.c" || true
+        "$MYOS_ROOT/ports/dropbear/myos_shims.c" \
+        "$MYOS_ROOT/ports/dropbear/myos_builtins.c" || true
       myos_newlib_version_hash
     } | sha256sum | awk '{print $1}'
   )"
@@ -325,7 +330,10 @@ myos_dropbear_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/dropbear-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/dbclient-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/dropbearkey-${arch}-unknown-none" ]] || return 1
   done
+  return 0
 }
 
 myos_curl_version_hash() {

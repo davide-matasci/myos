@@ -846,13 +846,15 @@ pub fn pipe_open() -> Option<(usize, usize)> {
 /// Readiness bits for a userspace fd, for select()/poll() on pipes.
 /// bit0 = readable (data or EOF), bit1 = writable, bit2 = hangup.
 /// Non-pipe fds return 0; sockets are handled by netfs from userspace.
-pub fn fd_poll_bits(fd: usize) -> u32 {
+/// Poll readiness for pipes. `None` if `fd` is not a pipe end (so libgloss can
+/// tell "empty pipe" apart from "not a pipe" when honouring O_NONBLOCK).
+pub fn fd_poll_bits(fd: usize) -> Option<u32> {
     if fd >= MAX_FDS {
-        return 0;
+        return None;
     }
     with_current_mut(|t| match t.fds[fd] {
         FdEntry::PipeRead(id) => {
-            let mut bits = 0;
+            let mut bits = 0u32;
             // Readable when data is buffered, or the writer closed (EOF).
             if !pipe::read_would_block(id) {
                 bits |= 1;
@@ -860,16 +862,12 @@ pub fn fd_poll_bits(fd: usize) -> u32 {
             if pipe::read_closed(id) {
                 bits |= 1 | 4;
             }
-            bits
+            Some(bits)
         }
         FdEntry::PipeWrite(id) => {
-            if !pipe::write_would_block(id) {
-                2
-            } else {
-                0
-            }
+            Some(if !pipe::write_would_block(id) { 2 } else { 0 })
         }
-        _ => 0,
+        _ => None,
     })
 }
 

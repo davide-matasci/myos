@@ -407,24 +407,6 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             "etc/shells",
             Some(b"/bin/custom/sh\n/bin/sh\n".to_vec()),
         );
-        // TEMP DEBUG: fork smoke (revert before commit)
-        let fs_path = target.join(format!("tcp-fork-smoke-{none_triple}"));
-        let fs_bytes = std::fs::read(&fs_path).unwrap_or_else(|e| {
-            panic!("dropbear: missing tcp-fork-smoke ({e})")
-        });
-        add(&mut entries, "bin/etc/tcp_fork_smoke", Some(fs_bytes));
-        // TEMP DEBUG: exec test (revert before commit)
-        let xt_path = target.join(format!("exectest-{none_triple}"));
-        let xt_bytes = std::fs::read(&xt_path).unwrap_or_else(|e| {
-            panic!("dropbear: missing exectest ({e})")
-        });
-        add(&mut entries, "bin/etc/exectest", Some(xt_bytes));
-        // TEMP DEBUG: stdio test (revert before commit)
-        let sv_path = target.join(format!("svftest-{none_triple}"));
-        let sv_bytes = std::fs::read(&sv_path).unwrap_or_else(|e| {
-            panic!("dropbear: missing svftest ({e})")
-        });
-        add(&mut entries, "bin/etc/svftest", Some(sv_bytes));
     }
     // vim (FEAT_TINY) -> bin/custom/vim (none triple, like oksh).
     // Gated on the port_vim feature: exclude with --no-default-features.

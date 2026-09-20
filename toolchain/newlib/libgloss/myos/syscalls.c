@@ -98,6 +98,36 @@ int myos_socket_poll(int fd, short events, short *revents) {
     return -1;
 }
 
+
+/* O_NONBLOCK is userspace-tracked for pipes: the kernel always blocks. Dropbear
+ * setnonblocking(signal_pipe) then drains with `while (read > 0)` — without
+ * EAGAIN on empty, a forced-POLLIN wake hangs the session forever and the SSH
+ * client never receives exit-status. */
+static unsigned myos_fd_nb_mask;
+
+void myos_fd_nonblock_set(int fd, int on) {
+    if (fd < 0 || fd >= 32) {
+        return;
+    }
+    if (on) {
+        myos_fd_nb_mask |= (1u << fd);
+    } else {
+        myos_fd_nb_mask &= ~(1u << fd);
+    }
+}
+
+int myos_fd_nonblock_get(int fd) {
+    return (fd >= 0 && fd < 32 && (myos_fd_nb_mask & (1u << fd))) ? 1 : 0;
+}
+
+void myos_fd_nonblock_clear(int fd) {
+    myos_fd_nonblock_set(fd, 0);
+}
+
+void myos_fd_nonblock_dup(int from, int to) {
+    myos_fd_nonblock_set(to, myos_fd_nonblock_get(from));
+}
+
 int _close(int fd) {
 
     myos_socket_on_close(fd);
@@ -110,6 +140,7 @@ int _close(int fd) {
         myos_fd_set_tty(fd, 0);
     }
     myos_fd_path_clear(fd);
+    myos_fd_nonblock_clear(fd);
     return 0;
 }
 
@@ -169,6 +200,16 @@ int _open(const char *path, int flags, ...) {
 }
 
 int _read(int fd, void *buf, size_t cnt) {
+
+    /* Pipes: POLLFD returns readiness (SYSERR = not a pipe). Honour O_NONBLOCK
+     * before the blocking SYS_READ so dropbear's signal-pipe drain cannot hang. */
+    if (myos_fd_nonblock_get(fd)) {
+        long bits = myos_syscall1(MYOS_SYS_POLLFD, fd);
+        if (bits != (long)MYOS_SYSERR && (bits & 1) == 0 && (bits & 4) == 0) {
+            errno = EAGAIN;
+            return -1;
+        }
+    }
 
     for (;;) {
         long ret = myos_syscall3(MYOS_SYS_READ, fd, (long)(uintptr_t)buf, (long)cnt);

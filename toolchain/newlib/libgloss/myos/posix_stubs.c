@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/wait.h>
 #include <grp.h>
 #include <pwd.h>
 #include <stdarg.h>
@@ -273,16 +274,30 @@ int execvp(const char *file, char *const argv[]) {
     return -1;
 }
 
+#ifndef WNOHANG
+#define WNOHANG 1
+#endif
+
 /*
  * Kernel SYS_WAIT is wait-any and blocking; it stores a raw exit-code byte.
- * Ignore WNOHANG/WUNTRACED/specific pid and convert to POSIX wait status.
+ * Ignore specific pid / WUNTRACED. Honour WNOHANG via SIGCHLD_PENDING so
+ * dropbear's `while (waitpid(-1, &st, WNOHANG) > 0)` reap loop cannot block
+ * after the first zombie (which left SSH exit-status undelivered).
  */
 pid_t waitpid(pid_t pid, int *status, int options) {
     unsigned char code = 0;
     long ret;
 
     (void)pid;
-    (void)options;
+
+    if ((options & WNOHANG) != 0) {
+        /* No zombie → nothing to reap. Dropbear only checks > 0 vs <= 0, so
+         * returning 0 (children may still be live) is correct even when the
+         * true POSIX answer would be -1/ECHILD. */
+        if (myos_syscall0(MYOS_SYS_SIGCHLD_PENDING) != 1) {
+            return 0;
+        }
+    }
 
     ret = myos_syscall1(MYOS_SYS_WAIT, status ? (long)(uintptr_t)&code : 0);
 
@@ -421,6 +436,7 @@ int _fcntl(int fd, int cmd, int arg) {
         }
         myos_fd_dup_tty(fd, (int)ret);
         myos_fd_path_dup(fd, (int)ret);
+        myos_fd_nonblock_dup(fd, (int)ret);
         return (int)ret;
     }
 
@@ -442,7 +458,7 @@ int _fcntl(int fd, int cmd, int arg) {
             return sockfl;
         }
         (void)arg;
-        return O_RDWR;
+        return O_RDWR | (myos_fd_nonblock_get(fd) ? O_NONBLOCK : 0);
     }
     case F_SETFL: {
         int sockfl = myos_socket_fcntl(fd, F_SETFL, arg);
@@ -452,9 +468,8 @@ int _fcntl(int fd, int cmd, int arg) {
         if (sockfl == -2) {
             return -1;
         }
-        /* Non-socket: accept and ignore (kernel has no O_NONBLOCK). */
-        (void)fd;
-        (void)arg;
+        /* Non-socket (pipes): track O_NONBLOCK in userspace. */
+        myos_fd_nonblock_set(fd, (arg & O_NONBLOCK) != 0);
         return 0;
     }
     default:

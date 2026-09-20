@@ -245,6 +245,18 @@ HELLO_OK_ELFS=(
   target/coreutils-curl-x86_64-unknown-none
   target/coreutils-curl-aarch64-unknown-none
   target/coreutils-curl-riscv64-unknown-none
+  target/dropbear-x86_64-unknown-none
+  target/dropbear-aarch64-unknown-none
+  target/dropbear-riscv64-unknown-none
+  target/dbclient-x86_64-unknown-none
+  target/dbclient-aarch64-unknown-none
+  target/dbclient-riscv64-unknown-none
+  target/dropbearkey-x86_64-unknown-none
+  target/dropbearkey-aarch64-unknown-none
+  target/dropbearkey-riscv64-unknown-none
+  target/coreutils-dropbear-x86_64-unknown-none
+  target/coreutils-dropbear-aarch64-unknown-none
+  target/coreutils-dropbear-riscv64-unknown-none
 )
 
 # Mozilla CA bundle -> initramfs lib/cacert.pem (curl CURL_CA_BUNDLE).
@@ -294,6 +306,10 @@ do_clean_and_build() {
   # initramfs silently omits it (initramfs read() skips missing files) and
   # the guest fails with "/bin/etc/tcp_listen_smoke: not found".
   "$ROOT/scripts/build-tcp-listen-smoke.sh"
+  # dropbear is a default Cargo feature (initramfs panics if missing). Build
+  # here so CI does not need a workflow-scoped ci.yml ports-matrix edit; the
+  # registry pull path (when present) still short-circuits via the stamp.
+  "$ROOT/ports/dropbear/build.sh"
   cargo clean -p myos
   # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
   # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
