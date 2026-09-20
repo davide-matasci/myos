@@ -63,6 +63,7 @@ if [ -n "$PREBUILT" ]; then
 	if [ "$CODE" -ne 0 ]; then
 		echo "exit: $CODE" >> "$OUT"
 	fi
+	rm -f -- "$BIN"
 	exit 0
 fi
 
@@ -73,8 +74,8 @@ if ! "$CC" $CFLAGS "$SRC" -o "$BIN" -lm 2> "out/$T.err"; then
 fi
 run_in_suite "$BIN"
 CODE=$?
-if [ "$CODE" -eq 0 ]; then
-	exit 0
+if [ "$CODE" -ne 0 ]; then
+	echo "exit: $CODE" >> "$OUT"
 fi
-echo "exit: $CODE" >> "$OUT"
+rm -f -- "$BIN"
 exit 0

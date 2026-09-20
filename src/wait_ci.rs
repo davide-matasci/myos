@@ -363,7 +363,7 @@ const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/c
 /// quote-free commands still require setpwent success. Commands stay
 /// quote-free for oksh redraw.
 const CMD_OS_TEST_PREP: &[u8] =
-    b"sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?\n";
+    b"sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make -j1 TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?\n";
 /// After the suite report: cat setpwent .err/.out (success leaves .out empty).
 const CMD_OS_TEST_CAT: &[u8] =
     b"cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out\n";
@@ -763,7 +763,7 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
 fn interactive_ostest_prep_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     let echoed =
-        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make -j1 TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
     if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
@@ -781,7 +781,7 @@ fn interactive_ostest_prep_ok(serial: &str) -> bool {
 fn interactive_ostest_prep_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     let echoed =
-        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make -j1 TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
     if !tail.contains(echoed) {
         return false;
     }
