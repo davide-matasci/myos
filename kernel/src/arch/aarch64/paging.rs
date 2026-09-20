@@ -60,6 +60,38 @@ pub fn map_devices() {
     enable_el0_cache_ops();
 }
 
+/// Install the BSP device TTBR0 + MAIR Attr2 on a secondary CPU.
+///
+/// Limine's AP trampoline snapshots TTBR0/MAIR at bring-up (before the kernel
+/// runs `map_devices`). Without this, AP GIC/UART MMIO at 0x08../0x09.. faults.
+pub fn apply_bsp_device_map() {
+    unsafe {
+        let l0 = &raw mut L0;
+        let l0_phys = limine_boot::kernel_virt_to_phys(l0 as usize);
+        let mut mair: u64;
+        asm!("mrs {m}, mair_el1", m = out(reg) mair, options(nomem, nostack, preserves_flags));
+        mair |= 0x04 << 16;
+        let el: u64;
+        asm!("mrs {el}, CurrentEL", el = out(reg) el, options(nomem, nostack, preserves_flags));
+        let el = (el >> 2) & 3;
+        asm!(
+            "msr mair_el1, {mair}",
+            "msr ttbr0_el1, {ttbr}",
+            "dsb sy",
+            mair = in(reg) mair,
+            ttbr = in(reg) l0_phys,
+            options(nostack),
+        );
+        if el >= 2 {
+            asm!("tlbi alle2is", options(nostack));
+        } else {
+            asm!("tlbi vmalle1", options(nostack));
+        }
+        asm!("dsb sy; isb", options(nostack));
+    }
+    enable_el0_cache_ops();
+}
+
 /// Allow EL0 `DC CVAU` / `IC IVAU` / `MRS CTR_EL0` (TinyCC `__clear_cache`).
 ///
 /// SCTLR.UCI=0 traps those SYS insns from EL0 with ESR.EC=0x18 (CI aarch64

@@ -504,18 +504,8 @@ pub fn init() {
         return;
     }
 
-    // aarch64: Limine lists APs but writing goto_address still does not
-    // reliably enter myos_smp_ap_entry on QEMU virt+UEFI (BSP then waits /
-    // hangs under release). Keep APs Limine-parked for boot-mini; GIC SGI
-    // IPI stubs remain. Retry handoff when Limine/QEMU park loop is proven.
-    #[cfg(target_arch = "aarch64")]
-    {
-        console::status_ok(&alloc::format!(
-            "smp: 1 CPU ({} parked)",
-            mp_cpus.len().saturating_sub(1)
-        ));
-        return;
-    }
+    // aarch64: real Limine goto_address bring-up (see bootstrap + naked entry
+    // below). Do not park APs — TTBR0 device map is synced in ap_init.
 
     // riscv64: dual-hart DTB is required (OpenSBI BSP hartid=1 otherwise
     // Limine-panics). Full AP bring-up (ONLINE + ap_idle_loop) hung mid-`/ok`
@@ -588,55 +578,36 @@ pub fn init() {
             };
         }
         core::sync::atomic::fence(Ordering::SeqCst);
-        cpu.bootstrap(AP_ENTRY_PTR, logical as u64);
-        // Limine aarch64 park uses LDAR on goto_addr (not WFE). Clean the
-        // MpInfo cache line to PoC so an AP that briefly had D-cache off
-        // (or a non-coherent view) observes the Release store; DSB+SEV for
-        // any WFE path.
         #[cfg(target_arch = "aarch64")]
-        unsafe {
-            // `cpu` is &&MpInfo; clean the MpInfo (goto_addr @ +24).
-            let p = core::ptr::from_ref(*cpu) as usize;
-            let goto = p + 24;
-            core::arch::asm!(
-                "dc cvac, {0}",
-                "dc cvac, {1}",
-                "dsb sy",
-                "sev",
-                in(reg) p,
-                in(reg) goto,
-                options(nostack),
-            );
+        {
+            // Limine 12.x aarch64 trampoline parks on `ldar` of goto_addr at
+            // MpInfo+24, then `eret`s to that VA with X0=&MpInfo. Publish with
+            // STLR (matches LDAR) and DC CVAC the line to PoC — required if an
+            // AP briefly ran with D-cache off during trampoline bring-up.
+            // Use a raw code address (not an fn-item temporary) so the stored
+            // pointer is the higher-half `myos_smp_ap_entry` symbol.
+            aarch64_publish_goto(*cpu, AP_ENTRY_PTR as *const () as usize, logical as u64);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            cpu.bootstrap(AP_ENTRY_PTR, logical as u64);
         }
         next += 1;
     }
 
     let want = next;
-    // aarch64 TCG: if Limine never runs goto_address, AP_PROGRESS stays 0 —
-    // fail fast instead of spinning for minutes (CI boot-mini timeout).
-    let max_spins: u32 = {
-        #[cfg(target_arch = "aarch64")]
-        {
-            2_000_000
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            20_000_000
-        }
-    };
+    // Bound the wait so a broken handoff cannot hang CI forever, but give
+    // QEMU TCG time to schedule parked APs through their LDAR/YIELD loop.
+    let max_spins: u32 = 50_000_000;
     let mut spins = 0u32;
     while online_count() < want && spins < max_spins {
         core::hint::spin_loop();
         spins += 1;
         #[cfg(target_arch = "aarch64")]
         {
-            if spins == 100_000 && AP_PROGRESS.load(Ordering::SeqCst) == 0 {
-                // Still no AP entry — further waiting is futile on this platform.
-                break;
-            }
-            if spins % 100_000 == 0 {
+            if spins % 50_000 == 0 {
                 unsafe {
-                    core::arch::asm!("dsb sy; sev", options(nostack));
+                    core::arch::asm!("dsb ishst; sev; yield", options(nostack));
                 }
             }
         }
@@ -687,8 +658,38 @@ pub unsafe extern "C" fn myos_smp_ap_park(_info: &limine::mp::MpInfo) -> ! {
     }
 }
 
+/// Limine aarch64 trampoline `eret`s here with X0=&MpInfo, SP=Limine stack,
+/// DAIF masked, CPACR.FPEN=0, and VBAR cleared. A naked stub marks progress
+/// and enables FP before any Rust prologue can touch NEON or the stack frame.
+#[cfg(target_arch = "aarch64")]
+#[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn myos_smp_ap_entry(info: &limine::mp::MpInfo) -> ! {
+    core::arch::naked_asm!(
+        // x0 = &MpInfo (must preserve into rust entry)
+        "adrp x1, {flag}",
+        "add x1, x1, :lo12:{flag}",
+        "mov x2, #1",
+        "stlr x2, [x1]",
+        // Enable FP/SIMD (Limine left CPACR/CPTR clear)
+        "mrs x2, cpacr_el1",
+        "orr x2, x2, #(3 << 20)",
+        "msr cpacr_el1, x2",
+        "isb",
+        "b {rust}",
+        flag = sym AP_PROGRESS,
+        rust = sym myos_smp_ap_entry_rust,
+    );
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn myos_smp_ap_entry(info: &limine::mp::MpInfo) -> ! {
+    unsafe { myos_smp_ap_entry_rust(info) }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn myos_smp_ap_entry_rust(info: &limine::mp::MpInfo) -> ! {
     AP_PROGRESS.store(1, Ordering::SeqCst);
     // Mask IRQs until this CPU's IDT/timer are programmed.
     #[cfg(target_arch = "x86_64")]
@@ -697,7 +698,7 @@ pub unsafe extern "C" fn myos_smp_ap_entry(info: &limine::mp::MpInfo) -> ! {
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("msr daifset, #3", options(nomem, nostack));
+        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {
@@ -738,6 +739,30 @@ pub unsafe extern "C" fn myos_smp_ap_entry(info: &limine::mp::MpInfo) -> ! {
     core::sync::atomic::fence(Ordering::SeqCst);
 
     crate::task::ap_idle_loop(logical)
+}
+
+/// Publish `goto_address` the way Limine's aarch64 trampoline observes it.
+#[cfg(target_arch = "aarch64")]
+fn aarch64_publish_goto(cpu: &limine::mp::MpInfo, entry: usize, extra: u64) {
+    // Layout: processor_id(4)+res(4)+mpidr(8)+stack/reserved(8)+goto(8)+extra(8)
+    let base = core::ptr::from_ref(cpu) as usize;
+    let extra_ptr = (base + 32) as *mut u64;
+    let goto_ptr = (base + 24) as *mut usize;
+    unsafe {
+        // extra_argument first (Relaxed), then goto with STLR.
+        core::ptr::write_volatile(extra_ptr, extra);
+        core::arch::asm!(
+            "stlr {entry}, [{goto}]",
+            "dc cvac, {base}",
+            "dc cvac, {goto}",
+            "dsb ish",
+            "sev",
+            entry = in(reg) entry,
+            goto = in(reg) goto_ptr,
+            base = in(reg) base,
+            options(nostack),
+        );
+    }
 }
 
 pub fn mark_running(logical: usize) {

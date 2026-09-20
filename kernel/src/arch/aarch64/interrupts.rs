@@ -314,6 +314,8 @@ pub fn init() {
 
 /// Secondary CPU: vectors already set globally; enable GICC + timers.
 pub fn ap_init(logical: usize) {
+    // Match BSP TTBR0 (device MMIO) before any GIC/UART access.
+    super::paging::apply_bsp_device_map();
     use_spx();
     let v = exception_vectors as *const () as usize;
     unsafe {
@@ -323,6 +325,12 @@ pub fn ap_init(logical: usize) {
         }
         // Logical CPU id for per-CPU syscall / stack state.
         asm!("msr tpidr_el1, {id}", id = in(reg) logical, options(nostack));
+        // Limine parks APs with CPACR/CPTR FPEN=0; enable FP/SIMD for any
+        // codegen that touches NEON (and for later EL0 userspace on this CPU).
+        let mut cpacr: u64;
+        asm!("mrs {c}, cpacr_el1", c = out(reg) cpacr, options(nomem, nostack));
+        cpacr |= 3 << 20;
+        asm!("msr cpacr_el1, {c}", "isb", c = in(reg) cpacr, options(nostack));
     }
     // GICv2 CPU interface is banked per-CPU.
     write32(GICC, 3);

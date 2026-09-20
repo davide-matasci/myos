@@ -444,7 +444,16 @@ fn user_affinity() -> Option<usize> {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         Some(1 + NEXT.fetch_add(1, Ordering::SeqCst) % (n - 1))
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        // Pin userspace to BSP for now. APs stay ONLINE for kernel/scheduler
+        // (smoke, idle, TLB/IPI). Virtio/NVMe SPIs are BSP-targeted on GICv2
+        // virt; running blocking block I/O on an AP hung mid-`ok` (ext2), and
+        // floating migration eret'd to elr=0x9. Real AP userspace needs IRQ
+        // affinity / cross-CPU completion wakes — follow-up.
+        Some(0)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         None
     }
@@ -2660,9 +2669,13 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     };
     drop(tasks);
     set_current_slot(slot);
-    // APs boot on Limine's CR3; record kernel aspace so the first schedule
-    // does not treat LOADED=0 as a switch that races TLB shootdowns.
-    set_loaded_aspace(KERNEL_ASPACE.load(Ordering::SeqCst));
+    // APs may still hold Limine's early TTBR0; install the BSP kernel/device
+    // root and record it so the first schedule does not race TLB shootdowns.
+    let k = KERNEL_ASPACE.load(Ordering::SeqCst);
+    if k != 0 {
+        user::switch_aspace(k);
+    }
+    set_loaded_aspace(k);
     irq_restore(flags);
     crate::smp::mark_running(logical);
     enable_preempt();
