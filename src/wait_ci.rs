@@ -117,7 +117,7 @@ static LISTEN_PONGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// When the listen smoke stage first began (bounds the ping/pong retry loop).
 static LISTEN_STAGE_START: std::sync::OnceLock<std::time::Instant> =
     std::sync::OnceLock::new();
-const LISTEN_STAGE_BOUND: Duration = Duration::from_secs(120);
+const LISTEN_STAGE_BOUND: Duration = Duration::from_secs(180);
 /// Shared serial accumulator, so failure paths can dump fresh output.
 static SERIAL_ACC: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<String>>> =
     std::sync::OnceLock::new();
@@ -156,7 +156,10 @@ fn poke_listener() -> bool {
 // netd keeps a parked accept + on-listen hold (backlog 2) for real dual-SYN;
 // CI stays sequential so slirp hostfwd cannot wedge the listen path.
 const CMD_DROPBEAR_BG: &[u8] =
-    b"/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 &\n";
+    b"/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 & echo $! > /tmp/dropbear.pid\n";
+/// Stop dropbear before listen smoke so netd convs / slirp stay free for :2323.
+const CMD_DROPBEAR_STOP: &[u8] =
+    b"kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP\n";
 /// Harness-side flag: both sequential SSH clients completed with exit 0.
 static SSH_SMOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Background SSH attempt started for the current dropbear stage.
@@ -230,8 +233,13 @@ fn ensure_host_ssh() -> Result<(), String> {
 
 fn ssh_one_client(key: &Path, tag: &str) -> Result<(), String> {
     let remote = format!("echo {tag}; /bin/coreutils/true");
-    let output = Command::new("ssh")
+    // Wrap with `timeout` so a hung KEX (ConnectTimeout only covers TCP
+    // connect) cannot burn the whole SSH stage budget — seen on riscv64
+    // where one Child + I/O error left ssh blocked until recv_timeout(60).
+    let output = Command::new("timeout")
         .args([
+            "20",
+            "ssh",
             "-4",
             "-i",
             key.to_str().ok_or("testkey path not utf-8")?,
@@ -250,14 +258,14 @@ fn ssh_one_client(key: &Path, tag: &str) -> Result<(), String> {
             "-o",
             "PreferredAuthentications=publickey",
             "-o",
-            "ConnectTimeout=10",
+            "ConnectTimeout=8",
             "-o",
             "ConnectionAttempts=1",
             "root@127.0.0.1",
             &remote,
         ])
         .output()
-        .map_err(|e| format!("spawn ssh ({tag}): {e}"))?;
+        .map_err(|e| format!("spawn timeout/ssh ({tag}): {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -410,6 +418,9 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         cmds.push(CMD_OS_TEST_RESULT);
         cmds.push(CMD_PTY);
         cmds.push(CMD_URANDOM);
+        if port_enabled("port_dropbear") {
+            cmds.push(CMD_DROPBEAR_STOP);
+        }
     }
     // netd listen/accept smoke runs in every mode (network is up; the
     // harness completes the ping/pong through slirp hostfwd).
@@ -972,7 +983,7 @@ fn interactive_dropbear_bg_ok(serial: &str) -> bool {
     }
     command_echoed(
         serial,
-        "/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 &",
+        "/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 & echo $! > /tmp/dropbear.pid",
     ) && at_interactive_prompt(serial)
 }
 
@@ -1000,6 +1011,11 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         i if cmds[i] == CMD_OS_TEST_RESULT => interactive_ostest_result_ok(serial),
         i if cmds[i] == CMD_PTY => interactive_pty_cmd_ok(serial),
         i if cmds[i] == CMD_URANDOM => interactive_urandom_cmd_ok(serial),
+        i if cmds[i] == CMD_DROPBEAR_STOP => {
+            command_echoed(serial, "kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP")
+                && serial.contains("DROPBEAR-STOP")
+                && at_interactive_prompt(serial)
+        }
         i if cmds[i] == CMD_LISTEN_BG => interactive_listen_bg_ok(serial),
         i if cmds[i] == CMD_LISTEN_CAT => interactive_listen_cat_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),

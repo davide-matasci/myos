@@ -785,7 +785,7 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
             ls->accept_armed = 0;
             return accept_from_status(ls, stbuf, addr, addrlen);
         }
-        if (elapsed_ms(&start) >= 120000L) {
+        if (elapsed_ms(&start) >= 180000L) {
             errno = ETIMEDOUT;
             return -1;
         }
