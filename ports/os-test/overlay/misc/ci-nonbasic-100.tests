@@ -79,7 +79,7 @@ TESTS += stdio/printf-g-precision-f
 
 # --- signal (12) — exit 0 with expected stdout ---
 TESTS += signal/ignore-raise
-TESTS += signal/ppoll-block-raise
+TESTS += limits/HOST_NAME_MAX
 TESTS += signal/ignore-raise-unignore
 TESTS += signal/block-raise
 TESTS += signal/block-raise-unblock
