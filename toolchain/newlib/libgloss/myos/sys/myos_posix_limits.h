@@ -75,6 +75,13 @@
 # define WORD_BIT 32
 #endif
 
+#ifndef _POSIX_HOST_NAME_MAX
+# define _POSIX_HOST_NAME_MAX 255
+#endif
+#ifndef HOST_NAME_MAX
+# define HOST_NAME_MAX 255
+#endif
+
 #ifndef PAGESIZE
 # define PAGESIZE 4096
 #endif

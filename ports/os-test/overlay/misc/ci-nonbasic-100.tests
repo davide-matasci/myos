@@ -2,7 +2,7 @@
 # Prefer tests whose POSIX expect is exit 0 (myos harness: exit 0 = pass).
 # ~100 tests spanning non-basic suites.
 
-# --- limits (32) ---
+# --- limits (33) ---
 TESTS += limits/CHAR_BIT
 TESTS += limits/CHAR_MAX
 TESTS += limits/CHAR_MIN
@@ -35,6 +35,7 @@ TESTS += limits/ARG_MAX
 TESTS += limits/LINK_MAX
 TESTS += limits/CHILD_MAX
 TESTS += limits/IOV_MAX
+TESTS += limits/HOST_NAME_MAX
 
 # --- malloc (3) ---
 TESTS += malloc/malloc-0
@@ -79,7 +80,6 @@ TESTS += stdio/printf-g-precision-f
 
 # --- signal (12) — exit 0 with expected stdout ---
 TESTS += signal/ignore-raise
-TESTS += limits/HOST_NAME_MAX
 TESTS += signal/ignore-raise-unignore
 TESTS += signal/block-raise
 TESTS += signal/block-raise-unblock
@@ -90,6 +90,7 @@ TESTS += signal/block-chld-unblock
 TESTS += signal/sigaltstack-raise
 TESTS += signal/default-usr1-exec
 TESTS += signal/handle-usr1-exec
+TESTS += signal/ignore-usr1-exec
 
 # --- process (8) — POSIX expect exit: 0 ---
 TESTS += process/fork-setpgid
