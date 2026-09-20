@@ -337,7 +337,9 @@ fn start_ssh_smoke_worker() {
         // has armed accept hang in slirp or produce Child+I/O-error and wedge
         // the listener for the rest of the stage. Do NOT TCP-probe :2222 —
         // a connect+close is itself a half-open session that can wedge.
-        std::thread::sleep(Duration::from_secs(8));
+        // Slow arches (riscv64 TCG): early SYNs before accept is armed still
+        // leave handshake orphans; give dropbear more settle than the old 8s.
+        std::thread::sleep(Duration::from_secs(12));
         let mut last_err = String::from("ssh smoke never attempted");
         while start.elapsed() < SSH_STAGE_BOUND {
             match poke_ssh_two_clients(&key) {
@@ -348,11 +350,10 @@ fn start_ssh_smoke_worker() {
                 }
                 Err(e) => {
                     last_err = e;
-                    // Back off harder than 1s: each failed attempt can leave a
-                    // SynReceived orphan in netd until handshake-age reclaim
-                    // (~10s). Flooding SYNs every second filled MAX_CONV on
-                    // riscv64 before dropbear could accept a live session.
-                    std::thread::sleep(Duration::from_secs(3));
+                    // Back off ≥ reclaim window: failed concurrent attempts can
+                    // leave SynReceived orphans until handshake-age reclaim
+                    // (~10s). Flooding every 3s still starved riscv64 MAX_CONV.
+                    std::thread::sleep(Duration::from_secs(5));
                 }
             }
         }
