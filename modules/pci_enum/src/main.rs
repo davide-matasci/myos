@@ -1,4 +1,8 @@
 //! Full PCI configuration-space enumeration → `/proc/pci`.
+//!
+//! Lines keep hex BDF / vendor:device / class:sub:prog, and append short
+//! human names when known (class/subclass + a small QEMU/virt ID table).
+//! Unknown IDs stay hex-only. Boot-time snapshot — no hotplug/rescan.
 
 #![no_std]
 #![no_main]
@@ -6,7 +10,8 @@
 use myos_abi::{status_info, status_ok, status_warn, ABI_VERSION, KernelApi};
 
 const MAX_DEV: usize = 64;
-const BUF_CAP: usize = 4096;
+const BUF_CAP: usize = 8192;
+const LINE_CAP: usize = 160;
 
 #[inline(never)]
 #[unsafe(no_mangle)]
@@ -27,7 +32,11 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         }
         let out = core::slice::from_raw_parts_mut(buf, BUF_CAP);
         let mut len = 0usize;
-        push_str(out, &mut len, "# bus:slot.func vendor:device class:sub:prog\n");
+        push_str(
+            out,
+            &mut len,
+            "# bus:slot.func vendor:device [name] class:sub:prog [class]\n",
+        );
 
         let mut found = 0usize;
         // Cap buses: arch MAX_BUS differs; 32 is enough for QEMU virt / PC.
@@ -50,20 +59,20 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
                     let class = (classw >> 24) as u8;
                     let sub = (classw >> 16) as u8;
                     let prog = (classw >> 8) as u8;
-                    let mut line = [0u8; 80];
+                    let mut line = [0u8; LINE_CAP];
                     let n = format_dev(&mut line, bus, slot, func, vend, dev, class, sub, prog);
                     push_bytes(out, &mut len, &line[..n]);
                     push_str(out, &mut len, "\n");
                     found += 1;
-                    if found >= MAX_DEV || len + 80 >= BUF_CAP {
+                    if found >= MAX_DEV || len + LINE_CAP >= BUF_CAP {
                         break;
                     }
                 }
-                if found >= MAX_DEV || len + 80 >= BUF_CAP {
+                if found >= MAX_DEV || len + LINE_CAP >= BUF_CAP {
                     break;
                 }
             }
-            if found >= MAX_DEV || len + 80 >= BUF_CAP {
+            if found >= MAX_DEV || len + LINE_CAP >= BUF_CAP {
                 break;
             }
         }
@@ -105,6 +114,111 @@ fn hex_u16(dst: &mut [u8], off: usize, v: u16) -> usize {
     hex_u8(dst, o, v as u8)
 }
 
+fn push_ascii(dst: &mut [u8], off: usize, s: &str) -> usize {
+    let b = s.as_bytes();
+    let n = b.len().min(dst.len().saturating_sub(off));
+    dst[off..off + n].copy_from_slice(&b[..n]);
+    off + n
+}
+
+/// Small static table: common QEMU / virt devices only (not full pci.ids).
+fn device_name(vend: u16, dev: u16) -> Option<&'static str> {
+    match (vend, dev) {
+        // Red Hat / virtio (transitional 0x1000.. and modern 0x1040..)
+        (0x1af4, 0x1000) | (0x1af4, 0x1041) => Some("virtio-net"),
+        (0x1af4, 0x1001) | (0x1af4, 0x1042) => Some("virtio-blk"),
+        (0x1af4, 0x1002) | (0x1af4, 0x1045) => Some("virtio-balloon"),
+        (0x1af4, 0x1003) | (0x1af4, 0x1043) => Some("virtio-console"),
+        (0x1af4, 0x1004) | (0x1af4, 0x1048) => Some("virtio-scsi"),
+        (0x1af4, 0x1005) | (0x1af4, 0x1044) => Some("virtio-rng"),
+        (0x1af4, 0x1009) | (0x1af4, 0x1049) => Some("virtio-9p"),
+        (0x1af4, 0x1050) => Some("virtio-gpu"),
+        (0x1af4, 0x1052) => Some("virtio-input"),
+        (0x1af4, 0x105a) => Some("virtio-fs"),
+        // QEMU devices (vendor 1b36)
+        (0x1b36, 0x0001) => Some("QEMU PCI-PCI bridge"),
+        (0x1b36, 0x0002) => Some("QEMU QXL"),
+        (0x1b36, 0x0003) => Some("QEMU serial"),
+        (0x1b36, 0x0004) => Some("QEMU dual serial"),
+        (0x1b36, 0x0005) => Some("QEMU quad serial"),
+        (0x1b36, 0x0007) => Some("QEMU PCI test"),
+        (0x1b36, 0x0008) => Some("QEMU dual 16550A"),
+        (0x1b36, 0x0009) => Some("QEMU PCIe host"),
+        (0x1b36, 0x000a) => Some("QEMU PCIe root port"),
+        (0x1b36, 0x000b) => Some("QEMU SDHCI"),
+        (0x1b36, 0x000c) => Some("QEMU PVPanic PCI"),
+        (0x1b36, 0x000d) => Some("QEMU virtio-iommu"),
+        (0x1b36, 0x0010) => Some("QEMU NVMe"),
+        (0x1b36, 0x0011) => Some("QEMU PVPanic ISA"),
+        (0x1b36, 0x0013) => Some("QEMU mbox"),
+        // Intel chipset pieces common under QEMU pc/q35
+        (0x8086, 0x1237) => Some("i440FX host bridge"),
+        (0x8086, 0x7000) => Some("PIIX3 ISA"),
+        (0x8086, 0x7010) => Some("PIIX3 IDE"),
+        (0x8086, 0x7020) => Some("PIIX3 USB"),
+        (0x8086, 0x7110) => Some("PIIX4 ISA"),
+        (0x8086, 0x7111) => Some("PIIX4 IDE"),
+        (0x8086, 0x7113) => Some("PIIX4 ACPI"),
+        (0x8086, 0x29c0) => Some("Q35 host bridge"),
+        (0x8086, 0x2918) => Some("ICH9 LPC"),
+        (0x8086, 0x2922) => Some("ICH9 AHCI"),
+        (0x8086, 0x2930) => Some("ICH9 SMBus"),
+        (0x8086, 0x2415) => Some("ICH AC97"),
+        (0x8086, 0x2668) => Some("ICH6 HDA"),
+        (0x8086, 0x100e) => Some("e1000"),
+        (0x8086, 0x10d3) => Some("e1000e"),
+        (0x8086, 0x15d0) => Some("PCIe DRAM controller"),
+        // Bochs / QEMU VGA
+        (0x1234, 0x1111) => Some("Bochs VGA"),
+        // Realtek often used with -nic model=rtl8139
+        (0x10ec, 0x8139) => Some("RTL8139"),
+        _ => None,
+    }
+}
+
+/// Class + subclass short names (PCI base-class codes). Prefer subclass
+/// when known; otherwise fall back to the base class label.
+fn class_name(class: u8, sub: u8) -> Option<&'static str> {
+    match (class, sub) {
+        (0x00, 0x00) => Some("Non-VGA unclassified"),
+        (0x00, 0x01) => Some("VGA unclassified"),
+        (0x01, 0x00) => Some("SCSI storage"),
+        (0x01, 0x01) => Some("IDE storage"),
+        (0x01, 0x04) => Some("RAID storage"),
+        (0x01, 0x05) => Some("ATA storage"),
+        (0x01, 0x06) => Some("SATA"),
+        (0x01, 0x07) => Some("SAS"),
+        (0x01, 0x08) => Some("NVMe"),
+        (0x01, _) => Some("Mass storage"),
+        (0x02, 0x00) => Some("Ethernet"),
+        (0x02, _) => Some("Network"),
+        (0x03, 0x00) => Some("VGA"),
+        (0x03, 0x02) => Some("3D controller"),
+        (0x03, _) => Some("Display"),
+        (0x04, 0x01) => Some("Audio"),
+        (0x04, 0x03) => Some("HD audio"),
+        (0x04, _) => Some("Multimedia"),
+        (0x05, _) => Some("Memory"),
+        (0x06, 0x00) => Some("Host bridge"),
+        (0x06, 0x01) => Some("ISA bridge"),
+        (0x06, 0x04) => Some("PCI-PCI bridge"),
+        (0x06, 0x09) => Some("PCI-PCI bridge (sub)"),
+        (0x06, _) => Some("Bridge"),
+        (0x07, 0x00) => Some("Serial"),
+        (0x07, _) => Some("Simple comm"),
+        (0x08, 0x05) => Some("SD host"),
+        (0x08, 0x80) => Some("System peripheral"),
+        (0x08, _) => Some("Base system"),
+        (0x09, _) => Some("Input"),
+        (0x0c, 0x03) => Some("USB"),
+        (0x0c, 0x05) => Some("SMBus"),
+        (0x0c, _) => Some("Serial bus"),
+        (0x0d, _) => Some("Wireless"),
+        (0xff, _) => Some("Unassigned"),
+        _ => None,
+    }
+}
+
 fn format_dev(
     line: &mut [u8],
     bus: u8,
@@ -116,7 +230,7 @@ fn format_dev(
     sub: u8,
     prog: u8,
 ) -> usize {
-    // "BB:SS.F VVVV:DDDD CC:SS:PP"
+    // "BB:SS.F VVVV:DDDD [name] CC:SS:PP [class-name]"
     let mut o = 0;
     o = hex_u8(line, o, bus);
     line[o] = b':';
@@ -132,6 +246,13 @@ fn format_dev(
     line[o] = b':';
     o += 1;
     o = hex_u16(line, o, dev);
+
+    if let Some(name) = device_name(vend, dev) {
+        line[o] = b' ';
+        o += 1;
+        o = push_ascii(line, o, name);
+    }
+
     line[o] = b' ';
     o += 1;
     o = hex_u8(line, o, class);
@@ -141,6 +262,12 @@ fn format_dev(
     line[o] = b':';
     o += 1;
     o = hex_u8(line, o, prog);
+
+    if let Some(cname) = class_name(class, sub) {
+        line[o] = b' ';
+        o += 1;
+        o = push_ascii(line, o, cname);
+    }
     o
 }
 

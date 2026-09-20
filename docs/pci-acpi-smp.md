@@ -105,7 +105,7 @@ AP stacks are too small for nested timer/IPI frames).
 
 - `/proc/mounts` — existing
 - `/proc/cpuinfo` — online CPUs, hw ids, schedule counts
-- `/proc/pci` — full BDF list from `pci_enum`
+- `/proc/pci` — full BDF list from `pci_enum` (hex IDs + class/subclass names and a small QEMU/virt device table; boot-time snapshot, no hotplug)
 - `/proc/acpi/info`, `tables`, `s5` — from `acpi` module (honest stubs if no RSDP)
 
 ## Out of scope
