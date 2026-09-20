@@ -2,7 +2,6 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 use spin::Mutex;
 
 use myos_abi::ModuleVfsOps;
@@ -393,9 +392,10 @@ pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
 ///
 /// Fork copies fd tables without a new `open()`, so several tasks can hold
 /// fds on the same vnode (dropbear forks and the parent closes the accepted
-/// socket while the child still writes to it). The netfs hangup must fire
-/// only when the LAST holder closes — POSIX close semantics.
-const OPEN_REFS_CAP: usize = 128;
+/// socket while the child still writes to it). The module `release` hook
+/// (netfs → REQ_CLOSE) must fire only when the LAST holder closes — POSIX
+/// close semantics.
+const OPEN_REFS_CAP: usize = 256;
 struct OpenRef {
     in_use: bool,
     mount: u16,
@@ -405,13 +405,24 @@ struct OpenRef {
 }
 static OPEN_REFS: Mutex<Vec<OpenRef>> = Mutex::new(Vec::new());
 
-fn open_ref_slot(node: &Vnode) -> usize {
+/// Last fd on `node` closed: see [`open_ref`].
+pub fn close_ref(node: &Vnode) {
+    open_ref_release(node);
+}
+
+/// Record one more fd reference on `node` (open, dup, fork-inherited fd).
+/// Find-or-create and increment under one lock (no TOCTOU with release).
+pub fn open_ref(node: &Vnode) {
     let mut refs = OPEN_REFS.lock();
     for i in 0..refs.len() {
-        if refs[i].in_use && refs[i].mount == node.mount && refs[i].path_len == node.path_len
-            && refs[i].path[..node.path_len as usize] == node.path[..node.path_len as usize]
+        if refs[i].in_use
+            && refs[i].mount == node.mount
+            && refs[i].path_len == node.path_len
+            && refs[i].path[..node.path_len as usize]
+                == node.path[..node.path_len as usize]
         {
-            return i;
+            refs[i].count = refs[i].count.saturating_add(1);
+            return;
         }
     }
     for i in 0..refs.len() {
@@ -419,9 +430,10 @@ fn open_ref_slot(node: &Vnode) -> usize {
             refs[i].in_use = true;
             refs[i].mount = node.mount;
             refs[i].path_len = node.path_len;
-            refs[i].path[..node.path_len as usize].copy_from_slice(&node.path[..node.path_len as usize]);
-            refs[i].count = 0;
-            return i;
+            refs[i].path[..node.path_len as usize]
+                .copy_from_slice(&node.path[..node.path_len as usize]);
+            refs[i].count = 1;
+            return;
         }
     }
     if refs.len() < OPEN_REFS_CAP {
@@ -430,34 +442,33 @@ fn open_ref_slot(node: &Vnode) -> usize {
             mount: node.mount,
             path_len: node.path_len,
             path: node.path,
-            count: 0,
+            count: 1,
         });
-        return refs.len() - 1;
     }
-    usize::MAX
+    // Cap exhausted: silently skip — better a leaked conv than a spurious hangup.
 }
 
-/// Last fd on `node` closed: see [`open_ref`].
-pub fn close_ref(node: &Vnode) {
-    open_ref_release(node);
-}
-
-/// Record one more fd reference on `node` (open, dup, fork-inherited fd).
-pub fn open_ref(node: &Vnode) {
-    let slot = open_ref_slot(node);
-    if slot == usize::MAX {
-        return;
-    }
-    OPEN_REFS.lock()[slot].count += 1;
-}
-
+/// Lookup-only release. Never create a slot on miss (that used to allocate
+/// count=0 then fire hangup while another task still held the fd — dropbear
+/// parent close vs child banner write → EIO on riscv64).
 fn open_ref_release(node: &Vnode) {
-    let slot = open_ref_slot(node);
-    if slot == usize::MAX {
-        return;
-    }
-    let (mount, fire, path) = {
+    let (mount, fire, path_len, path) = {
         let mut refs = OPEN_REFS.lock();
+        let mut slot = None;
+        for i in 0..refs.len() {
+            if refs[i].in_use
+                && refs[i].mount == node.mount
+                && refs[i].path_len == node.path_len
+                && refs[i].path[..node.path_len as usize]
+                    == node.path[..node.path_len as usize]
+            {
+                slot = Some(i);
+                break;
+            }
+        }
+        let Some(slot) = slot else {
+            return;
+        };
         if refs[slot].count > 0 {
             refs[slot].count -= 1;
         }
@@ -466,58 +477,26 @@ fn open_ref_release(node: &Vnode) {
             refs[slot].in_use = false;
         }
         let m = refs[slot].mount;
-        let mut p = [0u8; 96];
-        let pl = refs[slot].path_len as usize;
-        p[..pl].copy_from_slice(&refs[slot].path[..pl]);
-        (m, done, p)
+        let pl = refs[slot].path_len;
+        let p = refs[slot].path;
+        (m, done, pl, p)
     };
     if !fire {
         return;
     }
-    // Last holder closed. For netfs conv nodes the module has no close
-    // callback (path-based VfsOps), so synthesize the Plan 9 ctl hangup
-    // here; netfs turns it into netd REQ_CLOSE (socket teardown).
-    let name_ok = {
+    // Last holder closed: call the module release hook (netfs tears down
+    // only on /data; ctl/status are no-ops there). Do NOT synthesize a ctl
+    // hangup write — that raced the req ring and double-closed with release.
+    let rel = core::str::from_utf8(&path[..path_len as usize]).unwrap_or("");
+    let backend = {
         let mounts = MOUNTS.lock();
-        mounts.get(mount as usize).map(|m| m.name == "netfs").unwrap_or(false)
+        mounts.get(mount as usize).map(|m| m.backend)
     };
-    if !name_ok {
-        return;
-    }
-    let rel = core::str::from_utf8(&path).unwrap_or("");
-    // <proto>/<n>/data|ctl|status → hangup via <proto>/<n>/ctl
-    let parts: [&str; 4] = match rel.split('/').count() {
-        3 => {
-            let mut it = rel.split('/');
-            let a = it.next().unwrap_or("");
-            let b = it.next().unwrap_or("");
-            let c = it.next().unwrap_or("");
-            [a, b, c, ""]
+    if let Some(MountBackend::Module(ops)) = backend {
+        if let Some(release) = ops.release {
+            let _ = unsafe { (release)(rel.as_ptr(), rel.len()) };
         }
-        _ => return,
-    };
-    // Only the connection's DATA fd holds the conv open. ctl/status are
-    // transient metadata fds opened+closed by every poll/status check
-    // (listener_ctl, status_is_hangup); treating their last close as a
-    // hangup tore the conv down mid-session (listener died after the first
-    // accept; connected socket reported hangup right after its first write).
-    if parts[2] != "data" {
-        return;
     }
-    let ctl = alloc::format!("{}/{}/ctl", parts[0], parts[1]);
-    let _ = write(
-        &Vnode { mount, path_len: ctl.len() as u16, path: path_from_str(&ctl) },
-        0,
-        b"hangup",
-    );
-}
-
-fn path_from_str(s: &str) -> [u8; 96] {
-    let mut p = [0u8; 96];
-    let b = s.as_bytes();
-    let n = b.len().min(96);
-    p[..n].copy_from_slice(&b[..n]);
-    p
 }
 
 /// Device/filesystem ioctl on an open vnode.
