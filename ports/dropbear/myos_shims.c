@@ -209,8 +209,26 @@ ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
 	return total;
 }
 
-
+/* Coalesce into one write when small enough for a single netfs REQ_SEND
+ * (MSG_CAP=2048). Per-iovec write() flooded the 32-slot netfs req ring on
+ * slow riscv64 before netd drained → EIO on the SSH banner after accept. */
 ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
+	size_t need = 0;
+	for (int i = 0; i < iovcnt; i++) {
+		need += iov[i].iov_len;
+	}
+	if (need > 0 && need <= 2048) {
+		unsigned char tmp[2048];
+		size_t off = 0;
+		for (int i = 0; i < iovcnt; i++) {
+			if (iov[i].iov_len == 0) {
+				continue;
+			}
+			memcpy(tmp + off, iov[i].iov_base, iov[i].iov_len);
+			off += iov[i].iov_len;
+		}
+		return write(fd, tmp, off);
+	}
 	ssize_t total = 0;
 	for (int i = 0; i < iovcnt; i++) {
 		if (iov[i].iov_len == 0) {
