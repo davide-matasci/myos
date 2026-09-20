@@ -1,0 +1,236 @@
+name: CI ports
+# Reusable: sysroot / newlib / ports-*. Building belongs here — not in boot.
+on:
+  workflow_call:
+    inputs:
+      sysroot:
+        type: string
+        required: true
+      c_userspace:
+        type: string
+        required: true
+      force_sysroot:
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sysroot:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
+    timeout-minutes: 45
+    if: |
+      inputs.sysroot == 'true' || inputs.force_sysroot
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, aarch64-unknown-none-softfloat
+
+      - name: Cache myos sysroot
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: myos-sysroot-v2
+          workspaces: .
+          cache-directories: target/myos-sysroot
+
+      - name: Build and package sysroot
+        id: sysroot_build
+        env:
+          MYOS_SYSROOT_SLIM: "1"
+          MYOS_ZSTD_LEVEL: "3"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          MYOS_FORCE_SYSROOT: ${{ inputs.force_sysroot && '1' || '' }}
+        run: ./scripts/ci-sysroot-job.sh
+
+      - name: Upload sysroot tarball
+        if: steps.sysroot_build.outcome == 'success' && github.event_name != 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: myos-sysroot
+          path: target/myos-sysroot-*.tar.zst
+          if-no-files-found: warn
+          retention-days: 7
+
+  newlib:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
+    timeout-minutes: 45
+    if: |
+      inputs.c_userspace == 'true'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned nightly (llvm-tools for strip wrappers)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: llvm-tools-preview
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: myos-c-userspace
+          workspaces: .
+
+      - name: Build and push newlib sysroot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: ./scripts/ci-newlib-job.sh
+
+  ports-base:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
+    timeout-minutes: 45
+    needs: [sysroot, newlib]
+    if: |
+      always() &&
+      !cancelled() &&
+      (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped') &&
+      (needs.newlib.result == 'success' || needs.newlib.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - port: sbase
+            script: ./ports/sbase/build.sh
+            pull: sbase
+          - port: ubase
+            script: ./ports/ubase/build.sh
+            pull: ubase
+          - port: oksh
+            script: ./ports/oksh/build.sh
+            pull: oksh
+          - port: make
+            script: ./ports/make/build.sh
+            pull: make
+          - port: coreutils
+            script: ./ports/coreutils/build-uutils.sh
+            pull: coreutils
+            needs_sysroot: "1"
+          - port: ripgrep
+            script: ./ports/ripgrep/build.sh
+            pull: ripgrep
+            needs_sysroot: "1"
+          - port: tcc
+            script: ./ports/tcc/build.sh
+            pull: tcc
+          - port: ncurses
+            script: ./ports/ncurses/build.sh
+            pull: ncurses
+          - port: zlib
+            script: ./ports/zlib/build.sh
+            pull: zlib
+          - port: c-hello
+            script: ./scripts/build-c-hello.sh
+            pull: c-hello
+          - port: curl
+            script: ./ports/curl/build.sh
+            pull: curl
+          - port: std-hello
+            script: ./toolchain/std/build-std-hello.sh
+            pull: std-hello
+            needs_sysroot: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-6
+          cache-directories: |
+            target/myos-sysroot
+            target/patched-crates
+            target/crate-fetch-coreutils
+
+      - name: Download prebuilt sysroot
+        if: matrix.needs_sysroot == '1'
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: myos-sysroot
+          path: target
+
+      - name: Build port (${{ matrix.port }})
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: ./scripts/ci-build-port.sh "${{ matrix.pull }}" "${{ matrix.script }}" "${{ matrix.needs_sysroot }}"
+
+  ports-advanced:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
+    timeout-minutes: 45
+    needs: [sysroot, newlib, ports-base]
+    if: |
+      always() &&
+      !cancelled() &&
+      (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped') &&
+      (needs.newlib.result == 'success' || needs.newlib.result == 'skipped') &&
+      needs.ports-base.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - port: vim
+            script: ./ports/vim/build.sh
+            pull: vim
+            dep_port: ncurses
+          - port: git
+            script: ./ports/git/build.sh
+            pull: git
+            dep_port: zlib
+          - port: lynx
+            script: ./ports/lynx/build.sh
+            pull: lynx
+            dep_port: ncurses
+          - port: lua
+            script: ./ports/lua/build.sh
+            pull: lua
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: llvm-tools-preview
+
+      - name: Build port (${{ matrix.port }})
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: ./scripts/ci-build-port.sh "${{ matrix.pull }}" "${{ matrix.script }}" "0" "${{ matrix.dep_port }}"
