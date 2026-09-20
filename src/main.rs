@@ -216,6 +216,13 @@ fn host_listen_2323() -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
 }
 
+/// True when something already listens on host :2222 (dropbear SSH fwd port).
+fn host_listen_2222() -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    let addr = SocketAddr::from(([127, 0, 0, 1], 2222));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+}
+
 fn add_virtio_net(cmd: &mut Command) {
     // Local boot-stress packs socket_smoke → 10.0.2.100:80 with host http.server
     // on :8765 and starts that server *before* QEMU. Only add guestfwd when the
@@ -231,6 +238,11 @@ fn add_virtio_net(cmd: &mut Command) {
     // startup (same guard as guestfwd above).
     if !host_listen_2323() {
         netdev.push_str(",hostfwd=tcp::2323-:2323");
+    }
+    // Dropbear SSH smoke (full-boot wait_ci): host OpenSSH clients connect to
+    // localhost:2222 which slirp forwards to guest :22. Same free-port guard.
+    if !host_listen_2222() {
+        netdev.push_str(",hostfwd=tcp::2222-:22");
     }
     cmd.arg("-netdev").arg(netdev);
     cmd.arg("-device").arg("virtio-net-pci,netdev=net0");

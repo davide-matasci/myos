@@ -150,6 +150,182 @@ fn poke_listener() -> bool {
     }
     got >= 5 && &buf[..5] == b"pong\n"
 }
+// Dropbear SSH smoke (full boot only): start sshd in the guest; the harness
+// then opens two concurrent OpenSSH clients through slirp hostfwd
+// localhost:2222 → guest:22 (see add_virtio_net in src/main.rs).
+const CMD_DROPBEAR_BG: &[u8] =
+    b"/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 &\n";
+/// Harness-side flag: both concurrent SSH clients completed with exit 0.
+static SSH_SMOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Background SSH attempt started for the current dropbear stage.
+static SSH_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Background attempt finished (ok or err); see SSH_SMOKED / SSH_ERR.
+static SSH_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SSH_ERR: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+static SSH_STAGE_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+const SSH_STAGE_BOUND: Duration = Duration::from_secs(120);
+const SSH_HOST_PORT: &str = "2222";
+
+fn dropbear_testkey_src() -> PathBuf {
+    let from_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ports/dropbear/testkey");
+    if from_manifest.is_file() {
+        return from_manifest;
+    }
+    PathBuf::from("ports/dropbear/testkey")
+}
+
+/// OpenSSH refuses world-readable private keys; copy the committed test key
+/// to a 0600 tempfile for the duration of the smoke.
+fn prepare_dropbear_testkey() -> Result<PathBuf, String> {
+    let src = dropbear_testkey_src();
+    if !src.is_file() {
+        return Err(format!("missing dropbear test key at {}", src.display()));
+    }
+    let dir = std::env::temp_dir().join("myos-dropbear-ssh-smoke");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    let dst = dir.join("testkey");
+    std::fs::copy(&src, &dst).map_err(|e| format!("copy testkey: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod testkey: {e}"))?;
+    }
+    Ok(dst)
+}
+
+/// Ensure a host `ssh` client exists. The myos-ci image should ship
+/// openssh-client; fall back to apt-get when running as root on an older image.
+fn ensure_host_ssh() -> Result<(), String> {
+    if Command::new("ssh").arg("-V").output().is_ok() {
+        return Ok(());
+    }
+    let apt = Command::new("apt-get")
+        .args(["update", "-qq"])
+        .status()
+        .map_err(|e| format!("apt-get update: {e}"))?;
+    if !apt.success() {
+        return Err("apt-get update failed; install openssh-client for SSH smoke".into());
+    }
+    let inst = Command::new("apt-get")
+        .args([
+            "install",
+            "-y",
+            "-qq",
+            "--no-install-recommends",
+            "openssh-client",
+        ])
+        .status()
+        .map_err(|e| format!("apt-get install openssh-client: {e}"))?;
+    if !inst.success() {
+        return Err("failed to install openssh-client".into());
+    }
+    if Command::new("ssh").arg("-V").output().is_err() {
+        return Err("`ssh` still missing after apt install".into());
+    }
+    Ok(())
+}
+
+fn ssh_one_client(key: &Path, tag: &str) -> Result<(), String> {
+    let remote = format!("echo {tag}; /bin/coreutils/true");
+    let output = Command::new("ssh")
+        .args([
+            "-4",
+            "-i",
+            key.to_str().ok_or("testkey path not utf-8")?,
+            "-p",
+            SSH_HOST_PORT,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ConnectionAttempts=1",
+            "root@127.0.0.1",
+            &remote,
+        ])
+        .output()
+        .map_err(|e| format!("spawn ssh ({tag}): {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!(
+            "ssh {tag} failed (exit {:?}): stderr={stderr} stdout={stdout}",
+            output.status.code()
+        ));
+    }
+    if !stdout.contains(tag) {
+        return Err(format!(
+            "ssh {tag}: remote echo missing (stdout={stdout:?} stderr={stderr:?})"
+        ));
+    }
+    Ok(())
+}
+
+/// Open two concurrent SSH sessions into the guest (pubkey auth). Both must
+/// exit 0; overlapping launch exercises multi-session accept on dropbear.
+fn poke_ssh_two_clients() -> Result<(), String> {
+    ensure_host_ssh()?;
+    let key = prepare_dropbear_testkey()?;
+    let key_a = key.clone();
+    let key_b = key.clone();
+    let (tx_a, rx_a) = std::sync::mpsc::channel();
+    let (tx_b, rx_b) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx_a.send(ssh_one_client(&key_a, "ssh-ci-a"));
+    });
+    std::thread::spawn(move || {
+        let _ = tx_b.send(ssh_one_client(&key_b, "ssh-ci-b"));
+    });
+    let ra = rx_a
+        .recv_timeout(Duration::from_secs(60))
+        .map_err(|_| "ssh-ci-a timed out waiting for exit".to_string())?;
+    let rb = rx_b
+        .recv_timeout(Duration::from_secs(60))
+        .map_err(|_| "ssh-ci-b timed out waiting for exit".to_string())?;
+    ra?;
+    rb?;
+    Ok(())
+}
+
+/// Background worker: retry two concurrent SSH clients until success or bound.
+fn start_ssh_smoke_worker() {
+    if SSH_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let start = std::time::Instant::now();
+        let mut last_err = String::from("ssh smoke never attempted");
+        while start.elapsed() < SSH_STAGE_BOUND {
+            match poke_ssh_two_clients() {
+                Ok(()) => {
+                    SSH_SMOKED.store(true, std::sync::atomic::Ordering::SeqCst);
+                    SSH_DONE.store(true, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+                Err(e) => {
+                    last_err = e;
+                    std::thread::sleep(Duration::from_millis(750));
+                }
+            }
+        }
+        if let Ok(mut g) = SSH_ERR.lock() {
+            *g = last_err;
+        }
+        SSH_DONE.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
 // HTTPS GET (requires network + wall clock + mbedtls).
 const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 // curl over userspace sockets + mbedtls (same URL as https smoke).
@@ -227,6 +403,11 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     // harness completes the ping/pong through slirp hostfwd).
     cmds.push(CMD_LISTEN_BG);
     cmds.push(CMD_LISTEN_CAT);
+    // Dropbear SSH smoke: full boot only (boot-mini stays light). Host opens
+    // two concurrent clients via hostfwd after the guest sshd is started.
+    if !ci_mini() && port_enabled("port_dropbear") {
+        cmds.push(CMD_DROPBEAR_BG);
+    }
     cmds.push(CMD_INTERRUPT);
     cmds.push(CMD_HIST_SEED);
     cmds.push(CMD_ARROW);
@@ -775,6 +956,17 @@ fn interactive_listen_cat_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
+/// Dropbear started in the guest and both host SSH clients succeeded.
+fn interactive_dropbear_bg_ok(serial: &str) -> bool {
+    if !SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    command_echoed(
+        serial,
+        "/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 &",
+    ) && at_interactive_prompt(serial)
+}
+
 fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[&str]) -> bool {
     match cmd_index {
         0 => interactive_unknown_cmd_ok(serial),
@@ -805,6 +997,7 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         i if cmds[i] == CMD_URANDOM => interactive_urandom_cmd_ok(serial),
         i if cmds[i] == CMD_LISTEN_BG => interactive_listen_bg_ok(serial),
         i if cmds[i] == CMD_LISTEN_CAT => interactive_listen_cat_ok(serial),
+        i if cmds[i] == CMD_DROPBEAR_BG => interactive_dropbear_bg_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
         i if i == arrow_seed_idx(cmds) => interactive_arrow_seed_ok(serial),
         i if i == arrow_edit_idx(cmds) => interactive_arrow_edit_ok(serial),
@@ -1001,6 +1194,59 @@ fn advance_shell_ci(
                     .unwrap_or_default();
                 eprintln!(
                     "error: listen smoke never completed within {LISTEN_STAGE_BOUND:?}; listen.out + last serial:\n---\n{}\n---",
+                    fresh.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>()
+                );
+                std::process::exit(1);
+            }
+            return;
+        }
+        ShellStage::WaitResult if cmds[*cmd_index] == CMD_DROPBEAR_BG
+            && !SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) =>
+        {
+            // Guest sshd is backgrounded with output redirected; host clients
+            // connect via hostfwd. Kick a worker once and wait for both
+            // concurrent sessions to exit cleanly.
+            if SSH_STAGE_START.get().is_none() {
+                let _ = SSH_STAGE_START.set(std::time::Instant::now());
+            }
+            start_ssh_smoke_worker();
+            if SSH_DONE.load(std::sync::atomic::Ordering::SeqCst) {
+                if SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let err = SSH_ERR
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_else(|_| "ssh smoke failed".into());
+                for ch in "cat /tmp/dropbear.out\n".bytes() {
+                    send_shell_byte(stdin, ch);
+                }
+                std::thread::sleep(Duration::from_secs(3));
+                let fresh = SERIAL_ACC
+                    .get()
+                    .and_then(|a| a.lock().ok().map(|g| g.clone()))
+                    .unwrap_or_default();
+                eprintln!(
+                    "error: dropbear SSH smoke failed ({err}); dropbear.out + last serial:\n---\n{}\n---",
+                    fresh.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>()
+                );
+                std::process::exit(1);
+            }
+            if SSH_STAGE_START.get().unwrap().elapsed() > SSH_STAGE_BOUND {
+                for ch in "cat /tmp/dropbear.out\n".bytes() {
+                    send_shell_byte(stdin, ch);
+                }
+                std::thread::sleep(Duration::from_secs(3));
+                let fresh = SERIAL_ACC
+                    .get()
+                    .and_then(|a| a.lock().ok().map(|g| g.clone()))
+                    .unwrap_or_default();
+                let err = SSH_ERR
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                eprintln!(
+                    "error: dropbear SSH smoke never completed within {SSH_STAGE_BOUND:?} ({err}); dropbear.out + last serial:\n---\n{}\n---",
                     fresh.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>()
                 );
                 std::process::exit(1);
@@ -1526,6 +1772,29 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: shell did not return to `$` after interactive urandom_smoke");
             } else {
                 eprintln!("error: interactive urandom_smoke did not print `[ OK ] urandom`");
+            }
+            std::process::exit(1);
+        }
+        if cmds.get(shell_cmd_index) == Some(&CMD_DROPBEAR_BG)
+            && !interactive_dropbear_bg_ok(&serial)
+        {
+            let err = SSH_ERR
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            if !SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
+                eprintln!(
+                    "error: dropbear SSH smoke failed — need two concurrent host SSH clients with clean exit-status (last error: {err})"
+                );
+            } else if !command_echoed(
+                &serial,
+                "/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 &",
+            ) {
+                eprintln!("error: serial did not echo dropbear start command");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after dropbear SSH smoke");
+            } else {
+                eprintln!("error: dropbear SSH smoke incomplete");
             }
             std::process::exit(1);
         }
