@@ -1,0 +1,242 @@
+name: CI runtime
+# build packs complete ci-build.tar; boot/boot-mini ONLY extract + assert + QEMU.
+on:
+  workflow_call:
+    inputs:
+      full_boot:
+        type: boolean
+        required: false
+        default: false
+      build_iso:
+        type: boolean
+        required: false
+        default: false
+      sysroot_built:
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-6
+          cache-directories: |
+            target/myos-sysroot
+            target/patched-crates
+            target/crate-fetch-coreutils
+
+      - name: Download prebuilt sysroot
+        if: inputs.sysroot_built
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: myos-sysroot
+          path: target
+
+      - name: Pull prebuilt ports and build kernels
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/ci-build-pull-and-kernels.sh
+
+      - name: PS/2 scancode decode unit tests
+        run: cargo test -p ps2-scancode
+
+      - name: Pack CI build artifacts
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/ci-pack-build-artifacts.sh
+
+      - name: Upload CI build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-build
+          path: ci-build.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  boot:
+    name: boot (${{ matrix.id }})
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
+    timeout-minutes: 90
+    needs: build
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.build.result == 'success' &&
+      inputs.full_boot &&
+      !inputs.build_iso
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: bios
+            args: --ci
+            required: true
+          - id: uefi
+            args: uefi --ci
+            required: true
+          - id: aarch64
+            args: aarch64 --ci
+            required: true
+          - id: riscv64
+            args: riscv64 --ci
+            required: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download CI build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: ci-build
+
+      - name: Extract and assert CI artifacts
+        run: |
+          chmod +x scripts/*.sh
+          if [[ ! -f ci-build.tar ]]; then
+            echo "::error::ci-build.tar missing after download; build job must upload it"
+            exit 1
+          fi
+          echo "==> extracting ci-build.tar"
+          tar -xf ci-build.tar
+          # Fail hard if incomplete; never rebuild here.
+          ./scripts/ci-assert-boot-artifacts.sh
+
+      - name: Boot in QEMU
+        continue-on-error: ${{ !matrix.required }}
+        env:
+          MYOS_SKIP_KERNEL_REBUILD: "1"
+        run: ./target/debug/myos ${{ matrix.args }}
+
+  boot-mini:
+    name: boot-mini (${{ matrix.id }})
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
+    timeout-minutes: 90
+    needs: build
+    # MYOS_CI_MINI=1; skipped when full_boot or build_iso is selected.
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.build.result == 'success' &&
+      !inputs.build_iso &&
+      !inputs.full_boot
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: bios
+            args: --ci
+            required: true
+          - id: uefi
+            args: uefi --ci
+            required: true
+          - id: aarch64
+            args: aarch64 --ci
+            required: true
+          - id: riscv64
+            args: riscv64 --ci
+            required: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download CI build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: ci-build
+
+      - name: Extract and assert CI artifacts
+        run: |
+          chmod +x scripts/*.sh
+          if [[ ! -f ci-build.tar ]]; then
+            echo "::error::ci-build.tar missing after download; build job must upload it"
+            exit 1
+          fi
+          echo "==> extracting ci-build.tar"
+          tar -xf ci-build.tar
+          # Fail hard if incomplete; never rebuild here.
+          ./scripts/ci-assert-boot-artifacts.sh
+
+      - name: Boot in QEMU
+        continue-on-error: ${{ !matrix.required }}
+        env:
+          MYOS_SKIP_KERNEL_REBUILD: "1"
+          MYOS_CI_MINI: "1"
+        run: ./target/debug/myos ${{ matrix.args }}
+
+  iso:
+    # Manual-only ISO from build outputs; toolchain only for cargo run -- iso.
+    # Toolchain only for cargo iso; must not rebuild ports here.
+    name: iso (x86_64 hybrid)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
+    timeout-minutes: 30
+    needs: build
+    if: >-
+      always() &&
+      needs.build.result == 'success' &&
+      inputs.build_iso
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download CI build artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: ci-build
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, x86_64-unknown-uefi
+
+      - name: Build x86_64 hybrid ISO from ci-build artifacts
+        run: ./scripts/ci-iso-from-artifacts.sh
+
+      - name: Upload ISO
+        if: hashFiles('target/myos-x86_64.iso') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: myos-x86_64-iso
+          path: target/myos-x86_64.iso
+          if-no-files-found: error
+          retention-days: 3
