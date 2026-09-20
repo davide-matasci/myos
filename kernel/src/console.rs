@@ -41,10 +41,6 @@ pub fn init_fb(writer: FrameBufferWriter<'static>) {
     let _ = FB.call_once(|| Mutex::new(writer));
 }
 
-pub fn has_fb() -> bool {
-    FB.get().is_some()
-}
-
 pub fn mirrors_bytes() -> bool {
     MIRROR_BYTES.load(Ordering::Relaxed)
 }

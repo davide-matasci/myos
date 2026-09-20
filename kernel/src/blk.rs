@@ -134,18 +134,6 @@ pub(crate) const SECTOR: usize = 512;
 pub(crate) const VIRTIO_BLK_T_IN: u32 = 0;
 pub(crate) const VIRTIO_BLK_T_OUT: u32 = 1;
 
-pub fn nvme_read(ctrl: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-    crate::nvme::read(ctrl, lba, buf)
-}
-
-pub fn nvme_write(ctrl: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
-    crate::nvme::write(ctrl, lba, buf)
-}
-
-pub fn nvme_count() -> u32 {
-    crate::nvme::count()
-}
-
 pub fn nvme_capacity_bytes(ctrl: u32) -> Option<u64> {
     crate::nvme::capacity_sectors(ctrl).map(|s| s.saturating_mul(SECTOR as u64))
 }

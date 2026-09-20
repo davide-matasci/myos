@@ -45,7 +45,7 @@ static RNG: Mutex<Rng> = Mutex::new(Rng {
     initialized: false,
 });
 
-/// Debug/probe counter: how many bytes have been handed out.
+/// Bytes handed out (also an address-space entropy sample via addr_of!).
 static BYTES_OUT: AtomicUsize = AtomicUsize::new(0);
 /// Monotonic stir counter (also an entropy input).
 static STIRS: AtomicU64 = AtomicU64::new(0);
@@ -302,7 +302,3 @@ pub fn fill(out: &mut [u8]) {
     BYTES_OUT.fetch_add(out.len(), Ordering::Relaxed);
 }
 
-/// Bytes handed out so far (debug/stat).
-pub fn bytes_out() -> usize {
-    BYTES_OUT.load(Ordering::Relaxed)
-}
