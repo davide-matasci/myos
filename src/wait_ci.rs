@@ -1,4 +1,3 @@
-use std::time::{Duration, Instant};
 use std::io::Write;
 use std::process::ChildStdin;
 
