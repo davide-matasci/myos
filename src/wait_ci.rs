@@ -391,6 +391,12 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     if !ci_mini() {
         cmds.push(CMD_HTTP);
         cmds.push(CMD_CURL);
+        // Dropbear SSH smoke: full boot only, early after outbound HTTPS so we
+        // still reach it if later ostest/pty stages burn the QEMU budget.
+        // Host opens two concurrent clients via slirp hostfwd (:2222→:22).
+        if port_enabled("port_dropbear") {
+            cmds.push(CMD_DROPBEAR_BG);
+        }
         // os-test basic smoke (TESTLIST) + setpwent gate (full boot only;
         // too slow for boot-mini). pass_rate is reported, not gated.
         cmds.push(CMD_OS_TEST_PREP);
@@ -403,11 +409,6 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     // harness completes the ping/pong through slirp hostfwd).
     cmds.push(CMD_LISTEN_BG);
     cmds.push(CMD_LISTEN_CAT);
-    // Dropbear SSH smoke: full boot only (boot-mini stays light). Host opens
-    // two concurrent clients via hostfwd after the guest sshd is started.
-    if !ci_mini() && port_enabled("port_dropbear") {
-        cmds.push(CMD_DROPBEAR_BG);
-    }
     cmds.push(CMD_INTERRUPT);
     cmds.push(CMD_HIST_SEED);
     cmds.push(CMD_ARROW);
@@ -981,23 +982,18 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         9 => interactive_tmp_redir_ok(serial),
         10 => interactive_which_ls_cmd_ok(serial),
         11 => interactive_dns_cmd_ok(serial),
-        // HTTPS/curl smokes and the os-test setpwent stage only exist in full
-        // mode; in mini those slots are the interrupt/seed/arrow tail (matched
-        // by position below). Full-mode length is 19, mini is 15.
-        // HTTPS/curl smokes and the os-test setpwent stage only exist in full
-        // mode; in mini those slots are the interrupt/seed/arrow tail (matched
-        // by position below). Full-mode length is 20 (21 with the pty smoke),
-        // mini is 15.
-        12 if cmds.len() >= 20 => interactive_https_cmd_ok(serial),
-        13 if cmds.len() >= 20 => interactive_curl_cmd_ok(serial),
-        14 if cmds.len() >= 20 => interactive_ostest_prep_ok(serial),
-        15 if cmds.len() >= 20 => interactive_ostest_cat_ok(serial),
-        16 if cmds.len() >= 20 => interactive_ostest_result_ok(serial),
-        i if cmds.len() >= 20 && cmds[i] == CMD_PTY => interactive_pty_cmd_ok(serial),
+        // Full-mode-only stages matched by command content (indexes shift when
+        // dropbear SSH smoke is inserted after curl).
+        i if cmds[i] == CMD_HTTP => interactive_https_cmd_ok(serial),
+        i if cmds[i] == CMD_CURL => interactive_curl_cmd_ok(serial),
+        i if cmds[i] == CMD_DROPBEAR_BG => interactive_dropbear_bg_ok(serial),
+        i if cmds[i] == CMD_OS_TEST_PREP => interactive_ostest_prep_ok(serial),
+        i if cmds[i] == CMD_OS_TEST_CAT => interactive_ostest_cat_ok(serial),
+        i if cmds[i] == CMD_OS_TEST_RESULT => interactive_ostest_result_ok(serial),
+        i if cmds[i] == CMD_PTY => interactive_pty_cmd_ok(serial),
         i if cmds[i] == CMD_URANDOM => interactive_urandom_cmd_ok(serial),
         i if cmds[i] == CMD_LISTEN_BG => interactive_listen_bg_ok(serial),
         i if cmds[i] == CMD_LISTEN_CAT => interactive_listen_cat_ok(serial),
-        i if cmds[i] == CMD_DROPBEAR_BG => interactive_dropbear_bg_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
         i if i == arrow_seed_idx(cmds) => interactive_arrow_seed_ok(serial),
         i if i == arrow_edit_idx(cmds) => interactive_arrow_edit_ok(serial),
@@ -1400,7 +1396,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 // drops the HTTPS/curl smokes and 12 is the interrupt test).
                 if shell_stage == ShellStage::WaitResult
                     && !mini
-                    && shell_cmd_index == 12
+                    && cmds.get(shell_cmd_index) == Some(&CMD_HTTP)
                     && interactive_https_cmd_failed(&acc)
                 {
                     let _ = child.kill();
@@ -1410,7 +1406,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 // Index 13 == interactive curl HTTPS smoke (full mode only).
                 if shell_stage == ShellStage::WaitResult
                     && !mini
-                    && shell_cmd_index == 13
+                    && cmds.get(shell_cmd_index) == Some(&CMD_CURL)
                     && interactive_curl_cmd_failed(&acc)
                 {
                     let _ = child.kill();
@@ -1707,7 +1703,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `dns www.google.com` did not print `IP: x.x.x.x` and `[ OK ] dns`");
             }
         }
-        if cmds.len() == 20 && shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_CURL) && !interactive_curl_cmd_ok(&serial) {
             if !serial.contains(CURL_ECHO) {
                 eprintln!("error: serial did not echo the curl HTTPS command on one clean line at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1719,7 +1715,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if cmds.len() == 20 && shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_HTTP) && !interactive_https_cmd_ok(&serial) {
             if !command_echoed(&serial, "http https://example.com/") {
                 eprintln!("error: serial did not echo `$ http https://example.com/` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1733,25 +1729,25 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if cmds.len() == 20 && shell_cmd_index == 14 && !interactive_ostest_prep_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_PREP) && !interactive_ostest_prep_ok(&serial) {
             eprintln!(
                 "error: os-test basic smoke (ci-smoke-copy + TESTLIST make report) did not finish (want pass_rate= line, then `$`)"
             );
             std::process::exit(1);
         }
-        if cmds.len() == 20 && shell_cmd_index == 15 && !interactive_ostest_cat_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_CAT) && !interactive_ostest_cat_ok(&serial) {
             eprintln!(
                 "error: os-test setpwent cat stage failed (missing out/basic/pwd/setpwent.err/.out?)"
             );
             std::process::exit(1);
         }
-        if cmds.len() == 20 && shell_cmd_index == 16 && !interactive_ostest_result_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_RESULT) && !interactive_ostest_result_ok(&serial) {
             eprintln!(
                 "error: os-test setpwent gate failed (want SETPWENT-OK; .out must be empty on pass)"
             );
             std::process::exit(1);
         }
-        if cmds.len() >= 21 && shell_cmd_index == 17 && !interactive_pty_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_PTY) && !interactive_pty_cmd_ok(&serial) {
             if !command_echoed(&serial, "/bin/etc/pty_smoke") {
                 eprintln!("error: serial did not echo `$ /bin/etc/pty_smoke` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1763,7 +1759,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if cmds.len() >= 22 && shell_cmd_index == 18 && !interactive_urandom_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_URANDOM) && !interactive_urandom_cmd_ok(&serial) {
             if !command_echoed(&serial, "/bin/etc/urandom_smoke") {
                 eprintln!("error: serial did not echo `$ /bin/etc/urandom_smoke` at the interactive prompt");
             } else if serial.contains("exception:") {
