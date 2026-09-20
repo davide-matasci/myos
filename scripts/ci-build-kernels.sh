@@ -368,6 +368,11 @@ case "${1:-}" in
     done
     echo "$CACERT_PEM"
     echo "$CACERT_PACK_ALIAS"
+    # tcp-listen is required by artifacts_ready / every boot mode but lives
+    # outside HELLO_OK_ELFS (built by build-tcp-listen-smoke.sh).
+    echo target/tcp-listen-smoke-x86_64-unknown-none
+    echo target/tcp-listen-smoke-aarch64-unknown-none
+    echo target/tcp-listen-smoke-riscv64-unknown-none
     exit 0
     ;;
   --is-current)

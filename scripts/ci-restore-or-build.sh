@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # Restore ci-build.tar from the build job, or rebuild when missing (PR artifact skip / quota).
+#
+# IMPORTANT: boot / boot-mini must NOT call this script. Those jobs extract
+# ci-build.tar and run scripts/ci-assert-boot-artifacts.sh only (fail hard —
+# no compile/cache/toolchain/registry rebuild). Building and packing belong in
+# the build job (and ports-base / ports-advanced). This script remains for
+# manual/local recovery only.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
