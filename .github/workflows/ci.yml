@@ -1,1 +1,82 @@
-PLACEHOLDER_REPLACE_FROM_FILE
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  schedule:
+    # Daily full boot; otherwise boot-mini.
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      full_boot:
+        description: Run full boot jobs
+        type: boolean
+        default: false
+      probe_latest_nightly:
+        description: Probe latest nightly (non-blocking)
+        type: boolean
+        default: false
+      force_sysroot:
+        description: Force sysroot rebuild
+        type: boolean
+        default: false
+      build_iso:
+        description: Build x86_64 hybrid ISO (manual)
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Container jobs default to sh; force bash for [[ ]] / arrays (E0463 otherwise).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      sysroot: ${{ steps.filter.outputs.sysroot }}
+      c_userspace: ${{ steps.filter.outputs.c_userspace }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: .github/path-filters.yml
+
+  wire-myos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned nightly + rust-src
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src
+
+      - name: Verify wire-myos.py on pinned nightly
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./toolchain/std/check-wire.sh
+
+      - name: Probe latest nightly (informational)
+        if: github.event_name == 'workflow_dispatch' && inputs.probe_latest_nightly
+        continue-on-error: true
+        run: |
+          rustup toolchain install nightly --component rust-src
+          MYOS_NIGHTLY=nightly ./toolchain/std/check-wire.sh
