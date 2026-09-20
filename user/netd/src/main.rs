@@ -37,7 +37,7 @@ const REP_ERR: u8 = 4;
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
 const MSG_CAP: usize = 2048;
-const MAX_CONV: usize = 16;
+const MAX_CONV: usize = 32;
 const FILE_IO: usize = 2048;
 const DHCP_POLLS: usize = 3000;
 const TICK_MS: u64 = 100;
@@ -998,9 +998,9 @@ fn main() -> ! {
         }
 
         ticks += 1;
-        pump_accepts(&mut convs, &mut sockets, chan);
-        pump_sockets(&mut convs, &mut sockets, &device, chan);
-        // Finish graceful closes: once a closing socket reaches Closed, free it.
+        // Reclaim before accept so a free slot is available when a SYN lands
+        // (riscv SSH was starving: pump_accepts ran first, MAX_CONV full of
+        // hungup/closing orphans, host timed out, late Child then write EIO).
         for i in 0..MAX_CONV {
             if !convs[i].closing && !convs[i].closing_after_flush {
                 continue;
@@ -1019,9 +1019,6 @@ fn main() -> ! {
                 convs[i] = Conv::EMPTY;
             }
         }
-        // Peer-hangup reclaim: orphaned accepted convs (never opened / never
-        // REQ_CLOSE'd) used to sit forever after the peer timed out, starving
-        // pump_accepts of free slots. Drop them once RX is drained + hungup.
         for i in 0..MAX_CONV {
             if convs[i].hungup
                 && !convs[i].closing
@@ -1032,6 +1029,8 @@ fn main() -> ! {
                 drop_conv(&mut convs, &mut sockets, i);
             }
         }
+        pump_accepts(&mut convs, &mut sockets, chan);
+        pump_sockets(&mut convs, &mut sockets, &device, chan);
     }
 }
 

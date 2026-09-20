@@ -1,3 +1,4 @@
+use std::time::{Duration, Instant};
 use std::io::Write;
 use std::process::ChildStdin;
 
@@ -168,7 +169,7 @@ static SSH_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 static SSH_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SSH_ERR: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 static SSH_STAGE_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-const SSH_STAGE_BOUND: Duration = Duration::from_secs(180);
+const SSH_STAGE_BOUND: Duration = Duration::from_secs(300);
 const SSH_HOST_PORT: &str = "2222";
 
 fn dropbear_testkey_src() -> PathBuf {
@@ -315,10 +316,13 @@ fn start_ssh_smoke_worker() {
         };
         // Stage clock starts here (post-apt) so the outer WaitResult bound
         // matches the worker's retry window.
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let _ = SSH_STAGE_START.set(start);
-        // Brief settle so guest dropbear has bound :22 after the shell `&`.
-        std::thread::sleep(Duration::from_millis(500));
+        // Longer settle on slow arches (riscv64): early SYNs before dropbear
+        // has armed accept hang in slirp or produce Child+I/O-error and wedge
+        // the listener for the rest of the stage. Do NOT TCP-probe :2222 —
+        // a connect+close is itself a half-open session that can wedge.
+        std::thread::sleep(Duration::from_secs(8));
         let mut last_err = String::from("ssh smoke never attempted");
         while start.elapsed() < SSH_STAGE_BOUND {
             match poke_ssh_two_clients(&key) {
@@ -329,7 +333,7 @@ fn start_ssh_smoke_worker() {
                 }
                 Err(e) => {
                     last_err = e;
-                    std::thread::sleep(Duration::from_millis(750));
+                    std::thread::sleep(Duration::from_millis(1000));
                 }
             }
         }
