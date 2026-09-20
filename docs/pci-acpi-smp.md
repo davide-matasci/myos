@@ -5,14 +5,14 @@
 | Component | Location | Why |
 |-----------|----------|-----|
 | PCI config access (`cfg_read32` / BAR map) | `kernel/src/pci.rs` + `arch/*/pci.rs` | Needed early for NVMe / virtio; module ABI already exposes it |
-| Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Pure discovery; talks only through `KernelApi` |
+| Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Discovery + on-demand rescan via write; talks only through `KernelApi` |
 | ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP |
 | Limine RSDP / MP requests | `kernel/src/limine_boot.rs` | Boot protocol |
 | AP bring-up + `/proc/cpuinfo` | `kernel/src/smp.rs` | Must run before modules; owns CPU-local state + IPI helpers |
 | Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, shared ready set |
 | Proc exporters | `kernel/src/fs/procfs.rs` | Built-ins: `mounts`, `cpuinfo`; dynamic via `proc_register` ABI |
 
-ABI version: **9** (`proc_register`, `acpi_rsdp`, `hhdm_offset` appended).
+ABI version: **10** (`proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
 
 ## AML opcode set (custom interpreter — not ACPICA)
 
@@ -105,7 +105,7 @@ AP stacks are too small for nested timer/IPI frames).
 
 - `/proc/mounts` — existing
 - `/proc/cpuinfo` — online CPUs, hw ids, schedule counts
-- `/proc/pci` — full BDF list from `pci_enum` (hex IDs + class/subclass names and a small QEMU/virt device table; boot-time snapshot, no hotplug)
+- `/proc/pci` — full BDF list from `pci_enum` (hex IDs + class/subclass names and a small QEMU/virt device table). Write `rescan` to re-enumerate and refresh the node (gone devices disappear). Also re-probes in-kernel NVMe; virtio-net stays boot-bound. No ACPI/QEMU hotplug IRQ yet.
 - `/proc/acpi/info`, `tables`, `s5` — from `acpi` module (honest stubs if no RSDP)
 
 ## Out of scope

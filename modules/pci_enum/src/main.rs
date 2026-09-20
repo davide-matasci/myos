@@ -2,7 +2,14 @@
 //!
 //! Lines keep hex BDF / vendor:device / class:sub:prog, and append short
 //! human names when known (class/subclass + a small QEMU/virt ID table).
-//! Unknown IDs stay hex-only. Boot-time snapshot — no hotplug/rescan.
+//! Unknown IDs stay hex-only.
+//!
+//! Write `rescan` (optionally with a trailing newline) to `/proc/pci` to
+//! re-enumerate config space and refresh the node. Devices that disappeared
+//! are dropped from the listing. The kernel also re-runs its NVMe PCI probe
+//! on rescan (idempotent for already-attached controllers). virtio-net has
+//! no probe-again path yet and stays boot-bound. No ACPI/QEMU hotplug IRQ
+//! wiring — on-demand write is the trigger.
 
 #![no_std]
 #![no_main]
@@ -13,6 +20,9 @@ const MAX_DEV: usize = 64;
 const BUF_CAP: usize = 8192;
 const LINE_CAP: usize = 160;
 
+static mut API: *const KernelApi = core::ptr::null();
+static mut BUF: *mut u8 = core::ptr::null_mut();
+
 #[inline(never)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
@@ -20,16 +30,83 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         if api.is_null() {
             return -1;
         }
-        let api = &*api;
-        if api.abi_version != ABI_VERSION {
+        let api_ref = &*api;
+        if api_ref.abi_version != ABI_VERSION {
             return -2;
         }
 
-        let buf = (api.alloc)(BUF_CAP, 8);
+        let buf = (api_ref.alloc)(BUF_CAP, 8);
         if buf.is_null() {
-            status_warn(api, "pci_enum: alloc");
+            status_warn(api_ref, "pci_enum: alloc");
             return -3;
         }
+        API = api;
+        BUF = buf;
+
+        let found = publish(api_ref, buf);
+        let name = b"pci";
+        let wr = (api_ref.proc_set_writer)(name.as_ptr(), name.len(), Some(pci_proc_write));
+        if wr != 0 {
+            status_warn(api_ref, "pci_enum: proc_set_writer");
+            // Still usable read-only if writer attach failed.
+        }
+        let mut msg = [0u8; 32];
+        let ml = format_count(&mut msg, found);
+        status_ok(api_ref, core::str::from_utf8(&msg[..ml]).unwrap_or("pci"));
+        let _ = status_info;
+        0
+    }
+}
+
+/// `write(2)` handler for `/proc/pci`. Accepts `rescan` (+ optional whitespace/newline).
+unsafe extern "C" fn pci_proc_write(data: *const u8, data_len: usize) -> i32 {
+    unsafe {
+        if data.is_null() && data_len != 0 {
+            return -1;
+        }
+        let raw = if data_len == 0 {
+            &[][..]
+        } else {
+            core::slice::from_raw_parts(data, data_len)
+        };
+        if !is_rescan_cmd(raw) {
+            return -1;
+        }
+        let api = API;
+        let buf = BUF;
+        if api.is_null() || buf.is_null() {
+            return -1;
+        }
+        let api_ref = &*api;
+        let _found = publish(api_ref, buf);
+        data_len as i32
+    }
+}
+
+fn is_rescan_cmd(raw: &[u8]) -> bool {
+    // Trim leading/trailing ASCII whitespace.
+    let mut s = raw;
+    while let Some((&b, rest)) = s.split_first() {
+        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+            s = rest;
+        } else {
+            break;
+        }
+    }
+    while let Some((&b, rest)) = s.split_last() {
+        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+            s = rest;
+        } else {
+            break;
+        }
+    }
+    s == b"rescan"
+}
+
+/// Walk config space, format `/proc/pci`, and (re)register the node.
+/// Full rebuild drops devices that are gone since the last snapshot.
+fn publish(api: &KernelApi, buf: *mut u8) -> usize {
+    unsafe {
         let out = core::slice::from_raw_parts_mut(buf, BUF_CAP);
         let mut len = 0usize;
         push_str(
@@ -37,9 +114,13 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
             &mut len,
             "# bus:slot.func vendor:device [name] class:sub:prog [class]\n",
         );
+        push_str(
+            out,
+            &mut len,
+            "# write \"rescan\" to re-enumerate (boot snapshot + on-demand)\n",
+        );
 
         let mut found = 0usize;
-        // Cap buses: arch MAX_BUS differs; 32 is enough for QEMU virt / PC.
         for bus in 0u8..32 {
             for slot in 0u8..32 {
                 let id0 = (api.pci_cfg_read32)(bus, slot, 0, 0);
@@ -81,15 +162,11 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         let rc = (api.proc_register)(name.as_ptr(), name.len(), buf, len);
         if rc != 0 {
             status_warn(api, "pci_enum: proc_register");
-            return -4;
         }
-        let mut msg = [0u8; 32];
-        let ml = format_count(&mut msg, found);
-        status_ok(api, core::str::from_utf8(&msg[..ml]).unwrap_or("pci"));
-        let _ = status_info;
-        0
+        found
     }
 }
+
 
 fn push_str(out: &mut [u8], len: &mut usize, s: &str) {
     push_bytes(out, len, s.as_bytes());
@@ -121,7 +198,6 @@ fn push_ascii(dst: &mut [u8], off: usize, s: &str) -> usize {
     off + n
 }
 
-/// Small static table: common QEMU / virt devices only (not full pci.ids).
 fn device_name(vend: u16, dev: u16) -> Option<&'static str> {
     match (vend, dev) {
         // Red Hat / virtio (transitional 0x1000.. and modern 0x1040..)
@@ -270,6 +346,7 @@ fn format_dev(
     }
     o
 }
+
 
 fn format_count(msg: &mut [u8], n: usize) -> usize {
     let prefix = b"pci: ";

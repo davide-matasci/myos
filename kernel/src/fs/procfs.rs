@@ -11,11 +11,14 @@ const S_IFREG: u32 = 0o100000;
 const MAX_DYNAMIC: usize = 16;
 const MAX_NAME: usize = 32;
 
+type ProcWriter = unsafe extern "C" fn(*const u8, usize) -> i32;
+
 struct DynNode {
     name: [u8; MAX_NAME],
     name_len: usize,
     data: &'static [u8],
     ino: u32,
+    writer: Option<ProcWriter>,
 }
 
 static DYN: Mutex<[Option<DynNode>; MAX_DYNAMIC]> = Mutex::new([const { None }; MAX_DYNAMIC]);
@@ -38,12 +41,59 @@ pub fn truncate(_name: &str) -> bool {
     false
 }
 
-pub fn write(_name: &str, _pos: usize, _buf: &[u8]) -> Option<usize> {
-    None
+/// Write handler for dynamic nodes that registered a writer (e.g. `/proc/pci`
+/// rescan). After a successful `pci` write, also re-probe in-kernel NVMe.
+pub fn write(name: &str, _pos: usize, buf: &[u8]) -> Option<usize> {
+    let writer = {
+        let nodes = DYN.lock();
+        let mut found = None;
+        for n in nodes.iter().flatten() {
+            if n.name_len == name.len() && &n.name[..n.name_len] == name.as_bytes() {
+                found = n.writer;
+                break;
+            }
+        }
+        found
+    }?;
+    let rc = unsafe { writer(buf.as_ptr(), buf.len()) };
+    if rc < 0 {
+        return None;
+    }
+    if name == "pci" {
+        // Natural existing probe path: pick up newly visible NVMe controllers.
+        // Idempotent for already-attached BARs. virtio-net stays boot-only.
+        crate::pci::scan_nvme();
+    }
+    Some(rc as usize)
+}
+
+/// Attach or clear a write(2) handler for an existing dynamic `/proc/<name>`.
+pub fn set_writer(name: &str, writer: Option<ProcWriter>) -> bool {
+    let mut nodes = DYN.lock();
+    for slot in nodes.iter_mut() {
+        if let Some(n) = slot {
+            if n.name_len == name.len() && &n.name[..n.name_len] == name.as_bytes() {
+                n.writer = writer;
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn dyn_writable(name: &str) -> bool {
+    let nodes = DYN.lock();
+    for n in nodes.iter().flatten() {
+        if n.name_len == name.len() && &n.name[..n.name_len] == name.as_bytes() {
+            return n.writer.is_some();
+        }
+    }
+    false
 }
 
 /// Register or replace a generated text node under `/proc/<name>`.
 /// `name` may be `pci`, `acpi/tables`, etc. (at most one `/`).
+/// Preserves any previously attached writer on replace.
 pub fn register_dynamic(name: &str, data: &'static [u8]) -> bool {
     if name.is_empty() || name.len() > MAX_NAME || name == "mounts" || name == "cpuinfo" {
         return false;
@@ -70,6 +120,7 @@ pub fn register_dynamic(name: &str, data: &'static [u8]) -> bool {
                 name_len: name.len(),
                 data,
                 ino,
+                writer: None,
             });
             return true;
         }
@@ -109,16 +160,12 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 
 fn list_root(buf: &mut [u8]) -> usize {
     let mut names: alloc::vec::Vec<&str> = alloc::vec!["mounts", "cpuinfo", "pci", "acpi"];
-    // Also surface any other top-level dynamic names (no slash).
     {
         let nodes = DYN.lock();
         for n in nodes.iter().flatten() {
             let s = core::str::from_utf8(&n.name[..n.name_len]).unwrap_or("");
             if !s.contains('/') && !names.contains(&s) {
-                // Leak a stable name is awkward; only emit known fixed names
-                // plus pci/acpi which modules own. Skip unknown top-level
-                // extras from the listing to keep this simple — they remain
-                // openable by path.
+                // Skip unknown top-level extras from the listing.
             }
             let _ = s;
         }
@@ -158,9 +205,7 @@ fn list_acpi(buf: &mut [u8]) -> usize {
         buf[off] = b'\n';
         off += 1;
     }
-    // Always advertise stub names even before the module loads.
     for always in [b"tables".as_slice(), b"info".as_slice(), b"s5".as_slice()] {
-        // Avoid duplicates if already listed.
         let mut present = false;
         let mut scan = 0usize;
         while scan < off {
@@ -251,8 +296,13 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         });
     }
     if let Some((ino, data)) = dyn_get(name) {
+        let mode = if dyn_writable(name) {
+            S_IFREG | 0o644
+        } else {
+            S_IFREG | 0o444
+        };
         return Some(StatInfo {
-            mode: S_IFREG | 0o444,
+            mode,
             size: u32::try_from(data.len()).unwrap_or(u32::MAX),
             ino,
             nlink: 1,
