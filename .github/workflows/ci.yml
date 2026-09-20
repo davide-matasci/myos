@@ -39,7 +39,6 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
-# Container jobs default to sh; force bash for [[ ]] / arrays (E0463 otherwise).
 defaults:
   run:
     shell: bash
@@ -80,3 +79,23 @@ jobs:
         run: |
           rustup toolchain install nightly --component rust-src
           MYOS_NIGHTLY=nightly ./toolchain/std/check-wire.sh
+
+  ports:
+    needs: [changes, wire-myos]
+    if: always() && !cancelled() && needs.wire-myos.result == 'success'
+    uses: ./.github/workflows/ci-ports.yml
+    with:
+      sysroot: ${{ needs.changes.outputs.sysroot }}
+      c_userspace: ${{ needs.changes.outputs.c_userspace }}
+      force_sysroot: ${{ github.event_name == 'workflow_dispatch' && inputs.force_sysroot }}
+    secrets: inherit
+
+  runtime:
+    needs: [ports, wire-myos, changes]
+    if: always() && !cancelled() && needs.wire-myos.result == 'success' && needs.ports.result == 'success'
+    uses: ./.github/workflows/ci-runtime.yml
+    with:
+      full_boot: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_boot) }}
+      build_iso: ${{ github.event_name == 'workflow_dispatch' && inputs.build_iso }}
+      sysroot_built: ${{ needs.changes.outputs.sysroot == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_sysroot) }}
+    secrets: inherit
