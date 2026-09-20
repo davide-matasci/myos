@@ -964,8 +964,10 @@ pub fn fd_dup_min(oldfd: usize, minfd: usize) -> Option<usize> {
 }
 
 /// File/chr copy size. DHCP ~300B was truncated at 128, so TX chunks became
-/// separate Ethernet frames. Match virtio-net ETH_MAX (~2036).
-const FILE_IO_TMP: usize = 2048;
+/// separate Ethernet frames. Cap at netfs MSG_CAP-REQ_HDR (2042): a 2048
+/// chunk was rejected by net_write (payload > MSG_CAP-6) → EIO on large
+/// SSH/TLS writes.
+const FILE_IO_TMP: usize = 2042;
 
 /// Read/write on a pty end whose peer has hung up. `usize::MAX` stays the
 /// generic SYSERR (EBADF in libgloss); this distinct value lets libgloss map

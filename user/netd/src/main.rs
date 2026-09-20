@@ -113,6 +113,10 @@ struct Conv {
     /// then finishes the close. Dropping the conv here would lose the
     /// deferred REQ_SEND bytes (forked-child banner write race).
     closing_after_flush: bool,
+    /// Created by pump_accepts (incoming). Orphan reclaim must only touch
+    /// these: client clones start in TCP Closed and would be freed before
+    /// connect() (aarch64 socket_smoke connect fail on tip 0b4444e).
+    from_accept: bool,
 }
 
 impl Conv {
@@ -134,6 +138,7 @@ impl Conv {
         accept_seq: 0,
         closing: false,
         closing_after_flush: false,
+        from_accept: false,
     };
 }
 
@@ -722,6 +727,7 @@ fn pump_accepts(
             // made the hangup check fire immediately (may_recv()==false) and
             // tore the conv down before the server could send its banner.
             connected: false,
+            from_accept: true,
             ..Conv::EMPTY
         };
         // Tell netfs about the new conv: it only allocates convs on clone, so
@@ -1093,8 +1099,13 @@ fn main() -> ! {
         // ConnectTimeout RST) never set connected, sat forever, filled
         // MAX_CONV, and left dropbear with a late dead Child + write EIO on
         // riscv64. Free them; age Syn* via unused TCP `ident` (~10s).
+        // Only accept-originated slots: client clones sit in Closed until
+        // connect() and must not be force-freed (broke aarch64 socket_smoke).
         for i in 0..MAX_CONV {
             if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port != 0 {
+                continue;
+            }
+            if !convs[i].from_accept {
                 continue;
             }
             if convs[i].connected

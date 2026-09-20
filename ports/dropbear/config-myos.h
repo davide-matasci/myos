@@ -35,6 +35,7 @@
 #define HAVE_SYS_STAT_H 1
 #define HAVE_SYS_TYPES_H 1
 #define HAVE_SYS_UIO_H 1
+#define HAVE_WRITEV 1
 #define HAVE_SYS_UN_H 1
 #define HAVE_SYS_WAIT_H 1
 #define HAVE_TERMIOS_H 1
