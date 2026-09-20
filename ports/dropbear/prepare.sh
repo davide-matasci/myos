@@ -16,26 +16,14 @@ WORK="$ROOT/target/dropbear-myos-build"
 if [[ ! -d "$WORK/src" ]]; then
   rm -rf "$WORK"
   mkdir -p "$WORK"
-  # CI image may lack bzip2(1); prefer it, else decompress via python3.
+  # CI image may lack bzip2(1). Prefer it; else decompress with python3 and
+  # feed the uncompressed tar stream to tar(1) (streaming tarfile extract
+  # with rewritten member names was incomplete).
   if command -v bzip2 >/dev/null 2>&1 || command -v lbzip2 >/dev/null 2>&1; then
     tar -xjf "$TARBALL" -C "$WORK" --strip-components=1
   else
-    python3 - "$TARBALL" "$WORK" <<'PY'
-import bz2, sys, tarfile
-from pathlib import Path
-tarball, dest = sys.argv[1], Path(sys.argv[2])
-with bz2.open(tarball, "rb") as raw, tarfile.open(fileobj=raw, mode="r|") as tf:
-    # strip the single top-level directory dropbear-VERSION/
-    for m in tf:
-        parts = Path(m.name).parts
-        if len(parts) <= 1:
-            continue
-        m.name = str(Path(*parts[1:]))
-        try:
-            tf.extract(m, path=dest, filter="data")
-        except TypeError:
-            tf.extract(m, path=dest)
-PY
+    python3 -c 'import bz2,sys; sys.stdout.buffer.write(bz2.open(sys.argv[1],"rb").read())' \
+      "$TARBALL" | tar -xf - -C "$WORK" --strip-components=1
   fi
 fi
 
