@@ -343,13 +343,6 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         read_any(&[&cacert_canon, &cacert_alias]),
     );
 
-    // Full-boot curl smoke helper (one retry for UEFI/slirp connect flakes).
-    add(
-        &mut entries,
-        "lib/ci-curl-smoke.sh",
-        read(&manifest_dir.join("ports/curl/ci-curl-smoke.sh")),
-    );
-
     // hello demo module -> bin/modules/hello.
     add(
         &mut entries,

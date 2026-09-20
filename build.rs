@@ -50,7 +50,6 @@ fn main() {
     println!("cargo:rerun-if-changed=src/limine_dir.rs");
     println!("cargo:rerun-if-changed=src/initramfs.rs");
     println!("cargo:rerun-if-changed=ports/termcap/termcap");
-    println!("cargo:rerun-if-changed=ports/curl/ci-curl-smoke.sh");
     println!("cargo:rerun-if-changed=ports/lynx/lynx.cfg");
     println!("cargo:rerun-if-changed=kbd/ch.map");
     println!("cargo:rerun-if-changed=kbd/us.map");

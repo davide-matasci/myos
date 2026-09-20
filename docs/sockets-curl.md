@@ -39,8 +39,8 @@ Outbound TCP/UDP first. `listen`/`accept` return `EOPNOTSUPP`. Most `SO_*`/`TCP_
 - Sockets: libgloss shim (no kernel socket syscall)
 - DNS: `getaddrinfo` in libgloss
 - Clock: existing `gettimeofday` / RTC path (same as `/http`)
-- Guest: `/bin/etc/curl`; full-boot CI runs `sh /lib/ci-curl-smoke.sh`
-  (one connect retry for UEFI/slirp flakes after a green `http` smoke)
+- Guest: `/bin/etc/curl`; CI types
+  `curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html`
 - riscv64 links a small soft-float helper archive (`ports/curl/build-softfloat-riscv64.sh`)
 
 ### Build
