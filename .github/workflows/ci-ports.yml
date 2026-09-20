@@ -155,6 +155,9 @@ jobs:
             script: ./toolchain/std/build-std-hello.sh
             pull: std-hello
             needs_sysroot: "1"
+          - port: os-test
+            script: ./ports/os-test/build.sh
+            pull: os-test
     steps:
       - uses: actions/checkout@v6
 
