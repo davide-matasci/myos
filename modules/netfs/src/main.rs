@@ -18,29 +18,6 @@ const PROTO_ICMP: u8 = 3;
 const REQ_CLONE: u8 = 1;
 const REQ_CTL: u8 = 2;
 const REQ_SEND: u8 = 3;
-
-/// TEMP DEBUG (revert): emit a raw string via the kernel console API.
-static mut DBG_API: Option<&'static KernelApi> = None;
-fn write_uint(buf: &mut [u8], mut v: u32) -> usize {
-    let mut tmp = [0u8; 10];
-    let mut n = 0;
-    loop {
-        tmp[n] = b'0' + (v % 10) as u8;
-        n += 1;
-        v /= 10;
-        if v == 0 { break; }
-    }
-    for i in 0..n { buf[i] = tmp[n - 1 - i]; }
-    n
-}
-
-fn dbg_out(s: &str) {
-    let api = unsafe { core::ptr::addr_of!(DBG_API).read() };
-    if let Some(a) = api {
-        unsafe { (a.write_str)(s.as_bytes().as_ptr(), s.as_bytes().len()); }
-    }
-}
-
 const REQ_CLOSE: u8 = 4;
 
 const REP_CLONE_OK: u8 = 1;
@@ -53,7 +30,7 @@ const REP_HDR: usize = 9;
 /// Cap matches kernel `FILE_IO_TMP` (2048). TLS ClientHello / cert fragments
 /// need more than the old 512-byte slots (HTTPS handshake timed out in CI).
 const MSG_CAP: usize = 2048;
-const RING: usize = 8;
+const RING: usize = 32; /* SSH kex / concurrent sessions burst REQ_SEND */
 const MAX_CONV: usize = 16;
 /// Per-conversation RX staging. Cert chains exceed 512; drop = TLS timeout.
 const DATA_CAP: usize = 8192;
@@ -730,7 +707,6 @@ fn teardown_conv(id: u16) {
     if !st.convs[i].used {
         return;
     }
-    dbg_out("[netfs-dbg] teardown\n");
     set_status(&mut st.convs[i], b"hangup");
     let _ = enqueue_req(REQ_CLOSE, id, st.convs[i].proto, &[]);
     st.convs[i].used = false;
@@ -759,7 +735,6 @@ unsafe extern "C" fn net_write(
             }
             let cmd = trim_ctl(src);
             if cmd == b"hangup" {
-                dbg_out("[netfs-dbg] ctl-hangup\n");
                 set_status(&mut state().convs[id as usize], b"hangup");
                 if !enqueue_req(REQ_CLOSE, id, p, &[]) {
                     return -1;
@@ -772,28 +747,12 @@ unsafe extern "C" fn net_write(
         }
         Node::Data(p, id) => {
             if !conv_ok(id, p) {
-                let st = state();
-                let c = &st.convs[id as usize];
-                let mut d = [0u8; 128];
-                let mut n = 0;
-                for b in b"[netfs-dbg] conv_ok fail id=" { d[n] = *b; n += 1; }
-                n += write_uint(&mut d[n..], id as u32);
-                for b in b" used=" { d[n] = *b; n += 1; }
-                d[n] = b'0' + c.used as u8; n += 1;
-                for b in b" proto=" { d[n] = *b; n += 1; }
-                d[n] = c.proto as u8; n += 1;
-                for b in b" want=" { d[n] = *b; n += 1; }
-                d[n] = p as u8; n += 1;
-                d[n] = b'\n'; n += 1;
-                dbg_out(core::str::from_utf8(&d[..n]).unwrap_or("?"));
                 return -1;
             }
             if src.len() > MSG_CAP - REQ_HDR {
-                dbg_out("[netfs-dbg] data write too long\n");
                 return -1;
             }
             if !enqueue_req(REQ_SEND, id, p, src) {
-                dbg_out("[netfs-dbg] data write ring full\n");
                 return -1;
             }
             src.len() as i32
@@ -874,7 +833,6 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     if mount_rc == 0 && chr_rc == 0 {
         unsafe { status_ok(api, "netfs") };
     }
-    unsafe { core::ptr::addr_of_mut!(DBG_API).write(Some(&*(api as *const KernelApi))); }
     0
 }
 

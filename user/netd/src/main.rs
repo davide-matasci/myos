@@ -629,6 +629,15 @@ fn pump_accepts(
                 None => (Ipv4Address::new(0, 0, 0, 0), 0),
             }
         };
+        // One parked handoff at a time. Overwriting `accepted` orphaned the
+        // previous conv (never opened by userspace → never REQ_CLOSE), which
+        // exhausted MAX_CONV under concurrent SSH clients and left the listen
+        // socket stuck with nowhere to hand off. Hold the new connection on
+        // this listen handle until userspace takes the parked one; that gives
+        // an effective backlog of 1 (parked) + 1 (on-listen) = 2 SYNs.
+        if convs[i].accepted.is_some() {
+            continue;
+        }
         // Move the connected socket to a free conv.
         let slot = (0..MAX_CONV)
             .find(|&n| matches!(convs[n].kind, Kind::Empty) && n != i);
@@ -1008,6 +1017,19 @@ fn main() -> ! {
                     sockets.remove(h);
                 }
                 convs[i] = Conv::EMPTY;
+            }
+        }
+        // Peer-hangup reclaim: orphaned accepted convs (never opened / never
+        // REQ_CLOSE'd) used to sit forever after the peer timed out, starving
+        // pump_accepts of free slots. Drop them once RX is drained + hungup.
+        for i in 0..MAX_CONV {
+            if convs[i].hungup
+                && !convs[i].closing
+                && !convs[i].closing_after_flush
+                && convs[i].listen_port == 0
+                && !matches!(convs[i].kind, Kind::Empty)
+            {
+                drop_conv(&mut convs, &mut sockets, i);
             }
         }
     }

@@ -210,30 +210,7 @@ ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
 }
 
 
-/* TEMP DEBUG (revert): int-to-dec helper, no stdio */
-static int itoa10(int v, char *out) {
-	char tmp[12];
-	int n = 0, m = 0;
-	if (v < 0) { out[m++] = '-'; v = -v; }
-	do { tmp[n++] = '0' + (v % 10); v /= 10; } while (v > 0);
-	while (n > 0) out[m++] = tmp[--n];
-	return m;
-}
 ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
-	{
-		char mb[64];
-		int ml = 0;
-		const char *pre = "[W1] wv fd=";
-		memcpy(mb+ml, pre, strlen(pre)); ml += strlen(pre);
-		ml += itoa10(fd, mb+ml);
-		for (int i = 0; i < iovcnt; i++) {
-			if (ml > 44) break;
-			mb[ml++] = (i == 0) ? ':' : ',';
-			ml += itoa10((int)iov[i].iov_len, mb+ml);
-		}
-		mb[ml++] = '\n';
-		write(2, mb, ml);
-	}
 	ssize_t total = 0;
 	for (int i = 0; i < iovcnt; i++) {
 		if (iov[i].iov_len == 0) {
