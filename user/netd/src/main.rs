@@ -699,6 +699,7 @@ fn pump_accepts(
         // socket stuck with nowhere to hand off. Hold the new connection on
         // this listen handle until userspace takes the parked one; that gives
         // an effective backlog of 1 (parked) + 1 (on-listen) = 2 SYNs.
+        // pump_sockets must skip listen_port != 0 while holding (see there).
         if convs[i].accepted.is_some() {
             continue;
         }
@@ -749,6 +750,11 @@ fn pump_accepts(
             }
         }
         convs[i].handle = Some(nh);
+        // Fresh Listen socket: drop any stale connected/hungup that could have
+        // been set if an older build pumped the held backlog socket as if it
+        // belonged to the listener conv.
+        convs[i].connected = false;
+        convs[i].hungup = false;
         convs[i].accepted = Some(n as u16);
         convs[i].accept_seq = convs[i].accept_seq.wrapping_add(1);
         if convs[i].accept_wait {
@@ -894,6 +900,16 @@ fn pump_sockets(
                 let Some(h) = convs[i].handle else {
                     continue;
                 };
+                // Listeners (listen_port != 0) must not run connected/data/hangup
+                // logic — even while a backlog SYN is held on the listen handle.
+                // pump_sockets used to mark the listener `connected` when the
+                // held socket reached Established, overwrite status, drain KEX
+                // bytes as REP_DATA on the listen conv, then after re-arm hit
+                // hangup (connected && !is_active on Listen) and wedge further
+                // accepts under concurrent dual-SYN (dropbear SSH smoke).
+                if convs[i].listen_port != 0 {
+                    continue;
+                }
                 let pend_len = convs[i].pending_len as usize;
                 if pend_len != 0 {
                     let mut tmp_pend = [0u8; MSG_CAP];

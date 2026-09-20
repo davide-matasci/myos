@@ -151,16 +151,16 @@ fn poke_listener() -> bool {
     got >= 5 && &buf[..5] == b"pong\n"
 }
 // Dropbear SSH smoke (full boot only): start sshd in the guest; the harness
-// then opens two sequential OpenSSH clients through slirp hostfwd
+// then opens two concurrent OpenSSH clients through slirp hostfwd
 // localhost:2222 → guest:22 (see add_virtio_net in src/main.rs).
-// netd keeps a parked accept + on-listen hold (backlog 2) for real dual-SYN;
-// CI stays sequential so slirp hostfwd cannot wedge the listen path.
+// netd keeps a parked accept + on-listen hold (backlog 2); pump_sockets skips
+// listeners so a held backlog SYN cannot mark the listen conv connected/hungup.
 const CMD_DROPBEAR_BG: &[u8] =
     b"/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 & echo $! > /tmp/dropbear.pid\n";
 /// Stop dropbear before listen smoke so netd convs / slirp stay free for :2323.
 const CMD_DROPBEAR_STOP: &[u8] =
     b"kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP\n";
-/// Harness-side flag: both sequential SSH clients completed with exit 0.
+/// Harness-side flag: both concurrent SSH clients completed with exit 0.
 static SSH_SMOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Background SSH attempt started for the current dropbear stage.
 static SSH_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -282,20 +282,35 @@ fn ssh_one_client(key: &Path, tag: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Open two sequential SSH sessions into the guest (pubkey auth). Both must
-/// exit 0. CI uses sequential (not overlapping) hosts: concurrent dual-SYN
-/// through QEMU slirp hostfwd still races netd's accept handoff and can leave
-/// the listen socket unable to accept further sessions for the rest of the
-/// stage (one Child + pubkey success, then only Connection-reset retries).
-/// netd's parked+on-listen backlog remains for real concurrent use; the smoke
-/// still covers accept + pubkey + exit-status twice.
+/// Open two concurrent SSH sessions into the guest (pubkey auth). Both must
+/// exit 0; overlapping launch exercises multi-session accept on dropbear/netd
+/// (parked `accepted` + on-listen hold = backlog of 2).
 fn poke_ssh_two_clients(key: &Path) -> Result<(), String> {
-    ssh_one_client(key, "ssh-ci-a")?;
-    ssh_one_client(key, "ssh-ci-b")?;
+    let key_a = key.to_path_buf();
+    let key_b = key.to_path_buf();
+    let (tx_a, rx_a) = std::sync::mpsc::channel();
+    let (tx_b, rx_b) = std::sync::mpsc::channel();
+    // Launch both at once so dual-SYN hits parked+on-listen backlog (the
+    // race that sequential smoke hid). netd must keep Listen armed after the
+    // first accept without wedging.
+    std::thread::spawn(move || {
+        let _ = tx_a.send(ssh_one_client(&key_a, "ssh-ci-a"));
+    });
+    std::thread::spawn(move || {
+        let _ = tx_b.send(ssh_one_client(&key_b, "ssh-ci-b"));
+    });
+    let ra = rx_a
+        .recv_timeout(Duration::from_secs(60))
+        .map_err(|_| "ssh-ci-a timed out waiting for exit".to_string())?;
+    let rb = rx_b
+        .recv_timeout(Duration::from_secs(60))
+        .map_err(|_| "ssh-ci-b timed out waiting for exit".to_string())?;
+    ra?;
+    rb?;
     Ok(())
 }
 
-/// Background worker: retry two sequential SSH clients until success or bound.
+/// Background worker: retry two concurrent SSH clients until success or bound.
 fn start_ssh_smoke_worker() {
     if SSH_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
@@ -414,7 +429,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         cmds.push(CMD_CURL);
         // Dropbear SSH smoke: full boot only, early after outbound HTTPS so we
         // still reach it if later ostest/pty stages burn the QEMU budget.
-        // Host opens two sequential clients via slirp hostfwd (:2222→:22).
+        // Host opens two concurrent clients via slirp hostfwd (:2222→:22).
         if port_enabled("port_dropbear") {
             cmds.push(CMD_DROPBEAR_BG);
             // Tear down sshd before ostest/pty/listen. Leaving dropbear up
@@ -1265,7 +1280,7 @@ fn advance_shell_ci(
         {
             // Guest sshd is backgrounded with output redirected; host clients
             // connect via hostfwd. Kick a worker once and wait for both
-            // sequential sessions to exit cleanly. The stage clock starts
+            // concurrent sessions to exit cleanly. The stage clock starts
             // inside the worker *after* ensure_host_ssh (apt) so install
             // time does not burn the connect/retry budget.
             start_ssh_smoke_worker();
@@ -1861,7 +1876,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 .unwrap_or_default();
             if !SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
                 eprintln!(
-                    "error: dropbear SSH smoke failed — need two sequential host SSH clients with clean exit-status (last error: {err})"
+                    "error: dropbear SSH smoke failed — need two concurrent host SSH clients with clean exit-status (last error: {err})"
                 );
             } else if !command_echoed(
                 &serial,

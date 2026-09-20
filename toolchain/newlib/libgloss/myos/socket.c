@@ -835,6 +835,13 @@ static int accept_from_status(struct myos_sock *ls, char *status,
         }
     }
     ls->last_accept_seq = (int)seq;
+    /* Take the parked handoff in netd now. Leaving `accepted` occupied holds
+     * the next SYN on the listen handle (no Listen socket). While held,
+     * older netd pumped that socket as the listener and could mark it
+     * connected/hungup — wedging further accepts under concurrent dual-SYN.
+     * Taking here frees the backlog slot so pump_accepts can move the
+     * on-listen connection and re-arm Listen immediately. */
+    (void)listener_ctl(ls, "accept");
     struct myos_sock *s = sock_alloc();
     if (s == NULL) {
         errno = EMFILE;
