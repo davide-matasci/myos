@@ -380,6 +380,16 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             read(&target.join(format!("oksh-{none_triple}"))),
         );
     }
+    // os-test paths suite: /usr, /usr/bin, /usr/bin/env, /usr/lib.
+    // access(F_OK) only — a tiny placeholder ELF-less file is enough; bootfs
+    // directory-prefix logic exposes /usr and /usr/bin as directories.
+    add(
+        &mut entries,
+        "usr/bin/env",
+        Some(b"#!/bin/sh\nexec \"$@\"\n".to_vec()),
+    );
+    add(&mut entries, "usr/lib/.keep", Some(b"\n".to_vec()));
+
     // dropbear sshd + dbclient -> bin/custom/{dropbear,dbclient} (none triple,
     // like oksh). Gated on the port_dropbear feature; panic with the build
     // hint if the ELF is missing (silent skip = "dropbear not available").

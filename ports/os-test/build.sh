@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch + host-prebuild os-test (embed tree + boot-CI smoke ELFs).
+# Fetch + host-prebuild os-test (embed tree + boot-CI curated ELFs).
 # Same ports-base contract as curl/tcc: stamp + early-exit when current;
 # CI restores via ci-registry.sh; local: ./ports/os-test/build.sh
 set -euo pipefail
@@ -28,6 +28,11 @@ for arch in x86_64 aarch64 riscv64; do
   marker="$ROOT/target/os-test-prebuilt/${arch}/basic/arpa_inet/htons"
   if [[ ! -f "$marker" ]]; then
     echo "error: os-test prebuilt missing for ${arch} at ${marker}" >&2
+    missing=1
+  fi
+  nb="$ROOT/target/os-test-prebuilt/${arch}/limits/CHAR_BIT"
+  if [[ ! -f "$nb" ]]; then
+    echo "error: os-test nonbasic prebuilt missing for ${arch} at ${nb}" >&2
     missing=1
   fi
 done

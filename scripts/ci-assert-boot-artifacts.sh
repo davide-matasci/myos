@@ -117,6 +117,7 @@ require target/cacert.pem target/coreutils-cacert.pem || missing=1
 require target/os-test-embed/basic/ctype/isalnum.c || missing=1
 for arch in x86_64 aarch64 riscv64; do
   require "target/os-test-prebuilt/${arch}/basic/arpa_inet/htons" || missing=1
+  require "target/os-test-prebuilt/${arch}/limits/CHAR_BIT" || missing=1
 done
 
 if [[ "$missing" -ne 0 ]]; then

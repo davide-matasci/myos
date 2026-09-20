@@ -36,7 +36,7 @@ pub const STACK_SIZE: usize = 64 * 1024;
 /// the tiny Rust shell; raise further for dropbear: a session holds stdio +
 /// the session socket + the signal pipe (2) + three pipes for `spawn_command`
 /// (6) before the child execs, so 16 was exhausted and exec failed.
-const MAX_FDS: usize = 32;
+const MAX_FDS: usize = 64;
 
 /// Stamp the owning logical CPU id at the base of a kernel stack so U-mode
 /// trap entry can reload `tp` without trusting user TLS (see riscv64 trap

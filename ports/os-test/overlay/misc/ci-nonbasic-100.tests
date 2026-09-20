@@ -1,0 +1,124 @@
+# Boot CI curated non-basic subset — suite-prefixed paths (suite/rel, no .c).
+# Prefer tests whose POSIX expect is exit 0 (myos harness: exit 0 = pass).
+# ~100 tests spanning non-basic suites.
+
+# --- limits (32) ---
+TESTS += limits/CHAR_BIT
+TESTS += limits/CHAR_MAX
+TESTS += limits/CHAR_MIN
+TESTS += limits/SCHAR_MAX
+TESTS += limits/SCHAR_MIN
+TESTS += limits/UCHAR_MAX
+TESTS += limits/SHRT_MAX
+TESTS += limits/SHRT_MIN
+TESTS += limits/USHRT_MAX
+TESTS += limits/INT_MAX
+TESTS += limits/INT_MIN
+TESTS += limits/UINT_MAX
+TESTS += limits/LONG_MAX
+TESTS += limits/LONG_MIN
+TESTS += limits/ULONG_MAX
+TESTS += limits/LLONG_MAX
+TESTS += limits/LLONG_MIN
+TESTS += limits/ULLONG_MAX
+TESTS += limits/SSIZE_MAX
+TESTS += limits/LONG_BIT
+TESTS += limits/WORD_BIT
+TESTS += limits/MB_LEN_MAX
+TESTS += limits/PATH_MAX
+TESTS += limits/NAME_MAX
+TESTS += limits/OPEN_MAX
+TESTS += limits/PAGESIZE
+TESTS += limits/PAGE_SIZE
+TESTS += limits/PIPE_BUF
+TESTS += limits/ARG_MAX
+TESTS += limits/LINK_MAX
+TESTS += limits/CHILD_MAX
+TESTS += limits/IOV_MAX
+
+# --- malloc (3) ---
+TESTS += malloc/malloc-0
+TESTS += malloc/realloc-0
+TESTS += malloc/realloc-null-0
+
+# --- paths (16) ---
+TESTS += paths/dev-null
+TESTS += paths/dev-zero
+TESTS += paths/dev-tty
+TESTS += paths/dev-console
+TESTS += paths/dev-urandom
+TESTS += paths/dev
+TESTS += paths/tmp
+TESTS += paths/root
+TESTS += paths/bin-sh
+TESTS += paths/usr-bin-env
+TESTS += paths/etc
+TESTS += paths/lib
+TESTS += paths/usr
+TESTS += paths/usr-bin
+TESTS += paths/bin
+TESTS += paths/usr-lib
+
+# --- stdio (16) ---
+TESTS += stdio/printf-percent
+TESTS += stdio/printf-d-zero
+TESTS += stdio/printf-d-h
+TESTS += stdio/printf-d-hh
+TESTS += stdio/printf-d-right-pad
+TESTS += stdio/printf-d-left-pad-precision-zero-flag
+TESTS += stdio/printf-c-left-pad
+TESTS += stdio/printf-c-right-pad
+TESTS += stdio/printf-c-pos-args
+TESTS += stdio/printf-c-truncate
+TESTS += stdio/printf-u-zero
+TESTS += stdio/printf-x-zero
+TESTS += stdio/printf-o-zero
+TESTS += stdio/printf-e
+TESTS += stdio/printf-e-alt
+TESTS += stdio/printf-g-precision-f
+
+# --- signal (12) — exit 0 with expected stdout ---
+TESTS += signal/ignore-raise
+TESTS += signal/ppoll-block-raise
+TESTS += signal/ignore-raise-unignore
+TESTS += signal/block-raise
+TESTS += signal/block-raise-unblock
+TESTS += signal/block-raise-handle-unblock
+TESTS += signal/ignore-block-raise
+TESTS += signal/block-ignore-raise-unblock
+TESTS += signal/block-chld-unblock
+TESTS += signal/sigaltstack-raise
+TESTS += signal/default-usr1-exec
+TESTS += signal/handle-usr1-exec
+
+# --- process (8) — POSIX expect exit: 0 ---
+TESTS += process/fork-setpgid
+TESTS += process/fork-setpgid-undo
+TESTS += process/fork-setpgid-undo-redo
+TESTS += process/fork-setpgid-another-undo-redo
+TESTS += process/fork-setpgid-another-undo-undo
+TESTS += process/fork-exec-setpgid-in-child
+TESTS += process/waitpid-pgid
+TESTS += process/zombie-getpgid
+
+# --- io (6) — POSIX expect exit: 0 ---
+TESTS += io/open-tmpdir-rdonly
+TESTS += io/open-tmpdir-rdonly-directory
+TESTS += io/open-tmpdir-rdonly-append
+TESTS += io/open-clofork-fork
+TESTS += io/dup3-clofork-fork
+TESTS += io/open-mkstemp-rdonly
+
+# --- udp (12) — exit 0 / printable success ---
+TESTS += udp/bind-any-0
+TESTS += udp/bind-any-0-getsockname
+TESTS += udp/bind-connect-self
+TESTS += udp/bind-connect-self-send
+TESTS += udp/bind-connect-self-send-recv
+TESTS += udp/bind-sendto-self
+TESTS += udp/bind-sendto-self-recv
+TESTS += udp/connect-unconnect
+TESTS += udp/connect-reconnect
+TESTS += udp/connect-reconnect-same
+TESTS += udp/unconnect
+TESTS += udp/connect-sendto-null

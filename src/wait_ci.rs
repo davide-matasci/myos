@@ -356,14 +356,14 @@ const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/c
 /// os-test basic smoke (full boot only). Thin writable copy via
 /// `misc/ci-smoke-copy.sh` (Makefile + misc/ + basic.h + TESTLIST sources
 /// only — not `cp -r` of the whole suite) then
-/// `make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report` (~22 tests).
+/// `make TESTLIST=misc/ci-boot.tests report` (basic smoke + ~100 non-basic).
 /// NOT the full ~1187 basic suite (#860 timed out; #866 still burned 90m on
 /// full-tree copy + SMP). Report prints `pass_rate=NN% (P/T)`; CI asserts the
 /// harness finished but does NOT fail on pass_rate<80. Follow-up short
 /// quote-free commands still require setpwent success. Commands stay
 /// quote-free for oksh redraw.
 const CMD_OS_TEST_PREP: &[u8] =
-    b"sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?\n";
+    b"sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?\n";
 /// After the suite report: cat setpwent .err/.out (success leaves .out empty).
 const CMD_OS_TEST_CAT: &[u8] =
     b"cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out\n";
@@ -423,7 +423,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
             // PREP-RC=139) and starved listen accept on uefi.
             cmds.push(CMD_DROPBEAR_STOP);
         }
-        // os-test basic smoke (TESTLIST) + setpwent gate (full boot only;
+        // os-test curated smoke (ci-boot.tests) + setpwent gate (full boot only;
         // too slow for boot-mini). pass_rate is reported, not gated.
         cmds.push(CMD_OS_TEST_PREP);
         cmds.push(CMD_OS_TEST_CAT);
@@ -756,14 +756,14 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
     ok && !after.starts_with("\n\n") && at_interactive_prompt(serial)
 }
 
-/// os-test basic smoke, stage 1: writable copy + thin TESTLIST make report
+/// os-test curated smoke, stage 1: writable copy + ci-boot.tests make report
 /// must finish (harness printed `pass_rate=`). Scope failure patterns to the
 /// output after the echoed command. Do NOT fail on pass_rate < 80 — report
 /// only; the setpwent stages below remain the hard libc gate.
 fn interactive_ostest_prep_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     let echoed =
-        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
     if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
@@ -781,7 +781,7 @@ fn interactive_ostest_prep_ok(serial: &str) -> bool {
 fn interactive_ostest_prep_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     let echoed =
-        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
     if !tail.contains(echoed) {
         return false;
     }

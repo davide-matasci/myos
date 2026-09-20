@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <grp.h>
@@ -346,6 +347,49 @@ long sysconf(int name) {
 }
 
 unsigned sleep(unsigned seconds) {
+    /* Busy-wait via gettimeofday so UDP self-recv and similar see elapsed time. */
+    struct timeval start, now;
+    if (seconds == 0) {
+        return 0;
+    }
+    if (gettimeofday(&start, NULL) != 0) {
+        return seconds;
+    }
+    for (;;) {
+        if (gettimeofday(&now, NULL) != 0) {
+            break;
+        }
+        if ((unsigned long)(now.tv_sec - start.tv_sec) >= (unsigned long)seconds) {
+            break;
+        }
+    }
+    return 0;
+}
+
+int usleep(useconds_t usec) {
+    struct timeval start, now;
+    long long elapsed;
+    if (usec == 0) {
+        return 0;
+    }
+    if (gettimeofday(&start, NULL) != 0) {
+        return -1;
+    }
+    for (;;) {
+        if (gettimeofday(&now, NULL) != 0) {
+            return -1;
+        }
+        elapsed = (long long)(now.tv_sec - start.tv_sec) * 1000000LL
+            + (long long)(now.tv_usec - start.tv_usec);
+        if (elapsed >= (long long)usec) {
+            break;
+        }
+    }
+    return 0;
+}
+
+unsigned alarm(unsigned seconds) {
+    /* Hang-timeout helper for tests; no async delivery yet. */
     (void)seconds;
     return 0;
 }
@@ -550,4 +594,35 @@ mode_t _umask(mode_t mask) {
 
 int _symlink(const char *target, const char *linkpath) {
     return symlink(target, linkpath);
+}
+
+
+#ifndef O_CLOFORK
+#define O_CLOFORK 0x01000000
+#endif
+
+/* dup3 — dup2 with flags (O_CLOEXEC / O_CLOFORK). */
+int dup3(int oldfd, int newfd, int flags) {
+    int ret;
+    if (oldfd < 0 || newfd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    if (oldfd == newfd) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (flags & ~(O_CLOEXEC | O_CLOFORK)) {
+        errno = EINVAL;
+        return -1;
+    }
+    /* Kernel dup2 onto newfd (closes newfd first). */
+    ret = dup2(oldfd, newfd);
+    if (ret < 0) {
+        return -1;
+    }
+    myos_fd_clofork_set(newfd, (flags & O_CLOFORK) != 0);
+    /* CLOEXEC not tracked yet; accept the flag for ABI completeness. */
+    (void)(flags & O_CLOEXEC);
+    return newfd;
 }

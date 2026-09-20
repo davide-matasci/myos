@@ -5,12 +5,13 @@
 #   make                # compile + run every test; outcome -> out/<suite>/<test>.out
 #   make SUITES=malloc  # restrict to a suite subset
 #   make SUITES=basic TESTS="pwd/setpwent ctype/isalpha" report
-#   make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report
+#   make SUITES="basic limits" TESTLIST=misc/ci-boot.tests report
 #   make report         # pass/fail/compile_error summary
 #
 # Suite selection lives in SUITES; optional TESTS / AREAS / TESTLIST narrow
 # which sources under those suites are built. See ports/os-test/README.md.
-SUITES := basic limits io malloc paths process signal stdio
+# Default covers the runtime suites we wire for CI (not namespace/include/pty).
+SUITES := basic limits io malloc paths process signal stdio udp
 
 CC = /bin/tcc/tcc
 CFLAGS = -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE
@@ -21,7 +22,8 @@ CFLAGS = -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE
 # when TESTS/AREAS/TESTLIST are unset.
 
 # TESTLIST: makefile fragment with `TESTS += path` lines (path relative to
-# each SUITES entry, no .c). Prefer this for boot CI — short typed command.
+# each SUITES entry, no .c — or suite-prefixed suite/rel). Prefer this for
+# boot CI — short typed command.
 ifdef TESTLIST
 include $(TESTLIST)
 endif
@@ -31,9 +33,18 @@ empty :=
 space := $(empty) $(empty)
 
 ifdef TESTS
-# Explicit list: paths relative to each suite (e.g. pwd/setpwent with
-# SUITES=basic → basic/pwd/setpwent.c). Missing files are skipped.
-SOURCES := $(sort $(foreach t,$(TESTS),$(foreach s,$(SUITES),$(wildcard $(s)/$(t).c))))
+# Explicit list. Each t may be:
+#   - suite-prefixed: limits/CHAR_BIT → limits/CHAR_BIT.c (preferred for
+#     multi-suite TESTLISTs), or
+#   - relative to each SUITES entry: pwd/setpwent with SUITES=basic →
+#     basic/pwd/setpwent.c (legacy basic smoke form).
+# Missing files are skipped via $(wildcard).
+# suite_of: first path component. Suite-prefixed iff it names a SUITES entry.
+suite_of = $(firstword $(subst /, ,$(1)))
+SOURCES := $(sort $(foreach t,$(TESTS),\
+  $(if $(filter $(call suite_of,$(t)),$(SUITES)),\
+    $(wildcard $(t).c),\
+    $(foreach s,$(SUITES),$(wildcard $(s)/$(t).c)))))
 else ifdef AREAS
 # Subdir filter: AREAS=pwd,grp,ctype or AREAS="pwd grp ctype"
 AREAS_LIST := $(subst $(comma),$(space),$(AREAS))

@@ -11,6 +11,12 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
+
+#ifndef O_CLOFORK
+/* FreeBSD / POSIX.1-2024 close-on-fork. */
+#define O_CLOFORK 0x01000000
+#endif
+
 #include "myos_stat.h"
 
 static int myos_err(long ret) {
@@ -128,7 +134,49 @@ void myos_fd_nonblock_dup(int from, int to) {
     myos_fd_nonblock_set(to, myos_fd_nonblock_get(from));
 }
 
+/* O_CLOFORK bitmap — close these fds in the child after fork(). */
+static unsigned long long myos_fd_cf_mask;
+
+void myos_fd_clofork_set(int fd, int on) {
+    if (fd < 0 || fd >= 64) {
+        return;
+    }
+    if (on) {
+        myos_fd_cf_mask |= (1ull << fd);
+    } else {
+        myos_fd_cf_mask &= ~(1ull << fd);
+    }
+}
+
+int myos_fd_clofork_get(int fd) {
+    if (fd < 0 || fd >= 64) {
+        return 0;
+    }
+    return (myos_fd_cf_mask & (1ull << fd)) != 0;
+}
+
+void myos_fd_clofork_clear(int fd) {
+    myos_fd_clofork_set(fd, 0);
+}
+
+void myos_fd_clofork_dup(int from, int to) {
+    myos_fd_clofork_set(to, myos_fd_clofork_get(from));
+}
+
+void myos_fd_clofork_close_all(void) {
+    int fd;
+    unsigned long long m = myos_fd_cf_mask;
+    myos_fd_cf_mask = 0;
+    for (fd = 0; fd < 64; fd++) {
+        if (m & (1ull << fd)) {
+            close(fd);
+        }
+    }
+}
+
+
 int _close(int fd) {
+    myos_fd_clofork_clear(fd);
 
     myos_socket_on_close(fd);
     long ret = myos_syscall1(MYOS_SYS_CLOSE, fd);
@@ -196,6 +244,7 @@ int _open(const char *path, int flags, ...) {
         myos_fd_set_tty((int)ret, 1);
     }
     myos_fd_path_set((int)ret, path);
+    myos_fd_clofork_set((int)ret, (flags & O_CLOFORK) != 0);
     return (int)ret;
 }
 

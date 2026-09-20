@@ -80,5 +80,15 @@ int myos_fd_nonblock_get(int fd);
 void myos_fd_nonblock_clear(int fd);
 void myos_fd_nonblock_dup(int from, int to);
 
+/* O_CLOFORK: close listed fds in the child after fork (userspace). */
+void myos_fd_clofork_set(int fd, int on);
+int myos_fd_clofork_get(int fd);
+void myos_fd_clofork_clear(int fd);
+void myos_fd_clofork_dup(int from, int to);
+void myos_fd_clofork_close_all(void);
+
+
 #endif
 
+
+int myos_deliver_signal(int sig);

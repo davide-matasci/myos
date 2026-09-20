@@ -637,5 +637,7 @@ myos_os_test_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     marker="$MYOS_ROOT/target/os-test-prebuilt/${arch}/basic/arpa_inet/htons"
     [[ -f "$marker" ]] || return 1
+    nb="$MYOS_ROOT/target/os-test-prebuilt/${arch}/limits/CHAR_BIT"
+    [[ -f "$nb" ]] || return 1
   done
 }

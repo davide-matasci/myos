@@ -106,5 +106,8 @@ fn route(name: &str, bytes: &'static [u8]) {
         // root's home, e.g. root/.ssh/authorized_keys — bootfs serves these
         // flat like etc/ (without this branch such entries are dropped).
         let _ = bootfs::register(&alloc::format!("root/{rest}"), bytes);
+    } else if let Some(rest) = name.strip_prefix("usr/") {
+        // /usr tree for os-test paths suite (/usr, /usr/bin, /usr/bin/env, …).
+        let _ = bootfs::register(&alloc::format!("usr/{rest}"), bytes);
     }
 }

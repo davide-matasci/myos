@@ -2,6 +2,8 @@
 #define _MYOS_POLL_H_
 
 #include <sys/types.h>
+#include <signal.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,3 +33,5 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout);
 #endif
 
 #endif /* _MYOS_POLL_H_ */
+
+int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout, const sigset_t *sigmask);

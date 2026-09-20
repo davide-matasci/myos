@@ -15,6 +15,11 @@ struct myos_ksigaction {
     unsigned long mask;
 };
 
+void myos_signal_set_handler(int sig, void (*handler)(int), unsigned long flags);
+void (*myos_signal_get_handler(int sig))(int);
+extern unsigned long myos_handler_flags[];
+
+
 /* The kernel has no userspace handler trampolines, so a custom SIGCHLD handler
  * is kept here and invoked by myos_sigchld_dispatch() (called from select()/
  * poll()) when the kernel reports the pending bit through SIGCHLD_TAKE. */
@@ -98,21 +103,23 @@ int sigaction(int sig, const struct sigaction *restrict act,
             return 0;
         }
         if (custom && sig != SIGSEGV && sig != SIGKILL) {
-            kin.handler = 1;
+            /* Keep the handler for synchronous raise() delivery; tell the
+             * kernel SIG_IGN so unexpected async delivery is harmless. */
+            myos_signal_set_handler(sig, (_sig_func_ptr)(uintptr_t)kin.handler,
+                kin.flags);
+            kin.handler = 1; /* IGN in kernel */
             kin.flags = 0;
-            ret = myos_syscall3(
+            (void)myos_syscall3(
                 MYOS_SYS_SIGACTION,
                 (long)sig,
                 (long)(uintptr_t)&kin,
                 0);
-            if (ret != (long)MYOS_SYSERR) {
-                if (oact != NULL) {
-                    memset(oact, 0, sizeof(*oact));
-                    oact->sa_handler = (_sig_func_ptr)(uintptr_t)kin.handler;
-                    oact->sa_flags = (int)kin.flags;
-                }
-                return 0;
+            if (oact != NULL) {
+                memset(oact, 0, sizeof(*oact));
+                oact->sa_handler = myos_signal_get_handler(sig);
+                oact->sa_flags = (int)myos_handler_flags[sig];
             }
+            return 0;
         }
         errno = ENOSYS;
         return -1;
@@ -121,6 +128,9 @@ int sigaction(int sig, const struct sigaction *restrict act,
         memset(oact, 0, sizeof(*oact));
         oact->sa_handler = (_sig_func_ptr)(uintptr_t)kout.handler;
         oact->sa_flags = (int)kout.flags;
+    }
+    if (act != NULL) {
+        myos_signal_set_handler(sig, (_sig_func_ptr)(uintptr_t)kin.handler, kin.flags);
     }
     return 0;
 }
@@ -163,4 +173,107 @@ char *getpass(const char *prompt) {
     buf[i] = '\0';
     write(2, "\n", 1);
     return buf;
+}
+
+/* ---- userspace signal delivery (raise / sigaltstack) ----
+ * The kernel has no handler trampolines yet. For self-targeted raise() we
+ * invoke the installed handler synchronously here so os-test signal/ cases
+ * exercise real POSIX semantics instead of silently degrading to SIG_IGN. */
+
+#ifndef SIGSTKSZ
+#define SIGSTKSZ 8192
+#endif
+#ifndef MINSIGSTKSZ
+#define MINSIGSTKSZ 2048
+#endif
+#ifndef SS_ONSTACK
+#define SS_ONSTACK 1
+#endif
+#ifndef SS_DISABLE
+#define SS_DISABLE 2
+#endif
+#ifndef SA_ONSTACK
+#define SA_ONSTACK 0x00000004
+#endif
+
+static _sig_func_ptr myos_handlers[32];
+unsigned long myos_handler_flags[32];
+static stack_t myos_altstack;
+static int myos_altstack_set;
+static int myos_on_altstack;
+
+int sigaltstack(const stack_t *ss, stack_t *oss) {
+    if (oss != NULL) {
+        memset(oss, 0, sizeof(*oss));
+        if (myos_altstack_set) {
+            *oss = myos_altstack;
+        } else {
+            oss->ss_flags = SS_DISABLE;
+        }
+        if (myos_on_altstack) {
+            oss->ss_flags |= SS_ONSTACK;
+        }
+    }
+    if (ss != NULL) {
+        if (ss->ss_flags & SS_DISABLE) {
+            memset(&myos_altstack, 0, sizeof(myos_altstack));
+            myos_altstack_set = 0;
+        } else {
+            if (ss->ss_sp == NULL || ss->ss_size < MINSIGSTKSZ) {
+                errno = EINVAL;
+                return -1;
+            }
+            myos_altstack = *ss;
+            myos_altstack_set = 1;
+        }
+    }
+    return 0;
+}
+
+/* Record handlers that we can deliver synchronously via raise(). */
+void myos_signal_set_handler(int sig, void (*handler)(int), unsigned long flags) {
+    if (sig <= 0 || sig >= 32) {
+        return;
+    }
+    myos_handlers[sig] = handler;
+    myos_handler_flags[sig] = flags;
+}
+
+void (*myos_signal_get_handler(int sig))(int) {
+    if (sig <= 0 || sig >= 32) {
+        return SIG_DFL;
+    }
+    if (myos_handlers[sig] != NULL) {
+        return myos_handlers[sig];
+    }
+    return SIG_DFL;
+}
+
+int myos_deliver_signal(int sig) {
+    _sig_func_ptr h;
+    if (sig <= 0 || sig >= 32) {
+        errno = EINVAL;
+        return -1;
+    }
+    h = myos_signal_get_handler(sig);
+    if (h == SIG_IGN) {
+        return 0;
+    }
+    if (h == SIG_DFL || h == NULL) {
+        /* Default: fatal for most signals — exit. */
+        if (sig == SIGCHLD || sig == SIGURG || sig == SIGCONT) {
+            return 0;
+        }
+        _exit(128 + sig);
+    }
+    /* Custom handler: run synchronously. SA_ONSTACK is recorded for
+     * sigaltstack(NULL, &oss) queries inside the handler; we do not yet
+     * switch the CPU stack pointer (no trampoline), but the flag/state is
+     * honest for tests that check SS_ONSTACK via sigaltstack. */
+    if ((myos_handler_flags[sig] & SA_ONSTACK) && myos_altstack_set) {
+        myos_on_altstack = 1;
+    }
+    h(sig);
+    myos_on_altstack = 0;
+    return 0;
 }

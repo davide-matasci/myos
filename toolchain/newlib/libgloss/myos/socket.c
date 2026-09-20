@@ -3,6 +3,7 @@
  * No socket() syscall — outbound TCP (and UDP for DNS) via clone/ctl/data.
  */
 #include <errno.h>
+#include <stdint.h>
 #include <fcntl.h>
 #include "myos_fmt.h"
 #include <poll.h>
@@ -40,7 +41,9 @@ struct myos_sock {
     char proto_path[16]; /* "/net/tcp" or "/net/udp" */
     struct sockaddr_in peer;
     int peer_set;
-    unsigned short bind_port; /* listener port after bind() */
+    unsigned short bind_port; /* listener port after bind() (network order) */
+    uint32_t bind_addr; /* network-order IPv4; INADDR_ANY if unbound-any */
+    int bound;         /* set after successful bind() */
     int accept_armed;  /* listener: "accept" ctl written, waiting for status */
     int last_accept_seq; /* listener: seq of the last accepted handoff */
 };
@@ -614,6 +617,17 @@ int socket(int domain, int type, int protocol) {
     return data_fd;
 }
 
+
+/* Ephemeral UDP/TCP ports in host order; skip 0. */
+static unsigned short myos_next_eph = 40000;
+static unsigned short myos_ephemeral_port(void) {
+    unsigned short p = myos_next_eph++;
+    if (myos_next_eph < 40000 || myos_next_eph > 60000) {
+        myos_next_eph = 40000;
+    }
+    return p;
+}
+
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     struct myos_sock *s = sock_by_fd(sockfd);
     (void)addrlen;
@@ -623,13 +637,18 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     }
     if (addr != NULL && addr->sa_family == AF_INET) {
         const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
-        /* INADDR_ANY / unspecified only (netd owns the single interface). */
-        if (in->sin_addr.s_addr != INADDR_ANY && in->sin_addr.s_addr != 0) {
-            errno = EOPNOTSUPP;
-            return -1;
+        uint32_t a = in->sin_addr.s_addr;
+        /* Allow ANY and LOOPBACK; other addresses are for future multi-homing. */
+        if (a != INADDR_ANY && a != 0 && a != htonl(INADDR_LOOPBACK)) {
+            /* Still accept: netd is single-homed; treat as ANY for announce. */
         }
-        /* Remember the port; the listener is started by listen(). */
-        s->bind_port = in->sin_port; /* already network order; netd wants text */
+        unsigned short port = ntohs(in->sin_port);
+        if (port == 0) {
+            port = myos_ephemeral_port();
+        }
+        s->bind_port = htons(port);
+        s->bind_addr = a;
+        s->bound = 1;
     }
     return 0;
 }
@@ -1067,7 +1086,8 @@ int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optl
 
 int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     struct sockaddr_in local;
-    if (sock_by_fd(sockfd) == NULL) {
+    struct myos_sock *s = sock_by_fd(sockfd);
+    if (s == NULL) {
         errno = ENOTSOCK;
         return -1;
     }
@@ -1077,8 +1097,8 @@ int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     }
     memset(&local, 0, sizeof local);
     local.sin_family = AF_INET;
-    local.sin_addr.s_addr = INADDR_ANY;
-    local.sin_port = 0;
+    local.sin_addr.s_addr = s->bound ? s->bind_addr : INADDR_ANY;
+    local.sin_port = s->bound ? s->bind_port : 0;
     if (*addrlen > sizeof local) {
         *addrlen = sizeof local;
     }
