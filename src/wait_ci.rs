@@ -350,7 +350,7 @@ fn start_ssh_smoke_worker() {
 // HTTPS GET (requires network + wall clock + mbedtls).
 const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 // curl over userspace sockets + mbedtls (same URL as https smoke).
-const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/ || curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n";
+const CMD_CURL: &[u8] = b"sh /lib/ci-curl-smoke.sh\n";
 
 /// os-test basic smoke (full boot only). Thin writable copy via
 /// `misc/ci-smoke-copy.sh` (Makefile + misc/ + basic.h + TESTLIST sources
@@ -453,15 +453,12 @@ fn arrow_edit_idx(cmds: &[&[u8]]) -> usize {
     cmds.len() - 1
 }
 
-/// Interactive curl prompt echo. The full `$ curl -fsS --connect-timeout 30 …`
-/// command must echo as ONE clean line: oksh's emacs editor sizes the prompt
-/// from the device winsize, and the kernel reports a wide (160-col) console on
-/// every boot, so the line no longer wraps with redraw artifacts on the
-/// aarch64/riscv64 serial boots (the old 24x80 fallback did). Keep a strict
-/// full-line needle (including the `; cat` tail) so a wrapped/redraw-corrupted
-/// echo must NOT match.
-const CURL_ECHO: &str =
-    "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/ || curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html";
+/// Interactive curl prompt echo. Must be ONE clean short line (oksh sizes the
+/// prompt from winsize; x86 CI reports 160 cols). The guest script owns the
+/// long curl argv + one-shot retry so we never wrap here.
+/// Interactive curl smoke via `/lib/ci-curl-smoke.sh` (one connect retry).
+/// Keep this echo short so oksh never wraps it on the 160-col console.
+const CURL_ECHO: &str = "$ sh /lib/ci-curl-smoke.sh";
 
 /// Printed by the interactive shell when a command cannot be resolved.
 const CI_SHELL_UNKNOWN_CMD: &str = "not found";
@@ -902,13 +899,15 @@ fn interactive_curl_after_failed(after: &str) -> bool {
 }
 
 /// Hard fail so we do not burn the full QEMU timeout after a printed curl error.
+/// Wait until the shell is back at `$` so a mid-retry `curl: (N)` does not
+/// kill QEMU before the second attempt finishes.
 fn interactive_curl_cmd_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     if !tail.contains(CURL_ECHO) {
         return false;
     }
     let after = tail.rsplit_once(CURL_ECHO).map(|(_, rest)| rest).unwrap_or("");
-    interactive_curl_after_failed(after)
+    interactive_curl_after_failed(after) && at_interactive_prompt(serial)
 }
 
 /// Hard fail so we do not burn the full QEMU timeout after a printed TLS error.
@@ -1473,7 +1472,8 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     let _ = child.kill();
                     break child.wait().expect("wait after https fail-fast kill");
                 }
-                // curl: printed `curl: (N) …` — don't wait 180s for Example Domain.
+                // curl: back at `$` with `curl: (N)` and no Example Domain —
+                // don't wait 180s. Mid-retry errors must not kill QEMU early.
                 // Index 13 == interactive curl HTTPS smoke (full mode only).
                 if shell_stage == ShellStage::WaitResult
                     && !mini
