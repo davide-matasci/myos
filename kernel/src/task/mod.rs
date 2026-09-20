@@ -563,6 +563,16 @@ pub fn current_id() -> usize {
     current_slot()
 }
 
+/// Parent task slot of the current task (0 if none / init).
+pub fn current_ppid() -> Option<usize> {
+    let flags = irq_save();
+    irq_off();
+    let id = current_slot();
+    let ppid = TASKS.lock()[id].ppid;
+    irq_restore(flags);
+    Some(ppid)
+}
+
 /// When the running task is a user process, its saved PC and stack pointer.
 pub fn current_user_pc_sp() -> Option<(usize, usize)> {
     let flags = irq_save();

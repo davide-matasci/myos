@@ -40,6 +40,7 @@
 #define MYOS_SYS_KILL 34
 #define MYOS_SYS_SIGACTION 35
 #define MYOS_SYS_GETPID 36
+#define MYOS_SYS_GETPPID 40
 #define MYOS_SYS_SIGPROCMASK 37
 /* Readiness bits for a single fd (pipes): 1=readable, 2=writable, 4=hangup. */
 #define MYOS_SYS_POLLFD 38

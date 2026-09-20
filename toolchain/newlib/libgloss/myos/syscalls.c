@@ -419,3 +419,12 @@ int _getpid(void) {
     }
     return (int)ret;
 }
+
+pid_t getppid(void) {
+    long ret = myos_syscall0(MYOS_SYS_GETPPID);
+    if (ret == (long)MYOS_SYSERR) {
+        return 0;
+    }
+    return (pid_t)ret;
+}
+

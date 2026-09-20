@@ -47,6 +47,7 @@ const SYS_GETTIMEOFDAY: usize = 33;
 const SYS_KILL: usize = 34;
 const SYS_SIGACTION: usize = 35;
 const SYS_GETPID: usize = 36;
+const SYS_GETPPID: usize = 40;
 const SYS_SIGPROCMASK: usize = 37;
 /// Readiness bits for a single fd (pipes): 1=readable, 2=writable, 4=hangup.
 const SYS_POLLFD: usize = 38;
@@ -1739,6 +1740,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_KILL => sys_kill(a0, a1),
         SYS_SIGACTION => sys_sigaction(a0, a1, a2),
         SYS_GETPID => sys_getpid(),
+        SYS_GETPPID => sys_getppid(),
         SYS_SIGPROCMASK => sys_sigprocmask(a0, a1, a2),
         SYS_POLLFD => sys_pollfd(a0),
         SYS_SIGCHLD_TAKE => sys_sigchld_take(),
@@ -1880,6 +1882,10 @@ fn sys_getsid(pid: usize) -> usize {
 
 fn sys_getpid() -> usize {
     task::current_id()
+}
+
+fn sys_getppid() -> usize {
+    task::current_ppid().unwrap_or(0)
 }
 
 /// `kill(pid, sig)` — `pid` is interpreted as signed (`isize`) for pgid rules.
