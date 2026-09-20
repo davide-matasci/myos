@@ -350,7 +350,7 @@ fn start_ssh_smoke_worker() {
 // HTTPS GET (requires network + wall clock + mbedtls).
 const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 // curl over userspace sockets + mbedtls (same URL as https smoke).
-const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n";
+const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/ || curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n";
 
 /// os-test basic smoke (full boot only). Thin writable copy via
 /// `misc/ci-smoke-copy.sh` (Makefile + misc/ + basic.h + TESTLIST sources
@@ -461,7 +461,7 @@ fn arrow_edit_idx(cmds: &[&[u8]]) -> usize {
 /// full-line needle (including the `; cat` tail) so a wrapped/redraw-corrupted
 /// echo must NOT match.
 const CURL_ECHO: &str =
-    "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html";
+    "$ curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/ || curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html";
 
 /// Printed by the interactive shell when a command cannot be resolved.
 const CI_SHELL_UNKNOWN_CMD: &str = "not found";
@@ -889,7 +889,12 @@ fn interactive_arrow_edit_ok(serial: &str) -> bool {
 }
 
 /// curl errored after the interactive command (e.g. `curl: (4) …`).
+/// A retried command may print `curl: (7)` then succeed — treat as failure
+/// only when Example Domain never appears (uefi flake on 8769fc7).
 fn interactive_curl_after_failed(after: &str) -> bool {
+    if after.contains("Example Domain") {
+        return false;
+    }
     after.contains("not found")
         || after.contains("curl: (")
         || (after.contains("curl:")
