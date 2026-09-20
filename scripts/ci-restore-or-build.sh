@@ -56,6 +56,21 @@ restore_packed_rg_elves() {
       fi
     done
   done
+  # pty/urandom full-boot smokes: same coreutils-* pack-alias trick.
+  for f in target/coreutils-pty-smoke-*; do
+    dest="target/pty-smoke-${f#target/coreutils-pty-smoke-}"
+    if [[ ! -f "$dest" ]]; then
+      cp "$f" "$dest"
+      echo "restored $dest from $f"
+    fi
+  done
+  for f in target/coreutils-urandom-smoke-*; do
+    dest="target/urandom-smoke-${f#target/coreutils-urandom-smoke-}"
+    if [[ ! -f "$dest" ]]; then
+      cp "$f" "$dest"
+      echo "restored $dest from $f"
+    fi
+  done
   # Mozilla CA: pack alias is coreutils-cacert.pem (ci.yml coreutils-* glob).
   # Emit canonical target/cacert.pem so initramfs does not skip lib/cacert.pem.
   if [[ -f target/coreutils-cacert.pem && ! -f target/cacert.pem ]]; then
@@ -146,6 +161,18 @@ dropbear_elves_ready() {
      && -f target/dropbearkey-x86_64-unknown-none ]]
 }
 
+pty_smoke_elves_ready() {
+  [[ -f target/pty-smoke-x86_64-unknown-none \
+     && -f target/pty-smoke-aarch64-unknown-none \
+     && -f target/pty-smoke-riscv64-unknown-none ]]
+}
+
+urandom_smoke_elves_ready() {
+  [[ -f target/urandom-smoke-x86_64-unknown-none \
+     && -f target/urandom-smoke-aarch64-unknown-none \
+     && -f target/urandom-smoke-riscv64-unknown-none ]]
+}
+
 rebuild_kernels() {
   # Hash-gated: same script as the CI "Build kernel..." step. No-op when
   # inputs/artifacts already match target/.myos-ci-kernel-version.
@@ -229,6 +256,20 @@ if [[ -x target/debug/myos && -f target/bios.img \
   else
     echo "dropbear ELFs present: $(ls -lh target/dropbear-*-unknown-none)"
   fi
+  if ! pty_smoke_elves_ready; then
+    echo "==> pty-smoke ELF(s) missing after restore; building pty-smoke"
+    ./scripts/build-pty-smoke.sh
+    need_rebuild=1
+  else
+    echo "pty-smoke ELFs present: $(ls -lh target/pty-smoke-*-unknown-none)"
+  fi
+  if ! urandom_smoke_elves_ready; then
+    echo "==> urandom-smoke ELF(s) missing after restore; building urandom-smoke"
+    ./scripts/build-urandom-smoke.sh
+    need_rebuild=1
+  else
+    echo "urandom-smoke ELFs present: $(ls -lh target/urandom-smoke-*-unknown-none)"
+  fi
   if ! lynx_elves_ready; then
     echo "==> lynx ELF(s) missing after restore; building lynx"
     ./ports/lynx/build.sh
@@ -274,6 +315,8 @@ fi
 ./ports/dropbear/build.sh
 ./ports/lynx/build.sh
 ./ports/lua/build.sh
+./scripts/build-pty-smoke.sh
+./scripts/build-urandom-smoke.sh
 
 rebuild_kernels
 

@@ -290,10 +290,14 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
 
     // pty boot-CI smoke -> bin/etc/pty_smoke (openpty/forkpty + line-
     // discipline round-trip + EIO; see c/pty_smoke.c).
+    // Fallback: coreutils-* pack alias when ci-build.tar omitted the canonical
+    // name (no workflow-scope ci.yml glob for pty-smoke-*).
     add(
         &mut entries,
         "bin/etc/pty_smoke",
-        read(&target.join(format!("pty-smoke-{none_triple}"))),
+        read(&target.join(format!("pty-smoke-{none_triple}"))).or_else(|| {
+            read(&target.join(format!("coreutils-pty-smoke-{none_triple}")))
+        }),
     );
 
     // tcp listen/accept boot-CI smoke -> bin/etc/tcp_listen_smoke (netd
@@ -306,10 +310,13 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
 
     // urandom boot-CI smoke -> bin/etc/urandom_smoke (kernel CSPRNG via
     // /dev/urandom; see c/urandom_smoke.c).
+    // Fallback: coreutils-* pack alias (same as pty-smoke).
     add(
         &mut entries,
         "bin/etc/urandom_smoke",
-        read(&target.join(format!("urandom-smoke-{none_triple}"))),
+        read(&target.join(format!("urandom-smoke-{none_triple}"))).or_else(|| {
+            read(&target.join(format!("coreutils-urandom-smoke-{none_triple}")))
+        }),
     );
 
     // trimmed curl (HTTPS GET + -o) over userspace sockets + mbedtls.
