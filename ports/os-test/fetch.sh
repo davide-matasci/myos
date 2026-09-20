@@ -6,7 +6,9 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-OSTEST_REV="${OSTEST_REV:-0415c45723798a0ebc150c3990c529a2ff322513}"
+# shellcheck source=ports/os-test/versions.env
+source "$HERE/versions.env"
+OSTEST_REV="${OSTEST_REV:?OSTEST_REV unset (versions.env)}"
 OSTEST_SRC="$ROOT/target/os-test-src"
 EMBED="$ROOT/target/os-test-embed"
 

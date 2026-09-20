@@ -35,6 +35,10 @@ if [[ "${1:-}" != "--print-hash" && "${1:-}" != "--is-current" && "${1:-}" != "-
   # copy is missing and the guest `tcc std` boot needle fails. Build (idempotent,
   # early-exits when current) so the initramfs includes libtcc1.a.
   ./ports/tcc/build.sh
+  # os-test: always embedded in initramfs. ports-base + registry pull usually
+  # supply it; ensure here so a kernels cache-hit still packs embed/prebuilts
+  # (idempotent / stamp early-exit when current).
+  ./ports/os-test/build.sh
 fi
 
 STAMP="target/.myos-ci-kernel-version"
@@ -55,6 +59,7 @@ PORT_STAMPS=(
   target/.myos-zlib-version
   target/.myos-git-version
   target/.myos-newlib-version
+  target/.myos-os-test-version
 )
 
 # Source-controlled curl/mbedtls inputs (NOT target/.myos-{curl,mbedtls}-version).
@@ -335,6 +340,10 @@ do_clean_and_build() {
   # here so CI does not need a workflow-scoped ci.yml ports-matrix edit; the
   # registry pull path (when present) still short-circuits via the stamp.
   "$ROOT/ports/dropbear/build.sh"
+  # os-test: always embedded; ports-base builds + registry pull. Stamp
+  # short-circuits when present; otherwise build so cargo/initramfs do not
+  # fetch/prebuild inline.
+  "$ROOT/ports/os-test/build.sh"
   cargo clean -p myos
   # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
   # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
@@ -368,6 +377,11 @@ case "${1:-}" in
     done
     echo "$CACERT_PEM"
     echo "$CACERT_PACK_ALIAS"
+    # tcp-listen is required by artifacts_ready / every boot mode but lives
+    # outside HELLO_OK_ELFS (built by build-tcp-listen-smoke.sh).
+    echo target/tcp-listen-smoke-x86_64-unknown-none
+    echo target/tcp-listen-smoke-aarch64-unknown-none
+    echo target/tcp-listen-smoke-riscv64-unknown-none
     exit 0
     ;;
   --is-current)

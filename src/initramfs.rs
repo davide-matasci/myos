@@ -558,47 +558,29 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
 
     // os-test (POSIX compliance test suite) -> lib/os-test, run manually on
     // the guest with the GNU make port: cd /lib/os-test && make.
-    // Sources are fetched at build time by ports/os-test/fetch.sh (pinned
-    // sortix/os-test rev + myos GNU-make harness overlay); nothing vendored.
-    // Always embedded.
+    // Artifacts come from ports/os-test/build.sh (ports-base CI + local).
+    // Always embedded — consume prebuilt trees; never fetch/prebuild here.
     {
         let embed = manifest_dir.join("target/os-test-embed");
-        if !embed.is_dir() {
-            let fetch = manifest_dir.join("ports/os-test/fetch.sh");
-            let status = std::process::Command::new(&fetch)
-                .current_dir(manifest_dir)
-                .status();
-            match status {
-                Ok(st) if st.success() => {}
-                other => {
-                    panic!("os-test fetch failed ({other:?}); run {} manually", fetch.display())
-                }
-            }
+        let probe = embed.join("basic/ctype/isalnum.c");
+        if !probe.is_file() {
+            panic!(
+                "os-test embed missing at {}; run ./ports/os-test/build.sh (CI: ports-base os-test)",
+                embed.display()
+            );
         }
         collect_tree(&embed, "lib/os-test", &mut entries);
         // Host-prebuilt boot-CI smoke ELFs -> /lib/os-test/prebuilt/…
         // Guest myos-run.sh prefers these so x86 TCG need not tcc each test.
         let pre = manifest_dir.join(format!("target/os-test-prebuilt/{arch}"));
-        if !pre.is_dir() {
-            let sh = manifest_dir.join("ports/os-test/prebuild-basic-smoke.sh");
-            let status = std::process::Command::new("bash")
-                .arg(&sh)
-                .current_dir(manifest_dir)
-                .status();
-            match status {
-                Ok(st) if st.success() => {}
-                other => {
-                    panic!(
-                        "os-test prebuild failed ({other:?}); run {} manually",
-                        sh.display()
-                    )
-                }
-            }
+        let marker = pre.join("basic/arpa_inet/htons");
+        if !marker.is_file() {
+            panic!(
+                "os-test prebuilt missing at {}; run ./ports/os-test/build.sh (CI: ports-base os-test)",
+                pre.display()
+            );
         }
-        let pre = manifest_dir.join(format!("target/os-test-prebuilt/{arch}"));
-        if pre.is_dir() {
-            collect_tree(&pre, "lib/os-test/prebuilt", &mut entries);
-        }
+        collect_tree(&pre, "lib/os-test/prebuilt", &mut entries);
     }
 
     // Vim system vimrc (pathdef.c points default_vim_dir at /lib/vim):

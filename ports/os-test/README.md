@@ -4,17 +4,33 @@ Embeds the pinned [sortix/os-test](https://gitlab.com/sortix/os-test) suite into
 the initramfs at `/lib/os-test` (feature `port_os_test`) and drives it with a
 GNU-make harness under `overlay/`.
 
-## Fetch + embed
+## Build (ports-base)
 
-From the repo root (host):
+Same contract as other ports. From the repo root (host):
+
+```sh
+./ports/os-test/build.sh
+```
+
+This:
+
+1. Fetches the pinned revision (`versions.env` → `target/os-test-src`) and
+   assembles `target/os-test-embed` (upstream + `overlay/`).
+2. Host-prebuilds the boot-CI smoke list into `target/os-test-prebuilt/<arch>/…`
+   (all arches whose newlib sysroots exist; CI expects x86_64 + aarch64 + riscv64).
+3. Writes `target/.myos-os-test-version`.
+
+CI builds this in **ports-base** (`ci-ports.yml`), caches via `ci-registry.sh`,
+and the **build** job restores artifacts into `ci-build.tar`. `build.rs` /
+`initramfs.rs` **consume** those trees (no fetch/prebuild as a CI path). Local
+dev: run `./ports/os-test/build.sh` once if cargo complains they are missing.
+
+Low-level helpers (usually not needed alone):
 
 ```sh
 ./ports/os-test/fetch.sh
+./ports/os-test/prebuild-basic-smoke.sh
 ```
-
-This clones the pinned revision into `target/os-test-src` and assembles
-`target/os-test-embed` (upstream sources + `overlay/`). The initramfs builder
-packs that tree at `/lib/os-test` when `port_os_test` is enabled.
 
 ## Run on the guest
 
@@ -96,11 +112,11 @@ Boot-mini skips this stage (too slow for the mini window).
 
 ## Boot CI host-prebuild (thin smoke)
 
-The ~22-test boot smoke list is **host-prebuilt** into
-`target/os-test-prebuilt/<arch>/basic/…` by
-`ports/os-test/prebuild-basic-smoke.sh` (same newlib/libgloss link as
+The boot smoke list (`misc/ci-basic-smoke.tests`) is **host-prebuilt** into
+`target/os-test-prebuilt/<arch>/basic/…` by `ports/os-test/build.sh` →
+`prebuild-basic-smoke.sh` (same newlib/libgloss link as
 `scripts/build-c-hello.sh`). `initramfs.rs` packs them at
-`/lib/os-test/prebuilt/…`. `ci-smoke-copy.sh` stages matching ELFs; 
+`/lib/os-test/prebuilt/…`. `ci-smoke-copy.sh` stages matching ELFs;
 `myos-run.sh` runs `prebuilt/$T` when present and **skips guest tcc**.
 
 Root cause: guest `tcc … -lm` of a real os-test source under x86 TCG is
