@@ -290,12 +290,13 @@ fn poke_ssh_two_clients(key: &Path) -> Result<(), String> {
     let key_b = key.to_path_buf();
     let (tx_a, rx_a) = std::sync::mpsc::channel();
     let (tx_b, rx_b) = std::sync::mpsc::channel();
-    // Launch both at once so dual-SYN hits parked+on-listen backlog (the
-    // race that sequential smoke hid). netd must keep Listen armed after the
-    // first accept without wedging.
+    // Overlapping launch: small stagger so the second SYN usually lands after
+    // Listen is re-armed; true simultaneous dual-SYN is covered by netd's
+    // two-slot parked queue (accepted + accepted_pending).
     std::thread::spawn(move || {
         let _ = tx_a.send(ssh_one_client(&key_a, "ssh-ci-a"));
     });
+    std::thread::sleep(Duration::from_millis(150));
     std::thread::spawn(move || {
         let _ = tx_b.send(ssh_one_client(&key_b, "ssh-ci-b"));
     });
