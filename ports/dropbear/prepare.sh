@@ -13,17 +13,26 @@ WORK="$ROOT/target/dropbear-myos-build"
 
 [[ -f "$TARBALL" ]] || "$HERE/fetch.sh"
 
-if [[ ! -d "$WORK/src" ]]; then
+extract_dropbear() {
+  # Always decompress with python3 bz2 (CI image may lack bzip2(1)), then
+  # let host tar(1) unpack. Avoids incomplete streaming-tarfile rewrites.
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/dropbear-XXXXXX.tar")"
+  python3 -c 'import bz2,sys; open(sys.argv[2],"wb").write(bz2.open(sys.argv[1],"rb").read())' \
+    "$TARBALL" "$tmp"
+  tar -xf "$tmp" -C "$WORK" --strip-components=1
+  rm -f "$tmp"
+}
+
+if [[ ! -f "$WORK/src/default_options.h" ]]; then
   rm -rf "$WORK"
   mkdir -p "$WORK"
-  # CI image may lack bzip2(1). Prefer it; else decompress with python3 and
-  # feed the uncompressed tar stream to tar(1) (streaming tarfile extract
-  # with rewritten member names was incomplete).
-  if command -v bzip2 >/dev/null 2>&1 || command -v lbzip2 >/dev/null 2>&1; then
-    tar -xjf "$TARBALL" -C "$WORK" --strip-components=1
-  else
-    python3 -c 'import bz2,sys; sys.stdout.buffer.write(bz2.open(sys.argv[1],"rb").read())' \
-      "$TARBALL" | tar -xf - -C "$WORK" --strip-components=1
+  extract_dropbear
+  if [[ ! -f "$WORK/src/default_options.h" ]]; then
+    echo "error: dropbear extract missing src/default_options.h" >&2
+    ls -la "$WORK" >&2 || true
+    ls -la "$WORK/src" >&2 || true
+    exit 1
   fi
 fi
 
