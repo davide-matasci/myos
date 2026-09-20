@@ -81,6 +81,8 @@ void myos_socket_on_close(int fd) __attribute__((weak));
 void myos_socket_on_close(int fd) { (void)fd; }
 
 /* Empty /net data read: 0=not socket, 1=EAGAIN, 2=hangup EOF, 3=retry. */
+extern int myos_sigchld_armed(void);
+
 int myos_socket_empty_read(int fd) __attribute__((weak));
 int myos_socket_empty_read(int fd) { (void)fd; return 0; }
 
@@ -97,6 +99,7 @@ int myos_socket_poll(int fd, short events, short *revents) {
 }
 
 int _close(int fd) {
+
     myos_socket_on_close(fd);
     long ret = myos_syscall1(MYOS_SYS_CLOSE, fd);
     if (ret == (long)MYOS_SYSERR) {
@@ -111,6 +114,7 @@ int _close(int fd) {
 }
 
 void _exit(int status) {
+
     myos_syscall1(MYOS_SYS_EXIT, status);
     for (;;) {
     }
@@ -165,6 +169,7 @@ int _open(const char *path, int flags, ...) {
 }
 
 int _read(int fd, void *buf, size_t cnt) {
+
     for (;;) {
         long ret = myos_syscall3(MYOS_SYS_READ, fd, (long)(uintptr_t)buf, (long)cnt);
         if (ret == (long)MYOS_EIO) {
@@ -193,8 +198,16 @@ int _read(int fd, void *buf, size_t cnt) {
     }
 }
 
+extern volatile long myos_sigchld_wfd;
+extern volatile int myos_sigchld_insig;
+
 int _write(int fd, const void *buf, size_t cnt) {
-    long ret = myos_syscall3(MYOS_SYS_WRITE, fd, (long)(uintptr_t)buf, (long)cnt);
+    long ret;
+
+    if (myos_sigchld_insig && fd >= 0 && myos_sigchld_wfd < 0) {
+        myos_sigchld_wfd = fd; /* first write in the handler = self-pipe write end */
+    }
+    ret = myos_syscall3(MYOS_SYS_WRITE, fd, (long)(uintptr_t)buf, (long)cnt);
     if (ret == (long)MYOS_EIO) {
         errno = EIO; /* pty peer gone */
         return -1;

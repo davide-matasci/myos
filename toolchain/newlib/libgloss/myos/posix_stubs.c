@@ -283,7 +283,9 @@ pid_t waitpid(pid_t pid, int *status, int options) {
 
     (void)pid;
     (void)options;
+
     ret = myos_syscall1(MYOS_SYS_WAIT, status ? (long)(uintptr_t)&code : 0);
+
     if (ret == (long)MYOS_SYSERR) {
         errno = ECHILD;
         return -1;
@@ -471,15 +473,11 @@ int setpriority(int which, id_t who, int prio) {
 }
 
 int setsid(void) {
-    /* SYS_SETSID: become session leader (sid = pid / task slot), join a new
-     * process group (pgid = pid), and clear the controlling tty. Kernel
-     * returns the new sid, or SYSERR if already a session leader (EPERM). */
-    long ret = myos_syscall0(MYOS_SYS_SETSID);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = EPERM;
-        return -1;
-    }
-    return (int)ret;
+    /* TEMP bisect (revert): SYS_SETSID corrupts the netfs write path after
+     * setsid — kernel page fault reproducible via tcp_fork_smoke with
+     * setsid + accepted fd >= 5, and dropbear's banner write fails with
+     * EIO. No-op until root-caused: return success (sid = pid). */
+    return (int)getpid();
 }
 
 int setpgid(pid_t pid, pid_t pgid) {

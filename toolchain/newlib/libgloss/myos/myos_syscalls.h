@@ -41,6 +41,11 @@
 #define MYOS_SYS_SIGACTION 35
 #define MYOS_SYS_GETPID 36
 #define MYOS_SYS_SIGPROCMASK 37
+/* Readiness bits for a single fd (pipes): 1=readable, 2=writable, 4=hangup. */
+#define MYOS_SYS_POLLFD 38
+#define MYOS_SYS_SIGCHLD_TAKE 39
+#define MYOS_SYS_SIGCHLD_PENDING 41
+#define MYOS_SYS_PIPE_PEER 42
 
 #define MYOS_SYSERR ((unsigned long)-1)
 /* Distinct pty peer-gone error (kernel/src/task/mod.rs SYSERR_EIO): read or

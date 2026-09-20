@@ -32,7 +32,7 @@ default = [
 core = [
     "std", "c_hello",
     "port_sbase", "port_ubase", "port_coreutils", "port_ripgrep", "port_tcc",
-    "port_oksh",
+    "port_oksh", "port_dropbear",
 ]
 
 # Individual ports. Optional ones pull their build deps.
@@ -44,6 +44,7 @@ port_coreutils = []
 port_ripgrep = []
 port_tcc = []
 port_oksh = []
+port_dropbear = []
 port_ncurses = []
 port_zlib = []
 port_vim = ["port_ncurses"]

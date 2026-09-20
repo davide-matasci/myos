@@ -22,6 +22,7 @@ MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
 MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
+MYOS_DROPBEAR_VERSION_STAMP="$MYOS_ROOT/target/.myos-dropbear-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
@@ -297,6 +298,35 @@ myos_ripgrep_is_current() {
   done
 }
 
+
+myos_dropbear_version_hash() {
+  local h
+  h="$(
+    {
+      echo "$MYOS_DROPBEAR_VERSION"
+      sha256sum "$MYOS_ROOT/ports/dropbear/build.sh" \
+        "$MYOS_ROOT/ports/dropbear/fetch.sh" \
+        "$MYOS_ROOT/ports/dropbear/versions.env" \
+        "$MYOS_ROOT/ports/dropbear/config-myos.h" \
+        "$MYOS_ROOT/ports/dropbear/localoptions.h" \
+        "$MYOS_ROOT/ports/dropbear/myos_compat.h" \
+        "$MYOS_ROOT/ports/dropbear/prepare.sh" \
+        "$MYOS_ROOT/ports/dropbear/myos_shims.c" || true
+      myos_newlib_version_hash
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_dropbear_is_current() {
+  local arch
+  [[ -f "$MYOS_DROPBEAR_VERSION_STAMP" ]] \
+    && [[ "$(cat "$MYOS_DROPBEAR_VERSION_STAMP")" == "$(myos_dropbear_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/dropbear-${arch}-unknown-none" ]] || return 1
+  done
+}
 
 myos_curl_version_hash() {
   # curl's hash_curl() includes the CURL_VERSION value from versions.env.
