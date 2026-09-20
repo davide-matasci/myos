@@ -280,30 +280,30 @@ int execvp(const char *file, char *const argv[]) {
 
 /*
  * Kernel SYS_WAIT is wait-any and blocking; it stores a raw exit-code byte.
- * Ignore specific pid / WUNTRACED. Honour WNOHANG via SIGCHLD_PENDING so
+ * Ignore specific pid / WUNTRACED. Honour WNOHANG via SYS_WAIT options so
  * dropbear's `while (waitpid(-1, &st, WNOHANG) > 0)` reap loop cannot block
  * after the first zombie (which left SSH exit-status undelivered).
  */
 pid_t waitpid(pid_t pid, int *status, int options) {
     unsigned char code = 0;
     long ret;
+    long opts = 0;
 
     (void)pid;
 
     if ((options & WNOHANG) != 0) {
-        /* No zombie → nothing to reap. Dropbear only checks > 0 vs <= 0, so
-         * returning 0 (children may still be live) is correct even when the
-         * true POSIX answer would be -1/ECHILD. */
-        if (myos_syscall0(MYOS_SYS_SIGCHLD_PENDING) != 1) {
-            return 0;
-        }
+        opts |= 1; /* kernel bit0 = WNOHANG */
     }
 
-    ret = myos_syscall1(MYOS_SYS_WAIT, status ? (long)(uintptr_t)&code : 0);
+    ret = myos_syscall2(MYOS_SYS_WAIT, status ? (long)(uintptr_t)&code : 0, opts);
 
     if (ret == (long)MYOS_SYSERR) {
         errno = ECHILD;
         return -1;
+    }
+    /* Kernel returns 0 for WNOHANG with live children but no zombie. */
+    if (ret == 0 && (options & WNOHANG) != 0) {
+        return 0;
     }
     if (status != NULL) {
         *status = ((int)code) << 8;

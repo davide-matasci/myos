@@ -54,6 +54,7 @@
 
 long myos_syscall0(long nr);
 long myos_syscall1(long nr, long a0);
+long myos_syscall2(long nr, long a0, long a1);
 long myos_syscall3(long nr, long a0, long a1, long a2);
 
 int myos_fd_is_tty(int fd);
@@ -72,11 +73,12 @@ int myos_socket_empty_read(int fd);
 int myos_socket_fcntl(int fd, int cmd, int arg);
 int myos_socket_poll(int fd, short events, short *revents);
 
-#endif
 
 /* Userspace O_NONBLOCK tracking for pipes (kernel pipes are always blocking). */
 void myos_fd_nonblock_set(int fd, int on);
 int myos_fd_nonblock_get(int fd);
 void myos_fd_nonblock_clear(int fd);
 void myos_fd_nonblock_dup(int from, int to);
+
+#endif
 

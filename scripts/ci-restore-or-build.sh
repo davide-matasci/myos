@@ -46,6 +46,16 @@ restore_packed_rg_elves() {
       echo "restored $dest from $f"
     fi
   done
+  # dropbear/dbclient/dropbearkey: same coreutils-* pack-alias trick.
+  for bin in dropbear dbclient dropbearkey; do
+    for f in target/coreutils-${bin}-*; do
+      dest="target/${bin}-${f#target/coreutils-${bin}-}"
+      if [[ ! -f "$dest" ]]; then
+        cp "$f" "$dest"
+        echo "restored $dest from $f"
+      fi
+    done
+  done
   # Mozilla CA: pack alias is coreutils-cacert.pem (ci.yml coreutils-* glob).
   # Emit canonical target/cacert.pem so initramfs does not skip lib/cacert.pem.
   if [[ -f target/coreutils-cacert.pem && ! -f target/cacert.pem ]]; then

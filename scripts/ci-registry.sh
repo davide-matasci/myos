@@ -237,8 +237,10 @@ port_members() {
         echo "target/dropbear-${arch}-unknown-none"
         echo "target/dbclient-${arch}-unknown-none"
         echo "target/dropbearkey-${arch}-unknown-none"
-        # Pack alias for ci-build.tar `coreutils-*` glob.
+        # Pack aliases for ci-build.tar `coreutils-*` glob (no workflow edit).
         echo "target/coreutils-dropbear-${arch}-unknown-none"
+        echo "target/coreutils-dbclient-${arch}-unknown-none"
+        echo "target/coreutils-dropbearkey-${arch}-unknown-none"
       done
       ;;
     kernels)

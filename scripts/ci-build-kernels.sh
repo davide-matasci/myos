@@ -257,6 +257,12 @@ HELLO_OK_ELFS=(
   target/coreutils-dropbear-x86_64-unknown-none
   target/coreutils-dropbear-aarch64-unknown-none
   target/coreutils-dropbear-riscv64-unknown-none
+  target/coreutils-dbclient-x86_64-unknown-none
+  target/coreutils-dbclient-aarch64-unknown-none
+  target/coreutils-dbclient-riscv64-unknown-none
+  target/coreutils-dropbearkey-x86_64-unknown-none
+  target/coreutils-dropbearkey-aarch64-unknown-none
+  target/coreutils-dropbearkey-riscv64-unknown-none
 )
 
 # Mozilla CA bundle -> initramfs lib/cacert.pem (curl CURL_CA_BUNDLE).

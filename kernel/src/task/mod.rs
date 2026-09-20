@@ -2119,7 +2119,11 @@ pub fn has_exited_child(parent: usize) -> bool {
 /// Yield until a child has exited, reap it, return its pid.
 /// `usize::MAX` if this task has no children. If `status_out` is `Some(va)`,
 /// stores the low 8 bits of the child's exit code at that user address.
-pub fn wait_child(status_out: Option<usize>) -> usize {
+/// When `nohang` is set and children exist but none are Dead yet, returns 0
+/// (POSIX WNOHANG) so waitpid cannot block the dropbear reap loop — and so a
+/// WNOHANG poll with no children still returns `usize::MAX` (ECHILD), not 0
+/// (which would busy-spin shells that treat 0 as "try again").
+pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
     let parent = current_slot();
     loop {
         let mut any = false;
@@ -2162,6 +2166,9 @@ pub fn wait_child(status_out: Option<usize>) -> usize {
         }
         if !any {
             return usize::MAX;
+        }
+        if nohang {
+            return 0;
         }
         // A pending fatal signal must interrupt `wait` so `deliver_due` can kill
         // an interactive shell waiting on a foreground child (Ctrl-C while a

@@ -13,16 +13,19 @@ source "$ROOT/scripts/myos-c-userspace-lib.sh"
 STAMP="$MYOS_DROPBEAR_VERSION"
 
 pack_dropbear_aliases() {
-  # CI packs coreutils-* globs for C ports; keep the alias in sync (curl pattern).
-  local arch src alias
+  # CI packs coreutils-* globs for C ports (ci.yml lacks workflow-scope edits for
+  # new globs); keep aliases in sync for dropbear + dbclient + dropbearkey.
+  local arch bin src alias
   for arch in x86_64 aarch64 riscv64; do
-    src="$ROOT/target/dropbear-${arch}-unknown-none"
-    alias="$ROOT/target/coreutils-dropbear-${arch}-unknown-none"
-    if [[ -f "$src" ]]; then
-      cp "$src" "$alias"
-    elif [[ -f "$alias" ]]; then
-      cp "$alias" "$src"
-    fi
+    for bin in dropbear dbclient dropbearkey; do
+      src="$ROOT/target/${bin}-${arch}-unknown-none"
+      alias="$ROOT/target/coreutils-${bin}-${arch}-unknown-none"
+      if [[ -f "$src" ]]; then
+        cp "$src" "$alias"
+      elif [[ -f "$alias" ]]; then
+        cp "$alias" "$src"
+      fi
+    done
   done
 }
 

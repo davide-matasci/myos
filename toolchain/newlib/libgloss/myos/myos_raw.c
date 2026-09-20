@@ -36,6 +36,11 @@ long myos_syscall1(long nr, long a0) {
     return ret;
 }
 
+long myos_syscall2(long nr, long a0, long a1) {
+    return myos_syscall3(nr, a0, a1, 0);
+}
+
+
 long myos_syscall3(long nr, long a0, long a1, long a2) {
     long ret;
 #if defined(__x86_64__)

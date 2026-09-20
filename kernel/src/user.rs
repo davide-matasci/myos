@@ -1709,7 +1709,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_CLOSE => sys_close(a0),
         SYS_EXEC => sys_exec(a0, a1, a2),
         SYS_FORK => sys_fork(user_rip, user_rsp),
-        SYS_WAIT => sys_wait(a0),
+        SYS_WAIT => sys_wait(a0, a1),
         SYS_LISTDIR => sys_listdir(a0, a1, a2),
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
@@ -2341,15 +2341,20 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     }
 }
 
-fn sys_wait(status_ptr: usize) -> usize {
+fn sys_wait(status_ptr: usize, options: usize) -> usize {
     if status_ptr != 0 && !user_range_ok(status_ptr, 1) {
         return SYSERR;
     }
-    task::wait_child(if status_ptr == 0 {
-        None
-    } else {
-        Some(status_ptr)
-    })
+    // Bit 0 = WNOHANG (matches userspace WNOHANG = 1).
+    let nohang = (options & 1) != 0;
+    task::wait_child(
+        if status_ptr == 0 {
+            None
+        } else {
+            Some(status_ptr)
+        },
+        nohang,
+    )
 }
 
 fn sys_pipe(fds_ptr: usize) -> usize {
