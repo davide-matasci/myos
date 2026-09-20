@@ -356,10 +356,10 @@ fn run_ci_bios(bios_path: &str) {
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
-        // 3072: curated os-test (~242 prebuilt ELFs: basic smoke + ~105
-        // non-basic) OOMd at 2048 mid-suite on UEFI/BIOS (mm.rs out of
-        // usable memory after ~160 execs). riscv64 CI already runs 2048+.
-        .arg("3072")
+        // 4096: curated os-test (~243 prebuilts) still OOMd mid-stdio under
+        // 3072 (mm.rs live≈748k frames after ~200 execs). Headroom for
+        // make brk + fault0 pages across the full curated list.
+        .arg("4096")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
         .args({
@@ -414,10 +414,9 @@ fn run_ci_uefi(uefi_path: &str) {
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
-        // 3584: UEFI+GOP leaves less usable RAM than BIOS at the same -m.
-        // Curated os-test (~242 prebuilts) OOMd at 2560 mid-suite (mm.rs);
-        // keep above BIOS 3072 for GOP overhead.
-        .arg("3584")
+        // 4608: UEFI+GOP leaves less usable RAM than BIOS at the same -m.
+        // Keep ~512 MiB above BIOS 4096 for GOP / OVMF overhead.
+        .arg("4608")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
         .arg("-drive")
@@ -495,7 +494,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-cpu")
         .arg("cortex-a72")
         .arg("-m")
-        .arg(if ci { "3072" } else { "1024" })
+        .arg(if ci { "4096" } else { "1024" })
         .arg("-smp")
         .arg("4")  // APs still parked for userspace; keep boot-green under -smp 4
         .arg("-drive")
@@ -893,7 +892,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-cpu")
         .arg("rv64")
         .arg("-m")
-        .arg(if ci { "3072" } else { "2048" })
+        .arg(if ci { "4096" } else { "2048" })
         .arg("-smp")
         // Limine EDK2 path panics with -smp 4: "missing struct riscv_hart for BSP".
         // Keep 2 + dual-hart DTB + parked APs (OpenSBI may pick hartid=1 as BSP).
