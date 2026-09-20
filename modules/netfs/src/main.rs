@@ -676,10 +676,14 @@ fn trim_ctl(buf: &[u8]) -> &[u8] {
     s
 }
 
-/// Last fd on a /net/tcp/<id>/... path closed: tear the conv down once.
-/// Called by the kernel when the per-(mount,path) open count reaches zero,
-/// so a forked child sharing the fd keeps the connection alive until it too
-/// closes (dropbear forks and the parent closes its copy immediately).
+/// Last *data* fd on a /net/tcp/<id>/data path closed: tear the conv down.
+/// Called by the kernel when the per-(mount,path) open count reaches zero.
+/// Release teardown is data-fd only so transient ctl/status open+close
+/// (http/curl status polls during connect) cannot REQ_CLOSE a live conv —
+/// that raced mid-handshake and poisoned guest memory (riscv64 https sepc=0;
+/// aarch64 ostest FAR~"/net/tcp", PREP-RC=139). Dropbear fork still works:
+/// parent and child share the data fd open count, so hangup fires only when
+/// the last holder closes. Explicit ctl `hangup` write still tears down.
 unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
@@ -687,8 +691,11 @@ unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
     let Some(node) = parse_path(path) else {
         return -1;
     };
+    // Ctl/Status: open-count zero must not tear down — clients open+close
+    // these transiently while the TCP conversation must stay alive.
     let (p, id) = match node {
-        Node::Ctl(p, id) | Node::Data(p, id) | Node::Status(p, id) => (p, id),
+        Node::Data(p, id) => (p, id),
+        Node::Ctl(_, _) | Node::Status(_, _) => return 0,
         _ => return 0,
     };
     if !conv_ok(id, p) {
