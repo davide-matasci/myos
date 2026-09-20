@@ -17,6 +17,23 @@ pub const SIGINT: u32 = 2;
 pub const SIGKILL: u32 = 9;
 /// Must match newlib `<signal.h>` / Linux.
 pub const SIGTERM: u32 = 15;
+/// Must match newlib `<signal.h>` / Linux. Default action is *ignore*, so it is
+/// never in the default-fatal set below.
+pub const SIGCHLD: u32 = 17;
+
+/// Mark `SIGCHLD` pending in `parent` (child-exit notification).
+///
+/// myos has no userspace handler trampolines yet, so libgloss does not get the
+/// bit pushed at it: the runtime polls [`crate::task::signal_take_pending`] via
+/// the `SIGCHLD_TAKE` syscall from its `select()`/`poll()` loop and calls the
+/// registered handler itself.
+pub fn raise_sigchld(parent: usize) {
+    let bit = 1u32 << SIGCHLD;
+    if task::signal_is_ignored(parent, bit) {
+        return;
+    }
+    task::signal_set_pending(parent, bit);
+}
 
 /// `SIG_DFL` — default action (terminate for the signals we deliver).
 pub const HANDLER_DFL: usize = 0;

@@ -616,10 +616,13 @@ unsafe fn sys_fork() -> usize {
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys_wait(status_ptr: usize) -> usize {
     let ret: usize;
+    // a1/rsi = options; must be 0 (blocking). Leaving rsi unset made WNOHANG
+    // spuriously active when bit0 was set in leftover register state.
     core::arch::asm!(
         "syscall",
         in("rax") 7usize,
         in("rdi") status_ptr,
+        in("rsi") 0usize,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
@@ -795,10 +798,12 @@ unsafe fn sys_fork() -> usize {
 #[cfg(target_arch = "aarch64")]
 unsafe fn sys_wait(status_ptr: usize) -> usize {
     let ret: usize;
+    // a1/x1 = options; zero = blocking wait (see x86_64 sys_wait comment).
     core::arch::asm!(
         "svc #0",
         in("x8") 7usize,
         in("x0") status_ptr,
+        in("x1") 0usize,
         lateout("x0") ret,
         options(nostack),
     );
@@ -940,10 +945,12 @@ unsafe fn sys_fork() -> usize {
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys_wait(status_ptr: usize) -> usize {
     let ret: usize;
+    // a1 = options; zero = blocking wait (see x86_64 sys_wait comment).
     core::arch::asm!(
         "ecall",
         in("a7") 7usize,
         inout("a0") status_ptr => ret,
+        in("a1") 0usize,
         options(nostack),
     );
     ret

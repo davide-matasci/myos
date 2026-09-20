@@ -1166,6 +1166,7 @@ unsafe extern "C" fn ext2_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
             rename: Some(ext2_rename),
             symlink: Some(ext2_symlink),
             readlink: Some(ext2_readlink),
+                        release: None,
         };
     }
     0

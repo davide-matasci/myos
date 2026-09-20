@@ -99,7 +99,7 @@ int _fork(void) {
 
 int _wait(int *status) {
     unsigned char code = 0;
-    long ret = myos_syscall1(MYOS_SYS_WAIT, (long)(uintptr_t)&code);
+    long ret = myos_syscall2(MYOS_SYS_WAIT, (long)(uintptr_t)&code, 0);
     if (ret == (long)MYOS_SYSERR) {
         errno = ECHILD;
         return -1;

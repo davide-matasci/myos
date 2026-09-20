@@ -42,8 +42,34 @@ fn task_ctx() -> String {
 
 #[cfg(target_arch = "x86_64")]
 pub fn x86_page_fault(cr2: u64, rip: u64, rsp: u64, code: u64, user: bool) -> ! {
+    // Dump a few stack words so the faulting frame's return address (caller)
+    // is visible in the log — same idea as the #GP insn dump below.
+    let mut stack = String::new();
+    if user {
+        let a = task::current_aspace();
+        if a != 0 {
+            for i in 0..8usize {
+                let addr = rsp as usize + i * 8;
+                let mut v: u64 = 0;
+                let mut ok = true;
+                for b in 0..8usize {
+                    match crate::user::try_read_user_u8(a, addr + b) {
+                        Some(byte) => v |= (byte as u64) << (8 * b),
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !ok {
+                    break;
+                }
+                stack.push_str(&format!(" [{:#x}]={:#x}", addr, v));
+            }
+        }
+    }
     fatal_line(&format!(
-        "page fault cr2={cr2:#x} rip={rip:#x} rsp={rsp:#x} code={code:#x} {mode}{ctx}",
+        "page fault cr2={cr2:#x} rip={rip:#x} rsp={rsp:#x} code={code:#x} {mode}{ctx} stack{stack}",
         mode = if user { "user" } else { "kernel" },
         ctx = task_ctx(),
     ));

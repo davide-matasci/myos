@@ -41,6 +41,11 @@
 #define MYOS_SYS_SIGACTION 35
 #define MYOS_SYS_GETPID 36
 #define MYOS_SYS_SIGPROCMASK 37
+/* Readiness bits for a single fd (pipes): 1=readable, 2=writable, 4=hangup. */
+#define MYOS_SYS_POLLFD 38
+#define MYOS_SYS_SIGCHLD_TAKE 39
+#define MYOS_SYS_SIGCHLD_PENDING 41
+#define MYOS_SYS_PIPE_PEER 42
 
 #define MYOS_SYSERR ((unsigned long)-1)
 /* Distinct pty peer-gone error (kernel/src/task/mod.rs SYSERR_EIO): read or
@@ -49,6 +54,7 @@
 
 long myos_syscall0(long nr);
 long myos_syscall1(long nr, long a0);
+long myos_syscall2(long nr, long a0, long a1);
 long myos_syscall3(long nr, long a0, long a1, long a2);
 
 int myos_fd_is_tty(int fd);
@@ -67,4 +73,12 @@ int myos_socket_empty_read(int fd);
 int myos_socket_fcntl(int fd, int cmd, int arg);
 int myos_socket_poll(int fd, short events, short *revents);
 
+
+/* Userspace O_NONBLOCK tracking for pipes (kernel pipes are always blocking). */
+void myos_fd_nonblock_set(int fd, int on);
+int myos_fd_nonblock_get(int fd);
+void myos_fd_nonblock_clear(int fd);
+void myos_fd_nonblock_dup(int from, int to);
+
 #endif
+

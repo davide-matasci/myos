@@ -90,6 +90,7 @@ fn main() {
     ensure_feature_port(&manifest, "port_make", "target/make-x86_64-unknown-none", "ports/make/build.sh");
     ensure_feature_port(&manifest, "port_lynx", "target/lynx-x86_64-unknown-none", "ports/lynx/build.sh");
     ensure_feature_port(&manifest, "port_lua", "target/lua-x86_64-unknown-none", "ports/lua/build.sh");
+    ensure_feature_port(&manifest, "port_dropbear", "target/dropbear-x86_64-unknown-none", "ports/dropbear/build.sh");
 
     // os-test boot-CI smoke prebuilts (guest runs; skips tcc under TCG).
     {

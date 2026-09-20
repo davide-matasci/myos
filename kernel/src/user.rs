@@ -48,6 +48,18 @@ const SYS_KILL: usize = 34;
 const SYS_SIGACTION: usize = 35;
 const SYS_GETPID: usize = 36;
 const SYS_SIGPROCMASK: usize = 37;
+/// Readiness bits for a single fd (pipes): 1=readable, 2=writable, 4=hangup.
+const SYS_POLLFD: usize = 38;
+/// Take-and-clear the current task's pending `SIGCHLD` bit (returns 1/0).
+/// libgloss polls this from `select()`/`poll()` and calls the registered
+/// handler itself (myos has no userspace signal-handler trampolines yet).
+const SYS_SIGCHLD_TAKE: usize = 39;
+/// 1 if the calling task has an exited-and-unreaped child. libgloss's
+/// SIGCHLD dispatch queries this directly, so delivery does not depend on the
+/// kernel pushing a pending bit onto the correct task.
+const SYS_SIGCHLD_PENDING: usize = 41;
+/// Peer fd of a pipe end (for libgloss's SIGCHLD self-pipe wake).
+const SYS_PIPE_PEER: usize = 42;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -1697,7 +1709,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_CLOSE => sys_close(a0),
         SYS_EXEC => sys_exec(a0, a1, a2),
         SYS_FORK => sys_fork(user_rip, user_rsp),
-        SYS_WAIT => sys_wait(a0),
+        SYS_WAIT => sys_wait(a0, a1),
         SYS_LISTDIR => sys_listdir(a0, a1, a2),
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
@@ -1728,6 +1740,10 @@ pub extern "C" fn syscall_dispatch(
         SYS_SIGACTION => sys_sigaction(a0, a1, a2),
         SYS_GETPID => sys_getpid(),
         SYS_SIGPROCMASK => sys_sigprocmask(a0, a1, a2),
+        SYS_POLLFD => sys_pollfd(a0),
+        SYS_SIGCHLD_TAKE => sys_sigchld_take(),
+        SYS_SIGCHLD_PENDING => sys_sigchld_pending(),
+        SYS_PIPE_PEER => sys_pipe_peer(a0),
         _ => SYSERR,
     };
     // Deliver default-fatal pending signals before returning to userspace.
@@ -2325,15 +2341,20 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     }
 }
 
-fn sys_wait(status_ptr: usize) -> usize {
+fn sys_wait(status_ptr: usize, options: usize) -> usize {
     if status_ptr != 0 && !user_range_ok(status_ptr, 1) {
         return SYSERR;
     }
-    task::wait_child(if status_ptr == 0 {
-        None
-    } else {
-        Some(status_ptr)
-    })
+    // Bit 0 = WNOHANG (matches userspace WNOHANG = 1).
+    let nohang = (options & 1) != 0;
+    task::wait_child(
+        if status_ptr == 0 {
+            None
+        } else {
+            Some(status_ptr)
+        },
+        nohang,
+    )
 }
 
 fn sys_pipe(fds_ptr: usize) -> usize {
@@ -2350,6 +2371,37 @@ fn sys_pipe(fds_ptr: usize) -> usize {
         return SYSERR;
     }
     0
+}
+
+fn sys_pollfd(fd: usize) -> usize {
+    match task::fd_poll_bits(fd) {
+        Some(bits) => bits as usize,
+        None => SYSERR,
+    }
+}
+
+fn sys_sigchld_take() -> usize {
+    sys_sigchld_take_inner()
+}
+
+fn sys_sigchld_pending() -> usize {
+    if task::has_exited_child(task::current_id()) { 1 } else { 0 }
+}
+
+fn sys_pipe_peer(fd: usize) -> usize {
+    match task::fd_pipe_peer(fd) {
+        Some(p) => p,
+        None => SYSERR,
+    }
+}
+
+fn sys_sigchld_take_inner() -> usize {
+    let bit = 1u32 << crate::signal::SIGCHLD;
+    if task::signal_take_pending(task::current_id(), bit) {
+        1
+    } else {
+        0
+    }
 }
 
 fn sys_dup2(oldfd: usize, newfd: usize) -> usize {

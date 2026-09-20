@@ -388,6 +388,117 @@ pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     backend_write(node.mount as usize, node.path_str(), pos, buf)
 }
 
+/// Per-path open refcounts for module-backed File nodes.
+///
+/// Fork copies fd tables without a new `open()`, so several tasks can hold
+/// fds on the same vnode (dropbear forks and the parent closes the accepted
+/// socket while the child still writes to it). The module `release` hook
+/// (netfs → REQ_CLOSE) must fire only when the LAST holder closes — POSIX
+/// close semantics.
+const OPEN_REFS_CAP: usize = 256;
+struct OpenRef {
+    in_use: bool,
+    mount: u16,
+    path_len: u16,
+    path: [u8; 96],
+    count: u32,
+}
+static OPEN_REFS: Mutex<Vec<OpenRef>> = Mutex::new(Vec::new());
+
+/// Last fd on `node` closed: see [`open_ref`].
+pub fn close_ref(node: &Vnode) {
+    open_ref_release(node);
+}
+
+/// Record one more fd reference on `node` (open, dup, fork-inherited fd).
+/// Find-or-create and increment under one lock (no TOCTOU with release).
+pub fn open_ref(node: &Vnode) {
+    let mut refs = OPEN_REFS.lock();
+    for i in 0..refs.len() {
+        if refs[i].in_use
+            && refs[i].mount == node.mount
+            && refs[i].path_len == node.path_len
+            && refs[i].path[..node.path_len as usize]
+                == node.path[..node.path_len as usize]
+        {
+            refs[i].count = refs[i].count.saturating_add(1);
+            return;
+        }
+    }
+    for i in 0..refs.len() {
+        if !refs[i].in_use {
+            refs[i].in_use = true;
+            refs[i].mount = node.mount;
+            refs[i].path_len = node.path_len;
+            refs[i].path[..node.path_len as usize]
+                .copy_from_slice(&node.path[..node.path_len as usize]);
+            refs[i].count = 1;
+            return;
+        }
+    }
+    if refs.len() < OPEN_REFS_CAP {
+        refs.push(OpenRef {
+            in_use: true,
+            mount: node.mount,
+            path_len: node.path_len,
+            path: node.path,
+            count: 1,
+        });
+    }
+    // Cap exhausted: silently skip — better a leaked conv than a spurious hangup.
+}
+
+/// Lookup-only release. Never create a slot on miss (that used to allocate
+/// count=0 then fire hangup while another task still held the fd — dropbear
+/// parent close vs child banner write → EIO on riscv64).
+fn open_ref_release(node: &Vnode) {
+    let (mount, fire, path_len, path) = {
+        let mut refs = OPEN_REFS.lock();
+        let mut slot = None;
+        for i in 0..refs.len() {
+            if refs[i].in_use
+                && refs[i].mount == node.mount
+                && refs[i].path_len == node.path_len
+                && refs[i].path[..node.path_len as usize]
+                    == node.path[..node.path_len as usize]
+            {
+                slot = Some(i);
+                break;
+            }
+        }
+        let Some(slot) = slot else {
+            return;
+        };
+        if refs[slot].count > 0 {
+            refs[slot].count -= 1;
+        }
+        let done = refs[slot].count == 0;
+        if done {
+            refs[slot].in_use = false;
+        }
+        let m = refs[slot].mount;
+        let pl = refs[slot].path_len;
+        let p = refs[slot].path;
+        (m, done, pl, p)
+    };
+    if !fire {
+        return;
+    }
+    // Last holder closed: call the module release hook (netfs tears down
+    // only on /data; ctl/status are no-ops there). Do NOT synthesize a ctl
+    // hangup write — that raced the req ring and double-closed with release.
+    let rel = core::str::from_utf8(&path[..path_len as usize]).unwrap_or("");
+    let backend = {
+        let mounts = MOUNTS.lock();
+        mounts.get(mount as usize).map(|m| m.backend)
+    };
+    if let Some(MountBackend::Module(ops)) = backend {
+        if let Some(release) = ops.release {
+            let _ = unsafe { (release)(rel.as_ptr(), rel.len()) };
+        }
+    }
+}
+
 /// Device/filesystem ioctl on an open vnode.
 pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
     backend_ioctl(node.mount as usize, node.path_str(), request, arg)

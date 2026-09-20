@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/wait.h>
 #include <grp.h>
 #include <pwd.h>
 #include <stdarg.h>
@@ -273,20 +274,36 @@ int execvp(const char *file, char *const argv[]) {
     return -1;
 }
 
+#ifndef WNOHANG
+#define WNOHANG 1
+#endif
+
 /*
  * Kernel SYS_WAIT is wait-any and blocking; it stores a raw exit-code byte.
- * Ignore WNOHANG/WUNTRACED/specific pid and convert to POSIX wait status.
+ * Ignore specific pid / WUNTRACED. Honour WNOHANG via SYS_WAIT options so
+ * dropbear's `while (waitpid(-1, &st, WNOHANG) > 0)` reap loop cannot block
+ * after the first zombie (which left SSH exit-status undelivered).
  */
 pid_t waitpid(pid_t pid, int *status, int options) {
     unsigned char code = 0;
     long ret;
+    long opts = 0;
 
     (void)pid;
-    (void)options;
-    ret = myos_syscall1(MYOS_SYS_WAIT, status ? (long)(uintptr_t)&code : 0);
+
+    if ((options & WNOHANG) != 0) {
+        opts |= 1; /* kernel bit0 = WNOHANG */
+    }
+
+    ret = myos_syscall2(MYOS_SYS_WAIT, status ? (long)(uintptr_t)&code : 0, opts);
+
     if (ret == (long)MYOS_SYSERR) {
         errno = ECHILD;
         return -1;
+    }
+    /* Kernel returns 0 for WNOHANG with live children but no zombie. */
+    if (ret == 0 && (options & WNOHANG) != 0) {
+        return 0;
     }
     if (status != NULL) {
         *status = ((int)code) << 8;
@@ -419,6 +436,7 @@ int _fcntl(int fd, int cmd, int arg) {
         }
         myos_fd_dup_tty(fd, (int)ret);
         myos_fd_path_dup(fd, (int)ret);
+        myos_fd_nonblock_dup(fd, (int)ret);
         return (int)ret;
     }
 
@@ -440,7 +458,7 @@ int _fcntl(int fd, int cmd, int arg) {
             return sockfl;
         }
         (void)arg;
-        return O_RDWR;
+        return O_RDWR | (myos_fd_nonblock_get(fd) ? O_NONBLOCK : 0);
     }
     case F_SETFL: {
         int sockfl = myos_socket_fcntl(fd, F_SETFL, arg);
@@ -450,9 +468,8 @@ int _fcntl(int fd, int cmd, int arg) {
         if (sockfl == -2) {
             return -1;
         }
-        /* Non-socket: accept and ignore (kernel has no O_NONBLOCK). */
-        (void)fd;
-        (void)arg;
+        /* Non-socket (pipes): track O_NONBLOCK in userspace. */
+        myos_fd_nonblock_set(fd, (arg & O_NONBLOCK) != 0);
         return 0;
     }
     default:
@@ -471,15 +488,11 @@ int setpriority(int which, id_t who, int prio) {
 }
 
 int setsid(void) {
-    /* SYS_SETSID: become session leader (sid = pid / task slot), join a new
-     * process group (pgid = pid), and clear the controlling tty. Kernel
-     * returns the new sid, or SYSERR if already a session leader (EPERM). */
-    long ret = myos_syscall0(MYOS_SYS_SETSID);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = EPERM;
-        return -1;
-    }
-    return (int)ret;
+    /* TEMP bisect (revert): SYS_SETSID corrupts the netfs write path after
+     * setsid — kernel page fault reproducible via tcp_fork_smoke with
+     * setsid + accepted fd >= 5, and dropbear's banner write fails with
+     * EIO. No-op until root-caused: return success (sid = pid). */
+    return (int)getpid();
 }
 
 int setpgid(pid_t pid, pid_t pgid) {

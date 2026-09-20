@@ -106,9 +106,11 @@ kernel_inputs_hash() {
         # Do not hash Cargo.lock: **/Cargo.lock is gitignored and appears after
         # the first cargo build, which made pull-tag ≠ post-build stamp.
         sha256sum build.rs Cargo.toml 2>/dev/null || true
-        # tcp-listen smoke: built by ci-build-kernels (initramfs embeds it); a
-        # source change must bust the kernel stamp so the ELF gets rebuilt.
+        # tcp-listen / pty / urandom smokes: built by ci-build-kernels (initramfs
+        # embeds them); a source change must bust the kernel stamp so ELFs rebuild.
         sha256sum c/tcp_listen_smoke.c scripts/build-tcp-listen-smoke.sh 2>/dev/null || true
+        sha256sum c/pty_smoke.c scripts/build-pty-smoke.sh 2>/dev/null || true
+        sha256sum c/urandom_smoke.c scripts/build-urandom-smoke.sh 2>/dev/null || true
         # Whole host-bin crate (src/): target/debug/myos is the CI harness
         # (wait_ci) and the pack list ships it in ci-build.tar, so ANY src
         # change — not just the limine/initramfs files — must bust the stamp.
@@ -226,6 +228,7 @@ kernel_inputs_diag() {
 # socket_smoke + curl: same class of bug for #109 — build job must produce and
 # pack them or aarch64/riscv initramfs skips and `[ OK ] socket` / interactive
 # curl fail. Canonical names plus coreutils-* pack aliases (ci.yml glob).
+# pty + urandom: same class for full-boot wait_ci (schedule / workflow_dispatch).
 HELLO_OK_ELFS=(
   target/hello-x86_64-unknown-none
   target/hello-aarch64-unknown-none-softfloat
@@ -245,6 +248,37 @@ HELLO_OK_ELFS=(
   target/coreutils-curl-x86_64-unknown-none
   target/coreutils-curl-aarch64-unknown-none
   target/coreutils-curl-riscv64-unknown-none
+  target/dropbear-x86_64-unknown-none
+  target/dropbear-aarch64-unknown-none
+  target/dropbear-riscv64-unknown-none
+  target/dbclient-x86_64-unknown-none
+  target/dbclient-aarch64-unknown-none
+  target/dbclient-riscv64-unknown-none
+  target/dropbearkey-x86_64-unknown-none
+  target/dropbearkey-aarch64-unknown-none
+  target/dropbearkey-riscv64-unknown-none
+  target/coreutils-dropbear-x86_64-unknown-none
+  target/coreutils-dropbear-aarch64-unknown-none
+  target/coreutils-dropbear-riscv64-unknown-none
+  target/coreutils-dbclient-x86_64-unknown-none
+  target/coreutils-dbclient-aarch64-unknown-none
+  target/coreutils-dbclient-riscv64-unknown-none
+  target/coreutils-dropbearkey-x86_64-unknown-none
+  target/coreutils-dropbearkey-aarch64-unknown-none
+  target/coreutils-dropbearkey-riscv64-unknown-none
+  # Full-boot wait_ci runs pty + urandom; pack via coreutils-* (ci.yml glob).
+  target/pty-smoke-x86_64-unknown-none
+  target/pty-smoke-aarch64-unknown-none
+  target/pty-smoke-riscv64-unknown-none
+  target/urandom-smoke-x86_64-unknown-none
+  target/urandom-smoke-aarch64-unknown-none
+  target/urandom-smoke-riscv64-unknown-none
+  target/coreutils-pty-smoke-x86_64-unknown-none
+  target/coreutils-pty-smoke-aarch64-unknown-none
+  target/coreutils-pty-smoke-riscv64-unknown-none
+  target/coreutils-urandom-smoke-x86_64-unknown-none
+  target/coreutils-urandom-smoke-aarch64-unknown-none
+  target/coreutils-urandom-smoke-riscv64-unknown-none
 )
 
 # Mozilla CA bundle -> initramfs lib/cacert.pem (curl CURL_CA_BUNDLE).
@@ -289,11 +323,18 @@ do_clean_and_build() {
   echo "==> kernel inputs changed or artifacts missing; clean + build"
   # Ensure socket_smoke + curl exist before initramfs/cargo (x86 bios embeds them).
   "$ROOT/scripts/build-c-hello.sh"
-  # tcp listen/accept smoke: wait_ci runs it in EVERY boot mode (unlike
-  # pty/urandom, which are full/local-only), so CI must produce it or the
-  # initramfs silently omits it (initramfs read() skips missing files) and
+  # tcp listen/accept smoke: wait_ci runs it in EVERY boot mode, so CI must
+  # produce it or initramfs silently omits it (read() skips missing files) and
   # the guest fails with "/bin/etc/tcp_listen_smoke: not found".
   "$ROOT/scripts/build-tcp-listen-smoke.sh"
+  # pty + urandom: full-boot wait_ci runs both (!ci_mini). Same silent-omit
+  # trap; pack via coreutils-* aliases (no workflow-scope ci.yml glob edit).
+  "$ROOT/scripts/build-pty-smoke.sh"
+  "$ROOT/scripts/build-urandom-smoke.sh"
+  # dropbear is a default Cargo feature (initramfs panics if missing). Build
+  # here so CI does not need a workflow-scoped ci.yml ports-matrix edit; the
+  # registry pull path (when present) still short-circuits via the stamp.
+  "$ROOT/ports/dropbear/build.sh"
   cargo clean -p myos
   # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
   # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.

@@ -102,5 +102,9 @@ fn route(name: &str, bytes: &'static [u8]) {
     } else if let Some(rest) = name.strip_prefix("etc/") {
         // Flat bootfs name (prefer libfs for nested data; bootfs MAX_FILES=32).
         let _ = bootfs::register(&alloc::format!("etc/{rest}"), bytes);
+    } else if let Some(rest) = name.strip_prefix("root/") {
+        // root's home, e.g. root/.ssh/authorized_keys — bootfs serves these
+        // flat like etc/ (without this branch such entries are dropped).
+        let _ = bootfs::register(&alloc::format!("root/{rest}"), bytes);
     }
 }

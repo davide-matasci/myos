@@ -117,7 +117,7 @@ static LISTEN_PONGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// When the listen smoke stage first began (bounds the ping/pong retry loop).
 static LISTEN_STAGE_START: std::sync::OnceLock<std::time::Instant> =
     std::sync::OnceLock::new();
-const LISTEN_STAGE_BOUND: Duration = Duration::from_secs(120);
+const LISTEN_STAGE_BOUND: Duration = Duration::from_secs(180);
 /// Shared serial accumulator, so failure paths can dump fresh output.
 static SERIAL_ACC: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<String>>> =
     std::sync::OnceLock::new();
@@ -150,6 +150,203 @@ fn poke_listener() -> bool {
     }
     got >= 5 && &buf[..5] == b"pong\n"
 }
+// Dropbear SSH smoke (full boot only): start sshd in the guest; the harness
+// then opens two sequential OpenSSH clients through slirp hostfwd
+// localhost:2222 → guest:22 (see add_virtio_net in src/main.rs).
+// netd keeps a parked accept + on-listen hold (backlog 2) for real dual-SYN;
+// CI stays sequential so slirp hostfwd cannot wedge the listen path.
+const CMD_DROPBEAR_BG: &[u8] =
+    b"/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 & echo $! > /tmp/dropbear.pid\n";
+/// Stop dropbear before listen smoke so netd convs / slirp stay free for :2323.
+const CMD_DROPBEAR_STOP: &[u8] =
+    b"kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP\n";
+/// Harness-side flag: both sequential SSH clients completed with exit 0.
+static SSH_SMOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Background SSH attempt started for the current dropbear stage.
+static SSH_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Background attempt finished (ok or err); see SSH_SMOKED / SSH_ERR.
+static SSH_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SSH_ERR: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+static SSH_STAGE_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+const SSH_STAGE_BOUND: Duration = Duration::from_secs(300);
+const SSH_HOST_PORT: &str = "2222";
+
+fn dropbear_testkey_src() -> PathBuf {
+    let from_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ports/dropbear/testkey");
+    if from_manifest.is_file() {
+        return from_manifest;
+    }
+    PathBuf::from("ports/dropbear/testkey")
+}
+
+/// OpenSSH refuses world-readable private keys; copy the committed test key
+/// to a 0600 tempfile for the duration of the smoke.
+fn prepare_dropbear_testkey() -> Result<PathBuf, String> {
+    let src = dropbear_testkey_src();
+    if !src.is_file() {
+        return Err(format!("missing dropbear test key at {}", src.display()));
+    }
+    let dir = std::env::temp_dir().join("myos-dropbear-ssh-smoke");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    let dst = dir.join("testkey");
+    std::fs::copy(&src, &dst).map_err(|e| format!("copy testkey: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod testkey: {e}"))?;
+    }
+    Ok(dst)
+}
+
+/// Ensure a host `ssh` client exists. The myos-ci image should ship
+/// openssh-client; fall back to apt-get when running as root on an older image.
+fn ensure_host_ssh() -> Result<(), String> {
+    if Command::new("ssh").arg("-V").output().is_ok() {
+        return Ok(());
+    }
+    let apt = Command::new("apt-get")
+        .args(["update", "-qq"])
+        .status()
+        .map_err(|e| format!("apt-get update: {e}"))?;
+    if !apt.success() {
+        return Err("apt-get update failed; install openssh-client for SSH smoke".into());
+    }
+    let inst = Command::new("apt-get")
+        .args([
+            "install",
+            "-y",
+            "-qq",
+            "--no-install-recommends",
+            "openssh-client",
+        ])
+        .status()
+        .map_err(|e| format!("apt-get install openssh-client: {e}"))?;
+    if !inst.success() {
+        return Err("failed to install openssh-client".into());
+    }
+    if Command::new("ssh").arg("-V").output().is_err() {
+        return Err("`ssh` still missing after apt install".into());
+    }
+    Ok(())
+}
+
+fn ssh_one_client(key: &Path, tag: &str) -> Result<(), String> {
+    let remote = format!("echo {tag}; /bin/coreutils/true");
+    // Wrap with `timeout` so a hung KEX (ConnectTimeout only covers TCP
+    // connect) cannot burn the whole SSH stage budget — seen on riscv64
+    // where one Child + I/O error left ssh blocked until recv_timeout(60).
+    let output = Command::new("timeout")
+        .args([
+            "20",
+            "ssh",
+            "-4",
+            "-i",
+            key.to_str().ok_or("testkey path not utf-8")?,
+            "-p",
+            SSH_HOST_PORT,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "ConnectTimeout=8",
+            "-o",
+            "ConnectionAttempts=1",
+            "root@127.0.0.1",
+            &remote,
+        ])
+        .output()
+        .map_err(|e| format!("spawn timeout/ssh ({tag}): {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!(
+            "ssh {tag} failed (exit {:?}): stderr={stderr} stdout={stdout}",
+            output.status.code()
+        ));
+    }
+    if !stdout.contains(tag) {
+        return Err(format!(
+            "ssh {tag}: remote echo missing (stdout={stdout:?} stderr={stderr:?})"
+        ));
+    }
+    Ok(())
+}
+
+/// Open two sequential SSH sessions into the guest (pubkey auth). Both must
+/// exit 0. CI uses sequential (not overlapping) hosts: concurrent dual-SYN
+/// through QEMU slirp hostfwd still races netd's accept handoff and can leave
+/// the listen socket unable to accept further sessions for the rest of the
+/// stage (one Child + pubkey success, then only Connection-reset retries).
+/// netd's parked+on-listen backlog remains for real concurrent use; the smoke
+/// still covers accept + pubkey + exit-status twice.
+fn poke_ssh_two_clients(key: &Path) -> Result<(), String> {
+    ssh_one_client(key, "ssh-ci-a")?;
+    ssh_one_client(key, "ssh-ci-b")?;
+    Ok(())
+}
+
+/// Background worker: retry two sequential SSH clients until success or bound.
+fn start_ssh_smoke_worker() {
+    if SSH_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        // Install openssh-client + stage the test key ONCE before any connect.
+        // apt-get inside the retry loop raced the first SYNs on older images.
+        let key = match ensure_host_ssh().and_then(|_| prepare_dropbear_testkey()) {
+            Ok(k) => k,
+            Err(e) => {
+                if let Ok(mut g) = SSH_ERR.lock() {
+                    *g = e;
+                }
+                SSH_DONE.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+        };
+        // Stage clock starts here (post-apt) so the outer WaitResult bound
+        // matches the worker's retry window.
+        let start = Instant::now();
+        let _ = SSH_STAGE_START.set(start);
+        // Longer settle on slow arches (riscv64): early SYNs before dropbear
+        // has armed accept hang in slirp or produce Child+I/O-error and wedge
+        // the listener for the rest of the stage. Do NOT TCP-probe :2222 —
+        // a connect+close is itself a half-open session that can wedge.
+        std::thread::sleep(Duration::from_secs(8));
+        let mut last_err = String::from("ssh smoke never attempted");
+        while start.elapsed() < SSH_STAGE_BOUND {
+            match poke_ssh_two_clients(&key) {
+                Ok(()) => {
+                    SSH_SMOKED.store(true, std::sync::atomic::Ordering::SeqCst);
+                    SSH_DONE.store(true, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+                Err(e) => {
+                    last_err = e;
+                    // Back off harder than 1s: each failed attempt can leave a
+                    // SynReceived orphan in netd until handshake-age reclaim
+                    // (~10s). Flooding SYNs every second filled MAX_CONV on
+                    // riscv64 before dropbear could accept a live session.
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+            }
+        }
+        if let Ok(mut g) = SSH_ERR.lock() {
+            *g = last_err;
+        }
+        SSH_DONE.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
 // HTTPS GET (requires network + wall clock + mbedtls).
 const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 // curl over userspace sockets + mbedtls (same URL as https smoke).
@@ -215,6 +412,16 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     if !ci_mini() {
         cmds.push(CMD_HTTP);
         cmds.push(CMD_CURL);
+        // Dropbear SSH smoke: full boot only, early after outbound HTTPS so we
+        // still reach it if later ostest/pty stages burn the QEMU budget.
+        // Host opens two sequential clients via slirp hostfwd (:2222→:22).
+        if port_enabled("port_dropbear") {
+            cmds.push(CMD_DROPBEAR_BG);
+            // Tear down sshd before ostest/pty/listen. Leaving dropbear up
+            // through ostest raced netd on aarch64 (user fault FAR~"net/tcp",
+            // PREP-RC=139) and starved listen accept on uefi.
+            cmds.push(CMD_DROPBEAR_STOP);
+        }
         // os-test basic smoke (TESTLIST) + setpwent gate (full boot only;
         // too slow for boot-mini). pass_rate is reported, not gated.
         cmds.push(CMD_OS_TEST_PREP);
@@ -500,7 +707,9 @@ fn interactive_pty_cmd_ok(serial: &str) -> bool {
     if !tail.contains("$ /bin/etc/pty_smoke 2") || serial.contains("exception:") {
         return false;
     }
-    if !tail.contains("/dev/pts/") || !tail.contains("[ OK ] s2 EIO") {
+    // Stage 2 is the openpty round-trip + EIO path; it does not print a
+    // `/dev/pts/N` path (that is stage 0/1). Match the `[ OK ] s2 EIO` marker.
+    if !tail.contains("[ OK ] s2 EIO") {
         return false;
     }
     at_interactive_prompt(serial)
@@ -564,6 +773,30 @@ fn interactive_ostest_prep_ok(serial: &str) -> bool {
         && !after.contains("cannot create")
         && !after.contains("Read-only file system")
         && at_interactive_prompt(serial)
+}
+
+/// Hard-fail ostest prep when the guest already reported a non-zero PREP-RC
+/// or a user fault (aarch64: data abort mid-suite → PREP-RC=139, no pass_rate).
+fn interactive_ostest_prep_failed(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let echoed =
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
+    if !tail.contains(echoed) {
+        return false;
+    }
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    if after.contains("[ WARN ] user fault") || after.contains("user panic") {
+        return true;
+    }
+    // PREP-RC=0 is success; any other decoded RC means the suite aborted.
+    for line in after.lines() {
+        if let Some(rest) = line.strip_prefix("PREP-RC=") {
+            if rest.trim() != "0" {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// os-test setpwent, stage 2: cat the produced .err/.out (after smoke subset). Pass = plain `SETPWENT-OK` (and never plain
@@ -676,11 +909,19 @@ fn interactive_curl_cmd_failed(serial: &str) -> bool {
 /// Hard fail so we do not burn the full QEMU timeout after a printed TLS error.
 fn interactive_https_cmd_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    tail.contains("$ http https://example.com/")
-        && (tail.contains("tls handshake fail")
-            || tail.contains("tls err ")
-            || tail.contains("dns resolve fail")
-            || tail.contains("tcp connect timeout"))
+    if !tail.contains("$ http https://example.com/") {
+        return false;
+    }
+    // Guest http client can page-fault after printing the body (seen on
+    // riscv64: Example Domain in HTML, then instruction page fault sepc=0)
+    // before `[ OK ] https` — fail fast instead of burning the QEMU budget.
+    if tail.contains("[ WARN ] user fault") || tail.contains("user panic") {
+        return true;
+    }
+    tail.contains("tls handshake fail")
+        || tail.contains("tls err ")
+        || tail.contains("dns resolve fail")
+        || tail.contains("tcp connect timeout")
 }
 
 
@@ -775,6 +1016,17 @@ fn interactive_listen_cat_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
+/// Dropbear started in the guest and both host SSH clients succeeded.
+fn interactive_dropbear_bg_ok(serial: &str) -> bool {
+    if !SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    command_echoed(
+        serial,
+        "/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 & echo $! > /tmp/dropbear.pid",
+    ) && at_interactive_prompt(serial)
+}
+
 fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[&str]) -> bool {
     match cmd_index {
         0 => interactive_unknown_cmd_ok(serial),
@@ -789,20 +1041,21 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         9 => interactive_tmp_redir_ok(serial),
         10 => interactive_which_ls_cmd_ok(serial),
         11 => interactive_dns_cmd_ok(serial),
-        // HTTPS/curl smokes and the os-test setpwent stage only exist in full
-        // mode; in mini those slots are the interrupt/seed/arrow tail (matched
-        // by position below). Full-mode length is 19, mini is 15.
-        // HTTPS/curl smokes and the os-test setpwent stage only exist in full
-        // mode; in mini those slots are the interrupt/seed/arrow tail (matched
-        // by position below). Full-mode length is 20 (21 with the pty smoke),
-        // mini is 15.
-        12 if cmds.len() >= 20 => interactive_https_cmd_ok(serial),
-        13 if cmds.len() >= 20 => interactive_curl_cmd_ok(serial),
-        14 if cmds.len() >= 20 => interactive_ostest_prep_ok(serial),
-        15 if cmds.len() >= 20 => interactive_ostest_cat_ok(serial),
-        16 if cmds.len() >= 20 => interactive_ostest_result_ok(serial),
-        i if cmds.len() >= 20 && cmds[i] == CMD_PTY => interactive_pty_cmd_ok(serial),
+        // Full-mode-only stages matched by command content (indexes shift when
+        // dropbear SSH smoke is inserted after curl).
+        i if cmds[i] == CMD_HTTP => interactive_https_cmd_ok(serial),
+        i if cmds[i] == CMD_CURL => interactive_curl_cmd_ok(serial),
+        i if cmds[i] == CMD_DROPBEAR_BG => interactive_dropbear_bg_ok(serial),
+        i if cmds[i] == CMD_OS_TEST_PREP => interactive_ostest_prep_ok(serial),
+        i if cmds[i] == CMD_OS_TEST_CAT => interactive_ostest_cat_ok(serial),
+        i if cmds[i] == CMD_OS_TEST_RESULT => interactive_ostest_result_ok(serial),
+        i if cmds[i] == CMD_PTY => interactive_pty_cmd_ok(serial),
         i if cmds[i] == CMD_URANDOM => interactive_urandom_cmd_ok(serial),
+        i if cmds[i] == CMD_DROPBEAR_STOP => {
+            command_echoed(serial, "kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP")
+                && serial.contains("DROPBEAR-STOP")
+                && at_interactive_prompt(serial)
+        }
         i if cmds[i] == CMD_LISTEN_BG => interactive_listen_bg_ok(serial),
         i if cmds[i] == CMD_LISTEN_CAT => interactive_listen_cat_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
@@ -1007,6 +1260,61 @@ fn advance_shell_ci(
             }
             return;
         }
+        ShellStage::WaitResult if cmds[*cmd_index] == CMD_DROPBEAR_BG
+            && !SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) =>
+        {
+            // Guest sshd is backgrounded with output redirected; host clients
+            // connect via hostfwd. Kick a worker once and wait for both
+            // sequential sessions to exit cleanly. The stage clock starts
+            // inside the worker *after* ensure_host_ssh (apt) so install
+            // time does not burn the connect/retry budget.
+            start_ssh_smoke_worker();
+            if SSH_DONE.load(std::sync::atomic::Ordering::SeqCst) {
+                if SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let err = SSH_ERR
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_else(|_| "ssh smoke failed".into());
+                for ch in "cat /tmp/dropbear.out\n".bytes() {
+                    send_shell_byte(stdin, ch);
+                }
+                std::thread::sleep(Duration::from_secs(3));
+                let fresh = SERIAL_ACC
+                    .get()
+                    .and_then(|a| a.lock().ok().map(|g| g.clone()))
+                    .unwrap_or_default();
+                eprintln!(
+                    "error: dropbear SSH smoke failed ({err}); dropbear.out + last serial:\n---\n{}\n---",
+                    fresh.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>()
+                );
+                std::process::exit(1);
+            }
+            if SSH_STAGE_START
+                .get()
+                .is_some_and(|t| t.elapsed() > SSH_STAGE_BOUND)
+            {
+                for ch in "cat /tmp/dropbear.out\n".bytes() {
+                    send_shell_byte(stdin, ch);
+                }
+                std::thread::sleep(Duration::from_secs(3));
+                let fresh = SERIAL_ACC
+                    .get()
+                    .and_then(|a| a.lock().ok().map(|g| g.clone()))
+                    .unwrap_or_default();
+                let err = SSH_ERR
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                eprintln!(
+                    "error: dropbear SSH smoke never completed within {SSH_STAGE_BOUND:?} ({err}); dropbear.out + last serial:\n---\n{}\n---",
+                    fresh.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>()
+                );
+                std::process::exit(1);
+            }
+            return;
+        }
         ShellStage::WaitResult if shell_cmd_result_ok(acc, cmds, *cmd_index, extra) => {
             *cmd_index += 1;
             if *cmd_index >= cmds.len() {
@@ -1154,21 +1462,30 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 // drops the HTTPS/curl smokes and 12 is the interrupt test).
                 if shell_stage == ShellStage::WaitResult
                     && !mini
-                    && shell_cmd_index == 12
+                    && cmds.get(shell_cmd_index) == Some(&CMD_HTTP)
                     && interactive_https_cmd_failed(&acc)
                 {
                     let _ = child.kill();
                     break child.wait().expect("wait after https fail-fast kill");
                 }
-                // curl: printed `curl: (N) …` — don't wait 180s for Example Domain.
+                // curl: back at `$` with `curl: (N)` and no Example Domain —
+                // don't wait 180s. Mid-retry errors must not kill QEMU early.
                 // Index 13 == interactive curl HTTPS smoke (full mode only).
                 if shell_stage == ShellStage::WaitResult
                     && !mini
-                    && shell_cmd_index == 13
+                    && cmds.get(shell_cmd_index) == Some(&CMD_CURL)
                     && interactive_curl_cmd_failed(&acc)
                 {
                     let _ = child.kill();
                     break child.wait().expect("wait after curl fail-fast kill");
+                }
+                if shell_stage == ShellStage::WaitResult
+                    && !mini
+                    && cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_PREP)
+                    && interactive_ostest_prep_failed(&acc)
+                {
+                    let _ = child.kill();
+                    break child.wait().expect("wait after ostest fail-fast kill");
                 }
                 // Login: never burn 600s on sticky UART echo (`rroooo…`).
                 // Do not start the bound until late boot — OVMF + Limine on UEFI
@@ -1461,7 +1778,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `dns www.google.com` did not print `IP: x.x.x.x` and `[ OK ] dns`");
             }
         }
-        if cmds.len() == 20 && shell_cmd_index == 13 && !interactive_curl_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_CURL) && !interactive_curl_cmd_ok(&serial) {
             if !serial.contains(CURL_ECHO) {
                 eprintln!("error: serial did not echo the curl HTTPS command on one clean line at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1473,7 +1790,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if cmds.len() == 20 && shell_cmd_index == 12 && !interactive_https_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_HTTP) && !interactive_https_cmd_ok(&serial) {
             if !command_echoed(&serial, "http https://example.com/") {
                 eprintln!("error: serial did not echo `$ http https://example.com/` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1487,25 +1804,31 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
             std::process::exit(1);
         }
-        if cmds.len() == 20 && shell_cmd_index == 14 && !interactive_ostest_prep_ok(&serial) {
-            eprintln!(
-                "error: os-test basic smoke (ci-smoke-copy + TESTLIST make report) did not finish (want pass_rate= line, then `$`)"
-            );
+        if cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_PREP) && !interactive_ostest_prep_ok(&serial) {
+            if interactive_ostest_prep_failed(&serial) {
+                eprintln!(
+                    "error: os-test basic smoke aborted (user fault or PREP-RC!=0)"
+                );
+            } else {
+                eprintln!(
+                    "error: os-test basic smoke (ci-smoke-copy + TESTLIST make report) did not finish (want pass_rate= line, then `$`)"
+                );
+            }
             std::process::exit(1);
         }
-        if cmds.len() == 20 && shell_cmd_index == 15 && !interactive_ostest_cat_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_CAT) && !interactive_ostest_cat_ok(&serial) {
             eprintln!(
                 "error: os-test setpwent cat stage failed (missing out/basic/pwd/setpwent.err/.out?)"
             );
             std::process::exit(1);
         }
-        if cmds.len() == 20 && shell_cmd_index == 16 && !interactive_ostest_result_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_RESULT) && !interactive_ostest_result_ok(&serial) {
             eprintln!(
                 "error: os-test setpwent gate failed (want SETPWENT-OK; .out must be empty on pass)"
             );
             std::process::exit(1);
         }
-        if cmds.len() >= 21 && shell_cmd_index == 17 && !interactive_pty_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_PTY) && !interactive_pty_cmd_ok(&serial) {
             if !command_echoed(&serial, "/bin/etc/pty_smoke") {
                 eprintln!("error: serial did not echo `$ /bin/etc/pty_smoke` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1513,11 +1836,11 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             } else if !at_interactive_prompt(&serial) {
                 eprintln!("error: shell did not return to `$` after interactive pty_smoke");
             } else {
-                eprintln!("error: interactive pty_smoke did not print `/dev/pts/` and `[ OK ] pty`");
+                eprintln!("error: interactive pty_smoke did not print `[ OK ] s2 EIO`");
             }
             std::process::exit(1);
         }
-        if cmds.len() >= 22 && shell_cmd_index == 18 && !interactive_urandom_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_URANDOM) && !interactive_urandom_cmd_ok(&serial) {
             if !command_echoed(&serial, "/bin/etc/urandom_smoke") {
                 eprintln!("error: serial did not echo `$ /bin/etc/urandom_smoke` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1526,6 +1849,29 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: shell did not return to `$` after interactive urandom_smoke");
             } else {
                 eprintln!("error: interactive urandom_smoke did not print `[ OK ] urandom`");
+            }
+            std::process::exit(1);
+        }
+        if cmds.get(shell_cmd_index) == Some(&CMD_DROPBEAR_BG)
+            && !interactive_dropbear_bg_ok(&serial)
+        {
+            let err = SSH_ERR
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            if !SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
+                eprintln!(
+                    "error: dropbear SSH smoke failed — need two sequential host SSH clients with clean exit-status (last error: {err})"
+                );
+            } else if !command_echoed(
+                &serial,
+                "/bin/custom/dropbear -F -E -p 22 -r /etc/dropbear/ed25519_hostkey > /tmp/dropbear.out 2>&1 &",
+            ) {
+                eprintln!("error: serial did not echo dropbear start command");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after dropbear SSH smoke");
+            } else {
+                eprintln!("error: dropbear SSH smoke incomplete");
             }
             std::process::exit(1);
         }

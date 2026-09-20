@@ -119,6 +119,8 @@ int pipe(int fildes[2]) {
     }
     fildes[0] = (int)fds[0];
     fildes[1] = (int)fds[1];
+    myos_fd_nonblock_clear(fildes[0]);
+    myos_fd_nonblock_clear(fildes[1]);
     return 0;
 }
 

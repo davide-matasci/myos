@@ -32,13 +32,16 @@ const REP_DATA: u8 = 2;
 const REP_STATUS: u8 = 3;
 const REP_ERR: u8 = 4;
 
+
+
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
 const MSG_CAP: usize = 2048;
-const MAX_CONV: usize = 16;
+const MAX_CONV: usize = 32;
 const FILE_IO: usize = 2048;
 const DHCP_POLLS: usize = 3000;
 const TICK_MS: u64 = 100;
+
 const ICMP_IDENT_BASE: u16 = 0x22b;
 const TCP_RX: usize = 4096;
 const TCP_TX: usize = 4096;
@@ -98,8 +101,22 @@ struct Conv {
     accept_wait: bool,
     /// Accepted connection parked for the next ctl "accept": new conv id.
     accepted: Option<u16>,
+    /// Monotonic per-listener handoff counter. Letting libgloss tell a fresh
+    /// "accepted <N> <seq>" from a stale one (the status file keeps the last
+    /// accepted string until netd replies again) prevents the app's blocking
+    /// accept() from returning the same connection several times.
+    accept_seq: u32,
     /// Graceful close in flight: close() sent, socket removed once Closed.
     closing: bool,
+    /// close() requested while the handshake was still completing and
+    /// pending TX could not be flushed yet: pump flushes pending first,
+    /// then finishes the close. Dropping the conv here would lose the
+    /// deferred REQ_SEND bytes (forked-child banner write race).
+    closing_after_flush: bool,
+    /// Created by pump_accepts (incoming). Orphan reclaim must only touch
+    /// these: client clones start in TCP Closed and would be freed before
+    /// connect() (aarch64 socket_smoke connect fail on tip 0b4444e).
+    from_accept: bool,
 }
 
 impl Conv {
@@ -118,7 +135,10 @@ impl Conv {
         listen_port: 0,
         accept_wait: false,
         accepted: None,
+        accept_seq: 0,
         closing: false,
+        closing_after_flush: false,
+        from_accept: false,
     };
 }
 
@@ -188,9 +208,10 @@ fn parse_connect(cmd: &[u8]) -> Option<(Ipv4Address, Option<u16>)> {
     Some((addr, Some(port)))
 }
 
-/// Status payload for an accepted connection: "accepted <N> <ip>!<port>".
+/// Status payload for an accepted connection:
+/// "accepted <N> <ip>!<port> <seq>".
 /// Hand-rolled decimal formatting keeps the image free of fmt/memcpy deps.
-fn accept_reply(convs: &mut [Conv; MAX_CONV], n: u16) -> alloc::vec::Vec<u8> {
+fn accept_reply(convs: &mut [Conv; MAX_CONV], n: u16, seq: u32) -> alloc::vec::Vec<u8> {
     fn push_dec(out: &mut alloc::vec::Vec<u8>, mut v: u32) {
         let mut tmp = [0u8; 10];
         let mut i = 0;
@@ -224,6 +245,8 @@ fn accept_reply(convs: &mut [Conv; MAX_CONV], n: u16) -> alloc::vec::Vec<u8> {
         out.push(b'!');
         push_dec(&mut out, c.remote_port as u32);
     }
+    out.push(b' ');
+    push_dec(&mut out, seq);
     out
 }
 
@@ -375,8 +398,19 @@ fn handle_clone(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, proto
     }
 }
 
+
+
 fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize) {
     if i >= MAX_CONV {
+        return;
+    }
+    if matches!(convs[i].kind, Kind::Tcp) && convs[i].listen_port != 0 {
+    }
+    // Idempotent: a forked child's exit closes the inherited netfs fd AND the
+    // parent's close() may arrive in the same request burst. A second
+    // drop_conv on an already-closing conv used to hit the !live path and
+    // sockets.remove() the socket, discarding the queued TX data + FIN.
+    if convs[i].closing || convs[i].closing_after_flush {
         return;
     }
     if let Some(h) = convs[i].handle.take() {
@@ -386,6 +420,24 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
         let live = matches!(convs[i].kind, Kind::Tcp)
             && !matches!(sockets.get_mut::<tcp::Socket>(h).state(), tcp::State::Closed);
         if live {
+            // A REQ_SEND may have been stashed while the handshake was still
+            // completing (accept returns on SynReceived). Flush what we can
+            // now; if the socket still cannot send, defer the close until the
+            // pump drains pending, then finish the close.
+            if convs[i].pending_len > 0 {
+                let s = sockets.get_mut::<tcp::Socket>(h);
+                if s.can_send() {
+                    let n = convs[i].pending_len as usize;
+                    if s.send_slice(&convs[i].pending[..n]).is_ok() {
+                        convs[i].pending_len = 0;
+                    }
+                }
+            }
+            if convs[i].pending_len > 0 {
+                convs[i].closing_after_flush = true;
+                convs[i].handle = Some(h);
+                return;
+            }
             sockets.get_mut::<tcp::Socket>(h).close();
             convs[i].handle = Some(h);
             convs[i].closing = true;
@@ -458,7 +510,8 @@ fn handle_ctl(
             }
         }
         if let Some(n) = convs[i].accepted.take() {
-            let rep = accept_reply(convs, n);
+            let seq = convs[i].accept_seq;
+            let rep = accept_reply(convs, n, seq);
             reply(chan, REP_STATUS, conv, 0, &rep);
             return;
         }
@@ -466,6 +519,11 @@ fn handle_ctl(
             reply(chan, REP_ERR, conv, -1, b"accept busy");
             return;
         }
+        // A select()ing server keys listener readiness off the status file.
+        // Clear any stale "accepted <old>" so it does not re-accept the
+        // previous connection; status flips back to "accepted <new>" only
+        // when pump_accepts parks a fresh connection.
+        reply(chan, REP_STATUS, conv, 0, b"listening");
         convs[i].accept_wait = true; // parked; replied from the poll pump
         return;
     }
@@ -537,6 +595,55 @@ fn handle_ctl(
 /// Poll TCP listeners: when smoltcp moved a listening socket out of the
 /// Listen state, an incoming connection landed. Hand it to a fresh conv,
 /// re-arm a listener on the same port, and complete any parked "accept".
+fn rearm_listener(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize) {
+    let port = convs[i].listen_port;
+    if let Some(h) = convs[i].handle.take() {
+        {
+            let s = sockets.get_mut::<tcp::Socket>(h);
+            if !matches!(s.state(), tcp::State::Closed | tcp::State::Listen) {
+                s.abort();
+            }
+        }
+        sockets.remove(h);
+    }
+    let rx = tcp::SocketBuffer::new(vec![0; TCP_RX]);
+    let tx = tcp::SocketBuffer::new(vec![0; TCP_TX]);
+    let nh = sockets.add(tcp::Socket::new(rx, tx));
+    {
+        let ls = sockets.get_mut::<tcp::Socket>(nh);
+        let _ = ls.listen(port);
+    }
+    convs[i].handle = Some(nh);
+}
+
+/// Free a never-connected accepted TCP slot (failed handshake / peer abort).
+/// Clears any listener `accepted` pointer at this id and notifies netfs.
+fn force_free_orphan(
+    convs: &mut [Conv; MAX_CONV],
+    sockets: &mut SocketSet<'_>,
+    chan: usize,
+    i: usize,
+) {
+    for l in 0..MAX_CONV {
+        if convs[l].accepted == Some(i as u16) {
+            convs[l].accepted = None;
+        }
+    }
+    if let Some(h) = convs[i].handle.take() {
+        {
+            let s = sockets.get_mut::<tcp::Socket>(h);
+            if !matches!(s.state(), tcp::State::Closed) {
+                s.abort();
+            }
+        }
+        sockets.remove(h);
+    }
+    if !matches!(convs[i].kind, Kind::Empty) {
+        reply(chan, REP_STATUS, i as u16, 0, b"hangup");
+    }
+    convs[i] = Conv::EMPTY;
+}
+
 fn pump_accepts(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
@@ -546,19 +653,34 @@ fn pump_accepts(
         if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port == 0 {
             continue;
         }
+        // Stale park: orphan reclaim emptied the slot but left `accepted` set,
+        // which blocked every further handoff (riscv SSH: only a late Child).
+        if let Some(n) = convs[i].accepted {
+            let n = n as usize;
+            if n >= MAX_CONV || matches!(convs[n].kind, Kind::Empty) {
+                convs[i].accepted = None;
+            }
+        }
         let Some(h) = convs[i].handle else {
             continue;
         };
-        let arrived = {
-            let s = sockets.get_mut::<tcp::Socket>(h);
-            if s.state() == tcp::State::Listen {
-                false
-            } else {
-                true
+        let st = sockets.get_mut::<tcp::Socket>(h).state();
+        // Only SynReceived/Established are real accept handoffs. Peer-aborted
+        // sockets left on the listen handle (CloseWait/FinWait/…) used to look
+        // like "arrived" and were handed to dropbear as Child + write EIO.
+        match st {
+            tcp::State::Listen => continue,
+            tcp::State::Closed => {
+                let port = convs[i].listen_port;
+                let s = sockets.get_mut::<tcp::Socket>(h);
+                let _ = s.listen(port);
+                continue;
             }
-        };
-        if !arrived {
-            continue;
+            tcp::State::SynReceived | tcp::State::Established => {}
+            _ => {
+                rearm_listener(convs, sockets, i);
+                continue;
+            }
         }
         // Peer endpoint captured from the connected socket.
         let (remote4, remote_port) = {
@@ -571,6 +693,15 @@ fn pump_accepts(
                 None => (Ipv4Address::new(0, 0, 0, 0), 0),
             }
         };
+        // One parked handoff at a time. Overwriting `accepted` orphaned the
+        // previous conv (never opened by userspace → never REQ_CLOSE), which
+        // exhausted MAX_CONV under concurrent SSH clients and left the listen
+        // socket stuck with nowhere to hand off. Hold the new connection on
+        // this listen handle until userspace takes the parked one; that gives
+        // an effective backlog of 1 (parked) + 1 (on-listen) = 2 SYNs.
+        if convs[i].accepted.is_some() {
+            continue;
+        }
         // Move the connected socket to a free conv.
         let slot = (0..MAX_CONV)
             .find(|&n| matches!(convs[n].kind, Kind::Empty) && n != i);
@@ -590,16 +721,21 @@ fn pump_accepts(
             remote4,
             remote_port,
             have_remote: true,
-            connected: true,
+            // Do NOT mark connected here: at handoff the socket may still be
+            // SynReceived (may_recv()==false). pump_sockets owns the
+            // connected flag and sets it only once Established; marking it now
+            // made the hangup check fire immediately (may_recv()==false) and
+            // tore the conv down before the server could send its banner.
+            connected: false,
+            from_accept: true,
             ..Conv::EMPTY
         };
         // Tell netfs about the new conv: it only allocates convs on clone, so
         // without this the guest cannot open /net/tcp/<n>/data (conv_ok
         // fails) and accept() dies with EIO.
-        reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
-        // Introduce the new conv to netfs: pump-accepted convs bypass clone,
-        // so without this netfs never marks the slot used and the client's
-        // open of /net/tcp/<n>/data fails.
+        // Tell netfs about the new conv exactly once: pump-accepted convs
+        // bypass clone, so without this netfs never marks the slot used and
+        // the client's open of /net/tcp/<n>/data fails.
         reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
         // Re-arm a fresh listener on the same port for the next connection.
         let rx = tcp::SocketBuffer::new(vec![0; TCP_RX]);
@@ -607,16 +743,18 @@ fn pump_accepts(
         let nh = sockets.add(tcp::Socket::new(rx, tx));
         {
             let ls = sockets.get_mut::<tcp::Socket>(nh);
-            let _ = ls.listen(port);
+            match ls.listen(port) {
+                Ok(()) => {}
+                Err(_) => {}
+            }
         }
         convs[i].handle = Some(nh);
         convs[i].accepted = Some(n as u16);
-        // Tell netfs about the new conv: the guest never cloned it, so its
-        // slot is unused there and opening /net/tcp/<n>/data would fail.
-        reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
+        convs[i].accept_seq = convs[i].accept_seq.wrapping_add(1);
         if convs[i].accept_wait {
             convs[i].accept_wait = false;
-            let rep = accept_reply(convs, n as u16);
+            let seq = convs[i].accept_seq;
+            let rep = accept_reply(convs, n as u16, seq);
             reply(chan, REP_STATUS, i as u16, 0, &rep);
         }
     }
@@ -775,6 +913,14 @@ fn pump_sockets(
                         }
                     }
                 }
+                // Deferred close (drop_conv couldn't flush pending yet):
+                // pending fully queued now -> finish the graceful close.
+                if convs[i].closing_after_flush && convs[i].pending_len == 0 {
+                    let s = sockets.get_mut::<tcp::Socket>(h);
+                    s.close();
+                    convs[i].closing = true;
+                    convs[i].closing_after_flush = false;
+                }
                 let s = sockets.get_mut::<tcp::Socket>(h);
                 // Only Established (may_send && may_recv). CloseWait has may_send but
                 // may_recv==false once RX is empty — never advertise "connected" there
@@ -857,6 +1003,7 @@ fn main() -> ! {
     let dhcp = sockets.add(dhcpv4::Socket::new());
     let mut convs = [Conv::EMPTY; MAX_CONV];
     let mut local_ports = LOCAL_PORT_BASE;
+    let mut ticks: u32 = 0;
     let mut dhcp_ok = poll_dhcp(&mut iface, &mut device, &mut sockets, dhcp, &mut clock);
 
     // Daemon poll: nic, /dev/netd requests, sockets. Bound work per tick.
@@ -915,11 +1062,12 @@ fn main() -> ! {
             iface.poll(now, &mut device, &mut sockets);
         }
 
-        pump_accepts(&mut convs, &mut sockets, chan);
-        pump_sockets(&mut convs, &mut sockets, &device, chan);
-        // Finish graceful closes: once a closing socket reaches Closed, free it.
+        ticks += 1;
+        // Reclaim before accept so a free slot is available when a SYN lands
+        // (riscv SSH was starving: pump_accepts ran first, MAX_CONV full of
+        // hungup/closing orphans, host timed out, late Child then write EIO).
         for i in 0..MAX_CONV {
-            if !convs[i].closing {
+            if !convs[i].closing && !convs[i].closing_after_flush {
                 continue;
             }
             let closed = match convs[i].handle {
@@ -936,6 +1084,64 @@ fn main() -> ! {
                 convs[i] = Conv::EMPTY;
             }
         }
+        for i in 0..MAX_CONV {
+            if convs[i].hungup
+                && !convs[i].closing
+                && !convs[i].closing_after_flush
+                && convs[i].listen_port == 0
+                && !matches!(convs[i].kind, Kind::Empty)
+            {
+                drop_conv(&mut convs, &mut sockets, i);
+            }
+        }
+        // Failed-handshake orphans: hangup reclaim only runs after `connected`
+        // (Established). SynReceived/SynSent handoffs that die (host
+        // ConnectTimeout RST) never set connected, sat forever, filled
+        // MAX_CONV, and left dropbear with a late dead Child + write EIO on
+        // riscv64. Free them; age Syn* via unused TCP `ident` (~10s).
+        // Only accept-originated slots: client clones sit in Closed until
+        // connect() and must not be force-freed (broke aarch64 socket_smoke).
+        for i in 0..MAX_CONV {
+            if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port != 0 {
+                continue;
+            }
+            if !convs[i].from_accept {
+                continue;
+            }
+            if convs[i].connected
+                || convs[i].closing
+                || convs[i].closing_after_flush
+                || convs[i].hungup
+            {
+                continue;
+            }
+            let dead = match convs[i].handle {
+                None => true,
+                Some(h) => {
+                    let st = sockets.get_mut::<tcp::Socket>(h).state();
+                    match st {
+                        tcp::State::Closed
+                        | tcp::State::TimeWait
+                        | tcp::State::CloseWait
+                        | tcp::State::LastAck
+                        | tcp::State::Closing
+                        | tcp::State::FinWait1
+                        | tcp::State::FinWait2 => true,
+                        tcp::State::SynReceived | tcp::State::SynSent => {
+                            // `ident` is ICMP-only; reuse as handshake age ticks.
+                            convs[i].ident = convs[i].ident.saturating_add(1);
+                            convs[i].ident >= 100 // ~10s at TICK_MS=100
+                        }
+                        _ => false,
+                    }
+                }
+            };
+            if dead {
+                force_free_orphan(&mut convs, &mut sockets, chan, i);
+            }
+        }
+        pump_accepts(&mut convs, &mut sockets, chan);
+        pump_sockets(&mut convs, &mut sockets, &device, chan);
     }
 }
 

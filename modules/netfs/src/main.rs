@@ -30,8 +30,8 @@ const REP_HDR: usize = 9;
 /// Cap matches kernel `FILE_IO_TMP` (2048). TLS ClientHello / cert fragments
 /// need more than the old 512-byte slots (HTTPS handshake timed out in CI).
 const MSG_CAP: usize = 2048;
-const RING: usize = 8;
-const MAX_CONV: usize = 16;
+const RING: usize = 128; /* SSH writev/kex burst; was 32 — riscv EIO */
+const MAX_CONV: usize = 32;
 /// Per-conversation RX staging. Cert chains exceed 512; drop = TLS timeout.
 const DATA_CAP: usize = 8192;
 const STATUS_CAP: usize = 64;
@@ -51,9 +51,9 @@ impl Msg {
 
 struct RingBuf {
     slots: [Msg; RING],
-    head: u8,
-    tail: u8,
-    count: u8,
+    head: u16,
+    tail: u16,
+    count: u16,
 }
 
 impl RingBuf {
@@ -94,6 +94,11 @@ impl RingBuf {
 
 struct Conv {
     used: bool,
+    /// Client enqueued REQ_CLOSE; keep `used` until netd's hangup ack so the
+    /// slot is not reused while a stale hangup reply can still land (that made
+    /// the next outbound connect see status "hangup" → curl:7 / ECONNREFUSED,
+    /// especially on slower UEFI TCG after a long https drain).
+    closing: bool,
     proto: u8,
     data_len: u16,
     data: [u8; DATA_CAP],
@@ -104,6 +109,7 @@ struct Conv {
 impl Conv {
     const EMPTY: Self = Self {
         used: false,
+        closing: false,
         proto: 0,
         data_len: 0,
         data: [0; DATA_CAP],
@@ -262,6 +268,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
         if !st.convs[i].used {
             st.convs[i] = Conv {
                 used: true,
+                closing: false,
                 proto,
                 data_len: 0,
                 data: [0; DATA_CAP],
@@ -272,12 +279,18 @@ fn alloc_conv(proto: u8) -> Option<u16> {
         }
     }
     // Second pass: reclaim peer-hangup slots with no pending RX (client forgot
-    // ctl hangup). Without this, curl after https can starve at MAX_CONV.
+    // ctl hangup). Skip `closing` — those still await netd's CLOSE ack.
+    // Without reclaim, curl after https can starve at MAX_CONV.
     for i in 0..MAX_CONV {
         let c = &st.convs[i];
-        if c.used && c.data_len == 0 && (status_is(c, b"hangup") || status_is(c, b"error")) {
+        if c.used
+            && !c.closing
+            && c.data_len == 0
+            && (status_is(c, b"hangup") || status_is(c, b"error"))
+        {
             st.convs[i] = Conv {
                 used: true,
+                closing: false,
                 proto,
                 data_len: 0,
                 data: [0; DATA_CAP],
@@ -347,6 +360,7 @@ fn apply_reply(buf: &[u8]) {
         };
         state().convs[conv as usize] = Conv {
             used: true,
+            closing: false,
             proto,
             data_len: 0,
             data: [0; DATA_CAP],
@@ -371,6 +385,7 @@ fn apply_reply(buf: &[u8]) {
                 if (conv as usize) < MAX_CONV && !state().convs[conv as usize].used {
                     state().convs[conv as usize] = Conv {
                         used: true,
+                        closing: false,
                         proto,
                         data_len: 0,
                         data: [0; DATA_CAP],
@@ -391,6 +406,7 @@ fn apply_reply(buf: &[u8]) {
                     let c = &mut state().convs[conv as usize];
                     *c = Conv {
                         used: true,
+                        closing: false,
                         proto: PROTO_TCP,
                         data_len: 0,
                         data: [0; DATA_CAP],
@@ -411,12 +427,25 @@ fn apply_reply(buf: &[u8]) {
             } else {
                 set_status(c, payload);
             }
+            // CLOSE ack: drop the tombstone only after netd confirms hangup.
+            // Freeing earlier let the next clone reuse the id while this
+            // hangup reply was still in flight → connect_status saw "hangup"
+            // → ECONNREFUSED (curl:7) right after a green https smoke.
+            if c.closing
+                && !payload.is_empty()
+                && (status_is(c, b"hangup") || status_is(c, b"error"))
+            {
+                *c = Conv::EMPTY;
+            }
         }
         REP_ERR => {
             if payload.is_empty() {
                 set_status(c, b"error");
             } else {
                 set_status(c, payload);
+            }
+            if c.closing {
+                *c = Conv::EMPTY;
             }
         }
         _ => {}
@@ -676,6 +705,59 @@ fn trim_ctl(buf: &[u8]) -> &[u8] {
     s
 }
 
+/// Last *data* fd on a /net/tcp/<id>/data path closed: tear the conv down.
+/// Called by the kernel when the per-(mount,path) open count reaches zero.
+/// Release teardown is data-fd only so transient ctl/status open+close
+/// (http/curl status polls during connect) cannot REQ_CLOSE a live conv —
+/// that raced mid-handshake and poisoned guest memory (riscv64 https sepc=0;
+/// aarch64 ostest FAR~"/net/tcp", PREP-RC=139). Dropbear fork still works:
+/// parent and child share the data fd open count, so hangup fires only when
+/// the last holder closes. Explicit ctl `hangup` write still tears down.
+unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    let Some(node) = parse_path(path) else {
+        return -1;
+    };
+    // Ctl/Status: open-count zero must not tear down — clients open+close
+    // these transiently while the TCP conversation must stay alive.
+    let (p, id) = match node {
+        Node::Data(p, id) => (p, id),
+        Node::Ctl(_, _) | Node::Status(_, _) => return 0,
+        _ => return 0,
+    };
+    if !conv_ok(id, p) {
+        return 0;
+    }
+    teardown_conv(id);
+    0
+}
+
+fn teardown_conv(id: u16) {
+    let i = id as usize;
+    if i >= MAX_CONV {
+        return;
+    }
+    let st = state();
+    if !st.convs[i].used {
+        return;
+    }
+    // Idempotent: http does ctl hangup then close(data); both paths land here
+    // or in the ctl hangup writer. Only one REQ_CLOSE must be enqueued or a
+    // second hangup ack can poison the next occupant of this id.
+    if st.convs[i].closing {
+        return;
+    }
+    set_status(&mut st.convs[i], b"hangup");
+    if !enqueue_req(REQ_CLOSE, id, st.convs[i].proto, &[]) {
+        // Ring full: leave used+hangup for second-pass reclaim; clone's
+        // drop_conv still cleans netd when the id is reused.
+        return;
+    }
+    st.convs[i].closing = true;
+}
+
 unsafe extern "C" fn net_write(
     path: *const u8,
     path_len: usize,
@@ -699,11 +781,17 @@ unsafe extern "C" fn net_write(
             }
             let cmd = trim_ctl(src);
             if cmd == b"hangup" {
-                set_status(&mut state().convs[id as usize], b"hangup");
+                {
+                    let c = &mut state().convs[id as usize];
+                    if c.closing {
+                        return src.len() as i32;
+                    }
+                    set_status(c, b"hangup");
+                }
                 if !enqueue_req(REQ_CLOSE, id, p, &[]) {
                     return -1;
                 }
-                state().convs[id as usize].used = false;
+                state().convs[id as usize].closing = true;
             } else if !enqueue_req(REQ_CTL, id, p, cmd) {
                 return -1;
             }
@@ -730,7 +818,10 @@ unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
         return -1;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(buf, buf_len) };
-    state().req.pop(out) as i32
+    // No serial spam here: CI login typing matches against the serial log, and
+    // leftover TEMP `[cr] n typ=` lines stole keystrokes / timed out WaitLogin.
+    let n = state().req.pop(out);
+    n as i32
 }
 
 unsafe extern "C" fn chr_write(buf: *const u8, buf_len: usize) -> i32 {
@@ -771,6 +862,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         unlink: None,
         rename: None,
         symlink: None,
+        release: Some(net_release),
         readlink: None,
     };
     let mount_rc = unsafe {

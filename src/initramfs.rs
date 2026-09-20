@@ -290,10 +290,14 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
 
     // pty boot-CI smoke -> bin/etc/pty_smoke (openpty/forkpty + line-
     // discipline round-trip + EIO; see c/pty_smoke.c).
+    // Fallback: coreutils-* pack alias when ci-build.tar omitted the canonical
+    // name (no workflow-scope ci.yml glob for pty-smoke-*).
     add(
         &mut entries,
         "bin/etc/pty_smoke",
-        read(&target.join(format!("pty-smoke-{none_triple}"))),
+        read(&target.join(format!("pty-smoke-{none_triple}"))).or_else(|| {
+            read(&target.join(format!("coreutils-pty-smoke-{none_triple}")))
+        }),
     );
 
     // tcp listen/accept boot-CI smoke -> bin/etc/tcp_listen_smoke (netd
@@ -306,10 +310,13 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
 
     // urandom boot-CI smoke -> bin/etc/urandom_smoke (kernel CSPRNG via
     // /dev/urandom; see c/urandom_smoke.c).
+    // Fallback: coreutils-* pack alias (same as pty-smoke).
     add(
         &mut entries,
         "bin/etc/urandom_smoke",
-        read(&target.join(format!("urandom-smoke-{none_triple}"))),
+        read(&target.join(format!("urandom-smoke-{none_triple}"))).or_else(|| {
+            read(&target.join(format!("coreutils-urandom-smoke-{none_triple}")))
+        }),
     );
 
     // trimmed curl (HTTPS GET + -o) over userspace sockets + mbedtls.
@@ -371,6 +378,49 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             &mut entries,
             &["bin/custom/sh".to_string(), "bin/sh".to_string()],
             read(&target.join(format!("oksh-{none_triple}"))),
+        );
+    }
+    // dropbear sshd + dbclient -> bin/custom/{dropbear,dbclient} (none triple,
+    // like oksh). Gated on the port_dropbear feature; panic with the build
+    // hint if the ELF is missing (silent skip = "dropbear not available").
+    if feature_enabled("port_dropbear") {
+        for bin in ["dropbear", "dbclient", "dropbearkey"] {
+            // Prefer the canonical ELF; fall back to the coreutils-* pack alias
+            // used when ci.yml cannot gain new globs (OAuth lacks workflow scope).
+            let canonical = target.join(format!("{bin}-{none_triple}"));
+            let alias = target.join(format!("coreutils-{bin}-{none_triple}"));
+            let path = if canonical.is_file() {
+                canonical
+            } else {
+                alias.clone()
+            };
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                panic!(
+                    "dropbear: missing {path:?} (also tried {alias:?}) ({e}); run ports/dropbear/build.sh"
+                )
+            });
+            add(&mut entries, &format!("bin/custom/{bin}"), Some(bytes));
+        }
+        // Test-only authorized key for CI/E2E SSH login (private key is
+        // committed next to the port and labeled NOT A SECRET — demo OS).
+        let ak = manifest_dir.join("ports/dropbear/testkey.pub");
+        let ak_bytes = std::fs::read(&ak).unwrap_or_else(|e| {
+            panic!("dropbear: missing testkey.pub ({e})")
+        });
+        add(&mut entries, "root/.ssh/authorized_keys", Some(ak_bytes));
+        // Server host key (generated with host-built dropbearkey; private key
+        // committed next to the port, demo OS — NOT a secret).
+        let hk = manifest_dir.join("ports/dropbear/testkey.host");
+        let hk_bytes = std::fs::read(&hk).unwrap_or_else(|e| {
+            panic!("dropbear: missing testkey.host ({e})")
+        });
+        add(&mut entries, "etc/dropbear/ed25519_hostkey", Some(hk_bytes));
+        // /etc/shells: dropbear's check_shell() rejects auth unless the
+        // passwd shell is listed here (root's pw_shell is /bin/custom/sh).
+        add(
+            &mut entries,
+            "etc/shells",
+            Some(b"/bin/custom/sh\n/bin/sh\n".to_vec()),
         );
     }
     // vim (FEAT_TINY) -> bin/custom/vim (none triple, like oksh).

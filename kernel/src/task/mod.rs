@@ -33,8 +33,10 @@ const MAX_TASKS: usize = 32;
 /// plus stack frames and a nested timer IRQ). Overflow hangs with no serial.
 pub const STACK_SIZE: usize = 64 * 1024;
 /// oksh `FDBASE` is 10 (`fcntl(F_DUPFD)` for tty/script fds). 8 was enough for
-/// the tiny Rust shell; 16 leaves room for stdio + FDBASE + a pipe.
-const MAX_FDS: usize = 16;
+/// the tiny Rust shell; raise further for dropbear: a session holds stdio +
+/// the session socket + the signal pipe (2) + three pipes for `spawn_command`
+/// (6) before the child execs, so 16 was exhausted and exec failed.
+const MAX_FDS: usize = 32;
 
 /// Stamp the owning logical CPU id at the base of a kernel stack so U-mode
 /// trap entry can reload `tp` without trusting user TLS (see riscv64 trap
@@ -100,6 +102,10 @@ fn fd_clone(entry: FdEntry) -> FdEntry {
             crate::pty::slave_ref(id);
             FdEntry::PtySlave(id)
         }
+        FdEntry::File { node, .. } => {
+            crate::fs::vfs::open_ref(&node);
+            entry
+        }
         other => other,
     }
 }
@@ -110,6 +116,7 @@ fn fd_drop(entry: FdEntry) {
         FdEntry::PipeWrite(id) => pipe::drop_writer(id),
         FdEntry::PtyMaster(id) => crate::pty::drop_master(id),
         FdEntry::PtySlave(id) => crate::pty::drop_slave(id),
+        FdEntry::File { node, .. } => crate::fs::vfs::close_ref(&node),
         _ => {}
     }
 }
@@ -317,6 +324,39 @@ const EMPTY: Task = Task {
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
+
+/// Per-parent count of exited-but-unreaped (zombie) user children. myos has no
+/// userspace signal trampolines, so SIGCHLD is surfaced to libgloss by asking
+/// "does the caller have a zombie child?". A counter is robust against task-
+/// state scan timing (the child may be reaped by a concurrent waiter).
+static ZOMBIES: [core::sync::atomic::AtomicU32; MAX_TASKS] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; MAX_TASKS];
+
+/// Record that `parent` gained a zombie child (called in `die()`).
+pub fn note_zombie(parent: usize) {
+    if parent < MAX_TASKS {
+        ZOMBIES[parent].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A child of `parent` was reaped; drop the zombie marker (saturating).
+pub fn note_reap(parent: usize) {
+    if parent < MAX_TASKS {
+        ZOMBIES[parent].fetch_update(
+            core::sync::atomic::Ordering::Relaxed,
+            core::sync::atomic::Ordering::Relaxed,
+            |n| Some(n.saturating_sub(1)),
+        ).ok();
+    }
+}
+
+pub fn zombie_count(parent: usize) -> usize {
+    if parent < MAX_TASKS {
+        ZOMBIES[parent].load(core::sync::atomic::Ordering::Relaxed) as usize
+    } else {
+        0
+    }
+}
 static CURRENT: [AtomicUsize; crate::smp::MAX_CPUS] = [
     AtomicUsize::new(0),
     AtomicUsize::new(0),
@@ -765,6 +805,7 @@ pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
                     writable,
                     append,
                 };
+                crate::fs::vfs::open_ref(&node);
                 return Some(i);
             }
         }
@@ -800,6 +841,47 @@ pub fn pipe_open() -> Option<(usize, usize)> {
         pipe::free(id);
     }
     out
+}
+
+/// Readiness bits for a userspace fd, for select()/poll() on pipes.
+/// bit0 = readable (data or EOF), bit1 = writable, bit2 = hangup.
+/// Non-pipe fds return 0; sockets are handled by netfs from userspace.
+/// Poll readiness for pipes. `None` if `fd` is not a pipe end (so libgloss can
+/// tell "empty pipe" apart from "not a pipe" when honouring O_NONBLOCK).
+pub fn fd_poll_bits(fd: usize) -> Option<u32> {
+    if fd >= MAX_FDS {
+        return None;
+    }
+    with_current_mut(|t| match t.fds[fd] {
+        FdEntry::PipeRead(id) => {
+            let mut bits = 0u32;
+            // Readable when data is buffered, or the writer closed (EOF).
+            if !pipe::read_would_block(id) {
+                bits |= 1;
+            }
+            if pipe::read_closed(id) {
+                bits |= 1 | 4;
+            }
+            Some(bits)
+        }
+        FdEntry::PipeWrite(id) => {
+            Some(if !pipe::write_would_block(id) { 2 } else { 0 })
+        }
+        _ => None,
+    })
+}
+
+/// Peer fd of a pipe end in the current task (read<->write), or None.
+/// Used by libgloss's SIGCHLD wake to force a server's self-pipe readable.
+pub fn fd_pipe_peer(fd: usize) -> Option<usize> {
+    if fd >= MAX_FDS {
+        return None;
+    }
+    with_current_mut(|t| match t.fds[fd] {
+        FdEntry::PipeRead(id) => (0..MAX_FDS).find(|&i| t.fds[i] == FdEntry::PipeWrite(id)),
+        FdEntry::PipeWrite(id) => (0..MAX_FDS).find(|&i| t.fds[i] == FdEntry::PipeRead(id)),
+        _ => None,
+    })
 }
 
 /// Open `/dev/ptmx`: allocate a pty pair, take the master fd.
@@ -882,8 +964,10 @@ pub fn fd_dup_min(oldfd: usize, minfd: usize) -> Option<usize> {
 }
 
 /// File/chr copy size. DHCP ~300B was truncated at 128, so TX chunks became
-/// separate Ethernet frames. Match virtio-net ETH_MAX (~2036).
-const FILE_IO_TMP: usize = 2048;
+/// separate Ethernet frames. Cap at netfs MSG_CAP-REQ_HDR (2042): a 2048
+/// chunk was rejected by net_write (payload > MSG_CAP-6) → EIO on large
+/// SSH/TLS writes.
+const FILE_IO_TMP: usize = 2042;
 
 /// Read/write on a pty end whose peer has hung up. `usize::MAX` stays the
 /// generic SYSERR (EBADF in libgloss); this distinct value lets libgloss map
@@ -1270,6 +1354,7 @@ pub fn signal_is_ignored(id: usize, bit: u32) -> bool {
     out
 }
 
+/// Mark `bit` pending on `id` if it is a live user task (Ready/Running).
 pub fn signal_set_pending(id: usize, bit: u32) {
     if id >= MAX_TASKS {
         return;
@@ -1277,7 +1362,9 @@ pub fn signal_set_pending(id: usize, bit: u32) {
     let flags = irq_save();
     irq_off();
     let mut tasks = TASKS.lock();
-    if tasks[id].user_rip != 0 && matches!(tasks[id].state, State::Ready | State::Running) {
+    let stored = tasks[id].user_rip != 0
+        && matches!(tasks[id].state, State::Ready | State::Running);
+    if stored {
         tasks[id].sig_pending |= bit;
     }
     drop(tasks);
@@ -1292,6 +1379,22 @@ pub fn signal_clear_pending(id: usize, bit: u32) {
     irq_off();
     TASKS.lock()[id].sig_pending &= !bit;
     irq_restore(flags);
+}
+
+/// Consume `bit` from `id`'s pending set: true if it was pending (now cleared).
+/// Used by libgloss to pick up `SIGCHLD` (no userspace handler trampolines yet).
+pub fn signal_take_pending(id: usize, bit: u32) -> bool {
+    if id >= MAX_TASKS {
+        return false;
+    }
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    let had = tasks[id].sig_pending & bit != 0;
+    tasks[id].sig_pending &= !bit;
+    drop(tasks);
+    irq_restore(flags);
+    had
 }
 
 pub fn signal_set_ignored(id: usize, bit: u32, ign: bool) {
@@ -1989,10 +2092,40 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     Some(slot)
 }
 
+/// True if `parent` has a child that has exited (`Dead`) and not yet been reaped.
+/// myos has no userspace signal trampolines, so libgloss asks this directly from
+/// its `poll()`/`select()` dispatch instead of relying on a pushed pending bit.
+pub fn has_exited_child(parent: usize) -> bool {
+    if zombie_count(parent) > 0 {
+        return true;
+    }
+    let flags = irq_save();
+    irq_off();
+    let tasks = TASKS.lock();
+    let mut found = false;
+    for i in 0..MAX_TASKS {
+        if i != parent
+            && tasks[i].ppid == parent
+            && tasks[i].user_rip != 0
+            && tasks[i].state == State::Dead
+        {
+            found = true;
+            break;
+        }
+    }
+    drop(tasks);
+    irq_restore(flags);
+    found
+}
+
 /// Yield until a child has exited, reap it, return its pid.
 /// `usize::MAX` if this task has no children. If `status_out` is `Some(va)`,
 /// stores the low 8 bits of the child's exit code at that user address.
-pub fn wait_child(status_out: Option<usize>) -> usize {
+/// When `nohang` is set and children exist but none are Dead yet, returns 0
+/// (POSIX WNOHANG) so waitpid cannot block the dropbear reap loop — and so a
+/// WNOHANG poll with no children still returns `usize::MAX` (ECHILD), not 0
+/// (which would busy-spin shells that treat 0 as "try again").
+pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
     let parent = current_slot();
     loop {
         let mut any = false;
@@ -2024,6 +2157,7 @@ pub fn wait_child(status_out: Option<usize>) -> usize {
                 }
                 drop(tasks);
                 irq_restore(flags);
+                note_reap(parent);
                 if let Some(va) = status_out {
                     let _ = user::copy_to_user(current_aspace(), va, &[code]);
                 }
@@ -2034,6 +2168,9 @@ pub fn wait_child(status_out: Option<usize>) -> usize {
         }
         if !any {
             return usize::MAX;
+        }
+        if nohang {
+            return 0;
         }
         // A pending fatal signal must interrupt `wait` so `deliver_due` can kill
         // an interactive shell waiting on a foreground child (Ctrl-C while a
@@ -2310,11 +2447,13 @@ extern "C" fn trampoline() -> ! {
 
 pub fn die() -> ! {
     irq_off();
+    let mut chld_parent = usize::MAX;
     let reclaim = {
         let mut tasks = TASKS.lock();
         let id = current_slot();
         let mut out = None;
         if tasks[id].user_rip != 0 {
+            chld_parent = tasks[id].ppid;
             user::note_exit();
             for entry in tasks[id].fds {
                 fd_drop(entry);
@@ -2346,6 +2485,13 @@ pub fn die() -> ! {
     // onto another AP — bios triple-faulted under -smp 4 after the first
     // remote-AP exit.
     irq_on();
+    // Notify the parent now that the TASKS lock is dropped (child is Dead and
+    // reapable). SIGCHLD's default action is ignore, so a parent without a
+    // handler is unaffected; a parent polling SIGCHLD_TAKE sees the bit.
+    if chld_parent != usize::MAX {
+        crate::signal::raise_sigchld(chld_parent);
+        note_zombie(chld_parent);
+    }
     if let Some((aspace, base, span, off, brk, mmap)) = reclaim {
         user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
     }

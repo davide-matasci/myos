@@ -5,6 +5,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
 source "$ROOT/scripts/myos-c-userspace-lib.sh"
 
+pack_pty_smoke_aliases() {
+  # CI packs via existing `target/coreutils-*` glob (no workflow-scope ci.yml edit).
+  local arch src alias
+  for arch in x86_64 aarch64 riscv64; do
+    src="$ROOT/target/pty-smoke-${arch}-unknown-none"
+    alias="$ROOT/target/coreutils-pty-smoke-${arch}-unknown-none"
+    if [[ -f "$src" ]]; then
+      cp "$src" "$alias"
+    elif [[ -f "$alias" ]]; then
+      cp "$alias" "$src"
+    fi
+  done
+}
+
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 myos_ensure_llvm_bin
@@ -42,3 +56,5 @@ for arch in x86_64 aarch64 riscv64; do
     --start-group -lc -lgloss -lg --end-group
   echo "pty-smoke -> $out"
 done
+
+pack_pty_smoke_aliases

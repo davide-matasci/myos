@@ -41,6 +41,8 @@ struct myos_sock {
     struct sockaddr_in peer;
     int peer_set;
     unsigned short bind_port; /* listener port after bind() */
+    int accept_armed;  /* listener: "accept" ctl written, waiting for status */
+    int last_accept_seq; /* listener: seq of the last accepted handoff */
 };
 
 static struct myos_sock socks[MYOS_MAX_SOCKS];
@@ -66,6 +68,7 @@ static struct myos_sock *sock_alloc(void) {
             socks[i].used = 1;
             socks[i].data_fd = -1;
             socks[i].ctl_fd = -1;
+            socks[i].last_accept_seq = -1;
             return &socks[i];
         }
     }
@@ -330,6 +333,37 @@ int myos_socket_fcntl(int fd, int cmd, int arg) {
  * poll readiness for a tracked socket.
  * Returns: 1 = filled *revents (ready or hangup), 0 = not ready, -1 = not socket.
  */
+static int listener_ctl(struct myos_sock *s, const char *cmd);
+static int listener_status(struct myos_sock *s, char *out, size_t cap);
+/* Last whitespace-separated decimal in an "accepted ..." status = the
+ * per-listener handoff seq; -1 when absent. */
+static int status_accept_seq(const char *status) {
+    int L = (int)strlen(status);
+    int j = L - 1;
+    const char *t;
+    while (j >= 0 && status[j] != ' ') {
+        j--;
+    }
+    if (j < 0) {
+        return -1;
+    }
+    t = status + j + 1;
+    if (*t < '0' || *t > '9') {
+        return -1;
+    }
+    {
+        unsigned int v = 0;
+        while (*t >= '0' && *t <= '9') {
+            v = v * 10 + (unsigned)(*t - '0');
+            t++;
+        }
+        if (*t != '\0') {
+            return -1;
+        }
+        return (int)v;
+    }
+}
+
 int myos_socket_poll(int fd, short events, short *revents) {
     struct myos_sock *s = sock_by_fd(fd);
     short rev = 0;
@@ -344,6 +378,47 @@ int myos_socket_poll(int fd, short events, short *revents) {
     }
     want_in = events & (POLLIN | POLLPRI | POLLRDNORM);
     want_out = events & (POLLOUT | POLLWRNORM);
+
+    /* Listening sockets: arm the netd "accept" once (select-driven servers
+     * like dropbear select() before accept()), then report POLLIN when the
+     * listener status shows "accepted <N>". Without this, select() never
+     * wakes for listeners and the server never accepts. */
+    if (s->state == SOCK_LISTENING) {
+        if (want_in) {
+            char stbuf[80];
+            if (!s->accept_armed) {
+                if (listener_ctl(s, "accept") == 0) {
+                    s->accept_armed = 1;
+                }
+                /* Don't trust the status this call: netd clears any stale
+                 * "accepted <old>" when it parks the fresh accept, which
+                 * lands asynchronously. Re-check on the next poll so a
+                 * previous connection isn't re-accepted. */
+                *revents = 0;
+                return 0;
+            }
+            if (listener_status(s, stbuf, sizeof stbuf) == 0
+                && strncmp(stbuf, "accepted", 8) == 0) {
+                /* Stale-status guard: the status file keeps the last
+                 * "accepted <N> ... <seq>" until netd replies again, so a
+                 * bare prefix match re-reports readable for the same
+                 * connection. Only a *new* seq is a fresh event. */
+                int seq = status_accept_seq(stbuf);
+                if (seq >= 0 && seq != s->last_accept_seq) {
+                    rev |= POLLIN;
+                } else {
+                    /* We already consumed this accept. netd cleared its
+                     * parked wait after the handoff, so it will not report
+                     * the *next* connection until we ask again. Re-arm here
+                     * or the server accepts exactly one connection then
+                     * hangs on the listener forever. */
+                    (void)listener_ctl(s, "accept");
+                }
+            }
+        }
+        *revents = rev;
+        return rev ? 1 : 0;
+    }
 
     /* Nonblocking connect: curl waits for POLLOUT (then SO_ERROR) until
      * netd advertises Established ("connected"). Do not report POLLOUT while
@@ -435,8 +510,10 @@ void myos_socket_on_close(int fd) {
     if (s == NULL) {
         return;
     }
-    hangup_sock(s);
-    /* data fd is being closed by _close caller */
+    /* No ctl hangup here: the kernel fires the netfs release (hangup) when
+     * the LAST fd holder closes (fork-shared sockets: the parent's close
+     * must not tear the connection down under the child). */
+    (void)fd;
     s->data_fd = -1;
     sock_free(s);
 }
@@ -609,7 +686,7 @@ static int listener_status(struct myos_sock *s, char *out, size_t cap) {
     return 0;
 }
 
-static int accept_from_status(struct myos_sock *ls, const char *status,
+static int accept_from_status(struct myos_sock *ls, char *status,
     struct sockaddr *addr, socklen_t *addrlen);
 
 int listen(int sockfd, int backlog) {
@@ -670,14 +747,22 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     if (ls->nonblock) {
         /* Nonblocking accept: one check, EAGAIN when nothing is pending. */
         char stbuf[80];
+        if (!ls->accept_armed) {
+            if (listener_ctl(ls, "accept") != 0) {
+                return -1;
+            }
+            ls->accept_armed = 1;
+        }
         if (listener_status(ls, stbuf, sizeof stbuf) < 0) {
             errno = EAGAIN;
             return -1;
         }
-        if (strncmp(stbuf, "accepted", 8) != 0) {
+        if (strncmp(stbuf, "accepted", 8) != 0
+            || status_accept_seq(stbuf) == ls->last_accept_seq) {
             errno = EAGAIN;
             return -1;
         }
+        ls->accept_armed = 0;
         return accept_from_status(ls, stbuf, addr, addrlen);
     }
     if (gettimeofday(&start, NULL) != 0) {
@@ -686,28 +771,34 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     }
     /* Blocking accept: arm netd once, then poll the listener status until it
      * reports "accepted <N>" (REP_STATUS lands asynchronously from netd). */
-    if (listener_ctl(ls, "accept") < 0) {
-        return -1;
+    if (!ls->accept_armed) {
+        if (listener_ctl(ls, "accept") < 0) {
+            return -1;
+        }
+        ls->accept_armed = 1;
     }
     for (;;) {
         char stbuf[80];
         if (listener_status(ls, stbuf, sizeof stbuf) == 0
-            && strncmp(stbuf, "accepted", 8) == 0) {
+            && strncmp(stbuf, "accepted", 8) == 0
+            && status_accept_seq(stbuf) != ls->last_accept_seq) {
+            ls->accept_armed = 0;
             return accept_from_status(ls, stbuf, addr, addrlen);
         }
-        if (elapsed_ms(&start) >= 120000L) {
+        if (elapsed_ms(&start) >= 180000L) {
             errno = ETIMEDOUT;
             return -1;
         }
     }
 }
 
-/* Parse "accepted <N>[ <ip>!<port>]" and open the new conv as a socket fd. */
-static int accept_from_status(struct myos_sock *ls, const char *status,
+/* Parse "accepted <N>[ <ip>!<port>][ <seq>]" and open the new conv as a socket fd. */
+static int accept_from_status(struct myos_sock *ls, char *status,
     struct sockaddr *addr, socklen_t *addrlen) {
     char path[64];
     int data_fd;
     unsigned int n = 0;
+    unsigned int seq = 0;
     const char *p = status + 8; /* skip "accepted" */
     while (*p == ' ') {
         p++;
@@ -720,6 +811,30 @@ static int accept_from_status(struct myos_sock *ls, const char *status,
         n = n * 10 + (unsigned)(*p - '0');
         p++;
     }
+    /* The trailing " <seq>" token is a per-listener monotonic counter; strip
+     * it so the peer parser below sees the old "[ <ip>!<port>]" form. */
+    {
+        int L = (int)strlen(status);
+        int j = L - 1;
+        while (j >= 0 && status[j] != ' ') {
+            j--;
+        }
+        if (j >= 0) {
+            const char *t = status + j + 1;
+            if (*t >= '0' && *t <= '9') {
+                unsigned int v = 0;
+                while (*t >= '0' && *t <= '9') {
+                    v = v * 10 + (unsigned)(*t - '0');
+                    t++;
+                }
+                if (*t == '\0') {
+                    seq = v;
+                    status[j] = '\0';
+                }
+            }
+        }
+    }
+    ls->last_accept_seq = (int)seq;
     struct myos_sock *s = sock_alloc();
     if (s == NULL) {
         errno = EMFILE;
@@ -774,6 +889,11 @@ static int accept_from_status(struct myos_sock *ls, const char *status,
         }
         if (ok && k == 4) {
             s->peer_set = 1;
+            memset(&s->peer, 0, sizeof s->peer);
+            s->peer.sin_family = AF_INET;
+            s->peer.sin_port = (unsigned short)((port >> 8) | ((port & 0xff) << 8));
+            s->peer.sin_addr.s_addr = (b[0]) | ((unsigned)b[1] << 8)
+                | ((unsigned)b[2] << 16) | ((unsigned)b[3] << 24);
             if (addr != NULL) {
                 struct sockaddr_in sa;
                 memset(&sa, 0, sizeof sa);

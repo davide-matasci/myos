@@ -42,6 +42,7 @@ ENV CI=true \
 #   - zstd rsync xorriso: sysroot packaging + fetch, iso.yml ISO image.
 #   - git curl wget file patch bc ca-certificates python3: source fetch, SSL,
 #     checkout sync, wire-myos.py / port patching.
+#   - openssh-client: full-boot dropbear SSH smoke (host → guest via hostfwd).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         qemu-system-x86 \
@@ -58,6 +59,7 @@ RUN apt-get update \
         zstd rsync \
         xorriso \
         git curl wget file patch bc \
+        openssh-client \
         sudo \
         ca-certificates \
         python3 \

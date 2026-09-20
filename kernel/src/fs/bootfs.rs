@@ -60,7 +60,26 @@ pub fn lookup(name: &str) -> Option<&'static [u8]> {
     None
 }
 
-/// List the flat root when `rel` is empty or `"."`; otherwise return 0.
+/// True when `name` is a directory in the flat namespace: the mount root,
+/// or a prefix of any registered entry followed by `/`. Flat entries like
+/// `root/.ssh/authorized_keys` therefore expose real `/root` and `/root/.ssh`
+/// directories, which tools that stat every path component (e.g. dropbear's
+/// authorized_keys permission walk) require.
+fn is_dir_prefix(name: &str) -> bool {
+    if name.is_empty() || name == "." || name == ".." {
+        return true;
+    }
+    let needle = alloc::format!("{name}/");
+    let nb = needle.as_bytes();
+    let files = FILES.lock();
+    for slot in files.iter().flatten() {
+        let s = &slot.name[..slot.len];
+        if s.len() > nb.len() && &s[..nb.len()] == nb {
+            return true;
+        }
+    }
+    false
+}
 
 pub fn create(_name: &str) -> bool {
     false
@@ -86,10 +105,51 @@ pub fn write(_name: &str, _pos: usize, _buf: &[u8]) -> Option<usize> {
 }
 
 pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
-    if !rel.is_empty() && rel != "." {
+    if rel.is_empty() || rel == "." {
+        return listdir(buf);
+    }
+    // Subdirectory of the flat namespace: list the immediate child basenames
+    // of every entry under `rel/` (so `/root` lists `.ssh`, etc.).
+    if !is_dir_prefix(rel) {
         return 0;
     }
-    listdir(buf)
+    let prefix = alloc::format!("{rel}/");
+    let pb = prefix.as_bytes();
+    let files = FILES.lock();
+    let mut n = 0;
+    for slot in files.iter().flatten() {
+        let s = &slot.name[..slot.len];
+        if s.len() <= pb.len() || &s[..pb.len()] != pb {
+            continue;
+        }
+        let rest = &s[pb.len()..];
+        let child = match rest.iter().position(|&c| c == b'/') {
+            Some(p) => &rest[..p],
+            None => rest,
+        };
+        if child.is_empty() || n + child.len() + 1 > buf.len() {
+            continue;
+        }
+        // Skip duplicates from multiple entries sharing a subdirectory.
+        let mut base = 0;
+        let mut dup = false;
+        while base < n {
+            let end = buf[base..n].iter().position(|&c| c == b'\n').map(|p| base + p).unwrap_or(n);
+            if buf[base..end] == *child {
+                dup = true;
+                break;
+            }
+            base = end + 1;
+        }
+        if dup {
+            continue;
+        }
+        buf[n..n + child.len()].copy_from_slice(child);
+        n += child.len();
+        buf[n] = b'\n';
+        n += 1;
+    }
+    n
 }
 
 /// Copy newline-separated basenames into `buf`. Returns bytes written.
@@ -125,6 +185,15 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             mode: S_IFDIR | 0o755,
             size: 0,
             ino: 1,
+            nlink: 2,
+            dev: 0,
+        });
+    }
+    if is_dir_prefix(name) {
+        return Some(StatInfo {
+            mode: S_IFDIR | 0o755,
+            size: 0,
+            ino: crate::fs::vfs::dir_ino(name),
             nlink: 2,
             dev: 0,
         });
