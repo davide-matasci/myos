@@ -807,22 +807,9 @@ unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
         return -1;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(buf, buf_len) };
+    // No serial spam here: CI login typing matches against the serial log, and
+    // leftover TEMP `[cr] n typ=` lines stole keystrokes / timed out WaitLogin.
     let n = state().req.pop(out);
-    {
-        static mut CR: u32 = 0;
-        let c = unsafe { &mut *core::ptr::addr_of_mut!(CR) };
-        if *c < 40 {
-            let mut d = [0u8; 48];
-            let mut k = 0;
-            for b in b"[cr] " { d[k] = *b; k += 1; }
-            k += write_uint(&mut d[k..], n as u32);
-            for b in b" typ=" { d[k] = *b; k += 1; }
-            if n >= 1 { k += write_uint(&mut d[k..], out[0] as u32); }
-            d[k] = b'\n'; k += 1;
-            dbg_out(core::str::from_utf8(&d[..k]).unwrap_or("?"));
-            *c += 1;
-        }
-    }
     n as i32
 }
 
