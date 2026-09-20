@@ -99,8 +99,12 @@ struct Conv {
     listen_port: u16,
     /// A ctl "accept" arrived and is parked until a connection lands.
     accept_wait: bool,
-    /// Accepted connection parked for the next ctl "accept": new conv id.
+    /// Head of the parked accept queue (next ctl "accept" / status read).
     accepted: Option<u16>,
+    /// Second parked accept. Prefer queueing over holding a SYN on the listen
+    /// handle (which leaves no Listen socket). Always re-arm Listen when the
+    /// queue has room. Do not take from accept_from_status — that raced KEX.
+    accepted_pending: Option<u16>,
     /// Monotonic per-listener handoff counter. Letting libgloss tell a fresh
     /// "accepted <N> <seq>" from a stale one (the status file keeps the last
     /// accepted string until netd replies again) prevents the app's blocking
@@ -135,6 +139,7 @@ impl Conv {
         listen_port: 0,
         accept_wait: false,
         accepted: None,
+        accepted_pending: None,
         accept_seq: 0,
         closing: false,
         closing_after_flush: false,
@@ -511,6 +516,10 @@ fn handle_ctl(
         }
         if let Some(n) = convs[i].accepted.take() {
             let seq = convs[i].accept_seq;
+            if let Some(m) = convs[i].accepted_pending.take() {
+                convs[i].accepted = Some(m);
+                convs[i].accept_seq = convs[i].accept_seq.wrapping_add(1);
+            }
             let rep = accept_reply(convs, n, seq);
             reply(chan, REP_STATUS, conv, 0, &rep);
             return;
@@ -626,7 +635,10 @@ fn force_free_orphan(
 ) {
     for l in 0..MAX_CONV {
         if convs[l].accepted == Some(i as u16) {
-            convs[l].accepted = None;
+            convs[l].accepted = convs[l].accepted_pending.take();
+        }
+        if convs[l].accepted_pending == Some(i as u16) {
+            convs[l].accepted_pending = None;
         }
     }
     if let Some(h) = convs[i].handle.take() {
@@ -653,12 +665,17 @@ fn pump_accepts(
         if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port == 0 {
             continue;
         }
-        // Stale park: orphan reclaim emptied the slot but left `accepted` set,
-        // which blocked every further handoff (riscv SSH: only a late Child).
+        // Stale park: orphan reclaim emptied a slot but left a queue pointer.
         if let Some(n) = convs[i].accepted {
             let n = n as usize;
             if n >= MAX_CONV || matches!(convs[n].kind, Kind::Empty) {
-                convs[i].accepted = None;
+                convs[i].accepted = convs[i].accepted_pending.take();
+            }
+        }
+        if let Some(n) = convs[i].accepted_pending {
+            let n = n as usize;
+            if n >= MAX_CONV || matches!(convs[n].kind, Kind::Empty) {
+                convs[i].accepted_pending = None;
             }
         }
         let Some(h) = convs[i].handle else {
@@ -693,14 +710,10 @@ fn pump_accepts(
                 None => (Ipv4Address::new(0, 0, 0, 0), 0),
             }
         };
-        // One parked handoff at a time. Overwriting `accepted` orphaned the
-        // previous conv (never opened by userspace → never REQ_CLOSE), which
-        // exhausted MAX_CONV under concurrent SSH clients and left the listen
-        // socket stuck with nowhere to hand off. Hold the new connection on
-        // this listen handle until userspace takes the parked one; that gives
-        // an effective backlog of 1 (parked) + 1 (on-listen) = 2 SYNs.
-        // pump_sockets must skip listen_port != 0 while holding (see there).
-        if convs[i].accepted.is_some() {
+        // Park up to two handoffs. Prefer this over holding a SYN on the
+        // listen handle (no Listen socket + former pump_sockets wedge).
+        // If both slots full, hold on-listen as last resort (pump_sockets skips).
+        if convs[i].accepted.is_some() && convs[i].accepted_pending.is_some() {
             continue;
         }
         // Move the connected socket to a free conv.
@@ -750,18 +763,20 @@ fn pump_accepts(
             }
         }
         convs[i].handle = Some(nh);
-        // Fresh Listen socket: drop any stale connected/hungup that could have
-        // been set if an older build pumped the held backlog socket as if it
-        // belonged to the listener conv.
         convs[i].connected = false;
         convs[i].hungup = false;
-        convs[i].accepted = Some(n as u16);
-        convs[i].accept_seq = convs[i].accept_seq.wrapping_add(1);
-        if convs[i].accept_wait {
-            convs[i].accept_wait = false;
-            let seq = convs[i].accept_seq;
-            let rep = accept_reply(convs, n as u16, seq);
-            reply(chan, REP_STATUS, i as u16, 0, &rep);
+        if convs[i].accepted.is_none() {
+            convs[i].accept_seq = convs[i].accept_seq.wrapping_add(1);
+            convs[i].accepted = Some(n as u16);
+            if convs[i].accept_wait {
+                convs[i].accept_wait = false;
+                let seq = convs[i].accept_seq;
+                let rep = accept_reply(convs, n as u16, seq);
+                reply(chan, REP_STATUS, i as u16, 0, &rep);
+            }
+        } else {
+            // Head still parked; queue second without bumping head seq/status.
+            convs[i].accepted_pending = Some(n as u16);
         }
     }
 }
