@@ -410,6 +410,10 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         // Host opens two sequential clients via slirp hostfwd (:2222→:22).
         if port_enabled("port_dropbear") {
             cmds.push(CMD_DROPBEAR_BG);
+            // Tear down sshd before ostest/pty/listen. Leaving dropbear up
+            // through ostest raced netd on aarch64 (user fault FAR~"net/tcp",
+            // PREP-RC=139) and starved listen accept on uefi.
+            cmds.push(CMD_DROPBEAR_STOP);
         }
         // os-test basic smoke (TESTLIST) + setpwent gate (full boot only;
         // too slow for boot-mini). pass_rate is reported, not gated.
@@ -418,9 +422,6 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         cmds.push(CMD_OS_TEST_RESULT);
         cmds.push(CMD_PTY);
         cmds.push(CMD_URANDOM);
-        if port_enabled("port_dropbear") {
-            cmds.push(CMD_DROPBEAR_STOP);
-        }
     }
     // netd listen/accept smoke runs in every mode (network is up; the
     // harness completes the ping/pong through slirp hostfwd).
@@ -767,6 +768,30 @@ fn interactive_ostest_prep_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
+/// Hard-fail ostest prep when the guest already reported a non-zero PREP-RC
+/// or a user fault (aarch64: data abort mid-suite → PREP-RC=139, no pass_rate).
+fn interactive_ostest_prep_failed(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let echoed =
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
+    if !tail.contains(echoed) {
+        return false;
+    }
+    let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
+    if after.contains("[ WARN ] user fault") || after.contains("user panic") {
+        return true;
+    }
+    // PREP-RC=0 is success; any other decoded RC means the suite aborted.
+    for line in after.lines() {
+        if let Some(rest) = line.strip_prefix("PREP-RC=") {
+            if rest.trim() != "0" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// os-test setpwent, stage 2: cat the produced .err/.out (after smoke subset). Pass = plain `SETPWENT-OK` (and never plain
 /// `SETPWENT-FAIL`) after the echoed command; the quoted markers inside the
 /// echo cannot collide with the plain ones. Also refuse "not found" from the
@@ -877,11 +902,19 @@ fn interactive_curl_cmd_failed(serial: &str) -> bool {
 /// Hard fail so we do not burn the full QEMU timeout after a printed TLS error.
 fn interactive_https_cmd_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    tail.contains("$ http https://example.com/")
-        && (tail.contains("tls handshake fail")
-            || tail.contains("tls err ")
-            || tail.contains("dns resolve fail")
-            || tail.contains("tcp connect timeout"))
+    if !tail.contains("$ http https://example.com/") {
+        return false;
+    }
+    // Guest http client can page-fault after printing the body (seen on
+    // riscv64: Example Domain in HTML, then instruction page fault sepc=0)
+    // before `[ OK ] https` — fail fast instead of burning the QEMU budget.
+    if tail.contains("[ WARN ] user fault") || tail.contains("user panic") {
+        return true;
+    }
+    tail.contains("tls handshake fail")
+        || tail.contains("tls err ")
+        || tail.contains("dns resolve fail")
+        || tail.contains("tcp connect timeout")
 }
 
 
@@ -1438,6 +1471,14 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     let _ = child.kill();
                     break child.wait().expect("wait after curl fail-fast kill");
                 }
+                if shell_stage == ShellStage::WaitResult
+                    && !mini
+                    && cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_PREP)
+                    && interactive_ostest_prep_failed(&acc)
+                {
+                    let _ = child.kill();
+                    break child.wait().expect("wait after ostest fail-fast kill");
+                }
                 // Login: never burn 600s on sticky UART echo (`rroooo…`).
                 // Do not start the bound until late boot — OVMF + Limine on UEFI
                 // often exceeds 45s before getty; the sticky-key failure mode is
@@ -1756,9 +1797,15 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             std::process::exit(1);
         }
         if cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_PREP) && !interactive_ostest_prep_ok(&serial) {
-            eprintln!(
-                "error: os-test basic smoke (ci-smoke-copy + TESTLIST make report) did not finish (want pass_rate= line, then `$`)"
-            );
+            if interactive_ostest_prep_failed(&serial) {
+                eprintln!(
+                    "error: os-test basic smoke aborted (user fault or PREP-RC!=0)"
+                );
+            } else {
+                eprintln!(
+                    "error: os-test basic smoke (ci-smoke-copy + TESTLIST make report) did not finish (want pass_rate= line, then `$`)"
+                );
+            }
             std::process::exit(1);
         }
         if cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_CAT) && !interactive_ostest_cat_ok(&serial) {
