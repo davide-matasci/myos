@@ -95,11 +95,9 @@ TESTS += signal/ignore-usr1-exec
 # --- process (8) — POSIX expect exit: 0 ---
 TESTS += process/fork-setpgid
 TESTS += process/fork-setsid-setpgid
-TESTS += udp/connect-loopback-getsockname
 TESTS += process/fork-setsid-setpgid-in-parent
 TESTS += process/fork-setsid-setpgid-move
 TESTS += process/fork-exec-setpgid-in-child
-TESTS += udp/bind-rebind
 TESTS += process/zombie-getpgid
 
 # --- io (6) — POSIX expect exit: 0 ---
@@ -110,16 +108,3 @@ TESTS += io/open-mkstemp-rdonly-trunc
 TESTS += io/open-mkstemp-rdonly-directory
 TESTS += io/open-mkstemp-rdonly
 
-# --- udp (12) — exit 0 / printable success ---
-TESTS += udp/bind-any-0
-TESTS += udp/bind-any-0-getsockname
-TESTS += udp/bind-connect-self
-TESTS += udp/bind-connect-self-send
-TESTS += udp/bind-any-0-unbind
-TESTS += udp/bind-sendto-self
-TESTS += udp/bind-loopback-0-getsockname
-TESTS += udp/connect-unconnect
-TESTS += udp/connect-getpeername
-TESTS += udp/connect-unconnect-sa-family
-TESTS += udp/unconnect
-TESTS += udp/connect-sendto-null

@@ -36,3 +36,10 @@ until they pass honestly (no xfails):
 - `udp/connect-reconnect*`, `connect-unconnect-getpeername` — peer/unconnect edge cases
 - `process/waitpid-pgid` — needs waitpid(pgid) filtering (waitpid currently
   ignores pid)
+
+- **udp/** curated entries temporarily removed (2026-09-21): `socket.c` UDP
+  bind-ephemeral / getsockname / AF_UNSPEC unconnect from this PR regressed
+  aarch64 interactive curl TLS and riscv64 dropbear SSH (`bad packet size`).
+  Restored master `socket.c` to unblock full-boot; re-land UDP libc support
+  in a follow-up with curl/SSH smokes held green.
+
