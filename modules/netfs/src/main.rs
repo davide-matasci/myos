@@ -347,79 +347,47 @@ fn apply_reply(buf: &[u8]) {
         return;
     }
     let payload = &buf[REP_HDR..REP_HDR + plen];
-    // Server-introduced convs (netd pump-accept) bypass clone, so netfs has
-    // no state for them yet: allocate the exact index before anything else.
-    if typ == REP_CLONE_OK && conv_mut(conv).is_none() {
-        if conv >= MAX_CONV as u16 || state().convs[conv as usize].used {
+    // CLONE_OK must (re)install over an unused *or closing* slot.
+    // Pump-accept reuses netd indices as soon as TCP hits Closed while netfs
+    // may still hold used+closing for the prior occupant. Leaving that
+    // tombstone meant a late hangup ack wiped the *new* live accept
+    // (closing still true) → dropbear Child then banner write EIO.
+    // Do NOT wipe a live (!closing) client clone — that races HTTPS/curl.
+    if typ == REP_CLONE_OK {
+        if conv as usize >= MAX_CONV {
             return;
         }
         let proto = match core::str::from_utf8(payload) {
             Ok("udp") => PROTO_UDP,
             Ok("icmp") => PROTO_ICMP,
+            Ok("tcp") => PROTO_TCP,
+            // Empty payload: client clone after alloc_conv — keep proto.
+            _ if state().convs[conv as usize].used && !state().convs[conv as usize].closing => {
+                state().convs[conv as usize].proto
+            }
             _ => PROTO_TCP,
         };
-        state().convs[conv as usize] = Conv {
-            used: true,
-            closing: false,
-            proto,
-            data_len: 0,
-            data: [0; DATA_CAP],
-            status_len: 0,
-            status: [0; STATUS_CAP],
-        };
+        let slot = &mut state().convs[conv as usize];
+        if !slot.used || slot.closing {
+            *slot = Conv {
+                used: true,
+                closing: false,
+                proto,
+                data_len: 0,
+                data: [0; DATA_CAP],
+                status_len: 0,
+                status: [0; STATUS_CAP],
+            };
+            set_status(slot, b"cloned");
+        } else if slot.status_len == 0 {
+            set_status(slot, b"cloned");
+        }
+        return;
     }
     let Some(c) = conv_mut(conv) else {
         return;
     };
     match typ {
-        REP_CLONE_OK => {
-            if conv_mut(conv).is_none() {
-                // netd created this conv server-side (accepted-connection
-                // pump); register it on the fly so its data/status files
-                // resolve. Payload carries the protocol name.
-                let proto = if payload == b"udp" {
-                    PROTO_UDP
-                } else {
-                    PROTO_TCP
-                };
-                if (conv as usize) < MAX_CONV && !state().convs[conv as usize].used {
-                    state().convs[conv as usize] = Conv {
-                        used: true,
-                        closing: false,
-                        proto,
-                        data_len: 0,
-                        data: [0; DATA_CAP],
-                        status_len: 0,
-                        status: [0; STATUS_CAP],
-                    };
-                }
-            }
-            let c = match conv_mut(conv) {
-                Some(c) => c,
-                // Server-created conv (netd accepted an incoming connection
-                // on a listener and moved it into a fresh slot): the guest
-                // never cloned it, so allocate exactly this slot here.
-                None => {
-                    if conv as usize >= MAX_CONV || state().convs[conv as usize].used {
-                        return;
-                    }
-                    let c = &mut state().convs[conv as usize];
-                    *c = Conv {
-                        used: true,
-                        closing: false,
-                        proto: PROTO_TCP,
-                        data_len: 0,
-                        data: [0; DATA_CAP],
-                        status_len: 0,
-                        status: [0; STATUS_CAP],
-                    };
-                    c
-                }
-            };
-            if c.status_len == 0 {
-                set_status(c, b"cloned");
-            }
-        }
         REP_DATA => append_data(c, payload),
         REP_STATUS => {
             if payload.is_empty() {
