@@ -62,18 +62,19 @@ run_in_suite() {
 if [ -n "$PREBUILT" ]; then
 	# Progress for serial CI (unbuffered line so long suites are not silent).
 	echo "os-test: $T (prebuilt)"
-	# Place a symlink at suite/rel so tests that open("$REL") / fopen / stat
-	# the test binary itself (basic/fcntl/open, stdio/fopen, sys_stat/stat)
-	# resolve like the compile+run flow — without copying ELF bytes into tmpfs.
+	# Exec the absolute prebuilt path (libfs ELFs are readable via the vnode
+	# path; a cwd symlink to /lib is not executable → oksh 126).
+	# Drop a tiny regular file at suite/rel so open/fopen/stat of "$REL"
+	# (basic/fcntl/open, stdio/fopen, sys_stat/stat) still see a real file
+	# without copying ~100 KiB ELFs into tmpfs each time.
 	mkdir -p "${BIN%/*}" || true
 	rm -f -- "$BIN"
-	if ln -s "$PREBUILT" "$BIN" 2>/dev/null; then
-		:
-	else
-		cp "$PREBUILT" "$BIN" || exit 0
-		chmod +x "$BIN" || true
-	fi
-	run_in_suite "$BIN"
+	: > "$BIN" || echo x > "$BIN" || true
+	case "$PREBUILT" in
+	/*) RUN="$PREBUILT" ;;
+	*) RUN="$(pwd)/$PREBUILT" ;;
+	esac
+	run_in_suite "$RUN"
 	CODE=$?
 	# Capture $? before any if-statement: oksh resets $? to the if
 	# statement's own status (0 when the condition fails and there is no
