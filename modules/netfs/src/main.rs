@@ -379,8 +379,10 @@ fn apply_reply(buf: &[u8]) {
             *slot = Conv {
                 used: true,
                 closing: false,
-                // Prior occupant may still have a hangup ack in flight.
-                suppress_stale_hangup: slot.closing || slot.used,
+                // Always: pump-accept may orphan+hangup before userspace
+                // open(), or a prior occupant may still have hangup in flight.
+                // One suppressed hangup/error; cleared on data / other status.
+                suppress_stale_hangup: true,
                 proto,
                 data_len: 0,
                 data: [0; DATA_CAP],
