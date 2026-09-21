@@ -524,7 +524,17 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-m")
         .arg(if ci { "4096" } else { "1024" })
         .arg("-smp")
-        .arg("4")  // APs still parked for userspace; keep boot-green under -smp 4
+        .arg(if ci_mini() {
+            // boot-mini: exercise AP bring-up (userspace stays BSP-pinned).
+            "4"
+        } else {
+            // full-boot: curl/TLS needs the BSP to own guest time. -smp 4 with
+            // parked APs still times out interactive curl (`SSL connection
+            // timeout` after `[ OK ] https`) even under TCG thread=single —
+            // AP idle vCPUs consume guest slices. AP bring-up stays covered by
+            // boot-mini. Real AP userspace needs IRQ affinity (user_affinity).
+            "1"
+        })
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
@@ -550,6 +560,14 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
+    // aarch64 userspace is BSP-pinned (`task::user_affinity`). boot-mini still
+    // uses -smp 4 for AP bring-up; default MTTCG then schedules three idle
+    // vCPU threads that steal host TCG from the BSP. Single-thread TCG keeps
+    // that AP coverage without starving BSP work. Full-boot uses -smp 1 (see
+    // above). Set MYOS_TCG_SINGLE=0 only when deliberately testing MTTCG.
+    if std::env::var("MYOS_TCG_SINGLE").as_deref() != Ok("0") {
+        cmd.arg("-accel").arg("tcg,thread=single");
+    }
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg("none");
@@ -950,6 +968,14 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
+    // riscv64 keeps -smp 2 for OpenSBI/DTB but WFI-parks the AP (!ONLINE).
+    // Default MTTCG still schedules that parked hart and reopens the classic
+    // ripgrep/HTTPS `sepc=0` expand race under load (PR #151/#164). Single-thread
+    // TCG matches local-ci and keeps one ONLINE hart without AP TCG contention.
+    // Set MYOS_TCG_SINGLE=0 only when deliberately testing MTTCG.
+    if std::env::var("MYOS_TCG_SINGLE").as_deref() != Ok("0") {
+        cmd.arg("-accel").arg("tcg,thread=single");
+    }
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg("none");

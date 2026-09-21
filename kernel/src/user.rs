@@ -1479,10 +1479,37 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
         }
     };
     task::stamp_stack_cpu(ksp, crate::smp::cpu_id());
+    // Volatile resume image — same discipline as enter_aarch64 / enter_x86.
+    // Keep argc/argv/sp/sepc in memory; load into dedicated regs, then scrub.
+    // Under MTTCG full-boot, interactive `http https://…` hit
+    // `instruction page fault stval=0 sepc=0` when LLVM parked `rip`/`usp` in
+    // a register the scrub then zeroed (sret with sepc=0).
+    let resume = [
+        user_rip as u64,
+        user_rsp as u64,
+        user_argc as u64,
+        user_argv as u64,
+    ];
+    let mut slot = core::mem::MaybeUninit::<[u64; 4]>::uninit();
     unsafe {
-        // Install user context FIRST, then scrub remaining GPRs. Zeroing before
-        // the moves would clobber LLVM's `in(reg)` temporaries (usp/argc/…) and
-        // sret with sp/a0/sepc = 0 — instant sepc=0 IPF on first enter.
+        core::ptr::write_volatile(slot.as_mut_ptr(), resume);
+        let p = slot.as_ptr();
+        let rip: u64;
+        let usp: u64;
+        let argc: u64;
+        let argv: u64;
+        core::arch::asm!(
+            "ld {rip}, 0({p})",
+            "ld {usp}, 8({p})",
+            "ld {argc}, 16({p})",
+            "ld {argv}, 24({p})",
+            p = in(reg) p,
+            rip = lateout(reg) rip,
+            usp = lateout(reg) usp,
+            argc = lateout(reg) argc,
+            argv = lateout(reg) argv,
+            options(nostack, preserves_flags),
+        );
         core::arch::asm!(
             "csrw sscratch, {ksp}",
             "mv sp, {usp}",
@@ -1520,10 +1547,10 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             "mv t6, zero",
             "sret",
             ksp = in(reg) ksp,
-            usp = in(reg) user_rsp,
-            argc = in(reg) user_argc,
-            argv = in(reg) user_argv,
-            rip = in(reg) user_rip,
+            usp = in(reg) usp,
+            argc = in(reg) argc,
+            argv = in(reg) argv,
+            rip = in(reg) rip,
             s = in(reg) USER_SSTATUS,
             options(noreturn, nostack),
         );
