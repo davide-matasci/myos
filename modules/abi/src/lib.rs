@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 9;
+pub const ABI_VERSION: u32 = 10;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
@@ -201,6 +201,14 @@ pub struct KernelApi {
     /// HHDM offset for phys→virt of ACPI tables when needed. 0 on arches
     /// that identity-map low memory already.
     pub hhdm_offset: unsafe extern "C" fn() -> u64,
+    /// Attach or clear a write handler for an existing `/proc/<name>` node.
+    /// Invoked from write(2). Return bytes consumed (>=0) or negative on error.
+    /// Passing `None` clears the writer. 0 ok, negative on error.
+    pub proc_set_writer: unsafe extern "C" fn(
+        name: *const u8,
+        name_len: usize,
+        writer: Option<unsafe extern "C" fn(*const u8, usize) -> i32>,
+    ) -> i32,
 }
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).
