@@ -30,7 +30,7 @@ for arch in x86_64 aarch64 riscv64; do
     echo "error: os-test prebuilt missing for ${arch} at ${marker}" >&2
     missing=1
   fi
-  nb="$ROOT/target/os-test-prebuilt/${arch}/limits/CHAR_BIT"
+  nb="$ROOT/target/os-test-prebuilt/${arch}/malloc/malloc-0"
   if [[ ! -f "$nb" ]]; then
     echo "error: os-test nonbasic prebuilt missing for ${arch} at ${nb}" >&2
     missing=1

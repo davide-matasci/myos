@@ -1,15 +1,11 @@
 # Boot CI curated non-basic subset — suite-prefixed paths (suite/rel, no .c).
 # Prefer tests whose POSIX expect is exit 0 (myos harness: exit 0 = pass).
-# ~100 tests spanning non-basic suites.
+# Trimmed after libgloss/kernel rollback: only suites that pass on master
+# libc (malloc/paths/stdio/io). Re-expand suite-by-suite with curl+SSH green.
 
-# --- limits (33) ---
-
-# --- malloc (3) ---
 TESTS += malloc/malloc-0
 TESTS += malloc/realloc-0
 TESTS += malloc/realloc-null-0
-
-# --- paths (16) ---
 TESTS += paths/dev-null
 TESTS += paths/dev-zero
 TESTS += paths/dev-tty
@@ -26,8 +22,6 @@ TESTS += paths/usr
 TESTS += paths/usr-bin
 TESTS += paths/bin
 TESTS += paths/usr-lib
-
-# --- stdio (16) ---
 TESTS += stdio/printf-percent
 TESTS += stdio/printf-d-zero
 TESTS += stdio/printf-d-h
@@ -44,16 +38,9 @@ TESTS += stdio/printf-o-zero
 TESTS += stdio/printf-e
 TESTS += stdio/printf-e-alt
 TESTS += stdio/printf-g-precision-f
-
-# --- signal (12) — exit 0 with expected stdout ---
-
-# --- process (8) — POSIX expect exit: 0 ---
-
-# --- io (6) — POSIX expect exit: 0 ---
 TESTS += io/open-tmpdir-rdonly
 TESTS += io/open-tmpdir-rdonly-directory
 TESTS += io/open-tmpdir-rdonly-append
 TESTS += io/open-mkstemp-rdonly-trunc
 TESTS += io/open-mkstemp-rdonly-directory
 TESTS += io/open-mkstemp-rdonly
-
