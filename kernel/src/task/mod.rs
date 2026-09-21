@@ -2742,22 +2742,45 @@ fn ap_idle_bringup() {
 }
 
 fn ap_idle_body() {
-    // aarch64 boot-mini keeps -smp 4 for AP bring-up / smp_smoke. Once ONLINE,
-    // a 100Hz timer on each idle AP wakes WFI every tick; under TCG (even
-    // thread=single) those three vCPUs steal BSP guest time and interactive
-    // `which ls` misses the 240s mini budget. Disable AP timers so WFI sleeps;
-    // leave IRQs unmasked so SGIs still drive tlb_service / kick_cpus.
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!(
-            "msr cntv_ctl_el0, {z}",
-            "msr cntp_ctl_el0, {z}",
-            "isb",
-            z = in(reg) 0u64,
-            options(nomem, nostack),
-        );
-    }
     loop {
+        // Post-smoke quiet park (aarch64 `-smp 4` boot-mini): drop ONLINE so
+        // tlb_shootdown/kick ignore us, kill timers (a pending IRQ must not
+        // rearm), mask DAIF, and WFI forever. Matches riscv WFI-park intent
+        // while still covering bring-up + smp_smoke while ONLINE.
+        if crate::smp::want_quiet_park() {
+            let logical = crate::smp::cpu_id();
+            crate::smp::mark_offline(logical);
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                // Kill timers first so they cannot re-assert after we EOI.
+                core::arch::asm!(
+                    "msr cntv_ctl_el0, {z}",
+                    "msr cntp_ctl_el0, {z}",
+                    "isb",
+                    z = in(reg) 0u64,
+                    options(nomem, nostack),
+                );
+                // GICD_ICENABLER0 — PPI 27/30 are banked per-CPU on GICv2.
+                let icenabler0 = 0x0800_0000usize + 0x180;
+                core::ptr::write_volatile(icenabler0 as *mut u32, (1u32 << 27) | (1u32 << 30));
+                // Drain any pending ACK in GICC so WFI is not immediately complete.
+                let gicc_iar = 0x0801_0000usize + 0x0c;
+                let gicc_eoir = 0x0801_0000usize + 0x10;
+                for _ in 0..8 {
+                    let iar = core::ptr::read_volatile(gicc_iar as *const u32);
+                    if (iar & 0x3ff) >= 1020 {
+                        break;
+                    }
+                    core::ptr::write_volatile(gicc_eoir as *mut u32, iar);
+                }
+                core::arch::asm!("dsb sy", options(nomem, nostack));
+            }
+            // IRQs stay unmasked but nothing should fire; masked+pending WFI
+            // busy-spins on aarch64, which is exactly what we must avoid.
+            loop {
+                crate::arch::wait_interrupt();
+            }
+        }
         crate::smp::tlb_service();
         yield_now();
         crate::arch::wait_interrupt();

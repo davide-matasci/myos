@@ -245,6 +245,10 @@ fn smp_smoke() {
         smp::sched_ticks(0),
         smp::sched_ticks(1),
     ));
+    // aarch64: park APs now that bring-up + sched smoke passed. Leaving them
+    // ONLINE with timers/kicks steals BSP TCG under boot-mini `-smp 4`.
+    #[cfg(target_arch = "aarch64")]
+    smp::request_quiet_park();
 }
 
 fn task_a() {
