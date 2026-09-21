@@ -95,11 +95,11 @@ TESTS += signal/ignore-usr1-exec
 # --- process (8) — POSIX expect exit: 0 ---
 TESTS += process/fork-setpgid
 TESTS += process/fork-setsid-setpgid
-TESTS += process/zombie-setpgid
+TESTS += udp/connect-loopback-getsockname
 TESTS += process/fork-setsid-setpgid-in-parent
 TESTS += process/fork-setsid-setpgid-move
 TESTS += process/fork-exec-setpgid-in-child
-TESTS += process/zombie-setpgid-move
+TESTS += udp/bind-rebind
 TESTS += process/zombie-getpgid
 
 # --- io (6) — POSIX expect exit: 0 ---
