@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sys/time.h>
+#include <sys/select.h>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <grp.h>
@@ -347,44 +348,27 @@ long sysconf(int name) {
 }
 
 unsigned sleep(unsigned seconds) {
-    /* Busy-wait via gettimeofday so UDP self-recv and similar see elapsed time. */
-    struct timeval start, now;
+    /* Elapsed-time sleep via select(0,…,&tv) so UDP self-recv tests see time
+     * pass while poll/select still dispatch SIGCHLD (busy gettimeofday alone
+     * starved netd under aarch64 TCG when curl/mbedtls slept). */
+    struct timeval tv;
     if (seconds == 0) {
         return 0;
     }
-    if (gettimeofday(&start, NULL) != 0) {
-        return seconds;
-    }
-    for (;;) {
-        if (gettimeofday(&now, NULL) != 0) {
-            break;
-        }
-        if ((unsigned long)(now.tv_sec - start.tv_sec) >= (unsigned long)seconds) {
-            break;
-        }
-    }
+    tv.tv_sec = (time_t)seconds;
+    tv.tv_usec = 0;
+    (void)select(0, NULL, NULL, NULL, &tv);
     return 0;
 }
 
 int usleep(useconds_t usec) {
-    struct timeval start, now;
-    long long elapsed;
+    struct timeval tv;
     if (usec == 0) {
         return 0;
     }
-    if (gettimeofday(&start, NULL) != 0) {
-        return -1;
-    }
-    for (;;) {
-        if (gettimeofday(&now, NULL) != 0) {
-            return -1;
-        }
-        elapsed = (long long)(now.tv_sec - start.tv_sec) * 1000000LL
-            + (long long)(now.tv_usec - start.tv_usec);
-        if (elapsed >= (long long)usec) {
-            break;
-        }
-    }
+    tv.tv_sec = (time_t)(usec / 1000000u);
+    tv.tv_usec = (suseconds_t)(usec % 1000000u);
+    (void)select(0, NULL, NULL, NULL, &tv);
     return 0;
 }
 

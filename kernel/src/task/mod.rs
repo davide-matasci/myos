@@ -2000,17 +2000,43 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, pgid, has_ctty, fd_clofork_mask, sig_ignored) = {
+    // Do NOT `let t = tasks[id]` (full Task Copy). On aarch64 ForkRegs is a
+    // 36×u64 frame and each FdEntry carries a 96-byte Vnode path — with
+    // MAX_FDS=40 a full Task + fds snapshot + child_fds exceeded the 64 KiB
+    // kstack and silently corrupted forked children (curl SSL timeout,
+    // dropbear write EIO). Clone fds once into child_fds; copy only small
+    // scalars/arrays out of the locked slot.
+    let mut child_fds = [FdEntry::Empty; MAX_FDS];
+    let (
+        base,
+        span,
+        off,
+        ppid,
+        uargc,
+        uargv,
+        brk,
+        cwd,
+        cwd_len,
+        mmap,
+        mmap_next,
+        sid,
+        pgid,
+        has_ctty,
+        fd_clofork_mask,
+        sig_ignored,
+    ) = {
         let tasks = TASKS.lock();
         let id = current_slot();
-        let t = tasks[id];
+        let t = &tasks[id];
         if t.user_rip == 0 {
             drop(tasks);
             irq_restore(flags);
             return None;
         }
+        for i in 0..MAX_FDS {
+            child_fds[i] = fd_clone(t.fds[i]);
+        }
         (
-            t.fds,
             t.user_base,
             t.image_span,
             t.stack_off,
@@ -2030,7 +2056,25 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         )
     };
 
+    // POSIX O_CLOFORK: close marked fds in the child only (parent keeps them).
+    if fd_clofork_mask != 0 {
+        for i in 0..MAX_FDS {
+            if fd_clofork_mask & (1u64 << i) != 0 {
+                fd_drop(child_fds[i]);
+                child_fds[i] = FdEntry::Empty;
+            }
+        }
+    }
+
+    let drop_child_fds = |fds: &mut [FdEntry; MAX_FDS]| {
+        for i in 0..MAX_FDS {
+            fd_drop(fds[i]);
+            fds[i] = FdEntry::Empty;
+        }
+    };
+
     let Some(aspace) = user::copy_user_aspace(base, span, off, brk) else {
+        drop_child_fds(&mut child_fds);
         irq_restore(flags);
         return None;
     };
@@ -2038,6 +2082,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let layout = match Layout::from_size_align(STACK_SIZE, 16) {
         Ok(l) => l,
         Err(_) => {
+            drop_child_fds(&mut child_fds);
             irq_restore(flags);
             return None;
         }
@@ -2058,6 +2103,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             .or_else(|| tasks.iter().position(|t| t.state == State::Unused));
         let Some(slot) = slot else {
             drop(tasks);
+            drop_child_fds(&mut child_fds);
             irq_restore(flags);
             return None;
         };
@@ -2067,20 +2113,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         (slot, (reuse, stack_base))
     };
 
-    let mut child_fds = default_user_fds();
-    for i in 0..MAX_FDS {
-        child_fds[i] = fd_clone(fds[i]);
-    }
-    // POSIX O_CLOFORK: close marked fds in the child only (parent keeps them).
-    if fd_clofork_mask != 0 {
-        for i in 0..MAX_FDS {
-            if fd_clofork_mask & (1u64 << i) != 0 {
-                fd_drop(child_fds[i]);
-                child_fds[i] = FdEntry::Empty;
-            }
-        }
-    }
-
     let (stack_base, sp, top) = if reuse_stack.0 {
         let sb = reuse_stack.1;
         let sp = unsafe { seed_stack(sb as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
@@ -2088,6 +2120,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     } else {
         let stack = unsafe { alloc(layout) };
         if stack.is_null() {
+            drop_child_fds(&mut child_fds);
             irq_restore(flags);
             return None;
         }

@@ -77,14 +77,16 @@ int _link(const char *oldpath, const char *newpath) {
 int myos_deliver_signal(int sig); /* misc_stubs.c — sync userspace handlers */
 
 int _kill(int pid, int sig) {
-    /* Signal numbers must match newlib <signal.h> / kernel signal.rs. */
-    if (sig <= 0 || sig > 31) {
+    /* Signal numbers must match newlib <signal.h> / kernel signal.rs.
+     * sig == 0 is a POSIX existence probe — pass through to the kernel. */
+    if (sig < 0 || sig > 31) {
         errno = EINVAL;
         return -1;
     }
-    /* Self-targeted kill/raise: deliver installed userspace handlers
-     * synchronously (kernel has no trampolines yet). */
-    if (pid == 0 || pid == (int)myos_syscall0(MYOS_SYS_GETPID)) {
+    /* Self-targeted kill/raise (positive pid only): deliver installed
+     * userspace handlers synchronously (kernel has no trampolines yet).
+     * pid == 0 / negative pid are process-group kills — never treat as self. */
+    if (sig != 0 && pid > 0 && pid == (int)myos_syscall0(MYOS_SYS_GETPID)) {
         return myos_deliver_signal(sig);
     }
     long ret = myos_syscall3(MYOS_SYS_KILL, (long)pid, (long)sig, 0);
