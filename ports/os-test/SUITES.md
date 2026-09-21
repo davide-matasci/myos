@@ -31,8 +31,8 @@ until they pass honestly (no xfails):
 
 - `io/open-clofork-fork`, `io/dup3-clofork-fork` — kernel `fd_clofork_mask` +
   libgloss O_CLOFORK; still failing child fstat after fork on CI
-- `process/fork-setpgid-*-undo*` — `kill(sig=0)` existence probe added; undo
-  sequences still red
-- `udp/connect-reconnect*` — datagram reconnect allowed in libgloss; still red
+- `process/fork-setpgid-*-undo*`, `fork-setpgid-on-parent`, `limbo-getpgid` —
+  pgid edge cases still red
+- `udp/connect-reconnect*`, `connect-unconnect-getpeername` — peer/unconnect edge cases
 - `process/waitpid-pgid` — needs waitpid(pgid) filtering (waitpid currently
   ignores pid)

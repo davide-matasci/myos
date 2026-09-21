@@ -96,10 +96,10 @@ TESTS += signal/ignore-usr1-exec
 TESTS += process/fork-setpgid
 TESTS += process/fork-setsid-setpgid
 TESTS += process/zombie-setpgid
-TESTS += process/limbo-getpgid
+TESTS += process/fork-setsid-setpgid-in-parent
 TESTS += process/fork-setsid-setpgid-move
 TESTS += process/fork-exec-setpgid-in-child
-TESTS += process/fork-setpgid-on-parent
+TESTS += process/zombie-setpgid-move
 TESTS += process/zombie-getpgid
 
 # --- io (6) — POSIX expect exit: 0 ---
@@ -120,6 +120,6 @@ TESTS += udp/bind-sendto-self
 TESTS += udp/bind-loopback-0-getsockname
 TESTS += udp/connect-unconnect
 TESTS += udp/connect-getpeername
-TESTS += udp/connect-unconnect-getpeername
+TESTS += udp/connect-unconnect-sa-family
 TESTS += udp/unconnect
 TESTS += udp/connect-sendto-null
