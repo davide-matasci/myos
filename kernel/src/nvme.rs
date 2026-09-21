@@ -365,6 +365,17 @@ fn setup(bar: usize) -> Option<Ctrl> {
 }
 
 pub fn attach(bar_va: usize) -> bool {
+    {
+        let table = CTRLS.lock();
+        for slot in table.iter() {
+            if let Some(c) = slot {
+                if c.bar == bar_va {
+                    // Already bound — rescan must not re-init a live controller.
+                    return false;
+                }
+            }
+        }
+    }
     let Some(ctrl) = setup(bar_va) else {
         return false;
     };

@@ -440,7 +440,7 @@ pub fn init() {
     vfs::mount(
         "procfs",
         "proc",
-        ro_ops(
+        rw_ops(
             procfs::lookup,
             procfs::stat,
             procfs::listdir_at,
@@ -449,6 +449,12 @@ pub fn init() {
             procfs::truncate,
             procfs::read,
             procfs::write,
+            reject_mkdir,
+            reject_rmdir,
+            reject_unlink,
+            reject_rename,
+            reject_symlink,
+            reject_readlink,
         ),
     );
 }
@@ -462,4 +468,11 @@ pub fn init_limine() {
 /// Register a generated `/proc/<name>` node (used by loadable modules).
 pub fn procfs_register(name: &str, data: &'static [u8]) -> bool {
     procfs::register_dynamic(name, data)
+}
+
+pub fn procfs_set_writer(
+    name: &str,
+    writer: Option<unsafe extern "C" fn(*const u8, usize) -> i32>,
+) -> bool {
+    procfs::set_writer(name, writer)
 }

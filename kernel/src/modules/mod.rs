@@ -48,6 +48,7 @@ static API: KernelApi = KernelApi {
     proc_register: api_proc_register,
     acpi_rsdp: api_acpi_rsdp,
     hhdm_offset: api_hhdm_offset,
+    proc_set_writer: api_proc_set_writer,
 };
 
 /// Load the hello module that was baked into the kernel at build time.
@@ -516,4 +517,23 @@ unsafe extern "C" fn api_acpi_rsdp() -> usize {
 
 unsafe extern "C" fn api_hhdm_offset() -> u64 {
     crate::limine_boot::hhdm_offset()
+}
+
+unsafe extern "C" fn api_proc_set_writer(
+    name: *const u8,
+    name_len: usize,
+    writer: Option<unsafe extern "C" fn(*const u8, usize) -> i32>,
+) -> i32 {
+    if name.is_null() || name_len == 0 {
+        return -1;
+    }
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let Ok(name) = core::str::from_utf8(name_bytes) else {
+        return -1;
+    };
+    if crate::fs::procfs_set_writer(name, writer) {
+        0
+    } else {
+        -1
+    }
 }
