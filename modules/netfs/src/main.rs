@@ -99,6 +99,10 @@ struct Conv {
     /// the next outbound connect see status "hangup" → curl:7 / ECONNREFUSED,
     /// especially on slower UEFI TCG after a long https drain).
     closing: bool,
+    /// After CLONE_OK (re)install, ignore one in-flight hangup/error that still
+    /// belongs to the previous occupant of this index. Cleared on first data or
+    /// non-hangup status so real peer close still lands.
+    suppress_stale_hangup: bool,
     proto: u8,
     data_len: u16,
     data: [u8; DATA_CAP],
@@ -110,6 +114,7 @@ impl Conv {
     const EMPTY: Self = Self {
         used: false,
         closing: false,
+        suppress_stale_hangup: false,
         proto: 0,
         data_len: 0,
         data: [0; DATA_CAP],
@@ -269,6 +274,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
             st.convs[i] = Conv {
                 used: true,
                 closing: false,
+                suppress_stale_hangup: false,
                 proto,
                 data_len: 0,
                 data: [0; DATA_CAP],
@@ -291,6 +297,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
             st.convs[i] = Conv {
                 used: true,
                 closing: false,
+                suppress_stale_hangup: false,
                 proto,
                 data_len: 0,
                 data: [0; DATA_CAP],
@@ -372,6 +379,8 @@ fn apply_reply(buf: &[u8]) {
             *slot = Conv {
                 used: true,
                 closing: false,
+                // Prior occupant may still have a hangup ack in flight.
+                suppress_stale_hangup: slot.closing || slot.used,
                 proto,
                 data_len: 0,
                 data: [0; DATA_CAP],
@@ -388,13 +397,23 @@ fn apply_reply(buf: &[u8]) {
         return;
     };
     match typ {
-        REP_DATA => append_data(c, payload),
+        REP_DATA => {
+            c.suppress_stale_hangup = false;
+            append_data(c, payload);
+        }
         REP_STATUS => {
+            let hangupish = payload == b"hangup" || payload == b"error";
+            if hangupish && c.suppress_stale_hangup && !c.closing {
+                // In-flight CLOSE ack for the previous index occupant.
+                c.suppress_stale_hangup = false;
+                return;
+            }
             if payload.is_empty() {
                 set_status(c, b"connected");
             } else {
                 set_status(c, payload);
             }
+            c.suppress_stale_hangup = false;
             // CLOSE ack: drop the tombstone only after netd confirms hangup.
             // Freeing earlier let the next clone reuse the id while this
             // hangup reply was still in flight → connect_status saw "hangup"
