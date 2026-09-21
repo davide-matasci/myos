@@ -10,18 +10,25 @@
 //! on rescan (idempotent for already-attached controllers). virtio-net has
 //! no probe-again path yet and stays boot-bound. No ACPI/QEMU hotplug IRQ
 //! wiring — on-demand write is the trigger.
+//!
+//! Name strings are pushed from per-arm stack copies of byte literals so
+//! RISC-V/AArch64 `relocation-model=static` ET_EXEC modules never load
+//! unrebased `&'static str` addresses from a match pointer table (those
+//! point into .rodata; the loader only rebases PF_X pointers).
 
 #![no_std]
 #![no_main]
 
+use core::sync::atomic::{AtomicPtr, Ordering};
 use myos_abi::{status_info, status_ok, status_warn, ABI_VERSION, KernelApi};
 
 const MAX_DEV: usize = 64;
 const BUF_CAP: usize = 8192;
 const LINE_CAP: usize = 160;
+const WRITE_CAP: usize = 64;
 
-static mut API: *const KernelApi = core::ptr::null();
-static mut BUF: *mut u8 = core::ptr::null_mut();
+static API: AtomicPtr<KernelApi> = AtomicPtr::new(core::ptr::null_mut());
+static BUF: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
 #[inline(never)]
 #[unsafe(no_mangle)]
@@ -40,8 +47,8 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
             status_warn(api_ref, "pci_enum: alloc");
             return -3;
         }
-        API = api;
-        BUF = buf;
+        API.store(api.cast_mut(), Ordering::Release);
+        BUF.store(buf, Ordering::Release);
 
         let found = publish(api_ref, buf);
         let name = b"pci";
@@ -60,27 +67,34 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
 
 /// `write(2)` handler for `/proc/pci`. Accepts `rescan` (+ optional whitespace/newline).
 unsafe extern "C" fn pci_proc_write(data: *const u8, data_len: usize) -> i32 {
-    unsafe {
-        if data.is_null() && data_len != 0 {
-            return -1;
-        }
-        let raw = if data_len == 0 {
-            &[][..]
-        } else {
-            core::slice::from_raw_parts(data, data_len)
-        };
-        if !is_rescan_cmd(raw) {
-            return -1;
-        }
-        let api = API;
-        let buf = BUF;
-        if api.is_null() || buf.is_null() {
-            return -1;
-        }
-        let api_ref = &*api;
-        let _found = publish(api_ref, buf);
-        data_len as i32
+    // Copy the command onto the stack so we never form a slice from an
+    // untrusted C pointer (CodeQL rust/access-invalid-pointer) and so a
+    // concurrent overwrite of the syscall buffer cannot race the parse.
+    if data_len > WRITE_CAP {
+        return -1;
     }
+    let mut tmp = [0u8; WRITE_CAP];
+    if data_len > 0 {
+        if data.is_null() {
+            return -1;
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(data, tmp.as_mut_ptr(), data_len);
+        }
+    }
+    if !is_rescan_cmd(&tmp[..data_len]) {
+        return -1;
+    }
+    let api = API.load(Ordering::Acquire);
+    let buf = BUF.load(Ordering::Acquire);
+    let Some(api_ref) = (unsafe { api.as_ref() }) else {
+        return -1;
+    };
+    if buf.is_null() {
+        return -1;
+    }
+    let _found = publish(api_ref, buf);
+    data_len as i32
 }
 
 fn is_rescan_cmd(raw: &[u8]) -> bool {
@@ -167,7 +181,6 @@ fn publish(api: &KernelApi, buf: *mut u8) -> usize {
     }
 }
 
-
 fn push_str(out: &mut [u8], len: &mut usize, s: &str) {
     push_bytes(out, len, s.as_bytes());
 }
@@ -191,107 +204,346 @@ fn hex_u16(dst: &mut [u8], off: usize, v: u16) -> usize {
     hex_u8(dst, o, v as u8)
 }
 
-fn push_ascii(dst: &mut [u8], off: usize, s: &str) -> usize {
-    let b = s.as_bytes();
+fn push_ascii_bytes(dst: &mut [u8], off: usize, b: &[u8]) -> usize {
     let n = b.len().min(dst.len().saturating_sub(off));
     dst[off..off + n].copy_from_slice(&b[..n]);
     off + n
 }
 
-fn device_name(vend: u16, dev: u16) -> Option<&'static str> {
+/// Append ` name` using a stack-local copy of the literal so the address we
+/// read is never an unrebased absolute pointer from a match string table.
+fn push_spaced_name(line: &mut [u8], mut o: usize, name: &[u8]) -> usize {
+    if o >= line.len() {
+        return o;
+    }
+    line[o] = b' ';
+    o += 1;
+    push_ascii_bytes(line, o, name)
+}
+
+fn push_device_name(line: &mut [u8], o: usize, vend: u16, dev: u16) -> usize {
+    // Each arm copies the literal onto the stack (PC-relative load of bytes)
+    // before appending — do not `return Some("...")` (absolute .rodata ptrs).
     match (vend, dev) {
-        // Red Hat / virtio (transitional 0x1000.. and modern 0x1040..)
-        (0x1af4, 0x1000) | (0x1af4, 0x1041) => Some("virtio-net"),
-        (0x1af4, 0x1001) | (0x1af4, 0x1042) => Some("virtio-blk"),
-        (0x1af4, 0x1002) | (0x1af4, 0x1045) => Some("virtio-balloon"),
-        (0x1af4, 0x1003) | (0x1af4, 0x1043) => Some("virtio-console"),
-        (0x1af4, 0x1004) | (0x1af4, 0x1048) => Some("virtio-scsi"),
-        (0x1af4, 0x1005) | (0x1af4, 0x1044) => Some("virtio-rng"),
-        (0x1af4, 0x1009) | (0x1af4, 0x1049) => Some("virtio-9p"),
-        (0x1af4, 0x1050) => Some("virtio-gpu"),
-        (0x1af4, 0x1052) => Some("virtio-input"),
-        (0x1af4, 0x105a) => Some("virtio-fs"),
-        // QEMU devices (vendor 1b36)
-        (0x1b36, 0x0001) => Some("QEMU PCI-PCI bridge"),
-        (0x1b36, 0x0002) => Some("QEMU QXL"),
-        (0x1b36, 0x0003) => Some("QEMU serial"),
-        (0x1b36, 0x0004) => Some("QEMU dual serial"),
-        (0x1b36, 0x0005) => Some("QEMU quad serial"),
-        (0x1b36, 0x0007) => Some("QEMU PCI test"),
-        (0x1b36, 0x0008) => Some("QEMU dual 16550A"),
-        (0x1b36, 0x0009) => Some("QEMU PCIe host"),
-        (0x1b36, 0x000a) => Some("QEMU PCIe root port"),
-        (0x1b36, 0x000b) => Some("QEMU SDHCI"),
-        (0x1b36, 0x000c) => Some("QEMU PVPanic PCI"),
-        (0x1b36, 0x000d) => Some("QEMU virtio-iommu"),
-        (0x1b36, 0x0010) => Some("QEMU NVMe"),
-        (0x1b36, 0x0011) => Some("QEMU PVPanic ISA"),
-        (0x1b36, 0x0013) => Some("QEMU mbox"),
-        // Intel chipset pieces common under QEMU pc/q35
-        (0x8086, 0x1237) => Some("i440FX host bridge"),
-        (0x8086, 0x7000) => Some("PIIX3 ISA"),
-        (0x8086, 0x7010) => Some("PIIX3 IDE"),
-        (0x8086, 0x7020) => Some("PIIX3 USB"),
-        (0x8086, 0x7110) => Some("PIIX4 ISA"),
-        (0x8086, 0x7111) => Some("PIIX4 IDE"),
-        (0x8086, 0x7113) => Some("PIIX4 ACPI"),
-        (0x8086, 0x29c0) => Some("Q35 host bridge"),
-        (0x8086, 0x2918) => Some("ICH9 LPC"),
-        (0x8086, 0x2922) => Some("ICH9 AHCI"),
-        (0x8086, 0x2930) => Some("ICH9 SMBus"),
-        (0x8086, 0x2415) => Some("ICH AC97"),
-        (0x8086, 0x2668) => Some("ICH6 HDA"),
-        (0x8086, 0x100e) => Some("e1000"),
-        (0x8086, 0x10d3) => Some("e1000e"),
-        (0x8086, 0x15d0) => Some("PCIe DRAM controller"),
-        // Bochs / QEMU VGA
-        (0x1234, 0x1111) => Some("Bochs VGA"),
-        // Realtek often used with -nic model=rtl8139
-        (0x10ec, 0x8139) => Some("RTL8139"),
-        _ => None,
+        (0x1af4, 0x1000) | (0x1af4, 0x1041) => {
+            let n = *b"virtio-net";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1af4, 0x1001) | (0x1af4, 0x1042) => {
+            let n = *b"virtio-blk";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1af4, 0x1002) | (0x1af4, 0x1045) => {
+            let n = *b"virtio-balloon";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1af4, 0x1003) | (0x1af4, 0x1043) => {
+            let n = *b"virtio-console";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1af4, 0x1004) | (0x1af4, 0x1048) => {
+            let n = *b"virtio-scsi";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1af4, 0x1005) | (0x1af4, 0x1044) => {
+            let n = *b"virtio-rng";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1af4, 0x1009) | (0x1af4, 0x1049) => {
+            let n = *b"virtio-9p";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1af4, 0x1050) => {
+            let n = *b"virtio-gpu";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1af4, 0x1052) => {
+            let n = *b"virtio-input";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1af4, 0x105a) => {
+            let n = *b"virtio-fs";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0001) => {
+            let n = *b"QEMU PCI-PCI bridge";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0002) => {
+            let n = *b"QEMU QXL";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0003) => {
+            let n = *b"QEMU serial";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0004) => {
+            let n = *b"QEMU dual serial";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0005) => {
+            let n = *b"QEMU quad serial";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0007) => {
+            let n = *b"QEMU PCI test";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0008) => {
+            let n = *b"QEMU dual 16550A";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0009) => {
+            let n = *b"QEMU PCIe host";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x000a) => {
+            let n = *b"QEMU PCIe root port";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x000b) => {
+            let n = *b"QEMU SDHCI";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x000c) => {
+            let n = *b"QEMU PVPanic PCI";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x000d) => {
+            let n = *b"QEMU virtio-iommu";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0010) => {
+            let n = *b"QEMU NVMe";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0011) => {
+            let n = *b"QEMU PVPanic ISA";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1b36, 0x0013) => {
+            let n = *b"QEMU mbox";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x1237) => {
+            let n = *b"i440FX host bridge";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x7000) => {
+            let n = *b"PIIX3 ISA";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x7010) => {
+            let n = *b"PIIX3 IDE";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x7020) => {
+            let n = *b"PIIX3 USB";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x7110) => {
+            let n = *b"PIIX4 ISA";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x7111) => {
+            let n = *b"PIIX4 IDE";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x7113) => {
+            let n = *b"PIIX4 ACPI";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x29c0) => {
+            let n = *b"Q35 host bridge";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x2918) => {
+            let n = *b"ICH9 LPC";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x2922) => {
+            let n = *b"ICH9 AHCI";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x2930) => {
+            let n = *b"ICH9 SMBus";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x2415) => {
+            let n = *b"ICH AC97";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x2668) => {
+            let n = *b"ICH6 HDA";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x100e) => {
+            let n = *b"e1000";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x10d3) => {
+            let n = *b"e1000e";
+            push_spaced_name(line, o, &n)
+        }
+        (0x8086, 0x15d0) => {
+            let n = *b"PCIe DRAM controller";
+            push_spaced_name(line, o, &n)
+        }
+        (0x1234, 0x1111) => {
+            let n = *b"Bochs VGA";
+            push_spaced_name(line, o, &n)
+        }
+        (0x10ec, 0x8139) => {
+            let n = *b"RTL8139";
+            push_spaced_name(line, o, &n)
+        }
+        _ => o,
     }
 }
 
-/// Class + subclass short names (PCI base-class codes). Prefer subclass
-/// when known; otherwise fall back to the base class label.
-fn class_name(class: u8, sub: u8) -> Option<&'static str> {
+fn push_class_name(line: &mut [u8], o: usize, class: u8, sub: u8) -> usize {
     match (class, sub) {
-        (0x00, 0x00) => Some("Non-VGA unclassified"),
-        (0x00, 0x01) => Some("VGA unclassified"),
-        (0x01, 0x00) => Some("SCSI storage"),
-        (0x01, 0x01) => Some("IDE storage"),
-        (0x01, 0x04) => Some("RAID storage"),
-        (0x01, 0x05) => Some("ATA storage"),
-        (0x01, 0x06) => Some("SATA"),
-        (0x01, 0x07) => Some("SAS"),
-        (0x01, 0x08) => Some("NVMe"),
-        (0x01, _) => Some("Mass storage"),
-        (0x02, 0x00) => Some("Ethernet"),
-        (0x02, _) => Some("Network"),
-        (0x03, 0x00) => Some("VGA"),
-        (0x03, 0x02) => Some("3D controller"),
-        (0x03, _) => Some("Display"),
-        (0x04, 0x01) => Some("Audio"),
-        (0x04, 0x03) => Some("HD audio"),
-        (0x04, _) => Some("Multimedia"),
-        (0x05, _) => Some("Memory"),
-        (0x06, 0x00) => Some("Host bridge"),
-        (0x06, 0x01) => Some("ISA bridge"),
-        (0x06, 0x04) => Some("PCI-PCI bridge"),
-        (0x06, 0x09) => Some("PCI-PCI bridge (sub)"),
-        (0x06, _) => Some("Bridge"),
-        (0x07, 0x00) => Some("Serial"),
-        (0x07, _) => Some("Simple comm"),
-        (0x08, 0x05) => Some("SD host"),
-        (0x08, 0x80) => Some("System peripheral"),
-        (0x08, _) => Some("Base system"),
-        (0x09, _) => Some("Input"),
-        (0x0c, 0x03) => Some("USB"),
-        (0x0c, 0x05) => Some("SMBus"),
-        (0x0c, _) => Some("Serial bus"),
-        (0x0d, _) => Some("Wireless"),
-        (0xff, _) => Some("Unassigned"),
-        _ => None,
+        (0x00, 0x00) => {
+            let n = *b"Non-VGA unclassified";
+            push_spaced_name(line, o, &n)
+        }
+        (0x00, 0x01) => {
+            let n = *b"VGA unclassified";
+            push_spaced_name(line, o, &n)
+        }
+        (0x01, 0x00) => {
+            let n = *b"SCSI storage";
+            push_spaced_name(line, o, &n)
+        }
+        (0x01, 0x01) => {
+            let n = *b"IDE storage";
+            push_spaced_name(line, o, &n)
+        }
+        (0x01, 0x04) => {
+            let n = *b"RAID storage";
+            push_spaced_name(line, o, &n)
+        }
+        (0x01, 0x05) => {
+            let n = *b"ATA storage";
+            push_spaced_name(line, o, &n)
+        }
+        (0x01, 0x06) => {
+            let n = *b"SATA";
+            push_spaced_name(line, o, &n)
+        }
+        (0x01, 0x07) => {
+            let n = *b"SAS";
+            push_spaced_name(line, o, &n)
+        }
+        (0x01, 0x08) => {
+            let n = *b"NVMe";
+            push_spaced_name(line, o, &n)
+        }
+        (0x01, _) => {
+            let n = *b"Mass storage";
+            push_spaced_name(line, o, &n)
+        }
+        (0x02, 0x00) => {
+            let n = *b"Ethernet";
+            push_spaced_name(line, o, &n)
+        }
+        (0x02, _) => {
+            let n = *b"Network";
+            push_spaced_name(line, o, &n)
+        }
+        (0x03, 0x00) => {
+            let n = *b"VGA";
+            push_spaced_name(line, o, &n)
+        }
+        (0x03, 0x02) => {
+            let n = *b"3D controller";
+            push_spaced_name(line, o, &n)
+        }
+        (0x03, _) => {
+            let n = *b"Display";
+            push_spaced_name(line, o, &n)
+        }
+        (0x04, 0x01) => {
+            let n = *b"Audio";
+            push_spaced_name(line, o, &n)
+        }
+        (0x04, 0x03) => {
+            let n = *b"HD audio";
+            push_spaced_name(line, o, &n)
+        }
+        (0x04, _) => {
+            let n = *b"Multimedia";
+            push_spaced_name(line, o, &n)
+        }
+        (0x05, _) => {
+            let n = *b"Memory";
+            push_spaced_name(line, o, &n)
+        }
+        (0x06, 0x00) => {
+            let n = *b"Host bridge";
+            push_spaced_name(line, o, &n)
+        }
+        (0x06, 0x01) => {
+            let n = *b"ISA bridge";
+            push_spaced_name(line, o, &n)
+        }
+        (0x06, 0x04) => {
+            let n = *b"PCI-PCI bridge";
+            push_spaced_name(line, o, &n)
+        }
+        (0x06, 0x09) => {
+            let n = *b"PCI-PCI bridge (sub)";
+            push_spaced_name(line, o, &n)
+        }
+        (0x06, _) => {
+            let n = *b"Bridge";
+            push_spaced_name(line, o, &n)
+        }
+        (0x07, 0x00) => {
+            let n = *b"Serial";
+            push_spaced_name(line, o, &n)
+        }
+        (0x07, _) => {
+            let n = *b"Simple comm";
+            push_spaced_name(line, o, &n)
+        }
+        (0x08, 0x05) => {
+            let n = *b"SD host";
+            push_spaced_name(line, o, &n)
+        }
+        (0x08, 0x80) => {
+            let n = *b"System peripheral";
+            push_spaced_name(line, o, &n)
+        }
+        (0x08, _) => {
+            let n = *b"Base system";
+            push_spaced_name(line, o, &n)
+        }
+        (0x09, _) => {
+            let n = *b"Input";
+            push_spaced_name(line, o, &n)
+        }
+        (0x0c, 0x03) => {
+            let n = *b"USB";
+            push_spaced_name(line, o, &n)
+        }
+        (0x0c, 0x05) => {
+            let n = *b"SMBus";
+            push_spaced_name(line, o, &n)
+        }
+        (0x0c, _) => {
+            let n = *b"Serial bus";
+            push_spaced_name(line, o, &n)
+        }
+        (0x0d, _) => {
+            let n = *b"Wireless";
+            push_spaced_name(line, o, &n)
+        }
+        (0xff, _) => {
+            let n = *b"Unassigned";
+            push_spaced_name(line, o, &n)
+        }
+        _ => o,
     }
 }
 
@@ -323,11 +575,7 @@ fn format_dev(
     o += 1;
     o = hex_u16(line, o, dev);
 
-    if let Some(name) = device_name(vend, dev) {
-        line[o] = b' ';
-        o += 1;
-        o = push_ascii(line, o, name);
-    }
+    o = push_device_name(line, o, vend, dev);
 
     line[o] = b' ';
     o += 1;
@@ -339,14 +587,9 @@ fn format_dev(
     o += 1;
     o = hex_u8(line, o, prog);
 
-    if let Some(cname) = class_name(class, sub) {
-        line[o] = b' ';
-        o += 1;
-        o = push_ascii(line, o, cname);
-    }
+    o = push_class_name(line, o, class, sub);
     o
 }
-
 
 fn format_count(msg: &mut [u8], n: usize) -> usize {
     let prefix = b"pci: ";
