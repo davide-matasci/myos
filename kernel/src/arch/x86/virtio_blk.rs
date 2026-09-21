@@ -102,8 +102,12 @@ fn setup(iobase: u16) -> Option<Dev> {
     outl(iobase + REG_DRV_FEAT, 0);
 
     outw(iobase + REG_QUEUE_SEL, 0);
+    // QEMU 10+ legacy virtio-blk advertises QueueNum=1024 (older QEMU: 256).
+    // Accept up to 1024; at blk::init the frame freelist is empty so
+    // virtq::alloc_pages can take consecutive bump frames for the larger vring.
+    // Negotiating down via QueueNum writes looked accepted but hung on first I/O.
     let num = inw(iobase + REG_QUEUE_NUM);
-    if num == 0 || num > 256 {
+    if num == 0 || num > 1024 {
         return None;
     }
     let bytes = virtq::vring_size(num as usize, PAGE);

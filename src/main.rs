@@ -418,7 +418,15 @@ fn run_ci_uefi(uefi_path: &str) {
         // Keep ~512 MiB above BIOS 4096 for GOP / OVMF overhead.
         .arg("4608")
         .arg("-smp")
-        .arg("4")  // ≥2 APs for parallel-fork RR / make -j
+        .arg({
+            // Local TCG-single: smp=1 keeps serial shell typing reliable; CI
+            // runners omit MYOS_TCG_SINGLE and keep smp=4 (UEFI cat|cat race).
+            if std::env::var("MYOS_TCG_SINGLE").as_deref() == Ok("1") {
+                "1"
+            } else {
+                "4" // ≥2 APs for parallel-fork RR / make -j
+            }
+        })
         .args({
             // Match run_ci_bios: local-ci.sh exports MYOS_TCG_SINGLE=1 so MTTCG
             // does not starve the boot. Without this, UEFI CI ignored the flag.
