@@ -111,8 +111,15 @@ const CMD_URANDOM: &[u8] = b"/bin/etc/urandom_smoke\n";
 // the harness connects back through slirp hostfwd (see add_virtio_net in
 // src/main.rs), sends "ping", and expects "pong". Then `cat` must show
 // `[ OK ] listen` from the redirected output.
-const CMD_LISTEN_BG: &[u8] = b"/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 &\n";
+const CMD_LISTEN_BG: &[u8] =
+    b"/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 & echo $! > /tmp/listen.pid\n";
 const CMD_LISTEN_CAT: &[u8] = b"cat /tmp/listen.out\n";
+/// Tear down listen smoke before `cat | cat`. Leaving tcp_listen_smoke (+ #166
+/// netd reclaim/drain) live across the interrupt stage raced UEFI SMP fork/
+/// aspace for the pipeline (user page fault cr2 in HHDM, code=0x5, tip
+/// 42b7f2c boot-mini). Same discipline as CMD_DROPBEAR_STOP before ostest.
+const CMD_LISTEN_STOP: &[u8] =
+    b"kill $(cat /tmp/listen.pid) 2>/dev/null; echo LISTEN-STOP\n";
 /// Harness-side flag: the ping/pong exchange through hostfwd succeeded.
 static LISTEN_PONGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// When the listen smoke stage first began (bounds the ping/pong retry loop).
@@ -434,6 +441,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     // harness completes the ping/pong through slirp hostfwd).
     cmds.push(CMD_LISTEN_BG);
     cmds.push(CMD_LISTEN_CAT);
+    cmds.push(CMD_LISTEN_STOP);
     cmds.push(CMD_INTERRUPT);
     cmds.push(CMD_HIST_SEED);
     cmds.push(CMD_ARROW);
@@ -1005,7 +1013,7 @@ fn interactive_listen_bg_ok(serial: &str) -> bool {
     if !LISTEN_PONGED.load(std::sync::atomic::Ordering::SeqCst) {
         return false;
     }
-    command_echoed(serial, "/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 &")
+    command_echoed(serial, "/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 & echo $! > /tmp/listen.pid")
         && at_interactive_prompt(serial)
 }
 
@@ -1016,7 +1024,14 @@ fn interactive_listen_cat_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
-/// Dropbear started in the guest and both host SSH clients succeeded.
+/// Listen smoke torn down before the ^C interrupt stage.
+fn interactive_listen_stop_ok(serial: &str) -> bool {
+    command_echoed(serial, "kill $(cat /tmp/listen.pid) 2>/dev/null; echo LISTEN-STOP")
+        && serial.contains("LISTEN-STOP")
+        && at_interactive_prompt(serial)
+}
+
+
 fn interactive_dropbear_bg_ok(serial: &str) -> bool {
     if !SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
         return false;
@@ -1058,6 +1073,7 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         }
         i if cmds[i] == CMD_LISTEN_BG => interactive_listen_bg_ok(serial),
         i if cmds[i] == CMD_LISTEN_CAT => interactive_listen_cat_ok(serial),
+        i if cmds[i] == CMD_LISTEN_STOP => interactive_listen_stop_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
         i if i == arrow_seed_idx(cmds) => interactive_arrow_seed_ok(serial),
         i if i == arrow_edit_idx(cmds) => interactive_arrow_edit_ok(serial),

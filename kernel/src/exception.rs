@@ -67,10 +67,17 @@ pub fn x86_page_fault(cr2: u64, rip: u64, rsp: u64, code: u64, user: bool) -> ! 
                 stack.push_str(&format!(" [{:#x}]={:#x}", addr, v));
             }
         }
+        // Match aarch64/riscv: a userspace SEGV (including an accidental
+        // kernel-VA / HHDM deref) must kill the faulting task, not halt QEMU.
+        // Halting turned UEFI boot-mini `cat | cat` into a machine-wide
+        // `[ FAIL ] exception` (cr2 in HHDM, code=0x5) instead of a child SEGV.
+        user_fault_kill(
+            "page fault",
+            &format!("cr2={cr2:#x} rip={rip:#x} rsp={rsp:#x} code={code:#x}{ctx} stack{stack}", ctx = task_ctx()),
+        );
     }
     fatal_line(&format!(
-        "page fault cr2={cr2:#x} rip={rip:#x} rsp={rsp:#x} code={code:#x} {mode}{ctx} stack{stack}",
-        mode = if user { "user" } else { "kernel" },
+        "page fault cr2={cr2:#x} rip={rip:#x} rsp={rsp:#x} code={code:#x} kernel{ctx} stack{stack}",
         ctx = task_ctx(),
     ));
 }

@@ -1349,18 +1349,42 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
     // Iret frame in memory (RIP, CS, RFLAGS, RSP, SS). Do not feed five `in(reg)`
     // operands into one asm block: LLVM can reuse a register for CS and corrupt
     // iretq (post-fork exec of large ELFs → #GP on BIOS).
-    let frame = [user_rip as u64, cs, rflags, user_rsp as u64, ss];
+    //
+    // Volatile + GPR scrub: `mov rsp, frame_ptr` leaves the kernel stack
+    // address (HHDM) in a GPR across iretq. Userspace then faulted on that
+    // pointer (UEFI boot-mini `cat | cat`: cr2=0xffff8000… code=0x5). Same
+    // discipline as enter_fork_x86 / enter_riscv64.
+    let resume = [user_rip as u64, cs, rflags, user_rsp as u64, ss];
+    let mut slot = core::mem::MaybeUninit::<[u64; 5]>::uninit();
     const CR0_TS: u64 = 1 << 3;
     unsafe {
         let mut cr0: u64;
         core::arch::asm!("mov {}, cr0", out(reg) cr0);
         cr0 &= !CR0_TS;
         core::arch::asm!("mov cr0, {}", in(reg) cr0);
+        core::ptr::write_volatile(slot.as_mut_ptr(), resume);
+        let f = slot.as_ptr();
+        // Mov rsp first so scrubbing GPRs cannot zero the frame pointer reg.
         core::arch::asm!(
             "cli",
             "mov rsp, {f}",
+            "xor rax, rax",
+            "xor rcx, rcx",
+            "xor rdx, rdx",
+            "xor rbx, rbx",
+            "xor rbp, rbp",
+            "xor rsi, rsi",
+            "xor rdi, rdi",
+            "xor r8, r8",
+            "xor r9, r9",
+            "xor r10, r10",
+            "xor r11, r11",
+            "xor r12, r12",
+            "xor r13, r13",
+            "xor r14, r14",
+            "xor r15, r15",
             "iretq",
-            f = in(reg) frame.as_ptr(),
+            f = in(reg) f,
             options(noreturn),
         );
     }

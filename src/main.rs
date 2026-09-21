@@ -419,6 +419,15 @@ fn run_ci_uefi(uefi_path: &str) {
         .arg("4608")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
+        .args({
+            // Match run_ci_bios: local-ci.sh exports MYOS_TCG_SINGLE=1 so MTTCG
+            // does not starve the boot. Without this, UEFI CI ignored the flag.
+            if std::env::var("MYOS_TCG_SINGLE").as_deref() == Ok("1") {
+                vec!["-accel", "tcg,thread=single"]
+            } else {
+                vec![]
+            }
+        })
         .arg("-drive")
         .arg(format!("format=raw,file={uefi_path}"))
         .arg("-drive")
