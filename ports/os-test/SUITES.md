@@ -23,3 +23,16 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`
 (~100 paths, suite-prefixed). Wired the same way as basic: thin
 `ci-smoke-copy.sh` staging + host prebuild + `make … TESTLIST=… report`.
+
+## Deferred from curated set (implemented but not yet green)
+
+These have real support started in-tree but are **not** in `ci-nonbasic-100.tests`
+until they pass honestly (no xfails):
+
+- `io/open-clofork-fork`, `io/dup3-clofork-fork` — kernel `fd_clofork_mask` +
+  libgloss O_CLOFORK; still failing child fstat after fork on CI
+- `process/fork-setpgid-*-undo*` — `kill(sig=0)` existence probe added; undo
+  sequences still red
+- `udp/connect-reconnect*` — datagram reconnect allowed in libgloss; still red
+- `process/waitpid-pgid` — needs waitpid(pgid) filtering (waitpid currently
+  ignores pid)

@@ -94,10 +94,10 @@ TESTS += signal/ignore-usr1-exec
 
 # --- process (8) — POSIX expect exit: 0 ---
 TESTS += process/fork-setpgid
-TESTS += process/fork-setpgid-undo
-TESTS += process/fork-setpgid-undo-redo
-TESTS += process/fork-setpgid-another-undo-redo
-TESTS += process/fork-setpgid-another-undo-undo
+TESTS += process/fork-setsid-setpgid
+TESTS += process/zombie-setpgid
+TESTS += process/limbo-getpgid
+TESTS += process/fork-setsid-setpgid-move
 TESTS += process/fork-exec-setpgid-in-child
 TESTS += process/fork-setpgid-on-parent
 TESTS += process/zombie-getpgid
@@ -106,8 +106,8 @@ TESTS += process/zombie-getpgid
 TESTS += io/open-tmpdir-rdonly
 TESTS += io/open-tmpdir-rdonly-directory
 TESTS += io/open-tmpdir-rdonly-append
-TESTS += io/open-clofork-fork
-TESTS += io/dup3-clofork-fork
+TESTS += io/open-mkstemp-rdonly-trunc
+TESTS += io/open-mkstemp-rdonly-directory
 TESTS += io/open-mkstemp-rdonly
 
 # --- udp (12) — exit 0 / printable success ---
@@ -119,7 +119,7 @@ TESTS += udp/bind-any-0-unbind
 TESTS += udp/bind-sendto-self
 TESTS += udp/bind-loopback-0-getsockname
 TESTS += udp/connect-unconnect
-TESTS += udp/connect-reconnect
-TESTS += udp/connect-reconnect-same
+TESTS += udp/connect-getpeername
+TESTS += udp/connect-unconnect-getpeername
 TESTS += udp/unconnect
 TESTS += udp/connect-sendto-null
