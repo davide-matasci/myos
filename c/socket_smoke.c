@@ -23,8 +23,18 @@ static void backoff(int attempt) {
     }
 }
 
-int main(void) {
-    struct addrinfo hints, *res = NULL;
+/*
+ * One HTTP GET attempt. Returns 1 on success (caller prints [ OK ] socket),
+ * 0 if the exchange failed in a retryable way (connect/send/no-data).
+ *
+ * CI bios sometimes loses the first SYN right after /ping, or accepts the
+ * handshake and then RSTs / starves RX before any HTTP bytes arrive
+ * ("socket_smoke: no data" on master push 35557946498 after #161 while
+ * uefi/aarch64/riscv64 were green on the same ci-build.tar). Retry the full
+ * transaction, not only connect — connect-only retries left post-handshake
+ * starve as a hard failure.
+ */
+static int try_http_get(struct addrinfo *res) {
     int fd = -1;
     const char *req =
         "GET / HTTP/1.1\r\n"
@@ -38,14 +48,6 @@ int main(void) {
     int empty = 0;
     int attempt;
 
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo("example.com", "80", &hints, &res) != 0 || res == NULL) {
-        die("getaddrinfo fail");
-    }
-
-    /* CI bios sometimes loses the first SYN right after /ping — retry. */
     for (attempt = 0; attempt < 8; attempt++) {
         fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
         if (fd < 0) {
@@ -60,14 +62,12 @@ int main(void) {
         backoff(attempt);
     }
     if (fd < 0) {
-        freeaddrinfo(res);
-        die("connect fail");
+        return 0;
     }
-    freeaddrinfo(res);
 
     if (send(fd, req, strlen(req), 0) < 0) {
         close(fd);
-        die("send fail");
+        return 0;
     }
 
     for (i = 0; i < 400000; i++) {
@@ -92,10 +92,32 @@ int main(void) {
         write(STDOUT_FILENO, buf, (size_t)n);
     }
     close(fd);
+    return got;
+}
 
-    if (!got) {
-        die("no data");
+int main(void) {
+    struct addrinfo hints, *res = NULL;
+    int round;
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo("example.com", "80", &hints, &res) != 0 || res == NULL) {
+        die("getaddrinfo fail");
     }
-    write(STDOUT_FILENO, "\n[ OK ] socket\n", 15);
-    return 0;
+
+    for (round = 0; round < 8; round++) {
+        if (round != 0) {
+            backoff(round);
+        }
+        if (try_http_get(res)) {
+            freeaddrinfo(res);
+            write(STDOUT_FILENO, "\n[ OK ] socket\n", 15);
+            return 0;
+        }
+    }
+
+    freeaddrinfo(res);
+    die("no data");
+    return 1;
 }
