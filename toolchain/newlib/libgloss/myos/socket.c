@@ -638,12 +638,16 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     if (addr != NULL && addr->sa_family == AF_INET) {
         const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
         uint32_t a = in->sin_addr.s_addr;
-        /* Allow ANY and LOOPBACK; other addresses are for future multi-homing. */
+        /* ANY + LOOPBACK only (netd is single-homed). UDP suite binds loopback. */
         if (a != INADDR_ANY && a != 0 && a != htonl(INADDR_LOOPBACK)) {
-            /* Still accept: netd is single-homed; treat as ANY for announce. */
+            errno = EOPNOTSUPP;
+            return -1;
         }
         unsigned short port = ntohs(in->sin_port);
-        if (port == 0) {
+        /* Ephemeral ports: UDP needs getsockname()!=0 after bind(port=0).
+         * Do not invent a local TCP port here — netd assigns on connect, and
+         * a fake bind_port confused later getsockname/poll on some arches. */
+        if (port == 0 && s->type == SOCK_DGRAM) {
             port = myos_ephemeral_port();
         }
         s->bind_port = htons(port);
@@ -942,8 +946,15 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         errno = ENOTSOCK;
         return -1;
     }
-    /* POSIX: connect(AF_UNSPEC) dissolves the association (UDP "unconnect"). */
+    /* AF_UNSPEC dissolves a *datagram* association only (os-test udp/unconnect).
+     * On SOCK_STREAM a successful no-op left curl believing TCP was connected
+     * with no handshake — aarch64 then hit curl: (28) SSL connection timeout
+     * after [ OK ] https (Plan 9 /net path unaffected). */
     if (addr != NULL && addr->sa_family == AF_UNSPEC) {
+        if (s->type != SOCK_DGRAM) {
+            errno = EINVAL;
+            return -1;
+        }
         memset(&s->peer, 0, sizeof(s->peer));
         s->peer_set = 0;
         if (s->state == SOCK_CONNECTED || s->state == SOCK_CONNECTING) {
