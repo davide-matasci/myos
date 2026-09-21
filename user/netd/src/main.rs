@@ -508,6 +508,34 @@ fn handle_ctl(
         }
         return;
     }
+    // Userspace finished open() on the advertised head handoff. Drop that
+    // head without re-advertising it (ctl "accept" used to take+reply the
+    // same <N>, and with accepted_pending a seq bump made the next accept()
+    // re-open the live Child — dropbear "bad packet size 0x53534831" / SSH1).
+    // Promote pending to head and advertise it; otherwise status=listening.
+    if cmd == b"taken" {
+        match convs[i].kind {
+            Kind::Tcp if convs[i].listen_port != 0 => {}
+            _ => {
+                reply(chan, REP_ERR, conv, -1, b"not listening");
+                return;
+            }
+        }
+        let Some(_n) = convs[i].accepted.take() else {
+            reply(chan, REP_STATUS, conv, 0, b"listening");
+            return;
+        };
+        if let Some(m) = convs[i].accepted_pending.take() {
+            convs[i].accept_seq = convs[i].accept_seq.wrapping_add(1);
+            convs[i].accepted = Some(m);
+            let seq = convs[i].accept_seq;
+            let rep = accept_reply(convs, m, seq);
+            reply(chan, REP_STATUS, conv, 0, &rep);
+        } else {
+            reply(chan, REP_STATUS, conv, 0, b"listening");
+        }
+        return;
+    }
     // Accept a pending connection on this listener. One parked wait max.
     if cmd == b"accept" {
         match convs[i].kind {

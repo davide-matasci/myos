@@ -2742,7 +2742,23 @@ fn ap_idle_bringup() {
 }
 
 fn ap_idle_body() {
+    // aarch64 boot-mini keeps -smp 4 for AP bring-up / smp_smoke. Once ONLINE,
+    // a 100Hz timer on each idle AP wakes WFI every tick; under TCG (even
+    // thread=single) those three vCPUs steal BSP guest time and interactive
+    // `which ls` misses the 240s mini budget. Disable AP timers so WFI sleeps;
+    // leave IRQs unmasked so SGIs still drive tlb_service / kick_cpus.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "msr cntv_ctl_el0, {z}",
+            "msr cntp_ctl_el0, {z}",
+            "isb",
+            z = in(reg) 0u64,
+            options(nomem, nostack),
+        );
+    }
     loop {
+        crate::smp::tlb_service();
         yield_now();
         crate::arch::wait_interrupt();
     }

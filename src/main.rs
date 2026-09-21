@@ -561,10 +561,9 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("none")
         .arg("-no-reboot");
     // aarch64 userspace is BSP-pinned (`task::user_affinity`). boot-mini still
-    // uses -smp 4 for AP bring-up; default MTTCG then schedules three idle
-    // vCPU threads that steal host TCG from the BSP. Single-thread TCG keeps
-    // that AP coverage without starving BSP work. Full-boot uses -smp 1 (see
-    // above). Set MYOS_TCG_SINGLE=0 only when deliberately testing MTTCG.
+    // uses -smp 4 for AP bring-up; APs then disable their timers and WFI so
+    // idle vCPUs do not steal BSP guest time under TCG. Full-boot uses -smp 1
+    // (curl/TLS). Default TCG thread=single; MYOS_TCG_SINGLE=0 for MTTCG.
     if std::env::var("MYOS_TCG_SINGLE").as_deref() != Ok("0") {
         cmd.arg("-accel").arg("tcg,thread=single");
     }

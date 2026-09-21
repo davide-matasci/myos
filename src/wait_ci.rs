@@ -298,10 +298,6 @@ fn ssh_one_client(key: &Path, tag: &str) -> Result<(), String> {
 /// this smoke still covers accept + pubkey + exit-status twice.
 fn poke_ssh_two_clients(key: &Path) -> Result<(), String> {
     ssh_one_client(key, "ssh-ci-a")?;
-    // Gap so netd finishes teardown of the first Child before the next SYN.
-    // Back-to-back clients on riscv64 TCG produced dropbear
-    // "Integrity error (bad packet size …)" / hung KEX for ssh-ci-b (#164).
-    std::thread::sleep(Duration::from_secs(2));
     ssh_one_client(key, "ssh-ci-b")?;
     Ok(())
 }
@@ -332,7 +328,7 @@ fn start_ssh_smoke_worker() {
         // has armed accept hang in slirp or produce Child+I/O-error and wedge
         // the listener for the rest of the stage. Do NOT TCP-probe :2222 —
         // a connect+close is itself a half-open session that can wedge.
-        std::thread::sleep(Duration::from_secs(12));
+        std::thread::sleep(Duration::from_secs(8));
         let mut last_err = String::from("ssh smoke never attempted");
         while start.elapsed() < SSH_STAGE_BOUND {
             match poke_ssh_two_clients(&key) {
