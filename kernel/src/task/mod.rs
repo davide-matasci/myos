@@ -36,7 +36,7 @@ pub const STACK_SIZE: usize = 64 * 1024;
 /// the tiny Rust shell; raise further for dropbear: a session holds stdio +
 /// the session socket + the signal pipe (2) + three pipes for `spawn_command`
 /// (6) before the child execs, so 16 was exhausted and exec failed.
-const MAX_FDS: usize = 40;
+const MAX_FDS: usize = 32;
 
 /// Stamp the owning logical CPU id at the base of a kernel stack so U-mode
 /// trap entry can reload `tp` without trusting user TLS (see riscv64 trap
@@ -277,8 +277,6 @@ struct Task {
     /// Controlling terminal attached (phase-1: system console only).
     /// Inherited on fork; set by TIOCSCTTY; cleared by SYS_SETSID.
     has_ctty: bool,
-    /// Bit i set ⇒ close fd i in the child after fork (POSIX O_CLOFORK).
-    fd_clofork_mask: u64,
     /// Pending signals bitmask (bit N = signal N, N in 1..31). See `signal`.
     sig_pending: u32,
     /// Ignored signals bitmask (SIGKILL cannot be ignored). See `signal`.
@@ -319,7 +317,6 @@ const EMPTY: Task = Task {
     sid: 0,
     pgid: 0,
     has_ctty: false,
-    fd_clofork_mask: 0,
     sig_pending: 0,
     sig_ignored: 0,
     sig_blocked: 0,
@@ -561,16 +558,6 @@ pub fn unload_user_aspace(aspace: u64) {
 #[allow(dead_code)]
 pub fn current_id() -> usize {
     current_slot()
-}
-
-/// Parent task slot of the current task (0 if none / init).
-pub fn current_ppid() -> Option<usize> {
-    let flags = irq_save();
-    irq_off();
-    let id = current_slot();
-    let ppid = TASKS.lock()[id].ppid;
-    irq_restore(flags);
-    Some(ppid)
 }
 
 /// When the running task is a user process, its saved PC and stack pointer.
@@ -818,9 +805,6 @@ fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
 pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
     let writable = crate::fs::open_writable(flags);
     let append = crate::fs::open_append(flags);
-    // Match libgloss MYOS_K_O_CLOFORK / POSIX O_CLOFORK.
-    const O_CLOFORK: u32 = 0x0100_0000;
-    let clofork = (flags & O_CLOFORK) != 0;
     with_current_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
@@ -831,11 +815,6 @@ pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
                     append,
                 };
                 crate::fs::vfs::open_ref(&node);
-                if clofork {
-                    t.fd_clofork_mask |= 1u64 << i;
-                } else {
-                    t.fd_clofork_mask &= !(1u64 << i);
-                }
                 return Some(i);
             }
         }
@@ -956,12 +935,6 @@ pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
 }
 
 pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
-    fd_dup2_flags(oldfd, newfd, 0)
-}
-
-/// `flags` may include O_CLOFORK (0x01000000) — set/clear on `newfd`.
-pub fn fd_dup2_flags(oldfd: usize, newfd: usize, flags: usize) -> bool {
-    const O_CLOFORK: usize = 0x0100_0000;
     if oldfd >= MAX_FDS || newfd >= MAX_FDS {
         return false;
     }
@@ -974,14 +947,7 @@ pub fn fd_dup2_flags(oldfd: usize, newfd: usize, flags: usize) -> bool {
             return true;
         }
         fd_drop(t.fds[newfd]);
-        t.fd_clofork_mask &= !(1u64 << newfd);
         t.fds[newfd] = fd_clone(old);
-        if (flags & O_CLOFORK) != 0 {
-            t.fd_clofork_mask |= 1u64 << newfd;
-        } else if t.fd_clofork_mask & (1u64 << oldfd) != 0 {
-            // Inherit parent's CLOFORK when no explicit flags (plain dup2).
-            t.fd_clofork_mask |= 1u64 << newfd;
-        }
         true
     })
 }
@@ -1327,7 +1293,6 @@ pub fn fd_close(fd: usize) -> bool {
         // open/pipe/socket reuses the lowest fd (os-test stdio/puts does
         // close(0); close(1); pipe() and expects the pipe on 0,1).
         t.fds[fd] = FdEntry::Empty;
-        t.fd_clofork_mask &= !(1u64 << fd);
         true
     })
 }
@@ -2000,43 +1965,17 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    // Do NOT `let t = tasks[id]` (full Task Copy). On aarch64 ForkRegs is a
-    // 36×u64 frame and each FdEntry carries a 96-byte Vnode path — with
-    // MAX_FDS=40 a full Task + fds snapshot + child_fds exceeded the 64 KiB
-    // kstack and silently corrupted forked children (curl SSL timeout,
-    // dropbear write EIO). Clone fds once into child_fds; copy only small
-    // scalars/arrays out of the locked slot.
-    let mut child_fds = [FdEntry::Empty; MAX_FDS];
-    let (
-        base,
-        span,
-        off,
-        ppid,
-        uargc,
-        uargv,
-        brk,
-        cwd,
-        cwd_len,
-        mmap,
-        mmap_next,
-        sid,
-        pgid,
-        has_ctty,
-        fd_clofork_mask,
-        sig_ignored,
-    ) = {
+    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, pgid, has_ctty, sig_ignored) = {
         let tasks = TASKS.lock();
         let id = current_slot();
-        let t = &tasks[id];
+        let t = tasks[id];
         if t.user_rip == 0 {
             drop(tasks);
             irq_restore(flags);
             return None;
         }
-        for i in 0..MAX_FDS {
-            child_fds[i] = fd_clone(t.fds[i]);
-        }
         (
+            t.fds,
             t.user_base,
             t.image_span,
             t.stack_off,
@@ -2051,30 +1990,11 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.sid,
             t.pgid,
             t.has_ctty,
-            t.fd_clofork_mask,
             t.sig_ignored,
         )
     };
 
-    // POSIX O_CLOFORK: close marked fds in the child only (parent keeps them).
-    if fd_clofork_mask != 0 {
-        for i in 0..MAX_FDS {
-            if fd_clofork_mask & (1u64 << i) != 0 {
-                fd_drop(child_fds[i]);
-                child_fds[i] = FdEntry::Empty;
-            }
-        }
-    }
-
-    let drop_child_fds = |fds: &mut [FdEntry; MAX_FDS]| {
-        for i in 0..MAX_FDS {
-            fd_drop(fds[i]);
-            fds[i] = FdEntry::Empty;
-        }
-    };
-
     let Some(aspace) = user::copy_user_aspace(base, span, off, brk) else {
-        drop_child_fds(&mut child_fds);
         irq_restore(flags);
         return None;
     };
@@ -2082,7 +2002,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let layout = match Layout::from_size_align(STACK_SIZE, 16) {
         Ok(l) => l,
         Err(_) => {
-            drop_child_fds(&mut child_fds);
             irq_restore(flags);
             return None;
         }
@@ -2103,7 +2022,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             .or_else(|| tasks.iter().position(|t| t.state == State::Unused));
         let Some(slot) = slot else {
             drop(tasks);
-            drop_child_fds(&mut child_fds);
             irq_restore(flags);
             return None;
         };
@@ -2113,6 +2031,11 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         (slot, (reuse, stack_base))
     };
 
+    let mut child_fds = default_user_fds();
+    for i in 0..MAX_FDS {
+        child_fds[i] = fd_clone(fds[i]);
+    }
+
     let (stack_base, sp, top) = if reuse_stack.0 {
         let sb = reuse_stack.1;
         let sp = unsafe { seed_stack(sb as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
@@ -2120,7 +2043,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     } else {
         let stack = unsafe { alloc(layout) };
         if stack.is_null() {
-            drop_child_fds(&mut child_fds);
             irq_restore(flags);
             return None;
         }
@@ -2160,7 +2082,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         sid,
         pgid,
         has_ctty,
-        fd_clofork_mask: 0,
         // POSIX-ish: inherit ignored mask; clear pending in the child.
         sig_pending: 0,
         sig_ignored,
@@ -2337,7 +2258,6 @@ fn spawn_inner(
         sid: slot,
         pgid: slot,
         has_ctty: false,
-        fd_clofork_mask: 0,
         sig_pending: 0,
         sig_ignored: 0,
         sig_blocked: 0,
@@ -2742,7 +2662,6 @@ pub fn ap_idle_loop(logical: usize) -> ! {
         sid: slot,
         pgid: slot,
         has_ctty: false,
-        fd_clofork_mask: 0,
         sig_pending: 0,
         sig_ignored: 0,
         sig_blocked: 0,

@@ -16,7 +16,7 @@
 #define AT_FDCWD (-100)
 #endif
 
-#define MYOS_FD_PATH_MAX 64
+#define MYOS_FD_PATH_MAX 32
 #define MYOS_PATH_BUF 512
 
 static char fd_paths[MYOS_FD_PATH_MAX][MYOS_PATH_BUF];

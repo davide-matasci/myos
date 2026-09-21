@@ -655,13 +655,11 @@ unsafe fn sys_pipe(fds_ptr: usize) -> usize {
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     let ret: usize;
-    // rdx = flags (O_CLOFORK); must be 0 for plain dup2.
     core::arch::asm!(
         "syscall",
         in("rax") 11usize,
         in("rdi") oldfd,
         in("rsi") newfd,
-        in("rdx") 0usize,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
@@ -828,14 +826,11 @@ unsafe fn sys_pipe(fds_ptr: usize) -> usize {
 #[cfg(target_arch = "aarch64")]
 unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     let ret: usize;
-    // x2 = flags (O_CLOFORK); must be 0 — garbage leftover in x2 was
-    // interpreted after SYS_DUP2 grew a flags arg for dup3/CLOFORK.
     core::arch::asm!(
         "svc #0",
         in("x8") 11usize,
         in("x0") oldfd,
         in("x1") newfd,
-        in("x2") 0usize,
         lateout("x0") ret,
         options(nostack),
     );
@@ -976,13 +971,11 @@ unsafe fn sys_pipe(fds_ptr: usize) -> usize {
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     let ret: usize;
-    // a2 = flags (O_CLOFORK); must be 0 for plain dup2.
     core::arch::asm!(
         "ecall",
         in("a7") 11usize,
         in("a0") oldfd,
         in("a1") newfd,
-        in("a2") 0usize,
         lateout("a0") ret,
         options(nostack),
     );

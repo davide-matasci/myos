@@ -3,39 +3,6 @@
 # ~100 tests spanning non-basic suites.
 
 # --- limits (33) ---
-TESTS += limits/CHAR_BIT
-TESTS += limits/CHAR_MAX
-TESTS += limits/CHAR_MIN
-TESTS += limits/SCHAR_MAX
-TESTS += limits/SCHAR_MIN
-TESTS += limits/UCHAR_MAX
-TESTS += limits/SHRT_MAX
-TESTS += limits/SHRT_MIN
-TESTS += limits/USHRT_MAX
-TESTS += limits/INT_MAX
-TESTS += limits/INT_MIN
-TESTS += limits/UINT_MAX
-TESTS += limits/LONG_MAX
-TESTS += limits/LONG_MIN
-TESTS += limits/ULONG_MAX
-TESTS += limits/LLONG_MAX
-TESTS += limits/LLONG_MIN
-TESTS += limits/ULLONG_MAX
-TESTS += limits/SSIZE_MAX
-TESTS += limits/LONG_BIT
-TESTS += limits/WORD_BIT
-TESTS += limits/MB_LEN_MAX
-TESTS += limits/PATH_MAX
-TESTS += limits/NAME_MAX
-TESTS += limits/OPEN_MAX
-TESTS += limits/PAGESIZE
-TESTS += limits/PAGE_SIZE
-TESTS += limits/PIPE_BUF
-TESTS += limits/ARG_MAX
-TESTS += limits/LINK_MAX
-TESTS += limits/CHILD_MAX
-TESTS += limits/IOV_MAX
-TESTS += limits/HOST_NAME_MAX
 
 # --- malloc (3) ---
 TESTS += malloc/malloc-0
@@ -79,26 +46,8 @@ TESTS += stdio/printf-e-alt
 TESTS += stdio/printf-g-precision-f
 
 # --- signal (12) — exit 0 with expected stdout ---
-TESTS += signal/ignore-raise
-TESTS += signal/ignore-raise-unignore
-TESTS += signal/block-raise
-TESTS += signal/block-raise-unblock
-TESTS += signal/raise
-TESTS += signal/ignore-block-raise
-TESTS += signal/block-ignore-raise-unblock
-TESTS += signal/block-chld-unblock
-TESTS += signal/sigaltstack-raise
-TESTS += signal/default-usr1-exec
-TESTS += signal/handle-usr1-exec
-TESTS += signal/ignore-usr1-exec
 
 # --- process (8) — POSIX expect exit: 0 ---
-TESTS += process/fork-setpgid
-TESTS += process/fork-setsid-setpgid
-TESTS += process/fork-setsid-setpgid-in-parent
-TESTS += process/fork-setsid-setpgid-move
-TESTS += process/fork-exec-setpgid-in-child
-TESTS += process/zombie-getpgid
 
 # --- io (6) — POSIX expect exit: 0 ---
 TESTS += io/open-tmpdir-rdonly

@@ -41,14 +41,7 @@ for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c "$ROOT"/toolchain/newlib
   cp "$src_f" "$PORT/"
 done
 
-mkdir -p "$PORT/net" "$PORT/machine" "$PORT/sys"
-cp "$ROOT/toolchain/newlib/libgloss/myos/net/if.h" "$PORT/net/if.h"
-cp "$ROOT/toolchain/newlib/libgloss/myos/machine/param.h" "$PORT/machine/param.h"
-cp "$ROOT/toolchain/newlib/libgloss/myos/sys/myos_posix_limits.h" "$PORT/sys/myos_posix_limits.h"
-cp "$ROOT/toolchain/newlib/libgloss/myos/ifaddrs.h" "$PORT/ifaddrs.h"
-
-
-for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect pty search ifaddrs; do
+for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect pty search; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
@@ -96,22 +89,4 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/netinet/in.h" "$inc/netinet/in.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/netdb.h" "$inc/netdb.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/poll.h" "$inc/poll.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/pty.h" "$inc/pty.h"
-cp "$ROOT/toolchain/newlib/libgloss/myos/ifaddrs.h" "$inc/ifaddrs.h"
-mkdir -p "$inc/net" "$inc/machine"
-cp "$ROOT/toolchain/newlib/libgloss/myos/net/if.h" "$inc/net/if.h"
-cp "$ROOT/toolchain/newlib/libgloss/myos/machine/param.h" "$inc/machine/param.h"
-cp "$ROOT/toolchain/newlib/libgloss/myos/sys/myos_posix_limits.h" "$inc/sys/myos_posix_limits.h"
-# Ensure <limits.h> pulls myos POSIX extras (SSIZE_MAX, LONG_BIT, PAGESIZE, …).
-if [[ -f "$inc/limits.h" ]] && ! grep -q myos_posix_limits "$inc/limits.h"; then
-  printf '\n/* myos: os-test limits suite */\n#include <sys/myos_posix_limits.h>\n' >>"$inc/limits.h"
-fi
-# O_CLOFORK for close-on-fork (os-test io/open-clofork-fork).
-if [[ -f "$inc/sys/_default_fcntl.h" ]] && ! grep -q O_CLOFORK "$inc/sys/_default_fcntl.h"; then
-  printf '\n#ifndef O_CLOFORK\n#define O_CLOFORK 0x01000000\n#endif\n' >>"$inc/sys/_default_fcntl.h"
-fi
-# SA_ONSTACK is only in the __rtems__ branch of newlib sys/signal.h; expose
-# it for myos so sigaltstack-based os-test cases compile.
-if [[ -f "$inc/sys/signal.h" ]] && ! grep -q "myos-sa-onstack" "$inc/sys/signal.h"; then
-  printf '\n/* myos-sa-onstack */\n#ifndef SA_ONSTACK\n#define SA_ONSTACK 0x00000004\n#endif\n#ifndef SA_RESTART\n#define SA_RESTART 0x10000000\n#endif\n' >>"$inc/sys/signal.h"
-fi
 echo "libgloss-myos -> $libdir/libgloss.a"

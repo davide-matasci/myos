@@ -43,3 +43,13 @@ until they pass honestly (no xfails):
   Restored master `socket.c` to unblock full-boot; re-land UDP libc support
   in a follow-up with curl/SSH smokes held green.
 
+## 2026-09-21 networking regression rollback
+
+Libgloss/kernel additions for curated non-basic (CLOFORK, getifaddrs, limits
+macros, userspace raise/sigaltstack, ppoll, getppid, UDP bind/getsockname,
+sleep elapsed-time) regressed aarch64 `curl` TLS and riscv64 dropbear SSH
+even after restoring master `socket.c`. Those libc/kernel files are restored
+to master; curated `ci-nonbasic-100.tests` keeps suites that do not need them
+(malloc/paths/stdio + remaining honest peers). Re-land support suite-by-suite
+with curl+SSH held green on aarch64/riscv64 full boot.
+

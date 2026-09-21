@@ -139,6 +139,10 @@ int setitimer(int which, const struct itimerval *new_value,
     return 0;
 }
 
+pid_t getppid(void) {
+    return 1;
+}
+
 int execl(const char *path, const char *arg, ...) {
     char *argv[64];
     int n = 0;

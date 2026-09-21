@@ -287,19 +287,3 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
     }
     return pr;
 }
-
-
-int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout,
-    const sigset_t *sigmask) {
-    int ms;
-    (void)sigmask; /* full sigmask swap needs kernel support; poll semantics OK */
-    if (timeout == NULL) {
-        ms = -1;
-    } else {
-        ms = (int)(timeout->tv_sec * 1000 + timeout->tv_nsec / 1000000);
-        if (ms < 0) {
-            ms = 0;
-        }
-    }
-    return poll(fds, nfds, ms);
-}

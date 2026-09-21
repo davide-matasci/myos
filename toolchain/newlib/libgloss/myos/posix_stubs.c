@@ -2,8 +2,6 @@
 
 #include <dirent.h>
 #include <errno.h>
-#include <sys/time.h>
-#include <sys/select.h>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <grp.h>
@@ -348,23 +346,6 @@ long sysconf(int name) {
 }
 
 unsigned sleep(unsigned seconds) {
-    /* No kernel sleep yet. Do NOT busy-wait: a gettimeofday spin (or
-     * select(0,…,&tv) pure-sleep which is the same spin) starves netd on
-     * aarch64 TCG and left curl TLS stuck until SSL connection timeout.
-     * UDP suite entries that needed elapsed time were deferred from the
-     * curated set with socket.c (SUITES.md). */
-    (void)seconds;
-    return 0;
-}
-
-int usleep(useconds_t usec) {
-    (void)usec;
-    return 0;
-}
-
-/* Weak: ports/git myos_stubs.c also provides alarm(); prefer that when linked. */
-unsigned __attribute__((weak)) alarm(unsigned seconds) {
-    /* Hang-timeout helper for tests; no async delivery yet. */
     (void)seconds;
     return 0;
 }
@@ -569,39 +550,4 @@ mode_t _umask(mode_t mask) {
 
 int _symlink(const char *target, const char *linkpath) {
     return symlink(target, linkpath);
-}
-
-
-#ifndef O_CLOFORK
-#define O_CLOFORK 0x01000000
-#endif
-
-/* dup3 — dup2 with flags (O_CLOEXEC / O_CLOFORK). */
-int dup3(int oldfd, int newfd, int flags) {
-    int ret;
-    if (oldfd < 0 || newfd < 0) {
-        errno = EBADF;
-        return -1;
-    }
-    if (oldfd == newfd) {
-        errno = EINVAL;
-        return -1;
-    }
-    if (flags & ~(O_CLOEXEC | O_CLOFORK)) {
-        errno = EINVAL;
-        return -1;
-    }
-    /* Kernel dup2 onto newfd; pass O_CLOFORK so close-on-fork is recorded
-     * in the task (userspace bitmap alone is not enough after fork CoW). */
-    {
-        long kret = myos_syscall3(MYOS_SYS_DUP2, oldfd, newfd, flags & O_CLOFORK);
-        if (kret == (long)MYOS_SYSERR) {
-            errno = EBADF;
-            return -1;
-        }
-        ret = (int)kret;
-    }
-    myos_fd_clofork_set(newfd, (flags & O_CLOFORK) != 0);
-    (void)(flags & O_CLOEXEC);
-    return newfd;
 }
