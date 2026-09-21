@@ -1394,14 +1394,21 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
 fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
     // Load from a stack slot so LLVM cannot reuse rip/argc in one asm block
     // and reorder mov before msr (CI: exec eret with elr=0).
-    let args = [
+    //
+    // Volatile + GPR scrub: leftover kernel GPRs (HHDM / frame pointers) across
+    // eret used to reach userspace. Same discipline as enter_x86 / enter_riscv64
+    // — aarch64 boot-mini `echo pipe | cat` hit FAR=0 with elr in oksh
+    // (CI #35570070681) after exec of pipeline children.
+    let resume = [
         user_rip as u64,
         user_rsp as u64,
         user_argc as u64,
         user_argv as u64,
     ];
-    let p = args.as_ptr();
+    let mut slot = core::mem::MaybeUninit::<[u64; 4]>::uninit();
     unsafe {
+        core::ptr::write_volatile(slot.as_mut_ptr(), resume);
+        let p = slot.as_ptr();
         let rip: u64;
         let rsp: u64;
         core::arch::asm!(
@@ -1415,9 +1422,40 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             rsp = lateout(reg) rsp,
             options(nostack, preserves_flags),
         );
+        // Load argc/argv first, then scrub remaining GPRs so eret cannot leak
+        // kernel addresses into EL0 (mov/ldr into x0/x1 must precede the zeros).
         core::arch::asm!(
             "ldr x0, [{p}, #16]",
             "ldr x1, [{p}, #24]",
+            "mov x2, xzr",
+            "mov x3, xzr",
+            "mov x4, xzr",
+            "mov x5, xzr",
+            "mov x6, xzr",
+            "mov x7, xzr",
+            "mov x8, xzr",
+            "mov x9, xzr",
+            "mov x10, xzr",
+            "mov x11, xzr",
+            "mov x12, xzr",
+            "mov x13, xzr",
+            "mov x14, xzr",
+            "mov x15, xzr",
+            "mov x16, xzr",
+            "mov x17, xzr",
+            "mov x18, xzr",
+            "mov x19, xzr",
+            "mov x20, xzr",
+            "mov x21, xzr",
+            "mov x22, xzr",
+            "mov x23, xzr",
+            "mov x24, xzr",
+            "mov x25, xzr",
+            "mov x26, xzr",
+            "mov x27, xzr",
+            "mov x28, xzr",
+            "mov x29, xzr",
+            "mov x30, xzr",
             "isb",
             "eret",
             p = in(reg) p,

@@ -611,6 +611,8 @@ fn interactive_pipe_cmd_ok(serial: &str) -> bool {
     tail.contains("echo pipe | cat")
         && tail.lines().any(|line| line.trim() == "pipe")
         && !serial.contains("exception:")
+        && !serial.contains("[ WARN ] user fault")
+        && !serial.contains("user panic")
         && at_interactive_prompt(serial)
 }
 
@@ -1098,6 +1100,9 @@ const ARROW_SEED_STAGE_BOUND: Duration = Duration::from_secs(20);
 const INTERRUPT_STAGE_BOUND: Duration = Duration::from_secs(30);
 /// `which ls` mistyped as `which s` (serial drop) used to sit until QEMU 600s.
 const WHICH_STAGE_BOUND: Duration = Duration::from_secs(30);
+/// `echo pipe | cat` null-deref (FAR=0) used to leave the shell wedged with no
+/// `$` until the 1800s QEMU wall (CI aarch64 boot-mini #35570070681 ~24m).
+const PIPE_STAGE_BOUND: Duration = Duration::from_secs(30);
 /// getty login typing (incl. delayed AP echo) — fail fast vs sticky `rroooo…`.
 /// Clock starts only after `[ OK ] fork exec` (see wait loop): UEFI OVMF alone
 /// can burn ~40s before that marker, so counting from harness start killed
@@ -1433,6 +1438,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut arrow_seed_wait_started: Option<Instant> = None;
     let mut arrow_wait_started: Option<Instant> = None;
     let mut which_wait_started: Option<Instant> = None;
+    let mut pipe_wait_started: Option<Instant> = None;
     let mut login_wait_started: Option<Instant> = None;
     let status = loop {
         {
@@ -1472,6 +1478,35 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     );
                     let _ = child.kill();
                     break child.wait().expect("wait after heap early-exit kill");
+                }
+                // Any interactive WaitResult that prints a user fault / panic:
+                // kill immediately. aarch64 `echo pipe | cat` FAR=0 left the
+                // shell wedged with no `$` for ~24m under the old 1800s wall.
+                if shell_stage == ShellStage::WaitResult
+                    && (acc.contains("[ WARN ] user fault") || acc.contains("user panic"))
+                {
+                    eprintln!(
+                        "error: user fault/panic during interactive cmd {shell_cmd_index} — fail-fast"
+                    );
+                    let _ = child.kill();
+                    break child.wait().expect("wait after user-fault fail-fast kill");
+                }
+                // Pipe stage bound: even without a printed WARN, a wedged
+                // pipeline must not burn the mini 240s / full 1800s budget.
+                if shell_stage == ShellStage::WaitResult && cmds.get(shell_cmd_index) == Some(&CMD_PIPE)
+                {
+                    let started_at = pipe_wait_started.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() > PIPE_STAGE_BOUND && !interactive_pipe_cmd_ok(&acc)
+                    {
+                        eprintln!(
+                            "error: pipe stage timed out after {:?} (want `$ echo pipe | cat` then `pipe`)",
+                            PIPE_STAGE_BOUND
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after pipe timeout kill");
+                    }
+                } else {
+                    pipe_wait_started = None;
                 }
                 // HTTPS: printed tls/dns/tcp failure — don't burn the 180s timeout.
                 // Index 12 == `http https://example.com/` (full mode only; mini
@@ -1747,9 +1782,19 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
         }
         if shell_cmd_index >= 4 && shell_cmd_index < 5 && !interactive_pipe_cmd_ok(&serial) {
-            eprintln!(
-                "error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)"
-            );
+            if serial.contains("[ WARN ] user fault") || serial.contains("user panic") {
+                eprintln!(
+                    "error: interactive `echo pipe | cat` hit user fault/panic (want `pipe` then `$`)"
+                );
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!(
+                    "error: shell did not return to `$` after interactive `echo pipe | cat`"
+                );
+            } else {
+                eprintln!(
+                    "error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)"
+                );
+            }
         }
         if shell_cmd_index >= 5 && shell_cmd_index < 6 && !interactive_uutils_true_cmd_ok(&serial) {
             eprintln!("error: interactive `/bin/coreutils/true` failed (want `$ /bin/coreutils/true` then `$` prompt)");

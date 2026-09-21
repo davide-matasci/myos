@@ -351,6 +351,17 @@ fn aarch64_firmware() -> (PathBuf, PathBuf) {
 /// The kernel writes `0x10` on success, so QEMU should exit 33.
 const QEMU_SUCCESS_STATUS: i32 = (0x10 << 1) | 1;
 
+/// Overall QEMU/harness wall for `--ci`. Full boot keeps a long budget for
+/// os-test / dropbear; boot-mini (`MYOS_CI_MINI=1`) must fail well under the
+/// 5-minute GHA job timeout (hung aarch64 burned ~24m on the old 1800s).
+fn ci_qemu_timeout() -> Duration {
+    if std::env::var_os("MYOS_CI_MINI").map(|v| v == "1").unwrap_or(false) {
+        Duration::from_secs(240)
+    } else {
+        Duration::from_secs(1800)
+    }
+}
+
 fn run_ci_bios(bios_path: &str) {
     let mut cmd = Command::new("qemu-system-x86_64");
     cmd.arg("-cpu")
@@ -400,7 +411,7 @@ fn run_ci_bios(bios_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: ci_qemu_timeout(),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -470,7 +481,7 @@ fn run_ci_uefi(uefi_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: ci_qemu_timeout(),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -489,7 +500,7 @@ fn run_ci_aarch64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: ci_qemu_timeout(),
             qemu_debug_exit: false,
             shell_ci: true,
         },
@@ -889,7 +900,7 @@ fn run_ci_riscv64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: ci_qemu_timeout(),
             qemu_debug_exit: false,
             shell_ci: true,
         },

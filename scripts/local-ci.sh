@@ -36,17 +36,23 @@ nice -n 5 cargo +nightly-2026-07-26 run --quiet -- "$MODE" --ci >"$LOG" 2>&1 &
 PID=$!
 
 LAST=0
+STALL_SECS=0
 while kill -0 "$PID" 2>/dev/null; do
     sleep 20
     SIZE=$(stat -c%s "$LOG" 2>/dev/null || echo 0)
     if [ "$SIZE" = "$LAST" ]; then
-        echo "STALLED (no output for 3 min) — killed; log: $LOG" >&2
-        tail -5 "$LOG" >&2
-        pkill -9 -f qemu-system 2>/dev/null || true
-        kill -9 "$PID" 2>/dev/null || true
-        exit 124
+        STALL_SECS=$((STALL_SECS + 20))
+        if [ "$STALL_SECS" -ge 180 ]; then
+            echo "STALLED (no output for 3 min) — killed; log: $LOG" >&2
+            tail -5 "$LOG" >&2
+            killall -9 qemu-system-x86_64 qemu-system-aarch64 qemu-system-riscv64 2>/dev/null || true
+            kill -9 "$PID" 2>/dev/null || true
+            exit 124
+        fi
+    else
+        STALL_SECS=0
+        LAST=$SIZE
     fi
-    LAST=$SIZE
 done
 STATUS=0
 wait "$PID" || STATUS=$?

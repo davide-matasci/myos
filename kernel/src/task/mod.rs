@@ -2641,61 +2641,90 @@ fn wait() {
 }
 
 
+/// Per-AP idle stack base stashed before the Limine→idle migrate so bring-up
+/// can finish on the big stack (see [`ap_idle_loop`]).
+static AP_IDLE_STACK_BASE: [AtomicUsize; crate::smp::MAX_CPUS] =
+    [const { AtomicUsize::new(0) }; crate::smp::MAX_CPUS];
+
 /// Idle loop for a secondary CPU brought up by [`crate::smp`].
 ///
 /// Allocates a pinned idle task so `schedule` can leave and return to this CPU.
+///
+/// Critical: Limine's AP stack is tiny (UEFI path especially). Do **not**
+/// construct a multi-KiB [`Task`] or enable IRQs while still on it — both
+/// overflowed into NX execute (`code=0x11`, `cr2==rip`) under `-smp 4`
+/// (PR #164 boot-mini uefi). Migrate first with IF clear / !ONLINE, then
+/// finish bring-up on the 64KiB idle stack.
 pub fn ap_idle_loop(logical: usize) -> ! {
-    let flags = irq_save();
+    // Enter with IRQs masked (ap_entry cli / DAIF). Keep them off until
+    // bring-up completes on the idle stack.
     irq_off();
     let layout = Layout::from_size_align(STACK_SIZE, 16).expect("ap idle stack");
     let stack = unsafe { alloc(layout) };
     assert!(!stack.is_null(), "ap idle stack alloc");
-    // Seed a stack that simply returns into this function's loop via trampoline
-    // is awkward; instead park this CPU's "current" as a Running idle task with
-    // sp=0 meaning "already on stack" — we never switch TO an idle with sp=0
-    // from another CPU because affinity pins it. When we yield, we save our
-    // real sp via task_switch.
-    let sp = unsafe { seed_stack(stack, STACK_SIZE, ap_idle_trampoline as *const () as usize) };
-    let top = stack as usize + STACK_SIZE;
+    let base = stack as usize;
+    let top = base + STACK_SIZE;
     stamp_stack_cpu(top, logical);
+    if logical < crate::smp::MAX_CPUS {
+        AP_IDLE_STACK_BASE[logical].store(base, Ordering::SeqCst);
+    }
+    // Minimal work on Limine's stack: seed + switch. Task install happens in
+    // [`ap_idle_bringup`] once RSP is on the 64KiB allocation.
+    let sp = unsafe { seed_stack(stack, STACK_SIZE, ap_idle_trampoline as *const () as usize) };
+    let mut discard_sp: usize = 0;
+    unsafe {
+        task_switch(core::ptr::addr_of_mut!(discard_sp), sp);
+    }
+    unreachable!()
+}
+
+/// Finish AP idle bring-up on the 64KiB idle stack (see [`ap_idle_loop`]).
+fn ap_idle_bringup() {
+    let logical = crate::smp::cpu_id();
+    let base = if logical < crate::smp::MAX_CPUS {
+        AP_IDLE_STACK_BASE[logical].load(Ordering::SeqCst)
+    } else {
+        0
+    };
+    assert!(base != 0, "ap idle stack base");
+    let top = base + STACK_SIZE;
+    // Current RSP is already on this stack (we got here via task_switch ret).
+    // Record that SP so the first schedule away/back saves/restores correctly.
+    let sp_now: usize;
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) sp_now, options(nostack, preserves_flags));
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mov {}, sp", out(reg) sp_now, options(nostack, preserves_flags));
+    }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("mv {}, sp", out(reg) sp_now, options(nostack, preserves_flags));
+    }
+
+    // Install idle Task **in place** (no stack temporary — same discipline as
+    // fork_current; a full `Task { .. }` literal is multi-KiB).
     let mut tasks = TASKS.lock();
     let slot = tasks
         .iter()
         .position(|t| t.state == State::Unused)
         .expect("no AP idle slot");
-    tasks[slot] = Task {
-        state: State::Running,
-        stack_base: stack as usize,
-        sp,
-        entry: Some(ap_idle_body),
-        aspace: 0,
-        kernel_stack_top: top,
-        user_rip: 0,
-        user_rsp: 0,
-        fds: [FdEntry::Empty; MAX_FDS],
-        user_base: 0,
-        image_span: 0,
-        stack_off: 0,
-        ppid: 0,
-        fork_regs: None,
-        user_argc: 0,
-        user_argv: 0,
-        brk_cur: 0,
-        exec_name: [0; 32],
-        exec_name_len: 0,
-        cwd: root_cwd_buf(),
-        cwd_len: 1,
-        exit_code: 0,
-        mmap: EMPTY_MMAP,
-        mmap_next: 0,
-        sid: slot,
-        pgid: slot,
-        has_ctty: false,
-        sig_pending: 0,
-        sig_ignored: 0,
-        sig_blocked: 0,
-        affinity: Some(logical),
-    };
+    {
+        let t = &mut tasks[slot];
+        unsafe {
+            core::ptr::write(t, EMPTY);
+        }
+        t.state = State::Running;
+        t.stack_base = base;
+        t.sp = sp_now;
+        t.entry = Some(ap_idle_body);
+        t.kernel_stack_top = top;
+        t.sid = slot;
+        t.pgid = slot;
+        t.affinity = Some(logical);
+    }
     drop(tasks);
     set_current_slot(slot);
     // APs may still hold Limine's early TTBR0; install the BSP kernel/device
@@ -2705,18 +2734,11 @@ pub fn ap_idle_loop(logical: usize) -> ! {
         user::switch_aspace(k);
     }
     set_loaded_aspace(k);
-    irq_restore(flags);
     crate::smp::mark_running(logical);
     enable_preempt();
-    // IRQs only after CURRENT/idle exist (see smp::myos_smp_ap_entry).
+    // IRQs only after CURRENT/idle exist *and* we left the Limine stack.
     irq_on();
-    // Migrate off Limine's tiny AP stack onto the 64KiB idle stack before any
-    // timer/IPI nesting (UEFI path overflowed Limine stacks → kernel PF).
-    let mut discard_sp: usize = 0;
-    unsafe {
-        task_switch(core::ptr::addr_of_mut!(discard_sp), sp);
-    }
-    unreachable!()
+    ap_idle_body();
 }
 
 fn ap_idle_body() {
@@ -2727,5 +2749,5 @@ fn ap_idle_body() {
 }
 
 fn ap_idle_trampoline() {
-    ap_idle_body();
+    ap_idle_bringup();
 }
