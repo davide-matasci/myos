@@ -147,7 +147,7 @@ jobs:
     container:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
-    timeout-minutes: 90
+    timeout-minutes: 5
     needs: build
     # MYOS_CI_MINI=1; skipped when full_boot or build_iso is selected.
     if: |
