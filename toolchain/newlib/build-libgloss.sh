@@ -37,6 +37,7 @@ fi
 # this a source edit under toolchain/newlib/libgloss/myos/ never reaches
 # libgloss.a (pwdgrp.c sat stale here for a week, shipping a getpwent()
 # that returned NULL — the os-test setpwent regression).
+# Cache-bust: netd ctl taken + accept-arm-only (PR #164 riscv64 SSH).
 for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c "$ROOT"/toolchain/newlib/libgloss/myos/*.h; do
   cp "$src_f" "$PORT/"
 done
