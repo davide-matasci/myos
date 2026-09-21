@@ -348,27 +348,17 @@ long sysconf(int name) {
 }
 
 unsigned sleep(unsigned seconds) {
-    /* Elapsed-time sleep via select(0,…,&tv) so UDP self-recv tests see time
-     * pass while poll/select still dispatch SIGCHLD (busy gettimeofday alone
-     * starved netd under aarch64 TCG when curl/mbedtls slept). */
-    struct timeval tv;
-    if (seconds == 0) {
-        return 0;
-    }
-    tv.tv_sec = (time_t)seconds;
-    tv.tv_usec = 0;
-    (void)select(0, NULL, NULL, NULL, &tv);
+    /* No kernel sleep yet. Do NOT busy-wait: a gettimeofday spin (or
+     * select(0,…,&tv) pure-sleep which is the same spin) starves netd on
+     * aarch64 TCG and left curl TLS stuck until SSL connection timeout.
+     * UDP suite entries that needed elapsed time were deferred from the
+     * curated set with socket.c (SUITES.md). */
+    (void)seconds;
     return 0;
 }
 
 int usleep(useconds_t usec) {
-    struct timeval tv;
-    if (usec == 0) {
-        return 0;
-    }
-    tv.tv_sec = (time_t)(usec / 1000000u);
-    tv.tv_usec = (suseconds_t)(usec % 1000000u);
-    (void)select(0, NULL, NULL, NULL, &tv);
+    (void)usec;
     return 0;
 }
 
