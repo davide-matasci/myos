@@ -409,7 +409,10 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
     if i >= MAX_CONV {
         return;
     }
+    // Listeners must stay up across client hangups / forked closes. Empty
+    // body was a bug (listen sockets were destroyed on ctl hangup).
     if matches!(convs[i].kind, Kind::Tcp) && convs[i].listen_port != 0 {
+        return;
     }
     // Idempotent: a forked child's exit closes the inherited netfs fd AND the
     // parent's close() may arrive in the same request burst. A second
@@ -625,6 +628,37 @@ fn rearm_listener(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: 
     convs[i].handle = Some(nh);
 }
 
+
+/// Drain any remaining smoltcp RX into REP_DATA before destroying a conv.
+/// Orphan reclaim / hungup drop used to abort sockets that still held the
+/// peer payload (CloseWait with data after accept handoff), so userspace
+/// saw hangup / EOF with zero bytes — the bios `socket_smoke: no data`
+/// class of failure on the listen/accept data path.
+fn drain_tcp_rx_into_rep(
+    convs: &mut [Conv; MAX_CONV],
+    sockets: &mut SocketSet<'_>,
+    chan: usize,
+    i: usize,
+) {
+    if i >= MAX_CONV || !matches!(convs[i].kind, Kind::Tcp) {
+        return;
+    }
+    let Some(h) = convs[i].handle else {
+        return;
+    };
+    let mut tmp = [0u8; 1400];
+    for _ in 0..8 {
+        let s = sockets.get_mut::<tcp::Socket>(h);
+        if !s.can_recv() {
+            break;
+        }
+        match s.recv_slice(&mut tmp) {
+            Ok(n) if n > 0 => reply(chan, REP_DATA, i as u16, 0, &tmp[..n]),
+            _ => break,
+        }
+    }
+}
+
 /// Free a never-connected accepted TCP slot (failed handshake / peer abort).
 /// Clears any listener `accepted` pointer at this id and notifies netfs.
 fn force_free_orphan(
@@ -641,6 +675,9 @@ fn force_free_orphan(
             convs[l].accepted_pending = None;
         }
     }
+    // Deliver any still-buffered peer payload before abort (CloseWait with
+    // data was treated as a dead orphan and discarded).
+    drain_tcp_rx_into_rep(convs, sockets, chan, i);
     if let Some(h) = convs[i].handle.take() {
         {
             let s = sockets.get_mut::<tcp::Socket>(h);
@@ -1094,9 +1131,9 @@ fn main() -> ! {
         }
 
         ticks += 1;
-        // Reclaim before accept so a free slot is available when a SYN lands
-        // (riscv SSH was starving: pump_accepts ran first, MAX_CONV full of
-        // hungup/closing orphans, host timed out, late Child then write EIO).
+        // Reclaim *finished* closes before accept so a free slot is available
+        // when a SYN lands (riscv SSH was starving: pump_accepts ran first,
+        // MAX_CONV full of hungup/closing orphans).
         for i in 0..MAX_CONV {
             if !convs[i].closing && !convs[i].closing_after_flush {
                 continue;
@@ -1115,6 +1152,18 @@ fn main() -> ! {
                 convs[i] = Conv::EMPTY;
             }
         }
+        // Handoff + deliver BEFORE orphan/hungup destroy. #161's accept queue
+        // hands off SynReceived/Established with connected=false; if the peer
+        // already pushed payload+FIN, iface.poll leaves CloseWait with RX data.
+        // Orphan reclaim used to run *before* pump_sockets and treat CloseWait
+        // as dead → abort discarded the bytes → userspace hangup / "no data".
+        pump_accepts(&mut convs, &mut sockets, chan);
+        pump_sockets(&mut convs, &mut sockets, &device, chan);
+        // Push segments enqueued by pump (pending flush / ACKs) same tick.
+        {
+            let now = clock.now();
+            iface.poll(now, &mut device, &mut sockets);
+        }
         for i in 0..MAX_CONV {
             if convs[i].hungup
                 && !convs[i].closing
@@ -1122,15 +1171,13 @@ fn main() -> ! {
                 && convs[i].listen_port == 0
                 && !matches!(convs[i].kind, Kind::Empty)
             {
+                drain_tcp_rx_into_rep(&mut convs, &mut sockets, chan, i);
                 drop_conv(&mut convs, &mut sockets, i);
             }
         }
-        // Failed-handshake orphans: hangup reclaim only runs after `connected`
-        // (Established). SynReceived/SynSent handoffs that die (host
-        // ConnectTimeout RST) never set connected, sat forever, filled
-        // MAX_CONV, and left dropbear with a late dead Child + write EIO on
-        // riscv64. Free them; age Syn* via unused TCP `ident` (~10s).
-        // Only accept-originated slots: client clones sit in Closed until
+        // Failed-handshake orphans: only after pump had a chance to set
+        // `connected` and drain RX. SynReceived/SynSent that die still age out.
+        // Only accept-originated slots: client clones start Closed until
         // connect() and must not be force-freed (broke aarch64 socket_smoke).
         for i in 0..MAX_CONV {
             if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port != 0 {
@@ -1151,13 +1198,18 @@ fn main() -> ! {
                 Some(h) => {
                     let st = sockets.get_mut::<tcp::Socket>(h).state();
                     match st {
-                        tcp::State::Closed
-                        | tcp::State::TimeWait
-                        | tcp::State::CloseWait
+                        // Closed/TimeWait: safe to free immediately.
+                        tcp::State::Closed | tcp::State::TimeWait => true,
+                        // Half-closed with possible RX: age so pump_sockets has
+                        // at least one tick after handoff to deliver REP_DATA.
+                        tcp::State::CloseWait
                         | tcp::State::LastAck
                         | tcp::State::Closing
                         | tcp::State::FinWait1
-                        | tcp::State::FinWait2 => true,
+                        | tcp::State::FinWait2 => {
+                            convs[i].ident = convs[i].ident.saturating_add(1);
+                            convs[i].ident >= 2
+                        }
                         tcp::State::SynReceived | tcp::State::SynSent => {
                             // `ident` is ICMP-only; reuse as handshake age ticks.
                             convs[i].ident = convs[i].ident.saturating_add(1);
@@ -1171,8 +1223,6 @@ fn main() -> ! {
                 force_free_orphan(&mut convs, &mut sockets, chan, i);
             }
         }
-        pump_accepts(&mut convs, &mut sockets, chan);
-        pump_sockets(&mut convs, &mut sockets, &device, chan);
     }
 }
 
