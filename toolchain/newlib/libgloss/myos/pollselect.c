@@ -177,7 +177,14 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
             }
             return 0;
         }
-        /* timeout < 0: block forever until ready (preemption lets netd run). */
+        /* Infinite wait: scan_once may be pure userspace on idle sockets.
+         * Touch the clock so each spin enters the kernel and netd can run
+         * (riscv64 dropbear select starved netd → accept never completed,
+         * then Child+banner write EIO when the ring/socket was already dead). */
+        {
+            struct timeval now;
+            (void)gettimeofday(&now, NULL);
+        }
     }
 }
 
