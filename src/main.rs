@@ -524,17 +524,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-m")
         .arg(if ci { "4096" } else { "1024" })
         .arg("-smp")
-        .arg(if ci_mini() {
-            // boot-mini: exercise AP bring-up (userspace stays BSP-pinned).
-            "4"
-        } else {
-            // full-boot: curl/TLS needs the BSP to own guest time. -smp 4 with
-            // parked APs still times out interactive curl (`SSL connection
-            // timeout` after `[ OK ] https`) even under TCG thread=single —
-            // AP idle vCPUs consume guest slices. AP bring-up stays covered by
-            // boot-mini. Real AP userspace needs IRQ affinity (user_affinity).
-            "1"
-        })
+        .arg("4")
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
@@ -560,13 +550,6 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
-    // aarch64 userspace is BSP-pinned (`task::user_affinity`). boot-mini still
-    // uses -smp 4 for AP bring-up; APs then disable their timers and WFI so
-    // idle vCPUs do not steal BSP guest time under TCG. Full-boot uses -smp 1
-    // (curl/TLS). Default TCG thread=single; MYOS_TCG_SINGLE=0 for MTTCG.
-    if std::env::var("MYOS_TCG_SINGLE").as_deref() != Ok("0") {
-        cmd.arg("-accel").arg("tcg,thread=single");
-    }
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg("none");

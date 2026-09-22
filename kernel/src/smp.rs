@@ -31,10 +31,6 @@ static SCHED_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CP
 /// Logical CPU index stashed for arches that use `tp` (riscv) / until hw id works.
 static BOOT_CPU: AtomicUsize = AtomicUsize::new(0);
 static AP_PROGRESS: AtomicUsize = AtomicUsize::new(0);
-/// After `smp_smoke`, aarch64 APs drop ONLINE and WFI-park so idle vCPUs do
-/// not steal BSP TCG (boot-mini `-smp 4`). Set by BSP; APs poll in idle.
-#[cfg(target_arch = "aarch64")]
-static AP_QUIET: AtomicBool = AtomicBool::new(false);
 
 /// TLB shootdown epoch: sender bumps, every CPU (IPI or soft `tlb_service`)
 /// advances `TLB_SEEN[cpu]` after a local flush. Soft service lets remotes
@@ -766,25 +762,6 @@ fn aarch64_publish_goto(cpu: &limine::mp::MpInfo, entry: usize, extra: u64) {
             base = in(reg) base,
             options(nostack),
         );
-    }
-}
-
-/// BSP: after smp_smoke, ask APs to leave the scheduler and WFI-park.
-/// Clears the steal of guest time under QEMU TCG `-smp 4` (boot-mini).
-#[cfg(target_arch = "aarch64")]
-pub fn request_quiet_park() {
-    AP_QUIET.store(true, Ordering::SeqCst);
-    kick_cpus();
-}
-
-pub fn want_quiet_park() -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        return AP_QUIET.load(Ordering::SeqCst);
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        false
     }
 }
 
