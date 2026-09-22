@@ -159,7 +159,7 @@ fn poke_listener() -> bool {
     got >= 5 && &buf[..5] == b"pong\n"
 }
 // Dropbear SSH smoke (full boot only): start sshd in the guest; the harness
-// then opens two sequential OpenSSH clients through slirp hostfwd
+// then opens two concurrent OpenSSH clients through slirp hostfwd
 // localhost:2222 → guest:22 (see add_virtio_net in src/main.rs).
 // netd keeps a parked accept + on-listen hold (backlog 2); pump_sockets skips
 // listeners so a held backlog SYN cannot mark the listen conv connected/hungup.
@@ -168,7 +168,7 @@ const CMD_DROPBEAR_BG: &[u8] =
 /// Stop dropbear before listen smoke so netd convs / slirp stay free for :2323.
 const CMD_DROPBEAR_STOP: &[u8] =
     b"kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP\n";
-/// Harness-side flag: both sequential SSH clients completed with exit 0.
+/// Harness-side flag: both concurrent SSH clients completed with exit 0.
 static SSH_SMOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Background SSH attempt started for the current dropbear stage.
 static SSH_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -298,19 +298,37 @@ fn ssh_one_client(key: &Path, tag: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Open two sequential SSH sessions into the guest (pubkey auth). Both must
-/// exit 0. Keep sequential host clients here: concurrent dual-SYN through
-/// QEMU slirp hostfwd still flakes on riscv64/aarch64 even with netd's
-/// two-slot accept queue (#161) — one Child+pubkey then banner-timeout /
-/// bad-packet for the peer. netd backlog remains for real concurrent use;
-/// this smoke still covers accept + pubkey + exit-status twice.
+/// Open two concurrent SSH sessions into the guest (pubkey auth). Both must
+/// exit 0; overlapping launch exercises multi-session accept on dropbear/netd
+/// (parked `accepted` + on-listen hold = backlog of 2).
 fn poke_ssh_two_clients(key: &Path) -> Result<(), String> {
-    ssh_one_client(key, "ssh-ci-a")?;
-    ssh_one_client(key, "ssh-ci-b")?;
+    let key_a = key.to_path_buf();
+    let key_b = key.to_path_buf();
+    let (tx_a, rx_a) = std::sync::mpsc::channel();
+    let (tx_b, rx_b) = std::sync::mpsc::channel();
+    // Overlapping sessions: start B ~1s after A so both are live concurrently
+    // (SSH auth+cmd takes several seconds) while the 2nd SYN usually hits a
+    // re-armed Listen. netd's accepted+accepted_pending queue still covers
+    // true dual-SYN if A has not accepted yet.
+    std::thread::spawn(move || {
+        let _ = tx_a.send(ssh_one_client(&key_a, "ssh-ci-a"));
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    std::thread::spawn(move || {
+        let _ = tx_b.send(ssh_one_client(&key_b, "ssh-ci-b"));
+    });
+    let ra = rx_a
+        .recv_timeout(Duration::from_secs(60))
+        .map_err(|_| "ssh-ci-a timed out waiting for exit".to_string())?;
+    let rb = rx_b
+        .recv_timeout(Duration::from_secs(60))
+        .map_err(|_| "ssh-ci-b timed out waiting for exit".to_string())?;
+    ra?;
+    rb?;
     Ok(())
 }
 
-/// Background worker: retry two sequential SSH clients until success or bound.
+/// Background worker: retry two concurrent SSH clients until success or bound.
 fn start_ssh_smoke_worker() {
     if SSH_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
@@ -336,7 +354,9 @@ fn start_ssh_smoke_worker() {
         // has armed accept hang in slirp or produce Child+I/O-error and wedge
         // the listener for the rest of the stage. Do NOT TCP-probe :2222 —
         // a connect+close is itself a half-open session that can wedge.
-        std::thread::sleep(Duration::from_secs(8));
+        // Slow arches (riscv64 TCG): early SYNs before accept is armed still
+        // leave handshake orphans; give dropbear more settle than the old 8s.
+        std::thread::sleep(Duration::from_secs(12));
         let mut last_err = String::from("ssh smoke never attempted");
         while start.elapsed() < SSH_STAGE_BOUND {
             match poke_ssh_two_clients(&key) {
@@ -347,11 +367,10 @@ fn start_ssh_smoke_worker() {
                 }
                 Err(e) => {
                     last_err = e;
-                    // Back off harder than 1s: each failed attempt can leave a
-                    // SynReceived orphan in netd until handshake-age reclaim
-                    // (~10s). Flooding SYNs every second filled MAX_CONV on
-                    // riscv64 before dropbear could accept a live session.
-                    std::thread::sleep(Duration::from_secs(3));
+                    // Back off ≥ reclaim window: failed concurrent attempts can
+                    // leave SynReceived orphans until handshake-age reclaim
+                    // (~10s). Flooding every 3s still starved riscv64 MAX_CONV.
+                    std::thread::sleep(Duration::from_secs(5));
                 }
             }
         }
