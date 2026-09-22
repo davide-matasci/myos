@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use spin::Mutex;
 
 #[cfg(target_arch = "riscv64")]
 use crate::arch::paging;
@@ -367,6 +368,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     if info.span > ELF_SCRATCH_BYTES {
         return None;
     }
+    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -397,6 +399,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
             sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
         }
     }
+    drop(_scratch_guard);
     let mut stack_frames = [0u64; USER_STACK_PAGES];
     for frame in &mut stack_frames {
         *frame = mm::alloc_frame_site(5);
@@ -474,7 +477,14 @@ fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
 const ELF_SCRATCH_BYTES: usize = MAX_ELF_PAGES * PAGE;
 static ELF_SCRATCH_PHYS: AtomicU64 = AtomicU64::new(0);
 static ELF_SCRATCH_PAGES: AtomicUsize = AtomicUsize::new(0);
+/// Serialize realize→copy-out on the shared scratch. Pipeline children
+/// (`cat | cat`) RR-spread across APs under `-smp 4` and exec concurrently;
+/// without this lock they shred each other's relocated image (UEFI full-boot
+/// user #PF cr2=0x401 / bogus low pointer in sbase `cat` after os-test).
+static ELF_SCRATCH_LOCK: Mutex<()> = Mutex::new(());
 
+/// Borrow the shared ELF scratch. Caller must hold [`ELF_SCRATCH_LOCK`] for
+/// the whole realize + copy-into-aspace window — not merely this call.
 fn elf_scratch_mut(len: usize) -> Option<&'static mut [u8]> {
     if len == 0 || len > ELF_SCRATCH_BYTES {
         return None;
@@ -525,6 +535,7 @@ fn reload_user_elf(
     if info.span > MAX_RELOAD_PAGES * PAGE {
         return None;
     }
+    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -557,6 +568,7 @@ fn reload_user_elf(
         }
         sync_icache(mm::hhdm(phys) as usize, PAGE);
     }
+    drop(_scratch_guard);
     apply_elf_load_prots(aspace, bytes, base, image_pages);
     // Drop inherited brk pages so the next image starts with an empty on-demand
     // heap (see `free_abandoned_stack_heap`). Reload keeps `stack_off` fixed so
@@ -644,6 +656,9 @@ fn expand_user_elf(
     // Realize into scratch *before* touching the live aspace. Growing scratch
     // (or a realize error) must not leave the caller with a half-rewritten
     // mapping and a SYSERR return into wiped user text (ISO login rip=0).
+    // Hold ELF_SCRATCH_LOCK across realize→copy-out so a peer AP exec
+    // (pipeline RR) cannot overwrite scratch mid-flight.
+    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -1668,7 +1683,18 @@ fork_iret_to_user:
     mov r14, [rdi + 32]
     mov r15, [rdi + 40]
     lea rsp, [rdi + 48]
+    # Scrub caller-saved GPRs (incl. rdi = kernel resume ptr / HHDM). Matches
+    # enter_x86: leftover kernel addresses across iretq became user #PF
+    # (cr2 in HHDM) on UEFI pipeline fork before exec.
     xor rax, rax
+    xor rcx, rcx
+    xor rdx, rdx
+    xor rsi, rsi
+    xor rdi, rdi
+    xor r8, r8
+    xor r9, r9
+    xor r10, r10
+    xor r11, r11
     iretq
     "#,
     mxcsr = sym USER_MXCSR_DEFAULT,
