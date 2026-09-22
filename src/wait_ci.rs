@@ -387,16 +387,17 @@ const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n";
 
 /// os-test basic smoke (full boot only). Thin writable copy via
-/// `misc/ci-smoke-copy.sh` (Makefile + misc/ + basic.h + TESTLIST sources
-/// only — not `cp -r` of the whole suite) then
-/// `make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report` (~22 tests).
+/// `misc/ci-boot.tests` — not `cp -r` of the whole suite) then
+/// `make TESTLIST=misc/ci-boot.tests report` (full-boot curated set:
+/// `ci-basic-smoke.tests` 137 + `ci-nonbasic-100.tests` 41 = 178 prebuilt
+/// tests; default SUITES covers the suite-prefixed non-basic entries).
 /// NOT the full ~1187 basic suite (#860 timed out; #866 still burned 90m on
 /// full-tree copy + SMP). Report prints `pass_rate=NN% (P/T)`; CI asserts the
 /// harness finished but does NOT fail on pass_rate<80. Follow-up short
 /// quote-free commands still require setpwent success. Commands stay
 /// quote-free for oksh redraw.
 const CMD_OS_TEST_PREP: &[u8] =
-    b"sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?\n";
+    b"sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?\n";
 /// After the suite report: cat setpwent .err/.out (success leaves .out empty).
 const CMD_OS_TEST_CAT: &[u8] =
     b"cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out\n";
@@ -799,7 +800,7 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
 fn interactive_ostest_prep_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     let echoed =
-        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
     if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
@@ -817,7 +818,7 @@ fn interactive_ostest_prep_ok(serial: &str) -> bool {
 fn interactive_ostest_prep_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     let echoed =
-        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
     if !tail.contains(echoed) {
         return false;
     }
