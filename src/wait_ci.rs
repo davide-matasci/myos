@@ -111,8 +111,15 @@ const CMD_URANDOM: &[u8] = b"/bin/etc/urandom_smoke\n";
 // the harness connects back through slirp hostfwd (see add_virtio_net in
 // src/main.rs), sends "ping", and expects "pong". Then `cat` must show
 // `[ OK ] listen` from the redirected output.
-const CMD_LISTEN_BG: &[u8] = b"/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 &\n";
+const CMD_LISTEN_BG: &[u8] =
+    b"/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 & echo $! > /tmp/listen.pid\n";
 const CMD_LISTEN_CAT: &[u8] = b"cat /tmp/listen.out\n";
+/// Tear down listen smoke before `cat | cat`. Leaving tcp_listen_smoke (+ #166
+/// netd reclaim/drain) live across the interrupt stage raced UEFI SMP fork/
+/// aspace for the pipeline (user page fault cr2 in HHDM, code=0x5, tip
+/// 42b7f2c boot-mini). Same discipline as CMD_DROPBEAR_STOP before ostest.
+const CMD_LISTEN_STOP: &[u8] =
+    b"kill $(cat /tmp/listen.pid) 2>/dev/null; echo LISTEN-STOP\n";
 /// Harness-side flag: the ping/pong exchange through hostfwd succeeded.
 static LISTEN_PONGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// When the listen smoke stage first began (bounds the ping/pong retry loop).
@@ -258,6 +265,14 @@ fn ssh_one_client(key: &Path, tag: &str) -> Result<(), String> {
             "IdentitiesOnly=yes",
             "-o",
             "PreferredAuthentications=publickey",
+            // Pin the KEX to curve25519: CI runners (OpenSSH 9.6) never offer
+            // mlkem768x25519, so pinning matches what CI actually exercises.
+            // OpenSSH 10+ hosts negotiate mlkem768/sntrup761 first and hit a
+            // separate aarch64 dropbear PQ-KEX interop bug (hostkey signature
+            // verification fails deterministically on aarch64 guests; x86 is
+            // unaffected) that would otherwise burn the whole SSH stage.
+            "-o",
+            "KexAlgorithms=curve25519-sha256",
             "-o",
             "ConnectTimeout=8",
             "-o",
@@ -372,16 +387,17 @@ const CMD_HTTP: &[u8] = b"http https://example.com/\n";
 const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html\n";
 
 /// os-test basic smoke (full boot only). Thin writable copy via
-/// `misc/ci-smoke-copy.sh` (Makefile + misc/ + basic.h + TESTLIST sources
-/// only — not `cp -r` of the whole suite) then
-/// `make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report` (~22 tests).
+/// `misc/ci-boot.tests` — not `cp -r` of the whole suite) then
+/// `make TESTLIST=misc/ci-boot.tests report` (full-boot curated set:
+/// `ci-basic-smoke.tests` 137 + `ci-nonbasic-100.tests` 41 = 178 prebuilt
+/// tests; default SUITES covers the suite-prefixed non-basic entries).
 /// NOT the full ~1187 basic suite (#860 timed out; #866 still burned 90m on
 /// full-tree copy + SMP). Report prints `pass_rate=NN% (P/T)`; CI asserts the
 /// harness finished but does NOT fail on pass_rate<80. Follow-up short
 /// quote-free commands still require setpwent success. Commands stay
 /// quote-free for oksh redraw.
 const CMD_OS_TEST_PREP: &[u8] =
-    b"sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?\n";
+    b"sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?\n";
 /// After the suite report: cat setpwent .err/.out (success leaves .out empty).
 const CMD_OS_TEST_CAT: &[u8] =
     b"cat out/basic/pwd/setpwent.err out/basic/pwd/setpwent.out\n";
@@ -433,7 +449,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         cmds.push(CMD_CURL);
         // Dropbear SSH smoke: full boot only, early after outbound HTTPS so we
         // still reach it if later ostest/pty stages burn the QEMU budget.
-        // Host opens two concurrent clients via slirp hostfwd (:2222→:22).
+        // Host opens two sequential clients via slirp hostfwd (:2222→:22).
         if port_enabled("port_dropbear") {
             cmds.push(CMD_DROPBEAR_BG);
             // Tear down sshd before ostest/pty/listen. Leaving dropbear up
@@ -453,6 +469,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     // harness completes the ping/pong through slirp hostfwd).
     cmds.push(CMD_LISTEN_BG);
     cmds.push(CMD_LISTEN_CAT);
+    cmds.push(CMD_LISTEN_STOP);
     cmds.push(CMD_INTERRUPT);
     cmds.push(CMD_HIST_SEED);
     cmds.push(CMD_ARROW);
@@ -622,6 +639,8 @@ fn interactive_pipe_cmd_ok(serial: &str) -> bool {
     tail.contains("echo pipe | cat")
         && tail.lines().any(|line| line.trim() == "pipe")
         && !serial.contains("exception:")
+        && !serial.contains("[ WARN ] user fault")
+        && !serial.contains("user panic")
         && at_interactive_prompt(serial)
 }
 
@@ -781,7 +800,7 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
 fn interactive_ostest_prep_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     let echoed =
-        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
     if !tail.contains(echoed) || serial.contains("exception:") {
         return false;
     }
@@ -799,7 +818,7 @@ fn interactive_ostest_prep_ok(serial: &str) -> bool {
 fn interactive_ostest_prep_failed(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     let echoed =
-        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report; echo PREP-RC=$?";
+        "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
     if !tail.contains(echoed) {
         return false;
     }
@@ -1024,7 +1043,7 @@ fn interactive_listen_bg_ok(serial: &str) -> bool {
     if !LISTEN_PONGED.load(std::sync::atomic::Ordering::SeqCst) {
         return false;
     }
-    command_echoed(serial, "/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 &")
+    command_echoed(serial, "/bin/etc/tcp_listen_smoke > /tmp/listen.out 2>&1 & echo $! > /tmp/listen.pid")
         && at_interactive_prompt(serial)
 }
 
@@ -1035,7 +1054,14 @@ fn interactive_listen_cat_ok(serial: &str) -> bool {
         && at_interactive_prompt(serial)
 }
 
-/// Dropbear started in the guest and both host SSH clients succeeded.
+/// Listen smoke torn down before the ^C interrupt stage.
+fn interactive_listen_stop_ok(serial: &str) -> bool {
+    command_echoed(serial, "kill $(cat /tmp/listen.pid) 2>/dev/null; echo LISTEN-STOP")
+        && serial.contains("LISTEN-STOP")
+        && at_interactive_prompt(serial)
+}
+
+
 fn interactive_dropbear_bg_ok(serial: &str) -> bool {
     if !SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
         return false;
@@ -1077,6 +1103,7 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         }
         i if cmds[i] == CMD_LISTEN_BG => interactive_listen_bg_ok(serial),
         i if cmds[i] == CMD_LISTEN_CAT => interactive_listen_cat_ok(serial),
+        i if cmds[i] == CMD_LISTEN_STOP => interactive_listen_stop_ok(serial),
         i if i == interrupt_cmd_idx(cmds) => interactive_interrupt_cmd_ok(serial),
         i if i == arrow_seed_idx(cmds) => interactive_arrow_seed_ok(serial),
         i if i == arrow_edit_idx(cmds) => interactive_arrow_edit_ok(serial),
@@ -1101,6 +1128,9 @@ const ARROW_SEED_STAGE_BOUND: Duration = Duration::from_secs(20);
 const INTERRUPT_STAGE_BOUND: Duration = Duration::from_secs(30);
 /// `which ls` mistyped as `which s` (serial drop) used to sit until QEMU 600s.
 const WHICH_STAGE_BOUND: Duration = Duration::from_secs(30);
+/// `echo pipe | cat` null-deref (FAR=0) used to leave the shell wedged with no
+/// `$` until the 1800s QEMU wall (CI aarch64 boot-mini #35570070681 ~24m).
+const PIPE_STAGE_BOUND: Duration = Duration::from_secs(30);
 /// getty login typing (incl. delayed AP echo) — fail fast vs sticky `rroooo…`.
 /// Clock starts only after `[ OK ] fork exec` (see wait loop): UEFI OVMF alone
 /// can burn ~40s before that marker, so counting from harness start killed
@@ -1284,7 +1314,7 @@ fn advance_shell_ci(
         {
             // Guest sshd is backgrounded with output redirected; host clients
             // connect via hostfwd. Kick a worker once and wait for both
-            // concurrent sessions to exit cleanly. The stage clock starts
+            // sequential sessions to exit cleanly. The stage clock starts
             // inside the worker *after* ensure_host_ssh (apt) so install
             // time does not burn the connect/retry budget.
             start_ssh_smoke_worker();
@@ -1436,6 +1466,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
     let mut arrow_seed_wait_started: Option<Instant> = None;
     let mut arrow_wait_started: Option<Instant> = None;
     let mut which_wait_started: Option<Instant> = None;
+    let mut pipe_wait_started: Option<Instant> = None;
     let mut login_wait_started: Option<Instant> = None;
     let status = loop {
         {
@@ -1475,6 +1506,35 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     );
                     let _ = child.kill();
                     break child.wait().expect("wait after heap early-exit kill");
+                }
+                // Any interactive WaitResult that prints a user fault / panic:
+                // kill immediately. aarch64 `echo pipe | cat` FAR=0 left the
+                // shell wedged with no `$` for ~24m under the old 1800s wall.
+                if shell_stage == ShellStage::WaitResult
+                    && (acc.contains("[ WARN ] user fault") || acc.contains("user panic"))
+                {
+                    eprintln!(
+                        "error: user fault/panic during interactive cmd {shell_cmd_index} — fail-fast"
+                    );
+                    let _ = child.kill();
+                    break child.wait().expect("wait after user-fault fail-fast kill");
+                }
+                // Pipe stage bound: even without a printed WARN, a wedged
+                // pipeline must not burn the mini 240s / full 1800s budget.
+                if shell_stage == ShellStage::WaitResult && cmds.get(shell_cmd_index) == Some(&CMD_PIPE)
+                {
+                    let started_at = pipe_wait_started.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() > PIPE_STAGE_BOUND && !interactive_pipe_cmd_ok(&acc)
+                    {
+                        eprintln!(
+                            "error: pipe stage timed out after {:?} (want `$ echo pipe | cat` then `pipe`)",
+                            PIPE_STAGE_BOUND
+                        );
+                        let _ = child.kill();
+                        break child.wait().expect("wait after pipe timeout kill");
+                    }
+                } else {
+                    pipe_wait_started = None;
                 }
                 // HTTPS: printed tls/dns/tcp failure — don't burn the 180s timeout.
                 // Index 12 == `http https://example.com/` (full mode only; mini
@@ -1750,9 +1810,19 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             }
         }
         if shell_cmd_index >= 4 && shell_cmd_index < 5 && !interactive_pipe_cmd_ok(&serial) {
-            eprintln!(
-                "error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)"
-            );
+            if serial.contains("[ WARN ] user fault") || serial.contains("user panic") {
+                eprintln!(
+                    "error: interactive `echo pipe | cat` hit user fault/panic (want `pipe` then `$`)"
+                );
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!(
+                    "error: shell did not return to `$` after interactive `echo pipe | cat`"
+                );
+            } else {
+                eprintln!(
+                    "error: interactive `echo pipe | cat` failed (want `$ echo pipe | cat` then `pipe`)"
+                );
+            }
         }
         if shell_cmd_index >= 5 && shell_cmd_index < 6 && !interactive_uutils_true_cmd_ok(&serial) {
             eprintln!("error: interactive `/bin/coreutils/true` failed (want `$ /bin/coreutils/true` then `$` prompt)");
@@ -1880,7 +1950,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 .unwrap_or_default();
             if !SSH_SMOKED.load(std::sync::atomic::Ordering::SeqCst) {
                 eprintln!(
-                    "error: dropbear SSH smoke failed — need two concurrent host SSH clients with clean exit-status (last error: {err})"
+                    "error: dropbear SSH smoke failed — need two sequential host SSH clients with clean exit-status (last error: {err})"
                 );
             } else if !command_echoed(
                 &serial,

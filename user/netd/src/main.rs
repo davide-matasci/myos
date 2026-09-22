@@ -508,7 +508,38 @@ fn handle_ctl(
         }
         return;
     }
-    // Accept a pending connection on this listener. One parked wait max.
+    // Userspace finished open() on the advertised head handoff. Drop that
+    // head without re-advertising it (ctl "accept" used to take+reply the
+    // same <N>, and with accepted_pending a seq bump made the next accept()
+    // re-open the live Child — dropbear "bad packet size 0x53534831" / SSH1).
+    // Promote pending to head and advertise it; otherwise status=listening.
+    if cmd == b"taken" {
+        match convs[i].kind {
+            Kind::Tcp if convs[i].listen_port != 0 => {}
+            _ => {
+                reply(chan, REP_ERR, conv, -1, b"not listening");
+                return;
+            }
+        }
+        let Some(_n) = convs[i].accepted.take() else {
+            reply(chan, REP_STATUS, conv, 0, b"listening");
+            return;
+        };
+        if let Some(m) = convs[i].accepted_pending.take() {
+            convs[i].accept_seq = convs[i].accept_seq.wrapping_add(1);
+            convs[i].accepted = Some(m);
+            let seq = convs[i].accept_seq;
+            let rep = accept_reply(convs, m, seq);
+            reply(chan, REP_STATUS, conv, 0, &rep);
+        } else {
+            reply(chan, REP_STATUS, conv, 0, b"listening");
+        }
+        return;
+    }
+    // Arm accept-wait (or re-advertise a parked head). Never *take* the
+    // head here — that used to re-hand the live Child to the next accept()
+    // (dropbear Integrity / bad packet size 0x53534831). Only ctl "taken"
+    // (libgloss after open) removes the head / promotes pending.
     if cmd == b"accept" {
         match convs[i].kind {
             Kind::Tcp if convs[i].listen_port != 0 => {}
@@ -517,12 +548,8 @@ fn handle_ctl(
                 return;
             }
         }
-        if let Some(n) = convs[i].accepted.take() {
+        if let Some(n) = convs[i].accepted {
             let seq = convs[i].accept_seq;
-            if let Some(m) = convs[i].accepted_pending.take() {
-                convs[i].accepted = Some(m);
-                convs[i].accept_seq = convs[i].accept_seq.wrapping_add(1);
-            }
             let rep = accept_reply(convs, n, seq);
             reply(chan, REP_STATUS, conv, 0, &rep);
             return;
@@ -531,9 +558,8 @@ fn handle_ctl(
             reply(chan, REP_ERR, conv, -1, b"accept busy");
             return;
         }
-        // A select()ing server keys listener readiness off the status file.
-        // Clear any stale "accepted <old>" so it does not re-accept the
-        // previous connection; status flips back to "accepted <new>" only
+        // Clear any stale "accepted <old>" so select() does not re-wake for
+        // a consumed handoff; status flips back to "accepted <new>" only
         // when pump_accepts parks a fresh connection.
         reply(chan, REP_STATUS, conv, 0, b"listening");
         convs[i].accept_wait = true; // parked; replied from the poll pump

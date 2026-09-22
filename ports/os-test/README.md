@@ -65,32 +65,28 @@ The report ends with a machine-readable line:
 pass_rate=NN% (P/T)
 ```
 
-## Boot CI smoke subset (full boot only)
+## Boot CI curated set (full boot only)
 
-Full-boot shell CI (`src/wait_ci.rs`, non-mini) runs a **thin curated subset**
-of upstream `basic/` — a little of everything, not all ~1187 tests (CI run
-#860 timed out on the full suite; #866 still hit the GHA 90m cancel on x86
-under `-smp 2` heap/git + a full-tree `cp -r` before the thin copy +
-fail-fast fixes; aarch64 finished the thin smoke in ~4m).
+Full-boot shell CI (`src/wait_ci.rs`, non-mini) runs a **thin curated set**:
+the basic smoke list **plus** ~100 tests spanning non-basic suites (`limits`,
+`io`, `malloc`, `paths`, `process`, `signal`, `stdio`, `udp`). See
+`SUITES.md` for the full suite inventory and `misc/ci-nonbasic-100.tests`
+for the selection. Not the full ~1187 basic suite (CI #860/#866 timed out).
 
 Guest staging uses a thin copy (not the whole suite):
 
 ```sh
 sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o
-make SUITES=basic TESTLIST=misc/ci-basic-smoke.tests report
+make TESTLIST=misc/ci-boot.tests report
 ```
 
-`ci-smoke-copy.sh` stages only `Makefile` + `misc/` + `basic/basic.h` + each
-`.c` listed in `misc/ci-basic-smoke.tests`.
+`ci-boot.tests` includes `ci-basic-smoke.tests` + `ci-nonbasic-100.tests`.
+`ci-smoke-copy.sh` stages `Makefile` + `misc/` + suite headers + each listed
+`.c` (suite-prefixed paths for non-basic; basic-relative for the smoke list).
 
-`misc/ci-basic-smoke.tests` (~22 paths) spans:
-
-`pwd` / `grp` / `ctype` / `string` / `strings` / `stdlib` / `stdio` /
-`unistd` / `signal` / `sys_stat` / `dirent` / `time` / `fcntl` / `setjmp` /
-`libgen` / `arpa_inet`
-
-It **must** include `pwd/setpwent` (hard gate). It deliberately avoids
-pthread / aio / math / wchar / spawn / socket for this boot window.
+Basic smoke **must** include `pwd/setpwent` (hard gate). Non-basic picks
+prefer high-value syscall/libc coverage; missing kernel/libc support is
+implemented for real (no skip/XFAIL/fake stubs).
 
 CI launcher notes:
 
@@ -112,7 +108,7 @@ Boot-mini skips this stage (too slow for the mini window).
 
 ## Boot CI host-prebuild (thin smoke)
 
-The boot smoke list (`misc/ci-basic-smoke.tests`) is **host-prebuilt** into
+The boot curated list (`misc/ci-boot.tests`) is **host-prebuilt** into
 `target/os-test-prebuilt/<arch>/basic/…` by `ports/os-test/build.sh` →
 `prebuild-basic-smoke.sh` (same newlib/libgloss link as
 `scripts/build-c-hello.sh`). `initramfs.rs` packs them at

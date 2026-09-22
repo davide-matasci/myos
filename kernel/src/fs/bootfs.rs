@@ -8,7 +8,7 @@ use spin::Mutex;
 
 use crate::fs::StatInfo;
 
-const MAX_FILES: usize = 32;
+const MAX_FILES: usize = 48;
 const NAME_CAP: usize = 32;
 
 #[derive(Clone, Copy)]

@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use spin::Mutex;
 
 #[cfg(target_arch = "riscv64")]
 use crate::arch::paging;
@@ -367,6 +368,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
     if info.span > ELF_SCRATCH_BYTES {
         return None;
     }
+    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -377,7 +379,9 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
         Err(_) => return None,
     };
 
-    let mut frames = [0u64; MAX_INIT_PAGES];
+    // Heap, not kstack: MAX_INIT_PAGES×8 ≈ 8KiB would sit on the same
+    // 64KiB stack as the live syscall trap frame (riscv64 exec→load fallback).
+    let mut frames = alloc::vec![0u64; n_pages];
     for i in 0..n_pages {
         frames[i] = mm::alloc_frame_site(2);
         if i < code_pages {
@@ -397,6 +401,7 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
             sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
         }
     }
+    drop(_scratch_guard);
     let mut stack_frames = [0u64; USER_STACK_PAGES];
     for frame in &mut stack_frames {
         *frame = mm::alloc_frame_site(5);
@@ -474,7 +479,14 @@ fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
 const ELF_SCRATCH_BYTES: usize = MAX_ELF_PAGES * PAGE;
 static ELF_SCRATCH_PHYS: AtomicU64 = AtomicU64::new(0);
 static ELF_SCRATCH_PAGES: AtomicUsize = AtomicUsize::new(0);
+/// Serialize realize→copy-out on the shared scratch. Pipeline children
+/// (`cat | cat`) RR-spread across APs under `-smp 4` and exec concurrently;
+/// without this lock they shred each other's relocated image (UEFI full-boot
+/// user #PF cr2=0x401 / bogus low pointer in sbase `cat` after os-test).
+static ELF_SCRATCH_LOCK: Mutex<()> = Mutex::new(());
 
+/// Borrow the shared ELF scratch. Caller must hold [`ELF_SCRATCH_LOCK`] for
+/// the whole realize + copy-into-aspace window — not merely this call.
 fn elf_scratch_mut(len: usize) -> Option<&'static mut [u8]> {
     if len == 0 || len > ELF_SCRATCH_BYTES {
         return None;
@@ -525,6 +537,7 @@ fn reload_user_elf(
     if info.span > MAX_RELOAD_PAGES * PAGE {
         return None;
     }
+    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -557,6 +570,7 @@ fn reload_user_elf(
         }
         sync_icache(mm::hhdm(phys) as usize, PAGE);
     }
+    drop(_scratch_guard);
     apply_elf_load_prots(aspace, bytes, base, image_pages);
     // Drop inherited brk pages so the next image starts with an empty on-demand
     // heap (see `free_abandoned_stack_heap`). Reload keeps `stack_off` fixed so
@@ -644,6 +658,9 @@ fn expand_user_elf(
     // Realize into scratch *before* touching the live aspace. Growing scratch
     // (or a realize error) must not leave the caller with a half-rewritten
     // mapping and a SYSERR return into wiped user text (ISO login rip=0).
+    // Hold ELF_SCRATCH_LOCK across realize→copy-out so a peer AP exec
+    // (pipeline RR) cannot overwrite scratch mid-flight.
+    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -892,7 +909,8 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     if src == 0 {
         return None;
     }
-    let mut frames = [0u64; MAX_ELF_PAGES];
+    // Heap, not kstack: MAX_ELF_PAGES×8 ≈ 9KiB on every fork's syscall stack.
+    let mut frames = alloc::vec![0u64; n_pages];
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
         let phys = virt_to_phys(src, va)?;
@@ -1349,18 +1367,42 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
     // Iret frame in memory (RIP, CS, RFLAGS, RSP, SS). Do not feed five `in(reg)`
     // operands into one asm block: LLVM can reuse a register for CS and corrupt
     // iretq (post-fork exec of large ELFs → #GP on BIOS).
-    let frame = [user_rip as u64, cs, rflags, user_rsp as u64, ss];
+    //
+    // Volatile + GPR scrub: `mov rsp, frame_ptr` leaves the kernel stack
+    // address (HHDM) in a GPR across iretq. Userspace then faulted on that
+    // pointer (UEFI boot-mini `cat | cat`: cr2=0xffff8000… code=0x5). Same
+    // discipline as enter_fork_x86 / enter_riscv64.
+    let resume = [user_rip as u64, cs, rflags, user_rsp as u64, ss];
+    let mut slot = core::mem::MaybeUninit::<[u64; 5]>::uninit();
     const CR0_TS: u64 = 1 << 3;
     unsafe {
         let mut cr0: u64;
         core::arch::asm!("mov {}, cr0", out(reg) cr0);
         cr0 &= !CR0_TS;
         core::arch::asm!("mov cr0, {}", in(reg) cr0);
+        core::ptr::write_volatile(slot.as_mut_ptr(), resume);
+        let f = slot.as_ptr();
+        // Mov rsp first so scrubbing GPRs cannot zero the frame pointer reg.
         core::arch::asm!(
             "cli",
             "mov rsp, {f}",
+            "xor rax, rax",
+            "xor rcx, rcx",
+            "xor rdx, rdx",
+            "xor rbx, rbx",
+            "xor rbp, rbp",
+            "xor rsi, rsi",
+            "xor rdi, rdi",
+            "xor r8, r8",
+            "xor r9, r9",
+            "xor r10, r10",
+            "xor r11, r11",
+            "xor r12, r12",
+            "xor r13, r13",
+            "xor r14, r14",
+            "xor r15, r15",
             "iretq",
-            f = in(reg) frame.as_ptr(),
+            f = in(reg) f,
             options(noreturn),
         );
     }
@@ -1370,14 +1412,21 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
 fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usize) -> ! {
     // Load from a stack slot so LLVM cannot reuse rip/argc in one asm block
     // and reorder mov before msr (CI: exec eret with elr=0).
-    let args = [
+    //
+    // Volatile + GPR scrub: leftover kernel GPRs (HHDM / frame pointers) across
+    // eret used to reach userspace. Same discipline as enter_x86 / enter_riscv64
+    // — aarch64 boot-mini `echo pipe | cat` hit FAR=0 with elr in oksh
+    // (CI #35570070681) after exec of pipeline children.
+    let resume = [
         user_rip as u64,
         user_rsp as u64,
         user_argc as u64,
         user_argv as u64,
     ];
-    let p = args.as_ptr();
+    let mut slot = core::mem::MaybeUninit::<[u64; 4]>::uninit();
     unsafe {
+        core::ptr::write_volatile(slot.as_mut_ptr(), resume);
+        let p = slot.as_ptr();
         let rip: u64;
         let rsp: u64;
         core::arch::asm!(
@@ -1391,9 +1440,40 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             rsp = lateout(reg) rsp,
             options(nostack, preserves_flags),
         );
+        // Load argc/argv first, then scrub remaining GPRs so eret cannot leak
+        // kernel addresses into EL0 (mov/ldr into x0/x1 must precede the zeros).
         core::arch::asm!(
             "ldr x0, [{p}, #16]",
             "ldr x1, [{p}, #24]",
+            "mov x2, xzr",
+            "mov x3, xzr",
+            "mov x4, xzr",
+            "mov x5, xzr",
+            "mov x6, xzr",
+            "mov x7, xzr",
+            "mov x8, xzr",
+            "mov x9, xzr",
+            "mov x10, xzr",
+            "mov x11, xzr",
+            "mov x12, xzr",
+            "mov x13, xzr",
+            "mov x14, xzr",
+            "mov x15, xzr",
+            "mov x16, xzr",
+            "mov x17, xzr",
+            "mov x18, xzr",
+            "mov x19, xzr",
+            "mov x20, xzr",
+            "mov x21, xzr",
+            "mov x22, xzr",
+            "mov x23, xzr",
+            "mov x24, xzr",
+            "mov x25, xzr",
+            "mov x26, xzr",
+            "mov x27, xzr",
+            "mov x28, xzr",
+            "mov x29, xzr",
+            "mov x30, xzr",
             "isb",
             "eret",
             p = in(reg) p,
@@ -1417,10 +1497,37 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
         }
     };
     task::stamp_stack_cpu(ksp, crate::smp::cpu_id());
+    // Volatile resume image — same discipline as enter_aarch64 / enter_x86.
+    // Keep argc/argv/sp/sepc in memory; load into dedicated regs, then scrub.
+    // Under MTTCG full-boot, interactive `http https://…` hit
+    // `instruction page fault stval=0 sepc=0` when LLVM parked `rip`/`usp` in
+    // a register the scrub then zeroed (sret with sepc=0).
+    let resume = [
+        user_rip as u64,
+        user_rsp as u64,
+        user_argc as u64,
+        user_argv as u64,
+    ];
+    let mut slot = core::mem::MaybeUninit::<[u64; 4]>::uninit();
     unsafe {
-        // Install user context FIRST, then scrub remaining GPRs. Zeroing before
-        // the moves would clobber LLVM's `in(reg)` temporaries (usp/argc/…) and
-        // sret with sp/a0/sepc = 0 — instant sepc=0 IPF on first enter.
+        core::ptr::write_volatile(slot.as_mut_ptr(), resume);
+        let p = slot.as_ptr();
+        let rip: u64;
+        let usp: u64;
+        let argc: u64;
+        let argv: u64;
+        core::arch::asm!(
+            "ld {rip}, 0({p})",
+            "ld {usp}, 8({p})",
+            "ld {argc}, 16({p})",
+            "ld {argv}, 24({p})",
+            p = in(reg) p,
+            rip = lateout(reg) rip,
+            usp = lateout(reg) usp,
+            argc = lateout(reg) argc,
+            argv = lateout(reg) argv,
+            options(nostack, preserves_flags),
+        );
         core::arch::asm!(
             "csrw sscratch, {ksp}",
             "mv sp, {usp}",
@@ -1458,70 +1565,36 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             "mv t6, zero",
             "sret",
             ksp = in(reg) ksp,
-            usp = in(reg) user_rsp,
-            argc = in(reg) user_argc,
-            argv = in(reg) user_argv,
-            rip = in(reg) user_rip,
+            usp = in(reg) usp,
+            argc = in(reg) argc,
+            argv = in(reg) argv,
+            rip = in(reg) rip,
             s = in(reg) USER_SSTATUS,
             options(noreturn, nostack),
         );
     }
 }
 
-/// Exec from a syscall: copy the saved frame and sret through `fork_sret_from_frame`.
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+/// Exec from a syscall: rewrite the saved frame and eret (aarch64).
+///
+/// riscv64 deliberately does **not** resume through the live syscall trap
+/// frame after exec — deep `expand_user_elf` (ripgrep) shares the 64KiB
+/// kstack with that frame and reopened `sepc=0` IPF; see the riscv64 branch
+/// of `sys_exec` which clears `SYSCALL_FRAME` and falls through to
+/// `enter_riscv64`'s volatile resume image instead.
+#[cfg(target_arch = "aarch64")]
 fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv: usize) {
     let frame_ptr = unsafe { SYSCALL_FRAME };
     if frame_ptr.is_null() {
         return;
     }
     unsafe {
-        #[cfg(target_arch = "aarch64")]
-        {
-            let frame = frame_ptr as *mut u64;
-            *frame.add(0) = argc as u64;
-            *frame.add(1) = argv as u64;
-            *frame.add(32) = entry as u64;
-            *frame.add(34) = rsp as u64;
-            crate::arch::fork_eret_to_user(frame);
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            let frame = frame_ptr as *mut u64;
-            // Definitive exec frame: argc/argv/sp/sepc/sstatus only. Zero every
-            // other GPR so in-place expand cannot resume the new image with the
-            // previous program's ra/tp/gp (null-call → instruction page fault
-            // stval=0 sepc=0 — the ripgrep boot-mini signature after uutils ls).
-            for i in 0..32usize {
-                *frame.add(i) = 0;
-            }
-            *frame.add(10) = argc as u64; // a0
-            *frame.add(11) = argv as u64; // a1
-            *frame.add(32) = entry as u64;
-            *frame.add(33) = USER_SSTATUS;
-            *frame.add(34) = rsp as u64;
-            // Publish this task's kernel stack top into both the static and the
-            // CSR — schedule updating only the static left the CSR stale.
-            // sync_tp: expand_user_elf of a large rg ELF is deep enough that LLVM
-            // may clobber tp; without ONLINE gating that selected the wrong
-            // CURRENT[] and left sscratch/sepc resume corrupt (sepc=0 IPF).
-            crate::smp::sync_tp_for_kernel();
-            let ksp = {
-                let t = task::current_kernel_stack_top();
-                if t != 0 {
-                    t
-                } else {
-                    KERNEL_SSCRATCH
-                }
-            };
-            if ksp != 0 {
-                let cpu = crate::smp::cpu_id();
-                task::stamp_stack_cpu(ksp, cpu);
-                core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(ksp);
-                core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
-            }
-            crate::arch::fork_sret_to_user(frame);
-        }
+        let frame = frame_ptr as *mut u64;
+        *frame.add(0) = argc as u64;
+        *frame.add(1) = argv as u64;
+        *frame.add(32) = entry as u64;
+        *frame.add(34) = rsp as u64;
+        crate::arch::fork_eret_to_user(frame);
     }
 }
 
@@ -1579,7 +1652,18 @@ fork_iret_to_user:
     mov r14, [rdi + 32]
     mov r15, [rdi + 40]
     lea rsp, [rdi + 48]
+    # Scrub caller-saved GPRs (incl. rdi = kernel resume ptr / HHDM). Matches
+    # enter_x86: leftover kernel addresses across iretq became user #PF
+    # (cr2 in HHDM) on UEFI pipeline fork before exec.
     xor rax, rax
+    xor rcx, rcx
+    xor rdx, rdx
+    xor rsi, rsi
+    xor rdi, rdi
+    xor r8, r8
+    xor r9, r9
+    xor r10, r10
+    xor r11, r11
     iretq
     "#,
     mxcsr = sym USER_MXCSR_DEFAULT,
@@ -2044,8 +2128,20 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     // mutating the running task and resuming.
     crate::smp::sync_tp_for_kernel();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    // aarch64: sret/eret through the live syscall frame (shallow exec).
+    #[cfg(target_arch = "aarch64")]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
+    // riscv64: do NOT resume through the live syscall trap frame after a deep
+    // in-place expand (ripgrep after uutils ls on /heap). That frame sits near
+    // the top of the 64KiB kstack; expand + realize + PTE walks push LLVM
+    // spill slots into the same page, and a later `*frame.add(32) = entry`
+    // followed by sync_tp/sscratch setup can leave sepc as 0 before
+    // fork_sret_from_frame — classic `instruction page fault stval=0 sepc=0`
+    // with sp still in the new image's stack window (CI sp≈0x40354xxx).
+    // enter_riscv64 loads sepc/sp/argc/argv from a volatile resume image
+    // instead (same discipline as the MTTCG scrub fix in 9b6902a).
+    #[cfg(target_arch = "riscv64")]
+    set_syscall_frame(core::ptr::null_mut());
     enter(entry, rsp, argc, argv);
 }
 
@@ -3321,7 +3417,14 @@ fn flush_user_tlb() {
         }
         core::arch::asm!("dsb ish; isb", options(nostack));
     }
-    crate::smp::tlb_shootdown();
+    // Local flush only, matching the x86 path below: userspace is BSP-pinned
+    // (`task::user_affinity()` returns Some(0) for every task and forks
+    // inherit), so no AP ever loads a user aspace and no remote TLB can hold
+    // its translations. The full IPI barrier after every map/unmap made each
+    // shootdown a global event for all APs and — combined with the Dead-before-
+    // reclaim die() window — was the -smp 4 interactive crawl. Keep the global
+    // barrier available through `smp::tlb_shootdown` for the rare live-remote
+    // reclaim case in `unload_user_aspace`.
 }
 
 

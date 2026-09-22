@@ -19,31 +19,42 @@ OUT="out/$T.out"
 BIN="$T"
 SUITE="${T%%/*}"
 REL="${T#*/}"
-# Prebuilt ELFs live read-only in the initramfs; exec in place (no tmpfs copy
-# — hundreds of cp/chmod forks stalled the TCG boot window). Writable cwd
-# copies remain supported for manual/debug runs.
+# Prefer host-prebuilt ELFs. libfs registers /lib files mode 0755, so we can
+# exec /lib/os-test/prebuilt/$T in place — no tmpfs cp/chmod per test (that
+# path used to burn ~18 MiB × N of anonymous pages across the curated suite
+# and helped trip mm.rs OOM under 3072 MiB QEMU).
 PREBUILT=""
-PREBUILT_RO=0
 if [ -x "prebuilt/$T" ]; then
 	PREBUILT="prebuilt/$T"
-# libfs registers initramfs files mode 0444, so /lib/os-test/prebuilt ELFs
-# are readable but not executable: test readability, copy to the writable
-# BIN path and chmod there (exec-in-place fails with EACCES → sh 126).
 elif [ -r "/lib/os-test/prebuilt/$T" ]; then
 	PREBUILT="/lib/os-test/prebuilt/$T"
-	PREBUILT_RO=1
 fi
-mkdir -p "${OUT%/*}" "${BIN%/*}" || echo "myos-run: mkdir failed rc=$? dir=${OUT%/*}"
+mkdir -p "${OUT%/*}" || echo "myos-run: mkdir failed rc=$? dir=${OUT%/*}"
+# Only need BIN dir when compiling or when falling back to a cwd copy.
+if [ -z "$PREBUILT" ]; then
+	mkdir -p "${BIN%/*}" || echo "myos-run: mkdir failed rc=$? dir=${BIN%/*}"
+fi
 rm -f -- "$OUT" "$BIN"
 
 run_in_suite() {
-	# Run from the suite directory so relative open/fopen/stat paths match
-	# upstream. OUT stays repo-root-relative; use an absolute-ish path via
-	# prefix when cwd changes.
+	# $1 = path to ELF. Absolute paths survive `cd "$SUITE"`; relative
+	# suite/rel paths are invoked as ./$REL after cd (compile flow).
 	if [ "$SUITE" = "$T" ] || [ -z "$REL" ] || [ "$REL" = "$T" ]; then
 		"$1" > "$OUT" 2>&1
 	else
-		(cd "$SUITE" && ./$REL) > "$OUT" 2>&1
+		case "$1" in
+		/*)
+			(cd "$SUITE" && "$1") > "$OUT" 2>&1
+			;;
+		prebuilt/*)
+			# Resolve before cd so suite-relative cwd still finds it.
+			abs="$(pwd)/$1"
+			(cd "$SUITE" && "$abs") > "$OUT" 2>&1
+			;;
+		*)
+			(cd "$SUITE" && ./$REL) > "$OUT" 2>&1
+			;;
+		esac
 	fi
 	return $?
 }
@@ -51,11 +62,19 @@ run_in_suite() {
 if [ -n "$PREBUILT" ]; then
 	# Progress for serial CI (unbuffered line so long suites are not silent).
 	echo "os-test: $T (prebuilt)"
-	# Copy to the writable tcc target path so tests that open("$REL") or
-	# sibling paths behave like the compile+run flow.
-	cp "$PREBUILT" "$BIN" || exit 0
-	chmod +x "$BIN" || true
-	run_in_suite "$BIN"
+	# Exec the absolute prebuilt path (libfs ELFs are readable via the vnode
+	# path; a cwd symlink to /lib is not executable → oksh 126).
+	# Drop a tiny regular file at suite/rel so open/fopen/stat of "$REL"
+	# (basic/fcntl/open, stdio/fopen, sys_stat/stat) still see a real file
+	# without copying ~100 KiB ELFs into tmpfs each time.
+	mkdir -p "${BIN%/*}" || true
+	rm -f -- "$BIN"
+	: > "$BIN" || echo x > "$BIN" || true
+	case "$PREBUILT" in
+	/*) RUN="$PREBUILT" ;;
+	*) RUN="$(pwd)/$PREBUILT" ;;
+	esac
+	run_in_suite "$RUN"
 	CODE=$?
 	# Capture $? before any if-statement: oksh resets $? to the if
 	# statement's own status (0 when the condition fails and there is no
@@ -63,6 +82,7 @@ if [ -n "$PREBUILT" ]; then
 	if [ "$CODE" -ne 0 ]; then
 		echo "exit: $CODE" >> "$OUT"
 	fi
+	rm -f -- "$BIN"
 	exit 0
 fi
 
@@ -73,8 +93,8 @@ if ! "$CC" $CFLAGS "$SRC" -o "$BIN" -lm 2> "out/$T.err"; then
 fi
 run_in_suite "$BIN"
 CODE=$?
-if [ "$CODE" -eq 0 ]; then
-	exit 0
+if [ "$CODE" -ne 0 ]; then
+	echo "exit: $CODE" >> "$OUT"
 fi
-echo "exit: $CODE" >> "$OUT"
+rm -f -- "$BIN"
 exit 0

@@ -765,6 +765,14 @@ fn aarch64_publish_goto(cpu: &limine::mp::MpInfo, entry: usize, extra: u64) {
     }
 }
 
+pub fn mark_offline(logical: usize) {
+    if logical < MAX_CPUS {
+        ONLINE[logical].store(false, Ordering::SeqCst);
+        let mut cpus = CPUS.lock();
+        cpus[logical].online = false;
+    }
+}
+
 pub fn mark_running(logical: usize) {
     if logical < MAX_CPUS {
         // Catch up to the current shootdown epoch before advertising ONLINE so

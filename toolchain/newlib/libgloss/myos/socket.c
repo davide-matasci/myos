@@ -858,6 +858,11 @@ static int accept_from_status(struct myos_sock *ls, char *status,
         return -1;
     }
     s->data_fd = data_fd;
+    /* Consume the parked head in netd without re-advertising it. A plain
+     * ctl "accept" would take+reply the same <N> (and with accepted_pending
+     * bump seq), so the next accept() re-opened the live Child — dropbear
+     * Integrity error bad packet size 0x53534831 on sequential SSH. */
+    (void)listener_ctl(ls, "taken");
     /* Optional peer from "accepted <N> <ip>!<port>" — best effort. */
     while (*p == ' ') {
         p++;

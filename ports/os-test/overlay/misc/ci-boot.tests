@@ -1,0 +1,5 @@
+# Full-boot CI curated os-test set: basic smoke + ~100 non-basic.
+# Paths in ci-basic-smoke.tests are relative to basic/; non-basic entries
+# are suite-prefixed (suite/rel). Makefile accepts both forms.
+include misc/ci-basic-smoke.tests
+include misc/ci-nonbasic-100.tests

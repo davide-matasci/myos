@@ -542,13 +542,14 @@ pub fn unload_user_aspace(aspace: u64) {
         // Skip the global IPI barrier — it dominated exit/reclaim cost under
         // -smp 4 TCG. Still shoot down if a remote refused to drop the root
         // (float / bug), and on other arches that may migrate.
-        #[cfg(target_arch = "x86_64")]
+        // aarch64: same invariant holds (user_affinity() pins all user tasks
+        // to the BSP), so `live` is false here and the barrier is skipped.
+        // This gate is load-bearing: die() runs the reclaim with IF on after
+        // the task is already marked Dead, so a preempted in-flight
+        // tlb_shootdown can never resume — it would hold TLB_LOCK forever and
+        // every later shootdown would burn its full 2M-spin bound (observed:
+        // 1 shootdown/s and a ~10× interactive crawl under -smp 4).
         if live {
-            crate::smp::tlb_shootdown();
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            let _ = live;
             crate::smp::tlb_shootdown();
         }
     }
@@ -1965,17 +1966,40 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    let (fds, base, span, off, ppid, uargc, uargv, brk, cwd, cwd_len, mmap, mmap_next, sid, pgid, has_ctty, sig_ignored) = {
+    // Do NOT `let t = tasks[id]` (full Task Copy). Each FdEntry can carry a
+    // 96-byte Vnode path — with MAX_FDS fds + scalars a full Task snapshot on
+    // the 64 KiB kstack has silently corrupted forked children before. Clone
+    // fds once by reference under the lock; copy only small scalars out.
+    let mut child_fds = [FdEntry::Empty; MAX_FDS];
+    let (
+        base,
+        span,
+        off,
+        ppid,
+        uargc,
+        uargv,
+        brk,
+        cwd,
+        cwd_len,
+        mmap,
+        mmap_next,
+        sid,
+        pgid,
+        has_ctty,
+        sig_ignored,
+    ) = {
         let tasks = TASKS.lock();
         let id = current_slot();
-        let t = tasks[id];
+        let t = &tasks[id];
         if t.user_rip == 0 {
             drop(tasks);
             irq_restore(flags);
             return None;
         }
+        for i in 0..MAX_FDS {
+            child_fds[i] = fd_clone(t.fds[i]);
+        }
         (
-            t.fds,
             t.user_base,
             t.image_span,
             t.stack_off,
@@ -1994,7 +2018,15 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         )
     };
 
+    let drop_child_fds = |fds: &mut [FdEntry; MAX_FDS]| {
+        for i in 0..MAX_FDS {
+            fd_drop(fds[i]);
+            fds[i] = FdEntry::Empty;
+        }
+    };
+
     let Some(aspace) = user::copy_user_aspace(base, span, off, brk) else {
+        drop_child_fds(&mut child_fds);
         irq_restore(flags);
         return None;
     };
@@ -2002,6 +2034,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     let layout = match Layout::from_size_align(STACK_SIZE, 16) {
         Ok(l) => l,
         Err(_) => {
+            drop_child_fds(&mut child_fds);
             irq_restore(flags);
             return None;
         }
@@ -2022,6 +2055,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             .or_else(|| tasks.iter().position(|t| t.state == State::Unused));
         let Some(slot) = slot else {
             drop(tasks);
+            drop_child_fds(&mut child_fds);
             irq_restore(flags);
             return None;
         };
@@ -2031,11 +2065,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         (slot, (reuse, stack_base))
     };
 
-    let mut child_fds = default_user_fds();
-    for i in 0..MAX_FDS {
-        child_fds[i] = fd_clone(fds[i]);
-    }
-
     let (stack_base, sp, top) = if reuse_stack.0 {
         let sb = reuse_stack.1;
         let sp = unsafe { seed_stack(sb as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
@@ -2043,6 +2072,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     } else {
         let stack = unsafe { alloc(layout) };
         if stack.is_null() {
+            drop_child_fds(&mut child_fds);
             irq_restore(flags);
             return None;
         }
@@ -2612,61 +2642,90 @@ fn wait() {
 }
 
 
+/// Per-AP idle stack base stashed before the Limine→idle migrate so bring-up
+/// can finish on the big stack (see [`ap_idle_loop`]).
+static AP_IDLE_STACK_BASE: [AtomicUsize; crate::smp::MAX_CPUS] =
+    [const { AtomicUsize::new(0) }; crate::smp::MAX_CPUS];
+
 /// Idle loop for a secondary CPU brought up by [`crate::smp`].
 ///
 /// Allocates a pinned idle task so `schedule` can leave and return to this CPU.
+///
+/// Critical: Limine's AP stack is tiny (UEFI path especially). Do **not**
+/// construct a multi-KiB [`Task`] or enable IRQs while still on it — both
+/// overflowed into NX execute (`code=0x11`, `cr2==rip`) under `-smp 4`
+/// (PR #164 boot-mini uefi). Migrate first with IF clear / !ONLINE, then
+/// finish bring-up on the 64KiB idle stack.
 pub fn ap_idle_loop(logical: usize) -> ! {
-    let flags = irq_save();
+    // Enter with IRQs masked (ap_entry cli / DAIF). Keep them off until
+    // bring-up completes on the idle stack.
     irq_off();
     let layout = Layout::from_size_align(STACK_SIZE, 16).expect("ap idle stack");
     let stack = unsafe { alloc(layout) };
     assert!(!stack.is_null(), "ap idle stack alloc");
-    // Seed a stack that simply returns into this function's loop via trampoline
-    // is awkward; instead park this CPU's "current" as a Running idle task with
-    // sp=0 meaning "already on stack" — we never switch TO an idle with sp=0
-    // from another CPU because affinity pins it. When we yield, we save our
-    // real sp via task_switch.
-    let sp = unsafe { seed_stack(stack, STACK_SIZE, ap_idle_trampoline as *const () as usize) };
-    let top = stack as usize + STACK_SIZE;
+    let base = stack as usize;
+    let top = base + STACK_SIZE;
     stamp_stack_cpu(top, logical);
+    if logical < crate::smp::MAX_CPUS {
+        AP_IDLE_STACK_BASE[logical].store(base, Ordering::SeqCst);
+    }
+    // Minimal work on Limine's stack: seed + switch. Task install happens in
+    // [`ap_idle_bringup`] once RSP is on the 64KiB allocation.
+    let sp = unsafe { seed_stack(stack, STACK_SIZE, ap_idle_trampoline as *const () as usize) };
+    let mut discard_sp: usize = 0;
+    unsafe {
+        task_switch(core::ptr::addr_of_mut!(discard_sp), sp);
+    }
+    unreachable!()
+}
+
+/// Finish AP idle bring-up on the 64KiB idle stack (see [`ap_idle_loop`]).
+fn ap_idle_bringup() {
+    let logical = crate::smp::cpu_id();
+    let base = if logical < crate::smp::MAX_CPUS {
+        AP_IDLE_STACK_BASE[logical].load(Ordering::SeqCst)
+    } else {
+        0
+    };
+    assert!(base != 0, "ap idle stack base");
+    let top = base + STACK_SIZE;
+    // Current RSP is already on this stack (we got here via task_switch ret).
+    // Record that SP so the first schedule away/back saves/restores correctly.
+    let sp_now: usize;
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) sp_now, options(nostack, preserves_flags));
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mov {}, sp", out(reg) sp_now, options(nostack, preserves_flags));
+    }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("mv {}, sp", out(reg) sp_now, options(nostack, preserves_flags));
+    }
+
+    // Install idle Task **in place** (no stack temporary — same discipline as
+    // fork_current; a full `Task { .. }` literal is multi-KiB).
     let mut tasks = TASKS.lock();
     let slot = tasks
         .iter()
         .position(|t| t.state == State::Unused)
         .expect("no AP idle slot");
-    tasks[slot] = Task {
-        state: State::Running,
-        stack_base: stack as usize,
-        sp,
-        entry: Some(ap_idle_body),
-        aspace: 0,
-        kernel_stack_top: top,
-        user_rip: 0,
-        user_rsp: 0,
-        fds: [FdEntry::Empty; MAX_FDS],
-        user_base: 0,
-        image_span: 0,
-        stack_off: 0,
-        ppid: 0,
-        fork_regs: None,
-        user_argc: 0,
-        user_argv: 0,
-        brk_cur: 0,
-        exec_name: [0; 32],
-        exec_name_len: 0,
-        cwd: root_cwd_buf(),
-        cwd_len: 1,
-        exit_code: 0,
-        mmap: EMPTY_MMAP,
-        mmap_next: 0,
-        sid: slot,
-        pgid: slot,
-        has_ctty: false,
-        sig_pending: 0,
-        sig_ignored: 0,
-        sig_blocked: 0,
-        affinity: Some(logical),
-    };
+    {
+        let t = &mut tasks[slot];
+        unsafe {
+            core::ptr::write(t, EMPTY);
+        }
+        t.state = State::Running;
+        t.stack_base = base;
+        t.sp = sp_now;
+        t.entry = Some(ap_idle_body);
+        t.kernel_stack_top = top;
+        t.sid = slot;
+        t.pgid = slot;
+        t.affinity = Some(logical);
+    }
     drop(tasks);
     set_current_slot(slot);
     // APs may still hold Limine's early TTBR0; install the BSP kernel/device
@@ -2676,27 +2735,21 @@ pub fn ap_idle_loop(logical: usize) -> ! {
         user::switch_aspace(k);
     }
     set_loaded_aspace(k);
-    irq_restore(flags);
     crate::smp::mark_running(logical);
     enable_preempt();
-    // IRQs only after CURRENT/idle exist (see smp::myos_smp_ap_entry).
+    // IRQs only after CURRENT/idle exist *and* we left the Limine stack.
     irq_on();
-    // Migrate off Limine's tiny AP stack onto the 64KiB idle stack before any
-    // timer/IPI nesting (UEFI path overflowed Limine stacks → kernel PF).
-    let mut discard_sp: usize = 0;
-    unsafe {
-        task_switch(core::ptr::addr_of_mut!(discard_sp), sp);
-    }
-    unreachable!()
+    ap_idle_body();
 }
 
 fn ap_idle_body() {
     loop {
+        crate::smp::tlb_service();
         yield_now();
         crate::arch::wait_interrupt();
     }
 }
 
 fn ap_idle_trampoline() {
-    ap_idle_body();
+    ap_idle_bringup();
 }

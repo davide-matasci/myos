@@ -1,0 +1,46 @@
+# Boot CI curated non-basic subset — suite-prefixed paths (suite/rel, no .c).
+# Prefer tests whose POSIX expect is exit 0 (myos harness: exit 0 = pass).
+# Trimmed after libgloss/kernel rollback: only suites that pass on master
+# libc (malloc/paths/stdio/io). Re-expand suite-by-suite with curl+SSH green.
+
+TESTS += malloc/malloc-0
+TESTS += malloc/realloc-0
+TESTS += malloc/realloc-null-0
+TESTS += paths/dev-null
+TESTS += paths/dev-zero
+TESTS += paths/dev-tty
+TESTS += paths/dev-console
+TESTS += paths/dev-urandom
+TESTS += paths/dev
+TESTS += paths/tmp
+TESTS += paths/root
+TESTS += paths/bin-sh
+TESTS += paths/usr-bin-env
+TESTS += paths/etc
+TESTS += paths/lib
+TESTS += paths/usr
+TESTS += paths/usr-bin
+TESTS += paths/bin
+TESTS += paths/usr-lib
+TESTS += stdio/printf-percent
+TESTS += stdio/printf-d-zero
+TESTS += stdio/printf-d-h
+TESTS += stdio/printf-d-hh
+TESTS += stdio/printf-d-right-pad
+TESTS += stdio/printf-g-hash
+TESTS += stdio/printf-c-left-pad
+TESTS += stdio/printf-c-right-pad
+TESTS += stdio/printf-c-pos-args
+TESTS += stdio/printf-c-truncate
+TESTS += stdio/printf-u-zero
+TESTS += stdio/printf-x-zero
+TESTS += stdio/printf-o-zero
+TESTS += stdio/printf-e
+TESTS += stdio/printf-e-alt
+TESTS += stdio/printf-g-precision-f
+TESTS += io/open-tmpdir-rdonly
+TESTS += io/open-tmpdir-rdonly-directory
+TESTS += io/open-tmpdir-rdonly-append
+TESTS += io/open-mkstemp-rdonly-trunc
+TESTS += io/open-mkstemp-rdonly-directory
+TESTS += io/open-mkstemp-rdonly

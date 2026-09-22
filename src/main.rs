@@ -351,15 +351,26 @@ fn aarch64_firmware() -> (PathBuf, PathBuf) {
 /// The kernel writes `0x10` on success, so QEMU should exit 33.
 const QEMU_SUCCESS_STATUS: i32 = (0x10 << 1) | 1;
 
+/// Overall QEMU/harness wall for `--ci`. Full boot keeps a long budget for
+/// os-test / dropbear; boot-mini (`MYOS_CI_MINI=1`) must fail well under the
+/// 5-minute GHA job timeout (hung aarch64 burned ~24m on the old 1800s).
+fn ci_qemu_timeout() -> Duration {
+    if std::env::var_os("MYOS_CI_MINI").map(|v| v == "1").unwrap_or(false) {
+        Duration::from_secs(240)
+    } else {
+        Duration::from_secs(1800)
+    }
+}
+
 fn run_ci_bios(bios_path: &str) {
     let mut cmd = Command::new("qemu-system-x86_64");
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
-        // 2048: smoke staging of 137 ELFs into the tmpfs-backed /tmp
-        // exhausts the frame allocator at 1024 MiB ("out of usable memory",
-        // kernel/src/mm.rs). riscv64 CI already runs 2048.
-        .arg("2048")
+        // 4096: curated os-test (~243 prebuilts) still OOMd mid-stdio under
+        // 3072 (mm.rs live≈748k frames after ~200 execs). Headroom for
+        // make brk + fault0 pages across the full curated list.
+        .arg("4096")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
         .args({
@@ -400,7 +411,7 @@ fn run_ci_bios(bios_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: ci_qemu_timeout(),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -414,13 +425,28 @@ fn run_ci_uefi(uefi_path: &str) {
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
-        // 2560: UEFI+GOP leaves less usable RAM than BIOS at the same -m.
-        // After x86 page-table reclaim, 2048 still OOM'd mid os-test report
-        // dump on workflow 34993401424; give UEFI a little headroom without
-        // papering over leaks on the bios job (stays 2048).
-        .arg("2560")
+        // 4608: UEFI+GOP leaves less usable RAM than BIOS at the same -m.
+        // Keep ~512 MiB above BIOS 4096 for GOP / OVMF overhead.
+        .arg("4608")
         .arg("-smp")
-        .arg("4")  // ≥2 APs for parallel-fork RR / make -j
+        .arg({
+            // Local TCG-single: smp=1 keeps serial shell typing reliable; CI
+            // runners omit MYOS_TCG_SINGLE and keep smp=4 (UEFI cat|cat race).
+            if std::env::var("MYOS_TCG_SINGLE").as_deref() == Ok("1") {
+                "1"
+            } else {
+                "4" // ≥2 APs for parallel-fork RR / make -j
+            }
+        })
+        .args({
+            // Match run_ci_bios: local-ci.sh exports MYOS_TCG_SINGLE=1 so MTTCG
+            // does not starve the boot. Without this, UEFI CI ignored the flag.
+            if std::env::var("MYOS_TCG_SINGLE").as_deref() == Ok("1") {
+                vec!["-accel", "tcg,thread=single"]
+            } else {
+                vec![]
+            }
+        })
         .arg("-drive")
         .arg(format!("format=raw,file={uefi_path}"))
         .arg("-drive")
@@ -455,7 +481,7 @@ fn run_ci_uefi(uefi_path: &str) {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: ci_qemu_timeout(),
             qemu_debug_exit: true,
             shell_ci: true,
         },
@@ -474,7 +500,7 @@ fn run_ci_aarch64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: ci_qemu_timeout(),
             qemu_debug_exit: false,
             shell_ci: true,
         },
@@ -496,9 +522,9 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-cpu")
         .arg("cortex-a72")
         .arg("-m")
-        .arg("1024")
+        .arg(if ci { "4096" } else { "1024" })
         .arg("-smp")
-        .arg("4")  // APs still parked for userspace; keep boot-green under -smp 4
+        .arg("4")
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
@@ -874,7 +900,7 @@ fn run_ci_riscv64() {
     wait_ci(
         child,
         CiExpect {
-            timeout: Duration::from_secs(1800),
+            timeout: ci_qemu_timeout(),
             qemu_debug_exit: false,
             shell_ci: true,
         },
@@ -894,7 +920,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-cpu")
         .arg("rv64")
         .arg("-m")
-        .arg("2048")
+        .arg(if ci { "4096" } else { "2048" })
         .arg("-smp")
         // Limine EDK2 path panics with -smp 4: "missing struct riscv_hart for BSP".
         // Keep 2 + dual-hart DTB + parked APs (OpenSBI may pick hartid=1 as BSP).
@@ -924,6 +950,14 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
+    // riscv64 keeps -smp 2 for OpenSBI/DTB but WFI-parks the AP (!ONLINE).
+    // Default MTTCG still schedules that parked hart and reopens the classic
+    // ripgrep/HTTPS `sepc=0` expand race under load (PR #151/#164). Single-thread
+    // TCG matches local-ci and keeps one ONLINE hart without AP TCG contention.
+    // Set MYOS_TCG_SINGLE=0 only when deliberately testing MTTCG.
+    if std::env::var("MYOS_TCG_SINGLE").as_deref() != Ok("0") {
+        cmd.arg("-accel").arg("tcg,thread=single");
+    }
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg("none");
