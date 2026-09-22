@@ -379,7 +379,9 @@ fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
         Err(_) => return None,
     };
 
-    let mut frames = [0u64; MAX_INIT_PAGES];
+    // Heap, not kstack: MAX_INIT_PAGES×8 ≈ 8KiB would sit on the same
+    // 64KiB stack as the live syscall trap frame (riscv64 exec→load fallback).
+    let mut frames = alloc::vec![0u64; n_pages];
     for i in 0..n_pages {
         frames[i] = mm::alloc_frame_site(2);
         if i < code_pages {
@@ -907,7 +909,8 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     if src == 0 {
         return None;
     }
-    let mut frames = [0u64; MAX_ELF_PAGES];
+    // Heap, not kstack: MAX_ELF_PAGES×8 ≈ 9KiB on every fork's syscall stack.
+    let mut frames = alloc::vec![0u64; n_pages];
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
         let phys = virt_to_phys(src, va)?;
@@ -1572,60 +1575,26 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
     }
 }
 
-/// Exec from a syscall: copy the saved frame and sret through `fork_sret_from_frame`.
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+/// Exec from a syscall: rewrite the saved frame and eret (aarch64).
+///
+/// riscv64 deliberately does **not** resume through the live syscall trap
+/// frame after exec — deep `expand_user_elf` (ripgrep) shares the 64KiB
+/// kstack with that frame and reopened `sepc=0` IPF; see the riscv64 branch
+/// of `sys_exec` which clears `SYSCALL_FRAME` and falls through to
+/// `enter_riscv64`'s volatile resume image instead.
+#[cfg(target_arch = "aarch64")]
 fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv: usize) {
     let frame_ptr = unsafe { SYSCALL_FRAME };
     if frame_ptr.is_null() {
         return;
     }
     unsafe {
-        #[cfg(target_arch = "aarch64")]
-        {
-            let frame = frame_ptr as *mut u64;
-            *frame.add(0) = argc as u64;
-            *frame.add(1) = argv as u64;
-            *frame.add(32) = entry as u64;
-            *frame.add(34) = rsp as u64;
-            crate::arch::fork_eret_to_user(frame);
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            let frame = frame_ptr as *mut u64;
-            // Definitive exec frame: argc/argv/sp/sepc/sstatus only. Zero every
-            // other GPR so in-place expand cannot resume the new image with the
-            // previous program's ra/tp/gp (null-call → instruction page fault
-            // stval=0 sepc=0 — the ripgrep boot-mini signature after uutils ls).
-            for i in 0..32usize {
-                *frame.add(i) = 0;
-            }
-            *frame.add(10) = argc as u64; // a0
-            *frame.add(11) = argv as u64; // a1
-            *frame.add(32) = entry as u64;
-            *frame.add(33) = USER_SSTATUS;
-            *frame.add(34) = rsp as u64;
-            // Publish this task's kernel stack top into both the static and the
-            // CSR — schedule updating only the static left the CSR stale.
-            // sync_tp: expand_user_elf of a large rg ELF is deep enough that LLVM
-            // may clobber tp; without ONLINE gating that selected the wrong
-            // CURRENT[] and left sscratch/sepc resume corrupt (sepc=0 IPF).
-            crate::smp::sync_tp_for_kernel();
-            let ksp = {
-                let t = task::current_kernel_stack_top();
-                if t != 0 {
-                    t
-                } else {
-                    KERNEL_SSCRATCH
-                }
-            };
-            if ksp != 0 {
-                let cpu = crate::smp::cpu_id();
-                task::stamp_stack_cpu(ksp, cpu);
-                core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(ksp);
-                core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
-            }
-            crate::arch::fork_sret_to_user(frame);
-        }
+        let frame = frame_ptr as *mut u64;
+        *frame.add(0) = argc as u64;
+        *frame.add(1) = argv as u64;
+        *frame.add(32) = entry as u64;
+        *frame.add(34) = rsp as u64;
+        crate::arch::fork_eret_to_user(frame);
     }
 }
 
@@ -2159,8 +2128,20 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     // mutating the running task and resuming.
     crate::smp::sync_tp_for_kernel();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    // aarch64: sret/eret through the live syscall frame (shallow exec).
+    #[cfg(target_arch = "aarch64")]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
+    // riscv64: do NOT resume through the live syscall trap frame after a deep
+    // in-place expand (ripgrep after uutils ls on /heap). That frame sits near
+    // the top of the 64KiB kstack; expand + realize + PTE walks push LLVM
+    // spill slots into the same page, and a later `*frame.add(32) = entry`
+    // followed by sync_tp/sscratch setup can leave sepc as 0 before
+    // fork_sret_from_frame — classic `instruction page fault stval=0 sepc=0`
+    // with sp still in the new image's stack window (CI sp≈0x40354xxx).
+    // enter_riscv64 loads sepc/sp/argc/argv from a volatile resume image
+    // instead (same discipline as the MTTCG scrub fix in 9b6902a).
+    #[cfg(target_arch = "riscv64")]
+    set_syscall_frame(core::ptr::null_mut());
     enter(entry, rsp, argc, argv);
 }
 
