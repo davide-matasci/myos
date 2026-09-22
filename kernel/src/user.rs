@@ -3436,7 +3436,14 @@ fn flush_user_tlb() {
         }
         core::arch::asm!("dsb ish; isb", options(nostack));
     }
-    crate::smp::tlb_shootdown();
+    // Local flush only, matching the x86 path below: userspace is BSP-pinned
+    // (`task::user_affinity()` returns Some(0) for every task and forks
+    // inherit), so no AP ever loads a user aspace and no remote TLB can hold
+    // its translations. The full IPI barrier after every map/unmap made each
+    // shootdown a global event for all APs and — combined with the Dead-before-
+    // reclaim die() window — was the -smp 4 interactive crawl. Keep the global
+    // barrier available through `smp::tlb_shootdown` for the rare live-remote
+    // reclaim case in `unload_user_aspace`.
 }
 
 

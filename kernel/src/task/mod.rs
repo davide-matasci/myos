@@ -542,13 +542,14 @@ pub fn unload_user_aspace(aspace: u64) {
         // Skip the global IPI barrier — it dominated exit/reclaim cost under
         // -smp 4 TCG. Still shoot down if a remote refused to drop the root
         // (float / bug), and on other arches that may migrate.
-        #[cfg(target_arch = "x86_64")]
+        // aarch64: same invariant holds (user_affinity() pins all user tasks
+        // to the BSP), so `live` is false here and the barrier is skipped.
+        // This gate is load-bearing: die() runs the reclaim with IF on after
+        // the task is already marked Dead, so a preempted in-flight
+        // tlb_shootdown can never resume — it would hold TLB_LOCK forever and
+        // every later shootdown would burn its full 2M-spin bound (observed:
+        // 1 shootdown/s and a ~10× interactive crawl under -smp 4).
         if live {
-            crate::smp::tlb_shootdown();
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            let _ = live;
             crate::smp::tlb_shootdown();
         }
     }

@@ -265,6 +265,14 @@ fn ssh_one_client(key: &Path, tag: &str) -> Result<(), String> {
             "IdentitiesOnly=yes",
             "-o",
             "PreferredAuthentications=publickey",
+            // Pin the KEX to curve25519: CI runners (OpenSSH 9.6) never offer
+            // mlkem768x25519, so pinning matches what CI actually exercises.
+            // OpenSSH 10+ hosts negotiate mlkem768/sntrup761 first and hit a
+            // separate aarch64 dropbear PQ-KEX interop bug (hostkey signature
+            // verification fails deterministically on aarch64 guests; x86 is
+            // unaffected) that would otherwise burn the whole SSH stage.
+            "-o",
+            "KexAlgorithms=curve25519-sha256",
             "-o",
             "ConnectTimeout=8",
             "-o",

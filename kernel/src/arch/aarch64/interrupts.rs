@@ -332,9 +332,14 @@ pub fn ap_init(logical: usize) {
         cpacr |= 3 << 20;
         asm!("msr cpacr_el1, {c}", "isb", c = in(reg) cpacr, options(nostack));
     }
-    // GICv2 CPU interface is banked per-CPU.
-    write32(GICC, 3);
-    write32(GICC + 0x004, 0xFF);
+    // GICv2 CPU interface is banked per-CPU: run the full GIC init on this
+    // CPU's own bank, including ISENABLER0 (SGI 0/1 + timer PPIs) and per-ID
+    // priorities. With only the interface enabled the AP's distributor bank
+    // stays reset-disabled: no timer PPI, so an idle AP sleeps in WFI forever
+    // (sched counts frozen), never soft-ACKs TLB shootdown epochs, and every
+    // shootdown burns the full 2M-spin bound — under `-smp 4` interactive
+    // stages crawl (curl timeout, ostest crawl; PR #164 root cause).
+    init_gic();
     init_timer();
     // Leave DAIF masked until ap_idle_loop installs CURRENT / ONLINE.
     unsafe {
