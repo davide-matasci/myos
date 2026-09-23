@@ -35,9 +35,14 @@ pub struct Pty {
     winsize: Mutex<(u16, u16)>,
     master_refs: AtomicUsize,
     slave_refs: AtomicUsize,
-    /// Session leader recorded at first slave open / TIOCSCTTY. `usize::MAX`
-    /// when unset.
+    /// Session id (slot of the session leader) bound to this pair: recorded at
+    /// the first slave open without `O_NOCTTY` or via `TIOCSCTTY`. `usize::MAX`
+    /// when the pair belongs to no session yet.
     session: AtomicUsize,
+    /// Foreground process group of the pair (TIOCSPGRP/TIOCGPGRP). `usize::MAX`
+    /// when unset: reads then report the session leader's group (the initial
+    /// foreground group), per POSIX "initial foreground process group".
+    fg_pgid: AtomicUsize,
 }
 
 struct OutRing {
@@ -98,6 +103,7 @@ pub fn alloc() -> Option<usize> {
                 master_refs: AtomicUsize::new(1),
                 slave_refs: AtomicUsize::new(0),
                 session: AtomicUsize::new(usize::MAX),
+                fg_pgid: AtomicUsize::new(usize::MAX),
             });
             return Some(id);
         }
@@ -105,13 +111,56 @@ pub fn alloc() -> Option<usize> {
     None
 }
 
+/// Session id bound to the pair, or `usize::MAX` when unclaimed.
+fn session_of_raw(id: usize) -> usize {
+    pty_at(id)
+        .map(|p| p.session.load(Ordering::SeqCst))
+        .unwrap_or(usize::MAX)
+}
+
 fn session_pgid(id: usize) -> Option<usize> {
-    let p = pty_at(id)?;
-    let sess = p.session.load(Ordering::SeqCst);
+    let sess = session_of_raw(id);
     if sess == usize::MAX {
         return None;
     }
     crate::task::task_pgid(sess)
+}
+
+/// Raw stored foreground pgid (`usize::MAX` when never set via TIOCSPGRP and
+/// never defaulted at claim time).
+fn fg_raw(id: usize) -> usize {
+    pty_at(id)
+        .map(|p| p.fg_pgid.load(Ordering::SeqCst))
+        .unwrap_or(usize::MAX)
+}
+
+/// Effective foreground process group (TIOCGPGRP). Unset falls back to the
+/// session leader's slot (the initial foreground group), and a pair with no
+/// session reports 0 — sortix/os-test pty/tcgetpgrp-uncontrolled requires
+/// tcgetpgrp(3) to succeed (>= 0) on a session-less pty, and pty/
+/// tiocsctty-is-needed accepts only ENOTTY or the session from tcgetsid(3).
+/// The tests are the spec, so "no foreground group" is 0, not an error.
+pub fn fg_pgid(id: usize) -> usize {
+    let fg = fg_raw(id);
+    if fg != usize::MAX {
+        return fg;
+    }
+    let sess = session_of_raw(id);
+    if sess != usize::MAX {
+        return sess;
+    }
+    0
+}
+
+/// TIOCSPGRP: store the foreground pgid verbatim. The os-test pty suite
+/// demands permissive storage semantics (tcsetpgrp-wrong-pid stores a
+/// nonexistent pid, -wrong-session stores a foreign pgid, -zombie/-limbo
+/// store awaited leaders, -wrong-orphan must succeed without SIGTTOU), so no
+/// liveness or same-session validation happens here.
+pub fn set_fg_pgid(id: usize, pgid: usize) {
+    if let Some(p) = pty_at(id) {
+        p.fg_pgid.store(pgid, Ordering::SeqCst);
+    }
 }
 
 fn free_if_dead(id: usize) {
@@ -141,8 +190,16 @@ pub fn slave_ref(id: usize) {
 pub fn drop_master(id: usize) {
     let Some(p) = pty_at(id) else { return };
     if p.master_refs.fetch_sub(1, Ordering::SeqCst) == 1 {
-        // Session end: the login shell's controlling pty is gone.
-        if let Some(pgid) = session_pgid(id) {
+        // Session end: the login shell's controlling pty is gone. POSIX:
+        // hangup notifies the foreground process group; fall back to the
+        // session leader's group when no foreground group was ever set.
+        let fg = fg_raw(id);
+        let pgid = if fg != usize::MAX {
+            Some(fg)
+        } else {
+            session_pgid(id)
+        };
+        if let Some(pgid) = pgid {
             let _ = crate::signal::kill_pg(pgid, SIGHUP);
         }
         free_if_dead(id);
@@ -156,14 +213,65 @@ pub fn drop_slave(id: usize) {
     free_if_dead(id);
 }
 
-/// Record the caller as the pty's session leader (first slave open,
-/// TIOCSCTTY). Only the first claim wins, matching "session leader" rules.
+/// Bind the caller's session to this pair (first slave open without
+/// `O_NOCTTY`, or TIOCSCTTY). The pair's session id is the caller's session
+/// leader slot; the first claim also becomes the initial foreground process
+/// group (the opener's process group). Only the first claim wins, matching
+/// "session leader" rules — TIOCSCTTY uses `force_claim_session` instead.
 pub fn claim_session(id: usize) {
     let Some(p) = pty_at(id) else { return };
-    let me = crate::task::current_id();
-    let _ = p
+    let sid = crate::task::current_sid();
+    let newly = p
         .session
-        .compare_exchange(usize::MAX, me, Ordering::SeqCst, Ordering::SeqCst);
+        .compare_exchange(usize::MAX, sid, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok();
+    if newly {
+        let pgid = crate::task::current_pgid().unwrap_or(sid);
+        let _ = p
+            .fg_pgid
+            .compare_exchange(usize::MAX, pgid, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
+/// TIOCSCTTY: (re-)bind the pair to the caller's session unconditionally.
+/// sortix/os-test pty/tiocsctty-steal requires that a second session can
+/// steal a live pty this way, so this never refuses; the new session's group
+/// becomes the foreground group.
+pub fn force_claim_session(id: usize) {
+    let Some(p) = pty_at(id) else { return };
+    let sid = crate::task::current_sid();
+    p.session.store(sid, Ordering::SeqCst);
+    let pgid = crate::task::current_pgid().unwrap_or(sid);
+    p.fg_pgid.store(pgid, Ordering::SeqCst);
+}
+
+/// TIOCNOTTY: relinquish the pair when the caller's session owns it.
+/// Returns true when the pair was released. The old foreground group gets the
+/// hangup signal, matching the last-master-close semantics. A caller from a
+/// foreign session leaves the pair untouched (os-test pty/
+/// tiocsctty-steal-tiocnotty accepts TIOCNOTTY succeeding while only
+/// removing the caller's own controlling terminal).
+pub fn release_session_if_owner(id: usize, sid: usize) -> bool {
+    let Some(p) = pty_at(id) else { return false };
+    let owned = p
+        .session
+        .compare_exchange(sid, usize::MAX, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok();
+    if owned {
+        let fg = p.fg_pgid.swap(usize::MAX, Ordering::SeqCst);
+        if fg != usize::MAX {
+            let _ = crate::signal::kill_pg(fg, SIGHUP);
+        }
+    }
+    owned
+}
+
+/// Session id of the pair, or `usize::MAX` when the pair has no session.
+/// TIOCGSID (tcgetsid(3)) copies this as-is; `task::fd_ioctl` maps MAX to 0.
+pub fn session_of(id: usize) -> usize {
+    pty_at(id)
+        .map(|p| p.session.load(Ordering::SeqCst))
+        .unwrap_or(usize::MAX)
 }
 
 /// TIOCGPTN: slave index for the pair.

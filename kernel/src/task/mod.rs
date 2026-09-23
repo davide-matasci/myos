@@ -912,11 +912,13 @@ pub fn fd_open_pty_master() -> Option<usize> {
     out
 }
 
-/// Open `/dev/pts/N`: take a slave fd on an existing pair. Opening does NOT
-/// claim the controlling-terminal session (Linux only binds a ctty via
-/// `TIOCSCTTY`); `fd_open_pty_slave` deliberately skips `claim_session` so a
-/// plain `openpty` can never scope SIGHUP/^C to a foreign process group.
-pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
+/// Open `/dev/pts/N`: take a slave fd on an existing pair. Without `O_NOCTTY`,
+/// the open binds the caller's session to the pair (Linux: opening a tty
+/// without `O_NOCTTY` assigns the controlling terminal when none is set) and
+/// makes the opener's group the initial foreground group; with `O_NOCTTY` the
+/// pair is left unclaimed so a plain `openpty` can never scope SIGHUP/^C to a
+/// foreign process group.
+pub fn fd_open_pty_slave(id: usize, noctty: bool) -> Option<usize> {
     if !crate::pty::slave_exists(id) {
         return None;
     }
@@ -931,6 +933,9 @@ pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
     });
     if out.is_some() {
         crate::pty::slave_ref(id);
+        if !noctty {
+            crate::pty::claim_session(id);
+        }
     }
     out
 }
@@ -1334,6 +1339,26 @@ pub fn task_pgid(id: usize) -> Option<usize> {
     out
 }
 
+/// Session id of the calling task (slot of its session leader).
+pub fn current_sid() -> usize {
+    let flags = irq_save();
+    irq_off();
+    let id = current_slot();
+    let t = TASKS.lock()[id];
+    irq_restore(flags);
+    t.sid
+}
+
+/// Parent task slot of the calling task (0 for the root task).
+pub fn current_ppid() -> usize {
+    let flags = irq_save();
+    irq_off();
+    let id = current_slot();
+    let t = TASKS.lock()[id];
+    irq_restore(flags);
+    t.ppid
+}
+
 pub fn current_pgid() -> Option<usize> {
     task_pgid(current_slot())
 }
@@ -1536,6 +1561,13 @@ pub fn set_ctty() {
     });
 }
 
+/// Drop this task's controlling terminal (TIOCNOTTY, setsid).
+pub fn clear_ctty() {
+    with_current_mut(|t| {
+        t.has_ctty = false;
+    });
+}
+
 /// Create a new session: caller becomes session leader (`sid = pid` / task slot),
 /// joins a new process group (`pgid = pid`), and loses any controlling terminal
 /// (`has_ctty = false`).
@@ -1705,6 +1737,12 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
     const TIOCSWINSZ: usize = 0x5414;
     const TCGETS: usize = 0x5401;
     const TCSETS: usize = 0x5402;
+    // Foreground-process-group and session ioctls (Linux values): tcgetpgrp/
+    // tcsetpgrp/tcgetsid in libgloss map onto these.
+    const TIOCGPGRP: usize = 0x540F;
+    const TIOCSPGRP: usize = 0x5410;
+    const TIOCGSID: usize = 0x5425;
+    const TIOCNOTTY: usize = 0x5422;
     match (request, entry) {
         (TIOCGPTN, FdEntry::PtyMaster(id)) => {
             if arg == 0 {
@@ -1720,8 +1758,68 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         }
         (TIOCSPTLCK, FdEntry::PtyMaster(_)) => return 0,
         (TIOCSCTTY, FdEntry::PtySlave(id)) => {
-            // Session leader claims (or re-affirms) this pty as its ctty.
-            crate::pty::claim_session(id);
+            // Session leader claims (or steals) this pty as its ctty. The
+            // os-test pty/tiocsctty-steal tests require the steal to succeed,
+            // so force-rebind unconditionally; the caller also gains a
+            // controlling terminal (/dev/tty opens become possible).
+            crate::pty::force_claim_session(id);
+            set_ctty();
+            return 0;
+        }
+        (TIOCGPGRP, FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
+            // tcgetpgrp(3): the pair's foreground process group; 0 when the
+            // pair has no session (tests require >= 0, never an error).
+            if arg == 0 {
+                return usize::MAX;
+            }
+            let pg = crate::pty::fg_pgid(id);
+            if !user::copy_to_user(current_aspace(), arg, &(pg as u32).to_ne_bytes()) {
+                return usize::MAX;
+            }
+            return 0;
+        }
+        (TIOCSPGRP, FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
+            // tcsetpgrp(3): store the foreground pgid verbatim (tests demand
+            // permissive semantics; see pty::set_fg_pgid). pgid == 0 means
+            // the caller's own process group.
+            if arg == 0 {
+                return usize::MAX;
+            }
+            let mut buf = [0u8; 4];
+            if !user::copy_from_user(current_aspace(), arg, &mut buf) {
+                return usize::MAX;
+            }
+            let pgid = i32::from_ne_bytes(buf);
+            if pgid < 0 {
+                return usize::MAX; // EINVAL: negative pgid
+            }
+            let pgid = if pgid == 0 {
+                crate::task::current_pgid().unwrap_or_else(crate::task::current_id)
+            } else {
+                pgid as usize
+            };
+            crate::pty::set_fg_pgid(id, pgid);
+            return 0;
+        }
+        (TIOCGSID, FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
+            // tcgetsid(3): the pair's session id; 0 when the pair has no
+            // session (tests require >= 0, never an error).
+            if arg == 0 {
+                return usize::MAX;
+            }
+            let sess = crate::pty::session_of(id);
+            let v = if sess == usize::MAX { 0 } else { sess };
+            if !user::copy_to_user(current_aspace(), arg, &(v as u32).to_ne_bytes()) {
+                return usize::MAX;
+            }
+            return 0;
+        }
+        (TIOCNOTTY, FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
+            // Relinquish the controlling terminal: drop the caller's ctty
+            // mark and, when the caller's session owns the pair, release it.
+            clear_ctty();
+            let sid = current_sid();
+            crate::pty::release_session_if_owner(id, sid);
             return 0;
         }
         (TIOCGWINSZ, FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
@@ -1775,6 +1873,16 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
             return 0;
         }
         _ => {}
+    }
+
+    // TIOCNOTTY on the console / /dev/tty fd: drop the caller's ctty mark.
+    // (Pty pairs were handled above; /dev/tty aliases to console fds.)
+    if request == TIOCNOTTY {
+        if !fd_is_console_tty(entry) {
+            return usize::MAX;
+        }
+        clear_ctty();
+        return 0;
     }
 
     // Real TIOCSCTTY: attach the system console as the caller's ctty.

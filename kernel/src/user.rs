@@ -61,6 +61,8 @@ const SYS_SIGCHLD_TAKE: usize = 39;
 const SYS_SIGCHLD_PENDING: usize = 41;
 /// Peer fd of a pipe end (for libgloss's SIGCHLD self-pipe wake).
 const SYS_PIPE_PEER: usize = 42;
+/// Caller's parent task slot (getppid(2)).
+const SYS_GETPPID: usize = 43;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -1828,6 +1830,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_SIGCHLD_TAKE => sys_sigchld_take(),
         SYS_SIGCHLD_PENDING => sys_sigchld_pending(),
         SYS_PIPE_PEER => sys_pipe_peer(a0),
+        SYS_GETPPID => sys_getppid(),
         _ => SYSERR,
     };
     // Deliver default-fatal pending signals before returning to userspace.
@@ -1867,6 +1870,9 @@ fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
 }
 
 fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
+    // O_NOCTTY (newlib _FNOCTTY 0x8000): a tty open must not assign the
+    // controlling-terminal session to the caller.
+    const O_NOCTTY: usize = 0x8000;
     let Some(buf) = copy_user_path(ptr, path_len) else {
         return SYSERR;
     };
@@ -1888,7 +1894,10 @@ fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
     }
     if let Some(rest) = path_rel.strip_prefix("dev/pts/") {
         if let Ok(id) = rest.parse::<usize>() {
-            return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
+            // O_NOCTTY (newlib _FNOCTTY 0x8000): a plain slave open must not
+            // bind the caller's session to the pair.
+            let noctty = flags & O_NOCTTY as usize != 0;
+            return task::fd_open_pty_slave(id, noctty).unwrap_or(SYSERR);
         }
     }
     let Some(node) = fs::open(&path, flags as u32) else {
@@ -2489,6 +2498,10 @@ fn sys_pipe_peer(fd: usize) -> usize {
         Some(p) => p,
         None => SYSERR,
     }
+}
+
+fn sys_getppid() -> usize {
+    task::current_ppid()
 }
 
 fn sys_sigchld_take_inner() -> usize {
