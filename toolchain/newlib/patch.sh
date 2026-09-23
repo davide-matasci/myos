@@ -650,7 +650,53 @@ PYLIMITS
   fi
 }
 
+patch_pty_decls() {
+  # POSIX pty API declarations for myos. newlib has no posix_openpt/grantpt/
+  # unlockpt/ptsname/ptsname_r or tcgetsid anywhere (tcgetpgrp/tcsetpgrp are
+  # declared in sys/unistd.h, implemented in libgloss termios.c). The
+  # sortix/os-test pty suite calls all of them via <stdlib.h>/<unistd.h> and
+  # the test sources must stay unmodified, so append the declarations here
+  # (implementations: libgloss/myos/pty.c + termios.c).
+  local f="$NEWLIB_SRC/newlib/libc/include/stdlib.h"
+  if ! grep -q 'myos-posix-pty-begin' "$f"; then
+    python3 - "$f" <<'PYPTY'
+import sys
+f = sys.argv[1]
+s = open(f).read()
+block = '''
+/* myos-posix-pty-begin: POSIX pty allocation API (libgloss myos pty.c). */
+int		posix_openpt (int);
+int	grantpt (int);
+int	unlockpt (int);
+char *	ptsname (int);
+int	ptsname_r (int, char *, size_t);
+/* myos-posix-pty-end */'''
+s = s.rstrip() + "\n" + block + "\n"
+open(f, 'w').write(s)
+PYPTY
+    echo "patched stdlib.h: POSIX pty declarations"
+  fi
+  local g="$NEWLIB_SRC/newlib/libc/include/sys/unistd.h"
+  if ! grep -q 'myos-tcgetsid' "$g"; then
+    python3 - "$g" <<'PYTSID'
+import sys
+f = sys.argv[1]
+s = open(f).read()
+anchor = '''pid_t   tcgetpgrp (int __fildes);
+int     tcsetpgrp (int __fildes, pid_t __pgrp_id);'''
+new = '''pid_t   tcgetpgrp (int __fildes);
+int     tcsetpgrp (int __fildes, pid_t __pgrp_id);
+/* myos-tcgetsid: POSIX tcgetsid(3) (libgloss myos termios.c). */
+pid_t   tcgetsid (int __fildes);'''
+assert anchor in s, "unistd.h tcgetpgrp block not found"
+open(f, 'w').write(s.replace(anchor, new, 1))
+PYTSID
+    echo "patched sys/unistd.h: tcgetsid declaration"
+  fi
+}
+
 patch_valist
 patch_tmpfile
 patch_x86_longjmp_val0
 patch_limits_myos
+patch_pty_decls
