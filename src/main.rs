@@ -355,6 +355,13 @@ const QEMU_SUCCESS_STATUS: i32 = (0x10 << 1) | 1;
 /// os-test / dropbear; boot-mini (`MYOS_CI_MINI=1`) must fail well under the
 /// 5-minute GHA job timeout (hung aarch64 burned ~24m on the old 1800s).
 fn ci_qemu_timeout() -> Duration {
+    if let Some(secs) = std::env::var_os("MYOS_CI_TIMEOUT_SECS")
+        .and_then(|v| v.into_string().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|s| *s >= 30)
+    {
+        return Duration::from_secs(secs);
+    }
     if std::env::var_os("MYOS_CI_MINI").map(|v| v == "1").unwrap_or(false) {
         Duration::from_secs(240)
     } else {

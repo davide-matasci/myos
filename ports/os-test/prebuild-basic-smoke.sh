@@ -22,6 +22,7 @@ source "$ROOT/scripts/myos-c-userspace-lib.sh"
 BOOT_LIST="$HERE/overlay/misc/ci-boot.tests"
 BASIC_LIST="$HERE/overlay/misc/ci-basic-smoke.tests"
 NONBASIC_LIST="$HERE/overlay/misc/ci-nonbasic-100.tests"
+EXTRA_LIST="$HERE/overlay/misc/ci-nonbasic-extra.tests"
 EMBED="${OSTEST_EMBED:-$ROOT/target/os-test-embed}"
 OUT_ROOT="$ROOT/target/os-test-prebuilt"
 
@@ -77,6 +78,7 @@ while IFS= read -r path || [[ -n "$path" ]]; do
 done < <({
   parse_tests "$BASIC_LIST"
   parse_tests "$NONBASIC_LIST"
+  parse_tests "$EXTRA_LIST"
 })
 
 if [[ ${#TESTS[@]} -eq 0 ]]; then
