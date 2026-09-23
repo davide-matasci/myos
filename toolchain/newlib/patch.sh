@@ -613,7 +613,7 @@ block = r'''
 #define SIGQUEUE_MAX		32
 #endif
 #ifndef SSIZE_MAX
-#define SSIZE_MAX		((long long)(~((unsigned long long)0 >> 1)))
+#define SSIZE_MAX		9223372036854775807LL
 #endif
 #ifndef SS_REPL_MAX
 #define SS_REPL_MAX		4
