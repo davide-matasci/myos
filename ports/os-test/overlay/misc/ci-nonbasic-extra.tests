@@ -58,7 +58,7 @@ TESTS += io/open-tmpdir-wronly-append
 TESTS += io/open-tmpdir-wronly-creat
 TESTS += io/open-tmpdir-wronly-directory
 TESTS += io/open-tmpdir-wronly-trunc
-# limits: 105 tests
+# limits: 126 tests (105 + 21 enabled by the myos POSIX limits header patch)
 TESTS += limits/AIO_LISTIO_MAX
 TESTS += limits/AIO_MAX
 TESTS += limits/AIO_PRIO_DELTA_MAX
@@ -164,6 +164,27 @@ TESTS += limits/_POSIX_TZNAME_MAX
 TESTS += limits/_XOPEN_IOV_MAX
 TESTS += limits/_XOPEN_NAME_MAX
 TESTS += limits/_XOPEN_PATH_MAX
+TESTS += limits/ARG_MAX
+TESTS += limits/BC_BASE_MAX
+TESTS += limits/BC_DIM_MAX
+TESTS += limits/BC_SCALE_MAX
+TESTS += limits/BC_STRING_MAX
+TESTS += limits/CHILD_MAX
+TESTS += limits/COLL_WEIGHTS_MAX
+TESTS += limits/EXPR_NEST_MAX
+TESTS += limits/IOV_MAX
+TESTS += limits/LINK_MAX
+TESTS += limits/LINE_MAX
+TESTS += limits/MAX_CANON
+TESTS += limits/MAX_INPUT
+TESTS += limits/NAME_MAX
+TESTS += limits/NAME_MAX_XOPEN
+TESTS += limits/NGROUPS_MAX
+TESTS += limits/OPEN_MAX
+TESTS += limits/PATH_MAX
+TESTS += limits/PATH_MAX_XOPEN
+TESTS += limits/PIPE_BUF
+TESTS += limits/RE_DUP_MAX
 # paths: 32 tests
 TESTS += paths/boot
 TESTS += paths/dev-fd
