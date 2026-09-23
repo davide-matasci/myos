@@ -217,10 +217,24 @@ fn host_listen_2323() -> bool {
 }
 
 /// True when something already listens on host :2222 (dropbear SSH fwd port).
+///
+/// Bind-based, not connect-based: a connect can succeed transiently on a
+/// port that is being torn down (or fail on a port that is bound but not
+/// accepting), and a 200ms connect-timeout is too short to be reliable on
+/// loaded CI runners. Binding a socket with SO_REUSEADDR is atomic: if it
+/// succeeds, the port is free (close the socket); if it fails, something is
+/// already bound and we must not add the hostfwd (a competing listener would
+/// steal the SYNs and the SSH clients would hang on a non-SSH response).
 fn host_listen_2222() -> bool {
-    use std::net::{SocketAddr, TcpStream};
-    let addr = SocketAddr::from(([127, 0, 0, 1], 2222));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+    use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+    let addr = SocketAddr::from((Ipv4Addr::new(127, 0, 0, 1), 2222));
+    match TcpListener::bind(addr) {
+        Ok(listener) => {
+            drop(listener);
+            false
+        }
+        Err(_) => true,
+    }
 }
 
 fn add_virtio_net(cmd: &mut Command) {
