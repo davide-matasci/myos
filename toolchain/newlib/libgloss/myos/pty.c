@@ -1,11 +1,13 @@
-/* myos libgloss: pty allocation (openpty/forkpty) via /dev/ptmx + /dev/pts/N.
+/* myos libgloss: pty allocation (openpty/forkpty) via /dev/ptmx + /dev/pts/N,
+ * plus the POSIX pty allocation API (posix_openpt/grantpt/unlockpt/ptsname).
  *
  * Kernel model (see kernel/src/pty.rs): open("/dev/ptmx") allocates a pair
  * and returns the master fd; TIOCGPTN yields the slave index N; open of
- * "/dev/pts/N" takes a slave fd and (first open) claims the session.
+ * "/dev/pts/N" takes a slave fd and, without O_NOCTTY, binds the caller's
+ * session to the pair (initial foreground group). TIOCSCTTY on the slave
+ * claims or steals it (SIGINT/SIGHUP scoping, TIOCGPGRP/TIOCSPGRP).
  * Master reads block and return EIO once the last slave fd closes; slave
- * reads do the same once the master closes. TIOCSCTTY on the slave makes the
- * caller the session leader (SIGINT/SIGHUP scoping).
+ * reads do the same once the master closes.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -91,6 +93,59 @@ fail: {
         errno = saved;
         return -1;
     }
+}
+
+/* POSIX pty allocation API. posix_openpt is a plain open(2) of /dev/ptmx
+ * (flags pass through, O_NOCTTY included). grantpt/unlockpt are no-ops that
+ * route through the kernel's TIOCSPTLCK (the myos ABI has no privilege
+ * split, so there is no ownership check to perform). ptsname/ptsname_r map
+ * TIOCGPTN onto the /dev/pts/N slave path. */
+int posix_openpt(int flags) { return open("/dev/ptmx", flags); }
+
+int grantpt(int fd) {
+    (void)fd;
+    /* Kernel-enforced: no lock and no ownership handshake to perform. */
+    return 0;
+}
+
+int unlockpt(int fd) {
+    /* Clear the kernel's lock flag (always accepted) to mirror Linux. */
+    if (ioctl(fd, TIOCSPTLCK, 0) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int ptsname_r(int fd, char *buf, size_t size) {
+    unsigned int n = 0;
+    char path[32];
+
+    if (buf == NULL || size == 0) {
+        errno = EINVAL;
+        return errno;
+    }
+    if (ioctl(fd, TIOCGPTN, &n) != 0) {
+        return errno;
+    }
+    if (snprintf(path, sizeof(path), "/dev/pts/%u", n) >= (int)sizeof(path)) {
+        errno = ENAMETOOLONG;
+        return errno;
+    }
+    if (strlen(path) + 1 > size) {
+        errno = ERANGE;
+        return errno;
+    }
+    strcpy(buf, path);
+    return 0;
+}
+
+char *ptsname(int fd) {
+    static char name[32];
+
+    if (ptsname_r(fd, name, sizeof(name)) != 0) {
+        return NULL;
+    }
+    return name;
 }
 
 int forkpty(int *amaster, char *name,

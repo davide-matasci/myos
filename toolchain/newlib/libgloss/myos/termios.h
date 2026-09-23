@@ -47,6 +47,9 @@
 #define IEXTEN 0001000
 
 #define CSIZE 0000060
+#define CS5 0000000
+#define CS6 0000020
+#define CS7 0000040
 #define CS8 0000060
 #define CREAD 0000200
 #define CLOCAL 0004000
@@ -114,6 +117,7 @@ int tcflush(int fd, int queue_selector);
 int tcflow(int fd, int action);
 pid_t tcgetpgrp(int fd);
 int tcsetpgrp(int fd, pid_t pgrp);
+pid_t tcgetsid(int fd);
 speed_t cfgetispeed(const struct termios *termios_p);
 speed_t cfgetospeed(const struct termios *termios_p);
 int cfsetispeed(struct termios *termios_p, speed_t speed);

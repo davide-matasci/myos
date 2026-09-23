@@ -22,6 +22,10 @@ int ioctl(int fd, unsigned long request, ...) {
 
     switch (request) {
     case TIOCSCTTY:
+    case TIOCNOTTY:
+    case TIOCGPGRP:
+    case TIOCSPGRP:
+    case TIOCGSID:
     case TCFLSH:
     case TIOCGWINSZ:
     case TIOCGPTN:

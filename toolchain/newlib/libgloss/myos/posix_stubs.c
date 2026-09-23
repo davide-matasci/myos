@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "myos_syscalls.h"
@@ -348,6 +349,35 @@ long sysconf(int name) {
 unsigned sleep(unsigned seconds) {
     (void)seconds;
     return 0;
+}
+
+/* usleep(3): sleep a wall-clock microsecond span. The kernel has no sleep/
+ * nanosleep syscall yet, so this polls gettimeofday; the schedule stays
+ * responsive because other tasks run when the caller is descheduled. */
+int usleep(useconds_t usec) {
+    struct timeval start, now;
+    if (gettimeofday(&start, NULL) != 0) {
+        return -1;
+    }
+    for (;;) {
+        if (gettimeofday(&now, NULL) != 0) {
+            return -1;
+        }
+        long elapsed = (long)(now.tv_sec - start.tv_sec) * 1000000L
+            + (long)now.tv_usec - (long)start.tv_usec;
+        if (elapsed < 0 || elapsed >= (long)usec) {
+            break;
+        }
+    }
+    return 0;
+}
+
+pid_t getppid(void) {
+    long r = myos_syscall0(MYOS_SYS_GETPPID);
+    if (r == (long)MYOS_SYSERR) {
+        return 0;
+    }
+    return (pid_t)r;
 }
 
 uid_t getuid(void) {

@@ -46,6 +46,7 @@
 #define MYOS_SYS_SIGCHLD_TAKE 39
 #define MYOS_SYS_SIGCHLD_PENDING 41
 #define MYOS_SYS_PIPE_PEER 42
+#define MYOS_SYS_GETPPID 43
 
 #define MYOS_SYSERR ((unsigned long)-1)
 /* Distinct pty peer-gone error (kernel/src/task/mod.rs SYSERR_EIO): read or
