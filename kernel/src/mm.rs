@@ -35,11 +35,25 @@ pub static FRAME_ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static FRAME_FREE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Per-call-site allocation attribution (leak triage). Sites:
-/// 0=virtq 1=fault-zero 2=exec-copy 3=pagetable 4=mmap 5=other-explicit
-pub static FRAME_SITE_COUNTS: [AtomicU64; 6] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+/// 0=virtq 1=fault-zero(legacy reload) 2=code-image 3=pagetable 4=brk-heap
+/// 5=user-stack 6=anon-mmap 7=other-explicit. Frees are attributed by the
+/// VA category passed to free_frame_site, so alloc-free per site is a
+/// per-site LIVE count.
+pub static FRAME_SITE_COUNTS: [AtomicU64; 8] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
 ];
+
+/// Frees attributed to the same site taxonomy (see FRAME_SITE_COUNTS).
+pub static FRAME_SITE_FREES: [AtomicU64; 8] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+
+/// free_mapped_page refusals: unmap did not clear the PTE, so the frame was
+/// deliberately NOT freed (double-free guard). Nonzero growth here means
+/// unmapping is broken for some range and pages leak via reclaim.
+pub static FRAME_FREE_REFUSED: AtomicU64 = AtomicU64::new(0);
 
 /// Allocate one frame and attribute it to a leak-triage call site.
 #[inline(always)]
@@ -90,6 +104,12 @@ fn overlaps_kernel(phys: u64) -> bool {
 
 /// Return a previously freed frame to the allocator (page need not be zeroed).
 pub fn free_frame(phys: u64) {
+    free_frame_site(phys, usize::MAX);
+}
+
+/// Site-attributed free: matches alloc_frame_site taxonomy, so per-site
+/// (allocated - freed) is the live frame count owned by that category.
+pub fn free_frame_site(phys: u64, site: usize) {
     if phys == 0 || phys & 0xfff != 0 {
         return;
     }
@@ -113,6 +133,9 @@ pub fn free_frame(phys: u64) {
             .is_ok()
         {
             FRAME_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
+            if site < FRAME_SITE_FREES.len() {
+                FRAME_SITE_FREES[site].fetch_add(1, Ordering::Relaxed);
+            }
             return;
         }
     }
@@ -292,7 +315,7 @@ pub fn alloc_frame() -> u64 {
         })
         .unwrap_or(0);
     panic!(
-        "out of usable memory: alloc={} free={} live={} next={:#x} usable_top={:#x} sites virtq={} fault0={} exec={} pt={} mmap={} other={}",
+        "out of usable memory: alloc={} free={} live={} next={:#x} usable_top={:#x} allocsites virtq={} fault0={} code={} pt={} brk={} stack={} mmap={} other={} livesites code={} pt={} brk={} stack={} mmap={} refused={}",
         FRAME_ALLOC_COUNT.load(Ordering::Relaxed),
         FRAME_FREE_COUNT.load(Ordering::Relaxed),
         FRAME_ALLOC_COUNT.load(Ordering::Relaxed) - FRAME_FREE_COUNT.load(Ordering::Relaxed),
@@ -304,6 +327,14 @@ pub fn alloc_frame() -> u64 {
         FRAME_SITE_COUNTS[3].load(Ordering::Relaxed),
         FRAME_SITE_COUNTS[4].load(Ordering::Relaxed),
         FRAME_SITE_COUNTS[5].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[6].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[7].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[2].load(Ordering::Relaxed) - FRAME_SITE_FREES[2].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[3].load(Ordering::Relaxed) - FRAME_SITE_FREES[3].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[4].load(Ordering::Relaxed) - FRAME_SITE_FREES[4].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[5].load(Ordering::Relaxed) - FRAME_SITE_FREES[5].load(Ordering::Relaxed),
+        FRAME_SITE_COUNTS[6].load(Ordering::Relaxed) - FRAME_SITE_FREES[6].load(Ordering::Relaxed),
+        FRAME_FREE_REFUSED.load(Ordering::Relaxed),
     );
 }
 

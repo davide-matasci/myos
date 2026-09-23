@@ -455,11 +455,11 @@ fn apply_elf_load_prots(aspace: u64, bytes: &[u8], base: u64, image_pages: usize
     flush_user_tlb();
 }
 
-fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
+fn reuse_or_alloc_frame(aspace: u64, va: u64, site: usize) -> u64 {
     if let Some(phys) = virt_to_phys(aspace, va) {
         phys
     } else {
-        let frame = mm::alloc_frame_site(1);
+        let frame = mm::alloc_frame_site(site);
         unsafe {
             core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
         }
@@ -595,7 +595,7 @@ fn free_heap_window(aspace: u64, base: u64, stack_off: u64) {
     let mut va = heap_base_va(base, stack_off);
     let lim = heap_limit_va(base, stack_off);
     while va < lim {
-        free_mapped_page(aspace, va);
+        free_mapped_page(aspace, va, 4);
         va += PAGE as u64;
     }
 }
@@ -624,7 +624,7 @@ fn free_abandoned_stack_heap(aspace: u64, base: u64, old_stack_off: u64, new_sta
         for i in 0..USER_STACK_PAGES {
             let va = base + old_stack_off + (i * PAGE) as u64;
             if va >= new_code_end {
-                free_mapped_page(aspace, va);
+                free_mapped_page(aspace, va, 5);
             }
         }
     }
@@ -632,7 +632,7 @@ fn free_abandoned_stack_heap(aspace: u64, base: u64, old_stack_off: u64, new_sta
     let lim = heap_limit_va(base, old_stack_off);
     while va < lim {
         if va >= new_code_end {
-            free_mapped_page(aspace, va);
+            free_mapped_page(aspace, va, 4);
         }
         va += PAGE as u64;
     }
@@ -682,13 +682,13 @@ fn expand_user_elf(
     // of physical pages and walk the bump allocator into the kernel image.
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
-        let frame = reuse_or_alloc_frame(aspace, va);
+        let frame = reuse_or_alloc_frame(aspace, va, 2);
         map_user_code_page(aspace, va, frame);
         sync_icache(mm::hhdm(frame) as usize, PAGE);
     }
     for i in 0..USER_STACK_PAGES {
         let va = base + new_stack_off + (i * PAGE) as u64;
-        let frame = reuse_or_alloc_frame(aspace, va);
+        let frame = reuse_or_alloc_frame(aspace, va, 5);
         map_user_stack_page(aspace, va, frame);
     }
     map_initial_heap_pages(aspace, base, new_stack_off);
@@ -924,7 +924,7 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     let mut stack_frames = [0u64; USER_STACK_PAGES];
     for i in 0..USER_STACK_PAGES {
         let phys = virt_to_phys(src, stack_va + (i * PAGE) as u64)?;
-        stack_frames[i] = mm::alloc_frame_site(2);
+        stack_frames[i] = mm::alloc_frame_site(5);
         unsafe {
             core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(stack_frames[i]), PAGE);
         }
@@ -935,7 +935,7 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     let mut va = heap_base as usize;
     while va < heap_end {
         if virt_to_phys(src, va as u64).is_some() {
-            let phys = mm::alloc_frame_site(2);
+            let phys = mm::alloc_frame_site(4);
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     mm::hhdm(virt_to_phys(src, va as u64)?),
@@ -977,7 +977,7 @@ fn copy_mmap_pages(src: u64, dst: u64) {
         let end = r.va.saturating_add(r.pages as u64 * PAGE as u64);
         while va < end {
             if let Some(phys) = virt_to_phys(src, va) {
-                let frame = mm::alloc_frame_site(2);
+                let frame = mm::alloc_frame_site(6);
                 unsafe {
                     core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(frame), PAGE);
                 }
@@ -2783,7 +2783,7 @@ fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: isize, offset
     let mut mapped = 0usize;
     while mapped < map_len {
         let page_va = (va + mapped) as u64;
-        let frame = mm::alloc_frame_site(4);
+        let frame = mm::alloc_frame_site(6);
         unsafe {
             core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
         }
@@ -2828,7 +2828,7 @@ fn sys_munmap(addr: usize, len: usize) -> usize {
     let aspace = task::current_aspace();
     let mut off = 0;
     while off < map_len {
-        free_mapped_page(aspace, (addr + off) as u64);
+        free_mapped_page(aspace, (addr + off) as u64, 6);
         off += PAGE;
     }
     task::mmap_remove(addr as u64, pages as u32);
@@ -2978,7 +2978,7 @@ fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
             let Some(va) = r.va.checked_add(off) else {
                 break;
             };
-            free_mapped_page(aspace, va);
+            free_mapped_page(aspace, va, 6);
         }
     }
 }
@@ -3011,7 +3011,7 @@ pub fn reclaim_user_aspace(
         let Some(va) = base.checked_add((i * PAGE) as u64) else {
             break;
         };
-        free_mapped_page(aspace, va);
+        free_mapped_page(aspace, va, 2);
     }
     for i in 0..USER_STACK_PAGES {
         let Some(va) = base
@@ -3020,7 +3020,7 @@ pub fn reclaim_user_aspace(
         else {
             break;
         };
-        free_mapped_page(aspace, va);
+        free_mapped_page(aspace, va, 5);
     }
     let heap_base = heap_base_va(base, stack_off);
     let heap_end = if brk_cur > heap_base {
@@ -3031,12 +3031,12 @@ pub fn reclaim_user_aspace(
     let heap_lim = heap_limit_va(base, stack_off);
     let mut va = heap_base;
     while va < heap_end.min(heap_lim) {
-        free_mapped_page(aspace, va);
+        free_mapped_page(aspace, va, 4);
         va += PAGE as u64;
     }
     // Also drop any remaining mapped initial heap pages beyond brk.
     while va < heap_lim {
-        free_mapped_page(aspace, va);
+        free_mapped_page(aspace, va, 4);
         va += PAGE as u64;
     }
     free_mmap_regions(aspace, mmap);
@@ -3103,20 +3103,20 @@ fn free_user_page_tables_x86(pml4_phys: u64) {
                         let pte = pt[i1];
                         if pte & PRESENT != 0 {
                             // Orphan leaf still present after windowed reclaim.
-                            mm::free_frame(pte & PHYS_MASK);
+                            mm::free_frame_site(pte & PHYS_MASK, 3);
                             pt[i1] = 0;
                         }
                     }
-                    mm::free_frame(pt_phys);
+                    mm::free_frame_site(pt_phys, 3);
                     pd[i2] = 0;
                 }
-                mm::free_frame(pd_phys);
+                mm::free_frame_site(pd_phys, 3);
                 pdpt[i3] = 0;
             }
-            mm::free_frame(pdpt_phys);
+            mm::free_frame_site(pdpt_phys, 3);
             pml4[user_pml4_idx] = 0;
         }
-        mm::free_frame(pml4_phys);
+        mm::free_frame_site(pml4_phys, 3);
     }
 }
 
@@ -3147,19 +3147,19 @@ fn free_user_page_tables_riscv(satp: u64) {
             for i in 0..512 {
                 let leaf_pte = mid[i];
                 if leaf_pte & paging::PTE_V != 0 && paging::pte_is_table(leaf_pte) {
-                    mm::free_frame(paging::pte_phys(leaf_pte));
+                    mm::free_frame_site(paging::pte_phys(leaf_pte), 3);
                     mid[i] = 0;
                 }
             }
-            mm::free_frame(mid_phys);
+            mm::free_frame_site(mid_phys, 3);
             root[USER_ROOT_IDX] = 0;
         }
         // Private root copy (kernel PTEs were value-copies into this frame).
-        mm::free_frame(root_phys);
+        mm::free_frame_site(root_phys, 3);
     }
 }
 
-fn free_mapped_page(aspace: u64, va: u64) {
+fn free_mapped_page(aspace: u64, va: u64, site: usize) {
     let Some(phys) = virt_to_phys(aspace, va) else {
         return;
     };
@@ -3167,9 +3167,10 @@ fn free_mapped_page(aspace: u64, va: u64) {
     // If unmap failed to clear, refuse to free — avoids freelist double-free when
     // reclaim walks overlapping VA ranges (code span vs heap/mmap).
     if virt_to_phys(aspace, va).is_some() {
+        mm::FRAME_FREE_REFUSED.fetch_add(1, Ordering::Relaxed);
         return;
     }
-    mm::free_frame(phys);
+    mm::free_frame_site(phys, site);
 }
 
 fn align_up_u64(x: u64, a: u64) -> u64 {
