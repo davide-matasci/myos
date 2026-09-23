@@ -3017,6 +3017,13 @@ pub fn reclaim_user_aspace(
     if aspace == 0 || base == 0 {
         return;
     }
+    // Leak trace: every 32nd reclaim prints the per-site live counts so a
+    // growth trend can be attributed to a category (code/pt/brk/stack/mmap)
+    // from the boot serial alone.
+    let rc = RECLAIM_SEQ.fetch_add(1, Ordering::Relaxed);
+    if rc & 31 == 0 {
+        dump_site_live("rc");
+    }
     // Must not free pages while they may still be walked via this aspace.
     task::unload_user_aspace(aspace);
     let n_code = image_span.div_ceil(PAGE).min(MAX_ELF_PAGES);
@@ -3188,6 +3195,50 @@ fn free_mapped_page(aspace: u64, va: u64, site: usize) {
 
 fn align_up_u64(x: u64, a: u64) -> u64 {
     (x + a - 1) & !(a - 1)
+}
+
+/// Leak-trace sequence for reclaim_user_aspace.
+static RECLAIM_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Print one compact per-site live-frame line to the serial (leak triage).
+fn dump_site_live(tag: &str) {
+    let mut buf = [0u8; 160];
+    let mut n = 0usize;
+    fn push(buf: &mut [u8], n: &mut usize, s: &str) {
+        let b = s.as_bytes();
+        let c = usize::min(b.len(), buf.len() - *n);
+        buf[*n..*n + c].copy_from_slice(&b[..c]);
+        *n += c;
+    }
+    fn push_num(buf: &mut [u8], n: &mut usize, v: u64) {
+        let mut tmp = [0u8; 20];
+        let mut i = tmp.len();
+        let mut v = v;
+        loop {
+            i -= 1;
+            tmp[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        push(buf, n, core::str::from_utf8(&tmp[i..]).unwrap_or("?"));
+    }
+    push(&mut buf, &mut n, "mmdbg ");
+    push(&mut buf, &mut n, tag);
+    push(&mut buf, &mut n, " live");
+    let live = |i: usize| {
+        mm::FRAME_SITE_COUNTS[i].load(Ordering::Relaxed)
+            .saturating_sub(mm::FRAME_SITE_FREES[i].load(Ordering::Relaxed))
+    };
+    for (i, name) in [(2usize, " code="), (3usize, " pt="), (4usize, " brk="), (5usize, " stack="), (6usize, " mmap=")] {
+        push(&mut buf, &mut n, name);
+        push_num(&mut buf, &mut n, live(i));
+    }
+    push(&mut buf, &mut n, "\n");
+    if let Ok(s) = core::str::from_utf8(&buf[..n]) {
+        crate::console::write_str(s);
+    }
 }
 
 fn create_aspace(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {
