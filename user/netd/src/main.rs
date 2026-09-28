@@ -775,21 +775,59 @@ fn pump_accepts(
         };
         // Park up to two handoffs. Prefer this over holding a SYN on the
         // listen handle (no Listen socket + former pump_sockets wedge).
-        // If both slots full, hold on-listen as last resort (pump_sockets skips).
+        // A third concurrent connection is dropped + re-armed below rather
+        // than parked on-listen (pump_sockets skips such sockets).
         if convs[i].accepted.is_some() && convs[i].accepted_pending.is_some() {
+            // Accept queue full (both handoff slots parked, dropbear decoding
+            // sessions): drop this extra connection and re-arm Listen. Holding
+            // it on the listener socket instead would leave no Listen socket
+            // and silently drop every later SYN (the CI #1164 port-:22 stall).
+            rearm_listener(convs, sockets, i);
+            convs[i].ident = 0;
             continue;
         }
         // Move the connected socket to a free conv.
         let slot = (0..MAX_CONV)
             .find(|&n| matches!(convs[n].kind, Kind::Empty) && n != i);
-        let Some(n) = slot else {
-            // Backlog full: hold the connection in the listener socket until
-            // a conv frees up (checked again next tick).
-            if convs[i].accept_wait {
-                // Only fail a parked wait on real exhaustion; keep waiting.
-                continue;
+        let n = match slot {
+            Some(n) => n,
+            None => {
+                // No free slot. Do NOT park the fresh connection on the
+                // listener: holding a connected socket there leaves no Listen
+                // socket and silently drops every later SYN until the stale
+                // half-open ages out on its own (minutes). That wedged the
+                // riscv64 SSH smoke's port :22 for the whole stage (CI #1164).
+                // Reclaim the oldest handshake-incomplete accept orphan to free
+                // a slot; if every slot is a live session, abort this incoming
+                // connection and re-arm Listen so the port stays answerable.
+                let victim = (0..MAX_CONV).find(|&n| {
+                    n != i
+                        && convs[n].from_accept
+                        && !convs[n].connected
+                        && !convs[n].hungup
+                        && !convs[n].closing
+                        && !convs[n].closing_after_flush
+                });
+                match victim {
+                    Some(v) => {
+                        force_free_orphan(convs, sockets, chan, v);
+                        // Drop any queue pointer that named the freed slot; the
+                        // handoff below re-queues the fresh conv instead.
+                        if convs[i].accepted == Some(v as u16) {
+                            convs[i].accepted = convs[i].accepted_pending.take();
+                        }
+                        if convs[i].accepted_pending == Some(v as u16) {
+                            convs[i].accepted_pending = None;
+                        }
+                        v
+                    }
+                    None => {
+                        rearm_listener(convs, sockets, i);
+                        convs[i].ident = 0;
+                        continue;
+                    }
+                }
             }
-            continue;
         };
         let port = convs[i].listen_port;
         convs[n] = Conv {

@@ -22,6 +22,14 @@ pub fn fatal_line(line: &str) -> ! {
 /// and friends: a userspace null deref must not halt the whole machine (that
 /// turned `cat | cat` + ^C into a CI `[ FAIL ] exception` on aarch64). Exit
 /// status matches the shell convention for SIGSEGV (`128 + 11`).
+/// Warn-only variant: print and return. Used before `user_fault_kill` when
+/// the detail is split across two lines and the harness may kill QEMU on the
+/// first WARN before the second line reaches serial.
+pub fn user_fault_warn(kind: &str, detail: &str) {
+    console::status_warn(&format!("user fault: {kind} {detail}"));
+    console::flush();
+}
+
 pub fn user_fault_kill(kind: &str, detail: &str) -> ! {
     // Avoid the substring `exception:` so wait_ci interrupt/arrow needles that
     // treat any `exception:` as a hard fail stay quiet when a *child* faults.
@@ -32,7 +40,7 @@ pub fn user_fault_kill(kind: &str, detail: &str) -> ! {
 }
 
 
-fn task_ctx() -> String {
+pub fn task_ctx() -> String {
     let id = task::current_id();
     match task::current_user_pc_sp() {
         Some((rip, rsp)) => format!(" task={id} user rip={rip:#x} rsp={rsp:#x}"),
