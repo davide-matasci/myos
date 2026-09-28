@@ -319,9 +319,65 @@ fn rearm_timer() {
     write_stimecmp(next);
 }
 
+// FRAMESKEW watchdog: snapshot/verify the interrupted context's saved
+// x-register slots (trap frame words 0..32) around the interrupt body.
+// First mismatch is printed and the check disarms (one report per boot).
+static SKEW_REPORTED: AtomicBool = AtomicBool::new(false);
+static mut SKEW_SNAP: [u64; 32] = [0u64; 32];
+
+unsafe fn frame_skew_snap(frame: *mut u64) {
+    let snap = core::ptr::addr_of_mut!(SKEW_SNAP);
+    for i in 0..32usize {
+        (*snap)[i] = *frame.add(i);
+    }
+}
+
+unsafe fn frame_skew_verify(frame: *mut u64) {
+    let snap = core::ptr::addr_of!(SKEW_SNAP) as *const u64;
+    let now_sepc = *frame.add(32);
+    let snap_sepc = *snap.add(32);
+    // Only compare a still-identical context: the same frame VA can be reused
+    // by a different task (task churn at login/getty), which shows up as a
+    // full-frame delta. Same sepc + user SPP (SPP=0) => same context.
+    let user_ctx = (*frame.add(33) & 0x100) == 0 && (snap_sepc & 1) == 0;
+    if now_sepc != snap_sepc || now_sepc == 0 || !user_ctx {
+        return;
+    }
+    skew_report(frame, snap, 0);
+}
+
+// Syscall-window verify: slot 10 (a0=ret) and slot 32 (sepc+4) are written
+// intentionally after dispatch, so exclude them from the delta report.
+unsafe fn frame_skew_verify_syscall(frame: *mut u64) {
+    let snap = core::ptr::addr_of!(SKEW_SNAP) as *const u64;
+    let now_sepc = *frame.add(32);
+    let snap_sepc = *snap.add(32);
+    let user_ctx = (*frame.add(33) & 0x100) == 0;
+    if now_sepc != snap_sepc || now_sepc == 0 || !user_ctx {
+        return;
+    }
+    skew_report(frame, snap, (1u64 << 10) | (1u64 << 32));
+}
+
+unsafe fn skew_report(frame: *mut u64, snap: *const u64, skip: u64) {
+    let mut line = alloc::string::String::from("FRAMESKEW");
+    for i in 0..32usize {
+        if skip & (1u64 << i) != 0 {
+            continue;
+        }
+        let now = *frame.add(i);
+        let was = *snap.add(i);
+        if now != was {
+            line.push_str(&alloc::format!(" x{i}:{was:#x}->{now:#x}"));
+        }
+    }
+    if line.len() > 9 && !SKEW_REPORTED.swap(true, Ordering::SeqCst) {
+        crate::console::status_warn(&line);
+    }
+}
+
 #[unsafe(no_mangle)]
-extern "C" fn riscv64_trap_handler(frame: *mut u64) {
-    let scause: u64;
+extern "C" fn riscv64_trap_handler(frame: *mut u64) {    let scause: u64;
     let stval: u64;
     unsafe {
         asm!("csrr {c}, scause", c = out(reg) scause, options(nomem, nostack));
@@ -331,6 +387,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
     if scause >> 63 != 0 {
         // Interrupt
         let code = scause & 0xfff;
+        unsafe { frame_skew_snap(frame); }
         if code == 1 {
             // Supervisor software interrupt (SBI IPI). Clear SSIP.
             unsafe {
@@ -346,18 +403,22 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             if crate::smp::ipi_is_resched() {
                 crate::task::schedule();
             }
-            return;
-        }
-        if code == 5 {
+        } else if code == 5 {
             // Supervisor timer
             TIMER_FIRED.store(true, Ordering::SeqCst);
             crate::time::note_tick();
-    crate::rng::stir_tick();
+            crate::rng::stir_tick();
             rearm_timer();
             // Do not drain UART from the riscv timer: CI #150 hung after
             // `[ OK ] fork` with sepc=0 once this ran on every tick.
             crate::task::schedule();
         }
+        // FRAMESKEW watchdog: verify the interrupted context's saved x-regs
+        // survived the interrupt body. Empirically a user t0 went
+        // 0x40154698 -> 0 across one instruction (dropbear conv_path
+        // runaway-store fault); if something in this window writes the frame,
+        // print the slot deltas (first occurrence only).
+        unsafe { frame_skew_verify(frame); }
         return;
     }
 
@@ -381,6 +442,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
                 // frame pointer), which corrupted kernel stacks on riscv and
                 // showed up as illegal insn in HHDM/.rodata at getty login.
                 crate::user::set_syscall_frame(frame);
+                unsafe { frame_skew_snap(frame); }
                 let ret = crate::user::syscall_dispatch(
                     nr,
                     a0,
@@ -390,6 +452,10 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
                     user_sp as usize,
                 );
                 crate::user::set_syscall_frame(core::ptr::null_mut());
+                // FRAMESKEW (syscall window): verify the saved user x-regs
+                // survived the dispatch body; slots 10 (a0=ret) and 32
+                // (sepc+4) are written intentionally below.
+                unsafe { frame_skew_verify_syscall(frame); }
                 *frame.add(10) = ret as u64;
                 *frame.add(32) = sepc + 4;
                 asm!("csrc sstatus, {}", in(reg) 1 << 18, options(nostack)); // clear SUM
@@ -403,13 +469,35 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
                 13 => "load page fault",
                 _ => "store page fault",
             };
-            // Dump ra/a-regs + a few stack words so the faulting caller is
+            // Dump ra/all-regs + a few stack words so the faulting caller is
             // symbolizable (x86 does the same for page faults).
+            // Trap frame: word i = x_i, so print x{idx} (an earlier version
+            // labeled x{idx+1} and misattributed a5/a6 in the dropbear
+            // conv_path runaway-store dump).
             let ra = unsafe { *frame.add(1) };
             let mut regs = alloc::string::String::new();
-            for idx in 3..18usize {
+            for idx in 3..32usize {
                 let v = unsafe { *frame.add(idx) };
-                regs.push_str(&alloc::format!(" x{}={v:#x}", idx + 1));
+                regs.push_str(&alloc::format!(" x{idx}={v:#x}"));
+            }
+            // First 16 instruction bytes at sepc, read through the user page
+            // tables: live code vs on-disk image mismatch = stale icache /
+            // half-realized exec. Printed on line 1 (survives fail-fast kill).
+            let mut insns = alloc::string::String::new();
+            {
+                let a = crate::task::current_aspace();
+                if a != 0 {
+                    insns.push_str(" insns=");
+                    for i in 0..16usize {
+                        match crate::user::try_read_user_u8(a, sepc as usize + i) {
+                            Some(b) => insns.push_str(&alloc::format!("{b:02x}")),
+                            None => {
+                                insns.push_str("?");
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             let mut stack = alloc::string::String::new();
             {
@@ -442,7 +530,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             // the first line so they always survive.
             crate::exception::user_fault_warn(
                 kind,
-                &alloc::format!("ra={ra:#x}{}", regs),
+                &alloc::format!("ra={ra:#x}{}{insns}", regs),
             );
             crate::exception::user_fault_kill(
                 kind,

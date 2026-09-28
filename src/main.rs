@@ -944,10 +944,44 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
             image.display()
         ))
         .arg("-device")
-        .arg("virtio-blk-device,drive=hd0,bootindex=1")
-        .arg("-serial")
-        .arg("stdio")
-        .arg("-nic")
+        .arg("virtio-blk-device,drive=hd0,bootindex=1");
+    // MYOS_SERIAL_LOG: byte-complete serial capture. The harness fail-fasts on
+    // the first user-fault WARN and kills QEMU, which truncates pipe-buffered
+    // stdio serial mid-line — the logfile keeps every byte (fault ra/regs/map).
+    if let Ok(log) = std::env::var("MYOS_SERIAL_LOG") {
+        if !log.is_empty() {
+            cmd.arg("-chardev")
+                .arg(format!("stdio,id=s0,logfile={log},signal=off"))
+                .arg("-serial")
+                .arg("chardev:s0");
+        } else {
+            cmd.arg("-serial").arg("stdio");
+        }
+    } else {
+        cmd.arg("-serial").arg("stdio");
+    }
+    // MYOS_QEMU_GDB=1: expose the QEMU gdbstub on :1234 so the riscv64
+    // user-register-zeroing anomaly (conv_path t0=0 runaway store) can be
+    // caught live with a conditional breakpoint instead of post-mortem dumps.
+    if std::env::var("MYOS_QEMU_GDB").as_deref() == Ok("1") {
+        cmd.arg("-gdb").arg("tcp::1234");
+    }
+    // MYOS_QEMU_TRACE=<file>: QEMU -d in_asm,exec,nochain -D <file> — TB
+    // translation/execution trace for the stale-translation A/B on the
+    // riscv64 x5-zeroing fault.
+    if let Ok(tr) = std::env::var("MYOS_QEMU_TRACE") {
+        if !tr.is_empty() {
+            cmd.arg("-d").arg("in_asm,int").arg("-D").arg(tr);
+        }
+    }
+    // MYOS_QEMU_MON=1: HMP monitor on unix:/tmp/qmon — lets a probe enable
+    // `log exec,nochain` at runtime (post-boot) so only the fault window is
+    // traced instead of the whole firmware flood.
+    if std::env::var("MYOS_QEMU_MON").as_deref() == Ok("1") {
+        cmd.arg("-monitor").arg("unix:/tmp/qmon,server,nowait")
+            .arg("-D").arg("/tmp/qemu-hmplog.log");
+    }
+    cmd.arg("-nic")
         .arg("none")
         .arg("-no-reboot");
     // riscv64 keeps -smp 2 for OpenSBI/DTB but WFI-parks the AP (!ONLINE).
