@@ -403,11 +403,61 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
                 13 => "load page fault",
                 _ => "store page fault",
             };
+            // Dump ra/a-regs + a few stack words so the faulting caller is
+            // symbolizable (x86 does the same for page faults).
+            let ra = unsafe { *frame.add(1) };
+            let mut regs = alloc::string::String::new();
+            for idx in 3..18usize {
+                let v = unsafe { *frame.add(idx) };
+                regs.push_str(&alloc::format!(" x{}={v:#x}", idx + 1));
+            }
+            let mut stack = alloc::string::String::new();
+            {
+                let a = crate::task::current_aspace();
+                if a != 0 {
+                    for i in 0..8usize {
+                        let addr = user_sp as usize + i * 8;
+                        let mut v: u64 = 0;
+                        let mut ok = true;
+                        for b in 0..8usize {
+                            match crate::user::try_read_user_u8(a, addr + b) {
+                                Some(byte) => v |= (byte as u64) << (8 * b),
+                                None => {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if !ok {
+                            break;
+                        }
+                        stack.push_str(&alloc::format!(" [{addr:#x}]={v:#x}"));
+                    }
+                }
+            }
             // U-mode faults: kill the task (SIGSEGV convention) instead of
             // halting QEMU — same policy as aarch64 lower_sync data/insn aborts.
+            // Two lines: the harness may kill QEMU within ~100ms of the WARN
+            // (fail-fast), truncating the serial tail. Keep the caller regs on
+            // the first line so they always survive.
+            crate::exception::user_fault_warn(
+                kind,
+                &alloc::format!("ra={ra:#x}{}", regs),
+            );
             crate::exception::user_fault_kill(
                 kind,
-                &alloc::format!("stval={stval:#x} sepc={sepc:#x} sp={user_sp:#x}"),
+                &alloc::format!(
+                    "stval={stval:#x} sepc={sepc:#x} sp={user_sp:#x}{}{stack}{map}",
+                    crate::exception::task_ctx(),
+                    map = {
+                        let (ub, span, soff) = crate::task::current_user_map();
+                        let top = ub + soff + (crate::user::USER_STACK_PAGES * 4096) as u64;
+                        alloc::format!(
+                            " userbase={ub:#x} span={span:#x} stackoff={soff:#x} stacktop={top:#x} brk={:#x}",
+                            crate::task::current_brk()
+                        )
+                    },
+                ),
             );
         }
         _ => {
