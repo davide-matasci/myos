@@ -499,6 +499,29 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {    let scause: u64;
                     }
                 }
             }
+            // Frame-liveness triage: is the faulting text page's frame still on
+            // the freelist (freed-while-mapped) or aliased by another live
+            // aspace (double allocation)? Either means the loader handed the
+            // task a recycled frame — stale code executes as user text.
+            let mut framelive = alloc::string::String::new();
+            {
+                let a = crate::task::current_aspace();
+                if a != 0 {
+                    if let Some(phys) = crate::user::virt_to_phys(a, sepc & !0xfff) {
+                        framelive.push_str(&alloc::format!(" textphys={phys:#x}"));
+                        if crate::mm::freelist_contains(phys) {
+                            framelive.push_str(" TEXT-ON-FREELIST");
+                        }
+                        let al = crate::task::scan_va_aliases(phys, sepc & !0xfff);
+                        for id in al {
+                            if id != usize::MAX {
+                                framelive
+                                    .push_str(&alloc::format!(" ALIAS-task{id}"));
+                            }
+                        }
+                    }
+                }
+            }
             let mut stack = alloc::string::String::new();
             {
                 let a = crate::task::current_aspace();
@@ -535,7 +558,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {    let scause: u64;
             crate::exception::user_fault_kill(
                 kind,
                 &alloc::format!(
-                    "stval={stval:#x} sepc={sepc:#x} sp={user_sp:#x}{}{stack}{map}",
+                    "stval={stval:#x} sepc={sepc:#x} sp={user_sp:#x}{}{stack}{framelive}{map}",
                     crate::exception::task_ctx(),
                     map = {
                         let (ub, span, soff) = crate::task::current_user_map();

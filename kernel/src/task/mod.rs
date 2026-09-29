@@ -576,6 +576,25 @@ pub fn current_user_pc_sp() -> Option<(usize, usize)> {
     out
 }
 
+/// Frame-alias scan for fault triage: which other live tasks map `va` to the
+/// same physical frame the faulting task uses? A recycled-frame bug (freed
+/// frame handed out while still mapped elsewhere) shows up as an alias.
+pub fn scan_va_aliases(phys: u64, va: u64) -> [usize; 4] {
+    let mut hits = [usize::MAX; 4];
+    let mut n = 0;
+    let tasks = TASKS.lock();
+    for (id, t) in tasks.iter().enumerate() {
+        if t.aspace == 0 || n >= 4 || id == current_id() {
+            continue;
+        }
+        if crate::user::virt_to_phys(t.aspace, va) == Some(phys) {
+            hits[n] = id;
+            n += 1;
+        }
+    }
+    hits
+}
+
 pub fn current_aspace() -> u64 {
     let flags = irq_save();
     irq_off();

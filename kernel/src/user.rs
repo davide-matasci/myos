@@ -995,7 +995,7 @@ fn align_up_usize(v: usize, align: usize) -> usize {
     (v + align - 1) & !(align - 1)
 }
 
-fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
+pub fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
     #[cfg(target_arch = "x86_64")]
     {
         virt_to_phys_x86(aspace, va)

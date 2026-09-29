@@ -212,6 +212,25 @@ fn validate_free_frame(phys: u64) {
     }
 }
 
+/// True while `phys` sits on the frame freelist (freed but possibly still
+/// referenced by a live mapping — recycled-frame corruption detector).
+pub fn freelist_contains(phys: u64) -> bool {
+    if phys & 0xfff != 0 {
+        return false;
+    }
+    let hhdm = limine_boot::hhdm_offset();
+    let mut cur = FREE_HEAD.load(Ordering::SeqCst);
+    let mut hops = 0u64;
+    while cur != 0 && hops < 1_000_000 {
+        if cur == phys {
+            return true;
+        }
+        cur = unsafe { core::ptr::read_unaligned((cur + hhdm) as *const u64) };
+        hops += 1;
+    }
+    false
+}
+
 pub fn alloc_frame() -> u64 {
     let hhdm = limine_boot::hhdm_offset();
 
