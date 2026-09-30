@@ -61,6 +61,10 @@ const SYS_SIGCHLD_TAKE: usize = 39;
 const SYS_SIGCHLD_PENDING: usize = 41;
 /// Peer fd of a pipe end (for libgloss's SIGCHLD self-pipe wake).
 const SYS_PIPE_PEER: usize = 42;
+/// chroot(path): confine the caller (and its future children) to `path`.
+const SYS_CHROOT: usize = 43;
+/// mkfifo(path, mode): create a named pipe (tmpfs only).
+const SYS_MKFIFO: usize = 44;
 
 /// Linux mmap prot/flags (newlib + tcc).
 const PROT_READ: usize = 1;
@@ -118,6 +122,8 @@ const MAX_ARG_LEN: usize = 128;
 const MAX_ENVC: usize = 32;
 const MAX_ENV_LEN: usize = 128;
 const SYSERR: usize = usize::MAX;
+/// open(2) of a FIFO for writing with O_NONBLOCK and no reader (ENXIO).
+const SYSERR_ENXIO: usize = usize::MAX - 2;
 
 const INIT_ELF: &[u8] = include_bytes!(env!("USER_INIT_PATH"));
 
@@ -1834,6 +1840,8 @@ pub extern "C" fn syscall_dispatch(
         SYS_SIGCHLD_TAKE => sys_sigchld_take(),
         SYS_SIGCHLD_PENDING => sys_sigchld_pending(),
         SYS_PIPE_PEER => sys_pipe_peer(a0),
+        SYS_CHROOT => sys_chroot(a0, a1),
+        SYS_MKFIFO => sys_mkfifo(a0, a1, a2),
         _ => SYSERR,
     };
     // Deliver default-fatal pending signals before returning to userspace.
@@ -1896,6 +1904,14 @@ fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
         if let Ok(id) = rest.parse::<usize>() {
             return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
         }
+    }
+    // Named FIFO: the fd is a pipe end, not a file vnode.
+    if let Some(id) = fs::vfs::fifo_id(&path) {
+        return match task::fd_open_fifo(id, flags as u32) {
+            Ok(fd) => fd,
+            Err(task::FifoOpenErr::NoReader) => SYSERR_ENXIO,
+            Err(task::FifoOpenErr::Failed) => SYSERR,
+        };
     }
     let Some(node) = fs::open(&path, flags as u32) else {
         return SYSERR;
@@ -2528,17 +2544,79 @@ fn sys_chdir(path_ptr: usize, path_len: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let Some(path) = resolve_copied_path(path) else {
+    let Some(real) = resolve_copied_path(path) else {
         return SYSERR;
     };
-    let Some(info) = fs::stat(&path) else {
+    let Some(info) = fs::stat(&real) else {
         return SYSERR;
     };
-    const S_IFDIR: u32 = 0o040000;
-    if (info.mode & S_IFDIR) == 0 {
+    if (info.mode & fs::S_IFMT) != S_IFDIR {
         return SYSERR;
     }
-    if !task::set_cwd(path.as_bytes()) {
+    // cwd is kept in the task's own (possibly chrooted) view of the tree.
+    let mut virt = [0u8; MAX_PATH];
+    let Some(vn) = fs::resolve_user_path_virtual(path, &mut virt) else {
+        return SYSERR;
+    };
+    if !task::set_cwd(&virt[..vn]) {
+        return SYSERR;
+    }
+    0
+}
+
+const S_IFDIR: u32 = 0o040000;
+
+/// mkfifo(path, mode): create a named pipe. Only tmpfs (`/tmp`) supports
+/// FIFOs; the mode is not tracked (everything is root on myos).
+fn sys_mkfifo(path_ptr: usize, path_len: usize, _mode: usize) -> usize {
+    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    if fs::stat(&path).is_some() || !fs::vfs::mkfifo(&path) {
+        return SYSERR;
+    }
+    0
+}
+
+/// chroot(2): make `path` (a directory) the caller's `/`. Everything is root
+/// on myos, so there is no privilege check. The cwd keeps pointing at the
+/// same directory when it lies inside the new root, and moves to the new `/`
+/// otherwise (so `..` from the cwd cannot walk out of the jail).
+fn sys_chroot(path_ptr: usize, path_len: usize) -> usize {
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(real) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    let Some(info) = fs::stat(&real) else {
+        return SYSERR;
+    };
+    if (info.mode & fs::S_IFMT) != S_IFDIR || real.len() > task::ROOT_CAP {
+        return SYSERR;
+    }
+    // Real path of the current cwd, to re-express it under the new root.
+    let Some(real_cwd) = resolve_copied_path(".") else {
+        return SYSERR;
+    };
+    if !task::set_root(real.as_bytes()) {
+        return SYSERR;
+    }
+    let new_cwd = if real == "/" {
+        real_cwd.as_str()
+    } else if real_cwd == real {
+        "/"
+    } else if real_cwd.starts_with(real.as_str())
+        && real_cwd.as_bytes().get(real.len()) == Some(&b'/')
+    {
+        &real_cwd[real.len()..]
+    } else {
+        "/"
+    };
+    if !task::set_cwd(new_cwd.as_bytes()) {
         return SYSERR;
     }
     0

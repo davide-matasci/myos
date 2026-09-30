@@ -247,6 +247,7 @@ extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, code: u
         frame.stack_pointer.as_u64(),
         code,
         user_rbp,
+        frame.code_segment.0 & 3 == 3,
     );
 }
 

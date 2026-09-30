@@ -2,7 +2,12 @@
 
 use spin::Mutex;
 
-const MAX_PIPES: usize = 8;
+/// Anonymous `pipe()` slots: `0..ANON_PIPES` (unchanged capacity).
+const ANON_PIPES: usize = 8;
+/// Named FIFOs (tmpfs `mkfifo`) hold a slot for as long as the node exists,
+/// so they get their own pool (`ANON_PIPES..MAX_PIPES`) and can never starve
+/// `pipe()` for shells and dropbear sessions.
+const MAX_PIPES: usize = 32;
 const PIPE_BUF: usize = 512;
 
 struct Pipe {
@@ -12,6 +17,14 @@ struct Pipe {
     readers: u8,
     writers: u8,
     write_closed: bool,
+    /// Backs a named FIFO: the slot outlives its open ends and is only
+    /// released by [`fifo_unlink`] once nothing has it open.
+    named: bool,
+    /// Opens ever attached to this FIFO as reader / writer. A blocked
+    /// `open()` waits for the other side's count to move, so a peer that
+    /// opened and closed again before we were scheduled still releases it.
+    read_opens: u32,
+    write_opens: u32,
 }
 
 static PIPES: Mutex<[Option<Pipe>; MAX_PIPES]> = Mutex::new([const { None }; MAX_PIPES]);
@@ -24,8 +37,12 @@ pub fn free(id: usize) {
 }
 
 pub fn alloc() -> Option<usize> {
+    alloc_in(0, ANON_PIPES, false)
+}
+
+fn alloc_in(from: usize, to: usize, named: bool) -> Option<usize> {
     let mut pipes = PIPES.lock();
-    for (i, slot) in pipes.iter_mut().enumerate() {
+    for (i, slot) in pipes.iter_mut().enumerate().take(to).skip(from) {
         if slot.is_none() {
             *slot = Some(Pipe {
                 data: [0; PIPE_BUF],
@@ -34,6 +51,9 @@ pub fn alloc() -> Option<usize> {
                 readers: 0,
                 writers: 0,
                 write_closed: false,
+                named,
+                read_opens: 0,
+                write_opens: 0,
             });
             return Some(i);
         }
@@ -68,9 +88,7 @@ pub fn drop_reader(id: usize) {
     if p.readers == 0 {
         p.write_closed = true;
     }
-    if p.readers == 0 && p.writers == 0 {
-        *pipes.get_mut(id).unwrap() = None;
-    }
+    release_if_idle(&mut pipes, id);
 }
 
 pub fn drop_writer(id: usize) {
@@ -82,9 +100,72 @@ pub fn drop_writer(id: usize) {
     if p.writers == 0 {
         p.write_closed = true;
     }
-    if p.readers == 0 && p.writers == 0 {
-        *pipes.get_mut(id).unwrap() = None;
+    release_if_idle(&mut pipes, id);
+}
+
+/// Last end closed: free an anonymous pipe; a named FIFO keeps its slot but
+/// drops unread data (POSIX discards FIFO contents on last close).
+fn release_if_idle(pipes: &mut [Option<Pipe>; MAX_PIPES], id: usize) {
+    let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
+        return;
+    };
+    if p.readers != 0 || p.writers != 0 {
+        return;
     }
+    if p.named {
+        p.head = 0;
+        p.len = 0;
+        p.write_closed = false;
+    } else {
+        pipes[id] = None;
+    }
+}
+
+/// Allocate the pipe behind a new named FIFO.
+pub fn alloc_named() -> Option<usize> {
+    alloc_in(ANON_PIPES, MAX_PIPES, true)
+}
+
+/// The FIFO node was unlinked: free its pipe now, or when the last open end
+/// closes.
+pub fn fifo_unlink(id: usize) {
+    let mut pipes = PIPES.lock();
+    let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
+        return;
+    };
+    p.named = false;
+    if p.readers == 0 && p.writers == 0 {
+        pipes[id] = None;
+    }
+}
+
+/// Open state of a named FIFO: `(readers, writers, read_opens, write_opens)`,
+/// or `None` if the pipe is gone.
+pub fn fifo_ends(id: usize) -> Option<(u8, u8, u32, u32)> {
+    let pipes = PIPES.lock();
+    pipes
+        .get(id)
+        .and_then(|s| s.as_ref())
+        .map(|p| (p.readers, p.writers, p.read_opens, p.write_opens))
+}
+
+/// Attach one open of a named FIFO. Readers see EOF only once every writer
+/// is gone, so (re)opening a writer clears the "closed" state.
+pub fn fifo_attach(id: usize, read: bool, write: bool) -> bool {
+    let mut pipes = PIPES.lock();
+    let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
+        return false;
+    };
+    if read {
+        p.readers = p.readers.saturating_add(1);
+        p.read_opens = p.read_opens.wrapping_add(1);
+    }
+    if write {
+        p.writers = p.writers.saturating_add(1);
+        p.write_opens = p.write_opens.wrapping_add(1);
+    }
+    p.write_closed = p.writers == 0;
+    true
 }
 
 pub fn read(id: usize, out: &mut [u8]) -> usize {

@@ -177,12 +177,36 @@ pub fn blk_id_from_path(path: &str) -> Option<u32> {
 pub const S_IFBLK: u32 = 0o060000;
 pub const S_IFMT: u32 = 0o170000;
 
-/// Resolve `path` against the current task cwd into `out` (absolute).
-pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Option<usize> {
+/// Resolve `path` against the current task cwd into `out`, in the task's
+/// own view of the tree (canonical absolute; after chroot `/` is the jail).
+/// `..` is resolved here, so it can never climb above that `/`.
+pub fn resolve_user_path_virtual(path: &str, out: &mut [u8]) -> Option<usize> {
     let mut cwd = [0u8; 256];
     let n = crate::task::cwd(&mut cwd);
     let cwd = core::str::from_utf8(&cwd[..n]).unwrap_or("/");
     vfs::resolve_against_cwd(cwd, path, out)
+}
+
+/// Resolve `path` into the real absolute path (`out`) the VFS understands:
+/// the virtual path from [`resolve_user_path_virtual`] under the task's
+/// chroot prefix.
+pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Option<usize> {
+    // Unjailed (the common case): resolve straight into `out` — no extra
+    // buffers on the kernel stack of every path syscall.
+    if !crate::task::has_root() {
+        return resolve_user_path_virtual(path, out);
+    }
+    let mut virt = [0u8; 256];
+    let vn = resolve_user_path_virtual(path, &mut virt)?;
+    let mut root = [0u8; crate::task::ROOT_CAP];
+    let rn = crate::task::root(&mut root);
+    let tail: &[u8] = if rn != 0 && &virt[..vn] == b"/" { &[] } else { &virt[..vn] };
+    if rn + tail.len() > out.len() {
+        return None;
+    }
+    out[..rn].copy_from_slice(&root[..rn]);
+    out[rn..rn + tail.len()].copy_from_slice(tail);
+    Some(rn + tail.len())
 }
 
 fn reject_mkdir(_path: &str) -> bool {

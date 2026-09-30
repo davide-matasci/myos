@@ -111,10 +111,13 @@ int symlink(const char *target, const char *linkpath) {
 }
 
 int mknod(const char *path, mode_t mode, dev_t dev) {
-    (void)path;
-    (void)mode;
     (void)dev;
-    return myos_rofs();
+    /* Only FIFOs can be created; device nodes live in the kernel's devfs. */
+    if (S_ISFIFO(mode)) {
+        return mkfifo(path, mode & 07777);
+    }
+    errno = EPERM;
+    return -1;
 }
 
 int chown(const char *path, uid_t owner, gid_t group) {
@@ -163,6 +166,30 @@ int faccessat(int dirfd, const char *path, int mode, int flags) {
         return -1;
     }
     return access(full, mode);
+}
+
+int mkfifoat(int dirfd, const char *path, mode_t mode) {
+    char full[512];
+    if (path == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
+        return -1;
+    }
+    return mkfifo(full, mode);
+}
+
+int mknodat(int dirfd, const char *path, mode_t mode, dev_t dev) {
+    char full[512];
+    if (path == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
+        return -1;
+    }
+    return mknod(full, mode, dev);
 }
 
 int fstatat(int dirfd, const char *path, struct stat *st, int flags) {

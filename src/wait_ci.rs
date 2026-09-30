@@ -389,8 +389,9 @@ const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/c
 /// os-test basic smoke (full boot only). Thin writable copy via
 /// `misc/ci-boot.tests` — not `cp -r` of the whole suite) then
 /// `make TESTLIST=misc/ci-boot.tests report` (full-boot curated set:
-/// `ci-basic-smoke.tests` 137 + `ci-nonbasic-100.tests` 41 = 178 prebuilt
-/// tests; default SUITES covers the suite-prefixed non-basic entries).
+/// `ci-basic-smoke.tests` 137 + `ci-nonbasic-100.tests` 41 +
+/// `ci-expansion.tests` 125 (POSIX core + non-basic + myos chroot/FIFO)
+/// = 303 prebuilt tests; default SUITES covers the suite-prefixed entries).
 /// NOT the full ~1187 basic suite (#860 timed out; #866 still burned 90m on
 /// full-tree copy + SMP). Report prints `pass_rate=NN% (P/T)`; CI asserts the
 /// harness finished but does NOT fail on pass_rate<80. Follow-up short

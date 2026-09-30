@@ -162,6 +162,9 @@ void _exit(int status) {
 #define MYOS_K_O_CREAT  0x40
 #define MYOS_K_O_TRUNC  0x200
 #define MYOS_K_O_APPEND 0x400
+#define MYOS_K_O_NONBLOCK 0x800
+
+static int myos_stat_path(const char *path, struct stat *st);
 
 static long myos_kernel_oflags(int flags) {
     long k = (long)(flags & O_ACCMODE);
@@ -174,6 +177,9 @@ static long myos_kernel_oflags(int flags) {
     if (flags & O_APPEND) {
         k |= MYOS_K_O_APPEND;
     }
+    if (flags & O_NONBLOCK) {
+        k |= MYOS_K_O_NONBLOCK; /* FIFO open: no wait for the peer */
+    }
     return k;
 }
 
@@ -182,15 +188,41 @@ int _open(const char *path, int flags, ...) {
         errno = ENOENT;
         return -1;
     }
+    /* O_CREAT|O_EXCL: the kernel has no exclusive-create flag, so refuse an
+     * existing path here. Without it mkstemp()/mkdtemp() never saw EEXIST and
+     * could not step past a name already taken (pids — and so newlib's
+     * pid-seeded temp names — repeat once task slots are recycled). */
+    if ((flags & O_CREAT) && (flags & O_EXCL)) {
+        struct stat ex;
+        if (myos_stat_path(path, &ex) == 0) {
+            errno = EEXIST;
+            return -1;
+        }
+    }
     /* Writable opens are accepted for mounts that support them (tmpfs/devfs).
      * Read-only mounts are rejected by the kernel; map that to EROFS/ENOENT. */
     long ret = myos_syscall3(
         MYOS_SYS_OPEN, (long)(uintptr_t)path, (long)strlen(path),
         myos_kernel_oflags(flags));
+    if (ret == (long)MYOS_ENXIO) {
+        errno = ENXIO; /* FIFO: O_WRONLY|O_NONBLOCK and no reader */
+        return -1;
+    }
     if (ret == (long)MYOS_SYSERR) {
         /* No controlling terminal → ENXIO (Linux open(/dev/tty) semantics). */
         errno = myos_path_is_dev_tty(path) ? ENXIO : ENOENT;
         return -1;
+    }
+    if (flags & O_NONBLOCK) {
+        /* Only FIFOs get userspace O_NONBLOCK reads from open(): other paths
+         * (ttys, /dev/ptmx, files) keep their historical blocking behaviour
+         * that dropbear/curl rely on; fcntl(F_SETFL) still sets it anywhere.
+         * POLLFD succeeds only on pipe ends (a named FIFO opens as one), so
+         * regular files cost no extra lookup (dropbear opens authorized_keys
+         * O_RDONLY|O_NONBLOCK on every pubkey auth). */
+        if (myos_syscall1(MYOS_SYS_POLLFD, ret) != (long)MYOS_SYSERR) {
+            myos_fd_nonblock_set((int)ret, 1);
+        }
     }
     if (myos_path_is_tty(path)) {
         myos_fd_set_tty((int)ret, 1);

@@ -705,6 +705,26 @@ fn resolve_index(path: &str) -> Option<(usize, &str)> {
     best.map(|(_, idx, rel)| (idx, rel))
 }
 
+/// True when `path` resolves into the tmpfs mount (the only fs with FIFOs).
+fn tmpfs_rel(path: &str) -> Option<&str> {
+    let (idx, rel) = resolve_index(path)?;
+    let mounts = MOUNTS.lock();
+    (mounts.get(idx)?.name == "tmpfs").then_some(rel)
+}
+
+/// mkfifo(2) on an absolute path. Only tmpfs (`/tmp`) can hold FIFOs.
+pub fn mkfifo(path: &str) -> bool {
+    match tmpfs_rel(path) {
+        Some(rel) => super::tmpfs::mkfifo(rel),
+        None => false,
+    }
+}
+
+/// Pipe slot behind the named FIFO at `path`, if it is one.
+pub fn fifo_id(path: &str) -> Option<usize> {
+    super::tmpfs::fifo_id(tmpfs_rel(path)?)
+}
+
 fn backend_lookup(idx: usize, rel: &str) -> Option<&'static [u8]> {
     let backend = {
         let mounts = MOUNTS.lock();

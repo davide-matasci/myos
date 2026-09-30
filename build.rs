@@ -103,6 +103,7 @@ fn main() {
         println!("cargo:rerun-if-changed=ports/os-test/prebuild-basic-smoke.sh");
         println!("cargo:rerun-if-changed=ports/os-test/versions.env");
         println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/ci-basic-smoke.tests");
+        println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/ci-expansion.tests");
         println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/myos-run.sh");
         println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/ci-smoke-copy.sh");
         if !marker.is_file() || !probe.is_file() {

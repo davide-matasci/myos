@@ -42,7 +42,7 @@ make SUITES=basic report
 ```
 
 - `SUITES` selects which top-level suites to build/run (default covers basic,
-  limits, io, malloc, paths, process, signal, stdio).
+  limits, io, malloc, paths, process, signal, stdio, udp, myos).
 - Optional narrowers (prefer these for interactive / CI smokes):
   - `TESTS="pwd/setpwent ctype/isalpha …"` — explicit paths relative to each
     suite (no `.c` suffix).
@@ -69,9 +69,10 @@ pass_rate=NN% (P/T)
 
 Full-boot shell CI (`src/wait_ci.rs`, non-mini) runs a **thin curated set**:
 the basic smoke list **plus** ~100 tests spanning non-basic suites (`limits`,
-`io`, `malloc`, `paths`, `process`, `signal`, `stdio`, `udp`). See
-`SUITES.md` for the full suite inventory and `misc/ci-nonbasic-100.tests`
-for the selection. Not the full ~1187 basic suite (CI #860/#866 timed out).
+`io`, `malloc`, `paths`, `process`, `signal`, `stdio`, `udp`) **plus**
+`misc/ci-expansion.tests` (125: POSIX core, more non-basic, and the myos
+`chroot`/FIFO suite). See `SUITES.md` for the full suite inventory, the
+selection rationale and the deferred tests. Not the full ~1187 basic suite (CI #860/#866 timed out).
 
 Guest staging uses a thin copy (not the whole suite):
 
@@ -80,7 +81,8 @@ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o
 make TESTLIST=misc/ci-boot.tests report
 ```
 
-`ci-boot.tests` includes `ci-basic-smoke.tests` + `ci-nonbasic-100.tests`.
+`ci-boot.tests` includes `ci-basic-smoke.tests` + `ci-nonbasic-100.tests` +
+`ci-expansion.tests`.
 `ci-smoke-copy.sh` stages `Makefile` + `misc/` + suite headers + each listed
 `.c` (suite-prefixed paths for non-basic; basic-relative for the smoke list).
 
@@ -89,6 +91,9 @@ prefer high-value syscall/libc coverage; missing kernel/libc support is
 implemented for real (no skip/XFAIL/fake stubs).
 
 CI launcher notes:
+
+- QEMU RAM for `--ci` is 6144 MiB (UEFI 6656): the ~303-test curated list
+  ends near 1M live frames and hit "out of usable memory" under 4096.
 
 - QEMU helpers use **`-smp 4`** on x86/aarch64 (interactive + CI mini/full) so
   x86 has ≥2 APs for post-exec RR re-home / `make -j` spread; riscv stays
@@ -144,5 +149,7 @@ the setpwent regression, not on the percentage.
   `os-test: <path>` progress before each compile).
 - `overlay/misc/myos-report.sh` — pass/fail/compile_error + `pass_rate=` summary.
 - `overlay/misc/ci-basic-smoke.tests` — boot CI smoke list (`TESTS +=` paths).
+- `overlay/misc/ci-expansion.tests` — POSIX core + non-basic + myos expansion.
+- `overlay/myos/` — myos-specific tests (`chroot/`, `fifo/`) + `myos.h` helpers.
 - `overlay/misc/ci-smoke-copy.sh` — thin writable staging for boot CI (copies prebuilts when present).
 - `prebuild-basic-smoke.sh` — host-build smoke ELFs into `target/os-test-prebuilt/`.

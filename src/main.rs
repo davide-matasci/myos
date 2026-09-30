@@ -367,10 +367,11 @@ fn run_ci_bios(bios_path: &str) {
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
-        // 4096: curated os-test (~243 prebuilts) still OOMd mid-stdio under
-        // 3072 (mm.rs live≈748k frames after ~200 execs). Headroom for
-        // make brk + fault0 pages across the full curated list.
-        .arg("4096")
+        // 6144: the curated os-test list (~303 prebuilts) ends near 1M live
+        // frames — 4096 hit "out of usable memory" at the tail of the run
+        // (mm.rs live≈1.007M). Headroom for make brk + fault0 pages across
+        // the full curated list.
+        .arg("6144")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
         .args({
@@ -425,9 +426,9 @@ fn run_ci_uefi(uefi_path: &str) {
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
-        // 4608: UEFI+GOP leaves less usable RAM than BIOS at the same -m.
-        // Keep ~512 MiB above BIOS 4096 for GOP / OVMF overhead.
-        .arg("4608")
+        // 6656: UEFI+GOP leaves less usable RAM than BIOS at the same -m.
+        // Keep ~512 MiB above BIOS 6144 for GOP / OVMF overhead.
+        .arg("6656")
         .arg("-smp")
         .arg({
             // Local TCG-single: smp=1 keeps serial shell typing reliable; CI
@@ -522,7 +523,8 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-cpu")
         .arg("cortex-a72")
         .arg("-m")
-        .arg(if ci { "4096" } else { "1024" })
+        // CI: same curated os-test headroom as x86 BIOS (6144).
+        .arg(if ci { "6144" } else { "1024" })
         .arg("-smp")
         .arg("4")
         .arg("-drive")
@@ -920,7 +922,8 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-cpu")
         .arg("rv64")
         .arg("-m")
-        .arg(if ci { "4096" } else { "2048" })
+        // CI: same curated os-test headroom as x86 BIOS (6144).
+        .arg(if ci { "6144" } else { "2048" })
         .arg("-smp")
         // Limine EDK2 path panics with -smp 4: "missing struct riscv_hart for BSP".
         // Keep 2 + dual-hart DTB + parked APs (OpenSBI may pick hartid=1 as BSP).

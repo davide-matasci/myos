@@ -46,11 +46,15 @@
 #define MYOS_SYS_SIGCHLD_TAKE 39
 #define MYOS_SYS_SIGCHLD_PENDING 41
 #define MYOS_SYS_PIPE_PEER 42
+#define MYOS_SYS_CHROOT 43
+#define MYOS_SYS_MKFIFO 44
 
 #define MYOS_SYSERR ((unsigned long)-1)
 /* Distinct pty peer-gone error (kernel/src/task/mod.rs SYSERR_EIO): read or
  * write on a hung-up pty end. Mapped to errno = EIO by read/write wrappers. */
 #define MYOS_EIO ((unsigned long)-2)
+/* open() of a FIFO for writing with O_NONBLOCK and no reader. */
+#define MYOS_ENXIO ((unsigned long)-3)
 
 long myos_syscall0(long nr);
 long myos_syscall1(long nr, long a0);

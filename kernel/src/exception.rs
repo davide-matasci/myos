@@ -91,7 +91,7 @@ pub fn x86_page_fault(cr2: u64, rip: u64, rsp: u64, code: u64, user: bool) -> ! 
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn x86_general_protection(rip: u64, rsp: u64, code: u64, rbp: u64) -> ! {
+pub fn x86_general_protection(rip: u64, rsp: u64, code: u64, rbp: u64, user: bool) -> ! {
     // Dump faulting bytes so pipe/#GP CI failures are diagnosable without artifacts.
     let mut insn = [0u8; 16];
     let mut n = 0usize;
@@ -116,6 +116,19 @@ pub fn x86_general_protection(rip: u64, rsp: u64, code: u64, rbp: u64) -> ! {
     }
     if hex.is_empty() {
         hex.push_str("unreadable");
+    }
+    if user {
+        // Ring-3 #GP (e.g. an `int3` through the DPL-0 breakpoint gate, a
+        // non-canonical address): kill the task like a user page fault
+        // instead of halting the machine (os-test basic/signal/sigismember
+        // took the whole guest down with `[ FAIL ] exception`).
+        user_fault_kill(
+            "general protection",
+            &format!(
+                "rip={rip:#x} rsp={rsp:#x} code={code:#x} insn=[{hex}]{ctx}",
+                ctx = task_ctx(),
+            ),
+        );
     }
     fatal_line(&format!(
         "general protection rip={rip:#x} rsp={rsp:#x} rbp={rbp:#x} rsp16={} rbp16={} code={code:#x} insn=[{hex}]{ctx}",

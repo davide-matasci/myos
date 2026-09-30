@@ -11,7 +11,7 @@
 # Suite selection lives in SUITES; optional TESTS / AREAS / TESTLIST narrow
 # which sources under those suites are built. See ports/os-test/README.md.
 # Default covers the runtime suites we wire for CI (not namespace/include/pty).
-SUITES := basic limits io malloc paths process signal stdio udp
+SUITES := basic limits io malloc paths process signal stdio udp myos
 
 CC = /bin/tcc/tcc
 CFLAGS = -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE

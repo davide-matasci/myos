@@ -325,6 +325,39 @@ const EMPTY: Task = Task {
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
 
+/// Longest chroot prefix (real absolute path) a task can carry.
+pub const ROOT_CAP: usize = 128;
+
+/// chroot(2) prefix per task slot: absolute real path of the task's `/`, or
+/// empty (`len == 0`) for the real root. Inherited on fork, kept across exec;
+/// `cwd` is relative to it (the path the task itself sees). Kept out of
+/// [`Task`] so the by-value `Task` temporaries (fork builds one on the 64 KiB
+/// kernel stack) do not grow.
+#[derive(Clone, Copy)]
+struct Root {
+    buf: [u8; ROOT_CAP],
+    len: u8,
+}
+
+const NO_ROOT: Root = Root { buf: [0; ROOT_CAP], len: 0 };
+
+static ROOTS: Mutex<[Root; MAX_TASKS]> = Mutex::new([NO_ROOT; MAX_TASKS]);
+
+fn set_slot_root(slot: usize, root: Root) {
+    let flags = irq_save();
+    irq_off();
+    ROOTS.lock()[slot] = root;
+    irq_restore(flags);
+}
+
+fn slot_root(slot: usize) -> Root {
+    let flags = irq_save();
+    irq_off();
+    let r = ROOTS.lock()[slot];
+    irq_restore(flags);
+    r
+}
+
 /// Per-parent count of exited-but-unreaped (zombie) user children. myos has no
 /// userspace signal trampolines, so SIGCHLD is surfaced to libgloss by asking
 /// "does the caller have a zombie child?". A counter is robust against task-
@@ -814,6 +847,36 @@ pub fn cwd(out: &mut [u8]) -> usize {
     n
 }
 
+/// chroot prefix of the current task (real absolute path); 0 bytes = real `/`.
+pub fn root(out: &mut [u8]) -> usize {
+    let r = slot_root(current_slot());
+    let n = (r.len as usize).min(out.len());
+    out[..n].copy_from_slice(&r.buf[..n]);
+    n
+}
+
+/// True when the current task is chrooted (non-empty prefix).
+pub fn has_root() -> bool {
+    let flags = irq_save();
+    irq_off();
+    let jailed = ROOTS.lock()[current_slot()].len != 0;
+    irq_restore(flags);
+    jailed
+}
+
+/// Set the chroot prefix (canonical real absolute path; `/` clears it).
+pub fn set_root(path: &[u8]) -> bool {
+    if path.is_empty() || path[0] != b'/' || path.len() > ROOT_CAP {
+        return false;
+    }
+    let path = if path == b"/" { &path[..0] } else { path };
+    let mut r = NO_ROOT;
+    r.buf[..path.len()].copy_from_slice(path);
+    r.len = path.len() as u8;
+    set_slot_root(current_slot(), r);
+    true
+}
+
 /// Set absolute cwd. `path` must be a canonical absolute path (`/` or `/…`).
 pub fn set_cwd(path: &[u8]) -> bool {
     if path.is_empty() || path[0] != b'/' || path.len() > 256 {
@@ -900,6 +963,74 @@ pub fn pipe_open() -> Option<(usize, usize)> {
         pipe::free(id);
     }
     out
+}
+
+/// Why [`fd_open_fifo`] failed.
+pub enum FifoOpenErr {
+    /// `O_WRONLY|O_NONBLOCK` with no reader (POSIX `ENXIO`).
+    NoReader,
+    /// No free fd, `O_RDWR`, FIFO gone, or the wait was interrupted.
+    Failed,
+}
+
+const FIFO_O_ACCMODE: u32 = 3;
+const FIFO_O_WRONLY: u32 = 1;
+const FIFO_O_RDWR: u32 = 2;
+/// Linux-shaped `O_NONBLOCK` (libgloss maps newlib's bit to this).
+pub const O_NONBLOCK_K: u32 = 0o4000;
+
+/// open(2) of a named FIFO backed by pipe slot `id`.
+///
+/// POSIX semantics: a read-only open blocks until a writer opens and a
+/// write-only open blocks until a reader opens. With `O_NONBLOCK` the read
+/// side returns at once and the write side fails with ENXIO when nobody reads.
+/// `O_RDWR` is refused: an fd here is either a read or a write end.
+pub fn fd_open_fifo(id: usize, flags: u32) -> Result<usize, FifoOpenErr> {
+    let acc = flags & FIFO_O_ACCMODE;
+    if acc == FIFO_O_RDWR {
+        return Err(FifoOpenErr::Failed);
+    }
+    let write = acc == FIFO_O_WRONLY;
+    let nonblock = flags & O_NONBLOCK_K != 0;
+    let Some((readers, _, r_opens, w_opens)) = pipe::fifo_ends(id) else {
+        return Err(FifoOpenErr::Failed);
+    };
+    if write && nonblock && readers == 0 {
+        return Err(FifoOpenErr::NoReader);
+    }
+    if !pipe::fifo_attach(id, !write, write) {
+        return Err(FifoOpenErr::Failed);
+    }
+    let entry = if write { FdEntry::PipeWrite(id) } else { FdEntry::PipeRead(id) };
+    let fd = with_current_mut(|t| {
+        let i = (0..MAX_FDS).find(|&i| t.fds[i] == FdEntry::Empty)?;
+        t.fds[i] = entry;
+        Some(i)
+    });
+    let Some(fd) = fd else {
+        fd_drop(entry);
+        return Err(FifoOpenErr::Failed);
+    };
+    if nonblock {
+        return Ok(fd);
+    }
+    // Wait for the peer: either one is attached now, or one attached (and
+    // perhaps already left) since we looked.
+    loop {
+        let Some((r, w, ro, wo)) = pipe::fifo_ends(id) else {
+            break;
+        };
+        let peer_came = if write { r > 0 || ro != r_opens } else { w > 0 || wo != w_opens };
+        if peer_came {
+            return Ok(fd);
+        }
+        if crate::signal::current_should_wake() {
+            break;
+        }
+        yield_now();
+    }
+    fd_close(fd);
+    Err(FifoOpenErr::Failed)
 }
 
 /// Readiness bits for a userspace fd, for select()/poll() on pipes.
@@ -2131,6 +2262,11 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     };
     stamp_stack_cpu(top, crate::smp::cpu_id());
 
+    // Inherit the chroot prefix before the child is published as Ready.
+    {
+        let mut roots = ROOTS.lock();
+        roots[slot] = roots[ppid];
+    }
     let mut tasks = TASKS.lock();
     let (child_aff, kick) = fork_child_affinity(&tasks, ppid);
     tasks[slot] = Task {
@@ -2305,6 +2441,8 @@ fn spawn_inner(
     } else {
         0
     };
+    // Lock order TASKS -> ROOTS (nothing takes ROOTS first and then TASKS).
+    ROOTS.lock()[slot] = NO_ROOT;
     tasks[slot] = Task {
         state: State::Ready,
         stack_base: stack as usize,
