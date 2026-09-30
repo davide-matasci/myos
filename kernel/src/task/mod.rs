@@ -626,11 +626,10 @@ pub fn unload_user_aspace(aspace: u64) {
         // (float / bug), and on other arches that may migrate.
         // aarch64: same invariant holds (user_affinity() pins all user tasks
         // to the BSP), so `live` is false here and the barrier is skipped.
-        // This gate is load-bearing: die() runs the reclaim with IF on after
-        // the task is already marked Dead, so a preempted in-flight
-        // tlb_shootdown can never resume — it would hold TLB_LOCK forever and
-        // every later shootdown would burn its full 2M-spin bound (observed:
-        // 1 shootdown/s and a ~10× interactive crawl under -smp 4).
+        // This gate is load-bearing: a global shootdown per exit dominated
+        // exit cost (observed: 1 shootdown/s and a ~10× interactive crawl
+        // under -smp 4). die() now reclaims before the task is marked Dead,
+        // so a preempted reclaim resumes instead of being abandoned.
         if live {
             crate::smp::tlb_shootdown();
         }
@@ -2696,8 +2695,6 @@ pub fn die() -> ! {
                 out = Some((aspace, base, span, off, brk, mmap));
             }
         }
-        tasks[id].state = State::Dead;
-        tasks[id].entry = None;
         out
     };
     // Reclaim/TLB shootdown must run with IF on: remotes ACK the shootdown
@@ -2705,6 +2702,25 @@ pub fn die() -> ! {
     // also briefly cli (schedule/wait_child) when the child had been re-homed
     // onto another AP — bios triple-faulted under -smp 4 after the first
     // remote-AP exit.
+    //
+    // The task stays runnable (not Dead) until the reclaim has finished: a
+    // Dead task is never scheduled again, so a timer preemption in the middle
+    // of the (long) heap-window walk used to abandon the reclaim for good and
+    // leak the whole address space — ~370 frames per forked child, the
+    // per-exec "leak" that pushed the curated os-test run out of memory. With
+    // `aspace` already cleared, `schedule` runs it on the kernel root, and the
+    // parent cannot reap the slot before it is Dead.
+    irq_on();
+    if let Some((aspace, base, span, off, brk, mmap)) = reclaim {
+        user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
+    }
+    irq_off();
+    {
+        let mut tasks = TASKS.lock();
+        let id = current_slot();
+        tasks[id].state = State::Dead;
+        tasks[id].entry = None;
+    }
     irq_on();
     // Notify the parent now that the TASKS lock is dropped (child is Dead and
     // reapable). SIGCHLD's default action is ignore, so a parent without a
@@ -2712,9 +2728,6 @@ pub fn die() -> ! {
     if chld_parent != usize::MAX {
         crate::signal::raise_sigchld(chld_parent);
         note_zombie(chld_parent);
-    }
-    if let Some((aspace, base, span, off, brk, mmap)) = reclaim {
-        user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
     }
     irq_off();
     schedule();

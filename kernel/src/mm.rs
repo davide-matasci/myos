@@ -51,6 +51,30 @@ pub fn alloc_frame_site(site: usize) -> u64 {
     f
 }
 
+/// `/proc/meminfo`: frame allocator counters (4 KiB frames). `FramesLive` is
+/// allocated minus freed; the `Site*` lines are cumulative allocations per
+/// call site, the same numbers the out-of-memory panic prints.
+pub fn meminfo_text() -> alloc::vec::Vec<u8> {
+    let a = FRAME_ALLOC_COUNT.load(Ordering::Relaxed);
+    let f = FRAME_FREE_COUNT.load(Ordering::Relaxed);
+    let site = |i: usize| FRAME_SITE_COUNTS[i].load(Ordering::Relaxed);
+    alloc::format!(
+        "FramesAlloc: {}\nFramesFree: {}\nFramesLive: {}\nLiveKiB: {}\n\
+         SiteVirtq: {}\nSiteFault0: {}\nSiteExec: {}\nSitePageTable: {}\nSiteMmap: {}\nSiteOther: {}\n",
+        a,
+        f,
+        a - f,
+        (a - f) * (PAGE / 1024),
+        site(0),
+        site(1),
+        site(2),
+        site(3),
+        site(4),
+        site(5),
+    )
+    .into_bytes()
+}
+
 fn heap_phys() -> u64 {
     let entries = limine_boot::MEMMAP
         .response()
