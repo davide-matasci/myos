@@ -262,11 +262,6 @@ struct Task {
     /// Absolute cwd (POSIX). Survives exec; copied on fork. Always starts with `/`.
     cwd: [u8; 256],
     cwd_len: u16,
-    /// chroot(2) prefix: absolute real path of this task's `/`, or empty
-    /// (`root_len == 0`) for the real root. Copied on fork, kept across exec.
-    /// `cwd` is always relative to it (the path the task itself sees).
-    root: [u8; ROOT_CAP],
-    root_len: u8,
     exit_code: u8,
     /// Anonymous mmap windows (after the brk heap).
     mmap: [MmapRegion; MAX_MMAP_REGIONS],
@@ -316,8 +311,6 @@ const EMPTY: Task = Task {
     exec_name_len: 0,
     cwd: root_cwd_buf(),
     cwd_len: 1,
-    root: [0; ROOT_CAP],
-    root_len: 0,
     exit_code: 0,
     mmap: EMPTY_MMAP,
     mmap_next: 0,
@@ -334,6 +327,36 @@ static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
 
 /// Longest chroot prefix (real absolute path) a task can carry.
 pub const ROOT_CAP: usize = 128;
+
+/// chroot(2) prefix per task slot: absolute real path of the task's `/`, or
+/// empty (`len == 0`) for the real root. Inherited on fork, kept across exec;
+/// `cwd` is relative to it (the path the task itself sees). Kept out of
+/// [`Task`] so the by-value `Task` temporaries (fork builds one on the 64 KiB
+/// kernel stack) do not grow.
+#[derive(Clone, Copy)]
+struct Root {
+    buf: [u8; ROOT_CAP],
+    len: u8,
+}
+
+const NO_ROOT: Root = Root { buf: [0; ROOT_CAP], len: 0 };
+
+static ROOTS: Mutex<[Root; MAX_TASKS]> = Mutex::new([NO_ROOT; MAX_TASKS]);
+
+fn set_slot_root(slot: usize, root: Root) {
+    let flags = irq_save();
+    irq_off();
+    ROOTS.lock()[slot] = root;
+    irq_restore(flags);
+}
+
+fn slot_root(slot: usize) -> Root {
+    let flags = irq_save();
+    irq_off();
+    let r = ROOTS.lock()[slot];
+    irq_restore(flags);
+    r
+}
 
 /// Per-parent count of exited-but-unreaped (zombie) user children. myos has no
 /// userspace signal trampolines, so SIGCHLD is surfaced to libgloss by asking
@@ -826,18 +849,19 @@ pub fn cwd(out: &mut [u8]) -> usize {
 
 /// chroot prefix of the current task (real absolute path); 0 bytes = real `/`.
 pub fn root(out: &mut [u8]) -> usize {
+    let r = slot_root(current_slot());
+    let n = (r.len as usize).min(out.len());
+    out[..n].copy_from_slice(&r.buf[..n]);
+    n
+}
+
+/// True when the current task is chrooted (non-empty prefix).
+pub fn has_root() -> bool {
     let flags = irq_save();
     irq_off();
-    let id = current_slot();
-    let n = {
-        let tasks = TASKS.lock();
-        let t = &tasks[id];
-        let n = (t.root_len as usize).min(out.len());
-        out[..n].copy_from_slice(&t.root[..n]);
-        n
-    };
+    let jailed = ROOTS.lock()[current_slot()].len != 0;
     irq_restore(flags);
-    n
+    jailed
 }
 
 /// Set the chroot prefix (canonical real absolute path; `/` clears it).
@@ -846,11 +870,10 @@ pub fn set_root(path: &[u8]) -> bool {
         return false;
     }
     let path = if path == b"/" { &path[..0] } else { path };
-    with_current_mut(|t| {
-        t.root = [0; ROOT_CAP];
-        t.root[..path.len()].copy_from_slice(path);
-        t.root_len = path.len() as u8;
-    });
+    let mut r = NO_ROOT;
+    r.buf[..path.len()].copy_from_slice(path);
+    r.len = path.len() as u8;
+    set_slot_root(current_slot(), r);
     true
 }
 
@@ -2138,8 +2161,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         brk,
         cwd,
         cwd_len,
-        root,
-        root_len,
         mmap,
         mmap_next,
         sid,
@@ -2168,8 +2189,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.brk_cur,
             t.cwd,
             t.cwd_len,
-            t.root,
-            t.root_len,
             t.mmap,
             t.mmap_next,
             t.sid,
@@ -2243,6 +2262,11 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     };
     stamp_stack_cpu(top, crate::smp::cpu_id());
 
+    // Inherit the chroot prefix before the child is published as Ready.
+    {
+        let mut roots = ROOTS.lock();
+        roots[slot] = roots[ppid];
+    }
     let mut tasks = TASKS.lock();
     let (child_aff, kick) = fork_child_affinity(&tasks, ppid);
     tasks[slot] = Task {
@@ -2267,8 +2291,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         exec_name_len: 0,
         cwd,
         cwd_len,
-        root,
-        root_len,
         exit_code: 0,
         mmap,
         mmap_next,
@@ -2419,6 +2441,8 @@ fn spawn_inner(
     } else {
         0
     };
+    // Lock order TASKS -> ROOTS (nothing takes ROOTS first and then TASKS).
+    ROOTS.lock()[slot] = NO_ROOT;
     tasks[slot] = Task {
         state: State::Ready,
         stack_base: stack as usize,
@@ -2445,8 +2469,6 @@ fn spawn_inner(
             c
         },
         cwd_len: 1,
-        root: [0; ROOT_CAP],
-        root_len: 0,
         exit_code: 0,
         mmap: EMPTY_MMAP,
         mmap_next: 0,

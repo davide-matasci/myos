@@ -191,6 +191,11 @@ pub fn resolve_user_path_virtual(path: &str, out: &mut [u8]) -> Option<usize> {
 /// the virtual path from [`resolve_user_path_virtual`] under the task's
 /// chroot prefix.
 pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Option<usize> {
+    // Unjailed (the common case): resolve straight into `out` — no extra
+    // buffers on the kernel stack of every path syscall.
+    if !crate::task::has_root() {
+        return resolve_user_path_virtual(path, out);
+    }
     let mut virt = [0u8; 256];
     let vn = resolve_user_path_virtual(path, &mut virt)?;
     let mut root = [0u8; crate::task::ROOT_CAP];
