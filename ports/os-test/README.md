@@ -92,6 +92,9 @@ implemented for real (no skip/XFAIL/fake stubs).
 
 CI launcher notes:
 
+- QEMU RAM for `--ci` is 6144 MiB (UEFI 6656): the ~303-test curated list
+  ends near 1M live frames and hit "out of usable memory" under 4096.
+
 - QEMU helpers use **`-smp 4`** on x86/aarch64 (interactive + CI mini/full) so
   x86 has ≥2 APs for post-exec RR re-home / `make -j` spread; riscv stays
   **`-smp 2`** (Limine hart table panic at 4). aarch64/riscv userspace may
