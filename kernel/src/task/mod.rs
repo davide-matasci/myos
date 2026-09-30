@@ -394,6 +394,24 @@ fn slot_on_cpu(slot: usize) -> bool {
     CURRENT.iter().any(|c| c.load(Ordering::SeqCst) == slot)
 }
 
+/// True once dead task `slot` has left its kernel stack for good, so the slot
+/// (and the kernel stack it keeps for reuse) may be recycled.
+///
+/// `die()` marks the task Dead and zeroes its saved `sp`, then keeps running
+/// on its own kernel stack until `schedule` switches away; `CURRENT` already
+/// names the next task before that switch. `task_switch` stores the outgoing
+/// stack pointer into `sp` as its last use of the old stack, so a non-zero
+/// `sp` on a Dead, off-CPU task means nothing runs on that stack any more.
+/// Reaping earlier let the next fork seed the same kernel stack while the
+/// dying task still ran on it: the new child resumed from a clobbered frame
+/// (dropbear session children crashing with garbage pointers / return
+/// addresses under -smp 4).
+fn reapable(tasks: &[Task; MAX_TASKS], slot: usize) -> bool {
+    tasks[slot].state == State::Dead
+        && !slot_on_cpu(slot)
+        && unsafe { core::ptr::read_volatile(core::ptr::addr_of!(tasks[slot].sp)) } != 0
+}
+
 /// Detach the children of dying task `id`, and free orphan zombies.
 ///
 /// Children are found by `ppid == slot`, and a freed slot is soon reused by
@@ -417,7 +435,7 @@ fn orphan_children(tasks: &mut [Task; MAX_TASKS], id: usize) {
         if tasks[j].ppid != id && !dead_orphan {
             continue;
         }
-        if tasks[j].state == State::Dead && !slot_on_cpu(j) {
+        if reapable(tasks, j) {
             let stack_base = tasks[j].stack_base;
             tasks[j] = EMPTY;
             if stack_base != 0 {
@@ -2223,10 +2241,10 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         let tasks = TASKS.lock();
         // Reuse kernel stacks left behind by reaped fork children (stack_base kept
         // in EMPTY slots) or dead kernel threads — avoids kernel-heap alloc on CI.
-        let slot = tasks
-            .iter()
-            .position(|t| {
-                (t.state == State::Unused || t.state == State::Dead)
+        let slot = (0..MAX_TASKS)
+            .find(|&i| {
+                let t = &tasks[i];
+                (t.state == State::Unused || reapable(&tasks, i))
                     && t.user_rip == 0
                     && t.aspace == 0
                     && t.stack_base != 0
@@ -2353,6 +2371,9 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
     loop {
         let mut any = false;
         let mut reap = None;
+        // A child that is Dead but still on its kernel stack (the tail of
+        // `die()`): not reapable yet, but it will be within a few instructions.
+        let mut leaving = false;
         {
             let flags = irq_save();
             irq_off();
@@ -2366,8 +2387,11 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
                     continue;
                 }
                 if tasks[i].state == State::Dead {
-                    reap = Some(i);
-                    break;
+                    if reapable(&tasks, i) {
+                        reap = Some(i);
+                        break;
+                    }
+                    leaving = true;
                 }
                 any = true;
             }
@@ -2388,6 +2412,12 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
             }
             drop(tasks);
             irq_restore(flags);
+        }
+        if leaving {
+            // Even for WNOHANG: the child has exited, so report it once it is
+            // off its stack rather than "nothing to reap".
+            yield_now();
+            continue;
         }
         if !any {
             return usize::MAX;
@@ -2720,16 +2750,19 @@ pub fn die() -> ! {
         let id = current_slot();
         tasks[id].state = State::Dead;
         tasks[id].entry = None;
+        // `task_switch` stores the outgoing stack pointer here once this task
+        // has left its kernel stack for good; until then it is not reapable.
+        tasks[id].sp = 0;
     }
-    irq_on();
-    // Notify the parent now that the TASKS lock is dropped (child is Dead and
-    // reapable). SIGCHLD's default action is ignore, so a parent without a
-    // handler is unaffected; a parent polling SIGCHLD_TAKE sees the bit.
+    // Notify the parent now that the TASKS lock is dropped (child is Dead; the
+    // parent reaps it once `schedule` below has switched off its stack).
+    // SIGCHLD's default action is ignore, so a parent without a handler is
+    // unaffected; a parent polling SIGCHLD_TAKE sees the bit. IRQs stay off
+    // from Dead to the switch: a preemption here would never be resumed.
     if chld_parent != usize::MAX {
         crate::signal::raise_sigchld(chld_parent);
         note_zombie(chld_parent);
     }
-    irq_off();
     schedule();
     loop {
         irq_on();
