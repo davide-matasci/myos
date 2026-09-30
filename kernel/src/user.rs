@@ -1227,15 +1227,13 @@ pub fn set_kernel_rsp0(top: usize) {
     }
     #[cfg(target_arch = "riscv64")]
     {
-        // Keep stack footer + static + CSR coherent. Updating only the static
-        // left sscratch holding a previous task top across schedule races
-        // (riscv64 sepc=0 / zeroed-ra family).
+        // Keep stack footer + static coherent. Do NOT write the sscratch CSR
+        // here: it must stay 0 while the hart runs in S-mode (trap_vector
+        // reads non-zero as "trapped from U-mode"). Every sret to U-mode arms
+        // it with the kernel stack top itself.
         task::stamp_stack_cpu(top, cpu);
         unsafe {
             core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(top);
-            if top != 0 {
-                core::arch::asm!("csrw sscratch, {k}", k = in(reg) top, options(nostack));
-            }
         }
     }
     let _ = top;
@@ -1529,12 +1527,14 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             options(nostack, preserves_flags),
         );
         core::arch::asm!(
+            // USER_SSTATUS has SIE clear: mask interrupts before arming
+            // sscratch so no S-mode trap can see the non-zero value.
+            "csrw sstatus, {s}",
             "csrw sscratch, {ksp}",
             "mv sp, {usp}",
             "mv a0, {argc}",
             "mv a1, {argv}",
             "csrw sepc, {rip}",
-            "csrw sstatus, {s}",
             "mv ra, zero",
             "mv gp, zero",
             "mv tp, zero",
@@ -1746,13 +1746,19 @@ fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
         }
     };
     unsafe {
-        // Preserve kernel stack top in sscratch across sret (enter_riscv64
-        // invariant). The old child stub left sscratch at frame+280 and the
-        // next user trap smashed the stack — pipe/fork then jumped to garbage.
+        // Arm sscratch with the kernel stack top for the next user trap
+        // (enter_riscv64 invariant). Mask SIE first: sscratch must be 0 for
+        // any trap taken in S-mode, and fork_sret_child_from_frame keeps SIE
+        // clear until sret.
         if ksp != 0 {
             task::stamp_stack_cpu(ksp, crate::smp::cpu_id());
             core::ptr::addr_of_mut!(KERNEL_SSCRATCH).write(ksp);
-            core::arch::asm!("csrw sscratch, {ksp}", ksp = in(reg) ksp, options(nostack));
+            core::arch::asm!(
+                "csrci sstatus, 2",
+                "csrw sscratch, {ksp}",
+                ksp = in(reg) ksp,
+                options(nostack),
+            );
         }
         crate::arch::fork_sret_child_to_user(frame.as_mut_ptr());
     }

@@ -350,6 +350,55 @@ pub fn note_reap(parent: usize) {
     }
 }
 
+/// `ppid` of a task whose parent exited first. `ppid` is a slot index and
+/// slots are recycled, so an orphan must not keep pointing at its dead
+/// parent's slot (see `orphan_children`).
+const NO_PARENT: usize = usize::MAX;
+
+/// True while `slot` is some CPU's current task (e.g. still running the
+/// tail of `die()` on its own kernel stack), so it must not be recycled.
+fn slot_on_cpu(slot: usize) -> bool {
+    CURRENT.iter().any(|c| c.load(Ordering::SeqCst) == slot)
+}
+
+/// Detach the children of dying task `id`, and free orphan zombies.
+///
+/// Children are found by `ppid == slot`, and a freed slot is soon reused by
+/// the next fork. Children left pointing at `id` were inherited by that new
+/// occupant: its `waitpid(-1)` reaped a stranger's zombie, and because pids
+/// are slot indices the stranger's pid could equal the pid of the command it
+/// forks next. dropbear's "exited before we recorded it" fallback then
+/// matched that pid, marked its own command as already exited, and closed the
+/// command's stdout early: SSH sessions lost their output ("remote echo
+/// missing") or the command died with EPIPE.
+///
+/// Dead children can never be reaped now, so free them (like `wait_child`);
+/// live ones become `NO_PARENT` and are freed by a later `die()` sweep once
+/// they are dead and off-CPU.
+fn orphan_children(tasks: &mut [Task; MAX_TASKS], id: usize) {
+    for j in 0..MAX_TASKS {
+        if j == id || tasks[j].state == State::Unused || tasks[j].user_rip == 0 {
+            continue;
+        }
+        let dead_orphan = tasks[j].ppid == NO_PARENT && tasks[j].state == State::Dead;
+        if tasks[j].ppid != id && !dead_orphan {
+            continue;
+        }
+        if tasks[j].state == State::Dead && !slot_on_cpu(j) {
+            let stack_base = tasks[j].stack_base;
+            tasks[j] = EMPTY;
+            if stack_base != 0 {
+                tasks[j].stack_base = stack_base;
+            }
+        } else {
+            tasks[j].ppid = NO_PARENT;
+        }
+    }
+    if id < MAX_TASKS {
+        ZOMBIES[id].store(0, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub fn zombie_count(parent: usize) -> usize {
     if parent < MAX_TASKS {
         ZOMBIES[parent].load(core::sync::atomic::Ordering::Relaxed) as usize
@@ -2386,14 +2435,8 @@ pub fn schedule() {
         user::set_kernel_rsp0(kstack);
         #[cfg(target_arch = "x86_64")]
         crate::arch::gdt::set_rsp0(kstack as u64);
-        // Keep the sscratch CSR in lockstep with the static. Updating only the
-        // static left the CSR holding a previous task's top (or user sp) across
-        // schedule→trampoline→exec races; the next user trap then built its
-        // kernel frame on the wrong stack (riscv64 sepc=0 / zeroed ra family).
-        #[cfg(target_arch = "riscv64")]
-        unsafe {
-            core::arch::asm!("csrw sscratch, {k}", k = in(reg) kstack, options(nostack));
-        }
+        // riscv64: no sscratch write here — it stays 0 in S-mode and is armed
+        // with the kernel stack top only on the way out to U-mode.
     }
 
     let want = if aspace == 0 {
@@ -2491,6 +2534,7 @@ pub fn die() -> ! {
         let mut tasks = TASKS.lock();
         let id = current_slot();
         let mut out = None;
+        orphan_children(&mut tasks, id);
         if tasks[id].user_rip != 0 {
             chld_parent = tasks[id].ppid;
             user::note_exit();

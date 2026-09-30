@@ -405,6 +405,43 @@ fn handle_clone(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, proto
 
 
 
+/// Install `head` as listener `l`'s advertised handoff and publish it.
+///
+/// Every head change bumps `accept_seq` and replies with the new status, so
+/// libgloss (which only accepts a seq it has not consumed yet) can never miss
+/// a parked connection: a head promoted by `taken`, by orphan reclaim or by the
+/// stale-pointer cleanup used to be installed silently, and with no fresh
+/// "accepted <N> <seq>" the listener looked idle while clients hung (riscv64
+/// SSH smoke: 5 minutes without a `Child connection`).
+fn publish_head(convs: &mut [Conv; MAX_CONV], chan: usize, l: usize, head: Option<u16>) {
+    convs[l].accepted = head;
+    match head {
+        Some(n) => {
+            convs[l].accept_seq = convs[l].accept_seq.wrapping_add(1);
+            convs[l].accept_wait = false;
+            let seq = convs[l].accept_seq;
+            let rep = accept_reply(convs, n, seq);
+            reply(chan, REP_STATUS, l as u16, 0, &rep);
+        }
+        None => reply(chan, REP_STATUS, l as u16, 0, b"listening"),
+    }
+}
+
+/// Parse the optional "<seq>" argument of ctl "taken <seq>".
+fn parse_seq(b: &[u8]) -> Option<u32> {
+    if b.is_empty() {
+        return None;
+    }
+    let mut v: u32 = 0;
+    for &c in b {
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        v = v.wrapping_mul(10).wrapping_add((c - b'0') as u32);
+    }
+    Some(v)
+}
+
 fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize) {
     if i >= MAX_CONV {
         return;
@@ -513,7 +550,13 @@ fn handle_ctl(
     // same <N>, and with accepted_pending a seq bump made the next accept()
     // re-open the live Child — dropbear "bad packet size 0x53534831" / SSH1).
     // Promote pending to head and advertise it; otherwise status=listening.
-    if cmd == b"taken" {
+    //
+    // "taken <seq>" names the handoff it consumed, which makes it idempotent:
+    // libgloss re-sends it while the status still shows that seq (the first
+    // write can fail when the netfs request ring is full), and a late
+    // duplicate must not drop the *next* head. A bare "taken" is accepted
+    // for older userspace.
+    if let Some(rest) = cmd.strip_prefix(b"taken") {
         match convs[i].kind {
             Kind::Tcp if convs[i].listen_port != 0 => {}
             _ => {
@@ -521,19 +564,22 @@ fn handle_ctl(
                 return;
             }
         }
-        let Some(_n) = convs[i].accepted.take() else {
-            reply(chan, REP_STATUS, conv, 0, b"listening");
+        let want = parse_seq(trim(rest));
+        let stale = convs[i].accepted.is_none()
+            || want.is_some_and(|s| s != convs[i].accept_seq);
+        if stale {
+            // Already consumed: re-publish the current state unchanged.
+            match convs[i].accepted {
+                Some(n) => {
+                    let rep = accept_reply(convs, n, convs[i].accept_seq);
+                    reply(chan, REP_STATUS, conv, 0, &rep);
+                }
+                None => reply(chan, REP_STATUS, conv, 0, b"listening"),
+            }
             return;
-        };
-        if let Some(m) = convs[i].accepted_pending.take() {
-            convs[i].accept_seq = convs[i].accept_seq.wrapping_add(1);
-            convs[i].accepted = Some(m);
-            let seq = convs[i].accept_seq;
-            let rep = accept_reply(convs, m, seq);
-            reply(chan, REP_STATUS, conv, 0, &rep);
-        } else {
-            reply(chan, REP_STATUS, conv, 0, b"listening");
         }
+        let next = convs[i].accepted_pending.take();
+        publish_head(convs, chan, i, next);
         return;
     }
     // Arm accept-wait (or re-advertise a parked head). Never *take* the
@@ -554,15 +600,11 @@ fn handle_ctl(
             reply(chan, REP_STATUS, conv, 0, &rep);
             return;
         }
-        if convs[i].accept_wait {
-            reply(chan, REP_ERR, conv, -1, b"accept busy");
-            return;
-        }
-        // Clear any stale "accepted <old>" so select() does not re-wake for
-        // a consumed handoff; status flips back to "accepted <new>" only
-        // when pump_accepts parks a fresh connection.
+        // Idempotent: a repeated arm used to answer REP_ERR "accept busy",
+        // which overwrote the listener status. pump_accepts publishes every
+        // new head whether or not an accept is parked.
         reply(chan, REP_STATUS, conv, 0, b"listening");
-        convs[i].accept_wait = true; // parked; replied from the poll pump
+        convs[i].accept_wait = true;
         return;
     }
     let Some((addr, port)) = parse_connect(cmd) else {
@@ -694,11 +736,12 @@ fn force_free_orphan(
     i: usize,
 ) {
     for l in 0..MAX_CONV {
-        if convs[l].accepted == Some(i as u16) {
-            convs[l].accepted = convs[l].accepted_pending.take();
-        }
         if convs[l].accepted_pending == Some(i as u16) {
             convs[l].accepted_pending = None;
+        }
+        if convs[l].accepted == Some(i as u16) {
+            let next = convs[l].accepted_pending.take();
+            publish_head(convs, chan, l, next);
         }
     }
     // Deliver any still-buffered peer payload before abort (CloseWait with
@@ -728,17 +771,18 @@ fn pump_accepts(
         if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port == 0 {
             continue;
         }
-        // Stale park: orphan reclaim emptied a slot but left a queue pointer.
-        if let Some(n) = convs[i].accepted {
-            let n = n as usize;
-            if n >= MAX_CONV || matches!(convs[n].kind, Kind::Empty) {
-                convs[i].accepted = convs[i].accepted_pending.take();
-            }
-        }
+        // Stale park: a hangup drop emptied a slot but left a queue pointer.
         if let Some(n) = convs[i].accepted_pending {
             let n = n as usize;
             if n >= MAX_CONV || matches!(convs[n].kind, Kind::Empty) {
                 convs[i].accepted_pending = None;
+            }
+        }
+        if let Some(n) = convs[i].accepted {
+            let n = n as usize;
+            if n >= MAX_CONV || matches!(convs[n].kind, Kind::Empty) {
+                let next = convs[i].accepted_pending.take();
+                publish_head(convs, chan, i, next);
             }
         }
         let Some(h) = convs[i].handle else {
@@ -867,14 +911,10 @@ fn pump_accepts(
         convs[i].connected = false;
         convs[i].hungup = false;
         if convs[i].accepted.is_none() {
-            convs[i].accept_seq = convs[i].accept_seq.wrapping_add(1);
-            convs[i].accepted = Some(n as u16);
-            if convs[i].accept_wait {
-                convs[i].accept_wait = false;
-                let seq = convs[i].accept_seq;
-                let rep = accept_reply(convs, n as u16, seq);
-                reply(chan, REP_STATUS, i as u16, 0, &rep);
-            }
+            // Publish even when no accept is parked: libgloss arms only once
+            // per consumed handoff, and a lost/late arm must not hide this
+            // connection behind a stale "listening".
+            publish_head(convs, chan, i, Some(n as u16));
         } else {
             // Head still parked; queue second without bumping head seq/status.
             convs[i].accepted_pending = Some(n as u16);
