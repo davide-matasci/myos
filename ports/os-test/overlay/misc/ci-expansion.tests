@@ -1,0 +1,162 @@
+# Boot CI curated expansion — suite-prefixed paths (suite/rel, no .c).
+# POSIX core (fds, dirs, *at(), stat/mkfifo, pipes, fork/wait, stdio streams,
+# stdlib, time) plus non-basic process/signal/io/paths/limits, then myos's own
+# chroot(2) + named-FIFO tests (overlay/myos/). Every entry passes honestly on
+# the guest; tests that need missing features are listed as deferred in
+# ports/os-test/SUITES.md instead of being added here.
+
+# basic: dirent
+TESTS += basic/dirent/alphasort
+TESTS += basic/dirent/closedir
+TESTS += basic/dirent/dirfd
+TESTS += basic/dirent/readdir
+TESTS += basic/dirent/rewinddir
+TESTS += basic/dirent/scandir
+TESTS += basic/dirent/seekdir
+TESTS += basic/dirent/telldir
+
+# basic: fcntl / sys_stat (incl. mkfifo, mkfifoat, mknodat)
+TESTS += basic/fcntl/creat
+TESTS += basic/fcntl/openat
+TESTS += basic/sys_stat/fstat
+TESTS += basic/sys_stat/fstatat
+TESTS += basic/sys_stat/mkdirat
+TESTS += basic/sys_stat/mkfifo
+TESTS += basic/sys_stat/mkfifoat
+TESTS += basic/sys_stat/mknodat
+TESTS += basic/sys_stat/umask
+
+# basic: unistd
+TESTS += basic/unistd/_exit
+TESTS += basic/unistd/access
+TESTS += basic/unistd/chdir
+TESTS += basic/unistd/close
+TESTS += basic/unistd/dup
+TESTS += basic/unistd/faccessat
+TESTS += basic/unistd/fchdir
+TESTS += basic/unistd/fdatasync
+TESTS += basic/unistd/fork
+TESTS += basic/unistd/fsync
+TESTS += basic/unistd/getcwd
+TESTS += basic/unistd/getpgid
+TESTS += basic/unistd/getpgrp
+TESTS += basic/unistd/getsid
+TESTS += basic/unistd/isatty
+TESTS += basic/unistd/pipe
+TESTS += basic/unistd/pipe2
+TESTS += basic/unistd/pread
+TESTS += basic/unistd/readlink
+TESTS += basic/unistd/readlinkat
+TESTS += basic/unistd/rmdir
+TESTS += basic/unistd/setpgid
+TESTS += basic/unistd/symlink
+TESTS += basic/unistd/symlinkat
+TESTS += basic/unistd/sysconf
+TESTS += basic/unistd/unlink
+TESTS += basic/unistd/unlinkat
+TESTS += basic/unistd/write
+
+# basic: select / poll / wait
+TESTS += basic/sys_select/select
+TESTS += basic/sys_time/select
+TESTS += basic/poll/poll
+TESTS += basic/sys_wait/wait
+
+# basic: signal
+TESTS += basic/signal/psignal
+TESTS += basic/signal/signal
+TESTS += basic/signal/sigemptyset
+TESTS += basic/signal/sigfillset
+
+# basic: stdio
+TESTS += basic/stdio/dprintf
+TESTS += basic/stdio/fdopen
+TESTS += basic/stdio/flockfile
+TESTS += basic/stdio/fmemopen
+TESTS += basic/stdio/freopen
+TESTS += basic/stdio/fseeko
+TESTS += basic/stdio/ftello
+TESTS += basic/stdio/open_memstream
+TESTS += basic/stdio/rename
+TESTS += basic/stdio/renameat
+TESTS += basic/stdio/tmpfile
+TESTS += basic/stdio/ungetc
+TESTS += basic/stdio/vdprintf
+
+# basic: stdlib
+TESTS += basic/stdlib/getsubopt
+TESTS += basic/stdlib/mkstemp
+TESTS += basic/stdlib/posix_memalign
+TESTS += basic/stdlib/qsort_r
+TESTS += basic/stdlib/reallocarray
+TESTS += basic/stdlib/setenv
+TESTS += basic/stdlib/strtod
+TESTS += basic/stdlib/unsetenv
+
+# basic: time
+TESTS += basic/time/gmtime_r
+TESTS += basic/time/localtime_r
+TESTS += basic/time/mktime
+TESTS += basic/time/strftime
+TESTS += basic/time/strptime
+
+# process
+TESTS += process/fork-exec-setpgid-in-child
+TESTS += process/fork-exec-setpgid-in-parent
+TESTS += process/fork-setpgid
+TESTS += process/fork-setsid-setpgid
+TESTS += process/fork-setsid-setpgid-in-parent
+TESTS += process/fork-setsid-setpgid-move
+TESTS += process/zombie-getpgid
+TESTS += process/zombie-setpgid
+TESTS += process/zombie-setpgid-leader
+
+# signal
+TESTS += signal/block-chld-default-unblock
+TESTS += signal/block-chld-unblock
+TESTS += signal/block-ignore-raise-unblock
+TESTS += signal/block-raise
+TESTS += signal/block-raise-handle-unblock
+TESTS += signal/block-raise-unblock
+TESTS += signal/default-chld-exec
+TESTS += signal/default-usr1-exec
+TESTS += signal/handle-chld-exec
+TESTS += signal/handle-usr1-exec
+TESTS += signal/ignore-block-raise
+TESTS += signal/ignore-chld-exec
+TESTS += signal/ignore-raise
+TESTS += signal/ignore-raise-unignore
+TESTS += signal/ignore-usr1-exec
+TESTS += signal/raise
+
+# io
+TESTS += io/open-mkstemp-rdonly-trunc-directory
+TESTS += io/open-mkstemp-wronly-directory
+TESTS += io/open-mkstemp-wronly-trunc-directory
+
+# paths
+TESTS += paths/dev-random
+TESTS += paths/proc
+
+# limits
+TESTS += limits/_POSIX_ARG_MAX
+TESTS += limits/_POSIX_PATH_MAX
+TESTS += limits/_XOPEN_PATH_MAX
+TESTS += limits/COLL_WEIGHTS_MAX
+TESTS += limits/NAME_MAX_XOPEN
+
+# myos: chroot(2)
+TESTS += myos/chroot/chroot-basic
+TESTS += myos/chroot/chroot-cwd
+TESTS += myos/chroot/chroot-dotdot
+TESTS += myos/chroot/chroot-errors
+TESTS += myos/chroot/chroot-inherit
+TESTS += myos/chroot/chroot-nested
+
+# myos: named FIFOs (mkfifo/mknod S_IFIFO/mkfifoat)
+TESTS += myos/fifo/fifo-errors
+TESTS += myos/fifo/fifo-mknod
+TESTS += myos/fifo/fifo-nonblock
+TESTS += myos/fifo/fifo-reuse
+TESTS += myos/fifo/fifo-rw
+TESTS += myos/fifo/fifo-stat
