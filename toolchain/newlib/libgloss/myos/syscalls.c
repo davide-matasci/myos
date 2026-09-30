@@ -188,6 +188,17 @@ int _open(const char *path, int flags, ...) {
         errno = ENOENT;
         return -1;
     }
+    /* O_CREAT|O_EXCL: the kernel has no exclusive-create flag, so refuse an
+     * existing path here. Without it mkstemp()/mkdtemp() never saw EEXIST and
+     * could not step past a name already taken (pids — and so newlib's
+     * pid-seeded temp names — repeat once task slots are recycled). */
+    if ((flags & O_CREAT) && (flags & O_EXCL)) {
+        struct stat ex;
+        if (myos_stat_path(path, &ex) == 0) {
+            errno = EEXIST;
+            return -1;
+        }
+    }
     /* Writable opens are accepted for mounts that support them (tmpfs/devfs).
      * Read-only mounts are rejected by the kernel; map that to EROFS/ENOENT. */
     long ret = myos_syscall3(

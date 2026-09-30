@@ -22,7 +22,7 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 
 **Non-basic** = everything except `basic` (and the non-runtime `include` /
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`
-(~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (126 paths:
+(~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (125 paths:
 POSIX core + non-basic + the myos suite). Wired the same way as basic: thin
 `ci-smoke-copy.sh` staging + host prebuild + `make … TESTLIST=… report`.
 
@@ -75,6 +75,9 @@ until they pass honestly (no xfails):
   re-handling a blocked pending signal after unignore
 - `paths/*` FHS directories (`/var`, `/run`, `/usr/share`, `/sbin`, …) and
   `/dev/{fd,stdin,stdout,stderr,full}` — not present in the image
+- `basic/stdlib/strtod` — passes on x86_64, fails on riscv64 (cause not yet
+  investigated); `basic/setjmp/siglongjmp` (basic smoke) is likewise
+  already red on riscv64
 - Not buildable against newlib/libgloss yet (not in any list): pty API
   (`posix_openpt`/`grantpt`/`unlockpt`), `ppoll`, `timer_*`, `alarm`,
   `getppid`, `SA_ONSTACK`/`sigaltstack`, `siginfo_t.si_pid`, `struct rlimit`

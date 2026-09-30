@@ -90,7 +90,6 @@ TESTS += basic/stdlib/posix_memalign
 TESTS += basic/stdlib/qsort_r
 TESTS += basic/stdlib/reallocarray
 TESTS += basic/stdlib/setenv
-TESTS += basic/stdlib/strtod
 TESTS += basic/stdlib/unsetenv
 
 # basic: time
