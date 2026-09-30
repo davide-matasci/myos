@@ -1,6 +1,6 @@
 //! tmpfs: small in-memory writable tree mounted at `/tmp/…`.
 //!
-//! Supports regular files, directories, and symlinks. Paths are relative to the
+//! Supports regular files, directories, symlinks and named FIFOs. Paths are relative to the
 //! mount (no leading slash), e.g. `ci`, `d/f`.
 
 use alloc::string::String;
@@ -20,12 +20,15 @@ const LINK_CAP: usize = 64;
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 const S_IFLNK: u32 = 0o120000;
+const S_IFIFO: u32 = 0o010000;
 
 #[derive(Clone)]
 enum Kind {
     Dir,
     File(Vec<u8>),
     Symlink(String),
+    /// Named pipe (`mkfifo`): the kernel pipe slot it owns (see `pipe`).
+    Fifo(usize),
 }
 
 struct Entry {
@@ -180,6 +183,40 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
     Some(buf.len())
 }
 
+/// mkfifo(2): create a named pipe at `name` (fails if anything exists there).
+pub fn mkfifo(name: &str) -> bool {
+    if !valid_rel_path(name) {
+        return false;
+    }
+    let mut entries = ENTRIES.lock();
+    if find_index(&entries, name).is_some()
+        || !parent_ok(&entries, name)
+        || entries.len() >= MAX_ENTRIES
+    {
+        return false;
+    }
+    let Some(id) = crate::pipe::alloc_named() else {
+        return false;
+    };
+    entries.push(Entry {
+        path: String::from(name),
+        kind: Kind::Fifo(id),
+    });
+    true
+}
+
+/// Pipe slot behind the FIFO at `name`, if `name` is one.
+pub fn fifo_id(name: &str) -> Option<usize> {
+    if !valid_rel_path(name) {
+        return None;
+    }
+    let entries = ENTRIES.lock();
+    match entries[find_index(&entries, name)?].kind {
+        Kind::Fifo(id) => Some(id),
+        _ => None,
+    }
+}
+
 pub fn mkdir(name: &str) -> bool {
     if !valid_rel_path(name) {
         return false;
@@ -232,6 +269,11 @@ pub fn unlink(name: &str) -> bool {
             entries.remove(i);
             true
         }
+        Kind::Fifo(id) => {
+            crate::pipe::fifo_unlink(id);
+            entries.remove(i);
+            true
+        }
         Kind::Dir => false,
     }
 }
@@ -263,6 +305,9 @@ pub fn rename(old: &str, new: &str) -> bool {
         }
         if old_i == new_i {
             return true;
+        }
+        if let Kind::Fifo(id) = entries[new_i].kind {
+            crate::pipe::fifo_unlink(id);
         }
         entries.remove(new_i);
         let old_i = if new_i < old_i { old_i - 1 } else { old_i };
@@ -411,6 +456,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         Kind::Dir => (S_IFDIR | 0o755, 0u32, 2u32),
         Kind::File(data) => (S_IFREG | 0o755, data.len() as u32, 1u32),
         Kind::Symlink(t) => (S_IFLNK | 0o777, t.len() as u32, 1u32),
+        Kind::Fifo(_) => (S_IFIFO | 0o644, 0u32, 1u32),
     };
     Some(StatInfo {
         mode,

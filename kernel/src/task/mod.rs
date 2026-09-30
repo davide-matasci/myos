@@ -262,6 +262,11 @@ struct Task {
     /// Absolute cwd (POSIX). Survives exec; copied on fork. Always starts with `/`.
     cwd: [u8; 256],
     cwd_len: u16,
+    /// chroot(2) prefix: absolute real path of this task's `/`, or empty
+    /// (`root_len == 0`) for the real root. Copied on fork, kept across exec.
+    /// `cwd` is always relative to it (the path the task itself sees).
+    root: [u8; ROOT_CAP],
+    root_len: u8,
     exit_code: u8,
     /// Anonymous mmap windows (after the brk heap).
     mmap: [MmapRegion; MAX_MMAP_REGIONS],
@@ -311,6 +316,8 @@ const EMPTY: Task = Task {
     exec_name_len: 0,
     cwd: root_cwd_buf(),
     cwd_len: 1,
+    root: [0; ROOT_CAP],
+    root_len: 0,
     exit_code: 0,
     mmap: EMPTY_MMAP,
     mmap_next: 0,
@@ -324,6 +331,9 @@ const EMPTY: Task = Task {
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
+
+/// Longest chroot prefix (real absolute path) a task can carry.
+pub const ROOT_CAP: usize = 128;
 
 /// Per-parent count of exited-but-unreaped (zombie) user children. myos has no
 /// userspace signal trampolines, so SIGCHLD is surfaced to libgloss by asking
@@ -814,6 +824,36 @@ pub fn cwd(out: &mut [u8]) -> usize {
     n
 }
 
+/// chroot prefix of the current task (real absolute path); 0 bytes = real `/`.
+pub fn root(out: &mut [u8]) -> usize {
+    let flags = irq_save();
+    irq_off();
+    let id = current_slot();
+    let n = {
+        let tasks = TASKS.lock();
+        let t = &tasks[id];
+        let n = (t.root_len as usize).min(out.len());
+        out[..n].copy_from_slice(&t.root[..n]);
+        n
+    };
+    irq_restore(flags);
+    n
+}
+
+/// Set the chroot prefix (canonical real absolute path; `/` clears it).
+pub fn set_root(path: &[u8]) -> bool {
+    if path.is_empty() || path[0] != b'/' || path.len() > ROOT_CAP {
+        return false;
+    }
+    let path = if path == b"/" { &path[..0] } else { path };
+    with_current_mut(|t| {
+        t.root = [0; ROOT_CAP];
+        t.root[..path.len()].copy_from_slice(path);
+        t.root_len = path.len() as u8;
+    });
+    true
+}
+
 /// Set absolute cwd. `path` must be a canonical absolute path (`/` or `/…`).
 pub fn set_cwd(path: &[u8]) -> bool {
     if path.is_empty() || path[0] != b'/' || path.len() > 256 {
@@ -900,6 +940,74 @@ pub fn pipe_open() -> Option<(usize, usize)> {
         pipe::free(id);
     }
     out
+}
+
+/// Why [`fd_open_fifo`] failed.
+pub enum FifoOpenErr {
+    /// `O_WRONLY|O_NONBLOCK` with no reader (POSIX `ENXIO`).
+    NoReader,
+    /// No free fd, `O_RDWR`, FIFO gone, or the wait was interrupted.
+    Failed,
+}
+
+const FIFO_O_ACCMODE: u32 = 3;
+const FIFO_O_WRONLY: u32 = 1;
+const FIFO_O_RDWR: u32 = 2;
+/// Linux-shaped `O_NONBLOCK` (libgloss maps newlib's bit to this).
+pub const O_NONBLOCK_K: u32 = 0o4000;
+
+/// open(2) of a named FIFO backed by pipe slot `id`.
+///
+/// POSIX semantics: a read-only open blocks until a writer opens and a
+/// write-only open blocks until a reader opens. With `O_NONBLOCK` the read
+/// side returns at once and the write side fails with ENXIO when nobody reads.
+/// `O_RDWR` is refused: an fd here is either a read or a write end.
+pub fn fd_open_fifo(id: usize, flags: u32) -> Result<usize, FifoOpenErr> {
+    let acc = flags & FIFO_O_ACCMODE;
+    if acc == FIFO_O_RDWR {
+        return Err(FifoOpenErr::Failed);
+    }
+    let write = acc == FIFO_O_WRONLY;
+    let nonblock = flags & O_NONBLOCK_K != 0;
+    let Some((readers, _, r_opens, w_opens)) = pipe::fifo_ends(id) else {
+        return Err(FifoOpenErr::Failed);
+    };
+    if write && nonblock && readers == 0 {
+        return Err(FifoOpenErr::NoReader);
+    }
+    if !pipe::fifo_attach(id, !write, write) {
+        return Err(FifoOpenErr::Failed);
+    }
+    let entry = if write { FdEntry::PipeWrite(id) } else { FdEntry::PipeRead(id) };
+    let fd = with_current_mut(|t| {
+        let i = (0..MAX_FDS).find(|&i| t.fds[i] == FdEntry::Empty)?;
+        t.fds[i] = entry;
+        Some(i)
+    });
+    let Some(fd) = fd else {
+        fd_drop(entry);
+        return Err(FifoOpenErr::Failed);
+    };
+    if nonblock {
+        return Ok(fd);
+    }
+    // Wait for the peer: either one is attached now, or one attached (and
+    // perhaps already left) since we looked.
+    loop {
+        let Some((r, w, ro, wo)) = pipe::fifo_ends(id) else {
+            break;
+        };
+        let peer_came = if write { r > 0 || ro != r_opens } else { w > 0 || wo != w_opens };
+        if peer_came {
+            return Ok(fd);
+        }
+        if crate::signal::current_should_wake() {
+            break;
+        }
+        yield_now();
+    }
+    fd_close(fd);
+    Err(FifoOpenErr::Failed)
 }
 
 /// Readiness bits for a userspace fd, for select()/poll() on pipes.
@@ -2030,6 +2138,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         brk,
         cwd,
         cwd_len,
+        root,
+        root_len,
         mmap,
         mmap_next,
         sid,
@@ -2058,6 +2168,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.brk_cur,
             t.cwd,
             t.cwd_len,
+            t.root,
+            t.root_len,
             t.mmap,
             t.mmap_next,
             t.sid,
@@ -2155,6 +2267,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         exec_name_len: 0,
         cwd,
         cwd_len,
+        root,
+        root_len,
         exit_code: 0,
         mmap,
         mmap_next,
@@ -2331,6 +2445,8 @@ fn spawn_inner(
             c
         },
         cwd_len: 1,
+        root: [0; ROOT_CAP],
+        root_len: 0,
         exit_code: 0,
         mmap: EMPTY_MMAP,
         mmap_next: 0,

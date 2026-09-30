@@ -2,9 +2,12 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "myos_syscalls.h"
 
@@ -12,6 +15,8 @@
 
 static DIR dir_pool[MYOS_DIR_POOL];
 static unsigned char dir_used[MYOS_DIR_POOL];
+/* dirfd(): lazily opened fd per DIR (0 = none yet; stored as fd + 1). */
+static int dir_fd[MYOS_DIR_POOL];
 
 static int
 myos_path_is_root(const char *path)
@@ -82,6 +87,8 @@ myos_fill_dirent_meta(DIR *d, unsigned long namelen)
 		d->ent.d_type = DT_DIR;
 	} else if (S_ISREG(st.st_mode)) {
 		d->ent.d_type = DT_REG;
+	} else if (S_ISFIFO(st.st_mode)) {
+		d->ent.d_type = DT_FIFO;
 	}
 }
 
@@ -131,6 +138,7 @@ opendir(const char *name)
 	}
 	dir_pool[i].pos = 0;
 	dir_used[i] = 1;
+	dir_fd[i] = 0;
 	return &dir_pool[i];
 }
 
@@ -181,6 +189,129 @@ closedir(DIR *d)
 		errno = EBADF;
 		return -1;
 	}
+	if (dir_fd[slot] > 0) {
+		close(dir_fd[slot] - 1);
+		dir_fd[slot] = 0;
+	}
 	dir_used[slot] = 0;
 	return 0;
+}
+
+/* Re-read the listing so entries created since opendir() show up. */
+void
+rewinddir(DIR *d)
+{
+	int slot = dir_slot_index(d);
+	unsigned long len;
+
+	if (slot < 0 || !dir_used[slot]) {
+		return;
+	}
+	len = (unsigned long)myos_syscall3(MYOS_SYS_LISTDIR,
+	    (long)(uintptr_t)d->path, (long)strlen(d->path),
+	    (long)(uintptr_t)d->buf);
+	d->len = len == (unsigned long)MYOS_SYSERR ? 0 : len;
+	d->pos = 0;
+}
+
+/* Positions are byte offsets into the cached listing. */
+long
+telldir(DIR *d)
+{
+	int slot = dir_slot_index(d);
+
+	if (slot < 0 || !dir_used[slot]) {
+		errno = EBADF;
+		return -1;
+	}
+	return (long)d->pos;
+}
+
+void
+seekdir(DIR *d, long loc)
+{
+	int slot = dir_slot_index(d);
+
+	if (slot < 0 || !dir_used[slot] || loc < 0) {
+		return;
+	}
+	d->pos = (unsigned long)loc > d->len ? d->len : (unsigned long)loc;
+}
+
+int
+dirfd(DIR *d)
+{
+	int slot = dir_slot_index(d);
+	int fd;
+
+	if (slot < 0 || !dir_used[slot]) {
+		errno = EINVAL;
+		return -1;
+	}
+	if (dir_fd[slot] == 0) {
+		fd = open(d->path[0] ? d->path : ".", O_RDONLY);
+		if (fd < 0) {
+			return -1;
+		}
+		dir_fd[slot] = fd + 1;
+	}
+	return dir_fd[slot] - 1;
+}
+
+int
+alphasort(const struct dirent **a, const struct dirent **b)
+{
+	return strcoll((*a)->d_name, (*b)->d_name);
+}
+
+int
+scandir(const char *path, struct dirent ***namelist,
+    int (*select)(const struct dirent *),
+    int (*compar)(const struct dirent **, const struct dirent **))
+{
+	DIR *d = opendir(path);
+	struct dirent **list = NULL;
+	struct dirent *e;
+	size_t n = 0;
+	size_t cap = 0;
+
+	if (d == NULL) {
+		return -1;
+	}
+	while ((e = readdir(d)) != NULL) {
+		struct dirent *copy;
+		if (select != NULL && !select(e)) {
+			continue;
+		}
+		if (n == cap) {
+			size_t ncap = cap ? cap * 2 : 16;
+			struct dirent **grown = realloc(list, ncap * sizeof(*list));
+			if (grown == NULL) {
+				goto fail;
+			}
+			list = grown;
+			cap = ncap;
+		}
+		copy = malloc(sizeof(*copy));
+		if (copy == NULL) {
+			goto fail;
+		}
+		memcpy(copy, e, sizeof(*copy));
+		list[n++] = copy;
+	}
+	closedir(d);
+	if (compar != NULL && n > 1) {
+		qsort(list, n, sizeof(*list),
+		    (int (*)(const void *, const void *))compar);
+	}
+	*namelist = list;
+	return (int)n;
+fail:
+	while (n > 0) {
+		free(list[--n]);
+	}
+	free(list);
+	closedir(d);
+	errno = ENOMEM;
+	return -1;
 }

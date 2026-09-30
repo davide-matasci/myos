@@ -234,17 +234,12 @@ int _chown(const char *path, uid_t owner, gid_t group) {
     return -1;
 }
 
+int mknod(const char *path, mode_t mode, dev_t dev); /* posix_stubs.c */
+
 int _mknod(const char *path, mode_t mode, dev_t dev) {
-    (void)path;
-    (void)mode;
-    (void)dev;
-    errno = EROFS;
-    return -1;
+    return mknod(path, mode, dev);
 }
 
 int _mkfifo(const char *path, mode_t mode) {
-    (void)path;
-    (void)mode;
-    errno = EROFS;
-    return -1;
+    return mkfifo(path, mode);
 }

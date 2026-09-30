@@ -162,6 +162,7 @@ void _exit(int status) {
 #define MYOS_K_O_CREAT  0x40
 #define MYOS_K_O_TRUNC  0x200
 #define MYOS_K_O_APPEND 0x400
+#define MYOS_K_O_NONBLOCK 0x800
 
 static long myos_kernel_oflags(int flags) {
     long k = (long)(flags & O_ACCMODE);
@@ -173,6 +174,9 @@ static long myos_kernel_oflags(int flags) {
     }
     if (flags & O_APPEND) {
         k |= MYOS_K_O_APPEND;
+    }
+    if (flags & O_NONBLOCK) {
+        k |= MYOS_K_O_NONBLOCK; /* FIFO open: no wait for the peer */
     }
     return k;
 }
@@ -187,10 +191,17 @@ int _open(const char *path, int flags, ...) {
     long ret = myos_syscall3(
         MYOS_SYS_OPEN, (long)(uintptr_t)path, (long)strlen(path),
         myos_kernel_oflags(flags));
+    if (ret == (long)MYOS_ENXIO) {
+        errno = ENXIO; /* FIFO: O_WRONLY|O_NONBLOCK and no reader */
+        return -1;
+    }
     if (ret == (long)MYOS_SYSERR) {
         /* No controlling terminal → ENXIO (Linux open(/dev/tty) semantics). */
         errno = myos_path_is_dev_tty(path) ? ENXIO : ENOENT;
         return -1;
+    }
+    if (flags & O_NONBLOCK) {
+        myos_fd_nonblock_set((int)ret, 1);
     }
     if (myos_path_is_tty(path)) {
         myos_fd_set_tty((int)ret, 1);

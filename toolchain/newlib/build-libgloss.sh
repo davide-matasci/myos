@@ -43,7 +43,7 @@ for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c "$ROOT"/toolchain/newlib
   cp "$src_f" "$PORT/"
 done
 
-for f in myos_raw syscalls stubs posix_stubs misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect pty search; do
+for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect pty search; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
@@ -77,6 +77,7 @@ cp "$out/obj/crtn.o" "$libdir/crtn.o"
 mkdir -p "$libdir/specs" "$inc/sys"
 cp "$PORT/myos.specs" "$libdir/specs/myos.specs"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/dirent.h" "$inc/sys/dirent.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/sys/syslimits.h" "$inc/sys/syslimits.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/sysmacros.h" "$inc/sys/sysmacros.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/myos_extra.h" "$inc/sys/myos_extra.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/ioctl.h" "$inc/sys/ioctl.h"

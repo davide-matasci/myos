@@ -32,7 +32,8 @@ for hdr in \
 	process/process.h \
 	signal/signal.h \
 	stdio/suite.h \
-	udp/suite.h
+	udp/suite.h \
+	myos/myos.h
 do
 	if [ -f "$SRC/$hdr" ]; then
 		mkdir -p "$DEST/${hdr%/*}" || exit 1
