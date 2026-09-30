@@ -42,6 +42,9 @@ fi
 for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c "$ROOT"/toolchain/newlib/libgloss/myos/*.h; do
   cp "$src_f" "$PORT/"
 done
+# -I"$PORT" shadows the sysroot: sync sys/*.h too (dirent.c needs DT_FIFO).
+mkdir -p "$PORT/sys"
+cp "$ROOT"/toolchain/newlib/libgloss/myos/sys/*.h "$PORT/sys/"
 
 for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect pty search; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \

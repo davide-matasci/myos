@@ -164,6 +164,8 @@ void _exit(int status) {
 #define MYOS_K_O_APPEND 0x400
 #define MYOS_K_O_NONBLOCK 0x800
 
+static int myos_stat_path(const char *path, struct stat *st);
+
 static long myos_kernel_oflags(int flags) {
     long k = (long)(flags & O_ACCMODE);
     if (flags & O_CREAT) {
@@ -201,7 +203,13 @@ int _open(const char *path, int flags, ...) {
         return -1;
     }
     if (flags & O_NONBLOCK) {
-        myos_fd_nonblock_set((int)ret, 1);
+        /* Only FIFOs get userspace O_NONBLOCK reads from open(): other paths
+         * (ttys, /dev/ptmx, files) keep their historical blocking behaviour
+         * that dropbear/curl rely on; fcntl(F_SETFL) still sets it anywhere. */
+        struct stat st;
+        if (myos_stat_path(path, &st) == 0 && S_ISFIFO(st.st_mode)) {
+            myos_fd_nonblock_set((int)ret, 1);
+        }
     }
     if (myos_path_is_tty(path)) {
         myos_fd_set_tty((int)ret, 1);

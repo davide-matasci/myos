@@ -2,6 +2,9 @@
 
 #include "../myos.h"
 
+/* newlib only declares mknod() for Cygwin/RTEMS/SPU; libgloss defines it. */
+int mknod(const char*, mode_t, dev_t);
+
 int main(void)
 {
 	char* dir = make_scratch();

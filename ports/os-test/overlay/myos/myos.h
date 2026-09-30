@@ -5,13 +5,16 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
-#include <err.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/* err()/errx()/warn() as upstream suites get them (newlib has no <err.h>). */
+#include "../misc/errors.h"
 
 /* Fresh scratch directory under $TMPDIR (default /tmp), e.g. /tmp/myos-t.<pid>. */
 static inline char* make_scratch(void)
