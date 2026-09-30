@@ -216,9 +216,11 @@ int _open(const char *path, int flags, ...) {
     if (flags & O_NONBLOCK) {
         /* Only FIFOs get userspace O_NONBLOCK reads from open(): other paths
          * (ttys, /dev/ptmx, files) keep their historical blocking behaviour
-         * that dropbear/curl rely on; fcntl(F_SETFL) still sets it anywhere. */
-        struct stat st;
-        if (myos_stat_path(path, &st) == 0 && S_ISFIFO(st.st_mode)) {
+         * that dropbear/curl rely on; fcntl(F_SETFL) still sets it anywhere.
+         * POLLFD succeeds only on pipe ends (a named FIFO opens as one), so
+         * regular files cost no extra lookup (dropbear opens authorized_keys
+         * O_RDONLY|O_NONBLOCK on every pubkey auth). */
+        if (myos_syscall1(MYOS_SYS_POLLFD, ret) != (long)MYOS_SYSERR) {
             myos_fd_nonblock_set((int)ret, 1);
         }
     }
