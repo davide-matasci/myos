@@ -17,15 +17,25 @@ global_asm!(
     .align 4
     .global trap_vector
 trap_vector:
-    csrr t0, sstatus
-    andi t0, t0, 0x100
-    bnez t0, 1f
+    # sscratch convention (same as Linux): 0 while this hart executes in
+    # S-mode, the running task's kernel stack top while it executes in U-mode.
+    # That lets entry pick the stack with a single swap and no scratch GPR.
+    #
+    # The previous entry tested sstatus.SPP with `csrr t0, sstatus` BEFORE
+    # saving t0, and the exit repeated the test AFTER restoring it, so every
+    # trap from U-mode (timer tick, ecall, IPI) silently zeroed user t0 and
+    # every nested S-mode trap set kernel t0 to 0x100. That was the
+    # intermittent riscv64 corruption family: runaway copy loops storing at
+    # brk (dropbear conv_path), wrong mbedTLS ECDSA results ("ECP - The
+    # signature is not valid"), SSH stalls, sepc=0 / zeroed-ra faults.
+    csrrw sp, sscratch, sp
+    bnez sp, 1f
+    # From S-mode: sscratch was 0, undo the swap (sp = kernel sp again).
     csrrw sp, sscratch, sp
 1:
     addi sp, sp, -280
     sd x0, 0(sp)
     sd x1, 8(sp)
-    sd x2, 16(sp)
     sd x3, 24(sp)
     sd x4, 32(sp)
     sd x5, 40(sp)
@@ -55,57 +65,81 @@ trap_vector:
     sd x29, 232(sp)
     sd x30, 240(sp)
     sd x31, 248(sp)
+    # Every GPR except sp is saved; t0/t1 are free from here on.
+    csrr t0, sscratch    # U-mode: user sp. S-mode: 0.
+    bnez t0, 2f
+    addi t0, sp, 280     # S-mode: sp at the time of the trap
+2:
+    sd t0, 16(sp)
+    sd t0, 272(sp)
+    csrw sscratch, zero  # now running in S-mode
     csrr t0, sepc
     sd t0, 256(sp)
     csrr t0, sstatus
     sd t0, 264(sp)
-    csrr t1, sstatus
-    andi t1, t1, 0x100
-    bnez t1, 2f
-    csrr t0, sscratch
-    sd t0, 272(sp)
-    j 3f
-2:
-    # S-mode trap (timer nested in a syscall): keep sscratch. Storing zero
-    # here left the next user trap with sp=0 (sepc in flash after `echo pipe | cat`).
-    csrr t0, sscratch
-    sd t0, 272(sp)
-3:
-    # RISC-V ABI: tp (x4) is the user TLS pointer. smp::cpu_id() reads tp as the
-    # logical CPU index, so leaving user tp live through the trap/syscall body
-    # made current_slot()/LOADED_ASPACE hit the wrong per-CPU cell whenever
-    # user TLS was a small integer. #146 pinned tp=0 (BSP); that is wrong on an
-    # AP and also insufficient once #147 trusted any tp < MAX_CPUS without an
-    # ONLINE check — a clobbered tp during expand_user_elf (ripgrep) selected
-    # CURRENT[N] for a never-scheduled CPU. Reload tp from the kernel-stack
-    # footer stamped by schedule/spawn (word 0 at kstack_top - STACK_SIZE).
-    # sp is currently kstack_top - 280. Nested S-mode traps keep the hart tp.
-    csrr t1, sstatus
-    andi t1, t1, 0x100
-    bnez t1, 5f
-    # Userspace is BSP-only while Limine/WFI APs stay !ONLINE. Pin tp=0 so a
-    # clobbered x4 (or corrupt stack footer) cannot make cpu_id()/LOADED_ASPACE
-    # select a never-scheduled CURRENT[] slot — that was the ripgrep sepc=0
-    # signature after uutils ls (#146/#150). When APs are truly ONLINE for
-    # userspace, reload from the stack footer instead of hard zero.
+    # RISC-V ABI: tp (x4) is the user TLS pointer, but smp::cpu_id() reads tp
+    # as the logical CPU index. Userspace is BSP-only while Limine/WFI APs
+    # stay !ONLINE, so pin tp=0 for U-mode traps (a user TLS value would
+    # select a never-scheduled CURRENT[] slot — ripgrep sepc=0, #146/#150).
+    # Nested S-mode traps keep the hart tp.
+    andi t0, t0, 0x100
+    bnez t0, 5f
     mv tp, zero
 5:
     mv a0, sp
     call riscv64_trap_handler
-    # Mask SIE BEFORE restoring sscratch: a timer nesting in the window where
-    # sscratch already holds the user sp would trap in with sp = user sp and
-    # build a kernel frame on the user stack (silent user-memory corruption).
+    # Mask SIE before arming sscratch: a trap taken after sscratch holds the
+    # kernel stack top but before sret would take the U-mode path and build
+    # its frame over this live one. sret applies SIE <- SPIE atomically.
     ld t0, 264(sp)
     andi t0, t0, -3      # clear SIE
-    ori t0, t0, 0x20     # set SPIE (sret: SIE <- SPIE)
+    ori t0, t0, 0x20     # set SPIE
     csrw sstatus, t0
-    ld t0, 272(sp)
+    ld t1, 256(sp)
+    csrw sepc, t1
+    andi t0, t0, 0x100   # SPP: returning to S-mode?
+    bnez t0, 6f
+    # Return to U-mode: arm sscratch with this task's kernel stack top (the
+    # U-mode frame always sits right below it), restore every GPR from the
+    # frame, user sp last.
+    addi t0, sp, 280
     csrw sscratch, t0
-    ld t0, 256(sp)
-    csrw sepc, t0
-    ld x0, 0(sp)
     ld x1, 8(sp)
-    ld x2, 16(sp)
+    ld x3, 24(sp)
+    ld x4, 32(sp)
+    ld x5, 40(sp)
+    ld x6, 48(sp)
+    ld x7, 56(sp)
+    ld x8, 64(sp)
+    ld x9, 72(sp)
+    ld x10, 80(sp)
+    ld x11, 88(sp)
+    ld x12, 96(sp)
+    ld x13, 104(sp)
+    ld x14, 112(sp)
+    ld x15, 120(sp)
+    ld x16, 128(sp)
+    ld x17, 136(sp)
+    ld x18, 144(sp)
+    ld x19, 152(sp)
+    ld x20, 160(sp)
+    ld x21, 168(sp)
+    ld x22, 176(sp)
+    ld x23, 184(sp)
+    ld x24, 192(sp)
+    ld x25, 200(sp)
+    ld x26, 208(sp)
+    ld x27, 216(sp)
+    ld x28, 224(sp)
+    ld x29, 232(sp)
+    ld x30, 240(sp)
+    ld x31, 248(sp)
+    ld x2, 272(sp)
+    sret
+6:
+    # Return to S-mode: sscratch stays 0. The kernel may have scheduled in
+    # between; the resumed stack is still this frame's.
+    ld x1, 8(sp)
     ld x3, 24(sp)
     ld x4, 32(sp)
     ld x5, 40(sp)
@@ -136,11 +170,6 @@ trap_vector:
     ld x30, 240(sp)
     ld x31, 248(sp)
     addi sp, sp, 280
-    csrr t0, sstatus
-    andi t0, t0, 0x100
-    bnez t0, 4f
-    csrrw sp, sscratch, sp
-4:
     sret
 
     .global fork_sret_from_frame
@@ -257,6 +286,8 @@ pub fn fork_sret_child_to_user(frame: *mut u64) -> ! {
 pub fn init() {
     let v = trap_vector as *const () as usize;
     unsafe {
+        // trap_vector treats a non-zero sscratch as "trapped from U-mode".
+        asm!("csrw sscratch, zero", options(nostack));
         asm!("csrw stvec, {v}", v = in(reg) v, options(nostack));
         // Timer only on BSP bring-up. SSIE (IPI) is enabled in ap_init /
         // enable_ipi once secondaries are online — enabling it too early
@@ -276,6 +307,7 @@ pub fn enable_ipi() {
 pub fn ap_init(_logical: usize) {
     let v = trap_vector as *const () as usize;
     unsafe {
+        asm!("csrw sscratch, zero", options(nostack));
         asm!("csrw stvec, {v}", v = in(reg) v, options(nostack));
         // Program STIE+SSIE but leave SIE clear until ap_idle_loop.
         asm!("csrs sie, {}", in(reg) (1 << 5) | (1 << 1), options(nostack));
@@ -409,7 +441,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             let mut regs = alloc::string::String::new();
             for idx in 3..18usize {
                 let v = unsafe { *frame.add(idx) };
-                regs.push_str(&alloc::format!(" x{}={v:#x}", idx + 1));
+                regs.push_str(&alloc::format!(" x{idx}={v:#x}"));
             }
             let mut stack = alloc::string::String::new();
             {

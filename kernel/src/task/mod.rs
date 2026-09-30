@@ -2386,14 +2386,8 @@ pub fn schedule() {
         user::set_kernel_rsp0(kstack);
         #[cfg(target_arch = "x86_64")]
         crate::arch::gdt::set_rsp0(kstack as u64);
-        // Keep the sscratch CSR in lockstep with the static. Updating only the
-        // static left the CSR holding a previous task's top (or user sp) across
-        // schedule→trampoline→exec races; the next user trap then built its
-        // kernel frame on the wrong stack (riscv64 sepc=0 / zeroed ra family).
-        #[cfg(target_arch = "riscv64")]
-        unsafe {
-            core::arch::asm!("csrw sscratch, {k}", k = in(reg) kstack, options(nostack));
-        }
+        // riscv64: no sscratch write here — it stays 0 in S-mode and is armed
+        // with the kernel stack top only on the way out to U-mode.
     }
 
     let want = if aspace == 0 {
