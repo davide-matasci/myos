@@ -13,7 +13,7 @@ static struct passwd root_pw = {
 	.pw_uid = 0,
 	.pw_gid = 0,
 	.pw_gecos = "root",
-	.pw_dir = "/root",
+	.pw_dir = "/", /* keep in sync with libgloss pwdgrp.c */
 	.pw_shell = "/bin/custom/sh",
 };
 

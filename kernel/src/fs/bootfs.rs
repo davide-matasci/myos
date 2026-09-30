@@ -62,7 +62,7 @@ pub fn lookup(name: &str) -> Option<&'static [u8]> {
 
 /// True when `name` is a directory in the flat namespace: the mount root,
 /// or a prefix of any registered entry followed by `/`. Flat entries like
-/// `root/.ssh/authorized_keys` therefore expose real `/root` and `/root/.ssh`
+/// `.ssh/authorized_keys` therefore expose a real `/.ssh` directory
 /// directories, which tools that stat every path component (e.g. dropbear's
 /// authorized_keys permission walk) require.
 fn is_dir_prefix(name: &str) -> bool {
@@ -105,15 +105,18 @@ pub fn write(_name: &str, _pos: usize, _buf: &[u8]) -> Option<usize> {
 }
 
 pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
-    if rel.is_empty() || rel == "." {
-        return listdir(buf);
-    }
-    // Subdirectory of the flat namespace: list the immediate child basenames
-    // of every entry under `rel/` (so `/root` lists `.ssh`, etc.).
-    if !is_dir_prefix(rel) {
+    // The namespace is flat (`etc/dropbear/ed25519_hostkey`, `usr/lib/.keep`,
+    // ...): list only the immediate child basename of every entry under the
+    // directory, once each. The mount root used to copy every full entry name
+    // verbatim, so `ls /` printed `usr/lib/.keep` and friends as if they were
+    // top-level files.
+    let prefix = if rel.is_empty() || rel == "." {
+        alloc::string::String::new()
+    } else if is_dir_prefix(rel) {
+        alloc::format!("{rel}/")
+    } else {
         return 0;
-    }
-    let prefix = alloc::format!("{rel}/");
+    };
     let pb = prefix.as_bytes();
     let files = FILES.lock();
     let mut n = 0;
@@ -131,39 +134,11 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
             continue;
         }
         // Skip duplicates from multiple entries sharing a subdirectory.
-        let mut base = 0;
-        let mut dup = false;
-        while base < n {
-            let end = buf[base..n].iter().position(|&c| c == b'\n').map(|p| base + p).unwrap_or(n);
-            if buf[base..end] == *child {
-                dup = true;
-                break;
-            }
-            base = end + 1;
-        }
-        if dup {
+        if buf[..n].split(|&c| c == b'\n').any(|line| line == child) {
             continue;
         }
         buf[n..n + child.len()].copy_from_slice(child);
         n += child.len();
-        buf[n] = b'\n';
-        n += 1;
-    }
-    n
-}
-
-/// Copy newline-separated basenames into `buf`. Returns bytes written.
-pub fn listdir(buf: &mut [u8]) -> usize {
-    let files = FILES.lock();
-    let mut n = 0;
-    for slot in files.iter().flatten() {
-        let name = &slot.name[..slot.len];
-        let need = name.len() + 1;
-        if n + need > buf.len() {
-            break;
-        }
-        buf[n..n + name.len()].copy_from_slice(name);
-        n += name.len();
         buf[n] = b'\n';
         n += 1;
     }
