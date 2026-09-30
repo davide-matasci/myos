@@ -417,7 +417,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         let ak_bytes = std::fs::read(&ak).unwrap_or_else(|e| {
             panic!("dropbear: missing testkey.pub ({e})")
         });
-        add(&mut entries, "root/.ssh/authorized_keys", Some(ak_bytes));
+        add(&mut entries, ".ssh/authorized_keys", Some(ak_bytes));
         // Server host key (generated with host-built dropbearkey; private key
         // committed next to the port, demo OS — NOT a secret).
         let hk = manifest_dir.join("ports/dropbear/testkey.host");

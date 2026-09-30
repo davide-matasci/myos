@@ -13,7 +13,7 @@ static struct passwd pwd_root = {
     .pw_uid = 0,
     .pw_gid = 0,
     .pw_gecos = "root",
-    .pw_dir = "/root",
+    .pw_dir = "/", /* login starts at /; there is no separate /root */
     .pw_shell = "/bin/custom/sh",
 };
 
