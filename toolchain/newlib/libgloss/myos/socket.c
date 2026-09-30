@@ -43,6 +43,8 @@ struct myos_sock {
     unsigned short bind_port; /* listener port after bind() */
     int accept_armed;  /* listener: "accept" ctl written, waiting for status */
     int last_accept_seq; /* listener: seq of the last accepted handoff */
+    int taken_seq;     /* listener: seq named by the last "taken <seq>" sent */
+    struct timeval taken_tv; /* listener: when that "taken" was sent */
 };
 
 static struct myos_sock socks[MYOS_MAX_SOCKS];
@@ -69,6 +71,7 @@ static struct myos_sock *sock_alloc(void) {
             socks[i].data_fd = -1;
             socks[i].ctl_fd = -1;
             socks[i].last_accept_seq = -1;
+            socks[i].taken_seq = -1;
             return &socks[i];
         }
     }
@@ -335,6 +338,7 @@ int myos_socket_fcntl(int fd, int cmd, int arg) {
  */
 static int listener_ctl(struct myos_sock *s, const char *cmd);
 static int listener_status(struct myos_sock *s, char *out, size_t cap);
+static void listener_retry_taken(struct myos_sock *ls, int seq);
 /* Last whitespace-separated decimal in an "accepted ..." status = the
  * per-listener handoff seq; -1 when absent. */
 static int status_accept_seq(const char *status) {
@@ -407,12 +411,14 @@ int myos_socket_poll(int fd, short events, short *revents) {
                 if (seq >= 0 && seq != s->last_accept_seq) {
                     rev |= POLLIN;
                 } else {
-                    /* We already consumed this accept. netd cleared its
-                     * parked wait after the handoff, so it will not report
-                     * the *next* connection until we ask again. Re-arm here
-                     * or the server accepts exactly one connection then
-                     * hangs on the listener forever. */
-                    (void)listener_ctl(s, "accept");
+                    /* We already consumed this handoff and netd has not
+                     * processed our "taken" yet. Do NOT write a ctl on every
+                     * select() spin: re-sending "accept" here queued hundreds
+                     * of requests per connection, filled the shared netfs
+                     * ring and failed dropbear session writes with EIO (and
+                     * a dropped "taken" wedged the listener for good).
+                     * Re-send the idempotent "taken <seq>", rate-limited. */
+                    listener_retry_taken(s, seq);
                 }
             }
         }
@@ -655,6 +661,54 @@ static int listener_ctl(struct myos_sock *s, const char *cmd) {
     return 0;
 }
 
+/* Unsigned decimal (seq values outgrow myos_u16_dec). */
+static int myos_u32_dec(char *dst, size_t cap, unsigned v) {
+    char tmp[10];
+    int i = 10;
+    int n;
+    do {
+        tmp[--i] = (char)('0' + (v % 10u));
+        v /= 10u;
+    } while (v != 0 && i > 0);
+    n = 10 - i;
+    if ((size_t)n >= cap) {
+        return -1;
+    }
+    memcpy(dst, tmp + i, (size_t)n);
+    dst[n] = '\0';
+    return n;
+}
+
+/* Tell netd the handoff <seq> was consumed (see listener_retry_taken). */
+static void listener_send_taken(struct myos_sock *ls, int seq) {
+    char cmd[24];
+    const char pfx[] = "taken ";
+    memcpy(cmd, pfx, sizeof pfx - 1);
+    if (myos_u32_dec(cmd + sizeof pfx - 1, sizeof cmd - (sizeof pfx - 1),
+            (unsigned)seq) < 0) {
+        return;
+    }
+    ls->taken_seq = seq;
+    (void)gettimeofday(&ls->taken_tv, NULL);
+    (void)listener_ctl(ls, cmd);
+}
+
+/* The listener status still advertises handoff <seq>, which we consumed:
+ * netd has not processed our "taken <seq>" yet, or the write failed (netfs
+ * request ring full) and it never will. netd ignores a "taken" whose seq is
+ * no longer the head, so re-sending is safe; limit it to every 100ms so a
+ * select() spin cannot flood the ring. Without the retry a lost "taken" left
+ * the consumed head parked and every later connection unannounced. */
+static void listener_retry_taken(struct myos_sock *ls, int seq) {
+    if (seq < 0 || seq != ls->last_accept_seq) {
+        return;
+    }
+    if (ls->taken_seq == seq && elapsed_ms(&ls->taken_tv) < 100) {
+        return;
+    }
+    listener_send_taken(ls, seq);
+}
+
 /* Read the listener conv's status text ("listening" / "accepted <N> <ip>!<p>"). */
 static int listener_status(struct myos_sock *s, char *out, size_t cap) {
     char path[64];
@@ -757,8 +811,12 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
             errno = EAGAIN;
             return -1;
         }
-        if (strncmp(stbuf, "accepted", 8) != 0
-            || status_accept_seq(stbuf) == ls->last_accept_seq) {
+        if (strncmp(stbuf, "accepted", 8) != 0) {
+            errno = EAGAIN;
+            return -1;
+        }
+        if (status_accept_seq(stbuf) == ls->last_accept_seq) {
+            listener_retry_taken(ls, ls->last_accept_seq);
             errno = EAGAIN;
             return -1;
         }
@@ -780,10 +838,12 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     for (;;) {
         char stbuf[80];
         if (listener_status(ls, stbuf, sizeof stbuf) == 0
-            && strncmp(stbuf, "accepted", 8) == 0
-            && status_accept_seq(stbuf) != ls->last_accept_seq) {
-            ls->accept_armed = 0;
-            return accept_from_status(ls, stbuf, addr, addrlen);
+            && strncmp(stbuf, "accepted", 8) == 0) {
+            if (status_accept_seq(stbuf) != ls->last_accept_seq) {
+                ls->accept_armed = 0;
+                return accept_from_status(ls, stbuf, addr, addrlen);
+            }
+            listener_retry_taken(ls, ls->last_accept_seq);
         }
         if (elapsed_ms(&start) >= 180000L) {
             errno = ETIMEDOUT;
@@ -862,7 +922,7 @@ static int accept_from_status(struct myos_sock *ls, char *status,
      * ctl "accept" would take+reply the same <N> (and with accepted_pending
      * bump seq), so the next accept() re-opened the live Child — dropbear
      * Integrity error bad packet size 0x53534831 on sequential SSH. */
-    (void)listener_ctl(ls, "taken");
+    listener_send_taken(ls, (int)seq);
     /* Optional peer from "accepted <N> <ip>!<port>" — best effort. */
     while (*p == ' ') {
         p++;
