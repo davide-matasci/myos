@@ -2,7 +2,11 @@
 
 use spin::Mutex;
 
-// Named FIFOs (tmpfs `mkfifo`) hold a slot for as long as the node exists.
+/// Anonymous `pipe()` slots: `0..ANON_PIPES` (unchanged capacity).
+const ANON_PIPES: usize = 8;
+/// Named FIFOs (tmpfs `mkfifo`) hold a slot for as long as the node exists,
+/// so they get their own pool (`ANON_PIPES..MAX_PIPES`) and can never starve
+/// `pipe()` for shells and dropbear sessions.
 const MAX_PIPES: usize = 32;
 const PIPE_BUF: usize = 512;
 
@@ -33,8 +37,12 @@ pub fn free(id: usize) {
 }
 
 pub fn alloc() -> Option<usize> {
+    alloc_in(0, ANON_PIPES, false)
+}
+
+fn alloc_in(from: usize, to: usize, named: bool) -> Option<usize> {
     let mut pipes = PIPES.lock();
-    for (i, slot) in pipes.iter_mut().enumerate() {
+    for (i, slot) in pipes.iter_mut().enumerate().take(to).skip(from) {
         if slot.is_none() {
             *slot = Some(Pipe {
                 data: [0; PIPE_BUF],
@@ -43,7 +51,7 @@ pub fn alloc() -> Option<usize> {
                 readers: 0,
                 writers: 0,
                 write_closed: false,
-                named: false,
+                named,
                 read_opens: 0,
                 write_opens: 0,
             });
@@ -115,11 +123,7 @@ fn release_if_idle(pipes: &mut [Option<Pipe>; MAX_PIPES], id: usize) {
 
 /// Allocate the pipe behind a new named FIFO.
 pub fn alloc_named() -> Option<usize> {
-    let id = alloc()?;
-    if let Some(p) = PIPES.lock()[id].as_mut() {
-        p.named = true;
-    }
-    Some(id)
+    alloc_in(ANON_PIPES, MAX_PIPES, true)
 }
 
 /// The FIFO node was unlinked: free its pipe now, or when the last open end
