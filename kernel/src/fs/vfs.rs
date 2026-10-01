@@ -226,7 +226,6 @@ pub fn mounts_text() -> Vec<u8> {
 }
 
 const O_ACCMODE: u32 = 3;
-const O_RDONLY: u32 = 0;
 const O_WRONLY: u32 = 1;
 const O_RDWR: u32 = 2;
 const O_CREAT: u32 = 0o100;

@@ -6,7 +6,7 @@
 //! exists so the POSIX `/dev/pts/N` naming (and `listdir` for pty discovery)
 //! resolves through the normal VFS tree.
 
-use crate::fs::{IoctlResult, StatInfo};
+use crate::fs::StatInfo;
 use crate::pty;
 
 const S_IFDIR: u32 = 0o040000;
@@ -87,8 +87,4 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         nlink: 1,
         dev: 0,
     })
-}
-
-pub fn ioctl(_name: &str, _request: usize, _arg: usize) -> IoctlResult {
-    IoctlResult::Notty
 }

@@ -41,8 +41,11 @@ static TLB_SEEN: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS]
 static TLB_LOCK: Mutex<()> = Mutex::new(());
 
 /// Soft IPI reason bits (riscv software interrupt carries no vector).
+#[cfg(target_arch = "riscv64")]
 pub const IPI_BIT_TLB: u64 = 1;
+#[cfg(target_arch = "riscv64")]
 pub const IPI_BIT_RESCHED: u64 = 2;
+#[cfg(target_arch = "riscv64")]
 static IPI_BITS: AtomicU64 = AtomicU64::new(0);
 
 fn hw_cpu_id() -> u64 {
@@ -188,10 +191,12 @@ pub fn sync_tp_for_kernel() {
 #[cfg(not(target_arch = "riscv64"))]
 pub fn sync_tp_for_kernel() {}
 
+#[cfg(not(target_arch = "aarch64"))]
 pub fn cpu_online(i: usize) -> bool {
     i < MAX_CPUS && ONLINE[i].load(Ordering::SeqCst)
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub fn cpu_hw_id(i: usize) -> u64 {
     if i < MAX_CPUS {
         HW_IDS[i].load(Ordering::SeqCst)
@@ -226,22 +231,27 @@ pub fn note_schedule() {
 }
 
 
+#[cfg(target_arch = "riscv64")]
 pub fn ipi_mark_tlb() {
     IPI_BITS.fetch_or(IPI_BIT_TLB, Ordering::SeqCst);
 }
 
+#[cfg(target_arch = "riscv64")]
 pub fn ipi_mark_resched() {
     IPI_BITS.fetch_or(IPI_BIT_RESCHED, Ordering::SeqCst);
 }
 
+#[cfg(target_arch = "riscv64")]
 pub fn ipi_is_tlb() -> bool {
     IPI_BITS.load(Ordering::SeqCst) & IPI_BIT_TLB != 0
 }
 
+#[cfg(target_arch = "riscv64")]
 pub fn ipi_is_resched() -> bool {
     IPI_BITS.load(Ordering::SeqCst) & IPI_BIT_RESCHED != 0
 }
 
+#[cfg(target_arch = "riscv64")]
 fn ipi_clear_handled() {
     // Clear both; senders re-set before each blast. Slightly coarse but safe.
     IPI_BITS.store(0, Ordering::SeqCst);
@@ -250,11 +260,10 @@ fn ipi_clear_handled() {
 fn flush_tlb_local() {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        let cr3: u64;
         core::arch::asm!(
             "mov {cr3}, cr3",
             "mov cr3, {cr3}",
-            cr3 = out(reg) cr3,
+            cr3 = out(reg) _,
             options(nostack, preserves_flags),
         );
     }
@@ -283,7 +292,7 @@ pub fn tlb_service() {
         return;
     }
     flush_tlb_local();
-    let _ = TLB_SEEN[cpu].fetch_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
+    let _ = TLB_SEEN[cpu].try_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
         if s >= epoch {
             None
         } else {
@@ -455,6 +464,11 @@ static AP_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_a
 #[cfg(target_arch = "riscv64")]
 static AP_PARK_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_ap_park;
 
+/// riscv64: park APs in a WFI loop instead of bringing them online (see
+/// `init`).
+#[cfg(target_arch = "riscv64")]
+const RISCV_PARK_APS: bool = true;
+
 /// Record BSP and bring secondary CPUs online via Limine MP.
 pub fn init() {
     #[cfg(target_arch = "riscv64")]
@@ -512,8 +526,10 @@ pub fn init() {
     // (PR #150). Leaving APs in Limine's busy-spin still hit the ripgrep
     // `sepc=0` IPF under `-smp 2`. Hand each AP a SIE-masked WFI loop in
     // myos text *without* marking ONLINE — quiet park, no scheduler/IPI.
+    // The full bring-up below stays compiled for riscv64 so it can be retried
+    // by flipping RISCV_PARK_APS.
     #[cfg(target_arch = "riscv64")]
-    {
+    if RISCV_PARK_APS {
         let mut parked = 0usize;
         for cpu in mp_cpus.iter() {
             let is_bsp = cpu.hartid == resp.bsp_hartid;
@@ -648,13 +664,13 @@ pub unsafe extern "C" fn myos_smp_ap_park(_info: &limine::mp::MpInfo) -> ! {
             sie_bit = in(reg) 1u64 << 1,
             far = in(reg) u64::MAX,
             ssip = in(reg) 1u64 << 1,
-            options(nomem, nostack),
+            options(nostack),
         );
     }
     // Publish "quiet" so BSP does not enter userspace while we still drain STIP.
     AP_PROGRESS.store(2, Ordering::SeqCst);
     loop {
-        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+        unsafe { core::arch::asm!("wfi", options(nostack, preserves_flags)) };
     }
 }
 
@@ -694,15 +710,15 @@ unsafe extern "C" fn myos_smp_ap_entry_rust(info: &limine::mp::MpInfo) -> ! {
     // Mask IRQs until this CPU's IDT/timer are programmed.
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("cli", options(nostack, preserves_flags));
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+        core::arch::asm!("msr daifset, #0xf", options(nostack));
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {
-        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nostack));
     }
     AP_PROGRESS.store(2, Ordering::SeqCst);
 
@@ -762,14 +778,6 @@ fn aarch64_publish_goto(cpu: &limine::mp::MpInfo, entry: usize, extra: u64) {
             base = in(reg) base,
             options(nostack),
         );
-    }
-}
-
-pub fn mark_offline(logical: usize) {
-    if logical < MAX_CPUS {
-        ONLINE[logical].store(false, Ordering::SeqCst);
-        let mut cpus = CPUS.lock();
-        cpus[logical].online = false;
     }
 }
 

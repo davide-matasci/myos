@@ -111,6 +111,7 @@ fn read_rtc_seconds() -> Option<i64> {
 }
 
 /// Days from civil (y, m, d) to Unix epoch day (Howard Hinnant).
+#[cfg(target_arch = "x86_64")]
 fn days_from_civil(mut y: i64, m: u32, d: u32) -> i64 {
     y -= if m <= 2 { 1 } else { 0 };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -121,6 +122,7 @@ fn days_from_civil(mut y: i64, m: u32, d: u32) -> i64 {
     era * 146097 + doe as i64 - 719468
 }
 
+#[cfg(target_arch = "x86_64")]
 fn ymd_hms_to_unix(y: i64, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> i64 {
     let days = days_from_civil(y, mo, d);
     days * 86400 + (h as i64) * 3600 + (mi as i64) * 60 + s as i64

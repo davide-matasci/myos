@@ -1,6 +1,6 @@
-//! Keyboard input on AArch64: virtio-input when present (QEMU/UTM), else none.
+//! Keyboard input on AArch64/RISC-V: virtio-input when present (QEMU/UTM), else none.
 
-use super::virtio_input;
+use super::input as virtio_input;
 
 pub fn init() {
     virtio_input::init();

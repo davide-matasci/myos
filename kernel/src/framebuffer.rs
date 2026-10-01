@@ -200,10 +200,6 @@ impl FrameBufferWriter<'_> {
         self.csi_private = false;
     }
 
-    pub fn set_fg(&mut self, fg: (u8, u8, u8)) {
-        self.fg = fg;
-    }
-
     pub fn put_str_colored(&mut self, s: &str, fg: (u8, u8, u8)) {
         let saved = self.fg;
         self.fg = fg;

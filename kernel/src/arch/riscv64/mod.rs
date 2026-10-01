@@ -2,12 +2,11 @@
 
 mod interrupts;
 pub use interrupts::{enable_ipi, ipi_reschedule, ipi_tlb_shootdown};
-mod keyboard;
+use super::virtio_mmio::keyboard;
 pub mod paging;
 pub mod pci;
 mod serial;
-mod virtio_blk;
-mod virtio_input;
+use super::virtio_mmio::blk as virtio_blk;
 pub use serial::SerialPort;
 
 pub fn serial_read_byte() -> Option<u8> {
@@ -44,7 +43,7 @@ pub fn wait_for_interrupt_proof() {
     interrupts::wait_for_interrupt_proof();
 }
 
-pub use interrupts::{fork_sret_child_to_user, fork_sret_to_user};
+pub use interrupts::fork_sret_child_to_user;
 
 pub fn virtio_blk_init() {
     virtio_blk::init();
@@ -75,7 +74,7 @@ pub fn ap_init(logical: usize) {
 
 pub fn wait_interrupt() {
     unsafe {
-        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("wfi", options(nostack, preserves_flags));
     }
 }
 
@@ -96,7 +95,7 @@ pub fn exit_qemu(_code: u32) {
 pub fn halt() -> ! {
     loop {
         unsafe {
-            core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+            core::arch::asm!("wfi", options(nostack, preserves_flags));
         }
     }
 }

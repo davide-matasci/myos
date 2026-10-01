@@ -287,7 +287,7 @@ fn use_spx() {
             "isb",
             "mov sp, {tmp}",
             tmp = out(reg) _,
-            options(nomem),
+            options(),
         );
     }
 }
@@ -307,8 +307,8 @@ pub fn init() {
     init_gic();
     init_timer();
     unsafe {
-        asm!("dsb sy", options(nomem, nostack));
-        asm!("msr daifclr, #3", options(nomem, nostack)); // unmask IRQ+FIQ
+        asm!("dsb sy", options(nostack));
+        asm!("msr daifclr, #3", options(nostack)); // unmask IRQ+FIQ
     }
 }
 
@@ -343,14 +343,14 @@ pub fn ap_init(logical: usize) {
     init_timer();
     // Leave DAIF masked until ap_idle_loop installs CURRENT / ONLINE.
     unsafe {
-        asm!("dsb sy", options(nomem, nostack));
+        asm!("dsb sy", options(nostack));
     }
 }
 
 pub fn wait_for_interrupt_proof() {
     while !TIMER_FIRED.load(Ordering::SeqCst) {
         unsafe {
-            asm!("wfi", options(nomem, nostack, preserves_flags));
+            asm!("wfi", options(nostack, preserves_flags));
         }
     }
 }
@@ -386,7 +386,7 @@ fn init_timer() {
         asm!("msr cntv_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
         asm!("msr cntp_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
         asm!("msr cntp_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
-        asm!("isb", options(nomem, nostack));
+        asm!("isb", options(nostack));
     }
 }
 
@@ -487,7 +487,7 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     if ec == 0x15 {
         unsafe {
             // Keep IRQs masked for the syscall body (x86 syscall_entry does cli).
-            core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+            core::arch::asm!("msr daifset, #0xf", options(nostack));
             let nr = *frame.add(8) as usize;
             let a0 = *frame.add(0) as usize;
             let a1 = *frame.add(1) as usize;

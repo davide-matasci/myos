@@ -9,8 +9,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
 
-// Frame: x0..x31 at 0..31, sepc at 32, sstatus at 33, user sp at 34.
-const FRAME_WORDS: usize = 35;
+// Trap frame (u64 words): x0..x31 at 0..31, sepc at 32, sstatus at 33,
+// user sp at 34 — 280 bytes.
 
 global_asm!(
     r#"
@@ -172,55 +172,6 @@ trap_vector:
     addi sp, sp, 280
     sret
 
-    .global fork_sret_from_frame
-fork_sret_from_frame:
-    # Exec resume: a0 -> live syscall trap frame. Caller must leave sscratch
-    # as this task's kernel stack top (same invariant as enter_fork_riscv64 /
-    # enter_riscv64). Do NOT park user sp in sscratch then csrrw — that left
-    # sscratch at frame+280 (or the old program's user sp) and the next user
-    # trap built its kernel frame on the user stack (sepc=0 / zeroed ra).
-    mv t6, a0
-    ld t0, 264(t6)
-    andi t0, t0, -3      # clear SIE; sret applies SIE <- SPIE atomically
-    ori t0, t0, 0x20     # set SPIE
-    csrw sstatus, t0
-    ld t0, 256(t6)
-    csrw sepc, t0
-    ld x1, 8(t6)
-    ld x3, 24(t6)
-    ld x4, 32(t6)
-    ld x5, 40(t6)
-    ld x6, 48(t6)
-    ld x7, 56(t6)
-    ld x8, 64(t6)
-    ld x9, 72(t6)
-    ld x10, 80(t6)
-    ld x11, 88(t6)
-    ld x12, 96(t6)
-    ld x13, 104(t6)
-    ld x14, 112(t6)
-    ld x15, 120(t6)
-    ld x16, 128(t6)
-    ld x17, 136(t6)
-    ld x18, 144(t6)
-    ld x19, 152(t6)
-    ld x20, 160(t6)
-    ld x21, 168(t6)
-    ld x22, 176(t6)
-    ld x23, 184(t6)
-    ld x24, 192(t6)
-    ld x25, 200(t6)
-    ld x26, 208(t6)
-    ld x27, 216(t6)
-    ld x28, 224(t6)
-    ld x29, 232(t6)
-    ld x30, 240(t6)
-    # t6 is x31: capture user sp (slot 34) before restoring x31.
-    ld t0, 272(t6)
-    ld x31, 248(t6)
-    mv sp, t0
-    sret
-
     .global fork_sret_child_from_frame
 fork_sret_child_from_frame:
     # a0 -> copied trap frame (not live stack). Caller must leave sscratch as
@@ -271,12 +222,7 @@ fork_sret_child_from_frame:
 
 unsafe extern "C" {
     fn trap_vector();
-    fn fork_sret_from_frame(frame: *mut u64) -> !;
     fn fork_sret_child_from_frame(frame: *mut u64) -> !;
-}
-
-pub fn fork_sret_to_user(frame: *mut u64) -> ! {
-    unsafe { fork_sret_from_frame(frame) }
 }
 
 pub fn fork_sret_child_to_user(frame: *mut u64) -> ! {
@@ -318,7 +264,7 @@ pub fn ap_init(_logical: usize) {
 pub fn wait_for_interrupt_proof() {
     while !TIMER_FIRED.load(Ordering::SeqCst) {
         unsafe {
-            asm!("wfi", options(nomem, nostack, preserves_flags));
+            asm!("wfi", options(nostack, preserves_flags));
         }
     }
 }
@@ -333,7 +279,7 @@ fn read_time() -> u64 {
 
 fn write_stimecmp(val: u64) {
     unsafe {
-        asm!("csrw stimecmp, {v}", v = in(reg) val, options(nomem, nostack));
+        asm!("csrw stimecmp, {v}", v = in(reg) val, options(nostack));
     }
 }
 

@@ -18,8 +18,11 @@ pub const SIGKILL: u32 = 9;
 /// Must match newlib `<signal.h>` / Linux.
 pub const SIGTERM: u32 = 15;
 /// Must match newlib `<signal.h>` / Linux. Default action is *ignore*, so it is
-/// never in the default-fatal set below.
+/// never in [`DEFAULT_FATAL`].
 pub const SIGCHLD: u32 = 17;
+
+/// Signals whose default action terminates the task, lowest number first.
+pub const DEFAULT_FATAL: [u32; 3] = [SIGINT, SIGKILL, SIGTERM];
 
 /// Mark `SIGCHLD` pending in `parent` (child-exit notification).
 ///
