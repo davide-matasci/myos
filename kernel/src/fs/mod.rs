@@ -2,17 +2,14 @@
 
 pub mod binfs;
 pub mod bootfs;
-pub mod coreutilsfs;
 pub mod cpio;
+mod flatfs;
 mod devfs;
 pub mod ptsfs;
 mod fstype;
 mod procfs;
-pub mod sbasefs;
 pub mod libfs;
-pub mod tccfs;
 mod tmpfs;
-pub mod ubasefs;
 pub mod vfs;
 
 pub use vfs::{IoctlResult, StatInfo, Vnode};
@@ -228,6 +225,23 @@ fn reject_readlink(_path: &str, _buf: &mut [u8]) -> Option<usize> {
     None
 }
 
+/// Read-only [`vfs::MountOps`] for a [`flatfs::FlatFs`] static. The closures
+/// capture nothing (they name the static), so they coerce to `fn` pointers.
+macro_rules! flat_ops {
+    ($fs:path) => {
+        ro_ops(
+            |n| $fs.lookup(n),
+            |n| $fs.stat(n),
+            |rel, buf| $fs.listdir_at(rel, buf),
+            |n, bytes| $fs.register(n, bytes),
+            |_| false,
+            |_| false,
+            |n, pos, out| $fs.read(n, pos, out),
+            |_, _, _| None,
+        )
+    };
+}
+
 fn ro_ops(
     lookup: fn(&str) -> Option<&'static [u8]>,
     stat: fn(&str) -> Option<StatInfo>,
@@ -295,8 +309,8 @@ fn rw_ops(
 }
 
 /// Mount bootfs at `/`, binfs at `/bin/`, and the port trees under typed
-/// `/bin/…` prefixes (sbasefs at `/bin/sbase/`, ubasefs at `/bin/ubase/`,
-/// tccfs at `/bin/tcc/`, coreutilsfs at `/bin/coreutils/`), plus libfs at
+/// `/bin/…` prefixes (the flatfs instances at `/bin/sbase/`, `/bin/ubase/`,
+/// `/bin/tcc/` and `/bin/coreutils/`), plus libfs at
 /// `/lib/`, tmpfs at `/tmp/`, devfs at `/dev/`, procfs at `/proc/`.
 /// Embedded user ELFs live under `/bin/<category>/…` (see binfs).
 pub fn init() {
@@ -330,66 +344,11 @@ pub fn init() {
         ),
     );
     binfs::init_embedded();
-    vfs::mount(
-        "sbasefs",
-        "bin/sbase",
-        ro_ops(
-            sbasefs::lookup,
-            sbasefs::stat,
-            sbasefs::listdir_at,
-            sbasefs::register,
-            sbasefs::create,
-            sbasefs::truncate,
-            sbasefs::read,
-            sbasefs::write,
-        ),
-    );
-    sbasefs::init_embedded();
-    vfs::mount(
-        "ubasefs",
-        "bin/ubase",
-        ro_ops(
-            ubasefs::lookup,
-            ubasefs::stat,
-            ubasefs::listdir_at,
-            ubasefs::register,
-            ubasefs::create,
-            ubasefs::truncate,
-            ubasefs::read,
-            ubasefs::write,
-        ),
-    );
-    ubasefs::init_embedded();
-    vfs::mount(
-        "tccfs",
-        "bin/tcc",
-        ro_ops(
-            tccfs::lookup,
-            tccfs::stat,
-            tccfs::listdir_at,
-            tccfs::register,
-            tccfs::create,
-            tccfs::truncate,
-            tccfs::read,
-            tccfs::write,
-        ),
-    );
-    tccfs::init_embedded();
-    vfs::mount(
-        "coreutilsfs",
-        "bin/coreutils",
-        ro_ops(
-            coreutilsfs::lookup,
-            coreutilsfs::stat,
-            coreutilsfs::listdir_at,
-            coreutilsfs::register,
-            coreutilsfs::create,
-            coreutilsfs::truncate,
-            coreutilsfs::read,
-            coreutilsfs::write,
-        ),
-    );
-    coreutilsfs::init_embedded();
+    vfs::mount("sbasefs", "bin/sbase", flat_ops!(flatfs::SBASE));
+    vfs::mount("ubasefs", "bin/ubase", flat_ops!(flatfs::UBASE));
+    flatfs::init_embedded();
+    vfs::mount("tccfs", "bin/tcc", flat_ops!(flatfs::TCC));
+    vfs::mount("coreutilsfs", "bin/coreutils", flat_ops!(flatfs::COREUTILS));
     vfs::mount(
         "libfs",
         "lib",

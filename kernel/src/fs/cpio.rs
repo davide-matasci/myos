@@ -1,15 +1,16 @@
 //! Minimal newc (cpio) parser for the initramfs Limine module.
 //!
 //! The archive layout mirrors the VFS tree: `bin/<category>/<name>` entries are
-//! registered into the matching `/bin/…` mount (binfs, sbasefs, ubasefs,
-//! coreutilsfs, tccfs) and `lib/…` entries into libfs, and `etc/…` into bootfs at `/etc/…`. Longest-prefix routing
-//! preserves each mount's capacity and the `/bin/<category>/<name>` layout the
-//! shell's `_PATH_DEFPATH` expects.
+//! registered into the matching `/bin/…` mount (binfs or a flatfs instance),
+//! `lib/…` entries into libfs, and `etc/…` into bootfs at `/etc/…`.
+//! Longest-prefix routing preserves each mount's capacity and the
+//! `/bin/<category>/<name>` layout the shell's `_PATH_DEFPATH` expects.
 //!
 //! The module buffer is Limine-mapped for the kernel's lifetime, so each entry's
 //! bytes are `'static` and can be handed to `register()` without copying.
 
-use crate::fs::{binfs, bootfs, coreutilsfs, libfs, sbasefs, tccfs, ubasefs};
+use crate::fs::flatfs::{COREUTILS, SBASE, TCC, UBASE};
+use crate::fs::{binfs, bootfs, libfs};
 use alloc::vec::Vec;
 
 fn hex(s: &[u8]) -> usize {
@@ -88,13 +89,13 @@ pub fn parse(data: &'static [u8]) -> usize {
 /// Route one archive entry to the mount that serves its path.
 fn route(name: &str, bytes: &'static [u8]) {
     if let Some(rest) = name.strip_prefix("bin/sbase/") {
-        let _ = sbasefs::register(rest, bytes);
+        let _ = SBASE.register(rest, bytes);
     } else if let Some(rest) = name.strip_prefix("bin/ubase/") {
-        let _ = ubasefs::register(rest, bytes);
+        let _ = UBASE.register(rest, bytes);
     } else if let Some(rest) = name.strip_prefix("bin/coreutils/") {
-        let _ = coreutilsfs::register(rest, bytes);
+        let _ = COREUTILS.register(rest, bytes);
     } else if let Some(rest) = name.strip_prefix("bin/tcc/") {
-        let _ = tccfs::register(rest, bytes);
+        let _ = TCC.register(rest, bytes);
     } else if let Some(rest) = name.strip_prefix("lib/") {
         let _ = libfs::register(rest, bytes);
     } else if let Some(rest) = name.strip_prefix("bin/") {
