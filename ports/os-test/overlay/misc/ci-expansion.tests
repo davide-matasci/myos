@@ -159,3 +159,23 @@ TESTS += myos/fifo/fifo-nonblock
 TESTS += myos/fifo/fifo-reuse
 TESTS += myos/fifo/fifo-rw
 TESTS += myos/fifo/fifo-stat
+
+# Kernel-delivered signal handlers: kill/killpg with WIFSIGNALED, the
+# sigaction/sigprocmask/sigpending/sigsuspend/sigwait APIs, and re-handling
+# a blocked pending signal after ignore/unignore.
+TESTS += basic/signal/kill
+TESTS += basic/signal/killpg
+TESTS += basic/signal/pthread_sigmask
+TESTS += basic/signal/sig2str
+TESTS += basic/signal/sigaction
+TESTS += basic/signal/sigpending
+TESTS += basic/signal/sigprocmask
+TESTS += basic/signal/sigsuspend
+TESTS += basic/signal/sigwait
+TESTS += basic/signal/str2sig
+TESTS += signal/block-chld-default-rehandle-unblock
+TESTS += signal/block-ignore-raise-ignore-unignore-unblock
+TESTS += signal/block-ignore-raise-unignore-unblock
+TESTS += signal/block-raise-ignore-unignore-unblock
+TESTS += signal/ignore-block-raise-unignore-unblock
+TESTS += signal/sigaction-exec-flags

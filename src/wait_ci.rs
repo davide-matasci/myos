@@ -390,8 +390,9 @@ const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/c
 /// `misc/ci-boot.tests` — not `cp -r` of the whole suite) then
 /// `make TESTLIST=misc/ci-boot.tests report` (full-boot curated set:
 /// `ci-basic-smoke.tests` 137 + `ci-nonbasic-100.tests` 41 +
-/// `ci-expansion.tests` 125 (POSIX core + non-basic + myos chroot/FIFO)
-/// = 303 prebuilt tests; default SUITES covers the suite-prefixed entries).
+/// `ci-expansion.tests` 141 (POSIX core + non-basic + signal handlers +
+/// myos chroot/FIFO) = 319 prebuilt tests; default SUITES covers the
+/// suite-prefixed entries).
 /// NOT the full ~1187 basic suite (#860 timed out; #866 still burned 90m on
 /// full-tree copy + SMP). Report prints `pass_rate=NN% (P/T)`; CI requires
 /// the harness to finish with every curated test passing (P == T). Follow-up short
@@ -808,7 +809,12 @@ fn interactive_ostest_counts(serial: &str) -> Option<(u32, u32)> {
 /// The curated os-test set is a hard gate: every listed test must pass.
 /// True once the report is out and shows any failure or compile error.
 fn interactive_ostest_not_all_pass(serial: &str) -> bool {
-    matches!(interactive_ostest_counts(serial), Some((p, t)) if p != t || t == 0)
+    // Wait for the whole report (failure list, then `PREP-RC=`) so the CI
+    // log can name the failing tests before QEMU is killed.
+    let done = interactive_tail(serial)
+        .rsplit_once(OSTEST_PREP_ECHO)
+        .is_some_and(|(_, after)| after.contains("PREP-RC="));
+    done && matches!(interactive_ostest_counts(serial), Some((p, t)) if p != t || t == 0)
 }
 
 /// The report's failure list (`F   path.out exit: N`, `C   …`) for the CI log.
@@ -2079,6 +2085,12 @@ mod ostest_gate_tests {
             interactive_ostest_failures(&s),
             vec!["F   basic/setjmp/siglongjmp.out exit: 1".to_string()]
         );
+    }
+
+    #[test]
+    fn failure_list_still_printing_is_not_final() {
+        let s = report("=== os-test: 303 tests, 302 pass, 1 fail, 0 compile_error ===\r\npass_rate=99% (302/303)\r\n--- failures and compile errors ---\r\n");
+        assert!(!interactive_ostest_not_all_pass(&s));
     }
 
     #[test]
