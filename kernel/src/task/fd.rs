@@ -211,7 +211,7 @@ pub fn fd_open_fifo(id: usize, flags: u32) -> Result<usize, FifoOpenErr> {
         if peer_came {
             return Ok(fd);
         }
-        if crate::signal::current_should_wake() {
+        if crate::signal::interrupt_wait() {
             break;
         }
         yield_now();
@@ -249,7 +249,7 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
 }
 
 /// Peer fd of a pipe end in the current task (read<->write), or None.
-/// Used by libgloss's SIGCHLD wake to force a server's self-pipe readable.
+/// Legacy `PIPE_PEER` syscall (the old libgloss SIGCHLD self-pipe wake).
 pub fn fd_pipe_peer(fd: usize) -> Option<usize> {
     if fd >= MAX_FDS {
         return None;
@@ -446,10 +446,9 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                     return usize::MAX;
                 }
                 if n == 0 && pipe::read_would_block(id) {
-                    // A pending fatal/actionable signal must break this wait so
-                    // the generic `deliver_due` at syscall exit can kill the task
+                    // A signal that terminates or is caught breaks the wait
                     // (Ctrl+C while a `cat`/`yes` pipe read is blocked).
-                    if crate::signal::current_should_wake() {
+                    if crate::signal::interrupt_wait() {
                         return 0;
                     }
                     yield_now();
@@ -579,10 +578,13 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                         return if total == 0 { usize::MAX } else { total };
                     }
                     if n == 0 && pipe::write_would_block(id) {
-                        // See PipeRead wait: a pending fatal signal breaks the
-                        // full-pipe wait so `deliver_due` can terminate the task.
-                        if crate::signal::current_should_wake() {
-                            return if total == 0 { usize::MAX } else { total };
+                        // See PipeRead wait. With nothing written yet this is
+                        // EINTR; otherwise report the partial write.
+                        if total == 0 && crate::signal::interrupt_wait() {
+                            return usize::MAX;
+                        }
+                        if total != 0 && crate::signal::current_should_wake() {
+                            return total;
                         }
                         yield_now();
                         continue;

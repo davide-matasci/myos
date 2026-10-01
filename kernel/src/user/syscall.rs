@@ -43,20 +43,98 @@ const SYS_GETPID: usize = 36;
 const SYS_SIGPROCMASK: usize = 37;
 /// Readiness bits for a single fd (pipes): 1=readable, 2=writable, 4=hangup.
 const SYS_POLLFD: usize = 38;
+/// Legacy (39, 41, 42): before the kernel delivered handlers, libgloss
+/// polled for SIGCHLD from `select()`/`poll()` and ran the handler itself.
+/// Kept for binaries built against that libgloss.
 /// Take-and-clear the current task's pending `SIGCHLD` bit (returns 1/0).
-/// libgloss polls this from `select()`/`poll()` and calls the registered
-/// handler itself (myos has no userspace signal-handler trampolines yet).
 const SYS_SIGCHLD_TAKE: usize = 39;
-/// 1 if the calling task has an exited-and-unreaped child. libgloss's
-/// SIGCHLD dispatch queries this directly, so delivery does not depend on the
-/// kernel pushing a pending bit onto the correct task.
+/// 1 if the calling task has an exited-and-unreaped child.
 const SYS_SIGCHLD_PENDING: usize = 41;
-/// Peer fd of a pipe end (for libgloss's SIGCHLD self-pipe wake).
+/// Peer fd of a pipe end (the old SIGCHLD self-pipe wake).
 const SYS_PIPE_PEER: usize = 42;
 /// chroot(path): confine the caller (and its future children) to `path`.
 const SYS_CHROOT: usize = 43;
 /// mkfifo(path, mode): create a named pipe (tmpfs only).
 const SYS_MKFIFO: usize = 44;
+/// sigreturn(): the libc signal trampoline is done with the frame at the
+/// user stack pointer (see `crate::signal`).
+const SYS_SIGRETURN: usize = 45;
+
+/// waitpid(status, options, pid): like `SYS_WAIT` but writes a POSIX `int`
+/// status (`WIFSIGNALED`-aware) and can wait for one child. A new number, as
+/// some `SYS_WAIT` callers leave the second and third registers unset.
+const SYS_WAITPID: usize = 46;
+/// sigpending() -> pending set.
+const SYS_SIGPENDING: usize = 47;
+/// sigsuspend(mask): wait for a signal with `mask` blocked (always EINTR).
+const SYS_SIGSUSPEND: usize = 48;
+/// sigwait(set) -> signal number taken from `set`.
+const SYS_SIGWAIT: usize = 49;
+/// sigaction with a 4th struct word, the libc trampoline that runs function
+/// handlers (`SYS_SIGACTION` keeps the 3-word, DFL/IGN-only form).
+const SYS_SIGACTION2: usize = 50;
+
+/// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
+const WAIT_NOHANG: usize = 1;
+
+/// The user registers the syscall return path loads back, for the signal
+/// code to read and redirect (delivery, sigreturn, restart).
+///
+/// - x86_64: the block `syscall_entry` pushes: user rsp, rip (rcx), r8, r9,
+///   rflags (r11). The result travels in rax, which also carried the number.
+/// - aarch64 / riscv64: the full trap frame (`x0..x31`, pc at 32, sp at 34);
+///   the number register is x8 / a7.
+pub struct SyscallRegs(*mut u64);
+
+impl SyscallRegs {
+    #[cfg(target_arch = "x86_64")]
+    const PC: usize = 1;
+    #[cfg(target_arch = "x86_64")]
+    const SP: usize = 0;
+    #[cfg(not(target_arch = "x86_64"))]
+    const PC: usize = 32;
+    #[cfg(not(target_arch = "x86_64"))]
+    const SP: usize = 34;
+    #[cfg(target_arch = "aarch64")]
+    const NR_REG: Option<usize> = Some(8);
+    #[cfg(target_arch = "riscv64")]
+    const NR_REG: Option<usize> = Some(17);
+    #[cfg(target_arch = "x86_64")]
+    const NR_REG: Option<usize> = None;
+
+    /// Length of the syscall instruction (`syscall` / `svc` / `ecall`).
+    #[cfg(target_arch = "x86_64")]
+    pub const INSN_LEN: usize = 2;
+    #[cfg(not(target_arch = "x86_64"))]
+    pub const INSN_LEN: usize = 4;
+
+    /// Result-register value that makes a rewound syscall run again: the
+    /// number on x86 (rax carries both), the first argument elsewhere.
+    pub fn restart_value(nr: usize, a0: usize) -> usize {
+        if cfg!(target_arch = "x86_64") { nr } else { a0 }
+    }
+
+    pub fn pc(&self) -> usize {
+        unsafe { *self.0.add(Self::PC) as usize }
+    }
+    pub fn set_pc(&mut self, v: usize) {
+        unsafe { *self.0.add(Self::PC) = v as u64 }
+    }
+    pub fn sp(&self) -> usize {
+        unsafe { *self.0.add(Self::SP) as usize }
+    }
+    pub fn set_sp(&mut self, v: usize) {
+        unsafe { *self.0.add(Self::SP) = v as u64 }
+    }
+    pub fn nr_reg(&self) -> usize {
+        Self::NR_REG.map_or(0, |i| unsafe { *self.0.add(i) as usize })
+    }
+    pub fn set_nr_reg(&mut self, v: usize) {
+        if let Some(i) = Self::NR_REG {
+            unsafe { *self.0.add(i) = v as u64 }
+        }
+    }
+}
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(super) static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
@@ -83,8 +161,10 @@ pub extern "C" fn syscall_dispatch(
     a2: usize,
     user_rip: usize,
     user_rsp: usize,
+    regs: *mut u64,
 ) -> usize {
     task::save_user_context(user_rip, user_rsp);
+    let mut regs = SyscallRegs(regs);
     let ret = match nr {
         SYS_WRITE => sys_write(a0, a1, a2),
         SYS_EXIT => sys_exit(a0),
@@ -94,6 +174,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_EXEC => sys_exec(a0, a1, a2),
         SYS_FORK => sys_fork(user_rip, user_rsp),
         SYS_WAIT => sys_wait(a0, a1),
+        SYS_WAITPID => sys_waitpid(a0, a1, a2),
         SYS_LISTDIR => sys_listdir(a0, a1, a2),
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
@@ -121,7 +202,8 @@ pub extern "C" fn syscall_dispatch(
         SYS_GETSID => sys_getsid(a0),
         SYS_GETTIMEOFDAY => sys_gettimeofday(a0, a1),
         SYS_KILL => sys_kill(a0, a1),
-        SYS_SIGACTION => sys_sigaction(a0, a1, a2),
+        SYS_SIGACTION => sys_sigaction(a0, a1, a2, false),
+        SYS_SIGACTION2 => sys_sigaction(a0, a1, a2, true),
         SYS_GETPID => sys_getpid(),
         SYS_SIGPROCMASK => sys_sigprocmask(a0, a1, a2),
         SYS_POLLFD => sys_pollfd(a0),
@@ -130,11 +212,14 @@ pub extern "C" fn syscall_dispatch(
         SYS_PIPE_PEER => sys_pipe_peer(a0),
         SYS_CHROOT => sys_chroot(a0, a1),
         SYS_MKFIFO => sys_mkfifo(a0, a1, a2),
+        SYS_SIGRETURN => crate::signal::sigreturn(&mut regs),
+        SYS_SIGPENDING => crate::signal::sigpending(),
+        SYS_SIGSUSPEND => crate::signal::sigsuspend(a0 as u32),
+        SYS_SIGWAIT => crate::signal::sigwait(a0 as u32),
         _ => SYSERR,
     };
-    // Deliver default-fatal pending signals before returning to userspace.
-    crate::signal::deliver_due();
-    ret
+    // Terminate, run a handler, or turn an interrupted wait into EINTR.
+    crate::signal::on_syscall_exit(&mut regs, nr, a0, ret)
 }
 
 fn sys_exit(code: usize) -> ! {
@@ -285,11 +370,11 @@ fn sys_kill(pid: usize, sig: usize) -> usize {
     }
 }
 
-/// `sigaction(sig, act, oact)` with minimal `{handler, flags, mask}` user structs.
-fn sys_sigaction(sig: usize, act: usize, oact: usize) -> usize {
+/// `sigaction(sig, act, oact)`; see [`crate::signal::sigaction`].
+fn sys_sigaction(sig: usize, act: usize, oact: usize, with_tramp: bool) -> usize {
     let act = if act == 0 { None } else { Some(act) };
     let oact = if oact == 0 { None } else { Some(oact) };
-    if crate::signal::sigaction(sig as u32, act, oact) {
+    if crate::signal::sigaction(sig as u32, act, oact, with_tramp) {
         0
     } else {
         SYSERR
@@ -747,19 +832,31 @@ fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     }
 }
 
+/// `wait(status, options)`: any child; `status` gets the exit-code byte
+/// (`128 + sig` for a signal death).
 fn sys_wait(status_ptr: usize, options: usize) -> usize {
     if status_ptr != 0 && !user_range_ok(status_ptr, 1) {
         return SYSERR;
     }
-    // Bit 0 = WNOHANG (matches userspace WNOHANG = 1).
-    let nohang = (options & 1) != 0;
     task::wait_child(
-        if status_ptr == 0 {
-            None
-        } else {
-            Some(status_ptr)
-        },
-        nohang,
+        if status_ptr == 0 { None } else { Some(status_ptr) },
+        options & WAIT_NOHANG != 0,
+        None,
+        false,
+    )
+}
+
+/// `waitpid(status, options, pid)`: `pid > 0` waits for that child, anything
+/// else for any child; `status` gets a POSIX `int` status.
+fn sys_waitpid(status_ptr: usize, options: usize, pid: usize) -> usize {
+    if status_ptr != 0 && !user_range_ok(status_ptr, 4) {
+        return SYSERR;
+    }
+    task::wait_child(
+        if status_ptr == 0 { None } else { Some(status_ptr) },
+        options & WAIT_NOHANG != 0,
+        if (pid as isize) > 0 { Some(pid) } else { None },
+        true,
     )
 }
 

@@ -138,8 +138,8 @@ pub fn read(buf: &mut [u8]) -> usize {
     crate::signal::enter_input_read();
     let mut n = 0;
     while n == 0 {
-        // Pending fatal/actionable signal: break so deliver_due can exit.
-        if crate::signal::current_should_wake() {
+        // A signal that terminates or is caught ends the wait (EINTR).
+        if crate::signal::interrupt_wait() {
             break;
         }
         poll();
@@ -151,15 +151,15 @@ pub fn read(buf: &mut [u8]) -> usize {
             n += 1;
         }
         if n == 0 {
-            if crate::signal::current_should_wake() {
+            if crate::signal::interrupt_wait() {
                 break;
             }
             task::yield_now();
         }
     }
     crate::signal::leave_input_read();
-    // If we woke for a signal with no bytes, still return 0 so the syscall
-    // path can run `deliver_due` and terminate with 128+sig.
+    // Woken by a signal with no bytes: 0 here, turned into EINTR (or a
+    // restart, or the task's termination) on the way out of the syscall.
     n
 }
 
