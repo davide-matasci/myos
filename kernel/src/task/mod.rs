@@ -263,6 +263,11 @@ struct Task {
     cwd: [u8; 256],
     cwd_len: u16,
     exit_code: u8,
+    /// Set by `die()` as soon as the task has exited (status final, parent
+    /// notified), while it still frees its address space; `wait_child` may
+    /// report it from then on. The slot is recycled only once it is Dead and
+    /// off its kernel stack (`reapable`).
+    exited: bool,
     /// Anonymous mmap windows (after the brk heap).
     mmap: [MmapRegion; MAX_MMAP_REGIONS],
     mmap_next: u64,
@@ -312,6 +317,7 @@ const EMPTY: Task = Task {
     cwd: root_cwd_buf(),
     cwd_len: 1,
     exit_code: 0,
+    exited: false,
     mmap: EMPTY_MMAP,
     mmap_next: 0,
     sid: 0,
@@ -1558,6 +1564,7 @@ pub fn task_has_ctty(id: usize) -> bool {
     let t = TASKS.lock()[id];
     let out = t.user_rip != 0
         && matches!(t.state, State::Ready | State::Running)
+        && !t.exited
         && t.has_ctty;
     irq_restore(flags);
     out
@@ -2324,6 +2331,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         cwd,
         cwd_len,
         exit_code: 0,
+        exited: false,
         mmap,
         mmap_next,
         sid,
@@ -2363,7 +2371,7 @@ pub fn has_exited_child(parent: usize) -> bool {
         if i != parent
             && tasks[i].ppid == parent
             && tasks[i].user_rip != 0
-            && tasks[i].state == State::Dead
+            && (tasks[i].state == State::Dead || tasks[i].exited)
         {
             found = true;
             break;
@@ -2398,7 +2406,7 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
                 {
                     continue;
                 }
-                if tasks[i].state == State::Dead {
+                if tasks[i].state == State::Dead || tasks[i].exited {
                     reap = Some(i);
                     break;
                 }
@@ -2413,9 +2421,10 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
                         tasks[i].stack_base = stack_base;
                     }
                 } else {
-                    // Still on its kernel stack (the tail of `die()`): report
-                    // the exit now, but leave the slot to `free_dead_orphans`
-                    // so nothing reuses that stack until it is off it.
+                    // Exited but still in `die()` (freeing its address space,
+                    // or not yet off its kernel stack): report the exit now and
+                    // leave the slot to `free_dead_orphans`, so nothing reuses
+                    // that stack until it is Dead and off it.
                     tasks[i].ppid = NO_PARENT;
                 }
                 drop(tasks);
@@ -2509,6 +2518,7 @@ fn spawn_inner(
         },
         cwd_len: 1,
         exit_code: 0,
+        exited: false,
         mmap: EMPTY_MMAP,
         mmap_next: 0,
         sid: slot,
@@ -2731,12 +2741,22 @@ pub fn die() -> ! {
             tasks[id].stack_off = 0;
             tasks[id].brk_cur = 0;
             tasks[id].mmap = EMPTY_MMAP;
+            tasks[id].exited = true;
             if aspace != 0 {
                 out = Some((aspace, base, span, off, brk, mmap));
             }
         }
         out
     };
+    // Notify the parent now that the TASKS lock is dropped: the exit status
+    // is final, so the parent can reap it while this task still frees its
+    // address space below (that walk is not on the parent's critical path).
+    // SIGCHLD's default action is ignore, so a parent without a handler is
+    // unaffected; a parent polling SIGCHLD_TAKE sees the bit.
+    if chld_parent != usize::MAX {
+        crate::signal::raise_sigchld(chld_parent);
+        note_zombie(chld_parent);
+    }
     // Reclaim/TLB shootdown must run with IF on: remotes ACK the shootdown
     // IPI only after sti. Holding cli here deadlocked a parent waiter that was
     // also briefly cli (schedule/wait_child) when the child had been re-homed
@@ -2748,8 +2768,9 @@ pub fn die() -> ! {
     // of the (long) heap-window walk used to abandon the reclaim for good and
     // leak the whole address space — ~370 frames per forked child, the
     // per-exec "leak" that pushed the curated os-test run out of memory. With
-    // `aspace` already cleared, `schedule` runs it on the kernel root, and the
-    // parent cannot reap the slot before it is Dead.
+    // `aspace` already cleared, `schedule` runs it on the kernel root. The
+    // parent may already have reported the exit (`exited`), but the slot is
+    // only recycled once it is Dead and off its stack (`reapable`).
     irq_on();
     if let Some((aspace, base, span, off, brk, mmap)) = reclaim {
         user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
@@ -2764,15 +2785,8 @@ pub fn die() -> ! {
         // has left its kernel stack for good; until then it is not reapable.
         tasks[id].sp = 0;
     }
-    // Notify the parent now that the TASKS lock is dropped (child is Dead; the
-    // parent reaps it once `schedule` below has switched off its stack).
-    // SIGCHLD's default action is ignore, so a parent without a handler is
-    // unaffected; a parent polling SIGCHLD_TAKE sees the bit. IRQs stay off
-    // from Dead to the switch: a preemption here would never be resumed.
-    if chld_parent != usize::MAX {
-        crate::signal::raise_sigchld(chld_parent);
-        note_zombie(chld_parent);
-    }
+    // IRQs stay off from Dead to the switch: a preemption here would never be
+    // resumed.
     schedule();
     loop {
         irq_on();
