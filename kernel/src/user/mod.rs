@@ -115,7 +115,17 @@ struct ForkCalleeSaved {
 struct CpuSyscallState {
     kernel_rsp0: usize,
     fork: ForkCalleeSaved,
+    /// `syscall_entry` scratch (gs:[56]): the user rsp while the user
+    /// registers are pushed and popped, so none of them is used as a temp.
+    user_rsp: usize,
 }
+
+// `syscall_entry` addresses these fields as gs:[0], gs:[8..56] and gs:[56].
+#[cfg(target_arch = "x86_64")]
+const _: () = {
+    assert!(core::mem::offset_of!(CpuSyscallState, fork) == 8);
+    assert!(core::mem::offset_of!(CpuSyscallState, user_rsp) == 56);
+};
 
 #[cfg(target_arch = "x86_64")]
 static mut CPU_SYSCALL: [CpuSyscallState; crate::smp::MAX_CPUS] = [
@@ -129,6 +139,7 @@ static mut CPU_SYSCALL: [CpuSyscallState; crate::smp::MAX_CPUS] = [
             r14: 0,
             r15: 0,
         },
+        user_rsp: 0,
     }; crate::smp::MAX_CPUS
 ];
 
@@ -141,8 +152,9 @@ core::arch::global_asm!(
     .global syscall_entry
 syscall_entry:
     cli
-    mov r10, rsp
-    # GS_BASE -> &CPU_SYSCALL[cpu] (set in load_percpu_gs)
+    # GS_BASE -> &CPU_SYSCALL[cpu] (set in load_percpu_gs). Stash the user
+    # rsp there so no user register has to serve as a temporary.
+    mov gs:[56], rsp
     mov rsp, qword ptr gs:[0]
     # Snapshot user callee-saved before any Rust prologue can reuse them.
     mov gs:[8], rbx
@@ -151,26 +163,45 @@ syscall_entry:
     mov gs:[32], r13
     mov gs:[40], r14
     mov gs:[48], r15
-    push r11
+    # Like Linux, a syscall changes only rax (result), rcx and r11 (sysret's
+    # rip/rflags): userspace wrappers declare just those clobbered, so every
+    # other register Rust may reuse is saved here and restored below. The
+    # lowest five words (user rsp, rip, r8, r9, rflags) are `SyscallRegs`.
+    push rdi
+    push rsi
+    push rdx
+    push r10
+    push r11          # user rflags
     push r9
     push r8
     push rcx          # user rip
-    push r10          # user rsp (on this kernel stack, survives wait/yield)
-    push rax          # nr; 16-byte align for call
-    mov r9, r10       # user_rsp
+    push qword ptr gs:[56] # user rsp (on this kernel stack, survives wait/yield)
+    # 7th argument (and 16-byte alignment for the call): the address of the
+    # block just pushed (`push rsp` stores rsp before the decrement), through
+    # which the signal code redirects rip/rsp.
+    push rsp
+    mov r9, qword ptr [rsp + 8] # user_rsp
     mov r8, rcx       # user_rip
     mov rcx, rdx      # a2
     mov rdx, rsi      # a1
     mov rsi, rdi      # a0
     mov rdi, rax      # nr
     call {dispatch}
+    # The body may have enabled IRQs (and moved CPUs); keep them off while
+    # gs:[56] carries the user rsp. sysret restores IF from r11.
+    cli
     add rsp, 8
     pop r10
+    mov gs:[56], r10
     pop rcx
     pop r8
     pop r9
     pop r11
-    mov rsp, r10
+    pop r10
+    pop rdx
+    pop rsi
+    pop rdi
+    mov rsp, gs:[56]
     sysretq
     "#,
     dispatch = sym syscall_dispatch,

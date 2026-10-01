@@ -11,7 +11,7 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 | **malloc** | 3 | yes | `malloc(0)` / `realloc` edge cases |
 | **paths** | 48 | yes | filesystem path / device presence |
 | **process** | 24 | yes | fork/setpgid/setsid/waitpid process-group |
-| **signal** | 32 | yes | raise/block/ignore/sigaltstack/ppoll/exec |
+| **signal** | 32 | yes | raise/block/ignore/sigaltstack/ppoll/exec; handlers are kernel-delivered (`docs/signals.md`) |
 | **stdio** | 22 | yes | printf formatting |
 | **namespace** | 159 | no | header pollution vs include-suite APIs (heavy tooling) |
 | **pty** | 29 | no | pseudoterminals / controlling tty |
@@ -22,7 +22,7 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 
 **Non-basic** = everything except `basic` (and the non-runtime `include` /
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`
-(~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (125 paths:
+(~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (141 paths:
 POSIX core + non-basic + the myos suite). Wired the same way as basic: thin
 `ci-smoke-copy.sh` staging + host prebuild + `make … TESTLIST=… report`.
 
@@ -57,13 +57,11 @@ until they pass honestly (no xfails):
 - `udp/connect-reconnect*`, `connect-unconnect-getpeername` — peer/unconnect edge cases
 - `process/waitpid-pgid` — needs waitpid(pgid) filtering (waitpid currently
   ignores pid)
-- `basic/signal/sigismember` — newlib's `sigismember` macro shifts by the
-  (negative / huge) signal number unchecked; clang turns that UB into a trap.
-  The x86 kernel used to halt on the resulting ring-3 #GP — it now kills just
-  the task — but the test needs a bounds-checked `sigismember`/`sigaddset`
-- `basic/signal/kill`, `basic/signal/killpg` (hang) — only SIGINT/SIGKILL/SIGTERM are default-fatal and wait statuses
-  carry no terminating signal (`WIFSIGNALED`), so a child blocked in `read`
-  never dies of `SIGUSR1`; needs signal-termination wait status + waitpid(pid)
+- `basic/signal/sigismember`, `sigaddset`, `sigdelset` — newlib's macros
+  shift by the (negative / huge) signal number unchecked; clang turns that UB
+  into a trap. newlib's checked versions (`libc/unix/sigset.c`) use bit
+  `signo - 1`, unlike the macros and the kernel (bit `signo`), so they cannot
+  simply be swapped in.
 - `io/ofd-*` — open-file-description locks (`F_OFD_SETLK`/`F_OFD_GETLK`) are
   not implemented; `io/ofd-setlk-wr-dup-rd` hangs
 - `io/open-tmpdir-*` — these exit 0 only if a directory can be opened for
@@ -71,15 +69,14 @@ until they pass honestly (no xfails):
   (they need per-test expected outputs, not a kernel change)
 - `process/zombie-setpgid-move` (hang), `process/limbo-*`,
   `process/fork-setpgid-*undo*`/`-invalid` — pgid edge cases
-- `signal/*-ignore-unignore-*`, `signal/block-chld-default-rehandle-unblock` —
-  re-handling a blocked pending signal after unignore
 - `paths/*` FHS directories (`/var`, `/run`, `/usr/share`, `/sbin`, …) and
   `/dev/{fd,stdin,stdout,stderr,full}` — not present in the image
 - `basic/stdlib/strtod` — passes on x86_64, fails on riscv64 (cause not yet
   investigated)
 - Not buildable against newlib/libgloss yet (not in any list): pty API
   (`posix_openpt`/`grantpt`/`unlockpt`), `ppoll`, `timer_*`, `alarm`,
-  `getppid`, `SA_ONSTACK`/`sigaltstack`, `siginfo_t.si_pid`, `struct rlimit`
+  `getppid`, `SA_ONSTACK`/`sigaltstack`, `sigqueue`, `sigtimedwait` /
+  `sigwaitinfo`, `siginfo_t.si_pid`, `struct rlimit`
 
 - **udp/** curated entries temporarily removed (2026-09-21): `socket.c` UDP
   bind-ephemeral / getsockname / AF_UNSPEC unconnect from this PR regressed

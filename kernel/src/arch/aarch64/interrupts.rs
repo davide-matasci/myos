@@ -500,6 +500,7 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
                 a2,
                 elr as usize,
                 sp_el0 as usize,
+                frame,
             );
             crate::user::set_syscall_frame(core::ptr::null_mut());
             *frame.add(0) = ret as u64;

@@ -154,6 +154,8 @@ struct Task {
     cwd: [u8; 256],
     cwd_len: u16,
     exit_code: u8,
+    /// Signal that killed the task (0 = it exited normally).
+    term_sig: u8,
     /// Set by `die()` as soon as the task has exited (status final, parent
     /// notified), while it still frees its address space; `wait_child` may
     /// report it from then on. The slot is recycled only once it is Dead and
@@ -208,6 +210,7 @@ const EMPTY: Task = Task {
     cwd: root_cwd_buf(),
     cwd_len: 1,
     exit_code: 0,
+    term_sig: 0,
     exited: false,
     mmap: EMPTY_MMAP,
     mmap_next: 0,

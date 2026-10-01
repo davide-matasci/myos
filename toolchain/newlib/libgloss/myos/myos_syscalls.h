@@ -48,6 +48,22 @@
 #define MYOS_SYS_PIPE_PEER 42
 #define MYOS_SYS_CHROOT 43
 #define MYOS_SYS_MKFIFO 44
+/* Return from a signal handler: the trampoline is done with the frame at the
+ * stack pointer (signal.c, kernel/src/signal.rs). */
+#define MYOS_SYS_SIGRETURN 45
+
+/* waitpid(status, options, pid): POSIX int status (WIFSIGNALED-aware),
+ * pid > 0 waits for that child. SYS_WAIT keeps the legacy exit-code byte. */
+#define MYOS_SYS_WAITPID 46
+#define MYOS_SYS_SIGPENDING 47
+#define MYOS_SYS_SIGSUSPEND 48
+#define MYOS_SYS_SIGWAIT 49
+/* sigaction with the trampoline as a 4th struct word (signal.c). */
+#define MYOS_SYS_SIGACTION2 50
+#define MYOS_WAIT_NOHANG 1
+
+#define MYOS_STR_(x) #x
+#define MYOS_STR(x) MYOS_STR_(x)
 
 #define MYOS_SYSERR ((unsigned long)-1)
 /* Distinct pty peer-gone error (kernel/src/task/mod.rs SYSERR_EIO): read or
@@ -55,6 +71,8 @@
 #define MYOS_EIO ((unsigned long)-2)
 /* open() of a FIFO for writing with O_NONBLOCK and no reader. */
 #define MYOS_ENXIO ((unsigned long)-3)
+/* A blocking syscall interrupted by a caught signal (kernel SYSERR_EINTR). */
+#define MYOS_EINTR ((unsigned long)-4)
 
 long myos_syscall0(long nr);
 long myos_syscall1(long nr, long a0);

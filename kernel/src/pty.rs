@@ -19,13 +19,11 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
+use crate::signal::{SIGHUP, SIGINT};
 use crate::tty::{TtyIn, Termios, OPOST, ONLCR};
 
 pub const MAX_PTYS: usize = 4;
 const OUT_CAP: usize = 4096;
-
-const SIGINT: u32 = 2;
-const SIGHUP: u32 = 1;
 
 pub struct Pty {
     /// Shared input discipline + pair termios (TCGETS/TCSETS on either end).
@@ -243,7 +241,7 @@ pub fn slave_read(id: usize, out: &mut [u8]) -> usize {
         if p.master_refs.load(Ordering::SeqCst) == 0 {
             break usize::MAX; // EIO: peer gone
         }
-        if crate::signal::current_should_wake() {
+        if crate::signal::interrupt_wait() {
             break 0;
         }
         let got = {
@@ -333,7 +331,7 @@ pub fn master_read(id: usize, out: &mut [u8]) -> usize {
         if p.slave_refs.load(Ordering::SeqCst) == 0 {
             break usize::MAX; // EIO: session ended
         }
-        if crate::signal::current_should_wake() {
+        if crate::signal::interrupt_wait() {
             break 0;
         }
         crate::task::yield_now();

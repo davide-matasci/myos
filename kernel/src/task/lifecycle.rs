@@ -3,10 +3,9 @@
 
 use super::*;
 
-/// Per-parent count of exited-but-unreaped (zombie) user children. myos has no
-/// userspace signal trampolines, so SIGCHLD is surfaced to libgloss by asking
-/// "does the caller have a zombie child?". A counter is robust against task-
-/// state scan timing (the child may be reaped by a concurrent waiter).
+/// Per-parent count of exited-but-unreaped (zombie) user children, for the
+/// legacy `SIGCHLD_PENDING` syscall. A counter is robust against task-state
+/// scan timing (the child may be reaped by a concurrent waiter).
 static ZOMBIES: [core::sync::atomic::AtomicU32; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU32::new(0) }; MAX_TASKS];
 
@@ -198,13 +197,13 @@ pub fn replace_user(
         t.brk_cur = heap_base_for(user_base, stack_off);
         t.mmap = EMPTY_MMAP;
         t.mmap_next = 0;
-        // v1: reset dispositions on exec (ignored → DFL, drop pending).
-        t.sig_pending = 0;
-        t.sig_ignored = 0;
+        // POSIX exec: ignored signals, the blocked mask and pending signals
+        // survive; caught ones revert to SIG_DFL (signal_table_exec below).
         // Keep fork-assigned affinity across exec. Spreading for make -j /
         // pipelines happens at fork when a sibling is already active — not
         // via basename allowlists or blanket post-exec RR.
     });
+    signal_table_exec(current_slot());
     user::switch_aspace(aspace);
     set_loaded_aspace(aspace);
 }
@@ -279,6 +278,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         pgid,
         has_ctty,
         sig_ignored,
+        sig_blocked,
     ) = {
         let tasks = TASKS.lock();
         let id = current_slot();
@@ -307,6 +307,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.pgid,
             t.has_ctty,
             t.sig_ignored,
+            t.sig_blocked,
         )
     };
 
@@ -405,21 +406,26 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         cwd,
         cwd_len,
         exit_code: 0,
+        term_sig: 0,
         exited: false,
         mmap,
         mmap_next,
         sid,
         pgid,
         has_ctty,
-        // POSIX-ish: inherit ignored mask; clear pending in the child.
+        // POSIX: the child inherits dispositions and the blocked mask, but
+        // starts with no pending signals.
         sig_pending: 0,
         sig_ignored,
-        sig_blocked: 0,
+        sig_blocked,
         // Sequential / init→getty (no ctty): inherit. Ctty parent with an
         // active sibling (make -j / pipelines): fresh AP RR home. Exec keeps
         // this affinity. Cross-CPU wait: die() IF-on + schedule() soft TLB.
         affinity: child_aff,
     };
+    // Before the child becomes runnable on another CPU (TASKS still held;
+    // TASKS → SIG_TABLES is the lock order).
+    signal_table_fork(ppid, slot);
     drop(tasks);
     user::note_fork();
     irq_restore(flags);
@@ -430,9 +436,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     Some(slot)
 }
 
-/// True if `parent` has a child that has exited (`Dead`) and not yet been reaped.
-/// myos has no userspace signal trampolines, so libgloss asks this directly from
-/// its `poll()`/`select()` dispatch instead of relying on a pushed pending bit.
+/// True if `parent` has a child that has exited (`Dead`) and not yet been
+/// reaped (legacy `SIGCHLD_PENDING` syscall).
 pub fn has_exited_child(parent: usize) -> bool {
     if zombie_count(parent) > 0 {
         return true;
@@ -463,7 +468,16 @@ pub fn has_exited_child(parent: usize) -> bool {
 /// (POSIX WNOHANG) so waitpid cannot block the dropbear reap loop — and so a
 /// WNOHANG poll with no children still returns `usize::MAX` (ECHILD), not 0
 /// (which would busy-spin shells that treat 0 as "try again").
-pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
+///
+/// `pid` restricts the wait to that child (`waitpid(pid > 0)`). The status is
+/// written as one exit-code byte (legacy) or, with `status_word`, as a POSIX
+/// `int` status that distinguishes a signal death (`WIFSIGNALED`).
+pub fn wait_child(
+    status_out: Option<usize>,
+    nohang: bool,
+    pid: Option<usize>,
+    status_word: bool,
+) -> usize {
     let parent = current_slot();
     loop {
         let mut any = false;
@@ -474,6 +488,7 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
             let mut tasks = TASKS.lock();
             for i in 0..MAX_TASKS {
                 if i == parent
+                    || pid.is_some_and(|p| p != i)
                     || tasks[i].ppid != parent
                     || tasks[i].user_rip == 0
                     || tasks[i].state == State::Unused
@@ -488,6 +503,7 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
             }
             if let Some(i) = reap {
                 let code = tasks[i].exit_code;
+                let term_sig = tasks[i].term_sig;
                 if reapable(&tasks, i) {
                     let stack_base = tasks[i].stack_base;
                     tasks[i] = EMPTY;
@@ -505,7 +521,16 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
                 irq_restore(flags);
                 note_reap(parent);
                 if let Some(va) = status_out {
-                    let _ = user::copy_to_user(current_aspace(), va, &[code]);
+                    if status_word {
+                        let status: u32 = if term_sig != 0 {
+                            term_sig as u32
+                        } else {
+                            (code as u32) << 8
+                        };
+                        let _ = user::copy_to_user(current_aspace(), va, &status.to_le_bytes());
+                    } else {
+                        let _ = user::copy_to_user(current_aspace(), va, &[code]);
+                    }
                 }
                 return i;
             }
@@ -518,11 +543,10 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
         if nohang {
             return 0;
         }
-        // A pending fatal signal must interrupt `wait` so `deliver_due` can kill
-        // an interactive shell waiting on a foreground child (Ctrl-C while a
-        // child like `curl` is running). Ignored SIGINT is never pending, so an
-        // interactive oksh that ignores SIGINT during `wait` survives.
-        if crate::signal::current_should_wake() {
+        // A signal that terminates or is caught interrupts `wait` (Ctrl-C
+        // while a foreground child like `curl` runs). An ignored SIGINT is
+        // never pending, so an interactive oksh ignoring it survives.
+        if crate::signal::interrupt_wait() {
             return usize::MAX;
         }
         yield_now();
@@ -592,6 +616,7 @@ fn spawn_inner(
         },
         cwd_len: 1,
         exit_code: 0,
+        term_sig: 0,
         exited: false,
         mmap: EMPTY_MMAP,
         mmap_next: 0,
@@ -603,6 +628,7 @@ fn spawn_inner(
         sig_blocked: 0,
         affinity: if aspace != 0 { user_affinity() } else { None },
     };
+    signal_table_reset(slot);
     drop(tasks);
     irq_restore(flags);
     if crate::smp::online_count() > 1 {
@@ -612,6 +638,16 @@ fn spawn_inner(
 
 pub fn user_exit(code: u8) -> ! {
     with_current_mut(|t| t.exit_code = code);
+    die();
+}
+
+/// Terminate the current task because of `sig` (its default action).
+/// `wait` reports it as signaled; byte-status callers still see `128 + sig`.
+pub fn user_exit_signal(sig: u32) -> ! {
+    with_current_mut(|t| {
+        t.exit_code = 128u8.wrapping_add(sig as u8);
+        t.term_sig = sig as u8;
+    });
     die();
 }
 

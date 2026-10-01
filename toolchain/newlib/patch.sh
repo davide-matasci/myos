@@ -212,6 +212,55 @@ typedef	int jmp_buf[_JBLEN+1+(sizeof (__sigset_t)/sizeof (int))];
 # search.h (newlib) lacks lsearch/lfind/insque/remque + struct qelem that
 # POSIX puts in <search.h>; os-test search/*.c need them. Declare them and
 # implement in libgloss myos search.c.
+patch_signal_h() {
+  local f="$NEWLIB_SRC/newlib/libc/include/sys/signal.h"
+  # myos delivers caught signals in the kernel (kernel/src/signal.rs,
+  # libgloss signal.c), so give its struct sigaction the POSIX shape:
+  # sa_sigaction next to sa_handler, and the SA_* flags the kernel honours
+  # (Linux values; SA_SIGINFO is newlib's). newlib only does this for RTEMS.
+  if ! grep -q 'signal-myos-sa' "$f"; then
+    patch_edit "$f" \
+'#define SA_NOCLDSTOP 1  /* only value supported now for sa_flags */
+
+typedef void (*_sig_func_ptr)(int);
+
+struct sigaction 
+{
+	_sig_func_ptr sa_handler;
+	sigset_t sa_mask;
+	int sa_flags;
+};' \
+'#define SA_NOCLDSTOP 1  /* signal-myos-sa: flags below are kernel-delivered */
+#define SA_RESTART   0x10000000 /* Restart syscalls interrupted by the handler */
+#define SA_NODEFER   0x40000000 /* Do not block the signal in its own handler */
+#define SA_RESETHAND 0x80000000 /* Reset to SIG_DFL on delivery */
+
+typedef void (*_sig_func_ptr)(int);
+
+#if defined(_POSIX_REALTIME_SIGNALS) || __POSIX_VISIBLE >= 199309
+#define SA_SIGINFO   0x2  /* Handler takes (int, siginfo_t *, void *) */
+#endif
+
+struct sigaction 
+{
+	union {
+	  _sig_func_ptr _handler;
+#if defined(_POSIX_REALTIME_SIGNALS) || __POSIX_VISIBLE >= 199309
+	  void (*_sigaction)(int, siginfo_t *, void *);
+#endif
+	} _signal_handlers;
+	sigset_t sa_mask;
+	int sa_flags;
+};
+
+#define sa_handler    _signal_handlers._handler
+#if defined(_POSIX_REALTIME_SIGNALS) || __POSIX_VISIBLE >= 199309
+#define sa_sigaction  _signal_handlers._sigaction
+#endif' 1
+    echo "patched sys/signal.h: sa_sigaction + SA_RESTART/SA_NODEFER/SA_RESETHAND/SA_SIGINFO"
+  fi
+}
+
 patch_search_h() {
   local f="$NEWLIB_SRC/newlib/libc/include/search.h"
   if ! grep -q 'search-lsearch-qelem' "$f"; then
@@ -242,6 +291,7 @@ install_endian_h
 patch_search_h
 patch_regex_h
 patch_setjmp_h
+patch_signal_h
 
 echo "myos newlib patches applied"
 

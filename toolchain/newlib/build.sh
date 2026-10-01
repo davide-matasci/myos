@@ -21,7 +21,9 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 # (oksh savefd / F_DUPFD). HAVE_RENAME: libc rename() must call _rename
 # (SYS_RENAME), not link+unlink — our _link stub is EROFS and that broke
 # git init's commit_lock_file. Also set via configure.host; CFLAGS is reliable.
-TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL -DHAVE_RENAME"
+# SIGNAL_PROVIDED: newlib's userspace signal()/raise() emulation is replaced
+# by kernel delivery (libgloss signal.c); raise() becomes kill(getpid(), sig).
+TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL -DHAVE_RENAME -DSIGNAL_PROVIDED"
 
 build_one() {
   local arch="$1"
