@@ -41,6 +41,36 @@ pub static FRAME_SITE_COUNTS: [AtomicU64; 6] = [
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
 ];
 
+/// Zero one 4 KiB frame through its HHDM mapping.
+///
+/// The kernel is built unoptimized and `write_bytes` lowers to a byte loop
+/// there (very slow under TCG), so use word stores: `rep stosq` on x86_64.
+///
+/// # Safety
+/// `page` must point at a writable, 8-byte-aligned 4 KiB page.
+#[inline(always)]
+pub unsafe fn zero_page(page: *mut u8) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!(
+            "rep stosq",
+            inout("rcx") (PAGE / 8) as usize => _,
+            inout("rdi") page => _,
+            in("rax") 0u64,
+            options(nostack, preserves_flags),
+        );
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let w = page as *mut u64;
+        let mut i = 0;
+        while i < (PAGE / 8) as usize {
+            unsafe { w.add(i).write(0) };
+            i += 1;
+        }
+    }
+}
+
 /// Allocate one frame and attribute it to a leak-triage call site.
 #[inline(always)]
 pub fn alloc_frame_site(site: usize) -> u64 {
@@ -126,12 +156,11 @@ pub fn free_frame(phys: u64) {
         unsafe {
             core::ptr::write_unaligned((phys + hhdm) as *mut u64, head);
         }
-        // Sentinel-fill the remainder so stray writes into a freed frame
-        // are detectable (a popped frame's next-ptr landing misaligned
-        // means something scribbled here while it sat on the freelist).
-        unsafe {
-            core::ptr::write_bytes((phys + hhdm + 8) as *mut u8, 0x5A, (PAGE - 8) as usize);
-        }
+        // Only the next-ptr is written: `alloc_frame` validates it (a stray
+        // write into a free frame still surfaces as a bad next-ptr) and zeroes
+        // the page. A 4 KiB 0x5A fill here cost ~600k cycles per frame in the
+        // debug kernel under TCG (byte-wise memset) — fine while exits leaked,
+        // ~0.5 s per process once exits actually reclaim their pages.
         if FREE_HEAD
             .compare_exchange(head, phys, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
@@ -265,7 +294,7 @@ pub fn alloc_frame() -> u64 {
             .is_ok()
         {
             unsafe {
-                core::ptr::write_bytes((head + hhdm) as *mut u8, 0, PAGE as usize);
+                zero_page((head + hhdm) as *mut u8);
             }
             FRAME_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             return head;
@@ -298,7 +327,7 @@ pub fn alloc_frame() -> u64 {
             }
             NEXT.store(phys + PAGE, Ordering::SeqCst);
             unsafe {
-                core::ptr::write_bytes((phys + hhdm) as *mut u8, 0, PAGE as usize);
+                zero_page((phys + hhdm) as *mut u8);
             }
             FRAME_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             return phys;

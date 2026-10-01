@@ -466,9 +466,7 @@ fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
         phys
     } else {
         let frame = mm::alloc_frame_site(1);
-        unsafe {
-            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
-        }
+        // alloc_frame returns a zeroed frame.
         frame
     }
 }
@@ -2781,9 +2779,7 @@ fn sys_brk(req: usize) -> usize {
         while va < map_end {
             if virt_to_phys(aspace, va as u64).is_none() {
                 let frame = mm::alloc_frame_site(4);
-                unsafe {
-                    core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
-                }
+                // alloc_frame returns a zeroed frame.
                 map_heap_page(aspace, va as u64, frame);
                 mapped_any = true;
             }
@@ -2882,9 +2878,7 @@ fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: isize, offset
     while mapped < map_len {
         let page_va = (va + mapped) as u64;
         let frame = mm::alloc_frame_site(4);
-        unsafe {
-            core::ptr::write_bytes(mm::hhdm(frame), 0, PAGE);
-        }
+        // alloc_frame returns a zeroed frame.
         map_user_page_prot(aspace, page_va, frame, prot);
         mapped += PAGE;
     }
