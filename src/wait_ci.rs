@@ -1555,7 +1555,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                     break child.wait().expect("wait after user-fault fail-fast kill");
                 }
                 // Pipe stage bound: even without a printed WARN, a wedged
-                // pipeline must not burn the mini 240s / full 1800s budget.
+                // pipeline must not burn the mini 240s / full 2700s budget.
                 if shell_stage == ShellStage::WaitResult && cmds.get(shell_cmd_index) == Some(&CMD_PIPE)
                 {
                     let started_at = pipe_wait_started.get_or_insert_with(Instant::now);
