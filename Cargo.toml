@@ -59,5 +59,11 @@ kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 [profile.dev]
 panic = "abort"
 
+# The kernel runs under QEMU TCG in CI, where unoptimized code is several
+# times slower. Optimize it even in dev builds; debug assertions and
+# overflow checks stay on (they are separate profile settings).
+[profile.dev.package.kernel]
+opt-level = 2
+
 [profile.release]
 panic = "abort"
