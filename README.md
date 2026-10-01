@@ -20,7 +20,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Networking** — virtio-net kernel module + smoltcp in userspace; `/ping` works on all arches
 - **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET
 - **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
-- **Optional: Linux syscall compatibility** — off by default; `--features linux_compat` runs static-PIE musl x86_64 binaries via `linux PROGRAM` (see `docs/linux-compat.md`)
+- **Optional: Linux syscall compatibility** — off by default; `--features linux_compat` runs static-PIE musl binaries (x86_64, aarch64, riscv64) via `linux PROGRAM` (see `docs/linux-compat.md`)
 
 ---
 
