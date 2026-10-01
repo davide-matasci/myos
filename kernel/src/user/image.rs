@@ -360,14 +360,37 @@ pub(super) fn expand_user_elf(
     Some((entry as usize, n_pages * PAGE, new_stack_off))
 }
 
+/// Auxiliary-vector entries placed before the `AT_NULL` terminator.
+pub struct AuxV {
+    e: [(usize, usize); 16],
+    n: usize,
+}
+
+impl AuxV {
+    pub const fn new() -> Self {
+        Self { e: [(0, 0); 16], n: 0 }
+    }
+    #[cfg(feature = "linux-compat")]
+    pub fn push(&mut self, key: usize, val: usize) {
+        if self.n < self.e.len() {
+            self.e[self.n] = (key, val);
+            self.n += 1;
+        }
+    }
+    pub fn entries(&self) -> &[(usize, usize)] {
+        &self.e[..self.n]
+    }
+}
+
 /// SysV-style user stack at process entry (`rsp % 16 == 0`):
-/// `[argc][argv…][NULL][envp…][NULL][AT_NULL auxv][gap][strings…]`.
+/// `[argc][argv…][NULL][envp…][NULL][auxv…][AT_NULL][gap][strings…]`.
 pub(super) fn build_argv_stack(
     aspace: u64,
     user_base: u64,
     stack_off: u64,
     args: &[&[u8]],
     env: &[&[u8]],
+    aux: &[(usize, usize)],
 ) -> Option<(usize, usize)> {
     if args.len() > MAX_ARGC || env.len() > MAX_ENVC {
         return None;
@@ -418,8 +441,8 @@ pub(super) fn build_argv_stack(
     if sp < stack_bot {
         return None;
     }
-    // argc + argv + NULL + envp + NULL + auxv AT_NULL (type,val).
-    let words = 1 + args.len() + 1 + env.len() + 1 + 2;
+    // argc + argv + NULL + envp + NULL + auxv pairs + AT_NULL (type,val).
+    let words = 1 + args.len() + 1 + env.len() + 1 + 2 * aux.len() + 2;
     sp = sp.checked_sub(words * core::mem::size_of::<usize>())?;
     // Linux/SysV AMD64: %rsp ≡ 0 (mod 16) at _start. crt0/`call` then yields
     // callee %rsp ≡ 8. fe50282 forced ≡8 with an extra `sp -= 8`, which inverted
@@ -458,6 +481,12 @@ pub(super) fn build_argv_stack(
         return None;
     }
     sp += core::mem::size_of::<usize>();
+    for &(key, val) in aux {
+        if !write_user_usize(aspace, sp, key) || !write_user_usize(aspace, sp + 8, val) {
+            return None;
+        }
+        sp += 2 * core::mem::size_of::<usize>();
+    }
     // Minimal auxv terminator (AT_NULL). Fresh stacks are zeroed, but write it
     // explicitly so crt0/std walkers never read string bytes as aux entries.
     if !write_user_usize(aspace, sp, 0) {

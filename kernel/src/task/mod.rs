@@ -38,7 +38,7 @@ mod switch_riscv64;
 #[cfg(target_arch = "riscv64")]
 use switch_riscv64::{seed_stack, task_switch};
 
-const MAX_TASKS: usize = 32;
+pub const MAX_TASKS: usize = 32;
 /// Exec from a syscall runs `load_user_elf` / `copy_user_aspace` on the task
 /// stack (exception frame + `[MAX_INIT_PAGES]`/`[USER_STACK_PAGES]` frame arrays).
 /// 8 KiB overflowed after widening the user stack to 64 KiB; 16 KiB then overflowed
@@ -397,6 +397,16 @@ pub fn unload_user_aspace(aspace: u64) {
 #[allow(dead_code)]
 pub fn current_id() -> usize {
     current_slot()
+}
+
+/// Parent task slot of the running task (Linux layer `getppid`).
+#[cfg(feature = "linux-compat")]
+pub fn current_ppid() -> usize {
+    let flags = irq_save();
+    irq_off();
+    let p = TASKS.lock()[current_slot()].ppid;
+    irq_restore(flags);
+    p
 }
 
 /// When the running task is a user process, its saved PC and stack pointer.

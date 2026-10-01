@@ -8,6 +8,7 @@ mod uaccess;
 pub use aspace::*;
 pub use enter::*;
 use image::*;
+pub use image::AuxV;
 pub use syscall::*;
 pub use uaccess::*;
 
@@ -339,7 +340,7 @@ pub fn spawn_init() {
     let base = pick_user_base();
     USER_BASE.store(base, Ordering::SeqCst);
     let (aspace, entry, span, off) = load_user_elf(INIT_ELF).expect("init ELF");
-    let (rsp, argv) = build_argv_stack(aspace, base, off, &[], &[]).expect("init stack");
+    let (rsp, argv) = build_argv_stack(aspace, base, off, &[], &[], &[]).expect("init stack");
     task::spawn_user(aspace, entry, rsp, base, span, off, 0, argv);
     USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
     DID_SPAWN.store(true, Ordering::SeqCst);

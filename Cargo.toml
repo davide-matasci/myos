@@ -53,6 +53,12 @@ port_lynx = []
 port_lua = []
 port_make = []
 
+# Optional Linux syscall compatibility layer (x86_64 only; see
+# docs/linux-compat.md). Not part of `default` or `core`: builds the kernel's
+# `linux-compat` feature and adds /bin/etc/linux (the launcher) plus the
+# Linux test binary /bin/linux/linux-smoke to the image.
+linux_compat = ["kernel/linux-compat"]
+
 [build-dependencies]
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 

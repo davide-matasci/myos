@@ -16,6 +16,9 @@ mod input;
 mod kbd;
 mod keymap;
 mod limine_boot;
+/// Optional Linux syscall compatibility layer (`--features linux_compat`).
+#[cfg(feature = "linux-compat")]
+mod linux;
 mod mm;
 mod nvme;
 mod pci;

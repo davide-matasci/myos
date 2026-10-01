@@ -6,6 +6,9 @@ struct CiExpect {
     qemu_debug_exit: bool,
     /// Type commands at the interactive `$` prompt via `-serial stdio`.
     shell_ci: bool,
+    /// An x86_64 guest (bios/uefi): the only arch with the optional Linux
+    /// compatibility layer.
+    x86: bool,
 }
 
 const CI_NEEDLES: [&str; 33] = [
@@ -102,6 +105,9 @@ const CMD_TMP_REDIR: &[u8] = b"echo test > /tmp/aaa; cat /tmp/aaa\n";
 const CMD_WHICH: &[u8] = b"which ls\n";
 // DNS resolution test (requires network).
 const CMD_DNS: &[u8] = b"dns www.google.com\n";
+// Optional Linux compatibility layer smoke (`--features linux_compat`, x86_64):
+// a static-PIE musl binary run through the `linux` launcher.
+const CMD_LINUX: &[u8] = b"linux /bin/linux/linux-smoke\n";
 // pty boot-CI smoke (openpty/forkpty, echo round-trip, EIO on session end).
 const CMD_PTY: &[u8] = b"/bin/etc/pty_smoke 2\n";
 // urandom boot-CI smoke (kernel CSPRNG via /dev/urandom: non-zero, distinct,
@@ -429,7 +435,13 @@ pub fn ci_mini() -> bool {
     std::env::var_os("MYOS_CI_MINI").map(|v| v == "1").unwrap_or(false)
 }
 
-fn ci_shell_commands() -> Vec<&'static [u8]> {
+/// Whether this image carries the optional Linux compatibility layer (an
+/// explicit opt-in feature, unlike the ports `port_enabled` defaults to).
+fn linux_compat_enabled(x86: bool) -> bool {
+    x86 && active_features().iter().any(|f| f == "linux_compat")
+}
+
+fn ci_shell_commands(x86: bool) -> Vec<&'static [u8]> {
     let mut cmds: Vec<&'static [u8]> = vec![
         CMD_NOSUCH,
         // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
@@ -446,6 +458,9 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         CMD_WHICH,
         CMD_DNS,
     ];
+    if linux_compat_enabled(x86) {
+        cmds.push(CMD_LINUX);
+    }
     if !ci_mini() {
         cmds.push(CMD_HTTP);
         cmds.push(CMD_CURL);
@@ -737,6 +752,16 @@ fn interactive_urandom_cmd_ok(serial: &str) -> bool {
         return false;
     }
     at_interactive_prompt(serial)
+}
+
+/// Linux compatibility smoke: every check in linux-compat/tests/linux-smoke.c
+/// passed and the shell is back at `$`.
+fn interactive_linux_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    tail.contains("$ linux /bin/linux/linux-smoke")
+        && tail.contains("LINUX-SMOKE OK")
+        && !serial.contains("exception:")
+        && at_interactive_prompt(serial)
 }
 
 /// pty smoke (basic stage 2): openpty round-trip through the shared line
@@ -1137,6 +1162,7 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         i if cmds[i] == CMD_OS_TEST_RESULT => interactive_ostest_result_ok(serial),
         i if cmds[i] == CMD_PTY => interactive_pty_cmd_ok(serial),
         i if cmds[i] == CMD_URANDOM => interactive_urandom_cmd_ok(serial),
+        i if cmds[i] == CMD_LINUX => interactive_linux_cmd_ok(serial),
         i if cmds[i] == CMD_DROPBEAR_STOP => {
             command_echoed(serial, "kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP")
                 && serial.contains("DROPBEAR-STOP")
@@ -1492,7 +1518,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         }
     });
 
-    let cmds = ci_shell_commands();
+    let cmds = ci_shell_commands(expect.x86);
     let mini = ci_mini();
     let started = Instant::now();
     let mut timed_out = false;
@@ -1977,6 +2003,18 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: shell did not return to `$` after interactive pty_smoke");
             } else {
                 eprintln!("error: interactive pty_smoke did not print `[ OK ] s2 EIO`");
+            }
+            std::process::exit(1);
+        }
+        if cmds.get(shell_cmd_index) == Some(&CMD_LINUX) && !interactive_linux_cmd_ok(&serial) {
+            if !command_echoed(&serial, "linux /bin/linux/linux-smoke") {
+                eprintln!("error: serial did not echo `$ linux /bin/linux/linux-smoke` at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: the Linux compatibility smoke triggered a CPU exception");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after the Linux compatibility smoke");
+            } else {
+                eprintln!("error: the Linux compatibility smoke did not print `LINUX-SMOKE OK`");
             }
             std::process::exit(1);
         }

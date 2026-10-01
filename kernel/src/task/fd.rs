@@ -649,6 +649,36 @@ pub fn fd_lseek(fd: usize, offset: i64, whence: usize) -> usize {
     })
 }
 
+/// What an open fd refers to (for the Linux layer's `fstat`).
+#[cfg(feature = "linux-compat")]
+pub enum FdKind {
+    Tty,
+    Pipe,
+    File { size: usize },
+}
+
+#[cfg(feature = "linux-compat")]
+pub fn fd_kind(fd: usize) -> Option<FdKind> {
+    let entry = {
+        let flags = irq_save();
+        irq_off();
+        let e = TASKS.lock()[current_slot()].fds.get(fd).copied();
+        irq_restore(flags);
+        e?
+    };
+    Some(match entry {
+        FdEntry::Empty => return None,
+        FdEntry::Stdin | FdEntry::Console | FdEntry::PtyMaster(_) | FdEntry::PtySlave(_) => {
+            FdKind::Tty
+        }
+        FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) => FdKind::Pipe,
+        FdEntry::File { .. } if fd_is_console_tty(entry) => FdKind::Tty,
+        FdEntry::File { node, .. } => FdKind::File {
+            size: crate::fs::size_of(&node).unwrap_or(0),
+        },
+    })
+}
+
 pub fn fd_close(fd: usize) -> bool {
     if fd >= MAX_FDS {
         return false;
