@@ -417,6 +417,7 @@ fn run_ci_bios(bios_path: &str) {
         CiExpect {
             timeout: ci_qemu_timeout(),
             qemu_debug_exit: true,
+            x86: true,
             shell_ci: true,
         },
         &CI_NEEDLES_STD,
@@ -487,6 +488,7 @@ fn run_ci_uefi(uefi_path: &str) {
         CiExpect {
             timeout: ci_qemu_timeout(),
             qemu_debug_exit: true,
+            x86: true,
             shell_ci: true,
         },
         &CI_NEEDLES_STD,
@@ -506,6 +508,7 @@ fn run_ci_aarch64() {
         CiExpect {
             timeout: ci_qemu_timeout(),
             qemu_debug_exit: false,
+            x86: false,
             shell_ci: true,
         },
         // Same heavy `/heap` needles as x86 (typed at `$` after slim `/ok`).
@@ -906,6 +909,7 @@ fn run_ci_riscv64() {
         CiExpect {
             timeout: ci_qemu_timeout(),
             qemu_debug_exit: false,
+            x86: false,
             shell_ci: true,
         },
         // Same heavy `/heap` needles as x86 (typed at `$` after slim `/ok`).
