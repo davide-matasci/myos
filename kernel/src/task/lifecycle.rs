@@ -204,6 +204,8 @@ pub fn replace_user(
         // via basename allowlists or blanket post-exec RR.
     });
     signal_table_exec(current_slot());
+    #[cfg(feature = "linux-compat")]
+    crate::linux::on_exec(current_slot());
     user::switch_aspace(aspace);
     set_loaded_aspace(aspace);
 }
@@ -426,6 +428,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     // Before the child becomes runnable on another CPU (TASKS still held;
     // TASKS → SIG_TABLES is the lock order).
     signal_table_fork(ppid, slot);
+    #[cfg(feature = "linux-compat")]
+    crate::linux::on_fork(ppid, slot);
     drop(tasks);
     user::note_fork();
     irq_restore(flags);
@@ -629,6 +633,8 @@ fn spawn_inner(
         affinity: if aspace != 0 { user_affinity() } else { None },
     };
     signal_table_reset(slot);
+    #[cfg(feature = "linux-compat")]
+    crate::linux::on_spawn(slot);
     drop(tasks);
     irq_restore(flags);
     if crate::smp::online_count() > 1 {

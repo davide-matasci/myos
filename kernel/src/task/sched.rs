@@ -73,11 +73,11 @@ pub fn schedule() {
             // have switched CR3 below. Publish next + CURRENT now.
             tasks[next].state = State::Running;
             set_current_slot(next);
-            Some((old_sp, new_sp, kstack, aspace, current))
+            Some((old_sp, new_sp, kstack, aspace, current, next))
         }
     };
 
-    let Some((old_sp, new_sp, kstack, aspace, old)) = switch else {
+    let Some((old_sp, new_sp, kstack, aspace, old, _next)) = switch else {
         irq_restore(flags);
         return;
     };
@@ -91,6 +91,8 @@ pub fn schedule() {
         // riscv64: no sscratch write here — it stays 0 in S-mode and is armed
         // with the kernel stack top only on the way out to U-mode.
     }
+    #[cfg(feature = "linux-compat")]
+    crate::linux::on_switch(_next);
 
     let want = if aspace == 0 {
         KERNEL_ASPACE.load(Ordering::SeqCst)

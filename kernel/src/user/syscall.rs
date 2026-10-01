@@ -74,6 +74,12 @@ const SYS_SIGWAIT: usize = 49;
 /// handlers (`SYS_SIGACTION` keeps the 3-word, DFL/IGN-only form).
 const SYS_SIGACTION2: usize = 50;
 
+/// linux_next_exec(): the caller's next successful exec starts the image
+/// with the Linux personality (the `linux` launcher). Only with the optional
+/// `linux-compat` feature; otherwise an unknown syscall.
+#[cfg(feature = "linux-compat")]
+const SYS_LINUX_NEXT_EXEC: usize = 51;
+
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
 
@@ -134,6 +140,12 @@ impl SyscallRegs {
             unsafe { *self.0.add(i) = v as u64 }
         }
     }
+    /// Syscall arguments 4..6 (r10, r8, r9), which `syscall_dispatch` does
+    /// not take as parameters.
+    #[cfg(all(feature = "linux-compat", target_arch = "x86_64"))]
+    pub fn args_3_to_5(&self) -> [usize; 3] {
+        unsafe { [*self.0.add(5) as usize, *self.0.add(2) as usize, *self.0.add(3) as usize] }
+    }
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -165,6 +177,13 @@ pub extern "C" fn syscall_dispatch(
 ) -> usize {
     task::save_user_context(user_rip, user_rsp);
     let mut regs = SyscallRegs(regs);
+    // Optional Linux layer: a task exec'd with a Linux personality makes
+    // Linux syscalls (own numbers, errno returns); see `crate::linux`.
+    #[cfg(feature = "linux-compat")]
+    if crate::linux::active() {
+        let ret = crate::linux::dispatch(nr, a0, a1, a2, &regs, user_rip, user_rsp);
+        return crate::signal::on_syscall_exit(&mut regs, nr, a0, ret);
+    }
     let ret = match nr {
         SYS_WRITE => sys_write(a0, a1, a2),
         SYS_EXIT => sys_exit(a0),
@@ -216,6 +235,8 @@ pub extern "C" fn syscall_dispatch(
         SYS_SIGPENDING => crate::signal::sigpending(),
         SYS_SIGSUSPEND => crate::signal::sigsuspend(a0 as u32),
         SYS_SIGWAIT => crate::signal::sigwait(a0 as u32),
+        #[cfg(feature = "linux-compat")]
+        SYS_LINUX_NEXT_EXEC => crate::linux::sys_linux_next_exec(),
         _ => SYSERR,
     };
     // Terminate, run a handler, or turn an interrupted wait into EINTR.
@@ -230,7 +251,7 @@ fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
     task::fd_write(fd, ptr, len)
 }
 
-fn resolve_copied_path(path: &str) -> Option<alloc::string::String> {
+pub(crate) fn resolve_copied_path(path: &str) -> Option<alloc::string::String> {
     let mut abs = [0u8; MAX_PATH];
     let n = fs::resolve_user_path(path, &mut abs)?;
     core::str::from_utf8(&abs[..n])
@@ -260,6 +281,11 @@ fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
+    open_path(path, flags)
+}
+
+/// open(2) of a cwd-relative or absolute path already in kernel memory.
+pub(crate) fn open_path(path: &str, flags: usize) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
@@ -295,7 +321,7 @@ fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
     }
 }
 
-pub(super) fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
+pub(crate) fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
     task::fd_read(fd, buf, len)
 }
 
@@ -311,7 +337,7 @@ fn sys_ioctl(fd: usize, request: usize, arg: usize) -> usize {
 /// (`pgid = pid`), clear controlling tty.
 /// Fails with SYSERR if the caller is already a session leader (`sid == pid`).
 
-fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
+pub(crate) fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
     const N: usize = 16; // two i64s
     if tv_ptr == 0 || !user_range_ok(tv_ptr, N) {
         return SYSERR;
@@ -328,14 +354,14 @@ fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
     0
 }
 
-fn sys_setsid() -> usize {
+pub(crate) fn sys_setsid() -> usize {
     match task::setsid() {
         Some(sid) => sid,
         None => SYSERR,
     }
 }
 
-fn sys_setpgid(pid: usize, pgid: usize) -> usize {
+pub(crate) fn sys_setpgid(pid: usize, pgid: usize) -> usize {
     if task::setpgid(pid, pgid) {
         0
     } else {
@@ -343,14 +369,14 @@ fn sys_setpgid(pid: usize, pgid: usize) -> usize {
     }
 }
 
-fn sys_getpgid(pid: usize) -> usize {
+pub(crate) fn sys_getpgid(pid: usize) -> usize {
     match task::getpgid(pid) {
         Some(pgid) => pgid,
         None => SYSERR,
     }
 }
 
-fn sys_getsid(pid: usize) -> usize {
+pub(crate) fn sys_getsid(pid: usize) -> usize {
     match task::getsid(pid) {
         Some(sid) => sid,
         None => SYSERR,
@@ -398,6 +424,18 @@ pub(super) fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
+    let (arg_bufs, env_bufs) = match copy_user_exec_pack(args_ptr) {
+        Ok(v) => v,
+        Err(()) => return SYSERR,
+    };
+    let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
+    let env_refs: Vec<&[u8]> = env_bufs.iter().map(|s| s.as_slice()).collect();
+    exec_path(path, &arg_refs, &env_refs)
+}
+
+/// Replace the current image with the ELF at `path` (cwd-relative or
+/// absolute); returns only on failure.
+pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
@@ -438,12 +476,6 @@ pub(super) fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
         owned = v;
         &owned
     };
-    let (arg_bufs, env_bufs) = match copy_user_exec_pack(args_ptr) {
-        Ok(v) => v,
-        Err(()) => return SYSERR,
-    };
-    let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
-    let env_refs: Vec<&[u8]> = env_bufs.iter().map(|s| s.as_slice()).collect();
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any
     // current_slot()-backed lookup so we expand/replace the running task.
     crate::smp::sync_tp_for_kernel();
@@ -507,7 +539,14 @@ pub(super) fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
             }
         }
     };
-    let Some((rsp, argv)) = build_argv_stack(aspace, base_u, off, &arg_refs, &env_refs) else {
+    // The optional Linux layer adds the auxv entries musl's startup reads.
+    #[cfg(feature = "linux-compat")]
+    let aux = crate::linux::exec_auxv(bytes, base_u, entry);
+    #[cfg(not(feature = "linux-compat"))]
+    let aux = AuxV::new();
+    let Some((rsp, argv)) =
+        build_argv_stack(aspace, base_u, off, arg_refs, env_refs, aux.entries())
+    else {
         return SYSERR;
     };
     let argc = arg_refs.len();
@@ -784,7 +823,7 @@ fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
     0
 }
 
-fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
+pub(crate) fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     #[cfg(target_arch = "x86_64")]
     let child = {
         // Use the snapshot from syscall_entry — live rbx/rbp/r12–r15 here may
@@ -848,7 +887,7 @@ fn sys_wait(status_ptr: usize, options: usize) -> usize {
 
 /// `waitpid(status, options, pid)`: `pid > 0` waits for that child, anything
 /// else for any child; `status` gets a POSIX `int` status.
-fn sys_waitpid(status_ptr: usize, options: usize, pid: usize) -> usize {
+pub(crate) fn sys_waitpid(status_ptr: usize, options: usize, pid: usize) -> usize {
     if status_ptr != 0 && !user_range_ok(status_ptr, 4) {
         return SYSERR;
     }
@@ -929,6 +968,10 @@ fn sys_chdir(path_ptr: usize, path_len: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
+    chdir_path(path)
+}
+
+pub(crate) fn chdir_path(path: &str) -> usize {
     let Some(real) = resolve_copied_path(path) else {
         return SYSERR;
     };
@@ -1005,7 +1048,7 @@ fn sys_chroot(path_ptr: usize, path_len: usize) -> usize {
     0
 }
 
-fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> usize {
+pub(crate) fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> usize {
     if buf_ptr == 0 || buf_len == 0 {
         return SYSERR;
     }
@@ -1137,7 +1180,7 @@ fn sys_exec_name(buf: usize, len: usize) -> usize {
     n
 }
 
-pub(super) fn sys_brk(req: usize) -> usize {
+pub(crate) fn sys_brk(req: usize) -> usize {
     let (base, _span, stack_off) = task::current_user_map();
     let heap_base = heap_base_va(base, stack_off) as usize;
     let heap_limit = heap_limit_va(base, stack_off) as usize;
@@ -1220,7 +1263,7 @@ fn sys_mmap(args_ptr: usize) -> usize {
     do_mmap(hint, len, prot, flags, fd, offset)
 }
 
-fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: isize, offset: usize) -> usize {
+pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: isize, offset: usize) -> usize {
     if len == 0 {
         return SYSERR;
     }
@@ -1288,7 +1331,7 @@ fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: isize, offset
     va
 }
 
-fn sys_munmap(addr: usize, len: usize) -> usize {
+pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     if addr % PAGE != 0 || len == 0 {
         return SYSERR;
     }
@@ -1313,7 +1356,7 @@ fn sys_munmap(addr: usize, len: usize) -> usize {
     0
 }
 
-fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
+pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
     if addr % PAGE != 0 || len == 0 {
         return SYSERR;
     }
@@ -1345,7 +1388,7 @@ fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
     0
 }
 
-fn sys_lseek(fd: usize, offset: usize, whence: usize) -> usize {
+pub(crate) fn sys_lseek(fd: usize, offset: usize, whence: usize) -> usize {
     task::fd_lseek(fd, offset as i64, whence)
 }
 
