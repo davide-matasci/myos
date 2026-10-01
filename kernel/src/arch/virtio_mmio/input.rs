@@ -11,42 +11,9 @@ use spin::Mutex;
 use crate::blk::virtq;
 use crate::console;
 use crate::kbd::{self, ByteFifo};
+use super::*;
 
-const MMIO_BASE: usize = 0x0A00_0000;
-const MMIO_STRIDE: usize = 0x200;
-const MMIO_SLOTS: usize = 32;
-
-const MAGIC: u32 = 0x7472_6976;
 const DEV_INPUT: u32 = 18;
-const VERSION_2: u32 = 2;
-
-const REG_MAGIC: u32 = 0x000;
-const REG_VERSION: u32 = 0x004;
-const REG_DEVICE_ID: u32 = 0x008;
-const REG_DEV_FEAT: u32 = 0x010;
-const REG_DEV_FEAT_SEL: u32 = 0x014;
-const REG_DRV_FEAT: u32 = 0x020;
-const REG_DRV_FEAT_SEL: u32 = 0x024;
-const REG_QUEUE_SEL: u32 = 0x030;
-const REG_QUEUE_NUM_MAX: u32 = 0x034;
-const REG_QUEUE_NUM: u32 = 0x038;
-const REG_QUEUE_READY: u32 = 0x044;
-const REG_QUEUE_NOTIFY: u32 = 0x050;
-const REG_ISR: u32 = 0x060;
-const REG_ISR_ACK: u32 = 0x064;
-const REG_STATUS: u32 = 0x070;
-const REG_DESC_LO: u32 = 0x080;
-const REG_DESC_HI: u32 = 0x084;
-const REG_AVAIL_LO: u32 = 0x090;
-const REG_AVAIL_HI: u32 = 0x094;
-const REG_USED_LO: u32 = 0x0A0;
-const REG_USED_HI: u32 = 0x0A4;
-
-const ACKNOWLEDGE: u32 = 1;
-const DRIVER: u32 = 2;
-const DRIVER_OK: u32 = 4;
-const FEATURES_OK: u32 = 8;
-const VIRTIO_F_VERSION_1: u32 = 1;
 
 const EV_SYN: u16 = 0;
 const EV_KEY: u16 = 1;
@@ -100,40 +67,6 @@ fn canonical(code: u16) -> Option<u8> {
     }
 }
 
-fn r32(base: usize, off: u32) -> u32 {
-    unsafe { core::ptr::read_volatile((base + off as usize) as *const u32) }
-}
-
-fn w32(base: usize, off: u32, v: u32) {
-    unsafe { core::ptr::write_volatile((base + off as usize) as *mut u32, v) }
-}
-
-fn dsb() {
-    unsafe {
-        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-    }
-}
-
-fn dcache_civac(va: *mut u8, len: usize) {
-    if len == 0 {
-        return;
-    }
-    unsafe {
-        let mut addr = va as usize & !63;
-        let end = va as usize + len;
-        while addr < end {
-            core::arch::asm!("dc civac, {x}", x = in(reg) addr, options(nostack));
-            addr += 64;
-        }
-        core::arch::asm!("dsb sy", options(nostack));
-    }
-}
-
-fn write_phys(base: usize, lo: u32, hi: u32, phys: u64) {
-    w32(base, lo, phys as u32);
-    w32(base, hi, (phys >> 32) as u32);
-}
-
 fn notify_raw(base: usize, desc: *mut u8, avail: *mut u8) {
     dcache_civac(desc, 4096);
     dcache_civac(avail, 4096);
@@ -147,7 +80,7 @@ fn notify_raw(base: usize, desc: *mut u8, avail: *mut u8) {
 }
 
 unsafe fn avail_idx_ptr(avail: *mut u8) -> *mut u16 {
-    avail.add(2) as *mut u16
+    unsafe { avail.add(2) as *mut u16 }
 }
 
 unsafe fn post_buf(dev: &mut Dev, id: u16) {
@@ -177,7 +110,7 @@ unsafe fn drain_events(dev: &mut Dev) {
             break;
         }
         let slot = (dev.last_used as usize) % (dev.num as usize);
-        let used_elem = dev.used.add(4 + slot * 8);
+        let used_elem = unsafe { dev.used.add(4 + slot * 8) };
         dcache_civac(used_elem, 8);
         let id = unsafe { core::ptr::read_volatile(used_elem as *const u16) };
         let _len = unsafe { core::ptr::read_volatile(used_elem.add(2) as *const u32) };

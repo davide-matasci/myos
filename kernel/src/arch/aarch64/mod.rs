@@ -2,12 +2,11 @@
 
 mod interrupts;
 pub use interrupts::{ipi_reschedule, ipi_tlb_shootdown};
-mod keyboard;
+use super::virtio_mmio::keyboard;
 mod paging;
 pub mod pci;
 mod serial;
-mod virtio_blk;
-mod virtio_input;
+use super::virtio_mmio::blk as virtio_blk;
 pub use serial::SerialPort;
 
 pub fn serial_read_byte() -> Option<u8> {
