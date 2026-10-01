@@ -393,8 +393,8 @@ const CMD_CURL: &[u8] = b"curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/c
 /// `ci-expansion.tests` 125 (POSIX core + non-basic + myos chroot/FIFO)
 /// = 303 prebuilt tests; default SUITES covers the suite-prefixed entries).
 /// NOT the full ~1187 basic suite (#860 timed out; #866 still burned 90m on
-/// full-tree copy + SMP). Report prints `pass_rate=NN% (P/T)`; CI asserts the
-/// harness finished but does NOT fail on pass_rate<80. Follow-up short
+/// full-tree copy + SMP). Report prints `pass_rate=NN% (P/T)`; CI requires
+/// the harness to finish with every curated test passing (P == T). Follow-up short
 /// quote-free commands still require setpwent success. Commands stay
 /// quote-free for oksh redraw.
 const CMD_OS_TEST_PREP: &[u8] =
@@ -459,7 +459,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
             cmds.push(CMD_DROPBEAR_STOP);
         }
         // os-test basic smoke (TESTLIST) + setpwent gate (full boot only;
-        // too slow for boot-mini). pass_rate is reported, not gated.
+        // too slow for boot-mini). The curated list must pass 100%.
         cmds.push(CMD_OS_TEST_PREP);
         cmds.push(CMD_OS_TEST_CAT);
         cmds.push(CMD_OS_TEST_RESULT);
@@ -794,10 +794,44 @@ fn interactive_curl_cmd_ok(serial: &str) -> bool {
     ok && !after.starts_with("\n\n") && at_interactive_prompt(serial)
 }
 
+/// `P/T` from the os-test report's `pass_rate=NN% (P/T)` line after the
+/// echoed prep command, or `None` if the report has not printed it yet.
+fn interactive_ostest_counts(serial: &str) -> Option<(u32, u32)> {
+    let tail = interactive_tail(serial);
+    let (_, after) = tail.rsplit_once(OSTEST_PREP_ECHO)?;
+    let line = after.lines().find(|l| l.trim_start().starts_with("pass_rate="))?;
+    let inner = line.split_once('(')?.1.split_once(')')?.0;
+    let (p, t) = inner.split_once('/')?;
+    Some((p.trim().parse().ok()?, t.trim().parse().ok()?))
+}
+
+/// The curated os-test set is a hard gate: every listed test must pass.
+/// True once the report is out and shows any failure or compile error.
+fn interactive_ostest_not_all_pass(serial: &str) -> bool {
+    matches!(interactive_ostest_counts(serial), Some((p, t)) if p != t || t == 0)
+}
+
+/// The report's failure list (`F   path.out exit: N`, `C   …`) for the CI log.
+fn interactive_ostest_failures(serial: &str) -> Vec<String> {
+    let tail = interactive_tail(serial);
+    let Some((_, after)) = tail.rsplit_once(OSTEST_PREP_ECHO) else {
+        return Vec::new();
+    };
+    after
+        .lines()
+        .map(|l| l.trim_end_matches('\r'))
+        .filter(|l| l.starts_with("F ") || l.starts_with("C "))
+        .map(str::to_string)
+        .collect()
+}
+
+const OSTEST_PREP_ECHO: &str =
+    "$ sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o && make TESTLIST=misc/ci-boot.tests report; echo PREP-RC=$?";
+
 /// os-test basic smoke, stage 1: writable copy + thin TESTLIST make report
-/// must finish (harness printed `pass_rate=`). Scope failure patterns to the
-/// output after the echoed command. Do NOT fail on pass_rate < 80 — report
-/// only; the setpwent stages below remain the hard libc gate.
+/// must finish (harness printed `pass_rate=`) with every curated test passing
+/// (`pass_rate=100% (T/T)`). Scope failure patterns to the output after the
+/// echoed command.
 fn interactive_ostest_prep_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     let echoed =
@@ -806,9 +840,9 @@ fn interactive_ostest_prep_ok(serial: &str) -> bool {
         return false;
     }
     let after = tail.rsplit_once(echoed).map(|(_, rest)| rest).unwrap_or("");
-    // Harness finished: myos-report.sh always emits pass_rate=NN% (P/T).
-    // Low pass rates are informational only — never a CI hard-fail here.
-    after.contains("pass_rate=")
+    // Harness finished: myos-report.sh always emits pass_rate=NN% (P/T),
+    // and the curated list must pass in full.
+    matches!(interactive_ostest_counts(serial), Some((p, t)) if p == t && t > 0)
         && !after.contains("cannot create")
         && !after.contains("Read-only file system")
         && at_interactive_prompt(serial)
@@ -1562,7 +1596,8 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 if shell_stage == ShellStage::WaitResult
                     && !mini
                     && cmds.get(shell_cmd_index) == Some(&CMD_OS_TEST_PREP)
-                    && interactive_ostest_prep_failed(&acc)
+                    && (interactive_ostest_prep_failed(&acc)
+                        || interactive_ostest_not_all_pass(&acc))
                 {
                     let _ = child.kill();
                     break child.wait().expect("wait after ostest fail-fast kill");
@@ -1899,6 +1934,15 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!(
                     "error: os-test basic smoke aborted (user fault or PREP-RC!=0)"
                 );
+            } else if let Some((p, t)) =
+                interactive_ostest_counts(&serial).filter(|&(p, t)| p != t || t == 0)
+            {
+                eprintln!(
+                    "error: os-test curated set must pass in full: {p}/{t} passed; failures:"
+                );
+                for f in interactive_ostest_failures(&serial) {
+                    eprintln!("  {f}");
+                }
             } else {
                 eprintln!(
                     "error: os-test basic smoke (ci-smoke-copy + TESTLIST make report) did not finish (want pass_rate= line, then `$`)"
@@ -2007,5 +2051,41 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             );
             std::process::exit(1);
         }
+    }
+}
+#[cfg(test)]
+mod ostest_gate_tests {
+    use super::*;
+
+    fn report(body: &str) -> String {
+        format!("[ OK ] fork exec\n{OSTEST_PREP_ECHO}\n{body}\n$ ")
+    }
+
+    #[test]
+    fn full_pass_is_ok() {
+        let s = report("=== os-test: 303 tests, 303 pass, 0 fail, 0 compile_error ===\r\npass_rate=100% (303/303)\r\n--- failures and compile errors ---\r\n(none)\r\nPREP-RC=0");
+        assert_eq!(interactive_ostest_counts(&s), Some((303, 303)));
+        assert!(!interactive_ostest_not_all_pass(&s));
+        assert!(interactive_ostest_prep_ok(&s));
+    }
+
+    #[test]
+    fn any_failure_fails_the_gate() {
+        let s = report("=== os-test: 303 tests, 302 pass, 1 fail, 0 compile_error ===\r\npass_rate=99% (302/303)\r\n--- failures and compile errors ---\r\nF   basic/setjmp/siglongjmp.out exit: 1\r\nPREP-RC=0");
+        assert_eq!(interactive_ostest_counts(&s), Some((302, 303)));
+        assert!(interactive_ostest_not_all_pass(&s));
+        assert!(!interactive_ostest_prep_ok(&s));
+        assert_eq!(
+            interactive_ostest_failures(&s),
+            vec!["F   basic/setjmp/siglongjmp.out exit: 1".to_string()]
+        );
+    }
+
+    #[test]
+    fn no_report_yet_is_neither() {
+        let s = format!("[ OK ] fork exec\n{OSTEST_PREP_ECHO}\nos-test: basic/ctype/isalnum (prebuilt)\n");
+        assert_eq!(interactive_ostest_counts(&s), None);
+        assert!(!interactive_ostest_not_all_pass(&s));
+        assert!(!interactive_ostest_prep_ok(&s));
     }
 }
