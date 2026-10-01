@@ -394,6 +394,24 @@ fn slot_on_cpu(slot: usize) -> bool {
     CURRENT.iter().any(|c| c.load(Ordering::SeqCst) == slot)
 }
 
+/// True once dead task `slot` has left its kernel stack for good, so the slot
+/// (and the kernel stack it keeps for reuse) may be recycled.
+///
+/// `die()` marks the task Dead and zeroes its saved `sp`, then keeps running
+/// on its own kernel stack until `schedule` switches away; `CURRENT` already
+/// names the next task before that switch. `task_switch` stores the outgoing
+/// stack pointer into `sp` as its last use of the old stack, so a non-zero
+/// `sp` on a Dead, off-CPU task means nothing runs on that stack any more.
+/// Reaping earlier let the next fork seed the same kernel stack while the
+/// dying task still ran on it: the new child resumed from a clobbered frame
+/// (dropbear session children crashing with garbage pointers / return
+/// addresses under -smp 4).
+fn reapable(tasks: &[Task; MAX_TASKS], slot: usize) -> bool {
+    tasks[slot].state == State::Dead
+        && !slot_on_cpu(slot)
+        && unsafe { core::ptr::read_volatile(core::ptr::addr_of!(tasks[slot].sp)) } != 0
+}
+
 /// Detach the children of dying task `id`, and free orphan zombies.
 ///
 /// Children are found by `ppid == slot`, and a freed slot is soon reused by
@@ -417,7 +435,7 @@ fn orphan_children(tasks: &mut [Task; MAX_TASKS], id: usize) {
         if tasks[j].ppid != id && !dead_orphan {
             continue;
         }
-        if tasks[j].state == State::Dead && !slot_on_cpu(j) {
+        if reapable(tasks, j) {
             let stack_base = tasks[j].stack_base;
             tasks[j] = EMPTY;
             if stack_base != 0 {
@@ -626,11 +644,10 @@ pub fn unload_user_aspace(aspace: u64) {
         // (float / bug), and on other arches that may migrate.
         // aarch64: same invariant holds (user_affinity() pins all user tasks
         // to the BSP), so `live` is false here and the barrier is skipped.
-        // This gate is load-bearing: die() runs the reclaim with IF on after
-        // the task is already marked Dead, so a preempted in-flight
-        // tlb_shootdown can never resume — it would hold TLB_LOCK forever and
-        // every later shootdown would burn its full 2M-spin bound (observed:
-        // 1 shootdown/s and a ~10× interactive crawl under -smp 4).
+        // This gate is load-bearing: a global shootdown per exit dominated
+        // exit cost (observed: 1 shootdown/s and a ~10× interactive crawl
+        // under -smp 4). die() now reclaims before the task is marked Dead,
+        // so a preempted reclaim resumes instead of being abandoned.
         if live {
             crate::smp::tlb_shootdown();
         }
@@ -2224,10 +2241,10 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         let tasks = TASKS.lock();
         // Reuse kernel stacks left behind by reaped fork children (stack_base kept
         // in EMPTY slots) or dead kernel threads — avoids kernel-heap alloc on CI.
-        let slot = tasks
-            .iter()
-            .position(|t| {
-                (t.state == State::Unused || t.state == State::Dead)
+        let slot = (0..MAX_TASKS)
+            .find(|&i| {
+                let t = &tasks[i];
+                (t.state == State::Unused || reapable(&tasks, i))
                     && t.user_rip == 0
                     && t.aspace == 0
                     && t.stack_base != 0
@@ -2354,6 +2371,9 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
     loop {
         let mut any = false;
         let mut reap = None;
+        // A child that is Dead but still on its kernel stack (the tail of
+        // `die()`): not reapable yet, but it will be within a few instructions.
+        let mut leaving = false;
         {
             let flags = irq_save();
             irq_off();
@@ -2367,8 +2387,11 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
                     continue;
                 }
                 if tasks[i].state == State::Dead {
-                    reap = Some(i);
-                    break;
+                    if reapable(&tasks, i) {
+                        reap = Some(i);
+                        break;
+                    }
+                    leaving = true;
                 }
                 any = true;
             }
@@ -2389,6 +2412,12 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
             }
             drop(tasks);
             irq_restore(flags);
+        }
+        if leaving {
+            // Even for WNOHANG: the child has exited, so report it once it is
+            // off its stack rather than "nothing to reap".
+            yield_now();
+            continue;
         }
         if !any {
             return usize::MAX;
@@ -2696,8 +2725,6 @@ pub fn die() -> ! {
                 out = Some((aspace, base, span, off, brk, mmap));
             }
         }
-        tasks[id].state = State::Dead;
-        tasks[id].entry = None;
         out
     };
     // Reclaim/TLB shootdown must run with IF on: remotes ACK the shootdown
@@ -2705,18 +2732,37 @@ pub fn die() -> ! {
     // also briefly cli (schedule/wait_child) when the child had been re-homed
     // onto another AP — bios triple-faulted under -smp 4 after the first
     // remote-AP exit.
+    //
+    // The task stays runnable (not Dead) until the reclaim has finished: a
+    // Dead task is never scheduled again, so a timer preemption in the middle
+    // of the (long) heap-window walk used to abandon the reclaim for good and
+    // leak the whole address space — ~370 frames per forked child, the
+    // per-exec "leak" that pushed the curated os-test run out of memory. With
+    // `aspace` already cleared, `schedule` runs it on the kernel root, and the
+    // parent cannot reap the slot before it is Dead.
     irq_on();
-    // Notify the parent now that the TASKS lock is dropped (child is Dead and
-    // reapable). SIGCHLD's default action is ignore, so a parent without a
-    // handler is unaffected; a parent polling SIGCHLD_TAKE sees the bit.
-    if chld_parent != usize::MAX {
-        crate::signal::raise_sigchld(chld_parent);
-        note_zombie(chld_parent);
-    }
     if let Some((aspace, base, span, off, brk, mmap)) = reclaim {
         user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
     }
     irq_off();
+    {
+        let mut tasks = TASKS.lock();
+        let id = current_slot();
+        tasks[id].state = State::Dead;
+        tasks[id].entry = None;
+        // `task_switch` stores the outgoing stack pointer here once this task
+        // has left its kernel stack for good; until then it is not reapable.
+        tasks[id].sp = 0;
+    }
+    // Notify the parent now that the TASKS lock is dropped (child is Dead; the
+    // parent reaps it once `schedule` below has switched off its stack).
+    // SIGCHLD's default action is ignore, so a parent without a handler is
+    // unaffected; a parent polling SIGCHLD_TAKE sees the bit. IRQs stay off
+    // from Dead to the switch: a preemption here would never be resumed.
+    if chld_parent != usize::MAX {
+        crate::signal::raise_sigchld(chld_parent);
+        note_zombie(chld_parent);
+    }
     schedule();
     loop {
         irq_on();

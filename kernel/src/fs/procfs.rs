@@ -22,7 +22,7 @@ struct DynNode {
 }
 
 static DYN: Mutex<[Option<DynNode>; MAX_DYNAMIC]> = Mutex::new([const { None }; MAX_DYNAMIC]);
-static NEXT_INO: AtomicUsize = AtomicUsize::new(10);
+static NEXT_INO: AtomicUsize = AtomicUsize::new(11); // 1..=10 are fixed nodes
 
 /// No static file bytes; open uses [`stat`] / custom read.
 pub fn lookup(_name: &str) -> Option<&'static [u8]> {
@@ -95,7 +95,9 @@ fn dyn_writable(name: &str) -> bool {
 /// `name` may be `pci`, `acpi/tables`, etc. (at most one `/`).
 /// Preserves any previously attached writer on replace.
 pub fn register_dynamic(name: &str, data: &'static [u8]) -> bool {
-    if name.is_empty() || name.len() > MAX_NAME || name == "mounts" || name == "cpuinfo" {
+    if name.is_empty() || name.len() > MAX_NAME || name == "mounts" || name == "cpuinfo"
+        || name == "meminfo"
+    {
         return false;
     }
     if name.matches('/').count() > 1 {
@@ -149,6 +151,9 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     if name == "cpuinfo" {
         return copy_at(&cpuinfo_text(), pos, out);
     }
+    if name == "meminfo" {
+        return copy_at(&crate::mm::meminfo_text(), pos, out);
+    }
     if let Some((_, data)) = dyn_get(name) {
         return copy_at(data, pos, out);
     }
@@ -159,7 +164,7 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 }
 
 fn list_root(buf: &mut [u8]) -> usize {
-    let mut names: alloc::vec::Vec<&str> = alloc::vec!["mounts", "cpuinfo", "pci", "acpi"];
+    let mut names: alloc::vec::Vec<&str> = alloc::vec!["mounts", "cpuinfo", "meminfo", "pci", "acpi"];
     {
         let nodes = DYN.lock();
         for n in nodes.iter().flatten() {
@@ -171,7 +176,7 @@ fn list_root(buf: &mut [u8]) -> usize {
         }
     }
     let _ = names;
-    const FIXED: &[&[u8]] = &[b"mounts", b"cpuinfo", b"pci", b"acpi"];
+    const FIXED: &[&[u8]] = &[b"mounts", b"cpuinfo", b"meminfo", b"pci", b"acpi"];
     let mut off = 0usize;
     for name in FIXED {
         if off + name.len() + 1 > buf.len() {
@@ -291,6 +296,16 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             mode: S_IFREG | 0o444,
             size: u32::try_from(text.len()).unwrap_or(u32::MAX),
             ino: 4,
+            nlink: 1,
+            dev: 0,
+        });
+    }
+    if name == "meminfo" {
+        let text = crate::mm::meminfo_text();
+        return Some(StatInfo {
+            mode: S_IFREG | 0o444,
+            size: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            ino: 10,
             nlink: 1,
             dev: 0,
         });
