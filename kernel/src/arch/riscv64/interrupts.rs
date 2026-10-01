@@ -264,7 +264,7 @@ pub fn ap_init(_logical: usize) {
 pub fn wait_for_interrupt_proof() {
     while !TIMER_FIRED.load(Ordering::SeqCst) {
         unsafe {
-            asm!("wfi", options(nomem, nostack, preserves_flags));
+            asm!("wfi", options(nostack, preserves_flags));
         }
     }
 }
@@ -279,7 +279,7 @@ fn read_time() -> u64 {
 
 fn write_stimecmp(val: u64) {
     unsafe {
-        asm!("csrw stimecmp, {v}", v = in(reg) val, options(nomem, nostack));
+        asm!("csrw stimecmp, {v}", v = in(reg) val, options(nostack));
     }
 }
 

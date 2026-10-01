@@ -82,7 +82,7 @@ pub fn ap_init(logical: usize) {
 
 pub fn wait_interrupt() {
     unsafe {
-        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("wfi", options(nostack, preserves_flags));
     }
 }
 
@@ -90,9 +90,9 @@ pub fn exit_qemu(_code: u32) {
     let cmd: u64 = 0x8400_0008;
     unsafe {
         if current_el() >= 2 {
-            core::arch::asm!("smc #0", in("x0") cmd, options(nomem, nostack));
+            core::arch::asm!("smc #0", in("x0") cmd, options(nostack));
         } else {
-            core::arch::asm!("hvc #0", in("x0") cmd, options(nomem, nostack));
+            core::arch::asm!("hvc #0", in("x0") cmd, options(nostack));
         }
     }
 }
@@ -100,7 +100,7 @@ pub fn exit_qemu(_code: u32) {
 pub fn halt() -> ! {
     loop {
         unsafe {
-            core::arch::asm!("wfe", options(nomem, nostack, preserves_flags));
+            core::arch::asm!("wfe", options(nostack, preserves_flags));
         }
     }
 }

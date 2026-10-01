@@ -153,21 +153,21 @@ pub(super) fn irq_restore(flags: u64) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         if flags & (1 << 9) != 0 {
-            core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+            core::arch::asm!("sti", options(nostack, preserves_flags));
         } else {
-            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+            core::arch::asm!("cli", options(nostack, preserves_flags));
         }
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("msr daif, {r}", r = in(reg) flags, options(nomem, nostack));
+        core::arch::asm!("msr daif, {r}", r = in(reg) flags, options(nostack));
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {
         if flags & (1 << 1) != 0 {
-            core::arch::asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+            core::arch::asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack));
         } else {
-            core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+            core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nostack));
         }
     }
 }
@@ -175,45 +175,45 @@ pub(super) fn irq_restore(flags: u64) {
 pub(super) fn irq_off() {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("cli", options(nostack, preserves_flags));
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("msr daifset, #3", options(nomem, nostack));
+        core::arch::asm!("msr daifset, #3", options(nostack));
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {
-        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nostack));
     }
 }
 
 pub(super) fn irq_on() {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("sti", options(nostack, preserves_flags));
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("msr daifclr, #3", options(nomem, nostack));
+        core::arch::asm!("msr daifclr, #3", options(nostack));
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {
-        core::arch::asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+        core::arch::asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack));
     }
 }
 
 pub(super) fn wait() {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("hlt", options(nostack, preserves_flags));
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("wfi", options(nostack, preserves_flags));
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {
-        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("wfi", options(nostack, preserves_flags));
     }
 }
 

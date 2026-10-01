@@ -73,7 +73,7 @@ pub fn ap_init(logical: usize) {
 /// Brief halt until the next interrupt (idle loop).
 pub fn wait_interrupt() {
     unsafe {
-        core::arch::asm!("sti; hlt", options(nomem, nostack));
+        core::arch::asm!("sti; hlt", options(nostack));
     }
 }
 
@@ -91,7 +91,7 @@ pub fn exit_qemu(code: u32) {
 pub fn halt() -> ! {
     loop {
         unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+            core::arch::asm!("hlt", options(nostack, preserves_flags));
         }
     }
 }

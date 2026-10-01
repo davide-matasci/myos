@@ -298,7 +298,7 @@ fn wrmsr(msr: u32, val: u64) {
             in("ecx") msr,
             in("eax") lo,
             in("edx") hi,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }

@@ -664,13 +664,13 @@ pub unsafe extern "C" fn myos_smp_ap_park(_info: &limine::mp::MpInfo) -> ! {
             sie_bit = in(reg) 1u64 << 1,
             far = in(reg) u64::MAX,
             ssip = in(reg) 1u64 << 1,
-            options(nomem, nostack),
+            options(nostack),
         );
     }
     // Publish "quiet" so BSP does not enter userspace while we still drain STIP.
     AP_PROGRESS.store(2, Ordering::SeqCst);
     loop {
-        unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)) };
+        unsafe { core::arch::asm!("wfi", options(nostack, preserves_flags)) };
     }
 }
 
@@ -710,15 +710,15 @@ unsafe extern "C" fn myos_smp_ap_entry_rust(info: &limine::mp::MpInfo) -> ! {
     // Mask IRQs until this CPU's IDT/timer are programmed.
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("cli", options(nostack, preserves_flags));
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+        core::arch::asm!("msr daifset, #0xf", options(nostack));
     }
     #[cfg(target_arch = "riscv64")]
     unsafe {
-        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nomem, nostack));
+        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nostack));
     }
     AP_PROGRESS.store(2, Ordering::SeqCst);
 

@@ -74,7 +74,7 @@ pub fn ap_init(logical: usize) {
 
 pub fn wait_interrupt() {
     unsafe {
-        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("wfi", options(nostack, preserves_flags));
     }
 }
 
@@ -95,7 +95,7 @@ pub fn exit_qemu(_code: u32) {
 pub fn halt() -> ! {
     loop {
         unsafe {
-            core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+            core::arch::asm!("wfi", options(nostack, preserves_flags));
         }
     }
 }
