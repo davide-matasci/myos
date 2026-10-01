@@ -1,0 +1,1316 @@
+//! Syscall numbers, the dispatcher entered from the per-arch trap paths,
+//! and the `sys_*` implementations.
+
+use super::*;
+
+const SYS_WRITE: usize = 0;
+const SYS_EXIT: usize = 1;
+const SYS_OPEN: usize = 2;
+const SYS_READ: usize = 3;
+const SYS_CLOSE: usize = 4;
+const SYS_EXEC: usize = 5;
+pub(super) const SYS_FORK: usize = 6;
+const SYS_WAIT: usize = 7;
+const SYS_LISTDIR: usize = 8;
+const SYS_BRK: usize = 9;
+const SYS_PIPE: usize = 10;
+const SYS_DUP2: usize = 11;
+pub const SYS_STAT: usize = 12;
+const SYS_EXECNAME: usize = 13;
+const SYS_DUPFD: usize = 14;
+const SYS_CHDIR: usize = 15;
+const SYS_GETCWD: usize = 16;
+const SYS_MKDIR: usize = 17;
+const SYS_RMDIR: usize = 18;
+const SYS_UNLINK: usize = 19;
+const SYS_RENAME: usize = 20;
+const SYS_SYMLINK: usize = 21;
+const SYS_READLINK: usize = 22;
+const SYS_MMAP: usize = 23;
+const SYS_MUNMAP: usize = 24;
+const SYS_MPROTECT: usize = 25;
+const SYS_LSEEK: usize = 26;
+const SYS_MOUNT: usize = 27;
+const SYS_IOCTL: usize = 28;
+const SYS_SETSID: usize = 29;
+const SYS_SETPGID: usize = 30;
+const SYS_GETPGID: usize = 31;
+const SYS_GETSID: usize = 32;
+const SYS_GETTIMEOFDAY: usize = 33;
+const SYS_KILL: usize = 34;
+const SYS_SIGACTION: usize = 35;
+const SYS_GETPID: usize = 36;
+const SYS_SIGPROCMASK: usize = 37;
+/// Readiness bits for a single fd (pipes): 1=readable, 2=writable, 4=hangup.
+const SYS_POLLFD: usize = 38;
+/// Take-and-clear the current task's pending `SIGCHLD` bit (returns 1/0).
+/// libgloss polls this from `select()`/`poll()` and calls the registered
+/// handler itself (myos has no userspace signal-handler trampolines yet).
+const SYS_SIGCHLD_TAKE: usize = 39;
+/// 1 if the calling task has an exited-and-unreaped child. libgloss's
+/// SIGCHLD dispatch queries this directly, so delivery does not depend on the
+/// kernel pushing a pending bit onto the correct task.
+const SYS_SIGCHLD_PENDING: usize = 41;
+/// Peer fd of a pipe end (for libgloss's SIGCHLD self-pipe wake).
+const SYS_PIPE_PEER: usize = 42;
+/// chroot(path): confine the caller (and its future children) to `path`.
+const SYS_CHROOT: usize = 43;
+/// mkfifo(path, mode): create a named pipe (tmpfs only).
+const SYS_MKFIFO: usize = 44;
+
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(super) static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
+
+/// Record the live trap frame for fork/exec resume (aarch64/riscv).
+///
+/// x86 forks via the iret path and does not use this; provide a no-op so
+/// `signal::deliver_due` can clear the frame on every arch before `user_exit`.
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub fn set_syscall_frame(frame: *mut u64) {
+    unsafe {
+        SYSCALL_FRAME = frame as *mut usize;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn set_syscall_frame(_frame: *mut u64) {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn syscall_dispatch(
+    nr: usize,
+    a0: usize,
+    a1: usize,
+    a2: usize,
+    user_rip: usize,
+    user_rsp: usize,
+) -> usize {
+    task::save_user_context(user_rip, user_rsp);
+    let ret = match nr {
+        SYS_WRITE => sys_write(a0, a1, a2),
+        SYS_EXIT => sys_exit(a0),
+        SYS_OPEN => sys_open(a0, a1, a2),
+        SYS_READ => sys_read(a0, a1, a2),
+        SYS_CLOSE => sys_close(a0),
+        SYS_EXEC => sys_exec(a0, a1, a2),
+        SYS_FORK => sys_fork(user_rip, user_rsp),
+        SYS_WAIT => sys_wait(a0, a1),
+        SYS_LISTDIR => sys_listdir(a0, a1, a2),
+        SYS_BRK => sys_brk(a0),
+        SYS_PIPE => sys_pipe(a0),
+        SYS_DUP2 => sys_dup2(a0, a1),
+        SYS_DUPFD => sys_dupfd(a0, a1),
+        SYS_STAT => sys_stat(a0, a1, a2),
+        SYS_EXECNAME => sys_exec_name(a0, a1),
+        SYS_CHDIR => sys_chdir(a0, a1),
+        SYS_GETCWD => sys_getcwd(a0, a1),
+        SYS_MKDIR => sys_mkdir(a0, a1, a2),
+        SYS_RMDIR => sys_rmdir(a0, a1),
+        SYS_UNLINK => sys_unlink(a0, a1),
+        SYS_RENAME => sys_rename(a0, a1, a2),
+        SYS_SYMLINK => sys_symlink(a0, a1, a2),
+        SYS_READLINK => sys_readlink(a0, a1, a2),
+        SYS_MMAP => sys_mmap(a0),
+        SYS_MUNMAP => sys_munmap(a0, a1),
+        SYS_MPROTECT => sys_mprotect(a0, a1, a2),
+        SYS_LSEEK => sys_lseek(a0, a1, a2),
+        SYS_MOUNT => sys_mount(a0),
+        SYS_IOCTL => sys_ioctl(a0, a1, a2),
+        SYS_SETSID => sys_setsid(),
+        SYS_SETPGID => sys_setpgid(a0, a1),
+        SYS_GETPGID => sys_getpgid(a0),
+        SYS_GETSID => sys_getsid(a0),
+        SYS_GETTIMEOFDAY => sys_gettimeofday(a0, a1),
+        SYS_KILL => sys_kill(a0, a1),
+        SYS_SIGACTION => sys_sigaction(a0, a1, a2),
+        SYS_GETPID => sys_getpid(),
+        SYS_SIGPROCMASK => sys_sigprocmask(a0, a1, a2),
+        SYS_POLLFD => sys_pollfd(a0),
+        SYS_SIGCHLD_TAKE => sys_sigchld_take(),
+        SYS_SIGCHLD_PENDING => sys_sigchld_pending(),
+        SYS_PIPE_PEER => sys_pipe_peer(a0),
+        SYS_CHROOT => sys_chroot(a0, a1),
+        SYS_MKFIFO => sys_mkfifo(a0, a1, a2),
+        _ => SYSERR,
+    };
+    // Deliver default-fatal pending signals before returning to userspace.
+    crate::signal::deliver_due();
+    ret
+}
+
+fn sys_exit(code: usize) -> ! {
+    task::user_exit(code as u8);
+}
+
+fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
+    task::fd_write(fd, ptr, len)
+}
+
+fn resolve_copied_path(path: &str) -> Option<alloc::string::String> {
+    let mut abs = [0u8; MAX_PATH];
+    let n = fs::resolve_user_path(path, &mut abs)?;
+    core::str::from_utf8(&abs[..n])
+        .ok()
+        .map(|s| alloc::string::String::from(s))
+}
+
+fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
+    if len == 0 || len > MAX_PATH {
+        return None;
+    }
+    if !user_range_ok(ptr, len) {
+        return None;
+    }
+    let mut buf = [0u8; MAX_PATH];
+    let aspace = task::current_aspace();
+    if !read_user_bytes(aspace, ptr, &mut buf[..len]) {
+        return None;
+    }
+    Some(buf)
+}
+
+fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
+    let Some(buf) = copy_user_path(ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    // pty nodes: /dev/ptmx (master, allocates a pair) and /dev/pts/N (slave).
+    // Existence is still validated through the VFS tree; the resulting fd is
+    // a pty fd, not a plain file fd (I/O routes via crate::pty).
+    let path_rel = path.trim_start_matches('/');
+    if path_rel == "dev/ptmx" {
+        if fs::open("/dev/ptmx", flags as u32).is_none() {
+            return SYSERR;
+        }
+        return task::fd_open_pty_master().unwrap_or(SYSERR);
+    }
+    if let Some(rest) = path_rel.strip_prefix("dev/pts/") {
+        if let Ok(id) = rest.parse::<usize>() {
+            return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
+        }
+    }
+    // Named FIFO: the fd is a pipe end, not a file vnode.
+    if let Some(id) = fs::vfs::fifo_id(&path) {
+        return match task::fd_open_fifo(id, flags as u32) {
+            Ok(fd) => fd,
+            Err(task::FifoOpenErr::NoReader) => SYSERR_ENXIO,
+            Err(task::FifoOpenErr::Failed) => SYSERR,
+        };
+    }
+    let Some(node) = fs::open(&path, flags as u32) else {
+        return SYSERR;
+    };
+    match task::fd_open(node, flags as u32) {
+        Some(fd) => fd,
+        None => SYSERR,
+    }
+}
+
+pub(super) fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
+    task::fd_read(fd, buf, len)
+}
+
+fn sys_close(fd: usize) -> usize {
+    if task::fd_close(fd) { 0 } else { SYSERR }
+}
+
+fn sys_ioctl(fd: usize, request: usize, arg: usize) -> usize {
+    task::fd_ioctl(fd, request, arg)
+}
+
+/// Become a session leader: `sid = pid` (task slot), new process group
+/// (`pgid = pid`), clear controlling tty.
+/// Fails with SYSERR if the caller is already a session leader (`sid == pid`).
+
+fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
+    const N: usize = 16; // two i64s
+    if tv_ptr == 0 || !user_range_ok(tv_ptr, N) {
+        return SYSERR;
+    }
+    let Some((secs, usec)) = crate::time::timeval() else {
+        return SYSERR;
+    };
+    let mut raw = [0u8; N];
+    raw[..8].copy_from_slice(&secs.to_le_bytes());
+    raw[8..16].copy_from_slice(&usec.to_le_bytes());
+    if !write_user_bytes(task::current_aspace(), tv_ptr, &raw) {
+        return SYSERR;
+    }
+    0
+}
+
+fn sys_setsid() -> usize {
+    match task::setsid() {
+        Some(sid) => sid,
+        None => SYSERR,
+    }
+}
+
+fn sys_setpgid(pid: usize, pgid: usize) -> usize {
+    if task::setpgid(pid, pgid) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+fn sys_getpgid(pid: usize) -> usize {
+    match task::getpgid(pid) {
+        Some(pgid) => pgid,
+        None => SYSERR,
+    }
+}
+
+fn sys_getsid(pid: usize) -> usize {
+    match task::getsid(pid) {
+        Some(sid) => sid,
+        None => SYSERR,
+    }
+}
+
+fn sys_getpid() -> usize {
+    task::current_id()
+}
+
+/// `kill(pid, sig)` — `pid` is interpreted as signed (`isize`) for pgid rules.
+fn sys_kill(pid: usize, sig: usize) -> usize {
+    if crate::signal::kill(pid as isize, sig as u32) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+/// `sigaction(sig, act, oact)` with minimal `{handler, flags, mask}` user structs.
+fn sys_sigaction(sig: usize, act: usize, oact: usize) -> usize {
+    let act = if act == 0 { None } else { Some(act) };
+    let oact = if oact == 0 { None } else { Some(oact) };
+    if crate::signal::sigaction(sig as u32, act, oact) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+fn sys_sigprocmask(how: usize, set: usize, oset: usize) -> usize {
+    let set = if set == 0 { None } else { Some(set) };
+    let oset = if oset == 0 { None } else { Some(oset) };
+    if crate::signal::sigprocmask(how, set, oset) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+pub(super) fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
+    let Some(buf) = copy_user_path(ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    let basename = path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes();
+    task::set_exec_name(basename);
+    // Static lookup for bootfs/`/t/tcc`; VFS read for tmpfs `tcc -o` output.
+    const EXEC_FILE_MAX: usize = 512 * 1024;
+    let owned;
+    let bytes: &[u8] = if let Some(b) = fs::lookup(&path) {
+        b
+    } else if let Some(v) = fs::read_all(&path, EXEC_FILE_MAX) {
+        owned = v;
+        &owned
+    } else {
+        // /lib-style read-only mounts expose files through the vnode path
+        // (open + size + read) even where the read_all direct-backend shortcut
+        // fails; use it before giving up. Without this, every exec of a
+        // prebuilt ELF under /lib/os-test/prebuilt fails with EACCES and the
+        // boot smoke silently falls back to guest tcc.
+        let Some(node) = fs::open(&path, 0) else {
+            return SYSERR;
+        };
+        let Some(size) = fs::size_of(&node) else {
+            return SYSERR;
+        };
+        if size == 0 || size > EXEC_FILE_MAX {
+            return SYSERR;
+        }
+        let mut v = alloc::vec![0u8; size];
+        let mut pos = 0usize;
+        while pos < size {
+            let n = fs::read(&node, pos, &mut v[pos..]);
+            if n == 0 {
+                return SYSERR;
+            }
+            pos += n;
+        }
+        owned = v;
+        &owned
+    };
+    let (arg_bufs, env_bufs) = match copy_user_exec_pack(args_ptr) {
+        Ok(v) => v,
+        Err(()) => return SYSERR,
+    };
+    let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
+    let env_refs: Vec<&[u8]> = env_bufs.iter().map(|s| s.as_slice()).collect();
+    // Large in-place expand (ripgrep) can clobber tp; re-sync before any
+    // current_slot()-backed lookup so we expand/replace the running task.
+    crate::smp::sync_tp_for_kernel();
+    let cur_aspace = task::current_aspace();
+    let (base_u, _mapped_span, stack_off) = task::current_user_map();
+    let old_brk = task::current_brk();
+    let old_mmap = task::mmap_regions();
+    let (aspace, entry, span, off) = {
+        // Reuse the current aspace in place (reload / expand) so post-fork
+        // `exec` does not leak the prior aspace + its frames on every exec.
+        // riscv64 previously always took the `load_user_elf` fresh-aspace path
+        // (introduced in 887caf5 for RISC-V CI parity), which leaked hundreds of
+        // physical pages per exec (a 700+ page ripgrep ELF after `uutils false ok`
+        // in `/heap`) and walked the bump allocator forward past the heavyweight
+        // smoke ELFs. Keep the same in-place reload/expand/lazy-load sequence the
+        // other arches use so the mapping/stack reservation logic is identical.
+        {
+            if cur_aspace != 0 {
+                if let Some(v) = reload_user_elf(cur_aspace, bytes, base_u, stack_off, _mapped_span)
+                    .map(|(entry, span, off)| (cur_aspace, entry, span, off))
+                {
+                    // POSIX exec drops anonymous maps. In-place reload used to
+                    // clear the mmap table in `replace_user` without freeing
+                    // frames — a quiet freelist leak (and, when expand later
+                    // grows into the old mmap window, `reuse_or_alloc_frame`
+                    // would adopt those pages as code then double-free them).
+                    free_mmap_regions(cur_aspace, &old_mmap);
+                    flush_user_tlb();
+                    v
+                } else {
+                    // Free anonymous maps *before* expand remaps: when
+                    // `stack_off` grows, the new code span can overlap the old
+                    // mmap window and reuse_or_alloc would steal those frames.
+                    free_mmap_regions(cur_aspace, &old_mmap);
+                    task::clear_mmap();
+                    flush_user_tlb();
+                    if let Some(v) = expand_user_elf(cur_aspace, bytes, base_u, stack_off)
+                        .map(|(entry, span, off)| (cur_aspace, entry, span, off))
+                    {
+                        v
+                    } else if let Some(v) = load_user_elf(bytes) {
+                        // Fresh aspace: reclaim code/stack/heap (mmap already freed).
+                        reclaim_user_aspace(
+                            cur_aspace,
+                            base_u,
+                            _mapped_span,
+                            stack_off,
+                            old_brk,
+                            &[],
+                        );
+                        v
+                    } else {
+                        return SYSERR;
+                    }
+                }
+            } else {
+                let Some(v) = load_user_elf(bytes) else {
+                    return SYSERR;
+                };
+                v
+            }
+        }
+    };
+    let Some((rsp, argv)) = build_argv_stack(aspace, base_u, off, &arg_refs, &env_refs) else {
+        return SYSERR;
+    };
+    let argc = arg_refs.len();
+    // A zero entry is never a valid userspace image (would sret to NULL → the
+    // classic riscv64 `instruction page fault stval=0 sepc=0`). Refuse rather
+    // than resume a corrupt realize/expand result.
+    if entry == 0 {
+        return SYSERR;
+    }
+    // expand_user_elf / reload of a large ELF (ripgrep) is deep enough that
+    // LLVM may have clobbered tp since the sync above. replace_user and
+    // set_loaded_aspace go through current_slot()/cpu_id() — re-pin before
+    // mutating the running task and resuming.
+    crate::smp::sync_tp_for_kernel();
+    task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
+    // aarch64: sret/eret through the live syscall frame (shallow exec).
+    #[cfg(target_arch = "aarch64")]
+    try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
+    // riscv64: do NOT resume through the live syscall trap frame after a deep
+    // in-place expand (ripgrep after uutils ls on /heap). That frame sits near
+    // the top of the 64KiB kstack; expand + realize + PTE walks push LLVM
+    // spill slots into the same page, and a later `*frame.add(32) = entry`
+    // followed by sync_tp/sscratch setup can leave sepc as 0 before the
+    // (since removed) live-frame sret — classic `instruction page fault
+    // stval=0 sepc=0` with sp still in the new image's stack window (CI sp≈0x40354xxx).
+    // enter_riscv64 loads sepc/sp/argc/argv from a volatile resume image
+    // instead (same discipline as the MTTCG scrub fix in 9b6902a).
+    #[cfg(target_arch = "riscv64")]
+    set_syscall_frame(core::ptr::null_mut());
+    enter(entry, rsp, argc, argv);
+}
+
+fn copy_user_exec_pack(
+    args_ptr: usize,
+) -> Result<
+    (
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    ),
+    (),
+> {
+    if args_ptr == 0 {
+        return Ok((alloc::vec::Vec::new(), alloc::vec::Vec::new()));
+    }
+    if !user_range_ok(args_ptr, core::mem::size_of::<usize>()) {
+        return Err(());
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        copy_user_exec_pack_direct(args_ptr)
+    }
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    {
+        copy_user_exec_pack_via_aspace(args_ptr)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn copy_user_exec_pack_direct(
+    args_ptr: usize,
+) -> Result<
+    (
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    ),
+    (),
+> {
+    let argc = unsafe { *(args_ptr as *const usize) };
+    if argc > MAX_ARGC {
+        return Err(());
+    }
+    let mut args = alloc::vec::Vec::with_capacity(argc);
+    let mut off = args_ptr + core::mem::size_of::<usize>();
+    for _ in 0..argc {
+        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
+            return Err(());
+        }
+        let p = unsafe { *(off as *const usize) };
+        let n = unsafe { *((off + core::mem::size_of::<usize>()) as *const usize) };
+        off += 2 * core::mem::size_of::<usize>();
+        if n > MAX_ARG_LEN {
+            return Err(());
+        }
+        if n != 0 && !user_range_ok(p, n) {
+            return Err(());
+        }
+        let mut v = alloc::vec::Vec::with_capacity(n);
+        if n != 0 {
+            v.resize(n, 0);
+            unsafe {
+                core::ptr::copy_nonoverlapping(p as *const u8, v.as_mut_ptr(), n);
+            }
+        }
+        args.push(v);
+    }
+    if !user_range_ok(off, core::mem::size_of::<usize>()) {
+        return Err(());
+    }
+    let envc = unsafe { *(off as *const usize) };
+    off += core::mem::size_of::<usize>();
+    if envc > MAX_ENVC {
+        return Err(());
+    }
+    let mut env = alloc::vec::Vec::with_capacity(envc);
+    for _ in 0..envc {
+        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
+            return Err(());
+        }
+        let p = unsafe { *(off as *const usize) };
+        let n = unsafe { *((off + core::mem::size_of::<usize>()) as *const usize) };
+        off += 2 * core::mem::size_of::<usize>();
+        if n > MAX_ENV_LEN {
+            return Err(());
+        }
+        if n != 0 && !user_range_ok(p, n) {
+            return Err(());
+        }
+        let mut v = alloc::vec::Vec::with_capacity(n);
+        if n != 0 {
+            v.resize(n, 0);
+            unsafe {
+                core::ptr::copy_nonoverlapping(p as *const u8, v.as_mut_ptr(), n);
+            }
+        }
+        env.push(v);
+    }
+    Ok((args, env))
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+fn copy_user_exec_pack_via_aspace(
+    args_ptr: usize,
+) -> Result<
+    (
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+        alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    ),
+    (),
+> {
+    let aspace = task::current_aspace();
+    let argc = read_user_usize(aspace, args_ptr).ok_or(())?;
+    if argc > MAX_ARGC {
+        return Err(());
+    }
+    let mut args = alloc::vec::Vec::with_capacity(argc);
+    let mut off = args_ptr + core::mem::size_of::<usize>();
+    for _ in 0..argc {
+        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
+            return Err(());
+        }
+        let p = read_user_usize(aspace, off).ok_or(())?;
+        let n = read_user_usize(aspace, off + core::mem::size_of::<usize>()).ok_or(())?;
+        off += 2 * core::mem::size_of::<usize>();
+        if n > MAX_ARG_LEN {
+            return Err(());
+        }
+        if n != 0 && !user_range_ok(p, n) {
+            return Err(());
+        }
+        let mut v = alloc::vec::Vec::with_capacity(n);
+        if n != 0 {
+            v.resize(n, 0);
+            if !read_user_bytes(aspace, p, &mut v) {
+                return Err(());
+            }
+        }
+        args.push(v);
+    }
+    if !user_range_ok(off, core::mem::size_of::<usize>()) {
+        return Err(());
+    }
+    let envc = read_user_usize(aspace, off).ok_or(())?;
+    off += core::mem::size_of::<usize>();
+    if envc > MAX_ENVC {
+        return Err(());
+    }
+    let mut env = alloc::vec::Vec::with_capacity(envc);
+    for _ in 0..envc {
+        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
+            return Err(());
+        }
+        let p = read_user_usize(aspace, off).ok_or(())?;
+        let n = read_user_usize(aspace, off + core::mem::size_of::<usize>()).ok_or(())?;
+        off += 2 * core::mem::size_of::<usize>();
+        if n > MAX_ENV_LEN {
+            return Err(());
+        }
+        if n != 0 && !user_range_ok(p, n) {
+            return Err(());
+        }
+        let mut v = alloc::vec::Vec::with_capacity(n);
+        if n != 0 {
+            v.resize(n, 0);
+            if !read_user_bytes(aspace, p, &mut v) {
+                return Err(());
+            }
+        }
+        env.push(v);
+    }
+    Ok((args, env))
+}
+
+fn sys_listdir(path_ptr: usize, path_len: usize, buf: usize) -> usize {
+    // Match libgloss MYOS_DIRBUF / myos_user::LISTDIR_BUF so /s listings
+    // (~100 names) are not truncated. Callers must pass a mapped buffer of
+    // this size (user_range_ok); a 512-byte stack buf fails the check.
+    const LISTDIR_CAP: usize = 4096;
+    if buf == 0 || !user_range_ok(buf, LISTDIR_CAP) {
+        return SYSERR;
+    }
+    let path = if path_len == 0 {
+        alloc::string::String::from(".")
+    } else {
+        let Some(pbuf) = copy_user_path(path_ptr, path_len) else {
+            return SYSERR;
+        };
+        match core::str::from_utf8(&pbuf[..path_len]) {
+            Ok(p) => alloc::string::String::from(p),
+            Err(_) => return SYSERR,
+        }
+    };
+    let Some(path) = resolve_copied_path(&path) else {
+        return SYSERR;
+    };
+    let mut kbuf = [0u8; LISTDIR_CAP];
+    let n = fs::listdir(&path, &mut kbuf).min(LISTDIR_CAP);
+    let aspace = task::current_aspace();
+    if !write_user_bytes(aspace, buf, &kbuf[..n]) {
+        return SYSERR;
+    }
+    n
+}
+
+#[repr(C)]
+struct MyosStatBuf {
+    st_mode: u32,
+    st_size: u32,
+    st_ino: u32,
+    st_nlink: u32,
+    st_dev: u32,
+}
+
+fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
+    if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStatBuf>()) {
+        return SYSERR;
+    }
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    let Some(info) = fs::stat(&path) else {
+        return SYSERR;
+    };
+    let out = MyosStatBuf {
+        st_mode: info.mode,
+        st_size: info.size,
+        st_ino: info.ino,
+        st_nlink: info.nlink,
+        st_dev: info.dev,
+    };
+    if !write_user_bytes(task::current_aspace(), out_ptr, unsafe {
+        core::slice::from_raw_parts(
+            &out as *const MyosStatBuf as *const u8,
+            core::mem::size_of::<MyosStatBuf>(),
+        )
+    }) {
+        return SYSERR;
+    }
+    0
+}
+
+fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    let child = {
+        // Use the snapshot from syscall_entry — live rbx/rbp/r12–r15 here may
+        // already be Rust scratch (prologues saved the user values on the stack).
+        let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+        let c = unsafe { core::ptr::addr_of!(CPU_SYSCALL[cpu].fork).read() };
+        task::ForkRegs {
+            rip: user_rip,
+            rsp: user_rsp,
+            rbx: c.rbx,
+            rbp: c.rbp,
+            r12: c.r12,
+            r13: c.r13,
+            r14: c.r14,
+            r15: c.r15,
+        }
+    };
+    #[cfg(target_arch = "aarch64")]
+    let child = {
+        let frame = unsafe { SYSCALL_FRAME };
+        if frame.is_null() {
+            return SYSERR;
+        }
+        task::ForkRegs {
+            rip: user_rip,
+            rsp: user_rsp,
+            frame: copy_fork_syscall_frame(frame as *const u64),
+        }
+    };
+    #[cfg(target_arch = "riscv64")]
+    let child = {
+        let frame = unsafe { SYSCALL_FRAME };
+        if frame.is_null() {
+            return SYSERR;
+        }
+        task::ForkRegs {
+            rip: user_rip,
+            rsp: user_rsp,
+            frame: copy_fork_syscall_frame(frame as *const u64),
+        }
+    };
+    match task::fork_current(child) {
+        Some(pid) => pid,
+        None => SYSERR,
+    }
+}
+
+fn sys_wait(status_ptr: usize, options: usize) -> usize {
+    if status_ptr != 0 && !user_range_ok(status_ptr, 1) {
+        return SYSERR;
+    }
+    // Bit 0 = WNOHANG (matches userspace WNOHANG = 1).
+    let nohang = (options & 1) != 0;
+    task::wait_child(
+        if status_ptr == 0 {
+            None
+        } else {
+            Some(status_ptr)
+        },
+        nohang,
+    )
+}
+
+fn sys_pipe(fds_ptr: usize) -> usize {
+    if !user_range_ok(fds_ptr, 2 * core::mem::size_of::<usize>()) {
+        return SYSERR;
+    }
+    let Some((r, w)) = task::pipe_open() else {
+        return SYSERR;
+    };
+    let mut buf = [0u8; 2 * core::mem::size_of::<usize>()];
+    buf[..core::mem::size_of::<usize>()].copy_from_slice(&r.to_le_bytes());
+    buf[core::mem::size_of::<usize>()..].copy_from_slice(&w.to_le_bytes());
+    if !copy_to_user(task::current_aspace(), fds_ptr, &buf) {
+        return SYSERR;
+    }
+    0
+}
+
+fn sys_pollfd(fd: usize) -> usize {
+    match task::fd_poll_bits(fd) {
+        Some(bits) => bits as usize,
+        None => SYSERR,
+    }
+}
+
+fn sys_sigchld_take() -> usize {
+    sys_sigchld_take_inner()
+}
+
+fn sys_sigchld_pending() -> usize {
+    if task::has_exited_child(task::current_id()) { 1 } else { 0 }
+}
+
+fn sys_pipe_peer(fd: usize) -> usize {
+    match task::fd_pipe_peer(fd) {
+        Some(p) => p,
+        None => SYSERR,
+    }
+}
+
+fn sys_sigchld_take_inner() -> usize {
+    let bit = 1u32 << crate::signal::SIGCHLD;
+    if task::signal_take_pending(task::current_id(), bit) {
+        1
+    } else {
+        0
+    }
+}
+
+fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
+    if task::fd_dup2(oldfd, newfd) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+fn sys_dupfd(oldfd: usize, minfd: usize) -> usize {
+    match task::fd_dup_min(oldfd, minfd) {
+        Some(fd) => fd,
+        None => SYSERR,
+    }
+}
+
+fn sys_chdir(path_ptr: usize, path_len: usize) -> usize {
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(real) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    let Some(info) = fs::stat(&real) else {
+        return SYSERR;
+    };
+    if (info.mode & fs::S_IFMT) != S_IFDIR {
+        return SYSERR;
+    }
+    // cwd is kept in the task's own (possibly chrooted) view of the tree.
+    let mut virt = [0u8; MAX_PATH];
+    let Some(vn) = fs::resolve_user_path_virtual(path, &mut virt) else {
+        return SYSERR;
+    };
+    if !task::set_cwd(&virt[..vn]) {
+        return SYSERR;
+    }
+    0
+}
+
+/// mkfifo(path, mode): create a named pipe. Only tmpfs (`/tmp`) supports
+/// FIFOs; the mode is not tracked (everything is root on myos).
+fn sys_mkfifo(path_ptr: usize, path_len: usize, _mode: usize) -> usize {
+    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    if fs::stat(&path).is_some() || !fs::vfs::mkfifo(&path) {
+        return SYSERR;
+    }
+    0
+}
+
+/// chroot(2): make `path` (a directory) the caller's `/`. Everything is root
+/// on myos, so there is no privilege check. The cwd keeps pointing at the
+/// same directory when it lies inside the new root, and moves to the new `/`
+/// otherwise (so `..` from the cwd cannot walk out of the jail).
+fn sys_chroot(path_ptr: usize, path_len: usize) -> usize {
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(real) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    let Some(info) = fs::stat(&real) else {
+        return SYSERR;
+    };
+    if (info.mode & fs::S_IFMT) != S_IFDIR || real.len() > task::ROOT_CAP {
+        return SYSERR;
+    }
+    // Real path of the current cwd, to re-express it under the new root.
+    let Some(real_cwd) = resolve_copied_path(".") else {
+        return SYSERR;
+    };
+    if !task::set_root(real.as_bytes()) {
+        return SYSERR;
+    }
+    let new_cwd = if real == "/" {
+        real_cwd.as_str()
+    } else if real_cwd == real {
+        "/"
+    } else if real_cwd.starts_with(real.as_str())
+        && real_cwd.as_bytes().get(real.len()) == Some(&b'/')
+    {
+        &real_cwd[real.len()..]
+    } else {
+        "/"
+    };
+    if !task::set_cwd(new_cwd.as_bytes()) {
+        return SYSERR;
+    }
+    0
+}
+
+fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> usize {
+    if buf_ptr == 0 || buf_len == 0 {
+        return SYSERR;
+    }
+    if !user_range_ok(buf_ptr, buf_len) {
+        return SYSERR;
+    }
+    let mut cwd = [0u8; MAX_PATH];
+    let n = task::cwd(&mut cwd);
+    // POSIX getcwd needs room for the pathname and a trailing NUL.
+    if n + 1 > buf_len {
+        return SYSERR;
+    }
+    let mut tmp = [0u8; MAX_PATH + 1];
+    tmp[..n].copy_from_slice(&cwd[..n]);
+    tmp[n] = 0;
+    if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n + 1]) {
+        return SYSERR;
+    }
+    n
+}
+
+fn copy_resolved_user_path(ptr: usize, len: usize) -> Option<alloc::string::String> {
+    let buf = copy_user_path(ptr, len)?;
+    let path = core::str::from_utf8(&buf[..len]).ok()?;
+    resolve_copied_path(path)
+}
+
+/// Pack two lengths into one register: `(len_a << 16) | len_b` (each <= MAX_PATH).
+fn unpack_two_lens(packed: usize) -> Option<(usize, usize)> {
+    let a = packed >> 16;
+    let b = packed & 0xffff;
+    if a == 0 || a > MAX_PATH || b == 0 || b > MAX_PATH {
+        return None;
+    }
+    Some((a, b))
+}
+
+fn sys_mkdir(path_ptr: usize, path_len: usize, _mode: usize) -> usize {
+    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    if fs::mkdir(&path) { 0 } else { SYSERR }
+}
+
+fn sys_rmdir(path_ptr: usize, path_len: usize) -> usize {
+    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    if fs::rmdir(&path) { 0 } else { SYSERR }
+}
+
+fn sys_unlink(path_ptr: usize, path_len: usize) -> usize {
+    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    if fs::unlink(&path) { 0 } else { SYSERR }
+}
+
+/// `a0`=old_ptr, `a1`=new_ptr, `a2`=(old_len<<16)|new_len
+fn sys_rename(old_ptr: usize, new_ptr: usize, packed_lens: usize) -> usize {
+    let Some((old_len, new_len)) = unpack_two_lens(packed_lens) else {
+        return SYSERR;
+    };
+    let Some(old) = copy_resolved_user_path(old_ptr, old_len) else {
+        return SYSERR;
+    };
+    let Some(new) = copy_resolved_user_path(new_ptr, new_len) else {
+        return SYSERR;
+    };
+    if fs::rename(&old, &new) { 0 } else { SYSERR }
+}
+
+/// `a0`=target_ptr, `a1`=link_ptr, `a2`=(target_len<<16)|link_len
+fn sys_symlink(target_ptr: usize, link_ptr: usize, packed_lens: usize) -> usize {
+    let Some((target_len, link_len)) = unpack_two_lens(packed_lens) else {
+        return SYSERR;
+    };
+    // Target is opaque text (may be relative); do not cwd-resolve it.
+    let Some(tbuf) = copy_user_path(target_ptr, target_len) else {
+        return SYSERR;
+    };
+    let Ok(target) = core::str::from_utf8(&tbuf[..target_len]) else {
+        return SYSERR;
+    };
+    let Some(linkpath) = copy_resolved_user_path(link_ptr, link_len) else {
+        return SYSERR;
+    };
+    if fs::symlink(target, &linkpath) {
+        0
+    } else {
+        SYSERR
+    }
+}
+
+/// `a0`=path_ptr, `a1`=buf_ptr, `a2`=(path_len<<16)|buf_len
+fn sys_readlink(path_ptr: usize, buf_ptr: usize, packed: usize) -> usize {
+    let Some((path_len, buf_len)) = unpack_two_lens(packed) else {
+        return SYSERR;
+    };
+    if buf_ptr == 0 || buf_len == 0 || !user_range_ok(buf_ptr, buf_len) {
+        return SYSERR;
+    }
+    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let mut tmp = [0u8; MAX_PATH];
+    let cap = buf_len.min(tmp.len());
+    let Some(n) = fs::readlink(&path, &mut tmp[..cap]) else {
+        return SYSERR;
+    };
+    if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n]) {
+        return SYSERR;
+    }
+    n
+}
+
+fn sys_exec_name(buf: usize, len: usize) -> usize {
+    if len == 0 || !user_range_ok(buf, len) {
+        return SYSERR;
+    }
+    let mut tmp = [0u8; 32];
+    let n = task::exec_name(&mut tmp).min(len).min(tmp.len());
+    if n == 0 {
+        return 0;
+    }
+    if !write_user_bytes(task::current_aspace(), buf, &tmp[..n]) {
+        return SYSERR;
+    }
+    n
+}
+
+pub(super) fn sys_brk(req: usize) -> usize {
+    let (base, _span, stack_off) = task::current_user_map();
+    let heap_base = heap_base_va(base, stack_off) as usize;
+    let heap_limit = heap_limit_va(base, stack_off) as usize;
+    let mut cur = task::current_brk() as usize;
+    if cur == 0 {
+        cur = heap_base;
+        task::set_brk(cur as u64);
+    }
+    if req == 0 {
+        return cur;
+    }
+    if req < heap_base || req > heap_limit {
+        return cur;
+    }
+    if req > cur {
+        let aspace = task::current_aspace();
+        let map_end = align_up_usize(req, PAGE);
+        let mut va = if cur == heap_base {
+            heap_base
+        } else {
+            align_up_usize(cur, PAGE)
+        };
+        let mut mapped_any = false;
+        while va < map_end {
+            if virt_to_phys(aspace, va as u64).is_none() {
+                let frame = mm::alloc_frame_site(4);
+                // alloc_frame returns a zeroed frame.
+                map_heap_page(aspace, va as u64, frame);
+                mapped_any = true;
+            }
+            va += PAGE;
+        }
+        // RISC-V requires SFENCE.VMA after invalid→valid PTE updates. mmap /
+        // expand already flush; brk used to skip it. With on-demand heap (and
+        // the 2 MiB TLS arena on aarch64/riscv) that left stale non-present
+        // TLB entries → intermittent load faults mid-heap (HTTPS montmul).
+        if mapped_any {
+            flush_user_tlb();
+        }
+    } else if req < cur {
+        // Shrink: free the pages above the new break, so mapped heap always
+        // stays within [heap_base, brk) and exit/fork only walk that far.
+        let aspace = task::current_aspace();
+        let mut va = align_up_usize(req, PAGE);
+        let end = align_up_usize(cur, PAGE);
+        let freed_any = va < end;
+        while va < end {
+            free_mapped_page(aspace, va as u64);
+            va += PAGE;
+        }
+        if freed_any {
+            flush_user_tlb();
+        }
+    }
+    task::set_brk(req as u64);
+    req
+}
+
+/// `a0` points at a user `myos_mmap_args` {addr,len,prot,flags,fd,offset}.
+fn sys_mmap(args_ptr: usize) -> usize {
+    const N: usize = 6 * core::mem::size_of::<u64>();
+    if !user_range_ok(args_ptr, N) {
+        return SYSERR;
+    }
+    let mut raw = [0u8; N];
+    if !read_user_bytes(task::current_aspace(), args_ptr, &mut raw) {
+        return SYSERR;
+    }
+    let mut words = [0u64; 6];
+    for i in 0..6 {
+        let o = i * 8;
+        words[i] = u64::from_le_bytes(raw[o..o + 8].try_into().unwrap());
+    }
+    let hint = words[0] as usize;
+    let len = words[1] as usize;
+    let prot = words[2] as usize;
+    let flags = words[3] as usize;
+    let fd = words[4] as isize;
+    let offset = words[5] as usize;
+    do_mmap(hint, len, prot, flags, fd, offset)
+}
+
+fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: isize, offset: usize) -> usize {
+    if len == 0 {
+        return SYSERR;
+    }
+    let anon = flags & MAP_ANON != 0;
+    if !anon {
+        // File-backed is optional; anonymous MAP_ANON|MAP_PRIVATE is the must-have.
+        return SYSERR;
+    }
+    if flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
+        // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
+        return SYSERR;
+    }
+    let (base, _span, stack_off) = task::current_user_map();
+    let area_lo = mmap_base_va(base, stack_off) as usize;
+    let area_hi = mmap_limit_va(base, stack_off) as usize;
+    let pages = len.div_ceil(PAGE);
+    if pages == 0 || pages > MMAP_AREA_PAGES {
+        return SYSERR;
+    }
+    let map_len = pages * PAGE;
+    let va = if flags & MAP_FIXED != 0 {
+        if hint == 0 || hint % PAGE != 0 {
+            return SYSERR;
+        }
+        if hint < area_lo || hint.saturating_add(map_len) > area_hi {
+            return SYSERR;
+        }
+        hint
+    } else {
+        match task::mmap_alloc(area_lo, area_hi, map_len) {
+            Some(v) => v,
+            None => return SYSERR,
+        }
+    };
+    if task::mmap_overlaps(va, map_len) {
+        return SYSERR;
+    }
+    let aspace = task::current_aspace();
+    let mut mapped = 0usize;
+    while mapped < map_len {
+        let page_va = (va + mapped) as u64;
+        let frame = mm::alloc_frame_site(4);
+        // alloc_frame returns a zeroed frame.
+        map_user_page_prot(aspace, page_va, frame, prot);
+        mapped += PAGE;
+    }
+    if prot & PROT_EXEC != 0 {
+        let mut off = 0;
+        while off < map_len {
+            if let Some(phys) = virt_to_phys(aspace, (va + off) as u64) {
+                // User VA (execute) + HHDM alias (the stores). ic ialluis inside.
+                sync_icache((va + off) as usize, PAGE);
+                sync_icache(mm::hhdm(phys) as usize, PAGE);
+            }
+            off += PAGE;
+        }
+    }
+    let _ = (fd, offset);
+    if !task::mmap_add(va as u64, pages as u32, prot as u32) {
+        // Region table full: unmap what we just added.
+        let _ = sys_munmap(va, map_len);
+        return SYSERR;
+    }
+    flush_user_tlb();
+    va
+}
+
+fn sys_munmap(addr: usize, len: usize) -> usize {
+    if addr % PAGE != 0 || len == 0 {
+        return SYSERR;
+    }
+    let pages = len.div_ceil(PAGE);
+    let map_len = pages * PAGE;
+    // Only anonymous mmap regions. Allowing munmap of brk/code/stack punched
+    // holes while brk_cur still covered them (load faults) and — worse —
+    // `unmap_user_page` alone never returned frames to the freelist, which
+    // drained riscv UEFI RAM across exec-heavy smoke and surfaced as random
+    // user exceptions under HTTPS.
+    if !task::mmap_contains(addr, map_len) {
+        return SYSERR;
+    }
+    let aspace = task::current_aspace();
+    let mut off = 0;
+    while off < map_len {
+        free_mapped_page(aspace, (addr + off) as u64);
+        off += PAGE;
+    }
+    task::mmap_remove(addr as u64, pages as u32);
+    flush_user_tlb();
+    0
+}
+
+fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
+    if addr % PAGE != 0 || len == 0 {
+        return SYSERR;
+    }
+    let pages = len.div_ceil(PAGE);
+    let map_len = pages * PAGE;
+    let (base, _span, stack_off) = task::current_user_map();
+    let lo = base as usize;
+    let hi = mmap_limit_va(base, stack_off) as usize;
+    if addr < lo || addr.saturating_add(map_len) > hi {
+        return SYSERR;
+    }
+    let aspace = task::current_aspace();
+    let mut off = 0;
+    while off < map_len {
+        let va = (addr + off) as u64;
+        let Some(phys) = virt_to_phys(aspace, va) else {
+            return SYSERR;
+        };
+        map_user_page_prot(aspace, va, phys, prot);
+        if prot & PROT_EXEC != 0 {
+            // mprotect RW→RX: clean D-cache, invalidate I-cache for this range.
+            sync_icache(va as usize, PAGE);
+            sync_icache(mm::hhdm(phys) as usize, PAGE);
+        }
+        off += PAGE;
+    }
+    task::mmap_set_prot(addr as u64, pages as u32, prot as u32);
+    flush_user_tlb();
+    0
+}
+
+fn sys_lseek(fd: usize, offset: usize, whence: usize) -> usize {
+    task::fd_lseek(fd, offset as i64, whence)
+}
+
+/// `a0` points at `{src_ptr, src_len, tgt_ptr, tgt_len, fstype_ptr, fstype_len}`.
+fn sys_mount(args_ptr: usize) -> usize {
+    const N: usize = 6 * core::mem::size_of::<usize>();
+    if !user_range_ok(args_ptr, N) {
+        return SYSERR;
+    }
+    let mut raw = [0u8; N];
+    if !read_user_bytes(task::current_aspace(), args_ptr, &mut raw) {
+        return SYSERR;
+    }
+    let mut words = [0usize; 6];
+    for i in 0..6 {
+        let o = i * core::mem::size_of::<usize>();
+        words[i] = usize::from_le_bytes(
+            raw[o..o + core::mem::size_of::<usize>()]
+                .try_into()
+                .unwrap(),
+        );
+    }
+    let Some(src_buf) = copy_user_path(words[0], words[1]) else {
+        return SYSERR;
+    };
+    let Some(tgt_buf) = copy_user_path(words[2], words[3]) else {
+        return SYSERR;
+    };
+    let Some(fs_buf) = copy_user_path(words[4], words[5]) else {
+        return SYSERR;
+    };
+    let Ok(src) = core::str::from_utf8(&src_buf[..words[1]]) else {
+        return SYSERR;
+    };
+    let Ok(tgt) = core::str::from_utf8(&tgt_buf[..words[3]]) else {
+        return SYSERR;
+    };
+    let Ok(fstype) = core::str::from_utf8(&fs_buf[..words[5]]) else {
+        return SYSERR;
+    };
+    let Some(src) = resolve_copied_path(src) else {
+        return SYSERR;
+    };
+    let Some(tgt) = resolve_copied_path(tgt) else {
+        return SYSERR;
+    };
+    let Some(st) = fs::stat(&src) else {
+        return SYSERR;
+    };
+    if st.mode & fs::S_IFMT != fs::S_IFBLK {
+        return SYSERR;
+    }
+    let Some(dev) = fs::blk_id_from_path(&src) else {
+        return SYSERR;
+    };
+    let prefix = tgt.trim_start_matches('/');
+    if prefix.is_empty() || prefix.contains('/') || fstype.is_empty() {
+        return SYSERR;
+    }
+    if fs::mount_fstype(dev, prefix, fstype, &src) {
+        0
+    } else {
+        SYSERR
+    }
+}
