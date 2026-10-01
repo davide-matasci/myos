@@ -16,12 +16,9 @@
 
 #include "myos_syscalls.h"
 
-/* Defined in misc_stubs.c: no userspace handler trampolines, so a custom
- * SIGCHLD handler is dispatched here when the kernel reports the pending bit.
- * Servers (dropbear) rely on this to reap command children and send exit-status. */
-extern void myos_sigchld_dispatch(void);
-extern int myos_sigchld_armed(void);
-extern volatile long myos_sigchld_wfd;
+/* Handlers run so far (signal.c). The waits below loop through the kernel,
+ * where caught signals are delivered, and return EINTR once one ran. */
+extern volatile unsigned long __myos_sig_count;
 
 static long elapsed_ms(const struct timeval *start) {
     struct timeval now;
@@ -92,29 +89,6 @@ static int scan_once(struct pollfd *fds, nfds_t nfds) {
                     }
                 }
             }
-            /* Deterministic SIGCHLD wake: dropbear sets channel_signal_pending
-             * whenever FD_ISSET(signal_pipe[0]) is true (it doesn't need data).
-             * A blocked select() isn't interrupted on myos, so while the caller
-             * has an exited child, report its pipe read fds as POLLIN to make
-             * select() return >0 and let dropbear notice the signal pipe. */
-            if (rev == 0 && myos_sigchld_armed()
-                && (fds[i].events & POLLIN)
-                && myos_syscall0(MYOS_SYS_SIGCHLD_PENDING) == 1) {
-                /* Force exactly the SIGCHLD handler's self-pipe read end
-                 * readable, so dropbear's select() returns >0 with
-                 * signal_pipe[0] set and it reaps the child/sends exit-status.
-                 * The handler ran earlier this iteration (poll() dispatches
-                 * before scanning), so its write fd is captured. Only the
-                 * peer read end is forced — never every pathless fd (that
-                 * used to wake the drain on an empty pipe). */
-                long wfd = myos_sigchld_wfd;
-                long peer = (wfd >= 0)
-                    ? myos_syscall1(MYOS_SYS_PIPE_PEER, wfd) : (long)MYOS_SYSERR;
-                if (wfd >= 0 && peer != (long)MYOS_SYSERR
-                    && peer == (long)fds[i].fd) {
-                    rev = POLLIN;
-                }
-            }
             fds[i].revents = rev;
             if (rev) {
                 ready++;
@@ -129,30 +103,16 @@ static int scan_once(struct pollfd *fds, nfds_t nfds) {
 int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     struct timeval start;
     int ready;
+    unsigned long sigs = __myos_sig_count;
 
-    
     if (fds == NULL && nfds != 0) {
         errno = EFAULT;
         return -1;
     }
 
-    /* Also dispatch on entry: the timeout==0 fast path below returns without
-     * reaching the loop, and a select-driven server can keep calling with a
-     * zero timeout (select_timeout() due), which would otherwise starve
-     * SIGCHLD reaping (dropbear never sends an SSH exit-status). */
-    myos_sigchld_dispatch();
-
     if (timeout == 0) {
         ready = scan_once(fds, nfds);
         return ready < 0 ? -1 : ready;
-    }
-
-    /* Cap a long/blocking wait when a SIGCHLD handler is armed: a child exit
-     * does not interrupt a blocked select() on myos, so we poll for it. */
-    if (timeout < 0 || timeout > 100) {
-        if (myos_sigchld_armed()) {
-            timeout = 100;
-        }
     }
 
     if (gettimeofday(&start, NULL) != 0) {
@@ -162,13 +122,17 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     }
 
     for (;;) {
-        myos_sigchld_dispatch();
         ready = scan_once(fds, nfds);
         if (ready < 0) {
             return -1;
         }
         if (ready > 0) {
             return ready;
+        }
+        if (__myos_sig_count != sigs) {
+            /* A handler ran (e.g. a server's SIGCHLD self-pipe write). */
+            errno = EINTR;
+            return -1;
         }
         if (timeout > 0 && elapsed_ms(&start) >= timeout) {
             nfds_t i;
@@ -231,26 +195,21 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
         }
     }
 
-    /* Pure sleep: select(0, NULL, NULL, NULL, &tv) used by curl tool_sleep. */
+    /* Pure sleep: select(0, NULL, NULL, NULL, &tv) used by curl tool_sleep.
+     * Each gettimeofday enters the kernel, where signals are delivered. */
     if (n == 0) {
         struct timeval start;
+        unsigned long sigs = __myos_sig_count;
         if (ms == 0) {
-            myos_sigchld_dispatch();
             return 0;
         }
         if (gettimeofday(&start, NULL) != 0) {
             return 0;
         }
-        /* Sleep, but dispatch SIGCHLD and wake the caller if a child exited so
-         * its next select() includes the signal pipe (myos has no trampolines). */
         while (ms < 0 || elapsed_ms(&start) < ms) {
-            myos_sigchld_dispatch();
-            if (myos_sigchld_armed()
-                && myos_syscall0(MYOS_SYS_SIGCHLD_PENDING) == 1) {
-                return 0;
-            }
-            if (ms >= 0 && elapsed_ms(&start) >= ms) {
-                break;
+            if (__myos_sig_count != sigs) {
+                errno = EINTR;
+                return -1;
             }
         }
         return 0;

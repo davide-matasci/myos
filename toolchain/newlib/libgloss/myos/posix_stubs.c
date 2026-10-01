@@ -306,24 +306,28 @@ int execvp(const char *file, char *const argv[]) {
 #endif
 
 /*
- * Kernel SYS_WAIT is wait-any and blocking; it stores a raw exit-code byte.
- * Ignore specific pid / WUNTRACED. Honour WNOHANG via SYS_WAIT options so
- * dropbear's `while (waitpid(-1, &st, WNOHANG) > 0)` reap loop cannot block
- * after the first zombie (which left SSH exit-status undelivered).
+ * SYS_WAITPID(status, options, pid): the kernel writes a POSIX int status
+ * (WIFSIGNALED for a signal death) and waits for `pid` when it is > 0, for
+ * any child otherwise (process-group waits are treated as "any"). WNOHANG
+ * keeps dropbear's `while (waitpid(-1, &st, WNOHANG) > 0)` reap loop from
+ * blocking after the last zombie. WUNTRACED is ignored: nothing stops.
  */
 pid_t waitpid(pid_t pid, int *status, int options) {
-    unsigned char code = 0;
+    int st = 0;
     long ret;
     long opts = 0;
 
-    (void)pid;
-
     if ((options & WNOHANG) != 0) {
-        opts |= 1; /* kernel bit0 = WNOHANG */
+        opts |= MYOS_WAIT_NOHANG;
     }
 
-    ret = myos_syscall2(MYOS_SYS_WAIT, status ? (long)(uintptr_t)&code : 0, opts);
+    ret = myos_syscall3(MYOS_SYS_WAITPID, status ? (long)(uintptr_t)&st : 0, opts,
+                        pid > 0 ? (long)pid : 0);
 
+    if (ret == (long)MYOS_EINTR) {
+        errno = EINTR;
+        return -1;
+    }
     if (ret == (long)MYOS_SYSERR) {
         errno = ECHILD;
         return -1;
@@ -333,7 +337,7 @@ pid_t waitpid(pid_t pid, int *status, int options) {
         return 0;
     }
     if (status != NULL) {
-        *status = ((int)code) << 8;
+        *status = st;
     }
     return (pid_t)ret;
 }

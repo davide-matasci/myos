@@ -5,8 +5,8 @@
  #endif
  		cb.c_iflag &= ~(INLCR|ICRNL);
 -		cb.c_lflag &= ~(ISIG|ICANON|ECHO);
-+		/* myos: keep ISIG so kernel ^C (VINTR) still fires in raw edit
-+		 * mode; the editor does not install a userspace SIGINT trampoline. */
++		/* myos: keep ISIG so ^C in raw edit mode arrives as SIGINT
++		 * (the shell's trap handler), as at the kernel console. */
 +		cb.c_lflag &= ~(ICANON|ECHO);
  #ifdef VLNEXT
  		/* osf/1 processes lnext when ~icanon */

@@ -16,14 +16,15 @@
  
  /* initialize job control */
  void
-@@ -160,8 +160,9 @@
+@@ -160,8 +160,10 @@
  	setsig(&sigtraps[SIGCHLD], j_sigchld,
  	    SS_RESTORE_ORIG|SS_FORCE|SS_SHTRAP);
  
 -	if (!mflagset && Flag(FTALKING))
 -		Flag(FMONITOR) = 1;
 +	(void)mflagset;
-+	/* myos: no pgrp/SIGCHLD; keep FMONITOR off even when talking. */
++	/* myos: no job control (no stop signals, no tcsetpgrp); keep
++	 * FMONITOR off even when talking. */
 +	Flag(FMONITOR) = 0;
  
  	/* shl_j is used to do asynchronous notification (used in
@@ -91,7 +92,7 @@
  		int	err = errno;
  
  		if (!bg) {
-@@ -1000,7 +982,14 @@
+@@ -1000,7 +982,16 @@
  
  	while ((volatile int) j->state == PRUNNING ||
  	    ((flags & JW_STOPPEDWAIT) && (volatile int) j->state == PSTOPPED)) {
@@ -99,11 +100,13 @@
 +		int status;
 +		pid_t wpid;
 +
-+		/* Kernel wait is wait-any blocking; SIGCHLD is ENOSYS. */
++		/* myos: block in waitpid rather than sigsuspend; a trap that
++		 * interrupts it (EINTR) falls through to the checks below. */
 +		wpid = waitpid(-1, &status, 0);
-+		if (wpid <= 0)
++		if (wpid > 0)
++			j_apply_wait(wpid, status);
++		else if (errno != EINTR)
 +			break;
-+		j_apply_wait(wpid, status);
  		if (fatal_trap) {
  			int oldf = j->flags & (JF_WAITING|JF_W_ASYNCNOTIFY);
  			j->flags &= ~(JF_WAITING|JF_W_ASYNCNOTIFY);

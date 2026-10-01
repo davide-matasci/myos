@@ -38,7 +38,6 @@ patch_copy main
 patch_copy jobs
 patch_copy emacs
 patch_copy edit
-patch_copy trap
 patch_copy io
 patch_copy c_sh
 patch_copy lex

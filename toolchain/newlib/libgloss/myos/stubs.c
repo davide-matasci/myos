@@ -98,18 +98,18 @@ int _fork(void) {
 }
 
 int _wait(int *status) {
-    unsigned char code = 0;
-    long ret = myos_syscall2(MYOS_SYS_WAIT, (long)(uintptr_t)&code, 0);
+    int st = 0;
+    long ret = myos_syscall3(MYOS_SYS_WAITPID, (long)(uintptr_t)&st, 0, 0);
+    if (ret == (long)MYOS_EINTR) {
+        errno = EINTR;
+        return -1;
+    }
     if (ret == (long)MYOS_SYSERR) {
         errno = ECHILD;
         return -1;
     }
-    /* Kernel writes only the raw exit-code byte; the caller's int keeps its
-     * old stack bytes in bits 8+. Convert to a POSIX status like the waitpid
-     * wrapper in posix_stubs.c, or WEXITSTATUS() reads garbage (GNU make
-     * reported flaky "Error 181" on recipes that exited 0). */
     if (status != NULL) {
-        *status = ((int)code) << 8;
+        *status = st;
     }
     return (int)ret;
 }
@@ -124,7 +124,8 @@ int _wait(int *status) {
 #define MYOS_MAX_ARG_LEN 128
 #define MYOS_MAX_ENVC 32
 #define MYOS_MAX_ENV_LEN 128
-#define MYOS_MAX_PATH 64
+/* Matches the kernel exec path limit (kernel/src/user/mod.rs MAX_PATH). */
+#define MYOS_MAX_PATH 256
 
 int _execve(const char *path, char *const argv[], char *const envp[]) {
     char path_buf[MYOS_MAX_PATH];
