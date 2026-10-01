@@ -412,6 +412,20 @@ fn reapable(tasks: &[Task; MAX_TASKS], slot: usize) -> bool {
         && unsafe { core::ptr::read_volatile(core::ptr::addr_of!(tasks[slot].sp)) } != 0
 }
 
+/// Free the slots of dead, already-reported (`NO_PARENT`) tasks that have left
+/// their kernel stacks, keeping each stack for reuse.
+fn free_dead_orphans(tasks: &mut [Task; MAX_TASKS]) {
+    for j in 0..MAX_TASKS {
+        if tasks[j].ppid == NO_PARENT && tasks[j].user_rip != 0 && reapable(tasks, j) {
+            let stack_base = tasks[j].stack_base;
+            tasks[j] = EMPTY;
+            if stack_base != 0 {
+                tasks[j].stack_base = stack_base;
+            }
+        }
+    }
+}
+
 /// Detach the children of dying task `id`, and free orphan zombies.
 ///
 /// Children are found by `ppid == slot`, and a freed slot is soon reused by
@@ -2238,7 +2252,8 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     };
 
     let (slot, reuse_stack) = {
-        let tasks = TASKS.lock();
+        let mut tasks = TASKS.lock();
+        free_dead_orphans(&mut tasks);
         // Reuse kernel stacks left behind by reaped fork children (stack_base kept
         // in EMPTY slots) or dead kernel threads — avoids kernel-heap alloc on CI.
         let slot = (0..MAX_TASKS)
@@ -2371,9 +2386,6 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
     loop {
         let mut any = false;
         let mut reap = None;
-        // A child that is Dead but still on its kernel stack (the tail of
-        // `die()`): not reapable yet, but it will be within a few instructions.
-        let mut leaving = false;
         {
             let flags = irq_save();
             irq_off();
@@ -2387,20 +2399,24 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
                     continue;
                 }
                 if tasks[i].state == State::Dead {
-                    if reapable(&tasks, i) {
-                        reap = Some(i);
-                        break;
-                    }
-                    leaving = true;
+                    reap = Some(i);
+                    break;
                 }
                 any = true;
             }
             if let Some(i) = reap {
-                let stack_base = tasks[i].stack_base;
                 let code = tasks[i].exit_code;
-                tasks[i] = EMPTY;
-                if stack_base != 0 {
-                    tasks[i].stack_base = stack_base;
+                if reapable(&tasks, i) {
+                    let stack_base = tasks[i].stack_base;
+                    tasks[i] = EMPTY;
+                    if stack_base != 0 {
+                        tasks[i].stack_base = stack_base;
+                    }
+                } else {
+                    // Still on its kernel stack (the tail of `die()`): report
+                    // the exit now, but leave the slot to `free_dead_orphans`
+                    // so nothing reuses that stack until it is off it.
+                    tasks[i].ppid = NO_PARENT;
                 }
                 drop(tasks);
                 irq_restore(flags);
@@ -2412,12 +2428,6 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool) -> usize {
             }
             drop(tasks);
             irq_restore(flags);
-        }
-        if leaving {
-            // Even for WNOHANG: the child has exited, so report it once it is
-            // off its stack rather than "nothing to reap".
-            yield_now();
-            continue;
         }
         if !any {
             return usize::MAX;

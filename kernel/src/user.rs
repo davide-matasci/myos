@@ -2796,6 +2796,20 @@ fn sys_brk(req: usize) -> usize {
         if mapped_any {
             flush_user_tlb();
         }
+    } else if req < cur {
+        // Shrink: free the pages above the new break, so mapped heap always
+        // stays within [heap_base, brk) and exit/fork only walk that far.
+        let aspace = task::current_aspace();
+        let mut va = align_up_usize(req, PAGE);
+        let end = align_up_usize(cur, PAGE);
+        let freed_any = va < end;
+        while va < end {
+            free_mapped_page(aspace, va as u64);
+            va += PAGE;
+        }
+        if freed_any {
+            flush_user_tlb();
+        }
     }
     task::set_brk(req as u64);
     req
@@ -3113,13 +3127,11 @@ pub fn reclaim_user_aspace(
         heap_base
     };
     let heap_lim = heap_limit_va(base, stack_off);
+    // Heap pages only exist below brk (sys_brk frees on shrink; nothing maps
+    // the rest of the window), so stop there: walking all HEAP_PAGES (4096)
+    // on every exit was most of the exit cost in the debug kernel.
     let mut va = heap_base;
     while va < heap_end.min(heap_lim) {
-        free_mapped_page(aspace, va);
-        va += PAGE as u64;
-    }
-    // Also drop any remaining mapped initial heap pages beyond brk.
-    while va < heap_lim {
         free_mapped_page(aspace, va);
         va += PAGE as u64;
     }
