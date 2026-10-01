@@ -54,7 +54,7 @@ unsafe fn install_mid_root(root: &mut [u64; 512]) {
     let mid = &raw mut MID;
     let mid_phys = limine_boot::kernel_virt_to_phys(mid as usize);
     for i in 0..512 {
-        (*mid).0[i] = pte_leaf_2m((i as u64) << 21, DEV);
+        unsafe { (*mid).0[i] = pte_leaf_2m((i as u64) << 21, DEV) };
     }
     root[0] = pte_table(mid_phys);
 }

@@ -381,7 +381,7 @@ pub fn note_zombie(parent: usize) {
 /// A child of `parent` was reaped; drop the zombie marker (saturating).
 pub fn note_reap(parent: usize) {
     if parent < MAX_TASKS {
-        ZOMBIES[parent].fetch_update(
+        ZOMBIES[parent].try_update(
             core::sync::atomic::Ordering::Relaxed,
             core::sync::atomic::Ordering::Relaxed,
             |n| Some(n.saturating_sub(1)),
@@ -705,6 +705,7 @@ pub fn current_aspace() -> u64 {
 }
 
 /// Kernel stack top for the running task (riscv64 sscratch / x86 rsp0).
+#[cfg(not(target_arch = "aarch64"))]
 pub fn current_kernel_stack_top() -> usize {
     let flags = irq_save();
     irq_off();
@@ -1699,12 +1700,12 @@ pub fn signal_pending_actionable(id: usize) -> bool {
     let flags = irq_save();
     irq_off();
     let t = TASKS.lock()[id];
-    // SIGKILL = 9 cannot be ignored even if the bit is set in ignored.
-    let kill_bit = 1u32 << 9;
+    // SIGKILL cannot be ignored even if the bit is set in ignored.
+    let kill_bit = 1u32 << crate::signal::SIGKILL;
     let pending = t.sig_pending;
     let effective = (pending & !t.sig_ignored) | (pending & kill_bit);
-    const FATAL: [u32; 3] = [2, 9, 15]; // SIGINT, SIGKILL, SIGTERM
-    let out = FATAL.iter().any(|sig| effective & (1u32 << sig) != 0);
+    let out = crate::signal::DEFAULT_FATAL
+        .iter().any(|sig| effective & (1u32 << sig) != 0);
     irq_restore(flags);
     out
 }
@@ -1719,13 +1720,12 @@ pub fn signal_take_fatal(id: usize) -> Option<u32> {
     irq_off();
     let mut tasks = TASKS.lock();
     let t = &mut tasks[id];
-    let kill_bit = 1u32 << 9;
+    let kill_bit = 1u32 << crate::signal::SIGKILL;
     let effective = ((t.sig_pending & !t.sig_ignored) | (t.sig_pending & kill_bit))
         & !t.sig_blocked
         | (t.sig_pending & kill_bit);
-    const FATAL: [u32; 3] = [2, 9, 15]; // SIGINT, SIGKILL, SIGTERM
     let mut found = None;
-    for sig in FATAL {
+    for sig in crate::signal::DEFAULT_FATAL {
         let bit = 1u32 << sig;
         if effective & bit != 0 {
             t.sig_pending &= !bit;
@@ -2474,7 +2474,7 @@ fn spawn_inner(
     let layout = Layout::from_size_align(STACK_SIZE, 16).expect("task stack layout");
     let stack = unsafe { alloc(layout) };
     assert!(!stack.is_null(), "task stack alloc");
-    let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as usize) };
+    let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as *const () as usize) };
     let top = stack as usize + STACK_SIZE;
     // BSP-created tasks start on CPU 0; schedule restamps on migrate.
     stamp_stack_cpu(top, 0);

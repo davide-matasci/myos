@@ -305,11 +305,10 @@ pub fn ipi_reschedule() {
 
 fn flush_tlb_local() {
     unsafe {
-        let cr3: u64;
         core::arch::asm!(
             "mov {cr3}, cr3",
             "mov cr3, {cr3}",
-            cr3 = out(reg) cr3,
+            cr3 = out(reg) _,
             options(nostack, preserves_flags),
         );
     }

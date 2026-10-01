@@ -30,11 +30,6 @@ pub fn is_loaded() -> bool {
     LOADED.load(Ordering::SeqCst)
 }
 
-pub fn clear() {
-    *MAP.lock() = [[0; NLEVELS]; NKEYS];
-    LOADED.store(false, Ordering::SeqCst);
-}
-
 /// Translate a keycode with current modifiers. `None` if no map or empty slot.
 pub fn translate(keycode: u8, shift: bool, altgr: bool) -> Option<u8> {
     if !LOADED.load(Ordering::SeqCst) {

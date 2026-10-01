@@ -145,11 +145,6 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     n
 }
 
-/// Number of registered bootfs entries.
-pub fn count() -> usize {
-    FILES.lock().iter().flatten().count()
-}
-
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 

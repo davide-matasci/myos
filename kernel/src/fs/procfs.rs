@@ -164,18 +164,7 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 }
 
 fn list_root(buf: &mut [u8]) -> usize {
-    let mut names: alloc::vec::Vec<&str> = alloc::vec!["mounts", "cpuinfo", "meminfo", "pci", "acpi"];
-    {
-        let nodes = DYN.lock();
-        for n in nodes.iter().flatten() {
-            let s = core::str::from_utf8(&n.name[..n.name_len]).unwrap_or("");
-            if !s.contains('/') && !names.contains(&s) {
-                // Skip unknown top-level extras from the listing.
-            }
-            let _ = s;
-        }
-    }
-    let _ = names;
+    // Dynamic nodes all live under `acpi/` (see `list_acpi`).
     const FIXED: &[&[u8]] = &[b"mounts", b"cpuinfo", b"meminfo", b"pci", b"acpi"];
     let mut off = 0usize;
     for name in FIXED {

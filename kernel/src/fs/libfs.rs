@@ -48,7 +48,7 @@ pub fn register(name: &str, bytes: &'static [u8]) -> bool {
         return false;
     }
     let mut files = FILES.lock();
-    let mut sorted = SORTED.lock();
+    let sorted = SORTED.lock();
     if *sorted {
         // Sorted: binary-search dup check and keep order after insertion.
         match files.binary_search_by(|e| e.path.as_str().cmp(name)) {

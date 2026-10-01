@@ -312,7 +312,7 @@ fn init_syscall_msrs() {
     let star = ((crate::arch::gdt::user_ss() as u64 - 8) << 48)
         | ((crate::arch::gdt::kernel_cs() as u64) << 32);
     wrmsr(IA32_STAR, star);
-    wrmsr(IA32_LSTAR, syscall_entry as usize as u64);
+    wrmsr(IA32_LSTAR, syscall_entry as *const () as usize as u64);
     wrmsr(IA32_FMASK, 0x257fd);
 }
 
@@ -870,6 +870,7 @@ fn write_user_usize(aspace: u64, va: usize, val: usize) -> bool {
     write_user_bytes(aspace, va, &val.to_le_bytes())
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub fn try_read_user_u8(aspace: u64, va: usize) -> Option<u8> {
     read_user_byte(aspace, va)
 }
@@ -895,6 +896,7 @@ fn read_user_bytes(aspace: u64, va: usize, dst: &mut [u8]) -> bool {
     true
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn read_user_usize(aspace: u64, va: usize) -> Option<usize> {
     let mut buf = [0u8; core::mem::size_of::<usize>()];
     if !read_user_bytes(aspace, va, &mut buf) {
@@ -1220,6 +1222,7 @@ pub fn note_fork() {
 }
 
 pub fn set_kernel_rsp0(top: usize) {
+    #[cfg(not(target_arch = "aarch64"))]
     let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     #[cfg(target_arch = "x86_64")]
     {
@@ -1346,8 +1349,12 @@ pub fn enter(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: usiz
     if a != 0 {
         switch_aspace(a);
     }
+    // x86 passes argc/argv on the initial user stack, not in registers.
     #[cfg(target_arch = "x86_64")]
-    enter_x86(user_rip, user_rsp);
+    {
+        let _ = (user_argc, user_argv);
+        enter_x86(user_rip, user_rsp);
+    }
     #[cfg(target_arch = "aarch64")]
     enter_aarch64(user_rip, user_rsp, user_argc, user_argv);
     #[cfg(target_arch = "riscv64")]
@@ -1429,8 +1436,6 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
     unsafe {
         core::ptr::write_volatile(slot.as_mut_ptr(), resume);
         let p = slot.as_ptr();
-        let rip: u64;
-        let rsp: u64;
         core::arch::asm!(
             "ldr {rip}, [{p}]",
             "ldr {rsp}, [{p}, #8]",
@@ -1438,8 +1443,8 @@ fn enter_aarch64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             "msr sp_el0, {rsp}",
             "msr spsr_el1, xzr",
             p = in(reg) p,
-            rip = lateout(reg) rip,
-            rsp = lateout(reg) rsp,
+            rip = out(reg) _,
+            rsp = out(reg) _,
             options(nostack, preserves_flags),
         );
         // Load argc/argv first, then scrub remaining GPRs so eret cannot leak
@@ -1524,10 +1529,10 @@ fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, user_argv: 
             "ld {argc}, 16({p})",
             "ld {argv}, 24({p})",
             p = in(reg) p,
-            rip = lateout(reg) rip,
-            usp = lateout(reg) usp,
-            argc = lateout(reg) argc,
-            argv = lateout(reg) argv,
+            rip = out(reg) rip,
+            usp = out(reg) usp,
+            argc = out(reg) argc,
+            argv = out(reg) argv,
             options(nostack, preserves_flags),
         );
         core::arch::asm!(
@@ -2155,9 +2160,9 @@ fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
     // in-place expand (ripgrep after uutils ls on /heap). That frame sits near
     // the top of the 64KiB kstack; expand + realize + PTE walks push LLVM
     // spill slots into the same page, and a later `*frame.add(32) = entry`
-    // followed by sync_tp/sscratch setup can leave sepc as 0 before
-    // fork_sret_from_frame — classic `instruction page fault stval=0 sepc=0`
-    // with sp still in the new image's stack window (CI sp≈0x40354xxx).
+    // followed by sync_tp/sscratch setup can leave sepc as 0 before the
+    // (since removed) live-frame sret — classic `instruction page fault
+    // stval=0 sepc=0` with sp still in the new image's stack window (CI sp≈0x40354xxx).
     // enter_riscv64 loads sepc/sp/argc/argv from a volatile resume image
     // instead (same discipline as the MTTCG scrub fix in 9b6902a).
     #[cfg(target_arch = "riscv64")]
@@ -3521,11 +3526,10 @@ fn flush_user_tlb() {
 #[cfg(target_arch = "x86_64")]
 fn flush_user_tlb() {
     unsafe {
-        let cr3: u64;
         core::arch::asm!(
             "mov {cr3}, cr3",
             "mov cr3, {cr3}",
-            cr3 = out(reg) cr3,
+            cr3 = out(reg) _,
             options(nostack, preserves_flags),
         );
     }
@@ -3750,11 +3754,10 @@ fn create_aspace_riscv64(code: &[u64], stack: &[u64], base: u64, stack_off: u64)
 fn sync_icache(start: usize, size: usize) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        let cr3: u64;
         core::arch::asm!(
             "mov {cr3}, cr3",
             "mov cr3, {cr3}",
-            cr3 = out(reg) cr3,
+            cr3 = out(reg) _,
             options(nostack, preserves_flags),
         );
     }

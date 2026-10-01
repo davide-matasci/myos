@@ -19,7 +19,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
-use crate::tty::{TtyIn, Termios, ICANON, OPOST, ONLCR};
+use crate::tty::{TtyIn, Termios, OPOST, ONLCR};
 
 pub const MAX_PTYS: usize = 4;
 const OUT_CAP: usize = 4096;
@@ -346,10 +346,4 @@ pub fn slave_exists(id: usize) -> bool {
     pty_at(id).is_some()
 }
 
-/// True when the pair's canonical input processing is enabled (debug helper).
-pub fn canonical(id: usize) -> bool {
-    pty_at(id)
-        .map(|p| p.term.lock().termios.c_lflag & ICANON != 0)
-        .unwrap_or(false)
-}
 

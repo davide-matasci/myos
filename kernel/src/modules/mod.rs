@@ -167,19 +167,12 @@ pub fn load(name: &'static str, image: &[u8]) -> Result<(), elf::LoadError> {
         unsafe { loaded.free() };
         return Err(elf::LoadError::InitFailed(rc));
     }
-    registry::register(LoadedModule {
-        name,
-        base: loaded.base as usize,
-        size: loaded.size,
-        init: loaded.init,
-        exit: loaded.exit,
-    });
+    registry::register(LoadedModule { name });
     debug_assert!(by_name(name).is_some());
-    let _ = count();
     Ok(())
 }
 
-pub use registry::{LoadedModule, by_name, count};
+pub use registry::{LoadedModule, by_name};
 
 unsafe extern "C" fn api_write_str(ptr: *const u8, len: usize) {
     if ptr.is_null() || len == 0 {

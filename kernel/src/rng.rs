@@ -35,15 +35,7 @@ struct Rng {
     initialized: bool,
 }
 
-static RNG: Mutex<Rng> = Mutex::new(Rng {
-    key: [0; KEY_WORDS],
-    counter: 0,
-    nonce: 0,
-    since_mix: 0,
-    stir: [0; 16],
-    stir_i: 0,
-    initialized: false,
-});
+static RNG: Mutex<Rng> = Mutex::new(Rng::new());
 
 /// Bytes handed out (also an address-space entropy sample via addr_of!).
 static BYTES_OUT: AtomicUsize = AtomicUsize::new(0);
@@ -250,7 +242,7 @@ pub fn stir_tick() {
     };
     #[cfg(target_arch = "aarch64")]
     let jit = {
-        let cnt: u32;
+        let cnt: u64;
         unsafe {
             core::arch::asm!("mrs {}, cntvct_el0", out(reg) cnt, options(nostack, nomem));
         }

@@ -26,19 +26,34 @@ const SHT_REL: u32 = 9;
 const SHT_DYNSYM: u32 = 11;
 const SHN_UNDEF: u16 = 0;
 
-const R_X86_64_NONE: u32 = 0;
-const R_X86_64_64: u32 = 1;
-const R_X86_64_GLOB_DAT: u32 = 6;
-const R_X86_64_JUMP_SLOT: u32 = 7;
-const R_X86_64_RELATIVE: u32 = 8;
-const R_AARCH64_ABS64: u32 = 257;
-const R_AARCH64_GLOB_DAT: u32 = 1025;
-const R_AARCH64_JUMP_SLOT: u32 = 1026;
-const R_AARCH64_RELATIVE: u32 = 1027;
-const R_RISCV_64: u32 = 2;
-const R_RISCV_GLOB_DAT: u32 = 6;
-const R_RISCV_JUMP_SLOT: u32 = 5;
-const R_RISCV_RELATIVE: u32 = 3;
+// Dynamic relocation types for this kernel's arch. The numbers overlap
+// across arches (2 is R_X86_64_PC32 but R_RISCV_64), so only the native set
+// is accepted; anything else is `BadReloc`.
+const R_NONE: u32 = 0;
+#[cfg(target_arch = "x86_64")]
+const R_ABS64: u32 = 1; // R_X86_64_64
+#[cfg(target_arch = "x86_64")]
+const R_GLOB_DAT: u32 = 6;
+#[cfg(target_arch = "x86_64")]
+const R_JUMP_SLOT: u32 = 7;
+#[cfg(target_arch = "x86_64")]
+const R_RELATIVE: u32 = 8;
+#[cfg(target_arch = "aarch64")]
+const R_ABS64: u32 = 257; // R_AARCH64_ABS64
+#[cfg(target_arch = "aarch64")]
+const R_GLOB_DAT: u32 = 1025;
+#[cfg(target_arch = "aarch64")]
+const R_JUMP_SLOT: u32 = 1026;
+#[cfg(target_arch = "aarch64")]
+const R_RELATIVE: u32 = 1027;
+#[cfg(target_arch = "riscv64")]
+const R_ABS64: u32 = 2; // R_RISCV_64
+#[cfg(target_arch = "riscv64")]
+const R_GLOB_DAT: u32 = 6;
+#[cfg(target_arch = "riscv64")]
+const R_JUMP_SLOT: u32 = 5;
+#[cfg(target_arch = "riscv64")]
+const R_RELATIVE: u32 = 3;
 
 #[cfg(target_arch = "x86_64")]
 const EXPECT_MACHINE: u16 = 62; // EM_X86_64
@@ -82,6 +97,7 @@ pub struct Loaded {
     pub base: *mut u8,
     pub size: usize,
     pub init: Option<ModuleInit>,
+    #[allow(dead_code)] // resolved for a future unload path; nothing unloads yet
     pub exit: Option<ModuleExit>,
 }
 
@@ -437,8 +453,8 @@ fn apply_relocs(
             }
             let loc = loc_addr as *mut u64;
             match r_type {
-                R_X86_64_NONE => {}
-                R_X86_64_RELATIVE | R_AARCH64_RELATIVE | R_RISCV_RELATIVE => {
+                R_NONE => {}
+                R_RELATIVE => {
                     let a = if rela {
                         addend as u64
                     } else {
@@ -446,14 +462,9 @@ fn apply_relocs(
                     };
                     unsafe { loc.write_unaligned(load_bias.wrapping_add(a)) };
                 }
-                R_X86_64_64 | R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT | R_AARCH64_ABS64
-                | R_AARCH64_GLOB_DAT | R_AARCH64_JUMP_SLOT | R_RISCV_64 | R_RISCV_GLOB_DAT
-                | R_RISCV_JUMP_SLOT => {
+                R_ABS64 | R_GLOB_DAT | R_JUMP_SLOT => {
                     let s = symbol_value(bytes, symtab_sh, shoff, shentsize, r_sym, load_bias)?;
-                    let val = if r_type == R_X86_64_64
-                        || r_type == R_AARCH64_ABS64
-                        || r_type == R_RISCV_64
-                    {
+                    let val = if r_type == R_ABS64 {
                         let a = if rela {
                             addend as u64
                         } else {

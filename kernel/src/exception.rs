@@ -25,6 +25,7 @@ pub fn fatal_line(line: &str) -> ! {
 /// Warn-only variant: print and return. Used before `user_fault_kill` when
 /// the detail is split across two lines and the harness may kill QEMU on the
 /// first WARN before the second line reaches serial.
+#[cfg(target_arch = "riscv64")]
 pub fn user_fault_warn(kind: &str, detail: &str) {
     console::status_warn(&format!("user fault: {kind} {detail}"));
     console::flush();
@@ -154,14 +155,6 @@ pub fn aarch64_sync_abort(kind: &str, esr: u64, elr: u64, far: u64, sp_el0: Opti
         .unwrap_or_default();
     fatal_line(&format!(
         "{kind} ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x}{sp}{ctx}",
-        ctx = task_ctx(),
-    ));
-}
-
-#[cfg(target_arch = "riscv64")]
-pub fn riscv64_page_fault(kind: &str, stval: u64, sepc: u64, user_sp: u64) -> ! {
-    fatal_line(&format!(
-        "{kind} stval={stval:#x} sepc={sepc:#x} sp={user_sp:#x}{ctx}",
         ctx = task_ctx(),
     ));
 }

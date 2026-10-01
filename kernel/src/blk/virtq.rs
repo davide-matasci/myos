@@ -9,12 +9,14 @@ pub const AVAIL_F_NO_INTERRUPT: u16 = 1;
 pub const DESC_SIZE: usize = 16;
 
 /// Legacy contiguous vring byte size (page-aligned used ring).
+#[cfg(target_arch = "x86_64")]
 pub fn vring_size(num: usize, align: usize) -> usize {
     let after_avail = DESC_SIZE * num + 6 + 2 * num;
     let used_off = after_avail.div_ceil(align) * align;
     used_off + 6 + 8 * num
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn used_offset(num: usize, align: usize) -> usize {
     let after_avail = DESC_SIZE * num + 6 + 2 * num;
     after_avail.div_ceil(align) * align
