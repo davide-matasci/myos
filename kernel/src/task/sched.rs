@@ -92,7 +92,7 @@ pub fn schedule() {
         // with the kernel stack top only on the way out to U-mode.
     }
     #[cfg(feature = "linux-compat")]
-    crate::linux::on_switch(_next);
+    crate::linux::on_switch(old, _next);
 
     let want = if aspace == 0 {
         KERNEL_ASPACE.load(Ordering::SeqCst)

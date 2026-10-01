@@ -246,7 +246,7 @@ pub(super) fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, 
             argc = in(reg) argc,
             argv = in(reg) argv,
             rip = in(reg) rip,
-            s = in(reg) USER_SSTATUS,
+            s = in(reg) user_sstatus(),
             options(noreturn, nostack),
         );
     }
@@ -411,7 +411,7 @@ fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
 fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
     let mut frame = regs.frame;
     frame[32] = regs.rip as u64; // resume past the fork ecall
-    frame[33] = USER_SSTATUS;
+    frame[33] = user_sstatus();
     frame[34] = regs.rsp as u64;
     crate::smp::sync_tp_for_kernel();
     let ksp = {

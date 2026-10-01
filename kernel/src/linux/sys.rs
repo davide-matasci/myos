@@ -20,7 +20,7 @@ const ENAMETOOLONG: usize = 36;
 const EISDIR: usize = 21;
 const EAGAIN: usize = 11;
 
-type R = Result<usize, usize>;
+pub(super) type R = Result<usize, usize>;
 type R2<T> = Result<T, usize>;
 
 /// Fold a handler's `Result` into the result register.
@@ -45,11 +45,15 @@ fn aspace() -> u64 {
     task::current_aspace()
 }
 
-fn put(ptr: usize, bytes: &[u8]) -> Result<(), usize> {
+pub(super) fn put(ptr: usize, bytes: &[u8]) -> Result<(), usize> {
     if ptr == 0 || !user::buffer_ok(ptr, bytes.len()) || !user::copy_to_user(aspace(), ptr, bytes) {
         return Err(EFAULT);
     }
     Ok(())
+}
+
+pub(super) fn get_bytes(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
+    get(ptr, out)
 }
 
 fn get(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
@@ -59,7 +63,7 @@ fn get(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
     Ok(())
 }
 
-fn get_u64(ptr: usize) -> Result<u64, usize> {
+pub(super) fn get_u64(ptr: usize) -> Result<u64, usize> {
     let mut b = [0u8; 8];
     get(ptr, &mut b)?;
     Ok(u64::from_le_bytes(b))
@@ -230,7 +234,7 @@ pub fn close(fd: usize) -> R {
 }
 
 fn put_stat(buf: usize, st: &fs::StatInfo) -> R {
-    put(buf, &stat_bytes(st.mode, st.size as u64, st.ino as u64, st.nlink as u64, st.dev as u64))?;
+    put(buf, &super::arch::stat_bytes(st.mode, st.size as u64, st.ino as u64, st.nlink as u64, st.dev as u64))?;
     Ok(0)
 }
 
@@ -254,7 +258,7 @@ pub fn fstat(fd: usize, buf: usize) -> R {
         task::FdKind::Pipe => (0o010600, 0),
         task::FdKind::File { size } => (0o100644, size as u64),
     };
-    put(buf, &stat_bytes(mode, size, fd as u64 + 1, 1, 0))?;
+    put(buf, &super::arch::stat_bytes(mode, size, fd as u64 + 1, 1, 0))?;
     Ok(0)
 }
 
@@ -497,58 +501,10 @@ pub fn kill(pid: usize, sig: usize) -> R {
     if crate::signal::kill(pid as isize, n) { Ok(0) } else { Err(ESRCH) }
 }
 
-pub fn rt_sigaction(sig: usize, act: usize, oact: usize) -> R {
-    let n = sig_from_linux(sig);
-    if n == 0 {
-        return Err(EINVAL);
-    }
-    let id = task::current_id();
-    if oact != 0 {
-        let (handler, _, _) = task::signal_get_action(id, n);
-        let mut b = [0u8; 32];
-        b[..8].copy_from_slice(&(handler.min(1) as u64).to_le_bytes());
-        put(oact, &b)?;
-    }
-    if act != 0 {
-        let handler = get_u64(act)? as usize;
-        if n == crate::signal::SIGKILL || n == crate::signal::SIGSTOP {
-            return Err(EINVAL);
-        }
-        // SIG_DFL / SIG_IGN take effect. Function handlers are accepted
-        // but not run yet: the signal keeps its default action.
-        if handler <= 1 && !task::signal_set_action(id, n, handler, 0, 0, 0) {
-            return Err(EINVAL);
-        }
-    }
-    Ok(0)
-}
-
-pub fn rt_sigprocmask(how: usize, set: usize, oset: usize) -> R {
-    let id = task::current_id();
-    let cur = task::signal_blocked(id);
-    let new = if set != 0 {
-        let s = mask_from_linux(get_u64(set)?);
-        Some(match how {
-            0 => cur | s,
-            1 => cur & !s,
-            2 => s,
-            _ => return Err(EINVAL),
-        })
-    } else {
-        None
-    };
-    if oset != 0 {
-        put(oset, &mask_to_linux(cur).to_le_bytes())?;
-    }
-    if let Some(m) = new {
-        task::signal_set_blocked_mask(id, m);
-    }
-    Ok(0)
-}
-
 pub fn uname(buf: usize) -> R {
     let mut b = [0u8; 6 * 65];
-    let fields: [&[u8]; 6] = [b"Linux", b"myos", b"6.1.0-myos-compat", b"#1 myos", b"x86_64", b"(none)"];
+    let fields: [&[u8]; 6] =
+        [b"Linux", b"myos", b"6.1.0-myos-compat", b"#1 myos", super::arch::MACHINE, b"(none)"];
     for (i, f) in fields.iter().enumerate() {
         b[i * 65..i * 65 + f.len()].copy_from_slice(f);
     }
@@ -558,7 +514,7 @@ pub fn uname(buf: usize) -> R {
 
 // ---- time -----------------------------------------------------------------
 
-fn now_us() -> u64 {
+pub(super) fn now_us() -> u64 {
     match crate::time::timeval() {
         Some((s, us)) => s as u64 * 1_000_000 + us as u64,
         None => 0,
@@ -574,6 +530,7 @@ pub fn clock_gettime(ts: usize) -> R {
     Ok(0)
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn time(t: usize) -> R {
     let s = (now_us() / 1_000_000) as usize;
     if t != 0 {
@@ -674,4 +631,17 @@ pub fn poll(fds: usize, nfds: usize, timeout_ms: isize) -> R {
         }
         task::yield_now();
     }
+}
+
+/// `ppoll(fds, nfds, timeout, sigmask)` (the only poll on aarch64/riscv64;
+/// the signal mask argument is not applied).
+pub fn ppoll(fds: usize, nfds: usize, ts: usize) -> R {
+    let ms = if ts == 0 {
+        -1
+    } else {
+        let sec = get_u64(ts)?;
+        let nsec = get_u64(ts + 8)?;
+        (sec.saturating_mul(1000) + nsec.div_ceil(1_000_000)).min(isize::MAX as u64) as isize
+    };
+    poll(fds, nfds, ms)
 }

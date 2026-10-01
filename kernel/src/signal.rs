@@ -256,14 +256,21 @@ pub fn on_syscall_exit(regs: &mut SyscallRegs, nr: usize, a0: usize, ret: usize)
             } else {
                 (regs.pc(), SYSERR_EINTR)
             };
+            // After sigsuspend, the handler returns to the caller's mask.
+            let restore_mask = suspend_mask.unwrap_or(old_blocked);
+            // Optional Linux layer: a Linux task gets a Linux `rt_sigframe`.
+            #[cfg(feature = "linux-compat")]
+            if crate::linux::active() {
+                return crate::linux::deliver(regs, sig, &act, tramp, restore_mask, pc, ret)
+                    .unwrap_or_else(|| terminate(SIGSEGV));
+            }
             let sp = regs.sp();
             let frame_va = (sp.wrapping_sub(RED_ZONE + FRAME_WORDS * 8)) & !15;
             let mut frame = [0u64; FRAME_WORDS];
             frame[F_MAGIC] = FRAME_MAGIC;
             frame[F_SIGNO] = sig as u64;
             frame[F_HANDLER] = act.handler as u64;
-            // After sigsuspend, the handler returns to the caller's mask.
-            frame[F_MASK] = suspend_mask.unwrap_or(old_blocked) as u64;
+            frame[F_MASK] = restore_mask as u64;
             frame[F_PC] = pc as u64;
             frame[F_SP] = sp as u64;
             frame[F_RET] = ret as u64;
@@ -289,7 +296,7 @@ fn write_frame(va: usize, frame: &[u64; FRAME_WORDS]) -> bool {
         && crate::user::copy_to_user(task::current_aspace(), va, &bytes)
 }
 
-fn terminate(sig: u32) -> ! {
+pub(crate) fn terminate(sig: u32) -> ! {
     // `user_exit_signal` never returns to the trap epilogue that clears
     // `SYSCALL_FRAME`; drop it here so a later fork/exec cannot read a
     // dangling frame on the dying task's kernel stack.

@@ -1,37 +1,42 @@
-//! x86_64 Linux syscall numbers and the FS base (musl's thread pointer).
+//! x86_64: syscall numbers, `struct stat`, the signal frame, FXSAVE state
+//! and the FS base (musl's thread pointer).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::abi::{err, ENOSYS};
+use super::abi::{err, result, EFAULT, EINVAL, ENOMEM, ENOSYS, EPERM, ESRCH};
+use super::signal::{self as lsig, siginfo, Frame};
 use super::sys::{self, ret};
 use crate::task;
-use crate::user;
+use crate::user::{self, SyscallRegs};
 
-const IA32_FS_BASE: u32 = 0xC000_0100;
+pub const MACHINE: &[u8] = b"x86_64";
 
-/// The FS base each CPU has loaded, to skip redundant `wrmsr`s on switch.
-static LOADED: [AtomicU64; crate::smp::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+/// `struct sigaction` carries `sa_restorer` (musl always sets it).
+pub const SIGACTION_HAS_RESTORER: bool = true;
 
-pub fn load_fs_base(v: u64) {
-    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-    if LOADED[cpu].load(Ordering::Relaxed) == v {
-        return;
-    }
-    unsafe {
-        core::arch::asm!(
-            "wrmsr",
-            in("ecx") IA32_FS_BASE,
-            in("eax") v as u32,
-            in("edx") (v >> 32) as u32,
-            options(nostack, preserves_flags),
-        );
-    }
-    LOADED[cpu].store(v, Ordering::Relaxed);
+/// `mov eax, 15 (rt_sigreturn); syscall`.
+pub const TRAMP_CODE: &[u8] = &[0xb8, 0x0f, 0x00, 0x00, 0x00, 0x0f, 0x05];
+
+// `SyscallRegs` block (see `syscall_entry`): user rsp, rip, r8, r9, rflags,
+// r10, rdx, rsi, rdi.
+const R_RSP: usize = 0;
+const R_RIP: usize = 1;
+const R_R8: usize = 2;
+const R_R9: usize = 3;
+const R_RFLAGS: usize = 4;
+const R_R10: usize = 5;
+const R_RDX: usize = 6;
+const R_RSI: usize = 7;
+const R_RDI: usize = 8;
+
+/// Syscall arguments: rdi, rsi, rdx, r10, r8, r9.
+pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
+    [a0, a1, a2, regs.word(R_R10) as usize, regs.word(R_R8) as usize, regs.word(R_R9) as usize]
 }
 
 const AT_FDCWD: usize = -100isize as usize;
 
-pub fn dispatch(nr: usize, a: [usize; 6], user_rip: usize, user_rsp: usize) -> usize {
+pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs, user_rip: usize, user_rsp: usize) -> usize {
     match nr {
         0 => ret(sys::read(a[0], a[1], a[2])),
         1 => ret(sys::write(a[0], a[1], a[2])),
@@ -42,11 +47,12 @@ pub fn dispatch(nr: usize, a: [usize; 6], user_rip: usize, user_rsp: usize) -> u
         7 => ret(sys::poll(a[0], a[1], a[2] as i32 as isize)),
         8 => ret(sys::lseek(a[0], a[1], a[2])),
         9 => ret(sys::mmap(a[0], a[1], a[2], a[3], a[4], a[5])),
-        10 => sys_result(user::sys_mprotect(a[0], a[1], a[2]), super::abi::ENOMEM),
-        11 => sys_result(user::sys_munmap(a[0], a[1]), super::abi::EINVAL),
+        10 => result(user::sys_mprotect(a[0], a[1], a[2]), ENOMEM),
+        11 => result(user::sys_munmap(a[0], a[1]), EINVAL),
         12 => user::sys_brk(a[0]),
-        13 => ret(sys::rt_sigaction(a[0], a[1], a[2])),
-        14 => ret(sys::rt_sigprocmask(a[0], a[1], a[2])),
+        13 => ret(lsig::rt_sigaction(a[0], a[1], a[2])),
+        14 => ret(lsig::rt_sigprocmask(a[0], a[1], a[2])),
+        15 => lsig::rt_sigreturn(regs),
         16 => ret(sys::ioctl(a[0], a[1], a[2])),
         19 => ret(sys::rw_vec(a[0], a[1], a[2], false)), // readv
         20 => ret(sys::rw_vec(a[0], a[1], a[2], true)),  // writev
@@ -79,18 +85,21 @@ pub fn dispatch(nr: usize, a: [usize; 6], user_rip: usize, user_rsp: usize) -> u
         88 => ret(sys::symlinkat(a[0], AT_FDCWD, a[1])),
         89 => ret(sys::readlinkat(AT_FDCWD, a[0], a[1], a[2])),
         95 => 0o022, // umask
-        96 => sys_result(user::sys_gettimeofday(a[0], a[1]), super::abi::EFAULT),
+        96 => result(user::sys_gettimeofday(a[0], a[1]), EFAULT),
         97 => ret(sys::prlimit(a[0], a[1])), // getrlimit
         102 | 104 | 107 | 108 => 0,          // getuid, getgid, geteuid, getegid
         105 | 106 | 160 => 0,                // setuid, setgid, setrlimit
-        109 => sys_result(user::sys_setpgid(a[0], a[1]), super::abi::EPERM),
+        109 => result(user::sys_setpgid(a[0], a[1]), EPERM),
         110 => task::current_ppid(),
-        111 => sys_result(user::sys_getpgid(0), super::abi::ESRCH), // getpgrp
-        112 => sys_result(user::sys_setsid(), super::abi::EPERM),
+        111 => result(user::sys_getpgid(0), ESRCH), // getpgrp
+        112 => result(user::sys_setsid(), EPERM),
         115 => 0, // getgroups: none
-        121 => sys_result(user::sys_getpgid(a[0]), super::abi::ESRCH),
-        124 => sys_result(user::sys_getsid(a[0]), super::abi::ESRCH),
-        131 => 0, // sigaltstack
+        121 => result(user::sys_getpgid(a[0]), ESRCH),
+        124 => result(user::sys_getsid(a[0]), ESRCH),
+        127 => ret(lsig::rt_sigpending(a[0])),
+        128 => ret(lsig::rt_sigtimedwait(a[0], a[1], a[2])),
+        130 => lsig::rt_sigsuspend(a[0]),
+        131 => ret(lsig::sigaltstack(a[1])),
         158 => arch_prctl(a[0], a[1]),
         200 => ret(sys::kill(a[0], a[1])), // tkill
         201 => ret(sys::time(a[0])),
@@ -107,7 +116,8 @@ pub fn dispatch(nr: usize, a: [usize; 6], user_rip: usize, user_rsp: usize) -> u
         266 => ret(sys::symlinkat(a[0], a[1], a[2])),
         267 => ret(sys::readlinkat(a[0], a[1], a[2], a[3])),
         269 | 439 => ret(sys::faccessat(a[0], a[1])), // faccessat, faccessat2
-        273 => 0,                                     // set_robust_list
+        271 => ret(sys::ppoll(a[0], a[1], a[2])),
+        273 => 0, // set_robust_list
         292 => ret(sys::dup3(a[0], a[1], false)),
         293 => ret(sys::pipe2(a[0])),
         302 => ret(sys::prlimit(a[1], a[3])),
@@ -116,8 +126,48 @@ pub fn dispatch(nr: usize, a: [usize; 6], user_rip: usize, user_rsp: usize) -> u
     }
 }
 
-fn sys_result(r: usize, generic: usize) -> usize {
-    super::abi::result(r, generic)
+/// The x86_64 `struct stat` (144 bytes).
+pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64) -> [u8; 144] {
+    let mut b = [0u8; 144];
+    let mut put = |off: usize, v: &[u8]| b[off..off + v.len()].copy_from_slice(v);
+    put(0, &dev.to_le_bytes());
+    put(8, &ino.to_le_bytes());
+    put(16, &nlink.to_le_bytes());
+    put(24, &mode.to_le_bytes());
+    // uid, gid: 0 (everything is root).
+    put(48, &size.to_le_bytes());
+    put(56, &4096u64.to_le_bytes()); // st_blksize
+    put(64, &size.div_ceil(512).to_le_bytes()); // st_blocks
+    b
+}
+
+// ---- thread pointer ---------------------------------------------------------
+
+const IA32_FS_BASE: u32 = 0xC000_0100;
+
+/// The FS base each CPU has loaded, to skip redundant `wrmsr`s on switch.
+static LOADED: [AtomicU64; crate::smp::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+
+/// The FS base is tracked in `TP` (only `arch_prctl` changes it).
+pub fn tls_read() -> Option<u64> {
+    None
+}
+
+pub fn tls_write(v: u64) {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    if LOADED[cpu].load(Ordering::Relaxed) == v {
+        return;
+    }
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") IA32_FS_BASE,
+            in("eax") v as u32,
+            in("edx") (v >> 32) as u32,
+            options(nostack, preserves_flags),
+        );
+    }
+    LOADED[cpu].store(v, Ordering::Relaxed);
 }
 
 fn arch_prctl(code: usize, addr: usize) -> usize {
@@ -130,12 +180,158 @@ fn arch_prctl(code: usize, addr: usize) -> usize {
         }
         ARCH_GET_FS => {
             let v = super::TP[task::current_id()].load(Ordering::Relaxed);
-            if user::buffer_ok(addr, 8) && user::copy_to_user(task::current_aspace(), addr, &v.to_le_bytes()) {
-                0
-            } else {
-                err(super::abi::EFAULT)
-            }
+            ret(sys::put(addr, &v.to_le_bytes()).map(|()| 0))
         }
-        _ => err(super::abi::EINVAL),
+        _ => err(EINVAL),
     }
+}
+
+// ---- FP / SSE -------------------------------------------------------------
+
+/// The FXSAVE image (x87, MXCSR, xmm0-15).
+pub const FP_BYTES: usize = 512;
+
+/// # Safety
+/// `buf` is 16-byte aligned and `FP_BYTES` long.
+pub unsafe fn fp_save(buf: *mut u8) {
+    unsafe { core::arch::asm!("fxsave64 [{}]", in(reg) buf, options(nostack, preserves_flags)) };
+}
+
+/// # Safety
+/// As [`fp_save`]; `buf` holds an image whose MXCSR is valid for this CPU.
+pub unsafe fn fp_restore(buf: *const u8) {
+    unsafe { core::arch::asm!("fxrstor64 [{}]", in(reg) buf, options(nostack, preserves_flags)) };
+}
+
+#[repr(C, align(16))]
+struct Fx([u8; FP_BYTES]);
+
+// ---- signal frame ---------------------------------------------------------
+
+/// `struct ucontext` up to and including `uc_sigmask`.
+const UC_BYTES: usize = 304;
+const UC_MCONTEXT: usize = 40;
+const UC_SIGMASK: usize = 296;
+/// `uc_mcontext` (`struct sigcontext`) word indexes.
+const MC_R8: usize = 0;
+const MC_R9: usize = 1;
+const MC_R10: usize = 2;
+const MC_R11: usize = 3;
+const MC_RDI: usize = 8;
+const MC_RSI: usize = 9;
+const MC_RDX: usize = 12;
+const MC_RAX: usize = 13;
+const MC_RCX: usize = 14;
+const MC_RSP: usize = 15;
+const MC_RIP: usize = 16;
+const MC_EFLAGS: usize = 17;
+const MC_CSGSFS: usize = 18;
+const MC_OLDMASK: usize = 21;
+const MC_FPSTATE: usize = 23;
+/// Below the interrupted stack pointer: the SysV red zone.
+const RED_ZONE: usize = 128;
+/// User-changeable RFLAGS bits (CF PF AF ZF SF TF DF OF AC); IF stays set.
+const FLAGS_USER: u64 = 0x40dd5;
+const FLAGS_IF: u64 = 0x202;
+/// Canonical user addresses end here (`sysret` to anything above faults in
+/// the kernel).
+const USER_TOP: u64 = 0x0000_8000_0000_0000;
+
+fn put_u64(b: &mut [u8], off: usize, v: u64) {
+    b[off..off + 8].copy_from_slice(&v.to_le_bytes());
+}
+
+fn get_u64(b: &[u8], off: usize) -> u64 {
+    u64::from_le_bytes(b[off..off + 8].try_into().unwrap())
+}
+
+/// Linux `rt_sigframe`: `[restorer][ucontext][siginfo]`, the FXSAVE image
+/// 64-byte aligned above it, `rsp ≡ 8 (mod 16)` at handler entry.
+pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
+    let sp = regs.word(R_RSP) as usize;
+    let fp_va = sp.checked_sub(RED_ZONE + FP_BYTES)? & !63;
+    let info_va = fp_va.checked_sub(128)? & !15;
+    let uc_va = info_va - UC_BYTES;
+    let frame_va = uc_va - 8;
+
+    let mut fx = Fx([0; FP_BYTES]);
+    unsafe { fp_save(fx.0.as_mut_ptr()) };
+
+    let mut uc = [0u8; UC_BYTES];
+    uc[24..28].copy_from_slice(&2u32.to_le_bytes()); // uc_stack.ss_flags = SS_DISABLE
+    let mut mc = [0u64; 32];
+    mc[MC_R8] = regs.word(R_R8);
+    mc[MC_R9] = regs.word(R_R9);
+    mc[MC_R10] = regs.word(R_R10);
+    mc[MC_R11] = regs.word(R_RFLAGS);
+    mc[MC_RDI] = regs.word(R_RDI);
+    mc[MC_RSI] = regs.word(R_RSI);
+    mc[MC_RDX] = regs.word(R_RDX);
+    mc[MC_RAX] = f.ret as u64;
+    mc[MC_RCX] = f.pc as u64;
+    mc[MC_RSP] = sp as u64;
+    mc[MC_RIP] = f.pc as u64;
+    mc[MC_EFLAGS] = regs.word(R_RFLAGS);
+    mc[MC_CSGSFS] = (crate::arch::gdt::user_cs() | 3) as u64;
+    mc[MC_OLDMASK] = f.mask;
+    mc[MC_FPSTATE] = fp_va as u64;
+    // rbx, rbp, r12-r15 stay 0: the handler preserves them (SysV ABI), and
+    // rt_sigreturn keeps the live ones.
+    for (i, w) in mc.iter().enumerate() {
+        put_u64(&mut uc, UC_MCONTEXT + i * 8, *w);
+    }
+    put_u64(&mut uc, UC_SIGMASK, f.mask);
+
+    sys::put(fp_va, &fx.0).ok()?;
+    sys::put(info_va, &siginfo(f.sig)).ok()?;
+    sys::put(uc_va, &uc).ok()?;
+    sys::put(frame_va, &(f.restorer as u64).to_le_bytes()).ok()?;
+
+    regs.set_word(R_RDI, f.sig as u64);
+    regs.set_word(R_RSI, info_va as u64);
+    regs.set_word(R_RDX, uc_va as u64);
+    regs.set_word(R_RSP, frame_va as u64);
+    regs.set_word(R_RIP, f.handler as u64);
+    // The ABI wants DF clear at function entry.
+    regs.set_word(R_RFLAGS, regs.word(R_RFLAGS) & !0x400);
+    Some(0)
+}
+
+/// Undo [`deliver`]: the restorer runs with `rsp` at the ucontext (the
+/// handler's `ret` popped the restorer address). Returns `(rax, mask)`.
+pub fn sigreturn(regs: &mut SyscallRegs) -> Option<(usize, u64)> {
+    let uc_va = regs.word(R_RSP) as usize;
+    let mut uc = [0u8; UC_BYTES];
+    sys::get_bytes(uc_va, &mut uc).ok()?;
+    let mc = |i: usize| get_u64(&uc, UC_MCONTEXT + i * 8);
+    let (rip, rsp) = (mc(MC_RIP), mc(MC_RSP));
+    if rip >= USER_TOP || rsp >= USER_TOP {
+        return None;
+    }
+    let fp_va = mc(MC_FPSTATE) as usize;
+    if fp_va != 0 {
+        let mut fx = Fx([0; FP_BYTES]);
+        sys::get_bytes(fp_va, &mut fx.0).ok()?;
+        // MXCSR bits this CPU rejects would #GP in fxrstor: keep the valid
+        // ones (MXCSR_MASK from a live FXSAVE; 0 means the default 0xffbf).
+        let mut live = Fx([0; FP_BYTES]);
+        unsafe { fp_save(live.0.as_mut_ptr()) };
+        let mut valid = u32::from_le_bytes(live.0[28..32].try_into().unwrap());
+        if valid == 0 {
+            valid = 0xffbf;
+        }
+        let mxcsr = u32::from_le_bytes(fx.0[24..28].try_into().unwrap()) & valid;
+        fx.0[24..28].copy_from_slice(&mxcsr.to_le_bytes());
+        unsafe { fp_restore(fx.0.as_ptr()) };
+    }
+    regs.set_word(R_R8, mc(MC_R8));
+    regs.set_word(R_R9, mc(MC_R9));
+    regs.set_word(R_R10, mc(MC_R10));
+    regs.set_word(R_RDI, mc(MC_RDI));
+    regs.set_word(R_RSI, mc(MC_RSI));
+    regs.set_word(R_RDX, mc(MC_RDX));
+    regs.set_word(R_RSP, rsp);
+    regs.set_word(R_RIP, rip);
+    regs.set_word(R_RFLAGS, (mc(MC_EFLAGS) & FLAGS_USER) | FLAGS_IF);
+    Some((mc(MC_RAX) as usize, get_u64(&uc, UC_SIGMASK)))
 }

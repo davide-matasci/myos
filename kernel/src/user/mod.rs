@@ -416,4 +416,15 @@ pub fn load_percpu_gs(cpu: usize) {
 #[cfg(target_arch = "riscv64")]
 const USER_SSTATUS: u64 = (2 << 32) | (1 << 5); // UXL=64-bit user, SPIE, SPP=0
 
+/// `sstatus` for entering U-mode. The optional Linux layer turns the FPU on
+/// for Linux tasks (rv64gc); native programs are soft-float.
+#[cfg(target_arch = "riscv64")]
+fn user_sstatus() -> u64 {
+    #[cfg(feature = "linux-compat")]
+    if crate::linux::active() {
+        return USER_SSTATUS | crate::linux::SSTATUS_FS_INITIAL;
+    }
+    USER_SSTATUS
+}
+
 const S_IFDIR: u32 = 0o040000;
