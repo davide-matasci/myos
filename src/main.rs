@@ -358,7 +358,10 @@ fn ci_qemu_timeout() -> Duration {
     if std::env::var_os("MYOS_CI_MINI").map(|v| v == "1").unwrap_or(false) {
         Duration::from_secs(240)
     } else {
-        Duration::from_secs(1800)
+        // Full boot runs the whole curated os-test list (303 tests at
+        // ~3-6 s each under TCG) and must reach 100%; 1800 s ran out on
+        // UEFI mid-list. The CI job itself allows 90 min.
+        Duration::from_secs(2700)
     }
 }
 

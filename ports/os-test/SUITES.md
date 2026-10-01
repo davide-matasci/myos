@@ -76,8 +76,7 @@ until they pass honestly (no xfails):
 - `paths/*` FHS directories (`/var`, `/run`, `/usr/share`, `/sbin`, …) and
   `/dev/{fd,stdin,stdout,stderr,full}` — not present in the image
 - `basic/stdlib/strtod` — passes on x86_64, fails on riscv64 (cause not yet
-  investigated); `basic/setjmp/siglongjmp` (basic smoke) is likewise
-  already red on riscv64
+  investigated)
 - Not buildable against newlib/libgloss yet (not in any list): pty API
   (`posix_openpt`/`grantpt`/`unlockpt`), `ppoll`, `timer_*`, `alarm`,
   `getppid`, `SA_ONSTACK`/`sigaltstack`, `siginfo_t.si_pid`, `struct rlimit`

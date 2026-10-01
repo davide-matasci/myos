@@ -181,6 +181,32 @@ patch_setjmp_h() {
 /* POSIX sigsetjmp/siglongjmp macros */' 1
     echo "patched machine/setjmp.h: include <sys/features.h>"
   fi
+  # jmp_buf must be as large as sigjmp_buf: code (os-test basic/setjmp/
+  # siglongjmp, plenty of real programs) passes a plain jmp_buf to
+  # sigsetjmp, as glibc/musl allow (there the two are the same type). With
+  # newlib's shorter jmp_buf the savemask/sigmask words landed past the end
+  # of the array, on whatever local the compiler put there (a `volatile bool`
+  # on aarch64/riscv64), so siglongjmp(env, 0) restored the mask anyway.
+  if ! grep -q 'setjmp-myos-sigjmp' "$f"; then
+    patch_edit "$f" \
+'#ifdef _JBLEN
+#ifdef _JBTYPE
+typedef	_JBTYPE jmp_buf[_JBLEN];
+#else
+typedef	int jmp_buf[_JBLEN];
+#endif
+#endif' \
+'#ifdef _JBLEN
+#include <sys/_sigset.h> /* setjmp-myos-sigjmp: jmp_buf sized like sigjmp_buf */
+#ifdef _JBTYPE
+typedef	_JBTYPE jmp_buf[_JBLEN+1+((sizeof (_JBTYPE) + sizeof (__sigset_t) - 1)
+				  /sizeof (_JBTYPE))];
+#else
+typedef	int jmp_buf[_JBLEN+1+(sizeof (__sigset_t)/sizeof (int))];
+#endif
+#endif' 1
+    echo "patched machine/setjmp.h: jmp_buf sized like sigjmp_buf"
+  fi
 }
 
 # search.h (newlib) lacks lsearch/lfind/insque/remque + struct qelem that

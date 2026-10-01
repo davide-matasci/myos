@@ -106,9 +106,10 @@ CI launcher notes:
 
 CI checks:
 
-1. Harness finished (`pass_rate=` line present for the smoke subset).
+1. Harness finished and **every curated test passed** (`pass_rate=100% (T/T)`);
+   otherwise CI fails and prints the report's failure list. A test that
+   cannot pass yet belongs in `SUITES.md` (deferred), not in the curated lists.
 2. `basic/pwd/setpwent` success (`SETPWENT-OK`).
-3. **Do not** hard-fail when `pass_rate < 80` (deferred gate).
 
 Boot-mini skips this stage (too slow for the mini window).
 
@@ -134,13 +135,13 @@ the guest (`cp -r /lib/os-test /tmp/o` then make) and is the intended target
 for a future nightly job outside the interactive boot window.
 Not wired into wait_ci yet.
 
-## Deferred 80% gate
+## Pass-rate gate
 
-The long-term goal is ≥80% pass on full `SUITES=basic` with **real**
-libc/kernel coverage — no skip-lists, XFAIL, or fake stubs that paint the
-suite green. Until that bar is honest and stable, CI only **reports**
-`pass_rate=` (for the smoke subset today) and gates on harness completion +
-the setpwent regression, not on the percentage.
+The curated full-boot set (`misc/ci-boot.tests`) is gated at **100%**: every
+listed test must pass on every arch. The long-term goal is ≥80% pass on the
+full `SUITES=basic` with **real** libc/kernel coverage — no skip-lists, XFAIL,
+or fake stubs that paint the suite green; tests are added to the curated
+lists only once they pass honestly.
 
 ## Overlay layout
 
