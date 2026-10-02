@@ -99,8 +99,8 @@ cargo test -p ps2-scancode                 # host unit tests
 - Changing a port's pin or build script changes its cache key; CI rebuilds
   it. Adding a port touches `ports/<name>/`, `Cargo.toml` features,
   `scripts/myos-c-userspace-lib.sh`, `scripts/ci-restore-or-build.sh`,
-  `.github/workflows/ci-ports.yml`, `build.rs` and `src/initramfs.rs`
-  (follow an existing port such as `ports/lua`).
+  `.github/workflows/ci-ports.yml`, `build.rs`, `src/initramfs.rs` and
+  `THIRD_PARTY_NOTICES.md` (follow an existing port such as `ports/lua`).
 
 ## Rules and conventions
 
@@ -125,26 +125,32 @@ cargo test -p ps2-scancode                 # host unit tests
 
 ## License compliance
 
-myos integrates a lot of external software. **License compliance must be
-maintained whenever you add, update or vendor anything external** (a port,
-a crate, a code snippet, a data file, firmware, a downloaded binary):
+myos's own code is `MIT OR Apache-2.0` (`LICENSE-MIT`, `LICENSE-APACHE`).
+External software keeps its own license, listed in `THIRD_PARTY_NOTICES.md`;
+the copyleft license texts are in `licenses/` (`cargo run -- iso` copies
+both into the ISO). **License compliance must be maintained whenever you
+add, update or vendor anything external** (a port, a crate, a code snippet,
+a data file, firmware, a downloaded binary):
 
 - Check the upstream license before integrating, and that it permits what
   myos does with it (building, patching, and redistributing binaries inside
   the boot images). Prefer permissive licenses; flag copyleft (GPL, LGPL,
   MPL, ...) and anything unusual to the maintainer before adding it.
-- Copyleft ports already ship in the images (e.g. git and lynx are GPL-2.0,
-  GNU make is GPL-3.0+). Distributing their binaries requires the
-  corresponding source: keep the pinned upstream source reference
-  (`versions.env`) and every myos patch in the repo, so each image is
-  reproducible from source.
+- **Update `THIRD_PARTY_NOTICES.md` in the same change** when you add,
+  bump or remove a component (re-check the upstream license on every
+  bump), and add the full text to `licenses/` for a new copyleft license.
+- Copyleft components already ship in the images (git, lynx, GNU make,
+  TinyCC, the Mozilla CA bundle; see the notices file). Distributing their
+  binaries requires the corresponding source: keep the pinned upstream
+  source reference (`versions.env`) and every myos patch in the repo, so
+  each image is reproducible from source.
 - Keep upstream copyright and license notices intact in anything copied or
   patched; never strip headers. Code copied into the repo (even a small
-  function) keeps its notice and gets a comment naming its origin and
-  license.
-- Record the license of a new port in its `ports/<name>/` notes or
-  `versions.env` comment, next to the pin.
+  function) keeps its notice, gets a comment naming its origin and
+  license, and is listed in `THIRD_PARTY_NOTICES.md`.
 - Don't copy code from sources with unknown or incompatible licenses
-  (including code of unclear origin), and don't relicense anything.
+  (including code of unclear origin), and don't relicense anything:
+  myos patches and files derived from upstream stay under the upstream
+  license, not myos's.
 - Rust crate dependencies: check their license (and their dependencies')
   when adding one.

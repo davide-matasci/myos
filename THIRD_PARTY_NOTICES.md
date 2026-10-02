@@ -58,11 +58,11 @@ Files in this repository that carry notices from upstream (kept as required):
 
 | Component | Version | License | Notes |
 |-----------|---------|---------|-------|
-| musl libc (static-PIE test binaries) | 1.2.5 | MIT | fetched by `linux-compat/build.sh` |
-| zstd (for `get-void`) | 1.5.7 | BSD-3-Clause (used under BSD; also offered under GPL-2.0) | fetched by `linux-compat/build.sh` |
+| musl libc (Linux test binaries and their `libc.so`) | 1.2.5 | MIT | fetched by `linux-compat/build.sh` |
+| zlib (linked into `get-alpine`) | see above | zlib | the `ports/zlib` build |
 | LLVM compiler-rt builtins (soft-float helpers, riscv64 / `libtf.a`) | llvmorg-19.1.7 | Apache-2.0 WITH LLVM-exception | fetched by `ports/curl/build-softfloat-riscv64.sh` and `linux-compat/build.sh` |
 | EDK2 / OVMF firmware (used on the host only to boot QEMU) | via `ovmf-prebuilt` 0.2.9 (MIT OR Apache-2.0) | BSD-2-Clause-Patent | not part of any image |
-| Void Linux packages | n/a | per package | downloaded **at run time** by `get-void` on the user's machine; nothing from Void is in the image |
+| Alpine Linux packages | n/a | per package | downloaded **at run time** by `get-alpine` on the user's machine; nothing from Alpine is in the image |
 
 ## Source code for copyleft components
 
