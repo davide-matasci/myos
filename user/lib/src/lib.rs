@@ -342,6 +342,44 @@ pub fn gettimeofday() -> Option<(i64, i64)> {
     }
 }
 
+/// Wall-clock budget for a polling loop, replacing iteration counts (which
+/// scale with syscall speed: a 400k-read loop used to last seconds, now well
+/// under one). `wait()` sleeps 1 ms, ended early by any kernel event (a netd
+/// reply landing in the channel), so the loop neither spins nor adds latency.
+pub struct Timeout {
+    end_us: i64,
+    /// Fallback when there is no clock: remaining polls.
+    polls_left: u64,
+}
+
+impl Timeout {
+    pub fn ms(ms: i64) -> Self {
+        let end_us = now_us().map(|n| n.saturating_add(ms.saturating_mul(1000))).unwrap_or(i64::MAX);
+        Self {
+            end_us,
+            polls_left: (ms.max(1) as u64).saturating_mul(1000),
+        }
+    }
+
+    pub fn expired(&self) -> bool {
+        match now_us() {
+            Some(n) => n >= self.end_us,
+            None => self.polls_left == 0,
+        }
+    }
+
+    /// Sleep briefly before the next poll (any kernel event ends it).
+    pub fn wait(&mut self) {
+        self.polls_left = self.polls_left.saturating_sub(1);
+        sleep_ns(1_000_000, true);
+    }
+}
+
+/// Wall clock in microseconds since the epoch (`None` without a clock).
+pub fn now_us() -> Option<i64> {
+    gettimeofday().map(|(s, us)| s.saturating_mul(1_000_000).saturating_add(us))
+}
+
 /// Sleep for `ns` nanoseconds (`SYS_NANOSLEEP` = 52). With `any_event` the
 /// kernel also returns early when something a poller may care about happened
 /// (console / pipe / device traffic, a child exit); callers re-poll then.

@@ -1214,13 +1214,10 @@ fn main() -> ! {
     let mut local_ports = LOCAL_PORT_BASE;
     let mut ticks: u32 = 0;
     let mut dhcp_ok = poll_dhcp(&mut iface, &mut device, &mut sockets, dhcp, &mut clock);
-    // RX interrupts available? (The ioctl fails on a poll-mode device.)
+    // RX interrupts available? (The ioctl fails on a poll-mode device.) Not
+    // announced on the console: netd starts around the `login:` prompt and a
+    // line there confuses serial-driven harnesses; `/proc/interrupts` shows it.
     let mut rx_irq = device.wait_rx(1);
-    if rx_irq {
-        write(b"netd: rx interrupts\n");
-    } else {
-        write(b"netd: rx polling\n");
-    }
 
     // Daemon poll: nic, /dev/netd requests, sockets. Bound work per tick.
     loop {
