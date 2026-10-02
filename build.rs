@@ -23,7 +23,7 @@ use std::path::PathBuf;
 fn ensure_artifact(manifest: &PathBuf, artifact: &str, script: &str) {
     println!("cargo:rerun-if-changed={}", manifest.join(script).display());
     let artifact_path = manifest.join(artifact);
-    if artifact_path.is_file() {
+    if artifact_path.exists() {
         return;
     }
     eprintln!("==> cargo: artifact missing ({artifact}); running {script}");
