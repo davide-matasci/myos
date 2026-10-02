@@ -256,8 +256,90 @@ int main(void) {
     run_prog(b"/bin/custom/ping", &[b"ping", b"10.0.2.2"]);
     // Userspace BSD sockets over /net/tcp (no socket syscall).
     run_prog(b"/bin/etc/socket_smoke", &[b"socket_smoke"]);
+    fpu_smoke();
     status_ok("smoke");
     exit();
+}
+
+/// Children keep an FP value live in a register across a long loop while
+/// siblings do the same with other values: if the kernel did not switch the
+/// FP/SIMD registers with the task, preemption would mix them up.
+fn fpu_smoke() {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        const CHILDREN: u64 = 4;
+        const ITERS: u64 = 5_000_000;
+        for k in 0..CHILDREN {
+            match fork() {
+                None => write(b"fork fail\n"),
+                Some(0) => {
+                    let base = 1000.0 * (k + 1) as f64;
+                    let ok = fp_spin(base.to_bits(), ITERS) == (base + ITERS as f64).to_bits();
+                    exit_code(if ok { 0 } else { 1 });
+                }
+                Some(_) => {}
+            }
+        }
+        let mut bad = 0;
+        for _ in 0..CHILDREN {
+            match wait_status() {
+                Some((_, 0)) => {}
+                _ => bad += 1,
+            }
+        }
+        if bad == 0 {
+            write(b"[ OK ] fpu\n");
+        } else {
+            write(b"fpu FAIL: FP registers changed across preemption\n");
+        }
+    }
+    // Native riscv64 programs are soft-float: no FP registers to switch.
+    #[cfg(target_arch = "riscv64")]
+    write(b"[ OK ] fpu (soft-float)\n");
+}
+
+/// Add 1.0 to `bits` (an f64) `n` times, keeping it in an FP register.
+#[cfg(target_arch = "x86_64")]
+fn fp_spin(bits: u64, n: u64) -> u64 {
+    let out: u64;
+    unsafe {
+        core::arch::asm!(
+            "movq xmm0, {v}",
+            "mov {t}, 0x3ff0000000000000",
+            "movq xmm1, {t}",
+            "2:",
+            "addsd xmm0, xmm1",
+            "dec {n}",
+            "jnz 2b",
+            "movq {v}, xmm0",
+            v = inout(reg) bits => out,
+            n = inout(reg) n => _,
+            t = out(reg) _,
+            options(nostack, nomem),
+        );
+    }
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+fn fp_spin(bits: u64, n: u64) -> u64 {
+    let out: u64;
+    unsafe {
+        core::arch::asm!(
+            ".arch_extension fp",
+            "fmov d0, {v}",
+            "fmov d1, #1.0",
+            "2:",
+            "fadd d0, d0, d1",
+            "subs {n}, {n}, #1",
+            "b.ne 2b",
+            "fmov {v}, d0",
+            v = inout(reg) bits => out,
+            n = inout(reg) n => _,
+            options(nostack, nomem),
+        );
+    }
+    out
 }
 
 #[panic_handler]
