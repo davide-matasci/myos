@@ -14,7 +14,7 @@ pub fn task_pgid(id: usize) -> Option<usize> {
         let tasks = TASKS.lock();
         let t = &tasks[id];
         if t.user_rip != 0 && t.state != State::Unused && t.tgid == id {
-            Some(t.pgid)
+            Some(tasks.proc(id).pgid)
         } else {
             None
         }
@@ -40,7 +40,7 @@ pub fn task_has_ctty(id: usize) -> bool {
             && t.tgid == id
             && matches!(t.state, State::Ready | State::Running | State::Blocked)
             && !t.exited
-            && t.has_ctty
+            && tasks.proc(id).has_ctty
     };
     irq_restore(flags);
     out
@@ -68,8 +68,8 @@ pub fn set_ctty() {
 ///   session leader can still call `setsid` and becomes both).
 /// - Returns the new session id (task slot) on success, or `None` (EPERM).
 pub fn setsid() -> Option<usize> {
+    let pid = current_pid();
     with_process_mut(|t| {
-        let pid = t.tgid;
         if t.sid == pid {
             return None;
         }
@@ -91,14 +91,14 @@ pub fn getpgid(pid: usize) -> Option<usize> {
     irq_off();
     let out = {
         let tasks = TASKS.lock();
-        process_of(&tasks, if pid == 0 { current_slot() } else { pid }).map(|p| tasks[p].pgid)
+        process_of(&tasks, if pid == 0 { current_slot() } else { pid }).map(|p| tasks.proc(p).pgid)
     };
     irq_restore(flags);
     out
 }
 
 /// The process `id` (a pid or a thread's tid) belongs to, if it exists.
-fn process_of(tasks: &[Task; MAX_TASKS], id: usize) -> Option<usize> {
+fn process_of(tasks: &TaskTable, id: usize) -> Option<usize> {
     (id < MAX_TASKS && task_exists(&tasks[id])).then(|| tasks[id].tgid)
 }
 
@@ -109,7 +109,7 @@ pub fn getsid(pid: usize) -> Option<usize> {
     irq_off();
     let out = {
         let tasks = TASKS.lock();
-        process_of(&tasks, if pid == 0 { current_slot() } else { pid }).map(|p| tasks[p].sid)
+        process_of(&tasks, if pid == 0 { current_slot() } else { pid }).map(|p| tasks.proc(p).sid)
     };
     irq_restore(flags);
     out
@@ -144,7 +144,7 @@ pub fn setpgid(pid: usize, pgid: usize) -> bool {
         if !task_exists(&tasks[caller]) {
             return false;
         }
-        if tasks[target].sid != tasks[caller].sid {
+        if tasks.proc(target).sid != tasks.proc(caller).sid {
             return false;
         }
         if target != caller && tasks[target].ppid != caller {
@@ -155,22 +155,26 @@ pub fn setpgid(pid: usize, pgid: usize) -> bool {
         if new_pgid >= MAX_TASKS {
             return false;
         }
-        if new_pgid == tasks[target].pgid {
+        if new_pgid == tasks.proc(target).pgid {
             return true; // no-op
         }
         // Session leader cannot move to a different process group.
-        if tasks[target].sid == target {
+        if tasks.proc(target).sid == target {
             return false;
         }
-        let same_sid = tasks[target].sid;
+        let same_sid = tasks.proc(target).sid;
         let allowed = new_pgid == target
-            || tasks.iter().enumerate().any(|(i, t)| {
-                task_exists(t) && t.tgid == i && t.sid == same_sid && t.pgid == new_pgid
+            || (0..MAX_TASKS).any(|i| {
+                task_exists(&tasks[i])
+                    && tasks[i].tgid == i
+                    && tasks
+                        .proc_opt(i)
+                        .is_some_and(|p| p.sid == same_sid && p.pgid == new_pgid)
             });
         if !allowed {
             return false;
         }
-        tasks[target].pgid = new_pgid;
+        tasks.proc_mut(target).pgid = new_pgid;
         true
     })();
 

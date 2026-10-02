@@ -412,6 +412,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 let mut tmp = [0u8; FILE_IO_TMP];
                 let want = len.min(tmp.len());
                 let n = crate::fs::read(&node, pos, &mut tmp[..want]);
+                let aspace = current_aspace();
                 return with_process_mut(|t| {
                     let FdEntry::File {
                         pos: p,
@@ -432,7 +433,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                         ) {
                             return usize::MAX;
                         }
-                        if !user::copy_to_user(t.aspace, buf, &tmp[..n]) {
+                        if !user::copy_to_user(aspace, buf, &tmp[..n]) {
                             return usize::MAX;
                         }
                     }

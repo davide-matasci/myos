@@ -323,7 +323,7 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
 
 /// Make task `slot` runnable if it is Blocked. Returns the CPU to kick, if
 /// any. Caller holds TASKS.
-fn wake_locked(tasks: &mut [Task; MAX_TASKS], slot: usize, kicks: &mut u64) {
+fn wake_locked(tasks: &mut TaskTable, slot: usize, kicks: &mut u64) {
     let t = &mut tasks[slot];
     if t.state != State::Blocked {
         return;
@@ -431,7 +431,7 @@ pub fn wake_any() {
 }
 
 /// Wake one task whatever it waits for (a signal arrived). Caller holds TASKS.
-pub(super) fn wake_task_locked(tasks: &mut [Task; MAX_TASKS], slot: usize) -> u64 {
+pub(super) fn wake_task_locked(tasks: &mut TaskTable, slot: usize) -> u64 {
     let mut kicks = 0u64;
     if slot < MAX_TASKS {
         WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
@@ -623,8 +623,6 @@ fn ap_idle_bringup() {
         t.sp = sp_now;
         t.entry = Some(ap_idle_body);
         t.kernel_stack_top = top;
-        t.sid = slot;
-        t.pgid = slot;
         t.affinity = Some(logical);
     }
     drop(tasks);
