@@ -13,7 +13,7 @@ mod registry;
 
 use crate::console;
 use alloc::alloc::{Layout, alloc, dealloc};
-use myos_abi::{ABI_VERSION, FsBind, KernelApi, ModuleBlkOps, ModuleChrOps};
+use myos_abi::{ABI_VERSION, FramebufferInfo, FsBind, KernelApi, ModuleBlkOps, ModuleChrOps, ModuleConsoleOps};
 
 static API: KernelApi = KernelApi {
     abi_version: ABI_VERSION,
@@ -49,11 +49,13 @@ static API: KernelApi = KernelApi {
     monotonic_ns: api_monotonic_ns,
     blk_register: api_blk_register,
     pci_find_class: api_pci_find_class,
+    framebuffer_info: api_framebuffer_info,
+    console_register: api_console_register,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
 /// device, or with their own wording); the loader announces the others.
-const SELF_REPORTING: &[&str] = &["virtio_blk", "nvme", "virtio_net", "netfs", "pci_enum", "acpi"];
+const SELF_REPORTING: &[&str] = &["console", "virtio_blk", "nvme", "virtio_net", "netfs", "pci_enum", "acpi"];
 
 /// Load the modules Limine placed in RAM (`module_path` entries of
 /// limine.conf, in order). Each is named after its path's last component.
@@ -604,4 +606,25 @@ unsafe extern "C" fn api_pci_find_class(
         }
         None => -1,
     }
+}
+
+unsafe extern "C" fn api_framebuffer_info(out: *mut FramebufferInfo) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    match console::framebuffer_info() {
+        Some(info) => {
+            unsafe { *out = info };
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_console_register(ops: *const ModuleConsoleOps) -> i32 {
+    if ops.is_null() {
+        return -1;
+    }
+    let ops = unsafe { *ops };
+    if console::register(ops) { 0 } else { -1 }
 }

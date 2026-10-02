@@ -2,7 +2,6 @@
 
 mod interrupts;
 pub use interrupts::{enable_ipi, ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
-use super::virtio_mmio::keyboard;
 pub mod paging;
 pub mod pci;
 mod serial;
@@ -27,18 +26,6 @@ pub fn serial_read_byte() -> Option<u8> {
 }
 
 pub fn serial_flush_rx() {}
-
-pub fn keyboard_init() {
-    keyboard::init();
-}
-
-pub fn keyboard_present() -> bool {
-    keyboard::present()
-}
-
-pub fn keyboard_poll_byte() -> Option<u8> {
-    keyboard::poll_byte()
-}
 
 pub const QEMU_SUCCESS: u32 = 0x10;
 pub const QEMU_FAILURE: u32 = 0x11;

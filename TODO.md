@@ -1,7 +1,41 @@
 # TODO
 
-Performance follow-ups left open after the blocking scheduler (#187) and
-virtio-net RX interrupts. Roughly in priority order.
+Follow-ups left open after the blocking scheduler (#187), virtio-net RX
+interrupts (#188) and the modular kernel (arch/ split, process blocks, every
+driver a module). Roughly in priority order.
+
+## PCI interrupt routing from firmware tables (real hardware)
+
+`pci_irq_setup` hardcodes QEMU `virt`'s wiring: INTx → GIC SPI 3 + (slot +
+pin − 1) mod 4 on aarch64, PLIC source 32 + the same swizzle on riscv64, and
+the GIC/PLIC base addresses. A real board publishes this in the device tree:
+walk the PCIe host bridge's `interrupt-map` / `interrupt-map-mask` for the
+device's bus/slot/pin (Limine already hands us the DTB) and take controller
+bases from the same tree. On x86_64 MSI-X is the primary path and portable;
+INTx would need `_PRT` from the DSDT plus an IOAPIC driver, neither of which
+exists (the ACPI module only scans for `_S5`). Interrupt remapping (IOMMU) and
+x2APIC destinations above 255 CPUs are also unhandled. A wrong mapping today
+degrades to netd's 1 s `NET_WAIT_RX` backstop rather than breaking.
+
+## Module follow-ups
+
+- **Device rescan / hotplug**: drivers probe once in `module_init`. Writing
+  `rescan` to `/proc/pci` used to re-probe the in-kernel NVMe driver; now it
+  only refreshes the listing. A `rescan` hook in `ModuleBlkOps` (or a generic
+  module op the pci_enum writer calls) would restore that.
+- **`rmmod`**: `module_exit` exists but nothing calls it; unloading needs
+  unregister paths for blk/chr/fs/console ops and a check that no fd or
+  mount still uses them.
+- **Per-process locks**: the `Process` blocks (`task/process.rs`) hang off
+  the one `TASKS` lock. Giving each its own lock (TASKS → process ordering)
+  would let fd/mmap syscalls of different processes stop contending.
+- **virtio-mmio discovery from the DTB**: the `virtio_blk` and `console`
+  modules scan QEMU `virt`'s fixed MMIO window; real boards need the
+  `virtio,mmio` nodes from the device tree.
+- **Module dependencies**: the boot order in `BOOT_MODULES` is the only
+  ordering (console first, block drivers before filesystems). A module could
+  declare what it needs (`blk_count() > 0`, another module's name) so
+  `insmod` can refuse or defer.
 
 ## Tickless deadlines on aarch64 / riscv64
 

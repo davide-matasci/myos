@@ -6,7 +6,7 @@
 
 use core::fmt;
 
-use limine::framebuffer::Framebuffer;
+use myos_abi::FramebufferInfo;
 
 use crate::font;
 
@@ -106,7 +106,7 @@ pub struct FrameBufferWriter<'a> {
     /// this framebuffer: otherwise (oversized GOP, mirror=off) the painted
     /// text freezes at boot status lines while the console row/col keeps
     /// advancing on serial, so a drawn cursor would float over stale pixels.
-    pub(crate) cursor_active: bool,
+    pub cursor_active: bool,
     /// Inclusive scroll-region top row (0-based).
     scroll_top: usize,
     /// Inclusive scroll-region bottom row (0-based); `usize::MAX` = last row.
@@ -114,21 +114,24 @@ pub struct FrameBufferWriter<'a> {
 }
 
 impl FrameBufferWriter<'static> {
-    pub fn from_limine(fb: &'static Framebuffer) -> Self {
-        let bpp = (fb.bpp as usize).max(8);
+    /// A writer over the framebuffer the kernel describes (Limine's, already
+    /// mapped at `info.addr`).
+    pub fn from_info(info: &FramebufferInfo) -> Self {
+        let bpp = (info.bpp as usize).max(8);
         let bytes_per_pixel = (bpp + 7) / 8;
+        let len = (info.pitch as usize) * (info.height as usize);
         Self {
-            buffer: unsafe { fb.as_slice_mut() },
-            width: fb.width as usize,
-            height: fb.height as usize,
-            pitch: fb.pitch as usize,
+            buffer: unsafe { core::slice::from_raw_parts_mut(info.addr as *mut u8, len) },
+            width: info.width as usize,
+            height: info.height as usize,
+            pitch: info.pitch as usize,
             bytes_per_pixel,
-            r_shift: fb.red_mask_shift,
-            g_shift: fb.green_mask_shift,
-            b_shift: fb.blue_mask_shift,
-            r_size: fb.red_mask_size.max(1),
-            g_size: fb.green_mask_size.max(1),
-            b_size: fb.blue_mask_size.max(1),
+            r_shift: info.r_shift,
+            g_shift: info.g_shift,
+            b_shift: info.b_shift,
+            r_size: info.r_size.max(1),
+            g_size: info.g_size.max(1),
+            b_size: info.b_size.max(1),
             col: 0,
             row: 0,
             fg: TEXT,

@@ -265,6 +265,9 @@ kernel_inputs_diag() {
 # curl fail. Canonical names plus coreutils-* pack aliases (ci.yml glob).
 # pty + urandom: same class for full-boot wait_ci (schedule / workflow_dispatch).
 HELLO_OK_ELFS=(
+  target/console-x86_64-unknown-none
+  target/console-aarch64-unknown-none-softfloat
+  target/console-riscv64imac-unknown-none-elf
   target/stubfs-x86_64-unknown-none
   target/stubfs-aarch64-unknown-none-softfloat
   target/stubfs-riscv64imac-unknown-none-elf

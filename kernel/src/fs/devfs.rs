@@ -321,7 +321,7 @@ pub fn tty_ioctl(request: usize) -> IoctlResult {
     match request {
         // TCGETS/TCSETS and KDSKMAP/KDGKMAP are handled in `task::fd_ioctl`.
         TCGETS | TCSETS | TCFLSH | TIOCSWINSZ => IoctlResult::Ok,
-        x if x == crate::keymap::KDSKMAP || x == crate::keymap::KDGKMAP => IoctlResult::Ok,
+        x if x == crate::console::KDSKMAP || x == crate::console::KDGKMAP => IoctlResult::Ok,
         TIOCGWINSZ => {
             let (row, col) = crate::console::winsize();
             IoctlResult::Winsize { row, col }

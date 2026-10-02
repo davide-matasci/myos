@@ -3,7 +3,6 @@
 pub mod gdt;
 mod interrupts;
 pub use interrupts::{ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
-mod keyboard;
 mod paging;
 pub mod pci;
 mod serial;
@@ -29,18 +28,6 @@ pub fn serial_read_byte() -> Option<u8> {
 
 pub fn serial_flush_rx() {
     serial::flush_rx();
-}
-
-pub fn keyboard_init() {
-    keyboard::init();
-}
-
-pub fn keyboard_present() -> bool {
-    keyboard::present()
-}
-
-pub fn keyboard_poll_byte() -> Option<u8> {
-    keyboard::poll_byte()
 }
 
 pub const QEMU_SUCCESS: u32 = 0x10;

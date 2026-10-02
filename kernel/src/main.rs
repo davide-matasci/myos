@@ -8,14 +8,10 @@ mod arch;
 mod blk;
 mod console;
 mod exception;
-mod font;
-mod framebuffer;
 mod fs;
 mod heap;
 mod input;
 mod irq;
-mod kbd;
-mod keymap;
 mod limine_boot;
 /// Optional Linux syscall compatibility layer (`--features linux_compat`).
 #[cfg(feature = "linux-compat")]
@@ -90,9 +86,19 @@ pub(crate) fn kernel_main() -> ! {
         if let Some(fb) = resp.framebuffers().first() {
             fb_w = fb.width as usize;
             fb_h = fb.height as usize;
-            let mut writer = framebuffer::FrameBufferWriter::from_limine(fb);
-            writer.clear();
-            console::init_fb(writer);
+            console::set_framebuffer(myos_abi::FramebufferInfo {
+                addr: fb.address() as u64,
+                width: fb.width,
+                height: fb.height,
+                pitch: fb.pitch,
+                bpp: fb.bpp,
+                r_shift: fb.red_mask_shift,
+                g_shift: fb.green_mask_shift,
+                b_shift: fb.blue_mask_shift,
+                r_size: fb.red_mask_size,
+                g_size: fb.green_mask_size,
+                b_size: fb.blue_mask_size,
+            });
         }
     }
 
@@ -147,9 +153,9 @@ pub(crate) fn kernel_main() -> ! {
     rng::init();
     console::status_ok("urandom");
     // Every driver and filesystem is a module: Limine placed them in RAM in
-    // the `module_path` order of limine.conf (stubfs, hello, pci_enum, acpi,
-    // virtio_blk, nvme, virtio_net, netfs, fat, ext2), and they load in that
-    // order. More can follow at runtime with `insmod` from /lib/modules.
+    // the `module_path` order of limine.conf (console, stubfs, hello,
+    // pci_enum, acpi, virtio_blk, nvme, virtio_net, netfs, fat, ext2), and
+    // they load in that order. More can follow at runtime with `insmod` from /lib/modules.
     modules::load_limine_modules();
     // /msg lives on bootfs; /ok mounts /dev/vda as fat at /fat.
     let _ = fs::register("bootfs", "msg", MSG_OK);

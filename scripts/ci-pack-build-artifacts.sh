@@ -11,6 +11,7 @@ files=(
   "${kernel_members[@]}"
   target/debug/build/myos-*/out
   target/hello-*
+  target/console-*
   target/stubfs-*
   target/pci_enum-*
   target/acpi-*
@@ -106,6 +107,9 @@ required=(
   target/uefi.img
   target/aarch64-unknown-none-softfloat/debug/kernel
   target/riscv64imac-unknown-none-elf/debug/kernel
+  target/console-x86_64-unknown-none
+  target/console-aarch64-unknown-none-softfloat
+  target/console-riscv64imac-unknown-none-elf
   target/stubfs-x86_64-unknown-none
   target/stubfs-aarch64-unknown-none-softfloat
   target/stubfs-riscv64imac-unknown-none-elf

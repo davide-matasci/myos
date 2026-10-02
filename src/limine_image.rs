@@ -18,6 +18,7 @@ pub const LIMINE_TARBALL_SHA256: &str =
 /// embeds none. Each is shipped as `boot/modules/<name>` on the ESP / ISO,
 /// and again under `/lib/modules/<name>` in the initramfs for `insmod`.
 pub const BOOT_MODULES: &[&str] = &[
+    "console",
     "stubfs",
     "hello",
     "pci_enum",

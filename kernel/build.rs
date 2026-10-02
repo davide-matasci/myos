@@ -62,6 +62,7 @@ fn main() {
     // image builders (Limine loads them from `boot/modules/` at boot) and for
     // the initramfs (`/lib/modules`, `insmod`). The kernel embeds none of them.
     for (dir, bin) in [
+        ("console", "console"),
         ("hello", "hello"),
         ("stubfs", "stubfs"),
         ("pci_enum", "pci_enum"),

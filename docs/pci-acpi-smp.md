@@ -4,7 +4,9 @@
 
 | Component | Location | Why |
 |-----------|----------|-----|
-| PCI config access (`cfg_read32` / BAR map) | `kernel/src/pci.rs` + `arch/*/pci.rs` | Needed early for NVMe / virtio; module ABI already exposes it |
+| PCI config access (`cfg_read32` / BAR map / `pci_find` / `pci_find_class`) | `kernel/src/pci.rs` + `arch/*/pci.rs` | The module ABI exposes it; every PCI driver is a module |
+| virtio-blk, NVMe | `modules/virtio_blk`, `modules/nvme` | Register `/dev/<name>` through `blk_register`; loaded before the filesystem modules |
+| Framebuffer text, keyboards, keymap | `modules/console` | Serial stays in the kernel; the module registers screen + keyboard ops (`console_register`) |
 | Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Discovery + on-demand rescan via write; talks only through `KernelApi` |
 | ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP |
 | Limine RSDP / MP requests | `kernel/src/limine_boot.rs` | Boot protocol |
@@ -12,7 +14,9 @@
 | Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, shared ready set |
 | Proc exporters | `kernel/src/fs/procfs.rs` | Built-ins: `mounts`, `cpuinfo`; dynamic via `proc_register` ABI |
 
-ABI version: **11** (`pci_irq_enable`, `wake_any`, `wait_seq`, `block_until`, `monotonic_ns` for device interrupts and blocking waits; 10: `proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
+ABI version: **12** (`blk_register`, `pci_find_class`, `framebuffer_info`, `console_register`: block devices and the console are modules; 11: `pci_irq_enable`, `wake_any`, `wait_seq`, `block_until`, `monotonic_ns` for device interrupts and blocking waits; 10: `proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
+
+Boot modules come from Limine's module list (`limine.conf` `module_path` entries, `src/limine_image.rs` `BOOT_MODULES`, in load order); `insmod <path>` (`SYS_INSMOD`) loads more at runtime and `/proc/modules` lists them.
 
 ## Device interrupts
 
@@ -196,7 +200,7 @@ AP stacks are too small for nested timer/IPI frames).
 
 - `/proc/mounts` — existing
 - `/proc/cpuinfo` — online CPUs, hw ids, schedule counts
-- `/proc/pci` — full BDF list from `pci_enum` (hex IDs + class/subclass names and a small QEMU/virt device table). Write `rescan` to re-enumerate and refresh the node (gone devices disappear). Also re-probes in-kernel NVMe; virtio-net stays boot-bound. No ACPI/QEMU hotplug IRQ yet.
+- `/proc/pci` — full BDF list from `pci_enum` (hex IDs + class/subclass names and a small QEMU/virt device table). Write `rescan` to re-enumerate and refresh the node (gone devices disappear). Drivers (virtio-blk, NVMe, virtio-net) probe once at module load; a hot-added disk needs a rescan hook in the module (see `TODO.md`). No ACPI/QEMU hotplug IRQ yet.
 - `/proc/acpi/info`, `tables`, `s5` — from `acpi` module (honest stubs if no RSDP)
 
 ## Out of scope
