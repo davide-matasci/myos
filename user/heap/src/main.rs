@@ -257,8 +257,79 @@ int main(void) {
     // Userspace BSD sockets over /net/tcp (no socket syscall).
     run_prog(b"/bin/etc/socket_smoke", &[b"socket_smoke"]);
     fpu_smoke();
+    thread_smoke();
     status_ok("smoke");
     exit();
+}
+
+/// Stacks for the threads of [`thread_smoke`].
+#[repr(C, align(16))]
+struct Stack([u8; 16 * 1024]);
+static mut STACKS: [Stack; 5] = [const { Stack([0; 16 * 1024]) }; 5];
+
+fn stack_top(i: usize) -> usize {
+    unsafe { core::ptr::addr_of!(STACKS[i]) as usize + core::mem::size_of::<Stack>() }
+}
+
+/// Threads share the process's memory: workers bump a shared counter and
+/// report through wait/wake on an address. Then a forked child exits while
+/// one of its threads sleeps on an address and another spins in user mode
+/// (never making a syscall): both must end with it.
+fn thread_smoke() {
+    use core::sync::atomic::{AtomicU32, Ordering::SeqCst};
+    use myos_user::thread;
+    const WORKERS: usize = 3;
+    const ROUNDS: u32 = 1000;
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    static DONE: AtomicU32 = AtomicU32::new(0);
+    static NEVER: AtomicU32 = AtomicU32::new(0);
+    extern "C" fn worker(_: usize) -> ! {
+        for _ in 0..ROUNDS {
+            COUNT.fetch_add(1, SeqCst);
+            core::hint::spin_loop();
+        }
+        DONE.fetch_add(1, SeqCst);
+        thread::wake(&DONE, 1);
+        thread::exit(0);
+    }
+    extern "C" fn sleeper(_: usize) -> ! {
+        loop {
+            thread::wait(&NEVER, 0, 0);
+        }
+    }
+    extern "C" fn spinner(_: usize) -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+    let pid = myos_user::getpid();
+    let mut ok = thread::gettid() == pid;
+    for i in 0..WORKERS {
+        ok &= thread::spawn(worker, stack_top(i), i, 0).is_some_and(|tid| tid != pid);
+    }
+    while ok {
+        let done = DONE.load(SeqCst);
+        if done as usize == WORKERS {
+            break;
+        }
+        ok &= thread::wait(&DONE, done, 0) != thread::Wait::Fault;
+    }
+    ok &= COUNT.load(SeqCst) == WORKERS as u32 * ROUNDS;
+    match fork() {
+        Some(0) => {
+            let _ = thread::spawn(sleeper, stack_top(WORKERS), 0, 0);
+            let _ = thread::spawn(spinner, stack_top(WORKERS + 1), 0, 0);
+            myos_user::sleep_ns(50_000_000, false);
+            exit_code(7);
+        }
+        Some(_) => ok &= matches!(wait_status(), Some((_, 7))),
+        None => ok = false,
+    }
+    if ok {
+        write(b"[ OK ] threads\n");
+    } else {
+        write(b"threads FAIL\n");
+    }
 }
 
 /// Children keep an FP value live in a register across a long loop while

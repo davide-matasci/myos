@@ -92,13 +92,14 @@ Linux ones. It is killed by its own fault; the kernel stays up.
 
 | Where | What |
 |-------|------|
-| `kernel/src/linux/mod.rs` | per-task state (personality, pending flag, thread pointer), the hooks the core calls, the auxv for new Linux images |
-| `kernel/src/linux/x86_64.rs` | x86_64 syscall numbers, `struct stat`, signal frame, FXSAVE state, `arch_prctl` / FS base |
-| `kernel/src/linux/aarch64.rs` | signal frame (`fpsimd_context`), `tpidr_el0` |
+| `kernel/src/linux/mod.rs` | per-task state (personality, pending flag), the hooks the core calls, the auxv for new Linux images |
+| `kernel/src/linux/x86_64.rs` | x86_64 syscall numbers, `struct stat`, signal frame, FXSAVE state, `arch_prctl` (the core's thread pointer) |
+| `kernel/src/linux/aarch64.rs` | signal frame (`fpsimd_context`) |
 | `kernel/src/linux/riscv64.rs` | signal frame, the FPU enable for Linux tasks |
 | `kernel/src/linux/generic.rs` | the `asm-generic` syscall numbers and `struct stat` aarch64 and riscv64 share |
 | `kernel/src/linux/sys.rs` | the handlers: decode Linux arguments, call the native implementation, return `-errno` |
 | `kernel/src/linux/signal.rs` | `rt_sigaction` & co., handler delivery, `rt_sigreturn`, the sigreturn trampoline page |
+| `kernel/src/linux/thread.rs` | `clone` (threads and the fork form), `futex`, `set_tid_address`, thread `exit` |
 | `kernel/src/linux/abi.rs` | errno values, signal-number and sigset translation, `dirent64` layout |
 | `kernel/src/linux/files.rs` | paths of the fds a Linux process opened (`fstat`, `getdents64`, `fchdir`, `*at`) |
 | `linux-compat/launcher.c` | the `linux` command |
@@ -110,11 +111,10 @@ Hooks in the core, each behind `#[cfg(feature = "linux-compat")]`:
 
 - `syscall_dispatch`: a Linux-personality task's syscalls go to
   `linux::dispatch` (then the usual signal handling at syscall exit);
-- spawn / fork / exec (`task/lifecycle.rs`): reset, copy, or apply the
-  personality;
-- context switch (`task/sched.rs`): save and restore a Linux task's thread
-  pointer (FP/SIMD registers are switched for every user task by the core,
-  `task/fpu.rs`);
+- spawn / fork / thread creation / exec (`task/lifecycle.rs`,
+  `task/thread.rs`): reset, copy, or apply the personality (the thread
+  pointer and the FP/SIMD registers are switched for every user task by the
+  core, `task/tp.rs` and `task/fpu.rs`);
 - signal delivery (`signal.rs`): a caught signal of a Linux task gets a
   Linux `rt_sigframe` instead of the native frame;
 - riscv64 user entry (`user/mod.rs`, `user_sstatus`): Linux tasks run with
@@ -142,11 +142,23 @@ no-ops), `getcwd`, `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`,
 Memory: `brk`, `mmap` (anonymous, and private file mappings), `munmap`,
 `mprotect`, `madvise` (no-op). Files also: `pread64`.
 
-Processes: `fork`, `vfork` (as fork), `clone` (fork form only), `execve`,
-`exit`, `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`, `getpid`, `gettid`,
-`getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`, `setsid`, `uname`,
-`arch_prctl`, `set_tid_address`, `set_robust_list`, `prlimit64`, `getrlimit`,
-`get/set uid/gid` (everything is root), `sched_yield`.
+Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve`,
+`exit` (the thread), `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`,
+`getpid`, `gettid`, `getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`,
+`setsid`, `uname`, `arch_prctl`, `set_tid_address`, `set_robust_list`,
+`prlimit64`, `getrlimit`, `get/set uid/gid` (everything is root),
+`sched_yield`.
+
+Threads: `clone` with `CLONE_THREAD` (and `CLONE_VM`, `CLONE_FS`,
+`CLONE_FILES`, `CLONE_SIGHAND`; `CLONE_SETTLS`, `CLONE_PARENT_SETTID`,
+`CLONE_CHILD_SETTID`, `CLONE_CHILD_CLEARTID`) starts a native thread
+(`docs/threads.md`) that resumes like a forked child on its new stack;
+`futex` `WAIT`/`WAKE` (and the `_BITSET` forms, the bitset taken as "all";
+`REQUEUE`/`CMP_REQUEUE` as a wake of every waiter) maps onto the core's
+`wait_addr`/`wake_addr`; a thread's `exit` clears and wakes its
+`CLEAR_TID` word, which is what `pthread_join` waits on. `clone` without
+`CLONE_THREAD` is only the fork form (`CLONE_VM` alone, as `posix_spawn`
+uses it, is not supported).
 
 Signals: `rt_sigaction` (handlers with `SA_SIGINFO`, `SA_RESTART`,
 `SA_NODEFER`, `SA_RESETHAND`, `sa_mask`), `rt_sigreturn`, `rt_sigprocmask`,
@@ -217,10 +229,14 @@ the kernel does not keep a per-task copy at syscall entry.
   which needs a redesign of the user address-space layout; so e.g. Alpine's
   prebuilt `busybox.static` does not load).
 - Signals act at syscall exit, as for native programs: a task looping in
-  user mode is not interrupted until its next syscall. No alternate signal
-  stacks, no real-time signal queueing.
-- No threads (`clone` with `CLONE_VM`), no shared file mappings
-  (`MAP_SHARED`), no sockets, no `O_CLOEXEC` / `O_NONBLOCK` semantics.
+  user mode is not interrupted until its next syscall (only `SIGKILL` acts
+  on the interrupt return). No alternate signal stacks, no real-time signal
+  queueing.
+- Threads run on their process's home CPU, interleaved, not in parallel
+  (`docs/threads.md`).
+- No `posix_spawn` (`clone` with `CLONE_VM` but not `CLONE_THREAD`), no
+  shared file mappings (`MAP_SHARED`), no sockets, no `O_CLOEXEC` /
+  `O_NONBLOCK` semantics.
 - The native limits apply:
   - exec: up to 1024 arguments and 1024 environment strings, at most
     128 KiB together; a program file of at most 16 MiB from a writable
@@ -242,7 +258,9 @@ the kernel does not keep a per-task copy at syscall entry.
 `linux /bin/linux/linux-dyn` on every arch when the host binary was built
 with `--features linux_compat`, and expects `LINUX-SMOKE OK` (files,
 directories, mmap, fork/execve/wait4, pipes, Linux signal numbers, handlers,
-masks, `sigwait`, `EINTR` and `SA_RESTART`) and `LINUX-DYN OK` (a call,
+masks, `sigwait`, `EINTR` and `SA_RESTART`, pthreads: a mutex, a condition
+variable, thread-local storage, thread ids, join, and `exit` from a thread
+ending the process) and `LINUX-DYN OK` (a call,
 shared data, a relocated function pointer and a thread-local in
 `libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`).
 The test is plain musl C, so it can also be run on a Linux host for

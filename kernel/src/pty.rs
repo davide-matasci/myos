@@ -163,7 +163,7 @@ pub fn drop_slave(id: usize) {
 /// TIOCSCTTY). Only the first claim wins, matching "session leader" rules.
 pub fn claim_session(id: usize) {
     let Some(p) = pty_at(id) else { return };
-    let me = crate::task::current_id();
+    let me = crate::task::current_pid();
     let _ = p
         .session
         .compare_exchange(usize::MAX, me, Ordering::SeqCst, Ordering::SeqCst);

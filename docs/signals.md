@@ -10,7 +10,7 @@ terminates with a `WIFSIGNALED` wait status, and blocking syscalls return
 | Where | What |
 |-------|------|
 | `kernel/src/signal.rs` | policy: signal numbers, default actions, delivery, `sigreturn`, `sigaction`/`sigprocmask`/`sigsuspend`/`sigwait` |
-| `kernel/src/task/signals.rs` | per-task state: pending / ignored / blocked bits, the caught-handler table, the libc trampoline address |
+| `kernel/src/task/signals.rs` | per-thread pending / blocked bits; per-process ignored bits, caught-handler table and libc trampoline address |
 | `toolchain/newlib/libgloss/myos/signal.c` | `__myos_sigtramp` (per arch), `sigaction`, `signal`, `sigpending`, `sigsuspend`, `sigwait`, `pthread_sigmask` |
 | `toolchain/newlib/patch.sh` (`patch_signal_h`) | newlib `<sys/signal.h>`: `sa_sigaction`, `SA_RESTART`, `SA_NODEFER`, `SA_RESETHAND`, `SA_SIGINFO` |
 | `toolchain/newlib/build.sh` | `-DSIGNAL_PROVIDED`: newlib's userspace `signal()`/`raise()` emulation is off; `raise` is `kill(getpid(), sig)` |
@@ -31,11 +31,18 @@ signal always stays pending (as on Linux).
 `fork` copies handlers and the blocked mask; `exec` resets caught signals to
 `SIG_DFL` and keeps ignored ones, the blocked mask and pending signals.
 
+With threads (`docs/threads.md`), dispositions belong to the process and
+the blocked mask and pending set to each thread. A signal sent to a pid goes
+to the process's leader thread, one sent to a tid to that thread; a signal
+that terminates ends the whole process.
+
 ## Delivery
 
 Signals act on the way out of a syscall (`signal::on_syscall_exit`), as the
 default actions always did. A process looping in user mode without syscalls
-is not interrupted until its next syscall.
+is not interrupted until its next syscall, except by `SIGKILL`, which also
+acts when an interrupt preempts it in user mode
+(`signal::on_user_preempted`).
 
 For a caught signal the kernel:
 
@@ -92,8 +99,8 @@ the old libgloss SIGCHLD polling, kept for binaries built before this.
 
 ## Not yet
 
-- Asynchronous delivery to a process that makes no syscalls (on the
-  interrupt-return path).
+- Asynchronous delivery of signals other than `SIGKILL` to a process that
+  makes no syscalls (on the interrupt-return path).
 - `sigaltstack` / `SA_ONSTACK`, `sigqueue` / real-time signals, `alarm` /
   timers, `ppoll`.
 - Stop/continue and job control.

@@ -121,7 +121,7 @@ Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned
 Kernel linked in higher half (`0xffffffff80000000` on x86_64). Limine provides HHDM; usable memory = `phys + HHDM`. Page tables allocated from bump allocator after heap. AArch64 device block (UART, GIC, virtio-mmio) identity-mapped via `TTBR0`.
 
 ### Scheduling
-Round-robin kernel threads + user tasks across all online CPUs (Limine MP bring-up on x86_64, AArch64 and RISC-V; see `docs/pci-acpi-smp.md`). `task::yield_now()` cooperative; timer IRQ calls `task::schedule()` after EOI → preemptive even in user mode. Blocking waits (`read` on a tty/pipe/pty, `wait`, `nanosleep`, `select`/`poll`) put the task in a `Blocked` state and are woken by the producer (`task::wake`), a deadline or a signal; idle CPUs halt (`hlt`/`wfi`) until an interrupt or a targeted reschedule IPI. `/proc/cpuinfo` shows per-CPU schedule and idle-halt counts. x86_64: xAPIC timer, TSC calibrated against the PIT for the monotonic clock. AArch64: GICv2 generic timer (PPI 30), `CNTVCT`. RISC-V: `stimecmp`, `time` CSR.
+Round-robin kernel threads + user tasks across all online CPUs; a user process can run several threads, which share its address space and run on its home CPU (`docs/threads.md`) (Limine MP bring-up on x86_64, AArch64 and RISC-V; see `docs/pci-acpi-smp.md`). `task::yield_now()` cooperative; timer IRQ calls `task::schedule()` after EOI → preemptive even in user mode. Blocking waits (`read` on a tty/pipe/pty, `wait`, `nanosleep`, `select`/`poll`) put the task in a `Blocked` state and are woken by the producer (`task::wake`), a deadline or a signal; idle CPUs halt (`hlt`/`wfi`) until an interrupt or a targeted reschedule IPI. `/proc/cpuinfo` shows per-CPU schedule and idle-halt counts. x86_64: xAPIC timer, TSC calibrated against the PIT for the monotonic clock. AArch64: GICv2 generic timer (PPI 30), `CNTVCT`. RISC-V: `stimecmp`, `time` CSR.
 
 ### Console & Input
 Dual console: serial + Limine framebuffer (mirrored). Stdin (fd 0) merges PS/2 keyboard (x86, 8042 probe) and serial simultaneously.
@@ -278,7 +278,7 @@ unsafe extern "C" fn module_exit() // optional
 ## Userspace (Summary)
 
 ### Syscalls (append-only)
-`write`, `exit`, `open`, `read` (fd 0 = keyboard+serial), `close`, `exec`, `fork`, `wait`, `listdir`, `brk`, `pipe`, `dup2`, `stat`, `execname`, `dupfd`, `chdir`, `getcwd`, `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `readlink`, `mmap`, `munmap`, `mprotect`, `lseek`.
+`write`, `exit`, `open`, `read` (fd 0 = keyboard+serial), `close`, `exec`, `fork`, `wait`, `listdir`, `brk`, `pipe`, `dup2`, `stat`, `execname`, `dupfd`, `chdir`, `getcwd`, `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `readlink`, `mmap`, `munmap`, `mprotect`, `lseek`, …, and threads: `thread_spawn`, `thread_exit`, `wait_addr`, `wake_addr`, `gettid` (see `docs/threads.md`).
 
 ### Init & Shell
 `user/init` = PID1: baked in, smoke-tests fork/`/ok`, forks `/netd`, forks `/u/getty` and `wait()`/respawns. Getty prompts `login: ` → execs `/u/login` → accepts `root`/empty → execs `/sh`. `/sh` = oksh 7.9 with PATH `/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc`. Editor: `vim` → `/bin/custom/vim` (FEAT_TINY; see `ports/vim/README.md`). VCS: `git` → `/bin/custom/git` (Phase-1 local porcelain; see `ports/git/README.md`). Framebuffer CSI includes scroll regions; `TIOCGWINSZ` reports FB cells; `TERMCAP=/lib/termcap` (`ports/termcap`) + termios raw mode for full-screen TUI.

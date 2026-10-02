@@ -33,14 +33,6 @@ pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
     [a0, a1, a2, regs.word(13) as usize, regs.word(14) as usize, regs.word(15) as usize]
 }
 
-// ---- thread pointer: `tp` lives in the trap frame -------------------------
-
-pub fn tls_read() -> Option<u64> {
-    None
-}
-
-pub fn tls_write(_v: u64) {}
-
 // ---- FP -------------------------------------------------------------------
 
 /// f0-f31 then fcsr: the `__riscv_d_ext_state` layout (see `task::fpu`).

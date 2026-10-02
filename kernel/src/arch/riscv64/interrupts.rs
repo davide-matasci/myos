@@ -197,6 +197,7 @@ fork_sret_child_from_frame:
     ld x7, 56(t6)
     ld x8, 64(t6)
     ld x9, 72(t6)
+    ld x10, 80(t6)
     ld x11, 88(t6)
     ld x12, 96(t6)
     ld x13, 104(t6)
@@ -221,7 +222,6 @@ fork_sret_child_from_frame:
     ld t0, 272(t6)
     ld x31, 248(t6)
     mv sp, t0
-    li x10, 0
     sret
     "#
 );
@@ -307,6 +307,14 @@ fn rearm_timer() {
     write_stimecmp(next);
 }
 
+/// After an interrupt's reschedule: act on a `SIGKILL` if it came from
+/// user mode (the saved `sstatus.SPP` is clear).
+fn preempted(frame: *mut u64) {
+    if unsafe { *frame.add(33) } & 0x100 == 0 {
+        crate::signal::on_user_preempted();
+    }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn riscv64_trap_handler(frame: *mut u64) {
     let scause: u64;
@@ -333,6 +341,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             }
             if crate::smp::ipi_is_resched() {
                 crate::task::schedule();
+                preempted(frame);
             }
             return;
         }
@@ -363,6 +372,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             }
             crate::task::timer_tick();
             crate::task::schedule();
+            preempted(frame);
         }
         return;
     }

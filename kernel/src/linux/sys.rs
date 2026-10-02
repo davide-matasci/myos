@@ -10,7 +10,7 @@ use super::abi::*;
 use super::files;
 use crate::fs;
 use crate::task;
-use crate::user;
+use crate::user::{self, SyscallRegs};
 
 const AT_FDCWD: usize = -100isize as usize;
 const AT_EMPTY_PATH: usize = 0x1000;
@@ -19,7 +19,6 @@ pub const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 const MAX_PATH: usize = 256;
 const ENAMETOOLONG: usize = 36;
 const EISDIR: usize = 21;
-const EAGAIN: usize = 11;
 
 pub(super) type R = Result<usize, usize>;
 type R2<T> = Result<T, usize>;
@@ -233,9 +232,11 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
         if flags & O_ACCMODE != 0 {
             return Err(EISDIR);
         }
-        // Directories have no native fd; hold the slot with /dev/null and
-        // serve getdents64 from the path table.
-        let fd = native(user::open_path("/dev/null", 0), ENOENT)?;
+        // Directories have no native fd; hold the slot with the system's
+        // /dev/null (not the chroot's) and serve getdents64 from the path
+        // table.
+        let null = fs::open("/dev/null", 0).ok_or(ENOENT)?;
+        let fd = task::fd_open(null, 0).ok_or(EMFILE)?;
         files::set(fd, view_path(&p), true);
         return Ok(fd);
     }
@@ -488,17 +489,8 @@ pub fn pread(fd: usize, buf: usize, count: usize, off: usize) -> R {
 
 // ---- processes ------------------------------------------------------------
 
-pub fn fork(user_rip: usize, user_rsp: usize) -> R {
-    native(user::sys_fork(user_rip, user_rsp), EAGAIN)
-}
-
-pub fn clone(flags: usize, stack: usize, user_rip: usize, user_rsp: usize) -> R {
-    // Only the fork-equivalent form (exit signal in the low byte, no
-    // sharing flags, no new stack). Threads and CLONE_VM are not supported.
-    if flags & !0xff != 0 || stack != 0 {
-        return Err(ENOSYS);
-    }
-    fork(user_rip, user_rsp)
+pub fn fork(regs: &SyscallRegs) -> R {
+    native(user::sys_fork(regs), EAGAIN)
 }
 
 pub fn execve(path: usize, argv: usize, envp: usize) -> R {
@@ -559,6 +551,22 @@ pub fn uname(buf: usize) -> R {
 
 // ---- time -----------------------------------------------------------------
 
+/// The `struct timespec` at `ts` as a deadline in [`now_us`] time: as is
+/// when `absolute`, else from now. Every Linux clock reads that one clock.
+pub(super) fn timespec_deadline(ts: usize, absolute: bool) -> R2<u64> {
+    let sec = get_u64(ts)?;
+    let nsec = get_u64(ts + 8)?;
+    let t = sec.saturating_mul(1_000_000).saturating_add(nsec / 1000);
+    Ok(if absolute { t } else { now_us().saturating_add(t) })
+}
+
+/// The monotonic-ns deadline (for `block_until`) of `deadline_us`.
+pub(super) fn monotonic_deadline(deadline_us: u64) -> u64 {
+    crate::time::monotonic_ns()
+        .saturating_add(deadline_us.saturating_sub(now_us()).saturating_mul(1000))
+        .max(1)
+}
+
 pub(super) fn now_us() -> u64 {
     match crate::time::timeval() {
         Some((s, us)) => s as u64 * 1_000_000 + us as u64,
@@ -586,15 +594,9 @@ pub fn time(t: usize) -> R {
 
 /// Sleep for the timespec at `req` (or until that absolute time).
 pub fn nanosleep(req: usize, absolute: bool) -> R {
-    let sec = get_u64(req)?;
-    let nsec = get_u64(req + 8)?;
-    let t = sec.saturating_mul(1_000_000).saturating_add(nsec / 1000);
-    let deadline = if absolute { t } else { now_us().saturating_add(t) };
-    // Convert to a monotonic deadline and really sleep (Blocked, CPU halts).
-    let now = now_us();
-    let mono = crate::time::monotonic_ns()
-        .saturating_add(deadline.saturating_sub(now).saturating_mul(1000))
-        .max(1);
+    let deadline = timespec_deadline(req, absolute)?;
+    // Really sleep (Blocked, CPU halts) until the monotonic equivalent.
+    let mono = monotonic_deadline(deadline);
     loop {
         if now_us() >= deadline {
             return Ok(0);

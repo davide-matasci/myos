@@ -78,7 +78,7 @@ static LAST_INPUT_PGID: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// Mark the current task as blocked in console `input::read` (for `^C` fg).
 pub fn enter_input_read() {
-    let id = task::current_id();
+    let id = task::current_pid();
     INPUT_READER.store(id, Ordering::SeqCst);
     if let Some(pgid) = task::task_pgid(id) {
         LAST_INPUT_PGID.store(pgid, Ordering::SeqCst);
@@ -89,6 +89,16 @@ pub fn enter_input_read() {
 /// working while a foreground child runs (see its doc comment).
 pub fn leave_input_read() {
     INPUT_READER.store(usize::MAX, Ordering::SeqCst);
+}
+
+/// An interrupt that preempted user mode is about to return there: a
+/// pending `SIGKILL` ends the task now. Signals otherwise act at syscall
+/// exit, which a thread spinning in user mode would never reach (its process
+/// could not finish exiting).
+pub fn on_user_preempted() {
+    if task::signal_kill_pending(task::current_id()) {
+        task::user_exit_signal(SIGKILL);
+    }
 }
 
 /// `SIGCHLD` to `parent` (a child exited).

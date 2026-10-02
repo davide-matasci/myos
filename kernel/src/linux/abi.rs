@@ -10,6 +10,7 @@ pub const ENXIO: usize = 6;
 pub const E2BIG: usize = 7;
 pub const EBADF: usize = 9;
 pub const ECHILD: usize = 10;
+pub const EAGAIN: usize = 11;
 pub const ENOMEM: usize = 12;
 pub const EFAULT: usize = 14;
 pub const EEXIST: usize = 17;
@@ -20,6 +21,7 @@ pub const ENOTTY: usize = 25;
 pub const ESPIPE: usize = 29;
 pub const ERANGE: usize = 34;
 pub const ENOSYS: usize = 38;
+pub const ETIMEDOUT: usize = 110;
 pub const ENODEV: usize = 19;
 
 /// A Linux error return: `-errno` in the result register.

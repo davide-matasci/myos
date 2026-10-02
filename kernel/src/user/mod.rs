@@ -105,7 +105,7 @@ const DEFAULT_USER_BASE: u64 = 0x4000_0000; // Sv39 root[1] / L1[1] on QEMU virt
 static USER_BASE: AtomicU64 = AtomicU64::new(DEFAULT_USER_BASE);
 
 /// User callee-saved regs at syscall entry (before Rust can clobber them).
-/// Copied into `ForkRegs` on SYS_FORK so fork-continue children resume correctly.
+/// Copied into `UserRegs` on SYS_FORK so fork-continue children resume correctly.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
 #[repr(C)]

@@ -71,7 +71,7 @@ pub(super) fn fd_drop(entry: FdEntry) {
 /// Lock-free user-buffer check from a TASKS snapshot.
 ///
 /// Must not take `TASKS`: `fd_read` of a file re-checks the dest buffer
-/// inside `with_current_mut`. Routing through `user::buffer_ok` re-locks
+/// inside `with_process_mut`. Routing through `user::buffer_ok` re-locks
 /// (`current_user_map` / `mmap_contains`) and deadlocks the same CPU —
 /// hang after `/ok` prints `user ok`, on the first `read` of `/msg`.
 fn user_buf_ok(
@@ -105,7 +105,7 @@ fn user_buf_ok(
 pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
     let writable = crate::fs::open_writable(flags);
     let append = crate::fs::open_append(flags);
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
                 t.fds[i] = FdEntry::File {
@@ -124,7 +124,7 @@ pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
 
 pub fn pipe_open() -> Option<(usize, usize)> {
     let id = pipe::alloc()?;
-    let out = with_current_mut(|t| {
+    let out = with_process_mut(|t| {
         let mut read_fd = None;
         let mut write_fd = None;
         for i in 0..MAX_FDS {
@@ -189,7 +189,7 @@ pub fn fd_open_fifo(id: usize, flags: u32) -> Result<usize, FifoOpenErr> {
         return Err(FifoOpenErr::Failed);
     }
     let entry = if write { FdEntry::PipeWrite(id) } else { FdEntry::PipeRead(id) };
-    let fd = with_current_mut(|t| {
+    let fd = with_process_mut(|t| {
         let i = (0..MAX_FDS).find(|&i| t.fds[i] == FdEntry::Empty)?;
         t.fds[i] = entry;
         Some(i)
@@ -230,7 +230,7 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
     if fd >= MAX_FDS {
         return None;
     }
-    with_current_mut(|t| match t.fds[fd] {
+    with_process_mut(|t| match t.fds[fd] {
         FdEntry::PipeRead(id) => {
             let mut bits = 0u32;
             // Readable when data is buffered, or the writer closed (EOF).
@@ -255,7 +255,7 @@ pub fn fd_pipe_peer(fd: usize) -> Option<usize> {
     if fd >= MAX_FDS {
         return None;
     }
-    with_current_mut(|t| match t.fds[fd] {
+    with_process_mut(|t| match t.fds[fd] {
         FdEntry::PipeRead(id) => (0..MAX_FDS).find(|&i| t.fds[i] == FdEntry::PipeWrite(id)),
         FdEntry::PipeWrite(id) => (0..MAX_FDS).find(|&i| t.fds[i] == FdEntry::PipeRead(id)),
         _ => None,
@@ -265,7 +265,7 @@ pub fn fd_pipe_peer(fd: usize) -> Option<usize> {
 /// Open `/dev/ptmx`: allocate a pty pair, take the master fd.
 pub fn fd_open_pty_master() -> Option<usize> {
     let id = crate::pty::alloc()?;
-    let out = with_current_mut(|t| {
+    let out = with_process_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
                 t.fds[i] = FdEntry::PtyMaster(id);
@@ -288,7 +288,7 @@ pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
     if !crate::pty::slave_exists(id) {
         return None;
     }
-    let out = with_current_mut(|t| {
+    let out = with_process_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
                 t.fds[i] = FdEntry::PtySlave(id);
@@ -309,7 +309,7 @@ pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
     }
     // Release the old entry outside TASKS: dropping a pipe/pty end wakes
     // its peers (and a pty hangup signals the session), which take TASKS.
-    let (ok, dropped) = with_current_mut(|t| {
+    let (ok, dropped) = with_process_mut(|t| {
         let old = t.fds[oldfd];
         if old == FdEntry::Empty {
             return (false, FdEntry::Empty);
@@ -330,7 +330,7 @@ pub fn fd_dup_min(oldfd: usize, minfd: usize) -> Option<usize> {
     if oldfd >= MAX_FDS || minfd >= MAX_FDS {
         return None;
     }
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         let old = t.fds[oldfd];
         if old == FdEntry::Empty {
             return None;
@@ -387,7 +387,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
     loop {
         // Copy out only what the check needs: a whole `Task` is ~10 KiB
         // (fd table + mmap table) and used to be copied twice per read.
-        let (entry, map, mmap) = with_current_mut(|t| {
+        let (entry, map, mmap) = with_process_mut(|t| {
             (
                 t.fds.get(fd).copied().unwrap_or(FdEntry::Empty),
                 (
@@ -412,7 +412,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 let mut tmp = [0u8; FILE_IO_TMP];
                 let want = len.min(tmp.len());
                 let n = crate::fs::read(&node, pos, &mut tmp[..want]);
-                return with_current_mut(|t| {
+                return with_process_mut(|t| {
                     let FdEntry::File {
                         pos: p,
                         ..
@@ -503,7 +503,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
     let mut total = 0usize;
     while total < len {
         let chunk = (len - total).min(FILE_IO_TMP);
-        let (entry, map, mmap) = with_current_mut(|t| {
+        let (entry, map, mmap) = with_process_mut(|t| {
             (
                 t.fds.get(fd).copied().unwrap_or(FdEntry::Empty),
                 (
@@ -561,7 +561,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                     if n == 0 {
                         return if total == 0 { usize::MAX } else { total };
                     }
-                    with_current_mut(|t| {
+                    with_process_mut(|t| {
                         if let FdEntry::File { pos: p, append: ap, .. } = &mut t.fds[fd] {
                             if *ap {
                                 *p = write_pos + n;
@@ -630,7 +630,7 @@ pub fn fd_lseek(fd: usize, offset: i64, whence: usize) -> usize {
     const SEEK_SET: usize = 0;
     const SEEK_CUR: usize = 1;
     const SEEK_END: usize = 2;
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         if fd >= MAX_FDS {
             return usize::MAX;
         }
@@ -667,13 +667,7 @@ pub enum FdKind {
 
 #[cfg(feature = "linux-compat")]
 pub fn fd_kind(fd: usize) -> Option<FdKind> {
-    let entry = {
-        let flags = irq_save();
-        irq_off();
-        let e = TASKS.lock()[current_slot()].fds.get(fd).copied();
-        irq_restore(flags);
-        e?
-    };
+    let entry = with_process_mut(|t| t.fds.get(fd).copied())?;
     Some(match entry {
         FdEntry::Empty => return None,
         FdEntry::Stdin | FdEntry::Console | FdEntry::PtyMaster(_) | FdEntry::PtySlave(_) => {
@@ -689,11 +683,7 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
 
 /// The file behind `fd` (for file-backed `mmap`), if it is a regular file.
 pub fn fd_file_node(fd: usize) -> Option<crate::fs::Vnode> {
-    let flags = irq_save();
-    irq_off();
-    let e = TASKS.lock()[current_slot()].fds.get(fd).copied();
-    irq_restore(flags);
-    match e? {
+    match with_process_mut(|t| t.fds.get(fd).copied())? {
         FdEntry::File { node, .. } => Some(node),
         _ => None,
     }
@@ -703,7 +693,7 @@ pub fn fd_close(fd: usize) -> bool {
     if fd >= MAX_FDS {
         return false;
     }
-    let entry = with_current_mut(|t| {
+    let entry = with_process_mut(|t| {
         let entry = t.fds[fd];
         // POSIX close semantics: the slot must become free so the next
         // open/pipe/socket reuses the lowest fd (os-test stdio/puts does
@@ -739,7 +729,7 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
 
     const TIOCSCTTY: usize = 0x540E;
 
-    let entry = with_current_mut(|t| t.fds.get(fd).copied().unwrap_or(FdEntry::Empty));
+    let entry = with_process_mut(|t| t.fds.get(fd).copied().unwrap_or(FdEntry::Empty));
 
     // PTY fd ioctls: per-pair termios (shared across both ends, Linux model),
     // winsize propagation, TIOCGPTN/TIOCSPTLCK on the master, TIOCSCTTY on the

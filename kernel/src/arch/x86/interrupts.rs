@@ -461,12 +461,15 @@ extern "x86-interrupt" fn ipi_tlb(_frame: InterruptStackFrame) {
     lapic_w(EOI, 0);
 }
 
-extern "x86-interrupt" fn ipi_resched(_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn ipi_resched(frame: InterruptStackFrame) {
     lapic_w(EOI, 0);
     crate::task::schedule();
+    if frame.code_segment.0 & 3 == 3 {
+        crate::signal::on_user_preempted();
+    }
 }
 
-extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn timer(frame: InterruptStackFrame) {
     TIMER_FIRED.store(true, Ordering::SeqCst);
     crate::time::note_tick();
     crate::rng::stir_tick();
@@ -481,4 +484,7 @@ extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
     crate::task::timer_tick();
     lapic_w(EOI, 0);
     crate::task::schedule();
+    if frame.code_segment.0 & 3 == 3 {
+        crate::signal::on_user_preempted();
+    }
 }

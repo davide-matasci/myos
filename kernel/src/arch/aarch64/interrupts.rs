@@ -98,6 +98,7 @@ irq_save_done:
     mrs x2, sp_el0
     stp x0, x1, [sp, #16 * 16]
     str x2, [sp, #16 * 17]
+    mov x0, x1 // spsr: the interrupted mode
     bl aarch64_irq_handler
     ldp x0, x1, [sp, #16 * 16]
     ldr x2, [sp, #16 * 17]
@@ -418,7 +419,7 @@ fn rearm_timers() {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn aarch64_irq_handler() {
+extern "C" fn aarch64_irq_handler(spsr: u64) {
     let iar = read32(GICC + 0x0C);
     let id = iar & 0x3FF;
     let timer = id == PPI_EL1_VIRT || id == PPI_EL1_PHYS;
@@ -450,6 +451,10 @@ extern "C" fn aarch64_irq_handler() {
     }
     if timer || resched {
         crate::task::schedule();
+        // SPSR.M = EL0t: the interrupt came from user mode.
+        if spsr & 0xf == 0 {
+            crate::signal::on_user_preempted();
+        }
     }
 }
 
