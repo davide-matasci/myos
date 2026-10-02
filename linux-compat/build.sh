@@ -22,6 +22,9 @@ MUSL_SHA256=a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4
 ARCHES=(x86_64 aarch64 riscv64)
 
 myos_ensure_llvm_bin
+# The CI image has clang + lld but not llvm's binutils: fall back like the ports.
+AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
+RANLIB_BIN="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
@@ -73,7 +76,7 @@ C
       -isystem "$(clang -print-resource-dir)/include" -isystem "$prefix/include" \
       -c "$CRT_SRC/$f" -o "$obj/${f%.c}.o"
   done
-  llvm-ar rcs "$out" "$obj"/*.o
+  "$AR_BIN" rcs "$out" "$obj"/*.o
 }
 
 # zstd's decoder for get-void (Void packages and the repository index are
@@ -152,9 +155,12 @@ for arch in "${ARCHES[@]}"; do
     tar xzf "$tarball" -C "$work"
     (
       cd "$work/musl-$MUSL_VERSION"
-      CC="${cc[*]}" AR=llvm-ar RANLIB=llvm-ranlib LDFLAGS="-fuse-ld=lld" \
+      CC="${cc[*]}" AR="$AR_BIN" RANLIB="$RANLIB_BIN" LDFLAGS="-fuse-ld=lld" \
         ./configure --target="$arch-linux-musl" --prefix="$prefix" >/dev/null
-      make -j"$(nproc)" "${libcc[@]}" >/dev/null 2>&1
+      if ! make -j"$(nproc)" "${libcc[@]}" >make.log 2>&1; then
+        tail -40 make.log >&2
+        exit 1
+      fi
       make install >/dev/null
     )
     rm -rf "$work"
