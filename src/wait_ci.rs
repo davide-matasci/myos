@@ -454,8 +454,8 @@ pub fn ci_mini() -> bool {
     std::env::var_os("MYOS_CI_MINI").map(|v| v == "1").unwrap_or(false)
 }
 
-/// Whether this image carries the optional Linux compatibility layer (an
-/// explicit opt-in feature, unlike the ports `port_enabled` defaults to).
+/// Whether this image carries the optional Linux compatibility layer (the
+/// one Cargo feature left; the ports come from their descriptors).
 fn linux_compat_enabled() -> bool {
     active_features().iter().any(|f| f == "linux_compat")
 }
@@ -492,7 +492,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         // Dropbear SSH smoke: full boot only, early after outbound HTTPS so we
         // still reach it if later ostest/pty stages burn the QEMU budget.
         // Host opens two sequential clients via slirp hostfwd (:2222→:22).
-        if port_enabled("port_dropbear") {
+        if port_enabled("dropbear") {
             cmds.push(CMD_DROPBEAR_BG);
             // Tear down sshd before ostest/pty/listen. Leaving dropbear up
             // through ostest raced netd on aarch64 (user fault FAR~"net/tcp",
@@ -1087,12 +1087,10 @@ fn interactive_bs_ls_cmd_ok(serial: &str) -> bool {
         && !tail.contains("x/bin/sbase/ls")
 }
 
-/// Enabled Cargo features, baked at compile time by build.rs via
-/// `cargo:rustc-env=MYOS_FEATURES` (comma-joined, including `default` and
-/// expanded members). It is NOT a runtime process env var — `cargo:rustc-env`
-/// is only readable with the `env!()` compile-time macro, so never use
-/// `std::env::var` here. Empty list means "default ports" (the fallback below
-/// never weakens the tests on omission).
+/// Enabled Cargo features (`linux_compat`), baked at compile time by build.rs
+/// via `cargo:rustc-env=MYOS_FEATURES` (comma-joined). It is NOT a runtime
+/// process env var — `cargo:rustc-env` is only readable with the `env!()`
+/// compile-time macro, so never use `std::env::var` here.
 fn active_features() -> Vec<String> {
     env!("MYOS_FEATURES")
         .split(',')
@@ -1101,25 +1099,28 @@ fn active_features() -> Vec<String> {
         .collect()
 }
 
-/// True when the given feature (e.g. `port_tcc`) is in the active set. Falls
-/// through (returns true) when MYOS_FEATURES is unset so default builds require
-/// every port, matching pre-feature behavior.
-fn port_enabled(feature: &str) -> bool {
-    let fs = active_features();
-    fs.is_empty() || fs.iter().any(|f| *f == feature)
+/// True when the image carries port `name` (`MYOS_IMAGE_PORTS`, the names
+/// of the descriptors under ports/, user/ and toolchain/std, baked in by
+/// build.rs). Unset means an unknown build: require everything.
+fn port_enabled(name: &str) -> bool {
+    match option_env!("MYOS_IMAGE_PORTS") {
+        Some(list) => list.split(',').any(|p| p == name),
+        None => true,
+    }
 }
 
 /// Some heavy needles only print when their port is packed into the initramfs
-/// (tcc, git). When that port feature is disabled, the needle must not be
-/// required, or `--ci` would hang waiting for a marker that never appears.
+/// (tcc, git). When that port is not in the image (its directory is under
+/// packages/), the needle must not be required, or `--ci` would hang waiting
+/// for a marker that never appears.
 fn needle_for_enabled_port(n: &str) -> bool {
     if n == "[ OK ] tcc" || n == "[ OK ] tcc std" {
-        return port_enabled("port_tcc");
+        return port_enabled("tcc");
     }
     if n == "[ OK ] git" || n == "[ OK ] git commit" {
         // In boot-mini the harness types `heap mini`, which skips the git
         // stage entirely; those markers must not be required there.
-        return port_enabled("port_git") && !ci_mini();
+        return port_enabled("git") && !ci_mini();
     }
     true
 }

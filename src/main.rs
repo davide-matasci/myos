@@ -15,6 +15,8 @@
 
 mod limine_image;
 mod initramfs;
+#[allow(dead_code)]
+mod ports;
 
 use limine_image::{
     DiskFile, LIMINE_VERSION, boot_module_files, fetch_limine, limine_conf, write_esp_image,

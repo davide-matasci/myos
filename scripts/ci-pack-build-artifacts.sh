@@ -4,11 +4,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 shopt -s nullglob
-# Canonical kernel/image/hello/ok/curl/dropbear/smoke/cacert list —
-# same members GHCR kernels packages and boot assert require.
+# The kernels, the images and the host harness (what the kernels registry
+# package holds), the kernel modules, and every file the image ports ship
+# (scripts/ports.sh --all-image-files: a boot job re-packs the aarch64 and
+# riscv64 initramfs from them). Never a `-src` / `-build` tree.
 mapfile -t kernel_members < <(./scripts/ci-build-kernels.sh --print-members)
+mapfile -t image_files < <(./scripts/ports.sh --all-image-files)
 files=(
   "${kernel_members[@]}"
+  "${image_files[@]}"
   target/debug/build/myos-*/out
   target/hello-*
   target/console-*
@@ -23,69 +27,14 @@ files=(
   target/ext2-*
   target/linux-*
   target/ok-*
-  target/std-*
-  target/c-hello-*
-  target/c-socket_smoke-*
-  target/tcp-listen-smoke-*
-  target/pty-smoke-*
-  target/urandom-smoke-*
-  target/curl-*
-  target/sbase-*
-  target/ubase-*
-  target/oksh-*
-  target/make-*
-  target/uutils-*
-  target/coreutils-*
-  target/rg-*
-  target/tcc-*
-  target/vim-*
-  target/lynx-*
-  target/lua-*
-  target/ncurses-*
-  target/zlib-*
-  target/git-*
-  target/libncurses-*
-  target/pcre2-x86_64
-  target/pcre2-aarch64
-  target/pcre2-riscv64
+  # The newlib sysroot tree (initramfs /lib/newlib for tcc).
   target/.myos-newlib-version
   target/newlib-x86_64
   target/newlib-aarch64
   target/newlib-riscv64
-  target/.myos-c-hello-version
-  target/.myos-sbase-version
-  target/.myos-ubase-version
-  target/.myos-oksh-version
-  target/.myos-make-version
-  target/.myos-coreutils-version
-  target/.myos-ripgrep-version
-  target/.myos-tcc-version
-  target/.myos-vim-version
-  target/.myos-lynx-version
-  target/.myos-lua-version
-  target/.myos-ncurses-version
-  target/.myos-zlib-version
-  target/.myos-git-version
-  target/.myos-std-hello-version
-  target/.myos-dropbear-version
-  target/.myos-os-test-version
   target/.myos-ci-kernel-version
-  # Exact dirs — never glob target/os-test-* (matches -src / -prebuilt-obj).
-  target/os-test-embed
-  target/os-test-prebuilt
   target/limine-v*
 )
-# Exact ELF names only — never glob target/dropbear-* (matches
-# dropbear-*-src / dropbear-myos-build trees).
-for arch in x86_64 aarch64 riscv64; do
-  for bin in dropbear dbclient dropbearkey; do
-    files+=("target/${bin}-${arch}-unknown-none")
-    files+=("target/coreutils-${bin}-${arch}-unknown-none")
-  done
-done
-if [[ -f target/cacert.pem ]]; then
-  files+=(target/cacert.pem)
-fi
 if [[ -f target/virt.dtb ]]; then
   files+=(target/virt.dtb)
 fi
@@ -93,7 +42,7 @@ if [[ -d target/ovmf ]]; then
   files+=(target/ovmf)
 fi
 # Dedup while keeping only paths that exist (nullglob already dropped
-# empty globs; exact print-members paths may be absent → required check).
+# empty globs; exact paths may be absent → required check below).
 declare -A seen=()
 uniq=()
 for f in "${files[@]}"; do
@@ -108,59 +57,16 @@ required=(
   target/uefi.img
   target/aarch64-unknown-none-softfloat/debug/kernel
   target/riscv64imac-unknown-none-elf/debug/kernel
-  target/console-x86_64-unknown-none
-  target/console-aarch64-unknown-none-softfloat
-  target/console-riscv64imac-unknown-none-elf
-  target/stubfs-x86_64-unknown-none
-  target/stubfs-aarch64-unknown-none-softfloat
-  target/stubfs-riscv64imac-unknown-none-elf
-  target/hello-x86_64-unknown-none
-  target/hello-aarch64-unknown-none-softfloat
-  target/hello-riscv64imac-unknown-none-elf
-  target/pci_enum-x86_64-unknown-none
-  target/pci_enum-aarch64-unknown-none-softfloat
-  target/pci_enum-riscv64imac-unknown-none-elf
-  target/acpi-x86_64-unknown-none
-  target/acpi-aarch64-unknown-none-softfloat
-  target/acpi-riscv64imac-unknown-none-elf
-  target/virtio_blk-x86_64-unknown-none
-  target/virtio_blk-aarch64-unknown-none-softfloat
-  target/virtio_blk-riscv64imac-unknown-none-elf
-  target/nvme-x86_64-unknown-none
-  target/nvme-aarch64-unknown-none-softfloat
-  target/nvme-riscv64imac-unknown-none-elf
-  target/virtio_net-x86_64-unknown-none
-  target/virtio_net-aarch64-unknown-none-softfloat
-  target/virtio_net-riscv64imac-unknown-none-elf
-  target/netfs-x86_64-unknown-none
-  target/netfs-aarch64-unknown-none-softfloat
-  target/netfs-riscv64imac-unknown-none-elf
-  target/fat-x86_64-unknown-none
-  target/fat-aarch64-unknown-none-softfloat
-  target/fat-riscv64imac-unknown-none-elf
-  target/ext2-x86_64-unknown-none
-  target/ext2-aarch64-unknown-none-softfloat
-  target/ext2-riscv64imac-unknown-none-elf
-  target/linux-x86_64-unknown-none
-  target/linux-aarch64-unknown-none-softfloat
-  target/linux-riscv64imac-unknown-none-elf
-  target/linux-launcher-x86_64-unknown-none
-  target/linux-launcher-aarch64-unknown-none
-  target/linux-launcher-riscv64-unknown-none
-  target/ok-x86_64-unknown-none
-  target/ok-aarch64-unknown-none-softfloat
-  target/ok-riscv64imac-unknown-none-elf
-  target/tcp-listen-smoke-x86_64-unknown-none
-  target/tcp-listen-smoke-aarch64-unknown-none
-  target/tcp-listen-smoke-riscv64-unknown-none
+  "${image_files[@]}"
 )
-# Boot-critical ports: accept canon or coreutils-* alias.
-require_one() {
-  local c="$1" a="$2"
-  if [[ -e "$c" || -e "$a" ]]; then return 0; fi
-  echo "::error::required CI artifact missing: $c (also tried $a)"
-  return 1
-}
+for m in console stubfs hello pci_enum acpi virtio_blk nvme virtio_net netfs fat ext2 linux ok; do
+  for t in x86_64-unknown-none aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
+    required+=("target/${m}-${t}")
+  done
+done
+for t in x86_64-unknown-none aarch64-unknown-none riscv64-unknown-none; do
+  required+=("target/linux-launcher-${t}")
+done
 missing=0
 for f in "${required[@]}"; do
   if [[ ! -e "$f" ]]; then
@@ -168,38 +74,9 @@ for f in "${required[@]}"; do
     missing=1
   fi
 done
-for arch in x86_64 aarch64 riscv64; do
-  n=unknown-none
-  require_one "target/c-socket_smoke-${arch}-${n}" "target/coreutils-c-socket_smoke-${arch}-${n}" || missing=1
-  require_one "target/curl-${arch}-${n}" "target/coreutils-curl-${arch}-${n}" || missing=1
-  require_one "target/dropbear-${arch}-${n}" "target/coreutils-dropbear-${arch}-${n}" || missing=1
-  require_one "target/dbclient-${arch}-${n}" "target/coreutils-dbclient-${arch}-${n}" || missing=1
-  require_one "target/dropbearkey-${arch}-${n}" "target/coreutils-dropbearkey-${arch}-${n}" || missing=1
-  require_one "target/pty-smoke-${arch}-${n}" "target/coreutils-pty-smoke-${arch}-${n}" || missing=1
-  require_one "target/urandom-smoke-${arch}-${n}" "target/coreutils-urandom-smoke-${arch}-${n}" || missing=1
-done
-require_one target/cacert.pem target/coreutils-cacert.pem || missing=1
-# os-test embed + host-prebuilt smoke ELFs (initramfs always packs them).
-if [[ ! -f target/os-test-embed/basic/ctype/isalnum.c ]]; then
-  echo "::error::required CI artifact missing: target/os-test-embed (run ports/os-test/build.sh)"
-  missing=1
-fi
-for arch in x86_64 aarch64 riscv64; do
-  m="target/os-test-prebuilt/${arch}/basic/arpa_inet/htons"
-  if [[ ! -f "$m" ]]; then
-    echo "::error::required CI artifact missing: $m"
-    missing=1
-  fi
-done
 if [[ "$missing" -ne 0 ]]; then
-  echo "target/ listing (hello/ok/kernels/ports):"
-  ls -la target/hello-* target/ok-* \
-    target/aarch64-unknown-none-softfloat/debug/kernel \
-    target/riscv64imac-unknown-none-elf/debug/kernel \
-    target/bios.img target/uefi.img target/debug/myos \
-    target/curl-* target/dropbear-* target/pty-smoke-* \
-    target/urandom-smoke-* target/tcp-listen-smoke-* \
-    target/cacert.pem target/coreutils-* 2>&1 || true
+  echo "target/ listing:"
+  ls -la target/ 2>&1 | head -200 || true
   exit 1
 fi
 tar -cf ci-build.tar "${uniq[@]}"

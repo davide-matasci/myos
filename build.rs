@@ -5,6 +5,10 @@ mod limine_image {
 mod initramfs {
     include!("src/initramfs.rs");
 }
+#[allow(dead_code)]
+mod ports {
+    include!("src/ports.rs");
+}
 
 use limine_image::{
     BOOT_MODULES, bios_install, boot_module_files, fetch_limine, write_esp_image,
@@ -15,16 +19,14 @@ use std::path::PathBuf;
 /// Build a feature-gated port when its artifact is missing. Port build
 /// scripts are stamped and early-exit when current, so this is cheap for
 /// up-to-date trees. Ports whose feature is disabled are never built.
-fn ensure_feature_port(manifest: &PathBuf, feature: &str, artifact: &str, script: &str) {
-    if !initramfs::feature_enabled(feature) {
-        return;
-    }
+/// Run `script` (repo-relative) when `artifact` (repo-relative) is missing.
+fn ensure_artifact(manifest: &PathBuf, artifact: &str, script: &str) {
     println!("cargo:rerun-if-changed={}", manifest.join(script).display());
     let artifact_path = manifest.join(artifact);
     if artifact_path.is_file() {
         return;
     }
-    eprintln!("==> cargo: {feature} artifact missing ({artifact}); running {script}");
+    eprintln!("==> cargo: artifact missing ({artifact}); running {script}");
     // Strip cargo-injected env so the nested cargo probes targets cleanly.
     let status = std::process::Command::new("bash")
         .arg(manifest.join(script))
@@ -52,107 +54,45 @@ fn main() {
     println!("cargo:rerun-if-changed=src/limine_fat.rs");
     println!("cargo:rerun-if-changed=src/limine_dir.rs");
     println!("cargo:rerun-if-changed=src/initramfs.rs");
-    println!("cargo:rerun-if-changed=ports/termcap/termcap");
-    println!("cargo:rerun-if-changed=ports/lynx/lynx.cfg");
+    println!("cargo:rerun-if-changed=src/ports.rs");
+    // A new or moved port directory (ports/ <-> packages/) changes the image.
+    println!("cargo:rerun-if-changed=ports");
+    println!("cargo:rerun-if-changed=packages");
     println!("cargo:rerun-if-changed=modules/console/keymaps/ch.map");
     println!("cargo:rerun-if-changed=modules/console/keymaps/us.map");
     println!("cargo:rerun-if-changed={}", kernel_path.display());
 
-    // Ensure Phase-1 git (+zlib) ELFs exist before packing initramfs. CI hooks
-    // the same scripts from ci-build-kernels.sh; ISO/workflow may not list them
-    // when the OAuth token lacks `workflow` scope to edit ci.yml/iso.yml.
-    // Gated on the port_git feature: build --no-default-features excludes it.
-    if initramfs::feature_enabled("port_git") {
-        let git_elf = manifest.join("target/git-x86_64-unknown-none");
-        if !git_elf.is_file() {
-            let sh = manifest.join("ports/git/build.sh");
-            let status = std::process::Command::new("bash")
-                .arg(&sh)
-                .env("MYOS_GIT_ARCHES", "x86_64")
-                .status()
-                .unwrap_or_else(|e| panic!("run {}: {e}", sh.display()));
-            if !status.success() {
-                panic!("{} failed", sh.display());
+    // Every port of the image (ports/, user/, toolchain/std): run its build
+    // script when its outputs are missing (the scripts skip themselves when
+    // current), and rebuild the images when a descriptor, a build script or a
+    // checked-in file a port ships changes. Packages (packages/) are not
+    // built here; CI builds and publishes them.
+    let all_ports = ports::load_all(&manifest);
+    let mut image_ports: Vec<String> = Vec::new();
+    for port in all_ports.iter().filter(|p| p.role == ports::Role::Image) {
+        image_ports.push(port.name.clone());
+        println!("cargo:rerun-if-changed={}", manifest.join(&port.dir).join("port.env").display());
+        for f in &port.files {
+            if let ports::FileSpec::File { src, .. } = f {
+                println!("cargo:rerun-if-changed={}", manifest.join(&port.dir).join(src).display());
             }
         }
-        println!("cargo:rerun-if-changed={}", git_elf.display());
-        println!("cargo:rerun-if-changed=ports/git/build.sh");
-        println!("cargo:rerun-if-changed=ports/zlib/build.sh");
-    }
-
-    // Auto-build feature-gated ports when their artifacts are missing. Ports
-    // whose feature is disabled are skipped entirely (no build, no error);
-    // each port build.sh handles its own deps and early-exits when current.
-    // (std / c_hello / oksh are ensured in kernel/build.rs — the kernel embeds
-    // them via env!(), and the kernel package has no feature knowledge.)
-    ensure_feature_port(&manifest, "port_sbase", "target/sbase-manifest-x86_64.txt", "ports/sbase/build.sh");
-    ensure_feature_port(&manifest, "port_coreutils", "target/coreutils-manifest-x86_64.txt", "ports/coreutils/build.sh");
-    ensure_feature_port(&manifest, "port_tcc", "target/tcc-x86_64-unknown-myos", "ports/tcc/build.sh");
-    ensure_feature_port(&manifest, "port_ripgrep", "target/rg-x86_64-unknown-myos", "ports/ripgrep/build.sh");
-    ensure_feature_port(&manifest, "port_vim", "target/vim-x86_64-unknown-none", "ports/vim/build.sh");
-    ensure_feature_port(&manifest, "port_make", "target/make-x86_64-unknown-none", "ports/make/build.sh");
-    ensure_feature_port(&manifest, "port_lynx", "target/lynx-x86_64-unknown-none", "ports/lynx/build.sh");
-    ensure_feature_port(&manifest, "port_lua", "target/lua-x86_64-unknown-none", "ports/lua/build.sh");
-    ensure_feature_port(&manifest, "port_dropbear", "target/dropbear-x86_64-unknown-none", "ports/dropbear/build.sh");
-    // The `linux` launcher ships in every image (the Linux layer's kernel
-    // module is always built; `insmod /lib/modules/linux` enables it).
-    ensure_feature_port(&manifest, "core", "target/linux-launcher-x86_64-unknown-none", "linux-compat/build-launcher.sh");
-    ensure_feature_port(&manifest, "linux_compat", "target/linux-compat/x86_64/get-alpine", "linux-compat/build.sh");
-    // Always shipped with `core` but not Cargo features of their own: curl
-    // (with the CA bundle its build fetches) and the boot-CI smoke programs.
-    // Nothing else builds them locally, and the initramfs refuses to pack an
-    // image without them.
-    for (artifact, script) in [
-        ("target/curl-x86_64-unknown-none", "ports/curl/build.sh"),
-        ("target/tcp-listen-smoke-x86_64-unknown-none", "scripts/build-tcp-listen-smoke.sh"),
-        ("target/pty-smoke-x86_64-unknown-none", "scripts/build-pty-smoke.sh"),
-        ("target/urandom-smoke-x86_64-unknown-none", "scripts/build-urandom-smoke.sh"),
-    ] {
-        ensure_feature_port(&manifest, "core", artifact, script);
-    }
-
-    // os-test (always embedded): consume ports-base artifacts. CI restores via
-    // ci-registry; local-dev runs ports/os-test/build.sh when missing (same
-    // pattern as ensure_feature_port). Do not fetch/prebuild inline here.
-    {
-        let marker = manifest.join("target/os-test-prebuilt/x86_64/basic/arpa_inet/htons");
-        let probe = manifest.join("target/os-test-embed/basic/ctype/isalnum.c");
-        println!("cargo:rerun-if-changed=ports/os-test/build.sh");
-        println!("cargo:rerun-if-changed=ports/os-test/fetch.sh");
-        println!("cargo:rerun-if-changed=ports/os-test/prebuild-basic-smoke.sh");
-        println!("cargo:rerun-if-changed=ports/os-test/versions.env");
-        println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/ci-basic-smoke.tests");
-        println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/ci-expansion.tests");
-        println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/myos-run.sh");
-        println!("cargo:rerun-if-changed=ports/os-test/overlay/misc/ci-smoke-copy.sh");
-        if !marker.is_file() || !probe.is_file() {
-            let sh = manifest.join("ports/os-test/build.sh");
-            eprintln!(
-                "==> cargo: os-test artifacts missing; running {} (or restore from ports CI)",
-                sh.display()
-            );
-            let status = std::process::Command::new("bash")
-                .arg(&sh)
-                .env_clear()
-                .env("PATH", std::env::var("PATH").unwrap_or_default())
-                .env("HOME", std::env::var("HOME").unwrap_or_default())
-                .status()
-                .unwrap_or_else(|e| panic!("run {}: {e}", sh.display()));
-            if !status.success() {
-                panic!(
-                    "{} failed; for local builds run: ./ports/os-test/build.sh",
-                    sh.display()
-                );
-            }
-            if !marker.is_file() || !probe.is_file() {
-                panic!(
-                    "os-test artifacts still missing after build.sh; expected {} and {}",
-                    marker.display(),
-                    probe.display()
-                );
-            }
+        // The kernel's build script builds the user programs.
+        if port.kind == ports::Kind::User {
+            continue;
         }
+        let Some(script) = &port.build else {
+            continue;
+        };
+        let Some(ready) = port.ready_file("x86_64") else {
+            continue;
+        };
+        ensure_artifact(&manifest, &format!("target/{ready}"), script);
     }
+    // For the host tool: which ports the images carry (`wait_ci` requires the
+    // needles of tcc / git only when they are in).
+    println!("cargo:rustc-env=MYOS_IMAGE_PORTS={}", image_ports.join(","));
+    let modules = boot_module_files(&manifest.join("target"), "x86_64-unknown-none");
 
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any
     // user ELF changes (its build.rs rerun-if-changed on every stable copy), so
@@ -169,7 +109,6 @@ fn main() {
             manifest.join("target").join(format!("{m}-x86_64-unknown-none")).display()
         );
     }
-    let modules = boot_module_files(&manifest.join("target"), "x86_64-unknown-none");
 
     let ok_path = manifest.join("target").join("ok-x86_64-unknown-none");
     println!("cargo:rerun-if-changed={}", ok_path.display());

@@ -15,30 +15,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# Phase-1 git depends on zlib; build before cargo packs initramfs (workflow
-# edits need `workflow` OAuth scope — keep this script as the CI hook).
-# Then build newlib and settle target/.myos-newlib-version BEFORE the inputs
-# hash is snapshotted below. On a PR where the newlib job was skipped (no
-# toolchain/newlib changes) its stamp is absent and a registry pull misses;
-# a lazy port-build inside the cargo build then creates the stamp mid-build,
-# which tripped the kernel_inputs_hash drift guard. newlib/build.sh is
-# idempotent (early-exits when current), so this is a no-op on runs that
-# already onboarded newlib.
+# Build (idempotently: every script early-exits when its stamp is current)
+# newlib and every port of the image BEFORE the inputs hash is snapshotted
+# below: the port stamps are part of that hash, and a port missing from the
+# registry (a skipped ports job, a new cache key) must not appear mid-build,
+# which tripped the kernel_inputs_hash drift guard. The ports come in build
+# order (scripts/ports.sh --image-list: dependencies first; the sysroot ports
+# need target/myos-sysroot, fetched by ci-build-pull-and-kernels.sh).
 if [[ "${1:-}" != "--print-hash" && "${1:-}" != "--is-current" && "${1:-}" != "--print-members" ]]; then
-  ./ports/zlib/build.sh
-  ./ports/git/build.sh
   ./toolchain/newlib/build.sh
-  # tcc installs libtcc1.a into target/newlib-*/<triple>/lib/ (pack_aliases /
-  # install_libtcc1) which the initramfs builder packs as /lib/newlib/lib.
-  # On a run where the newlib/tcc jobs were skipped only the tcc ELF +
-  # target/libtcc1-*.a are restored by the registry pull, so the newlib-lib
-  # copy is missing and the guest `tcc std` boot needle fails. Build (idempotent,
-  # early-exits when current) so the initramfs includes libtcc1.a.
-  ./ports/tcc/build.sh
-  # os-test: always embedded in initramfs. ports-base + registry pull usually
-  # supply it; ensure here so a kernels cache-hit still packs embed/prebuilts
-  # (idempotent / stamp early-exit when current).
-  ./ports/os-test/build.sh
+  while read -r name script; do
+    echo "==> ensure port $name ($script)"
+    "./$script"
+  done < <(./scripts/ports.sh --image-list)
 fi
 
 STAMP="target/.myos-ci-kernel-version"
@@ -65,24 +54,13 @@ linux_compat_members() {
   done
 }
 
-# Stable ELF copies that kernel/build.rs embed via include_bytes! / rustc-env,
-# and that myos build.rs packs into initramfs / Limine images.
-PORT_STAMPS=(
-  target/.myos-std-hello-version
-  target/.myos-c-hello-version
-  target/.myos-oksh-version
-  target/.myos-ubase-version
-  target/.myos-sbase-version
-  target/.myos-coreutils-version
-  target/.myos-ripgrep-version
-  target/.myos-tcc-version
-  target/.myos-vim-version
-  target/.myos-ncurses-version
-  target/.myos-zlib-version
-  target/.myos-git-version
-  target/.myos-newlib-version
-  target/.myos-os-test-version
-)
+# The version stamps of newlib and of every image port (scripts/ports.sh
+# --stamps): they encode the userspace content kernel/build.rs embeds via
+# include_bytes! and myos build.rs packs into the initramfs / Limine images.
+PORT_STAMPS=(target/.myos-newlib-version)
+while read -r stamp; do
+  PORT_STAMPS+=("$stamp")
+done < <(./scripts/ports.sh --stamps)
 
 # Source-controlled curl/mbedtls inputs (NOT target/.myos-{curl,mbedtls}-version).
 # Those stamps are rewritten by ports/*/build.sh during this same job (and mbedtls
@@ -133,11 +111,11 @@ kernel_inputs_hash() {
         # Do not hash Cargo.lock: **/Cargo.lock is gitignored and appears after
         # the first cargo build, which made pull-tag ≠ post-build stamp.
         sha256sum build.rs Cargo.toml 2>/dev/null || true
-        # tcp-listen / pty / urandom smokes: built by ci-build-kernels (initramfs
-        # embeds them); a source change must bust the kernel stamp so ELFs rebuild.
-        sha256sum user/c/tcp_listen_smoke.c scripts/build-tcp-listen-smoke.sh 2>/dev/null || true
-        sha256sum user/c/pty_smoke.c scripts/build-pty-smoke.sh 2>/dev/null || true
-        sha256sum user/c/urandom_smoke.c scripts/build-urandom-smoke.sh 2>/dev/null || true
+        # The port descriptors: which ports are in the image and what they ship.
+        sha256sum scripts/ports.sh
+        for f in ports/*/port.env user/*/port.env toolchain/std/port.env; do
+          [[ -f "$f" ]] && sha256sum "$f"
+        done
         # Whole host-bin crate (src/): target/debug/myos is the CI harness
         # (wait_ci) and the pack list ships it in ci-build.tar, so ANY src
         # change — not just the limine/initramfs files — must bust the stamp.
@@ -256,12 +234,9 @@ kernel_inputs_diag() {
 # none, the images ship them under boot/modules/. GHCR kernels
 # packages that omit them made master boot jobs panic with "hello ELF missing"
 # after a kernels cache hit (PR builds were fine because they did a full cargo
-# build). Keep them in artifacts_ready + --print-members.
-#
-# socket_smoke + curl: same class of bug for #109 — build job must produce and
-# pack them or aarch64/riscv initramfs skips and `[ OK ] socket` / interactive
-# curl fail. Canonical names plus coreutils-* pack aliases (ci.yml glob).
-# pty + urandom: same class for full-boot wait_ci (schedule / workflow_dispatch).
+# build). Keep them in artifacts_ready + --print-members. The ports' files
+# (smokes, curl, dropbear, ...) are checked from the descriptors instead
+# (scripts/ports.sh --all-image-files in artifacts_ready).
 HELLO_OK_ELFS=(
   target/console-x86_64-unknown-none
   target/console-aarch64-unknown-none-softfloat
@@ -305,86 +280,25 @@ HELLO_OK_ELFS=(
   target/ok-x86_64-unknown-none
   target/ok-aarch64-unknown-none-softfloat
   target/ok-riscv64imac-unknown-none-elf
-  target/c-socket_smoke-x86_64-unknown-none
-  target/c-socket_smoke-aarch64-unknown-none
-  target/c-socket_smoke-riscv64-unknown-none
-  target/curl-x86_64-unknown-none
-  target/curl-aarch64-unknown-none
-  target/curl-riscv64-unknown-none
-  target/coreutils-c-socket_smoke-x86_64-unknown-none
-  target/coreutils-c-socket_smoke-aarch64-unknown-none
-  target/coreutils-c-socket_smoke-riscv64-unknown-none
-  target/coreutils-curl-x86_64-unknown-none
-  target/coreutils-curl-aarch64-unknown-none
-  target/coreutils-curl-riscv64-unknown-none
-  target/dropbear-x86_64-unknown-none
-  target/dropbear-aarch64-unknown-none
-  target/dropbear-riscv64-unknown-none
-  target/dbclient-x86_64-unknown-none
-  target/dbclient-aarch64-unknown-none
-  target/dbclient-riscv64-unknown-none
-  target/dropbearkey-x86_64-unknown-none
-  target/dropbearkey-aarch64-unknown-none
-  target/dropbearkey-riscv64-unknown-none
-  target/coreutils-dropbear-x86_64-unknown-none
-  target/coreutils-dropbear-aarch64-unknown-none
-  target/coreutils-dropbear-riscv64-unknown-none
-  target/coreutils-dbclient-x86_64-unknown-none
-  target/coreutils-dbclient-aarch64-unknown-none
-  target/coreutils-dbclient-riscv64-unknown-none
-  target/coreutils-dropbearkey-x86_64-unknown-none
-  target/coreutils-dropbearkey-aarch64-unknown-none
-  target/coreutils-dropbearkey-riscv64-unknown-none
-  # Full-boot wait_ci runs pty + urandom; pack via coreutils-* (ci.yml glob).
-  target/pty-smoke-x86_64-unknown-none
-  target/pty-smoke-aarch64-unknown-none
-  target/pty-smoke-riscv64-unknown-none
-  target/urandom-smoke-x86_64-unknown-none
-  target/urandom-smoke-aarch64-unknown-none
-  target/urandom-smoke-riscv64-unknown-none
-  target/coreutils-pty-smoke-x86_64-unknown-none
-  target/coreutils-pty-smoke-aarch64-unknown-none
-  target/coreutils-pty-smoke-riscv64-unknown-none
-  target/coreutils-urandom-smoke-x86_64-unknown-none
-  target/coreutils-urandom-smoke-aarch64-unknown-none
-  target/coreutils-urandom-smoke-riscv64-unknown-none
 )
 
-# Mozilla CA bundle -> initramfs lib/cacert.pem (curl CURL_CA_BUNDLE).
-# Pack via coreutils-cacert.pem alias (existing ci.yml `target/coreutils-*` glob;
-# workflow edits need `workflow` scope). initramfs falls back to the alias.
-CACERT_PEM=target/cacert.pem
-CACERT_PACK_ALIAS=target/coreutils-cacert.pem
-
-ensure_cacert_pack_alias() {
-  if [[ -f "$CACERT_PEM" ]]; then
-    cp "$CACERT_PEM" "$CACERT_PACK_ALIAS"
-  elif [[ -f "$CACERT_PACK_ALIAS" ]]; then
-    cp "$CACERT_PACK_ALIAS" "$CACERT_PEM"
-  else
-    return 1
-  fi
-  return 0
-}
-
+# Everything the images are packed from: the kernels, the modules and every
+# file the image ports ship (scripts/ports.sh --all-image-files; a boot job
+# re-packs the aarch64/riscv64 initramfs from them), plus the Linux layer.
 artifacts_ready() {
-  ensure_cacert_pack_alias || return 1
   [[ -x target/debug/myos ]] \
     && [[ -f target/bios.img ]] \
     && [[ -f target/uefi.img ]] \
     && [[ -f target/aarch64-unknown-none-softfloat/debug/kernel ]] \
     && [[ -f target/riscv64imac-unknown-none-elf/debug/kernel ]] \
-    && [[ -f "$CACERT_PACK_ALIAS" ]] \
     || return 1
   local f
   for f in "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
     [[ -f "$f" ]] || return 1
   done
-  for f in target/tcp-listen-smoke-x86_64-unknown-none \
-           target/tcp-listen-smoke-aarch64-unknown-none \
-           target/tcp-listen-smoke-riscv64-unknown-none; do
-    [[ -f "$f" ]] || return 1
-  done
+  while read -r f; do
+    [[ -e "$f" ]] || return 1
+  done < <(./scripts/ports.sh --all-image-files)
   for f in $(linux_compat_members); do
     [[ -e "$f" ]] || return 1
   done
@@ -396,24 +310,8 @@ artifacts_ready() {
 
 do_clean_and_build() {
   echo "==> kernel inputs changed or artifacts missing; clean + build"
-  # Ensure socket_smoke + curl exist before initramfs/cargo (x86 bios embeds them).
-  "$ROOT/scripts/build-c-hello.sh"
-  # tcp listen/accept smoke: wait_ci runs it in EVERY boot mode, so CI must
-  # produce it or initramfs silently omits it (read() skips missing files) and
-  # the guest fails with "/bin/etc/tcp_listen_smoke: not found".
-  "$ROOT/scripts/build-tcp-listen-smoke.sh"
-  # pty + urandom: full-boot wait_ci runs both (!ci_mini). Same silent-omit
-  # trap; pack via coreutils-* aliases (no workflow-scope ci.yml glob edit).
-  "$ROOT/scripts/build-pty-smoke.sh"
-  "$ROOT/scripts/build-urandom-smoke.sh"
-  # dropbear is a default Cargo feature (initramfs panics if missing). Build
-  # here so CI does not need a workflow-scoped ci.yml ports-matrix edit; the
-  # registry pull path (when present) still short-circuits via the stamp.
-  "$ROOT/ports/dropbear/build.sh"
-  # os-test: always embedded; ports-base builds + registry pull. Stamp
-  # short-circuits when present; otherwise build so cargo/initramfs do not
-  # fetch/prebuild inline.
-  "$ROOT/ports/os-test/build.sh"
+  # The ports were built above (before the hash snapshot); build.rs only
+  # checks them. Clean so the images and the embeds are rebuilt from them.
   cargo clean -p myos
   # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
   # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
@@ -449,13 +347,6 @@ case "${1:-}" in
     for f in "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
       echo "$f"
     done
-    echo "$CACERT_PEM"
-    echo "$CACERT_PACK_ALIAS"
-    # tcp-listen is required by artifacts_ready / every boot mode but lives
-    # outside HELLO_OK_ELFS (built by build-tcp-listen-smoke.sh).
-    echo target/tcp-listen-smoke-x86_64-unknown-none
-    echo target/tcp-listen-smoke-aarch64-unknown-none
-    echo target/tcp-listen-smoke-riscv64-unknown-none
     linux_compat_members
     exit 0
     ;;

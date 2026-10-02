@@ -16,7 +16,11 @@ sysroot:
 c_userspace:
   - 'toolchain/newlib/**'
   - 'ports/**'
+  - 'packages/**'
   - 'user/c/**'
+  - 'scripts/ports.sh'
+  - 'scripts/build-c-smokes.sh'
+  - 'scripts/build-*-smoke.sh'
   - 'scripts/myos-c-userspace-lib.sh'
   - 'scripts/build-c-hello.sh'
   - 'scripts/build-newlib.sh'

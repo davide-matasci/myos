@@ -14,50 +14,16 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 ovmf-prebuilt = "0.2.9"
 
-# Per-port feature gates. Each optional port can be excluded from the image
-# (and its build skipped) with `--no-default-features` (or by building with a
-# custom feature set). Default = the curated, boot-tested set; the build script
-# (build.rs) reads the active set via CARGO_CFG_FEATURE.
-#
-#   cargo build                          # default set (everything shipped today)
-#   cargo build --no-default-features --features port_sbase,port_coreutils \
-#                                          # lean image, only the listed ports
+# What the image carries is not a feature set: every port whose directory is
+# under ports/ (and the user/ programs) is built and packed; a directory under
+# packages/ is built and published for `get-myos` instead (docs/ports.md).
 [features]
-default = [
-    "core",
-    "port_vim", "port_lynx", "port_git", "port_make", "port_lua",
-]
+default = []
 
-# Boot-required core: these are load-bearing (kernel smoke tests + shell PATH
-# depend on them) and stay on unless explicitly rebuilt without "core".
-core = [
-    "std", "c_hello",
-    "port_sbase", "port_ubase", "port_coreutils", "port_ripgrep", "port_tcc",
-    "port_oksh", "port_dropbear",
-]
-
-# Individual ports. Optional ones pull their build deps.
-std = []
-c_hello = []
-port_sbase = []
-port_ubase = []
-port_coreutils = []
-port_ripgrep = []
-port_tcc = []
-port_oksh = []
-port_dropbear = []
-port_ncurses = []
-port_zlib = []
-port_vim = ["port_ncurses"]
-port_git = ["port_zlib"]
-port_lynx = []
-port_lua = []
-port_make = []
-
-# Optional Linux syscall compatibility layer (see docs/linux-compat.md). Not
-# part of `default` or `core`: the kernel module (modules/linux) is always
-# built; this feature loads it at boot and adds the musl test binaries plus
-# get-alpine to the image (the `linux` launcher ships regardless).
+# Optional Linux syscall compatibility layer (see docs/linux-compat.md): the
+# kernel module (modules/linux) is always built; this feature loads it at
+# boot and adds the musl test binaries plus get-alpine to the image (the
+# `linux` launcher ships regardless).
 linux_compat = []
 
 [build-dependencies]

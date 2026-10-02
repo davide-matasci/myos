@@ -66,7 +66,7 @@ Notes:
 cargo run
 ```
 
-Builds x86_64 kernel, wraps in Limine GPT+FAT ESP (BIOS + UEFI), writes `target/fat.img`, starts QEMU. You'll see `Hello from myos`; close window to exit. The first build also cross-builds everything the image carries (newlib, the enabled ports, curl, the smoke programs), so it takes a while; a missing piece is a build error, never a silently smaller image.
+Builds x86_64 kernel, wraps in Limine GPT+FAT ESP (BIOS + UEFI), writes `target/fat.img`, starts QEMU. You'll see `Hello from myos`; close window to exit. The first build also cross-builds everything the image carries (newlib and every port with a `port.env` under `ports/`, `user/` and `toolchain/std`; see `docs/ports.md`), so it takes a while; a missing piece is a build error, never a silently smaller image.
 
 ```sh
 cargo run -- uefi        # x86_64 UEFI
@@ -168,11 +168,12 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `user/c` | Native C programs (newlib): `hello` and the boot-CI smokes installed as `/bin/etc/*` |
 | `user/echo/cat/ls` | Bootfs demos (`/myos_echo`, `/myos_cat`, `/myos_ls`) |
 | `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` |
-| `ports/` | Userspace ports: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, vim) |
+| `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, vim, git, ...), one `port.env` descriptor each (`docs/ports.md`) |
+| `packages/` | Ports CI builds but the image does not carry; moving a directory here (or back to `ports/`) is the whole change |
 | `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters |
 | `toolchain/std/` | Rust `std` PAL skeleton, sysroot build scripts |
 | `targets/` | Custom Rust target specs (`x86_64-unknown-myos`, `aarch64-unknown-myos`, `riscv64imac-unknown-myos`) |
-| `scripts/` | Thin wrappers for port builds; CI registry (`myos-c-userspace-lib.sh`) |
+| `scripts/` | Thin wrappers for port builds; `ports.sh` (the descriptors); CI registry (`myos-c-userspace-lib.sh`) |
 | `linux-compat/` | Userspace of the Linux layer: the `linux` launcher (every image), musl tests and `get-alpine` (feature `linux_compat`) |
 
 ---
@@ -315,7 +316,7 @@ Implemented libgloss hooks call real syscalls where they exist; stubs return ENO
 
 ## CI
 
-GitHub Actions caches Cargo with Swatinem/rust-cache (`prefix-key: limine-8.3-6`). Userspace port outputs are OCI artifacts on GHCR, one package per port, tagged with stamp hash from `scripts/myos-c-userspace-lib.sh`. First run after stamp change = miss + push; later runs with same hashes = hit. Packages should be **public** for fork PRs. Source checkouts (`*-src`) are never cached.
+GitHub Actions caches Cargo with Swatinem/rust-cache (`prefix-key: limine-8.3-6`). Userspace port outputs are OCI artifacts on GHCR, one package per port (its `PORT_OUTPUTS`, `scripts/ports.sh`), tagged with stamp hash from `scripts/myos-c-userspace-lib.sh`; the ports matrices come from the descriptors. First run after stamp change = miss + push; later runs with same hashes = hit. Packages should be **public** for fork PRs. Source checkouts (`*-src`) are never cached.
 
 Every run boots the four disk images (boot-mini, or the full boot when dispatched) and builds the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`), uploads it as the `myos-x86_64-iso` artifact and boots it from the CD (`cargo run -- iso --ci`).
 

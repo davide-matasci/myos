@@ -8,8 +8,10 @@
 # Usage:
 #   ./scripts/ci-registry.sh pull PORT
 #   ./scripts/ci-registry.sh push PORT
-# PORT is one of: sysroot newlib sbase oksh ubase coreutils ripgrep tcc ncurses vim zlib git lynx curl dropbear lua os-test linux-compat std-hello c-hello kernels
-# or "all" (sysroot + newlib first).
+# PORT is a port with a descriptor and a build script (`scripts/ports.sh
+# --list`: its stamp and PORT_OUTPUTS are cached, keyed by its
+# myos_<name>_version_hash), or one of the pieces cached the same way:
+# sysroot newlib linux-compat kernels. "all" does sysroot + newlib first.
 #
 # Env:
 #   GITHUB_TOKEN              required for private GHCR; pull is anonymous only when unset
@@ -23,6 +25,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=toolchain/std/lib.sh
 source "$ROOT/toolchain/std/lib.sh"
+# shellcheck source=scripts/ports.sh
+source "$ROOT/scripts/ports.sh"
 
 ORAS_VERSION="1.3.3"
 ORAS_LINUX_AMD64_SHA256="9ce999f8d2de03fc03968b29d743077a58783e545e5eaa53917ca177352d0e59"
@@ -30,8 +34,14 @@ ORAS_LINUX_ARM64_SHA256="ac7156f93a21e903f7ad606c792f3560f17e0cd0e36365634701b1e
 ORAS_ARTIFACT_TYPE="application/vnd.myos.ci.port.v1"
 ORAS_LAYER_TYPE="application/vnd.myos.ci.port.layer.v1.tar+zst"
 
-# sysroot (rust std) then newlib (C): dependents pull after.
-ALL_PORTS=(sysroot newlib std-hello c-hello sbase oksh make ubase coreutils ripgrep tcc ncurses vim zlib git lynx curl dropbear lua os-test linux-compat kernels)
+# sysroot (rust std) then newlib (C): dependents pull after. Then every port
+# with a build script (image and package ports, dependencies first), the
+# Linux layer's musl pieces and the kernels.
+ALL_PORTS=(sysroot newlib)
+while read -r name; do
+  ALL_PORTS+=("$name")
+done < <(myos_port_build_order all)
+ALL_PORTS+=(linux-compat kernels)
 
 usage() {
   echo "usage: $0 pull|push PORT" >&2
@@ -39,64 +49,38 @@ usage() {
   exit 2
 }
 
+# Dispatch to the hash / freshness functions of myos-c-userspace-lib.sh and
+# toolchain/std/lib.sh: a port NAME has myos_<name>_version_hash and
+# myos_<name>_is_current (dashes as underscores).
+port_fn() {
+  local fn="myos_${1//-/_}_$2"
+  if ! declare -F "$fn" >/dev/null; then
+    echo "error: no function $fn for port $1 (scripts/myos-c-userspace-lib.sh)" >&2
+    return 2
+  fi
+  echo "$fn"
+}
+
 port_hash() {
+  local fn
   case "$1" in
-    sysroot) myos_sysroot_version_hash ;;
-    newlib) myos_newlib_version_hash ;;
-    sbase) myos_sbase_version_hash ;;
-    oksh) myos_oksh_version_hash ;;
-    make) myos_make_version_hash ;;
-    ubase) myos_ubase_version_hash ;;
-    coreutils) myos_coreutils_version_hash ;;
-    ripgrep) myos_ripgrep_version_hash ;;
-    tcc) myos_tcc_version_hash ;;
-    ncurses) myos_ncurses_version_hash ;;
-    vim) myos_vim_version_hash ;;
-    zlib) myos_zlib_version_hash ;;
-    git) myos_git_version_hash ;;
-    lynx) myos_lynx_version_hash ;;
-    lua) myos_lua_version_hash ;;
-    std-hello) myos_std_hello_version_hash ;;
-    c-hello) myos_c_hello_version_hash ;;
-    curl) myos_curl_version_hash ;;
-    dropbear) myos_dropbear_version_hash ;;
-    os-test) myos_os_test_version_hash ;;
-    linux-compat) myos_linux_compat_version_hash ;;
-    kernels) "$ROOT/scripts/ci-build-kernels.sh" --print-hash | tr -d '\n' ;;
-    *) echo "error: unknown port $1" >&2; return 2 ;;
+    kernels) "$ROOT/scripts/ci-build-kernels.sh" --print-hash | tr -d '
+' ;;
+    *) fn="$(port_fn "$1" version_hash)" || return 2; "$fn" ;;
   esac
 }
 
 port_is_current() {
+  local fn
   case "$1" in
-    sysroot) myos_sysroot_is_current ;;
-    newlib) myos_newlib_is_current ;;
-    sbase) myos_sbase_is_current ;;
-    oksh) myos_oksh_is_current ;;
-    make) myos_make_is_current ;;
-    ubase) myos_ubase_is_current ;;
-    coreutils) myos_coreutils_is_current ;;
-    ripgrep) myos_ripgrep_is_current ;;
-    tcc) myos_tcc_is_current ;;
-    ncurses) myos_ncurses_is_current ;;
-    vim) myos_vim_is_current ;;
-    zlib) myos_zlib_is_current ;;
-    git) myos_git_is_current ;;
-    lynx) myos_lynx_is_current ;;
-    lua) myos_lua_is_current ;;
-    std-hello) myos_std_hello_is_current ;;
-    c-hello) myos_c_hello_is_current ;;
-    curl) myos_curl_is_current ;;
-    dropbear) myos_dropbear_is_current ;;
-    os-test) myos_os_test_is_current ;;
-    linux-compat) myos_linux_compat_is_current ;;
     kernels) "$ROOT/scripts/ci-build-kernels.sh" --is-current ;;
-    *) return 2 ;;
+    *) fn="$(port_fn "$1" is_current)" || return 2; "$fn" ;;
   esac
 }
 
 # Print repo-relative paths to pack. Directories are included recursively.
-# Never lists *-src / *-myos-build / object trees.
+# Never lists *-src / *-myos-build / object trees: a port's descriptor names
+# its outputs (PORT_OUTPUTS, scripts/ports.sh --outputs).
 port_members() {
   local port="$1"
   local arch triple
@@ -118,141 +102,6 @@ port_members() {
       echo target/newlib-aarch64
       echo target/newlib-riscv64
       ;;
-    sbase)
-      echo target/.myos-sbase-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/sbase-manifest-${arch}.txt"
-      done
-      # ELFs only (maxdepth 1 files); skip sbase-src / sbase-myos-build dirs.
-      find "$ROOT/target" -maxdepth 1 -type f -name 'sbase-*-unknown-none' -printf 'target/%f\n' 2>/dev/null || true
-      ;;
-    oksh)
-      echo target/.myos-oksh-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/oksh-${arch}-unknown-none"
-      done
-      ;;
-    make)
-      echo target/.myos-make-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/make-${arch}-unknown-none"
-      done
-      ;;
-    ubase)
-      echo target/.myos-ubase-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/ubase-manifest-${arch}.txt"
-      done
-      find "$ROOT/target" -maxdepth 1 -type f -name 'ubase-*-unknown-none' -printf 'target/%f\n' 2>/dev/null || true
-      ;;
-    coreutils)
-      echo target/.myos-coreutils-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/coreutils-manifest-${arch}.txt"
-        echo "target/coreutils-${arch}-unknown-myos"
-      done
-      ;;
-    ripgrep)
-      echo target/.myos-ripgrep-version
-      for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
-        echo "target/rg-${triple}"
-        echo "target/coreutils-rg-${triple}"
-      done
-      echo target/pcre2-x86_64
-      echo target/pcre2-aarch64
-      echo target/pcre2-riscv64
-      ;;
-    tcc)
-      echo target/.myos-tcc-version
-      for arch in x86_64 aarch64 riscv64; do
-        triple="${arch}-unknown-myos"
-        echo "target/tcc-${triple}"
-        echo "target/coreutils-tcc-${triple}"
-        echo "target/libtcc1-${triple}.a"
-        echo "target/tcc-libtcc1-${triple}.a"
-      done
-      ;;
-    ncurses)
-      echo target/.myos-ncurses-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/ncurses-${arch}"
-        echo "target/libncurses-${arch}-unknown-myos.a"
-      done
-      ;;
-    vim)
-      echo target/.myos-vim-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/vim-${arch}-unknown-none"
-      done
-      ;;
-    zlib)
-      echo target/.myos-zlib-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/zlib-${arch}"
-        echo "target/zlib-libz-${arch}-unknown-myos.a"
-      done
-      ;;
-    git)
-      echo target/.myos-git-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/git-${arch}-unknown-none"
-      done
-      ;;
-    lynx)
-      echo target/.myos-lynx-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/lynx-${arch}-unknown-none"
-      done
-      ;;
-    lua)
-      echo target/.myos-lua-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/lua-${arch}-unknown-none"
-      done
-      ;;
-    std-hello)
-      echo target/.myos-std-hello-version
-      for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
-        for name in hello cat echo bigalloc; do
-          echo "target/std-${name}-${triple}"
-        done
-      done
-      ;;
-    c-hello)
-      echo target/.myos-c-hello-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/c-hello-${arch}-unknown-none"
-        echo "target/c-socket_smoke-${arch}-unknown-none"
-        # Pack alias for ci-build.tar `coreutils-*` glob (no workflow edit).
-        echo "target/coreutils-c-socket_smoke-${arch}-unknown-none"
-      done
-      ;;
-    curl)
-      echo target/.myos-curl-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/curl-${arch}-unknown-none"
-        # Pack alias for ci-build.tar `coreutils-*` glob (no workflow edit).
-        echo "target/coreutils-curl-${arch}-unknown-none"
-      done
-      ;;
-    dropbear)
-      echo target/.myos-dropbear-version
-      for arch in x86_64 aarch64 riscv64; do
-        echo "target/dropbear-${arch}-unknown-none"
-        echo "target/dbclient-${arch}-unknown-none"
-        echo "target/dropbearkey-${arch}-unknown-none"
-        # Pack aliases for ci-build.tar `coreutils-*` glob (no workflow edit).
-        echo "target/coreutils-dropbear-${arch}-unknown-none"
-        echo "target/coreutils-dbclient-${arch}-unknown-none"
-        echo "target/coreutils-dropbearkey-${arch}-unknown-none"
-      done
-      ;;
-    os-test)
-      # Exact dirs only — never os-test-src / os-test-prebuilt-obj.
-      echo target/.myos-os-test-version
-      echo target/os-test-embed
-      echo target/os-test-prebuilt
-      ;;
     linux-compat)
       # The per-arch output dirs only: never the musl prefixes / sources /
       # compiler-rt tree next to them under target/linux-compat.
@@ -265,7 +114,7 @@ port_members() {
     kernels)
       "$ROOT/scripts/ci-build-kernels.sh" --print-members
       ;;
-    *) return 2 ;;
+    *) myos_port_outputs "$port" ;;
   esac
 }
 
