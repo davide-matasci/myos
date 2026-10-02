@@ -75,6 +75,9 @@ enum State {
     Unused,
     Ready,
     Running,
+    /// Waiting for an event (see `sched::block_until`): not runnable until a
+    /// `wake` matching its `wait_key`, its `wake_at` deadline, or a signal.
+    Blocked,
     Dead,
 }
 
@@ -188,6 +191,13 @@ struct Task {
     sig_blocked: u32,
     /// `None` = runnable on any CPU; `Some(cpu)` = pinned (idle threads).
     affinity: Option<usize>,
+    /// What a `Blocked` task waits for (`sched::WAIT_ANY` = any event).
+    wait_key: usize,
+    /// Monotonic-ns deadline of a `Blocked` task, 0 = none.
+    wake_at: u64,
+    /// A wake arrived while the task was still leaving a CPU (mid task
+    /// switch); `finish_switch` turns it into `Ready`.
+    wake_pending: bool,
 }
 
 const EMPTY: Task = Task {
@@ -223,6 +233,9 @@ const EMPTY: Task = Task {
     sig_ignored: 0,
     sig_blocked: 0,
     affinity: None,
+    wait_key: 0,
+    wake_at: 0,
+    wake_pending: false,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -260,16 +273,11 @@ fn slot_root(slot: usize) -> Root {
     r
 }
 
-static CURRENT: [AtomicUsize; crate::smp::MAX_CPUS] = [
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-];
+/// Current task slot per CPU. `usize::MAX` until the CPU's first task is
+/// installed (`init` / `ap_idle_bringup`), so `slot_on_cpu` never mistakes
+/// task 0 for "running on an offline CPU".
+static CURRENT: [AtomicUsize; crate::smp::MAX_CPUS] =
+    [const { AtomicUsize::new(usize::MAX) }; crate::smp::MAX_CPUS];
 static PREEMPT_ON: AtomicBool = AtomicBool::new(false);
 static SERIAL: Mutex<()> = Mutex::new(());
 static KERNEL_ASPACE: AtomicU64 = AtomicU64::new(0);
@@ -413,17 +421,13 @@ pub fn current_ppid() -> usize {
 
 /// When the running task is a user process, its saved PC and stack pointer.
 pub fn current_user_pc_sp() -> Option<(usize, usize)> {
-    let flags = irq_save();
-    irq_off();
-    let id = current_slot();
-    let t = TASKS.lock()[id];
-    let out = if t.user_rip != 0 {
-        Some((t.user_rip, t.user_rsp))
-    } else {
-        None
-    };
-    irq_restore(flags);
-    out
+    with_current_mut(|t| {
+        if t.user_rip != 0 {
+            Some((t.user_rip, t.user_rsp))
+        } else {
+            None
+        }
+    })
 }
 
 pub fn current_aspace() -> u64 {
@@ -455,27 +459,21 @@ pub fn set_exec_name(name: &[u8]) {
 }
 
 pub fn exec_name(out: &mut [u8]) -> usize {
-    let flags = irq_save();
-    irq_off();
-    let id = current_slot();
-    let t = TASKS.lock()[id];
-    let n = t.exec_name_len as usize;
-    let n = n.min(out.len()).min(t.exec_name.len());
-    out[..n].copy_from_slice(&t.exec_name[..n]);
-    irq_restore(flags);
-    n
+    with_current_mut(|t| {
+        let n = t.exec_name_len as usize;
+        let n = n.min(out.len()).min(t.exec_name.len());
+        out[..n].copy_from_slice(&t.exec_name[..n]);
+        n
+    })
 }
 
 pub fn cwd(out: &mut [u8]) -> usize {
-    let flags = irq_save();
-    irq_off();
-    let id = current_slot();
-    let t = TASKS.lock()[id];
-    let n = t.cwd_len as usize;
-    let n = n.min(out.len()).min(t.cwd.len());
-    out[..n].copy_from_slice(&t.cwd[..n]);
-    irq_restore(flags);
-    n
+    with_current_mut(|t| {
+        let n = t.cwd_len as usize;
+        let n = n.min(out.len()).min(t.cwd.len());
+        out[..n].copy_from_slice(&t.cwd[..n]);
+        n
+    })
 }
 
 /// chroot prefix of the current task (real absolute path); 0 bytes = real `/`.
@@ -553,8 +551,11 @@ pub fn is_live_user(id: usize) -> bool {
     }
     let flags = irq_save();
     irq_off();
-    let t = TASKS.lock()[id];
-    let ok = t.user_rip != 0 && matches!(t.state, State::Ready | State::Running);
+    let ok = {
+        let tasks = TASKS.lock();
+        let t = &tasks[id];
+        t.user_rip != 0 && matches!(t.state, State::Ready | State::Running | State::Blocked)
+    };
     irq_restore(flags);
     ok
 }

@@ -8,7 +8,10 @@ const ANON_PIPES: usize = 8;
 /// so they get their own pool (`ANON_PIPES..MAX_PIPES`) and can never starve
 /// `pipe()` for shells and dropbear sessions.
 const MAX_PIPES: usize = 32;
-const PIPE_BUF: usize = 512;
+/// Ring size per pipe. 512 made every `cat | cat` byte stream a 128-byte
+/// syscall ping-pong; 4 KiB (Linux PIPE_BUF) lets a writer hand over a
+/// whole `FILE_IO_TMP` chunk per syscall.
+const PIPE_BUF: usize = 4096;
 
 struct Pipe {
     data: [u8; PIPE_BUF],
@@ -80,27 +83,42 @@ pub fn add_writer(id: usize) -> bool {
 }
 
 pub fn drop_reader(id: usize) {
-    let mut pipes = PIPES.lock();
-    let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
-        return;
-    };
-    p.readers = p.readers.saturating_sub(1);
-    if p.readers == 0 {
-        p.write_closed = true;
+    {
+        let mut pipes = PIPES.lock();
+        let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
+            return;
+        };
+        p.readers = p.readers.saturating_sub(1);
+        if p.readers == 0 {
+            p.write_closed = true;
+        }
+        release_if_idle(&mut pipes, id);
     }
-    release_if_idle(&mut pipes, id);
+    // Blocked writers see EPIPE / FIFO openers see the reader count move.
+    notify(id);
 }
 
 pub fn drop_writer(id: usize) {
-    let mut pipes = PIPES.lock();
-    let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
-        return;
-    };
-    p.writers = p.writers.saturating_sub(1);
-    if p.writers == 0 {
-        p.write_closed = true;
+    {
+        let mut pipes = PIPES.lock();
+        let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
+            return;
+        };
+        p.writers = p.writers.saturating_sub(1);
+        if p.writers == 0 {
+            p.write_closed = true;
+        }
+        release_if_idle(&mut pipes, id);
     }
-    release_if_idle(&mut pipes, id);
+    // Blocked readers see EOF; pollers see POLLHUP.
+    notify(id);
+}
+
+/// Wake tasks blocked on this pipe and any poller. Called after the PIPES
+/// lock is released so the woken side can take it at once.
+fn notify(id: usize) {
+    crate::task::wake(crate::task::key_pipe(id));
+    crate::task::wake_any();
 }
 
 /// Last end closed: free an anonymous pipe; a named FIFO keeps its slot but
@@ -152,57 +170,76 @@ pub fn fifo_ends(id: usize) -> Option<(u8, u8, u32, u32)> {
 /// Attach one open of a named FIFO. Readers see EOF only once every writer
 /// is gone, so (re)opening a writer clears the "closed" state.
 pub fn fifo_attach(id: usize, read: bool, write: bool) -> bool {
-    let mut pipes = PIPES.lock();
-    let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
-        return false;
-    };
-    if read {
-        p.readers = p.readers.saturating_add(1);
-        p.read_opens = p.read_opens.wrapping_add(1);
+    {
+        let mut pipes = PIPES.lock();
+        let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
+            return false;
+        };
+        if read {
+            p.readers = p.readers.saturating_add(1);
+            p.read_opens = p.read_opens.wrapping_add(1);
+        }
+        if write {
+            p.writers = p.writers.saturating_add(1);
+            p.write_opens = p.write_opens.wrapping_add(1);
+        }
+        p.write_closed = p.writers == 0;
     }
-    if write {
-        p.writers = p.writers.saturating_add(1);
-        p.write_opens = p.write_opens.wrapping_add(1);
-    }
-    p.write_closed = p.writers == 0;
+    // A blocked FIFO open on the other side waits for this count to move.
+    notify(id);
     true
 }
 
 pub fn read(id: usize, out: &mut [u8]) -> usize {
-    let mut pipes = PIPES.lock();
-    let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
-        return usize::MAX;
+    let n = {
+        let mut pipes = PIPES.lock();
+        let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
+            return usize::MAX;
+        };
+        if p.len == 0 {
+            return 0;
+        }
+        let was_full = p.len >= PIPE_BUF;
+        let n = out.len().min(p.len);
+        let first = n.min(PIPE_BUF - p.head);
+        out[..first].copy_from_slice(&p.data[p.head..p.head + first]);
+        out[first..n].copy_from_slice(&p.data[..n - first]);
+        p.head = (p.head + n) % PIPE_BUF;
+        p.len -= n;
+        if !was_full {
+            return n;
+        }
+        n
     };
-    if p.len == 0 {
-        return if p.write_closed { 0 } else { 0 };
-    }
-    let n = out.len().min(p.len);
-    for i in 0..n {
-        out[i] = p.data[(p.head + i) % PIPE_BUF];
-    }
-    p.head = (p.head + n) % PIPE_BUF;
-    p.len -= n;
+    // Space freed in a full pipe: a blocked writer can continue.
+    notify(id);
     n
 }
 
 pub fn write(id: usize, data: &[u8]) -> usize {
-    let mut pipes = PIPES.lock();
-    let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
-        return usize::MAX;
-    };
-    if p.readers == 0 {
-        return usize::MAX;
-    }
-    let mut n = 0usize;
-    for &b in data {
-        if p.len >= PIPE_BUF {
-            break;
+    let n = {
+        let mut pipes = PIPES.lock();
+        let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
+            return usize::MAX;
+        };
+        if p.readers == 0 {
+            return usize::MAX;
         }
+        let was_empty = p.len == 0;
+        let room = PIPE_BUF - p.len;
+        let n = data.len().min(room);
         let tail = (p.head + p.len) % PIPE_BUF;
-        p.data[tail] = b;
-        p.len += 1;
-        n += 1;
-    }
+        let first = n.min(PIPE_BUF - tail);
+        p.data[tail..tail + first].copy_from_slice(&data[..first]);
+        p.data[..n - first].copy_from_slice(&data[first..n]);
+        p.len += n;
+        if n == 0 || !was_empty {
+            return n;
+        }
+        n
+    };
+    // Data landed in an empty pipe: a blocked reader / poller can continue.
+    notify(id);
     n
 }
 

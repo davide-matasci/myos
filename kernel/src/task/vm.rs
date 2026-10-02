@@ -61,13 +61,7 @@ const EMPTY_MMAP_REGION: MmapRegion = MmapRegion { va: 0, pages: 0, prot: 0 };
 
 /// Per-task user map: (USER_BASE, IMAGE_SPAN, STACK_OFF).
 pub fn current_user_map() -> (u64, usize, u64) {
-    let flags = irq_save();
-    irq_off();
-    let id = current_slot();
-    let t = TASKS.lock()[id];
-    let out = (t.user_base, t.image_span, t.stack_off);
-    irq_restore(flags);
-    out
+    with_current_mut(|t| (t.user_base, t.image_span, t.stack_off))
 }
 
 pub fn current_brk() -> u64 {

@@ -103,22 +103,17 @@ fn hw_cpu_id() -> u64 {
 pub fn cpu_id() -> usize {
     #[cfg(target_arch = "riscv64")]
     {
-        // BSP-only userspace (Limine/WFI APs stay !ONLINE): ignore tp entirely.
-        // LLVM freely uses x4 as a temporary during deep expand_user_elf
-        // (ripgrep); trusting a clobbered-but-ONLINE-looking tp reopened the
-        // sepc=0 IPF after #151 even with WFI-park. Single ONLINE hart → BOOT.
-        if online_count() <= 1 {
-            return BOOT_CPU.load(Ordering::SeqCst);
-        }
+        // `tp` holds the logical hart id in S-mode: set at BSP init / AP
+        // entry, reserved by LLVM (never a temporary), and reloaded from the
+        // kernel-stack footer by the trap vector on every trap from U-mode
+        // (where tp is the user TLS pointer). The old "single ONLINE hart →
+        // BSP" shortcut broke AP bring-up (an AP is not ONLINE until its idle
+        // task exists, yet needs its own id for its idle stack).
         let tp: usize;
         unsafe {
             core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
         }
-        // #146 required ONLINE[tp]. #147 dropped it so APs could read tp before
-        // mark_running — but that also trusts a *clobbered* tp in 1..MAX_CPUS-1
-        // (LLVM may use x4 as a temporary; user TLS can be a small integer).
-        // Require ONLINE once multiple harts are scheduled.
-        if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
+        if tp < MAX_CPUS {
             return tp;
         }
     }
@@ -164,25 +159,20 @@ pub fn cpu_id() -> usize {
     BOOT_CPU.load(Ordering::SeqCst)
 }
 
-/// Force `tp` back to a sane kernel CPU id after a long Rust path may have
-/// clobbered x4. Safe under UP (tp=0) and after AP `mark_running`.
+/// Safety net before entering U-mode: an out-of-range `tp` (which the trap
+/// vector would otherwise re-derive from the stack footer anyway) is reset to
+/// the BSP id. With `tp` reserved by LLVM and reloaded on every U-mode trap
+/// this should never fire.
 #[cfg(target_arch = "riscv64")]
 pub fn sync_tp_for_kernel() {
-    // Always rewrite tp when only the BSP is ONLINE: a "valid" tp==0 early in a
-    // long expand can still be clobbered later, and callers that skip sync after
-    // the first check would then see garbage. Force the known-good id.
-    let id = if online_count() <= 1 {
-        BOOT_CPU.load(Ordering::SeqCst)
-    } else {
-        let tp: usize;
-        unsafe {
-            core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
-        }
-        if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
-            return;
-        }
-        BOOT_CPU.load(Ordering::SeqCst)
-    };
+    let tp: usize;
+    unsafe {
+        core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
+    }
+    if tp < MAX_CPUS {
+        return;
+    }
+    let id = BOOT_CPU.load(Ordering::SeqCst);
     unsafe {
         core::arch::asm!("mv tp, {0}", in(reg) id, options(nomem, nostack, preserves_flags));
     }
@@ -191,12 +181,10 @@ pub fn sync_tp_for_kernel() {
 #[cfg(not(target_arch = "riscv64"))]
 pub fn sync_tp_for_kernel() {}
 
-#[cfg(not(target_arch = "aarch64"))]
 pub fn cpu_online(i: usize) -> bool {
     i < MAX_CPUS && ONLINE[i].load(Ordering::SeqCst)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 pub fn cpu_hw_id(i: usize) -> u64 {
     if i < MAX_CPUS {
         HW_IDS[i].load(Ordering::SeqCst)
@@ -361,6 +349,16 @@ pub fn tlb_shootdown() {
     ipi_clear_handled();
 }
 
+/// Wake one halted CPU (reschedule IPI) so it notices a newly-ready task.
+pub fn kick_cpu(cpu: usize) {
+    if cpu >= MAX_CPUS || !ONLINE[cpu].load(Ordering::SeqCst) || cpu == cpu_id() {
+        return;
+    }
+    #[cfg(target_arch = "riscv64")]
+    ipi_mark_resched();
+    arch::ipi_reschedule_cpu(cpu);
+}
+
 /// Wake idle CPUs so they notice newly-ready tasks.
 pub fn kick_cpus() {
     if online_count() <= 1 {
@@ -392,7 +390,13 @@ pub fn cpuinfo_text() -> alloc::vec::Vec<u8> {
     push_dec(&mut out, n as u64);
     push_str(&mut out, "\narch: ");
     push_str(&mut out, arch_name);
-    push_str(&mut out, "\nscheduler: smp-rr\n");
+    push_str(&mut out, "\nscheduler: smp-rr\nblocked_tasks: ");
+    push_dec(&mut out, crate::task::blocked_count() as u64);
+    push_str(&mut out, "\nclock_hz: ");
+    push_dec(&mut out, crate::time::clock_hz());
+    push_str(&mut out, "\nuptime_ms: ");
+    push_dec(&mut out, crate::time::monotonic_ns() / 1_000_000);
+    push_str(&mut out, "\n");
     let cpus = CPUS.lock();
     for i in 0..MAX_CPUS {
         let online = ONLINE[i].load(Ordering::SeqCst);
@@ -413,6 +417,8 @@ pub fn cpuinfo_text() -> alloc::vec::Vec<u8> {
         push_str(&mut out, if online || i == 0 { "yes" } else { "no" });
         push_str(&mut out, "\nschedules\t: ");
         push_dec(&mut out, SCHED_TICKS[i].load(Ordering::Relaxed));
+        push_str(&mut out, "\nidle_halts\t: ");
+        push_dec(&mut out, crate::task::idle_halts(i));
         push_str(&mut out, "\n");
         if !ONLINE[0].load(Ordering::SeqCst) && i == 0 {
             break;
@@ -465,9 +471,12 @@ static AP_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_a
 static AP_PARK_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_ap_park;
 
 /// riscv64: park APs in a WFI loop instead of bringing them online (see
-/// `init`).
+/// `init`). Off: secondary harts join the scheduler like the other arches.
+/// The U-mode trap entry reloads `tp` from the kernel-stack footer, so
+/// `cpu_id()` is right on every hart; the `sepc=0` corruption that forced the
+/// park was the trap vector's t0 clobber (fixed in #179).
 #[cfg(target_arch = "riscv64")]
-const RISCV_PARK_APS: bool = true;
+const RISCV_PARK_APS: bool = false;
 
 /// Record BSP and bring secondary CPUs online via Limine MP.
 pub fn init() {

@@ -119,18 +119,26 @@ pub fn signal_send(id: usize, sig: u32) {
         return;
     }
     let bit = 1u32 << sig;
-    with_sig(|tasks, tabs| {
+    let kicks = with_sig(|tasks, tabs| {
         let t = &mut tasks[id];
-        let live = t.user_rip != 0 && matches!(t.state, State::Ready | State::Running);
+        let live = t.user_rip != 0
+            && matches!(t.state, State::Ready | State::Running | State::Blocked);
         if !live {
-            return;
+            return 0;
         }
         let blocked = t.sig_blocked & bit != 0 && bit & UNBLOCKABLE == 0;
         if !blocked && matches!(disposition(t, &tabs[id], sig), Disposition::Ignore) {
-            return;
+            return 0;
         }
         t.sig_pending |= bit;
+        // A signal that acts ends any blocking wait (EINTR / termination).
+        if !blocked {
+            wake_task_locked(tasks, id)
+        } else {
+            0
+        }
     });
+    kick_cpus_mask(kicks);
 }
 
 /// True if a pending signal should break `id` out of a blocking wait: one

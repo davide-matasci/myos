@@ -39,6 +39,7 @@ fi
 # that returned NULL — the os-test setpwent regression).
 # Cache-bust: netd ctl taken + accept-arm-only (PR #164 riscv64 SSH).
 # Cache-bust: pollselect infinite-wait gettimeofday yield (dropbear/netd).
+# Cache-bust: sleep.c (SYS_NANOSLEEP) + pollselect sleeping between scans.
 for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c "$ROOT"/toolchain/newlib/libgloss/myos/*.h; do
   cp "$src_f" "$PORT/"
 done
@@ -46,7 +47,7 @@ done
 mkdir -p "$PORT/sys"
 cp "$ROOT"/toolchain/newlib/libgloss/myos/sys/*.h "$PORT/sys/"
 
-for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect pty search; do
+for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect pty search sleep; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done

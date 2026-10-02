@@ -590,13 +590,20 @@ pub fn nanosleep(req: usize, absolute: bool) -> R {
     let nsec = get_u64(req + 8)?;
     let t = sec.saturating_mul(1_000_000).saturating_add(nsec / 1000);
     let deadline = if absolute { t } else { now_us().saturating_add(t) };
-    while now_us() < deadline {
+    // Convert to a monotonic deadline and really sleep (Blocked, CPU halts).
+    let now = now_us();
+    let mono = crate::time::monotonic_ns()
+        .saturating_add(deadline.saturating_sub(now).saturating_mul(1000))
+        .max(1);
+    loop {
+        if now_us() >= deadline {
+            return Ok(0);
+        }
         if crate::signal::interrupt_wait() {
             return Err(EINTR);
         }
-        task::yield_now();
+        task::sleep_until(mono, false);
     }
-    Ok(0)
 }
 
 pub fn getrandom(buf: usize, len: usize) -> R {
@@ -634,6 +641,7 @@ pub fn poll(fds: usize, nfds: usize, timeout_ms: isize) -> R {
     }
     let deadline = (timeout_ms >= 0).then(|| now_us().saturating_add(timeout_ms as u64 * 1000));
     loop {
+        let seq = task::wait_seq();
         let mut ready = 0;
         for i in 0..nfds {
             let mut b = [0u8; 8];
@@ -674,7 +682,15 @@ pub fn poll(fds: usize, nfds: usize, timeout_ms: isize) -> R {
         if crate::signal::interrupt_wait() {
             return Err(EINTR);
         }
-        task::yield_now();
+        // Sleep until something happens (pipe/tty/device traffic, an exit)
+        // or the timeout; readiness is re-scanned above either way.
+        let mono = match deadline {
+            Some(d) => crate::time::monotonic_ns()
+                .saturating_add(d.saturating_sub(now_us()).saturating_mul(1000))
+                .max(1),
+            None => 0,
+        };
+        task::block_until(task::WAIT_ANY, seq, mono);
     }
 }
 

@@ -24,6 +24,15 @@ pub struct SerialPort;
 
 impl SerialPort {
     pub fn new() -> Self {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        // Program the PL011 once. The console constructs a `SerialPort` per
+        // output byte; re-running this sequence each time disabled the UART
+        // and rewrote LCR_H (which flushes the FIFOs) in the middle of
+        // incoming data — the same input-loss class as the x86 FCR reset.
+        static INITIALIZED: AtomicBool = AtomicBool::new(false);
+        if INITIALIZED.swap(true, Ordering::AcqRel) {
+            return Self;
+        }
         // 115200 8N1-ish. QEMU's PL011 largely ignores baud, but a real init
         // sequence still makes TXE/UARTEN explicit.
         write32(UARTCR, 0);

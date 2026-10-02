@@ -78,13 +78,19 @@ trap_vector:
     csrr t0, sstatus
     sd t0, 264(sp)
     # RISC-V ABI: tp (x4) is the user TLS pointer, but smp::cpu_id() reads tp
-    # as the logical CPU index. Userspace is BSP-only while Limine/WFI APs
-    # stay !ONLINE, so pin tp=0 for U-mode traps (a user TLS value would
-    # select a never-scheduled CURRENT[] slot — ripgrep sepc=0, #146/#150).
-    # Nested S-mode traps keep the hart tp.
+    # as the logical CPU index (LLVM reserves x4, so kernel code never
+    # clobbers it). On a trap from U-mode reload it from the footer word the
+    # scheduler stamps at the base of this task's kernel stack
+    # (`task::stamp_stack_cpu`): the frame sits at the top of that 64 KiB
+    # stack, so the footer is at sp + 280 - STACK_SIZE. Nested S-mode traps
+    # keep the hart tp. (The old `mv tp, zero` only worked while userspace
+    # was BSP-only; user TLS in tp selected a never-scheduled CURRENT[] slot,
+    # ripgrep sepc=0 #146/#150.)
     andi t0, t0, 0x100
     bnez t0, 5f
-    mv tp, zero
+    li t1, 65536
+    sub t1, sp, t1
+    ld tp, 280(t1)
 5:
     mv a0, sp
     call riscv64_trap_handler
@@ -284,7 +290,11 @@ fn write_stimecmp(val: u64) {
 }
 
 fn timer_interval() -> u64 {
-    1_000_000 // ~10 ms at 10 MHz `time` clock on QEMU virt
+    // 10 ms at the 10 MHz `time` clock on QEMU virt (100 Hz, like aarch64).
+    // The previous 1_000_000 was a 100 ms quantum — a tenth of the intended
+    // rate — which made every preemption, deadline wake and console poll
+    // wait up to 100 ms.
+    100_000
 }
 
 fn init_timer() {
@@ -330,10 +340,15 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             // Supervisor timer
             TIMER_FIRED.store(true, Ordering::SeqCst);
             crate::time::note_tick();
-    crate::rng::stir_tick();
+            crate::rng::stir_tick();
             rearm_timer();
-            // Do not drain UART from the riscv timer: CI #150 hung after
-            // `[ OK ] fork` with sepc=0 once this ran on every tick.
+            // BSP stages 16550 RX so a blocked console reader is woken instead
+            // of polling the UART itself (see x86 timer). The CI #150 hang
+            // once blamed on this was the trap-vector t0 clobber, fixed since.
+            if crate::smp::cpu_id() == 0 && crate::input::drain_uart_irq() {
+                crate::task::wake(crate::task::KEY_CONSOLE);
+            }
+            crate::task::timer_tick();
             crate::task::schedule();
         }
         return;
@@ -499,4 +514,13 @@ pub fn ipi_tlb_shootdown() {
 pub fn ipi_reschedule() {
     crate::smp::ipi_mark_resched();
     ipi_others();
+}
+
+/// Reschedule IPI to one logical CPU (its hart id via SBI).
+pub fn ipi_reschedule_cpu(cpu: usize) {
+    if !crate::smp::cpu_online(cpu) {
+        return;
+    }
+    crate::smp::ipi_mark_resched();
+    sbi_send_ipi(1, crate::smp::cpu_hw_id(cpu));
 }

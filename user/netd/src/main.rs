@@ -42,7 +42,14 @@ const MSG_CAP: usize = 2048;
 const MAX_CONV: usize = 32;
 const FILE_IO: usize = 2048;
 const DHCP_POLLS: usize = 3000;
-const TICK_MS: u64 = 100;
+/// Minimum clock advance per poll when `gettimeofday` is unavailable; the
+/// stack clock otherwise follows wall time (`VirtualInstant::bump`).
+const TICK_MS: u64 = 1;
+/// Idle sleeps between polls: the NIC is polled (no RX interrupt), so a
+/// bounded sleep sets the worst-case RX latency; kernel events (channel
+/// requests from netfs, pipe/console traffic) end the sleep early.
+const IDLE_SLEEP_ACTIVE_NS: u64 = 2_000_000;
+const IDLE_SLEEP_QUIET_NS: u64 = 10_000_000;
 
 const ICMP_IDENT_BASE: u16 = 0x22b;
 const TCP_RX: usize = 4096;
@@ -346,7 +353,12 @@ fn poll_dhcp(
     for _ in 0..DHCP_POLLS {
         clock.bump(TICK_MS);
         let now = clock.now();
+        let rx_before = device.rx_frames();
         iface.poll(now, device, sockets);
+        if device.rx_frames() == rx_before {
+            // Nothing arrived: wait a little instead of spinning on the NIC.
+            myos_user::sleep_ns(1_000_000, false);
+        }
         match sockets.get_mut::<dhcpv4::Socket>(dhcp).poll() {
             Some(dhcpv4::Event::Configured(cfg)) => {
                 iface.update_ip_addrs(|addrs| {
@@ -1204,6 +1216,7 @@ fn main() -> ! {
     loop {
         clock.bump(TICK_MS);
         let now = clock.now();
+        let rx_before = device.rx_frames();
         iface.poll(now, &mut device, &mut sockets);
 
         if !dhcp_ok {
@@ -1348,6 +1361,25 @@ fn main() -> ! {
             if dead {
                 force_free_orphan(&mut convs, &mut sockets, chan, i);
             }
+        }
+
+        // Idle? Sleep until the next kernel event (a request on the channel,
+        // console/pipe traffic) or a short bound, instead of spinning: netd
+        // used to pin a CPU at 100% forever. Frames or requests seen this
+        // round mean the NIC/peer is active, so poll again at once.
+        let rx_now = device.rx_frames();
+        if !got_req && rx_now == rx_before {
+            let active = convs
+                .iter()
+                .any(|c| !matches!(c.kind, Kind::Empty) && c.listen_port == 0);
+            let mut ns = if active { IDLE_SLEEP_ACTIVE_NS } else { IDLE_SLEEP_QUIET_NS };
+            if let Some(d) = iface.poll_delay(clock.now(), &sockets) {
+                let d_ns = (d.total_micros() as u64).saturating_mul(1000);
+                if d_ns < ns {
+                    ns = d_ns.max(100_000);
+                }
+            }
+            myos_user::sleep_ns(ns, true);
         }
     }
 }

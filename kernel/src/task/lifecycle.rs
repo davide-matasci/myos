@@ -32,12 +32,6 @@ pub fn note_reap(parent: usize) {
 /// parent's slot (see `orphan_children`).
 const NO_PARENT: usize = usize::MAX;
 
-/// True while `slot` is some CPU's current task (e.g. still running the
-/// tail of `die()` on its own kernel stack), so it must not be recycled.
-fn slot_on_cpu(slot: usize) -> bool {
-    CURRENT.iter().any(|c| c.load(Ordering::SeqCst) == slot)
-}
-
 /// True once dead task `slot` has left its kernel stack for good, so the slot
 /// (and the kernel stack it keeps for reuse) may be recycled.
 ///
@@ -115,29 +109,31 @@ pub fn zombie_count(parent: usize) -> usize {
         0
     }
 }
+/// Home CPU for a new top-level user task: round-robin over the online
+/// CPUs. Every user task is pinned to a home (no live migration), which is
+/// what lets `flush_user_tlb` stay local: an address space is only ever
+/// loaded on its home CPU.
+///
+/// x86_64 / aarch64 skip the BSP (it owns the console, UART drain and the
+/// kernel_main idle loop; with 3 APs under `-smp 4` user work has plenty of
+/// room). riscv64 runs `-smp 2`, so the RR covers both harts.
+/// aarch64 history: user was BSP-pinned while block I/O waited on BSP-
+/// targeted SPIs; virtio-blk/NVMe are polled now, so APs can run user code
+/// (verified: boot-mini needles under `-smp 4`).
 pub(super) fn user_affinity() -> Option<usize> {
-    #[cfg(target_arch = "x86_64")]
+    let n = crate::smp::online_count();
+    if n <= 1 {
+        return Some(0);
+    }
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(target_arch = "riscv64")]
     {
-        let n = crate::smp::online_count();
-        if n <= 1 {
-            return Some(0);
-        }
+        Some(NEXT.fetch_add(1, Ordering::SeqCst) % n)
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    {
         // RR over [1, n): never assign user to BSP.
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
         Some(1 + NEXT.fetch_add(1, Ordering::SeqCst) % (n - 1))
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        // Pin userspace to BSP for now. APs stay ONLINE for kernel/scheduler
-        // (smoke, idle, TLB/IPI). Virtio/NVMe SPIs are BSP-targeted on GICv2
-        // virt; running blocking block I/O on an AP hung mid-`ok` (ext2), and
-        // floating migration eret'd to elr=0x9. Real AP userspace needs IRQ
-        // affinity / cross-CPU completion wakes — follow-up.
-        Some(0)
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        None
     }
 }
 
@@ -151,7 +147,7 @@ pub(super) fn parent_has_active_child(tasks: &[Task; MAX_TASKS], ppid: usize) ->
             continue;
         }
         match tasks[i].state {
-            State::Ready | State::Running => return true,
+            State::Ready | State::Running | State::Blocked => return true,
             State::Unused | State::Dead => {}
         }
     }
@@ -421,6 +417,9 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         // active sibling (make -j / pipelines): fresh AP RR home. Exec keeps
         // this affinity. Cross-CPU wait: die() IF-on + schedule() soft TLB.
         affinity: child_aff,
+        wait_key: 0,
+        wake_at: 0,
+        wake_pending: false,
     };
     // Before the child becomes runnable on another CPU (TASKS still held;
     // TASKS → SIG_TABLES is the lock order).
@@ -431,9 +430,10 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     drop(tasks);
     user::note_fork();
     irq_restore(flags);
-    // Only wake peers when the child was RR-homed onto another AP.
+    // Wake the child's home CPU if it is halted (another AP after RR
+    // spreading; the home CPU otherwise picks it up at its next schedule).
     if kick {
-        crate::smp::kick_cpus();
+        note_ready(child_aff);
     }
     Some(slot)
 }
@@ -484,6 +484,9 @@ pub fn wait_child(
     loop {
         let mut any = false;
         let mut reap = None;
+        // Read before the scan: a child exiting after it bumps the sequence
+        // and `block_until` then returns at once.
+        let seq = wait_seq();
         {
             let flags = irq_save();
             irq_off();
@@ -551,7 +554,7 @@ pub fn wait_child(
         if crate::signal::interrupt_wait() {
             return usize::MAX;
         }
-        yield_now();
+        block_until(key_child(parent), seq, 0);
     }
 }
 
@@ -628,16 +631,18 @@ fn spawn_inner(
         sig_ignored: 0,
         sig_blocked: 0,
         affinity: if aspace != 0 { user_affinity() } else { None },
+        wait_key: 0,
+        wake_at: 0,
+        wake_pending: false,
     };
     signal_table_reset(slot);
     fpu::reset(slot);
     #[cfg(feature = "linux-compat")]
     crate::linux::on_spawn(slot);
+    let aff = tasks[slot].affinity;
     drop(tasks);
     irq_restore(flags);
-    if crate::smp::online_count() > 1 {
-        crate::smp::kick_cpus();
-    }
+    note_ready(aff);
 }
 
 pub fn user_exit(code: u8) -> ! {
@@ -694,6 +699,9 @@ extern "C" fn trampoline() -> ! {
 pub fn die() -> ! {
     irq_off();
     let mut chld_parent = usize::MAX;
+    // Closed outside TASKS below: dropping pipe/pty ends wakes their peers
+    // (and a pty hangup signals the session), which take TASKS themselves.
+    let mut fds_to_drop: Option<[FdEntry; MAX_FDS]> = None;
     let reclaim = {
         let mut tasks = TASKS.lock();
         let id = current_slot();
@@ -702,9 +710,7 @@ pub fn die() -> ! {
         if tasks[id].user_rip != 0 {
             chld_parent = tasks[id].ppid;
             user::note_exit();
-            for entry in tasks[id].fds {
-                fd_drop(entry);
-            }
+            fds_to_drop = Some(tasks[id].fds);
             tasks[id].fds = [FdEntry::Empty; MAX_FDS];
             let aspace = tasks[id].aspace;
             let base = tasks[id].user_base;
@@ -725,6 +731,11 @@ pub fn die() -> ! {
         }
         out
     };
+    if let Some(fds) = fds_to_drop {
+        for entry in fds {
+            fd_drop(entry);
+        }
+    }
     // Notify the parent now that the TASKS lock is dropped: the exit status
     // is final, so the parent can reap it while this task still frees its
     // address space below (that walk is not on the parent's critical path).
@@ -733,6 +744,9 @@ pub fn die() -> ! {
     if chld_parent != usize::MAX {
         crate::signal::raise_sigchld(chld_parent);
         note_zombie(chld_parent);
+        // The parent may be blocked in `wait`; pollers may watch for exits.
+        wake(key_child(chld_parent));
+        wake_any();
     }
     // Reclaim/TLB shootdown must run with IF on: remotes ACK the shootdown
     // IPI only after sti. Holding cli here deadlocked a parent waiter that was

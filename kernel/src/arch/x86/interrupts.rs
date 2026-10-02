@@ -29,6 +29,7 @@ const LVT_TIMER: u32 = 0x320;
 const LVT_LINT0: u32 = 0x350;
 const LVT_LINT1: u32 = 0x360;
 const INIT_COUNT: u32 = 0x380;
+const CUR_COUNT: u32 = 0x390;
 const DIV: u32 = 0x3E0;
 
 static IDT: Once<InterruptDescriptorTable> = Once::new();
@@ -165,12 +166,55 @@ pub fn init() {
     lapic_w(LVT_LINT0, 1 << 16);
     lapic_w(LVT_LINT1, 1 << 16);
     lapic_w(DIV, 0xB);
+    // Measure first: the calibration reprograms LVT_TIMER (masked one-shot).
+    let count = timer_init_count();
     // Periodic (bit 17). Do not mask after the first tick: preemption needs
-    // the timer to keep firing. INIT_COUNT ~100_000 is several kHz in QEMU.
+    // the timer to keep firing.
     lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 17));
-    lapic_w(INIT_COUNT, 100_000);
+    lapic_w(INIT_COUNT, count);
 
     x86_64::instructions::interrupts::enable();
+}
+
+/// Scheduler tick period.
+const TICK_HZ: u64 = 1000;
+/// Fallback when the TSC is not calibrated (no PIT): the historical
+/// INIT_COUNT, "several kHz" in QEMU.
+const FALLBACK_INIT_COUNT: u32 = 100_000;
+static INIT_COUNT_CACHED: AtomicUsize = AtomicUsize::new(0);
+
+/// LAPIC timer INIT_COUNT for [`TICK_HZ`], measured once on the BSP against
+/// the calibrated TSC (`time::init` runs before interrupts come up). The old
+/// fixed 100_000 fired 10-20k ticks per second per CPU under QEMU, and every
+/// tick takes the scheduler lock; 1 kHz keeps preemption and the UART drain
+/// (16-byte FIFO fills in ~4 ms at 38400 baud) and cuts that overhead.
+fn timer_init_count() -> u32 {
+    let cached = INIT_COUNT_CACHED.load(Ordering::SeqCst);
+    if cached != 0 {
+        return cached as u32;
+    }
+    let count = if crate::time::clock_hz() == 0 {
+        FALLBACK_INIT_COUNT
+    } else {
+        // One-shot, maximal count, masked: watch how far it counts in 20 ms.
+        lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 16));
+        lapic_w(INIT_COUNT, 0xFFFF_FFFF);
+        let t0 = crate::time::monotonic_ns();
+        while crate::time::monotonic_ns().wrapping_sub(t0) < 20_000_000 {
+            core::hint::spin_loop();
+        }
+        let elapsed = u64::from(0xFFFF_FFFFu32 - lapic_r(CUR_COUNT));
+        lapic_w(INIT_COUNT, 0);
+        let per_tick = elapsed * 1000 / 20 / TICK_HZ;
+        // Sanity: 1 kHz needs at least a few thousand counts; cap at 2^31.
+        if per_tick < 1_000 || per_tick > u64::from(u32::MAX / 2) {
+            FALLBACK_INIT_COUNT
+        } else {
+            per_tick as u32
+        }
+    };
+    INIT_COUNT_CACHED.store(count as usize, Ordering::SeqCst);
+    count
 }
 
 
@@ -199,8 +243,9 @@ pub fn ap_init(logical: usize) {
     lapic_w(LVT_LINT0, 1 << 16);
     lapic_w(LVT_LINT1, 1 << 16);
     lapic_w(DIV, 0xB);
+    let count = timer_init_count();
     lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 17));
-    lapic_w(INIT_COUNT, 100_000);
+    lapic_w(INIT_COUNT, count);
     // Leave IF clear — `task::ap_idle_loop` enables IRQs only after CURRENT
     // and the idle task exist (otherwise an early IPI/timer schedules with
     // CURRENT==0 and corrupts the BSP's task 0).
@@ -307,6 +352,13 @@ pub fn ipi_reschedule() {
     send_ipi_others(IPI_RESCHED_VECTOR);
 }
 
+/// Reschedule IPI to one logical CPU (wakes it from `hlt`).
+pub fn ipi_reschedule_cpu(cpu: usize) {
+    if crate::smp::cpu_online(cpu) {
+        send_ipi_apic(crate::smp::cpu_hw_id(cpu) as u32, IPI_RESCHED_VECTOR);
+    }
+}
+
 fn flush_tlb_local() {
     unsafe {
         core::arch::asm!(
@@ -334,13 +386,14 @@ extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
     crate::time::note_tick();
     crate::rng::stir_tick();
     // BSP drains COM1 so a starved shell CPU cannot overrun the FIFO
-    // (bios `which ls`→`which s` under -smp 4 TCG). x86-only.
-    // When bytes land, IPI other CPUs: getty lives on an AP, and ECHO only
-    // runs from that reader's poll — without a kick, host echo-sync waits
-    // then resends, sticky-keying `login: rroooo…` / `roootttt…`.
+    // (bios `which ls`→`which s` under -smp 4 TCG). When bytes land, wake
+    // the console reader (it blocks on KEY_CONSOLE, possibly on another CPU):
+    // ECHO only runs from that reader's poll — without a wake, host echo-sync
+    // waits then resends, sticky-keying `login: rroooo…` / `roootttt…`.
     if crate::smp::cpu_id() == 0 && crate::input::drain_uart_irq() {
-        crate::smp::kick_cpus();
+        crate::task::wake(crate::task::KEY_CONSOLE);
     }
+    crate::task::timer_tick();
     lapic_w(EOI, 0);
     crate::task::schedule();
 }

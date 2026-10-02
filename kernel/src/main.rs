@@ -136,6 +136,9 @@ fn kernel_main() -> ! {
     heap::init();
     prove_heap();
 
+    // Calibrate the monotonic clock first (x86: TSC vs PIT, port I/O only):
+    // the x86 LAPIC tick period is derived from it.
+    time::init();
     arch::init_interrupts();
     arch::wait_for_interrupt_proof();
     console::status_ok("interrupts");
@@ -202,8 +205,10 @@ fn kernel_main() -> ! {
         );
     }
     user::spawn_init();
+    // kernel_main is the BSP's idle task from here on: run whatever is Ready
+    // for CPU 0, halt until the next interrupt otherwise.
     while !user::both_exited() {
-        task::yield_now();
+        task::idle_step();
     }
 
     console::flush();
