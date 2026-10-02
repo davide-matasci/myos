@@ -15,8 +15,8 @@ use crate::fs::StatInfo;
 const MAX_ENTRIES: usize = 16384;
 const COMP_CAP: usize = 255;
 const PATH_CAP: usize = 255;
-/// File data lives in the kernel heap (`heap::HEAP_SIZE`), which bounds the
-/// whole tmpfs; this caps one file.
+/// File data lives in the kernel heap (sized from memory, see `heap`), which
+/// bounds the whole tmpfs; this caps one file.
 const FILE_CAP: usize = 16 * 1024 * 1024;
 const LINK_CAP: usize = 255;
 

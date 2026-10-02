@@ -123,6 +123,10 @@ const CMD_LINUX_DYN: &[u8] = b"linux /bin/linux/linux-dyn\n";
 // ... and a real Alpine Linux package, downloaded at run time (jq +
 // oniguruma + musl), run chrooted in its Alpine root.
 const CMD_GET_ALPINE: &[u8] = b"get-alpine jq && linux --root /tmp/alpine jq -nr '\"ALPINE-JQ \\(1+2+3)\"'\n";
+// ... and Python (python3 and its 19 dependencies, ~45 MB in /tmp): the
+// standard library, and the json and sqlite3 C extension modules.
+const CMD_PYTHON: &[u8] =
+    b"get-alpine python3 && linux --root /tmp/alpine python3 -c 'import json,sqlite3;print(\"PYTHON\",json.loads(\"[42]\")[0])'\n";
 // pty boot-CI smoke (openpty/forkpty, echo round-trip, EIO on session end).
 const CMD_PTY: &[u8] = b"/bin/etc/pty_smoke 2\n";
 // urandom boot-CI smoke (kernel CSPRNG via /dev/urandom: non-zero, distinct,
@@ -478,6 +482,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         cmds.push(CMD_LINUX);
         cmds.push(CMD_LINUX_DYN);
         cmds.push(CMD_GET_ALPINE);
+        cmds.push(CMD_PYTHON);
     } else {
         cmds.push(CMD_INSMOD_LINUX);
     }
@@ -1212,6 +1217,9 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         i if cmds[i] == CMD_LINUX_DYN => interactive_linux_dyn_cmd_ok(serial),
         i if cmds[i] == CMD_GET_ALPINE => {
             interactive_tail(serial).contains("\nALPINE-JQ 6") && at_interactive_prompt(serial)
+        }
+        i if cmds[i] == CMD_PYTHON => {
+            interactive_tail(serial).contains("\nPYTHON 42") && at_interactive_prompt(serial)
         }
         i if cmds[i] == CMD_DROPBEAR_STOP => {
             command_echoed(serial, "kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP")

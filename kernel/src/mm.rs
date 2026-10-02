@@ -17,11 +17,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use limine::memmap;
 
-use crate::heap::HEAP_SIZE;
 use crate::limine_boot;
 
 const PAGE: u64 = 4096;
-const SKIP: u64 = 64 * 1024;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 /// Intrusive freelist head (physical address), or 0. Each free page stores the
@@ -85,23 +83,6 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
         site(5),
     )
     .into_bytes()
-}
-
-fn heap_phys() -> u64 {
-    let entries = limine_boot::MEMMAP
-        .response()
-        .expect("Limine memmap")
-        .entries();
-    let need = HEAP_SIZE as u64 + SKIP;
-    for e in entries {
-        if e.type_ != memmap::MEMMAP_USABLE {
-            continue;
-        }
-        if e.length >= need {
-            return (e.base + SKIP + 0xfff) & !0xfff;
-        }
-    }
-    panic!("no usable Limine memory for heap");
 }
 
 /// Physical `[start, end)` of the Limine-loaded kernel image.
@@ -175,7 +156,7 @@ pub fn alloc_contiguous_frames(n: usize) -> Option<u64> {
 
     let mut next = NEXT.load(Ordering::SeqCst);
     if next == 0 {
-        next = heap_phys() + HEAP_SIZE as u64;
+        next = crate::heap::phys_end();
     }
     next = (next + 0xfff) & !0xfff;
     let need = (n as u64).saturating_mul(PAGE);
@@ -290,7 +271,7 @@ pub fn alloc_frame() -> u64 {
 
     let mut next = NEXT.load(Ordering::SeqCst);
     if next == 0 {
-        next = heap_phys() + HEAP_SIZE as u64;
+        next = crate::heap::phys_end();
     }
     next = (next + 0xfff) & !0xfff;
 

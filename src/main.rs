@@ -412,9 +412,9 @@ const QEMU_SUCCESS_STATUS: i32 = (0x10 << 1) | 1;
 fn ci_qemu_timeout() -> Duration {
     if std::env::var_os("MYOS_CI_MINI").map(|v| v == "1").unwrap_or(false) {
         // Local mini runs with the Linux layer add its smokes and get-alpine
-        // (downloads from the Alpine mirror and unpacks under TCG). CI runs
-        // the layer only in the full boot.
-        Duration::from_secs(if linux_compat_enabled() { 480 } else { 240 })
+        // (jq and Python from the Alpine mirror, unpacked under TCG). CI
+        // runs the layer only in the full boot.
+        Duration::from_secs(if linux_compat_enabled() { 720 } else { 240 })
     } else {
         // Full boot runs the whole curated os-test list (303 tests at
         // ~3-6 s each under TCG) and must reach 100%; 1800 s ran out on
