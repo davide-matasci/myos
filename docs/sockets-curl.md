@@ -23,6 +23,11 @@ sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.
 | `getaddrinfo` | DNS A lookup over `/net/udp` to QEMU DNS `10.0.2.3:53` (same as `user/lib/dns.rs`) |
 | `poll`/`select` | userspace busy-wait; **POLLOUT** only when `SOCK_CONNECTED` (or connect finished); **POLLIN** from netfs RX size / hangup (drain RX before hangup EOF); tty **POLLIN** is not always-ready (no FIONREAD) |
 
+A read of a UDP conversation's `data` returns one datagram (netfs keeps
+their boundaries; bytes beyond the reader's buffer are dropped, as in
+`recv`). The optional Linux layer maps Linux sockets onto the same files in
+the kernel (`docs/linux-compat.md`, Sockets).
+
 Outbound TCP/UDP first. `listen`/`accept` return `EOPNOTSUPP`. Most `SO_*`/`TCP_*` are ignored.
 
 ### Smoke

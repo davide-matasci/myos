@@ -108,6 +108,8 @@ static API: KernelApi = KernelApi {
     wall_time_us: api_wall_time_us,
     rng_fill: api_rng_fill,
     dt_mmio_find: api_dt_mmio_find,
+    vfs_read: api_vfs_read,
+    vfs_write: api_vfs_write,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -880,6 +882,31 @@ unsafe extern "C" fn api_vfs_readlink(path: StrRef, buf: *mut u8, cap: usize) ->
     let out = unsafe { core::slice::from_raw_parts_mut(buf, cap) };
     match crate::fs::readlink(path, out) {
         Some(n) => n as i32,
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_read(path: StrRef, pos: usize, buf: *mut u8, cap: usize) -> i32 {
+    let (Some(path), false) = (str_ref(path), buf.is_null()) else {
+        return -1;
+    };
+    let Some(node) = crate::fs::open(path, 0) else {
+        return -1;
+    };
+    let out = unsafe { core::slice::from_raw_parts_mut(buf, cap) };
+    crate::fs::read(&node, pos, out).min(i32::MAX as usize) as i32
+}
+
+unsafe extern "C" fn api_vfs_write(path: StrRef, pos: usize, buf: *const u8, len: usize) -> i32 {
+    let (Some(path), false) = (str_ref(path), buf.is_null()) else {
+        return -1;
+    };
+    let Some(node) = crate::fs::open(path, 1) else {
+        return -1;
+    };
+    let src = unsafe { core::slice::from_raw_parts(buf, len) };
+    match crate::fs::write(&node, pos, src) {
+        Some(n) => n.min(i32::MAX as usize) as i32,
         None => -1,
     }
 }

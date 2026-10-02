@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 
 use super::abi::*;
 use super::files;
+use super::net;
 use crate::k::fs;
 use crate::k::task;
 use crate::k::user::{self, SyscallRegs};
@@ -36,7 +37,7 @@ fn native_failed(r: usize) -> bool {
     r >= crate::k::signal::SYSERR_EINTR
 }
 
-fn native(r: usize, generic: usize) -> R {
+pub(super) fn native(r: usize, generic: usize) -> R {
     let v = result(r, generic);
     if native_failed(r) { Err(v.wrapping_neg()) } else { Ok(v) }
 }
@@ -157,14 +158,21 @@ fn real_path_nofollow(path: &str) -> R2<String> {
 // ---- files ----------------------------------------------------------------
 
 pub fn read(fd: usize, buf: usize, len: usize) -> R {
-    if files::get(fd).is_some_and(|e| e.dir) {
-        return Err(EISDIR);
+    let io = || native(user::sys_read(fd, buf, len), EBADF);
+    match files::get(fd) {
+        Some(e) if e.dir => Err(EISDIR),
+        Some(e) if e.sock.is_some() => net::recv(fd, false, io),
+        _ => io(),
     }
-    native(user::sys_read(fd, buf, len), EBADF)
 }
 
 pub fn write(fd: usize, buf: usize, len: usize) -> R {
-    native(task::fd_write(fd, buf, len), EBADF)
+    let io = || native(task::fd_write(fd, buf, len), EBADF);
+    if is_socket(fd) { net::send(fd, io) } else { io() }
+}
+
+fn is_socket(fd: usize) -> bool {
+    files::get(fd).is_some_and(|e| e.sock.is_some())
 }
 
 /// readv / writev: one native call per `iovec`, stopping at a short one.
@@ -172,23 +180,30 @@ pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
     if cnt > 1024 {
         return Err(EINVAL);
     }
-    let mut total = 0usize;
-    for i in 0..cnt {
-        let base = get_u64(iov + i * 16)? as usize;
-        let len = get_u64(iov + i * 16 + 8)? as usize;
-        if len == 0 {
-            continue;
+    let io = || {
+        let mut total = 0usize;
+        for i in 0..cnt {
+            let base = get_u64(iov + i * 16)? as usize;
+            let len = get_u64(iov + i * 16 + 8)? as usize;
+            if len == 0 {
+                continue;
+            }
+            let r = if write { task::fd_write(fd, base, len) } else { user::sys_read(fd, base, len) };
+            if native_failed(r) {
+                return if total > 0 { Ok(total) } else { native(r, EBADF) };
+            }
+            total += r;
+            if r < len {
+                break;
+            }
         }
-        let r = if write { task::fd_write(fd, base, len) } else { user::sys_read(fd, base, len) };
-        if native_failed(r) {
-            return if total > 0 { Ok(total) } else { native(r, EBADF) };
-        }
-        total += r;
-        if r < len {
-            break;
-        }
+        Ok(total)
+    };
+    match (is_socket(fd), write) {
+        (true, true) => net::send(fd, io),
+        (true, false) => net::recv(fd, false, io),
+        (false, _) => io(),
     }
-    Ok(total)
 }
 
 pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
@@ -248,6 +263,10 @@ pub fn fstatat(dirfd: usize, path: usize, buf: usize, flags: usize) -> R {
 }
 
 pub fn fstat(fd: usize, buf: usize) -> R {
+    if is_socket(fd) {
+        put(buf, &super::arch::stat_bytes(0o140777, 0, fd as u64 + 1, 1, 0))?;
+        return Ok(0);
+    }
     if let Some(e) = files::get(fd) {
         if let Some(st) = fs::stat(&real_path(&e.path)?) {
             return put_stat(buf, &st);
@@ -310,6 +329,13 @@ pub fn getdents64(fd: usize, buf: usize, count: usize) -> R {
 }
 
 pub fn ioctl(fd: usize, req: usize, arg: usize) -> R {
+    const FIONBIO: usize = 0x5421;
+    if req == FIONBIO && is_socket(fd) {
+        let mut on = [0u8; 4];
+        get(arg, &mut on)?;
+        net::set_nonblock(fd, on != [0; 4]);
+        return Ok(0);
+    }
     native(task::fd_ioctl(fd, req, arg), ENOTTY)
 }
 
@@ -362,11 +388,19 @@ pub fn fcntl(fd: usize, cmd: usize, arg: usize) -> R {
     if task::fd_kind(fd).is_none() {
         return Err(EBADF);
     }
+    const O_NONBLOCK: usize = 0o4000;
     match cmd {
         F_DUPFD | F_DUPFD_CLOEXEC => dup(fd, arg),
-        // No close-on-exec or non-blocking flags to report or change yet.
-        F_GETFD | F_SETFD | F_SETFL => Ok(0),
-        F_GETFL => Ok(2), // O_RDWR
+        // No close-on-exec flag yet; only sockets can be non-blocking.
+        F_GETFD | F_SETFD => Ok(0),
+        F_SETFL => {
+            net::set_nonblock(fd, arg & O_NONBLOCK != 0);
+            Ok(0)
+        }
+        F_GETFL => {
+            let nonblock = files::get(fd).and_then(|e| e.sock).is_some_and(|s| s.nonblock);
+            Ok(2 | if nonblock { O_NONBLOCK } else { 0 }) // O_RDWR
+        }
         _ => Err(EINVAL),
     }
 }
@@ -603,10 +637,11 @@ pub fn prlimit(resource: usize, old: usize) -> R {
     Ok(0)
 }
 
-/// poll(2) on pipes; other fds always report ready.
+/// poll(2) on pipes and sockets; other fds always report ready.
 pub fn poll(fds: usize, nfds: usize, timeout_ms: isize) -> R {
     const POLLIN: u16 = 1;
     const POLLOUT: u16 = 4;
+    const POLLERR: u16 = 8;
     const POLLHUP: u16 = 0x10;
     const POLLNVAL: u16 = 0x20;
     if nfds > 64 {
@@ -625,6 +660,8 @@ pub fn poll(fds: usize, nfds: usize, timeout_ms: isize) -> R {
                 0
             } else if task::fd_kind(fd as usize).is_none() {
                 POLLNVAL
+            } else if let Some(r) = net::poll_events(fd as usize) {
+                r & (events | POLLERR | POLLHUP)
             } else {
                 match task::fd_poll_bits(fd as usize) {
                     Some(bits) => {
