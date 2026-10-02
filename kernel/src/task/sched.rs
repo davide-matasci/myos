@@ -283,6 +283,8 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
         }
         if deadline != 0 {
             NEXT_DEADLINE.fetch_min(deadline, Ordering::SeqCst);
+            // This CPU's timer fires at the deadline, not at the next tick.
+            crate::arch::timer_deadline(deadline);
         }
     }
     loop {
@@ -456,6 +458,14 @@ pub fn wake_task(slot: usize) {
     };
     irq_restore(flags);
     kick(kicks);
+}
+
+/// The earliest pending sleep deadline (monotonic ns; `u64::MAX` for none),
+/// for arches that program their timer for it instead of waiting for the
+/// next periodic tick (aarch64, riscv64; x86 ticks at 1 kHz).
+#[allow(dead_code)]
+pub fn next_deadline_ns() -> u64 {
+    NEXT_DEADLINE.load(Ordering::SeqCst)
 }
 
 /// Called from every timer IRQ (before `schedule`): wake tasks whose

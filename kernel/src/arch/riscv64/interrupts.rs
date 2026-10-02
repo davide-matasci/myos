@@ -289,22 +289,55 @@ fn write_stimecmp(val: u64) {
     }
 }
 
+fn read_stimecmp() -> u64 {
+    let v: u64;
+    unsafe {
+        asm!("csrr {v}, stimecmp", v = out(reg) v, options(nomem, nostack));
+    }
+    v
+}
+
+/// `time` ticks per scheduler tick: 10 ms (100 Hz, like aarch64) at the
+/// device tree's `timebase-frequency`.
 fn timer_interval() -> u64 {
-    // 10 ms at the 10 MHz `time` clock on QEMU virt (100 Hz, like aarch64).
-    // The previous 1_000_000 was a 100 ms quantum — a tenth of the intended
-    // rate — which made every preemption, deadline wake and console poll
-    // wait up to 100 ms.
-    100_000
+    (super::clock::timebase_hz() / 100).max(1)
+}
+
+/// A monotonic-ns deadline as a `time` value (same clock as
+/// `clock::monotonic_ns`).
+fn ns_to_ticks(ns: u64) -> u64 {
+    ((ns as u128 * super::clock::timebase_hz() as u128) / 1_000_000_000) as u64
+}
+
+/// Arm this hart's timer for the next tick, or for the earliest sleep
+/// deadline (`task::next_deadline_ns`) when that is sooner, so a
+/// `nanosleep` / `poll` timeout ends when it should and not at the next
+/// 10 ms boundary.
+fn arm_timer() {
+    let now = read_time();
+    let mut target = now.wrapping_add(timer_interval());
+    let deadline = crate::task::next_deadline_ns();
+    if deadline != u64::MAX {
+        target = target.min(ns_to_ticks(deadline).max(now + 1));
+    }
+    write_stimecmp(target);
+}
+
+/// A new sleep deadline on this hart: pull the timer in if it is armed
+/// later than that.
+pub fn timer_deadline(deadline_ns: u64) {
+    let target = ns_to_ticks(deadline_ns);
+    if target < read_stimecmp() {
+        write_stimecmp(target.max(read_time() + 1));
+    }
 }
 
 fn init_timer() {
-    let next = read_time().wrapping_add(timer_interval());
-    write_stimecmp(next);
+    arm_timer();
 }
 
 fn rearm_timer() {
-    let next = read_time().wrapping_add(timer_interval());
-    write_stimecmp(next);
+    arm_timer();
 }
 
 /// After an interrupt's reschedule: act on a `SIGKILL` if it came from
@@ -486,11 +519,20 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
 }
 
 
-/// SiFive-style PLIC on QEMU `virt`, S-mode context of the boot hart.
+/// SiFive-style PLIC (base from the device tree), S-mode context of the
+/// boot hart.
 pub mod plic {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    const BASE: usize = 0x0C00_0000;
+    static BASE: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn set_base(base: usize) {
+        BASE.store(base, Ordering::SeqCst);
+    }
+
+    fn base() -> usize {
+        BASE.load(Ordering::Relaxed)
+    }
     const PRIORITY: usize = 0x0;
     const ENABLE: usize = 0x2000;
     const ENABLE_STRIDE: usize = 0x80;
@@ -512,11 +554,11 @@ pub mod plic {
     }
 
     fn w(off: usize, v: u32) {
-        unsafe { core::ptr::write_volatile((BASE + off) as *mut u32, v) }
+        unsafe { core::ptr::write_volatile((base() + off) as *mut u32, v) }
     }
 
     fn r(off: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((BASE + off) as *const u32) }
+        unsafe { core::ptr::read_volatile((base() + off) as *const u32) }
     }
 
     /// Enable `src` for the BSP's S-mode context (priority 1, threshold 0)

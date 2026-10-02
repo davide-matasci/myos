@@ -19,7 +19,7 @@ mod initramfs;
 mod ports;
 
 use limine_image::{
-    DiskFile, LIMINE_VERSION, boot_module_files, fetch_limine, limine_conf, write_esp_image,
+    DiskFile, LIMINE_VERSION, boot_module_files, fetch_limine, limine_conf,
     write_esp_image_ex,
     write_fat_data_image, write_x86_iso,
 };
@@ -35,6 +35,19 @@ const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
 /// same count: a single-hart DTB plus OpenSBI BSP hartid=1 →
 /// `PANIC: riscv: missing struct riscv_hart for BSP`.
 const RISCV_SMP: &str = "2";
+
+/// QEMU `virt` machine options for aarch64 (boot and the DTB dump alike).
+/// gic-version=2 keeps the distributor/CPU interface memory-mapped (the
+/// kernel drives GICv2); virtio-mmio transports default to legacy
+/// (version 1), the driver is v2.
+const AARCH64_MACHINE: &str = "virt,gic-version=2,highmem-ecam=off,highmem-mmio=off";
+
+/// aarch64: the kernel reads the board from the device tree, and the EDK2
+/// (AAVMF) boot path hands Limine none, so the image carries QEMU's own
+/// dump of it (`global_dtb`), like riscv64.
+fn aarch64_limine_conf() -> String {
+    limine_conf("global_dtb: boot():/boot/virt-aarch64.dtb\n", "")
+}
 
 /// riscv64 needs the packed DTB and Sv39 on top of the common config.
 fn riscv_limine_conf() -> String {
@@ -569,7 +582,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     cmd.arg("-global")
         .arg("virtio-mmio.force-legacy=false")
         .arg("-machine")
-        .arg("virt,gic-version=2,highmem-ecam=off,highmem-mmio=off")
+        .arg(AARCH64_MACHINE)
         .arg("-cpu")
         .arg("cortex-a72")
         .arg("-m")
@@ -632,10 +645,33 @@ fn build_aarch64_image() -> PathBuf {
         fetch_limine(&fallback)
     };
     let efi = std::fs::read(limine.bootaa64()).expect("BOOTAA64.EFI");
+    // The board's device tree, dumped by QEMU with the machine options the
+    // boot uses (the same -smp, so the CPU list matches). Regenerated every
+    // time: it is cheap and must never be stale.
+    let dtb_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/virt-aarch64.dtb");
+    let status = Command::new("qemu-system-aarch64")
+        .args([
+            "-machine",
+            &format!("{AARCH64_MACHINE},dumpdtb=target/virt-aarch64.dtb"),
+            "-cpu",
+            "cortex-a72",
+            "-smp",
+            "4",
+            "-nographic",
+            "-serial",
+            "none",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .expect("spawn qemu for virt-aarch64.dtb");
+    if !status.success() || !dtb_path.is_file() {
+        panic!("failed to generate target/virt-aarch64.dtb with qemu-system-aarch64");
+    }
+    let dtb = std::fs::read(&dtb_path).expect("read virt-aarch64.dtb");
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/aarch64.img");
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let initramfs = initramfs::build_initramfs(&manifest, "aarch64");
-    write_esp_image(
+    write_esp_image_ex(
         &image,
         &kernel_bytes,
         "BOOTAA64.EFI",
@@ -644,6 +680,11 @@ fn build_aarch64_image() -> PathBuf {
         &modules,
         &ok,
         &initramfs,
+        &aarch64_limine_conf(),
+        &[DiskFile {
+            path: "boot/virt-aarch64.dtb".into(),
+            data: dtb,
+        }],
     );
     write_fat_data_image(&fat_img_path());
     image

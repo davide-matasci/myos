@@ -51,17 +51,57 @@ pub fn ap_init(logical: usize) {
     crate::user::ap_init();
 }
 
-/// QEMU `virt` wires PCIe INTA..D to PLIC sources 32..35 with the standard
-/// slot swizzle; enable that source for the boot hart. Legacy INTx: the
-/// handler must read the device ISR to deassert the line.
+/// Take the board's device bases from the device tree: the PLIC, the
+/// 16550 console, the goldfish RTC, the `time` CSR rate and the PCIe host
+/// bridge (ECAM, bus range, 64-bit MMIO window). Required: no tree, no
+/// boot. Returns the board model for the boot log.
+pub fn apply_dt() -> Result<Option<&'static str>, &'static str> {
+    if crate::dt::get().is_none() {
+        return Err("no device tree from the bootloader");
+    }
+    let (plic, _) = crate::dt::reg(&["sifive,plic-1.0.0", "riscv,plic0"], 0)
+        .ok_or("device tree: no PLIC")?;
+    interrupts::plic::set_base(plic as usize);
+    let (uart, _) = crate::dt::reg(&["ns16550a", "ns16550"], 0).ok_or("device tree: no 16550 UART")?;
+    serial::set_base(uart as usize);
+    if let Some((rtc, _)) = crate::dt::reg(&["google,goldfish-rtc"], 0) {
+        clock::set_rtc_base(rtc as usize);
+    }
+    let hz = crate::dt::timebase_frequency().ok_or("device tree: no timebase-frequency")?;
+    clock::set_timebase(hz);
+    let host = crate::dt::pci_host().ok_or("device tree: no PCIe host bridge")?;
+    // The 64-bit window: the 32-bit one (0x4000_0000 on QEMU `virt`) is
+    // user address space in Sv39 root[1].
+    let (mmio, mmio_size) = crate::dt::pci_mmio_window(crate::dt::PCI_SPACE_MEM64)
+        .ok_or("device tree: PCIe host bridge has no 64-bit MMIO range")?;
+    pci::set_host(host.ecam_base, host.ecam_size, host.bus_end, mmio, mmio_size);
+    Ok(crate::dt::model())
+}
+
+/// A PLIC interrupt specifier: the source number.
+pub fn irq_from_dt(cells: &[u32]) -> Option<u32> {
+    match cells {
+        [src] if *src != 0 && *src < 1024 => Some(*src),
+        _ => None,
+    }
+}
+
+/// Program this hart's timer for a sleep deadline sooner than its next tick.
+pub fn timer_deadline(deadline_ns: u64) {
+    interrupts::timer_deadline(deadline_ns);
+}
+
+/// Route a PCI function's INTx line as the device tree's PCIe
+/// `interrupt-map` says (QEMU `virt`: PLIC sources 32..35 with the
+/// standard slot swizzle); enable that source for the boot hart. Legacy
+/// INTx: the handler must read the device ISR to deassert the line.
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
-    const VIRT_PCIE_IRQ: u32 = 0x20;
     let pin = (crate::pci::cfg_read32(bus, slot, func, 0x3C) >> 8) & 0xFF;
     if pin == 0 || pin > 4 {
         return None;
     }
-    let line = (u32::from(slot) + pin - 1) % 4;
-    let src = VIRT_PCIE_IRQ + line;
+    let spec = crate::dt::pci_intx(bus, slot, func, pin as u8)?;
+    let src = irq_from_dt(spec.cells())?;
     interrupts::plic::enable(src);
     Some(crate::irq::PciIrq {
         irq: src,

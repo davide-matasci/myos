@@ -1433,6 +1433,9 @@ fn sys_mount(args_ptr: usize) -> usize {
     let Some(tgt) = resolve_copied_path(tgt) else {
         return SYSERR;
     };
+    if fstype == "bind" {
+        return if fs::vfs::bind(&src, &tgt) { 0 } else { SYSERR };
+    }
     let Some(st) = fs::stat(&src) else {
         return SYSERR;
     };

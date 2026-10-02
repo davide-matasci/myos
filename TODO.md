@@ -4,18 +4,25 @@ Follow-ups left open after the blocking scheduler (#187), virtio-net RX
 interrupts (#188) and the modular kernel (arch/ split, process blocks, every
 driver a module). Roughly in priority order.
 
-## PCI interrupt routing from firmware tables (real hardware)
+## x86_64 interrupt routing beyond MSI-X
 
-`pci_irq_setup` hardcodes QEMU `virt`'s wiring: INTx → GIC SPI 3 + (slot +
-pin − 1) mod 4 on aarch64, PLIC source 32 + the same swizzle on riscv64, and
-the GIC/PLIC base addresses. A real board publishes this in the device tree:
-walk the PCIe host bridge's `interrupt-map` / `interrupt-map-mask` for the
-device's bus/slot/pin (Limine already hands us the DTB) and take controller
-bases from the same tree. On x86_64 MSI-X is the primary path and portable;
-INTx would need `_PRT` from the DSDT plus an IOAPIC driver, neither of which
-exists (the ACPI module only scans for `_S5`). Interrupt remapping (IOMMU) and
-x2APIC destinations above 255 CPUs are also unhandled. A wrong mapping today
-degrades to netd's 1 s `NET_WAIT_RX` backstop rather than breaking.
+aarch64 and riscv64 take their PCI INTx routing, controller bases and
+virtio-mmio devices from the device tree (`kernel/src/dt.rs`). On x86_64
+MSI-X is the primary path and portable; INTx would need `_PRT` from the DSDT
+plus an IOAPIC driver, neither of which exists (the ACPI module only scans
+for `_S5`). Interrupt remapping (IOMMU) and x2APIC destinations above 255
+CPUs are also unhandled. A device without MSI-X today degrades to netd's 1 s
+`NET_WAIT_RX` backstop rather than breaking.
+
+## Device tree: what is still assumed
+
+The tree gives the GIC / PLIC, UART, RTC, PCIe host bridge and `virtio,mmio`
+nodes. Not read yet: the CPU list (Limine's MP bring-up enumerates CPUs),
+`clint`, GICv3 (`arm,gic-v3`: redistributors and the ICC system registers
+instead of the GICv2 memory-mapped CPU interface), a UART other than PL011 /
+16550, and `interrupt-map` entries whose parent is not the one interrupt
+controller. A board needing any of these fails at boot with a `fatal: device
+tree: ...` line on the default QEMU `virt` UART address.
 
 ## Module follow-ups
 
@@ -29,22 +36,10 @@ degrades to netd's 1 s `NET_WAIT_RX` backstop rather than breaking.
 - **Per-process locks**: the `Process` blocks (`task/process.rs`) hang off
   the one `TASKS` lock. Giving each its own lock (TASKS → process ordering)
   would let fd/mmap syscalls of different processes stop contending.
-- **virtio-mmio discovery from the DTB**: the `virtio_blk` and `console`
-  modules scan QEMU `virt`'s fixed MMIO window; real boards need the
-  `virtio,mmio` nodes from the device tree.
 - **Module dependencies**: the boot order in `BOOT_MODULES` is the only
   ordering (console first, block drivers before filesystems). A module could
   declare what it needs (`blk_count() > 0`, another module's name) so
   `insmod` can refuse or defer.
-
-## Tickless deadlines on aarch64 / riscv64
-
-Sleep deadlines (`nanosleep`, `poll`/`select` timeouts, `NET_WAIT_RX`) are
-only checked when the timer IRQ fires, and those arches tick at 100 Hz, so a
-1 ms sleep lasts up to 10 ms. Either raise their tick to 1 kHz like x86 (one
-constant each, ten times more idle wakeups) or, better, program the timer
-(`cntv_tval_el0` / `stimecmp`) for the earliest deadline when it is sooner
-than the next tick. `task::timer_tick` already keeps `NEXT_DEADLINE`.
 
 ## Per-key wait queues
 

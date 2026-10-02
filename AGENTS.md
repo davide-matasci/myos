@@ -22,7 +22,7 @@ match the surrounding code's naming, idiom and comment density.
 |------|------|
 | `src/` | host launcher (`main.rs`: QEMU per arch, `--ci` harness), image/initramfs assembly (`initramfs.rs`, `limine_image.rs`), boot-CI script (`wait_ci.rs`) |
 | `build.rs` | builds the x86_64 kernel and the disk images; checks port artifacts per enabled feature |
-| `kernel/` | the kernel (`arch/`, `task/`, `fs/`, `user/`, `modules/`, optional `linux/`) |
+| `kernel/` | the kernel (`arch/`, `task/`, `fs/`, `user/`, `modules/`, `dt.rs` for the device tree) |
 | `modules/` | loadable kernel modules and their `#[repr(C)]` ABI (`modules/abi`); the console module also holds the keymaps and the `ps2-scancode` crate |
 | `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib) and C (`user/c`: hello and CI smokes); one `port.env` per program |
 | `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`) |
