@@ -98,6 +98,18 @@ fn main() {
     // module is always built; `insmod /lib/modules/linux` enables it).
     ensure_feature_port(&manifest, "core", "target/linux-launcher-x86_64-unknown-none", "linux-compat/build-launcher.sh");
     ensure_feature_port(&manifest, "linux_compat", "target/linux-compat/x86_64/get-alpine", "linux-compat/build.sh");
+    // Always shipped with `core` but not Cargo features of their own: curl
+    // (with the CA bundle its build fetches) and the boot-CI smoke programs.
+    // Nothing else builds them locally, and the initramfs refuses to pack an
+    // image without them.
+    for (artifact, script) in [
+        ("target/curl-x86_64-unknown-none", "ports/curl/build.sh"),
+        ("target/tcp-listen-smoke-x86_64-unknown-none", "scripts/build-tcp-listen-smoke.sh"),
+        ("target/pty-smoke-x86_64-unknown-none", "scripts/build-pty-smoke.sh"),
+        ("target/urandom-smoke-x86_64-unknown-none", "scripts/build-urandom-smoke.sh"),
+    ] {
+        ensure_feature_port(&manifest, "core", artifact, script);
+    }
 
     // os-test (always embedded): consume ports-base artifacts. CI restores via
     // ci-registry; local-dev runs ports/os-test/build.sh when missing (same

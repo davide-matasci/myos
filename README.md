@@ -66,7 +66,7 @@ Notes:
 cargo run
 ```
 
-Builds x86_64 kernel, wraps in Limine GPT+FAT ESP (BIOS + UEFI), writes `target/fat.img`, starts QEMU. You'll see `Hello from myos`; close window to exit.
+Builds x86_64 kernel, wraps in Limine GPT+FAT ESP (BIOS + UEFI), writes `target/fat.img`, starts QEMU. You'll see `Hello from myos`; close window to exit. The first build also cross-builds everything the image carries (newlib, the enabled ports, curl, the smoke programs), so it takes a while; a missing piece is a build error, never a silently smaller image.
 
 ```sh
 cargo run -- uefi        # x86_64 UEFI
