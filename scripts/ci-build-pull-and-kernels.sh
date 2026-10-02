@@ -30,6 +30,7 @@ fi
 ./scripts/ci-registry.sh pull lynx || true
 ./scripts/ci-registry.sh pull lua || true
 ./scripts/ci-registry.sh pull os-test || true
+./scripts/ci-registry.sh pull linux-compat || true
 ./scripts/ci-registry.sh push sysroot || true
 ./scripts/ci-registry.sh push newlib || true
 ./scripts/ci-registry.sh push std-hello || true
@@ -50,4 +51,5 @@ fi
 ./scripts/ci-registry.sh push lynx || true
 ./scripts/ci-registry.sh push lua || true
 ./scripts/ci-registry.sh push os-test || true
+./scripts/ci-registry.sh push linux-compat || true
 ./scripts/ci-build-kernels.sh

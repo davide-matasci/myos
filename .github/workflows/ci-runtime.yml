@@ -7,10 +7,6 @@ on:
         type: boolean
         required: false
         default: false
-      build_iso:
-        type: boolean
-        required: false
-        default: false
       sysroot_built:
         type: boolean
         required: false
@@ -102,8 +98,7 @@ jobs:
       always() &&
       !cancelled() &&
       needs.build.result == 'success' &&
-      inputs.full_boot &&
-      !inputs.build_iso
+      inputs.full_boot
     strategy:
       fail-fast: false
       matrix:
@@ -154,12 +149,11 @@ jobs:
       options: -e HOME=/root
     timeout-minutes: 5
     needs: build
-    # MYOS_CI_MINI=1; skipped when full_boot or build_iso is selected.
+    # MYOS_CI_MINI=1; skipped when full_boot is selected.
     if: |
       always() &&
       !cancelled() &&
       needs.build.result == 'success' &&
-      !inputs.build_iso &&
       !inputs.full_boot
     strategy:
       fail-fast: false
@@ -205,8 +199,11 @@ jobs:
         run: ./target/debug/myos ${{ matrix.args }}
 
   iso:
-    # Manual-only ISO from build outputs; toolchain only for cargo run -- iso.
-    # Toolchain only for cargo iso; must not rebuild ports here.
+    # x86_64 hybrid ISO from the build outputs, on every run: the image with
+    # everything in it (the Linux layer loaded at boot, its tests and
+    # get-alpine), uploaded for local testing and boot-tested from the CD
+    # (`iso --ci`, boot-mini stages). Toolchain only for cargo run -- iso;
+    # must not rebuild ports here.
     name: iso (x86_64 hybrid)
     runs-on: ubuntu-latest
     container:
@@ -216,13 +213,12 @@ jobs:
     needs: build
     if: >-
       always() &&
-      needs.build.result == 'success' &&
-      inputs.build_iso
+      !cancelled() &&
+      needs.build.result == 'success'
     steps:
       - uses: actions/checkout@v6
 
       - name: Download CI build artifacts
-        continue-on-error: true
         uses: actions/download-artifact@v7
         with:
           name: ci-build
@@ -238,10 +234,14 @@ jobs:
         run: ./scripts/ci-iso-from-artifacts.sh
 
       - name: Upload ISO
-        if: hashFiles('target/myos-x86_64.iso') != ''
         uses: actions/upload-artifact@v7
         with:
           name: myos-x86_64-iso
           path: target/myos-x86_64.iso
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
+
+      - name: Boot the ISO in QEMU
+        env:
+          MYOS_CI_MINI: "1"
+        run: ./target/debug/myos iso --ci

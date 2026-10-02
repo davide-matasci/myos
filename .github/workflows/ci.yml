@@ -22,10 +22,6 @@ on:
         description: Force sysroot rebuild
         type: boolean
         default: false
-      build_iso:
-        description: Build x86_64 hybrid ISO (manual)
-        type: boolean
-        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -96,6 +92,5 @@ jobs:
     uses: ./.github/workflows/ci-runtime.yml
     with:
       full_boot: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_boot) }}
-      build_iso: ${{ github.event_name == 'workflow_dispatch' && inputs.build_iso }}
       sysroot_built: ${{ needs.changes.outputs.sysroot == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_sysroot) }}
     secrets: inherit

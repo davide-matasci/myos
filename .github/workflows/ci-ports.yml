@@ -223,6 +223,10 @@ jobs:
           - port: lua
             script: ./ports/lua/build.sh
             pull: lua
+          - port: linux-compat
+            script: ./linux-compat/build.sh
+            pull: linux-compat
+            dep_port: zlib
     steps:
       - uses: actions/checkout@v6
 

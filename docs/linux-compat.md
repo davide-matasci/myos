@@ -310,14 +310,23 @@ expects `ALPINE-JQ 6` (this needs the Alpine mirror to be reachable).
 Without the feature (boot-mini, the normal PR CI), the harness instead
 runs `insmod /lib/modules/linux; cat /proc/modules` and expects `[ OK ]
 linux` and the module in the list: the module is built and loadable in
-every build. The full-boot CI runs the Linux tests: with `full_boot`,
-`MYOS_CI_FEATURES=linux_compat` makes `scripts/ci-build-kernels.sh` build
-the musl pieces and the images with the module loaded at boot (its
-artifact hash covers `linux-compat/`), so all four boot jobs (bios, uefi,
-aarch64, riscv64) run the tests above. There are no separate Linux jobs.
+every build.
+
+CI builds the musl pieces in every run (`linux-compat` in
+`ci-ports.yml`, cached in the GHCR registry by `scripts/ci-registry.sh`
+under a hash of `linux-compat/`, newlib and zlib) and packs them into
+`ci-build.tar`. The **iso** job builds the x86_64 hybrid ISO with
+`--features linux_compat`, so the downloadable ISO always carries the
+layer (module loaded at boot, `linux-smoke`, `linux-dyn`, `get-alpine`),
+and boots it from the CD with `cargo run -- iso --ci`, which runs the
+Linux tests above on x86_64 in every CI run. The full-boot CI
+(`full_boot`, `MYOS_CI_FEATURES=linux_compat`) builds all four disk images
+with the layer, so bios, uefi, aarch64 and riscv64 run the tests too.
+There are no separate Linux jobs.
 
 `linux-compat/build.sh` builds musl (static and shared) with clang for each
-target. On aarch64/riscv64 musl's `long double` is 128-bit and needs
+target (and skips itself when its outputs match its stamp,
+`target/.myos-linux-compat-version`). On aarch64/riscv64 musl's `long double` is 128-bit and needs
 compiler-rt's quad-float builtins: the script fetches those sources (pinned
 LLVM tag) and links them into `libc.so`. The static smoke test is not linked
 against them, so it (and the launcher) avoid `printf`.
