@@ -8,6 +8,7 @@
 # Usage:
 #   ./scripts/ci-registry.sh pull PORT
 #   ./scripts/ci-registry.sh push PORT
+#   ./scripts/ci-registry.sh current PORT   exit 0 when PORT's outputs are current
 # PORT is a port with a descriptor and a build script (`scripts/ports.sh
 # --list`: its stamp and PORT_OUTPUTS are cached, keyed by its
 # myos_<name>_version_hash), or one of the pieces cached the same way:
@@ -44,7 +45,7 @@ done < <(myos_port_build_order all)
 ALL_PORTS+=(linux-compat kernels)
 
 usage() {
-  echo "usage: $0 pull|push PORT" >&2
+  echo "usage: $0 pull|push|current PORT" >&2
   echo "  PORT: ${ALL_PORTS[*]} all" >&2
   exit 2
 }
@@ -422,6 +423,10 @@ run_many() {
 CMD="$1"
 PORT="${2:-}"
 case "$CMD" in
+  current)
+    [[ -n "$PORT" ]] || usage
+    port_is_current "$PORT"
+    ;;
   pull|push)
     [[ -n "$PORT" ]] || usage
     if [[ "$PORT" == all ]]; then

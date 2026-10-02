@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fetch + host-prebuild os-test (embed tree + boot-CI curated ELFs).
-# Same ports-base contract as curl/tcc: stamp + early-exit when current;
+# Same port contract as curl/tcc: stamp + early-exit when current;
 # CI restores via ci-registry.sh; local: ./ports/os-test/build.sh
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

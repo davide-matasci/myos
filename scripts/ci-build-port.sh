@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# CI helper: pull deps, optional sysroot, build one port, push GHCR.
+# CI helper for the ports job (not boot): pull a port's dependencies (and
+# build the ones the registry does not have), the optional sysroot, build
+# the port, push it to GHCR.
 # Args: PORT SCRIPT [NEEDS_SYSROOT] [DEPS]
 # PORT names the registry package (a port's name); DEPS is the space-separated
-# PORT_DEPS of its descriptor. Used by ports-base / ports-advanced (not boot).
+# PORT_DEPS of its descriptor.
 set -euo pipefail
 chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh 2>/dev/null || true
 
@@ -14,6 +16,13 @@ DEPS="${4:-}"
 ./scripts/ci-registry.sh pull newlib || true
 for dep in $DEPS; do
   ./scripts/ci-registry.sh pull "$dep" || true
+  if ! ./scripts/ci-registry.sh current "$dep"; then
+    # Built here too (every port needing it does the same on a miss; the
+    # registry keeps the first push), so the matrix has no second stage.
+    echo "==> dependency $dep not in the registry; building it"
+    "./$(./scripts/ports.sh --script "$dep")"
+    ./scripts/ci-registry.sh push "$dep" || true
+  fi
 done
 ./scripts/ci-registry.sh pull "$PORT" || true
 if [[ "$NEEDS_SYSROOT" == "1" ]]; then

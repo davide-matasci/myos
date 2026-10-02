@@ -12,7 +12,7 @@
 #   scripts/ports.sh --all-image-files [ARCH]     the same for every image port
 #   scripts/ports.sh --stamps                     version stamps of the image ports
 #   scripts/ports.sh --image-list                 `<name> <script>` of the image ports to build
-#   scripts/ports.sh --matrix base|advanced       ci-ports.yml matrix (JSON)
+#   scripts/ports.sh --matrix                     ci-ports.yml ports matrix (JSON)
 
 MYOS_PORTS_ROOT="${MYOS_PORTS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 MYOS_ARCHES=(x86_64 aarch64 riscv64)
@@ -153,28 +153,20 @@ myos_port_build_order() {
   done
 }
 
-# ci-ports.yml matrix for the ports with a build script (image and package
-# ports: packages are built and cached the same way): "base" = no port
-# dependencies, "advanced" = depends on another port (built after base). The
-# optional Linux layer (linux-compat/, not a port: its files are in the
-# image only with `--features linux_compat`) is built and cached like one.
+# The ci-ports.yml matrix: every port with a build script (image and package
+# ports: packages are built and cached the same way), with its dependencies
+# (`deps`: ci-build-port.sh builds a dependency the registry does not have),
+# plus the optional Linux layer (linux-compat/, not a port: its files are in
+# the image only with `--features linux_compat`), built and cached like one.
 myos_ports_matrix() {
-  local which="$1" name first=1
+  local name
   printf '['
   for name in $(myos_port_build_order all); do
     myos_port_load "$name"
-    if [[ "$which" == base && -n "$PORT_DEPS" ]]; then continue; fi
-    if [[ "$which" == advanced && -z "$PORT_DEPS" ]]; then continue; fi
-    [[ $first -eq 1 ]] || printf ','
-    first=0
-    printf '{"port":"%s","script":"./%s","needs_sysroot":"%s","deps":"%s"}' \
+    printf '{"port":"%s","script":"./%s","needs_sysroot":"%s","deps":"%s"},' \
       "$name" "$(myos_port_build_script)" "$PORT_SYSROOT" "$PORT_DEPS"
   done
-  if [[ "$which" == advanced ]]; then
-    [[ $first -eq 1 ]] || printf ','
-    printf '{"port":"linux-compat","script":"./linux-compat/build.sh","needs_sysroot":"0","deps":"zlib"}'
-  fi
-  printf ']\n'
+  printf '{"port":"linux-compat","script":"./linux-compat/build.sh","needs_sysroot":"0","deps":"zlib"}]\n'
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
@@ -193,7 +185,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         [[ -n "$PORT_BUILD" ]] && myos_port_stamp "$n"
       done
       ;;
-    --matrix) myos_ports_matrix "$2" ;;
+    --matrix) myos_ports_matrix ;;
     --dir) myos_port_load "$2" && echo "$PORT_DIR" ;;
     --script) myos_port_load "$2" && myos_port_build_script ;;
     --image-list)

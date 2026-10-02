@@ -3,7 +3,7 @@
 # need to run QEMU. NO compile / rebuild / registry / toolchain install.
 #
 # Boot jobs must call this after `tar -xf ci-build.tar`; building and packing
-# belong in the build job (and ports-base / ports-advanced). Missing bits =
+# belong in the build job (and the ports job). Missing bits =
 # fail the build job's pack (scripts/ci-pack-build-artifacts.sh).
 set -euo pipefail
 

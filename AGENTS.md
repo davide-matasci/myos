@@ -106,7 +106,7 @@ cargo test -p ps2-scancode                 # host unit tests
   not cover.
 - CI runs in the `myos-ci` container (`Dockerfile`, `build-ci-image.yml`).
 - Changing a port's pin or build script changes its cache key; CI rebuilds
-  it. The ports matrices of `ci-ports.yml` and the pack/assert lists of the
+  it. The ports matrix of `ci-ports.yml` and the pack/assert lists of the
   build and boot jobs come from the descriptors. Adding a port touches
   `ports/<name>/` (with its `port.env`), `scripts/myos-c-userspace-lib.sh`
   (hash + freshness functions), `src/wait_ci.rs` and

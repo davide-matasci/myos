@@ -32,7 +32,7 @@ has a default, so a minimal port needs only `PORT_FILES`.
 | `PORT_NAME` | the directory name | registry package, stamp and matrix name (`user/c` is `c-smokes`, `toolchain/std` is `std-hello`) |
 | `PORT_KIND` | `port` | `port` (cross-built by a script), `user` (a Rust crate built by `kernel/build.rs`), `c` (the C smokes), `std` (the `std` programs) |
 | `PORT_CORE` | `0` | `1` for what a boot needs (the shell, getty, init's helpers, the CI smokes) |
-| `PORT_DEPS` | | ports to build first (`vim` needs `ncurses`); CI builds these in `ports-advanced`, after `ports-base` |
+| `PORT_DEPS` | | ports to build first (`vim` needs `ncurses`): the build loops build them first, and the CI ports job builds a dependency itself when the registry does not have it |
 | `PORT_SYSROOT` | `0` | `1` when the build needs the Rust `std` sysroot (`target/myos-sysroot`) |
 | `PORT_BUILD` | | the build script: a name is in the port directory (`build.sh`), a path with `/` is repo-relative (`scripts/build-c-smokes.sh`). Empty: nothing to build (`ports/termcap` ships a checked-in file) |
 | `PORT_OUTPUTS` | | what the script leaves under `target/`, for the three arches (what the CI registry caches, with the stamp). Globs are allowed (`sbase-*-{none}`) |
@@ -80,12 +80,12 @@ serves it from binfs, so its file in the initramfs is optional.
   being imaged.
 - `scripts/ports.sh`: the shell side. `--list`, `--outputs NAME`,
   `--image-files NAME`, `--all-image-files`, `--stamps`, `--image-list`,
-  `--matrix base|advanced`; as a library (`myos_port_load NAME`) for
+  `--matrix`; as a library (`myos_port_load NAME`) for
   `scripts/ci-registry.sh` (what to cache, under the port's name), the CI
   build job (`ci-build-kernels.sh` builds every image port before hashing
   the kernel inputs; the port stamps are part of that hash),
   `ci-pack-build-artifacts.sh` and `ci-assert-boot-artifacts.sh` (what a
-  boot job needs) and the `ci-ports.yml` matrices.
+  boot job needs) and the `ci-ports.yml` ports matrix.
 - The registry needs `myos_<name>_version_hash` and `myos_<name>_is_current`
   in `scripts/myos-c-userspace-lib.sh` (dashes as underscores): the content
   hash of the port's inputs, and the check that its outputs exist and match.
