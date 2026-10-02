@@ -26,9 +26,6 @@ pub const SYS_READLINK: usize = 22;
 pub const SYS_IOCTL: usize = 28;
 pub const SYS_GETTIMEOFDAY: usize = 33;
 
-const MAX_EXEC_ARGS: usize = 16;
-const MAX_EXEC_ENV: usize = 32;
-
 pub const STDIN_FILENO: i32 = 0;
 pub const STDOUT_FILENO: i32 = 1;
 pub const STDERR_FILENO: i32 = 2;
@@ -129,22 +126,18 @@ pub fn exec(path: &[u8], args: &[&[u8]]) -> ! {
 /// Like [`exec`], but passes a `KEY=value` environment block to the new image.
 #[inline]
 pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) -> ! {
-    let argc = args.len().min(MAX_EXEC_ARGS);
-    let envc = env.len().min(MAX_EXEC_ENV);
-    if argc == 0 && envc == 0 {
+    if args.is_empty() && env.is_empty() {
         raw_exec(path.as_ptr() as usize, path.len(), 0);
     }
-    let mut pack = [0usize; 1 + MAX_EXEC_ARGS * 2 + 1 + MAX_EXEC_ENV * 2];
-    pack[0] = argc;
-    for (i, arg) in args.iter().take(MAX_EXEC_ARGS).enumerate() {
-        pack[1 + i * 2] = arg.as_ptr() as usize;
-        pack[2 + i * 2] = arg.len();
-    }
-    let env_base = 1 + argc * 2;
-    pack[env_base] = envc;
-    for (i, e) in env.iter().take(MAX_EXEC_ENV).enumerate() {
-        pack[env_base + 1 + i * 2] = e.as_ptr() as usize;
-        pack[env_base + 2 + i * 2] = e.len();
+    // `[argc, (ptr,len)…, envc, (ptr,len)…]`; the kernel enforces its limits
+    // (and fails the exec past them).
+    let mut pack = crate::vec::Vec::with_capacity(2 + 2 * (args.len() + env.len()));
+    for list in [args, env] {
+        pack.push(list.len());
+        for s in list {
+            pack.push(s.as_ptr() as usize);
+            pack.push(s.len());
+        }
     }
     raw_exec(path.as_ptr() as usize, path.len(), pack.as_ptr() as usize);
 }

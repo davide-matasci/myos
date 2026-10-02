@@ -92,8 +92,9 @@ fn user_cstr(ptr: usize, max: usize) -> Result<Vec<u8>, usize> {
     }
 }
 
-/// A NULL-terminated array of strings (`argv` / `envp`).
-fn user_str_array(ptr: usize, max_n: usize, max_len: usize) -> Result<Vec<Vec<u8>>, usize> {
+/// A NULL-terminated array of strings (`argv` / `envp`), at most `max_n`,
+/// each within the native exec limit on all strings together.
+fn user_str_array(ptr: usize, max_n: usize) -> Result<Vec<Vec<u8>>, usize> {
     let mut out = Vec::new();
     if ptr == 0 {
         return Ok(out);
@@ -106,10 +107,7 @@ fn user_str_array(ptr: usize, max_n: usize, max_len: usize) -> Result<Vec<Vec<u8
         if out.len() == max_n {
             return Err(E2BIG);
         }
-        let s = user_cstr(p, max_len).map_err(|e| if e == ENAMETOOLONG { E2BIG } else { e })?;
-        if s.len() > max_len {
-            return Err(E2BIG);
-        }
+        let s = user_cstr(p, user::MAX_EXEC_STRINGS).map_err(|e| if e == ENAMETOOLONG { E2BIG } else { e })?;
         out.push(s);
     }
 }
@@ -476,9 +474,12 @@ pub fn clone(flags: usize, stack: usize, user_rip: usize, user_rsp: usize) -> R 
 
 pub fn execve(path: usize, argv: usize, envp: usize) -> R {
     let p = path_at(AT_FDCWD, path)?;
-    // The native exec limits (kernel/src/user/mod.rs).
-    let args = user_str_array(argv, 16, 128)?;
-    let env = user_str_array(envp, 32, 128)?;
+    let args = user_str_array(argv, user::MAX_ARGC)?;
+    let env = user_str_array(envp, user::MAX_ENVC)?;
+    // The native exec limit on the strings' total size (NULs included).
+    if args.iter().chain(&env).map(|s| s.len() + 1).sum::<usize>() > user::MAX_EXEC_STRINGS {
+        return Err(E2BIG);
+    }
     let arg_refs: Vec<&[u8]> = args.iter().map(|s| s.as_slice()).collect();
     let env_refs: Vec<&[u8]> = env.iter().map(|s| s.as_slice()).collect();
     native(super::exec_linux(&p, &arg_refs, &env_refs), ENOENT)

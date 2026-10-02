@@ -179,10 +179,17 @@ the kernel does not keep a per-task copy at syscall entry.
   stacks, no real-time signal queueing.
 - No threads (`clone` with `CLONE_VM`), no shared file mappings
   (`MAP_SHARED`), no sockets, no `O_CLOEXEC` / `O_NONBLOCK` semantics.
-- The native limits apply: 16 args / 32 environment strings of at most 128
-  bytes at exec, a per-process `mmap` window of 128 MiB (x86_64) / 64 MiB
-  (aarch64, riscv64) with at most 64 mappings, 32 fds, and exec of at most
-  512 KiB from a writable filesystem (the initramfs has no limit).
+- The native limits apply:
+  - exec: up to 1024 arguments and 1024 environment strings, at most
+    128 KiB together; a program file of at most 16 MiB from a writable
+    filesystem (the initramfs has no limit) whose loaded image spans at
+    most 1152 pages (4.5 MiB). Shared objects are mapped with `mmap` and
+    do not count;
+  - a per-process `mmap` window of 128 MiB (x86_64) / 64 MiB (aarch64,
+    riscv64) with at most 64 mappings;
+  - 64 fds per process, 64 tasks in total;
+  - `/tmp` (tmpfs) files of at most 16 MiB each, all of them in the
+    64 MiB kernel heap.
 
 ## Testing
 

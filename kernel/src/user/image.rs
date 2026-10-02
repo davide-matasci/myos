@@ -399,46 +399,31 @@ pub(super) fn build_argv_stack(
     if args.len() > MAX_ARGC || env.len() > MAX_ENVC {
         return None;
     }
+    let total: usize = args.iter().chain(env).map(|s| s.len() + 1).sum();
+    if total > MAX_EXEC_STRINGS {
+        return None;
+    }
     let stack_top = (user_base + stack_off + (USER_STACK_PAGES * PAGE) as u64) as usize;
     let stack_bot = (user_base + stack_off) as usize;
     // Leave bytes below stack_top: argv strings must not end at stack_top (unmapped).
     let mut sp = stack_top.checked_sub(64)?;
-    let mut arg_ptrs = [0usize; MAX_ARGC];
-    for (i, arg) in args.iter().enumerate() {
-        if arg.len() > MAX_ARG_LEN {
-            return None;
+    // Each string with its NUL, highest first; returns where each landed.
+    let mut push_strings = |list: &[&[u8]]| -> Option<Vec<usize>> {
+        let mut ptrs = Vec::with_capacity(list.len());
+        for item in list {
+            sp = sp.checked_sub(item.len() + 1)?;
+            if sp < stack_bot {
+                return None;
+            }
+            if !write_user_bytes(aspace, sp, item) || !write_user_bytes(aspace, sp + item.len(), &[0]) {
+                return None;
+            }
+            ptrs.push(sp);
         }
-        let slen = arg.len() + 1;
-        sp = sp.checked_sub(slen)?;
-        if sp < stack_bot {
-            return None;
-        }
-        if !write_user_bytes(aspace, sp, arg) {
-            return None;
-        }
-        if !write_user_byte(aspace, sp + arg.len(), 0) {
-            return None;
-        }
-        arg_ptrs[i] = sp;
-    }
-    let mut env_ptrs = [0usize; MAX_ENVC];
-    for (i, item) in env.iter().enumerate() {
-        if item.len() > MAX_ENV_LEN {
-            return None;
-        }
-        let slen = item.len() + 1;
-        sp = sp.checked_sub(slen)?;
-        if sp < stack_bot {
-            return None;
-        }
-        if !write_user_bytes(aspace, sp, item) {
-            return None;
-        }
-        if !write_user_byte(aspace, sp + item.len(), 0) {
-            return None;
-        }
-        env_ptrs[i] = sp;
-    }
+        Some(ptrs)
+    };
+    let arg_ptrs = push_strings(args)?;
+    let env_ptrs = push_strings(env)?;
     // Gap so the argv pointer table cannot overlap the copied strings (x86 std
     // `_start` reads argv[] immediately; a tight layout can alias string bytes).
     sp = sp.checked_sub(16)?;

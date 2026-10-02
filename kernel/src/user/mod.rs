@@ -81,10 +81,12 @@ const MAX_RELOAD_PAGES: usize = 40;
 /// `reload_user_elf` the largest newlib/sbase ELFs (today `sbase-cat`).
 const USER_EXEC_RELOAD_PAGES: usize = 36;
 const MAX_PATH: usize = 256;
-const MAX_ARGC: usize = 16;
-const MAX_ARG_LEN: usize = 128;
-const MAX_ENVC: usize = 32;
-const MAX_ENV_LEN: usize = 128;
+/// exec argument and environment limits: at most this many strings each, and
+/// this many bytes for all of them together (NULs included), which also bounds
+/// what the new image's stack gives up to them.
+pub(crate) const MAX_ARGC: usize = 1024;
+pub(crate) const MAX_ENVC: usize = 1024;
+pub(crate) const MAX_EXEC_STRINGS: usize = 128 * 1024;
 const SYSERR: usize = usize::MAX;
 /// open(2) of a FIFO for writing with O_NONBLOCK and no reader (ENXIO).
 const SYSERR_ENXIO: usize = usize::MAX - 2;

@@ -12,10 +12,12 @@ use crate::fs::StatInfo;
 // os-test alone is ~6.5k files; cp -R of a port tree must not hit an
 // arbitrary cap (creat fails with ENOENT once mkdir stops succeeding).
 const MAX_ENTRIES: usize = 16384;
-const COMP_CAP: usize = 64;
-const PATH_CAP: usize = 128;
-const FILE_CAP: usize = 262144;
-const LINK_CAP: usize = 64;
+const COMP_CAP: usize = 255;
+const PATH_CAP: usize = 255;
+/// File data lives in the kernel heap (`heap::HEAP_SIZE`), which bounds the
+/// whole tmpfs; this caps one file.
+const FILE_CAP: usize = 16 * 1024 * 1024;
+const LINK_CAP: usize = 255;
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
@@ -177,6 +179,13 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         return None;
     }
     if end > data.len() {
+        // Sequential writes grow the file a block at a time: reserve ahead,
+        // but by at most 1 MiB so a large file does not double the heap use.
+        let extra = end - data.len();
+        let ahead = data.len().min(1 << 20).max(extra);
+        if data.try_reserve(ahead.min(FILE_CAP - data.len())).is_err() && data.try_reserve_exact(extra).is_err() {
+            return None;
+        }
         data.resize(end, 0);
     }
     data[pos..end].copy_from_slice(buf);
