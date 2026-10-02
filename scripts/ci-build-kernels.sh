@@ -253,7 +253,9 @@ kernel_inputs_diag() {
 }
 
 # Host `myos aarch64/riscv64 --ci` rebuilds the guest disk image and reads these
-# Limine modules from disk (not from the prebuilt kernel ELF). GHCR kernels
+# Limine modules from disk (not from the prebuilt kernel ELF). Every kernel
+# module (src/limine_image.rs BOOT_MODULES) is in the list: the kernel embeds
+# none, the images ship them under boot/modules/. GHCR kernels
 # packages that omit them made master boot jobs panic with "hello ELF missing"
 # after a kernels cache hit (PR builds were fine because they did a full cargo
 # build). Keep them in artifacts_ready + --print-members.
@@ -263,9 +265,39 @@ kernel_inputs_diag() {
 # curl fail. Canonical names plus coreutils-* pack aliases (ci.yml glob).
 # pty + urandom: same class for full-boot wait_ci (schedule / workflow_dispatch).
 HELLO_OK_ELFS=(
+  target/console-x86_64-unknown-none
+  target/console-aarch64-unknown-none-softfloat
+  target/console-riscv64imac-unknown-none-elf
+  target/stubfs-x86_64-unknown-none
+  target/stubfs-aarch64-unknown-none-softfloat
+  target/stubfs-riscv64imac-unknown-none-elf
   target/hello-x86_64-unknown-none
   target/hello-aarch64-unknown-none-softfloat
   target/hello-riscv64imac-unknown-none-elf
+  target/pci_enum-x86_64-unknown-none
+  target/pci_enum-aarch64-unknown-none-softfloat
+  target/pci_enum-riscv64imac-unknown-none-elf
+  target/acpi-x86_64-unknown-none
+  target/acpi-aarch64-unknown-none-softfloat
+  target/acpi-riscv64imac-unknown-none-elf
+  target/virtio_blk-x86_64-unknown-none
+  target/virtio_blk-aarch64-unknown-none-softfloat
+  target/virtio_blk-riscv64imac-unknown-none-elf
+  target/nvme-x86_64-unknown-none
+  target/nvme-aarch64-unknown-none-softfloat
+  target/nvme-riscv64imac-unknown-none-elf
+  target/virtio_net-x86_64-unknown-none
+  target/virtio_net-aarch64-unknown-none-softfloat
+  target/virtio_net-riscv64imac-unknown-none-elf
+  target/netfs-x86_64-unknown-none
+  target/netfs-aarch64-unknown-none-softfloat
+  target/netfs-riscv64imac-unknown-none-elf
+  target/fat-x86_64-unknown-none
+  target/fat-aarch64-unknown-none-softfloat
+  target/fat-riscv64imac-unknown-none-elf
+  target/ext2-x86_64-unknown-none
+  target/ext2-aarch64-unknown-none-softfloat
+  target/ext2-riscv64imac-unknown-none-elf
   target/ok-x86_64-unknown-none
   target/ok-aarch64-unknown-none-softfloat
   target/ok-riscv64imac-unknown-none-elf

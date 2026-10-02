@@ -1,7 +1,7 @@
 //! Stdin: serial + keyboard (when detected), shared ring buffer.
 //!
-//! Keyboard bytes are keycode→character via the loadable [`crate::keymap`]
-//! (empty until userspace loads a map). Serial is unaffected.
+//! Keyboard bytes come from the `console` module (keycode→character via its
+//! loadable keymap, empty until userspace loads a map). Serial is unaffected.
 //!
 //! Line discipline follows the console termios (`ICANON` / `ECHO` / `ISIG` /
 //! `ICRNL`). The discipline core (termios + edit/ring processing) lives in
@@ -45,7 +45,6 @@ pub fn init() {
     IRQ_TAIL.store(0, Ordering::SeqCst);
     *TTY.lock() = crate::tty::TtyIn::new();
     arch::serial_flush_rx();
-    arch::keyboard_init();
     DRAIN_ENABLED.store(true, Ordering::Relaxed);
 }
 
@@ -112,7 +111,7 @@ pub fn poll() {
     fold_irq_rx();
     drain_uart_irq();
     fold_irq_rx();
-    while let Some(b) = arch::keyboard_poll_byte() {
+    while let Some(b) = console::keyboard_poll_byte() {
         push_byte(b);
     }
 }
@@ -142,7 +141,7 @@ pub fn read(buf: &mut [u8]) -> usize {
     let mut n = 0;
     // Keyboards are polled (no IRQ), so a reader re-polls them at a modest
     // rate; serial bytes are staged by the BSP timer, which wakes KEY_CONSOLE.
-    let keyboard = arch::keyboard_present();
+    let keyboard = console::keyboard_present();
     while n == 0 {
         // A signal that terminates or is caught ends the wait (EINTR).
         if crate::signal::interrupt_wait() {
@@ -172,6 +171,6 @@ pub fn read(buf: &mut [u8]) -> usize {
 }
 
 pub fn keyboard_present() -> bool {
-    arch::keyboard_present()
+    console::keyboard_present()
 }
 

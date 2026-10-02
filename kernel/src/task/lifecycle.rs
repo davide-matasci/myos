@@ -44,7 +44,7 @@ pub(super) const NO_PARENT: usize = usize::MAX;
 /// dying task still ran on it: the new child resumed from a clobbered frame
 /// (dropbear session children crashing with garbage pointers / return
 /// addresses under -smp 4).
-pub(super) fn reapable(tasks: &[Task; MAX_TASKS], slot: usize) -> bool {
+pub(super) fn reapable(tasks: &TaskTable, slot: usize) -> bool {
     tasks[slot].state == State::Dead
         && !slot_on_cpu(slot)
         && unsafe { core::ptr::read_volatile(core::ptr::addr_of!(tasks[slot].sp)) } != 0
@@ -52,14 +52,10 @@ pub(super) fn reapable(tasks: &[Task; MAX_TASKS], slot: usize) -> bool {
 
 /// Free the slots of dead, already-reported (`NO_PARENT`) tasks that have left
 /// their kernel stacks, keeping each stack for reuse.
-fn free_dead_orphans(tasks: &mut [Task; MAX_TASKS]) {
+fn free_dead_orphans(tasks: &mut TaskTable) {
     for j in 0..MAX_TASKS {
         if tasks[j].ppid == NO_PARENT && tasks[j].user_rip != 0 && reapable(tasks, j) {
-            let stack_base = tasks[j].stack_base;
-            tasks[j] = EMPTY;
-            if stack_base != 0 {
-                tasks[j].stack_base = stack_base;
-            }
+            tasks.recycle(j);
         }
     }
 }
@@ -78,7 +74,7 @@ fn free_dead_orphans(tasks: &mut [Task; MAX_TASKS]) {
 /// Dead children can never be reaped now, so free them (like `wait_child`);
 /// live ones become `NO_PARENT` and are freed by a later `die()` sweep once
 /// they are dead and off-CPU.
-fn orphan_children(tasks: &mut [Task; MAX_TASKS], id: usize) {
+fn orphan_children(tasks: &mut TaskTable, id: usize) {
     for j in 0..MAX_TASKS {
         if j == id || tasks[j].state == State::Unused || tasks[j].user_rip == 0 {
             continue;
@@ -88,11 +84,7 @@ fn orphan_children(tasks: &mut [Task; MAX_TASKS], id: usize) {
             continue;
         }
         if reapable(tasks, j) {
-            let stack_base = tasks[j].stack_base;
-            tasks[j] = EMPTY;
-            if stack_base != 0 {
-                tasks[j].stack_base = stack_base;
-            }
+            tasks.recycle(j);
         } else {
             tasks[j].ppid = NO_PARENT;
         }
@@ -126,12 +118,9 @@ pub(super) fn user_affinity() -> Option<usize> {
         return Some(0);
     }
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    #[cfg(target_arch = "riscv64")]
-    {
+    if crate::arch::USER_TASKS_ON_BSP {
         Some(NEXT.fetch_add(1, Ordering::SeqCst) % n)
-    }
-    #[cfg(not(target_arch = "riscv64"))]
-    {
+    } else {
         // RR over [1, n): never assign user to BSP.
         Some(1 + NEXT.fetch_add(1, Ordering::SeqCst) % (n - 1))
     }
@@ -141,7 +130,7 @@ pub(super) fn user_affinity() -> Option<usize> {
 /// ctty check at fork: interactive shells parallel-fork (`make -j`,
 /// pipelines) RR-spread; init/netd (no ctty) always inherit so getty/login
 /// stay with the session home — no basename sticky allowlists.
-pub(super) fn parent_has_active_child(tasks: &[Task; MAX_TASKS], ppid: usize) -> bool {
+pub(super) fn parent_has_active_child(tasks: &TaskTable, ppid: usize) -> bool {
     for i in 0..MAX_TASKS {
         if i == ppid || tasks[i].ppid != ppid || tasks[i].user_rip == 0 {
             continue;
@@ -157,9 +146,9 @@ pub(super) fn parent_has_active_child(tasks: &[Task; MAX_TASKS], ppid: usize) ->
 /// Fork affinity: inherit, or RR-spread when a ctty-bearing parent already
 /// has an active child (parallel jobs). Returns `(affinity, kick)` — kick
 /// only when the child was placed on a different home than the parent.
-fn fork_child_affinity(tasks: &[Task; MAX_TASKS], ppid: usize) -> (Option<usize>, bool) {
+fn fork_child_affinity(tasks: &TaskTable, ppid: usize) -> (Option<usize>, bool) {
     let parent_aff = tasks[ppid].affinity;
-    if tasks[ppid].has_ctty && parent_has_active_child(tasks, ppid) {
+    if tasks.proc(ppid).has_ctty && parent_has_active_child(tasks, ppid) {
         let next = user_affinity();
         (next, next != parent_aff)
     } else {
@@ -180,23 +169,25 @@ pub fn replace_user(
     user_argc: usize,
     user_argv: usize,
 ) {
-    with_process_mut(|t| {
+    with_thread_mut(|t| {
         t.aspace = aspace;
         t.user_rip = user_rip;
         t.user_rsp = user_rsp;
-        t.user_base = user_base;
-        t.image_span = image_span;
-        t.stack_off = stack_off;
-        t.user_argc = user_argc;
-        t.user_argv = user_argv;
         t.start_regs = None;
-        t.brk_cur = heap_base_for(user_base, stack_off);
-        t.mmap = EMPTY_MMAP;
-        // POSIX exec: ignored signals, the blocked mask and pending signals
-        // survive; caught ones revert to SIG_DFL (signal_table_exec below).
         // Keep fork-assigned affinity across exec. Spreading for make -j /
         // pipelines happens at fork when a sibling is already active — not
         // via basename allowlists or blanket post-exec RR.
+    });
+    with_process_mut(|p| {
+        p.user_base = user_base;
+        p.image_span = image_span;
+        p.stack_off = stack_off;
+        p.user_argc = user_argc;
+        p.user_argv = user_argv;
+        p.brk_cur = heap_base_for(user_base, stack_off);
+        p.mmap = EMPTY_MMAP;
+        // POSIX exec: ignored signals, the blocked mask and pending signals
+        // survive; caught ones revert to SIG_DFL (signal_table_exec below).
     });
     signal_table_exec(current_slot());
     fpu::reset(current_slot());
@@ -257,28 +248,11 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
-    // Do NOT `let t = tasks[id]` (full Task Copy). Each FdEntry can carry a
-    // 96-byte Vnode path — with MAX_FDS fds + scalars a full Task snapshot on
-    // the 64 KiB kstack has silently corrupted forked children before. Clone
-    // fds once by reference under the lock; copy only small scalars out.
-    let mut child_fds = [FdEntry::Empty; MAX_FDS];
-    let (
-        base,
-        span,
-        off,
-        ppid,
-        uargc,
-        uargv,
-        brk,
-        cwd,
-        cwd_len,
-        mmap,
-        sid,
-        pgid,
-        has_ctty,
-        sig_ignored,
-        sig_blocked,
-    ) = {
+    // The child's process block is a heap copy of the parent's (never a
+    // stack temporary: a `Process` is several KiB and a full snapshot on the
+    // 64 KiB kstack has silently corrupted forked children before). Only the
+    // small scalars the aspace copy needs are read out here.
+    let (base, span, off, ppid, brk, sig_blocked, child_proc) = {
         let tasks = TASKS.lock();
         let me = current_slot();
         if tasks[me].user_rip == 0 {
@@ -287,54 +261,40 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
             return None;
         }
         let id = tasks[me].tgid;
-        let t = &tasks[id];
-        for i in 0..MAX_FDS {
-            child_fds[i] = fd_clone(t.fds[i]);
-        }
+        let p = tasks.proc(id);
         (
-            t.user_base,
-            t.image_span,
-            t.stack_off,
+            p.user_base,
+            p.image_span,
+            p.stack_off,
             id,
-            t.user_argc,
-            t.user_argv,
-            t.brk_cur,
-            t.cwd,
-            t.cwd_len,
-            t.mmap,
-            t.sid,
-            t.pgid,
-            t.has_ctty,
-            t.sig_ignored,
+            p.brk_cur,
             tasks[me].sig_blocked,
+            fork_process(p),
         )
     };
+    let mut child_proc = child_proc;
 
-    let drop_child_fds = |fds: &mut [FdEntry; MAX_FDS]| {
+    let drop_child_fds = |p: &mut Process| {
         for i in 0..MAX_FDS {
-            fd_drop(fds[i]);
-            fds[i] = FdEntry::Empty;
+            fd_drop(p.fds[i]);
+            p.fds[i] = FdEntry::Empty;
         }
     };
 
     let Some(aspace) = user::copy_user_aspace(base, span, off, brk) else {
-        drop_child_fds(&mut child_fds);
+        drop_child_fds(&mut child_proc);
         irq_restore(flags);
         return None;
     };
 
     let Some((slot, stack_base, sp, top)) = claim_slot() else {
-        drop_child_fds(&mut child_fds);
+        drop_child_fds(&mut child_proc);
         irq_restore(flags);
         return None;
     };
 
-    // Inherit the chroot prefix before the child is published as Ready.
-    {
-        let mut roots = ROOTS.lock();
-        roots[slot] = roots[ppid];
-    }
     let mut tasks = TASKS.lock();
+    tasks.install_proc(slot, child_proc);
     let (child_aff, kick) = fork_child_affinity(&tasks, ppid);
     tasks[slot] = Task {
         state: State::Ready,
@@ -345,30 +305,14 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
         kernel_stack_top: top,
         user_rip: child_regs.rip,
         user_rsp: child_regs.rsp,
-        fds: child_fds,
-        user_base: base,
-        image_span: span,
-        stack_off: off,
         ppid,
         start_regs: Some(child_regs),
-        user_argc: uargc,
-        user_argv: uargv,
-        brk_cur: brk,
-        exec_name: [0; 32],
-        exec_name_len: 0,
-        cwd,
-        cwd_len,
         exit_code: 0,
         term_sig: 0,
         exited: false,
-        mmap,
-        sid,
-        pgid,
-        has_ctty,
         // POSIX: the child inherits dispositions and the blocked mask, but
         // starts with no pending signals.
         sig_pending: 0,
-        sig_ignored,
         sig_blocked,
         // Sequential / init→getty (no ctty): inherit. Ctty parent with an
         // active sibling (make -j / pipelines): fresh AP RR home. Exec keeps
@@ -429,7 +373,7 @@ pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
     };
     let sp = unsafe { seed_stack(stack_base as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
     let top = stack_base + STACK_SIZE;
-    stamp_stack_cpu(top, crate::smp::cpu_id());
+    crate::arch::stamp_stack_cpu(top, crate::smp::cpu_id());
     Some((slot, stack_base, sp, top))
 }
 
@@ -505,11 +449,7 @@ pub fn wait_child(
                 let code = tasks[i].exit_code;
                 let term_sig = tasks[i].term_sig;
                 if reapable(&tasks, i) {
-                    let stack_base = tasks[i].stack_base;
-                    tasks[i] = EMPTY;
-                    if stack_base != 0 {
-                        tasks[i].stack_base = stack_base;
-                    }
+                    tasks.recycle(i);
                 } else {
                     // Exited but still in `die()` (freeing its address space,
                     // or not yet off its kernel stack): report the exit now and
@@ -575,7 +515,7 @@ fn spawn_inner(
     let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as *const () as usize) };
     let top = stack as usize + STACK_SIZE;
     // BSP-created tasks start on CPU 0; schedule restamps on migrate.
-    stamp_stack_cpu(top, 0);
+    crate::arch::stamp_stack_cpu(top, 0);
 
     let mut tasks = TASKS.lock();
     let slot = tasks
@@ -587,8 +527,17 @@ fn spawn_inner(
     } else {
         0
     };
-    // Lock order TASKS -> ROOTS (nothing takes ROOTS first and then TASKS).
-    ROOTS.lock()[slot] = NO_ROOT;
+    let mut proc = new_process();
+    proc.fds = fds;
+    proc.user_base = user_base;
+    proc.image_span = image_span;
+    proc.stack_off = stack_off;
+    proc.user_argc = user_argc;
+    proc.user_argv = user_argv;
+    proc.brk_cur = brk_cur;
+    proc.sid = slot;
+    proc.pgid = slot;
+    tasks.install_proc(slot, proc);
     tasks[slot] = Task {
         state: State::Ready,
         stack_base: stack as usize,
@@ -598,32 +547,12 @@ fn spawn_inner(
         kernel_stack_top: top,
         user_rip,
         user_rsp,
-        fds,
-        user_base,
-        image_span,
-        stack_off,
         ppid,
         start_regs,
-        user_argc,
-        user_argv,
-        brk_cur,
-        exec_name: [0; 32],
-        exec_name_len: 0,
-        cwd: {
-            let mut c = [0u8; 256];
-            c[0] = b'/';
-            c
-        },
-        cwd_len: 1,
         exit_code: 0,
         term_sig: 0,
         exited: false,
-        mmap: EMPTY_MMAP,
-        sid: slot,
-        pgid: slot,
-        has_ctty: false,
         sig_pending: 0,
-        sig_ignored: 0,
         sig_blocked: 0,
         affinity: if aspace != 0 { user_affinity() } else { None },
         wait_key: 0,
@@ -663,16 +592,13 @@ extern "C" fn trampoline() -> ! {
         irq_off();
         let id = current_slot();
         let mut tasks = TASKS.lock();
+        let pid = tasks[id].tgid;
+        let (argc, argv) = tasks
+            .proc_opt(pid)
+            .map_or((0, 0), |p| (p.user_argc, p.user_argv));
         let t = &mut tasks[id];
         let fr = t.start_regs.take();
-        let out = (
-            t.entry,
-            t.user_rip,
-            t.user_rsp,
-            t.user_argc,
-            t.user_argv,
-            fr,
-        );
+        let out = (t.entry, t.user_rip, t.user_rsp, argc, argv, fr);
         drop(tasks);
         irq_restore(flags);
         out
@@ -707,21 +633,22 @@ pub fn die() -> ! {
         if tasks[id].user_rip != 0 {
             chld_parent = tasks[id].ppid;
             user::note_exit();
-            fds_to_drop = Some(tasks[id].fds);
-            tasks[id].fds = [FdEntry::Empty; MAX_FDS];
             let aspace = tasks[id].aspace;
-            let base = tasks[id].user_base;
-            let span = tasks[id].image_span;
-            let off = tasks[id].stack_off;
-            let brk = tasks[id].brk_cur;
-            let mmap = tasks[id].mmap;
             tasks[id].aspace = 0;
-            tasks[id].user_base = 0;
-            tasks[id].image_span = 0;
-            tasks[id].stack_off = 0;
-            tasks[id].brk_cur = 0;
-            tasks[id].mmap = EMPTY_MMAP;
             tasks[id].exited = true;
+            let p = tasks.proc_mut(id);
+            fds_to_drop = Some(p.fds);
+            p.fds = [FdEntry::Empty; MAX_FDS];
+            let base = p.user_base;
+            let span = p.image_span;
+            let off = p.stack_off;
+            let brk = p.brk_cur;
+            let mmap = p.mmap;
+            p.user_base = 0;
+            p.image_span = 0;
+            p.stack_off = 0;
+            p.brk_cur = 0;
+            p.mmap = EMPTY_MMAP;
             if aspace != 0 {
                 out = Some((aspace, base, span, off, brk, mmap));
             }

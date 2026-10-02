@@ -45,7 +45,7 @@ pub(super) fn write_user_usize(aspace: u64, va: usize, val: usize) -> bool {
     write_user_bytes(aspace, va, &val.to_le_bytes())
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[allow(dead_code)]
 pub fn try_read_user_u8(aspace: u64, va: usize) -> Option<u8> {
     let mut b = [0u8; 1];
     read_user_bytes(aspace, va, &mut b).then_some(b[0])

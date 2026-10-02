@@ -372,12 +372,15 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         read_any(&[&cacert_canon, &cacert_alias]),
     );
 
-    // hello demo module -> bin/modules/hello.
-    add(
-        &mut entries,
-        "bin/modules/hello",
-        read(&target.join(format!("hello-{kernel_triple}"))),
-    );
+    // Kernel modules -> lib/modules/<name> (the same ELFs Limine loads at
+    // boot; `insmod /lib/modules/<name>` loads one that was not).
+    for m in crate::limine_image::BOOT_MODULES {
+        add(
+            &mut entries,
+            &format!("lib/modules/{m}"),
+            read(&target.join(format!("{m}-{kernel_triple}"))),
+        );
+    }
 
     // Nested user/* ELFs -> bin/custom/<name>.
     for (rel, bin) in [
@@ -387,6 +390,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         ("echo", "myos_echo"),
         ("ls", "myos_ls"),
         ("mount", "mount"),
+        ("insmod", "insmod"),
         ("mkfs.ext2", "mkfs_ext2"),
         ("ping", "ping"),
         ("http", "http"),

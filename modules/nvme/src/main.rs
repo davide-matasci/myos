@@ -1,16 +1,18 @@
-//! Shared NVMe driver: one admin SQ/CQ, one I/O SQ/CQ, poll CQ phase.
+//! NVMe: `/dev/nvmeXn1` through [`myos_abi::KernelApi::blk_register`].
 //!
-//! No MSI/MSI-X. DMA pages come from `blk/virtq.rs` `alloc_pages`
-//! (phys = frame, VA = HHDM). Cap `MAX_CTRL` controllers, NSID 1 each.
+//! Speaks only through the module ABI. One admin SQ/CQ and one I/O SQ/CQ
+//! per controller, completion by polling the CQ phase bit; no MSI/MSI-X.
+//! Controllers are found by PCI class (`0x01` / `0x08`), their BAR0 mapped
+//! by the kernel. Cap [`MAX_CTRL`] controllers, NSID 1 each.
+
+#![no_std]
+#![no_main]
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use spin::Mutex;
+use myos_abi::{ABI_VERSION, KernelApi, ModuleBlkOps, status_ok};
 
-use crate::blk::SECTOR;
-use crate::blk::virtq;
-use crate::console;
-
+const SECTOR: usize = 512;
 pub const MAX_CTRL: usize = 4;
 const ADMIN_QD: u16 = 16;
 const IO_QD: u16 = 16;
@@ -60,9 +62,28 @@ struct Ctrl {
     capacity: u64,
 }
 
-unsafe impl Send for Ctrl {}
+static mut CTRLS: [Option<Ctrl>; MAX_CTRL] = [const { None }; MAX_CTRL];
+static mut API: Option<&'static KernelApi> = None;
 
-static CTRLS: Mutex<[Option<Ctrl>; MAX_CTRL]> = Mutex::new([const { None }; MAX_CTRL]);
+static OPS: ModuleBlkOps = ModuleBlkOps {
+    read: blk_read,
+    write: blk_write,
+    capacity_sectors: blk_capacity,
+};
+
+fn api() -> &'static KernelApi {
+    unsafe { (*core::ptr::addr_of!(API)).expect("nvme: API") }
+}
+
+fn dma_page() -> Option<(u64, *mut u8)> {
+    let mut phys = 0u64;
+    let va = unsafe { (api().dma_alloc)(1, &mut phys) };
+    if va.is_null() { None } else { Some((phys, va)) }
+}
+
+fn ctrl(i: usize) -> Option<&'static mut Ctrl> {
+    unsafe { (*core::ptr::addr_of_mut!(CTRLS)).get_mut(i)?.as_mut() }
+}
 
 fn r32(bar: usize, off: u32) -> u32 {
     unsafe { core::ptr::read_volatile((bar + off as usize) as *const u32) }
@@ -79,6 +100,7 @@ fn w64(bar: usize, off: u32, v: u64) {
     w32(bar, off, v as u32);
     w32(bar, off + 4, (v >> 32) as u32);
 }
+
 
 fn dma_wmb() {
     compiler_fence(Ordering::Release);
@@ -272,11 +294,11 @@ fn setup(bar: usize) -> Option<Ctrl> {
         return None;
     }
 
-    let (admin_sq_phys, admin_sq) = virtq::alloc_pages(1)?;
-    let (admin_cq_phys, admin_cq) = virtq::alloc_pages(1)?;
-    let (io_sq_phys, io_sq) = virtq::alloc_pages(1)?;
-    let (io_cq_phys, io_cq) = virtq::alloc_pages(1)?;
-    let (dma_phys, dma_va) = virtq::alloc_pages(1)?;
+    let (admin_sq_phys, admin_sq) = dma_page()?;
+    let (admin_cq_phys, admin_cq) = dma_page()?;
+    let (io_sq_phys, io_sq) = dma_page()?;
+    let (io_cq_phys, io_cq) = dma_page()?;
+    let (dma_phys, dma_va) = dma_page()?;
 
     w32(
         bar,
@@ -364,53 +386,27 @@ fn setup(bar: usize) -> Option<Ctrl> {
     Some(c)
 }
 
-pub fn attach(bar_va: usize) -> bool {
-    {
-        let table = CTRLS.lock();
-        for slot in table.iter() {
-            if let Some(c) = slot {
-                if c.bar == bar_va {
-                    // Already bound — rescan must not re-init a live controller.
-                    return false;
-                }
-            }
-        }
+
+/// `bar_va` is a controller's BAR0 (not yet attached). True once it is
+/// initialised and in the table.
+fn attach(bar_va: usize) -> bool {
+    let table = unsafe { &mut *core::ptr::addr_of_mut!(CTRLS) };
+    if table.iter().flatten().any(|c| c.bar == bar_va) {
+        return false;
     }
-    let Some(ctrl) = setup(bar_va) else {
+    let Some(c) = setup(bar_va) else {
         return false;
     };
-    let mut table = CTRLS.lock();
-    for slot in table.iter_mut() {
-        if slot.is_none() {
-            *slot = Some(ctrl);
-            return true;
+    match table.iter_mut().find(|s| s.is_none()) {
+        Some(slot) => {
+            *slot = Some(c);
+            true
         }
+        None => false,
     }
-    false
-}
-
-pub fn init() {
-    crate::pci::scan_nvme();
-    let n = count();
-    if n == 0 {
-        console::write_info("nvme none\n");
-    } else {
-        console::status_ok("nvme");
-    }
-}
-
-pub fn count() -> u32 {
-    let table = CTRLS.lock();
-    table.iter().filter(|c| c.is_some()).count() as u32
-}
-
-pub fn capacity_sectors(ctrl: u32) -> Option<u64> {
-    let table = CTRLS.lock();
-    table.get(ctrl as usize)?.as_ref().map(|c| c.capacity)
 }
 
 fn one(c: &mut Ctrl, lba: u64, buf: &mut [u8], is_write: bool) -> Result<(), ()> {
-    debug_assert!(buf.len() == SECTOR);
     if is_write {
         unsafe {
             core::ptr::copy_nonoverlapping(buf.as_ptr(), c.dma_va, SECTOR);
@@ -438,34 +434,104 @@ fn one(c: &mut Ctrl, lba: u64, buf: &mut [u8], is_write: bool) -> Result<(), ()>
     Ok(())
 }
 
-pub fn read(ctrl: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-    if buf.len() % SECTOR != 0 {
-        return Err(());
+unsafe extern "C" fn blk_read(ctx: usize, lba: u64, buf: *mut u8, len: usize) -> i32 {
+    if buf.is_null() || len % SECTOR != 0 {
+        return -1;
     }
-    let mut table = CTRLS.lock();
-    let slot = table.get_mut(ctrl as usize).ok_or(())?;
-    let c = slot.as_mut().ok_or(())?;
+    let Some(c) = ctrl(ctx) else {
+        return -1;
+    };
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf, len) };
     let mut lba = lba;
     for chunk in buf.chunks_mut(SECTOR) {
-        one(c, lba, chunk, false)?;
+        if one(c, lba, chunk, false).is_err() {
+            return -1;
+        }
         lba += 1;
     }
-    Ok(())
+    0
 }
 
-pub fn write(ctrl: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
-    if buf.len() % SECTOR != 0 {
-        return Err(());
+unsafe extern "C" fn blk_write(ctx: usize, lba: u64, buf: *const u8, len: usize) -> i32 {
+    if buf.is_null() || len % SECTOR != 0 {
+        return -1;
     }
-    let mut table = CTRLS.lock();
-    let slot = table.get_mut(ctrl as usize).ok_or(())?;
-    let c = slot.as_mut().ok_or(())?;
+    let Some(c) = ctrl(ctx) else {
+        return -1;
+    };
+    let buf = unsafe { core::slice::from_raw_parts(buf, len) };
     let mut lba = lba;
     for chunk in buf.chunks(SECTOR) {
         let mut tmp = [0u8; SECTOR];
         tmp.copy_from_slice(chunk);
-        one(c, lba, &mut tmp, true)?;
+        if one(c, lba, &mut tmp, true).is_err() {
+            return -1;
+        }
         lba += 1;
     }
-    Ok(())
+    0
+}
+
+unsafe extern "C" fn blk_capacity(ctx: usize) -> u64 {
+    ctrl(ctx).map_or(0, |c| c.capacity)
+}
+
+const CLASS_MASS: u8 = 0x01;
+const SUBCLASS_NVME: u8 = 0x08;
+
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
+    if api_ptr.is_null() {
+        return -1;
+    }
+    let api: &'static KernelApi = unsafe { &*api_ptr };
+    if api.abi_version != ABI_VERSION {
+        return -2;
+    }
+    unsafe {
+        *core::ptr::addr_of_mut!(API) = Some(api);
+    }
+    let mut n = 0usize;
+    for i in 0..MAX_CTRL as u32 {
+        let (mut bus, mut slot, mut func) = (0u8, 0u8, 0u8);
+        if unsafe { (api.pci_find_class)(CLASS_MASS, SUBCLASS_NVME, i, &mut bus, &mut slot, &mut func) } != 0 {
+            break;
+        }
+        unsafe { (api.pci_enable)(bus, slot, func) };
+        let (mut va, mut size) = (0usize, 0u64);
+        if unsafe { (api.pci_bar_map)(bus, slot, func, 0, &mut va, &mut size) } != 0 {
+            continue;
+        }
+        if !attach(va) {
+            continue;
+        }
+        // nvme{n}n1 (n < 10: MAX_CTRL is 4).
+        let name = [b'n', b'v', b'm', b'e', b'0' + n as u8, b'n', b'1'];
+        if unsafe { (api.blk_register)(name.as_ptr(), name.len(), &OPS, n) } < 0 {
+            break;
+        }
+        n += 1;
+    }
+    if n == 0 {
+        unsafe { (api.write_str)(b"nvme none\n".as_ptr(), 10) };
+    } else {
+        status_ok(api, "nvme");
+    }
+    0
+}
+
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn module_exit() {}
+
+// So `cargo build --bin nvme` links. The kernel never jumps here.
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    loop {}
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
 }

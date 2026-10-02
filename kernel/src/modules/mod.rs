@@ -1,8 +1,10 @@
 //! Runtime loader for in-memory ELF modules.
 //!
-//! There is no filesystem and no dynamic linker against kernel `.dynsym`.
-//! The kernel copies PT_LOAD segments into the heap, applies relative
-//! relocs, looks up `module_init`, and calls it with a [`myos_abi::KernelApi`].
+//! There is no dynamic linker against kernel `.dynsym`. The kernel copies
+//! PT_LOAD segments into the heap, applies relative relocs, looks up
+//! `module_init`, and calls it with a [`myos_abi::KernelApi`]. Boot modules
+//! come from Limine's module list (`boot/modules/<name>` in limine.conf,
+//! loaded in that order); later ones from `insmod` (`/lib/modules`).
 //! `elf::image_span` / `elf::realize_as` are also used to load the userspace
 //! `init` ELF (no `module_init`).
 
@@ -11,16 +13,7 @@ mod registry;
 
 use crate::console;
 use alloc::alloc::{Layout, alloc, dealloc};
-use myos_abi::{ABI_VERSION, FsBind, KernelApi, ModuleChrOps};
-
-const HELLO_IMAGE: &[u8] = include_bytes!(env!("HELLO_MODULE_PATH"));
-const FAT_IMAGE: &[u8] = include_bytes!(env!("FAT_MODULE_PATH"));
-const STUBFS_IMAGE: &[u8] = include_bytes!(env!("STUBFS_MODULE_PATH"));
-const EXT2_IMAGE: &[u8] = include_bytes!(env!("EXT2_MODULE_PATH"));
-const VIRTIO_NET_IMAGE: &[u8] = include_bytes!(env!("VIRTIO_NET_MODULE_PATH"));
-const NETFS_IMAGE: &[u8] = include_bytes!(env!("NETFS_MODULE_PATH"));
-const PCI_ENUM_IMAGE: &[u8] = include_bytes!(env!("PCI_ENUM_MODULE_PATH"));
-const ACPI_IMAGE: &[u8] = include_bytes!(env!("ACPI_MODULE_PATH"));
+use myos_abi::{ABI_VERSION, FramebufferInfo, FsBind, KernelApi, ModuleBlkOps, ModuleChrOps, ModuleConsoleOps};
 
 static API: KernelApi = KernelApi {
     abi_version: ABI_VERSION,
@@ -54,108 +47,96 @@ static API: KernelApi = KernelApi {
     wait_seq: api_wait_seq,
     block_until: api_block_until,
     monotonic_ns: api_monotonic_ns,
+    blk_register: api_blk_register,
+    pci_find_class: api_pci_find_class,
+    framebuffer_info: api_framebuffer_info,
+    console_register: api_console_register,
 };
 
-/// Load the hello module that was baked into the kernel at build time.
-pub fn load_embedded_hello() {
-    match load("hello", HELLO_IMAGE) {
-        Ok(()) => console::status_ok("hello"),
-        Err(e) => console::status_fail(&alloc::format!("hello module: {e}")),
-    }
-}
+/// Modules that print their own `[ OK ]` line (only when they found a
+/// device, or with their own wording); the loader announces the others.
+const SELF_REPORTING: &[&str] = &["console", "virtio_blk", "nvme", "virtio_net", "netfs", "pci_enum", "acpi"];
 
-pub fn load_embedded_pci_enum() {
-    match load("pci_enum", PCI_ENUM_IMAGE) {
-        Ok(()) => {}
-        Err(e) => console::status_fail(&alloc::format!("pci_enum module: {e}")),
-    }
-}
-
-pub fn load_embedded_acpi() {
-    match load("acpi", ACPI_IMAGE) {
-        Ok(()) => {}
-        Err(e) => console::status_fail(&alloc::format!("acpi module: {e}")),
-    }
-}
-
-/// Load the stubfs module (registers `/disk` via vfs_mount).
-pub fn load_embedded_stubfs() {
-    match load("stubfs", STUBFS_IMAGE) {
-        Ok(()) => console::status_ok("stubfs"),
-        Err(e) => console::status_fail(&alloc::format!("stubfs module: {e}")),
-    }
-}
-
-/// Load the FAT16 module baked into the kernel. Registers fstype `"fat"`;
-/// userspace `mount` binds a disk. Failure is logged and is not a panic.
-pub fn load_embedded_fat() {
-    match load("fat", FAT_IMAGE) {
-        Ok(()) => console::status_ok("fat"),
-        Err(e) => console::status_fail(&alloc::format!("fat module: {e}")),
-    }
-}
-
-/// Load the ext2 module baked into the kernel. Registers fstype `"ext2"`;
-/// userspace `mount` binds a disk after `mkfs.ext2`. Failure is logged.
-pub fn load_embedded_ext2() {
-    match load("ext2", EXT2_IMAGE) {
-        Ok(()) => console::status_ok("ext2"),
-        Err(e) => console::status_fail(&alloc::format!("ext2 module: {e}")),
-    }
-}
-
-/// Load the virtio-net module. Probes virtio-pci and registers `/dev/netN`.
-pub fn load_embedded_virtio_net() {
-    // Module self-reports `[ OK ] virtio-net` only when a NIC is registered.
-    if let Err(e) = load("virtio_net", VIRTIO_NET_IMAGE) {
-        console::status_fail(&alloc::format!("virtio-net module: {e}"));
-    }
-}
-
-/// Load netfs: Plan 9 `/net` plus `/dev/netd` channel for userspace netd.
-pub fn load_embedded_netfs() {
-    // Module self-reports `[ OK ] netfs` only when both hooks register.
-    if let Err(e) = load("netfs", NETFS_IMAGE) {
-        console::status_fail(&alloc::format!("netfs module: {e}"));
-    }
-}
-
-/// Load modules Limine mapped from `module_path` (ESP `boot/hello`).
+/// Load the modules Limine placed in RAM (`module_path` entries of
+/// limine.conf, in order). Each is named after its path's last component.
 ///
-/// Uses the same ELF loader as the baked-in image. Does not panic on
-/// failure: embedded hello already proved the loader.
-/// Userspace ELFs in the module list (`MissingInit`) are skipped quietly
-/// so bootfs can reuse the same Limine modules.
+/// Non-module files in the list are skipped: the `initramfs` cpio archive
+/// (bootfs parses it) and userspace ELFs (`MissingInit`), so bootfs can reuse
+/// the same Limine modules. Failures are logged, never fatal.
 pub fn load_limine_modules() {
     let Some(resp) = crate::limine_boot::MODULES.response() else {
         return;
     };
-    const NAMES: [&str; 4] = [
-        "hello-limine",
-        "hello-limine-1",
-        "hello-limine-2",
-        "hello-limine-3",
-    ];
-    for (i, file) in resp.modules().iter().enumerate() {
+    let mut loaded = 0usize;
+    for file in resp.modules().iter() {
         // Limine already mapped `address..address+size`.
         let bytes = file.data();
-        // The initramfs module is a newc cpio archive, not a kernel module:
-        // fs::init_limine (bootfs) parses it and registers userspace into the
-        // /bin and /lib mounts. Skip it here so it is not probed as ELF.
-        if file.path().rsplit('/').next() == Some("initramfs") {
+        let base = file.path().rsplit('/').next().unwrap_or("");
+        if base.is_empty() || base == "initramfs" {
             continue;
         }
-        let name = NAMES.get(i).copied().unwrap_or("hello-limine");
+        // Not an ELF (a stray data file): skip without a status line.
+        if bytes.len() < 4 || &bytes[..4] != b"\x7fELF" {
+            continue;
+        }
+        let name: &'static str = alloc::boxed::Box::leak(alloc::string::String::from(base).into_boxed_str());
         match load(name, bytes) {
             Ok(()) => {
-                console::status_ok("limine module");
+                loaded += 1;
+                if !SELF_REPORTING.contains(&name) {
+                    console::status_ok(name);
+                }
             }
             Err(elf::LoadError::MissingInit) => {}
             Err(e) => {
-                console::status_fail(&alloc::format!("limine module: {e}"));
+                console::status_fail(&alloc::format!("limine module {name}: {e}"));
             }
         }
     }
+    console::status_ok(&alloc::format!("limine modules: {loaded}"));
+}
+
+/// `insmod`: load the module at `path` (a plain ELF file, named after the
+/// path's last component). Errors: not found / too large, bad image, a module
+/// of that name is already loaded, or `module_init` failed.
+pub fn insmod(path: &str) -> Result<(), InsmodError> {
+    const MODULE_MAX: usize = 4 << 20;
+    let base = path.rsplit('/').next().unwrap_or("");
+    if base.is_empty() {
+        return Err(InsmodError::NotFound);
+    }
+    if by_name(base).is_some() {
+        return Err(InsmodError::Exists);
+    }
+    let bytes = crate::fs::read_all(path, MODULE_MAX).ok_or(InsmodError::NotFound)?;
+    let name: &'static str = alloc::boxed::Box::leak(alloc::string::String::from(base).into_boxed_str());
+    load(name, &bytes).map_err(InsmodError::Load)
+}
+
+pub enum InsmodError {
+    NotFound,
+    Exists,
+    Load(elf::LoadError),
+}
+
+impl core::fmt::Display for InsmodError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "no such file (or larger than 4 MiB)"),
+            Self::Exists => write!(f, "a module of that name is already loaded"),
+            Self::Load(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// `/proc/modules`: one loaded module name per line.
+pub fn modules_text() -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::new();
+    for m in registry::all() {
+        out.extend_from_slice(m.name.as_bytes());
+        out.push(b'\n');
+    }
+    out
 }
 
 /// Load `image` (an ELF file already in memory) and run `module_init`.
@@ -433,7 +414,7 @@ unsafe extern "C" fn api_dma_alloc(n_pages: usize, phys: *mut u64) -> *mut u8 {
     if phys.is_null() {
         return core::ptr::null_mut();
     }
-    match crate::blk::virtq::alloc_pages(n_pages) {
+    match crate::mm::alloc_contiguous_pages(n_pages) {
         Some((p, va)) => {
             unsafe {
                 *phys = p;
@@ -581,4 +562,69 @@ unsafe extern "C" fn api_block_until(key: usize, seq: u64, deadline_ns: u64) {
 
 unsafe extern "C" fn api_monotonic_ns() -> u64 {
     crate::time::monotonic_ns()
+}
+
+unsafe extern "C" fn api_blk_register(
+    name: *const u8,
+    name_len: usize,
+    ops: *const ModuleBlkOps,
+    ctx: usize,
+) -> i32 {
+    if name.is_null() || name_len == 0 || ops.is_null() {
+        return -1;
+    }
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let Ok(name) = core::str::from_utf8(name_bytes) else {
+        return -1;
+    };
+    let ops = unsafe { *ops };
+    match crate::blk::register(name, ops, ctx) {
+        Some(id) => id as i32,
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_pci_find_class(
+    class: u8,
+    subclass: u8,
+    index: u32,
+    bus: *mut u8,
+    slot: *mut u8,
+    func: *mut u8,
+) -> i32 {
+    if bus.is_null() || slot.is_null() || func.is_null() {
+        return -1;
+    }
+    match crate::pci::find_class(class, subclass, index) {
+        Some(bdf) => {
+            unsafe {
+                *bus = bdf.bus;
+                *slot = bdf.slot;
+                *func = bdf.func;
+            }
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_framebuffer_info(out: *mut FramebufferInfo) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    match console::framebuffer_info() {
+        Some(info) => {
+            unsafe { *out = info };
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_console_register(ops: *const ModuleConsoleOps) -> i32 {
+    if ops.is_null() {
+        return -1;
+    }
+    let ops = unsafe { *ops };
+    if console::register(ops) { 0 } else { -1 }
 }

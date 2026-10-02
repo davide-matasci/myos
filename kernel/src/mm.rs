@@ -50,25 +50,7 @@ pub static FRAME_SITE_COUNTS: [AtomicU64; 6] = [
 /// `page` must point at a writable, 8-byte-aligned 4 KiB page.
 #[inline(always)]
 pub unsafe fn zero_page(page: *mut u8) {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!(
-            "rep stosq",
-            inout("rcx") (PAGE / 8) as usize => _,
-            inout("rdi") page => _,
-            in("rax") 0u64,
-            options(nostack, preserves_flags),
-        );
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let w = page as *mut u64;
-        let mut i = 0;
-        while i < (PAGE / 8) as usize {
-            unsafe { w.add(i).write(0) };
-            i += 1;
-        }
-    }
+    unsafe { crate::arch::zero_page(page) }
 }
 
 /// Allocate one frame and attribute it to a leak-triage call site.
@@ -366,4 +348,21 @@ pub fn hhdm(phys: u64) -> *mut u8 {
 
 pub fn table(phys: u64) -> *mut [u64; 512] {
     hhdm(phys & !0xfff) as *mut [u64; 512]
+}
+
+/// Allocate `n` consecutive 4 KiB frames for DMA rings: `(phys, hhdm va)`.
+/// Fails if the bump allocator crossed a memmap hole (should not happen for
+/// a handful of pages).
+pub fn alloc_contiguous_pages(n: usize) -> Option<(u64, *mut u8)> {
+    if n == 0 {
+        return None;
+    }
+    let first = alloc_frame_site(0);
+    for i in 1..n {
+        let p = alloc_frame_site(0);
+        if p != first + (i as u64) * 4096 {
+            return None;
+        }
+    }
+    Some((first, hhdm(first)))
 }

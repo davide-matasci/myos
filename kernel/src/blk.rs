@@ -1,40 +1,97 @@
-//! In-kernel virtio-blk: sector I/O for `/dev/vd*` and filesystem modules.
+//! Block devices: the registry filled by driver modules (`virtio_blk`,
+//! `nvme`) through `KernelApi::blk_register`, and the sector / byte I/O the
+//! VFS (`/dev/<name>`) and the filesystem modules go through.
 //!
-//! Public surface is `init`, `count`, `capacity_sectors`, `read`, `write`,
-//! plus unaligned byte I/O. Transports live under `arch` (PCI legacy I/O on
-//! x86, virtio-mmio v2 on AArch64/RISC-V). DMA addresses for descriptors
-//! are frame phys / HHDM VA minus `hhdm_offset()`, never `kernel_virt_to_phys`.
+//! The kernel has no block driver of its own: a device appears when a
+//! module registers it with a name (`vda`, `nvme0n1`, …) and a
+//! [`ModuleBlkOps`] table, and is addressed by the id that returned.
 
-pub(crate) mod virtq;
+use myos_abi::ModuleBlkOps;
+use spin::Mutex;
 
-pub const MAX_DISKS: usize = 8;
-/// Block ids for `/dev/nvme*`; virtio stays `0..count()`.
-pub const NVME_ID_BASE: u32 = 0x100;
+pub const MAX_DISKS: usize = 16;
+pub const SECTOR: usize = 512;
+const NAME_MAX: usize = 15;
 
-pub fn init() {
-    crate::arch::virtio_blk_init();
+#[derive(Clone, Copy)]
+struct BlkDev {
+    name: [u8; NAME_MAX],
+    name_len: u8,
+    ops: ModuleBlkOps,
+    ctx: usize,
 }
 
-/// Number of probed virtio-blk devices.
-pub fn count() -> u32 {
-    crate::arch::virtio_blk_count()
-}
+static DEVS: Mutex<[Option<BlkDev>; MAX_DISKS]> = Mutex::new([const { None }; MAX_DISKS]);
 
-/// Disk size in 512-byte sectors, if the virtio config exposed it.
-pub fn capacity_sectors(dev: u32) -> Option<u64> {
-    if dev >= NVME_ID_BASE {
-        return crate::nvme::capacity_sectors(dev - NVME_ID_BASE);
+/// Register `/dev/<name>` backed by `ops` with `ctx`; the device id, or
+/// `None` when the table is full, the name is invalid or already taken.
+pub fn register(name: &str, ops: ModuleBlkOps, ctx: usize) -> Option<u32> {
+    if name.is_empty() || name.len() > NAME_MAX || !name.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
     }
-    crate::arch::virtio_blk_capacity(dev)
+    let mut devs = DEVS.lock();
+    if devs.iter().flatten().any(|d| d.name_str() == name) {
+        return None;
+    }
+    let slot = devs.iter().position(|d| d.is_none())?;
+    let mut d = BlkDev {
+        name: [0; NAME_MAX],
+        name_len: name.len() as u8,
+        ops,
+        ctx,
+    };
+    d.name[..name.len()].copy_from_slice(name.as_bytes());
+    devs[slot] = Some(d);
+    Some(slot as u32)
 }
 
-/// Disk size in bytes (saturating at `u32::MAX` for VFS stat).
+impl BlkDev {
+    fn name_str(&self) -> &str {
+        core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("")
+    }
+}
+
+/// Number of device ids in use (`0..count()` may have holes).
+pub fn count() -> u32 {
+    let devs = DEVS.lock();
+    devs.iter().rposition(|d| d.is_some()).map_or(0, |i| i as u32 + 1)
+}
+
+/// The device's `/dev` name, copied into `out`; its length.
+pub fn name(dev: u32, out: &mut [u8]) -> Option<usize> {
+    let devs = DEVS.lock();
+    let d = devs.get(dev as usize)?.as_ref()?;
+    let n = (d.name_len as usize).min(out.len());
+    out[..n].copy_from_slice(&d.name[..n]);
+    Some(n)
+}
+
+/// The device registered as `/dev/<name>`.
+pub fn by_name(name: &str) -> Option<u32> {
+    let devs = DEVS.lock();
+    devs.iter()
+        .position(|d| d.as_ref().is_some_and(|d| d.name_str() == name))
+        .map(|i| i as u32)
+}
+
+fn get(dev: u32) -> Option<BlkDev> {
+    *DEVS.lock().get(dev as usize)?
+}
+
+/// Disk size in 512-byte sectors, if the driver knows it.
+pub fn capacity_sectors(dev: u32) -> Option<u64> {
+    let d = get(dev)?;
+    let n = unsafe { (d.ops.capacity_sectors)(d.ctx) };
+    (n != 0).then_some(n)
+}
+
+/// Disk size in bytes.
 pub fn capacity_bytes(dev: u32) -> Option<u64> {
     capacity_sectors(dev).map(|s| s.saturating_mul(SECTOR as u64))
 }
 
 /// Read `buf.len()` bytes starting at `lba`. `buf.len()` must be a multiple
-/// of 512. Fails if the device was not found (does not panic).
+/// of 512. Fails if the device does not exist (does not panic).
 pub fn read(dev: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
     if buf.len() % SECTOR != 0 {
         return Err(());
@@ -42,10 +99,9 @@ pub fn read(dev: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
     if buf.is_empty() {
         return Ok(());
     }
-    if dev >= NVME_ID_BASE {
-        return crate::nvme::read(dev - NVME_ID_BASE, lba, buf);
-    }
-    crate::arch::virtio_blk_read(dev, lba, buf)
+    let d = get(dev).ok_or(())?;
+    let rc = unsafe { (d.ops.read)(d.ctx, lba, buf.as_mut_ptr(), buf.len()) };
+    if rc == 0 { Ok(()) } else { Err(()) }
 }
 
 /// Write `buf.len()` bytes starting at `lba`. `buf.len()` must be a multiple
@@ -57,10 +113,9 @@ pub fn write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
     if buf.is_empty() {
         return Ok(());
     }
-    if dev >= NVME_ID_BASE {
-        return crate::nvme::write(dev - NVME_ID_BASE, lba, buf);
-    }
-    crate::arch::virtio_blk_write(dev, lba, buf)
+    let d = get(dev).ok_or(())?;
+    let rc = unsafe { (d.ops.write)(d.ctx, lba, buf.as_ptr(), buf.len()) };
+    if rc == 0 { Ok(()) } else { Err(()) }
 }
 
 /// Byte-granular read at `offset`. Partial sectors are handled internally.
@@ -125,15 +180,4 @@ pub fn write_bytes(dev: u32, offset: u64, buf: &[u8]) -> Result<usize, ()> {
         done += take;
     }
     Ok(done)
-}
-
-/// DMA page layout used by both transports: header, status, one sector.
-pub(crate) const DMA_STATUS: usize = 16;
-pub(crate) const DMA_DATA: usize = 512;
-pub(crate) const SECTOR: usize = 512;
-pub(crate) const VIRTIO_BLK_T_IN: u32 = 0;
-pub(crate) const VIRTIO_BLK_T_OUT: u32 = 1;
-
-pub fn nvme_capacity_bytes(ctrl: u32) -> Option<u64> {
-    crate::nvme::capacity_sectors(ctrl).map(|s| s.saturating_mul(SECTOR as u64))
 }

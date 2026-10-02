@@ -188,10 +188,10 @@ pub fn init_embedded() {}
 
 /// Register Limine-mapped modules under `/bin/…` (remapped in issue #79).
 ///
-/// The bios/uefi image embeds `boot/hello` (the hello demo module, e.g. the
-/// LF `modules/hello` tree) and `boot/ok` (user/ok). These land in their
-/// `/bin` category now instead of the flat root: `hello` -> `/bin/modules/hello`,
-/// everything else -> `/bin/custom/<basename>`.
+/// The images carry the kernel modules under `boot/modules/` (loaded by
+/// `modules::load_limine_modules`, also shipped as `/lib/modules/<name>` in
+/// the initramfs: not registered here) and `boot/ok` (user/ok), which lands
+/// in its `/bin` category instead of the flat root: `/bin/custom/<basename>`.
 ///
 /// The `boot/initramfs` module is special: it is a newc archive of the
 /// userspace ELFs (sbase, coreutils, ripgrep, tcc, std, custom, and the newlib
@@ -216,12 +216,10 @@ pub fn init_limine() {
             crate::console::status_ok(&alloc::format!("initramfs: {n} files"));
             continue;
         }
-        let rel = if name == "hello" {
-            alloc::format!("modules/{name}")
-        } else {
-            alloc::format!("custom/{name}")
-        };
-        let _ = crate::fs::binfs::register(&rel, bytes);
+        if file.path().contains("/modules/") {
+            continue;
+        }
+        let _ = crate::fs::binfs::register(&alloc::format!("custom/{name}"), bytes);
     }
 }
 

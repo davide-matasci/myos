@@ -8,7 +8,7 @@
 //! characters are out of scope — see `docs/keymap.md`.
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use spin::Mutex;
+use crate::lock::Lock as Mutex;
 
 /// `ioctl(console, KDSKMAP, &KeymapIoctl)` — load map text from userspace.
 pub const KDSKMAP: usize = 0x5480;

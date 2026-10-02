@@ -22,7 +22,6 @@ pub const SIGACTION_HAS_RESTORER: bool = false;
 pub const TRAMP_CODE: &[u8] = &[0x93, 0x08, 0xb0, 0x08, 0x73, 0x00, 0x00, 0x00];
 
 /// `sstatus.FS = Initial`: user FP instructions allowed (Linux tasks).
-pub use crate::task::fpu::SSTATUS_FS_INITIAL;
 
 // Trap frame words: x0..x31, sepc, sstatus, user sp (restored into x2).
 const R_PC: usize = 32;

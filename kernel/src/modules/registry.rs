@@ -17,3 +17,8 @@ pub fn register(module: LoadedModule) {
 pub fn by_name(name: &str) -> Option<LoadedModule> {
     MODULES.lock().iter().copied().find(|m| m.name == name)
 }
+
+/// Every loaded module, in load order.
+pub fn all() -> Vec<LoadedModule> {
+    MODULES.lock().clone()
+}

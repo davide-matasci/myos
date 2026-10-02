@@ -6,7 +6,10 @@ mod initramfs {
     include!("src/initramfs.rs");
 }
 
-use limine_image::{bios_install, fetch_limine, write_esp_image, write_fat_data_image, LIMINE_VERSION};
+use limine_image::{
+    BOOT_MODULES, bios_install, boot_module_files, fetch_limine, write_esp_image,
+    write_fat_data_image, LIMINE_VERSION,
+};
 use std::path::PathBuf;
 
 /// Build a feature-gated port when its artifact is missing. Port build
@@ -145,11 +148,13 @@ fn main() {
         .expect("write target/initramfs-x86_64.cpio");
     println!("cargo:rerun-if-changed={}", initramfs_path.display());
 
-    let hello_path = manifest.join("target").join("hello-x86_64-unknown-none");
-    println!("cargo:rerun-if-changed={}", hello_path.display());
-    let hello = std::fs::read(&hello_path).unwrap_or_else(|_| {
-        panic!("hello ELF missing at {}", hello_path.display())
-    });
+    for m in BOOT_MODULES {
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest.join("target").join(format!("{m}-x86_64-unknown-none")).display()
+        );
+    }
+    let modules = boot_module_files(&manifest.join("target"), "x86_64-unknown-none");
 
     let ok_path = manifest.join("target").join("ok-x86_64-unknown-none");
     println!("cargo:rerun-if-changed={}", ok_path.display());
@@ -168,7 +173,7 @@ fn main() {
         "BOOTX64.EFI",
         &bootx64,
         Some(&bios_sys),
-        &hello,
+        &modules,
         &ok,
         &initramfs_bytes,
     );
@@ -195,7 +200,6 @@ fn main() {
     println!("cargo:rustc-env=LIMINE_DIR={}", limine_dir.display());
     // Artifact-dep kernel is not at target/<triple>/debug/kernel.
     println!("cargo:rustc-env=KERNEL_PATH={}", kernel_path.display());
-    println!("cargo:rustc-env=HELLO_PATH={}", hello_path.display());
     println!("cargo:rustc-env=OK_PATH={}", ok_path.display());
     // Hand the active feature set to the host binary so wait_ci.rs can gate the
     // smoke-test needles at runtime (build scripts can't use #[cfg] on a

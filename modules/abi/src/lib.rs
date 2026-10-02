@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 11;
+pub const ABI_VERSION: u32 = 12;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
@@ -111,6 +111,80 @@ pub struct ModuleVfsOps {
     /// mid-life close: after fork() several fds share one conv, and the
     /// parent's close must not kill the child's connection.
     pub release: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
+}
+
+/// Module-provided block device (`KernelApi::blk_register`). Sector size is
+/// 512 bytes; `buf` lengths are whole sectors. `ctx` is the value given at
+/// registration (the driver's device index). 0 ok, negative on error.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ModuleBlkOps {
+    pub read: unsafe extern "C" fn(ctx: usize, lba: u64, buf: *mut u8, len: usize) -> i32,
+    pub write: unsafe extern "C" fn(ctx: usize, lba: u64, buf: *const u8, len: usize) -> i32,
+    /// Size in 512-byte sectors (0 = unknown).
+    pub capacity_sectors: unsafe extern "C" fn(ctx: usize) -> u64,
+}
+
+/// The boot framebuffer as the bootloader left it (`KernelApi::framebuffer_info`):
+/// `addr` is its mapped virtual address, `pitch` the bytes per row.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct FramebufferInfo {
+    pub addr: u64,
+    pub width: u64,
+    pub height: u64,
+    pub pitch: u64,
+    pub bpp: u16,
+    pub r_shift: u8,
+    pub g_shift: u8,
+    pub b_shift: u8,
+    pub r_size: u8,
+    pub g_size: u8,
+    pub b_size: u8,
+}
+
+/// Text kinds for `ModuleConsoleOps::write_kind`: plain mirrored output, the
+/// boot banner (accent colour) and dim informational text.
+pub const CONSOLE_TEXT: u32 = 0;
+pub const CONSOLE_BANNER: u32 = 1;
+pub const CONSOLE_INFO: u32 = 2;
+/// Status-line kinds for `ModuleConsoleOps::status_line` (`[ TAG ] label`):
+/// ok, fail, info / progress, warn.
+pub const CONSOLE_STATUS_OK: u32 = 0;
+pub const CONSOLE_STATUS_FAIL: u32 = 1;
+pub const CONSOLE_STATUS_INFO: u32 = 2;
+pub const CONSOLE_STATUS_WARN: u32 = 3;
+
+/// The module-provided console (`KernelApi::console_register`): the
+/// framebuffer text screen and the local keyboards. Serial stays in the
+/// kernel, which calls these after writing a byte there. `blink` runs from
+/// the timer interrupt and must never spin on a lock.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ModuleConsoleOps {
+    /// Paint `len` bytes of text (ANSI escapes understood) of `kind`
+    /// ([`CONSOLE_TEXT`], [`CONSOLE_BANNER`], [`CONSOLE_INFO`]).
+    pub write_kind: unsafe extern "C" fn(buf: *const u8, len: usize, kind: u32),
+    /// Paint one `[ TAG ] label` line with the tag coloured by `kind`.
+    pub status_line: unsafe extern "C" fn(
+        tag: *const u8,
+        tag_len: usize,
+        kind: u32,
+        label: *const u8,
+        label_len: usize,
+    ),
+    /// Character-cell size (rows, cols); negative when there is no screen.
+    pub winsize: unsafe extern "C" fn(rows: *mut u16, cols: *mut u16) -> i32,
+    /// Toggle the block cursor (timer tick). Must not block.
+    pub blink: unsafe extern "C" fn(),
+    /// A local keyboard was found.
+    pub keyboard_present: unsafe extern "C" fn() -> i32,
+    /// Next keyboard byte (keymap-translated), or negative when none is pending.
+    pub keyboard_poll: unsafe extern "C" fn() -> i32,
+    /// Install a keymap from its text form (`KDSKMAP`). 0 ok, negative on error.
+    pub keymap_load: unsafe extern "C" fn(text: *const u8, len: usize) -> i32,
+    /// 1 when a keymap is loaded (`KDGKMAP`).
+    pub keymap_loaded: unsafe extern "C" fn() -> i32,
 }
 
 /// Bind `dev_id` to a filesystem and fill `ops`. Return 0 on success.
@@ -251,6 +325,33 @@ pub struct KernelApi {
     pub block_until: unsafe extern "C" fn(key: usize, seq: u64, deadline_ns: u64),
     /// Monotonic nanoseconds (`kernel/src/time.rs`).
     pub monotonic_ns: unsafe extern "C" fn() -> u64,
+    // --- ABI 12: block devices are modules ---
+    /// Register a block device as `/dev/<name>` (`vda`, `nvme0n1`, …) and a
+    /// `blk_*` device id. Returns the id (>= 0) or negative on error (table
+    /// full, duplicate name). The kernel's `blk_read` / `blk_write` and the
+    /// filesystem modules then reach it through `ops`.
+    pub blk_register: unsafe extern "C" fn(
+        name: *const u8,
+        name_len: usize,
+        ops: *const ModuleBlkOps,
+        ctx: usize,
+    ) -> i32,
+    /// Nth PCI function (0-based) of `class` / `subclass` (e.g. NVMe is
+    /// 0x01 / 0x08). 0 ok (BDF filled), negative when there is none.
+    pub pci_find_class: unsafe extern "C" fn(
+        class: u8,
+        subclass: u8,
+        index: u32,
+        bus: *mut u8,
+        slot: *mut u8,
+        func: *mut u8,
+    ) -> i32,
+    // --- ABI 12: the console is a module ---
+    /// The boot framebuffer, if the bootloader set one up. Negative when none.
+    pub framebuffer_info: unsafe extern "C" fn(out: *mut FramebufferInfo) -> i32,
+    /// Install the console (one per boot): the kernel replays the boot output
+    /// it buffered so far, then mirrors every later line. 0 ok.
+    pub console_register: unsafe extern "C" fn(ops: *const ModuleConsoleOps) -> i32,
 }
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).

@@ -1,0 +1,186 @@
+//! The process block: what the threads of a process share, kept on the heap
+//! and reached through the leader's slot. The scheduler's own record of a
+//! thread is the (small, `Copy`) [`Task`]; this is the large, per-process
+//! part — the fd table, the address-space layout, cwd and chroot, mmap
+//! regions, job control and signal dispositions — allocated when a process
+//! starts and freed when its slot is recycled.
+
+use alloc::boxed::Box;
+
+use super::*;
+
+/// Longest chroot prefix (real absolute path) a process can carry.
+pub const ROOT_CAP: usize = 128;
+
+/// chroot(2) prefix: absolute real path of the process's `/`, or empty
+/// (`len == 0`) for the real root. Inherited on fork, kept across exec;
+/// `cwd` is relative to it (the path the process itself sees).
+#[derive(Clone, Copy)]
+pub(super) struct Root {
+    pub buf: [u8; ROOT_CAP],
+    pub len: u8,
+}
+
+pub(super) const NO_ROOT: Root = Root { buf: [0; ROOT_CAP], len: 0 };
+
+/// Per-process state (see the module doc). Only the leader slot of a
+/// process has one; its threads reach it through `Task::tgid`.
+#[derive(Clone, Copy)]
+pub(super) struct Process {
+    pub fds: [FdEntry; MAX_FDS],
+    pub user_base: u64,
+    pub image_span: usize,
+    pub stack_off: u64,
+    pub user_argc: usize,
+    pub user_argv: usize,
+    /// Current program break (end of heap).
+    pub brk_cur: u64,
+    /// Basename from the last successful exec (multicall argv[0] fallback).
+    pub exec_name: [u8; 32],
+    pub exec_name_len: u8,
+    /// Absolute cwd (POSIX). Survives exec; copied on fork. Always starts with `/`.
+    pub cwd: [u8; 256],
+    pub cwd_len: u16,
+    /// Anonymous mmap windows (after the brk heap).
+    pub mmap: [MmapRegion; MAX_MMAP_REGIONS],
+    /// Session id (slot of the session leader). Inherited on fork. New
+    /// spawns start as their own session (`sid == slot`); `setsid` creates a
+    /// fresh session for a forked child.
+    pub sid: usize,
+    /// Process group id (slot of the group leader). Inherited on fork. New
+    /// spawns start in their own group (`pgid == slot`); `setsid` also puts
+    /// the caller in a new group (`pgid = pid`).
+    pub pgid: usize,
+    /// Controlling terminal attached (phase-1: system console only).
+    /// Inherited on fork; set by TIOCSCTTY; cleared by SYS_SETSID.
+    pub has_ctty: bool,
+    /// Ignored signals bitmask (SIGKILL cannot be ignored). See `signal`.
+    pub sig_ignored: u32,
+    pub root: Root,
+}
+
+const fn root_cwd_buf() -> [u8; 256] {
+    let mut c = [0u8; 256];
+    c[0] = b'/';
+    c
+}
+
+/// A fresh process: no fds, cwd `/`, no chroot, its own session and group
+/// (set by the spawner).
+static EMPTY_PROC: Process = Process {
+    fds: [FdEntry::Empty; MAX_FDS],
+    user_base: 0,
+    image_span: 0,
+    stack_off: 0,
+    user_argc: 0,
+    user_argv: 0,
+    brk_cur: 0,
+    exec_name: [0; 32],
+    exec_name_len: 0,
+    cwd: root_cwd_buf(),
+    cwd_len: 1,
+    mmap: EMPTY_MMAP,
+    sid: 0,
+    pgid: 0,
+    has_ctty: false,
+    sig_ignored: 0,
+    root: NO_ROOT,
+};
+
+/// A new, empty process block (heap; never staged on the kernel stack: a
+/// `Process` is several KiB).
+pub(super) fn new_process() -> Box<Process> {
+    let mut b = Box::<Process>::new_uninit();
+    unsafe {
+        core::ptr::copy_nonoverlapping(&EMPTY_PROC, b.as_mut_ptr(), 1);
+        b.assume_init()
+    }
+}
+
+/// A forked child's process block: a copy of `src` with the fds re-opened
+/// (shared file positions and pipes), the exec name cleared.
+pub(super) fn fork_process(src: &Process) -> Box<Process> {
+    let mut b = Box::<Process>::new_uninit();
+    let mut b = unsafe {
+        core::ptr::copy_nonoverlapping(src, b.as_mut_ptr(), 1);
+        b.assume_init()
+    };
+    for fd in b.fds.iter_mut() {
+        *fd = fd_clone(*fd);
+    }
+    b.exec_name = [0; 32];
+    b.exec_name_len = 0;
+    b
+}
+
+/// The task table under the `TASKS` lock: every slot's scheduler record and
+/// the process block of the slots that lead a process.
+pub(super) struct TaskTable {
+    tasks: [Task; MAX_TASKS],
+    procs: [Option<Box<Process>>; MAX_TASKS],
+}
+
+impl TaskTable {
+    pub const fn new() -> Self {
+        Self {
+            tasks: [EMPTY; MAX_TASKS],
+            procs: [const { None }; MAX_TASKS],
+        }
+    }
+
+    pub fn iter(&self) -> core::slice::Iter<'_, Task> {
+        self.tasks.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> core::slice::IterMut<'_, Task> {
+        self.tasks.iter_mut()
+    }
+
+    /// The process block of leader slot `pid` (a user process).
+    pub fn proc(&self, pid: usize) -> &Process {
+        self.procs[pid].as_deref().expect("task slot has no process block")
+    }
+
+    pub fn proc_mut(&mut self, pid: usize) -> &mut Process {
+        self.procs[pid].as_deref_mut().expect("task slot has no process block")
+    }
+
+    /// The process block of slot `pid`, if it leads a process (kernel
+    /// threads, idle tasks and non-leader threads have none).
+    pub fn proc_opt(&self, pid: usize) -> Option<&Process> {
+        self.procs.get(pid).and_then(|p| p.as_deref())
+    }
+
+    /// Give slot `slot` the process block `p` (it becomes a process leader).
+    pub fn install_proc(&mut self, slot: usize, p: Box<Process>) {
+        self.procs[slot] = Some(p);
+    }
+
+    /// Ignored-signal mask of the process led by `pid` (0 for a slot that
+    /// leads none).
+    pub fn sig_ignored(&self, pid: usize) -> u32 {
+        self.proc_opt(pid).map_or(0, |p| p.sig_ignored)
+    }
+
+    /// Free slot `slot` for reuse: back to [`EMPTY`] (keeping its kernel
+    /// stack, see `claim_slot`) and without a process block.
+    pub fn recycle(&mut self, slot: usize) {
+        let stack_base = self.tasks[slot].stack_base;
+        self.tasks[slot] = EMPTY;
+        self.tasks[slot].stack_base = stack_base;
+        self.procs[slot] = None;
+    }
+}
+
+impl core::ops::Index<usize> for TaskTable {
+    type Output = Task;
+    fn index(&self, i: usize) -> &Task {
+        &self.tasks[i]
+    }
+}
+
+impl core::ops::IndexMut<usize> for TaskTable {
+    fn index_mut(&mut self, i: usize) -> &mut Task {
+        &mut self.tasks[i]
+    }
+}

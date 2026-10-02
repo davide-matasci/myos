@@ -6,12 +6,72 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use spin::Mutex;
-
-use crate::blk::virtq;
-use crate::console;
 use crate::kbd::{self, ByteFifo};
-use super::*;
+use crate::lock::Lock as Mutex;
+use crate::status_ok;
+use virtq::{dcache_civac, dsb};
+
+#[cfg(target_arch = "aarch64")]
+const MMIO_BASE: usize = 0x0A00_0000;
+#[cfg(target_arch = "aarch64")]
+const MMIO_STRIDE: usize = 0x200;
+#[cfg(target_arch = "aarch64")]
+const MMIO_SLOTS: usize = 32;
+#[cfg(target_arch = "riscv64")]
+const MMIO_BASE: usize = 0x1000_1000;
+#[cfg(target_arch = "riscv64")]
+const MMIO_STRIDE: usize = 0x1000;
+#[cfg(target_arch = "riscv64")]
+const MMIO_SLOTS: usize = 8;
+
+const MAGIC: u32 = 0x7472_6976; // "virt"
+const VERSION_2: u32 = 2;
+
+const REG_MAGIC: u32 = 0x000;
+const REG_VERSION: u32 = 0x004;
+const REG_DEVICE_ID: u32 = 0x008;
+const REG_DEV_FEAT: u32 = 0x010;
+const REG_DEV_FEAT_SEL: u32 = 0x014;
+const REG_DRV_FEAT: u32 = 0x020;
+const REG_DRV_FEAT_SEL: u32 = 0x024;
+const REG_QUEUE_SEL: u32 = 0x030;
+const REG_QUEUE_NUM_MAX: u32 = 0x034;
+const REG_QUEUE_NUM: u32 = 0x038;
+const REG_QUEUE_READY: u32 = 0x044;
+const REG_QUEUE_NOTIFY: u32 = 0x050;
+const REG_ISR: u32 = 0x060;
+const REG_ISR_ACK: u32 = 0x064;
+const REG_STATUS: u32 = 0x070;
+const REG_DESC_LO: u32 = 0x080;
+const REG_DESC_HI: u32 = 0x084;
+const REG_AVAIL_LO: u32 = 0x090;
+const REG_AVAIL_HI: u32 = 0x094;
+const REG_USED_LO: u32 = 0x0A0;
+const REG_USED_HI: u32 = 0x0A4;
+
+const ACKNOWLEDGE: u32 = 1;
+const DRIVER: u32 = 2;
+const DRIVER_OK: u32 = 4;
+const FEATURES_OK: u32 = 8;
+const VIRTIO_F_VERSION_1: u32 = 1; // bit 32, in features dword 1
+
+fn r32(base: usize, off: u32) -> u32 {
+    unsafe { core::ptr::read_volatile((base + off as usize) as *const u32) }
+}
+fn w32(base: usize, off: u32, v: u32) {
+    unsafe { core::ptr::write_volatile((base + off as usize) as *mut u32, v) }
+}
+fn write_phys(base: usize, lo: u32, hi: u32, phys: u64) {
+    w32(base, lo, phys as u32);
+    w32(base, hi, (phys >> 32) as u32);
+}
+
+/// One DMA page from the kernel: `(phys, va)`.
+fn dma_page() -> Option<(u64, *mut u8)> {
+    let mut phys = 0u64;
+    let va = unsafe { (crate::api().dma_alloc)(1, &mut phys) };
+    if va.is_null() { None } else { Some((phys, va)) }
+}
 
 const DEV_INPUT: u32 = 18;
 
@@ -206,14 +266,14 @@ fn setup(base: usize) -> Option<Dev> {
     let num = (max.min(128) as u16).max(NUM_BUFS);
     w32(base, REG_QUEUE_NUM, u32::from(num));
 
-    let (desc_phys, desc_va) = virtq::alloc_pages(1)?;
-    let (avail_phys, avail_va) = virtq::alloc_pages(1)?;
-    let (used_phys, used_va) = virtq::alloc_pages(1)?;
+    let (desc_phys, desc_va) = dma_page()?;
+    let (avail_phys, avail_va) = dma_page()?;
+    let (used_phys, used_va) = dma_page()?;
 
     let mut event_phys = [0u64; NUM_BUFS as usize];
     let mut event_va = [core::ptr::null_mut(); NUM_BUFS as usize];
     for i in 0..NUM_BUFS as usize {
-        let (phys, va) = virtq::alloc_pages(1)?;
+        let (phys, va) = dma_page()?;
         event_phys[i] = phys;
         event_va[i] = va;
         unsafe { core::ptr::write_bytes(va, 0, EVENT_SIZE as usize) };
@@ -275,7 +335,7 @@ pub fn init() {
             SHIFT.store(false, Ordering::SeqCst);
             ALTGR.store(false, Ordering::SeqCst);
             CTRL.store(false, Ordering::SeqCst);
-            console::status_ok("keyboard");
+            status_ok("keyboard");
             return;
         }
     }

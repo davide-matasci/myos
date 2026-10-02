@@ -32,37 +32,7 @@ const SHN_UNDEF: u16 = 0;
 // across arches (2 is R_X86_64_PC32 but R_RISCV_64), so only the native set
 // is accepted; anything else is `BadReloc`.
 const R_NONE: u32 = 0;
-#[cfg(target_arch = "x86_64")]
-const R_ABS64: u32 = 1; // R_X86_64_64
-#[cfg(target_arch = "x86_64")]
-const R_GLOB_DAT: u32 = 6;
-#[cfg(target_arch = "x86_64")]
-const R_JUMP_SLOT: u32 = 7;
-#[cfg(target_arch = "x86_64")]
-const R_RELATIVE: u32 = 8;
-#[cfg(target_arch = "aarch64")]
-const R_ABS64: u32 = 257; // R_AARCH64_ABS64
-#[cfg(target_arch = "aarch64")]
-const R_GLOB_DAT: u32 = 1025;
-#[cfg(target_arch = "aarch64")]
-const R_JUMP_SLOT: u32 = 1026;
-#[cfg(target_arch = "aarch64")]
-const R_RELATIVE: u32 = 1027;
-#[cfg(target_arch = "riscv64")]
-const R_ABS64: u32 = 2; // R_RISCV_64
-#[cfg(target_arch = "riscv64")]
-const R_GLOB_DAT: u32 = 6;
-#[cfg(target_arch = "riscv64")]
-const R_JUMP_SLOT: u32 = 5;
-#[cfg(target_arch = "riscv64")]
-const R_RELATIVE: u32 = 3;
-
-#[cfg(target_arch = "x86_64")]
-const EXPECT_MACHINE: u16 = 62; // EM_X86_64
-#[cfg(target_arch = "aarch64")]
-const EXPECT_MACHINE: u16 = 183; // EM_AARCH64
-#[cfg(target_arch = "riscv64")]
-const EXPECT_MACHINE: u16 = 243; // EM_RISCV
+use crate::arch::elf::{EXPECT_MACHINE, R_ABS64, R_GLOB_DAT, R_JUMP_SLOT, R_RELATIVE};
 
 const PAGE: usize = 4096;
 
@@ -602,24 +572,7 @@ fn cstr_at(bytes: &[u8], off: usize) -> Option<&[u8]> {
 }
 
 fn sync_icache(start: *mut u8, size: usize) {
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        // Clean D-cache to PoU, invalidate I-cache; heap is normal WB RAM.
-        let mut addr = start as usize & !63;
-        let end = start as usize + size;
-        while addr < end {
-            core::arch::asm!("dc cvau, {x}", x = in(reg) addr, options(nostack));
-            addr += 64;
-        }
-        core::arch::asm!("dsb ish", options(nostack));
-        addr = start as usize & !63;
-        while addr < end {
-            core::arch::asm!("ic ivau, {x}", x = in(reg) addr, options(nostack));
-            addr += 64;
-        }
-        core::arch::asm!("dsb ish; isb", options(nostack));
-    }
-    let _ = (start, size);
+    crate::arch::sync_icache(start as usize, size);
 }
 
 fn u16_at(b: &[u8], o: usize) -> Result<u16, LoadError> {

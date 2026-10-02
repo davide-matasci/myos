@@ -22,7 +22,6 @@ enum Node {
     Ptmx,
     Urandom,
     Block(u32),
-    Nvme(u32),
     Chr(usize),
 }
 
@@ -81,44 +80,9 @@ fn parse_chr(name: &str) -> Option<usize> {
     None
 }
 
-fn vd_name(id: u32) -> Option<[u8; 3]> {
-    if id >= 26 {
-        return None;
-    }
-    Some([b'v', b'd', b'a' + id as u8])
-}
-
-fn parse_vd(name: &str) -> Option<u32> {
-    let rest = name.strip_prefix("vd")?;
-    if rest.len() != 1 {
-        return None;
-    }
-    let c = rest.as_bytes()[0];
-    if !(b'a'..=b'z').contains(&c) {
-        return None;
-    }
-    let id = (c - b'a') as u32;
-    if id < blk::count() { Some(id) } else { None }
-}
-
-fn parse_nvme(name: &str) -> Option<u32> {
-    let rest = name.strip_prefix("nvme")?;
-    let (ctrl, ns) = rest.split_once('n')?;
-    if ns != "1" || ctrl.is_empty() {
-        return None;
-    }
-    let mut id = 0u32;
-    for b in ctrl.bytes() {
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        id = id.checked_mul(10)?.checked_add((b - b'0') as u32)?;
-    }
-    if id < crate::nvme::count() {
-        Some(id)
-    } else {
-        None
-    }
+/// `/dev/<name>` of a registered block device (`vda`, `nvme0n1`, …).
+fn parse_blk(name: &str) -> Option<u32> {
+    blk::by_name(name)
 }
 
 fn parse(name: &str) -> Option<Node> {
@@ -131,17 +95,13 @@ fn parse(name: &str) -> Option<Node> {
         "urandom" | "random" => Some(Node::Urandom),
         _ => parse_chr(name)
             .map(Node::Chr)
-            .or_else(|| parse_vd(name).map(Node::Block))
-            .or_else(|| parse_nvme(name).map(Node::Nvme)),
+            .or_else(|| parse_blk(name).map(Node::Block)),
     }
 }
 
-/// Block-device id for `/dev/vdX` or `/dev/nvmeXn1`.
+/// Block-device id for `/dev/<name>` (`vdX`, `nvmeXn1`, …).
 pub fn blk_id(name: &str) -> Option<u32> {
-    if let Some(id) = parse_vd(name) {
-        return Some(id);
-    }
-    parse_nvme(name).map(|c| crate::blk::NVME_ID_BASE + c)
+    parse_blk(name)
 }
 
 /// No static file bytes; open uses [`stat`] / custom read-write.
@@ -188,9 +148,6 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
             out.len()
         }
         Some(Node::Block(id)) => blk::read_bytes(id, pos as u64, out).unwrap_or(0),
-        Some(Node::Nvme(ctrl)) => {
-            blk::read_bytes(blk::NVME_ID_BASE + ctrl, pos as u64, out).unwrap_or(0)
-        }
         Some(Node::Chr(i)) => {
             let _ = pos;
             match chr_table().get(i).and_then(|s| *s) {
@@ -217,7 +174,6 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         // Writes to the RNG pool are ignored (no RNDADDENTROPY ioctl yet).
         Some(Node::Urandom) => Some(buf.len()),
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
-        Some(Node::Nvme(ctrl)) => blk::write_bytes(blk::NVME_ID_BASE + ctrl, pos as u64, buf).ok(),
         Some(Node::Chr(i)) => {
             let _ = pos;
             match chr_table().get(i).and_then(|s| *s) {
@@ -248,34 +204,17 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         buf[n] = b'\n';
         n += 1;
     }
-    let disks = blk::count();
-    for id in 0..disks {
-        let Some(name) = vd_name(id) else {
-            break;
+    for id in 0..blk::count() {
+        let mut name = [0u8; 16];
+        let Some(len) = blk::name(id, &mut name) else {
+            continue;
         };
-        let need = name.len() + 1;
+        let need = len + 1;
         if n + need > buf.len() {
             break;
         }
-        buf[n..n + name.len()].copy_from_slice(&name);
-        n += name.len();
-        buf[n] = b'\n';
-        n += 1;
-    }
-    let nvme = crate::nvme::count();
-    for id in 0..nvme {
-        // nvme{id}n1, id < 10 (MAX_CTRL is 4)
-        let mut name = [0u8; 7];
-        name[..4].copy_from_slice(b"nvme");
-        name[4] = b'0' + id as u8;
-        name[5] = b'n';
-        name[6] = b'1';
-        let need = name.len() + 1;
-        if n + need > buf.len() {
-            break;
-        }
-        buf[n..n + name.len()].copy_from_slice(&name);
-        n += name.len();
+        buf[n..n + len].copy_from_slice(&name[..len]);
+        n += len;
         buf[n] = b'\n';
         n += 1;
     }
@@ -358,21 +297,6 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 dev: 0,
             })
         }
-        Node::Nvme(ctrl) => {
-            let bytes = blk::nvme_capacity_bytes(ctrl).unwrap_or(0);
-            let size = if bytes > u32::MAX as u64 {
-                u32::MAX
-            } else {
-                bytes as u32
-            };
-            Some(StatInfo {
-                mode: S_IFBLK | 0o666,
-                size,
-                ino: 20 + ctrl,
-                nlink: 1,
-                dev: 0,
-            })
-        }
         Node::Chr(i) => Some(StatInfo {
             mode: S_IFCHR | 0o666,
             size: 0,
@@ -397,7 +321,7 @@ pub fn tty_ioctl(request: usize) -> IoctlResult {
     match request {
         // TCGETS/TCSETS and KDSKMAP/KDGKMAP are handled in `task::fd_ioctl`.
         TCGETS | TCSETS | TCFLSH | TIOCSWINSZ => IoctlResult::Ok,
-        x if x == crate::keymap::KDSKMAP || x == crate::keymap::KDGKMAP => IoctlResult::Ok,
+        x if x == crate::console::KDSKMAP || x == crate::console::KDGKMAP => IoctlResult::Ok,
         TIOCGWINSZ => {
             let (row, col) = crate::console::winsize();
             IoctlResult::Winsize { row, col }
@@ -434,6 +358,6 @@ pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
                 None => IoctlResult::Notty,
             }
         }
-        Some(Node::Null) | Some(Node::Zero) | Some(Node::Block(_)) | Some(Node::Nvme(_)) | None => IoctlResult::Notty,
+        Some(Node::Null) | Some(Node::Zero) | Some(Node::Block(_)) | None => IoctlResult::Notty,
     }
 }

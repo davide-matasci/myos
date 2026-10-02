@@ -8,20 +8,15 @@ mod arch;
 mod blk;
 mod console;
 mod exception;
-mod font;
-mod framebuffer;
 mod fs;
 mod heap;
 mod input;
 mod irq;
-mod kbd;
-mod keymap;
 mod limine_boot;
 /// Optional Linux syscall compatibility layer (`--features linux_compat`).
 #[cfg(feature = "linux-compat")]
 mod linux;
 mod mm;
-mod nvme;
 mod pci;
 mod modules;
 mod pipe;
@@ -45,28 +40,6 @@ const MSG_OK: &[u8] = b"fat-msg\n";
 static TASK_A_DONE: AtomicBool = AtomicBool::new(false);
 static TASK_B_DONE: AtomicBool = AtomicBool::new(false);
 
-#[cfg(target_arch = "riscv64")]
-core::arch::global_asm!(
-    r#"
-    .section .text._start,"ax",@progbits
-    .globl _start
-_start:
-    call {main}
-    "#,
-    main = sym kernel_main_riscv64,
-);
-
-#[cfg(target_arch = "riscv64")]
-#[unsafe(no_mangle)]
-extern "C" fn kernel_main_riscv64() -> ! {
-    kernel_main()
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-#[unsafe(no_mangle)]
-extern "C" fn _start() -> ! {
-    kernel_main()
-}
 
 
 fn fb_geom_msg(buf: &mut [u8], w: usize, h: usize) -> usize {
@@ -103,7 +76,8 @@ fn push_usize(buf: &mut [u8], mut i: usize, mut v: usize) -> usize {
     i
 }
 
-fn kernel_main() -> ! {
+/// Entered from `arch::_start` once Limine has handed over.
+pub(crate) fn kernel_main() -> ! {
     arch::early_init();
 
     let mut fb_w = 0usize;
@@ -112,9 +86,19 @@ fn kernel_main() -> ! {
         if let Some(fb) = resp.framebuffers().first() {
             fb_w = fb.width as usize;
             fb_h = fb.height as usize;
-            let mut writer = framebuffer::FrameBufferWriter::from_limine(fb);
-            writer.clear();
-            console::init_fb(writer);
+            console::set_framebuffer(myos_abi::FramebufferInfo {
+                addr: fb.address() as u64,
+                width: fb.width,
+                height: fb.height,
+                pitch: fb.pitch,
+                bpp: fb.bpp,
+                r_shift: fb.red_mask_shift,
+                g_shift: fb.green_mask_shift,
+                b_shift: fb.blue_mask_shift,
+                r_size: fb.red_mask_size,
+                g_size: fb.green_mask_size,
+                b_size: fb.blue_mask_size,
+            });
         }
     }
 
@@ -168,18 +152,11 @@ fn kernel_main() -> ! {
     fs::init_limine();
     rng::init();
     console::status_ok("urandom");
-    modules::load_embedded_stubfs();
-    modules::load_embedded_hello();
-    modules::load_embedded_pci_enum();
-    modules::load_embedded_acpi();
+    // Every driver and filesystem is a module: Limine placed them in RAM in
+    // the `module_path` order of limine.conf (console, stubfs, hello,
+    // pci_enum, acpi, virtio_blk, nvme, virtio_net, netfs, fat, ext2), and
+    // they load in that order. More can follow at runtime with `insmod` from /lib/modules.
     modules::load_limine_modules();
-
-    blk::init();
-    nvme::init();
-    modules::load_embedded_virtio_net();
-    modules::load_embedded_netfs();
-    modules::load_embedded_fat();
-    modules::load_embedded_ext2();
     // /msg lives on bootfs; /ok mounts /dev/vda as fat at /fat.
     let _ = fs::register("bootfs", "msg", MSG_OK);
     console::status_ok("fat message");
@@ -187,16 +164,10 @@ fn kernel_main() -> ! {
     user::init();
     input::init();
     if input::keyboard_present() {
-        #[cfg(target_arch = "x86_64")]
-        console::write_info(
-            "\nstdin: PS/2 keyboard + serial (COM1 38400 8N1). \
-             Output is mirrored to the screen.\n\n",
-        );
-        #[cfg(target_arch = "aarch64")]
-        console::write_info(
-            "\nstdin: virtio keyboard + serial (PL011). \
-             Output is mirrored to the screen.\n\n",
-        );
+        console::write_info(&alloc::format!(
+            "\nstdin: {} + serial. Output is mirrored to the screen.\n\n",
+            crate::arch::KEYBOARD_NAME
+        ));
     } else {
         console::write_info(
             "\nstdin: serial (x86 COM1 38400 8N1, AArch64 PL011). \

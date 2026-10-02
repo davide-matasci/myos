@@ -13,7 +13,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Multi-arch boot** — x86_64 (BIOS + UEFI), AArch64, RISC-V via Limine protocol revision 6
 - **Interactive shell** — getty → login (`root`, empty password) → [oksh](https://github.com/ibara/oksh) 7.9
 - **Rust kernel** — `#![no_std]`, higher-half link, HHDM memory, preemptive round-robin scheduler
-- **Kernel modules** — one ELF loader; FAT16, ext2, virtio-net, netfs are loadable
+- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, NVMe, virtio-net, netfs, FAT16, ext2, …) listed in `limine.conf` and loadable at runtime with `insmod`
 - **VFS with multiple backends** — bootfs, tmpfs, devfs, procfs, FAT16, ext2
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase, ubase, uutils coreutils, ripgrep, TinyCC (all fetched at build)
@@ -105,8 +105,8 @@ Boot (Limine)
             ├─ Heap (256 KiB linked-list allocator)
             ├─ Scheduler (round-robin kernel threads + user tasks)
             ├─ VFS (mount table → bootfs / tmpfs / devfs / procfs / ext2 / netfs)
-            ├─ virtio-blk (in-kernel, x86 PCI legacy / AArch64 MMIO)
-            ├─ Modules: FAT16, ext2, virtio-net, netfs
+            ├─ Modules (Limine list, in order): console, stubfs, hello, pci_enum,
+            │     acpi, virtio_blk, nvme, virtio_net, netfs, fat, ext2
             └─ Userspace (ELF processes)
                  ├─ /ok smoke (always-on alloc/user/fat/disk/proc markers)
                  ├─ /netd (smoltcp over /dev/net0; only opener of net0)
@@ -115,7 +115,7 @@ Boot (Limine)
 ```
 
 ### Boot
-Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned Limine `v12.6.1`, writes GPT+FAT ESP, `limine.conf`, kernel ELF and module ELFs. On x86, `limine bios-install` makes the image BIOS+UEFI bootable. No `bootloader` crate, no QEMU `-kernel`, no Multiboot.
+Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned Limine `v12.6.1`, writes GPT+FAT ESP, `limine.conf`, kernel ELF and the module ELFs (`boot/modules/<name>`, `src/limine_image.rs` `BOOT_MODULES`). On x86, `limine bios-install` makes the image BIOS+UEFI bootable. No `bootloader` crate, no QEMU `-kernel`, no Multiboot.
 
 ### Memory
 Kernel linked in higher half (`0xffffffff80000000` on x86_64). Limine provides HHDM; usable memory = `phys + HHDM`. Page tables allocated from bump allocator after heap. AArch64 device block (UART, GIC, virtio-mmio) identity-mapped via `TTBR0`.
@@ -124,7 +124,7 @@ Kernel linked in higher half (`0xffffffff80000000` on x86_64). Limine provides H
 Round-robin kernel threads + user tasks across all online CPUs; a user process can run several threads, which share its address space and run on its home CPU (`docs/threads.md`) (Limine MP bring-up on x86_64, AArch64 and RISC-V; see `docs/pci-acpi-smp.md`). `task::yield_now()` cooperative; timer IRQ calls `task::schedule()` after EOI → preemptive even in user mode. Blocking waits (`read` on a tty/pipe/pty, `wait`, `nanosleep`, `select`/`poll`) put the task in a `Blocked` state and are woken by the producer (`task::wake`), a deadline or a signal; idle CPUs halt (`hlt`/`wfi`) until an interrupt or a targeted reschedule IPI. `/proc/cpuinfo` shows per-CPU schedule and idle-halt counts. x86_64: xAPIC timer, TSC calibrated against the PIT for the monotonic clock. AArch64: GICv2 generic timer (PPI 30), `CNTVCT`. RISC-V: `stimecmp`, `time` CSR.
 
 ### Console & Input
-Dual console: serial + Limine framebuffer (mirrored). Stdin (fd 0) merges PS/2 keyboard (x86, 8042 probe) and serial simultaneously.
+Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot output before it loads is replayed to it). Stdin (fd 0) merges the module's keyboard (PS/2 on x86 via 8042 probe, virtio-input on the `virt` boards) and serial simultaneously.
 
 ---
 
@@ -135,19 +135,23 @@ Dual console: serial + Limine framebuffer (mirrored). Stdin (fd 0) merges PS/2 k
 | `src/main.rs` | Host launcher: QEMU (BIOS/UEFI/AArch64/RISC-V) + second virtio-blk disk |
 | `src/limine_image.rs` | GPT+FAT ESP writer + Limine fetch + `limine.conf` + `fat.img` |
 | `build.rs` | Fetch Limine; wrap x86_64 kernel in BIOS+UEFI images; write `fat.img` |
-| `kernel/src/main.rs` | `#![no_std]` Limine entry: heap, IRQs, scheduler, bootfs, modules, virtio-blk, fat, user init |
+| `kernel/src/main.rs` | `#![no_std]` Limine entry: heap, IRQs, scheduler, bootfs, Limine modules, user init |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
 | `kernel/src/mm.rs` | Physical frame allocator (after 256 KiB heap; page tables, user pages, virtqueues) |
-| `kernel/src/blk.rs` | In-kernel virtio-blk: legacy I/O-BAR (x86) and virtio-mmio (AArch64) |
-| `kernel/src/arch/` | x86_64, AArch64, RISC-V arch code (UART, GIC/PCI, PSCI, etc.) |
-| `kernel/src/console.rs` | Dual console: serial + framebuffer mirror |
-| `kernel/src/input.rs` | Stdin ring buffer: PS/2 keyboard + serial → fd 0 |
+| `kernel/src/blk.rs` | Block-device registry filled by driver modules (`blk_register`); `/dev/<name>` + sector/byte I/O |
+| `kernel/src/arch/` | All per-arch code: boot, UART, interrupts, PCI, user entry/paging (`user`, `upaging`), context switch, FPU, clock, SMP glue |
+| `kernel/src/console.rs` | Serial console + the `console` module's screen/keyboard hooks (early-output replay) |
+| `kernel/src/input.rs` | Stdin line discipline: module keyboard + serial → fd 0 |
 | `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap |
-| `kernel/src/task/` | Round-robin threads + user tasks: yield, preemption, fork/exec/wait |
+| `kernel/src/task/` | Scheduler records (`Task`) + per-process blocks (`process.rs`): yield, preemption, fork/exec/wait |
 | `kernel/src/fs/` | VFS + bootfs/tmpfs/devfs/procfs backends |
 | `kernel/src/modules/` | ELF64 loader, KernelApi wrappers, loaded-module registry |
-| `modules/abi` | Shared `#[repr(C)]` KernelApi (v7: PCI/DMA/`dev_register`) |
-| `modules/hello` | Sample module: embedded + ESP via Limine |
+| `modules/abi` | Shared `#[repr(C)]` KernelApi (v12: PCI/DMA/`dev_register`/`blk_register`/`console_register`) |
+| `modules/virtq` | Split virtqueue helpers shared by the virtio modules |
+| `modules/console` | Framebuffer text screen, PS/2 + virtio-input keyboards, loadable keymap |
+| `modules/virtio_blk` | virtio-blk `/dev/vd*`: PCI legacy I/O (x86_64) or virtio-mmio (aarch64, riscv64) |
+| `modules/nvme` | NVMe `/dev/nvmeXn1` (PCI class 01/08, polled queues) |
+| `modules/hello` | Sample module (`[ OK ] hello`) |
 | `modules/stubfs` | Sample prefixed mount via `vfs_mount` at `/disk` |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` |
 | `modules/ext2` | Writable ext2 (rev1, 1 KiB blocks): `ModuleVfsOps` |
@@ -158,6 +162,7 @@ Dual console: serial + Limine framebuffer (mirrored). Stdin (fd 0) merges PS/2 k
 | `user/ok` | Slim always-on boot smoke (alloc/user/fat/disk/proc) |
 | `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/ripgrep/tcc/bigalloc) |
 | `user/netd` | Userspace smoltcp over `/dev/net0` |
+| `user/insmod` | `insmod /lib/modules/<name>`: load a kernel module at runtime (`SYS_INSMOD`) |
 | `user/lib` | Shared `myos_user` syscall wrappers, argv parser, `Heap` allocator |
 | `user/echo/cat/ls` | Bootfs demos (`/myos_echo`, `/myos_cat`, `/myos_ls`) |
 | `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` |
@@ -242,7 +247,7 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 - **bootfs** — read-only embedded namespace at `/`; Limine ESP modules override; demos use `myos_` prefix
 - **procfs** — `/proc/mounts` (generated, not stored bytes)
 - **tmpfs/devfs** — writable mount for `O_CREAT`; device nodes
-- **virtio-blk** — in-kernel (chicken/egg for FAT); x86 PCI legacy, AArch64 virtio-mmio
+- **virtio-blk / NVMe** — modules registering `/dev/vda`… and `/dev/nvme0n1` through `blk_register`; loaded before the filesystem modules
 - **FAT16 module** — parses BPB, walks cluster chain, registers `/msg` from root `MSG`
 - **ext2 module** — writable, rev1, 1 KiB blocks, bound via `mount(2)` fstype `ext2`
 - **virtio-net / netfs / netd** — kernel virtio-net → `/dev/net0` Ethernet; netfs mounts Plan 9 `/net`; netd runs smoltcp in userspace over `/dev/netd`; `/ping <ipv4>` uses `/net/icmp`
@@ -251,14 +256,14 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 
 ## Kernel Modules
 
-Kernel modules are ELFs the kernel already has in RAM. One loader copies `PT_LOAD`, applies relocs, calls `module_init`.
+Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, calls `module_init`. The kernel embeds none of them:
 
-Two ways to get bytes into RAM:
-
-| | Embedded | Limine |
+| | Boot (Limine) | Runtime (`insmod`) |
 |---|---|---|
-| Bytes live in | kernel binary (`include_bytes!`) | file on ESP |
-| Rebuild trigger | kernel build | disk image rebuild |
+| Bytes live in | `boot/modules/<name>` on the ESP, listed in `limine.conf` (`module_path`, load order) | `/lib/modules/<name>` in the initramfs (or any file) |
+| Loaded by | `modules::load_limine_modules` right after bootfs | `SYS_INSMOD` from `/bin/custom/insmod` |
+
+`/proc/modules` lists what is loaded. The console module goes first (it paints the buffered boot output), then stubfs, hello, pci_enum, acpi, the block drivers (virtio_blk, nvme), virtio_net, netfs and the filesystems (fat, ext2).
 
 Module exports:
 ```rust
@@ -266,12 +271,12 @@ unsafe extern "C" fn module_init(api: *const KernelApi) -> i32
 unsafe extern "C" fn module_exit() // optional
 ```
 
-`KernelApi` (`modules/abi`) is `#[repr(C)]` table, ABI v7 (append-only). Kernel fills it and passes to `module_init`.
+`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v12 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems), `console_register` (screen + keyboard).
 
 ### Adding a module
 1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)
-2. **Embedded:** add nested `cargo build` in `kernel/build.rs`, `include_bytes!`, call `modules::load("foo", IMAGE)` after heap/IRQs
-3. **Limine:** build ELF, copy to `target/`, add `module_path: boot():/boot/foo` to `LIMINE_CONF` in `src/limine_image.rs`, rebuild disk image
+2. Add it to the module list in `kernel/build.rs` (builds `target/foo-<triple>` for every arch) and to `BOOT_MODULES` in `src/limine_image.rs` at the position it must load (that also ships it in the initramfs and generates the `module_path` line); list the ELFs in `scripts/ci-build-kernels.sh` / `ci-pack-build-artifacts.sh`
+3. Or skip the boot list and load it on demand: `insmod /lib/modules/foo`
 
 ---
 

@@ -110,6 +110,9 @@ const WAIT_ADDR_TIMEOUT: usize = 2;
 const SYS_WAKE_ADDR: usize = 56;
 /// `gettid()`: the calling thread's id (`getpid` is its process's).
 const SYS_GETTID: usize = 57;
+/// `insmod(path, len)`: load the kernel module ELF at `path` (named after
+/// its last path component). 0 ok, `SYSERR` on any failure.
+const SYS_INSMOD: usize = 58;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
@@ -124,36 +127,17 @@ const WAIT_NOHANG: usize = 1;
 pub struct SyscallRegs(*mut u64);
 
 impl SyscallRegs {
-    #[cfg(target_arch = "x86_64")]
-    const PC: usize = 1;
-    #[cfg(target_arch = "x86_64")]
-    const SP: usize = 0;
-    #[cfg(not(target_arch = "x86_64"))]
-    const PC: usize = 32;
-    #[cfg(not(target_arch = "x86_64"))]
-    const SP: usize = 34;
-    #[cfg(target_arch = "aarch64")]
-    const NR_REG: Option<usize> = Some(8);
-    #[cfg(target_arch = "riscv64")]
-    const NR_REG: Option<usize> = Some(17);
-    #[cfg(target_arch = "x86_64")]
-    const NR_REG: Option<usize> = None;
-    /// The result register in the trap frame (x0 / a0).
-    #[cfg(target_arch = "aarch64")]
-    const RESULT: usize = 0;
-    #[cfg(target_arch = "riscv64")]
-    const RESULT: usize = 10;
+    const PC: usize = crate::arch::SYSCALL_PC;
+    const SP: usize = crate::arch::SYSCALL_SP;
+    const NR_REG: Option<usize> = crate::arch::SYSCALL_NR_REG;
 
     /// Length of the syscall instruction (`syscall` / `svc` / `ecall`).
-    #[cfg(target_arch = "x86_64")]
-    pub const INSN_LEN: usize = 2;
-    #[cfg(not(target_arch = "x86_64"))]
-    pub const INSN_LEN: usize = 4;
+    pub const INSN_LEN: usize = crate::arch::SYSCALL_INSN_LEN;
 
     /// Result-register value that makes a rewound syscall run again: the
     /// number on x86 (rax carries both), the first argument elsewhere.
     pub fn restart_value(nr: usize, a0: usize) -> usize {
-        if cfg!(target_arch = "x86_64") { nr } else { a0 }
+        if crate::arch::SYSCALL_RESTART_IS_NR { nr } else { a0 }
     }
 
     pub fn pc(&self) -> usize {
@@ -188,36 +172,9 @@ impl SyscallRegs {
     }
 }
 
-/// Live trap frame of the syscall running on each CPU (aarch64/riscv): a
-/// syscall sets it on entry and clears it on exit; exec reads it on the
-/// same CPU. One cell per CPU, so user tasks on several CPUs never see each
-/// other's frame.
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-static mut SYSCALL_FRAMES: [*mut usize; crate::smp::MAX_CPUS] =
-    [core::ptr::null_mut(); crate::smp::MAX_CPUS];
-
-/// Record the live trap frame for fork/exec resume (aarch64/riscv).
-///
-/// x86 forks via the iret path and does not use this; provide a no-op so
-/// `signal::deliver_due` can clear the frame on every arch before `user_exit`.
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub fn set_syscall_frame(frame: *mut u64) {
-    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-    unsafe {
-        core::ptr::addr_of_mut!(SYSCALL_FRAMES[cpu]).write(frame as *mut usize);
-    }
-}
-
-/// The frame recorded by [`set_syscall_frame`] on this CPU (null outside a
-/// syscall); exec resumes through it on aarch64.
-#[cfg(target_arch = "aarch64")]
-pub(super) fn syscall_frame() -> *mut usize {
-    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-    unsafe { core::ptr::addr_of!(SYSCALL_FRAMES[cpu]).read() }
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn set_syscall_frame(_frame: *mut u64) {}
+/// Record the live trap frame for fork/exec resume (aarch64/riscv; a no-op
+/// on x86, so `signal::deliver_due` can clear it on every arch).
+pub use crate::arch::set_syscall_frame;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn syscall_dispatch(
@@ -295,6 +252,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_WAIT_ADDR => sys_wait_addr(a0, a1, a2),
         SYS_WAKE_ADDR => task::wake_addr(a0, a1),
         SYS_GETTID => task::current_tid(),
+        SYS_INSMOD => sys_insmod(a0, a1),
         #[cfg(feature = "linux-compat")]
         SYS_LINUX_NEXT_EXEC => crate::linux::sys_linux_next_exec(),
         _ => SYSERR,
@@ -399,6 +357,25 @@ fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
         return SYSERR;
     };
     open_path(path, flags)
+}
+
+fn sys_insmod(ptr: usize, path_len: usize) -> usize {
+    let Some(buf) = copy_user_path(ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    match crate::modules::insmod(&path) {
+        Ok(()) => 0,
+        Err(e) => {
+            crate::console::status_fail(&alloc::format!("insmod {path}: {e}"));
+            SYSERR
+        }
+    }
 }
 
 /// open(2) of a cwd-relative or absolute path already in kernel memory.
@@ -615,7 +592,7 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     }
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any
     // current_slot()-backed lookup so we expand/replace the running task.
-    crate::smp::sync_tp_for_kernel();
+    crate::arch::sync_cpu_id_reg();
     let cur_aspace = task::current_aspace();
     let (base_u, _mapped_span, stack_off) = task::current_user_map();
     let old_brk = task::current_brk();
@@ -712,7 +689,7 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     // LLVM may have clobbered tp since the sync above. replace_user and
     // set_loaded_aspace go through current_slot()/cpu_id() — re-pin before
     // mutating the running task and resuming.
-    crate::smp::sync_tp_for_kernel();
+    crate::arch::sync_cpu_id_reg();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     #[cfg(feature = "linux-compat")]
     if let Some((_, _, runs)) = &interp_map {
@@ -722,20 +699,9 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
             }
         }
     }
-    // aarch64: sret/eret through the live syscall frame (shallow exec).
-    #[cfg(target_arch = "aarch64")]
-    try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
-    // riscv64: do NOT resume through the live syscall trap frame after a deep
-    // in-place expand (ripgrep after uutils ls on /heap). That frame sits near
-    // the top of the 64KiB kstack; expand + realize + PTE walks push LLVM
-    // spill slots into the same page, and a later `*frame.add(32) = entry`
-    // followed by sync_tp/sscratch setup can leave sepc as 0 before the
-    // (since removed) live-frame sret — classic `instruction page fault
-    // stval=0 sepc=0` with sp still in the new image's stack window (CI sp≈0x40354xxx).
-    // enter_riscv64 loads sepc/sp/argc/argv from a volatile resume image
-    // instead (same discipline as the MTTCG scrub fix in 9b6902a).
-    #[cfg(target_arch = "riscv64")]
-    set_syscall_frame(core::ptr::null_mut());
+    // aarch64: sret/eret through the live syscall frame (shallow exec);
+    // riscv64 clears the frame instead and falls through (see there).
+    crate::arch::exec_resume(entry, rsp, argc, argv);
     enter(entry, rsp, argc, argv);
 }
 
@@ -861,36 +827,7 @@ fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
 /// resuming after this syscall with result 0 (a forked child; a thread
 /// changes the stack pointer and entry, see [`thread_start`]).
 pub(crate) fn caller_regs(regs: &SyscallRegs) -> task::UserRegs {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // Use the snapshot from syscall_entry — live rbx/rbp/r12–r15 here may
-        // already be Rust scratch (prologues saved the user values on the stack).
-        let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-        let c = unsafe { core::ptr::addr_of!(CPU_SYSCALL[cpu].fork).read() };
-        // The pushed block: rsp, rip, r8, r9, rflags, r10, rdx, rsi, rdi.
-        let w = |i: usize| unsafe { *regs.0.add(i) };
-        task::UserRegs {
-            rip: regs.pc(),
-            rsp: regs.sp(),
-            rbx: c.rbx,
-            rbp: c.rbp,
-            r12: c.r12,
-            r13: c.r13,
-            r14: c.r14,
-            r15: c.r15,
-            args: [w(8), w(7), w(6), w(5), w(2), w(3)],
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let mut frame = copy_fork_syscall_frame(regs.0 as *const u64);
-        frame[SyscallRegs::RESULT] = 0;
-        task::UserRegs {
-            rip: regs.pc(),
-            rsp: regs.sp(),
-            frame,
-        }
-    }
+    crate::arch::caller_regs(regs.0)
 }
 
 /// Registers for a native thread that starts at `entry(arg)` on the stack
@@ -898,24 +835,7 @@ pub(crate) fn caller_regs(regs: &SyscallRegs) -> task::UserRegs {
 fn thread_start(regs: &SyscallRegs, entry: usize, stack: usize, arg: usize) -> task::UserRegs {
     let mut r = caller_regs(regs);
     r.rip = entry;
-    let top = stack & !15;
-    #[cfg(target_arch = "x86_64")]
-    {
-        r.rsp = top - 8; // where `call` leaves the return address
-        r.args[0] = arg as u64;
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        r.rsp = top;
-        r.frame[0] = arg as u64;
-        r.frame[30] = 0; // lr
-    }
-    #[cfg(target_arch = "riscv64")]
-    {
-        r.rsp = top;
-        r.frame[10] = arg as u64; // a0
-        r.frame[1] = 0; // ra
-    }
+    crate::arch::regs_thread_start(&mut r, stack & !15, arg);
     r
 }
 

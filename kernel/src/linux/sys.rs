@@ -583,7 +583,7 @@ pub fn clock_gettime(ts: usize) -> R {
     Ok(0)
 }
 
-#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
 pub fn time(t: usize) -> R {
     let s = (now_us() / 1_000_000) as usize;
     if t != 0 {

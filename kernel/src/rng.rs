@@ -148,41 +148,11 @@ fn quarter(s: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
 fn arch_entropy_words() -> [u32; 16] {
     let mut w = [0u32; 16];
     let mut i = 0usize;
-    #[cfg(target_arch = "x86_64")]
-    {
-        let (lo, hi): (u32, u32);
-        let tsc: u64;
-        unsafe {
-            core::arch::asm!("rdtsc", out("rax") lo, out("rdx") hi, options(nostack, nomem));
-            tsc = (lo as u64) | ((hi as u64) << 32);
-        }
-        w[i % 16] ^= tsc as u32;
-        i += 1;
-        w[i % 16] ^= (tsc >> 32) as u32;
-        i += 1;
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        let cnt: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) cnt, options(nostack, nomem));
-        }
-        w[i % 16] ^= cnt as u32;
-        i += 1;
-        w[i % 16] ^= (cnt >> 32) as u32;
-        i += 1;
-    }
-    #[cfg(target_arch = "riscv64")]
-    {
-        let cyc: u64;
-        unsafe {
-            core::arch::asm!("rdcycle {}", out(reg) cyc, options(nostack, nomem));
-        }
-        w[i % 16] ^= cyc as u32;
-        i += 1;
-        w[i % 16] ^= (cyc >> 32) as u32;
-        i += 1;
-    }
+    let cyc = crate::arch::cycle_counter();
+    w[i % 16] ^= cyc as u32;
+    i += 1;
+    w[i % 16] ^= (cyc >> 32) as u32;
+    i += 1;
     // Address-space layout (heap/bss/stack addresses differ per boot and
     // per build;Limine places the kernel at a fixed base but the heap bump
     // pointer lands on used frames).
@@ -231,31 +201,7 @@ pub fn stir_tick() {
         STIRS.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    #[cfg(target_arch = "x86_64")]
-    let jit = {
-        let lo: u32;
-        let _hi: u32;
-        unsafe {
-            core::arch::asm!("rdtsc", out("eax") lo, out("edx") _hi, options(nostack, nomem));
-        }
-        lo
-    };
-    #[cfg(target_arch = "aarch64")]
-    let jit = {
-        let cnt: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) cnt, options(nostack, nomem));
-        }
-        cnt as u32
-    };
-    #[cfg(target_arch = "riscv64")]
-    let jit = {
-        let cyc: u32;
-        unsafe {
-            core::arch::asm!("rdcycle {}", out(reg) cyc, options(nostack, nomem));
-        }
-        cyc
-    };
+    let jit = crate::arch::cycle_counter() as u32;
     rng.push(jit);
     STIRS.fetch_add(1, Ordering::Relaxed);
 }

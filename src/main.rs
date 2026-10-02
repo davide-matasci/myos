@@ -17,7 +17,8 @@ mod limine_image;
 mod initramfs;
 
 use limine_image::{
-    DiskFile, LIMINE_VERSION, fetch_limine, write_esp_image, write_esp_image_ex,
+    DiskFile, LIMINE_VERSION, boot_module_files, fetch_limine, limine_conf, write_esp_image,
+    write_esp_image_ex,
     write_fat_data_image, write_x86_iso,
 };
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
@@ -33,20 +34,13 @@ const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
 /// `PANIC: riscv: missing struct riscv_hart for BSP`.
 const RISCV_SMP: &str = "2";
 
-const RISCV_LIMINE_CONF: &str = "\
-serial: yes
-timeout: 0
-randomise_hhdm_base: no
-global_dtb: boot():/boot/virt.dtb
-
-/myos
-    protocol: limine
-    path: boot():/boot/kernel
-    paging_mode: sv39
-    module_path: boot():/boot/hello
-    module_path: boot():/boot/ok
-    module_path: boot():/boot/initramfs
-";
+/// riscv64 needs the packed DTB and Sv39 on top of the common config.
+fn riscv_limine_conf() -> String {
+    limine_conf(
+        "randomise_hhdm_base: no\nglobal_dtb: boot():/boot/virt.dtb\n",
+        "    paging_mode: sv39\n",
+    )
+}
 /// Default qemu64 does not advertise x2APIC (CI #49 panicked, #50 fell back
 /// to PIC and hung). Limine leaves PIC IRQs dead, so the kernel timer proof
 /// needs the x2APIC MSRs.
@@ -100,13 +94,9 @@ fn run_iso() {
     // Artifact-dep kernel lives at CARGO_BIN_FILE_KERNEL_kernel, not
     // target/<triple>/debug/kernel (ISO #1 panicked on that missing path).
     let kernel = Path::new(env!("KERNEL_PATH"));
-    let hello = Path::new(env!("HELLO_PATH"));
     let ok = Path::new(env!("OK_PATH"));
     if !kernel.is_file() {
         panic!("kernel ELF missing at {}", kernel.display());
-    }
-    if !hello.is_file() {
-        panic!("hello ELF missing at {}", hello.display());
     }
     if !ok.is_file() {
         panic!("ok ELF missing at {}", ok.display());
@@ -119,7 +109,7 @@ fn run_iso() {
     let limine = fetch_limine(Path::new(env!("LIMINE_DIR")));
     let dest = target.join("myos-x86_64.iso");
     let iso_root = target.join("iso_root");
-    write_x86_iso(&dest, &iso_root, kernel, hello, ok, &initramfs_path, &limine);
+    write_x86_iso(&dest, &iso_root, kernel, &target, ok, &initramfs_path, &limine);
     println!("{}", dest.display());
 }
 
@@ -570,10 +560,10 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
 fn build_aarch64_image() -> PathBuf {
     let kernel = build_aarch64_kernel();
     let kernel_bytes = std::fs::read(&kernel).expect("read aarch64 kernel ELF");
-    let hello_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/hello-aarch64-unknown-none-softfloat");
-    let hello = std::fs::read(&hello_path)
-        .unwrap_or_else(|_| panic!("hello ELF missing at {}", hello_path.display()));
+    let modules = boot_module_files(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
+        "aarch64-unknown-none-softfloat",
+    );
     let ok_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ok-aarch64-unknown-none-softfloat");
     let ok = std::fs::read(&ok_path)
@@ -597,7 +587,7 @@ fn build_aarch64_image() -> PathBuf {
         "BOOTAA64.EFI",
         &efi,
         None,
-        &hello,
+        &modules,
         &ok,
         &initramfs,
     );
@@ -982,10 +972,10 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
 fn build_riscv64_image() -> PathBuf {
     let kernel = build_riscv64_kernel();
     let kernel_bytes = std::fs::read(&kernel).expect("read riscv64 kernel ELF");
-    let hello_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/hello-riscv64imac-unknown-none-elf");
-    let hello = std::fs::read(&hello_path)
-        .unwrap_or_else(|_| panic!("hello ELF missing at {}", hello_path.display()));
+    let modules = boot_module_files(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
+        "riscv64imac-unknown-none-elf",
+    );
     let ok_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ok-riscv64imac-unknown-none-elf");
     let ok = std::fs::read(&ok_path)
@@ -1030,10 +1020,10 @@ fn build_riscv64_image() -> PathBuf {
         "BOOTRISCV64.EFI",
         &efi,
         None,
-        &hello,
+        &modules,
         &ok,
         &initramfs,
-        RISCV_LIMINE_CONF,
+        &riscv_limine_conf(),
         &[DiskFile {
             path: "boot/virt.dtb".into(),
             data: dtb,

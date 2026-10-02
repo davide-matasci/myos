@@ -1,14 +1,9 @@
-//! Shared PCI scan for NVMe. Config access and BAR mapping are arch-specific.
-//!
-//! NVMe is class `0x01` subclass `0x08`. BAR0 is always memory (often 64-bit).
-//! Device MMIO is mapped by the arch; it is not HHDM.
+//! PCI configuration access for the module ABI (`pci_find`, `pci_find_class`,
+//! BAR mapping, bus-master enable). Config access and MMIO mapping are
+//! arch-specific; device MMIO is mapped by the arch, it is not HHDM. The
+//! drivers themselves (virtio-blk, NVMe, virtio-net) are modules.
 
 use crate::arch::pci::{self as arch_pci, MAX_BUS};
-use crate::nvme;
-
-const CLASS_MASS: u8 = 0x01;
-const SUBCLASS_NVME: u8 = 0x08;
-const MAX_CTRL: usize = nvme::MAX_CTRL;
 
 #[derive(Clone, Copy)]
 pub struct Bdf {
@@ -98,43 +93,6 @@ pub fn bar_mmio(bdf: Bdf, index: u8) -> Option<(u64, u64)> {
     Some((addr, size))
 }
 
-/// Walk PCI, map each NVMe BAR, and attach the shared driver.
-pub fn scan_nvme() {
-    let mut found = 0usize;
-    for bus in 0u8..=MAX_BUS {
-        for slot in 0u8..32 {
-            let bdf0 = Bdf { bus, slot, func: 0 };
-            if vendor(bdf0) == 0xFFFF {
-                continue;
-            }
-            let funcs = if header_type(bdf0) & 0x80 != 0 { 8 } else { 1 };
-            for func in 0..funcs {
-                let bdf = Bdf { bus, slot, func };
-                if vendor(bdf) == 0xFFFF {
-                    continue;
-                }
-                let (class, sub) = class_subclass(bdf);
-                if class != CLASS_MASS || sub != SUBCLASS_NVME {
-                    continue;
-                }
-                enable_mem_master(bdf);
-                let Some((phys, size)) = bar_mmio(bdf, 0) else {
-                    continue;
-                };
-                let Some(va) = arch_pci::map_mmio(phys, size) else {
-                    continue;
-                };
-                if nvme::attach(va) {
-                    found += 1;
-                    if found == MAX_CTRL {
-                        return;
-                    }
-                }
-            }
-        }
-    }
-}
-
 pub fn cfg_read32(bus: u8, slot: u8, func: u8, off: u8) -> u32 {
     read32(Bdf { bus, slot, func }, off)
 }
@@ -174,6 +132,34 @@ pub fn find(vend: u16, dev: u16, nth: u32) -> Option<Bdf> {
                 let v = id as u16;
                 let d = (id >> 16) as u16;
                 if v != vend || d != dev {
+                    continue;
+                }
+                if seen == nth {
+                    return Some(bdf);
+                }
+                seen += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Nth PCI function (0-based) of `class` / `subclass` (NVMe: 0x01 / 0x08).
+pub fn find_class(class: u8, subclass: u8, nth: u32) -> Option<Bdf> {
+    let mut seen = 0u32;
+    for bus in 0u8..=MAX_BUS {
+        for slot in 0u8..32 {
+            let bdf0 = Bdf { bus, slot, func: 0 };
+            if vendor(bdf0) == 0xFFFF {
+                continue;
+            }
+            let funcs = if header_type(bdf0) & 0x80 != 0 { 8 } else { 1 };
+            for func in 0..funcs {
+                let bdf = Bdf { bus, slot, func };
+                if vendor(bdf) == 0xFFFF {
+                    continue;
+                }
+                if class_subclass(bdf) != (class, subclass) {
                     continue;
                 }
                 if seen == nth {

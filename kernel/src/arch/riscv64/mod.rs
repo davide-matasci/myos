@@ -2,30 +2,30 @@
 
 mod interrupts;
 pub use interrupts::{enable_ipi, ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
-use super::virtio_mmio::keyboard;
 pub mod paging;
 pub mod pci;
 mod serial;
-use super::virtio_mmio::blk as virtio_blk;
 pub use serial::SerialPort;
+
+pub mod clock;
+mod cpu;
+pub use cpu::*;
+pub mod elf;
+mod exception;
+pub mod fpu;
+pub mod switch;
+pub mod tp;
+mod smp;
+pub use smp::*;
+pub mod upaging;
+mod user;
+pub use user::*;
 
 pub fn serial_read_byte() -> Option<u8> {
     serial::read_byte()
 }
 
 pub fn serial_flush_rx() {}
-
-pub fn keyboard_init() {
-    keyboard::init();
-}
-
-pub fn keyboard_present() -> bool {
-    keyboard::present()
-}
-
-pub fn keyboard_poll_byte() -> Option<u8> {
-    keyboard::poll_byte()
-}
 
 pub const QEMU_SUCCESS: u32 = 0x10;
 pub const QEMU_FAILURE: u32 = 0x11;
@@ -43,27 +43,6 @@ pub fn wait_for_interrupt_proof() {
     interrupts::wait_for_interrupt_proof();
 }
 
-pub use interrupts::fork_sret_child_to_user;
-
-pub fn virtio_blk_init() {
-    virtio_blk::init();
-}
-
-pub fn virtio_blk_count() -> u32 {
-    virtio_blk::count()
-}
-
-pub fn virtio_blk_capacity(dev: u32) -> Option<u64> {
-    virtio_blk::capacity(dev)
-}
-
-pub fn virtio_blk_read(dev: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-    virtio_blk::read(dev, lba, buf)
-}
-
-pub fn virtio_blk_write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
-    virtio_blk::write(dev, lba, buf)
-}
 
 /// SBI System Reset extension shutdown (QEMU virt).
 
@@ -124,4 +103,19 @@ pub fn halt() -> ! {
             core::arch::asm!("wfi", options(nostack, preserves_flags));
         }
     }
+}
+
+core::arch::global_asm!(
+    r#"
+    .section .text._start,"ax",@progbits
+    .globl _start
+_start:
+    call {main}
+    "#,
+    main = sym kernel_main_riscv64,
+);
+
+#[unsafe(no_mangle)]
+extern "C" fn kernel_main_riscv64() -> ! {
+    crate::kernel_main()
 }

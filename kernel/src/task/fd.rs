@@ -412,6 +412,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 let mut tmp = [0u8; FILE_IO_TMP];
                 let want = len.min(tmp.len());
                 let n = crate::fs::read(&node, pos, &mut tmp[..want]);
+                let aspace = current_aspace();
                 return with_process_mut(|t| {
                     let FdEntry::File {
                         pos: p,
@@ -432,7 +433,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                         ) {
                             return usize::MAX;
                         }
-                        if !user::copy_to_user(t.aspace, buf, &tmp[..n]) {
+                        if !user::copy_to_user(aspace, buf, &tmp[..n]) {
                             return usize::MAX;
                         }
                     }
@@ -846,8 +847,8 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         return 0;
     }
 
-    // KDSKMAP / KDGKMAP: loadable keyboard map (see crate::keymap, docs/keymap.md).
-    if request == crate::keymap::KDSKMAP || request == crate::keymap::KDGKMAP {
+    // KDSKMAP / KDGKMAP: loadable keyboard map (console module, docs/keymap.md).
+    if request == crate::console::KDSKMAP || request == crate::console::KDGKMAP {
         if !fd_is_console_tty(entry) {
             return usize::MAX;
         }
@@ -855,8 +856,8 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
             return usize::MAX;
         }
         let aspace = current_aspace();
-        if request == crate::keymap::KDGKMAP {
-            let v: u32 = if crate::keymap::is_loaded() { 1 } else { 0 };
+        if request == crate::console::KDGKMAP {
+            let v: u32 = if crate::console::keymap_loaded() { 1 } else { 0 };
             if !user::copy_to_user(aspace, arg, &v.to_ne_bytes()) {
                 return usize::MAX;
             }
@@ -875,13 +876,8 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         if !user::copy_from_user(aspace, arg + 4, &mut data) {
             return usize::MAX;
         }
-        match crate::keymap::load_from_text(&data) {
-            Ok(()) => return 0,
-            Err(e) => {
-                crate::console::status_fail(&alloc::format!("keymap: {e}"));
-                return usize::MAX;
-            }
-        }
+        // The module reports the parse error itself.
+        return if crate::console::keymap_load(&data) { 0 } else { usize::MAX };
     }
 
     let result = match entry {

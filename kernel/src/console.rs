@@ -1,76 +1,174 @@
-//! Kernel console: output goes to serial and, when Limine provides one, the framebuffer.
+//! Kernel console: output goes to serial and, once the `console` module has
+//! registered, to its framebuffer text screen; keyboard input and the
+//! loadable keymap come from the same module.
 //!
-//! On real hardware you usually see the Limine framebuffer on the monitor while
-//! COM1 (x86) carries the interactive shell. Without mirroring, the screen
-//! stops at "Hello from myos" even though the OS keeps booting on serial.
+//! On real hardware you usually see the framebuffer on the monitor while
+//! COM1 (x86) carries the interactive shell. Boot status lines use a
+//! structured `[ TAG ] label` form: serial gets plain text, the module
+//! colours the tags. Output written before the module loads is kept in a
+//! small buffer and replayed to it on registration, so the screen shows the
+//! whole boot.
 //!
-//! Boot status lines use a structured `[ TAG ] label` form. Serial is plain
-//! text; the framebuffer renders tags and labels in a soft dark-theme palette.
-//!
-//! All console output (status lines, write_str/write_byte, banners) takes a
-//! single `OUT` mutex for the whole operation so concurrent tasks cannot
-//! interleave serial bytes or confuse the framebuffer status-prefix parser.
+//! All console output takes a single `OUT` mutex for the whole operation so
+//! concurrent tasks cannot interleave serial bytes or split a status line.
 
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, Ordering};
+use myos_abi::{
+    CONSOLE_BANNER, CONSOLE_INFO, CONSOLE_STATUS_FAIL, CONSOLE_STATUS_INFO, CONSOLE_STATUS_OK,
+    CONSOLE_STATUS_WARN, CONSOLE_TEXT, FramebufferInfo, ModuleConsoleOps,
+};
 use spin::{Mutex, Once};
 
 use crate::arch::SerialPort;
-use crate::framebuffer::{self, FrameBufferWriter};
 
-static FB: Once<Mutex<FrameBufferWriter<'static>>> = Once::new();
-/// Serializes every console write end-to-end (serial + FB).
+/// `ioctl(console, KDSKMAP, &KeymapIoctl)` — load map text from userspace.
+pub const KDSKMAP: usize = 0x5480;
+/// `ioctl(console, KDGKMAP, &mut u32)` — write 1 if a map is loaded, else 0.
+pub const KDGKMAP: usize = 0x5481;
+
+/// The boot framebuffer Limine handed over (for the module), if any.
+static FB_INFO: Once<FramebufferInfo> = Once::new();
+/// The console module's screen and keyboards, once registered.
+static OPS: Once<ModuleConsoleOps> = Once::new();
+/// Serializes every console write end-to-end (serial + screen).
 static OUT: Mutex<()> = Mutex::new(());
 /// When false, high-volume `write_byte`/`write_str` stay serial-only.
-/// Boot `status_*` / banners still paint the FB. Oversized GOP (typical
+/// Boot `status_*` / banners still paint the screen. Oversized GOP (typical
 /// UEFI 1280×800+) makes every newline memmove megabytes under TCG; that
 /// was the ~6× BIOS→UEFI gap on prebuilt os-test (CI #34814552381).
 static MIRROR_BYTES: AtomicBool = AtomicBool::new(true);
 
+/// Boot output before the module loads: `(kind, text)` records, replayed on
+/// registration. Status lines are stored as their serial text; the module
+/// colours `[ TAG ]` prefixes itself.
+const EARLY_CAP: usize = 16 * 1024;
+struct Early {
+    buf: [u8; EARLY_CAP],
+    len: usize,
+    /// The module registered: nothing more is buffered.
+    done: bool,
+}
+static EARLY: Mutex<Early> = Mutex::new(Early {
+    buf: [0; EARLY_CAP],
+    len: 0,
+    done: false,
+});
 
-pub fn init_fb(writer: FrameBufferWriter<'static>) {
-    // ~800×600×4bpp ≈ 1.8MiB; above that, skip per-byte mirroring.
-    let bytes = writer.fb_bytes();
-    // Keep winsize from the full GOP (so oksh curl line stays ≤160 cols) but
-    // skip per-byte FB mirror when the buffer is huge — newline scroll under
-    // TCG was the UEFI~6× BIOS gap (CI #34814552381).
-    let mirror = bytes <= 2 * 1024 * 1024;
-    MIRROR_BYTES.store(mirror, Ordering::Relaxed);
-    let mut writer = writer;
-    writer.cursor_active = mirror;
-    let _ = FB.call_once(|| Mutex::new(writer));
+/// Record the boot framebuffer (before any output). The screen itself is
+/// painted by the console module once it loads.
+pub fn set_framebuffer(info: FramebufferInfo) {
+    // ~800×600×4bpp ≈ 1.8MiB; above that, skip per-byte mirroring: keep
+    // winsize from the full GOP (so the oksh curl line stays ≤160 cols) but
+    // newline scroll under TCG was the UEFI~6× BIOS gap (CI #34814552381).
+    let bytes = info.pitch.saturating_mul(info.height);
+    MIRROR_BYTES.store(bytes <= 2 * 1024 * 1024, Ordering::Relaxed);
+    FB_INFO.call_once(|| info);
+}
+
+/// The boot framebuffer for `KernelApi::framebuffer_info`.
+pub fn framebuffer_info() -> Option<FramebufferInfo> {
+    FB_INFO.get().copied()
+}
+
+/// The console module registers its screen and keyboards (once per boot).
+/// The buffered boot output is replayed to it first.
+pub fn register(ops: ModuleConsoleOps) -> bool {
+    if OPS.get().is_some() {
+        return false;
+    }
+    let _guard = OUT.lock();
+    let mut early = EARLY.lock();
+    early.done = true;
+    OPS.call_once(|| ops);
+    // Records: kind byte, u16 LE length, bytes.
+    let mut i = 0;
+    while i + 3 <= early.len {
+        let kind = u32::from(early.buf[i]);
+        let len = usize::from(u16::from_le_bytes([early.buf[i + 1], early.buf[i + 2]]));
+        i += 3;
+        let end = (i + len).min(early.len);
+        unsafe { (ops.write_kind)(early.buf[i..end].as_ptr(), end - i, kind) };
+        i = end;
+    }
+    early.len = 0;
+    true
+}
+
+/// Keep `s` for the replay (dropped once the buffer is full).
+fn early_record(kind: u32, s: &[u8]) {
+    let mut early = EARLY.lock();
+    if early.done || s.is_empty() {
+        return;
+    }
+    let len = s.len().min(u16::MAX as usize);
+    if early.len + 3 + len > EARLY_CAP {
+        return;
+    }
+    let at = early.len;
+    early.buf[at] = kind as u8;
+    early.buf[at + 1..at + 3].copy_from_slice(&(len as u16).to_le_bytes());
+    early.buf[at + 3..at + 3 + len].copy_from_slice(&s[..len]);
+    early.len += 3 + len;
+}
+
+/// Paint `s` on the screen (caller holds `OUT`).
+fn screen_write(kind: u32, s: &[u8]) {
+    match OPS.get() {
+        Some(ops) => unsafe { (ops.write_kind)(s.as_ptr(), s.len(), kind) },
+        None => early_record(kind, s),
+    }
 }
 
 pub fn mirrors_bytes() -> bool {
     MIRROR_BYTES.load(Ordering::Relaxed)
 }
 
-/// Timer-IRQ blink for the framebuffer block cursor. Non-blocking: if the FB
-/// mutex is held by a mainline paint, this phase is skipped and the next tick
-/// re-syncs (the cursor cell is only mutated under the FB lock).
+/// Timer-IRQ blink for the framebuffer block cursor (the module skips the
+/// tick if a paint holds its lock).
 pub fn cursor_blink() {
-    if let Some(fb) = FB.get() {
-        if let Some(mut writer) = fb.try_lock() {
-            writer.blink_toggle();
-        }
+    if let Some(ops) = OPS.get() {
+        unsafe { (ops.blink)() };
     }
 }
 
 /// Character-cell winsize for tty `TIOCGWINSZ`.
 ///
-/// Uses the framebuffer geometry (`width/FONT_W` × `height/FONT_H`) when a
-/// Limine FB is present; otherwise falls back to the serial console geometry.
-/// A serial console has no intrinsic width, so stay consistent with the
-/// framebuffer boots (x86 CI reports 160×100) instead of the old fixed 80-char
-/// default: 80 made oksh's emacs editor wrap long commands (the interactive
-/// curl line) with redraw artifacts, while the same command stayed on one clean
-/// line on the framebuffer arches.
+/// The screen's geometry when the console module has one; otherwise the
+/// serial console geometry. A serial console has no intrinsic width, so stay
+/// consistent with the framebuffer boots (x86 CI reports 160×100) instead of
+/// the old fixed 80-char default: 80 made oksh's emacs editor wrap long
+/// commands (the interactive curl line) with redraw artifacts.
 pub fn winsize() -> (u16, u16) {
-    if let Some(fb) = FB.get() {
-        fb.lock().winsize()
-    } else {
-        (100, 160)
+    if let Some(ops) = OPS.get() {
+        let (mut rows, mut cols) = (0u16, 0u16);
+        if unsafe { (ops.winsize)(&mut rows, &mut cols) } == 0 {
+            return (rows, cols);
+        }
     }
+    (100, 160)
+}
+
+/// A local keyboard (PS/2, virtio-input) was found by the console module.
+pub fn keyboard_present() -> bool {
+    OPS.get().is_some_and(|ops| unsafe { (ops.keyboard_present)() } != 0)
+}
+
+/// Next keyboard byte, keymap-translated, if one is pending.
+pub fn keyboard_poll_byte() -> Option<u8> {
+    let ops = OPS.get()?;
+    let b = unsafe { (ops.keyboard_poll)() };
+    (0..=255).contains(&b).then_some(b as u8)
+}
+
+/// `KDSKMAP`: install a keymap from its text form (see `docs/keymap.md`).
+pub fn keymap_load(text: &[u8]) -> bool {
+    OPS.get().is_some_and(|ops| unsafe { (ops.keymap_load)(text.as_ptr(), text.len()) } == 0)
+}
+
+/// `KDGKMAP`: a keymap is loaded.
+pub fn keymap_loaded() -> bool {
+    OPS.get().is_some_and(|ops| unsafe { (ops.keymap_loaded)() } != 0)
 }
 
 pub fn write_byte(byte: u8) {
@@ -84,9 +182,7 @@ fn write_byte_unlocked(byte: u8) {
         return;
     }
     if MIRROR_BYTES.load(Ordering::Relaxed) {
-        if let Some(fb) = FB.get() {
-            fb.lock().put_byte(byte);
-        }
+        screen_write(CONSOLE_TEXT, &[byte]);
     }
 }
 
@@ -94,51 +190,47 @@ pub fn write_str(s: &str) {
     let _ = Console.write_str(s);
 }
 
-/// Banner line (e.g. `Hello from myos`) in accent color on the framebuffer.
+/// Banner line (e.g. `Hello from myos`) in accent color on the screen.
 pub fn write_banner(s: &str) {
     let _guard = OUT.lock();
     SerialPort::new().write_str(s).ok();
-    if let Some(fb) = FB.get() {
-        fb.lock().put_str_colored(s, framebuffer::ACCENT);
-    }
+    screen_write(CONSOLE_BANNER, s.as_bytes());
 }
 
 /// Dim informational text (stdin hints, etc.).
 pub fn write_info(s: &str) {
     let _guard = OUT.lock();
     SerialPort::new().write_str(s).ok();
-    if let Some(fb) = FB.get() {
-        fb.lock().put_str_colored(s, framebuffer::DIM);
-    }
+    screen_write(CONSOLE_INFO, s.as_bytes());
 }
 
-/// `[ OK ] label` — tag in green on the framebuffer, plain text on serial.
+/// `[ OK ] label` — tag in green on the screen, plain text on serial.
 pub fn status_ok(label: &str) {
-    write_status("OK", framebuffer::OK, label);
+    write_status("OK", CONSOLE_STATUS_OK, label);
 }
 
-/// `[ FAIL ] label` — tag in red on the framebuffer.
+/// `[ FAIL ] label` — tag in red on the screen.
 pub fn status_fail(label: &str) {
-    write_status("FAIL", framebuffer::FAIL, label);
+    write_status("FAIL", CONSOLE_STATUS_FAIL, label);
 }
 
-/// `[ INFO ] label` — informational status (blue tag on the framebuffer).
+/// `[ INFO ] label` — informational status (blue tag on the screen).
 pub fn status_info(label: &str) {
-    write_status("INFO", framebuffer::INFO, label);
+    write_status("INFO", CONSOLE_STATUS_INFO, label);
 }
 
-/// `[ WARN ] label` — warning (amber tag on the framebuffer).
+/// `[ WARN ] label` — warning (amber tag on the screen).
 pub fn status_warn(label: &str) {
-    write_status("WARN", framebuffer::WARN, label);
+    write_status("WARN", CONSOLE_STATUS_WARN, label);
 }
 
-/// `[ .. ] label` — in-progress boot step (blue tag on the framebuffer).
+/// `[ .. ] label` — in-progress boot step (blue tag on the screen).
 pub fn status_progress(label: &str) {
-    write_status("..", framebuffer::INFO, label);
+    write_status("..", CONSOLE_STATUS_INFO, label);
 }
 
-fn write_status(tag: &str, tag_color: (u8, u8, u8), label: &str) {
-    // Hold OUT across every serial fragment + the FB line so one
+fn write_status(tag: &str, kind: u32, label: &str) {
+    // Hold OUT across every serial fragment + the screen line so one
     // `[ TAG ] label\n` is atomic w.r.t. other console writers.
     let _guard = OUT.lock();
     let mut serial = SerialPort::new();
@@ -150,8 +242,21 @@ fn write_status(tag: &str, tag_color: (u8, u8, u8), label: &str) {
         let _ = serial.write_str(label);
     }
     let _ = serial.write_str("\n");
-    if let Some(fb) = FB.get() {
-        fb.lock().put_status_line(tag, tag_color, label);
+    match OPS.get() {
+        Some(ops) => unsafe {
+            (ops.status_line)(tag.as_ptr(), tag.len(), kind, label.as_ptr(), label.len())
+        },
+        None => {
+            // Replayed as text: the module colours `[ TAG ] ` prefixes itself.
+            early_record(CONSOLE_TEXT, b"[ ");
+            early_record(CONSOLE_TEXT, tag.as_bytes());
+            early_record(CONSOLE_TEXT, b" ]");
+            if !label.is_empty() {
+                early_record(CONSOLE_TEXT, b" ");
+                early_record(CONSOLE_TEXT, label.as_bytes());
+            }
+            early_record(CONSOLE_TEXT, b"\n");
+        }
     }
 }
 
@@ -167,9 +272,7 @@ impl Write for Console {
         let _guard = OUT.lock();
         SerialPort::new().write_str(s)?;
         if MIRROR_BYTES.load(Ordering::Relaxed) {
-            if let Some(fb) = FB.get() {
-                fb.lock().write_str(s)?;
-            }
+            screen_write(CONSOLE_TEXT, s.as_bytes());
         }
         Ok(())
     }

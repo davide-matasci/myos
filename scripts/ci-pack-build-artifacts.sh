@@ -11,6 +11,16 @@ files=(
   "${kernel_members[@]}"
   target/debug/build/myos-*/out
   target/hello-*
+  target/console-*
+  target/stubfs-*
+  target/pci_enum-*
+  target/acpi-*
+  target/virtio_blk-*
+  target/nvme-*
+  target/virtio_net-*
+  target/netfs-*
+  target/fat-*
+  target/ext2-*
   target/ok-*
   target/std-*
   target/c-hello-*
@@ -97,9 +107,39 @@ required=(
   target/uefi.img
   target/aarch64-unknown-none-softfloat/debug/kernel
   target/riscv64imac-unknown-none-elf/debug/kernel
+  target/console-x86_64-unknown-none
+  target/console-aarch64-unknown-none-softfloat
+  target/console-riscv64imac-unknown-none-elf
+  target/stubfs-x86_64-unknown-none
+  target/stubfs-aarch64-unknown-none-softfloat
+  target/stubfs-riscv64imac-unknown-none-elf
   target/hello-x86_64-unknown-none
   target/hello-aarch64-unknown-none-softfloat
   target/hello-riscv64imac-unknown-none-elf
+  target/pci_enum-x86_64-unknown-none
+  target/pci_enum-aarch64-unknown-none-softfloat
+  target/pci_enum-riscv64imac-unknown-none-elf
+  target/acpi-x86_64-unknown-none
+  target/acpi-aarch64-unknown-none-softfloat
+  target/acpi-riscv64imac-unknown-none-elf
+  target/virtio_blk-x86_64-unknown-none
+  target/virtio_blk-aarch64-unknown-none-softfloat
+  target/virtio_blk-riscv64imac-unknown-none-elf
+  target/nvme-x86_64-unknown-none
+  target/nvme-aarch64-unknown-none-softfloat
+  target/nvme-riscv64imac-unknown-none-elf
+  target/virtio_net-x86_64-unknown-none
+  target/virtio_net-aarch64-unknown-none-softfloat
+  target/virtio_net-riscv64imac-unknown-none-elf
+  target/netfs-x86_64-unknown-none
+  target/netfs-aarch64-unknown-none-softfloat
+  target/netfs-riscv64imac-unknown-none-elf
+  target/fat-x86_64-unknown-none
+  target/fat-aarch64-unknown-none-softfloat
+  target/fat-riscv64imac-unknown-none-elf
+  target/ext2-x86_64-unknown-none
+  target/ext2-aarch64-unknown-none-softfloat
+  target/ext2-riscv64imac-unknown-none-elf
   target/ok-x86_64-unknown-none
   target/ok-aarch64-unknown-none-softfloat
   target/ok-riscv64imac-unknown-none-elf

@@ -1,0 +1,33 @@
+[workspace]
+
+[package]
+name = "console"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Console kernel module: framebuffer text, keyboards (PS/2, virtio-input) and the loadable keymap."
+
+[[bin]]
+name = "console"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+virtq = { path = "../virtq" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+ps2-scancode = { path = "../../ps2-scancode" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

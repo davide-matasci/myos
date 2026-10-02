@@ -480,7 +480,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
         }
         _ => {
             let sepc = unsafe { *frame.add(32) };
-            crate::exception::riscv64_trap(code, sepc, stval);
+            super::exception::riscv64_trap(code, sepc, stval);
         }
     }
 }

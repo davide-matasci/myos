@@ -13,10 +13,9 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ps2_scancode::{Decoder, ScancodeSet};
-use spin::Mutex;
-
-use crate::console;
 use crate::kbd::{self, ByteFifo};
+use crate::lock::Lock as Mutex;
+use crate::{status_fail, status_ok};
 
 const DATA: u16 = 0x60;
 const STATUS: u16 = 0x64;
@@ -41,12 +40,11 @@ pub fn init() {
     if let Some((dec, translate)) = probe_and_enable() {
         *DECODER.lock() = Some(dec);
         READY.store(true, Ordering::SeqCst);
-        let mode = if translate { "xlate" } else { "raw" };
-        console::status_ok(&alloc::format!("keyboard ({mode}, set 1)"));
+        status_ok(if translate { "keyboard (xlate, set 1)" } else { "keyboard (raw, set 1)" });
         if ps2_scancode::self_test() {
-            console::status_ok("keyboard decode");
+            status_ok("keyboard decode");
         } else {
-            console::status_fail("keyboard decode");
+            status_fail("keyboard decode");
         }
     }
 }

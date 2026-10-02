@@ -11,6 +11,7 @@ mod fd;
 pub mod fpu;
 mod jobs;
 mod lifecycle;
+mod process;
 mod sched;
 mod signals;
 mod thread;
@@ -19,6 +20,8 @@ mod vm;
 pub use fd::*;
 pub use jobs::*;
 pub use lifecycle::*;
+pub use process::ROOT_CAP;
+use process::*;
 pub use sched::*;
 pub use signals::*;
 pub use thread::*;
@@ -32,20 +35,7 @@ use crate::console;
 use crate::pipe;
 use crate::user;
 
-#[cfg(target_arch = "x86_64")]
-mod switch_x86;
-#[cfg(target_arch = "x86_64")]
-use switch_x86::{seed_stack, task_switch};
-
-#[cfg(target_arch = "aarch64")]
-mod switch_aarch64;
-#[cfg(target_arch = "aarch64")]
-use switch_aarch64::{seed_stack, task_switch};
-
-#[cfg(target_arch = "riscv64")]
-mod switch_riscv64;
-#[cfg(target_arch = "riscv64")]
-use switch_riscv64::{seed_stack, task_switch};
+use crate::arch::switch::{seed_stack, task_switch};
 
 pub const MAX_TASKS: usize = 64;
 /// Exec from a syscall runs `load_user_elf` / `copy_user_aspace` on the task
@@ -61,22 +51,6 @@ pub const STACK_SIZE: usize = 64 * 1024;
 /// larger programs; libgloss tracks per-fd flags up to `MYOS_MAX_FDS`.
 const MAX_FDS: usize = 64;
 
-/// Stamp the owning logical CPU id at the base of a kernel stack so U-mode
-/// trap entry can reload `tp` without trusting user TLS (see riscv64 trap
-/// vector). Word 0 of the stack allocation is reserved for this footer.
-#[cfg(target_arch = "riscv64")]
-pub fn stamp_stack_cpu(kstack_top: usize, cpu: usize) {
-    if kstack_top < STACK_SIZE {
-        return;
-    }
-    let cpu = cpu.min(crate::smp::MAX_CPUS - 1);
-    unsafe {
-        ((kstack_top - STACK_SIZE) as *mut usize).write(cpu);
-    }
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-pub fn stamp_stack_cpu(_kstack_top: usize, _cpu: usize) {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -92,44 +66,8 @@ enum State {
 /// The user registers a new task starts with: a forked child resumes after
 /// the parent's syscall with the parent's registers (result 0); a new thread
 /// at its entry or, for a Linux `clone`, like a forked child on its own
-/// stack (built by `user::caller_regs`).
-/// `#[repr(C)]` is required: `enter_regs_x86` historically used fixed
-/// offsets into this struct; keep a stable layout even if that path changes.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct UserRegs {
-    pub rip: usize,
-    pub rsp: usize,
-    #[cfg(target_arch = "x86_64")]
-    pub rbx: u64,
-    #[cfg(target_arch = "x86_64")]
-    pub rbp: u64,
-    #[cfg(target_arch = "x86_64")]
-    pub r12: u64,
-    #[cfg(target_arch = "x86_64")]
-    pub r13: u64,
-    #[cfg(target_arch = "x86_64")]
-    pub r14: u64,
-    #[cfg(target_arch = "x86_64")]
-    pub r15: u64,
-    /// The argument registers rdi, rsi, rdx, r10, r8, r9 (a syscall
-    /// preserves them; rax, the result, starts at 0; rcx and r11 are
-    /// clobbered by `sysret` anyway).
-    #[cfg(target_arch = "x86_64")]
-    pub args: [u64; 6],
-    /// Full `lower_sync` frame (x0..x30, elr, spsr, sp_el0). Index 31 unused.
-    #[cfg(target_arch = "aarch64")]
-    pub frame: [u64; 36],
-    /// Trap frame (x0..x31, sepc, sstatus, user sp). Index 35 unused.
-    #[cfg(target_arch = "riscv64")]
-    pub frame: [u64; 36],
-}
-
-const fn root_cwd_buf() -> [u8; 256] {
-    let mut c = [0u8; 256];
-    c[0] = b'/';
-    c
-}
+/// stack (built by `user::caller_regs`). Defined per arch.
+pub use crate::arch::UserRegs;
 
 /// Enough for a dynamically linked program: each shared object takes a
 /// region per segment.
@@ -148,6 +86,9 @@ const EMPTY_MMAP: [MmapRegion; MAX_MMAP_REGIONS] = [MmapRegion {
     prot: 0,
 }; MAX_MMAP_REGIONS];
 
+/// The scheduler's record of one thread (see [`Process`] for what the
+/// threads of a process share). Small and `Copy`: it is written whole into
+/// its slot on spawn and reset with [`EMPTY`] on reap.
 #[derive(Clone, Copy)]
 struct Task {
     state: State,
@@ -159,22 +100,8 @@ struct Task {
     kernel_stack_top: usize,
     user_rip: usize,
     user_rsp: usize,
-    fds: [FdEntry; MAX_FDS],
-    user_base: u64,
-    image_span: usize,
-    stack_off: u64,
     ppid: usize,
     start_regs: Option<UserRegs>,
-    user_argc: usize,
-    user_argv: usize,
-    /// Current program break (end of heap). 0 for kernel threads.
-    brk_cur: u64,
-    /// Basename from the last successful exec (multicall argv[0] fallback).
-    exec_name: [u8; 32],
-    exec_name_len: u8,
-    /// Absolute cwd (POSIX). Survives exec; copied on fork. Always starts with `/`.
-    cwd: [u8; 256],
-    cwd_len: u16,
     exit_code: u8,
     /// Signal that killed the task (0 = it exited normally).
     term_sig: u8,
@@ -183,23 +110,8 @@ struct Task {
     /// report it from then on. The slot is recycled only once it is Dead and
     /// off its kernel stack (`reapable`).
     exited: bool,
-    /// Anonymous mmap windows (after the brk heap).
-    mmap: [MmapRegion; MAX_MMAP_REGIONS],
-    /// Session id (task slot of the session leader). Inherited on fork.
-    /// New spawns start as their own session (`sid == slot`); `setsid` creates
-    /// a fresh session for a forked child.
-    sid: usize,
-    /// Process group id (task slot of the group leader). Inherited on fork.
-    /// New spawns start in their own group (`pgid == slot`); `setsid` also
-    /// puts the caller in a new group (`pgid = pid`).
-    pgid: usize,
-    /// Controlling terminal attached (phase-1: system console only).
-    /// Inherited on fork; set by TIOCSCTTY; cleared by SYS_SETSID.
-    has_ctty: bool,
     /// Pending signals bitmask (bit N = signal N, N in 1..31). See `signal`.
     sig_pending: u32,
-    /// Ignored signals bitmask (SIGKILL cannot be ignored). See `signal`.
-    sig_ignored: u32,
     /// Blocked signal mask (SYS_SIGPROCMASK, `SIG_BLOCK`/`SIG_SETMASK`).
     /// Blocked does not mean discarded: still accumulates in `sig_pending`,
     /// delivered when unblocked.
@@ -214,9 +126,9 @@ struct Task {
     /// switch); `finish_switch` turns it into `Ready`.
     wake_pending: bool,
     /// The process (thread-group leader slot) this thread belongs to; its
-    /// own slot for a single-threaded process. The process-wide fields above
-    /// (address-space layout, fds, cwd, job control, `sig_ignored`, exit
-    /// status) are only kept in the leader's slot.
+    /// own slot for a single-threaded process. The process-wide state (the
+    /// [`Process`] block: address-space layout, fds, cwd, job control,
+    /// `sig_ignored`) and the exit status are only kept in the leader's slot.
     tgid: usize,
     /// Set in the leader once the process is ending (`exit_group`): its
     /// other threads are being killed, and the exit status is final.
@@ -232,28 +144,12 @@ const EMPTY: Task = Task {
     kernel_stack_top: 0,
     user_rip: 0,
     user_rsp: 0,
-    fds: [FdEntry::Empty; MAX_FDS],
-    user_base: 0,
-    image_span: 0,
-    stack_off: 0,
     ppid: 0,
     start_regs: None,
-    user_argc: 0,
-    user_argv: 0,
-    brk_cur: 0,
-    exec_name: [0; 32],
-    exec_name_len: 0,
-    cwd: root_cwd_buf(),
-    cwd_len: 1,
     exit_code: 0,
     term_sig: 0,
     exited: false,
-    mmap: EMPTY_MMAP,
-    sid: 0,
-    pgid: 0,
-    has_ctty: false,
     sig_pending: 0,
-    sig_ignored: 0,
     sig_blocked: 0,
     affinity: None,
     wait_key: 0,
@@ -263,40 +159,7 @@ const EMPTY: Task = Task {
     group_exit: false,
 };
 
-static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
-
-/// Longest chroot prefix (real absolute path) a task can carry.
-pub const ROOT_CAP: usize = 128;
-
-/// chroot(2) prefix per task slot: absolute real path of the task's `/`, or
-/// empty (`len == 0`) for the real root. Inherited on fork, kept across exec;
-/// `cwd` is relative to it (the path the task itself sees). Kept out of
-/// [`Task`] so the by-value `Task` temporaries (fork builds one on the 64 KiB
-/// kernel stack) do not grow.
-#[derive(Clone, Copy)]
-struct Root {
-    buf: [u8; ROOT_CAP],
-    len: u8,
-}
-
-const NO_ROOT: Root = Root { buf: [0; ROOT_CAP], len: 0 };
-
-static ROOTS: Mutex<[Root; MAX_TASKS]> = Mutex::new([NO_ROOT; MAX_TASKS]);
-
-fn set_slot_root(slot: usize, root: Root) {
-    let flags = irq_save();
-    irq_off();
-    ROOTS.lock()[slot] = root;
-    irq_restore(flags);
-}
-
-fn slot_root(slot: usize) -> Root {
-    let flags = irq_save();
-    irq_off();
-    let r = ROOTS.lock()[slot];
-    irq_restore(flags);
-    r
-}
+static TASKS: Mutex<TaskTable> = Mutex::new(TaskTable::new());
 
 /// Current task slot per CPU. `usize::MAX` until the CPU's first task is
 /// installed (`init` / `ap_idle_bringup`), so `slot_on_cpu` never mistakes
@@ -467,7 +330,7 @@ pub fn current_aspace() -> u64 {
 }
 
 /// Kernel stack top for the running task (riscv64 sscratch / x86 rsp0).
-#[cfg(not(target_arch = "aarch64"))]
+#[allow(dead_code)]
 pub fn current_kernel_stack_top() -> usize {
     let flags = irq_save();
     irq_off();
@@ -505,15 +368,16 @@ pub fn cwd(out: &mut [u8]) -> usize {
 
 /// chroot prefix of the current process (real absolute path); 0 bytes = real `/`.
 pub fn root(out: &mut [u8]) -> usize {
-    let r = slot_root(current_pid());
-    let n = (r.len as usize).min(out.len());
-    out[..n].copy_from_slice(&r.buf[..n]);
-    n
+    with_process_mut(|p| {
+        let n = (p.root.len as usize).min(out.len());
+        out[..n].copy_from_slice(&p.root.buf[..n]);
+        n
+    })
 }
 
 /// True when the current process is chrooted (non-empty prefix).
 pub fn has_root() -> bool {
-    slot_root(current_pid()).len != 0
+    with_process_mut(|p| p.root.len != 0)
 }
 
 /// Set the chroot prefix (canonical real absolute path; `/` clears it).
@@ -525,7 +389,7 @@ pub fn set_root(path: &[u8]) -> bool {
     let mut r = NO_ROOT;
     r.buf[..path.len()].copy_from_slice(path);
     r.len = path.len() as u8;
-    set_slot_root(current_pid(), r);
+    with_process_mut(|p| p.root = r);
     true
 }
 
@@ -549,11 +413,24 @@ pub fn save_user_context(rip: usize, rsp: usize) {
     });
 }
 
-/// Run `f` on the current process: the leader slot of the running thread,
-/// which holds the state its threads share.
-fn with_process_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
+/// Run `f` on the current process block: the state the running thread
+/// shares with the other threads of its process (see [`Process`]).
+fn with_process_mut<R>(f: impl FnOnce(&mut Process) -> R) -> R {
     // Timer schedule also takes TASKS; nesting that while IF=1 deadlocks the
     // same CPU (seen as a hang after fork child's open/read).
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    let pid = tasks[current_slot()].tgid;
+    let out = f(tasks.proc_mut(pid));
+    drop(tasks);
+    irq_restore(flags);
+    out
+}
+
+/// Run `f` on the current process's leader slot: the `Task` that carries
+/// the process's exit status.
+fn with_leader_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
     let flags = irq_save();
     irq_off();
     let mut tasks = TASKS.lock();

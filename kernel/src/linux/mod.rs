@@ -46,8 +46,6 @@ mod riscv64;
 use riscv64 as arch;
 
 pub use signal::deliver;
-#[cfg(target_arch = "riscv64")]
-pub use riscv64::SSTATUS_FS_INITIAL;
 
 use alloc::borrow::Cow;
 use core::sync::atomic::{AtomicBool, Ordering};

@@ -20,11 +20,10 @@ use super::*;
 /// Start a thread in the current process that enters user mode with
 /// `regs`, with thread pointer `tls` (`None`: the caller's). Returns its tid.
 pub fn spawn_thread(regs: UserRegs, tls: Option<u64>) -> Option<usize> {
-    #[cfg(target_arch = "riscv64")]
     let regs = {
         let mut r = regs;
         if let Some(v) = tls {
-            r.frame[4] = v; // riscv64's thread pointer is the register `tp`
+            crate::arch::regs_set_tls(&mut r, v);
         }
         r
     };
@@ -73,7 +72,7 @@ pub fn spawn_thread(regs: UserRegs, tls: Option<u64>) -> Option<usize> {
 pub fn thread_exit(code: u8) -> ! {
     let (me, pid) = with_thread_mut(|t| (current_slot(), t.tgid));
     if me == pid {
-        with_process_mut(|t| {
+        with_leader_mut(|t| {
             if !t.group_exit {
                 t.exit_code = code;
             }
@@ -117,7 +116,7 @@ pub fn exec_alone() -> bool {
     // `group_exit` keeps the killed threads from setting an exit status.
     kill_other_threads(|leader| leader.group_exit = true);
     wait_for_threads(pid);
-    with_process_mut(|t| t.group_exit = false);
+    with_leader_mut(|t| t.group_exit = false);
     true
 }
 
@@ -147,7 +146,7 @@ fn kill_other_threads(mark: impl FnOnce(&mut Task)) -> usize {
 }
 
 /// `j` is a live (not yet dead) user thread of process `pid`.
-fn is_thread_of(tasks: &[Task; MAX_TASKS], j: usize, pid: usize) -> bool {
+fn is_thread_of(tasks: &TaskTable, j: usize, pid: usize) -> bool {
     let t = &tasks[j];
     t.tgid == pid
         && t.user_rip != 0
