@@ -19,6 +19,10 @@ const REQ_CLONE: u8 = 1;
 const REQ_CTL: u8 = 2;
 const REQ_SEND: u8 = 3;
 const REQ_CLOSE: u8 = 4;
+/// Bytes the reader drained from a conv's `data` (u16 payload): netd may send
+/// that much more. netd never sends more than `DATA_CAP` unacknowledged bytes,
+/// so `append_data` never has to drop any.
+const REQ_CREDIT: u8 = 5;
 
 const REP_CLONE_OK: u8 = 1;
 const REP_DATA: u8 = 2;
@@ -106,6 +110,8 @@ struct Conv {
     proto: u8,
     data_len: u16,
     data: [u8; DATA_CAP],
+    /// Drained bytes not yet returned to netd as REQ_CREDIT.
+    credit: u16,
     status_len: u16,
     status: [u8; STATUS_CAP],
 }
@@ -118,6 +124,7 @@ impl Conv {
         proto: 0,
         data_len: 0,
         data: [0; DATA_CAP],
+        credit: 0,
         status_len: 0,
         status: [0; STATUS_CAP],
     };
@@ -278,6 +285,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 proto,
                 data_len: 0,
                 data: [0; DATA_CAP],
+                credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
             };
@@ -301,6 +309,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 proto,
                 data_len: 0,
                 data: [0; DATA_CAP],
+                credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
             };
@@ -330,6 +339,22 @@ fn set_status(c: &mut Conv, s: &[u8]) {
     let n = s.len().min(STATUS_CAP);
     c.status[..n].copy_from_slice(&s[..n]);
     c.status_len = n as u16;
+}
+
+/// Give netd back the room the reader made: batched (the request ring is
+/// small) unless the buffer ran empty; kept for a later read or `stat` (the
+/// readers' poll) if the ring is full.
+fn return_credit(id: u16, p: u8) {
+    let Some(c) = conv_mut(id) else {
+        return;
+    };
+    let owed = c.credit;
+    if owed == 0 || (c.data_len != 0 && (owed as usize) < DATA_CAP / 4) {
+        return;
+    }
+    if enqueue_req(REQ_CREDIT, id, p, &owed.to_le_bytes()) {
+        c.credit = 0;
+    }
 }
 
 fn append_data(c: &mut Conv, src: &[u8]) {
@@ -386,6 +411,7 @@ fn apply_reply(buf: &[u8]) {
                 proto,
                 data_len: 0,
                 data: [0; DATA_CAP],
+                credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
             };
@@ -516,7 +542,10 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
             }
             let size = match node {
                 Node::Status(_, _) => state().convs[id as usize].status_len as u32,
-                Node::Data(_, _) => state().convs[id as usize].data_len as u32,
+                Node::Data(p, _) => {
+                    return_credit(id, p);
+                    state().convs[id as usize].data_len as u32
+                }
                 _ => 0,
             };
             let tag = match node {
@@ -651,6 +680,8 @@ unsafe extern "C" fn net_read(
                 c.data.copy_within(n..have, 0);
             }
             c.data_len = (have - n) as u16;
+            c.credit += n as u16;
+            return_credit(id, p);
             n as i32
         }
         Node::Status(p, id) => {
