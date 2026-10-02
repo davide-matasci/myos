@@ -679,6 +679,18 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
     })
 }
 
+/// The file behind `fd` (for file-backed `mmap`), if it is a regular file.
+pub fn fd_file_node(fd: usize) -> Option<crate::fs::Vnode> {
+    let flags = irq_save();
+    irq_off();
+    let e = TASKS.lock()[current_slot()].fds.get(fd).copied();
+    irq_restore(flags);
+    match e? {
+        FdEntry::File { node, .. } => Some(node),
+        _ => None,
+    }
+}
+
 pub fn fd_close(fd: usize) -> bool {
     if fd >= MAX_FDS {
         return false;

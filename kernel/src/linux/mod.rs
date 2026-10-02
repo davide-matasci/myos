@@ -49,6 +49,7 @@ pub use signal::deliver;
 pub use riscv64::SSTATUS_FS_INITIAL;
 
 use core::cell::UnsafeCell;
+use alloc::borrow::Cow;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::task::{self, MAX_TASKS};
@@ -174,9 +175,11 @@ fn set_tp(v: u64) {
 }
 
 /// The auxiliary vector for an image about to start with the Linux
-/// personality (empty for native images): musl's static-PIE startup finds
-/// its program headers (PT_DYNAMIC, PT_TLS) through `AT_PHDR`.
-pub fn exec_auxv(elf: &[u8], base: u64, entry: usize) -> AuxV {
+/// personality (empty for native images): musl's startup (static-PIE, or the
+/// dynamic linker for a dynamic program) finds the program headers
+/// (PT_DYNAMIC, PT_TLS) through `AT_PHDR`, and the dynamic linker its own
+/// load address through `AT_BASE`.
+pub fn exec_auxv(elf: &[u8], base: u64, entry: usize, interp_base: Option<usize>) -> AuxV {
     let mut aux = AuxV::new();
     if !PENDING[task::current_id()].load(Ordering::Relaxed) {
         return aux;
@@ -217,5 +220,29 @@ pub fn exec_auxv(elf: &[u8], base: u64, entry: usize) -> AuxV {
     aux.push(AT_PAGESZ, crate::user::PAGE);
     aux.push(AT_ENTRY, entry);
     aux.push(AT_CLKTCK, 100);
+    if let Some(b) = interp_base {
+        const AT_BASE: usize = 7;
+        aux.push(AT_BASE, b);
+    }
     aux
+}
+
+/// For a Linux exec of a dynamically linked program: the bytes of its
+/// interpreter (`PT_INTERP`, e.g. `/lib/ld-musl-x86_64.so.1`), which the
+/// core maps next to it and starts instead. `Ok(None)` for a static image
+/// or a native exec; `Err` if the interpreter cannot be read.
+pub fn exec_interp(elf: &[u8]) -> Result<Option<Cow<'static, [u8]>>, ()> {
+    if !PENDING[task::current_id()].load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let Some(path) = crate::modules::elf::interp_path(elf) else {
+        return Ok(None);
+    };
+    let path = core::str::from_utf8(path).map_err(|_| ())?;
+    let real = crate::user::resolve_copied_path(path).ok_or(())?;
+    if let Some(b) = crate::fs::lookup(&real) {
+        return Ok(Some(Cow::Borrowed(b)));
+    }
+    const INTERP_MAX: usize = 16 << 20;
+    crate::fs::read_all(&real, INTERP_MAX).map(|v| Some(Cow::Owned(v))).ok_or(())
 }

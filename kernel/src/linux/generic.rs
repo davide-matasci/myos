@@ -31,6 +31,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs, user_rip: usize
         64 => ret(sys::write(a[0], a[1], a[2])),
         65 => ret(sys::rw_vec(a[0], a[1], a[2], false)), // readv
         66 => ret(sys::rw_vec(a[0], a[1], a[2], true)),  // writev
+        67 => ret(sys::pread(a[0], a[1], a[2], a[3])),
         73 => ret(sys::ppoll(a[0], a[1], a[2])),
         78 => ret(sys::readlinkat(a[0], a[1], a[2], a[3])),
         79 => ret(sys::fstatat(a[0], a[1], a[2], a[3])), // newfstatat

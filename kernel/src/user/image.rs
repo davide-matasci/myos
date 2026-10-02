@@ -5,7 +5,9 @@ use super::*;
 
 /// Realize `bytes` at USER_BASE: frames, stack page, aspace.
 /// Callers that abandon a prior aspace must [`reclaim_user_aspace`] it.
-pub(super) fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
+/// `relocate == false` leaves the relocations to a dynamic linker (see
+/// [`elf::realize_as`]); the same holds for reload and expand below.
+pub(super) fn load_user_elf(bytes: &[u8], relocate: bool) -> Option<(u64, usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let code_pages = info.span.div_ceil(PAGE);
     if code_pages == 0 || code_pages > MAX_INIT_PAGES {
@@ -25,7 +27,7 @@ pub(super) fn load_user_elf(bytes: &[u8]) -> Option<(u64, usize, usize, u64)> {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
     let load_bias = base - info.min_vaddr;
-    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
+    let entry = match elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, relocate) {
         Ok(e) => e,
         Err(_) => return None,
     };
@@ -154,6 +156,7 @@ pub(super) fn reload_user_elf(
     base: u64,
     stack_off: u64,
     _mapped_span: usize,
+    relocate: bool,
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let image_pages = info.span.div_ceil(PAGE);
@@ -182,7 +185,7 @@ pub(super) fn reload_user_elf(
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
     let load_bias = base - info.min_vaddr;
-    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
+    let entry = match elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, relocate) {
         Ok(e) => e,
         Err(_) => return None,
     };
@@ -282,6 +285,7 @@ pub(super) fn expand_user_elf(
     bytes: &[u8],
     base: u64,
     old_stack_off: u64,
+    relocate: bool,
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let image_pages = info.span.div_ceil(PAGE);
@@ -305,7 +309,7 @@ pub(super) fn expand_user_elf(
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
     let load_bias = base - info.min_vaddr;
-    let entry = match elf::realize(bytes, buf.as_mut_ptr(), load_bias) {
+    let entry = match elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, relocate) {
         Ok(e) => e,
         Err(_) => return None,
     };
@@ -497,4 +501,54 @@ pub(super) fn build_argv_stack(
         return None;
     }
     Some((argc_sp, argc_sp + core::mem::size_of::<usize>()))
+}
+
+/// Map ELF `bytes` at `va` in `aspace` without relocating it (a dynamic
+/// linker relocates itself): fresh frames, protections from its PT_LOAD
+/// flags. Returns the biased entry and the mapped runs `(va, pages, prot)`
+/// for the caller to record as mmap regions.
+#[cfg(feature = "linux-compat")]
+pub(crate) fn map_elf_unrelocated(
+    aspace: u64,
+    bytes: &[u8],
+    va: u64,
+) -> Option<(usize, Vec<(u64, u32, u32)>)> {
+    let info = elf::image_span(bytes).ok()?;
+    if info.min_vaddr % PAGE as u64 != 0 || info.span > ELF_SCRATCH_BYTES {
+        return None;
+    }
+    let pages = info.span.div_ceil(PAGE);
+    let guard = ELF_SCRATCH_LOCK.lock();
+    let buf = elf_scratch_mut(info.span)?;
+    let entry = elf::realize_as(bytes, buf.as_mut_ptr(), va - info.min_vaddr, false).ok()?;
+    let mut runs: Vec<(u64, u32, u32)> = Vec::new();
+    for i in 0..pages {
+        let page_lo = info.min_vaddr + (i * PAGE) as u64;
+        let page_hi = page_lo + PAGE as u64;
+        let mut prot = 0usize;
+        let _ = elf::for_each_load_segment(bytes, |seg| {
+            if page_lo < seg.vaddr.saturating_add(seg.memsz) && page_hi > seg.vaddr {
+                prot |= elf::pf_to_prot(seg.flags);
+            }
+        });
+        if prot == 0 {
+            prot = PROT_READ;
+        }
+        let frame = mm::alloc_frame_site(2);
+        let off = i * PAGE;
+        let len = PAGE.min(info.span - off);
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf.as_ptr().add(off), mm::hhdm(frame), len);
+        }
+        sync_icache(mm::hhdm(frame) as usize, PAGE);
+        let page_va = va + off as u64;
+        map_user_page_prot(aspace, page_va, frame, prot);
+        match runs.last_mut() {
+            Some(r) if r.2 == prot as u32 && r.0 + r.1 as u64 * PAGE as u64 == page_va => r.1 += 1,
+            _ => runs.push((page_va, 1, prot as u32)),
+        }
+    }
+    drop(guard);
+    flush_user_tlb();
+    Some((entry as usize, runs))
 }

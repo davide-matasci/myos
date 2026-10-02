@@ -480,6 +480,19 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
         owned = v;
         &owned
     };
+    // Optional Linux layer: a dynamically linked program also needs its
+    // interpreter (the dynamic linker). Read it before the current image is
+    // replaced, so a missing one fails the exec cleanly.
+    #[cfg(feature = "linux-compat")]
+    let interp = match crate::linux::exec_interp(bytes) {
+        Ok(i) => i,
+        Err(()) => return SYSERR,
+    };
+    // A dynamically linked program is relocated by its dynamic linker.
+    #[cfg(feature = "linux-compat")]
+    let relocate = interp.is_none();
+    #[cfg(not(feature = "linux-compat"))]
+    let relocate = true;
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any
     // current_slot()-backed lookup so we expand/replace the running task.
     crate::smp::sync_tp_for_kernel();
@@ -498,7 +511,7 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
         // other arches use so the mapping/stack reservation logic is identical.
         {
             if cur_aspace != 0 {
-                if let Some(v) = reload_user_elf(cur_aspace, bytes, base_u, stack_off, _mapped_span)
+                if let Some(v) = reload_user_elf(cur_aspace, bytes, base_u, stack_off, _mapped_span, relocate)
                     .map(|(entry, span, off)| (cur_aspace, entry, span, off))
                 {
                     // POSIX exec drops anonymous maps. In-place reload used to
@@ -516,11 +529,11 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
                     free_mmap_regions(cur_aspace, &old_mmap);
                     task::clear_mmap();
                     flush_user_tlb();
-                    if let Some(v) = expand_user_elf(cur_aspace, bytes, base_u, stack_off)
+                    if let Some(v) = expand_user_elf(cur_aspace, bytes, base_u, stack_off, relocate)
                         .map(|(entry, span, off)| (cur_aspace, entry, span, off))
                     {
                         v
-                    } else if let Some(v) = load_user_elf(bytes) {
+                    } else if let Some(v) = load_user_elf(bytes, relocate) {
                         // Fresh aspace: reclaim code/stack/heap (mmap already freed).
                         reclaim_user_aspace(
                             cur_aspace,
@@ -536,18 +549,33 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
                     }
                 }
             } else {
-                let Some(v) = load_user_elf(bytes) else {
+                let Some(v) = load_user_elf(bytes, relocate) else {
                     return SYSERR;
                 };
                 v
             }
         }
     };
+    // The interpreter goes at the start of the new image's mmap window,
+    // unrelocated; execution starts there (AT_ENTRY still names the program).
+    #[cfg(feature = "linux-compat")]
+    let interp_map = match &interp {
+        Some(ib) => {
+            let at = mmap_base_va(base_u, off);
+            match map_elf_unrelocated(aspace, ib, at) {
+                Some((ientry, runs)) => Some((at as usize, ientry, runs)),
+                None => return SYSERR,
+            }
+        }
+        None => None,
+    };
     // The optional Linux layer adds the auxv entries musl's startup reads.
     #[cfg(feature = "linux-compat")]
-    let aux = crate::linux::exec_auxv(bytes, base_u, entry);
+    let aux = crate::linux::exec_auxv(bytes, base_u, entry, interp_map.as_ref().map(|m| m.0));
     #[cfg(not(feature = "linux-compat"))]
     let aux = AuxV::new();
+    #[cfg(feature = "linux-compat")]
+    let entry = interp_map.as_ref().map_or(entry, |m| m.1);
     let Some((rsp, argv)) =
         build_argv_stack(aspace, base_u, off, arg_refs, env_refs, aux.entries())
     else {
@@ -566,6 +594,14 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     // mutating the running task and resuming.
     crate::smp::sync_tp_for_kernel();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
+    #[cfg(feature = "linux-compat")]
+    if let Some((_, _, runs)) = &interp_map {
+        for &(va, pages, prot) in runs {
+            if !task::mmap_add(va, pages, prot) {
+                task::user_exit(127);
+            }
+        }
+    }
     // aarch64: sret/eret through the live syscall frame (shallow exec).
     #[cfg(target_arch = "aarch64")]
     try_resume_exec_via_syscall_frame(entry, rsp, argc, argv);
@@ -1271,15 +1307,23 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     if len == 0 {
         return SYSERR;
     }
-    let anon = flags & MAP_ANON != 0;
-    if !anon {
-        // File-backed is optional; anonymous MAP_ANON|MAP_PRIVATE is the must-have.
-        return SYSERR;
-    }
     if flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
         // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
         return SYSERR;
     }
+    // File mappings are private copies: the pages are filled from the file
+    // at map time and never written back.
+    let file = if flags & MAP_ANON != 0 {
+        None
+    } else {
+        if offset % PAGE != 0 || fd < 0 {
+            return SYSERR;
+        }
+        match task::fd_file_node(fd as usize) {
+            Some(node) => Some(node),
+            None => return SYSERR,
+        }
+    };
     let (base, _span, stack_off) = task::current_user_map();
     let area_lo = mmap_base_va(base, stack_off) as usize;
     let area_hi = mmap_limit_va(base, stack_off) as usize;
@@ -1288,12 +1332,21 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         return SYSERR;
     }
     let map_len = pages * PAGE;
+    let aspace = task::current_aspace();
     let va = if flags & MAP_FIXED != 0 {
         if hint == 0 || hint % PAGE != 0 {
             return SYSERR;
         }
         if hint < area_lo || hint.saturating_add(map_len) > area_hi {
             return SYSERR;
+        }
+        // MAP_FIXED replaces whatever is mapped there (a dynamic linker maps
+        // each segment over the span it reserved first).
+        if !task::mmap_remove(hint as u64, pages as u32) {
+            return SYSERR;
+        }
+        for i in 0..pages {
+            free_mapped_page(aspace, (hint + i * PAGE) as u64);
         }
         hint
     } else {
@@ -1302,19 +1355,20 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             None => return SYSERR,
         }
     };
-    if task::mmap_overlaps(va, map_len) {
-        return SYSERR;
-    }
-    let aspace = task::current_aspace();
     let mut mapped = 0usize;
     while mapped < map_len {
         let page_va = (va + mapped) as u64;
         let frame = mm::alloc_frame_site(4);
-        // alloc_frame returns a zeroed frame.
+        // alloc_frame returns a zeroed frame; past the end of the file it
+        // stays zero.
+        if let Some(node) = &file {
+            let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
+            let _ = fs::read(node, offset + mapped, dst);
+        }
         map_user_page_prot(aspace, page_va, frame, prot);
         mapped += PAGE;
     }
-    if prot & PROT_EXEC != 0 {
+    if prot & PROT_EXEC != 0 || file.is_some() {
         let mut off = 0;
         while off < map_len {
             if let Some(phys) = virt_to_phys(aspace, (va + off) as u64) {
@@ -1325,10 +1379,12 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             off += PAGE;
         }
     }
-    let _ = (fd, offset);
     if !task::mmap_add(va as u64, pages as u32, prot as u32) {
         // Region table full: unmap what we just added.
-        let _ = sys_munmap(va, map_len);
+        for i in 0..pages {
+            free_mapped_page(aspace, (va + i * PAGE) as u64);
+        }
+        flush_user_tlb();
         return SYSERR;
     }
     flush_user_tlb();
@@ -1341,12 +1397,19 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     }
     let pages = len.div_ceil(PAGE);
     let map_len = pages * PAGE;
-    // Only anonymous mmap regions. Allowing munmap of brk/code/stack punched
+    // Only the mmap window. Allowing munmap of brk/code/stack punched
     // holes while brk_cur still covered them (load faults) and — worse —
     // `unmap_user_page` alone never returned frames to the freelist, which
     // drained riscv UEFI RAM across exec-heavy smoke and surfaced as random
-    // user exceptions under HTTPS.
-    if !task::mmap_contains(addr, map_len) {
+    // user exceptions under HTTPS. Within the window, any range may be
+    // unmapped (holes included), as POSIX allows.
+    let (base, _span, stack_off) = task::current_user_map();
+    let area_lo = mmap_base_va(base, stack_off) as usize;
+    let area_hi = mmap_limit_va(base, stack_off) as usize;
+    if addr < area_lo || addr.saturating_add(map_len) > area_hi {
+        return SYSERR;
+    }
+    if !task::mmap_remove(addr as u64, pages as u32) {
         return SYSERR;
     }
     let aspace = task::current_aspace();
@@ -1355,7 +1418,6 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
         free_mapped_page(aspace, (addr + off) as u64);
         off += PAGE;
     }
-    task::mmap_remove(addr as u64, pages as u32);
     flush_user_tlb();
     0
 }
@@ -1387,9 +1449,9 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         }
         off += PAGE;
     }
-    task::mmap_set_prot(addr as u64, pages as u32, prot as u32);
+    let recorded = task::mmap_set_prot(addr as u64, pages as u32, prot as u32);
     flush_user_tlb();
-    0
+    if recorded { 0 } else { SYSERR }
 }
 
 pub(crate) fn sys_lseek(fd: usize, offset: usize, whence: usize) -> usize {

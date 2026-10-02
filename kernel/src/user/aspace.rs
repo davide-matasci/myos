@@ -155,7 +155,7 @@ fn aarch64_l3_table_mut(l0_phys: u64, page: usize) -> Option<*mut [u64; 512]> {
     const TABLE: u64 = 0b11;
     const PA: u64 = 0x0000_FFFF_FFFF_F000;
     let l2_idx = page / AARCH64_USER_L3_PAGES;
-    if l2_idx >= 4 {
+    if l2_idx >= AARCH64_USER_L2_TABLES {
         return None;
     }
     unsafe {
@@ -184,6 +184,9 @@ fn virt_to_phys_aarch64(l0_phys: u64, va: u64) -> Option<u64> {
     let page = aarch64_user_page_idx(va);
     let l3_idx = page % AARCH64_USER_L3_PAGES;
     let l2_idx = page / AARCH64_USER_L3_PAGES;
+    if l2_idx >= AARCH64_USER_L2_TABLES {
+        return None;
+    }
     unsafe {
         let l0 = &*mm::table(l0_phys);
         let l1_phys = l0[0] & PA;

@@ -31,7 +31,14 @@ const MAP_PRIVATE: usize = 0x02;
 const MAP_FIXED: usize = 0x10;
 const MAP_ANON: usize = 0x20;
 /// Anonymous mmap region after the brk heap.
-const MMAP_AREA_PAGES: usize = 256;
+/// The mmap window (after the brk heap): VA only, frames are allocated per
+/// mapping. Large enough for a dynamically linked program and its shared
+/// objects (the optional Linux layer); aarch64 also stays within
+/// `AARCH64_USER_L2_TABLES`.
+#[cfg(target_arch = "x86_64")]
+const MMAP_AREA_PAGES: usize = 32768;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+const MMAP_AREA_PAGES: usize = 16384;
 pub const PAGE: usize = 4096;
 /// User stack below the heap. x86_64 uses 1 MiB; AArch64 uses 512 KiB.
 /// AArch64 user maps spill into L2[1+] when code+stack+heap exceed 512 pages.
@@ -339,7 +346,7 @@ fn wrmsr(msr: u32, val: u64) {
 pub fn spawn_init() {
     let base = pick_user_base();
     USER_BASE.store(base, Ordering::SeqCst);
-    let (aspace, entry, span, off) = load_user_elf(INIT_ELF).expect("init ELF");
+    let (aspace, entry, span, off) = load_user_elf(INIT_ELF, true).expect("init ELF");
     let (rsp, argv) = build_argv_stack(aspace, base, off, &[], &[], &[]).expect("init stack");
     task::spawn_user(aspace, entry, rsp, base, span, off, 0, argv);
     USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
@@ -358,6 +365,10 @@ pub fn spawn_init() {
 const ELF_SCRATCH_BYTES: usize = MAX_ELF_PAGES * PAGE;
 #[cfg(target_arch = "aarch64")]
 const AARCH64_USER_L3_PAGES: usize = 512;
+/// L3 tables (2 MiB each) a user aspace may use under its L2 table: the
+/// per-process span from USER_BASE is at most 64 × 2 MiB = 128 MiB.
+#[cfg(target_arch = "aarch64")]
+const AARCH64_USER_L2_TABLES: usize = 64;
 
 pub fn both_exited() -> bool {
     DID_SPAWN.load(Ordering::SeqCst) && USERS_ALIVE.load(Ordering::SeqCst) == 0

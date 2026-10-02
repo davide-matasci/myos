@@ -196,7 +196,6 @@ pub fn replace_user(
         t.fork_regs = None;
         t.brk_cur = heap_base_for(user_base, stack_off);
         t.mmap = EMPTY_MMAP;
-        t.mmap_next = 0;
         // POSIX exec: ignored signals, the blocked mask and pending signals
         // survive; caught ones revert to SIG_DFL (signal_table_exec below).
         // Keep fork-assigned affinity across exec. Spreading for make -j /
@@ -275,7 +274,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         cwd,
         cwd_len,
         mmap,
-        mmap_next,
         sid,
         pgid,
         has_ctty,
@@ -304,7 +302,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.cwd,
             t.cwd_len,
             t.mmap,
-            t.mmap_next,
             t.sid,
             t.pgid,
             t.has_ctty,
@@ -411,7 +408,6 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         term_sig: 0,
         exited: false,
         mmap,
-        mmap_next,
         sid,
         pgid,
         has_ctty,
@@ -623,7 +619,6 @@ fn spawn_inner(
         term_sig: 0,
         exited: false,
         mmap: EMPTY_MMAP,
-        mmap_next: 0,
         sid: slot,
         pgid: slot,
         has_ctty: false,

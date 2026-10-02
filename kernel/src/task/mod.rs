@@ -111,7 +111,9 @@ const fn root_cwd_buf() -> [u8; 256] {
     c
 }
 
-pub const MAX_MMAP_REGIONS: usize = 16;
+/// Enough for a dynamically linked program: each shared object takes a
+/// region per segment.
+pub const MAX_MMAP_REGIONS: usize = 64;
 
 #[derive(Clone, Copy)]
 pub struct MmapRegion {
@@ -163,7 +165,6 @@ struct Task {
     exited: bool,
     /// Anonymous mmap windows (after the brk heap).
     mmap: [MmapRegion; MAX_MMAP_REGIONS],
-    mmap_next: u64,
     /// Session id (task slot of the session leader). Inherited on fork.
     /// New spawns start as their own session (`sid == slot`); `setsid` creates
     /// a fresh session for a forked child.
@@ -213,7 +214,6 @@ const EMPTY: Task = Task {
     term_sig: 0,
     exited: false,
     mmap: EMPTY_MMAP,
-    mmap_next: 0,
     sid: 0,
     pgid: 0,
     has_ctty: false,

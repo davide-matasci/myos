@@ -435,13 +435,28 @@ pub fn readlinkat(dirfd: usize, path: usize, buf: usize, size: usize) -> R {
 
 // ---- memory ---------------------------------------------------------------
 
+/// Anonymous or file-backed (a private copy of the file: `MAP_SHARED` file
+/// mappings are refused, as the native layer cannot write them back).
 pub fn mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, off: usize) -> R {
+    const MAP_SHARED: usize = 0x01;
     const MAP_ANONYMOUS: usize = 0x20;
-    if flags & MAP_ANONYMOUS == 0 {
-        // File mappings are not supported yet.
+    if flags & MAP_SHARED != 0 && flags & MAP_ANONYMOUS == 0 {
         return Err(ENODEV);
     }
+    if flags & MAP_ANONYMOUS == 0 && task::fd_kind(fd).is_none() {
+        return Err(EBADF);
+    }
     native(user::do_mmap(addr, len, prot, flags, fd as isize, off), ENOMEM)
+}
+
+/// `pread64(fd, buf, count, offset)`: a read at `offset` that leaves the
+/// file position alone.
+pub fn pread(fd: usize, buf: usize, count: usize, off: usize) -> R {
+    let node = task::fd_file_node(fd).ok_or(ESPIPE)?;
+    let mut tmp = alloc::vec![0u8; count.min(1 << 20)];
+    let n = fs::read(&node, off, &mut tmp);
+    put(buf, &tmp[..n])?;
+    Ok(n)
 }
 
 // ---- processes ------------------------------------------------------------
