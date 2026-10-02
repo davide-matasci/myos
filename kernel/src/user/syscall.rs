@@ -110,6 +110,9 @@ const WAIT_ADDR_TIMEOUT: usize = 2;
 const SYS_WAKE_ADDR: usize = 56;
 /// `gettid()`: the calling thread's id (`getpid` is its process's).
 const SYS_GETTID: usize = 57;
+/// `insmod(path, len)`: load the kernel module ELF at `path` (named after
+/// its last path component). 0 ok, `SYSERR` on any failure.
+const SYS_INSMOD: usize = 58;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
@@ -249,6 +252,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_WAIT_ADDR => sys_wait_addr(a0, a1, a2),
         SYS_WAKE_ADDR => task::wake_addr(a0, a1),
         SYS_GETTID => task::current_tid(),
+        SYS_INSMOD => sys_insmod(a0, a1),
         #[cfg(feature = "linux-compat")]
         SYS_LINUX_NEXT_EXEC => crate::linux::sys_linux_next_exec(),
         _ => SYSERR,
@@ -353,6 +357,25 @@ fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
         return SYSERR;
     };
     open_path(path, flags)
+}
+
+fn sys_insmod(ptr: usize, path_len: usize) -> usize {
+    let Some(buf) = copy_user_path(ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    match crate::modules::insmod(&path) {
+        Ok(()) => 0,
+        Err(e) => {
+            crate::console::status_fail(&alloc::format!("insmod {path}: {e}"));
+            SYSERR
+        }
+    }
 }
 
 /// open(2) of a cwd-relative or absolute path already in kernel memory.

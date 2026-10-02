@@ -309,6 +309,18 @@ pub fn readlink(path: &[u8], buf: &mut [u8]) -> Option<usize> {
     if n == usize::MAX { None } else { Some(n) }
 }
 
+/// Load the kernel module ELF at `path` (`SYS_INSMOD` = 58), e.g.
+/// `/lib/modules/hello`. The kernel prints the reason on failure.
+pub fn insmod(path: &[u8]) -> bool {
+    const CAP: usize = 128;
+    let mut buf = [0u8; CAP];
+    let n = copy_exec_bytes(&mut buf, path);
+    if n == 0 {
+        return false;
+    }
+    unsafe { sys3(58, buf.as_ptr() as usize, n, 0) != usize::MAX }
+}
+
 /// Mount `src` (a `/dev/vd*` node) at `tgt` using `fstype` (`fat`).
 pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
     const CAP: usize = 128;

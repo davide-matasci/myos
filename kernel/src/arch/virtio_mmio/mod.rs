@@ -1,12 +1,13 @@
 //! Virtio-mmio v2 transport shared by the AArch64 and RISC-V `virt` boards:
-//! block (`blk`), keyboard input (`input`) and the keyboard shim on top of it.
+//! keyboard input (`input`) and the keyboard shim on top of it (block
+//! devices are the `virtio_blk` module).
 //!
 //! Only the transport window and the cache maintenance differ per arch.
 //! Polling only; no virtio IRQ.
 
-pub mod blk;
 pub mod input;
 pub mod keyboard;
+pub mod virtq;
 
 #[cfg(target_arch = "aarch64")]
 pub(super) const MMIO_BASE: usize = 0x0A00_0000;

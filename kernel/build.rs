@@ -58,102 +58,34 @@ fn main() {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let manifest = Path::new(&manifest_dir);
 
-    nested_elf(
-        &cargo,
-        manifest,
-        "../modules/hello",
-        "hello",
-        "hello-target",
-        "HELLO_MODULE_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../abi/src/lib.rs"],
-    );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../modules/fat",
-        "fat",
-        "fat-target",
-        "FAT_MODULE_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../abi/src/lib.rs"],
-    );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../modules/ext2",
-        "ext2",
-        "ext2-target",
-        "EXT2_MODULE_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../abi/src/lib.rs"],
-    );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../modules/stubfs",
-        "stubfs",
-        "stubfs-target",
-        "STUBFS_MODULE_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../abi/src/lib.rs"],
-    );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../modules/virtio_net",
-        "virtio_net",
-        "virtio-net-target",
-        "VIRTIO_NET_MODULE_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../abi/src/lib.rs"],
-    );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../modules/netfs",
-        "netfs",
-        "netfs-target",
-        "NETFS_MODULE_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../abi/src/lib.rs"],
-    );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../modules/pci_enum",
-        "pci_enum",
-        "pci-enum-target",
-        "PCI_ENUM_MODULE_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../abi/src/lib.rs"],
-    );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../modules/acpi",
-        "acpi",
-        "acpi-target",
-        "ACPI_MODULE_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../abi/src/lib.rs"],
-    );
+    // Kernel modules: built here so `target/<module>-<triple>` exists for the
+    // image builders (Limine loads them from `boot/modules/` at boot) and for
+    // the initramfs (`/lib/modules`, `insmod`). The kernel embeds none of them.
+    for (dir, bin) in [
+        ("hello", "hello"),
+        ("stubfs", "stubfs"),
+        ("pci_enum", "pci_enum"),
+        ("acpi", "acpi"),
+        ("virtio_blk", "virtio_blk"),
+        ("nvme", "nvme"),
+        ("virtio_net", "virtio_net"),
+        ("netfs", "netfs"),
+        ("fat", "fat"),
+        ("ext2", "ext2"),
+    ] {
+        nested_elf(
+            &cargo,
+            manifest,
+            &format!("../modules/{dir}"),
+            bin,
+            &format!("{bin}-target"),
+            "_unused",
+            &target,
+            &profile,
+            &out,
+            &["../abi/src/lib.rs", "../virtq/src/lib.rs"],
+        );
+    }
     nested_elf(
         &cargo,
         manifest,
@@ -173,6 +105,7 @@ fn main() {
         ("../user/cat", "myos_cat", "cat-target", "USER_CAT_PATH"),
         ("../user/ls", "myos_ls", "ls-target", "USER_LS_PATH"),
         ("../user/mount", "mount", "mount-target", "USER_MOUNT_PATH"),
+        ("../user/insmod", "insmod", "insmod-target", "USER_INSMOD_PATH"),
         (
             "../user/mkfs.ext2",
             "mkfs_ext2",
@@ -518,7 +451,9 @@ fn nested_elf(
     }
     let mut rustflags = String::from("-C panic=abort");
     // ext2's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
-    if target.contains("x86_64") && (bin == "ext2" || bin == "virtio_net" || bin == "netfs" || bin == "pci_enum" || bin == "acpi") {
+    if target.contains("x86_64")
+        && matches!(bin, "ext2" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "virtio_blk" | "nvme")
+    {
         rustflags = String::from("-C panic=abort -C relocation-model=pic");
     }
     if target.contains("aarch64") {

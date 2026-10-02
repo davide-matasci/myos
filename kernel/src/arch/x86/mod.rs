@@ -7,7 +7,6 @@ mod keyboard;
 mod paging;
 pub mod pci;
 mod serial;
-mod virtio_blk;
 pub use serial::SerialPort;
 
 pub mod clock;
@@ -55,26 +54,6 @@ pub fn init_interrupts() {
 
 pub fn wait_for_interrupt_proof() {
     interrupts::wait_for_interrupt_proof();
-}
-
-pub fn virtio_blk_init() {
-    virtio_blk::init();
-}
-
-pub fn virtio_blk_count() -> u32 {
-    virtio_blk::count()
-}
-
-pub fn virtio_blk_capacity(dev: u32) -> Option<u64> {
-    virtio_blk::capacity(dev)
-}
-
-pub fn virtio_blk_read(dev: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-    virtio_blk::read(dev, lba, buf)
-}
-
-pub fn virtio_blk_write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
-    virtio_blk::write(dev, lba, buf)
 }
 
 /// QEMU `isa-debug-exit` at iobase 0xf4. A no-op if the device was not added.

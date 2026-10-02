@@ -12,17 +12,53 @@ pub const LIMINE_TARBALL_URL: &str =
 pub const LIMINE_TARBALL_SHA256: &str =
     "07d054e6297d8c41bee74ddd30024696e4ad811e7e73be28d98dc0a6168fbfeb";
 
-pub const LIMINE_CONF: &str = "\
-serial: yes
-timeout: 0
+/// Kernel modules Limine places in RAM at boot (`module_path` entries), in
+/// load order: the kernel's `modules::load_limine_modules` initialises them
+/// in this order. Every driver and filesystem is one of these; the kernel
+/// embeds none. Each is shipped as `boot/modules/<name>` on the ESP / ISO,
+/// and again under `/lib/modules/<name>` in the initramfs for `insmod`.
+pub const BOOT_MODULES: &[&str] = &[
+    "stubfs",
+    "hello",
+    "pci_enum",
+    "acpi",
+    "virtio_blk",
+    "nvme",
+    "virtio_net",
+    "netfs",
+    "fat",
+    "ext2",
+];
 
-/myos
-    protocol: limine
-    path: boot():/boot/kernel
-    module_path: boot():/boot/hello
-    module_path: boot():/boot/ok
-    module_path: boot():/boot/initramfs
-";
+/// The Limine config: `head_extra` lines go before the entry (riscv64's
+/// `global_dtb`), `kernel_extra` after `path:` (riscv64's `paging_mode`).
+pub fn limine_conf(head_extra: &str, kernel_extra: &str) -> String {
+    let mut s = format!(
+        "serial: yes\ntimeout: 0\n{head_extra}\n/myos\n    protocol: limine\n    path: boot():/boot/kernel\n{kernel_extra}"
+    );
+    for m in BOOT_MODULES {
+        s.push_str(&format!("    module_path: boot():/boot/modules/{m}\n"));
+    }
+    s.push_str("    module_path: boot():/boot/ok\n    module_path: boot():/boot/initramfs\n");
+    s
+}
+
+/// The boot modules for `triple` as ESP files (`boot/modules/<name>`), read
+/// from the stable copies `target/<name>-<triple>` kernel/build.rs writes.
+pub fn boot_module_files(target_dir: &Path, triple: &str) -> Vec<DiskFile> {
+    BOOT_MODULES
+        .iter()
+        .map(|m| {
+            let src = target_dir.join(format!("{m}-{triple}"));
+            let data = fs::read(&src)
+                .unwrap_or_else(|e| panic!("module {m} ELF missing at {}: {e}", src.display()));
+            DiskFile {
+                path: format!("boot/modules/{m}"),
+                data,
+            }
+        })
+        .collect()
+}
 
 const SECTOR: usize = 512;
 // 64 MiB no longer fits the packed boot images (55 MiB initramfs + kernels +
@@ -153,12 +189,21 @@ pub fn write_esp_image(
     efi_name: &str,
     efi_bytes: &[u8],
     bios_sys: Option<&[u8]>,
-    hello: &[u8],
+    modules: &[DiskFile],
     ok: &[u8],
     initramfs: &[u8],
 ) {
     write_esp_image_ex(
-        dest, kernel, efi_name, efi_bytes, bios_sys, hello, ok, initramfs, LIMINE_CONF, &[],
+        dest,
+        kernel,
+        efi_name,
+        efi_bytes,
+        bios_sys,
+        modules,
+        ok,
+        initramfs,
+        &limine_conf("", ""),
+        &[],
     );
 }
 
@@ -168,7 +213,7 @@ pub fn write_esp_image_ex(
     efi_name: &str,
     efi_bytes: &[u8],
     bios_sys: Option<&[u8]>,
-    hello: &[u8],
+    modules: &[DiskFile],
     ok: &[u8],
     initramfs: &[u8],
     limine_conf: &str,
@@ -182,10 +227,6 @@ pub fn write_esp_image_ex(
         DiskFile {
             path: "boot/kernel".into(),
             data: kernel.to_vec(),
-        },
-        DiskFile {
-            path: "boot/hello".into(),
-            data: hello.to_vec(),
         },
         DiskFile {
             path: "boot/ok".into(),
@@ -208,6 +249,7 @@ pub fn write_esp_image_ex(
             data: limine_conf.as_bytes().to_vec(),
         },
     ];
+    files.extend_from_slice(modules);
     files.extend_from_slice(extra);
     if efi_name.contains("RISCV") {
         files.push(DiskFile {
@@ -268,7 +310,7 @@ pub fn write_x86_iso(
     dest: &Path,
     iso_root: &Path,
     kernel: &Path,
-    hello: &Path,
+    modules_dir: &Path,
     ok: &Path,
     initramfs: &Path,
     limine: &LimineFiles,
@@ -292,7 +334,14 @@ pub fn write_x86_iso(
         });
     };
     copy(kernel, "boot/kernel");
-    copy(hello, "boot/hello");
+    fs::create_dir_all(iso_root.join("boot/modules"))
+        .unwrap_or_else(|e| panic!("create iso boot/modules: {e}"));
+    for m in BOOT_MODULES {
+        copy(
+            &modules_dir.join(format!("{m}-x86_64-unknown-none")),
+            &format!("boot/modules/{m}"),
+        );
+    }
     copy(ok, "boot/ok");
     copy(initramfs, "boot/initramfs");
     copy(&limine.bios_sys(), "boot/limine/limine-bios.sys");
@@ -317,7 +366,8 @@ pub fn write_x86_iso(
         copy(&entry.path(), &rel);
     }
 
-    let conf = LIMINE_CONF.as_bytes();
+    let conf = limine_conf("", "");
+    let conf = conf.as_bytes();
     for rel in ["boot/limine/limine.conf", "EFI/BOOT/limine.conf", "limine.conf"] {
         let dst = iso_root.join(rel);
         fs::write(&dst, conf)

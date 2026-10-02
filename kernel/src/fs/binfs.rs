@@ -5,7 +5,8 @@
 //! `/bin/coreutils/…`). Port backends are mounted at their own `/bin/…`
 //! prefixes (longer prefix wins in `resolve_index`); this backend only
 //! provides the `/bin` directory nodes and the leaf programs that live
-//! under `/bin/std` and `/bin/custom`, `/bin/modules`, `/bin/etc`.
+//! under `/bin/std` and `/bin/custom`, `/bin/etc` (kernel modules are under
+//! `/lib/modules`, from the initramfs).
 //!
 //! Paths are relative to the mount, e.g. `std/cat`, `custom/netd`.
 //! Directories are implied by children.
@@ -189,7 +190,6 @@ pub fn init_embedded() {
     let _ = register("std/echo", STD_ECHO_ELF);
     let _ = register("std/hello", STD_HELLO_ELF);
     let _ = register("etc/hello", C_HELLO_ELF);
-    let _ = register("modules/hello", HELLO_MODULE_ELF);
     let _ = register("custom/heap", HEAP_ELF);
     let _ = register("custom/ok", OK_ELF);
     let _ = register("custom/sh", SH_ELF);
@@ -197,6 +197,7 @@ pub fn init_embedded() {
     let _ = register("custom/echo", ECHO_ELF);
     let _ = register("custom/ls", LS_ELF);
     let _ = register("custom/mount", MOUNT_ELF);
+    let _ = register("custom/insmod", INSMOD_ELF);
     let _ = register("custom/mkfs.ext2", MKFS_EXT2_ELF);
     let _ = register("custom/ping", PING_ELF);
     let _ = register("custom/http", HTTP_ELF);
@@ -210,13 +211,13 @@ const STD_CAT_ELF: &[u8] = include_bytes!(env!("USER_STD_CAT_PATH"));
 const STD_ECHO_ELF: &[u8] = include_bytes!(env!("USER_STD_ECHO_PATH"));
 const BIGALLOC_ELF: &[u8] = include_bytes!(env!("USER_BIGALLOC_PATH"));
 const C_HELLO_ELF: &[u8] = include_bytes!(env!("USER_C_HELLO_PATH"));
-const HELLO_MODULE_ELF: &[u8] = include_bytes!(env!("HELLO_MODULE_PATH"));
 const OK_ELF: &[u8] = include_bytes!(env!("USER_OK_PATH"));
 const SH_ELF: &[u8] = include_bytes!(env!("USER_SH_PATH"));
 const ECHO_ELF: &[u8] = include_bytes!(env!("USER_ECHO_PATH"));
 const CAT_ELF: &[u8] = include_bytes!(env!("USER_CAT_PATH"));
 const LS_ELF: &[u8] = include_bytes!(env!("USER_LS_PATH"));
 const MOUNT_ELF: &[u8] = include_bytes!(env!("USER_MOUNT_PATH"));
+const INSMOD_ELF: &[u8] = include_bytes!(env!("USER_INSMOD_PATH"));
 const MKFS_EXT2_ELF: &[u8] = include_bytes!(env!("USER_MKFS_EXT2_PATH"));
 const PING_ELF: &[u8] = include_bytes!(env!("USER_PING_PATH"));
 const HTTP_ELF: &[u8] = include_bytes!(env!("USER_HTTP_PATH"));

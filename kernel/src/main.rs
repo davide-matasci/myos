@@ -21,7 +21,6 @@ mod limine_boot;
 #[cfg(feature = "linux-compat")]
 mod linux;
 mod mm;
-mod nvme;
 mod pci;
 mod modules;
 mod pipe;
@@ -147,18 +146,11 @@ pub(crate) fn kernel_main() -> ! {
     fs::init_limine();
     rng::init();
     console::status_ok("urandom");
-    modules::load_embedded_stubfs();
-    modules::load_embedded_hello();
-    modules::load_embedded_pci_enum();
-    modules::load_embedded_acpi();
+    // Every driver and filesystem is a module: Limine placed them in RAM in
+    // the `module_path` order of limine.conf (stubfs, hello, pci_enum, acpi,
+    // virtio_blk, nvme, virtio_net, netfs, fat, ext2), and they load in that
+    // order. More can follow at runtime with `insmod` from /lib/modules.
     modules::load_limine_modules();
-
-    blk::init();
-    nvme::init();
-    modules::load_embedded_virtio_net();
-    modules::load_embedded_netfs();
-    modules::load_embedded_fat();
-    modules::load_embedded_ext2();
     // /msg lives on bootfs; /ok mounts /dev/vda as fat at /fat.
     let _ = fs::register("bootfs", "msg", MSG_OK);
     console::status_ok("fat message");

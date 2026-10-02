@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use spin::Mutex;
 
-use crate::blk::virtq;
+use super::virtq;
 use crate::console;
 use crate::kbd::{self, ByteFifo};
 use super::*;
