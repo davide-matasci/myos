@@ -102,7 +102,7 @@ CI types `root` at `login: `, then commands at `$ ` (password is empty).
 Boot (Limine)
   └─ Limine HHDM + memmap + framebuffer + modules
        └─ Kernel (higher-half, #![no_std])
-            ├─ Heap (256 KiB linked-list allocator)
+            ├─ Heap (linked-list allocator, a quarter of RAM: 64 MiB to 1 GiB)
             ├─ Scheduler (round-robin kernel threads + user tasks)
             ├─ VFS (mount table → bootfs / tmpfs / devfs / procfs / ext2 / netfs)
             ├─ Modules (Limine list, in order): console, stubfs, hello, pci_enum,
@@ -137,12 +137,12 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `build.rs` | Fetch Limine; wrap x86_64 kernel in BIOS+UEFI images; write `fat.img` |
 | `kernel/src/main.rs` | `#![no_std]` Limine entry: heap, IRQs, scheduler, bootfs, Limine modules, user init |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
-| `kernel/src/mm.rs` | Physical frame allocator (after 256 KiB heap; page tables, user pages, virtqueues) |
+| `kernel/src/mm.rs` | Physical frame allocator (after the heap; page tables, user pages, virtqueues) |
 | `kernel/src/blk.rs` | Block-device registry filled by driver modules (`blk_register`); `/dev/<name>` + sector/byte I/O |
 | `kernel/src/arch/` | All per-arch code: boot, UART, interrupts, PCI, user entry/paging (`user`, `upaging`), context switch, FPU, clock, SMP glue |
 | `kernel/src/console.rs` | Serial console + the `console` module's screen/keyboard hooks (early-output replay) |
 | `kernel/src/input.rs` | Stdin line discipline: module keyboard + serial → fd 0 |
-| `kernel/src/heap.rs` | 256 KiB `linked_list_allocator` heap |
+| `kernel/src/heap.rs` | `linked_list_allocator` heap sized from memory (also holds tmpfs data) |
 | `kernel/src/task/` | Scheduler records (`Task`) + per-process blocks (`process.rs`): yield, preemption, fork/exec/wait |
 | `kernel/src/fs/` | VFS + bootfs/tmpfs/devfs/procfs backends |
 | `kernel/src/modules/` | ELF64 loader, KernelApi wrappers, loaded-module registry |
