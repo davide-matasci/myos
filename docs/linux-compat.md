@@ -51,10 +51,10 @@ Linux ones. It is killed by its own fault; the kernel stays up.
 
 | Where | What |
 |-------|------|
-| `kernel/src/linux/mod.rs` | per-task state (personality, pending flag, thread pointer, saved FP/SIMD registers), the hooks the core calls, the auxv for new Linux images |
+| `kernel/src/linux/mod.rs` | per-task state (personality, pending flag, thread pointer), the hooks the core calls, the auxv for new Linux images |
 | `kernel/src/linux/x86_64.rs` | x86_64 syscall numbers, `struct stat`, signal frame, FXSAVE state, `arch_prctl` / FS base |
-| `kernel/src/linux/aarch64.rs` | signal frame (`fpsimd_context`), q0-q31/FPSR/FPCR, `tpidr_el0` |
-| `kernel/src/linux/riscv64.rs` | signal frame, f0-f31/fcsr, the FPU enable for Linux tasks |
+| `kernel/src/linux/aarch64.rs` | signal frame (`fpsimd_context`), `tpidr_el0` |
+| `kernel/src/linux/riscv64.rs` | signal frame, the FPU enable for Linux tasks |
 | `kernel/src/linux/generic.rs` | the `asm-generic` syscall numbers and `struct stat` aarch64 and riscv64 share |
 | `kernel/src/linux/sys.rs` | the handlers: decode Linux arguments, call the native implementation, return `-errno` |
 | `kernel/src/linux/signal.rs` | `rt_sigaction` & co., handler delivery, `rt_sigreturn`, the sigreturn trampoline page |
@@ -71,7 +71,8 @@ Hooks in the core, each behind `#[cfg(feature = "linux-compat")]`:
 - spawn / fork / exec (`task/lifecycle.rs`): reset, copy, or apply the
   personality;
 - context switch (`task/sched.rs`): save and restore a Linux task's thread
-  pointer and FP/SIMD registers;
+  pointer (FP/SIMD registers are switched for every user task by the core,
+  `task/fpu.rs`);
 - signal delivery (`signal.rs`): a caught signal of a Linux task gets a
   Linux `rt_sigframe` instead of the native frame;
 - riscv64 user entry (`user/mod.rs`, `user_sstatus`): Linux tasks run with
@@ -176,8 +177,6 @@ the kernel does not keep a per-task copy at syscall entry.
 - Signals act at syscall exit, as for native programs: a task looping in
   user mode is not interrupted until its next syscall. No alternate signal
   stacks, no real-time signal queueing.
-- FP/SIMD registers are saved across context switches for Linux tasks only
-  (native programs do not get this yet).
 - No threads (`clone` with `CLONE_VM`), no shared file mappings
   (`MAP_SHARED`), no sockets, no `O_CLOEXEC` / `O_NONBLOCK` semantics.
 - The native limits apply: 16 args / 32 environment strings of at most 128

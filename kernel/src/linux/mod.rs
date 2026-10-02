@@ -19,8 +19,9 @@
 //! Each arch module (`x86_64`, `aarch64`, `riscv64`) provides the same
 //! items: `MACHINE`, `args`, `syscall` (its number table; aarch64 and
 //! riscv64 share `generic`), `stat_bytes`, the signal frame (`deliver`,
-//! `sigreturn`), the FP/SIMD register file (`FP_BYTES`, `fp_save`,
-//! `fp_restore`), the thread pointer (`tls_read`, `tls_write`) and the
+//! `sigreturn`), the FP/SIMD image for frames (`FP_BYTES`, `fp_save`,
+//! `fp_restore`, from `task::fpu`), the thread pointer (`tls_read`,
+//! `tls_write`) and the
 //! sigreturn trampoline code (`TRAMP_CODE`).
 
 mod abi;
@@ -48,7 +49,6 @@ pub use signal::deliver;
 #[cfg(target_arch = "riscv64")]
 pub use riscv64::SSTATUS_FS_INITIAL;
 
-use core::cell::UnsafeCell;
 use alloc::borrow::Cow;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -63,18 +63,6 @@ static PENDING: [AtomicBool; MAX_TASKS] = [const { AtomicBool::new(false) }; MAX
 /// (`arch_prctl(ARCH_SET_FS)` on x86_64, `tpidr_el0` on aarch64; riscv64
 /// keeps `tp` in the trap frame).
 static TP: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
-
-/// Per task slot: the FP/SIMD registers while the task is switched out. The
-/// kernel itself never touches them (soft-float builds), so a Linux task's
-/// registers are saved when it leaves the CPU and restored when it returns.
-#[repr(C, align(64))]
-struct FpBuf(UnsafeCell<[u8; arch::FP_BYTES]>);
-// Each slot is only touched by the CPU switching that task in or out, or by
-// fork before the child can run.
-unsafe impl Sync for FpBuf {}
-static FP: [FpBuf; MAX_TASKS] = [const { FpBuf(UnsafeCell::new([0; arch::FP_BYTES])) }; MAX_TASKS];
-/// `FP[slot]` holds a saved state (else the CPU state is left as it is).
-static FP_VALID: [AtomicBool; MAX_TASKS] = [const { AtomicBool::new(false) }; MAX_TASKS];
 
 /// Whether the running task has the Linux personality.
 pub fn active() -> bool {
@@ -116,7 +104,6 @@ pub fn on_exec(slot: usize) {
     let linux = PENDING[slot].swap(false, Ordering::Relaxed);
     ACTIVE[slot].store(linux, Ordering::Relaxed);
     TP[slot].store(0, Ordering::Relaxed);
-    FP_VALID[slot].store(false, Ordering::Relaxed);
     if linux {
         arch::tls_write(0);
     }
@@ -124,18 +111,13 @@ pub fn on_exec(slot: usize) {
 }
 
 /// Hook: `child` was forked from `parent` (TASKS held, irqs off). Runs on
-/// the parent's CPU, so its live thread pointer and FP registers are the
-/// parent's.
+/// the parent's CPU, so its live thread pointer is the parent's.
 pub fn on_fork(parent: usize, child: usize) {
     let linux = ACTIVE[parent].load(Ordering::Relaxed);
     ACTIVE[child].store(linux, Ordering::Relaxed);
     PENDING[child].store(false, Ordering::Relaxed);
     let tp = arch::tls_read().unwrap_or(TP[parent].load(Ordering::Relaxed));
     TP[child].store(tp, Ordering::Relaxed);
-    FP_VALID[child].store(linux, Ordering::Relaxed);
-    if linux {
-        unsafe { arch::fp_save(FP[child].0.get().cast()) };
-    }
     files::on_fork(parent, child);
     signal::on_fork(parent, child);
 }
@@ -145,25 +127,20 @@ pub fn on_spawn(slot: usize) {
     ACTIVE[slot].store(false, Ordering::Relaxed);
     PENDING[slot].store(false, Ordering::Relaxed);
     TP[slot].store(0, Ordering::Relaxed);
-    FP_VALID[slot].store(false, Ordering::Relaxed);
     files::on_spawn(slot);
     signal::on_exec(slot);
 }
 
-/// Hook: this CPU switches from task `prev` to task `next` (irqs off).
+/// Hook: this CPU switches from task `prev` to task `next` (irqs off). The
+/// FP/SIMD registers are switched by the core (`task::fpu`).
 pub fn on_switch(prev: usize, next: usize) {
     if ACTIVE[prev].load(Ordering::Relaxed) {
         if let Some(tp) = arch::tls_read() {
             TP[prev].store(tp, Ordering::Relaxed);
         }
-        unsafe { arch::fp_save(FP[prev].0.get().cast()) };
-        FP_VALID[prev].store(true, Ordering::Relaxed);
     }
     if ACTIVE[next].load(Ordering::Relaxed) {
         arch::tls_write(TP[next].load(Ordering::Relaxed));
-        if FP_VALID[next].load(Ordering::Relaxed) {
-            unsafe { arch::fp_restore(FP[next].0.get().cast()) };
-        }
     }
 }
 

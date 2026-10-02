@@ -189,20 +189,7 @@ fn arch_prctl(code: usize, addr: usize) -> usize {
 
 // ---- FP / SSE -------------------------------------------------------------
 
-/// The FXSAVE image (x87, MXCSR, xmm0-15).
-pub const FP_BYTES: usize = 512;
-
-/// # Safety
-/// `buf` is 16-byte aligned and `FP_BYTES` long.
-pub unsafe fn fp_save(buf: *mut u8) {
-    unsafe { core::arch::asm!("fxsave64 [{}]", in(reg) buf, options(nostack, preserves_flags)) };
-}
-
-/// # Safety
-/// As [`fp_save`]; `buf` holds an image whose MXCSR is valid for this CPU.
-pub unsafe fn fp_restore(buf: *const u8) {
-    unsafe { core::arch::asm!("fxrstor64 [{}]", in(reg) buf, options(nostack, preserves_flags)) };
-}
+pub use crate::task::fpu::{restore as fp_restore, save as fp_save, BYTES as FP_BYTES};
 
 #[repr(C, align(16))]
 struct Fx([u8; FP_BYTES]);
