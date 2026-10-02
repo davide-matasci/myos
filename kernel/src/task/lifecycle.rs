@@ -126,12 +126,9 @@ pub(super) fn user_affinity() -> Option<usize> {
         return Some(0);
     }
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    #[cfg(target_arch = "riscv64")]
-    {
+    if crate::arch::USER_TASKS_ON_BSP {
         Some(NEXT.fetch_add(1, Ordering::SeqCst) % n)
-    }
-    #[cfg(not(target_arch = "riscv64"))]
-    {
+    } else {
         // RR over [1, n): never assign user to BSP.
         Some(1 + NEXT.fetch_add(1, Ordering::SeqCst) % (n - 1))
     }
@@ -429,7 +426,7 @@ pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
     };
     let sp = unsafe { seed_stack(stack_base as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
     let top = stack_base + STACK_SIZE;
-    stamp_stack_cpu(top, crate::smp::cpu_id());
+    crate::arch::stamp_stack_cpu(top, crate::smp::cpu_id());
     Some((slot, stack_base, sp, top))
 }
 
@@ -575,7 +572,7 @@ fn spawn_inner(
     let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as *const () as usize) };
     let top = stack as usize + STACK_SIZE;
     // BSP-created tasks start on CPU 0; schedule restamps on migrate.
-    stamp_stack_cpu(top, 0);
+    crate::arch::stamp_stack_cpu(top, 0);
 
     let mut tasks = TASKS.lock();
     let slot = tasks

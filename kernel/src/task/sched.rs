@@ -94,12 +94,8 @@ pub fn schedule() {
 
     if kstack != 0 {
         let cpu = crate::smp::cpu_id();
-        stamp_stack_cpu(kstack, cpu);
-        user::set_kernel_rsp0(kstack);
-        #[cfg(target_arch = "x86_64")]
-        crate::arch::gdt::set_rsp0(kstack as u64);
-        // riscv64: no sscratch write here — it stays 0 in S-mode and is armed
-        // with the kernel stack top only on the way out to U-mode.
+        let _ = cpu;
+        crate::arch::set_kernel_stack_top(kstack);
     }
     // User FP/SIMD registers and the thread pointer follow the task (the
     // kernel never uses them).
@@ -557,102 +553,7 @@ pub(super) fn note_ready(affinity: Option<usize>) {
     }
 }
 
-pub(super) fn irq_save() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        let r: u64;
-        core::arch::asm!("pushfq; pop {r}", r = out(reg) r);
-        r
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        let r: u64;
-        core::arch::asm!(
-            "mrs {r}, daif",
-            r = out(reg) r,
-            options(nomem, nostack, preserves_flags)
-        );
-        r
-    }
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        let r: u64;
-        core::arch::asm!(
-            "csrr {r}, sstatus",
-            r = out(reg) r,
-            options(nomem, nostack, preserves_flags)
-        );
-        r
-    }
-}
-
-pub(super) fn irq_restore(flags: u64) {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        if flags & (1 << 9) != 0 {
-            core::arch::asm!("sti", options(nostack, preserves_flags));
-        } else {
-            core::arch::asm!("cli", options(nostack, preserves_flags));
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("msr daif, {r}", r = in(reg) flags, options(nostack));
-    }
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        if flags & (1 << 1) != 0 {
-            core::arch::asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack));
-        } else {
-            core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nostack));
-        }
-    }
-}
-
-pub(super) fn irq_off() {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("cli", options(nostack, preserves_flags));
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("msr daifset, #3", options(nostack));
-    }
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nostack));
-    }
-}
-
-pub(super) fn irq_on() {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("sti", options(nostack, preserves_flags));
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("msr daifclr, #3", options(nostack));
-    }
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        core::arch::asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack));
-    }
-}
-
-pub(super) fn wait() {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("hlt", options(nostack, preserves_flags));
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("wfi", options(nostack, preserves_flags));
-    }
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        core::arch::asm!("wfi", options(nostack, preserves_flags));
-    }
-}
+pub(super) use crate::arch::{hlt as wait, irq_off, irq_on, irq_restore, irq_save};
 
 /// Per-AP idle stack base stashed before the Limine→idle migrate so bring-up
 /// can finish on the big stack (see [`ap_idle_loop`]).
@@ -677,7 +578,7 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     assert!(!stack.is_null(), "ap idle stack alloc");
     let base = stack as usize;
     let top = base + STACK_SIZE;
-    stamp_stack_cpu(top, logical);
+    crate::arch::stamp_stack_cpu(top, logical);
     if logical < crate::smp::MAX_CPUS {
         AP_IDLE_STACK_BASE[logical].store(base, Ordering::SeqCst);
     }
@@ -703,19 +604,7 @@ fn ap_idle_bringup() {
     let top = base + STACK_SIZE;
     // Current RSP is already on this stack (we got here via task_switch ret).
     // Record that SP so the first schedule away/back saves/restores correctly.
-    let sp_now: usize;
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) sp_now, options(nostack, preserves_flags));
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("mov {}, sp", out(reg) sp_now, options(nostack, preserves_flags));
-    }
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        core::arch::asm!("mv {}, sp", out(reg) sp_now, options(nostack, preserves_flags));
-    }
+    let sp_now: usize = crate::arch::read_sp();
 
     // Install idle Task **in place** (no stack temporary — same discipline as
     // fork_current; a full `Task { .. }` literal is multi-KiB).

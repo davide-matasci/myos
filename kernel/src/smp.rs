@@ -30,7 +30,7 @@ static HW_IDS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static SCHED_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 /// Logical CPU index stashed for arches that use `tp` (riscv) / until hw id works.
 static BOOT_CPU: AtomicUsize = AtomicUsize::new(0);
-static AP_PROGRESS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static AP_PROGRESS: AtomicUsize = AtomicUsize::new(0);
 
 /// TLB shootdown epoch: sender bumps, every CPU (IPI or soft `tlb_service`)
 /// advances `TLB_SEEN[cpu]` after a local flush. Soft service lets remotes
@@ -41,114 +41,34 @@ static TLB_SEEN: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS]
 static TLB_LOCK: Mutex<()> = Mutex::new(());
 
 /// Soft IPI reason bits (riscv software interrupt carries no vector).
-#[cfg(target_arch = "riscv64")]
 pub const IPI_BIT_TLB: u64 = 1;
-#[cfg(target_arch = "riscv64")]
 pub const IPI_BIT_RESCHED: u64 = 2;
-#[cfg(target_arch = "riscv64")]
 static IPI_BITS: AtomicU64 = AtomicU64::new(0);
 
+/// The hardware id of this CPU: from the arch where it can read one, else
+/// the id Limine reported for the logical index in the CPU id register.
 fn hw_cpu_id() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let apic: u32;
-        unsafe {
-            core::arch::asm!(
-                "mov eax, 1",
-                "push rbx",
-                "cpuid",
-                "mov {apic:e}, ebx",
-                "pop rbx",
-                out("eax") _,
-                apic = out(reg) apic,
-                out("ecx") _,
-                out("edx") _,
-                options(preserves_flags),
-            );
-        }
-        u64::from(apic >> 24)
+    if let Some(id) = arch::hw_cpu_id() {
+        return id;
     }
-    #[cfg(target_arch = "aarch64")]
-    {
-        let mpidr: u64;
-        unsafe {
-            core::arch::asm!(
-                "mrs {0}, mpidr_el1",
-                out(reg) mpidr,
-                options(nomem, preserves_flags)
-            );
+    let reg = arch::cpu_id_reg();
+    if reg < MAX_CPUS && ONLINE[reg].load(Ordering::SeqCst) {
+        let id = HW_IDS[reg].load(Ordering::SeqCst);
+        if id != 0 {
+            return id;
         }
-        // Aff3:Aff2:Aff1:Aff0; clear [31:24] (MT/U) — Linux MPIDR_HWID_BITMASK /
-        // Limine MPIDR_AFFINITY_MASK so MRS matches MpInfo::mpidr.
-        mpidr & 0xFF_00FF_FFFF
     }
-    #[cfg(target_arch = "riscv64")]
-    {
-        // S-mode: no mhartid. Logical index lives in `tp` (set at AP entry / BSP init).
-        let tp: usize;
-        unsafe {
-            core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
-        }
-        if tp < MAX_CPUS && ONLINE[tp].load(Ordering::SeqCst) {
-            let id = HW_IDS[tp].load(Ordering::SeqCst);
-            if id != 0 {
-                return id;
-            }
-        }
-        HW_IDS[0].load(Ordering::SeqCst)
-    }
+    HW_IDS[0].load(Ordering::SeqCst)
 }
 
 /// Logical CPU index for the caller (0 = BSP).
 pub fn cpu_id() -> usize {
-    #[cfg(target_arch = "riscv64")]
-    {
-        // `tp` holds the logical hart id in S-mode: set at BSP init / AP
-        // entry, reserved by LLVM (never a temporary), and reloaded from the
-        // kernel-stack footer by the trap vector on every trap from U-mode
-        // (where tp is the user TLS pointer). The old "single ONLINE hart →
-        // BSP" shortcut broke AP bring-up (an AP is not ONLINE until its idle
-        // task exists, yet needs its own id for its idle stack).
-        let tp: usize;
-        unsafe {
-            core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
-        }
-        if tp < MAX_CPUS {
-            return tp;
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        let tpidr: usize;
-        unsafe {
-            core::arch::asm!(
-                "mrs {0}, tpidr_el1",
-                out(reg) tpidr,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
-        if tpidr < MAX_CPUS {
-            return tpidr;
-        }
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        // Logical id written to IA32_TSC_AUX in interrupt init / AP entry.
-        // Use RDMSR (not RDTSCP) — qemu64 may lack the RDTSCP feature.
-        let lo: u32;
-        unsafe {
-            core::arch::asm!(
-                "rdmsr",
-                in("ecx") 0xC000_0103u32,
-                out("eax") lo,
-                out("edx") _,
-                options(nostack, preserves_flags),
-            );
-        }
-        let id = lo as usize;
-        if id < MAX_CPUS {
-            return id;
-        }
+    // The per-CPU id register (`tp` / `TPIDR_EL1` / `IA32_TSC_AUX`) holds
+    // the logical index once `set_cpu_id_reg` ran at BSP init / AP entry;
+    // before that it is out of range and the hardware id is matched below.
+    let reg = arch::cpu_id_reg();
+    if reg < MAX_CPUS {
+        return reg;
     }
     let hw = hw_cpu_id();
     for i in 0..MAX_CPUS {
@@ -159,27 +79,11 @@ pub fn cpu_id() -> usize {
     BOOT_CPU.load(Ordering::SeqCst)
 }
 
-/// Safety net before entering U-mode: an out-of-range `tp` (which the trap
-/// vector would otherwise re-derive from the stack footer anyway) is reset to
-/// the BSP id. With `tp` reserved by LLVM and reloaded on every U-mode trap
-/// this should never fire.
-#[cfg(target_arch = "riscv64")]
-pub fn sync_tp_for_kernel() {
-    let tp: usize;
-    unsafe {
-        core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags));
-    }
-    if tp < MAX_CPUS {
-        return;
-    }
-    let id = BOOT_CPU.load(Ordering::SeqCst);
-    unsafe {
-        core::arch::asm!("mv tp, {0}", in(reg) id, options(nomem, nostack, preserves_flags));
-    }
+/// The BSP's logical index (0), for `arch::sync_cpu_id_reg`.
+#[allow(dead_code)]
+pub fn boot_cpu() -> usize {
+    BOOT_CPU.load(Ordering::SeqCst)
 }
-
-#[cfg(not(target_arch = "riscv64"))]
-pub fn sync_tp_for_kernel() {}
 
 pub fn cpu_online(i: usize) -> bool {
     i < MAX_CPUS && ONLINE[i].load(Ordering::SeqCst)
@@ -219,52 +123,34 @@ pub fn note_schedule() {
 }
 
 
-#[cfg(target_arch = "riscv64")]
+#[allow(dead_code)]
 pub fn ipi_mark_tlb() {
     IPI_BITS.fetch_or(IPI_BIT_TLB, Ordering::SeqCst);
 }
 
-#[cfg(target_arch = "riscv64")]
+#[allow(dead_code)]
 pub fn ipi_mark_resched() {
     IPI_BITS.fetch_or(IPI_BIT_RESCHED, Ordering::SeqCst);
 }
 
-#[cfg(target_arch = "riscv64")]
+#[allow(dead_code)]
 pub fn ipi_is_tlb() -> bool {
     IPI_BITS.load(Ordering::SeqCst) & IPI_BIT_TLB != 0
 }
 
-#[cfg(target_arch = "riscv64")]
+#[allow(dead_code)]
 pub fn ipi_is_resched() -> bool {
     IPI_BITS.load(Ordering::SeqCst) & IPI_BIT_RESCHED != 0
 }
 
-#[cfg(target_arch = "riscv64")]
+#[allow(dead_code)]
 fn ipi_clear_handled() {
     // Clear both; senders re-set before each blast. Slightly coarse but safe.
     IPI_BITS.store(0, Ordering::SeqCst);
 }
 
 fn flush_tlb_local() {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!(
-            "mov {cr3}, cr3",
-            "mov cr3, {cr3}",
-            cr3 = out(reg) _,
-            options(nostack, preserves_flags),
-        );
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("dsb ishst", options(nostack));
-        core::arch::asm!("tlbi vmalle1is", options(nostack));
-        core::arch::asm!("dsb ish; isb", options(nostack));
-    }
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        core::arch::asm!("sfence.vma zero, zero", options(nostack));
-    }
+    arch::flush_tlb_local();
 }
 
 /// Flush this CPU's TLB if a shootdown epoch is pending. Safe with IF off —
@@ -287,10 +173,7 @@ pub fn tlb_service() {
             Some(epoch)
         }
     });
-    #[cfg(target_arch = "riscv64")]
-    {
-        IPI_BITS.fetch_and(!IPI_BIT_TLB, Ordering::SeqCst);
-    }
+    IPI_BITS.fetch_and(!IPI_BIT_TLB, Ordering::SeqCst);
 }
 
 /// IPI handler entry: same as soft service (idempotent on epoch).
@@ -335,7 +218,6 @@ pub fn tlb_shootdown() {
     };
     let epoch = TLB_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
     tlb_service();
-    #[cfg(target_arch = "riscv64")]
     ipi_mark_tlb();
     arch::ipi_tlb_shootdown();
     let mut spins = 0u32;
@@ -345,7 +227,6 @@ pub fn tlb_shootdown() {
         core::hint::spin_loop();
         spins += 1;
     }
-    #[cfg(target_arch = "riscv64")]
     ipi_clear_handled();
 }
 
@@ -354,7 +235,6 @@ pub fn kick_cpu(cpu: usize) {
     if cpu >= MAX_CPUS || !ONLINE[cpu].load(Ordering::SeqCst) || cpu == cpu_id() {
         return;
     }
-    #[cfg(target_arch = "riscv64")]
     ipi_mark_resched();
     arch::ipi_reschedule_cpu(cpu);
 }
@@ -364,7 +244,6 @@ pub fn kick_cpus() {
     if online_count() <= 1 {
         return;
     }
-    #[cfg(target_arch = "riscv64")]
     ipi_mark_resched();
     arch::ipi_reschedule();
 }
@@ -372,20 +251,7 @@ pub fn kick_cpus() {
 pub fn cpuinfo_text() -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::new();
     let n = online_count();
-    let arch_name = {
-        #[cfg(target_arch = "x86_64")]
-        {
-            "x86_64"
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            "aarch64"
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            "riscv64"
-        }
-    };
+    let arch_name = arch::NAME;
     push_str(&mut out, "processor_count: ");
     push_dec(&mut out, n as u64);
     push_str(&mut out, "\narch: ");
@@ -464,46 +330,18 @@ fn push_hex(out: &mut alloc::vec::Vec<u8>, mut v: u64) {
 }
 
 /// Linker-relocated AP entry pointer (fn-item casts are unreliable at runtime).
-static AP_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_ap_entry;
+static AP_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = arch::ap_entry;
 
-/// Quiet WFI park for riscv Limine APs (never marked ONLINE).
-#[cfg(target_arch = "riscv64")]
-static AP_PARK_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_ap_park;
-
-/// riscv64: park APs in a WFI loop instead of bringing them online (see
-/// `init`). Off: secondary harts join the scheduler like the other arches.
-/// The U-mode trap entry reloads `tp` from the kernel-stack footer, so
-/// `cpu_id()` is right on every hart; the `sepc=0` corruption that forced the
-/// park was the trap vector's t0 clobber (fixed in #179).
-#[cfg(target_arch = "riscv64")]
-const RISCV_PARK_APS: bool = false;
 
 /// Record BSP and bring secondary CPUs online via Limine MP.
 pub fn init() {
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        core::arch::asm!("mv tp, zero", options(nomem, nostack, preserves_flags));
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("msr tpidr_el1, xzr", options(nomem, nostack));
-    }
+    arch::set_cpu_id_reg(0);
 
-    let hw = {
-        #[cfg(target_arch = "riscv64")]
-        {
-            // Prefer Limine BSP hartid when available.
-            if let Some(resp) = limine_boot::MP.response() {
-                resp.bsp_hartid
-            } else {
-                0
-            }
-        }
-        #[cfg(not(target_arch = "riscv64"))]
-        {
-            hw_cpu_id()
-        }
-    };
+    // Where the arch cannot read its own hardware id (riscv64 S-mode), take
+    // the BSP id Limine reports.
+    let hw = arch::hw_cpu_id()
+        .or_else(|| limine_boot::MP.response().map(arch::mp_bsp_id))
+        .unwrap_or(0);
     HW_IDS[0].store(hw, Ordering::SeqCst);
     ONLINE[0].store(true, Ordering::SeqCst);
     TLB_SEEN[0].store(TLB_EPOCH.load(Ordering::SeqCst), Ordering::SeqCst);
@@ -527,67 +365,10 @@ pub fn init() {
         return;
     }
 
-    // aarch64: real Limine goto_address bring-up (see bootstrap + naked entry
-    // below). Do not park APs — TTBR0 device map is synced in ap_init.
-
-    // riscv64: dual-hart DTB is required (OpenSBI BSP hartid=1 otherwise
-    // Limine-panics). Full AP bring-up (ONLINE + ap_idle_loop) hung mid-`/ok`
-    // (PR #150). Leaving APs in Limine's busy-spin still hit the ripgrep
-    // `sepc=0` IPF under `-smp 2`. Hand each AP a SIE-masked WFI loop in
-    // myos text *without* marking ONLINE — quiet park, no scheduler/IPI.
-    // The full bring-up below stays compiled for riscv64 so it can be retried
-    // by flipping RISCV_PARK_APS.
-    #[cfg(target_arch = "riscv64")]
-    if RISCV_PARK_APS {
-        let mut parked = 0usize;
-        for cpu in mp_cpus.iter() {
-            let is_bsp = cpu.hartid == resp.bsp_hartid;
-            if is_bsp {
-                continue;
-            }
-            if parked + 1 >= MAX_CPUS {
-                break;
-            }
-            let logical = parked + 1;
-            HW_IDS[logical].store(cpu.hartid, Ordering::SeqCst);
-            {
-                let mut guard = CPUS.lock();
-                guard[logical] = CpuInfo {
-                    online: false,
-                    hw_id: cpu.hartid,
-                };
-            }
-            core::sync::atomic::fence(Ordering::SeqCst);
-            // extra_argument is ignored by the park stub; pass logical for symmetry.
-            cpu.bootstrap(AP_PARK_ENTRY_PTR, logical as u64);
-            parked += 1;
-        }
-        // Wait until each AP has finished quieting (sie/stimecmp) and entered
-        // the WFI loop — AP_PROGRESS 1 = entered stub, 2 = interrupts retired.
-        // Continuing into userspace while an AP still busy-spins on pending STIP
-        // is exactly the Limine-spin contention #151 meant to kill.
-        for _ in 0..2_000_000 {
-            if AP_PROGRESS.load(Ordering::SeqCst) >= 2 {
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        console::status_ok(&alloc::format!(
-            "smp: 1 CPU ({} wfi-parked)",
-            parked
-        ));
-        return;
-    }
-
     let mut next = 1usize;
     for cpu in mp_cpus.iter() {
-        #[cfg(target_arch = "x86_64")]
-        let (is_bsp, hw_id) = (cpu.lapic_id == resp.bsp_lapic_id, u64::from(cpu.lapic_id));
-        #[cfg(target_arch = "aarch64")]
-        let (is_bsp, hw_id) = (cpu.mpidr == resp.bsp_mpidr, cpu.mpidr);
-        #[cfg(target_arch = "riscv64")]
-        let (is_bsp, hw_id) = (cpu.hartid == resp.bsp_hartid, cpu.hartid);
-        if is_bsp {
+        let hw_id = arch::mp_cpu_id(cpu);
+        if hw_id == arch::mp_bsp_id(resp) {
             continue;
         }
         if next >= MAX_CPUS {
@@ -603,20 +384,7 @@ pub fn init() {
             };
         }
         core::sync::atomic::fence(Ordering::SeqCst);
-        #[cfg(target_arch = "aarch64")]
-        {
-            // Limine 12.x aarch64 trampoline parks on `ldar` of goto_addr at
-            // MpInfo+24, then `eret`s to that VA with X0=&MpInfo. Publish with
-            // STLR (matches LDAR) and DC CVAC the line to PoC — required if an
-            // AP briefly ran with D-cache off during trampoline bring-up.
-            // Use a raw code address (not an fn-item temporary) so the stored
-            // pointer is the higher-half `myos_smp_ap_entry` symbol.
-            aarch64_publish_goto(*cpu, AP_ENTRY_PTR as *const () as usize, logical as u64);
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            cpu.bootstrap(AP_ENTRY_PTR, logical as u64);
-        }
+        arch::ap_bootstrap(cpu, AP_ENTRY_PTR, logical as u64);
         next += 1;
     }
 
@@ -628,13 +396,8 @@ pub fn init() {
     while online_count() < want && spins < max_spins {
         core::hint::spin_loop();
         spins += 1;
-        #[cfg(target_arch = "aarch64")]
-        {
-            if spins % 50_000 == 0 {
-                unsafe {
-                    core::arch::asm!("dsb ishst; sev; yield", options(nostack));
-                }
-            }
+        if spins % 50_000 == 0 {
+            arch::ap_wait_poke();
         }
     }
     let got = online_count();
@@ -645,90 +408,14 @@ pub fn init() {
         ));
     }
     console::status_ok(&alloc::format!("smp: {got} CPUs online"));
-    #[cfg(target_arch = "riscv64")]
     if got > 1 {
-        crate::arch::enable_ipi();
+        arch::enable_ipi();
     }
 }
 
-/// SIE-masked WFI forever. Used when we must silence Limine's AP busy-spin
-/// without joining the scheduler (ONLINE stays false — no IPI / sscratch races).
-#[cfg(target_arch = "riscv64")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn myos_smp_ap_park(_info: &limine::mp::MpInfo) -> ! {
-    AP_PROGRESS.store(1, Ordering::SeqCst);
-    unsafe {
-        // Quiet park must make WFI *sleep*, not busy-spin. RISC-V WFI is allowed
-        // to complete whenever an interrupt is *pending*, even with SIE clear.
-        // Limine/OpenSBI often leave STIE + a pending timer (STIP) on secondary
-        // harts — clearing only sstatus.SIE then turns this loop into another
-        // satp-visible RAM hammer, which reopens the ripgrep sepc=0 expand flake
-        // under QEMU -smp 2 (seen again on PR #153 tip after mm site tags).
-        // Retire enables, push stimecmp to infinity (sstc), and clear SSIP.
-        core::arch::asm!(
-            "csrc sstatus, {sie_bit}",
-            "csrw sie, zero",
-            "csrw stimecmp, {far}",
-            "csrc sip, {ssip}",
-            sie_bit = in(reg) 1u64 << 1,
-            far = in(reg) u64::MAX,
-            ssip = in(reg) 1u64 << 1,
-            options(nostack),
-        );
-    }
-    // Publish "quiet" so BSP does not enter userspace while we still drain STIP.
-    AP_PROGRESS.store(2, Ordering::SeqCst);
-    loop {
-        unsafe { core::arch::asm!("wfi", options(nostack, preserves_flags)) };
-    }
-}
-
-/// Limine aarch64 trampoline `eret`s here with X0=&MpInfo, SP=Limine stack,
-/// DAIF masked, CPACR.FPEN=0, and VBAR cleared. A naked stub marks progress
-/// and enables FP before any Rust prologue can touch NEON or the stack frame.
-#[cfg(target_arch = "aarch64")]
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn myos_smp_ap_entry(info: &limine::mp::MpInfo) -> ! {
-    core::arch::naked_asm!(
-        // x0 = &MpInfo (must preserve into rust entry)
-        "adrp x1, {flag}",
-        "add x1, x1, :lo12:{flag}",
-        "mov x2, #1",
-        "stlr x2, [x1]",
-        // Enable FP/SIMD (Limine left CPACR/CPTR clear)
-        "mrs x2, cpacr_el1",
-        "orr x2, x2, #(3 << 20)",
-        "msr cpacr_el1, x2",
-        "isb",
-        "b {rust}",
-        flag = sym AP_PROGRESS,
-        rust = sym myos_smp_ap_entry_rust,
-    );
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn myos_smp_ap_entry(info: &limine::mp::MpInfo) -> ! {
-    unsafe { myos_smp_ap_entry_rust(info) }
-}
-
-#[unsafe(no_mangle)]
-unsafe extern "C" fn myos_smp_ap_entry_rust(info: &limine::mp::MpInfo) -> ! {
-    AP_PROGRESS.store(1, Ordering::SeqCst);
-    // Mask IRQs until this CPU's IDT/timer are programmed.
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("cli", options(nostack, preserves_flags));
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("msr daifset, #0xf", options(nostack));
-    }
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        core::arch::asm!("csrc sstatus, {}", in(reg) 1 << 1, options(nostack));
-    }
+/// Rust side of AP entry: `arch::ap_entry` (the symbol Limine jumps to)
+/// masks interrupts and lands here with Limine's `MpInfo`.
+pub(crate) unsafe extern "C" fn ap_entry_rust(info: &limine::mp::MpInfo) -> ! {
     AP_PROGRESS.store(2, Ordering::SeqCst);
 
     let logical = info.extra_argument() as usize;
@@ -739,22 +426,7 @@ unsafe extern "C" fn myos_smp_ap_entry_rust(info: &limine::mp::MpInfo) -> ! {
         }
     }
 
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        core::arch::asm!(
-            "mv tp, {0}",
-            in(reg) logical,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!(
-            "msr tpidr_el1, {0}",
-            in(reg) logical,
-            options(nomem, nostack)
-        );
-    }
+    arch::set_cpu_id_reg(logical);
 
     AP_PROGRESS.store(10, Ordering::SeqCst);
     crate::arch::ap_init(logical);
@@ -764,30 +436,6 @@ unsafe extern "C" fn myos_smp_ap_entry_rust(info: &limine::mp::MpInfo) -> ! {
     core::sync::atomic::fence(Ordering::SeqCst);
 
     crate::task::ap_idle_loop(logical)
-}
-
-/// Publish `goto_address` the way Limine's aarch64 trampoline observes it.
-#[cfg(target_arch = "aarch64")]
-fn aarch64_publish_goto(cpu: &limine::mp::MpInfo, entry: usize, extra: u64) {
-    // Layout: processor_id(4)+res(4)+mpidr(8)+stack/reserved(8)+goto(8)+extra(8)
-    let base = core::ptr::from_ref(cpu) as usize;
-    let extra_ptr = (base + 32) as *mut u64;
-    let goto_ptr = (base + 24) as *mut usize;
-    unsafe {
-        // extra_argument first (Relaxed), then goto with STLR.
-        core::ptr::write_volatile(extra_ptr, extra);
-        core::arch::asm!(
-            "stlr {entry}, [{goto}]",
-            "dc cvac, {base}",
-            "dc cvac, {goto}",
-            "dsb ish",
-            "sev",
-            entry = in(reg) entry,
-            goto = in(reg) goto_ptr,
-            base = in(reg) base,
-            options(nostack),
-        );
-    }
 }
 
 pub fn mark_running(logical: usize) {

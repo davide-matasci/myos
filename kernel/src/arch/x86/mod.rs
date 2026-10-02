@@ -10,6 +10,20 @@ mod serial;
 mod virtio_blk;
 pub use serial::SerialPort;
 
+pub mod clock;
+mod cpu;
+pub use cpu::*;
+pub mod elf;
+mod exception;
+pub mod fpu;
+pub mod switch;
+pub mod tp;
+mod smp;
+pub use smp::*;
+pub mod upaging;
+mod user;
+pub use user::*;
+
 pub fn serial_read_byte() -> Option<u8> {
     serial::read_byte()
 }
@@ -112,4 +126,9 @@ pub fn halt() -> ! {
             core::arch::asm!("hlt", options(nostack, preserves_flags));
         }
     }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn _start() -> ! {
+    crate::kernel_main()
 }

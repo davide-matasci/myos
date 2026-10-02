@@ -161,7 +161,7 @@ pub fn init() {
     idt.load();
 
     wrmsr(IA32_TSC_AUX, 0);
-    crate::user::load_percpu_gs(0);
+    super::user::load_percpu_gs(0);
 
     let mut base = rdmsr(IA32_APIC_BASE);
     base |= APIC_EN;
@@ -236,7 +236,7 @@ pub fn ap_init(logical: usize) {
     }
     super::gdt::load_for_ap(logical);
     wrmsr(IA32_TSC_AUX, logical as u64);
-    crate::user::load_percpu_gs(logical);
+    super::user::load_percpu_gs(logical);
 
     let mut base = rdmsr(IA32_APIC_BASE);
     base |= APIC_EN;
@@ -355,7 +355,7 @@ fn read_cr2() -> u64 {
 }
 
 extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _code: u64) -> ! {
-    crate::exception::x86_double_fault(
+    super::exception::x86_double_fault(
         frame.instruction_pointer.as_u64(),
         frame.stack_pointer.as_u64(),
     );
@@ -376,7 +376,7 @@ extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, code: u
             );
         }
     }
-    crate::exception::x86_general_protection(
+    super::exception::x86_general_protection(
         frame.instruction_pointer.as_u64(),
         frame.stack_pointer.as_u64(),
         code,
@@ -386,7 +386,7 @@ extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, code: u
 }
 
 extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFaultErrorCode) {
-    crate::exception::x86_page_fault(
+    super::exception::x86_page_fault(
         read_cr2(),
         frame.instruction_pointer.as_u64(),
         frame.stack_pointer.as_u64(),

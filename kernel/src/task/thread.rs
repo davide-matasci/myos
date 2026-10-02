@@ -20,11 +20,10 @@ use super::*;
 /// Start a thread in the current process that enters user mode with
 /// `regs`, with thread pointer `tls` (`None`: the caller's). Returns its tid.
 pub fn spawn_thread(regs: UserRegs, tls: Option<u64>) -> Option<usize> {
-    #[cfg(target_arch = "riscv64")]
     let regs = {
         let mut r = regs;
         if let Some(v) = tls {
-            r.frame[4] = v; // riscv64's thread pointer is the register `tp`
+            crate::arch::regs_set_tls(&mut r, v);
         }
         r
     };

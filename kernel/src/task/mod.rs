@@ -32,20 +32,7 @@ use crate::console;
 use crate::pipe;
 use crate::user;
 
-#[cfg(target_arch = "x86_64")]
-mod switch_x86;
-#[cfg(target_arch = "x86_64")]
-use switch_x86::{seed_stack, task_switch};
-
-#[cfg(target_arch = "aarch64")]
-mod switch_aarch64;
-#[cfg(target_arch = "aarch64")]
-use switch_aarch64::{seed_stack, task_switch};
-
-#[cfg(target_arch = "riscv64")]
-mod switch_riscv64;
-#[cfg(target_arch = "riscv64")]
-use switch_riscv64::{seed_stack, task_switch};
+use crate::arch::switch::{seed_stack, task_switch};
 
 pub const MAX_TASKS: usize = 64;
 /// Exec from a syscall runs `load_user_elf` / `copy_user_aspace` on the task
@@ -61,22 +48,6 @@ pub const STACK_SIZE: usize = 64 * 1024;
 /// larger programs; libgloss tracks per-fd flags up to `MYOS_MAX_FDS`.
 const MAX_FDS: usize = 64;
 
-/// Stamp the owning logical CPU id at the base of a kernel stack so U-mode
-/// trap entry can reload `tp` without trusting user TLS (see riscv64 trap
-/// vector). Word 0 of the stack allocation is reserved for this footer.
-#[cfg(target_arch = "riscv64")]
-pub fn stamp_stack_cpu(kstack_top: usize, cpu: usize) {
-    if kstack_top < STACK_SIZE {
-        return;
-    }
-    let cpu = cpu.min(crate::smp::MAX_CPUS - 1);
-    unsafe {
-        ((kstack_top - STACK_SIZE) as *mut usize).write(cpu);
-    }
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-pub fn stamp_stack_cpu(_kstack_top: usize, _cpu: usize) {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -92,38 +63,8 @@ enum State {
 /// The user registers a new task starts with: a forked child resumes after
 /// the parent's syscall with the parent's registers (result 0); a new thread
 /// at its entry or, for a Linux `clone`, like a forked child on its own
-/// stack (built by `user::caller_regs`).
-/// `#[repr(C)]` is required: `enter_regs_x86` historically used fixed
-/// offsets into this struct; keep a stable layout even if that path changes.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct UserRegs {
-    pub rip: usize,
-    pub rsp: usize,
-    #[cfg(target_arch = "x86_64")]
-    pub rbx: u64,
-    #[cfg(target_arch = "x86_64")]
-    pub rbp: u64,
-    #[cfg(target_arch = "x86_64")]
-    pub r12: u64,
-    #[cfg(target_arch = "x86_64")]
-    pub r13: u64,
-    #[cfg(target_arch = "x86_64")]
-    pub r14: u64,
-    #[cfg(target_arch = "x86_64")]
-    pub r15: u64,
-    /// The argument registers rdi, rsi, rdx, r10, r8, r9 (a syscall
-    /// preserves them; rax, the result, starts at 0; rcx and r11 are
-    /// clobbered by `sysret` anyway).
-    #[cfg(target_arch = "x86_64")]
-    pub args: [u64; 6],
-    /// Full `lower_sync` frame (x0..x30, elr, spsr, sp_el0). Index 31 unused.
-    #[cfg(target_arch = "aarch64")]
-    pub frame: [u64; 36],
-    /// Trap frame (x0..x31, sepc, sstatus, user sp). Index 35 unused.
-    #[cfg(target_arch = "riscv64")]
-    pub frame: [u64; 36],
-}
+/// stack (built by `user::caller_regs`). Defined per arch.
+pub use crate::arch::UserRegs;
 
 const fn root_cwd_buf() -> [u8; 256] {
     let mut c = [0u8; 256];
@@ -467,7 +408,7 @@ pub fn current_aspace() -> u64 {
 }
 
 /// Kernel stack top for the running task (riscv64 sscratch / x86 rsp0).
-#[cfg(not(target_arch = "aarch64"))]
+#[allow(dead_code)]
 pub fn current_kernel_stack_top() -> usize {
     let flags = irq_save();
     irq_off();

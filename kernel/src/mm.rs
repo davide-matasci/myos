@@ -50,25 +50,7 @@ pub static FRAME_SITE_COUNTS: [AtomicU64; 6] = [
 /// `page` must point at a writable, 8-byte-aligned 4 KiB page.
 #[inline(always)]
 pub unsafe fn zero_page(page: *mut u8) {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!(
-            "rep stosq",
-            inout("rcx") (PAGE / 8) as usize => _,
-            inout("rdi") page => _,
-            in("rax") 0u64,
-            options(nostack, preserves_flags),
-        );
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let w = page as *mut u64;
-        let mut i = 0;
-        while i < (PAGE / 8) as usize {
-            unsafe { w.add(i).write(0) };
-            i += 1;
-        }
-    }
+    unsafe { crate::arch::zero_page(page) }
 }
 
 /// Allocate one frame and attribute it to a leak-triage call site.

@@ -45,28 +45,6 @@ const MSG_OK: &[u8] = b"fat-msg\n";
 static TASK_A_DONE: AtomicBool = AtomicBool::new(false);
 static TASK_B_DONE: AtomicBool = AtomicBool::new(false);
 
-#[cfg(target_arch = "riscv64")]
-core::arch::global_asm!(
-    r#"
-    .section .text._start,"ax",@progbits
-    .globl _start
-_start:
-    call {main}
-    "#,
-    main = sym kernel_main_riscv64,
-);
-
-#[cfg(target_arch = "riscv64")]
-#[unsafe(no_mangle)]
-extern "C" fn kernel_main_riscv64() -> ! {
-    kernel_main()
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-#[unsafe(no_mangle)]
-extern "C" fn _start() -> ! {
-    kernel_main()
-}
 
 
 fn fb_geom_msg(buf: &mut [u8], w: usize, h: usize) -> usize {
@@ -103,7 +81,8 @@ fn push_usize(buf: &mut [u8], mut i: usize, mut v: usize) -> usize {
     i
 }
 
-fn kernel_main() -> ! {
+/// Entered from `arch::_start` once Limine has handed over.
+pub(crate) fn kernel_main() -> ! {
     arch::early_init();
 
     let mut fb_w = 0usize;
@@ -187,16 +166,10 @@ fn kernel_main() -> ! {
     user::init();
     input::init();
     if input::keyboard_present() {
-        #[cfg(target_arch = "x86_64")]
-        console::write_info(
-            "\nstdin: PS/2 keyboard + serial (COM1 38400 8N1). \
-             Output is mirrored to the screen.\n\n",
-        );
-        #[cfg(target_arch = "aarch64")]
-        console::write_info(
-            "\nstdin: virtio keyboard + serial (PL011). \
-             Output is mirrored to the screen.\n\n",
-        );
+        console::write_info(&alloc::format!(
+            "\nstdin: {} + serial. Output is mirrored to the screen.\n\n",
+            crate::arch::KEYBOARD_NAME
+        ));
     } else {
         console::write_info(
             "\nstdin: serial (x86 COM1 38400 8N1, AArch64 PL011). \

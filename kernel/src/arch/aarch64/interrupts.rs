@@ -565,7 +565,7 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
             &alloc::format!("ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x} sp_el0={sp_el0:#x}"),
         );
     }
-    crate::exception::aarch64_sync_abort("user sync abort", esr, elr, far, Some(sp_el0));
+    super::exception::aarch64_sync_abort("user sync abort", esr, elr, far, Some(sp_el0));
 }
 
 fn read_esr_elr_far() -> (u64, u64, u64) {
@@ -589,13 +589,13 @@ fn read_esr_elr_far() -> (u64, u64, u64) {
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_sync_handler() -> ! {
     let (esr, elr, far) = read_esr_elr_far();
-    crate::exception::aarch64_sync_abort("kernel sync abort", esr, elr, far, None);
+    super::exception::aarch64_sync_abort("kernel sync abort", esr, elr, far, None);
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_unhandled_exception() -> ! {
     let (esr, elr, far) = read_esr_elr_far();
-    crate::exception::aarch64_sync_abort("unhandled exception", esr, elr, far, None);
+    super::exception::aarch64_sync_abort("unhandled exception", esr, elr, far, None);
 }
 
 fn read32(addr: usize) -> u32 {
