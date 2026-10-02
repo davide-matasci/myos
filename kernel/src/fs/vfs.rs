@@ -274,6 +274,11 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
         return None;
     }
     let (idx, rel) = resolve_index(path)?;
+    // An open file keeps its mount-relative path in the vnode: refuse what
+    // does not fit rather than open a truncated path.
+    if rel.len() > Vnode::PATH_CAP {
+        return None;
+    }
 
     let acc = flags & O_ACCMODE;
     if acc > O_RDWR {
@@ -565,6 +570,11 @@ pub fn rename(old: &str, new: &str) -> bool {
         return false;
     }
     backend_rename(idx_o, rel_o, rel_n)
+}
+
+/// Whether path resolution has to look for symlinks.
+pub fn symlinks_possible() -> bool {
+    super::tmpfs::has_symlinks()
 }
 
 /// Create symlink at `linkpath` with contents `target`.
@@ -1074,6 +1084,9 @@ fn normalize_path(path: &str) -> &str {
     path.trim_start_matches('/')
 }
 
+/// Longest absolute path the VFS resolves (as the syscalls' `MAX_PATH`).
+pub const PATH_MAX: usize = 256;
+
 /// Join `cwd` (absolute) with `path` (absolute or relative) into `out`.
 ///
 /// Returns the length of the canonical absolute path written to `out`, or
@@ -1089,7 +1102,7 @@ pub fn resolve_against_cwd(cwd: &str, path: &str, out: &mut [u8]) -> Option<usiz
     }
 
     // Build an absolute candidate before canonicalizing.
-    let mut raw = [0u8; 128];
+    let mut raw = [0u8; PATH_MAX];
     let mut n = 0usize;
     let push = |raw: &mut [u8], n: &mut usize, b: u8| -> bool {
         if *n >= raw.len() {
@@ -1143,11 +1156,11 @@ pub fn resolve_against_cwd(cwd: &str, path: &str, out: &mut [u8]) -> Option<usiz
 
 fn canonicalize_absolute(path: &str, out: &mut [u8]) -> Option<usize> {
     // Stack of component byte ranges into a scratch buffer.
-    let mut scratch = [0u8; 128];
+    let mut scratch = [0u8; PATH_MAX];
     let mut sn = 0usize;
     // component starts in scratch
-    let mut starts = [0usize; 32];
-    let mut lens = [0usize; 32];
+    let mut starts = [0usize; 64];
+    let mut lens = [0usize; 64];
     let mut depth = 0usize;
 
     for comp in path.split('/') {

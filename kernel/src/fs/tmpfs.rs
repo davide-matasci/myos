@@ -5,6 +5,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::fs::StatInfo;
@@ -274,8 +275,13 @@ pub fn unlink(name: &str) -> bool {
         return false;
     };
     match entries[i].kind {
-        Kind::File(_) | Kind::Symlink(_) => {
+        Kind::File(_) => {
             entries.remove(i);
+            true
+        }
+        Kind::Symlink(_) => {
+            entries.remove(i);
+            SYMLINKS.fetch_sub(1, Ordering::Relaxed);
             true
         }
         Kind::Fifo(id) => {
@@ -386,11 +392,22 @@ pub fn symlink(target: &str, linkpath: &str) -> bool {
         path: String::from(linkpath),
         kind: Kind::Symlink(String::from(target)),
     });
+    SYMLINKS.fetch_add(1, Ordering::Relaxed);
     true
 }
 
+/// Symlinks currently in the tmpfs (a rename over one may leave this too
+/// high, which only costs lookups).
+static SYMLINKS: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether the tmpfs holds any symlink (the only filesystem that can): path
+/// resolution skips its per-component symlink checks otherwise.
+pub fn has_symlinks() -> bool {
+    SYMLINKS.load(Ordering::Relaxed) != 0
+}
+
 pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
-    if !valid_rel_path(path) {
+    if !has_symlinks() || !valid_rel_path(path) {
         return None;
     }
     let entries = ENTRIES.lock();
