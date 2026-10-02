@@ -1,4 +1,9 @@
-/* Copyright 2005 Shaun Jackman — myos libgloss copy of newlib unix/basename.c */
+/* Copyright 2005 Shaun Jackman
+ * Permission to use, copy, modify, and distribute this software
+ * is freely granted, provided that this notice is preserved.
+ *
+ * myos libgloss copy of newlib's libc/unix/basename.c.
+ */
 
 #include <libgen.h>
 #include <string.h>

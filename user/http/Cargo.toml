@@ -5,6 +5,7 @@ name = "http"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT OR Apache-2.0"
 description = "curl-like HTTP/HTTPS GET via Plan 9 /net/tcp + user/tls (mbedtls)."
 
 [[bin]]

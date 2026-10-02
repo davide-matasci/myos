@@ -1,6 +1,11 @@
-/* Copyright 2005 Shaun Jackman — myos libgloss copy of newlib unix/dirname.c
- * Extended to collapse trailing slashes on the remaining directory so
- * dirname("/foo//bar//") yields "/foo" (POSIX / os-test), not "/foo/". */
+/* Copyright 2005 Shaun Jackman
+ * Permission to use, copy, modify, and distribute this software
+ * is freely granted, provided that this notice is preserved.
+ *
+ * myos libgloss copy of newlib's libc/unix/dirname.c, extended to collapse
+ * trailing slashes on the remaining directory so dirname("/foo//bar//")
+ * yields "/foo" (POSIX / os-test), not "/foo/".
+ */
 #include <libgen.h>
 #include <string.h>
 

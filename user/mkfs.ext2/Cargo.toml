@@ -5,6 +5,7 @@ name = "mkfs-ext2"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT OR Apache-2.0"
 description = "Userspace mkfs.ext2: format a block device as rev1 1KiB-block ext2"
 
 [[bin]]

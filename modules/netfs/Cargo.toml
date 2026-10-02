@@ -5,6 +5,7 @@ name = "netfs"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT OR Apache-2.0"
 description = "Plan 9 /net kernel module: vfs_mount at /net plus /dev/netd channel to netd."
 
 [[bin]]
