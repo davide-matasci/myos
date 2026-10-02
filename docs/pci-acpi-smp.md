@@ -12,7 +12,33 @@
 | Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, shared ready set |
 | Proc exporters | `kernel/src/fs/procfs.rs` | Built-ins: `mounts`, `cpuinfo`; dynamic via `proc_register` ABI |
 
-ABI version: **10** (`proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
+ABI version: **11** (`pci_irq_enable`, `wake_any`, `wait_seq`, `block_until`, `monotonic_ns` for device interrupts and blocking waits; 10: `proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
+
+## Device interrupts
+
+`kernel/src/irq.rs` keeps one handler per interrupt number and `pci_irq_setup`
+picks the delivery mechanism per arch, so a module only asks for "this PCI
+function's interrupt" (`KernelApi::pci_irq_enable`) and gets told whether to
+use an MSI-X table entry or the INTx line:
+
+| Arch | Mechanism | Numbering |
+|------|-----------|-----------|
+| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`MSI_VECTOR_BASE` 48 + n, 8 vectors; no IOAPIC / PIRQ routing) | vector |
+| aarch64 | INTx → GICv2 SPI, level, priority 0x80, CPU 0 (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
+| riscv64 | INTx → PLIC source for the boot hart's S-mode context (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
+
+Handlers run in interrupt context with interrupts masked on CPU 0. On INTx
+the handler must read the device's ISR register so the level line deasserts
+before the GIC/PLIC EOI. `/proc/interrupts` lists counts per registered
+interrupt plus spurious ones.
+
+virtio-net uses this for its RX queue: `AVAIL_F_NO_INTERRUPT` is cleared on
+the RX ring only, the handler acks the ISR and calls `wake_any`, and the
+`MYOS_IOCTL_NET_WAIT_RX` ioctl blocks `netd` (sequence-checked against the
+used ring, so a frame that lands between the check and the sleep is not
+missed) until a frame, another kernel event or a timeout. `netd` falls back
+to its 2–10 ms timed polling when the ioctl reports no interrupt (poll-mode
+device). Reads of `/dev/netN` stay non-blocking.
 
 ## AML opcode set (custom interpreter — not ACPICA)
 

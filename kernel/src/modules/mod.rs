@@ -49,6 +49,11 @@ static API: KernelApi = KernelApi {
     acpi_rsdp: api_acpi_rsdp,
     hhdm_offset: api_hhdm_offset,
     proc_set_writer: api_proc_set_writer,
+    pci_irq_enable: api_pci_irq_enable,
+    wake_any: api_wake_any,
+    wait_seq: api_wait_seq,
+    block_until: api_block_until,
+    monotonic_ns: api_monotonic_ns,
 };
 
 /// Load the hello module that was baked into the kernel at build time.
@@ -529,4 +534,51 @@ unsafe extern "C" fn api_proc_set_writer(
     } else {
         -1
     }
+}
+
+unsafe extern "C" fn api_pci_irq_enable(
+    bus: u8,
+    slot: u8,
+    func: u8,
+    name: *const u8,
+    name_len: usize,
+    handler: myos_abi::IrqHandler,
+    ctx: *mut core::ffi::c_void,
+    msix_entry: *mut u16,
+) -> i32 {
+    if msix_entry.is_null() {
+        return -1;
+    }
+    let name = if name.is_null() || name_len == 0 {
+        "pci"
+    } else {
+        let bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+        core::str::from_utf8(bytes).unwrap_or("pci")
+    };
+    let Some(route) = crate::irq::pci_irq_setup(bus, slot, func) else {
+        return -1;
+    };
+    if !crate::irq::register(route.irq, name, handler, ctx as usize) {
+        return -1;
+    }
+    unsafe {
+        *msix_entry = route.msix_entry.unwrap_or(myos_abi::MYOS_IRQ_INTX);
+    }
+    0
+}
+
+unsafe extern "C" fn api_wake_any() {
+    crate::task::wake_any();
+}
+
+unsafe extern "C" fn api_wait_seq() -> u64 {
+    crate::task::wait_seq()
+}
+
+unsafe extern "C" fn api_block_until(key: usize, seq: u64, deadline_ns: u64) {
+    crate::task::block_until(key, seq, deadline_ns);
+}
+
+unsafe extern "C" fn api_monotonic_ns() -> u64 {
+    crate::time::monotonic_ns()
 }

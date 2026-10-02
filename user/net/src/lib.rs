@@ -33,6 +33,10 @@ pub const QEMU_DEFAULT_MAC: EthernetAddress =
 /// Copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `myos_abi::MYOS_IOCTL_NET_GETMAC`.
 pub const MYOS_IOCTL_NET_GETMAC: usize = 0x4d01;
+/// Sleep until the NIC received a frame, another kernel event happened, or
+/// `arg` nanoseconds passed. Fails when the driver has no RX interrupt.
+/// Keep in sync with `myos_abi::MYOS_IOCTL_NET_WAIT_RX`.
+pub const MYOS_IOCTL_NET_WAIT_RX: usize = 0x4d02;
 
 /// Stack clock in milliseconds. `bump` advances it to the real elapsed time
 /// (`gettimeofday`, microsecond resolution since the kernel's monotonic
@@ -119,6 +123,14 @@ impl Net0Device {
     /// Frames received since open.
     pub fn rx_frames(&self) -> u64 {
         self.rx_frames
+    }
+
+    /// Block until a frame is available, another kernel event a poller cares
+    /// about happened, or `ns` nanoseconds passed. Returns `false` when the
+    /// driver cannot do this (no RX interrupt): the caller should sleep for
+    /// a bounded time instead.
+    pub fn wait_rx(&self, ns: u64) -> bool {
+        ioctl(self.fd, MYOS_IOCTL_NET_WAIT_RX, ns as usize) != usize::MAX
     }
 
     /// Hardware MAC via ioctl; falls back to [`QEMU_DEFAULT_MAC`] on failure

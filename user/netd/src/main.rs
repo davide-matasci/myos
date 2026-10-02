@@ -45,11 +45,14 @@ const DHCP_POLLS: usize = 3000;
 /// Minimum clock advance per poll when `gettimeofday` is unavailable; the
 /// stack clock otherwise follows wall time (`VirtualInstant::bump`).
 const TICK_MS: u64 = 1;
-/// Idle sleeps between polls: the NIC is polled (no RX interrupt), so a
-/// bounded sleep sets the worst-case RX latency; kernel events (channel
-/// requests from netfs, pipe/console traffic) end the sleep early.
+/// Idle sleeps between polls when the NIC has no RX interrupt (poll-mode
+/// fallback): a bounded sleep sets the worst-case RX latency; kernel events
+/// (channel requests from netfs, pipe/console traffic) end the sleep early.
 const IDLE_SLEEP_ACTIVE_NS: u64 = 2_000_000;
 const IDLE_SLEEP_QUIET_NS: u64 = 10_000_000;
+/// With RX interrupts the idle wait only needs a backstop (smoltcp's own
+/// `poll_delay` cuts it shorter when a timer is due).
+const IDLE_WAIT_IRQ_NS: u64 = 1_000_000_000;
 
 const ICMP_IDENT_BASE: u16 = 0x22b;
 const TCP_RX: usize = 4096;
@@ -1211,6 +1214,13 @@ fn main() -> ! {
     let mut local_ports = LOCAL_PORT_BASE;
     let mut ticks: u32 = 0;
     let mut dhcp_ok = poll_dhcp(&mut iface, &mut device, &mut sockets, dhcp, &mut clock);
+    // RX interrupts available? (The ioctl fails on a poll-mode device.)
+    let mut rx_irq = device.wait_rx(1);
+    if rx_irq {
+        write(b"netd: rx interrupts\n");
+    } else {
+        write(b"netd: rx polling\n");
+    }
 
     // Daemon poll: nic, /dev/netd requests, sockets. Bound work per tick.
     loop {
@@ -1372,14 +1382,29 @@ fn main() -> ! {
             let active = convs
                 .iter()
                 .any(|c| !matches!(c.kind, Kind::Empty) && c.listen_port == 0);
-            let mut ns = if active { IDLE_SLEEP_ACTIVE_NS } else { IDLE_SLEEP_QUIET_NS };
+            let mut ns = if rx_irq {
+                IDLE_WAIT_IRQ_NS
+            } else if active {
+                IDLE_SLEEP_ACTIVE_NS
+            } else {
+                IDLE_SLEEP_QUIET_NS
+            };
             if let Some(d) = iface.poll_delay(clock.now(), &sockets) {
                 let d_ns = (d.total_micros() as u64).saturating_mul(1000);
                 if d_ns < ns {
                     ns = d_ns.max(100_000);
                 }
             }
-            myos_user::sleep_ns(ns, true);
+            if rx_irq {
+                // Woken by the NIC's RX interrupt, a netfs request or any other
+                // kernel event; the ring is re-checked inside the ioctl so a
+                // frame that landed just before cannot be missed.
+                if !device.wait_rx(ns) {
+                    rx_irq = false;
+                }
+            } else {
+                myos_user::sleep_ns(ns, true);
+            }
         }
     }
 }

@@ -1,13 +1,20 @@
-//! virtio-net: modern virtio 1.0 PCI, poll-mode `/dev/netN`.
+//! virtio-net: modern virtio 1.0 PCI `/dev/netN`.
 //!
 //! Speaks only through [`myos_abi::KernelApi`]. Ethernet frames only; no IP.
+//! Reads never block (a `0` means "no frame"), but the RX queue raises an
+//! interrupt (MSI-X on x86_64, the INTx line elsewhere) and
+//! [`MYOS_IOCTL_NET_WAIT_RX`] lets `netd` sleep until a frame, another kernel
+//! event or a timeout instead of polling the ring.
 
 #![no_std]
 #![no_main]
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use myos_abi::{status_ok, ABI_VERSION, KernelApi, MYOS_IOCTL_NET_GETMAC, ModuleChrOps};
+use myos_abi::{
+    status_ok, ABI_VERSION, KernelApi, MYOS_IOCTL_NET_GETMAC, MYOS_IOCTL_NET_WAIT_RX,
+    MYOS_IRQ_INTX, MYOS_WAIT_ANY, ModuleChrOps,
+};
 
 const VENDOR: u16 = 0x1AF4;
 const DEV_NET_MODERN: u16 = 0x1041;
@@ -78,7 +85,16 @@ struct Net {
     tx_buf_va: *mut u8,
     tx_buf_phys: u64,
     mac: [u8; 6],
+    /// ISR status byte (virtio-pci ISR capability); read in the interrupt
+    /// handler to deassert a legacy INTx line. 0 when the cap is absent.
+    isr: usize,
+    /// The RX queue raises interrupts (`pci_irq_enable` succeeded).
+    irq_ok: bool,
 }
+
+/// Longest `NET_WAIT_RX` sleep when the caller passes 0 (a lost interrupt
+/// then costs at most this much latency instead of a hang).
+const WAIT_RX_CAP_NS: u64 = 10_000_000_000;
 
 static mut NETS: [Option<Net>; MAX_NET] = [None, None, None, None];
 static mut API: Option<&'static KernelApi> = None;
@@ -258,6 +274,7 @@ struct Caps {
     notify: usize,
     notify_mult: u32,
     device: usize,
+    isr: usize,
 }
 
 fn map_bar(
@@ -298,6 +315,7 @@ fn walk_caps(api: &KernelApi, bus: u8, slot: u8, func: u8) -> Option<Caps> {
     let mut notify = 0usize;
     let mut notify_mult = 0u32;
     let mut device = 0usize;
+    let mut isr = 0usize;
     let mut hops = 0u8;
     while cap != 0 && hops < 64 {
         hops += 1;
@@ -324,7 +342,7 @@ fn walk_caps(api: &KernelApi, bus: u8, slot: u8, func: u8) -> Option<Caps> {
                             };
                         }
                         VIRTIO_PCI_CAP_DEVICE => device = mmio,
-                        VIRTIO_PCI_CAP_ISR => {}
+                        VIRTIO_PCI_CAP_ISR => isr = mmio,
                         _ => {}
                     }
                 }
@@ -343,6 +361,7 @@ fn walk_caps(api: &KernelApi, bus: u8, slot: u8, func: u8) -> Option<Caps> {
         notify,
         notify_mult,
         device,
+        isr,
     })
 }
 
@@ -444,7 +463,7 @@ fn post_rx(net: &Net, i: u16) {
     push(&net.rx, i);
 }
 
-fn probe(api: &KernelApi, pci_index: u32) -> Option<Net> {
+fn probe(api: &KernelApi, pci_index: u32, slot_index: usize) -> Option<Net> {
     let (bus, slot, func) = pci_find_net(api, pci_index)?;
 
     unsafe { (api.pci_enable)(bus, slot, func) };
@@ -496,7 +515,7 @@ fn probe(api: &KernelApi, pci_index: u32) -> Option<Net> {
     let (rx_buf_va, rx_buf_phys) = dma_alloc(api, rx_pages)?;
     let (tx_buf_va, tx_buf_phys) = dma_alloc(api, 1)?;
 
-    let net = Net {
+    let mut net = Net {
         notify: caps.notify,
         notify_mult: caps.notify_mult,
         rx,
@@ -506,7 +525,46 @@ fn probe(api: &KernelApi, pci_index: u32) -> Option<Net> {
         tx_buf_va,
         tx_buf_phys,
         mac,
+        isr: caps.isr,
+        irq_ok: false,
     };
+
+    // RX interrupts: route the function's interrupt to `net_irq`, point the
+    // RX queue at the MSI-X entry the kernel chose (or leave INTx), and let
+    // the device interrupt for RX completions (the TX queue keeps
+    // AVAIL_F_NO_INTERRUPT). Failure leaves the device in poll mode; the
+    // WAIT_RX ioctl then reports it so netd keeps its timed polling.
+    let mut msix_entry: u16 = MYOS_IRQ_INTX;
+    let name = b"virtio-net";
+    let rc = unsafe {
+        (api.pci_irq_enable)(
+            bus,
+            slot,
+            func,
+            name.as_ptr(),
+            name.len(),
+            net_irq,
+            slot_index as *mut core::ffi::c_void,
+            &mut msix_entry,
+        )
+    };
+    if rc == 0 {
+        let mut ok = true;
+        if msix_entry != MYOS_IRQ_INTX {
+            w16(common + C_QUEUE_SELECT, 0);
+            w16(common + C_QUEUE_MSIX_VECTOR, msix_entry);
+            dma_wmb();
+            ok = r16(common + C_QUEUE_MSIX_VECTOR) == msix_entry;
+        }
+        if ok {
+            unsafe {
+                core::ptr::write_volatile(net.rx.avail as *mut u16, 0);
+            }
+            dcache_civac(net.rx.avail, PAGE);
+            dma_wmb();
+            net.irq_ok = true;
+        }
+    }
 
     let n = net.rx.num;
     let mut i = 0u16;
@@ -542,7 +600,52 @@ fn api_ref() -> Option<&'static KernelApi> {
     unsafe { core::ptr::addr_of!(API).read() }
 }
 
+/// Interrupt handler: ack the device (ISR read deasserts a legacy INTx line;
+/// harmless under MSI-X) and wake pollers sleeping on "any event", which is
+/// what `NET_WAIT_RX` and libgloss `poll()` block on.
+unsafe extern "C" fn net_irq(ctx: *mut core::ffi::c_void) {
+    let idx = ctx as usize;
+    if let Some(net) = net_slot(idx) {
+        if net.isr != 0 {
+            let _ = r8(net.isr);
+        }
+    }
+    if let Some(api) = api_ref() {
+        unsafe { (api.wake_any)() };
+    }
+}
+
+fn rx_available(net: &Net) -> bool {
+    used_idx(&net.rx) != net.rx.last_used
+}
+
 fn net_ioctl_n(idx: usize, request: u64, arg: usize) -> i32 {
+    if request == MYOS_IOCTL_NET_WAIT_RX {
+        let net = match net_slot(idx) {
+            Some(n) => n,
+            None => return -1,
+        };
+        let api = match api_ref() {
+            Some(a) => a,
+            None => return -1,
+        };
+        if !net.irq_ok {
+            return -1;
+        }
+        // Sequence first, then the ring check: an interrupt in between bumps
+        // the sequence and `block_until` returns at once (no lost wakeup).
+        let seq = unsafe { (api.wait_seq)() };
+        if rx_available(net) {
+            return 0;
+        }
+        let mut ns = arg as u64;
+        if ns == 0 || ns > WAIT_RX_CAP_NS {
+            ns = WAIT_RX_CAP_NS;
+        }
+        let deadline = unsafe { (api.monotonic_ns)() }.saturating_add(ns).max(1);
+        unsafe { (api.block_until)(MYOS_WAIT_ANY, seq, deadline) };
+        return 0;
+    }
     if request != MYOS_IOCTL_NET_GETMAC {
         return -1;
     }
@@ -656,7 +759,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         let mut registered = 0usize;
         let mut pci_index = 0u32;
         while registered < MAX_NET {
-            match probe(api, pci_index) {
+            match probe(api, pci_index, registered) {
                 Some(net) => {
                     let slot = registered;
                     *core::ptr::addr_of_mut!(NETS[slot]) = Some(net);

@@ -70,6 +70,16 @@ pub fn ap_init(logical: usize) {
     crate::user::ap_init();
 }
 
+/// Route a PCI function's interrupt: MSI-X entry 0 → a LAPIC vector on the
+/// BSP (no IOAPIC / PIRQ routing needed).
+pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
+    let irq = interrupts::pci_msix_setup(bus, slot, func)?;
+    Some(crate::irq::PciIrq {
+        irq,
+        msix_entry: Some(0),
+    })
+}
+
 /// Brief halt until the next interrupt (idle loop).
 pub fn wait_interrupt() {
     unsafe {

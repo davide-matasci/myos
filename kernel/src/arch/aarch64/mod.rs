@@ -80,6 +80,24 @@ pub fn ap_init(logical: usize) {
     crate::user::ap_init();
 }
 
+/// QEMU `virt` wires PCIe INTA..D to GIC SPIs 3..6 (INTID 35..38) with the
+/// standard slot swizzle; enable that SPI on CPU 0. Legacy INTx: the handler
+/// must read the device ISR to deassert the line.
+pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
+    const VIRT_PCIE_IRQ: u32 = 3;
+    let pin = (crate::pci::cfg_read32(bus, slot, func, 0x3C) >> 8) & 0xFF;
+    if pin == 0 || pin > 4 {
+        return None;
+    }
+    let line = (u32::from(slot) + pin - 1) % 4;
+    let intid = 32 + VIRT_PCIE_IRQ + line;
+    interrupts::gic_enable_spi(intid);
+    Some(crate::irq::PciIrq {
+        irq: intid,
+        msix_entry: None,
+    })
+}
+
 pub fn wait_interrupt() {
     unsafe {
         core::arch::asm!("wfi", options(nostack, preserves_flags));

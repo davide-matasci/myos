@@ -371,6 +371,24 @@ fn init_gic() {
     }
 }
 
+/// Enable SPI `id` in the distributor, level-triggered, priority 0x80,
+/// targeted at CPU interface 0 (the BSP).
+pub fn gic_enable_spi(id: u32) {
+    if !(32..1020).contains(&id) {
+        return;
+    }
+    unsafe {
+        // ICFGR: 2 bits per interrupt, 0b00 = level-sensitive.
+        let cfg = GICD + 0xC00 + (id as usize / 16) * 4;
+        let shift = (id % 16) * 2;
+        write32(cfg, read32(cfg) & !(0b11 << shift));
+        core::ptr::write_volatile((GICD + 0x400 + id as usize) as *mut u8, 0x80);
+        core::ptr::write_volatile((GICD + 0x800 + id as usize) as *mut u8, 0x01);
+        write32(GICD + 0x100 + (id as usize / 32) * 4, 1 << (id % 32));
+        asm!("dsb sy", options(nostack));
+    }
+}
+
 fn timer_ticks() -> u64 {
     let freq: u64;
     unsafe {
@@ -421,6 +439,11 @@ extern "C" fn aarch64_irq_handler() {
     if tlb {
         flush_tlb_local();
         crate::smp::tlb_ipi_ack();
+    }
+    // Shared peripheral interrupts (PCI INTx lines and the like): second-level
+    // dispatch before EOI so a level-triggered line is deasserted first.
+    if id >= 32 && id < 1020 {
+        crate::irq::dispatch(id);
     }
     if id < 1020 {
         write32(GICC + 0x10, iar);

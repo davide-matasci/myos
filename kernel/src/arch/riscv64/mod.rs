@@ -72,6 +72,24 @@ pub fn ap_init(logical: usize) {
     crate::user::ap_init();
 }
 
+/// QEMU `virt` wires PCIe INTA..D to PLIC sources 32..35 with the standard
+/// slot swizzle; enable that source for the boot hart. Legacy INTx: the
+/// handler must read the device ISR to deassert the line.
+pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
+    const VIRT_PCIE_IRQ: u32 = 0x20;
+    let pin = (crate::pci::cfg_read32(bus, slot, func, 0x3C) >> 8) & 0xFF;
+    if pin == 0 || pin > 4 {
+        return None;
+    }
+    let line = (u32::from(slot) + pin - 1) % 4;
+    let src = VIRT_PCIE_IRQ + line;
+    interrupts::plic::enable(src);
+    Some(crate::irq::PciIrq {
+        irq: src,
+        msix_entry: None,
+    })
+}
+
 pub fn wait_interrupt() {
     unsafe {
         core::arch::asm!("wfi", options(nostack, preserves_flags));

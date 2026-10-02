@@ -6,11 +6,25 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 10;
+pub const ABI_VERSION: u32 = 11;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
 pub const MYOS_IOCTL_NET_GETMAC: u64 = 0x4d01;
+/// Block until the NIC has a received frame, another kernel event a poller
+/// cares about (`wake_any`), or `arg` nanoseconds passed (0 = driver cap).
+/// Fails (negative) when the device has no RX interrupt, so callers fall back
+/// to timed polling. Keep in sync with `user/net`.
+pub const MYOS_IOCTL_NET_WAIT_RX: u64 = 0x4d02;
+/// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
+pub const MYOS_WAIT_ANY: usize = usize::MAX;
+
+/// Device interrupt handler (`KernelApi::pci_irq_enable`): runs in interrupt
+/// context on the BSP with interrupts masked; must not block or allocate.
+pub type IrqHandler = unsafe extern "C" fn(ctx: *mut core::ffi::c_void);
+/// `pci_irq_enable` out value: the device is on legacy INTx (read its ISR
+/// register in the handler to deassert the line).
+pub const MYOS_IRQ_INTX: u16 = 0xFFFF;
 
 /// Stat blob exchanged with module VFS hooks (matches kernel layout).
 #[repr(C)]
@@ -209,6 +223,34 @@ pub struct KernelApi {
         name_len: usize,
         writer: Option<unsafe extern "C" fn(*const u8, usize) -> i32>,
     ) -> i32,
+    // --- ABI 11: device interrupts and blocking waits ---
+    /// Route the PCI function's interrupt to `handler(ctx)`. The kernel picks
+    /// the mechanism: `*msix_entry` is the MSI-X table entry the device must
+    /// use (virtio: `queue_msix_vector`), or [`MYOS_IRQ_INTX`] for a legacy
+    /// INTx line. `name` labels `/proc/interrupts`. 0 ok, negative on error.
+    pub pci_irq_enable: unsafe extern "C" fn(
+        bus: u8,
+        slot: u8,
+        func: u8,
+        name: *const u8,
+        name_len: usize,
+        handler: IrqHandler,
+        ctx: *mut core::ffi::c_void,
+        msix_entry: *mut u16,
+    ) -> i32,
+    /// Wake every task sleeping on "any event" (pollers, `NET_WAIT_RX`).
+    /// Safe from interrupt context.
+    pub wake_any: unsafe extern "C" fn(),
+    /// Blocking-wait protocol (see `kernel/src/task/sched.rs`): read the
+    /// sequence, check the condition, then `block_until(key, seq, deadline)`;
+    /// a wake in between makes `block_until` return at once.
+    pub wait_seq: unsafe extern "C" fn() -> u64,
+    /// Block the calling task until `wake(key)` (or any wake for
+    /// [`MYOS_WAIT_ANY`]), a signal, or the monotonic deadline (0 = none).
+    /// Task context only.
+    pub block_until: unsafe extern "C" fn(key: usize, seq: u64, deadline_ns: u64),
+    /// Monotonic nanoseconds (`kernel/src/time.rs`).
+    pub monotonic_ns: unsafe extern "C" fn() -> u64,
 }
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).
