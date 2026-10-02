@@ -5,6 +5,7 @@ name = "heap"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT OR Apache-2.0"
 description = "CI-only heavy smoke (std/C/sbase/uutils/ripgrep/tcc/bigalloc); typed at $ by wait_ci."
 
 [[bin]]

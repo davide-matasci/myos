@@ -5,6 +5,7 @@ name = "init"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT OR Apache-2.0"
 description = "Userspace PID1: smoke fork/`/ok`, then respawn getty → login → /sh."
 
 [[bin]]

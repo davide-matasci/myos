@@ -3,6 +3,7 @@ name = "ps2-scancode"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT OR Apache-2.0"
 description = "PS/2 scancode set 1/2 decode (no_std, host-testable)."
 
 [lib]

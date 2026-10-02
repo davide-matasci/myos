@@ -5,6 +5,7 @@ name = "ok"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT OR Apache-2.0"
 description = "Slim always-on boot smoke: alloc, /msg, disk/FAT listdir, /proc/mounts; no heavy carnival."
 
 [[bin]]

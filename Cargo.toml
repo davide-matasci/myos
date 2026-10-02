@@ -9,6 +9,7 @@ version = "0.1.0"
 edition = "2024"
 description = "A small kernel that boots in QEMU on x86_64 and AArch64 via Limine."
 publish = false
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 ovmf-prebuilt = "0.2.9"

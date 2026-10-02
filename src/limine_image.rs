@@ -300,6 +300,23 @@ pub fn write_x86_iso(
     copy(&limine.uefi_cd(), "boot/limine/limine-uefi-cd.bin");
     copy(&limine.bootx64(), "EFI/BOOT/BOOTX64.EFI");
 
+    // The image bundles GPL/LGPL/MPL programs: ship the license texts and the
+    // third-party notices (incl. the source offer) with it. See
+    // THIRD_PARTY_NOTICES.md.
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for rel in ["LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md"] {
+        copy(&manifest.join(rel), rel);
+    }
+    fs::create_dir_all(iso_root.join("licenses"))
+        .unwrap_or_else(|e| panic!("create iso licenses: {e}"));
+    let texts = fs::read_dir(manifest.join("licenses"))
+        .unwrap_or_else(|e| panic!("read licenses/: {e}"));
+    for entry in texts {
+        let entry = entry.unwrap_or_else(|e| panic!("read licenses/ entry: {e}"));
+        let rel = format!("licenses/{}", entry.file_name().to_string_lossy());
+        copy(&entry.path(), &rel);
+    }
+
     let conf = LIMINE_CONF.as_bytes();
     for rel in ["boot/limine/limine.conf", "EFI/BOOT/limine.conf", "limine.conf"] {
         let dst = iso_root.join(rel);
