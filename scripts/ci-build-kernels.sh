@@ -45,17 +45,18 @@ STAMP="target/.myos-ci-kernel-version"
 
 # Optional root-package features for the CI build (full boot sets
 # MYOS_CI_FEATURES=linux_compat: the optional Linux layer loaded at boot and
-# its musl test binaries in every image). The kernels and the `linux` module
-# are the same in both builds; only the images differ.
+# its musl test binaries in every image). The kernels, the `linux` module and
+# the Linux layer's userspace are built either way; only the images differ.
 CI_FEATURES="${MYOS_CI_FEATURES:-}"
-linux_compat() { [[ " ${CI_FEATURES//,/ } " == *" linux_compat "* ]]; }
 FEATURE_ARGS=()
 if [[ -n "$CI_FEATURES" ]]; then
   FEATURE_ARGS=(--features "$CI_FEATURES")
 fi
 
-# The Linux layer's musl files (linux-compat/build.sh) the images take with
-# the feature; the `linux` launcher is in HELLO_OK_ELFS (every image).
+# The Linux layer's musl files (linux-compat/build.sh, registry port
+# `linux-compat`): in ci-build.tar always, so the ISO job and a full boot
+# build their images from the same tar; the `linux` launcher is in
+# HELLO_OK_ELFS (every image).
 linux_compat_members() {
   local arch
   for arch in x86_64 aarch64 riscv64; do
@@ -148,10 +149,8 @@ kernel_inputs_hash() {
         fi
         printf 'features:%s\n' "$CI_FEATURES"
         sha256sum linux-compat/launcher.c linux-compat/build-launcher.sh
-        if linux_compat; then
-          hash_tree linux-compat
-          sha256sum linux-compat/build.sh
-        fi
+        hash_tree linux-compat
+        sha256sum linux-compat/build.sh
         # Port registry stamps encode userspace content identity (source-hash
         # philosophy). Do not hash target/ ELFs or manifests: those change or
         # appear after cargo clean/build and would make pull-tag ≠ push-tag.
@@ -386,14 +385,12 @@ artifacts_ready() {
            target/tcp-listen-smoke-riscv64-unknown-none; do
     [[ -f "$f" ]] || return 1
   done
-  if linux_compat; then
-    for f in $(linux_compat_members); do
-      [[ -e "$f" ]] || return 1
-    done
-    for f in x86_64 aarch64 riscv64; do
-      [[ -f "target/linux-compat/$f/get-alpine" ]] || return 1
-    done
-  fi
+  for f in $(linux_compat_members); do
+    [[ -e "$f" ]] || return 1
+  done
+  for f in x86_64 aarch64 riscv64; do
+    [[ -f "target/linux-compat/$f/get-alpine" ]] || return 1
+  done
   return 0
 }
 
@@ -423,11 +420,10 @@ do_clean_and_build() {
   cargo clean -p kernel --target x86_64-unknown-none
   cargo clean -p kernel --target aarch64-unknown-none-softfloat
   cargo clean -p kernel --target riscv64imac-unknown-none-elf
-  # The `linux` launcher is in every initramfs (the layer is a module).
+  # The `linux` launcher is in every initramfs (the layer is a module); the
+  # musl pieces come from the registry (`linux-compat`) or are built here.
   "$ROOT/linux-compat/build-launcher.sh"
-  if linux_compat; then
-    "$ROOT/linux-compat/build.sh"
-  fi
+  "$ROOT/linux-compat/build.sh"
   cargo build "${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"}"
   cargo build -p kernel --target aarch64-unknown-none-softfloat
   cargo build -p kernel --target riscv64imac-unknown-none-elf
@@ -460,9 +456,7 @@ case "${1:-}" in
     echo target/tcp-listen-smoke-x86_64-unknown-none
     echo target/tcp-listen-smoke-aarch64-unknown-none
     echo target/tcp-listen-smoke-riscv64-unknown-none
-    if linux_compat; then
-      linux_compat_members
-    fi
+    linux_compat_members
     exit 0
     ;;
   --is-current)

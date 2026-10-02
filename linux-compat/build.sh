@@ -22,6 +22,14 @@ MUSL_VERSION=1.2.5
 MUSL_SHA256=a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4
 ARCHES=(x86_64 aarch64 riscv64)
 
+# Stamped like a port (scripts/ci-registry.sh caches the outputs under
+# `linux-compat`); the launcher has its own script and is always rebuilt.
+if myos_linux_compat_is_current; then
+  echo "linux-compat outputs up to date"
+  "$ROOT/linux-compat/build-launcher.sh"
+  exit 0
+fi
+
 myos_ensure_llvm_bin
 # The CI image has clang + lld but not llvm's binutils: fall back like the ports.
 AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
@@ -174,4 +182,5 @@ for arch in "${ARCHES[@]}"; do
 done
 # The launcher ships in every image; its own script builds it for the 3 arches.
 "$ROOT/linux-compat/build-launcher.sh"
+myos_linux_compat_version_hash > "$MYOS_LINUX_COMPAT_VERSION"
 echo "linux-compat -> target/linux-launcher-*-unknown-none, target/linux-smoke-*-linux-musl, target/linux-compat/<arch>/"

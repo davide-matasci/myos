@@ -24,6 +24,7 @@ MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
 MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
 MYOS_DROPBEAR_VERSION_STAMP="$MYOS_ROOT/target/.myos-dropbear-version"
 MYOS_OS_TEST_VERSION="$MYOS_ROOT/target/.myos-os-test-version"
+MYOS_LINUX_COMPAT_VERSION="$MYOS_ROOT/target/.myos-linux-compat-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
@@ -333,6 +334,38 @@ myos_dropbear_is_current() {
     [[ -f "$MYOS_ROOT/target/dropbear-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/dbclient-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/dropbearkey-${arch}-unknown-none" ]] || return 1
+  done
+  return 0
+}
+
+# Linux compatibility layer userspace (linux-compat/build.sh): musl, the
+# Linux test binaries and get-alpine. Not the launcher, which has its own
+# script and is part of the kernels bundle.
+myos_linux_compat_version_hash() {
+  local h
+  h="$(
+    {
+      sha256sum "$MYOS_ROOT/linux-compat/build.sh" \
+        "$MYOS_ROOT/linux-compat/get-alpine.c" || true
+      find "$MYOS_ROOT/linux-compat/tests" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum 2>/dev/null || true
+      myos_newlib_version_hash
+      myos_zlib_version_hash
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_linux_compat_is_current() {
+  local arch f
+  [[ -f "$MYOS_LINUX_COMPAT_VERSION" ]] \
+    && [[ "$(cat "$MYOS_LINUX_COMPAT_VERSION")" == "$(myos_linux_compat_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/linux-smoke-${arch}-linux-musl" ]] || return 1
+    for f in "ld-musl-${arch}.so.1" libsmoke.so libsmoke2.so linux-dyn get-alpine; do
+      [[ -f "$MYOS_ROOT/target/linux-compat/${arch}/$f" ]] || return 1
+    done
   done
   return 0
 }

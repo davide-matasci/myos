@@ -64,7 +64,8 @@ fn main() {
         .unwrap_or("bios");
 
     match (mode, ci) {
-        ("iso", _) => run_iso(),
+        ("iso", true) => run_ci_iso(),
+        ("iso", false) => run_iso(),
         ("riscv64", true) => run_ci_riscv64(),
         ("riscv64", false) => run_riscv64(),
         ("aarch64", true) => run_ci_aarch64(),
@@ -86,11 +87,62 @@ Usage: cargo run -- [bios|uefi|aarch64|riscv64|iso] [--ci]
   aarch64   Boot the AArch64 kernel via Limine on QEMU virt + AAVMF (serial + ramfb)
   riscv64   Boot the RISC-V64 kernel via Limine on QEMU virt + UEFI (serial + ramfb)
   iso       Write target/myos-x86_64.iso (Limine BIOS+UEFI hybrid) and exit; needs xorriso
+            (with --ci: also boot it from the CD like `--ci` does the BIOS image)
   --ci      Headless boot; require serial hello/heap/int/mod and a clean QEMU exit",
     );
 }
 
 fn run_iso() {
+    println!("{}", build_iso().display());
+}
+
+/// `iso --ci`: write the ISO, then boot it from the CD (BIOS, El Torito) in
+/// QEMU with the same disks, network and checks as the BIOS disk image.
+fn run_ci_iso() {
+    let iso = build_iso();
+    let mut cmd = Command::new("qemu-system-x86_64");
+    cmd.arg("-cpu")
+        .arg(X86_CPU)
+        .arg("-m")
+        .arg("4096")
+        .arg("-smp")
+        .arg("4")
+        .arg("-drive")
+        .arg(format!("format=raw,media=cdrom,readonly=on,file={}", iso.display()))
+        .arg("-serial")
+        .arg("stdio")
+        .arg("-display")
+        .arg("none")
+        .arg("-monitor")
+        .arg("none")
+        .arg("-device")
+        .arg("isa-debug-exit,iobase=0xf4,iosize=0x04")
+        .arg("-nic")
+        .arg("none")
+        .arg("-boot")
+        .arg("order=d,menu=off")
+        .arg("-no-reboot");
+    add_virtio_blk_x86(&mut cmd);
+    add_virtio_net(&mut cmd);
+    let child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start qemu-system-x86_64");
+    wait_ci(
+        child,
+        CiExpect {
+            timeout: ci_qemu_timeout(),
+            qemu_debug_exit: true,
+            shell_ci: true,
+        },
+        &CI_NEEDLES_STD,
+    );
+}
+
+/// Write target/myos-x86_64.iso from the built kernel, modules and initramfs.
+fn build_iso() -> PathBuf {
     // Artifact-dep kernel lives at CARGO_BIN_FILE_KERNEL_kernel, not
     // target/<triple>/debug/kernel (ISO #1 panicked on that missing path).
     let kernel = Path::new(env!("KERNEL_PATH"));
@@ -110,7 +162,7 @@ fn run_iso() {
     let dest = target.join("myos-x86_64.iso");
     let iso_root = target.join("iso_root");
     write_x86_iso(&dest, &iso_root, kernel, &target, ok, &initramfs_path, &limine);
-    println!("{}", dest.display());
+    dest
 }
 
 fn fat_img_path() -> PathBuf {

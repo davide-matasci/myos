@@ -316,6 +316,8 @@ Implemented libgloss hooks call real syscalls where they exist; stubs return ENO
 
 GitHub Actions caches Cargo with Swatinem/rust-cache (`prefix-key: limine-8.3-6`). Userspace port outputs are OCI artifacts on GHCR, one package per port, tagged with stamp hash from `scripts/myos-c-userspace-lib.sh`. First run after stamp change = miss + push; later runs with same hashes = hit. Packages should be **public** for fork PRs. Source checkouts (`*-src`) are never cached.
 
+Every run boots the four disk images (boot-mini, or the full boot when dispatched) and builds the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`), uploads it as the `myos-x86_64-iso` artifact and boots it from the CD (`cargo run -- iso --ci`).
+
 ---
 
 ## Notes

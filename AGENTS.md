@@ -89,7 +89,11 @@ cargo test -p ps2-scancode                 # host unit tests
   artifacts on GHCR keyed by a hash of its inputs, `scripts/ci-registry.sh`)
   and `ci-runtime.yml` (build job → boot jobs).
 - Pull requests run **boot-mini** on bios, uefi, aarch64 and riscv64
-  (`MYOS_CI_MINI=1`).
+  (`MYOS_CI_MINI=1`), and the **iso** job: the x86_64 hybrid ISO built with
+  `--features linux_compat` (the image with everything in it), uploaded as
+  the `myos-x86_64-iso` artifact and boot-tested from the CD with
+  `cargo run -- iso --ci` (boot-mini stages). The Linux layer's musl pieces
+  are built and cached like a port (`linux-compat`) in every run.
 - **Full boot** is manual: dispatch `ci.yml` with `full_boot: true` on the
   branch. It runs the curated os-test list, git, HTTPS/curl and the optional
   Linux layer (built in by `MYOS_CI_FEATURES=linux_compat`) in all four boot
