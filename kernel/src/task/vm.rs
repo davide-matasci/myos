@@ -126,16 +126,62 @@ pub fn mmap_alloc(area_lo: usize, area_hi: usize, len: usize) -> Option<usize> {
     (cand.checked_add(len)? <= area_hi).then_some(cand)
 }
 
+/// Record a new mapping. It joins an adjacent mapping with the same
+/// protection when there is one (malloc implementations such as musl's map
+/// many small neighbouring blocks: hundreds of mappings, few runs).
 pub fn mmap_add(va: u64, pages: u32, prot: u32) -> bool {
     with_current_mut(|t| {
-        for r in t.mmap.iter_mut() {
-            if r.pages == 0 {
+        let added = match t.mmap.iter_mut().find(|r| r.pages == 0) {
+            Some(r) => {
                 *r = MmapRegion { va, pages, prot };
-                return true;
+                true
+            }
+            None => false,
+        };
+        let joined = coalesce(&mut t.mmap, (!added).then_some(MmapRegion { va, pages, prot }));
+        added || joined
+    })
+}
+
+/// Merge adjacent regions with the same protection, and fold `extra` (a
+/// region that found no free slot) into a neighbour if it touches one.
+/// Returns whether `extra` was folded in.
+fn coalesce(regions: &mut [MmapRegion; MAX_MMAP_REGIONS], mut extra: Option<MmapRegion>) -> bool {
+    let page = crate::user::PAGE as u64;
+    let joinable = |a: &MmapRegion, b: &MmapRegion| {
+        a.pages != 0 && b.pages != 0 && a.prot == b.prot && a.va + a.pages as u64 * page == b.va
+    };
+    let mut folded = false;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        if let Some(x) = extra {
+            for r in regions.iter_mut() {
+                if joinable(r, &x) {
+                    r.pages += x.pages;
+                } else if joinable(&x, r) {
+                    r.va = x.va;
+                    r.pages += x.pages;
+                } else {
+                    continue;
+                }
+                extra = None;
+                folded = true;
+                changed = true;
+                break;
             }
         }
-        false
-    })
+        for i in 0..MAX_MMAP_REGIONS {
+            for j in 0..MAX_MMAP_REGIONS {
+                if i != j && joinable(&regions[i], &regions[j]) {
+                    regions[i].pages += regions[j].pages;
+                    regions[j] = MmapRegion { va: 0, pages: 0, prot: 0 };
+                    changed = true;
+                }
+            }
+        }
+    }
+    folded
 }
 
 /// Forget `[va, va + pages)` (callers free the frames). False if the table
@@ -163,6 +209,7 @@ pub fn mmap_set_prot(va: u64, pages: u32, prot: u32) -> bool {
             };
             *r = MmapRegion { va: a as u64, pages: ((b - a) / page) as u32, prot };
         }
+        coalesce(&mut t.mmap, None);
         true
     })
 }
