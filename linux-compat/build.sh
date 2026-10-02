@@ -26,6 +26,9 @@ myos_ensure_llvm_bin
 AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
 RANLIB_BIN="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
 "$ROOT/toolchain/newlib/build.sh"
+# The cross-compiler wrappers (target/newlib-bin) are not in the CI build
+# artifacts, which carry newlib itself; they are cheap to (re)write.
+"$ROOT/toolchain/newlib/tool-wrappers.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 # compiler-rt builtins for libc.so on aarch64/riscv64 (128-bit long double).
