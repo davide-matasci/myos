@@ -7,7 +7,7 @@ use alloc::vec;
 use super::generic::{uc_head, SIGINFO_BYTES, UC_MCONTEXT};
 use super::signal::{siginfo, Frame};
 use super::sys;
-use crate::user::SyscallRegs;
+use crate::k::user::SyscallRegs;
 
 pub use super::generic::{stat_bytes, syscall};
 
@@ -36,7 +36,7 @@ pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
 
 /// The register image is laid out as the frame's `fpsimd_context`: head
 /// (magic, size), FPSR, FPCR, then v0-v31 (see `task::fpu`).
-pub use crate::task::fpu::{restore as fp_restore, save as fp_save, BYTES as FP_BYTES};
+pub use crate::k::task::fpu::{restore as fp_restore, save as fp_save, BYTES as FP_BYTES};
 const FPSIMD_MAGIC: u32 = 0x4650_8001;
 
 #[repr(C, align(16))]

@@ -17,7 +17,6 @@ const ELFDATA2LSB: u8 = 1;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 const PT_LOAD: u32 = 1;
-#[cfg(feature = "linux-compat")]
 const PT_INTERP: u32 = 3;
 const PF_X: u32 = 1;
 const PF_W: u32 = 2;
@@ -237,7 +236,6 @@ pub fn realize_as(bytes: &[u8], dest: *mut u8, load_bias: u64, relocate: bool) -
 }
 
 /// The `PT_INTERP` path (without its NUL), for a dynamically linked image.
-#[cfg(feature = "linux-compat")]
 pub fn interp_path(bytes: &[u8]) -> Option<&[u8]> {
     let hdr = parse_ehdr(bytes).ok()?;
     for i in 0..hdr.e_phnum {

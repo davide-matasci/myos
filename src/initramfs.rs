@@ -277,14 +277,16 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         );
     }
 
-    // Optional Linux compatibility layer: the `linux` launcher (native) and
-    // Linux test binaries, kept out of $PATH under bin/linux.
+    // The `linux` launcher of the Linux compatibility layer (native, always
+    // shipped: with the module loaded, `linux PROGRAM` works in any build).
+    add(
+        &mut entries,
+        "bin/etc/linux",
+        read(&target.join(format!("linux-launcher-{arch}-unknown-none"))),
+    );
+    // Optional Linux compatibility layer: the Linux test binaries, kept out
+    // of $PATH under bin/linux, and the Alpine package fetcher.
     if feature_enabled("linux_compat") {
-        add(
-            &mut entries,
-            "bin/etc/linux",
-            read(&target.join(format!("linux-launcher-{arch}-unknown-none"))),
-        );
         add(
             &mut entries,
             "bin/linux/linux-smoke",
@@ -373,8 +375,9 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     );
 
     // Kernel modules -> lib/modules/<name> (the same ELFs Limine loads at
-    // boot; `insmod /lib/modules/<name>` loads one that was not).
-    for m in crate::limine_image::BOOT_MODULES {
+    // boot; `insmod /lib/modules/<name>` loads one that was not, e.g. the
+    // optional `linux` module in a build without its feature).
+    for m in crate::limine_image::all_modules() {
         add(
             &mut entries,
             &format!("lib/modules/{m}"),

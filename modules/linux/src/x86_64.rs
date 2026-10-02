@@ -6,8 +6,8 @@ use super::abi::{err, result, EFAULT, EINVAL, ENOMEM, ENOSYS, EPERM, ESRCH};
 use super::signal::{self as lsig, siginfo, Frame};
 use super::sys::{self, ret};
 use super::thread;
-use crate::task;
-use crate::user::{self, SyscallRegs};
+use crate::k::task;
+use crate::k::user::{self, SyscallRegs};
 
 pub const MACHINE: &[u8] = b"x86_64";
 
@@ -167,7 +167,7 @@ fn arch_prctl(code: usize, addr: usize) -> usize {
 
 // ---- FP / SSE -------------------------------------------------------------
 
-pub use crate::task::fpu::{restore as fp_restore, save as fp_save, BYTES as FP_BYTES};
+pub use crate::k::task::fpu::{restore as fp_restore, save as fp_save, BYTES as FP_BYTES};
 
 #[repr(C, align(16))]
 struct Fx([u8; FP_BYTES]);
@@ -238,7 +238,7 @@ pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     mc[MC_RSP] = sp as u64;
     mc[MC_RIP] = f.pc as u64;
     mc[MC_EFLAGS] = regs.word(R_RFLAGS);
-    mc[MC_CSGSFS] = (crate::arch::gdt::user_cs() | 3) as u64;
+    mc[MC_CSGSFS] = f.arch;
     mc[MC_OLDMASK] = f.mask;
     mc[MC_FPSTATE] = fp_va as u64;
     // rbx, rbp, r12-r15 stay 0: the handler preserves them (SysV ABI), and

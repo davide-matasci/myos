@@ -112,6 +112,12 @@ pub fn set_kernel_stack_top(_top: usize) {}
 /// Record which CPU a kernel stack belongs to (riscv64 only; see there).
 pub fn stamp_stack_cpu(_kstack_top: usize, _cpu: usize) {}
 
+/// The arch word of a foreign-personality signal frame (x86_64's user CS):
+/// none here.
+pub fn signal_arch_word() -> u64 {
+    0
+}
+
 /// Exec from a syscall: rewrite the saved frame and eret through it, or
 /// return so the caller falls through to [`enter_user`].
 pub fn exec_resume(entry: usize, rsp: usize, argc: usize, argv: usize) {

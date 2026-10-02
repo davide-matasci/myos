@@ -73,6 +73,7 @@ fn main() {
         ("netfs", "netfs"),
         ("fat", "fat"),
         ("ext2", "ext2"),
+        ("linux", "linux"),
     ] {
         nested_elf(
             &cargo,
@@ -453,7 +454,10 @@ fn nested_elf(
     let mut rustflags = String::from("-C panic=abort");
     // ext2's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
     if target.contains("x86_64")
-        && matches!(bin, "ext2" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "virtio_blk" | "nvme")
+        && matches!(
+            bin,
+            "ext2" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "virtio_blk" | "nvme" | "linux"
+        )
     {
         rustflags = String::from("-C panic=abort -C relocation-model=pic");
     }

@@ -108,6 +108,12 @@ pub fn set_kernel_stack_top(top: usize) {
     }
 }
 
+/// The arch word of a foreign-personality signal frame (x86_64's user CS):
+/// none here.
+pub fn signal_arch_word() -> u64 {
+    0
+}
+
 /// Stamp the logical CPU id into the footer below a task's kernel stack so
 /// the trap vector can reload `tp` without trusting user TLS (see the trap
 /// vector in `interrupts`). Word 0 of the stack allocation is reserved for
@@ -137,8 +143,7 @@ const USER_SSTATUS: u64 = (2 << 32) | (1 << 5); // UXL=64-bit user, SPIE, SPP=0
 /// `sstatus` for entering U-mode. The optional Linux layer turns the FPU on
 /// for Linux tasks (rv64gc); native programs are soft-float.
 fn user_sstatus() -> u64 {
-    #[cfg(feature = "linux-compat")]
-    if crate::linux::active() {
+    if crate::personality::fpu_on() {
         return USER_SSTATUS | super::fpu::SSTATUS_FS_INITIAL;
     }
     USER_SSTATUS

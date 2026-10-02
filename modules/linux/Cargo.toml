@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "linux"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Linux syscall compatibility layer as a kernel module: a personality for static-PIE and dynamic musl binaries (x86_64, aarch64, riscv64)."
+
+[[bin]]
+name = "linux"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

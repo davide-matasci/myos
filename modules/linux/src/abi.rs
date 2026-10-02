@@ -37,7 +37,7 @@ pub fn result(ret: usize, generic: usize) -> usize {
         usize::MAX => err(generic),
         x if x == usize::MAX - 1 => err(EIO),
         x if x == usize::MAX - 2 => err(ENXIO),
-        x if x == crate::signal::SYSERR_EINTR => err(EINTR),
+        x if x == crate::k::signal::SYSERR_EINTR => err(EINTR),
         x => x,
     }
 }

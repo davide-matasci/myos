@@ -77,7 +77,6 @@ const SYS_SIGACTION2: usize = 50;
 /// linux_next_exec(): the caller's next successful exec starts the image
 /// with the Linux personality (the `linux` launcher). Only with the optional
 /// `linux-compat` feature; otherwise an unknown syscall.
-#[cfg(feature = "linux-compat")]
 const SYS_LINUX_NEXT_EXEC: usize = 51;
 /// `nanosleep(ns, flags)`: block the task (its CPU halts) until the deadline
 /// or a signal. `flags & 1` (`SLEEP_ANY_EVENT`) also ends the sleep on any
@@ -162,13 +161,13 @@ impl SyscallRegs {
     }
     /// Word `i` of the saved user registers, for the Linux layer's syscall
     /// arguments and signal frames (layout per arch: see above).
-    #[cfg(feature = "linux-compat")]
-    pub fn word(&self, i: usize) -> u64 {
-        unsafe { *self.0.add(i) }
+    /// The raw block, for a personality module (`crate::personality`).
+    pub fn as_ptr(&self) -> *mut u64 {
+        self.0
     }
-    #[cfg(feature = "linux-compat")]
-    pub fn set_word(&mut self, i: usize, v: u64) {
-        unsafe { *self.0.add(i) = v }
+    /// A module's view of the live block (`KernelApi::native_syscall`).
+    pub fn from_ptr(p: *mut u64) -> Self {
+        Self(p)
     }
 }
 
@@ -188,21 +187,27 @@ pub extern "C" fn syscall_dispatch(
 ) -> usize {
     task::save_user_context(user_rip, user_rsp);
     let mut regs = SyscallRegs(regs);
-    // Optional Linux layer: a task exec'd with a Linux personality makes
-    // Linux syscalls (own numbers, errno returns); see `crate::linux`.
-    #[cfg(feature = "linux-compat")]
-    if crate::linux::active() {
-        let ret = crate::linux::dispatch(nr, a0, a1, a2, &mut regs);
+    // A task exec'd with a foreign personality (the Linux module) makes that
+    // personality's syscalls (own numbers, errno returns); see `personality`.
+    if let Some(ret) = crate::personality::dispatch(nr, a0, a1, a2, &mut regs) {
         return crate::signal::on_syscall_exit(&mut regs, nr, a0, ret);
     }
-    let ret = match nr {
+    let ret = native_dispatch(nr, a0, a1, a2, &mut regs);
+    // Terminate, run a handler, or turn an interrupted wait into EINTR.
+    crate::signal::on_syscall_exit(&mut regs, nr, a0, ret)
+}
+
+/// The native syscall table (also reachable by a personality module through
+/// `KernelApi::native_syscall`).
+pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: &mut SyscallRegs) -> usize {
+    match nr {
         SYS_WRITE => sys_write(a0, a1, a2),
         SYS_EXIT => sys_exit(a0),
         SYS_OPEN => sys_open(a0, a1, a2),
         SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
         SYS_EXEC => sys_exec(a0, a1, a2),
-        SYS_FORK => sys_fork(&regs),
+        SYS_FORK => sys_fork(regs),
         SYS_WAIT => sys_wait(a0, a1),
         SYS_WAITPID => sys_waitpid(a0, a1, a2),
         SYS_LISTDIR => sys_listdir(a0, a1, a2),
@@ -242,23 +247,22 @@ pub extern "C" fn syscall_dispatch(
         SYS_PIPE_PEER => sys_pipe_peer(a0),
         SYS_CHROOT => sys_chroot(a0, a1),
         SYS_MKFIFO => sys_mkfifo(a0, a1, a2),
-        SYS_SIGRETURN => crate::signal::sigreturn(&mut regs),
+        SYS_SIGRETURN => crate::signal::sigreturn(regs),
         SYS_SIGPENDING => crate::signal::sigpending(),
         SYS_SIGSUSPEND => crate::signal::sigsuspend(a0 as u32),
         SYS_SIGWAIT => crate::signal::sigwait(a0 as u32),
         SYS_NANOSLEEP => sys_nanosleep(a0, a1),
-        SYS_THREAD_SPAWN => sys_thread_spawn(&regs, a0),
+        SYS_THREAD_SPAWN => sys_thread_spawn(regs, a0),
         SYS_THREAD_EXIT => task::thread_exit(a0 as u8),
         SYS_WAIT_ADDR => sys_wait_addr(a0, a1, a2),
         SYS_WAKE_ADDR => task::wake_addr(a0, a1),
         SYS_GETTID => task::current_tid(),
         SYS_INSMOD => sys_insmod(a0, a1),
-        #[cfg(feature = "linux-compat")]
-        SYS_LINUX_NEXT_EXEC => crate::linux::sys_linux_next_exec(),
+        SYS_LINUX_NEXT_EXEC => {
+            if crate::personality::request_next_exec() { 0 } else { SYSERR }
+        }
         _ => SYSERR,
-    };
-    // Terminate, run a handler, or turn an interrupted wait into EINTR.
-    crate::signal::on_syscall_exit(&mut regs, nr, a0, ret)
+    }
 }
 
 fn sys_exit(code: usize) -> ! {
@@ -572,19 +576,15 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
         owned = v;
         &owned
     };
-    // Optional Linux layer: a dynamically linked program also needs its
+    // A foreign-personality image that is dynamically linked also needs its
     // interpreter (the dynamic linker). Read it before the current image is
     // replaced, so a missing one fails the exec cleanly.
-    #[cfg(feature = "linux-compat")]
-    let interp = match crate::linux::exec_interp(bytes) {
+    let interp = match exec_interp(bytes) {
         Ok(i) => i,
         Err(()) => return SYSERR,
     };
     // A dynamically linked program is relocated by its dynamic linker.
-    #[cfg(feature = "linux-compat")]
     let relocate = interp.is_none();
-    #[cfg(not(feature = "linux-compat"))]
-    let relocate = true;
     // The old image goes away from here on: the process's other threads
     // end first.
     if !task::exec_alone() {
@@ -655,7 +655,6 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     };
     // The interpreter goes at the start of the new image's mmap window,
     // unrelocated; execution starts there (AT_ENTRY still names the program).
-    #[cfg(feature = "linux-compat")]
     let interp_map = match &interp {
         Some(ib) => {
             let at = mmap_base_va(base_u, off);
@@ -666,12 +665,8 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
         }
         None => None,
     };
-    // The optional Linux layer adds the auxv entries musl's startup reads.
-    #[cfg(feature = "linux-compat")]
-    let aux = crate::linux::exec_auxv(bytes, base_u, entry, interp_map.as_ref().map(|m| m.0));
-    #[cfg(not(feature = "linux-compat"))]
-    let aux = AuxV::new();
-    #[cfg(feature = "linux-compat")]
+    // A foreign-personality image gets the SysV auxv its libc startup reads.
+    let aux = exec_auxv(bytes, base_u, entry, interp_map.as_ref().map(|m| m.0));
     let entry = interp_map.as_ref().map_or(entry, |m| m.1);
     let Some((rsp, argv)) =
         build_argv_stack(aspace, base_u, off, arg_refs, env_refs, aux.entries())
@@ -691,7 +686,6 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     // mutating the running task and resuming.
     crate::arch::sync_cpu_id_reg();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
-    #[cfg(feature = "linux-compat")]
     if let Some((_, _, runs)) = &interp_map {
         for &(va, pages, prot) in runs {
             if !task::mmap_add(va, pages, prot) {
@@ -1457,4 +1451,78 @@ fn sys_mount(args_ptr: usize) -> usize {
     } else {
         SYSERR
     }
+}
+
+/// The auxiliary vector for an image about to start with a foreign
+/// personality (empty for native images): a libc startup (musl's static-PIE
+/// one, or the dynamic linker of a dynamic program) finds the program
+/// headers (PT_DYNAMIC, PT_TLS) through `AT_PHDR`, and the dynamic linker its
+/// own load address through `AT_BASE`.
+fn exec_auxv(elf_bytes: &[u8], base: u64, entry: usize, interp_base: Option<usize>) -> AuxV {
+    let mut aux = AuxV::new();
+    if !crate::personality::pending() {
+        return aux;
+    }
+    let u16_at = |o: usize| elf_bytes.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u64);
+    let u32_at = |o: usize| elf_bytes.get(o..o + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as u64);
+    let u64_at = |o: usize| elf_bytes.get(o..o + 8).map_or(0, |b| u64::from_le_bytes(b.try_into().unwrap()));
+    let phoff = u64_at(0x20);
+    let phent = u16_at(0x36);
+    let phnum = u16_at(0x38);
+    let Ok(span) = elf::image_span(elf_bytes) else {
+        return aux;
+    };
+    let bias = base.wrapping_sub(span.min_vaddr);
+    // Where the program headers sit in memory: PT_PHDR, else the PT_LOAD
+    // whose file range covers them.
+    let mut phdr = 0u64;
+    for i in 0..phnum {
+        let p = (phoff + i * phent) as usize;
+        let (ty, off, va, filesz) = (u32_at(p), u64_at(p + 8), u64_at(p + 16), u64_at(p + 32));
+        if ty == 6 {
+            phdr = va;
+            break;
+        }
+        if ty == 1 && off <= phoff && phoff < off + filesz {
+            phdr = va + (phoff - off);
+        }
+    }
+    const AT_PHDR: usize = 3;
+    const AT_PHENT: usize = 4;
+    const AT_PHNUM: usize = 5;
+    const AT_PAGESZ: usize = 6;
+    const AT_ENTRY: usize = 9;
+    const AT_CLKTCK: usize = 17;
+    aux.push(AT_PHDR, (bias + phdr) as usize);
+    aux.push(AT_PHENT, phent as usize);
+    aux.push(AT_PHNUM, phnum as usize);
+    aux.push(AT_PAGESZ, PAGE);
+    aux.push(AT_ENTRY, entry);
+    aux.push(AT_CLKTCK, 100);
+    if let Some(b) = interp_base {
+        const AT_BASE: usize = 7;
+        aux.push(AT_BASE, b);
+    }
+    aux
+}
+
+/// For a foreign-personality exec of a dynamically linked program: the bytes
+/// of its interpreter (`PT_INTERP`, e.g. `/lib/ld-musl-x86_64.so.1`), which
+/// `sys_exec` maps next to it and starts instead. `Ok(None)` for a static
+/// image or a native exec; `Err` if the interpreter cannot be read.
+fn exec_interp(elf_bytes: &[u8]) -> Result<Option<alloc::borrow::Cow<'static, [u8]>>, ()> {
+    use alloc::borrow::Cow;
+    if !crate::personality::pending() {
+        return Ok(None);
+    }
+    let Some(path) = elf::interp_path(elf_bytes) else {
+        return Ok(None);
+    };
+    let path = core::str::from_utf8(path).map_err(|_| ())?;
+    let real = resolve_copied_path(path).ok_or(())?;
+    if let Some(b) = fs::lookup(&real) {
+        return Ok(Some(Cow::Borrowed(b)));
+    }
+    const INTERP_MAX: usize = 16 << 20;
+    fs::read_all(&real, INTERP_MAX).map(|v| Some(Cow::Owned(v))).ok_or(())
 }

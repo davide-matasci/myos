@@ -374,7 +374,6 @@ impl AuxV {
     pub const fn new() -> Self {
         Self { e: [(0, 0); 16], n: 0 }
     }
-    #[cfg(feature = "linux-compat")]
     pub fn push(&mut self, key: usize, val: usize) {
         if self.n < self.e.len() {
             self.e[self.n] = (key, val);
@@ -492,7 +491,6 @@ pub(super) fn build_argv_stack(
 /// linker relocates itself): fresh frames, protections from its PT_LOAD
 /// flags. Returns the biased entry and the mapped runs `(va, pages, prot)`
 /// for the caller to record as mmap regions.
-#[cfg(feature = "linux-compat")]
 pub(crate) fn map_elf_unrelocated(
     aspace: u64,
     bytes: &[u8],

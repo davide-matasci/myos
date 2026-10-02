@@ -268,11 +268,11 @@ pub fn on_syscall_exit(regs: &mut SyscallRegs, nr: usize, a0: usize, ret: usize)
             };
             // After sigsuspend, the handler returns to the caller's mask.
             let restore_mask = suspend_mask.unwrap_or(old_blocked);
-            // Optional Linux layer: a Linux task gets a Linux `rt_sigframe`.
-            #[cfg(feature = "linux-compat")]
-            if crate::linux::active() {
-                return crate::linux::deliver(regs, sig, &act, tramp, restore_mask, pc, ret)
-                    .unwrap_or_else(|| terminate(SIGSEGV));
+            // A foreign-personality task gets its own frame (Linux `rt_sigframe`).
+            match crate::personality::deliver(regs, sig, &act, tramp, restore_mask, pc, ret) {
+                crate::personality::Deliver::Native => {}
+                crate::personality::Deliver::Done(v) => return v,
+                crate::personality::Deliver::Failed => terminate(SIGSEGV),
             }
             let sp = regs.sp();
             let frame_va = (sp.wrapping_sub(RED_ZONE + FRAME_WORDS * 8)) & !15;

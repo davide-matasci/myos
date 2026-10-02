@@ -8,9 +8,9 @@ use alloc::vec::Vec;
 
 use super::abi::*;
 use super::files;
-use crate::fs;
-use crate::task;
-use crate::user::{self, SyscallRegs};
+use crate::k::fs;
+use crate::k::task;
+use crate::k::user::{self, SyscallRegs};
 
 const AT_FDCWD: usize = -100isize as usize;
 const AT_EMPTY_PATH: usize = 0x1000;
@@ -33,7 +33,7 @@ pub fn ret(r: R) -> usize {
 
 /// A native result that is one of its failure sentinels.
 fn native_failed(r: usize) -> bool {
-    r >= crate::signal::SYSERR_EINTR
+    r >= crate::k::signal::SYSERR_EINTR
 }
 
 fn native(r: usize, generic: usize) -> R {
@@ -41,12 +41,8 @@ fn native(r: usize, generic: usize) -> R {
     if native_failed(r) { Err(v.wrapping_neg()) } else { Ok(v) }
 }
 
-fn aspace() -> u64 {
-    task::current_aspace()
-}
-
 pub(super) fn put(ptr: usize, bytes: &[u8]) -> Result<(), usize> {
-    if ptr == 0 || !user::buffer_ok(ptr, bytes.len()) || !user::copy_to_user(aspace(), ptr, bytes) {
+    if ptr == 0 || !user::buffer_ok(ptr, bytes.len()) || !user::copy_to_user(ptr, bytes) {
         return Err(EFAULT);
     }
     Ok(())
@@ -57,7 +53,7 @@ pub(super) fn get_bytes(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
 }
 
 fn get(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
-    if ptr == 0 || !user::copy_from_user(aspace(), ptr, out) {
+    if ptr == 0 || !user::copy_from_user(ptr, out) {
         return Err(EFAULT);
     }
     Ok(())
@@ -235,8 +231,7 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
         // Directories have no native fd; hold the slot with the system's
         // /dev/null (not the chroot's) and serve getdents64 from the path
         // table.
-        let null = fs::open("/dev/null", 0).ok_or(ENOENT)?;
-        let fd = task::fd_open(null, 0).ok_or(EMFILE)?;
+        let fd = native(user::open_path("/dev/null", 0), EMFILE)?;
         files::set(fd, view_path(&p), true);
         return Ok(fd);
     }
@@ -480,9 +475,8 @@ pub fn mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, off: 
 /// `pread64(fd, buf, count, offset)`: a read at `offset` that leaves the
 /// file position alone.
 pub fn pread(fd: usize, buf: usize, count: usize, off: usize) -> R {
-    let node = task::fd_file_node(fd).ok_or(ESPIPE)?;
     let mut tmp = alloc::vec![0u8; count.min(1 << 20)];
-    let n = fs::read(&node, off, &mut tmp);
+    let n = task::fd_pread(fd, off, &mut tmp).ok_or(ESPIPE)?;
     put(buf, &tmp[..n])?;
     Ok(n)
 }
@@ -503,7 +497,7 @@ pub fn execve(path: usize, argv: usize, envp: usize) -> R {
     }
     let arg_refs: Vec<&[u8]> = args.iter().map(|s| s.as_slice()).collect();
     let env_refs: Vec<&[u8]> = env.iter().map(|s| s.as_slice()).collect();
-    native(super::exec_linux(&p, &arg_refs, &env_refs), ENOENT)
+    native(user::exec_linux(&p, &arg_refs, &env_refs), ENOENT)
 }
 
 pub fn wait4(pid: usize, status: usize, options: usize, rusage: usize) -> R {
@@ -535,7 +529,7 @@ pub fn kill(pid: usize, sig: usize) -> R {
     if n == 0 {
         return Err(EINVAL);
     }
-    if crate::signal::kill(pid as isize, n) { Ok(0) } else { Err(ESRCH) }
+    if crate::k::signal::kill(pid as isize, n) { Ok(0) } else { Err(ESRCH) }
 }
 
 pub fn uname(buf: usize) -> R {
@@ -562,13 +556,13 @@ pub(super) fn timespec_deadline(ts: usize, absolute: bool) -> R2<u64> {
 
 /// The monotonic-ns deadline (for `block_until`) of `deadline_us`.
 pub(super) fn monotonic_deadline(deadline_us: u64) -> u64 {
-    crate::time::monotonic_ns()
+    crate::k::time::monotonic_ns()
         .saturating_add(deadline_us.saturating_sub(now_us()).saturating_mul(1000))
         .max(1)
 }
 
 pub(super) fn now_us() -> u64 {
-    match crate::time::timeval() {
+    match crate::k::time::timeval() {
         Some((s, us)) => s as u64 * 1_000_000 + us as u64,
         None => 0,
     }
@@ -601,7 +595,7 @@ pub fn nanosleep(req: usize, absolute: bool) -> R {
         if now_us() >= deadline {
             return Ok(0);
         }
-        if crate::signal::interrupt_wait() {
+        if crate::k::signal::interrupt_wait() {
             return Err(EINTR);
         }
         task::sleep_until(mono, false);
@@ -613,7 +607,7 @@ pub fn getrandom(buf: usize, len: usize) -> R {
     let mut tmp = [0u8; 256];
     while done < len {
         let n = (len - done).min(tmp.len());
-        crate::rng::fill(&mut tmp[..n]);
+        crate::k::rng::fill(&mut tmp[..n]);
         put(buf + done, &tmp[..n])?;
         done += n;
     }
@@ -681,13 +675,13 @@ pub fn poll(fds: usize, nfds: usize, timeout_ms: isize) -> R {
         if ready > 0 || deadline.is_some_and(|d| now_us() >= d) {
             return Ok(ready);
         }
-        if crate::signal::interrupt_wait() {
+        if crate::k::signal::interrupt_wait() {
             return Err(EINTR);
         }
         // Sleep until something happens (pipe/tty/device traffic, an exit)
         // or the timeout; readiness is re-scanned above either way.
         let mono = match deadline {
-            Some(d) => crate::time::monotonic_ns()
+            Some(d) => crate::k::time::monotonic_ns()
                 .saturating_add(d.saturating_sub(now_us()).saturating_mul(1000))
                 .max(1),
             None => 0,

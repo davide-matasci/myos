@@ -192,8 +192,7 @@ pub fn replace_user(
     signal_table_exec(current_slot());
     fpu::reset(current_slot());
     tp::set(0);
-    #[cfg(feature = "linux-compat")]
-    crate::linux::on_exec(current_slot());
+    crate::personality::on_exec(current_slot());
     user::switch_aspace(aspace);
     set_loaded_aspace(aspace);
 }
@@ -329,8 +328,7 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
     signal_table_fork(ppid, slot);
     fpu::fork(slot);
     tp::fork(current_slot(), slot);
-    #[cfg(feature = "linux-compat")]
-    crate::linux::on_fork(ppid, slot);
+    crate::personality::on_fork(ppid, slot);
     drop(tasks);
     user::note_fork();
     irq_restore(flags);
@@ -564,8 +562,7 @@ fn spawn_inner(
     signal_table_reset(slot);
     fpu::reset(slot);
     tp::reset(slot);
-    #[cfg(feature = "linux-compat")]
-    crate::linux::on_spawn(slot);
+    crate::personality::on_spawn(slot);
     let aff = tasks[slot].affinity;
     drop(tasks);
     irq_restore(flags);

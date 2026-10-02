@@ -44,23 +44,21 @@ fi
 STAMP="target/.myos-ci-kernel-version"
 
 # Optional root-package features for the CI build (full boot sets
-# MYOS_CI_FEATURES=linux_compat: the optional Linux layer in every image).
+# MYOS_CI_FEATURES=linux_compat: the optional Linux layer loaded at boot and
+# its musl test binaries in every image). The kernels and the `linux` module
+# are the same in both builds; only the images differ.
 CI_FEATURES="${MYOS_CI_FEATURES:-}"
 linux_compat() { [[ " ${CI_FEATURES//,/ } " == *" linux_compat "* ]]; }
 FEATURE_ARGS=()
-KERNEL_FEATURE_ARGS=()
 if [[ -n "$CI_FEATURES" ]]; then
   FEATURE_ARGS=(--features "$CI_FEATURES")
 fi
-if linux_compat; then
-  KERNEL_FEATURE_ARGS=(--features linux-compat)
-fi
 
-# The Linux layer's userspace files (linux-compat/build.sh) the images take.
+# The Linux layer's musl files (linux-compat/build.sh) the images take with
+# the feature; the `linux` launcher is in HELLO_OK_ELFS (every image).
 linux_compat_members() {
   local arch
   for arch in x86_64 aarch64 riscv64; do
-    echo "target/linux-launcher-${arch}-unknown-none"
     echo "target/linux-smoke-${arch}-linux-musl"
     echo "target/linux-compat/${arch}"
   done
@@ -149,6 +147,7 @@ kernel_inputs_hash() {
           sha256sum .cargo/config.toml
         fi
         printf 'features:%s\n' "$CI_FEATURES"
+        sha256sum linux-compat/launcher.c linux-compat/build-launcher.sh
         if linux_compat; then
           hash_tree linux-compat
           sha256sum linux-compat/build.sh
@@ -298,6 +297,12 @@ HELLO_OK_ELFS=(
   target/ext2-x86_64-unknown-none
   target/ext2-aarch64-unknown-none-softfloat
   target/ext2-riscv64imac-unknown-none-elf
+  target/linux-x86_64-unknown-none
+  target/linux-aarch64-unknown-none-softfloat
+  target/linux-riscv64imac-unknown-none-elf
+  target/linux-launcher-x86_64-unknown-none
+  target/linux-launcher-aarch64-unknown-none
+  target/linux-launcher-riscv64-unknown-none
   target/ok-x86_64-unknown-none
   target/ok-aarch64-unknown-none-softfloat
   target/ok-riscv64imac-unknown-none-elf
@@ -418,12 +423,14 @@ do_clean_and_build() {
   cargo clean -p kernel --target x86_64-unknown-none
   cargo clean -p kernel --target aarch64-unknown-none-softfloat
   cargo clean -p kernel --target riscv64imac-unknown-none-elf
+  # The `linux` launcher is in every initramfs (the layer is a module).
+  "$ROOT/linux-compat/build-launcher.sh"
   if linux_compat; then
     "$ROOT/linux-compat/build.sh"
   fi
   cargo build "${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"}"
-  cargo build -p kernel --target aarch64-unknown-none-softfloat "${KERNEL_FEATURE_ARGS[@]+"${KERNEL_FEATURE_ARGS[@]}"}"
-  cargo build -p kernel --target riscv64imac-unknown-none-elf "${KERNEL_FEATURE_ARGS[@]+"${KERNEL_FEATURE_ARGS[@]}"}"
+  cargo build -p kernel --target aarch64-unknown-none-softfloat
+  cargo build -p kernel --target riscv64imac-unknown-none-elf
 }
 
 mkdir -p target

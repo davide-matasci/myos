@@ -829,10 +829,6 @@ fn build_aarch64_kernel() -> PathBuf {
         .arg("kernel")
         .arg("--target")
         .arg(AARCH64_TARGET);
-    // The optional Linux compatibility layer (`--features linux_compat`).
-    if linux_compat_enabled() {
-        cmd.args(["--features", "linux-compat"]);
-    }
     if !cfg!(debug_assertions) {
         cmd.arg("--release");
     }
@@ -1069,10 +1065,6 @@ fn build_riscv64_kernel() -> PathBuf {
         .arg("kernel")
         .arg("--target")
         .arg(RISCV64_TARGET);
-    // The optional Linux compatibility layer (`--features linux_compat`).
-    if linux_compat_enabled() {
-        cmd.args(["--features", "linux-compat"]);
-    }
     cmd.env(
         "RUSTFLAGS",
         "-C panic=abort -C relocation-model=static -C code-model=large",

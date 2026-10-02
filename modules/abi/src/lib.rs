@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 12;
+pub const ABI_VERSION: u32 = 13;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
@@ -187,6 +187,125 @@ pub struct ModuleConsoleOps {
     pub keymap_loaded: unsafe extern "C" fn() -> i32,
 }
 
+// ---- ABI 13: personalities (the Linux layer is a module) --------------------
+
+/// Task slots (pids / tids are slot indexes), the user page size and the
+/// native exec limits, for modules that keep per-task state or build execs.
+pub const MYOS_MAX_TASKS: usize = 64;
+pub const MYOS_PAGE: usize = 4096;
+pub const MYOS_MAX_ARGC: usize = 1024;
+pub const MYOS_MAX_ENVC: usize = 1024;
+pub const MYOS_MAX_EXEC_STRINGS: usize = 128 * 1024;
+
+/// Native syscall results: anything from [`MYOS_SYSERR_EINTR`] up is a
+/// failure sentinel (`usize::MAX` the generic one).
+pub const MYOS_SYSERR: usize = usize::MAX;
+pub const MYOS_SYSERR_EIO: usize = usize::MAX - 1;
+pub const MYOS_SYSERR_ENXIO: usize = usize::MAX - 2;
+pub const MYOS_SYSERR_EINTR: usize = usize::MAX - 3;
+
+/// Native signal dispositions (`signal_get_action`): default, ignore; any
+/// other value is a caught handler's address. Native signal numbers are
+/// newlib / BSD (`SIGKILL` 9, `SIGSEGV` 11).
+pub const MYOS_HANDLER_DFL: usize = 0;
+pub const MYOS_HANDLER_IGN: usize = 1;
+pub const MYOS_SIGSEGV: u32 = 11;
+
+/// Size of the FP/SIMD register image `fpu_save` writes (x86_64 FXSAVE,
+/// aarch64 `fpsimd_context` head + v0-v31, riscv64 f0-f31 + fcsr). The
+/// buffer must be 16-byte aligned.
+#[cfg(target_arch = "x86_64")]
+pub const MYOS_FP_BYTES: usize = 512;
+#[cfg(target_arch = "aarch64")]
+pub const MYOS_FP_BYTES: usize = 528;
+#[cfg(target_arch = "riscv64")]
+pub const MYOS_FP_BYTES: usize = 264;
+
+/// A kernel-memory string (not NUL-terminated).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct StrRef {
+    pub ptr: *const u8,
+    pub len: usize,
+}
+
+/// `vfs_stat` result.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct PathStat {
+    pub mode: u32,
+    pub nlink: u32,
+    pub size: u64,
+    pub ino: u64,
+    pub dev: u64,
+}
+
+/// `path_resolve` modes: the task's own view (cwd applied, chroot-relative),
+/// the real VFS path (cwd, chroot and symlinks applied), the real path with a
+/// symlink in the last component not followed.
+pub const MYOS_PATH_VIRTUAL: u32 = 0;
+pub const MYOS_PATH_REAL: u32 = 1;
+pub const MYOS_PATH_REAL_NOFOLLOW: u32 = 2;
+
+/// `fd_kind` results.
+pub const MYOS_FD_TTY: i32 = 0;
+pub const MYOS_FD_PIPE: i32 = 1;
+pub const MYOS_FD_FILE: i32 = 2;
+
+/// `wait_addr` results.
+pub const MYOS_WAIT_WOKEN: i32 = 0;
+pub const MYOS_WAIT_CHANGED: i32 = 1;
+pub const MYOS_WAIT_TIMEOUT: i32 = 2;
+pub const MYOS_WAIT_INTERRUPTED: i32 = 3;
+pub const MYOS_WAIT_FAULT: i32 = 4;
+
+/// A caught signal about to run its handler in a task of a foreign
+/// personality (`PersonalityOps::deliver`): native signal number, the
+/// handler and its `sigaction` flags, the sigreturn trampoline (the
+/// registered `sa_restorer`, or the kernel's), the native blocked mask the
+/// handler's return restores, and the interrupted PC and syscall result.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SignalDelivery {
+    pub sig: u32,
+    pub flags: u32,
+    pub handler: usize,
+    pub tramp: usize,
+    pub restore_mask: u32,
+    pub pc: usize,
+    pub ret: usize,
+    /// Arch word for the frame: x86_64 the user code segment selector (CS
+    /// at handler entry); 0 elsewhere.
+    pub arch: u64,
+}
+
+/// `PersonalityOps::flags`: the personality's tasks run with the FPU on
+/// (riscv64 `sstatus.FS`; native programs are soft-float there).
+pub const PERSONALITY_FPU_ON: u32 = 1;
+
+/// A foreign syscall personality (`KernelApi::personality_register`; one per
+/// boot). A task acquires it through `SYS_LINUX_NEXT_EXEC` + exec or
+/// [`KernelApi::personality_exec`]; the kernel tracks which tasks have it and
+/// calls these hooks for them. `on_fork` / `on_thread` run under the task
+/// lock with interrupts off.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PersonalityOps {
+    pub flags: u32,
+    /// A syscall from a task with the personality: `regs` is the saved
+    /// user-register block (layout per arch, see `user::SyscallRegs`).
+    pub syscall: unsafe extern "C" fn(nr: usize, a0: usize, a1: usize, a2: usize, regs: *mut u64) -> usize,
+    /// A successful exec replaced `slot`'s image (with or without the personality).
+    pub on_exec: unsafe extern "C" fn(slot: usize),
+    pub on_fork: unsafe extern "C" fn(parent: usize, child: usize),
+    pub on_thread: unsafe extern "C" fn(creator: usize, slot: usize),
+    pub on_spawn: unsafe extern "C" fn(slot: usize),
+    /// Build the signal frame and redirect `regs` to the handler; writes the
+    /// result-register value to `out`. Negative if the frame does not fit
+    /// (the kernel then kills the task with SIGSEGV).
+    pub deliver: unsafe extern "C" fn(regs: *mut u64, d: *const SignalDelivery, out: *mut usize) -> i32,
+}
+
 /// Bind `dev_id` to a filesystem and fill `ops`. Return 0 on success.
 pub type FsBind = unsafe extern "C" fn(dev_id: u32, ops: *mut ModuleVfsOps) -> i32;
 
@@ -352,6 +471,100 @@ pub struct KernelApi {
     /// Install the console (one per boot): the kernel replays the boot output
     /// it buffered so far, then mirrors every later line. 0 ok.
     pub console_register: unsafe extern "C" fn(ops: *const ModuleConsoleOps) -> i32,
+    // --- ABI 13: personalities and the kernel services a syscall layer needs ---
+    /// Install the foreign personality (one per boot). 0 ok.
+    pub personality_register: unsafe extern "C" fn(ops: *const PersonalityOps) -> i32,
+    /// Exec `path` with `argv` / `envp` (kernel strings) so the new image
+    /// starts with the personality. Native result (does not return on success).
+    pub personality_exec: unsafe extern "C" fn(
+        path: StrRef,
+        argv: *const StrRef,
+        argc: usize,
+        envp: *const StrRef,
+        envc: usize,
+    ) -> usize,
+    /// Run native syscall `nr` for the current task (no personality
+    /// dispatch, no signal handling): the native result.
+    pub native_syscall: unsafe extern "C" fn(nr: usize, a0: usize, a1: usize, a2: usize, regs: *mut u64) -> usize,
+    /// Copy `len` bytes from user address `src_user` into kernel `dst`. 0 ok,
+    /// negative on fault.
+    pub copy_from_user: unsafe extern "C" fn(src_user: usize, dst: *mut u8, len: usize) -> i32,
+    /// `[ptr, ptr+len)` lies in the current task's user mappings.
+    pub user_buffer_ok: unsafe extern "C" fn(ptr: usize, len: usize) -> i32,
+    pub current_tid: unsafe extern "C" fn() -> usize,
+    pub current_pid: unsafe extern "C" fn() -> usize,
+    pub current_ppid: unsafe extern "C" fn() -> usize,
+    /// `id` is a live user task.
+    pub task_is_live_user: unsafe extern "C" fn(id: usize) -> i32,
+    /// The current process is chrooted.
+    pub task_has_root: unsafe extern "C" fn() -> i32,
+    /// Resolve `path` for the current task (`MYOS_PATH_*`) into `out`: the
+    /// length, or negative.
+    pub path_resolve: unsafe extern "C" fn(path: StrRef, mode: u32, out: *mut u8, cap: usize) -> i32,
+    pub vfs_stat: unsafe extern "C" fn(path: StrRef, out: *mut PathStat) -> i32,
+    /// Directory listing (newline-separated names) into `buf`: the length.
+    pub vfs_listdir: unsafe extern "C" fn(path: StrRef, buf: *mut u8, cap: usize) -> i32,
+    pub vfs_mkdir: unsafe extern "C" fn(path: StrRef) -> i32,
+    pub vfs_rmdir: unsafe extern "C" fn(path: StrRef) -> i32,
+    pub vfs_unlink: unsafe extern "C" fn(path: StrRef) -> i32,
+    pub vfs_rename: unsafe extern "C" fn(old: StrRef, new: StrRef) -> i32,
+    pub vfs_symlink: unsafe extern "C" fn(target: StrRef, link: StrRef) -> i32,
+    /// The link target into `buf`: the length, or negative.
+    pub vfs_readlink: unsafe extern "C" fn(path: StrRef, buf: *mut u8, cap: usize) -> i32,
+    /// open(2) of a kernel-string path (cwd-relative or absolute) with
+    /// native flags: the fd, or a native failure sentinel.
+    pub open_path: unsafe extern "C" fn(path: StrRef, flags: usize) -> usize,
+    pub chdir_path: unsafe extern "C" fn(path: StrRef) -> usize,
+    /// Read `len` bytes at `pos` of the file behind `fd` into kernel `buf`
+    /// (the file position is left alone): bytes read, or negative if not a file.
+    pub fd_pread: unsafe extern "C" fn(fd: usize, pos: usize, buf: *mut u8, len: usize) -> i32,
+    /// What `fd` refers to (`MYOS_FD_*`; a file's size in `*size`), or negative.
+    pub fd_kind: unsafe extern "C" fn(fd: usize, size: *mut usize) -> i32,
+    /// Pipe readiness bits (1 readable, 2 writable, 4 hung up), or negative
+    /// when the fd is not a pipe.
+    pub fd_poll_bits: unsafe extern "C" fn(fd: usize) -> i32,
+    pub fd_dup_min: unsafe extern "C" fn(fd: usize, min: usize) -> i32,
+    pub fd_dup2: unsafe extern "C" fn(old: usize, new: usize) -> i32,
+    pub fd_close: unsafe extern "C" fn(fd: usize) -> i32,
+    /// write(2) from user memory: native result.
+    pub fd_write: unsafe extern "C" fn(fd: usize, buf_user: usize, len: usize) -> usize,
+    pub fd_ioctl: unsafe extern "C" fn(fd: usize, request: usize, arg: usize) -> usize,
+    pub pipe_open: unsafe extern "C" fn(read_fd: *mut usize, write_fd: *mut usize) -> i32,
+    /// The native mmap (user addresses; `fd` -1 for anonymous): native result.
+    pub mmap: unsafe extern "C" fn(addr: usize, len: usize, prot: usize, flags: usize, fd: isize, off: usize) -> usize,
+    pub signal_get_action: unsafe extern "C" fn(id: usize, sig: u32, handler: *mut usize, flags: *mut u32, mask: *mut u32),
+    pub signal_set_action: unsafe extern "C" fn(id: usize, sig: u32, handler: usize, flags: u32, mask: u32, tramp: usize) -> i32,
+    pub signal_blocked: unsafe extern "C" fn(id: usize) -> u32,
+    pub signal_set_blocked: unsafe extern "C" fn(id: usize, mask: u32),
+    pub signal_pending: unsafe extern "C" fn(id: usize) -> u32,
+    /// Take one pending signal of `set` (native numbering), or negative.
+    pub signal_take: unsafe extern "C" fn(id: usize, set: u32) -> i32,
+    /// kill(2) with a native signal number (`pid` <= 0 as POSIX). 0 ok.
+    pub signal_kill: unsafe extern "C" fn(pid: isize, sig: u32) -> i32,
+    pub signal_sigsuspend: unsafe extern "C" fn(mask: u32) -> usize,
+    /// A signal that terminates or is caught is pending (a wait should end).
+    pub signal_interrupt_wait: unsafe extern "C" fn() -> i32,
+    /// End the current process as if killed by native signal `sig`.
+    pub signal_terminate: unsafe extern "C" fn(sig: u32) -> !,
+    /// Save / load the user FP/SIMD registers (`MYOS_FP_BYTES`, 16-aligned).
+    pub fpu_save: unsafe extern "C" fn(buf: *mut u8),
+    pub fpu_restore: unsafe extern "C" fn(buf: *const u8),
+    pub thread_pointer_get: unsafe extern "C" fn() -> u64,
+    pub thread_pointer_set: unsafe extern "C" fn(v: u64),
+    /// Start a thread resuming like the caller of the syscall in `regs`
+    /// (result 0) on stack `sp`, with thread pointer `tls` when `set_tls`:
+    /// its tid, or negative.
+    pub thread_spawn_from: unsafe extern "C" fn(regs: *mut u64, sp: usize, set_tls: i32, tls: u64) -> i32,
+    pub thread_exit: unsafe extern "C" fn(code: u8) -> !,
+    /// Block while the user word at `addr` holds `expected` (`MYOS_WAIT_*`).
+    pub wait_addr: unsafe extern "C" fn(addr: usize, expected: u32, deadline_ns: u64) -> i32,
+    pub wake_addr: unsafe extern "C" fn(addr: usize, max: usize) -> usize,
+    /// Sleep until the monotonic deadline (a signal may end it early).
+    pub task_sleep_until: unsafe extern "C" fn(deadline_ns: u64),
+    pub task_yield: unsafe extern "C" fn(),
+    /// Wall-clock microseconds since the epoch (0 if no RTC).
+    pub wall_time_us: unsafe extern "C" fn() -> u64,
+    pub rng_fill: unsafe extern "C" fn(buf: *mut u8, len: usize),
 }
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).

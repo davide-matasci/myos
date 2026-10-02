@@ -51,9 +51,3 @@ fi
 ./scripts/ci-registry.sh push lua || true
 ./scripts/ci-registry.sh push os-test || true
 ./scripts/ci-build-kernels.sh
-
-# The optional Linux compatibility layer is off in the CI image; type-check
-# the kernels with it so the feature keeps building as the core changes.
-cargo check -p kernel --target x86_64-unknown-none --features linux-compat
-cargo check -p kernel --target aarch64-unknown-none-softfloat --features linux-compat
-cargo check -p kernel --target riscv64imac-unknown-none-elf --features linux-compat
