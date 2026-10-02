@@ -54,6 +54,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs, user_rip: usize
         14 => ret(lsig::rt_sigprocmask(a[0], a[1], a[2])),
         15 => lsig::rt_sigreturn(regs),
         16 => ret(sys::ioctl(a[0], a[1], a[2])),
+        17 => ret(sys::pread(a[0], a[1], a[2], a[3])),
         19 => ret(sys::rw_vec(a[0], a[1], a[2], false)), // readv
         20 => ret(sys::rw_vec(a[0], a[1], a[2], true)),  // writev
         21 => ret(sys::faccessat(AT_FDCWD, a[0])),       // access

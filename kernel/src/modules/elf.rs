@@ -4,7 +4,7 @@
 //! types rustc actually emits for a `no_std` PIE (`GLOB_DAT`, `JUMP_SLOT`,
 //! `R_*_64`). Symbols come from `.dynsym` or `.symtab`.
 //!
-//! `image_span` / `realize` also load the userspace `init` ELF: copy
+//! `image_span` / `realize_as` also load the userspace `init` ELF: copy
 //! PT_LOAD into a caller buffer and apply relocs for a chosen load bias
 //! (USER_BASE), with no `module_init`.
 
@@ -17,6 +17,8 @@ const ELFDATA2LSB: u8 = 1;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 const PT_LOAD: u32 = 1;
+#[cfg(feature = "linux-compat")]
+const PT_INTERP: u32 = 3;
 const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 const PF_R: u32 = 4;
@@ -253,11 +255,32 @@ fn span_from(hdr: &Ehdr, bytes: &[u8]) -> Result<ImageSpan, LoadError> {
 
 /// Copy PT_LOAD into `dest` (`image_span().span` bytes) and apply relocs
 /// so pointers become `load_bias + vaddr`. Returns the biased entry.
-pub fn realize(bytes: &[u8], dest: *mut u8, load_bias: u64) -> Result<u64, LoadError> {
+///
+/// With `relocate == false` only PT_LOAD is copied: for an image that a
+/// dynamic linker relocates (itself, or a dynamically linked program it
+/// starts), against symbols the kernel cannot resolve.
+pub fn realize_as(bytes: &[u8], dest: *mut u8, load_bias: u64, relocate: bool) -> Result<u64, LoadError> {
     let hdr = parse_ehdr(bytes)?;
     let info = span_from(&hdr, bytes)?;
-    realize_into(bytes, &hdr, &info, dest, load_bias)?;
+    realize_into(bytes, &hdr, &info, dest, load_bias, relocate)?;
     Ok(info.entry.wrapping_add(load_bias))
+}
+
+/// The `PT_INTERP` path (without its NUL), for a dynamically linked image.
+#[cfg(feature = "linux-compat")]
+pub fn interp_path(bytes: &[u8]) -> Option<&[u8]> {
+    let hdr = parse_ehdr(bytes).ok()?;
+    for i in 0..hdr.e_phnum {
+        let p = hdr.e_phoff.checked_add(i.checked_mul(hdr.e_phentsize)?)?;
+        if u32_at(bytes, p).ok()? != PT_INTERP {
+            continue;
+        }
+        let off = u64_at(bytes, p + 8).ok()? as usize;
+        let len = u64_at(bytes, p + 32).ok()? as usize;
+        let s = bytes.get(off..off.checked_add(len)?)?;
+        return Some(s.split(|&b| b == 0).next().unwrap_or(s));
+    }
+    None
 }
 
 fn realize_into(
@@ -266,6 +289,7 @@ fn realize_into(
     info: &ImageSpan,
     dest: *mut u8,
     load_bias: u64,
+    relocate: bool,
 ) -> Result<(), LoadError> {
     unsafe { dest.write_bytes(0, info.span) };
     for i in 0..hdr.e_phnum {
@@ -282,21 +306,23 @@ fn realize_into(
         let d = unsafe { dest.add((vaddr - info.min_vaddr) as usize) };
         unsafe { d.copy_from_nonoverlapping(src.as_ptr(), filesz) };
     }
-    apply_relocs(
-        bytes,
-        hdr.e_shoff,
-        hdr.e_shentsize,
-        hdr.e_shnum,
-        dest,
-        info.span,
-        info.min_vaddr,
-        load_bias,
-    )?;
-    // ET_EXEC has no DYN relocs. rust-lld --image-base can still leave a
-    // rust-cache ping linked at 0x200000/0x10000 while PT_LOAD is slid to
-    // USER_BASE; abs vtables (smoltcp) then abort at 0x202218 / 0x11e6a.
-    // When load_bias is 0 the image is already at USER_BASE: skip.
-    rebase_exec_abs_ptrs(bytes, hdr, dest, info.span, load_bias);
+    if relocate {
+        apply_relocs(
+            bytes,
+            hdr.e_shoff,
+            hdr.e_shentsize,
+            hdr.e_shnum,
+            dest,
+            info.span,
+            info.min_vaddr,
+            load_bias,
+        )?;
+        // ET_EXEC has no DYN relocs. rust-lld --image-base can still leave a
+        // rust-cache ping linked at 0x200000/0x10000 while PT_LOAD is slid to
+        // USER_BASE; abs vtables (smoltcp) then abort at 0x202218 / 0x11e6a.
+        // When load_bias is 0 the image is already at USER_BASE: skip.
+        rebase_exec_abs_ptrs(bytes, hdr, dest, info.span, load_bias);
+    }
     sync_icache(dest, info.span);
     Ok(())
 }
@@ -310,7 +336,7 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, LoadError> {
         return Err(LoadError::Alloc);
     }
     let load_bias = base as u64 - info.min_vaddr;
-    if let Err(e) = realize_into(bytes, &hdr, &info, base, load_bias) {
+    if let Err(e) = realize_into(bytes, &hdr, &info, base, load_bias, true) {
         unsafe { dealloc(base, layout) };
         return Err(e);
     }

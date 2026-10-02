@@ -6,14 +6,16 @@
 > interface; this layer is an add-on for running some unmodified Linux
 > binaries.
 
-With it, a static-PIE Linux binary linked against musl (x86_64, aarch64 or
-riscv64) runs on myos when started through the `linux` launcher:
+With it, a Linux binary linked against musl (x86_64, aarch64 or riscv64),
+static-PIE or dynamically linked, runs on myos when started through the
+`linux` launcher:
 
 ```sh
 cargo run --features linux_compat          # build + boot the x86_64 image
 cargo run --features linux_compat -- aarch64   # (or riscv64)
 # in the guest:
 linux /bin/linux/linux-smoke               # prints LINUX-SMOKE OK
+linux /bin/linux/linux-dyn                 # dynamic: prints LINUX-DYN OK
 ```
 
 ## Turning it on
@@ -59,7 +61,8 @@ Linux ones. It is killed by its own fault; the kernel stays up.
 | `kernel/src/linux/abi.rs` | errno values, signal-number and sigset translation, `dirent64` layout |
 | `kernel/src/linux/files.rs` | paths of the fds a Linux process opened (`fstat`, `getdents64`, `fchdir`, `*at`) |
 | `linux-compat/launcher.c` | the `linux` command |
-| `linux-compat/tests/linux-smoke.c` | Linux-side boot smoke (musl) |
+| `linux-compat/tests/linux-smoke.c` | Linux-side boot smoke (musl, static) |
+| `linux-compat/tests/linux-dyn.c`, `libsmoke*.c` | dynamically linked smoke and its shared objects |
 
 Hooks in the core, each behind `#[cfg(feature = "linux-compat")]`:
 
@@ -75,7 +78,8 @@ Hooks in the core, each behind `#[cfg(feature = "linux-compat")]`:
 - riscv64 user entry (`user/mod.rs`, `user_sstatus`): Linux tasks run with
   the FPU on (`sstatus.FS`); native programs are soft-float;
 - exec (`user/syscall.rs`): extra auxv entries (`AT_PHDR`, `AT_PHNUM`,
-  `AT_ENTRY`, ...) that musl's static-PIE startup needs.
+  `AT_ENTRY`, `AT_BASE`, ...) that musl's startup needs, and the dynamic
+  linker of a dynamically linked program (see below).
 
 The core refactors this needed are feature-independent: `exec_path`,
 `open_path` and `chdir_path` take a kernel string (the native syscalls copy
@@ -93,7 +97,8 @@ Files: `read`, `write`, `readv`, `writev`, `open`, `openat`, `close`, `stat`,
 no-ops), `getcwd`, `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`,
 `rename(at/at2)`, `symlink(at)`, `readlink(at)`, `poll`, `umask`.
 
-Memory: `brk`, `mmap` (anonymous only), `munmap`, `mprotect`, `madvise` (no-op).
+Memory: `brk`, `mmap` (anonymous, and private file mappings), `munmap`,
+`mprotect`, `madvise` (no-op). Files also: `pread64`.
 
 Processes: `fork`, `vfork` (as fork), `clone` (fork form only), `execve`,
 `exit`, `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`, `getpid`, `gettid`,
@@ -111,6 +116,38 @@ Time and misc: `clock_gettime`, `gettimeofday`, `time`, `nanosleep`,
 `clock_nanosleep`, `getrandom`; `poll` (x86_64) and `ppoll`.
 
 Anything else returns `ENOSYS`.
+
+## Dynamic linking
+
+A dynamically linked program names its interpreter in `PT_INTERP` (musl:
+`/lib/ld-musl-<arch>.so.1`, which is `libc.so` itself). For a Linux exec of
+such a program the kernel:
+
+1. reads the interpreter (`linux::exec_interp`) before replacing the current
+   image, so a missing one fails the exec cleanly;
+2. maps the program as usual but **without applying its relocations**
+   (`elf::realize_as(.., relocate: false)`): they refer to symbols in shared
+   objects, which the dynamic linker resolves;
+3. maps the interpreter, also unrelocated (it relocates itself), at the start
+   of the new image's `mmap` window, with per-segment protections, and
+   records it as `mmap` regions (so fork copies it and exit frees it);
+4. starts the interpreter, with `AT_BASE` = its load address and
+   `AT_PHDR` / `AT_ENTRY` naming the program.
+
+The dynamic linker then loads the `DT_NEEDED` objects (and later `dlopen`
+ones) from `/lib`, `/usr/local/lib`, `/usr/lib` with `open`, `read`,
+`pread64` and `mmap` of the file, and maps each segment over the span it
+reserved first. That needed core `mmap` work, which native programs share:
+
+- file-backed `MAP_PRIVATE` mappings (the pages are a copy of the file,
+  filled at map time; `MAP_SHARED` file mappings are refused);
+- `MAP_FIXED` replaces whatever is mapped in its range;
+- `munmap` of any range in the `mmap` window (holes included) and
+  `mprotect` of part of a mapping split the mapping;
+- free address space is reused (first fit) instead of only growing;
+- a larger window (128 MiB on x86_64, 64 MiB on aarch64 / riscv64) and 64
+  mappings per process; aarch64 user address spaces may span 128 MiB
+  (previously 8 MiB).
 
 ## Signal handlers
 
@@ -131,30 +168,37 @@ the kernel does not keep a per-task copy at syscall entry.
 
 ## Limits
 
-- Static-PIE musl binaries only. No dynamic linking (`PT_INTERP`), and no
-  non-PIE `ET_EXEC` images: the loader places every image in the fixed
+- PIE musl binaries only (static-PIE or dynamically linked), no glibc ones
+  (not tried: glibc needs more syscalls), and no non-PIE `ET_EXEC` images:
+  the loader places every image in the fixed
   per-arch user window (non-PIE binaries are linked at 0x400000 / 0x10000,
   which needs a redesign of the user address-space layout; so e.g. Alpine's
   prebuilt `busybox.static` does not load).
 - Signals act at syscall exit, as for native programs: a task looping in
   user mode is not interrupted until its next syscall. No alternate signal
   stacks, no real-time signal queueing.
-- No threads (`clone` with `CLONE_VM`), no file-backed `mmap`, no sockets,
-  no `O_CLOEXEC` / `O_NONBLOCK` semantics.
+- No threads (`clone` with `CLONE_VM`), no shared file mappings
+  (`MAP_SHARED`), no sockets, no `O_CLOEXEC` / `O_NONBLOCK` semantics.
 - The native limits apply: 16 args / 32 environment strings of at most 128
-  bytes at exec, a 1 MiB anonymous-`mmap` window, 32 fds.
+  bytes at exec, a per-process `mmap` window of 128 MiB (x86_64) / 64 MiB
+  (aarch64, riscv64) with at most 64 mappings, 32 fds, and exec of at most
+  512 KiB from a writable filesystem (the initramfs has no limit).
 
 ## Testing
 
-`myos --ci` (and `MYOS_CI_MINI=1`) runs `linux /bin/linux/linux-smoke` on
-every arch when the host binary was built with `--features linux_compat` and
-expects `LINUX-SMOKE OK` (files, directories, mmap, fork/execve/wait4,
-pipes, Linux signal numbers, handlers, masks, `sigwait`, `EINTR` and
-`SA_RESTART`). The test is plain musl C, so it can also be run on a Linux
+`myos --ci` (and `MYOS_CI_MINI=1`) runs `linux /bin/linux/linux-smoke` and
+`linux /bin/linux/linux-dyn` on every arch when the host binary was built
+with `--features linux_compat`, and expects `LINUX-SMOKE OK` (files,
+directories, mmap, fork/execve/wait4, pipes, Linux signal numbers, handlers,
+masks, `sigwait`, `EINTR` and `SA_RESTART`) and `LINUX-DYN OK` (a call,
+shared data, a relocated function pointer and a thread-local in
+`libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`). The test is plain musl C, so it can also be run on a Linux
 host for reference. The default CI image does not include the layer; the
 CI build job type-checks the three kernels with the feature
 (`scripts/ci-build-pull-and-kernels.sh`) so it keeps compiling.
 
-`linux-compat/build.sh` builds musl with clang for each target. musl's
-`printf` needs quad-float compiler-runtime helpers on aarch64/riscv64 that
-this build does not ship, so the smoke test (and the launcher) avoid it.
+`linux-compat/build.sh` builds musl (static and shared) with clang for each
+target. On aarch64/riscv64 musl's `long double` is 128-bit and needs
+compiler-rt's quad-float builtins: the script fetches those sources (pinned
+LLVM tag) and links them into `libc.so`. The static smoke test is not linked
+against them, so it (and the launcher) avoid `printf`.
