@@ -7,12 +7,18 @@ shopt -s nullglob
 # The kernels, the images and the host harness (what the kernels registry
 # package holds), the kernel modules, and every file the image ports ship
 # (scripts/ports.sh --all-image-files: a boot job re-packs the aarch64 and
-# riscv64 initramfs from them). Never a `-src` / `-build` tree.
+# riscv64 initramfs from them; a manifest's ELFs included). Never a `-src`
+# / `-build` tree.
 mapfile -t kernel_members < <(./scripts/ci-build-kernels.sh --print-members)
 mapfile -t image_files < <(./scripts/ports.sh --all-image-files)
+# The ports' stamps and outputs too: the ISO job runs `cargo build` on the
+# extracted tar, and build.rs would otherwise rebuild a port whose ready
+# file (a library's prefix) is not an image file.
+mapfile -t port_outputs < <(./scripts/ports.sh --all-outputs)
 files=(
   "${kernel_members[@]}"
   "${image_files[@]}"
+  "${port_outputs[@]}"
   target/debug/build/myos-*/out
   target/hello-*
   target/console-*

@@ -10,6 +10,7 @@
 #   scripts/ports.sh --outputs NAME               cached outputs (target/...)
 #   scripts/ports.sh --image-files NAME [ARCH]    files the image needs (target/...)
 #   scripts/ports.sh --all-image-files [ARCH]     the same for every image port
+#   scripts/ports.sh --all-outputs                the outputs of every image port
 #   scripts/ports.sh --stamps                     version stamps of the image ports
 #   scripts/ports.sh --image-list                 `<name> <script>` of the image ports to build
 #   scripts/ports.sh --matrix                     ci-ports.yml ports matrix (JSON)
@@ -127,7 +128,16 @@ myos_port_image_files() {
     for arch in "${MYOS_ARCHES[@]}"; do
       [[ -z "$only" || "$only" == "$arch" ]] || continue
       case "$kind" in
-        bin|data|manifest|tree) echo "target/$(myos_port_expand "$a" "$arch")" ;;
+        bin|data|tree) echo "target/$(myos_port_expand "$a" "$arch")" ;;
+        manifest)
+          # The manifest and every ELF it names (`name:/path/to/elf` lines;
+          # the registry pull rewrites the paths to this checkout).
+          echo "target/$(myos_port_expand "$a" "$arch")"
+          if [[ -f "$MYOS_PORTS_ROOT/target/$(myos_port_expand "$a" "$arch")" ]]; then
+            sed -n 's/^[^:]*://p' "$MYOS_PORTS_ROOT/target/$(myos_port_expand "$a" "$arch")" \
+              | sed 's|.*/target/|target/|'
+          fi
+          ;;
         multicall)
           echo "target/$(myos_port_expand "$a" "$arch")"
           echo "target/$(myos_port_expand "$b" "$arch")"
@@ -211,6 +221,14 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     --all-image-files)
       for n in $(myos_port_names image); do
         myos_port_image_files "$n" "${2:-}"
+      done | sort -u
+      ;;
+    --all-outputs)
+      # The stamps and outputs of every image port (what the registry
+      # caches): the pack list carries them so a boot job's `cargo build`
+      # (the ISO job) finds every port built.
+      for n in $(myos_port_names image); do
+        myos_port_outputs "$n"
       done | sort -u
       ;;
     --stamps)
