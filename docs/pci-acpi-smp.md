@@ -84,6 +84,11 @@ hart) only when that CPU is halted. The console reader re-polls keyboards
 every 10 ms (they have no IRQ); the BSP timer stages UART RX on all three
 arches and wakes `KEY_CONSOLE`.
 
+The UARTs are programmed once (`SerialPort::new` used to reprogram COM1 /
+the PL011 on every output byte; the FIFO-reset bits in that sequence dropped
+input that arrived while the kernel echoed, which only showed once the drain
+tick slowed down).
+
 `/proc/cpuinfo` reports `schedules`, `idle_halts` per CPU, `blocked_tasks`,
 `clock_hz` and `uptime_ms` — an idle shell should show `idle_halts` climbing
 and `schedules` nearly flat.
