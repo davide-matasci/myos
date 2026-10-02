@@ -69,15 +69,16 @@ pub fn schedule() {
             let new_sp = tasks[next].sp;
             let kstack = tasks[next].kernel_stack_top;
             let aspace = tasks[next].aspace;
-            // Leave `current` Running so peers cannot pick/reclaim it until we
-            // have switched CR3 below. Publish next + CURRENT now.
+            let old_user = tasks[current].aspace != 0;
+            // Leave `current` Running so peers cannot pick/reclaim it until it
+            // is off this CPU (`finish_switch`). Publish next + CURRENT now.
             tasks[next].state = State::Running;
             set_current_slot(next);
-            Some((old_sp, new_sp, kstack, aspace, current, next))
+            Some((old_sp, new_sp, kstack, aspace, current, next, old_user))
         }
     };
 
-    let Some((old_sp, new_sp, kstack, aspace, old, _next)) = switch else {
+    let Some((old_sp, new_sp, kstack, aspace, old, next, old_user)) = switch else {
         irq_restore(flags);
         return;
     };
@@ -91,8 +92,15 @@ pub fn schedule() {
         // riscv64: no sscratch write here — it stays 0 in S-mode and is armed
         // with the kernel stack top only on the way out to U-mode.
     }
+    // User FP/SIMD registers follow the task (the kernel never uses them).
+    if old_user {
+        fpu::switch_out(old);
+    }
+    if aspace != 0 {
+        fpu::switch_in(next);
+    }
     #[cfg(feature = "linux-compat")]
-    crate::linux::on_switch(old, _next);
+    crate::linux::on_switch(old, next);
 
     let want = if aspace == 0 {
         KERNEL_ASPACE.load(Ordering::SeqCst)
@@ -104,22 +112,39 @@ pub fn schedule() {
         set_loaded_aspace(want);
     }
 
-    // CR3 is `next`'s — safe to publish Ready on `old`.
-    // Do NOT IPI-kick here: Ready is visible while we still run on `old`'s
-    // stack until task_switch; a peer running `old` early NX-faulted under
-    // -smp 4. AP timers pick up foreign-affinity Ready; fork kicks when a
-    // parallel child is RR-homed onto another AP.
-    {
-        let mut tasks = TASKS.lock();
-        if tasks[old].state == State::Running {
-            tasks[old].state = State::Ready;
-        }
-    }
-
+    // `old` becomes Ready only once task_switch has saved its stack pointer
+    // and left its stack: the task that resumes on this CPU publishes it
+    // (`finish_switch`). Publishing it here let a peer CPU pick `old` and
+    // switch to its stale saved `sp` while this CPU still ran on that stack
+    // (x86 boot-mini: kernel #PF at rip=0x7 right after the SMP smoke, whose
+    // unpinned kernel threads yield across CPUs). Do NOT IPI-kick: AP timers
+    // pick up foreign-affinity Ready; fork kicks when a parallel child is
+    // RR-homed onto another AP.
+    SWITCHED_FROM[crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1)].store(old, Ordering::SeqCst);
     unsafe {
         task_switch(old_sp, new_sp);
     }
+    finish_switch();
     irq_restore(flags);
+}
+
+/// Per CPU: the task this CPU just switched away from, still marked Running
+/// until [`finish_switch`] runs on the other side of the switch.
+static SWITCHED_FROM: [AtomicUsize; crate::smp::MAX_CPUS] =
+    [const { AtomicUsize::new(usize::MAX) }; crate::smp::MAX_CPUS];
+
+/// First thing after a task switch, on the incoming task's stack (irqs off):
+/// the previous task is off this CPU's stack now, so peers may run it.
+pub(super) fn finish_switch() {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    let prev = SWITCHED_FROM[cpu].swap(usize::MAX, Ordering::SeqCst);
+    if prev == usize::MAX {
+        return;
+    }
+    let mut tasks = TASKS.lock();
+    if tasks[prev].state == State::Running {
+        tasks[prev].state = State::Ready;
+    }
 }
 
 pub(super) fn irq_save() -> u64 {

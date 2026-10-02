@@ -204,6 +204,7 @@ pub fn replace_user(
         // via basename allowlists or blanket post-exec RR.
     });
     signal_table_exec(current_slot());
+    fpu::reset(current_slot());
     #[cfg(feature = "linux-compat")]
     crate::linux::on_exec(current_slot());
     user::switch_aspace(aspace);
@@ -428,6 +429,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
     // Before the child becomes runnable on another CPU (TASKS still held;
     // TASKS → SIG_TABLES is the lock order).
     signal_table_fork(ppid, slot);
+    fpu::fork(slot);
     #[cfg(feature = "linux-compat")]
     crate::linux::on_fork(ppid, slot);
     drop(tasks);
@@ -633,6 +635,7 @@ fn spawn_inner(
         affinity: if aspace != 0 { user_affinity() } else { None },
     };
     signal_table_reset(slot);
+    fpu::reset(slot);
     #[cfg(feature = "linux-compat")]
     crate::linux::on_spawn(slot);
     drop(tasks);
@@ -658,6 +661,9 @@ pub fn user_exit_signal(sig: u32) -> ! {
 }
 
 extern "C" fn trampoline() -> ! {
+    // A fresh task's first run starts here instead of returning from
+    // task_switch in `schedule`.
+    finish_switch();
     let (entry, user_rip, user_rsp, user_argc, user_argv, fork_regs) = {
         let flags = irq_save();
         irq_off();

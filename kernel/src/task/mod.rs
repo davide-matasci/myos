@@ -3,6 +3,7 @@
 //! `schedule` after EOI).
 
 mod fd;
+pub mod fpu;
 mod jobs;
 mod lifecycle;
 mod sched;
