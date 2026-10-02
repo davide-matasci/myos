@@ -416,7 +416,10 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         );
     }
 
-    // Nested user/* ELFs -> bin/custom/<name>.
+    // Nested user/* ELFs -> bin/custom/<name>. The kernel embeds the same
+    // ELFs (kernel/src/fs/binfs.rs), so these copies may be absent: the CI
+    // boot jobs pack the aarch64/riscv64 initramfs from ci-build.tar, which
+    // carries only what the kernel does not embed.
     for (rel, bin) in [
         ("ok", "ok"),
         ("heap", "heap"),
@@ -434,7 +437,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         add(
             &mut entries,
             &format!("bin/custom/{rel}"),
-            read(&target.join(format!("{bin}-{kernel_triple}"))),
+            read_optional(&[&target.join(format!("{bin}-{kernel_triple}"))]),
         );
     }
     // oksh -> bin/custom/sh (none triple).
