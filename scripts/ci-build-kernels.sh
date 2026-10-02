@@ -43,6 +43,29 @@ fi
 
 STAMP="target/.myos-ci-kernel-version"
 
+# Optional root-package features for the CI build (full boot sets
+# MYOS_CI_FEATURES=linux_compat: the optional Linux layer in every image).
+CI_FEATURES="${MYOS_CI_FEATURES:-}"
+linux_compat() { [[ " ${CI_FEATURES//,/ } " == *" linux_compat "* ]]; }
+FEATURE_ARGS=()
+KERNEL_FEATURE_ARGS=()
+if [[ -n "$CI_FEATURES" ]]; then
+  FEATURE_ARGS=(--features "$CI_FEATURES")
+fi
+if linux_compat; then
+  KERNEL_FEATURE_ARGS=(--features linux-compat)
+fi
+
+# The Linux layer's userspace files (linux-compat/build.sh) the images take.
+linux_compat_members() {
+  local arch
+  for arch in x86_64 aarch64 riscv64; do
+    echo "target/linux-launcher-${arch}-unknown-none"
+    echo "target/linux-smoke-${arch}-linux-musl"
+    echo "target/linux-compat/${arch}"
+  done
+}
+
 # Stable ELF copies that kernel/build.rs embed via include_bytes! / rustc-env,
 # and that myos build.rs packs into initramfs / Limine images.
 PORT_STAMPS=(
@@ -124,6 +147,11 @@ kernel_inputs_hash() {
         hash_tree src
         if [[ -f .cargo/config.toml ]]; then
           sha256sum .cargo/config.toml
+        fi
+        printf 'features:%s\n' "$CI_FEATURES"
+        if linux_compat; then
+          hash_tree linux-compat
+          sha256sum linux-compat/build.sh
         fi
         # Port registry stamps encode userspace content identity (source-hash
         # philosophy). Do not hash target/ ELFs or manifests: those change or
@@ -321,6 +349,14 @@ artifacts_ready() {
            target/tcp-listen-smoke-riscv64-unknown-none; do
     [[ -f "$f" ]] || return 1
   done
+  if linux_compat; then
+    for f in $(linux_compat_members); do
+      [[ -e "$f" ]] || return 1
+    done
+    for f in x86_64 aarch64 riscv64; do
+      [[ -f "target/linux-compat/$f/get-alpine" ]] || return 1
+    done
+  fi
   return 0
 }
 
@@ -350,9 +386,12 @@ do_clean_and_build() {
   cargo clean -p kernel --target x86_64-unknown-none
   cargo clean -p kernel --target aarch64-unknown-none-softfloat
   cargo clean -p kernel --target riscv64imac-unknown-none-elf
-  cargo build
-  cargo build -p kernel --target aarch64-unknown-none-softfloat
-  cargo build -p kernel --target riscv64imac-unknown-none-elf
+  if linux_compat; then
+    "$ROOT/linux-compat/build.sh"
+  fi
+  cargo build "${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"}"
+  cargo build -p kernel --target aarch64-unknown-none-softfloat "${KERNEL_FEATURE_ARGS[@]+"${KERNEL_FEATURE_ARGS[@]}"}"
+  cargo build -p kernel --target riscv64imac-unknown-none-elf "${KERNEL_FEATURE_ARGS[@]+"${KERNEL_FEATURE_ARGS[@]}"}"
 }
 
 mkdir -p target
@@ -382,6 +421,9 @@ case "${1:-}" in
     echo target/tcp-listen-smoke-x86_64-unknown-none
     echo target/tcp-listen-smoke-aarch64-unknown-none
     echo target/tcp-listen-smoke-riscv64-unknown-none
+    if linux_compat; then
+      linux_compat_members
+    fi
     exit 0
     ;;
   --is-current)

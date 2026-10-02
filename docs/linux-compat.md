@@ -16,43 +16,48 @@ cargo run --features linux_compat -- aarch64   # (or riscv64)
 # in the guest:
 linux /bin/linux/linux-smoke               # prints LINUX-SMOKE OK
 linux /bin/linux/linux-dyn                 # dynamic: prints LINUX-DYN OK
-get-void jq                                # Void Linux packages (x86_64, aarch64)
-linux --root /tmp/void jq -n '1+1'
+get-alpine jq                              # Alpine Linux packages
+linux --root /tmp/alpine jq -n '1+1'
 ```
 
-## Void Linux packages: `get-void`
+## Alpine Linux packages: `get-alpine`
 
-Nothing from Void is in the image: `get-void` (`linux-compat/get-void.c`, a
-native program built with the layer on x86_64 and aarch64, the arches Void
-has musl repositories for) downloads packages at run time with the guest's
-`curl`:
+Nothing from Alpine is in the image: `get-alpine` (`linux-compat/get-alpine.c`,
+a native program built with the layer on x86_64, aarch64 and riscv64, all
+three of which Alpine has repositories for) downloads packages at run time
+with the guest's `curl`:
 
 ```sh
-get-void [-r ROOT] [-u] PACKAGE...         # ROOT defaults to /tmp/void
+get-alpine [-r ROOT] [-u] PACKAGE...       # ROOT defaults to /tmp/alpine
 linux --root ROOT PROGRAM [ARG...]
 ```
 
-1. The repository index (`<arch>-repodata`, a zstd-compressed tar holding a
-   20 MB `index.plist`) is downloaded once and reduced, streaming, to
-   `ROOT/var/db/get-void/index`: one line per package with its pkgver,
-   sha256 and `run_depends`. `-u` refreshes it.
-2. Each package and, recursively, its dependencies (`musl` included) is
-   downloaded, checked against the index's sha256 and unpacked (zstd + tar)
-   into `ROOT`. Already installed packages (`ROOT/var/db/get-void/pkgs/`)
-   are skipped. INSTALL/REMOVE scripts are not run.
-3. `ROOT` gets the directories and symlinks Void's `base-files` provides
-   (`/lib -> usr/lib`, `/usr/lib64 -> lib`, ...): Void's dynamic linker is
-   `/usr/lib/ld-musl-<arch>.so.1 -> /usr/lib64/libc.so`.
+1. The `main` and `community` indexes (`APKINDEX.tar.gz`) are downloaded
+   once and reduced, streaming, to `ROOT/var/lib/get-alpine/index`: one
+   line per package with its repository, version, control checksum,
+   dependencies and provides (`so:`, `cmd:`, ...). `-u` refreshes it.
+2. Each package and, recursively, its dependencies (`musl` included; a
+   `so:libfoo.so.1` dependency resolves to the package providing it) is
+   downloaded and checked before anything is written: an `.apk` is three
+   concatenated gzip members (signature, control, data); the SHA-1 of the
+   control member must match the index's `C:Q1...` and the SHA-256 of the
+   data member the `datahash` in the control's `.PKGINFO`. The data tar is
+   then unpacked into `ROOT`. Installed packages
+   (`ROOT/var/lib/get-alpine/pkgs/`) are skipped. Install scripts are not
+   run, and the index signature is not checked (the download is HTTPS).
+   A failed download is retried twice.
+3. Alpine keeps `/lib` and `/usr/lib` separate, so no symlinks are needed:
+   the dynamic linker is `/lib/ld-musl-<arch>.so.1`.
 
 `linux --root ROOT` chroots into `ROOT` (the native `chroot`) before the
 exec, with a Linux `PATH`, so the program finds its dynamic linker, shared
-objects and data files at their Void paths. A chrooted Linux process still
+objects and data files at their Alpine paths. A chrooted Linux process still
 sees the system's `/dev` and `/proc`, as if they were bind-mounted into the
 root (`linux/sys.rs`, `system_path`); native chroots are not affected.
 
-`GET_VOID_MIRROR` overrides `https://repo-default.voidlinux.org`. `/tmp` is
-a tmpfs in the kernel heap, so a root there holds a few small packages and
-is gone at reboot.
+`ALPINE_MIRROR` overrides `https://dl-cdn.alpinelinux.org/alpine` and
+`ALPINE_BRANCH` overrides `latest-stable`. `/tmp` is a tmpfs in the kernel
+heap, so a root there holds a few small packages and is gone at reboot.
 
 ## Turning it on
 
@@ -99,7 +104,7 @@ Linux ones. It is killed by its own fault; the kernel stays up.
 | `linux-compat/launcher.c` | the `linux` command |
 | `linux-compat/tests/linux-smoke.c` | Linux-side boot smoke (musl, static) |
 | `linux-compat/tests/linux-dyn.c`, `libsmoke*.c` | dynamically linked smoke and its shared objects |
-| `linux-compat/get-void.c` | the Void package fetcher (with zstd's decoder, fetched by `build.sh`) |
+| `linux-compat/get-alpine.c` | the Alpine package fetcher (linked with the zlib port) |
 
 Hooks in the core, each behind `#[cfg(feature = "linux-compat")]`:
 
@@ -239,17 +244,18 @@ with `--features linux_compat`, and expects `LINUX-SMOKE OK` (files,
 directories, mmap, fork/execve/wait4, pipes, Linux signal numbers, handlers,
 masks, `sigwait`, `EINTR` and `SA_RESTART`) and `LINUX-DYN OK` (a call,
 shared data, a relocated function pointer and a thread-local in
-`libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`). The test is plain musl C, so it can also be run on a Linux
-host for reference. On x86_64 and aarch64 it then runs
-`get-void jq && linux --root /tmp/void jq -nr '"VOID-JQ \(1+2+3)"'` and
-expects `VOID-JQ 6` (this needs the Void mirror to be reachable).
+`libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`).
+The test is plain musl C, so it can also be run on a Linux host for
+reference. It then runs
+`get-alpine jq && linux --root /tmp/alpine jq -nr '"ALPINE-JQ \(1+2+3)"'` and
+expects `ALPINE-JQ 6` (this needs the Alpine mirror to be reachable).
 
-The default CI image does not include the layer. The CI build job
-type-checks the three kernels with the feature
-(`scripts/ci-build-pull-and-kernels.sh`), and the `linux-compat` jobs
-(`.github/workflows/ci-runtime.yml`) build the layer's pieces and the
-kernels with it on top of the CI ports, then boot bios, aarch64 and riscv64
-in mini mode.
+The normal CI does not include the layer. The full-boot CI does: with
+`full_boot`, `MYOS_CI_FEATURES=linux_compat` makes
+`scripts/ci-build-kernels.sh` build the layer's pieces and the kernels with
+it (its artifact hash covers `linux-compat/`), so all four boot jobs
+(bios, uefi, aarch64, riscv64) run the tests above. There are no separate
+Linux jobs.
 
 `linux-compat/build.sh` builds musl (static and shared) with clang for each
 target. On aarch64/riscv64 musl's `long double` is 128-bit and needs

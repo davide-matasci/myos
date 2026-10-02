@@ -6,7 +6,7 @@
  * personality, then exec. Needs a kernel built with the linux-compat
  * feature; see docs/linux-compat.md.
  *
- * --root DIR runs it chrooted into DIR (a Linux root such as get-void's,
+ * --root DIR runs it chrooted into DIR (a Linux root such as get-alpine's,
  * where /lib/ld-musl-*.so.1 and the shared objects live), with PROGRAM
  * looked up in a Linux PATH. The Linux layer still shows such a process the
  * real /dev and /proc.
