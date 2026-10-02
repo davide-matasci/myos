@@ -290,7 +290,11 @@ fn write_stimecmp(val: u64) {
 }
 
 fn timer_interval() -> u64 {
-    1_000_000 // ~10 ms at 10 MHz `time` clock on QEMU virt
+    // 10 ms at the 10 MHz `time` clock on QEMU virt (100 Hz, like aarch64).
+    // The previous 1_000_000 was a 100 ms quantum — a tenth of the intended
+    // rate — which made every preemption, deadline wake and console poll
+    // wait up to 100 ms.
+    100_000
 }
 
 fn init_timer() {

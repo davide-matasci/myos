@@ -6,16 +6,27 @@ const COM1: u16 = 0x3F8;
 
 pub struct SerialPort;
 
+/// Set once the line is programmed. `SerialPort::new()` used to reprogram
+/// the UART on every call — and the console constructs one per output byte.
+/// Besides eight port writes per character under TCG, the FCR write (bit 1:
+/// reset RX FIFO) discarded whatever input had arrived since the last drain:
+/// typing while the kernel echoed lost whole 14-byte FIFO batches once the
+/// drain tick dropped from 10 kHz to 1 kHz (`cat /proc/cpuinfo` → `cpuinf`).
+static INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 impl SerialPort {
     pub fn new() -> Self {
-        // 38400 8N1, FIFO on. Harmless if QEMU already set the port up.
-        outb(COM1 + 1, 0x00); // disable interrupts
-        outb(COM1 + 3, 0x80); // enable DLAB
-        outb(COM1 + 0, 0x03); // divisor 3 → 38400 baud
-        outb(COM1 + 1, 0x00);
-        outb(COM1 + 3, 0x03); // 8N1
-        outb(COM1 + 2, 0xC7); // FIFO on
-        outb(COM1 + 4, 0x0B); // RTS/DSR
+        use core::sync::atomic::Ordering;
+        if !INITIALIZED.swap(true, Ordering::AcqRel) {
+            // 38400 8N1, FIFO on. Harmless if QEMU already set the port up.
+            outb(COM1 + 1, 0x00); // disable interrupts
+            outb(COM1 + 3, 0x80); // enable DLAB
+            outb(COM1 + 0, 0x03); // divisor 3 → 38400 baud
+            outb(COM1 + 1, 0x00);
+            outb(COM1 + 3, 0x03); // 8N1
+            outb(COM1 + 2, 0xC7); // FIFO on, RX/TX FIFO reset, trigger 14
+            outb(COM1 + 4, 0x0B); // RTS/DSR
+        }
         Self
     }
 

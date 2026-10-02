@@ -65,7 +65,9 @@ with `SLEEP_ANY_EVENT`, the Linux `ppoll`) are woken by every wake and by
 Deadlines use `time::monotonic_ns()` (x86: TSC calibrated against PIT
 channel 2 at boot; aarch64: `CNTVCT_EL0`; riscv64: `time` CSR). Each timer
 IRQ calls `task::timer_tick()`, which only scans `TASKS` once the earliest
-deadline (`NEXT_DEADLINE`) has passed.
+deadline (`NEXT_DEADLINE`) has passed. The x86 LAPIC tick is calibrated
+against that clock to 1 kHz (it used to fire 10-20k times per second per
+CPU, each tick taking the scheduler lock); aarch64/riscv64 stay at 100 Hz.
 
 Idle: `kernel_main` (task 0) is the BSP's idle task, `ap_idle_body` the APs'.
 `idle_step` runs whatever is Ready for the CPU, then halts

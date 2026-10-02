@@ -136,10 +136,12 @@ fn kernel_main() -> ! {
     heap::init();
     prove_heap();
 
+    // Calibrate the monotonic clock first (x86: TSC vs PIT, port I/O only):
+    // the x86 LAPIC tick period is derived from it.
+    time::init();
     arch::init_interrupts();
     arch::wait_for_interrupt_proof();
     console::status_ok("interrupts");
-    time::init();
 
     task::init();
     task::spawn(task_a);

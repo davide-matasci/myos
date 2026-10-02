@@ -273,16 +273,11 @@ fn slot_root(slot: usize) -> Root {
     r
 }
 
-static CURRENT: [AtomicUsize; crate::smp::MAX_CPUS] = [
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-];
+/// Current task slot per CPU. `usize::MAX` until the CPU's first task is
+/// installed (`init` / `ap_idle_bringup`), so `slot_on_cpu` never mistakes
+/// task 0 for "running on an offline CPU".
+static CURRENT: [AtomicUsize; crate::smp::MAX_CPUS] =
+    [const { AtomicUsize::new(usize::MAX) }; crate::smp::MAX_CPUS];
 static PREEMPT_ON: AtomicBool = AtomicBool::new(false);
 static SERIAL: Mutex<()> = Mutex::new(());
 static KERNEL_ASPACE: AtomicU64 = AtomicU64::new(0);
