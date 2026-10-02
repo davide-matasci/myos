@@ -50,7 +50,10 @@ MPL-2.0) and `arch::apply_dt` runs before the first console output:
 
 A missing tree or node stops the boot with `fatal: device tree: ...` on the
 UART at QEMU `virt`'s address (the one assumption left, so the message has
-somewhere to go). Interrupt specifiers are decoded per arch
+somewhere to go). The EDK2 firmware boots (AAVMF, RISC-V EDK2) hand Limine
+no tree, so the host tool dumps QEMU's (`-machine ...,dumpdtb`, same machine
+options and `-smp` as the boot) into the ESP as `boot/virt-aarch64.dtb` /
+`boot/virt.dtb` and `limine.conf` passes it with `global_dtb`. Interrupt specifiers are decoded per arch
 (`arch::irq_from_dt`: GIC `<type number flags>` → INTID, PLIC `<source>`).
 x86_64 has no tree (ACPI): `dt::init` finds none and the arch ignores it.
 
