@@ -51,7 +51,7 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
     // Volatile + GPR scrub: `mov rsp, frame_ptr` leaves the kernel stack
     // address (HHDM) in a GPR across iretq. Userspace then faulted on that
     // pointer (UEFI boot-mini `cat | cat`: cr2=0xffff8000… code=0x5). Same
-    // discipline as enter_fork_x86 / enter_riscv64.
+    // discipline as enter_regs_x86 / enter_riscv64.
     let resume = [user_rip as u64, cs, rflags, user_rsp as u64, ss];
     let mut slot = core::mem::MaybeUninit::<[u64; 5]>::uninit();
     const CR0_TS: u64 = 1 << 3;
@@ -275,31 +275,33 @@ pub(super) fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: 
     }
 }
 
-/// Resume a forked child with the parent's user GPRs (rax/x0 = 0).
-pub fn enter_fork(regs: task::ForkRegs) -> ! {
+/// Start a new task (forked child or thread) in user mode with `regs`.
+pub fn enter_regs(regs: task::UserRegs) -> ! {
     let a = task::current_aspace();
     if a != 0 {
         switch_aspace(a);
     }
     #[cfg(target_arch = "x86_64")]
-    enter_fork_x86(regs);
+    enter_regs_x86(regs);
     #[cfg(target_arch = "aarch64")]
-    enter_fork_aarch64(regs);
+    enter_regs_aarch64(regs);
     #[cfg(target_arch = "riscv64")]
-    enter_fork_riscv64(regs);
+    enter_regs_riscv64(regs);
 }
 
 /// Packed resume image for `fork_iret_to_user` (global_asm). Layout must match
 /// the offsets in that stub — do not reorder fields.
 #[cfg(target_arch = "x86_64")]
 #[repr(C, align(16))]
-struct ForkResumeX86 {
+struct ResumeX86 {
     rbx: u64,
     rbp: u64,
     r12: u64,
     r13: u64,
     r14: u64,
     r15: u64,
+    /// rdi, rsi, rdx, r10, r8, r9.
+    args: [u64; 6],
     rip: u64,
     cs: u64,
     rflags: u64,
@@ -321,25 +323,25 @@ fork_iret_to_user:
     mov cr0, rax
     fninit
     ldmxcsr [rip + {mxcsr}]
-    # rdi -> ForkResumeX86. Restore user callee-saved, then iret frame.
+    # rdi -> ResumeX86. Restore the user GPRs, then the iret frame; rdi
+    # (the kernel resume pointer) last. The other registers are scrubbed:
+    # leftover kernel addresses across iretq became user #PF (cr2 in HHDM)
+    # on UEFI pipeline fork before exec. rax is the result (0).
     mov rbx, [rdi]
     mov rbp, [rdi + 8]
     mov r12, [rdi + 16]
     mov r13, [rdi + 24]
     mov r14, [rdi + 32]
     mov r15, [rdi + 40]
-    lea rsp, [rdi + 48]
-    # Scrub caller-saved GPRs (incl. rdi = kernel resume ptr / HHDM). Matches
-    # enter_x86: leftover kernel addresses across iretq became user #PF
-    # (cr2 in HHDM) on UEFI pipeline fork before exec.
+    mov rsi, [rdi + 56]
+    mov rdx, [rdi + 64]
+    mov r10, [rdi + 72]
+    mov r8, [rdi + 80]
+    mov r9, [rdi + 88]
+    lea rsp, [rdi + 96]
+    mov rdi, [rdi + 48]
     xor rax, rax
     xor rcx, rcx
-    xor rdx, rdx
-    xor rsi, rsi
-    xor rdi, rdi
-    xor r8, r8
-    xor r9, r9
-    xor r10, r10
     xor r11, r11
     iretq
     "#,
@@ -348,27 +350,28 @@ fork_iret_to_user:
 
 #[cfg(target_arch = "x86_64")]
 unsafe extern "C" {
-    fn fork_iret_to_user(resume: *const ForkResumeX86) -> !;
+    fn fork_iret_to_user(resume: *const ResumeX86) -> !;
 }
 
 #[cfg(target_arch = "x86_64")]
-fn enter_fork_x86(regs: task::ForkRegs) -> ! {
+fn enter_regs_x86(regs: task::UserRegs) -> ! {
     let cs = (crate::arch::gdt::user_cs() | 3) as u64;
     let ss = (crate::arch::gdt::user_ss() | 3) as u64;
     let rflags: u64 = 0x202;
-    // Resume through global_asm — not inline asm. Prior enter_fork_x86 variants
+    // Resume through global_asm — not inline asm. Prior enter_regs_x86 variants
     // used black_box arrays + as_ptr() / forbidden rbx,rbp constraints; LLVM
     // could leave the child with garbage callee-saved regs. Identical #GP
     // rip/rsp across those "fixes" matches a restore that never stuck.
     // Parent returns via sysret with the same user RSP; child must get the
     // exact syscall RSP and the FORK_CALLEE snapshot of rbx/rbp/r12–r15.
-    let resume = ForkResumeX86 {
+    let resume = ResumeX86 {
         rbx: regs.rbx,
         rbp: regs.rbp,
         r12: regs.r12,
         r13: regs.r13,
         r14: regs.r14,
         r15: regs.r15,
+        args: regs.args,
         rip: regs.rip as u64,
         cs,
         rflags,
@@ -376,7 +379,7 @@ fn enter_fork_x86(regs: task::ForkRegs) -> ! {
         ss,
     };
     // Volatile write so the stores exist in memory before the asm reads them.
-    let mut slot = core::mem::MaybeUninit::<ForkResumeX86>::uninit();
+    let mut slot = core::mem::MaybeUninit::<ResumeX86>::uninit();
     unsafe {
         core::ptr::write_volatile(slot.as_mut_ptr(), resume);
         fork_iret_to_user(slot.as_ptr());
@@ -398,19 +401,20 @@ pub(super) fn copy_fork_syscall_frame(src: *const u64) -> [u64; 36] {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn enter_fork_aarch64(regs: task::ForkRegs) -> ! {
+fn enter_regs_aarch64(regs: task::UserRegs) -> ! {
     // Resume through the same restore path as `lower_sync` (preserves spsr and
     // callee-saved state). Rebuilding ELR/SP_EL0 in one asm block miscompiled on
     // CI and left the child with x0 != 0 → parent+child both blocked in wait.
     let mut frame = regs.frame;
-    frame[0] = 0;
+    frame[32] = regs.rip as u64;
+    frame[34] = regs.rsp as u64;
     crate::arch::fork_eret_to_user(frame.as_mut_ptr());
 }
 
 #[cfg(target_arch = "riscv64")]
-fn enter_fork_riscv64(regs: task::ForkRegs) -> ! {
+fn enter_regs_riscv64(regs: task::UserRegs) -> ! {
     let mut frame = regs.frame;
-    frame[32] = regs.rip as u64; // resume past the fork ecall
+    frame[32] = regs.rip as u64;
     frame[33] = user_sstatus();
     frame[34] = regs.rsp as u64;
     crate::smp::sync_tp_for_kernel();

@@ -1,11 +1,11 @@
 //! x86_64: syscall numbers, `struct stat`, the signal frame, FXSAVE state
 //! and the FS base (musl's thread pointer).
 
-use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::abi::{err, result, EFAULT, EINVAL, ENOMEM, ENOSYS, EPERM, ESRCH};
 use super::signal::{self as lsig, siginfo, Frame};
 use super::sys::{self, ret};
+use super::thread;
 use crate::task;
 use crate::user::{self, SyscallRegs};
 
@@ -36,7 +36,7 @@ pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
 
 const AT_FDCWD: usize = -100isize as usize;
 
-pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs, user_rip: usize, user_rsp: usize) -> usize {
+pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     match nr {
         0 => ret(sys::read(a[0], a[1], a[2])),
         1 => ret(sys::write(a[0], a[1], a[2])),
@@ -68,11 +68,13 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs, user_rip: usize
         32 => ret(sys::dup(a[0], 0)),
         33 => ret(sys::dup3(a[0], a[1], true)), // dup2
         35 => ret(sys::nanosleep(a[0], false)),
-        39 | 186 => task::current_id(), // getpid, gettid
-        56 => ret(sys::clone(a[0], a[1], user_rip, user_rsp)),
-        57 | 58 => ret(sys::fork(user_rip, user_rsp)), // fork, vfork
+        39 => task::current_pid(),
+        186 => task::current_tid(),
+        56 => ret(thread::clone(regs, a[0], a[1], a[2], a[4], a[3])),
+        57 | 58 => ret(sys::fork(regs)), // fork, vfork
         59 => ret(sys::execve(a[0], a[1], a[2])),
-        60 | 231 => task::user_exit(a[0] as u8), // exit, exit_group
+        60 => thread::exit(a[0]),
+        231 => task::user_exit(a[0] as u8), // exit_group
         61 => ret(sys::wait4(a[0], a[1], a[2], a[3])),
         62 => ret(sys::kill(a[0], a[1])),
         63 => ret(sys::uname(a[0])),
@@ -105,8 +107,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs, user_rip: usize
         158 => arch_prctl(a[0], a[1]),
         200 => ret(sys::kill(a[0], a[1])), // tkill
         201 => ret(sys::time(a[0])),
+        202 => ret(thread::futex(a[0], a[1], a[2], a[3], a[5])),
         217 => ret(sys::getdents64(a[0], a[1], a[2])),
-        218 => task::current_id(), // set_tid_address
+        218 => thread::set_tid_address(a[0]),
         228 => ret(sys::clock_gettime(a[1])),
         230 => ret(sys::nanosleep(a[2], a[1] & 1 != 0)), // clock_nanosleep
         234 => ret(sys::kill(a[1], a[2])),               // tgkill
@@ -145,43 +148,17 @@ pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64) -> [u8; 
 
 // ---- thread pointer ---------------------------------------------------------
 
-const IA32_FS_BASE: u32 = 0xC000_0100;
-
-/// The FS base each CPU has loaded, to skip redundant `wrmsr`s on switch.
-static LOADED: [AtomicU64; crate::smp::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
-
-/// The FS base is tracked in `TP` (only `arch_prctl` changes it).
-pub fn tls_read() -> Option<u64> {
-    None
-}
-
-pub fn tls_write(v: u64) {
-    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-    if LOADED[cpu].load(Ordering::Relaxed) == v {
-        return;
-    }
-    unsafe {
-        core::arch::asm!(
-            "wrmsr",
-            in("ecx") IA32_FS_BASE,
-            in("eax") v as u32,
-            in("edx") (v >> 32) as u32,
-            options(nostack, preserves_flags),
-        );
-    }
-    LOADED[cpu].store(v, Ordering::Relaxed);
-}
-
+/// `arch_prctl`: the FS base is the core's per-task thread pointer.
 fn arch_prctl(code: usize, addr: usize) -> usize {
     const ARCH_SET_FS: usize = 0x1002;
     const ARCH_GET_FS: usize = 0x1003;
     match code {
         ARCH_SET_FS => {
-            super::set_tp(addr as u64);
+            task::tp::set(addr as u64);
             0
         }
         ARCH_GET_FS => {
-            let v = super::TP[task::current_id()].load(Ordering::Relaxed);
+            let v = task::tp::get();
             ret(sys::put(addr, &v.to_le_bytes()).map(|()| 0))
         }
         _ => err(EINVAL),

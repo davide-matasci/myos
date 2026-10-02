@@ -53,7 +53,7 @@ const CI_NEEDLES: [&str; 33] = [
 /// print during `/heap`, so including them here would abort before those
 /// commands are typed. Verified by `interactive_dns_cmd_ok` /
 /// `interactive_https_cmd_ok`.
-const CI_NEEDLES_STD: [&str; 23] = [
+const CI_NEEDLES_STD: [&str; 24] = [
     "[ OK ] std",
     "[ OK ] std cat",
     "[ OK ] std echo",
@@ -78,6 +78,9 @@ const CI_NEEDLES_STD: [&str; 23] = [
     "[ OK ] socket",
     // FP/SIMD registers survive preemption (user/heap `fpu_smoke`).
     "[ OK ] fpu",
+    // Threads share memory, wait/wake on an address, end with their process
+    // (user/heap `thread_smoke`).
+    "[ OK ] threads",
 ];
 
 /// Interactive shell commands typed at the `$` prompt (serial stdin).

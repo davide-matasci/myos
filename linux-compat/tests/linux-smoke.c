@@ -9,11 +9,13 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -92,6 +94,89 @@ static void check_interrupted_read(int restart) {
     waitpid(c, &status, 0);
     close(p[0]);
     close(p[1]);
+}
+
+/* Threads: shared memory, a mutex and a condition variable, thread-local
+ * storage, thread ids, join. */
+#define NTHREADS 4
+#define ROUNDS 1000
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+static int counter, arrived;
+static __thread long tls_id = -1;
+static long tids[NTHREADS];
+
+static void *worker(void *arg) {
+    tls_id = (long)arg;
+    tids[tls_id] = syscall(SYS_gettid);
+    for (int i = 0; i < ROUNDS; i++) {
+        pthread_mutex_lock(&lock);
+        counter++;
+        pthread_mutex_unlock(&lock);
+    }
+    /* Wait for the others, so all run at once (an ended thread's id may be
+     * reused). */
+    pthread_mutex_lock(&lock);
+    arrived++;
+    pthread_cond_broadcast(&cond);
+    while (arrived < NTHREADS) {
+        pthread_cond_wait(&cond, &lock);
+    }
+    pthread_mutex_unlock(&lock);
+    /* Each thread still sees its own thread-local value. */
+    return (void *)(long)(tls_id == (long)arg);
+}
+
+static void *blocker(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&lock);
+    for (;;) {
+        pthread_cond_wait(&cond, &lock);
+    }
+}
+
+static void *exiter(void *arg) {
+    (void)arg;
+    exit(9);
+}
+
+static void check_threads(void) {
+    pthread_t t[NTHREADS];
+    int ok = 1;
+    for (long i = 0; i < NTHREADS; i++) {
+        ok &= pthread_create(&t[i], NULL, worker, (void *)i) == 0;
+    }
+    pthread_mutex_lock(&lock);
+    while (ok && arrived < NTHREADS) {
+        pthread_cond_wait(&cond, &lock);
+    }
+    pthread_mutex_unlock(&lock);
+    for (int i = 0; i < NTHREADS; i++) {
+        void *r = NULL;
+        ok &= pthread_join(t[i], &r) == 0 && r == (void *)1;
+    }
+    check(ok && counter == NTHREADS * ROUNDS && tls_id == -1, "threads: mutex, condvar, TLS, join");
+    int ids = syscall(SYS_gettid) == getpid();
+    for (int i = 0; i < NTHREADS; i++) {
+        for (int j = 0; j < i; j++) {
+            ids &= tids[i] != tids[j];
+        }
+        ids &= tids[i] > 0 && tids[i] != getpid();
+    }
+    check(ids, "thread ids");
+
+    /* exit() from one thread ends the process while another one waits. */
+    pid_t c = fork();
+    if (c == 0) {
+        pthread_t b, e;
+        pthread_create(&b, NULL, blocker, NULL);
+        pthread_create(&e, NULL, exiter, NULL);
+        pthread_join(b, NULL);
+        _exit(1);
+    }
+    int st = 0;
+    check(c > 0 && waitpid(c, &st, 0) == c && WIFEXITED(st) && WEXITSTATUS(st) == 9,
+          "exit from a thread ends the process");
 }
 
 int main(int argc, char **argv) {
@@ -222,6 +307,7 @@ int main(int argc, char **argv) {
 
     check_interrupted_read(0);
     check_interrupted_read(1);
+    check_threads();
 
     check(unlink(path) == 0 && stat(path, &st) == -1 && errno == ENOENT, "unlink/ENOENT");
 

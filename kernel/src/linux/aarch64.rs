@@ -32,18 +32,6 @@ pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
     [a0, a1, a2, regs.word(3) as usize, regs.word(4) as usize, regs.word(5) as usize]
 }
 
-// ---- thread pointer ---------------------------------------------------------
-
-pub fn tls_read() -> Option<u64> {
-    let v: u64;
-    unsafe { core::arch::asm!("mrs {}, tpidr_el0", out(reg) v, options(nomem, nostack)) };
-    Some(v)
-}
-
-pub fn tls_write(v: u64) {
-    unsafe { core::arch::asm!("msr tpidr_el0, {}", in(reg) v, options(nostack)) };
-}
-
 // ---- FP / SIMD ------------------------------------------------------------
 
 /// The register image is laid out as the frame's `fpsimd_context`: head

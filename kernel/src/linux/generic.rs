@@ -5,10 +5,11 @@
 use super::abi::{err, result, EFAULT, EINVAL, ENOMEM, ENOSYS, EPERM, ESRCH};
 use super::signal as lsig;
 use super::sys::{self, ret};
+use super::thread;
 use crate::task;
 use crate::user::{self, SyscallRegs};
 
-pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs, user_rip: usize, user_rsp: usize) -> usize {
+pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     match nr {
         17 => ret(sys::getcwd(a[0], a[1])),
         23 => ret(sys::dup(a[0], 0)),
@@ -36,9 +37,11 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs, user_rip: usize
         78 => ret(sys::readlinkat(a[0], a[1], a[2], a[3])),
         79 => ret(sys::fstatat(a[0], a[1], a[2], a[3])), // newfstatat
         80 => ret(sys::fstat(a[0], a[1])),
-        93 | 94 => task::user_exit(a[0] as u8), // exit, exit_group
-        96 => task::current_id(),               // set_tid_address
-        99 => 0,                                // set_robust_list
+        93 => thread::exit(a[0]),
+        94 => task::user_exit(a[0] as u8), // exit_group
+        96 => thread::set_tid_address(a[0]),
+        98 => ret(thread::futex(a[0], a[1], a[2], a[3], a[5])),
+        99 => 0, // set_robust_list
         101 => ret(sys::nanosleep(a[0], false)),
         113 => ret(sys::clock_gettime(a[1])),
         115 => ret(sys::nanosleep(a[2], a[1] & 1 != 0)), // clock_nanosleep
@@ -66,12 +69,13 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs, user_rip: usize
         164 => 0,                             // setrlimit
         166 => 0o022,                         // umask
         169 => result(user::sys_gettimeofday(a[0], a[1]), EFAULT),
-        172 | 178 => task::current_id(), // getpid, gettid
+        172 => task::current_pid(),
+        178 => task::current_tid(),
         173 => task::current_ppid(),
         174..=177 => 0, // getuid, geteuid, getgid, getegid
         214 => user::sys_brk(a[0]),
         215 => result(user::sys_munmap(a[0], a[1]), EINVAL),
-        220 => ret(sys::clone(a[0], a[1], user_rip, user_rsp)),
+        220 => ret(thread::clone(regs, a[0], a[1], a[2], a[3], a[4])),
         221 => ret(sys::execve(a[0], a[1], a[2])),
         222 => ret(sys::mmap(a[0], a[1], a[2], a[3], a[4], a[5])),
         226 => result(user::sys_mprotect(a[0], a[1], a[2]), ENOMEM),

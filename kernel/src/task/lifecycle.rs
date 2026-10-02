@@ -30,7 +30,7 @@ pub fn note_reap(parent: usize) {
 /// `ppid` of a task whose parent exited first. `ppid` is a slot index and
 /// slots are recycled, so an orphan must not keep pointing at its dead
 /// parent's slot (see `orphan_children`).
-const NO_PARENT: usize = usize::MAX;
+pub(super) const NO_PARENT: usize = usize::MAX;
 
 /// True once dead task `slot` has left its kernel stack for good, so the slot
 /// (and the kernel stack it keeps for reuse) may be recycled.
@@ -180,7 +180,7 @@ pub fn replace_user(
     user_argc: usize,
     user_argv: usize,
 ) {
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         t.aspace = aspace;
         t.user_rip = user_rip;
         t.user_rsp = user_rsp;
@@ -189,7 +189,7 @@ pub fn replace_user(
         t.stack_off = stack_off;
         t.user_argc = user_argc;
         t.user_argv = user_argv;
-        t.fork_regs = None;
+        t.start_regs = None;
         t.brk_cur = heap_base_for(user_base, stack_off);
         t.mmap = EMPTY_MMAP;
         // POSIX exec: ignored signals, the blocked mask and pending signals
@@ -200,6 +200,7 @@ pub fn replace_user(
     });
     signal_table_exec(current_slot());
     fpu::reset(current_slot());
+    tp::set(0);
     #[cfg(feature = "linux-compat")]
     crate::linux::on_exec(current_slot());
     user::switch_aspace(aspace);
@@ -249,9 +250,10 @@ pub fn spawn_user(
     );
 }
 
-/// Copy the current user task: new aspace, copied fds, fork resume regs.
-/// Child is Ready and will resume userspace with rax/x0 = 0. Returns child slot.
-pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
+/// Copy the current process: new aspace, copied fds. The child is a new
+/// single-threaded process whose thread resumes userspace with `child_regs`
+/// (the calling thread's registers, result 0). Returns the child's pid.
+pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
     let flags = irq_save();
     irq_off();
 
@@ -278,13 +280,14 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         sig_blocked,
     ) = {
         let tasks = TASKS.lock();
-        let id = current_slot();
-        let t = &tasks[id];
-        if t.user_rip == 0 {
+        let me = current_slot();
+        if tasks[me].user_rip == 0 {
             drop(tasks);
             irq_restore(flags);
             return None;
         }
+        let id = tasks[me].tgid;
+        let t = &tasks[id];
         for i in 0..MAX_FDS {
             child_fds[i] = fd_clone(t.fds[i]);
         }
@@ -303,7 +306,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
             t.pgid,
             t.has_ctty,
             t.sig_ignored,
-            t.sig_blocked,
+            tasks[me].sig_blocked,
         )
     };
 
@@ -320,57 +323,11 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         return None;
     };
 
-    let layout = match Layout::from_size_align(STACK_SIZE, 16) {
-        Ok(l) => l,
-        Err(_) => {
-            drop_child_fds(&mut child_fds);
-            irq_restore(flags);
-            return None;
-        }
+    let Some((slot, stack_base, sp, top)) = claim_slot() else {
+        drop_child_fds(&mut child_fds);
+        irq_restore(flags);
+        return None;
     };
-
-    let (slot, reuse_stack) = {
-        let mut tasks = TASKS.lock();
-        free_dead_orphans(&mut tasks);
-        // Reuse kernel stacks left behind by reaped fork children (stack_base kept
-        // in EMPTY slots) or dead kernel threads — avoids kernel-heap alloc on CI.
-        let slot = (0..MAX_TASKS)
-            .find(|&i| {
-                let t = &tasks[i];
-                (t.state == State::Unused || reapable(&tasks, i))
-                    && t.user_rip == 0
-                    && t.aspace == 0
-                    && t.stack_base != 0
-            })
-            .or_else(|| tasks.iter().position(|t| t.state == State::Unused));
-        let Some(slot) = slot else {
-            drop(tasks);
-            drop_child_fds(&mut child_fds);
-            irq_restore(flags);
-            return None;
-        };
-        let reuse = tasks[slot].stack_base != 0;
-        let stack_base = tasks[slot].stack_base;
-        drop(tasks);
-        (slot, (reuse, stack_base))
-    };
-
-    let (stack_base, sp, top) = if reuse_stack.0 {
-        let sb = reuse_stack.1;
-        let sp = unsafe { seed_stack(sb as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
-        (sb, sp, sb + STACK_SIZE)
-    } else {
-        let stack = unsafe { alloc(layout) };
-        if stack.is_null() {
-            drop_child_fds(&mut child_fds);
-            irq_restore(flags);
-            return None;
-        }
-        let sb = stack as usize;
-        let sp = unsafe { seed_stack(stack, STACK_SIZE, trampoline as *const () as usize) };
-        (sb, sp, sb + STACK_SIZE)
-    };
-    stamp_stack_cpu(top, crate::smp::cpu_id());
 
     // Inherit the chroot prefix before the child is published as Ready.
     {
@@ -393,7 +350,7 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         image_span: span,
         stack_off: off,
         ppid,
-        fork_regs: Some(child_regs),
+        start_regs: Some(child_regs),
         user_argc: uargc,
         user_argv: uargv,
         brk_cur: brk,
@@ -420,11 +377,14 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         wait_key: 0,
         wake_at: 0,
         wake_pending: false,
+        tgid: slot,
+        group_exit: false,
     };
     // Before the child becomes runnable on another CPU (TASKS still held;
     // TASKS → SIG_TABLES is the lock order).
     signal_table_fork(ppid, slot);
     fpu::fork(slot);
+    tp::fork(current_slot(), slot);
     #[cfg(feature = "linux-compat")]
     crate::linux::on_fork(ppid, slot);
     drop(tasks);
@@ -436,6 +396,41 @@ pub fn fork_current(child_regs: ForkRegs) -> Option<usize> {
         note_ready(child_aff);
     }
     Some(slot)
+}
+
+/// A free task slot with a kernel stack seeded to start at `trampoline`:
+/// `(slot, stack_base, sp, stack_top)`. Reuses the kernel stack a reaped
+/// task left behind when it can (avoids kernel-heap allocations). Call with
+/// irqs off; `None` when every slot is taken.
+pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
+    let (slot, kept) = {
+        let mut tasks = TASKS.lock();
+        free_dead_orphans(&mut tasks);
+        let slot = (0..MAX_TASKS)
+            .find(|&i| {
+                let t = &tasks[i];
+                (t.state == State::Unused || reapable(&tasks, i))
+                    && t.user_rip == 0
+                    && t.aspace == 0
+                    && t.stack_base != 0
+            })
+            .or_else(|| tasks.iter().position(|t| t.state == State::Unused))?;
+        (slot, tasks[slot].stack_base)
+    };
+    let stack_base = if kept != 0 {
+        kept
+    } else {
+        let layout = Layout::from_size_align(STACK_SIZE, 16).ok()?;
+        let stack = unsafe { alloc(layout) };
+        if stack.is_null() {
+            return None;
+        }
+        stack as usize
+    };
+    let sp = unsafe { seed_stack(stack_base as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
+    let top = stack_base + STACK_SIZE;
+    stamp_stack_cpu(top, crate::smp::cpu_id());
+    Some((slot, stack_base, sp, top))
 }
 
 /// True if `parent` has a child that has exited (`Dead`) and not yet been
@@ -480,7 +475,7 @@ pub fn wait_child(
     pid: Option<usize>,
     status_word: bool,
 ) -> usize {
-    let parent = current_slot();
+    let parent = current_pid();
     loop {
         let mut any = false;
         let mut reap = None;
@@ -570,7 +565,7 @@ fn spawn_inner(
     user_argv: usize,
     ppid: usize,
     fds: [FdEntry; MAX_FDS],
-    fork_regs: Option<ForkRegs>,
+    start_regs: Option<UserRegs>,
 ) {
     let flags = irq_save();
     irq_off();
@@ -608,7 +603,7 @@ fn spawn_inner(
         image_span,
         stack_off,
         ppid,
-        fork_regs,
+        start_regs,
         user_argc,
         user_argv,
         brk_cur,
@@ -634,9 +629,12 @@ fn spawn_inner(
         wait_key: 0,
         wake_at: 0,
         wake_pending: false,
+        tgid: slot,
+        group_exit: false,
     };
     signal_table_reset(slot);
     fpu::reset(slot);
+    tp::reset(slot);
     #[cfg(feature = "linux-compat")]
     crate::linux::on_spawn(slot);
     let aff = tasks[slot].affinity;
@@ -645,32 +643,28 @@ fn spawn_inner(
     note_ready(aff);
 }
 
+/// `exit`: end the current process with `code`.
 pub fn user_exit(code: u8) -> ! {
-    with_current_mut(|t| t.exit_code = code);
-    die();
+    exit_group(code, 0);
 }
 
-/// Terminate the current task because of `sig` (its default action).
+/// Terminate the current process because of `sig` (its default action).
 /// `wait` reports it as signaled; byte-status callers still see `128 + sig`.
 pub fn user_exit_signal(sig: u32) -> ! {
-    with_current_mut(|t| {
-        t.exit_code = 128u8.wrapping_add(sig as u8);
-        t.term_sig = sig as u8;
-    });
-    die();
+    exit_group(128u8.wrapping_add(sig as u8), sig);
 }
 
 extern "C" fn trampoline() -> ! {
     // A fresh task's first run starts here instead of returning from
     // task_switch in `schedule`.
     finish_switch();
-    let (entry, user_rip, user_rsp, user_argc, user_argv, fork_regs) = {
+    let (entry, user_rip, user_rsp, user_argc, user_argv, start_regs) = {
         let flags = irq_save();
         irq_off();
         let id = current_slot();
         let mut tasks = TASKS.lock();
         let t = &mut tasks[id];
-        let fr = t.fork_regs.take();
+        let fr = t.start_regs.take();
         let out = (
             t.entry,
             t.user_rip,
@@ -683,8 +677,8 @@ extern "C" fn trampoline() -> ! {
         irq_restore(flags);
         out
     };
-    if let Some(fr) = fork_regs {
-        crate::user::enter_fork(fr);
+    if let Some(fr) = start_regs {
+        crate::user::enter_regs(fr);
     }
     if user_rip != 0 {
         crate::user::enter(user_rip, user_rsp, user_argc, user_argv);
@@ -696,6 +690,9 @@ extern "C" fn trampoline() -> ! {
     die()
 }
 
+/// End the current process (its leader thread, the last one left) or kernel
+/// thread: close its fds, report its exit to the parent, free its address
+/// space, then leave the CPU for good.
 pub fn die() -> ! {
     irq_off();
     let mut chld_parent = usize::MAX;
@@ -766,6 +763,13 @@ pub fn die() -> ! {
     if let Some((aspace, base, span, off, brk, mmap)) = reclaim {
         user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
     }
+    retire(None);
+}
+
+/// Leave the CPU for good: mark the current task Dead, wake `then_wake`, and
+/// switch away. The slot is recycled once the task is off its kernel stack
+/// (`reapable`).
+pub(super) fn retire(then_wake: Option<usize>) -> ! {
     irq_off();
     {
         let mut tasks = TASKS.lock();
@@ -775,6 +779,9 @@ pub fn die() -> ! {
         // `task_switch` stores the outgoing stack pointer here once this task
         // has left its kernel stack for good; until then it is not reapable.
         tasks[id].sp = 0;
+    }
+    if let Some(key) = then_wake {
+        wake(key);
     }
     // IRQs stay off from Dead to the switch: a preemption here would never be
     // resumed.

@@ -1,4 +1,5 @@
-//! Per-task heap break and mmap region bookkeeping.
+//! Per-process heap break and mmap region bookkeeping (kept in the leader
+//! slot, shared by the process's threads).
 
 use super::*;
 
@@ -61,45 +62,30 @@ const EMPTY_MMAP_REGION: MmapRegion = MmapRegion { va: 0, pages: 0, prot: 0 };
 
 /// Per-task user map: (USER_BASE, IMAGE_SPAN, STACK_OFF).
 pub fn current_user_map() -> (u64, usize, u64) {
-    with_current_mut(|t| (t.user_base, t.image_span, t.stack_off))
+    with_process_mut(|t| (t.user_base, t.image_span, t.stack_off))
 }
 
 pub fn current_brk() -> u64 {
-    let flags = irq_save();
-    irq_off();
-    let id = current_slot();
-    let b = TASKS.lock()[id].brk_cur;
-    irq_restore(flags);
-    b
+    with_process_mut(|t| t.brk_cur)
 }
 
 pub fn set_brk(brk: u64) {
-    with_current_mut(|t| t.brk_cur = brk);
+    with_process_mut(|t| t.brk_cur = brk);
 }
 
 /// Drop the current task's mmap table without freeing frames (caller already
 /// reclaimed them). Used after in-place exec frees anonymous maps before
 /// `expand_user_elf` so a later `reclaim_user_aspace` / exit cannot double-free.
 pub fn clear_mmap() {
-    with_current_mut(|t| t.mmap = EMPTY_MMAP);
+    with_process_mut(|t| t.mmap = EMPTY_MMAP);
 }
 
 pub fn mmap_regions() -> [MmapRegion; MAX_MMAP_REGIONS] {
-    let flags = irq_save();
-    irq_off();
-    let id = current_slot();
-    let r = TASKS.lock()[id].mmap;
-    irq_restore(flags);
-    r
+    with_process_mut(|t| t.mmap)
 }
 
 pub fn mmap_contains(ptr: usize, len: usize) -> bool {
-    let flags = irq_save();
-    irq_off();
-    let id = current_slot();
-    let mmap = TASKS.lock()[id].mmap;
-    irq_restore(flags);
-    mmap_range_in(&mmap, ptr, len)
+    with_process_mut(|t| mmap_range_in(&t.mmap, ptr, len))
 }
 
 /// Lowest free `len`-byte gap in `[area_lo, area_hi)` (page aligned).
@@ -124,7 +110,7 @@ pub fn mmap_alloc(area_lo: usize, area_hi: usize, len: usize) -> Option<usize> {
 /// protection when there is one (malloc implementations such as musl's map
 /// many small neighbouring blocks: hundreds of mappings, few runs).
 pub fn mmap_add(va: u64, pages: u32, prot: u32) -> bool {
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         let added = match t.mmap.iter_mut().find(|r| r.pages == 0) {
             Some(r) => {
                 *r = MmapRegion { va, pages, prot };
@@ -183,7 +169,7 @@ fn coalesce(regions: &mut [MmapRegion; MAX_MMAP_REGIONS], mut extra: Option<Mmap
 pub fn mmap_remove(va: u64, pages: u32) -> bool {
     let lo = va as usize;
     let hi = lo + pages as usize * crate::user::PAGE;
-    with_current_mut(|t| carve(&mut t.mmap, lo, hi).is_some())
+    with_process_mut(|t| carve(&mut t.mmap, lo, hi).is_some())
 }
 
 /// Record `prot` for the mapped parts of `[va, va + pages)`.
@@ -191,7 +177,7 @@ pub fn mmap_set_prot(va: u64, pages: u32, prot: u32) -> bool {
     let page = crate::user::PAGE;
     let lo = va as usize;
     let hi = lo + pages as usize * page;
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         let saved = t.mmap;
         let Some(parts) = carve(&mut t.mmap, lo, hi) else {
             return false;

@@ -1,6 +1,8 @@
-//! Per-task signal state: the pending / ignored / blocked bits on [`Task`],
-//! the table of caught handlers, and the queries the signal code makes on
-//! them. Policy (default actions, frame layout, syscalls) lives in
+//! Signal state: the pending / blocked bits of each thread, the
+//! dispositions of each process (`sig_ignored` and the table of caught
+//! handlers, in the leader's slot), and the queries the signal code makes on
+//! them. Ids are thread ids; a signal sent to a pid goes to the leader
+//! thread. Policy (default actions, frame layout, syscalls) lives in
 //! [`crate::signal`].
 
 use super::*;
@@ -23,7 +25,7 @@ const NO_ACTION: SigAction = SigAction {
     flags: 0,
 };
 
-/// Caught handlers of one task, plus the libc trampoline that runs them
+/// Caught handlers of one process, plus the libc trampoline that runs them
 /// (registered with each `sigaction`; 0 = none, so nothing can be caught).
 #[derive(Clone, Copy)]
 struct SigTable {
@@ -87,13 +89,16 @@ fn with_sig<R>(f: impl FnOnce(&mut [Task; MAX_TASKS], &mut [SigTable; MAX_TASKS]
     r
 }
 
-fn disposition(t: &Task, tab: &SigTable, sig: u32) -> Disposition {
+/// What `sig` does to thread `id`, from its process's dispositions.
+fn disposition(tasks: &[Task; MAX_TASKS], tabs: &[SigTable; MAX_TASKS], id: usize, sig: u32) -> Disposition {
     if sig == signal::SIGKILL {
         return Disposition::Terminate;
     }
-    if t.sig_ignored & (1 << sig) != 0 {
+    let pid = tasks[id].tgid;
+    if tasks[pid].sig_ignored & (1 << sig) != 0 {
         return Disposition::Ignore;
     }
+    let tab = &tabs[pid];
     let act = tab.act[sig as usize];
     if act.handler != 0 && tab.tramp != 0 {
         return Disposition::Catch(act);
@@ -120,17 +125,17 @@ pub fn signal_send(id: usize, sig: u32) {
     }
     let bit = 1u32 << sig;
     let kicks = with_sig(|tasks, tabs| {
-        let t = &mut tasks[id];
+        let t = &tasks[id];
         let live = t.user_rip != 0
             && matches!(t.state, State::Ready | State::Running | State::Blocked);
         if !live {
             return 0;
         }
         let blocked = t.sig_blocked & bit != 0 && bit & UNBLOCKABLE == 0;
-        if !blocked && matches!(disposition(t, &tabs[id], sig), Disposition::Ignore) {
+        if !blocked && matches!(disposition(tasks, tabs, id, sig), Disposition::Ignore) {
             return 0;
         }
-        t.sig_pending |= bit;
+        tasks[id].sig_pending |= bit;
         // A signal that acts ends any blocking wait (EINTR / termination).
         if !blocked {
             wake_task_locked(tasks, id)
@@ -148,12 +153,16 @@ pub fn signal_wakeable(id: usize) -> bool {
         return false;
     }
     with_sig(|tasks, tabs| {
-        let t = &tasks[id];
-        let set = deliverable(t);
+        let set = deliverable(&tasks[id]);
         (1..32u32).any(|sig| {
-            set & (1 << sig) != 0 && !matches!(disposition(t, &tabs[id], sig), Disposition::Ignore)
+            set & (1 << sig) != 0 && !matches!(disposition(tasks, tabs, id, sig), Disposition::Ignore)
         })
     })
+}
+
+/// Whether `SIGKILL` is pending for `id` (it acts even when blocked).
+pub fn signal_kill_pending(id: usize) -> bool {
+    id < MAX_TASKS && with_sig(|tasks, _| tasks[id].sig_pending & KILL_BIT != 0)
 }
 
 /// Consume the lowest-numbered pending, unblocked signal of `id` that has an
@@ -164,10 +173,9 @@ pub fn signal_next(id: usize) -> SigNext {
         return SigNext::None;
     }
     with_sig(|tasks, tabs| {
-        let t = &mut tasks[id];
-        let tab = &mut tabs[id];
+        let pid = tasks[id].tgid;
         loop {
-            let set = deliverable(t);
+            let set = deliverable(&tasks[id]);
             if set == 0 {
                 return SigNext::None;
             }
@@ -178,17 +186,19 @@ pub fn signal_next(id: usize) -> SigNext {
                 set.trailing_zeros()
             };
             let bit = 1u32 << sig;
-            t.sig_pending &= !bit;
-            match disposition(t, tab, sig) {
+            tasks[id].sig_pending &= !bit;
+            match disposition(tasks, tabs, id, sig) {
                 Disposition::Ignore => continue,
                 Disposition::Terminate => return SigNext::Terminate(sig),
                 Disposition::Catch(act) => {
+                    let t = &mut tasks[id];
                     let old_blocked = t.sig_blocked;
                     let mut add = act.mask;
                     if act.flags & signal::SA_NODEFER == 0 {
                         add |= bit;
                     }
                     t.sig_blocked = (t.sig_blocked | add) & !UNBLOCKABLE;
+                    let tab = &mut tabs[pid];
                     if act.flags & signal::SA_RESETHAND != 0 {
                         tab.act[sig as usize] = NO_ACTION;
                     }
@@ -211,10 +221,11 @@ pub fn signal_get_action(id: usize, sig: u32) -> (usize, u32, u32) {
         return (signal::HANDLER_DFL, 0, 0);
     }
     with_sig(|tasks, tabs| {
-        if tasks[id].sig_ignored & (1 << sig) != 0 {
+        let pid = tasks[id].tgid;
+        if tasks[pid].sig_ignored & (1 << sig) != 0 {
             return (signal::HANDLER_IGN, 0, 0);
         }
-        let a = tabs[id].act[sig as usize];
+        let a = tabs[pid].act[sig as usize];
         (a.handler, a.flags, a.mask)
     })
 }
@@ -241,24 +252,30 @@ pub fn signal_set_action(
         return false;
     }
     with_sig(|tasks, tabs| {
-        let t = &mut tasks[id];
-        let tab = &mut tabs[id];
-        match handler {
-            signal::HANDLER_IGN => {
-                t.sig_ignored |= bit;
-                tab.act[sig as usize] = NO_ACTION;
-                // POSIX: setting SIG_IGN discards a pending instance, blocked or not.
+        let pid = tasks[id].tgid;
+        let tab = &mut tabs[pid];
+        // Dropping a now-ignored pending signal from every thread of the process.
+        let discard = |tasks: &mut [Task; MAX_TASKS]| {
+            for t in tasks.iter_mut().filter(|t| t.tgid == pid && t.state != State::Unused) {
                 t.sig_pending &= !bit;
             }
+        };
+        match handler {
+            signal::HANDLER_IGN => {
+                tasks[pid].sig_ignored |= bit;
+                tab.act[sig as usize] = NO_ACTION;
+                // POSIX: setting SIG_IGN discards a pending instance, blocked or not.
+                discard(tasks);
+            }
             signal::HANDLER_DFL => {
-                t.sig_ignored &= !bit;
+                tasks[pid].sig_ignored &= !bit;
                 tab.act[sig as usize] = NO_ACTION;
                 if !signal::default_terminates(sig) {
-                    t.sig_pending &= !bit;
+                    discard(tasks);
                 }
             }
             _ => {
-                t.sig_ignored &= !bit;
+                tasks[pid].sig_ignored &= !bit;
                 tab.act[sig as usize] = SigAction {
                     handler,
                     mask: mask & !UNBLOCKABLE,
@@ -364,6 +381,14 @@ fn with_tables(f: impl FnOnce(&mut [SigTable; MAX_TASKS])) {
 pub(super) fn signal_table_reset(slot: usize) {
     if slot < MAX_TASKS {
         with_tables(|tabs| tabs[slot] = EMPTY_TABLE);
+        signal_thread_reset(slot);
+    }
+}
+
+/// A new thread in `slot`: no interrupted wait, no `sigsuspend` mask (the
+/// handlers are its process's).
+pub(super) fn signal_thread_reset(slot: usize) {
+    if slot < MAX_TASKS {
         INTERRUPTED[slot].store(false, Ordering::SeqCst);
         SUSPEND_MASK[slot].store(u64::MAX, Ordering::SeqCst);
     }

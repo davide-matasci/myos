@@ -19,13 +19,12 @@ use crate::user::SyscallRegs;
 
 const SA_RESTORER: usize = 0x0400_0000;
 const SS_DISABLE: u32 = 2;
-const EAGAIN: usize = 11;
 
-/// Per task slot: the user page holding [`arch::TRAMP_CODE`], mapped on
+/// Per process (leader slot): the user page holding [`arch::TRAMP_CODE`], mapped on
 /// first use for handlers registered without `SA_RESTORER` (riscv64 musl
 /// never passes one; real Linux uses its vDSO there). 0 = none yet.
 static TRAMP: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
-/// Per task slot: the `sa_restorer` last registered (reported in `oact`).
+/// Per process: the `sa_restorer` last registered (reported in `oact`).
 static RESTORER: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
 
 pub fn on_exec(slot: usize) {
@@ -100,7 +99,7 @@ pub fn rt_sigreturn(regs: &mut SyscallRegs) -> usize {
 
 /// The trampoline page for handlers without `SA_RESTORER`.
 fn trampoline() -> Result<usize, usize> {
-    let slot = task::current_id();
+    let slot = task::current_pid();
     let have = TRAMP[slot].load(Ordering::Relaxed) as usize;
     if have != 0 {
         return Ok(have);
@@ -130,7 +129,7 @@ pub fn rt_sigaction(sig: usize, act: usize, oact: usize) -> R {
     if n == 0 {
         return Err(EINVAL);
     }
-    let id = task::current_id();
+    let id = task::current_pid();
     let words = if arch::SIGACTION_HAS_RESTORER { 4 } else { 3 };
     let mask_word = words - 1;
     // Read the new action before writing the old one (they may alias).

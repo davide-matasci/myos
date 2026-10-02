@@ -13,21 +13,21 @@
 //! musl binaries on x86_64, aarch64 and riscv64. See docs/linux-compat.md.
 //!
 //! State lives here, per task slot, outside `Task`; the core calls the
-//! `on_*` hooks at spawn, fork, exec and context switch, and [`deliver`] to
-//! run a caught signal's handler.
+//! `on_*` hooks at spawn, fork, thread creation and exec, and [`deliver`]
+//! to run a caught signal's handler.
 //!
 //! Each arch module (`x86_64`, `aarch64`, `riscv64`) provides the same
 //! items: `MACHINE`, `args`, `syscall` (its number table; aarch64 and
 //! riscv64 share `generic`), `stat_bytes`, the signal frame (`deliver`,
 //! `sigreturn`), the FP/SIMD image for frames (`FP_BYTES`, `fp_save`,
-//! `fp_restore`, from `task::fpu`), the thread pointer (`tls_read`,
-//! `tls_write`) and the
-//! sigreturn trampoline code (`TRAMP_CODE`).
+//! `fp_restore`, from `task::fpu`) and the sigreturn trampoline code
+//! (`TRAMP_CODE`).
 
 mod abi;
 mod files;
 mod signal;
 mod sys;
+mod thread;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 mod generic;
@@ -50,7 +50,7 @@ pub use signal::deliver;
 pub use riscv64::SSTATUS_FS_INITIAL;
 
 use alloc::borrow::Cow;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::task::{self, MAX_TASKS};
 use crate::user::{AuxV, SyscallRegs};
@@ -59,10 +59,6 @@ use crate::user::{AuxV, SyscallRegs};
 static ACTIVE: [AtomicBool; MAX_TASKS] = [const { AtomicBool::new(false) }; MAX_TASKS];
 /// Per task slot: the next successful exec starts a Linux image.
 static PENDING: [AtomicBool; MAX_TASKS] = [const { AtomicBool::new(false) }; MAX_TASKS];
-/// Per task slot: the thread pointer while the task is switched out
-/// (`arch_prctl(ARCH_SET_FS)` on x86_64, `tpidr_el0` on aarch64; riscv64
-/// keeps `tp` in the trap frame).
-static TP: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
 
 /// Whether the running task has the Linux personality.
 pub fn active() -> bool {
@@ -70,17 +66,9 @@ pub fn active() -> bool {
 }
 
 /// A Linux syscall from the running task (see the module docs).
-pub fn dispatch(
-    nr: usize,
-    a0: usize,
-    a1: usize,
-    a2: usize,
-    regs: &mut SyscallRegs,
-    user_rip: usize,
-    user_rsp: usize,
-) -> usize {
+pub fn dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: &mut SyscallRegs) -> usize {
     let args = arch::args(regs, a0, a1, a2);
-    arch::syscall(nr, args, regs, user_rip, user_rsp)
+    arch::syscall(nr, args, regs)
 }
 
 /// Native `SYS_LINUX_NEXT_EXEC`: the next successful exec of the caller
@@ -103,52 +91,35 @@ fn exec_linux(path: &str, args: &[&[u8]], env: &[&[u8]]) -> usize {
 pub fn on_exec(slot: usize) {
     let linux = PENDING[slot].swap(false, Ordering::Relaxed);
     ACTIVE[slot].store(linux, Ordering::Relaxed);
-    TP[slot].store(0, Ordering::Relaxed);
-    if linux {
-        arch::tls_write(0);
-    }
     signal::on_exec(slot);
 }
 
-/// Hook: `child` was forked from `parent` (TASKS held, irqs off). Runs on
-/// the parent's CPU, so its live thread pointer is the parent's.
+/// Hook: `child` was forked from `parent` (TASKS held, irqs off).
 pub fn on_fork(parent: usize, child: usize) {
     let linux = ACTIVE[parent].load(Ordering::Relaxed);
     ACTIVE[child].store(linux, Ordering::Relaxed);
     PENDING[child].store(false, Ordering::Relaxed);
-    let tp = arch::tls_read().unwrap_or(TP[parent].load(Ordering::Relaxed));
-    TP[child].store(tp, Ordering::Relaxed);
     files::on_fork(parent, child);
     signal::on_fork(parent, child);
+    thread::on_new_task(child);
+}
+
+/// Hook: thread `creator` started thread `slot` in its process (TASKS held,
+/// irqs off). Process-wide state (fd paths, the signal trampoline) is kept
+/// per process; the personality goes with each thread.
+pub fn on_thread(creator: usize, slot: usize) {
+    ACTIVE[slot].store(ACTIVE[creator].load(Ordering::Relaxed), Ordering::Relaxed);
+    PENDING[slot].store(false, Ordering::Relaxed);
+    thread::on_new_task(slot);
 }
 
 /// Hook: `slot` was (re)used for a freshly spawned task.
 pub fn on_spawn(slot: usize) {
     ACTIVE[slot].store(false, Ordering::Relaxed);
     PENDING[slot].store(false, Ordering::Relaxed);
-    TP[slot].store(0, Ordering::Relaxed);
     files::on_spawn(slot);
     signal::on_exec(slot);
-}
-
-/// Hook: this CPU switches from task `prev` to task `next` (irqs off). The
-/// FP/SIMD registers are switched by the core (`task::fpu`).
-pub fn on_switch(prev: usize, next: usize) {
-    if ACTIVE[prev].load(Ordering::Relaxed) {
-        if let Some(tp) = arch::tls_read() {
-            TP[prev].store(tp, Ordering::Relaxed);
-        }
-    }
-    if ACTIVE[next].load(Ordering::Relaxed) {
-        arch::tls_write(TP[next].load(Ordering::Relaxed));
-    }
-}
-
-/// The running task's thread pointer changed (`arch_prctl`).
-#[cfg(target_arch = "x86_64")]
-fn set_tp(v: u64) {
-    TP[task::current_id()].store(v, Ordering::Relaxed);
-    arch::tls_write(v);
+    thread::on_new_task(slot);
 }
 
 /// The auxiliary vector for an image about to start with the Linux

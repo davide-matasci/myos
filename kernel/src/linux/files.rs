@@ -31,18 +31,18 @@ pub fn on_spawn(slot: usize) {
 }
 
 pub fn get(fd: usize) -> Option<FdPath> {
-    PATHS.lock()[task::current_id()].iter().find(|e| e.fd == fd).cloned()
+    PATHS.lock()[task::current_pid()].iter().find(|e| e.fd == fd).cloned()
 }
 
 pub fn set(fd: usize, path: String, dir: bool) {
     let mut t = PATHS.lock();
-    let v = &mut t[task::current_id()];
+    let v = &mut t[task::current_pid()];
     v.retain(|e| e.fd != fd);
     v.push(FdPath { fd, path, dir, pos: 0 });
 }
 
 pub fn remove(fd: usize) {
-    PATHS.lock()[task::current_id()].retain(|e| e.fd != fd);
+    PATHS.lock()[task::current_pid()].retain(|e| e.fd != fd);
 }
 
 /// `new` now refers to what `old` does (dup/dup2/F_DUPFD).
@@ -55,7 +55,7 @@ pub fn dup(old: usize, new: usize) {
 
 pub fn set_pos(fd: usize, pos: usize) {
     let mut t = PATHS.lock();
-    if let Some(e) = t[task::current_id()].iter_mut().find(|e| e.fd == fd) {
+    if let Some(e) = t[task::current_pid()].iter_mut().find(|e| e.fd == fd) {
         e.pos = pos;
     }
 }

@@ -87,6 +87,29 @@ const SYS_LINUX_NEXT_EXEC: usize = 51;
 /// `EINTR` when a signal acts.
 const SYS_NANOSLEEP: usize = 52;
 const SLEEP_ANY_EVENT: usize = 1;
+/// `thread_spawn(&ThreadSpawn)`: start a thread in the calling process at
+/// `entry(arg)` on the stack whose top is `stack`, with thread pointer `tls`
+/// (`ThreadSpawn` is four `u64`s in that order: entry, stack, arg, tls). The
+/// entry must not return: it ends with `thread_exit`. Returns the tid.
+/// Threads share everything but their registers and stacks (see
+/// `task::thread`).
+const SYS_THREAD_SPAWN: usize = 53;
+/// `thread_exit(code)`: end the calling thread; the process ends with its
+/// last thread (`exit` ends all of them).
+const SYS_THREAD_EXIT: usize = 54;
+/// `wait_addr(addr, expected, timeout_ns)`: block while the 32-bit word at
+/// `addr` holds `expected`, until `wake_addr` on it, the timeout (0 = none)
+/// or a signal (`EINTR`). Returns 0 (woken, possibly spuriously),
+/// `WAIT_ADDR_CHANGED` (the word did not hold `expected`) or
+/// `WAIT_ADDR_TIMEOUT`. For user-space locks.
+const SYS_WAIT_ADDR: usize = 55;
+const WAIT_ADDR_CHANGED: usize = 1;
+const WAIT_ADDR_TIMEOUT: usize = 2;
+/// `wake_addr(addr, count)`: wake up to `count` threads of the calling
+/// process waiting on `addr`. Returns how many it woke.
+const SYS_WAKE_ADDR: usize = 56;
+/// `gettid()`: the calling thread's id (`getpid` is its process's).
+const SYS_GETTID: usize = 57;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
@@ -115,6 +138,11 @@ impl SyscallRegs {
     const NR_REG: Option<usize> = Some(17);
     #[cfg(target_arch = "x86_64")]
     const NR_REG: Option<usize> = None;
+    /// The result register in the trap frame (x0 / a0).
+    #[cfg(target_arch = "aarch64")]
+    const RESULT: usize = 0;
+    #[cfg(target_arch = "riscv64")]
+    const RESULT: usize = 10;
 
     /// Length of the syscall instruction (`syscall` / `svc` / `ecall`).
     #[cfg(target_arch = "x86_64")]
@@ -161,7 +189,7 @@ impl SyscallRegs {
 }
 
 /// Live trap frame of the syscall running on each CPU (aarch64/riscv): a
-/// syscall sets it on entry and clears it on exit, fork/exec read it on the
+/// syscall sets it on entry and clears it on exit; exec reads it on the
 /// same CPU. One cell per CPU, so user tasks on several CPUs never see each
 /// other's frame.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -181,8 +209,8 @@ pub fn set_syscall_frame(frame: *mut u64) {
 }
 
 /// The frame recorded by [`set_syscall_frame`] on this CPU (null outside a
-/// syscall).
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+/// syscall); exec resumes through it on aarch64.
+#[cfg(target_arch = "aarch64")]
 pub(super) fn syscall_frame() -> *mut usize {
     let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     unsafe { core::ptr::addr_of!(SYSCALL_FRAMES[cpu]).read() }
@@ -207,7 +235,7 @@ pub extern "C" fn syscall_dispatch(
     // Linux syscalls (own numbers, errno returns); see `crate::linux`.
     #[cfg(feature = "linux-compat")]
     if crate::linux::active() {
-        let ret = crate::linux::dispatch(nr, a0, a1, a2, &mut regs, user_rip, user_rsp);
+        let ret = crate::linux::dispatch(nr, a0, a1, a2, &mut regs);
         return crate::signal::on_syscall_exit(&mut regs, nr, a0, ret);
     }
     let ret = match nr {
@@ -217,7 +245,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
         SYS_EXEC => sys_exec(a0, a1, a2),
-        SYS_FORK => sys_fork(user_rip, user_rsp),
+        SYS_FORK => sys_fork(&regs),
         SYS_WAIT => sys_wait(a0, a1),
         SYS_WAITPID => sys_waitpid(a0, a1, a2),
         SYS_LISTDIR => sys_listdir(a0, a1, a2),
@@ -262,6 +290,11 @@ pub extern "C" fn syscall_dispatch(
         SYS_SIGSUSPEND => crate::signal::sigsuspend(a0 as u32),
         SYS_SIGWAIT => crate::signal::sigwait(a0 as u32),
         SYS_NANOSLEEP => sys_nanosleep(a0, a1),
+        SYS_THREAD_SPAWN => sys_thread_spawn(&regs, a0),
+        SYS_THREAD_EXIT => task::thread_exit(a0 as u8),
+        SYS_WAIT_ADDR => sys_wait_addr(a0, a1, a2),
+        SYS_WAKE_ADDR => task::wake_addr(a0, a1),
+        SYS_GETTID => task::current_tid(),
         #[cfg(feature = "linux-compat")]
         SYS_LINUX_NEXT_EXEC => crate::linux::sys_linux_next_exec(),
         _ => SYSERR,
@@ -272,6 +305,34 @@ pub extern "C" fn syscall_dispatch(
 
 fn sys_exit(code: usize) -> ! {
     task::user_exit(code as u8);
+}
+
+fn sys_thread_spawn(regs: &SyscallRegs, params: usize) -> usize {
+    let mut b = [0u8; 32];
+    if !buffer_ok(params, b.len()) || !copy_from_user(task::current_aspace(), params, &mut b) {
+        return SYSERR;
+    }
+    let word = |i: usize| u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap()) as usize;
+    let (entry, stack, arg, tls) = (word(0), word(1), word(2), word(3) as u64);
+    if entry == 0 || stack == 0 {
+        return SYSERR;
+    }
+    task::spawn_thread(thread_start(regs, entry, stack, arg), Some(tls)).unwrap_or(SYSERR)
+}
+
+fn sys_wait_addr(addr: usize, expected: usize, timeout_ns: usize) -> usize {
+    let deadline = if timeout_ns == 0 {
+        0
+    } else {
+        crate::time::monotonic_ns().saturating_add(timeout_ns as u64).max(1)
+    };
+    match task::wait_addr(addr, expected as u32, deadline) {
+        // An interrupted wait becomes `EINTR` in `on_syscall_exit`.
+        task::AddrWait::Woken | task::AddrWait::Interrupted => 0,
+        task::AddrWait::Changed => WAIT_ADDR_CHANGED,
+        task::AddrWait::TimedOut => WAIT_ADDR_TIMEOUT,
+        task::AddrWait::Fault => SYSERR,
+    }
 }
 
 fn sys_nanosleep(ns: usize, flags: usize) -> usize {
@@ -440,7 +501,7 @@ pub(crate) fn sys_getsid(pid: usize) -> usize {
 }
 
 fn sys_getpid() -> usize {
-    task::current_id()
+    task::current_pid()
 }
 
 /// `kill(pid, sig)` — `pid` is interpreted as signed (`isize`) for pgid rules.
@@ -547,6 +608,11 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     let relocate = interp.is_none();
     #[cfg(not(feature = "linux-compat"))]
     let relocate = true;
+    // The old image goes away from here on: the process's other threads
+    // end first.
+    if !task::exec_alone() {
+        return SYSERR;
+    }
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any
     // current_slot()-backed lookup so we expand/replace the running task.
     crate::smp::sync_tp_for_kernel();
@@ -791,49 +857,70 @@ fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
     0
 }
 
-pub(crate) fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
+/// The calling thread's user registers as a new task starts with them:
+/// resuming after this syscall with result 0 (a forked child; a thread
+/// changes the stack pointer and entry, see [`thread_start`]).
+pub(crate) fn caller_regs(regs: &SyscallRegs) -> task::UserRegs {
     #[cfg(target_arch = "x86_64")]
-    let child = {
+    {
         // Use the snapshot from syscall_entry — live rbx/rbp/r12–r15 here may
         // already be Rust scratch (prologues saved the user values on the stack).
         let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
         let c = unsafe { core::ptr::addr_of!(CPU_SYSCALL[cpu].fork).read() };
-        task::ForkRegs {
-            rip: user_rip,
-            rsp: user_rsp,
+        // The pushed block: rsp, rip, r8, r9, rflags, r10, rdx, rsi, rdi.
+        let w = |i: usize| unsafe { *regs.0.add(i) };
+        task::UserRegs {
+            rip: regs.pc(),
+            rsp: regs.sp(),
             rbx: c.rbx,
             rbp: c.rbp,
             r12: c.r12,
             r13: c.r13,
             r14: c.r14,
             r15: c.r15,
+            args: [w(8), w(7), w(6), w(5), w(2), w(3)],
         }
-    };
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let mut frame = copy_fork_syscall_frame(regs.0 as *const u64);
+        frame[SyscallRegs::RESULT] = 0;
+        task::UserRegs {
+            rip: regs.pc(),
+            rsp: regs.sp(),
+            frame,
+        }
+    }
+}
+
+/// Registers for a native thread that starts at `entry(arg)` on the stack
+/// whose top is `stack`, as if called (it must not return).
+fn thread_start(regs: &SyscallRegs, entry: usize, stack: usize, arg: usize) -> task::UserRegs {
+    let mut r = caller_regs(regs);
+    r.rip = entry;
+    let top = stack & !15;
+    #[cfg(target_arch = "x86_64")]
+    {
+        r.rsp = top - 8; // where `call` leaves the return address
+        r.args[0] = arg as u64;
+    }
     #[cfg(target_arch = "aarch64")]
-    let child = {
-        let frame = syscall_frame();
-        if frame.is_null() {
-            return SYSERR;
-        }
-        task::ForkRegs {
-            rip: user_rip,
-            rsp: user_rsp,
-            frame: copy_fork_syscall_frame(frame as *const u64),
-        }
-    };
+    {
+        r.rsp = top;
+        r.frame[0] = arg as u64;
+        r.frame[30] = 0; // lr
+    }
     #[cfg(target_arch = "riscv64")]
-    let child = {
-        let frame = syscall_frame();
-        if frame.is_null() {
-            return SYSERR;
-        }
-        task::ForkRegs {
-            rip: user_rip,
-            rsp: user_rsp,
-            frame: copy_fork_syscall_frame(frame as *const u64),
-        }
-    };
-    match task::fork_current(child) {
+    {
+        r.rsp = top;
+        r.frame[10] = arg as u64; // a0
+        r.frame[1] = 0; // ra
+    }
+    r
+}
+
+pub(crate) fn sys_fork(regs: &SyscallRegs) -> usize {
+    match task::fork_current(caller_regs(regs)) {
         Some(pid) => pid,
         None => SYSERR,
     }
@@ -895,7 +982,7 @@ fn sys_sigchld_take() -> usize {
 }
 
 fn sys_sigchld_pending() -> usize {
-    if task::has_exited_child(task::current_id()) { 1 } else { 0 }
+    if task::has_exited_child(task::current_pid()) { 1 } else { 0 }
 }
 
 fn sys_pipe_peer(fd: usize) -> usize {
@@ -907,7 +994,7 @@ fn sys_pipe_peer(fd: usize) -> usize {
 
 fn sys_sigchld_take_inner() -> usize {
     let bit = 1u32 << crate::signal::SIGCHLD;
-    if task::signal_take_pending(task::current_id(), bit) {
+    if task::signal_take_pending(task::current_pid(), bit) {
         1
     } else {
         0

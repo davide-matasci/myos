@@ -1,6 +1,11 @@
 //! Round-robin kernel threads plus user processes (own CR3/TTBR0).
 //! Cooperative (`yield_now`) and preemptive (timer IRQ calls the same
 //! `schedule` after EOI).
+//!
+//! A user process is one or more threads. Each thread is a task slot; the
+//! slot of the first one, the thread-group leader, is also the process: its
+//! id is the pid, and it holds what the threads share (address space, fds,
+//! cwd, signal dispositions, job control, exit status). See `thread`.
 
 mod fd;
 pub mod fpu;
@@ -8,12 +13,15 @@ mod jobs;
 mod lifecycle;
 mod sched;
 mod signals;
+mod thread;
+pub mod tp;
 mod vm;
 pub use fd::*;
 pub use jobs::*;
 pub use lifecycle::*;
 pub use sched::*;
 pub use signals::*;
+pub use thread::*;
 pub use vm::*;
 
 use alloc::alloc::{alloc, Layout};
@@ -81,13 +89,15 @@ enum State {
     Dead,
 }
 
-/// User register snapshot so a forked child can resume after the syscall
-/// with the same callee-saved state the parent had (rax/x0 forced to 0).
-/// `#[repr(C)]` is required: `enter_fork_x86` historically used fixed
+/// The user registers a new task starts with: a forked child resumes after
+/// the parent's syscall with the parent's registers (result 0); a new thread
+/// at its entry or, for a Linux `clone`, like a forked child on its own
+/// stack (built by `user::caller_regs`).
+/// `#[repr(C)]` is required: `enter_regs_x86` historically used fixed
 /// offsets into this struct; keep a stable layout even if that path changes.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ForkRegs {
+pub struct UserRegs {
     pub rip: usize,
     pub rsp: usize,
     #[cfg(target_arch = "x86_64")]
@@ -102,6 +112,11 @@ pub struct ForkRegs {
     pub r14: u64,
     #[cfg(target_arch = "x86_64")]
     pub r15: u64,
+    /// The argument registers rdi, rsi, rdx, r10, r8, r9 (a syscall
+    /// preserves them; rax, the result, starts at 0; rcx and r11 are
+    /// clobbered by `sysret` anyway).
+    #[cfg(target_arch = "x86_64")]
+    pub args: [u64; 6],
     /// Full `lower_sync` frame (x0..x30, elr, spsr, sp_el0). Index 31 unused.
     #[cfg(target_arch = "aarch64")]
     pub frame: [u64; 36],
@@ -149,7 +164,7 @@ struct Task {
     image_span: usize,
     stack_off: u64,
     ppid: usize,
-    fork_regs: Option<ForkRegs>,
+    start_regs: Option<UserRegs>,
     user_argc: usize,
     user_argv: usize,
     /// Current program break (end of heap). 0 for kernel threads.
@@ -198,6 +213,14 @@ struct Task {
     /// A wake arrived while the task was still leaving a CPU (mid task
     /// switch); `finish_switch` turns it into `Ready`.
     wake_pending: bool,
+    /// The process (thread-group leader slot) this thread belongs to; its
+    /// own slot for a single-threaded process. The process-wide fields above
+    /// (address-space layout, fds, cwd, job control, `sig_ignored`, exit
+    /// status) are only kept in the leader's slot.
+    tgid: usize,
+    /// Set in the leader once the process is ending (`exit_group`): its
+    /// other threads are being killed, and the exit status is final.
+    group_exit: bool,
 }
 
 const EMPTY: Task = Task {
@@ -214,7 +237,7 @@ const EMPTY: Task = Task {
     image_span: 0,
     stack_off: 0,
     ppid: 0,
-    fork_regs: None,
+    start_regs: None,
     user_argc: 0,
     user_argv: 0,
     brk_cur: 0,
@@ -236,6 +259,8 @@ const EMPTY: Task = Task {
     wait_key: 0,
     wake_at: 0,
     wake_pending: false,
+    tgid: 0,
+    group_exit: false,
 };
 
 static TASKS: Mutex<[Task; MAX_TASKS]> = Mutex::new([EMPTY; MAX_TASKS]);
@@ -414,14 +439,16 @@ pub fn current_id() -> usize {
 pub fn current_ppid() -> usize {
     let flags = irq_save();
     irq_off();
-    let p = TASKS.lock()[current_slot()].ppid;
+    let tasks = TASKS.lock();
+    let p = tasks[tasks[current_slot()].tgid].ppid;
+    drop(tasks);
     irq_restore(flags);
     p
 }
 
-/// When the running task is a user process, its saved PC and stack pointer.
+/// When the running task is a user thread, its saved PC and stack pointer.
 pub fn current_user_pc_sp() -> Option<(usize, usize)> {
-    with_current_mut(|t| {
+    with_thread_mut(|t| {
         if t.user_rip != 0 {
             Some((t.user_rip, t.user_rsp))
         } else {
@@ -451,7 +478,7 @@ pub fn current_kernel_stack_top() -> usize {
 }
 
 pub fn set_exec_name(name: &[u8]) {
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         let n = name.len().min(t.exec_name.len());
         t.exec_name[..n].copy_from_slice(&name[..n]);
         t.exec_name_len = n as u8;
@@ -459,7 +486,7 @@ pub fn set_exec_name(name: &[u8]) {
 }
 
 pub fn exec_name(out: &mut [u8]) -> usize {
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         let n = t.exec_name_len as usize;
         let n = n.min(out.len()).min(t.exec_name.len());
         out[..n].copy_from_slice(&t.exec_name[..n]);
@@ -468,7 +495,7 @@ pub fn exec_name(out: &mut [u8]) -> usize {
 }
 
 pub fn cwd(out: &mut [u8]) -> usize {
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         let n = t.cwd_len as usize;
         let n = n.min(out.len()).min(t.cwd.len());
         out[..n].copy_from_slice(&t.cwd[..n]);
@@ -476,21 +503,17 @@ pub fn cwd(out: &mut [u8]) -> usize {
     })
 }
 
-/// chroot prefix of the current task (real absolute path); 0 bytes = real `/`.
+/// chroot prefix of the current process (real absolute path); 0 bytes = real `/`.
 pub fn root(out: &mut [u8]) -> usize {
-    let r = slot_root(current_slot());
+    let r = slot_root(current_pid());
     let n = (r.len as usize).min(out.len());
     out[..n].copy_from_slice(&r.buf[..n]);
     n
 }
 
-/// True when the current task is chrooted (non-empty prefix).
+/// True when the current process is chrooted (non-empty prefix).
 pub fn has_root() -> bool {
-    let flags = irq_save();
-    irq_off();
-    let jailed = ROOTS.lock()[current_slot()].len != 0;
-    irq_restore(flags);
-    jailed
+    slot_root(current_pid()).len != 0
 }
 
 /// Set the chroot prefix (canonical real absolute path; `/` clears it).
@@ -502,7 +525,7 @@ pub fn set_root(path: &[u8]) -> bool {
     let mut r = NO_ROOT;
     r.buf[..path.len()].copy_from_slice(path);
     r.len = path.len() as u8;
-    set_slot_root(current_slot(), r);
+    set_slot_root(current_pid(), r);
     true
 }
 
@@ -511,7 +534,7 @@ pub fn set_cwd(path: &[u8]) -> bool {
     if path.is_empty() || path[0] != b'/' || path.len() > 256 {
         return false;
     }
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         t.cwd = [0; 256];
         t.cwd[..path.len()].copy_from_slice(path);
         t.cwd_len = path.len() as u16;
@@ -520,23 +543,47 @@ pub fn set_cwd(path: &[u8]) -> bool {
 }
 
 pub fn save_user_context(rip: usize, rsp: usize) {
-    with_current_mut(|t| {
+    with_thread_mut(|t| {
         t.user_rip = rip;
         t.user_rsp = rsp;
     });
 }
 
-fn with_current_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
+/// Run `f` on the current process: the leader slot of the running thread,
+/// which holds the state its threads share.
+fn with_process_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
     // Timer schedule also takes TASKS; nesting that while IF=1 deadlocks the
     // same CPU (seen as a hang after fork child's open/read).
     let flags = irq_save();
     irq_off();
     let mut tasks = TASKS.lock();
-    let id = current_slot();
-    let out = f(&mut tasks[id]);
+    let pid = tasks[current_slot()].tgid;
+    let out = f(&mut tasks[pid]);
     drop(tasks);
     irq_restore(flags);
     out
+}
+
+/// Run `f` on the running thread's own slot (its registers and stacks).
+fn with_thread_mut<R>(f: impl FnOnce(&mut Task) -> R) -> R {
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    let out = f(&mut tasks[current_slot()]);
+    drop(tasks);
+    irq_restore(flags);
+    out
+}
+
+/// The current process id: the slot of the running thread's leader.
+pub fn current_pid() -> usize {
+    let flags = irq_save();
+    irq_off();
+    let tasks = TASKS.lock();
+    let pid = tasks[current_slot()].tgid;
+    drop(tasks);
+    irq_restore(flags);
+    pid
 }
 
 /// Slot count for iterating tasks (signals, process groups).

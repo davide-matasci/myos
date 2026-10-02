@@ -101,15 +101,16 @@ pub fn schedule() {
         // riscv64: no sscratch write here — it stays 0 in S-mode and is armed
         // with the kernel stack top only on the way out to U-mode.
     }
-    // User FP/SIMD registers follow the task (the kernel never uses them).
+    // User FP/SIMD registers and the thread pointer follow the task (the
+    // kernel never uses them).
     if old_user {
         fpu::switch_out(old);
+        tp::switch_out(old);
     }
     if aspace != 0 {
         fpu::switch_in(next);
+        tp::switch_in(next);
     }
-    #[cfg(feature = "linux-compat")]
-    crate::linux::on_switch(old, next);
 
     let want = if aspace == 0 {
         KERNEL_ASPACE.load(Ordering::SeqCst)
@@ -195,6 +196,15 @@ pub const fn key_child(parent: usize) -> usize {
 pub const KEY_CONSOLE: usize = 0x4_0000;
 /// Waits that only a signal (`wake_task`) ends; no `wake(KEY_SIGNAL)` exists.
 pub const KEY_SIGNAL: usize = 0x5_0000;
+/// A process leader waiting for its other threads to end.
+pub const fn key_threads(pid: usize) -> usize {
+    0x6_0000 + pid
+}
+/// Threads of process `pid` waiting on user address `addr` (`wait_addr`):
+/// bit 63 set, the pid above the 48-bit user address.
+pub const fn key_addr(pid: usize, addr: usize) -> usize {
+    1 << 63 | pid << 48 | (addr & 0xffff_ffff_ffff)
+}
 
 /// Bumped on every wake (under TASKS).
 static WAIT_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -387,6 +397,31 @@ pub fn wake(key: usize) {
     }
     irq_restore(flags);
     kick(kicks);
+}
+
+/// Wake at most `max` tasks blocked on `key` exactly (not the `WAIT_ANY`
+/// pollers). Returns how many it woke.
+pub fn wake_n(key: usize, max: usize) -> usize {
+    let flags = irq_save();
+    irq_off();
+    let mut kicks = 0u64;
+    let mut n = 0;
+    {
+        let mut tasks = TASKS.lock();
+        WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
+        for i in 0..MAX_TASKS {
+            if n == max {
+                break;
+            }
+            if tasks[i].state == State::Blocked && tasks[i].wait_key == key {
+                wake_locked(&mut tasks, i, &mut kicks);
+                n += 1;
+            }
+        }
+    }
+    irq_restore(flags);
+    kick(kicks);
+    n
 }
 
 /// Wake `WAIT_ANY` waiters only (something happened that a poller may care

@@ -4,6 +4,7 @@ pub mod alloc;
 pub mod args;
 pub mod dns;
 pub mod runtime;
+pub mod thread;
 
 pub use alloc::Heap;
 pub use args::{arg, argc};

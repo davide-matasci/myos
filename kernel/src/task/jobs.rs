@@ -1,4 +1,6 @@
-//! Process groups, sessions and the controlling terminal.
+//! Process groups, sessions and the controlling terminal. All of it is
+//! process state: ids here are pids (leader slots), and a thread's id
+//! resolves to its process.
 
 use super::*;
 
@@ -11,7 +13,7 @@ pub fn task_pgid(id: usize) -> Option<usize> {
     let out = {
         let tasks = TASKS.lock();
         let t = &tasks[id];
-        if t.user_rip != 0 && t.state != State::Unused {
+        if t.user_rip != 0 && t.state != State::Unused && t.tgid == id {
             Some(t.pgid)
         } else {
             None
@@ -22,7 +24,7 @@ pub fn task_pgid(id: usize) -> Option<usize> {
 }
 
 pub fn current_pgid() -> Option<usize> {
-    task_pgid(current_slot())
+    task_pgid(current_pid())
 }
 
 pub fn task_has_ctty(id: usize) -> bool {
@@ -35,6 +37,7 @@ pub fn task_has_ctty(id: usize) -> bool {
         let tasks = TASKS.lock();
         let t = &tasks[id];
         t.user_rip != 0
+            && t.tgid == id
             && matches!(t.state, State::Ready | State::Running | State::Blocked)
             && !t.exited
             && t.has_ctty
@@ -44,12 +47,12 @@ pub fn task_has_ctty(id: usize) -> bool {
 }
 
 pub fn has_ctty() -> bool {
-    with_current_mut(|t| t.has_ctty)
+    with_process_mut(|t| t.has_ctty)
 }
 
 /// Mark the system console as this task's controlling terminal (TIOCSCTTY).
 pub fn set_ctty() {
-    with_current_mut(|t| {
+    with_process_mut(|t| {
         t.has_ctty = true;
     });
 }
@@ -65,8 +68,8 @@ pub fn set_ctty() {
 ///   session leader can still call `setsid` and becomes both).
 /// - Returns the new session id (task slot) on success, or `None` (EPERM).
 pub fn setsid() -> Option<usize> {
-    with_current_mut(|t| {
-        let pid = current_slot();
+    with_process_mut(|t| {
+        let pid = t.tgid;
         if t.sid == pid {
             return None;
         }
@@ -86,21 +89,17 @@ fn task_exists(t: &Task) -> bool {
 pub fn getpgid(pid: usize) -> Option<usize> {
     let flags = irq_save();
     irq_off();
-    let caller = current_slot();
-    let target = if pid == 0 { caller } else { pid };
-    let out = if target >= MAX_TASKS {
-        None
-    } else {
+    let out = {
         let tasks = TASKS.lock();
-        let t = &tasks[target];
-        if task_exists(t) {
-            Some(t.pgid)
-        } else {
-            None
-        }
+        process_of(&tasks, if pid == 0 { current_slot() } else { pid }).map(|p| tasks[p].pgid)
     };
     irq_restore(flags);
     out
+}
+
+/// The process `id` (a pid or a thread's tid) belongs to, if it exists.
+fn process_of(tasks: &[Task; MAX_TASKS], id: usize) -> Option<usize> {
+    (id < MAX_TASKS && task_exists(&tasks[id])).then(|| tasks[id].tgid)
 }
 
 /// `getsid(pid)`: `pid == 0` means the caller. Returns the session id, or
@@ -108,18 +107,9 @@ pub fn getpgid(pid: usize) -> Option<usize> {
 pub fn getsid(pid: usize) -> Option<usize> {
     let flags = irq_save();
     irq_off();
-    let caller = current_slot();
-    let target = if pid == 0 { caller } else { pid };
-    let out = if target >= MAX_TASKS {
-        None
-    } else {
+    let out = {
         let tasks = TASKS.lock();
-        let t = &tasks[target];
-        if task_exists(t) {
-            Some(t.sid)
-        } else {
-            None
-        }
+        process_of(&tasks, if pid == 0 { current_slot() } else { pid }).map(|p| tasks[p].sid)
     };
     irq_restore(flags);
     out
@@ -144,11 +134,11 @@ pub fn setpgid(pid: usize, pgid: usize) -> bool {
     let flags = irq_save();
     irq_off();
     let mut tasks = TASKS.lock();
-    let caller = current_slot();
+    let caller = tasks[current_slot()].tgid;
     let target = if pid == 0 { caller } else { pid };
 
     let ok = (|| {
-        if target >= MAX_TASKS || !task_exists(&tasks[target]) {
+        if target >= MAX_TASKS || !task_exists(&tasks[target]) || tasks[target].tgid != target {
             return false;
         }
         if !task_exists(&tasks[caller]) {
@@ -174,8 +164,8 @@ pub fn setpgid(pid: usize, pgid: usize) -> bool {
         }
         let same_sid = tasks[target].sid;
         let allowed = new_pgid == target
-            || tasks.iter().any(|t| {
-                task_exists(t) && t.sid == same_sid && t.pgid == new_pgid
+            || tasks.iter().enumerate().any(|(i, t)| {
+                task_exists(t) && t.tgid == i && t.sid == same_sid && t.pgid == new_pgid
             });
         if !allowed {
             return false;
