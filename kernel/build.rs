@@ -37,6 +37,22 @@ fn ensure_artifact(manifest: &Path, artifact: &str, script: &str) {
     }
 }
 
+/// Kernel modules, `(directory under modules/, bin name)`, in build order.
+const MODULES: &[(&str, &str)] = &[
+    ("console", "console"),
+    ("hello", "hello"),
+    ("stubfs", "stubfs"),
+    ("pci_enum", "pci_enum"),
+    ("acpi", "acpi"),
+    ("virtio_blk", "virtio_blk"),
+    ("nvme", "nvme"),
+    ("virtio_net", "virtio_net"),
+    ("netfs", "netfs"),
+    ("fat", "fat"),
+    ("ext2", "ext2"),
+    ("linux", "linux"),
+];
+
 fn main() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -61,20 +77,7 @@ fn main() {
     // Kernel modules: built here so `target/<module>-<triple>` exists for the
     // image builders (Limine loads them from `boot/modules/` at boot) and for
     // the initramfs (`/lib/modules`, `insmod`). The kernel embeds none of them.
-    for (dir, bin) in [
-        ("console", "console"),
-        ("hello", "hello"),
-        ("stubfs", "stubfs"),
-        ("pci_enum", "pci_enum"),
-        ("acpi", "acpi"),
-        ("virtio_blk", "virtio_blk"),
-        ("nvme", "nvme"),
-        ("virtio_net", "virtio_net"),
-        ("netfs", "netfs"),
-        ("fat", "fat"),
-        ("ext2", "ext2"),
-        ("linux", "linux"),
-    ] {
+    for &(dir, bin) in MODULES {
         nested_elf(
             &cargo,
             manifest,
@@ -452,6 +455,7 @@ fn nested_elf(
         cmd.arg("--release");
     }
     let mut rustflags = String::from("-C panic=abort");
+    let is_module = MODULES.iter().any(|(_, m)| *m == bin);
     // ext2's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
     if target.contains("x86_64")
         && matches!(
@@ -468,6 +472,17 @@ fn nested_elf(
     if target.contains("riscv64") {
         rustflags = String::from(
             "-C panic=abort -C relocation-model=static -C code-model=medium",
+        );
+    }
+    // Kernel modules are PIEs on every arch, so the loader applies real
+    // RELATIVE relocs: a static ET_EXEC slid by the loader only gets its code
+    // pointers rebased (`rebase_exec_abs_ptrs`), not pointers into .rodata
+    // (`&str` tables), which then fault in the module. The prebuilt libcore
+    // is not PIC on aarch64/riscv64; `-z notext` lets lld emit dynamic
+    // relocs for its read-only sections (the loader relocates before use).
+    if is_module && (target.contains("aarch64") || target.contains("riscv64")) {
+        rustflags = String::from(
+            "-C panic=abort -C relocation-model=pic -C link-arg=-pie -C link-arg=-z -C link-arg=notext",
         );
     }
     // Belt-and-suspenders with user/ping/build.rs. Prefer split link-arg form
