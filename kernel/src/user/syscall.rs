@@ -446,7 +446,9 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     let basename = path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes();
     task::set_exec_name(basename);
     // Static lookup for bootfs/`/t/tcc`; VFS read for tmpfs `tcc -o` output.
-    const EXEC_FILE_MAX: usize = 512 * 1024;
+    // The file is read into the kernel heap; what gets mapped is still capped
+    // by the image limits (`MAX_EXPAND_PAGES`).
+    const EXEC_FILE_MAX: usize = 16 * 1024 * 1024;
     let owned;
     let bytes: &[u8] = if let Some(b) = fs::lookup(&path) {
         b
@@ -619,173 +621,45 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     enter(entry, rsp, argc, argv);
 }
 
-fn copy_user_exec_pack(
-    args_ptr: usize,
-) -> Result<
-    (
-        alloc::vec::Vec<alloc::vec::Vec<u8>>,
-        alloc::vec::Vec<alloc::vec::Vec<u8>>,
-    ),
-    (),
-> {
+/// Copy the native exec argument block `[argc, (ptr,len)…, envc, (ptr,len)…]`
+/// in from the caller (see [`MAX_ARGC`], [`MAX_ENVC`], [`MAX_EXEC_STRINGS`]).
+fn copy_user_exec_pack(args_ptr: usize) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), ()> {
     if args_ptr == 0 {
-        return Ok((alloc::vec::Vec::new(), alloc::vec::Vec::new()));
+        return Ok((Vec::new(), Vec::new()));
     }
-    if !user_range_ok(args_ptr, core::mem::size_of::<usize>()) {
-        return Err(());
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        copy_user_exec_pack_direct(args_ptr)
-    }
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    {
-        copy_user_exec_pack_via_aspace(args_ptr)
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-fn copy_user_exec_pack_direct(
-    args_ptr: usize,
-) -> Result<
-    (
-        alloc::vec::Vec<alloc::vec::Vec<u8>>,
-        alloc::vec::Vec<alloc::vec::Vec<u8>>,
-    ),
-    (),
-> {
-    let argc = unsafe { *(args_ptr as *const usize) };
-    if argc > MAX_ARGC {
-        return Err(());
-    }
-    let mut args = alloc::vec::Vec::with_capacity(argc);
-    let mut off = args_ptr + core::mem::size_of::<usize>();
-    for _ in 0..argc {
-        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
-            return Err(());
-        }
-        let p = unsafe { *(off as *const usize) };
-        let n = unsafe { *((off + core::mem::size_of::<usize>()) as *const usize) };
-        off += 2 * core::mem::size_of::<usize>();
-        if n > MAX_ARG_LEN {
-            return Err(());
-        }
-        if n != 0 && !user_range_ok(p, n) {
-            return Err(());
-        }
-        let mut v = alloc::vec::Vec::with_capacity(n);
-        if n != 0 {
-            v.resize(n, 0);
-            unsafe {
-                core::ptr::copy_nonoverlapping(p as *const u8, v.as_mut_ptr(), n);
-            }
-        }
-        args.push(v);
-    }
-    if !user_range_ok(off, core::mem::size_of::<usize>()) {
-        return Err(());
-    }
-    let envc = unsafe { *(off as *const usize) };
-    off += core::mem::size_of::<usize>();
-    if envc > MAX_ENVC {
-        return Err(());
-    }
-    let mut env = alloc::vec::Vec::with_capacity(envc);
-    for _ in 0..envc {
-        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
-            return Err(());
-        }
-        let p = unsafe { *(off as *const usize) };
-        let n = unsafe { *((off + core::mem::size_of::<usize>()) as *const usize) };
-        off += 2 * core::mem::size_of::<usize>();
-        if n > MAX_ENV_LEN {
-            return Err(());
-        }
-        if n != 0 && !user_range_ok(p, n) {
-            return Err(());
-        }
-        let mut v = alloc::vec::Vec::with_capacity(n);
-        if n != 0 {
-            v.resize(n, 0);
-            unsafe {
-                core::ptr::copy_nonoverlapping(p as *const u8, v.as_mut_ptr(), n);
-            }
-        }
-        env.push(v);
-    }
-    Ok((args, env))
-}
-
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-fn copy_user_exec_pack_via_aspace(
-    args_ptr: usize,
-) -> Result<
-    (
-        alloc::vec::Vec<alloc::vec::Vec<u8>>,
-        alloc::vec::Vec<alloc::vec::Vec<u8>>,
-    ),
-    (),
-> {
     let aspace = task::current_aspace();
-    let argc = read_user_usize(aspace, args_ptr).ok_or(())?;
-    if argc > MAX_ARGC {
-        return Err(());
-    }
-    let mut args = alloc::vec::Vec::with_capacity(argc);
-    let mut off = args_ptr + core::mem::size_of::<usize>();
-    for _ in 0..argc {
-        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
+    let word = core::mem::size_of::<usize>();
+    let mut off = args_ptr;
+    let mut budget = MAX_EXEC_STRINGS;
+    let mut list = |max: usize, off: &mut usize| -> Result<Vec<Vec<u8>>, ()> {
+        if !user_range_ok(*off, word) {
             return Err(());
         }
-        let p = read_user_usize(aspace, off).ok_or(())?;
-        let n = read_user_usize(aspace, off + core::mem::size_of::<usize>()).ok_or(())?;
-        off += 2 * core::mem::size_of::<usize>();
-        if n > MAX_ARG_LEN {
+        let count = read_user_usize(aspace, *off).ok_or(())?;
+        *off += word;
+        if count > max || !user_range_ok(*off, count * 2 * word) {
             return Err(());
         }
-        if n != 0 && !user_range_ok(p, n) {
-            return Err(());
-        }
-        let mut v = alloc::vec::Vec::with_capacity(n);
-        if n != 0 {
-            v.resize(n, 0);
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            let p = read_user_usize(aspace, *off).ok_or(())?;
+            let n = read_user_usize(aspace, *off + word).ok_or(())?;
+            *off += 2 * word;
+            // Each string also takes its NUL on the new stack.
+            budget = budget.checked_sub(n.checked_add(1).ok_or(())?).ok_or(())?;
+            if n != 0 && !user_range_ok(p, n) {
+                return Err(());
+            }
+            let mut v = alloc::vec![0u8; n];
             if !read_user_bytes(aspace, p, &mut v) {
                 return Err(());
             }
+            out.push(v);
         }
-        args.push(v);
-    }
-    if !user_range_ok(off, core::mem::size_of::<usize>()) {
-        return Err(());
-    }
-    let envc = read_user_usize(aspace, off).ok_or(())?;
-    off += core::mem::size_of::<usize>();
-    if envc > MAX_ENVC {
-        return Err(());
-    }
-    let mut env = alloc::vec::Vec::with_capacity(envc);
-    for _ in 0..envc {
-        if !user_range_ok(off, 2 * core::mem::size_of::<usize>()) {
-            return Err(());
-        }
-        let p = read_user_usize(aspace, off).ok_or(())?;
-        let n = read_user_usize(aspace, off + core::mem::size_of::<usize>()).ok_or(())?;
-        off += 2 * core::mem::size_of::<usize>();
-        if n > MAX_ENV_LEN {
-            return Err(());
-        }
-        if n != 0 && !user_range_ok(p, n) {
-            return Err(());
-        }
-        let mut v = alloc::vec::Vec::with_capacity(n);
-        if n != 0 {
-            v.resize(n, 0);
-            if !read_user_bytes(aspace, p, &mut v) {
-                return Err(());
-            }
-        }
-        env.push(v);
-    }
+        Ok(out)
+    };
+    let args = list(MAX_ARGC, &mut off)?;
+    let env = list(MAX_ENVC, &mut off)?;
     Ok((args, env))
 }
 

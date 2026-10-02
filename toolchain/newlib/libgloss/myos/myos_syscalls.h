@@ -3,6 +3,9 @@
 
 #include <stddef.h>
 
+/* Per-process fd table size (kernel/src/task/mod.rs MAX_FDS). */
+#define MYOS_MAX_FDS 64
+
 #define MYOS_SYS_WRITE 0
 #define MYOS_SYS_EXIT 1
 #define MYOS_SYS_OPEN 2

@@ -39,7 +39,7 @@ mod switch_riscv64;
 #[cfg(target_arch = "riscv64")]
 use switch_riscv64::{seed_stack, task_switch};
 
-pub const MAX_TASKS: usize = 32;
+pub const MAX_TASKS: usize = 64;
 /// Exec from a syscall runs `load_user_elf` / `copy_user_aspace` on the task
 /// stack (exception frame + `[MAX_INIT_PAGES]`/`[USER_STACK_PAGES]` frame arrays).
 /// 8 KiB overflowed after widening the user stack to 64 KiB; 16 KiB then overflowed
@@ -49,8 +49,9 @@ pub const STACK_SIZE: usize = 64 * 1024;
 /// oksh `FDBASE` is 10 (`fcntl(F_DUPFD)` for tty/script fds). 8 was enough for
 /// the tiny Rust shell; raise further for dropbear: a session holds stdio +
 /// the session socket + the signal pipe (2) + three pipes for `spawn_command`
-/// (6) before the child execs, so 16 was exhausted and exec failed.
-const MAX_FDS: usize = 32;
+/// (6) before the child execs, so 16 was exhausted and exec failed. 64 for
+/// larger programs; libgloss tracks per-fd flags up to `MYOS_MAX_FDS`.
+const MAX_FDS: usize = 64;
 
 /// Stamp the owning logical CPU id at the base of a kernel stack so U-mode
 /// trap entry can reload `tp` without trusting user TLS (see riscv64 trap

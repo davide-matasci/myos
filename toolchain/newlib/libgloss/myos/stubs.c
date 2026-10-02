@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <reent.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -117,25 +118,27 @@ int _wait(int *status) {
 /*
  * Pack argv/envp into the myos SYS_EXEC layout:
  *   [argc, (ptr,len)…, envc, (ptr,len)…]
- * Strings are copied onto the stack so the kernel copy-in sees writable user
- * memory (AArch64 ET_EXEC rodata VAs are rejected).
+ * Strings are copied into one heap block so the kernel copy-in sees writable
+ * user memory (AArch64 ET_EXEC rodata VAs are rejected). The limits match the
+ * kernel's (kernel/src/user/mod.rs): MAX_ARGC, MAX_ENVC, and MAX_EXEC_STRINGS
+ * bytes for all strings with their NULs.
  */
-#define MYOS_MAX_ARGC 16
-#define MYOS_MAX_ARG_LEN 128
-#define MYOS_MAX_ENVC 32
-#define MYOS_MAX_ENV_LEN 128
+#define MYOS_MAX_ARGC 1024
+#define MYOS_MAX_ENVC 1024
+#define MYOS_MAX_EXEC_STRINGS (128 * 1024)
 /* Matches the kernel exec path limit (kernel/src/user/mod.rs MAX_PATH). */
 #define MYOS_MAX_PATH 256
 
 int _execve(const char *path, char *const argv[], char *const envp[]) {
     char path_buf[MYOS_MAX_PATH];
-    char arg_store[MYOS_MAX_ARGC][MYOS_MAX_ARG_LEN];
-    char env_store[MYOS_MAX_ENVC][MYOS_MAX_ENV_LEN];
-    unsigned long pack[1 + MYOS_MAX_ARGC * 2 + 1 + MYOS_MAX_ENVC * 2];
     size_t path_len;
-    int argc = 0;
-    int envc = 0;
-    int i;
+    size_t bytes = 0;
+    size_t argc = 0;
+    size_t envc = 0;
+    size_t i;
+    unsigned long *pack;
+    char *store;
+    long ret;
 
     if (path == NULL) {
         errno = EFAULT;
@@ -149,59 +152,48 @@ int _execve(const char *path, char *const argv[], char *const envp[]) {
     memcpy(path_buf, path, path_len);
     path_buf[path_len] = '\0';
 
-    if (argv != NULL) {
-        for (; argv[argc] != NULL; argc++) {
-            size_t n;
-            if (argc >= MYOS_MAX_ARGC) {
-                errno = E2BIG;
-                return -1;
-            }
-            n = strlen(argv[argc]);
-            if (n >= MYOS_MAX_ARG_LEN) {
-                errno = E2BIG;
-                return -1;
-            }
-            memcpy(arg_store[argc], argv[argc], n);
-            arg_store[argc][n] = '\0';
-        }
+    for (; argv != NULL && argv[argc] != NULL; argc++) {
+        bytes += strlen(argv[argc]) + 1;
     }
-    if (envp != NULL) {
-        for (; envp[envc] != NULL; envc++) {
-            size_t n;
-            if (envc >= MYOS_MAX_ENVC) {
-                errno = E2BIG;
-                return -1;
-            }
-            n = strlen(envp[envc]);
-            if (n >= MYOS_MAX_ENV_LEN) {
-                errno = E2BIG;
-                return -1;
-            }
-            memcpy(env_store[envc], envp[envc], n);
-            env_store[envc][n] = '\0';
-        }
+    for (; envp != NULL && envp[envc] != NULL; envc++) {
+        bytes += strlen(envp[envc]) + 1;
     }
+    if (argc > MYOS_MAX_ARGC || envc > MYOS_MAX_ENVC || bytes > MYOS_MAX_EXEC_STRINGS) {
+        errno = E2BIG;
+        return -1;
+    }
+    pack = malloc((2 + 2 * (argc + envc)) * sizeof(unsigned long) + bytes);
+    if (pack == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+    store = (char *)(pack + 2 + 2 * (argc + envc));
 
     pack[0] = (unsigned long)argc;
     for (i = 0; i < argc; i++) {
-        pack[1 + i * 2] = (unsigned long)(uintptr_t)arg_store[i];
-        pack[2 + i * 2] = (unsigned long)strlen(arg_store[i]);
+        size_t n = strlen(argv[i]);
+        memcpy(store, argv[i], n + 1);
+        pack[1 + i * 2] = (unsigned long)(uintptr_t)store;
+        pack[2 + i * 2] = (unsigned long)n;
+        store += n + 1;
     }
     pack[1 + argc * 2] = (unsigned long)envc;
     for (i = 0; i < envc; i++) {
-        pack[1 + argc * 2 + 1 + i * 2] = (unsigned long)(uintptr_t)env_store[i];
-        pack[1 + argc * 2 + 2 + i * 2] = (unsigned long)strlen(env_store[i]);
+        size_t n = strlen(envp[i]);
+        memcpy(store, envp[i], n + 1);
+        pack[1 + argc * 2 + 1 + i * 2] = (unsigned long)(uintptr_t)store;
+        pack[1 + argc * 2 + 2 + i * 2] = (unsigned long)n;
+        store += n + 1;
     }
 
-    long ret = myos_syscall3(
+    ret = myos_syscall3(
         MYOS_SYS_EXEC,
         (long)(uintptr_t)path_buf,
         (long)path_len,
         (long)(uintptr_t)pack);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = ENOENT;
-        return -1;
-    }
+    /* Only reached on failure. */
+    (void)ret;
+    free(pack);
     errno = ENOENT;
     return -1;
 }

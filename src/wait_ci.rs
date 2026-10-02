@@ -104,6 +104,9 @@ const CMD_TMP_REDIR: &[u8] = b"echo test > /tmp/aaa; cat /tmp/aaa\n";
 const CMD_WHICH: &[u8] = b"which ls\n";
 // DNS resolution test (requires network).
 const CMD_DNS: &[u8] = b"dns www.google.com\n";
+// exec limits: 41 arguments and a 692-byte environment string through oksh
+// (libgloss execve) into sbase programs.
+const CMD_EXEC_LIMITS: &[u8] = b"set -- $(/bin/sbase/echo $(/bin/sbase/seq 1 40)); Y=$(X=$(/bin/sbase/seq -s, 1 200) /bin/sbase/printenv X); echo EXEC-LIMITS $# ${#Y}\n";
 // Optional Linux compatibility layer smoke (`--features linux_compat`): a
 // static-PIE musl binary run through the `linux` launcher.
 const CMD_LINUX: &[u8] = b"linux /bin/linux/linux-smoke\n";
@@ -458,6 +461,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         CMD_TMP_REDIR,
         CMD_WHICH,
         CMD_DNS,
+        CMD_EXEC_LIMITS,
     ];
     if linux_compat_enabled() {
         cmds.push(CMD_LINUX);
@@ -1173,6 +1177,9 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         i if cmds[i] == CMD_OS_TEST_RESULT => interactive_ostest_result_ok(serial),
         i if cmds[i] == CMD_PTY => interactive_pty_cmd_ok(serial),
         i if cmds[i] == CMD_URANDOM => interactive_urandom_cmd_ok(serial),
+        i if cmds[i] == CMD_EXEC_LIMITS => {
+            interactive_tail(serial).contains("EXEC-LIMITS 40 691") && at_interactive_prompt(serial)
+        }
         i if cmds[i] == CMD_LINUX => interactive_linux_cmd_ok(serial),
         i if cmds[i] == CMD_LINUX_DYN => interactive_linux_dyn_cmd_ok(serial),
         i if cmds[i] == CMD_DROPBEAR_STOP => {

@@ -3,23 +3,30 @@
 
 use super::*;
 
-pub(super) fn write_user_byte(aspace: u64, va: usize, byte: u8) -> bool {
-    let page = va & !0xfff;
-    let off = va & 0xfff;
-    let Some(phys) = virt_to_phys(aspace, page as u64) else {
-        return false;
-    };
-    unsafe {
-        *mm::hhdm(phys).add(off) = byte;
-    }
-    true
+pub(super) fn write_user_bytes(aspace: u64, va: usize, src: &[u8]) -> bool {
+    each_user_page(aspace, va, src.len(), |p, done, n| unsafe {
+        core::ptr::copy_nonoverlapping(src.as_ptr().add(done), p, n);
+    })
 }
 
-pub(super) fn write_user_bytes(aspace: u64, va: usize, src: &[u8]) -> bool {
-    for (i, &b) in src.iter().enumerate() {
-        if !write_user_byte(aspace, va + i, b) {
+/// Walk `va..va+len` page by page: `f(hhdm pointer, offset into the
+/// buffer, bytes in this page)`. False if a page is unmapped.
+fn each_user_page(aspace: u64, va: usize, len: usize, mut f: impl FnMut(*mut u8, usize, usize)) -> bool {
+    let mut done = 0;
+    while done < len {
+        let at = va + done;
+        let page = at & !0xfff;
+        let off = at & 0xfff;
+        let n = (PAGE - off).min(len - done);
+        let Some(phys) = virt_to_phys(aspace, page as u64) else {
+            return false;
+        };
+        if phys == 0 {
+            // V-set/phys-0 leaf (corrupt PTE): never dereference hhdm(0).
             return false;
         }
+        f(unsafe { mm::hhdm(phys).add(off) }, done, n);
+        done += n;
     }
     true
 }
@@ -40,31 +47,17 @@ pub(super) fn write_user_usize(aspace: u64, va: usize, val: usize) -> bool {
 
 #[cfg(not(target_arch = "aarch64"))]
 pub fn try_read_user_u8(aspace: u64, va: usize) -> Option<u8> {
-    read_user_byte(aspace, va)
-}
-
-fn read_user_byte(aspace: u64, va: usize) -> Option<u8> {
-    let page = va & !0xfff;
-    let off = va & 0xfff;
-    let phys = virt_to_phys(aspace, page as u64)?;
-    if phys == 0 {
-        // V-set/phys-0 leaf (corrupt PTE): never dereference hhdm(0).
-        return None;
-    }
-    Some(unsafe { *mm::hhdm(phys).add(off) })
+    let mut b = [0u8; 1];
+    read_user_bytes(aspace, va, &mut b).then_some(b[0])
 }
 
 pub(super) fn read_user_bytes(aspace: u64, va: usize, dst: &mut [u8]) -> bool {
-    for (i, b) in dst.iter_mut().enumerate() {
-        *b = match read_user_byte(aspace, va + i) {
-            Some(v) => v,
-            None => return false,
-        };
-    }
-    true
+    let out = dst.as_mut_ptr();
+    each_user_page(aspace, va, dst.len(), |p, done, n| unsafe {
+        core::ptr::copy_nonoverlapping(p, out.add(done), n);
+    })
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(super) fn read_user_usize(aspace: u64, va: usize) -> Option<usize> {
     let mut buf = [0u8; core::mem::size_of::<usize>()];
     if !read_user_bytes(aspace, va, &mut buf) {

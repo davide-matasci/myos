@@ -26,26 +26,26 @@ static void myos_set_errno_io(void) {
 
 /* fds 0-2 start as the hardware console; open(/dev/console) and a successful
  * open(/dev/tty) (requires ctty) also mark the returned fd as a tty. */
-static unsigned myos_tty_mask = 0x7;
+static unsigned long long myos_tty_mask = 0x7;
 
 int myos_fd_is_tty(int fd) {
     if (fd >= 0 && fd <= 2) {
         return 1;
     }
-    if (fd >= 0 && fd < 32 && (myos_tty_mask & (1u << fd))) {
+    if (fd >= 0 && fd < MYOS_MAX_FDS && (myos_tty_mask & (1ull << fd))) {
         return 1;
     }
     return 0;
 }
 
 void myos_fd_set_tty(int fd, int on) {
-    if (fd < 0 || fd >= 32) {
+    if (fd < 0 || fd >= MYOS_MAX_FDS) {
         return;
     }
     if (on) {
-        myos_tty_mask |= (1u << fd);
+        myos_tty_mask |= (1ull << fd);
     } else {
-        myos_tty_mask &= ~(1u << fd);
+        myos_tty_mask &= ~(1ull << fd);
     }
 }
 
@@ -102,21 +102,21 @@ int myos_socket_poll(int fd, short events, short *revents) {
  * setnonblocking(signal_pipe) then drains with `while (read > 0)` — without
  * EAGAIN on empty, a forced-POLLIN wake hangs the session forever and the SSH
  * client never receives exit-status. */
-static unsigned myos_fd_nb_mask;
+static unsigned long long myos_fd_nb_mask;
 
 void myos_fd_nonblock_set(int fd, int on) {
-    if (fd < 0 || fd >= 32) {
+    if (fd < 0 || fd >= MYOS_MAX_FDS) {
         return;
     }
     if (on) {
-        myos_fd_nb_mask |= (1u << fd);
+        myos_fd_nb_mask |= (1ull << fd);
     } else {
-        myos_fd_nb_mask &= ~(1u << fd);
+        myos_fd_nb_mask &= ~(1ull << fd);
     }
 }
 
 int myos_fd_nonblock_get(int fd) {
-    return (fd >= 0 && fd < 32 && (myos_fd_nb_mask & (1u << fd))) ? 1 : 0;
+    return (fd >= 0 && fd < MYOS_MAX_FDS && (myos_fd_nb_mask & (1ull << fd))) ? 1 : 0;
 }
 
 void myos_fd_nonblock_clear(int fd) {
