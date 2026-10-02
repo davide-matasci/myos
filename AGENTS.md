@@ -27,7 +27,7 @@ match the surrounding code's naming, idiom and comment density.
 | `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib) and C (`user/c`: hello and CI smokes); one `port.env` per program |
 | `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`); both are ports too (`port.env`, kind `toolchain`) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
-| `packages/<name>/` | the same, for programs CI builds but the image does not carry; a port moves between the two by moving its directory |
+| `packages/<name>/` | the same, for programs CI builds but the image does not carry (`get-myos` installs them, `docs/packages.md`); a port moves between the two by moving its directory |
 | `linux-compat/` | optional Linux syscall layer userspace (launcher, musl build, tests, `get-alpine`) |
 | `scripts/` | CI scripts, registry, `ports.sh` (reads the descriptors), thin wrappers for port builds |
 | `targets/` | custom Rust target specs for userspace |
@@ -71,7 +71,8 @@ of each. QEMU runs under TCG, so a boot takes minutes.
 ```sh
 MYOS_CI_MINI=1 cargo run -- --ci           # fast boot test (what PR CI runs)
 MYOS_CI_MINI=1 cargo run -- aarch64 --ci   # also riscv64, uefi
-cargo run -- --ci                          # full boot: + curated os-test (must be 100%), git, HTTPS
+cargo run -- --ci                          # full boot: + curated os-test (must be 100%), git, HTTPS, a package install
+cargo run -- packages                      # the package tarballs + indexes (target/packages/)
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64]   # full boot with a stall watchdog
 cargo test -p ps2-scancode                 # host unit tests
 ```
@@ -84,7 +85,8 @@ cargo test -p ps2-scancode                 # host unit tests
   guest line editor mangles longer ones), a smoke program, or an os-test in
   the curated lists (`ports/os-test/overlay/misc/*.tests`).
 - Some stages need the network (`https://example.com/`, the Alpine mirror for
-  `get-alpine`). In a sandbox with a TLS-intercepting proxy, append its CA to
+  `get-alpine`); the package stage uses the build's own packages, served by
+  the launcher to the guest (`docs/packages.md`). In a sandbox with a TLS-intercepting proxy, append its CA to
   `target/cacert.pem` for local runs only and restore it afterwards; never
   commit it.
 

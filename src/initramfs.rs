@@ -67,16 +67,16 @@ pub fn active_features() -> Vec<String> {
 pub fn feature_enabled(feature: &str) -> bool {
     active_features().iter().any(|f| *f == feature)
 }
-struct Entry {
-    name: String,
-    data: Vec<u8>,
-    ino: u64,
-    nlink: u32,
+pub(crate) struct Entry {
+    pub(crate) name: String,
+    pub(crate) data: Vec<u8>,
+    pub(crate) ino: u64,
+    pub(crate) nlink: u32,
     // Full st_mode (S_IFREG | perm). Defaults to 0644 for callers that don't
     // set it; prebuilt smoke ELFs must be 0755 or the guest shell refuses to
     // exec them ("Permission denied") and every smoke test falls back to a
     // minutes-long guest tcc compile.
-    mode: u32,
+    pub(crate) mode: u32,
 }
 
 /// A file the image needs: a missing one is a build error, never a silently
@@ -164,7 +164,7 @@ fn add_hardlink_group(entries: &mut Vec<Entry>, names: &[String], data: Option<V
 /// A user program the kernel embeds (`PORT_EMBED`) is optional here: the CI
 /// boot jobs pack the aarch64/riscv64 initramfs from ci-build.tar, which
 /// carries only what the kernel does not embed.
-fn install_port(entries: &mut Vec<Entry>, port: &crate::ports::Port, manifest_dir: &Path, arch: &str) {
+pub(crate) fn install_port(entries: &mut Vec<Entry>, port: &crate::ports::Port, manifest_dir: &Path, arch: &str) {
     use crate::ports::{FileSpec, expand};
     let target = manifest_dir.join("target");
     let optional = port.embed.is_some();

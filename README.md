@@ -169,9 +169,10 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `user/c` | Native C programs (newlib): `hello` and the boot-CI smokes installed as `/bin/etc/*` |
 | `user/echo/cat/ls` | Bootfs demos (`/myos_echo`, `/myos_cat`, `/myos_ls`) |
 | `user/std` | The Rust `std` demo programs (`/bin/std/{hello,cat,echo,bigalloc}`) |
+| `user/get-myos` | `get-myos`: installs packages (ports the image does not carry) from a mirror, `docs/packages.md` |
 | `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` (`mount SRC TARGET FSTYPE`, `bind` for a bind mount) |
 | `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, vim, git, ...), one `port.env` descriptor each (`docs/ports.md`) |
-| `packages/` | Ports CI builds but the image does not carry; moving a directory here (or back to `ports/`) is the whole change |
+| `packages/` | Ports CI builds but the image does not carry (`get-myos` installs them, `docs/packages.md`); moving a directory here (or back to `ports/`) is the whole change |
 | `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters |
 | `toolchain/std/` | Rust `std` PAL skeleton, sysroot build scripts (the `sysroot` port) |
 | `targets/` | Custom Rust target specs (`x86_64-unknown-myos`, `aarch64-unknown-myos`, `riscv64imac-unknown-myos`) |
@@ -248,7 +249,7 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 
 ## VFS & Filesystems (Summary)
 
-- **VFS** — mount table with longest-prefix routing and bind mounts (`mount SRC TARGET bind`: a directory seen at a second place too); `vfs::mounts_text()` exports `/proc/mounts`
+- **VFS** — mount table with longest-prefix routing and bind mounts (`mount SRC TARGET bind`: a directory or file seen at a second place too, the target need not exist; `get-myos` installs packages this way); `vfs::mounts_text()` exports `/proc/mounts`
 - **bootfs** — read-only embedded namespace at `/`; Limine ESP modules override; demos use `myos_` prefix
 - **procfs** — `/proc/mounts` (generated, not stored bytes)
 - **tmpfs/devfs** — writable mount for `O_CREAT`; device nodes
@@ -320,7 +321,7 @@ Implemented libgloss hooks call real syscalls where they exist; stubs return ENO
 
 GitHub Actions caches Cargo with Swatinem/rust-cache (`prefix-key: limine-8.3-6`). Userspace port outputs are OCI artifacts on GHCR, one package per port (its `PORT_OUTPUTS`, `scripts/ports.sh`), tagged with stamp hash from `scripts/myos-c-userspace-lib.sh`; the ports matrices come from the descriptors. First run after stamp change = miss + push; later runs with same hashes = hit. Packages should be **public** for fork PRs. Source checkouts (`*-src`) are never cached.
 
-Every run boots the four disk images (boot-mini, or the full boot when dispatched) and builds the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`), uploads it as the `myos-x86_64-iso` artifact and boots it from the CD (`cargo run -- iso --ci`).
+A full boot also serves the build's own packages to the guest and installs one with `get-myos` (`docs/packages.md`). Every run boots the four disk images (boot-mini, or the full boot when dispatched) and builds the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`), uploads it as the `myos-x86_64-iso` artifact and boots it from the CD (`cargo run -- iso --ci`).
 
 ---
 
