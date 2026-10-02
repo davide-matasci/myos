@@ -15,6 +15,7 @@ use crate::user;
 const AT_FDCWD: usize = -100isize as usize;
 const AT_EMPTY_PATH: usize = 0x1000;
 const AT_REMOVEDIR: usize = 0x200;
+pub const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 const MAX_PATH: usize = 256;
 const ENAMETOOLONG: usize = 36;
 const EISDIR: usize = 21;
@@ -148,9 +149,36 @@ fn view_path(path: &str) -> String {
     }
 }
 
-/// The VFS path behind `path` (cwd and chroot applied).
+/// The VFS path behind `path` (cwd, chroot and symlinks applied).
 fn real_path(path: &str) -> R2<String> {
-    user::resolve_copied_path(path).ok_or(ENOENT)
+    match system_path(path) {
+        Some(p) => Ok(p),
+        None => user::resolve_copied_path(path).ok_or(ENOENT),
+    }
+}
+
+/// Like [`real_path`], but a symlink in the last component is not followed.
+fn real_path_nofollow(path: &str) -> R2<String> {
+    match system_path(path) {
+        Some(p) => Ok(p),
+        None => user::resolve_copied_path_nofollow(path).ok_or(ENOENT),
+    }
+}
+
+/// A chrooted Linux process (`linux --root`) still sees the system's `/dev`
+/// and `/proc`, as if bind-mounted into its root: their paths are not
+/// confined.
+fn system_path(path: &str) -> Option<String> {
+    if !task::has_root() {
+        return None;
+    }
+    let mut b = [0u8; MAX_PATH];
+    let n = fs::resolve_user_path_virtual(path, &mut b)?;
+    let v = core::str::from_utf8(&b[..n]).ok()?;
+    ["/dev", "/proc"]
+        .iter()
+        .any(|d| v == *d || v.strip_prefix(d).is_some_and(|r| r.starts_with('/')))
+        .then(|| String::from(v))
 }
 
 // ---- files ----------------------------------------------------------------
@@ -240,7 +268,8 @@ pub fn fstatat(dirfd: usize, path: usize, buf: usize, flags: usize) -> R {
     if flags & AT_EMPTY_PATH != 0 && user_cstr(path, MAX_PATH).is_ok_and(|p| p.is_empty()) {
         return fstat(dirfd, buf);
     }
-    let real = real_path(&path_at(dirfd, path)?)?;
+    let p = path_at(dirfd, path)?;
+    let real = if flags & AT_SYMLINK_NOFOLLOW != 0 { real_path_nofollow(&p)? } else { real_path(&p)? };
     let st = fs::stat(&real).ok_or(ENOENT)?;
     put_stat(buf, &st)
 }
@@ -387,7 +416,7 @@ pub fn fchdir(fd: usize) -> R {
 }
 
 pub fn mkdirat(dirfd: usize, path: usize) -> R {
-    let real = real_path(&path_at(dirfd, path)?)?;
+    let real = real_path_nofollow(&path_at(dirfd, path)?)?;
     if fs::stat(&real).is_some() {
         return Err(EEXIST);
     }
@@ -395,7 +424,7 @@ pub fn mkdirat(dirfd: usize, path: usize) -> R {
 }
 
 pub fn unlinkat(dirfd: usize, path: usize, flags: usize) -> R {
-    let real = real_path(&path_at(dirfd, path)?)?;
+    let real = real_path_nofollow(&path_at(dirfd, path)?)?;
     let st = fs::stat(&real).ok_or(ENOENT)?;
     let is_dir = st.mode & fs::S_IFMT == 0o040000;
     if flags & AT_REMOVEDIR != 0 {
@@ -411,19 +440,19 @@ pub fn unlinkat(dirfd: usize, path: usize, flags: usize) -> R {
 }
 
 pub fn renameat(olddir: usize, old: usize, newdir: usize, new: usize) -> R {
-    let old = real_path(&path_at(olddir, old)?)?;
-    let new = real_path(&path_at(newdir, new)?)?;
+    let old = real_path_nofollow(&path_at(olddir, old)?)?;
+    let new = real_path_nofollow(&path_at(newdir, new)?)?;
     if fs::rename(&old, &new) { Ok(0) } else { Err(ENOENT) }
 }
 
 pub fn symlinkat(target: usize, newdir: usize, link: usize) -> R {
     let target = String::from_utf8(user_cstr(target, MAX_PATH)?).map_err(|_| EINVAL)?;
-    let link = real_path(&path_at(newdir, link)?)?;
+    let link = real_path_nofollow(&path_at(newdir, link)?)?;
     if fs::symlink(&target, &link) { Ok(0) } else { Err(EEXIST) }
 }
 
 pub fn readlinkat(dirfd: usize, path: usize, buf: usize, size: usize) -> R {
-    let real = real_path(&path_at(dirfd, path)?)?;
+    let real = real_path_nofollow(&path_at(dirfd, path)?)?;
     let mut tmp = [0u8; MAX_PATH];
     let cap = size.min(tmp.len());
     let n = fs::readlink(&real, &mut tmp[..cap]).ok_or(EINVAL)?;

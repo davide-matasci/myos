@@ -199,6 +199,62 @@ jobs:
           MYOS_CI_MINI: "1"
         run: ./target/debug/myos ${{ matrix.args }}
 
+  linux-compat:
+    # The optional Linux compatibility layer (`--features linux_compat`):
+    # build its pieces (musl, test programs, get-void) and the kernels with
+    # it on top of the ci-build ports, then boot mini. On bios and aarch64
+    # this also runs get-void, which downloads jq from the Void mirror.
+    name: linux-compat (${{ matrix.id }})
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
+    timeout-minutes: 45
+    needs: build
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.build.result == 'success' &&
+      !inputs.build_iso
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: bios
+            args: --ci
+          - id: aarch64
+            args: aarch64 --ci
+          - id: riscv64
+            args: riscv64 --ci
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download CI build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: ci-build
+
+      - name: Extract CI artifacts
+        run: tar -xf ci-build.tar
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
+
+      - name: Build with linux_compat
+        run: |
+          chmod +x scripts/*.sh linux-compat/build.sh
+          ./linux-compat/build.sh
+          cargo build --features linux_compat
+
+      - name: Boot in QEMU
+        env:
+          MYOS_CI_MINI: "1"
+        run: ./target/debug/myos ${{ matrix.args }}
+
   iso:
     # Manual-only ISO from build outputs; toolchain only for cargo run -- iso.
     # Toolchain only for cargo iso; must not rebuild ports here.

@@ -91,7 +91,7 @@ fn main() {
     ensure_feature_port(&manifest, "port_lynx", "target/lynx-x86_64-unknown-none", "ports/lynx/build.sh");
     ensure_feature_port(&manifest, "port_lua", "target/lua-x86_64-unknown-none", "ports/lua/build.sh");
     ensure_feature_port(&manifest, "port_dropbear", "target/dropbear-x86_64-unknown-none", "ports/dropbear/build.sh");
-    ensure_feature_port(&manifest, "linux_compat", "target/linux-compat/x86_64/linux-dyn", "linux-compat/build.sh");
+    ensure_feature_port(&manifest, "linux_compat", "target/linux-compat/x86_64/get-void", "linux-compat/build.sh");
 
     // os-test (always embedded): consume ports-base artifacts. CI restores via
     // ci-registry; local-dev runs ports/os-test/build.sh when missing (same
