@@ -290,6 +290,18 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             "bin/linux/linux-smoke",
             read(&target.join(format!("linux-smoke-{arch}-linux-musl"))),
         );
+        // A dynamically linked test: musl's libc.so as the dynamic linker
+        // (its PT_INTERP path) and two shared objects in the default path.
+        let dyn_dir = target.join("linux-compat").join(arch);
+        add(
+            &mut entries,
+            &format!("lib/ld-musl-{arch}.so.1"),
+            read(&dyn_dir.join(format!("ld-musl-{arch}.so.1"))),
+        );
+        for lib in ["libsmoke.so", "libsmoke2.so"] {
+            add(&mut entries, &format!("lib/{lib}"), read(&dyn_dir.join(lib)));
+        }
+        add(&mut entries, "bin/linux/linux-dyn", read(&dyn_dir.join("linux-dyn")));
     }
 
     // userspace BSD sockets smoke -> bin/etc/socket_smoke.

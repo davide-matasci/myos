@@ -105,6 +105,8 @@ const CMD_DNS: &[u8] = b"dns www.google.com\n";
 // Optional Linux compatibility layer smoke (`--features linux_compat`): a
 // static-PIE musl binary run through the `linux` launcher.
 const CMD_LINUX: &[u8] = b"linux /bin/linux/linux-smoke\n";
+// ... and a dynamically linked one (PT_INTERP, shared objects, dlopen).
+const CMD_LINUX_DYN: &[u8] = b"linux /bin/linux/linux-dyn\n";
 // pty boot-CI smoke (openpty/forkpty, echo round-trip, EIO on session end).
 const CMD_PTY: &[u8] = b"/bin/etc/pty_smoke 2\n";
 // urandom boot-CI smoke (kernel CSPRNG via /dev/urandom: non-zero, distinct,
@@ -457,6 +459,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     ];
     if linux_compat_enabled() {
         cmds.push(CMD_LINUX);
+        cmds.push(CMD_LINUX_DYN);
     }
     if !ci_mini() {
         cmds.push(CMD_HTTP);
@@ -757,6 +760,15 @@ fn interactive_linux_cmd_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
     tail.contains("$ linux /bin/linux/linux-smoke")
         && tail.contains("LINUX-SMOKE OK")
+        && !serial.contains("exception:")
+        && at_interactive_prompt(serial)
+}
+
+/// Dynamically linked Linux smoke (linux-compat/tests/linux-dyn.c).
+fn interactive_linux_dyn_cmd_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    tail.contains("$ linux /bin/linux/linux-dyn")
+        && tail.contains("LINUX-DYN OK")
         && !serial.contains("exception:")
         && at_interactive_prompt(serial)
 }
@@ -1160,6 +1172,7 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         i if cmds[i] == CMD_PTY => interactive_pty_cmd_ok(serial),
         i if cmds[i] == CMD_URANDOM => interactive_urandom_cmd_ok(serial),
         i if cmds[i] == CMD_LINUX => interactive_linux_cmd_ok(serial),
+        i if cmds[i] == CMD_LINUX_DYN => interactive_linux_dyn_cmd_ok(serial),
         i if cmds[i] == CMD_DROPBEAR_STOP => {
             command_echoed(serial, "kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP")
                 && serial.contains("DROPBEAR-STOP")
@@ -2012,6 +2025,18 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: shell did not return to `$` after the Linux compatibility smoke");
             } else {
                 eprintln!("error: the Linux compatibility smoke did not print `LINUX-SMOKE OK`");
+            }
+            std::process::exit(1);
+        }
+        if cmds.get(shell_cmd_index) == Some(&CMD_LINUX_DYN) && !interactive_linux_dyn_cmd_ok(&serial) {
+            if !command_echoed(&serial, "linux /bin/linux/linux-dyn") {
+                eprintln!("error: serial did not echo `$ linux /bin/linux/linux-dyn` at the interactive prompt");
+            } else if serial.contains("exception:") {
+                eprintln!("error: the dynamic Linux smoke triggered a CPU exception");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after the dynamic Linux smoke");
+            } else {
+                eprintln!("error: the dynamic Linux smoke did not print `LINUX-DYN OK`");
             }
             std::process::exit(1);
         }
