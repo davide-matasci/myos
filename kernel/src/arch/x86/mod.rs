@@ -50,6 +50,19 @@ pub fn ap_init(logical: usize) {
     crate::user::ap_init();
 }
 
+/// No device tree on x86_64 (ACPI describes the platform); nothing to apply.
+pub fn apply_dt() -> Result<Option<&'static str>, &'static str> {
+    Ok(None)
+}
+
+/// No device-tree interrupt specifiers on x86_64.
+pub fn irq_from_dt(_cells: &[u32]) -> Option<u32> {
+    None
+}
+
+/// The 1 kHz LAPIC tick already bounds sleep latency; no deadline timer.
+pub fn timer_deadline(_deadline_ns: u64) {}
+
 /// Route a PCI function's interrupt: MSI-X entry 0 → a LAPIC vector on the
 /// BSP (no IOAPIC / PIRQ routing needed).
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {

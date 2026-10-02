@@ -15,7 +15,7 @@
 | Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, shared ready set |
 | Proc exporters | `kernel/src/fs/procfs.rs` | Built-ins: `mounts`, `cpuinfo`; dynamic via `proc_register` ABI |
 
-ABI version: **13** (`personality_register`, `personality_exec`, `native_syscall` and the task / fd / VFS / signal / FPU / wait helpers a syscall personality needs: the Linux layer is a module; 12: `blk_register`, `pci_find_class`, `framebuffer_info`, `console_register`: block devices and the console are modules; 11: `pci_irq_enable`, `wake_any`, `wait_seq`, `block_until`, `monotonic_ns` for device interrupts and blocking waits; 10: `proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
+ABI version: **14** (`dt_mmio_find`: a module finds its memory-mapped devices in the device tree; 13: `personality_register`, `personality_exec`, `native_syscall` and the task / fd / VFS / signal / FPU / wait helpers a syscall personality needs: the Linux layer is a module; 12: `blk_register`, `pci_find_class`, `framebuffer_info`, `console_register`: block devices and the console are modules; 11: `pci_irq_enable`, `wake_any`, `wait_seq`, `block_until`, `monotonic_ns` for device interrupts and blocking waits; 10: `proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
 
 Boot modules come from Limine's module list (`limine.conf` `module_path` entries, `src/limine_image.rs` `BOOT_MODULES` plus the `OPTIONAL_MODULES` whose Cargo feature is on, in load order); `insmod <path>` (`SYS_INSMOD`) loads more at runtime and `/proc/modules` lists them.
 
@@ -29,8 +29,33 @@ use an MSI-X table entry or the INTx line:
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
 | x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`MSI_VECTOR_BASE` 48 + n, 8 vectors; no IOAPIC / PIRQ routing) | vector |
-| aarch64 | INTx → GICv2 SPI, level, priority 0x80, CPU 0 (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
-| riscv64 | INTx → PLIC source for the boot hart's S-mode context (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
+| aarch64 | INTx → GICv2 SPI, level, priority 0x80, CPU 0; the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
+| riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
+
+## The device tree (aarch64, riscv64)
+
+Nothing about the board is hard-coded on these arches: `kernel/src/dt.rs`
+parses the flattened device tree Limine hands over (the `fdt` crate,
+MPL-2.0) and `arch::apply_dt` runs before the first console output:
+
+| Node (`compatible`) | Used for |
+|------|------|
+| `arm,cortex-a15-gic` / `arm,gic-400` | GICv2 distributor + CPU interface bases |
+| `sifive,plic-1.0.0` / `riscv,plic0` | PLIC base |
+| `arm,pl011` / `ns16550a` | console UART base |
+| `arm,pl031` / `google,goldfish-rtc` | RTC base (optional: no RTC, no wall clock) |
+| `/cpus` `timebase-frequency` | riscv64 `time` CSR rate (monotonic clock, timer) |
+| `pci-host-ecam-generic` | ECAM window and `bus-range`; the 32-bit (aarch64) or 64-bit (riscv64) MMIO `ranges` entry BARs are assigned from; `interrupt-map` / `interrupt-map-mask` for INTx |
+| `virtio,mmio` | the virtio-mmio transports, for modules through `KernelApi::dt_mmio_find` (ABI 14), in ascending address order |
+
+A missing tree or node stops the boot with `fatal: device tree: ...` on the
+UART at QEMU `virt`'s address (the one assumption left, so the message has
+somewhere to go). The EDK2 firmware boots (AAVMF, RISC-V EDK2) hand Limine
+no tree, so the host tool dumps QEMU's (`-machine ...,dumpdtb`, same machine
+options and `-smp` as the boot) into the ESP as `boot/virt-aarch64.dtb` /
+`boot/virt.dtb` and `limine.conf` passes it with `global_dtb`. Interrupt specifiers are decoded per arch
+(`arch::irq_from_dt`: GIC `<type number flags>` → INTID, PLIC `<source>`).
+x86_64 has no tree (ACPI): `dt::init` finds none and the arch ignores it.
 
 Handlers run in interrupt context with interrupts masked on CPU 0. On INTx
 the handler must read the device's ISR register so the level line deasserts
@@ -98,7 +123,12 @@ channel 2 at boot; aarch64: `CNTVCT_EL0`; riscv64: `time` CSR). Each timer
 IRQ calls `task::timer_tick()`, which only scans `TASKS` once the earliest
 deadline (`NEXT_DEADLINE`) has passed. The x86 LAPIC tick is calibrated
 against that clock to 1 kHz (it used to fire 10-20k times per second per
-CPU, each tick taking the scheduler lock); aarch64/riscv64 stay at 100 Hz.
+CPU, each tick taking the scheduler lock). aarch64/riscv64 tick at 100 Hz
+but are tickless for deadlines: `block_until` calls
+`arch::timer_deadline`, which pulls the CPU's own timer (`cntv_cval_el0` /
+`stimecmp`, absolute compare values) in to the new deadline, and every
+re-arm programs `min(next tick, task::next_deadline_ns())`, so a 1 ms
+`nanosleep` ends after about 1 ms instead of at the next 10 ms boundary.
 
 Idle: `kernel_main` (task 0) is the BSP's idle task, `ap_idle_body` the APs'.
 `idle_step` runs whatever is Ready for the CPU, then halts

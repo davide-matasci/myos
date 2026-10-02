@@ -26,13 +26,23 @@ pub fn rtc_unix_seconds() -> Option<i64> {
     pl031::unix_seconds()
 }
 
+/// PL031 RTC base from the device tree (`arm,pl031`); 0 = none.
+pub fn set_rtc_base(base: usize) {
+    pl031::BASE.store(base, core::sync::atomic::Ordering::SeqCst);
+}
+
 mod pl031 {
-    /// QEMU virt PL031 RTC base (Identity-mapped in paging::map_devices).
-    const PL031_BASE: usize = 0x0901_0000;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    pub(super) static BASE: AtomicUsize = AtomicUsize::new(0);
     const RTCDR: usize = 0x00; // data register: Unix seconds
 
     pub fn unix_seconds() -> Option<i64> {
-        let ptr = (PL031_BASE + RTCDR) as *const u32;
+        let base = BASE.load(Ordering::Relaxed);
+        if base == 0 {
+            return None;
+        }
+        let ptr = (base + RTCDR) as *const u32;
         let secs = unsafe { core::ptr::read_volatile(ptr) };
         Some(secs as i64)
     }

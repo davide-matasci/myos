@@ -59,17 +59,58 @@ pub fn ap_init(logical: usize) {
     crate::user::ap_init();
 }
 
-/// QEMU `virt` wires PCIe INTA..D to GIC SPIs 3..6 (INTID 35..38) with the
-/// standard slot swizzle; enable that SPI on CPU 0. Legacy INTx: the handler
-/// must read the device ISR to deassert the line.
+/// GICv2 `compatible` strings (QEMU `virt`: `arm,cortex-a15-gic`).
+const GIC_COMPAT: &[&str] = &["arm,cortex-a15-gic", "arm,gic-400", "arm,cortex-a9-gic"];
+
+/// Take the board's device bases from the device tree: the GICv2
+/// distributor and CPU interface, the PL011 console, the PL031 RTC and the
+/// PCIe host bridge (ECAM, bus range, 32-bit MMIO window). Required: no
+/// tree, no boot. Returns the board model for the boot log.
+pub fn apply_dt() -> Result<Option<&'static str>, &'static str> {
+    if crate::dt::get().is_none() {
+        return Err("no device tree from the bootloader");
+    }
+    let (gicd, _) = crate::dt::reg(GIC_COMPAT, 0).ok_or("device tree: no GICv2 distributor")?;
+    let (gicc, _) = crate::dt::reg(GIC_COMPAT, 1).ok_or("device tree: no GICv2 CPU interface")?;
+    interrupts::set_gic(gicd as usize, gicc as usize);
+    let (uart, _) = crate::dt::reg(&["arm,pl011"], 0).ok_or("device tree: no PL011 UART")?;
+    serial::set_base(uart as usize);
+    if let Some((rtc, _)) = crate::dt::reg(&["arm,pl031"], 0) {
+        clock::set_rtc_base(rtc as usize);
+    }
+    let host = crate::dt::pci_host().ok_or("device tree: no PCIe host bridge")?;
+    let (mmio, mmio_size) = crate::dt::pci_mmio_window(crate::dt::PCI_SPACE_MEM32)
+        .ok_or("device tree: PCIe host bridge has no 32-bit MMIO range")?;
+    pci::set_host(host.ecam_base, host.ecam_size, host.bus_end, mmio, mmio_size);
+    Ok(crate::dt::model())
+}
+
+/// A GICv2 interrupt specifier (`type, number, flags`): SPI `n` is INTID
+/// 32 + n, PPI `n` is 16 + n.
+pub fn irq_from_dt(cells: &[u32]) -> Option<u32> {
+    match cells {
+        [0, n, _] if *n < 988 => Some(32 + n),
+        [1, n, _] if *n < 16 => Some(16 + n),
+        _ => None,
+    }
+}
+
+/// Program this CPU's timer for a sleep deadline sooner than its next tick.
+pub fn timer_deadline(deadline_ns: u64) {
+    interrupts::timer_deadline(deadline_ns);
+}
+
+/// Route a PCI function's INTx line as the device tree's PCIe
+/// `interrupt-map` says (QEMU `virt`: GIC SPIs 3..6 with the standard slot
+/// swizzle); enable that SPI on CPU 0. Legacy INTx: the handler must read
+/// the device ISR to deassert the line.
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
-    const VIRT_PCIE_IRQ: u32 = 3;
     let pin = (crate::pci::cfg_read32(bus, slot, func, 0x3C) >> 8) & 0xFF;
     if pin == 0 || pin > 4 {
         return None;
     }
-    let line = (u32::from(slot) + pin - 1) % 4;
-    let intid = 32 + VIRT_PCIE_IRQ + line;
+    let spec = crate::dt::pci_intx(bus, slot, func, pin as u8)?;
+    let intid = irq_from_dt(spec.cells())?;
     interrupts::gic_enable_spi(intid);
     Some(crate::irq::PciIrq {
         irq: intid,

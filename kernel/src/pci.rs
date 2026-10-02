@@ -3,7 +3,7 @@
 //! arch-specific; device MMIO is mapped by the arch, it is not HHDM. The
 //! drivers themselves (virtio-blk, NVMe, virtio-net) are modules.
 
-use crate::arch::pci::{self as arch_pci, MAX_BUS};
+use crate::arch::pci as arch_pci;
 
 #[derive(Clone, Copy)]
 pub struct Bdf {
@@ -84,7 +84,7 @@ pub fn bar_mmio(bdf: Bdf, index: u8) -> Option<(u64, u64)> {
         return None;
     }
     if addr == 0 {
-        addr = (arch_pci::MMIO_ASSIGN + size - 1) & !(size - 1);
+        addr = (arch_pci::mmio_assign() + size - 1) & !(size - 1);
         write32(bdf, off, (addr as u32) | (lo & 0xF));
         if is64 {
             write32(bdf, off + 4, (addr >> 32) as u32);
@@ -116,7 +116,7 @@ pub fn bar_map(bus: u8, slot: u8, func: u8, bar: u8) -> Option<(usize, u64)> {
 /// Nth PCI function matching `vend`/`dev` (0-based), walking like NVMe scan.
 pub fn find(vend: u16, dev: u16, nth: u32) -> Option<Bdf> {
     let mut seen = 0u32;
-    for bus in 0u8..=MAX_BUS {
+    for bus in 0u8..=arch_pci::max_bus() {
         for slot in 0u8..32 {
             let bdf0 = Bdf { bus, slot, func: 0 };
             if vendor(bdf0) == 0xFFFF {
@@ -147,7 +147,7 @@ pub fn find(vend: u16, dev: u16, nth: u32) -> Option<Bdf> {
 /// Nth PCI function (0-based) of `class` / `subclass` (NVMe: 0x01 / 0x08).
 pub fn find_class(class: u8, subclass: u8, nth: u32) -> Option<Bdf> {
     let mut seen = 0u32;
-    for bus in 0u8..=MAX_BUS {
+    for bus in 0u8..=arch_pci::max_bus() {
         for slot in 0u8..32 {
             let bdf0 = Bdf { bus, slot, func: 0 };
             if vendor(bdf0) == 0xFFFF {

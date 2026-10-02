@@ -1,12 +1,20 @@
-//! PL011 UART on QEMU `virt` (base 0x0900_0000).
-//!
-//! That address is the virt board's long-standing UART0 mapping. QEMU docs
-//! say device locations can move, but this one has been stable and matches
-//! the board source (`VIRT_UART0`).
+//! PL011 UART, at the address the device tree gives (`arm,pl011`).
 
 use core::fmt;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-const UART0: usize = 0x0900_0000;
+/// Until `set_base` runs: QEMU `virt`'s PL011, so that a boot without a
+/// usable device tree can still say so on the console it most likely has.
+static BASE: AtomicUsize = AtomicUsize::new(0x0900_0000);
+
+pub fn set_base(base: usize) {
+    BASE.store(base, Ordering::SeqCst);
+}
+
+#[inline]
+fn uart0() -> usize {
+    BASE.load(Ordering::Relaxed)
+}
 const UARTDR: usize = 0x00;
 const UARTFR: usize = 0x18;
 const UARTIBRD: usize = 0x24;
@@ -98,10 +106,10 @@ impl fmt::Write for SerialPort {
 
 #[inline]
 fn read32(offset: usize) -> u32 {
-    unsafe { core::ptr::read_volatile((UART0 + offset) as *const u32) }
+    unsafe { core::ptr::read_volatile((uart0() + offset) as *const u32) }
 }
 
 #[inline]
 fn write32(offset: usize, value: u32) {
-    unsafe { core::ptr::write_volatile((UART0 + offset) as *mut u32, value) }
+    unsafe { core::ptr::write_volatile((uart0() + offset) as *mut u32, value) }
 }

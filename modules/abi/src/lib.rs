@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 13;
+pub const ABI_VERSION: u32 = 14;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
@@ -565,6 +565,24 @@ pub struct KernelApi {
     /// Wall-clock microseconds since the epoch (0 if no RTC).
     pub wall_time_us: unsafe extern "C" fn() -> u64,
     pub rng_fill: unsafe extern "C" fn(buf: *mut u8, len: usize),
+    // --- ABI 14 ---
+    /// The `index`-th device-tree node whose `compatible` list has
+    /// `compatible` (e.g. `virtio,mmio`), in ascending address order, with
+    /// its registers mapped: 0 and `*out` filled, or -1 (no such node, or no
+    /// device tree on this arch).
+    pub dt_mmio_find: unsafe extern "C" fn(compatible: StrRef, index: usize, out: *mut MmioDevice) -> i32,
+}
+
+/// A memory-mapped device from the device tree (`KernelApi::dt_mmio_find`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct MmioDevice {
+    /// Kernel virtual address of the register window.
+    pub base: usize,
+    pub size: usize,
+    /// Interrupt number as `irq::dispatch` / `irq_register` see it; 0 when
+    /// the node has none or the kernel cannot route it.
+    pub irq: u32,
 }
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).

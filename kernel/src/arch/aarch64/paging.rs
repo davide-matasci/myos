@@ -1,8 +1,9 @@
-//! Map QEMU virt MMIO on TTBR0. Limine already owns TTBR1 (higher half + HHDM).
+//! Map device MMIO on TTBR0. Limine already owns TTBR1 (higher half + HHDM).
 //!
-//! Base revision 3+ HHDM does not include device MMIO, so UART (0x0900_0000)
-//! and GICv2 (0x0800_0000 / 0x0801_0000) need their own identity map. TTBR0
-//! is unspecified at handoff and free for the kernel.
+//! Base revision 3+ HHDM does not include device MMIO, so the UART, the
+//! GICv2 and the PCIe windows (addresses from the device tree) need their
+//! own identity map. TTBR0 is unspecified at handoff and free for the
+//! kernel.
 
 use core::arch::asm;
 

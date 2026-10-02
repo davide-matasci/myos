@@ -121,7 +121,7 @@ Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned
 Kernel linked in higher half (`0xffffffff80000000` on x86_64). Limine provides HHDM; usable memory = `phys + HHDM`. Page tables allocated from bump allocator after heap. AArch64 device block (UART, GIC, virtio-mmio) identity-mapped via `TTBR0`.
 
 ### Scheduling
-Round-robin kernel threads + user tasks across all online CPUs; a user process can run several threads, which share its address space and run on its home CPU (`docs/threads.md`) (Limine MP bring-up on x86_64, AArch64 and RISC-V; see `docs/pci-acpi-smp.md`). `task::yield_now()` cooperative; timer IRQ calls `task::schedule()` after EOI → preemptive even in user mode. Blocking waits (`read` on a tty/pipe/pty, `wait`, `nanosleep`, `select`/`poll`) put the task in a `Blocked` state and are woken by the producer (`task::wake`), a deadline or a signal; idle CPUs halt (`hlt`/`wfi`) until an interrupt or a targeted reschedule IPI. `/proc/cpuinfo` shows per-CPU schedule and idle-halt counts. x86_64: xAPIC timer, TSC calibrated against the PIT for the monotonic clock. AArch64: GICv2 generic timer (PPI 30), `CNTVCT`. RISC-V: `stimecmp`, `time` CSR.
+Round-robin kernel threads + user tasks across all online CPUs; a user process can run several threads, which share its address space and run on its home CPU (`docs/threads.md`) (Limine MP bring-up on x86_64, AArch64 and RISC-V; see `docs/pci-acpi-smp.md`). `task::yield_now()` cooperative; timer IRQ calls `task::schedule()` after EOI → preemptive even in user mode. Blocking waits (`read` on a tty/pipe/pty, `wait`, `nanosleep`, `select`/`poll`) put the task in a `Blocked` state and are woken by the producer (`task::wake`), a deadline or a signal; idle CPUs halt (`hlt`/`wfi`) until an interrupt or a targeted reschedule IPI. `/proc/cpuinfo` shows per-CPU schedule and idle-halt counts. x86_64: xAPIC timer at 1 kHz, TSC calibrated against the PIT for the monotonic clock. AArch64: GICv2 generic timer, `CNTVCT`. RISC-V: `stimecmp`, `time` CSR at the device tree's `timebase-frequency`. AArch64 and RISC-V tick at 100 Hz but program the timer for the earliest sleep deadline when it is sooner, so `nanosleep` / `poll` timeouts are not rounded up to 10 ms.
 
 ### Console & Input
 Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot output before it loads is replayed to it). Stdin (fd 0) merges the module's keyboard (PS/2 on x86 via 8042 probe, virtio-input on the `virt` boards) and serial simultaneously.
@@ -137,7 +137,8 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `build.rs` | Fetch Limine; wrap x86_64 kernel in BIOS+UEFI images; write `fat.img` |
 | `kernel/src/main.rs` | `#![no_std]` Limine entry: heap, IRQs, scheduler, bootfs, Limine modules, user init |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
-| `kernel/src/mm.rs` | Physical frame allocator (after the heap; page tables, user pages, virtqueues) |
+| `kernel/src/dt.rs` | Device tree (aarch64, riscv64): device bases, PCI INTx `interrupt-map`, `virtio,mmio` nodes, `timebase-frequency` (`fdt` crate) |
+| `kernel/src/mm.rs` | Physical frame allocator (after 256 KiB heap; page tables, user pages, virtqueues) |
 | `kernel/src/blk.rs` | Block-device registry filled by driver modules (`blk_register`); `/dev/<name>` + sector/byte I/O |
 | `kernel/src/arch/` | All per-arch code: boot, UART, interrupts, PCI, user entry/paging (`user`, `upaging`), context switch, FPU, clock, SMP glue |
 | `kernel/src/console.rs` | Serial console + the `console` module's screen/keyboard hooks (early-output replay) |
@@ -146,7 +147,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `kernel/src/task/` | Scheduler records (`Task`) + per-process blocks (`process.rs`): yield, preemption, fork/exec/wait |
 | `kernel/src/fs/` | VFS + bootfs/tmpfs/devfs/procfs backends |
 | `kernel/src/modules/` | ELF64 loader, KernelApi wrappers, loaded-module registry |
-| `modules/abi` | Shared `#[repr(C)]` KernelApi (v13: PCI/DMA/`dev_register`/`blk_register`/`console_register`/`personality_register`) |
+| `modules/abi` | Shared `#[repr(C)]` KernelApi (v14: PCI/DMA/`dev_register`/`blk_register`/`console_register`/`personality_register`/`dt_mmio_find`) |
 | `modules/virtq` | Split virtqueue helpers shared by the virtio modules |
 | `modules/console` | Framebuffer text screen, PS/2 + virtio-input keyboards, loadable keymap (`keymaps/`; scancode decoding in the host-testable `ps2-scancode` crate) |
 | `modules/virtio_blk` | virtio-blk `/dev/vd*`: PCI legacy I/O (x86_64) or virtio-mmio (aarch64, riscv64) |
@@ -273,7 +274,7 @@ unsafe extern "C" fn module_init(api: *const KernelApi) -> i32
 unsafe extern "C" fn module_exit() // optional
 ```
 
-`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v13 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`).
+`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v14 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
 
 ### Adding a module
 1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)

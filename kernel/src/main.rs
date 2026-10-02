@@ -7,6 +7,9 @@ extern crate alloc;
 mod arch;
 mod blk;
 mod console;
+// Its accessors are used by the aarch64 / riscv64 arch code only.
+#[allow(dead_code)]
+mod dt;
 mod exception;
 mod fs;
 mod heap;
@@ -78,6 +81,18 @@ fn push_usize(buf: &mut [u8], mut i: usize, mut v: usize) -> usize {
 /// Entered from `arch::_start` once Limine has handed over.
 pub(crate) fn kernel_main() -> ! {
     arch::early_init();
+    // The board description comes first: device bases, interrupt routing
+    // and clocks are read from it (aarch64, riscv64), nothing is assumed.
+    dt::init();
+    let board = match arch::apply_dt() {
+        Ok(board) => board,
+        Err(what) => {
+            console::write_str("fatal: ");
+            console::write_str(what);
+            console::write_str("\n");
+            arch::halt();
+        }
+    };
 
     let mut fb_w = 0usize;
     let mut fb_h = 0usize;
@@ -115,7 +130,11 @@ pub(crate) fn kernel_main() -> ! {
         }
     }
     let _ = limine_boot::base_revision_supported();
-    let _ = limine_boot::DTB.response();
+    if let Some(board) = board {
+        console::write_str("board: ");
+        console::write_str(board);
+        console::write_str("\n");
+    }
 
     heap::init();
     prove_heap();

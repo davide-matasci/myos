@@ -9,6 +9,16 @@ pub const MAX_BUS: u8 = 255;
 /// Fallback MMIO window if firmware left BAR0 at 0.
 pub const MMIO_ASSIGN: u64 = 0xF000_0000;
 
+/// Last bus the config mechanism covers.
+pub fn max_bus() -> u8 {
+    MAX_BUS
+}
+
+/// Where BARs are assigned.
+pub fn mmio_assign() -> u64 {
+    MMIO_ASSIGN
+}
+
 #[derive(Clone, Copy)]
 pub struct Bdf {
     pub bus: u8,
