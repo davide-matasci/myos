@@ -96,8 +96,8 @@ myos_c_hello_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
-      sha256sum "$MYOS_ROOT/c/hello.c"
-      sha256sum "$MYOS_ROOT/c/socket_smoke.c"
+      sha256sum "$MYOS_ROOT/user/c/hello.c"
+      sha256sum "$MYOS_ROOT/user/c/socket_smoke.c"
       sha256sum "$MYOS_ROOT/scripts/build-c-hello.sh"
     } | sha256sum | awk '{print $1}'
   )"

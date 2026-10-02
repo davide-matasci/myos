@@ -148,7 +148,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `kernel/src/modules/` | ELF64 loader, KernelApi wrappers, loaded-module registry |
 | `modules/abi` | Shared `#[repr(C)]` KernelApi (v12: PCI/DMA/`dev_register`/`blk_register`/`console_register`) |
 | `modules/virtq` | Split virtqueue helpers shared by the virtio modules |
-| `modules/console` | Framebuffer text screen, PS/2 + virtio-input keyboards, loadable keymap |
+| `modules/console` | Framebuffer text screen, PS/2 + virtio-input keyboards, loadable keymap (`keymaps/`; scancode decoding in the host-testable `ps2-scancode` crate) |
 | `modules/virtio_blk` | virtio-blk `/dev/vd*`: PCI legacy I/O (x86_64) or virtio-mmio (aarch64, riscv64) |
 | `modules/nvme` | NVMe `/dev/nvmeXn1` (PCI class 01/08, polled queues) |
 | `modules/hello` | Sample module (`[ OK ] hello`) |
@@ -164,6 +164,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `user/netd` | Userspace smoltcp over `/dev/net0` |
 | `user/insmod` | `insmod /lib/modules/<name>`: load a kernel module at runtime (`SYS_INSMOD`) |
 | `user/lib` | Shared `myos_user` syscall wrappers, argv parser, `Heap` allocator |
+| `user/c` | Native C programs (newlib): `hello` and the boot-CI smokes installed as `/bin/etc/*` |
 | `user/echo/cat/ls` | Bootfs demos (`/myos_echo`, `/myos_cat`, `/myos_ls`) |
 | `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` |
 | `ports/` | Userspace ports: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, vim) |

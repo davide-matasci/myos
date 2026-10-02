@@ -54,8 +54,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/initramfs.rs");
     println!("cargo:rerun-if-changed=ports/termcap/termcap");
     println!("cargo:rerun-if-changed=ports/lynx/lynx.cfg");
-    println!("cargo:rerun-if-changed=kbd/ch.map");
-    println!("cargo:rerun-if-changed=kbd/us.map");
+    println!("cargo:rerun-if-changed=modules/console/keymaps/ch.map");
+    println!("cargo:rerun-if-changed=modules/console/keymaps/us.map");
     println!("cargo:rerun-if-changed={}", kernel_path.display());
 
     // Ensure Phase-1 git (+zlib) ELFs exist before packing initramfs. CI hooks

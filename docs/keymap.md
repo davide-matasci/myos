@@ -18,8 +18,9 @@ const DEFAULT_KEYMAP: &[u8] = b"/lib/kbd/ch.map";
 
 Switch the default to US by pointing that constant at `/lib/kbd/us.map`.
 
-Both maps ship in the initramfs under `/lib/kbd/` (libfs nested tree — not
-bootfs/`/etc`, which is flat and too small for reliable packing).
+Both maps (`modules/console/keymaps/` in the repo) ship in the initramfs
+under `/lib/kbd/` (libfs nested tree — not bootfs/`/etc`, which is flat and
+too small for reliable packing).
 
 `user/init` loads CH first; on open/read/ioctl failure it prints a distinct
 `[ FAIL ] keymap {open|read|ioctl} ch` line and falls back to `us.map` so the
@@ -80,7 +81,7 @@ keycode 0x35 = - _ none none
 
 | Arch    | Hardware     | Keycode space                          |
 |---------|--------------|----------------------------------------|
-| x86_64  | PS/2 8042    | set-1 makes via `ps2-scancode`          |
+| x86_64  | PS/2 8042    | set-1 makes via `modules/console/ps2-scancode`          |
 | aarch64 | virtio-input | Linux `KEY_*` (same numbers for alphanumerics) |
 | riscv64 | virtio-input | same as aarch64                        |
 
