@@ -58,8 +58,8 @@ names are what GitHub release assets allow.
   without `MYOS_CI_MINI`) packs this build's packages for its arch, serves
   `target/packages/` on the host's 127.0.0.1:8765 (the guest reaches it as
   `http://10.0.2.2:8765` on QEMU's user network) and, after the HTTPS
-  stages, runs `get-myos -m http://10.0.2.2:8765 lua` and the installed
-  `lua` (`CMD_GET_MYOS` in `src/wait_ci.rs`). The boot job needs `gzip`
+  stages, runs `get-myos -m http://10.0.2.2:8765 make` and the installed
+  `make` (`CMD_GET_MYOS` in `src/wait_ci.rs`). The boot job needs `gzip`
   and `sha256sum`.
 - The full boot installs **every package of the build** as its first
   command (`cmd_get_packages` in `src/wait_ci.rs`), so the stages that use
