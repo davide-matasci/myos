@@ -50,7 +50,8 @@ cargo run -- [uefi|aarch64|riscv64]  # build and boot in QEMU (default: x86 BIOS
   are missing (or fails with that script's error), and likewise builds what
   every `core` image carries without a feature of its own (curl with its CA
   bundle, the boot-CI smoke programs). The initramfs packer refuses a
-  missing file instead of silently leaving it out. Ports are Cargo features
+  missing file instead of silently leaving it out, and re-packs the images
+  when a packed file under `target/` changes. Ports are Cargo features
   (`port_vim`, ...; `core` is the boot-required set); `--no-default-features`
   gives a lean image.
 - `--features linux_compat` adds the optional Linux layer; build its pieces

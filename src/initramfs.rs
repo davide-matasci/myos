@@ -105,9 +105,18 @@ fn read_any(paths: &[&Path]) -> Option<Vec<u8>> {
 
 /// The first readable of `paths`, or `None` with a note per miss: only for
 /// files a build may legitimately lack.
+///
+/// Under the build script, every path tried becomes a `rerun-if-changed`
+/// input, so a port rebuilt (or removed) under `target/` re-packs the images
+/// on the next `cargo build` without any source change.
 fn read_optional(paths: &[&Path]) -> Option<Vec<u8>> {
+    let in_build_script = std::env::var_os("OUT_DIR").is_some()
+        && std::env::var_os("CARGO_CFG_FEATURE").is_some();
     let mut errors: Vec<(String, String)> = Vec::new();
     for path in paths {
+        if in_build_script {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
         match std::fs::read(path) {
             Ok(v) => return Some(v),
             Err(e) => errors.push((path.display().to_string(), e.to_string())),
