@@ -109,7 +109,7 @@ static void mkdirs(const char *path, int self) {
 
 /* ---- running curl ------------------------------------------------------- */
 
-static int download(const char *url, const char *dest) {
+static int download_once(const char *url, const char *dest) {
     pid_t pid = fork();
     if (pid < 0) {
         return -1;
@@ -126,6 +126,20 @@ static int download(const char *url, const char *dest) {
         return -1;
     }
     return 0;
+}
+
+/* A transient connect failure should not fail the whole install. */
+static int download(const char *url, const char *dest) {
+    for (int attempt = 1;; attempt++) {
+        if (download_once(url, dest) == 0) {
+            return 0;
+        }
+        if (attempt == 3) {
+            return -1;
+        }
+        say("get-alpine: retrying ", url, NULL);
+        sleep(2);
+    }
 }
 
 /* ---- sha256 ------------------------------------------------------------- */

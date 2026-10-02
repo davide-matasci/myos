@@ -45,6 +45,7 @@ linux --root ROOT PROGRAM [ARG...]
    then unpacked into `ROOT`. Installed packages
    (`ROOT/var/lib/get-alpine/pkgs/`) are skipped. Install scripts are not
    run, and the index signature is not checked (the download is HTTPS).
+   A failed download is retried twice.
 3. Alpine keeps `/lib` and `/usr/lib` separate, so no symlinks are needed:
    the dynamic linker is `/lib/ld-musl-<arch>.so.1`.
 
