@@ -289,7 +289,8 @@ the kernel does not keep a per-task copy at syscall entry.
   - a 16 MiB `brk` heap;
   - 64 fds per process, 64 tasks in total;
   - `/tmp` (tmpfs) files of at most 16 MiB each, all of them in the
-    64 MiB kernel heap.
+    kernel heap (a quarter of the memory, 64 MiB to 1 GiB: 256 MiB in the
+    1 GiB CI guests).
 
 ## Testing
 
@@ -305,7 +306,11 @@ shared data, a relocated function pointer and a thread-local in
 The test is plain musl C, so it can also be run on a Linux host for
 reference. It then runs
 `get-alpine jq && linux --root /tmp/alpine jq -nr '"ALPINE-JQ \(1+2+3)"'` and
-expects `ALPINE-JQ 6` (this needs the Alpine mirror to be reachable).
+expects `ALPINE-JQ 6`, then installs Python into the same root (python3 and
+its 19 dependencies, ~45 MB) and runs
+`python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])'`
+(the standard library and two C extension modules), expecting `PYTHON 42`.
+Both need the Alpine mirror to be reachable.
 
 Without the feature (boot-mini, the normal PR CI), the harness instead
 runs `insmod /lib/modules/linux; cat /proc/modules` and expects `[ OK ]
