@@ -130,11 +130,13 @@ const CMD_GET_ALPINE: &[u8] =
 const CMD_PYTHON: &[u8] =
     b"get-alpine python3 && linux --root /tmp/alpine python3 -c 'import json,sqlite3;print(\"PYTHON\",json.loads(\"[42]\")[0])'\n";
 // pty boot-CI smoke (openpty/forkpty, echo round-trip, EIO on session end).
-// Package install smoke (full boot only): get-myos fetches lua from the
+// Package install smoke (full boot only): get-myos fetches make from the
 // mirror the launcher serves (this build's own packages), binds its files
-// where the image has them, and the bound program runs.
+// where the image has them, and the bound program runs. (make, not lua:
+// lua's startup version check fails on riscv64imac's soft-float arithmetic,
+// a lua problem that predates the packages.)
 const CMD_GET_MYOS: &[u8] =
-    b"get-myos -m http://10.0.2.2:8765 lua >/dev/null && grep -q /tmp/pkg/bin/custom/lua /proc/mounts && lua -e \"print(40+2)\" && echo GET-MYOS-OK\n";
+    b"get-myos -m http://10.0.2.2:8765 make >/dev/null && grep -q /tmp/pkg/bin/custom/make /proc/mounts && make --version && echo GET-MYOS-OK\n";
 const CMD_PTY: &[u8] = b"/bin/etc/pty_smoke 2\n";
 // urandom boot-CI smoke (kernel CSPRNG via /dev/urandom: non-zero, distinct,
 // successive reads differ).
@@ -790,13 +792,13 @@ fn interactive_urandom_cmd_ok(serial: &str) -> bool {
 }
 
 /// get-myos: the index and the package came from the host mirror, the bind
-/// is in `/proc/mounts`, and lua (through the bind) printed 42.
+/// is in `/proc/mounts`, and make (through the bind) printed its version.
 fn interactive_get_myos_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
-    if !command_echoed(serial, "get-myos -m http://10.0.2.2:8765 lua") || serial.contains("exception:") {
+    if !command_echoed(serial, "get-myos -m http://10.0.2.2:8765 make") || serial.contains("exception:") {
         return false;
     }
-    tail.contains("\n42") && tail.contains("GET-MYOS-OK") && at_interactive_prompt(serial)
+    tail.contains("GNU Make") && tail.contains("GET-MYOS-OK") && at_interactive_prompt(serial)
 }
 
 /// `insmod /lib/modules/linux`: the module reports `[ OK ] linux` and
@@ -2111,14 +2113,14 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             std::process::exit(1);
         }
         if cmds.get(shell_cmd_index) == Some(&CMD_GET_MYOS) && !interactive_get_myos_ok(&serial) {
-            if !command_echoed(&serial, "get-myos -m http://10.0.2.2:8765 lua") {
-                eprintln!("error: serial did not echo `$ get-myos -m http://10.0.2.2:8765 lua ...` at the interactive prompt");
+            if !command_echoed(&serial, "get-myos -m http://10.0.2.2:8765 make") {
+                eprintln!("error: serial did not echo `$ get-myos -m http://10.0.2.2:8765 make ...` at the interactive prompt");
             } else if serial.contains("exception:") {
                 eprintln!("error: the package install smoke triggered a CPU exception");
             } else if !at_interactive_prompt(&serial) {
                 eprintln!("error: shell did not return to `$` after the package install smoke");
             } else {
-                eprintln!("error: get-myos did not install lua from the host mirror (want `42` and `GET-MYOS-OK`)");
+                eprintln!("error: get-myos did not install make from the host mirror (want `GNU Make` and `GET-MYOS-OK`)");
             }
             std::process::exit(1);
         }
