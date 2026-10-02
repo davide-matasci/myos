@@ -146,6 +146,16 @@ pub fn init() {
         idt[IPI_TLB_VECTOR].set_handler_fn(ipi_tlb);
         idt[IPI_RESCHED_VECTOR].set_handler_fn(ipi_resched);
         idt[SPURIOUS_VECTOR].set_handler_fn(spurious);
+        // Device (MSI-X) vectors: one IDT stub per vector, all funnelled into
+        // `irq::dispatch`.
+        idt[MSI_VECTOR_BASE].set_handler_fn(msi_irq0);
+        idt[MSI_VECTOR_BASE + 1].set_handler_fn(msi_irq1);
+        idt[MSI_VECTOR_BASE + 2].set_handler_fn(msi_irq2);
+        idt[MSI_VECTOR_BASE + 3].set_handler_fn(msi_irq3);
+        idt[MSI_VECTOR_BASE + 4].set_handler_fn(msi_irq4);
+        idt[MSI_VECTOR_BASE + 5].set_handler_fn(msi_irq5);
+        idt[MSI_VECTOR_BASE + 6].set_handler_fn(msi_irq6);
+        idt[MSI_VECTOR_BASE + 7].set_handler_fn(msi_irq7);
         idt
     });
     idt.load();
@@ -258,6 +268,81 @@ pub fn wait_for_interrupt_proof() {
 }
 
 extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {}
+
+/// First LAPIC vector handed to PCI MSI-X devices (8 vectors).
+pub const MSI_VECTOR_BASE: u8 = 48;
+const MSI_VECTORS: u8 = 8;
+static NEXT_MSI_VECTOR: AtomicUsize = AtomicUsize::new(0);
+
+macro_rules! msi_stub {
+    ($name:ident, $n:expr) => {
+        extern "x86-interrupt" fn $name(_frame: InterruptStackFrame) {
+            crate::irq::dispatch(u32::from(MSI_VECTOR_BASE) + $n);
+            lapic_w(EOI, 0);
+        }
+    };
+}
+msi_stub!(msi_irq0, 0);
+msi_stub!(msi_irq1, 1);
+msi_stub!(msi_irq2, 2);
+msi_stub!(msi_irq3, 3);
+msi_stub!(msi_irq4, 4);
+msi_stub!(msi_irq5, 5);
+msi_stub!(msi_irq6, 6);
+msi_stub!(msi_irq7, 7);
+
+/// Program MSI-X table entry 0 of the PCI function to raise a fresh LAPIC
+/// vector on the BSP, and enable MSI-X. Returns the vector (`irq::dispatch`
+/// number). The caller still has to point the device's queue at entry 0
+/// (virtio: `queue_msix_vector`).
+pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
+    const CAP_MSIX: u32 = 0x11;
+    let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
+    let status = (cfg(4) >> 16) as u16;
+    if status & 0x10 == 0 {
+        return None;
+    }
+    let mut cap = (cfg(0x34) & 0xFC) as u8;
+    let mut hops = 0;
+    while cap != 0 && hops < 48 {
+        hops += 1;
+        let w0 = cfg(cap);
+        if w0 & 0xFF == CAP_MSIX {
+            break;
+        }
+        cap = ((w0 >> 8) & 0xFC) as u8;
+    }
+    if cap == 0 || cfg(cap) & 0xFF != CAP_MSIX {
+        return None;
+    }
+    let table = cfg(cap.wrapping_add(4));
+    let bir = (table & 0x7) as u8;
+    let offset = (table & !0x7) as u64;
+    let (va, size) = crate::pci::bar_map(bus, slot, func, bir)?;
+    if offset.saturating_add(16) > size {
+        return None;
+    }
+    let n = NEXT_MSI_VECTOR.fetch_add(1, Ordering::SeqCst);
+    if n >= MSI_VECTORS as usize {
+        return None;
+    }
+    let vector = u32::from(MSI_VECTOR_BASE) + n as u32;
+    let apic_id = crate::smp::cpu_hw_id(0) as u32;
+    let entry = va + offset as usize;
+    unsafe {
+        // Mask the entry while programming it (vector control bit 0).
+        core::ptr::write_volatile((entry + 12) as *mut u32, 1);
+        core::ptr::write_volatile(entry as *mut u32, 0xFEE0_0000 | (apic_id << 12));
+        core::ptr::write_volatile((entry + 4) as *mut u32, 0);
+        core::ptr::write_volatile((entry + 8) as *mut u32, vector);
+        core::ptr::write_volatile((entry + 12) as *mut u32, 0);
+    }
+    // Message control (cap+2): bit 15 MSI-X enable, bit 14 function mask.
+    let w0 = cfg(cap);
+    let ctrl = ((w0 >> 16) as u16 | 0x8000) & !0x4000;
+    crate::pci::cfg_write32(bus, slot, func, cap, (w0 & 0xFFFF) | (u32::from(ctrl) << 16));
+    Some(vector)
+}
 
 extern "x86-interrupt" fn spurious(_frame: InterruptStackFrame) {}
 

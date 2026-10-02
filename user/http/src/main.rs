@@ -21,8 +21,9 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
     main()
 }
 
-const STATUS_POLLS: usize = 200_000;
-const DATA_POLLS: usize = 400_000;
+/// Wall-clock budgets (iteration counts scaled with syscall speed).
+const STATUS_TIMEOUT_MS: i64 = 10_000;
+const DATA_TIMEOUT_MS: i64 = 60_000;
 const BUF: usize = 1024;
 
 fn usage() -> ! {
@@ -307,17 +308,18 @@ fn tcp_connect(ip: &[u8], port: u16) -> (u16, usize) {
 
     let sn = conv_path(&mut pbuf, id, b"status");
     let mut connected = false;
-    for _ in 0..STATUS_POLLS {
-        let Some(st) = open(&pbuf[..sn]) else {
-            continue;
-        };
-        let mut sbuf = [0u8; 64];
-        let nr = read(st, &mut sbuf);
-        close(st);
-        if nr > 0 && nr <= 64 && buf_has(&sbuf[..nr], b"connected") {
-            connected = true;
-            break;
+    let mut t = myos_user::Timeout::ms(STATUS_TIMEOUT_MS);
+    while !t.expired() {
+        if let Some(st) = open(&pbuf[..sn]) {
+            let mut sbuf = [0u8; 64];
+            let nr = read(st, &mut sbuf);
+            close(st);
+            if nr > 0 && nr <= 64 && buf_has(&sbuf[..nr], b"connected") {
+                connected = true;
+                break;
+            }
         }
+        t.wait();
     }
     if !connected {
         fail(b"tcp connect timeout\n");
@@ -417,9 +419,11 @@ fn main() -> ! {
         // ate the os-test budget (CI #34814552381).
         let mut idle_start: Option<(i64, i64)> = None;
         const IDLE_USEC: i64 = 500_000;
-        for _ in 0..DATA_POLLS {
+        let mut t = myos_user::Timeout::ms(DATA_TIMEOUT_MS);
+        while !t.expired() {
             match tls.read(&mut rbuf) {
                 Ok(0) => {
+                    t.wait();
                     if got {
                         empty_polls += 1;
                         if empty_polls > 10000 {
@@ -467,12 +471,14 @@ fn main() -> ! {
     let mut rbuf = [0u8; BUF];
     let mut idle_start: Option<(i64, i64)> = None;
     const IDLE_USEC: i64 = 500_000;
-    for _ in 0..DATA_POLLS {
+    let mut t = myos_user::Timeout::ms(DATA_TIMEOUT_MS);
+    while !t.expired() {
         let nr = read(data, &mut rbuf);
         if nr == usize::MAX {
             break;
         }
         if nr == 0 {
+            t.wait();
             if got {
                 empty_polls += 1;
                 if empty_polls > 10000 {

@@ -96,7 +96,7 @@ fn dyn_writable(name: &str) -> bool {
 /// Preserves any previously attached writer on replace.
 pub fn register_dynamic(name: &str, data: &'static [u8]) -> bool {
     if name.is_empty() || name.len() > MAX_NAME || name == "mounts" || name == "cpuinfo"
-        || name == "meminfo"
+        || name == "meminfo" || name == "interrupts"
     {
         return false;
     }
@@ -154,6 +154,9 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     if name == "meminfo" {
         return copy_at(&crate::mm::meminfo_text(), pos, out);
     }
+    if name == "interrupts" {
+        return copy_at(&crate::irq::interrupts_text(), pos, out);
+    }
     if let Some((_, data)) = dyn_get(name) {
         return copy_at(data, pos, out);
     }
@@ -165,7 +168,7 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 
 fn list_root(buf: &mut [u8]) -> usize {
     // Dynamic nodes all live under `acpi/` (see `list_acpi`).
-    const FIXED: &[&[u8]] = &[b"mounts", b"cpuinfo", b"meminfo", b"pci", b"acpi"];
+    const FIXED: &[&[u8]] = &[b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"pci", b"acpi"];
     let mut off = 0usize;
     for name in FIXED {
         if off + name.len() + 1 > buf.len() {
@@ -295,6 +298,16 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             mode: S_IFREG | 0o444,
             size: u32::try_from(text.len()).unwrap_or(u32::MAX),
             ino: 10,
+            nlink: 1,
+            dev: 0,
+        });
+    }
+    if name == "interrupts" {
+        let text = crate::irq::interrupts_text();
+        return Some(StatInfo {
+            mode: S_IFREG | 0o444,
+            size: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            ino: 11,
             nlink: 1,
             dev: 0,
         });

@@ -12,8 +12,9 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
     main()
 }
 
-const STATUS_POLLS: usize = 100_000;
-const DATA_POLLS: usize = 100_000;
+/// Wall-clock budgets (iteration counts scaled with syscall speed).
+const STATUS_TIMEOUT_MS: i64 = 5_000;
+const DATA_TIMEOUT_MS: i64 = 5_000;
 
 fn usage() -> ! {
     write(b"usage: ping <ipv4>\n");
@@ -153,17 +154,18 @@ fn main() -> ! {
 
     let sn = conv_path(&mut path, id, b"status");
     let mut connected = false;
-    for _ in 0..STATUS_POLLS {
-        let Some(st) = open(&path[..sn]) else {
-            continue;
-        };
-        let mut sbuf = [0u8; 64];
-        let nr = read(st, &mut sbuf);
-        close(st);
-        if nr != 0 && nr != usize::MAX && buf_has(&sbuf[..nr], b"connected") {
-            connected = true;
-            break;
+    let mut t = myos_user::Timeout::ms(STATUS_TIMEOUT_MS);
+    while !t.expired() {
+        if let Some(st) = open(&path[..sn]) {
+            let mut sbuf = [0u8; 64];
+            let nr = read(st, &mut sbuf);
+            close(st);
+            if nr != 0 && nr != usize::MAX && buf_has(&sbuf[..nr], b"connected") {
+                connected = true;
+                break;
+            }
         }
+        t.wait();
     }
     if !connected {
         fail(b"icmp status timeout\n");
@@ -178,13 +180,18 @@ fn main() -> ! {
         fail(b"write data fail\n");
     }
     let mut got = false;
-    for _ in 0..DATA_POLLS {
+    let mut t = myos_user::Timeout::ms(DATA_TIMEOUT_MS);
+    while !t.expired() {
         let mut rbuf = [0u8; 64];
         let nr = read(data, &mut rbuf);
         if nr != 0 && nr != usize::MAX {
             got = true;
             break;
         }
+        if nr == usize::MAX {
+            break;
+        }
+        t.wait();
     }
     close(data);
     if !got {

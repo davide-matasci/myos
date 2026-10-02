@@ -3,10 +3,12 @@
 //! Used by `/bin/custom/dns` and `/bin/custom/http` — do not duplicate the
 //! packet encoder/parser elsewhere.
 
-use crate::{close, open, open_flags, read, write_fd, O_RDWR, O_WRONLY};
+use crate::{close, open, open_flags, read, write_fd, Timeout, O_RDWR, O_WRONLY};
 
-const STATUS_POLLS: usize = 400_000;
-const DATA_POLLS: usize = 400_000;
+/// Wall-clock budgets (the old 400k-iteration loops lasted seconds only while
+/// each read took tens of microseconds under TCG).
+const STATUS_TIMEOUT_MS: i64 = 5_000;
+const DATA_TIMEOUT_MS: i64 = 5_000;
 const BUF: usize = 1024;
 
 fn put_dec(buf: &mut [u8], mut n: u16) -> usize {
@@ -266,21 +268,22 @@ pub fn resolve_a(host: &[u8]) -> Result<[u8; 4], ResolveError> {
     let mut last_n = 0usize;
     // "connected" on the stack — avoid relying on rodata string merging for the needle.
     let want = *b"connected";
-    for _ in 0..STATUS_POLLS {
-        let Some(st) = open(&pbuf[..sn]) else {
-            continue;
-        };
-        let mut sbuf = [0u8; 64];
-        let nr = read(st, &mut sbuf);
-        close(st);
-        if nr > 0 && nr <= 64 {
-            last_n = nr;
-            last[..nr].copy_from_slice(&sbuf[..nr]);
-            if buf_has(&sbuf[..nr], &want) {
-                connected = true;
-                break;
+    let mut t = Timeout::ms(STATUS_TIMEOUT_MS);
+    while !t.expired() {
+        if let Some(st) = open(&pbuf[..sn]) {
+            let mut sbuf = [0u8; 64];
+            let nr = read(st, &mut sbuf);
+            close(st);
+            if nr > 0 && nr <= 64 {
+                last_n = nr;
+                last[..nr].copy_from_slice(&sbuf[..nr]);
+                if buf_has(&sbuf[..nr], &want) {
+                    connected = true;
+                    break;
+                }
             }
         }
+        t.wait();
     }
     close(ctl);
     if !connected {
@@ -311,12 +314,14 @@ pub fn resolve_a(host: &[u8]) -> Result<[u8; 4], ResolveError> {
     }
 
     let mut rbuf = [0u8; BUF];
-    for _ in 0..DATA_POLLS {
+    let mut t = Timeout::ms(DATA_TIMEOUT_MS);
+    while !t.expired() {
         let nr = read(data, &mut rbuf);
         if nr == usize::MAX {
             break;
         }
         if nr == 0 {
+            t.wait();
             continue;
         }
         if let Some(ip) = parse_a_record(&rbuf[..nr]) {

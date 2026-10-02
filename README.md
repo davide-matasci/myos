@@ -17,7 +17,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **VFS with multiple backends** — bootfs, tmpfs, devfs, procfs, FAT16, ext2
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase, ubase, uutils coreutils, ripgrep, TinyCC (all fetched at build)
-- **Networking** — virtio-net kernel module + smoltcp in userspace; `/ping` works on all arches
+- **Networking** — virtio-net kernel module (RX interrupts: MSI-X on x86_64, INTx on aarch64/riscv64) + smoltcp in userspace; `/ping` works on all arches
 - **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET
 - **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
 - **Optional: Linux syscall compatibility** — off by default; `--features linux_compat` runs static-PIE musl binaries (x86_64, aarch64, riscv64) via `linux PROGRAM` (see `docs/linux-compat.md`)

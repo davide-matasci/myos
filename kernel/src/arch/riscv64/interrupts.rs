@@ -336,6 +336,19 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             }
             return;
         }
+        if code == 9 {
+            // Supervisor external interrupt: claim from the PLIC, dispatch,
+            // complete. Loop: several sources may be pending.
+            loop {
+                let src = plic::claim();
+                if src == 0 {
+                    break;
+                }
+                crate::irq::dispatch(src);
+                plic::complete(src);
+            }
+            return;
+        }
         if code == 5 {
             // Supervisor timer
             TIMER_FIRED.store(true, Ordering::SeqCst);
@@ -462,6 +475,64 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
     }
 }
 
+
+/// SiFive-style PLIC on QEMU `virt`, S-mode context of the boot hart.
+pub mod plic {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    const BASE: usize = 0x0C00_0000;
+    const PRIORITY: usize = 0x0;
+    const ENABLE: usize = 0x2000;
+    const ENABLE_STRIDE: usize = 0x80;
+    const CONTEXT: usize = 0x20_0000;
+    const CONTEXT_STRIDE: usize = 0x1000;
+
+    /// S-mode PLIC context of the BSP (`2 * hartid + 1`), resolved on first use.
+    static CTX: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+    fn ctx() -> usize {
+        let c = CTX.load(Ordering::Relaxed);
+        if c != usize::MAX {
+            return c;
+        }
+        let hart = crate::smp::cpu_hw_id(0) as usize;
+        let c = 2 * hart + 1;
+        CTX.store(c, Ordering::Relaxed);
+        c
+    }
+
+    fn w(off: usize, v: u32) {
+        unsafe { core::ptr::write_volatile((BASE + off) as *mut u32, v) }
+    }
+
+    fn r(off: usize) -> u32 {
+        unsafe { core::ptr::read_volatile((BASE + off) as *const u32) }
+    }
+
+    /// Enable `src` for the BSP's S-mode context (priority 1, threshold 0)
+    /// and turn on supervisor external interrupts.
+    pub fn enable(src: u32) {
+        if src == 0 || src >= 1024 {
+            return;
+        }
+        let c = ctx();
+        w(PRIORITY + 4 * src as usize, 1);
+        let en = ENABLE + c * ENABLE_STRIDE + (src as usize / 32) * 4;
+        w(en, r(en) | (1 << (src % 32)));
+        w(CONTEXT + c * CONTEXT_STRIDE, 0);
+        unsafe {
+            core::arch::asm!("csrs sie, {}", in(reg) 1u64 << 9, options(nostack)); // SEIE
+        }
+    }
+
+    pub fn claim() -> u32 {
+        r(CONTEXT + ctx() * CONTEXT_STRIDE + 4)
+    }
+
+    pub fn complete(src: u32) {
+        w(CONTEXT + ctx() * CONTEXT_STRIDE + 4, src);
+    }
+}
 
 const SBI_EXT_IPI: u64 = 0x7350_4949; // "IPI\0"
 const SBI_IPI_SEND: u64 = 0;
