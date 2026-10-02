@@ -261,7 +261,7 @@ pub(super) fn enter_riscv64(user_rip: usize, user_rsp: usize, user_argc: usize, 
 /// `enter_riscv64`'s volatile resume image instead.
 #[cfg(target_arch = "aarch64")]
 pub(super) fn try_resume_exec_via_syscall_frame(entry: usize, rsp: usize, argc: usize, argv: usize) {
-    let frame_ptr = unsafe { SYSCALL_FRAME };
+    let frame_ptr = super::syscall::syscall_frame();
     if frame_ptr.is_null() {
         return;
     }

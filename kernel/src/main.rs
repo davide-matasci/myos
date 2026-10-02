@@ -139,6 +139,7 @@ fn kernel_main() -> ! {
     arch::init_interrupts();
     arch::wait_for_interrupt_proof();
     console::status_ok("interrupts");
+    time::init();
 
     task::init();
     task::spawn(task_a);
@@ -202,8 +203,10 @@ fn kernel_main() -> ! {
         );
     }
     user::spawn_init();
+    // kernel_main is the BSP's idle task from here on: run whatever is Ready
+    // for CPU 0, halt until the next interrupt otherwise.
     while !user::both_exited() {
-        task::yield_now();
+        task::idle_step();
     }
 
     console::flush();

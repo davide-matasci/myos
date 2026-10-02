@@ -376,11 +376,6 @@ long sysconf(int name) {
     return -1;
 }
 
-unsigned sleep(unsigned seconds) {
-    (void)seconds;
-    return 0;
-}
-
 uid_t getuid(void) {
     return 0;
 }

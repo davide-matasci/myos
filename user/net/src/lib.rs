@@ -34,15 +34,21 @@ pub const QEMU_DEFAULT_MAC: EthernetAddress =
 /// Keep in sync with `myos_abi::MYOS_IOCTL_NET_GETMAC`.
 pub const MYOS_IOCTL_NET_GETMAC: usize = 0x4d01;
 
-/// Virtual clock: `u64` milliseconds bumped each poll (no clock syscall yet).
+/// Stack clock in milliseconds. `bump` advances it to the real elapsed time
+/// (`gettimeofday`, microsecond resolution since the kernel's monotonic
+/// clock) so smoltcp's retransmit/keepalive timers run at wall speed whether
+/// netd is busy or sleeping; it never goes backwards and advances by at least
+/// the caller's `millis` when no clock is available.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VirtualInstant {
     millis: u64,
+    /// Wall clock (µs) at the first bump; 0 until then.
+    epoch_us: i64,
 }
 
 impl VirtualInstant {
     pub const fn new() -> Self {
-        Self { millis: 0 }
+        Self { millis: 0, epoch_us: 0 }
     }
 
     pub fn now(&self) -> Instant {
@@ -50,7 +56,18 @@ impl VirtualInstant {
     }
 
     pub fn bump(&mut self, millis: u64) {
-        self.millis = self.millis.saturating_add(millis);
+        if let Some((s, us)) = myos_user::gettimeofday() {
+            let now_us = s.saturating_mul(1_000_000).saturating_add(us);
+            if self.epoch_us == 0 {
+                self.epoch_us = now_us;
+            }
+            let elapsed_ms = (now_us.saturating_sub(self.epoch_us) / 1000).max(0) as u64;
+            if elapsed_ms > self.millis {
+                self.millis = elapsed_ms;
+                return;
+            }
+        }
+        self.millis = self.millis.saturating_add(millis.max(1));
     }
 
     pub fn millis(&self) -> u64 {
@@ -63,6 +80,9 @@ pub struct Net0Device {
     fd: usize,
     rx: [u8; FRAME_BUF],
     rx_len: usize,
+    /// Frames handed to the stack so far (lets netd tell an idle poll from
+    /// a busy one and sleep when nothing is happening).
+    rx_frames: u64,
 }
 
 impl Net0Device {
@@ -78,6 +98,7 @@ impl Net0Device {
             fd,
             rx: [0; FRAME_BUF],
             rx_len: 0,
+            rx_frames: 0,
         })
     }
 
@@ -93,6 +114,11 @@ impl Net0Device {
 
     pub fn fd(&self) -> usize {
         self.fd
+    }
+
+    /// Frames received since open.
+    pub fn rx_frames(&self) -> u64 {
+        self.rx_frames
     }
 
     /// Hardware MAC via ioctl; falls back to [`QEMU_DEFAULT_MAC`] on failure
@@ -168,6 +194,7 @@ impl Device for Net0Device {
             return None;
         }
         self.rx_len = n.min(FRAME_BUF);
+        self.rx_frames += 1;
         Some((
             Net0RxToken {
                 buf: &self.rx[..self.rx_len],

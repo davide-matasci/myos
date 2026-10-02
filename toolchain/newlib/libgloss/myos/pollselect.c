@@ -4,7 +4,8 @@
  * Regular files stay always-ready (POSIX). TTY POLLIN is not: there is no
  * FIONREAD, and lying "ready" made lynx HTCheckForInterrupt block in LYgetch
  * at "Looking up … first" before libgloss DNS (same getaddrinfo path as curl).
- * Timeouts use gettimeofday so select(0,...,tv) can sleep without a spin budget.
+ * Timeouts use gettimeofday; the waits themselves sleep in the kernel
+ * (SYS_NANOSLEEP, sleep.c) instead of spinning.
  */
 #include <errno.h>
 #include <poll.h>
@@ -141,13 +142,29 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
             }
             return 0;
         }
-        /* Infinite wait: scan_once may be pure userspace on idle sockets.
-         * Touch the clock so each spin enters the kernel and netd can run
-         * (riscv64 dropbear select starved netd → accept never completed,
-         * then Child+banner write EIO when the ring/socket was already dead). */
+        /* Sleep in the kernel until something happens (console / pipe /
+         * device traffic, a child exit) or a short bound passes, then
+         * re-scan. Socket readiness arrives through netd's channel writes,
+         * which count as events. The bound keeps netd-side state that does
+         * not surface as a kernel event (e.g. a timer-driven retransmit)
+         * from being missed for long. Spinning here used to burn a whole
+         * CPU per idle select()-driven server (dropbear, lynx). */
         {
-            struct timeval now;
-            (void)gettimeofday(&now, NULL);
+            unsigned long long ns = 10ULL * 1000000ULL;
+            if (timeout > 0) {
+                long left = timeout - elapsed_ms(&start);
+                if (left < 1) {
+                    left = 1;
+                }
+                if ((unsigned long long)left * 1000000ULL < ns) {
+                    ns = (unsigned long long)left * 1000000ULL;
+                }
+            }
+            (void)__myos_sleep_ns(ns, MYOS_SLEEP_ANY_EVENT);
+            if (__myos_sig_count != sigs) {
+                errno = EINTR;
+                return -1;
+            }
         }
     }
 }
@@ -207,6 +224,15 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
             return 0;
         }
         while (ms < 0 || elapsed_ms(&start) < ms) {
+            unsigned long long ns = 3600ULL * 1000000000ULL;
+            if (ms >= 0) {
+                long left = ms - elapsed_ms(&start);
+                if (left < 1) {
+                    left = 1;
+                }
+                ns = (unsigned long long)left * 1000000ULL;
+            }
+            (void)__myos_sleep_ns(ns, 0);
             if (__myos_sig_count != sigs) {
                 errno = EINTR;
                 return -1;

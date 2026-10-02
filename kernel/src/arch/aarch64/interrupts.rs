@@ -409,8 +409,14 @@ extern "C" fn aarch64_irq_handler() {
     if timer {
         TIMER_FIRED.store(true, Ordering::SeqCst);
         crate::time::note_tick();
-    crate::rng::stir_tick();
+        crate::rng::stir_tick();
         rearm_timers();
+        // BSP stages PL011 RX so a blocked console reader is woken instead
+        // of polling the UART itself (see x86 timer).
+        if crate::smp::cpu_id() == 0 && crate::input::drain_uart_irq() {
+            crate::task::wake(crate::task::KEY_CONSOLE);
+        }
+        crate::task::timer_tick();
     }
     if tlb {
         flush_tlb_local();
@@ -419,8 +425,6 @@ extern "C" fn aarch64_irq_handler() {
     if id < 1020 {
         write32(GICC + 0x10, iar);
     }
-    // UART drain stays x86-only for now (bios FIFO overrun). aarch64 boot-mini
-    // was already green without it; keep timer path lean.
     if timer || resched {
         crate::task::schedule();
     }
@@ -450,6 +454,23 @@ pub fn ipi_tlb_shootdown() {
 
 pub fn ipi_reschedule() {
     send_sgi(SGI_RESCHED);
+}
+
+/// Reschedule SGI to one logical CPU. GICv2 CPU interface `n` is the CPU
+/// with MPIDR Aff0 = `n` on QEMU virt (CPUTargetList bit `n`).
+pub fn ipi_reschedule_cpu(cpu: usize) {
+    if !crate::smp::cpu_online(cpu) {
+        return;
+    }
+    let target = (crate::smp::cpu_hw_id(cpu) & 0xff) as u32;
+    if target >= 8 {
+        send_sgi(SGI_RESCHED);
+        return;
+    }
+    unsafe {
+        asm!("dsb ishst", options(nostack));
+    }
+    write32(GICD + 0xF00, (1 << (16 + target)) | (SGI_RESCHED & 0xf));
 }
 
 #[unsafe(no_mangle)]

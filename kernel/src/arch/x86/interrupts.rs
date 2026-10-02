@@ -307,6 +307,13 @@ pub fn ipi_reschedule() {
     send_ipi_others(IPI_RESCHED_VECTOR);
 }
 
+/// Reschedule IPI to one logical CPU (wakes it from `hlt`).
+pub fn ipi_reschedule_cpu(cpu: usize) {
+    if crate::smp::cpu_online(cpu) {
+        send_ipi_apic(crate::smp::cpu_hw_id(cpu) as u32, IPI_RESCHED_VECTOR);
+    }
+}
+
 fn flush_tlb_local() {
     unsafe {
         core::arch::asm!(
@@ -334,13 +341,14 @@ extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
     crate::time::note_tick();
     crate::rng::stir_tick();
     // BSP drains COM1 so a starved shell CPU cannot overrun the FIFO
-    // (bios `which ls`→`which s` under -smp 4 TCG). x86-only.
-    // When bytes land, IPI other CPUs: getty lives on an AP, and ECHO only
-    // runs from that reader's poll — without a kick, host echo-sync waits
-    // then resends, sticky-keying `login: rroooo…` / `roootttt…`.
+    // (bios `which ls`→`which s` under -smp 4 TCG). When bytes land, wake
+    // the console reader (it blocks on KEY_CONSOLE, possibly on another CPU):
+    // ECHO only runs from that reader's poll — without a wake, host echo-sync
+    // waits then resends, sticky-keying `login: rroooo…` / `roootttt…`.
     if crate::smp::cpu_id() == 0 && crate::input::drain_uart_irq() {
-        crate::smp::kick_cpus();
+        crate::task::wake(crate::task::KEY_CONSOLE);
     }
+    crate::task::timer_tick();
     lapic_w(EOI, 0);
     crate::task::schedule();
 }

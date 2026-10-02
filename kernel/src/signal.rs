@@ -340,8 +340,13 @@ pub fn sigsuspend(mask: u32) -> usize {
     let id = task::current_id();
     task::signal_save_suspend_mask(id, task::signal_blocked(id));
     task::signal_set_blocked_mask(id, mask);
-    while !task::signal_wakeable(id) {
-        task::yield_now();
+    loop {
+        let seq = task::wait_seq();
+        if task::signal_wakeable(id) {
+            break;
+        }
+        // Woken by `signal_send` (`wake_task`), not by any key.
+        task::block_until(task::KEY_SIGNAL, seq, 0);
     }
     SYSERR_EINTR
 }
@@ -352,13 +357,14 @@ pub fn sigsuspend(mask: u32) -> usize {
 pub fn sigwait(set: u32) -> usize {
     let id = task::current_id();
     loop {
+        let seq = task::wait_seq();
         if let Some(sig) = task::signal_take_from(id, set) {
             return sig as usize;
         }
         if task::signal_wakeable(id) {
             return SYSERR_EINTR;
         }
-        task::yield_now();
+        task::block_until(task::KEY_SIGNAL, seq, 0);
     }
 }
 

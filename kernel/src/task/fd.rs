@@ -204,6 +204,7 @@ pub fn fd_open_fifo(id: usize, flags: u32) -> Result<usize, FifoOpenErr> {
     // Wait for the peer: either one is attached now, or one attached (and
     // perhaps already left) since we looked.
     loop {
+        let seq = wait_seq();
         let Some((r, w, ro, wo)) = pipe::fifo_ends(id) else {
             break;
         };
@@ -214,7 +215,7 @@ pub fn fd_open_fifo(id: usize, flags: u32) -> Result<usize, FifoOpenErr> {
         if crate::signal::interrupt_wait() {
             break;
         }
-        yield_now();
+        block_until(key_pipe(id), seq, 0);
     }
     fd_close(fd);
     Err(FifoOpenErr::Failed)
@@ -306,18 +307,22 @@ pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
     if oldfd >= MAX_FDS || newfd >= MAX_FDS {
         return false;
     }
-    with_current_mut(|t| {
+    // Release the old entry outside TASKS: dropping a pipe/pty end wakes
+    // its peers (and a pty hangup signals the session), which take TASKS.
+    let (ok, dropped) = with_current_mut(|t| {
         let old = t.fds[oldfd];
         if old == FdEntry::Empty {
-            return false;
+            return (false, FdEntry::Empty);
         }
         if oldfd == newfd {
-            return true;
+            return (true, FdEntry::Empty);
         }
-        fd_drop(t.fds[newfd]);
+        let prev = t.fds[newfd];
         t.fds[newfd] = fd_clone(old);
-        true
-    })
+        (true, prev)
+    });
+    fd_drop(dropped);
+    ok
 }
 
 /// First free fd >= `minfd` that clones `oldfd` (fcntl F_DUPFD).
@@ -380,12 +385,9 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         return 0;
     }
     loop {
-        let (entry, map, mmap) = {
-            let flags = irq_save();
-            irq_off();
-            let id = current_slot();
-            let t = TASKS.lock()[id];
-            irq_restore(flags);
+        // Copy out only what the check needs: a whole `Task` is ~10 KiB
+        // (fd table + mmap table) and used to be copied twice per read.
+        let (entry, map, mmap) = with_current_mut(|t| {
             (
                 t.fds.get(fd).copied().unwrap_or(FdEntry::Empty),
                 (
@@ -396,7 +398,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 ),
                 t.mmap,
             )
-        };
+        });
         let (user_base, image_span, stack_off, brk) = map;
         let user_base = user_base as usize;
         let stack_off = stack_off as usize;
@@ -439,8 +441,9 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 });
             }
             FdEntry::PipeRead(id) => {
-                let mut tmp = [0u8; 128];
+                let mut tmp = [0u8; FILE_IO_TMP];
                 let want = len.min(tmp.len());
+                let seq = wait_seq();
                 let n = pipe::read(id, &mut tmp[..want]);
                 if n == usize::MAX {
                     return usize::MAX;
@@ -451,7 +454,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                     if crate::signal::interrupt_wait() {
                         return 0;
                     }
-                    yield_now();
+                    block_until(key_pipe(id), seq, 0);
                     continue;
                 }
                 let aspace = current_aspace();
@@ -500,12 +503,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
     let mut total = 0usize;
     while total < len {
         let chunk = (len - total).min(FILE_IO_TMP);
-        let (entry, map, mmap) = {
-            let flags = irq_save();
-            irq_off();
-            let id = current_slot();
-            let t = TASKS.lock()[id];
-            irq_restore(flags);
+        let (entry, map, mmap) = with_current_mut(|t| {
             (
                 t.fds.get(fd).copied().unwrap_or(FdEntry::Empty),
                 (
@@ -516,7 +514,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                 ),
                 t.mmap,
             )
-        };
+        });
         let (user_base, image_span, stack_off, brk) = map;
         if !user_buf_ok(
             buf + total,
@@ -557,6 +555,9 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                     let Some(n) = crate::fs::write(&node, write_pos, &tmp[..chunk]) else {
                         return if total == 0 { usize::MAX } else { total };
                     };
+                    // A poller (select/poll sleeping on "any event") may be
+                    // waiting for this device/channel traffic.
+                    wake_any();
                     if n == 0 {
                         return if total == 0 { usize::MAX } else { total };
                     }
@@ -573,6 +574,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                     break;
                 }
                 FdEntry::PipeWrite(id) => {
+                    let seq = wait_seq();
                     let n = pipe::write(id, &tmp[..chunk]);
                     if n == usize::MAX {
                         return if total == 0 { usize::MAX } else { total };
@@ -586,7 +588,13 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                         if total != 0 && crate::signal::current_should_wake() {
                             return total;
                         }
-                        yield_now();
+                        block_until(key_pipe(id), seq, 0);
+                        continue;
+                    }
+                    if n < chunk {
+                        // Partial: the rest goes in the next loop round once
+                        // a reader drained the ring.
+                        total += n;
                         continue;
                     }
                     total += n;
@@ -695,18 +703,20 @@ pub fn fd_close(fd: usize) -> bool {
     if fd >= MAX_FDS {
         return false;
     }
-    with_current_mut(|t| {
+    let entry = with_current_mut(|t| {
         let entry = t.fds[fd];
-        if entry == FdEntry::Empty {
-            return false;
-        }
-        fd_drop(entry);
         // POSIX close semantics: the slot must become free so the next
         // open/pipe/socket reuses the lowest fd (os-test stdio/puts does
         // close(0); close(1); pipe() and expects the pipe on 0,1).
         t.fds[fd] = FdEntry::Empty;
-        true
-    })
+        entry
+    });
+    if entry == FdEntry::Empty {
+        return false;
+    }
+    // Outside TASKS: dropping a pipe/pty end wakes peers / signals a session.
+    fd_drop(entry);
+    true
 }
 
 /// Whether the current task has a controlling terminal.
@@ -729,14 +739,7 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
 
     const TIOCSCTTY: usize = 0x540E;
 
-    let entry = {
-        let flags = irq_save();
-        irq_off();
-        let id = current_slot();
-        let t = TASKS.lock()[id];
-        irq_restore(flags);
-        t.fds.get(fd).copied().unwrap_or(FdEntry::Empty)
-    };
+    let entry = with_current_mut(|t| t.fds.get(fd).copied().unwrap_or(FdEntry::Empty));
 
     // PTY fd ioctls: per-pair termios (shared across both ends, Linux model),
     // winsize propagation, TIOCGPTN/TIOCSPTLCK on the master, TIOCSCTTY on the

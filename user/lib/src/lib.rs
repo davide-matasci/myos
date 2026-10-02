@@ -342,6 +342,16 @@ pub fn gettimeofday() -> Option<(i64, i64)> {
     }
 }
 
+/// Sleep for `ns` nanoseconds (`SYS_NANOSLEEP` = 52). With `any_event` the
+/// kernel also returns early when something a poller may care about happened
+/// (console / pipe / device traffic, a child exit); callers re-poll then.
+pub fn sleep_ns(ns: u64, any_event: bool) {
+    let flags = if any_event { 1 } else { 0 };
+    unsafe {
+        sys3(52, ns as usize, flags, 0);
+    }
+}
+
 pub const SEEK_SET: usize = 0;
 pub const SEEK_CUR: usize = 1;
 pub const SEEK_END: usize = 2;

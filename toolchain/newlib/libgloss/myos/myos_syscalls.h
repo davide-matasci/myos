@@ -63,6 +63,11 @@
 #define MYOS_SYS_SIGWAIT 49
 /* sigaction with the trampoline as a 4th struct word (signal.c). */
 #define MYOS_SYS_SIGACTION2 50
+/* nanosleep(ns, flags): the task blocks (its CPU halts) until the deadline or
+ * a signal (EINTR). MYOS_SLEEP_ANY_EVENT also ends the sleep on any kernel
+ * event a poller cares about (console/pipe/pty/device traffic, an exit). */
+#define MYOS_SYS_NANOSLEEP 52
+#define MYOS_SLEEP_ANY_EVENT 1
 #define MYOS_WAIT_NOHANG 1
 
 #define MYOS_STR_(x) #x
@@ -76,6 +81,10 @@
 #define MYOS_ENXIO ((unsigned long)-3)
 /* A blocking syscall interrupted by a caught signal (kernel SYSERR_EINTR). */
 #define MYOS_EINTR ((unsigned long)-4)
+
+/* Sleep `ns` nanoseconds (sleep.c). 0 = slept (or an event with
+ * MYOS_SLEEP_ANY_EVENT); -1 with errno = EINTR when a caught signal ran. */
+int __myos_sleep_ns(unsigned long long ns, int flags);
 
 long myos_syscall0(long nr);
 long myos_syscall1(long nr, long a0);

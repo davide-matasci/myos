@@ -8,11 +8,14 @@ pub fn task_pgid(id: usize) -> Option<usize> {
     }
     let flags = irq_save();
     irq_off();
-    let t = TASKS.lock()[id];
-    let out = if t.user_rip != 0 && t.state != State::Unused {
-        Some(t.pgid)
-    } else {
-        None
+    let out = {
+        let tasks = TASKS.lock();
+        let t = &tasks[id];
+        if t.user_rip != 0 && t.state != State::Unused {
+            Some(t.pgid)
+        } else {
+            None
+        }
     };
     irq_restore(flags);
     out
@@ -28,22 +31,20 @@ pub fn task_has_ctty(id: usize) -> bool {
     }
     let flags = irq_save();
     irq_off();
-    let t = TASKS.lock()[id];
-    let out = t.user_rip != 0
-        && matches!(t.state, State::Ready | State::Running)
-        && !t.exited
-        && t.has_ctty;
+    let out = {
+        let tasks = TASKS.lock();
+        let t = &tasks[id];
+        t.user_rip != 0
+            && matches!(t.state, State::Ready | State::Running | State::Blocked)
+            && !t.exited
+            && t.has_ctty
+    };
     irq_restore(flags);
     out
 }
 
 pub fn has_ctty() -> bool {
-    let flags = irq_save();
-    irq_off();
-    let id = current_slot();
-    let t = TASKS.lock()[id];
-    irq_restore(flags);
-    t.has_ctty
+    with_current_mut(|t| t.has_ctty)
 }
 
 /// Mark the system console as this task's controlling terminal (TIOCSCTTY).
@@ -90,8 +91,9 @@ pub fn getpgid(pid: usize) -> Option<usize> {
     let out = if target >= MAX_TASKS {
         None
     } else {
-        let t = TASKS.lock()[target];
-        if task_exists(&t) {
+        let tasks = TASKS.lock();
+        let t = &tasks[target];
+        if task_exists(t) {
             Some(t.pgid)
         } else {
             None
@@ -111,8 +113,9 @@ pub fn getsid(pid: usize) -> Option<usize> {
     let out = if target >= MAX_TASKS {
         None
     } else {
-        let t = TASKS.lock()[target];
-        if task_exists(&t) {
+        let tasks = TASKS.lock();
+        let t = &tasks[target];
+        if task_exists(t) {
             Some(t.sid)
         } else {
             None

@@ -79,6 +79,14 @@ const SYS_SIGACTION2: usize = 50;
 /// `linux-compat` feature; otherwise an unknown syscall.
 #[cfg(feature = "linux-compat")]
 const SYS_LINUX_NEXT_EXEC: usize = 51;
+/// `nanosleep(ns, flags)`: block the task (its CPU halts) until the deadline
+/// or a signal. `flags & 1` (`SLEEP_ANY_EVENT`) also ends the sleep on any
+/// kernel event a poller may care about (console/pipe/pty/device traffic, an
+/// exit), so `poll()`/`select()` loops in libgloss sleep between scans
+/// instead of spinning on `gettimeofday`. Returns 0 (deadline or event),
+/// `EINTR` when a signal acts.
+const SYS_NANOSLEEP: usize = 52;
+const SLEEP_ANY_EVENT: usize = 1;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
@@ -152,8 +160,13 @@ impl SyscallRegs {
     }
 }
 
+/// Live trap frame of the syscall running on each CPU (aarch64/riscv): a
+/// syscall sets it on entry and clears it on exit, fork/exec read it on the
+/// same CPU. One cell per CPU, so user tasks on several CPUs never see each
+/// other's frame.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub(super) static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
+static mut SYSCALL_FRAMES: [*mut usize; crate::smp::MAX_CPUS] =
+    [core::ptr::null_mut(); crate::smp::MAX_CPUS];
 
 /// Record the live trap frame for fork/exec resume (aarch64/riscv).
 ///
@@ -161,9 +174,18 @@ pub(super) static mut SYSCALL_FRAME: *mut usize = core::ptr::null_mut();
 /// `signal::deliver_due` can clear the frame on every arch before `user_exit`.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn set_syscall_frame(frame: *mut u64) {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     unsafe {
-        SYSCALL_FRAME = frame as *mut usize;
+        core::ptr::addr_of_mut!(SYSCALL_FRAMES[cpu]).write(frame as *mut usize);
     }
+}
+
+/// The frame recorded by [`set_syscall_frame`] on this CPU (null outside a
+/// syscall).
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(super) fn syscall_frame() -> *mut usize {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    unsafe { core::ptr::addr_of!(SYSCALL_FRAMES[cpu]).read() }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -239,6 +261,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_SIGPENDING => crate::signal::sigpending(),
         SYS_SIGSUSPEND => crate::signal::sigsuspend(a0 as u32),
         SYS_SIGWAIT => crate::signal::sigwait(a0 as u32),
+        SYS_NANOSLEEP => sys_nanosleep(a0, a1),
         #[cfg(feature = "linux-compat")]
         SYS_LINUX_NEXT_EXEC => crate::linux::sys_linux_next_exec(),
         _ => SYSERR,
@@ -249,6 +272,25 @@ pub extern "C" fn syscall_dispatch(
 
 fn sys_exit(code: usize) -> ! {
     task::user_exit(code as u8);
+}
+
+fn sys_nanosleep(ns: usize, flags: usize) -> usize {
+    // Cap at ~100 days so the deadline arithmetic cannot wrap.
+    let ns = (ns as u64).min(100 * 86_400 * 1_000_000_000);
+    let deadline = crate::time::monotonic_ns().saturating_add(ns).max(1);
+    let any = flags & SLEEP_ANY_EVENT != 0;
+    loop {
+        if task::sleep_until(deadline, any) {
+            return 0;
+        }
+        // Either an event (any-event mode) or a signal ended the wait.
+        if crate::signal::interrupt_wait() {
+            return 0; // turned into EINTR / a restart by on_syscall_exit
+        }
+        if any {
+            return 0;
+        }
+    }
 }
 
 fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
@@ -769,7 +811,7 @@ pub(crate) fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     };
     #[cfg(target_arch = "aarch64")]
     let child = {
-        let frame = unsafe { SYSCALL_FRAME };
+        let frame = syscall_frame();
         if frame.is_null() {
             return SYSERR;
         }
@@ -781,7 +823,7 @@ pub(crate) fn sys_fork(user_rip: usize, user_rsp: usize) -> usize {
     };
     #[cfg(target_arch = "riscv64")]
     let child = {
-        let frame = unsafe { SYSCALL_FRAME };
+        let frame = syscall_frame();
         if frame.is_null() {
             return SYSERR;
         }

@@ -191,12 +191,10 @@ pub fn sync_tp_for_kernel() {
 #[cfg(not(target_arch = "riscv64"))]
 pub fn sync_tp_for_kernel() {}
 
-#[cfg(not(target_arch = "aarch64"))]
 pub fn cpu_online(i: usize) -> bool {
     i < MAX_CPUS && ONLINE[i].load(Ordering::SeqCst)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 pub fn cpu_hw_id(i: usize) -> u64 {
     if i < MAX_CPUS {
         HW_IDS[i].load(Ordering::SeqCst)
@@ -361,6 +359,16 @@ pub fn tlb_shootdown() {
     ipi_clear_handled();
 }
 
+/// Wake one halted CPU (reschedule IPI) so it notices a newly-ready task.
+pub fn kick_cpu(cpu: usize) {
+    if cpu >= MAX_CPUS || !ONLINE[cpu].load(Ordering::SeqCst) || cpu == cpu_id() {
+        return;
+    }
+    #[cfg(target_arch = "riscv64")]
+    ipi_mark_resched();
+    arch::ipi_reschedule_cpu(cpu);
+}
+
 /// Wake idle CPUs so they notice newly-ready tasks.
 pub fn kick_cpus() {
     if online_count() <= 1 {
@@ -392,7 +400,13 @@ pub fn cpuinfo_text() -> alloc::vec::Vec<u8> {
     push_dec(&mut out, n as u64);
     push_str(&mut out, "\narch: ");
     push_str(&mut out, arch_name);
-    push_str(&mut out, "\nscheduler: smp-rr\n");
+    push_str(&mut out, "\nscheduler: smp-rr\nblocked_tasks: ");
+    push_dec(&mut out, crate::task::blocked_count() as u64);
+    push_str(&mut out, "\nclock_hz: ");
+    push_dec(&mut out, crate::time::clock_hz());
+    push_str(&mut out, "\nuptime_ms: ");
+    push_dec(&mut out, crate::time::monotonic_ns() / 1_000_000);
+    push_str(&mut out, "\n");
     let cpus = CPUS.lock();
     for i in 0..MAX_CPUS {
         let online = ONLINE[i].load(Ordering::SeqCst);
@@ -413,6 +427,8 @@ pub fn cpuinfo_text() -> alloc::vec::Vec<u8> {
         push_str(&mut out, if online || i == 0 { "yes" } else { "no" });
         push_str(&mut out, "\nschedules\t: ");
         push_dec(&mut out, SCHED_TICKS[i].load(Ordering::Relaxed));
+        push_str(&mut out, "\nidle_halts\t: ");
+        push_dec(&mut out, crate::task::idle_halts(i));
         push_str(&mut out, "\n");
         if !ONLINE[0].load(Ordering::SeqCst) && i == 0 {
             break;
@@ -465,9 +481,12 @@ static AP_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_a
 static AP_PARK_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = myos_smp_ap_park;
 
 /// riscv64: park APs in a WFI loop instead of bringing them online (see
-/// `init`).
+/// `init`). Off: secondary harts join the scheduler like the other arches.
+/// The U-mode trap entry reloads `tp` from the kernel-stack footer, so
+/// `cpu_id()` is right on every hart; the `sepc=0` corruption that forced the
+/// park was the trap vector's t0 clobber (fixed in #179).
 #[cfg(target_arch = "riscv64")]
-const RISCV_PARK_APS: bool = true;
+const RISCV_PARK_APS: bool = false;
 
 /// Record BSP and bring secondary CPUs online via Limine MP.
 pub fn init() {

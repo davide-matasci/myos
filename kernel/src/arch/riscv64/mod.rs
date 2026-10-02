@@ -1,7 +1,7 @@
 //! RISC-V64: Limine on QEMU `virt` (UEFI). Sv39 MMU is already on.
 
 mod interrupts;
-pub use interrupts::{enable_ipi, ipi_reschedule, ipi_tlb_shootdown};
+pub use interrupts::{enable_ipi, ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
 use super::virtio_mmio::keyboard;
 pub mod paging;
 pub mod pci;
@@ -75,6 +75,14 @@ pub fn ap_init(logical: usize) {
 pub fn wait_interrupt() {
     unsafe {
         core::arch::asm!("wfi", options(nostack, preserves_flags));
+    }
+}
+
+/// Enter with SIE clear; WFI completes once an enabled interrupt is pending
+/// (SIE clear or not), then set SIE so it is taken. Returns with IRQs on.
+pub fn idle_wait() {
+    unsafe {
+        core::arch::asm!("wfi", "csrs sstatus, {}", in(reg) 1u64 << 1, options(nostack));
     }
 }
 

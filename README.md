@@ -121,7 +121,7 @@ Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned
 Kernel linked in higher half (`0xffffffff80000000` on x86_64). Limine provides HHDM; usable memory = `phys + HHDM`. Page tables allocated from bump allocator after heap. AArch64 device block (UART, GIC, virtio-mmio) identity-mapped via `TTBR0`.
 
 ### Scheduling
-Round-robin kernel threads + user tasks. `task::yield_now()` cooperative; timer IRQ calls `task::schedule()` after EOI → preemptive even in user mode. x86_64: xAPIC timer. AArch64: GICv2 physical timer (PPI 30). RISC-V: ACLINT.
+Round-robin kernel threads + user tasks across all online CPUs (Limine MP bring-up on x86_64, AArch64 and RISC-V; see `docs/pci-acpi-smp.md`). `task::yield_now()` cooperative; timer IRQ calls `task::schedule()` after EOI → preemptive even in user mode. Blocking waits (`read` on a tty/pipe/pty, `wait`, `nanosleep`, `select`/`poll`) put the task in a `Blocked` state and are woken by the producer (`task::wake`), a deadline or a signal; idle CPUs halt (`hlt`/`wfi`) until an interrupt or a targeted reschedule IPI. `/proc/cpuinfo` shows per-CPU schedule and idle-halt counts. x86_64: xAPIC timer, TSC calibrated against the PIT for the monotonic clock. AArch64: GICv2 generic timer (PPI 30), `CNTVCT`. RISC-V: `stimecmp`, `time` CSR.
 
 ### Console & Input
 Dual console: serial + Limine framebuffer (mirrored). Stdin (fd 0) merges PS/2 keyboard (x86, 8042 probe) and serial simultaneously.

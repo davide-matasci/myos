@@ -143,6 +143,8 @@ pub fn drop_master(id: usize) {
         if let Some(pgid) = session_pgid(id) {
             let _ = crate::signal::kill_pg(pgid, SIGHUP);
         }
+        // Blocked slave readers/writers report EIO now.
+        notify(id);
         free_if_dead(id);
     }
 }
@@ -150,7 +152,10 @@ pub fn drop_master(id: usize) {
 /// One fd referencing the slave end closed.
 pub fn drop_slave(id: usize) {
     let Some(p) = pty_at(id) else { return };
-    p.slave_refs.fetch_sub(1, Ordering::SeqCst);
+    if p.slave_refs.fetch_sub(1, Ordering::SeqCst) == 1 {
+        // A blocked master read drains and then reports EIO.
+        notify(id);
+    }
     free_if_dead(id);
 }
 
@@ -224,7 +229,14 @@ pub fn master_write(id: usize, data: &[u8]) -> usize {
             let _ = crate::signal::kill_pg(pgid, SIGINT);
         }
     }
+    notify(id);
     n
+}
+
+/// Wake tasks blocked on this pair (either end) and any poller.
+fn notify(id: usize) {
+    crate::task::wake(crate::task::key_pty(id));
+    crate::task::wake_any();
 }
 
 /// Read from the slave: committed discipline output. Blocks until at least
@@ -238,6 +250,7 @@ pub fn slave_read(id: usize, out: &mut [u8]) -> usize {
     };
     crate::signal::enter_input_read();
     let n = loop {
+        let seq = crate::task::wait_seq();
         if p.master_refs.load(Ordering::SeqCst) == 0 {
             break usize::MAX; // EIO: peer gone
         }
@@ -265,9 +278,10 @@ pub fn slave_read(id: usize, out: &mut [u8]) -> usize {
         if got > 0 {
             break got;
         }
-        crate::task::yield_now();
+        crate::task::block_until(crate::task::key_pty(id), seq, 0);
     };
     crate::signal::leave_input_read();
+    notify(id);
     n
 }
 
@@ -288,7 +302,9 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
         // OPOST/ONLCR: LF expands to CRLF in the output stream.
         let expand = post && onlcr && b == b'\n';
         loop {
+            let seq = crate::task::wait_seq();
             if p.master_refs.load(Ordering::SeqCst) == 0 {
+                notify(id);
                 return if n == 0 { usize::MAX } else { n };
             }
             let mut out = p.out.lock();
@@ -307,9 +323,12 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
                 break;
             }
             drop(out);
-            crate::task::yield_now();
+            // Ring full: let the master drain it.
+            notify(id);
+            crate::task::block_until(crate::task::key_pty(id), seq, 0);
         }
     }
+    notify(id);
     n
 }
 
@@ -324,6 +343,7 @@ pub fn master_read(id: usize, out: &mut [u8]) -> usize {
         return usize::MAX;
     };
     let n = loop {
+        let seq = crate::task::wait_seq();
         let got = p.out.lock().take(out);
         if got > 0 {
             break got;
@@ -334,8 +354,10 @@ pub fn master_read(id: usize, out: &mut [u8]) -> usize {
         if crate::signal::interrupt_wait() {
             break 0;
         }
-        crate::task::yield_now();
+        crate::task::block_until(crate::task::key_pty(id), seq, 0);
     };
+    // Space freed for slave writers blocked on a full ring.
+    notify(id);
     n
 }
 

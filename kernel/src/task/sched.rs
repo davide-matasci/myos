@@ -55,6 +55,11 @@ pub fn schedule() {
                     continue;
                 }
             }
+            // A woken task that is still some CPU's `CURRENT` (halting in
+            // `block_until`) runs there when it resumes; never pick it here.
+            if slot_on_cpu(i) {
+                continue;
+            }
             next = i;
             break;
         }
@@ -72,8 +77,12 @@ pub fn schedule() {
             let old_user = tasks[current].aspace != 0;
             // Leave `current` Running so peers cannot pick/reclaim it until it
             // is off this CPU (`finish_switch`). Publish next + CURRENT now.
+            // SWITCHED_FROM is published under TASKS too: `wake` consults it
+            // so a Blocked task that is still leaving this CPU is not made
+            // Ready (and picked elsewhere) before `task_switch` saved its sp.
             tasks[next].state = State::Running;
             set_current_slot(next);
+            SWITCHED_FROM[cpu.min(crate::smp::MAX_CPUS - 1)].store(current, Ordering::SeqCst);
             Some((old_sp, new_sp, kstack, aspace, current, next, old_user))
         }
     };
@@ -120,7 +129,7 @@ pub fn schedule() {
     // unpinned kernel threads yield across CPUs). Do NOT IPI-kick: AP timers
     // pick up foreign-affinity Ready; fork kicks when a parallel child is
     // RR-homed onto another AP.
-    SWITCHED_FROM[crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1)].store(old, Ordering::SeqCst);
+    let _ = old;
     unsafe {
         task_switch(old_sp, new_sp);
     }
@@ -144,6 +153,372 @@ pub(super) fn finish_switch() {
     let mut tasks = TASKS.lock();
     if tasks[prev].state == State::Running {
         tasks[prev].state = State::Ready;
+    } else if tasks[prev].state == State::Blocked && tasks[prev].wake_pending {
+        // Woken while it was still on the old CPU's stack: runnable now.
+        tasks[prev].wake_pending = false;
+        tasks[prev].state = State::Ready;
+    }
+}
+
+/// True while `slot` is still being switched away from on some CPU: its
+/// saved stack pointer is not valid until `finish_switch` runs there.
+fn mid_switch(slot: usize) -> bool {
+    SWITCHED_FROM.iter().any(|s| s.load(Ordering::SeqCst) == slot)
+}
+
+/// True while `slot` is some CPU's current task (also used by lifecycle).
+pub(super) fn slot_on_cpu(slot: usize) -> bool {
+    CURRENT.iter().any(|c| c.load(Ordering::SeqCst) == slot)
+}
+
+// --- Blocking waits ----------------------------------------------------------
+//
+// A waiter reads `wait_seq()`, checks its condition, and if it must wait calls
+// `block_until(key, seq, deadline)`. Producers change state and then call
+// `wake(key)`. `wake` bumps the sequence under TASKS and `block_until` refuses
+// to block when the sequence moved, so a wake between the check and the block
+// is never lost. Waits are always re-checked by the caller (spurious wakes are
+// fine), which keeps every existing `loop { check; wait }` shape intact.
+
+/// `wait_key` that every `wake` call matches (pollers, idle sleeps).
+pub const WAIT_ANY: usize = usize::MAX;
+/// Key spaces so unrelated objects never share a key.
+pub const fn key_pipe(id: usize) -> usize {
+    0x1_0000 + id
+}
+pub const fn key_pty(id: usize) -> usize {
+    0x2_0000 + id
+}
+pub const fn key_child(parent: usize) -> usize {
+    0x3_0000 + parent
+}
+pub const KEY_CONSOLE: usize = 0x4_0000;
+/// Waits that only a signal (`wake_task`) ends; no `wake(KEY_SIGNAL)` exists.
+pub const KEY_SIGNAL: usize = 0x5_0000;
+
+/// Bumped on every wake (under TASKS).
+static WAIT_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Earliest `wake_at` of any Blocked task (u64::MAX = none).
+static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Number of tasks blocked with `WAIT_ANY` (lets producers skip the scan).
+static ANY_WAITERS: AtomicUsize = AtomicUsize::new(0);
+/// Per CPU: a task for this CPU became runnable while it may be about to
+/// halt; its idle loop re-checks instead of sleeping.
+static NEED_RESCHED: [AtomicBool; crate::smp::MAX_CPUS] =
+    [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+/// Per CPU: halted (or about to halt) in an idle loop / `block_until`.
+static CPU_IDLE: [AtomicBool; crate::smp::MAX_CPUS] =
+    [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+/// Per CPU: how often it halted waiting for an interrupt (`/proc/cpuinfo`).
+static IDLE_HALTS: [AtomicU64; crate::smp::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+
+pub fn idle_halts(cpu: usize) -> u64 {
+    if cpu < crate::smp::MAX_CPUS {
+        IDLE_HALTS[cpu].load(Ordering::Relaxed)
+    } else {
+        0
+    }
+}
+
+/// Number of tasks currently Blocked (diagnostics).
+pub fn blocked_count() -> usize {
+    let flags = irq_save();
+    irq_off();
+    let n = TASKS.lock().iter().filter(|t| t.state == State::Blocked).count();
+    irq_restore(flags);
+    n
+}
+
+fn halt(cpu: usize) {
+    IDLE_HALTS[cpu].fetch_add(1, Ordering::Relaxed);
+    crate::arch::idle_wait();
+}
+
+pub fn wait_seq() -> u64 {
+    WAIT_SEQ.load(Ordering::SeqCst)
+}
+
+/// Monotonic-ns deadline `ms` from now (for `block_until`).
+pub fn deadline_ms(ms: u64) -> u64 {
+    crate::time::monotonic_ns().saturating_add(ms.saturating_mul(1_000_000)).max(1)
+}
+
+/// Block the current task until `wake(key)` (or any wake for `WAIT_ANY`), a
+/// signal (`wake_task`), or the monotonic deadline (`0` = none). Returns at
+/// once if a wake happened since `seq` was read. Callers re-check their
+/// condition afterwards.
+pub fn block_until(key: usize, seq: u64, deadline: u64) {
+    if !PREEMPT_ON.load(Ordering::SeqCst) {
+        return;
+    }
+    let flags = irq_save();
+    irq_off();
+    let me = current_slot();
+    {
+        let mut tasks = TASKS.lock();
+        if WAIT_SEQ.load(Ordering::SeqCst) != seq || tasks[me].state != State::Running {
+            drop(tasks);
+            irq_restore(flags);
+            return;
+        }
+        if deadline != 0 && crate::time::monotonic_ns() >= deadline {
+            drop(tasks);
+            irq_restore(flags);
+            return;
+        }
+        let t = &mut tasks[me];
+        t.state = State::Blocked;
+        t.wait_key = key;
+        t.wake_at = deadline;
+        t.wake_pending = false;
+        if key == WAIT_ANY {
+            ANY_WAITERS.fetch_add(1, Ordering::SeqCst);
+        }
+        if deadline != 0 {
+            NEXT_DEADLINE.fetch_min(deadline, Ordering::SeqCst);
+        }
+    }
+    loop {
+        // Run something else on this CPU if there is anything; comes back
+        // here once we are Ready again (or at once when nothing is runnable).
+        schedule();
+        let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+        CPU_IDLE[cpu].store(true, Ordering::SeqCst);
+        let still_blocked = {
+            let mut tasks = TASKS.lock();
+            match tasks[me].state {
+                State::Blocked => true,
+                State::Ready => {
+                    tasks[me].state = State::Running;
+                    false
+                }
+                _ => false,
+            }
+        };
+        if !still_blocked {
+            CPU_IDLE[cpu].store(false, Ordering::SeqCst);
+            break;
+        }
+        // Nothing else runnable here: halt on our own stack until an
+        // interrupt (timer / IPI from a waker) arrives. `idle_wait` enters
+        // with IRQs off, so a wake that already raised an IPI is pending and
+        // ends the halt immediately.
+        if !NEED_RESCHED[cpu].swap(false, Ordering::SeqCst) {
+            halt(cpu);
+        } else {
+            irq_on();
+        }
+        irq_off();
+        CPU_IDLE[cpu].store(false, Ordering::SeqCst);
+    }
+    irq_restore(flags);
+}
+
+/// Make task `slot` runnable if it is Blocked. Returns the CPU to kick, if
+/// any. Caller holds TASKS.
+fn wake_locked(tasks: &mut [Task; MAX_TASKS], slot: usize, kicks: &mut u64) {
+    let t = &mut tasks[slot];
+    if t.state != State::Blocked {
+        return;
+    }
+    if t.wait_key == WAIT_ANY {
+        ANY_WAITERS.fetch_sub(1, Ordering::SeqCst);
+    }
+    // Keep a stale key from matching a later wake once the task runs again.
+    t.wait_key = 0;
+    t.wake_at = 0;
+    if mid_switch(slot) {
+        t.wake_pending = true;
+    } else {
+        t.state = State::Ready;
+    }
+    // Where will it run? Its home CPU, the CPU it is halting on, or any
+    // idle CPU for a floating task.
+    let mut target = None;
+    for (c, cur) in CURRENT.iter().enumerate() {
+        if cur.load(Ordering::SeqCst) == slot {
+            target = Some(c);
+        }
+    }
+    if target.is_none() {
+        target = t.affinity;
+    }
+    if target.is_none() {
+        target = (0..crate::smp::MAX_CPUS).find(|&c| CPU_IDLE[c].load(Ordering::SeqCst));
+    }
+    if let Some(c) = target {
+        let c = c.min(crate::smp::MAX_CPUS - 1);
+        NEED_RESCHED[c].store(true, Ordering::SeqCst);
+        *kicks |= 1 << c;
+    }
+}
+
+/// IPI the CPUs in `kicks` that are halted (never ourselves: the caller
+/// returns to its own scheduler soon enough).
+fn kick(kicks: u64) {
+    if kicks == 0 || crate::smp::online_count() <= 1 {
+        return;
+    }
+    let me = crate::smp::cpu_id();
+    for c in 0..crate::smp::MAX_CPUS {
+        if kicks & (1 << c) != 0 && c != me && CPU_IDLE[c].load(Ordering::SeqCst) {
+            crate::smp::kick_cpu(c);
+        }
+    }
+}
+
+/// Wake every task blocked on `key` (and every `WAIT_ANY` waiter).
+pub fn wake(key: usize) {
+    let flags = irq_save();
+    irq_off();
+    let mut kicks = 0u64;
+    {
+        let mut tasks = TASKS.lock();
+        WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
+        let any = ANY_WAITERS.load(Ordering::SeqCst) != 0;
+        for i in 0..MAX_TASKS {
+            if tasks[i].state == State::Blocked
+                && (tasks[i].wait_key == key || (any && tasks[i].wait_key == WAIT_ANY))
+            {
+                wake_locked(&mut tasks, i, &mut kicks);
+            }
+        }
+    }
+    irq_restore(flags);
+    kick(kicks);
+}
+
+/// Wake `WAIT_ANY` waiters only (something happened that a poller may care
+/// about: console input, pipe/pty/device traffic, an exit). Cheap when nobody
+/// waits that way.
+pub fn wake_any() {
+    if ANY_WAITERS.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    wake(WAIT_ANY);
+}
+
+/// Wake one task whatever it waits for (a signal arrived). Caller holds TASKS.
+pub(super) fn wake_task_locked(tasks: &mut [Task; MAX_TASKS], slot: usize) -> u64 {
+    let mut kicks = 0u64;
+    if slot < MAX_TASKS {
+        WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
+        wake_locked(tasks, slot, &mut kicks);
+    }
+    kicks
+}
+
+/// Deliver pending kicks computed under the lock, after it was dropped.
+pub(super) fn kick_cpus_mask(kicks: u64) {
+    kick(kicks);
+}
+
+/// Wake one task whatever it waits for (a signal arrived).
+#[allow(dead_code)]
+pub fn wake_task(slot: usize) {
+    let flags = irq_save();
+    irq_off();
+    let kicks = {
+        let mut tasks = TASKS.lock();
+        wake_task_locked(&mut tasks, slot)
+    };
+    irq_restore(flags);
+    kick(kicks);
+}
+
+/// Called from every timer IRQ (before `schedule`): wake tasks whose
+/// deadline passed. One atomic load on the common path.
+pub fn timer_tick() {
+    let now = crate::time::monotonic_ns();
+    if now < NEXT_DEADLINE.load(Ordering::SeqCst) {
+        return;
+    }
+    let mut kicks = 0u64;
+    {
+        let Some(mut tasks) = TASKS.try_lock() else {
+            return; // the holder's own tick, or the next one, will do it
+        };
+        let mut next = u64::MAX;
+        let mut woke = false;
+        for i in 0..MAX_TASKS {
+            if tasks[i].state != State::Blocked || tasks[i].wake_at == 0 {
+                continue;
+            }
+            if tasks[i].wake_at <= now {
+                woke = true;
+                wake_locked(&mut tasks, i, &mut kicks);
+            } else {
+                next = next.min(tasks[i].wake_at);
+            }
+        }
+        NEXT_DEADLINE.store(next, Ordering::SeqCst);
+        if woke {
+            WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    kick(kicks);
+}
+
+/// Sleep the current task until the monotonic deadline (or a signal via
+/// `wake_task`). Returns true if the deadline passed, false if interrupted.
+pub fn sleep_until(deadline: u64, wake_on_any_event: bool) -> bool {
+    loop {
+        let seq = wait_seq();
+        if crate::time::monotonic_ns() >= deadline {
+            return true;
+        }
+        if crate::signal::current_should_wake() {
+            return false;
+        }
+        block_until(if wake_on_any_event { WAIT_ANY } else { 0 }, seq, deadline);
+        if wake_on_any_event {
+            // Any event ends the wait: the caller re-polls its sources.
+            return crate::time::monotonic_ns() >= deadline;
+        }
+    }
+}
+
+/// One idle-loop step: run whatever is Ready for this CPU, then halt until
+/// the next interrupt unless work arrived meanwhile.
+pub fn idle_step() {
+    yield_now();
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    CPU_IDLE[cpu].store(true, Ordering::SeqCst);
+    irq_off();
+    if !NEED_RESCHED[cpu].swap(false, Ordering::SeqCst) && !ready_for_cpu(cpu) {
+        halt(cpu);
+    } else {
+        irq_on();
+    }
+    CPU_IDLE[cpu].store(false, Ordering::SeqCst);
+}
+
+/// Is any off-CPU task Ready for `cpu`? (IRQs off; TASKS not held.)
+fn ready_for_cpu(cpu: usize) -> bool {
+    let Some(tasks) = TASKS.try_lock() else {
+        return true;
+    };
+    for i in 0..MAX_TASKS {
+        if tasks[i].state == State::Ready
+            && tasks[i].affinity.is_none_or(|a| a == cpu)
+            && !slot_on_cpu(i)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Spawn/fork made a task Ready: note it for its home CPU (or any idle CPU)
+/// and kick that CPU if it is halted.
+pub(super) fn note_ready(affinity: Option<usize>) {
+    let target = affinity
+        .or_else(|| (0..crate::smp::MAX_CPUS).find(|&c| CPU_IDLE[c].load(Ordering::SeqCst)));
+    if let Some(c) = target {
+        let c = c.min(crate::smp::MAX_CPUS - 1);
+        NEED_RESCHED[c].store(true, Ordering::SeqCst);
+        kick(1 << c);
     }
 }
 
@@ -347,8 +722,7 @@ fn ap_idle_bringup() {
 fn ap_idle_body() {
     loop {
         crate::smp::tlb_service();
-        yield_now();
-        crate::arch::wait_interrupt();
+        idle_step();
     }
 }
 

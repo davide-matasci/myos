@@ -128,6 +128,9 @@ fn push_byte(raw: u8) {
         let mut t = TTY.lock();
         t.push_raw(raw, &mut console_echo)
     };
+    // Readers (possibly another task than the one polling) and pollers.
+    task::wake(task::KEY_CONSOLE);
+    task::wake_any();
     if vintr {
         // Console foreground group (signal.rs resolves reader/last-input pgid).
         crate::signal::handle_ctrl_c();
@@ -137,11 +140,15 @@ fn push_byte(raw: u8) {
 pub fn read(buf: &mut [u8]) -> usize {
     crate::signal::enter_input_read();
     let mut n = 0;
+    // Keyboards are polled (no IRQ), so a reader re-polls them at a modest
+    // rate; serial bytes are staged by the BSP timer, which wakes KEY_CONSOLE.
+    let keyboard = arch::keyboard_present();
     while n == 0 {
         // A signal that terminates or is caught ends the wait (EINTR).
         if crate::signal::interrupt_wait() {
             break;
         }
+        let seq = task::wait_seq();
         poll();
         while n < buf.len() {
             let Some(b) = TTY.lock().pop() else {
@@ -154,7 +161,8 @@ pub fn read(buf: &mut [u8]) -> usize {
             if crate::signal::interrupt_wait() {
                 break;
             }
-            task::yield_now();
+            let deadline = if keyboard { task::deadline_ms(10) } else { 0 };
+            task::block_until(task::KEY_CONSOLE, seq, deadline);
         }
     }
     crate::signal::leave_input_read();

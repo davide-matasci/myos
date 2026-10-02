@@ -2,7 +2,7 @@
 
 pub mod gdt;
 mod interrupts;
-pub use interrupts::{ipi_reschedule, ipi_tlb_shootdown};
+pub use interrupts::{ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
 mod keyboard;
 mod paging;
 pub mod pci;
@@ -72,6 +72,14 @@ pub fn ap_init(logical: usize) {
 
 /// Brief halt until the next interrupt (idle loop).
 pub fn wait_interrupt() {
+    unsafe {
+        core::arch::asm!("sti; hlt", options(nostack));
+    }
+}
+
+/// Enter with IRQs off; sleep until an interrupt is pending (one that is
+/// already pending ends the halt at once); return with IRQs on.
+pub fn idle_wait() {
     unsafe {
         core::arch::asm!("sti; hlt", options(nostack));
     }
