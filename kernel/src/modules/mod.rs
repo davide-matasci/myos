@@ -107,6 +107,7 @@ static API: KernelApi = KernelApi {
     task_yield: api_task_yield,
     wall_time_us: api_wall_time_us,
     rng_fill: api_rng_fill,
+    dt_mmio_find: api_dt_mmio_find,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1080,6 +1081,30 @@ unsafe extern "C" fn api_wall_time_us() -> u64 {
         Some((s, us)) => s as u64 * 1_000_000 + us as u64,
         None => 0,
     }
+}
+
+unsafe extern "C" fn api_dt_mmio_find(compatible: StrRef, index: usize, out: *mut myos_abi::MmioDevice) -> i32 {
+    let Some(compat) = str_ref(compatible) else {
+        return -1;
+    };
+    if out.is_null() {
+        return -1;
+    }
+    let Some(dev) = crate::dt::mmio_device(compat, index) else {
+        return -1;
+    };
+    let Some(base) = crate::arch::pci::map_mmio(dev.base, dev.size.max(1)) else {
+        return -1;
+    };
+    let irq = dev.irq.and_then(|s| crate::arch::irq_from_dt(s.cells())).unwrap_or(0);
+    unsafe {
+        *out = myos_abi::MmioDevice {
+            base,
+            size: dev.size as usize,
+            irq,
+        };
+    }
+    0
 }
 
 unsafe extern "C" fn api_rng_fill(buf: *mut u8, len: usize) {

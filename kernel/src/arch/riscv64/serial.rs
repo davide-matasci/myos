@@ -1,8 +1,20 @@
-//! NS16550 UART on QEMU `virt` (base 0x1000_0000).
+//! NS16550 UART, at the address the device tree gives (`ns16550a`).
 
 use core::fmt;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-const UART0: usize = 0x1000_0000;
+/// Until `set_base` runs: QEMU `virt`'s UART, so that a boot without a
+/// usable device tree can still say so on the console it most likely has.
+static BASE: AtomicUsize = AtomicUsize::new(0x1000_0000);
+
+pub fn set_base(base: usize) {
+    BASE.store(base, Ordering::SeqCst);
+}
+
+#[inline]
+fn uart0() -> usize {
+    BASE.load(Ordering::Relaxed)
+}
 const THR: usize = 0x00;
 const LSR: usize = 0x05;
 
@@ -68,10 +80,10 @@ impl fmt::Write for SerialPort {
 
 #[inline]
 fn read8(offset: usize) -> u8 {
-    unsafe { core::ptr::read_volatile((UART0 + offset) as *const u8) }
+    unsafe { core::ptr::read_volatile((uart0() + offset) as *const u8) }
 }
 
 #[inline]
 fn write8(offset: usize, value: u8) {
-    unsafe { core::ptr::write_volatile((UART0 + offset) as *mut u8, value) }
+    unsafe { core::ptr::write_volatile((uart0() + offset) as *mut u8, value) }
 }

@@ -8,10 +8,24 @@
 //! nightly-2026-07-26 rejects `cnthv_*_el2`, so stay on EL0 timer registers.
 
 use core::arch::{asm, global_asm};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-const GICD: usize = 0x0800_0000;
-const GICC: usize = 0x0801_0000;
+/// GICv2 distributor and CPU interface, from the device tree (`set_gic`).
+static GICD_BASE: AtomicUsize = AtomicUsize::new(0);
+static GICC_BASE: AtomicUsize = AtomicUsize::new(0);
+
+pub fn set_gic(gicd: usize, gicc: usize) {
+    GICD_BASE.store(gicd, Ordering::SeqCst);
+    GICC_BASE.store(gicc, Ordering::SeqCst);
+}
+
+fn gicd() -> usize {
+    GICD_BASE.load(Ordering::Relaxed)
+}
+
+fn gicc() -> usize {
+    GICC_BASE.load(Ordering::Relaxed)
+}
 const PPI_EL1_VIRT: u32 = 27; // CNTV
 const PPI_EL1_PHYS: u32 = 30; // CNTP
 const SGI_TLB: u32 = 0;
@@ -313,7 +327,7 @@ pub fn init() {
     }
 }
 
-/// Secondary CPU: vectors already set globally; enable GICC + timers.
+/// Secondary CPU: vectors already set globally; enable gicc() + timers.
 pub fn ap_init(logical: usize) {
     // Match BSP TTBR0 (device MMIO) before any GIC/UART access.
     super::paging::apply_bsp_device_map();
@@ -357,17 +371,17 @@ pub fn wait_for_interrupt_proof() {
 }
 
 fn init_gic() {
-    write32(GICD, 3); // GICD_CTLR enable group 0+1
-    write32(GICC, 3); // GICC_CTLR enable group 0+1
-    write32(GICC + 0x004, 0xFF); // PMR: accept all
+    write32(gicd(), 3); // GICD_CTLR enable group 0+1
+    write32(gicc(), 3); // GICC_CTLR enable group 0+1
+    write32(gicc() + 0x004, 0xFF); // PMR: accept all
     // Enable SGIs 0/1 (IPI) + timer PPIs.
     write32(
-        GICD + 0x100,
+        gicd() + 0x100,
         (1 << SGI_TLB) | (1 << SGI_RESCHED) | (1 << PPI_EL1_VIRT) | (1 << PPI_EL1_PHYS),
     );
     for id in [SGI_TLB, SGI_RESCHED, PPI_EL1_VIRT, PPI_EL1_PHYS] {
         unsafe {
-            core::ptr::write_volatile((GICD + 0x400 + id as usize) as *mut u8, 0x80);
+            core::ptr::write_volatile((gicd() + 0x400 + id as usize) as *mut u8, 0x80);
         }
     }
 }
@@ -380,28 +394,79 @@ pub fn gic_enable_spi(id: u32) {
     }
     unsafe {
         // ICFGR: 2 bits per interrupt, 0b00 = level-sensitive.
-        let cfg = GICD + 0xC00 + (id as usize / 16) * 4;
+        let cfg = gicd() + 0xC00 + (id as usize / 16) * 4;
         let shift = (id % 16) * 2;
         write32(cfg, read32(cfg) & !(0b11 << shift));
-        core::ptr::write_volatile((GICD + 0x400 + id as usize) as *mut u8, 0x80);
-        core::ptr::write_volatile((GICD + 0x800 + id as usize) as *mut u8, 0x01);
-        write32(GICD + 0x100 + (id as usize / 32) * 4, 1 << (id % 32));
+        core::ptr::write_volatile((gicd() + 0x400 + id as usize) as *mut u8, 0x80);
+        core::ptr::write_volatile((gicd() + 0x800 + id as usize) as *mut u8, 0x01);
+        write32(gicd() + 0x100 + (id as usize / 32) * 4, 1 << (id % 32));
         asm!("dsb sy", options(nostack));
     }
 }
 
-fn timer_ticks() -> u64 {
+fn cnt_freq() -> u64 {
     let freq: u64;
     unsafe {
         asm!("mrs {f}, cntfrq_el0", f = out(reg) freq, options(nomem, nostack, preserves_flags));
     }
-    (freq / 100).max(1)
+    freq.max(1)
+}
+
+fn cnt_now() -> u64 {
+    let cnt: u64;
+    unsafe {
+        asm!("isb", "mrs {c}, cntvct_el0", c = out(reg) cnt, options(nomem, nostack));
+    }
+    cnt
+}
+
+/// Counter ticks per scheduler tick (100 Hz).
+fn timer_ticks() -> u64 {
+    (cnt_freq() / 100).max(1)
+}
+
+/// A monotonic-ns deadline as a counter value (same clock as
+/// `clock::monotonic_ns`).
+fn ns_to_ticks(ns: u64) -> u64 {
+    ((ns as u128 * cnt_freq() as u128) / 1_000_000_000) as u64
+}
+
+/// Arm this CPU's virtual timer for the next tick, or for the earliest
+/// sleep deadline (`task::next_deadline_ns`) when that is sooner, so a
+/// `nanosleep` / `poll` timeout ends when it should and not at the next
+/// 10 ms boundary. The physical timer stays periodic.
+fn arm_virt_timer() {
+    let now = cnt_now();
+    let mut target = now + timer_ticks();
+    let deadline = crate::task::next_deadline_ns();
+    if deadline != u64::MAX {
+        target = target.min(ns_to_ticks(deadline).max(now + 1));
+    }
+    unsafe {
+        asm!("msr cntv_cval_el0, {t}", t = in(reg) target, options(nomem, nostack));
+    }
+}
+
+/// A new sleep deadline on this CPU: pull the virtual timer in if it is
+/// armed later than that.
+pub fn timer_deadline(deadline_ns: u64) {
+    let target = ns_to_ticks(deadline_ns);
+    let armed: u64;
+    unsafe {
+        asm!("mrs {c}, cntv_cval_el0", c = out(reg) armed, options(nomem, nostack));
+    }
+    if target < armed {
+        let target = target.max(cnt_now() + 1);
+        unsafe {
+            asm!("msr cntv_cval_el0, {t}", t = in(reg) target, options(nomem, nostack));
+        }
+    }
 }
 
 fn init_timer() {
     let ticks = timer_ticks();
+    arm_virt_timer();
     unsafe {
-        asm!("msr cntv_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
         asm!("msr cntv_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
         asm!("msr cntp_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
         asm!("msr cntp_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
@@ -409,18 +474,18 @@ fn init_timer() {
     }
 }
 
-/// Reload the same interval used at init instead of disabling the timers.
+/// Re-arm both timers instead of disabling them.
 fn rearm_timers() {
     let ticks = timer_ticks();
+    arm_virt_timer();
     unsafe {
-        asm!("msr cntv_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
         asm!("msr cntp_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
     }
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_irq_handler(spsr: u64) {
-    let iar = read32(GICC + 0x0C);
+    let iar = read32(gicc() + 0x0C);
     let id = iar & 0x3FF;
     let timer = id == PPI_EL1_VIRT || id == PPI_EL1_PHYS;
     let tlb = id == SGI_TLB;
@@ -447,7 +512,7 @@ extern "C" fn aarch64_irq_handler(spsr: u64) {
         crate::irq::dispatch(id);
     }
     if id < 1020 {
-        write32(GICC + 0x10, iar);
+        write32(gicc() + 0x10, iar);
     }
     if timer || resched {
         crate::task::schedule();
@@ -473,7 +538,7 @@ fn flush_tlb_local() {
 
 fn send_sgi(id: u32) {
     // GICD_SGIR: target filter = all except self (bits 25:24 = 01).
-    write32(GICD + 0xF00, (0b01 << 24) | (id & 0xf));
+    write32(gicd() + 0xF00, (0b01 << 24) | (id & 0xf));
 }
 
 pub fn ipi_tlb_shootdown() {
@@ -498,7 +563,7 @@ pub fn ipi_reschedule_cpu(cpu: usize) {
     unsafe {
         asm!("dsb ishst", options(nostack));
     }
-    write32(GICD + 0xF00, (1 << (16 + target)) | (SGI_RESCHED & 0xf));
+    write32(gicd() + 0xF00, (1 << (16 + target)) | (SGI_RESCHED & 0xf));
 }
 
 #[unsafe(no_mangle)]

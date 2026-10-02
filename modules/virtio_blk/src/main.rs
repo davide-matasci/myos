@@ -244,24 +244,11 @@ mod transport {
     }
 }
 
-/// Modern virtio-mmio v2 on QEMU `virt` (aarch64, riscv64): every
-/// device-id-2 transport window is probed.
+/// Modern virtio-mmio v2 (aarch64, riscv64): every `virtio,mmio` node of
+/// the device tree is probed for a block device (device id 2).
 #[cfg(not(target_arch = "x86_64"))]
 mod transport {
     use super::*;
-
-    #[cfg(target_arch = "aarch64")]
-    const MMIO_BASE: usize = 0x0A00_0000;
-    #[cfg(target_arch = "aarch64")]
-    const MMIO_STRIDE: usize = 0x200;
-    #[cfg(target_arch = "aarch64")]
-    const MMIO_SLOTS: usize = 32;
-    #[cfg(target_arch = "riscv64")]
-    const MMIO_BASE: usize = 0x1000_1000;
-    #[cfg(target_arch = "riscv64")]
-    const MMIO_STRIDE: usize = 0x1000;
-    #[cfg(target_arch = "riscv64")]
-    const MMIO_SLOTS: usize = 8;
 
     const MAGIC: u32 = 0x7472_6976; // "virt"
     const VERSION_2: u32 = 2;
@@ -317,8 +304,18 @@ mod transport {
     }
 
     pub fn probe(mut found: impl FnMut(Dev)) {
-        for i in 0..MMIO_SLOTS {
-            let base = MMIO_BASE + i * MMIO_STRIDE;
+        let compat = myos_abi::StrRef {
+            ptr: b"virtio,mmio".as_ptr(),
+            len: b"virtio,mmio".len(),
+        };
+        let mut i = 0;
+        loop {
+            let mut node = myos_abi::MmioDevice::default();
+            if unsafe { (api().dt_mmio_find)(compat, i, &mut node) } != 0 {
+                break;
+            }
+            i += 1;
+            let base = node.base;
             if r32(base, REG_MAGIC) != MAGIC || r32(base, REG_DEVICE_ID) != DEV_BLK {
                 continue;
             }
