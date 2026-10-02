@@ -64,6 +64,9 @@ jobs:
       - name: Pull prebuilt ports and build kernels
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Full boot: every image carries the optional Linux layer, and the
+          # boot jobs run its smokes and get-alpine. Boot-mini does not.
+          MYOS_CI_FEATURES: ${{ inputs.full_boot && 'linux_compat' || '' }}
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           chmod +x scripts/*.sh
@@ -73,6 +76,8 @@ jobs:
         run: cargo test -p ps2-scancode
 
       - name: Pack CI build artifacts
+        env:
+          MYOS_CI_FEATURES: ${{ inputs.full_boot && 'linux_compat' || '' }}
         run: |
           chmod +x scripts/*.sh
           ./scripts/ci-pack-build-artifacts.sh
@@ -196,62 +201,6 @@ jobs:
         continue-on-error: ${{ !matrix.required }}
         env:
           MYOS_SKIP_KERNEL_REBUILD: "1"
-          MYOS_CI_MINI: "1"
-        run: ./target/debug/myos ${{ matrix.args }}
-
-  linux-compat:
-    # The optional Linux compatibility layer (`--features linux_compat`):
-    # build its pieces (musl, test programs, get-void) and the kernels with
-    # it on top of the ci-build ports, then boot mini. On bios and aarch64
-    # this also runs get-void, which downloads jq from the Void mirror.
-    name: linux-compat (${{ matrix.id }})
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/davide-matasci/myos-ci:latest
-      options: -e HOME=/root
-    timeout-minutes: 45
-    needs: build
-    if: |
-      always() &&
-      !cancelled() &&
-      needs.build.result == 'success' &&
-      !inputs.build_iso
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - id: bios
-            args: --ci
-          - id: aarch64
-            args: aarch64 --ci
-          - id: riscv64
-            args: riscv64 --ci
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Download CI build artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: ci-build
-
-      - name: Extract CI artifacts
-        run: tar -xf ci-build.tar
-
-      - name: Install pinned nightly
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-07-26
-          components: rust-src, llvm-tools-preview
-          targets: x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf
-
-      - name: Build with linux_compat
-        run: |
-          chmod +x scripts/*.sh linux-compat/build.sh
-          ./linux-compat/build.sh
-          cargo build --features linux_compat
-
-      - name: Boot in QEMU
-        env:
           MYOS_CI_MINI: "1"
         run: ./target/debug/myos ${{ matrix.args }}
 

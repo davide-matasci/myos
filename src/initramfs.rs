@@ -302,11 +302,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             add(&mut entries, &format!("lib/{lib}"), read(&dyn_dir.join(lib)));
         }
         add(&mut entries, "bin/linux/linux-dyn", read(&dyn_dir.join("linux-dyn")));
-        // Void Linux package fetcher (Void has x86_64 and aarch64 musl
-        // repositories); packages themselves are downloaded at run time.
-        if arch != "riscv64" {
-            add(&mut entries, "bin/etc/get-void", read(&dyn_dir.join("get-void")));
-        }
+        // Alpine Linux package fetcher; packages are downloaded at run time.
+        add(&mut entries, "bin/etc/get-alpine", read(&dyn_dir.join("get-alpine")));
     }
 
     // userspace BSD sockets smoke -> bin/etc/socket_smoke.

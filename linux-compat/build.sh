@@ -6,8 +6,8 @@
 #   target/linux-compat/<arch>/ld-musl-<arch>.so.1  musl's libc.so / dynamic linker
 #   target/linux-compat/<arch>/{linux-dyn,libsmoke.so,libsmoke2.so}
 #                                              a dynamically linked test
-#   target/linux-compat/<arch>/get-void         Void package fetcher (myos newlib;
-#                                              x86_64 and aarch64, which Void has)
+#   target/linux-compat/<arch>/get-alpine       Alpine package fetcher (myos newlib,
+#                                              with the zlib port)
 # musl is built from its release tarball with clang for each target; on
 # aarch64/riscv64 its libc.so links compiler-rt's quad-float builtins (fetched
 # per file, like ports/curl/build-softfloat-riscv64.sh). Only needed for
@@ -30,6 +30,7 @@ RANLIB_BIN="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
 # artifacts, which carry newlib itself; they are cheap to (re)write.
 "$ROOT/toolchain/newlib/tool-wrappers.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
+"$ROOT/ports/zlib/build.sh"
 
 # compiler-rt builtins for libc.so on aarch64/riscv64 (128-bit long double).
 CRT_TAG=llvmorg-19.1.7
@@ -82,46 +83,21 @@ C
   "$AR_BIN" rcs "$out" "$obj"/*.o
 }
 
-# zstd's decoder for get-void (Void packages and the repository index are
-# zstd-compressed tars).
-ZSTD_VERSION=1.5.7
-ZSTD_SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
-ZSTD_SRC="$ROOT/target/linux-compat/zstd-$ZSTD_VERSION"
-fetch_zstd() {
-  [[ -f "$ZSTD_SRC/lib/zstd.h" ]] && return 0
-  local tb="$ROOT/target/linux-compat/zstd-$ZSTD_VERSION.tar.gz"
-  if [[ ! -f "$tb" ]]; then
-    curl -sSfL --retry 3 -o "$tb.tmp" \
-      "https://github.com/facebook/zstd/releases/download/v$ZSTD_VERSION/zstd-$ZSTD_VERSION.tar.gz"
-    mv "$tb.tmp" "$tb"
-  fi
-  echo "$ZSTD_SHA256  $tb" | sha256sum -c -
-  tar xzf "$tb" -C "$ROOT/target/linux-compat"
-}
-
-# get-void for one arch: zstd's decompression sources + get-void.c, linked
-# like the launcher.
-build_get_void() {
+# get-alpine for one arch, linked like the launcher plus the zlib port
+# (Alpine packages and indexes are gzip-compressed tars).
+build_get_alpine() {
   local arch="$1"
   local triple="$arch-unknown-myos"
   local nl="$ROOT/target/newlib-$arch"
+  local zl="$ROOT/target/zlib-$arch"
   local out="$ROOT/target/linux-compat/$arch"
-  local obj="$ROOT/target/linux-compat/get-void-obj-$arch"
-  rm -rf "$obj"
-  mkdir -p "$obj" "$out"
-  local cflags=(-ffreestanding -fPIC -O2 -isystem "$nl/$triple/include"
-    -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DZSTD_NO_TRACE -DDEBUGLEVEL=0)
-  local f
-  for f in common/debug.c common/entropy_common.c common/error_private.c \
-    common/fse_decompress.c common/xxhash.c common/zstd_common.c \
-    decompress/huf_decompress.c decompress/zstd_ddict.c \
-    decompress/zstd_decompress.c decompress/zstd_decompress_block.c; do
-    "${triple}-cc" "${cflags[@]}" -c "$ZSTD_SRC/lib/$f" -o "$obj/$(basename "${f%.c}").o"
-  done
-  "${triple}-cc" "${cflags[@]}" -I"$ZSTD_SRC/lib" -c "$ROOT/linux-compat/get-void.c" -o "$obj/get-void.o"
-  ld.lld -pie --no-dynamic-linker -o "$out/get-void" \
+  local obj="$ROOT/target/linux-compat/get-alpine-$arch.o"
+  mkdir -p "$out"
+  "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$nl/$triple/include" -I"$zl/include" \
+    -c "$ROOT/linux-compat/get-alpine.c" -o "$obj"
+  ld.lld -pie --no-dynamic-linker -o "$out/get-alpine" \
     --entry=_start -z max-page-size=4096 \
-    "$nl/$triple/lib/crt0.o" "$obj"/*.o -L"$nl/$triple/lib" \
+    "$nl/$triple/lib/crt0.o" "$obj" "$zl/lib/libz.a" -L"$nl/$triple/lib" \
     --start-group -lc -lgloss -lg --end-group
 }
 
@@ -203,10 +179,7 @@ for arch in "${ARCHES[@]}"; do
     "$nl/$triple/lib/crt0.o" "$obj" -L"$nl/$triple/lib" \
     --start-group -lc -lgloss -lg --end-group
 
-  if [[ "$arch" != riscv64 ]]; then
-    echo "==> get-void ($arch, myos newlib)"
-    fetch_zstd
-    build_get_void "$arch"
-  fi
+  echo "==> get-alpine ($arch, myos newlib + zlib)"
+  build_get_alpine "$arch"
 done
 echo "linux-compat -> target/linux-launcher-*-unknown-none, target/linux-smoke-*-linux-musl, target/linux-compat/<arch>/"

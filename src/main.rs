@@ -356,9 +356,10 @@ const QEMU_SUCCESS_STATUS: i32 = (0x10 << 1) | 1;
 /// 5-minute GHA job timeout (hung aarch64 burned ~24m on the old 1800s).
 fn ci_qemu_timeout() -> Duration {
     if std::env::var_os("MYOS_CI_MINI").map(|v| v == "1").unwrap_or(false) {
-        // The Linux layer adds its smokes and get-void (downloads ~4 MB from
-        // the Void mirror and unpacks it under TCG).
-        Duration::from_secs(if linux_compat_enabled() { 600 } else { 240 })
+        // Local mini runs with the Linux layer add its smokes and get-alpine
+        // (downloads from the Alpine mirror and unpacks under TCG). CI runs
+        // the layer only in the full boot.
+        Duration::from_secs(if linux_compat_enabled() { 480 } else { 240 })
     } else {
         // Full boot runs the whole curated os-test list (303 tests at
         // ~3-6 s each under TCG) and must reach 100%; 1800 s ran out on
@@ -420,8 +421,6 @@ fn run_ci_bios(bios_path: &str) {
             timeout: ci_qemu_timeout(),
             qemu_debug_exit: true,
             shell_ci: true,
-            // Void Linux has x86_64 and aarch64 musl repositories (get-void).
-            void_repo: true,
         },
         &CI_NEEDLES_STD,
     );
@@ -492,8 +491,6 @@ fn run_ci_uefi(uefi_path: &str) {
             timeout: ci_qemu_timeout(),
             qemu_debug_exit: true,
             shell_ci: true,
-            // Void Linux has x86_64 and aarch64 musl repositories (get-void).
-            void_repo: true,
         },
         &CI_NEEDLES_STD,
     );
@@ -513,8 +510,6 @@ fn run_ci_aarch64() {
             timeout: ci_qemu_timeout(),
             qemu_debug_exit: false,
             shell_ci: true,
-            // Void Linux has x86_64 and aarch64 musl repositories (get-void).
-            void_repo: true,
         },
         // Same heavy `/heap` needles as x86 (typed at `$` after slim `/ok`).
         &CI_NEEDLES_STD,
@@ -919,8 +914,6 @@ fn run_ci_riscv64() {
             timeout: ci_qemu_timeout(),
             qemu_debug_exit: false,
             shell_ci: true,
-            // Void Linux has x86_64 and aarch64 musl repositories (get-void).
-            void_repo: false,
         },
         // Same heavy `/heap` needles as x86 (typed at `$` after slim `/ok`).
         &CI_NEEDLES_STD,

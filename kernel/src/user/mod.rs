@@ -52,7 +52,7 @@ pub const USER_STACK_PAGES: usize = 256;
 ///   ("make: *** virtual memory exhausted"), so allow 4096 pages (16 MiB).
 /// - aarch64/riscv64: TLS arena is a 2 MiB brk allocation — window must fit
 ///   that plus headroom. aarch64 matches x86_64 (16 MiB; zstd's 4 MiB window
-///   in get-void needs more than the old 3 MiB); image + stack + heap + the
+///   in get-alpine needs more than the old 3 MiB); image + stack + heap + the
 ///   mmap window stay within `AARCH64_USER_L2_TABLES` (128 MiB).
 #[cfg(target_arch = "aarch64")]
 const HEAP_PAGES: usize = 4096;
