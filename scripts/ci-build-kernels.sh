@@ -16,17 +16,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Build (idempotently: every script early-exits when its stamp is current)
-# every port of the image BEFORE the inputs hash is snapshotted below: the
-# port stamps are part of that hash, and a port missing from the registry (a
+# every port BEFORE the inputs hash is snapshotted below: the image ports'
+# stamps are part of that hash, and a port missing from the registry (a
 # skipped ports job, a new cache key) must not appear mid-build, which
-# tripped the kernel_inputs_hash drift guard. The ports come in build order
-# (scripts/ports.sh --image-list: newlib and the sysroot first, then
+# tripped the kernel_inputs_hash drift guard. The packages are built too:
+# the boot jobs pack and serve them. The ports come in build order
+# (scripts/ports.sh --build-list all: newlib and the sysroot first, then
 # dependencies before dependents).
 if [[ "${1:-}" != "--print-hash" && "${1:-}" != "--is-current" && "${1:-}" != "--print-members" ]]; then
   while read -r name script; do
     echo "==> ensure port $name ($script)"
     "./$script"
-  done < <(./scripts/ports.sh --image-list)
+  done < <(./scripts/ports.sh --build-list all)
 fi
 
 STAMP="target/.myos-ci-kernel-version"
@@ -236,7 +237,7 @@ kernel_inputs_diag() {
 # after a kernels cache hit (PR builds were fine because they did a full cargo
 # build). Keep them in artifacts_ready + --print-members. The ports' files
 # (smokes, curl, dropbear, ...) are checked from the descriptors instead
-# (scripts/ports.sh --all-image-files in artifacts_ready).
+# (scripts/ports.sh --all-files all in artifacts_ready).
 HELLO_OK_ELFS=(
   target/console-x86_64-unknown-none
   target/console-aarch64-unknown-none-softfloat
@@ -283,8 +284,9 @@ HELLO_OK_ELFS=(
 )
 
 # Everything the images are packed from: the kernels, the modules and every
-# file the image ports ship (scripts/ports.sh --all-image-files; a boot job
-# re-packs the aarch64/riscv64 initramfs from them), plus the Linux layer.
+# file the ports ship (scripts/ports.sh --all-files all: a boot job re-packs
+# the aarch64/riscv64 initramfs from the image ports' and the packages from
+# all of them), plus the Linux layer.
 artifacts_ready() {
   [[ -x target/debug/myos ]] \
     && [[ -f target/bios.img ]] \
@@ -298,7 +300,7 @@ artifacts_ready() {
   done
   while read -r f; do
     [[ -e "$f" ]] || return 1
-  done < <(./scripts/ports.sh --all-image-files)
+  done < <(./scripts/ports.sh --all-files all)
   for f in $(linux_compat_members); do
     [[ -e "$f" ]] || return 1
   done

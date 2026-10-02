@@ -6,6 +6,16 @@ MYOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export MYOS_ROOT
 
 MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
+# The directory of a port: under ports/ (in the image) or packages/ (a
+# package, see docs/ports.md); a port moves between the two by moving it.
+myos_port_dir() {
+  if [[ -d "$MYOS_ROOT/ports/$1" ]]; then
+    echo "$MYOS_ROOT/ports/$1"
+  else
+    echo "$MYOS_ROOT/packages/$1"
+  fi
+}
+
 MYOS_NEWLIB_VERSION="$MYOS_ROOT/target/.myos-newlib-version"
 MYOS_C_HELLO_VERSION="$MYOS_ROOT/target/.myos-c-hello-version"
 MYOS_C_SMOKES_VERSION="$MYOS_ROOT/target/.myos-c-smokes-version"
@@ -508,11 +518,11 @@ myos_vim_version_hash() {
     {
       myos_newlib_version_hash
       myos_ncurses_version_hash
-      sha256sum "$MYOS_ROOT/ports/vim/build.sh"
-      sha256sum "$MYOS_ROOT/ports/vim/prepare.sh"
-      sha256sum "$MYOS_ROOT/ports/vim/fetch.sh"
-      sha256sum "$MYOS_ROOT/ports/vim/versions.env"
-      find "$MYOS_ROOT/ports/vim" -type f -print0 2>/dev/null \
+      sha256sum "$(myos_port_dir vim)/build.sh"
+      sha256sum "$(myos_port_dir vim)/prepare.sh"
+      sha256sum "$(myos_port_dir vim)/fetch.sh"
+      sha256sum "$(myos_port_dir vim)/versions.env"
+      find "$(myos_port_dir vim)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | sha256sum | awk '{print $1}'
   )"
@@ -535,11 +545,11 @@ myos_ncurses_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
-      sha256sum "$MYOS_ROOT/ports/ncurses/build.sh"
-      sha256sum "$MYOS_ROOT/ports/ncurses/prepare.sh"
-      sha256sum "$MYOS_ROOT/ports/ncurses/fetch.sh"
-      sha256sum "$MYOS_ROOT/ports/ncurses/versions.env"
-      find "$MYOS_ROOT/ports/ncurses" -type f -print0 2>/dev/null \
+      sha256sum "$(myos_port_dir ncurses)/build.sh"
+      sha256sum "$(myos_port_dir ncurses)/prepare.sh"
+      sha256sum "$(myos_port_dir ncurses)/fetch.sh"
+      sha256sum "$(myos_port_dir ncurses)/versions.env"
+      find "$(myos_port_dir ncurses)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | sha256sum | awk '{print $1}'
   )"
@@ -588,11 +598,11 @@ myos_git_version_hash() {
     {
       myos_newlib_version_hash
       myos_zlib_version_hash
-      sha256sum "$MYOS_ROOT/ports/git/build.sh"
-      sha256sum "$MYOS_ROOT/ports/git/prepare.sh"
-      sha256sum "$MYOS_ROOT/ports/git/fetch.sh"
-      sha256sum "$MYOS_ROOT/ports/git/versions.env"
-      find "$MYOS_ROOT/ports/git" -type f -print0 2>/dev/null \
+      sha256sum "$(myos_port_dir git)/build.sh"
+      sha256sum "$(myos_port_dir git)/prepare.sh"
+      sha256sum "$(myos_port_dir git)/fetch.sh"
+      sha256sum "$(myos_port_dir git)/versions.env"
+      find "$(myos_port_dir git)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | sha256sum | awk '{print $1}'
   )"
@@ -622,10 +632,10 @@ myos_lynx_version_hash() {
       # versions.env content hashed below
       # shellcheck source=ports/lynx/versions.env
       # LYNX_VERSION may be unset when called from registry; hash the env file.
-      sha256sum "$MYOS_ROOT/ports/lynx/versions.env"
-      sha256sum "$MYOS_ROOT/ports/lynx/build.sh"
-      sha256sum "$MYOS_ROOT/ports/lynx/prepare.sh"
-      sha256sum "$MYOS_ROOT/ports/lynx/fetch.sh"
+      sha256sum "$(myos_port_dir lynx)/versions.env"
+      sha256sum "$(myos_port_dir lynx)/build.sh"
+      sha256sum "$(myos_port_dir lynx)/prepare.sh"
+      sha256sum "$(myos_port_dir lynx)/fetch.sh"
       # mbedtls is a lynx build dependency. Hash its checkout-stable SOURCE inputs,
       # NOT the post-build target/.myos-mbedtls-version stamp: that stamp exists
       # when lynx builds mbedtls itself but is absent in a downstream ``build`` job
@@ -636,7 +646,7 @@ myos_lynx_version_hash() {
         2>/dev/null || true
       find "$MYOS_ROOT/ports/mbedtls/include" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum 2>/dev/null || true
-      find "$MYOS_ROOT/ports/lynx" -type f -print0 2>/dev/null \
+      find "$(myos_port_dir lynx)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | sha256sum | awk '{print $1}'
   )"
@@ -658,10 +668,10 @@ myos_lua_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
-      sha256sum "$MYOS_ROOT/ports/lua/versions.env"
-      sha256sum "$MYOS_ROOT/ports/lua/build.sh"
-      sha256sum "$MYOS_ROOT/ports/lua/fetch.sh"
-      find "$MYOS_ROOT/ports/lua" -type f -print0 2>/dev/null \
+      sha256sum "$(myos_port_dir lua)/versions.env"
+      sha256sum "$(myos_port_dir lua)/build.sh"
+      sha256sum "$(myos_port_dir lua)/fetch.sh"
+      find "$(myos_port_dir lua)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | sha256sum | awk '{print $1}'
   )"
@@ -683,7 +693,7 @@ myos_make_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
-      find "$MYOS_ROOT/ports/make" -type f -print0 2>/dev/null \
+      find "$(myos_port_dir make)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
     } | sha256sum | awk '{print $1}'
@@ -706,11 +716,11 @@ myos_os_test_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
-      sha256sum "$MYOS_ROOT/ports/os-test/versions.env"
-      sha256sum "$MYOS_ROOT/ports/os-test/build.sh"
-      sha256sum "$MYOS_ROOT/ports/os-test/fetch.sh"
-      sha256sum "$MYOS_ROOT/ports/os-test/prebuild-basic-smoke.sh"
-      find "$MYOS_ROOT/ports/os-test/overlay" -type f -print0 2>/dev/null \
+      sha256sum "$(myos_port_dir os-test)/versions.env"
+      sha256sum "$(myos_port_dir os-test)/build.sh"
+      sha256sum "$(myos_port_dir os-test)/fetch.sh"
+      sha256sum "$(myos_port_dir os-test)/prebuild-basic-smoke.sh"
+      find "$(myos_port_dir os-test)/overlay" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/sbase/trunctfdf2.c" 2>/dev/null
       sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null

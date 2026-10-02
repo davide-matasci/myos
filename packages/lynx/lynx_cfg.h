@@ -1,11 +1,11 @@
 /* lynx_cfg.h — hand-written myos freestanding config (not host ./configure).
  *
  * Host configure probes Linux/glibc and cannot cross-link *-unknown-myos.
- * Follow ports/vim + ports/curl: only HAVE_* that match newlib/libgloss +
- * ports/ncurses + ports/mbedtls (via tidy_tls OpenSSL-compat shim).
+ * Follow packages/vim + ports/curl: only HAVE_* that match newlib/libgloss +
+ * packages/ncurses + ports/mbedtls (via tidy_tls OpenSSL-compat shim).
  *
  * SSL: USE_SSL + USE_GNUTLS_INCL selects lynx's tidy_tls polyfill path.
- * ports/lynx/tidy_tls.{h,c} implement that API over mbedtls (same stack as
+ * packages/lynx/tidy_tls.{h,c} implement that API over mbedtls (same stack as
  * curl / user/tls) — not a second TLS library, not OpenSSL.
  */
 #ifndef LYNX_CFG_H
@@ -66,7 +66,7 @@
 #define HAVE_INET_ATON 1
 #define CAN_SET_ERRNO 1
 
-/* ncurses (ports/ncurses static lib) */
+/* ncurses (packages/ncurses static lib) */
 #define NCURSES 1
 #define HAVE_NCURSES_H 1
 #define HAVE_TERM_H 1
@@ -87,7 +87,7 @@
 
 #define USE_FCNTL 1
 
-/* TLS via tidy_tls → mbedtls (ports/lynx/tidy_tls.c) */
+/* TLS via tidy_tls → mbedtls (packages/lynx/tidy_tls.c) */
 #define USE_SSL 1
 #define USE_GNUTLS_INCL 1
 #define MYOS_MBEDTLS_TIDY_TLS 1

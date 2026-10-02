@@ -11,13 +11,13 @@ if myos_vim_is_current; then
   exit 0
 fi
 
-"$ROOT/ports/vim/prepare.sh"
-"$ROOT/ports/ncurses/build.sh"
+"$HERE/prepare.sh"
+"$(myos_port_dir ncurses)/build.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 WORK="$ROOT/target/vim-myos-build/src"
-MYOS="$ROOT/ports/vim"
+MYOS="$HERE"
 
 # BASIC_SRC from upstream Makefile (FEAT_TINY still compiles these; most become
 # empty stubs via #ifdef). No GUI / libvterm / xdiff / interpreters.

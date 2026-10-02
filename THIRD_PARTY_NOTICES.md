@@ -44,7 +44,7 @@ under its own license.
 | Mbed TLS (TLS for `curl`, `lynx`, `user/tls`) | 3.6.2 | Apache-2.0 OR GPL-2.0-or-later (myos uses it under Apache-2.0) | https://github.com/Mbed-TLS/mbedtls |
 | curl | 8.11.1 | curl license (MIT-style) | https://curl.se/ |
 | Mozilla CA certificate bundle (`/lib/cacert.pem`, from curl.se) | latest at build time | **MPL-2.0** | https://curl.se/docs/caextract.html |
-| os-test suite (`/lib/os-test`, when included) | `OSTEST_REV` in `ports/os-test/versions.env` | ISC | https://gitlab.com/sortix/os-test |
+| os-test suite (`/lib/os-test`, when included) | `OSTEST_REV` in `packages/os-test/versions.env` | ISC | https://gitlab.com/sortix/os-test |
 | BSD `syslimits.h` (`toolchain/newlib/libgloss/myos/sys/`) | n/a (file copied into this repo) | BSD-3-Clause, Regents of the University of California (notice kept in the file) | FreeBSD |
 | PCRE2 headers (`ports/ripgrep/pcre2-headers/`) | 10.46 | BSD-3-Clause, University of Cambridge (notice kept in the file) | https://github.com/PCRE2Project/pcre2 |
 

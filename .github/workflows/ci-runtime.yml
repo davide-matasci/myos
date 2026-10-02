@@ -13,7 +13,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -85,6 +85,19 @@ jobs:
           path: ci-build.tar
           if-no-files-found: error
           retention-days: 1
+
+      # The packages of the three arches (docs/packages.md): what the
+      # publish job puts on the rolling release after the boots pass.
+      - name: Build packages
+        run: ./target/debug/myos packages
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: myos-packages
+          path: target/packages
+          if-no-files-found: error
+          retention-days: 7
 
   boot:
     name: boot (${{ matrix.id }})
@@ -245,3 +258,49 @@ jobs:
         env:
           MYOS_CI_MINI: "1"
         run: ./target/debug/myos iso --ci
+
+  # Pushes to master: the packages go to the rolling GitHub release
+  # `packages` (the default mirror of get-myos), once every boot of this
+  # run passed. The tag moves to the published commit: the binaries of the
+  # copyleft ports (git, lynx, make, ...) are redistributed with their
+  # corresponding source that way (THIRD_PARTY_NOTICES.md).
+  publish:
+    name: publish packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build, boot, boot-mini, iso]
+    if: >-
+      always() &&
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      needs.build.result == 'success' &&
+      (needs.boot.result == 'success' || needs.boot.result == 'skipped') &&
+      (needs.boot-mini.result == 'success' || needs.boot-mini.result == 'skipped') &&
+      needs.iso.result == 'success'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download packages
+        uses: actions/download-artifact@v7
+        with:
+          name: myos-packages
+          path: target/packages
+
+      - name: Publish to the rolling release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=packages
+          notes="Packages built from ${GITHUB_SHA} (the tag points at it): install on a running myos with \`get-myos NAME\`, see docs/packages.md. Third-party licenses: THIRD_PARTY_NOTICES.md at that commit; the copyleft ports' sources are the pinned upstreams plus the patches in the repository."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
+            gh release edit "$tag" --notes "$notes" --prerelease
+          else
+            gh release create "$tag" --target "${GITHUB_SHA}" --prerelease --title "Packages (rolling)" --notes "$notes"
+          fi
+          gh release upload "$tag" target/packages/* --clobber
+          ls -l target/packages | tail -n +2 | wc -l

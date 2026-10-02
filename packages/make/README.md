@@ -2,7 +2,7 @@
 
 Cross-builds GNU make 4.4.1 (`x86_64`, `aarch64`, `riscv64`) with the
 newlib + libgloss/myos userspace. Follows the same pattern as
-`ports/vim` (no configure run; a hand-tuned `config.h`).
+`packages/vim` (no configure run; a hand-tuned `config.h`).
 
 ## Layout
 

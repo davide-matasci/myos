@@ -38,7 +38,7 @@ Intended local workflows: `init`, `add`, `commit`, `log`, `status`, `diff`,
 branch/checkout basics on a writable filesystem. Remotes /
 `clone`/`fetch`/`push` over HTTPS or SSH are **out of scope** for Phase 1.
 
-Patches and compat live only under `ports/git/` — sources are fetched, never vendored.
+Patches and compat live only under `packages/git/` — sources are fetched, never vendored.
 
 ## Image path
 

@@ -79,7 +79,7 @@ serves it from binfs, so its file in the initramfs is optional.
 - `src/initramfs.rs`: packs `PORT_FILES` of every image port, for the arch
   being imaged.
 - `scripts/ports.sh`: the shell side. `--list`, `--outputs NAME`,
-  `--image-files NAME`, `--all-image-files`, `--stamps`, `--image-list`,
+  `--image-files NAME`, `--all-files`, `--all-outputs`, `--stamps`, `--build-list`,
   `--matrix`; as a library (`myos_port_load NAME`) for
   `scripts/ci-registry.sh` (what to cache, under the port's name), the CI
   build job (`ci-build-kernels.sh` builds every image port before hashing

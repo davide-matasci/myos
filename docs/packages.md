@@ -61,5 +61,31 @@ names are what GitHub release assets allow.
   stages, runs `get-myos -m http://10.0.2.2:8765 lua` and the installed
   `lua` (`CMD_GET_MYOS` in `src/wait_ci.rs`). The boot job needs `gzip`
   and `sha256sum`.
-- Packages are published to the rolling GitHub release on pushes to
-  master (see "Publishing" below once that lands).
+- The full boot installs **every package of the build** as its first
+  command (`cmd_get_packages` in `src/wait_ci.rs`), so the stages that use
+  one (git in `heap`, os-test with `make`) find it at its image path; a
+  port's needles are required when it is in the image or a package
+  (`port_enabled`). Then the `lua` stage above checks one bind end to end.
+- The build job writes the packages of the three arches (`cargo run --
+  packages`) and uploads them as the `myos-packages` artifact (7 days).
+
+## Publishing
+
+On a push to master, once the build, the boots and the ISO passed, the
+`publish` job of `ci-runtime.yml` uploads `target/packages/*` to the
+rolling GitHub release **`packages`** (a prerelease; `--clobber` replaces
+the files) and moves its tag to the published commit. That release is
+get-myos's default mirror
+(`https://github.com/davide-matasci/myos/releases/download/packages`).
+
+The copyleft ports (git, lynx, GNU make, ...) are redistributed as
+binaries there: the tag names the commit they were built from, whose
+`versions.env` pins and `*.myos.patch` files are the corresponding source
+(`THIRD_PARTY_NOTICES.md`, "License compliance" in `AGENTS.md`).
+
+## What is a package today
+
+`packages/`: git, lua, lynx, make, os-test, vim, and ncurses (a build
+dependency of vim and lynx, nothing in the image). Everything a boot needs
+stays in `ports/` (and zlib, which get-myos links). The full boot installs
+them all; the ISO (`cargo run -- iso`) carries the image only.

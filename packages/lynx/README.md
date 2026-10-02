@@ -17,23 +17,23 @@ Thin wrappers: `scripts/fetch-lynx.sh`, `scripts/build-lynx.sh`.
 ## Config choice
 
 `lynx_cfg.h` is **hand-written** for freestanding myos (not host `./configure`),
-same approach as `ports/vim/config.h` and `ports/curl/config-myos.h`.
+same approach as `packages/vim/config.h` and `ports/curl/config-myos.h`.
 
 ## SSL (not a workaround)
 
 Lynx speaks OpenSSL or GnuTLS-via-`tidy_tls`. There is no in-tree OpenSSL and
 we must not add a second TLS stack. We keep lynx’s existing **`USE_GNUTLS_INCL`
-+ tidy_tls** integration surface and implement `ports/lynx/tidy_tls.{h,c}` on
++ tidy_tls** integration surface and implement `packages/lynx/tidy_tls.{h,c}` on
 **ports/mbedtls** — the same library curl and `user/tls` already use. CA bundle
 path: `/lib/cacert.pem` (shipped for curl).
 
-Default config is `ports/lynx/lynx.cfg`, packed as `/lib/lynx.cfg` (myos has no `/etc` mount; cpio only registers `bin/*` and `lib/*`). Lynx is built with `LYNX_CFG_FILE=/lib/lynx.cfg` and exits if that file is missing.
+Default config is `packages/lynx/lynx.cfg`, packed as `/lib/lynx.cfg` (myos has no `/etc` mount; cpio only registers `bin/*` and `lib/*`). Lynx is built with `LYNX_CFG_FILE=/lib/lynx.cfg` and exits if that file is missing.
 
 ## Reuse (no duplication)
 
 - Sockets: `toolchain/newlib/libgloss/myos/socket.c` over `/net` (no new stubs)
 - DNS: libgloss `gethostbyname` / `getaddrinfo` (`netdb.c`) — same `/net/udp` → QEMU `10.0.2.3:53` path as curl and `user/lib/src/dns.rs`. Lynx is IPv4-only (`ENABLE_IPV6` off), so `HTTCP.c` calls `gethostbyname`; both symbols share `resolve_a`.
-- Screen: `ports/ncurses`
+- Screen: `packages/ncurses`
 - TLS: `ports/mbedtls` (+ tidy_tls glue only)
 
 `lynx www.google.com` paints **Looking up … first** then `HTCheckForInterrupt` (`select` on stdin, 0 timeout). That must not block in `LYgetch` — see libgloss `pollselect.c` (tty POLLIN is not always-ready).
@@ -46,6 +46,6 @@ required (same pattern as vim).
 ## Try
 
 ```sh
-./ports/lynx/build.sh
+./packages/lynx/build.sh
 ls -lh target/lynx-*-unknown-none
 ```

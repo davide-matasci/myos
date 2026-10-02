@@ -2,7 +2,7 @@
  * tidy_tls.h — OpenSSL-compatible API for lynx, backed by mbedtls.
  *
  * Same contract as upstream WWW/Library/Implementation/tidy_tls.h (GnuTLS
- * polyfill). Implementation is ports/lynx/tidy_tls.c over ports/mbedtls —
+ * polyfill). Implementation is packages/lynx/tidy_tls.c over ports/mbedtls —
  * the TLS stack already used by curl and user/tls. Not OpenSSL; not a stub.
  */
 #ifndef TIDY_TLS_H

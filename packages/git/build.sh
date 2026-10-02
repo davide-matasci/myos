@@ -20,13 +20,13 @@ if myos_git_is_current; then
   exit 0
 fi
 
-"$ROOT/ports/git/prepare.sh"
+"$HERE/prepare.sh"
 "$ROOT/ports/zlib/build.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 WORK="$ROOT/target/git-myos-build"
-MYOS="$ROOT/ports/git"
+MYOS="$HERE"
 
 build_arch() {
   local arch="$1"

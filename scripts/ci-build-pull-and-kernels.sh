@@ -11,14 +11,15 @@ if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
 else
   ./toolchain/std/fetch-sysroot.sh
 fi
-# Everything the images carry: every image port with a build script in build
-# order (scripts/ports.sh --image-list: newlib first; the sysroot was fetched
-# above) and the Linux layer's musl pieces. A miss is built by
-# ci-build-kernels.sh and pushed from there.
+# Every port with a build script in build order (scripts/ports.sh
+# --build-list all: newlib first, the sysroot was fetched above; the image
+# ports and the packages, which the build job packs too) and the Linux
+# layer's musl pieces. A miss is built by ci-build-kernels.sh and pushed
+# from there.
 pieces=()
 while read -r name _; do
   [[ "$name" == sysroot ]] || pieces+=("$name")
-done < <(./scripts/ports.sh --image-list)
+done < <(./scripts/ports.sh --build-list all)
 pieces+=(linux-compat)
 for p in "${pieces[@]}"; do
   ./scripts/ci-registry.sh pull "$p" || true

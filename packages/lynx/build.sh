@@ -13,8 +13,8 @@ if myos_lynx_is_current; then
   exit 0
 fi
 
-"$ROOT/ports/lynx/prepare.sh"
-"$ROOT/ports/ncurses/build.sh"
+"$HERE/prepare.sh"
+"$(myos_port_dir ncurses)/build.sh"
 "$ROOT/ports/mbedtls/build.sh"
 "$ROOT/toolchain/newlib/build.sh"
 # Softfloat helpers for riscv (same as curl).

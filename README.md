@@ -171,8 +171,8 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `user/std` | The Rust `std` demo programs (`/bin/std/{hello,cat,echo,bigalloc}`) |
 | `user/get-myos` | `get-myos`: installs packages (ports the image does not carry) from a mirror, `docs/packages.md` |
 | `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` (`mount SRC TARGET FSTYPE`, `bind` for a bind mount) |
-| `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, vim, git, ...), one `port.env` descriptor each (`docs/ports.md`) |
-| `packages/` | Ports CI builds but the image does not carry (`get-myos` installs them, `docs/packages.md`); moving a directory here (or back to `ports/`) is the whole change |
+| `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, curl, dropbear, ...), one `port.env` descriptor each (`docs/ports.md`) |
+| `packages/` | Ports CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test; `get-myos NAME` installs them, `docs/packages.md`); moving a directory here (or back to `ports/`) is the whole change |
 | `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters |
 | `toolchain/std/` | Rust `std` PAL skeleton, sysroot build scripts (the `sysroot` port) |
 | `targets/` | Custom Rust target specs (`x86_64-unknown-myos`, `aarch64-unknown-myos`, `riscv64imac-unknown-myos`) |
@@ -292,7 +292,7 @@ unsafe extern "C" fn module_exit() // optional
 `write`, `exit`, `open`, `read` (fd 0 = keyboard+serial), `close`, `exec`, `fork`, `wait`, `listdir`, `brk`, `pipe`, `dup2`, `stat`, `execname`, `dupfd`, `chdir`, `getcwd`, `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `readlink`, `mmap`, `munmap`, `mprotect`, `lseek`, …, and threads: `thread_spawn`, `thread_exit`, `wait_addr`, `wake_addr`, `gettid` (see `docs/threads.md`).
 
 ### Init & Shell
-`user/init` = PID1: baked in, smoke-tests fork/`/ok`, forks `/netd`, forks `/u/getty` and `wait()`/respawns. Getty prompts `login: ` → execs `/u/login` → accepts `root`/empty → execs `/sh`. `/sh` = oksh 7.9 with PATH `/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc`. Editor: `vim` → `/bin/custom/vim` (FEAT_TINY; see `ports/vim/README.md`). VCS: `git` → `/bin/custom/git` (Phase-1 local porcelain; see `ports/git/README.md`). Framebuffer CSI includes scroll regions; `TIOCGWINSZ` reports FB cells; `TERMCAP=/lib/termcap` (`ports/termcap`) + termios raw mode for full-screen TUI.
+`user/init` = PID1: baked in, smoke-tests fork/`/ok`, forks `/netd`, forks `/u/getty` and `wait()`/respawns. Getty prompts `login: ` → execs `/u/login` → accepts `root`/empty → execs `/sh`. `/sh` = oksh 7.9 with PATH `/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc`. Editor: `vim` → `/bin/custom/vim` (FEAT_TINY; see `packages/vim/README.md`) and VCS: `git` → `/bin/custom/git` (Phase-1 local porcelain; see `packages/git/README.md`) are packages, `get-myos vim git` installs them. Framebuffer CSI includes scroll regions; `TIOCGWINSZ` reports FB cells; `TERMCAP=/lib/termcap` (`ports/termcap`) + termios raw mode for full-screen TUI.
 
 ### Rust Userspace
 Syscall 9 (`brk`) backs per-process heap. `user/lib` exposes `brk`, `heap_init`, bump `GlobalAlloc`. `user/ok` smoke-tests every boot. `user/heap` = CI-only heavy suite. `std` programs link prebuilt sysroot (`toolchain/std/build-sysroot.sh`).
@@ -306,9 +306,9 @@ Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs). No ne
 ./ports/sbase/build.sh              # ~91 sbase utilities under /s/
 ./ports/ubase/build.sh              # getty + login under /u/
 ./ports/oksh/build.sh               # oksh 7.9 as /sh
-./ports/vim/build.sh                # vim FEAT_TINY as /bin/custom/vim
-./ports/zlib/build.sh               # static libz.a for git
-./ports/git/build.sh                # git Phase-1 local as /bin/custom/git
+./packages/vim/build.sh             # vim FEAT_TINY (a package: get-myos vim)
+./ports/zlib/build.sh               # static libz.a for git and get-myos
+./packages/git/build.sh             # git Phase-1 local (a package: get-myos git)
 ./ports/tcc/build.sh                # TinyCC as /t/tcc (-run support)
 ./ports/ripgrep/build.sh            # ripgrep + PCRE2 as /c/rg
 ```
@@ -321,7 +321,7 @@ Implemented libgloss hooks call real syscalls where they exist; stubs return ENO
 
 GitHub Actions caches Cargo with Swatinem/rust-cache (`prefix-key: limine-8.3-6`). Userspace port outputs are OCI artifacts on GHCR, one package per port (its `PORT_OUTPUTS`, `scripts/ports.sh`), tagged with stamp hash from `scripts/myos-c-userspace-lib.sh`; the ports matrices come from the descriptors. First run after stamp change = miss + push; later runs with same hashes = hit. Packages should be **public** for fork PRs. Source checkouts (`*-src`) are never cached.
 
-A full boot also serves the build's own packages to the guest and installs one with `get-myos` (`docs/packages.md`). Every run boots the four disk images (boot-mini, or the full boot when dispatched) and builds the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`), uploads it as the `myos-x86_64-iso` artifact and boots it from the CD (`cargo run -- iso --ci`).
+A full boot also serves the build's own packages to the guest and installs them with `get-myos`; pushes to master publish them to the rolling `packages` release, get-myos's default mirror (`docs/packages.md`). Every run boots the four disk images (boot-mini, or the full boot when dispatched) and builds the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`), uploads it as the `myos-x86_64-iso` artifact and boots it from the CD (`cargo run -- iso --ci`).
 
 ---
 

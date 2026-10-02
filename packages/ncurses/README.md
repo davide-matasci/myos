@@ -21,13 +21,13 @@ the archive only (`make … ../lib/libncurses.a`).
 ## Status
 
 - Static lib builds for x86_64 / aarch64 / riscv64.
-- Vim may link `-lncurses` when `HAVE_TGETENT` is enabled (see `ports/vim/`);
+- Vim may link `-lncurses` when `HAVE_TGETENT` is enabled (see `packages/vim/`);
   FEAT_TINY still works with builtin termcap if ncurses is absent.
 - No `tic`/terminfo database in the image yet — fallbacks only.
 
 ## Try
 
 ```sh
-./ports/ncurses/build.sh
+./packages/ncurses/build.sh
 ls target/ncurses-x86_64/lib/libncurses.a
 ```
