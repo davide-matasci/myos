@@ -233,9 +233,11 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
         if flags & O_ACCMODE != 0 {
             return Err(EISDIR);
         }
-        // Directories have no native fd; hold the slot with /dev/null and
-        // serve getdents64 from the path table.
-        let fd = native(user::open_path("/dev/null", 0), ENOENT)?;
+        // Directories have no native fd; hold the slot with the system's
+        // /dev/null (not the chroot's) and serve getdents64 from the path
+        // table.
+        let null = fs::open("/dev/null", 0).ok_or(ENOENT)?;
+        let fd = task::fd_open(null, 0).ok_or(EMFILE)?;
         files::set(fd, view_path(&p), true);
         return Ok(fd);
     }
