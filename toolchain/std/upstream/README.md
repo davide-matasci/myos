@@ -17,7 +17,7 @@ Today consumers use:
 
 ```sh
 ./toolchain/std/fetch-sysroot.sh          # or build-sysroot.sh
-./toolchain/std/build-std-hello.sh
+./user/std/build.sh
 ```
 
 With upstream `target_os = "myos"`, the goal is:

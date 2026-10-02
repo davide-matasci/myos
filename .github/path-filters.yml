@@ -12,7 +12,7 @@ sysroot:
   - 'scripts/fetch-sysroot.sh'
   - 'scripts/package-sysroot.sh'
   - 'scripts/install-sysroot.sh'
-  - 'scripts/build-std-hello.sh'
+  - 'user/std/hello/**'
 c_userspace:
   - 'toolchain/newlib/**'
   - 'ports/**'

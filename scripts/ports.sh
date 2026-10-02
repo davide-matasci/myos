@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The port descriptors: every directory with a `port.env` under ports/,
-# user/ and toolchain/std (in the image) or packages/ (built and published,
+# user/ and toolchain/ (in the image) or packages/ (built and published,
 # not in the image) is a port. This library reads them for the build, the
 # registry and CI, so a port moves between the two roles by moving its
 # directory. See docs/ports.md for the keys.
@@ -22,10 +22,10 @@ MYOS_ARCHES=(x86_64 aarch64 riscv64)
 myos_port_dirs() {
   local role base d name
   for role in image package; do
-    local bases="ports user toolchain/std"
+    local bases="ports user toolchain"
     [[ "$role" == package ]] && bases="packages"
     for base in $bases; do
-      for d in "$MYOS_PORTS_ROOT/$base"/*/ "$MYOS_PORTS_ROOT/$base/"; do
+      for d in "$MYOS_PORTS_ROOT/$base"/*/; do
         [[ -f "$d/port.env" ]] || continue
         d="${d%/}"
         name="$(sed -n 's/^PORT_NAME=//p' "$d/port.env" | head -1)"
@@ -47,7 +47,7 @@ myos_port_names() {
 # Load NAME's descriptor into PORT_* (PORT_NAME, PORT_DIR, PORT_ROLE added).
 myos_port_load() {
   local want="$1" role name dir
-  PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_SYSROOT=0 PORT_BUILD="" PORT_OUTPUTS="" PORT_FILES=""
+  PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES=""
   PORT_READY="" PORT_BIN="" PORT_EMBED="" PORT_IMAGE_BASE=0 PORT_WATCH=""
   while read -r role name dir; do
     if [[ "$name" == "$want" ]]; then
@@ -88,8 +88,10 @@ myos_port_build_script() {
   fi
 }
 
+# The version stamp of the loaded port (target/...): what its build script
+# writes when done, `.myos-<name>-version` unless PORT_STAMP says otherwise.
 myos_port_stamp() {
-  echo "target/.myos-$1-version"
+  echo "target/${PORT_STAMP:-.myos-$PORT_NAME-version}"
 }
 
 # Everything the registry caches for NAME: the stamp and PORT_OUTPUTS for
@@ -97,7 +99,7 @@ myos_port_stamp() {
 myos_port_outputs() {
   myos_port_load "$1" || return 1
   [[ -n "$PORT_BUILD" ]] || return 0
-  myos_port_stamp "$PORT_NAME"
+  myos_port_stamp
   local o arch path
   for o in $PORT_OUTPUTS; do
     for arch in "${MYOS_ARCHES[@]}"; do
@@ -138,18 +140,39 @@ myos_port_image_files() {
 }
 
 # The ports of ROLE (image|package|all) with a build script, in build order:
-# the ones without PORT_DEPS first, then the ones depending on them (one
-# level: nothing depends on a port that itself has dependencies).
+# the toolchains first (newlib, the sysroot), then every port once the
+# ports it names in PORT_DEPS are out.
 myos_port_build_order() {
-  local role="${1:-image}" pass name
-  for pass in base advanced; do
-    for name in $(myos_port_names "$role"); do
-      myos_port_load "$name"
-      [[ -n "$PORT_BUILD" ]] || continue
-      if [[ "$pass" == base && -n "$PORT_DEPS" ]]; then continue; fi
-      if [[ "$pass" == advanced && -z "$PORT_DEPS" ]]; then continue; fi
+  local role="${1:-image}" name done="" todo="" progress
+  for name in $(myos_port_names "$role"); do
+    myos_port_load "$name"
+    [[ -n "$PORT_BUILD" ]] || continue
+    if [[ "$PORT_KIND" == toolchain ]]; then
       echo "$name"
+      done="$done $name"
+    else
+      todo="$todo $name"
+    fi
+  done
+  while [[ -n "$todo" ]]; do
+    progress=0
+    for name in $todo; do
+      myos_port_load "$name"
+      local dep ready=1
+      for dep in $PORT_DEPS; do
+        # A dependency outside ROLE (or a toolchain) is built by other means.
+        if [[ " $todo " == *" $dep "* ]]; then ready=0; fi
+      done
+      [[ $ready -eq 1 ]] || continue
+      echo "$name"
+      done="$done $name"
+      todo="${todo/ $name/}"
+      progress=1
     done
+    if [[ $progress -eq 0 ]]; then
+      echo "error: dependency cycle among ports:$todo" >&2
+      return 1
+    fi
   done
 }
 
@@ -158,13 +181,24 @@ myos_port_build_order() {
 # (`deps`: ci-build-port.sh builds a dependency the registry does not have),
 # plus the optional Linux layer (linux-compat/, not a port: its files are in
 # the image only with `--features linux_compat`), built and cached like one.
+# The toolchains have their own jobs (sysroot, newlib) and are not in it:
+# `needs_sysroot` says which ports wait for the sysroot artifact.
 myos_ports_matrix() {
-  local name
+  local name dep deps needs_sysroot
   printf '['
   for name in $(myos_port_build_order all); do
     myos_port_load "$name"
+    [[ "$PORT_KIND" != toolchain ]] || continue
+    deps="" needs_sysroot=0
+    for dep in $PORT_DEPS; do
+      case "$dep" in
+        sysroot) needs_sysroot=1 ;;
+        newlib) ;;
+        *) deps="${deps:+$deps }$dep" ;;
+      esac
+    done
     printf '{"port":"%s","script":"./%s","needs_sysroot":"%s","deps":"%s"},' \
-      "$name" "$(myos_port_build_script)" "$PORT_SYSROOT" "$PORT_DEPS"
+      "$name" "$(myos_port_build_script)" "$needs_sysroot" "$deps"
   done
   printf '{"port":"linux-compat","script":"./linux-compat/build.sh","needs_sysroot":"0","deps":"zlib"}]\n'
 }
@@ -182,7 +216,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     --stamps)
       for n in $(myos_port_names image); do
         myos_port_load "$n"
-        [[ -n "$PORT_BUILD" ]] && myos_port_stamp "$n"
+        [[ -n "$PORT_BUILD" ]] && myos_port_stamp
       done
       ;;
     --matrix) myos_ports_matrix ;;

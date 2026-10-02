@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 /// Where a port lives, which decides what the image carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
-    /// `ports/`, `user/`, `toolchain/std`: in the image.
+    /// `ports/`, `user/`, `toolchain/`: in the image.
     Image,
     /// `packages/`: built and published, installed with `get-myos`.
     Package,
@@ -27,6 +27,9 @@ pub enum Kind {
     C,
     /// The Rust std demo programs.
     Std,
+    /// newlib and the Rust std sysroot: what the ports are built with,
+    /// built first; their scripts bring them, build.rs does not run them.
+    Toolchain,
 }
 
 /// One entry of `PORT_FILES`: what the image (or the package) gets.
@@ -54,9 +57,11 @@ pub struct Port {
     pub kind: Kind,
     pub core: bool,
     pub deps: Vec<String>,
-    pub sysroot: bool,
     /// Build script, repo-relative (`None`: nothing to build).
     pub build: Option<String>,
+    /// Version stamp the build script writes, `target/`-relative
+    /// (`PORT_STAMP`, default `.myos-<name>-version`).
+    pub stamp: String,
     pub outputs: Vec<String>,
     /// A `target/`-relative file whose presence means the outputs exist
     /// (default: the first output).
@@ -73,11 +78,6 @@ pub struct Port {
 }
 
 impl Port {
-    /// Stamp file the build script writes, `target/`-relative.
-    pub fn stamp(&self) -> String {
-        format!(".myos-{}-version", self.name)
-    }
-
     /// The `target/`-relative file that says the outputs exist (for `arch`).
     pub fn ready_file(&self, arch: &str) -> Option<String> {
         let r = self.ready.clone().or_else(|| self.outputs.first().cloned())?;
@@ -168,6 +168,7 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
         "user" => Kind::User,
         "c" => Kind::C,
         "std" => Kind::Std,
+        "toolchain" => Kind::Toolchain,
         other => panic!("port {name}: unknown PORT_KIND {other:?}"),
     };
     let build = get("PORT_BUILD");
@@ -181,6 +182,11 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
     };
     let list = |k: &str| get(k).split_whitespace().map(str::to_string).collect::<Vec<_>>();
     let bin = if get("PORT_BIN").is_empty() { name.clone() } else { get("PORT_BIN") };
+    let stamp = if get("PORT_STAMP").is_empty() {
+        format!(".myos-{name}-version")
+    } else {
+        get("PORT_STAMP")
+    };
     Some(Port {
         files: parse_files(&name, &get("PORT_FILES")),
         name,
@@ -189,8 +195,8 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
         kind,
         core: get("PORT_CORE") == "1",
         deps: list("PORT_DEPS"),
-        sysroot: get("PORT_SYSROOT") == "1",
         build,
+        stamp,
         outputs: list("PORT_OUTPUTS"),
         ready: Some(get("PORT_READY")).filter(|s| !s.is_empty()),
         bin,
@@ -207,11 +213,11 @@ pub fn load_all(repo: &Path) -> Vec<Port> {
     let roots: [(&str, Role); 4] = [
         ("ports", Role::Image),
         ("user", Role::Image),
-        ("toolchain/std", Role::Image),
+        ("toolchain", Role::Image),
         ("packages", Role::Package),
     ];
     for (base, role) in roots {
-        let mut dirs: Vec<PathBuf> = vec![PathBuf::from(base)];
+        let mut dirs: Vec<PathBuf> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(repo.join(base)) {
             for e in rd.flatten() {
                 if e.path().is_dir() {

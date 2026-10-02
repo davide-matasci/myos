@@ -29,6 +29,6 @@ cat <<EOF
 
 Patched sysroot source tree: $MYOS_SYSROOT
 Next: ./toolchain/std/build-sysroot.sh   # precompile std for both triples
-      ./toolchain/std/build-std-hello.sh # build smoke binaries (uses sysroot)
+      ./user/std/build.sh # build smoke binaries (uses sysroot)
 
 EOF

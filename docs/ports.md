@@ -12,8 +12,8 @@ ports, and no Cargo feature per port.
 | Directory | Role | Shipped |
 |-----------|------|---------|
 | `ports/<name>/` | image | in every image (initramfs) |
-| `user/<name>/`, `user/c/` | image | the native userspace (Rust programs, C smokes) |
-| `toolchain/std/` | image | the Rust `std` test programs (`/bin/std`) |
+| `user/<name>/`, `user/c/`, `user/std/` | image | the native userspace (Rust programs, C smokes, the `std` demos) |
+| `toolchain/newlib/`, `toolchain/std/` | image | the toolchains: newlib (its sysroot tree is in the image, for tcc) and the Rust `std` sysroot (nothing in the image) |
 | `packages/<name>/` | package | built and cached by CI, not in the image |
 
 The role is the directory: **moving `ports/foo` to `packages/foo` takes foo
@@ -29,12 +29,12 @@ has a default, so a minimal port needs only `PORT_FILES`.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `PORT_NAME` | the directory name | registry package, stamp and matrix name (`user/c` is `c-smokes`, `toolchain/std` is `std-hello`) |
-| `PORT_KIND` | `port` | `port` (cross-built by a script), `user` (a Rust crate built by `kernel/build.rs`), `c` (the C smokes), `std` (the `std` programs) |
+| `PORT_NAME` | the directory name | registry package, stamp and matrix name (`user/c` is `c-smokes`, `user/std` is `std-hello`, `toolchain/std` is `sysroot`) |
+| `PORT_KIND` | `port` | `port` (cross-built by a script), `user` (a Rust crate built by `kernel/build.rs`), `c` (the C smokes), `std` (the `std` demos), `toolchain` (newlib, the sysroot: built before everything else, by their own CI jobs; `build.rs` leaves them to the ports' scripts) |
 | `PORT_CORE` | `0` | `1` for what a boot needs (the shell, getty, init's helpers, the CI smokes) |
-| `PORT_DEPS` | | ports to build first (`vim` needs `ncurses`): the build loops build them first, and the CI ports job builds a dependency itself when the registry does not have it |
-| `PORT_SYSROOT` | `0` | `1` when the build needs the Rust `std` sysroot (`target/myos-sysroot`) |
+| `PORT_DEPS` | | ports to build first (`vim` needs `ncurses`, the Rust ports need `sysroot`): the build loops order by them, and the CI ports job builds a dependency itself when the registry does not have it (`sysroot` means: wait for the sysroot job's artifact) |
 | `PORT_BUILD` | | the build script: a name is in the port directory (`build.sh`), a path with `/` is repo-relative (`scripts/build-c-smokes.sh`). Empty: nothing to build (`ports/termcap` ships a checked-in file) |
+| `PORT_STAMP` | `.myos-<name>-version` | the `target/` file the script writes its input hash to when done (the sysroot's is inside the sysroot) |
 | `PORT_OUTPUTS` | | what the script leaves under `target/`, for the three arches (what the CI registry caches, with the stamp). Globs are allowed (`sbase-*-{none}`) |
 | `PORT_READY` | the first file output | a `target/` file whose presence means the port was built (`build.rs` runs the script when it is missing). Needed when the first output is a directory |
 | `PORT_FILES` | | what the image (or the package) gets, see below |
@@ -87,8 +87,13 @@ serves it from binfs, so its file in the initramfs is optional.
   `ci-pack-build-artifacts.sh` and `ci-assert-boot-artifacts.sh` (what a
   boot job needs) and the `ci-ports.yml` ports matrix.
 - The registry needs `myos_<name>_version_hash` and `myos_<name>_is_current`
-  in `scripts/myos-c-userspace-lib.sh` (dashes as underscores): the content
-  hash of the port's inputs, and the check that its outputs exist and match.
+  in `scripts/myos-c-userspace-lib.sh` (dashes as underscores; the sysroot's
+  are in `toolchain/std/lib.sh`): the content hash of the port's inputs, and
+  the check that its outputs exist and match.
+- The two toolchains are ports too (`toolchain/newlib`, `toolchain/std`),
+  so the registry, the stamps and the image files treat them like the rest;
+  only their CI jobs are their own (`sysroot`, `newlib` in `ci-ports.yml`:
+  every port pulls them, and the sysroot build is long and cached apart).
 
 ## Adding a port
 

@@ -62,7 +62,7 @@ fn main() {
     println!("cargo:rerun-if-changed=modules/console/keymaps/us.map");
     println!("cargo:rerun-if-changed={}", kernel_path.display());
 
-    // Every port of the image (ports/, user/, toolchain/std): run its build
+    // Every port of the image (ports/, user/, toolchain/): run its build
     // script when its outputs are missing (the scripts skip themselves when
     // current), and rebuild the images when a descriptor, a build script or a
     // checked-in file a port ships changes. Packages (packages/) are not
@@ -77,8 +77,9 @@ fn main() {
                 println!("cargo:rerun-if-changed={}", manifest.join(&port.dir).join(src).display());
             }
         }
-        // The kernel's build script builds the user programs.
-        if port.kind == ports::Kind::User {
+        // The kernel's build script builds the user programs; the ports'
+        // scripts bring the toolchains (newlib, the sysroot) themselves.
+        if matches!(port.kind, ports::Kind::User | ports::Kind::Toolchain) {
             continue;
         }
         let Some(script) = &port.build else {

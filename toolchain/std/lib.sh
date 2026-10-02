@@ -100,7 +100,7 @@ myos_cargo_build_std() {
   local profile="${2:-release}"
   local target_json="$MYOS_ROOT/targets/${triple}.json"
   local target_dir="$MYOS_ROOT/target/sysroot-build-${triple}"
-  local manifest="$MYOS_ROOT/toolchain/std/examples/hello/Cargo.toml"
+  local manifest="$MYOS_ROOT/user/std/hello/Cargo.toml"
   local -a profile_args=()
   if [[ "$profile" == release ]]; then
     profile_args=(--release)
@@ -152,11 +152,11 @@ myos_std_hello_version_hash() {
       cd "$MYOS_ROOT"
       {
         myos_sysroot_version_hash
-        sha256sum "toolchain/std/build-std-hello.sh"
+        sha256sum "user/std/build.sh"
         # Sources only: Cargo.toml + *.rs. Ignore cargo outputs under
         # examples (target/, Cargo.lock, *.rlib, etc.) so the stamp is
-        # stable across build-std-hello.sh within one CI job.
-        find toolchain/std/examples \
+        # stable across user/std/build.sh within one CI job.
+        find user/std \
           \( -name target -o -path '*/target/*' \) -prune -o \
           -type f \( -name 'Cargo.toml' -o -name '*.rs' \) -print0 2>/dev/null \
           | sort -z | xargs -0 -r sha256sum

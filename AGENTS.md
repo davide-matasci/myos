@@ -25,7 +25,7 @@ match the surrounding code's naming, idiom and comment density.
 | `kernel/` | the kernel (`arch/`, `task/`, `fs/`, `user/`, `modules/`, `dt.rs` for the device tree) |
 | `modules/` | loadable kernel modules and their `#[repr(C)]` ABI (`modules/abi`); the console module also holds the keymaps and the `ps2-scancode` crate |
 | `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib) and C (`user/c`: hello and CI smokes); one `port.env` per program |
-| `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`) |
+| `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`); both are ports too (`port.env`, kind `toolchain`) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
 | `packages/<name>/` | the same, for programs CI builds but the image does not carry; a port moves between the two by moving its directory |
 | `linux-compat/` | optional Linux syscall layer userspace (launcher, musl build, tests, `get-alpine`) |
@@ -52,7 +52,7 @@ cargo run -- [uefi|aarch64|riscv64]  # build and boot in QEMU (default: x86 BIOS
   initramfs packer refuses a missing file instead of silently leaving it
   out, and re-packs the images when a packed file under `target/` changes.
   What is in the image is decided by the port descriptors (`port.env`,
-  `docs/ports.md`): every `ports/`, `user/` and `toolchain/std` directory
+  `docs/ports.md`): every `ports/`, `user/` and `toolchain/` directory
   with one is in, `packages/` directories are built but not shipped. There
   are no per-port Cargo features.
 - `--features linux_compat` adds the optional Linux layer; build its pieces

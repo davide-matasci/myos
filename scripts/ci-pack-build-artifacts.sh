@@ -27,11 +27,6 @@ files=(
   target/ext2-*
   target/linux-*
   target/ok-*
-  # The newlib sysroot tree (initramfs /lib/newlib for tcc).
-  target/.myos-newlib-version
-  target/newlib-x86_64
-  target/newlib-aarch64
-  target/newlib-riscv64
   target/.myos-ci-kernel-version
   target/limine-v*
 )

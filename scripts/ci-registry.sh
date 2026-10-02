@@ -35,10 +35,10 @@ ORAS_LINUX_ARM64_SHA256="ac7156f93a21e903f7ad606c792f3560f17e0cd0e36365634701b1e
 ORAS_ARTIFACT_TYPE="application/vnd.myos.ci.port.v1"
 ORAS_LAYER_TYPE="application/vnd.myos.ci.port.layer.v1.tar+zst"
 
-# sysroot (rust std) then newlib (C): dependents pull after. Then every port
-# with a build script (image and package ports, dependencies first), the
-# Linux layer's musl pieces and the kernels.
-ALL_PORTS=(sysroot newlib)
+# Every port with a build script in build order (the toolchains first:
+# sysroot and newlib, which the others pull; image and package ports), then
+# the Linux layer's musl pieces and the kernels.
+ALL_PORTS=()
 while read -r name; do
   ALL_PORTS+=("$name")
 done < <(myos_port_build_order all)
@@ -52,7 +52,8 @@ usage() {
 
 # Dispatch to the hash / freshness functions of myos-c-userspace-lib.sh and
 # toolchain/std/lib.sh: a port NAME has myos_<name>_version_hash and
-# myos_<name>_is_current (dashes as underscores).
+# myos_<name>_is_current (dashes as underscores; the sysroot's are in
+# toolchain/std/lib.sh).
 port_fn() {
   local fn="myos_${1//-/_}_$2"
   if ! declare -F "$fn" >/dev/null; then
@@ -81,28 +82,13 @@ port_is_current() {
 
 # Print repo-relative paths to pack. Directories are included recursively.
 # Never lists *-src / *-myos-build / object trees: a port's descriptor names
-# its outputs (PORT_OUTPUTS, scripts/ports.sh --outputs).
+# its outputs (PORT_OUTPUTS, scripts/ports.sh --outputs; the sysroot's is
+# the slim pack: stamp, manifest, precompiled rlibs and target specs, never
+# the patched library/ source tree under rustlib/src).
 port_members() {
   local port="$1"
   local arch triple
   case "$port" in
-    sysroot)
-      # Slim pack (MYOS_SYSROOT_SLIM=1 shape): stamps + precompiled rlibs +
-      # target specs. Never the patched library/ source tree under rustlib/src.
-      echo target/myos-sysroot/.myos-sysroot-version
-      echo target/myos-sysroot/myos-manifest.toml
-      for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
-        echo "target/myos-sysroot/lib/rustlib/${triple}"
-        echo "target/myos-sysroot/lib/rustlib/${triple}.json"
-      done
-      ;;
-    newlib)
-      echo target/.myos-newlib-version
-      echo target/newlib-bin
-      echo target/newlib-x86_64
-      echo target/newlib-aarch64
-      echo target/newlib-riscv64
-      ;;
     linux-compat)
       # The per-arch output dirs only: never the musl prefixes / sources /
       # compiler-rt tree next to them under target/linux-compat.

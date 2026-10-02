@@ -282,7 +282,7 @@ fn collect_tree(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
 /// otherwise): `build.rs` runs the missing ports' build scripts before this.
 pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     let target = manifest_dir.join("target");
-    let (kernel_triple, _none_triple, myos_triple) = triples(arch);
+    let (kernel_triple, _none_triple, _myos_triple) = triples(arch);
     let mut entries: Vec<Entry> = Vec::new();
 
     // Everything the ports ship: one descriptor per port (`port.env`, see
@@ -346,15 +346,11 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         );
     }
 
-    // newlib sysroot -> lib/newlib/include/… and lib/newlib/lib/….
-    // libc is always required (every port links against it), so it is not gated.
-    let sysroot = target.join(format!("newlib-{arch}")).join(myos_triple);
-    collect_tree(&sysroot.join("include"), "lib/newlib/include", &mut entries);
-    collect_tree(&sysroot.join("lib"), "lib/newlib/lib", &mut entries);
     // Compiler headers (stddef.h, stdarg.h, float.h, …) come from the tcc
-    // source tree: newlib's sys/cdefs.h includes them, but tcc has no GCC
-    // builtins, so they must exist in the archive. Only stricter when tcc is
-    // enabled; without tcc nothing compiles on the guest so they are unneeded.
+    // source tree: newlib's sys/cdefs.h includes them (the newlib sysroot is
+    // under lib/newlib, from the `newlib` port), but tcc has no GCC builtins,
+    // so they must exist in the archive. Only when tcc is in the image;
+    // without tcc nothing compiles on the guest so they are unneeded.
     if image_ports.iter().any(|p| p.name == "tcc") {
     let tcc_inc = target.join("tcc-src/include");
     let stddef = tcc_inc.join("stddef.h");

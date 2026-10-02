@@ -148,7 +148,7 @@ fn main() {
         // Auto-build artifacts the kernel embeds unconditionally (binfs.rs
         // uses env!(); the kernel package has no feature gates). These are
         // cheap when present — the scripts early-exit when current.
-        ensure_artifact(manifest, &format!("target/std-hello-{arch}-unknown-myos"), "toolchain/std/build-std-hello.sh");
+        ensure_artifact(manifest, &format!("target/std-hello-{arch}-unknown-myos"), "user/std/build.sh");
         ensure_artifact(manifest, &format!("target/c-hello-{arch}-unknown-none"), "scripts/build-c-hello.sh");
         ensure_artifact(manifest, &format!("target/oksh-{arch}-unknown-none"), "ports/oksh/build.sh");
         for (artifact, env_key) in [
@@ -214,7 +214,7 @@ fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str)
     println!("cargo:rerun-if-changed={}", stable.display());
     if !stable.is_file() {
         panic!(
-            "{artifact} ELF missing at {} (run ./toolchain/std/build-std-hello.sh)",
+            "{artifact} ELF missing at {} (run ./user/std/build.sh)",
             stable.display()
         );
     }

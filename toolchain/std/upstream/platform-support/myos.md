@@ -40,7 +40,7 @@ cd myos
 ./toolchain/std/fetch-sysroot.sh
 cargo +nightly build -Z unstable-options -Z json-target-spec \
   --target targets/x86_64-unknown-myos.json \
-  --manifest-path toolchain/std/examples/hello/Cargo.toml
+  --manifest-path user/std/hello/Cargo.toml
 ```
 
 See `toolchain/std/toolchain/config.toml.example` for a standalone app manifest.
@@ -62,7 +62,7 @@ Run myos under QEMU; CI on every arch types `heap` at `$` after slim `/ok`
 and checks the same serial needles including `std ok`:
 
 ```sh
-./toolchain/std/build-std-hello.sh
+./user/std/build.sh
 cargo build
 cargo run -- --ci              # x86 BIOS (+ heap at $)
 cargo run -- uefi --ci         # x86 UEFI (+ heap at $)

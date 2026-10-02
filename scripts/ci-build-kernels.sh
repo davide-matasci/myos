@@ -16,14 +16,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Build (idempotently: every script early-exits when its stamp is current)
-# newlib and every port of the image BEFORE the inputs hash is snapshotted
-# below: the port stamps are part of that hash, and a port missing from the
-# registry (a skipped ports job, a new cache key) must not appear mid-build,
-# which tripped the kernel_inputs_hash drift guard. The ports come in build
-# order (scripts/ports.sh --image-list: dependencies first; the sysroot ports
-# need target/myos-sysroot, fetched by ci-build-pull-and-kernels.sh).
+# every port of the image BEFORE the inputs hash is snapshotted below: the
+# port stamps are part of that hash, and a port missing from the registry (a
+# skipped ports job, a new cache key) must not appear mid-build, which
+# tripped the kernel_inputs_hash drift guard. The ports come in build order
+# (scripts/ports.sh --image-list: newlib and the sysroot first, then
+# dependencies before dependents).
 if [[ "${1:-}" != "--print-hash" && "${1:-}" != "--is-current" && "${1:-}" != "--print-members" ]]; then
-  ./toolchain/newlib/build.sh
   while read -r name script; do
     echo "==> ensure port $name ($script)"
     "./$script"
@@ -54,10 +53,11 @@ linux_compat_members() {
   done
 }
 
-# The version stamps of newlib and of every image port (scripts/ports.sh
-# --stamps): they encode the userspace content kernel/build.rs embeds via
-# include_bytes! and myos build.rs packs into the initramfs / Limine images.
-PORT_STAMPS=(target/.myos-newlib-version)
+# The version stamps of every image port, the toolchains included
+# (scripts/ports.sh --stamps): they encode the userspace content
+# kernel/build.rs embeds via include_bytes! and myos build.rs packs into the
+# initramfs / Limine images.
+PORT_STAMPS=()
 while read -r stamp; do
   PORT_STAMPS+=("$stamp")
 done < <(./scripts/ports.sh --stamps)
@@ -113,7 +113,7 @@ kernel_inputs_hash() {
         sha256sum build.rs Cargo.toml 2>/dev/null || true
         # The port descriptors: which ports are in the image and what they ship.
         sha256sum scripts/ports.sh
-        for f in ports/*/port.env user/*/port.env toolchain/std/port.env; do
+        for f in ports/*/port.env user/*/port.env toolchain/*/port.env; do
           [[ -f "$f" ]] && sha256sum "$f"
         done
         # Whole host-bin crate (src/): target/debug/myos is the CI harness
