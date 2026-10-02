@@ -69,7 +69,8 @@ fn state(conv: &str) -> State {
     let mut b = [0u8; 64];
     let n = fs::read(&format!("{conv}/status"), 0, &mut b).unwrap_or(0);
     match &b[..n] {
-        b"cloned" | b"connecting" => State::Pending,
+        // Empty until netd acknowledges the `clone`.
+        b"" | b"cloned" | b"connecting" => State::Pending,
         b"connected" => State::Connected,
         b"hangup" => State::HungUp,
         _ => State::Failed,
