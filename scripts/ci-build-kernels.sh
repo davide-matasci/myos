@@ -136,9 +136,9 @@ kernel_inputs_hash() {
         sha256sum build.rs Cargo.toml 2>/dev/null || true
         # tcp-listen / pty / urandom smokes: built by ci-build-kernels (initramfs
         # embeds them); a source change must bust the kernel stamp so ELFs rebuild.
-        sha256sum c/tcp_listen_smoke.c scripts/build-tcp-listen-smoke.sh 2>/dev/null || true
-        sha256sum c/pty_smoke.c scripts/build-pty-smoke.sh 2>/dev/null || true
-        sha256sum c/urandom_smoke.c scripts/build-urandom-smoke.sh 2>/dev/null || true
+        sha256sum user/c/tcp_listen_smoke.c scripts/build-tcp-listen-smoke.sh 2>/dev/null || true
+        sha256sum user/c/pty_smoke.c scripts/build-pty-smoke.sh 2>/dev/null || true
+        sha256sum user/c/urandom_smoke.c scripts/build-urandom-smoke.sh 2>/dev/null || true
         # Whole host-bin crate (src/): target/debug/myos is the CI harness
         # (wait_ci) and the pack list ships it in ci-build.tar, so ANY src
         # change — not just the limine/initramfs files — must bust the stamp.

@@ -20,7 +20,7 @@ for arch in x86_64 aarch64 riscv64; do
   extra=()
 
   echo "==> tcp-listen-smoke ($triple)"
-  "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/c/tcp_listen_smoke.c" -o "$obj"
+  "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/user/c/tcp_listen_smoke.c" -o "$obj"
 
   # soft-float long-double helpers (same as c-hello/lynx: libc dtoa/printf
   # pull long-double + double helpers). aarch64: trunctfdf2; riscv64: the

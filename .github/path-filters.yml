@@ -16,7 +16,7 @@ sysroot:
 c_userspace:
   - 'toolchain/newlib/**'
   - 'ports/**'
-  - 'c/**'
+  - 'user/c/**'
   - 'scripts/myos-c-userspace-lib.sh'
   - 'scripts/build-c-hello.sh'
   - 'scripts/build-newlib.sh'

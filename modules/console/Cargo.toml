@@ -18,7 +18,7 @@ myos-abi = { path = "../abi" }
 virtq = { path = "../virtq" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-ps2-scancode = { path = "../../ps2-scancode" }
+ps2-scancode = { path = "ps2-scancode" }
 
 [profile.dev]
 panic = "abort"

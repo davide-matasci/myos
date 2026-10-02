@@ -60,8 +60,8 @@ link_prog() {
 }
 
 for arch in x86_64 aarch64 riscv64; do
-  link_prog hello "$ROOT/c/hello.c" "$arch"
-  link_prog socket_smoke "$ROOT/c/socket_smoke.c" "$arch"
+  link_prog hello "$ROOT/user/c/hello.c" "$arch"
+  link_prog socket_smoke "$ROOT/user/c/socket_smoke.c" "$arch"
 done
 
 echo "$(myos_c_hello_version_hash)" >"$MYOS_C_HELLO_VERSION"
