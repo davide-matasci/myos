@@ -185,9 +185,6 @@ pub mod task {
     pub fn is_live_user(id: usize) -> bool {
         unsafe { (api().task_is_live_user)(id) != 0 }
     }
-    pub fn has_root() -> bool {
-        unsafe { (api().task_has_root)() != 0 }
-    }
     pub fn yield_now() {
         unsafe { (api().task_yield)() }
     }

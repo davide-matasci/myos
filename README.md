@@ -167,7 +167,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `user/lib` | Shared `myos_user` syscall wrappers, argv parser, `Heap` allocator |
 | `user/c` | Native C programs (newlib): `hello` and the boot-CI smokes installed as `/bin/etc/*` |
 | `user/echo/cat/ls` | Bootfs demos (`/myos_echo`, `/myos_cat`, `/myos_ls`) |
-| `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` |
+| `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` (`mount SRC TARGET FSTYPE`, `bind` for a bind mount) |
 | `ports/` | Userspace ports: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, vim) |
 | `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters |
 | `toolchain/std/` | Rust `std` PAL skeleton, sysroot build scripts |
@@ -245,7 +245,7 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 
 ## VFS & Filesystems (Summary)
 
-- **VFS** — mount table with longest-prefix routing; `vfs::mounts_text()` exports `/proc/mounts`
+- **VFS** — mount table with longest-prefix routing and bind mounts (`mount SRC TARGET bind`: a directory seen at a second place too); `vfs::mounts_text()` exports `/proc/mounts`
 - **bootfs** — read-only embedded namespace at `/`; Limine ESP modules override; demos use `myos_` prefix
 - **procfs** — `/proc/mounts` (generated, not stored bytes)
 - **tmpfs/devfs** — writable mount for `O_CREAT`; device nodes

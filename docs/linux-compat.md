@@ -59,10 +59,10 @@ linux --root ROOT PROGRAM [ARG...]
 
 `linux --root ROOT` chroots into `ROOT` (the native `chroot`) before the
 exec, with a Linux `PATH`, so the program finds its dynamic linker, shared
-objects and data files at their Alpine paths. A chrooted Linux process still
-sees the system's `/dev` and `/proc`, as if they were bind-mounted into the
-root (`modules/linux/src/sys.rs`, `system_path`); native chroots are not
-affected.
+objects and data files at their Alpine paths. Before the chroot it
+bind-mounts the system's `/dev`, `/proc` and `/net` into `ROOT` (`mount SRC
+TARGET bind`; binds last until reboot, and binding a target again replaces
+the bind), so the chrooted process sees them like any other directory.
 
 `ALPINE_MIRROR` overrides `https://dl-cdn.alpinelinux.org/alpine` and
 `ALPINE_BRANCH` overrides `latest-stable`. `/tmp` is a tmpfs in the kernel

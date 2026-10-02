@@ -222,6 +222,10 @@ pub fn mounts_text() -> Vec<u8> {
         out.extend_from_slice(opts);
         out.extend_from_slice(b" 0 0\n");
     }
+    drop(mounts);
+    for (target, source) in BINDS.lock().iter() {
+        out.extend_from_slice(alloc::format!("/{source} /{target} bind rw 0 0\n").as_bytes());
+    }
     out
 }
 
@@ -273,7 +277,7 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
     if rel_check.is_empty() {
         return None;
     }
-    let (idx, rel) = resolve_index(path)?;
+    let (idx, ref rel) = resolve_index(path)?;
     // An open file keeps its mount-relative path in the vnode: refuse what
     // does not fit rather than open a truncated path.
     if rel.len() > Vnode::PATH_CAP {
@@ -343,7 +347,7 @@ pub fn lookup(path: &str) -> Option<&'static [u8]> {
     if rel.is_empty() {
         return None;
     }
-    let (idx, rel) = resolve_index(path)?;
+    let (idx, ref rel) = resolve_index(path)?;
     backend_lookup(idx, rel)
 }
 
@@ -355,7 +359,7 @@ pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
         }
         return Some(b.to_vec());
     }
-    let (idx, rel) = resolve_index(path)?;
+    let (idx, ref rel) = resolve_index(path)?;
     if rel.is_empty() {
         return None;
     }
@@ -378,7 +382,7 @@ pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
 
 /// Stat `path` on the best matching mount.
 pub fn stat(path: &str) -> Option<StatInfo> {
-    let (idx, rel) = resolve_index(path)?;
+    let (idx, ref rel) = resolve_index(path)?;
     backend_stat(idx, rel)
 }
 
@@ -515,7 +519,7 @@ pub fn size_of(node: &Vnode) -> Option<usize> {
 
 /// Create directory at `path` (must resolve to a writable mount).
 pub fn mkdir(path: &str) -> bool {
-    let Some((idx, rel)) = resolve_index(path) else {
+    let Some((idx, ref rel)) = resolve_index(path) else {
         return false;
     };
     if rel.is_empty() {
@@ -529,7 +533,7 @@ pub fn mkdir(path: &str) -> bool {
 
 /// Remove empty directory at `path`.
 pub fn rmdir(path: &str) -> bool {
-    let Some((idx, rel)) = resolve_index(path) else {
+    let Some((idx, ref rel)) = resolve_index(path) else {
         return false;
     };
     if rel.is_empty() {
@@ -543,7 +547,7 @@ pub fn rmdir(path: &str) -> bool {
 
 /// Unlink file or symlink at `path`.
 pub fn unlink(path: &str) -> bool {
-    let Some((idx, rel)) = resolve_index(path) else {
+    let Some((idx, ref rel)) = resolve_index(path) else {
         return false;
     };
     if rel.is_empty() {
@@ -557,10 +561,10 @@ pub fn unlink(path: &str) -> bool {
 
 /// Rename within a single mount (`old` and `new` must resolve to the same mount).
 pub fn rename(old: &str, new: &str) -> bool {
-    let Some((idx_o, rel_o)) = resolve_index(old) else {
+    let Some((idx_o, ref rel_o)) = resolve_index(old) else {
         return false;
     };
-    let Some((idx_n, rel_n)) = resolve_index(new) else {
+    let Some((idx_n, ref rel_n)) = resolve_index(new) else {
         return false;
     };
     if idx_o != idx_n || rel_o.is_empty() || rel_n.is_empty() {
@@ -579,7 +583,7 @@ pub fn symlinks_possible() -> bool {
 
 /// Create symlink at `linkpath` with contents `target`.
 pub fn symlink(target: &str, linkpath: &str) -> bool {
-    let Some((idx, rel)) = resolve_index(linkpath) else {
+    let Some((idx, ref rel)) = resolve_index(linkpath) else {
         return false;
     };
     if rel.is_empty() {
@@ -593,7 +597,7 @@ pub fn symlink(target: &str, linkpath: &str) -> bool {
 
 /// Read symlink target at `path` into `buf`.
 pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
-    let (idx, rel) = resolve_index(path)?;
+    let (idx, ref rel) = resolve_index(path)?;
     if rel.is_empty() {
         return None;
     }
@@ -605,7 +609,7 @@ pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
 /// When listing the root mount (`/` / `.`), also append other mount prefixes
 /// (e.g. `s`, `c`) so tools like `/s/ls` show bootfs files and mount points.
 pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
-    let Some((idx, rel)) = resolve_index(path) else {
+    let Some((idx, ref rel)) = resolve_index(path) else {
         return 0;
     };
     let mounts = MOUNTS.lock();
@@ -689,14 +693,16 @@ fn mount_index(name: &str) -> Option<usize> {
     MOUNTS.lock().iter().position(|m| m.name == name)
 }
 
-fn resolve_index(path: &str) -> Option<(usize, &str)> {
-    let path = normalize_path(path);
+/// The mount `path` lives on and the path relative to it (bind mounts
+/// applied).
+fn resolve_index(path: &str) -> Option<(usize, String)> {
+    let path = unbind(normalize_path(path))?;
     let mounts = MOUNTS.lock();
     let mut best: Option<(usize, usize, &str)> = None;
     for (idx, m) in mounts.iter().enumerate() {
         let prefix = m.prefix.as_str();
         let (score, rel) = if prefix.is_empty() {
-            (0, path)
+            (0, path.as_str())
         } else if path == prefix {
             (prefix.len(), "")
         } else if path.starts_with(prefix)
@@ -711,11 +717,53 @@ fn resolve_index(path: &str) -> Option<(usize, &str)> {
             best = Some((score, idx, rel));
         }
     }
-    best.map(|(_, idx, rel)| (idx, rel))
+    best.map(|(_, idx, rel)| (idx, String::from(rel)))
+}
+
+/// Bind mounts as `(target, source)`: the tree at `source` is also seen at
+/// `target` (both absolute paths without the leading `/`). A path is
+/// rewritten before it reaches a mount, so a bind has no backend of its own.
+static BINDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// Binds rewritten while resolving one path (binds of binds).
+const MAX_BIND_HOPS: usize = 8;
+
+/// `path` with the longest bind it lies under replaced by its source, until
+/// none applies. `None` on a bind loop.
+fn unbind(path: &str) -> Option<String> {
+    let mut path = String::from(path);
+    for _ in 0..MAX_BIND_HOPS {
+        let binds = BINDS.lock();
+        let Some((target, source)) = binds
+            .iter()
+            .filter(|(t, _)| path == *t || (path.starts_with(t.as_str()) && path.as_bytes()[t.len()] == b'/'))
+            .max_by_key(|(t, _)| t.len())
+        else {
+            return Some(path);
+        };
+        let rest = &path[target.len()..];
+        let joined = if source.is_empty() { rest.trim_start_matches('/') } else { rest };
+        path = alloc::format!("{source}{joined}");
+    }
+    None
+}
+
+/// Bind the directory `source` at the directory `target` (absolute paths),
+/// replacing a bind already there. Binds last until reboot.
+pub fn bind(source: &str, target: &str) -> bool {
+    let (source, target) = (normalize_path(source), normalize_path(target));
+    let is_dir = |p: &str| stat(p).is_some_and(|st| is_dir_mode(st.mode));
+    if target.is_empty() || !is_dir(source) || !is_dir(target) {
+        return false;
+    }
+    let mut binds = BINDS.lock();
+    binds.retain(|(t, _)| t != target);
+    binds.push((String::from(target), String::from(source)));
+    true
 }
 
 /// True when `path` resolves into the tmpfs mount (the only fs with FIFOs).
-fn tmpfs_rel(path: &str) -> Option<&str> {
+fn tmpfs_rel(path: &str) -> Option<String> {
     let (idx, rel) = resolve_index(path)?;
     let mounts = MOUNTS.lock();
     (mounts.get(idx)?.name == "tmpfs").then_some(rel)
@@ -724,14 +772,14 @@ fn tmpfs_rel(path: &str) -> Option<&str> {
 /// mkfifo(2) on an absolute path. Only tmpfs (`/tmp`) can hold FIFOs.
 pub fn mkfifo(path: &str) -> bool {
     match tmpfs_rel(path) {
-        Some(rel) => super::tmpfs::mkfifo(rel),
+        Some(rel) => super::tmpfs::mkfifo(&rel),
         None => false,
     }
 }
 
 /// Pipe slot behind the named FIFO at `path`, if it is one.
 pub fn fifo_id(path: &str) -> Option<usize> {
-    super::tmpfs::fifo_id(tmpfs_rel(path)?)
+    super::tmpfs::fifo_id(&tmpfs_rel(path)?)
 }
 
 fn backend_lookup(idx: usize, rel: &str) -> Option<&'static [u8]> {
