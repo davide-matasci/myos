@@ -146,34 +146,12 @@ fn view_path(path: &str) -> String {
 
 /// The VFS path behind `path` (cwd, chroot and symlinks applied).
 fn real_path(path: &str) -> R2<String> {
-    match system_path(path) {
-        Some(p) => Ok(p),
-        None => user::resolve_copied_path(path).ok_or(ENOENT),
-    }
+    user::resolve_copied_path(path).ok_or(ENOENT)
 }
 
 /// Like [`real_path`], but a symlink in the last component is not followed.
 fn real_path_nofollow(path: &str) -> R2<String> {
-    match system_path(path) {
-        Some(p) => Ok(p),
-        None => user::resolve_copied_path_nofollow(path).ok_or(ENOENT),
-    }
-}
-
-/// A chrooted Linux process (`linux --root`) still sees the system's `/dev`
-/// and `/proc`, as if bind-mounted into its root: their paths are not
-/// confined.
-fn system_path(path: &str) -> Option<String> {
-    if !task::has_root() {
-        return None;
-    }
-    let mut b = [0u8; MAX_PATH];
-    let n = fs::resolve_user_path_virtual(path, &mut b)?;
-    let v = core::str::from_utf8(&b[..n]).ok()?;
-    ["/dev", "/proc"]
-        .iter()
-        .any(|d| v == *d || v.strip_prefix(d).is_some_and(|r| r.starts_with('/')))
-        .then(|| String::from(v))
+    user::resolve_copied_path_nofollow(path).ok_or(ENOENT)
 }
 
 // ---- files ----------------------------------------------------------------
