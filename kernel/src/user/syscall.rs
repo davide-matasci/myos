@@ -140,11 +140,15 @@ impl SyscallRegs {
             unsafe { *self.0.add(i) = v as u64 }
         }
     }
-    /// Syscall arguments 4..6 (r10, r8, r9), which `syscall_dispatch` does
-    /// not take as parameters.
-    #[cfg(all(feature = "linux-compat", target_arch = "x86_64"))]
-    pub fn args_3_to_5(&self) -> [usize; 3] {
-        unsafe { [*self.0.add(5) as usize, *self.0.add(2) as usize, *self.0.add(3) as usize] }
+    /// Word `i` of the saved user registers, for the Linux layer's syscall
+    /// arguments and signal frames (layout per arch: see above).
+    #[cfg(feature = "linux-compat")]
+    pub fn word(&self, i: usize) -> u64 {
+        unsafe { *self.0.add(i) }
+    }
+    #[cfg(feature = "linux-compat")]
+    pub fn set_word(&mut self, i: usize, v: u64) {
+        unsafe { *self.0.add(i) = v }
     }
 }
 
@@ -181,7 +185,7 @@ pub extern "C" fn syscall_dispatch(
     // Linux syscalls (own numbers, errno returns); see `crate::linux`.
     #[cfg(feature = "linux-compat")]
     if crate::linux::active() {
-        let ret = crate::linux::dispatch(nr, a0, a1, a2, &regs, user_rip, user_rsp);
+        let ret = crate::linux::dispatch(nr, a0, a1, a2, &mut regs, user_rip, user_rsp);
         return crate::signal::on_syscall_exit(&mut regs, nr, a0, ret);
     }
     let ret = match nr {

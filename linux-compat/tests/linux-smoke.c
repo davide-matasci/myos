@@ -1,7 +1,10 @@
 /*
  * Boot smoke for the optional Linux compatibility layer. Built as a static-PIE
- * x86_64 Linux binary against musl (not myos newlib) and run as
+ * Linux binary against musl (not myos newlib) for each arch and run as
  * `linux linux-smoke`. Prints "LINUX-SMOKE OK" when every check passes.
+ *
+ * No printf: musl's printf needs the compiler runtime's quad-float helpers
+ * on aarch64/riscv64, which this build does not ship.
  */
 #include <dirent.h>
 #include <errno.h>
@@ -17,18 +20,84 @@
 
 static int failures;
 
+static void out(const char *s) {
+    write(1, s, strlen(s));
+}
+
 static void check(int ok, const char *what) {
-    printf("%s: %s\n", ok ? "ok" : "FAIL", what);
+    out(ok ? "ok: " : "FAIL: ");
+    out(what);
+    out("\n");
     if (!ok) {
         failures++;
     }
+}
+
+static volatile sig_atomic_t got_sig, got_info_sig, got_uc;
+
+static void on_sig(int sig) {
+    got_sig = sig;
+}
+
+static void on_siginfo(int sig, siginfo_t *info, void *uc) {
+    got_sig = sig;
+    got_info_sig = info->si_signo;
+    got_uc = uc != NULL;
+}
+
+static void handle(int sig, int flags) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_sig;
+    sa.sa_flags = flags;
+    sigaction(sig, &sa, NULL);
+}
+
+/* A child that signals this process after a short delay, then writes one
+ * byte into the pipe. Returns its pid. */
+static pid_t poke_later(int sig, int wfd) {
+    pid_t c = fork();
+    if (c == 0) {
+        usleep(50000);
+        kill(getppid(), sig);
+        usleep(50000);
+        write(wfd, "x", 1);
+        _exit(0);
+    }
+    return c;
+}
+
+/* Blocking read interrupted by a caught signal: EINTR without SA_RESTART,
+ * a transparent restart with it. */
+static void check_interrupted_read(int restart) {
+    int p[2];
+    char ch = 0;
+    int status;
+    if (pipe(p) != 0) {
+        check(0, "pipe");
+        return;
+    }
+    handle(SIGUSR1, restart ? SA_RESTART : 0);
+    got_sig = 0;
+    pid_t c = poke_later(SIGUSR1, p[1]);
+    ssize_t n = read(p[0], &ch, 1);
+    if (restart) {
+        check(n == 1 && ch == 'x' && got_sig == SIGUSR1, "SA_RESTART read resumes after handler");
+    } else {
+        int e = errno;
+        check(n == -1 && e == EINTR && got_sig == SIGUSR1, "read interrupted by handler: EINTR");
+        n = read(p[0], &ch, 1);
+        check(n == 1 && ch == 'x', "read after EINTR");
+    }
+    waitpid(c, &status, 0);
+    close(p[0]);
+    close(p[1]);
 }
 
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
     }
-    setvbuf(stdout, NULL, _IONBF, 0);
 
     struct utsname u;
     check(uname(&u) == 0 && strcmp(u.sysname, "Linux") == 0, "uname");
@@ -39,7 +108,7 @@ int main(int argc, char **argv) {
     /* stdio file write, raw read back, fstat. */
     const char *path = "/tmp/linux-smoke.txt";
     FILE *f = fopen(path, "w");
-    check(f != NULL && fprintf(f, "hello linux\n") == 12 && fclose(f) == 0, "fopen/fprintf");
+    check(f != NULL && fputs("hello linux\n", f) >= 0 && fclose(f) == 0, "fopen/fputs");
     char buf[64] = {0};
     int fd = open(path, O_RDONLY);
     struct stat st;
@@ -116,12 +185,50 @@ int main(int argc, char **argv) {
     check(waitpid(c, &status, 0) == c && WIFSIGNALED(status) && WTERMSIG(status) == SIGUSR1,
           "WTERMSIG(SIGUSR1)");
 
+    /* Handlers: SA_SIGINFO handler run by raise(). */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_siginfo;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGUSR1, &sa, NULL);
+    got_sig = got_info_sig = got_uc = 0;
+    raise(SIGUSR1);
+    check(got_sig == SIGUSR1 && got_info_sig == SIGUSR1 && got_uc, "SA_SIGINFO handler");
+    struct sigaction old;
+    check(sigaction(SIGUSR1, NULL, &old) == 0 && old.sa_sigaction == on_siginfo &&
+              (old.sa_flags & SA_SIGINFO),
+          "sigaction reports the handler");
+
+    /* Blocked: stays pending, runs on unblock. */
+    sigset_t set, pend;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR2);
+    handle(SIGUSR2, 0);
+    got_sig = 0;
+    sigprocmask(SIG_BLOCK, &set, NULL);
+    raise(SIGUSR2);
+    sigpending(&pend);
+    check(got_sig == 0 && sigismember(&pend, SIGUSR2), "blocked signal pending");
+    sigprocmask(SIG_UNBLOCK, &set, NULL);
+    check(got_sig == SIGUSR2, "handler runs on unblock");
+
+    /* sigwait takes a blocked signal instead of running the handler. */
+    got_sig = 0;
+    sigprocmask(SIG_BLOCK, &set, NULL);
+    raise(SIGUSR2);
+    int taken = 0;
+    check(sigwait(&set, &taken) == 0 && taken == SIGUSR2 && got_sig == 0, "sigwait");
+    sigprocmask(SIG_UNBLOCK, &set, NULL);
+
+    check_interrupted_read(0);
+    check_interrupted_read(1);
+
     check(unlink(path) == 0 && stat(path, &st) == -1 && errno == ENOENT, "unlink/ENOENT");
 
     if (failures) {
-        printf("LINUX-SMOKE FAIL (%d)\n", failures);
+        out("LINUX-SMOKE FAIL\n");
         return 1;
     }
-    printf("LINUX-SMOKE OK\n");
+    out("LINUX-SMOKE OK\n");
     return 0;
 }

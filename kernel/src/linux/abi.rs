@@ -86,21 +86,6 @@ pub fn mask_to_linux(mask: u32) -> u64 {
     out
 }
 
-/// The x86_64 `struct stat` (144 bytes).
-pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64) -> [u8; 144] {
-    let mut b = [0u8; 144];
-    let mut put = |off: usize, v: &[u8]| b[off..off + v.len()].copy_from_slice(v);
-    put(0, &dev.to_le_bytes());
-    put(8, &ino.to_le_bytes());
-    put(16, &nlink.to_le_bytes());
-    put(24, &mode.to_le_bytes());
-    // uid, gid: 0 (everything is root).
-    put(48, &size.to_le_bytes());
-    put(56, &4096u64.to_le_bytes()); // st_blksize
-    put(64, &size.div_ceil(512).to_le_bytes()); // st_blocks
-    b
-}
-
 pub const DT_UNKNOWN: u8 = 0;
 pub const DT_FIFO: u8 = 1;
 pub const DT_CHR: u8 = 2;

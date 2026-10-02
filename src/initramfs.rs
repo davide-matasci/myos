@@ -279,16 +279,16 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
 
     // Optional Linux compatibility layer: the `linux` launcher (native) and
     // Linux test binaries, kept out of $PATH under bin/linux.
-    if feature_enabled("linux_compat") && arch == "x86_64" {
+    if feature_enabled("linux_compat") {
         add(
             &mut entries,
             "bin/etc/linux",
-            read(&target.join(format!("linux-launcher-{none_triple}"))),
+            read(&target.join(format!("linux-launcher-{arch}-unknown-none"))),
         );
         add(
             &mut entries,
             "bin/linux/linux-smoke",
-            read(&target.join("linux-smoke-x86_64-linux-musl")),
+            read(&target.join(format!("linux-smoke-{arch}-linux-musl"))),
         );
     }
 
