@@ -6,8 +6,8 @@ use super::abi::{err, result, EFAULT, EINVAL, ENOMEM, ENOSYS, EPERM, ESRCH};
 use super::signal as lsig;
 use super::sys::{self, ret};
 use super::thread;
-use crate::task;
-use crate::user::{self, SyscallRegs};
+use crate::k::task;
+use crate::k::user::{self, SyscallRegs};
 
 pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     match nr {

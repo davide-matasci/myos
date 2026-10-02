@@ -8,7 +8,7 @@ use alloc::vec;
 use super::generic::{uc_head, SIGINFO_BYTES, UC_MCONTEXT};
 use super::signal::{siginfo, Frame};
 use super::sys;
-use crate::user::SyscallRegs;
+use crate::k::user::SyscallRegs;
 
 pub use super::generic::{stat_bytes, syscall};
 
@@ -20,8 +20,6 @@ pub const SIGACTION_HAS_RESTORER: bool = false;
 
 /// `li a7, 139 (rt_sigreturn); ecall`.
 pub const TRAMP_CODE: &[u8] = &[0x93, 0x08, 0xb0, 0x08, 0x73, 0x00, 0x00, 0x00];
-
-/// `sstatus.FS = Initial`: user FP instructions allowed (Linux tasks).
 
 // Trap frame words: x0..x31, sepc, sstatus, user sp (restored into x2).
 const R_PC: usize = 32;
@@ -35,7 +33,7 @@ pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
 // ---- FP -------------------------------------------------------------------
 
 /// f0-f31 then fcsr: the `__riscv_d_ext_state` layout (see `task::fpu`).
-pub use crate::task::fpu::{restore as fp_restore, save as fp_save, BYTES as FP_BYTES};
+pub use crate::k::task::fpu::{restore as fp_restore, save as fp_save, BYTES as FP_BYTES};
 
 #[repr(C, align(16))]
 struct Fp([u8; FP_BYTES]);

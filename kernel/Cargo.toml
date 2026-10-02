@@ -10,12 +10,6 @@ name = "kernel"
 test = false
 bench = false
 
-[features]
-# Optional Linux syscall compatibility layer (kernel/src/linux/, see
-# docs/linux-compat.md). Off by default: without it the kernel has no Linux
-# code at all. Enabled from the root package's `linux_compat` feature.
-linux-compat = []
-
 [dependencies]
 linked_list_allocator = "0.10.5"
 spin = "0.9.8"

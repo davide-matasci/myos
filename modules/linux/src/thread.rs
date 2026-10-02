@@ -6,8 +6,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::abi::*;
 use super::sys::{self, put, R};
-use crate::task::{self, AddrWait, MAX_TASKS};
-use crate::user::{self, SyscallRegs};
+use crate::k::task::{self, AddrWait};
+use crate::k::MAX_TASKS;
+use crate::k::user::SyscallRegs;
 
 const CLONE_VM: usize = 0x100;
 const CLONE_FS: usize = 0x200;
@@ -44,10 +45,8 @@ pub fn clone(regs: &SyscallRegs, flags: usize, stack: usize, ptid: usize, tls: u
         return Err(EINVAL);
     }
     // The child resumes like a forked one (result 0), on its own stack.
-    let mut start = user::caller_regs(regs);
-    start.rsp = stack;
     let tls = (flags & CLONE_SETTLS != 0).then_some(tls as u64);
-    let tid = task::spawn_thread(start, tls).ok_or(EAGAIN)?;
+    let tid = task::spawn_thread_from(regs, stack, tls).ok_or(EAGAIN)?;
     // The new thread cannot run before this syscall returns (it shares this
     // CPU, and the syscall runs with interrupts off), so it finds these set.
     // Parent and child share their memory: both ids are stored from here.

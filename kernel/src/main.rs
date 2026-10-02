@@ -14,8 +14,7 @@ mod input;
 mod irq;
 mod limine_boot;
 /// Optional Linux syscall compatibility layer (`--features linux_compat`).
-#[cfg(feature = "linux-compat")]
-mod linux;
+mod personality;
 mod mm;
 mod pci;
 mod modules;

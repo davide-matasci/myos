@@ -6,9 +6,10 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::Mutex;
+use crate::lock::Lock as Mutex;
 
-use crate::task::{self, MAX_TASKS};
+use crate::k::task;
+use crate::k::MAX_TASKS;
 
 #[derive(Clone)]
 pub struct FdPath {

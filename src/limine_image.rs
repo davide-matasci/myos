@@ -31,13 +31,42 @@ pub const BOOT_MODULES: &[&str] = &[
     "ext2",
 ];
 
+/// Modules behind a root Cargo feature: always built and shipped under
+/// `/lib/modules/<name>` (so `insmod` can load one at run time), loaded at
+/// boot only when the feature is on. `(module, feature)`, in load order.
+pub const OPTIONAL_MODULES: &[(&str, &str)] = &[("linux", "linux_compat")];
+
+/// The modules `limine.conf` loads: [`BOOT_MODULES`] plus the optional ones
+/// whose feature is active.
+pub fn boot_modules() -> Vec<&'static str> {
+    BOOT_MODULES
+        .iter()
+        .copied()
+        .chain(
+            OPTIONAL_MODULES
+                .iter()
+                .filter(|(_, feature)| crate::initramfs::feature_enabled(feature))
+                .map(|(m, _)| *m),
+        )
+        .collect()
+}
+
+/// Every module the images carry (`/lib/modules`): boot and optional ones.
+pub fn all_modules() -> Vec<&'static str> {
+    BOOT_MODULES
+        .iter()
+        .copied()
+        .chain(OPTIONAL_MODULES.iter().map(|(m, _)| *m))
+        .collect()
+}
+
 /// The Limine config: `head_extra` lines go before the entry (riscv64's
 /// `global_dtb`), `kernel_extra` after `path:` (riscv64's `paging_mode`).
 pub fn limine_conf(head_extra: &str, kernel_extra: &str) -> String {
     let mut s = format!(
         "serial: yes\ntimeout: 0\n{head_extra}\n/myos\n    protocol: limine\n    path: boot():/boot/kernel\n{kernel_extra}"
     );
-    for m in BOOT_MODULES {
+    for m in boot_modules() {
         s.push_str(&format!("    module_path: boot():/boot/modules/{m}\n"));
     }
     s.push_str("    module_path: boot():/boot/ok\n    module_path: boot():/boot/initramfs\n");
@@ -47,8 +76,8 @@ pub fn limine_conf(head_extra: &str, kernel_extra: &str) -> String {
 /// The boot modules for `triple` as ESP files (`boot/modules/<name>`), read
 /// from the stable copies `target/<name>-<triple>` kernel/build.rs writes.
 pub fn boot_module_files(target_dir: &Path, triple: &str) -> Vec<DiskFile> {
-    BOOT_MODULES
-        .iter()
+    boot_modules()
+        .into_iter()
         .map(|m| {
             let src = target_dir.join(format!("{m}-{triple}"));
             let data = fs::read(&src)
@@ -337,7 +366,7 @@ pub fn write_x86_iso(
     copy(kernel, "boot/kernel");
     fs::create_dir_all(iso_root.join("boot/modules"))
         .unwrap_or_else(|e| panic!("create iso boot/modules: {e}"));
-    for m in BOOT_MODULES {
+    for m in boot_modules() {
         copy(
             &modules_dir.join(format!("{m}-x86_64-unknown-none")),
             &format!("boot/modules/{m}"),

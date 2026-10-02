@@ -13,7 +13,10 @@ mod registry;
 
 use crate::console;
 use alloc::alloc::{Layout, alloc, dealloc};
-use myos_abi::{ABI_VERSION, FramebufferInfo, FsBind, KernelApi, ModuleBlkOps, ModuleChrOps, ModuleConsoleOps};
+use myos_abi::{
+    ABI_VERSION, FramebufferInfo, FsBind, KernelApi, ModuleBlkOps, ModuleChrOps, ModuleConsoleOps,
+    PathStat, PersonalityOps, StrRef,
+};
 
 static API: KernelApi = KernelApi {
     abi_version: ABI_VERSION,
@@ -51,6 +54,59 @@ static API: KernelApi = KernelApi {
     pci_find_class: api_pci_find_class,
     framebuffer_info: api_framebuffer_info,
     console_register: api_console_register,
+    personality_register: api_personality_register,
+    personality_exec: api_personality_exec,
+    native_syscall: api_native_syscall,
+    copy_from_user: api_copy_from_user,
+    user_buffer_ok: api_user_buffer_ok,
+    current_tid: api_current_tid,
+    current_pid: api_current_pid,
+    current_ppid: api_current_ppid,
+    task_is_live_user: api_task_is_live_user,
+    task_has_root: api_task_has_root,
+    path_resolve: api_path_resolve,
+    vfs_stat: api_vfs_stat,
+    vfs_listdir: api_vfs_listdir,
+    vfs_mkdir: api_vfs_mkdir,
+    vfs_rmdir: api_vfs_rmdir,
+    vfs_unlink: api_vfs_unlink,
+    vfs_rename: api_vfs_rename,
+    vfs_symlink: api_vfs_symlink,
+    vfs_readlink: api_vfs_readlink,
+    open_path: api_open_path,
+    chdir_path: api_chdir_path,
+    fd_pread: api_fd_pread,
+    fd_kind: api_fd_kind,
+    fd_poll_bits: api_fd_poll_bits,
+    fd_dup_min: api_fd_dup_min,
+    fd_dup2: api_fd_dup2,
+    fd_close: api_fd_close,
+    fd_write: api_fd_write,
+    fd_ioctl: api_fd_ioctl,
+    pipe_open: api_pipe_open,
+    mmap: api_mmap,
+    signal_get_action: api_signal_get_action,
+    signal_set_action: api_signal_set_action,
+    signal_blocked: api_signal_blocked,
+    signal_set_blocked: api_signal_set_blocked,
+    signal_pending: api_signal_pending,
+    signal_take: api_signal_take,
+    signal_kill: api_signal_kill,
+    signal_sigsuspend: api_signal_sigsuspend,
+    signal_interrupt_wait: api_signal_interrupt_wait,
+    signal_terminate: api_signal_terminate,
+    fpu_save: api_fpu_save,
+    fpu_restore: api_fpu_restore,
+    thread_pointer_get: api_thread_pointer_get,
+    thread_pointer_set: api_thread_pointer_set,
+    thread_spawn_from: api_thread_spawn_from,
+    thread_exit: api_thread_exit,
+    wait_addr: api_wait_addr,
+    wake_addr: api_wake_addr,
+    task_sleep_until: api_task_sleep_until,
+    task_yield: api_task_yield,
+    wall_time_us: api_wall_time_us,
+    rng_fill: api_rng_fill,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -627,4 +683,409 @@ unsafe extern "C" fn api_console_register(ops: *const ModuleConsoleOps) -> i32 {
     }
     let ops = unsafe { *ops };
     if console::register(ops) { 0 } else { -1 }
+}
+
+// ---- ABI 13: personalities and the services a syscall layer needs ----------
+
+/// A kernel-memory string argument.
+fn str_ref<'a>(s: StrRef) -> Option<&'a str> {
+    if s.ptr.is_null() {
+        return None;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(s.ptr, s.len) };
+    core::str::from_utf8(bytes).ok()
+}
+
+fn put_str(out: *mut u8, cap: usize, s: &[u8]) -> i32 {
+    if out.is_null() || s.len() > cap {
+        return -1;
+    }
+    unsafe { core::ptr::copy_nonoverlapping(s.as_ptr(), out, s.len()) };
+    s.len() as i32
+}
+
+unsafe extern "C" fn api_personality_register(ops: *const PersonalityOps) -> i32 {
+    if ops.is_null() {
+        return -1;
+    }
+    if crate::personality::register(unsafe { *ops }) { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_personality_exec(
+    path: StrRef,
+    argv: *const StrRef,
+    argc: usize,
+    envp: *const StrRef,
+    envc: usize,
+) -> usize {
+    let Some(path) = str_ref(path) else {
+        return myos_abi::MYOS_SYSERR;
+    };
+    let strs = |p: *const StrRef, n: usize| -> alloc::vec::Vec<&[u8]> {
+        if p.is_null() || n == 0 {
+            return alloc::vec::Vec::new();
+        }
+        unsafe { core::slice::from_raw_parts(p, n) }
+            .iter()
+            .map(|s| if s.ptr.is_null() { &[][..] } else { unsafe { core::slice::from_raw_parts(s.ptr, s.len) } })
+            .collect()
+    };
+    let args = strs(argv, argc);
+    let env = strs(envp, envc);
+    crate::personality::exec_with(path, &args, &env)
+}
+
+unsafe extern "C" fn api_native_syscall(nr: usize, a0: usize, a1: usize, a2: usize, regs: *mut u64) -> usize {
+    let mut regs = crate::user::SyscallRegs::from_ptr(regs);
+    crate::user::native_dispatch(nr, a0, a1, a2, &mut regs)
+}
+
+unsafe extern "C" fn api_copy_from_user(src_user: usize, dst: *mut u8, len: usize) -> i32 {
+    if dst.is_null() {
+        return -1;
+    }
+    if len == 0 {
+        return 0;
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(dst, len) };
+    if crate::user::copy_from_user(crate::task::current_aspace(), src_user, out) { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_user_buffer_ok(ptr: usize, len: usize) -> i32 {
+    i32::from(crate::user::buffer_ok(ptr, len))
+}
+
+unsafe extern "C" fn api_current_tid() -> usize {
+    crate::task::current_tid()
+}
+
+unsafe extern "C" fn api_current_pid() -> usize {
+    crate::task::current_pid()
+}
+
+unsafe extern "C" fn api_current_ppid() -> usize {
+    crate::task::current_ppid()
+}
+
+unsafe extern "C" fn api_task_is_live_user(id: usize) -> i32 {
+    i32::from(crate::task::is_live_user(id))
+}
+
+unsafe extern "C" fn api_task_has_root() -> i32 {
+    i32::from(crate::task::has_root())
+}
+
+unsafe extern "C" fn api_path_resolve(path: StrRef, mode: u32, out: *mut u8, cap: usize) -> i32 {
+    let Some(path) = str_ref(path) else {
+        return -1;
+    };
+    match mode {
+        myos_abi::MYOS_PATH_VIRTUAL => {
+            let mut b = [0u8; 256];
+            match crate::fs::resolve_user_path_virtual(path, &mut b) {
+                Some(n) => put_str(out, cap, &b[..n]),
+                None => -1,
+            }
+        }
+        myos_abi::MYOS_PATH_REAL => match crate::user::resolve_copied_path(path) {
+            Some(p) => put_str(out, cap, p.as_bytes()),
+            None => -1,
+        },
+        myos_abi::MYOS_PATH_REAL_NOFOLLOW => match crate::user::resolve_copied_path_nofollow(path) {
+            Some(p) => put_str(out, cap, p.as_bytes()),
+            None => -1,
+        },
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_stat(path: StrRef, out: *mut PathStat) -> i32 {
+    let Some(path) = str_ref(path) else {
+        return -1;
+    };
+    if out.is_null() {
+        return -1;
+    }
+    match crate::fs::stat(path) {
+        Some(st) => {
+            unsafe {
+                *out = PathStat {
+                    mode: st.mode,
+                    nlink: st.nlink,
+                    size: st.size as u64,
+                    ino: st.ino as u64,
+                    dev: st.dev as u64,
+                };
+            }
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_listdir(path: StrRef, buf: *mut u8, cap: usize) -> i32 {
+    let Some(path) = str_ref(path) else {
+        return -1;
+    };
+    if buf.is_null() {
+        return -1;
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(buf, cap) };
+    crate::fs::listdir(path, out).min(i32::MAX as usize) as i32
+}
+
+unsafe extern "C" fn api_vfs_mkdir(path: StrRef) -> i32 {
+    match str_ref(path) {
+        Some(p) if crate::fs::mkdir(p) => 0,
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_rmdir(path: StrRef) -> i32 {
+    match str_ref(path) {
+        Some(p) if crate::fs::rmdir(p) => 0,
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_unlink(path: StrRef) -> i32 {
+    match str_ref(path) {
+        Some(p) if crate::fs::unlink(p) => 0,
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_rename(old: StrRef, new: StrRef) -> i32 {
+    match (str_ref(old), str_ref(new)) {
+        (Some(o), Some(n)) if crate::fs::rename(o, n) => 0,
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_symlink(target: StrRef, link: StrRef) -> i32 {
+    match (str_ref(target), str_ref(link)) {
+        (Some(t), Some(l)) if crate::fs::symlink(t, l) => 0,
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_readlink(path: StrRef, buf: *mut u8, cap: usize) -> i32 {
+    let Some(path) = str_ref(path) else {
+        return -1;
+    };
+    if buf.is_null() {
+        return -1;
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(buf, cap) };
+    match crate::fs::readlink(path, out) {
+        Some(n) => n as i32,
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_open_path(path: StrRef, flags: usize) -> usize {
+    match str_ref(path) {
+        Some(p) => crate::user::open_path(p, flags),
+        None => myos_abi::MYOS_SYSERR,
+    }
+}
+
+unsafe extern "C" fn api_chdir_path(path: StrRef) -> usize {
+    match str_ref(path) {
+        Some(p) => crate::user::chdir_path(p),
+        None => myos_abi::MYOS_SYSERR,
+    }
+}
+
+unsafe extern "C" fn api_fd_pread(fd: usize, pos: usize, buf: *mut u8, len: usize) -> i32 {
+    let Some(node) = crate::task::fd_file_node(fd) else {
+        return -1;
+    };
+    if buf.is_null() {
+        return -1;
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+    crate::fs::read(&node, pos, out).min(i32::MAX as usize) as i32
+}
+
+unsafe extern "C" fn api_fd_kind(fd: usize, size: *mut usize) -> i32 {
+    match crate::task::fd_kind(fd) {
+        Some(crate::task::FdKind::Tty) => myos_abi::MYOS_FD_TTY,
+        Some(crate::task::FdKind::Pipe) => myos_abi::MYOS_FD_PIPE,
+        Some(crate::task::FdKind::File { size: n }) => {
+            if !size.is_null() {
+                unsafe { *size = n };
+            }
+            myos_abi::MYOS_FD_FILE
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_fd_poll_bits(fd: usize) -> i32 {
+    crate::task::fd_poll_bits(fd).map_or(-1, |b| b as i32)
+}
+
+unsafe extern "C" fn api_fd_dup_min(fd: usize, min: usize) -> i32 {
+    crate::task::fd_dup_min(fd, min).map_or(-1, |n| n as i32)
+}
+
+unsafe extern "C" fn api_fd_dup2(old: usize, new: usize) -> i32 {
+    if crate::task::fd_dup2(old, new) { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_fd_close(fd: usize) -> i32 {
+    if crate::task::fd_close(fd) { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_fd_write(fd: usize, buf_user: usize, len: usize) -> usize {
+    crate::task::fd_write(fd, buf_user, len)
+}
+
+unsafe extern "C" fn api_fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
+    crate::task::fd_ioctl(fd, request, arg)
+}
+
+unsafe extern "C" fn api_pipe_open(read_fd: *mut usize, write_fd: *mut usize) -> i32 {
+    if read_fd.is_null() || write_fd.is_null() {
+        return -1;
+    }
+    match crate::task::pipe_open() {
+        Some((r, w)) => {
+            unsafe {
+                *read_fd = r;
+                *write_fd = w;
+            }
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: isize, off: usize) -> usize {
+    crate::user::do_mmap(addr, len, prot, flags, fd, off)
+}
+
+unsafe extern "C" fn api_signal_get_action(id: usize, sig: u32, handler: *mut usize, flags: *mut u32, mask: *mut u32) {
+    let (h, f, m) = crate::task::signal_get_action(id, sig);
+    unsafe {
+        if !handler.is_null() {
+            *handler = h;
+        }
+        if !flags.is_null() {
+            *flags = f;
+        }
+        if !mask.is_null() {
+            *mask = m;
+        }
+    }
+}
+
+unsafe extern "C" fn api_signal_set_action(id: usize, sig: u32, handler: usize, flags: u32, mask: u32, tramp: usize) -> i32 {
+    if crate::task::signal_set_action(id, sig, handler, flags, mask, tramp) { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_signal_blocked(id: usize) -> u32 {
+    crate::task::signal_blocked(id)
+}
+
+unsafe extern "C" fn api_signal_set_blocked(id: usize, mask: u32) {
+    crate::task::signal_set_blocked_mask(id, mask)
+}
+
+unsafe extern "C" fn api_signal_pending(id: usize) -> u32 {
+    crate::task::signal_pending(id)
+}
+
+unsafe extern "C" fn api_signal_take(id: usize, set: u32) -> i32 {
+    crate::task::signal_take_from(id, set).map_or(-1, |s| s as i32)
+}
+
+unsafe extern "C" fn api_signal_kill(pid: isize, sig: u32) -> i32 {
+    if crate::signal::kill(pid, sig) { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_signal_sigsuspend(mask: u32) -> usize {
+    crate::signal::sigsuspend(mask)
+}
+
+unsafe extern "C" fn api_signal_interrupt_wait() -> i32 {
+    i32::from(crate::signal::interrupt_wait())
+}
+
+unsafe extern "C" fn api_signal_terminate(sig: u32) -> ! {
+    crate::signal::terminate(sig)
+}
+
+unsafe extern "C" fn api_fpu_save(buf: *mut u8) {
+    if !buf.is_null() {
+        unsafe { crate::task::fpu::save(buf) }
+    }
+}
+
+unsafe extern "C" fn api_fpu_restore(buf: *const u8) {
+    if !buf.is_null() {
+        unsafe { crate::task::fpu::restore(buf) }
+    }
+}
+
+unsafe extern "C" fn api_thread_pointer_get() -> u64 {
+    crate::task::tp::get()
+}
+
+unsafe extern "C" fn api_thread_pointer_set(v: u64) {
+    crate::task::tp::set(v)
+}
+
+unsafe extern "C" fn api_thread_spawn_from(regs: *mut u64, sp: usize, set_tls: i32, tls: u64) -> i32 {
+    if regs.is_null() {
+        return -1;
+    }
+    let regs = crate::user::SyscallRegs::from_ptr(regs);
+    let mut start = crate::user::caller_regs(&regs);
+    start.rsp = sp;
+    let tls = (set_tls != 0).then_some(tls);
+    crate::task::spawn_thread(start, tls).map_or(-1, |t| t as i32)
+}
+
+unsafe extern "C" fn api_thread_exit(code: u8) -> ! {
+    crate::task::thread_exit(code)
+}
+
+unsafe extern "C" fn api_wait_addr(addr: usize, expected: u32, deadline_ns: u64) -> i32 {
+    use crate::task::AddrWait;
+    match crate::task::wait_addr(addr, expected, deadline_ns) {
+        AddrWait::Woken => myos_abi::MYOS_WAIT_WOKEN,
+        AddrWait::Changed => myos_abi::MYOS_WAIT_CHANGED,
+        AddrWait::TimedOut => myos_abi::MYOS_WAIT_TIMEOUT,
+        AddrWait::Interrupted => myos_abi::MYOS_WAIT_INTERRUPTED,
+        AddrWait::Fault => myos_abi::MYOS_WAIT_FAULT,
+    }
+}
+
+unsafe extern "C" fn api_wake_addr(addr: usize, max: usize) -> usize {
+    crate::task::wake_addr(addr, max)
+}
+
+unsafe extern "C" fn api_task_sleep_until(deadline_ns: u64) {
+    crate::task::sleep_until(deadline_ns, false);
+}
+
+unsafe extern "C" fn api_task_yield() {
+    crate::task::yield_now();
+}
+
+unsafe extern "C" fn api_wall_time_us() -> u64 {
+    match crate::time::timeval() {
+        Some((s, us)) => s as u64 * 1_000_000 + us as u64,
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn api_rng_fill(buf: *mut u8, len: usize) {
+    if buf.is_null() || len == 0 {
+        return;
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+    crate::rng::fill(out);
 }

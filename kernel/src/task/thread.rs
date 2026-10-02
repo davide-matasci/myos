@@ -58,8 +58,7 @@ pub fn spawn_thread(regs: UserRegs, tls: Option<u64>) -> Option<usize> {
     signal_thread_reset(slot);
     fpu::fork(slot);
     tp::init(slot, tls);
-    #[cfg(feature = "linux-compat")]
-    crate::linux::on_thread(me, slot);
+    crate::personality::on_thread(me, slot);
     drop(tasks);
     irq_restore(flags);
     note_ready(affinity);

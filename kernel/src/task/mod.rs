@@ -297,8 +297,7 @@ pub fn current_id() -> usize {
     current_slot()
 }
 
-/// Parent task slot of the running task (Linux layer `getppid`).
-#[cfg(feature = "linux-compat")]
+/// Parent task slot of the running task (`getppid`).
 pub fn current_ppid() -> usize {
     let flags = irq_save();
     irq_off();

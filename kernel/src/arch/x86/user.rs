@@ -304,6 +304,12 @@ pub fn set_kernel_stack_top(top: usize) {
 /// Record which CPU a kernel stack belongs to (riscv64 only; see there).
 pub fn stamp_stack_cpu(_kstack_top: usize, _cpu: usize) {}
 
+/// The arch word of a foreign-personality signal frame: the user CS (a
+/// Linux `sigcontext` carries it in `csgsfs`).
+pub fn signal_arch_word() -> u64 {
+    (super::gdt::user_cs() | 3) as u64
+}
+
 /// Point GS at this CPU's syscall state (x86). Called from BSP/AP interrupt init.
 pub fn load_percpu_gs(cpu: usize) {
     const IA32_GS_BASE: u32 = 0xC000_0101;

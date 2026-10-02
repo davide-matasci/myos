@@ -658,15 +658,13 @@ pub fn fd_lseek(fd: usize, offset: i64, whence: usize) -> usize {
     })
 }
 
-/// What an open fd refers to (for the Linux layer's `fstat`).
-#[cfg(feature = "linux-compat")]
+/// What an open fd refers to (a personality module's `fstat`).
 pub enum FdKind {
     Tty,
     Pipe,
     File { size: usize },
 }
 
-#[cfg(feature = "linux-compat")]
 pub fn fd_kind(fd: usize) -> Option<FdKind> {
     let entry = with_process_mut(|t| t.fds.get(fd).copied())?;
     Some(match entry {

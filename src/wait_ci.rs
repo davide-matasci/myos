@@ -111,6 +111,10 @@ const CMD_DNS: &[u8] = b"dns www.google.com\n";
 // (libgloss execve) into sbase programs. Built with shell variables (sbase
 // seq prints nothing on riscv64's soft-float build).
 const CMD_EXEC_LIMITS: &[u8] = b"A=\"a b c d e f g h\";A=\"$A $A $A $A $A\";X=$A$A$A$A$A$A$A$A$A;set -- $(/bin/sbase/echo $A);Y=$(X=$X /bin/sbase/printenv X);echo EXEC-LIMITS $# ${#Y}\n";
+// The Linux layer's kernel module ships in every image (`/lib/modules/linux`)
+// and is loaded at boot only with `--features linux_compat`: without the
+// feature, load it at run time and check both registrations.
+const CMD_INSMOD_LINUX: &[u8] = b"insmod /lib/modules/linux; cat /proc/modules\n";
 // Optional Linux compatibility layer smoke (`--features linux_compat`): a
 // static-PIE musl binary run through the `linux` launcher.
 const CMD_LINUX: &[u8] = b"linux /bin/linux/linux-smoke\n";
@@ -474,6 +478,8 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         cmds.push(CMD_LINUX);
         cmds.push(CMD_LINUX_DYN);
         cmds.push(CMD_GET_ALPINE);
+    } else {
+        cmds.push(CMD_INSMOD_LINUX);
     }
     if !ci_mini() {
         cmds.push(CMD_HTTP);
@@ -766,6 +772,19 @@ fn interactive_urandom_cmd_ok(serial: &str) -> bool {
         return false;
     }
     at_interactive_prompt(serial)
+}
+
+/// `insmod /lib/modules/linux`: the module reports `[ OK ] linux` and
+/// `/proc/modules` lists it after the boot modules.
+fn interactive_insmod_linux_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    let Some((_, after)) = tail.rsplit_once("cat /proc/modules") else {
+        return false;
+    };
+    tail.contains("[ OK ] linux")
+        && !tail.contains("[ FAIL ]")
+        && after.lines().any(|l| l.trim() == "linux")
+        && at_interactive_prompt(serial)
 }
 
 /// Linux compatibility smoke: every check in linux-compat/tests/linux-smoke.c
@@ -1188,6 +1207,7 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         i if cmds[i] == CMD_EXEC_LIMITS => {
             interactive_tail(serial).contains("EXEC-LIMITS 40 711") && at_interactive_prompt(serial)
         }
+        i if cmds[i] == CMD_INSMOD_LINUX => interactive_insmod_linux_ok(serial),
         i if cmds[i] == CMD_LINUX => interactive_linux_cmd_ok(serial),
         i if cmds[i] == CMD_LINUX_DYN => interactive_linux_dyn_cmd_ok(serial),
         i if cmds[i] == CMD_GET_ALPINE => {

@@ -3,7 +3,7 @@
 //! Dispositions, masks and pending bits are the native ones
 //! (`task::signal_*`, in native numbering); this module translates numbers
 //! and structures at the boundary. A caught signal runs through the native
-//! decision path (`crate::signal::on_syscall_exit`), which calls [`deliver`]
+//! decision path (`crate::k::signal::on_syscall_exit`), which calls [`deliver`]
 //! for a Linux task: the arch module writes a Linux `rt_sigframe` (siginfo,
 //! ucontext with the interrupted registers, FP state) and `rt_sigreturn`
 //! undoes it.
@@ -13,9 +13,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::abi::*;
 use super::arch;
 use super::sys::{get_u64, put, R};
-use super::MAX_TASKS;
-use crate::task::{self, SigAction};
-use crate::user::SyscallRegs;
+use crate::k::MAX_TASKS;
+use crate::k::task;
+use crate::k::user::SyscallRegs;
 
 const SA_RESTORER: usize = 0x0400_0000;
 const SS_DISABLE: u32 = 2;
@@ -50,6 +50,9 @@ pub struct Frame {
     /// Interrupted PC and the syscall result it will see.
     pub pc: usize,
     pub ret: usize,
+    /// Arch word from the kernel (x86_64: the user CS; unused elsewhere).
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+    pub arch: u64,
 }
 
 /// `siginfo_t` for a signal sent with `kill` (`SI_USER`).
@@ -59,27 +62,20 @@ pub fn siginfo(sig: usize) -> [u8; 128] {
     b
 }
 
-/// Run `act` for native signal `sig` in the current Linux task: called by
-/// the native delivery path with the decided return context (`pc`, `ret`)
-/// and the native mask the handler's return restores. Returns the value for
-/// the result register, or `None` if the frame does not fit (the caller
-/// then kills the task with `SIGSEGV`, as Linux does).
-pub fn deliver(
-    regs: &mut SyscallRegs,
-    sig: u32,
-    act: &SigAction,
-    tramp: usize,
-    restore_mask: u32,
-    pc: usize,
-    ret: usize,
-) -> Option<usize> {
+/// Run the caught handler of a native signal in the current Linux task:
+/// called by the kernel's delivery path with the decided return context
+/// (`pc`, `ret`) and the native mask the handler's return restores. Returns
+/// the value for the result register, or `None` if the frame does not fit
+/// (the kernel then kills the task with `SIGSEGV`, as Linux does).
+pub fn deliver(regs: &mut SyscallRegs, d: &myos_abi::SignalDelivery) -> Option<usize> {
     let f = Frame {
-        sig: sig_to_linux(sig),
-        handler: act.handler,
-        restorer: tramp,
-        mask: mask_to_linux(restore_mask),
-        pc,
-        ret,
+        sig: sig_to_linux(d.sig),
+        handler: d.handler,
+        restorer: d.tramp,
+        mask: mask_to_linux(d.restore_mask),
+        pc: d.pc,
+        ret: d.ret,
+        arch: d.arch,
     };
     arch::deliver(regs, &f)
 }
@@ -93,7 +89,7 @@ pub fn rt_sigreturn(regs: &mut SyscallRegs) -> usize {
             ret
         }
         // A corrupt frame: what Linux does too.
-        None => crate::signal::terminate(crate::signal::SIGSEGV),
+        None => crate::k::signal::terminate(crate::k::signal::SIGSEGV),
     }
 }
 
@@ -109,13 +105,13 @@ fn trampoline() -> Result<usize, usize> {
     const PROT_EXEC: usize = 4;
     const MAP_PRIVATE: usize = 2;
     const MAP_ANON: usize = 0x20;
-    let page = crate::user::PAGE;
-    let va = crate::user::do_mmap(0, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if va >= crate::signal::SYSERR_EINTR {
+    let page = crate::k::user::PAGE;
+    let va = crate::k::user::do_mmap(0, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if va >= crate::k::signal::SYSERR_EINTR {
         return Err(ENOMEM);
     }
     put(va, arch::TRAMP_CODE)?;
-    if crate::user::sys_mprotect(va, page, PROT_READ | PROT_EXEC) != 0 {
+    if crate::k::user::sys_mprotect(va, page, PROT_READ | PROT_EXEC) != 0 {
         return Err(ENOMEM);
     }
     TRAMP[slot].store(va as u64, Ordering::Relaxed);
@@ -144,7 +140,7 @@ pub fn rt_sigaction(sig: usize, act: usize, oact: usize) -> R {
     };
     if oact != 0 {
         let (handler, flags, mask) = task::signal_get_action(id, n);
-        let caught = handler > crate::signal::HANDLER_IGN;
+        let caught = handler > crate::k::signal::HANDLER_IGN;
         let mut w = [0u64; 4];
         w[0] = handler as u64;
         if caught {
@@ -164,7 +160,7 @@ pub fn rt_sigaction(sig: usize, act: usize, oact: usize) -> R {
         let (handler, flags) = (w[0] as usize, w[1] as usize);
         let mask = mask_from_linux(w[mask_word]);
         let mut tramp = 0;
-        if handler > crate::signal::HANDLER_IGN {
+        if handler > crate::k::signal::HANDLER_IGN {
             let restorer = if arch::SIGACTION_HAS_RESTORER && flags & SA_RESTORER != 0 {
                 w[2] as usize
             } else {
@@ -209,10 +205,10 @@ pub fn rt_sigpending(set: usize) -> R {
     Ok(0)
 }
 
-/// Always `EINTR` once a handler has run (see `crate::signal::sigsuspend`).
+/// Always `EINTR` once a handler has run (see `crate::k::signal::sigsuspend`).
 pub fn rt_sigsuspend(set: usize) -> usize {
     match get_u64(set) {
-        Ok(m) => crate::signal::sigsuspend(mask_from_linux(m)),
+        Ok(m) => crate::k::signal::sigsuspend(mask_from_linux(m)),
         Err(e) => err(e),
     }
 }
@@ -239,7 +235,7 @@ pub fn rt_sigtimedwait(set: usize, info: usize, timeout: usize) -> R {
         if deadline.is_some_and(|d| super::sys::now_us() >= d) {
             return Err(EAGAIN);
         }
-        if crate::signal::interrupt_wait() {
+        if crate::k::signal::interrupt_wait() {
             return Err(EINTR);
         }
         task::yield_now();

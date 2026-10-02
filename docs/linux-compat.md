@@ -1,14 +1,18 @@
 # Linux syscall compatibility layer (optional)
 
-> **Optional, off by default.** None of this is in a default build: the
-> kernel code is behind a Cargo feature, and nothing about native myos
-> programs changes when it is on. myos's own syscall ABI stays the primary
-> interface; this layer is an add-on for running some unmodified Linux
-> binaries.
+> **Optional, a kernel module.** The layer is the `linux` kernel module
+> (`modules/linux`): the kernel itself has no Linux code, only a generic
+> *personality* hook (`kernel/src/personality.rs`) the module fills through
+> the module ABI. Every image carries the module under `/lib/modules/linux`
+> and the `linux` launcher; the `linux_compat` Cargo feature (off by
+> default) loads the module at boot and adds the musl test binaries and
+> `get-alpine`. Nothing about native myos programs changes when it is
+> loaded. myos's own syscall ABI stays the primary interface; this layer is
+> an add-on for running some unmodified Linux binaries.
 
-With it, a Linux binary linked against musl (x86_64, aarch64 or riscv64),
-static-PIE or dynamically linked, runs on myos when started through the
-`linux` launcher:
+With the module loaded, a Linux binary linked against musl (x86_64, aarch64
+or riscv64), static-PIE or dynamically linked, runs on myos when started
+through the `linux` launcher:
 
 ```sh
 cargo run --features linux_compat          # build + boot the x86_64 image
@@ -19,6 +23,10 @@ linux /bin/linux/linux-dyn                 # dynamic: prints LINUX-DYN OK
 get-alpine jq                              # Alpine Linux packages
 linux --root /tmp/alpine jq -n '1+1'
 ```
+
+In a default build the module is not loaded at boot; `insmod
+/lib/modules/linux` loads it (`[ OK ] linux`, listed in `/proc/modules`),
+after which `linux PROGRAM` works for any Linux musl binary at hand.
 
 ## Alpine Linux packages: `get-alpine`
 
@@ -53,7 +61,8 @@ linux --root ROOT PROGRAM [ARG...]
 exec, with a Linux `PATH`, so the program finds its dynamic linker, shared
 objects and data files at their Alpine paths. A chrooted Linux process still
 sees the system's `/dev` and `/proc`, as if they were bind-mounted into the
-root (`linux/sys.rs`, `system_path`); native chroots are not affected.
+root (`modules/linux/src/sys.rs`, `system_path`); native chroots are not
+affected.
 
 `ALPINE_MIRROR` overrides `https://dl-cdn.alpinelinux.org/alpine` and
 `ALPINE_BRANCH` overrides `latest-stable`. `/tmp` is a tmpfs in the kernel
@@ -63,14 +72,16 @@ heap, so a root there holds a few small packages and is gone at reboot.
 
 | Where | What |
 |-------|------|
+| `kernel/build.rs` | builds `modules/linux` for the 3 arches like every module (`target/linux-<triple>`) |
+| `src/limine_image.rs` | `OPTIONAL_MODULES`: `linux` is in `limine.conf` only with `linux_compat`, in `/lib/modules` always |
 | `Cargo.toml` (root) | feature `linux_compat` (not in `default` or `core`) |
-| `kernel/Cargo.toml` | feature `linux-compat`, enabled by the root one |
-| `linux-compat/build.sh` | builds the launcher and the Linux test binary for each arch (run automatically by `build.rs` when the feature is on) |
-| `src/main.rs` | builds the aarch64 / riscv64 kernels with `linux-compat` when the host binary has `linux_compat` |
+| `linux-compat/build-launcher.sh` | the `linux` launcher for each arch, in every image (`build.rs` runs it) |
+| `linux-compat/build.sh` | musl, the Linux test binaries and `get-alpine` for each arch (run by `build.rs` when the feature is on) |
 
-Without the feature the kernel has no Linux code, `SYS_LINUX_NEXT_EXEC`
-(51) is an unknown syscall, and the image has no `/bin/etc/linux` or
-`/bin/linux/`.
+Without the module loaded the kernel has no personality registered:
+`SYS_LINUX_NEXT_EXEC` (51) fails, so `linux PROGRAM` prints an error, and a
+task can never get the Linux personality. Without the feature the image has
+no `/bin/linux/` and no `get-alpine`.
 
 ## How a process becomes a Linux process
 
@@ -92,40 +103,68 @@ Linux ones. It is killed by its own fault; the kernel stays up.
 
 | Where | What |
 |-------|------|
-| `kernel/src/linux/mod.rs` | per-task state (personality, pending flag), the hooks the core calls, the auxv for new Linux images |
-| `kernel/src/linux/x86_64.rs` | x86_64 syscall numbers, `struct stat`, signal frame, FXSAVE state, `arch_prctl` (the core's thread pointer) |
-| `kernel/src/linux/aarch64.rs` | signal frame (`fpsimd_context`) |
-| `kernel/src/linux/riscv64.rs` | signal frame, the FPU enable for Linux tasks |
-| `kernel/src/linux/generic.rs` | the `asm-generic` syscall numbers and `struct stat` aarch64 and riscv64 share |
-| `kernel/src/linux/sys.rs` | the handlers: decode Linux arguments, call the native implementation, return `-errno` |
-| `kernel/src/linux/signal.rs` | `rt_sigaction` & co., handler delivery, `rt_sigreturn`, the sigreturn trampoline page |
-| `kernel/src/linux/thread.rs` | `clone` (threads and the fork form), `futex`, `set_tid_address`, thread `exit` |
-| `kernel/src/linux/abi.rs` | errno values, signal-number and sigset translation, `dirent64` layout |
-| `kernel/src/linux/files.rs` | paths of the fds a Linux process opened (`fstat`, `getdents64`, `fchdir`, `*at`) |
+| `kernel/src/personality.rs` | the generic side: which task slots have / are about to get the personality, the registered `PersonalityOps`, the hooks the core calls |
+| `modules/linux/src/main.rs` | `module_init`: registers `PersonalityOps` (syscall, deliver, the task hooks); the module's allocator over the kernel heap |
+| `modules/linux/src/k.rs` | the kernel as the module sees it: wrappers over `KernelApi` grouped like the old kernel modules (`task`, `user`, `fs`, `signal`, ...) |
+| `modules/linux/src/x86_64.rs` | x86_64 syscall numbers, `struct stat`, signal frame, FXSAVE state, `arch_prctl` (the core's thread pointer) |
+| `modules/linux/src/aarch64.rs` | signal frame (`fpsimd_context`) |
+| `modules/linux/src/riscv64.rs` | signal frame, the sigreturn trampoline code |
+| `modules/linux/src/generic.rs` | the `asm-generic` syscall numbers and `struct stat` aarch64 and riscv64 share |
+| `modules/linux/src/sys.rs` | the handlers: decode Linux arguments, call the native implementation, return `-errno` |
+| `modules/linux/src/signal.rs` | `rt_sigaction` & co., handler delivery, `rt_sigreturn`, the sigreturn trampoline page |
+| `modules/linux/src/thread.rs` | `clone` (threads and the fork form), `futex`, `set_tid_address`, thread `exit` |
+| `modules/linux/src/abi.rs` | errno values, signal-number and sigset translation, `dirent64` layout |
+| `modules/linux/src/files.rs` | paths of the fds a Linux process opened (`fstat`, `getdents64`, `fchdir`, `*at`) |
 | `linux-compat/launcher.c` | the `linux` command |
 | `linux-compat/tests/linux-smoke.c` | Linux-side boot smoke (musl, static) |
 | `linux-compat/tests/linux-dyn.c`, `libsmoke*.c` | dynamically linked smoke and its shared objects |
 | `linux-compat/get-alpine.c` | the Alpine package fetcher (linked with the zlib port) |
 
-Hooks in the core, each behind `#[cfg(feature = "linux-compat")]`:
+### The personality ABI
 
-- `syscall_dispatch`: a Linux-personality task's syscalls go to
-  `linux::dispatch` (then the usual signal handling at syscall exit);
+A *personality* is a foreign syscall ABI a module provides; one can be
+registered (`KernelApi::personality_register`, ABI 13). The kernel keeps
+two bits per task slot, *active* and *pending*, and calls the module's
+`PersonalityOps` at these points (all generic, nothing Linux-specific in
+the kernel):
+
+- `syscall_dispatch`: an active task's syscalls go to `ops.syscall(nr, a0,
+  a1, a2, regs)` instead of the native table (then the usual signal
+  handling at syscall exit); `regs` is the saved user register block, so
+  the module reads further arguments and sets the result the arch way;
 - spawn / fork / thread creation / exec (`task/lifecycle.rs`,
-  `task/thread.rs`): reset, copy, or apply the personality (the thread
-  pointer and the FP/SIMD registers are switched for every user task by the
-  core, `task/tp.rs` and `task/fpu.rs`);
-- signal delivery (`signal.rs`): a caught signal of a Linux task gets a
-  Linux `rt_sigframe` instead of the native frame;
-- riscv64 user entry (`user/mod.rs`, `user_sstatus`): Linux tasks run with
-  the FPU on (`sstatus.FS`); native programs are soft-float;
-- exec (`user/syscall.rs`): extra auxv entries (`AT_PHDR`, `AT_PHNUM`,
-  `AT_ENTRY`, `AT_BASE`, ...) that musl's startup needs, and the dynamic
-  linker of a dynamically linked program (see below).
+  `task/thread.rs`): the kernel resets, copies or applies the bits and
+  calls `ops.on_spawn / on_fork / on_thread / on_exec` so the module can do
+  the same with its own per-slot state (fd paths, the trampoline, the
+  `clear_tid` word). The thread pointer and the FP/SIMD registers are
+  switched for every user task by the core (`task/tp.rs`, `task/fpu.rs`);
+- signal delivery (`signal.rs`): a caught signal of an active task goes to
+  `ops.deliver(regs, &SignalDelivery, &mut ret)` (the decided handler,
+  trampoline, return context and the native mask the handler's return
+  restores; on x86_64 `arch` carries the user code segment), which writes
+  the foreign frame or fails (the kernel then kills the task with
+  `SIGSEGV`);
+- riscv64 user entry (`arch/riscv64/user.rs`, `user_sstatus`): with
+  `PERSONALITY_FPU_ON` in `ops.flags`, active tasks run with the FPU on
+  (`sstatus.FS`); native programs are soft-float;
+- exec (`user/syscall.rs`): with the personality pending or active, the
+  new image gets the SysV auxv entries (`AT_PHDR`, `AT_PHNUM`, `AT_ENTRY`,
+  `AT_BASE`, ...) and its `PT_INTERP` dynamic linker is mapped (see below).
+  `KernelApi::personality_exec` is the exec that keeps the personality
+  (Linux `execve`); `SYS_LINUX_NEXT_EXEC` sets the pending bit for the
+  launcher.
 
-The core refactors this needed are feature-independent: `exec_path`,
-`open_path` and `chdir_path` take a kernel string (the native syscalls copy
-the user string and call them), and `build_argv_stack` takes auxv entries.
+The module's other needs are plain `KernelApi` services added with ABI 13:
+`native_syscall` (a native syscall from kernel mode, e.g. `read`, `brk`,
+`waitpid`), `copy_from_user`, the path / VFS calls (`path_resolve`,
+`vfs_stat`, `vfs_listdir`, ...), fd calls (`fd_pread`, `fd_kind`,
+`fd_dup2`, `pipe_open`, ...), `mmap`, the signal table (`signal_get_action`
+/ `signal_set_action`, masks, `signal_kill`, `signal_sigsuspend`, ...),
+`fpu_save` / `fpu_restore`, the thread pointer, `thread_spawn_from` (a
+thread resuming like the caller of a syscall on a new stack, for `clone`),
+`wait_addr` / `wake_addr` (for `futex`), `task_sleep_until`, `wall_time_us`
+and `rng_fill`. The module uses `alloc` (`Vec`, `String`) through the
+kernel heap (`KernelApi::alloc` / `dealloc`).
 
 ## Supported syscalls
 
@@ -177,8 +216,8 @@ A dynamically linked program names its interpreter in `PT_INTERP` (musl:
 `/lib/ld-musl-<arch>.so.1`, which is `libc.so` itself). For a Linux exec of
 such a program the kernel:
 
-1. reads the interpreter (`linux::exec_interp`) before replacing the current
-   image, so a missing one fails the exec cleanly;
+1. reads the interpreter (`exec_interp` in `user/syscall.rs`) before
+   replacing the current image, so a missing one fails the exec cleanly;
 2. maps the program as usual but **without applying its relocations**
    (`elf::realize_as(.., relocate: false)`): they refer to symbols in shared
    objects, which the dynamic linker resolves;
@@ -268,12 +307,14 @@ reference. It then runs
 `get-alpine jq && linux --root /tmp/alpine jq -nr '"ALPINE-JQ \(1+2+3)"'` and
 expects `ALPINE-JQ 6` (this needs the Alpine mirror to be reachable).
 
-The normal CI does not include the layer. The full-boot CI does: with
-`full_boot`, `MYOS_CI_FEATURES=linux_compat` makes
-`scripts/ci-build-kernels.sh` build the layer's pieces and the kernels with
-it (its artifact hash covers `linux-compat/`), so all four boot jobs
-(bios, uefi, aarch64, riscv64) run the tests above. There are no separate
-Linux jobs.
+Without the feature (boot-mini, the normal PR CI), the harness instead
+runs `insmod /lib/modules/linux; cat /proc/modules` and expects `[ OK ]
+linux` and the module in the list: the module is built and loadable in
+every build. The full-boot CI runs the Linux tests: with `full_boot`,
+`MYOS_CI_FEATURES=linux_compat` makes `scripts/ci-build-kernels.sh` build
+the musl pieces and the images with the module loaded at boot (its
+artifact hash covers `linux-compat/`), so all four boot jobs (bios, uefi,
+aarch64, riscv64) run the tests above. There are no separate Linux jobs.
 
 `linux-compat/build.sh` builds musl (static and shared) with clang for each
 target. On aarch64/riscv64 musl's `long double` is 128-bit and needs

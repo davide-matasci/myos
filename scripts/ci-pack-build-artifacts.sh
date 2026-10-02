@@ -21,6 +21,7 @@ files=(
   target/netfs-*
   target/fat-*
   target/ext2-*
+  target/linux-*
   target/ok-*
   target/std-*
   target/c-hello-*
@@ -140,6 +141,12 @@ required=(
   target/ext2-x86_64-unknown-none
   target/ext2-aarch64-unknown-none-softfloat
   target/ext2-riscv64imac-unknown-none-elf
+  target/linux-x86_64-unknown-none
+  target/linux-aarch64-unknown-none-softfloat
+  target/linux-riscv64imac-unknown-none-elf
+  target/linux-launcher-x86_64-unknown-none
+  target/linux-launcher-aarch64-unknown-none
+  target/linux-launcher-riscv64-unknown-none
   target/ok-x86_64-unknown-none
   target/ok-aarch64-unknown-none-softfloat
   target/ok-riscv64imac-unknown-none-elf

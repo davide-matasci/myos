@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the optional Linux compatibility layer's userspace pieces, per arch
 # (x86_64, aarch64, riscv64):
-#   target/linux-launcher-<arch>-unknown-none  the `linux` launcher (myos newlib)
+#   target/linux-launcher-<arch>-unknown-none  the `linux` launcher (myos newlib,
+#                                              build-launcher.sh: in every image)
 #   target/linux-smoke-<arch>-linux-musl       a Linux static-PIE test (musl)
 #   target/linux-compat/<arch>/ld-musl-<arch>.so.1  musl's libc.so / dynamic linker
 #   target/linux-compat/<arch>/{linux-dyn,libsmoke.so,libsmoke2.so}
@@ -168,18 +169,9 @@ for arch in "${ARCHES[@]}"; do
     "$prefix/lib/Scrt1.o" "$prefix/lib/crti.o" "$ROOT/linux-compat/tests/linux-dyn.c" \
     "$out/libsmoke.so" -L"$prefix/lib" -lc "$prefix/lib/crtn.o"
 
-  echo "==> linux launcher ($arch, myos newlib)"
-  triple="$arch-unknown-myos"
-  nl="$ROOT/target/newlib-$arch"
-  obj="$ROOT/target/linux-launcher-$arch.o"
-  "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$nl/$triple/include" \
-    -c "$ROOT/linux-compat/launcher.c" -o "$obj"
-  ld.lld -pie --no-dynamic-linker -o "$ROOT/target/linux-launcher-$arch-unknown-none" \
-    --entry=_start -z max-page-size=4096 \
-    "$nl/$triple/lib/crt0.o" "$obj" -L"$nl/$triple/lib" \
-    --start-group -lc -lgloss -lg --end-group
-
   echo "==> get-alpine ($arch, myos newlib + zlib)"
   build_get_alpine "$arch"
 done
+# The launcher ships in every image; its own script builds it for the 3 arches.
+"$ROOT/linux-compat/build-launcher.sh"
 echo "linux-compat -> target/linux-launcher-*-unknown-none, target/linux-smoke-*-linux-musl, target/linux-compat/<arch>/"
