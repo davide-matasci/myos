@@ -121,8 +121,10 @@ const CMD_LINUX: &[u8] = b"linux /bin/linux/linux-smoke\n";
 // ... and a dynamically linked one (PT_INTERP, shared objects, dlopen).
 const CMD_LINUX_DYN: &[u8] = b"linux /bin/linux/linux-dyn\n";
 // ... and a real Alpine Linux package, downloaded at run time (jq +
-// oniguruma + musl), run chrooted in its Alpine root.
-const CMD_GET_ALPINE: &[u8] = b"get-alpine jq && linux --root /tmp/alpine jq -nr '\"ALPINE-JQ \\(1+2+3)\"'\n";
+// oniguruma + musl), run chrooted in its Alpine root: it counts the binds
+// of /dev, /proc and /net it sees in /proc/mounts (3, doubled).
+const CMD_GET_ALPINE: &[u8] =
+    b"get-alpine jq && linux --root /tmp/alpine jq -Rrn '[inputs|select(endswith(\" bind rw 0 0\"))]|\"ALPINE-JQ \\(length*2)\"' /proc/mounts\n";
 // ... and Python (python3 and its 19 dependencies, ~45 MB in /tmp): the
 // standard library, and the json and sqlite3 C extension modules.
 const CMD_PYTHON: &[u8] =
