@@ -45,6 +45,9 @@ Outbound TCP/UDP first. `listen`/`accept` return `EOPNOTSUPP`. Most `SO_*`/`TCP_
 
 ### Build
 
+`cargo build` runs these itself when `target/` lacks their outputs (curl and
+`socket_smoke` are in every `core` image); by hand:
+
 ```sh
 ./toolchain/newlib/build.sh      # includes socket/inet/netdb/pollselect in libgloss
 ./scripts/build-c-hello.sh       # builds socket_smoke

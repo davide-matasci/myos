@@ -79,18 +79,33 @@ struct Entry {
     mode: u32,
 }
 
+/// A file the image needs: a missing one is a build error, never a silently
+/// smaller image (the guest then fails with "not found" much later, or an
+/// ISO ships without curl). `build.rs` builds every port and program the
+/// active features ship, so this names what to run when it did not.
 fn read(path: &Path) -> Option<Vec<u8>> {
-    match std::fs::read(path) {
-        Ok(v) => Some(v),
-        Err(e) => {
-            eprintln!("initramfs: skip {} ({e})", path.display());
-            None
+    read_any(&[path])
+}
+
+/// Like `read`, but accepts the first of several paths (canonical name or
+/// the `coreutils-*` pack alias of ci-build.tar).
+fn read_any(paths: &[&Path]) -> Option<Vec<u8>> {
+    match read_optional(paths) {
+        Some(v) => Some(v),
+        None => {
+            let tried: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+            panic!(
+                "initramfs: required file missing: {} (run `cargo build`, which builds the enabled \
+                 ports and programs; or the port's build.sh under ports/, see README)",
+                tried.join(" or ")
+            );
         }
     }
 }
 
-/// Like `read`, but tries several paths and only logs skips if all miss.
-fn read_any(paths: &[&Path]) -> Option<Vec<u8>> {
+/// The first readable of `paths`, or `None` with a note per miss: only for
+/// files a build may legitimately lack.
+fn read_optional(paths: &[&Path]) -> Option<Vec<u8>> {
     let mut errors: Vec<(String, String)> = Vec::new();
     for path in paths {
         match std::fs::read(path) {
@@ -102,6 +117,12 @@ fn read_any(paths: &[&Path]) -> Option<Vec<u8>> {
         eprintln!("initramfs: skip {path} ({e})");
     }
     None
+}
+
+/// Programs every `core` image carries (curl, the boot-CI smokes): required
+/// then; a lean `--no-default-features` image goes without them.
+fn read_core(paths: &[&Path]) -> Option<Vec<u8>> {
+    if feature_enabled("core") { read_any(paths) } else { read_optional(paths) }
 }
 
 fn add(entries: &mut Vec<Entry>, rel: &str, data: Option<Vec<u8>>) {
@@ -185,8 +206,8 @@ fn collect_tree(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
 }
 
 /// Build the newc initramfs archive for `arch` from the ELFs under `target/`.
-/// Missing files are skipped (the kernel keeps a small embedded fallback for
-/// boot-critical programs), so this is safe to run before every port has built.
+/// Every file the active features ship must exist (`read` panics otherwise):
+/// `build.rs` runs the missing ports' build scripts before this.
 pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     let target = manifest_dir.join("target");
     let (kernel_triple, none_triple, myos_triple) = triples(arch);
@@ -224,9 +245,9 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
 
     // coreutils: one multicall ELF aliased under every name -> bin/coreutils/<name>.
     // Stored once via a hardlink group.
-    let coreutils_elf = read(&target.join(format!("coreutils-{myos_triple}")));
     if feature_enabled("port_coreutils")
         && let Some(text) = read(&target.join(format!("coreutils-manifest-{arch}.txt"))) {
+        let coreutils_elf = read(&target.join(format!("coreutils-{myos_triple}")));
         let text = String::from_utf8_lossy(&text);
         let mut names: Vec<String> = Vec::new();
         for line in text.lines() {
@@ -312,9 +333,10 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     add(
         &mut entries,
         "bin/etc/socket_smoke",
-        read(&target.join(format!("c-socket_smoke-{none_triple}"))).or_else(|| {
-            read(&target.join(format!("coreutils-c-socket_smoke-{none_triple}")))
-        }),
+        read_core(&[
+            &target.join(format!("c-socket_smoke-{none_triple}")),
+            &target.join(format!("coreutils-c-socket_smoke-{none_triple}")),
+        ]),
     );
 
     // pty boot-CI smoke -> bin/etc/pty_smoke (openpty/forkpty + line-
@@ -324,9 +346,10 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     add(
         &mut entries,
         "bin/etc/pty_smoke",
-        read(&target.join(format!("pty-smoke-{none_triple}"))).or_else(|| {
-            read(&target.join(format!("coreutils-pty-smoke-{none_triple}")))
-        }),
+        read_core(&[
+            &target.join(format!("pty-smoke-{none_triple}")),
+            &target.join(format!("coreutils-pty-smoke-{none_triple}")),
+        ]),
     );
 
     // tcp listen/accept boot-CI smoke -> bin/etc/tcp_listen_smoke (netd
@@ -334,7 +357,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     add(
         &mut entries,
         "bin/etc/tcp_listen_smoke",
-        read(&target.join(format!("tcp-listen-smoke-{none_triple}"))),
+        read_core(&[&target.join(format!("tcp-listen-smoke-{none_triple}"))]),
     );
 
     // urandom boot-CI smoke -> bin/etc/urandom_smoke (kernel CSPRNG via
@@ -343,18 +366,20 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     add(
         &mut entries,
         "bin/etc/urandom_smoke",
-        read(&target.join(format!("urandom-smoke-{none_triple}"))).or_else(|| {
-            read(&target.join(format!("coreutils-urandom-smoke-{none_triple}")))
-        }),
+        read_core(&[
+            &target.join(format!("urandom-smoke-{none_triple}")),
+            &target.join(format!("coreutils-urandom-smoke-{none_triple}")),
+        ]),
     );
 
     // trimmed curl (HTTPS GET + -o) over userspace sockets + mbedtls.
     // Canonical guest path is /bin/etc/curl ($PATH includes /bin/etc). Also install
     // /bin/custom/curl next to ping/http/dns (hardlink group = one ELF in the archive).
     // Fallback to coreutils-curl-* pack alias when ci-build.tar omitted the canonical name.
-    let curl_elf = read(&target.join(format!("curl-{none_triple}"))).or_else(|| {
-        read(&target.join(format!("coreutils-curl-{none_triple}")))
-    });
+    let curl_elf = read_core(&[
+        &target.join(format!("curl-{none_triple}")),
+        &target.join(format!("coreutils-curl-{none_triple}")),
+    ]);
     add_hardlink_group(
         &mut entries,
         &["bin/etc/curl".to_string(), "bin/custom/curl".to_string()],
@@ -369,7 +394,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     add(
         &mut entries,
         "lib/cacert.pem",
-        read_any(&[&cacert_canon, &cacert_alias]),
+        read_core(&[&cacert_canon, &cacert_alias]),
     );
 
     // Kernel modules -> lib/modules/<name> (the same ELFs Limine loads at
