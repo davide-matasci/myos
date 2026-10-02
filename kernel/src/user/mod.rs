@@ -51,10 +51,11 @@ pub const USER_STACK_PAGES: usize = 256;
 ///   and GNU make's os-test parsing xmallocs well past the old 512-page cap
 ///   ("make: *** virtual memory exhausted"), so allow 4096 pages (16 MiB).
 /// - aarch64/riscv64: TLS arena is a 2 MiB brk allocation — window must fit
-///   that plus headroom. aarch64 stays under the 4×512-page L2 spill cap
-///   (image + stack + heap ≲ 2048 pages from USER_BASE).
+///   that plus headroom. aarch64 matches x86_64 (16 MiB; zstd's 4 MiB window
+///   in get-void needs more than the old 3 MiB); image + stack + heap + the
+///   mmap window stay within `AARCH64_USER_L2_TABLES` (128 MiB).
 #[cfg(target_arch = "aarch64")]
-const HEAP_PAGES: usize = 768;
+const HEAP_PAGES: usize = 4096;
 #[cfg(target_arch = "riscv64")]
 const HEAP_PAGES: usize = 1024;
 #[cfg(target_arch = "x86_64")]
@@ -371,6 +372,12 @@ const AARCH64_USER_L3_PAGES: usize = 512;
 /// per-process span from USER_BASE is at most 64 × 2 MiB = 128 MiB.
 #[cfg(target_arch = "aarch64")]
 const AARCH64_USER_L2_TABLES: usize = 64;
+// Image, stack, heap and mmap window must fit that span.
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    MAX_ELF_PAGES + USER_STACK_PAGES + HEAP_PAGES + MMAP_AREA_PAGES
+        <= AARCH64_USER_L2_TABLES * AARCH64_USER_L3_PAGES
+);
 
 pub fn both_exited() -> bool {
     DID_SPAWN.load(Ordering::SeqCst) && USERS_ALIVE.load(Ordering::SeqCst) == 0

@@ -185,25 +185,94 @@ pub fn resolve_user_path_virtual(path: &str, out: &mut [u8]) -> Option<usize> {
 }
 
 /// Resolve `path` into the real absolute path (`out`) the VFS understands:
-/// the virtual path from [`resolve_user_path_virtual`] under the task's
-/// chroot prefix.
+/// the virtual path from [`resolve_user_path_virtual`], with symlinks
+/// followed (the last component too), under the task's chroot prefix.
 pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Option<usize> {
-    // Unjailed (the common case): resolve straight into `out` — no extra
-    // buffers on the kernel stack of every path syscall.
-    if !crate::task::has_root() {
+    resolve_user_path_with(path, out, true)
+}
+
+/// Like [`resolve_user_path`], but a symlink in the last component is not
+/// followed (`lstat`, `readlink`, `unlink`, `rename`, `symlink`, ...).
+pub fn resolve_user_path_nofollow(path: &str, out: &mut [u8]) -> Option<usize> {
+    resolve_user_path_with(path, out, false)
+}
+
+fn resolve_user_path_with(path: &str, out: &mut [u8], follow_last: bool) -> Option<usize> {
+    // Unjailed and no symlinks anywhere (the common case): resolve straight
+    // into `out` — no extra buffers on the kernel stack of every path syscall.
+    let follow = vfs::symlinks_possible();
+    if !crate::task::has_root() && !follow {
         return resolve_user_path_virtual(path, out);
     }
-    let mut virt = [0u8; 256];
-    let vn = resolve_user_path_virtual(path, &mut virt)?;
+    let mut virt = [0u8; vfs::PATH_MAX];
+    let mut vn = resolve_user_path_virtual(path, &mut virt)?;
+    if follow {
+        vn = follow_symlinks(&mut virt, vn, follow_last)?;
+    }
+    virtual_to_real(&virt[..vn], out)
+}
+
+/// The real path behind `virt` (a canonical path in the task's view): the
+/// task's chroot prefix + `virt`.
+fn virtual_to_real(virt: &[u8], out: &mut [u8]) -> Option<usize> {
     let mut root = [0u8; crate::task::ROOT_CAP];
     let rn = crate::task::root(&mut root);
-    let tail: &[u8] = if rn != 0 && &virt[..vn] == b"/" { &[] } else { &virt[..vn] };
+    let tail: &[u8] = if rn != 0 && virt == b"/" { &[] } else { virt };
     if rn + tail.len() > out.len() {
         return None;
     }
     out[..rn].copy_from_slice(&root[..rn]);
     out[rn..rn + tail.len()].copy_from_slice(tail);
     Some(rn + tail.len())
+}
+
+/// Symlinks followed while resolving one path (Linux's `MAXSYMLINKS`).
+const MAX_SYMLINKS: usize = 40;
+
+/// Replace each symlink along `virt[..vn]` (a canonical path in the task's
+/// view) by its target, the last component only if `follow_last`. Targets
+/// are resolved in the same view, so an absolute one stays inside a chroot
+/// and `..` cannot climb out of it.
+fn follow_symlinks(virt: &mut [u8; vfs::PATH_MAX], mut vn: usize, follow_last: bool) -> Option<usize> {
+    let mut hops = 0;
+    // Start of the next component to check; everything before is link-free.
+    let mut start = 1;
+    while start < vn {
+        let end = virt[start..vn].iter().position(|&b| b == b'/').map_or(vn, |i| start + i);
+        if end < vn || follow_last {
+            let mut real = [0u8; vfs::PATH_MAX];
+            let rn = virtual_to_real(&virt[..end], &mut real)?;
+            let mut target = [0u8; vfs::PATH_MAX];
+            if let Some(tn) = vfs::readlink(core::str::from_utf8(&real[..rn]).ok()?, &mut target) {
+                hops += 1;
+                if hops > MAX_SYMLINKS || tn == 0 {
+                    return None;
+                }
+                // The target, then the rest of the path, relative to the
+                // directory holding the link.
+                let rest = &virt[end..vn];
+                let mut joined = [0u8; vfs::PATH_MAX];
+                if tn + rest.len() > joined.len() {
+                    return None;
+                }
+                joined[..tn].copy_from_slice(&target[..tn]);
+                joined[tn..tn + rest.len()].copy_from_slice(rest);
+                let dir: &[u8] = if start > 1 { &virt[..start - 1] } else { b"/" };
+                let mut next = [0u8; vfs::PATH_MAX];
+                vn = vfs::resolve_against_cwd(
+                    core::str::from_utf8(dir).ok()?,
+                    core::str::from_utf8(&joined[..tn + rest.len()]).ok()?,
+                    &mut next,
+                )?;
+                virt[..vn].copy_from_slice(&next[..vn]);
+                // The target may itself go through links: check from the top.
+                start = 1;
+                continue;
+            }
+        }
+        start = end + 1;
+    }
+    Some(vn)
 }
 
 fn reject_mkdir(_path: &str) -> bool {

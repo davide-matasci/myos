@@ -6,6 +6,9 @@ struct CiExpect {
     qemu_debug_exit: bool,
     /// Type commands at the interactive `$` prompt via `-serial stdio`.
     shell_ci: bool,
+    /// With the Linux layer, the image has get-void (Void has a repository
+    /// for this arch): run a downloaded Void package.
+    void_repo: bool,
 }
 
 const CI_NEEDLES: [&str; 33] = [
@@ -113,6 +116,9 @@ const CMD_EXEC_LIMITS: &[u8] = b"A=\"a b c d e f g h\";A=\"$A $A $A $A $A\";X=$A
 const CMD_LINUX: &[u8] = b"linux /bin/linux/linux-smoke\n";
 // ... and a dynamically linked one (PT_INTERP, shared objects, dlopen).
 const CMD_LINUX_DYN: &[u8] = b"linux /bin/linux/linux-dyn\n";
+// ... and a real Void Linux package, downloaded at run time (jq + oniguruma
+// + musl), run chrooted in its Void root.
+const CMD_GET_VOID: &[u8] = b"get-void jq && linux --root /tmp/void jq -nr '\"VOID-JQ \\(1+2+3)\"'\n";
 // pty boot-CI smoke (openpty/forkpty, echo round-trip, EIO on session end).
 const CMD_PTY: &[u8] = b"/bin/etc/pty_smoke 2\n";
 // urandom boot-CI smoke (kernel CSPRNG via /dev/urandom: non-zero, distinct,
@@ -446,7 +452,7 @@ fn linux_compat_enabled() -> bool {
     active_features().iter().any(|f| f == "linux_compat")
 }
 
-fn ci_shell_commands() -> Vec<&'static [u8]> {
+fn ci_shell_commands(void_repo: bool) -> Vec<&'static [u8]> {
     let mut cmds: Vec<&'static [u8]> = vec![
         CMD_NOSUCH,
         // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
@@ -467,6 +473,9 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
     if linux_compat_enabled() {
         cmds.push(CMD_LINUX);
         cmds.push(CMD_LINUX_DYN);
+        if void_repo {
+            cmds.push(CMD_GET_VOID);
+        }
     }
     if !ci_mini() {
         cmds.push(CMD_HTTP);
@@ -1183,6 +1192,9 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         }
         i if cmds[i] == CMD_LINUX => interactive_linux_cmd_ok(serial),
         i if cmds[i] == CMD_LINUX_DYN => interactive_linux_dyn_cmd_ok(serial),
+        i if cmds[i] == CMD_GET_VOID => {
+            interactive_tail(serial).contains("\nVOID-JQ 6") && at_interactive_prompt(serial)
+        }
         i if cmds[i] == CMD_DROPBEAR_STOP => {
             command_echoed(serial, "kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP")
                 && serial.contains("DROPBEAR-STOP")
@@ -1538,7 +1550,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         }
     });
 
-    let cmds = ci_shell_commands();
+    let cmds = ci_shell_commands(expect.void_repo);
     let mini = ci_mini();
     let started = Instant::now();
     let mut timed_out = false;

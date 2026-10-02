@@ -26,6 +26,8 @@ const REQ_CLONE: u8 = 1;
 const REQ_CTL: u8 = 2;
 const REQ_SEND: u8 = 3;
 const REQ_CLOSE: u8 = 4;
+/// netfs returns drained receive space (u16 payload); see `Conv::rx_room`.
+const REQ_CREDIT: u8 = 5;
 
 const REP_CLONE_OK: u8 = 1;
 const REP_DATA: u8 = 2;
@@ -45,6 +47,9 @@ const TICK_MS: u64 = 100;
 const ICMP_IDENT_BASE: u16 = 0x22b;
 const TCP_RX: usize = 4096;
 const TCP_TX: usize = 4096;
+/// netfs's per-conv receive buffer (modules/netfs DATA_CAP). It drops what
+/// does not fit, so netd never has more than this in flight to it.
+const NETFS_RX_CAP: u16 = 8192;
 const UDP_BUF: usize = 512;
 /// Ephemeral local ports for outbound TCP/UDP (avoid sticky 49152+conv reuse).
 const LOCAL_PORT_BASE: u16 = 49152;
@@ -105,6 +110,11 @@ struct Conv {
     /// handle (which leaves no Listen socket). Always re-arm Listen when the
     /// queue has room. Do not take from accept_from_status — that raced KEX.
     accepted_pending: Option<u16>,
+    /// Room left in netfs's receive buffer for this conv: TCP data is only
+    /// taken from smoltcp (and sent as REP_DATA) up to this; REQ_CREDIT adds
+    /// back what the reader drained. While it is 0 the data waits in the
+    /// smoltcp socket and the TCP window throttles the peer.
+    rx_room: u16,
     /// Monotonic per-listener handoff counter. Letting libgloss tell a fresh
     /// "accepted <N> <seq>" from a stale one (the status file keeps the last
     /// accepted string until netd replies again) prevents the app's blocking
@@ -141,6 +151,7 @@ impl Conv {
         accepted: None,
         accepted_pending: None,
         accept_seq: 0,
+        rx_room: NETFS_RX_CAP,
         closing: false,
         closing_after_flush: false,
         from_accept: false,
@@ -717,11 +728,15 @@ fn drain_tcp_rx_into_rep(
     let mut tmp = [0u8; 1400];
     for _ in 0..8 {
         let s = sockets.get_mut::<tcp::Socket>(h);
-        if !s.can_recv() {
+        let room = (convs[i].rx_room as usize).min(tmp.len());
+        if !s.can_recv() || room == 0 {
             break;
         }
-        match s.recv_slice(&mut tmp) {
-            Ok(n) if n > 0 => reply(chan, REP_DATA, i as u16, 0, &tmp[..n]),
+        match s.recv_slice(&mut tmp[..room]) {
+            Ok(n) if n > 0 => {
+                convs[i].rx_room -= n as u16;
+                reply(chan, REP_DATA, i as u16, 0, &tmp[..n]);
+            }
             _ => break,
         }
     }
@@ -1106,10 +1121,12 @@ fn pump_sockets(
                     convs[i].connected = true;
                     reply(chan, REP_STATUS, conv, 0, b"connected");
                 }
-                if s.can_recv() {
+                let room = (convs[i].rx_room as usize).min(1400);
+                if s.can_recv() && room != 0 {
                     let mut tmp = [0u8; 1400];
-                    if let Ok(n) = s.recv_slice(&mut tmp) {
+                    if let Ok(n) = s.recv_slice(&mut tmp[..room]) {
                         if n != 0 {
+                            convs[i].rx_room -= n as u16;
                             reply(chan, REP_DATA, conv, 0, &tmp[..n]);
                         }
                     }
@@ -1160,6 +1177,11 @@ fn handle_req(
         REQ_CLOSE => {
             drop_conv(convs, sockets, conv as usize);
             reply(chan, REP_STATUS, conv, 0, b"hangup");
+        }
+        REQ_CREDIT => {
+            if let (Some(c), [a, b, ..]) = (convs.get_mut(conv as usize), payload) {
+                c.rx_room = c.rx_room.saturating_add(u16::from_le_bytes([*a, *b])).min(NETFS_RX_CAP);
+            }
         }
         _ => {}
     }

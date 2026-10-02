@@ -255,9 +255,19 @@ fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
     task::fd_write(fd, ptr, len)
 }
 
+/// The real path behind `path`, symlinks followed.
 pub(crate) fn resolve_copied_path(path: &str) -> Option<alloc::string::String> {
     let mut abs = [0u8; MAX_PATH];
     let n = fs::resolve_user_path(path, &mut abs)?;
+    core::str::from_utf8(&abs[..n])
+        .ok()
+        .map(|s| alloc::string::String::from(s))
+}
+
+/// The real path behind `path`, a symlink in the last component not followed.
+pub(crate) fn resolve_copied_path_nofollow(path: &str) -> Option<alloc::string::String> {
+    let mut abs = [0u8; MAX_PATH];
+    let n = fs::resolve_user_path_nofollow(path, &mut abs)?;
     core::str::from_utf8(&abs[..n])
         .ok()
         .map(|s| alloc::string::String::from(s))
@@ -713,7 +723,9 @@ fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let Some(path) = resolve_copied_path(path) else {
+    // Native `stat` and `lstat` share this call: the last component is not
+    // followed (a symlink reports itself), as before symlinks were followed.
+    let Some(path) = resolve_copied_path_nofollow(path) else {
         return SYSERR;
     };
     let Some(info) = fs::stat(&path) else {
@@ -984,10 +996,13 @@ pub(crate) fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> usize {
     n
 }
 
+/// A user path for calls that act on the last component itself (mkdir,
+/// rmdir, unlink, rename, symlink, readlink, mkfifo): symlinks are followed
+/// on the way there, not in the last component.
 fn copy_resolved_user_path(ptr: usize, len: usize) -> Option<alloc::string::String> {
     let buf = copy_user_path(ptr, len)?;
     let path = core::str::from_utf8(&buf[..len]).ok()?;
-    resolve_copied_path(path)
+    resolve_copied_path_nofollow(path)
 }
 
 /// Pack two lengths into one register: `(len_a << 16) | len_b` (each <= MAX_PATH).

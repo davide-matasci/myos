@@ -6,6 +6,8 @@
 #   target/linux-compat/<arch>/ld-musl-<arch>.so.1  musl's libc.so / dynamic linker
 #   target/linux-compat/<arch>/{linux-dyn,libsmoke.so,libsmoke2.so}
 #                                              a dynamically linked test
+#   target/linux-compat/<arch>/get-void         Void package fetcher (myos newlib;
+#                                              x86_64 and aarch64, which Void has)
 # musl is built from its release tarball with clang for each target; on
 # aarch64/riscv64 its libc.so links compiler-rt's quad-float builtins (fetched
 # per file, like ports/curl/build-softfloat-riscv64.sh). Only needed for
@@ -20,7 +22,13 @@ MUSL_SHA256=a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4
 ARCHES=(x86_64 aarch64 riscv64)
 
 myos_ensure_llvm_bin
+# The CI image has clang + lld but not llvm's binutils: fall back like the ports.
+AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
+RANLIB_BIN="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
 "$ROOT/toolchain/newlib/build.sh"
+# The cross-compiler wrappers (target/newlib-bin) are not in the CI build
+# artifacts, which carry newlib itself; they are cheap to (re)write.
+"$ROOT/toolchain/newlib/tool-wrappers.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 # compiler-rt builtins for libc.so on aarch64/riscv64 (128-bit long double).
@@ -71,7 +79,50 @@ C
       -isystem "$(clang -print-resource-dir)/include" -isystem "$prefix/include" \
       -c "$CRT_SRC/$f" -o "$obj/${f%.c}.o"
   done
-  llvm-ar rcs "$out" "$obj"/*.o
+  "$AR_BIN" rcs "$out" "$obj"/*.o
+}
+
+# zstd's decoder for get-void (Void packages and the repository index are
+# zstd-compressed tars).
+ZSTD_VERSION=1.5.7
+ZSTD_SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+ZSTD_SRC="$ROOT/target/linux-compat/zstd-$ZSTD_VERSION"
+fetch_zstd() {
+  [[ -f "$ZSTD_SRC/lib/zstd.h" ]] && return 0
+  local tb="$ROOT/target/linux-compat/zstd-$ZSTD_VERSION.tar.gz"
+  if [[ ! -f "$tb" ]]; then
+    curl -sSfL --retry 3 -o "$tb.tmp" \
+      "https://github.com/facebook/zstd/releases/download/v$ZSTD_VERSION/zstd-$ZSTD_VERSION.tar.gz"
+    mv "$tb.tmp" "$tb"
+  fi
+  echo "$ZSTD_SHA256  $tb" | sha256sum -c -
+  tar xzf "$tb" -C "$ROOT/target/linux-compat"
+}
+
+# get-void for one arch: zstd's decompression sources + get-void.c, linked
+# like the launcher.
+build_get_void() {
+  local arch="$1"
+  local triple="$arch-unknown-myos"
+  local nl="$ROOT/target/newlib-$arch"
+  local out="$ROOT/target/linux-compat/$arch"
+  local obj="$ROOT/target/linux-compat/get-void-obj-$arch"
+  rm -rf "$obj"
+  mkdir -p "$obj" "$out"
+  local cflags=(-ffreestanding -fPIC -O2 -isystem "$nl/$triple/include"
+    -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DZSTD_NO_TRACE -DDEBUGLEVEL=0)
+  local f
+  for f in common/debug.c common/entropy_common.c common/error_private.c \
+    common/fse_decompress.c common/xxhash.c common/zstd_common.c \
+    decompress/huf_decompress.c decompress/zstd_ddict.c \
+    decompress/zstd_decompress.c decompress/zstd_decompress_block.c; do
+    "${triple}-cc" "${cflags[@]}" -c "$ZSTD_SRC/lib/$f" -o "$obj/$(basename "${f%.c}").o"
+  done
+  "${triple}-cc" "${cflags[@]}" -I"$ZSTD_SRC/lib" -c "$ROOT/linux-compat/get-void.c" -o "$obj/get-void.o"
+  ld.lld -pie --no-dynamic-linker -o "$out/get-void" \
+    --entry=_start -z max-page-size=4096 \
+    "$nl/$triple/lib/crt0.o" "$obj"/*.o -L"$nl/$triple/lib" \
+    --start-group -lc -lgloss -lg --end-group
 }
 
 tarball="$ROOT/target/linux-compat/musl-$MUSL_VERSION.tar.gz"
@@ -107,9 +158,12 @@ for arch in "${ARCHES[@]}"; do
     tar xzf "$tarball" -C "$work"
     (
       cd "$work/musl-$MUSL_VERSION"
-      CC="${cc[*]}" AR=llvm-ar RANLIB=llvm-ranlib LDFLAGS="-fuse-ld=lld" \
+      CC="${cc[*]}" AR="$AR_BIN" RANLIB="$RANLIB_BIN" LDFLAGS="-fuse-ld=lld" \
         ./configure --target="$arch-linux-musl" --prefix="$prefix" >/dev/null
-      make -j"$(nproc)" "${libcc[@]}" >/dev/null 2>&1
+      if ! make -j"$(nproc)" "${libcc[@]}" >make.log 2>&1; then
+        tail -40 make.log >&2
+        exit 1
+      fi
       make install >/dev/null
     )
     rm -rf "$work"
@@ -148,5 +202,11 @@ for arch in "${ARCHES[@]}"; do
     --entry=_start -z max-page-size=4096 \
     "$nl/$triple/lib/crt0.o" "$obj" -L"$nl/$triple/lib" \
     --start-group -lc -lgloss -lg --end-group
+
+  if [[ "$arch" != riscv64 ]]; then
+    echo "==> get-void ($arch, myos newlib)"
+    fetch_zstd
+    build_get_void "$arch"
+  fi
 done
 echo "linux-compat -> target/linux-launcher-*-unknown-none, target/linux-smoke-*-linux-musl, target/linux-compat/<arch>/"

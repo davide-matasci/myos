@@ -16,7 +16,43 @@ cargo run --features linux_compat -- aarch64   # (or riscv64)
 # in the guest:
 linux /bin/linux/linux-smoke               # prints LINUX-SMOKE OK
 linux /bin/linux/linux-dyn                 # dynamic: prints LINUX-DYN OK
+get-void jq                                # Void Linux packages (x86_64, aarch64)
+linux --root /tmp/void jq -n '1+1'
 ```
+
+## Void Linux packages: `get-void`
+
+Nothing from Void is in the image: `get-void` (`linux-compat/get-void.c`, a
+native program built with the layer on x86_64 and aarch64, the arches Void
+has musl repositories for) downloads packages at run time with the guest's
+`curl`:
+
+```sh
+get-void [-r ROOT] [-u] PACKAGE...         # ROOT defaults to /tmp/void
+linux --root ROOT PROGRAM [ARG...]
+```
+
+1. The repository index (`<arch>-repodata`, a zstd-compressed tar holding a
+   20 MB `index.plist`) is downloaded once and reduced, streaming, to
+   `ROOT/var/db/get-void/index`: one line per package with its pkgver,
+   sha256 and `run_depends`. `-u` refreshes it.
+2. Each package and, recursively, its dependencies (`musl` included) is
+   downloaded, checked against the index's sha256 and unpacked (zstd + tar)
+   into `ROOT`. Already installed packages (`ROOT/var/db/get-void/pkgs/`)
+   are skipped. INSTALL/REMOVE scripts are not run.
+3. `ROOT` gets the directories and symlinks Void's `base-files` provides
+   (`/lib -> usr/lib`, `/usr/lib64 -> lib`, ...): Void's dynamic linker is
+   `/usr/lib/ld-musl-<arch>.so.1 -> /usr/lib64/libc.so`.
+
+`linux --root ROOT` chroots into `ROOT` (the native `chroot`) before the
+exec, with a Linux `PATH`, so the program finds its dynamic linker, shared
+objects and data files at their Void paths. A chrooted Linux process still
+sees the system's `/dev` and `/proc`, as if they were bind-mounted into the
+root (`linux/sys.rs`, `system_path`); native chroots are not affected.
+
+`GET_VOID_MIRROR` overrides `https://repo-default.voidlinux.org`. `/tmp` is
+a tmpfs in the kernel heap, so a root there holds a few small packages and
+is gone at reboot.
 
 ## Turning it on
 
@@ -63,6 +99,7 @@ Linux ones. It is killed by its own fault; the kernel stays up.
 | `linux-compat/launcher.c` | the `linux` command |
 | `linux-compat/tests/linux-smoke.c` | Linux-side boot smoke (musl, static) |
 | `linux-compat/tests/linux-dyn.c`, `libsmoke*.c` | dynamically linked smoke and its shared objects |
+| `linux-compat/get-void.c` | the Void package fetcher (with zstd's decoder, fetched by `build.sh`) |
 
 Hooks in the core, each behind `#[cfg(feature = "linux-compat")]`:
 
@@ -186,7 +223,10 @@ the kernel does not keep a per-task copy at syscall entry.
     most 1152 pages (4.5 MiB). Shared objects are mapped with `mmap` and
     do not count;
   - a per-process `mmap` window of 128 MiB (x86_64) / 64 MiB (aarch64,
-    riscv64) with at most 64 mappings;
+    riscv64) with at most 64 mappings; adjacent mappings with the same
+    protection are merged (musl's malloc makes hundreds of small
+    neighbouring ones: jq peaks at 188);
+  - a 16 MiB `brk` heap;
   - 64 fds per process, 64 tasks in total;
   - `/tmp` (tmpfs) files of at most 16 MiB each, all of them in the
     64 MiB kernel heap.
@@ -200,9 +240,16 @@ directories, mmap, fork/execve/wait4, pipes, Linux signal numbers, handlers,
 masks, `sigwait`, `EINTR` and `SA_RESTART`) and `LINUX-DYN OK` (a call,
 shared data, a relocated function pointer and a thread-local in
 `libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`). The test is plain musl C, so it can also be run on a Linux
-host for reference. The default CI image does not include the layer; the
-CI build job type-checks the three kernels with the feature
-(`scripts/ci-build-pull-and-kernels.sh`) so it keeps compiling.
+host for reference. On x86_64 and aarch64 it then runs
+`get-void jq && linux --root /tmp/void jq -nr '"VOID-JQ \(1+2+3)"'` and
+expects `VOID-JQ 6` (this needs the Void mirror to be reachable).
+
+The default CI image does not include the layer. The CI build job
+type-checks the three kernels with the feature
+(`scripts/ci-build-pull-and-kernels.sh`), and the `linux-compat` jobs
+(`.github/workflows/ci-runtime.yml`) build the layer's pieces and the
+kernels with it on top of the CI ports, then boot bios, aarch64 and riscv64
+in mini mode.
 
 `linux-compat/build.sh` builds musl (static and shared) with clang for each
 target. On aarch64/riscv64 musl's `long double` is 128-bit and needs
