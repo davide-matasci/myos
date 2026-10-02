@@ -308,7 +308,7 @@ the kernel does not keep a per-task copy at syscall entry.
     most 1152 pages (4.5 MiB). Shared objects are mapped with `mmap` and
     do not count;
   - a per-process `mmap` window of 128 MiB (x86_64) / 64 MiB (aarch64,
-    riscv64) with at most 64 mappings; adjacent mappings with the same
+    riscv64) with at most 256 mappings; adjacent mappings with the same
     protection are merged (musl's malloc makes hundreds of small
     neighbouring ones: jq peaks at 188);
   - a 16 MiB `brk` heap;
