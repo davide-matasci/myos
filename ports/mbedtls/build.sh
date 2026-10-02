@@ -46,10 +46,11 @@ import pathlib, sys
 pem = pathlib.Path(sys.argv[1]).read_bytes().replace(b"\r", b"")
 out = pathlib.Path(sys.argv[2])
 text = pem.decode("latin-1")
-esc = text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
-step = 12000
-parts = [esc[i:i+step] for i in range(0, len(esc), step)]
-body = "\n".join('    "%s"' % p for p in parts)
+def esc(t):
+    return t.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+# One string literal per line (splitting the escaped text at fixed offsets
+# could cut an escape sequence in two).
+body = "\n".join('    "%s"' % esc(l) for l in text.splitlines(keepends=True))
 out.write_text(
     "/* Auto-generated Mozilla CA bundle (PEM). */\n"
     "const char myos_ca_bundle_pem[] =\n" + body + ";\n"
