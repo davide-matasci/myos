@@ -26,10 +26,13 @@ tcp_ping() {
       timeout 120 cat <&3 > "$got" 2>/dev/null || true
       exec 3>&-
       if [[ "$(head -c 5 "$got")" == pong ]]; then
-        if tail -c +6 "$got" | cmp -s - <(seq -f %06g 0 $((BULK_LINES - 1))); then
+        local diff
+        diff="$(tail -c +6 "$got" | cmp - <(seq -f %06g 0 $((BULK_LINES - 1))) 2>&1)"
+        if [[ -z "$diff" ]]; then
           verdict=good
         else
-          verdict="bad $(($(wc -c < "$got") - 5))"
+          # The byte count and where the stream first goes wrong.
+          verdict="bad $(($(wc -c < "$got") - 5)): ${diff#*: }"
         fi
         echo "boot test: tcp-ping $port: pong, bulk $verdict" >&2
         if { exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
