@@ -660,6 +660,28 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
             n += 1;
         }
     }
+    drop(mounts);
+    // Binds whose target is in this directory (a package's program in
+    // /bin/custom, its test script in /lib/myos-tests/ports): the target
+    // need not exist in the backend, so it shows up only here.
+    let dir = normalize_path(path).trim_end_matches('/');
+    for (target, _) in BINDS.lock().iter() {
+        let (parent, child) = match target.rsplit_once('/') {
+            Some((p, c)) => (p, c),
+            None => ("", target.as_str()),
+        };
+        if parent != dir || child.is_empty() || buf_contains_entry(&buf[..n], child) {
+            continue;
+        }
+        let name = child.as_bytes();
+        if n + name.len() + 1 > buf.len() {
+            break;
+        }
+        buf[n..n + name.len()].copy_from_slice(name);
+        n += name.len();
+        buf[n] = b'\n';
+        n += 1;
+    }
     n
 }
 
