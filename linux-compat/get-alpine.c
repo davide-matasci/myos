@@ -692,6 +692,14 @@ int main(int argc, char **argv) {
             mkdirs(path, 1);
         }
     }
+    /* The resolver the system uses (QEMU user networking's DNS), for musl. */
+    if (under_root(path, "etc/resolv.conf") == 0 && access(path, F_OK) != 0) {
+        FILE *f = fopen(path, "w");
+        if (f != NULL) {
+            fputs("nameserver 10.0.2.3\n", f);
+            fclose(f);
+        }
+    }
     char index[PATH_MAX_GV];
     db_path(index, "index");
     if ((update || access(index, F_OK) != 0) && update_index() != 0) {

@@ -4,6 +4,7 @@
 
 use super::abi::{err, result, EFAULT, EINVAL, ENOMEM, ENOSYS, EPERM, ESRCH};
 use super::signal::{self as lsig, siginfo, Frame};
+use super::net;
 use super::sys::{self, ret};
 use super::thread;
 use crate::k::task;
@@ -69,6 +70,18 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         33 => ret(sys::dup3(a[0], a[1], true)), // dup2
         35 => ret(sys::nanosleep(a[0], false)),
         39 => task::current_pid(),
+        41 => ret(net::socket(a[0], a[1])),
+        42 => ret(net::connect(a[0], a[1], a[2])),
+        43 | 50 | 288 => ret(net::no_listen(a[0])), // accept, listen, accept4
+        44 => ret(net::sendto(a[0], a[1], a[2], a[4], a[5])),
+        45 => ret(net::recvfrom(a[0], a[1], a[2], a[3], a[4], a[5])),
+        46 => ret(net::sendmsg(a[0], a[1])),
+        47 => ret(net::recvmsg(a[0], a[1], a[2])),
+        48 => ret(net::shutdown(a[0], a[1])),
+        49 | 54 => ret(net::ignored(a[0])), // bind, setsockopt
+        51 => ret(net::getsockname(a[0], a[1], a[2])),
+        52 => ret(net::getpeername(a[0], a[1], a[2])),
+        55 => ret(net::getsockopt(a[0], a[1], a[2], a[3], a[4])),
         186 => task::current_tid(),
         56 => ret(thread::clone(regs, a[0], a[1], a[2], a[4], a[3])),
         57 | 58 => ret(sys::fork(regs)), // fork, vfork

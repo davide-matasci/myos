@@ -359,6 +359,17 @@ fn return_credit(id: u16, p: u8) {
 
 fn append_data(c: &mut Conv, src: &[u8]) {
     let have = c.data_len as usize;
+    if c.proto == PROTO_UDP {
+        // Datagrams keep their boundaries: each is stored behind its u16
+        // length, and one that does not fit is dropped whole.
+        let n = 2 + src.len();
+        if have + n <= DATA_CAP {
+            c.data[have..have + 2].copy_from_slice(&(src.len() as u16).to_le_bytes());
+            c.data[have + 2..have + n].copy_from_slice(src);
+            c.data_len = (have + n) as u16;
+        }
+        return;
+    }
     let n = src.len().min(DATA_CAP.saturating_sub(have));
     if n == 0 {
         return;
@@ -674,13 +685,23 @@ unsafe extern "C" fn net_read(
             if have == 0 {
                 return 0;
             }
-            let n = out.len().min(have);
-            out[..n].copy_from_slice(&c.data[..n]);
-            if n < have {
-                c.data.copy_within(n..have, 0);
+            // A stream read takes what fits; a datagram read takes the next
+            // datagram, its excess bytes discarded (`append_data`).
+            let (n, used) = if p == PROTO_UDP {
+                let len = u16::from_le_bytes([c.data[0], c.data[1]]) as usize;
+                let n = out.len().min(len);
+                out[..n].copy_from_slice(&c.data[2..2 + n]);
+                (n, 2 + len)
+            } else {
+                let n = out.len().min(have);
+                out[..n].copy_from_slice(&c.data[..n]);
+                (n, n)
+            };
+            if used < have {
+                c.data.copy_within(used..have, 0);
             }
-            c.data_len = (have - n) as u16;
-            c.credit += n as u16;
+            c.data_len = (have - used) as u16;
+            c.credit += used as u16;
             return_credit(id, p);
             n as i32
         }

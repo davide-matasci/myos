@@ -4,6 +4,7 @@
 
 use super::abi::{err, result, EFAULT, EINVAL, ENOMEM, ENOSYS, EPERM, ESRCH};
 use super::signal as lsig;
+use super::net;
 use super::sys::{self, ret};
 use super::thread;
 use crate::k::task;
@@ -73,6 +74,18 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         178 => task::current_tid(),
         173 => task::current_ppid(),
         174..=177 => 0, // getuid, geteuid, getgid, getegid
+        198 => ret(net::socket(a[0], a[1])),
+        200 | 208 => ret(net::ignored(a[0])),             // bind, setsockopt
+        201 | 202 | 242 => ret(net::no_listen(a[0])),     // listen, accept, accept4
+        203 => ret(net::connect(a[0], a[1], a[2])),
+        204 => ret(net::getsockname(a[0], a[1], a[2])),
+        205 => ret(net::getpeername(a[0], a[1], a[2])),
+        206 => ret(net::sendto(a[0], a[1], a[2], a[4], a[5])),
+        207 => ret(net::recvfrom(a[0], a[1], a[2], a[3], a[4], a[5])),
+        209 => ret(net::getsockopt(a[0], a[1], a[2], a[3], a[4])),
+        210 => ret(net::shutdown(a[0], a[1])),
+        211 => ret(net::sendmsg(a[0], a[1])),
+        212 => ret(net::recvmsg(a[0], a[1], a[2])),
         214 => user::sys_brk(a[0]),
         215 => result(user::sys_munmap(a[0], a[1]), EINVAL),
         220 => ret(thread::clone(regs, a[0], a[1], a[2], a[3], a[4])),

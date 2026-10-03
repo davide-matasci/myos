@@ -32,6 +32,12 @@ lx_python() {
 	echo "$out"
 	[ "$out" = "PYTHON 42" ]
 }
+# ... and its sockets: DNS (musl over UDP) and an HTTP GET (TCP).
+lx_python_net() {
+	out=$(linux --root /tmp/alpine python3 -c 'import urllib.request as u;print("HTTP",u.urlopen("http://example.com/").status)')
+	echo "$out"
+	[ "$out" = "HTTP 200" ]
+}
 # Without the feature: load the module now; it registers (the kernel prints
 # `[ OK ] linux` on the console) and shows up in /proc/modules.
 lx_insmod() {
@@ -44,6 +50,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	if [ "$MODE" = full ]; then
 		t alpine_jq lx_alpine
 		t alpine_python lx_python
+		t alpine_python_net lx_python_net
 	fi
 else
 	t linux_insmod lx_insmod

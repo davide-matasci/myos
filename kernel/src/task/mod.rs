@@ -70,8 +70,9 @@ enum State {
 pub use crate::arch::UserRegs;
 
 /// Enough for a dynamically linked program: each shared object takes a
-/// region per segment.
-pub const MAX_MMAP_REGIONS: usize = 64;
+/// region per segment (Python with its C extension modules for `urllib`
+/// needs more than 64).
+pub const MAX_MMAP_REGIONS: usize = 256;
 
 #[derive(Clone, Copy)]
 pub struct MmapRegion {

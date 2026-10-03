@@ -380,6 +380,16 @@ pub mod fs {
         let n = unsafe { (api().vfs_readlink)(sref(path), buf.as_mut_ptr(), buf.len()) };
         (n >= 0).then_some(n as usize)
     }
+    /// Read at `pos` of the file at `path` without an fd.
+    pub fn read(path: &str, pos: usize, out: &mut [u8]) -> Option<usize> {
+        let n = unsafe { (api().vfs_read)(sref(path), pos, out.as_mut_ptr(), out.len()) };
+        (n >= 0).then_some(n as usize)
+    }
+    /// Write at `pos` of the file at `path` without an fd.
+    pub fn write(path: &str, pos: usize, src: &[u8]) -> Option<usize> {
+        let n = unsafe { (api().vfs_write)(sref(path), pos, src.as_ptr(), src.len()) };
+        (n >= 0).then_some(n as usize)
+    }
     /// The task's own absolute view of `path` (cwd applied, chroot-relative).
     pub fn resolve_user_path_virtual(path: &str, out: &mut [u8]) -> Option<usize> {
         let n = unsafe { (api().path_resolve)(sref(path), myos_abi::MYOS_PATH_VIRTUAL, out.as_mut_ptr(), out.len()) };
