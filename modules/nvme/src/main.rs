@@ -389,21 +389,45 @@ fn setup(bar: usize) -> Option<Ctrl> {
 
 /// `bar_va` is a controller's BAR0 (not yet attached). True once it is
 /// initialised and in the table.
-fn attach(bar_va: usize) -> bool {
+/// Bring up the controller at `bar_va` into a free slot; its index, or
+/// `None` when it is already attached, fails to come up or the table is full.
+fn attach(bar_va: usize) -> Option<usize> {
     let table = unsafe { &mut *core::ptr::addr_of_mut!(CTRLS) };
     if table.iter().flatten().any(|c| c.bar == bar_va) {
-        return false;
+        return None;
     }
-    let Some(c) = setup(bar_va) else {
-        return false;
-    };
-    match table.iter_mut().find(|s| s.is_none()) {
-        Some(slot) => {
-            *slot = Some(c);
-            true
+    let c = setup(bar_va)?;
+    let slot = table.iter().position(|s| s.is_none())?;
+    table[slot] = Some(c);
+    Some(slot)
+}
+
+/// Every NVMe controller on the bus: the new ones come up and register as
+/// `/dev/nvme<slot>n1`, the ones already attached are left alone. The
+/// number of controllers attached by this call.
+fn probe(api: &KernelApi) -> usize {
+    let mut new = 0;
+    for i in 0..MAX_CTRL as u32 {
+        let (mut bus, mut slot, mut func) = (0u8, 0u8, 0u8);
+        if unsafe { (api.pci_find_class)(CLASS_MASS, SUBCLASS_NVME, i, &mut bus, &mut slot, &mut func) } != 0 {
+            break;
         }
-        None => false,
+        unsafe { (api.pci_enable)(bus, slot, func) };
+        let (mut va, mut size) = (0usize, 0u64);
+        if unsafe { (api.pci_bar_map)(bus, slot, func, 0, &mut va, &mut size) } != 0 {
+            continue;
+        }
+        let Some(n) = attach(va) else {
+            continue;
+        };
+        // nvme{n}n1 (n < 10: MAX_CTRL is 4).
+        let name = [b'n', b'v', b'm', b'e', b'0' + n as u8, b'n', b'1'];
+        if unsafe { (api.blk_register)(name.as_ptr(), name.len(), &OPS, n) } < 0 {
+            break;
+        }
+        new += 1;
     }
+    new
 }
 
 fn one(c: &mut Ctrl, lba: u64, buf: &mut [u8], is_write: bool) -> Result<(), ()> {
@@ -492,28 +516,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     unsafe {
         *core::ptr::addr_of_mut!(API) = Some(api);
     }
-    let mut n = 0usize;
-    for i in 0..MAX_CTRL as u32 {
-        let (mut bus, mut slot, mut func) = (0u8, 0u8, 0u8);
-        if unsafe { (api.pci_find_class)(CLASS_MASS, SUBCLASS_NVME, i, &mut bus, &mut slot, &mut func) } != 0 {
-            break;
-        }
-        unsafe { (api.pci_enable)(bus, slot, func) };
-        let (mut va, mut size) = (0usize, 0u64);
-        if unsafe { (api.pci_bar_map)(bus, slot, func, 0, &mut va, &mut size) } != 0 {
-            continue;
-        }
-        if !attach(va) {
-            continue;
-        }
-        // nvme{n}n1 (n < 10: MAX_CTRL is 4).
-        let name = [b'n', b'v', b'm', b'e', b'0' + n as u8, b'n', b'1'];
-        if unsafe { (api.blk_register)(name.as_ptr(), name.len(), &OPS, n) } < 0 {
-            break;
-        }
-        n += 1;
-    }
-    if n == 0 {
+    if probe(api) == 0 {
         unsafe { (api.write_str)(b"nvme none\n".as_ptr(), 10) };
     } else {
         status_ok(api, "nvme");
@@ -524,6 +527,13 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
 #[inline(never)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn module_exit() {}
+
+/// A `rescan` of `/proc/pci`: controllers that appeared since init.
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn module_rescan() {
+    probe(api());
+}
 
 // So `cargo build --bin nvme` links. The kernel never jumps here.
 #[unsafe(no_mangle)]
