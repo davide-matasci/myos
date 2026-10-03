@@ -963,8 +963,11 @@ fn sys_poll(fds_ptr: usize, nfds: usize, timeout_ms: isize) -> usize {
             }
             return ready;
         }
-        if crate::signal::interrupt_wait() {
-            return 0; // EINTR (or a restart) on the way out
+        // A signal that runs a handler (or terminates) ends the wait. Never
+        // a restart, whatever SA_RESTART says (POSIX): servers wait in
+        // select() for a handler's flag (dropbear's SIGTERM exit).
+        if task::signal_wakeable(task::current_id()) {
+            return crate::signal::SYSERR_EINTR;
         }
         // Sleep until anything happens (pipe, pty, console, device and
         // module traffic, an exit all wake pollers) or the deadline. The

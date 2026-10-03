@@ -5,7 +5,9 @@
  * pipe (not before), with only that fd reported among several; POLLHUP when
  * the writer goes, POLLERR when the reader does, POLLNVAL for a closed fd; a
  * nonblocking read saying EAGAIN; a unix socket and a unix listener waking
- * their poller; a caught signal ending the wait with EINTR. Prints
+ * their poller; a caught signal ending the wait with EINTR, even with
+ * SA_RESTART (poll is never restarted: dropbear waits in select() for its
+ * SIGTERM handler's flag). Prints
  * [ OK ] poll.
  */
 #include <errno.h>
@@ -190,6 +192,15 @@ int main(void) {
     errno = 0;
     if (poll(&e, 1, -1) != -1 || errno != EINTR) {
         return fail("EINTR");
+    }
+    waitpid(pid, &status, 0);
+    /* ... and so does one whose handler has SA_RESTART (signal() sets it). */
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGUSR1, &sa, NULL);
+    pid = later(signal_parent, SIGUSR1);
+    errno = 0;
+    if (poll(&e, 1, -1) != -1 || errno != EINTR) {
+        return fail("EINTR with SA_RESTART");
     }
     waitpid(pid, &status, 0);
     printf("[ OK ] poll\n");
