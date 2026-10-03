@@ -40,6 +40,7 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
         if port.files.is_empty() {
             continue;
         }
+        ensure_built(manifest_dir, &port, arch);
         let mut entries: Vec<Entry> = Vec::new();
         install_port(&mut entries, &port, manifest_dir, arch);
         if entries.is_empty() {
@@ -70,6 +71,26 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
     }
     std::fs::write(out.join(format!("{arch}-index.txt")), index).expect("write package index");
     out
+}
+
+/// Run a port's build script when its ready file for `arch` is missing: a
+/// package (`packages/`) is not built by `build.rs` like the image's ports,
+/// so a local `cargo run -- packages` builds it here (the scripts skip
+/// themselves when current; CI has them from the registry).
+fn ensure_built(manifest_dir: &Path, port: &ports::Port, arch: &str) {
+    let (Some(script), Some(ready)) = (&port.build, port.ready_file(arch)) else {
+        return;
+    };
+    if port.kind == ports::Kind::User || manifest_dir.join("target").join(&ready).exists() {
+        return;
+    }
+    eprintln!("==> packages: {ready} missing; running {script}");
+    let status = Command::new("bash")
+        .arg(manifest_dir.join(script))
+        .current_dir(manifest_dir)
+        .status()
+        .unwrap_or_else(|e| panic!("run {script}: {e}"));
+    assert!(status.success(), "{script} failed; the {} package cannot be built", port.name);
 }
 
 /// Build the packages of every architecture (`cargo run -- packages`).

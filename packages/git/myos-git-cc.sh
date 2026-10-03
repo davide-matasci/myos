@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Compile with myos clang wrappers; link with ld.lld + crt0 + zlib + newlib.
 set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARCH="${MYOS_GIT_ARCH:?MYOS_GIT_ARCH unset}"
 ROOT="${MYOS_GIT_ROOT:?MYOS_GIT_ROOT unset}"
 TRIPLE="${ARCH}-unknown-myos"
@@ -24,8 +25,8 @@ CPP_EXTRA=(
   -nostdinc
   -isystem "$CLANG_RES"
   -isystem "$INC"
-  -I"$ROOT/ports/git/include"
-  -I"$ROOT/ports/git"
+  -I"$HERE/include"
+  -I"$HERE"
   -I"$ROOT/toolchain/newlib/libgloss/myos"
   -I"$ZLIB/include"
   -include myos_compat.h

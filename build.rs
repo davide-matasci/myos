@@ -90,9 +90,16 @@ fn main() {
         };
         ensure_artifact(&manifest, &format!("target/{ready}"), script);
     }
-    // For the host tool: which ports the images carry (`wait_ci` requires the
-    // needles of tcc / git only when they are in).
+    // For the host tool: which ports the images carry and which are
+    // packages (`wait_ci` requires a port's needles when it is in the image,
+    // or installed as a package by the full boot).
     println!("cargo:rustc-env=MYOS_IMAGE_PORTS={}", image_ports.join(","));
+    let packages: Vec<String> = all_ports
+        .iter()
+        .filter(|p| p.role == ports::Role::Package && !p.files.is_empty())
+        .map(|p| p.name.clone())
+        .collect();
+    println!("cargo:rustc-env=MYOS_PACKAGES={}", packages.join(","));
     let modules = boot_module_files(&manifest.join("target"), "x86_64-unknown-none");
 
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any

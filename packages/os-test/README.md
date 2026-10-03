@@ -9,7 +9,7 @@ GNU-make harness under `overlay/`.
 Same contract as other ports. From the repo root (host):
 
 ```sh
-./ports/os-test/build.sh
+./packages/os-test/build.sh
 ```
 
 This:
@@ -23,13 +23,13 @@ This:
 CI builds this in the **ports** job (`ci-ports.yml`), caches via `ci-registry.sh`,
 and the **build** job restores artifacts into `ci-build.tar`. `build.rs` /
 `initramfs.rs` **consume** those trees (no fetch/prebuild as a CI path). Local
-dev: run `./ports/os-test/build.sh` once if cargo complains they are missing.
+dev: run `./packages/os-test/build.sh` once if cargo complains they are missing.
 
 Low-level helpers (usually not needed alone):
 
 ```sh
-./ports/os-test/fetch.sh
-./ports/os-test/prebuild-basic-smoke.sh
+./packages/os-test/fetch.sh
+./packages/os-test/prebuild-basic-smoke.sh
 ```
 
 ## Run on the guest
@@ -116,7 +116,7 @@ Boot-mini skips this stage (too slow for the mini window).
 ## Boot CI host-prebuild (thin smoke)
 
 The boot curated list (`misc/ci-boot.tests`) is **host-prebuilt** into
-`target/os-test-prebuilt/<arch>/basic/…` by `ports/os-test/build.sh` →
+`target/os-test-prebuilt/<arch>/basic/…` by `packages/os-test/build.sh` →
 `prebuild-basic-smoke.sh` (same newlib/libgloss link as
 `scripts/build-c-hello.sh`). `initramfs.rs` packs them at
 `/lib/os-test/prebuilt/…`. `ci-smoke-copy.sh` stages matching ELFs;

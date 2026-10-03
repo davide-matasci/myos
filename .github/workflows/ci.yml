@@ -89,6 +89,11 @@ jobs:
   runtime:
     needs: [ports, wire-myos, changes]
     if: always() && !cancelled() && needs.wire-myos.result == 'success' && needs.ports.result == 'success'
+    # contents: write for the publish job (the rolling `packages` release
+    # on pushes to master); a called workflow cannot have more than its caller.
+    permissions:
+      contents: write
+      packages: write
     uses: ./.github/workflows/ci-runtime.yml
     with:
       full_boot: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_boot) }}

@@ -6,11 +6,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-"$ROOT/ports/lynx/fetch.sh"
+"$HERE/fetch.sh"
 
 SRC="$ROOT/target/lynx-src"
 WORK="$ROOT/target/lynx-myos-build"
-MYOS="$ROOT/ports/lynx"
+MYOS="$HERE"
 
 rm -rf "$WORK"
 mkdir -p "$WORK"

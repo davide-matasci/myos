@@ -49,7 +49,7 @@ const CI_NEEDLES: [&str; 33] = [
 /// Pre-prompt readiness stays slim; these are required after interactive `heap`.
 ///
 /// Note: `[ OK ] dns` / `[ OK ] https` are intentionally NOT here. They are
-/// separate interactive commands (indices 11/12) run *after* `heap`; they never
+/// separate interactive commands run *after* `heap`; they never
 /// print during `/heap`, so including them here would abort before those
 /// commands are typed. Verified by `interactive_dns_cmd_ok` /
 /// `interactive_https_cmd_ok`.
@@ -122,9 +122,10 @@ const CMD_LINUX: &[u8] = b"linux /bin/linux/linux-smoke\n";
 const CMD_LINUX_DYN: &[u8] = b"linux /bin/linux/linux-dyn\n";
 // ... and a real Alpine Linux package, downloaded at run time (jq +
 // oniguruma + musl), run chrooted in its Alpine root: it counts the binds
-// of /dev, /proc and /net it sees in /proc/mounts (3, doubled).
+// of /dev, /proc and /net into that root it sees in /proc/mounts (3,
+// doubled; the packages installed first have binds of their own).
 const CMD_GET_ALPINE: &[u8] =
-    b"get-alpine jq && linux --root /tmp/alpine jq -Rrn '[inputs|select(endswith(\" bind rw 0 0\"))]|\"ALPINE-JQ \\(length*2)\"' /proc/mounts\n";
+    b"get-alpine jq && linux --root /tmp/alpine jq -Rrn '[inputs|select(test(\"/tmp/alpine/\"))]|\"ALPINE-JQ \\(length*2)\"' /proc/mounts\n";
 // ... and Python (python3 and its 19 dependencies, ~45 MB in /tmp): the
 // standard library, and the json and sqlite3 C extension modules.
 const CMD_PYTHON: &[u8] =
@@ -470,7 +471,12 @@ fn linux_compat_enabled() -> bool {
 }
 
 fn ci_shell_commands() -> Vec<&'static [u8]> {
-    let mut cmds: Vec<&'static [u8]> = vec![
+    let mut cmds: Vec<&'static [u8]> = Vec::new();
+    // Full boot: the packages first, before anything that uses one.
+    if !ci_mini() && !package_names().is_empty() && port_enabled("get-myos") {
+        cmds.push(cmd_get_packages());
+    }
+    cmds.extend([
         CMD_NOSUCH,
         // CI-only heavy smoke (std/C/sbase/uutils/bigalloc); slim `/ok` already ran at boot.
         // boot-mini passes `heap mini` so the heavy git stage stays in the full boot jobs.
@@ -486,7 +492,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         CMD_WHICH,
         CMD_DNS,
         CMD_EXEC_LIMITS,
-    ];
+    ]);
     if linux_compat_enabled() {
         cmds.push(CMD_LINUX);
         cmds.push(CMD_LINUX_DYN);
@@ -798,7 +804,7 @@ fn interactive_get_myos_ok(serial: &str) -> bool {
     if !command_echoed(serial, "get-myos -m http://10.0.2.2:8765 make") || serial.contains("exception:") {
         return false;
     }
-    tail.contains("GNU Make") && tail.contains("GET-MYOS-OK") && at_interactive_prompt(serial)
+    tail.contains("GNU Make") && tail.contains("\nGET-MYOS-OK") && at_interactive_prompt(serial)
 }
 
 /// `insmod /lib/modules/linux`: the module reports `[ OK ] linux` and
@@ -1121,14 +1127,53 @@ fn active_features() -> Vec<String> {
         .collect()
 }
 
-/// True when the image carries port `name` (`MYOS_IMAGE_PORTS`, the names
-/// of the descriptors under ports/, user/ and toolchain/std, baked in by
-/// build.rs). Unset means an unknown build: require everything.
+/// True when port `name` is there to test: in the image (`MYOS_IMAGE_PORTS`,
+/// the descriptors under ports/, user/ and toolchain/, baked in by build.rs)
+/// or, in the full boot, a package (`MYOS_PACKAGES`: `CMD_GET_PACKAGES`
+/// installs every package first). Unset means an unknown build: require
+/// everything.
 fn port_enabled(name: &str) -> bool {
     match option_env!("MYOS_IMAGE_PORTS") {
-        Some(list) => list.split(',').any(|p| p == name),
+        Some(list) => list.split(',').any(|p| p == name) || (!ci_mini() && package_names().contains(&name)),
         None => true,
     }
+}
+
+/// The packages this build has (`MYOS_PACKAGES`, baked in by build.rs).
+fn package_names() -> Vec<&'static str> {
+    option_env!("MYOS_PACKAGES")
+        .unwrap_or("")
+        .split(',')
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// The first full-boot command: install every package of this build from
+/// the launcher's mirror, so the stages that need them (git in `heap`,
+/// os-test, the editor and the browser if they ever get one) find them
+/// at their image paths. Boot-mini has no packages and no network.
+fn cmd_get_packages() -> &'static [u8] {
+    static CMD: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    CMD.get_or_init(|| {
+        format!("get-myos -m http://10.0.2.2:8765 {} >/dev/null && echo GET-PACKAGES-OK\n", package_names().join(" "))
+            .into_bytes()
+    })
+}
+
+/// The heavy `heap` smoke (either variant) is the command at `idx`.
+fn is_heap(cmds: &[&[u8]], idx: usize) -> bool {
+    matches!(cmds.get(idx), Some(c) if *c == CMD_HEAP || *c == CMD_HEAP_MINI)
+}
+
+/// Every package reported installed and the shell came back.
+fn interactive_get_packages_ok(serial: &str) -> bool {
+    let tail = interactive_tail(serial);
+    // At the start of a line: the typed command echoes `echo GET-PACKAGES-OK`
+    // too, which must not pass for the marker.
+    command_echoed(serial, "get-myos -m http://10.0.2.2:8765 ")
+        && !serial.contains("exception:")
+        && tail.contains("\nGET-PACKAGES-OK")
+        && at_interactive_prompt(serial)
 }
 
 /// Some heavy needles only print when their port is packed into the initramfs
@@ -1209,21 +1254,23 @@ fn interactive_dropbear_bg_ok(serial: &str) -> bool {
 }
 
 fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[&str]) -> bool {
+    // Every stage is matched by its command: the list differs between the
+    // boot modes (the full boot installs the packages first, boot-mini has no
+    // network stages).
     match cmd_index {
-        0 => interactive_unknown_cmd_ok(serial),
-        1 => interactive_heap_cmd_ok(serial, extra),
-        2 => interactive_ok_cmd_ok(serial),
-        3 => interactive_echo_cmd_ok(serial),
-        4 => interactive_pipe_cmd_ok(serial),
-        5 => interactive_uutils_true_cmd_ok(serial),
-        6 => interactive_sbase_echo_cmd_ok(serial),
-        7 => interactive_sbase_ls_cmd_ok(serial),
-        8 => interactive_bs_ls_cmd_ok(serial),
-        9 => interactive_tmp_redir_ok(serial),
-        10 => interactive_which_ls_cmd_ok(serial),
-        11 => interactive_dns_cmd_ok(serial),
-        // Full-mode-only stages matched by command content (indexes shift when
-        // dropbear SSH smoke is inserted after curl).
+        i if cmds[i] == cmd_get_packages() => interactive_get_packages_ok(serial),
+        i if cmds[i] == CMD_NOSUCH => interactive_unknown_cmd_ok(serial),
+        i if cmds[i] == CMD_HEAP || cmds[i] == CMD_HEAP_MINI => interactive_heap_cmd_ok(serial, extra),
+        i if cmds[i] == CMD_OK => interactive_ok_cmd_ok(serial),
+        i if cmds[i] == CMD_ECHO => interactive_echo_cmd_ok(serial),
+        i if cmds[i] == CMD_PIPE => interactive_pipe_cmd_ok(serial),
+        i if cmds[i] == CMD_TRUE => interactive_uutils_true_cmd_ok(serial),
+        i if cmds[i] == CMD_SBASE_ECHO => interactive_sbase_echo_cmd_ok(serial),
+        i if cmds[i] == CMD_SBASE_LS => interactive_sbase_ls_cmd_ok(serial),
+        i if cmds[i] == CMD_BS_LS => interactive_bs_ls_cmd_ok(serial),
+        i if cmds[i] == CMD_TMP_REDIR => interactive_tmp_redir_ok(serial),
+        i if cmds[i] == CMD_WHICH => interactive_which_ls_cmd_ok(serial),
+        i if cmds[i] == CMD_DNS => interactive_dns_cmd_ok(serial),
         i if cmds[i] == CMD_HTTP => interactive_https_cmd_ok(serial),
         i if cmds[i] == CMD_CURL => interactive_curl_cmd_ok(serial),
         i if cmds[i] == CMD_DROPBEAR_BG => interactive_dropbear_bg_ok(serial),
@@ -1635,7 +1682,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 // `/heap` always prints `[ OK ] smoke` after tcc exits (even on
                 // JIT failure). Don't sit on the 180s timeout for `[ OK ] tcc`.
                 if shell_stage == ShellStage::WaitResult
-                    && shell_cmd_index == 1
+                    && is_heap(&cmds, shell_cmd_index)
                     && interactive_heap_returned(&acc)
                     && !interactive_heap_cmd_ok(&acc, extra_needles)
                 {
@@ -1645,7 +1692,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 // Heap exited back to `$` without `[ OK ] smoke` (e.g. riscv
                 // ripgrep sepc=0 → `exit_code(1)`). Fail fast vs QEMU 600s.
                 if shell_stage == ShellStage::WaitResult
-                    && shell_cmd_index == 1
+                    && is_heap(&cmds, shell_cmd_index)
                     && command_echoed(&acc, "heap")
                     && at_interactive_prompt(&acc)
                     && !acc.contains("[ OK ] smoke")
@@ -1743,9 +1790,9 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 } else {
                     login_wait_started = None;
                 }
-                // `which ls` (cmd 10): serial drop (`which s`) or PATH miss used
+                // `which ls`: serial drop (`which s`) or PATH miss used
                 // to sit in WaitResult until the 600s QEMU timeout (CI #34824642315).
-                if shell_stage == ShellStage::WaitResult && shell_cmd_index == 10 {
+                if shell_stage == ShellStage::WaitResult && cmds.get(shell_cmd_index) == Some(&CMD_WHICH) {
                     let tail = interactive_tail(&acc);
                     let which_hard_fail = tail.contains("not an external command")
                         || (tail.contains("$ which ")
@@ -1909,7 +1956,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
         if !at_interactive_prompt(&serial) && !command_echoed(&serial, "nosuchcmd") {
             eprintln!("error: serial never reached interactive `$` prompt");
         }
-        if shell_cmd_index == 0 && !interactive_unknown_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_NOSUCH) && !interactive_unknown_cmd_ok(&serial) {
             if !serial.contains(CI_SHELL_UNKNOWN_CMD) {
                 eprintln!("error: serial output did not contain {CI_SHELL_UNKNOWN_CMD:?}");
             } else if tail_has_hex_received(&serial) {
@@ -1918,8 +1965,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: {CI_SHELL_UNKNOWN_CMD:?} did not follow interactive `nosuchcmd`");
             }
         }
-        if shell_cmd_index >= 1
-            && shell_cmd_index < 2
+        if is_heap(&cmds, shell_cmd_index)
             && !interactive_heap_cmd_ok(&serial, extra_needles)
         {
             if !command_echoed(&serial, "heap") {
@@ -1940,7 +1986,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 }
             }
         }
-        if shell_cmd_index >= 2 && shell_cmd_index < 3 && !interactive_ok_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_OK) && !interactive_ok_cmd_ok(&serial) {
             if !command_echoed(&serial, "ok") {
                 eprintln!("error: serial did not echo `$ ok` at the interactive prompt");
             }
@@ -1948,7 +1994,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: shell reported non-printable input (hex escapes in received:)");
             }
         }
-        if shell_cmd_index >= 3 && shell_cmd_index < 4 && !interactive_echo_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_ECHO) && !interactive_echo_cmd_ok(&serial) {
             if !command_echoed(&serial, "echo test") {
                 eprintln!("error: serial did not echo `$ echo test` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1959,7 +2005,7 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `echo test` did not print `test`");
             }
         }
-        if shell_cmd_index >= 4 && shell_cmd_index < 5 && !interactive_pipe_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_PIPE) && !interactive_pipe_cmd_ok(&serial) {
             if serial.contains("[ WARN ] user fault") || serial.contains("user panic") {
                 eprintln!(
                     "error: interactive `echo pipe | cat` hit user fault/panic (want `pipe` then `$`)"
@@ -1974,10 +2020,10 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 );
             }
         }
-        if shell_cmd_index >= 5 && shell_cmd_index < 6 && !interactive_uutils_true_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_TRUE) && !interactive_uutils_true_cmd_ok(&serial) {
             eprintln!("error: interactive `/bin/coreutils/true` failed (want `$ /bin/coreutils/true` then `$` prompt)");
         }
-        if shell_cmd_index >= 6 && shell_cmd_index < 7 && !interactive_sbase_echo_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_SBASE_ECHO) && !interactive_sbase_echo_cmd_ok(&serial) {
             if !command_echoed(&serial, "/bin/sbase/echo hi") {
                 eprintln!("error: serial did not echo `$ /bin/sbase/echo hi` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -1988,25 +2034,25 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: interactive `/bin/sbase/echo hi` did not print `hi`");
             }
         }
-        if shell_cmd_index >= 7 && shell_cmd_index < 8 && !interactive_sbase_ls_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_SBASE_LS) && !interactive_sbase_ls_cmd_ok(&serial) {
             eprintln!("error: interactive `/bin/sbase/ls` failed (want `$ /bin/sbase/ls` then `$` prompt)");
         }
-        if shell_cmd_index >= 8 && shell_cmd_index < 9 && !interactive_bs_ls_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_BS_LS) && !interactive_bs_ls_cmd_ok(&serial) {
             eprintln!(
                 "error: interactive `x<BS>/s/ls` failed (canonical backspace must yield `/s/ls`)"
             );
         }
-        if shell_cmd_index == 9 && !interactive_tmp_redir_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_TMP_REDIR) && !interactive_tmp_redir_ok(&serial) {
             eprintln!(
                 "error: interactive `echo test > /tmp/aaa; cat /tmp/aaa` failed (want `test`, no cannot create)"
             );
         }
-        if shell_cmd_index == 10 && !interactive_which_ls_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_WHICH) && !interactive_which_ls_cmd_ok(&serial) {
             eprintln!(
                 "error: interactive `which ls` failed (want absolute PATH hit like `/bin/sbase/ls`, not `not an external command`)"
             );
         }
-        if shell_cmd_index == 11 && !interactive_dns_cmd_ok(&serial) {
+        if cmds.get(shell_cmd_index) == Some(&CMD_DNS) && !interactive_dns_cmd_ok(&serial) {
             if !command_echoed(&serial, "dns www.google.com") {
                 eprintln!("error: serial did not echo `$ dns www.google.com` at the interactive prompt");
             } else if serial.contains("exception:") {
@@ -2109,6 +2155,16 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
                 eprintln!("error: shell did not return to `$` after the dynamic Linux smoke");
             } else {
                 eprintln!("error: the dynamic Linux smoke did not print `LINUX-DYN OK`");
+            }
+            std::process::exit(1);
+        }
+        if cmds.get(shell_cmd_index) == Some(&cmd_get_packages()) && !interactive_get_packages_ok(&serial) {
+            if !command_echoed(&serial, "get-myos -m http://10.0.2.2:8765 ") {
+                eprintln!("error: serial did not echo `$ get-myos -m http://10.0.2.2:8765 ...` at the interactive prompt");
+            } else if !at_interactive_prompt(&serial) {
+                eprintln!("error: shell did not return to `$` after installing the packages");
+            } else {
+                eprintln!("error: installing this build's packages from the host mirror failed (want `GET-PACKAGES-OK`)");
             }
             std::process::exit(1);
         }

@@ -207,7 +207,7 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
 }
 
 /// Every port, by name. `repo` is the repository root; the `dir` of each
-/// port is repo-relative (`ports/vim`), as the scripts print it.
+/// port is repo-relative (`ports/curl`, `packages/vim`), as the scripts print it.
 pub fn load_all(repo: &Path) -> Vec<Port> {
     let mut ports: Vec<Port> = Vec::new();
     let roots: [(&str, Role); 4] = [

@@ -1,6 +1,6 @@
 /* config.h — myos GNU make port (hand-tuned; no configure run).
  * Mirrors what make-4.4.1's configure would detect against
- * newlib + libgloss/myos. See ports/make/README.md. */
+ * newlib + libgloss/myos. See packages/make/README.md. */
 #ifndef MYOS_MAKE_CONFIG_H
 #define MYOS_MAKE_CONFIG_H
 

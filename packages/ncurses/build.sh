@@ -11,7 +11,7 @@ if myos_ncurses_is_current; then
   exit 0
 fi
 
-"$ROOT/ports/ncurses/prepare.sh"
+"$HERE/prepare.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 

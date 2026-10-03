@@ -11,7 +11,9 @@ A small Rust kernel (`#![no_std]`) that boots through Limine in QEMU on
 VFS, kernel modules, preemptive scheduling, signals, networking (smoltcp in
 userspace) and a C/Rust userspace built on newlib + libgloss. Ported programs
 (oksh, sbase, ubase, uutils coreutils, ripgrep, tcc, vim, git, curl,
-dropbear, ...) are fetched and cross-built at build time.
+dropbear, ...) are fetched and cross-built at build time; the ones a boot
+does not need are packages (`packages/`, published to a rolling GitHub
+release, installed on the running system with `get-myos`).
 
 Every change has to work on **all three arches**. Readability is a goal:
 match the surrounding code's naming, idiom and comment density.
@@ -27,7 +29,7 @@ match the surrounding code's naming, idiom and comment density.
 | `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib) and C (`user/c`: hello and CI smokes); one `port.env` per program |
 | `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`); both are ports too (`port.env`, kind `toolchain`) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
-| `packages/<name>/` | the same, for programs CI builds but the image does not carry (`get-myos` installs them, `docs/packages.md`); a port moves between the two by moving its directory |
+| `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test, ncurses; `get-myos` installs them, `docs/packages.md`); a port moves between the two by moving its directory |
 | `linux-compat/` | optional Linux syscall layer userspace (launcher, musl build, tests, `get-alpine`) |
 | `scripts/` | CI scripts, registry, `ports.sh` (reads the descriptors), thin wrappers for port builds |
 | `targets/` | custom Rust target specs for userspace |
@@ -83,7 +85,9 @@ cargo test -p ps2-scancode                 # host unit tests
 - New behavior gets a CI check: a command + expected needle in
   `src/wait_ci.rs` (keep typed command lines under ~150 characters, the
   guest line editor mangles longer ones), a smoke program, or an os-test in
-  the curated lists (`ports/os-test/overlay/misc/*.tests`).
+  the curated lists (`packages/os-test/overlay/misc/*.tests`). The full
+  boot installs every package first, so a package's check runs like an
+  image port's (`port_enabled`).
 - Some stages need the network (`https://example.com/`, the Alpine mirror for
   `get-alpine`); the package stage uses the build's own packages, served by
   the launcher to the guest (`docs/packages.md`). In a sandbox with a TLS-intercepting proxy, append its CA to
@@ -104,8 +108,10 @@ cargo test -p ps2-scancode                 # host unit tests
 - **Full boot** is manual: dispatch `ci.yml` with `full_boot: true` on the
   branch. It runs the curated os-test list, git, HTTPS/curl and the optional
   Linux layer (built in by `MYOS_CI_FEATURES=linux_compat`) in all four boot
-  jobs. Run it for kernel, libc, port or CI changes that the mini boot does
-  not cover.
+  jobs, with every package installed from the build's own mirror. Run it
+  for kernel, libc, port or CI changes that the mini boot does not cover.
+- Pushes to master publish the packages to the rolling `packages` release
+  (the `publish` job, after the boots; `docs/packages.md`).
 - CI runs in the `myos-ci` container (`Dockerfile`, `build-ci-image.yml`).
 - Changing a port's pin or build script changes its cache key; CI rebuilds
   it. The ports matrix of `ci-ports.yml` and the pack/assert lists of the

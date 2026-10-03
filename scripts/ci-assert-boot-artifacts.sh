@@ -37,17 +37,17 @@ for arch_hello in \
   require "target/${arch_hello}" || missing=1
 done
 
-# Every file the image ports ship, from their descriptors (scripts/ports.sh
-# --all-image-files): the ELFs, manifests, data files and trees the initramfs
-# is packed from.
+# Every file the ports ship, from their descriptors (scripts/ports.sh
+# --all-files all): the ELFs, manifests, data files and trees the initramfs
+# (image ports) and the packages (a full boot serves them) are packed from.
 while read -r f; do
   require "$f" || missing=1
-done < <(./scripts/ports.sh --all-image-files)
+done < <(./scripts/ports.sh --all-files all)
 
 if [[ "$missing" -ne 0 ]]; then
   echo "::error::ci-build.tar is incomplete for boot/boot-mini."
   echo "::error::The build job must pack these via scripts/ci-pack-build-artifacts.sh"
-  echo "::error::(kernels --print-members + ports.sh --all-image-files). Boot jobs do not rebuild."
+  echo "::error::(kernels --print-members + ports.sh --all-files all). Boot jobs do not rebuild."
   echo "target/ listing:"
   ls -la target/ 2>&1 | head -200 || true
   exit 1

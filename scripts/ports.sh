@@ -8,11 +8,11 @@
 #   source scripts/ports.sh; myos_port_load vim; echo "$PORT_FILES"
 #   scripts/ports.sh --list [image|package|all]   names, one per line
 #   scripts/ports.sh --outputs NAME               cached outputs (target/...)
-#   scripts/ports.sh --image-files NAME [ARCH]    files the image needs (target/...)
-#   scripts/ports.sh --all-image-files [ARCH]     the same for every image port
-#   scripts/ports.sh --all-outputs                the outputs of every image port
+#   scripts/ports.sh --image-files NAME [ARCH]    files the image (or the package) needs (target/...)
+#   scripts/ports.sh --all-files [image|all]      the same for every port of the role
+#   scripts/ports.sh --all-outputs [image|all]    the outputs of every port of the role
 #   scripts/ports.sh --stamps                     version stamps of the image ports
-#   scripts/ports.sh --image-list                 `<name> <script>` of the image ports to build
+#   scripts/ports.sh --build-list [image|all]     `<name> <script>` of the ports to build, in order
 #   scripts/ports.sh --matrix                     ci-ports.yml ports matrix (JSON)
 
 MYOS_PORTS_ROOT="${MYOS_PORTS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -218,16 +218,18 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     --list) myos_port_names "${2:-all}" ;;
     --outputs) myos_port_outputs "$2" ;;
     --image-files) myos_port_image_files "$2" "${3:-}" ;;
-    --all-image-files)
-      for n in $(myos_port_names image); do
-        myos_port_image_files "$n" "${2:-}"
+    --all-files)
+      # Every file the image ports ship, or (`all`) the package ports' too:
+      # what a boot job packs its initramfs and its packages from.
+      for n in $(myos_port_names "${2:-image}"); do
+        myos_port_image_files "$n"
       done | sort -u
       ;;
     --all-outputs)
-      # The stamps and outputs of every image port (what the registry
-      # caches): the pack list carries them so a boot job's `cargo build`
-      # (the ISO job) finds every port built.
-      for n in $(myos_port_names image); do
+      # The stamps and outputs of the ports (what the registry caches): the
+      # pack list carries them so a boot job's `cargo build` (the ISO job)
+      # finds every port built.
+      for n in $(myos_port_names "${2:-image}"); do
         myos_port_outputs "$n"
       done | sort -u
       ;;
@@ -240,10 +242,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     --matrix) myos_ports_matrix ;;
     --dir) myos_port_load "$2" && echo "$PORT_DIR" ;;
     --script) myos_port_load "$2" && myos_port_build_script ;;
-    --image-list)
-      # Every image port with a build script, in build order: `<name> <script>`
-      # (the registry pull/push and the build job's build loop).
-      for n in $(myos_port_build_order image); do
+    --build-list)
+      # Every port of the role with a build script, in build order:
+      # `<name> <script>` (the registry pull/push and the build job's build
+      # loop; `all` includes the packages, which the build job packs too).
+      for n in $(myos_port_build_order "${2:-image}"); do
         myos_port_load "$n"
         echo "$n $(myos_port_build_script)"
       done

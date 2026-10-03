@@ -95,7 +95,7 @@ build_arch() {
 
   # myos gap shims (dup, vfork, getloadavg) + guile stubs.
   "$cc" -ffreestanding -fPIC -O2 -std=gnu99 -isystem "$inc" "${CPPFLAGS[@]+"${CPPFLAGS[@]}"}" \
-    -c "$ROOT/ports/make/myos_shims.c" -o "$objdir/myos_shims.o"
+    -c "$HERE/myos_shims.c" -o "$objdir/myos_shims.o"
   "$cc" -ffreestanding -fPIC -O2 -std=gnu99 -isystem "$inc" "${CPPFLAGS[@]+"${CPPFLAGS[@]}"}" \
     -c "$WORK/guile.c" -o "$objdir/guile.o"
   objs+=("$objdir/myos_shims.o" "$objdir/guile.o")

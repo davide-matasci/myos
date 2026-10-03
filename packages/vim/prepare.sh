@@ -7,11 +7,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-"$ROOT/ports/vim/fetch.sh"
+"$HERE/fetch.sh"
 
 VIM="$ROOT/target/vim-src"
 WORK="$ROOT/target/vim-myos-build"
-MYOS="$ROOT/ports/vim"
+MYOS="$HERE"
 
 rm -rf "$WORK"
 mkdir -p "$WORK"

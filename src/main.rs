@@ -443,8 +443,10 @@ fn ci_qemu_timeout() -> Duration {
     } else {
         // Full boot runs the whole curated os-test list (303 tests at
         // ~3-6 s each under TCG) and must reach 100%; 1800 s ran out on
-        // UEFI mid-list. The CI job itself allows 90 min.
-        Duration::from_secs(2700)
+        // UEFI mid-list. Installing the packages first (os-test's 15 MB
+        // unpack under TCG) adds a few minutes. The CI job itself allows
+        // 90 min.
+        Duration::from_secs(3000)
     }
 }
 

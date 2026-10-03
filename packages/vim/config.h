@@ -4,7 +4,7 @@
  * probes Linux/glibc/ncurses and enables TERMINFO/TGETENT/select/sysinfo/etc.
  * that myos newlib+libgloss do not provide. We keep FEAT_TINY + UNIX and only
  * the HAVE_* flags that match available newlib/libgloss + ncurses symbols.
- * HAVE_TGETENT uses ports/ncurses (static lib); no TERMINFO database.
+ * HAVE_TGETENT uses packages/ncurses (static lib); no TERMINFO database.
  */
 #ifndef MYOS_VIM_CONFIG_H_
 #define MYOS_VIM_CONFIG_H_
@@ -14,7 +14,7 @@
 /* #undef HAVE_WAYLAND */
 /* #undef FEAT_WAYLAND_CLIPBOARD_FS */
 
-/* ncurses termcap API (ports/ncurses); no full TERMINFO DB. */
+/* ncurses termcap API (packages/ncurses); no full TERMINFO DB. */
 /* #undef TERMINFO */
 #define HAVE_OSPEED 1
 #define OSPEED_EXTERN 1

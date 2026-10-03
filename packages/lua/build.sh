@@ -13,7 +13,7 @@ if myos_lua_is_current; then
   exit 0
 fi
 
-"$ROOT/ports/lua/fetch.sh"
+"$HERE/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 

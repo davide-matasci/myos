@@ -7,7 +7,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-"$ROOT/ports/ncurses/fetch.sh"
+"$HERE/fetch.sh"
 
 SRC="$ROOT/target/ncurses-src"
 WORK="$ROOT/target/ncurses-myos-build"

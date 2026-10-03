@@ -3,11 +3,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-"$ROOT/ports/git/fetch.sh"
+"$HERE/fetch.sh"
 
 GIT="$ROOT/target/git-src"
 WORK="$ROOT/target/git-myos-build"
-MYOS="$ROOT/ports/git"
+MYOS="$HERE"
 
 rm -rf "$WORK"
 mkdir -p "$WORK"

@@ -9,14 +9,14 @@ myos libgloss + static ncurses termcap for `x86_64` / `aarch64` / `riscv64`.
 |--------|------|
 | `fetch.sh` | Clone pinned tag into `target/vim-src` (idempotent) |
 | `prepare.sh` | rsync → `target/vim-myos-build`, install `config.h` / stubs |
-| `build.sh` | Cross-compile → `target/vim-<arch>-unknown-none` (links `ports/ncurses`) |
+| `build.sh` | Cross-compile → `target/vim-<arch>-unknown-none` (links `packages/ncurses`) |
 
 Thin wrappers: `scripts/fetch-vim.sh`, `scripts/build-vim.sh`.
 
 ## Config choice
 
 `config.h` is **hand-written** for freestanding myos (not host `./configure`).
-`HAVE_TGETENT` / `HAVE_TERMCAP_H` use `ports/ncurses` (static `libncurses.a`,
+`HAVE_TGETENT` / `HAVE_TERMCAP_H` use `packages/ncurses` (static `libncurses.a`,
 fallbacks `dumb`/`ansi`/`vt100`/`linux`). The image also ships
 `/lib/termcap` (`ports/termcap/termcap`); getty sets `TERMCAP=/lib/termcap`
 with `TERM=linux`. No full TERMINFO database.
@@ -25,7 +25,7 @@ with `TERM=linux`. No full TERMINFO database.
 
 `<termios.h>` and `tcgetattr`/`tcsetattr` stubs live in
 `toolchain/newlib/libgloss/myos/` (installed into the newlib sysroot) — not
-under `ports/vim/`.
+under `packages/vim/`.
 
 ## Image path
 
