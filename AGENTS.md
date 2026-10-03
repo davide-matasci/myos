@@ -67,7 +67,8 @@ cargo run -- [uefi|aarch64|riscv64]  # build and boot in QEMU (default: x86 BIOS
 ## Testing
 
 The real test is booting: `test-mini` / `test-full` boot headless, log in
-and run a test list **in the guest** (`user/tests`, the ports' `test.sh`),
+and run a test list **in the guest** (the ports' `test.sh`, the kernel's
+`user/tests/kernel.sh`),
 while the host watches the console for `TEST <name> PASS|FAIL` lines
 (`src/boot_test.rs`, `docs/testing.md`). QEMU runs under TCG, so a boot
 takes minutes.
@@ -84,11 +85,12 @@ cargo test -p ps2-scancode -p ext2fs      # host unit tests (ext2fs needs e2fspr
 - Test on every arch you could have affected; arch-specific code needs all
   three. Don't over-test: a mini run per affected arch is usually enough
   locally, CI does the rest.
-- New behavior gets a test: a function and a `t` line in a section of
-  `user/tests/`, a port's `test.sh` (`PORT_TEST` in its `port.env`; a
+- New behavior gets a test: a function and a `t` line in the `test.sh` of
+  the port or program it belongs to (`PORT_TEST` in its `port.env`; a
   package's test runs in the full mode after the install; `host.sh` with
-  `PORT_HOST` when the test needs a peer on the host), a smoke program
-  under `user/c`, or an os-test in the curated lists
+  `PORT_HOST` when the test needs a peer on the host), the kernel's own in
+  `user/tests/kernel.sh`, a smoke program under `user/c`, or an os-test in
+  the curated lists
   (`packages/os-test/overlay/misc/*.tests`). A test's output is shown only
   when it fails: keep passing tests quiet.
 - The full mode needs the network (`https://example.com/`, the Alpine

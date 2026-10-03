@@ -14,10 +14,11 @@
 #
 # A test is a command (mostly a shell function); its exit status decides,
 # its output goes to /tmp/myos-tests/<name>.out and is shown when it fails.
-# The sections are sourced in order: the shell and the programs every boot
-# has (shell.sh), the Linux layer (linux.sh), the ports' own tests
-# (ports/*.sh, from their PORT_TEST), the network (net.sh), the tty. The
-# full mode first installs every package of the mirror the host serves.
+# Every test belongs to the port of what it tests (ports/*.sh, from their
+# PORT_TEST; the packer names them so the core image ports come first, the
+# other image ports next, the packages last), except the kernel's own
+# (kernel.sh), which run first. The full mode first installs every package
+# of the mirror the host serves.
 
 MODE=${1:-mini}
 TESTS=/lib/myos-tests
@@ -75,11 +76,9 @@ if [ "$MODE" = full ]; then
 	t packages install_packages
 fi
 
-. $TESTS/shell.sh
-. $TESTS/linux.sh
+. $TESTS/kernel.sh
 for f in $TESTS/ports/*.sh; do
 	[ -f "$f" ] && . "$f"
 done
-. $TESTS/net.sh
 
 echo "TESTS DONE $passed/$total"

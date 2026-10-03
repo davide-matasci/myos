@@ -193,10 +193,20 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
     };
     // The port's boot test script (`PORT_TEST`, docs/testing.md) is one
     // more checked-in file of the image (or the package), under the
-    // directory the test runner walks.
+    // directory the test runner walks in name order: the core image ports
+    // (the shell, the basic programs) first, the other image ports next,
+    // the packages last.
     let mut files = parse_files(&name, &get("PORT_FILES"));
     if !get("PORT_TEST").is_empty() {
-        files.push(FileSpec::File { src: get("PORT_TEST"), path: format!("lib/myos-tests/ports/{name}.sh") });
+        let group = match (role, get("PORT_CORE") == "1") {
+            (Role::Package, _) => 2,
+            (Role::Image, true) => 0,
+            (Role::Image, false) => 1,
+        };
+        files.push(FileSpec::File {
+            src: get("PORT_TEST"),
+            path: format!("lib/myos-tests/ports/{group}-{name}.sh"),
+        });
     }
     let host = Some(get("PORT_HOST"))
         .filter(|s| !s.is_empty())

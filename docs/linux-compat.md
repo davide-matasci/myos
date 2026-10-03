@@ -319,7 +319,7 @@ the kernel does not keep a per-task copy at syscall entry.
 
 ## Testing
 
-The boot tests (`docs/testing.md`, `user/tests/linux.sh`) run
+The boot tests (`docs/testing.md`, `user/tests/kernel.sh`) run
 `linux /bin/linux/linux-smoke` and `linux /bin/linux/linux-dyn` on every
 arch when the image was built with `--features linux_compat`, and expect
 `LINUX-SMOKE OK` (files, directories, mmap, fork/execve/wait4, pipes, Linux

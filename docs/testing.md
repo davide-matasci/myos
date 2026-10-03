@@ -54,16 +54,21 @@ TESTS DONE 17/18
   connects to the guest's listener through QEMU's port forward and plays
   ping/pong; `dropbear PORT` (`ports/dropbear/host.sh`) opens two SSH
   sessions at once with the test key, each of which touches
-  `/tmp/ssh-ok-a` / `-b` for the guest test to find. A port that needs a
+  `/tmp/ssh-ok-a` / `-b` for the guest test to find. `c-smokes tcp-ping
+  PORT` (`user/c/host.sh`) is the listen test's peer. A port that needs a
   peer on the host ships its own `host.sh`; the launcher knows no test.
 - `TESTS DONE <passed>/<total>` ends the run.
 
-The sections run in this order: `shell.sh` (the shell and the programs
-every boot has, ext2 on the scratch disk, the heavy `heap` smoke),
-`linux.sh` (the Linux layer: its smokes when the image was built with the
-feature, `insmod` otherwise), the ports' tests (`ports/*.sh`, see below;
-the C smokes' among them, with the tty test), `net.sh` (DNS, HTTPS,
-listen/accept). In the full mode the very first test installs every
+Every test belongs to the port of what it tests and ships with it
+(`test.sh`, see below): the shell's are oksh's, `heap`'s are `user/heap`'s,
+the ext2 ones are `mkfs.ext2`'s, DNS and HTTPS are the `dns` and `http`
+programs', listen/accept and the tty are the C smokes'. The one section of
+`user/tests` itself, `kernel.sh`, holds what has no port directory: the
+exec limits and the Linux layer (its smokes when the image was built with
+the feature, `insmod` otherwise). The runner sources `kernel.sh`, then
+`ports/*.sh` in name order; the packer names those so the core image ports
+(the shell, the basic programs) come first, the other image ports next,
+the packages last. In the full mode the very first test installs every
 package the host's mirror has.
 
 The tty test (`user/c/tty_smoke.c`, in `user/c/test.sh`) drives an
@@ -74,10 +79,11 @@ foreground pipeline with the shell surviving.
 ### A port's own tests
 
 A port ships its test with `PORT_TEST=test.sh` in its `port.env`
-(`docs/ports.md`): the file lands at `/lib/myos-tests/ports/<name>.sh` in
-the image, or in the package, so moving a port between `ports/` and
+(`docs/ports.md`): the file lands at `/lib/myos-tests/ports/<group>-<name>.sh`
+in the image, or in the package (`0` for a core image port, `1` for another
+image port, `2` for a package), so moving a port between `ports/` and
 `packages/` moves its test too. The runner sources every file of that
-directory in name order, after the core sections. A test script calls `t`:
+directory in name order, after `kernel.sh`. A test script calls `t`:
 
 ```sh
 # packages/make/test.sh
@@ -127,11 +133,12 @@ output is in the log either way.
 
 ## Adding a test
 
-- Something every boot must do: a function in the matching section of
-  `user/tests/` and a `t name function` line. Programs the tests need
-  (smokes) go in `user/c` or as a `user` crate.
-- A port's behaviour: `test.sh` next to its `port.env`, with `PORT_TEST`;
-  a `host.sh` with `PORT_HOST` when the test needs a peer on the host.
+- A port's or a program's behaviour: a function and a `t name function`
+  line in the `test.sh` next to its `port.env` (`PORT_TEST`; a `host.sh`
+  with `PORT_HOST` when the test needs a peer on the host). Programs the
+  tests need (smokes) go in `user/c` or as a `user` crate, with their test.
+- The kernel's own behaviour (a limit, a module without a user-side
+  program): `user/tests/kernel.sh`.
 - A POSIX conformance case: the curated os-test lists
   (`packages/os-test/overlay/misc/*.tests`), which must pass in full.
 

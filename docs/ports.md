@@ -42,7 +42,7 @@ has a default, so a minimal port needs only `PORT_FILES`.
 | `PORT_EMBED` | | `user` only: the kernel embeds the program at this binfs path (`custom/cat`), so a boot works without the initramfs |
 | `PORT_IMAGE_BASE` | `0` | `user` only: `1` links the program at `USER_BASE` as `ET_EXEC` on aarch64 and riscv64 (programs with absolute vtables: netd, ping, http, dns) |
 | `PORT_WATCH` | | `user` only: extra source files the kernel build watches, relative to the crate (`../lib/src/lib.rs`) |
-| `PORT_TEST` | | the port's boot test script, in the port directory (`test.sh`): packed as `lib/myos-tests/ports/<name>.sh`, run by the test runner after the core sections (`docs/testing.md`) |
+| `PORT_TEST` | | the port's boot test script, in the port directory (`test.sh`): packed as `lib/myos-tests/ports/<group>-<name>.sh` (`0` core image port, `1` image port, `2` package), run by the test runner in that order (`docs/testing.md`) |
 | `PORT_HOST` | | the host's side of that test, in the port directory (`host.sh`): not packed; the launcher runs it with the arguments of a `HOST <name> <args>` line the guest test prints (dropbear's SSH clients, the listen test's peer) |
 
 Paths in `PORT_OUTPUTS`, `PORT_READY` and `PORT_FILES` are relative to
