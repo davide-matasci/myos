@@ -1154,6 +1154,17 @@ fn pump_sockets(
                     && !s.can_recv()
                     && (!s.is_active() || !s.may_recv())
                 {
+                    if !s.is_active() {
+                        // DEBUG (not for merge): a hangup without a FIN.
+                        let line = alloc::format!(
+                            "\nnetd-dbg hup conv {} state {} fin {:?} rx_room {}\n",
+                            conv,
+                            s.state(),
+                            s.may_recv(),
+                            convs[i].rx_room
+                        );
+                        let _ = write_fd(1, line.as_bytes());
+                    }
                     convs[i].hungup = true;
                     reply(chan, REP_STATUS, conv, 0, b"hangup");
                 }

@@ -172,6 +172,45 @@ fn wake_any() {
     }
 }
 
+/// DEBUG (not for merge): one line on the console.
+fn dbg2(a: &[u8], x: usize, b: &[u8], y: usize) {
+    let Some(api) = (unsafe { *core::ptr::addr_of!(API) }) else {
+        return;
+    };
+    let mut line = [0u8; 96];
+    let mut n = 0;
+    let mut put = |s: &[u8], n: &mut usize| {
+        for &c in s {
+            if *n < line.len() {
+                line[*n] = c;
+                *n += 1;
+            }
+        }
+    };
+    let dec = |mut v: usize| {
+        let mut d = [0u8; 20];
+        let mut i = d.len();
+        loop {
+            i -= 1;
+            d[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        (d, i)
+    };
+    put(b"\n", &mut n);
+    put(a, &mut n);
+    let (d, i) = dec(x);
+    put(&d[i..], &mut n);
+    put(b, &mut n);
+    let (d, i) = dec(y);
+    put(&d[i..], &mut n);
+    put(b"\n", &mut n);
+    unsafe { (api.write_str)(line.as_ptr(), n) };
+}
+
 fn state() -> &'static mut State {
     unsafe { &mut *core::ptr::addr_of_mut!(STATE) }
 }
@@ -474,6 +513,9 @@ fn append_data(c: &mut Conv, src: &[u8]) {
         return;
     }
     let n = src.len().min(DATA_CAP.saturating_sub(have));
+    if n < src.len() {
+        dbg2(b"netfs-dbg drop have ", have, b" lost ", src.len() - n);
+    }
     if n == 0 {
         return;
     }
@@ -537,6 +579,9 @@ fn apply_reply(buf: &[u8]) {
         return;
     }
     let Some(c) = conv_mut(conv) else {
+        if typ == REP_DATA {
+            dbg2(b"netfs-dbg orphan conv ", conv as usize, b" len ", payload.len());
+        }
         return;
     };
     match typ {
