@@ -32,7 +32,7 @@ pub fn user_fault_warn(kind: &str, detail: &str) {
 }
 
 pub fn user_fault_kill(kind: &str, detail: &str) -> ! {
-    // Avoid the substring `exception:` so wait_ci interrupt/arrow needles that
+    // Avoid the substring `exception:` so the boot test host, which ends the run on it,
     // treat any `exception:` as a hard fail stay quiet when a *child* faults.
     console::status_warn(&format!("user fault: {kind} {detail}"));
     console::flush();

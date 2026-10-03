@@ -1,19 +1,60 @@
 #!/usr/bin/env bash
-# The C smoke programs (user/c): c-hello + socket_smoke, the TCP listen,
-# pty and urandom boot-CI smokes, for the three arches. One stamp for all
-# of them (the `c-smokes` port of scripts/ports.sh); each script skips
-# itself or is cheap when current.
+# The C smoke programs of the boot tests (user/c, the `c-smokes` port):
+# c-hello and socket_smoke (build-c-hello.sh, the kernel embeds c-hello), and
+# the ones below, each a static PIE against newlib + libgloss/myos for the
+# three arches: target/<name>-<arch>-unknown-none.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/myos-c-userspace-lib.sh
 source "$ROOT/scripts/myos-c-userspace-lib.sh"
+
 if myos_c_smokes_is_current; then
   echo "c smokes up to date"
   exit 0
 fi
+
 "$ROOT/scripts/build-c-hello.sh"
-"$ROOT/scripts/build-tcp-listen-smoke.sh"
-"$ROOT/scripts/build-pty-smoke.sh"
-"$ROOT/scripts/build-urandom-smoke.sh"
+"$ROOT/toolchain/newlib/build.sh"
+export PATH="$ROOT/target/newlib-bin:$PATH"
+myos_ensure_llvm_bin
+
+# name -> source
+smokes=(
+  "tcp-listen-smoke user/c/tcp_listen_smoke.c"
+  "pty-smoke user/c/pty_smoke.c"
+  "urandom-smoke user/c/urandom_smoke.c"
+  "tty-smoke user/c/tty_smoke.c"
+)
+for arch in x86_64 aarch64 riscv64; do
+  triple="${arch}-unknown-myos"
+  prefix="$ROOT/target/newlib-${arch}"
+  inc="$prefix/${triple}/include"
+  lib="$prefix/${triple}/lib"
+  cc="${triple}-cc"
+  # newlib's printf wants the long-double and soft-float helpers these
+  # arches lack in the shim (the sbase port carries them).
+  extra=()
+  if [[ "$arch" == "aarch64" ]]; then
+    tf="$ROOT/target/c-smokes-${arch}-trunctfdf2.o"
+    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$tf"
+    extra+=("$tf")
+  elif [[ "$arch" == "riscv64" ]]; then
+    sf="$ROOT/target/c-smokes-${arch}-softfloat.o"
+    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$sf"
+    extra+=("$sf")
+  fi
+  for entry in "${smokes[@]}"; do
+    name="${entry%% *}"
+    src="${entry#* }"
+    out="$ROOT/target/${name}-${arch}-unknown-none"
+    obj="$ROOT/target/${name}-${arch}.o"
+    echo "==> ${name} ($triple)"
+    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/$src" -o "$obj"
+    ld.lld -pie --no-dynamic-linker -o "$out" \
+      --entry=_start -z max-page-size=4096 \
+      "$lib/crt0.o" "$obj" "${extra[@]+"${extra[@]}"}" -L"$lib" \
+      --start-group -lc -lgloss -lg --end-group
+  done
+done
+
 myos_c_smokes_version_hash > "$MYOS_C_SMOKES_VERSION"
-echo "c smokes -> target/{c-hello,c-socket_smoke,tcp-listen-smoke,pty-smoke,urandom-smoke}-<arch>-unknown-none"
+echo "c smokes -> target/{c-hello,c-socket_smoke,tcp-listen-smoke,pty-smoke,urandom-smoke,tty-smoke}-<arch>-unknown-none"

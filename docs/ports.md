@@ -42,6 +42,7 @@ has a default, so a minimal port needs only `PORT_FILES`.
 | `PORT_EMBED` | | `user` only: the kernel embeds the program at this binfs path (`custom/cat`), so a boot works without the initramfs |
 | `PORT_IMAGE_BASE` | `0` | `user` only: `1` links the program at `USER_BASE` as `ET_EXEC` on aarch64 and riscv64 (programs with absolute vtables: netd, ping, http, dns) |
 | `PORT_WATCH` | | `user` only: extra source files the kernel build watches, relative to the crate (`../lib/src/lib.rs`) |
+| `PORT_TEST` | | the port's boot test script, in the port directory (`test.sh`): packed as `lib/myos-tests/ports/<name>.sh`, run by the test runner after the core sections (`docs/testing.md`) |
 
 Paths in `PORT_OUTPUTS`, `PORT_READY` and `PORT_FILES` are relative to
 `target/` and expand per arch: `{arch}` (`x86_64`), `{none}`
@@ -71,16 +72,14 @@ serves it from binfs, so its file in the initramfs is optional.
 
 - `build.rs`: for every image port with a build script, runs the script
   when `PORT_READY` is missing (the scripts skip themselves when current),
-  watches `port.env` and the `file:` sources, and tells the host tool which
-  ports are in (`MYOS_IMAGE_PORTS`, for the `wait_ci` needles of tcc, git
-  and dropbear).
+  and watches `port.env`, the `file:` sources and the test script.
 - `kernel/build.rs`: builds every `user` port for the kernel's arch and
   generates the binfs registrations of the embedded ones.
 - `src/initramfs.rs`: packs `PORT_FILES` of every image port, for the arch
   being imaged.
 - `scripts/ports.sh`: the shell side. `--list`, `--outputs NAME`,
   `--image-files NAME`, `--all-files`, `--all-outputs`, `--stamps`, `--build-list`,
-  `--matrix`; as a library (`myos_port_load NAME`) for
+  `--matrix`, `--tests`; as a library (`myos_port_load NAME`) for
   `scripts/ci-registry.sh` (what to cache, under the port's name), the CI
   build job (`ci-build-kernels.sh` builds every image port before hashing
   the kernel inputs; the port stamps are part of that hash),
@@ -102,11 +101,10 @@ serves it from binfs, so its file in the initramfs is optional.
    hash when done, patches as `*.myos.patch`, a `README.md`, and `port.env`.
 2. `myos_<name>_version_hash` / `myos_<name>_is_current` in
    `scripts/myos-c-userspace-lib.sh` (copy an existing pair).
-3. A CI check: a command and needle in `src/wait_ci.rs`, gated on
-   `port_enabled("<name>")` when the port is not core.
-4. `THIRD_PARTY_NOTICES.md` (see "License compliance" in `AGENTS.md`), and
-   `.github/path-filters.yml` only when the port's inputs live outside
-   `ports/`, `packages/` and `user/c`.
+3. A boot test: `test.sh` in the port directory with `PORT_TEST=test.sh`
+   in the descriptor (`docs/testing.md`; a package's test runs in the full
+   mode, after the install).
+4. `THIRD_PARTY_NOTICES.md` (see "License compliance" in `AGENTS.md`).
 
 Nothing else: `Cargo.toml`, the workflows, the registry, the pack lists and
 the initramfs packer are descriptor-driven.

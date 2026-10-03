@@ -114,7 +114,12 @@ kernel_inputs_hash() {
         sha256sum build.rs Cargo.toml 2>/dev/null || true
         # The port descriptors: which ports are in the image and what they ship.
         sha256sum scripts/ports.sh
-        for f in ports/*/port.env user/*/port.env toolchain/*/port.env; do
+        for f in ports/*/port.env user/*/port.env toolchain/*/port.env packages/*/port.env; do
+          [[ -f "$f" ]] && sha256sum "$f"
+        done
+        # The boot tests ride in the images and the packages: the ports'
+        # test scripts (PORT_TEST) and the runner under user/tests.
+        for f in $(./scripts/ports.sh --tests all) user/tests/*.sh; do
           [[ -f "$f" ]] && sha256sum "$f"
         done
         # Whole host-bin crate (src/): target/debug/myos is the CI harness
@@ -287,25 +292,23 @@ HELLO_OK_ELFS=(
 # file the ports ship (scripts/ports.sh --all-files all: a boot job re-packs
 # the aarch64/riscv64 initramfs from the image ports' and the packages from
 # all of them), plus the Linux layer.
+# Every file a boot job and the ISO job need. Names what is missing: a
+# pulled bundle that lacks one rebuilds the kernels in every run until the
+# member list and this check agree.
 artifacts_ready() {
-  [[ -x target/debug/myos ]] \
-    && [[ -f target/bios.img ]] \
-    && [[ -f target/uefi.img ]] \
-    && [[ -f target/aarch64-unknown-none-softfloat/debug/kernel ]] \
-    && [[ -f target/riscv64imac-unknown-none-elf/debug/kernel ]] \
-    || return 1
   local f
-  for f in "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
-    [[ -f "$f" ]] || return 1
+  for f in target/debug/myos target/bios.img target/uefi.img \
+    target/aarch64-unknown-none-softfloat/debug/kernel \
+    target/riscv64imac-unknown-none-elf/debug/kernel \
+    "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
+    [[ -f "$f" ]] || { echo "kernel artifacts: missing $f" >&2; return 1; }
   done
+  [[ -x target/debug/myos ]] || { echo "kernel artifacts: target/debug/myos not executable" >&2; return 1; }
   while read -r f; do
-    [[ -e "$f" ]] || return 1
+    [[ -e "$f" ]] || { echo "kernel artifacts: missing $f (ports.sh --all-files all)" >&2; return 1; }
   done < <(./scripts/ports.sh --all-files all)
-  for f in $(linux_compat_members); do
-    [[ -e "$f" ]] || return 1
-  done
-  for f in x86_64 aarch64 riscv64; do
-    [[ -f "target/linux-compat/$f/get-alpine" ]] || return 1
+  for f in $(linux_compat_members) target/linux-compat/{x86_64,aarch64,riscv64}/get-alpine; do
+    [[ -e "$f" ]] || { echo "kernel artifacts: missing $f (linux-compat)" >&2; return 1; }
   done
   return 0
 }

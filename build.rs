@@ -68,9 +68,7 @@ fn main() {
     // checked-in file a port ships changes. Packages (packages/) are not
     // built here; CI builds and publishes them.
     let all_ports = ports::load_all(&manifest);
-    let mut image_ports: Vec<String> = Vec::new();
     for port in all_ports.iter().filter(|p| p.role == ports::Role::Image) {
-        image_ports.push(port.name.clone());
         println!("cargo:rerun-if-changed={}", manifest.join(&port.dir).join("port.env").display());
         for f in &port.files {
             if let ports::FileSpec::File { src, .. } = f {
@@ -90,16 +88,6 @@ fn main() {
         };
         ensure_artifact(&manifest, &format!("target/{ready}"), script);
     }
-    // For the host tool: which ports the images carry and which are
-    // packages (`wait_ci` requires a port's needles when it is in the image,
-    // or installed as a package by the full boot).
-    println!("cargo:rustc-env=MYOS_IMAGE_PORTS={}", image_ports.join(","));
-    let packages: Vec<String> = all_ports
-        .iter()
-        .filter(|p| p.role == ports::Role::Package && !p.files.is_empty())
-        .map(|p| p.name.clone())
-        .collect();
-    println!("cargo:rustc-env=MYOS_PACKAGES={}", packages.join(","));
     let modules = boot_module_files(&manifest.join("target"), "x86_64-unknown-none");
 
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any
@@ -163,8 +151,8 @@ fn main() {
     // Artifact-dep kernel is not at target/<triple>/debug/kernel.
     println!("cargo:rustc-env=KERNEL_PATH={}", kernel_path.display());
     println!("cargo:rustc-env=OK_PATH={}", ok_path.display());
-    // Hand the active feature set to the host binary so wait_ci.rs can gate the
-    // smoke-test needles at runtime (build scripts can't use #[cfg] on a
+    // Hand the active feature set to the host binary (the boot test's QEMU
+    // budget depends on the Linux layer; build scripts can't use #[cfg] on a
     // separate binary; the crate can, but this keeps one source of truth).
     println!("cargo:rustc-env=MYOS_FEATURES={}", initramfs::active_features().join(","));
 }

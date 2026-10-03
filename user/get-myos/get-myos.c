@@ -5,8 +5,9 @@
  * carry (packages/<name>, docs/packages.md). A package is a gzip tar of the
  * files the port would have in the image (bin/custom/vim, lib/vim/vimrc),
  * unpacked under ROOT (default /tmp/pkg, on the tmpfs) and bind-mounted
- * where the image would have them, so programs find their files at the
- * usual paths and PATH needs no change.
+ * where the image would have them (a directory the image lacks, or a file
+ * into one it has), so programs find their files at the usual paths and
+ * PATH needs no change.
  *
  * The mirror holds one index per architecture (<arch>-index.txt: name,
  * version, size, SHA-256 and file of every package) and the tarballs
@@ -43,7 +44,7 @@
 #error "no packages for this architecture"
 #endif
 
-#define DEFAULT_MIRROR "https://github.com/davide-matasci/myos/releases/download/packages"
+#define DEFAULT_MIRROR "https://github.com/davide-matasci/myos/releases/download/rolling"
 
 /* libgloss/myos mount(2): SYS_MOUNT; "bind" makes SOURCE visible at TARGET. */
 int mount(const char *source, const char *target, const char *fstype, ...);
@@ -108,24 +109,29 @@ static int find_package(const char *want, char *line, size_t cap) {
 
 /* ---- unpacking into the root, then binding -------------------------------- */
 
-/* What a package's entries are bound as: a file of bin/ is bound by itself
- * (bin/<category> is a read-only tree of the image with other programs
- * in it), anything else at its second component (lib/vim, lib/os-test,
- * lib/lynx.cfg, etc/dropbear). */
+/* What a package's entries are bound as: the first directory of the entry's
+ * path that the running system does not have (lib/vim for lib/vim/vimrc,
+ * lib/os-test for everything under it), or the file itself when all its
+ * directories exist (bin/custom/vim: /bin/custom is a read-only tree of the
+ * image with other programs in it; lib/myos-tests/ports/vim.sh lands next
+ * to the image's test scripts). */
 #define MAX_BINDS 256
 static char binds[MAX_BINDS][PATH_MAX_GV];
 static size_t nbinds;
 
 static void note_bind(const char *name) {
-    char rel[PATH_MAX_GV];
+    char rel[PATH_MAX_GV], abs[PATH_MAX_GV + 1];
+    struct stat st;
     copy_field(rel, sizeof rel, name, strlen(name));
-    if (strncmp(rel, "bin/", 4) != 0) {
-        char *slash = strchr(rel, '/');
-        if (slash != NULL) {
-            slash = strchr(slash + 1, '/');
-            if (slash != NULL) {
-                *slash = '\0';
-            }
+    for (char *slash = strchr(rel, '/'); slash != NULL; slash = strchr(slash + 1, '/')) {
+        *slash = '\0';
+        abs[0] = '/';
+        strcpy(abs + 1, rel);
+        int have = stat(abs, &st) == 0;
+        *slash = '/';
+        if (!have) {
+            *slash = '\0';
+            break;
         }
     }
     for (size_t i = 0; i < nbinds; i++) {

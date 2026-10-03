@@ -76,12 +76,12 @@ cargo run -- iso         # write target/myos-x86_64.iso
 cargo run --release      # release build
 ```
 
-**Headless / CI mode** — add `-- --ci` to kill QEMU after all boot needles:
+**Boot tests** — boot headless, log in and run the test list in the guest (`docs/testing.md`):
 
 ```sh
-cargo run -- --ci
-cargo run -- uefi --ci
-cargo run -- aarch64 --ci
+cargo run -- test-mini            # the quick list (every pull request runs it)
+cargo run -- uefi test-mini
+cargo run -- aarch64 test-full    # the full list: packages, HTTPS, SSH, os-test (needs the network)
 ```
 
 **Interactive use** — type at `$` prompt (PS/2 keyboard in QEMU window on x86; serial on all arches):
@@ -92,7 +92,7 @@ cargo run -- uefi  # x86 UEFI
 cargo run -- aarch64   # serial only for now
 ```
 
-CI types `root` at `login: `, then commands at `$ ` (password is empty).
+The boot test types `root` at `login: ` (the password is empty), then `sh /lib/myos-tests/run.sh mini|full` at `$ `.
 
 ---
 
@@ -321,13 +321,13 @@ Implemented libgloss hooks call real syscalls where they exist; stubs return ENO
 
 GitHub Actions caches Cargo with Swatinem/rust-cache (`prefix-key: limine-8.3-6`). Userspace port outputs are OCI artifacts on GHCR, one package per port (its `PORT_OUTPUTS`, `scripts/ports.sh`), tagged with stamp hash from `scripts/myos-c-userspace-lib.sh`; the ports matrices come from the descriptors. First run after stamp change = miss + push; later runs with same hashes = hit. Packages should be **public** for fork PRs. Source checkouts (`*-src`) are never cached.
 
-A full boot also serves the build's own packages to the guest and installs them with `get-myos`; pushes to master publish them to the rolling `packages` release, get-myos's default mirror (`docs/packages.md`). Every run boots the four disk images (boot-mini, or the full boot when dispatched) and builds the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`), uploads it as the `myos-x86_64-iso` artifact and boots it from the CD (`cargo run -- iso --ci`).
+Every run boots the four disk images with the quick test list (`test-mini`); the daily run and a dispatch with `full_boot` run the full list, which also installs the build's own packages into the guest with `get-myos` from a mirror the launcher serves. On master, the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`) and the packages go to the rolling `rolling` release, get-myos's default mirror (`docs/packages.md`, `docs/testing.md`).
 
 ---
 
 ## Notes
 
-- x86_64: CPU halts with `hlt` (QEMU stays open; `--ci` attaches `isa-debug-exit` for clean exit)
+- x86_64: CPU halts with `hlt` (QEMU stays open; the boot test attaches `isa-debug-exit` and kills QEMU when done)
 - AArch64: kernel issues PSCI `SYSTEM_OFF` (QEMU treats as shutdown)
 - Kernel linked in higher half; Limine sets stack, enables MMU, provides HHDM
 - AArch64 device MMIO identity-mapped on `TTBR0` (not in HHDM at Limine base rev 3+)

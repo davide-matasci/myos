@@ -3,7 +3,7 @@
  * Plan 9 flow over /net/tcp: bind() stores the port, listen() announces it
  * (ctl "announce <port>"), accept() writes ctl "accept" and polls the
  * listener status for "accepted <N>". The accepted connection echoes one
- * line back to the peer. The CI harness (wait_ci) connects from the runner
+ * line back to the peer. The boot test's host side connects from the runner
  * through QEMU slirp hostfwd, sends "ping", and expects "pong".
  */
 #include <arpa/inet.h>

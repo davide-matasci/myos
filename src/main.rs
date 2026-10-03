@@ -7,17 +7,19 @@
 //! cargo run -- aarch64      # QEMU virt + AAVMF, serial + ramfb
 //! cargo run -- riscv64      # QEMU virt + RISC-V UEFI, serial + ramfb
 //! cargo run -- iso          # write target/myos-x86_64.iso (no QEMU)
-//! cargo run -- --ci         # headless BIOS check
-//! cargo run -- uefi --ci    # headless UEFI check
-//! cargo run -- aarch64 --ci # headless AArch64 check
-//! cargo run -- riscv64 --ci # headless RISC-V64 check
+//! cargo run -- packages     # write the package tarballs and indexes
+//! cargo run -- test-mini    # headless BIOS boot running the quick test list
+//! cargo run -- aarch64 test-full   # the full list (also uefi, riscv64)
 //! ```
 
+mod boot_test;
 mod limine_image;
 mod initramfs;
 mod packages;
 #[allow(dead_code)]
 mod ports;
+
+use boot_test::Mode;
 
 use limine_image::{
     DiskFile, LIMINE_VERSION, boot_module_files, fetch_limine, limine_conf,
@@ -25,10 +27,9 @@ use limine_image::{
     write_fat_data_image, write_x86_iso,
 };
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio, exit};
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio, exit};
+use std::time::Duration;
 
 const AARCH64_TARGET: &str = "aarch64-unknown-none-softfloat";
 const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
@@ -72,95 +73,57 @@ fn main() {
         return;
     }
 
-    let ci = args.iter().any(|a| a == "--ci");
-    let mode = args
+    if args.iter().any(|a| a == "--ci") {
+        eprintln!("error: `--ci` is gone; run the boot tests with `test-mini` or `test-full` (docs/testing.md)");
+        exit(2);
+    }
+    let test = args.iter().find_map(|a| Mode::parse(a));
+    let what = args
         .iter()
         .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64" | "riscv64" | "iso" | "packages"))
         .map(|s| s.as_str())
         .unwrap_or("bios");
 
-    match (mode, ci) {
+    match (what, test) {
         ("packages", _) => {
             let out = packages::build_all(&PathBuf::from(env!("CARGO_MANIFEST_DIR")));
             println!("{}", out.display());
         }
-        ("iso", true) => run_ci_iso(),
-        ("iso", false) => run_iso(),
-        ("riscv64", true) => run_ci_riscv64(),
-        ("riscv64", false) => run_riscv64(),
-        ("aarch64", true) => run_ci_aarch64(),
-        ("aarch64", false) => run_aarch64(),
-        ("uefi", true) => run_ci_uefi(uefi_path),
-        ("uefi", false) => run_uefi(uefi_path),
-        (_, true) => run_ci_bios(bios_path),
-        (_, false) => run_bios(bios_path),
+        ("iso", Some(_)) => {
+            eprintln!("error: the ISO is not boot-tested; the bios and uefi images carry the same files");
+            exit(2);
+        }
+        ("iso", None) => run_iso(),
+        ("riscv64", Some(mode)) => run_test_riscv64(mode),
+        ("riscv64", None) => run_riscv64(),
+        ("aarch64", Some(mode)) => run_test_aarch64(mode),
+        ("aarch64", None) => run_aarch64(),
+        ("uefi", Some(mode)) => run_test_uefi(uefi_path, mode),
+        ("uefi", None) => run_uefi(uefi_path),
+        (_, Some(mode)) => run_test_bios(bios_path, mode),
+        (_, None) => run_bios(bios_path),
     }
 }
 
 fn print_usage() {
     eprintln!(
         "\
-Usage: cargo run -- [bios|uefi|aarch64|riscv64|iso] [--ci]
+Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test-mini|test-full]
+       cargo run -- iso | packages
 
-  bios      Boot the x86_64 Limine BIOS disk image in QEMU (default, graphical)
-  uefi      Boot the x86_64 Limine UEFI disk image in QEMU (fetches OVMF on first run)
-  aarch64   Boot the AArch64 kernel via Limine on QEMU virt + AAVMF (serial + ramfb)
-  riscv64   Boot the RISC-V64 kernel via Limine on QEMU virt + UEFI (serial + ramfb)
-  iso       Write target/myos-x86_64.iso (Limine BIOS+UEFI hybrid) and exit; needs xorriso
-            (with --ci: also boot it from the CD like `--ci` does the BIOS image)
-  packages  Write the package tarballs and indexes of the three arches to target/packages/
-  --ci      Headless boot; require serial hello/heap/int/mod and a clean QEMU exit",
+  bios       Boot the x86_64 Limine BIOS disk image in QEMU (default, graphical)
+  uefi       Boot the x86_64 Limine UEFI disk image in QEMU (fetches OVMF on first run)
+  aarch64    Boot the AArch64 kernel via Limine on QEMU virt + AAVMF (serial + ramfb)
+  riscv64    Boot the RISC-V64 kernel via Limine on QEMU virt + UEFI (serial + ramfb)
+  test-mini  Headless: log in, run the quick test list in the guest, exit with its result
+  test-full  The same with the full list (the packages, HTTPS, SSH, os-test; needs the network)
+  iso        Write target/myos-x86_64.iso (Limine BIOS+UEFI hybrid) and exit; needs xorriso
+  packages   Write the package tarballs and indexes of the three arches to target/packages/",
     );
 }
 
 fn run_iso() {
     println!("{}", build_iso().display());
-}
-
-/// `iso --ci`: write the ISO, then boot it from the CD (BIOS, El Torito) in
-/// QEMU with the same disks, network and checks as the BIOS disk image.
-fn run_ci_iso() {
-    let iso = build_iso();
-    start_package_mirror("x86_64");
-    let mut cmd = Command::new("qemu-system-x86_64");
-    cmd.arg("-cpu")
-        .arg(X86_CPU)
-        .arg("-m")
-        .arg("4096")
-        .arg("-smp")
-        .arg("4")
-        .arg("-drive")
-        .arg(format!("format=raw,media=cdrom,readonly=on,file={}", iso.display()))
-        .arg("-serial")
-        .arg("stdio")
-        .arg("-display")
-        .arg("none")
-        .arg("-monitor")
-        .arg("none")
-        .arg("-device")
-        .arg("isa-debug-exit,iobase=0xf4,iosize=0x04")
-        .arg("-nic")
-        .arg("none")
-        .arg("-boot")
-        .arg("order=d,menu=off")
-        .arg("-no-reboot");
-    add_virtio_blk_x86(&mut cmd);
-    add_virtio_net(&mut cmd);
-    let child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start qemu-system-x86_64");
-    wait_ci(
-        child,
-        CiExpect {
-            timeout: ci_qemu_timeout(),
-            qemu_debug_exit: true,
-            shell_ci: true,
-        },
-        &CI_NEEDLES_STD,
-    );
 }
 
 /// Write target/myos-x86_64.iso from the built kernel, modules and initramfs.
@@ -324,17 +287,17 @@ fn add_virtio_blk_riscv64(cmd: &mut Command) {
 
 /// True when local stress (or similar) already has `python3 -m http.server 8765`
 /// listening. QEMU `guestfwd=…-tcp:127.0.0.1:8765` aborts at startup with
-/// "Connection refused" if nothing is bound — CI boot-mini does not start :8765.
-/// A full `--ci` boot installs packages from this build: pack them for
-/// `arch` and serve `target/packages/` on the host loopback, which the
-/// guest reaches as http://10.0.2.2:8765 (`CMD_GET_MYOS`). Boot-mini stays
-/// network-free.
-fn start_package_mirror(arch: &str) {
-    if ci_mini() {
+/// "Connection refused" if nothing is bound.
+///
+/// The full test installs this build's packages: pack them for `arch` and
+/// serve `target/packages/` on the host loopback, which the guest reaches
+/// as http://10.0.2.2:8765. The mini list stays network-free.
+fn start_package_mirror(arch: &str, mode: Mode) {
+    if mode != Mode::Full {
         return;
     }
     let dir = packages::build(&PathBuf::from(env!("CARGO_MANIFEST_DIR")), arch);
-    if packages::serve_mirror(dir) {
+    if packages::serve_mirror(dir, arch) {
         eprintln!("package mirror: serving target/packages on 127.0.0.1:{}", packages::MIRROR_PORT);
     } else {
         eprintln!("package mirror: port {} busy, not serving", packages::MIRROR_PORT);
@@ -370,14 +333,14 @@ fn add_virtio_net(cmd: &mut Command) {
     if host_http_8765_listening() {
         netdev.push_str(",guestfwd=tcp:10.0.2.100:80-tcp:127.0.0.1:8765");
     }
-    // Listen/accept smoke (wait_ci): the guest announces TCP 2323 and the
-    // harness connects back through slirp hostfwd. Only add when the host
+    // Listen/accept test (boot_test): the guest announces TCP 2323 and the
+    // host connects back through slirp hostfwd. Only add when the host
     // port is free so a locally-running listener does not abort QEMU at
     // startup (same guard as guestfwd above).
     if !host_listen_2323() {
         netdev.push_str(",hostfwd=tcp::2323-:2323");
     }
-    // Dropbear SSH smoke (full-boot wait_ci): host OpenSSH clients connect to
+    // Dropbear SSH test (full mode): host OpenSSH clients connect to
     // localhost:2222 which slirp forwards to guest :22. Same free-port guard.
     if !host_listen_2222() {
         netdev.push_str(",hostfwd=tcp::2222-:22");
@@ -485,31 +448,14 @@ fn aarch64_firmware() -> (PathBuf, PathBuf) {
     );
 }
 
-/// QEMU `isa-debug-exit` turns a 32-bit write of `value` into process status `(value << 1) | 1`.
-/// The kernel writes `0x10` on success, so QEMU should exit 33.
-const QEMU_SUCCESS_STATUS: i32 = (0x10 << 1) | 1;
-
-/// Overall QEMU/harness wall for `--ci`. Full boot keeps a long budget for
-/// os-test / dropbear; boot-mini (`MYOS_CI_MINI=1`) must fail well under the
-/// 5-minute GHA job timeout (hung aarch64 burned ~24m on the old 1800s).
-fn ci_qemu_timeout() -> Duration {
-    if std::env::var_os("MYOS_CI_MINI").map(|v| v == "1").unwrap_or(false) {
-        // Local mini runs with the Linux layer add its smokes and get-alpine
-        // (jq and Python from the Alpine mirror, unpacked under TCG). CI
-        // runs the layer only in the full boot.
-        Duration::from_secs(if linux_compat_enabled() { 720 } else { 240 })
-    } else {
-        // Full boot runs the whole curated os-test list (303 tests at
-        // ~3-6 s each under TCG) and must reach 100%; 1800 s ran out on
-        // UEFI mid-list. Installing the packages first (os-test's 15 MB
-        // unpack under TCG) adds a few minutes. The CI job itself allows
-        // 90 min.
-        Duration::from_secs(3000)
-    }
+/// Whether this build carries the optional Linux layer (`--features
+/// linux_compat`, baked in by build.rs): its tests join the list.
+fn linux_compat_enabled() -> bool {
+    initramfs::active_features().iter().any(|f| f == "linux_compat")
 }
 
-fn run_ci_bios(bios_path: &str) {
-    start_package_mirror("x86_64");
+fn run_test_bios(bios_path: &str, mode: Mode) {
+    start_package_mirror("x86_64", mode);
     let mut cmd = Command::new("qemu-system-x86_64");
     cmd.arg("-cpu")
         .arg(X86_CPU)
@@ -556,19 +502,11 @@ fn run_ci_bios(bios_path: &str) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to start qemu-system-x86_64");
-    wait_ci(
-        child,
-        CiExpect {
-            timeout: ci_qemu_timeout(),
-            qemu_debug_exit: true,
-            shell_ci: true,
-        },
-        &CI_NEEDLES_STD,
-    );
+    boot_test::run(child, mode, linux_compat_enabled());
 }
 
-fn run_ci_uefi(uefi_path: &str) {
-    start_package_mirror("x86_64");
+fn run_test_uefi(uefi_path: &str, mode: Mode) {
+    start_package_mirror("x86_64", mode);
     let (code, vars) = ovmf_files(Arch::X64);
     let mut cmd = Command::new("qemu-system-x86_64");
     cmd.arg("-cpu")
@@ -627,19 +565,11 @@ fn run_ci_uefi(uefi_path: &str) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to start qemu-system-x86_64");
-    wait_ci(
-        child,
-        CiExpect {
-            timeout: ci_qemu_timeout(),
-            qemu_debug_exit: true,
-            shell_ci: true,
-        },
-        &CI_NEEDLES_STD,
-    );
+    boot_test::run(child, mode, linux_compat_enabled());
 }
 
-fn run_ci_aarch64() {
-    start_package_mirror("aarch64");
+fn run_test_aarch64(mode: Mode) {
+    start_package_mirror("aarch64", mode);
     let image = build_aarch64_image();
     let child = qemu_aarch64(&image, true)
         .stdin(Stdio::piped())
@@ -647,16 +577,7 @@ fn run_ci_aarch64() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to start qemu-system-aarch64");
-    wait_ci(
-        child,
-        CiExpect {
-            timeout: ci_qemu_timeout(),
-            qemu_debug_exit: false,
-            shell_ci: true,
-        },
-        // Same heavy `/heap` needles as x86 (typed at `$` after slim `/ok`).
-        &CI_NEEDLES_STD,
-    );
+    boot_test::run(child, mode, linux_compat_enabled());
 }
 
 fn qemu_aarch64(image: &Path, ci: bool) -> Command {
@@ -1067,8 +988,8 @@ fn riscv64_firmware() -> (PathBuf, PathBuf) {
     );
 }
 
-fn run_ci_riscv64() {
-    start_package_mirror("riscv64");
+fn run_test_riscv64(mode: Mode) {
+    start_package_mirror("riscv64", mode);
     let image = build_riscv64_image();
     let child = qemu_riscv64(&image, true)
         .stdin(Stdio::piped())
@@ -1076,16 +997,7 @@ fn run_ci_riscv64() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to start qemu-system-riscv64");
-    wait_ci(
-        child,
-        CiExpect {
-            timeout: ci_qemu_timeout(),
-            qemu_debug_exit: false,
-            shell_ci: true,
-        },
-        // Same heavy `/heap` needles as x86 (typed at `$` after slim `/ok`).
-        &CI_NEEDLES_STD,
-    );
+    boot_test::run(child, mode, linux_compat_enabled());
 }
 
 fn qemu_riscv64(image: &Path, ci: bool) -> Command {
@@ -1278,4 +1190,3 @@ fn build_riscv64_kernel() -> PathBuf {
     elf
 }
 
-include!("wait_ci.rs");

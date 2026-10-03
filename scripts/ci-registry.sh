@@ -45,7 +45,7 @@ done < <(myos_port_build_order all)
 ALL_PORTS+=(linux-compat kernels)
 
 usage() {
-  echo "usage: $0 pull|push|current PORT" >&2
+  echo "usage: $0 pull|push|current|exists PORT | login" >&2
   echo "  PORT: ${ALL_PORTS[*]} all" >&2
   exit 2
 }
@@ -156,8 +156,18 @@ ensure_oras() {
   chmod +x "$bindir/oras"
 }
 
+# One oras login per job: `login` writes the marker, the pulls and pushes
+# that follow (in parallel, from ci-build-pull-and-kernels.sh) skip theirs.
+login_marker() {
+  local base="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+  printf '%s' "${base%/}/myos-ci-registry-login-ok"
+}
+
 oras_login() {
   local user token err
+  if [[ -f "$(login_marker)" ]]; then
+    return 0
+  fi
   token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
   user="${GITHUB_ACTOR:-${GITHUB_REPOSITORY_OWNER:-${GITHUB_REPOSITORY%%/*}}}"
   user="$(lower "$user")"
@@ -177,6 +187,7 @@ oras_login() {
     return 1
   fi
   rm -f "$err"
+  touch "$(login_marker)"
 }
 
 can_push() {
@@ -275,6 +286,30 @@ needs_force_replace() {
   [[ -f "$marker" ]]
 }
 
+# 0 when the registry has PORT at its current input hash (manifest only, no
+# download): what the CI plan asks before running a toolchain job.
+cmd_exists() {
+  local port="$1"
+  local hash ref
+  hash="$(port_hash "$port")"
+  ref="$(registry_ref "$port" "$hash")"
+  ensure_oras
+  if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
+    oras_login || true
+  fi
+  if oras manifest fetch "$ref" >/dev/null 2>&1; then
+    echo "registry has ${port} ${hash}"
+    return 0
+  fi
+  echo "registry lacks ${port} ${hash}"
+  return 1
+}
+
+cmd_login() {
+  ensure_oras
+  oras_login
+}
+
 cmd_pull() {
   local port="$1"
   local hash ref tmp tarball
@@ -331,6 +366,11 @@ cmd_pull() {
   else
     mark_force_replace "$port" "$hash"
     echo "registry miss ${port}: not current after extract ${hash}"
+    # Name what the package lacks: the port is rebuilt (or completed) and
+    # pushed in its place, and the log says why.
+    while IFS= read -r f; do
+      [[ -z "$f" || -e "$ROOT/$f" ]] || echo "registry pull ${port}: missing member ${f}"
+    done < <(port_members "$port" | awk 'NF && !seen[$0]++')
   fi
 }
 
@@ -412,6 +452,13 @@ case "$CMD" in
   current)
     [[ -n "$PORT" ]] || usage
     port_is_current "$PORT"
+    ;;
+  exists)
+    [[ -n "$PORT" ]] || usage
+    cmd_exists "$PORT"
+    ;;
+  login)
+    cmd_login
     ;;
   pull|push)
     [[ -n "$PORT" ]] || usage

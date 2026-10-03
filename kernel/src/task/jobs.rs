@@ -27,6 +27,26 @@ pub fn current_pgid() -> Option<usize> {
     task_pgid(current_pid())
 }
 
+/// The parent of process `id`, `None` for init, an orphan or a free slot.
+pub fn parent_pid(id: usize) -> Option<usize> {
+    if id >= MAX_TASKS {
+        return None;
+    }
+    let flags = irq_save();
+    irq_off();
+    let out = {
+        let tasks = TASKS.lock();
+        let t = &tasks[id];
+        if t.user_rip != 0 && t.state != State::Unused && t.ppid != NO_PARENT && t.ppid < MAX_TASKS {
+            Some(t.ppid)
+        } else {
+            None
+        }
+    };
+    irq_restore(flags);
+    out
+}
+
 pub fn task_has_ctty(id: usize) -> bool {
     if id >= MAX_TASKS {
         return false;

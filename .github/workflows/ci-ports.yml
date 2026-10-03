@@ -1,21 +1,13 @@
 name: CI ports
-# Reusable: sysroot / newlib / ports-*. Building belongs here — not in boot.
-# The ports matrix comes from the port descriptors (scripts/ports.sh
-# --matrix: every ports/, packages/, user/ and toolchain/std directory with a
-# port.env and a build script), so adding a port does not touch this file.
+# Reusable: the toolchains (sysroot, newlib) and every port. Building belongs
+# here, not in the boot jobs. The ports matrix comes from the port
+# descriptors (scripts/ports.sh --matrix: every ports/, packages/, user/ and
+# toolchain/std directory with a port.env and a build script), so adding a
+# port does not touch this file. Everything is cached on GHCR under a hash
+# of its inputs (scripts/ci-registry.sh): the plan job asks the registry
+# whether the two toolchains are there, and their jobs run only when not.
 on:
   workflow_call:
-    inputs:
-      sysroot:
-        type: string
-        required: true
-      c_userspace:
-        type: string
-        required: true
-      force_sysroot:
-        type: boolean
-        required: false
-        default: false
 
 permissions:
   contents: read
@@ -31,9 +23,16 @@ defaults:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    # The same container (and so the same workspace path) as the jobs that
+    # build: a port's input hash includes the paths sha256sum prints.
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 5
     outputs:
       ports: ${{ steps.matrix.outputs.ports }}
+      sysroot: ${{ steps.toolchains.outputs.sysroot }}
+      newlib: ${{ steps.toolchains.outputs.newlib }}
     steps:
       - uses: actions/checkout@v6
       - name: Ports matrix from the descriptors
@@ -42,6 +41,19 @@ jobs:
           chmod +x scripts/*.sh
           echo "ports=$(./scripts/ports.sh --matrix)" >> "$GITHUB_OUTPUT"
           ./scripts/ports.sh --matrix
+      - name: Which toolchains the registry lacks
+        id: toolchains
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          for t in sysroot newlib; do
+            if ./scripts/ci-registry.sh exists "$t"; then
+              echo "$t=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "$t=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
 
   sysroot:
     runs-on: ubuntu-latest
@@ -49,8 +61,8 @@ jobs:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
     timeout-minutes: 45
-    if: |
-      inputs.sysroot == 'true' || inputs.force_sysroot
+    needs: plan
+    if: needs.plan.outputs.sysroot == 'true'
     steps:
       - uses: actions/checkout@v6
 
@@ -75,7 +87,6 @@ jobs:
           MYOS_ZSTD_LEVEL: "3"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-          MYOS_FORCE_SYSROOT: ${{ inputs.force_sysroot && '1' || '' }}
         run: ./scripts/ci-sysroot-job.sh
 
       - name: Upload sysroot tarball
@@ -94,8 +105,8 @@ jobs:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
     timeout-minutes: 45
-    if: |
-      inputs.c_userspace == 'true'
+    needs: plan
+    if: needs.plan.outputs.newlib == 'true'
     steps:
       - uses: actions/checkout@v6
 

@@ -7,10 +7,6 @@ on:
         type: boolean
         required: false
         default: false
-      sysroot_built:
-        type: boolean
-        required: false
-        default: false
 
 permissions:
   contents: write
@@ -49,8 +45,9 @@ jobs:
             target/patched-crates
             target/crate-fetch-coreutils
 
+      # The sysroot job's tarball when it ran in this run; otherwise the
+      # registry has it (ci-build-pull-and-kernels.sh pulls it).
       - name: Download prebuilt sysroot
-        if: inputs.sysroot_built
         continue-on-error: true
         uses: actions/download-artifact@v7
         with:
@@ -117,16 +114,16 @@ jobs:
       matrix:
         include:
           - id: bios
-            args: --ci
+            args: test-full
             required: true
           - id: uefi
-            args: uefi --ci
+            args: uefi test-full
             required: true
           - id: aarch64
-            args: aarch64 --ci
+            args: aarch64 test-full
             required: true
           - id: riscv64
-            args: riscv64 --ci
+            args: riscv64 test-full
             required: true
     steps:
       - uses: actions/checkout@v6
@@ -148,7 +145,7 @@ jobs:
           # Fail hard if incomplete; never rebuild here.
           ./scripts/ci-assert-boot-artifacts.sh
 
-      - name: Boot in QEMU
+      - name: Boot and test in QEMU
         continue-on-error: ${{ !matrix.required }}
         env:
           MYOS_SKIP_KERNEL_REBUILD: "1"
@@ -162,7 +159,7 @@ jobs:
       options: -e HOME=/root
     timeout-minutes: 5
     needs: build
-    # MYOS_CI_MINI=1; skipped when full_boot is selected.
+    # The quick test list (docs/testing.md); skipped when full_boot is selected.
     if: |
       always() &&
       !cancelled() &&
@@ -173,16 +170,16 @@ jobs:
       matrix:
         include:
           - id: bios
-            args: --ci
+            args: test-mini
             required: true
           - id: uefi
-            args: uefi --ci
+            args: uefi test-mini
             required: true
           - id: aarch64
-            args: aarch64 --ci
+            args: aarch64 test-mini
             required: true
           - id: riscv64
-            args: riscv64 --ci
+            args: riscv64 test-mini
             required: true
     steps:
       - uses: actions/checkout@v6
@@ -204,19 +201,19 @@ jobs:
           # Fail hard if incomplete; never rebuild here.
           ./scripts/ci-assert-boot-artifacts.sh
 
-      - name: Boot in QEMU
+      - name: Boot and test in QEMU
         continue-on-error: ${{ !matrix.required }}
         env:
           MYOS_SKIP_KERNEL_REBUILD: "1"
-          MYOS_CI_MINI: "1"
         run: ./target/debug/myos ${{ matrix.args }}
 
   iso:
-    # x86_64 hybrid ISO from the build outputs, on every run: the image with
-    # everything in it (the Linux layer loaded at boot, its tests and
-    # get-alpine), uploaded for local testing and boot-tested from the CD
-    # (`iso --ci`, boot-mini stages). Toolchain only for cargo run -- iso;
-    # must not rebuild ports here.
+    # x86_64 hybrid ISO from the build outputs, on master only: the image
+    # with everything in it (the Linux layer loaded at boot, its tests and
+    # get-alpine), published on the rolling release by the publish job. The
+    # bios and uefi boots test the same kernel and initramfs from the disk
+    # images; the ISO itself is not booted. Toolchain only for
+    # `cargo run -- iso`; must not rebuild ports here.
     name: iso (x86_64 hybrid)
     runs-on: ubuntu-latest
     container:
@@ -227,7 +224,9 @@ jobs:
     if: >-
       always() &&
       !cancelled() &&
-      needs.build.result == 'success'
+      needs.build.result == 'success' &&
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v6
 
@@ -254,16 +253,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Boot the ISO in QEMU
-        env:
-          MYOS_CI_MINI: "1"
-        run: ./target/debug/myos iso --ci
-
-  # Pushes to master: the packages go to the rolling GitHub release
-  # `packages` (the default mirror of get-myos), once every boot of this
-  # run passed. The tag moves to the published commit: the binaries of the
-  # copyleft ports (git, lynx, make, ...) are redistributed with their
-  # corresponding source that way (THIRD_PARTY_NOTICES.md).
+  # Master (a push, or the daily scheduled full boot): the packages and the
+  # ISO go to the rolling GitHub release `rolling` (the default mirror of
+  # get-myos), once every boot of this run passed. The tag moves to the
+  # published commit: the binaries of the copyleft ports (git, lynx, make,
+  # ...) are redistributed with their corresponding source that way
+  # (THIRD_PARTY_NOTICES.md).
   publish:
     name: publish packages
     runs-on: ubuntu-latest
@@ -272,7 +267,7 @@ jobs:
     if: >-
       always() &&
       !cancelled() &&
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'schedule') &&
       github.ref == 'refs/heads/master' &&
       needs.build.result == 'success' &&
       (needs.boot.result == 'success' || needs.boot.result == 'skipped') &&
@@ -289,18 +284,24 @@ jobs:
           name: myos-packages
           path: target/packages
 
+      - name: Download ISO
+        uses: actions/download-artifact@v7
+        with:
+          name: myos-x86_64-iso
+          path: target
+
       - name: Publish to the rolling release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag=packages
-          notes="Packages built from ${GITHUB_SHA} (the tag points at it): install on a running myos with \`get-myos NAME\`, see docs/packages.md. Third-party licenses: THIRD_PARTY_NOTICES.md at that commit; the copyleft ports' sources are the pinned upstreams plus the patches in the repository."
+          tag=rolling
+          notes="Built from ${GITHUB_SHA} (the tag points at it). myos-x86_64.iso boots on BIOS and UEFI machines (and from a USB stick). The <arch>-*.tar.gz files are the packages: install one on a running myos with \`get-myos NAME\`, see docs/packages.md. Third-party licenses: THIRD_PARTY_NOTICES.md at that commit; the copyleft ports' sources are the pinned upstreams plus the patches in the repository."
           if gh release view "$tag" >/dev/null 2>&1; then
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
             gh release edit "$tag" --notes "$notes" --prerelease
           else
-            gh release create "$tag" --target "${GITHUB_SHA}" --prerelease --title "Packages (rolling)" --notes "$notes"
+            gh release create "$tag" --target "${GITHUB_SHA}" --prerelease --title "myos (rolling)" --notes "$notes"
           fi
-          gh release upload "$tag" target/packages/* --clobber
+          gh release upload "$tag" target/packages/* target/myos-x86_64.iso --clobber
           ls -l target/packages | tail -n +2 | wc -l

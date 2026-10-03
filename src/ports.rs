@@ -187,8 +187,15 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
     } else {
         get("PORT_STAMP")
     };
+    // The port's boot test script (`PORT_TEST`, docs/testing.md) is one
+    // more checked-in file of the image (or the package), under the
+    // directory the test runner walks.
+    let mut files = parse_files(&name, &get("PORT_FILES"));
+    if !get("PORT_TEST").is_empty() {
+        files.push(FileSpec::File { src: get("PORT_TEST"), path: format!("lib/myos-tests/ports/{name}.sh") });
+    }
     Some(Port {
-        files: parse_files(&name, &get("PORT_FILES")),
+        files,
         name,
         dir: dir.to_path_buf(),
         role,
