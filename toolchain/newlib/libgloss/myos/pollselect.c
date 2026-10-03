@@ -1,11 +1,14 @@
 /*
- * poll/select for myos: no kernel poll syscall.
- * Tracked /net sockets report real POLLIN via netfs st_size / hangup status.
- * Regular files stay always-ready (POSIX). TTY POLLIN is not: there is no
- * FIONREAD, and lying "ready" made lynx HTCheckForInterrupt block in LYgetch
- * at "Looking up … first" before libgloss DNS (same getaddrinfo path as curl).
- * Timeouts use gettimeofday; the waits themselves sleep in the kernel
- * (SYS_NANOSLEEP, sleep.c) instead of spinning.
+ * poll/select for myos: one SYS_POLL call does the waiting. The kernel knows
+ * the readiness of every fd (pipes, ptys, the console tty, sockets through
+ * netfs's poll hook; regular files are always ready) and sleeps until the
+ * first change, so nothing here spins or sleeps in steps.
+ *
+ * Tracked sockets (socket.c) add what only the socket library knows: a
+ * connected TCP socket is always writable (no TX accounting), a listener
+ * must arm netd's accept before waiting, and a finished connect changes the
+ * socket's state. myos_socket_poll_prepare() runs before the kernel call,
+ * myos_socket_poll_done() on its result.
  */
 #include <errno.h>
 #include <poll.h>
@@ -13,13 +16,11 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <unistd.h>
-#include <sys/stat.h>
 
 #include "myos_syscalls.h"
 
-/* Handlers run so far (signal.c). The waits below loop through the kernel,
- * where caught signals are delivered, and return EINTR once one ran. */
-extern volatile unsigned long __myos_sig_count;
+/* Most fds one poll() takes (the kernel's limit too). */
+#define MYOS_POLL_MAX 256
 
 static long elapsed_ms(const struct timeval *start) {
     struct timeval now;
@@ -30,142 +31,76 @@ static long elapsed_ms(const struct timeval *start) {
         + (now.tv_usec - start->tv_usec) / 1000L;
 }
 
-static int scan_once(struct pollfd *fds, nfds_t nfds) {
-    nfds_t i;
-    int ready = 0;
-    for (i = 0; i < nfds; i++) {
-        short rev = 0;
-        int sock;
-        if (fds[i].fd < 0) {
-            fds[i].revents = 0;
-            continue;
-        }
-        sock = myos_socket_poll(fds[i].fd, fds[i].events, &rev);
-        if (sock == 1) {
-            fds[i].revents = rev;
-            ready++;
-            continue;
-        }
-        if (sock == -2) {
-            return -1;
-        }
-        /* Not a tracked socket (or not ready).
-         * Regular files: POSIX always-ready.
-         * TTY POLLIN: do NOT lie. Lynx HTCheckForInterrupt does
-         * select(stdin, timeout=0) after painting "Looking up … first";
-         * always-ready made it call blocking LYgetch() and never reach
-         * gethostbyname / getaddrinfo. No FIONREAD yet, so report not-ready
-         * (false negative: 'z' during a transfer is missed) rather than hang.
-         */
-        if (sock < 0) {
-            /* Not a tracked socket. Only regular files are POSIX
-             * always-ready; blocking fds we cannot verify (pipes, ttys)
-             * must report not-ready, or select-driven servers wake on an
-             * empty signal pipe and hang in a blocking read() forever
-             * (dropbear's session_loop signal-pipe drain). */
-            rev = 0;
-            /* Only fds with a known path (regular files we opened) are
-             * POSIX always-ready. The _fstat fallback reports every
-             * pathless fd (pipes!) as S_IFREG, so fstat alone would
-             * still wake select() on an empty signal pipe and the
-             * caller's blocking read() hangs forever (dropbear). */
-            const char *fpath = myos_fd_path_get(fds[i].fd);
-            if (fpath != NULL) {
-                rev = fds[i].events ? fds[i].events : (POLLIN | POLLOUT);
-            } else {
-                /* Pathless blocking fd: pipes. Ask the kernel for real
-                 * readiness so select-driven servers relay a forked
-                 * command's output (dropbear session stdout) and still do
-                 * not spuriously wake on an empty signal pipe. */
-                long bits = myos_syscall1(MYOS_SYS_POLLFD, fds[i].fd);
-                if (bits != (long)MYOS_SYSERR && bits > 0) {
-                    if ((bits & 1) && (fds[i].events & POLLIN)) {
-                        rev |= POLLIN;
-                    }
-                    if ((bits & 2) && (fds[i].events & POLLOUT)) {
-                        rev |= POLLOUT;
-                    }
-                    if (bits & 4) {
-                        rev |= POLLHUP;
-                    }
-                }
-            }
-            fds[i].revents = rev;
-            if (rev) {
-                ready++;
-            }
-        } else {
-            fds[i].revents = 0;
-        }
+int __myos_kpoll(struct pollfd *fds, nfds_t nfds, int timeout) {
+    long ret = myos_syscall3(MYOS_SYS_POLL, (long)(uintptr_t)fds, (long)nfds, (long)timeout);
+    if (ret == (long)MYOS_EINTR) {
+        errno = EINTR;
+        return -1;
     }
-    return ready;
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (int)ret;
 }
 
 int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+    struct pollfd k[MYOS_POLL_MAX];
+    short now[MYOS_POLL_MAX];
     struct timeval start;
-    int ready;
-    unsigned long sigs = __myos_sig_count;
+    nfds_t i;
 
     if (fds == NULL && nfds != 0) {
         errno = EFAULT;
         return -1;
     }
-
-    if (timeout == 0) {
-        ready = scan_once(fds, nfds);
-        return ready < 0 ? -1 : ready;
+    if (nfds > MYOS_POLL_MAX) {
+        errno = EINVAL;
+        return -1;
     }
-
-    if (gettimeofday(&start, NULL) != 0) {
-        /* Clock missing: single scan (best effort). */
-        ready = scan_once(fds, nfds);
-        return ready < 0 ? -1 : ready;
+    if (timeout > 0 && gettimeofday(&start, NULL) != 0) {
+        timeout = 0;
     }
-
     for (;;) {
-        ready = scan_once(fds, nfds);
-        if (ready < 0) {
+        int immediate = 0;
+        int left = timeout;
+        int ready = 0;
+        for (i = 0; i < nfds; i++) {
+            short kev = fds[i].events;
+            now[i] = 0;
+            if (fds[i].fd >= 0
+                && myos_socket_poll_prepare(fds[i].fd, fds[i].events, &now[i], &kev) == 0
+                && now[i] != 0) {
+                immediate = 1;
+            }
+            k[i].fd = fds[i].fd;
+            k[i].events = kev;
+            k[i].revents = 0;
+        }
+        if (timeout > 0) {
+            left = timeout - (int)elapsed_ms(&start);
+            if (left < 0) {
+                left = 0;
+            }
+        }
+        if (__myos_kpoll(k, nfds, immediate ? 0 : left) < 0) {
             return -1;
         }
-        if (ready > 0) {
+        for (i = 0; i < nfds; i++) {
+            short rev = k[i].revents;
+            if (fds[i].fd >= 0) {
+                myos_socket_poll_done(fds[i].fd, fds[i].events, &rev);
+            }
+            fds[i].revents = rev | now[i];
+            if (fds[i].revents != 0) {
+                ready++;
+            }
+        }
+        if (ready > 0 || timeout == 0 || (timeout > 0 && elapsed_ms(&start) >= timeout)) {
             return ready;
         }
-        if (__myos_sig_count != sigs) {
-            /* A handler ran (e.g. a server's SIGCHLD self-pipe write). */
-            errno = EINTR;
-            return -1;
-        }
-        if (timeout > 0 && elapsed_ms(&start) >= timeout) {
-            nfds_t i;
-            for (i = 0; i < nfds; i++) {
-                fds[i].revents = 0;
-            }
-            return 0;
-        }
-        /* Sleep in the kernel until something happens (console / pipe /
-         * device traffic, a child exit) or a short bound passes, then
-         * re-scan. Socket readiness arrives through netd's channel writes,
-         * which count as events. The bound keeps netd-side state that does
-         * not surface as a kernel event (e.g. a timer-driven retransmit)
-         * from being missed for long. Spinning here used to burn a whole
-         * CPU per idle select()-driven server (dropbear, lynx). */
-        {
-            unsigned long long ns = 10ULL * 1000000ULL;
-            if (timeout > 0) {
-                long left = timeout - elapsed_ms(&start);
-                if (left < 1) {
-                    left = 1;
-                }
-                if ((unsigned long long)left * 1000000ULL < ns) {
-                    ns = (unsigned long long)left * 1000000ULL;
-                }
-            }
-            (void)__myos_sleep_ns(ns, MYOS_SLEEP_ANY_EVENT);
-            if (__myos_sig_count != sigs) {
-                errno = EINTR;
-                return -1;
-            }
-        }
+        /* The kernel saw something the socket library then discarded (a
+         * listener's accept it already took): look again. */
     }
 }
 
@@ -212,33 +147,10 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
         }
     }
 
-    /* Pure sleep: select(0, NULL, NULL, NULL, &tv) used by curl tool_sleep.
-     * Each gettimeofday enters the kernel, where signals are delivered. */
+    /* Pure sleep: select(0, NULL, NULL, NULL, &tv) (curl's tool_sleep) is a
+     * poll of no fds, which a caught signal ends with EINTR. */
     if (n == 0) {
-        struct timeval start;
-        unsigned long sigs = __myos_sig_count;
-        if (ms == 0) {
-            return 0;
-        }
-        if (gettimeofday(&start, NULL) != 0) {
-            return 0;
-        }
-        while (ms < 0 || elapsed_ms(&start) < ms) {
-            unsigned long long ns = 3600ULL * 1000000000ULL;
-            if (ms >= 0) {
-                long left = ms - elapsed_ms(&start);
-                if (left < 1) {
-                    left = 1;
-                }
-                ns = (unsigned long long)left * 1000000ULL;
-            }
-            (void)__myos_sleep_ns(ns, 0);
-            if (__myos_sig_count != sigs) {
-                errno = EINTR;
-                return -1;
-            }
-        }
-        return 0;
+        return __myos_kpoll(NULL, 0, ms) < 0 ? -1 : 0;
     }
 
     pr = poll(pfds, (nfds_t)n, ms);

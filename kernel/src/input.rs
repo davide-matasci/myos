@@ -170,6 +170,14 @@ pub fn read(buf: &mut [u8]) -> usize {
     n
 }
 
+/// A read would not block: committed input, or a pending end-of-file (`^D`).
+/// Drains the UART and keyboard first, as a read does.
+pub fn readable() -> bool {
+    poll();
+    let t = TTY.lock();
+    t.available() > 0 || t.eof
+}
+
 pub fn keyboard_present() -> bool {
     console::keyboard_present()
 }

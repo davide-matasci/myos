@@ -9,7 +9,10 @@
 
 mod unix;
 
-use myos_abi::{status_ok, ABI_VERSION, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo};
+use myos_abi::{
+    status_ok, ABI_VERSION, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo, MYOS_POLLERR,
+    MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT,
+};
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
@@ -118,7 +121,14 @@ struct Conv {
     credit: u16,
     status_len: u16,
     status: [u8; STATUS_CAP],
+    /// Listener: the accept seq named by the socket library's last
+    /// `taken <seq>` ([`NO_SEQ`] before any); a newer "accepted ... <seq>"
+    /// status is a connection to accept (`poll`).
+    taken: u32,
 }
+
+/// [`Conv::taken`] before the first `taken`.
+const NO_SEQ: u32 = u32::MAX;
 
 impl Conv {
     const EMPTY: Self = Self {
@@ -131,6 +141,7 @@ impl Conv {
         credit: 0,
         status_len: 0,
         status: [0; STATUS_CAP],
+        taken: NO_SEQ,
     };
 }
 
@@ -143,6 +154,16 @@ static mut STATE: State = State {
     req: RingBuf::EMPTY,
     convs: [Conv::EMPTY; MAX_CONV],
 };
+
+static mut API: Option<&'static KernelApi> = None;
+
+/// Wake the kernel's pollers: readiness changed without a write or close
+/// (a unix reader made room for its peer).
+fn wake_any() {
+    if let Some(api) = unsafe { *core::ptr::addr_of!(API) } {
+        unsafe { (api.wake_any)() };
+    }
+}
 
 fn state() -> &'static mut State {
     unsafe { &mut *core::ptr::addr_of_mut!(STATE) }
@@ -298,6 +319,31 @@ fn status_is(c: &Conv, needle: &[u8]) -> bool {
     s.windows(needle.len()).any(|w| w == needle)
 }
 
+fn parse_u32(s: &[u8]) -> Option<u32> {
+    if s.is_empty() || s.len() > 10 {
+        return None;
+    }
+    let mut n = 0u32;
+    for &b in s {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        n = n.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+    }
+    Some(n)
+}
+
+/// A listener whose status advertises a connection ("accepted <N> ...
+/// <seq>") the socket library has not taken yet.
+fn accept_ready(c: &Conv) -> bool {
+    let s = &c.status[..c.status_len as usize];
+    if !s.starts_with(b"accepted") {
+        return false;
+    }
+    let seq = s.rsplit(|&b| b == b' ').next().and_then(parse_u32);
+    seq.is_some_and(|seq| seq != c.taken)
+}
+
 fn alloc_conv(proto: u8) -> Option<u16> {
     let st = state();
     // First pass: truly free slots.
@@ -313,6 +359,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
+                taken: NO_SEQ,
             };
             return Some(i as u16);
         }
@@ -337,6 +384,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
+                taken: NO_SEQ,
             };
             return Some(i as u16);
         }
@@ -450,6 +498,7 @@ fn apply_reply(buf: &[u8]) {
                 credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
+                taken: NO_SEQ,
             };
             set_status(slot, b"cloned");
         } else if slot.status_len == 0 {
@@ -880,8 +929,14 @@ unsafe extern "C" fn net_write(
                     return -1;
                 }
                 state().convs[id as usize].closing = true;
-            } else if !enqueue_req(REQ_CTL, id, p, cmd) {
-                return -1;
+            } else {
+                if !enqueue_req(REQ_CTL, id, p, cmd) {
+                    return -1;
+                }
+                // The library consumed that accept: no longer pollable.
+                if let Some(seq) = cmd.strip_prefix(b"taken ").and_then(parse_u32) {
+                    state().convs[id as usize].taken = seq;
+                }
             }
             src.len() as i32
         }
@@ -899,6 +954,41 @@ unsafe extern "C" fn net_write(
         }
         _ => -1,
     }
+}
+
+/// `poll` readiness of a conversation's `data` (the socket's fd): bytes or a
+/// hangup to read, a connection up for writing, a connection to accept.
+/// netd's replies arrive as writes to `/dev/netd`, which wake the pollers.
+unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
+    let Some(node) = (unsafe { c_str(path, path_len) }).and_then(parse_path) else {
+        return MYOS_POLLERR | MYOS_POLLHUP;
+    };
+    if node.proto() == Some(PROTO_UNIX) {
+        return unix::poll(node);
+    }
+    let Node::Data(p, id) = node else {
+        return MYOS_POLLIN | MYOS_POLLOUT;
+    };
+    if !conv_ok(id, p) {
+        return MYOS_POLLERR | MYOS_POLLHUP;
+    }
+    // As a reader's `stat` used to: hand back room the reads made.
+    return_credit(id, p);
+    let c = &state().convs[id as usize];
+    let mut bits = 0;
+    if c.data_len != 0 || accept_ready(c) {
+        bits |= MYOS_POLLIN;
+    }
+    if status_is(c, b"hangup") {
+        bits |= MYOS_POLLIN | MYOS_POLLHUP;
+    }
+    if status_is(c, b"error") {
+        bits |= MYOS_POLLIN | MYOS_POLLHUP | MYOS_POLLERR;
+    }
+    if c.status[..c.status_len as usize].starts_with(b"connected") {
+        bits |= MYOS_POLLOUT;
+    }
+    bits
 }
 
 unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
@@ -930,10 +1020,11 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     if api.is_null() {
         return -1;
     }
-    let api = unsafe { &*api };
+    let api: &'static KernelApi = unsafe { &*api };
     if api.abi_version != ABI_VERSION {
         return -2;
     }
+    unsafe { *core::ptr::addr_of_mut!(API) = Some(api) };
     // Build ops here (not in a static): AArch64 ET_EXEC modules do not relocate
     // fn pointers in .rodata, so kernel callbacks need slide-correct addresses.
     let ops = ModuleVfsOps {
@@ -952,6 +1043,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         symlink: None,
         release: Some(net_release),
         mmap: None,
+        poll: Some(net_poll),
         readlink: None,
     };
     let mount_rc = unsafe {

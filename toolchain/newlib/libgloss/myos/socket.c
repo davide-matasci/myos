@@ -162,6 +162,20 @@ static long elapsed_ms(const struct timeval *start) {
         + (now.tv_usec - start->tv_usec) / 1000L;
 }
 
+/* Block until `fd` has `events` (or a hangup / error) for at most
+ * `timeout_ms` (-1: no limit): the kernel's poll, which sleeps until netfs
+ * reports a change. 1 = ready, 0 = timed out, -1 = interrupted (EINTR). */
+static int sock_wait(int fd, short events, int timeout_ms) {
+    struct pollfd p = {fd, events, 0};
+    return __myos_kpoll(&p, 1, timeout_ms);
+}
+
+/* What is left of `total_ms` since `start` (0 once past). */
+static int ms_left(const struct timeval *start, long total_ms) {
+    long left = total_ms - elapsed_ms(start);
+    return left < 0 ? 0 : (int)left;
+}
+
 /* Read /net/.../status for an in-flight connect.
  * Returns 1=Established ("connected"), -1=error/hangup (errno set), 0=still waiting.
  * Note: "connecting" must not match "connected" (memcmp length check in buf_has). */
@@ -223,6 +237,10 @@ static int wait_connected(struct myos_sock *s) {
             errno = ETIMEDOUT;
             return -1;
         }
+        /* netfs reports POLLOUT once connected, POLLHUP on failure. */
+        if (sock_wait(s->data_fd, POLLOUT, ms_left(&start, CONNECT_TIMEOUT_MS)) < 0) {
+            return -1;
+        }
     }
 }
 
@@ -262,14 +280,9 @@ static int data_pending(struct myos_sock *s) {
     return st.st_size > 0;
 }
 
-/* Block until RX data, hangup, or (timeout_ms>=0) deadline.
- * Returns 0=data ready, 1=hangup, -1=timeout (errno ETIMEDOUT). */
-static int wait_readable(struct myos_sock *s, int timeout_ms) {
-    struct timeval start;
-    if (gettimeofday(&start, NULL) != 0) {
-        /* Fall through to untimed spin if clock missing. */
-        timeout_ms = -1;
-    }
+/* Block until RX data or hangup. Returns 0 = data ready, 1 = hangup,
+ * -1 = interrupted (errno EINTR). */
+static int wait_readable(struct myos_sock *s) {
     for (;;) {
         /* Drain remaining RX before treating hangup as EOF (BSD half-close). */
         if (data_pending(s)) {
@@ -278,8 +291,7 @@ static int wait_readable(struct myos_sock *s, int timeout_ms) {
         if (status_is_hangup(s)) {
             return 1;
         }
-        if (timeout_ms >= 0 && elapsed_ms(&start) >= timeout_ms) {
-            errno = ETIMEDOUT;
+        if (sock_wait(s->data_fd, POLLIN, -1) < 0) {
             return -1;
         }
     }
@@ -292,6 +304,7 @@ static int wait_readable(struct myos_sock *s, int timeout_ms) {
  *   1 = empty + nonblocking -> EAGAIN
  *   2 = hangup/EOF
  *   3 = blocking wait done, data should be available -> retry read
+ *   4 = the wait was interrupted -> EINTR
  */
 int myos_socket_empty_read(int fd) {
     struct myos_sock *s = sock_by_fd(fd);
@@ -311,7 +324,10 @@ int myos_socket_empty_read(int fd) {
         return 1;
     }
     /* BSD: empty read on a blocking TCP socket waits for data or hangup. */
-    wr = wait_readable(s, -1);
+    wr = wait_readable(s);
+    if (wr < 0) {
+        return 4;
+    }
     if (wr == 1) {
         /* Re-check RX: hangup can race with a late REP_DATA. */
         if (data_pending(s)) {
@@ -328,8 +344,9 @@ int myos_socket_empty_read(int fd) {
  *   0 = not handled (keep the generic error)
  *   1 = buffer full + nonblocking -> EAGAIN
  *   2 = peer gone -> EPIPE
- *   3 = waited a little: retry the write
+ *   3 = waited for the reader: retry the write
  *   4 = not connected -> ENOTCONN
+ *   5 = the wait was interrupted -> EINTR
  */
 int myos_socket_write_failed(int fd) {
     struct myos_sock *s = sock_by_fd(fd);
@@ -345,8 +362,8 @@ int myos_socket_write_failed(int fd) {
     if (s->nonblock) {
         return 1;
     }
-    usleep(1000);
-    return 3;
+    /* netfs reports POLLOUT once the peer's buffer has room again. */
+    return sock_wait(fd, POLLOUT, -1) < 0 ? 5 : 3;
 }
 
 /* fcntl F_GETFL / F_SETFL for tracked sockets. Returns -1 if not a socket. */
@@ -373,7 +390,6 @@ int myos_socket_fcntl(int fd, int cmd, int arg) {
 static int listener_ctl(struct myos_sock *s, const char *cmd);
 static int listener_status(struct myos_sock *s, char *out, size_t cap);
 static void listener_retry_taken(struct myos_sock *ls, int seq);
-static int un_pending(struct myos_sock *s);
 /* Last whitespace-separated decimal in an "accepted ..." status = the
  * per-listener handoff seq; -1 when absent. */
 static int status_accept_seq(const char *status) {
@@ -403,134 +419,104 @@ static int status_accept_seq(const char *status) {
     }
 }
 
-int myos_socket_poll(int fd, short events, short *revents) {
+/*
+ * poll() of a tracked socket, around the kernel call (pollselect.c). The
+ * kernel knows what netfs knows: bytes to read, a hangup, a connect done
+ * (POLLOUT once "connected"), an accept not taken yet, room in a unix
+ * peer's buffer. This adds the socket's own state.
+ *
+ * prepare: returns -1 for a non-socket. Sets *now to what is ready without
+ * asking (a connected TCP/UDP socket is always writable: there is no TX
+ * accounting) and *kevents to what the kernel should wait for. A listener
+ * arms netd's accept first: select-driven servers like dropbear select()
+ * before accept(), and netd only announces a connection once armed.
+ */
+int myos_socket_poll_prepare(int fd, short events, short *now, short *kevents) {
     struct myos_sock *s = sock_by_fd(fd);
-    short rev = 0;
-    int want_in;
-    int want_out;
+    short want_in;
+    short want_out;
     if (s == NULL) {
         return -1;
     }
-    if (revents == NULL) {
-        errno = EINVAL;
-        return -2;
+    want_in = events & (POLLIN | POLLPRI | POLLRDNORM);
+    want_out = events & (POLLOUT | POLLWRNORM);
+    *now = 0;
+    *kevents = 0;
+    switch (s->state) {
+    case SOCK_LISTENING:
+        if (want_in && s->family != AF_UNIX && !s->accept_armed
+            && listener_ctl(s, "accept") == 0) {
+            s->accept_armed = 1;
+        }
+        *kevents = want_in ? POLLIN : 0;
+        break;
+    case SOCK_CONNECTING:
+        /* POLLOUT (or a hangup) tells the connect is over. */
+        *kevents = POLLOUT | (want_in ? POLLIN : 0);
+        break;
+    case SOCK_CONNECTED:
+        if (s->family == AF_UNIX) {
+            *kevents = (want_in ? POLLIN : 0) | (want_out ? POLLOUT : 0);
+        } else {
+            *now = want_out ? POLLOUT : 0;
+            *kevents = want_in ? POLLIN : 0;
+        }
+        break;
+    default:
+        /* Not connected: nothing to wait for but a hangup. */
+        break;
+    }
+    return 0;
+}
+
+/* done: the kernel's revents for a tracked socket become the socket's. */
+void myos_socket_poll_done(int fd, short events, short *revents) {
+    struct myos_sock *s = sock_by_fd(fd);
+    short want_in;
+    short want_out;
+    short rev;
+    if (s == NULL) {
+        return;
     }
     want_in = events & (POLLIN | POLLPRI | POLLRDNORM);
     want_out = events & (POLLOUT | POLLWRNORM);
-
-    /* Listening sockets: arm the netd "accept" once (select-driven servers
-     * like dropbear select() before accept()), then report POLLIN when the
-     * listener status shows "accepted <N>". Without this, select() never
-     * wakes for listeners and the server never accepts. */
-    if (s->state == SOCK_LISTENING && s->family == AF_UNIX) {
-        if (want_in && un_pending(s)) {
-            rev |= POLLIN;
+    rev = *revents;
+    if (s->state == SOCK_LISTENING && s->family != AF_UNIX && (rev & POLLIN)) {
+        /* Stale-status guard: the status file keeps the last "accepted <N>
+         * ... <seq>" until netd replies again; only a seq we have not
+         * accepted yet is a new connection. Otherwise netd has not processed
+         * our "taken <seq>" (or it was lost when the netfs ring was full):
+         * re-send it, rate-limited, never "accept" (that flooded the ring
+         * and failed dropbear's session writes with EIO). */
+        char stbuf[80];
+        int seq = -1;
+        if (listener_status(s, stbuf, sizeof stbuf) == 0
+            && strncmp(stbuf, "accepted", 8) == 0) {
+            seq = status_accept_seq(stbuf);
         }
-        *revents = rev;
-        return rev ? 1 : 0;
-    }
-    if (s->state == SOCK_LISTENING) {
-        if (want_in) {
-            char stbuf[80];
-            if (!s->accept_armed) {
-                if (listener_ctl(s, "accept") == 0) {
-                    s->accept_armed = 1;
-                }
-                /* Don't trust the status this call: netd clears any stale
-                 * "accepted <old>" when it parks the fresh accept, which
-                 * lands asynchronously. Re-check on the next poll so a
-                 * previous connection isn't re-accepted. */
-                *revents = 0;
-                return 0;
-            }
-            if (listener_status(s, stbuf, sizeof stbuf) == 0
-                && strncmp(stbuf, "accepted", 8) == 0) {
-                /* Stale-status guard: the status file keeps the last
-                 * "accepted <N> ... <seq>" until netd replies again, so a
-                 * bare prefix match re-reports readable for the same
-                 * connection. Only a *new* seq is a fresh event. */
-                int seq = status_accept_seq(stbuf);
-                if (seq >= 0 && seq != s->last_accept_seq) {
-                    rev |= POLLIN;
-                } else {
-                    /* We already consumed this handoff and netd has not
-                     * processed our "taken" yet. Do NOT write a ctl on every
-                     * select() spin: re-sending "accept" here queued hundreds
-                     * of requests per connection, filled the shared netfs
-                     * ring and failed dropbear session writes with EIO (and
-                     * a dropped "taken" wedged the listener for good).
-                     * Re-send the idempotent "taken <seq>", rate-limited. */
-                    listener_retry_taken(s, seq);
-                }
-            }
+        if (seq < 0 || seq == s->last_accept_seq) {
+            listener_retry_taken(s, seq);
+            rev &= ~POLLIN;
         }
-        *revents = rev;
-        return rev ? 1 : 0;
-    }
-
-    /* Nonblocking connect: curl waits for POLLOUT (then SO_ERROR) until
-     * netd advertises Established ("connected"). Do not report POLLOUT while
-     * still SynSent / "connecting". */
-    if (s->state == SOCK_CONNECTING) {
-        int st = connect_status(s);
-        if (st > 0) {
-            finish_connect(s);
-            if (want_out) {
-                rev |= POLLOUT;
-            }
-            if (want_in && data_pending(s)) {
-                rev |= POLLIN;
-            }
-            *revents = rev;
-            return rev ? 1 : 0;
-        }
-        if (st < 0) {
-            s->so_error = errno ? errno : ECONNREFUSED;
+    } else if (s->state == SOCK_CONNECTING) {
+        if (rev & (POLLHUP | POLLERR)) {
+            /* Refused or failed: curl reads SO_ERROR after POLLOUT. */
+            s->so_error = ECONNREFUSED;
             s->state = SOCK_OPEN;
             if (s->ctl_fd >= 0) {
                 close(s->ctl_fd);
                 s->ctl_fd = -1;
             }
-            rev |= POLLERR;
-            if (want_out) {
-                rev |= POLLOUT; /* wake curl to read SO_ERROR */
-            }
-            if (want_in) {
-                rev |= POLLIN | POLLHUP;
-            }
-            *revents = rev;
-            return 1;
+            rev = POLLERR | (want_out ? POLLOUT : 0) | (want_in ? POLLIN | POLLHUP : 0);
+        } else if (rev & POLLOUT) {
+            finish_connect(s);
+            rev &= (want_out ? POLLOUT : 0) | (want_in ? POLLIN : 0);
         }
-        *revents = 0;
-        return 0;
-    }
-
-    /* Drain RX before surfacing hangup as the only POLLIN (half-close). */
-    if (want_in && s->state == SOCK_CONNECTED && data_pending(s)) {
-        rev |= POLLIN;
-    }
-    if (s->state == SOCK_CONNECTED && status_is_hangup(s)) {
-        if (want_in) {
-            rev |= POLLIN | POLLHUP;
-        } else {
-            rev |= POLLHUP;
-        }
-        if (want_out) {
-            rev |= POLLOUT;
-        }
-        *revents = rev;
-        return 1;
-    }
-    /* Connected TCP is writable unless we track a full TX buffer (we don't).
-     * Never withhold POLLOUT when POLLIN is also requested: curl/mbedtls need
-     * POLLOUT to send ClientHello while also watching for ServerHello. The old
-     * withhold deadlocked HTTPS (curl:7 after ~15s in the connect/TLS phase).
-     * Unconnected / connecting sockets must not report POLLOUT here. */
-    if (want_out && s->state == SOCK_CONNECTED) {
+    } else if (s->state == SOCK_CONNECTED && (rev & POLLHUP) && want_out) {
+        /* A hung-up socket is "writable": the write reports the error. */
         rev |= POLLOUT;
     }
     *revents = rev;
-    return rev ? 1 : 0;
 }
 
 static int hangup_sock(struct myos_sock *s) {
@@ -875,16 +861,6 @@ static int un_take(struct myos_sock *s, unsigned short *id) {
     return parse_clone_id(buf, (size_t)n, id) == 0 ? 1 : (errno = EIO, -1);
 }
 
-/* AF_UNIX: whether a connection is queued on `s` (listen's st_size). */
-static int un_pending(struct myos_sock *s) {
-    char path[64];
-    struct stat st;
-    if (conv_path(path, sizeof path, s->proto_path, s->conv, "listen") < 0) {
-        return 0;
-    }
-    return stat(path, &st) == 0 && st.st_size > 0;
-}
-
 /* AF_UNIX: open conversation <id> (connected) as a socket fd. */
 static int un_open(unsigned short id, const char *name) {
     char path[64];
@@ -926,7 +902,10 @@ static int un_accept(struct myos_sock *ls, struct sockaddr *addr, socklen_t *add
             errno = EAGAIN;
             return -1;
         }
-        usleep(1000);
+        /* netfs reports POLLIN once a connection is queued. */
+        if (sock_wait(ls->data_fd, POLLIN, -1) < 0) {
+            return -1;
+        }
     }
     fd = un_open(id, ls->un_name);
     if (fd >= 0) {
@@ -1073,8 +1052,9 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
         errno = EIO;
         return -1;
     }
-    /* Blocking accept: arm netd once, then poll the listener status until it
-     * reports "accepted <N>" (REP_STATUS lands asynchronously from netd). */
+    /* Blocking accept: arm netd once, then wait for the listener status to
+     * report "accepted <N>" (REP_STATUS lands asynchronously from netd;
+     * netfs reports POLLIN for an accept not yet taken). */
     if (!ls->accept_armed) {
         if (listener_ctl(ls, "accept") < 0) {
             return -1;
@@ -1093,6 +1073,9 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
         }
         if (elapsed_ms(&start) >= 180000L) {
             errno = ETIMEDOUT;
+            return -1;
+        }
+        if (sock_wait(ls->data_fd, POLLIN, ms_left(&start, 180000L)) < 0) {
             return -1;
         }
     }

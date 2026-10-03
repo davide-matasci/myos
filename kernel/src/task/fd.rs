@@ -329,6 +329,72 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
     })
 }
 
+/// `poll(2)` bits (Linux values).
+pub const POLLIN: u16 = 0x1;
+pub const POLLOUT: u16 = 0x4;
+pub const POLLERR: u16 = 0x8;
+pub const POLLHUP: u16 = 0x10;
+pub const POLLNVAL: u16 = 0x20;
+
+/// Readiness of `fd` for `poll(2)`: the bits that hold now, whatever the
+/// caller asked for, and whether `fd` is the console tty (whose keyboard
+/// input is polled, not interrupt-driven: a waiter re-checks it).
+pub fn fd_poll(fd: usize) -> (u16, bool) {
+    let Some(entry) = with_process_mut(|t| t.fds.get(fd).copied()) else {
+        return (POLLNVAL, false);
+    };
+    let tty = || {
+        let readable = if crate::input::readable() { POLLIN } else { 0 };
+        (readable | POLLOUT, true)
+    };
+    match entry {
+        FdEntry::Empty => (POLLNVAL, false),
+        FdEntry::Stdin | FdEntry::Console => tty(),
+        FdEntry::File(_) if fd_is_console_tty(entry) => tty(),
+        FdEntry::PipeRead(id) => {
+            let mut bits = if pipe::read_would_block(id) { 0 } else { POLLIN };
+            if pipe::read_closed(id) {
+                // Writers gone: end of file is readable.
+                bits |= POLLIN | POLLHUP;
+            }
+            (bits, false)
+        }
+        FdEntry::PipeWrite(id) => {
+            if pipe::readers_gone(id) {
+                (POLLERR, false)
+            } else if pipe::write_would_block(id) {
+                (0, false)
+            } else {
+                (POLLOUT, false)
+            }
+        }
+        FdEntry::PtyMaster(id) | FdEntry::PtySlave(id) => {
+            let master = matches!(entry, FdEntry::PtyMaster(_));
+            let (readable, writable, hup) = crate::pty::poll_state(id, master);
+            let mut bits = 0;
+            if readable {
+                bits |= POLLIN;
+            }
+            if writable {
+                bits |= POLLOUT;
+            }
+            if hup {
+                // The peer is gone: reads report it (EIO / end of file).
+                bits |= POLLIN | POLLHUP;
+            }
+            (bits, false)
+        }
+        FdEntry::File(id) => {
+            // A module file (a socket's /net data) knows its readiness; any
+            // other file is always readable and writable.
+            let bits = open_file_node(id)
+                .and_then(|node| crate::fs::poll(&node))
+                .map_or(POLLIN | POLLOUT, |b| b as u16);
+            (bits, false)
+        }
+    }
+}
+
 /// Peer fd of a pipe end in the current task (read<->write), or None.
 /// Legacy `PIPE_PEER` syscall (the old libgloss SIGCHLD self-pipe wake).
 pub fn fd_pipe_peer(fd: usize) -> Option<usize> {

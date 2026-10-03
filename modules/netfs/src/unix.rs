@@ -25,6 +25,8 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use myos_abi::{MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT};
+
 use crate::{Node, put_bytes, put_dec, S_IFDIR, S_IFREG};
 
 pub const MAX_CONV: usize = 32;
@@ -203,6 +205,37 @@ pub fn listdir(node: Node, dst: &mut [u8], n: &mut usize) -> bool {
 }
 
 pub fn read(node: Node, pos: usize, out: &mut [u8]) -> i32 {
+    let n = read_locked(node, pos, out);
+    if n > 0 && matches!(node, Node::Data(..)) {
+        // Room in this end's buffer: a writer may be polling for it.
+        crate::wake_any();
+    }
+    n
+}
+
+/// `poll` readiness: bytes (or a queued connection) to read, room in the
+/// peer's buffer to write, the peer gone.
+pub fn poll(node: Node) -> u32 {
+    with(|convs| {
+        let (Node::Data(_, id) | Node::Listen(_, id)) = node else {
+            return MYOS_POLLIN | MYOS_POLLOUT;
+        };
+        let Some(c) = get(convs, id) else {
+            return MYOS_POLLERR | MYOS_POLLHUP;
+        };
+        let (readable, state, peer) = (c.rx_len != 0 || c.queued != 0, c.state, c.peer);
+        let mut bits = if readable { MYOS_POLLIN } else { 0 };
+        if state == State::Hangup {
+            bits |= MYOS_POLLIN | MYOS_POLLHUP;
+        }
+        if state == State::Connected && peer.is_some_and(|p| convs[p as usize].rx_len < BUF_CAP) {
+            bits |= MYOS_POLLOUT;
+        }
+        bits
+    })
+}
+
+fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
     with(|convs| match node {
         Node::Clone(_) => {
             if pos > 0 {
