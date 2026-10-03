@@ -147,7 +147,7 @@ const CMD_EXT2_LINK: &[u8] =
 // remove the directory. The launcher checks the disk with
 // `e2fsck -fn` after the boot.
 const CMD_EXT2_BIG: &[u8] =
-    b"cat /disk/t/[a-m]* >/tmp/big&&cp /tmp/big /disk/big&&cmp /tmp/big /disk/big&&rm -r /disk/t /tmp/big&&echo EXT2-BIG-OK\n";
+    b"cat /disk/t/[a-m]* >/tmp/big&&cp /tmp/big /disk/big&&cmp /tmp/big /disk/big&&rm /disk/t/* /tmp/big&&rmdir /disk/t&&echo EXT2-BIG-OK\n";
 // pty boot-CI smoke (openpty/forkpty, echo round-trip, EIO on session end).
 // Package install smoke (full boot only): get-myos fetches make from the
 // mirror the launcher serves (this build's own packages), binds its files
