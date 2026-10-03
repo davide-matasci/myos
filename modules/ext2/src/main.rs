@@ -18,10 +18,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ext2fs::{Device, Fs, Kind};
 use myos_abi::{ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo};
 
-static mut API: *const KernelApi = core::ptr::null();
+/// The kernel's table, set once by `module_init` before anything runs.
+static mut API: Option<&'static KernelApi> = None;
 
 fn api() -> &'static KernelApi {
-    unsafe { &*API }
+    unsafe { (*core::ptr::addr_of!(API)).expect("ext2: no KernelApi") }
 }
 
 /// The kernel heap, through the ABI.
@@ -288,7 +289,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     if api.abi_version != ABI_VERSION {
         return -2;
     }
-    unsafe { API = api };
+    unsafe { *core::ptr::addr_of_mut!(API) = Some(api) };
     unsafe { (api.fs_register)(b"ext2".as_ptr(), 4, ext2_bind) }
 }
 
