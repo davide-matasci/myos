@@ -54,8 +54,3 @@ User tasks are pinned to a home CPU chosen round-robin at spawn/fork (the
 pinning is what keeps TLB flushes local). An idle CPU could steal a Ready task
 whose home CPU is busy; needs a cross-CPU TLB shootdown on migration and the
 NX #PF / leave races noted in `docs/pci-acpi-smp.md` resolved first.
-
-## Rust std `thread::sleep`
-
-The myos `std` sysroot has no `thread::sleep`; wire it to `SYS_NANOSLEEP`
-(52). Touching `toolchain/std` triggers a sysroot rebuild in CI.

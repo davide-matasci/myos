@@ -25,6 +25,7 @@ pub const SYS_SYMLINK: usize = 21;
 pub const SYS_READLINK: usize = 22;
 pub const SYS_IOCTL: usize = 28;
 pub const SYS_GETTIMEOFDAY: usize = 33;
+pub const SYS_NANOSLEEP: usize = 52;
 
 pub const STDIN_FILENO: i32 = 0;
 pub const STDOUT_FILENO: i32 = 1;
@@ -86,6 +87,14 @@ pub fn exit(code: i32) -> ! {
 #[inline]
 pub fn isatty(_fd: i32) -> bool {
     false
+}
+
+/// Block for `dur` (`SYS_NANOSLEEP`, no flags: no early wake on events).
+/// `false` when a signal cut the sleep short.
+#[inline]
+pub fn nanosleep(dur: crate::time::Duration) -> bool {
+    let ns = u64::try_from(dur.as_nanos()).unwrap_or(u64::MAX);
+    raw_nanosleep(ns as usize, 0) == 0
 }
 
 #[inline]
@@ -817,6 +826,59 @@ fn raw_exec(path: usize, path_len: usize, args: usize) -> ! {
         );
         core::hint::unreachable_unchecked();
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn raw_nanosleep(ns: usize, flags: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_NANOSLEEP,
+            in("rdi") ns,
+            in("rsi") flags,
+            lateout("rax") ret,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn raw_nanosleep(ns: usize, flags: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") SYS_NANOSLEEP,
+            in("x0") ns,
+            in("x1") flags,
+            lateout("x0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn raw_nanosleep(ns: usize, flags: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") SYS_NANOSLEEP,
+            in("a0") ns,
+            in("a1") flags,
+            lateout("a0") ret,
+            options(nostack),
+        );
+    }
+    ret
 }
 
 #[cfg(target_arch = "x86_64")]

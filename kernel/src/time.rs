@@ -14,24 +14,31 @@
 //! reason x86 TCG spent minutes in `git commit` / https / the first
 //! os-test `tcc` while aarch64 finished the same work in seconds.
 //!
-//! We cache RTC seconds and take `tv_usec` from the monotonic clock
-//! ([`monotonic_ns`]) so time advances within a second without hammering the
-//! CMOS.
+//! The wall clock is the monotonic clock plus an offset taken from the RTC
+//! ([`monotonic_ns`] + `WALL_OFFSET_NS`): it advances smoothly between RTC
+//! reads, which happen at most every 50 ms. The offset moves only when the
+//! RTC and the wall clock disagree by two whole seconds (the monotonic clock
+//! is calibrated and the RTC has one-second resolution), so `tv_usec` never
+//! jumps at a second edge, where it used to restart from the edge the next
+//! RTC read happened to see (a 300 ms sleep measured 144 ms or 336 ms).
 
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 /// Monotonic tick count (timer IRQ). Not wall-calibrated; used for cache
 /// freshness and approximate sub-second timestamps.
 static TICKS: AtomicU64 = AtomicU64::new(0);
-static CACHE_VALID: AtomicBool = AtomicBool::new(false);
-static CACHED_SECS: AtomicI64 = AtomicI64::new(0);
-/// Monotonic ns when `CACHED_SECS` was last refreshed from the RTC.
-static CACHED_AT_NS: AtomicU64 = AtomicU64::new(0);
-/// Monotonic ns when `CACHED_SECS` last changed (start of this second, approx).
-static SEC_START_NS: AtomicU64 = AtomicU64::new(0);
+/// `wall_ns = monotonic_ns + WALL_OFFSET_NS`; valid once the RTC was read.
+static WALL_VALID: AtomicBool = AtomicBool::new(false);
+static WALL_OFFSET_NS: AtomicI64 = AtomicI64::new(0);
+/// Monotonic ns of the last RTC read.
+static RTC_READ_AT_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Re-read the RTC at most this often.
-const CACHE_TTL_NS: u64 = 50_000_000;
+const RTC_TTL_NS: u64 = 50_000_000;
+/// The RTC moves the wall clock only when they disagree by this much: the
+/// offset is taken within an RTC second, so one second of disagreement is
+/// normal.
+const RESYNC_SECS: i64 = 2;
 
 /// Blink phase flip cadence.
 const BLINK_INTERVAL_NS: u64 = 500_000_000;
@@ -96,37 +103,31 @@ pub fn unix_seconds() -> Option<i64> {
     timeval().map(|(s, _)| s)
 }
 
-/// `(tv_sec, tv_usec)` for `SYS_GETTIMEOFDAY`. `tv_usec` is synthesized
-/// from timer ticks so userspace elapsed-time loops make progress inside
-/// a wall-clock second without re-entering the RTC path every call.
+/// `(tv_sec, tv_usec)` for `SYS_GETTIMEOFDAY`: the monotonic clock shifted
+/// to Unix time by the RTC offset, so it is smooth and only ever goes
+/// forward between RTC re-syncs (`RESYNC_SECS`).
 pub fn timeval() -> Option<(i64, i64)> {
     let now = monotonic_ns();
-    let secs = cached_unix_seconds(now)?;
-    let start = SEC_START_NS.load(Ordering::Relaxed);
-    let delta = now.saturating_sub(start);
-    // Microseconds into the current RTC second; the RTC is re-read at least
-    // every CACHE_TTL_NS so this stays within a second of the true edge.
-    let usec = core::cmp::min(delta / 1_000, 999_999) as i64;
-    Some((secs, usec))
+    let wall = wall_ns(now)?;
+    Some((wall / 1_000_000_000, (wall % 1_000_000_000) / 1_000))
 }
 
-fn cached_unix_seconds(now: u64) -> Option<i64> {
-    if CACHE_VALID.load(Ordering::Relaxed) {
-        let at = CACHED_AT_NS.load(Ordering::Relaxed);
-        if now.saturating_sub(at) < CACHE_TTL_NS {
-            return Some(CACHED_SECS.load(Ordering::Relaxed));
+/// Unix nanoseconds at monotonic `now`, reading the RTC when the offset is
+/// not known yet or is due for a check.
+fn wall_ns(now: u64) -> Option<i64> {
+    let valid = WALL_VALID.load(Ordering::Relaxed);
+    let due = now.saturating_sub(RTC_READ_AT_NS.load(Ordering::Relaxed)) >= RTC_TTL_NS;
+    if !valid || due {
+        let rtc = read_rtc_seconds()?;
+        RTC_READ_AT_NS.store(now, Ordering::Relaxed);
+        let offset = WALL_OFFSET_NS.load(Ordering::Relaxed);
+        let wall_secs = (now as i64).wrapping_add(offset) / 1_000_000_000;
+        if !valid || (rtc - wall_secs).abs() >= RESYNC_SECS {
+            WALL_OFFSET_NS.store(rtc.wrapping_mul(1_000_000_000).wrapping_sub(now as i64), Ordering::Relaxed);
+            WALL_VALID.store(true, Ordering::Relaxed);
         }
     }
-    let secs = read_rtc_seconds()?;
-    let prev = CACHED_SECS.load(Ordering::Relaxed);
-    let was = CACHE_VALID.load(Ordering::Relaxed);
-    CACHED_SECS.store(secs, Ordering::Relaxed);
-    CACHED_AT_NS.store(now, Ordering::Relaxed);
-    if !was || secs != prev {
-        SEC_START_NS.store(now, Ordering::Relaxed);
-    }
-    CACHE_VALID.store(true, Ordering::Relaxed);
-    Some(secs)
+    Some((now as i64).wrapping_add(WALL_OFFSET_NS.load(Ordering::Relaxed)))
 }
 
 fn read_rtc_seconds() -> Option<i64> {
