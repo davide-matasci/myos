@@ -13,6 +13,8 @@ use core::sync::atomic::{Ordering, compiler_fence};
 use myos_abi::{ABI_VERSION, KernelApi, ModuleBlkOps, status_ok};
 
 const SECTOR: usize = 512;
+/// The DMA buffer: one page, what a command's PRP1 covers.
+const PAGE: usize = 4096;
 pub const MAX_CTRL: usize = 4;
 const ADMIN_QD: u16 = 16;
 const IO_QD: u16 = 16;
@@ -406,15 +408,16 @@ fn attach(bar_va: usize) -> bool {
     }
 }
 
-fn one(c: &mut Ctrl, lba: u64, buf: &mut [u8], is_write: bool) -> Result<(), ()> {
+/// One read or write command: `buf` (whole sectors, at most the DMA
+/// page) through the controller's DMA page.
+fn xfer(c: &mut Ctrl, lba: u64, buf: &mut [u8], is_write: bool) -> Result<(), ()> {
+    let n = buf.len();
     if is_write {
         unsafe {
-            core::ptr::copy_nonoverlapping(buf.as_ptr(), c.dma_va, SECTOR);
+            core::ptr::copy_nonoverlapping(buf.as_ptr(), c.dma_va, n);
         }
-        dcache_civac(c.dma_va, SECTOR);
-    } else {
-        dcache_civac(c.dma_va, SECTOR);
     }
+    dcache_civac(c.dma_va, n);
     let opc = if is_write { OPC_IO_WRITE } else { OPC_IO_READ };
     let mut cmd = [0u32; 16];
     cmd[0] = u32::from(opc);
@@ -423,15 +426,27 @@ fn one(c: &mut Ctrl, lba: u64, buf: &mut [u8], is_write: bool) -> Result<(), ()>
     cmd[7] = (c.dma_phys >> 32) as u32;
     cmd[10] = lba as u32;
     cmd[11] = (lba >> 32) as u32;
-    cmd[12] = 0;
+    cmd[12] = (n / SECTOR - 1) as u32; // 0-based block count
     io(c, cmd)?;
     if !is_write {
-        dcache_civac(c.dma_va, SECTOR);
+        dcache_civac(c.dma_va, n);
         unsafe {
-            core::ptr::copy_nonoverlapping(c.dma_va, buf.as_mut_ptr(), SECTOR);
+            core::ptr::copy_nonoverlapping(c.dma_va, buf.as_mut_ptr(), n);
         }
     }
     Ok(())
+}
+
+/// Move `buf` page by page (a page is what one command's PRP1 covers).
+fn rw(c: &mut Ctrl, lba: u64, buf: &mut [u8], is_write: bool) -> i32 {
+    let mut lba = lba;
+    for chunk in buf.chunks_mut(PAGE) {
+        if xfer(c, lba, chunk, is_write).is_err() {
+            return -1;
+        }
+        lba += (chunk.len() / SECTOR) as u64;
+    }
+    0
 }
 
 unsafe extern "C" fn blk_read(ctx: usize, lba: u64, buf: *mut u8, len: usize) -> i32 {
@@ -441,15 +456,7 @@ unsafe extern "C" fn blk_read(ctx: usize, lba: u64, buf: *mut u8, len: usize) ->
     let Some(c) = ctrl(ctx) else {
         return -1;
     };
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf, len) };
-    let mut lba = lba;
-    for chunk in buf.chunks_mut(SECTOR) {
-        if one(c, lba, chunk, false).is_err() {
-            return -1;
-        }
-        lba += 1;
-    }
-    0
+    rw(c, lba, unsafe { core::slice::from_raw_parts_mut(buf, len) }, false)
 }
 
 unsafe extern "C" fn blk_write(ctx: usize, lba: u64, buf: *const u8, len: usize) -> i32 {
@@ -459,17 +466,8 @@ unsafe extern "C" fn blk_write(ctx: usize, lba: u64, buf: *const u8, len: usize)
     let Some(c) = ctrl(ctx) else {
         return -1;
     };
-    let buf = unsafe { core::slice::from_raw_parts(buf, len) };
-    let mut lba = lba;
-    for chunk in buf.chunks(SECTOR) {
-        let mut tmp = [0u8; SECTOR];
-        tmp.copy_from_slice(chunk);
-        if one(c, lba, &mut tmp, true).is_err() {
-            return -1;
-        }
-        lba += 1;
-    }
-    0
+    // `rw` only reads from `buf` when writing.
+    rw(c, lba, unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, len) }, true)
 }
 
 unsafe extern "C" fn blk_capacity(ctx: usize) -> u64 {
