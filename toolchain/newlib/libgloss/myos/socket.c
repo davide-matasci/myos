@@ -280,16 +280,28 @@ static int data_pending(struct myos_sock *s) {
     return st.st_size > 0;
 }
 
+/* What a read would find: 0 = data, 1 = end of file (hangup, nothing left),
+ * 2 = nothing yet. The hangup is looked at first: netd sends it after the
+ * last data, and both can land between two looks, so "no data" followed by
+ * "hangup" would be an end of file with that data still unread (curl: "end
+ * of response with N bytes missing", once the kernel's poll woke readers
+ * on the very write of the last data). */
+static int rx_state(struct myos_sock *s) {
+    int hangup = status_is_hangup(s);
+    if (data_pending(s)) {
+        return 0;
+    }
+    return hangup ? 1 : 2;
+}
+
 /* Block until RX data or hangup. Returns 0 = data ready, 1 = hangup,
  * -1 = interrupted (errno EINTR). */
 static int wait_readable(struct myos_sock *s) {
     for (;;) {
         /* Drain remaining RX before treating hangup as EOF (BSD half-close). */
-        if (data_pending(s)) {
-            return 0;
-        }
-        if (status_is_hangup(s)) {
-            return 1;
+        int st = rx_state(s);
+        if (st != 2) {
+            return st;
         }
         if (sock_wait(s->data_fd, POLLIN, -1) < 0) {
             return -1;
@@ -314,10 +326,10 @@ int myos_socket_empty_read(int fd) {
     }
     /* Prefer pending RX over hangup (BSD half-close). _read returned 0, but
      * REP_DATA may have landed after the syscall; never EOF while st_size > 0. */
-    if (data_pending(s)) {
+    switch (rx_state(s)) {
+    case 0:
         return 3;
-    }
-    if (status_is_hangup(s)) {
+    case 1:
         return 2;
     }
     if (s->nonblock) {
@@ -328,14 +340,7 @@ int myos_socket_empty_read(int fd) {
     if (wr < 0) {
         return 4;
     }
-    if (wr == 1) {
-        /* Re-check RX: hangup can race with a late REP_DATA. */
-        if (data_pending(s)) {
-            return 3;
-        }
-        return 2;
-    }
-    return 3;
+    return wr == 1 ? 2 : 3;
 }
 
 /*
