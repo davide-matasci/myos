@@ -366,6 +366,11 @@ cmd_pull() {
   else
     mark_force_replace "$port" "$hash"
     echo "registry miss ${port}: not current after extract ${hash}"
+    # Name what the package lacks: the port is rebuilt (or completed) and
+    # pushed in its place, and the log says why.
+    while IFS= read -r f; do
+      [[ -z "$f" || -e "$ROOT/$f" ]] || echo "registry pull ${port}: missing member ${f}"
+    done < <(port_members "$port" | awk 'NF && !seen[$0]++')
   fi
 }
 

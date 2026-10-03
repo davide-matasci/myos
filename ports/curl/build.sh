@@ -26,8 +26,22 @@ pack_curl_aliases() {
   done
 }
 
-if myos_curl_is_current; then
+# The CA bundle (CURL_CA_BUNDLE=/lib/cacert.pem) is an output of this port
+# next to the ELFs; ports/mbedtls/fetch.sh fetches it with the mbedtls
+# sources, and a tree with the ELFs but not the bundle (a registry package
+# packed without it) only needs this fetch.
+ensure_ca_bundle() {
+  local ca="$ROOT/target/cacert.pem"
+  [[ -f "$ca" ]] && return 0
+  # shellcheck source=../mbedtls/versions.env
+  source "$HERE/../mbedtls/versions.env"
+  echo "fetch CA bundle"
+  curl -fsSL "$CACERT_URL" -o "$ca"
+}
+
+if myos_curl_elfs_current; then
   echo "curl ELFs up to date"
+  ensure_ca_bundle
   pack_curl_aliases
   exit 0
 fi

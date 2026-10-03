@@ -470,7 +470,8 @@ myos_curl_version_hash() {
   printf '%s' "$h"
 }
 
-myos_curl_is_current() {
+# The stamp and the three ELFs: what a curl build produces.
+myos_curl_elfs_current() {
   local arch
   [[ -f "$MYOS_CURL_VERSION" ]] \
     && [[ "$(cat "$MYOS_CURL_VERSION")" == "$(myos_curl_version_hash)" ]] \
@@ -478,6 +479,15 @@ myos_curl_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/curl-${arch}-unknown-none" ]] || return 1
   done
+}
+
+# Every output of the port (PORT_OUTPUTS): the ELFs and the CA bundle the
+# build fetches, which the image ships as /lib/cacert.pem. A registry
+# package or a workspace without it is not current (the kernel bundle's
+# check wants every port file, so a missing bundle rebuilt the kernels in
+# every CI run); ports/curl/build.sh fetches it without rebuilding curl.
+myos_curl_is_current() {
+  myos_curl_elfs_current && [[ -f "$MYOS_ROOT/target/cacert.pem" ]]
 }
 
 
