@@ -748,12 +748,14 @@ fn unbind(path: &str) -> Option<String> {
     None
 }
 
-/// Bind the directory `source` at the directory `target` (absolute paths),
-/// replacing a bind already there. Binds last until reboot.
+/// Bind `source` (a directory or a file) at `target` (absolute paths),
+/// replacing a bind already there. `target` need not exist: `get-myos`
+/// binds a package's files where the image would have them (`/lib/vim`,
+/// `/bin/custom/vim`), over a read-only tree or beside it. Binds last
+/// until reboot.
 pub fn bind(source: &str, target: &str) -> bool {
     let (source, target) = (normalize_path(source), normalize_path(target));
-    let is_dir = |p: &str| stat(p).is_some_and(|st| is_dir_mode(st.mode));
-    if target.is_empty() || !is_dir(source) || !is_dir(target) {
+    if target.is_empty() || stat(source).is_none() {
         return false;
     }
     let mut binds = BINDS.lock();

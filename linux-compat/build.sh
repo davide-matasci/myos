@@ -101,12 +101,16 @@ build_get_alpine() {
   local zl="$ROOT/target/zlib-$arch"
   local out="$ROOT/target/linux-compat/$arch"
   local obj="$ROOT/target/linux-compat/get-alpine-$arch.o"
+  local tools="$ROOT/target/linux-compat/pkgtools-$arch.o"
   mkdir -p "$out"
+  # The download/tar/gzip code is shared with get-myos (user/get-myos).
   "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$nl/$triple/include" -I"$zl/include" \
-    -c "$ROOT/linux-compat/get-alpine.c" -o "$obj"
+    -I"$ROOT/user/get-myos" -c "$ROOT/linux-compat/get-alpine.c" -o "$obj"
+  "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$nl/$triple/include" -I"$zl/include" \
+    -c "$ROOT/user/get-myos/pkgtools.c" -o "$tools"
   ld.lld -pie --no-dynamic-linker -o "$out/get-alpine" \
     --entry=_start -z max-page-size=4096 \
-    "$nl/$triple/lib/crt0.o" "$obj" "$zl/lib/libz.a" -L"$nl/$triple/lib" \
+    "$nl/$triple/lib/crt0.o" "$obj" "$tools" "$zl/lib/libz.a" -L"$nl/$triple/lib" \
     --start-group -lc -lgloss -lg --end-group
 }
 

@@ -1,0 +1,197 @@
+//! Packages: one gzip tar per port with the files it would have in the
+//! image (`bin/custom/vim`, `lib/vim/vimrc`, ...), and an index per
+//! architecture, under `target/packages/`:
+//!
+//! ```text
+//! <arch>-index.txt          name version size sha256 file, one line per package
+//! <arch>-<name>.tar.gz      the package
+//! ```
+//!
+//! `get-myos` (user/get-myos) installs them on a running system from a
+//! mirror with this layout: the project's rolling GitHub release, or the
+//! build's own `target/packages/` that a full `--ci` boot serves to the
+//! guest over slirp (`serve_mirror`). The entries come from the same
+//! descriptor code the initramfs is packed with (`install_port`), so a
+//! port moving between `ports/` and `packages/` changes nothing in what
+//! it ships. See docs/packages.md.
+
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use crate::initramfs::{Entry, install_port};
+use crate::ports;
+
+/// The mirror's host port. The guest reaches the host's loopback as
+/// 10.0.2.2 on QEMU's user network, so no forward is needed (a `guestfwd`
+/// chardev would serve one connection only).
+pub const MIRROR_PORT: u16 = 8765;
+
+/// Build every package for `arch` into `target/packages/` and return that
+/// directory. Every port with files is packaged, whichever its role: the
+/// packages of the image's ports are how the mechanism is tested while
+/// they are in the image.
+pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
+    let out = manifest_dir.join("target/packages");
+    std::fs::create_dir_all(&out).expect("create target/packages");
+    let mut index = String::new();
+    for port in ports::load_all(manifest_dir) {
+        if port.files.is_empty() {
+            continue;
+        }
+        let mut entries: Vec<Entry> = Vec::new();
+        install_port(&mut entries, &port, manifest_dir, arch);
+        if entries.is_empty() {
+            continue;
+        }
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        let tar_path = out.join(format!("{arch}-{}.tar", port.name));
+        std::fs::write(&tar_path, ustar(&entries)).expect("write package tar");
+        // -n: no name or timestamp in the gzip header, so the same files
+        // give the same bytes (the release is re-uploaded only when they
+        // change).
+        let status = Command::new("gzip")
+            .args(["-n", "-f", "-6"])
+            .arg(&tar_path)
+            .status()
+            .expect("run gzip");
+        assert!(status.success(), "gzip {} failed", tar_path.display());
+        let file = format!("{arch}-{}.tar.gz", port.name);
+        let gz = out.join(&file);
+        let size = std::fs::metadata(&gz).expect("package size").len();
+        // The version is the port's input hash (its stamp); a user program
+        // has no stamp, its tarball's own hash stands in.
+        let sha = sha256_file(&gz);
+        let version = std::fs::read_to_string(manifest_dir.join("target").join(&port.stamp))
+            .map(|s| s.trim().chars().take(12).collect::<String>())
+            .unwrap_or_else(|_| sha.chars().take(12).collect());
+        index.push_str(&format!("{} {version} {size} {sha} {file}\n", port.name));
+    }
+    std::fs::write(out.join(format!("{arch}-index.txt")), index).expect("write package index");
+    out
+}
+
+/// Build the packages of every architecture (`cargo run -- packages`).
+pub fn build_all(manifest_dir: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for arch in ["x86_64", "aarch64", "riscv64"] {
+        out = build(manifest_dir, arch);
+    }
+    out
+}
+
+fn sha256_file(path: &Path) -> String {
+    let output = Command::new("sha256sum").arg(path).output().expect("run sha256sum");
+    assert!(output.status.success(), "sha256sum {} failed", path.display());
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .expect("sha256sum output")
+        .to_string()
+}
+
+/// A ustar archive of regular files (the aliases of a program are written
+/// as files of their own: the guest's tmpfs has no hard links to make),
+/// mtime 0 and uid/gid 0 so the archive is reproducible.
+fn ustar(entries: &[Entry]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for e in entries {
+        let (prefix, name) = split_name(&e.name);
+        let mut h = [0u8; 512];
+        put(&mut h[0..100], name.as_bytes());
+        put(&mut h[100..108], format!("{:07o}", e.mode & 0o7777).as_bytes());
+        put(&mut h[108..116], b"0000000");
+        put(&mut h[116..124], b"0000000");
+        put(&mut h[124..136], format!("{:011o}", e.data.len()).as_bytes());
+        put(&mut h[136..148], b"00000000000");
+        h[148..156].copy_from_slice(b"        ");
+        h[156] = b'0';
+        put(&mut h[257..263], b"ustar\0");
+        put(&mut h[263..265], b"00");
+        put(&mut h[265..297], b"root");
+        put(&mut h[297..329], b"root");
+        put(&mut h[329..337], b"0000000");
+        put(&mut h[337..345], b"0000000");
+        put(&mut h[345..500], prefix.as_bytes());
+        let sum: u32 = h.iter().map(|b| u32::from(*b)).sum();
+        put(&mut h[148..156], format!("{sum:06o}\0 ").as_bytes());
+        out.extend_from_slice(&h);
+        out.extend_from_slice(&e.data);
+        let pad = (512 - e.data.len() % 512) % 512;
+        out.extend(std::iter::repeat_n(0u8, pad));
+    }
+    out.extend(std::iter::repeat_n(0u8, 1024));
+    out
+}
+
+/// A path longer than the 100-byte name field goes into prefix/name.
+fn split_name(path: &str) -> (&str, &str) {
+    if path.len() <= 100 {
+        return ("", path);
+    }
+    let cut = path[..=path.len().min(156) - 1]
+        .rfind('/')
+        .filter(|i| path.len() - i - 1 <= 100)
+        .unwrap_or_else(|| panic!("package path too long for ustar: {path}"));
+    (&path[..cut], &path[cut + 1..])
+}
+
+fn put(field: &mut [u8], bytes: &[u8]) {
+    assert!(bytes.len() <= field.len(), "ustar field overflow");
+    field[..bytes.len()].copy_from_slice(bytes);
+}
+
+/// Serve `dir` over HTTP on 127.0.0.1:MIRROR_PORT in a background thread
+/// (GET only: `/` lists the files, anything else is a file of `dir`).
+/// False when the port is taken: the launcher then skips the forward and
+/// the guest's install stage fails visibly instead of hitting a stranger.
+pub fn serve_mirror(dir: PathBuf) -> bool {
+    let Ok(listener) = TcpListener::bind(("127.0.0.1", MIRROR_PORT)) else {
+        return false;
+    };
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let dir = dir.clone();
+            std::thread::spawn(move || serve_one(stream, &dir));
+        }
+    });
+    true
+}
+
+fn serve_one(mut stream: TcpStream, dir: &Path) {
+    let mut req = Vec::new();
+    let mut buf = [0u8; 1024];
+    while !req.windows(4).any(|w| w == b"\r\n\r\n") && req.len() < 8192 {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => req.extend_from_slice(&buf[..n]),
+        }
+    }
+    let line = String::from_utf8_lossy(&req);
+    let mut words = line.split_whitespace();
+    let (method, target) = (words.next().unwrap_or(""), words.next().unwrap_or("/"));
+    let path = target.split('?').next().unwrap_or("").trim_start_matches('/');
+    let body: Option<Vec<u8>> = if method != "GET" || path.contains("..") || path.contains('/') {
+        None
+    } else if path.is_empty() {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect())
+            .unwrap_or_default();
+        names.sort();
+        Some(names.join("\n").into_bytes())
+    } else {
+        std::fs::read(dir.join(path)).ok()
+    };
+    let response = match body {
+        Some(b) => {
+            let mut r = format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", b.len())
+                .into_bytes();
+            r.extend_from_slice(&b);
+            r
+        }
+        None => b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+    };
+    let _ = stream.write_all(&response);
+    let _ = stream.flush();
+}

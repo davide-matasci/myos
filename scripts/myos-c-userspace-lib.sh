@@ -26,6 +26,7 @@ MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
 MYOS_DROPBEAR_VERSION_STAMP="$MYOS_ROOT/target/.myos-dropbear-version"
 MYOS_OS_TEST_VERSION="$MYOS_ROOT/target/.myos-os-test-version"
 MYOS_LINUX_COMPAT_VERSION="$MYOS_ROOT/target/.myos-linux-compat-version"
+MYOS_GET_MYOS_VERSION="$MYOS_ROOT/target/.myos-get-myos-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
@@ -115,6 +116,32 @@ myos_c_hello_is_current() {
     && [[ -f "$MYOS_ROOT/target/c-socket_smoke-x86_64-unknown-none" ]] \
     && [[ -f "$MYOS_ROOT/target/c-socket_smoke-aarch64-unknown-none" ]] \
     && [[ -f "$MYOS_ROOT/target/c-socket_smoke-riscv64-unknown-none" ]]
+}
+
+# get-myos (user/get-myos): its sources, the shared pkgtools, the build
+# script, and what it links (newlib, zlib).
+myos_get_myos_version_hash() {
+  local h
+  h="$(
+    {
+      sha256sum "$MYOS_ROOT/user/get-myos/get-myos.c" "$MYOS_ROOT/user/get-myos/pkgtools.c" \
+        "$MYOS_ROOT/user/get-myos/pkgtools.h" "$MYOS_ROOT/user/get-myos/build.sh"
+      myos_newlib_version_hash
+      myos_zlib_version_hash
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_get_myos_is_current() {
+  local arch
+  [[ -f "$MYOS_GET_MYOS_VERSION" ]] \
+    && [[ "$(cat "$MYOS_GET_MYOS_VERSION")" == "$(myos_get_myos_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/get-myos-${arch}-unknown-none" ]] || return 1
+  done
+  return 0
 }
 
 # All the C smokes (scripts/build-c-smokes.sh): c-hello's inputs plus the
@@ -376,7 +403,8 @@ myos_linux_compat_version_hash() {
   h="$(
     {
       sha256sum "$MYOS_ROOT/linux-compat/build.sh" \
-        "$MYOS_ROOT/linux-compat/get-alpine.c" || true
+        "$MYOS_ROOT/linux-compat/get-alpine.c" \
+        "$MYOS_ROOT/user/get-myos/pkgtools.c" "$MYOS_ROOT/user/get-myos/pkgtools.h" || true
       find "$MYOS_ROOT/linux-compat/tests" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum 2>/dev/null || true
       myos_newlib_version_hash
