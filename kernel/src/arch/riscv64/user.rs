@@ -7,15 +7,16 @@ use crate::task::STACK_SIZE;
 
 /// User images load at Sv39 root[1] on QEMU virt RAM.
 pub const DEFAULT_USER_BASE: u64 = 0x4000_0000;
-/// The mmap window (after the brk heap), see x86.
-pub const MMAP_AREA_PAGES: usize = 16384;
+/// The mmap window (after the brk heap), see x86: 960 MiB, the rest of the
+/// 1 GiB span after the largest image, the stack and the heap.
+pub const MMAP_AREA_PAGES: usize = 245760;
 /// User stack below the heap: 1 MiB.
 pub const USER_STACK_PAGES: usize = 256;
 /// Per-process brk heap capacity: the TLS arena is a 2 MiB brk allocation,
 /// so the window must fit that plus headroom.
 pub const HEAP_PAGES: usize = 1024;
-/// No per-process span limit beyond root[1] (1 GiB).
-pub const USER_SPAN_PAGES: usize = usize::MAX;
+/// The process lives in Sv39 root[1]: 1 GiB.
+pub const USER_SPAN_PAGES: usize = 1 << 18;
 
 /// The user registers a new task starts with (fork child, thread).
 #[derive(Clone, Copy)]

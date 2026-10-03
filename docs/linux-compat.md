@@ -267,9 +267,8 @@ reserved first. That needed core `mmap` work, which native programs share:
 - `munmap` of any range in the `mmap` window (holes included) and
   `mprotect` of part of a mapping split the mapping;
 - free address space is reused (first fit) instead of only growing;
-- a larger window (128 MiB on x86_64, 64 MiB on aarch64 / riscv64) and 64
-  mappings per process; aarch64 user address spaces may span 128 MiB
-  (previously 8 MiB).
+- a larger window (4 GiB on x86_64, 960 MiB on aarch64 / riscv64, whose
+  user address spaces span 1 GiB) and 256 mappings per process.
 
 ## Signal handlers
 
@@ -315,7 +314,7 @@ the kernel does not keep a per-task copy at syscall entry.
     filesystem (the initramfs has no limit) whose loaded image spans at
     most 1152 pages (4.5 MiB). Shared objects are mapped with `mmap` and
     do not count;
-  - a per-process `mmap` window of 128 MiB (x86_64) / 64 MiB (aarch64,
+  - a per-process `mmap` window of 4 GiB (x86_64) / 960 MiB (aarch64,
     riscv64) with at most 256 mappings; adjacent mappings with the same
     protection and backing are merged (musl's malloc makes hundreds of
     small neighbouring ones: jq peaks at 188). At most 64 distinct files
