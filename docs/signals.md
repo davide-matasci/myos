@@ -75,8 +75,8 @@ Blocking waits (console/pty/pipe reads, full-pipe writes, FIFO opens,
   and the number / first-argument register restored;
 - restarts transparently if, by then, nothing acts on the signal.
 
-`select`/`poll` wait in userspace loops that enter the kernel every
-iteration; they return `EINTR` when a handler ran (libgloss counts them).
+`poll` (and `select`, built on it) waits in the kernel (`SYS_POLL`) and
+returns `EINTR` like any other blocking call.
 `sigsuspend` waits with a temporary mask and the handler returns to the
 previous one. `signal()` installs BSD-style handlers (`SA_RESTART`).
 

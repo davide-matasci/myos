@@ -51,12 +51,12 @@ lock, so the unix conversations have their own spinlock.
 | `socket(AF_UNIX, SOCK_STREAM, 0)` | `clone`, open `ctl` and `data`; returns the data fd |
 | `bind(sockaddr_un)` | remembers the name (an abstract name, leading NUL, becomes `@name`) |
 | `listen` | `announce NAME`; `EADDRINUSE` if the name has a listener |
-| `accept` | takes a number from `listen` and opens its `data`; blocking sleeps 1 ms between looks, nonblocking says `EAGAIN` |
+| `accept` | takes a number from `listen` and opens its `data`; blocking waits in `poll` for a queued connection, nonblocking says `EAGAIN` |
 | `connect(sockaddr_un)` | `connect NAME`; done at once, or `ECONNREFUSED` (no listener, or its queue is full) |
 | `socketpair(AF_UNIX, SOCK_STREAM, 0, sv)` | `pair`, then the second end from `listen` |
 | `read` / `recv` | `data`; empty and blocking waits for data or `hangup` (EOF) |
-| `write` / `send` | `data`; a full peer buffer waits (blocking, 1 ms sleeps) or says `EAGAIN`; a closed peer `EPIPE` (no `SIGPIPE`) |
-| `poll` / `select` | `POLLIN` on a listener when `listen` is non-empty; on a connection as for TCP |
+| `write` / `send` | `data`; a full peer buffer waits in `poll` for room (blocking) or says `EAGAIN`; a closed peer `EPIPE` (no `SIGPIPE`) |
+| `poll` / `select` | netfs's `poll` hook: `POLLIN` for bytes, a queued connection or the peer gone, `POLLOUT` while the peer's buffer has room |
 | `getsockname` / `getpeername` | the bound or connected name; accepted sockets have the listener's name and an unnamed peer |
 
 `SOCK_DGRAM` is not supported (`EPROTONOSUPPORT`).
@@ -66,8 +66,6 @@ lock, so the unix conversations have their own spinlock.
 - Passing file descriptors (`SCM_RIGHTS`) and credentials (`SCM_CREDENTIALS`,
   `SO_PEERCRED`), and shared memory between processes: see `TODO.md`.
 - The Linux layer (`modules/linux/src/net.rs`) maps only `AF_INET`.
-- Waiting is polling (sleeps of 1 ms, or the busy wait the TCP reads use),
-  not a blocking kernel wait.
 
 ## Test
 

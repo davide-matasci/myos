@@ -280,7 +280,7 @@ unsafe extern "C" fn module_exit()   // optional: run by rmmod
 unsafe extern "C" fn module_rescan() // optional: probe for new devices after a /proc/pci rescan
 ```
 
-`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v16 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems; a backend's optional `mmap` hook maps device memory, `docs/fb.md`), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
+`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v17 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems; a backend's optional `mmap` hook maps device memory, `docs/fb.md`, and its `poll` hook reports readiness for `poll`), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
 
 ### Adding a module
 1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)
@@ -292,7 +292,7 @@ unsafe extern "C" fn module_rescan() // optional: probe for new devices after a 
 ## Userspace (Summary)
 
 ### Syscalls (append-only)
-`write`, `exit`, `open`, `read` (fd 0 = keyboard+serial), `close`, `exec`, `fork`, `wait`, `listdir`, `brk`, `pipe`, `dup2`, `stat`, `execname`, `dupfd`, `chdir`, `getcwd`, `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `readlink`, `mmap`, `munmap`, `mprotect`, `lseek`, …, and threads: `thread_spawn`, `thread_exit`, `wait_addr`, `wake_addr`, `gettid` (see `docs/threads.md`).
+`write`, `exit`, `open`, `read` (fd 0 = keyboard+serial), `close`, `exec`, `fork`, `wait`, `listdir`, `brk`, `pipe`, `dup2`, `stat`, `execname`, `dupfd`, `chdir`, `getcwd`, `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `readlink`, `mmap`, `munmap`, `mprotect`, `lseek`, `poll`, …, and threads: `thread_spawn`, `thread_exit`, `wait_addr`, `wake_addr`, `gettid` (see `docs/threads.md`).
 
 ### Init & Shell
 `user/init` = PID1: baked in, smoke-tests fork/`/ok`, forks `/netd`, forks `/u/getty` and `wait()`/respawns. Getty prompts `login: ` → execs `/u/login` → accepts `root`/empty → execs `/sh`. `/sh` = oksh 7.9 with PATH `/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc`. Editor: `vim` → `/bin/custom/vim` (FEAT_TINY; see `packages/vim/README.md`) and VCS: `git` → `/bin/custom/git` (Phase-1 local porcelain; see `packages/git/README.md`) are packages, `get-myos vim git` installs them. Framebuffer CSI includes scroll regions; `TIOCGWINSZ` reports FB cells; `TERMCAP=/lib/termcap` (`ports/termcap`) + termios raw mode for full-screen TUI.

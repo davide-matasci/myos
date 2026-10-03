@@ -249,6 +249,7 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         readlink: Some(ext2_readlink::<S>),
         release: None,
         mmap: None,
+        poll: None,
     }
 }
 
