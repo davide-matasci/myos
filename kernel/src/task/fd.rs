@@ -532,6 +532,8 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
         unsafe {
             core::ptr::copy_nonoverlapping((buf + total) as *const u8, tmp.as_mut_ptr(), chunk);
         }
+        // Bytes of this chunk a pipe took so far (a full ring takes part of it).
+        let mut done = 0usize;
         loop {
             match entry {
                 FdEntry::Console => {
@@ -576,7 +578,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                 }
                 FdEntry::PipeWrite(id) => {
                     let seq = wait_seq();
-                    let n = pipe::write(id, &tmp[..chunk]);
+                    let n = pipe::write(id, &tmp[done..chunk]);
                     if n == usize::MAX {
                         return if total == 0 { usize::MAX } else { total };
                     }
@@ -592,13 +594,13 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                         block_until(key_pipe(id), seq, 0);
                         continue;
                     }
-                    if n < chunk {
+                    done += n;
+                    total += n;
+                    if done < chunk {
                         // Partial: the rest goes in the next loop round once
                         // a reader drained the ring.
-                        total += n;
                         continue;
                     }
-                    total += n;
                     break;
                 }
                 FdEntry::PtyMaster(id) => {

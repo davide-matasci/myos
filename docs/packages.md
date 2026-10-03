@@ -14,9 +14,13 @@ get-myos [-r ROOT] [-m MIRROR] [-u] PACKAGE...
 ```
 
 - Downloads `<arch>-index.txt` from the mirror once (into
-  `ROOT/var/lib/get-myos/index`; `-u` refreshes it), then each package's
-  `<arch>-<name>.tar.gz`, checks its SHA-256 against the index and unpacks
-  it under `ROOT` (default `/tmp/pkg`, on the tmpfs).
+  `ROOT/var/lib/get-myos/index`; `-u` refreshes it), then streams each
+  package's `<arch>-<name>.tar.gz` from `curl` through gunzip and tar
+  straight into `ROOT` (default `/tmp/pkg`, on the tmpfs), checking the
+  SHA-256 of the stream against the index at the end (a mismatch leaves the
+  files unbound and the package not recorded). The tarball is never stored:
+  a tmpfs file holds at most 16 MiB and the riscv64 `os-test` package is
+  bigger than that.
 - Then **bind-mounts** the unpacked files where the image has them: a file
   under `bin/` by itself (`/tmp/pkg/bin/custom/vim` at `/bin/custom/vim`,
   since `/bin/custom` is a read-only tree with other programs in it),

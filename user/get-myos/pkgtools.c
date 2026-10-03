@@ -96,6 +96,42 @@ static int download_once(const char *url, const char *dest) {
     return 0;
 }
 
+int download_open(const char *url, int *pid) {
+    int fds[2];
+    if (pipe(fds) != 0) {
+        return -1;
+    }
+    pid_t child = fork();
+    if (child < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return -1;
+    }
+    if (child == 0) {
+        close(fds[0]);
+        dup2(fds[1], 1);
+        close(fds[1]);
+        /* `-o -`: libgloss reports fds 0-2 as a tty whatever they are, and
+         * curl refuses to write binary data to a terminal otherwise. */
+        char *argv[] = {"curl", "-fsSL", "--connect-timeout", "30", "--max-time", "900",
+                        "-o", "-", (char *)url, NULL};
+        execvp("curl", argv);
+        _exit(127);
+    }
+    close(fds[1]);
+    *pid = (int)child;
+    return fds[0];
+}
+
+int download_close(int fd, int pid) {
+    close(fd);
+    int status = 0;
+    if (waitpid((pid_t)pid, &status, 0) != (pid_t)pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 /* A transient connect failure should not fail the whole install. */
 int download(const char *url, const char *dest) {
     for (int attempt = 1;; attempt++) {
@@ -330,20 +366,27 @@ void tar_feed(tar *t, const uint8_t *p, size_t n) {
 
 /* ---- concatenated gzip streams ------------------------------------------ */
 
-/* Inflate the gzip members of the file at `path` one after the other. The
- * compressed bytes of member i go to in(i), the decompressed ones to out(i);
- * either may be NULL. Returns the number of members, or -1. */
+/* Inflate the gzip members of the file at `path` (or of `fd`, read to its
+ * end) one after the other. The compressed bytes of member i go to in(i),
+ * the decompressed ones to out(i); either may be NULL. Returns the number
+ * of members, or -1. */
 int gunzip_members(const char *path, void (*in)(void *ctx, int member, const uint8_t *p, size_t n),
-                          void (*out)(void *ctx, int member, const uint8_t *p, size_t n), void *ctx) {
+                   void (*out)(void *ctx, int member, const uint8_t *p, size_t n), void *ctx) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
         return -1;
     }
+    int members = gunzip_fd(fd, in, out, ctx);
+    close(fd);
+    return members;
+}
+
+int gunzip_fd(int fd, void (*in)(void *ctx, int member, const uint8_t *p, size_t n),
+                          void (*out)(void *ctx, int member, const uint8_t *p, size_t n), void *ctx) {
     static uint8_t ibuf[16384], obuf[32768];
     z_stream zs;
     memset(&zs, 0, sizeof zs);
     if (inflateInit2(&zs, 16 + MAX_WBITS) != Z_OK) {
-        close(fd);
         return -1;
     }
     int member = 0, rc = Z_OK, open_member = 0;
@@ -359,7 +402,6 @@ int gunzip_members(const char *path, void (*in)(void *ctx, int member, const uin
             rc = inflate(&zs, Z_NO_FLUSH);
             if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
                 inflateEnd(&zs);
-                close(fd);
                 return -1;
             }
             if (in != NULL) {
@@ -393,6 +435,5 @@ int gunzip_members(const char *path, void (*in)(void *ctx, int member, const uin
         }
     }
     inflateEnd(&zs);
-    close(fd);
     return n == 0 && !open_member ? member : -1;
 }
