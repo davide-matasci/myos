@@ -6,8 +6,12 @@ t urandom /bin/etc/urandom_smoke
 t tty /bin/etc/tty_smoke
 # /dev/fb0: geometry, a MAP_SHARED mapping that is the framebuffer itself
 # (shared with read/write and a forked child), and the console's graphics
-# mode, which a program exiting in it gives back (fb_smoke.c).
-t fb /bin/etc/fb_smoke
+# mode, which a program exiting in it gives back (fb_smoke.c). Only where the
+# guest has a framebuffer: the x86 boots (VGA); the CI boots of aarch64 and
+# riscv64 run without a display device (ramfb only in interactive boots).
+if [ -e /dev/fb0 ]; then
+	t fb /bin/etc/fb_smoke
+fi
 # netd listen/accept: the smoke announces TCP 2323; the host connects back
 # through QEMU's port forward (the HOST request runs host.sh tcp-ping),
 # sends "ping" and expects "pong"; the smoke then reports.

@@ -61,8 +61,11 @@ reports every exiting process to it.
 
 ## Test
 
-`user/c/fb_smoke.c` (`t fb` in `user/c/test.sh`, in the mini list on every
-arch): the geometry, a `MAP_SHARED` mapping that reads back through `read`
+`user/c/fb_smoke.c` (`t fb` in `user/c/test.sh`, in the mini list): the
+geometry, a `MAP_SHARED` mapping that reads back through `read`
 and sees what `write` put there, a forked child drawing into the same
 pixels, `KD_GRAPHICS`/`KD_TEXT`, and a child that exits in graphics mode
-handing the screen back.
+handing the screen back. It runs where the guest has a framebuffer: in CI
+that is the BIOS and UEFI boots (QEMU's VGA); the aarch64 and riscv64 CI
+boots have no display device (the launcher adds `ramfb` only to interactive
+boots), so there `/dev/fb0` does not exist and the test is left out.
