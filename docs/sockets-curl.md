@@ -18,10 +18,10 @@ sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.
 | `socket(AF_INET, SOCK_STREAM, …)` | open `/net/tcp/clone`, read conv id, open `ctl` + `data`; return **data fd** |
 | `socket(…, SOCK_DGRAM, …)` | same with `/net/udp` |
 | `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` to ctl; blocking waits for `connected`; **O_NONBLOCK** → `EINPROGRESS`, then `poll`/`select` **POLLOUT** (+ `SO_ERROR`) when netd reports Established |
-| `send`/`recv`/`read`/`write` | ordinary fd I/O on data; empty connected read blocks unless `O_NONBLOCK` (then EAGAIN); hangup → EOF |
+| `send`/`recv`/`read`/`write` | ordinary fd I/O on data; empty connected read blocks (in `SYS_POLL`) unless `O_NONBLOCK` (then EAGAIN); hangup → EOF |
 | `close` | hangup via ctl (`hangup`) then close data (hook from `_close`) |
 | `getaddrinfo` | DNS A lookup over `/net/udp` to QEMU DNS `10.0.2.3:53` (same as `user/lib/dns.rs`) |
-| `poll`/`select` | userspace busy-wait; **POLLOUT** only when `SOCK_CONNECTED` (or connect finished); **POLLIN** from netfs RX size / hangup (drain RX before hangup EOF); tty **POLLIN** is not always-ready (no FIONREAD) |
+| `poll`/`select` | the kernel's `SYS_POLL`: netfs's `poll` hook reports **POLLIN** for bytes, a hangup or an accept not yet taken, **POLLOUT** once "connected"; the library adds **POLLOUT** for a connected socket (no TX accounting), arms a listener's `accept` before waiting and finishes a connect (`myos_socket_poll_prepare` / `_done`) |
 
 A read of a UDP conversation's `data` returns one datagram (netfs keeps
 their boundaries; bytes beyond the reader's buffer are dropped, as in
@@ -66,6 +66,6 @@ server). Most `SO_*`/`TCP_*` are ignored. `AF_UNIX` stream sockets go over
 ### Known gaps
 
 - No IPv6; incomplete `getsockname` for TCP/UDP (returns INADDR_ANY)
-- poll/select: sockets use netfs RX size / hangup; regular files still always-ready; tty POLLIN is not (no FIONREAD — lynx interrupt-check must not block)
+- poll/select: a connected TCP socket always reports POLLOUT (netd keeps no TX window for the library to see)
 - curl still a large ELF (~0.6–1.2MB stripped); many protocols disabled but not a tiny client
 - Full QEMU smoke may not have been run on the builder box — rely on CI

@@ -519,6 +519,9 @@ fn open_ref_release(node: &Vnode) {
     if let Some(MountBackend::Module(ops)) = backend {
         if let Some(release) = ops.release {
             let _ = unsafe { (release)(rel.as_ptr(), rel.len()) };
+            // A peer that just went away (a socket's hangup) is news for
+            // pollers.
+            crate::task::wake_any();
         }
     }
 }
@@ -539,6 +542,19 @@ pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
     let rel = node.path_str();
     let phys = unsafe { mmap(rel.as_ptr(), rel.len(), offset) };
     (phys != 0 && phys % crate::user::PAGE as u64 == 0).then_some(phys)
+}
+
+/// The `poll` bits (`myos_abi::MYOS_POLL*`) that hold now for `node`, from
+/// its module's `poll` hook; `None` when the backend has none (a file that
+/// is always ready).
+pub fn poll(node: &Vnode) -> Option<u32> {
+    let backend = MOUNTS.lock().get(node.mount as usize)?.backend;
+    let MountBackend::Module(ops) = backend else {
+        return None;
+    };
+    let poll = ops.poll?;
+    let rel = node.path_str();
+    Some(unsafe { poll(rel.as_ptr(), rel.len()) })
 }
 
 /// Current size of the vnode path (for `O_APPEND`), if known.

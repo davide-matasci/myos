@@ -251,6 +251,12 @@ pub fn read_closed(id: usize) -> bool {
         .is_some_and(|p| p.write_closed)
 }
 
+/// Every reader closed: a write fails (`EPIPE`).
+pub fn readers_gone(id: usize) -> bool {
+    let pipes = PIPES.lock();
+    pipes.get(id).and_then(|s| s.as_ref()).is_some_and(|p| p.readers == 0)
+}
+
 pub fn write_would_block(id: usize) -> bool {
     let pipes = PIPES.lock();
     pipes

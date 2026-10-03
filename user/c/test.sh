@@ -12,6 +12,9 @@ t unix /bin/etc/unix_smoke
 # MAP_PRIVATE one that is a copy, and the screen handed to a program and back
 # by `text`, the last close of ctl and its holder's exit (fb_smoke.c).
 t fb /bin/etc/fb_smoke
+# poll: timeouts, waking on pipe and unix socket events (not before),
+# POLLHUP/POLLERR/POLLNVAL, EAGAIN, EINTR (poll_smoke.c).
+t poll /bin/etc/poll_smoke
 # netd listen/accept: the smoke announces TCP 2323; the host connects back
 # through QEMU's port forward (the HOST request runs host.sh tcp-ping),
 # sends "ping" and expects "pong"; the smoke then reports.

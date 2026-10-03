@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 16;
+pub const ABI_VERSION: u32 = 17;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
@@ -118,7 +118,21 @@ pub struct ModuleVfsOps {
     /// kernel maps it shared into every process that asks, never copies it
     /// on fork and never frees it.
     pub mmap: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, offset: usize) -> u64>,
+    // --- ABI 17: readiness ---
+    /// Optional: the `poll(2)` bits ([`MYOS_POLLIN`], [`MYOS_POLLOUT`],
+    /// [`MYOS_POLLERR`], [`MYOS_POLLHUP`]) that hold now for `path`, whatever
+    /// the caller asked for; without it a file is always readable and
+    /// writable. Must not block. When readiness changes other than through a
+    /// write or the last close of one of its files (both wake pollers), the
+    /// backend calls `KernelApi::wake_any`.
+    pub poll: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> u32>,
 }
+
+/// `poll(2)` bits (Linux values), for [`ModuleVfsOps::poll`].
+pub const MYOS_POLLIN: u32 = 0x1;
+pub const MYOS_POLLOUT: u32 = 0x4;
+pub const MYOS_POLLERR: u32 = 0x8;
+pub const MYOS_POLLHUP: u32 = 0x10;
 
 /// Module-provided block device (`KernelApi::blk_register`). Sector size is
 /// 512 bytes; `buf` lengths are whole sectors. `ctx` is the value given at
