@@ -14,17 +14,12 @@ on:
         description: Run full boot jobs
         type: boolean
         default: false
-      probe_latest_nightly:
-        description: Probe latest nightly (non-blocking)
-        type: boolean
-        default: false
-      force_sysroot:
-        description: Force sysroot rebuild
-        type: boolean
-        default: false
 
+# A newer run of the same kind on the same ref replaces the older one. The
+# kind is part of the group so the daily scheduled run never cancels a push
+# to master: that run publishes the packages and the ISO.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -40,18 +35,6 @@ defaults:
     shell: bash
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      sysroot: ${{ steps.filter.outputs.sysroot }}
-      c_userspace: ${{ steps.filter.outputs.c_userspace }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v4
-        id: filter
-        with:
-          filters: .github/path-filters.yml
-
   wire-myos:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -69,33 +52,20 @@ jobs:
           chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
           ./toolchain/std/check-wire.sh
 
-      - name: Probe latest nightly (informational)
-        if: github.event_name == 'workflow_dispatch' && inputs.probe_latest_nightly
-        continue-on-error: true
-        run: |
-          rustup toolchain install nightly --component rust-src
-          MYOS_NIGHTLY=nightly ./toolchain/std/check-wire.sh
-
   ports:
-    needs: [changes, wire-myos]
-    if: always() && !cancelled() && needs.wire-myos.result == 'success'
+    needs: wire-myos
     uses: ./.github/workflows/ci-ports.yml
-    with:
-      sysroot: ${{ needs.changes.outputs.sysroot }}
-      c_userspace: ${{ needs.changes.outputs.c_userspace }}
-      force_sysroot: ${{ github.event_name == 'workflow_dispatch' && inputs.force_sysroot }}
     secrets: inherit
 
   runtime:
-    needs: [ports, wire-myos, changes]
+    needs: [ports, wire-myos]
     if: always() && !cancelled() && needs.wire-myos.result == 'success' && needs.ports.result == 'success'
-    # contents: write for the publish job (the rolling `packages` release
-    # on pushes to master); a called workflow cannot have more than its caller.
+    # contents: write for the publish job (the rolling release on pushes to
+    # master); a called workflow cannot have more than its caller.
     permissions:
       contents: write
       packages: write
     uses: ./.github/workflows/ci-runtime.yml
     with:
       full_boot: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_boot) }}
-      sysroot_built: ${{ needs.changes.outputs.sysroot == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_sysroot) }}
     secrets: inherit

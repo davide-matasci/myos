@@ -44,7 +44,7 @@
 #error "no packages for this architecture"
 #endif
 
-#define DEFAULT_MIRROR "https://github.com/davide-matasci/myos/releases/download/packages"
+#define DEFAULT_MIRROR "https://github.com/davide-matasci/myos/releases/download/rolling"
 
 /* libgloss/myos mount(2): SYS_MOUNT; "bind" makes SOURCE visible at TARGET. */
 int mount(const char *source, const char *target, const char *fstype, ...);

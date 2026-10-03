@@ -31,7 +31,7 @@ get-myos [-r ROOT] [-m MIRROR] [-u] PACKAGE...
   and `/proc/mounts` lists the binds. A bind lasts until reboot; `get-myos`
   records what it installed under `ROOT/var/lib/get-myos/pkgs/`.
 - The mirror is `-m`, else `$MYOS_MIRROR`, else the project's rolling
-  GitHub release (`.../releases/download/packages`). Downloads go through
+  GitHub release (`.../releases/download/rolling`). Downloads go through
   `curl` (in every image, with the CA bundle).
 - `ROOT` can be anywhere writable (`-r /ext2/pkg` on the ext2 disk); only
   the binds are lost at reboot, running `get-myos` again re-binds without
@@ -73,12 +73,12 @@ names are what GitHub release assets allow.
 
 ## Publishing
 
-On a push to master, once the build, the boots and the ISO passed, the
-`publish` job of `ci-runtime.yml` uploads `target/packages/*` to the
-rolling GitHub release **`packages`** (a prerelease; `--clobber` replaces
-the files) and moves its tag to the published commit. That release is
-get-myos's default mirror
-(`https://github.com/davide-matasci/myos/releases/download/packages`).
+On master (a push, or the daily scheduled full boot), once the build, the
+boots and the ISO passed, the `publish` job of `ci-runtime.yml` uploads
+`target/packages/*` and `myos-x86_64.iso` to the rolling GitHub release
+**`rolling`** (a prerelease; `--clobber` replaces the files) and moves its
+tag to the published commit. That release is get-myos's default mirror
+(`https://github.com/davide-matasci/myos/releases/download/rolling`).
 
 The copyleft ports (git, lynx, GNU make, ...) are redistributed as
 binaries there: the tag names the commit they were built from, whose
@@ -89,5 +89,5 @@ binaries there: the tag names the commit they were built from, whose
 
 `packages/`: git, lua, lynx, make, os-test, vim, and ncurses (a build
 dependency of vim and lynx, nothing in the image). Everything a boot needs
-stays in `ports/` (and zlib, which get-myos links). The full boot installs
-them all; the ISO (`cargo run -- iso`) carries the image only.
+stays in `ports/` (and zlib, which get-myos links). The full test list
+installs them all; the ISO (`cargo run -- iso`) carries the image only.
