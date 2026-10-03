@@ -174,6 +174,9 @@ pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -
     if prefix.contains('/') {
         return false;
     }
+    if ops.readlink.is_some() {
+        MODULE_SYMLINKS.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
     let source = if source.is_empty() { "none" } else { source };
     let mut mounts = MOUNTS.lock();
     if let Some(m) = mounts.iter_mut().find(|m| m.prefix == prefix) {
@@ -576,9 +579,13 @@ pub fn rename(old: &str, new: &str) -> bool {
     backend_rename(idx_o, rel_o, rel_n)
 }
 
+/// A module filesystem that can hold symlinks (one with `readlink`, such
+/// as ext2) has been mounted.
+static MODULE_SYMLINKS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Whether path resolution has to look for symlinks.
 pub fn symlinks_possible() -> bool {
-    super::tmpfs::has_symlinks()
+    super::tmpfs::has_symlinks() || MODULE_SYMLINKS.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Create symlink at `linkpath` with contents `target`.
