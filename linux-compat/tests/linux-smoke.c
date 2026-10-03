@@ -320,6 +320,7 @@ int main(int argc, char **argv) {
     struct winsize ws;
     char link[64];
     ssize_t ln = readlink("/proc/self/fd/0", link, sizeof link - 1);
+    link[ln > 0 ? ln : 0] = '\0';
     check(isatty(0) == 1 && isatty(1) == 0, "isatty");
     check(tcgetattr(0, &t) == 0 && (t.c_lflag & ICANON) && t.c_cc[VINTR] == 3, "tcgetattr");
     check(ioctl(0, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0, "TIOCGWINSZ");
