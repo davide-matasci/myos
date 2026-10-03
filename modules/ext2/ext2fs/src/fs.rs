@@ -111,14 +111,28 @@ impl<D: Device> Fs<D> {
         Ok(())
     }
 
-    /// Run a public operation and flush what it changed, even if it failed
-    /// half way (what it did is consistent on disk).
+    /// Write every change to the device: what [`Fs::write`] left in the
+    /// cache, and the counts in the descriptors and the superblock.
+    pub fn sync(&mut self) -> Result<()> {
+        self.flush()
+    }
+
+    /// Run a public operation that changes the tree and flush what it
+    /// changed, even if it failed half way (what it did is consistent on
+    /// disk).
     fn op<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         let r = f(self);
         let flushed = self.flush();
         let v = r?;
         flushed?;
         Ok(v)
+    }
+
+    /// Run a public operation that reads, or only writes file data: it
+    /// stays in the cache until the next flush (a metadata change, `sync`,
+    /// an eviction or `unmount`).
+    fn run<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        f(self)
     }
 
     pub(crate) fn now(&mut self) -> u32 {
@@ -312,7 +326,7 @@ impl<D: Device> Fs<D> {
     // ---- the public operations --------------------------------------------
 
     pub fn stat(&mut self, path: &str) -> Result<Stat> {
-        self.op(|fs| {
+        self.run(|fs| {
             let ino = fs.resolve(path)?;
             let n = fs.inode(ino)?;
             Ok(Stat { kind: n.kind(), mode: n.mode, size: n.size, ino, links: n.links })
@@ -322,7 +336,7 @@ impl<D: Device> Fs<D> {
     /// Call `f` with each name in the directory `path` (not `.` and `..`)
     /// until it returns false.
     pub fn list(&mut self, path: &str, mut f: impl FnMut(&[u8]) -> bool) -> Result<()> {
-        self.op(|fs| {
+        self.run(|fs| {
             let dir = fs.inode_at_path(path)?;
             if !dir.is_dir() {
                 return Err(Error::NotDir);
@@ -333,7 +347,7 @@ impl<D: Device> Fs<D> {
 
     /// Read the file `path` at `pos` into `out`: the bytes read (0 at the end).
     pub fn read(&mut self, path: &str, pos: u64, out: &mut [u8]) -> Result<usize> {
-        self.op(|fs| {
+        self.run(|fs| {
             let node = fs.inode_at_path(path)?;
             match node.kind() {
                 Kind::Dir => Err(Error::IsDir),
@@ -346,7 +360,7 @@ impl<D: Device> Fs<D> {
     /// Write `buf` at `pos` of the file `path` (a gap before `pos` reads as
     /// zeros): the bytes written.
     pub fn write(&mut self, path: &str, pos: u64, buf: &[u8]) -> Result<usize> {
-        self.op(|fs| {
+        self.run(|fs| {
             let ino = fs.resolve(path)?;
             let mut node = fs.inode(ino)?;
             match node.kind() {
@@ -529,7 +543,7 @@ impl<D: Device> Fs<D> {
 
     /// The target of the symlink `path` into `buf`: its length.
     pub fn readlink(&mut self, path: &str, buf: &mut [u8]) -> Result<usize> {
-        self.op(|fs| {
+        self.run(|fs| {
             let node = fs.inode_at_path(path)?;
             if node.kind() != Kind::Symlink {
                 return Err(Error::Invalid);

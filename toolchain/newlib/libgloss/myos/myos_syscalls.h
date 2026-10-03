@@ -47,8 +47,9 @@ struct winsize;
 #define MYOS_SYS_SIGACTION 35
 #define MYOS_SYS_GETPID 36
 #define MYOS_SYS_SIGPROCMASK 37
-/* Readiness bits for a single fd (pipes): 1=readable, 2=writable, 4=hangup. */
-#define MYOS_SYS_POLLFD 38
+/* poll(fds, nfds, timeout_ms): the kernel scans struct pollfd and sleeps until
+ * the first one is ready (pollselect.c). */
+#define MYOS_SYS_POLL 38
 #define MYOS_SYS_SIGCHLD_TAKE 39
 #define MYOS_SYS_SIGCHLD_PENDING 41
 #define MYOS_SYS_PIPE_PEER 42
@@ -120,10 +121,21 @@ int myos_fd_path_resolve(int dirfd, const char *path, char *out, size_t outsz);
 void myos_socket_on_close(int fd);
 int myos_socket_empty_read(int fd);
 int myos_socket_fcntl(int fd, int cmd, int arg);
-int myos_socket_poll(int fd, short events, short *revents);
+int myos_socket_write_failed(int fd);
+/* poll() around the kernel call (pollselect.c): before it, a tracked socket
+ * sets what is ready already (*now) and what the kernel should wait for
+ * (*kevents), returning 0 (-1: not a socket); after it, done() turns the
+ * kernel's revents into the socket's. */
+int myos_socket_poll_prepare(int fd, short events, short *now, short *kevents);
+void myos_socket_poll_done(int fd, short events, short *revents);
+
+/* SYS_POLL (syscalls.c): count of ready fds, or -1 with errno (EINTR). */
+struct pollfd;
+int __myos_kpoll(struct pollfd *fds, unsigned long nfds, int timeout);
 
 
-/* Userspace O_NONBLOCK tracking for pipes (kernel pipes are always blocking). */
+/* Userspace O_NONBLOCK tracking (kernel reads always block): a nonblocking
+ * read first asks the kernel whether it would. */
 void myos_fd_nonblock_set(int fd, int on);
 int myos_fd_nonblock_get(int fd);
 void myos_fd_nonblock_clear(int fd);

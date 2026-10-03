@@ -1,5 +1,6 @@
 //! Console module: the framebuffer text screen (ANSI-capable, status-line
-//! colouring, block cursor), the local keyboards (PS/2 on x86_64,
+//! colouring, block cursor), `/dev/fb` for programs that draw on the screen
+//! themselves ([`fbdev`]), the local keyboards (PS/2 on x86_64,
 //! virtio-input on the `virt` boards) and the loadable keymap.
 //!
 //! Serial is the kernel's; this module paints what the kernel also sends to
@@ -10,6 +11,7 @@
 #![no_main]
 
 mod fb;
+mod fbdev;
 mod font;
 mod kbd;
 mod keymap;
@@ -60,6 +62,9 @@ unsafe extern "C" fn write_kind(buf: *const u8, len: usize, kind: u32) {
     if buf.is_null() || len == 0 {
         return;
     }
+    if fbdev::graphics() {
+        return;
+    }
     let bytes = unsafe { core::slice::from_raw_parts(buf, len) };
     let mut guard = FB.lock();
     let Some(w) = guard.as_mut() else {
@@ -92,6 +97,9 @@ unsafe extern "C" fn status_line(
         _ => fb::INFO,
     };
     let _ = CONSOLE_STATUS_INFO;
+    if fbdev::graphics() {
+        return;
+    }
     let mut guard = FB.lock();
     if let Some(w) = guard.as_mut() {
         w.put_status_line(text(tag, tag_len), color, text(label, label_len));
@@ -117,6 +125,9 @@ unsafe extern "C" fn winsize(rows: *mut u16, cols: *mut u16) -> i32 {
 /// Timer tick: toggle the block cursor. Non-blocking: if a paint holds the
 /// lock this phase is skipped and the next tick re-syncs.
 unsafe extern "C" fn blink() {
+    if fbdev::graphics() {
+        return;
+    }
     if let Some(mut guard) = FB.try_lock() {
         if let Some(w) = guard.as_mut() {
             w.blink_toggle();
@@ -175,7 +186,8 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
         *core::ptr::addr_of_mut!(API) = Some(api);
     }
     let mut info = FramebufferInfo::default();
-    if unsafe { (api.framebuffer_info)(&mut info) } == 0 && info.addr != 0 {
+    let screen = unsafe { (api.framebuffer_info)(&mut info) } == 0 && info.addr != 0;
+    if screen {
         let mut w = FrameBufferWriter::from_info(&info);
         // Cursor rendering only makes sense while the kernel mirrors bytes
         // to the screen (it stops above ~2 MiB of framebuffer, see there).
@@ -184,7 +196,11 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
         *FB.lock() = Some(w);
     }
     keyboard::init();
-    unsafe { (api.console_register)(&OPS) }
+    let rc = unsafe { (api.console_register)(&OPS) };
+    if screen && fbdev::mount(info) != 0 {
+        status_fail("console: /dev/fb");
+    }
+    rc
 }
 
 #[inline(never)]

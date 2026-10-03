@@ -96,7 +96,7 @@ beyond the above are **not** executed — scan-only.
 
 Tasks have a `Blocked` state. Every kernel wait — `wait`/`waitpid`, console
 `read`, pipe/FIFO/pty read/write/open, `sigsuspend`/`sigwait`, `nanosleep`,
-the Linux layer's `nanosleep`/`ppoll` — follows one pattern:
+`poll`, the Linux layer's `nanosleep`/`ppoll` — follows one pattern:
 
 ```
 loop {
@@ -112,11 +112,22 @@ Producers change state and call `task::wake(key)` (`key_pipe(id)`,
 target whatever it waits on (`wake_task`). `wake` bumps a global sequence
 under `TASKS`, and `block_until` refuses to block when the sequence moved,
 so a wake between the check and the block is never lost; spurious wakes are
-fine because every caller re-checks. `WAIT_ANY` waiters (`SYS_NANOSLEEP`
-with `SLEEP_ANY_EVENT`, the Linux `ppoll`) are woken by every wake and by
-`wake_any` after device/file writes and exits — that is what lets libgloss
-`poll`/`select` and `netd` sleep between scans instead of spinning on
-`gettimeofday`.
+fine because every caller re-checks. `WAIT_ANY` waiters (`SYS_POLL`,
+`SYS_NANOSLEEP` with `SLEEP_ANY_EVENT`, the Linux `ppoll`) are woken by
+every wake and by `wake_any` after device/file writes, the last close of a
+module file and exits — that is what lets `poll` and `netd` sleep instead of
+spinning on `gettimeofday`.
+
+`SYS_POLL` (`poll(fds, nfds, timeout_ms)`, `sys_poll`) scans a `struct
+pollfd` array with `task::fd_poll` and sleeps on `WAIT_ANY` until the first
+fd is ready, the timeout, or a signal. Readiness comes from each object:
+pipes and ptys (data, room, the peer gone), the console tty (committed
+input; its keyboard is polled, so a watched tty re-checks every 10 ms when
+one is present), regular files (always ready), and module files through
+the optional `ModuleVfsOps::poll` hook (ABI 17): netfs reports a socket's
+bytes, hangup, finished connect, queued accept and, for `/net/unix`, room
+in the peer's buffer. libgloss's `poll`/`select` are one call, and so is
+every blocking wait of its socket library (`pollselect.c`, `socket.c`).
 
 Deadlines use `time::monotonic_ns()` (x86: TSC calibrated against PIT
 channel 2 at boot; aarch64: `CNTVCT_EL0`; riscv64: `time` CSR). Each timer

@@ -3,6 +3,7 @@
 #include <_ansi.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <reent.h>
 #include <stddef.h>
 #include <string.h>
@@ -49,20 +50,45 @@ void myos_socket_on_close(int fd) { (void)fd; }
 int myos_socket_empty_read(int fd) __attribute__((weak));
 int myos_socket_empty_read(int fd) { (void)fd; return 0; }
 
+int myos_socket_write_failed(int fd) __attribute__((weak));
+int myos_socket_write_failed(int fd) { (void)fd; return 0; }
+
 int myos_socket_fcntl(int fd, int cmd, int arg) __attribute__((weak));
 int myos_socket_fcntl(int fd, int cmd, int arg) {
     (void)fd; (void)cmd; (void)arg;
     return -1;
 }
 
-int myos_socket_poll(int fd, short events, short *revents) __attribute__((weak));
-int myos_socket_poll(int fd, short events, short *revents) {
-    (void)fd; (void)events; (void)revents;
+int myos_socket_poll_prepare(int fd, short events, short *now, short *kevents)
+    __attribute__((weak));
+int myos_socket_poll_prepare(int fd, short events, short *now, short *kevents) {
+    (void)fd; (void)events; (void)now; (void)kevents;
     return -1;
 }
 
+void myos_socket_poll_done(int fd, short events, short *revents) __attribute__((weak));
+void myos_socket_poll_done(int fd, short events, short *revents) {
+    (void)fd; (void)events; (void)revents;
+}
 
-/* O_NONBLOCK is userspace-tracked for pipes: the kernel always blocks. Dropbear
+
+/* SYS_POLL. Here rather than in pollselect.c: _read uses it, and linking
+ * pollselect.o into every program would clash with a port's own select()
+ * (vim's myos_stubs.c). */
+int __myos_kpoll(struct pollfd *fds, unsigned long nfds, int timeout) {
+    long ret = myos_syscall3(MYOS_SYS_POLL, (long)(uintptr_t)fds, (long)nfds, (long)timeout);
+    if (ret == (long)MYOS_EINTR) {
+        errno = EINTR;
+        return -1;
+    }
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (int)ret;
+}
+
+/* O_NONBLOCK is userspace-tracked: kernel reads always block. Dropbear
  * setnonblocking(signal_pipe) then drains with `while (read > 0)` — without
  * EAGAIN on empty, a forced-POLLIN wake hangs the session forever and the SSH
  * client never receives exit-status. */
@@ -180,11 +206,9 @@ int _open(const char *path, int flags, ...) {
     if (flags & O_NONBLOCK) {
         /* Only FIFOs get userspace O_NONBLOCK reads from open(): other paths
          * (ttys, ptys, files) keep their historical blocking behaviour
-         * that dropbear/curl rely on; fcntl(F_SETFL) still sets it anywhere.
-         * POLLFD succeeds only on pipe ends (a named FIFO opens as one), so
-         * regular files cost no extra lookup (dropbear opens authorized_keys
-         * O_RDONLY|O_NONBLOCK on every pubkey auth). */
-        if (myos_syscall1(MYOS_SYS_POLLFD, ret) != (long)MYOS_SYSERR) {
+         * that dropbear/curl rely on; fcntl(F_SETFL) still sets it anywhere. */
+        struct stat st;
+        if (myos_stat_path(path, &st) == 0 && S_ISFIFO(st.st_mode)) {
             myos_fd_nonblock_set((int)ret, 1);
         }
     }
@@ -194,11 +218,11 @@ int _open(const char *path, int flags, ...) {
 
 int _read(int fd, void *buf, size_t cnt) {
 
-    /* Pipes: POLLFD returns readiness (SYSERR = not a pipe). Honour O_NONBLOCK
-     * before the blocking SYS_READ so dropbear's signal-pipe drain cannot hang. */
+    /* Honour O_NONBLOCK before the blocking SYS_READ (dropbear's signal-pipe
+     * drain must not hang): ask the kernel whether the read would block. */
     if (myos_fd_nonblock_get(fd)) {
-        long bits = myos_syscall1(MYOS_SYS_POLLFD, fd);
-        if (bits != (long)MYOS_SYSERR && (bits & 1) == 0 && (bits & 4) == 0) {
+        struct pollfd p = {fd, POLLIN, 0};
+        if (__myos_kpoll(&p, 1, 0) == 0) {
             errno = EAGAIN;
             return -1;
         }
@@ -231,6 +255,10 @@ int _read(int fd, void *buf, size_t cnt) {
             if (kind == 3) {
                 continue; /* blocking wait finished; retry syscall */
             }
+            if (kind == 4) {
+                errno = EINTR; /* a caught signal ended the wait */
+                return -1;
+            }
         }
         return (int)ret;
     }
@@ -239,20 +267,39 @@ int _read(int fd, void *buf, size_t cnt) {
 int _write(int fd, const void *buf, size_t cnt) {
     long ret;
 
-    ret = myos_syscall3(MYOS_SYS_WRITE, fd, (long)(uintptr_t)buf, (long)cnt);
-    if (ret == (long)MYOS_EINTR) {
-        errno = EINTR; /* a caught signal interrupted a blocked write */
-        return -1;
+    for (;;) {
+        ret = myos_syscall3(MYOS_SYS_WRITE, fd, (long)(uintptr_t)buf, (long)cnt);
+        if (ret == (long)MYOS_EINTR) {
+            errno = EINTR; /* a caught signal interrupted a blocked write */
+            return -1;
+        }
+        if (ret == (long)MYOS_EIO) {
+            errno = EIO; /* pty peer gone */
+            return -1;
+        }
+        if (ret == (long)MYOS_SYSERR) {
+            /* /net/unix data refuses a write when the peer's buffer is full. */
+            switch (myos_socket_write_failed(fd)) {
+            case 1:
+                errno = EAGAIN;
+                return -1;
+            case 2:
+                errno = EPIPE;
+                return -1;
+            case 3:
+                continue; /* waited for the reader; retry */
+            case 4:
+                errno = ENOTCONN;
+                return -1;
+            case 5:
+                errno = EINTR; /* a caught signal ended the wait */
+                return -1;
+            }
+            myos_set_errno_io();
+            return -1;
+        }
+        return (int)ret;
     }
-    if (ret == (long)MYOS_EIO) {
-        errno = EIO; /* pty peer gone */
-        return -1;
-    }
-    if (ret == (long)MYOS_SYSERR) {
-        myos_set_errno_io();
-        return -1;
-    }
-    return (int)ret;
 }
 
 int _isatty(int fd) {

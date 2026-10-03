@@ -330,6 +330,72 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
     })
 }
 
+/// `poll(2)` bits (Linux values).
+pub const POLLIN: u16 = 0x1;
+pub const POLLOUT: u16 = 0x4;
+pub const POLLERR: u16 = 0x8;
+pub const POLLHUP: u16 = 0x10;
+pub const POLLNVAL: u16 = 0x20;
+
+/// Readiness of `fd` for `poll(2)`: the bits that hold now, whatever the
+/// caller asked for, and whether `fd` is the console tty (whose keyboard
+/// input is polled, not interrupt-driven: a waiter re-checks it).
+pub fn fd_poll(fd: usize) -> (u16, bool) {
+    let Some(entry) = with_process_mut(|t| t.fds.get(fd).copied()) else {
+        return (POLLNVAL, false);
+    };
+    let tty = || {
+        let readable = if crate::input::readable() { POLLIN } else { 0 };
+        (readable | POLLOUT, true)
+    };
+    match entry {
+        FdEntry::Empty => (POLLNVAL, false),
+        FdEntry::Stdin | FdEntry::Console => tty(),
+        FdEntry::File(_) if fd_is_console_tty(entry) => tty(),
+        FdEntry::PipeRead(id) => {
+            let mut bits = if pipe::read_would_block(id) { 0 } else { POLLIN };
+            if pipe::read_closed(id) {
+                // Writers gone: end of file is readable.
+                bits |= POLLIN | POLLHUP;
+            }
+            (bits, false)
+        }
+        FdEntry::PipeWrite(id) => {
+            if pipe::readers_gone(id) {
+                (POLLERR, false)
+            } else if pipe::write_would_block(id) {
+                (0, false)
+            } else {
+                (POLLOUT, false)
+            }
+        }
+        FdEntry::PtyMaster(id) | FdEntry::PtySlave(id) => {
+            let master = matches!(entry, FdEntry::PtyMaster(_));
+            let (readable, writable, hup) = crate::pty::poll_state(id, master);
+            let mut bits = 0;
+            if readable {
+                bits |= POLLIN;
+            }
+            if writable {
+                bits |= POLLOUT;
+            }
+            if hup {
+                // The peer is gone: reads report it (EIO / end of file).
+                bits |= POLLIN | POLLHUP;
+            }
+            (bits, false)
+        }
+        FdEntry::File(id) => {
+            // A module file (a socket's /net data) knows its readiness; any
+            // other file is always readable and writable.
+            let bits = open_file_node(id)
+                .and_then(|node| crate::fs::poll(&node))
+                .map_or(POLLIN | POLLOUT, |b| b as u16);
+            (bits, false)
+        }
+    }
+}
+
 /// Peer fd of a pipe end in the current task (read<->write), or None.
 /// Legacy `PIPE_PEER` syscall (the old libgloss SIGCHLD self-pipe wake).
 pub fn fd_pipe_peer(fd: usize) -> Option<usize> {
@@ -496,30 +562,11 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 let mut tmp = [0u8; FILE_IO_TMP];
                 let want = len.min(tmp.len());
                 let n = crate::fs::read(&node, pos, &mut tmp[..want]);
-                let aspace = current_aspace();
-                let copied = with_process_mut(|t| {
-                    if t.fds.get(fd).copied() != Some(FdEntry::File(id)) {
-                        return false;
-                    }
-                    if n != 0 {
-                        if !user_buf_ok(
-                            buf,
-                            n,
-                            t.user_base as usize,
-                            t.image_span,
-                            t.stack_off as usize,
-                            t.brk_cur as usize,
-                            &t.mmap,
-                        ) {
-                            return false;
-                        }
-                        if !user::copy_to_user(aspace, buf, &tmp[..n]) {
-                            return false;
-                        }
-                    }
-                    true
-                });
-                if !copied {
+                // Not under TASKS: the copy may page in the buffer.
+                if n != 0 && !user::copy_to_user(current_aspace(), buf, &tmp[..n]) {
+                    return usize::MAX;
+                }
+                if with_process_mut(|t| t.fds.get(fd).copied()) != Some(FdEntry::File(id)) {
                     return usize::MAX;
                 }
                 open_file_advance(id, n);
@@ -613,8 +660,8 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
             return if total == 0 { usize::MAX } else { total };
         }
         let mut tmp = [0u8; FILE_IO_TMP];
-        unsafe {
-            core::ptr::copy_nonoverlapping((buf + total) as *const u8, tmp.as_mut_ptr(), chunk);
+        if !user::copy_from_user(current_aspace(), buf + total, &mut tmp[..chunk]) {
+            return if total == 0 { usize::MAX } else { total };
         }
         // Bytes of this chunk a pipe took so far (a full ring takes part of it).
         let mut done = 0usize;

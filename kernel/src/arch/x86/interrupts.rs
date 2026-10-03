@@ -386,6 +386,18 @@ extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, code: u
 }
 
 extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFaultErrorCode) {
+    // A user mmap page not touched yet (from userspace, or a kernel copy of
+    // a user buffer): page it in and retry the access.
+    let access = if code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) {
+        crate::user::Access::Exec
+    } else if code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+        crate::user::Access::Write
+    } else {
+        crate::user::Access::Read
+    };
+    if !code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) && crate::user::fault_in(read_cr2() as usize, access) {
+        return;
+    }
     super::exception::x86_page_fault(
         read_cr2(),
         frame.instruction_pointer.as_u64(),
