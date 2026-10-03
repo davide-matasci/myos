@@ -254,8 +254,15 @@ ones) from `/lib`, `/usr/local/lib`, `/usr/lib` with `open`, `read`,
 `pread64` and `mmap` of the file, and maps each segment over the span it
 reserved first. That needed core `mmap` work, which native programs share:
 
-- file-backed `MAP_PRIVATE` mappings (the pages are a copy of the file,
-  filled at map time; `MAP_SHARED` file mappings are refused);
+- file-backed `MAP_PRIVATE` mappings (the pages are a private copy of the
+  file, never written back; `MAP_SHARED` file mappings are refused);
+- demand paging: a mapping takes no memory until it is used. The first
+  touch of a page, a page fault from userspace or a kernel copy into a user
+  buffer, gives it a frame, zeroed or read from the file
+  (`user::fault_in`). rustc reserves 256 MiB for its allocator and maps
+  some 250 MiB of libraries, and `rustc --version` touches about 30 MiB of
+  it. A file changed or deleted while mapped gives its new contents (or
+  zeros) to the pages not touched yet;
 - `MAP_FIXED` replaces whatever is mapped in its range;
 - `munmap` of any range in the `mmap` window (holes included) and
   `mprotect` of part of a mapping split the mapping;
@@ -310,8 +317,10 @@ the kernel does not keep a per-task copy at syscall entry.
     do not count;
   - a per-process `mmap` window of 128 MiB (x86_64) / 64 MiB (aarch64,
     riscv64) with at most 256 mappings; adjacent mappings with the same
-    protection are merged (musl's malloc makes hundreds of small
-    neighbouring ones: jq peaks at 188);
+    protection and backing are merged (musl's malloc makes hundreds of
+    small neighbouring ones: jq peaks at 188). At most 64 distinct files
+    are mapped at once; a file mapping past that is read in whole when it
+    is made;
   - a 16 MiB `brk` heap;
   - 64 fds per process, 64 tasks in total;
   - `/tmp` (tmpfs) files of at most 16 MiB each, all of them in the

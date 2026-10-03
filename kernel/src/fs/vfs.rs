@@ -68,6 +68,7 @@ impl Vnode {
     /// As long as a tmpfs path: deep trees (gcc's plugin headers) on a
     /// mounted disk need more than 96.
     pub const PATH_CAP: usize = 255;
+    pub const EMPTY: Vnode = Vnode { mount: 0, path_len: 0, path: [0; Vnode::PATH_CAP] };
 
     pub fn path_str(&self) -> &str {
         core::str::from_utf8(&self.path[..self.path_len as usize]).unwrap_or("")
