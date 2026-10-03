@@ -174,8 +174,8 @@ forms of the legacy calls). The set:
 
 Files: `read`, `write`, `readv`, `writev`, `open`, `openat`, `close`, `stat`,
 `lstat`, `fstat`, `newfstatat`, `lseek`, `getdents64`, `ioctl`, `access`,
-`faccessat`, `pipe`, `pipe2`, `dup`, `dup2`, `dup3`, `fcntl` (dup; flags are
-no-ops), `getcwd`, `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`,
+`faccessat`, `pipe`, `pipe2`, `dup`, `dup2`, `dup3`, `fcntl` (dup;
+`O_NONBLOCK` on sockets, other flags are no-ops), `getcwd`, `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`,
 `rename(at/at2)`, `symlink(at)`, `readlink(at)`, `poll`, `umask`.
 
 Memory: `brk`, `mmap` (anonymous, and private file mappings), `munmap`,
@@ -205,10 +205,31 @@ Signals: `rt_sigaction` (handlers with `SA_SIGINFO`, `SA_RESTART`,
 alternate stacks). Signal numbers and masks are translated between Linux and
 the native (newlib) numbering, also in `wait4` statuses.
 
+Sockets: `socket` (`AF_INET` stream and datagram), `connect`, `sendto`,
+`recvfrom`, `sendmsg`, `recvmsg`, `shutdown`, `getsockname`, `getpeername`,
+`getsockopt` (`SO_ERROR`, `SO_TYPE`), `setsockopt` and `bind` (accepted,
+ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
+too. See Sockets below.
+
 Time and misc: `clock_gettime`, `gettimeofday`, `time`, `nanosleep`,
 `clock_nanosleep`, `getrandom`; `poll` (x86_64) and `ppoll`.
 
 Anything else returns `ENOSYS`.
+
+## Sockets
+
+A Linux socket is a conversation of the native `/net` (`docs/sockets-curl.md`;
+`modules/linux/src/net.rs`), whose fd is the conversation's `data` file:
+reads, writes, `dup`, `fork` and `close` are ordinary fd operations, and the
+last close hangs the conversation up. `socket` reads `/net/{tcp,udp}/clone`,
+`connect` writes `connect a.b.c.d!port` to its `ctl`, and readiness comes from
+its `status` and the bytes waiting in `data`. The `/net` files never block,
+so a blocking read or connect sleeps until netd's next reply wakes the
+pollers (a write retries while netd's request ring is full). A datagram
+socket sends to the last address it was given, and reads one datagram at a
+time. A chrooted process reaches `/net` through the bind `linux --root` sets
+up, and `get-alpine` gives a new root an `/etc/resolv.conf` naming the
+resolver the system uses (QEMU's `10.0.2.3`) for musl.
 
 ## Dynamic linking
 
@@ -274,8 +295,12 @@ the kernel does not keep a per-task copy at syscall entry.
 - Threads run on their process's home CPU, interleaved, not in parallel
   (`docs/threads.md`).
 - No `posix_spawn` (`clone` with `CLONE_VM` but not `CLONE_THREAD`), no
-  shared file mappings (`MAP_SHARED`), no sockets, no `O_CLOEXEC` /
-  `O_NONBLOCK` semantics.
+  shared file mappings (`MAP_SHARED`), no `O_CLOEXEC` and no `O_NONBLOCK`
+  outside sockets.
+- Sockets: IPv4 clients only (no `listen`/`accept`, no IPv6, no Unix
+  sockets or `socketpair`); no half-close (`shutdown` hangs up only for
+  `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are
+  ignored.
 - The native limits apply:
   - exec: up to 1024 arguments and 1024 environment strings, at most
     128 KiB together; a program file of at most 16 MiB from a writable
@@ -283,7 +308,7 @@ the kernel does not keep a per-task copy at syscall entry.
     most 1152 pages (4.5 MiB). Shared objects are mapped with `mmap` and
     do not count;
   - a per-process `mmap` window of 128 MiB (x86_64) / 64 MiB (aarch64,
-    riscv64) with at most 64 mappings; adjacent mappings with the same
+    riscv64) with at most 256 mappings; adjacent mappings with the same
     protection are merged (musl's malloc makes hundreds of small
     neighbouring ones: jq peaks at 188);
   - a 16 MiB `brk` heap;
@@ -305,12 +330,15 @@ shared data, a relocated function pointer and a thread-local in
 `libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`).
 The test is plain musl C, so it can also be run on a Linux host for
 reference. It then runs
-`get-alpine jq && linux --root /tmp/alpine jq -nr '"ALPINE-JQ \(1+2+3)"'` and
+`get-alpine jq && linux --root /tmp/alpine jq -Rrn '...' /proc/mounts`,
+which counts the binds of `/dev`, `/proc` and `/net` it sees in the root and
 expects `ALPINE-JQ 6`, then installs Python into the same root (python3 and
 its 19 dependencies, ~45 MB) and runs
 `python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])'`
-(the standard library and two C extension modules), expecting `PYTHON 42`.
-Both need the Alpine mirror to be reachable.
+(the standard library and two C extension modules), expecting `PYTHON 42`,
+and fetches `http://example.com/` with `urllib` (DNS over UDP, then TCP),
+expecting `HTTP 200`. They need the Alpine mirror and `example.com` to be
+reachable.
 
 Without the feature (boot-mini, the normal PR CI), the harness instead
 runs `insmod /lib/modules/linux; cat /proc/modules` and expects `[ OK ]

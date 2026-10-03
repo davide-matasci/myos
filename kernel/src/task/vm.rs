@@ -36,21 +36,21 @@ fn carve(mmap: &mut [MmapRegion; MAX_MMAP_REGIONS], lo: usize, hi: usize) -> Opt
     let mut out = [EMPTY_MMAP_REGION; MAX_MMAP_REGIONS];
     let mut n = 0;
     let mut removed = alloc::vec::Vec::new();
+    let mut keep = |r: MmapRegion| -> Option<()> {
+        *out.get_mut(n)? = r;
+        n += 1;
+        Some(())
+    };
     for r in mmap.iter().filter(|r| r.pages != 0) {
         let (rlo, rhi) = (r.va as usize, region_end(r));
         if rhi <= lo || rlo >= hi {
-            out[n] = *r;
-            n += 1;
+            keep(*r)?;
             continue;
         }
         removed.push((rlo.max(lo), rhi.min(hi), r.prot));
         for (a, b) in [(rlo, lo), (hi, rhi)] {
             if a < b {
-                if n == MAX_MMAP_REGIONS {
-                    return None;
-                }
-                out[n] = MmapRegion { va: a as u64, pages: ((b - a) / page) as u32, prot: r.prot };
-                n += 1;
+                keep(MmapRegion { va: a as u64, pages: ((b - a) / page) as u32, prot: r.prot })?;
             }
         }
     }

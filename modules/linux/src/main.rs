@@ -29,6 +29,7 @@ mod abi;
 mod files;
 mod k;
 mod lock;
+mod net;
 mod signal;
 mod sys;
 mod thread;

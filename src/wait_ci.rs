@@ -130,6 +130,9 @@ const CMD_GET_ALPINE: &[u8] =
 // standard library, and the json and sqlite3 C extension modules.
 const CMD_PYTHON: &[u8] =
     b"get-alpine python3 && linux --root /tmp/alpine python3 -c 'import json,sqlite3;print(\"PYTHON\",json.loads(\"[42]\")[0])'\n";
+// ... and its sockets: DNS (musl over UDP) and an HTTP GET (TCP).
+const CMD_PYTHON_NET: &[u8] =
+    b"linux --root /tmp/alpine python3 -c 'import urllib.request as u;print(\"HTTP\",u.urlopen(\"http://example.com/\").status)'\n";
 // pty boot-CI smoke (openpty/forkpty, echo round-trip, EIO on session end).
 // Package install smoke (full boot only): get-myos fetches make from the
 // mirror the launcher serves (this build's own packages), binds its files
@@ -498,6 +501,7 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         cmds.push(CMD_LINUX_DYN);
         cmds.push(CMD_GET_ALPINE);
         cmds.push(CMD_PYTHON);
+        cmds.push(CMD_PYTHON_NET);
     } else {
         cmds.push(CMD_INSMOD_LINUX);
     }
@@ -1291,6 +1295,9 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         }
         i if cmds[i] == CMD_PYTHON => {
             interactive_tail(serial).contains("\nPYTHON 42") && at_interactive_prompt(serial)
+        }
+        i if cmds[i] == CMD_PYTHON_NET => {
+            interactive_tail(serial).contains("\nHTTP 200") && at_interactive_prompt(serial)
         }
         i if cmds[i] == CMD_DROPBEAR_STOP => {
             command_echoed(serial, "kill $(cat /tmp/dropbear.pid) 2>/dev/null; echo DROPBEAR-STOP")

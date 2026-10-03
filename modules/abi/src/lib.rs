@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 14;
+pub const ABI_VERSION: u32 = 15;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
@@ -571,6 +571,13 @@ pub struct KernelApi {
     /// its registers mapped: 0 and `*out` filled, or -1 (no such node, or no
     /// device tree on this arch).
     pub dt_mmio_find: unsafe extern "C" fn(compatible: StrRef, index: usize, out: *mut MmioDevice) -> i32,
+    // --- ABI 15: VFS paths without an fd (the Linux layer's sockets) ---
+    /// Read up to `cap` bytes at `pos` of the file at VFS `path` (a real
+    /// path, as `vfs_stat`'s) into kernel `buf`: bytes read, or negative.
+    pub vfs_read: unsafe extern "C" fn(path: StrRef, pos: usize, buf: *mut u8, cap: usize) -> i32,
+    /// Write kernel `buf` at `pos` of the file at VFS `path`: bytes
+    /// written, or negative.
+    pub vfs_write: unsafe extern "C" fn(path: StrRef, pos: usize, buf: *const u8, len: usize) -> i32,
 }
 
 /// A memory-mapped device from the device tree (`KernelApi::dt_mmio_find`).
