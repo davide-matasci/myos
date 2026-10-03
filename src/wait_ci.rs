@@ -138,8 +138,10 @@ const CMD_PYTHON_NET: &[u8] =
 // onto it ...
 const CMD_EXT2_DISK: &[u8] =
     b"mkfs.ext2 /dev/nvme1n1&&mount /dev/nvme1n1 /disk ext2&&cp -r /bin/sbase /disk/s&&echo EXT2-DISK-OK\n";
-// ... rename it, and run one of them through a symlink ...
-const CMD_EXT2_LINK: &[u8] = b"mv /disk/s /disk/t&&ln -s t/ls /disk/l&&/disk/l -d /disk/t&&echo EXT2-LINK-OK\n";
+// ... rename it, run one of them from the disk, and read it through a
+// symlink ...
+const CMD_EXT2_LINK: &[u8] =
+    b"mv /disk/s /disk/t&&/disk/t/ls -d /disk/t&&ln -s t/ls /disk/l&&readlink /disk/l&&cmp /disk/l /disk/t/ls&&echo EXT2-LINK-OK\n";
 // ... then a file past the direct and single-indirect blocks, compared with
 // its source, and remove the directory. The launcher checks the disk with
 // `e2fsck -fn` after the boot.
