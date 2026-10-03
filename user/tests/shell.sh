@@ -82,6 +82,8 @@ heap_smoke() {
 			contains "[ OK ] $n" $OUT/heap.log || { echo "missing: [ OK ] $n"; return 1; }
 		done
 	fi
-	! grep -q FAIL $OUT/heap.log
+	# heap's own failure lines ("threads FAIL", "fpu FAIL: ..."); a path
+	# such as EAI_FAIL.c in a listing is not one.
+	! grep -q -E "(^| )FAIL" $OUT/heap.log
 }
 t heap heap_smoke

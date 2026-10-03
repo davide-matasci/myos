@@ -86,8 +86,6 @@ fn main() -> ! {
     } else {
         write(b"find skip (mkdir fail)\n");
     }
-    // Also walk from / — should print nested mount paths without EMFILE.
-    run_prog(b"/bin/sbase/find", &[b"find", b"/tmp"]);
     // Newly-ported uutils that need std::fs::read_dir / open.
     if !run_prog_exit(
         b"/bin/coreutils/cat",

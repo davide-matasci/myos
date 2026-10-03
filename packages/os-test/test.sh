@@ -11,13 +11,15 @@ ostest_report() {
 	grep -e "^pass_rate=" -e "^F " -e "^C " -e "=== os-test" /tmp/o/report.log
 	rate=$(grep "^pass_rate=" /tmp/o/report.log | head -n 1)
 	[ -n "$rate" ] || { echo "no pass_rate line"; return 1; }
-	pt=${rate#*(}
-	pt=${pt%)*}
+	# "pass_rate=NN% (P/T)": every test passed when P = T (sed, not ${rate#*(}:
+	# oksh reads the parenthesis in a pattern as an unclosed group).
+	pt=$(echo "$rate" | sed 's/.*(\(.*\)).*/\1/')
 	[ "${pt%/*}" = "${pt#*/}" ] && [ "${pt#*/}" -gt 0 ]
 }
-# setpwent (basic/pwd): a non-empty .out is a compile error or a bad exit.
+# setpwent (basic/pwd): the runner writes the test's .out; a non-empty one is
+# a compile error or a bad exit (the prebuilt tests have no .err).
 ostest_setpwent() {
-	[ -f /tmp/o/out/basic/pwd/setpwent.err ] && [ ! -s /tmp/o/out/basic/pwd/setpwent.out ]
+	[ -f /tmp/o/out/basic/pwd/setpwent.out ] && [ ! -s /tmp/o/out/basic/pwd/setpwent.out ]
 }
 t os_test ostest_report
 t os_test_setpwent ostest_setpwent
