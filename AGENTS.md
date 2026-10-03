@@ -86,7 +86,8 @@ cargo test -p ps2-scancode -p ext2fs      # host unit tests (ext2fs needs e2fspr
   locally, CI does the rest.
 - New behavior gets a test: a function and a `t` line in a section of
   `user/tests/`, a port's `test.sh` (`PORT_TEST` in its `port.env`; a
-  package's test runs in the full mode after the install), a smoke program
+  package's test runs in the full mode after the install; `host.sh` with
+  `PORT_HOST` when the test needs a peer on the host), a smoke program
   under `user/c`, or an os-test in the curated lists
   (`packages/os-test/overlay/misc/*.tests`). A test's output is shown only
   when it fails: keep passing tests quiet.

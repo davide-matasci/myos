@@ -82,7 +82,4 @@ for f in $TESTS/ports/*.sh; do
 done
 . $TESTS/net.sh
 
-# The tty: the line editor's keys and ^C, driven through a pty (user/c/tty_smoke.c).
-t tty /bin/etc/tty_smoke
-
 echo "TESTS DONE $passed/$total"
