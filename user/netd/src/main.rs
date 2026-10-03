@@ -106,6 +106,8 @@ struct Conv {
     connected: bool,
     /// Peer closed (or socket inactive); status hangup already sent once.
     hungup: bool,
+    /// DEBUG: bytes sent to netfs as REP_DATA.
+    rx_total: u32,
     /// REQ_SEND payload deferred when the smoltcp socket could not accept it.
     /// Without this, netfs already reported write success and the bytes vanish.
     pending_len: u16,
@@ -154,6 +156,7 @@ impl Conv {
         seq: 0,
         connected: false,
         hungup: false,
+        rx_total: 0,
         pending_len: 0,
         pending: [0; MSG_CAP],
         listen_port: 0,
@@ -750,6 +753,7 @@ fn drain_tcp_rx_into_rep(
         match s.recv_slice(&mut tmp[..room]) {
             Ok(n) if n > 0 => {
                 convs[i].rx_room -= n as u16;
+                convs[i].rx_total += n as u32;
                 reply(chan, REP_DATA, i as u16, 0, &tmp[..n]);
             }
             _ => break,
@@ -1142,6 +1146,7 @@ fn pump_sockets(
                     if let Ok(n) = s.recv_slice(&mut tmp[..room]) {
                         if n != 0 {
                             convs[i].rx_room -= n as u16;
+                            convs[i].rx_total += n as u32;
                             reply(chan, REP_DATA, conv, 0, &tmp[..n]);
                         }
                     }
@@ -1154,13 +1159,13 @@ fn pump_sockets(
                     && !s.can_recv()
                     && (!s.is_active() || !s.may_recv())
                 {
-                    if !s.is_active() {
-                        // DEBUG (not for merge): a hangup without a FIN.
+                    {
+                        // DEBUG (not for merge): every tcp hangup.
                         let line = alloc::format!(
-                            "\nnetd-dbg hup conv {} state {} fin {:?} rx_room {}\n",
+                            "\nnetd-dbg hup conv {} state {} total {} rx_room {}\n",
                             conv,
                             s.state(),
-                            s.may_recv(),
+                            convs[i].rx_total,
                             convs[i].rx_room
                         );
                         let _ = write_fd(1, line.as_bytes());

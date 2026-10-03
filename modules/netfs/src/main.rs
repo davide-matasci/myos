@@ -132,6 +132,10 @@ struct Conv {
     /// `taken <seq>` ([`NO_SEQ`] before any); a newer "accepted ... <seq>"
     /// status is a connection to accept (`poll`).
     taken: u32,
+    /// DEBUG: bytes netd delivered / readers took; EOF logged once.
+    got: u32,
+    took: u32,
+    eof_logged: bool,
 }
 
 /// [`Conv::taken`] before the first `taken`.
@@ -149,6 +153,9 @@ impl Conv {
         status_len: 0,
         status: [0; STATUS_CAP],
         taken: NO_SEQ,
+        got: 0,
+        took: 0,
+        eof_logged: false,
     };
 }
 
@@ -429,6 +436,9 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 status_len: 0,
                 status: [0; STATUS_CAP],
                 taken: NO_SEQ,
+        got: 0,
+        took: 0,
+        eof_logged: false,
             };
             return Some(i as u16);
         }
@@ -454,6 +464,9 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 status_len: 0,
                 status: [0; STATUS_CAP],
                 taken: NO_SEQ,
+        got: 0,
+        took: 0,
+        eof_logged: false,
             };
             return Some(i as u16);
         }
@@ -571,6 +584,9 @@ fn apply_reply(buf: &[u8]) {
                 status_len: 0,
                 status: [0; STATUS_CAP],
                 taken: NO_SEQ,
+        got: 0,
+        took: 0,
+        eof_logged: false,
             };
             set_status(slot, b"cloned");
         } else if slot.status_len == 0 {
@@ -587,6 +603,7 @@ fn apply_reply(buf: &[u8]) {
     match typ {
         REP_DATA => {
             c.suppress_stale_hangup = false;
+            c.got += payload.len() as u32;
             append_data(c, payload);
         }
         REP_STATUS => {
@@ -850,6 +867,11 @@ unsafe extern "C" fn net_read(
             // Stream: ignore pos. Poll: 0 when empty (do not hang).
             let have = c.data_len as usize;
             if have == 0 {
+                if !c.eof_logged && (status_is(c, b"hangup") || status_is(c, b"error")) {
+                    c.eof_logged = true;
+                    let (got, took) = (c.got as usize, c.took as usize);
+                    dbg2(b"netfs-dbg eof got ", got, b" took ", took);
+                }
                 return 0;
             }
             // A stream read takes what fits; a datagram read takes the next
@@ -868,6 +890,7 @@ unsafe extern "C" fn net_read(
                 c.data.copy_within(used..have, 0);
             }
             c.data_len = (have - used) as u16;
+            c.took += n as u32;
             c.credit += used as u16;
             return_credit(id, p);
             n as i32
