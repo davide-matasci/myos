@@ -58,18 +58,15 @@ names are what GitHub release assets allow.
 
 ## In CI
 
-- Boot-mini stays network-free. A **full boot** (`cargo run -- --ci`
-  without `MYOS_CI_MINI`) packs this build's packages for its arch, serves
-  `target/packages/` on the host's 127.0.0.1:8765 (the guest reaches it as
-  `http://10.0.2.2:8765` on QEMU's user network) and, after the HTTPS
-  stages, runs `get-myos -m http://10.0.2.2:8765 make` and the installed
-  `make` (`CMD_GET_MYOS` in `src/wait_ci.rs`). The boot job needs `gzip`
-  and `sha256sum`.
-- The full boot installs **every package of the build** as its first
-  command (`cmd_get_packages` in `src/wait_ci.rs`), so the stages that use
-  one (git in `heap`, os-test with `make`) find it at its image path; a
-  port's needles are required when it is in the image or a package
-  (`port_enabled`). Then the `lua` stage above checks one bind end to end.
+- The quick test list (`test-mini`) stays network-free. The **full** one
+  (`cargo run -- test-full`, `docs/testing.md`) packs this build's packages
+  for its arch, serves `target/packages/` on the host's 127.0.0.1:8765 (the
+  guest reaches it as `http://10.0.2.2:8765` on QEMU's user network;
+  `index.txt` there is the arch's index) and installs **every package of
+  the build** as its first test (`install_packages` in
+  `user/tests/run.sh`), so the tests that use one (git in `heap`, os-test
+  with `make`, the packages' own `test.sh`) find it at its image path. The
+  boot job needs `gzip` and `sha256sum`.
 - The build job writes the packages of the three arches (`cargo run --
   packages`) and uploads them as the `myos-packages` artifact (7 days).
 

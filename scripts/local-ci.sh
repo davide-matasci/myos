@@ -1,61 +1,38 @@
 #!/usr/bin/env bash
-# Quick, reliable local boot-CI run. Fixes the chronic failure modes:
-# 1. OOM: OpenClaw's exec wrapper sets oom_score_adj=1000 on children, so a
-#    2 GiB TCG QEMU gets SIGKILLed under memory pressure. This wrapper
-#    lowers its own oom_score_adj (inherited by QEMU); the host has 4G swap.
-# 2. Stale state: leftover QEMU holds target/bios.img write lock or host
-#    :2323/:8765. Preflight cleans + warns.
-# 3. MTTCG starvation: 4 vCPU threads on a loaded 4-core host stall the boot
-#    with no serial output. Single-threaded TCG by default (MYOS_TCG_SINGLE).
-# 4. Silent hangs: watchdog kills the run if the log stops growing 3 min.
+# A local boot test (docs/testing.md) with the settings a loaded host needs:
+# 1. OOM: some sandboxes set oom_score_adj=1000 on children, so a TCG QEMU
+#    with a few GiB gets SIGKILLed under memory pressure. Lower our own
+#    score (QEMU inherits it).
+# 2. Stale state: a leftover QEMU holds target/bios.img or the host ports
+#    the tests forward (:2323, :2222, :8765). Clean up and warn.
+# 3. MTTCG starvation: four vCPU threads on a loaded 4-core host stall the
+#    boot with no serial output. Single-threaded TCG by default
+#    (MYOS_TCG_SINGLE).
 #
-# Usage: scripts/local-ci.sh [bios|uefi|aarch64|riscv64]   (default bios)
+# Usage: scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   (default bios mini)
 set -euo pipefail
-MODE="${1:-bios}"
+ARCH="${1:-bios}"
+LIST="${2:-mini}"
 
-# OOM protection for everything we spawn (needs root; ignore otherwise).
 if [ -w /proc/self/oom_score_adj ]; then
     echo -500 > /proc/self/oom_score_adj 2>/dev/null || true
 fi
 
-# Preflight: kill stale QEMU from aborted runs.
 pkill -9 -f qemu-system 2>/dev/null || true
 sleep 1
 
-# Port guards mirror src/main.rs guestfwd/hostfwd conditions.
-ss -tln | grep -q ':2323 ' &&
-    echo "WARNING: host :2323 busy -> listen smoke hostfwd will be skipped" >&2
-ss -tln | grep -q ':8765 ' &&
-    echo "NOTE: host :8765 busy -> guestfwd will be skipped" >&2
+for port in 2323 2222 8765; do
+    if ss -tln 2>/dev/null | grep -q ":$port "; then
+        echo "WARNING: host :$port busy -> the test that needs it will fail" >&2
+    fi
+done
 
 cd "$(dirname "$0")/.."
 export MYOS_TCG_SINGLE="${MYOS_TCG_SINGLE:-1}"
 
-LOG="${TMPDIR:-/tmp}/localci-$MODE-$(date +%s).log"
-nice -n 5 cargo +nightly-2026-07-26 run --quiet -- "$MODE" --ci >"$LOG" 2>&1 &
-PID=$!
-
-LAST=0
-STALL_SECS=0
-while kill -0 "$PID" 2>/dev/null; do
-    sleep 20
-    SIZE=$(stat -c%s "$LOG" 2>/dev/null || echo 0)
-    if [ "$SIZE" = "$LAST" ]; then
-        STALL_SECS=$((STALL_SECS + 20))
-        if [ "$STALL_SECS" -ge 180 ]; then
-            echo "STALLED (no output for 3 min) — killed; log: $LOG" >&2
-            tail -5 "$LOG" >&2
-            killall -9 qemu-system-x86_64 qemu-system-aarch64 qemu-system-riscv64 2>/dev/null || true
-            kill -9 "$PID" 2>/dev/null || true
-            exit 124
-        fi
-    else
-        STALL_SECS=0
-        LAST=$SIZE
-    fi
-done
+LOG="${TMPDIR:-/tmp}/localci-$ARCH-$LIST-$(date +%s).log"
 STATUS=0
-wait "$PID" || STATUS=$?
+nice -n 5 cargo run --quiet -- "$ARCH" "test-$LIST" >"$LOG" 2>&1 || STATUS=$?
 tail -5 "$LOG"
 echo "log: $LOG"
-exit "$STATUS"
+exit $STATUS

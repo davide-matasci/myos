@@ -12,6 +12,7 @@
 #   scripts/ports.sh --all-files [image|all]      the same for every port of the role
 #   scripts/ports.sh --all-outputs [image|all]    the outputs of every port of the role
 #   scripts/ports.sh --stamps                     version stamps of the image ports
+#   scripts/ports.sh --tests [image|all]          the boot test scripts of the ports (PORT_TEST), repo-relative
 #   scripts/ports.sh --build-list [image|all]     `<name> <script>` of the ports to build, in order
 #   scripts/ports.sh --matrix                     ci-ports.yml ports matrix (JSON)
 
@@ -49,7 +50,7 @@ myos_port_names() {
 myos_port_load() {
   local want="$1" role name dir
   PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES=""
-  PORT_READY="" PORT_BIN="" PORT_EMBED="" PORT_IMAGE_BASE=0 PORT_WATCH=""
+  PORT_READY="" PORT_BIN="" PORT_EMBED="" PORT_IMAGE_BASE=0 PORT_WATCH="" PORT_TEST=""
   while read -r role name dir; do
     if [[ "$name" == "$want" ]]; then
       PORT_NAME="$name" PORT_DIR="$dir" PORT_ROLE="$role"
@@ -149,6 +150,18 @@ myos_port_image_files() {
   done | sort -u
 }
 
+# The boot test scripts (PORT_TEST, docs/testing.md) of the ports of ROLE,
+# repo-relative: the image packs them under /lib/myos-tests/ports/ and the
+# kernel-inputs hash of the CI build covers them.
+myos_port_tests() {
+  local role="${1:-image}" name
+  for name in $(myos_port_names "$role"); do
+    myos_port_load "$name"
+    [[ -n "$PORT_TEST" ]] || continue
+    echo "${PORT_DIR#"$MYOS_PORTS_ROOT"/}/$PORT_TEST"
+  done
+}
+
 # The ports of ROLE (image|package|all) with a build script, in build order:
 # the toolchains first (newlib, the sysroot), then every port once the
 # ports it names in PORT_DEPS are out.
@@ -240,6 +253,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       done
       ;;
     --matrix) myos_ports_matrix ;;
+    --tests) myos_port_tests "${2:-image}" ;;
     --dir) myos_port_load "$2" && echo "$PORT_DIR" ;;
     --script) myos_port_load "$2" && myos_port_build_script ;;
     --build-list)

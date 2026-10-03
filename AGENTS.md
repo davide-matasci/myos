@@ -22,11 +22,11 @@ match the surrounding code's naming, idiom and comment density.
 
 | Path | What |
 |------|------|
-| `src/` | host launcher (`main.rs`: QEMU per arch, `--ci` harness), image/initramfs assembly (`initramfs.rs`, `limine_image.rs`), boot-CI script (`wait_ci.rs`) |
+| `src/` | host launcher (`main.rs`: QEMU per arch, the test modes), image/initramfs assembly (`initramfs.rs`, `limine_image.rs`), the boot test's host side (`boot_test.rs`), the packages (`packages.rs`) |
 | `build.rs` | builds the x86_64 kernel and the disk images; checks port artifacts per enabled feature |
 | `kernel/` | the kernel (`arch/`, `task/`, `fs/`, `user/`, `modules/`, `dt.rs` for the device tree) |
 | `modules/` | loadable kernel modules and their `#[repr(C)]` ABI (`modules/abi`); the console module also holds the keymaps and the `ps2-scancode` crate |
-| `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib) and C (`user/c`: hello and CI smokes); one `port.env` per program |
+| `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib), C (`user/c`: hello and the test smokes) and the boot tests' runner (`user/tests`); one `port.env` per program |
 | `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`); both are ports too (`port.env`, kind `toolchain`) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
 | `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test, ncurses; `get-myos` installs them, `docs/packages.md`); a port moves between the two by moving its directory |
@@ -66,58 +66,61 @@ cargo run -- [uefi|aarch64|riscv64]  # build and boot in QEMU (default: x86 BIOS
 
 ## Testing
 
-The real test is booting: `--ci` boots headless, logs in, types a scripted
-list of shell commands (`src/wait_ci.rs`) and waits for the expected output
-of each. QEMU runs under TCG, so a boot takes minutes.
+The real test is booting: `test-mini` / `test-full` boot headless, log in
+and run a test list **in the guest** (`user/tests`, the ports' `test.sh`),
+while the host watches the console for `TEST <name> PASS|FAIL` lines
+(`src/boot_test.rs`, `docs/testing.md`). QEMU runs under TCG, so a boot
+takes minutes.
 
 ```sh
-MYOS_CI_MINI=1 cargo run -- --ci           # fast boot test (what PR CI runs)
-MYOS_CI_MINI=1 cargo run -- aarch64 --ci   # also riscv64, uefi
-cargo run -- --ci                          # full boot: + curated os-test (must be 100%), git, HTTPS, a package install
+cargo run -- test-mini                     # quick list (what PR CI runs)
+cargo run -- aarch64 test-mini             # also riscv64, uefi
+cargo run -- test-full                     # full list: + packages, HTTPS, SSH, Alpine, curated os-test (must be 100%)
 cargo run -- packages                      # the package tarballs + indexes (target/packages/)
-scripts/local-ci.sh [bios|uefi|aarch64|riscv64]   # full boot with a stall watchdog
+scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
 cargo test -p ps2-scancode                 # host unit tests
 ```
 
 - Test on every arch you could have affected; arch-specific code needs all
-  three. Don't over-test: a mini boot per affected arch is usually enough
+  three. Don't over-test: a mini run per affected arch is usually enough
   locally, CI does the rest.
-- New behavior gets a CI check: a command + expected needle in
-  `src/wait_ci.rs` (keep typed command lines under ~150 characters, the
-  guest line editor mangles longer ones), a smoke program, or an os-test in
-  the curated lists (`packages/os-test/overlay/misc/*.tests`). The full
-  boot installs every package first, so a package's check runs like an
-  image port's (`port_enabled`).
-- Some stages need the network (`https://example.com/`, the Alpine mirror for
-  `get-alpine`); the package stage uses the build's own packages, served by
-  the launcher to the guest (`docs/packages.md`). In a sandbox with a TLS-intercepting proxy, append its CA to
-  `target/cacert.pem` for local runs only and restore it afterwards; never
-  commit it.
+- New behavior gets a test: a function and a `t` line in a section of
+  `user/tests/`, a port's `test.sh` (`PORT_TEST` in its `port.env`; a
+  package's test runs in the full mode after the install), a smoke program
+  under `user/c`, or an os-test in the curated lists
+  (`packages/os-test/overlay/misc/*.tests`). A test's output is shown only
+  when it fails: keep passing tests quiet.
+- The full mode needs the network (`https://example.com/`, the Alpine
+  mirror for `get-alpine`); the packages come from the build itself, served
+  by the launcher to the guest (`docs/packages.md`). In a sandbox with a
+  TLS-intercepting proxy, append its CA to `target/cacert.pem` for local
+  runs only and restore it afterwards; never commit it.
 
 ## CI (GitHub Actions)
 
 - `ci.yml` calls `ci-ports.yml` (cross-builds each port, cached as OCI
-  artifacts on GHCR keyed by a hash of its inputs, `scripts/ci-registry.sh`)
-  and `ci-runtime.yml` (build job → boot jobs).
-- Pull requests run **boot-mini** on bios, uefi, aarch64 and riscv64
-  (`MYOS_CI_MINI=1`), and the **iso** job: the x86_64 hybrid ISO built with
-  `--features linux_compat` (the image with everything in it), uploaded as
-  the `myos-x86_64-iso` artifact and boot-tested from the CD with
-  `cargo run -- iso --ci` (boot-mini stages). The Linux layer's musl pieces
-  are built and cached like a port (`linux-compat`) in every run.
-- **Full boot** is manual: dispatch `ci.yml` with `full_boot: true` on the
-  branch. It runs the curated os-test list, git, HTTPS/curl and the optional
-  Linux layer (built in by `MYOS_CI_FEATURES=linux_compat`) in all four boot
-  jobs, with every package installed from the build's own mirror. Run it
-  for kernel, libc, port or CI changes that the mini boot does not cover.
-- Pushes to master publish the packages to the rolling `packages` release
-  (the `publish` job, after the boots; `docs/packages.md`).
+  artifacts on GHCR keyed by a hash of its inputs, `scripts/ci-registry.sh`;
+  the two toolchain jobs run only when the registry lacks them) and
+  `ci-runtime.yml` (build job → boot jobs).
+- Pull requests run **test-mini** on bios, uefi, aarch64 and riscv64. The
+  Linux layer's musl pieces are built and cached like a port
+  (`linux-compat`) in every run.
+- **Full boot** (`test-full` in all four boot jobs, every image with the
+  Linux layer built in by `MYOS_CI_FEATURES=linux_compat`, every package
+  installed from the build's own mirror) runs daily on master and on
+  demand: dispatch `ci.yml` with `full_boot: true` on the branch. Run it
+  for kernel, libc, port or CI changes that the mini list does not cover.
+- On master (a push or the daily run) the **iso** job builds the x86_64
+  hybrid ISO with the Linux layer in it and the **publish** job uploads it
+  and the packages to the rolling GitHub release `rolling`, get-myos's
+  default mirror (`docs/packages.md`). The ISO is not boot-tested: the bios
+  and uefi boots carry the same files.
 - CI runs in the `myos-ci` container (`Dockerfile`, `build-ci-image.yml`).
 - Changing a port's pin or build script changes its cache key; CI rebuilds
   it. The ports matrix of `ci-ports.yml` and the pack/assert lists of the
   build and boot jobs come from the descriptors. Adding a port touches
-  `ports/<name>/` (with its `port.env`), `scripts/myos-c-userspace-lib.sh`
-  (hash + freshness functions), `src/wait_ci.rs` and
+  `ports/<name>/` (with its `port.env` and `test.sh`),
+  `scripts/myos-c-userspace-lib.sh` (hash + freshness functions) and
   `THIRD_PARTY_NOTICES.md`; see "Adding a port" in `docs/ports.md` and
   follow an existing port such as `ports/lua`.
 

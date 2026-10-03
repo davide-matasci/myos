@@ -2,7 +2,7 @@
 #![no_main]
 
 //! CI-only heavy smoke: std / C / sbase / uutils / ripgrep / tcc / bigalloc.
-//! Always-on boot uses slim `/ok` instead; `wait_ci` types `heap` at `$`.
+//! Always-on boot uses slim `/ok` instead; the boot tests run `heap` (user/tests/shell.sh).
 
 use myos_user::{status_ok, 
     close, exec, exit, exit_code, fork, mkdir, open_flags, wait_status, write, write_fd, O_CREAT,
@@ -18,7 +18,7 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
     main()
 }
 
-/// boot-mini passes `heap mini`: the mini boots keep their fast turnaround,
+/// The mini test list passes `heap mini`: the mini boots keep their fast turnaround,
 /// so the heavy git porcelain stage only runs in the full boot jobs.
 fn mini_mode() -> bool {
     (0..myos_user::argc()).any(|i| myos_user::arg(i) == Some(b"mini" as &[u8]))
@@ -184,7 +184,7 @@ int main(void) {
     }
     // Phase-1 git porcelain (offline): init/add/commit/log on tmpfs.
     // Absolute /bin/custom/git — PATH is fine at login, but heap execs by path.
-    // Skipped in boot-mini (`heap mini`): git testing belongs to the full boot
+    // Skipped in the mini list (`heap mini`): git testing belongs to the full boot
     // jobs, which have time for the Phase-1 exec pages.
     if mini_mode() {
         write(b"git skip (boot-mini)\n");

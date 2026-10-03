@@ -59,3 +59,14 @@ NX #PF / leave races noted in `docs/pci-acpi-smp.md` resolved first.
 
 The myos `std` sysroot has no `thread::sleep`; wire it to `SYS_NANOSLEEP`
 (52). Touching `toolchain/std` triggers a sysroot rebuild in CI.
+
+## File offsets are per fd copy
+
+A forked child (or a `dup`) gets its own copy of an open file's offset
+(`FdEntry::File { pos }` in `kernel/src/task/fd.rs`), where POSIX shares
+one open file description. With `prog > file`, a program whose children
+write to the inherited fd then overwrites their output with its own later
+writes (the `heap` smoke's log lost its first lines). The boot tests work
+around it with `>>` (`O_APPEND` writes at the end), see `capture` in
+`user/tests/run.sh`. The fix is an open-file table the fd entries point
+into, shared across fork and dup.

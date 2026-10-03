@@ -9,7 +9,7 @@
 //!
 //! `get-myos` (user/get-myos) installs them on a running system from a
 //! mirror with this layout: the project's rolling GitHub release, or the
-//! build's own `target/packages/` that a full `--ci` boot serves to the
+//! build's own `target/packages/` that the full boot test serves to the
 //! guest over slirp (`serve_mirror`). The entries come from the same
 //! descriptor code the initramfs is packed with (`install_port`), so a
 //! port moving between `ports/` and `packages/` changes nothing in what
@@ -164,23 +164,26 @@ fn put(field: &mut [u8], bytes: &[u8]) {
 }
 
 /// Serve `dir` over HTTP on 127.0.0.1:MIRROR_PORT in a background thread
-/// (GET only: `/` lists the files, anything else is a file of `dir`).
+/// (GET only: `/` lists the files, `index.txt` is the index of `arch`,
+/// anything else is a file of `dir`).
 /// False when the port is taken: the launcher then skips the forward and
 /// the guest's install stage fails visibly instead of hitting a stranger.
-pub fn serve_mirror(dir: PathBuf) -> bool {
+pub fn serve_mirror(dir: PathBuf, arch: &str) -> bool {
     let Ok(listener) = TcpListener::bind(("127.0.0.1", MIRROR_PORT)) else {
         return false;
     };
+    let arch = arch.to_string();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let dir = dir.clone();
-            std::thread::spawn(move || serve_one(stream, &dir));
+            let arch = arch.clone();
+            std::thread::spawn(move || serve_one(stream, &dir, &arch));
         }
     });
     true
 }
 
-fn serve_one(mut stream: TcpStream, dir: &Path) {
+fn serve_one(mut stream: TcpStream, dir: &Path, arch: &str) {
     let mut req = Vec::new();
     let mut buf = [0u8; 1024];
     while !req.windows(4).any(|w| w == b"\r\n\r\n") && req.len() < 8192 {
@@ -193,6 +196,10 @@ fn serve_one(mut stream: TcpStream, dir: &Path) {
     let mut words = line.split_whitespace();
     let (method, target) = (words.next().unwrap_or(""), words.next().unwrap_or("/"));
     let path = target.split('?').next().unwrap_or("").trim_start_matches('/');
+    // The guest test installs every package of the index without knowing
+    // its arch name: `index.txt` is this mirror's `<arch>-index.txt`.
+    let index = format!("{arch}-index.txt");
+    let path = if path == "index.txt" { index.as_str() } else { path };
     let body: Option<Vec<u8>> = if method != "GET" || path.contains("..") || path.contains('/') {
         None
     } else if path.is_empty() {

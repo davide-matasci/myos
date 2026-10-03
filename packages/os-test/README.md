@@ -65,14 +65,15 @@ The report ends with a machine-readable line:
 pass_rate=NN% (P/T)
 ```
 
-## Boot CI curated set (full boot only)
+## Boot test curated set (full list only)
 
-Full-boot shell CI (`src/wait_ci.rs`, non-mini) runs a **thin curated set**:
-the basic smoke list **plus** ~100 tests spanning non-basic suites (`limits`,
-`io`, `malloc`, `paths`, `process`, `signal`, `stdio`, `udp`) **plus**
-`misc/ci-expansion.tests` (141: POSIX core, more non-basic, signal handlers, and the myos
-`chroot`/FIFO suite). See `SUITES.md` for the full suite inventory, the
-selection rationale and the deferred tests. Not the full ~1187 basic suite (CI #860/#866 timed out).
+The full boot test (`packages/os-test/test.sh`, `docs/testing.md`) runs a
+**thin curated set**: the basic smoke list **plus** ~100 tests spanning
+non-basic suites (`limits`, `io`, `malloc`, `paths`, `process`, `signal`,
+`stdio`, `udp`) **plus** `misc/ci-expansion.tests` (141: POSIX core, more
+non-basic, signal handlers, and the myos `chroot`/FIFO suite). See
+`SUITES.md` for the full suite inventory, the selection rationale and the
+deferred tests. Not the full ~1187 basic suite (CI #860/#866 timed out).
 
 Guest staging uses a thin copy (not the whole suite):
 
@@ -90,28 +91,23 @@ Basic smoke **must** include `pwd/setpwent` (hard gate). Non-basic picks
 prefer high-value syscall/libc coverage; missing kernel/libc support is
 implemented for real (no skip/XFAIL/fake stubs).
 
-CI launcher notes:
+Launcher notes:
 
 - `cat /proc/meminfo` shows the kernel frame counters (`FramesLive`, …);
-  live frames stay flat across the curated run, so `--ci` keeps 4096 MiB
+  live frames stay flat across the curated run, so the test keeps 4096 MiB
   (UEFI 4608).
+- QEMU uses **`-smp 4`** on x86/aarch64 so x86 has ≥2 APs for post-exec RR
+  re-home / `make -j` spread; riscv stays **`-smp 2`** (Limine hart table
+  panic at 4).
+- The report's progress (one line per test) streams to the console, which
+  keeps the host's stall watchdog quiet; the full run has a 50-minute budget.
 
-- QEMU helpers use **`-smp 4`** on x86/aarch64 (interactive + CI mini/full) so
-  x86 has ≥2 APs for post-exec RR re-home / `make -j` spread; riscv stays
-  **`-smp 2`** (Limine hart table panic at 4). aarch64/riscv userspace may
-  still be UP.
-- wait_ci overall QEMU wait is ~10m (600s), and the arrow/histrecall stage
-  fail-fasts in ~20s if `histrecall_z3z` never appears (riscv64 #866 hung
-  there after a good smoke + SETPWENT-OK).
+The test passes only when **every curated test passed** (`pass_rate=100%
+(T/T)`); otherwise it prints the report's failure list. A test that cannot
+pass yet belongs in `SUITES.md` (deferred), not in the curated lists. A
+second test checks `basic/pwd/setpwent` (its `.out` must be empty).
 
-CI checks:
-
-1. Harness finished and **every curated test passed** (`pass_rate=100% (T/T)`);
-   otherwise CI fails and prints the report's failure list. A test that
-   cannot pass yet belongs in `SUITES.md` (deferred), not in the curated lists.
-2. `basic/pwd/setpwent` success (`SETPWENT-OK`).
-
-Boot-mini skips this stage (too slow for the mini window).
+The mini list skips os-test (too slow for the mini window).
 
 ## Boot CI host-prebuild (thin smoke)
 
@@ -133,7 +129,7 @@ Manual/full suite on the guest still uses tcc when prebuilts are absent.
 Full `make SUITES=basic report` (~1187 tests) remains available manually on
 the guest (`cp -r /lib/os-test /tmp/o` then make) and is the intended target
 for a future nightly job outside the interactive boot window.
-Not wired into wait_ci yet.
+Not wired into the boot tests yet.
 
 ## Pass-rate gate
 

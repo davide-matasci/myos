@@ -294,40 +294,38 @@ the kernel does not keep a per-task copy at syscall entry.
 
 ## Testing
 
-`myos --ci` (and `MYOS_CI_MINI=1`) runs `linux /bin/linux/linux-smoke` and
-`linux /bin/linux/linux-dyn` on every arch when the host binary was built
-with `--features linux_compat`, and expects `LINUX-SMOKE OK` (files,
-directories, mmap, fork/execve/wait4, pipes, Linux signal numbers, handlers,
-masks, `sigwait`, `EINTR` and `SA_RESTART`, pthreads: a mutex, a condition
-variable, thread-local storage, thread ids, join, and `exit` from a thread
-ending the process) and `LINUX-DYN OK` (a call,
-shared data, a relocated function pointer and a thread-local in
+The boot tests (`docs/testing.md`, `user/tests/linux.sh`) run
+`linux /bin/linux/linux-smoke` and `linux /bin/linux/linux-dyn` on every
+arch when the image was built with `--features linux_compat`, and expect
+`LINUX-SMOKE OK` (files, directories, mmap, fork/execve/wait4, pipes, Linux
+signal numbers, handlers, masks, `sigwait`, `EINTR` and `SA_RESTART`,
+pthreads: a mutex, a condition variable, thread-local storage, thread ids,
+join, and `exit` from a thread ending the process) and `LINUX-DYN OK` (a
+call, shared data, a relocated function pointer and a thread-local in
 `libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`).
 The test is plain musl C, so it can also be run on a Linux host for
-reference. It then runs
-`get-alpine jq && linux --root /tmp/alpine jq -nr '"ALPINE-JQ \(1+2+3)"'` and
-expects `ALPINE-JQ 6`, then installs Python into the same root (python3 and
-its 19 dependencies, ~45 MB) and runs
+reference. The full list then runs
+`get-alpine jq && linux --root /tmp/alpine jq ...` and expects `ALPINE-JQ 6`
+(the binds of /dev, /proc and /net into the Alpine root, counted in
+/proc/mounts), then installs Python into the same root (python3 and its 19
+dependencies, ~45 MB) and runs
 `python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])'`
 (the standard library and two C extension modules), expecting `PYTHON 42`.
 Both need the Alpine mirror to be reachable.
 
-Without the feature (boot-mini, the normal PR CI), the harness instead
-runs `insmod /lib/modules/linux; cat /proc/modules` and expects `[ OK ]
-linux` and the module in the list: the module is built and loadable in
-every build.
+Without the feature (the quick list, the normal PR CI), the test instead
+runs `insmod /lib/modules/linux` and expects `[ OK ] linux` and the module
+in `/proc/modules`: the module is built and loadable in every build.
 
 CI builds the musl pieces in every run (`linux-compat` in
 `ci-ports.yml`, cached in the GHCR registry by `scripts/ci-registry.sh`
 under a hash of `linux-compat/`, newlib and zlib) and packs them into
-`ci-build.tar`. The **iso** job builds the x86_64 hybrid ISO with
-`--features linux_compat`, so the downloadable ISO always carries the
-layer (module loaded at boot, `linux-smoke`, `linux-dyn`, `get-alpine`),
-and boots it from the CD with `cargo run -- iso --ci`, which runs the
-Linux tests above on x86_64 in every CI run. The full-boot CI
-(`full_boot`, `MYOS_CI_FEATURES=linux_compat`) builds all four disk images
-with the layer, so bios, uefi, aarch64 and riscv64 run the tests too.
-There are no separate Linux jobs.
+`ci-build.tar`. The full boot (daily, or `full_boot` on dispatch;
+`MYOS_CI_FEATURES=linux_compat`) builds all four disk images with the
+layer, so bios, uefi, aarch64 and riscv64 run the tests above. On master
+the **iso** job builds the x86_64 hybrid ISO with `--features linux_compat`,
+so the downloadable ISO always carries the layer (module loaded at boot,
+`linux-smoke`, `linux-dyn`, `get-alpine`). There are no separate Linux jobs.
 
 `linux-compat/build.sh` builds musl (static and shared) with clang for each
 target (and skips itself when its outputs match its stamp,

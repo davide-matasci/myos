@@ -162,8 +162,7 @@ myos_c_smokes_version_hash() {
     {
       myos_c_hello_version_hash
       sha256sum "$MYOS_ROOT/user/c/tcp_listen_smoke.c" "$MYOS_ROOT/user/c/pty_smoke.c" \
-        "$MYOS_ROOT/user/c/urandom_smoke.c" "$MYOS_ROOT/scripts/build-tcp-listen-smoke.sh" \
-        "$MYOS_ROOT/scripts/build-pty-smoke.sh" "$MYOS_ROOT/scripts/build-urandom-smoke.sh" \
+        "$MYOS_ROOT/user/c/urandom_smoke.c" "$MYOS_ROOT/user/c/tty_smoke.c" \
         "$MYOS_ROOT/scripts/build-c-smokes.sh"
     } | sha256sum | awk '{print $1}'
   )"
@@ -176,7 +175,7 @@ myos_c_smokes_is_current() {
     && [[ "$(cat "$MYOS_C_SMOKES_VERSION")" == "$(myos_c_smokes_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke; do
+    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke; do
       [[ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ]] || return 1
     done
   done

@@ -56,7 +56,7 @@ impl SerialPort {
     pub fn write_byte(&mut self, byte: u8) {
         // UART ONLCR: turn LF into CRLF for serial terminals. If the writer
         // already sent CR (oksh emacs historically emitted CR+LF), do not inject
-        // another CR — that became CR CR LF, which wait_ci normalizes to a blank
+        // another CR — that became CR CR LF, which the boot test host normalizes to a blank
         // line and flakes the histrecall seed needle.
         // Also coalesce runs of CR: two writer CRs before LF used to reach
         // the wire as `\r\r\n` (LAST_WAS_CR only suppressed the *injected* CR).
