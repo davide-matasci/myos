@@ -18,7 +18,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase, ubase, uutils coreutils, ripgrep, TinyCC (all fetched at build)
 - **Networking** — virtio-net kernel module (RX interrupts: MSI-X on x86_64, INTx on aarch64/riscv64) + smoltcp in userspace; `/ping` works on all arches
-- **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET
+- **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET; `AF_UNIX` stream sockets over `/net/unix`, kept in the kernel (`docs/sockets-unix.md`)
 - **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
 - **Optional: Linux syscall compatibility** — the `linux` kernel module (loaded at boot with `--features linux_compat`, or `insmod /lib/modules/linux`) runs musl binaries (x86_64, aarch64, riscv64) via `linux PROGRAM` (see `docs/linux-compat.md`)
 
@@ -157,7 +157,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` |
 | `modules/ext2` | Writable ext2: `ModuleVfsOps` over the `ext2fs` crate (`modules/ext2/ext2fs`, also `mkfs.ext2`'s), host-tested against e2fsprogs |
 | `modules/virtio_net` | Modern virtio-pci net: poll RX/TX, `/dev/net0` Ethernet frames |
-| `modules/netfs` | Plan 9 `/net` + `/dev/netd` channel to userspace netd |
+| `modules/netfs` | Plan 9 `/net` + `/dev/netd` channel to userspace netd; `/net/unix` local connections |
 | `modules/linux` | Linux syscall compatibility layer: a syscall *personality* (`personality_register`) for musl binaries |
 | `user/init` | PID1: smoke fork/`/ok`, fork `/netd`, exec `/sh` (baked in) |
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |

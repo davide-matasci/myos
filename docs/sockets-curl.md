@@ -28,7 +28,10 @@ their boundaries; bytes beyond the reader's buffer are dropped, as in
 `recv`). The optional Linux layer maps Linux sockets onto the same files in
 the kernel (`docs/linux-compat.md`, Sockets).
 
-Outbound TCP/UDP first. `listen`/`accept` return `EOPNOTSUPP`. Most `SO_*`/`TCP_*` are ignored.
+TCP listens through netd's `announce` (`listen`/`accept`, dropbear's SSH
+server). Most `SO_*`/`TCP_*` are ignored. `AF_UNIX` stream sockets go over
+`/net/unix` instead, served by the kernel without netd
+(`docs/sockets-unix.md`).
 
 ### Smoke
 
@@ -62,7 +65,7 @@ Outbound TCP/UDP first. `listen`/`accept` return `EOPNOTSUPP`. Most `SO_*`/`TCP_
 
 ### Known gaps
 
-- No inbound listen/accept; no IPv6; incomplete `getsockname` (returns INADDR_ANY)
+- No IPv6; incomplete `getsockname` for TCP/UDP (returns INADDR_ANY)
 - poll/select: sockets use netfs RX size / hangup; regular files still always-ready; tty POLLIN is not (no FIONREAD — lynx interrupt-check must not block)
 - curl still a large ELF (~0.6–1.2MB stripped); many protocols disabled but not a tiny client
 - Full QEMU smoke may not have been run on the builder box — rely on CI

@@ -1,6 +1,8 @@
 /*
  * Userspace BSD sockets over Plan 9 /net + netd (smoltcp).
- * No socket() syscall — outbound TCP (and UDP for DNS) via clone/ctl/data.
+ * No socket() syscall — TCP and UDP via clone/ctl/data, and AF_UNIX
+ * stream sockets over /net/unix, which the kernel serves itself
+ * (docs/sockets-unix.md).
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -14,10 +16,12 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 
 #include "myos_syscalls.h"
 
 #define MYOS_MAX_SOCKS 16
+#define UN_NAME_CAP ((int)sizeof(((struct sockaddr_un *)0)->sun_path))
 #define CONNECT_TIMEOUT_MS 30000
 
 enum {
@@ -45,6 +49,9 @@ struct myos_sock {
     int last_accept_seq; /* listener: seq of the last accepted handoff */
     int taken_seq;     /* listener: seq named by the last "taken <seq>" sent */
     struct timeval taken_tv; /* listener: when that "taken" was sent */
+    int family;     /* AF_INET or AF_UNIX */
+    char un_name[UN_NAME_CAP + 1]; /* AF_UNIX: bound (listener's) name */
+    char un_peer[UN_NAME_CAP + 1]; /* AF_UNIX: the name connected to */
 };
 
 static struct myos_sock socks[MYOS_MAX_SOCKS];
@@ -315,6 +322,33 @@ int myos_socket_empty_read(int fd) {
     return 3;
 }
 
+/*
+ * Called from _write when the kernel refused a write on a tracked socket fd.
+ * Only AF_UNIX distinguishes a full peer buffer from a closed peer:
+ *   0 = not handled (keep the generic error)
+ *   1 = buffer full + nonblocking -> EAGAIN
+ *   2 = peer gone -> EPIPE
+ *   3 = waited a little: retry the write
+ *   4 = not connected -> ENOTCONN
+ */
+int myos_socket_write_failed(int fd) {
+    struct myos_sock *s = sock_by_fd(fd);
+    if (s == NULL || s->family != AF_UNIX) {
+        return 0;
+    }
+    if (s->state != SOCK_CONNECTED) {
+        return 4;
+    }
+    if (status_is_hangup(s)) {
+        return 2;
+    }
+    if (s->nonblock) {
+        return 1;
+    }
+    usleep(1000);
+    return 3;
+}
+
 /* fcntl F_GETFL / F_SETFL for tracked sockets. Returns -1 if not a socket. */
 int myos_socket_fcntl(int fd, int cmd, int arg) {
     struct myos_sock *s = sock_by_fd(fd);
@@ -339,6 +373,7 @@ int myos_socket_fcntl(int fd, int cmd, int arg) {
 static int listener_ctl(struct myos_sock *s, const char *cmd);
 static int listener_status(struct myos_sock *s, char *out, size_t cap);
 static void listener_retry_taken(struct myos_sock *ls, int seq);
+static int un_pending(struct myos_sock *s);
 /* Last whitespace-separated decimal in an "accepted ..." status = the
  * per-listener handoff seq; -1 when absent. */
 static int status_accept_seq(const char *status) {
@@ -387,6 +422,13 @@ int myos_socket_poll(int fd, short events, short *revents) {
      * like dropbear select() before accept()), then report POLLIN when the
      * listener status shows "accepted <N>". Without this, select() never
      * wakes for listeners and the server never accepts. */
+    if (s->state == SOCK_LISTENING && s->family == AF_UNIX) {
+        if (want_in && un_pending(s)) {
+            rev |= POLLIN;
+        }
+        *revents = rev;
+        return rev ? 1 : 0;
+    }
     if (s->state == SOCK_LISTENING) {
         if (want_in) {
             char stbuf[80];
@@ -518,8 +560,13 @@ void myos_socket_on_close(int fd) {
     }
     /* No ctl hangup here: the kernel fires the netfs release (hangup) when
      * the LAST fd holder closes (fork-shared sockets: the parent's close
-     * must not tear the connection down under the child). */
+     * must not tear the connection down under the child). A listener
+     * still holds its ctl fd: closing that tears nothing down (netfs acts
+     * on the last data close only), it just stops leaking the fd. */
     (void)fd;
+    if (s->ctl_fd >= 0) {
+        close(s->ctl_fd);
+    }
     s->data_fd = -1;
     sock_free(s);
 }
@@ -538,11 +585,16 @@ int socket(int domain, int type, int protocol) {
 
     (void)protocol;
 
-    if (domain != AF_INET) {
+    if (domain == AF_UNIX) {
+        if (type != SOCK_STREAM) {
+            errno = EPROTONOSUPPORT;
+            return -1;
+        }
+        proto = "/net/unix";
+    } else if (domain != AF_INET) {
         errno = EAFNOSUPPORT;
         return -1;
-    }
-    if (type == SOCK_STREAM) {
+    } else if (type == SOCK_STREAM) {
         proto = "/net/tcp";
     } else if (type == SOCK_DGRAM) {
         proto = "/net/udp";
@@ -616,16 +668,72 @@ int socket(int domain, int type, int protocol) {
     s->ctl_fd = ctl_fd;
     s->data_fd = data_fd;
     s->type = type;
+    s->family = domain;
     s->state = SOCK_OPEN;
     return data_fd;
 }
 
+/* AF_UNIX: the name in `addr` (sun_path up to its NUL, within addrlen) as
+ * /net/unix text. An abstract name (leading NUL) becomes "@name". */
+static int un_name_of(const struct sockaddr *addr, socklen_t addrlen, char *out) {
+    const char *path = ((const struct sockaddr_un *)addr)->sun_path;
+    size_t len;
+    size_t i = 0;
+    size_t j = 0;
+    if (addrlen <= offsetof(struct sockaddr_un, sun_path)) {
+        return -1;
+    }
+    len = addrlen - offsetof(struct sockaddr_un, sun_path);
+    if (len > (size_t)UN_NAME_CAP) {
+        len = UN_NAME_CAP;
+    }
+    if (path[0] == '\0') {
+        out[i++] = '@';
+        j = 1;
+    }
+    for (; j < len && path[j] != '\0'; j++) {
+        out[i++] = path[j];
+    }
+    out[i] = '\0';
+    return (i == 0 || (i == 1 && out[0] == '@')) ? -1 : 0;
+}
+
+/* AF_UNIX: fill `addr` with `name` (empty: an unnamed socket). */
+static void un_put_name(const char *name, struct sockaddr *addr, socklen_t *addrlen) {
+    struct sockaddr_un un;
+    size_t n = strlen(name);
+    socklen_t len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + (n ? n + 1 : 0));
+    if (addr == NULL || addrlen == NULL) {
+        return;
+    }
+    memset(&un, 0, sizeof un);
+    un.sun_family = AF_UNIX;
+    memcpy(un.sun_path, name, n);
+    if (name[0] == '@') {
+        un.sun_path[0] = '\0'; /* abstract */
+        len--;
+    }
+    memcpy(addr, &un, *addrlen < len ? *addrlen : len);
+    *addrlen = len;
+}
+
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     struct myos_sock *s = sock_by_fd(sockfd);
-    (void)addrlen;
     if (s == NULL) {
         errno = ENOTSOCK;
         return -1;
+    }
+    if (addr != NULL && s->family == AF_UNIX) {
+        /* The name is announced by listen(). */
+        if (addr->sa_family != AF_UNIX) {
+            errno = EAFNOSUPPORT;
+            return -1;
+        }
+        if (un_name_of(addr, addrlen, s->un_name) < 0) {
+            errno = EINVAL;
+            return -1;
+        }
+        return 0;
     }
     if (addr != NULL && addr->sa_family == AF_INET) {
         const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
@@ -743,6 +851,126 @@ static int listener_status(struct myos_sock *s, char *out, size_t cap) {
 static int accept_from_status(struct myos_sock *ls, char *status,
     struct sockaddr *addr, socklen_t *addrlen);
 
+/* AF_UNIX: take the next connection queued on `s` (its listen file).
+ * 1 = *id is it, 0 = none waiting, -1 = error. */
+static int un_take(struct myos_sock *s, unsigned short *id) {
+    char path[64];
+    char buf[16];
+    ssize_t n;
+    int fd;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "listen") < 0) {
+        errno = EIO;
+        return -1;
+    }
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        errno = EIO;
+        return -1;
+    }
+    n = read(fd, buf, sizeof buf);
+    close(fd);
+    if (n <= 0) {
+        return 0;
+    }
+    return parse_clone_id(buf, (size_t)n, id) == 0 ? 1 : (errno = EIO, -1);
+}
+
+/* AF_UNIX: whether a connection is queued on `s` (listen's st_size). */
+static int un_pending(struct myos_sock *s) {
+    char path[64];
+    struct stat st;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "listen") < 0) {
+        return 0;
+    }
+    return stat(path, &st) == 0 && st.st_size > 0;
+}
+
+/* AF_UNIX: open conversation <id> (connected) as a socket fd. */
+static int un_open(unsigned short id, const char *name) {
+    char path[64];
+    struct myos_sock *s = sock_alloc();
+    if (s == NULL) {
+        errno = EMFILE;
+        return -1;
+    }
+    strcpy(s->proto_path, "/net/unix");
+    s->conv = id;
+    s->type = SOCK_STREAM;
+    s->family = AF_UNIX;
+    s->state = SOCK_CONNECTED;
+    s->peer_set = 1;
+    strcpy(s->un_name, name);
+    if (conv_path(path, sizeof path, s->proto_path, id, "data") < 0
+        || (s->data_fd = open(path, O_RDWR)) < 0) {
+        sock_free(s);
+        errno = EIO;
+        return -1;
+    }
+    return s->data_fd;
+}
+
+/* AF_UNIX accept: connections wait on the listener's queue in the kernel;
+ * a blocking accept sleeps between looks. The peer is unnamed. */
+static int un_accept(struct myos_sock *ls, struct sockaddr *addr, socklen_t *addrlen) {
+    unsigned short id;
+    int fd;
+    for (;;) {
+        int r = un_take(ls, &id);
+        if (r < 0) {
+            return -1;
+        }
+        if (r > 0) {
+            break;
+        }
+        if (ls->nonblock) {
+            errno = EAGAIN;
+            return -1;
+        }
+        usleep(1000);
+    }
+    fd = un_open(id, ls->un_name);
+    if (fd >= 0) {
+        un_put_name("", addr, addrlen);
+    }
+    return fd;
+}
+
+int socketpair(int domain, int type, int protocol, int sv[2]) {
+    struct myos_sock *s;
+    unsigned short id;
+    int a;
+    int b;
+    if (domain != AF_UNIX) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    if (type != SOCK_STREAM) {
+        errno = EPROTONOSUPPORT;
+        return -1;
+    }
+    a = socket(AF_UNIX, SOCK_STREAM, protocol);
+    if (a < 0) {
+        return -1;
+    }
+    s = sock_by_fd(a);
+    /* "pair" connects a new conversation to this one and queues it on our
+     * listen file, where un_take picks it up like an accepted connection. */
+    if (write(s->ctl_fd, "pair", 4) < 0 || un_take(s, &id) <= 0) {
+        close(a);
+        errno = EMFILE;
+        return -1;
+    }
+    finish_connect(s);
+    b = un_open(id, "");
+    if (b < 0) {
+        close(a);
+        return -1;
+    }
+    sv[0] = a;
+    sv[1] = b;
+    return 0;
+}
+
 int listen(int sockfd, int backlog) {
     struct myos_sock *s = sock_by_fd(sockfd);
     char cmd[32];
@@ -754,6 +982,21 @@ int listen(int sockfd, int backlog) {
     if (s->type != SOCK_STREAM) {
         errno = EOPNOTSUPP;
         return -1;
+    }
+    if (s->family == AF_UNIX) {
+        char ucmd[sizeof "announce " + UN_NAME_CAP];
+        if (s->un_name[0] == '\0') {
+            errno = EINVAL;
+            return -1;
+        }
+        memcpy(ucmd, "announce ", 9);
+        strcpy(ucmd + 9, s->un_name);
+        if (listener_ctl(s, ucmd) < 0) {
+            errno = EADDRINUSE; /* the name has a listener already */
+            return -1;
+        }
+        s->state = SOCK_LISTENING;
+        return 0;
     }
     if (s->bind_port == 0) {
         errno = EINVAL;
@@ -797,6 +1040,9 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     if (ls->state != SOCK_LISTENING) {
         errno = EINVAL;
         return -1;
+    }
+    if (ls->family == AF_UNIX) {
+        return un_accept(ls, addr, addrlen);
     }
     if (ls->nonblock) {
         /* Nonblocking accept: one check, EAGAIN when nothing is pending. */
@@ -905,6 +1151,7 @@ static int accept_from_status(struct myos_sock *ls, char *status,
     s->conv = (unsigned short)n;
     s->ctl_fd = -1;
     s->type = SOCK_STREAM;
+    s->family = AF_INET;
     s->state = SOCK_CONNECTED;
     if (conv_path(path, sizeof path, s->proto_path, s->conv, "data") < 0) {
         sock_free(s);
@@ -996,9 +1243,25 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         errno = EALREADY;
         return -1;
     }
-    if (addr == NULL || addr->sa_family != AF_INET) {
+    if (addr == NULL || addr->sa_family != s->family) {
         errno = EAFNOSUPPORT;
         return -1;
+    }
+    if (s->family == AF_UNIX) {
+        /* Local: connected (queued on the listener) or refused at once. */
+        char ucmd[sizeof "connect " + UN_NAME_CAP];
+        if (un_name_of(addr, addrlen, s->un_peer) < 0) {
+            errno = EINVAL;
+            return -1;
+        }
+        memcpy(ucmd, "connect ", 8);
+        strcpy(ucmd + 8, s->un_peer);
+        if (s->ctl_fd < 0 || write(s->ctl_fd, ucmd, strlen(ucmd)) < 0) {
+            errno = ECONNREFUSED; /* no listener of that name, or its queue is full */
+            return -1;
+        }
+        finish_connect(s);
+        return 0;
     }
     in = (const struct sockaddr_in *)addr;
     if (inet_ntop(AF_INET, &in->sin_addr, ip, sizeof ip) == NULL) {
@@ -1132,13 +1395,18 @@ int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optl
 
 int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     struct sockaddr_in local;
-    if (sock_by_fd(sockfd) == NULL) {
+    struct myos_sock *s = sock_by_fd(sockfd);
+    if (s == NULL) {
         errno = ENOTSOCK;
         return -1;
     }
     if (addr == NULL || addrlen == NULL) {
         errno = EINVAL;
         return -1;
+    }
+    if (s->family == AF_UNIX) {
+        un_put_name(s->un_name, addr, addrlen);
+        return 0;
     }
     memset(&local, 0, sizeof local);
     local.sin_family = AF_INET;
@@ -1164,6 +1432,10 @@ int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     if (addr == NULL || addrlen == NULL) {
         errno = EINVAL;
         return -1;
+    }
+    if (s->family == AF_UNIX) {
+        un_put_name(s->un_peer, addr, addrlen);
+        return 0;
     }
     if (*addrlen > sizeof s->peer) {
         *addrlen = sizeof s->peer;
