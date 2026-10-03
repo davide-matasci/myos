@@ -3,11 +3,18 @@
 //! Lookup always fails; bytes go through the ABI v7 `read`/`write` hooks.
 //! Syscalls run with interrupts off — never busy-spin, never sleep.
 //! `/net/unix` (local connections) is served here alone, see [`unix`].
+//!
+//! Module calls take no kernel lock: netd's replies (`/dev/netd` writes) land
+//! on one CPU while a reader drains `data` on another, so every entry point
+//! holds [`LOCK`]. Without it a reply appended during a read was lost (curl:
+//! "end of response with N bytes missing").
 
 #![no_std]
 #![no_main]
 
 mod unix;
+
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use myos_abi::{
     status_ok, ABI_VERSION, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo, MYOS_POLLERR,
@@ -167,6 +174,29 @@ fn wake_any() {
 
 fn state() -> &'static mut State {
     unsafe { &mut *core::ptr::addr_of_mut!(STATE) }
+}
+
+static LOCK: AtomicBool = AtomicBool::new(false);
+
+/// [`LOCK`] held until dropped.
+struct Held;
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        LOCK.store(false, Ordering::Release);
+    }
+}
+
+/// Take [`LOCK`] for the rest of an entry point. The unix conversations have
+/// their own lock, taken inside this one, never the other way round.
+fn lock() -> Held {
+    while LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    Held
 }
 
 fn proto_name(p: u8) -> Option<&'static str> {
@@ -602,6 +632,7 @@ unsafe extern "C" fn net_lookup(
 }
 
 unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
+    let _held = lock();
     if out.is_null() {
         return -1;
     }
@@ -663,6 +694,7 @@ unsafe extern "C" fn net_listdir(
     buf_len: usize,
     out_len: *mut usize,
 ) -> i32 {
+    let _held = lock();
     if buf.is_null() || out_len.is_null() {
         return -1;
     }
@@ -719,6 +751,7 @@ unsafe extern "C" fn net_read(
     buf: *mut u8,
     buf_len: usize,
 ) -> i32 {
+    let _held = lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -844,6 +877,7 @@ fn trim_ctl(buf: &[u8]) -> &[u8] {
 /// parent and child share the data fd open count, so hangup fires only when
 /// the last holder closes. Explicit ctl `hangup` write still tears down.
 unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
+    let _held = lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -899,6 +933,7 @@ unsafe extern "C" fn net_write(
     buf: *const u8,
     buf_len: usize,
 ) -> i32 {
+    let _held = lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -960,6 +995,7 @@ unsafe extern "C" fn net_write(
 /// hangup to read, a connection up for writing, a connection to accept.
 /// netd's replies arrive as writes to `/dev/netd`, which wake the pollers.
 unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
+    let _held = lock();
     let Some(node) = (unsafe { c_str(path, path_len) }).and_then(parse_path) else {
         return MYOS_POLLERR | MYOS_POLLHUP;
     };
@@ -992,6 +1028,7 @@ unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
 }
 
 unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
+    let _held = lock();
     if buf.is_null() {
         return -1;
     }
@@ -1003,6 +1040,7 @@ unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
 }
 
 unsafe extern "C" fn chr_write(buf: *const u8, buf_len: usize) -> i32 {
+    let _held = lock();
     if buf_len == 0 {
         return 0;
     }
