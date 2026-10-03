@@ -169,6 +169,13 @@ pub fn claim_session(id: usize) {
         .compare_exchange(usize::MAX, me, Ordering::SeqCst, Ordering::SeqCst);
 }
 
+/// The pty whose session `pid` claimed (TIOCSCTTY), if any: what `/dev/tty`
+/// means to that process and its descendants.
+pub fn claimed_by(pid: usize) -> Option<usize> {
+    let ptys = PTYS.lock();
+    (0..MAX_PTYS).find(|&id| ptys[id].as_ref().is_some_and(|p| p.session.load(Ordering::SeqCst) == pid))
+}
+
 /// TIOCGPTN: slave index for the pair.
 pub fn index(id: usize) -> Option<u32> {
     Some(id as u32)

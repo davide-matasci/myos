@@ -402,6 +402,20 @@ pub(crate) fn open_path(path: &str, flags: usize) -> usize {
             return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
         }
     }
+    // /dev/tty in a pty session (a forkpty child and what it started: an SSH
+    // login, the tty smoke) is that pty's slave, not the console. Sessions
+    // are not real yet (setsid is a no-op in libgloss), so the claim is
+    // looked up along the parent chain.
+    if path_rel == "dev/tty" {
+        let mut pid = Some(task::current_pid());
+        for _ in 0..16 {
+            let Some(p) = pid else { break };
+            if let Some(id) = crate::pty::claimed_by(p) {
+                return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
+            }
+            pid = task::parent_pid(p);
+        }
+    }
     // Named FIFO: the fd is a pipe end, not a file vnode.
     if let Some(id) = fs::vfs::fifo_id(&path) {
         return match task::fd_open_fifo(id, flags as u32) {
