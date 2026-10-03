@@ -1159,8 +1159,11 @@ fn pump_sockets(
                     && !s.can_recv()
                     && (!s.is_active() || !s.may_recv())
                 {
+                    convs[i].hungup = true;
+                    reply(chan, REP_STATUS, conv, 0, b"hangup");
                     {
-                        // DEBUG (not for merge): every tcp hangup.
+                        // DEBUG (not for merge): every tcp hangup, after the
+                        // reply so the log does not delay it.
                         let line = alloc::format!(
                             "\nnetd-dbg hup conv {} state {} total {} rx_room {}\n",
                             conv,
@@ -1170,8 +1173,6 @@ fn pump_sockets(
                         );
                         let _ = write_fd(1, line.as_bytes());
                     }
-                    convs[i].hungup = true;
-                    reply(chan, REP_STATUS, conv, 0, b"hangup");
                 }
             }
         }
