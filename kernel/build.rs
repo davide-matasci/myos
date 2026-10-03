@@ -93,7 +93,8 @@ fn main() {
             &target,
             &profile,
             &out,
-            &["../abi/src/lib.rs", "../virtq/src/lib.rs"],
+            // `.`: crates inside the module's directory too (ext2fs, ps2-scancode).
+            &[".", "../abi/src/lib.rs", "../virtq/src/lib.rs"],
         );
     }
     let _ = nested_elf(
@@ -368,7 +369,8 @@ fn nested_elf(
     extra_rerun: &[&str],
 ) -> Option<PathBuf> {
     let crate_dir = manifest_dir.join(crate_rel);
-    println!("cargo:rerun-if-changed={}/src/main.rs", crate_dir.display());
+    // The whole source tree (a directory is watched recursively).
+    println!("cargo:rerun-if-changed={}/src", crate_dir.display());
     println!("cargo:rerun-if-changed={}/build.rs", crate_dir.display());
     println!("cargo:rerun-if-changed={}/Cargo.toml", crate_dir.display());
     for rel in extra_rerun {
