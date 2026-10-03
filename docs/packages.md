@@ -21,14 +21,15 @@ get-myos [-r ROOT] [-m MIRROR] [-u] PACKAGE...
   files unbound and the package not recorded). The tarball is never stored:
   a tmpfs file holds at most 16 MiB and the riscv64 `os-test` package is
   bigger than that.
-- Then **bind-mounts** the unpacked files where the image has them: a file
-  under `bin/` by itself (`/tmp/pkg/bin/custom/vim` at `/bin/custom/vim`,
-  since `/bin/custom` is a read-only tree with other programs in it),
-  anything else at its second path component (`lib/vim`, `lib/os-test`,
-  `lib/lynx.cfg`). Programs find their files at the usual paths, `PATH`
-  needs no change, and `/proc/mounts` lists the binds. A bind lasts until
-  reboot; `get-myos` records what it installed under
-  `ROOT/var/lib/get-myos/pkgs/`.
+- Then **bind-mounts** the unpacked files where the image has them: the
+  first directory of a file's path that the running system lacks
+  (`/tmp/pkg/lib/vim` at `/lib/vim`, `lib/os-test`), or the file itself
+  when every directory above it exists (`/tmp/pkg/bin/custom/vim` at
+  `/bin/custom/vim`, since `/bin/custom` is a read-only tree with other
+  programs in it; a package's test script into `/lib/myos-tests/ports/`).
+  Programs find their files at the usual paths, `PATH` needs no change,
+  and `/proc/mounts` lists the binds. A bind lasts until reboot; `get-myos`
+  records what it installed under `ROOT/var/lib/get-myos/pkgs/`.
 - The mirror is `-m`, else `$MYOS_MIRROR`, else the project's rolling
   GitHub release (`.../releases/download/packages`). Downloads go through
   `curl` (in every image, with the CA bundle).
