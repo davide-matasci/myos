@@ -77,9 +77,13 @@ void mkdirs(const char *path, int self) {
 
 /* ---- running curl ------------------------------------------------------- */
 
-/* One curl run, appending to what earlier runs left in dest (-C -). A
- * transfer is cut off only when it stalls (under 1 KB/s for a minute), not
- * after a fixed time: big packages take long under emulation. */
+/* curl's exit status when the server cannot resume a transfer. */
+#define CURL_CANNOT_RESUME 33
+
+/* One curl run, appending to what earlier runs left in dest (-C -): curl's
+ * exit status (-1 if it did not run). A transfer is cut off only when it
+ * stalls (under 1 KB/s for a minute), not after a fixed time: big packages
+ * take long under emulation. */
 static int download_once(const char *url, const char *dest) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -92,10 +96,10 @@ static int download_once(const char *url, const char *dest) {
         _exit(127);
     }
     int status = 0;
-    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) {
         return -1;
     }
-    return 0;
+    return WEXITSTATUS(status);
 }
 
 static long long file_size(const char *path) {
@@ -142,16 +146,23 @@ int download_close(int fd, int pid) {
 /* A transient connect failure should not fail the whole install. */
 int download(const char *url, const char *dest) {
     /* Mirrors drop long transfers: each retry resumes where the last one
-     * stopped, and only three in a row without progress give up. */
+     * stopped (or starts over from a server that cannot resume), and three
+     * in a row that get no further than before give up. */
     unlink(dest);
-    long long had = 0;
+    long long best = 0;
     for (int stuck = 0;;) {
-        if (download_once(url, dest) == 0) {
+        int rc = download_once(url, dest);
+        if (rc == 0) {
             return 0;
         }
         long long now = file_size(dest);
-        stuck = now > had ? 0 : stuck + 1;
-        had = now;
+        stuck = now > best ? 0 : stuck + 1;
+        if (now > best) {
+            best = now;
+        }
+        if (rc == CURL_CANNOT_RESUME) {
+            unlink(dest);
+        }
         if (stuck == 3) {
             unlink(dest);
             return -1;
