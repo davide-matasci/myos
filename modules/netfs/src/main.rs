@@ -2,9 +2,12 @@
 //!
 //! Lookup always fails; bytes go through the ABI v7 `read`/`write` hooks.
 //! Syscalls run with interrupts off — never busy-spin, never sleep.
+//! `/net/unix` (local connections) is served here alone, see [`unix`].
 
 #![no_std]
 #![no_main]
+
+mod unix;
 
 use myos_abi::{status_ok, ABI_VERSION, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo};
 
@@ -14,6 +17,7 @@ const S_IFREG: u32 = 0o100000;
 const PROTO_TCP: u8 = 1;
 const PROTO_UDP: u8 = 2;
 const PROTO_ICMP: u8 = 3;
+const PROTO_UNIX: u8 = 4;
 
 const REQ_CLONE: u8 = 1;
 const REQ_CTL: u8 = 2;
@@ -149,6 +153,7 @@ fn proto_name(p: u8) -> Option<&'static str> {
         PROTO_TCP => Some("tcp"),
         PROTO_UDP => Some("udp"),
         PROTO_ICMP => Some("icmp"),
+        PROTO_UNIX => Some("unix"),
         _ => None,
     }
 }
@@ -158,6 +163,7 @@ fn parse_proto(s: &str) -> Option<u8> {
         "tcp" => Some(PROTO_TCP),
         "udp" => Some(PROTO_UDP),
         "icmp" => Some(PROTO_ICMP),
+        "unix" => Some(PROTO_UNIX),
         _ => None,
     }
 }
@@ -185,6 +191,22 @@ enum Node {
     Ctl(u8, u16),
     Data(u8, u16),
     Status(u8, u16),
+    /// `/net/unix/N/listen`: connections waiting to be accepted.
+    Listen(u8, u16),
+}
+
+impl Node {
+    fn proto(self) -> Option<u8> {
+        match self {
+            Node::Root => None,
+            Node::Proto(p) | Node::Clone(p) => Some(p),
+            Node::ConvDir(p, _)
+            | Node::Ctl(p, _)
+            | Node::Data(p, _)
+            | Node::Status(p, _)
+            | Node::Listen(p, _) => Some(p),
+        }
+    }
 }
 
 fn parse_path(path: &str) -> Option<Node> {
@@ -210,6 +232,9 @@ fn parse_path(path: &str) -> Option<Node> {
                 Some("ctl") if it.next().is_none() => Some(Node::Ctl(proto, conv)),
                 Some("data") if it.next().is_none() => Some(Node::Data(proto, conv)),
                 Some("status") if it.next().is_none() => Some(Node::Status(proto, conv)),
+                Some("listen") if it.next().is_none() && proto == PROTO_UNIX => {
+                    Some(Node::Listen(proto, conv))
+                }
                 _ => None,
             }
         }
@@ -537,7 +562,12 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
     let Some(node) = parse_path(path) else {
         return -1;
     };
+    let unix = if node.proto() == Some(PROTO_UNIX) { unix::stat(node) } else { None };
     let (mode, size, ino) = match node {
+        _ if node.proto() == Some(PROTO_UNIX) => match unix {
+            Some(st) => st,
+            None => return -1,
+        },
         Node::Root => (S_IFDIR | 0o755, 0u32, 1u32),
         Node::Proto(p) => (S_IFDIR | 0o755, 0, 10 + p as u32),
         Node::Clone(p) => (S_IFREG | 0o666, 0, 20 + p as u32),
@@ -547,6 +577,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
             }
             (S_IFDIR | 0o755, 0, 100 + id as u32)
         }
+        Node::Listen(_, _) => return -1,
         Node::Ctl(p, id) | Node::Data(p, id) | Node::Status(p, id) => {
             if !conv_ok(id, p) {
                 return -1;
@@ -597,10 +628,16 @@ unsafe extern "C" fn net_listdir(
     };
     let mut n = 0usize;
     match node {
+        _ if node.proto() == Some(PROTO_UNIX) => {
+            if !unix::listdir(node, dst, &mut n) {
+                return -1;
+            }
+        }
         Node::Root => {
             let _ = put_bytes(dst, &mut n, b"tcp");
             let _ = put_bytes(dst, &mut n, b"udp");
             let _ = put_bytes(dst, &mut n, b"icmp");
+            let _ = put_bytes(dst, &mut n, b"unix");
         }
         Node::Proto(p) => {
             let _ = put_bytes(dst, &mut n, b"clone");
@@ -642,6 +679,9 @@ unsafe extern "C" fn net_read(
     let Some(node) = parse_path(path) else {
         return -1;
     };
+    if node.proto() == Some(PROTO_UNIX) {
+        return unix::read(node, pos, out);
+    }
     match node {
         Node::Clone(p) => {
             if pos > 0 {
@@ -761,6 +801,10 @@ unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
     let Some(node) = parse_path(path) else {
         return -1;
     };
+    if node.proto() == Some(PROTO_UNIX) {
+        unix::release(node);
+        return 0;
+    }
     // Ctl/Status: open-count zero must not tear down — clients open+close
     // these transiently while the TCP conversation must stay alive.
     let (p, id) = match node {
@@ -815,6 +859,9 @@ unsafe extern "C" fn net_write(
     let Some(node) = parse_path(path) else {
         return -1;
     };
+    if node.proto() == Some(PROTO_UNIX) {
+        return unix::write(node, src);
+    }
     match node {
         Node::Ctl(p, id) => {
             if !conv_ok(id, p) {
@@ -904,6 +951,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         rename: None,
         symlink: None,
         release: Some(net_release),
+        mmap: None,
         readlink: None,
     };
     let mount_rc = unsafe {

@@ -336,7 +336,8 @@ the kernel does not keep a per-task copy at syscall entry.
     are mapped at once; a file mapping past that is read in whole when it
     is made;
   - a 16 MiB `brk` heap;
-  - 64 fds per process, 64 tasks in total;
+  - 64 fds per process, 512 open file descriptions in the system, 64 tasks
+    in total;
   - `/tmp` (tmpfs) files of at most 16 MiB each, all of them in the
     kernel heap (a quarter of the memory, 64 MiB to 1 GiB: 256 MiB in the
     1 GiB CI guests).

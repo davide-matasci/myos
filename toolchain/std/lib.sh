@@ -172,7 +172,7 @@ myos_std_hello_is_current() {
     && [[ "$(cat "$MYOS_STD_HELLO_VERSION")" == "$(myos_std_hello_version_hash)" ]] \
     || return 1
   for triple in "${MYOS_USER_TRIPLES[@]+"${MYOS_USER_TRIPLES[@]}"}"; do
-    for name in hello cat echo bigalloc; do
+    for name in hello cat echo bigalloc sleep; do
       [[ -f "$MYOS_ROOT/target/std-${name}-${triple}" ]] || return 1
     done
   done

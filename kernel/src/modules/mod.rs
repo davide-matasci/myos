@@ -198,23 +198,83 @@ pub fn modules_text() -> alloc::vec::Vec<u8> {
     out
 }
 
-/// Load `image` (an ELF file already in memory) and run `module_init`.
+/// Load `image` (an ELF file already in memory) and run `module_init`. The
+/// module is in the registry while its init runs, so what it registers is
+/// counted against it; a failed init takes it out again.
 pub fn load(name: &'static str, image: &[u8]) -> Result<(), elf::LoadError> {
     let loaded = elf::load(image)?;
-    let rc = match loaded.init {
-        Some(init) => unsafe { init(&API) },
-        None => {
-            unsafe { loaded.free() };
-            return Err(elf::LoadError::MissingInit);
-        }
-    };
-    if rc != 0 {
+    let Some(init) = loaded.init else {
         unsafe { loaded.free() };
+        return Err(elf::LoadError::MissingInit);
+    };
+    registry::register(LoadedModule {
+        name,
+        base: loaded.base as usize,
+        size: loaded.size,
+        exit: loaded.exit,
+        rescan: loaded.rescan,
+        registrations: 0,
+    });
+    let rc = registry::as_module(name, || unsafe { init(&API) });
+    if rc != 0 {
+        // Whatever it registered before failing stays (there is no
+        // unregister); the image goes only when it registered nothing.
+        if let Ok(Some(_)) = registry::remove_if_free(name) {
+            unsafe { loaded.free() };
+        }
         return Err(elf::LoadError::InitFailed(rc));
     }
-    registry::register(LoadedModule { name });
     debug_assert!(by_name(name).is_some());
     Ok(())
+}
+
+/// `rmmod`: unload the module `name` when nothing it registered is in
+/// place: run its `module_exit` and free its image.
+pub fn rmmod(name: &str) -> Result<(), RmmodError> {
+    let module = match registry::remove_if_free(name) {
+        Ok(Some(m)) => m,
+        Ok(None) => return Err(RmmodError::NotLoaded),
+        Err(n) => return Err(RmmodError::Busy(n)),
+    };
+    if let Some(exit) = module.exit {
+        registry::as_module(module.name, || unsafe { exit() });
+    }
+    unsafe { elf::free_image(module.base as *mut u8, module.size) };
+    Ok(())
+}
+
+pub enum RmmodError {
+    NotLoaded,
+    Busy(u32),
+}
+
+impl core::fmt::Display for RmmodError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotLoaded => write!(f, "no module of that name is loaded"),
+            Self::Busy(n) => write!(f, "in use: {n} registration(s) (a device, a filesystem, a mount, ...)"),
+        }
+    }
+}
+
+/// After a `rescan` of `/proc/pci`: every module with a `module_rescan`
+/// probes for devices that appeared since its init and registers them.
+pub fn rescan_all() {
+    for m in registry::all() {
+        if let Some(rescan) = m.rescan {
+            registry::as_module(m.name, || unsafe { rescan() });
+        }
+    }
+}
+
+/// A registration the running module's call just made.
+fn noted(ok: bool) -> i32 {
+    if ok {
+        registry::note_registration();
+        0
+    } else {
+        -1
+    }
 }
 
 pub use registry::{LoadedModule, by_name};
@@ -317,11 +377,7 @@ unsafe extern "C" fn api_fs_register(name: *const u8, name_len: usize, bind: FsB
     let Ok(name) = core::str::from_utf8(name_bytes) else {
         return -1;
     };
-    if crate::fs::register_fstype(name, bind) {
-        0
-    } else {
-        -1
-    }
+    noted(crate::fs::register_fstype(name, bind))
 }
 
 unsafe extern "C" fn api_vfs_register(
@@ -346,11 +402,7 @@ unsafe extern "C" fn api_vfs_register(
         unsafe { core::slice::from_raw_parts(data, data_len) }
     };
     let leaked: &'static [u8] = alloc::boxed::Box::leak(src.to_vec().into_boxed_slice());
-    if crate::fs::register("bootfs", name, leaked) {
-        0
-    } else {
-        -1
-    }
+    noted(crate::fs::register("bootfs", name, leaked))
 }
 
 unsafe extern "C" fn api_vfs_register_static(
@@ -374,11 +426,7 @@ unsafe extern "C" fn api_vfs_register_static(
     } else {
         unsafe { core::slice::from_raw_parts(data, data_len) }
     };
-    if crate::fs::register_static("bootfs", name, bytes) {
-        0
-    } else {
-        -1
-    }
+    noted(crate::fs::register_static("bootfs", name, bytes))
 }
 
 unsafe extern "C" fn api_vfs_mount(
@@ -403,11 +451,7 @@ unsafe extern "C" fn api_vfs_mount(
     if ops.lookup as usize == 0 {
         return -1;
     }
-    if crate::fs::mount_module(name, prefix, ops) {
-        0
-    } else {
-        -1
-    }
+    noted(crate::fs::mount_module(name, prefix, ops))
 }
 
 unsafe extern "C" fn api_pci_cfg_read32(bus: u8, slot: u8, func: u8, off: u8) -> u32 {
@@ -497,11 +541,7 @@ unsafe extern "C" fn api_dev_register(
         return -1;
     };
     let ops = unsafe { *ops };
-    if crate::fs::register_chrdev(name, ops) {
-        0
-    } else {
-        -1
-    }
+    noted(crate::fs::register_chrdev(name, ops))
 }
 
 unsafe extern "C" fn api_copy_to_user(dst_user: usize, src: *const u8, len: usize) -> i32 {
@@ -542,11 +582,7 @@ unsafe extern "C" fn api_proc_register(
         unsafe { core::slice::from_raw_parts(data, data_len) }
     };
     let leaked: &'static [u8] = alloc::boxed::Box::leak(src.to_vec().into_boxed_slice());
-    if crate::fs::procfs_register(name, leaked) {
-        0
-    } else {
-        -1
-    }
+    noted(crate::fs::procfs_register(name, leaked))
 }
 
 unsafe extern "C" fn api_acpi_rsdp() -> usize {
@@ -569,11 +605,12 @@ unsafe extern "C" fn api_proc_set_writer(
     let Ok(name) = core::str::from_utf8(name_bytes) else {
         return -1;
     };
-    if crate::fs::procfs_set_writer(name, writer) {
-        0
-    } else {
-        -1
+    // Clearing a writer provides nothing; setting one does.
+    let ok = crate::fs::procfs_set_writer(name, writer);
+    if ok && writer.is_some() {
+        registry::note_registration();
     }
+    if ok { 0 } else { -1 }
 }
 
 unsafe extern "C" fn api_pci_irq_enable(
@@ -601,6 +638,7 @@ unsafe extern "C" fn api_pci_irq_enable(
     if !crate::irq::register(route.irq, name, handler, ctx as usize) {
         return -1;
     }
+    registry::note_registration();
     unsafe {
         *msix_entry = route.msix_entry.unwrap_or(myos_abi::MYOS_IRQ_INTX);
     }
@@ -638,7 +676,10 @@ unsafe extern "C" fn api_blk_register(
     };
     let ops = unsafe { *ops };
     match crate::blk::register(name, ops, ctx) {
-        Some(id) => id as i32,
+        Some(id) => {
+            registry::note_registration();
+            id as i32
+        }
         None => -1,
     }
 }
@@ -685,7 +726,7 @@ unsafe extern "C" fn api_console_register(ops: *const ModuleConsoleOps) -> i32 {
         return -1;
     }
     let ops = unsafe { *ops };
-    if console::register(ops) { 0 } else { -1 }
+    noted(console::register(ops))
 }
 
 // ---- ABI 13: personalities and the services a syscall layer needs ----------
@@ -711,7 +752,7 @@ unsafe extern "C" fn api_personality_register(ops: *const PersonalityOps) -> i32
     if ops.is_null() {
         return -1;
     }
-    if crate::personality::register(unsafe { *ops }) { 0 } else { -1 }
+    noted(crate::personality::register(unsafe { *ops }))
 }
 
 unsafe extern "C" fn api_personality_exec(

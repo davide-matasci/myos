@@ -112,6 +112,9 @@ const SYS_GETTID: usize = 57;
 /// `insmod(path, len)`: load the kernel module ELF at `path` (named after
 /// its last path component). 0 ok, `SYSERR` on any failure.
 const SYS_INSMOD: usize = 58;
+/// `rmmod(name, len)`: unload the kernel module `name` when nothing it
+/// registered is in place. 0 ok, `SYSERR` on any failure.
+const SYS_RMMOD: usize = 59;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
@@ -258,6 +261,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_WAKE_ADDR => task::wake_addr(a0, a1),
         SYS_GETTID => task::current_tid(),
         SYS_INSMOD => sys_insmod(a0, a1),
+        SYS_RMMOD => sys_rmmod(a0, a1),
         SYS_LINUX_NEXT_EXEC => {
             if crate::personality::request_next_exec() { 0 } else { SYSERR }
         }
@@ -377,6 +381,22 @@ fn sys_insmod(ptr: usize, path_len: usize) -> usize {
         Ok(()) => 0,
         Err(e) => {
             crate::console::status_fail(&alloc::format!("insmod {path}: {e}"));
+            SYSERR
+        }
+    }
+}
+
+fn sys_rmmod(ptr: usize, name_len: usize) -> usize {
+    let Some(buf) = copy_user_path(ptr, name_len) else {
+        return SYSERR;
+    };
+    let Ok(name) = core::str::from_utf8(&buf[..name_len]) else {
+        return SYSERR;
+    };
+    match crate::modules::rmmod(name) {
+        Ok(()) => 0,
+        Err(e) => {
+            crate::console::status_fail(&alloc::format!("rmmod {name}: {e}"));
             SYSERR
         }
     }
@@ -1256,12 +1276,10 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     if len == 0 {
         return SYSERR;
     }
-    if flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
-        // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
-        return SYSERR;
-    }
     // File mappings are private copies: the pages are filled from the file
-    // when first touched and never written back.
+    // when first touched and never written back. A shared mapping of a
+    // device (a module's `mmap` hook: `/dev/fb/data`) maps the device's own
+    // pages at once.
     let file = if flags & MAP_ANON != 0 {
         None
     } else {
@@ -1273,12 +1291,26 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             None => return SYSERR,
         }
     };
+    let device = match &file {
+        Some(node) if flags & MAP_SHARED != 0 => fs::device_frame(node, offset).is_some(),
+        _ => false,
+    };
+    if !device && flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
+        // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
+        return SYSERR;
+    }
     let (base, _span, stack_off) = task::current_user_map();
     let area_lo = mmap_base_va(base, stack_off) as usize;
     let area_hi = mmap_limit_va(base, stack_off) as usize;
     let pages = len.div_ceil(PAGE);
     if pages == 0 || pages > MMAP_AREA_PAGES {
         return SYSERR;
+    }
+    if let (true, Some(node)) = (device, &file) {
+        // Every page must be the device's (none past its end).
+        if !(0..pages).all(|i| fs::device_frame(node, offset + i * PAGE).is_some()) {
+            return SYSERR;
+        }
     }
     let map_len = pages * PAGE;
     let aspace = task::current_aspace();
@@ -1291,12 +1323,11 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         }
         // MAP_FIXED replaces whatever is mapped there (a dynamic linker maps
         // each segment over the span it reserved first).
+        let old = task::mmap_regions();
         if !task::mmap_remove(hint as u64, pages as u32) {
             return SYSERR;
         }
-        for i in 0..pages {
-            free_mapped_page(aspace, (hint + i * PAGE) as u64);
-        }
+        release_mmap_range(aspace, &old, hint as u64, pages);
         hint
     } else {
         match task::mmap_alloc(area_lo, area_hi, map_len) {
@@ -1304,6 +1335,22 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             None => return SYSERR,
         }
     };
+    if let (true, Some(node)) = (device, &file) {
+        for i in 0..pages {
+            if let Some(frame) = fs::device_frame(node, offset + i * PAGE) {
+                map_user_page_prot(aspace, (va + i * PAGE) as u64, frame, prot);
+            }
+        }
+        if !task::mmap_add(va as u64, pages as u32, prot as u32 | task::MMAP_DEVICE, None) {
+            for i in 0..pages {
+                unmap_user_page(aspace, (va + i * PAGE) as u64);
+            }
+            flush_user_tlb();
+            return SYSERR;
+        }
+        flush_user_tlb();
+        return va;
+    }
     // The pages get their frames on first touch (`fault_in`), so a large
     // reservation or a big library costs only what is used.
     if task::mmap_add(va as u64, pages as u32, prot as u32, file.as_ref().map(|node| (node, offset))) {
@@ -1357,15 +1404,11 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     if addr < area_lo || addr.saturating_add(map_len) > area_hi {
         return SYSERR;
     }
+    let old = task::mmap_regions();
     if !task::mmap_remove(addr as u64, pages as u32) {
         return SYSERR;
     }
-    let aspace = task::current_aspace();
-    let mut off = 0;
-    while off < map_len {
-        free_mapped_page(aspace, (addr + off) as u64);
-        off += PAGE;
-    }
+    release_mmap_range(task::current_aspace(), &old, addr as u64, pages);
     flush_user_tlb();
     0
 }

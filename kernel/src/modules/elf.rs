@@ -9,7 +9,7 @@
 //! (USER_BASE), with no `module_init`.
 
 use alloc::alloc::{alloc_zeroed, dealloc, Layout};
-use myos_abi::{ModuleExit, ModuleInit};
+use myos_abi::{ModuleExit, ModuleInit, ModuleRescan};
 
 const ELFMAG: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELFCLASS64: u8 = 2;
@@ -68,16 +68,21 @@ pub struct Loaded {
     pub base: *mut u8,
     pub size: usize,
     pub init: Option<ModuleInit>,
-    #[allow(dead_code)] // resolved for a future unload path; nothing unloads yet
     pub exit: Option<ModuleExit>,
+    pub rescan: Option<ModuleRescan>,
 }
 
 impl Loaded {
     pub unsafe fn free(self) {
-        if !self.base.is_null() && self.size != 0 {
-            if let Ok(layout) = Layout::from_size_align(self.size, PAGE) {
-                unsafe { dealloc(self.base, layout) };
-            }
+        unsafe { free_image(self.base, self.size) }
+    }
+}
+
+/// Release a loaded image (`rmmod`, or a module whose init failed).
+pub unsafe fn free_image(base: *mut u8, size: usize) {
+    if !base.is_null() && size != 0 {
+        if let Ok(layout) = Layout::from_size_align(size, PAGE) {
+            unsafe { dealloc(base, layout) };
         }
     }
 }
@@ -308,7 +313,7 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, LoadError> {
         unsafe { dealloc(base, layout) };
         return Err(e);
     }
-    let (init, exit) = lookup_entry_points(
+    let (init, exit, rescan) = lookup_entry_points(
         bytes,
         hdr.e_shoff,
         hdr.e_shentsize,
@@ -320,6 +325,7 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, LoadError> {
         size: info.span.max(1),
         init,
         exit,
+        rescan,
     })
 }
 
@@ -519,9 +525,10 @@ fn lookup_entry_points(
     shentsize: usize,
     shnum: usize,
     load_bias: u64,
-) -> Result<(Option<ModuleInit>, Option<ModuleExit>), LoadError> {
+) -> Result<(Option<ModuleInit>, Option<ModuleExit>, Option<ModuleRescan>), LoadError> {
     let mut init = None;
     let mut exit = None;
+    let mut rescan = None;
     for i in 0..shnum {
         let sh = shoff + i * shentsize;
         let sh_type = u32_at(bytes, sh + 4)?;
@@ -556,11 +563,14 @@ fn lookup_entry_points(
                 Some(b"module_exit") => {
                     exit = Some(unsafe { core::mem::transmute::<usize, ModuleExit>(addr) });
                 }
+                Some(b"module_rescan") => {
+                    rescan = Some(unsafe { core::mem::transmute::<usize, ModuleRescan>(addr) });
+                }
                 _ => {}
             }
         }
     }
-    Ok((init, exit))
+    Ok((init, exit, rescan))
 }
 
 fn cstr_at(bytes: &[u8], off: usize) -> Option<&[u8]> {

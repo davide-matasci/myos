@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 15;
+pub const ABI_VERSION: u32 = 16;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
@@ -111,6 +111,13 @@ pub struct ModuleVfsOps {
     /// mid-life close: after fork() several fds share one conv, and the
     /// parent's close must not kill the child's connection.
     pub release: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
+    // --- ABI 16: device memory ---
+    /// Optional: the physical address of the page at byte `offset` (page
+    /// aligned) of `path`, for `mmap` of device memory (`/dev/fb/data`), or 0
+    /// when that page cannot be mapped. The page stays the module's: the
+    /// kernel maps it shared into every process that asks, never copies it
+    /// on fork and never frees it.
+    pub mmap: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, offset: usize) -> u64>,
 }
 
 /// Module-provided block device (`KernelApi::blk_register`). Sector size is
@@ -631,5 +638,12 @@ pub fn status_warn(api: &KernelApi, label: &str) {
 /// `module_init` — required. Return 0 on success.
 pub type ModuleInit = unsafe extern "C" fn(*const KernelApi) -> i32;
 
-/// `module_exit` — optional cleanup.
+/// `module_exit` — optional cleanup, run by `rmmod` once nothing the module
+/// registered is left (the kernel counts a module's registrations and
+/// refuses to unload one that still provides something).
 pub type ModuleExit = unsafe extern "C" fn();
+
+/// `module_rescan` — optional: probe for devices that appeared since
+/// `module_init` and register the new ones, leaving the known ones as they
+/// are. The kernel calls it after a `rescan` written to `/proc/pci`.
+pub type ModuleRescan = unsafe extern "C" fn();

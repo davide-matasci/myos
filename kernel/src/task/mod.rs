@@ -84,12 +84,19 @@ pub const MAX_MAPPED_FILES: usize = 64;
 pub struct MmapRegion {
     pub va: u64,
     pub pages: u32,
+    /// `PROT_*` bits, plus [`MMAP_DEVICE`].
     pub prot: u32,
     /// 0: anonymous; else the process's `mapped_files[file - 1]`.
     pub file: u32,
     /// The file offset of the first page, in pages.
     pub fpage: u32,
 }
+
+/// [`MmapRegion::prot`] flag: the pages are a device's (a module's `mmap`
+/// hook, `/dev/fb/data`), mapped shared. Unmapping (munmap, exec, exit)
+/// leaves them to the device instead of freeing them, and fork maps the
+/// same pages into the child instead of copying them.
+pub const MMAP_DEVICE: u32 = 1 << 31;
 
 const EMPTY_MMAP_REGION: MmapRegion = MmapRegion { va: 0, pages: 0, prot: 0, file: 0, fpage: 0 };
 const EMPTY_MMAP: [MmapRegion; MAX_MMAP_REGIONS] = [EMPTY_MMAP_REGION; MAX_MMAP_REGIONS];

@@ -224,7 +224,8 @@ pub fn mmap_remove(va: u64, pages: u32) -> bool {
     with_process_mut(|t| carve(&mut t.mmap, lo, hi).is_some())
 }
 
-/// Record `prot` for the mapped parts of `[va, va + pages)`.
+/// Record `prot` for the mapped parts of `[va, va + pages)` (a device
+/// mapping stays one).
 pub fn mmap_set_prot(va: u64, pages: u32, prot: u32) -> bool {
     let page = crate::user::PAGE;
     let lo = va as usize;
@@ -239,7 +240,7 @@ pub fn mmap_set_prot(va: u64, pages: u32, prot: u32) -> bool {
                 t.mmap = saved;
                 return false;
             };
-            *r = MmapRegion { prot, ..part };
+            *r = MmapRegion { prot: prot | (part.prot & MMAP_DEVICE), ..part };
         }
         coalesce(&mut t.mmap, None);
         true
