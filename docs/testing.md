@@ -85,7 +85,7 @@ t make make_version
 `[ "$MODE" = full ] || return 0`), `$OUT` is the output directory,
 `contains NEEDLE FILE` greps, fd 3 is the console (`echo "HOST ..." >&3`;
 a long test can stream its progress there, os-test does). Keep the
-output of a passing test to itself: failures show the first 40 lines.
+output of a passing test to itself: failures show the last 40 lines.
 
 ## On the host
 

@@ -53,7 +53,7 @@ t() {
 		echo "TEST $name PASS"
 	else
 		echo "TEST $name FAIL (exit $rc)"
-		head -n 40 $OUT/$name.out | sed 's/^/    /'
+		tail -n 40 $OUT/$name.out | sed 's/^/    /'
 	fi
 }
 
