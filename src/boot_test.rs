@@ -99,7 +99,7 @@ const BOOT_MARKERS: [&str; 33] = [
     "[ OK ] tmp",
     "[ OK ] tmpops",
     "[ OK ] proc",
-    "[ OK ] ioctl",
+    "[ OK ] tty",
     "[ OK ] signal",
 ];
 
