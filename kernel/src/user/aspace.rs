@@ -137,6 +137,10 @@ pub(super) fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
 pub(super) fn release_mmap_range(aspace: u64, mmap: &[task::MmapRegion], va: u64, pages: usize) {
     for i in 0..pages {
         let page_va = va + (i * PAGE) as u64;
+        // Most pages of a lazy mapping were never touched.
+        if virt_to_phys(aspace, page_va).is_none() {
+            continue;
+        }
         let device = mmap.iter().any(|r| {
             r.pages != 0
                 && r.prot & task::MMAP_DEVICE != 0
@@ -212,6 +216,68 @@ pub fn reclaim_user_aspace(
     free_mmap_regions(aspace, mmap);
     free_user_page_tables(aspace);
     flush_user_tlb();
+}
+
+/// How a fault touched a page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Read,
+    Write,
+    Exec,
+}
+
+/// Two threads of a process touching the same new page must not both map it.
+static FAULT_LOCK: Mutex<()> = Mutex::new(());
+
+/// Page in the mmap page at `va` of the current process on its first touch,
+/// from userspace (a page fault) or from a kernel copy: a zeroed frame,
+/// filled from the file that backs the region. False when `va` is in no
+/// region or the region's protection forbids `access`: a real fault.
+pub fn fault_in(va: usize, access: Access) -> bool {
+    let page = va & !(PAGE - 1);
+    let Some((prot, file)) = task::mmap_backing(page) else {
+        return false;
+    };
+    // A device's pages are mapped with the region, never paged in.
+    if prot & task::MMAP_DEVICE != 0 {
+        return false;
+    }
+    let prot = prot as usize;
+    let allowed = match access {
+        Access::Read => prot != 0,
+        Access::Write => prot & PROT_WRITE != 0,
+        Access::Exec => prot & PROT_EXEC != 0,
+    };
+    if !allowed {
+        return false;
+    }
+    let aspace = task::current_aspace();
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    let guard = FAULT_LOCK.lock();
+    // Another thread may have paged it in meanwhile: then only the
+    // protection is (re)applied.
+    let frame = virt_to_phys(aspace, page as u64).unwrap_or_else(|| {
+        let frame = mm::alloc_frame_site(4);
+        if let Some((node, off)) = file {
+            // Past the end of the file the frame stays zero.
+            let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
+            let _ = fs::read(&node, off, dst);
+        }
+        frame
+    });
+    map_user_page_prot(aspace, page as u64, frame, prot);
+    if prot & PROT_EXEC != 0 {
+        sync_icache(mm::hhdm(frame) as usize, PAGE);
+        sync_icache(page, PAGE);
+    }
+    // The page was not mapped before: no other CPU can hold a translation
+    // for it (one that faults on it meanwhile flushes its own TLB here), so
+    // a local flush does, without riscv64's shootdown IPI per fault.
+    crate::arch::flush_tlb_local();
+    drop(guard);
+    crate::arch::irq_restore(flags);
+    true
 }
 
 pub(super) fn free_mapped_page(aspace: u64, va: u64) {

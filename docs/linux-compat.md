@@ -53,7 +53,9 @@ linux --root ROOT PROGRAM [ARG...]
    then unpacked into `ROOT`. Installed packages
    (`ROOT/var/lib/get-alpine/pkgs/`) are skipped. Install scripts are not
    run, and the index signature is not checked (the download is HTTPS).
-   A failed download is retried twice.
+   A dropped download resumes where it stopped (or starts over from a
+   server that cannot resume); three attempts in a row that get no further
+   give up.
 3. Alpine keeps `/lib` and `/usr/lib` separate, so no symlinks are needed:
    the dynamic linker is `/lib/ld-musl-<arch>.so.1`.
 
@@ -67,6 +69,21 @@ the bind), so the chrooted process sees them like any other directory.
 `ALPINE_MIRROR` overrides `https://dl-cdn.alpinelinux.org/alpine` and
 `ALPINE_BRANCH` overrides `latest-stable`. `/tmp` is a tmpfs in the kernel
 heap, so a root there holds a few small packages and is gone at reboot.
+A bigger one goes on a disk, for instance Alpine's Rust compiler (rust,
+LLVM and gcc: ~300 MB of downloads, ~600 MB installed) on the scratch disk
+of a test boot:
+
+```sh
+mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /disk ext2
+get-alpine -r /disk/alpine rust
+linux --root /disk/alpine rustc --version
+```
+
+Under emulation that download takes a couple of hours (the mirror drops
+long transfers; each one resumes). The same root made on the host is
+quicker: `linux-compat/alpine-disk.sh ARCH OUT.img PACKAGE...` builds
+get-alpine for the host (`-DALPINE_ARCH`), installs the packages for ARCH
+into a directory and makes an ext2 image of it, to attach as a disk.
 
 ## Turning it on
 
@@ -253,15 +270,21 @@ ones) from `/lib`, `/usr/local/lib`, `/usr/lib` with `open`, `read`,
 `pread64` and `mmap` of the file, and maps each segment over the span it
 reserved first. That needed core `mmap` work, which native programs share:
 
-- file-backed `MAP_PRIVATE` mappings (the pages are a copy of the file,
-  filled at map time; `MAP_SHARED` file mappings are refused);
+- file-backed `MAP_PRIVATE` mappings (the pages are a private copy of the
+  file, never written back; `MAP_SHARED` file mappings are refused);
+- demand paging: a mapping takes no memory until it is used. The first
+  touch of a page, a page fault from userspace or a kernel copy into a user
+  buffer, gives it a frame, zeroed or read from the file
+  (`user::fault_in`). rustc reserves 256 MiB for its allocator and maps
+  some 250 MiB of libraries, and `rustc --version` touches about 30 MiB of
+  it. A file changed or deleted while mapped gives its new contents (or
+  zeros) to the pages not touched yet;
 - `MAP_FIXED` replaces whatever is mapped in its range;
 - `munmap` of any range in the `mmap` window (holes included) and
   `mprotect` of part of a mapping split the mapping;
 - free address space is reused (first fit) instead of only growing;
-- a larger window (128 MiB on x86_64, 64 MiB on aarch64 / riscv64) and 64
-  mappings per process; aarch64 user address spaces may span 128 MiB
-  (previously 8 MiB).
+- a larger window (4 GiB on x86_64, 960 MiB on aarch64 / riscv64, whose
+  user address spaces span 1 GiB) and 256 mappings per process.
 
 ## Signal handlers
 
@@ -307,10 +330,12 @@ the kernel does not keep a per-task copy at syscall entry.
     filesystem (the initramfs has no limit) whose loaded image spans at
     most 1152 pages (4.5 MiB). Shared objects are mapped with `mmap` and
     do not count;
-  - a per-process `mmap` window of 128 MiB (x86_64) / 64 MiB (aarch64,
+  - a per-process `mmap` window of 4 GiB (x86_64) / 960 MiB (aarch64,
     riscv64) with at most 256 mappings; adjacent mappings with the same
-    protection are merged (musl's malloc makes hundreds of small
-    neighbouring ones: jq peaks at 188);
+    protection and backing are merged (musl's malloc makes hundreds of
+    small neighbouring ones: jq peaks at 188). At most 64 distinct files
+    are mapped at once; a file mapping past that is read in whole when it
+    is made;
   - a 16 MiB `brk` heap;
   - 64 fds per process, 512 open file descriptions in the system, 64 tasks
     in total;
@@ -338,8 +363,12 @@ its 19 dependencies, ~45 MB) and runs
 `python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])'`
 (the standard library and two C extension modules), expecting `PYTHON 42`,
 and fetches `http://example.com/` with `urllib` (DNS over UDP, then TCP),
-expecting `HTTP 200`. They need the Alpine mirror and `example.com` to be
-reachable.
+expecting `HTTP 200`. Last, it mounts the disk the launcher made on the
+host with `linux-compat/alpine-disk.sh ARCH target/alpine-rust-ARCH.img
+rust` (kept in `target/`: remove it for newer packages) and attached as
+`/dev/nvme2n1` (writes go to a QEMU snapshot), and runs `rustc --version`
+from it, expecting `rustc 1.`. They need the Alpine mirror and
+`example.com` to be reachable.
 
 Without the feature (the quick list, the normal PR CI), the test instead
 runs `insmod /lib/modules/linux` and expects `[ OK ] linux` and the module

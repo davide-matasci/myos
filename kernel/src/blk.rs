@@ -139,6 +139,13 @@ pub fn read_bytes(dev: u32, offset: u64, buf: &mut [u8]) -> Result<usize, ()> {
         let abs = offset + done as u64;
         let lba = abs / SECTOR as u64;
         let off = (abs as usize) % SECTOR;
+        // Whole sectors go to the driver in one request.
+        let whole = whole_sectors(off, want - done);
+        if whole > 0 {
+            read(dev, lba, &mut buf[done..done + whole])?;
+            done += whole;
+            continue;
+        }
         let mut sec = [0u8; SECTOR];
         read(dev, lba, &mut sec)?;
         let take = (SECTOR - off).min(want - done);
@@ -148,7 +155,21 @@ pub fn read_bytes(dev: u32, offset: u64, buf: &mut [u8]) -> Result<usize, ()> {
     Ok(done)
 }
 
-/// Byte-granular write at `offset` via read-modify-write of partial sectors.
+/// Most sectors one driver request carries.
+const MAX_REQUEST: usize = 64 * 1024;
+
+/// How many bytes from sector offset `off` on, with `left` to go, are whole
+/// sectors to move in one request (0 when `off` is inside a sector or less
+/// than a sector is left).
+fn whole_sectors(off: usize, left: usize) -> usize {
+    if off != 0 {
+        return 0;
+    }
+    (left / SECTOR * SECTOR).min(MAX_REQUEST)
+}
+
+/// Byte-granular write at `offset`: whole sectors in one request, partial
+/// ones by read-modify-write.
 pub fn write_bytes(dev: u32, offset: u64, buf: &[u8]) -> Result<usize, ()> {
     if buf.is_empty() {
         return Ok(0);
@@ -168,15 +189,17 @@ pub fn write_bytes(dev: u32, offset: u64, buf: &[u8]) -> Result<usize, ()> {
         let abs = offset + done as u64;
         let lba = abs / SECTOR as u64;
         let off = (abs as usize) % SECTOR;
-        let take = (SECTOR - off).min(want - done);
-        if off == 0 && take == SECTOR {
-            write(dev, lba, &buf[done..done + take])?;
-        } else {
-            let mut sec = [0u8; SECTOR];
-            read(dev, lba, &mut sec)?;
-            sec[off..off + take].copy_from_slice(&buf[done..done + take]);
-            write(dev, lba, &sec)?;
+        let whole = whole_sectors(off, want - done);
+        if whole > 0 {
+            write(dev, lba, &buf[done..done + whole])?;
+            done += whole;
+            continue;
         }
+        let take = (SECTOR - off).min(want - done);
+        let mut sec = [0u8; SECTOR];
+        read(dev, lba, &mut sec)?;
+        sec[off..off + take].copy_from_slice(&buf[done..done + take]);
+        write(dev, lba, &sec)?;
         done += take;
     }
     Ok(done)

@@ -74,12 +74,22 @@ pub use crate::arch::UserRegs;
 /// needs more than 64).
 pub const MAX_MMAP_REGIONS: usize = 256;
 
+/// Distinct files a process can have mapped at once (a file mapping past
+/// this is copied in whole at `mmap` time instead of paged in).
+pub const MAX_MAPPED_FILES: usize = 64;
+
+/// A run of mmap pages with one protection and one backing. Its pages get
+/// frames on first touch (`user::fault_in`): zeroed, or read from the file.
 #[derive(Clone, Copy)]
 pub struct MmapRegion {
     pub va: u64,
     pub pages: u32,
     /// `PROT_*` bits, plus [`MMAP_DEVICE`].
     pub prot: u32,
+    /// 0: anonymous; else the process's `mapped_files[file - 1]`.
+    pub file: u32,
+    /// The file offset of the first page, in pages.
+    pub fpage: u32,
 }
 
 /// [`MmapRegion::prot`] flag: the pages are a device's (a module's `mmap`
@@ -88,11 +98,8 @@ pub struct MmapRegion {
 /// same pages into the child instead of copying them.
 pub const MMAP_DEVICE: u32 = 1 << 31;
 
-const EMPTY_MMAP: [MmapRegion; MAX_MMAP_REGIONS] = [MmapRegion {
-    va: 0,
-    pages: 0,
-    prot: 0,
-}; MAX_MMAP_REGIONS];
+const EMPTY_MMAP_REGION: MmapRegion = MmapRegion { va: 0, pages: 0, prot: 0, file: 0, fpage: 0 };
+const EMPTY_MMAP: [MmapRegion; MAX_MMAP_REGIONS] = [EMPTY_MMAP_REGION; MAX_MMAP_REGIONS];
 
 /// The scheduler's record of one thread (see [`Process`] for what the
 /// threads of a process share). Small and `Copy`: it is written whole into

@@ -21,7 +21,7 @@ prompt (what the ISO is for).
 | CI | every pull request, on bios, uefi, aarch64 and riscv64 | the daily scheduled run and `workflow_dispatch` with `full_boot` |
 | budget | 4 minutes (5 with the Linux layer) | 50 minutes |
 | network | QEMU's user network only (DNS and the listen test go through it) | the host's: HTTPS, the Alpine mirror, this build's packages |
-| tests | the shell, exec, the basic programs, ext2 on the scratch disk, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear, the Linux layer's Alpine packages (jq, Python), the curated os-test list, the packages' own tests |
+| tests | the shell, exec, the basic programs, ext2 on the scratch disk, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear, the Linux layer's Alpine packages (jq, Python, and rustc from a disk the host prepares), the curated os-test list, the packages' own tests |
 
 ## In the guest
 
@@ -111,7 +111,10 @@ the guest test decides.
 
 `src/boot_test.rs` starts QEMU with the serial console on its stdio
 (`src/main.rs` sets up the machine, the disks, the network with the port
-forwards, and the package mirror in the full mode), waits for `login: `,
+forwards, and in the full mode the package mirror and, with the Linux
+layer, the Alpine Rust disk: `linux-compat/alpine-disk.sh` builds it once
+into `target/alpine-rust-<arch>.img`, attached as `/dev/nvme2n1` with its
+writes kept in a QEMU snapshot), waits for `login: `,
 types `root`, an empty password and the command (each byte once its echo
 is back, so an AP's lagging echo never garbles the line), then watches:
 
