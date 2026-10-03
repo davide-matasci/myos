@@ -4,14 +4,15 @@
 //! The tests themselves live in the image (`/lib/myos-tests`, from
 //! `user/tests` and the ports' `PORT_TEST` scripts). The runner prints one
 //! line per test, `TEST <name> PASS` or `TEST <name> FAIL`, asks for the
-//! host's help with `HOST <what> <args>` (a connection to a forwarded port),
-//! and ends with `TESTS DONE <passed>/<total>`. This side types the login
-//! and the one command, performs the requests, bounds the run (an overall
+//! host's help with `HOST <port> <args>` (the port's own host-side script,
+//! `PORT_HOST`: a peer connecting to a forwarded port, an SSH client), and
+//! ends with `TESTS DONE <passed>/<total>`. This side types the login and
+//! the one command, runs the requested scripts, bounds the run (an overall
 //! budget and a stall watchdog: the console must keep moving), checks the
 //! kernel's own boot markers, and exits 0 only when every test passed.
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -195,186 +196,37 @@ fn wait_for(serial: &Shared, deadline: Instant, ready: impl Fn(&str) -> bool) ->
     }
 }
 
-/// A host request from the guest (`HOST <what> <args>`).
-fn handle_host_request(req: &str) {
+/// A host request from the guest, `HOST <port> <args>`: the port's
+/// host-side script (`PORT_HOST`, docs/testing.md) runs on the host with the
+/// arguments, in the background, its messages on our stderr. The guest test
+/// decides the outcome from what the script did (a file it touched, a reply
+/// it sent); the exit status only makes the log say when it failed.
+fn handle_host_request(req: &str, ports: &[crate::ports::Port]) {
     let mut words = req.split_whitespace();
-    match (words.next(), words.next()) {
-        (Some("tcp-ping"), Some(port)) => {
-            let port: u16 = port.parse().unwrap_or(2323);
-            std::thread::spawn(move || tcp_ping(port));
-        }
-        (Some("ssh"), Some(port)) => {
-            let port = port.to_string();
-            std::thread::spawn(move || ssh_two_clients(&port));
-        }
-        _ => eprintln!("boot test: unknown host request {req:?}"),
-    }
-}
-
-/// The listen/accept smoke's peer: connect to the guest's listener through
-/// QEMU's port forward, send "ping", expect "pong". Retried until the
-/// listener is up; the guest test bounds its own wait.
-fn tcp_ping(port: u16) {
-    use std::net::{SocketAddr, TcpStream};
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let deadline = Instant::now() + Duration::from_secs(180);
-    while Instant::now() < deadline {
-        let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(5)) else {
-            std::thread::sleep(Duration::from_millis(250));
-            continue;
-        };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
-        if stream.write_all(b"ping").is_err() {
-            continue;
-        }
-        let mut buf = [0u8; 8];
-        let mut got = 0usize;
-        while got < 5 {
-            match stream.read(&mut buf[got..]) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => got += n,
-            }
-        }
-        if got >= 5 && &buf[..5] == b"pong\n" {
-            eprintln!("boot test: tcp-ping {port}: pong");
-            return;
-        }
-    }
-    eprintln!("boot test: tcp-ping {port}: no pong within the bound");
-}
-
-fn dropbear_testkey_src() -> PathBuf {
-    let from_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ports/dropbear/testkey");
-    if from_manifest.is_file() {
-        return from_manifest;
-    }
-    PathBuf::from("ports/dropbear/testkey")
-}
-
-/// OpenSSH refuses world-readable private keys: a 0600 copy of the
-/// committed test key.
-fn prepare_dropbear_testkey() -> Result<PathBuf, String> {
-    let src = dropbear_testkey_src();
-    if !src.is_file() {
-        return Err(format!("missing dropbear test key at {}", src.display()));
-    }
-    let dir = std::env::temp_dir().join("myos-dropbear-ssh-smoke");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
-    let dst = dir.join("testkey");
-    std::fs::copy(&src, &dst).map_err(|e| format!("copy testkey: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("chmod testkey: {e}"))?;
-    }
-    Ok(dst)
-}
-
-/// An `ssh` client on the host: the CI image ships openssh-client; fall
-/// back to apt-get when running as root on an older image.
-fn ensure_host_ssh() -> Result<(), String> {
-    if Command::new("ssh").arg("-V").output().is_ok() {
-        return Ok(());
-    }
-    let ok = Command::new("apt-get").args(["update", "-qq"]).status().map_or(false, |s| s.success())
-        && Command::new("apt-get")
-            .args(["install", "-y", "-qq", "--no-install-recommends", "openssh-client"])
-            .status()
-            .map_or(false, |s| s.success());
-    if !ok || Command::new("ssh").arg("-V").output().is_err() {
-        return Err("no ssh client and apt-get install openssh-client failed".into());
-    }
-    Ok(())
-}
-
-/// One SSH session into the guest: the remote command echoes `tag` and
-/// touches `/tmp/ssh-ok-<tag>`, which the guest test waits for.
-fn ssh_one_client(key: &Path, port: &str, tag: &str) -> Result<(), String> {
-    let remote = format!("echo {tag}; : > /tmp/ssh-ok-{tag}");
-    // `timeout` so a hung key exchange cannot burn the whole bound
-    // (ConnectTimeout covers the TCP connect only).
-    let output = Command::new("timeout")
-        .args([
-            "20",
-            "ssh",
-            "-4",
-            "-i",
-            key.to_str().ok_or("testkey path not utf-8")?,
-            "-p",
-            port,
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "GlobalKnownHostsFile=/dev/null",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "IdentitiesOnly=yes",
-            "-o",
-            "PreferredAuthentications=publickey",
-            // Pin the KEX to curve25519: OpenSSH 10 negotiates post-quantum
-            // KEX first, which hits a dropbear interop bug on aarch64.
-            "-o",
-            "KexAlgorithms=curve25519-sha256",
-            "-o",
-            "ConnectTimeout=8",
-            "-o",
-            "ConnectionAttempts=1",
-            "root@127.0.0.1",
-            &remote,
-        ])
-        .output()
-        .map_err(|e| format!("spawn timeout/ssh ({tag}): {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() {
-        return Err(format!("ssh {tag} failed (exit {:?}): {stderr}", output.status.code()));
-    }
-    if !stdout.contains(tag) {
-        return Err(format!("ssh {tag}: remote echo missing (stdout={stdout:?})"));
-    }
-    Ok(())
-}
-
-/// Two SSH sessions at once (pubkey auth), both must exit 0: multi-session
-/// accept on dropbear and netd (a parked accept plus the listen hold). B
-/// starts a second after A so both are live together while the second SYN
-/// usually meets a re-armed listener.
-fn ssh_two_clients(port: &str) {
-    let key = match ensure_host_ssh().and_then(|_| prepare_dropbear_testkey()) {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("boot test: ssh: {e}");
-            return;
-        }
+    let Some(name) = words.next() else {
+        eprintln!("boot test: empty host request");
+        return;
     };
-    // Early SYNs before dropbear has armed accept leave half-open sessions
-    // on slow arches; give it time, and never probe the port.
-    std::thread::sleep(Duration::from_secs(12));
-    let deadline = Instant::now() + Duration::from_secs(300);
-    let mut last_err = String::new();
-    while Instant::now() < deadline {
-        let (ka, kb, pa, pb) = (key.clone(), key.clone(), port.to_string(), port.to_string());
-        let a = std::thread::spawn(move || ssh_one_client(&ka, &pa, "a"));
-        std::thread::sleep(Duration::from_secs(1));
-        let b = std::thread::spawn(move || ssh_one_client(&kb, &pb, "b"));
-        let ra = a.join().unwrap_or_else(|_| Err("ssh a panicked".into()));
-        let rb = b.join().unwrap_or_else(|_| Err("ssh b panicked".into()));
-        match (ra, rb) {
-            (Ok(()), Ok(())) => {
-                eprintln!("boot test: ssh {port}: two sessions ok");
-                return;
-            }
-            (Err(e), _) | (_, Err(e)) => last_err = e,
+    let args: Vec<String> = words.map(str::to_string).collect();
+    let Some(script) = ports.iter().find(|p| p.name == name).and_then(|p| p.host.clone()) else {
+        eprintln!("boot test: host request {req:?}: no port {name:?} with a PORT_HOST script");
+        return;
+    };
+    let req = req.to_string();
+    std::thread::spawn(move || {
+        let status = Command::new("bash").arg(&script).args(&args).current_dir(repo_root()).status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => eprintln!("boot test: HOST {req}: {script} exited with {s}"),
+            Err(e) => eprintln!("boot test: HOST {req}: {script} did not start: {e}"),
         }
-        // Failed attempts can leave SynReceived orphans until the
-        // handshake-age reclaim (~10 s); flooding starved riscv64.
-        std::thread::sleep(Duration::from_secs(5));
-    }
-    eprintln!("boot test: ssh {port}: gave up ({last_err})");
+    });
+}
+
+/// The checkout the launcher was built from: the descriptors and the host
+/// scripts are read from it.
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// One `TEST` line of the runner.
@@ -459,6 +311,8 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
 
     let started = Instant::now();
     let budget = mode.budget(linux_compat);
+    // The descriptors: a `HOST <port> ...` line runs that port's host script.
+    let ports = crate::ports::load_all(&repo_root());
     let deadline = started + budget;
 
     // Log in: `root`, an empty password, then the one command. Each line is
@@ -523,7 +377,7 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
                 if let Some(t) = parse_test_line(line) {
                     results.push(t);
                 } else if let Some(req) = line.strip_prefix("HOST ") {
-                    handle_host_request(req);
+                    handle_host_request(req, &ports);
                 } else if let Some(counts) = parse_done_line(line) {
                     done = Some(counts);
                 } else if FATAL_MARKERS.iter().any(|m| line.contains(m)) {

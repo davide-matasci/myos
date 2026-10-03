@@ -42,28 +42,34 @@ TEST shell_echo PASS
 TEST heap FAIL (exit 1)
     smoke start
     ...
-HOST tcp-ping 2323
+HOST tests tcp-ping 2323
 TESTS DONE 17/18
 ```
 
 - `TEST <name> PASS|FAIL`: one per test.
-- `HOST <what> <args>`: the test needs the host: `tcp-ping PORT` connects
-  to the guest's listener through QEMU's port forward and plays ping/pong;
-  `ssh PORT` opens two SSH sessions at once (the dropbear test key), each
-  of which touches `/tmp/ssh-ok-a` / `-b` for the guest test to find.
+- `HOST <port> <args>`: the test needs the host. The launcher runs that
+  port's host-side script (`PORT_HOST=host.sh` in its `port.env`, from the
+  checkout) with the arguments, in the background; the guest test then
+  waits for what the script does. `tests tcp-ping PORT` (`user/tests/host.sh`)
+  connects to the guest's listener through QEMU's port forward and plays
+  ping/pong; `dropbear PORT` (`ports/dropbear/host.sh`) opens two SSH
+  sessions at once with the test key, each of which touches
+  `/tmp/ssh-ok-a` / `-b` for the guest test to find. A port that needs a
+  peer on the host ships its own `host.sh`; the launcher knows no test.
 - `TESTS DONE <passed>/<total>` ends the run.
 
 The sections run in this order: `shell.sh` (the shell and the programs
-every boot has, the heavy `heap` smoke), `linux.sh` (the Linux layer: its
-smokes when the image was built with the feature, `insmod` otherwise),
-the ports' tests (`ports/*.sh`, see below), `net.sh` (DNS, HTTPS,
-listen/accept), the tty. In the full mode the very first test installs
-every package the host's mirror has.
+every boot has, ext2 on the scratch disk, the heavy `heap` smoke),
+`linux.sh` (the Linux layer: its smokes when the image was built with the
+feature, `insmod` otherwise), the ports' tests (`ports/*.sh`, see below;
+the C smokes' among them, with the tty test), `net.sh` (DNS, HTTPS,
+listen/accept). In the full mode the very first test installs every
+package the host's mirror has.
 
-The tty test (`user/c/tty_smoke.c`) drives an interactive shell on a pty
-the way a person types at the console: history recall and in-line editing
-with the arrow keys, backspace, `^C` on a foreground pipeline with the
-shell surviving.
+The tty test (`user/c/tty_smoke.c`, in `user/c/test.sh`) drives an
+interactive shell on a pty the way a person types at the console: history
+recall and in-line editing with the arrow keys, backspace, `^C` on a
+foreground pipeline with the shell surviving.
 
 ### A port's own tests
 
@@ -87,6 +93,14 @@ t make make_version
 a long test can stream its progress there, os-test does). Keep the
 output of a passing test to itself: failures show the last 40 lines.
 
+A test that needs a peer outside the guest (a client connecting in) gets
+one from the port's own `host.sh` (`PORT_HOST=host.sh`): the guest side
+prints `HOST <port> <args>` to fd 3, the launcher runs
+`bash <port dir>/host.sh <args>` on the host, and the guest side waits for
+the effect (a file the session touched, a reply on its socket) with a
+bound. The script's messages go to its stderr; its exit status is logged,
+the guest test decides.
+
 ## On the host
 
 `src/boot_test.rs` starts QEMU with the serial console on its stdio
@@ -95,7 +109,7 @@ forwards, and the package mirror in the full mode), waits for `login: `,
 types `root`, an empty password and the command (each byte once its echo
 is back, so an AP's lagging echo never garbles the line), then watches:
 
-- the `TEST`, `HOST` and `TESTS DONE` lines;
+- the `TEST`, `HOST` (the named port's `host.sh`) and `TESTS DONE` lines;
 - the kernel's crash reports (`exception:`, `user panic`, a user fault)
   end the run at once;
 - a **stall watchdog**: the console must print something within 3 minutes
@@ -116,7 +130,8 @@ output is in the log either way.
 - Something every boot must do: a function in the matching section of
   `user/tests/` and a `t name function` line. Programs the tests need
   (smokes) go in `user/c` or as a `user` crate.
-- A port's behaviour: `test.sh` next to its `port.env`, with `PORT_TEST`.
+- A port's behaviour: `test.sh` next to its `port.env`, with `PORT_TEST`;
+  a `host.sh` with `PORT_HOST` when the test needs a peer on the host.
 - A POSIX conformance case: the curated os-test lists
   (`packages/os-test/overlay/misc/*.tests`), which must pass in full.
 

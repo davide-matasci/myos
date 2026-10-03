@@ -67,6 +67,10 @@ pub struct Port {
     /// (default: the first output).
     pub ready: Option<String>,
     pub files: Vec<FileSpec>,
+    /// The host-side half of the port's boot test, repo-relative
+    /// (`PORT_HOST`, docs/testing.md): what the launcher runs on a
+    /// `HOST <name> <args>` line from the guest.
+    pub host: Option<String>,
     /// Cargo bin name (`User` kind).
     pub bin: String,
     /// binfs path the kernel embeds the program under (`User` kind).
@@ -194,8 +198,12 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
     if !get("PORT_TEST").is_empty() {
         files.push(FileSpec::File { src: get("PORT_TEST"), path: format!("lib/myos-tests/ports/{name}.sh") });
     }
+    let host = Some(get("PORT_HOST"))
+        .filter(|s| !s.is_empty())
+        .map(|h| format!("{}/{h}", dir.to_string_lossy()));
     Some(Port {
         files,
+        host,
         name,
         dir: dir.to_path_buf(),
         role,

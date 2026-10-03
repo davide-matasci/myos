@@ -43,6 +43,7 @@ has a default, so a minimal port needs only `PORT_FILES`.
 | `PORT_IMAGE_BASE` | `0` | `user` only: `1` links the program at `USER_BASE` as `ET_EXEC` on aarch64 and riscv64 (programs with absolute vtables: netd, ping, http, dns) |
 | `PORT_WATCH` | | `user` only: extra source files the kernel build watches, relative to the crate (`../lib/src/lib.rs`) |
 | `PORT_TEST` | | the port's boot test script, in the port directory (`test.sh`): packed as `lib/myos-tests/ports/<name>.sh`, run by the test runner after the core sections (`docs/testing.md`) |
+| `PORT_HOST` | | the host's side of that test, in the port directory (`host.sh`): not packed; the launcher runs it with the arguments of a `HOST <name> <args>` line the guest test prints (dropbear's SSH clients, the listen test's peer) |
 
 Paths in `PORT_OUTPUTS`, `PORT_READY` and `PORT_FILES` are relative to
 `target/` and expand per arch: `{arch}` (`x86_64`), `{none}`
@@ -102,6 +103,7 @@ serves it from binfs, so its file in the initramfs is optional.
 2. `myos_<name>_version_hash` / `myos_<name>_is_current` in
    `scripts/myos-c-userspace-lib.sh` (copy an existing pair).
 3. A boot test: `test.sh` in the port directory with `PORT_TEST=test.sh`
+   (and `host.sh` with `PORT_HOST=host.sh` when it needs a peer on the host)
    in the descriptor (`docs/testing.md`; a package's test runs in the full
    mode, after the install).
 4. `THIRD_PARTY_NOTICES.md` (see "License compliance" in `AGENTS.md`).

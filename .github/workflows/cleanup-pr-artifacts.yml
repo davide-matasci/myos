@@ -23,6 +23,10 @@ jobs:
               { owner, repo, branch, per_page: 100 },
             );
             for (const run of runs) {
+              // A run still going (a full boot dispatched on the branch)
+              // needs its build artifact for its boot jobs; its own
+              // retention expires it.
+              if (run.status !== 'completed') continue;
               const { data } = await github.rest.actions.listWorkflowRunArtifacts({
                 owner,
                 repo,
