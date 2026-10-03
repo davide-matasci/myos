@@ -447,6 +447,15 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             }
         }
         12 | 13 | 15 => {
+            // An mmap page not touched yet: page it in and retry.
+            let access = match code {
+                12 => crate::user::Access::Exec,
+                13 => crate::user::Access::Read,
+                _ => crate::user::Access::Write,
+            };
+            if crate::user::fault_in(stval as usize, access) {
+                return;
+            }
             let sepc = unsafe { *frame.add(32) };
             let user_sp = unsafe { *frame.add(34) };
             let kind = match code {

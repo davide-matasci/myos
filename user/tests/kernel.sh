@@ -141,6 +141,16 @@ lx_python_net() {
 	echo "$out"
 	[ "$out" = "HTTP 200" ]
 }
+# Alpine's rustc (rust, LLVM and gcc: ~600 MB) from the disk the launcher
+# prepares on the host (linux-compat/alpine-disk.sh, /dev/nvme2n1): its
+# libraries and allocator reservation need over 500 MiB of address space,
+# of which `--version` touches some 30 MiB.
+lx_rustc() {
+	mount /dev/nvme2n1 /alpine-rust ext2 || return 1
+	out=$(linux --root /alpine-rust/alpine rustc --version)
+	echo "$out"
+	case "$out" in "rustc 1."*) ;; *) return 1 ;; esac
+}
 # Without the feature: load the module now; it registers (the kernel prints
 # `[ OK ] linux` on the console) and shows up in /proc/modules.
 lx_insmod() {
@@ -154,6 +164,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 		t alpine_jq lx_alpine
 		t alpine_python lx_python
 		t alpine_python_net lx_python_net
+		t alpine_rustc lx_rustc
 	fi
 else
 	t linux_insmod lx_insmod

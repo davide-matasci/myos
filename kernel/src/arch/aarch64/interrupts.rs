@@ -625,6 +625,19 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     // convention) instead of halting QEMU — a userspace null deref during
     // `cat | cat` must not be a machine-wide `[ FAIL ] exception`.
     if ec == 0x20 || ec == 0x24 {
+        // A translation fault (status 0b0001xx) on an mmap page not touched
+        // yet: page it in and retry the instruction.
+        let translation = esr & 0x3c == 0x04;
+        let access = if ec == 0x20 {
+            crate::user::Access::Exec
+        } else if esr & (1 << 6) != 0 {
+            crate::user::Access::Write
+        } else {
+            crate::user::Access::Read
+        };
+        if translation && crate::user::fault_in(far as usize, access) {
+            return;
+        }
         crate::exception::user_fault_kill(
             if ec == 0x20 { "insn abort" } else { "data abort" },
             &alloc::format!("ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x} sp_el0={sp_el0:#x}"),

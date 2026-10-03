@@ -41,8 +41,10 @@ pub(super) struct Process {
     /// Absolute cwd (POSIX). Survives exec; copied on fork. Always starts with `/`.
     pub cwd: [u8; 256],
     pub cwd_len: u16,
-    /// Anonymous mmap windows (after the brk heap).
+    /// The mmap regions (in the window after the brk heap).
     pub mmap: [MmapRegion; MAX_MMAP_REGIONS],
+    /// The files the regions page in from; an entry no region names is free.
+    pub mapped_files: [crate::fs::Vnode; MAX_MAPPED_FILES],
     /// Session id (slot of the session leader). Inherited on fork. New
     /// spawns start as their own session (`sid == slot`); `setsid` creates a
     /// fresh session for a forked child.
@@ -80,6 +82,7 @@ static EMPTY_PROC: Process = Process {
     cwd: root_cwd_buf(),
     cwd_len: 1,
     mmap: EMPTY_MMAP,
+    mapped_files: [crate::fs::Vnode::EMPTY; MAX_MAPPED_FILES],
     sid: 0,
     pgid: 0,
     has_ctty: false,
