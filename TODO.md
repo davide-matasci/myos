@@ -26,20 +26,23 @@ tree: ...` line on the default QEMU `virt` UART address.
 
 ## Module follow-ups
 
-- **Device rescan / hotplug**: drivers probe once in `module_init`. Writing
-  `rescan` to `/proc/pci` used to re-probe the in-kernel NVMe driver; now it
-  only refreshes the listing. A `rescan` hook in `ModuleBlkOps` (or a generic
-  module op the pci_enum writer calls) would restore that.
-- **`rmmod`**: `module_exit` exists but nothing calls it; unloading needs
-  unregister paths for blk/chr/fs/console ops and a check that no fd or
-  mount still uses them.
+- **Unregister paths**: `rmmod` unloads a module only while it provides
+  nothing (the kernel counts its registrations and refuses otherwise). To
+  unload a driver or a filesystem, the blk/chr/fs/console/personality
+  registries need unregister paths and a check that no fd, mount or task
+  still uses them.
+- **Hotplug notification**: a hot-added device appears after `rescan` is
+  written to `/proc/pci` (`module_rescan`); no ACPI/QEMU hotplug interrupt
+  triggers that by itself. virtio-net probes once (netd binds the one
+  `/dev/net0`).
 - **Per-process locks**: the `Process` blocks (`task/process.rs`) hang off
   the one `TASKS` lock. Giving each its own lock (TASKS → process ordering)
   would let fd/mmap syscalls of different processes stop contending.
 - **Module dependencies**: the boot order in `BOOT_MODULES` is the only
-  ordering (console first, block drivers before filesystems). A module could
-  declare what it needs (`blk_count() > 0`, another module's name) so
-  `insmod` can refuse or defer.
+  ordering (console first, block drivers before filesystems). No module
+  needs another at init today (the filesystems register a type and read
+  their disk at mount time), so nothing declares dependencies yet; a module
+  that does could name them for `insmod` to refuse or defer.
 
 ## Per-key wait queues
 

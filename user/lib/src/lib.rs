@@ -321,6 +321,19 @@ pub fn insmod(path: &[u8]) -> bool {
     unsafe { sys3(58, buf.as_ptr() as usize, n, 0) != usize::MAX }
 }
 
+/// Unload the kernel module `name` (`SYS_RMMOD` = 59); it must not provide
+/// anything any more (a device, a filesystem, a mount). The kernel prints
+/// the reason on failure.
+pub fn rmmod(name: &[u8]) -> bool {
+    const CAP: usize = 64;
+    let mut buf = [0u8; CAP];
+    let n = copy_exec_bytes(&mut buf, name);
+    if n == 0 {
+        return false;
+    }
+    unsafe { sys3(59, buf.as_ptr() as usize, n, 0) != usize::MAX }
+}
+
 /// Mount `src` (a `/dev/vd*` node) at `tgt` using `fstype` (`fat`).
 pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
     const CAP: usize = 128;

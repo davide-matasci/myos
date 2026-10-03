@@ -16,6 +16,28 @@ exec_limits() {
 }
 t exec_limits exec_limits
 
+# rmmod: a module that provides nothing (hello) unloads and loads again;
+# one with a registration (the block driver's disks) is refused and keeps
+# working.
+rmmod_hello() {
+	grep -q "^hello$" /proc/modules && rmmod hello && ! grep -q "^hello$" /proc/modules \
+		&& insmod /lib/modules/hello && grep -q "^hello$" /proc/modules
+}
+rmmod_busy() {
+	! rmmod virtio_blk && grep -q "^virtio_blk$" /proc/modules && ls /dev/vda
+}
+# A /proc/pci rescan re-probes the drivers: the disks are the same ones
+# after it, and still readable.
+pci_rescan() {
+	ls /dev > /tmp/dev-before.txt
+	echo rescan > /proc/pci || return 1
+	ls /dev > /tmp/dev-after.txt
+	cmp /tmp/dev-before.txt /tmp/dev-after.txt && /bin/sbase/tail -c 512 /dev/vda > /dev/null
+}
+t rmmod_hello rmmod_hello
+t rmmod_busy rmmod_busy
+t pci_rescan pci_rescan
+
 linux_loaded() {
 	grep -q "^linux$" /proc/modules
 }

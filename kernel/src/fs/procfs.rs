@@ -37,12 +37,20 @@ pub fn create(_name: &str) -> bool {
     false
 }
 
-pub fn truncate(_name: &str) -> bool {
-    false
+/// A node with a writer takes commands (`echo rescan > /proc/pci`): the
+/// shell's `O_TRUNC` open has nothing to cut and succeeds; the others are
+/// read-only.
+pub fn truncate(name: &str) -> bool {
+    let nodes = DYN.lock();
+    nodes
+        .iter()
+        .flatten()
+        .any(|n| n.name_len == name.len() && &n.name[..n.name_len] == name.as_bytes() && n.writer.is_some())
 }
 
 /// Write handler for dynamic nodes that registered a writer (e.g. `/proc/pci`
-/// rescan). After a successful `pci` write, also re-probe in-kernel NVMe.
+/// rescan). After a successful `pci` write the drivers probe for devices that
+/// appeared (`module_rescan`, `crate::modules::rescan_all`).
 pub fn write(name: &str, _pos: usize, buf: &[u8]) -> Option<usize> {
     let writer = {
         let nodes = DYN.lock();
@@ -58,6 +66,9 @@ pub fn write(name: &str, _pos: usize, buf: &[u8]) -> Option<usize> {
     let rc = unsafe { writer(buf.as_ptr(), buf.len()) };
     if rc < 0 {
         return None;
+    }
+    if name == "pci" {
+        crate::modules::rescan_all();
     }
     Some(rc as usize)
 }
