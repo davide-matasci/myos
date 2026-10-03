@@ -31,19 +31,6 @@ static long elapsed_ms(const struct timeval *start) {
         + (now.tv_usec - start->tv_usec) / 1000L;
 }
 
-int __myos_kpoll(struct pollfd *fds, nfds_t nfds, int timeout) {
-    long ret = myos_syscall3(MYOS_SYS_POLL, (long)(uintptr_t)fds, (long)nfds, (long)timeout);
-    if (ret == (long)MYOS_EINTR) {
-        errno = EINTR;
-        return -1;
-    }
-    if (ret == (long)MYOS_SYSERR) {
-        errno = EINVAL;
-        return -1;
-    }
-    return (int)ret;
-}
-
 int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     struct pollfd k[MYOS_POLL_MAX];
     short now[MYOS_POLL_MAX];

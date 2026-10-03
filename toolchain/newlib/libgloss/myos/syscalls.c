@@ -108,6 +108,22 @@ void myos_socket_poll_done(int fd, short events, short *revents) {
 }
 
 
+/* SYS_POLL. Here rather than in pollselect.c: _read uses it, and linking
+ * pollselect.o into every program would clash with a port's own select()
+ * (vim's myos_stubs.c). */
+int __myos_kpoll(struct pollfd *fds, unsigned long nfds, int timeout) {
+    long ret = myos_syscall3(MYOS_SYS_POLL, (long)(uintptr_t)fds, (long)nfds, (long)timeout);
+    if (ret == (long)MYOS_EINTR) {
+        errno = EINTR;
+        return -1;
+    }
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (int)ret;
+}
+
 /* O_NONBLOCK is userspace-tracked: kernel reads always block. Dropbear
  * setnonblocking(signal_pipe) then drains with `while (read > 0)` — without
  * EAGAIN on empty, a forced-POLLIN wake hangs the session forever and the SSH

@@ -114,7 +114,7 @@ int myos_socket_write_failed(int fd);
 int myos_socket_poll_prepare(int fd, short events, short *now, short *kevents);
 void myos_socket_poll_done(int fd, short events, short *revents);
 
-/* SYS_POLL (pollselect.c): count of ready fds, or -1 with errno (EINTR). */
+/* SYS_POLL (syscalls.c): count of ready fds, or -1 with errno (EINTR). */
 struct pollfd;
 int __myos_kpoll(struct pollfd *fds, unsigned long nfds, int timeout);
 
