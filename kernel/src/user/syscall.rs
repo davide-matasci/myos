@@ -1256,12 +1256,9 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     if len == 0 {
         return SYSERR;
     }
-    if flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
-        // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
-        return SYSERR;
-    }
     // File mappings are private copies: the pages are filled from the file
-    // at map time and never written back.
+    // at map time and never written back. `/dev/fb0` is the exception: its
+    // own frames are mapped, shared by everyone who maps it.
     let file = if flags & MAP_ANON != 0 {
         None
     } else {
@@ -1273,6 +1270,15 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             None => return SYSERR,
         }
     };
+    let fb = file.as_ref().is_some_and(|node| fs::is_dev(node, "fb0"));
+    if fb {
+        if flags & (MAP_SHARED | MAP_PRIVATE) == 0 || crate::fb::frame_at(offset, len).is_none() {
+            return SYSERR;
+        }
+    } else if flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
+        // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
+        return SYSERR;
+    }
     let (base, _span, stack_off) = task::current_user_map();
     let area_lo = mmap_base_va(base, stack_off) as usize;
     let area_hi = mmap_limit_va(base, stack_off) as usize;
@@ -1307,6 +1313,14 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     let mut mapped = 0usize;
     while mapped < map_len {
         let page_va = (va + mapped) as u64;
+        if fb {
+            let Some(frame) = crate::fb::frame_at(offset + mapped, PAGE) else {
+                break;
+            };
+            map_user_page_prot(aspace, page_va, frame, prot);
+            mapped += PAGE;
+            continue;
+        }
         let frame = mm::alloc_frame_site(4);
         // alloc_frame returns a zeroed frame; past the end of the file it
         // stays zero.
@@ -1317,7 +1331,7 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         map_user_page_prot(aspace, page_va, frame, prot);
         mapped += PAGE;
     }
-    if prot & PROT_EXEC != 0 || file.is_some() {
+    if !fb && (prot & PROT_EXEC != 0 || file.is_some()) {
         let mut off = 0;
         while off < map_len {
             if let Some(phys) = virt_to_phys(aspace, (va + off) as u64) {

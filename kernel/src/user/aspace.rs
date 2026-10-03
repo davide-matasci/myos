@@ -81,6 +81,12 @@ fn copy_mmap_pages(src: u64, dst: u64) {
         let end = r.va.saturating_add(r.pages as u64 * PAGE as u64);
         while va < end {
             if let Some(phys) = virt_to_phys(src, va) {
+                // A framebuffer mapping is shared with the child, not copied.
+                if crate::fb::is_frame(phys) {
+                    map_user_page_prot(dst, va, phys, r.prot as usize);
+                    va += PAGE as u64;
+                    continue;
+                }
                 let frame = mm::alloc_frame_site(2);
                 unsafe {
                     core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(frame), PAGE);
@@ -192,6 +198,10 @@ pub(super) fn free_mapped_page(aspace: u64, va: u64) {
     // If unmap failed to clear, refuse to free — avoids freelist double-free when
     // reclaim walks overlapping VA ranges (code span vs heap/mmap).
     if virt_to_phys(aspace, va).is_some() {
+        return;
+    }
+    // Device memory (the framebuffer) is not the allocator's to take back.
+    if crate::fb::is_frame(phys) {
         return;
     }
     mm::free_frame(phys);

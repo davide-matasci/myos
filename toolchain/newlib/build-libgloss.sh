@@ -44,8 +44,9 @@ for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c "$ROOT"/toolchain/newlib
   cp "$src_f" "$PORT/"
 done
 # -I"$PORT" shadows the sysroot: sync sys/*.h too (dirent.c needs DT_FIFO).
-mkdir -p "$PORT/sys"
+mkdir -p "$PORT/sys" "$PORT/linux"
 cp "$ROOT"/toolchain/newlib/libgloss/myos/sys/*.h "$PORT/sys/"
+cp "$ROOT"/toolchain/newlib/libgloss/myos/linux/*.h "$PORT/linux/"
 
 for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios socket inet netdb pollselect pty search sleep; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
@@ -96,4 +97,6 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/netinet/in.h" "$inc/netinet/in.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/netdb.h" "$inc/netdb.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/poll.h" "$inc/poll.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/pty.h" "$inc/pty.h"
+mkdir -p "$inc/linux"
+cp "$ROOT"/toolchain/newlib/libgloss/myos/linux/*.h "$inc/linux/"
 echo "libgloss-myos -> $libdir/libgloss.a"

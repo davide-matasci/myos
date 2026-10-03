@@ -1,9 +1,12 @@
-/* myos libgloss: tty ioctl via SYS_IOCTL (getty/login).
+/* myos libgloss: tty ioctl via SYS_IOCTL (getty/login), and the /dev/fb0
+ * and console-mode ones (linux/fb.h, linux/kd.h).
  * TIOCSCTTY is implemented in the kernel (sets the process ctty). */
 #include <errno.h>
 #include <stdarg.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <linux/fb.h>
+#include <linux/kd.h>
 
 #include "myos_syscalls.h"
 
@@ -28,6 +31,13 @@ int ioctl(int fd, unsigned long request, ...) {
     case TIOCSPTLCK:
     case TCGETS:
     case TCSETS:
+    case FBIOGET_VSCREENINFO:
+    case FBIOPUT_VSCREENINFO:
+    case FBIOGET_FSCREENINFO:
+    case FBIOPAN_DISPLAY:
+    case FBIOBLANK:
+    case KDSETMODE:
+    case KDGETMODE:
         break;
     default:
         errno = ENOTTY;

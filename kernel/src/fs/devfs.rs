@@ -1,8 +1,9 @@
-//! devfs: device nodes at `/dev/…` (`null`, `tty`, `console`, `vd*`, `nvme*n1`).
+//! devfs: device nodes at `/dev/…` (`null`, `tty`, `console`, `fb0`, `vd*`, `nvme*n1`).
 //!
 //! `/dev/console` is the hardware console (serial+fb). `/dev/tty` is the
 //! process controlling terminal: open is gated in [`crate::fs::open`] and
-//! aliases to console when a ctty is set.
+//! aliases to console when a ctty is set. `/dev/fb0` is the boot
+//! framebuffer ([`crate::fb`]), present when Limine gave us one.
 
 use crate::blk;
 use crate::fs::{IoctlResult, StatInfo};
@@ -21,6 +22,7 @@ enum Node {
     Console,
     Ptmx,
     Urandom,
+    Fb,
     Block(u32),
     Chr(usize),
 }
@@ -93,6 +95,7 @@ fn parse(name: &str) -> Option<Node> {
         "console" => Some(Node::Console),
         "ptmx" => Some(Node::Ptmx),
         "urandom" | "random" => Some(Node::Urandom),
+        "fb0" if crate::fb::present() => Some(Node::Fb),
         _ => parse_chr(name)
             .map(Node::Chr)
             .or_else(|| parse_blk(name).map(Node::Block)),
@@ -147,6 +150,7 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
             crate::rng::fill(out);
             out.len()
         }
+        Some(Node::Fb) => crate::fb::read(pos, out),
         Some(Node::Block(id)) => blk::read_bytes(id, pos as u64, out).unwrap_or(0),
         Some(Node::Chr(i)) => {
             let _ = pos;
@@ -173,6 +177,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         Some(Node::Ptmx) => None,
         // Writes to the RNG pool are ignored (no RNDADDENTROPY ioctl yet).
         Some(Node::Urandom) => Some(buf.len()),
+        Some(Node::Fb) => crate::fb::write(pos, buf),
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
         Some(Node::Chr(i)) => {
             let _ = pos;
@@ -203,6 +208,10 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         n += name.len();
         buf[n] = b'\n';
         n += 1;
+    }
+    if crate::fb::present() && n + 4 <= buf.len() {
+        buf[n..n + 4].copy_from_slice(b"fb0\n");
+        n += 4;
     }
     for id in 0..blk::count() {
         let mut name = [0u8; 16];
@@ -282,6 +291,13 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
         }),
+        Node::Fb => Some(StatInfo {
+            mode: S_IFCHR | 0o666,
+            size: crate::fb::len() as u32,
+            ino: 8,
+            nlink: 1,
+            dev: 0,
+        }),
         Node::Block(id) => {
             let bytes = blk::capacity_bytes(id).unwrap_or(0);
             let size = if bytes > u32::MAX as u64 {
@@ -342,6 +358,9 @@ pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
         // userspace copies); the bare node has no pair attached.
         Some(Node::Ptmx) => IoctlResult::Notty,
         Some(Node::Urandom) => IoctlResult::Notty,
+        // fbdev and KDSETMODE ioctls copy structs: `task::fd_ioctl` routes
+        // them to `crate::fb` before this.
+        Some(Node::Fb) => IoctlResult::Notty,
         Some(Node::Chr(i)) => {
             match chr_table().get(i).and_then(|s| *s) {
                 Some(c) => match c.ops.ioctl {

@@ -57,6 +57,11 @@ pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     vfs::write(node, pos, buf)
 }
 
+/// Whether `node` is the device `/dev/<name>`.
+pub fn is_dev(node: &Vnode, name: &str) -> bool {
+    vfs::is_dev(node, name)
+}
+
 /// Device/filesystem ioctl on an open vnode.
 pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
     vfs::ioctl(node, request, arg)

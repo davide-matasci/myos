@@ -804,6 +804,12 @@ pub fn bind(source: &str, target: &str) -> bool {
     true
 }
 
+/// Whether `node` is the device `/dev/<name>`.
+pub fn is_dev(node: &Vnode, name: &str) -> bool {
+    node.path_str() == name
+        && MOUNTS.lock().get(node.mount as usize).is_some_and(|m| m.name == "devfs")
+}
+
 /// True when `path` resolves into the tmpfs mount (the only fs with FIFOs).
 fn tmpfs_rel(path: &str) -> Option<String> {
     let (idx, rel) = resolve_index(path)?;

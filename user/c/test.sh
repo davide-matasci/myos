@@ -4,6 +4,10 @@ t pty /bin/etc/pty_smoke 2
 t urandom /bin/etc/urandom_smoke
 # The tty: the line editor's keys and ^C, driven through a pty (tty_smoke.c).
 t tty /bin/etc/tty_smoke
+# /dev/fb0: geometry, a MAP_SHARED mapping that is the framebuffer itself
+# (shared with read/write and a forked child), and the console's graphics
+# mode, which a program exiting in it gives back (fb_smoke.c).
+t fb /bin/etc/fb_smoke
 # netd listen/accept: the smoke announces TCP 2323; the host connects back
 # through QEMU's port forward (the HOST request runs host.sh tcp-ping),
 # sends "ping" and expects "pong"; the smoke then reports.
