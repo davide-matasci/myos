@@ -336,16 +336,23 @@ fn smoke_signal() {
 }
 
 fn smoke_tty() {
-    // The controlling terminal through its files (docs/tty.md): /proc/self/tty
-    // names its directory, its ctl has a window size, and /dev/null is not a
-    // terminal.
+    // The console through its files (docs/tty.md): init has no controlling
+    // terminal yet, but its fd 1 is the console, so /proc/self/fd/1 names
+    // /dev/console/data; the console's ctl has a window size, and /dev/null
+    // is not a terminal.
     let mut path = [0u8; 80];
-    let Some(n) = readlink(b"/proc/self/tty", &mut path[..64]) else {
+    let Some(mut n) = readlink(b"/proc/self/fd/1", &mut path[..64]) else {
         status_fail("tty link");
         return;
     };
-    path[n..n + 4].copy_from_slice(b"/ctl");
-    let Some(fd) = open(&path[..n + 4]) else {
+    if !path[..n].ends_with(b"/data") {
+        status_fail("tty link data");
+        return;
+    }
+    n -= 4;
+    path[n..n + 3].copy_from_slice(b"ctl");
+    n += 3;
+    let Some(fd) = open(&path[..n]) else {
         status_fail("tty ctl open");
         return;
     };

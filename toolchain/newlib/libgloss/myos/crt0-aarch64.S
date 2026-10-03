@@ -9,9 +9,14 @@ _start:
     mov x0, x19
     mov x1, x20
     bl main
+    // main's return goes through newlib's exit (atexit handlers, the
+    // stdio flush a file on stdout needs); it does not return, the raw
+    // syscall is a guard. x0 already holds the status.
+    bl exit
     mov x8, #1
     svc #0
 
     .globl myos_init_environ
     .globl myos_libc_init
     .extern main
+    .extern exit

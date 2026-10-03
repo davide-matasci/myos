@@ -11,9 +11,14 @@ _start:
     mv a0, s0
     mv a1, s1
     call main
+    // main's return goes through newlib's exit (atexit handlers, the
+    // stdio flush a file on stdout needs); it does not return, the raw
+    // syscall is a guard. a0 already holds the status.
+    call exit
     li a7, 1
     ecall
 
     .globl myos_init_environ
     .globl myos_libc_init
     .extern main
+    .extern exit
