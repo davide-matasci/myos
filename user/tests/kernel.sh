@@ -1,6 +1,20 @@
-# The Linux compatibility layer (docs/linux-compat.md): the module is in
-# every image and loaded at boot when the image was built with the
-# feature (`--features linux_compat`), with the musl test programs.
+# The kernel's own tests: what has no port directory of its own. The exec
+# limits, and the Linux compatibility layer (docs/linux-compat.md): its
+# module is in every image and loaded at boot when the image was built with
+# the feature (`--features linux_compat`), with the musl test programs.
+
+# exec limits: 40 arguments and a 711-byte environment string through oksh
+# (libgloss execve) into sbase programs.
+exec_limits() {
+	A="a b c d e f g h"
+	A="$A $A $A $A $A"
+	X=$A$A$A$A$A$A$A$A$A
+	set -- $(/bin/sbase/echo $A)
+	Y=$(X=$X /bin/sbase/printenv X)
+	echo "args=$# env=${#Y}"
+	[ $# -eq 40 ] && [ ${#Y} -eq 711 ]
+}
+t exec_limits exec_limits
 
 linux_loaded() {
 	grep -q "^linux$" /proc/modules

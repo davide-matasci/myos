@@ -113,7 +113,7 @@ static int find_package(const char *want, char *line, size_t cap) {
  * path that the running system does not have (lib/vim for lib/vim/vimrc,
  * lib/os-test for everything under it), or the file itself when all its
  * directories exist (bin/custom/vim: /bin/custom is a read-only tree of the
- * image with other programs in it; lib/myos-tests/ports/vim.sh lands next
+ * image with other programs in it; lib/myos-tests/ports/2-vim.sh lands next
  * to the image's test scripts). */
 #define MAX_BINDS 256
 static char binds[MAX_BINDS][PATH_MAX_GV];

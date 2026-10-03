@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The host's side of the core tests (docs/testing.md): the launcher runs
-# `host.sh <what> <args>` for a `HOST tests <what> <args>` line from the
+# The host's side of the C smokes' tests (docs/testing.md): the launcher runs
+# `host.sh <what> <args>` for a `HOST c-smokes <what> <args>` line from the
 # guest, in the background; the guest test decides from what it sees.
 #
 #   tcp-ping PORT   the listen/accept smoke's peer: connect to the guest's
@@ -12,11 +12,14 @@ set -u
 tcp_ping() {
   local port="$1" reply deadline=$((SECONDS + 180))
   while (( SECONDS < deadline )); do
-    if exec 3<>"/dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+    # The group keeps the connect error quiet without redirecting the
+    # script's stderr for good, as `exec ... 2>/dev/null` would.
+    if { exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
       printf ping >&3
+      # "pong\n"; the substitution drops the newline.
       reply="$(timeout 15 head -c 5 <&3 2>/dev/null || true)"
       exec 3>&-
-      if [[ "$reply" == $'pong\n' ]]; then
+      if [[ "$reply" == pong ]]; then
         echo "boot test: tcp-ping $port: pong" >&2
         return 0
       fi
