@@ -11,8 +11,11 @@
  * The mirror holds one index per architecture (<arch>-index.txt: name,
  * version, size, SHA-256 and file of every package) and the tarballs
  * (<arch>-<name>.tar.gz). The index is downloaded once into
- * ROOT/var/lib/get-myos/index; -u refreshes it. A package's SHA-256 is
- * checked before it is unpacked. MYOS_MIRROR or -m overrides the default,
+ * ROOT/var/lib/get-myos/index; -u refreshes it. A package streams from
+ * curl through gunzip and the tar reader into ROOT (nothing is stored: a
+ * tmpfs file holds 16 MiB at most, less than some packages); its SHA-256
+ * is checked over the stream, and only a package whose checksum matches
+ * is bound and recorded. MYOS_MIRROR or -m overrides the default,
  * the project's rolling GitHub release; the full boot test uses the
  * host-served mirror of the build's own packages (http://10.0.2.2:8765).
  *
@@ -201,26 +204,55 @@ static void unpack_end(tar *t) {
     }
 }
 
-static void tar_out(void *ctx, int member, const uint8_t *p, size_t n) {
+/* One pass over the stream: the compressed bytes into the SHA-256, the
+ * inflated ones into the tar reader. */
+typedef struct {
+    sha256 sha;
+    tar t;
+    unpack u;
+} stream;
+
+static void stream_in(void *ctx, int member, const uint8_t *p, size_t n) {
     (void)member;
-    tar_feed((tar *)ctx, p, n);
+    sha256_update(&((stream *)ctx)->sha, p, n);
 }
 
-static void sha_in(void *ctx, int member, const uint8_t *p, size_t n) {
+static void stream_out(void *ctx, int member, const uint8_t *p, size_t n) {
     (void)member;
-    sha256_update((sha256 *)ctx, p, n);
+    tar_feed(&((stream *)ctx)->t, p, n);
 }
 
-/* SHA-256 of the downloaded file (the compressed bytes) against the index. */
-static int check_package(const char *path, const char *want) {
-    sha256 s;
-    sha256_init(&s);
-    if (gunzip_members(path, sha_in, NULL, &s) < 1) {
+/* Download and unpack `url` into the root in one pass; 0 when curl, the
+ * gzip and the tar all ended well, with the stream's SHA-256 in hex[65]. */
+static int fetch_unpack(const char *url, char *hex) {
+    int pid = 0;
+    int fd = download_open(url, &pid);
+    if (fd < 0) {
         return -1;
     }
-    char hex[65];
-    sha256_hex(&s, hex);
-    return strcmp(hex, want) == 0 ? 0 : -1;
+    stream s;
+    memset(&s, 0, sizeof s);
+    sha256_init(&s.sha);
+    s.t.entry = unpack_entry;
+    s.t.data = unpack_data;
+    s.t.end = unpack_end;
+    s.t.ctx = &s.u;
+    s.u.fd = -1;
+    nbinds = 0;
+    int members = gunzip_fd(fd, stream_in, stream_out, &s);
+    unpack_end(&s.t);
+    free(s.t.meta);
+    int rc = download_close(fd, pid);
+    sha256_hex(&s.sha, hex);
+    if (rc != 0) {
+        say("download failed: ", url, NULL);
+        return -1;
+    }
+    if (members < 1 || s.t.failed || s.u.failed) {
+        say("bad archive: ", url, NULL);
+        return -1;
+    }
+    return 0;
 }
 
 static int bind_all(void) {
@@ -283,33 +315,22 @@ static int install(const char *want) {
         say(name, " already installed", NULL);
         return 0;
     }
-    char url[512], cache[PATH_MAX_GV];
+    char url[512], hex[65];
     mirror_url(url, sizeof url, file);
-    if (db_path(cache, file) != 0) {
-        return die("root path too long", NULL);
-    }
     say(name, " ", version);
-    if (download(url, cache) != 0) {
-        return die("download failed: ", url);
+    /* A transient failure should not fail the whole install; a retry
+     * rewrites the files of the attempt before it. */
+    int attempt = 1;
+    while (fetch_unpack(url, hex) != 0) {
+        if (attempt++ == 3) {
+            return die("download failed: ", url);
+        }
+        say("retrying ", url, NULL);
+        sleep(2);
     }
-    if (check_package(cache, csum) != 0) {
-        unlink(cache);
+    if (strcmp(hex, csum) != 0) {
+        /* The files are under ROOT but not bound nor recorded. */
         return die("checksum mismatch: ", file);
-    }
-    unpack u = {-1, 0};
-    tar t;
-    memset(&t, 0, sizeof t);
-    t.entry = unpack_entry;
-    t.data = unpack_data;
-    t.end = unpack_end;
-    t.ctx = &u;
-    nbinds = 0;
-    int members = gunzip_members(cache, NULL, tar_out, &t);
-    unpack_end(&t);
-    free(t.meta);
-    unlink(cache);
-    if (members < 1 || t.failed || u.failed) {
-        return die("cannot unpack ", file);
     }
     if (bind_all() != 0) {
         return 1;

@@ -22,6 +22,11 @@ void mkdirs(const char *path, int self);
 
 /* curl -fsSL URL -o DEST, three attempts; -1 when every attempt failed. */
 int download(const char *url, const char *dest);
+/* curl -fsSL URL writing to a pipe: the read end (-1 on failure), curl's pid
+ * in *pid. download_close() reaps curl: 0 when it exited 0. Nothing is
+ * stored, so a download is not bound by the tmpfs file size (16 MiB). */
+int download_open(const char *url, int *pid);
+int download_close(int fd, int pid);
 
 typedef struct {
     uint32_t h[8];
@@ -63,5 +68,8 @@ void tar_feed(tar *t, const uint8_t *p, size_t n);
  * either may be NULL. Returns the number of members, or -1. */
 int gunzip_members(const char *path, void (*in)(void *ctx, int member, const uint8_t *p, size_t n),
                    void (*out)(void *ctx, int member, const uint8_t *p, size_t n), void *ctx);
+/* The same, reading `fd` (a pipe or a file) to its end; the fd stays open. */
+int gunzip_fd(int fd, void (*in)(void *ctx, int member, const uint8_t *p, size_t n),
+              void (*out)(void *ctx, int member, const uint8_t *p, size_t n), void *ctx);
 
 #endif
