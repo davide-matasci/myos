@@ -53,6 +53,10 @@ impl<D: Device> Fs<D> {
         Ok(fs)
     }
 
+    pub fn device(&self) -> &D {
+        &self.cache.dev
+    }
+
     /// The device back (after a final flush).
     pub fn unmount(mut self) -> Result<D> {
         self.flush()?;

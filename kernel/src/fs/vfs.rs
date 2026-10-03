@@ -171,6 +171,17 @@ pub fn mount(name: &str, prefix: &str, ops: MountOps) {
 /// That lets userspace retry `vd*` disks at `/fat` until the right volume is bound.
 /// `source` is the userspace path (`/dev/vda`) or `none` when there is no block device.
 pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -> bool {
+    attach_module(name, prefix, ops, source, true)
+}
+
+/// Attach one more filesystem of type `name` (a block device bound through
+/// its fstype, `mount(2)`): unlike [`mount_module`], several mounts may
+/// share the name (two ext2 disks).
+pub fn mount_instance(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -> bool {
+    attach_module(name, prefix, ops, source, false)
+}
+
+fn attach_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str, unique: bool) -> bool {
     if prefix.contains('/') {
         return false;
     }
@@ -185,7 +196,7 @@ pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -
         m.backend = MountBackend::Module(ops);
         return true;
     }
-    if mounts.iter().any(|m| m.name == name) {
+    if unique && mounts.iter().any(|m| m.name == name) {
         return false;
     }
     mounts.push(Mount {

@@ -3,7 +3,8 @@
 //!
 //! The filesystem itself is the `ext2fs` crate (`ext2fs/`, host-tested
 //! against e2fsprogs); this module puts it on a block device and serves the
-//! VFS hooks with it. One mount at a time; calls are serialized by a lock.
+//! VFS hooks with it. Up to four disks are mounted at once; the calls on
+//! each are serialized by its lock.
 
 #![no_std]
 #![no_main]
@@ -53,24 +54,33 @@ impl Device for Blk {
     }
 }
 
-/// The mounted filesystem, behind a spin lock.
-struct Mounted {
+/// Mounted filesystems, one per device. The VFS hooks carry no context, so
+/// every slot has a hook set of its own (`ops::<S>()`).
+const SLOTS: usize = 4;
+
+struct Slot {
     held: AtomicBool,
     fs: UnsafeCell<Option<Fs<Blk>>>,
 }
 
-unsafe impl Sync for Mounted {}
+unsafe impl Sync for Slot {}
 
-static MOUNTED: Mounted = Mounted { held: AtomicBool::new(false), fs: UnsafeCell::new(None) };
+static MOUNTS: [Slot; SLOTS] = [const { Slot { held: AtomicBool::new(false), fs: UnsafeCell::new(None) } }; SLOTS];
 
-/// Run `f` on the mounted filesystem (`None` if there is none).
-fn with_fs<T>(f: impl FnOnce(&mut Fs<Blk>) -> T) -> Option<T> {
-    while MOUNTED.held.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+/// Run `f` on the filesystem in slot `s` (`None` if there is none), with
+/// the slot locked.
+fn with_slot<T>(s: usize, f: impl FnOnce(&mut Option<Fs<Blk>>) -> T) -> T {
+    let slot = &MOUNTS[s];
+    while slot.held.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
         core::hint::spin_loop();
     }
-    let r = unsafe { (*MOUNTED.fs.get()).as_mut().map(f) };
-    MOUNTED.held.store(false, Ordering::Release);
+    let r = f(unsafe { &mut *slot.fs.get() });
+    slot.held.store(false, Ordering::Release);
     r
+}
+
+fn with_fs<const S: usize, T>(f: impl FnOnce(&mut Fs<Blk>) -> T) -> Option<T> {
+    with_slot(S, |fs| fs.as_mut().map(f))
 }
 
 fn rc<T>(r: Option<ext2fs::Result<T>>) -> i32 {
@@ -113,9 +123,9 @@ unsafe extern "C" fn ext2_lookup(_: *const u8, _: usize, _: *mut *const u8, _: *
     -1 // no static bytes: everything is read through `read`
 }
 
-unsafe extern "C" fn ext2_stat(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
+unsafe extern "C" fn ext2_stat<const S: usize>(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
     let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
-    let Some(Ok(st)) = with_fs(|fs| fs.stat(path)) else { return -1 };
+    let Some(Ok(st)) = with_fs::<S, _>(|fs| fs.stat(path)) else { return -1 };
     let kind: u32 = match st.kind {
         Kind::Dir => 0o040000,
         Kind::Symlink => 0o120000,
@@ -132,7 +142,7 @@ unsafe extern "C" fn ext2_stat(path: *const u8, path_len: usize, out: *mut VfsSt
     0
 }
 
-unsafe extern "C" fn ext2_listdir(
+unsafe extern "C" fn ext2_listdir<const S: usize>(
     path: *const u8,
     path_len: usize,
     buf: *mut u8,
@@ -143,7 +153,7 @@ unsafe extern "C" fn ext2_listdir(
         return -1;
     };
     let mut n = 0;
-    let r = with_fs(|fs| {
+    let r = with_fs::<S, _>(|fs| {
         fs.list(path, |name| {
             if n + name.len() + 1 > out.len() {
                 return false;
@@ -158,98 +168,113 @@ unsafe extern "C" fn ext2_listdir(
     rc(r)
 }
 
-unsafe extern "C" fn ext2_read(path: *const u8, path_len: usize, pos: usize, buf: *mut u8, buf_len: usize) -> i32 {
+unsafe extern "C" fn ext2_read<const S: usize>(path: *const u8, path_len: usize, pos: usize, buf: *mut u8, buf_len: usize) -> i32 {
     let (Some(path), Some(out)) = (unsafe { text(path, path_len) }, unsafe { bytes_mut(buf, buf_len) }) else {
         return -1;
     };
     // A read past the end, or of something unreadable, reads nothing.
-    count(with_fs(|fs| fs.read(path, pos as u64, out))).max(0)
+    count(with_fs::<S, _>(|fs| fs.read(path, pos as u64, out))).max(0)
 }
 
-unsafe extern "C" fn ext2_write(path: *const u8, path_len: usize, pos: usize, buf: *const u8, buf_len: usize) -> i32 {
+unsafe extern "C" fn ext2_write<const S: usize>(path: *const u8, path_len: usize, pos: usize, buf: *const u8, buf_len: usize) -> i32 {
     let (Some(path), Some(src)) = (unsafe { text(path, path_len) }, unsafe { bytes(buf, buf_len) }) else {
         return -1;
     };
-    count(with_fs(|fs| fs.write(path, pos as u64, src)))
+    count(with_fs::<S, _>(|fs| fs.write(path, pos as u64, src)))
 }
 
-unsafe extern "C" fn ext2_create(path: *const u8, path_len: usize) -> i32 {
+unsafe extern "C" fn ext2_create<const S: usize>(path: *const u8, path_len: usize) -> i32 {
     let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
-    rc(with_fs(|fs| fs.create(path)))
+    rc(with_fs::<S, _>(|fs| fs.create(path)))
 }
 
-unsafe extern "C" fn ext2_truncate(path: *const u8, path_len: usize) -> i32 {
+unsafe extern "C" fn ext2_truncate<const S: usize>(path: *const u8, path_len: usize) -> i32 {
     let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
-    rc(with_fs(|fs| fs.truncate(path)))
+    rc(with_fs::<S, _>(|fs| fs.truncate(path)))
 }
 
-unsafe extern "C" fn ext2_mkdir(path: *const u8, path_len: usize) -> i32 {
+unsafe extern "C" fn ext2_mkdir<const S: usize>(path: *const u8, path_len: usize) -> i32 {
     let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
-    rc(with_fs(|fs| fs.mkdir(path)))
+    rc(with_fs::<S, _>(|fs| fs.mkdir(path)))
 }
 
-unsafe extern "C" fn ext2_rmdir(path: *const u8, path_len: usize) -> i32 {
+unsafe extern "C" fn ext2_rmdir<const S: usize>(path: *const u8, path_len: usize) -> i32 {
     let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
-    rc(with_fs(|fs| fs.rmdir(path)))
+    rc(with_fs::<S, _>(|fs| fs.rmdir(path)))
 }
 
-unsafe extern "C" fn ext2_unlink(path: *const u8, path_len: usize) -> i32 {
+unsafe extern "C" fn ext2_unlink<const S: usize>(path: *const u8, path_len: usize) -> i32 {
     let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
-    rc(with_fs(|fs| fs.unlink(path)))
+    rc(with_fs::<S, _>(|fs| fs.unlink(path)))
 }
 
-unsafe extern "C" fn ext2_rename(old: *const u8, old_len: usize, new: *const u8, new_len: usize) -> i32 {
+unsafe extern "C" fn ext2_rename<const S: usize>(old: *const u8, old_len: usize, new: *const u8, new_len: usize) -> i32 {
     let (Some(old), Some(new)) = (unsafe { text(old, old_len) }, unsafe { text(new, new_len) }) else {
         return -1;
     };
-    rc(with_fs(|fs| fs.rename(old, new)))
+    rc(with_fs::<S, _>(|fs| fs.rename(old, new)))
 }
 
-unsafe extern "C" fn ext2_symlink(target: *const u8, target_len: usize, link: *const u8, link_len: usize) -> i32 {
+unsafe extern "C" fn ext2_symlink<const S: usize>(target: *const u8, target_len: usize, link: *const u8, link_len: usize) -> i32 {
     let (Some(target), Some(link)) = (unsafe { text(target, target_len) }, unsafe { text(link, link_len) }) else {
         return -1;
     };
-    rc(with_fs(|fs| fs.symlink(target, link)))
+    rc(with_fs::<S, _>(|fs| fs.symlink(target, link)))
 }
 
-unsafe extern "C" fn ext2_readlink(path: *const u8, path_len: usize, buf: *mut u8, buf_len: usize) -> i32 {
+unsafe extern "C" fn ext2_readlink<const S: usize>(path: *const u8, path_len: usize, buf: *mut u8, buf_len: usize) -> i32 {
     let (Some(path), Some(out)) = (unsafe { text(path, path_len) }, unsafe { bytes_mut(buf, buf_len) }) else {
         return -1;
     };
-    count(with_fs(|fs| fs.readlink(path, out)))
+    count(with_fs::<S, _>(|fs| fs.readlink(path, out)))
 }
 
-/// `mount(2)` of a block device with fstype ext2: mount it (replacing the
-/// previous mount) and hand the VFS the hooks.
-unsafe extern "C" fn ext2_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
-    if ops.is_null() {
+/// The hooks of slot `S`.
+fn ops<const S: usize>() -> ModuleVfsOps {
+    ModuleVfsOps {
+        lookup: ext2_lookup,
+        stat: ext2_stat::<S>,
+        listdir: ext2_listdir::<S>,
+        register: None,
+        read: Some(ext2_read::<S>),
+        write: Some(ext2_write::<S>),
+        create: Some(ext2_create::<S>),
+        truncate: Some(ext2_truncate::<S>),
+        mkdir: Some(ext2_mkdir::<S>),
+        rmdir: Some(ext2_rmdir::<S>),
+        unlink: Some(ext2_unlink::<S>),
+        rename: Some(ext2_rename::<S>),
+        symlink: Some(ext2_symlink::<S>),
+        readlink: Some(ext2_readlink::<S>),
+        release: None,
+    }
+}
+
+/// `mount(2)` of a block device with fstype ext2: mount it in the slot it
+/// had (a remount) or a free one, and hand the VFS that slot's hooks.
+unsafe extern "C" fn ext2_bind(dev_id: u32, ops_out: *mut ModuleVfsOps) -> i32 {
+    if ops_out.is_null() {
         return -1;
     }
     let Ok(fs) = Fs::mount(Blk(dev_id)) else { return -1 };
-    while MOUNTED.held.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        core::hint::spin_loop();
-    }
-    unsafe { *MOUNTED.fs.get() = Some(fs) };
-    MOUNTED.held.store(false, Ordering::Release);
-    unsafe {
-        *ops = ModuleVfsOps {
-            lookup: ext2_lookup,
-            stat: ext2_stat,
-            listdir: ext2_listdir,
-            register: None,
-            read: Some(ext2_read),
-            write: Some(ext2_write),
-            create: Some(ext2_create),
-            truncate: Some(ext2_truncate),
-            mkdir: Some(ext2_mkdir),
-            rmdir: Some(ext2_rmdir),
-            unlink: Some(ext2_unlink),
-            rename: Some(ext2_rename),
-            symlink: Some(ext2_symlink),
-            readlink: Some(ext2_readlink),
-            release: None,
-        };
-    }
+    let mine = |s: usize| with_slot(s, |f| f.as_ref().is_some_and(|f| f.device().0 == dev_id));
+    let empty = |s: usize| with_slot(s, |f| f.is_none());
+    let Some(s) = (0..SLOTS).find(|&s| mine(s)).or_else(|| (0..SLOTS).find(|&s| empty(s))) else {
+        return -1;
+    };
+    with_slot(s, |f| {
+        if let Some(old) = f.take() {
+            let _ = old.unmount();
+        }
+        *f = Some(fs);
+    });
+    let ops = match s {
+        0 => ops::<0>(),
+        1 => ops::<1>(),
+        2 => ops::<2>(),
+        _ => ops::<3>(),
+    };
+    unsafe { *ops_out = ops };
     0
 }
 
