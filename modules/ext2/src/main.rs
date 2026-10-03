@@ -248,6 +248,7 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         symlink: Some(ext2_symlink::<S>),
         readlink: Some(ext2_readlink::<S>),
         release: None,
+        mmap: None,
     }
 }
 

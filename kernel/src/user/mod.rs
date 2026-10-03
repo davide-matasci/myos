@@ -25,6 +25,7 @@ use crate::task;
 const PROT_READ: usize = 1;
 const PROT_WRITE: usize = 2;
 const PROT_EXEC: usize = 4;
+const MAP_SHARED: usize = 0x01;
 const MAP_PRIVATE: usize = 0x02;
 const MAP_FIXED: usize = 0x10;
 const MAP_ANON: usize = 0x20;

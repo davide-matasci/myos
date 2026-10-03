@@ -57,6 +57,12 @@ pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     vfs::write(node, pos, buf)
 }
 
+/// The device page at `offset` of `node`, for a shared `mmap` (see
+/// [`vfs::device_frame`]).
+pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
+    vfs::device_frame(node, offset)
+}
+
 /// Device/filesystem ioctl on an open vnode.
 pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
     vfs::ioctl(node, request, arg)
