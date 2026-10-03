@@ -397,6 +397,27 @@ pub fn master_read(id: usize, out: &mut [u8]) -> usize {
     n
 }
 
+/// `poll` readiness of one end of pair `id`, as (readable, writable, hung
+/// up). The slave reads committed discipline input (or a pending `^D`) and
+/// is hung up once the master is gone; the master reads slave output and is
+/// hung up once every slave fd closed.
+pub fn poll_state(id: usize, master: bool) -> (bool, bool, bool) {
+    let Some(p) = pty_at(id) else {
+        return (true, false, true);
+    };
+    if master {
+        let readable = p.out.lock().len > 0;
+        (readable, true, p.slave_refs.load(Ordering::SeqCst) == 0)
+    } else {
+        let readable = {
+            let term = p.term.lock();
+            term.available() > 0 || term.eof
+        };
+        let writable = p.out.lock().len < OUT_CAP;
+        (readable, writable, p.master_refs.load(Ordering::SeqCst) == 0)
+    }
+}
+
 /// Slave count (used by libgloss-facing stat to hide dead pairs).
 pub fn slave_exists(id: usize) -> bool {
     pty_at(id).is_some()

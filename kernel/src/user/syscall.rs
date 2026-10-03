@@ -41,8 +41,10 @@ const SYS_KILL: usize = 34;
 const SYS_SIGACTION: usize = 35;
 const SYS_GETPID: usize = 36;
 const SYS_SIGPROCMASK: usize = 37;
-/// Readiness bits for a single fd (pipes): 1=readable, 2=writable, 4=hangup.
-const SYS_POLLFD: usize = 38;
+/// `poll(fds, nfds, timeout_ms)`: set each `struct pollfd`'s `revents`
+/// and return how many are non-zero, waiting for the first one when none
+/// is (up to `timeout_ms`; negative: no limit, 0: just look).
+const SYS_POLL: usize = 38;
 /// Legacy (39, 41, 42): before the kernel delivered handlers, libgloss
 /// polled for SIGCHLD from `select()`/`poll()` and ran the handler itself.
 /// Kept for binaries built against that libgloss.
@@ -244,7 +246,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_SIGACTION2 => sys_sigaction(a0, a1, a2, true),
         SYS_GETPID => sys_getpid(),
         SYS_SIGPROCMASK => sys_sigprocmask(a0, a1, a2),
-        SYS_POLLFD => sys_pollfd(a0),
+        SYS_POLL => sys_poll(a0, a1, a2 as isize),
         SYS_SIGCHLD_TAKE => sys_sigchld_take(),
         SYS_SIGCHLD_PENDING => sys_sigchld_pending(),
         SYS_PIPE_PEER => sys_pipe_peer(a0),
@@ -719,7 +721,7 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     if let Some((_, _, runs)) = &interp_map {
         for &(va, pages, prot) in runs {
-            if !task::mmap_add(va, pages, prot) {
+            if !task::mmap_add(va, pages, prot, None) {
                 task::user_exit(127);
             }
         }
@@ -915,10 +917,65 @@ fn sys_pipe(fds_ptr: usize) -> usize {
     0
 }
 
-fn sys_pollfd(fd: usize) -> usize {
-    match task::fd_poll_bits(fd) {
-        Some(bits) => bits as usize,
-        None => SYSERR,
+/// Most fds one `poll` looks at.
+const POLL_MAX: usize = 256;
+
+fn sys_poll(fds_ptr: usize, nfds: usize, timeout_ms: isize) -> usize {
+    if nfds > POLL_MAX || (nfds != 0 && !user_range_ok(fds_ptr, nfds * 8)) {
+        return SYSERR;
+    }
+    let aspace = task::current_aspace();
+    // `struct pollfd { int fd; short events; short revents; }`
+    let mut fds = alloc::vec![0u8; nfds * 8];
+    if nfds != 0 && !copy_from_user(aspace, fds_ptr, &mut fds) {
+        return SYSERR;
+    }
+    let deadline = if timeout_ms > 0 { task::deadline_ms(timeout_ms as u64) } else { 0 };
+    loop {
+        // Read before the scan: a wake during it makes the block below
+        // return at once, so no event is lost.
+        let seq = task::wait_seq();
+        let mut ready = 0;
+        let mut tty = false;
+        for pfd in fds.chunks_exact_mut(8) {
+            let fd = i32::from_ne_bytes([pfd[0], pfd[1], pfd[2], pfd[3]]);
+            let events = u16::from_ne_bytes([pfd[4], pfd[5]]);
+            let revents = if fd < 0 {
+                0
+            } else {
+                let (bits, is_tty) = task::fd_poll(fd as usize);
+                tty |= is_tty && events & task::POLLIN != 0;
+                bits & (events | task::POLLERR | task::POLLHUP | task::POLLNVAL)
+            };
+            pfd[6..8].copy_from_slice(&revents.to_ne_bytes());
+            if revents != 0 {
+                ready += 1;
+            }
+        }
+        let timed_out =
+            timeout_ms == 0 || (deadline != 0 && crate::time::monotonic_ns() >= deadline);
+        if ready > 0 || timed_out {
+            if nfds != 0 && !copy_to_user(aspace, fds_ptr, &fds) {
+                return SYSERR;
+            }
+            return ready;
+        }
+        // A signal that runs a handler (or terminates) ends the wait. Never
+        // a restart, whatever SA_RESTART says (POSIX): servers wait in
+        // select() for a handler's flag (dropbear's SIGTERM exit).
+        if task::signal_wakeable(task::current_id()) {
+            return crate::signal::SYSERR_EINTR;
+        }
+        // Sleep until anything happens (pipe, pty, console, device and
+        // module traffic, an exit all wake pollers) or the deadline. The
+        // keyboard is polled, not interrupt-driven: a watched console tty
+        // re-checks at its rate, as `input::read` does.
+        let mut until = deadline;
+        if tty && crate::input::keyboard_present() {
+            let keyboard = task::deadline_ms(10);
+            until = if until == 0 { keyboard } else { until.min(keyboard) };
+        }
+        task::block_until(task::WAIT_ANY, seq, until);
     }
 }
 
@@ -1273,12 +1330,10 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     if len == 0 {
         return SYSERR;
     }
-    if flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
-        // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
-        return SYSERR;
-    }
     // File mappings are private copies: the pages are filled from the file
-    // at map time and never written back.
+    // when first touched and never written back. A shared mapping of a
+    // device (a module's `mmap` hook: `/dev/fb/data`) maps the device's own
+    // pages at once.
     let file = if flags & MAP_ANON != 0 {
         None
     } else {
@@ -1290,12 +1345,26 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             None => return SYSERR,
         }
     };
+    let device = match &file {
+        Some(node) if flags & MAP_SHARED != 0 => fs::device_frame(node, offset).is_some(),
+        _ => false,
+    };
+    if !device && flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
+        // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
+        return SYSERR;
+    }
     let (base, _span, stack_off) = task::current_user_map();
     let area_lo = mmap_base_va(base, stack_off) as usize;
     let area_hi = mmap_limit_va(base, stack_off) as usize;
     let pages = len.div_ceil(PAGE);
     if pages == 0 || pages > MMAP_AREA_PAGES {
         return SYSERR;
+    }
+    if let (true, Some(node)) = (device, &file) {
+        // Every page must be the device's (none past its end).
+        if !(0..pages).all(|i| fs::device_frame(node, offset + i * PAGE).is_some()) {
+            return SYSERR;
+        }
     }
     let map_len = pages * PAGE;
     let aspace = task::current_aspace();
@@ -1308,12 +1377,11 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         }
         // MAP_FIXED replaces whatever is mapped there (a dynamic linker maps
         // each segment over the span it reserved first).
+        let old = task::mmap_regions();
         if !task::mmap_remove(hint as u64, pages as u32) {
             return SYSERR;
         }
-        for i in 0..pages {
-            free_mapped_page(aspace, (hint + i * PAGE) as u64);
-        }
+        release_mmap_range(aspace, &old, hint as u64, pages);
         hint
     } else {
         match task::mmap_alloc(area_lo, area_hi, map_len) {
@@ -1321,32 +1389,47 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             None => return SYSERR,
         }
     };
+    if let (true, Some(node)) = (device, &file) {
+        for i in 0..pages {
+            if let Some(frame) = fs::device_frame(node, offset + i * PAGE) {
+                map_user_page_prot(aspace, (va + i * PAGE) as u64, frame, prot);
+            }
+        }
+        if !task::mmap_add(va as u64, pages as u32, prot as u32 | task::MMAP_DEVICE, None) {
+            for i in 0..pages {
+                unmap_user_page(aspace, (va + i * PAGE) as u64);
+            }
+            flush_user_tlb();
+            return SYSERR;
+        }
+        flush_user_tlb();
+        return va;
+    }
+    // The pages get their frames on first touch (`fault_in`), so a large
+    // reservation or a big library costs only what is used.
+    if task::mmap_add(va as u64, pages as u32, prot as u32, file.as_ref().map(|node| (node, offset))) {
+        flush_user_tlb();
+        return va;
+    }
+    // A file mapping fails there when the mapped-file table is full: read
+    // the file in whole now, as an anonymous region.
+    let Some(node) = file else {
+        return SYSERR;
+    };
     let mut mapped = 0usize;
     while mapped < map_len {
         let page_va = (va + mapped) as u64;
-        let frame = mm::alloc_frame_site(4);
         // alloc_frame returns a zeroed frame; past the end of the file it
         // stays zero.
-        if let Some(node) = &file {
-            let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
-            let _ = fs::read(node, offset + mapped, dst);
-        }
+        let frame = mm::alloc_frame_site(4);
+        let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
+        let _ = fs::read(&node, offset + mapped, dst);
         map_user_page_prot(aspace, page_va, frame, prot);
+        sync_icache(page_va as usize, PAGE);
+        sync_icache(mm::hhdm(frame) as usize, PAGE);
         mapped += PAGE;
     }
-    if prot & PROT_EXEC != 0 || file.is_some() {
-        let mut off = 0;
-        while off < map_len {
-            if let Some(phys) = virt_to_phys(aspace, (va + off) as u64) {
-                // User VA (execute) + HHDM alias (the stores). ic ialluis inside.
-                sync_icache((va + off) as usize, PAGE);
-                sync_icache(mm::hhdm(phys) as usize, PAGE);
-            }
-            off += PAGE;
-        }
-    }
-    if !task::mmap_add(va as u64, pages as u32, prot as u32) {
-        // Region table full: unmap what we just added.
+    if !task::mmap_add(va as u64, pages as u32, prot as u32, None) {
         for i in 0..pages {
             free_mapped_page(aspace, (va + i * PAGE) as u64);
         }
@@ -1375,15 +1458,11 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     if addr < area_lo || addr.saturating_add(map_len) > area_hi {
         return SYSERR;
     }
+    let old = task::mmap_regions();
     if !task::mmap_remove(addr as u64, pages as u32) {
         return SYSERR;
     }
-    let aspace = task::current_aspace();
-    let mut off = 0;
-    while off < map_len {
-        free_mapped_page(aspace, (addr + off) as u64);
-        off += PAGE;
-    }
+    release_mmap_range(task::current_aspace(), &old, addr as u64, pages);
     flush_user_tlb();
     0
 }
@@ -1401,10 +1480,17 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         return SYSERR;
     }
     let aspace = task::current_aspace();
+    let area_lo = mmap_base_va(base, stack_off);
     let mut off = 0;
     while off < map_len {
         let va = (addr + off) as u64;
         let Some(phys) = virt_to_phys(aspace, va) else {
+            // An mmap page not touched yet takes the new protection when
+            // it is paged in.
+            if va >= area_lo {
+                off += PAGE;
+                continue;
+            }
             return SYSERR;
         };
         map_user_page_prot(aspace, va, phys, prot);

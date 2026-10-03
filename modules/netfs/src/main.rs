@@ -2,11 +2,24 @@
 //!
 //! Lookup always fails; bytes go through the ABI v7 `read`/`write` hooks.
 //! Syscalls run with interrupts off — never busy-spin, never sleep.
+//! `/net/unix` (local connections) is served here alone, see [`unix`].
+//!
+//! Module calls take no kernel lock: netd's replies (`/dev/netd` writes) land
+//! on one CPU while a reader drains `data` on another, so every entry point
+//! holds [`LOCK`]. Without it a reply appended during a read was lost (curl:
+//! "end of response with N bytes missing").
 
 #![no_std]
 #![no_main]
 
-use myos_abi::{status_ok, ABI_VERSION, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo};
+mod unix;
+
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use myos_abi::{
+    status_ok, ABI_VERSION, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo, MYOS_POLLERR,
+    MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT,
+};
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
@@ -14,6 +27,7 @@ const S_IFREG: u32 = 0o100000;
 const PROTO_TCP: u8 = 1;
 const PROTO_UDP: u8 = 2;
 const PROTO_ICMP: u8 = 3;
+const PROTO_UNIX: u8 = 4;
 
 const REQ_CLONE: u8 = 1;
 const REQ_CTL: u8 = 2;
@@ -114,7 +128,14 @@ struct Conv {
     credit: u16,
     status_len: u16,
     status: [u8; STATUS_CAP],
+    /// Listener: the accept seq named by the socket library's last
+    /// `taken <seq>` ([`NO_SEQ`] before any); a newer "accepted ... <seq>"
+    /// status is a connection to accept (`poll`).
+    taken: u32,
 }
+
+/// [`Conv::taken`] before the first `taken`.
+const NO_SEQ: u32 = u32::MAX;
 
 impl Conv {
     const EMPTY: Self = Self {
@@ -127,6 +148,7 @@ impl Conv {
         credit: 0,
         status_len: 0,
         status: [0; STATUS_CAP],
+        taken: NO_SEQ,
     };
 }
 
@@ -140,8 +162,41 @@ static mut STATE: State = State {
     convs: [Conv::EMPTY; MAX_CONV],
 };
 
+static mut API: Option<&'static KernelApi> = None;
+
+/// Wake the kernel's pollers: readiness changed without a write or close
+/// (a unix reader made room for its peer).
+fn wake_any() {
+    if let Some(api) = unsafe { *core::ptr::addr_of!(API) } {
+        unsafe { (api.wake_any)() };
+    }
+}
+
 fn state() -> &'static mut State {
     unsafe { &mut *core::ptr::addr_of_mut!(STATE) }
+}
+
+static LOCK: AtomicBool = AtomicBool::new(false);
+
+/// [`LOCK`] held until dropped.
+struct Held;
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        LOCK.store(false, Ordering::Release);
+    }
+}
+
+/// Take [`LOCK`] for the rest of an entry point. The unix conversations have
+/// their own lock, taken inside this one, never the other way round.
+fn lock() -> Held {
+    while LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    Held
 }
 
 fn proto_name(p: u8) -> Option<&'static str> {
@@ -149,6 +204,7 @@ fn proto_name(p: u8) -> Option<&'static str> {
         PROTO_TCP => Some("tcp"),
         PROTO_UDP => Some("udp"),
         PROTO_ICMP => Some("icmp"),
+        PROTO_UNIX => Some("unix"),
         _ => None,
     }
 }
@@ -158,6 +214,7 @@ fn parse_proto(s: &str) -> Option<u8> {
         "tcp" => Some(PROTO_TCP),
         "udp" => Some(PROTO_UDP),
         "icmp" => Some(PROTO_ICMP),
+        "unix" => Some(PROTO_UNIX),
         _ => None,
     }
 }
@@ -185,6 +242,22 @@ enum Node {
     Ctl(u8, u16),
     Data(u8, u16),
     Status(u8, u16),
+    /// `/net/unix/N/listen`: connections waiting to be accepted.
+    Listen(u8, u16),
+}
+
+impl Node {
+    fn proto(self) -> Option<u8> {
+        match self {
+            Node::Root => None,
+            Node::Proto(p) | Node::Clone(p) => Some(p),
+            Node::ConvDir(p, _)
+            | Node::Ctl(p, _)
+            | Node::Data(p, _)
+            | Node::Status(p, _)
+            | Node::Listen(p, _) => Some(p),
+        }
+    }
 }
 
 fn parse_path(path: &str) -> Option<Node> {
@@ -210,6 +283,9 @@ fn parse_path(path: &str) -> Option<Node> {
                 Some("ctl") if it.next().is_none() => Some(Node::Ctl(proto, conv)),
                 Some("data") if it.next().is_none() => Some(Node::Data(proto, conv)),
                 Some("status") if it.next().is_none() => Some(Node::Status(proto, conv)),
+                Some("listen") if it.next().is_none() && proto == PROTO_UNIX => {
+                    Some(Node::Listen(proto, conv))
+                }
                 _ => None,
             }
         }
@@ -273,6 +349,31 @@ fn status_is(c: &Conv, needle: &[u8]) -> bool {
     s.windows(needle.len()).any(|w| w == needle)
 }
 
+fn parse_u32(s: &[u8]) -> Option<u32> {
+    if s.is_empty() || s.len() > 10 {
+        return None;
+    }
+    let mut n = 0u32;
+    for &b in s {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        n = n.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+    }
+    Some(n)
+}
+
+/// A listener whose status advertises a connection ("accepted <N> ...
+/// <seq>") the socket library has not taken yet.
+fn accept_ready(c: &Conv) -> bool {
+    let s = &c.status[..c.status_len as usize];
+    if !s.starts_with(b"accepted") {
+        return false;
+    }
+    let seq = s.rsplit(|&b| b == b' ').next().and_then(parse_u32);
+    seq.is_some_and(|seq| seq != c.taken)
+}
+
 fn alloc_conv(proto: u8) -> Option<u16> {
     let st = state();
     // First pass: truly free slots.
@@ -288,6 +389,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
+                taken: NO_SEQ,
             };
             return Some(i as u16);
         }
@@ -312,6 +414,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
+                taken: NO_SEQ,
             };
             return Some(i as u16);
         }
@@ -425,6 +528,7 @@ fn apply_reply(buf: &[u8]) {
                 credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
+                taken: NO_SEQ,
             };
             set_status(slot, b"cloned");
         } else if slot.status_len == 0 {
@@ -528,6 +632,7 @@ unsafe extern "C" fn net_lookup(
 }
 
 unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
+    let _held = lock();
     if out.is_null() {
         return -1;
     }
@@ -537,7 +642,12 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
     let Some(node) = parse_path(path) else {
         return -1;
     };
+    let unix = if node.proto() == Some(PROTO_UNIX) { unix::stat(node) } else { None };
     let (mode, size, ino) = match node {
+        _ if node.proto() == Some(PROTO_UNIX) => match unix {
+            Some(st) => st,
+            None => return -1,
+        },
         Node::Root => (S_IFDIR | 0o755, 0u32, 1u32),
         Node::Proto(p) => (S_IFDIR | 0o755, 0, 10 + p as u32),
         Node::Clone(p) => (S_IFREG | 0o666, 0, 20 + p as u32),
@@ -547,6 +657,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
             }
             (S_IFDIR | 0o755, 0, 100 + id as u32)
         }
+        Node::Listen(_, _) => return -1,
         Node::Ctl(p, id) | Node::Data(p, id) | Node::Status(p, id) => {
             if !conv_ok(id, p) {
                 return -1;
@@ -583,6 +694,7 @@ unsafe extern "C" fn net_listdir(
     buf_len: usize,
     out_len: *mut usize,
 ) -> i32 {
+    let _held = lock();
     if buf.is_null() || out_len.is_null() {
         return -1;
     }
@@ -597,10 +709,16 @@ unsafe extern "C" fn net_listdir(
     };
     let mut n = 0usize;
     match node {
+        _ if node.proto() == Some(PROTO_UNIX) => {
+            if !unix::listdir(node, dst, &mut n) {
+                return -1;
+            }
+        }
         Node::Root => {
             let _ = put_bytes(dst, &mut n, b"tcp");
             let _ = put_bytes(dst, &mut n, b"udp");
             let _ = put_bytes(dst, &mut n, b"icmp");
+            let _ = put_bytes(dst, &mut n, b"unix");
         }
         Node::Proto(p) => {
             let _ = put_bytes(dst, &mut n, b"clone");
@@ -633,6 +751,7 @@ unsafe extern "C" fn net_read(
     buf: *mut u8,
     buf_len: usize,
 ) -> i32 {
+    let _held = lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -642,6 +761,9 @@ unsafe extern "C" fn net_read(
     let Some(node) = parse_path(path) else {
         return -1;
     };
+    if node.proto() == Some(PROTO_UNIX) {
+        return unix::read(node, pos, out);
+    }
     match node {
         Node::Clone(p) => {
             if pos > 0 {
@@ -755,12 +877,17 @@ fn trim_ctl(buf: &[u8]) -> &[u8] {
 /// parent and child share the data fd open count, so hangup fires only when
 /// the last holder closes. Explicit ctl `hangup` write still tears down.
 unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
+    let _held = lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
     let Some(node) = parse_path(path) else {
         return -1;
     };
+    if node.proto() == Some(PROTO_UNIX) {
+        unix::release(node);
+        return 0;
+    }
     // Ctl/Status: open-count zero must not tear down — clients open+close
     // these transiently while the TCP conversation must stay alive.
     let (p, id) = match node {
@@ -806,6 +933,7 @@ unsafe extern "C" fn net_write(
     buf: *const u8,
     buf_len: usize,
 ) -> i32 {
+    let _held = lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -815,6 +943,9 @@ unsafe extern "C" fn net_write(
     let Some(node) = parse_path(path) else {
         return -1;
     };
+    if node.proto() == Some(PROTO_UNIX) {
+        return unix::write(node, src);
+    }
     match node {
         Node::Ctl(p, id) => {
             if !conv_ok(id, p) {
@@ -833,8 +964,14 @@ unsafe extern "C" fn net_write(
                     return -1;
                 }
                 state().convs[id as usize].closing = true;
-            } else if !enqueue_req(REQ_CTL, id, p, cmd) {
-                return -1;
+            } else {
+                if !enqueue_req(REQ_CTL, id, p, cmd) {
+                    return -1;
+                }
+                // The library consumed that accept: no longer pollable.
+                if let Some(seq) = cmd.strip_prefix(b"taken ").and_then(parse_u32) {
+                    state().convs[id as usize].taken = seq;
+                }
             }
             src.len() as i32
         }
@@ -854,7 +991,44 @@ unsafe extern "C" fn net_write(
     }
 }
 
+/// `poll` readiness of a conversation's `data` (the socket's fd): bytes or a
+/// hangup to read, a connection up for writing, a connection to accept.
+/// netd's replies arrive as writes to `/dev/netd`, which wake the pollers.
+unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
+    let _held = lock();
+    let Some(node) = (unsafe { c_str(path, path_len) }).and_then(parse_path) else {
+        return MYOS_POLLERR | MYOS_POLLHUP;
+    };
+    if node.proto() == Some(PROTO_UNIX) {
+        return unix::poll(node);
+    }
+    let Node::Data(p, id) = node else {
+        return MYOS_POLLIN | MYOS_POLLOUT;
+    };
+    if !conv_ok(id, p) {
+        return MYOS_POLLERR | MYOS_POLLHUP;
+    }
+    // As a reader's `stat` used to: hand back room the reads made.
+    return_credit(id, p);
+    let c = &state().convs[id as usize];
+    let mut bits = 0;
+    if c.data_len != 0 || accept_ready(c) {
+        bits |= MYOS_POLLIN;
+    }
+    if status_is(c, b"hangup") {
+        bits |= MYOS_POLLIN | MYOS_POLLHUP;
+    }
+    if status_is(c, b"error") {
+        bits |= MYOS_POLLIN | MYOS_POLLHUP | MYOS_POLLERR;
+    }
+    if c.status[..c.status_len as usize].starts_with(b"connected") {
+        bits |= MYOS_POLLOUT;
+    }
+    bits
+}
+
 unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
+    let _held = lock();
     if buf.is_null() {
         return -1;
     }
@@ -866,6 +1040,7 @@ unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
 }
 
 unsafe extern "C" fn chr_write(buf: *const u8, buf_len: usize) -> i32 {
+    let _held = lock();
     if buf_len == 0 {
         return 0;
     }
@@ -883,10 +1058,11 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     if api.is_null() {
         return -1;
     }
-    let api = unsafe { &*api };
+    let api: &'static KernelApi = unsafe { &*api };
     if api.abi_version != ABI_VERSION {
         return -2;
     }
+    unsafe { *core::ptr::addr_of_mut!(API) = Some(api) };
     // Build ops here (not in a static): AArch64 ET_EXEC modules do not relocate
     // fn pointers in .rodata, so kernel callbacks need slide-correct addresses.
     let ops = ModuleVfsOps {
@@ -904,6 +1080,8 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         rename: None,
         symlink: None,
         release: Some(net_release),
+        mmap: None,
+        poll: Some(net_poll),
         readlink: None,
     };
     let mount_rc = unsafe {

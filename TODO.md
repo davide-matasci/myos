@@ -57,3 +57,30 @@ User tasks are pinned to a home CPU chosen round-robin at spawn/fork (the
 pinning is what keeps TLB flushes local). An idle CPU could steal a Ready task
 whose home CPU is busy; needs a cross-CPU TLB shootdown on migration and the
 NX #PF / leave races noted in `docs/pci-acpi-smp.md` resolved first.
+
+## Passing file descriptors and shared memory
+
+What a GUI needs beyond `/net/unix` (`docs/sockets-unix.md`) and
+`/dev/fb` (`docs/fb.md`). A client of a display server draws into memory
+the server can read without copying it through a socket, and Wayland's core
+protocol is built on that: the client creates a shared-memory file and sends
+its fd to the compositor. X does without, but its MIT-SHM extension (and so
+the speed of every image-heavy client) needs the same.
+
+- **fd passing**: `sendmsg`/`recvmsg` with `SCM_RIGHTS` on `/net/unix`
+  connections. The sender's open file (`FdEntry`) is taken a reference on
+  and queued with the bytes it travels with; the receiver gets a new fd for
+  it when it reads past that point. Needs a kernel path from netfs to the
+  fd tables (a `KernelApi` call, append-only), care with the open-ref
+  counts (`fs::vfs::open_ref`) and with fds still in flight when either end
+  closes. `SCM_CREDENTIALS` / `SO_PEERCRED` (the peer's pid and uid) come
+  cheaply along with it.
+- **Shared memory**: `mmap(MAP_SHARED)` of a file maps its pages instead
+  of private copies (today only a device's, through a module's `mmap`
+  hook: `/dev/fb/data`, `user::do_mmap`). For a tmpfs file that means pages
+  owned by the file and refcounted by their mappings (tmpfs keeps a file as one contiguous buffer now), with writes
+  through `write(2)` and through mappings seeing each other. Then
+  `shm_open` (a tmpfs file under `/dev/shm` or `/tmp`), `memfd_create` and
+  `ftruncate` on top; the Linux layer's `mmap` would stop refusing
+  `MAP_SHARED`. Anonymous `MAP_SHARED` (shared across `fork`) falls out of
+  the same refcounted pages.

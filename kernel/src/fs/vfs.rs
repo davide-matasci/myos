@@ -65,7 +65,10 @@ pub struct Vnode {
 }
 
 impl Vnode {
-    pub const PATH_CAP: usize = 96;
+    /// As long as a tmpfs path: deep trees (gcc's plugin headers) on a
+    /// mounted disk need more than 96.
+    pub const PATH_CAP: usize = 255;
+    pub const EMPTY: Vnode = Vnode { mount: 0, path_len: 0, path: [0; Vnode::PATH_CAP] };
 
     pub fn path_str(&self) -> &str {
         core::str::from_utf8(&self.path[..self.path_len as usize]).unwrap_or("")
@@ -179,7 +182,9 @@ pub fn mount_instance(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str)
 }
 
 fn attach_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str, unique: bool) -> bool {
-    if prefix.contains('/') {
+    // A nested prefix (`dev/fb`) wins over its parent mount for the paths
+    // below it (`resolve_index` takes the longest match).
+    if prefix.starts_with('/') || prefix.ends_with('/') || prefix.contains("//") {
         return false;
     }
     if ops.readlink.is_some() {
@@ -419,7 +424,7 @@ struct OpenRef {
     in_use: bool,
     mount: u16,
     path_len: u16,
-    path: [u8; 96],
+    path: [u8; Vnode::PATH_CAP],
     count: u32,
 }
 static OPEN_REFS: Mutex<Vec<OpenRef>> = Mutex::new(Vec::new());
@@ -514,6 +519,9 @@ fn open_ref_release(node: &Vnode) {
     if let Some(MountBackend::Module(ops)) = backend {
         if let Some(release) = ops.release {
             let _ = unsafe { (release)(rel.as_ptr(), rel.len()) };
+            // A peer that just went away (a socket's hangup) is news for
+            // pollers.
+            crate::task::wake_any();
         }
     }
 }
@@ -536,6 +544,32 @@ pub fn vnode_path(node: &Vnode) -> String {
     }
     path.push_str(rel);
     path
+}
+
+/// The page holding byte `offset` (page aligned) of a device file, from its
+/// module's `mmap` hook (`/dev/fb/data`); `None` for anything else.
+pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
+    let backend = MOUNTS.lock().get(node.mount as usize)?.backend;
+    let MountBackend::Module(ops) = backend else {
+        return None;
+    };
+    let mmap = ops.mmap?;
+    let rel = node.path_str();
+    let phys = unsafe { mmap(rel.as_ptr(), rel.len(), offset) };
+    (phys != 0 && phys % crate::user::PAGE as u64 == 0).then_some(phys)
+}
+
+/// The `poll` bits (`myos_abi::MYOS_POLL*`) that hold now for `node`, from
+/// its module's `poll` hook; `None` when the backend has none (a file that
+/// is always ready).
+pub fn poll(node: &Vnode) -> Option<u32> {
+    let backend = MOUNTS.lock().get(node.mount as usize)?.backend;
+    let MountBackend::Module(ops) = backend else {
+        return None;
+    };
+    let poll = ops.poll?;
+    let rel = node.path_str();
+    Some(unsafe { poll(rel.as_ptr(), rel.len()) })
 }
 
 /// Current size of the vnode path (for `O_APPEND`), if known.

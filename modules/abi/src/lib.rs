@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 16;
+pub const ABI_VERSION: u32 = 18;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
@@ -111,7 +111,28 @@ pub struct ModuleVfsOps {
     /// mid-life close: after fork() several fds share one conv, and the
     /// parent's close must not kill the child's connection.
     pub release: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
+    // --- ABI 16: device memory ---
+    /// Optional: the physical address of the page at byte `offset` (page
+    /// aligned) of `path`, for `mmap` of device memory (`/dev/fb/data`), or 0
+    /// when that page cannot be mapped. The page stays the module's: the
+    /// kernel maps it shared into every process that asks, never copies it
+    /// on fork and never frees it.
+    pub mmap: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, offset: usize) -> u64>,
+    // --- ABI 17: readiness ---
+    /// Optional: the `poll(2)` bits ([`MYOS_POLLIN`], [`MYOS_POLLOUT`],
+    /// [`MYOS_POLLERR`], [`MYOS_POLLHUP`]) that hold now for `path`, whatever
+    /// the caller asked for; without it a file is always readable and
+    /// writable. Must not block. When readiness changes other than through a
+    /// write or the last close of one of its files (both wake pollers), the
+    /// backend calls `KernelApi::wake_any`.
+    pub poll: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> u32>,
 }
+
+/// `poll(2)` bits (Linux values), for [`ModuleVfsOps::poll`].
+pub const MYOS_POLLIN: u32 = 0x1;
+pub const MYOS_POLLOUT: u32 = 0x4;
+pub const MYOS_POLLERR: u32 = 0x8;
+pub const MYOS_POLLHUP: u32 = 0x10;
 
 /// Module-provided block device (`KernelApi::blk_register`). Sector size is
 /// 512 bytes; `buf` lengths are whole sectors. `ctx` is the value given at
@@ -529,7 +550,7 @@ pub struct KernelApi {
     /// write(2) from user memory: native result.
     pub fd_write: unsafe extern "C" fn(fd: usize, buf_user: usize, len: usize) -> usize,
     /// The native ioctl: the console keymap and module character devices.
-    /// A terminal's state is its `ctl` file; see `tty_ctl_read` (ABI 16).
+    /// A terminal's state is its `ctl` file; see `tty_ctl_read` (ABI 18).
     pub fd_ioctl: unsafe extern "C" fn(fd: usize, request: usize, arg: usize) -> usize,
     pub pipe_open: unsafe extern "C" fn(read_fd: *mut usize, write_fd: *mut usize) -> i32,
     /// The native mmap (user addresses; `fd` -1 for anonymous): native result.
@@ -580,7 +601,7 @@ pub struct KernelApi {
     /// Write kernel `buf` at `pos` of the file at VFS `path`: bytes
     /// written, or negative.
     pub vfs_write: unsafe extern "C" fn(path: StrRef, pos: usize, buf: *const u8, len: usize) -> i32,
-    // --- ABI 16: terminals as files (docs/tty.md) ---
+    // --- ABI 18: terminals as files (docs/tty.md) ---
     /// The `ctl` text of the terminal `fd` is open on, into `buf` (cut at
     /// `cap`): its length, or negative when `fd` is not a terminal.
     pub tty_ctl_read: unsafe extern "C" fn(fd: usize, buf: *mut u8, cap: usize) -> i32,
