@@ -85,6 +85,9 @@ void myos_socket_on_close(int fd) { (void)fd; }
 int myos_socket_empty_read(int fd) __attribute__((weak));
 int myos_socket_empty_read(int fd) { (void)fd; return 0; }
 
+int myos_socket_write_failed(int fd) __attribute__((weak));
+int myos_socket_write_failed(int fd) { (void)fd; return 0; }
+
 int myos_socket_fcntl(int fd, int cmd, int arg) __attribute__((weak));
 int myos_socket_fcntl(int fd, int cmd, int arg) {
     (void)fd; (void)cmd; (void)arg;
@@ -281,20 +284,36 @@ int _read(int fd, void *buf, size_t cnt) {
 int _write(int fd, const void *buf, size_t cnt) {
     long ret;
 
-    ret = myos_syscall3(MYOS_SYS_WRITE, fd, (long)(uintptr_t)buf, (long)cnt);
-    if (ret == (long)MYOS_EINTR) {
-        errno = EINTR; /* a caught signal interrupted a blocked write */
-        return -1;
+    for (;;) {
+        ret = myos_syscall3(MYOS_SYS_WRITE, fd, (long)(uintptr_t)buf, (long)cnt);
+        if (ret == (long)MYOS_EINTR) {
+            errno = EINTR; /* a caught signal interrupted a blocked write */
+            return -1;
+        }
+        if (ret == (long)MYOS_EIO) {
+            errno = EIO; /* pty peer gone */
+            return -1;
+        }
+        if (ret == (long)MYOS_SYSERR) {
+            /* /net/unix data refuses a write when the peer's buffer is full. */
+            switch (myos_socket_write_failed(fd)) {
+            case 1:
+                errno = EAGAIN;
+                return -1;
+            case 2:
+                errno = EPIPE;
+                return -1;
+            case 3:
+                continue; /* waited for the reader; retry */
+            case 4:
+                errno = ENOTCONN;
+                return -1;
+            }
+            myos_set_errno_io();
+            return -1;
+        }
+        return (int)ret;
     }
-    if (ret == (long)MYOS_EIO) {
-        errno = EIO; /* pty peer gone */
-        return -1;
-    }
-    if (ret == (long)MYOS_SYSERR) {
-        myos_set_errno_io();
-        return -1;
-    }
-    return (int)ret;
 }
 
 int _isatty(int fd) {

@@ -12,10 +12,14 @@ typedef unsigned int socklen_t;
 typedef unsigned short sa_family_t;
 
 #define AF_UNSPEC 0
+#define AF_UNIX   1
+#define AF_LOCAL  AF_UNIX
 #define AF_INET   2
 #define AF_INET6  10
 
 #define PF_UNSPEC AF_UNSPEC
+#define PF_UNIX   AF_UNIX
+#define PF_LOCAL  AF_UNIX
 #define PF_INET   AF_INET
 #define PF_INET6  AF_INET6
 
@@ -61,6 +65,7 @@ struct linger {
 };
 
 int socket(int domain, int type, int protocol);
+int socketpair(int domain, int type, int protocol, int sv[2]);
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int listen(int sockfd, int backlog);
