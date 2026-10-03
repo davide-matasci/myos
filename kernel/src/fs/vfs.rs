@@ -171,8 +171,22 @@ pub fn mount(name: &str, prefix: &str, ops: MountOps) {
 /// That lets userspace retry `vd*` disks at `/fat` until the right volume is bound.
 /// `source` is the userspace path (`/dev/vda`) or `none` when there is no block device.
 pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -> bool {
+    attach_module(name, prefix, ops, source, true)
+}
+
+/// Attach one more filesystem of type `name` (a block device bound through
+/// its fstype, `mount(2)`): unlike [`mount_module`], several mounts may
+/// share the name (two ext2 disks).
+pub fn mount_instance(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -> bool {
+    attach_module(name, prefix, ops, source, false)
+}
+
+fn attach_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str, unique: bool) -> bool {
     if prefix.contains('/') {
         return false;
+    }
+    if ops.readlink.is_some() {
+        MODULE_SYMLINKS.store(true, core::sync::atomic::Ordering::Relaxed);
     }
     let source = if source.is_empty() { "none" } else { source };
     let mut mounts = MOUNTS.lock();
@@ -182,7 +196,7 @@ pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -
         m.backend = MountBackend::Module(ops);
         return true;
     }
-    if mounts.iter().any(|m| m.name == name) {
+    if unique && mounts.iter().any(|m| m.name == name) {
         return false;
     }
     mounts.push(Mount {
@@ -576,9 +590,13 @@ pub fn rename(old: &str, new: &str) -> bool {
     backend_rename(idx_o, rel_o, rel_n)
 }
 
+/// A module filesystem that can hold symlinks (one with `readlink`, such
+/// as ext2) has been mounted.
+static MODULE_SYMLINKS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Whether path resolution has to look for symlinks.
 pub fn symlinks_possible() -> bool {
-    super::tmpfs::has_symlinks()
+    super::tmpfs::has_symlinks() || MODULE_SYMLINKS.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Create symlink at `linkpath` with contents `target`.

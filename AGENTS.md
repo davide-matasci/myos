@@ -78,7 +78,7 @@ cargo run -- aarch64 test-mini             # also riscv64, uefi
 cargo run -- test-full                     # full list: + packages, HTTPS, SSH, Alpine, curated os-test (must be 100%)
 cargo run -- packages                      # the package tarballs + indexes (target/packages/)
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
-cargo test -p ps2-scancode                 # host unit tests
+cargo test -p ps2-scancode -p ext2fs      # host unit tests (ext2fs needs e2fsprogs)
 ```
 
 - Test on every arch you could have affected; arch-specific code needs all

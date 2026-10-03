@@ -21,7 +21,7 @@ prompt (what the ISO is for).
 | CI | every pull request, on bios, uefi, aarch64 and riscv64 | the daily scheduled run and `workflow_dispatch` with `full_boot` |
 | budget | 4 minutes (5 with the Linux layer) | 50 minutes |
 | network | QEMU's user network only (DNS and the listen test go through it) | the host's: HTTPS, the Alpine mirror, this build's packages |
-| tests | the shell, exec, the basic programs, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear, the Linux layer's Alpine packages (jq, Python), the curated os-test list, the packages' own tests |
+| tests | the shell, exec, the basic programs, ext2 on the scratch disk, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear, the Linux layer's Alpine packages (jq, Python), the curated os-test list, the packages' own tests |
 
 ## In the guest
 
@@ -102,7 +102,10 @@ is back, so an AP's lagging echo never garbles the line), then watches:
   (mini) or 10 minutes (full), and the whole run has its budget;
 - the kernel's own **boot markers** (`[ OK ] heap`, `[ OK ] scheduler`,
   the drivers, the VFS checks of `/bin/custom/ok`), which init prints
-  before the login prompt: required whatever the tests say.
+  before the login prompt: required whatever the tests say;
+- after the boot, `e2fsck -fn` on the scratch disk (`target/scratch.img`,
+  the guest's `/dev/nvme1n1`) when the ext2 tests left a filesystem on it;
+  skipped without e2fsprogs.
 
 It exits 0 only when every test passed and every marker was seen, and
 prints a one-line summary with the failed tests' names. The full serial

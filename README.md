@@ -155,7 +155,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `modules/hello` | Sample module (`[ OK ] hello`) |
 | `modules/stubfs` | Sample prefixed mount via `vfs_mount` at `/disk` |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` |
-| `modules/ext2` | Writable ext2 (rev1, 1 KiB blocks): `ModuleVfsOps` |
+| `modules/ext2` | Writable ext2: `ModuleVfsOps` over the `ext2fs` crate (`modules/ext2/ext2fs`, also `mkfs.ext2`'s), host-tested against e2fsprogs |
 | `modules/virtio_net` | Modern virtio-pci net: poll RX/TX, `/dev/net0` Ethernet frames |
 | `modules/netfs` | Plan 9 `/net` + `/dev/netd` channel to userspace netd |
 | `modules/linux` | Linux syscall compatibility layer: a syscall *personality* (`personality_register`) for musl binaries |
@@ -255,7 +255,7 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 - **tmpfs/devfs** — writable mount for `O_CREAT`; device nodes
 - **virtio-blk / NVMe** — modules registering `/dev/vda`… and `/dev/nvme0n1` through `blk_register`; loaded before the filesystem modules
 - **FAT16 module** — parses BPB, walks cluster chain, registers `/msg` from root `MSG`
-- **ext2 module** — writable, rev1, 1 KiB blocks, bound via `mount(2)` fstype `ext2`
+- **ext2 module** — the ext2 Linux and e2fsprogs know (1/2/4 KiB blocks, block groups, indirect blocks up to triple, symlinks, rename, sparse superblocks, files over 2 GiB), bound via `mount(2)` fstype `ext2` on a disk `mkfs.ext2` (or Linux's `mke2fs -t ext2`) formatted; `cargo test -p ext2fs` checks it against `e2fsck` and `debugfs`. CI boots carry an empty 4 GiB scratch disk (`/dev/nvme1n1`) for big filesystems
 - **virtio-net / netfs / netd** — kernel virtio-net → `/dev/net0` Ethernet; netfs mounts Plan 9 `/net`; netd runs smoltcp in userspace over `/dev/netd`; `/ping <ipv4>` uses `/net/icmp`
 
 ---

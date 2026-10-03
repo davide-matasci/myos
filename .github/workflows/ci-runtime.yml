@@ -65,8 +65,8 @@ jobs:
           chmod +x scripts/*.sh
           ./scripts/ci-build-pull-and-kernels.sh
 
-      - name: PS/2 scancode decode unit tests
-        run: cargo test -p ps2-scancode
+      - name: Host unit tests (PS/2 decode; ext2 against e2fsprogs)
+        run: cargo test -p ps2-scancode -p ext2fs
 
       - name: Pack CI build artifacts
         env:

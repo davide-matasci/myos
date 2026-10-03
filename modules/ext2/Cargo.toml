@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "ext2 kernel module: registers fstype ext2; mount(2) binds a block device."
+description = "ext2 kernel module: registers fstype ext2; mount(2) binds a block device (the filesystem is the ext2fs crate)."
 
 [[bin]]
 name = "ext2"
@@ -15,6 +15,7 @@ bench = false
 
 [dependencies]
 myos-abi = { path = "../abi" }
+ext2fs = { path = "ext2fs" }
 
 [profile.dev]
 panic = "abort"

@@ -158,7 +158,7 @@ pub fn mount_fstype(source_dev: u32, prefix: &str, fstype_name: &str, source: &s
     let Some(ops) = fstype::bind(fstype_name, source_dev) else {
         return false;
     };
-    vfs::mount_module(fstype_name, prefix, ops, source)
+    vfs::mount_instance(fstype_name, prefix, ops, source)
 }
 
 /// Block-device id for a `/dev/<name>` path (`vdX`, `nvmeXn1`, …), if registered.

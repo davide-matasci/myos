@@ -548,6 +548,9 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
     }
     let _ = child.kill();
     let _ = child.wait();
+    // The ext2 tests leave a filesystem on the scratch disk: e2fsprogs must
+    // find it clean (`src/main.rs`).
+    let disk_ok = crate::fsck_scratch_disk();
 
     let text = snapshot(&serial);
     let missing: Vec<&str> = BOOT_MARKERS.iter().copied().filter(|m| !text.contains(m)).collect();
@@ -566,7 +569,7 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
     if results.len() as u32 != total {
         eprintln!("error: the runner reported {total} tests, {} TEST lines were seen", results.len());
     }
-    if !failed.is_empty() || !missing.is_empty() || passed != total || total == 0 || results.len() as u32 != total {
+    if !failed.is_empty() || !missing.is_empty() || passed != total || total == 0 || results.len() as u32 != total || !disk_ok {
         std::process::exit(1);
     }
     std::process::exit(0);
