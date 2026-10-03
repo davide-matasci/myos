@@ -23,6 +23,11 @@ defaults:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    # The same container (and so the same workspace path) as the jobs that
+    # build: a port's input hash includes the paths sha256sum prints.
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 5
     outputs:
       ports: ${{ steps.matrix.outputs.ports }}
