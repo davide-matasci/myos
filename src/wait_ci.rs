@@ -804,7 +804,7 @@ fn interactive_get_myos_ok(serial: &str) -> bool {
     if !command_echoed(serial, "get-myos -m http://10.0.2.2:8765 make") || serial.contains("exception:") {
         return false;
     }
-    tail.contains("GNU Make") && tail.contains("GET-MYOS-OK") && at_interactive_prompt(serial)
+    tail.contains("GNU Make") && tail.contains("\nGET-MYOS-OK") && at_interactive_prompt(serial)
 }
 
 /// `insmod /lib/modules/linux`: the module reports `[ OK ] linux` and
@@ -1168,9 +1168,11 @@ fn is_heap(cmds: &[&[u8]], idx: usize) -> bool {
 /// Every package reported installed and the shell came back.
 fn interactive_get_packages_ok(serial: &str) -> bool {
     let tail = interactive_tail(serial);
+    // At the start of a line: the typed command echoes `echo GET-PACKAGES-OK`
+    // too, which must not pass for the marker.
     command_echoed(serial, "get-myos -m http://10.0.2.2:8765 ")
         && !serial.contains("exception:")
-        && tail.contains("GET-PACKAGES-OK")
+        && tail.contains("\nGET-PACKAGES-OK")
         && at_interactive_prompt(serial)
 }
 
