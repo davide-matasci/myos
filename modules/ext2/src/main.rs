@@ -230,6 +230,11 @@ unsafe extern "C" fn ext2_readlink<const S: usize>(path: *const u8, path_len: us
     count(with_fs::<S, _>(|fs| fs.readlink(path, out)))
 }
 
+/// The last fd on a file closed: write what is cached to the disk.
+unsafe extern "C" fn ext2_release<const S: usize>(_path: *const u8, _path_len: usize) -> i32 {
+    rc(with_fs::<S, _>(|fs| fs.sync()))
+}
+
 /// The hooks of slot `S`.
 fn ops<const S: usize>() -> ModuleVfsOps {
     ModuleVfsOps {
@@ -247,7 +252,7 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         rename: Some(ext2_rename::<S>),
         symlink: Some(ext2_symlink::<S>),
         readlink: Some(ext2_readlink::<S>),
-        release: None,
+        release: Some(ext2_release::<S>),
     }
 }
 
