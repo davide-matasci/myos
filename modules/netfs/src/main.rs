@@ -48,9 +48,14 @@ const REP_TXCREDIT: u8 = 5;
 
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
-/// Cap matches kernel `FILE_IO_TMP` (2048). TLS ClientHello / cert fragments
-/// need more than the old 512-byte slots (HTTPS handshake timed out in CI).
+/// TLS ClientHello / cert fragments need more than the old 512-byte slots
+/// (HTTPS handshake timed out in CI).
 const MSG_CAP: usize = 2048;
+/// Most a request to netd may take: one read of `/dev/netd` carries it, and
+/// the kernel copies a read through `FILE_IO_TMP` (kernel/src/task/fd.rs,
+/// 2042 bytes). A longer one reached netd cut short, and netd dropped it: a
+/// TCP write lost every full 2042-byte chunk.
+const READ_CAP: usize = 2042;
 const RING: usize = 128; /* SSH writev/kex burst; was 32 — riscv EIO */
 const MAX_CONV: usize = 32;
 /// Per-conversation RX staging. Cert chains exceed 512; drop = TLS timeout.
@@ -89,7 +94,7 @@ impl RingBuf {
     };
 
     fn push(&mut self, src: &[u8]) -> bool {
-        if self.count as usize >= RING || src.is_empty() || src.len() > MSG_CAP {
+        if self.count as usize >= RING || src.is_empty() || src.len() > READ_CAP {
             return false;
         }
         let i = self.head as usize % RING;
@@ -997,15 +1002,16 @@ unsafe extern "C" fn net_write(
             if !conv_ok(id, p) {
                 return -1;
             }
-            if src.len() > MSG_CAP - REQ_HDR {
-                return -1;
-            }
-            // TCP takes what netd has room for; none left refuses the write
-            // (the kernel returns what earlier chunks took).
+            // TCP takes what one request carries and netd has room for; none
+            // left refuses the write (the kernel returns what earlier chunks
+            // took). A datagram goes whole or not at all.
+            let max = READ_CAP - REQ_HDR;
             let n = if p == PROTO_TCP {
-                src.len().min(state().convs[id as usize].tx_room as usize)
-            } else {
+                src.len().min(max).min(state().convs[id as usize].tx_room as usize)
+            } else if src.len() <= max {
                 src.len()
+            } else {
+                return -1;
             };
             if n == 0 || !enqueue_req(REQ_SEND, id, p, &src[..n]) {
                 return -1;
