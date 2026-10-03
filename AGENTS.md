@@ -24,11 +24,12 @@ match the surrounding code's naming, idiom and comment density.
 | `build.rs` | builds the x86_64 kernel and the disk images; checks port artifacts per enabled feature |
 | `kernel/` | the kernel (`arch/`, `task/`, `fs/`, `user/`, `modules/`, `dt.rs` for the device tree) |
 | `modules/` | loadable kernel modules and their `#[repr(C)]` ABI (`modules/abi`); the console module also holds the keymaps and the `ps2-scancode` crate |
-| `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib) and C (`user/c`: hello and CI smokes) |
-| `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`) |
-| `ports/<name>/` | one directory per ported program: `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
+| `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib) and C (`user/c`: hello and CI smokes); one `port.env` per program |
+| `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`); both are ports too (`port.env`, kind `toolchain`) |
+| `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
+| `packages/<name>/` | the same, for programs CI builds but the image does not carry; a port moves between the two by moving its directory |
 | `linux-compat/` | optional Linux syscall layer userspace (launcher, musl build, tests, `get-alpine`) |
-| `scripts/` | CI scripts, registry, thin wrappers for port builds |
+| `scripts/` | CI scripts, registry, `ports.sh` (reads the descriptors), thin wrappers for port builds |
 | `targets/` | custom Rust target specs for userspace |
 | `docs/` | design notes per subsystem (signals, sockets, Linux layer, ...) |
 | `target/` | all build output and fetched sources (never committed) |
@@ -46,14 +47,14 @@ cargo build                          # x86_64 kernel + images (target/*.img)
 cargo run -- [uefi|aarch64|riscv64]  # build and boot in QEMU (default: x86 BIOS)
 ```
 
-- `build.rs` runs an enabled port's `build.sh` itself when its artifacts
-  are missing (or fails with that script's error), and likewise builds what
-  every `core` image carries without a feature of its own (curl with its CA
-  bundle, the boot-CI smoke programs). The initramfs packer refuses a
-  missing file instead of silently leaving it out, and re-packs the images
-  when a packed file under `target/` changes. Ports are Cargo features
-  (`port_vim`, ...; `core` is the boot-required set); `--no-default-features`
-  gives a lean image.
+- `build.rs` runs the build script of every port of the image itself when
+  its outputs are missing (or fails with that script's error). The
+  initramfs packer refuses a missing file instead of silently leaving it
+  out, and re-packs the images when a packed file under `target/` changes.
+  What is in the image is decided by the port descriptors (`port.env`,
+  `docs/ports.md`): every `ports/`, `user/` and `toolchain/` directory
+  with one is in, `packages/` directories are built but not shipped. There
+  are no per-port Cargo features.
 - `--features linux_compat` adds the optional Linux layer; build its pieces
   first with `./linux-compat/build.sh` (see `docs/linux-compat.md`).
 - The aarch64 and riscv64 kernels are built by the launcher; to just
@@ -105,10 +106,12 @@ cargo test -p ps2-scancode                 # host unit tests
   not cover.
 - CI runs in the `myos-ci` container (`Dockerfile`, `build-ci-image.yml`).
 - Changing a port's pin or build script changes its cache key; CI rebuilds
-  it. Adding a port touches `ports/<name>/`, `Cargo.toml` features,
-  `scripts/myos-c-userspace-lib.sh`, `scripts/ci-restore-or-build.sh`,
-  `.github/workflows/ci-ports.yml`, `build.rs`, `src/initramfs.rs` and
-  `THIRD_PARTY_NOTICES.md` (follow an existing port such as `ports/lua`).
+  it. The ports matrix of `ci-ports.yml` and the pack/assert lists of the
+  build and boot jobs come from the descriptors. Adding a port touches
+  `ports/<name>/` (with its `port.env`), `scripts/myos-c-userspace-lib.sh`
+  (hash + freshness functions), `src/wait_ci.rs` and
+  `THIRD_PARTY_NOTICES.md`; see "Adding a port" in `docs/ports.md` and
+  follow an existing port such as `ports/lua`.
 
 ## Rules and conventions
 

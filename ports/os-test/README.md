@@ -4,7 +4,7 @@ Embeds the pinned [sortix/os-test](https://gitlab.com/sortix/os-test) suite into
 the initramfs at `/lib/os-test` (feature `port_os_test`) and drives it with a
 GNU-make harness under `overlay/`.
 
-## Build (ports-base)
+## Build (CI ports job)
 
 Same contract as other ports. From the repo root (host):
 
@@ -20,7 +20,7 @@ This:
    (all arches whose newlib sysroots exist; CI expects x86_64 + aarch64 + riscv64).
 3. Writes `target/.myos-os-test-version`.
 
-CI builds this in **ports-base** (`ci-ports.yml`), caches via `ci-registry.sh`,
+CI builds this in the **ports** job (`ci-ports.yml`), caches via `ci-registry.sh`,
 and the **build** job restores artifacts into `ci-build.tar`. `build.rs` /
 `initramfs.rs` **consume** those trees (no fetch/prebuild as a CI path). Local
 dev: run `./ports/os-test/build.sh` once if cargo complains they are missing.

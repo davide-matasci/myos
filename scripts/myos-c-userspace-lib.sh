@@ -8,6 +8,7 @@ export MYOS_ROOT
 MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
 MYOS_NEWLIB_VERSION="$MYOS_ROOT/target/.myos-newlib-version"
 MYOS_C_HELLO_VERSION="$MYOS_ROOT/target/.myos-c-hello-version"
+MYOS_C_SMOKES_VERSION="$MYOS_ROOT/target/.myos-c-smokes-version"
 MYOS_CURL_VERSION="$MYOS_ROOT/target/.myos-curl-version"
 MYOS_SBASE_VERSION="$MYOS_ROOT/target/.myos-sbase-version"
 MYOS_OKSH_VERSION="$MYOS_ROOT/target/.myos-oksh-version"
@@ -114,6 +115,35 @@ myos_c_hello_is_current() {
     && [[ -f "$MYOS_ROOT/target/c-socket_smoke-x86_64-unknown-none" ]] \
     && [[ -f "$MYOS_ROOT/target/c-socket_smoke-aarch64-unknown-none" ]] \
     && [[ -f "$MYOS_ROOT/target/c-socket_smoke-riscv64-unknown-none" ]]
+}
+
+# All the C smokes (scripts/build-c-smokes.sh): c-hello's inputs plus the
+# other smoke sources and their build scripts.
+myos_c_smokes_version_hash() {
+  local h
+  h="$(
+    {
+      myos_c_hello_version_hash
+      sha256sum "$MYOS_ROOT/user/c/tcp_listen_smoke.c" "$MYOS_ROOT/user/c/pty_smoke.c" \
+        "$MYOS_ROOT/user/c/urandom_smoke.c" "$MYOS_ROOT/scripts/build-tcp-listen-smoke.sh" \
+        "$MYOS_ROOT/scripts/build-pty-smoke.sh" "$MYOS_ROOT/scripts/build-urandom-smoke.sh" \
+        "$MYOS_ROOT/scripts/build-c-smokes.sh"
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_c_smokes_is_current() {
+  local arch bin
+  [[ -f "$MYOS_C_SMOKES_VERSION" ]] \
+    && [[ "$(cat "$MYOS_C_SMOKES_VERSION")" == "$(myos_c_smokes_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke; do
+      [[ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ]] || return 1
+    done
+  done
+  return 0
 }
 
 myos_sbase_version_hash() {

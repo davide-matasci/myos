@@ -1,5 +1,10 @@
 use std::env;
 use std::path::{Path, PathBuf};
+
+#[allow(dead_code)]
+mod ports {
+    include!("../src/ports.rs");
+}
 use std::process::Command;
 
 
@@ -78,7 +83,7 @@ fn main() {
     // image builders (Limine loads them from `boot/modules/` at boot) and for
     // the initramfs (`/lib/modules`, `insmod`). The kernel embeds none of them.
     for &(dir, bin) in MODULES {
-        nested_elf(
+        let _ = nested_elf(
             &cargo,
             manifest,
             &format!("../modules/{dir}"),
@@ -91,7 +96,7 @@ fn main() {
             &["../abi/src/lib.rs", "../virtq/src/lib.rs"],
         );
     }
-    nested_elf(
+    let _ = nested_elf(
         &cargo,
         manifest,
         "../user/init",
@@ -103,101 +108,47 @@ fn main() {
         &out,
         &["../lib/src/lib.rs", "../lib/Cargo.toml"],
     );
-    for (crate_rel, bin, td, env_key) in [
-        ("../user/ok", "ok", "ok-target", "USER_OK_PATH"),
-        ("../user/heap", "heap", "heap-target", "USER_HEAP_PATH"),
-        ("../user/echo", "myos_echo", "echo-target", "USER_ECHO_PATH"),
-        ("../user/cat", "myos_cat", "cat-target", "USER_CAT_PATH"),
-        ("../user/ls", "myos_ls", "ls-target", "USER_LS_PATH"),
-        ("../user/mount", "mount", "mount-target", "USER_MOUNT_PATH"),
-        ("../user/insmod", "insmod", "insmod-target", "USER_INSMOD_PATH"),
-        (
-            "../user/mkfs.ext2",
-            "mkfs_ext2",
-            "mkfs-ext2-target",
-            "USER_MKFS_EXT2_PATH",
-        ),
-    ] {
-        nested_elf(
+    // The Rust userspace programs: every `user/<name>/port.env` (and a
+    // `packages/<name>/port.env` of kind `user`), built for this arch; the
+    // ones with PORT_EMBED are generated into binfs (`user_embed.rs`).
+    let repo = manifest.join("..");
+    println!("cargo:rerun-if-changed={}", repo.join("src/ports.rs").display());
+    let mut embed = String::from("pub fn register_all() {\n");
+    for port in ports::load_all(&repo) {
+        if port.kind != ports::Kind::User {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", repo.join(&port.dir).join("port.env").display());
+        let crate_rel = format!("../{}", port.dir.display());
+        let watch: Vec<String> = port.watch.clone();
+        let watch_refs: Vec<&str> = watch.iter().map(String::as_str).collect();
+        let embedded = nested_elf(
             &cargo,
             manifest,
-            crate_rel,
-            bin,
-            td,
-            env_key,
+            &crate_rel,
+            &port.bin,
+            &format!("{}-target", port.name),
+            if port.embed.is_some() { "_embed" } else { "_unused" },
             &target,
             &profile,
             &out,
-            &["../lib/src/lib.rs", "../lib/Cargo.toml"],
+            &watch_refs,
         );
+        if let (Some(path), Some(bytes)) = (&port.embed, embedded) {
+            embed.push_str(&format!(
+                "    let _ = register({path:?}, include_bytes!(r\"{}\"));\n",
+                bytes.display()
+            ));
+        }
     }
-    nested_elf(
-        &cargo,
-        manifest,
-        "../user/ping",
-        "ping",
-        "ping-target",
-        "USER_PING_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../lib/src/lib.rs", "../lib/Cargo.toml"],
-    );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../user/http",
-        "http",
-        "http-target",
-        "USER_HTTP_PATH",
-        &target,
-        &profile,
-        &out,
-        &[
-            "../lib/src/lib.rs",
-            "../lib/Cargo.toml",
-            "../lib/src/dns.rs",
-            "../tls/src/lib.rs",
-            "../tls/src/platform.c",
-            "../tls/Cargo.toml",
-            "../tls/build.rs",
-        ],
-    );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../user/dns",
-        "dns",
-        "dns-target",
-        "USER_DNS_PATH",
-        &target,
-        &profile,
-        &out,
-        &["../lib/src/lib.rs", "../lib/Cargo.toml", "../lib/src/dns.rs"],
-    );
-    nested_elf(
-        &cargo,
-        manifest,
-        "../user/netd",
-        "netd",
-        "netd-target",
-        "USER_NETD_PATH",
-        &target,
-        &profile,
-        &out,
-        &[
-            "../lib/src/lib.rs",
-            "../lib/Cargo.toml",
-            "../net/src/lib.rs",
-            "../net/Cargo.toml",
-        ],
-    );
+    embed.push_str("}\n");
+    std::fs::write(PathBuf::from(&out).join("user_embed.rs"), embed).expect("write user_embed.rs");
 
     if arch == "x86_64" || arch == "aarch64" || arch == "riscv64" {
         // Auto-build artifacts the kernel embeds unconditionally (binfs.rs
         // uses env!(); the kernel package has no feature gates). These are
         // cheap when present — the scripts early-exit when current.
-        ensure_artifact(manifest, &format!("target/std-hello-{arch}-unknown-myos"), "toolchain/std/build-std-hello.sh");
+        ensure_artifact(manifest, &format!("target/std-hello-{arch}-unknown-myos"), "user/std/build.sh");
         ensure_artifact(manifest, &format!("target/c-hello-{arch}-unknown-none"), "scripts/build-c-hello.sh");
         ensure_artifact(manifest, &format!("target/oksh-{arch}-unknown-none"), "ports/oksh/build.sh");
         for (artifact, env_key) in [
@@ -263,7 +214,7 @@ fn embed_std_elf(manifest_dir: &Path, arch: &str, artifact: &str, env_key: &str)
     println!("cargo:rerun-if-changed={}", stable.display());
     if !stable.is_file() {
         panic!(
-            "{artifact} ELF missing at {} (run ./toolchain/std/build-std-hello.sh)",
+            "{artifact} ELF missing at {} (run ./user/std/build.sh)",
             stable.display()
         );
     }
@@ -415,7 +366,7 @@ fn nested_elf(
     profile: &str,
     out: &str,
     extra_rerun: &[&str],
-) {
+) -> Option<PathBuf> {
     let crate_dir = manifest_dir.join(crate_rel);
     println!("cargo:rerun-if-changed={}/src/main.rs", crate_dir.display());
     println!("cargo:rerun-if-changed={}/build.rs", crate_dir.display());
@@ -433,8 +384,7 @@ fn nested_elf(
     let profile_dir = if profile == "release" { "release" } else { "debug" };
     // smoltcp (ping) needs a clean link for --image-base; deps-only wipe can
     // leave a stale ET_EXEC at the default 0x200000 / 0x10000 link base.
-    let need_image_base = (bin == "ping" || bin == "netd" || bin == "http" || bin == "dns")
-        && (target.contains("aarch64") || target.contains("riscv64"));
+    let need_image_base = user_image_base(bin) && (target.contains("aarch64") || target.contains("riscv64"));
     if need_image_base {
         let _ = std::fs::remove_dir_all(&td);
     } else {
@@ -518,35 +468,32 @@ fn nested_elf(
     let stable = ws_target.join(format!("{bin}-{target}"));
     std::fs::copy(&elf, &stable)
         .unwrap_or_else(|e| panic!("copy {bin} ELF to {}: {e}", stable.display()));
-    // Path string alone is not enough: same USER_*_PATH with new bytes left
-    // bootfs include_bytes! stale. Watch the stable copy like other embeds.
+    // Path string alone is not enough: same path with new bytes left bootfs
+    // include_bytes! stale (rust-cache reused a fingerprint). Watch the stable
+    // copy, and give an embedded program a content-hashed file name.
     println!("cargo:rerun-if-changed={}", stable.display());
-    if bin == "ping" || bin == "netd" || bin == "http" || bin == "dns" {
-        // Hash in rustc-env so bootfs.rs env!("USER_*_HASH") dirties the
-        // crate when rust-cache reused a fingerprint but ELF bytes changed.
-        let bytes = std::fs::read(&elf).unwrap_or_default();
-        let mut hash = 0xcbf29ce484222325u64;
-        for b in &bytes {
-            hash ^= u64::from(*b);
-            hash = hash.wrapping_mul(0x1000_0000_01b3);
-        }
-        let hashed = PathBuf::from(out).join(format!("{bin}-{hash:016x}.elf"));
-        std::fs::write(&hashed, &bytes)
-            .unwrap_or_else(|e| panic!("write hashed {bin}: {e}"));
-        let hash_key = if bin == "ping" {
-            "USER_PING_HASH"
-        } else if bin == "http" {
-            "USER_HTTP_HASH"
-        } else if bin == "dns" {
-            "USER_DNS_HASH"
-        } else {
-            "USER_NETD_HASH"
-        };
-        println!("cargo:rustc-env={hash_key}={hash:016x}");
-        if env_key != "_unused" {
-            println!("cargo:rustc-env={env_key}={}", hashed.display());
-        }
-    } else if env_key != "_unused" {
-        println!("cargo:rustc-env={env_key}={}", stable.display());
+    if env_key == "_unused" {
+        return None;
     }
+    let bytes = std::fs::read(&elf).unwrap_or_default();
+    let mut hash = 0xcbf29ce484222325u64;
+    for b in &bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    let hashed = PathBuf::from(out).join(format!("{bin}-{hash:016x}.elf"));
+    std::fs::write(&hashed, &bytes).unwrap_or_else(|e| panic!("write hashed {bin}: {e}"));
+    if env_key != "_embed" {
+        println!("cargo:rustc-env={env_key}={}", hashed.display());
+    }
+    Some(hashed)
+}
+
+/// Programs linked at USER_BASE (ET_EXEC with absolute vtables; see
+/// `PORT_IMAGE_BASE` in the descriptor).
+fn user_image_base(bin: &str) -> bool {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    ports::load_all(&repo)
+        .iter()
+        .any(|p| p.kind == ports::Kind::User && p.bin == bin && p.image_base)
 }

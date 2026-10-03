@@ -11,45 +11,19 @@ if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
 else
   ./toolchain/std/fetch-sysroot.sh
 fi
-./scripts/ci-registry.sh pull newlib || true
-./scripts/ci-registry.sh pull std-hello || true
-./scripts/ci-registry.sh pull c-hello || true
-./scripts/ci-registry.sh pull curl || true
-./scripts/ci-registry.sh pull dropbear || true
-./scripts/ci-registry.sh pull sbase || true
-./scripts/ci-registry.sh pull oksh || true
-./scripts/ci-registry.sh pull make || true
-./scripts/ci-registry.sh pull ubase || true
-./scripts/ci-registry.sh pull coreutils || true
-./scripts/ci-registry.sh pull ripgrep || true
-./scripts/ci-registry.sh pull tcc || true
-./scripts/ci-registry.sh pull ncurses || true
-./scripts/ci-registry.sh pull vim || true
-./scripts/ci-registry.sh pull zlib || true
-./scripts/ci-registry.sh pull git || true
-./scripts/ci-registry.sh pull lynx || true
-./scripts/ci-registry.sh pull lua || true
-./scripts/ci-registry.sh pull os-test || true
-./scripts/ci-registry.sh pull linux-compat || true
-./scripts/ci-registry.sh push sysroot || true
-./scripts/ci-registry.sh push newlib || true
-./scripts/ci-registry.sh push std-hello || true
-./scripts/ci-registry.sh push c-hello || true
-./scripts/ci-registry.sh push curl || true
-./scripts/ci-registry.sh push dropbear || true
-./scripts/ci-registry.sh push sbase || true
-./scripts/ci-registry.sh push oksh || true
-./scripts/ci-registry.sh push make || true
-./scripts/ci-registry.sh push ubase || true
-./scripts/ci-registry.sh push coreutils || true
-./scripts/ci-registry.sh push ripgrep || true
-./scripts/ci-registry.sh push tcc || true
-./scripts/ci-registry.sh push ncurses || true
-./scripts/ci-registry.sh push vim || true
-./scripts/ci-registry.sh push zlib || true
-./scripts/ci-registry.sh push git || true
-./scripts/ci-registry.sh push lynx || true
-./scripts/ci-registry.sh push lua || true
-./scripts/ci-registry.sh push os-test || true
-./scripts/ci-registry.sh push linux-compat || true
+# Everything the images carry: every image port with a build script in build
+# order (scripts/ports.sh --image-list: newlib first; the sysroot was fetched
+# above) and the Linux layer's musl pieces. A miss is built by
+# ci-build-kernels.sh and pushed from there.
+pieces=()
+while read -r name _; do
+  [[ "$name" == sysroot ]] || pieces+=("$name")
+done < <(./scripts/ports.sh --image-list)
+pieces+=(linux-compat)
+for p in "${pieces[@]}"; do
+  ./scripts/ci-registry.sh pull "$p" || true
+done
+for p in "${pieces[@]}"; do
+  ./scripts/ci-registry.sh push "$p" || true
+done
 ./scripts/ci-build-kernels.sh

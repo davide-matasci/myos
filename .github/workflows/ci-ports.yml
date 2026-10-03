@@ -1,5 +1,8 @@
 name: CI ports
 # Reusable: sysroot / newlib / ports-*. Building belongs here — not in boot.
+# The ports matrix comes from the port descriptors (scripts/ports.sh
+# --matrix: every ports/, packages/, user/ and toolchain/std directory with a
+# port.env and a build script), so adding a port does not touch this file.
 on:
   workflow_call:
     inputs:
@@ -26,6 +29,20 @@ defaults:
     shell: bash
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ports: ${{ steps.matrix.outputs.ports }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Ports matrix from the descriptors
+        id: matrix
+        run: |
+          chmod +x scripts/*.sh
+          echo "ports=$(./scripts/ports.sh --matrix)" >> "$GITHUB_OUTPUT"
+          ./scripts/ports.sh --matrix
+
   sysroot:
     runs-on: ubuntu-latest
     container:
@@ -100,64 +117,23 @@ jobs:
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: ./scripts/ci-newlib-job.sh
 
-  ports-base:
+  ports:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
     timeout-minutes: 45
-    needs: [sysroot, newlib]
+    needs: [plan, sysroot, newlib]
     if: |
       always() &&
       !cancelled() &&
+      needs.plan.result == 'success' &&
       (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped') &&
       (needs.newlib.result == 'success' || needs.newlib.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - port: sbase
-            script: ./ports/sbase/build.sh
-            pull: sbase
-          - port: ubase
-            script: ./ports/ubase/build.sh
-            pull: ubase
-          - port: oksh
-            script: ./ports/oksh/build.sh
-            pull: oksh
-          - port: make
-            script: ./ports/make/build.sh
-            pull: make
-          - port: coreutils
-            script: ./ports/coreutils/build-uutils.sh
-            pull: coreutils
-            needs_sysroot: "1"
-          - port: ripgrep
-            script: ./ports/ripgrep/build.sh
-            pull: ripgrep
-            needs_sysroot: "1"
-          - port: tcc
-            script: ./ports/tcc/build.sh
-            pull: tcc
-          - port: ncurses
-            script: ./ports/ncurses/build.sh
-            pull: ncurses
-          - port: zlib
-            script: ./ports/zlib/build.sh
-            pull: zlib
-          - port: c-hello
-            script: ./scripts/build-c-hello.sh
-            pull: c-hello
-          - port: curl
-            script: ./ports/curl/build.sh
-            pull: curl
-          - port: std-hello
-            script: ./toolchain/std/build-std-hello.sh
-            pull: std-hello
-            needs_sysroot: "1"
-          - port: os-test
-            script: ./ports/os-test/build.sh
-            pull: os-test
+        include: ${{ fromJson(needs.plan.outputs.ports) }}
     steps:
       - uses: actions/checkout@v6
 
@@ -189,55 +165,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        run: ./scripts/ci-build-port.sh "${{ matrix.pull }}" "${{ matrix.script }}" "${{ matrix.needs_sysroot }}"
-
-  ports-advanced:
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/davide-matasci/myos-ci:latest
-      options: -e HOME=/root
-    timeout-minutes: 45
-    needs: [sysroot, newlib, ports-base]
-    if: |
-      always() &&
-      !cancelled() &&
-      (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped') &&
-      (needs.newlib.result == 'success' || needs.newlib.result == 'skipped') &&
-      needs.ports-base.result == 'success'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - port: vim
-            script: ./ports/vim/build.sh
-            pull: vim
-            dep_port: ncurses
-          - port: git
-            script: ./ports/git/build.sh
-            pull: git
-            dep_port: zlib
-          - port: lynx
-            script: ./ports/lynx/build.sh
-            pull: lynx
-            dep_port: ncurses
-          - port: lua
-            script: ./ports/lua/build.sh
-            pull: lua
-          - port: linux-compat
-            script: ./linux-compat/build.sh
-            pull: linux-compat
-            dep_port: zlib
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install pinned nightly
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-07-26
-          components: llvm-tools-preview
-
-      - name: Build port (${{ matrix.port }})
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        run: ./scripts/ci-build-port.sh "${{ matrix.pull }}" "${{ matrix.script }}" "0" "${{ matrix.dep_port }}"
+        run: ./scripts/ci-build-port.sh "${{ matrix.port }}" "${{ matrix.script }}" "${{ matrix.needs_sysroot }}" "${{ matrix.deps }}"

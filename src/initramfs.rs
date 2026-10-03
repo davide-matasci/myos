@@ -63,7 +63,7 @@ pub fn active_features() -> Vec<String> {
         .collect()
 }
 
-/// True when the given feature (e.g. `port_vim`) is in the active set.
+/// True when the given feature (`linux_compat`) is in the active set.
 pub fn feature_enabled(feature: &str) -> bool {
     active_features().iter().any(|f| *f == feature)
 }
@@ -81,8 +81,8 @@ struct Entry {
 
 /// A file the image needs: a missing one is a build error, never a silently
 /// smaller image (the guest then fails with "not found" much later, or an
-/// ISO ships without curl). `build.rs` builds every port and program the
-/// active features ship, so this names what to run when it did not.
+/// ISO ships without curl). `build.rs` builds every port of the image from
+/// its descriptor, so this names what to run when it did not.
 fn read(path: &Path) -> Option<Vec<u8>> {
     read_any(&[path])
 }
@@ -128,11 +128,6 @@ fn read_optional(paths: &[&Path]) -> Option<Vec<u8>> {
     None
 }
 
-/// Programs every `core` image carries (curl, the boot-CI smokes): required
-/// then; a lean `--no-default-features` image goes without them.
-fn read_core(paths: &[&Path]) -> Option<Vec<u8>> {
-    if feature_enabled("core") { read_any(paths) } else { read_optional(paths) }
-}
 
 fn add(entries: &mut Vec<Entry>, rel: &str, data: Option<Vec<u8>>) {
     if let Some(d) = data {
@@ -161,6 +156,74 @@ fn add_hardlink_group(entries: &mut Vec<Entry>, names: &[String], data: Option<V
             nlink,
             mode: 0o100755,
         });
+    }
+}
+
+
+/// Pack what one port of the image ships (`PORT_FILES`, see docs/ports.md).
+/// A user program the kernel embeds (`PORT_EMBED`) is optional here: the CI
+/// boot jobs pack the aarch64/riscv64 initramfs from ci-build.tar, which
+/// carries only what the kernel does not embed.
+fn install_port(entries: &mut Vec<Entry>, port: &crate::ports::Port, manifest_dir: &Path, arch: &str) {
+    use crate::ports::{FileSpec, expand};
+    let target = manifest_dir.join("target");
+    let optional = port.embed.is_some();
+    let take = |path: &Path| -> Option<Vec<u8>> {
+        if optional { read_optional(&[path]) } else { read(path) }
+    };
+    for f in &port.files {
+        match f {
+            FileSpec::Bin { src, paths } => {
+                let data = take(&target.join(expand(src, arch)));
+                if paths.len() == 1 {
+                    add(entries, &paths[0], data);
+                } else {
+                    add_hardlink_group(entries, paths, data);
+                }
+            }
+            FileSpec::Data { src, path } => {
+                add(entries, path, take(&target.join(expand(src, arch))));
+            }
+            FileSpec::File { src, path } => {
+                add(entries, path, read(&manifest_dir.join(&port.dir).join(src)));
+            }
+            FileSpec::Manifest { src, dir } => {
+                // `name:/path/to/elf` per line.
+                let Some(text) = read(&target.join(expand(src, arch))) else {
+                    continue;
+                };
+                for line in String::from_utf8_lossy(&text).lines() {
+                    let line = line.trim();
+                    if let Some((name, path)) = line.split_once(':') {
+                        add(entries, &format!("{dir}/{name}"), read(Path::new(path)));
+                    }
+                }
+            }
+            FileSpec::Multicall { elf, manifest, dir } => {
+                // One ELF stored once, aliased under every name of the manifest.
+                let Some(text) = read(&target.join(expand(manifest, arch))) else {
+                    continue;
+                };
+                let names: Vec<String> = String::from_utf8_lossy(&text)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty() && !n.starts_with('#'))
+                    .map(|n| format!("{dir}/{n}"))
+                    .collect();
+                add_hardlink_group(entries, &names, read(&target.join(expand(elf, arch))));
+            }
+            FileSpec::Tree { src, dir } => {
+                let root = target.join(expand(src, arch));
+                if !root.is_dir() {
+                    panic!(
+                        "initramfs: required directory missing: {} (port {}; run its build script)",
+                        root.display(),
+                        port.name
+                    );
+                }
+                collect_tree(&root, dir, entries);
+            }
+        }
     }
 }
 
@@ -215,97 +278,31 @@ fn collect_tree(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
 }
 
 /// Build the newc initramfs archive for `arch` from the ELFs under `target/`.
-/// Every file the active features ship must exist (`read` panics otherwise):
-/// `build.rs` runs the missing ports' build scripts before this.
+/// Every file a port of the image ships must exist (`read` panics
+/// otherwise): `build.rs` runs the missing ports' build scripts before this.
 pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     let target = manifest_dir.join("target");
-    let (kernel_triple, none_triple, myos_triple) = triples(arch);
+    let (kernel_triple, _none_triple, _myos_triple) = triples(arch);
     let mut entries: Vec<Entry> = Vec::new();
 
-    // sbase manifest: `name:/path/to/sbase-name-<triple>` -> bin/sbase/<name>.
-    if feature_enabled("port_sbase")
-        && let Some(text) = read(&target.join(format!("sbase-manifest-{arch}.txt"))) {
-        let text = String::from_utf8_lossy(&text);
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some((name, path)) = line.split_once(':') {
-                add(&mut entries, &format!("bin/sbase/{name}"), read(Path::new(path)));
-            }
-        }
+    // Everything the ports ship: one descriptor per port (`port.env`, see
+    // docs/ports.md), the same files `get-myos` would install from a package.
+    let all_ports = crate::ports::load_all(manifest_dir);
+    let image_ports: Vec<&crate::ports::Port> =
+        all_ports.iter().filter(|p| p.role == crate::ports::Role::Image).collect();
+    for port in &image_ports {
+        install_port(&mut entries, port, manifest_dir, arch);
     }
 
-    // ubase manifest -> bin/ubase/<name>.
-    if feature_enabled("port_ubase")
-        && let Some(text) = read(&target.join(format!("ubase-manifest-{arch}.txt"))) {
-        let text = String::from_utf8_lossy(&text);
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some((name, path)) = line.split_once(':') {
-                add(&mut entries, &format!("bin/ubase/{name}"), read(Path::new(path)));
-            }
-        }
-    }
-
-    // coreutils: one multicall ELF aliased under every name -> bin/coreutils/<name>.
-    // Stored once via a hardlink group.
-    if feature_enabled("port_coreutils")
-        && let Some(text) = read(&target.join(format!("coreutils-manifest-{arch}.txt"))) {
-        let coreutils_elf = read(&target.join(format!("coreutils-{myos_triple}")));
-        let text = String::from_utf8_lossy(&text);
-        let mut names: Vec<String> = Vec::new();
-        for line in text.lines() {
-            let name = line.trim();
-            if name.is_empty() || name.starts_with('#') {
-                continue;
-            }
-            names.push(format!("bin/coreutils/{name}"));
-        }
-        add_hardlink_group(&mut entries, &names, coreutils_elf);
-    }
-
-    // ripgrep -> bin/coreutils/rg.
-    if feature_enabled("port_ripgrep") {
-        add(
-            &mut entries,
-            "bin/coreutils/rg",
-            read(&target.join(format!("rg-{myos_triple}"))),
-        );
-    }
-
-    // tcc -> bin/tcc/tcc.
-    if feature_enabled("port_tcc") {
-        add(
-            &mut entries,
-            "bin/tcc/tcc",
-            read(&target.join(format!("tcc-{myos_triple}"))),
-        );
-    }
-
-    // std programs -> bin/std/<name>.
-    if feature_enabled("std") {
-        for name in ["hello", "cat", "echo", "bigalloc"] {
-            add(
-                &mut entries,
-                &format!("bin/std/{name}"),
-                read(&target.join(format!("std-{name}-{myos_triple}"))),
-            );
-        }
-    }
-
-    // c-hello -> bin/etc/hello.
-    if feature_enabled("c_hello") {
-        add(
-            &mut entries,
-            "bin/etc/hello",
-            read(&target.join(format!("c-hello-{none_triple}"))),
-        );
-    }
+    // /usr skeleton for the os-test paths suite (/usr, /usr/bin, /usr/bin/env,
+    // /usr/lib): access(F_OK) only, so a placeholder is enough; the directory
+    // prefix logic of the filesystems exposes the parents as directories.
+    add(
+        &mut entries,
+        "usr/bin/env",
+        Some(b"#!/bin/sh\nexec \"$@\"\n".to_vec()),
+    );
+    add(&mut entries, "usr/lib/.keep", Some(b"\n".to_vec()));
 
     // The `linux` launcher of the Linux compatibility layer (native, always
     // shipped: with the module loaded, `linux PROGRAM` works in any build).
@@ -338,78 +335,6 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         add(&mut entries, "bin/etc/get-alpine", read(&dyn_dir.join("get-alpine")));
     }
 
-    // userspace BSD sockets smoke -> bin/etc/socket_smoke.
-    // Fallback: coreutils-* pack alias when ci-build.tar omitted the canonical name
-    // (workflow glob is `target/c-hello-*`, not `c-socket_smoke-*`).
-    add(
-        &mut entries,
-        "bin/etc/socket_smoke",
-        read_core(&[
-            &target.join(format!("c-socket_smoke-{none_triple}")),
-            &target.join(format!("coreutils-c-socket_smoke-{none_triple}")),
-        ]),
-    );
-
-    // pty boot-CI smoke -> bin/etc/pty_smoke (openpty/forkpty + line-
-    // discipline round-trip + EIO; see user/c/pty_smoke.c).
-    // Fallback: coreutils-* pack alias when ci-build.tar omitted the canonical
-    // name (no workflow-scope ci.yml glob for pty-smoke-*).
-    add(
-        &mut entries,
-        "bin/etc/pty_smoke",
-        read_core(&[
-            &target.join(format!("pty-smoke-{none_triple}")),
-            &target.join(format!("coreutils-pty-smoke-{none_triple}")),
-        ]),
-    );
-
-    // tcp listen/accept boot-CI smoke -> bin/etc/tcp_listen_smoke (netd
-    // announce/accept over /net/tcp; see user/c/tcp_listen_smoke.c).
-    add(
-        &mut entries,
-        "bin/etc/tcp_listen_smoke",
-        read_core(&[&target.join(format!("tcp-listen-smoke-{none_triple}"))]),
-    );
-
-    // urandom boot-CI smoke -> bin/etc/urandom_smoke (kernel CSPRNG via
-    // /dev/urandom; see user/c/urandom_smoke.c).
-    // Fallback: coreutils-* pack alias (same as pty-smoke).
-    add(
-        &mut entries,
-        "bin/etc/urandom_smoke",
-        read_core(&[
-            &target.join(format!("urandom-smoke-{none_triple}")),
-            &target.join(format!("coreutils-urandom-smoke-{none_triple}")),
-        ]),
-    );
-
-    // trimmed curl (HTTPS GET + -o) over userspace sockets + mbedtls.
-    // Canonical guest path is /bin/etc/curl ($PATH includes /bin/etc). Also install
-    // /bin/custom/curl next to ping/http/dns (hardlink group = one ELF in the archive).
-    // Fallback to coreutils-curl-* pack alias when ci-build.tar omitted the canonical name.
-    let curl_elf = read_core(&[
-        &target.join(format!("curl-{none_triple}")),
-        &target.join(format!("coreutils-curl-{none_triple}")),
-    ]);
-    add_hardlink_group(
-        &mut entries,
-        &["bin/etc/curl".to_string(), "bin/custom/curl".to_string()],
-        curl_elf,
-    );
-
-    // Mozilla CA bundle for curl's mbedtls backend (CURL_CA_BUNDLE=/lib/cacert.pem).
-    // Same PEM mbedtls/fetch.sh downloads and embeds as myos_ca_bundle_pem for `http`.
-    // Fallback: coreutils-cacert.pem pack alias (ci-build.tar glob is target/coreutils-*).
-    // (Public data; the names avoid "cert" so code scanning does not take the
-    // logged path for a credential.)
-    let ca_bundle = target.join("cacert.pem");
-    let ca_bundle_alias = target.join("coreutils-cacert.pem");
-    add(
-        &mut entries,
-        "lib/cacert.pem",
-        read_core(&[&ca_bundle, &ca_bundle_alias]),
-    );
-
     // Kernel modules -> lib/modules/<name> (the same ELFs Limine loads at
     // boot; `insmod /lib/modules/<name>` loads one that was not, e.g. the
     // optional `linux` module in a build without its feature).
@@ -421,181 +346,12 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         );
     }
 
-    // Nested user/* ELFs -> bin/custom/<name>. The kernel embeds the same
-    // ELFs (kernel/src/fs/binfs.rs), so these copies may be absent: the CI
-    // boot jobs pack the aarch64/riscv64 initramfs from ci-build.tar, which
-    // carries only what the kernel does not embed.
-    for (rel, bin) in [
-        ("ok", "ok"),
-        ("heap", "heap"),
-        ("cat", "myos_cat"),
-        ("echo", "myos_echo"),
-        ("ls", "myos_ls"),
-        ("mount", "mount"),
-        ("insmod", "insmod"),
-        ("mkfs.ext2", "mkfs_ext2"),
-        ("ping", "ping"),
-        ("http", "http"),
-        ("dns", "dns"),
-        ("netd", "netd"),
-    ] {
-        add(
-            &mut entries,
-            &format!("bin/custom/{rel}"),
-            read_optional(&[&target.join(format!("{bin}-{kernel_triple}"))]),
-        );
-    }
-    // oksh -> bin/custom/sh (none triple).
-    if feature_enabled("port_oksh") {
-        // Also serve the shell at /bin/sh: PATH-independent consumers (GNU
-        // make's default SHELL=/bin/sh) need it at the canonical location.
-        add_hardlink_group(
-            &mut entries,
-            &["bin/custom/sh".to_string(), "bin/sh".to_string()],
-            read(&target.join(format!("oksh-{none_triple}"))),
-        );
-    }
-    // os-test paths suite: /usr, /usr/bin, /usr/bin/env, /usr/lib.
-    // access(F_OK) only — a tiny placeholder ELF-less file is enough; bootfs
-    // directory-prefix logic exposes /usr and /usr/bin as directories.
-    add(
-        &mut entries,
-        "usr/bin/env",
-        Some(b"#!/bin/sh\nexec \"$@\"\n".to_vec()),
-    );
-    add(&mut entries, "usr/lib/.keep", Some(b"\n".to_vec()));
-
-    // dropbear sshd + dbclient -> bin/custom/{dropbear,dbclient} (none triple,
-    // like oksh). Gated on the port_dropbear feature; panic with the build
-    // hint if the ELF is missing (silent skip = "dropbear not available").
-    if feature_enabled("port_dropbear") {
-        for bin in ["dropbear", "dbclient", "dropbearkey"] {
-            // Prefer the canonical ELF; fall back to the coreutils-* pack alias
-            // used when ci.yml cannot gain new globs (OAuth lacks workflow scope).
-            let canonical = target.join(format!("{bin}-{none_triple}"));
-            let alias = target.join(format!("coreutils-{bin}-{none_triple}"));
-            let path = if canonical.is_file() {
-                canonical
-            } else {
-                alias.clone()
-            };
-            let bytes = std::fs::read(&path).unwrap_or_else(|e| {
-                panic!(
-                    "dropbear: missing {path:?} (also tried {alias:?}) ({e}); run ports/dropbear/build.sh"
-                )
-            });
-            add(&mut entries, &format!("bin/custom/{bin}"), Some(bytes));
-        }
-        // Test-only authorized key for CI/E2E SSH login (private key is
-        // committed next to the port and labeled NOT A SECRET — demo OS).
-        let ak = manifest_dir.join("ports/dropbear/testkey.pub");
-        let ak_bytes = std::fs::read(&ak).unwrap_or_else(|e| {
-            panic!("dropbear: missing testkey.pub ({e})")
-        });
-        add(&mut entries, ".ssh/authorized_keys", Some(ak_bytes));
-        // Server host key (generated with host-built dropbearkey; private key
-        // committed next to the port, demo OS — NOT a secret).
-        let hk = manifest_dir.join("ports/dropbear/testkey.host");
-        let hk_bytes = std::fs::read(&hk).unwrap_or_else(|e| {
-            panic!("dropbear: missing testkey.host ({e})")
-        });
-        add(&mut entries, "etc/dropbear/ed25519_hostkey", Some(hk_bytes));
-        // /etc/shells: dropbear's check_shell() rejects auth unless the
-        // passwd shell is listed here (root's pw_shell is /bin/custom/sh).
-        add(
-            &mut entries,
-            "etc/shells",
-            Some(b"/bin/custom/sh\n/bin/sh\n".to_vec()),
-        );
-    }
-    // vim (FEAT_TINY) -> bin/custom/vim (none triple, like oksh).
-    // Gated on the port_vim feature: exclude with --no-default-features.
-    if feature_enabled("port_vim") {
-        let vim_path = target.join(format!("vim-{none_triple}"));
-        let vim_bytes = std::fs::read(&vim_path).unwrap_or_else(|e| {
-            panic!(
-                "initramfs: required bin/custom/vim missing at {} ({e}); run ./ports/vim/build.sh",
-                vim_path.display()
-            )
-        });
-        add(&mut entries, "bin/custom/vim", Some(vim_bytes));
-    }
-    // GNU make -> bin/custom/make (none triple).
-    // Gated on the port_make feature.
-    if feature_enabled("port_make") {
-        let make_path = target.join(format!("make-{none_triple}"));
-        let make_bytes = std::fs::read(&make_path).unwrap_or_else(|e| {
-            panic!(
-                "initramfs: required bin/custom/make missing at {} ({e}); run ./ports/make/build.sh",
-                make_path.display()
-            )
-        });
-        add(&mut entries, "bin/custom/make", Some(make_bytes));
-    }
-    // lynx (text browser) -> bin/custom/lynx (none triple).
-    // HTTPS via ports/lynx/tidy_tls.c over mbedtls; sockets via libgloss /net.
-    // Gated on the port_lynx feature.
-    if feature_enabled("port_lynx") {
-        let lynx_path = target.join(format!("lynx-{none_triple}"));
-        let lynx_bytes = std::fs::read(&lynx_path).unwrap_or_else(|e| {
-            panic!(
-                "initramfs: required bin/custom/lynx missing at {} ({e}); run ./ports/lynx/build.sh",
-                lynx_path.display()
-            )
-        });
-        add(&mut entries, "bin/custom/lynx", Some(lynx_bytes));
-        // System lynx.cfg (LYNX_CFG_FILE=/lib/lynx.cfg). Prefer /lib like
-        // cacert/termcap/kbd maps (bootfs /etc exists now, but lynx is built for /lib).
-        add(
-            &mut entries,
-            "lib/lynx.cfg",
-            read(&manifest_dir.join("ports/lynx/lynx.cfg")),
-        );
-    }
-    // lua (Lua 5.4 interpreter) -> bin/custom/lua (none triple, like vim).
-    // Gated on the port_lua feature.
-    if feature_enabled("port_lua") {
-        let lua_path = target.join(format!("lua-{none_triple}"));
-        let lua_bytes = std::fs::read(&lua_path).unwrap_or_else(|e| {
-            panic!(
-                "initramfs: required bin/custom/lua missing at {} ({e}); run ./ports/lua/build.sh",
-                lua_path.display()
-            )
-        });
-        add(&mut entries, "bin/custom/lua", Some(lua_bytes));
-    }
-    // git (Phase-1 local porcelain) -> bin/custom/git (none triple, like vim).
-    // Gated on the port_git feature.
-    if feature_enabled("port_git") {
-        let git_path = target.join(format!("git-{none_triple}"));
-        let git_alias = target.join(format!("coreutils-git-{none_triple}"));
-        let git_bytes = std::fs::read(&git_path)
-            .or_else(|_| std::fs::read(&git_alias))
-            .unwrap_or_else(|e| {
-                panic!(
-                    "initramfs: required bin/custom/git missing at {} (or {}); run ./ports/git/build.sh ({e})",
-                    git_path.display(),
-                    git_alias.display()
-                )
-            });
-        // Same ELF at /bin/git so `git` is obvious even if PATH is minimal.
-        add_hardlink_group(
-            &mut entries,
-            &["bin/custom/git".to_string(), "bin/git".to_string()],
-            Some(git_bytes),
-        );
-    }
-
-    // newlib sysroot -> lib/newlib/include/… and lib/newlib/lib/….
-    // libc is always required (every port links against it), so it is not gated.
-    let sysroot = target.join(format!("newlib-{arch}")).join(myos_triple);
-    collect_tree(&sysroot.join("include"), "lib/newlib/include", &mut entries);
-    collect_tree(&sysroot.join("lib"), "lib/newlib/lib", &mut entries);
     // Compiler headers (stddef.h, stdarg.h, float.h, …) come from the tcc
-    // source tree: newlib's sys/cdefs.h includes them, but tcc has no GCC
-    // builtins, so they must exist in the archive. Only stricter when tcc is
-    // enabled; without tcc nothing compiles on the guest so they are unneeded.
-    if feature_enabled("port_tcc") {
+    // source tree: newlib's sys/cdefs.h includes them (the newlib sysroot is
+    // under lib/newlib, from the `newlib` port), but tcc has no GCC builtins,
+    // so they must exist in the archive. Only when tcc is in the image;
+    // without tcc nothing compiles on the guest so they are unneeded.
+    if image_ports.iter().any(|p| p.name == "tcc") {
     let tcc_inc = target.join("tcc-src/include");
     let stddef = tcc_inc.join("stddef.h");
     if !stddef.is_file() {
@@ -632,51 +388,6 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         }
     }
     }
-
-    // Minimal termcap (linux/ansi/vt100/dumb) for ncurses tgetent — see
-    // ports/termcap/README.md. Served at /lib/termcap; getty sets TERMCAP.
-    add(
-        &mut entries,
-        "lib/termcap",
-        read(&manifest_dir.join("ports/termcap/termcap")),
-    );
-
-    // os-test (POSIX compliance test suite) -> lib/os-test, run manually on
-    // the guest with the GNU make port: cd /lib/os-test && make.
-    // Artifacts come from ports/os-test/build.sh (ports-base CI + local).
-    // Always embedded — consume prebuilt trees; never fetch/prebuild here.
-    {
-        let embed = manifest_dir.join("target/os-test-embed");
-        let probe = embed.join("basic/ctype/isalnum.c");
-        if !probe.is_file() {
-            panic!(
-                "os-test embed missing at {}; run ./ports/os-test/build.sh (CI: ports-base os-test)",
-                embed.display()
-            );
-        }
-        collect_tree(&embed, "lib/os-test", &mut entries);
-        // Host-prebuilt boot-CI smoke ELFs -> /lib/os-test/prebuilt/…
-        // Guest myos-run.sh prefers these so x86 TCG need not tcc each test.
-        let pre = manifest_dir.join(format!("target/os-test-prebuilt/{arch}"));
-        let marker = pre.join("basic/arpa_inet/htons");
-        if !marker.is_file() {
-            panic!(
-                "os-test prebuilt missing at {}; run ./ports/os-test/build.sh (CI: ports-base os-test)",
-                pre.display()
-            );
-        }
-        collect_tree(&pre, "lib/os-test/prebuilt", &mut entries);
-    }
-
-    // Vim system vimrc (pathdef.c points default_vim_dir at /lib/vim):
-    // without it vim starts in Vi-compatible mode, which turns 'esckeys' off
-    // (arrow keys dead in insert mode) and empties 'backspace' (BS cannot
-    // erase before the insert start) — "arrows/backspace don't work in vim".
-    add(
-        &mut entries,
-        "lib/vim/vimrc",
-        read(&manifest_dir.join("ports/vim/vimrc")),
-    );
 
     // Loadable keyboard maps (Swiss German default; US alternate).
     // Served at /lib/kbd/*.map via libfs (cpio lib/ → libfs nested tree).

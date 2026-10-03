@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build std example ELFs for CI (small smoke binaries).
+# Build the std demo programs (user/std/*: small smoke binaries for /bin/std).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -22,9 +22,9 @@ build_example() {
   echo "std-${name} -> $ROOT/target/std-${name}-${triple}"
 }
 for triple in "${MYOS_USER_TRIPLES[@]+"${MYOS_USER_TRIPLES[@]}"}"; do
-  build_example hello "$ROOT/toolchain/std/examples/hello/Cargo.toml" std-hello "$triple"
-  build_example cat "$ROOT/toolchain/std/examples/cat/Cargo.toml" std-cat "$triple"
-  build_example echo "$ROOT/toolchain/std/examples/echo/Cargo.toml" std-echo "$triple"
-  build_example bigalloc "$ROOT/toolchain/std/examples/bigalloc/Cargo.toml" bigalloc "$triple"
+  build_example hello "$HERE/hello/Cargo.toml" std-hello "$triple"
+  build_example cat "$HERE/cat/Cargo.toml" std-cat "$triple"
+  build_example echo "$HERE/echo/Cargo.toml" std-echo "$triple"
+  build_example bigalloc "$HERE/bigalloc/Cargo.toml" bigalloc "$triple"
 done
 echo "$(myos_std_hello_version_hash)" >"$MYOS_STD_HELLO_VERSION"

@@ -15,7 +15,7 @@ Target toolchain: `nightly-2026-07-26` (see root `rust-toolchain.toml`).
 | `patches/wire-myos.py` | Copies `rust-src` and inserts `target_os = "myos"` wiring |
 | `../prepare.sh` | Patched library tree → `target/myos-sysroot` |
 | `../build-sysroot.sh` | Precompile `std` for both triples into the sysroot |
-| `../build-std-hello.sh` | Build smoke ELFs using the prebuilt sysroot |
+| `../../user/std/build.sh` | Build smoke ELFs using the prebuilt sysroot |
 | `../lib.sh` | Shared version stamp, install helpers, cargo wrappers |
 | `../package-sysroot.sh` | Tarball the sysroot for local use or CI artifacts |
 | `../fetch-sysroot.sh` | Install prebuilt sysroot or build if missing |
@@ -31,7 +31,7 @@ Target toolchain: `nightly-2026-07-26` (see root `rust-toolchain.toml`).
 One-shot (CI uses this):
 
 ```sh
-./toolchain/std/build-std-hello.sh
+./user/std/build.sh
 ```
 
 That runs `build-sysroot.sh` (if stale), then builds `std-hello` for **both**
@@ -41,7 +41,7 @@ x86_64 and AArch64 without `-Z build-std` on the app crate.
 
 ```sh
 ./toolchain/std/fetch-sysroot.sh          # prebuilt tarball, or build if needed
-./toolchain/std/build-std-hello.sh        # smoke binaries → target/std-hello-*
+./user/std/build.sh        # smoke binaries → target/std-hello-*
 ./toolchain/std/package-sysroot.sh        # optional: target/myos-sysroot-<hash>.tar.zst
 ```
 
@@ -63,7 +63,7 @@ export RUSTC=$PWD/scripts/myos-rustc.sh
 cargo +nightly-2026-07-26 build --release \
   -Z unstable-options -Z json-target-spec \
   --target targets/x86_64-unknown-myos.json \
-  --manifest-path toolchain/std/examples/hello/Cargo.toml
+  --manifest-path user/std/hello/Cargo.toml
 ```
 
 Root `.cargo/config.toml` sets `MYOS_SYSROOT`, `RUSTC_BOOTSTRAP`, and
