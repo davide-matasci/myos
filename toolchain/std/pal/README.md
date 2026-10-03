@@ -101,8 +101,9 @@ Bring-up scope: **`println!("std ok")`** via patched `std` on x86_64-myos and
 aarch64-unknown-myos (CI on every arch checks `"std ok"` via `/heap` at `$`
 after slim `/ok`).
 
-Networking, filesystem, threads, and fork-aware `std` process support are still
-stubs or unsupported paths in libstd.
+Networking, filesystem, thread spawning, and fork-aware `std` process support
+are still stubs or unsupported paths in libstd; `thread::sleep` blocks the task
+in the kernel (`SYS_NANOSLEEP`, `sys/thread/myos.rs`).
 
 Long term: upstream `target_os = "myos"` in Rust — see `toolchain/std/upstream/README.md`.
 Sysroot tarballs are built locally or cached in CI workflow artifacts only (nothing is published publicly).

@@ -95,25 +95,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     unsafe {
         *core::ptr::addr_of_mut!(API) = Some(api);
     }
-    let mut n = 0usize;
-    transport::probe(|d| {
-        if n == MAX_DISKS {
-            return;
-        }
-        let name = [b'v', b'd', b'a' + n as u8];
-        unsafe {
-            (*core::ptr::addr_of_mut!(DEVS))[n] = Some(d);
-        }
-        let rc = unsafe { (api.blk_register)(name.as_ptr(), name.len(), &OPS, n) };
-        if rc < 0 {
-            unsafe {
-                (*core::ptr::addr_of_mut!(DEVS))[n] = None;
-            }
-            return;
-        }
-        n += 1;
-    });
-    if n > 0 {
+    if probe(api) > 0 {
         status_ok(api, "virtio block");
     }
     0
@@ -122,6 +104,41 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
 #[inline(never)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn module_exit() {}
+
+/// A `rescan` of `/proc/pci`: disks that appeared since init.
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn module_rescan() {
+    probe(api());
+}
+
+/// Whether a device with this register base (an I/O port base on x86, an
+/// MMIO window elsewhere) is already up: a rescan must not reset it.
+fn known(base: usize) -> bool {
+    unsafe { (*core::ptr::addr_of!(DEVS)).iter().flatten().any(|d| d.base == base) }
+}
+
+/// Every virtio-blk device of the transport: the new ones come up and
+/// register as `/dev/vd<slot>`, the known ones are left alone. The number
+/// of disks brought up by this call.
+fn probe(api: &KernelApi) -> usize {
+    let mut new = 0usize;
+    transport::probe(known, |d| {
+        let devs = unsafe { &mut *core::ptr::addr_of_mut!(DEVS) };
+        let Some(n) = devs.iter().position(|s| s.is_none()) else {
+            return;
+        };
+        let name = [b'v', b'd', b'a' + n as u8];
+        devs[n] = Some(d);
+        let rc = unsafe { (api.blk_register)(name.as_ptr(), name.len(), &OPS, n) };
+        if rc < 0 {
+            devs[n] = None;
+            return;
+        }
+        new += 1;
+    });
+    new
+}
 
 /// Transitional virtio-blk over the legacy I/O BAR (x86_64).
 #[cfg(target_arch = "x86_64")]
@@ -176,8 +193,9 @@ mod transport {
     }
 
     /// Every transitional virtio-blk whose BAR0 is an I/O port range
-    /// (modern `0x1042` devices are skipped: no MMIO driver).
-    pub fn probe(mut found: impl FnMut(Dev)) {
+    /// (modern `0x1042` devices are skipped: no MMIO driver), except the
+    /// ones `known` by their port base.
+    pub fn probe(known: impl Fn(usize) -> bool, mut found: impl FnMut(Dev)) {
         let api = api();
         for i in 0..MAX_DISKS as u32 {
             let (mut bus, mut slot, mut func) = (0u8, 0u8, 0u8);
@@ -185,7 +203,7 @@ mod transport {
                 break;
             }
             let bar = unsafe { (api.pci_cfg_read32)(bus, slot, func, 0x10) };
-            if bar == 0 || bar == 0xFFFF_FFFF || bar & 1 == 0 {
+            if bar == 0 || bar == 0xFFFF_FFFF || bar & 1 == 0 || known((bar & 0xFFFC) as usize) {
                 continue;
             }
             // I/O space + memory space + bus master.
@@ -303,7 +321,9 @@ mod transport {
         }
     }
 
-    pub fn probe(mut found: impl FnMut(Dev)) {
+    /// Every `virtio,mmio` node of the device tree that is a block device,
+    /// except the ones `known` by their window base.
+    pub fn probe(known: impl Fn(usize) -> bool, mut found: impl FnMut(Dev)) {
         let compat = myos_abi::StrRef {
             ptr: b"virtio,mmio".as_ptr(),
             len: b"virtio,mmio".len(),
@@ -316,7 +336,7 @@ mod transport {
             }
             i += 1;
             let base = node.base;
-            if r32(base, REG_MAGIC) != MAGIC || r32(base, REG_DEVICE_ID) != DEV_BLK {
+            if known(base) || r32(base, REG_MAGIC) != MAGIC || r32(base, REG_DEVICE_ID) != DEV_BLK {
                 continue;
             }
             if let Some(d) = setup(base) {

@@ -1,19 +1,18 @@
 //! Per-task file descriptor table: open/dup/close, pipes, FIFOs, ptys,
-//! read/write/lseek and the tty/termios ioctls.
+//! read/write/lseek and the tty/termios ioctls. An fd on a file refers to
+//! an open file description in [`OPEN_FILES`], shared with its `dup`s and
+//! a fork's copies the POSIX way.
 
 use super::*;
+use spin::Mutex;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum FdEntry {
     Empty,
     Stdin,
     Console,
-    File {
-        node: crate::fs::Vnode,
-        pos: usize,
-        writable: bool,
-        append: bool,
-    },
+    /// An open file: the index of its description in [`OPEN_FILES`].
+    File(usize),
     PipeRead(usize),
     PipeWrite(usize),
     /// PTY master end (`/dev/ptmx`): writes feed slave input, reads drain
@@ -21,6 +20,82 @@ pub(super) enum FdEntry {
     PtyMaster(usize),
     /// PTY slave end (`/dev/pts/N`): the session-side tty.
     PtySlave(usize),
+}
+
+/// One open file description (POSIX): the node, the file offset and the
+/// open flags, shared by every fd that refers to it. A fork's and a dup's
+/// copies of an fd point at the same description, so a child's writes
+/// advance the offset the parent writes at next (`prog > file` keeps what
+/// the children wrote) and `lseek` moves it for all of them. An `open`
+/// makes a new one.
+struct OpenFile {
+    node: crate::fs::Vnode,
+    pos: usize,
+    writable: bool,
+    append: bool,
+    /// The fds referring to it, over every process.
+    refs: u32,
+}
+
+/// Open file descriptions in the whole system (docs/linux-compat.md lists
+/// the limits with the fds per process).
+const MAX_OPEN_FILES: usize = 512;
+
+/// Taken after `TASKS` when both are held (`fd_clone` runs under it), never
+/// the other way round.
+static OPEN_FILES: Mutex<[Option<OpenFile>; MAX_OPEN_FILES]> =
+    Mutex::new([const { None }; MAX_OPEN_FILES]);
+
+/// A new description with one reference; `None` when the table is full.
+fn open_file_alloc(node: crate::fs::Vnode, writable: bool, append: bool) -> Option<usize> {
+    let mut files = OPEN_FILES.lock();
+    let id = files.iter().position(Option::is_none)?;
+    files[id] = Some(OpenFile { node, pos: 0, writable, append, refs: 1 });
+    Some(id)
+}
+
+fn open_file_ref(id: usize) {
+    if let Some(Some(f)) = OPEN_FILES.lock().get_mut(id) {
+        f.refs += 1;
+    }
+}
+
+/// Drop one reference; the node of a description that just went away, for
+/// the caller to `close_ref` outside the lock.
+fn open_file_unref(id: usize) -> Option<crate::fs::Vnode> {
+    let mut files = OPEN_FILES.lock();
+    let slot = files.get_mut(id)?;
+    let f = slot.as_mut()?;
+    f.refs -= 1;
+    if f.refs > 0 {
+        return None;
+    }
+    let node = f.node;
+    *slot = None;
+    Some(node)
+}
+
+/// `(node, pos, writable, append)` of a description.
+fn open_file_get(id: usize) -> Option<(crate::fs::Vnode, usize, bool, bool)> {
+    let files = OPEN_FILES.lock();
+    let f = files.get(id)?.as_ref()?;
+    Some((f.node, f.pos, f.writable, f.append))
+}
+
+fn open_file_node(id: usize) -> Option<crate::fs::Vnode> {
+    open_file_get(id).map(|(node, ..)| node)
+}
+
+fn open_file_set_pos(id: usize, pos: usize) {
+    if let Some(Some(f)) = OPEN_FILES.lock().get_mut(id) {
+        f.pos = pos;
+    }
+}
+
+fn open_file_advance(id: usize, n: usize) {
+    if let Some(Some(f)) = OPEN_FILES.lock().get_mut(id) {
+        f.pos += n;
+    }
 }
 
 pub(super) fn default_user_fds() -> [FdEntry; MAX_FDS] {
@@ -49,8 +124,8 @@ pub(super) fn fd_clone(entry: FdEntry) -> FdEntry {
             crate::pty::slave_ref(id);
             FdEntry::PtySlave(id)
         }
-        FdEntry::File { node, .. } => {
-            crate::fs::vfs::open_ref(&node);
+        FdEntry::File(id) => {
+            open_file_ref(id);
             entry
         }
         other => other,
@@ -63,7 +138,11 @@ pub(super) fn fd_drop(entry: FdEntry) {
         FdEntry::PipeWrite(id) => pipe::drop_writer(id),
         FdEntry::PtyMaster(id) => crate::pty::drop_master(id),
         FdEntry::PtySlave(id) => crate::pty::drop_slave(id),
-        FdEntry::File { node, .. } => crate::fs::vfs::close_ref(&node),
+        FdEntry::File(id) => {
+            if let Some(node) = open_file_unref(id) {
+                crate::fs::vfs::close_ref(&node);
+            }
+        }
         _ => {}
     }
 }
@@ -105,21 +184,22 @@ fn user_buf_ok(
 pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
     let writable = crate::fs::open_writable(flags);
     let append = crate::fs::open_append(flags);
-    with_process_mut(|t| {
+    let id = open_file_alloc(node, writable, append)?;
+    let fd = with_process_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
-                t.fds[i] = FdEntry::File {
-                    node,
-                    pos: 0,
-                    writable,
-                    append,
-                };
-                crate::fs::vfs::open_ref(&node);
+                t.fds[i] = FdEntry::File(id);
                 return Some(i);
             }
         }
         None
-    })
+    });
+    if fd.is_some() {
+        crate::fs::vfs::open_ref(&node);
+    } else {
+        open_file_unref(id);
+    }
+    fd
 }
 
 pub fn pipe_open() -> Option<(usize, usize)> {
@@ -407,20 +487,19 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         }
         match entry {
             FdEntry::Stdin => return fd_read_stdin(buf, len),
-            FdEntry::File { node, pos, .. } => {
-                // Snapshot then read without holding TASKS (devfs tty may yield).
+            FdEntry::File(id) => {
+                // Snapshot then read without holding a lock (devfs tty may yield).
+                let Some((node, pos, ..)) = open_file_get(id) else {
+                    return usize::MAX;
+                };
                 let mut tmp = [0u8; FILE_IO_TMP];
                 let want = len.min(tmp.len());
                 let n = crate::fs::read(&node, pos, &mut tmp[..want]);
                 let aspace = current_aspace();
-                return with_process_mut(|t| {
-                    let FdEntry::File {
-                        pos: p,
-                        ..
-                    } = &mut t.fds[fd]
-                    else {
-                        return usize::MAX;
-                    };
+                let copied = with_process_mut(|t| {
+                    if t.fds.get(fd).copied() != Some(FdEntry::File(id)) {
+                        return false;
+                    }
                     if n != 0 {
                         if !user_buf_ok(
                             buf,
@@ -431,15 +510,19 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                             t.brk_cur as usize,
                             &t.mmap,
                         ) {
-                            return usize::MAX;
+                            return false;
                         }
                         if !user::copy_to_user(aspace, buf, &tmp[..n]) {
-                            return usize::MAX;
+                            return false;
                         }
                     }
-                    *p += n;
-                    n
+                    true
                 });
+                if !copied {
+                    return usize::MAX;
+                }
+                open_file_advance(id, n);
+                return n;
             }
             FdEntry::PipeRead(id) => {
                 let mut tmp = [0u8; FILE_IO_TMP];
@@ -541,12 +624,10 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                     total += chunk;
                     break;
                 }
-                FdEntry::File {
-                    node,
-                    pos,
-                    writable,
-                    append,
-                } => {
+                FdEntry::File(id) => {
+                    let Some((node, pos, writable, append)) = open_file_get(id) else {
+                        return if total == 0 { usize::MAX } else { total };
+                    };
                     if !writable {
                         return if total == 0 { usize::MAX } else { total };
                     }
@@ -564,15 +645,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                     if n == 0 {
                         return if total == 0 { usize::MAX } else { total };
                     }
-                    with_process_mut(|t| {
-                        if let FdEntry::File { pos: p, append: ap, .. } = &mut t.fds[fd] {
-                            if *ap {
-                                *p = write_pos + n;
-                            } else {
-                                *p = write_pos + n;
-                            }
-                        }
-                    });
+                    open_file_set_pos(id, write_pos + n);
                     total += n;
                     break;
                 }
@@ -633,31 +706,28 @@ pub fn fd_lseek(fd: usize, offset: i64, whence: usize) -> usize {
     const SEEK_SET: usize = 0;
     const SEEK_CUR: usize = 1;
     const SEEK_END: usize = 2;
-    with_process_mut(|t| {
-        if fd >= MAX_FDS {
-            return usize::MAX;
-        }
-        match t.fds[fd] {
-            FdEntry::File { node, pos, .. } => {
-                let size = crate::fs::size_of(&node).unwrap_or(pos) as i64;
-                let cur = pos as i64;
-                let next = match whence {
-                    SEEK_SET => offset,
-                    SEEK_CUR => cur.saturating_add(offset),
-                    SEEK_END => size.saturating_add(offset),
-                    _ => return usize::MAX,
-                };
-                if next < 0 {
-                    return usize::MAX;
-                }
-                if let FdEntry::File { pos: p, .. } = &mut t.fds[fd] {
-                    *p = next as usize;
-                }
-                next as usize
-            }
-            _ => usize::MAX,
-        }
-    })
+    if fd >= MAX_FDS {
+        return usize::MAX;
+    }
+    let FdEntry::File(id) = with_process_mut(|t| t.fds[fd]) else {
+        return usize::MAX;
+    };
+    let Some((node, pos, ..)) = open_file_get(id) else {
+        return usize::MAX;
+    };
+    let size = crate::fs::size_of(&node).unwrap_or(pos) as i64;
+    let cur = pos as i64;
+    let next = match whence {
+        SEEK_SET => offset,
+        SEEK_CUR => cur.saturating_add(offset),
+        SEEK_END => size.saturating_add(offset),
+        _ => return usize::MAX,
+    };
+    if next < 0 {
+        return usize::MAX;
+    }
+    open_file_set_pos(id, next as usize);
+    next as usize
 }
 
 /// What an open fd refers to (a personality module's `fstat`).
@@ -675,9 +745,9 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
             FdKind::Tty
         }
         FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) => FdKind::Pipe,
-        FdEntry::File { .. } if fd_is_console_tty(entry) => FdKind::Tty,
-        FdEntry::File { node, .. } => FdKind::File {
-            size: crate::fs::size_of(&node).unwrap_or(0),
+        FdEntry::File(_) if fd_is_console_tty(entry) => FdKind::Tty,
+        FdEntry::File(id) => FdKind::File {
+            size: open_file_node(id).and_then(|node| crate::fs::size_of(&node)).unwrap_or(0),
         },
     })
 }
@@ -685,7 +755,7 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
 /// The file behind `fd` (for file-backed `mmap`), if it is a regular file.
 pub fn fd_file_node(fd: usize) -> Option<crate::fs::Vnode> {
     match with_process_mut(|t| t.fds.get(fd).copied())? {
-        FdEntry::File { node, .. } => Some(node),
+        FdEntry::File(id) => open_file_node(id),
         _ => None,
     }
 }
@@ -715,7 +785,10 @@ pub fn fd_close(fd: usize) -> bool {
 fn fd_is_console_tty(entry: FdEntry) -> bool {
     match entry {
         FdEntry::Stdin | FdEntry::Console => true,
-        FdEntry::File { node, .. } => {
+        FdEntry::File(id) => {
+            let Some(node) = open_file_node(id) else {
+                return false;
+            };
             let p = node.path_str();
             p == "tty" || p == "console"
         }
@@ -908,7 +981,10 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         | FdEntry::PtyMaster(_)
         | FdEntry::PtySlave(_) => IoctlResult::Notty,
         FdEntry::Stdin | FdEntry::Console => crate::fs::tty_ioctl(request),
-        FdEntry::File { node, .. } => crate::fs::ioctl(&node, request, arg),
+        FdEntry::File(id) => match open_file_node(id) {
+            Some(node) => crate::fs::ioctl(&node, request, arg),
+            None => return usize::MAX,
+        },
     };
 
     match result {

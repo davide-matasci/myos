@@ -16,6 +16,50 @@ exec_limits() {
 }
 t exec_limits exec_limits
 
+# One open file description per open, shared by a fork's and a dup's copies
+# of the fd (POSIX): a child's writes advance the offset the parent writes
+# at next, so a redirected group's output is complete and in order, through
+# the shell's own fd too.
+fd_offsets() {
+	{ echo one; /bin/sbase/echo two; echo three; } > /tmp/fdo.txt
+	cat /tmp/fdo.txt
+	[ "$(cat /tmp/fdo.txt)" = "one
+two
+three" ] || return 1
+	exec 4> /tmp/fdd.txt
+	echo a >&4
+	/bin/sbase/echo b >&4
+	echo c >&4
+	exec 4>&-
+	cat /tmp/fdd.txt
+	[ "$(cat /tmp/fdd.txt)" = "a
+b
+c" ]
+}
+t fd_offsets fd_offsets
+
+# rmmod: a module that provides nothing (hello) unloads and loads again;
+# one with a registration (the block driver's disks) is refused and keeps
+# working.
+rmmod_hello() {
+	grep -q "^hello$" /proc/modules && rmmod hello && ! grep -q "^hello$" /proc/modules \
+		&& insmod /lib/modules/hello && grep -q "^hello$" /proc/modules
+}
+rmmod_busy() {
+	! rmmod virtio_blk && grep -q "^virtio_blk$" /proc/modules && ls /dev/vda
+}
+# A /proc/pci rescan re-probes the drivers: the disks are the same ones
+# after it, and still readable.
+pci_rescan() {
+	ls /dev > /tmp/dev-before.txt
+	echo rescan > /proc/pci || return 1
+	ls /dev > /tmp/dev-after.txt
+	cmp /tmp/dev-before.txt /tmp/dev-after.txt && /bin/sbase/tail -c 512 /dev/vda > /dev/null
+}
+t rmmod_hello rmmod_hello
+t rmmod_busy rmmod_busy
+t pci_rescan pci_rescan
+
 linux_loaded() {
 	grep -q "^linux$" /proc/modules
 }

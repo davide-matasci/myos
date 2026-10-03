@@ -19,8 +19,9 @@ Available triples (proposed):
 | `aarch64-unknown-myos` | AArch64 softfloat | `svc #0`, argc in x0 / argv in x1 at `_start` |
 
 These targets support `std` at bring-up scope (`println!`, heap via `brk`, basic
-stdio). Filesystem, process, thread, network, and time APIs remain largely
-unsupported in libstd until the kernel and PAL grow.
+stdio, `thread::sleep`). Filesystem, process, thread spawning, network,
+and time APIs remain largely unsupported in libstd until the kernel and
+PAL grow.
 
 ## Building
 

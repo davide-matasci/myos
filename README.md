@@ -166,6 +166,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/ripgrep/tcc/bigalloc) |
 | `user/netd` | Userspace smoltcp over `/dev/net0` |
 | `user/insmod` | `insmod /lib/modules/<name>`: load a kernel module at runtime (`SYS_INSMOD`) |
+| `user/rmmod` | `rmmod <name>`: unload a kernel module that provides nothing any more (`SYS_RMMOD`) |
 | `user/lib` | Shared `myos_user` syscall wrappers, argv parser, `Heap` allocator |
 | `user/c` | Native C programs (newlib): `hello` and the boot-CI smokes installed as `/bin/etc/*` |
 | `user/echo/cat/ls` | Bootfs demos (`/myos_echo`, `/myos_cat`, `/myos_ls`) |
@@ -270,12 +271,13 @@ Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, cal
 | Bytes live in | `boot/modules/<name>` on the ESP, listed in `limine.conf` (`module_path`, load order) | `/lib/modules/<name>` in the initramfs (or any file) |
 | Loaded by | `modules::load_limine_modules` right after bootfs | `SYS_INSMOD` from `/bin/custom/insmod` |
 
-`/proc/modules` lists what is loaded. The console module goes first (it paints the buffered boot output), then stubfs, hello, pci_enum, acpi, the block drivers (virtio_blk, nvme), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `limine.conf` when the feature is on.
+`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality) and refuses to unload one with a registration left, since nothing unregisters yet; `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1`, `/dev/vdb`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then stubfs, hello, pci_enum, acpi, the block drivers (virtio_blk, nvme), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `limine.conf` when the feature is on.
 
 Module exports:
 ```rust
 unsafe extern "C" fn module_init(api: *const KernelApi) -> i32
-unsafe extern "C" fn module_exit() // optional
+unsafe extern "C" fn module_exit()   // optional: run by rmmod
+unsafe extern "C" fn module_rescan() // optional: probe for new devices after a /proc/pci rescan
 ```
 
 `KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v15 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
