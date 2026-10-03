@@ -142,11 +142,12 @@ const CMD_EXT2_DISK: &[u8] =
 // symlink ...
 const CMD_EXT2_LINK: &[u8] =
     b"mv /disk/s /disk/t&&/disk/t/ls -d /disk/t&&ln -s t/ls /disk/l&&readlink /disk/l&&cmp /disk/l /disk/t/ls&&echo EXT2-LINK-OK\n";
-// ... then a file past the direct and single-indirect blocks, compared with
-// its source, and remove the directory. The launcher checks the disk with
+// ... then a file past the direct and single-indirect blocks (7-10 MB,
+// under the tmpfs file cap it is built in), compared with its source, and
+// remove the directory. The launcher checks the disk with
 // `e2fsck -fn` after the boot.
 const CMD_EXT2_BIG: &[u8] =
-    b"cat /disk/t/* /disk/t/* >/tmp/big&&cp /tmp/big /disk/big&&cmp /tmp/big /disk/big&&rm -r /disk/t /tmp/big&&echo EXT2-BIG-OK\n";
+    b"cat /disk/t/[a-m]* >/tmp/big&&cp /tmp/big /disk/big&&cmp /tmp/big /disk/big&&rm -r /disk/t /tmp/big&&echo EXT2-BIG-OK\n";
 // pty boot-CI smoke (openpty/forkpty, echo round-trip, EIO on session end).
 // Package install smoke (full boot only): get-myos fetches make from the
 // mirror the launcher serves (this build's own packages), binds its files
