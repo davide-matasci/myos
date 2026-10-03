@@ -43,6 +43,7 @@ ENV CI=true \
 #   - git curl wget file patch bc ca-certificates python3: source fetch, SSL,
 #     checkout sync, wire-myos.py / port patching.
 #   - openssh-client: full-boot dropbear SSH smoke (host → guest via hostfwd).
+#   - e2fsprogs: the ext2 host tests and the boots' scratch-disk e2fsck.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         qemu-system-x86 \
@@ -60,6 +61,7 @@ RUN apt-get update \
         xorriso \
         git curl wget file patch bc \
         openssh-client \
+        e2fsprogs \
         sudo \
         ca-certificates \
         python3 \

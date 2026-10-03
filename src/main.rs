@@ -217,14 +217,72 @@ fn write_nvme_blk_image() {
         .unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
 }
 
+/// The scratch disk: a second NVMe controller (`/dev/nvme1n1`), empty and
+/// sparse (only what the guest writes takes space), recreated every boot.
+/// Room for a big filesystem (an Alpine root with a toolchain).
+const SCRATCH_BYTES: u64 = 4 << 30;
+
+fn scratch_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/scratch.img")
+}
+
+fn write_scratch_image() {
+    let dest = scratch_img_path();
+    let f = std::fs::File::create(&dest).unwrap_or_else(|e| panic!("create {}: {e}", dest.display()));
+    f.set_len(SCRATCH_BYTES)
+        .unwrap_or_else(|e| panic!("size {}: {e}", dest.display()));
+}
+
 fn add_nvme(cmd: &mut Command) {
     write_nvme_blk_image();
+    write_scratch_image();
     let img = nvme_img_path();
     cmd.arg("-drive").arg(format!(
         "if=none,id=nvme0,format=raw,file={}",
         img.display()
     ));
     cmd.arg("-device").arg("nvme,drive=nvme0,serial=myos");
+    cmd.arg("-drive").arg(format!(
+        "if=none,id=nvme1,format=raw,file={}",
+        scratch_img_path().display()
+    ));
+    cmd.arg("-device").arg("nvme,drive=nvme1,serial=myos-scratch");
+}
+
+/// After a boot: an ext2 filesystem the guest left on the scratch disk must
+/// be one e2fsprogs finds clean (`e2fsck -fn`; skipped without e2fsprogs).
+fn fsck_scratch_disk() -> bool {
+    let img = scratch_img_path();
+    let mut magic = [0u8; 2];
+    let has_ext2 = std::fs::File::open(&img)
+        .and_then(|f| {
+            use std::os::unix::fs::FileExt;
+            f.read_exact_at(&mut magic, 1024 + 56)
+        })
+        .is_ok()
+        && magic == 0xEF53u16.to_le_bytes();
+    if !has_ext2 {
+        return true;
+    }
+    match Command::new("e2fsck").arg("-fn").arg(&img).output() {
+        Ok(out) if out.status.success() => {
+            eprintln!("ci: e2fsck: the scratch disk's ext2 is clean");
+            true
+        }
+        Ok(out) => {
+            eprintln!(
+                "error: e2fsck -fn {} found problems:\n{}{}",
+                img.display(),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            false
+        }
+        Err(_) => {
+            eprintln!("ci: e2fsck not found; the scratch disk is not checked");
+            true
+        }
+    }
 }
 
 fn add_virtio_blk_x86(cmd: &mut Command) {

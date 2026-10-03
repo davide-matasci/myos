@@ -1117,9 +1117,12 @@ fn sys_symlink(target_ptr: usize, link_ptr: usize, packed_lens: usize) -> usize 
 
 /// `a0`=path_ptr, `a1`=buf_ptr, `a2`=(path_len<<16)|buf_len
 fn sys_readlink(path_ptr: usize, buf_ptr: usize, packed: usize) -> usize {
-    let Some((path_len, buf_len)) = unpack_two_lens(packed) else {
+    // The buffer may be bigger than a path (libc passes `PATH_MAX`): only
+    // the path length is bounded; the target fits in `MAX_PATH` bytes.
+    let (path_len, buf_len) = (packed >> 16, packed & 0xffff);
+    if path_len == 0 || path_len > MAX_PATH {
         return SYSERR;
-    };
+    }
     if buf_ptr == 0 || buf_len == 0 || !user_range_ok(buf_ptr, buf_len) {
         return SYSERR;
     }

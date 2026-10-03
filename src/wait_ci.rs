@@ -133,6 +133,21 @@ const CMD_PYTHON: &[u8] =
 // ... and its sockets: DNS (musl over UDP) and an HTTP GET (TCP).
 const CMD_PYTHON_NET: &[u8] =
     b"linux --root /tmp/alpine python3 -c 'import urllib.request as u;print(\"HTTP\",u.urlopen(\"http://example.com/\").status)'\n";
+// ext2 on the scratch disk (`/dev/nvme1n1`, the launcher's sparse 4 GiB
+// `target/scratch.img`): format and mount it, copy a directory of programs
+// onto it ...
+const CMD_EXT2_DISK: &[u8] =
+    b"mkfs.ext2 /dev/nvme1n1&&mount /dev/nvme1n1 /disk ext2&&cp -r /bin/sbase /disk/s&&echo EXT2-DISK-OK\n";
+// ... rename it, run one of them from the disk, and read it through a
+// symlink ...
+const CMD_EXT2_LINK: &[u8] =
+    b"mv /disk/s /disk/t&&/disk/t/ls -d /disk/t&&ln -s t/ls /disk/l&&readlink /disk/l&&cmp /disk/l /disk/t/ls&&echo EXT2-LINK-OK\n";
+// ... then a file past the direct and single-indirect blocks (7-10 MB,
+// under the tmpfs file cap it is built in), compared with its source, and
+// remove the directory. The launcher checks the disk with
+// `e2fsck -fn` after the boot.
+const CMD_EXT2_BIG: &[u8] =
+    b"cat /disk/t/[a-m]* >/tmp/big&&cp /tmp/big /disk/big&&cmp /tmp/big /disk/big&&rm /disk/t/* /tmp/big&&rmdir /disk/t&&echo EXT2-BIG-OK\n";
 // pty boot-CI smoke (openpty/forkpty, echo round-trip, EIO on session end).
 // Package install smoke (full boot only): get-myos fetches make from the
 // mirror the launcher serves (this build's own packages), binds its files
@@ -495,6 +510,9 @@ fn ci_shell_commands() -> Vec<&'static [u8]> {
         CMD_WHICH,
         CMD_DNS,
         CMD_EXEC_LIMITS,
+        CMD_EXT2_DISK,
+        CMD_EXT2_LINK,
+        CMD_EXT2_BIG,
     ]);
     if linux_compat_enabled() {
         cmds.push(CMD_LINUX);
@@ -1283,6 +1301,15 @@ fn shell_cmd_result_ok(serial: &str, cmds: &[&[u8]], cmd_index: usize, extra: &[
         i if cmds[i] == CMD_OS_TEST_RESULT => interactive_ostest_result_ok(serial),
         i if cmds[i] == CMD_PTY => interactive_pty_cmd_ok(serial),
         i if cmds[i] == CMD_URANDOM => interactive_urandom_cmd_ok(serial),
+        i if cmds[i] == CMD_EXT2_DISK => {
+            interactive_tail(serial).contains("\nEXT2-DISK-OK") && at_interactive_prompt(serial)
+        }
+        i if cmds[i] == CMD_EXT2_LINK => {
+            interactive_tail(serial).contains("\nEXT2-LINK-OK") && at_interactive_prompt(serial)
+        }
+        i if cmds[i] == CMD_EXT2_BIG => {
+            interactive_tail(serial).contains("\nEXT2-BIG-OK") && at_interactive_prompt(serial)
+        }
         i if cmds[i] == CMD_GET_MYOS => interactive_get_myos_ok(serial),
         i if cmds[i] == CMD_EXEC_LIMITS => {
             interactive_tail(serial).contains("EXEC-LIMITS 40 711") && at_interactive_prompt(serial)
@@ -2264,6 +2291,9 @@ fn wait_ci(mut child: Child, expect: CiExpect, extra_needles: &[&str]) {
             );
             std::process::exit(1);
         }
+    }
+    if !fsck_scratch_disk() {
+        std::process::exit(1);
     }
 }
 #[cfg(test)]

@@ -1,0 +1,10 @@
+[package]
+name = "ext2fs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The ext2 on-disk format (no_std + alloc, host-testable): mkfs, and reading and writing files, directories and symlinks over a block device."
+
+[lib]
+test = true
