@@ -192,6 +192,15 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        "std/src/sys/thread/mod.rs",
+        [
+            (
+                '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }',
+                '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }\n    target_os = "myos" => {\n        mod myos;\n        pub use myos::sleep;\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{Thread, available_parallelism, current_os_id, set_name, yield_now, DEFAULT_MIN_STACK_SIZE};\n    }',
+            ),
+        ],
+    ),
+    (
         "std/src/sys/io/error/mod.rs",
         [
             (
@@ -488,6 +497,7 @@ def main() -> None:
         (repo / "toolchain/std/sys/fs/myos.rs", patch_root / "std/src/sys/fs/myos.rs"),
         (repo / "toolchain/std/sys/process/myos.rs", patch_root / "std/src/sys/process/myos.rs"),
         (repo / "toolchain/std/sys/time/myos.rs", patch_root / "std/src/sys/time/myos.rs"),
+        (repo / "toolchain/std/sys/thread/myos.rs", patch_root / "std/src/sys/thread/myos.rs"),
         (repo / "toolchain/std/sys/io/error/myos.rs", patch_root / "std/src/sys/io/error/myos.rs"),
         (repo / "toolchain/std/os/myos", patch_root / "std/src/os/myos"),
     ]
