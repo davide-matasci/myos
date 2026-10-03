@@ -69,11 +69,25 @@ directory disappears. Closing the last master fd hangs up the session
 (`SIGHUP`, then `EIO` on the slave), closing the last slave fd makes the
 master's reads report `EIO` once drained ([`kernel/src/pty.rs`](../kernel/src/pty.rs)).
 
+## libc
+
+Nothing in libgloss or the Rust `libc` crate issues an ioctl syscall. The
+terminal behind an fd is found through its `/proc/self/fd` link
+(`toolchain/newlib/libgloss/myos/ttyctl.c`): `tcgetattr` reads the ctl,
+`tcsetattr` writes the termios lines, `tcflush` a `flush` line, `isatty` asks
+whether the link ends in `/data` (or `/master`), `ttyname` returns the link's
+target, `openpty` opens `clone` and reads the master's link for the pair's
+directory. The `ioctl()` function is a shim for the requests ported programs
+make (`TCGETS`, `TCSETS`, `TCFLSH`, `TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCSCTTY`,
+`TIOCGPTN`, `TIOCSPTLCK`), served the same way; anything else is `ENOTTY`.
+The Rust `libc` crate (`ports/crates/libc/myos.rs`) does the same for
+`isatty` and `ioctl`.
+
 ## Transition
 
-The termios, window size and pty ioctls (`TCGETS`, `TCSETS`, `TCFLSH`,
-`TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCSCTTY`, `TIOCGPTN`, `TIOCSPTLCK`) and the old
-names `/dev/ptmx` and `/dev/pts/N` (the slave) still work while libc moves to
-the files; both go in the next steps, and the native `ioctl` syscall with
-them. The Linux layer keeps speaking the Linux ioctl numbers for Alpine
-binaries.
+The kernel still answers the termios, window size and pty ioctls
+(`TCGETS`, `TCSETS`, `TCFLSH`, `TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCSCTTY`,
+`TIOCGPTN`, `TIOCSPTLCK`) for the Linux layer, which keeps speaking the Linux
+numbers for Alpine binaries and maps their `/dev/ptmx` and `/dev/pts/N` onto
+`clone` and `data`. The next step moves the Linux module onto the tty
+functions and retires the native `ioctl` syscall.

@@ -214,7 +214,7 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
     const O_DIRECTORY: usize = 0o200000;
     const O_NOFOLLOW: usize = 0o400000;
     const O_CLOEXEC: usize = 0o2000000;
-    let p = path_at(dirfd, path)?;
+    let p = pty_alias(path_at(dirfd, path)?);
     let real = real_path(&p)?;
     let st = fs::stat(&real);
     if st.as_ref().is_some_and(|s| s.mode & fs::S_IFMT == 0o040000) {
@@ -240,6 +240,21 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
     let fd = native(user::open_path(&p, native_flags), ENOENT)?;
     files::set(fd, view_path(&p), false);
     Ok(fd)
+}
+
+/// The Linux names of the ptys, for musl's `openpty` and `ptsname`:
+/// `/dev/ptmx` is `/dev/pts/clone`, `/dev/pts/N` the pair's `data`
+/// (docs/tty.md).
+fn pty_alias(path: String) -> String {
+    if path == "/dev/ptmx" {
+        return String::from("/dev/pts/clone");
+    }
+    match path.strip_prefix("/dev/pts/") {
+        Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
+            alloc::format!("{path}/data")
+        }
+        _ => path,
+    }
 }
 
 pub fn close(fd: usize) -> R {

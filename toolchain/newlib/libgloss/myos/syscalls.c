@@ -24,52 +24,17 @@ static void myos_set_errno_io(void) {
     errno = EIO;
 }
 
-/* fds 0-2 start as the hardware console; open(/dev/console) and a successful
- * open(/dev/tty) (requires ctty) also mark the returned fd as a tty. */
-static unsigned long long myos_tty_mask = 0x7;
-
+/* Whether `fd` is open on a terminal: what its /proc/self/fd link names
+ * (ttyctl.c). errno is left alone. */
 int myos_fd_is_tty(int fd) {
-    if (fd >= 0 && fd <= 2) {
-        return 1;
-    }
-    if (fd >= 0 && fd < MYOS_MAX_FDS && (myos_tty_mask & (1ull << fd))) {
-        return 1;
-    }
-    return 0;
+    int saved = errno;
+    int tty = myos_tty_dir(fd, NULL, 0, NULL) == 0;
+    errno = saved;
+    return tty;
 }
 
-void myos_fd_set_tty(int fd, int on) {
-    if (fd < 0 || fd >= MYOS_MAX_FDS) {
-        return;
-    }
-    if (on) {
-        myos_tty_mask |= (1ull << fd);
-    } else {
-        myos_tty_mask &= ~(1ull << fd);
-    }
-}
-
-void myos_fd_dup_tty(int oldfd, int newfd) {
-    myos_fd_set_tty(newfd, myos_fd_is_tty(oldfd));
-}
-
-/* True if `path` names a tty device node (for isatty bookkeeping after open).
- * A terminal is a directory whose `data` is the terminal (`/dev/console/data`,
- * `/dev/pts/N/data`, docs/tty.md); `/dev/tty` = controlling tty (kernel may
- * reject open with ENXIO when the process has no ctty). */
-static int myos_path_is_tty(const char *path) {
-    size_t len;
-    if (path == NULL) {
-        return 0;
-    }
-    if (strcmp(path, "/dev/tty") == 0) {
-        return 1;
-    }
-    len = strlen(path);
-    return strncmp(path, "/dev/", 5) == 0 && len >= 5 + 5
-        && strcmp(path + len - 5, "/data") == 0;
-}
-
+/* `/dev/tty` = controlling tty (the kernel rejects the open with ENXIO when
+ * the process has no ctty). */
 static int myos_path_is_dev_tty(const char *path) {
     return path != NULL && strcmp(path, "/dev/tty") == 0;
 }
@@ -133,9 +98,6 @@ int _close(int fd) {
     if (ret == (long)MYOS_SYSERR) {
         errno = EBADF;
         return -1;
-    }
-    if (fd > 2) {
-        myos_fd_set_tty(fd, 0);
     }
     myos_fd_path_clear(fd);
     myos_fd_nonblock_clear(fd);
@@ -217,7 +179,7 @@ int _open(const char *path, int flags, ...) {
     }
     if (flags & O_NONBLOCK) {
         /* Only FIFOs get userspace O_NONBLOCK reads from open(): other paths
-         * (ttys, /dev/ptmx, files) keep their historical blocking behaviour
+         * (ttys, ptys, files) keep their historical blocking behaviour
          * that dropbear/curl rely on; fcntl(F_SETFL) still sets it anywhere.
          * POLLFD succeeds only on pipe ends (a named FIFO opens as one), so
          * regular files cost no extra lookup (dropbear opens authorized_keys
@@ -225,9 +187,6 @@ int _open(const char *path, int flags, ...) {
         if (myos_syscall1(MYOS_SYS_POLLFD, ret) != (long)MYOS_SYSERR) {
             myos_fd_nonblock_set((int)ret, 1);
         }
-    }
-    if (myos_path_is_tty(path)) {
-        myos_fd_set_tty((int)ret, 1);
     }
     myos_fd_path_set((int)ret, path);
     return (int)ret;

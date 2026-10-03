@@ -421,7 +421,6 @@ int dup2(int oldfd, int newfd) {
         errno = EBADF;
         return -1;
     }
-    myos_fd_dup_tty(oldfd, newfd);
     myos_fd_path_dup(oldfd, newfd);
     return newfd;
 }
@@ -460,7 +459,6 @@ int _fcntl(int fd, int cmd, int arg) {
             errno = EBADF;
             return -1;
         }
-        myos_fd_dup_tty(fd, (int)ret);
         myos_fd_path_dup(fd, (int)ret);
         myos_fd_nonblock_dup(fd, (int)ret);
         return (int)ret;

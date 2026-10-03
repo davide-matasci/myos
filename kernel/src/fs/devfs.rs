@@ -27,7 +27,6 @@ enum Node {
     Console,
     /// `console/ctl`, its control file.
     ConsoleCtl,
-    Ptmx,
     Urandom,
     Block(u32),
     Chr(usize),
@@ -101,7 +100,6 @@ fn parse(name: &str) -> Option<Node> {
         "console" => Some(Node::ConsoleDir),
         "console/data" => Some(Node::Console),
         "console/ctl" => Some(Node::ConsoleCtl),
-        "ptmx" => Some(Node::Ptmx),
         "urandom" | "random" => Some(Node::Urandom),
         _ => parse_chr(name)
             .map(Node::Chr)
@@ -181,9 +179,6 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
         }
         Some(Node::ConsoleDir) => 0,
         Some(Node::ConsoleCtl) => copy_at(&console_ctl_text(), pos, out),
-        // ptmx I/O routes through FdEntry::PtyMaster in crate::task; a plain
-        // VFS read on the node itself has no peer session — report EIO-ish 0.
-        Some(Node::Ptmx) => 0,
         // /dev/urandom and /dev/random share the kernel CSPRNG pool (phase-1
         // has no blocking distinction; pos is ignored — it is a stream).
         Some(Node::Urandom) => {
@@ -216,7 +211,6 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         }
         Some(Node::ConsoleDir) => None,
         Some(Node::ConsoleCtl) => console_ctl_write(buf),
-        Some(Node::Ptmx) => None,
         // Writes to the RNG pool are ignored (no RNDADDENTROPY ioctl yet).
         Some(Node::Urandom) => Some(buf.len()),
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
@@ -235,7 +229,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
 }
 
 pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
-    const NAMES: &[&[u8]] = &[b"null", b"zero", b"tty", b"console", b"ptmx", b"urandom", b"random"];
+    const NAMES: &[&[u8]] = &[b"null", b"zero", b"tty", b"console", b"urandom", b"random"];
     const CONSOLE: &[&[u8]] = &[b"data", b"ctl"];
     let names = match rel {
         "" | "." => NAMES,
@@ -341,13 +335,6 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
         }),
-        Node::Ptmx => Some(StatInfo {
-            mode: S_IFCHR | 0o666,
-            size: 0,
-            ino: 5,
-            nlink: 1,
-            dev: 0,
-        }),
         Node::Block(id) => {
             let bytes = blk::capacity_bytes(id).unwrap_or(0);
             let size = if bytes > u32::MAX as u64 {
@@ -405,9 +392,6 @@ pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
         // `/dev/tty` open aliases to console; keep both for leftover/stat paths.
         Some(Node::Tty) | Some(Node::Console) => tty_ioctl(request),
         Some(Node::ConsoleDir) | Some(Node::ConsoleCtl) => IoctlResult::Notty,
-        // pty pair ioctls are handled per-fd in crate::task (they need
-        // userspace copies); the bare node has no pair attached.
-        Some(Node::Ptmx) => IoctlResult::Notty,
         Some(Node::Urandom) => IoctlResult::Notty,
         Some(Node::Chr(i)) => {
             match chr_table().get(i).and_then(|s| *s) {

@@ -1,19 +1,18 @@
-/* myos libgloss: termios via TCGETS/TCSETS (kernel line discipline). */
+/* myos libgloss: termios over the terminal's ctl file (ttyctl.c). */
 #include <errno.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
+#include "myos_syscalls.h"
+
 int tcgetattr(int fd, struct termios *t) {
     if (!t) {
         errno = EINVAL;
         return -1;
     }
-    if (ioctl(fd, TCGETS, t) < 0) {
-        return -1;
-    }
-    return 0;
+    return myos_tty_get(fd, t, NULL);
 }
 
 int tcsetattr(int fd, int optional_actions, const struct termios *t) {
@@ -22,10 +21,7 @@ int tcsetattr(int fd, int optional_actions, const struct termios *t) {
         errno = EINVAL;
         return -1;
     }
-    if (ioctl(fd, TCSETS, (void *)t) < 0) {
-        return -1;
-    }
-    return 0;
+    return myos_tty_set(fd, t);
 }
 
 int tcsendbreak(int fd, int duration) {
@@ -40,10 +36,22 @@ int tcdrain(int fd) {
 }
 
 int tcflush(int fd, int queue_selector) {
-    if (ioctl(fd, TCFLSH, (void *)(long)queue_selector) < 0) {
+    const char *line;
+    switch (queue_selector) {
+    case TCIFLUSH:
+        line = "flush in\n";
+        break;
+    case TCOFLUSH:
+        line = "flush out\n";
+        break;
+    case TCIOFLUSH:
+        line = "flush both\n";
+        break;
+    default:
+        errno = EINVAL;
         return -1;
     }
-    return 0;
+    return myos_tty_write(fd, line);
 }
 
 int tcflow(int fd, int action) {

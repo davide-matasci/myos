@@ -149,7 +149,7 @@ mod syscalls {
     const SYS_PIPE: usize = 10;
     const SYS_DUP2: usize = 11;
     const SYS_STAT: usize = 12;
-    const SYS_IOCTL: usize = 28;
+    const SYS_READLINK: usize = 22;
     const SYS_GETTIMEOFDAY: usize = 33;
     const SYS_KILL: usize = 34;
     const SYS_SIGACTION: usize = 35;
@@ -313,13 +313,32 @@ mod syscalls {
         ret as *mut c_void
     }
 
-    pub unsafe fn sys_ioctl(fd: c_int, request: c_ulong, arg: *mut c_void) -> c_int {
-        let ret = raw_syscall(SYS_IOCTL, fd as usize, request as usize, arg as usize);
+    /// Kernel open flags (`open_path`): write access for a control file.
+    pub const K_O_WRONLY: usize = 1;
+
+    pub unsafe fn sys_open_flags(path: *const c_char, kflags: usize) -> c_int {
+        let len = cstr_len(path);
+        let ret = raw_syscall(SYS_OPEN, path as usize, len, kflags);
         if ret == usize::MAX {
-            set_errno(ENOTTY);
+            set_errno(ENOENT);
             -1
         } else {
-            0
+            ret as c_int
+        }
+    }
+
+    pub unsafe fn sys_readlink(path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t {
+        let len = cstr_len(path);
+        if len == 0 || len > 0xffff || bufsiz == 0 || bufsiz > 0xffff {
+            set_errno(ENAMETOOLONG);
+            return -1;
+        }
+        let ret = raw_syscall(SYS_READLINK, path as usize, buf as usize, (len << 16) | bufsiz);
+        if ret == usize::MAX {
+            set_errno(ENOENT);
+            -1
+        } else {
+            ret as ssize_t
         }
     }
 
@@ -474,8 +493,14 @@ pub unsafe extern "C" fn waitpid(pid: pid_t, status: *mut c_int, _options: c_int
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn isatty(_fd: c_int) -> c_int {
-    0
+pub unsafe extern "C" fn isatty(fd: c_int) -> c_int {
+    let mut dir = [0u8; tty::PATH];
+    if tty::dir(fd, &mut dir).is_some() {
+        1
+    } else {
+        syscalls::set_errno(ENOTTY);
+        0
+    }
 }
 
 #[no_mangle]
@@ -527,13 +552,285 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_ulong) -> c_int {
     }
 }
 
+/// The tty ioctls, served from the terminal's files (`tty`); there is no
+/// ioctl syscall behind this, anything else is ENOTTY.
 #[no_mangle]
 pub unsafe extern "C" fn ioctl(fd: c_int, request: c_ulong, arg: *mut c_void) -> c_int {
+    const TCGETS: c_ulong = 0x5401;
+    const TCSETS: c_ulong = 0x5402;
+    const TCFLSH: c_ulong = 0x540B;
+    const TIOCSCTTY: c_ulong = 0x540E;
+    const TIOCGWINSZ: c_ulong = 0x5413;
+    const TIOCSWINSZ: c_ulong = 0x5414;
     if fd < 0 {
         syscalls::set_errno(EBADF);
         return -1;
     }
-    syscalls::sys_ioctl(fd, request, arg)
+    let ok = match request {
+        TCGETS => tty::get(fd, arg as *mut tty::termios, core::ptr::null_mut()),
+        TCSETS => tty::set(fd, arg as *const tty::termios),
+        TIOCGWINSZ => tty::get(fd, core::ptr::null_mut(), arg as *mut tty::winsize),
+        TIOCSWINSZ => {
+            let w = &*(arg as *const tty::winsize);
+            let mut line = tty::Text::new();
+            line.push(b"winsize ");
+            line.push_dec(w.ws_row as usize);
+            line.push(b" ");
+            line.push_dec(w.ws_col as usize);
+            line.push(b"\n");
+            tty::write(fd, line.bytes())
+        }
+        TCFLSH => {
+            let line: &[u8] = match arg as usize {
+                0 => b"flush in\n",
+                1 => b"flush out\n",
+                2 => b"flush both\n",
+                _ => {
+                    syscalls::set_errno(EINVAL);
+                    return -1;
+                }
+            };
+            tty::write(fd, line)
+        }
+        TIOCSCTTY => tty::write(fd, b"ctty\n"),
+        _ => {
+            syscalls::set_errno(ENOTTY);
+            return -1;
+        }
+    };
+    if ok { 0 } else { -1 }
+}
+
+/// The terminal behind an fd, through its files (docs/tty.md): a directory
+/// with `data` (the terminal) and `ctl` (its state as text), found from the
+/// fd's `/proc/self/fd` link.
+mod tty {
+    use super::*;
+
+    /// `struct termios` as libgloss lays it out (56 bytes).
+    #[repr(C)]
+    pub struct termios {
+        pub c_iflag: u32,
+        pub c_oflag: u32,
+        pub c_cflag: u32,
+        pub c_lflag: u32,
+        pub c_cc: [u8; 32],
+        pub c_ispeed: u32,
+        pub c_ospeed: u32,
+    }
+
+    #[repr(C)]
+    pub struct winsize {
+        pub ws_row: u16,
+        pub ws_col: u16,
+        pub ws_xpixel: u16,
+        pub ws_ypixel: u16,
+    }
+
+    pub const PATH: usize = 64;
+    const CTL: usize = 512;
+
+    /// A small NUL-terminated text buffer (paths, ctl lines).
+    pub struct Text {
+        buf: [u8; CTL],
+        len: usize,
+    }
+
+    impl Text {
+        pub fn new() -> Self {
+            Text { buf: [0; CTL], len: 0 }
+        }
+        pub fn push(&mut self, s: &[u8]) {
+            let n = s.len().min(CTL - 1 - self.len);
+            self.buf[self.len..self.len + n].copy_from_slice(&s[..n]);
+            self.len += n;
+        }
+        pub fn push_dec(&mut self, mut v: usize) {
+            let mut digits = [0u8; 20];
+            let mut i = digits.len();
+            loop {
+                i -= 1;
+                digits[i] = b'0' + (v % 10) as u8;
+                v /= 10;
+                if v == 0 {
+                    break;
+                }
+            }
+            self.push(&digits[i..]);
+        }
+        pub fn push_hex(&mut self, v: u32, min_digits: usize) {
+            let mut digits = [0u8; 8];
+            let mut i = digits.len();
+            let mut v = v;
+            while i > digits.len() - min_digits || v != 0 {
+                i -= 1;
+                digits[i] = b"0123456789abcdef"[(v & 15) as usize];
+                v >>= 4;
+            }
+            self.push(&digits[i..]);
+        }
+        pub fn bytes(&self) -> &[u8] {
+            &self.buf[..self.len]
+        }
+        pub fn cstr(&self) -> *const c_char {
+            self.buf.as_ptr() as *const c_char
+        }
+    }
+
+    /// The directory of the terminal `fd` is open on (`/dev/pts/3`), from
+    /// its `/proc/self/fd` link, whose target ends in `/data` (or `/master`
+    /// for a pty's master end). `None` when the fd is not a terminal.
+    pub unsafe fn dir(fd: c_int, out: &mut [u8; PATH]) -> Option<usize> {
+        if fd < 0 {
+            return None;
+        }
+        let mut link = Text::new();
+        link.push(b"/proc/self/fd/");
+        link.push_dec(fd as usize);
+        let mut target = [0u8; 128];
+        let n = syscalls::sys_readlink(link.cstr(), target.as_mut_ptr() as *mut c_char, target.len());
+        if n <= 0 {
+            return None;
+        }
+        let target = &target[..n as usize];
+        let slash = target.iter().rposition(|&b| b == b'/')?;
+        let tail = &target[slash..];
+        if !target.starts_with(b"/dev/") || (tail != b"/data" && tail != b"/master") || slash >= PATH {
+            return None;
+        }
+        out[..slash].copy_from_slice(&target[..slash]);
+        Some(slash)
+    }
+
+    unsafe fn ctl_open(fd: c_int, kflags: usize) -> Option<c_int> {
+        let mut dir = [0u8; PATH];
+        let n = dir(fd, &mut dir)?;
+        let mut path = Text::new();
+        path.push(&dir[..n]);
+        path.push(b"/ctl");
+        let cfd = syscalls::sys_open_flags(path.cstr(), kflags);
+        if cfd < 0 {
+            syscalls::set_errno(ENOTTY);
+            return None;
+        }
+        Some(cfd)
+    }
+
+    /// Write `text` to the terminal's ctl; false (EINVAL) when the kernel
+    /// refused it, ENOTTY when `fd` is not a terminal.
+    pub unsafe fn write(fd: c_int, text: &[u8]) -> bool {
+        let Some(cfd) = ctl_open(fd, syscalls::K_O_WRONLY) else {
+            syscalls::set_errno(ENOTTY);
+            return false;
+        };
+        let n = syscalls::sys_write(cfd, text.as_ptr() as *const c_void, text.len());
+        syscalls::sys_close(cfd);
+        if n != text.len() as ssize_t {
+            syscalls::set_errno(EINVAL);
+            return false;
+        }
+        true
+    }
+
+    fn number(word: &[u8]) -> u32 {
+        match word.strip_prefix(b"0x") {
+            Some(hex) => hex.iter().fold(0u32, |v, &b| (v << 4) | hex_digit(b)),
+            None => word.iter().fold(0u32, |v, &b| v * 10 + (b.wrapping_sub(b'0') as u32 % 10)),
+        }
+    }
+
+    fn hex_digit(b: u8) -> u32 {
+        match b {
+            b'0'..=b'9' => (b - b'0') as u32,
+            b'a'..=b'f' => (b - b'a' + 10) as u32,
+            b'A'..=b'F' => (b - b'A' + 10) as u32,
+            _ => 0,
+        }
+    }
+
+    /// Read the terminal's termios and/or window size (null to skip either).
+    pub unsafe fn get(fd: c_int, t: *mut termios, w: *mut winsize) -> bool {
+        let Some(cfd) = ctl_open(fd, 0) else {
+            syscalls::set_errno(ENOTTY);
+            return false;
+        };
+        let mut text = [0u8; CTL];
+        let mut len = 0usize;
+        while len < text.len() {
+            let n = syscalls::sys_read(cfd, text[len..].as_mut_ptr() as *mut c_void, text.len() - len);
+            if n <= 0 {
+                break;
+            }
+            len += n as usize;
+        }
+        syscalls::sys_close(cfd);
+        if !t.is_null() {
+            core::ptr::write_bytes(t, 0, 1);
+        }
+        if !w.is_null() {
+            core::ptr::write_bytes(w, 0, 1);
+        }
+        for line in text[..len].split(|&b| b == b'\n') {
+            let mut words = line.split(|&b| b == b' ').filter(|w| !w.is_empty());
+            let Some(key) = words.next() else { continue };
+            if !t.is_null() {
+                let t = &mut *t;
+                match key {
+                    b"iflag" => t.c_iflag = number(words.next().unwrap_or(b"")),
+                    b"oflag" => t.c_oflag = number(words.next().unwrap_or(b"")),
+                    b"cflag" => t.c_cflag = number(words.next().unwrap_or(b"")),
+                    b"lflag" => t.c_lflag = number(words.next().unwrap_or(b"")),
+                    b"cc" => {
+                        for (i, w) in words.by_ref().take(32).enumerate() {
+                            t.c_cc[i] = w.iter().fold(0u32, |v, &b| (v << 4) | hex_digit(b)) as u8;
+                        }
+                    }
+                    b"speed" => {
+                        t.c_ispeed = number(words.next().unwrap_or(b""));
+                        t.c_ospeed = number(words.next().unwrap_or(b""));
+                    }
+                    _ => {}
+                }
+            }
+            if !w.is_null() && key == b"winsize" {
+                let w = &mut *w;
+                w.ws_row = number(words.next().unwrap_or(b"")) as u16;
+                w.ws_col = number(words.next().unwrap_or(b"")) as u16;
+            }
+        }
+        true
+    }
+
+    /// Write the termios to the terminal.
+    pub unsafe fn set(fd: c_int, t: *const termios) -> bool {
+        if t.is_null() {
+            syscalls::set_errno(EFAULT);
+            return false;
+        }
+        let t = &*t;
+        let mut text = Text::new();
+        for (name, v) in [
+            (&b"iflag 0x"[..], t.c_iflag),
+            (b"oflag 0x", t.c_oflag),
+            (b"cflag 0x", t.c_cflag),
+            (b"lflag 0x", t.c_lflag),
+        ] {
+            text.push(name);
+            text.push_hex(v, 1);
+            text.push(b"\n");
+        }
+        text.push(b"cc");
+        for &c in &t.c_cc {
+            text.push(b" ");
+            text.push_hex(c as u32, 2);
+        }
+        text.push(b"\nspeed ");
+        text.push_dec(t.c_ispeed as usize);
+        text.push(b" ");
+        text.push_dec(t.c_ospeed as usize);
+        text.push(b"\n");
+        write(fd, text.bytes())
+    }
 }
 
 #[no_mangle]
@@ -641,6 +938,11 @@ pub unsafe extern "C" fn clock_gettime(_clk: clockid_t, tp: *mut timespec) -> c_
     0
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t {
+    syscalls::sys_readlink(path, buf, bufsiz)
+}
+
 // Stubs for symbols rustix may reference on first compile pass.
 enosys! {
     pub unsafe fn openat(dirfd: c_int, path: *const c_char, flags: c_int, mode: mode_t) -> c_int;
@@ -650,7 +952,6 @@ enosys! {
     pub unsafe fn rmdir(path: *const c_char) -> c_int;
     pub unsafe fn link(old: *const c_char, new: *const c_char) -> c_int;
     pub unsafe fn symlink(target: *const c_char, linkpath: *const c_char) -> c_int;
-    pub unsafe fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t;
     pub unsafe fn fchmod(fd: c_int, mode: mode_t) -> c_int;
     pub unsafe fn chmod(path: *const c_char, mode: mode_t) -> c_int;
     pub unsafe fn fchown(fd: c_int, owner: uid_t, group: gid_t) -> c_int;

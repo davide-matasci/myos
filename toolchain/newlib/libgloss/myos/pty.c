@@ -1,38 +1,27 @@
-/* myos libgloss: pty allocation (openpty/forkpty) via /dev/ptmx + /dev/pts/N.
+/* myos libgloss: pty allocation (openpty/forkpty) over /dev/pts (docs/tty.md).
  *
- * Kernel model (see kernel/src/pty.rs): open("/dev/ptmx") allocates a pair
- * and returns the master fd; TIOCGPTN yields the slave index N; open of
- * "/dev/pts/N" takes a slave fd and (first open) claims the session.
+ * Opening /dev/pts/clone allocates a pair and returns the master fd; the
+ * master's /proc/self/fd link names the pair's directory /dev/pts/N, whose
+ * `data` is the slave. The slave's first open does not claim the session:
+ * forkpty's child does, with TIOCSCTTY (a `ctty` line on the pair's ctl).
  * Master reads block and return EIO once the last slave fd closes; slave
- * reads do the same once the master closes. TIOCSCTTY on the slave makes the
- * caller the session leader (SIGINT/SIGHUP scoping).
- */
+ * reads do the same once the master closes. */
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
 #include "myos_syscalls.h"
-
-/* Linux pty ioctls (kernel-backed). TIOCGPTN lives in <sys/ioctl.h> on
- * glibc; myos ships it here to keep one definition per header tree. */
-#ifndef TIOCGPTN
-#define TIOCGPTN 0x80045430
-#endif
-#ifndef TIOCSPTLCK
-#define TIOCSPTLCK 0x40045431
-#endif
+#include "pty.h"
 
 int openpty(int *amaster, int *aslave, char *name,
             const struct termios *termp, const struct winsize *winp) {
     int m = -1, s = -1;
-    unsigned int n = 0;
-    char slave_path[32];
+    char dir[MYOS_TTY_PATH];
+    char slave_path[MYOS_TTY_PATH];
 
     /* glibc openpty: aslave may be NULL (the internal slave fd is closed
      * before return); only amaster is required. */
@@ -41,19 +30,18 @@ int openpty(int *amaster, int *aslave, char *name,
         return -1;
     }
 
-    m = open("/dev/ptmx", O_RDWR | O_NOCTTY);
+    m = open("/dev/pts/clone", O_RDWR | O_NOCTTY);
     if (m < 0) {
         return -1;
     }
-
-    if (ioctl(m, TIOCGPTN, &n) != 0) {
+    if (myos_tty_dir(m, dir, sizeof dir, NULL) != 0) {
         goto fail;
     }
 
-    /* grantpt/unlockpt are implicit: the kernel enforces no lock and the
-     * myos ABI has no privilege split (phase-1 single-user). */
+    /* grantpt/unlockpt are implicit: there is no lock and the myos ABI has
+     * no privilege split (phase-1 single-user). */
 
-    if (snprintf(slave_path, sizeof(slave_path), "/dev/pts/%u", n) >= (int)sizeof(slave_path)) {
+    if (snprintf(slave_path, sizeof slave_path, "%s/data", dir) >= (int)sizeof slave_path) {
         errno = ENAMETOOLONG;
         goto fail;
     }
@@ -70,8 +58,9 @@ int openpty(int *amaster, int *aslave, char *name,
     }
 
     if (name != NULL) {
-        /* Best effort: full slave path for callers that print it. */
-        snprintf(name, sizeof("/dev/pts/00"), "%s", slave_path);
+        /* The slave's path, for callers that print it (at most 4 pairs, so
+         * it is /dev/pts/N/data). */
+        strcpy(name, slave_path);
     }
 
     *amaster = m;

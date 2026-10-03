@@ -410,25 +410,19 @@ pub(crate) fn open_path(path: &str, flags: usize) -> usize {
     // The pty ends (docs/tty.md): /dev/pts/clone allocates a pair and
     // returns its master, /dev/pts/N/data is the slave. The fd is a pty fd,
     // not a plain file fd (I/O routes via crate::pty). /dev/pts/N/master is
-    // only ever what clone returned, never opened by name. /dev/ptmx and
-    // the flat /dev/pts/N are the old names, kept until libc has moved.
+    // only ever what clone returned, never opened by name.
     let path_rel = path.trim_start_matches('/');
-    if path_rel == "dev/ptmx" {
-        if fs::open("/dev/ptmx", flags as u32).is_none() {
-            return SYSERR;
-        }
-        return task::fd_open_pty_master().unwrap_or(SYSERR);
-    }
     if let Some(rest) = path_rel.strip_prefix("dev/pts/") {
         if rest == "clone" {
             return task::fd_open_pty_master().unwrap_or(SYSERR);
         }
-        let (index, member) = rest.split_once('/').unwrap_or((rest, ""));
-        if let Ok(id) = index.parse::<usize>() {
-            match member {
-                "" | "data" => return task::fd_open_pty_slave(id).unwrap_or(SYSERR),
-                "master" => return SYSERR,
-                _ => {}
+        if let Some((index, member)) = rest.split_once('/') {
+            if let Ok(id) = index.parse::<usize>() {
+                match member {
+                    "data" => return task::fd_open_pty_slave(id).unwrap_or(SYSERR),
+                    "master" => return SYSERR,
+                    _ => {}
+                }
             }
         }
     }

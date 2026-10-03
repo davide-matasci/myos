@@ -1,4 +1,4 @@
-/* myos libgloss: pty allocation (kernel-backed /dev/ptmx + /dev/pts/N). */
+/* myos libgloss: pty allocation (/dev/pts/clone, /dev/pts/N/data; docs/tty.md). */
 #ifndef _MYOS_PTY_H_
 #define _MYOS_PTY_H_
 
@@ -6,8 +6,8 @@
 #include <termios.h>
 #include <unistd.h>
 
-/* Allocates a pty pair: opens /dev/ptmx (master) and the matching
- * /dev/pts/N (slave). `name` (if non-NULL) receives the slave path.
+/* Allocates a pty pair: opens /dev/pts/clone (the master) and the pair's
+ * /dev/pts/N/data (the slave). `name` (if non-NULL) receives the slave path.
  * `termp`/`winp` (if non-NULL) are applied to the slave. Returns 0 and
  * fills both fds, or -1 with errno. */
 int openpty(int *amaster, int *aslave, char *name,
