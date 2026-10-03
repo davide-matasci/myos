@@ -32,14 +32,11 @@ mkdir -p $OUT
 # long test's progress go there.
 exec 3>&1
 
-# Output goes to files in append mode (`>>` after truncating): the kernel
-# gives a forked child its own copy of a file offset, so with a plain `>`
-# a parent's later writes land over what its children wrote.
+# capture FILE COMMAND...: the command's output, both streams, in the file.
 capture() {
 	f=$1
 	shift
-	: > "$f"
-	"$@" >> "$f" 2>&1
+	"$@" > "$f" 2>&1
 }
 
 # t NAME COMMAND...: run one test.
