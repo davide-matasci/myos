@@ -77,23 +77,30 @@ void mkdirs(const char *path, int self) {
 
 /* ---- running curl ------------------------------------------------------- */
 
+/* One curl run, appending to what earlier runs left in dest (-C -). A
+ * transfer is cut off only when it stalls (under 1 KB/s for a minute), not
+ * after a fixed time: big packages take long under emulation. */
 static int download_once(const char *url, const char *dest) {
     pid_t pid = fork();
     if (pid < 0) {
         return -1;
     }
     if (pid == 0) {
-        char *argv[] = {"curl", "-fsSL", "--connect-timeout", "30", "--max-time", "900",
-                        "-o", (char *)dest, (char *)url, NULL};
+        char *argv[] = {"curl", "-fsSL", "--connect-timeout", "30", "--speed-limit", "1024",
+                        "--speed-time", "60", "-C", "-", "-o", (char *)dest, (char *)url, NULL};
         execvp("curl", argv);
         _exit(127);
     }
     int status = 0;
     if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        unlink(dest);
         return -1;
     }
     return 0;
+}
+
+static long long file_size(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 ? (long long)st.st_size : -1;
 }
 
 int download_open(const char *url, int *pid) {
@@ -134,11 +141,19 @@ int download_close(int fd, int pid) {
 
 /* A transient connect failure should not fail the whole install. */
 int download(const char *url, const char *dest) {
-    for (int attempt = 1;; attempt++) {
+    /* Mirrors drop long transfers: each retry resumes where the last one
+     * stopped, and only three in a row without progress give up. */
+    unlink(dest);
+    long long had = 0;
+    for (int stuck = 0;;) {
         if (download_once(url, dest) == 0) {
             return 0;
         }
-        if (attempt == 3) {
+        long long now = file_size(dest);
+        stuck = now > had ? 0 : stuck + 1;
+        had = now;
+        if (stuck == 3) {
+            unlink(dest);
             return -1;
         }
         say("retrying ", url, NULL);
