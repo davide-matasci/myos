@@ -4,7 +4,6 @@
  * these is ENOTTY. */
 #include <errno.h>
 #include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -17,7 +16,6 @@ int ioctl(int fd, unsigned long request, ...) {
     va_list ap;
     void *arg;
     char dir[MYOS_TTY_PATH];
-    char line[64];
     int master;
 
     if (fd < 0) {
@@ -48,8 +46,7 @@ int ioctl(int fd, unsigned long request, ...) {
             errno = EFAULT;
             return -1;
         }
-        snprintf(line, sizeof line, "winsize %u %u\n", w->ws_row, w->ws_col);
-        return myos_tty_write(fd, line);
+        return myos_tty_set_winsize(fd, w->ws_row, w->ws_col);
     }
     case TIOCSCTTY:
         return myos_tty_write(fd, "ctty\n");

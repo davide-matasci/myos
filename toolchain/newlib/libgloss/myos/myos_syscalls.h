@@ -104,8 +104,9 @@ int myos_fd_is_tty(int fd);
 int myos_tty_dir(int fd, char *dir, size_t cap, int *master);
 /* Read the terminal's termios and/or window size (either may be NULL). */
 int myos_tty_get(int fd, struct termios *t, struct winsize *w);
-/* Write the termios to the terminal. */
+/* Write the termios, or the window size, to the terminal. */
 int myos_tty_set(int fd, const struct termios *t);
+int myos_tty_set_winsize(int fd, unsigned rows, unsigned cols);
 /* Write lines to the terminal's ctl (`ctty`, `flush`, `winsize`). */
 int myos_tty_write(int fd, const char *text);
 

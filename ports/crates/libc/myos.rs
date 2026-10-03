@@ -703,10 +703,10 @@ mod tty {
     }
 
     unsafe fn ctl_open(fd: c_int, kflags: usize) -> Option<c_int> {
-        let mut dir = [0u8; PATH];
-        let n = dir(fd, &mut dir)?;
+        let mut d = [0u8; PATH];
+        let n = dir(fd, &mut d)?;
         let mut path = Text::new();
-        path.push(&dir[..n]);
+        path.push(&d[..n]);
         path.push(b"/ctl");
         let cfd = syscalls::sys_open_flags(path.cstr(), kflags);
         if cfd < 0 {

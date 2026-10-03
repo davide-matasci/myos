@@ -8,7 +8,6 @@
  * the ioctl() shim are all built on these. */
 #include <errno.h>
 #include <fcntl.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -16,6 +15,29 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
+
+/* Numbers are written by hand: snprintf would pull newlib's floating point
+ * formatting into every program that calls isatty (newlib's stdio does at
+ * its first output), and on riscv64 that needs the soft-float helpers. */
+static char *put_num(char *p, unsigned long v, unsigned base, int min_digits) {
+    char digits[24];
+    int n = 0;
+    do {
+        digits[n++] = "0123456789abcdef"[v % base];
+        v /= base;
+    } while (v != 0 || n < min_digits);
+    while (n > 0) {
+        *p++ = digits[--n];
+    }
+    *p = '\0';
+    return p;
+}
+
+static char *put_str(char *p, const char *s) {
+    size_t n = strlen(s);
+    memcpy(p, s, n + 1);
+    return p + n;
+}
 
 int myos_tty_dir(int fd, char *dir, size_t cap, int *master) {
     char link[32];
@@ -25,10 +47,14 @@ int myos_tty_dir(int fd, char *dir, size_t cap, int *master) {
     size_t len;
     int saved = errno;
 
-    snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
+    if (fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    put_num(put_str(link, "/proc/self/fd/"), (unsigned long)fd, 10, 1);
     n = readlink(link, target, sizeof target - 1);
     if (n < 0) {
-        errno = fd < 0 ? EBADF : ENOTTY;
+        errno = ENOTTY;
         return -1;
     }
     target[n] = '\0';
@@ -163,17 +189,27 @@ int myos_tty_get(int fd, struct termios *t, struct winsize *w) {
 
 int myos_tty_set(int fd, const struct termios *t) {
     char text[MYOS_TTY_CTL];
-    size_t n;
+    char *p = text;
     int i;
 
-    n = (size_t)snprintf(text, sizeof text,
-        "iflag 0x%lx\noflag 0x%lx\ncflag 0x%lx\nlflag 0x%lx\ncc",
-        (unsigned long)t->c_iflag, (unsigned long)t->c_oflag,
-        (unsigned long)t->c_cflag, (unsigned long)t->c_lflag);
+    p = put_num(put_str(p, "iflag 0x"), t->c_iflag, 16, 1);
+    p = put_num(put_str(p, "\noflag 0x"), t->c_oflag, 16, 1);
+    p = put_num(put_str(p, "\ncflag 0x"), t->c_cflag, 16, 1);
+    p = put_num(put_str(p, "\nlflag 0x"), t->c_lflag, 16, 1);
+    p = put_str(p, "\ncc");
     for (i = 0; i < NCCS; i++) {
-        n += (size_t)snprintf(text + n, sizeof text - n, " %02x", t->c_cc[i]);
+        p = put_num(put_str(p, " "), t->c_cc[i], 16, 2);
     }
-    snprintf(text + n, sizeof text - n, "\nspeed %lu %lu\n",
-        (unsigned long)t->c_ispeed, (unsigned long)t->c_ospeed);
+    p = put_num(put_str(p, "\nspeed "), t->c_ispeed, 10, 1);
+    p = put_num(put_str(p, " "), t->c_ospeed, 10, 1);
+    put_str(p, "\n");
     return myos_tty_write(fd, text);
+}
+
+int myos_tty_set_winsize(int fd, unsigned rows, unsigned cols) {
+    char line[48];
+    char *p = put_num(put_str(line, "winsize "), rows, 10, 1);
+    p = put_num(put_str(p, " "), cols, 10, 1);
+    put_str(p, "\n");
+    return myos_tty_write(fd, line);
 }
