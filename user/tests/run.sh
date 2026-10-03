@@ -63,10 +63,11 @@ contains() {
 }
 
 # The full boot gets every package of this build from the host's mirror
-# first (docs/packages.md): the tests of the packages and `heap`'s git
-# stage then find them at their image paths.
+# first (docs/packages.md; packages.txt names the ports the image lacks,
+# the index has the image's ports too): the tests of the packages and
+# `heap`'s git stage then find them at their image paths.
 install_packages() {
-	names=$(curl -fsS $MIRROR/index.txt | cut -d " " -f 1 | tr "\n" " ") || return 1
+	names=$(curl -fsS $MIRROR/packages.txt | tr "\n" " ") || return 1
 	echo "packages: $names"
 	get-myos -m $MIRROR $names
 }

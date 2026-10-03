@@ -53,6 +53,7 @@ while a port is in the image).
 |------|---------|
 | `<arch>-<name>.tar.gz` | ustar, gzip `-n`: the port's files at their image paths (`bin/custom/vim`, `lib/vim/vimrc`), mode 0755/0644, mtime 0, a program's aliases as files of their own; reproducible for the same inputs |
 | `<arch>-index.txt` | one line per package: `name version size sha256 file`; the version is the port's input hash (its stamp), a user program's the tarball's own hash |
+| `<arch>-packages.txt` | the names of the ports the image does not carry (`packages/`): what there is to install; the index also has the image's ports, whose tarballs test the mechanism |
 
 A mirror is any HTTP server with these files in one directory. The flat
 names are what GitHub release assets allow.
@@ -63,8 +64,8 @@ names are what GitHub release assets allow.
   (`cargo run -- test-full`, `docs/testing.md`) packs this build's packages
   for its arch, serves `target/packages/` on the host's 127.0.0.1:8765 (the
   guest reaches it as `http://10.0.2.2:8765` on QEMU's user network;
-  `index.txt` there is the arch's index) and installs **every package of
-  the build** as its first test (`install_packages` in
+  `index.txt` and `packages.txt` there are the arch's) and installs
+  **every package of the build** as its first test (`install_packages` in
   `user/tests/run.sh`), so the tests that use one (git in `heap`, os-test
   with `make`, the packages' own `test.sh`) find it at its image path. The
   boot job needs `gzip` and `sha256sum`.

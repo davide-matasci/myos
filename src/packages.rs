@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! <arch>-index.txt          name version size sha256 file, one line per package
+//! <arch>-packages.txt       the names of the ports the image does not carry (packages/)
 //! <arch>-<name>.tar.gz      the package
 //! ```
 //!
@@ -36,9 +37,17 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
     let out = manifest_dir.join("target/packages");
     std::fs::create_dir_all(&out).expect("create target/packages");
     let mut index = String::new();
+    // The ports the image lacks: what `get-myos` is for, and what the full
+    // boot test installs (an image port installed over itself would bind
+    // its files over the image's).
+    let mut packages = String::new();
     for port in ports::load_all(manifest_dir) {
         if port.files.is_empty() {
             continue;
+        }
+        if port.role == ports::Role::Package {
+            packages.push_str(&port.name);
+            packages.push('\n');
         }
         ensure_built(manifest_dir, &port, arch);
         let mut entries: Vec<Entry> = Vec::new();
@@ -70,6 +79,7 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
         index.push_str(&format!("{} {version} {size} {sha} {file}\n", port.name));
     }
     std::fs::write(out.join(format!("{arch}-index.txt")), index).expect("write package index");
+    std::fs::write(out.join(format!("{arch}-packages.txt")), packages).expect("write package list");
     out
 }
 
@@ -164,8 +174,8 @@ fn put(field: &mut [u8], bytes: &[u8]) {
 }
 
 /// Serve `dir` over HTTP on 127.0.0.1:MIRROR_PORT in a background thread
-/// (GET only: `/` lists the files, `index.txt` is the index of `arch`,
-/// anything else is a file of `dir`).
+/// (GET only: `/` lists the files, `index.txt` and `packages.txt` are the
+/// files of `arch`, anything else is a file of `dir`).
 /// False when the port is taken: the launcher then skips the forward and
 /// the guest's install stage fails visibly instead of hitting a stranger.
 pub fn serve_mirror(dir: PathBuf, arch: &str) -> bool {
@@ -196,10 +206,10 @@ fn serve_one(mut stream: TcpStream, dir: &Path, arch: &str) {
     let mut words = line.split_whitespace();
     let (method, target) = (words.next().unwrap_or(""), words.next().unwrap_or("/"));
     let path = target.split('?').next().unwrap_or("").trim_start_matches('/');
-    // The guest test installs every package of the index without knowing
-    // its arch name: `index.txt` is this mirror's `<arch>-index.txt`.
-    let index = format!("{arch}-index.txt");
-    let path = if path == "index.txt" { index.as_str() } else { path };
+    // The guest test asks for the arch's files without knowing its arch
+    // name: `index.txt` and `packages.txt` are this mirror's `<arch>-...`.
+    let per_arch = format!("{arch}-{path}");
+    let path = if path == "index.txt" || path == "packages.txt" { per_arch.as_str() } else { path };
     let body: Option<Vec<u8>> = if method != "GET" || path.contains("..") || path.contains('/') {
         None
     } else if path.is_empty() {
