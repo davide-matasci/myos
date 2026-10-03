@@ -6,7 +6,7 @@
 #![no_std]
 
 /// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 15;
+pub const ABI_VERSION: u32 = 16;
 
 /// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
 /// Keep in sync with `user/net` / `user/lib` duplicates.
@@ -528,6 +528,8 @@ pub struct KernelApi {
     pub fd_close: unsafe extern "C" fn(fd: usize) -> i32,
     /// write(2) from user memory: native result.
     pub fd_write: unsafe extern "C" fn(fd: usize, buf_user: usize, len: usize) -> usize,
+    /// The native ioctl: the console keymap and module character devices.
+    /// A terminal's state is its `ctl` file; see `tty_ctl_read` (ABI 16).
     pub fd_ioctl: unsafe extern "C" fn(fd: usize, request: usize, arg: usize) -> usize,
     pub pipe_open: unsafe extern "C" fn(read_fd: *mut usize, write_fd: *mut usize) -> i32,
     /// The native mmap (user addresses; `fd` -1 for anonymous): native result.
@@ -578,6 +580,16 @@ pub struct KernelApi {
     /// Write kernel `buf` at `pos` of the file at VFS `path`: bytes
     /// written, or negative.
     pub vfs_write: unsafe extern "C" fn(path: StrRef, pos: usize, buf: *const u8, len: usize) -> i32,
+    // --- ABI 16: terminals as files (docs/tty.md) ---
+    /// The `ctl` text of the terminal `fd` is open on, into `buf` (cut at
+    /// `cap`): its length, or negative when `fd` is not a terminal.
+    pub tty_ctl_read: unsafe extern "C" fn(fd: usize, buf: *mut u8, cap: usize) -> i32,
+    /// Write `len` bytes of ctl text to the terminal `fd` is open on: 0, or
+    /// negative when `fd` is not a terminal or the text is refused.
+    pub tty_ctl_write: unsafe extern "C" fn(fd: usize, text: *const u8, len: usize) -> i32,
+    /// What `fd` is open on, as `/proc/self/fd` names it (`/dev/pts/3/data`,
+    /// `/dev/pts/3/master`, `pipe:[N]`), into `buf`: its length, or negative.
+    pub fd_path: unsafe extern "C" fn(fd: usize, buf: *mut u8, cap: usize) -> i32,
 }
 
 /// A memory-mapped device from the device tree (`KernelApi::dt_mmio_find`).

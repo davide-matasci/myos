@@ -62,10 +62,14 @@ pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
     vfs::ioctl(node, request, arg)
 }
 
-/// Shared tty ioctl helper (Stdin/Console and `/dev/console`).
-/// `TIOCSCTTY` is handled in [`crate::task::fd_ioctl`], not here.
-pub fn tty_ioctl(request: usize) -> IoctlResult {
-    devfs::tty_ioctl(request)
+/// The console's control file (`/dev/console/ctl`, docs/tty.md), for an fd
+/// on the console: its text, and a write to it.
+pub fn console_ctl_text() -> alloc::vec::Vec<u8> {
+    devfs::console_ctl_text()
+}
+
+pub fn console_ctl_write(text: &[u8]) -> Option<usize> {
+    devfs::console_ctl_write(text)
 }
 
 /// Size of an open vnode (for `O_APPEND`).

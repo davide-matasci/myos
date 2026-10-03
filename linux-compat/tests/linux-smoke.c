@@ -14,10 +14,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 static int failures;
@@ -310,6 +312,19 @@ int main(int argc, char **argv) {
     check_threads();
 
     check(unlink(path) == 0 && stat(path, &st) == -1 && errno == ENOENT, "unlink/ENOENT");
+
+    /* The terminal: the boot test runs this with stdout in a file and stdin
+     * on the console. musl's tty calls are the Linux ioctls, which the layer
+     * serves from the terminal's ctl file (docs/tty.md). */
+    struct termios t;
+    struct winsize ws;
+    char link[64];
+    ssize_t ln = readlink("/proc/self/fd/0", link, sizeof link - 1);
+    check(isatty(0) == 1 && isatty(1) == 0, "isatty");
+    check(tcgetattr(0, &t) == 0 && (t.c_lflag & ICANON) && t.c_cc[VINTR] == 3, "tcgetattr");
+    check(ioctl(0, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0, "TIOCGWINSZ");
+    check(ln > 5 && strcmp(link + ln - 5, "/data") == 0, "fd link names the terminal");
+    check(tcgetattr(1, &t) == -1 && errno == ENOTTY, "tcgetattr on a file: ENOTTY");
 
     if (failures) {
         out("LINUX-SMOKE FAIL\n");

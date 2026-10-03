@@ -77,8 +77,6 @@ impl Vnode {
 pub enum IoctlResult {
     /// Success; syscall returns 0.
     Ok,
-    /// TIOCGWINSZ: caller copies `{row,col}` winsize to user `arg`.
-    Winsize { row: u16, col: u16 },
     /// Not a tty / no handler (ENOTTY → SYSERR).
     Notty,
     /// Bad argument or device error (SYSERR).
@@ -113,8 +111,7 @@ pub struct MountOps {
     /// Read symlink target into `buf`; returns bytes written.
     pub readlink: fn(&str, &mut [u8]) -> Option<usize>,
     /// Optional ioctl on a path relative to this mount. `None` → ENOTTY.
-    /// Args: (rel_path, request, arg). Pointer args are not copied here —
-    /// return [`IoctlResult::Winsize`] and let the syscall layer copy_to_user.
+    /// Args: (rel_path, request, arg). Pointer args are not copied here.
     pub ioctl: Option<fn(&str, usize, usize) -> IoctlResult>,
     /// Mount accepts write opens / creates.
     pub writable: bool,

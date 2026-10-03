@@ -132,7 +132,7 @@ pub fn truncate(name: &str) -> bool {
 }
 
 /// The text of `/dev/console/ctl`: the console termios and the screen's size.
-fn console_ctl_text() -> alloc::vec::Vec<u8> {
+pub fn console_ctl_text() -> alloc::vec::Vec<u8> {
     let (rows, cols) = crate::console::winsize();
     crate::tty::ctl_text(&input::termios(), rows, cols)
 }
@@ -140,7 +140,7 @@ fn console_ctl_text() -> alloc::vec::Vec<u8> {
 /// A write to `/dev/console/ctl`. A `winsize` line is accepted and ignored:
 /// the console is the size of the screen. The console has no output buffer,
 /// so `flush out` has nothing to do.
-fn console_ctl_write(text: &[u8]) -> Option<usize> {
+pub fn console_ctl_write(text: &[u8]) -> Option<usize> {
     use crate::tty::CtlAction;
     for action in crate::tty::ctl_parse(&input::termios(), text)? {
         match action {
@@ -360,26 +360,14 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     }
 }
 
-/// Linux-compatible tty ioctls for the hardware console (`/dev/console/data`).
-///
-/// `TIOCSCTTY` is handled in [`crate::task::fd_ioctl`] (sets `Task.has_ctty`).
-/// `/dev/tty` open is gated there too; when allowed it aliases to console.
+/// The console's ioctls: only the keymap ones are left (`KDSKMAP`/`KDGKMAP`,
+/// handled with their user copies in [`crate::task::fd_ioctl`]); the
+/// terminal's state is its `ctl` file (`docs/tty.md`).
 pub fn tty_ioctl(request: usize) -> IoctlResult {
-    const TCGETS: usize = 0x5401;
-    const TCSETS: usize = 0x5402;
-    const TCFLSH: usize = 0x540B;
-    const TIOCGWINSZ: usize = 0x5413;
-    const TIOCSWINSZ: usize = 0x5414;
-
-    match request {
-        // TCGETS/TCSETS and KDSKMAP/KDGKMAP are handled in `task::fd_ioctl`.
-        TCGETS | TCSETS | TCFLSH | TIOCSWINSZ => IoctlResult::Ok,
-        x if x == crate::console::KDSKMAP || x == crate::console::KDGKMAP => IoctlResult::Ok,
-        TIOCGWINSZ => {
-            let (row, col) = crate::console::winsize();
-            IoctlResult::Winsize { row, col }
-        }
-        _ => IoctlResult::Notty,
+    if request == crate::console::KDSKMAP || request == crate::console::KDGKMAP {
+        IoctlResult::Ok
+    } else {
+        IoctlResult::Notty
     }
 }
 
@@ -389,7 +377,6 @@ pub fn tty_ioctl(request: usize) -> IoctlResult {
 /// Modules must not deref userspace `arg` — use `KernelApi::copy_to_user`.
 pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
     match parse(name) {
-        // `/dev/tty` open aliases to console; keep both for leftover/stat paths.
         Some(Node::Tty) | Some(Node::Console) => tty_ioctl(request),
         Some(Node::ConsoleDir) | Some(Node::ConsoleCtl) => IoctlResult::Notty,
         Some(Node::Urandom) => IoctlResult::Notty,

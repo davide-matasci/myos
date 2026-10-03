@@ -33,6 +33,7 @@ mod net;
 mod signal;
 mod sys;
 mod thread;
+mod tty;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 mod generic;

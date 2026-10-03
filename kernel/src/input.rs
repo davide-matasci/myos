@@ -36,8 +36,6 @@ static IRQ_BUF: [AtomicU8; IRQ_RING] = {
 };
 
 /// The console tty: one input line-discipline instance (termios + rings).
-pub const TERMIOS_LEN: usize = crate::tty::TERMIOS_LEN;
-
 static TTY: Mutex<crate::tty::TtyIn> = Mutex::new(crate::tty::TtyIn::new());
 
 pub fn init() {
@@ -46,14 +44,6 @@ pub fn init() {
     *TTY.lock() = crate::tty::TtyIn::new();
     arch::serial_flush_rx();
     DRAIN_ENABLED.store(true, Ordering::Relaxed);
-}
-
-pub fn termios_get_bytes() -> [u8; crate::tty::TERMIOS_LEN] {
-    TTY.lock().termios.as_bytes()
-}
-
-pub fn termios_set_bytes(buf: &[u8; crate::tty::TERMIOS_LEN]) {
-    TTY.lock().set_termios(crate::tty::Termios::from_bytes(buf));
 }
 
 pub fn termios() -> crate::tty::Termios {

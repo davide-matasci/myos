@@ -1,5 +1,5 @@
 //! Per-task file descriptor table: open/dup/close, pipes, FIFOs, ptys,
-//! read/write/lseek and the tty/termios ioctls. An fd on a file refers to
+//! read/write/lseek and ioctl. An fd on a file refers to
 //! an open file description in [`OPEN_FILES`], shared with its `dup`s and
 //! a fork's copies the POSIX way.
 
@@ -814,129 +814,15 @@ fn fd_is_console_tty(entry: FdEntry) -> bool {
     }
 }
 
-/// Generic ioctl dispatch. Tty/console keep Linux getty semantics; other
-/// open File vnodes go through [`crate::fs::ioctl`] (devfs → chrdevs like net0).
+/// The native ioctl: the console keymap (`KDSKMAP`/`KDGKMAP`, docs/keymap.md)
+/// and the requests of module character devices (net0). A terminal's state
+/// is its `ctl` file (docs/tty.md): the termios, window size and pty
+/// requests are not here, the Linux layer serves its numbers from
+/// [`fd_tty_ctl_read`] and [`fd_tty_ctl_write`].
 pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
     use crate::fs::IoctlResult;
 
-    const TIOCSCTTY: usize = 0x540E;
-
     let entry = with_process_mut(|t| t.fds.get(fd).copied().unwrap_or(FdEntry::Empty));
-
-    // PTY fd ioctls: per-pair termios (shared across both ends, Linux model),
-    // winsize propagation, TIOCGPTN/TIOCSPTLCK on the master, TIOCSCTTY on the
-    // slave (session-leader claim). Handled here because they copy user data.
-    const TIOCGPTN: usize = 0x8004_5430;
-    const TIOCSPTLCK: usize = 0x4004_5431;
-    const TIOCGWINSZ: usize = 0x5413;
-    const TIOCSWINSZ: usize = 0x5414;
-    const TCGETS: usize = 0x5401;
-    const TCSETS: usize = 0x5402;
-    match (request, entry) {
-        (TIOCGPTN, FdEntry::PtyMaster(id)) => {
-            if arg == 0 {
-                return usize::MAX;
-            }
-            let Some(id) = crate::pty::index(id) else {
-                return usize::MAX;
-            };
-            if !user::copy_to_user(current_aspace(), arg, &id.to_ne_bytes()) {
-                return usize::MAX;
-            }
-            return 0;
-        }
-        (TIOCSPTLCK, FdEntry::PtyMaster(_)) => return 0,
-        (TIOCSCTTY, FdEntry::PtySlave(id)) => {
-            // Session leader claims (or re-affirms) this pty as its ctty.
-            crate::pty::claim_session(id);
-            return 0;
-        }
-        (TIOCGWINSZ, FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
-            let Some((row, col)) = crate::pty::winsize(id) else {
-                return usize::MAX;
-            };
-            if arg == 0 {
-                return usize::MAX;
-            }
-            let mut buf = [0u8; 8]; // {row: u16, col: u16, xpixel: u16, ypixel: u16}
-            buf[0..2].copy_from_slice(&row.to_ne_bytes());
-            buf[2..4].copy_from_slice(&col.to_ne_bytes());
-            if !user::copy_to_user(current_aspace(), arg, &buf) {
-                return usize::MAX;
-            }
-            return 0;
-        }
-        (TIOCSWINSZ, FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
-            if arg == 0 {
-                return usize::MAX;
-            }
-            let aspace = current_aspace();
-            let mut ws = [0u8; 8]; // {row: u16, col: u16, xpixel: u16, ypixel: u16}
-            if !user::copy_from_user(aspace, arg, &mut ws) {
-                return usize::MAX;
-            }
-            let row = u16::from_ne_bytes([ws[0], ws[1]]);
-            let col = u16::from_ne_bytes([ws[2], ws[3]]);
-            crate::pty::set_winsize(id, row, col);
-            return 0;
-        }
-        (req @ (TCGETS | TCSETS), FdEntry::PtyMaster(id) | FdEntry::PtySlave(id)) => {
-            if arg == 0 {
-                return usize::MAX;
-            }
-            let aspace = current_aspace();
-            if req == TCGETS {
-                let Some(buf) = crate::pty::termios_get_bytes(id) else {
-                    return usize::MAX;
-                };
-                if !user::copy_to_user(aspace, arg, &buf) {
-                    return usize::MAX;
-                }
-            } else {
-                let mut buf = [0u8; crate::tty::TERMIOS_LEN];
-                if !user::copy_from_user(aspace, arg, &mut buf) {
-                    return usize::MAX;
-                }
-                crate::pty::termios_set_bytes(id, &buf);
-            }
-            return 0;
-        }
-        _ => {}
-    }
-
-    // Real TIOCSCTTY: attach the system console as the caller's ctty.
-    // Getty passes a non-null arg (force); phase-1 accepts either.
-    if request == TIOCSCTTY {
-        if !fd_is_console_tty(entry) {
-            return usize::MAX;
-        }
-        set_ctty();
-        return 0;
-    }
-
-    // TCGETS / TCSETS: maintain per-console termios (raw vs cooked for vim).
-    if request == TCGETS || request == TCSETS {
-        if !fd_is_console_tty(entry) {
-            return usize::MAX;
-        }
-        if arg == 0 {
-            return usize::MAX;
-        }
-        let aspace = current_aspace();
-        if request == TCGETS {
-            let buf = crate::input::termios_get_bytes();
-            if !user::copy_to_user(aspace, arg, &buf) {
-                return usize::MAX;
-            }
-        } else {
-            let mut buf = [0u8; crate::input::TERMIOS_LEN];
-            if !user::copy_from_user(aspace, arg, &mut buf) {
-                return usize::MAX;
-            }
-            crate::input::termios_set_bytes(&buf);
-        }
-        return 0;
-    }
 
     // KDSKMAP / KDGKMAP: loadable keyboard map (console module, docs/keymap.md).
     if request == crate::console::KDSKMAP || request == crate::console::KDGKMAP {
@@ -972,35 +858,49 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
     }
 
     let result = match entry {
-        FdEntry::Empty
-        | FdEntry::PipeRead(_)
-        | FdEntry::PipeWrite(_)
-        // pty-pair ioctls (TCGETS/TCSETS/winsize/TIOCSCTTY/TIOCGPTN) are all
-        // handled above with userspace copies; nothing falls through here.
-        | FdEntry::PtyMaster(_)
-        | FdEntry::PtySlave(_) => IoctlResult::Notty,
-        FdEntry::Stdin | FdEntry::Console => crate::fs::tty_ioctl(request),
         FdEntry::File(id) => match open_file_node(id) {
             Some(node) => crate::fs::ioctl(&node, request, arg),
             None => return usize::MAX,
         },
+        _ => IoctlResult::Notty,
     };
-
     match result {
         IoctlResult::Ok => 0,
-        IoctlResult::Winsize { row, col } => {
-            if arg == 0 {
-                return usize::MAX;
-            }
-            let mut buf = [0u8; 8];
-            buf[0..2].copy_from_slice(&row.to_ne_bytes());
-            buf[2..4].copy_from_slice(&col.to_ne_bytes());
-            let aspace = current_aspace();
-            if !user::copy_to_user(aspace, arg, &buf) {
-                return usize::MAX;
-            }
-            0
-        }
         IoctlResult::Notty | IoctlResult::Bad => usize::MAX,
+    }
+}
+
+/// The terminal `fd` is open on, for its control file: the console
+/// (fds 0-2 and `/dev/console/data`) or a pty pair.
+enum Terminal {
+    Console,
+    Pty(usize),
+}
+
+fn fd_terminal(fd: usize) -> Option<Terminal> {
+    let entry = with_process_mut(|t| t.fds.get(fd).copied())?;
+    match entry {
+        FdEntry::Stdin | FdEntry::Console => Some(Terminal::Console),
+        FdEntry::File(_) if fd_is_console_tty(entry) => Some(Terminal::Console),
+        FdEntry::PtyMaster(id) | FdEntry::PtySlave(id) => Some(Terminal::Pty(id)),
+        _ => None,
+    }
+}
+
+/// The `ctl` text of the terminal `fd` is open on (docs/tty.md), for the
+/// Linux layer's tty ioctls; `None` when the fd is not a terminal.
+pub fn fd_tty_ctl_read(fd: usize) -> Option<alloc::vec::Vec<u8>> {
+    match fd_terminal(fd)? {
+        Terminal::Console => Some(crate::fs::console_ctl_text()),
+        Terminal::Pty(id) => crate::pty::ctl_text(id),
+    }
+}
+
+/// A write to the `ctl` of the terminal `fd` is open on: `None` when the fd
+/// is not a terminal or the text is refused (nothing applied).
+pub fn fd_tty_ctl_write(fd: usize, text: &[u8]) -> Option<usize> {
+    match fd_terminal(fd)? {
+        Terminal::Console => crate::fs::console_ctl_write(text),
+        Terminal::Pty(id) => crate::pty::ctl_write(id, text),
     }
 }

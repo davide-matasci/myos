@@ -343,7 +343,11 @@ pub fn getdents64(fd: usize, buf: usize, count: usize) -> R {
     Ok(out.len())
 }
 
+/// `FIONBIO` on a socket; the terminal requests from the terminal's ctl
+/// text (`tty`, docs/tty.md); the rest (the console keymap, module devices)
+/// through the native ioctl.
 pub fn ioctl(fd: usize, req: usize, arg: usize) -> R {
+    use super::tty;
     const FIONBIO: usize = 0x5421;
     if req == FIONBIO && is_socket(fd) {
         let mut on = [0u8; 4];
@@ -351,7 +355,25 @@ pub fn ioctl(fd: usize, req: usize, arg: usize) -> R {
         net::set_nonblock(fd, on != [0; 4]);
         return Ok(0);
     }
-    native(task::fd_ioctl(fd, req, arg), ENOTTY)
+    match req {
+        tty::TCGETS => put(arg, &tty::termios(fd)?).map(|_| 0),
+        tty::TCSETS | tty::TCSETSW | tty::TCSETSF => {
+            let mut t = [0u8; tty::TERMIOS_LEN];
+            get(arg, &mut t)?;
+            tty::set_termios(fd, &t)
+        }
+        tty::TCFLSH => tty::flush(fd, arg),
+        tty::TIOCSCTTY => tty::set_ctty(fd),
+        tty::TIOCGWINSZ => put(arg, &tty::winsize(fd)?).map(|_| 0),
+        tty::TIOCSWINSZ => {
+            let mut w = [0u8; 8];
+            get(arg, &mut w)?;
+            tty::set_winsize(fd, &w)
+        }
+        tty::TIOCGPTN => put(arg, &tty::pty_index(fd)?.to_ne_bytes()).map(|_| 0),
+        tty::TIOCSPTLCK => tty::pty_index(fd).map(|_| 0),
+        _ => native(task::fd_ioctl(fd, req, arg), ENOTTY),
+    }
 }
 
 pub fn faccessat(dirfd: usize, path: usize) -> R {

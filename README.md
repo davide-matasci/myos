@@ -279,7 +279,7 @@ unsafe extern "C" fn module_exit()   // optional: run by rmmod
 unsafe extern "C" fn module_rescan() // optional: probe for new devices after a /proc/pci rescan
 ```
 
-`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v15 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
+`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v16 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
 
 ### Adding a module
 1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)

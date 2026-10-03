@@ -2,8 +2,8 @@
 
 A terminal is a directory with two files, the Plan 9 way: `data` is the
 terminal itself, what a program reads and writes, and `ctl` is its state as
-text, read to see it and written to change it. Nothing about a terminal needs
-`ioctl`.
+text, read to see it and written to change it. Nothing about a terminal goes
+through `ioctl`.
 
 ```
 /dev/console/data        the hardware console (serial and framebuffer)
@@ -83,11 +83,16 @@ make (`TCGETS`, `TCSETS`, `TCFLSH`, `TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCSCTTY`,
 The Rust `libc` crate (`ports/crates/libc/myos.rs`) does the same for
 `isatty` and `ioctl`.
 
-## Transition
+## The Linux layer
 
-The kernel still answers the termios, window size and pty ioctls
-(`TCGETS`, `TCSETS`, `TCFLSH`, `TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCSCTTY`,
-`TIOCGPTN`, `TIOCSPTLCK`) for the Linux layer, which keeps speaking the Linux
-numbers for Alpine binaries and maps their `/dev/ptmx` and `/dev/pts/N` onto
-`clone` and `data`. The next step moves the Linux module onto the tty
-functions and retires the native `ioctl` syscall.
+Alpine binaries speak the Linux tty ioctls (`TCGETS`, `TCSETS`, `TCFLSH`,
+`TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCSCTTY`, `TIOCGPTN`, `TIOCSPTLCK`). The Linux
+module serves them from the same ctl text, which the kernel hands it for an fd
+(`KernelApi::tty_ctl_read` and `tty_ctl_write`, `modules/linux/src/tty.rs`),
+converting to and from Linux's `struct termios` (the 36-byte kernel layout
+with `c_line` and 19 control characters). It maps musl's `/dev/ptmx` and
+`/dev/pts/N` onto `clone` and `data`, and `TIOCGPTN` reads the master's name
+(`KernelApi::fd_path`).
+
+The native `ioctl` syscall keeps the console keymap (`docs/keymap.md`) and the
+requests of module character devices; it does not know a terminal request.
