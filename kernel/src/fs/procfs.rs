@@ -1,4 +1,6 @@
-//! procfs: generated nodes at `/proc/…` (`mounts`, `pci`, `cpuinfo`, `acpi/…`).
+//! procfs: generated nodes at `/proc/…` (`mounts`, `pci`, `cpuinfo`, `acpi/…`)
+//! and the calling process's view under `self/`: `fd/N` links to what fd N
+//! is open on, `tty` to its controlling terminal's directory (`docs/tty.md`).
 
 use crate::fs::StatInfo;
 use crate::fs::vfs;
@@ -7,6 +9,7 @@ use spin::Mutex;
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
+const S_IFLNK: u32 = 0o120000;
 
 const MAX_DYNAMIC: usize = 16;
 const MAX_NAME: usize = 32;
@@ -102,7 +105,8 @@ fn dyn_writable(name: &str) -> bool {
 /// Preserves any previously attached writer on replace.
 pub fn register_dynamic(name: &str, data: &'static [u8]) -> bool {
     if name.is_empty() || name.len() > MAX_NAME || name == "mounts" || name == "cpuinfo"
-        || name == "meminfo" || name == "interrupts" || name == "modules"
+        || name == "meminfo" || name == "interrupts" || name == "modules" || name == "self"
+        || name.starts_with("self/")
     {
         return false;
     }
@@ -150,6 +154,79 @@ fn cpuinfo_text() -> alloc::vec::Vec<u8> {
     crate::smp::cpuinfo_text()
 }
 
+/// The nodes under `self/`.
+enum SelfNode {
+    Dir,
+    FdDir,
+    /// `self/fd/N`, a link to what the fd is open on.
+    Fd(usize),
+    /// `self/tty`, a link to the controlling terminal's directory.
+    Tty,
+}
+
+fn parse_self(name: &str) -> Option<SelfNode> {
+    match name {
+        "self" => Some(SelfNode::Dir),
+        "self/fd" => Some(SelfNode::FdDir),
+        "self/tty" => Some(SelfNode::Tty),
+        _ => {
+            let n = name.strip_prefix("self/fd/")?;
+            if n.is_empty() || n.len() > 3 || n.starts_with('+') {
+                return None;
+            }
+            Some(SelfNode::Fd(n.parse().ok()?))
+        }
+    }
+}
+
+/// The target of a `self/` link, if the fd is open or the terminal exists.
+fn self_link(node: &SelfNode) -> Option<alloc::string::String> {
+    match node {
+        SelfNode::Fd(fd) => crate::task::fd_path(*fd),
+        SelfNode::Tty => crate::tty::ctty_dir(),
+        SelfNode::Dir | SelfNode::FdDir => None,
+    }
+}
+
+/// `readlink` on `self/fd/N` and `self/tty`.
+pub fn readlink(name: &str, buf: &mut [u8]) -> Option<usize> {
+    let target = self_link(&parse_self(name)?)?;
+    let n = target.len().min(buf.len());
+    buf[..n].copy_from_slice(&target.as_bytes()[..n]);
+    Some(n)
+}
+
+fn list_self(name: &str, buf: &mut [u8]) -> usize {
+    let mut off = 0usize;
+    let mut push = |entry: &[u8]| {
+        if off + entry.len() + 1 > buf.len() {
+            return false;
+        }
+        buf[off..off + entry.len()].copy_from_slice(entry);
+        off += entry.len();
+        buf[off] = b'\n';
+        off += 1;
+        true
+    };
+    match parse_self(name) {
+        Some(SelfNode::Dir) => {
+            push(b"fd");
+            if crate::tty::ctty_dir().is_some() {
+                push(b"tty");
+            }
+        }
+        Some(SelfNode::FdDir) => {
+            for fd in 0..crate::task::MAX_FDS {
+                if crate::task::fd_path(fd).is_some() && !push(alloc::format!("{fd}").as_bytes()) {
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+    off
+}
+
 pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     if name == "mounts" {
         return copy_at(&vfs::mounts_text(), pos, out);
@@ -177,7 +254,8 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 
 fn list_root(buf: &mut [u8]) -> usize {
     // Dynamic nodes all live under `acpi/` (see `list_acpi`).
-    const FIXED: &[&[u8]] = &[b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"pci", b"acpi"];
+    const FIXED: &[&[u8]] =
+        &[b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"pci", b"acpi", b"self"];
     let mut off = 0usize;
     for name in FIXED {
         if off + name.len() + 1 > buf.len() {
@@ -247,6 +325,9 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     if rel == "acpi" {
         return list_acpi(buf);
     }
+    if parse_self(rel).is_some() {
+        return list_self(rel, buf);
+    }
     0
 }
 
@@ -278,6 +359,28 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             size: 0,
             ino: 3,
             nlink: 2,
+            dev: 0,
+        });
+    }
+    if let Some(node) = parse_self(name) {
+        // The inodes of the links are 100 (`tty`) and 101 + the fd.
+        let (mode, ino, size) = match node {
+            SelfNode::Dir => (S_IFDIR | 0o555, 13, 0),
+            SelfNode::FdDir => (S_IFDIR | 0o555, 14, 0),
+            SelfNode::Tty | SelfNode::Fd(_) => {
+                let len = self_link(&node)?.len();
+                let ino = match node {
+                    SelfNode::Fd(fd) => 101 + fd as u32,
+                    _ => 100,
+                };
+                (S_IFLNK | 0o777, ino, u32::try_from(len).unwrap_or(u32::MAX))
+            }
+        };
+        return Some(StatInfo {
+            mode,
+            size,
+            ino,
+            nlink: if mode & S_IFDIR != 0 { 2 } else { 1 },
             dev: 0,
         });
     }

@@ -49,7 +49,7 @@ pub const STACK_SIZE: usize = 64 * 1024;
 /// the session socket + the signal pipe (2) + three pipes for `spawn_command`
 /// (6) before the child execs, so 16 was exhausted and exec failed. 64 for
 /// larger programs; libgloss tracks per-fd flags up to `MYOS_MAX_FDS`.
-const MAX_FDS: usize = 64;
+pub const MAX_FDS: usize = 64;
 
 
 #[derive(Clone, Copy, PartialEq, Eq)]

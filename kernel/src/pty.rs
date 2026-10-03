@@ -1,4 +1,6 @@
-//! PTY pairs: `/dev/ptmx` master + `/dev/pts/N` slave, Linux-faithful model.
+//! PTY pairs: `/dev/pts/N/master` + `/dev/pts/N/data` slave (a pair comes
+//! from opening `/dev/pts/clone`; `/dev/pts/N/ctl` is its control file,
+//! `docs/tty.md`), Linux-faithful model.
 //!
 //! One pair = one shared termios (Linux ptys share termios across both ends)
 //! with the slave-side input line discipline ([`crate::tty::TtyIn`]) and an
@@ -19,8 +21,10 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
+use alloc::vec::Vec;
+
 use crate::signal::{SIGHUP, SIGINT};
-use crate::tty::{TtyIn, Termios, OPOST, ONLCR};
+use crate::tty::{CtlAction, TtyIn, Termios, OPOST, ONLCR};
 
 pub const MAX_PTYS: usize = 4;
 const OUT_CAP: usize = 4096;
@@ -176,6 +180,22 @@ pub fn claimed_by(pid: usize) -> Option<usize> {
     (0..MAX_PTYS).find(|&id| ptys[id].as_ref().is_some_and(|p| p.session.load(Ordering::SeqCst) == pid))
 }
 
+/// The pty of `pid`'s session: the one it or an ancestor claimed (`ctty`
+/// on the control file, TIOCSCTTY). Sessions are not real yet (setsid is
+/// a no-op in libgloss), so the claim is looked up along the parent chain:
+/// a forkpty child and what it started (an SSH login, the tty smoke).
+pub fn for_session(pid: usize) -> Option<usize> {
+    let mut pid = Some(pid);
+    for _ in 0..16 {
+        let p = pid?;
+        if let Some(id) = claimed_by(p) {
+            return Some(id);
+        }
+        pid = crate::task::parent_pid(p);
+    }
+    None
+}
+
 /// TIOCGPTN: slave index for the pair.
 pub fn index(id: usize) -> Option<u32> {
     Some(id as u32)
@@ -199,6 +219,40 @@ pub fn termios_set_bytes(id: usize, buf: &[u8; crate::tty::TERMIOS_LEN]) {
     if let Some(p) = pty_at(id) {
         p.term.lock().set_termios(Termios::from_bytes(buf));
     }
+}
+
+/// The text of `/dev/pts/N/ctl` (`crate::tty::ctl_text`).
+pub fn ctl_text(id: usize) -> Option<Vec<u8>> {
+    let p = pty_at(id)?;
+    let termios = p.term.lock().termios;
+    let (rows, cols) = *p.winsize.lock();
+    Some(crate::tty::ctl_text(&termios, rows, cols))
+}
+
+/// A write to `/dev/pts/N/ctl`: the parsed lines applied to the pair, or
+/// `None` (and nothing applied) when the text is not valid.
+pub fn ctl_write(id: usize, text: &[u8]) -> Option<usize> {
+    let p = pty_at(id)?;
+    let current = p.term.lock().termios;
+    for action in crate::tty::ctl_parse(&current, text)? {
+        match action {
+            CtlAction::Termios(t) => p.term.lock().set_termios(t),
+            CtlAction::Winsize(rows, cols) => *p.winsize.lock() = (rows, cols),
+            CtlAction::Ctty => claim_session(id),
+            CtlAction::Flush { input, output } => {
+                if input {
+                    p.term.lock().flush_input();
+                }
+                if output {
+                    let mut out = p.out.lock();
+                    out.head = 0;
+                    out.len = 0;
+                }
+                notify(id);
+            }
+        }
+    }
+    Some(text.len())
 }
 
 /// Write to the master: bytes become slave input through the discipline.

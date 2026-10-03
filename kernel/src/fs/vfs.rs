@@ -526,6 +526,21 @@ pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
     backend_ioctl(node.mount as usize, node.path_str(), request, arg)
 }
 
+/// The absolute path of an open vnode: its mount's prefix and the path
+/// inside it (what `/proc/self/fd/N` points at).
+pub fn vnode_path(node: &Vnode) -> String {
+    let mounts = MOUNTS.lock();
+    let prefix = mounts.get(node.mount as usize).map_or("", |m| m.prefix.as_str());
+    let rel = node.path_str();
+    let mut path = String::from("/");
+    path.push_str(prefix);
+    if !prefix.is_empty() && !rel.is_empty() {
+        path.push('/');
+    }
+    path.push_str(rel);
+    path
+}
+
 /// Current size of the vnode path (for `O_APPEND`), if known.
 pub fn size_of(node: &Vnode) -> Option<usize> {
     backend_stat(node.mount as usize, node.path_str()).map(|s| s.size as usize)

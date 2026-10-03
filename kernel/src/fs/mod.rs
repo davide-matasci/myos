@@ -21,15 +21,15 @@ fn path_is_dev_tty(path: &str) -> bool {
 
 /// Resolve `path` to a vnode for open/read/write.
 ///
-/// `/dev/console` is always the hardware console. `/dev/tty` resolves to that
-/// console only when the caller has a controlling terminal (ENXIO otherwise).
+/// `/dev/console/data` is always the hardware console. `/dev/tty` resolves
+/// to it only when the caller has a controlling terminal (ENXIO otherwise);
+/// a pty session's `/dev/tty` is resolved before this, in `open_path`.
 pub fn open(path: &str, flags: u32) -> Option<Vnode> {
     if path_is_dev_tty(path) {
         if !crate::task::has_ctty() {
             return None;
         }
-        // Phase-1: the only ctty is the system console.
-        return vfs::open("/dev/console", flags);
+        return vfs::open("/dev/console/data", flags);
     }
     vfs::open(path, flags)
 }
@@ -202,15 +202,27 @@ fn resolve_user_path_with(path: &str, out: &mut [u8], follow_last: bool) -> Opti
     // into `out` — no extra buffers on the kernel stack of every path syscall.
     let follow = vfs::symlinks_possible();
     if !crate::task::has_root() && !follow {
-        return resolve_user_path_virtual(path, out);
+        let n = resolve_user_path_virtual(path, out)?;
+        if !out[..n].starts_with(PROC_SELF) {
+            return Some(n);
+        }
+        // `/proc/self` holds symlinks (`fd/N`, `tty`) whatever the tmpfs does.
+        let mut virt = [0u8; vfs::PATH_MAX];
+        virt[..n].copy_from_slice(&out[..n]);
+        let vn = follow_symlinks(&mut virt, n, follow_last)?;
+        out[..vn].copy_from_slice(&virt[..vn]);
+        return Some(vn);
     }
     let mut virt = [0u8; vfs::PATH_MAX];
     let mut vn = resolve_user_path_virtual(path, &mut virt)?;
-    if follow {
+    if follow || virt[..vn].starts_with(PROC_SELF) {
         vn = follow_symlinks(&mut virt, vn, follow_last)?;
     }
     virtual_to_real(&virt[..vn], out)
 }
+
+/// The directory of procfs symlinks (`procfs::readlink`).
+const PROC_SELF: &[u8] = b"/proc/self/";
 
 /// The real path behind `virt` (a canonical path in the task's view): the
 /// task's chroot prefix + `virt`.
@@ -474,11 +486,12 @@ pub fn init() {
         ops.ioctl = Some(devfs::ioctl);
         vfs::mount("devfs", "dev", ops);
     }
-    // pty slave nodes: /dev/pts/N (stat/list only; fds route via crate::task).
+    // The ptys: /dev/pts/clone and /dev/pts/N/{master,data,ctl}. Only ctl
+    // is read and written here (fds on the ends route via crate::task).
     vfs::mount(
         "ptsfs",
         "dev/pts",
-        ro_ops(
+        rw_ops(
             ptsfs::lookup,
             ptsfs::stat,
             ptsfs::listdir_at,
@@ -487,6 +500,12 @@ pub fn init() {
             ptsfs::truncate,
             ptsfs::read,
             ptsfs::write,
+            reject_mkdir,
+            reject_rmdir,
+            reject_unlink,
+            reject_rename,
+            reject_symlink,
+            reject_readlink,
         ),
     );
     vfs::mount(
@@ -506,7 +525,7 @@ pub fn init() {
             reject_unlink,
             reject_rename,
             reject_symlink,
-            reject_readlink,
+            procfs::readlink,
         ),
     );
 }

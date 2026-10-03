@@ -56,6 +56,20 @@ pub fn termios_set_bytes(buf: &[u8; crate::tty::TERMIOS_LEN]) {
     TTY.lock().set_termios(crate::tty::Termios::from_bytes(buf));
 }
 
+pub fn termios() -> crate::tty::Termios {
+    TTY.lock().termios
+}
+
+pub fn set_termios(t: crate::tty::Termios) {
+    TTY.lock().set_termios(t);
+}
+
+/// `flush in` on `/dev/console/ctl`: drop the pending input. The console
+/// has no output buffer to flush.
+pub fn flush_input() {
+    TTY.lock().flush_input();
+}
+
 /// Serializes hardware UART RX across timer IRQs and `poll` (multi-CPU TCG
 /// otherwise races two `inb(COM1)` and drops chars — e.g. `root` → `oot`).
 static UART_RX_LOCK: Mutex<()> = Mutex::new(());

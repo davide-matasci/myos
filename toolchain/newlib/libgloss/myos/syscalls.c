@@ -54,21 +54,20 @@ void myos_fd_dup_tty(int oldfd, int newfd) {
 }
 
 /* True if `path` names a tty device node (for isatty bookkeeping after open).
- * `/dev/console` = hardware console; `/dev/tty` = controlling tty (kernel
- * may reject open with ENXIO when the process has no ctty). */
+ * A terminal is a directory whose `data` is the terminal (`/dev/console/data`,
+ * `/dev/pts/N/data`, docs/tty.md); `/dev/tty` = controlling tty (kernel may
+ * reject open with ENXIO when the process has no ctty). */
 static int myos_path_is_tty(const char *path) {
-    const char *base;
+    size_t len;
     if (path == NULL) {
         return 0;
     }
-    if (strcmp(path, "/dev/console") == 0 || strcmp(path, "/dev/tty") == 0) {
+    if (strcmp(path, "/dev/tty") == 0) {
         return 1;
     }
-    base = strrchr(path, '/');
-    base = base ? base + 1 : path;
-    return strcmp(base, "console") == 0
-        || strcmp(base, "tty") == 0
-        || strcmp(base, "tty1") == 0;
+    len = strlen(path);
+    return strncmp(path, "/dev/", 5) == 0 && len >= 5 + 5
+        && strcmp(path + len - 5, "/data") == 0;
 }
 
 static int myos_path_is_dev_tty(const char *path) {

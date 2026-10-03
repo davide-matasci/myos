@@ -60,6 +60,51 @@ t rmmod_hello rmmod_hello
 t rmmod_busy rmmod_busy
 t pci_rescan pci_rescan
 
+# A terminal is a directory (docs/tty.md): `data` is the terminal, `ctl` its
+# state as text. /proc/self/fd/N names what an fd is open on, /proc/self/tty
+# the controlling terminal's directory; a field written to ctl reads back,
+# a bad line is refused.
+tty_ctl() {
+	tty=$(readlink /proc/self/tty) || return 1
+	echo "tty: $tty"
+	[ "$tty" = /dev/console ] || return 1
+	exec 5< /dev/console/data || return 1
+	fd5=$(readlink /proc/self/fd/5)
+	exec 5<&-
+	echo "fd 5: $fd5"
+	[ "$fd5" = /dev/console/data ] || return 1
+	cat $tty/ctl
+	old=$(grep '^cflag ' $tty/ctl)
+	echo 'cflag 0x0' > $tty/ctl || return 1
+	[ "$(grep '^cflag ' $tty/ctl)" = 'cflag 0x0' ] || return 1
+	echo "$old" > $tty/ctl || return 1
+	[ "$(grep '^cflag ' $tty/ctl)" = "$old" ] || return 1
+	echo bogus > $tty/ctl 2>/dev/null && return 1
+	grep -q '^winsize [0-9]* [0-9]*$' $tty/ctl
+}
+t tty_ctl tty_ctl
+
+# A pty comes from /dev/pts/clone: the fd it returns is /dev/pts/N/master,
+# the pair's directory lists master, data and ctl, its window size is set
+# through ctl, master is not openable by name, and the pair goes away with
+# its last fd.
+pty_clone() {
+	exec 6<> /dev/pts/clone || return 1
+	m=$(readlink /proc/self/fd/6)
+	echo "master: $m"
+	d=${m%/master}
+	[ "$d" != "$m" ] || return 1
+	[ "$(ls $d | sort | tr '\n' ' ')" = "ctl data master " ] || return 1
+	grep -q '^winsize 24 80$' $d/ctl || return 1
+	echo 'winsize 50 132' > $d/ctl || return 1
+	grep -q '^winsize 50 132$' $d/ctl || return 1
+	echo flush > $d/ctl || return 1
+	( exec 7< $d/master ) 2>/dev/null && return 1
+	exec 6>&-
+	! [ -e $d/ctl ]
+}
+t pty_clone pty_clone
+
 linux_loaded() {
 	grep -q "^linux$" /proc/modules
 }

@@ -45,8 +45,8 @@ fn load_keymap(path: &[u8]) -> Result<(), KeymapErr> {
         return Err(KeymapErr::Read);
     }
     packet[0..4].copy_from_slice(&(n as u32).to_ne_bytes());
-    // Open /dev/console explicitly — do not assume fd 1 is the tty.
-    let Some(cfd) = open(b"/dev/console") else {
+    // Open the console explicitly — do not assume fd 1 is the tty.
+    let Some(cfd) = open(b"/dev/console/data") else {
         return Err(KeymapErr::Ioctl);
     };
     let ok = ioctl(cfd, KDSKMAP, packet.as_ptr() as usize) != usize::MAX;
@@ -133,7 +133,7 @@ fn spawn_getty_loop() -> ! {
             Some(0) => {
                 exec(
                     b"/bin/ubase/getty",
-                    &[b"getty", b"/dev/console", b"linux"],
+                    &[b"getty", b"/dev/console/data", b"linux"],
                 );
                 status_fail("getty exec failed");
                 exit();
