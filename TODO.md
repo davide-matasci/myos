@@ -61,7 +61,7 @@ NX #PF / leave races noted in `docs/pci-acpi-smp.md` resolved first.
 ## Passing file descriptors and shared memory
 
 What a GUI needs beyond `/net/unix` (`docs/sockets-unix.md`) and
-`/dev/fb0` (`docs/fb.md`). A client of a display server draws into memory
+`/dev/fb` (`docs/fb.md`). A client of a display server draws into memory
 the server can read without copying it through a socket, and Wayland's core
 protocol is built on that: the client creates a shared-memory file and sends
 its fd to the compositor. X does without, but its MIT-SHM extension (and so
@@ -76,9 +76,9 @@ the speed of every image-heavy client) needs the same.
   closes. `SCM_CREDENTIALS` / `SO_PEERCRED` (the peer's pid and uid) come
   cheaply along with it.
 - **Shared memory**: `mmap(MAP_SHARED)` of a file maps its pages instead
-  of private copies (today only `/dev/fb0` does, `user::do_mmap`). For a
-  tmpfs file that means pages owned by the file and refcounted by their
-  mappings (tmpfs keeps a file as one contiguous buffer now), with writes
+  of private copies (today only a device's, through a module's `mmap`
+  hook: `/dev/fb/data`, `user::do_mmap`). For a tmpfs file that means pages
+  owned by the file and refcounted by their mappings (tmpfs keeps a file as one contiguous buffer now), with writes
   through `write(2)` and through mappings seeing each other. Then
   `shm_open` (a tmpfs file under `/dev/shm` or `/tmp`), `memfd_create` and
   `ftruncate` on top; the Linux layer's `mmap` would stop refusing

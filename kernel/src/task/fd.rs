@@ -920,25 +920,6 @@ pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
         return 0;
     }
 
-    // /dev/fb0 (fbdev geometry) and the console's text/graphics mode, which
-    // a program may switch through its tty or the framebuffer (docs/fb.md).
-    let is_fb = fd_file_node(fd).is_some_and(|node| crate::fs::is_dev(&node, "fb0"));
-    if request == crate::fb::KDSETMODE || request == crate::fb::KDGETMODE {
-        if !is_fb && !fd_is_console_tty(entry) {
-            return usize::MAX;
-        }
-        return match crate::fb::kd_ioctl(request, arg) {
-            IoctlResult::Ok => 0,
-            _ => usize::MAX,
-        };
-    }
-    if is_fb {
-        return match crate::fb::ioctl(request, arg) {
-            IoctlResult::Ok => 0,
-            _ => usize::MAX,
-        };
-    }
-
     // KDSKMAP / KDGKMAP: loadable keyboard map (console module, docs/keymap.md).
     if request == crate::console::KDSKMAP || request == crate::console::KDGKMAP {
         if !fd_is_console_tty(entry) {

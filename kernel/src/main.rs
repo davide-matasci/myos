@@ -11,7 +11,6 @@ mod console;
 #[allow(dead_code)]
 mod dt;
 mod exception;
-mod fb;
 mod fs;
 mod heap;
 mod input;

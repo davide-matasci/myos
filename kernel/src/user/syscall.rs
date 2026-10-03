@@ -1277,8 +1277,8 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         return SYSERR;
     }
     // File mappings are private copies: the pages are filled from the file
-    // at map time and never written back. `/dev/fb0` is the exception: its
-    // own frames are mapped, shared by everyone who maps it.
+    // at map time and never written back. A shared mapping of a device (a
+    // module's `mmap` hook: `/dev/fb/data`) maps the device's own pages.
     let file = if flags & MAP_ANON != 0 {
         None
     } else {
@@ -1290,12 +1290,11 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             None => return SYSERR,
         }
     };
-    let fb = file.as_ref().is_some_and(|node| fs::is_dev(node, "fb0"));
-    if fb {
-        if flags & (MAP_SHARED | MAP_PRIVATE) == 0 || crate::fb::frame_at(offset, len).is_none() {
-            return SYSERR;
-        }
-    } else if flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
+    let device = match &file {
+        Some(node) if flags & MAP_SHARED != 0 => fs::device_frame(node, offset).is_some(),
+        _ => false,
+    };
+    if !device && flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
         // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
         return SYSERR;
     }
@@ -1305,6 +1304,12 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     let pages = len.div_ceil(PAGE);
     if pages == 0 || pages > MMAP_AREA_PAGES {
         return SYSERR;
+    }
+    if let (true, Some(node)) = (device, &file) {
+        // Every page must be the device's (none past its end).
+        if !(0..pages).all(|i| fs::device_frame(node, offset + i * PAGE).is_some()) {
+            return SYSERR;
+        }
     }
     let map_len = pages * PAGE;
     let aspace = task::current_aspace();
@@ -1317,12 +1322,11 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         }
         // MAP_FIXED replaces whatever is mapped there (a dynamic linker maps
         // each segment over the span it reserved first).
+        let old = task::mmap_regions();
         if !task::mmap_remove(hint as u64, pages as u32) {
             return SYSERR;
         }
-        for i in 0..pages {
-            free_mapped_page(aspace, (hint + i * PAGE) as u64);
-        }
+        release_mmap_range(aspace, &old, hint as u64, pages);
         hint
     } else {
         match task::mmap_alloc(area_lo, area_hi, map_len) {
@@ -1333,11 +1337,10 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     let mut mapped = 0usize;
     while mapped < map_len {
         let page_va = (va + mapped) as u64;
-        if fb {
-            let Some(frame) = crate::fb::frame_at(offset + mapped, PAGE) else {
-                break;
-            };
-            map_user_page_prot(aspace, page_va, frame, prot);
+        if let (true, Some(node)) = (device, &file) {
+            if let Some(frame) = fs::device_frame(node, offset + mapped) {
+                map_user_page_prot(aspace, page_va, frame, prot);
+            }
             mapped += PAGE;
             continue;
         }
@@ -1351,7 +1354,7 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         map_user_page_prot(aspace, page_va, frame, prot);
         mapped += PAGE;
     }
-    if !fb && (prot & PROT_EXEC != 0 || file.is_some()) {
+    if !device && (prot & PROT_EXEC != 0 || file.is_some()) {
         let mut off = 0;
         while off < map_len {
             if let Some(phys) = virt_to_phys(aspace, (va + off) as u64) {
@@ -1362,11 +1365,14 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             off += PAGE;
         }
     }
-    if !task::mmap_add(va as u64, pages as u32, prot as u32) {
+    let region = task::MmapRegion {
+        va: va as u64,
+        pages: pages as u32,
+        prot: prot as u32 | if device { task::MMAP_DEVICE } else { 0 },
+    };
+    if !task::mmap_add(region.va, region.pages, region.prot) {
         // Region table full: unmap what we just added.
-        for i in 0..pages {
-            free_mapped_page(aspace, (va + i * PAGE) as u64);
-        }
+        release_mmap_range(aspace, &[region], region.va, pages);
         flush_user_tlb();
         return SYSERR;
     }
@@ -1392,15 +1398,11 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     if addr < area_lo || addr.saturating_add(map_len) > area_hi {
         return SYSERR;
     }
+    let old = task::mmap_regions();
     if !task::mmap_remove(addr as u64, pages as u32) {
         return SYSERR;
     }
-    let aspace = task::current_aspace();
-    let mut off = 0;
-    while off < map_len {
-        free_mapped_page(aspace, (addr + off) as u64);
-        off += PAGE;
-    }
+    release_mmap_range(task::current_aspace(), &old, addr as u64, pages);
     flush_user_tlb();
     0
 }

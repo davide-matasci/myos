@@ -11,12 +11,9 @@
 //!
 //! All console output takes a single `OUT` mutex for the whole operation so
 //! concurrent tasks cannot interleave serial bytes or split a status line.
-//!
-//! While a program draws on `/dev/fb0` in graphics mode (`KDSETMODE`,
-//! [`set_graphics`]) the screen is left alone: output goes to serial only.
 
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use myos_abi::{
     CONSOLE_BANNER, CONSOLE_INFO, CONSOLE_STATUS_FAIL, CONSOLE_STATUS_INFO, CONSOLE_STATUS_OK,
     CONSOLE_STATUS_WARN, CONSOLE_TEXT, FramebufferInfo, ModuleConsoleOps,
@@ -41,9 +38,6 @@ static OUT: Mutex<()> = Mutex::new(());
 /// UEFI 1280×800+) makes every newline memmove megabytes under TCG; that
 /// was the ~6× BIOS→UEFI gap on prebuilt os-test (CI #34814552381).
 static MIRROR_BYTES: AtomicBool = AtomicBool::new(true);
-/// The process that put the screen in graphics mode, or [`TEXT_MODE`].
-static GRAPHICS_OWNER: AtomicUsize = AtomicUsize::new(TEXT_MODE);
-const TEXT_MODE: usize = usize::MAX;
 
 /// Boot output before the module loads: `(kind, text)` records, replayed on
 /// registration. Status lines are stored as their serial text; the module
@@ -120,36 +114,9 @@ fn early_record(kind: u32, s: &[u8]) {
 
 /// Paint `s` on the screen (caller holds `OUT`).
 fn screen_write(kind: u32, s: &[u8]) {
-    if graphics() {
-        return;
-    }
     match OPS.get() {
         Some(ops) => unsafe { (ops.write_kind)(s.as_ptr(), s.len(), kind) },
         None => early_record(kind, s),
-    }
-}
-
-/// The screen belongs to a program drawing on `/dev/fb0` (`KD_GRAPHICS`).
-pub fn graphics() -> bool {
-    GRAPHICS_OWNER.load(Ordering::Relaxed) != TEXT_MODE
-}
-
-/// `KDSETMODE`: `Some(pid)` hands the screen to that process (`KD_GRAPHICS`),
-/// `None` takes it back (`KD_TEXT`) and clears it, since the text screen
-/// cannot repaint what was drawn over it.
-pub fn set_graphics(owner: Option<usize>) {
-    let _guard = OUT.lock();
-    let was = GRAPHICS_OWNER.swap(owner.unwrap_or(TEXT_MODE), Ordering::Relaxed);
-    if owner.is_none() && was != TEXT_MODE {
-        screen_write(CONSOLE_TEXT, b"\x1b[2J\x1b[H");
-    }
-}
-
-/// A process exited: if it left the screen in graphics mode, return it to
-/// text (a crashed program must not leave the console dark).
-pub fn process_exited(pid: usize) {
-    if GRAPHICS_OWNER.load(Ordering::Relaxed) == pid {
-        set_graphics(None);
     }
 }
 
@@ -160,9 +127,6 @@ pub fn mirrors_bytes() -> bool {
 /// Timer-IRQ blink for the framebuffer block cursor (the module skips the
 /// tick if a paint holds its lock).
 pub fn cursor_blink() {
-    if graphics() {
-        return;
-    }
     if let Some(ops) = OPS.get() {
         unsafe { (ops.blink)() };
     }
@@ -279,7 +243,6 @@ fn write_status(tag: &str, kind: u32, label: &str) {
     }
     let _ = serial.write_str("\n");
     match OPS.get() {
-        Some(_) if graphics() => {}
         Some(ops) => unsafe {
             (ops.status_line)(tag.as_ptr(), tag.len(), kind, label.as_ptr(), label.len())
         },

@@ -15,7 +15,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Rust kernel** — `#![no_std]`, higher-half link, HHDM memory, preemptive round-robin scheduler
 - **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, NVMe, virtio-net, netfs, FAT16, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
 - **VFS with multiple backends** — bootfs, tmpfs, devfs, procfs, FAT16, ext2
-- **Framebuffer device** — `/dev/fb0` with the Linux fbdev ioctls, `mmap(MAP_SHARED)` and a console graphics mode (`docs/fb.md`)
+- **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase, ubase, uutils coreutils, ripgrep, TinyCC (all fetched at build)
 - **Networking** — virtio-net kernel module (RX interrupts: MSI-X on x86_64, INTx on aarch64/riscv64) + smoltcp in userspace; `/ping` works on all arches
@@ -150,7 +150,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `kernel/src/modules/` | ELF64 loader, KernelApi wrappers, loaded-module registry |
 | `modules/abi` | Shared `#[repr(C)]` KernelApi (v14: PCI/DMA/`dev_register`/`blk_register`/`console_register`/`personality_register`/`dt_mmio_find`) |
 | `modules/virtq` | Split virtqueue helpers shared by the virtio modules |
-| `modules/console` | Framebuffer text screen, PS/2 + virtio-input keyboards, loadable keymap (`keymaps/`; scancode decoding in the host-testable `ps2-scancode` crate) |
+| `modules/console` | Framebuffer text screen and `/dev/fb`, PS/2 + virtio-input keyboards, loadable keymap (`keymaps/`; scancode decoding in the host-testable `ps2-scancode` crate) |
 | `modules/virtio_blk` | virtio-blk `/dev/vd*`: PCI legacy I/O (x86_64) or virtio-mmio (aarch64, riscv64) |
 | `modules/nvme` | NVMe `/dev/nvmeXn1` (PCI class 01/08, polled queues) |
 | `modules/hello` | Sample module (`[ OK ] hello`) |
@@ -280,7 +280,7 @@ unsafe extern "C" fn module_exit()   // optional: run by rmmod
 unsafe extern "C" fn module_rescan() // optional: probe for new devices after a /proc/pci rescan
 ```
 
-`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v15 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
+`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v16 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems; a backend's optional `mmap` hook maps device memory, `docs/fb.md`), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
 
 ### Adding a module
 1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)

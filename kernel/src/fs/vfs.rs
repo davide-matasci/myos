@@ -182,7 +182,9 @@ pub fn mount_instance(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str)
 }
 
 fn attach_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str, unique: bool) -> bool {
-    if prefix.contains('/') {
+    // A nested prefix (`dev/fb`) wins over its parent mount for the paths
+    // below it (`resolve_index` takes the longest match).
+    if prefix.starts_with('/') || prefix.ends_with('/') || prefix.contains("//") {
         return false;
     }
     if ops.readlink.is_some() {
@@ -526,6 +528,19 @@ pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
     backend_ioctl(node.mount as usize, node.path_str(), request, arg)
 }
 
+/// The page holding byte `offset` (page aligned) of a device file, from its
+/// module's `mmap` hook (`/dev/fb/data`); `None` for anything else.
+pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
+    let backend = MOUNTS.lock().get(node.mount as usize)?.backend;
+    let MountBackend::Module(ops) = backend else {
+        return None;
+    };
+    let mmap = ops.mmap?;
+    let rel = node.path_str();
+    let phys = unsafe { mmap(rel.as_ptr(), rel.len(), offset) };
+    (phys != 0 && phys % crate::user::PAGE as u64 == 0).then_some(phys)
+}
+
 /// Current size of the vnode path (for `O_APPEND`), if known.
 pub fn size_of(node: &Vnode) -> Option<usize> {
     backend_stat(node.mount as usize, node.path_str()).map(|s| s.size as usize)
@@ -802,12 +817,6 @@ pub fn bind(source: &str, target: &str) -> bool {
     binds.retain(|(t, _)| t != target);
     binds.push((String::from(target), String::from(source)));
     true
-}
-
-/// Whether `node` is the device `/dev/<name>`.
-pub fn is_dev(node: &Vnode, name: &str) -> bool {
-    node.path_str() == name
-        && MOUNTS.lock().get(node.mount as usize).is_some_and(|m| m.name == "devfs")
 }
 
 /// True when `path` resolves into the tmpfs mount (the only fs with FIFOs).

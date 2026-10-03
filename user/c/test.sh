@@ -7,14 +7,11 @@ t tty /bin/etc/tty_smoke
 # AF_UNIX over /net/unix: socketpair, listen/accept/connect with a forked
 # client, a transfer larger than the buffers, EOF, names (unix_smoke.c).
 t unix /bin/etc/unix_smoke
-# /dev/fb0: geometry, a MAP_SHARED mapping that is the framebuffer itself
-# (shared with read/write and a forked child), and the console's graphics
-# mode, which a program exiting in it gives back (fb_smoke.c). Only where the
-# guest has a framebuffer: the x86 boots (VGA); the CI boots of aarch64 and
-# riscv64 run without a display device (ramfb only in interactive boots).
-if [ -e /dev/fb0 ]; then
-	t fb /bin/etc/fb_smoke
-fi
+# /dev/fb: the geometry in ctl, a MAP_SHARED mapping of data that is the
+# framebuffer itself (shared with read/write and a forked child), a
+# MAP_PRIVATE one that is a copy, and the screen handed to a program and back
+# by `text`, the last close of ctl and its holder's exit (fb_smoke.c).
+t fb /bin/etc/fb_smoke
 # netd listen/accept: the smoke announces TCP 2323; the host connects back
 # through QEMU's port forward (the HOST request runs host.sh tcp-ping),
 # sends "ping" and expects "pong"; the smoke then reports.

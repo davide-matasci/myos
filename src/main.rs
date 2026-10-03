@@ -621,11 +621,13 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
+    // The screen in every boot, the headless CI ones too: it is `/dev/fb`
+    // (docs/fb.md), which the boot tests draw on.
+    cmd.arg("-device").arg("ramfb");
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg("none");
     } else {
-        cmd.arg("-device").arg("ramfb");
         cmd.arg("-device").arg("virtio-keyboard-device");
     }
     cmd
@@ -1049,11 +1051,13 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     if std::env::var("MYOS_TCG_SINGLE").as_deref() != Ok("0") {
         cmd.arg("-accel").arg("tcg,thread=single");
     }
+    // The screen in every boot, the headless CI ones too: it is `/dev/fb`
+    // (docs/fb.md), which the boot tests draw on.
+    cmd.arg("-device").arg("ramfb");
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg("none");
     } else {
-        cmd.arg("-device").arg("ramfb");
         cmd.arg("-device").arg("virtio-keyboard-device");
     }
     cmd

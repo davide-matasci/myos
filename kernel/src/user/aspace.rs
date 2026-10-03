@@ -81,8 +81,8 @@ fn copy_mmap_pages(src: u64, dst: u64) {
         let end = r.va.saturating_add(r.pages as u64 * PAGE as u64);
         while va < end {
             if let Some(phys) = virt_to_phys(src, va) {
-                // A framebuffer mapping is shared with the child, not copied.
-                if crate::fb::is_frame(phys) {
+                // A device's pages are shared with the child, not copied.
+                if r.prot & task::MMAP_DEVICE != 0 {
                     map_user_page_prot(dst, va, phys, r.prot as usize);
                     va += PAGE as u64;
                     continue;
@@ -110,7 +110,8 @@ pub use crate::arch::upaging::{read_aspace, switch_aspace};
 pub(super) use crate::arch::upaging::flush_user_tlb;
 
 /// Unmap and free anonymous mmap pages for `aspace` (table entries are left
-/// to the caller). Shared by in-place exec and [`reclaim_user_aspace`].
+/// to the caller); a device's pages are only unmapped. Shared by in-place
+/// exec and [`reclaim_user_aspace`].
 pub(super) fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
     for r in mmap.iter() {
         if r.pages == 0 || r.va == 0 {
@@ -126,8 +127,31 @@ pub(super) fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
             let Some(va) = r.va.checked_add(off) else {
                 break;
             };
-            free_mapped_page(aspace, va);
+            release_mmap_page(aspace, va, r.prot & task::MMAP_DEVICE != 0);
         }
+    }
+}
+
+/// Unmap the mmap pages `[va, va + pages)` as `mmap` (the table before the
+/// range was removed from it) describes them: freed, or a device's left to it.
+pub(super) fn release_mmap_range(aspace: u64, mmap: &[task::MmapRegion], va: u64, pages: usize) {
+    for i in 0..pages {
+        let page_va = va + (i * PAGE) as u64;
+        let device = mmap.iter().any(|r| {
+            r.pages != 0
+                && r.prot & task::MMAP_DEVICE != 0
+                && r.va <= page_va
+                && page_va < r.va + r.pages as u64 * PAGE as u64
+        });
+        release_mmap_page(aspace, page_va, device);
+    }
+}
+
+fn release_mmap_page(aspace: u64, va: u64, device: bool) {
+    if device {
+        unmap_user_page(aspace, va);
+    } else {
+        free_mapped_page(aspace, va);
     }
 }
 
@@ -198,10 +222,6 @@ pub(super) fn free_mapped_page(aspace: u64, va: u64) {
     // If unmap failed to clear, refuse to free — avoids freelist double-free when
     // reclaim walks overlapping VA ranges (code span vs heap/mmap).
     if virt_to_phys(aspace, va).is_some() {
-        return;
-    }
-    // Device memory (the framebuffer) is not the allocator's to take back.
-    if crate::fb::is_frame(phys) {
         return;
     }
     mm::free_frame(phys);
