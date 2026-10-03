@@ -196,6 +196,27 @@ fn write_scratch_image() {
         .unwrap_or_else(|e| panic!("size {}: {e}", dest.display()));
 }
 
+/// The full test with the Linux layer runs Alpine's rustc from a disk the
+/// host prepares (`linux-compat/alpine-disk.sh`, kept in `target/`): the
+/// third NVMe controller, `/dev/nvme2n1`, its writes dropped with the boot.
+static ALPINE_DISK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+fn prepare_alpine_disk(arch: &str, mode: Mode) {
+    if mode != Mode::Full || !linux_compat_enabled() {
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let img = root.join(format!("target/alpine-rust-{arch}.img"));
+    let status = Command::new(root.join("linux-compat/alpine-disk.sh"))
+        .arg(arch)
+        .arg(&img)
+        .arg("rust")
+        .status()
+        .expect("run linux-compat/alpine-disk.sh");
+    assert!(status.success(), "linux-compat/alpine-disk.sh {arch} failed");
+    let _ = ALPINE_DISK.set(img);
+}
+
 fn add_nvme(cmd: &mut Command) {
     write_nvme_blk_image();
     write_scratch_image();
@@ -210,6 +231,13 @@ fn add_nvme(cmd: &mut Command) {
         scratch_img_path().display()
     ));
     cmd.arg("-device").arg("nvme,drive=nvme1,serial=myos-scratch");
+    if let Some(img) = ALPINE_DISK.get() {
+        cmd.arg("-drive").arg(format!(
+            "if=none,id=nvme2,format=raw,snapshot=on,file={}",
+            img.display()
+        ));
+        cmd.arg("-device").arg("nvme,drive=nvme2,serial=myos-alpine");
+    }
 }
 
 /// After a boot: an ext2 filesystem the guest left on the scratch disk must
@@ -456,6 +484,7 @@ fn linux_compat_enabled() -> bool {
 
 fn run_test_bios(bios_path: &str, mode: Mode) {
     start_package_mirror("x86_64", mode);
+    prepare_alpine_disk("x86_64", mode);
     let mut cmd = Command::new("qemu-system-x86_64");
     cmd.arg("-cpu")
         .arg(X86_CPU)
@@ -507,6 +536,7 @@ fn run_test_bios(bios_path: &str, mode: Mode) {
 
 fn run_test_uefi(uefi_path: &str, mode: Mode) {
     start_package_mirror("x86_64", mode);
+    prepare_alpine_disk("x86_64", mode);
     let (code, vars) = ovmf_files(Arch::X64);
     let mut cmd = Command::new("qemu-system-x86_64");
     cmd.arg("-cpu")
@@ -570,6 +600,7 @@ fn run_test_uefi(uefi_path: &str, mode: Mode) {
 
 fn run_test_aarch64(mode: Mode) {
     start_package_mirror("aarch64", mode);
+    prepare_alpine_disk("aarch64", mode);
     let image = build_aarch64_image();
     let child = qemu_aarch64(&image, true)
         .stdin(Stdio::piped())
@@ -990,6 +1021,7 @@ fn riscv64_firmware() -> (PathBuf, PathBuf) {
 
 fn run_test_riscv64(mode: Mode) {
     start_package_mirror("riscv64", mode);
+    prepare_alpine_disk("riscv64", mode);
     let image = build_riscv64_image();
     let child = qemu_riscv64(&image, true)
         .stdin(Stdio::piped())

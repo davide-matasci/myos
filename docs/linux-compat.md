@@ -68,6 +68,21 @@ the bind), so the chrooted process sees them like any other directory.
 `ALPINE_MIRROR` overrides `https://dl-cdn.alpinelinux.org/alpine` and
 `ALPINE_BRANCH` overrides `latest-stable`. `/tmp` is a tmpfs in the kernel
 heap, so a root there holds a few small packages and is gone at reboot.
+A bigger one goes on a disk, for instance Alpine's Rust compiler (rust,
+LLVM and gcc: ~300 MB of downloads, ~600 MB installed) on the scratch disk
+of a test boot:
+
+```sh
+mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /disk ext2
+get-alpine -r /disk/alpine rust
+linux --root /disk/alpine rustc --version
+```
+
+Under emulation that download takes a couple of hours (the mirror drops
+long transfers; each one resumes). The same root made on the host is
+quicker: `linux-compat/alpine-disk.sh ARCH OUT.img PACKAGE...` builds
+get-alpine for the host (`-DALPINE_ARCH`), installs the packages for ARCH
+into a directory and makes an ext2 image of it, to attach as a disk.
 
 ## Turning it on
 
@@ -346,8 +361,12 @@ its 19 dependencies, ~45 MB) and runs
 `python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])'`
 (the standard library and two C extension modules), expecting `PYTHON 42`,
 and fetches `http://example.com/` with `urllib` (DNS over UDP, then TCP),
-expecting `HTTP 200`. They need the Alpine mirror and `example.com` to be
-reachable.
+expecting `HTTP 200`. Last, it mounts the disk the launcher made on the
+host with `linux-compat/alpine-disk.sh ARCH target/alpine-rust-ARCH.img
+rust` (kept in `target/`: remove it for newer packages) and attached as
+`/dev/nvme2n1` (writes go to a QEMU snapshot), and runs `rustc --version`
+from it, expecting `rustc 1.`. They need the Alpine mirror and
+`example.com` to be reachable.
 
 Without the feature (the quick list, the normal PR CI), the test instead
 runs `insmod /lib/modules/linux` and expects `[ OK ] linux` and the module

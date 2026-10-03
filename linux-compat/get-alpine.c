@@ -40,7 +40,10 @@
 
 #include "pkgtools.h"
 
-#if defined(__x86_64__)
+/* The repository of the machine it runs on; alpine-disk.sh builds it for
+ * the host with another one (-DALPINE_ARCH). */
+#if defined(ALPINE_ARCH)
+#elif defined(__x86_64__)
 #define ALPINE_ARCH "x86_64"
 #elif defined(__aarch64__)
 #define ALPINE_ARCH "aarch64"
