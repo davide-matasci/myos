@@ -5,16 +5,16 @@ use crate::smp::MAX_CPUS;
 
 /// User images load at L1[1] on QEMU virt RAM.
 pub const DEFAULT_USER_BASE: u64 = 0x4000_0000;
-/// The mmap window (after the brk heap), see x86. Stays within
-/// `upaging::USER_L2_TABLES`.
-pub const MMAP_AREA_PAGES: usize = 16384;
+/// The mmap window (after the brk heap), see x86: 960 MiB, the rest of the
+/// 1 GiB span after the largest image, the stack and the heap.
+pub const MMAP_AREA_PAGES: usize = 245760;
 /// User stack below the heap: 512 KiB (user maps spill into L2[1+] when
 /// code+stack+heap exceed 512 pages).
 pub const USER_STACK_PAGES: usize = 128;
 /// Per-process brk heap capacity: the TLS arena is a 2 MiB brk allocation,
 /// and zstd's 4 MiB window in get-alpine needs more than 3 MiB; 16 MiB.
 pub const HEAP_PAGES: usize = 4096;
-/// Image, stack, heap and the mmap window must fit the L2 span (128 MiB).
+/// Image, stack, heap and the mmap window must fit the L2 span (1 GiB).
 pub const USER_SPAN_PAGES: usize = super::upaging::USER_L2_TABLES * super::upaging::USER_L3_PAGES;
 
 /// The user registers a new task starts with (fork child, thread).

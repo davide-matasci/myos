@@ -65,7 +65,10 @@ pub struct Vnode {
 }
 
 impl Vnode {
-    pub const PATH_CAP: usize = 96;
+    /// As long as a tmpfs path: deep trees (gcc's plugin headers) on a
+    /// mounted disk need more than 96.
+    pub const PATH_CAP: usize = 255;
+    pub const EMPTY: Vnode = Vnode { mount: 0, path_len: 0, path: [0; Vnode::PATH_CAP] };
 
     pub fn path_str(&self) -> &str {
         core::str::from_utf8(&self.path[..self.path_len as usize]).unwrap_or("")
@@ -424,7 +427,7 @@ struct OpenRef {
     in_use: bool,
     mount: u16,
     path_len: u16,
-    path: [u8; 96],
+    path: [u8; Vnode::PATH_CAP],
     count: u32,
 }
 static OPEN_REFS: Mutex<Vec<OpenRef>> = Mutex::new(Vec::new());

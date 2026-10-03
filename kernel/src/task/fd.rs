@@ -561,30 +561,11 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 let mut tmp = [0u8; FILE_IO_TMP];
                 let want = len.min(tmp.len());
                 let n = crate::fs::read(&node, pos, &mut tmp[..want]);
-                let aspace = current_aspace();
-                let copied = with_process_mut(|t| {
-                    if t.fds.get(fd).copied() != Some(FdEntry::File(id)) {
-                        return false;
-                    }
-                    if n != 0 {
-                        if !user_buf_ok(
-                            buf,
-                            n,
-                            t.user_base as usize,
-                            t.image_span,
-                            t.stack_off as usize,
-                            t.brk_cur as usize,
-                            &t.mmap,
-                        ) {
-                            return false;
-                        }
-                        if !user::copy_to_user(aspace, buf, &tmp[..n]) {
-                            return false;
-                        }
-                    }
-                    true
-                });
-                if !copied {
+                // Not under TASKS: the copy may page in the buffer.
+                if n != 0 && !user::copy_to_user(current_aspace(), buf, &tmp[..n]) {
+                    return usize::MAX;
+                }
+                if with_process_mut(|t| t.fds.get(fd).copied()) != Some(FdEntry::File(id)) {
                     return usize::MAX;
                 }
                 open_file_advance(id, n);
@@ -678,8 +659,8 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
             return if total == 0 { usize::MAX } else { total };
         }
         let mut tmp = [0u8; FILE_IO_TMP];
-        unsafe {
-            core::ptr::copy_nonoverlapping((buf + total) as *const u8, tmp.as_mut_ptr(), chunk);
+        if !user::copy_from_user(current_aspace(), buf + total, &mut tmp[..chunk]) {
+            return if total == 0 { usize::MAX } else { total };
         }
         // Bytes of this chunk a pipe took so far (a full ring takes part of it).
         let mut done = 0usize;

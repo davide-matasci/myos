@@ -4,21 +4,28 @@
 use super::*;
 
 pub(super) fn write_user_bytes(aspace: u64, va: usize, src: &[u8]) -> bool {
-    each_user_page(aspace, va, src.len(), |p, done, n| unsafe {
+    each_user_page(aspace, va, src.len(), Access::Write, |p, done, n| unsafe {
         core::ptr::copy_nonoverlapping(src.as_ptr().add(done), p, n);
     })
 }
 
 /// Walk `va..va+len` page by page: `f(hhdm pointer, offset into the
-/// buffer, bytes in this page)`. False if a page is unmapped.
-fn each_user_page(aspace: u64, va: usize, len: usize, mut f: impl FnMut(*mut u8, usize, usize)) -> bool {
+/// buffer, bytes in this page)`. An mmap page of the current process not
+/// touched yet is paged in for `access` (never under `TASKS`: `fault_in`
+/// takes it). False if a page is unmapped.
+fn each_user_page(aspace: u64, va: usize, len: usize, access: Access, mut f: impl FnMut(*mut u8, usize, usize)) -> bool {
     let mut done = 0;
     while done < len {
         let at = va + done;
         let page = at & !0xfff;
         let off = at & 0xfff;
         let n = (PAGE - off).min(len - done);
-        let Some(phys) = virt_to_phys(aspace, page as u64) else {
+        let phys = virt_to_phys(aspace, page as u64).or_else(|| {
+            (aspace == task::current_aspace() && fault_in(page, access))
+                .then(|| virt_to_phys(aspace, page as u64))
+                .flatten()
+        });
+        let Some(phys) = phys else {
             return false;
         };
         if phys == 0 {
@@ -53,7 +60,7 @@ pub fn try_read_user_u8(aspace: u64, va: usize) -> Option<u8> {
 
 pub(super) fn read_user_bytes(aspace: u64, va: usize, dst: &mut [u8]) -> bool {
     let out = dst.as_mut_ptr();
-    each_user_page(aspace, va, dst.len(), |p, done, n| unsafe {
+    each_user_page(aspace, va, dst.len(), Access::Read, |p, done, n| unsafe {
         core::ptr::copy_nonoverlapping(p, out.add(done), n);
     })
 }

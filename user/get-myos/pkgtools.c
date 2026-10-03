@@ -77,23 +77,34 @@ void mkdirs(const char *path, int self) {
 
 /* ---- running curl ------------------------------------------------------- */
 
+/* curl's exit status when the server cannot resume a transfer. */
+#define CURL_CANNOT_RESUME 33
+
+/* One curl run, appending to what earlier runs left in dest (-C -): curl's
+ * exit status (-1 if it did not run). A transfer is cut off only when it
+ * stalls (under 1 KB/s for a minute), not after a fixed time: big packages
+ * take long under emulation. */
 static int download_once(const char *url, const char *dest) {
     pid_t pid = fork();
     if (pid < 0) {
         return -1;
     }
     if (pid == 0) {
-        char *argv[] = {"curl", "-fsSL", "--connect-timeout", "30", "--max-time", "900",
-                        "-o", (char *)dest, (char *)url, NULL};
+        char *argv[] = {"curl", "-fsSL", "--connect-timeout", "30", "--speed-limit", "1024",
+                        "--speed-time", "60", "-C", "-", "-o", (char *)dest, (char *)url, NULL};
         execvp("curl", argv);
         _exit(127);
     }
     int status = 0;
-    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        unlink(dest);
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) {
         return -1;
     }
-    return 0;
+    return WEXITSTATUS(status);
+}
+
+static long long file_size(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 ? (long long)st.st_size : -1;
 }
 
 int download_open(const char *url, int *pid) {
@@ -134,11 +145,26 @@ int download_close(int fd, int pid) {
 
 /* A transient connect failure should not fail the whole install. */
 int download(const char *url, const char *dest) {
-    for (int attempt = 1;; attempt++) {
-        if (download_once(url, dest) == 0) {
+    /* Mirrors drop long transfers: each retry resumes where the last one
+     * stopped (or starts over from a server that cannot resume), and three
+     * in a row that get no further than before give up. */
+    unlink(dest);
+    long long best = 0;
+    for (int stuck = 0;;) {
+        int rc = download_once(url, dest);
+        if (rc == 0) {
             return 0;
         }
-        if (attempt == 3) {
+        long long now = file_size(dest);
+        stuck = now > best ? 0 : stuck + 1;
+        if (now > best) {
+            best = now;
+        }
+        if (rc == CURL_CANNOT_RESUME) {
+            unlink(dest);
+        }
+        if (stuck == 3) {
+            unlink(dest);
             return -1;
         }
         say("retrying ", url, NULL);

@@ -5,10 +5,10 @@ use crate::smp::MAX_CPUS;
 
 /// User images load at PML4[1] unless Limine took it (see `upaging::pick_user_base`).
 pub const DEFAULT_USER_BASE: u64 = 0x0000_0080_0000_0000;
-/// The mmap window (after the brk heap): VA only, frames are allocated per
-/// mapping. Large enough for a dynamically linked program and its shared
-/// objects (the optional Linux layer).
-pub const MMAP_AREA_PAGES: usize = 32768;
+/// The mmap window (after the brk heap): VA only, its pages get frames on
+/// first touch. 4 GiB: room for rustc (its libraries and allocator
+/// reservation take over 500 MiB) under the optional Linux layer.
+pub const MMAP_AREA_PAGES: usize = 1 << 20;
 /// User stack below the heap: 1 MiB.
 pub const USER_STACK_PAGES: usize = 256;
 /// Per-process brk heap capacity (mapped on demand by `sys_brk`): the TLS

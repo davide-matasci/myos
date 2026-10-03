@@ -1,7 +1,6 @@
 //! A write-back cache of filesystem blocks over the [`Device`]: the least
 //! recently used block is evicted (written first if dirty), and `flush`
-//! writes every dirty block. [`Fs`](crate::Fs) flushes at the end of each
-//! public call, so the device is consistent between calls.
+//! writes every dirty block (see [`Fs`](crate::Fs) for when it does).
 
 use alloc::collections::BTreeMap;
 use alloc::vec;

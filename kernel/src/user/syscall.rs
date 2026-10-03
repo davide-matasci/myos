@@ -724,7 +724,7 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     if let Some((_, _, runs)) = &interp_map {
         for &(va, pages, prot) in runs {
-            if !task::mmap_add(va, pages, prot) {
+            if !task::mmap_add(va, pages, prot, None) {
                 task::user_exit(127);
             }
         }
@@ -1334,8 +1334,9 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         return SYSERR;
     }
     // File mappings are private copies: the pages are filled from the file
-    // at map time and never written back. A shared mapping of a device (a
-    // module's `mmap` hook: `/dev/fb/data`) maps the device's own pages.
+    // when first touched and never written back. A shared mapping of a
+    // device (a module's `mmap` hook: `/dev/fb/data`) maps the device's own
+    // pages at once.
     let file = if flags & MAP_ANON != 0 {
         None
     } else {
@@ -1391,45 +1392,50 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             None => return SYSERR,
         }
     };
+    if let (true, Some(node)) = (device, &file) {
+        for i in 0..pages {
+            if let Some(frame) = fs::device_frame(node, offset + i * PAGE) {
+                map_user_page_prot(aspace, (va + i * PAGE) as u64, frame, prot);
+            }
+        }
+        if !task::mmap_add(va as u64, pages as u32, prot as u32 | task::MMAP_DEVICE, None) {
+            for i in 0..pages {
+                unmap_user_page(aspace, (va + i * PAGE) as u64);
+            }
+            flush_user_tlb();
+            return SYSERR;
+        }
+        flush_user_tlb();
+        return va;
+    }
+    // The pages get their frames on first touch (`fault_in`), so a large
+    // reservation or a big library costs only what is used.
+    if task::mmap_add(va as u64, pages as u32, prot as u32, file.as_ref().map(|node| (node, offset))) {
+        flush_user_tlb();
+        return va;
+    }
+    // A file mapping fails there when the mapped-file table is full: read
+    // the file in whole now, as an anonymous region.
+    let Some(node) = file else {
+        return SYSERR;
+    };
     let mut mapped = 0usize;
     while mapped < map_len {
         let page_va = (va + mapped) as u64;
-        if let (true, Some(node)) = (device, &file) {
-            if let Some(frame) = fs::device_frame(node, offset + mapped) {
-                map_user_page_prot(aspace, page_va, frame, prot);
-            }
-            mapped += PAGE;
-            continue;
-        }
-        let frame = mm::alloc_frame_site(4);
         // alloc_frame returns a zeroed frame; past the end of the file it
         // stays zero.
-        if let Some(node) = &file {
-            let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
-            let _ = fs::read(node, offset + mapped, dst);
-        }
+        let frame = mm::alloc_frame_site(4);
+        let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
+        let _ = fs::read(&node, offset + mapped, dst);
         map_user_page_prot(aspace, page_va, frame, prot);
+        sync_icache(page_va as usize, PAGE);
+        sync_icache(mm::hhdm(frame) as usize, PAGE);
         mapped += PAGE;
     }
-    if !device && (prot & PROT_EXEC != 0 || file.is_some()) {
-        let mut off = 0;
-        while off < map_len {
-            if let Some(phys) = virt_to_phys(aspace, (va + off) as u64) {
-                // User VA (execute) + HHDM alias (the stores). ic ialluis inside.
-                sync_icache((va + off) as usize, PAGE);
-                sync_icache(mm::hhdm(phys) as usize, PAGE);
-            }
-            off += PAGE;
+    if !task::mmap_add(va as u64, pages as u32, prot as u32, None) {
+        for i in 0..pages {
+            free_mapped_page(aspace, (va + i * PAGE) as u64);
         }
-    }
-    let region = task::MmapRegion {
-        va: va as u64,
-        pages: pages as u32,
-        prot: prot as u32 | if device { task::MMAP_DEVICE } else { 0 },
-    };
-    if !task::mmap_add(region.va, region.pages, region.prot) {
-        // Region table full: unmap what we just added.
-        release_mmap_range(aspace, &[region], region.va, pages);
         flush_user_tlb();
         return SYSERR;
     }
@@ -1477,10 +1483,17 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         return SYSERR;
     }
     let aspace = task::current_aspace();
+    let area_lo = mmap_base_va(base, stack_off);
     let mut off = 0;
     while off < map_len {
         let va = (addr + off) as u64;
         let Some(phys) = virt_to_phys(aspace, va) else {
+            // An mmap page not touched yet takes the new protection when
+            // it is paged in.
+            if va >= area_lo {
+                off += PAGE;
+                continue;
+            }
             return SYSERR;
         };
         map_user_page_prot(aspace, va, phys, prot);

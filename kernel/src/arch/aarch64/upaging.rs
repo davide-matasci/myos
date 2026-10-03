@@ -18,9 +18,9 @@ const PA: u64 = 0x0000_FFFF_FFFF_F000;
 
 /// Pages per L3 table (2 MiB).
 pub const USER_L3_PAGES: usize = 512;
-/// L3 tables (2 MiB each) a user aspace may use under its L2 table: the
-/// per-process span from the user base is at most 64 × 2 MiB = 128 MiB.
-pub const USER_L2_TABLES: usize = 64;
+/// L3 tables (2 MiB each, allocated as pages are mapped) a user aspace may
+/// use under its L2 table: the whole L1[1] gigabyte.
+pub const USER_L2_TABLES: usize = 512;
 
 /// Physical address of `va` in `aspace`, if mapped.
 pub fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
