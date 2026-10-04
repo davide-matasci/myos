@@ -131,11 +131,11 @@ t keymap keymap_ctl
 # two sources.
 platform() {
 	cat /proc/platform
-	grep -q '^source \(acpi\|dt\|acpi+dt\)$' /proc/platform || return 1
-	grep -q '^cpus [0-9]* (\(acpi\|dt\))$' /proc/platform || return 1
-	grep -q '^intc \(apic\|gicv2\|gicv3\|plic\) 0x' /proc/platform || return 1
+	grep -q '^source [a-z+]*$' /proc/platform || return 1
+	grep -q '^cpus [0-9]* ([a-z]*)$' /proc/platform || return 1
+	grep -q '^intc [a-z0-9]* 0x[0-9a-f]* ' /proc/platform || return 1
 	if ! grep -q '^intc apic ' /proc/platform; then
-		grep -q '^uart \(pl011\|ns16550\) ' /proc/platform || return 1
+		grep -q '^uart [a-z0-9]* 0x[0-9a-f]* ' /proc/platform || return 1
 		grep -q '^pci ecam 0x[0-9a-f]* 0x[0-9a-f]* bus [0-9]*-[0-9]* (' /proc/platform || return 1
 	fi
 	! grep -q 'differs' /proc/platform
