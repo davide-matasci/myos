@@ -1,7 +1,9 @@
 # myos termcap
 
 Minimal `/lib/termcap` describing the framebuffer ANSI/VT100 CSI subset
-implemented in `kernel/src/framebuffer.rs` (`linux`, `ansi`, `vt100`, `dumb`).
+implemented in `kernel/src/framebuffer.rs` (`linux`, `ansi`, `vt100`, `dumb`),
+and `st` / `st-256color` for the terminal of the `st` package (converted
+from its `st.info`; st sets `TERM=st-256color`).
 
 ## Path
 
