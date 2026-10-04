@@ -174,8 +174,11 @@ pub(super) fn slot_on_cpu(slot: usize) -> bool {
 // `block_until(key, seq, deadline)`. Producers change state and then call
 // `wake(key)`. `wake` bumps the sequence under TASKS and `block_until` refuses
 // to block when the sequence moved, so a wake between the check and the block
-// is never lost. Waits are always re-checked by the caller (spurious wakes are
-// fine), which keeps every existing `loop { check; wait }` shape intact.
+// is never lost. `wake_any` skips the scan when no WAIT_ANY waiter is
+// registered, but bumps the sequence first; `block_until` registers before it
+// checks the sequence, so one of the two always sees the other. Waits are
+// always re-checked by the caller (spurious wakes are fine), which keeps every
+// existing `loop { check; wait }` shape intact.
 
 /// `wait_key` that every `wake` call matches (pollers, idle sleeps).
 pub const WAIT_ANY: usize = usize::MAX;
@@ -202,7 +205,7 @@ pub const fn key_addr(pid: usize, addr: usize) -> usize {
     1 << 63 | pid << 48 | (addr & 0xffff_ffff_ffff)
 }
 
-/// Bumped on every wake (under TASKS).
+/// Bumped on every wake (under TASKS, except `wake_any`'s fast path).
 static WAIT_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Earliest `wake_at` of any Blocked task (u64::MAX = none).
 static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -263,12 +266,20 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
     let me = current_slot();
     {
         let mut tasks = TASKS.lock();
-        if WAIT_SEQ.load(Ordering::SeqCst) != seq || tasks[me].state != State::Running {
-            drop(tasks);
-            irq_restore(flags);
-            return;
+        // Count ourselves as a WAIT_ANY waiter before the WAIT_SEQ check:
+        // `wake_any` bumps WAIT_SEQ before it reads ANY_WAITERS, so either
+        // it sees us (and wakes us once we are Blocked: it takes TASKS) or
+        // we see its bump and return.
+        if key == WAIT_ANY {
+            ANY_WAITERS.fetch_add(1, Ordering::SeqCst);
         }
-        if deadline != 0 && crate::time::monotonic_ns() >= deadline {
+        let early = WAIT_SEQ.load(Ordering::SeqCst) != seq
+            || tasks[me].state != State::Running
+            || (deadline != 0 && crate::time::monotonic_ns() >= deadline);
+        if early {
+            if key == WAIT_ANY {
+                ANY_WAITERS.fetch_sub(1, Ordering::SeqCst);
+            }
             drop(tasks);
             irq_restore(flags);
             return;
@@ -278,9 +289,6 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
         t.wait_key = key;
         t.wake_at = deadline;
         t.wake_pending = false;
-        if key == WAIT_ANY {
-            ANY_WAITERS.fetch_add(1, Ordering::SeqCst);
-        }
         if deadline != 0 {
             NEXT_DEADLINE.fetch_min(deadline, Ordering::SeqCst);
             // This CPU's timer fires at the deadline, not at the next tick.
@@ -426,6 +434,10 @@ pub fn wake_n(key: usize, max: usize) -> usize {
 /// about: console input, pipe/pty/device traffic, an exit). Cheap when nobody
 /// waits that way.
 pub fn wake_any() {
+    // Bump WAIT_SEQ even when nobody waits yet: a poller between its scan
+    // and `block_until` then returns instead of sleeping through this event
+    // (it registers in ANY_WAITERS before it checks WAIT_SEQ).
+    WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
     if ANY_WAITERS.load(Ordering::SeqCst) == 0 {
         return;
     }

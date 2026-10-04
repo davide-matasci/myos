@@ -531,6 +531,13 @@ fn apply_reply(buf: &[u8]) {
             _ => PROTO_TCP,
         };
         let slot = &mut state().convs[conv as usize];
+        // A client clone closed before netd acked it: its CLOSE is queued
+        // behind this ack and frees the slot. Reinstalling here would
+        // swallow that hangup (suppress_stale_hangup) and leak the slot.
+        // Accept clones carry their proto and still reinstall.
+        if payload.is_empty() && slot.used && slot.closing {
+            return;
+        }
         if !slot.used || slot.closing {
             *slot = Conv {
                 used: true,

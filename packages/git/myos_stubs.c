@@ -126,23 +126,6 @@ unsigned alarm(unsigned seconds) {
     return 0;
 }
 
-int setitimer(int which, const struct itimerval *new_value,
-              struct itimerval *old_value) {
-    (void)which;
-    (void)new_value;
-    if (old_value) {
-        old_value->it_interval.tv_sec = 0;
-        old_value->it_interval.tv_usec = 0;
-        old_value->it_value.tv_sec = 0;
-        old_value->it_value.tv_usec = 0;
-    }
-    return 0;
-}
-
-pid_t getppid(void) {
-    return 1;
-}
-
 int execl(const char *path, const char *arg, ...) {
     char *argv[64];
     int n = 0;

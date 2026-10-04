@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+mod acpi;
 mod arch;
 mod blk;
 mod console;
@@ -22,6 +23,7 @@ mod mm;
 mod pci;
 mod modules;
 mod pipe;
+mod platform;
 mod rng;
 mod signal;
 mod smp;
@@ -83,16 +85,15 @@ pub(crate) fn kernel_main() -> ! {
     arch::early_init();
     // The board description comes first: device bases, interrupt routing
     // and clocks are read from it (aarch64, riscv64), nothing is assumed.
+    // The ACPI tables fill it, then the device tree (`platform`).
     dt::init();
-    let board = match arch::apply_dt() {
-        Ok(board) => board,
-        Err(what) => {
-            console::write_str("fatal: ");
-            console::write_str(what);
-            console::write_str("\n");
-            arch::halt();
-        }
-    };
+    platform::init();
+    if let Err(what) = arch::apply_platform(platform::get()) {
+        console::write_str("fatal: ");
+        console::write_str(what);
+        console::write_str("\n");
+        arch::halt();
+    }
 
     let mut fb_w = 0usize;
     let mut fb_h = 0usize;
@@ -130,14 +131,25 @@ pub(crate) fn kernel_main() -> ! {
         }
     }
     let _ = limine_boot::base_revision_supported();
-    if let Some(board) = board {
+    if let Some(model) = platform::get().model {
         console::write_str("board: ");
-        console::write_str(board);
+        console::write_str(model.value);
         console::write_str("\n");
     }
 
     heap::init();
     prove_heap();
+
+    // The sources that described the board; a component the tree describes
+    // differently from the tables is a firmware bug worth a line.
+    let p = platform::get();
+    console::status_ok(&alloc::format!("platform: {}", platform::sources_text(p)));
+    if p.differs != 0 {
+        console::status_warn(&alloc::format!(
+            "platform: acpi and dt differ on {}",
+            platform::differs_text(p)
+        ));
+    }
 
     // Calibrate the monotonic clock first (x86: TSC vs PIT, port I/O only):
     // the x86 LAPIC tick period is derived from it.
@@ -172,7 +184,8 @@ pub(crate) fn kernel_main() -> ! {
     console::status_ok("urandom");
     // Every driver and filesystem is a module: Limine placed them in RAM in
     // the `module_path` order of limine.conf (console, stubfs, hello,
-    // pci_enum, acpi, virtio_blk, nvme, virtio_net, netfs, fat, ext2), and
+    // pci_enum, acpi, virtio_blk, nvme, xhci, usb_hub, usb_storage, virtio_net,
+    // netfs, fat, ext2), and
     // they load in that order. More can follow at runtime with `insmod` from /lib/modules.
     modules::load_limine_modules();
     // /msg lives on bootfs; /ok mounts /dev/vda as fat at /fat.

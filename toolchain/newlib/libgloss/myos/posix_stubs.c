@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "myos_syscalls.h"
@@ -233,6 +234,13 @@ int utimensat(int dirfd, const char *path, const struct timespec times[2], int f
     return 0;
 }
 
+int utimes(const char *path, const struct timeval times[2]) {
+    (void)path;
+    (void)times;
+    /* Timestamps are not stored, as for utimensat (fontconfig's cache). */
+    return 0;
+}
+
 DIR *fdopendir(int fd) {
     (void)fd;
     errno = ENOSYS;
@@ -343,6 +351,11 @@ pid_t waitpid(pid_t pid, int *status, int options) {
 }
 
 long sysconf(int name) {
+#ifdef _SC_OPEN_MAX
+    if (name == _SC_OPEN_MAX) {
+        return MYOS_OPEN_MAX;
+    }
+#endif
 #ifdef _SC_PAGESIZE
     if (name == _SC_PAGESIZE) {
         return 4096;

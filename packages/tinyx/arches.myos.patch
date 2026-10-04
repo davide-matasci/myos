@@ -1,0 +1,20 @@
+diff --git a/include/servermd.h b/include/servermd.h
+index 7b373ca..8ae6ef0 100644
+--- a/include/servermd.h
++++ b/include/servermd.h
+@@ -278,6 +278,15 @@ SOFTWARE.
+ # define FAST_UNALIGNED_READS
+ #endif /* AMD64 */
+ 
++/* myos: AArch64 and RISC-V 64, little-endian; no unaligned-read shortcuts
++ * (RISC-V traps them to firmware). */
++#if defined(__aarch64__) || (defined(__riscv) && __riscv_xlen == 64)
++# define IMAGE_BYTE_ORDER	LSBFirst
++# define BITMAP_BIT_ORDER	LSBFirst
++# define GLYPHPADBYTES		4
++# define GETLEFTBITS_ALIGNMENT	1
++#endif
++
+ 
+ 
+ #if	defined(__alpha__) || defined(__alpha) || \

@@ -1,0 +1,13 @@
+--- a/src/fcfreetype.c
++++ b/src/fcfreetype.c
+@@ -1920,8 +1920,8 @@
+ 	FcRange *r;
+ 
+ 	/* usLowerPointSize and usUpperPointSize is actually twips */
+-	lower_size = os2->usLowerOpticalPointSize / 20.0L;
+-	upper_size = os2->usUpperOpticalPointSize / 20.0L;
++	lower_size = os2->usLowerOpticalPointSize / 20.0;
++	upper_size = os2->usUpperOpticalPointSize / 20.0;
+ 
+ 	if (lower_size == upper_size)
+ 	{

@@ -265,6 +265,15 @@ HELLO_OK_ELFS=(
   target/nvme-x86_64-unknown-none
   target/nvme-aarch64-unknown-none-softfloat
   target/nvme-riscv64imac-unknown-none-elf
+  target/xhci-x86_64-unknown-none
+  target/xhci-aarch64-unknown-none-softfloat
+  target/xhci-riscv64imac-unknown-none-elf
+  target/usb_hub-x86_64-unknown-none
+  target/usb_hub-aarch64-unknown-none-softfloat
+  target/usb_hub-riscv64imac-unknown-none-elf
+  target/usb_storage-x86_64-unknown-none
+  target/usb_storage-aarch64-unknown-none-softfloat
+  target/usb_storage-riscv64imac-unknown-none-elf
   target/virtio_net-x86_64-unknown-none
   target/virtio_net-aarch64-unknown-none-softfloat
   target/virtio_net-riscv64imac-unknown-none-elf

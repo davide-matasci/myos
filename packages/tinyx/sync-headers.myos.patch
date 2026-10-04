@@ -1,0 +1,15 @@
+diff --git a/Xext/sync.c b/Xext/sync.c
+index 460cc5e..5f05b6a 100644
+--- a/Xext/sync.c
++++ b/Xext/sync.c
+@@ -65,7 +65,9 @@ PERFORMANCE OF THIS SOFTWARE.
+ #include "resource.h"
+ #include "opaque.h"
+ #define _SYNC_SERVER
+-#include <X11/extensions/sync.h>
++/* The constants and XSyncValue macros: libXext's client <sync.h> used to
++ * carry them, xorgproto's syncconst.h does now. */
++#include <X11/extensions/syncconst.h>
+ #include <X11/extensions/syncstr.h>
+ 
+ #include <stdio.h>

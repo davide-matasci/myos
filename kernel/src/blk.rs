@@ -51,6 +51,26 @@ impl BlkDev {
     }
 }
 
+/// Take `dev` out of the table (`/dev/<name>` disappears, its id may be
+/// reused): `Err(())` while a filesystem is mounted from it or an fd is
+/// open on it, or when there is no such device.
+pub fn unregister(dev: u32) -> Result<(), ()> {
+    let mut name = [0u8; NAME_MAX];
+    let n = self::name(dev, &mut name).ok_or(())?;
+    let name = core::str::from_utf8(&name[..n]).map_err(|_| ())?;
+    if crate::fs::blk_in_use(name) {
+        return Err(());
+    }
+    let mut devs = DEVS.lock();
+    match devs.get_mut(dev as usize) {
+        Some(slot @ Some(_)) => {
+            *slot = None;
+            Ok(())
+        }
+        _ => Err(()),
+    }
+}
+
 /// Number of device ids in use (`0..count()` may have holes).
 pub fn count() -> u32 {
     let devs = DEVS.lock();

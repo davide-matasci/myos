@@ -28,6 +28,11 @@ MYOS_RIPGREP_VERSION="$MYOS_ROOT/target/.myos-ripgrep-version"
 MYOS_TCC_VERSION="$MYOS_ROOT/target/.myos-tcc-version"
 MYOS_VIM_VERSION="$MYOS_ROOT/target/.myos-vim-version"
 MYOS_NCURSES_VERSION="$MYOS_ROOT/target/.myos-ncurses-version"
+MYOS_X11_LIBS_VERSION="$MYOS_ROOT/target/.myos-x11-libs-version"
+MYOS_TINYX_VERSION="$MYOS_ROOT/target/.myos-tinyx-version"
+MYOS_DWM_VERSION="$MYOS_ROOT/target/.myos-dwm-version"
+MYOS_X11_XFT_VERSION="$MYOS_ROOT/target/.myos-x11-xft-version"
+MYOS_X11_FONTS_VERSION="$MYOS_ROOT/target/.myos-x11-fonts-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
@@ -165,6 +170,8 @@ myos_c_smokes_version_hash() {
         "$MYOS_ROOT/user/c/urandom_smoke.c" "$MYOS_ROOT/user/c/tty_smoke.c" \
         "$MYOS_ROOT/user/c/unix_smoke.c" "$MYOS_ROOT/user/c/fb_smoke.c" \
         "$MYOS_ROOT/user/c/poll_smoke.c" "$MYOS_ROOT/user/c/kbd_smoke.c" \
+        "$MYOS_ROOT/user/c/uio_smoke.c" "$MYOS_ROOT/user/c/pthread_smoke.c" \
+        "$MYOS_ROOT/user/c/netconv_smoke.c" "$MYOS_ROOT/user/c/child_smoke.c" \
         "$MYOS_ROOT/scripts/build-c-smokes.sh"
     } | sha256sum | awk '{print $1}'
   )"
@@ -177,7 +184,7 @@ myos_c_smokes_is_current() {
     && [[ "$(cat "$MYOS_C_SMOKES_VERSION")" == "$(myos_c_smokes_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke; do
+    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke uio-smoke pthread-smoke netconv-smoke child-smoke; do
       [[ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ]] || return 1
     done
   done
@@ -577,6 +584,196 @@ myos_ncurses_is_current() {
   done
 }
 
+
+# myos_write_cross_cc ARCH OUT [CFLAG...]: write OUT, a cc for autoconf
+# ports: clang against the newlib sysroot with the CFLAGs, and for a link
+# ld.lld with crt0, libc and libgloss the way scripts/build-c-smokes.sh
+# links, so configure's link tests answer for myos (--build and --host
+# differing keeps configure from running what it links). Not clang's own
+# link: for a bare-metal target it hands it to the host's gcc on some
+# triples and versions.
+myos_write_cross_cc() {
+  local arch="$1" out="$2"
+  shift 2
+  local elf="${arch}-unknown-none"
+  local sysroot="$MYOS_ROOT/target/newlib-${arch}/${arch}-unknown-myos"
+  local clanginc extra="" flags="" f
+  clanginc="$(clang -print-resource-dir)/include"
+  for f in "$@"; do
+    flags="$flags $(printf '%q' "$f")"
+  done
+  # newlib's printf wants the long-double helpers these arches lack (the
+  # sbase port carries them). riscv64 has no FPU: its float and double
+  # arithmetic, conversions and compares are compiler-rt's
+  # (ports/curl/build-softfloat-riscv64.sh); sbase's own versions of those
+  # are renamed away, so only its long-double ones are linked.
+  case "$arch" in
+    aarch64) extra="$out.helpers.o"
+      clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
+        -c "$MYOS_ROOT/ports/sbase/trunctfdf2.c" -o "$extra" ;;
+    riscv64)
+      local sf="$MYOS_ROOT/target/libsoftfloat-riscv64.a" nmbin sym renames=()
+      "$MYOS_ROOT/ports/curl/build-softfloat-riscv64.sh" >/dev/null
+      nmbin="$(command -v llvm-nm 2>/dev/null || echo nm)"
+      for sym in $("$nmbin" --defined-only -g "$sf" | awk '$2 == "T" { print $3 }'); do
+        renames+=("-D$sym=__myos_sbase$sym")
+      done
+      clang --target="$elf" -ffreestanding -fPIC -O2 -w -isystem "$sysroot/include" \
+        "${renames[@]}" -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$out.helpers.o"
+      extra="$out.helpers.o $sf" ;;
+  esac
+  cat > "$out" <<EOC
+#!/usr/bin/env bash
+cflags=(--target=$elf -ffreestanding -fPIC -nostdinc -isystem $clanginc -isystem $sysroot/include$flags)
+sysroot=$sysroot
+extra="$extra"
+EOC
+  cat >> "$out" <<'EOC'
+for a in "$@"; do
+  case "$a" in -c|-E|-S|-M|-MM) exec clang "${cflags[@]}" "$@" ;; esac
+done
+# Linking: compile what is C here, then ld.lld, keeping the order of the
+# objects, -L and -l.
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+out=a.out
+flags=() srcs=() inputs=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -include|-isystem|-I|-D|-U|-x|-MF|-MT|-MQ) flags+=("$1" "$2"); shift ;;
+    *.c) srcs+=("$1"); inputs+=("$tmp/${#srcs[@]}.o") ;;
+    -Wl,*) IFS=, read -ra w <<< "${1#-Wl,}"; inputs+=("${w[@]}") ;;
+    -Xlinker) inputs+=("$2"); shift ;;
+    -L*|-l*) inputs+=("$1") ;;
+    -pthread|-static|-rdynamic) ;;
+    -*) flags+=("$1") ;;
+    *) inputs+=("$1") ;;
+  esac
+  shift
+done
+for i in "${!srcs[@]}"; do
+  clang "${cflags[@]}" "${flags[@]}" -c "${srcs[$i]}" -o "$tmp/$((i + 1)).o" || exit 1
+done
+exec ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
+  "$sysroot/lib/crt0.o" "${inputs[@]}" $extra \
+  -L"$sysroot/lib" --start-group -lc -lgloss -lg --end-group
+EOC
+  chmod +x "$out"
+}
+
+myos_x11_libs_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      find "$(myos_port_dir x11-libs)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_x11_libs_is_current() {
+  local arch
+  [[ -f "$MYOS_X11_LIBS_VERSION" ]] \
+    && [[ "$(cat "$MYOS_X11_LIBS_VERSION")" == "$(myos_x11_libs_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/x11-libs-${arch}/lib/x11/lib/libX11.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/x11-smoke-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_tinyx_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_x11_libs_version_hash
+      myos_zlib_version_hash
+      find "$(myos_port_dir tinyx)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_tinyx_is_current() {
+  local arch
+  [[ -f "$MYOS_TINYX_VERSION" ]] \
+    && [[ "$(cat "$MYOS_TINYX_VERSION")" == "$(myos_tinyx_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/xfbdev-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/tinyx-smoke-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/startx-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_x11_xft_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_x11_libs_version_hash
+      find "$(myos_port_dir x11-xft)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_x11_xft_is_current() {
+  local arch
+  [[ -f "$MYOS_X11_XFT_VERSION" ]] \
+    && [[ "$(cat "$MYOS_X11_XFT_VERSION")" == "$(myos_x11_xft_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/x11-xft-${arch}/lib/x11/lib/libXft.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/xft-smoke-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/fc-match-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_x11_fonts_version_hash() {
+  local h
+  h="$(
+    find "$(myos_port_dir x11-fonts)" -type f -print0 2>/dev/null \
+      | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_x11_fonts_is_current() {
+  [[ -f "$MYOS_X11_FONTS_VERSION" ]] \
+    && [[ "$(cat "$MYOS_X11_FONTS_VERSION")" == "$(myos_x11_fonts_version_hash)" ]] \
+    && [[ -f "$MYOS_ROOT/target/x11-fonts/DejaVuSansMono.ttf" ]]
+}
+
+myos_dwm_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_x11_xft_version_hash
+      find "$(myos_port_dir dwm)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_dwm_is_current() {
+  local arch
+  [[ -f "$MYOS_DWM_VERSION" ]] \
+    && [[ "$(cat "$MYOS_DWM_VERSION")" == "$(myos_dwm_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/dwm-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/dwm-smoke-${arch}-unknown-none" ]] || return 1
+  done
+}
 
 myos_zlib_version_hash() {
   local h

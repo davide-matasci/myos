@@ -18,6 +18,8 @@ use crate::k::task;
 use crate::k::user::SyscallRegs;
 
 const SA_RESTORER: usize = 0x0400_0000;
+/// Linux's `SA_NOCLDWAIT`; the native bit differs (`signal::SA_NOCLDWAIT`).
+const LINUX_SA_NOCLDWAIT: u32 = 0x2;
 const SS_DISABLE: u32 = 2;
 
 /// Per process (leader slot): the user page holding [`arch::TRAMP_CODE`], mapped on
@@ -118,6 +120,19 @@ fn trampoline() -> Result<usize, usize> {
     Ok(va)
 }
 
+/// Linux `sa_flags` to the native ones: only `SA_NOCLDWAIT` moves.
+fn flags_from_linux(flags: u32) -> u32 {
+    let native = crate::k::signal::SA_NOCLDWAIT;
+    let nocldwait = if flags & LINUX_SA_NOCLDWAIT != 0 { native } else { 0 };
+    (flags & !(LINUX_SA_NOCLDWAIT | native)) | nocldwait
+}
+
+fn flags_to_linux(flags: u32) -> u32 {
+    let native = crate::k::signal::SA_NOCLDWAIT;
+    let nocldwait = if flags & native != 0 { LINUX_SA_NOCLDWAIT } else { 0 };
+    (flags & !native) | nocldwait
+}
+
 /// `rt_sigaction(sig, act, oact, sigsetsize)` with the arch's
 /// `struct sigaction` (`{handler, flags, [restorer,] mask}`).
 pub fn rt_sigaction(sig: usize, act: usize, oact: usize) -> R {
@@ -144,7 +159,7 @@ pub fn rt_sigaction(sig: usize, act: usize, oact: usize) -> R {
         let mut w = [0u64; 4];
         w[0] = handler as u64;
         if caught {
-            w[1] = flags as u64;
+            w[1] = flags_to_linux(flags) as u64;
             if arch::SIGACTION_HAS_RESTORER {
                 w[2] = RESTORER[id].load(Ordering::Relaxed);
             }
@@ -169,7 +184,7 @@ pub fn rt_sigaction(sig: usize, act: usize, oact: usize) -> R {
             RESTORER[id].store(restorer as u64, Ordering::Relaxed);
             tramp = if restorer != 0 { restorer } else { trampoline()? };
         }
-        if !task::signal_set_action(id, n, handler, flags as u32, mask, tramp) {
+        if !task::signal_set_action(id, n, handler, flags_from_linux(flags as u32), mask, tramp) {
             return Err(EINVAL);
         }
     }

@@ -202,6 +202,29 @@ fn attach_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str, uniq
     true
 }
 
+/// A mount has `source` (`/dev/sda`) as its block device.
+pub fn source_mounted(source: &str) -> bool {
+    MOUNTS.lock().iter().any(|m| m.source == source)
+}
+
+/// Open fds on `rel` of the mount at `prefix` (`"dev"`, `"sda"`: the block
+/// device `/dev/sda`), counting a fork's and a dup's copies.
+pub fn open_refs(prefix: &str, rel: &str) -> u32 {
+    let Some(mount) = MOUNTS.lock().iter().position(|m| m.prefix == prefix) else {
+        return 0;
+    };
+    let refs = OPEN_REFS.lock();
+    refs.iter()
+        .filter(|r| {
+            r.in_use
+                && r.mount as usize == mount
+                && r.path_len as usize == rel.len()
+                && &r.path[..rel.len()] == rel.as_bytes()
+        })
+        .map(|r| r.count)
+        .sum()
+}
+
 /// Linux-shaped `/proc/mounts` snapshot (`source target fstype opts 0 0\n`).
 ///
 /// Must not be called while `MOUNTS` is already held (procfs `read`/`stat`

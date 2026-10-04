@@ -6,16 +6,18 @@
 |-----------|----------|-----|
 | PCI config access (`cfg_read32` / BAR map / `pci_find` / `pci_find_class`) | `kernel/src/pci.rs` + `arch/*/pci.rs` | The module ABI exposes it; every PCI driver is a module |
 | virtio-blk, NVMe | `modules/virtio_blk`, `modules/nvme` | Register `/dev/<name>` through `blk_register`; loaded before the filesystem modules |
+| USB: xHCI host, hub and mass storage | `modules/xhci`, `modules/usb_hub`, `modules/usb_storage` | The host publishes the USB bus as a service the class drivers look up; sticks are `/dev/sdX`, hot-pluggable (`docs/usb.md`) |
 | Framebuffer text, keyboards, keymap | `modules/console` | Serial stays in the kernel; the module registers screen + keyboard ops (`console_register`) |
 | Linux syscall layer | `modules/linux` | Registers a syscall *personality* (`personality_register`); the kernel keeps only which tasks have it (`kernel/src/personality.rs`) |
 | Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Discovery + on-demand rescan via write; talks only through `KernelApi` |
+| Platform description (ACPI static tables, device tree) | `kernel/src/platform.rs`, `acpi.rs`, `dt.rs` | Device bases, interrupt routing and clocks come from it, before the heap exists |
 | ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP |
 | Limine RSDP / MP requests | `kernel/src/limine_boot.rs` | Boot protocol |
 | AP bring-up + `/proc/cpuinfo` | `kernel/src/smp.rs` | Must run before modules; owns CPU-local state + IPI helpers |
 | Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, shared ready set |
-| Proc exporters | `kernel/src/fs/procfs.rs` | Built-ins: `mounts`, `cpuinfo`; dynamic via `proc_register` ABI |
+| Proc exporters | `kernel/src/fs/procfs.rs` | Built-ins: `mounts`, `cpuinfo`, `platform`; dynamic via `proc_register` ABI |
 
-ABI version: **14** (`dt_mmio_find`: a module finds its memory-mapped devices in the device tree; 13: `personality_register`, `personality_exec`, `native_syscall` and the task / fd / VFS / signal / FPU / wait helpers a syscall personality needs: the Linux layer is a module; 12: `blk_register`, `pci_find_class`, `framebuffer_info`, `console_register`: block devices and the console are modules; 11: `pci_irq_enable`, `wake_any`, `wait_seq`, `block_until`, `monotonic_ns` for device interrupts and blocking waits; 10: `proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
+ABI version: **21** (`blk_unregister`, `service_register` / `service_lookup`, `thread_spawn`, `wake` and the USB bus types, `docs/usb.md`; see `README.md` for 15–20; 14: `dt_mmio_find`: a module finds its memory-mapped devices in the device tree; 13: `personality_register`, `personality_exec`, `native_syscall` and the task / fd / VFS / signal / FPU / wait helpers a syscall personality needs: the Linux layer is a module; 12: `blk_register`, `pci_find_class`, `framebuffer_info`, `console_register`: block devices and the console are modules; 11: `pci_irq_enable`, `wake_any`, `wait_seq`, `block_until`, `monotonic_ns` for device interrupts and blocking waits; 10: `proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
 
 Boot modules come from Limine's module list (`limine.conf` `module_path` entries, `src/limine_image.rs` `BOOT_MODULES` plus the `OPTIONAL_MODULES` whose Cargo feature is on, in load order); `insmod <path>` (`SYS_INSMOD`) loads more at runtime and `/proc/modules` lists them.
 
@@ -28,34 +30,105 @@ use an MSI-X table entry or the INTx line:
 
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
-| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`MSI_VECTOR_BASE` 48 + n, 8 vectors; no IOAPIC / PIRQ routing) | vector |
-| aarch64 | INTx → GICv2 SPI, level, priority 0x80, CPU 0; the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
+| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`MSI_VECTOR_BASE` 48 + n, 8 vectors; no IOAPIC / PIRQ routing; a BSP with an x2APIC id above 255 would need interrupt remapping, so it gets no MSI) | vector |
+| aarch64 | INTx → GIC SPI, level, priority 0x80, delivered to the BSP (GICv2: `ITARGETSR` CPU 0; GICv3: `IROUTER` to its affinity); the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
 | riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
 
-## The device tree (aarch64, riscv64)
+## The platform description
 
-Nothing about the board is hard-coded on these arches: `kernel/src/dt.rs`
-parses the flattened device tree Limine hands over (the `fdt` crate,
-MPL-2.0) and `arch::apply_dt` runs before the first console output:
+Nothing about the board is hard-coded: `kernel/src/platform.rs` describes
+it once at boot, before the heap and the first console output, and the
+arch code takes its device bases from that description and from nowhere
+else (`arch::apply_platform`). Two sources fill it, in this order:
 
-| Node (`compatible`) | Used for |
-|------|------|
-| `arm,cortex-a15-gic` / `arm,gic-400` | GICv2 distributor + CPU interface bases |
-| `sifive,plic-1.0.0` / `riscv,plic0` | PLIC base |
-| `arm,pl011` / `ns16550a` | console UART base |
-| `arm,pl031` / `google,goldfish-rtc` | RTC base (optional: no RTC, no wall clock) |
-| `/cpus` `timebase-frequency` | riscv64 `time` CSR rate (monotonic clock, timer) |
-| `pci-host-ecam-generic` | ECAM window and `bus-range`; the 32-bit (aarch64) or 64-bit (riscv64) MMIO `ranges` entry BARs are assigned from; `interrupt-map` / `interrupt-map-mask` for INTx |
-| `virtio,mmio` | the virtio-mmio transports, for modules through `KernelApi::dt_mmio_find` (ABI 14), in ascending address order |
+1. **The ACPI static tables** (`kernel/src/acpi.rs`), when the firmware
+   hands Limine an RSDP and the arch prefers them (`arch::PREFER_ACPI`:
+   x86_64 and aarch64; not riscv64, whose ACPI tables are younger than
+   the firmware that runs here). Only tables that name the platform are
+   read, and no AML: the MADT (CPUs; the local APIC, or the GICD, GICC,
+   GICR and ITS entries), the MCFG (PCIe ECAM and bus range), the SPCR
+   (the console UART and its interrupt) and the GTDT (the arm timer
+   interrupts). Allocation-free, read in place through the HHDM.
+   `modules/acpi` keeps `/proc/acpi` and the `_S5` power-off.
+2. **The device tree** (`kernel/src/dt.rs`, the `fdt` crate, MPL-2.0),
+   when Limine hands one over. It fills what nothing described yet and is
+   compared against what the tables did: a component both describe
+   differently is flagged (`[WARN] platform: acpi and dt differ on ...`
+   at boot, `differs` in `/proc/platform`) rather than silently resolved
+   in favour of either.
 
-A missing tree or node stops the boot with `fatal: device tree: ...` on the
-UART at QEMU `virt`'s address (the one assumption left, so the message has
-somewhere to go). The EDK2 firmware boots (AAVMF, RISC-V EDK2) hand Limine
-no tree, so the host tool dumps QEMU's (`-machine ...,dumpdtb`, same machine
-options and `-smp` as the boot) into the ESP as `boot/virt-aarch64.dtb` /
-`boot/virt.dtb` and `limine.conf` passes it with `global_dtb`. Interrupt specifiers are decoded per arch
+| Component | ACPI | Device tree (`compatible`) |
+|------|------|------|
+| CPUs | MADT enabled LAPIC / x2APIC / GICC entries | `/cpus` children |
+| Interrupt controller | MADT: LAPIC address; GICD (with the GIC version) + GICC → GICv2, GICD + GICR → GICv3 | `arm,cortex-a15-gic` / `arm,gic-400` (GICv2), `arm,gic-v3`, `sifive,plic-1.0.0` / `riscv,plic0` |
+| Console UART | SPCR: interface type (16550 or PL011 / SBSA), address, GSIV | `arm,pl011`, `ns16550a` + `interrupts` |
+| RTC | — | `arm,pl031`, `google,goldfish-rtc` (optional: no RTC, no wall clock) |
+| Timers | GTDT: EL1 physical and virtual timer INTIDs | `/cpus` `timebase-frequency` (riscv64 `time` CSR rate) |
+| PCIe host bridge | MCFG: ECAM base, bus range | `pci-host-ecam-generic`: `reg`, `bus-range` |
+| PCIe MMIO windows, INTx routing | — (in AML) | `ranges` (the 32-bit entry on aarch64, the 64-bit one on riscv64), `interrupt-map` / `interrupt-map-mask` |
+| virtio-mmio transports | — | `virtio,mmio`, for modules through `KernelApi::dt_mmio_find`, in ascending address order |
+
+What each arch requires of the description: aarch64 a GIC (v2: the
+distributor and the CPU interface; v3: the distributor and the
+redistributor region, below), a PL011 or a 16550 (with its register stride
+and access width: the tree's `reg-shift` / `reg-io-width`, the SPCR's
+access size) and a PCIe host bridge with a 32-bit MMIO window; riscv64 a PLIC, a
+16550, the timebase and a host bridge with a 64-bit window; x86_64
+takes the MCFG's ECAM window for PCI configuration space when the
+description has one (QEMU `q35`, every PCIe PC; `arch/x86/pci.rs` maps a
+bus's megabyte of it on first use, once the heap's frames exist) and
+needs nothing else (the LAPIC base comes from its MSR, the console from
+COM1, configuration space from port 0xCF8 without an MCFG), so a PC
+without ACPI tables boots too (QEMU's `pc` machine publishes neither an
+SPCR nor an MCFG: its description is the CPUs and the LAPIC).
+`MYOS_X86_MACHINE=q35 cargo run -- test-mini` boots the PCIe PC locally;
+CI boots `pc`. A missing source or component stops the boot with `fatal: platform:
+...` on the UART at QEMU `virt`'s address (the one assumption left, so
+the message has somewhere to go).
+
+`/proc/platform` shows the description, one line per component, each
+ending in the source it came from:
+
+```
+source acpi+dt
+model linux,dummy-virt (dt)
+oem BOCHS (acpi)
+cpus 4 (acpi)
+intc gicv2 0x8000000 0x8010000 (acpi)
+uart pl011 0x9000000 irq 33 (acpi)
+rtc pl031 0x9010000 (dt)
+timer irq 30 27 (acpi)
+pci ecam 0x3f000000 0x1000000 bus 0-15 (acpi)
+pci mmio32 0x10000000 0x2eff0000 (dt)
+```
+
+The kernel command line (`cmdline:` in `limine.conf`) forces one source
+when a board's firmware gets the other wrong: `platform=acpi` ignores the
+tree, `platform=dt` the tables (on riscv64 it also makes the kernel read
+tables it would otherwise skip: `platform=acpi` there is the opt-in).
+
+**GICv3** (`arch/aarch64/interrupts.rs`): the distributor runs with
+affinity routing (every SPI in group 1, routed to the BSP's MPIDR
+affinity by `GICD_IROUTER` when a driver enables it); each CPU finds its
+redistributor by walking the region's frames (128 KiB each, 256 KiB with
+the GICv4 VLPI frames) for the `GICR_TYPER` naming its affinity, wakes
+it, enables its SGIs and timer PPIs there, and drives the CPU interface
+through the `ICC_*` system registers (`ICC_SRE_EL2` as well when the
+kernel runs at EL2; `ICC_IAR1`/`ICC_EOIR1` in the handler, `ICC_SGI1R`
+for the IPIs with the target's affinity). The boot log says which GIC
+(`[INFO] gicv3`). QEMU `virt` gives a GICv3 with `gic-version=3`:
+`MYOS_AARCH64_GIC=3 cargo run -- aarch64 test-mini` (the launcher dumps
+the matching tree); CI boots both versions (`aarch64`, `aarch64-gicv3`).
+The ITS (message-signalled interrupts) is not driven: PCI devices use
+INTx on aarch64.
+
+The EDK2 firmware boots (AAVMF, RISC-V EDK2) hand Limine no tree, so the
+host tool dumps QEMU's (`-machine ...,dumpdtb`, same machine options and
+`-smp` as the boot) into the ESP as `boot/virt-aarch64.dtb` /
+`boot/virt.dtb` and `limine.conf` passes it with `global_dtb`; AAVMF also
+publishes ACPI tables, so the aarch64 boots exercise the agreement check
+(`source acpi+dt`). Interrupt specifiers of the tree are decoded per arch
 (`arch::irq_from_dt`: GIC `<type number flags>` → INTID, PLIC `<source>`).
-x86_64 has no tree (ACPI): `dt::init` finds none and the arch ignores it.
 
 Handlers run in interrupt context with interrupts masked on CPU 0. On INTx
 the handler must read the device's ISR register so the level line deasserts
@@ -117,7 +190,12 @@ fine because every caller re-checks. `WAIT_ANY` waiters (`SYS_POLL`,
 `SYS_NANOSLEEP` with `SLEEP_ANY_EVENT`, the Linux `ppoll`) are woken by
 every wake and by `wake_any` after device/file writes, the last close of a
 module file and exits — that is what lets `poll` and `netd` sleep instead of
-spinning on `gettimeofday`.
+spinning on `gettimeofday`. `wake_any` skips the task scan when no `WAIT_ANY`
+waiter is registered, but bumps the sequence first, and `block_until`
+registers a `WAIT_ANY` waiter before it checks the sequence: either the
+producer sees the waiter or the waiter sees the bump. (Before, a unix-socket
+write landing between a poller's scan and its registration was missed until
+some other event: the X server then left a client's requests unanswered.)
 
 `SYS_POLL` (`poll(fds, nfds, timeout_ms)`, `sys_poll`) scans a `struct
 pollfd` array with `task::fd_poll` and sleeps on `WAIT_ANY` until the first
@@ -133,7 +211,7 @@ and a module `read` that returns `MYOS_READ_WAIT` makes an fd read wait for
 the file the same way. libgloss's `poll`/`select` are one call, and so is
 every blocking wait of its socket library (`pollselect.c`, `socket.c`).
 
-Deadlines use `time::monotonic_ns()` (x86: TSC calibrated against PIT
+Deadlines use `time::monotonic_ns()` (x86: TSC at the rate CPUID leaf 15H/16H states, else calibrated against the PIT
 channel 2 at boot; aarch64: `CNTVCT_EL0`; riscv64: `time` CSR). Each timer
 IRQ calls `task::timer_tick()`, which only scans `TASKS` once the earliest
 deadline (`NEXT_DEADLINE`) has passed. The x86 LAPIC tick is calibrated
@@ -154,8 +232,8 @@ picks a woken task that is still some CPU's `CURRENT`, and a wake that lands
 while the task is mid-switch (`SWITCHED_FROM`) is deferred to
 `finish_switch` (`wake_pending`). `wake` marks the woken task's home CPU
 (or the CPU it is halting on, or any idle CPU for a floating task) and sends
-a **targeted** reschedule IPI (`arch::ipi_reschedule_cpu`: xAPIC ICR with
-a destination, GICv2 SGI with a CPUTargetList bit, SBI IPI with a single
+a **targeted** reschedule IPI (`arch::ipi_reschedule_cpu`: the LAPIC ICR with
+a destination, a GIC SGI to one CPU (v2: a CPUTargetList bit, v3: the affinity in `ICC_SGI1R_EL1`), SBI IPI with a single
 hart) only when that CPU is halted. The console reader re-polls keyboards
 every 10 ms (they have no IRQ); the BSP timer stages UART RX on all three
 arches and wakes `KEY_CONSOLE`.
@@ -176,8 +254,8 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 
 | Arch | CPU id | AP init | Timer / IRQ | IPI |
 |------|--------|---------|-------------|-----|
-| x86_64 | TSC_AUX / APIC id | Per-CPU GDT+TSS, GS → syscall state, xAPIC timer | LVT timer → `schedule` | xAPIC ICR all-excl-self (vec 33 TLB, 34 resched) |
-| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | naked `goto_address` entry, TTBR0 device map sync, `VBAR`/`use_spx`, banked GICC, timers | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
+| x86_64 | TSC_AUX / APIC id | Per-CPU GDT+TSS, GS → syscall state, LAPIC timer (x2APIC MSRs when the CPU has an x2APIC, the xAPIC page otherwise; QEMU's TCG has no x2APIC, so CI runs the xAPIC path) | LVT timer → `schedule` | ICR all-excl-self (vec 33 TLB, 34 resched) |
+| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | naked `goto_address` entry, TTBR0 device map sync, `VBAR`/`use_spx`, the CPU's GIC bank (v2: banked GICC; v3: its redistributor + `ICC_*`), timers | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
 | riscv64 | `tp` / Limine `hartid` | `stvec` / `sie` (STIE+SSIE) / `stimecmp` | S-mode timer → `schedule` | SBI IPI ext → SSIP; soft reason bits in `smp` |
 
 Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
@@ -246,6 +324,8 @@ AP stacks are too small for nested timer/IPI frames).
 
 - `/proc/mounts` — existing
 - `/proc/cpuinfo` — online CPUs, hw ids, schedule counts
+- `/proc/platform` — the board description and where each component came from (above)
+- `/proc/usb` — the controllers (ports, interrupt, event counts) and the USB devices: id, parent hub and port, speed, vendor:product, each interface's class triple and the driver that took it (`docs/usb.md`)
 - `/proc/pci` — full BDF list from `pci_enum` (hex IDs + class/subclass names and a small QEMU/virt device table). Write `rescan` to re-enumerate and refresh the node (gone devices disappear); the kernel then calls every module's `module_rescan`, and the block drivers (virtio-blk, NVMe) bring up the disks that appeared since boot, leaving the known ones alone. virtio-net probes once at load (netd binds the one `/dev/net0`). No ACPI/QEMU hotplug IRQ yet: a hot-added disk shows up after a rescan.
 - `/proc/acpi/info`, `tables`, `s5` — from `acpi` module (honest stubs if no RSDP)
 

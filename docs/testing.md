@@ -50,12 +50,13 @@ TESTS DONE 17/18
 - `HOST <port> <args>`: the test needs the host. The launcher runs that
   port's host-side script (`PORT_HOST=host.sh` in its `port.env`, from the
   checkout) with the arguments, in the background; the guest test then
-  waits for what the script does. `tests tcp-ping PORT` (`user/tests/host.sh`)
+  waits for what the script does. `c-smokes tcp-ping PORT` (`user/c/host.sh`)
   connects to the guest's listener through QEMU's port forward and plays
-  ping/pong; `dropbear PORT` (`ports/dropbear/host.sh`) opens two SSH
+  ping/pong; `tests usb-plug|usb-unplug` (`user/tests/host.sh`) plugs a
+  second USB stick into the guest through the QEMU monitor and pulls it out
+  (`docs/usb.md`); `dropbear PORT` (`ports/dropbear/host.sh`) opens two SSH
   sessions at once with the test key, each of which touches
-  `/tmp/ssh-ok-a` / `-b` for the guest test to find. `c-smokes tcp-ping
-  PORT` (`user/c/host.sh`) is the listen test's peer. A port that needs a
+  `/tmp/ssh-ok-a` / `-b` for the guest test to find. A port that needs a
   peer on the host ships its own `host.sh`; the launcher knows no test.
 - `TESTS DONE <passed>/<total>` ends the run.
 

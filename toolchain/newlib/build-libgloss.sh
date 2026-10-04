@@ -28,6 +28,30 @@ for hdr in search.h endian.h regex.h; do
     cp "$NEWLIB_SRC/newlib/libc/include/$hdr" "$inc/$hdr"
   fi
 done
+# newlib defines _POSIX_THREADS (which guards <pthread.h>) and the UNIX98
+# mutex types only for RTEMS and Cygwin. libgloss implements the API for
+# single-threaded programs (pthread.c), so the installed features.h declares
+# it for myos; every program sees the same pthread_mutexattr_t. Only the
+# sysroot copy: newlib's own build keeps them off (its stdio would call
+# pthread_setcancelstate around every lock).
+cp "$NEWLIB_SRC/newlib/libc/include/sys/features.h" "$inc/sys/features.h"
+python3 - "$inc/sys/features.h" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+tail = "#ifdef __cplusplus\n}\n#endif\n#endif /* _SYS_FEATURES_H */"
+assert s.count(tail) == 1, "features.h tail not found"
+s = s.replace(tail, """/* myos: libgloss pthread.c (one thread per process). */
+#ifndef _POSIX_THREADS
+#define _POSIX_THREADS 1
+#endif
+#ifndef _UNIX98_THREAD_MUTEX_ATTRIBUTES
+#define _UNIX98_THREAD_MUTEX_ATTRIBUTES 1
+#endif
+
+""" + tail)
+open(path, "w").write(s)
+PY
 if [[ -f "$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h" ]]; then
   mkdir -p "$inc/machine"
   cp "$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h" "$inc/machine/setjmp.h"
@@ -47,7 +71,7 @@ done
 mkdir -p "$PORT/sys"
 cp "$ROOT"/toolchain/newlib/libgloss/myos/sys/*.h "$PORT/sys/"
 
-for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios ttyctl socket inet netdb pollselect pty search sleep; do
+for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios ttyctl socket inet netdb pollselect pty search sleep uio pthread; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
@@ -75,6 +99,10 @@ AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
 "$AR_BIN" rcs "$out/libgloss.a" "$out/obj"/*.o
 "$AR_BIN" d "$out/libgloss.a" crti.o crtn.o 2>/dev/null || true
 cp "$out/libgloss.a" "$libdir/libgloss.a"
+# The pthread functions are in libgloss (pthread.c); an empty libpthread.a
+# keeps `-lpthread` in ported Makefiles linking.
+rm -f "$libdir/libpthread.a"
+"$AR_BIN" rcs "$libdir/libpthread.a"
 cp "$out/obj/crt0.o" "$libdir/crt0.o"
 cp "$out/obj/crti.o" "$libdir/crti.o"
 cp "$out/obj/crtn.o" "$libdir/crtn.o"
@@ -89,6 +117,7 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/sys/socket.h" "$inc/sys/socket.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/un.h" "$inc/sys/un.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/utsname.h" "$inc/sys/utsname.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/mman.h" "$inc/sys/mman.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/sys/uio.h" "$inc/sys/uio.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/utmp.h" "$inc/utmp.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
 mkdir -p "$inc/arpa" "$inc/netinet"

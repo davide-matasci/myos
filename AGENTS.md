@@ -29,7 +29,7 @@ match the surrounding code's naming, idiom and comment density.
 | `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib), C (`user/c`: hello and the test smokes) and the boot tests' runner (`user/tests`); one `port.env` per program |
 | `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`); both are ports too (`port.env`, kind `toolchain`) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
-| `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test, ncurses; `get-myos` installs them, `docs/packages.md`); a port moves between the two by moving its directory |
+| `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, ncurses; `get-myos` installs them, `docs/packages.md`); a port moves between the two by moving its directory |
 | `linux-compat/` | optional Linux syscall layer userspace (launcher, musl build, tests, `get-alpine`) |
 | `scripts/` | CI scripts, registry, `ports.sh` (reads the descriptors), thin wrappers for port builds |
 | `targets/` | custom Rust target specs for userspace |
@@ -164,8 +164,8 @@ a data file, firmware, a downloaded binary):
 - **Update `THIRD_PARTY_NOTICES.md` in the same change** when you add,
   bump or remove a component (re-check the upstream license on every
   bump), and add the full text to `licenses/` for a new copyleft license.
-- Copyleft components already ship in the images (git, lynx, GNU make,
-  TinyCC, the Mozilla CA bundle; see the notices file). Distributing their
+- Copyleft components already ship in the images or as packages (git, lynx,
+  GNU make, TinyCC, TinyX, the Mozilla CA bundle; see the notices file). Distributing their
   binaries requires the corresponding source: keep the pinned upstream
   source reference (`versions.env`) and every myos patch in the repo, so
   each image is reproducible from source.

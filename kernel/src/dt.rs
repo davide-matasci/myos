@@ -1,9 +1,10 @@
 //! The flattened device tree (FDT) Limine hands over on aarch64 and riscv64:
-//! the board's description, which the kernel reads its device bases,
-//! interrupt routing and clocks from (`arch::apply_dt`). Nothing about the
-//! QEMU `virt` board is assumed outside this file's callers; a board
-//! without a usable tree does not boot on those arches. x86_64 has no tree
-//! (ACPI instead): `init` finds none and the accessors stay unused.
+//! the board's description. `fill` turns it into the kernel's platform
+//! description (`crate::platform`), the second source after the ACPI
+//! tables where the firmware has them; the accessors below serve what only
+//! the tree describes afterwards: the virtio-mmio nodes modules look up
+//! (`KernelApi::dt_mmio_find`) and the PCI INTx routing. x86_64 has no
+//! tree (ACPI instead): `init` finds none and the accessors stay unused.
 //!
 //! Lookups are by `compatible` string. Interrupt specifiers are returned
 //! raw (cells per the interrupt parent's `#interrupt-cells`) and decoded by
@@ -13,6 +14,8 @@
 use fdt::Fdt;
 use fdt::node::FdtNode;
 use spin::Once;
+
+use crate::platform::{Platform, Uart, UartKind};
 
 static FDT: Once<Fdt<'static>> = Once::new();
 
@@ -256,4 +259,86 @@ pub fn pci_intx(bus: u8, slot: u8, func: u8, pin: u8) -> Option<IrqSpec> {
 pub fn timebase_frequency() -> Option<u64> {
     let cpus = get()?.find_node("/cpus")?;
     cpus.property("timebase-frequency")?.as_usize().map(|v| v as u64)
+}
+
+/// GICv2 `compatible` strings (QEMU `virt`: `arm,cortex-a15-gic`).
+const GICV2_COMPAT: &[&str] = &["arm,cortex-a15-gic", "arm,gic-400", "arm,cortex-a9-gic"];
+
+/// The first node compatible with `compat`, as a UART of `kind`: base,
+/// first interrupt, and the `reg-shift` / `reg-io-width` of a 16550.
+fn uart(compat: &[&str], kind: UartKind) -> Option<Uart> {
+    let fdt = get()?;
+    let node = fdt.find_compatible(compat)?;
+    let (base, _) = node_reg(node, 0)?;
+    let irq = interrupt_spec(fdt, node).and_then(|s| crate::arch::irq_from_dt(s.cells()));
+    let cell = |name: &str, default: u32| match kind {
+        UartKind::Ns16550 => prop(node, name).and_then(|c| c.get(0)).unwrap_or(default),
+        UartKind::Pl011 => default,
+    };
+    Some(Uart {
+        kind,
+        base,
+        io: false,
+        irq,
+        reg_shift: cell("reg-shift", 0) as u8,
+        reg_width: cell("reg-io-width", 1) as u8,
+    })
+}
+
+/// Describe the board from the tree (`crate::platform::init`): the model,
+/// the CPUs, the interrupt controller (a GICv2, a GICv3 or a PLIC), the
+/// console UART (a PL011 or a 16550), the RTC (a PL031 or a goldfish), the
+/// `time` CSR rate and the PCIe host bridge with its MMIO windows.
+pub fn fill(p: &mut Platform) {
+    use crate::platform::*;
+    let Some(fdt) = FDT.get() else {
+        return;
+    };
+    let from = Source::DeviceTree;
+    offer_model(p, fdt.root().model());
+    let cpus = fdt.cpus().count();
+    if cpus != 0 {
+        offer_cpus(p, cpus, from);
+    }
+    if let (Some((gicd, _)), Some((gicc, _))) = (reg(GICV2_COMPAT, 0), reg(GICV2_COMPAT, 1)) {
+        offer_intc(p, Intc::GicV2 { gicd, gicc }, from);
+    } else if let (Some((gicd, _)), Some((gicr, gicr_size))) =
+        (reg(&["arm,gic-v3"], 0), reg(&["arm,gic-v3"], 1))
+    {
+        offer_intc(p, Intc::GicV3 { gicd, gicr, gicr_size }, from);
+    } else if let Some((base, _)) = reg(&["sifive,plic-1.0.0", "riscv,plic0"], 0) {
+        offer_intc(p, Intc::Plic { base }, from);
+    }
+    if let Some(uart) = uart(&["arm,pl011"], UartKind::Pl011) {
+        offer_uart(p, uart, from);
+    } else if let Some(uart) = uart(&["ns16550a", "ns16550", "snps,dw-apb-uart"], UartKind::Ns16550) {
+        offer_uart(p, uart, from);
+    }
+    if let Some((base, _)) = reg(&["arm,pl031"], 0) {
+        offer_rtc(p, Rtc { kind: RtcKind::Pl031, base }, from);
+    } else if let Some((base, _)) = reg(&["google,goldfish-rtc"], 0) {
+        offer_rtc(p, Rtc { kind: RtcKind::Goldfish, base }, from);
+    }
+    if let Some(hz) = timebase_frequency() {
+        offer_timer_hz(p, hz, from);
+    }
+    if let Some(host) = pci_host() {
+        let bus_start = fdt
+            .find_compatible(&["pci-host-ecam-generic"])
+            .and_then(|h| prop(h, "bus-range"))
+            .and_then(|r| r.get(0))
+            .unwrap_or(0) as u8;
+        offer_pci(
+            p,
+            PciHost { ecam: host.ecam_base, ecam_size: host.ecam_size, bus_start, bus_end: host.bus_end },
+            from,
+        );
+        let windows = PciWindows {
+            mmio32: pci_mmio_window(PCI_SPACE_MEM32),
+            mmio64: pci_mmio_window(PCI_SPACE_MEM64),
+        };
+        if windows.mmio32.is_some() || windows.mmio64.is_some() {
+            offer_pci_windows(p, windows, from);
+        }
+    }
 }

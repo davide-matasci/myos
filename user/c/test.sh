@@ -15,6 +15,18 @@ t fb /bin/etc/fb_smoke
 # poll: timeouts, waking on pipe and unix socket events (not before),
 # POLLHUP/POLLERR/POLLNVAL, EAGAIN, EINTR (poll_smoke.c).
 t poll /bin/etc/poll_smoke
+# readv/writev over a pipe, a socketpair and a nonblocking socket that
+# fills mid-writev (uio_smoke.c).
+t uio /bin/etc/uio_smoke
+# The single-threaded pthread API: mutexes, once, keys, a timed condition
+# wait (pthread_smoke.c).
+t pthread /bin/etc/pthread_smoke
+# netfs conversations: a connect to 127.0.0.1 is refused at once, and 200
+# sockets closed right after socket() leak none (netconv_smoke.c).
+t netconv /bin/etc/netconv_smoke
+# kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
+# the wait (child_smoke.c).
+t child /bin/etc/child_smoke
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).

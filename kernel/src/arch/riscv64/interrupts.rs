@@ -144,10 +144,12 @@ trap_vector:
     sret
 6:
     # Return to S-mode: sscratch stays 0. The kernel may have scheduled in
-    # between; the resumed stack is still this frame's.
+    # between; the resumed stack is still this frame's. tp is not restored:
+    # in S-mode it is this hart's index, and a task without a home CPU (a
+    # module's kernel thread blocking in `block_until`) that the handler
+    # scheduled away from may resume on another hart, whose index must stay.
     ld x1, 8(sp)
     ld x3, 24(sp)
-    ld x4, 32(sp)
     ld x5, 40(sp)
     ld x6, 48(sp)
     ld x7, 56(sp)

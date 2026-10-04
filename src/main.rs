@@ -39,10 +39,18 @@ const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
 const RISCV_SMP: &str = "2";
 
 /// QEMU `virt` machine options for aarch64 (boot and the DTB dump alike).
-/// gic-version=2 keeps the distributor/CPU interface memory-mapped (the
-/// kernel drives GICv2); virtio-mmio transports default to legacy
-/// (version 1), the driver is v2.
-const AARCH64_MACHINE: &str = "virt,gic-version=2,highmem-ecam=off,highmem-mmio=off";
+/// QEMU `virt` for the aarch64 boots. `gic-version` is `$MYOS_AARCH64_GIC`
+/// (2, the default: the memory-mapped GICv2 CPU interface; 3: redistributors
+/// and the `ICC_*` system registers; CI boots both). `highmem-*=off` keeps
+/// the PCIe ECAM and MMIO windows in the identity-mapped low 1 GiB, and
+/// virtio-mmio transports default to legacy (version 1): the driver is v2.
+fn aarch64_machine() -> String {
+    let gic = match std::env::var("MYOS_AARCH64_GIC").as_deref() {
+        Ok("3") => "3",
+        _ => "2",
+    };
+    format!("virt,gic-version={gic},highmem-ecam=off,highmem-mmio=off")
+}
 
 /// aarch64: the kernel reads the board from the device tree, and the EDK2
 /// (AAVMF) boot path hands Limine none, so the image carries QEMU's own
@@ -62,6 +70,17 @@ fn riscv_limine_conf() -> String {
 /// to PIC and hung). Limine leaves PIC IRQs dead, so the kernel timer proof
 /// needs the x2APIC MSRs.
 const X86_CPU: &str = "qemu64,+x2apic";
+
+/// `-machine` for the x86 boots: QEMU's default (`pc`: PCI through port
+/// 0xCF8, no MCFG), or `$MYOS_X86_MACHINE` (`q35` for a PCIe PC with an
+/// MCFG, the ECAM path of `kernel/src/arch/x86/pci.rs`).
+fn x86_machine(cmd: &mut Command) {
+    if let Ok(machine) = std::env::var("MYOS_X86_MACHINE") {
+        if !machine.is_empty() {
+            cmd.arg("-machine").arg(machine);
+        }
+    }
+}
 
 fn main() {
     let bios_path = env!("BIOS_PATH");
@@ -276,6 +295,33 @@ fn fsck_scratch_disk() -> bool {
     }
 }
 
+fn usb_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/usb.img")
+}
+
+fn usb_hot_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/usb-hot.img")
+}
+
+/// The USB bus of every boot (docs/usb.md): an xHCI controller, a hub on
+/// its first port and a memory stick behind the hub (`/dev/sda`: the same
+/// FAT volume as `/dev/vda`, in its own file since QEMU locks images). A
+/// second stick's drive is defined but plugged into root port 2 only by the
+/// hot-plug test, through the monitor (`user/tests/host.sh usb-plug`).
+fn add_usb(cmd: &mut Command) {
+    let fat = fat_img_path();
+    for dest in [usb_img_path(), usb_hot_img_path()] {
+        std::fs::copy(&fat, &dest).unwrap_or_else(|e| panic!("copy {} to {}: {e}", fat.display(), dest.display()));
+    }
+    cmd.arg("-device").arg("qemu-xhci,id=xhci");
+    cmd.arg("-device").arg("usb-hub,bus=xhci.0,port=1,id=usbhub");
+    cmd.arg("-drive")
+        .arg(format!("if=none,id=usb0,format=raw,file={}", usb_img_path().display()));
+    cmd.arg("-device").arg("usb-storage,bus=xhci.0,port=1.1,drive=usb0,id=usbdisk");
+    cmd.arg("-drive")
+        .arg(format!("if=none,id=usbhot,format=raw,file={}", usb_hot_img_path().display()));
+}
+
 fn add_virtio_blk_x86(cmd: &mut Command) {
     write_empty_blk_image();
     let fat = fat_img_path();
@@ -292,6 +338,7 @@ fn add_virtio_blk_x86(cmd: &mut Command) {
     cmd.arg("-device")
         .arg("virtio-blk-pci,drive=vd1,disable-modern=on");
     add_nvme(cmd);
+    add_usb(cmd);
 }
 
 fn add_virtio_blk_aarch64(cmd: &mut Command) {
@@ -307,6 +354,7 @@ fn add_virtio_blk_aarch64(cmd: &mut Command) {
     ));
     cmd.arg("-device").arg("virtio-blk-device,drive=vd1");
     add_nvme(cmd);
+    add_usb(cmd);
 }
 
 fn add_virtio_blk_riscv64(cmd: &mut Command) {
@@ -379,6 +427,7 @@ fn add_virtio_net(cmd: &mut Command) {
 
 fn run_bios(bios_path: &str) {
     let mut cmd = Command::new("qemu-system-x86_64");
+    x86_machine(&mut cmd);
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
@@ -402,6 +451,7 @@ fn run_bios(bios_path: &str) {
 fn run_uefi(uefi_path: &str) {
     let (code, vars) = ovmf_files(Arch::X64);
     let mut cmd = Command::new("qemu-system-x86_64");
+    x86_machine(&mut cmd);
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
@@ -486,6 +536,7 @@ fn run_test_bios(bios_path: &str, mode: Mode) {
     start_package_mirror("x86_64", mode);
     prepare_alpine_disk("x86_64", mode);
     let mut cmd = Command::new("qemu-system-x86_64");
+    x86_machine(&mut cmd);
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
@@ -539,6 +590,7 @@ fn run_test_uefi(uefi_path: &str, mode: Mode) {
     prepare_alpine_disk("x86_64", mode);
     let (code, vars) = ovmf_files(Arch::X64);
     let mut cmd = Command::new("qemu-system-x86_64");
+    x86_machine(&mut cmd);
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
@@ -614,13 +666,10 @@ fn run_test_aarch64(mode: Mode) {
 fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     let (code, vars) = aarch64_firmware();
     let mut cmd = Command::new("qemu-system-aarch64");
-    // gic-version=2 keeps the distributor/CPU interface at the classic MMIO
-    // addresses (0x0800_0000 / 0x0801_0000) used later for IRQs.
-    // virtio-mmio transports default to legacy (version 1); the driver is v2.
     cmd.arg("-global")
         .arg("virtio-mmio.force-legacy=false")
         .arg("-machine")
-        .arg(AARCH64_MACHINE)
+        .arg(aarch64_machine())
         .arg("-cpu")
         .arg("cortex-a72")
         .arg("-m")
@@ -693,7 +742,7 @@ fn build_aarch64_image() -> PathBuf {
     let status = Command::new("qemu-system-aarch64")
         .args([
             "-machine",
-            &format!("{AARCH64_MACHINE},dumpdtb=target/virt-aarch64.dtb"),
+            &format!("{},dumpdtb=target/virt-aarch64.dtb", aarch64_machine()),
             "-cpu",
             "cortex-a72",
             "-smp",

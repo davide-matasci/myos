@@ -1,0 +1,16 @@
+diff --git a/os/utils.c b/os/utils.c
+index 657a3fa..627ffc6 100644
+--- a/os/utils.c
++++ b/os/utils.c
+@@ -272,6 +272,11 @@ LockServer(void)
+   haslock = 0;
+   while ((!haslock) && (i++ < 3)) {
+     haslock = (link(tmp,LockFile) == 0);
++    /* myos has no hard links: with no lock in place, move the tmp file
++     * there instead (another server starting in that window can clobber
++     * it, which link() would have refused). */
++    if (!haslock && errno != EEXIST && access(LockFile, F_OK) != 0)
++      haslock = (rename(tmp, LockFile) == 0);
+     if (haslock) {
+       /*
+        * We're done.

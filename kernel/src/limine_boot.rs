@@ -2,8 +2,8 @@
 
 use limine::memmap;
 use limine::request::{
-    DtbRequest, ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemmapRequest,
-    ModulesRequest, MpRequest, RsdpRequest,
+    DtbRequest, ExecutableAddressRequest, ExecutableCmdlineRequest, FramebufferRequest,
+    HhdmRequest, MemmapRequest, ModulesRequest, MpRequest, RsdpRequest,
 };
 use limine::{BaseRevision, RequestsEndMarker, RequestsStartMarker};
 
@@ -48,6 +48,11 @@ pub static MP: MpRequest = MpRequest::new(0);
 #[used]
 #[unsafe(link_section = ".limine_requests")]
 pub static RSDP: RsdpRequest = RsdpRequest::new();
+
+/// The kernel's command line (`cmdline:` in limine.conf): `platform=…`.
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+pub static CMDLINE: ExecutableCmdlineRequest = ExecutableCmdlineRequest::new();
 
 #[used]
 #[unsafe(link_section = ".limine_requests_end")]
@@ -98,6 +103,11 @@ pub fn alloc_usable(size: usize) -> usize {
         }
     }
     panic!("no usable Limine memory for heap");
+}
+
+/// The kernel command line, empty without one.
+pub fn cmdline() -> &'static str {
+    CMDLINE.response().map_or("", |r| r.cmdline())
 }
 
 /// Limine RSDP virtual address, or `None` when firmware has no ACPI.

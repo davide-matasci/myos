@@ -65,24 +65,38 @@ pub fn cycle_counter() -> u64 {
     (lo as u64) | ((hi as u64) << 32)
 }
 
-/// The hardware id of this CPU (the initial APIC id), if the arch can read it.
-pub fn hw_cpu_id() -> Option<u64> {
-    let apic: u32;
+/// `cpuid` leaf `leaf`, subleaf `sub`: `(eax, ebx, ecx, edx)`.
+pub fn cpuid(leaf: u32, sub: u32) -> (u32, u32, u32, u32) {
+    let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
     unsafe {
         core::arch::asm!(
-            "mov eax, 1",
             "push rbx",
             "cpuid",
-            "mov {apic:e}, ebx",
+            "mov {ebx:e}, ebx",
             "pop rbx",
-            out("eax") _,
-            apic = out(reg) apic,
-            out("ecx") _,
-            out("edx") _,
+            inout("eax") leaf => eax,
+            ebx = out(reg) ebx,
+            inout("ecx") sub => ecx,
+            out("edx") edx,
             options(preserves_flags),
         );
     }
-    Some(u64::from(apic >> 24))
+    (eax, ebx, ecx, edx)
+}
+
+/// The CPU has an x2APIC (CPUID.01H:ECX[21]).
+pub fn has_x2apic() -> bool {
+    cpuid(1, 0).2 & (1 << 21) != 0
+}
+
+/// The hardware id of this CPU: its x2APIC id (CPUID.0BH:EDX, 32 bits) when
+/// the CPU has an x2APIC, the initial APIC id (CPUID.01H:EBX[31:24])
+/// otherwise. The same id Limine's MP response names the CPU by.
+pub fn hw_cpu_id() -> Option<u64> {
+    if has_x2apic() && cpuid(0, 0).0 >= 0xB {
+        return Some(u64::from(cpuid(0xB, 0).3));
+    }
+    Some(u64::from(cpuid(1, 0).1 >> 24))
 }
 
 /// The logical CPU index stored in this CPU's id register (`IA32_TSC_AUX`,

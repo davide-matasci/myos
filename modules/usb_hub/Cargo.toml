@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "usb_hub"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "USB hub class driver module: the devices behind a hub, through the xhci module's USB bus service."
+
+[[bin]]
+name = "usb_hub"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

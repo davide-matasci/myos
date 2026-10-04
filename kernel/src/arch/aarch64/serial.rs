@@ -1,20 +1,41 @@
-//! PL011 UART, at the address the device tree gives (`arm,pl011`).
+//! The console UART, as the platform description names it: a PL011
+//! (`arm,pl011`, the SBSA UART; QEMU `virt`) or a 16550 (`ns16550a`,
+//! `snps,dw-apb-uart`: most SoCs), the latter with the board's register
+//! stride and access width (`reg-shift`, `reg-io-width`; the SPCR's access
+//! size).
 
 use core::fmt;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
-/// Until `set_base` runs: QEMU `virt`'s PL011, so that a boot without a
-/// usable device tree can still say so on the console it most likely has.
+use crate::platform::{Uart, UartKind};
+
+/// Until `set_uart` runs: QEMU `virt`'s PL011, so that a boot without a
+/// usable description can still say so on the console it most likely has.
 static BASE: AtomicUsize = AtomicUsize::new(0x0900_0000);
+/// 0: PL011, 1: 16550.
+static KIND: AtomicU8 = AtomicU8::new(0);
+/// 16550: register `n` is at `BASE + (n << SHIFT)`, `WIDTH` bytes wide.
+static SHIFT: AtomicU8 = AtomicU8::new(0);
+static WIDTH: AtomicU8 = AtomicU8::new(1);
 
-pub fn set_base(base: usize) {
-    BASE.store(base, Ordering::SeqCst);
+pub fn set_uart(uart: Uart) {
+    BASE.store(uart.base as usize, Ordering::SeqCst);
+    SHIFT.store(uart.reg_shift, Ordering::SeqCst);
+    WIDTH.store(uart.reg_width.max(1), Ordering::SeqCst);
+    KIND.store(matches!(uart.kind, UartKind::Ns16550) as u8, Ordering::SeqCst);
 }
 
 #[inline]
 fn uart0() -> usize {
     BASE.load(Ordering::Relaxed)
 }
+
+#[inline]
+fn is_16550() -> bool {
+    KIND.load(Ordering::Relaxed) == 1
+}
+
+// PL011 registers.
 const UARTDR: usize = 0x00;
 const UARTFR: usize = 0x18;
 const UARTIBRD: usize = 0x24;
@@ -28,11 +49,21 @@ const FR_TXFF: u32 = 1 << 5;
 const FR_BUSY: u32 = 1 << 3;
 const FR_RXFE: u32 = 1 << 4;
 
+// 16550 registers (indices, before the stride).
+const THR: usize = 0;
+const LSR: usize = 5;
+const LSR_RX_READY: u32 = 1 << 0;
+const LSR_TX_IDLE: u32 = 1 << 5;
+
 pub struct SerialPort;
 
 impl SerialPort {
     pub fn new() -> Self {
         use core::sync::atomic::{AtomicBool, Ordering};
+        if is_16550() {
+            // The firmware programmed the line; the 16550 is used as found.
+            return Self;
+        }
         // Program the PL011 once. The console constructs a `SerialPort` per
         // output byte; re-running this sequence each time disabled the UART
         // and rewrote LCR_H (which flushes the FIFOs) in the middle of
@@ -78,17 +109,32 @@ impl SerialPort {
     }
 
     fn write_byte_raw(&mut self, byte: u8) {
+        if is_16550() {
+            while reg_read(LSR) & LSR_TX_IDLE == 0 {}
+            reg_write(THR, u32::from(byte));
+            return;
+        }
         while read32(UARTFR) & FR_TXFF != 0 {}
         write32(UARTDR, byte as u32);
     }
 
     pub fn flush(&mut self) {
+        if is_16550() {
+            while reg_read(LSR) & LSR_TX_IDLE == 0 {}
+            return;
+        }
         while read32(UARTFR) & FR_BUSY != 0 {}
     }
 }
 
-/// Non-blocking read from PL011. Returns `None` if the RX FIFO is empty.
+/// Non-blocking read. Returns `None` if the RX FIFO is empty.
 pub fn read_byte() -> Option<u8> {
+    if is_16550() {
+        if reg_read(LSR) & LSR_RX_READY == 0 {
+            return None;
+        }
+        return Some(reg_read(THR) as u8);
+    }
     if read32(UARTFR) & FR_RXFE != 0 {
         return None;
     }
@@ -101,6 +147,31 @@ impl fmt::Write for SerialPort {
             self.write_byte(byte);
         }
         Ok(())
+    }
+}
+
+/// 16550 register `n`, at the board's stride and width.
+#[inline]
+fn reg_read(n: usize) -> u32 {
+    let addr = uart0() + (n << SHIFT.load(Ordering::Relaxed));
+    unsafe {
+        match WIDTH.load(Ordering::Relaxed) {
+            4 => core::ptr::read_volatile(addr as *const u32),
+            2 => u32::from(core::ptr::read_volatile(addr as *const u16)),
+            _ => u32::from(core::ptr::read_volatile(addr as *const u8)),
+        }
+    }
+}
+
+#[inline]
+fn reg_write(n: usize, value: u32) {
+    let addr = uart0() + (n << SHIFT.load(Ordering::Relaxed));
+    unsafe {
+        match WIDTH.load(Ordering::Relaxed) {
+            4 => core::ptr::write_volatile(addr as *mut u32, value),
+            2 => core::ptr::write_volatile(addr as *mut u16, value as u16),
+            _ => core::ptr::write_volatile(addr as *mut u8, value as u8),
+        }
     }
 }
 

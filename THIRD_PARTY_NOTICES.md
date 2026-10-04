@@ -26,6 +26,7 @@ under its own license.
 | newlib + libgloss (C library; `toolchain/newlib/`) | 4.4.0 | Mostly BSD-style permissive licenses; see `COPYING.NEWLIB` / `COPYING.LIBGLOSS` in the upstream source | https://sourceware.org/git/newlib-cygwin.git |
 | Rust `std` and `core` (patched; `toolchain/std/`), linked into Rust userspace programs | pinned nightly (`rust-toolchain.toml`) | MIT OR Apache-2.0 | https://github.com/rust-lang/rust |
 | Rust crates in the kernel / `user/netd` | see `Cargo.toml` | `limine`: MIT OR Apache-2.0; `spin`: MIT; `x86_64`, `linked_list_allocator`, `pic8259`: MIT/Apache-2.0; `smoltcp`: 0BSD; `fdt` (device tree parser, used unmodified): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://crates.io |
+| Rust crates in the `xhci` module (`modules/xhci/Cargo.toml`) | `xhci` 0.9.2 | `xhci` (register, TRB and context layouts, used unmodified) and its dependencies `accessor`, `bit_field`, `num-derive`, `num-traits`, `paste`: MIT OR Apache-2.0 | https://github.com/rust-osdev/xhci |
 | sbase | `SBASE_REV` in `ports/sbase/versions.env` | MIT | https://git.suckless.org/sbase |
 | ubase | `UBASE_REV` in `ports/ubase/versions.env` | MIT | https://github.com/michaelforney/ubase |
 | uutils coreutils (+ its Rust dependencies) | 0.10.0 (see `ports/coreutils/README.md`) | MIT (dependencies: MIT / Apache-2.0 and similar permissive licenses) | https://github.com/uutils/coreutils |
@@ -41,12 +42,22 @@ under its own license.
 | Lynx | 2.9.3 | **GPL-2.0-only** | https://invisible-island.net/lynx/ |
 | GNU Make | 4.4.1 | **GPL-3.0-or-later** | https://ftp.gnu.org/gnu/make/ |
 | Lua | 5.4.7 | MIT | https://www.lua.org/ |
+| X client libraries (package `x11-libs`): xorgproto, xtrans, libXau, xcb-proto, libxcb, libX11 | see `packages/x11-libs/versions.env` | MIT / X11-style (X.Org, The Open Group and others; each upstream `COPYING`) | https://www.x.org/releases/individual/ |
+| TinyX `Xfbdev` (package `tinyx`; the X server) | `TINYX_REV` in `packages/tinyx/versions.env` | **GPL-3.0** (TinyX's changes; the X.Org code it started from is MIT/X11) | https://github.com/tinycorelinux/tinyx |
+| libfontenc, libXfont 1.x, libXdmcp's header (linked into / used to build `Xfbdev`) | see `packages/tinyx/versions.env` | MIT / X11-style | https://www.x.org/releases/individual/lib/ |
+| dwm (package `dwm`; the window manager) | `DWM_VERSION` in `packages/dwm/versions.env` | MIT/X Consortium | https://dwm.suckless.org/ |
+| Xft font stack (package `x11-xft`): expat, FreeType, fontconfig, libXrender, libXft | see `packages/x11-xft/versions.env` | expat, libXrender, libXft: MIT; fontconfig: MIT-style (HPND); FreeType: the FreeType License (FTL, used instead of its GPL-2.0 alternative; credit below) | https://libexpat.github.io/ https://freetype.org/ https://www.freedesktop.org/wiki/Software/fontconfig/ https://www.x.org/releases/individual/lib/ |
+| DejaVu Sans Mono (package `x11-fonts`, `/lib/fonts`) | `DEJAVU_VERSION` in `packages/x11-fonts/versions.env` | Bitstream Vera Fonts license and Arev Fonts license (DejaVu's changes public domain); the text ships as `/lib/fonts/LICENSE.DejaVu` | https://dejavu-fonts.github.io/ |
 | Mbed TLS (TLS for `curl`, `lynx`, `user/tls`) | 3.6.2 | Apache-2.0 OR GPL-2.0-or-later (myos uses it under Apache-2.0) | https://github.com/Mbed-TLS/mbedtls |
 | curl | 8.11.1 | curl license (MIT-style) | https://curl.se/ |
 | Mozilla CA certificate bundle (`/lib/cacert.pem`, from curl.se) | latest at build time | **MPL-2.0** | https://curl.se/docs/caextract.html |
 | os-test suite (`/lib/os-test`, when included) | `OSTEST_REV` in `packages/os-test/versions.env` | ISC | https://gitlab.com/sortix/os-test |
 | BSD `syslimits.h` (`toolchain/newlib/libgloss/myos/sys/`) | n/a (file copied into this repo) | BSD-3-Clause, Regents of the University of California (notice kept in the file) | FreeBSD |
 | PCRE2 headers (`ports/ripgrep/pcre2-headers/`) | 10.46 | BSD-3-Clause, University of Cambridge (notice kept in the file) | https://github.com/PCRE2Project/pcre2 |
+
+Portions of this software are copyright © The FreeType Project
+(www.freetype.org). All rights reserved. (The FreeType License's credit, for
+the `x11-xft` package and the X programs linked with it.)
 
 Files in this repository that carry notices from upstream (kept as required):
 `toolchain/newlib/libgloss/myos/{basename.c,dirname.c}` (newlib, Shaun Jackman),
@@ -60,24 +71,26 @@ Files in this repository that carry notices from upstream (kept as required):
 |-----------|---------|---------|-------|
 | musl libc (Linux test binaries and their `libc.so`) | 1.2.5 | MIT | fetched by `linux-compat/build.sh` |
 | zlib (linked into `get-alpine`) | see above | zlib | the `ports/zlib` build |
-| LLVM compiler-rt builtins (soft-float helpers, riscv64 / `libtf.a`) | llvmorg-19.1.7 | Apache-2.0 WITH LLVM-exception | fetched by `ports/curl/build-softfloat-riscv64.sh` and `linux-compat/build.sh` |
+| LLVM compiler-rt builtins (soft-float helpers, riscv64 / `libtf.a`) | llvmorg-19.1.7 | Apache-2.0 WITH LLVM-exception | fetched by `ports/curl/build-softfloat-riscv64.sh` (linked into curl and, on riscv64, every port built with `myos_write_cross_cc`: the X packages) and `linux-compat/build.sh` |
 | EDK2 / OVMF firmware (used on the host only to boot QEMU) | via `ovmf-prebuilt` 0.2.9 (MIT OR Apache-2.0) | BSD-2-Clause-Patent | not part of any image |
 | Alpine Linux packages | n/a | per package | downloaded **at run time** by `get-alpine` on the user's machine; nothing from Alpine is in the image |
 
 ## Source code for copyleft components
 
 The following programs in the image are under copyleft licenses
-(GPL-2.0-only, GPL-3.0-or-later, LGPL-2.1, MPL-2.0): **Git, Lynx, GNU Make,
-TinyCC, and the Mozilla CA bundle.** (Vim's and Mbed TLS's licenses also allow
+(GPL-2.0-only, GPL-3.0-or-later, GPL-3.0, LGPL-2.1, MPL-2.0): **Git, Lynx,
+GNU Make, TinyCC, TinyX (`Xfbdev`), and the Mozilla CA bundle.** (Vim's and Mbed TLS's licenses also allow
 redistribution; Mbed TLS is used here under its Apache-2.0 option.)
 
 The complete corresponding source for each of them is:
 
 1. the pinned upstream source named in the table above (exact revision or
-   version and, where available, SHA-256 in `ports/<name>/versions.env`), plus
+   version and, where available, SHA-256 in `ports/<name>/versions.env` or
+   `packages/<name>/versions.env`), plus
 2. the myos build scripts and patches in this repository, at the git commit
-   from which the image was built (`ports/<name>/`, `scripts/`,
-   `toolchain/`).
+   from which the image was built (`ports/<name>/`, `packages/<name>/`,
+   `scripts/`, `toolchain/`). The TinyX patches (`packages/tinyx/*.myos.patch`,
+   the new `kdrive/myos` files among them) are under TinyX's license.
 
 If you received a myos image or ISO from the maintainers and would like these
 sources on a physical medium, or cannot download them from the locations above,

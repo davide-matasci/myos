@@ -4,6 +4,59 @@ Follow-ups left open after the blocking scheduler (#187), virtio-net RX
 interrupts (#188) and the modular kernel (arch/ split, process blocks, every
 driver a module). Roughly in priority order.
 
+## X11 as a package (minimal)
+
+An X server and a few clients as packages (`packages/`, `get-myos`): core
+protocol only, no mouse, no extensions beyond what the server cannot drop.
+The screen is `/dev/fb` (`docs/fb.md`), the keyboard `/dev/console/kbd`
+(`docs/tty.md`, Linux `KEY_*` codes: X keycode = code + 8), clients connect
+over `/net/unix` (`/tmp/.X11-unix/X0` is a name there,
+`docs/sockets-unix.md`). libc has `readv`/`writev` and a single-threaded
+pthread API, `packages/x11-libs` builds the client libraries (libxcb,
+libX11; `packages/x11-libs/README.md`) and `packages/tinyx` the server,
+TinyX's `Xfbdev` on `/dev/fb` and `/dev/console/kbd`
+(`packages/tinyx/README.md`; GPL-3.0, the rest MIT/X11),
+`packages/x11-xft` the client-side fonts (FreeType, fontconfig, Xft) with
+`packages/x11-fonts` (DejaVu Sans Mono), and `packages/dwm` the window
+manager, unpatched (`packages/dwm/README.md`). Everything is linked
+statically.
+
+1. **First clients, libX11 only**: `xsetroot`, `xev`.
+2. **A terminal**, the one dwm's Alt+Shift+Return starts: `st` on Xft, or
+   `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from `ports/termcap`; libX11's
+   locale data, which x11-libs does not ship yet). Then `dmenu` (Alt+P), on
+   Xft too.
+   More fonts (a proportional DejaVu Sans) when a client wants them.
+3. **A session file**: `startx` (`packages/tinyx`) runs the server and one
+   client (dwm); a `~/.xinitrc`-like script to start a terminal next to the
+   window manager once there is a terminal.
+
+Gaps that may show up on the way:
+
+- `setitimer` fails (`ENOSYS`) and `alarm` is missing: the server runs its
+  plain scheduler (it prints "scheduling timer: Function not implemented");
+  `xterm`'s blinking will want a timer.
+- `/net/unix` buffers 8 KiB per end and has 32 conversations: enough to
+  start, slow for big replies (`GetImage`, large `PutImage`).
+- A real `pthread_create` (on `thread_spawn` / `wait_addr`) if a client
+  needs threads; the libgloss pthread functions are single-threaded.
+- MIT-SHM, and with it fast image transfers, needs the shared memory below.
+
+## riscv64 soft-float: sbase's double helpers are wrong
+
+`ports/sbase/riscv64-softfloat.c` implements riscv64's (no FPU) double
+arithmetic, conversions and compares by hand, and they are broken: 80 + 100
+gave 116, 80 * 1000 not 80000, `a == a` was false (the compares take
+`long double` arguments where the compiler passes `double`). fontconfig's
+font weights came out as garbage with them. The X packages now take those
+functions from compiler-rt (`target/libsoftfloat-riscv64.a`, which curl
+already used) and only the long-double conversions from sbase's file
+(`myos_write_cross_cc`), but the other ports linking the file still get the
+broken ones: sbase, ubase, oksh, dropbear, tcc, vim, lua, make, git, lynx,
+os-test's prebuilt tests and the C smokes. Fix: the same split for each, or the file reduced to its
+long-double part with compiler-rt for the rest, then a riscv64 test that
+checks double arithmetic (lua would show it).
+
 ## x86_64 interrupt routing beyond MSI-X
 
 aarch64 and riscv64 take their PCI INTx routing, controller bases and
@@ -16,21 +69,21 @@ CPUs are also unhandled. A device without MSI-X today degrades to netd's 1 s
 
 ## Device tree: what is still assumed
 
-The tree gives the GIC / PLIC, UART, RTC, PCIe host bridge and `virtio,mmio`
-nodes. Not read yet: the CPU list (Limine's MP bring-up enumerates CPUs),
-`clint`, GICv3 (`arm,gic-v3`: redistributors and the ICC system registers
-instead of the GICv2 memory-mapped CPU interface), a UART other than PL011 /
-16550, and `interrupt-map` entries whose parent is not the one interrupt
-controller. A board needing any of these fails at boot with a `fatal: device
-tree: ...` line on the default QEMU `virt` UART address.
+The tree gives the GIC (v2 or v3) / PLIC, UART (PL011, 16550 with its
+`reg-shift`), RTC, PCIe host bridge and `virtio,mmio` nodes. Not read yet:
+`clint`, a UART of another kind, the GICv3 ITS (PCI devices use INTx on
+aarch64), and `interrupt-map` entries whose parent is not the one interrupt
+controller. A board needing any of these fails at boot with a `fatal:
+platform: ...` line on the default QEMU `virt` UART address.
 
 ## Module follow-ups
 
 - **Unregister paths**: `rmmod` unloads a module only while it provides
-  nothing (the kernel counts its registrations and refuses otherwise). To
-  unload a driver or a filesystem, the blk/chr/fs/console/personality
-  registries need unregister paths and a check that no fd, mount or task
-  still uses them.
+  nothing (the kernel counts its registrations and refuses otherwise).
+  Block devices unregister (`blk_unregister`, refused while mounted or
+  open: a USB stick pulled out). To unload a driver or a filesystem, the
+  chr/fs/console/personality registries need the same and a check that no
+  fd, mount or task still uses them.
 - **Hotplug notification**: a hot-added device appears after `rescan` is
   written to `/proc/pci` (`module_rescan`); no ACPI/QEMU hotplug interrupt
   triggers that by itself. virtio-net probes once (netd binds the one

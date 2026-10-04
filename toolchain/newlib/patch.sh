@@ -259,6 +259,15 @@ struct sigaction
 #endif' 1
     echo "patched sys/signal.h: sa_sigaction + SA_RESTART/SA_NODEFER/SA_RESETHAND/SA_SIGINFO"
   fi
+  # SA_NOCLDWAIT: children of a process setting it on SIGCHLD leave no
+  # zombie (the kernel reaps them). Not Linux's 2, newlib's SA_SIGINFO.
+  if ! grep -q 'SA_NOCLDWAIT' "$f"; then
+    patch_edit "$f" \
+'#define SA_RESETHAND 0x80000000 /* Reset to SIG_DFL on delivery */' \
+'#define SA_RESETHAND 0x80000000 /* Reset to SIG_DFL on delivery */
+#define SA_NOCLDWAIT 0x20       /* SIGCHLD: no zombies, the kernel reaps */' 1
+    echo "patched sys/signal.h: SA_NOCLDWAIT"
+  fi
 }
 
 patch_search_h() {

@@ -35,7 +35,10 @@ pub const QEMU_FAILURE: u32 = 0x11;
 
 pub fn early_init() {}
 
+/// After the heap: the ECAM window's page tables need frames.
 pub fn init_interrupts() {
+    pci::ecam_ready();
+    crate::console::status_info(&alloc::format!("pci config: {}", pci::config_source()));
     interrupts::init();
 }
 
@@ -50,9 +53,18 @@ pub fn ap_init(logical: usize) {
     crate::user::ap_init();
 }
 
-/// No device tree on x86_64 (ACPI describes the platform); nothing to apply.
-pub fn apply_dt() -> Result<Option<&'static str>, &'static str> {
-    Ok(None)
+/// ACPI describes the platform; there is no device tree.
+pub const PREFER_ACPI: bool = true;
+
+/// PCI configuration space goes through the MCFG's ECAM window when the
+/// description has one; the rest needs nothing from it (the LAPIC base
+/// comes from its MSR, the console from the COM1 port, configuration space
+/// from port 0xCF8 without an MCFG), so a PC without ACPI tables boots too.
+pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str> {
+    if let Some(host) = p.pci {
+        pci::set_ecam(host.value.ecam, host.value.bus_start, host.value.bus_end);
+    }
+    Ok(())
 }
 
 /// No device-tree interrupt specifiers on x86_64.
