@@ -29,7 +29,7 @@ use an MSI-X table entry or the INTx line:
 
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
-| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`MSI_VECTOR_BASE` 48 + n, 8 vectors; no IOAPIC / PIRQ routing) | vector |
+| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`MSI_VECTOR_BASE` 48 + n, 8 vectors; no IOAPIC / PIRQ routing; a BSP with an x2APIC id above 255 would need interrupt remapping, so it gets no MSI) | vector |
 | aarch64 | INTx → GICv2 SPI, level, priority 0x80, CPU 0; the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
 | riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
 
@@ -71,10 +71,15 @@ What each arch requires of the description: aarch64 a GICv2 (a GICv3 is
 reported and refused: `fatal: platform: GICv3 is not supported yet`), a
 PL011 and a PCIe host bridge with a 32-bit MMIO window; riscv64 a PLIC, a
 16550, the timebase and a host bridge with a 64-bit window; x86_64
-nothing (the LAPIC base comes from its MSR, the console from COM1, PCI
-configuration space from port 0xCF8), so a PC without ACPI tables boots
-too (QEMU's `pc` machine publishes neither an SPCR nor an MCFG: its
-description is the CPUs and the LAPIC). A missing source or component stops the boot with `fatal: platform:
+takes the MCFG's ECAM window for PCI configuration space when the
+description has one (QEMU `q35`, every PCIe PC; `arch/x86/pci.rs` maps a
+bus's megabyte of it on first use, once the heap's frames exist) and
+needs nothing else (the LAPIC base comes from its MSR, the console from
+COM1, configuration space from port 0xCF8 without an MCFG), so a PC
+without ACPI tables boots too (QEMU's `pc` machine publishes neither an
+SPCR nor an MCFG: its description is the CPUs and the LAPIC).
+`MYOS_X86_MACHINE=q35 cargo run -- test-mini` boots the PCIe PC locally;
+CI boots `pc`. A missing source or component stops the boot with `fatal: platform:
 ...` on the UART at QEMU `virt`'s address (the one assumption left, so
 the message has somewhere to go).
 
@@ -183,7 +188,7 @@ and a module `read` that returns `MYOS_READ_WAIT` makes an fd read wait for
 the file the same way. libgloss's `poll`/`select` are one call, and so is
 every blocking wait of its socket library (`pollselect.c`, `socket.c`).
 
-Deadlines use `time::monotonic_ns()` (x86: TSC calibrated against PIT
+Deadlines use `time::monotonic_ns()` (x86: TSC at the rate CPUID leaf 15H/16H states, else calibrated against the PIT
 channel 2 at boot; aarch64: `CNTVCT_EL0`; riscv64: `time` CSR). Each timer
 IRQ calls `task::timer_tick()`, which only scans `TASKS` once the earliest
 deadline (`NEXT_DEADLINE`) has passed. The x86 LAPIC tick is calibrated
@@ -204,7 +209,7 @@ picks a woken task that is still some CPU's `CURRENT`, and a wake that lands
 while the task is mid-switch (`SWITCHED_FROM`) is deferred to
 `finish_switch` (`wake_pending`). `wake` marks the woken task's home CPU
 (or the CPU it is halting on, or any idle CPU for a floating task) and sends
-a **targeted** reschedule IPI (`arch::ipi_reschedule_cpu`: xAPIC ICR with
+a **targeted** reschedule IPI (`arch::ipi_reschedule_cpu`: the LAPIC ICR with
 a destination, GICv2 SGI with a CPUTargetList bit, SBI IPI with a single
 hart) only when that CPU is halted. The console reader re-polls keyboards
 every 10 ms (they have no IRQ); the BSP timer stages UART RX on all three
@@ -226,7 +231,7 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 
 | Arch | CPU id | AP init | Timer / IRQ | IPI |
 |------|--------|---------|-------------|-----|
-| x86_64 | TSC_AUX / APIC id | Per-CPU GDT+TSS, GS → syscall state, xAPIC timer | LVT timer → `schedule` | xAPIC ICR all-excl-self (vec 33 TLB, 34 resched) |
+| x86_64 | TSC_AUX / APIC id | Per-CPU GDT+TSS, GS → syscall state, LAPIC timer (x2APIC MSRs when the CPU has an x2APIC, the xAPIC page otherwise; QEMU's TCG has no x2APIC, so CI runs the xAPIC path) | LVT timer → `schedule` | ICR all-excl-self (vec 33 TLB, 34 resched) |
 | aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | naked `goto_address` entry, TTBR0 device map sync, `VBAR`/`use_spx`, banked GICC, timers | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
 | riscv64 | `tp` / Limine `hartid` | `stvec` / `sie` (STIE+SSIE) / `stimecmp` | S-mode timer → `schedule` | SBI IPI ext → SSIP; soft reason bits in `smp` |
 
