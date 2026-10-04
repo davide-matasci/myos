@@ -6,7 +6,9 @@
  *                    at the top left
  *   dwm_smoke gone   wait for it to be gone (dwm hid the bar)
  *   dwm_smoke probe  whether the server answers a new connection's setup
- *                    within 10 s (when the bar does not come)
+ *                    within 10 s, the unix conversations' unread bytes and
+ *                    the server's view: its top-level windows and the
+ *                    root's pixel (when the bar does not come)
  *
  * Prints "[ OK ] dwm <mode>", or what it last saw.
  */
@@ -16,8 +18,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
 
 #define BAR_SEL 0x005577u
 #define X 2
@@ -63,6 +68,86 @@ static int probe(void) {
     return 0;
 }
 
+/* Each /net/unix conversation: its status, the bytes waiting in its data
+ * and, for a listener, the connections waiting in its listen. */
+static void conversations(void) {
+    char path[48], status[32];
+    struct stat st;
+
+    for (int n = 0; n < 32; n++) {
+        snprintf(path, sizeof path, "/net/unix/%d/status", n);
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) {
+            continue;
+        }
+        ssize_t len = read(fd, status, sizeof status - 1);
+        close(fd);
+        status[len > 0 ? len : 0] = '\0';
+        printf("/net/unix/%d: %s", n, status);
+        snprintf(path, sizeof path, "/net/unix/%d/data", n);
+        if (stat(path, &st) == 0) {
+            printf(" data=%lld", (long long)st.st_size);
+        }
+        snprintf(path, sizeof path, "/net/unix/%d/listen", n);
+        if (stat(path, &st) == 0) {
+            printf(" listen=%lld", (long long)st.st_size);
+        }
+        printf("\n");
+    }
+}
+
+/* The server's view: the root's children (dwm's bar among them) and the
+ * pixel at (X, Y) as the server has it. */
+static void server_view(void) {
+    Display *dpy = XOpenDisplay(":0");
+    Window root, parent, *kids = NULL;
+    unsigned nkids = 0;
+
+    if (!dpy) {
+        printf("view: no display\n");
+        return;
+    }
+    root = DefaultRootWindow(dpy);
+    if (XQueryTree(dpy, root, &root, &parent, &kids, &nkids)) {
+        for (unsigned i = 0; i < nkids; i++) {
+            XWindowAttributes wa;
+            if (XGetWindowAttributes(dpy, kids[i], &wa)) {
+                printf("view: window 0x%lx %dx%d+%d+%d %s%s\n", kids[i], wa.width, wa.height, wa.x, wa.y,
+                       wa.map_state == IsViewable ? "viewable" : "unmapped",
+                       wa.override_redirect ? " override-redirect" : "");
+            }
+        }
+        XFree(kids);
+    }
+    /* Down the bar's left edge: the server's pixel and the framebuffer's,
+     * with the framebuffer page the pixel is on. */
+    char line[128];
+    unsigned w, h, depth, pitch = 0;
+    int ctl = open("/dev/fb/ctl", O_RDONLY), fd = open("/dev/fb/data", O_RDONLY);
+    ssize_t n = ctl < 0 ? -1 : read(ctl, line, sizeof line - 1);
+    if (n > 0) {
+        line[n] = '\0';
+        sscanf(line, "%u %u %u %*s %u", &w, &h, &depth, &pitch);
+    }
+    for (int y = 0; y < 20; y += 2) {
+        XImage *img = XGetImage(dpy, root, X, y, 1, 1, AllPlanes, ZPixmap);
+        uint32_t p = 0;
+        off_t off = (off_t)y * pitch + X * 4;
+        if (fd >= 0 && pitch) {
+            lseek(fd, off, SEEK_SET);
+            if (read(fd, &p, 4) != 4) {
+                p = 0xdeadbeef;
+            }
+        }
+        printf("view: (%d, %d) server %06lx fb %06x page %lld\n", X, y,
+               img ? XGetPixel(img, 0, 0) & 0xffffff : 0xffffffUL, (unsigned)(p & 0xffffff), (long long)(off / 4096));
+        if (img) {
+            XDestroyImage(img);
+        }
+    }
+    XCloseDisplay(dpy);
+}
+
 int main(int argc, char **argv) {
     char line[128];
     unsigned w, h, depth, pitch;
@@ -76,7 +161,12 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (!strcmp(argv[1], "probe")) {
-        return probe();
+        conversations();
+        if (probe() != 0) {
+            return 1;
+        }
+        server_view();
+        return 0;
     }
     if (!strcmp(argv[1], "server")) {
         for (int i = 0; i < 60; i++) {

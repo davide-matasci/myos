@@ -45,7 +45,8 @@ for arch in x86_64 aarch64 riscv64; do
     -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_XOPEN_SOURCE=700L -DVERSION=\"$DWM_VERSION\" \
     -I"$stage/include" dwm.c drw.c util.c "${extra[@]+"${extra[@]}"}" \
     -o "$ROOT/target/dwm-${arch}-unknown-none" -L"$stage/lib" -lX11 -lxcb -lXau)
-  "$cc" -O2 -Wall -Wextra "$HERE/dwm_smoke.c" -o "$ROOT/target/dwm-smoke-${arch}-unknown-none"
+  "$cc" -O2 -Wall -Wextra -I"$stage/include" "$HERE/dwm_smoke.c" \
+    -o "$ROOT/target/dwm-smoke-${arch}-unknown-none" -L"$stage/lib" -lX11 -lxcb -lXau
 done
 
 myos_dwm_version_hash >"$MYOS_DWM_VERSION"
