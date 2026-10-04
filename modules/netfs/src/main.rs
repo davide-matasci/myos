@@ -42,16 +42,27 @@ const REP_CLONE_OK: u8 = 1;
 const REP_DATA: u8 = 2;
 const REP_STATUS: u8 = 3;
 const REP_ERR: u8 = 4;
+/// Bytes of a TCP conv's sends that netd moved into its socket (u16
+/// payload): the writers may queue that many more (`Conv::tx_room`).
+const REP_TXCREDIT: u8 = 5;
 
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
-/// Cap matches kernel `FILE_IO_TMP` (2048). TLS ClientHello / cert fragments
-/// need more than the old 512-byte slots (HTTPS handshake timed out in CI).
+/// TLS ClientHello / cert fragments need more than the old 512-byte slots
+/// (HTTPS handshake timed out in CI).
 const MSG_CAP: usize = 2048;
+/// Most a request to netd may take: one read of `/dev/netd` carries it, and
+/// the kernel copies a read through `FILE_IO_TMP` (kernel/src/task/fd.rs,
+/// 2042 bytes). A longer one reached netd cut short, and netd dropped it: a
+/// TCP write lost every full 2042-byte chunk.
+const READ_CAP: usize = 2042;
 const RING: usize = 128; /* SSH writev/kex burst; was 32 — riscv EIO */
 const MAX_CONV: usize = 32;
 /// Per-conversation RX staging. Cert chains exceed 512; drop = TLS timeout.
 const DATA_CAP: usize = 8192;
+/// TCP bytes a conv's writers may have queued in netd at once: a write
+/// takes what fits and a full conv refuses it (the writer waits for POLLOUT).
+const TX_CAP: u16 = 8192;
 const STATUS_CAP: usize = 64;
 
 #[derive(Clone, Copy)]
@@ -83,7 +94,7 @@ impl RingBuf {
     };
 
     fn push(&mut self, src: &[u8]) -> bool {
-        if self.count as usize >= RING || src.is_empty() || src.len() > MSG_CAP {
+        if self.count as usize >= RING || src.is_empty() || src.len() > READ_CAP {
             return false;
         }
         let i = self.head as usize % RING;
@@ -132,6 +143,9 @@ struct Conv {
     /// `taken <seq>` ([`NO_SEQ`] before any); a newer "accepted ... <seq>"
     /// status is a connection to accept (`poll`).
     taken: u32,
+    /// TCP: bytes the writers may still queue in netd (up to [`TX_CAP`]);
+    /// REP_TXCREDIT gives back what netd moved into its socket.
+    tx_room: u16,
 }
 
 /// [`Conv::taken`] before the first `taken`.
@@ -149,6 +163,7 @@ impl Conv {
         status_len: 0,
         status: [0; STATUS_CAP],
         taken: NO_SEQ,
+        tx_room: TX_CAP,
     };
 }
 
@@ -390,6 +405,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 status_len: 0,
                 status: [0; STATUS_CAP],
                 taken: NO_SEQ,
+                tx_room: TX_CAP,
             };
             return Some(i as u16);
         }
@@ -415,6 +431,7 @@ fn alloc_conv(proto: u8) -> Option<u16> {
                 status_len: 0,
                 status: [0; STATUS_CAP],
                 taken: NO_SEQ,
+                tx_room: TX_CAP,
             };
             return Some(i as u16);
         }
@@ -529,6 +546,7 @@ fn apply_reply(buf: &[u8]) {
                 status_len: 0,
                 status: [0; STATUS_CAP],
                 taken: NO_SEQ,
+                tx_room: TX_CAP,
             };
             set_status(slot, b"cloned");
         } else if slot.status_len == 0 {
@@ -566,6 +584,11 @@ fn apply_reply(buf: &[u8]) {
                 && (status_is(c, b"hangup") || status_is(c, b"error"))
             {
                 *c = Conv::EMPTY;
+            }
+        }
+        REP_TXCREDIT => {
+            if let [a, b, ..] = *payload {
+                c.tx_room = c.tx_room.saturating_add(u16::from_le_bytes([a, b])).min(TX_CAP);
             }
         }
         REP_ERR => {
@@ -979,13 +1002,24 @@ unsafe extern "C" fn net_write(
             if !conv_ok(id, p) {
                 return -1;
             }
-            if src.len() > MSG_CAP - REQ_HDR {
+            // TCP takes what one request carries and netd has room for; none
+            // left refuses the write (the kernel returns what earlier chunks
+            // took). A datagram goes whole or not at all.
+            let max = READ_CAP - REQ_HDR;
+            let n = if p == PROTO_TCP {
+                src.len().min(max).min(state().convs[id as usize].tx_room as usize)
+            } else if src.len() <= max {
+                src.len()
+            } else {
+                return -1;
+            };
+            if n == 0 || !enqueue_req(REQ_SEND, id, p, &src[..n]) {
                 return -1;
             }
-            if !enqueue_req(REQ_SEND, id, p, src) {
-                return -1;
+            if p == PROTO_TCP {
+                state().convs[id as usize].tx_room -= n as u16;
             }
-            src.len() as i32
+            n as i32
         }
         _ => -1,
     }
@@ -1021,7 +1055,9 @@ unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
     if status_is(c, b"error") {
         bits |= MYOS_POLLIN | MYOS_POLLHUP | MYOS_POLLERR;
     }
-    if c.status[..c.status_len as usize].starts_with(b"connected") {
+    if c.status[..c.status_len as usize].starts_with(b"connected")
+        && (p != PROTO_TCP || c.tx_room != 0)
+    {
         bits |= MYOS_POLLOUT;
     }
     bits
