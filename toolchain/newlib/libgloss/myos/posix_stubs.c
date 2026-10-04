@@ -343,6 +343,11 @@ pid_t waitpid(pid_t pid, int *status, int options) {
 }
 
 long sysconf(int name) {
+#ifdef _SC_OPEN_MAX
+    if (name == _SC_OPEN_MAX) {
+        return MYOS_OPEN_MAX;
+    }
+#endif
 #ifdef _SC_PAGESIZE
     if (name == _SC_PAGESIZE) {
         return 4096;
