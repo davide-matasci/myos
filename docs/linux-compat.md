@@ -342,8 +342,10 @@ login) and `http`, whose TLS library is mbedtls over newlib
 scripts are linked with clang: Alpine's gcc is not position-independent,
 which the Linux layer requires.
 
-Under TCG a first run takes hours: `core` and `alloc` take about 25
-minutes, each module or user program one to three. Known gaps:
+The kernel it builds boots: with it in the image instead of the host's,
+`cargo run -- test-mini` passes. Under TCG a first run takes hours:
+`core` and `alloc` about 25 minutes, each module or user program one to
+three, the kernel crate itself an hour. Known gaps:
 
 - `http` (mbedtls and newlib: autotools, `make`, `python3`) and the other
   C programs are not built in myos;
