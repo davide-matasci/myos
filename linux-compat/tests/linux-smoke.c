@@ -11,10 +11,16 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
+#include <spawn.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
+#include <sys/file.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/utsname.h>
@@ -181,6 +187,64 @@ static void check_threads(void) {
           "exit from a thread ends the process");
 }
 
+/* What a toolchain (cargo, rustc and its allocator, libcurl, SQLite) asks
+ * of the layer besides the basics. */
+static void check_toolchain_calls(char *self) {
+    /* posix_spawn: musl's clone(CLONE_VM | CLONE_VFORK) on a stack of its own. */
+    pid_t c;
+    int status = 0;
+    char *args[] = {self, "child", NULL};
+    check(posix_spawn(&c, self, NULL, NULL, args, NULL) == 0 &&
+              waitpid(c, &status, 0) == c && WIFEXITED(status) && WEXITSTATUS(status) == 5,
+          "posix_spawn");
+
+    /* pipe2 flags: close-on-exec kept per fd, an empty non-blocking end. */
+    int p[2];
+    char ch;
+    check(pipe2(p, O_CLOEXEC | O_NONBLOCK) == 0 && (fcntl(p[0], F_GETFD) & FD_CLOEXEC) &&
+              read(p[0], &ch, 1) == -1 && errno == EAGAIN,
+          "pipe2 O_CLOEXEC|O_NONBLOCK");
+    close(p[0]);
+    close(p[1]);
+
+    uint64_t v = 1;
+    int efd = eventfd(0, EFD_CLOEXEC);
+    check(efd >= 0 && write(efd, &v, 8) == 8 && read(efd, &v, 8) == 8 && v >= 1, "eventfd");
+    close(efd);
+
+    int sv[2];
+    char b[4] = {0};
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0 && write(sv[0], "to", 2) == 2 &&
+              read(sv[1], b, 2) == 2 && write(sv[1], "fro", 3) == 3 && read(sv[0], b, 3) == 3 &&
+              memcmp(b, "fro", 3) == 0,
+          "socketpair");
+    close(sv[0]);
+    close(sv[1]);
+
+    /* A file cut, grown and written at a position, with locks and fsync. */
+    struct stat st;
+    int fd = open("/tmp/linux-smoke.trunc", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0 && write(fd, "hello", 5) == 5 && ftruncate(fd, 0) == 0 && fstat(fd, &st) == 0 &&
+              st.st_size == 0 && ftruncate(fd, 100) == 0 && fstat(fd, &st) == 0 && st.st_size == 100,
+          "ftruncate");
+    check(pwrite(fd, "ab", 2, 10) == 2 && pread(fd, b, 2, 10) == 2 && memcmp(b, "ab", 2) == 0,
+          "pwrite");
+    check(flock(fd, LOCK_EX) == 0 && fsync(fd) == 0 && flock(fd, LOCK_UN) == 0, "flock, fsync");
+    close(fd);
+    unlink("/tmp/linux-smoke.trunc");
+
+    /* MADV_DONTNEED: the pages read as zero again (allocators count on it). */
+    char *m = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (m != MAP_FAILED) {
+        memset(m, 0x5a, 8192);
+    }
+    check(m != MAP_FAILED && madvise(m, 8192, MADV_DONTNEED) == 0 && m[0] == 0 && m[8191] == 0,
+          "madvise MADV_DONTNEED");
+    if (m != MAP_FAILED) {
+        munmap(m, 8192);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
@@ -326,6 +390,8 @@ int main(int argc, char **argv) {
     check(ioctl(0, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0, "TIOCGWINSZ");
     check(ln > 5 && strcmp(link + ln - 5, "/data") == 0, "fd link names the terminal");
     check(tcgetattr(1, &t) == -1 && errno == ENOTTY, "tcgetattr on a file: ENOTTY");
+
+    check_toolchain_calls(argv[0]);
 
     if (failures) {
         out("LINUX-SMOKE FAIL\n");
