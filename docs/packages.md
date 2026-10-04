@@ -88,7 +88,9 @@ binaries there: the tag names the commit they were built from, whose
 
 ## What is a package today
 
-`packages/`: git, lua, lynx, make, os-test, vim, and ncurses (a build
-dependency of vim and lynx, nothing in the image). Everything a boot needs
+`packages/`: git, lua, lynx, make, os-test, vim, x11-libs (the X client
+libraries for the X packages, with libX11's error database and their
+test), and ncurses (a build dependency of vim and lynx, nothing in the
+image). Everything a boot needs
 stays in `ports/` (and zlib, which get-myos links). The full test list
 installs them all; the ISO (`cargo run -- iso`) carries the image only.

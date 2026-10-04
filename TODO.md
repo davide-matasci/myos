@@ -12,23 +12,22 @@ The screen is `/dev/fb` (`docs/fb.md`), the keyboard `/dev/console/kbd`
 (`docs/tty.md`, Linux `KEY_*` codes: X keycode = code + 8), clients connect
 over `/net/unix` (`/tmp/.X11-unix/X0` is a name there,
 `docs/sockets-unix.md`). libc has `readv`/`writev` and a single-threaded
-pthread API already. Everything is MIT/X11 licensed and linked statically.
+pthread API, and `packages/x11-libs` builds the client libraries (libxcb,
+libX11; `packages/x11-libs/README.md`). Everything is MIT/X11 licensed and
+linked statically.
 
-1. **`packages/x11-libs`**: build output only, like `ncurses`. `xorgproto`,
-   `xtrans`, `libXau`, `xcb-proto` (its generator is Python, run on the
-   host), `libxcb`, `libX11` (`--disable-xthreads`, no XKB). Static `.a` and
-   headers for the packages below.
-2. **`packages/tinyx`**: TinyX's `Xfbdev` (Tiny Core's kdrive fork, MIT),
+1. **`packages/tinyx`**: TinyX's `Xfbdev` (Tiny Core's kdrive fork, MIT),
    with a myos backend: the screen from `/dev/fb/ctl` (`graphics` written,
    `data` mapped shared), the keyboard from `/dev/console/kbd`, no pointer
    driver (the core pointer exists, never moves). Built without MIT-SHM, XKB,
    GLX/DRI, Xinerama, DPMS; `-dumbSched` (no `SIGALRM` timer). Fonts:
    `fixed` and `cursor` from font-misc-misc as PCF, no FreeType.
-3. **First clients, libX11 only**: `xsetroot`, `xev`, a tiny window manager
+2. **First clients, libX11 only**: `xsetroot`, `xev`, a tiny window manager
    (TinyWM, public domain).
-4. **A terminal**: `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from
-   `ports/termcap`). `st` would need Xft, fontconfig and FreeType.
-5. **Test** (the packages' `test.sh`, full mode): start `Xfbdev :0`,
+3. **A terminal**: `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from
+   `ports/termcap`; libX11's locale data, which x11-libs does not ship yet).
+   `st` would need Xft, fontconfig and FreeType.
+4. **Test** (the packages' `test.sh`, full mode): start `Xfbdev :0`,
    `xsetroot -solid red` and check a pixel of `/dev/fb/data`, `xev` while
    the host types through the monitor (`user/c/host.sh sendkey`), kill the
    server and check the console has the screen and the keyboard back.
