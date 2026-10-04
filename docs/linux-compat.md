@@ -199,7 +199,8 @@ the console keymap and module devices natively), `access`,
 `symlink(at)`, `readlink(at)`, `poll`, `umask`.
 
 Memory: `brk`, `mmap` (anonymous, and private file mappings), `munmap`,
-`mprotect`, `madvise` (no-op). Files also: `pread64`.
+`mprotect`, `madvise` (no-op). Files also: `pread64`, `pwrite64`,
+`pwritev(2)`.
 
 Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve`,
 `exit` (the thread), `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`,
@@ -334,12 +335,16 @@ the kernel does not keep a per-task copy at syscall entry.
 - An eventfd is a pipe (its write end kept aside): a non-zero write wakes
   a reader, a read returns how many writes it collected. No semaphore mode
   and no initial value.
+- `socketpair(AF_UNIX, SOCK_STREAM | SOCK_SEQPACKET)` is two pipes, each
+  end reading one and writing the other: a channel between a parent and
+  its child (Rust's `Command` reports a failed exec through one). No
+  message boundaries, no fd passing, and a `dup` of an end only reads.
 - File locks (`flock`, `fcntl` record locks) are granted and not kept:
   myos has none, and a lock only guards against another copy of the same
   program (cargo, SQLite, git). `ftruncate` cuts a file to nothing or
   grows it; a shorter non-zero length is refused (`EINVAL`).
 - Sockets: IPv4 clients only (no `listen`/`accept`, no IPv6, no Unix
-  sockets or `socketpair`); no half-close (`shutdown` hangs up only for
+  sockets but `socketpair`'s); no half-close (`shutdown` hangs up only for
   `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are
   ignored; `poll` reports a connected socket writable even with no send
   room left (a nonblocking write then says `EAGAIN`).

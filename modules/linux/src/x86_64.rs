@@ -57,6 +57,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         15 => lsig::rt_sigreturn(regs),
         16 => ret(sys::ioctl(a[0], a[1], a[2])),
         17 => ret(sys::pread(a[0], a[1], a[2], a[3])),
+        18 => ret(sys::pwrite(a[0], a[1], a[2], a[3])),
         19 => ret(sys::rw_vec(a[0], a[1], a[2], false)), // readv
         20 => ret(sys::rw_vec(a[0], a[1], a[2], true)),  // writev
         21 => ret(sys::faccessat(AT_FDCWD, a[0])),       // access
@@ -81,6 +82,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         49 | 54 => ret(net::ignored(a[0])), // bind, setsockopt
         51 => ret(net::getsockname(a[0], a[1], a[2])),
         52 => ret(net::getpeername(a[0], a[1], a[2])),
+        53 => ret(net::socketpair(a[0], a[1], a[3])),
         55 => ret(net::getsockopt(a[0], a[1], a[2], a[3], a[4])),
         186 => task::current_tid(),
         56 => ret(thread::clone(regs, a[0], a[1], a[2], a[4], a[3])),
@@ -143,6 +145,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         290 => ret(sys::eventfd2(a[0], a[1])),
         292 => ret(sys::dup3(a[0], a[1], false, a[2])),
         293 => ret(sys::pipe2(a[0], a[1])),
+        296 | 328 => ret(sys::pwritev(a[0], a[1], a[2], a[3])), // pwritev, pwritev2
         302 => ret(sys::prlimit(a[1], a[3])),
         318 => ret(sys::getrandom(a[0], a[1])),
         _ => err(ENOSYS),

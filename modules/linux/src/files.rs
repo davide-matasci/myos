@@ -33,11 +33,14 @@ static PATHS: Mutex<[Vec<FdPath>; MAX_TASKS]> = Mutex::new([const { Vec::new() }
 struct Flags {
     cloexec: u64,
     nonblock: u64,
-    /// An eventfd's pipe write end (`sys::eventfd2`), by its read end: fd + 1.
+    /// Which fds are eventfds (`sys::eventfd2`).
+    event: u64,
+    /// For a pipe read end that stands for an eventfd or a socketpair end:
+    /// the hidden pipe write end its writes go to (fd + 1).
     writer: [u8; 64],
 }
 
-const NO_FLAGS: Flags = Flags { cloexec: 0, nonblock: 0, writer: [0; 64] };
+const NO_FLAGS: Flags = Flags { cloexec: 0, nonblock: 0, event: 0, writer: [0; 64] };
 
 static FLAGS: Mutex<[Flags; MAX_TASKS]> = Mutex::new([NO_FLAGS; MAX_TASKS]);
 
@@ -57,11 +60,20 @@ pub fn on_spawn(slot: usize) {
     FLAGS.lock()[slot] = NO_FLAGS;
 }
 
+/// `fd` and the hidden write end behind it, if any: they share their flags.
+fn with_writer(e: &Flags, fd: usize) -> u64 {
+    match e.writer.get(fd) {
+        Some(&w) if w != 0 => bit(fd) | bit(w as usize - 1),
+        _ => bit(fd),
+    }
+}
+
 /// Set fd's close-on-exec flag.
 pub fn set_cloexec(fd: usize, on: bool) {
     let mut f = FLAGS.lock();
     let e = &mut f[task::current_pid()];
-    e.cloexec = if on { e.cloexec | bit(fd) } else { e.cloexec & !bit(fd) };
+    let b = with_writer(e, fd);
+    e.cloexec = if on { e.cloexec | b } else { e.cloexec & !b };
 }
 
 pub fn cloexec(fd: usize) -> bool {
@@ -71,23 +83,39 @@ pub fn cloexec(fd: usize) -> bool {
 pub fn set_nonblock(fd: usize, on: bool) {
     let mut f = FLAGS.lock();
     let e = &mut f[task::current_pid()];
-    e.nonblock = if on { e.nonblock | bit(fd) } else { e.nonblock & !bit(fd) };
+    let b = with_writer(e, fd);
+    e.nonblock = if on { e.nonblock | b } else { e.nonblock & !b };
 }
 
 pub fn nonblock(fd: usize) -> bool {
     FLAGS.lock()[task::current_pid()].nonblock & bit(fd) != 0
 }
 
-/// The write end of eventfd `fd`, if it is one.
-pub fn event_writer(fd: usize) -> Option<usize> {
+/// The hidden write end behind `fd`, if it has one.
+pub fn writer(fd: usize) -> Option<usize> {
     let w = *FLAGS.lock()[task::current_pid()].writer.get(fd)?;
     (w != 0).then(|| w as usize - 1)
 }
 
-pub fn set_event_writer(fd: usize, writer: Option<usize>) {
+pub fn set_writer(fd: usize, writer: Option<usize>) {
     if let Some(slot) = FLAGS.lock()[task::current_pid()].writer.get_mut(fd) {
         *slot = writer.map_or(0, |w| w as u8 + 1);
     }
+}
+
+pub fn set_event(fd: usize, on: bool) {
+    let mut f = FLAGS.lock();
+    let e = &mut f[task::current_pid()];
+    e.event = if on { e.event | bit(fd) } else { e.event & !bit(fd) };
+}
+
+pub fn event(fd: usize) -> bool {
+    FLAGS.lock()[task::current_pid()].event & bit(fd) != 0
+}
+
+/// A socketpair end (`net::socketpair`): a hidden writer, not an eventfd.
+pub fn pair(fd: usize) -> bool {
+    writer(fd).is_some() && !event(fd)
 }
 
 /// A successful exec in `slot`: the fds to close now (and forget).
@@ -125,7 +153,8 @@ pub fn remove(fd: usize) {
     PATHS.lock()[task::current_pid()].retain(|e| e.fd != fd);
     set_cloexec(fd, false);
     set_nonblock(fd, false);
-    set_event_writer(fd, None);
+    set_writer(fd, None);
+    set_event(fd, false);
 }
 
 /// `new` now refers to what `old` does (dup/dup2/F_DUPFD), without

@@ -15,9 +15,11 @@ use super::files;
 use super::sys::{get_bytes, native, put, R};
 use crate::k::{fs, signal, task, time, user};
 
+const AF_UNIX: usize = 1;
 const AF_INET: usize = 2;
 const SOCK_STREAM: usize = 1;
 const SOCK_DGRAM: usize = 2;
+const SOCK_SEQPACKET: usize = 5;
 const SOCK_NONBLOCK: usize = 0o4000;
 const SOCK_CLOEXEC: usize = 0o2000000;
 const MSG_DONTWAIT: usize = 0x40;
@@ -242,11 +244,17 @@ fn ctl_connect(conv: &str, ([a, b, c, d], port): Addr) -> Result<(), usize> {
 }
 
 pub fn sendto(fd: usize, buf: usize, len: usize, to: usize, tolen: usize) -> R {
+    if files::pair(fd) {
+        return super::sys::write(fd, buf, len);
+    }
     send_to(fd, to, tolen)?;
     super::sys::write(fd, buf, len)
 }
 
 pub fn recvfrom(fd: usize, buf: usize, len: usize, flags: usize, from: usize, fromlen: usize) -> R {
+    if files::pair(fd) {
+        return super::sys::read(fd, buf, len);
+    }
     let n = recv(fd, flags & MSG_DONTWAIT != 0, || native(user::sys_read(fd, buf, len), EBADF))?;
     if let Some(peer) = sock(fd)?.1.peer {
         put_addr(from, fromlen, peer)?;
@@ -264,12 +272,18 @@ fn msghdr(msg: usize) -> Result<[usize; 4], usize> {
 
 pub fn sendmsg(fd: usize, msg: usize) -> R {
     let [name, namelen, iov, iovlen] = msghdr(msg)?;
+    if files::pair(fd) {
+        return super::sys::rw_vec(fd, iov, iovlen, true);
+    }
     send_to(fd, name, namelen)?;
     super::sys::rw_vec(fd, iov, iovlen, true)
 }
 
 pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
     let [name, _, iov, iovlen] = msghdr(msg)?;
+    if files::pair(fd) {
+        return super::sys::rw_vec(fd, iov, iovlen, false);
+    }
     let n = recv(fd, flags & MSG_DONTWAIT != 0, || super::sys::rw_vec(fd, iov, iovlen, false))?;
     if let Some(peer) = sock(fd)?.1.peer {
         put_addr(name, msg + 8, peer)?;
@@ -282,6 +296,17 @@ pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
 
 /// Only a full shutdown hangs up: `/net` has no half-close.
 pub fn shutdown(fd: usize, how: usize) -> R {
+    const SHUT_RD: usize = 0;
+    if files::pair(fd) {
+        // Done writing: the peer reads to the end of what is there.
+        if how != SHUT_RD
+            && let Some(w) = files::writer(fd)
+        {
+            files::set_writer(fd, None);
+            super::sys::close(w).ok();
+        }
+        return Ok(0);
+    }
     let (conv, _) = sock(fd)?;
     if how == SHUT_RDWR {
         let _ = fs::write(&format!("{conv}/ctl"), 0, b"hangup");
@@ -316,6 +341,39 @@ pub fn getsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -
 /// and a client socket binds implicitly).
 pub fn ignored(fd: usize) -> R {
     sock(fd).map(|_| 0)
+}
+
+/// `socketpair(AF_UNIX, ...)` as two native pipes: each end is one pipe's
+/// read end, and its writes go to the other pipe (`files::writer`). Enough
+/// for a channel between a parent and a child (Rust's `Command` reports a
+/// failed exec through one); no message boundaries, no passing of fds.
+pub fn socketpair(domain: usize, ty: usize, sv: usize) -> R {
+    if domain != AF_UNIX {
+        return Err(EAFNOSUPPORT);
+    }
+    if !matches!(ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC), SOCK_STREAM | SOCK_SEQPACKET) {
+        return Err(EPROTOTYPE);
+    }
+    let (ar, aw) = task::pipe_open().ok_or(EMFILE)?;
+    let Some((br, bw)) = task::pipe_open() else {
+        task::fd_close(ar);
+        task::fd_close(aw);
+        return Err(EMFILE);
+    };
+    for fd in [ar, aw, br, bw] {
+        files::remove(fd);
+    }
+    files::set_writer(ar, Some(bw));
+    files::set_writer(br, Some(aw));
+    for fd in [ar, br] {
+        files::set_cloexec(fd, ty & SOCK_CLOEXEC != 0);
+        files::set_nonblock(fd, ty & SOCK_NONBLOCK != 0);
+    }
+    let mut b = [0u8; 8];
+    b[..4].copy_from_slice(&(ar as i32).to_le_bytes());
+    b[4..].copy_from_slice(&(br as i32).to_le_bytes());
+    put(sv, &b)?;
+    Ok(0)
 }
 
 /// `listen` and `accept`: no listening sockets yet.

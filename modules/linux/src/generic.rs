@@ -38,6 +38,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         65 => ret(sys::rw_vec(a[0], a[1], a[2], false)), // readv
         66 => ret(sys::rw_vec(a[0], a[1], a[2], true)),  // writev
         67 => ret(sys::pread(a[0], a[1], a[2], a[3])),
+        68 => ret(sys::pwrite(a[0], a[1], a[2], a[3])),
+        70 | 287 => ret(sys::pwritev(a[0], a[1], a[2], a[3])), // pwritev, pwritev2
         73 => ret(sys::ppoll(a[0], a[1], a[2])),
         78 => ret(sys::readlinkat(a[0], a[1], a[2], a[3])),
         79 => ret(sys::fstatat(a[0], a[1], a[2], a[3])), // newfstatat
@@ -79,6 +81,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         173 => task::current_ppid(),
         174..=177 => 0, // getuid, geteuid, getgid, getegid
         198 => ret(net::socket(a[0], a[1])),
+        199 => ret(net::socketpair(a[0], a[1], a[3])),
         200 | 208 => ret(net::ignored(a[0])),             // bind, setsockopt
         201 | 202 | 242 => ret(net::no_listen(a[0])),     // listen, accept, accept4
         203 => ret(net::connect(a[0], a[1], a[2])),

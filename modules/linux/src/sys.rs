@@ -167,7 +167,7 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
     if would_block(fd, 1) {
         return Err(EAGAIN);
     }
-    if files::event_writer(fd).is_some() {
+    if files::event(fd) {
         return eventfd_read(fd, buf, len);
     }
     match files::get(fd) {
@@ -179,8 +179,8 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
 
 pub fn write(fd: usize, buf: usize, len: usize) -> R {
     let io = || native(task::fd_write(fd, buf, len), EBADF);
-    if let Some(w) = files::event_writer(fd) {
-        return eventfd_write(w, buf, len);
+    if let Some(w) = files::writer(fd) {
+        return if files::event(fd) { eventfd_write(w, buf, len) } else { write(w, buf, len) };
     }
     if would_block(fd, 2) {
         return Err(EAGAIN);
@@ -197,6 +197,8 @@ pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
     if cnt > 1024 {
         return Err(EINVAL);
     }
+    // A socketpair end writes to its peer's pipe.
+    let wfd = files::writer(fd).filter(|_| write && files::pair(fd)).unwrap_or(fd);
     let io = || {
         let mut total = 0usize;
         for i in 0..cnt {
@@ -205,7 +207,7 @@ pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
             if len == 0 {
                 continue;
             }
-            let r = if write { task::fd_write(fd, base, len) } else { user::sys_read(fd, base, len) };
+            let r = if write { task::fd_write(wfd, base, len) } else { user::sys_read(fd, base, len) };
             if native_failed(r) {
                 return if total > 0 { Ok(total) } else { native(r, EBADF) };
             }
@@ -279,8 +281,8 @@ fn pty_alias(path: String) -> String {
 }
 
 pub fn close(fd: usize) -> R {
-    if let Some(w) = files::event_writer(fd) {
-        files::set_event_writer(fd, None);
+    if let Some(w) = files::writer(fd) {
+        files::set_writer(fd, None);
         close(w).ok();
     }
     files::remove(fd);
@@ -455,7 +457,7 @@ pub fn pipe2(fds: usize, flags: usize) -> R {
 }
 
 /// `eventfd2(initval, flags)` as a native pipe: the eventfd is the read
-/// end, the write end is kept aside (`files::event_writer`). A write of a
+/// end, the write end is kept aside (`files::writer`). A write of a
 /// non-zero count puts a byte in the pipe; a read takes what is there and
 /// gives the number of bytes as the count. Enough for a wakeup (libcurl's),
 /// not for exact counts: no semaphore mode, no initial value.
@@ -470,7 +472,8 @@ pub fn eventfd2(init: usize, flags: usize) -> R {
         files::set_cloexec(fd, flags & O_CLOEXEC != 0);
     }
     files::set_nonblock(r, flags & O_NONBLOCK != 0);
-    files::set_event_writer(r, Some(w));
+    files::set_writer(r, Some(w));
+    files::set_event(r, true);
     Ok(r)
 }
 
@@ -672,6 +675,33 @@ pub fn pread(fd: usize, buf: usize, count: usize, off: usize) -> R {
     let n = task::fd_pread(fd, off, &mut tmp).ok_or(ESPIPE)?;
     put(buf, &tmp[..n])?;
     Ok(n)
+}
+
+/// `pwrite64`: the VFS writes at a position by path (the fd's offset stays).
+pub fn pwrite(fd: usize, buf: usize, count: usize, off: usize) -> R {
+    let path = files::get(fd).filter(|e| !e.dir && e.sock.is_none()).ok_or(ESPIPE)?.path;
+    let real = real_path(&path)?;
+    let mut tmp = alloc::vec![0u8; count.min(1 << 20)];
+    get(buf, &mut tmp)?;
+    fs::write(&real, off, &tmp).ok_or(EIO)
+}
+
+/// `pwritev` / `pwritev2` (flags ignored): one `pwrite` per buffer.
+pub fn pwritev(fd: usize, iov: usize, cnt: usize, off: usize) -> R {
+    if cnt > 1024 {
+        return Err(EINVAL);
+    }
+    let mut total = 0;
+    for i in 0..cnt {
+        let base = get_u64(iov + i * 16)? as usize;
+        let len = get_u64(iov + i * 16 + 8)? as usize;
+        let n = pwrite(fd, base, len, off + total)?;
+        total += n;
+        if n < len {
+            break;
+        }
+    }
+    Ok(total)
 }
 
 // ---- processes ------------------------------------------------------------
