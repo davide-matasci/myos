@@ -372,7 +372,8 @@ the kernel does not keep a per-task copy at syscall entry.
     is made;
   - a 16 MiB `brk` heap;
   - 64 fds per process, 512 open file descriptions in the system, 64 tasks
-    in total;
+    in total, 64 pipes in the system (and 24 named FIFOs), each with a
+    4 KiB buffer;
   - `/tmp` (tmpfs) files of at most 16 MiB each, all of them in the
     kernel heap (a quarter of the memory, 64 MiB to 1 GiB: 256 MiB in the
     1 GiB CI guests).

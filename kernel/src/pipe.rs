@@ -1,20 +1,24 @@
 //! In-kernel pipe ring buffers for `pipe(2)`.
 
+use alloc::boxed::Box;
 use spin::Mutex;
 
-/// Anonymous `pipe()` slots: `0..ANON_PIPES` (unchanged capacity).
-const ANON_PIPES: usize = 8;
+/// Anonymous `pipe()` slots, system-wide: `0..ANON_PIPES`. A process
+/// spawned with its output captured takes two, and builds nest them
+/// (cargo, rustc, the linker; `make`, the compiler, the assembler).
+const ANON_PIPES: usize = 64;
 /// Named FIFOs (tmpfs `mkfifo`) hold a slot for as long as the node exists,
 /// so they get their own pool (`ANON_PIPES..MAX_PIPES`) and can never starve
 /// `pipe()` for shells and dropbear sessions.
-const MAX_PIPES: usize = 32;
+const MAX_PIPES: usize = ANON_PIPES + 24;
 /// Ring size per pipe. 512 made every `cat | cat` byte stream a 128-byte
 /// syscall ping-pong; 4 KiB (Linux PIPE_BUF) lets a writer hand over a
 /// whole `FILE_IO_TMP` chunk per syscall.
 const PIPE_BUF: usize = 4096;
 
 struct Pipe {
-    data: [u8; PIPE_BUF],
+    /// The ring, on the heap while the pipe exists.
+    data: Box<[u8]>,
     head: usize,
     len: usize,
     readers: u8,
@@ -48,7 +52,7 @@ fn alloc_in(from: usize, to: usize, named: bool) -> Option<usize> {
     for (i, slot) in pipes.iter_mut().enumerate().take(to).skip(from) {
         if slot.is_none() {
             *slot = Some(Pipe {
-                data: [0; PIPE_BUF],
+                data: alloc::vec![0; PIPE_BUF].into_boxed_slice(),
                 head: 0,
                 len: 0,
                 readers: 0,
