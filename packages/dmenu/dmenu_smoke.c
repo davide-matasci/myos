@@ -31,6 +31,22 @@ static int server_up(void) {
     return up;
 }
 
+/* Read `len` bytes at `off`: /dev/fb/data may return less per read. */
+static int read_at(int fd, off_t off, void *buf, size_t len) {
+    size_t done = 0;
+    if (lseek(fd, off, SEEK_SET) < 0) {
+        return -1;
+    }
+    while (done < len) {
+        ssize_t n = read(fd, (char *)buf + done, len - done);
+        if (n <= 0) {
+            return -1;
+        }
+        done += n;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     static uint32_t row[MAX_W];
     char line[128];
@@ -72,7 +88,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     for (int i = 0; i < 60; i++) {
-        if (lseek(fd, (off_t)Y * pitch, SEEK_SET) < 0 || read(fd, row, w * 4) != (ssize_t)(w * 4)) {
+        if (read_at(fd, (off_t)Y * pitch, row, w * 4) < 0) {
             printf("[ FAIL ] dmenu reading /dev/fb/data\n");
             return 1;
         }
