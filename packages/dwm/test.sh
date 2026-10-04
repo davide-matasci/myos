@@ -3,6 +3,19 @@
 # hides it on the Alt+B the host types through the QEMU monitor (the black
 # root shows through, Xfbdev -br) and shows it again on a second Alt+B;
 # dwm_smoke.c reads the pixel.
+
+# On a failure: the /net conversations (a client that cannot reach the
+# server's unix socket falls back to TCP).
+dwm_net_state() {
+	for proto in unix tcp; do
+		printf '/net/%s:' $proto
+		for f in /net/$proto/[0-9]*/status; do
+			[ -e "$f" ] && printf ' %s' "$(cat "$f")"
+		done
+		echo
+	done
+}
+
 dwm_run() {
 	Xfbdev :0 -br > /tmp/dwm-server.log 2>&1 &
 	xpid=$!
@@ -17,6 +30,7 @@ dwm_run() {
 				/bin/etc/dwm_smoke bar && ok=1
 			fi
 		fi
+		[ $ok = 1 ] || dwm_net_state
 		kill $dpid 2>/dev/null
 		wait $dpid 2>/dev/null
 	fi
