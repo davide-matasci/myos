@@ -1,9 +1,13 @@
-//! IDT + xAPIC timer via MMIO.
+//! IDT + the local APIC timer, IPIs and MSI-X vectors.
 //!
-//! TCG (GitHub Actions) does not implement x2APIC: CI #51 printed
-//! "TCG doesn't support requested feature: CPUID.01H:ECX.x2apic".
-//! PIC IRQ0 also never arrives under Limine. Map the local APIC
-//! (phys from IA32_APIC_BASE) at HHDM+phys and program the xAPIC timer.
+//! The local APIC is driven in x2APIC mode (its registers are MSRs
+//! 0x800..) when the CPU has one (CPUID.01H:ECX[21]: every PC of the last
+//! fifteen years), in xAPIC mode (the registers memory-mapped at the
+//! IA32_APIC_BASE address, mapped here at HHDM+phys) otherwise. QEMU's TCG
+//! has no x2APIC ("TCG doesn't support requested feature:
+//! CPUID.01H:ECX.x2apic", CI #51), so CI runs the xAPIC path; real hardware
+//! takes the other. PIC IRQ0 never arrives under Limine: the timer is the
+//! LAPIC's.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Once;
@@ -34,7 +38,13 @@ const DIV: u32 = 0x3E0;
 
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
+/// The xAPIC registers' virtual address (0 in x2APIC mode).
 static LAPIC: AtomicUsize = AtomicUsize::new(0);
+/// x2APIC mode: registers through MSRs, decided once by the BSP.
+static X2APIC: AtomicBool = AtomicBool::new(false);
+/// The first x2APIC MSR; register `off` of the xAPIC page is MSR
+/// `X2APIC_MSR_BASE + off / 16`.
+const X2APIC_MSR_BASE: u32 = 0x800;
 
 #[repr(align(4096))]
 struct Table([u64; 512]);
@@ -123,9 +133,30 @@ fn map_lapic(phys: u64) -> usize {
 }
 
 fn lapic_w(off: u32, val: u32) {
+    if X2APIC.load(Ordering::Relaxed) {
+        wrmsr(X2APIC_MSR_BASE + off / 16, u64::from(val));
+        return;
+    }
     let b = LAPIC.load(Ordering::SeqCst);
     unsafe {
         core::ptr::write_volatile((b + off as usize) as *mut u32, val);
+    }
+}
+
+/// Enable this CPU's local APIC, in x2APIC mode when the BSP chose it, and
+/// map the xAPIC registers otherwise (once: every CPU sees the same page).
+fn enable_lapic() {
+    let mut base = rdmsr(IA32_APIC_BASE) | APIC_EN;
+    if X2APIC.load(Ordering::Relaxed) {
+        base |= APIC_EXTD;
+        wrmsr(IA32_APIC_BASE, base);
+        return;
+    }
+    base &= !APIC_EXTD;
+    wrmsr(IA32_APIC_BASE, base);
+    if LAPIC.load(Ordering::SeqCst) == 0 {
+        let va = map_lapic(base & 0xffff_f000);
+        LAPIC.store(va, Ordering::SeqCst);
     }
 }
 
@@ -163,13 +194,13 @@ pub fn init() {
     wrmsr(IA32_TSC_AUX, 0);
     super::user::load_percpu_gs(0);
 
-    let mut base = rdmsr(IA32_APIC_BASE);
-    base |= APIC_EN;
-    base &= !APIC_EXTD;
-    wrmsr(IA32_APIC_BASE, base);
-    let phys = base & 0xffff_f000;
-    let va = map_lapic(phys);
-    LAPIC.store(va, Ordering::SeqCst);
+    X2APIC.store(super::cpu::has_x2apic(), Ordering::SeqCst);
+    enable_lapic();
+    crate::console::status_info(if X2APIC.load(Ordering::Relaxed) {
+        "lapic: x2apic"
+    } else {
+        "lapic: xapic"
+    });
 
     lapic_w(SVR, 0x100 | u32::from(SPURIOUS_VECTOR));
     lapic_w(TPR, 0);
@@ -238,16 +269,7 @@ pub fn ap_init(logical: usize) {
     wrmsr(IA32_TSC_AUX, logical as u64);
     super::user::load_percpu_gs(logical);
 
-    let mut base = rdmsr(IA32_APIC_BASE);
-    base |= APIC_EN;
-    base &= !APIC_EXTD;
-    wrmsr(IA32_APIC_BASE, base);
-    let phys = base & 0xffff_f000;
-    // LAPIC MMIO already mapped by BSP at the same phys (CPU-local view).
-    if LAPIC.load(Ordering::SeqCst) == 0 {
-        let va = map_lapic(phys);
-        LAPIC.store(va, Ordering::SeqCst);
-    }
+    enable_lapic();
     lapic_w(SVR, 0x100 | u32::from(SPURIOUS_VECTOR));
     lapic_w(TPR, 0);
     lapic_w(LVT_LINT0, 1 << 16);
@@ -322,12 +344,17 @@ pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     if offset.saturating_add(16) > size {
         return None;
     }
+    // The message address names the destination in 8 bits: a BSP with a
+    // larger x2APIC id would need interrupt remapping to be reached.
+    let apic_id = crate::smp::cpu_hw_id(0) as u32;
+    if apic_id > 0xFF {
+        return None;
+    }
     let n = NEXT_MSI_VECTOR.fetch_add(1, Ordering::SeqCst);
     if n >= MSI_VECTORS as usize {
         return None;
     }
     let vector = u32::from(MSI_VECTOR_BASE) + n as u32;
-    let apic_id = crate::smp::cpu_hw_id(0) as u32;
     let entry = va + offset as usize;
     unsafe {
         // Mask the entry while programming it (vector control bit 0).
@@ -408,6 +435,9 @@ extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFault
 }
 
 fn lapic_r(off: u32) -> u32 {
+    if X2APIC.load(Ordering::Relaxed) {
+        return rdmsr(X2APIC_MSR_BASE + off / 16) as u32;
+    }
     let b = LAPIC.load(Ordering::SeqCst);
     unsafe { core::ptr::read_volatile((b + off as usize) as *const u32) }
 }
@@ -415,6 +445,15 @@ fn lapic_r(off: u32) -> u32 {
 const ICR_HIGH: u32 = 0x310;
 
 fn send_ipi_apic(apic_id: u32, vector: u8) {
+    if X2APIC.load(Ordering::Relaxed) {
+        // One 64-bit ICR: the destination in bits 63:32, fixed delivery,
+        // physical mode, assert; no delivery-status bit to wait on.
+        wrmsr(
+            X2APIC_MSR_BASE + ICR_LOW / 16,
+            (u64::from(apic_id) << 32) | u64::from(vector) | (1 << 14),
+        );
+        return;
+    }
     if LAPIC.load(Ordering::SeqCst) == 0 {
         return;
     }

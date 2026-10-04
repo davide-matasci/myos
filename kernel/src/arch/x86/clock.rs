@@ -1,4 +1,5 @@
-//! Clock sources: the TSC (calibrated against the PIT) and the CMOS RTC.
+//! Clock sources: the TSC (its rate from CPUID, else calibrated against
+//! the PIT) and the CMOS RTC.
 
 
 /// Nanoseconds since some point before boot (TSC, calibrated in [`init`]).
@@ -6,9 +7,16 @@ pub fn monotonic_ns() -> u64 {
     x86clock::now_ns()
 }
 
-/// Calibrate the TSC against the PIT. Once, on the BSP, before anything sleeps.
+/// Find the TSC rate: CPUID leaf 15H/16H when the CPU states it, else
+/// calibrated against the PIT. Once, on the BSP, before anything sleeps.
 pub fn init() {
     x86clock::init();
+    let hz = x86clock::tsc_hz();
+    crate::console::status_info(&alloc::format!(
+        "tsc: {} MHz ({})",
+        hz / 1_000_000,
+        x86clock::source()
+    ));
 }
 
 /// Calibrated clock rate for diagnostics (TSC Hz; 0 until calibrated).
@@ -22,12 +30,42 @@ pub fn rtc_unix_seconds() -> Option<i64> {
 }
 
 mod x86clock {
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
     /// TSC ticks per second; 0 until calibrated (then `now_ns` falls back to a
     /// nominal 1 GHz, which only mis-scales timeouts during early boot).
     static TSC_HZ: AtomicU64 = AtomicU64::new(0);
     static TSC_BASE: AtomicU64 = AtomicU64::new(0);
+    /// Where the rate came from, for the boot log.
+    static SOURCE: AtomicU8 = AtomicU8::new(0);
+    const SOURCES: [&str; 3] = ["nominal", "cpuid", "pit"];
+
+    pub fn source() -> &'static str {
+        SOURCES[SOURCE.load(Ordering::Relaxed) as usize]
+    }
+
+    /// The TSC rate the CPU states: CPUID leaf 15H gives the core crystal
+    /// clock and the TSC/crystal ratio; when the crystal's rate is not
+    /// filled in (Intel before Ice Lake), leaf 16H's processor base
+    /// frequency is the TSC's nominal rate. AMD has neither leaf.
+    fn cpuid_tsc_hz() -> Option<u64> {
+        let (max_leaf, ..) = super::super::cpu::cpuid(0, 0);
+        if max_leaf < 0x15 {
+            return None;
+        }
+        let (den, num, crystal_hz, _) = super::super::cpu::cpuid(0x15, 0);
+        if den == 0 || num == 0 {
+            return None;
+        }
+        if crystal_hz != 0 {
+            return Some(u64::from(crystal_hz) * u64::from(num) / u64::from(den));
+        }
+        if max_leaf < 0x16 {
+            return None;
+        }
+        let (base_mhz, ..) = super::super::cpu::cpuid(0x16, 0);
+        (base_mhz != 0).then(|| u64::from(base_mhz) * 1_000_000)
+    }
 
     #[inline]
     fn rdtsc() -> u64 {
@@ -67,9 +105,16 @@ mod x86clock {
         crate::time::counter_to_ns(t, hz)
     }
 
-    /// Measure the TSC against PIT channel 2 (1.193182 MHz) over 10 ms.
-    /// Mode 0 one-shot: OUT goes high when the count reaches zero.
+    /// The CPU's stated rate, else a measurement against PIT channel 2
+    /// (1.193182 MHz) over 10 ms, mode 0 one-shot: OUT goes high when the
+    /// count reaches zero. A PC without a PIT keeps the nominal scale.
     pub fn init() {
+        if let Some(hz) = cpuid_tsc_hz() {
+            TSC_HZ.store(hz, Ordering::Relaxed);
+            SOURCE.store(1, Ordering::Relaxed);
+            TSC_BASE.store(rdtsc(), Ordering::Relaxed);
+            return;
+        }
         const PIT_HZ: u64 = 1_193_182;
         const WINDOW_MS: u64 = 10;
         let count = (PIT_HZ * WINDOW_MS / 1000) as u16;
@@ -94,6 +139,7 @@ mod x86clock {
         // Sanity: accept 50 MHz .. 20 GHz.
         if spins <= 50_000_000 && delta > 500_000 && delta < 200_000_000 {
             TSC_HZ.store(delta * (1000 / WINDOW_MS), Ordering::Relaxed);
+            SOURCE.store(2, Ordering::Relaxed);
         }
         TSC_BASE.store(rdtsc(), Ordering::Relaxed);
     }

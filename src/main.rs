@@ -71,6 +71,17 @@ fn riscv_limine_conf() -> String {
 /// needs the x2APIC MSRs.
 const X86_CPU: &str = "qemu64,+x2apic";
 
+/// `-machine` for the x86 boots: QEMU's default (`pc`: PCI through port
+/// 0xCF8, no MCFG), or `$MYOS_X86_MACHINE` (`q35` for a PCIe PC with an
+/// MCFG, the ECAM path of `kernel/src/arch/x86/pci.rs`).
+fn x86_machine(cmd: &mut Command) {
+    if let Ok(machine) = std::env::var("MYOS_X86_MACHINE") {
+        if !machine.is_empty() {
+            cmd.arg("-machine").arg(machine);
+        }
+    }
+}
+
 fn main() {
     let bios_path = env!("BIOS_PATH");
     let uefi_path = env!("UEFI_PATH");
@@ -387,6 +398,7 @@ fn add_virtio_net(cmd: &mut Command) {
 
 fn run_bios(bios_path: &str) {
     let mut cmd = Command::new("qemu-system-x86_64");
+    x86_machine(&mut cmd);
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
@@ -410,6 +422,7 @@ fn run_bios(bios_path: &str) {
 fn run_uefi(uefi_path: &str) {
     let (code, vars) = ovmf_files(Arch::X64);
     let mut cmd = Command::new("qemu-system-x86_64");
+    x86_machine(&mut cmd);
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
@@ -494,6 +507,7 @@ fn run_test_bios(bios_path: &str, mode: Mode) {
     start_package_mirror("x86_64", mode);
     prepare_alpine_disk("x86_64", mode);
     let mut cmd = Command::new("qemu-system-x86_64");
+    x86_machine(&mut cmd);
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
@@ -547,6 +561,7 @@ fn run_test_uefi(uefi_path: &str, mode: Mode) {
     prepare_alpine_disk("x86_64", mode);
     let (code, vars) = ovmf_files(Arch::X64);
     let mut cmd = Command::new("qemu-system-x86_64");
+    x86_machine(&mut cmd);
     cmd.arg("-cpu")
         .arg(X86_CPU)
         .arg("-m")
