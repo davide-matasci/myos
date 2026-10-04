@@ -580,6 +580,73 @@ myos_ncurses_is_current() {
 }
 
 
+# myos_write_cross_cc ARCH OUT [CFLAG...]: write OUT, a cc for autoconf
+# ports: clang against the newlib sysroot with the CFLAGs, and for a link
+# ld.lld with crt0, libc and libgloss the way scripts/build-c-smokes.sh
+# links, so configure's link tests answer for myos (--build and --host
+# differing keeps configure from running what it links). Not clang's own
+# link: for a bare-metal target it hands it to the host's gcc on some
+# triples and versions.
+myos_write_cross_cc() {
+  local arch="$1" out="$2"
+  shift 2
+  local elf="${arch}-unknown-none"
+  local sysroot="$MYOS_ROOT/target/newlib-${arch}/${arch}-unknown-myos"
+  local clanginc extra="" flags="" f
+  clanginc="$(clang -print-resource-dir)/include"
+  for f in "$@"; do
+    flags="$flags $(printf '%q' "$f")"
+  done
+  # newlib's printf wants the long-double and soft-float helpers these
+  # arches lack (the sbase port carries them).
+  case "$arch" in
+    aarch64) extra="$out.helpers.o"
+      clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
+        -c "$MYOS_ROOT/ports/sbase/trunctfdf2.c" -o "$extra" ;;
+    riscv64) extra="$out.helpers.o"
+      clang --target="$elf" -ffreestanding -fPIC -O2 -w -isystem "$sysroot/include" \
+        -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$extra" ;;
+  esac
+  cat > "$out" <<EOC
+#!/usr/bin/env bash
+cflags=(--target=$elf -ffreestanding -fPIC -nostdinc -isystem $clanginc -isystem $sysroot/include$flags)
+sysroot=$sysroot
+extra="$extra"
+EOC
+  cat >> "$out" <<'EOC'
+for a in "$@"; do
+  case "$a" in -c|-E|-S|-M|-MM) exec clang "${cflags[@]}" "$@" ;; esac
+done
+# Linking: compile what is C here, then ld.lld, keeping the order of the
+# objects, -L and -l.
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+out=a.out
+flags=() srcs=() inputs=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -include|-isystem|-I|-D|-U|-x|-MF|-MT|-MQ) flags+=("$1" "$2"); shift ;;
+    *.c) srcs+=("$1"); inputs+=("$tmp/${#srcs[@]}.o") ;;
+    -Wl,*) IFS=, read -ra w <<< "${1#-Wl,}"; inputs+=("${w[@]}") ;;
+    -Xlinker) inputs+=("$2"); shift ;;
+    -L*|-l*) inputs+=("$1") ;;
+    -pthread|-static|-rdynamic) ;;
+    -*) flags+=("$1") ;;
+    *) inputs+=("$1") ;;
+  esac
+  shift
+done
+for i in "${!srcs[@]}"; do
+  clang "${cflags[@]}" "${flags[@]}" -c "${srcs[$i]}" -o "$tmp/$((i + 1)).o" || exit 1
+done
+exec ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
+  "$sysroot/lib/crt0.o" "${inputs[@]}" $extra \
+  -L"$sysroot/lib" --start-group -lc -lgloss -lg --end-group
+EOC
+  chmod +x "$out"
+}
+
 myos_x11_libs_version_hash() {
   local h
   h="$(

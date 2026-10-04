@@ -35,68 +35,6 @@ AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
 RANLIB_BIN="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
 NM_BIN="$(command -v llvm-nm 2>/dev/null || echo nm)"
 
-# A cc for configure and make: compiles against the newlib sysroot and links
-# a myos program (crt0, libc, libgloss) like scripts/build-c-smokes.sh does,
-# so configure's link tests mean what they say. Cross mode (--build and
-# --host differ) keeps configure from running what it links.
-write_cc() {
-  local arch="$1" cc="$2"
-  local elf="${arch}-unknown-none"
-  local sysroot="$ROOT/target/newlib-${arch}/${arch}-unknown-myos"
-  local clanginc extra=""
-  clanginc="$(clang -print-resource-dir)/include"
-  # newlib's printf wants the long-double and soft-float helpers these
-  # arches lack (the sbase port carries them).
-  case "$arch" in
-    aarch64) extra="$WORK/$arch-helpers.o"
-      clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
-        -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$extra" ;;
-    riscv64) extra="$WORK/$arch-helpers.o"
-      clang --target="$elf" -ffreestanding -fPIC -O2 -w -isystem "$sysroot/include" \
-        -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$extra" ;;
-  esac
-  cat > "$cc" <<EOC
-#!/usr/bin/env bash
-cflags=(--target=$elf -ffreestanding -fPIC -nostdinc -isystem $clanginc -isystem $sysroot/include
-  -I$HERE/include -include $HERE/myos_compat.h)
-sysroot=$sysroot
-extra="$extra"
-EOC
-  cat >> "$cc" <<'EOC'
-for a in "$@"; do
-  case "$a" in -c|-E|-S|-M|-MM) exec clang "${cflags[@]}" "$@" ;; esac
-done
-# Linking. Not through clang: for a bare-metal target it hands the link to
-# the host's gcc on some triples and versions. Compile what is C here, then
-# ld.lld the way scripts/build-c-smokes.sh does, keeping the order of the
-# objects, -L and -l.
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-out=a.out
-flags=() srcs=() inputs=()
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -o) out="$2"; shift ;;
-    *.c) srcs+=("$1"); inputs+=("$tmp/${#srcs[@]}.o") ;;
-    -Wl,*) IFS=, read -ra w <<< "${1#-Wl,}"; inputs+=("${w[@]}") ;;
-    -Xlinker) inputs+=("$2"); shift ;;
-    -L*|-l*) inputs+=("$1") ;;
-    -pthread|-static|-rdynamic) ;;
-    -*) flags+=("$1") ;;
-    *) inputs+=("$1") ;;
-  esac
-  shift
-done
-for i in "${!srcs[@]}"; do
-  clang "${cflags[@]}" "${flags[@]}" -c "${srcs[$i]}" -o "$tmp/$((i + 1)).o" || exit 1
-done
-exec ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
-  "$sysroot/lib/crt0.o" "${inputs[@]}" $extra \
-  -L"$sysroot/lib" --start-group -lc -lgloss -lg --end-group
-EOC
-  chmod +x "$cc"
-}
-
 # build ARCH NAME-VERSION CONFIGURE-ARGS...: configure out of tree, make,
 # install into the arch's stage.
 build_one() {
@@ -125,7 +63,9 @@ build_arch() {
   local cc="$WORK/$arch-cc"
   rm -rf "$STAGE" "$WORK/$arch"
   mkdir -p "$STAGE" "$WORK/$arch"
-  write_cc "$arch" "$cc"
+  # The compiler (scripts/myos-c-userspace-lib.sh), with the headers the
+  # X code expects from libc and libgloss lacks.
+  myos_write_cross_cc "$arch" "$cc" -I"$HERE/include" -include "$HERE/myos_compat.h"
 
   export CC="$cc" CC_FOR_BUILD=gcc CFLAGS="-O2" AR="$AR_BIN" RANLIB="$RANLIB_BIN" NM="$NM_BIN"
   export PYTHON=python3
