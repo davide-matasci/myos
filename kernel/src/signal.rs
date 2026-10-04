@@ -49,6 +49,9 @@ pub const HANDLER_IGN: usize = 1;
 pub const SA_RESTART: u32 = 0x1000_0000;
 pub const SA_NODEFER: u32 = 0x4000_0000;
 pub const SA_RESETHAND: u32 = 0x8000_0000;
+/// On `SIGCHLD`: children leave no zombie (the kernel reaps them, as when
+/// `SIGCHLD` is ignored). Not Linux's 2, which is newlib's `SA_SIGINFO`.
+pub const SA_NOCLDWAIT: u32 = myos_abi::MYOS_SA_NOCLDWAIT;
 
 /// Returned by a syscall interrupted by a caught signal (libgloss: `EINTR`).
 pub const SYSERR_EINTR: usize = usize::MAX - 3;
@@ -131,9 +134,17 @@ pub fn interrupt_wait() -> bool {
 /// - `pid < 0`: process group `-pid`
 ///
 /// Returns `false` if `sig` is invalid or no matching live user task was found.
+/// Signal 0 sends nothing: it only asks whether a target exists.
 pub fn kill(pid: isize, sig: u32) -> bool {
-    if sig == 0 || sig > 31 {
+    if sig > 31 {
         return false;
+    }
+    if sig == 0 {
+        return match pid {
+            1.. => task::is_live_user(pid as usize),
+            0 => true,
+            _ => (0..task::task_slots()).any(|id| task::task_pgid(id) == Some((-pid) as usize)),
+        };
     }
     if pid > 0 {
         return send_one(pid as usize, sig);

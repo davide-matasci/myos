@@ -15,25 +15,24 @@ over `/net/unix` (`/tmp/.X11-unix/X0` is a name there,
 pthread API, `packages/x11-libs` builds the client libraries (libxcb,
 libX11; `packages/x11-libs/README.md`) and `packages/tinyx` the server,
 TinyX's `Xfbdev` on `/dev/fb` and `/dev/console/kbd`
-(`packages/tinyx/README.md`; GPL-3.0, the rest MIT/X11), and
-`packages/dwm` the window manager (dwm drawing with core X fonts,
-`packages/dwm/README.md`). Everything is linked statically.
+(`packages/tinyx/README.md`; GPL-3.0, the rest MIT/X11),
+`packages/x11-xft` the client-side fonts (FreeType, fontconfig, Xft) with
+`packages/x11-fonts` (DejaVu Sans Mono), and `packages/dwm` the window
+manager, unpatched (`packages/dwm/README.md`). Everything is linked
+statically.
 
 1. **First clients, libX11 only**: `xsetroot`, `xev`.
-2. **A terminal**, the one dwm's Alt+Shift+Return starts: `st` drawing with
-   core fonts like dwm (its `x.c` uses Xft throughout, a bigger patch than
-   dwm's `drw.c`), or `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from
-   `ports/termcap`; libX11's locale data, which x11-libs does not ship yet).
-   Then `dmenu` (Alt+P), with dwm's core-font `drw.c`.
-3. **xinit / startx**: start the server and a session (a window manager
-   and a terminal) together.
+2. **A terminal**, the one dwm's Alt+Shift+Return starts: `st` on Xft, or
+   `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from `ports/termcap`; libX11's
+   locale data, which x11-libs does not ship yet). Then `dmenu` (Alt+P), on
+   Xft too.
+   More fonts (a proportional DejaVu Sans) when a client wants them.
+3. **A session file**: `startx` (`packages/tinyx`) runs the server and one
+   client (dwm); a `~/.xinitrc`-like script to start a terminal next to the
+   window manager once there is a terminal.
 
 Gaps that may show up on the way:
 
-- `SA_NOCLDWAIT` (and children of a process ignoring `SIGCHLD` reaped by
-  the kernel): dwm reaps in a handler instead (`packages/dwm`).
-- `kill(pid, 0)` fails (`kill -0` in the shell): the kernel refuses signal
-  0 instead of only checking that the target exists.
 - `setitimer` fails (`ENOSYS`) and `alarm` is missing: the server runs its
   plain scheduler (it prints "scheduling timer: Function not implemented");
   `xterm`'s blinking will want a timer.
@@ -42,6 +41,21 @@ Gaps that may show up on the way:
 - A real `pthread_create` (on `thread_spawn` / `wait_addr`) if a client
   needs threads; the libgloss pthread functions are single-threaded.
 - MIT-SHM, and with it fast image transfers, needs the shared memory below.
+
+## riscv64 soft-float: sbase's double helpers are wrong
+
+`ports/sbase/riscv64-softfloat.c` implements riscv64's (no FPU) double
+arithmetic, conversions and compares by hand, and they are broken: 80 + 100
+gave 116, 80 * 1000 not 80000, `a == a` was false (the compares take
+`long double` arguments where the compiler passes `double`). fontconfig's
+font weights came out as garbage with them. The X packages now take those
+functions from compiler-rt (`target/libsoftfloat-riscv64.a`, which curl
+already used) and only the long-double conversions from sbase's file
+(`myos_write_cross_cc`), but the other ports linking the file still get the
+broken ones: sbase, ubase, oksh, dropbear, tcc, vim, lua, make, git, lynx,
+os-test's prebuilt tests and the C smokes. Fix: the same split for each, or the file reduced to its
+long-double part with compiler-rt for the rest, then a riscv64 test that
+checks double arithmetic (lua would show it).
 
 ## x86_64 interrupt routing beyond MSI-X
 

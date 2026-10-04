@@ -482,7 +482,8 @@ pub fn task_slots() -> usize {
     MAX_TASKS
 }
 
-/// Live user process: has a user image and is not Unused/Dead.
+/// Live user process: has a user image, is not Unused/Dead and has not
+/// exited (a reaped child can still be freeing its address space in `die`).
 pub fn is_live_user(id: usize) -> bool {
     if id >= MAX_TASKS {
         return false;
@@ -492,7 +493,7 @@ pub fn is_live_user(id: usize) -> bool {
     let ok = {
         let tasks = TASKS.lock();
         let t = &tasks[id];
-        t.user_rip != 0 && matches!(t.state, State::Ready | State::Running | State::Blocked)
+        t.user_rip != 0 && !t.exited && matches!(t.state, State::Ready | State::Running | State::Blocked)
     };
     irq_restore(flags);
     ok
