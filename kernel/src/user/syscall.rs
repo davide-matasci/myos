@@ -609,6 +609,12 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
         owned = v;
         &owned
     };
+    // Not a loadable ELF (a script: the caller's shell runs it itself on
+    // the error): fail before anything of the current image goes, or the
+    // caller is left with no code to return to.
+    if elf::image_span(bytes).is_err() {
+        return SYSERR;
+    }
     // A foreign-personality image that is dynamically linked also needs its
     // interpreter (the dynamic linker). Read it before the current image is
     // replaced, so a missing one fails the exec cleanly.
