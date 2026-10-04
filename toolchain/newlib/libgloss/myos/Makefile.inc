@@ -26,7 +26,9 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/netdb.c \
 	%D%/pollselect.c \
 	%D%/pty.c \
-	%D%/sleep.c
+	%D%/sleep.c \
+	%D%/uio.c \
+	%D%/pthread.c
 
 %C%_extra_parts = crt0 crti crtn
 

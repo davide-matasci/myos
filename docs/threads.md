@@ -88,7 +88,12 @@ on an address and another spins in user mode.
 
 - Parallelism within a process (threads of other processes do run on other
   CPUs): it needs TLB shootdowns for shared address spaces.
-- Threads in newlib (`pthread_*`) and Rust `std::thread` for native
-  programs; the Linux layer runs musl's pthreads (see
-  `docs/linux-compat.md`).
+- Threads in newlib and Rust `std::thread` for native programs; the Linux
+  layer runs musl's pthreads (see `docs/linux-compat.md`). libgloss has
+  the pthread API for one thread (`toolchain/newlib/libgloss/myos/pthread.c`):
+  mutexes count their locks (a relock is `EDEADLK`, not a hang), a timed
+  condition wait sleeps to its deadline, once and keys work, and
+  `pthread_create` fails with `EAGAIN`. Libraries that lock "in case"
+  (libxcb, libX11) build and run on it; a real `pthread_create` on
+  `thread_spawn` and `wait_addr` would replace the stubs.
 - `exec` from a thread other than the leader.
