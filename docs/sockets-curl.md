@@ -4,8 +4,8 @@
 
 myos has **no `socket()` syscall** and no kernel socket table. Networking is:
 
-1. Kernel: virtio-net → `/dev/net0` + netfs Plan 9 `/net` + `/dev/netd` chrdev
-2. Userspace `netd`: smoltcp over `/dev/net0`
+1. Kernel: virtio-net → `/dev/net0/data` + netfs Plan 9 `/net` + `/dev/netd/data` channel
+2. Userspace `netd`: smoltcp over `/dev/net0/data`
 3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}`
 
 This feature adds a **libgloss userspace shim** that implements a trimmed BSD

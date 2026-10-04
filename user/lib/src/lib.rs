@@ -425,9 +425,24 @@ pub fn lseek(fd: usize, offset: usize, whence: usize) -> usize {
     unsafe { sys3(26, fd, offset, whence) }
 }
 
-/// Device ioctl (SYS_IOCTL = 28). Returns 0 on success, `usize::MAX` on error.
-pub fn ioctl(fd: usize, request: usize, arg: usize) -> usize {
-    unsafe { sys3(28, fd, request, arg) }
+/// `struct pollfd` of [`poll`] (`SYS_POLL` = 38): Linux layout and bits.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PollFd {
+    pub fd: i32,
+    pub events: i16,
+    pub revents: i16,
+}
+
+pub const POLLIN: i16 = 0x1;
+pub const POLLOUT: i16 = 0x4;
+pub const POLLHUP: i16 = 0x10;
+
+/// Wait until one of `fds` is ready for what its `events` ask, or
+/// `timeout_ms` passed (negative: no limit, 0: just look). Returns how many
+/// are ready, their `revents` set, or `usize::MAX` on error.
+pub fn poll(fds: &mut [PollFd], timeout_ms: i32) -> usize {
+    unsafe { sys3(38, fds.as_mut_ptr() as usize, fds.len(), timeout_ms as isize as usize) }
 }
 
 /// Must match newlib `<signal.h>` / kernel `signal.rs` / rustix_compat.

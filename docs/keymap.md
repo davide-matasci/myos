@@ -22,27 +22,29 @@ Both maps (`modules/console/keymaps/` in the repo) ship in the initramfs
 under `/lib/kbd/` (libfs nested tree — not bootfs/`/etc`, which is flat and
 too small for reliable packing).
 
-`user/init` loads CH first; on open/read/ioctl failure it prints a distinct
-`[ FAIL ] keymap {open|read|ioctl} ch` line and falls back to `us.map` so the
-PS/2 keyboard is never left without a map. Success prints `[ OK ] keymap ch`
-or `[ OK ] keymap us`.
+`user/init` loads CH first; when the console's control file cannot be opened
+or refuses the line it prints a distinct `[ FAIL ] keymap {ctl|load} ch` and
+falls back to `us.map` so the PS/2 keyboard is never left without a map.
+Success prints `[ OK ] keymap ch` or `[ OK ] keymap us`.
 
-## ioctl API (`/dev/console`, also stdin/stdout tty fds)
+## Loading a map: the console's control file
 
-| Request   | Value    | Argument |
-|-----------|----------|----------|
-| `KDSKMAP` | `0x5480` | Pointer to `{ len: u32, data: [u8; len] }` — map **text** (little-endian `len`, max 8 KiB). |
-| `KDGKMAP` | `0x5481` | Pointer to `u32` out: `1` if a map is loaded, else `0`. |
+The console is a directory (`docs/tty.md`); its state is the text of
+`/dev/console/ctl`, and the keyboard map is one of its lines:
 
-Loaders must **loop `read`** until EOF: kernel `fd_read` caps each call at `FILE_READ_TMP` (4096 bytes), and a map may be larger.
+```
+$ grep keymap /dev/console/ctl
+keymap /lib/kbd/ch.map
+$ echo 'keymap /lib/kbd/us.map' > /dev/console/ctl
+```
 
-`KDSKMAP` replaces any previously loaded map. On parse failure the previous
-map is left unchanged, the syscall returns an error, and the kernel prints
-`[ FAIL ] keymap: <reason>` on the console (serial/FB).
-
-The numbers sit where Linux's console ioctls are. They are the one terminal
-use of the native `ioctl` syscall left: a terminal's termios and window size
-are its `ctl` file (`docs/tty.md`).
+`keymap PATH` makes the kernel read the map **text** in that file (at most
+8 KiB, in the writer's view of the tree) and the console module install it in
+place of the loaded one. Reading the ctl gives the file the loaded map came
+from, or `keymap none` before any was loaded. A file that cannot be read, is
+too long or does not parse fails the write with the previous map untouched,
+and the console module prints `[ FAIL ] keymap: <reason>` for a parse error.
+A pty's ctl refuses the line: the map is the console's.
 
 ## Map file format (text)
 

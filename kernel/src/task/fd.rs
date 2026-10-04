@@ -1,5 +1,5 @@
 //! Per-task file descriptor table: open/dup/close, pipes, FIFOs, ptys,
-//! read/write/lseek and ioctl. An fd on a file refers to
+//! read/write/lseek. An fd on a file refers to
 //! an open file description in [`OPEN_FILES`], shared with its `dup`s and
 //! a fork's copies the POSIX way.
 
@@ -883,62 +883,6 @@ fn fd_is_console_tty(entry: FdEntry) -> bool {
             p == "tty" || p == "console/data"
         }
         _ => false,
-    }
-}
-
-/// The native ioctl: the console keymap (`KDSKMAP`/`KDGKMAP`, docs/keymap.md)
-/// and the requests of module character devices (net0). A terminal's state
-/// is its `ctl` file (docs/tty.md): the termios, window size and pty
-/// requests are not here, the Linux layer serves its numbers from
-/// [`fd_tty_ctl_read`] and [`fd_tty_ctl_write`].
-pub fn fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
-    use crate::fs::IoctlResult;
-
-    let entry = with_process_mut(|t| t.fds.get(fd).copied().unwrap_or(FdEntry::Empty));
-
-    // KDSKMAP / KDGKMAP: loadable keyboard map (console module, docs/keymap.md).
-    if request == crate::console::KDSKMAP || request == crate::console::KDGKMAP {
-        if !fd_is_console_tty(entry) {
-            return usize::MAX;
-        }
-        if arg == 0 {
-            return usize::MAX;
-        }
-        let aspace = current_aspace();
-        if request == crate::console::KDGKMAP {
-            let v: u32 = if crate::console::keymap_loaded() { 1 } else { 0 };
-            if !user::copy_to_user(aspace, arg, &v.to_ne_bytes()) {
-                return usize::MAX;
-            }
-            return 0;
-        }
-        // KDSKMAP: arg → { len: u32, data: [u8; len] } (len little-endian, max 8 KiB).
-        let mut len_buf = [0u8; 4];
-        if !user::copy_from_user(aspace, arg, &mut len_buf) {
-            return usize::MAX;
-        }
-        let len = u32::from_ne_bytes(len_buf) as usize;
-        if len == 0 || len > 8192 {
-            return usize::MAX;
-        }
-        let mut data = alloc::vec![0u8; len];
-        if !user::copy_from_user(aspace, arg + 4, &mut data) {
-            return usize::MAX;
-        }
-        // The module reports the parse error itself.
-        return if crate::console::keymap_load(&data) { 0 } else { usize::MAX };
-    }
-
-    let result = match entry {
-        FdEntry::File(id) => match open_file_node(id) {
-            Some(node) => crate::fs::ioctl(&node, request, arg),
-            None => return usize::MAX,
-        },
-        _ => IoctlResult::Notty,
-    };
-    match result {
-        IoctlResult::Ok => 0,
-        IoctlResult::Notty | IoctlResult::Bad => usize::MAX,
     }
 }
 

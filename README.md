@@ -110,7 +110,7 @@ Boot (Limine)
             │     acpi, virtio_blk, nvme, virtio_net, netfs, fat, ext2
             └─ Userspace (ELF processes)
                  ├─ /ok smoke (always-on alloc/user/fat/disk/proc markers)
-                 ├─ /netd (smoltcp over /dev/net0; only opener of net0)
+                 ├─ /netd (smoltcp over /dev/net0/data; only opener of net0)
                  ├─ getty → login → /sh (oksh 7.9 via newlib/libgloss)
                  └─ CI /heap: std / C / sbase / uutils / ripgrep / tcc
 ```
@@ -157,14 +157,14 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `modules/stubfs` | Sample prefixed mount via `vfs_mount` at `/disk` |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` |
 | `modules/ext2` | Writable ext2: `ModuleVfsOps` over the `ext2fs` crate (`modules/ext2/ext2fs`, also `mkfs.ext2`'s), host-tested against e2fsprogs |
-| `modules/virtio_net` | Modern virtio-pci net: poll RX/TX, `/dev/net0` Ethernet frames |
-| `modules/netfs` | Plan 9 `/net` + `/dev/netd` channel to userspace netd; `/net/unix` local connections |
+| `modules/virtio_net` | Modern virtio-pci net: `/dev/net0/` (`data` Ethernet frames, `ctl` the MAC and interrupt), RX interrupt wakes `poll` |
+| `modules/netfs` | Plan 9 `/net` + `/dev/netd/data` channel to userspace netd; `/net/unix` local connections |
 | `modules/linux` | Linux syscall compatibility layer: a syscall *personality* (`personality_register`) for musl binaries |
 | `user/init` | PID1: smoke fork/`/ok`, fork `/netd`, exec `/sh` (baked in) |
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
 | `user/ok` | Slim always-on boot smoke (alloc/user/fat/disk/proc) |
 | `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/ripgrep/tcc/bigalloc) |
-| `user/netd` | Userspace smoltcp over `/dev/net0` |
+| `user/netd` | Userspace smoltcp over `/dev/net0/data` |
 | `user/insmod` | `insmod /lib/modules/<name>`: load a kernel module at runtime (`SYS_INSMOD`) |
 | `user/rmmod` | `rmmod <name>`: unload a kernel module that provides nothing any more (`SYS_RMMOD`) |
 | `user/lib` | Shared `myos_user` syscall wrappers, argv parser, `Heap` allocator |
@@ -258,7 +258,7 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 - **virtio-blk / NVMe** — modules registering `/dev/vda`… and `/dev/nvme0n1` through `blk_register`; loaded before the filesystem modules
 - **FAT16 module** — parses BPB, walks cluster chain, registers `/msg` from root `MSG`
 - **ext2 module** — the ext2 Linux and e2fsprogs know (1/2/4 KiB blocks, block groups, indirect blocks up to triple, symlinks, rename, sparse superblocks, files over 2 GiB), bound via `mount(2)` fstype `ext2` on a disk `mkfs.ext2` (or Linux's `mke2fs -t ext2`) formatted; `cargo test -p ext2fs` checks it against `e2fsck` and `debugfs`. CI boots carry an empty 4 GiB scratch disk (`/dev/nvme1n1`) for big filesystems
-- **virtio-net / netfs / netd** — kernel virtio-net → `/dev/net0` Ethernet; netfs mounts Plan 9 `/net`; netd runs smoltcp in userspace over `/dev/netd`; `/ping <ipv4>` uses `/net/icmp`
+- **virtio-net / netfs / netd** — kernel virtio-net → `/dev/net0/data` Ethernet; netfs mounts Plan 9 `/net`; netd runs smoltcp in userspace over `/dev/netd/data`; `/ping <ipv4>` uses `/net/icmp`
 
 ---
 
@@ -280,7 +280,7 @@ unsafe extern "C" fn module_exit()   // optional: run by rmmod
 unsafe extern "C" fn module_rescan() // optional: probe for new devices after a /proc/pci rescan
 ```
 
-`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v18 (append-only). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices), `fs_register` / `vfs_mount` (filesystems; a backend's optional `mmap` hook maps device memory, `docs/fb.md`, and its `poll` hook reports readiness for `poll`), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
+`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v20 (append-only; v19 took `ioctl` out, v20 added the `open` hook that makes a file exclusive, `/dev/console/kbd`). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices: the directory `/dev/<name>/` with `data` and an optional text `ctl`, and a `poll` hook for `data`'s readiness), `fs_register` / `vfs_mount` (filesystems; a backend's optional `mmap` hook maps device memory, `docs/fb.md`, and its `poll` hook reports readiness for `poll`), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
 
 ### Adding a module
 1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)
@@ -292,7 +292,7 @@ unsafe extern "C" fn module_rescan() // optional: probe for new devices after a 
 ## Userspace (Summary)
 
 ### Syscalls (append-only)
-`write`, `exit`, `open`, `read` (fd 0 = keyboard+serial), `close`, `exec`, `fork`, `wait`, `listdir`, `brk`, `pipe`, `dup2`, `stat`, `execname`, `dupfd`, `chdir`, `getcwd`, `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `readlink`, `mmap`, `munmap`, `mprotect`, `lseek`, `poll`, …, and threads: `thread_spawn`, `thread_exit`, `wait_addr`, `wake_addr`, `gettid` (see `docs/threads.md`).
+`write`, `exit`, `open`, `read` (fd 0 = keyboard+serial), `close`, `exec`, `fork`, `wait`, `listdir`, `brk`, `pipe`, `dup2`, `stat`, `execname`, `dupfd`, `chdir`, `getcwd`, `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `readlink`, `mmap`, `munmap`, `mprotect`, `lseek`, `poll`, …, and threads: `thread_spawn`, `thread_exit`, `wait_addr`, `wake_addr`, `gettid` (see `docs/threads.md`). There is no `ioctl` (number 28 is retired): a device's state is its `ctl` file (`docs/tty.md`).
 
 ### Init & Shell
 `user/init` = PID1: baked in, smoke-tests fork/`/ok`, forks `/netd`, forks `/u/getty` and `wait()`/respawns. Getty prompts `login: ` → execs `/u/login` → accepts `root`/empty → execs `/sh`. `/sh` = oksh 7.9 with PATH `/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc`. Editor: `vim` → `/bin/custom/vim` (FEAT_TINY; see `packages/vim/README.md`) and VCS: `git` → `/bin/custom/git` (Phase-1 local porcelain; see `packages/git/README.md`) are packages, `get-myos vim git` installs them. Framebuffer CSI includes scroll regions; `TERMCAP=/lib/termcap` (`ports/termcap`) + termios raw mode for full-screen TUI. A terminal is a directory, `data` and `ctl` (its termios and window size as text), the console at `/dev/console/`, the ptys at `/dev/pts/N/` from `/dev/pts/clone`, with `/proc/self/fd/N` and `/proc/self/tty` naming them (`docs/tty.md`).

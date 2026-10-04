@@ -8,7 +8,8 @@
 //! We enable translation when possible and always decode set 1 at the port.
 //!
 //! Scancodes become **keycodes** in `ps2-scancode`; ASCII comes from the
-//! loadable kernel keymap (empty until userspace ioctl-loads one).
+//! loadable kernel keymap (empty until one is loaded through the console's
+//! control file, `docs/keymap.md`).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 

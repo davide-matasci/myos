@@ -1,13 +1,18 @@
-//! devfs: device nodes at `/dev/…` (`null`, `tty`, `console/`, `vd*`, `nvme*n1`).
+//! devfs: device nodes at `/dev/…` (`null`, `tty`, `console/`, `vd*`, `nvme*n1`
+//! and the modules' character devices).
 //!
 //! `/dev/console` is the hardware console (serial+fb), a directory like
 //! every terminal (`docs/tty.md`): `data` is the terminal, `ctl` its control
-//! file (termios, window size, `ctty`, `flush` as text). `/dev/tty` is the
-//! process controlling terminal: open is gated in [`crate::fs::open`] and
-//! aliases to the console's `data` when a ctty is set.
+//! file (termios, window size, `ctty`, `flush`, `keymap` as text). `/dev/tty`
+//! is the process controlling terminal: open is gated in [`crate::fs::open`]
+//! and aliases to the console's `data` when a ctty is set.
+//!
+//! A module's character device (`KernelApi::dev_register`) is a directory
+//! too: `/dev/<name>/data` is the device, `/dev/<name>/ctl` its control file
+//! when the module gives it one ([`myos_abi::ModuleChrOps`]).
 
 use crate::blk;
-use crate::fs::{IoctlResult, StatInfo};
+use crate::fs::StatInfo;
 use crate::input;
 use crate::task;
 
@@ -29,7 +34,12 @@ enum Node {
     ConsoleCtl,
     Urandom,
     Block(u32),
-    Chr(usize),
+    /// `<name>`, a module device's directory.
+    ChrDir(usize),
+    /// `<name>/data`, the device.
+    ChrData(usize),
+    /// `<name>/ctl`, its control file.
+    ChrCtl(usize),
 }
 
 const MAX_CHR: usize = 4;
@@ -48,7 +58,8 @@ fn chr_table() -> &'static mut [Option<ChrDev>; MAX_CHR] {
     unsafe { &mut *core::ptr::addr_of_mut!(CHR) }
 }
 
-/// Register a module character device as `/dev/<name>`.
+/// Register a module character device: the directory `/dev/<name>/` with
+/// `data` and, when `ops` has a control file, `ctl`.
 pub fn register_chrdev(name: &str, ops: myos_abi::ModuleChrOps) -> bool {
     if name.is_empty() || name.len() > CHR_NAME_MAX || name.contains('/') {
         return false;
@@ -87,6 +98,27 @@ fn parse_chr(name: &str) -> Option<usize> {
     None
 }
 
+fn chr(i: usize) -> Option<ChrDev> {
+    chr_table().get(i).and_then(|s| *s)
+}
+
+/// The module gave the device a control file.
+fn chr_has_ctl(i: usize) -> bool {
+    chr(i).is_some_and(|c| c.ops.ctl_read.is_some() || c.ops.ctl_write.is_some())
+}
+
+/// The text of a module device's `ctl`, from the module.
+fn chr_ctl_text(i: usize) -> alloc::vec::Vec<u8> {
+    let Some(f) = chr(i).and_then(|c| c.ops.ctl_read) else {
+        return alloc::vec::Vec::new();
+    };
+    let mut buf = alloc::vec![0u8; 1024];
+    let n = unsafe { f(buf.as_mut_ptr(), buf.len()) };
+    let n = usize::try_from(n).unwrap_or(0).min(buf.len());
+    buf.truncate(n);
+    buf
+}
+
 /// `/dev/<name>` of a registered block device (`vda`, `nvme0n1`, …).
 fn parse_blk(name: &str) -> Option<u32> {
     blk::by_name(name)
@@ -101,9 +133,19 @@ fn parse(name: &str) -> Option<Node> {
         "console/data" => Some(Node::Console),
         "console/ctl" => Some(Node::ConsoleCtl),
         "urandom" | "random" => Some(Node::Urandom),
-        _ => parse_chr(name)
-            .map(Node::Chr)
-            .or_else(|| parse_blk(name).map(Node::Block)),
+        _ => {
+            if let Some((dir, member)) = name.split_once('/') {
+                let i = parse_chr(dir)?;
+                return match member {
+                    "data" => Some(Node::ChrData(i)),
+                    "ctl" if chr_has_ctl(i) => Some(Node::ChrCtl(i)),
+                    _ => None,
+                };
+            }
+            parse_chr(name)
+                .map(Node::ChrDir)
+                .or_else(|| parse_blk(name).map(Node::Block))
+        }
     }
 }
 
@@ -128,27 +170,46 @@ pub fn create(_name: &str) -> bool {
 pub fn truncate(name: &str) -> bool {
     // O_TRUNC on char/block devices is a no-op; a control file takes the
     // shell's truncating open (`echo … > ctl`) the same way.
-    parse(name).is_some_and(|n| n != Node::ConsoleDir)
+    parse(name).is_some_and(|n| !matches!(n, Node::ConsoleDir | Node::ChrDir(_)))
 }
 
-/// The text of `/dev/console/ctl`: the console termios and the screen's size.
+/// The text of `/dev/console/ctl`: the console termios, the screen's size
+/// and the keyboard map (`keymap PATH`, or `keymap none`).
 pub fn console_ctl_text() -> alloc::vec::Vec<u8> {
     let (rows, cols) = crate::console::winsize();
-    crate::tty::ctl_text(&input::termios(), rows, cols)
+    let mut text = crate::tty::ctl_text(&input::termios(), rows, cols);
+    text.extend_from_slice(b"keymap ");
+    match crate::console::keymap_path() {
+        Some(path) => text.extend_from_slice(path.as_bytes()),
+        None => text.extend_from_slice(b"none"),
+    }
+    text.push(b'\n');
+    text
 }
 
 /// A write to `/dev/console/ctl`. A `winsize` line is accepted and ignored:
 /// the console is the size of the screen. The console has no output buffer,
-/// so `flush out` has nothing to do.
+/// so `flush out` has nothing to do. `keymap PATH` loads the keyboard map in
+/// that file (`docs/keymap.md`).
 pub fn console_ctl_write(text: &[u8]) -> Option<usize> {
     use crate::tty::CtlAction;
-    for action in crate::tty::ctl_parse(&input::termios(), text)? {
+    let actions = crate::tty::ctl_parse(&input::termios(), text)?;
+    // The keymap load is the one step that can fail, so it goes first and
+    // the write stays all or nothing.
+    for action in &actions {
+        if let CtlAction::Keymap(path) = action {
+            if !crate::console::keymap_load_file(path) {
+                return None;
+            }
+        }
+    }
+    for action in actions {
         match action {
             CtlAction::Termios(t) => input::set_termios(t),
             CtlAction::Winsize(..) => {}
             CtlAction::Ctty => task::set_ctty(),
             CtlAction::Flush { input: true, .. } => input::flush_input(),
-            CtlAction::Flush { .. } => {}
+            CtlAction::Flush { .. } | CtlAction::Keymap(_) => {}
         }
     }
     Some(text.len())
@@ -187,16 +248,15 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
             out.len()
         }
         Some(Node::Block(id)) => blk::read_bytes(id, pos as u64, out).unwrap_or(0),
-        Some(Node::Chr(i)) => {
-            let _ = pos;
-            match chr_table().get(i).and_then(|s| *s) {
-                Some(c) => {
-                    let n = unsafe { (c.ops.read)(out.as_mut_ptr(), out.len()) };
-                    if n < 0 { 0 } else { n as usize }
-                }
-                None => 0,
+        Some(Node::ChrDir(_)) => 0,
+        Some(Node::ChrData(i)) => match chr(i) {
+            Some(c) => {
+                let n = unsafe { (c.ops.read)(out.as_mut_ptr(), out.len()) };
+                if n < 0 { 0 } else { n as usize }
             }
-        }
+            None => 0,
+        },
+        Some(Node::ChrCtl(i)) => copy_at(&chr_ctl_text(i), pos, out),
         None => 0,
     }
 }
@@ -214,15 +274,14 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         // Writes to the RNG pool are ignored (no RNDADDENTROPY ioctl yet).
         Some(Node::Urandom) => Some(buf.len()),
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
-        Some(Node::Chr(i)) => {
-            let _ = pos;
-            match chr_table().get(i).and_then(|s| *s) {
-                Some(c) => {
-                    let n = unsafe { (c.ops.write)(buf.as_ptr(), buf.len()) };
-                    if n < 0 { None } else { Some(n as usize) }
-                }
-                None => None,
-            }
+        Some(Node::ChrDir(_)) => None,
+        Some(Node::ChrData(i)) => {
+            let n = unsafe { (chr(i)?.ops.write)(buf.as_ptr(), buf.len()) };
+            if n < 0 { None } else { Some(n as usize) }
+        }
+        Some(Node::ChrCtl(i)) => {
+            let n = unsafe { (chr(i)?.ops.ctl_write?)(buf.as_ptr(), buf.len()) };
+            if n < 0 { None } else { Some(n as usize) }
         }
         None => None,
     }
@@ -230,11 +289,16 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
 
 pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     const NAMES: &[&[u8]] = &[b"null", b"zero", b"tty", b"console", b"urandom", b"random"];
-    const CONSOLE: &[&[u8]] = &[b"data", b"ctl"];
+    const DATA_CTL: &[&[u8]] = &[b"data", b"ctl"];
+    const DATA: &[&[u8]] = &[b"data"];
     let names = match rel {
         "" | "." => NAMES,
-        "console" => CONSOLE,
-        _ => return 0,
+        "console" => DATA_CTL,
+        _ => match parse_chr(rel) {
+            Some(i) if chr_has_ctl(i) => DATA_CTL,
+            Some(_) => DATA,
+            None => return 0,
+        },
     };
     let mut n = 0;
     for name in names {
@@ -247,7 +311,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         buf[n] = b'\n';
         n += 1;
     }
-    if rel == "console" {
+    if rel != "" && rel != "." {
         return n;
     }
     for id in 0..blk::count() {
@@ -350,52 +414,38 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 dev: 0,
             })
         }
-        Node::Chr(i) => Some(StatInfo {
-            mode: S_IFCHR | 0o666,
+        Node::ChrDir(i) => Some(StatInfo {
+            mode: S_IFDIR | 0o755,
             size: 0,
             ino: 30 + i as u32,
+            nlink: 2,
+            dev: 0,
+        }),
+        Node::ChrData(i) => Some(StatInfo {
+            mode: S_IFCHR | 0o666,
+            size: 0,
+            ino: 40 + i as u32,
+            nlink: 1,
+            dev: 0,
+        }),
+        Node::ChrCtl(i) => Some(StatInfo {
+            mode: S_IFREG | 0o644,
+            size: u32::try_from(chr_ctl_text(i).len()).unwrap_or(u32::MAX),
+            ino: 50 + i as u32,
             nlink: 1,
             dev: 0,
         }),
     }
 }
 
-/// The console's ioctls: only the keymap ones are left (`KDSKMAP`/`KDGKMAP`,
-/// handled with their user copies in [`crate::task::fd_ioctl`]); the
-/// terminal's state is its `ctl` file (`docs/tty.md`).
-pub fn tty_ioctl(request: usize) -> IoctlResult {
-    if request == crate::console::KDSKMAP || request == crate::console::KDGKMAP {
-        IoctlResult::Ok
-    } else {
-        IoctlResult::Notty
-    }
-}
-
-/// MountOps ioctl callback for `/dev/*`.
-///
-/// Module chrdevs may register [`myos_abi::ModuleChrOps::ioctl`]; `None` → ENOTTY.
-/// Modules must not deref userspace `arg` — use `KernelApi::copy_to_user`.
-pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
-    match parse(name) {
-        Some(Node::Tty) | Some(Node::Console) => tty_ioctl(request),
-        Some(Node::ConsoleDir) | Some(Node::ConsoleCtl) => IoctlResult::Notty,
-        Some(Node::Urandom) => IoctlResult::Notty,
-        Some(Node::Chr(i)) => {
-            match chr_table().get(i).and_then(|s| *s) {
-                Some(c) => match c.ops.ioctl {
-                    Some(f) => {
-                        let rc = unsafe { f(request as u64, arg) };
-                        if rc < 0 {
-                            IoctlResult::Bad
-                        } else {
-                            IoctlResult::Ok
-                        }
-                    }
-                    None => IoctlResult::Notty,
-                },
-                None => IoctlResult::Notty,
-            }
+/// `poll` readiness of a device ([`crate::fs::poll`]): a module device's
+/// `data` asks its module; everything else is always ready (`None`).
+pub fn poll(name: &str) -> Option<u32> {
+    match parse(name)? {
+        Node::ChrData(i) => {
+            let f = chr(i)?.ops.poll?;
+            Some(unsafe { f() })
         }
-        Some(Node::Null) | Some(Node::Zero) | Some(Node::Block(_)) | None => IoctlResult::Notty,
+        _ => None,
     }
 }

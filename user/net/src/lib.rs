@@ -7,7 +7,7 @@
 
 extern crate alloc;
 
-use myos_user::{ioctl, open_flags, read, write_fd, O_RDWR};
+use myos_user::{close, open, open_flags, read, write_fd, O_RDWR};
 use smoltcp::iface::{Config, Interface};
 use smoltcp::phy::{
     Checksum, ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken,
@@ -25,18 +25,10 @@ pub const FRAME_BUF: usize = 2048;
 /// Ethernet header (14) + 1500 IP MTU.
 pub const MTU: usize = 1514;
 
-/// QEMU `virtio-net-pci` default MAC when no `mac=` is passed.
-/// Used only if [`MYOS_IOCTL_NET_GETMAC`] fails.
+/// QEMU `virtio-net-pci` default MAC when no `mac=` is passed. Used only
+/// when the device's `ctl` names no usable one.
 pub const QEMU_DEFAULT_MAC: EthernetAddress =
     EthernetAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
-
-/// Copy 6-byte MAC to the userspace pointer in `arg`.
-/// Keep in sync with `myos_abi::MYOS_IOCTL_NET_GETMAC`.
-pub const MYOS_IOCTL_NET_GETMAC: usize = 0x4d01;
-/// Sleep until the NIC received a frame, another kernel event happened, or
-/// `arg` nanoseconds passed. Fails when the driver has no RX interrupt.
-/// Keep in sync with `myos_abi::MYOS_IOCTL_NET_WAIT_RX`.
-pub const MYOS_IOCTL_NET_WAIT_RX: usize = 0x4d02;
 
 /// Stack clock in milliseconds. `bump` advances it to the real elapsed time
 /// (`gettimeofday`, microsecond resolution since the kernel's monotonic
@@ -79,7 +71,8 @@ impl VirtualInstant {
     }
 }
 
-/// smoltcp `Device` over an open `/dev/net0` fd (raw Ethernet frames).
+/// smoltcp `Device` over a NIC's directory `/dev/netN/`: `data` carries raw
+/// Ethernet frames, `ctl` names the MAC and whether the RX interrupt works.
 pub struct Net0Device {
     fd: usize,
     rx: [u8; FRAME_BUF],
@@ -87,33 +80,38 @@ pub struct Net0Device {
     /// Frames handed to the stack so far (lets netd tell an idle poll from
     /// a busy one and sleep when nothing is happening).
     rx_frames: u64,
+    /// `mac` of `ctl`, zero when it named none.
+    mac: [u8; 6],
+    /// `irq on` in `ctl`: a `poll` on `data` wakes when a frame arrives.
+    rx_irq: bool,
 }
 
 impl Net0Device {
-    /// Open `/dev/net0` read/write. Returns `None` if the chrdev is missing.
+    /// Open `/dev/net0`. Returns `None` if the device is missing.
     pub fn open() -> Option<Self> {
-        Self::open_path(b"/dev/net0")
+        Self::open_nth(0)
     }
 
-    /// Open an arbitrary net chrdev path (e.g. `/dev/net1`).
-    pub fn open_path(path: &[u8]) -> Option<Self> {
-        let fd = open_flags(path, O_RDWR)?;
+    /// Open `/dev/netN` for `n` in 0..=9: its `data` read/write, its `ctl`
+    /// read once for the MAC and the interrupt.
+    pub fn open_nth(n: usize) -> Option<Self> {
+        if n > 9 {
+            return None;
+        }
+        let mut data = *b"/dev/net0/data";
+        data[8] = b'0' + (n as u8);
+        let mut ctl = *b"/dev/net0/ctl";
+        ctl[8] = b'0' + (n as u8);
+        let fd = open_flags(&data, O_RDWR)?;
+        let (mac, rx_irq) = read_ctl(&ctl).unwrap_or(([0; 6], false));
         Some(Self {
             fd,
             rx: [0; FRAME_BUF],
             rx_len: 0,
             rx_frames: 0,
+            mac,
+            rx_irq,
         })
-    }
-
-    /// Open `/dev/netN` for `n` in 0..=9.
-    pub fn open_nth(n: usize) -> Option<Self> {
-        if n > 9 {
-            return None;
-        }
-        let mut path = *b"/dev/net0";
-        path[8] = b'0' + (n as u8);
-        Self::open_path(&path)
     }
 
     pub fn fd(&self) -> usize {
@@ -125,26 +123,58 @@ impl Net0Device {
         self.rx_frames
     }
 
-    /// Block until a frame is available, another kernel event a poller cares
-    /// about happened, or `ns` nanoseconds passed. Returns `false` when the
-    /// driver cannot do this (no RX interrupt): the caller should sleep for
-    /// a bounded time instead.
-    pub fn wait_rx(&self, ns: u64) -> bool {
-        ioctl(self.fd, MYOS_IOCTL_NET_WAIT_RX, ns as usize) != usize::MAX
+    /// The RX queue interrupts, so a `poll` on [`fd`](Self::fd) wakes when a
+    /// frame arrives; without it the caller sleeps for a bounded time and
+    /// looks again.
+    pub fn rx_irq(&self) -> bool {
+        self.rx_irq
     }
 
-    /// Hardware MAC via ioctl; falls back to [`QEMU_DEFAULT_MAC`] on failure
-    /// or an unusable address (all-zero / multicast).
+    /// Hardware MAC from `ctl`; [`QEMU_DEFAULT_MAC`] when it named none or
+    /// an unusable address (all-zero / multicast).
     pub fn mac(&self) -> EthernetAddress {
-        let mut mac = [0u8; 6];
-        if ioctl(self.fd, MYOS_IOCTL_NET_GETMAC, mac.as_mut_ptr() as usize) != usize::MAX
-            && mac_usable(&mac)
-        {
-            EthernetAddress(mac)
+        if mac_usable(&self.mac) {
+            EthernetAddress(self.mac)
         } else {
             QEMU_DEFAULT_MAC
         }
     }
+}
+
+/// The `mac` and `irq` lines of a NIC's `ctl`.
+fn read_ctl(path: &[u8]) -> Option<([u8; 6], bool)> {
+    let fd = open(path)?;
+    let mut text = [0u8; 128];
+    let n = read(fd, &mut text);
+    close(fd);
+    if n == usize::MAX {
+        return None;
+    }
+    let mut mac = [0u8; 6];
+    let mut irq = false;
+    for line in text[..n].split(|&b| b == b'\n') {
+        if let Some(addr) = line.strip_prefix(b"mac ") {
+            mac = parse_mac(addr)?;
+        } else if let Some(state) = line.strip_prefix(b"irq ") {
+            irq = state == b"on";
+        }
+    }
+    Some((mac, irq))
+}
+
+/// `52:54:00:12:34:56` as bytes.
+fn parse_mac(text: &[u8]) -> Option<[u8; 6]> {
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut mac = [0u8; 6];
+    let mut parts = text.split(|&b| b == b':');
+    for byte in mac.iter_mut() {
+        let p = parts.next()?;
+        if p.len() != 2 {
+            return None;
+        }
+        *byte = hex(p[0])? << 4 | hex(p[1])?;
+    }
+    parts.next().is_none().then_some(mac)
 }
 
 /// Unicast, non-zero MAC. All-zero or multicast breaks smoltcp RX filtering.
@@ -155,8 +185,8 @@ fn mac_usable(mac: &[u8; 6]) -> bool {
     mac[0] & 1 == 0
 }
 
-/// Build an Ethernet `Interface` with the device MAC (ioctl), software checksums,
-/// and the given timestamp.
+/// Build an Ethernet `Interface` with the device MAC (its `ctl`), software
+/// checksums, and the given timestamp.
 pub fn build_interface(device: &mut Net0Device, now: Instant) -> Interface {
     let mac = device.mac();
     let mut config = Config::new(HardwareAddress::Ethernet(mac));

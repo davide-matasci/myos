@@ -2,8 +2,8 @@
 
 A terminal is a directory with two files, the Plan 9 way: `data` is the
 terminal itself, what a program reads and writes, and `ctl` is its state as
-text, read to see it and written to change it. Nothing about a terminal goes
-through `ioctl`.
+text, read to see it and written to change it. myos has no `ioctl`: nothing
+about a terminal, or any device, goes through one.
 
 ```
 /dev/console/data        the hardware console (serial and framebuffer)
@@ -34,24 +34,29 @@ lflag 0x23b
 cc 03 00 7f 00 04 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 speed 0 0
 winsize 100 160
+keymap /lib/kbd/ch.map
 ```
 
 The four flag lines and `speed` are the termios fields with Linux's bit values
 (`toolchain/newlib/libgloss/myos/termios.h`), `cc` the 32 control characters
-(`VINTR` first) as two hex digits each, `winsize` rows and columns. A write
-takes the same lines back, and a line changes only what it names: `lflag 0`
-puts the terminal in raw mode and leaves the rest alone, `cc 03` sets `VINTR`
-only. Numbers are `0x` hex or decimal. Two more lines are commands:
+(`VINTR` first) as two hex digits each, `winsize` rows and columns. The console
+has one more line, `keymap`: the file its keyboard map was loaded from, or
+`none`. A write takes the same lines back, and a line changes only what it
+names: `lflag 0` puts the terminal in raw mode and leaves the rest alone,
+`cc 03` sets `VINTR` only. Numbers are `0x` hex or decimal. Three more lines
+are commands:
 
 | Line | Effect |
 |------|--------|
 | `ctty` | the terminal becomes the writer's controlling terminal (what `TIOCSCTTY` does) |
 | `flush [in\|out\|both]` | discard the pending input and/or output; `both` when nothing is given |
+| `keymap PATH` | the console loads the keyboard map in that file (`docs/keymap.md`); a pty refuses it |
 
-A write applies all its lines or none: an unknown word, a bad number or a
-line with extra words fails it with nothing changed. Lines must be whole
-within one write. The console accepts `winsize` and ignores it (it is the
-size of the screen), and has no output buffer to flush.
+A write applies all its lines or none: an unknown word, a bad number, a line
+with extra words or a keymap that cannot be loaded fails it with nothing
+changed. Lines must be whole within one write. The console accepts `winsize`
+and ignores it (it is the size of the screen), and has no output buffer to
+flush.
 
 ```
 $ echo 'lflag 0' > $(readlink /proc/self/tty)/ctl     # raw mode
@@ -125,5 +130,11 @@ with `c_line` and 19 control characters). It maps musl's `/dev/ptmx` and
 `/dev/pts/N` onto `clone` and `data`, and `TIOCGPTN` reads the master's name
 (`KernelApi::fd_path`).
 
-The native `ioctl` syscall keeps the console keymap (`docs/keymap.md`) and the
-requests of module character devices; it does not know a terminal request.
+## Devices
+
+There is no `ioctl` syscall. A module's character device is a directory like
+a terminal: `/dev/net0/data` is the NIC (Ethernet frames), `/dev/net0/ctl` its
+state as text (`mac 52:54:00:12:34:56`, `irq on`), `/dev/netd/data` the netfs
+channel to `netd`. A device says when its `data` is ready through `poll`, so
+`netd` sleeps in `poll` on the NIC and its channel instead of a blocking
+request (`myos_abi::ModuleChrOps`, `docs/pci-acpi-smp.md`).

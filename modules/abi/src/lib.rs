@@ -5,17 +5,12 @@
 
 #![no_std]
 
-/// Bump this when [`KernelApi`] layout or meaning changes.
-pub const ABI_VERSION: u32 = 19;
+/// Bump this when [`KernelApi`] layout or meaning changes. 19 took `fd_ioctl`
+/// out of the table and the ioctl hook out of [`ModuleChrOps`]: there is no
+/// ioctl, a device's state is its `ctl` file and `poll` says when it is ready.
+/// 20 added [`ModuleVfsOps::open`] (a file one program holds at a time).
+pub const ABI_VERSION: u32 = 20;
 
-/// myos-specific: copy 6-byte MAC to the userspace pointer in `arg`.
-/// Keep in sync with `user/net` / `user/lib` duplicates.
-pub const MYOS_IOCTL_NET_GETMAC: u64 = 0x4d01;
-/// Block until the NIC has a received frame, another kernel event a poller
-/// cares about (`wake_any`), or `arg` nanoseconds passed (0 = driver cap).
-/// Fails (negative) when the device has no RX interrupt, so callers fall back
-/// to timed polling. Keep in sync with `user/net`.
-pub const MYOS_IOCTL_NET_WAIT_RX: u64 = 0x4d02;
 /// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
 pub const MYOS_WAIT_ANY: usize = usize::MAX;
 
@@ -126,7 +121,7 @@ pub struct ModuleVfsOps {
     /// write or the last close of one of its files (both wake pollers), the
     /// backend calls `KernelApi::wake_any`.
     pub poll: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> u32>,
-    // --- ABI 19: exclusive files ---
+    // --- ABI 20: exclusive files ---
     /// Optional: an `open(2)` of `path` (not a `dup` or a `fork`): 0 lets it
     /// through, negative refuses it (a file one program holds at a time).
     /// `release` follows when the last fd of the file closes.
@@ -214,9 +209,10 @@ pub struct ModuleConsoleOps {
     pub keyboard_present: unsafe extern "C" fn() -> i32,
     /// Next keyboard byte (keymap-translated), or negative when none is pending.
     pub keyboard_poll: unsafe extern "C" fn() -> i32,
-    /// Install a keymap from its text form (`KDSKMAP`). 0 ok, negative on error.
+    /// Install a keymap from its text form (the console ctl's `keymap PATH`,
+    /// `docs/keymap.md`). 0 ok, negative on error.
     pub keymap_load: unsafe extern "C" fn(text: *const u8, len: usize) -> i32,
-    /// 1 when a keymap is loaded (`KDGKMAP`).
+    /// 1 when a keymap is loaded.
     pub keymap_loaded: unsafe extern "C" fn() -> i32,
 }
 
@@ -342,18 +338,28 @@ pub struct PersonalityOps {
 /// Bind `dev_id` to a filesystem and fill `ops`. Return 0 on success.
 pub type FsBind = unsafe extern "C" fn(dev_id: u32, ops: *mut ModuleVfsOps) -> i32;
 
-/// Module-provided character device ops for `/dev` nodes.
-/// Kernel forces `S_IFCHR | 0666`. `read`/`write` return bytes (>=0) or a
-/// negative error. `read` may return 0 when no data is ready (poll).
+/// Module-provided character device (`KernelApi::dev_register`): the
+/// directory `/dev/<name>/` with `data` (`S_IFCHR | 0666`) and, when the
+/// module gives it one, the control file `ctl` (text, like a terminal's,
+/// `docs/tty.md`). `read`/`write` are `data`: bytes (>=0) or a negative
+/// error; `read` may return 0 when nothing is pending, `poll` tells.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ModuleChrOps {
     pub read: unsafe extern "C" fn(buf: *mut u8, buf_len: usize) -> i32,
     pub write: unsafe extern "C" fn(buf: *const u8, buf_len: usize) -> i32,
-    /// Optional. `None` → ENOTTY. `request` is an ioctl code; `arg` is a
-    /// userspace pointer/value. Modules must not deref user pointers directly —
-    /// use [`KernelApi::copy_to_user`] instead.
-    pub ioctl: Option<unsafe extern "C" fn(request: u64, arg: usize) -> i32>,
+    /// Optional: the `poll(2)` bits ([`MYOS_POLLIN`], [`MYOS_POLLOUT`], ...)
+    /// of `data` now. `None`: always readable and writable. The module wakes
+    /// the pollers itself (`KernelApi::wake_any`) when readiness changes
+    /// other than through its own `read`/`write`: an interrupt, a request
+    /// queued from another module.
+    pub poll: Option<unsafe extern "C" fn() -> u32>,
+    /// Optional: the text of `ctl` into `buf` (cut at `cap`): its full
+    /// length, or negative. `None` (with `ctl_write`): no `ctl` file.
+    pub ctl_read: Option<unsafe extern "C" fn(buf: *mut u8, cap: usize) -> i32>,
+    /// Optional: a write of `len` bytes of text to `ctl`: bytes taken, or
+    /// negative when refused.
+    pub ctl_write: Option<unsafe extern "C" fn(text: *const u8, len: usize) -> i32>,
 }
 
 /// Kernel services visible to a module.
@@ -464,8 +470,9 @@ pub struct KernelApi {
         ctx: *mut core::ffi::c_void,
         msix_entry: *mut u16,
     ) -> i32,
-    /// Wake every task sleeping on "any event" (pollers, `NET_WAIT_RX`).
-    /// Safe from interrupt context.
+    /// Wake every task sleeping on "any event": `poll(2)`, after a device's
+    /// readiness changed (its interrupt, a queued request). Safe from
+    /// interrupt context.
     pub wake_any: unsafe extern "C" fn(),
     /// Blocking-wait protocol (see `kernel/src/task/sched.rs`): read the
     /// sequence, check the condition, then `block_until(key, seq, deadline)`;
@@ -561,9 +568,6 @@ pub struct KernelApi {
     pub fd_close: unsafe extern "C" fn(fd: usize) -> i32,
     /// write(2) from user memory: native result.
     pub fd_write: unsafe extern "C" fn(fd: usize, buf_user: usize, len: usize) -> usize,
-    /// The native ioctl: the console keymap and module character devices.
-    /// A terminal's state is its `ctl` file; see `tty_ctl_read` (ABI 18).
-    pub fd_ioctl: unsafe extern "C" fn(fd: usize, request: usize, arg: usize) -> usize,
     pub pipe_open: unsafe extern "C" fn(read_fd: *mut usize, write_fd: *mut usize) -> i32,
     /// The native mmap (user addresses; `fd` -1 for anonymous): native result.
     pub mmap: unsafe extern "C" fn(addr: usize, len: usize, prot: usize, flags: usize, fd: isize, off: usize) -> usize,

@@ -2,7 +2,7 @@
 #![no_main]
 
 use myos_user::{
-    close, exit, fork, ioctl, open, read, status_fail, status_ok, wait_status, exec,
+    close, exit, fork, open_flags, status_fail, status_ok, wait_status, exec, write_fd, O_WRONLY,
 };
 
 /// Default keymap path in the initramfs (libfs nested tree). Switch to US with:
@@ -10,63 +10,48 @@ use myos_user::{
 const DEFAULT_KEYMAP: &[u8] = b"/lib/kbd/ch.map";
 const FALLBACK_KEYMAP: &[u8] = b"/lib/kbd/us.map";
 
-/// `ioctl` load request — must match `kernel::keymap::KDSKMAP`.
-const KDSKMAP: usize = 0x5480;
-
 #[derive(Clone, Copy)]
 enum KeymapErr {
-    Open,
-    Read,
-    Ioctl,
+    /// The console's control file could not be opened.
+    Ctl,
+    /// The kernel refused the line: no such file, or the map does not parse
+    /// (the console module says why).
+    Load,
 }
 
+/// Load the keyboard map in the file at `path`: `keymap PATH` written to the
+/// console's control file (docs/keymap.md); the kernel reads the file and the
+/// console module installs it.
 fn load_keymap(path: &[u8]) -> Result<(), KeymapErr> {
-    let Some(kfd) = open(path) else {
-        return Err(KeymapErr::Open);
+    let Some(fd) = open_flags(b"/dev/console/ctl", O_WRONLY) else {
+        return Err(KeymapErr::Ctl);
     };
-    // Packet: { len: u32 NE, data: [u8; len] }. fd_read caps at FILE_IO_TMP=2048
-    // per call, so loop until EOF (ch.map is >2048).
-    const MAX_MAP: usize = 8192;
-    let mut packet = [0u8; 4 + MAX_MAP];
-    let mut n = 0usize;
-    loop {
-        let got = read(kfd, &mut packet[4 + n..]);
-        if got == 0 {
-            break;
-        }
-        n += got;
-        if n >= MAX_MAP {
-            close(kfd);
-            return Err(KeymapErr::Read);
-        }
+    let mut line = [0u8; 64];
+    let head = b"keymap ";
+    let n = head.len() + path.len() + 1;
+    if n > line.len() {
+        close(fd);
+        return Err(KeymapErr::Load);
     }
-    close(kfd);
-    if n == 0 {
-        return Err(KeymapErr::Read);
-    }
-    packet[0..4].copy_from_slice(&(n as u32).to_ne_bytes());
-    // Open the console explicitly — do not assume fd 1 is the tty.
-    let Some(cfd) = open(b"/dev/console/data") else {
-        return Err(KeymapErr::Ioctl);
-    };
-    let ok = ioctl(cfd, KDSKMAP, packet.as_ptr() as usize) != usize::MAX;
-    close(cfd);
+    line[..head.len()].copy_from_slice(head);
+    line[head.len()..head.len() + path.len()].copy_from_slice(path);
+    line[n - 1] = b'\n';
+    let ok = write_fd(fd, &line[..n]) == n;
+    close(fd);
     if ok {
         Ok(())
     } else {
-        Err(KeymapErr::Ioctl)
+        Err(KeymapErr::Load)
     }
 }
 
 fn fail_keymap(which: &str, err: KeymapErr) {
     // Static labels only (no_std init has no formatting helpers here).
     match (which, err) {
-        ("ch", KeymapErr::Open) => status_fail("keymap open ch"),
-        ("ch", KeymapErr::Read) => status_fail("keymap read ch"),
-        ("ch", KeymapErr::Ioctl) => status_fail("keymap ioctl ch"),
-        (_, KeymapErr::Open) => status_fail("keymap open us"),
-        (_, KeymapErr::Read) => status_fail("keymap read us"),
-        (_, KeymapErr::Ioctl) => status_fail("keymap ioctl us"),
+        ("ch", KeymapErr::Ctl) => status_fail("keymap ctl ch"),
+        ("ch", KeymapErr::Load) => status_fail("keymap load ch"),
+        (_, KeymapErr::Ctl) => status_fail("keymap ctl us"),
+        (_, KeymapErr::Load) => status_fail("keymap load us"),
     }
 }
 
