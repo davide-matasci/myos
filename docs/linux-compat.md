@@ -330,10 +330,13 @@ the kernel does not keep a per-task copy at syscall entry.
   room left (a nonblocking write then says `EAGAIN`).
 - The native limits apply:
   - exec: up to 1024 arguments and 1024 environment strings, at most
-    128 KiB together; a program file of at most 16 MiB from a writable
-    filesystem (the initramfs has no limit) whose loaded image spans at
-    most 1152 pages (4.5 MiB). Shared objects are mapped with `mmap` and
-    do not count;
+    128 KiB together. A dynamically linked, position-independent program
+    (most of Alpine's) is mapped from its file like a shared object: its
+    dynamic linker is loaded as the image, the program's segments become
+    mmap regions paged in on first touch, so only the mmap window bounds
+    its size (Alpine's cargo is 23 MB). Any other program is read whole: a
+    file of at most 16 MiB from a writable filesystem (the initramfs has
+    no limit) whose loaded image spans at most 1152 pages (4.5 MiB);
   - a per-process `mmap` window of 4 GiB (x86_64) / 960 MiB (aarch64,
     riscv64) with at most 256 mappings; adjacent mappings with the same
     protection and backing are merged (musl's malloc makes hundreds of
