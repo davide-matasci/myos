@@ -31,6 +31,8 @@ MYOS_NCURSES_VERSION="$MYOS_ROOT/target/.myos-ncurses-version"
 MYOS_X11_LIBS_VERSION="$MYOS_ROOT/target/.myos-x11-libs-version"
 MYOS_TINYX_VERSION="$MYOS_ROOT/target/.myos-tinyx-version"
 MYOS_DWM_VERSION="$MYOS_ROOT/target/.myos-dwm-version"
+MYOS_X11_XFT_VERSION="$MYOS_ROOT/target/.myos-x11-xft-version"
+MYOS_X11_FONTS_VERSION="$MYOS_ROOT/target/.myos-x11-fonts-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
@@ -706,6 +708,46 @@ myos_tinyx_is_current() {
     [[ -f "$MYOS_ROOT/target/xfbdev-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/tinyx-smoke-${arch}-unknown-none" ]] || return 1
   done
+}
+
+myos_x11_xft_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_x11_libs_version_hash
+      find "$(myos_port_dir x11-xft)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_x11_xft_is_current() {
+  local arch
+  [[ -f "$MYOS_X11_XFT_VERSION" ]] \
+    && [[ "$(cat "$MYOS_X11_XFT_VERSION")" == "$(myos_x11_xft_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/x11-xft-${arch}/lib/x11/lib/libXft.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/xft-smoke-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/fc-match-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_x11_fonts_version_hash() {
+  local h
+  h="$(
+    find "$(myos_port_dir x11-fonts)" -type f -print0 2>/dev/null \
+      | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_x11_fonts_is_current() {
+  [[ -f "$MYOS_X11_FONTS_VERSION" ]] \
+    && [[ "$(cat "$MYOS_X11_FONTS_VERSION")" == "$(myos_x11_fonts_version_hash)" ]] \
+    && [[ -f "$MYOS_ROOT/target/x11-fonts/DejaVuSansMono.ttf" ]]
 }
 
 myos_dwm_version_hash() {

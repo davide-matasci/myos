@@ -15,16 +15,18 @@ over `/net/unix` (`/tmp/.X11-unix/X0` is a name there,
 pthread API, `packages/x11-libs` builds the client libraries (libxcb,
 libX11; `packages/x11-libs/README.md`) and `packages/tinyx` the server,
 TinyX's `Xfbdev` on `/dev/fb` and `/dev/console/kbd`
-(`packages/tinyx/README.md`; GPL-3.0, the rest MIT/X11), and
-`packages/dwm` the window manager (dwm drawing with core X fonts,
-`packages/dwm/README.md`). Everything is linked statically.
+(`packages/tinyx/README.md`; GPL-3.0, the rest MIT/X11),
+`packages/x11-xft` the client-side fonts (FreeType, fontconfig, Xft) with
+`packages/x11-fonts` (DejaVu Sans Mono), and `packages/dwm` the window
+manager, unpatched (`packages/dwm/README.md`). Everything is linked
+statically.
 
 1. **First clients, libX11 only**: `xsetroot`, `xev`.
-2. **A terminal**, the one dwm's Alt+Shift+Return starts: `st` drawing with
-   core fonts like dwm (its `x.c` uses Xft throughout, a bigger patch than
-   dwm's `drw.c`), or `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from
-   `ports/termcap`; libX11's locale data, which x11-libs does not ship yet).
-   Then `dmenu` (Alt+P), with dwm's core-font `drw.c`.
+2. **A terminal**, the one dwm's Alt+Shift+Return starts: `st` on Xft, or
+   `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from `ports/termcap`; libX11's
+   locale data, which x11-libs does not ship yet). Then `dmenu` (Alt+P), on
+   Xft too.
+   More fonts (a proportional DejaVu Sans) when a client wants them.
 3. **xinit / startx**: start the server and a session (a window manager
    and a terminal) together.
 
