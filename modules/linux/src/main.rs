@@ -86,6 +86,10 @@ unsafe extern "C" fn op_syscall(nr: usize, a0: usize, a1: usize, a2: usize, regs
 /// Hook: a successful exec replaced the image in `slot`.
 unsafe extern "C" fn op_on_exec(slot: usize) {
     signal::on_exec(slot);
+    let close = files::take_cloexec(slot);
+    for fd in (0..64).filter(|fd| close & 1 << fd != 0) {
+        sys::close(fd).ok();
+    }
 }
 
 /// Hook: `child` was forked from `parent` (TASKS held, irqs off).

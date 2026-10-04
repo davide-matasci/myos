@@ -119,6 +119,8 @@ static API: KernelApi = KernelApi {
     service_lookup: api_service_lookup,
     thread_spawn: api_thread_spawn,
     wake: api_wake,
+    fork_from: api_fork_from,
+    mmap_discard: api_mmap_discard,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -868,6 +870,7 @@ unsafe extern "C" fn api_vfs_stat(path: StrRef, out: *mut PathStat) -> i32 {
                     size: st.size as u64,
                     ino: st.ino as u64,
                     dev: st.dev as u64,
+                    mtime: st.mtime,
                 };
             }
             0
@@ -1151,6 +1154,20 @@ unsafe extern "C" fn api_thread_spawn_from(regs: *mut u64, sp: usize, set_tls: i
     start.rsp = sp;
     let tls = (set_tls != 0).then_some(tls);
     crate::task::spawn_thread(start, tls).map_or(-1, |t| t as i32)
+}
+
+unsafe extern "C" fn api_fork_from(regs: *mut u64, sp: usize) -> i32 {
+    if regs.is_null() {
+        return -1;
+    }
+    let regs = crate::user::SyscallRegs::from_ptr(regs);
+    let mut start = crate::user::caller_regs(&regs);
+    start.rsp = sp;
+    crate::task::fork_current(start).map_or(-1, |p| p as i32)
+}
+
+unsafe extern "C" fn api_mmap_discard(addr: usize, len: usize) -> i32 {
+    if crate::user::mmap_discard(addr, len) { 0 } else { -1 }
 }
 
 unsafe extern "C" fn api_thread_exit(code: u8) -> ! {

@@ -13,20 +13,26 @@ use crate::k::user::{self, SyscallRegs};
 pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     match nr {
         17 => ret(sys::getcwd(a[0], a[1])),
+        19 => ret(sys::eventfd2(a[0], a[1])),
         23 => ret(sys::dup(a[0], 0)),
-        24 => ret(sys::dup3(a[0], a[1], false)),
+        24 => ret(sys::dup3(a[0], a[1], false, a[2])),
         25 => ret(sys::fcntl(a[0], a[1], a[2])),
         29 => ret(sys::ioctl(a[0], a[1], a[2])),
+        32 => ret(sys::flock(a[0])),
         34 => ret(sys::mkdirat(a[0], a[1])),
         35 => ret(sys::unlinkat(a[0], a[1], a[2])),
         36 => ret(sys::symlinkat(a[0], a[1], a[2])),
         38 | 276 => ret(sys::renameat(a[0], a[1], a[2], a[3])), // renameat, renameat2
+        45 => ret(sys::truncate(a[0], a[1])),
+        46 => ret(sys::ftruncate(a[0], a[1])),
         48 | 439 => ret(sys::faccessat(a[0], a[1])),          // faccessat, faccessat2
         49 => ret(sys::chdir(a[0])),
         50 => ret(sys::fchdir(a[0])),
+        52 | 55 => ret(sys::fd_noop(a[0])),         // fchmod, fchown
+        53 | 54 => ret(sys::path_noop(a[0], a[1])), // fchmodat, fchownat
         56 => ret(sys::openat(a[0], a[1], a[2])),
         57 => ret(sys::close(a[0])),
-        59 => ret(sys::pipe2(a[0])),
+        59 => ret(sys::pipe2(a[0], a[1])),
         61 => ret(sys::getdents64(a[0], a[1], a[2])),
         62 => ret(sys::lseek(a[0], a[1], a[2])),
         63 => ret(sys::read(a[0], a[1], a[2])),
@@ -34,10 +40,13 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         65 => ret(sys::rw_vec(a[0], a[1], a[2], false)), // readv
         66 => ret(sys::rw_vec(a[0], a[1], a[2], true)),  // writev
         67 => ret(sys::pread(a[0], a[1], a[2], a[3])),
+        68 => ret(sys::pwrite(a[0], a[1], a[2], a[3])),
+        70 | 287 => ret(sys::pwritev(a[0], a[1], a[2], a[3])), // pwritev, pwritev2
         73 => ret(sys::ppoll(a[0], a[1], a[2])),
         78 => ret(sys::readlinkat(a[0], a[1], a[2], a[3])),
         79 => ret(sys::fstatat(a[0], a[1], a[2], a[3])), // newfstatat
         80 => ret(sys::fstat(a[0], a[1])),
+        82 | 83 => ret(sys::fd_noop(a[0])), // fsync, fdatasync
         93 => thread::exit(a[0]),
         94 => task::user_exit(a[0] as u8), // exit_group
         96 => thread::set_tid_address(a[0]),
@@ -75,6 +84,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         173 => task::current_ppid(),
         174..=177 => 0, // getuid, geteuid, getgid, getegid
         198 => ret(net::socket(a[0], a[1])),
+        199 => ret(net::socketpair(a[0], a[1], a[3])),
         200 | 208 => ret(net::ignored(a[0])),             // bind, setsockopt
         201 | 202 | 242 => ret(net::no_listen(a[0])),     // listen, accept, accept4
         203 => ret(net::connect(a[0], a[1], a[2])),
@@ -92,7 +102,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         221 => ret(sys::execve(a[0], a[1], a[2])),
         222 => ret(sys::mmap(a[0], a[1], a[2], a[3], a[4], a[5])),
         226 => result(user::sys_mprotect(a[0], a[1], a[2]), ENOMEM),
-        233 => 0, // madvise
+        233 => ret(sys::madvise(a[0], a[1], a[2])),
         260 => ret(sys::wait4(a[0], a[1], a[2], a[3])),
         261 => ret(sys::prlimit(a[1], a[3])),
         278 => ret(sys::getrandom(a[0], a[1])),
@@ -100,8 +110,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     }
 }
 
-/// The `asm-generic` `struct stat` (128 bytes).
-pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64) -> [u8; 128] {
+/// The `asm-generic` `struct stat` (128 bytes); `mtime` stands for all
+/// three times.
+pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64, mtime: u64) -> [u8; 128] {
     let mut b = [0u8; 128];
     let mut put = |off: usize, v: &[u8]| b[off..off + v.len()].copy_from_slice(v);
     put(0, &dev.to_le_bytes());
@@ -112,6 +123,9 @@ pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64) -> [u8; 
     put(48, &size.to_le_bytes());
     put(56, &4096u32.to_le_bytes()); // st_blksize
     put(64, &size.div_ceil(512).to_le_bytes()); // st_blocks
+    for off in [72, 88, 104] {
+        put(off, &mtime.to_le_bytes()); // st_atime, st_mtime, st_ctime
+    }
     b
 }
 

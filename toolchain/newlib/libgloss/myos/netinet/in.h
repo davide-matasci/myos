@@ -26,6 +26,9 @@ struct in6_addr {
     uint8_t s6_addr[16];
 };
 
+#define IN6ADDR_ANY_INIT      { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } }
+#define IN6ADDR_LOOPBACK_INIT { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } }
+
 struct sockaddr_in6 {
     sa_family_t sin6_family;
     in_port_t sin6_port;
@@ -41,6 +44,30 @@ struct sockaddr_in6 {
 
 #define INET_ADDRSTRLEN  16
 #define INET6_ADDRSTRLEN 46
+
+/* Ports below this are the privileged ones (a convention; myos has no
+ * privilege check). */
+#define IPPORT_RESERVED 1024
+
+#define IN6_IS_ADDR_UNSPECIFIED(a) \
+    ((a)->s6_addr[0] == 0 && (a)->s6_addr[1] == 0 && (a)->s6_addr[2] == 0 \
+     && (a)->s6_addr[3] == 0 && (a)->s6_addr[4] == 0 && (a)->s6_addr[5] == 0 \
+     && (a)->s6_addr[6] == 0 && (a)->s6_addr[7] == 0 && (a)->s6_addr[8] == 0 \
+     && (a)->s6_addr[9] == 0 && (a)->s6_addr[10] == 0 && (a)->s6_addr[11] == 0 \
+     && (a)->s6_addr[12] == 0 && (a)->s6_addr[13] == 0 && (a)->s6_addr[14] == 0 \
+     && (a)->s6_addr[15] == 0)
+#define IN6_IS_ADDR_LOOPBACK(a) \
+    ((a)->s6_addr[0] == 0 && (a)->s6_addr[1] == 0 && (a)->s6_addr[2] == 0 \
+     && (a)->s6_addr[3] == 0 && (a)->s6_addr[4] == 0 && (a)->s6_addr[5] == 0 \
+     && (a)->s6_addr[6] == 0 && (a)->s6_addr[7] == 0 && (a)->s6_addr[8] == 0 \
+     && (a)->s6_addr[9] == 0 && (a)->s6_addr[10] == 0 && (a)->s6_addr[11] == 0 \
+     && (a)->s6_addr[12] == 0 && (a)->s6_addr[13] == 0 && (a)->s6_addr[14] == 0 \
+     && (a)->s6_addr[15] == 1)
+#define IN6_IS_ADDR_V4MAPPED(a) \
+    ((a)->s6_addr[0] == 0 && (a)->s6_addr[1] == 0 && (a)->s6_addr[2] == 0 \
+     && (a)->s6_addr[3] == 0 && (a)->s6_addr[4] == 0 && (a)->s6_addr[5] == 0 \
+     && (a)->s6_addr[6] == 0 && (a)->s6_addr[7] == 0 && (a)->s6_addr[8] == 0 \
+     && (a)->s6_addr[9] == 0 && (a)->s6_addr[10] == 0xff && (a)->s6_addr[11] == 0xff)
 
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17

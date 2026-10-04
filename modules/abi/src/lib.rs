@@ -13,7 +13,10 @@
 /// the service registry modules reach each other through
 /// (`service_register` / `service_lookup`), module threads (`thread_spawn`)
 /// and targeted wakes (`wake`), plus the USB bus types below.
-pub const ABI_VERSION: u32 = 21;
+/// 22 added [`KernelApi::fork_from`] (posix_spawn's child on its own stack).
+/// 23 added [`KernelApi::mmap_discard`] (`madvise(MADV_DONTNEED)`).
+/// 24 added `mtime` to [`VfsStatInfo`] and [`PathStat`].
+pub const ABI_VERSION: u32 = 24;
 
 /// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
 pub const MYOS_WAIT_ANY: usize = usize::MAX;
@@ -33,6 +36,8 @@ pub struct VfsStatInfo {
     pub size: u32,
     pub ino: u32,
     pub nlink: u32,
+    /// Last modification, in seconds since the epoch (0: not kept).
+    pub mtime: u64,
 }
 
 /// Module-provided VFS backend hooks. Function pointers may be null only where
@@ -273,6 +278,8 @@ pub struct PathStat {
     pub size: u64,
     pub ino: u64,
     pub dev: u64,
+    /// Last modification, in seconds since the epoch (0: not kept).
+    pub mtime: u64,
 }
 
 /// `path_resolve` modes: the task's own view (cwd applied, chroot-relative),
@@ -659,6 +666,15 @@ pub struct KernelApi {
     /// Wake the tasks blocked on `key` (`block_until`), and the `poll`
     /// sleepers. Safe from interrupt context.
     pub wake: unsafe extern "C" fn(key: usize),
+    // --- ABI 22 ---
+    /// Fork, the child resuming like the caller of the syscall in `regs`
+    /// (result 0) on stack `sp`: its pid, or negative.
+    pub fork_from: unsafe extern "C" fn(regs: *mut u64, sp: usize) -> i32,
+    // --- ABI 23 ---
+    /// Drop the pages of `[addr, addr + len)` in the caller's mmap window:
+    /// they read as new on the next touch (zero, or the file's contents).
+    /// 0, or negative when the range is outside the window.
+    pub mmap_discard: unsafe extern "C" fn(addr: usize, len: usize) -> i32,
 }
 
 /// `blk_unregister`: the device is mounted or open.

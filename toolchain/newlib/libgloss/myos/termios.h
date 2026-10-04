@@ -19,7 +19,10 @@
 #define VEOF 4
 #define VTIME 5
 #define VMIN 6
+#define VSTART 8
+#define VSTOP 9
 #define VSUSP 10
+#define VEOL 11
 
 #define IGNBRK 0000001
 #define BRKINT 0000002
@@ -31,6 +34,7 @@
 #define IGNCR 0000200
 #define ICRNL 0000400
 #define IXON 0002000
+#define IXANY 0004000
 #define IXOFF 0010000
 
 #define OPOST 0000001
@@ -47,8 +51,13 @@
 #define IEXTEN 0001000
 
 #define CSIZE 0000060
+#define CS5 0000000
+#define CS6 0000020
+#define CS7 0000040
 #define CS8 0000060
 #define CREAD 0000200
+#define PARENB 0000400
+#define PARODD 0001000
 #define CLOCAL 0004000
 
 /* Queue selectors / flow — also in sys/ioctl.h; keep matching values. */

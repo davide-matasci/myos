@@ -27,6 +27,9 @@ t netconv /bin/etc/netconv_smoke
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
 # the wait (child_smoke.c).
 t child /bin/etc/child_smoke
+# getrandom, vfork, daemon, the netdb service lookups and the termios
+# constants libgloss gained for the ports (libc_smoke.c).
+t libc /bin/etc/libc_smoke
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).

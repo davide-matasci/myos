@@ -608,12 +608,17 @@ fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8
     };
     let basename = path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes();
     task::set_exec_name(basename);
+    // A dynamically linked Linux program is mapped from its file, like the
+    // shared objects its dynamic linker maps: that linker is the image.
+    let mapped = mapped_program(&path);
     // Static lookup for bootfs/`/t/tcc`; VFS read for tmpfs `tcc -o` output.
     // The file is read into the kernel heap; what gets mapped is still capped
     // by the image limits (`MAX_EXPAND_PAGES`).
     const EXEC_FILE_MAX: usize = 16 * 1024 * 1024;
     let owned;
-    let bytes: &[u8] = if let Some(b) = fs::lookup(&path) {
+    let bytes: &[u8] = if let Some(m) = &mapped {
+        &m.interp
+    } else if let Some(b) = fs::lookup(&path) {
         b
     } else if let Some(v) = fs::read_all(&path, EXEC_FILE_MAX) {
         owned = v;
@@ -648,15 +653,24 @@ fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8
     if let Some(line) = bytes.strip_prefix(b"#!") {
         return exec_script(&path, line, arg_refs, env_refs, depth);
     }
+    // Not a loadable ELF: fail before anything of the current image goes,
+    // or the caller is left with no code to return to.
+    if elf::image_span(bytes).is_err() {
+        return SYSERR;
+    }
     // A foreign-personality image that is dynamically linked also needs its
     // interpreter (the dynamic linker). Read it before the current image is
     // replaced, so a missing one fails the exec cleanly.
-    let interp = match exec_interp(bytes) {
-        Ok(i) => i,
-        Err(()) => return SYSERR,
+    let interp = match mapped {
+        Some(_) => None,
+        None => match exec_interp(bytes) {
+            Ok(i) => i,
+            Err(()) => return SYSERR,
+        },
     };
-    // A dynamically linked program is relocated by its dynamic linker.
-    let relocate = interp.is_none();
+    // A dynamically linked program is relocated by its dynamic linker (which
+    // relocates itself).
+    let relocate = interp.is_none() && mapped.is_none();
     // The old image goes away from here on: the process's other threads
     // end first.
     if !task::exec_alone() {
@@ -737,8 +751,17 @@ fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8
         }
         None => None,
     };
+    // A mapped program goes at the start of the mmap window; the dynamic
+    // linker, the image, starts and finds it through AT_PHDR / AT_ENTRY.
+    let program_at = mmap_base_va(base_u, off);
     // A foreign-personality image gets the SysV auxv its libc startup reads.
-    let aux = exec_auxv(bytes, base_u, entry, interp_map.as_ref().map(|m| m.0));
+    let aux = match &mapped {
+        Some(m) => match m.entry_at(program_at) {
+            Some(program_entry) => exec_auxv(&m.head, program_at, program_entry, Some(base_u as usize)),
+            None => return SYSERR,
+        },
+        None => exec_auxv(bytes, base_u, entry, interp_map.as_ref().map(|m| m.0)),
+    };
     let entry = interp_map.as_ref().map_or(entry, |m| m.1);
     let Some((rsp, argv)) =
         build_argv_stack(aspace, base_u, off, arg_refs, env_refs, aux.entries())
@@ -758,6 +781,11 @@ fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8
     // mutating the running task and resuming.
     crate::arch::sync_cpu_id_reg();
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
+    if let Some(m) = &mapped {
+        if !m.map(aspace, program_at) {
+            task::user_exit(127);
+        }
+    }
     if let Some((_, _, runs)) = &interp_map {
         for &(va, pages, prot) in runs {
             if !task::mmap_add(va, pages, prot, None) {
@@ -1479,6 +1507,33 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     va
 }
 
+/// `madvise(MADV_DONTNEED)`: free the frames of `[addr, addr + len)` in the
+/// mmap window but keep its regions, so a page reads as new on its next
+/// touch (`fault_in`: zeroed, or from the file). Allocators release memory
+/// this way and count on it reading as zero afterwards. A device's pages
+/// stay.
+pub(crate) fn mmap_discard(addr: usize, len: usize) -> bool {
+    if addr % PAGE != 0 {
+        return false;
+    }
+    let pages = len.div_ceil(PAGE);
+    let (base, _span, stack_off) = task::current_user_map();
+    let area_lo = mmap_base_va(base, stack_off) as usize;
+    let area_hi = mmap_limit_va(base, stack_off) as usize;
+    if addr < area_lo || addr.saturating_add(pages * PAGE) > area_hi {
+        return false;
+    }
+    let aspace = task::current_aspace();
+    for i in 0..pages {
+        let va = addr + i * PAGE;
+        if task::mmap_backing(va).is_some_and(|(prot, _)| prot & task::MMAP_DEVICE == 0) {
+            free_mapped_page(aspace, va as u64);
+        }
+    }
+    flush_user_tlb();
+    true
+}
+
 pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     if addr % PAGE != 0 || len == 0 {
         return SYSERR;
@@ -1620,6 +1675,107 @@ fn sys_mount(args_ptr: usize) -> usize {
 /// one, or the dynamic linker of a dynamic program) finds the program
 /// headers (PT_DYNAMIC, PT_TLS) through `AT_PHDR`, and the dynamic linker its
 /// own load address through `AT_BASE`.
+/// A dynamically linked, position-independent Linux program that `exec`
+/// maps from its file instead of reading it whole: only its headers and its
+/// interpreter (the dynamic linker, loaded as the image) are read. Its
+/// segments are paged in on first touch, so its size is bounded only by the
+/// mmap window (Alpine's cargo spans 34 MiB).
+struct MappedProgram {
+    node: fs::Vnode,
+    /// The start of the file: the ELF and program headers.
+    head: Vec<u8>,
+    interp: alloc::borrow::Cow<'static, [u8]>,
+}
+
+/// The headers of a program: what `exec` reads of a mapped one.
+const PROGRAM_HEAD_MAX: usize = 64 * 1024;
+
+/// `path` as a [`MappedProgram`], or `None` for any other exec (a native
+/// one, a static or non-PIE program: read whole as before).
+fn mapped_program(path: &str) -> Option<MappedProgram> {
+    if !crate::personality::pending() {
+        return None;
+    }
+    let node = fs::open(path, 0)?;
+    let size = fs::size_of(&node)?;
+    let mut head = alloc::vec![0u8; size.min(PROGRAM_HEAD_MAX)];
+    let mut got = 0;
+    while got < head.len() {
+        let n = fs::read(&node, got, &mut head[got..]);
+        if n == 0 {
+            return None;
+        }
+        got += n;
+    }
+    if !elf::is_pie(&head) || elf::image_span(&head).is_err() {
+        return None;
+    }
+    let (off, len) = elf::interp_range(&head)?;
+    let mut name = alloc::vec![0u8; len.min(MAX_PATH)];
+    if fs::read(&node, off, &mut name) != name.len() {
+        return None;
+    }
+    let name = name.split(|&b| b == 0).next()?;
+    let interp_path = resolve_copied_path(core::str::from_utf8(name).ok()?)?;
+    let interp = match fs::lookup(&interp_path) {
+        Some(b) => alloc::borrow::Cow::Borrowed(b),
+        None => alloc::borrow::Cow::Owned(fs::read_all(&interp_path, 16 << 20)?),
+    };
+    Some(MappedProgram { node, head, interp })
+}
+
+impl MappedProgram {
+    /// Its entry point when its lowest page is mapped at `at`.
+    fn entry_at(&self, at: u64) -> Option<usize> {
+        let span = elf::image_span(&self.head).ok()?;
+        let lo = span.min_vaddr & !(PAGE as u64 - 1);
+        Some(at.checked_add(span.entry.checked_sub(lo)?)? as usize)
+    }
+
+    /// Record its segments as mmap regions with their lowest page at `at`
+    /// (the region table of the new image, so after `replace_user`). The
+    /// whole pages of file data are paged in from the file; the page where a
+    /// segment's file data ends is filled now, the rest of it zero (not the
+    /// file's next bytes); what is left of its memory size is anonymous.
+    fn map(&self, aspace: u64, at: u64) -> bool {
+        let page = PAGE as u64;
+        let Ok(span) = elf::image_span(&self.head) else {
+            return false;
+        };
+        let bias = at - (span.min_vaddr & !(page - 1));
+        let mut ok = true;
+        let _ = elf::for_each_load_segment(&self.head, |seg| {
+            let prot = elf::pf_to_prot(seg.flags) as u32;
+            let lo = seg.vaddr & !(page - 1);
+            let file_off = seg.offset - (seg.vaddr - lo);
+            let file_end = if seg.filesz == 0 { lo } else { seg.vaddr + seg.filesz };
+            let whole_end = file_end & !(page - 1);
+            let mem_end = (seg.vaddr + seg.memsz).div_ceil(page) * page;
+            let pages = |a: u64, b: u64| ((b - a) / page) as u32;
+            if whole_end > lo {
+                ok &= task::mmap_add(bias + lo, pages(lo, whole_end), prot, Some((&self.node, file_off as usize)));
+            }
+            let mut next = whole_end;
+            if file_end > whole_end {
+                // alloc_frame returns a zeroed frame.
+                let frame = mm::alloc_frame_site(4);
+                let len = (file_end - whole_end) as usize;
+                let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), len) };
+                let _ = fs::read(&self.node, (file_off + (whole_end - lo)) as usize, dst);
+                map_user_page_prot(aspace, bias + whole_end, frame, prot as usize);
+                sync_icache(mm::hhdm(frame) as usize, PAGE);
+                ok &= task::mmap_add(bias + whole_end, 1, prot, None);
+                next += page;
+            }
+            if mem_end > next {
+                ok &= task::mmap_add(bias + next, pages(next, mem_end), prot, None);
+            }
+        });
+        flush_user_tlb();
+        ok
+    }
+}
+
 fn exec_auxv(elf_bytes: &[u8], base: u64, entry: usize, interp_base: Option<usize>) -> AuxV {
     let mut aux = AuxV::new();
     if !crate::personality::pending() {

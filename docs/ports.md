@@ -108,5 +108,13 @@ serves it from binfs, so its file in the initramfs is optional.
    mode, after the install).
 4. `THIRD_PARTY_NOTICES.md` (see "License compliance" in `AGENTS.md`).
 
+Patches (`*.myos.patch`) and compat files (`myos_compat.h`, `myos_stubs.c`)
+are for what myos genuinely lacks: a kernel feature (job control, timer
+signals, rlimits, `/var`), a declaration newlib's headers leave out, or
+build glue. A function several ports would stub belongs in libgloss
+(`toolchain/newlib/libgloss/myos`), implemented over the existing
+primitives; a workaround for a gap that has since been filled is removed
+(the audit that trimmed them is in the history of this file's ports).
+
 Nothing else: `Cargo.toml`, the workflows, the registry, the pack lists and
 the initramfs packer are descriptor-driven.

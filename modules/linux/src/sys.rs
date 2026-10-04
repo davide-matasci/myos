@@ -157,8 +157,19 @@ fn real_path_nofollow(path: &str) -> R2<String> {
 
 // ---- files ----------------------------------------------------------------
 
+/// A non-blocking pipe end that would block (bits: readable 1, writable 2).
+fn would_block(fd: usize, ready: u32) -> bool {
+    files::nonblock(fd) && task::fd_poll_bits(fd).is_some_and(|b| b & ready == 0)
+}
+
 pub fn read(fd: usize, buf: usize, len: usize) -> R {
     let io = || native(user::sys_read(fd, buf, len), EBADF);
+    if would_block(fd, 1) {
+        return Err(EAGAIN);
+    }
+    if files::writer(fd).is_some() {
+        return eventfd_read(fd, buf, len);
+    }
     match files::get(fd) {
         Some(e) if e.dir => Err(EISDIR),
         Some(e) if e.sock.is_some() => net::recv(fd, false, io),
@@ -168,6 +179,12 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
 
 pub fn write(fd: usize, buf: usize, len: usize) -> R {
     let io = || native(task::fd_write(fd, buf, len), EBADF);
+    if let Some(w) = files::writer(fd) {
+        return eventfd_write(w, buf, len);
+    }
+    if would_block(fd, 2) {
+        return Err(EAGAIN);
+    }
     if is_socket(fd) { net::send(fd, io) } else { io() }
 }
 
@@ -214,6 +231,7 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
     const O_DIRECTORY: usize = 0o200000;
     const O_NOFOLLOW: usize = 0o400000;
     const O_CLOEXEC: usize = 0o2000000;
+    const O_NONBLOCK: usize = 0o4000;
     let p = pty_alias(path_at(dirfd, path)?);
     let real = real_path(&p)?;
     let st = fs::stat(&real);
@@ -225,6 +243,7 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
         // getdents64 is served from the path table.
         let fd = native(user::open_path(&p, 0), EMFILE)?;
         files::set(fd, view_path(&p), true);
+        files::set_cloexec(fd, flags & O_CLOEXEC != 0);
         return Ok(fd);
     }
     if flags & O_DIRECTORY != 0 {
@@ -239,6 +258,8 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
     let native_flags = flags & !(O_EXCL | O_LARGEFILE | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     let fd = native(user::open_path(&p, native_flags), ENOENT)?;
     files::set(fd, view_path(&p), false);
+    files::set_cloexec(fd, flags & O_CLOEXEC != 0);
+    files::set_nonblock(fd, flags & O_NONBLOCK != 0);
     Ok(fd)
 }
 
@@ -258,12 +279,68 @@ fn pty_alias(path: String) -> String {
 }
 
 pub fn close(fd: usize) -> R {
+    if let Some(w) = files::writer(fd) {
+        files::set_writer(fd, None);
+        close(w).ok();
+    }
     files::remove(fd);
     if task::fd_close(fd) { Ok(0) } else { Err(EBADF) }
 }
 
+/// `ftruncate(fd, len)`. The VFS cuts a file only to nothing (an `O_TRUNC`
+/// open of it): a longer length is a zero written at its end, a shorter
+/// non-zero one is refused.
+pub fn ftruncate(fd: usize, len: usize) -> R {
+    const O_WRONLY: usize = 1;
+    const O_TRUNC: usize = 0o1000;
+    let path = files::get(fd).filter(|e| !e.dir && e.sock.is_none()).ok_or(EINVAL)?.path;
+    let real = real_path(&path)?;
+    let size = fs::stat(&real).ok_or(EBADF)?.size as usize;
+    if len == 0 && size != 0 {
+        let t = native(user::open_path(&path, O_WRONLY | O_TRUNC), EIO)?;
+        task::fd_close(t);
+    } else if len > size {
+        write_at(&real, len - 1, &[0])?;
+    } else if len != 0 && len < size {
+        return Err(EINVAL);
+    }
+    Ok(0)
+}
+
+pub fn truncate(path: usize, len: usize) -> R {
+    const O_WRONLY: usize = 1;
+    let fd = openat(AT_FDCWD, path, O_WRONLY)?;
+    let r = ftruncate(fd, len);
+    close(fd).ok();
+    r
+}
+
+/// `madvise`: `MADV_DONTNEED` drops the pages (they read as zero, or as
+/// the file, next time: allocators count on it); other advice is ignored.
+pub fn madvise(addr: usize, len: usize, advice: usize) -> R {
+    const MADV_DONTNEED: usize = 4;
+    if advice == MADV_DONTNEED && !task::mmap_discard(addr, len) {
+        return Err(EINVAL);
+    }
+    Ok(0)
+}
+
+/// `fsync`, `fdatasync`, `fchmod`, `fchown`: done once `fd` is valid.
+/// myos keeps no owners or permission bits, and ext2 writes a file's
+/// cached blocks back when its last fd closes.
+pub fn fd_noop(fd: usize) -> R {
+    task::fd_kind(fd).map(|_| 0).ok_or(EBADF)
+}
+
+/// `chmod`, `chown` and their `at` forms: done once the file exists.
+pub fn path_noop(dirfd: usize, path: usize) -> R {
+    let real = real_path(&path_at(dirfd, path)?)?;
+    fs::stat(&real).map(|_| 0).ok_or(ENOENT)
+}
+
 fn put_stat(buf: usize, st: &fs::StatInfo) -> R {
-    put(buf, &super::arch::stat_bytes(st.mode, st.size as u64, st.ino as u64, st.nlink as u64, st.dev as u64))?;
+    let b = super::arch::stat_bytes(st.mode, st.size as u64, st.ino as u64, st.nlink as u64, st.dev as u64, st.mtime);
+    put(buf, &b)?;
     Ok(0)
 }
 
@@ -279,7 +356,7 @@ pub fn fstatat(dirfd: usize, path: usize, buf: usize, flags: usize) -> R {
 
 pub fn fstat(fd: usize, buf: usize) -> R {
     if is_socket(fd) {
-        put(buf, &super::arch::stat_bytes(0o140777, 0, fd as u64 + 1, 1, 0))?;
+        put(buf, &super::arch::stat_bytes(0o140777, 0, fd as u64 + 1, 1, 0, 0))?;
         return Ok(0);
     }
     if let Some(e) = files::get(fd) {
@@ -292,7 +369,7 @@ pub fn fstat(fd: usize, buf: usize) -> R {
         task::FdKind::Pipe => (0o010600, 0),
         task::FdKind::File { size } => (0o100644, size as u64),
     };
-    put(buf, &super::arch::stat_bytes(mode, size, fd as u64 + 1, 1, 0))?;
+    put(buf, &super::arch::stat_bytes(mode, size, fd as u64 + 1, 1, 0, 0))?;
     Ok(0)
 }
 
@@ -343,19 +420,25 @@ pub fn getdents64(fd: usize, buf: usize, count: usize) -> R {
     Ok(out.len())
 }
 
-/// `FIONBIO` on a socket; the terminal requests from the terminal's ctl
-/// text (`tty`, docs/tty.md). myos has no ioctl of its own: anything else
-/// is `ENOTTY`.
+/// `FIONBIO`, `FIOCLEX` / `FIONCLEX`; the terminal requests from the
+/// terminal's ctl text (`tty`, docs/tty.md). myos has no ioctl of its own:
+/// anything else is `ENOTTY`.
 pub fn ioctl(fd: usize, req: usize, arg: usize) -> R {
     use super::tty;
     const FIONBIO: usize = 0x5421;
-    if req == FIONBIO && is_socket(fd) {
-        let mut on = [0u8; 4];
-        get(arg, &mut on)?;
-        net::set_nonblock(fd, on != [0; 4]);
-        return Ok(0);
-    }
+    const FIONCLEX: usize = 0x5450;
+    const FIOCLEX: usize = 0x5451;
     match req {
+        FIONBIO => {
+            let mut on = [0u8; 4];
+            get(arg, &mut on)?;
+            set_nonblock(fd, on != [0; 4]);
+            Ok(0)
+        }
+        FIOCLEX | FIONCLEX => {
+            files::set_cloexec(fd, req == FIOCLEX);
+            Ok(0)
+        }
         tty::TCGETS => put(arg, &tty::termios(fd)?).map(|_| 0),
         tty::TCSETS | tty::TCSETSW | tty::TCSETSF => {
             let mut t = [0u8; tty::TERMIOS_LEN];
@@ -381,15 +464,61 @@ pub fn faccessat(dirfd: usize, path: usize) -> R {
     fs::stat(&real).map(|_| 0).ok_or(ENOENT)
 }
 
-pub fn pipe2(fds: usize) -> R {
+pub fn pipe2(fds: usize, flags: usize) -> R {
     let (r, w) = task::pipe_open().ok_or(EMFILE)?;
-    files::remove(r);
-    files::remove(w);
+    for fd in [r, w] {
+        files::remove(fd);
+        files::set_cloexec(fd, flags & O_CLOEXEC != 0);
+        files::set_nonblock(fd, flags & O_NONBLOCK != 0);
+    }
     let mut b = [0u8; 8];
     b[..4].copy_from_slice(&(r as i32).to_le_bytes());
     b[4..].copy_from_slice(&(w as i32).to_le_bytes());
     put(fds, &b)?;
     Ok(0)
+}
+
+/// `eventfd2(initval, flags)` as a native pipe: the eventfd is the read
+/// end, the write end is kept aside (`files::writer`). A write of a
+/// non-zero count puts a byte in the pipe; a read takes what is there and
+/// gives the number of bytes as the count. Enough for a wakeup (libcurl's),
+/// not for exact counts: no semaphore mode, no initial value.
+pub fn eventfd2(init: usize, flags: usize) -> R {
+    const EFD_SEMAPHORE: usize = 1;
+    if init != 0 || flags & EFD_SEMAPHORE != 0 {
+        return Err(EINVAL);
+    }
+    let (r, w) = task::pipe_open().ok_or(EMFILE)?;
+    for fd in [r, w] {
+        files::remove(fd);
+        files::set_cloexec(fd, flags & O_CLOEXEC != 0);
+    }
+    files::set_nonblock(r, flags & O_NONBLOCK != 0);
+    files::set_writer(r, Some(w));
+    Ok(r)
+}
+
+fn eventfd_read(fd: usize, buf: usize, len: usize) -> R {
+    if len < 8 {
+        return Err(EINVAL);
+    }
+    // The bytes land in the caller's buffer, then their number replaces them.
+    let n = native(user::sys_read(fd, buf, 8), EBADF)?;
+    put(buf, &(n as u64).to_le_bytes())?;
+    Ok(8)
+}
+
+fn eventfd_write(writer: usize, buf: usize, len: usize) -> R {
+    if len < 8 {
+        return Err(EINVAL);
+    }
+    let mut v = [0u8; 8];
+    get(buf, &mut v)?;
+    if u64::from_le_bytes(v) != 0 {
+        // Any one byte of the caller's buffer will do.
+        native(task::fd_write(writer, buf, 1), EBADF)?;
+    }
+    Ok(8)
 }
 
 pub fn dup(fd: usize, min: usize) -> R {
@@ -398,7 +527,7 @@ pub fn dup(fd: usize, min: usize) -> R {
     Ok(new)
 }
 
-pub fn dup3(old: usize, new: usize, same_ok: bool) -> R {
+pub fn dup3(old: usize, new: usize, same_ok: bool, flags: usize) -> R {
     if old == new {
         return if !same_ok {
             Err(EINVAL)
@@ -412,6 +541,7 @@ pub fn dup3(old: usize, new: usize, same_ok: bool) -> R {
         return Err(EBADF);
     }
     files::dup(old, new);
+    files::set_cloexec(new, flags & O_CLOEXEC != 0);
     Ok(new)
 }
 
@@ -421,24 +551,53 @@ pub fn fcntl(fd: usize, cmd: usize, arg: usize) -> R {
     const F_SETFD: usize = 2;
     const F_GETFL: usize = 3;
     const F_SETFL: usize = 4;
+    const F_GETLK: usize = 5;
+    const F_SETLK: usize = 6;
+    const F_SETLKW: usize = 7;
+    const F_OFD_GETLK: usize = 36;
+    const F_OFD_SETLK: usize = 37;
+    const F_OFD_SETLKW: usize = 38;
     const F_DUPFD_CLOEXEC: usize = 1030;
     if task::fd_kind(fd).is_none() {
         return Err(EBADF);
     }
-    const O_NONBLOCK: usize = 0o4000;
+    const FD_CLOEXEC: usize = 1;
     match cmd {
-        F_DUPFD | F_DUPFD_CLOEXEC => dup(fd, arg),
-        // No close-on-exec flag yet; only sockets can be non-blocking.
-        F_GETFD | F_SETFD => Ok(0),
+        F_DUPFD => dup(fd, arg),
+        F_DUPFD_CLOEXEC => {
+            let new = dup(fd, arg)?;
+            files::set_cloexec(new, true);
+            Ok(new)
+        }
+        F_GETFD => Ok(if files::cloexec(fd) { FD_CLOEXEC } else { 0 }),
+        F_SETFD => {
+            files::set_cloexec(fd, arg & FD_CLOEXEC != 0);
+            Ok(0)
+        }
         F_SETFL => {
-            net::set_nonblock(fd, arg & O_NONBLOCK != 0);
+            set_nonblock(fd, arg & O_NONBLOCK != 0);
             Ok(0)
         }
         F_GETFL => {
-            let nonblock = files::get(fd).and_then(|e| e.sock).is_some_and(|s| s.nonblock);
-            Ok(2 | if nonblock { O_NONBLOCK } else { 0 }) // O_RDWR
+            let sock = files::get(fd).and_then(|e| e.sock).is_some_and(|s| s.nonblock);
+            Ok(2 | if sock || files::nonblock(fd) { O_NONBLOCK } else { 0 }) // O_RDWR
         }
+        // Record locks are granted and not kept (see `flock`): F_GETLK
+        // always finds the range free (`l_type` = F_UNLCK).
+        F_GETLK | F_OFD_GETLK => {
+            put(arg, &2i16.to_le_bytes())?;
+            Ok(0)
+        }
+        F_SETLK | F_SETLKW | F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
         _ => Err(EINVAL),
+    }
+}
+
+/// `O_NONBLOCK` on `fd`: a socket's state, or the flag `read` / `write`
+/// honour on a pipe.
+fn set_nonblock(fd: usize, on: bool) {
+    if !net::set_nonblock(fd, on) {
+        files::set_nonblock(fd, on);
     }
 }
 
@@ -522,11 +681,61 @@ pub fn mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, off: 
 
 /// `pread64(fd, buf, count, offset)`: a read at `offset` that leaves the
 /// file position alone.
+/// `flock`: granted and not kept. myos has no file locks; a lock taken by
+/// cargo, SQLite or git against another copy of itself is all this skips.
+pub fn flock(fd: usize) -> R {
+    if task::fd_kind(fd).is_none() {
+        Err(EBADF)
+    } else {
+        Ok(0)
+    }
+}
+
 pub fn pread(fd: usize, buf: usize, count: usize, off: usize) -> R {
     let mut tmp = alloc::vec![0u8; count.min(1 << 20)];
     let n = task::fd_pread(fd, off, &mut tmp).ok_or(ESPIPE)?;
     put(buf, &tmp[..n])?;
     Ok(n)
+}
+
+/// Write `data` at `off` of the file at VFS path `real`. The filesystems
+/// write no further than the end of a file: a gap before `off` is filled
+/// with zeros first, which is what reading the hole would give.
+fn write_at(real: &str, off: usize, data: &[u8]) -> R {
+    let zeros = [0u8; 4096];
+    let mut end = fs::stat(real).ok_or(EBADF)?.size as usize;
+    while end < off {
+        let n = (off - end).min(zeros.len());
+        end += fs::write(real, end, &zeros[..n]).filter(|&w| w > 0).ok_or(EIO)?;
+    }
+    fs::write(real, off, data).ok_or(EIO)
+}
+
+/// `pwrite64`: the VFS writes at a position by path (the fd's offset stays).
+pub fn pwrite(fd: usize, buf: usize, count: usize, off: usize) -> R {
+    let path = files::get(fd).filter(|e| !e.dir && e.sock.is_none()).ok_or(ESPIPE)?.path;
+    let real = real_path(&path)?;
+    let mut tmp = alloc::vec![0u8; count.min(1 << 20)];
+    get(buf, &mut tmp)?;
+    write_at(&real, off, &tmp)
+}
+
+/// `pwritev` / `pwritev2` (flags ignored): one `pwrite` per buffer.
+pub fn pwritev(fd: usize, iov: usize, cnt: usize, off: usize) -> R {
+    if cnt > 1024 {
+        return Err(EINVAL);
+    }
+    let mut total = 0;
+    for i in 0..cnt {
+        let base = get_u64(iov + i * 16)? as usize;
+        let len = get_u64(iov + i * 16 + 8)? as usize;
+        let n = pwrite(fd, base, len, off + total)?;
+        total += n;
+        if n < len {
+            break;
+        }
+    }
+    Ok(total)
 }
 
 // ---- processes ------------------------------------------------------------
@@ -536,16 +745,49 @@ pub fn fork(regs: &SyscallRegs) -> R {
 }
 
 pub fn execve(path: usize, argv: usize, envp: usize) -> R {
-    let p = path_at(AT_FDCWD, path)?;
-    let args = user_str_array(argv, user::MAX_ARGC)?;
+    const ENOEXEC: usize = 8;
+    let mut p = path_at(AT_FDCWD, path)?;
+    let mut args = user_str_array(argv, user::MAX_ARGC)?;
     let env = user_str_array(envp, user::MAX_ENVC)?;
+    let real = real_path(&p)?;
+    if let Some((interp, arg)) = script_interpreter(&real)? {
+        // `#!interp [arg]`: run the interpreter on the script, as Linux does.
+        let mut v = Vec::from([interp.clone().into_bytes()]);
+        v.extend(arg.map(String::into_bytes));
+        v.push(p.into_bytes());
+        v.extend(args.into_iter().skip(1));
+        (p, args) = (interp, v);
+    }
     // The native exec limit on the strings' total size (NULs included).
     if args.iter().chain(&env).map(|s| s.len() + 1).sum::<usize>() > user::MAX_EXEC_STRINGS {
         return Err(E2BIG);
     }
     let arg_refs: Vec<&[u8]> = args.iter().map(|s| s.as_slice()).collect();
     let env_refs: Vec<&[u8]> = env.iter().map(|s| s.as_slice()).collect();
-    native(user::exec_linux(&p, &arg_refs, &env_refs), ENOENT)
+    // A file that is there but did not run is not an executable.
+    let missing = if fs::stat(&real).is_some() { ENOEXEC } else { ENOENT };
+    native(user::exec_linux(&p, &arg_refs, &env_refs), missing)
+}
+
+/// The interpreter of a `#!` script at VFS path `real`, and its optional
+/// argument (the rest of the line), if the file is one.
+fn script_interpreter(real: &str) -> R2<Option<(String, Option<String>)>> {
+    const ENOEXEC: usize = 8;
+    let mut head = [0u8; 256];
+    let n = fs::read(real, 0, &mut head).unwrap_or(0);
+    let Some(line) = head[..n].strip_prefix(b"#!") else {
+        return Ok(None);
+    };
+    let end = line.iter().position(|&b| b == b'\n').ok_or(ENOEXEC)?;
+    let line = core::str::from_utf8(&line[..end]).map_err(|_| ENOEXEC)?.trim();
+    let (interp, arg) = match line.split_once([' ', '\t']) {
+        Some((i, a)) => (i, Some(a.trim()).filter(|a| !a.is_empty())),
+        None => (line, None),
+    };
+    if interp.is_empty() {
+        return Err(ENOEXEC);
+    }
+    Ok(Some((String::from(interp), arg.map(String::from))))
 }
 
 pub fn wait4(pid: usize, status: usize, options: usize, rusage: usize) -> R {

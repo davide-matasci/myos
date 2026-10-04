@@ -333,6 +333,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         add(&mut entries, "bin/linux/linux-dyn", read(&dyn_dir.join("linux-dyn")));
         // Alpine Linux package fetcher; packages are downloaded at run time.
         add(&mut entries, "bin/etc/get-alpine", read(&dyn_dir.join("get-alpine")));
+        // Building myos inside myos with Alpine's Rust (`sh /lib/self-host.sh DIR`).
+        add(&mut entries, "lib/self-host.sh", read(&manifest_dir.join("linux-compat/self-host.sh")));
     }
 
     // Kernel modules -> lib/modules/<name> (the same ELFs Limine loads at

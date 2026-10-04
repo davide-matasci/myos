@@ -5,6 +5,7 @@
 //! package root such as Alpine's python3 ~45 MB). So it is sized from the
 //! machine's memory at boot ([`size_for`]) instead of a fixed size.
 
+use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use linked_list_allocator::LockedHeap;
@@ -17,7 +18,30 @@ const MIN_SIZE: u64 = 64 * 1024 * 1024;
 const MAX_SIZE: u64 = 1024 * 1024 * 1024;
 
 #[global_allocator]
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
+static ALLOCATOR: IrqSafeHeap = IrqSafeHeap(LockedHeap::empty());
+
+/// The heap with interrupts off while its lock is held. Otherwise a task
+/// preempted inside `alloc` keeps the lock, and the next one on its CPU to
+/// allocate with interrupts off (under `TASKS`, in `with_process_mut`)
+/// spins on it forever.
+struct IrqSafeHeap(LockedHeap);
+
+unsafe impl GlobalAlloc for IrqSafeHeap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let flags = crate::arch::irq_save();
+        crate::arch::irq_off();
+        let p = unsafe { self.0.alloc(layout) };
+        crate::arch::irq_restore(flags);
+        p
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let flags = crate::arch::irq_save();
+        crate::arch::irq_off();
+        unsafe { self.0.dealloc(ptr, layout) };
+        crate::arch::irq_restore(flags);
+    }
+}
 
 /// Physical end of the heap (the frame allocator starts after it).
 static PHYS_END: AtomicU64 = AtomicU64::new(0);
@@ -34,7 +58,7 @@ pub fn init() {
     let start = limine_boot::alloc_usable(size as usize);
     PHYS_END.store(start as u64 - limine_boot::hhdm_offset() + size, Ordering::SeqCst);
     unsafe {
-        ALLOCATOR.lock().init(start as *mut u8, size as usize);
+        ALLOCATOR.0.lock().init(start as *mut u8, size as usize);
     }
 }
 

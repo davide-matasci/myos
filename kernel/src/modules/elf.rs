@@ -147,6 +147,9 @@ pub struct LoadSegment {
     pub vaddr: u64,
     pub memsz: u64,
     pub flags: u32,
+    /// Where its bytes are in the file, and how many (`filesz <= memsz`).
+    pub offset: u64,
+    pub filesz: u64,
 }
 
 /// Visit each PT_LOAD in `bytes`. Returns the number of segments walked.
@@ -165,12 +168,16 @@ pub fn for_each_load_segment(
             continue;
         }
         let flags = u32_at(bytes, p + 4)?;
+        let offset = u64_at(bytes, p + 8)?;
         let vaddr = u64_at(bytes, p + 16)?;
+        let filesz = u64_at(bytes, p + 32)?;
         let memsz = u64_at(bytes, p + 40)?;
         f(LoadSegment {
             vaddr,
             memsz,
             flags,
+            offset,
+            filesz,
         });
         n += 1;
     }
@@ -241,6 +248,24 @@ pub fn realize_as(bytes: &[u8], dest: *mut u8, load_bias: u64, relocate: bool) -
 }
 
 /// The `PT_INTERP` path (without its NUL), for a dynamically linked image.
+/// Where `PT_INTERP`'s path is in the file (offset, length), from the
+/// headers alone (`bytes` need not hold the path itself).
+pub fn interp_range(bytes: &[u8]) -> Option<(usize, usize)> {
+    let hdr = parse_ehdr(bytes).ok()?;
+    for i in 0..hdr.e_phnum {
+        let p = hdr.e_phoff.checked_add(i.checked_mul(hdr.e_phentsize)?)?;
+        if u32_at(bytes, p).ok()? == PT_INTERP {
+            return Some((u64_at(bytes, p + 8).ok()? as usize, u64_at(bytes, p + 32).ok()? as usize));
+        }
+    }
+    None
+}
+
+/// Whether `bytes` starts a position-independent ELF (`ET_DYN`).
+pub fn is_pie(bytes: &[u8]) -> bool {
+    parse_ehdr(bytes).map_or(false, |h| h.e_type == ET_DYN)
+}
+
 pub fn interp_path(bytes: &[u8]) -> Option<&[u8]> {
     let hdr = parse_ehdr(bytes).ok()?;
     for i in 0..hdr.e_phnum {

@@ -19,8 +19,8 @@ myos libgloss + static zlib for `x86_64` / `aarch64` / `riscv64`.
 | `build.sh` | Cross-compile → `target/git-<arch>-unknown-none` (links `ports/zlib`) |
 | `myos-git-cc.sh` | Compile/link wrapper (crt0 + `libz.a` + newlib) |
 | `config.mak` | Phase-1 `NO_*` flags + undo host-Linux uname detections |
-| `include/` | Freestanding stubs (`syslog.h`, `sys/statvfs.h`, `sys/un.h`, …) |
-| `myos_stubs.c` / `myos_compat.h` | Runtime + compile-only helpers |
+| `include/` | Headers newlib lacks (`syslog.h`, `sys/statvfs.h`, `netinet/tcp.h`) |
+| `myos_stubs.c` / `myos_compat.h` | What libgloss has no honest implementation for (`prctl`, `sync_file_range`, `statvfs`, `alarm`) + compile-only definitions |
 
 Thin wrappers: `scripts/fetch-git.sh`, `scripts/build-git.sh` (and
 `scripts/fetch-zlib.sh` / `scripts/build-zlib.sh`).

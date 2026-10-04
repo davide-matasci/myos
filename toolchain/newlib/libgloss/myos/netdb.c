@@ -372,3 +372,36 @@ struct hostent *gethostbyname(const char *name) {
     he.h_addr_list = addr_list;
     return &he;
 }
+
+int h_errno;
+
+const char *hstrerror(int err) {
+    switch (err) {
+    case 0:
+        return "Resolver error 0 (no error)";
+    case HOST_NOT_FOUND:
+        return "Unknown host";
+    case TRY_AGAIN:
+        return "Host name lookup failure";
+    case NO_RECOVERY:
+        return "Unknown server error";
+    case NO_DATA:
+        return "No address associated with name";
+    default:
+        return "Unknown resolver error";
+    }
+}
+
+/* No services database: a lookup by name or port finds nothing, and a
+ * caller falls back to the number it has (xtrans, git's daemon). */
+struct servent *getservbyname(const char *name, const char *proto) {
+    (void)name;
+    (void)proto;
+    return NULL;
+}
+
+struct servent *getservbyport(int port, const char *proto) {
+    (void)port;
+    (void)proto;
+    return NULL;
+}

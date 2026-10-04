@@ -17,6 +17,9 @@ pub struct StatInfo {
     /// `(st_dev, st_ino)` identities do not collide across VFS roots that all
     /// use `ino == 1`. Assigned by [`backend_stat`] as `mount_index + 1`.
     pub dev: u32,
+    /// Last modification, in seconds since the epoch: 0 where the
+    /// filesystem keeps none (only module filesystems such as ext2 do).
+    pub mtime: u64,
 }
 
 /// Stable inode for a directory path relative to a mount root.
@@ -1162,6 +1165,7 @@ fn module_stat(ops: &ModuleVfsOps, rel: &str) -> Option<StatInfo> {
         ino: out.ino,
         nlink: out.nlink,
         dev: 0,
+        mtime: out.mtime,
     })
 }
 

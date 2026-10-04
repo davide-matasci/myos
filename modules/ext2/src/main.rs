@@ -138,6 +138,7 @@ unsafe extern "C" fn ext2_stat<const S: usize>(path: *const u8, path_len: usize,
             size: st.size.min(u32::MAX as u64) as u32,
             ino: st.ino,
             nlink: st.links as u32,
+            mtime: u64::from(st.mtime),
         }
     };
     0

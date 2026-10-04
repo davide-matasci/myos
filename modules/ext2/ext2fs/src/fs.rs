@@ -329,7 +329,7 @@ impl<D: Device> Fs<D> {
         self.run(|fs| {
             let ino = fs.resolve(path)?;
             let n = fs.inode(ino)?;
-            Ok(Stat { kind: n.kind(), mode: n.mode, size: n.size, ino, links: n.links })
+            Ok(Stat { kind: n.kind(), mode: n.mode, size: n.size, ino, links: n.links, mtime: n.mtime })
         })
     }
 

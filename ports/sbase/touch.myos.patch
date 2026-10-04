@@ -1,15 +1,16 @@
 --- touch.c
 +++ touch.c
-@@ -89,11 +89,12 @@
+@@ -89,11 +89,9 @@
  
  	if (!strptime(str, format, &t))
  		eprintf("strptime %s: Invalid date format\n", str);
 -	if (zulu) {
-+	if (zulu && 0) {
- 		t.tm_hour += t.tm_gmtoff / 60;
- 		t.tm_gmtoff = 0;
- 		t.tm_zone = "Z";
- 	}
+-		t.tm_hour += t.tm_gmtoff / 60;
+-		t.tm_gmtoff = 0;
+-		t.tm_zone = "Z";
+-	}
++	/* myos: no time zones, local time is UTC, so -Z changes nothing;
++	 * newlib's struct tm has no tm_gmtoff to adjust by anyway. */
 +	(void)zulu;
  
  	return mktime(&t);

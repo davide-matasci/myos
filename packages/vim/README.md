@@ -38,7 +38,7 @@ Missing ELF is a **hard error** at image pack time (CI always builds vim).
   `tcsetattr` no-op success). Raw/visual mode and single-key input are limited.
 - Framebuffer ANSI CSI includes DECSTBM (`CSI r`) + SU/SD (`CSI S`/`CSI T`);
   `TIOCGWINSZ` reports FB character cells; termios raw mode via TCGETS/TCSETS.
-- `select()` is a tiny stub (zero-timeout → idle; otherwise stdin “ready”).
+- `select()` is libgloss's (`pollselect.c`), over the kernel's `poll`.
 - Interactive editing on serial/FB may be awkward; opening a file and `:q!`
   should work.
 

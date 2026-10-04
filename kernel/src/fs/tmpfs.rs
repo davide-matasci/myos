@@ -471,6 +471,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 1,
             nlink: 2,
             dev: 0,
+            mtime: 0,
         });
     }
     if !valid_rel_path(name) {
@@ -490,5 +491,6 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         ino: (i as u32) + 2,
         nlink,
         dev: 0,
+        mtime: 0,
     })
 }

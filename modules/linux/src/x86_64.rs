@@ -57,17 +57,18 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         15 => lsig::rt_sigreturn(regs),
         16 => ret(sys::ioctl(a[0], a[1], a[2])),
         17 => ret(sys::pread(a[0], a[1], a[2], a[3])),
+        18 => ret(sys::pwrite(a[0], a[1], a[2], a[3])),
         19 => ret(sys::rw_vec(a[0], a[1], a[2], false)), // readv
         20 => ret(sys::rw_vec(a[0], a[1], a[2], true)),  // writev
         21 => ret(sys::faccessat(AT_FDCWD, a[0])),       // access
-        22 => ret(sys::pipe2(a[0])),
+        22 => ret(sys::pipe2(a[0], 0)),
         24 => {
             task::yield_now();
             0
         }
-        28 => 0, // madvise
+        28 => ret(sys::madvise(a[0], a[1], a[2])),
         32 => ret(sys::dup(a[0], 0)),
-        33 => ret(sys::dup3(a[0], a[1], true)), // dup2
+        33 => ret(sys::dup3(a[0], a[1], true, 0)), // dup2
         35 => ret(sys::nanosleep(a[0], false)),
         39 => task::current_pid(),
         41 => ret(net::socket(a[0], a[1])),
@@ -81,6 +82,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         49 | 54 => ret(net::ignored(a[0])), // bind, setsockopt
         51 => ret(net::getsockname(a[0], a[1], a[2])),
         52 => ret(net::getpeername(a[0], a[1], a[2])),
+        53 => ret(net::socketpair(a[0], a[1], a[3])),
         55 => ret(net::getsockopt(a[0], a[1], a[2], a[3], a[4])),
         186 => task::current_tid(),
         56 => ret(thread::clone(regs, a[0], a[1], a[2], a[4], a[3])),
@@ -92,6 +94,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         62 => ret(sys::kill(a[0], a[1])),
         63 => ret(sys::uname(a[0])),
         72 => ret(sys::fcntl(a[0], a[1], a[2])),
+        73 => ret(sys::flock(a[0])),
+        76 => ret(sys::truncate(a[0], a[1])),
+        77 => ret(sys::ftruncate(a[0], a[1])),
         79 => ret(sys::getcwd(a[0], a[1])),
         80 => ret(sys::chdir(a[0])),
         81 => ret(sys::fchdir(a[0])),
@@ -101,6 +106,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         87 => ret(sys::unlinkat(AT_FDCWD, a[0], 0)),     // unlink
         88 => ret(sys::symlinkat(a[0], AT_FDCWD, a[1])),
         89 => ret(sys::readlinkat(AT_FDCWD, a[0], a[1], a[2])),
+        74 | 75 | 91 | 93 => ret(sys::fd_noop(a[0])), // fsync, fdatasync, fchmod, fchown
+        90 | 92 | 94 => ret(sys::path_noop(AT_FDCWD, a[0])), // chmod, chown, lchown
         95 => 0o022, // umask
         96 => result(user::sys_gettimeofday(a[0], a[1]), EFAULT),
         97 => ret(sys::prlimit(a[0], a[1])), // getrlimit
@@ -128,6 +135,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         234 => ret(sys::kill(a[1], a[2])),               // tgkill
         257 => ret(sys::openat(a[0], a[1], a[2])),
         258 => ret(sys::mkdirat(a[0], a[1])),
+        260 | 268 => ret(sys::path_noop(a[0], a[1])), // fchownat, fchmodat
         262 => ret(sys::fstatat(a[0], a[1], a[2], a[3])),
         263 => ret(sys::unlinkat(a[0], a[1], a[2])),
         264 | 316 => ret(sys::renameat(a[0], a[1], a[2], a[3])), // renameat, renameat2
@@ -136,16 +144,19 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         269 | 439 => ret(sys::faccessat(a[0], a[1])), // faccessat, faccessat2
         271 => ret(sys::ppoll(a[0], a[1], a[2])),
         273 => 0, // set_robust_list
-        292 => ret(sys::dup3(a[0], a[1], false)),
-        293 => ret(sys::pipe2(a[0])),
+        284 => ret(sys::eventfd2(a[0], 0)),
+        290 => ret(sys::eventfd2(a[0], a[1])),
+        292 => ret(sys::dup3(a[0], a[1], false, a[2])),
+        293 => ret(sys::pipe2(a[0], a[1])),
+        296 | 328 => ret(sys::pwritev(a[0], a[1], a[2], a[3])), // pwritev, pwritev2
         302 => ret(sys::prlimit(a[1], a[3])),
         318 => ret(sys::getrandom(a[0], a[1])),
         _ => err(ENOSYS),
     }
 }
 
-/// The x86_64 `struct stat` (144 bytes).
-pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64) -> [u8; 144] {
+/// The x86_64 `struct stat` (144 bytes); `mtime` stands for all three times.
+pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64, mtime: u64) -> [u8; 144] {
     let mut b = [0u8; 144];
     let mut put = |off: usize, v: &[u8]| b[off..off + v.len()].copy_from_slice(v);
     put(0, &dev.to_le_bytes());
@@ -156,6 +167,9 @@ pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64) -> [u8; 
     put(48, &size.to_le_bytes());
     put(56, &4096u64.to_le_bytes()); // st_blksize
     put(64, &size.div_ceil(512).to_le_bytes()); // st_blocks
+    for off in [72, 88, 104] {
+        put(off, &mtime.to_le_bytes()); // st_atime, st_mtime, st_ctime
+    }
     b
 }
 
