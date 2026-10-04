@@ -7,13 +7,17 @@ built for myos. Core protocol, no mouse, no XKB, no GL; the screen is
 
 ```sh
 get-myos x11-libs tinyx
-Xfbdev :0 &
-DISPLAY=:0 some-x-client
+startx some-x-client        # dwm when no client is named
 ```
 
 The server takes the screen and the keyboard from the console while it runs
 and gives them back when it exits (Ctrl+Alt+Backspace ends it; serial input
-still reaches the shell meanwhile).
+still reaches the shell meanwhile). That is why a session starts in one
+command: what is typed after `Xfbdev :0 &` goes to the server, not to the
+shell. `startx [program [arg...]] [-- server-arg...]` (`startx.c`) starts
+`Xfbdev :0 -br` with SIGUSR1 ignored, waits for the signal the server sends
+its parent once it listens (xinit's handshake), runs the program with
+`DISPLAY=:0`, and stops the server when the program exits.
 
 ## What it is built from
 
@@ -47,15 +51,15 @@ Fonts: libXfont's built-in `fixed` and `cursor` (the font path is
 
 ## The test
 
-`test.sh` (full mode, after the install): `Xfbdev :0`, then `tinyx_smoke`
-checks that the screen is `/dev/fb`'s size, maps a red window over it and
+`test.sh` (full mode, after the install): `startx /bin/etc/tinyx_smoke`;
+`tinyx_smoke` checks that the screen is `/dev/fb`'s size, maps a red window over it and
 reads the framebuffer back, and receives the Shift+A the host types through
-the QEMU monitor as keycode 38, "A"; after the server's exit `/dev/fb/ctl`
-says `text` again.
+the QEMU monitor as keycode 38, "A"; when it exits startx stops the server,
+and `/dev/fb/ctl` says `text` again.
 
 ## Not yet
 
 - A mouse (`kdrive/myos` has none; the core pointer never moves).
 - Rotation and modes: one framebuffer, at the mode the bootloader set.
 - Fonts beyond the built-in two (`/lib/X11/fonts`).
-- xinit / startx; the first clients (`TODO.md`).
+- The first clients beyond dwm, a terminal above all (`TODO.md`).

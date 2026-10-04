@@ -31,6 +31,8 @@ MYOS_NCURSES_VERSION="$MYOS_ROOT/target/.myos-ncurses-version"
 MYOS_X11_LIBS_VERSION="$MYOS_ROOT/target/.myos-x11-libs-version"
 MYOS_TINYX_VERSION="$MYOS_ROOT/target/.myos-tinyx-version"
 MYOS_DWM_VERSION="$MYOS_ROOT/target/.myos-dwm-version"
+MYOS_X11_XFT_VERSION="$MYOS_ROOT/target/.myos-x11-xft-version"
+MYOS_X11_FONTS_VERSION="$MYOS_ROOT/target/.myos-x11-fonts-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
@@ -169,7 +171,7 @@ myos_c_smokes_version_hash() {
         "$MYOS_ROOT/user/c/unix_smoke.c" "$MYOS_ROOT/user/c/fb_smoke.c" \
         "$MYOS_ROOT/user/c/poll_smoke.c" "$MYOS_ROOT/user/c/kbd_smoke.c" \
         "$MYOS_ROOT/user/c/uio_smoke.c" "$MYOS_ROOT/user/c/pthread_smoke.c" \
-        "$MYOS_ROOT/user/c/netconv_smoke.c" \
+        "$MYOS_ROOT/user/c/netconv_smoke.c" "$MYOS_ROOT/user/c/child_smoke.c" \
         "$MYOS_ROOT/user/c/libc_smoke.c" \
         "$MYOS_ROOT/scripts/build-c-smokes.sh"
     } | sha256sum | awk '{print $1}'
@@ -183,7 +185,7 @@ myos_c_smokes_is_current() {
     && [[ "$(cat "$MYOS_C_SMOKES_VERSION")" == "$(myos_c_smokes_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke uio-smoke pthread-smoke netconv-smoke libc-smoke; do
+    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke uio-smoke pthread-smoke netconv-smoke child-smoke libc-smoke; do
       [[ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ]] || return 1
     done
   done
@@ -601,15 +603,25 @@ myos_write_cross_cc() {
   for f in "$@"; do
     flags="$flags $(printf '%q' "$f")"
   done
-  # newlib's printf wants the long-double and soft-float helpers these
-  # arches lack (the sbase port carries them).
+  # newlib's printf wants the long-double helpers these arches lack (the
+  # sbase port carries them). riscv64 has no FPU: its float and double
+  # arithmetic, conversions and compares are compiler-rt's
+  # (ports/curl/build-softfloat-riscv64.sh); sbase's own versions of those
+  # are renamed away, so only its long-double ones are linked.
   case "$arch" in
     aarch64) extra="$out.helpers.o"
       clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
         -c "$MYOS_ROOT/ports/sbase/trunctfdf2.c" -o "$extra" ;;
-    riscv64) extra="$out.helpers.o"
+    riscv64)
+      local sf="$MYOS_ROOT/target/libsoftfloat-riscv64.a" nmbin sym renames=()
+      "$MYOS_ROOT/ports/curl/build-softfloat-riscv64.sh" >/dev/null
+      nmbin="$(command -v llvm-nm 2>/dev/null || echo nm)"
+      for sym in $("$nmbin" --defined-only -g "$sf" | awk '$2 == "T" { print $3 }'); do
+        renames+=("-D$sym=__myos_sbase$sym")
+      done
       clang --target="$elf" -ffreestanding -fPIC -O2 -w -isystem "$sysroot/include" \
-        -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$extra" ;;
+        "${renames[@]}" -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$out.helpers.o"
+      extra="$out.helpers.o $sf" ;;
   esac
   cat > "$out" <<EOC
 #!/usr/bin/env bash
@@ -696,7 +708,48 @@ myos_tinyx_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/xfbdev-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/tinyx-smoke-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/startx-${arch}-unknown-none" ]] || return 1
   done
+}
+
+myos_x11_xft_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_x11_libs_version_hash
+      find "$(myos_port_dir x11-xft)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_x11_xft_is_current() {
+  local arch
+  [[ -f "$MYOS_X11_XFT_VERSION" ]] \
+    && [[ "$(cat "$MYOS_X11_XFT_VERSION")" == "$(myos_x11_xft_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/x11-xft-${arch}/lib/x11/lib/libXft.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/xft-smoke-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/fc-match-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_x11_fonts_version_hash() {
+  local h
+  h="$(
+    find "$(myos_port_dir x11-fonts)" -type f -print0 2>/dev/null \
+      | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_x11_fonts_is_current() {
+  [[ -f "$MYOS_X11_FONTS_VERSION" ]] \
+    && [[ "$(cat "$MYOS_X11_FONTS_VERSION")" == "$(myos_x11_fonts_version_hash)" ]] \
+    && [[ -f "$MYOS_ROOT/target/x11-fonts/DejaVuSansMono.ttf" ]]
 }
 
 myos_dwm_version_hash() {
@@ -704,7 +757,7 @@ myos_dwm_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
-      myos_x11_libs_version_hash
+      myos_x11_xft_version_hash
       find "$(myos_port_dir dwm)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | sha256sum | awk '{print $1}'

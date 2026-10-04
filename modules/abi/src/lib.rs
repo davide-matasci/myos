@@ -243,6 +243,8 @@ pub const MYOS_SYSERR_EINTR: usize = usize::MAX - 3;
 pub const MYOS_HANDLER_DFL: usize = 0;
 pub const MYOS_HANDLER_IGN: usize = 1;
 pub const MYOS_SIGSEGV: u32 = 11;
+/// `sa_flags` bit: on `SIGCHLD`, children leave no zombie (kernel `signal::SA_NOCLDWAIT`).
+pub const MYOS_SA_NOCLDWAIT: u32 = 0x20;
 
 /// Size of the FP/SIMD register image `fpu_save` writes (x86_64 FXSAVE,
 /// aarch64 `fpsimd_context` head + v0-v31, riscv64 f0-f31 + fcsr). The

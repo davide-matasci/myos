@@ -24,6 +24,9 @@ t pthread /bin/etc/pthread_smoke
 # netfs conversations: a connect to 127.0.0.1 is refused at once, and 200
 # sockets closed right after socket() leak none (netconv_smoke.c).
 t netconv /bin/etc/netconv_smoke
+# kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
+# the wait (child_smoke.c).
+t child /bin/etc/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports (libc_smoke.c).
 t libc /bin/etc/libc_smoke

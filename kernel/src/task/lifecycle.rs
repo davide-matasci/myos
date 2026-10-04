@@ -619,6 +619,7 @@ extern "C" fn trampoline() -> ! {
 pub fn die() -> ! {
     irq_off();
     let mut chld_parent = usize::MAX;
+    let mut leaves_zombie = true;
     // Closed outside TASKS below: dropping pipe/pty ends wakes their peers
     // (and a pty hangup signals the session), which take TASKS themselves.
     let mut fds_to_drop: Option<[FdEntry; MAX_FDS]> = None;
@@ -629,6 +630,14 @@ pub fn die() -> ! {
         orphan_children(&mut tasks, id);
         if tasks[id].user_rip != 0 {
             chld_parent = tasks[id].ppid;
+            // A parent ignoring SIGCHLD (or with SA_NOCLDWAIT) gets no
+            // zombie: the exit is reported to nobody and the slot is freed
+            // like an orphan's. Its `wait` sees one child fewer (ECHILD when
+            // none are left).
+            if chld_parent != NO_PARENT && signal_no_zombies(&tasks, chld_parent) {
+                tasks[id].ppid = NO_PARENT;
+                leaves_zombie = false;
+            }
             user::note_exit();
             let aspace = tasks[id].aspace;
             tasks[id].aspace = 0;
@@ -664,7 +673,9 @@ pub fn die() -> ! {
     // unaffected; a parent polling SIGCHLD_TAKE sees the bit.
     if chld_parent != usize::MAX {
         crate::signal::raise_sigchld(chld_parent);
-        note_zombie(chld_parent);
+        if leaves_zombie {
+            note_zombie(chld_parent);
+        }
         // The parent may be blocked in `wait`; pollers may watch for exits.
         wake(key_child(chld_parent));
         wake_any();

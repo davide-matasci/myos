@@ -76,8 +76,9 @@ int _link(const char *oldpath, const char *newpath) {
 }
 
 int _kill(int pid, int sig) {
-    /* Signal numbers must match newlib <signal.h> / kernel signal.rs. */
-    if (sig <= 0 || sig > 31) {
+    /* Signal numbers must match newlib <signal.h> / kernel signal.rs; 0
+     * only checks that the target exists. */
+    if (sig < 0 || sig > 31) {
         errno = EINVAL;
         return -1;
     }

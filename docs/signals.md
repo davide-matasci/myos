@@ -12,7 +12,7 @@ terminates with a `WIFSIGNALED` wait status, and blocking syscalls return
 | `kernel/src/signal.rs` | policy: signal numbers, default actions, delivery, `sigreturn`, `sigaction`/`sigprocmask`/`sigsuspend`/`sigwait` |
 | `kernel/src/task/signals.rs` | per-thread pending / blocked bits; per-process ignored bits, caught-handler table and libc trampoline address |
 | `toolchain/newlib/libgloss/myos/signal.c` | `__myos_sigtramp` (per arch), `sigaction`, `signal`, `sigpending`, `sigsuspend`, `sigwait`, `pthread_sigmask` |
-| `toolchain/newlib/patch.sh` (`patch_signal_h`) | newlib `<sys/signal.h>`: `sa_sigaction`, `SA_RESTART`, `SA_NODEFER`, `SA_RESETHAND`, `SA_SIGINFO` |
+| `toolchain/newlib/patch.sh` (`patch_signal_h`) | newlib `<sys/signal.h>`: `sa_sigaction`, `SA_RESTART`, `SA_NODEFER`, `SA_RESETHAND`, `SA_SIGINFO`, `SA_NOCLDWAIT` |
 | `toolchain/newlib/build.sh` | `-DSIGNAL_PROVIDED`: newlib's userspace `signal()`/`raise()` emulation is off; `raise` is `kill(getpid(), sig)` |
 
 Signal numbers are newlib's (BSD layout: `SIGCHLD = 20`, `SIGUSR1 = 30`),
@@ -30,6 +30,16 @@ signal always stays pending (as on Linux).
 
 `fork` copies handlers and the blocked mask; `exec` resets caught signals to
 `SIG_DFL` and keeps ignored ones, the blocked mask and pending signals.
+
+## Children without zombies
+
+A process that ignores `SIGCHLD`, or sets `SA_NOCLDWAIT` on it (`0x20`:
+Linux's 2 is newlib's `SA_SIGINFO`; the Linux layer translates), gets no
+zombies: an exiting child is reaped by the kernel like an orphan
+(`die` in `kernel/src/task/lifecycle.rs`), and `wait` finds one child fewer,
+`ECHILD` once none is left (a `wait` in progress returns `ECHILD` when the
+last child exits). `SIGCHLD` itself is still sent to a handler set with
+`SA_NOCLDWAIT`.
 
 With threads (`docs/threads.md`), dispositions belong to the process and
 the blocked mask and pending set to each thread. A signal sent to a pid goes
@@ -84,7 +94,7 @@ previous one. `signal()` installs BSD-style handlers (`SA_RESTART`).
 
 | # | Name | Notes |
 |--:|------|-------|
-| 34 | `kill(pid, sig)` | `pid > 0` task, `0` own group, `< 0` group `-pid` |
+| 34 | `kill(pid, sig)` | `pid > 0` task, `0` own group, `< 0` group `-pid`; `sig` 0 sends nothing, only checks that the target exists (`ESRCH` for an exited one, zombies included) |
 | 35 | `sigaction(sig, act, oact)` | 3-word struct, `SIG_DFL`/`SIG_IGN` only (binaries from before handlers) |
 | 37 | `sigprocmask(how, set, oset)` | 32-bit masks |
 | 45 | `sigreturn()` | frame at the user stack pointer |

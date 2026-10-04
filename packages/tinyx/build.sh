@@ -4,7 +4,7 @@
 # MIT-SHM or XTEST, current proto headers) and libfontenc and libXfont 1.x,
 # against the X libraries of packages/x11-libs. Static, like everything; the
 # fonts are libXfont's built-in `fixed` and `cursor`. Then the boot test
-# tinyx_smoke, an X client.
+# tinyx_smoke, an X client, and startx, which runs a session.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -103,6 +103,7 @@ build_arch() {
     --with-fontdir=/lib/X11/fonts --with-default-font-path=built-ins
   cp "$dir/tinyx/kdrive/fbdev/Xfbdev" "$ROOT/target/xfbdev-${arch}-unknown-none"
 
+  "$cc" -O2 -Wall -Wextra "$HERE/startx.c" -o "$ROOT/target/startx-${arch}-unknown-none"
   "$cc" -O2 -Wall -Wextra -I"$stage$PREFIX/include" "$HERE/tinyx_smoke.c" \
     -o "$ROOT/target/tinyx-smoke-${arch}-unknown-none" \
     -L"$stage$PREFIX/lib" -lX11 -lxcb -lXau

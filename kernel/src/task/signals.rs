@@ -222,10 +222,10 @@ pub fn signal_get_action(id: usize, sig: u32) -> (usize, u32, u32) {
     }
     with_sig(|tasks, tabs| {
         let pid = tasks[id].tgid;
-        if tasks.sig_ignored(pid) & (1 << sig) != 0 {
-            return (signal::HANDLER_IGN, 0, 0);
-        }
         let a = tabs[pid].act[sig as usize];
+        if tasks.sig_ignored(pid) & (1 << sig) != 0 {
+            return (signal::HANDLER_IGN, a.flags, 0);
+        }
         (a.handler, a.flags, a.mask)
     })
 }
@@ -263,13 +263,14 @@ pub fn signal_set_action(
         match handler {
             signal::HANDLER_IGN => {
                 tasks.proc_mut(pid).sig_ignored |= bit;
-                tab.act[sig as usize] = NO_ACTION;
+                // No handler, but the flags still count (`SA_NOCLDWAIT`).
+                tab.act[sig as usize] = SigAction { flags, ..NO_ACTION };
                 // POSIX: setting SIG_IGN discards a pending instance, blocked or not.
                 discard(tasks);
             }
             signal::HANDLER_DFL => {
                 tasks.proc_mut(pid).sig_ignored &= !bit;
-                tab.act[sig as usize] = NO_ACTION;
+                tab.act[sig as usize] = SigAction { flags, ..NO_ACTION };
                 if !signal::default_terminates(sig) {
                     discard(tasks);
                 }
@@ -375,6 +376,20 @@ fn with_tables(f: impl FnOnce(&mut [SigTable; MAX_TASKS])) {
     irq_off();
     f(&mut SIG_TABLES.lock());
     irq_restore(flags);
+}
+
+/// Whether process `pid` wants no zombies: it ignores `SIGCHLD` or set
+/// `SA_NOCLDWAIT` for it. Caller holds `TASKS` (it comes first in lock order).
+pub(super) fn signal_no_zombies(tasks: &TaskTable, pid: usize) -> bool {
+    if pid >= MAX_TASKS {
+        return false;
+    }
+    let chld = signal::SIGCHLD as usize;
+    let flags = irq_save();
+    irq_off();
+    let nocldwait = SIG_TABLES.lock()[pid].act[chld].flags & signal::SA_NOCLDWAIT != 0;
+    irq_restore(flags);
+    nocldwait || tasks.sig_ignored(pid) & (1 << chld) != 0
 }
 
 /// A new task in `slot` starts with no handlers.
