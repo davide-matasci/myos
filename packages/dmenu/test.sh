@@ -47,7 +47,10 @@ dmenu_run_pick() {
 	rm -f /tmp/dmenu-ran /tmp/dmenu-cache/dmenu_run
 	listed=$(PATH=/tmp/dmenu-bin:$PATH XDG_CACHE_HOME=/tmp/dmenu-cache dmenu_path | grep -x -e zzdmenu -e dmenu -e sh)
 	echo "dmenu_path lists" $listed
-	if [ "$(echo "$listed" | wc -l)" -eq 3 ] && dmenu_server; then
+	if [ "$(echo "$listed" | wc -l)" -ne 3 ]; then
+		ls -l /tmp/dmenu-bin
+		echo "stest -flx /tmp/dmenu-bin:" $(stest -flx /tmp/dmenu-bin)
+	elif dmenu_server; then
 		PATH=/tmp/dmenu-bin:$PATH XDG_CACHE_HOME=/tmp/dmenu-cache DISPLAY=:0 dmenu_run 2> /tmp/dmenu.log
 		if /bin/etc/dmenu_smoke bar; then
 			echo "HOST c-smokes sendkey z z ret" >&3

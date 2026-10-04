@@ -1,9 +1,9 @@
 # st, installed as a package, on Xfbdev (the tinyx package), without a
-# window manager: st, sized to cover the screen's centre, starts a shell on
-# a pty that prints a line (lit pixels in the screen's top left,
-# st_smoke.c), reads what the host types through the QEMU monitor (the keys
-# reach st, the window under the pointer, and st writes them to the pty)
-# and saves it with st's TERM; st exits with it.
+# window manager: st starts a shell on a pty that prints a line (lit pixels
+# in the screen's top left, st_smoke.c); st_smoke gives st's window the
+# focus, as a window manager would, the host types a line through the QEMU
+# monitor, st writes it to the pty and the shell saves it with st's TERM;
+# st exits with it.
 
 st_run() {
 	Xfbdev :0 -br > /tmp/st-server.log 2>&1 &
@@ -11,14 +11,10 @@ st_run() {
 	ok=0
 	rm -f /tmp/st-typed
 	if /bin/etc/st_smoke server; then
-		# Big enough to cover the pointer, at the screen's centre (st's
-		# cells are about 7x15 pixels), not much more: st draws through a
-		# pixmap of its size.
-		read -r w h rest < /dev/fb/ctl
-		DISPLAY=:0 st -g $((w / 12 + 8))x$((h / 24 + 6)) -e /bin/sh -c \
+		DISPLAY=:0 st -e /bin/sh -c \
 			'echo st-ready; read l; echo "$l $TERM" > /tmp/st-typed' > /tmp/st.log 2>&1 &
 		spid=$!
-		if /bin/etc/st_smoke text; then
+		if /bin/etc/st_smoke text && /bin/etc/st_smoke focus; then
 			echo "HOST c-smokes sendkey o k ret" >&3
 			i=0
 			while [ $i -lt 60 ] && [ ! -s /tmp/st-typed ]; do

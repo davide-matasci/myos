@@ -5,6 +5,10 @@
  *   st_smoke text    wait for text in st's first line: lit pixels in the
  *                    screen's top left corner (st's window, with no window
  *                    manager, sits at 0,0 on the black root)
+ *   st_smoke focus   give st's window (the only top-level one) the
+ *                    keyboard's focus, as a window manager would: with no
+ *                    pointer device, the server's focus does not follow a
+ *                    window mapped under the pointer
  *   st_smoke probe   the server's view when the typed keys did not arrive:
  *                    the pointer, the input focus and the top-level windows
  *
@@ -80,15 +84,50 @@ static int probe(void) {
     return 0;
 }
 
+/* Focus the first viewable top-level window. */
+static int focus(void) {
+    Display *dpy = XOpenDisplay(":0");
+    Window root, parent, *kids = NULL, win = None;
+    unsigned nkids = 0;
+
+    if (!dpy) {
+        printf("[ FAIL ] st focus: no display\n");
+        return 1;
+    }
+    if (XQueryTree(dpy, DefaultRootWindow(dpy), &root, &parent, &kids, &nkids)) {
+        for (unsigned i = 0; i < nkids && win == None; i++) {
+            XWindowAttributes wa;
+            if (XGetWindowAttributes(dpy, kids[i], &wa) && wa.map_state == IsViewable) {
+                win = kids[i];
+            }
+        }
+        XFree(kids);
+    }
+    if (win == None) {
+        printf("[ FAIL ] st focus: no window\n");
+        return 1;
+    }
+    XSetInputFocus(dpy, win, RevertToPointerRoot, CurrentTime);
+    XSync(dpy, False);
+    XCloseDisplay(dpy);
+    printf("[ OK ] st focus\n");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     char line[128];
     unsigned w, h, depth, pitch;
     int ctl, fd, lit = 0;
     ssize_t n;
 
-    if (argc != 2 || (strcmp(argv[1], "server") && strcmp(argv[1], "text") && strcmp(argv[1], "probe"))) {
-        fprintf(stderr, "usage: st_smoke server|text|probe\n");
+    if (argc != 2
+        || (strcmp(argv[1], "server") && strcmp(argv[1], "text") && strcmp(argv[1], "focus")
+            && strcmp(argv[1], "probe"))) {
+        fprintf(stderr, "usage: st_smoke server|text|focus|probe\n");
         return 2;
+    }
+    if (!strcmp(argv[1], "focus")) {
+        return focus();
     }
     if (!strcmp(argv[1], "probe")) {
         return probe();

@@ -35,14 +35,15 @@ Linux, `clock_gettime`, `_POSIX_ARG_MAX`). Static, through the same cross
 ## The test
 
 `test.sh` (full mode, after the install): `Xfbdev :0 -br` and, with no
-window manager, st sized from `/dev/fb/ctl` to reach past the screen's
-centre (where the pointer stays, so it has the keyboard's focus; not much
-more, as st draws through a pixmap of its size) running a
-shell that prints a line, then reads one. `st_smoke` waits for the server's
-socket and for lit pixels in the screen's top left corner (st's first
-line); the host types `o`, `k` and Return through the QEMU monitor, the
-shell saves the line with `$TERM` (`ok st-256color`), exits, and st exits
-with it, status 0.
+window manager, st running a shell that prints a line, then reads one.
+`st_smoke` waits for the server's socket and for lit pixels in the screen's
+top left corner (st's first line), then gives st's window the keyboard's
+focus as a window manager would (with no pointer device the server's focus
+does not follow a window mapped under the pointer). The host types `o`, `k`
+and Return through the QEMU monitor, the shell saves the line with `$TERM`
+(`ok st-256color`) and exits, and st exits with it, status 0; when the line
+does not come, `st_smoke probe` reports the pointer, the focus and the
+windows.
 
 ## Not yet
 
