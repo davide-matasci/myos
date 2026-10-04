@@ -755,7 +755,7 @@ myos_dwm_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
-      myos_x11_libs_version_hash
+      myos_x11_xft_version_hash
       find "$(myos_port_dir dwm)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | sha256sum | awk '{print $1}'
