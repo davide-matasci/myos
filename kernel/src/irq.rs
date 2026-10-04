@@ -3,7 +3,7 @@
 //!
 //! * x86_64: MSI-X messages land on LAPIC vectors `MSI_VECTOR_BASE..`; the
 //!   IDT stubs call [`dispatch`] with the vector.
-//! * aarch64: PCI INTx lines are GICv2 SPIs; `aarch64_irq_handler` passes
+//! * aarch64: PCI INTx lines are GIC SPIs; `aarch64_irq_handler` passes
 //!   any non-timer, non-SGI INTID here.
 //! * riscv64: PCI INTx lines are PLIC sources; the supervisor external
 //!   interrupt claims from the PLIC and passes the source id here.

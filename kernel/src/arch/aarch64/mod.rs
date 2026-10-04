@@ -63,25 +63,27 @@ pub fn ap_init(logical: usize) {
 /// the device tree fills in the rest.
 pub const PREFER_ACPI: bool = true;
 
-/// Take the board's device bases from the platform description: the GICv2
-/// distributor and CPU interface, the PL011 console, the PL031 RTC and the
-/// PCIe host bridge (ECAM, bus range, 32-bit MMIO window). Required: a
-/// board the description does not cover does not boot.
+/// Take the board's device bases from the platform description: the GIC
+/// (v2: distributor and CPU interface; v3: distributor and redistributors),
+/// the console (a PL011 or a 16550), the PL031 RTC and the PCIe host bridge
+/// (ECAM, bus range, 32-bit MMIO window). Required: a board the description
+/// does not cover does not boot.
 pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str> {
-    use crate::platform::{Intc, UartKind};
+    use crate::platform::Intc;
     if p.source.is_none() {
         return Err("no ACPI tables and no device tree from the bootloader");
     }
     match p.intc.map(|c| c.value) {
         Some(Intc::GicV2 { gicd, gicc }) => interrupts::set_gic(gicd as usize, gicc as usize),
-        Some(Intc::GicV3 { .. }) => return Err("platform: GICv3 is not supported yet"),
-        _ => return Err("platform: no GICv2"),
+        Some(Intc::GicV3 { gicd, gicr, gicr_size }) if gicr != 0 => {
+            interrupts::set_gicv3(gicd as usize, gicr as usize, gicr_size as usize)
+        }
+        Some(Intc::GicV3 { .. }) => return Err("platform: GICv3 without a redistributor region"),
+        _ => return Err("platform: no GIC"),
     }
     match p.uart.map(|c| c.value) {
-        Some(uart) if uart.kind == UartKind::Pl011 && !uart.io => {
-            serial::set_base(uart.base as usize)
-        }
-        _ => return Err("platform: no PL011 UART"),
+        Some(uart) if !uart.io => serial::set_uart(uart),
+        _ => return Err("platform: no memory-mapped UART"),
     }
     if let Some(rtc) = p.rtc {
         clock::set_rtc_base(rtc.value.base as usize);

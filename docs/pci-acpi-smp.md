@@ -30,7 +30,7 @@ use an MSI-X table entry or the INTx line:
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
 | x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`MSI_VECTOR_BASE` 48 + n, 8 vectors; no IOAPIC / PIRQ routing) | vector |
-| aarch64 | INTx → GICv2 SPI, level, priority 0x80, CPU 0; the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
+| aarch64 | INTx → GIC SPI, level, priority 0x80, delivered to the BSP (GICv2: `ITARGETSR` CPU 0; GICv3: `IROUTER` to its affinity); the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
 | riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
 
 ## The platform description
@@ -67,9 +67,11 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
 | PCIe MMIO windows, INTx routing | — (in AML) | `ranges` (the 32-bit entry on aarch64, the 64-bit one on riscv64), `interrupt-map` / `interrupt-map-mask` |
 | virtio-mmio transports | — | `virtio,mmio`, for modules through `KernelApi::dt_mmio_find`, in ascending address order |
 
-What each arch requires of the description: aarch64 a GICv2 (a GICv3 is
-reported and refused: `fatal: platform: GICv3 is not supported yet`), a
-PL011 and a PCIe host bridge with a 32-bit MMIO window; riscv64 a PLIC, a
+What each arch requires of the description: aarch64 a GIC (v2: the
+distributor and the CPU interface; v3: the distributor and the
+redistributor region, below), a PL011 or a 16550 (with its register stride
+and access width: the tree's `reg-shift` / `reg-io-width`, the SPCR's
+access size) and a PCIe host bridge with a 32-bit MMIO window; riscv64 a PLIC, a
 16550, the timebase and a host bridge with a 64-bit window; x86_64
 nothing (the LAPIC base comes from its MSR, the console from COM1, PCI
 configuration space from port 0xCF8), so a PC without ACPI tables boots
@@ -98,6 +100,21 @@ The kernel command line (`cmdline:` in `limine.conf`) forces one source
 when a board's firmware gets the other wrong: `platform=acpi` ignores the
 tree, `platform=dt` the tables (on riscv64 it also makes the kernel read
 tables it would otherwise skip: `platform=acpi` there is the opt-in).
+
+**GICv3** (`arch/aarch64/interrupts.rs`): the distributor runs with
+affinity routing (every SPI in group 1, routed to the BSP's MPIDR
+affinity by `GICD_IROUTER` when a driver enables it); each CPU finds its
+redistributor by walking the region's frames (128 KiB each, 256 KiB with
+the GICv4 VLPI frames) for the `GICR_TYPER` naming its affinity, wakes
+it, enables its SGIs and timer PPIs there, and drives the CPU interface
+through the `ICC_*` system registers (`ICC_SRE_EL2` as well when the
+kernel runs at EL2; `ICC_IAR1`/`ICC_EOIR1` in the handler, `ICC_SGI1R`
+for the IPIs with the target's affinity). The boot log says which GIC
+(`[INFO] gicv3`). QEMU `virt` gives a GICv3 with `gic-version=3`:
+`MYOS_AARCH64_GIC=3 cargo run -- aarch64 test-mini` (the launcher dumps
+the matching tree); CI boots both versions (`aarch64`, `aarch64-gicv3`).
+The ITS (message-signalled interrupts) is not driven: PCI devices use
+INTx on aarch64.
 
 The EDK2 firmware boots (AAVMF, RISC-V EDK2) hand Limine no tree, so the
 host tool dumps QEMU's (`-machine ...,dumpdtb`, same machine options and
@@ -205,7 +222,7 @@ while the task is mid-switch (`SWITCHED_FROM`) is deferred to
 `finish_switch` (`wake_pending`). `wake` marks the woken task's home CPU
 (or the CPU it is halting on, or any idle CPU for a floating task) and sends
 a **targeted** reschedule IPI (`arch::ipi_reschedule_cpu`: xAPIC ICR with
-a destination, GICv2 SGI with a CPUTargetList bit, SBI IPI with a single
+a destination, a GIC SGI to one CPU (v2: a CPUTargetList bit, v3: the affinity in `ICC_SGI1R_EL1`), SBI IPI with a single
 hart) only when that CPU is halted. The console reader re-polls keyboards
 every 10 ms (they have no IRQ); the BSP timer stages UART RX on all three
 arches and wakes `KEY_CONSOLE`.
@@ -227,7 +244,7 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 | Arch | CPU id | AP init | Timer / IRQ | IPI |
 |------|--------|---------|-------------|-----|
 | x86_64 | TSC_AUX / APIC id | Per-CPU GDT+TSS, GS → syscall state, xAPIC timer | LVT timer → `schedule` | xAPIC ICR all-excl-self (vec 33 TLB, 34 resched) |
-| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | naked `goto_address` entry, TTBR0 device map sync, `VBAR`/`use_spx`, banked GICC, timers | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
+| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | naked `goto_address` entry, TTBR0 device map sync, `VBAR`/`use_spx`, the CPU's GIC bank (v2: banked GICC; v3: its redistributor + `ICC_*`), timers | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
 | riscv64 | `tp` / Limine `hartid` | `stvec` / `sie` (STIE+SSIE) / `stimecmp` | S-mode timer → `schedule` | SBI IPI ext → SSIP; soft reason bits in `smp` |
 
 Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).

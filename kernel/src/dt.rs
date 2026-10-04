@@ -15,7 +15,7 @@ use fdt::Fdt;
 use fdt::node::FdtNode;
 use spin::Once;
 
-use crate::platform::Platform;
+use crate::platform::{Platform, Uart, UartKind};
 
 static FDT: Once<Fdt<'static>> = Once::new();
 
@@ -264,13 +264,25 @@ pub fn timebase_frequency() -> Option<u64> {
 /// GICv2 `compatible` strings (QEMU `virt`: `arm,cortex-a15-gic`).
 const GICV2_COMPAT: &[&str] = &["arm,cortex-a15-gic", "arm,gic-400", "arm,cortex-a9-gic"];
 
-/// Base and first interrupt of the first node compatible with `compat`.
-fn device(compat: &[&str]) -> Option<(u64, Option<u32>)> {
+/// The first node compatible with `compat`, as a UART of `kind`: base,
+/// first interrupt, and the `reg-shift` / `reg-io-width` of a 16550.
+fn uart(compat: &[&str], kind: UartKind) -> Option<Uart> {
     let fdt = get()?;
     let node = fdt.find_compatible(compat)?;
     let (base, _) = node_reg(node, 0)?;
     let irq = interrupt_spec(fdt, node).and_then(|s| crate::arch::irq_from_dt(s.cells()));
-    Some((base, irq))
+    let cell = |name: &str, default: u32| match kind {
+        UartKind::Ns16550 => prop(node, name).and_then(|c| c.get(0)).unwrap_or(default),
+        UartKind::Pl011 => default,
+    };
+    Some(Uart {
+        kind,
+        base,
+        io: false,
+        irq,
+        reg_shift: cell("reg-shift", 0) as u8,
+        reg_width: cell("reg-io-width", 1) as u8,
+    })
 }
 
 /// Describe the board from the tree (`crate::platform::init`): the model,
@@ -297,10 +309,10 @@ pub fn fill(p: &mut Platform) {
     } else if let Some((base, _)) = reg(&["sifive,plic-1.0.0", "riscv,plic0"], 0) {
         offer_intc(p, Intc::Plic { base }, from);
     }
-    if let Some((base, irq)) = device(&["arm,pl011"]) {
-        offer_uart(p, Uart { kind: UartKind::Pl011, base, io: false, irq }, from);
-    } else if let Some((base, irq)) = device(&["ns16550a", "ns16550"]) {
-        offer_uart(p, Uart { kind: UartKind::Ns16550, base, io: false, irq }, from);
+    if let Some(uart) = uart(&["arm,pl011"], UartKind::Pl011) {
+        offer_uart(p, uart, from);
+    } else if let Some(uart) = uart(&["ns16550a", "ns16550", "snps,dw-apb-uart"], UartKind::Ns16550) {
+        offer_uart(p, uart, from);
     }
     if let Some((base, _)) = reg(&["arm,pl031"], 0) {
         offer_rtc(p, Rtc { kind: RtcKind::Pl031, base }, from);

@@ -54,13 +54,12 @@ CPUs are also unhandled. A device without MSI-X today degrades to netd's 1 s
 
 ## Device tree: what is still assumed
 
-The tree gives the GIC / PLIC, UART, RTC, PCIe host bridge and `virtio,mmio`
-nodes. Not read yet: the CPU list (Limine's MP bring-up enumerates CPUs),
-`clint`, GICv3 (`arm,gic-v3`: redistributors and the ICC system registers
-instead of the GICv2 memory-mapped CPU interface), a UART other than PL011 /
-16550, and `interrupt-map` entries whose parent is not the one interrupt
-controller. A board needing any of these fails at boot with a `fatal: device
-tree: ...` line on the default QEMU `virt` UART address.
+The tree gives the GIC (v2 or v3) / PLIC, UART (PL011, 16550 with its
+`reg-shift`), RTC, PCIe host bridge and `virtio,mmio` nodes. Not read yet:
+`clint`, a UART of another kind, the GICv3 ITS (PCI devices use INTx on
+aarch64), and `interrupt-map` entries whose parent is not the one interrupt
+controller. A board needing any of these fails at boot with a `fatal:
+platform: ...` line on the default QEMU `virt` UART address.
 
 ## Module follow-ups
 

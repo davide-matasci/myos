@@ -206,6 +206,8 @@ pub struct Spcr {
     /// The base is an I/O port (x86) rather than a memory address.
     pub io: bool,
     pub base: u64,
+    /// The GAS access size: 1 byte, 2 word, 3 dword (0 undefined).
+    pub access: u8,
     /// The interrupt as the interrupt controller numbers it (a GIC INTID).
     pub gsiv: u32,
 }
@@ -219,6 +221,7 @@ pub fn spcr() -> Option<Spcr> {
         interface: t.u8(36)?,
         io: t.u8(40)? == 1,
         base: t.u64(44)?,
+        access: t.u8(43)?,
         gsiv: t.u32(54)?,
     })
 }
