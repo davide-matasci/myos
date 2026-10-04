@@ -613,16 +613,16 @@ fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8
     let mapped = mapped_program(&path);
     // Static lookup for bootfs/`/t/tcc`; VFS read for tmpfs `tcc -o` output.
     // The file is read into the kernel heap; what gets mapped is still capped
-    // by the image limits (`MAX_EXPAND_PAGES`).
+    // by the image limits (`MAX_EXPAND_PAGES`). A successful exec never
+    // returns, so the copy is freed explicitly before the new image runs.
     const EXEC_FILE_MAX: usize = 16 * 1024 * 1024;
-    let owned;
+    let mut owned: Option<Vec<u8>> = None;
     let bytes: &[u8] = if let Some(m) = &mapped {
         &m.interp
     } else if let Some(b) = fs::lookup(&path) {
         b
     } else if let Some(v) = fs::read_all(&path, EXEC_FILE_MAX) {
-        owned = v;
-        &owned
+        owned.insert(v)
     } else {
         // /lib-style read-only mounts expose files through the vnode path
         // (open + size + read) even where the read_all direct-backend shortcut
@@ -647,11 +647,14 @@ fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8
             }
             pos += n;
         }
-        owned = v;
-        &owned
+        owned.insert(v)
     };
     if let Some(line) = bytes.strip_prefix(b"#!") {
-        return exec_script(&path, line, arg_refs, env_refs, depth);
+        // Only the line is kept (the script's file freed): the interpreter's
+        // exec does not return here either.
+        let line = line[..line.len().min(SHEBANG_MAX)].to_vec();
+        drop(owned);
+        return exec_script(&path, &line, arg_refs, env_refs, depth);
     }
     // Not a loadable ELF: fail before anything of the current image goes,
     // or the caller is left with no code to return to.
@@ -780,6 +783,9 @@ fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8
     // set_loaded_aspace go through current_slot()/cpu_id() — re-pin before
     // mutating the running task and resuming.
     crate::arch::sync_cpu_id_reg();
+    // Nothing of the file or of the dynamic linker's is read from here on.
+    drop(owned);
+    drop(interp);
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     if let Some(m) = &mapped {
         if !m.map(aspace, program_at) {
