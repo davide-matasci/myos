@@ -301,7 +301,7 @@ unsafe extern "C" fn module_rescan() // optional: probe for new devices after a 
 Syscall 9 (`brk`) backs per-process heap. `user/lib` exposes `brk`, `heap_init`, bump `GlobalAlloc`. `user/ok` smoke-tests every boot. `user/heap` = CI-only heavy suite. `std` programs link prebuilt sysroot (`toolchain/std/build-sysroot.sh`).
 
 ### C Userspace (newlib + libgloss)
-Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs). No new kernel syscalls needed.
+Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs). No new kernel syscalls needed: `readv`/`writev` (`<sys/uio.h>`) are libc over `read`/`write`, and the pthread API is there for single-threaded programs (`pthread_create` fails, `docs/threads.md`; an empty `libpthread.a` keeps `-lpthread` linking).
 
 ```sh
 ./toolchain/newlib/build.sh         # fetch newlib 4.4.0, build libc + libgloss/myos
