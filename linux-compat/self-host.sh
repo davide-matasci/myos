@@ -49,8 +49,12 @@ if [ ! -d $R$SRC/.git ]; then
 	say "cloning myos ($REV)"
 	mkdir -p $R/src
 	linux --root $R git clone --depth 1 -b $REV $URL $SRC || exit 1
+	linux --root $R git -C $SRC config core.fileMode false || exit 1
 else
 	say "updating myos ($REV)"
+	# myos keeps no permission bits (every ext2 file reads as 0755): git
+	# would take each one for a mode change.
+	linux --root $R git -C $SRC config core.fileMode false || exit 1
 	linux --root $R git -C $SRC fetch --depth 1 $URL $REV || exit 1
 	linux --root $R git -C $SRC checkout -q FETCH_HEAD || exit 1
 fi
