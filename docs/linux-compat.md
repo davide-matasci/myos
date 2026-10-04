@@ -190,7 +190,9 @@ the `asm-generic` one, which has only the `*at`, `clone`, `ppoll` and `dup3`
 forms of the legacy calls). The set:
 
 Files: `read`, `write`, `readv`, `writev`, `open`, `openat`, `close`, `stat`,
-`lstat`, `fstat`, `newfstatat`, `lseek`, `getdents64`, `ioctl`, `access`,
+`lstat`, `fstat`, `newfstatat`, `lseek`, `getdents64`, `ioctl` (the tty
+requests from the terminal's ctl file, `docs/tty.md`; `FIONBIO` on sockets;
+the console keymap and module devices natively), `access`,
 `faccessat`, `pipe`, `pipe2`, `dup`, `dup2`, `dup3`, `fcntl` (dup;
 `O_NONBLOCK` on sockets, other flags are no-ops), `getcwd`, `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`,
 `rename(at/at2)`, `symlink(at)`, `readlink(at)`, `poll`, `umask`.

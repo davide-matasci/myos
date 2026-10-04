@@ -110,6 +110,9 @@ static API: KernelApi = KernelApi {
     dt_mmio_find: api_dt_mmio_find,
     vfs_read: api_vfs_read,
     vfs_write: api_vfs_write,
+    tty_ctl_read: api_tty_ctl_read,
+    tty_ctl_write: api_tty_ctl_write,
+    fd_path: api_fd_path,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1013,6 +1016,37 @@ unsafe extern "C" fn api_fd_write(fd: usize, buf_user: usize, len: usize) -> usi
 
 unsafe extern "C" fn api_fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
     crate::task::fd_ioctl(fd, request, arg)
+}
+
+/// Copy `text` into the module's buffer, cut at `cap`: its full length.
+unsafe fn copy_text(text: &[u8], buf: *mut u8, cap: usize) -> i32 {
+    let n = text.len().min(cap);
+    if n != 0 && !buf.is_null() {
+        unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), buf, n) };
+    }
+    i32::try_from(text.len()).unwrap_or(i32::MAX)
+}
+
+unsafe extern "C" fn api_tty_ctl_read(fd: usize, buf: *mut u8, cap: usize) -> i32 {
+    match crate::task::fd_tty_ctl_read(fd) {
+        Some(text) => unsafe { copy_text(&text, buf, cap) },
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_tty_ctl_write(fd: usize, text: *const u8, len: usize) -> i32 {
+    if text.is_null() {
+        return -1;
+    }
+    let text = unsafe { core::slice::from_raw_parts(text, len) };
+    if crate::task::fd_tty_ctl_write(fd, text).is_some() { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_fd_path(fd: usize, buf: *mut u8, cap: usize) -> i32 {
+    match crate::task::fd_path(fd) {
+        Some(path) => unsafe { copy_text(path.as_bytes(), buf, cap) },
+        None => -1,
+    }
 }
 
 unsafe extern "C" fn api_pipe_open(read_fd: *mut usize, write_fd: *mut usize) -> i32 {

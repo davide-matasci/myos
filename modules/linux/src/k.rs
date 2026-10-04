@@ -271,6 +271,29 @@ pub mod task {
     pub fn fd_ioctl(fd: usize, req: usize, arg: usize) -> usize {
         unsafe { (api().fd_ioctl)(fd, req, arg) }
     }
+    /// The ctl text of the terminal `fd` is open on; `None` if not a terminal.
+    pub fn tty_ctl_read(fd: usize) -> Option<alloc::vec::Vec<u8>> {
+        let mut buf = alloc::vec![0u8; 512];
+        let n = unsafe { (api().tty_ctl_read)(fd, buf.as_mut_ptr(), buf.len()) };
+        if n < 0 {
+            return None;
+        }
+        buf.truncate((n as usize).min(buf.len()));
+        Some(buf)
+    }
+    pub fn tty_ctl_write(fd: usize, text: &[u8]) -> bool {
+        unsafe { (api().tty_ctl_write)(fd, text.as_ptr(), text.len()) == 0 }
+    }
+    /// What `fd` is open on, as /proc/self/fd names it.
+    pub fn fd_path(fd: usize) -> Option<alloc::vec::Vec<u8>> {
+        let mut buf = alloc::vec![0u8; 128];
+        let n = unsafe { (api().fd_path)(fd, buf.as_mut_ptr(), buf.len()) };
+        if n < 0 {
+            return None;
+        }
+        buf.truncate((n as usize).min(buf.len()));
+        Some(buf)
+    }
     pub fn pipe_open() -> Option<(usize, usize)> {
         let (mut r, mut w) = (0usize, 0usize);
         (unsafe { (api().pipe_open)(&mut r, &mut w) } == 0).then_some((r, w))

@@ -391,6 +391,14 @@ fn smoke_tty() {
         status_fail("tty null open");
         return;
     };
+    // The native ioctl no longer knows the terminal requests.
+    const TCGETS: usize = 0x5401;
+    let mut termios = [0u8; 56];
+    if ioctl(1, TCGETS, termios.as_mut_ptr() as usize) != usize::MAX {
+        status_fail("tty ioctl should fail");
+        return;
+    }
+
     let mut link = *b"/proc/self/fd/\0\0\0";
     link[14] = b'0' + (dn / 10) as u8;
     link[15] = b'0' + (dn % 10) as u8;

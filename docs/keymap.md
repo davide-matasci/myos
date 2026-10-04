@@ -40,8 +40,9 @@ Loaders must **loop `read`** until EOF: kernel `fd_read` caps each call at `FILE
 map is left unchanged, the syscall returns an error, and the kernel prints
 `[ FAIL ] keymap: <reason>` on the console (serial/FB).
 
-Numbers sit next to the existing termios ioctls (`TCGETS`/`TCSETS` =
-`0x5401`/`0x5402`).
+The numbers sit where Linux's console ioctls are. They are the one terminal
+use of the native `ioctl` syscall left: a terminal's termios and window size
+are its `ctl` file (`docs/tty.md`).
 
 ## Map file format (text)
 

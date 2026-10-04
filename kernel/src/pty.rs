@@ -24,7 +24,7 @@ use spin::Mutex;
 use alloc::vec::Vec;
 
 use crate::signal::{SIGHUP, SIGINT};
-use crate::tty::{CtlAction, TtyIn, Termios, OPOST, ONLCR};
+use crate::tty::{CtlAction, TtyIn, OPOST, ONLCR};
 
 pub const MAX_PTYS: usize = 4;
 const OUT_CAP: usize = 4096;
@@ -194,31 +194,6 @@ pub fn for_session(pid: usize) -> Option<usize> {
         pid = crate::task::parent_pid(p);
     }
     None
-}
-
-/// TIOCGPTN: slave index for the pair.
-pub fn index(id: usize) -> Option<u32> {
-    Some(id as u32)
-}
-
-pub fn winsize(id: usize) -> Option<(u16, u16)> {
-    Some(*pty_at(id)?.winsize.lock())
-}
-
-pub fn set_winsize(id: usize, row: u16, col: u16) {
-    if let Some(p) = pty_at(id) {
-        *p.winsize.lock() = (row, col);
-    }
-}
-
-pub fn termios_get_bytes(id: usize) -> Option<[u8; crate::tty::TERMIOS_LEN]> {
-    Some(pty_at(id)?.term.lock().termios.as_bytes())
-}
-
-pub fn termios_set_bytes(id: usize, buf: &[u8; crate::tty::TERMIOS_LEN]) {
-    if let Some(p) = pty_at(id) {
-        p.term.lock().set_termios(Termios::from_bytes(buf));
-    }
 }
 
 /// The text of `/dev/pts/N/ctl` (`crate::tty::ctl_text`).

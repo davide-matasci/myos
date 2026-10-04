@@ -18,9 +18,6 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// Matches libgloss `<termios.h>` `struct termios` layout (56 bytes).
-pub const TERMIOS_LEN: usize = 56;
-
 pub const VINTR: usize = 0;
 pub const VERASE: usize = 2;
 pub const VEOF: usize = 4;
@@ -42,7 +39,8 @@ pub const IEXTEN: u32 = 0o001000;
 pub const CS8: u32 = 0o000060;
 pub const CREAD: u32 = 0o000200;
 
-#[repr(C)]
+/// A terminal's termios, Linux's bit values; the control file carries it
+/// as text ([`ctl_text`]).
 #[derive(Clone, Copy)]
 pub struct Termios {
     pub c_iflag: u32,
@@ -70,37 +68,6 @@ impl Termios {
             c_cc: cc,
             c_ispeed: 0,
             c_ospeed: 0,
-        }
-    }
-
-    pub fn as_bytes(&self) -> [u8; TERMIOS_LEN] {
-        let mut buf = [0u8; TERMIOS_LEN];
-        buf[0..4].copy_from_slice(&self.c_iflag.to_ne_bytes());
-        buf[4..8].copy_from_slice(&self.c_oflag.to_ne_bytes());
-        buf[8..12].copy_from_slice(&self.c_cflag.to_ne_bytes());
-        buf[12..16].copy_from_slice(&self.c_lflag.to_ne_bytes());
-        buf[16..48].copy_from_slice(&self.c_cc);
-        buf[48..52].copy_from_slice(&self.c_ispeed.to_ne_bytes());
-        buf[52..56].copy_from_slice(&self.c_ospeed.to_ne_bytes());
-        buf
-    }
-
-    pub fn from_bytes(buf: &[u8; TERMIOS_LEN]) -> Self {
-        let u32_at = |off: usize| {
-            let mut b = [0u8; 4];
-            b.copy_from_slice(&buf[off..off + 4]);
-            u32::from_ne_bytes(b)
-        };
-        let mut cc = [0u8; 32];
-        cc.copy_from_slice(&buf[16..48]);
-        Self {
-            c_iflag: u32_at(0),
-            c_oflag: u32_at(4),
-            c_cflag: u32_at(8),
-            c_lflag: u32_at(12),
-            c_cc: cc,
-            c_ispeed: u32_at(48),
-            c_ospeed: u32_at(52),
         }
     }
 }
