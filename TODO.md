@@ -4,6 +4,45 @@ Follow-ups left open after the blocking scheduler (#187), virtio-net RX
 interrupts (#188) and the modular kernel (arch/ split, process blocks, every
 driver a module). Roughly in priority order.
 
+## X11 as a package (minimal)
+
+An X server and a few clients as packages (`packages/`, `get-myos`): core
+protocol only, no mouse, no extensions beyond what the server cannot drop.
+The screen is `/dev/fb` (`docs/fb.md`), the keyboard `/dev/console/kbd`
+(`docs/tty.md`, Linux `KEY_*` codes: X keycode = code + 8), clients connect
+over `/net/unix` (`/tmp/.X11-unix/X0` is a name there,
+`docs/sockets-unix.md`). libc has `readv`/`writev` and a single-threaded
+pthread API already. Everything is MIT/X11 licensed and linked statically.
+
+1. **`packages/x11-libs`**: build output only, like `ncurses`. `xorgproto`,
+   `xtrans`, `libXau`, `xcb-proto` (its generator is Python, run on the
+   host), `libxcb`, `libX11` (`--disable-xthreads`, no XKB). Static `.a` and
+   headers for the packages below.
+2. **`packages/tinyx`**: TinyX's `Xfbdev` (Tiny Core's kdrive fork, MIT),
+   with a myos backend: the screen from `/dev/fb/ctl` (`graphics` written,
+   `data` mapped shared), the keyboard from `/dev/console/kbd`, no pointer
+   driver (the core pointer exists, never moves). Built without MIT-SHM, XKB,
+   GLX/DRI, Xinerama, DPMS; `-dumbSched` (no `SIGALRM` timer). Fonts:
+   `fixed` and `cursor` from font-misc-misc as PCF, no FreeType.
+3. **First clients, libX11 only**: `xsetroot`, `xev`, a tiny window manager
+   (TinyWM, public domain).
+4. **A terminal**: `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from
+   `ports/termcap`). `st` would need Xft, fontconfig and FreeType.
+5. **Test** (the packages' `test.sh`, full mode): start `Xfbdev :0`,
+   `xsetroot -solid red` and check a pixel of `/dev/fb/data`, `xev` while
+   the host types through the monitor (`user/c/host.sh sendkey`), kill the
+   server and check the console has the screen and the keyboard back.
+
+Gaps that may show up on the way:
+
+- `setitimer`/`alarm` (libgloss has neither): needed if `-dumbSched` is not
+  enough, and by `xterm`'s blinking.
+- `/net/unix` buffers 8 KiB per end and has 32 conversations: enough to
+  start, slow for big replies (`GetImage`, large `PutImage`).
+- A real `pthread_create` (on `thread_spawn` / `wait_addr`) if a client
+  needs threads; the libgloss pthread functions are single-threaded.
+- MIT-SHM, and with it fast image transfers, needs the shared memory below.
+
 ## x86_64 interrupt routing beyond MSI-X
 
 aarch64 and riscv64 take their PCI INTx routing, controller bases and
