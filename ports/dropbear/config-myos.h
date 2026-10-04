@@ -6,10 +6,11 @@
 
 /* Enable localoptions.h inclusion (configure normally defines this). */
 #define LOCALOPTIONS_H_EXISTS 1
-
-/* setresuid/setresgid provided by ports/dropbear/myos_shims.c. */
+/* setresuid/setresgid: ports/dropbear/myos_shims.c (no saved set-ids on
+ * myos; they set the effective ids). */
 #define HAVE_SETRESUID 1
 #define HAVE_SETRESGID 1
+
 
 /* newlib's socket/netdb headers provide these structs; without these flags
  * fake-rfc2553.h redefines them. */
@@ -46,7 +47,7 @@
 #define HAVE_STRTOL 1
 #define HAVE_STRTOUL 1
 #define HAVE_STRDUP 1
-#define HAVE_DAEMON 0
+#define HAVE_DAEMON 1
 #define HAVE_SETSID 1
 #define HAVE_SETENV 1
 #define HAVE_UNSETENV 1
