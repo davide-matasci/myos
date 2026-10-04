@@ -84,24 +84,31 @@ static int probe(void) {
     return 0;
 }
 
-/* Focus the first viewable top-level window. */
+/* Focus the first viewable top-level window, waiting (up to 30 s) for st
+ * to map it. */
 static int focus(void) {
     Display *dpy = XOpenDisplay(":0");
-    Window root, parent, *kids = NULL, win = None;
-    unsigned nkids = 0;
+    Window win = None;
 
     if (!dpy) {
         printf("[ FAIL ] st focus: no display\n");
         return 1;
     }
-    if (XQueryTree(dpy, DefaultRootWindow(dpy), &root, &parent, &kids, &nkids)) {
-        for (unsigned i = 0; i < nkids && win == None; i++) {
-            XWindowAttributes wa;
-            if (XGetWindowAttributes(dpy, kids[i], &wa) && wa.map_state == IsViewable) {
-                win = kids[i];
-            }
+    for (int tries = 0; tries < 30 && win == None; tries++) {
+        Window root, parent, *kids = NULL;
+        unsigned nkids = 0;
+        if (tries) {
+            sleep(1);
         }
-        XFree(kids);
+        if (XQueryTree(dpy, DefaultRootWindow(dpy), &root, &parent, &kids, &nkids)) {
+            for (unsigned i = 0; i < nkids && win == None; i++) {
+                XWindowAttributes wa;
+                if (XGetWindowAttributes(dpy, kids[i], &wa) && wa.map_state == IsViewable) {
+                    win = kids[i];
+                }
+            }
+            XFree(kids);
+        }
     }
     if (win == None) {
         printf("[ FAIL ] st focus: no window\n");

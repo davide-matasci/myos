@@ -41,9 +41,10 @@ window manager (dmenu grabs the keyboard):
   the server's socket and for the bar (the selected item's `#005577` along
   the screen's top), the host types `b` and Return through the QEMU monitor,
   and dmenu prints `beta`.
-- `dmenu_run`: `dmenu_path` lists a `#!` script put in `/bin/custom` (and
-  `dmenu`, `sh`); `dmenu_run` shows the bar, the host types `z`, `z` and
-  Return, and the shell it pipes the pick into runs the script.
+- `dmenu_run`: `dmenu_path` lists the programs of `PATH` (`uname`, `dmenu`
+  and `sh` among them); `dmenu_run` shows the bar, the host types `uname`
+  and Return, and the shell it pipes the pick into runs `uname`, whose
+  output it checks.
 
 ## Not yet
 
