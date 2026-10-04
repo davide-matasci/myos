@@ -21,6 +21,9 @@ t uio /bin/etc/uio_smoke
 # The single-threaded pthread API: mutexes, once, keys, a timed condition
 # wait (pthread_smoke.c).
 t pthread /bin/etc/pthread_smoke
+# netfs conversations: a connect to 127.0.0.1 is refused at once, and 200
+# sockets closed right after socket() leak none (netconv_smoke.c).
+t netconv /bin/etc/netconv_smoke
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).
