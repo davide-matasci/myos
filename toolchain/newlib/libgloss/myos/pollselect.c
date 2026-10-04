@@ -5,7 +5,7 @@
  * first change, so nothing here spins or sleeps in steps.
  *
  * Tracked sockets (socket.c) add what only the socket library knows: a
- * connected TCP socket is always writable (no TX accounting), a listener
+ * connected UDP socket is always writable, a listener
  * must arm netd's accept before waiting, and a finished connect changes the
  * socket's state. myos_socket_poll_prepare() runs before the kernel call,
  * myos_socket_poll_done() on its result.

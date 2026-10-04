@@ -33,6 +33,10 @@ const REP_CLONE_OK: u8 = 1;
 const REP_DATA: u8 = 2;
 const REP_STATUS: u8 = 3;
 const REP_ERR: u8 = 4;
+/// Bytes of a TCP conv's queued sends that went into its smoltcp socket
+/// (u16 payload): netfs lets the writers send that many more (its TX_CAP
+/// bounds what waits here).
+const REP_TXCREDIT: u8 = 5;
 
 
 
@@ -106,10 +110,11 @@ struct Conv {
     connected: bool,
     /// Peer closed (or socket inactive); status hangup already sent once.
     hungup: bool,
-    /// REQ_SEND payload deferred when the smoltcp socket could not accept it.
-    /// Without this, netfs already reported write success and the bytes vanish.
-    pending_len: u16,
-    pending: [u8; MSG_CAP],
+    /// TCP bytes written but not yet in the smoltcp socket, in order: the
+    /// socket's send buffer was full, or the handshake not done. netfs has
+    /// already reported them written; REP_TXCREDIT gives back the room as
+    /// they move on, so this stays within netfs's TX_CAP (8 KiB).
+    pending: Vec<u8>,
     /// TCP listener (Plan 9 "announce"): nonzero = advertised port.
     listen_port: u16,
     /// A ctl "accept" arrived and is parked until a connection lands.
@@ -154,8 +159,7 @@ impl Conv {
         seq: 0,
         connected: false,
         hungup: false,
-        pending_len: 0,
-        pending: [0; MSG_CAP],
+        pending: Vec::new(),
         listen_port: 0,
         accept_wait: false,
         accepted: None,
@@ -468,6 +472,26 @@ fn parse_seq(b: &[u8]) -> Option<u32> {
     Some(v)
 }
 
+/// Move what fits of `c`'s queued sends into its socket, oldest first.
+/// Returns how many bytes moved (room to hand back to netfs).
+fn flush_pending(c: &mut Conv, s: &mut tcp::Socket) -> usize {
+    if c.pending.is_empty() || !s.can_send() {
+        return 0;
+    }
+    let n = s.send_slice(&c.pending).unwrap_or(0);
+    c.pending.drain(..n);
+    n
+}
+
+/// Give netfs back `n` bytes of a TCP conv's send room.
+fn tx_credit(chan: usize, conv: u16, mut n: usize) {
+    while n > 0 {
+        let m = n.min(u16::MAX as usize);
+        reply(chan, REP_TXCREDIT, conv, 0, &(m as u16).to_le_bytes());
+        n -= m;
+    }
+}
+
 fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize) {
     if i >= MAX_CONV {
         return;
@@ -495,16 +519,8 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
             // completing (accept returns on SynReceived). Flush what we can
             // now; if the socket still cannot send, defer the close until the
             // pump drains pending, then finish the close.
-            if convs[i].pending_len > 0 {
-                let s = sockets.get_mut::<tcp::Socket>(h);
-                if s.can_send() {
-                    let n = convs[i].pending_len as usize;
-                    if s.send_slice(&convs[i].pending[..n]).is_ok() {
-                        convs[i].pending_len = 0;
-                    }
-                }
-            }
-            if convs[i].pending_len > 0 {
+            flush_pending(&mut convs[i], sockets.get_mut::<tcp::Socket>(h));
+            if !convs[i].pending.is_empty() {
                 convs[i].closing_after_flush = true;
                 convs[i].handle = Some(h);
                 return;
@@ -1014,30 +1030,10 @@ fn handle_send(
             let Some(h) = convs[i].handle else {
                 return;
             };
-            let s = sockets.get_mut::<tcp::Socket>(h);
-            if s.can_send() {
-                match s.send_slice(payload) {
-                    Ok(n) if n < payload.len() => {
-                        // Partial accept — stash the rest for pump_sockets.
-                        let rest = &payload[n..];
-                        let m = rest.len().min(MSG_CAP);
-                        convs[i].pending[..m].copy_from_slice(&rest[..m]);
-                        convs[i].pending_len = m as u16;
-                    }
-                    Ok(_) => {
-                        convs[i].pending_len = 0;
-                    }
-                    Err(_) => {
-                        let m = payload.len().min(MSG_CAP);
-                        convs[i].pending[..m].copy_from_slice(&payload[..m]);
-                        convs[i].pending_len = m as u16;
-                    }
-                }
-            } else {
-                let m = payload.len().min(MSG_CAP);
-                convs[i].pending[..m].copy_from_slice(&payload[..m]);
-                convs[i].pending_len = m as u16;
-            }
+            // Behind what already waits, so the stream keeps its order.
+            convs[i].pending.extend_from_slice(payload);
+            let n = flush_pending(&mut convs[i], sockets.get_mut::<tcp::Socket>(h));
+            tx_credit(chan, conv, n);
         }
         Kind::Empty => reply(chan, REP_ERR, conv, -1, b"no conv"),
     }
@@ -1096,28 +1092,11 @@ fn pump_sockets(
                 if convs[i].listen_port != 0 {
                     continue;
                 }
-                let pend_len = convs[i].pending_len as usize;
-                if pend_len != 0 {
-                    let mut tmp_pend = [0u8; MSG_CAP];
-                    tmp_pend[..pend_len].copy_from_slice(&convs[i].pending[..pend_len]);
-                    let s = sockets.get_mut::<tcp::Socket>(h);
-                    if s.can_send() {
-                        match s.send_slice(&tmp_pend[..pend_len]) {
-                            Ok(n) if n >= pend_len => {
-                                convs[i].pending_len = 0;
-                            }
-                            Ok(n) if n > 0 => {
-                                let left = pend_len - n;
-                                convs[i].pending.copy_within(n..pend_len, 0);
-                                convs[i].pending_len = left as u16;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                let n = flush_pending(&mut convs[i], sockets.get_mut::<tcp::Socket>(h));
+                tx_credit(chan, conv, n);
                 // Deferred close (drop_conv couldn't flush pending yet):
                 // pending fully queued now -> finish the graceful close.
-                if convs[i].closing_after_flush && convs[i].pending_len == 0 {
+                if convs[i].closing_after_flush && convs[i].pending.is_empty() {
                     let s = sockets.get_mut::<tcp::Socket>(h);
                     s.close();
                     convs[i].closing = true;

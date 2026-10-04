@@ -5,27 +5,49 @@
 #
 #   tcp-ping PORT   the listen/accept smoke's peer: connect to the guest's
 #                   listener through QEMU's port forward, send "ping",
-#                   expect "pong". Retried until the listener is up; the
-#                   guest test bounds its own wait.
+#                   expect "pong" and then the smoke's numbered lines up to
+#                   its close; connect again to say "good" if every byte
+#                   arrived ("bad <bytes>" if not). Retried until the
+#                   listener is up; the guest test bounds its own wait.
 set -u
 
+# The smoke's bulk: BULK_LINES lines "%06d\n" (tcp_listen_smoke.c).
+BULK_LINES=40000
+
 tcp_ping() {
-  local port="$1" reply deadline=$((SECONDS + 180))
+  local port="$1" got verdict deadline=$((SECONDS + 180))
+  got="$(mktemp)"
   while (( SECONDS < deadline )); do
     # The group keeps the connect error quiet without redirecting the
     # script's stderr for good, as `exec ... 2>/dev/null` would.
     if { exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
       printf ping >&3
-      # "pong\n"; the substitution drops the newline.
-      reply="$(timeout 15 head -c 5 <&3 2>/dev/null || true)"
+      # Everything up to the smoke's close: "pong\n", then the lines.
+      timeout 120 cat <&3 > "$got" 2>/dev/null || true
       exec 3>&-
-      if [[ "$reply" == pong ]]; then
-        echo "boot test: tcp-ping $port: pong" >&2
-        return 0
+      if [[ "$(head -c 5 "$got")" == pong ]]; then
+        local diff
+        diff="$(tail -c +6 "$got" | cmp - <(seq -f %06g 0 $((BULK_LINES - 1))) 2>&1)"
+        if [[ -z "$diff" ]]; then
+          verdict=good
+        else
+          # The byte count and where the stream first goes wrong.
+          verdict="bad $(($(wc -c < "$got") - 5)): ${diff#*: }"
+        fi
+        echo "boot test: tcp-ping $port: pong, bulk $verdict" >&2
+        if { exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
+          printf '%s\n' "$verdict" >&3
+          sleep 1
+          exec 3>&-
+        fi
+        rm -f "$got"
+        [[ "$verdict" == good ]]
+        return
       fi
     fi
     sleep 0.25
   done
+  rm -f "$got"
   echo "boot test: tcp-ping $port: no pong within the bound" >&2
   return 1
 }

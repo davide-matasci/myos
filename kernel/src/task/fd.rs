@@ -492,11 +492,17 @@ pub fn fd_dup_min(oldfd: usize, minfd: usize) -> Option<usize> {
     })
 }
 
-/// File/chr copy size. DHCP ~300B was truncated at 128, so TX chunks became
-/// separate Ethernet frames. Cap at netfs MSG_CAP-REQ_HDR (2042): a 2048
-/// chunk was rejected by net_write (payload > MSG_CAP-6) → EIO on large
-/// SSH/TLS writes.
+/// File/chr write chunk (and pipe copy) size. DHCP ~300B was truncated at
+/// 128, so TX chunks became separate Ethernet frames. Cap at netfs
+/// MSG_CAP-REQ_HDR (2042): a 2048 chunk was rejected by net_write (payload >
+/// MSG_CAP-6) → EIO on large SSH/TLS writes.
 const FILE_IO_TMP: usize = 2042;
+
+/// File/chr read size. A device that hands out messages (netfs's requests to
+/// netd on `/dev/netd`, up to 2048 bytes) must get each whole into one read:
+/// it was copied through `FILE_IO_TMP` and lost its tail, and netd dropped
+/// the request.
+const FILE_READ_TMP: usize = 4096;
 
 /// Read/write on a pty end whose peer has hung up. `usize::MAX` stays the
 /// generic SYSERR (EBADF in libgloss); this distinct value lets libgloss map
@@ -549,7 +555,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         let (user_base, image_span, stack_off, brk) = map;
         let user_base = user_base as usize;
         let stack_off = stack_off as usize;
-        if !user_buf_ok(buf, len.min(FILE_IO_TMP), user_base, image_span, stack_off, brk, &mmap) {
+        if !user_buf_ok(buf, len.min(FILE_READ_TMP), user_base, image_span, stack_off, brk, &mmap) {
             return usize::MAX;
         }
         match entry {
@@ -559,7 +565,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 let Some((node, pos, ..)) = open_file_get(id) else {
                     return usize::MAX;
                 };
-                let mut tmp = [0u8; FILE_IO_TMP];
+                let mut tmp = [0u8; FILE_READ_TMP];
                 let want = len.min(tmp.len());
                 let n = crate::fs::read(&node, pos, &mut tmp[..want]);
                 // Not under TASKS: the copy may page in the buffer.

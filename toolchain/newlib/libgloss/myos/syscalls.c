@@ -66,6 +66,12 @@ int myos_socket_poll_prepare(int fd, short events, short *now, short *kevents) {
     return -1;
 }
 
+int myos_socket_write_all(int fd) __attribute__((weak));
+int myos_socket_write_all(int fd) {
+    (void)fd;
+    return 0;
+}
+
 void myos_socket_poll_done(int fd, short events, short *revents) __attribute__((weak));
 void myos_socket_poll_done(int fd, short events, short *revents) {
     (void)fd; (void)events; (void)revents;
@@ -266,39 +272,46 @@ int _read(int fd, void *buf, size_t cnt) {
 
 int _write(int fd, const void *buf, size_t cnt) {
     long ret;
+    size_t done = 0;
 
     for (;;) {
-        ret = myos_syscall3(MYOS_SYS_WRITE, fd, (long)(uintptr_t)buf, (long)cnt);
+        ret = myos_syscall3(MYOS_SYS_WRITE, fd, (long)(uintptr_t)buf + done, (long)(cnt - done));
         if (ret == (long)MYOS_EINTR) {
             errno = EINTR; /* a caught signal interrupted a blocked write */
-            return -1;
+            return done ? (int)done : -1;
         }
         if (ret == (long)MYOS_EIO) {
             errno = EIO; /* pty peer gone */
-            return -1;
+            return done ? (int)done : -1;
         }
         if (ret == (long)MYOS_SYSERR) {
-            /* /net/unix data refuses a write when the peer's buffer is full. */
+            /* A stream socket refuses a write while it has no room. */
             switch (myos_socket_write_failed(fd)) {
             case 1:
                 errno = EAGAIN;
-                return -1;
+                return done ? (int)done : -1;
             case 2:
                 errno = EPIPE;
-                return -1;
+                return done ? (int)done : -1;
             case 3:
-                continue; /* waited for the reader; retry */
+                continue; /* waited for room; retry */
             case 4:
                 errno = ENOTCONN;
-                return -1;
+                return done ? (int)done : -1;
             case 5:
                 errno = EINTR; /* a caught signal ended the wait */
-                return -1;
+                return done ? (int)done : -1;
             }
             myos_set_errno_io();
-            return -1;
+            return done ? (int)done : -1;
         }
-        return (int)ret;
+        done += (size_t)ret;
+        /* A blocking stream socket took part of it (no more room): write
+         * the rest, waiting for room as above. */
+        if (ret > 0 && done < cnt && myos_socket_write_all(fd)) {
+            continue;
+        }
+        return (int)done;
     }
 }
 

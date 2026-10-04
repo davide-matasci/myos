@@ -12,10 +12,18 @@
 //! intrusive freelist so the `/heap` smoke can fork+exec large ELFs many times
 //! without walking the bump allocator into garbage (riscv64 `sepc=0` after
 //! find+cat+ls+rg — same class as #84).
+//!
+//! The bump cursor and the freelist change under [`FRAMES`] only. Both were
+//! lock-free and racy on SMP: two CPUs bumping at once got the same frame,
+//! and a freelist pop could read the next-ptr of a head another CPU had just
+//! popped and handed to a user (the "freelist node corrupt" panic with a
+//! value like `0x5b01`), or, with that head pushed back meanwhile, put a
+//! frame in use back on the list (ABA).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use limine::memmap;
+use spin::Mutex;
 
 use crate::limine_boot;
 
@@ -25,6 +33,20 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 /// Intrusive freelist head (physical address), or 0. Each free page stores the
 /// next phys at offset 0 via HHDM.
 static FREE_HEAD: AtomicU64 = AtomicU64::new(0);
+/// Held (interrupts off) while [`NEXT`] or [`FREE_HEAD`] change.
+static FRAMES: Mutex<()> = Mutex::new(());
+
+/// Run `f` with [`FRAMES`] held and interrupts off on this CPU.
+fn with_frames<R>(f: impl FnOnce() -> R) -> R {
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    let r = {
+        let _held = FRAMES.lock();
+        f()
+    };
+    crate::arch::irq_restore(flags);
+    r
+}
 
 /// Diagnostics for the frame allocator: total 4 KiB frames handed out vs
 /// returned to the freelist. Printed verbatim in the `out of usable memory`
@@ -114,27 +136,20 @@ pub fn free_frame(phys: u64) {
         return;
     }
     let hhdm = limine_boot::hhdm_offset();
-    loop {
+    with_frames(|| {
         let head = FREE_HEAD.load(Ordering::SeqCst);
-        unsafe {
-            core::ptr::write_unaligned((phys + hhdm) as *mut u64, head);
-        }
         // Only the next-ptr is written: `alloc_frame` validates it (a stray
         // write into a free frame still surfaces as a bad next-ptr) and zeroes
         // the page. A 4 KiB 0x5A fill here cost ~600k cycles per frame in the
         // debug kernel under TCG (byte-wise memset) — fine while exits leaked,
         // ~0.5 s per process once exits actually reclaim their pages.
-        if FREE_HEAD
-            .compare_exchange(head, phys, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            FRAME_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
-            return;
+        unsafe {
+            core::ptr::write_unaligned((phys + hhdm) as *mut u64, head);
         }
-    }
+        FREE_HEAD.store(phys, Ordering::SeqCst);
+    });
+    FRAME_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
 }
-
-/// Allocate a 4 KiB frame, zero it, return its physical address.
 
 /// Allocate `n` physically contiguous zeroed frames from the bump cursor only
 /// (skip the freelist). Needed for ELF scratch: HHDM byte slices require
@@ -149,6 +164,17 @@ pub fn alloc_contiguous_frames(n: usize) -> Option<u64> {
         return None;
     }
     let hhdm = limine_boot::hhdm_offset();
+    let need = (n as u64).saturating_mul(PAGE);
+    let phys = with_frames(|| bump_run(n, need))?;
+    unsafe {
+        core::ptr::write_bytes((phys + hhdm) as *mut u8, 0, need as usize);
+    }
+    Some(phys)
+}
+
+/// The bump cursor's next run of `n` frames (`need` bytes) clear of the
+/// kernel image, cursor moved past it. Caller holds [`FRAMES`].
+fn bump_run(n: usize, need: u64) -> Option<u64> {
     let entries = limine_boot::MEMMAP
         .response()
         .expect("Limine memmap")
@@ -159,7 +185,6 @@ pub fn alloc_contiguous_frames(n: usize) -> Option<u64> {
         next = crate::heap::phys_end();
     }
     next = (next + 0xfff) & !0xfff;
-    let need = (n as u64).saturating_mul(PAGE);
 
     for e in entries {
         if e.type_ != memmap::MEMMAP_USABLE {
@@ -185,9 +210,6 @@ pub fn alloc_contiguous_frames(n: usize) -> Option<u64> {
                 continue;
             }
             NEXT.store(phys + need, Ordering::SeqCst);
-            unsafe {
-                core::ptr::write_bytes((phys + hhdm) as *mut u8, 0, need as usize);
-            }
             return Some(phys);
         }
     }
@@ -228,74 +250,44 @@ fn validate_free_frame(phys: u64) {
     }
 }
 
+/// Allocate a 4 KiB frame, zero it, return its physical address.
 pub fn alloc_frame() -> u64 {
-    let hhdm = limine_boot::hhdm_offset();
-
     // Prefer reclaimed user frames (process exit / abandoned exec).
-    loop {
-        let head = FREE_HEAD.load(Ordering::SeqCst);
-        if head == 0 {
-            break;
-        }
-        validate_free_frame(head);
-        let next = unsafe { core::ptr::read_unaligned((head + hhdm) as *const u64) };
-        if next != 0
-            && (next & 0xfff != 0 || overlaps_kernel(next) || !frame_in_usable_memmap(next))
-        {
-            // head's own next-ptr was corrupted while it sat on the freelist.
-            panic!(
-                "mm: freelist node corrupt: head={:#x} next={:#x} aligned={} kernel={} usable={}",
-                head,
-                next,
-                next & 0xfff == 0,
-                overlaps_kernel(next),
-                frame_in_usable_memmap(next),
-            );
-        }
-        if FREE_HEAD
-            .compare_exchange(head, next, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            unsafe {
-                zero_page((head + hhdm) as *mut u8);
-            }
-            FRAME_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-            return head;
-        }
+    let Some(phys) = with_frames(|| pop_free().or_else(|| bump_run(1, PAGE))) else {
+        out_of_memory();
+    };
+    unsafe {
+        zero_page(hhdm(phys));
     }
+    FRAME_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+    phys
+}
 
-    let entries = limine_boot::MEMMAP
-        .response()
-        .expect("Limine memmap")
-        .entries();
-
-    let mut next = NEXT.load(Ordering::SeqCst);
-    if next == 0 {
-        next = crate::heap::phys_end();
+/// Take the freelist's head, or `None` when it is empty. Caller holds
+/// [`FRAMES`].
+fn pop_free() -> Option<u64> {
+    let head = FREE_HEAD.load(Ordering::SeqCst);
+    if head == 0 {
+        return None;
     }
-    next = (next + 0xfff) & !0xfff;
-
-    for e in entries {
-        if e.type_ != memmap::MEMMAP_USABLE {
-            continue;
-        }
-        let region_end = e.base + e.length;
-        let mut phys = e.base.max(next);
-        phys = (phys + 0xfff) & !0xfff;
-        while phys.saturating_add(PAGE) <= region_end {
-            if overlaps_kernel(phys) {
-                let (_, k1) = kernel_phys_range();
-                phys = (k1 + 0xfff) & !0xfff;
-                continue;
-            }
-            NEXT.store(phys + PAGE, Ordering::SeqCst);
-            unsafe {
-                zero_page((phys + hhdm) as *mut u8);
-            }
-            FRAME_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-            return phys;
-        }
+    validate_free_frame(head);
+    let next = unsafe { core::ptr::read_unaligned(hhdm(head) as *const u64) };
+    if next != 0 && (next & 0xfff != 0 || overlaps_kernel(next) || !frame_in_usable_memmap(next)) {
+        // head's own next-ptr was overwritten while it sat on the freelist.
+        panic!(
+            "mm: freelist node corrupt: head={:#x} next={:#x} aligned={} kernel={} usable={}",
+            head,
+            next,
+            next & 0xfff == 0,
+            overlaps_kernel(next),
+            frame_in_usable_memmap(next),
+        );
     }
+    FREE_HEAD.store(next, Ordering::SeqCst);
+    Some(head)
+}
+
+fn out_of_memory() -> ! {
     let top = limine_boot::MEMMAP
         .response()
         .map(|r| {

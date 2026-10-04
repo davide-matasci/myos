@@ -345,17 +345,19 @@ int myos_socket_empty_read(int fd) {
 
 /*
  * Called from _write when the kernel refused a write on a tracked socket fd.
- * Only AF_UNIX distinguishes a full peer buffer from a closed peer:
+ * A stream refuses a write when it has no room: a unix peer's buffer is
+ * full, or netd has a TCP conversation's 8 KiB of sends still queued.
  *   0 = not handled (keep the generic error)
- *   1 = buffer full + nonblocking -> EAGAIN
+ *   1 = no room + nonblocking -> EAGAIN
  *   2 = peer gone -> EPIPE
- *   3 = waited for the reader: retry the write
+ *   3 = waited for room: retry the write
  *   4 = not connected -> ENOTCONN
  *   5 = the wait was interrupted -> EINTR
  */
 int myos_socket_write_failed(int fd) {
     struct myos_sock *s = sock_by_fd(fd);
-    if (s == NULL || s->family != AF_UNIX) {
+    struct pollfd p = {fd, POLLOUT, 0};
+    if (s == NULL || s->type != SOCK_STREAM) {
         return 0;
     }
     if (s->state != SOCK_CONNECTED) {
@@ -367,8 +369,19 @@ int myos_socket_write_failed(int fd) {
     if (s->nonblock) {
         return 1;
     }
-    /* netfs reports POLLOUT once the peer's buffer has room again. */
-    return sock_wait(fd, POLLOUT, -1) < 0 ? 5 : 3;
+    /* netfs reports POLLOUT once there is room again; a hangup (or a
+     * conversation gone) ends the wait too. */
+    if (__myos_kpoll(&p, 1, -1) < 0) {
+        return 5;
+    }
+    return p.revents & (POLLHUP | POLLERR | POLLNVAL) ? 2 : 3;
+}
+
+/* Whether a short write on `fd` should go on with the rest: a blocking
+ * connected stream (POSIX: it returns once everything is written). */
+int myos_socket_write_all(int fd) {
+    struct myos_sock *s = sock_by_fd(fd);
+    return s != NULL && s->type == SOCK_STREAM && s->state == SOCK_CONNECTED && !s->nonblock;
 }
 
 /* fcntl F_GETFL / F_SETFL for tracked sockets. Returns -1 if not a socket. */
@@ -431,8 +444,8 @@ static int status_accept_seq(const char *status) {
  * peer's buffer. This adds the socket's own state.
  *
  * prepare: returns -1 for a non-socket. Sets *now to what is ready without
- * asking (a connected TCP/UDP socket is always writable: there is no TX
- * accounting) and *kevents to what the kernel should wait for. A listener
+ * asking (a connected UDP socket is always writable) and *kevents to what
+ * the kernel should wait for (a stream is writable while it has room). A listener
  * arms netd's accept first: select-driven servers like dropbear select()
  * before accept(), and netd only announces a connection once armed.
  */
@@ -460,7 +473,7 @@ int myos_socket_poll_prepare(int fd, short events, short *now, short *kevents) {
         *kevents = POLLOUT | (want_in ? POLLIN : 0);
         break;
     case SOCK_CONNECTED:
-        if (s->family == AF_UNIX) {
+        if (s->type == SOCK_STREAM) {
             *kevents = (want_in ? POLLIN : 0) | (want_out ? POLLOUT : 0);
         } else {
             *now = want_out ? POLLOUT : 0;

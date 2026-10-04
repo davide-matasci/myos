@@ -244,7 +244,8 @@ last close hangs the conversation up. `socket` reads `/net/{tcp,udp}/clone`,
 `connect` writes `connect a.b.c.d!port` to its `ctl`, and readiness comes from
 its `status` and the bytes waiting in `data`. The `/net` files never block,
 so a blocking read or connect sleeps until netd's next reply wakes the
-pollers (a write retries while netd's request ring is full). A datagram
+pollers (a write retries while netd's request ring is full, or a TCP
+conversation has no send room left: 8 KiB queued in netd). A datagram
 socket sends to the last address it was given, and reads one datagram at a
 time. A chrooted process reaches `/net` through the bind `linux --root` sets
 up, and `get-alpine` gives a new root an `/etc/resolv.conf` naming the
@@ -325,7 +326,8 @@ the kernel does not keep a per-task copy at syscall entry.
 - Sockets: IPv4 clients only (no `listen`/`accept`, no IPv6, no Unix
   sockets or `socketpair`); no half-close (`shutdown` hangs up only for
   `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are
-  ignored.
+  ignored; `poll` reports a connected socket writable even with no send
+  room left (a nonblocking write then says `EAGAIN`).
 - The native limits apply:
   - exec: up to 1024 arguments and 1024 environment strings, at most
     128 KiB together; a program file of at most 16 MiB from a writable
