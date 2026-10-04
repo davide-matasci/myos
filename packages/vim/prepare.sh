@@ -31,7 +31,6 @@ mkdir -p "$WORK/src/auto"
 cp "$MYOS/config.h" "$WORK/src/auto/config.h"
 cp "$MYOS/osdef.h" "$WORK/src/auto/osdef.h"
 cp "$MYOS/pathdef.c" "$WORK/src/auto/pathdef.c"
-cp "$MYOS/myos_stubs.c" "$WORK/src/myos_stubs.c"
 cp "$MYOS/myos_compat.h" "$WORK/src/myos_compat.h"
 
 # Apply ordered myos patches when present.
