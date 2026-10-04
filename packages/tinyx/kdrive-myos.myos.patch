@@ -1,0 +1,640 @@
+diff --git a/configure.ac b/configure.ac
+index a30d074..0f529fe 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -261,6 +261,7 @@ AC_ARG_ENABLE(dpms,           AS_HELP_STRING([--disable-dpms], [Build DPMS exten
+ dnl kdrive and its subsystems
+ AC_ARG_ENABLE(kdrive,         AS_HELP_STRING([--enable-kdrive], [Build kdrive servers (default: yes)]), [KDRIVE=$enableval], [KDRIVE=yes])
+ AC_ARG_ENABLE(xvesa,          AS_HELP_STRING([--disable-xvesa], [Build Xvesa server (default: yes)]), [XVESA=$enableval], [XVESA=yes])
++AC_ARG_WITH(kdrive-os, AS_HELP_STRING([--with-kdrive-os=myos], [kdrive OS layer for myos (default: by host)]))
+ AC_ARG_ENABLE(xfbdev,         AS_HELP_STRING([--disable-xfbdev], [Build Xfbdev server (default: yes)]), [XFBDEV=$enableval], [XFBDEV=yes])
+ 
+ 
+@@ -568,6 +569,15 @@ if test "$KDRIVE" = yes; then
+             KDRIVELINUX=yes
+ 	    ;;
+     esac
++    # myos (--with-kdrive-os=myos): /dev/fb and /dev/console/kbd
++    if test "x$with_kdrive_os" = xmyos; then
++	KDRIVE_OS_INC='-I$(top_srcdir)/kdrive/myos'
++	KDRIVE_INCS="$KDRIVE_PURE_INCS $KDRIVE_OS_INC"
++	KDRIVE_OS_LIB='$(top_builddir)/kdrive/myos/libmyos.a'
++	KDRIVELINUX=no
++	KDRIVEMYOS=yes
++	AC_DEFINE(KDRIVEMYOS, 1, [kdrive on myos])
++    fi
+     KDRIVE_STUB_LIB='$(top_builddir)/kdrive/src/libkdrivestubs.a'
+     KDRIVE_LIBS="$DIX_LIB $KDRIVE_LIB $KDRIVE_OS_LIB $KDRIVE_PURE_LIBS $KDRIVE_STUB_LIB"
+ fi
+@@ -577,6 +587,7 @@ AC_SUBST(KDRIVE_CFLAGS)
+ AC_SUBST(KDRIVE_PURE_LIBS)
+ AC_SUBST(KDRIVE_LIBS)
+ AM_CONDITIONAL(KDRIVELINUX, [test "x$KDRIVELINUX" = xyes])
++AM_CONDITIONAL(KDRIVEMYOS, [test "x$KDRIVEMYOS" = xyes])
+ AM_CONDITIONAL(KDRIVEVESA, [test x"$ac_cv_header_asm_vm86_h" = xyes -a "x$XVESA" != "xno"])
+ AM_CONDITIONAL(KDRIVEFBDEV, [test x"$ac_cv_header_linux_fb_h" = xyes -a "x$XFBDEV" != "xno"])
+ 
+@@ -661,6 +672,7 @@ xfixes/Makefile
+ kdrive/Makefile
+ kdrive/fbdev/Makefile
+ kdrive/linux/Makefile
++kdrive/myos/Makefile
+ kdrive/src/Makefile
+ kdrive/vesa/Makefile
+ ])
+diff --git a/include/kdrive-config.h.in b/include/kdrive-config.h.in
+index 07b5b4b..cec830f 100644
+--- a/include/kdrive-config.h.in
++++ b/include/kdrive-config.h.in
+@@ -12,6 +12,9 @@
+ /* Include framebuffer support in X servers */
+ #undef KDRIVEFBDEV
+ 
++/* kdrive on myos */
++#undef KDRIVEMYOS
++
+ /* Include vesa support in X servers */
+ #undef KDRIVEVESA
+ 
+diff --git a/kdrive/Makefile.am b/kdrive/Makefile.am
+index 8f0bd76..07a3f05 100644
+--- a/kdrive/Makefile.am
++++ b/kdrive/Makefile.am
+@@ -10,10 +10,15 @@ if KDRIVELINUX
+ LINUX_SUBDIRS = linux
+ endif
+ 
++if KDRIVEMYOS
++MYOS_SUBDIRS = myos
++endif
++
+ SUBDIRS =			\
+ 	src			\
+ 	$(LINUX_SUBDIRS)	\
++	$(MYOS_SUBDIRS)		\
+ 	$(FBDEV_SUBDIRS)	\
+ 	$(VESA_SUBDIRS)
+ 
+-DIST_SUBDIRS = vesa fbdev src linux
++DIST_SUBDIRS = vesa fbdev src linux myos
+diff --git a/kdrive/fbdev/Makefile.am b/kdrive/fbdev/Makefile.am
+index da31e2e..4de6af4 100644
+--- a/kdrive/fbdev/Makefile.am
++++ b/kdrive/fbdev/Makefile.am
+@@ -10,6 +10,10 @@ libfbdev_a_SOURCES =	\
+ 	fbdev.c		\
+ 	fbdev.h
+ 
++if KDRIVEMYOS
++libfbdev_a_SOURCES += myosfb.c
++endif
++
+ Xfbdev_SOURCES = \
+ 	fbinit.c
+ 
+diff --git a/kdrive/fbdev/fbdev.c b/kdrive/fbdev/fbdev.c
+index ae89381..f21cf26 100644
+--- a/kdrive/fbdev/fbdev.c
++++ b/kdrive/fbdev/fbdev.c
+@@ -40,7 +40,7 @@ static Bool fbdevInitialize(KdCardInfo * card, FbdevPriv * priv)
+ 	unsigned long off;
+ 
+ 	if (fbdevDevicePath == NULL)
+-		fbdevDevicePath = "/dev/fb0";
++		fbdevDevicePath = "/dev/fb/data";
+ 
+ 	if ((priv->fd = open(fbdevDevicePath, O_RDWR)) < 0) {
+ 		ErrorF("Error opening framebuffer %s: %s\n",
+diff --git a/kdrive/fbdev/fbinit.c b/kdrive/fbdev/fbinit.c
+index 7be0190..a4e82c8 100644
+--- a/kdrive/fbdev/fbinit.c
++++ b/kdrive/fbdev/fbinit.c
+@@ -67,7 +67,11 @@ void InitOutput(ScreenInfo * pScreenInfo, int argc, char **argv)
+ 
+ void InitInput(int argc, char **argv)
+ {
++#ifdef KDRIVEMYOS
++	KdInitInput(&MyosMouseFuncs, &MyosKeyboardFuncs);
++#else
+ 	KdInitInput(&LinuxMouseFuncs, &LinuxKeyboardFuncs);
++#endif
+ }
+ 
+ void ddxUseMsg(void)
+@@ -75,7 +79,7 @@ void ddxUseMsg(void)
+ 	KdUseMsg();
+ 	ErrorF("\nXfbdev Device Usage:\n");
+ 	ErrorF
+-	    ("-fb path         Framebuffer device to use. Defaults to /dev/fb0\n");
++	    ("-fb path         Framebuffer device to use. Defaults to /dev/fb0 (myos: /dev/fb/data)\n");
+ 	ErrorF("\n");
+ }
+ 
+diff --git a/kdrive/fbdev/myosfb.c b/kdrive/fbdev/myosfb.c
+new file mode 100644
+index 0000000..e01f1ba
+--- /dev/null
++++ b/kdrive/fbdev/myosfb.c
+@@ -0,0 +1,151 @@
++/*
++ * myos: the framebuffer ioctls fbdev.c makes, answered from /dev/fb/ctl.
++ *
++ * myos's framebuffer is a directory (docs/fb.md): `ctl` reads as one line,
++ * "width height depth chan pitch mode" (e.g. "1280 800 32 x8r8g8b8 5120
++ * text"), and `data` is the pixels, mapped MAP_SHARED. The mode is the one
++ * the bootloader set; there is no mode setting and no colormap. Writing
++ * "graphics" to `ctl` takes the screen from the text console; the console
++ * takes it back when the fd closes, so the server holds it open until it
++ * exits.
++ *
++ * Part of the myos patches to TinyX (packages/tinyx), under TinyX's license.
++ */
++#ifdef HAVE_CONFIG_H
++#include <kdrive-config.h>
++#endif
++#include <errno.h>
++#include <fcntl.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <linux/fb.h>
++
++#undef ioctl
++
++#define CTL "/dev/fb/ctl"
++
++static int ctl_fd = -1;
++static struct fb_var_screeninfo cur_var;
++static struct fb_fix_screeninfo cur_fix;
++
++/* "x8r8g8b8": components from the most significant bits down. */
++static int parse_chan(const char *chan, struct fb_var_screeninfo *var)
++{
++	int bits = 0, i;
++
++	for (i = 0; chan[i]; i += 2)
++		if (chan[i + 1] < '1' || chan[i + 1] > '9')
++			return -1;
++		else
++			bits += chan[i + 1] - '0';
++	for (i = 0; chan[i]; i += 2) {
++		int len = chan[i + 1] - '0';
++		struct fb_bitfield *f = NULL;
++
++		bits -= len;
++		switch (chan[i]) {
++		case 'r': f = &var->red; break;
++		case 'g': f = &var->green; break;
++		case 'b': f = &var->blue; break;
++		case 'a': f = &var->transp; break;
++		case 'x': break;
++		default: return -1;
++		}
++		if (f) {
++			f->offset = bits;
++			f->length = len;
++		}
++	}
++	return 0;
++}
++
++/* Read the geometry and take the screen (once). */
++static int fb_open_ctl(void)
++{
++	char line[128], chan[16], mode[16];
++	unsigned w, h, depth, pitch;
++	ssize_t n;
++
++	if (ctl_fd >= 0)
++		return 0;
++	ctl_fd = open(CTL, O_RDWR);
++	if (ctl_fd < 0)
++		return -1;
++	n = read(ctl_fd, line, sizeof line - 1);
++	if (n <= 0) {
++		close(ctl_fd);
++		ctl_fd = -1;
++		return -1;
++	}
++	line[n] = '\0';
++	if (sscanf(line, "%u %u %u %15s %u %15s", &w, &h, &depth, chan, &pitch, mode) != 6
++	    || parse_chan(chan, &cur_var) < 0) {
++		close(ctl_fd);
++		ctl_fd = -1;
++		errno = EINVAL;
++		return -1;
++	}
++	cur_var.xres = cur_var.xres_virtual = w;
++	cur_var.yres = cur_var.yres_virtual = h;
++	cur_var.bits_per_pixel = depth;
++	strcpy(cur_fix.id, "myos");
++	cur_fix.smem_len = pitch * h;
++	cur_fix.type = FB_TYPE_PACKED_PIXELS;
++	cur_fix.visual = FB_VISUAL_TRUECOLOR;
++	cur_fix.line_length = pitch;
++	if (write(ctl_fd, "graphics\n", 9) != 9) {
++		close(ctl_fd);
++		ctl_fd = -1;
++		return -1;
++	}
++	return 0;
++}
++
++int myos_fb_ioctl(int fd, unsigned long request, ...)
++{
++	va_list ap;
++	void *arg;
++
++	va_start(ap, request);
++	arg = va_arg(ap, void *);
++	va_end(ap);
++
++	switch (request) {
++	case FBIOGET_FSCREENINFO:
++		if (fb_open_ctl() < 0)
++			return -1;
++		memcpy(arg, &cur_fix, sizeof cur_fix);
++		return 0;
++	case FBIOGET_VSCREENINFO:
++		if (fb_open_ctl() < 0)
++			return -1;
++		memcpy(arg, &cur_var, sizeof cur_var);
++		return 0;
++	case FBIOPUT_VSCREENINFO: {
++		/* No mode setting: only the current mode is accepted. */
++		struct fb_var_screeninfo *var = arg;
++
++		if (fb_open_ctl() < 0)
++			return -1;
++		if (var->xres != cur_var.xres || var->yres != cur_var.yres
++		    || var->bits_per_pixel != cur_var.bits_per_pixel) {
++			errno = EINVAL;
++			return -1;
++		}
++		memcpy(var, &cur_var, sizeof cur_var);
++		return 0;
++	}
++	case FBIOBLANK:
++		return 0;
++	case FBIOGETCMAP:
++	case FBIOPUTCMAP:
++		/* TrueColor only: there is no colormap. */
++		errno = EINVAL;
++		return -1;
++	default:
++		return ioctl(fd, request, arg);
++	}
++}
+diff --git a/kdrive/myos/Makefile.am b/kdrive/myos/Makefile.am
+new file mode 100644
+index 0000000..a848dd4
+--- /dev/null
++++ b/kdrive/myos/Makefile.am
+@@ -0,0 +1,11 @@
++AM_CPPFLAGS = 					\
++	@KDRIVE_INCS@				\
++	@KDRIVE_CFLAGS@
++
++AM_CFLAGS = -DHAVE_DIX_CONFIG_H
++
++noinst_LIBRARIES = libmyos.a
++
++libmyos_a_SOURCES = 	\
++	keyboard.c	\
++	myos.c
+diff --git a/kdrive/myos/keyboard.c b/kdrive/myos/keyboard.c
+new file mode 100644
+index 0000000..edd99cb
+--- /dev/null
++++ b/kdrive/myos/keyboard.c
+@@ -0,0 +1,246 @@
++/*
++ * myos: the keyboard, from /dev/console/kbd (docs/tty.md).
++ *
++ * The file reports every press and release as a line, "d <code>[ <char>]"
++ * or "u <code>", with Linux KEY_* codes: the scan codes kdrive expects
++ * (the X keycode is the code + 8, as with evdev). Opening it takes the
++ * keyboard from the console until the server closes it.
++ *
++ * The keymap: the keys that are not characters (Esc, the modifiers, the
++ * function keys, the keypad, the arrows) from the table below; the
++ * characters from the console's keymap file (the `keymap` line of
++ * /dev/console/ctl, docs/keymap.md: base, Shift, AltGr, Shift+AltGr, the
++ * four columns of an X keymap with AltGr as Mode_switch), US when there is
++ * none. Its bytes are Latin-1, which are their own keysyms.
++ *
++ * Part of the myos patches to TinyX (packages/tinyx), under TinyX's license.
++ */
++#ifdef HAVE_CONFIG_H
++#include <kdrive-config.h>
++#endif
++#include <errno.h>
++#include <fcntl.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include "kdrive.h"
++#include "kkeymap.h"
++#include <X11/keysym.h>
++
++#define KBD "/dev/console/kbd"
++#define CONSOLE_CTL "/dev/console/ctl"
++#define NCODES 128
++
++static int MyosKbdType;
++
++static KeySym *row(int code)
++{
++	return &kdKeymap[(code - kdMinScanCode) * KD_MAX_WIDTH];
++}
++
++static void set_keys(int code, KeySym base, KeySym shift)
++{
++	row(code)[0] = base;
++	row(code)[1] = shift;
++}
++
++/* The keys that are not characters, by Linux code. */
++static void load_fixed(void)
++{
++	static const struct {
++		unsigned char code;
++		KeySym base, shift;
++	} fixed[] = {
++		{1, XK_Escape, NoSymbol}, {14, XK_BackSpace, NoSymbol},
++		{15, XK_Tab, XK_ISO_Left_Tab}, {28, XK_Return, NoSymbol},
++		{29, XK_Control_L, NoSymbol}, {42, XK_Shift_L, NoSymbol},
++		{54, XK_Shift_R, NoSymbol}, {55, XK_KP_Multiply, NoSymbol},
++		{56, XK_Alt_L, XK_Meta_L}, {57, XK_space, NoSymbol},
++		{58, XK_Caps_Lock, NoSymbol}, {69, XK_Num_Lock, NoSymbol},
++		{70, XK_Scroll_Lock, NoSymbol},
++		{71, XK_KP_Home, XK_KP_7}, {72, XK_KP_Up, XK_KP_8},
++		{73, XK_KP_Prior, XK_KP_9}, {74, XK_KP_Subtract, NoSymbol},
++		{75, XK_KP_Left, XK_KP_4}, {76, XK_KP_Begin, XK_KP_5},
++		{77, XK_KP_Right, XK_KP_6}, {78, XK_KP_Add, NoSymbol},
++		{79, XK_KP_End, XK_KP_1}, {80, XK_KP_Down, XK_KP_2},
++		{81, XK_KP_Next, XK_KP_3}, {82, XK_KP_Insert, XK_KP_0},
++		{83, XK_KP_Delete, XK_KP_Decimal},
++		{87, XK_F11, NoSymbol}, {88, XK_F12, NoSymbol},
++		{96, XK_KP_Enter, NoSymbol}, {97, XK_Control_R, NoSymbol},
++		{98, XK_KP_Divide, NoSymbol}, {99, XK_Print, NoSymbol},
++		{100, XK_Mode_switch, NoSymbol}, {102, XK_Home, NoSymbol},
++		{103, XK_Up, NoSymbol}, {104, XK_Prior, NoSymbol},
++		{105, XK_Left, NoSymbol}, {106, XK_Right, NoSymbol},
++		{107, XK_End, NoSymbol}, {108, XK_Down, NoSymbol},
++		{109, XK_Next, NoSymbol}, {110, XK_Insert, NoSymbol},
++		{111, XK_Delete, NoSymbol}, {119, XK_Pause, NoSymbol},
++		{125, XK_Super_L, NoSymbol}, {126, XK_Super_R, NoSymbol},
++		{127, XK_Menu, NoSymbol},
++	};
++	unsigned i;
++	int f;
++
++	for (i = 0; i < sizeof fixed / sizeof fixed[0]; i++)
++		set_keys(fixed[i].code, fixed[i].base, fixed[i].shift);
++	for (f = 0; f < 10; f++)
++		set_keys(59 + f, XK_F1 + f, NoSymbol);
++}
++
++/* US characters, base and Shift, by Linux code. */
++static void load_us(void)
++{
++	static const char *const us[NCODES] = {
++		[2] = "1!", [3] = "2@", [4] = "3#", [5] = "4$", [6] = "5%",
++		[7] = "6^", [8] = "7&", [9] = "8*", [10] = "9(", [11] = "0)",
++		[12] = "-_", [13] = "=+", [16] = "qQ", [17] = "wW", [18] = "eE",
++		[19] = "rR", [20] = "tT", [21] = "yY", [22] = "uU", [23] = "iI",
++		[24] = "oO", [25] = "pP", [26] = "[{", [27] = "]}", [30] = "aA",
++		[31] = "sS", [32] = "dD", [33] = "fF", [34] = "gG", [35] = "hH",
++		[36] = "jJ", [37] = "kK", [38] = "lL", [39] = ";:", [40] = "'\"",
++		[41] = "`~", [43] = "\\|", [44] = "zZ", [45] = "xX", [46] = "cC",
++		[47] = "vV", [48] = "bB", [49] = "nN", [50] = "mM", [51] = ",<",
++		[52] = ".>", [53] = "/?", [86] = "<>",
++	};
++	int code;
++
++	for (code = 0; code < NCODES; code++)
++		if (us[code])
++			set_keys(code, (unsigned char)us[code][0], (unsigned char)us[code][1]);
++}
++
++/* A level of a keymap file line (docs/keymap.md) as a keysym. */
++static KeySym map_token(const char *t)
++{
++	unsigned long b;
++
++	if (!strcmp(t, "none"))
++		return NoSymbol;
++	if (!strcmp(t, "ENTER") || !strcmp(t, "\\n"))
++		return XK_Return;
++	if (!strcmp(t, "TAB") || !strcmp(t, "\\t"))
++		return XK_Tab;
++	if (!strcmp(t, "BKSP") || !strcmp(t, "\\b"))
++		return XK_BackSpace;
++	if (!strcmp(t, "SPACE"))
++		return XK_space;
++	if ((t[0] == '\\' || t[0] == '0') && t[1] == 'x' && t[2])
++		b = strtoul(t + 2, NULL, 16);
++	else if (t[0] && !t[1])
++		b = (unsigned char)t[0];
++	else
++		return NoSymbol;
++	return (b >= 0x20 && b < 0x7f) || (b >= 0xa0 && b <= 0xff) ? (KeySym)b : NoSymbol;
++}
++
++/* The path on the console's `keymap` line, or NULL ("none", no line). */
++static char *console_keymap(char *buf, size_t len)
++{
++	char ctl[1024], *line;
++	int fd = open(CONSOLE_CTL, O_RDONLY);
++	ssize_t n;
++
++	if (fd < 0)
++		return NULL;
++	n = read(fd, ctl, sizeof ctl - 1);
++	close(fd);
++	if (n <= 0)
++		return NULL;
++	ctl[n] = '\0';
++	for (line = strtok(ctl, "\n"); line; line = strtok(NULL, "\n"))
++		if (!strncmp(line, "keymap ", 7) && strcmp(line + 7, "none")) {
++			snprintf(buf, len, "%s", line + 7);
++			return buf;
++		}
++	return NULL;
++}
++
++static void load_file(void)
++{
++	char path[512], line[256];
++	FILE *f;
++
++	if (!console_keymap(path, sizeof path) || !(f = fopen(path, "r")))
++		return;
++	while (fgets(line, sizeof line, f)) {
++		char lv[4][16];
++		unsigned code;
++		int i;
++
++		if (sscanf(line, " keycode %i = %15s %15s %15s %15s", (int *)&code,
++			   lv[0], lv[1], lv[2], lv[3]) != 5 || code == 0 || code >= NCODES)
++			continue;
++		for (i = 0; i < 4; i++)
++			row(code)[i] = map_token(lv[i]);
++	}
++	fclose(f);
++}
++
++static void MyosKeyboardLoad(void)
++{
++	kdMinScanCode = 0;
++	kdMaxScanCode = NCODES - 1;
++	memset(kdKeymap, 0, sizeof kdKeymap);
++	load_fixed();
++	load_us();
++	load_file();
++}
++
++/* Called when select() says the file is readable: one read, which returns
++ * whole lines and does not block then. */
++static void MyosKeyboardRead(int fd, void *closure)
++{
++	char buf[512], *line, *save;
++	ssize_t n = read(fd, buf, sizeof buf - 1);
++
++	if (n <= 0)
++		return;
++	buf[n] = '\0';
++	for (line = strtok_r(buf, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
++		char *end;
++		long code = strtol(line + 2, &end, 10);
++
++		if ((line[0] != 'd' && line[0] != 'u') || line[1] != ' ' || end == line + 2)
++			continue;
++		if (code > 0 && code < NCODES)
++			KdEnqueueKeyboardEvent((unsigned char)code, line[0] == 'u');
++	}
++}
++
++static int MyosKeyboardInit(void)
++{
++	int fd;
++
++	if (!MyosKbdType)
++		MyosKbdType = KdAllocInputType();
++	fd = open(KBD, O_RDONLY);
++	if (fd < 0) {
++		ErrorF("myos: %s: %s (no keyboard)\n", KBD, strerror(errno));
++		return 0;
++	}
++	KdRegisterFd(MyosKbdType, fd, MyosKeyboardRead, 0);
++	return 1;
++}
++
++static void MyosKeyboardFini(void)
++{
++	/* The last close gives the keyboard back to the console. */
++	KdUnregisterFds(MyosKbdType, TRUE);
++}
++
++static void MyosKeyboardLeds(int leds)
++{
++}
++
++static void MyosKeyboardBell(int volume, int pitch, int duration)
++{
++}
++
++const KdKeyboardFuncs MyosKeyboardFuncs = {
++	MyosKeyboardLoad,
++	MyosKeyboardInit,
++	MyosKeyboardLeds,
++	MyosKeyboardBell,
++	MyosKeyboardFini,
++	3,
++};
+diff --git a/kdrive/myos/myos.c b/kdrive/myos/myos.c
+new file mode 100644
+index 0000000..d20deec
+--- /dev/null
++++ b/kdrive/myos/myos.c
+@@ -0,0 +1,63 @@
++/*
++ * myos: kdrive's OS layer. Nothing to switch: myos has one console, and the
++ * screen and the keyboard are taken by opening their files (/dev/fb/ctl,
++ * kdrive/fbdev/myosfb.c; /dev/console/kbd, keyboard.c) and given back when
++ * they close, the server's exit included. No mouse (the core pointer
++ * exists and never moves).
++ *
++ * Part of the myos patches to TinyX (packages/tinyx), under TinyX's license.
++ */
++#ifdef HAVE_CONFIG_H
++#include <kdrive-config.h>
++#endif
++#include "kdrive.h"
++
++static int MyosInit(void)
++{
++	return 1;
++}
++
++static void MyosEnable(void)
++{
++}
++
++static Bool MyosSpecialKey(KeySym sym)
++{
++	return FALSE;
++}
++
++static void MyosDisable(void)
++{
++}
++
++static void MyosFini(void)
++{
++}
++
++static const KdOsFuncs MyosFuncs = {
++	MyosInit,
++	MyosEnable,
++	MyosSpecialKey,
++	MyosDisable,
++	MyosFini,
++	0
++};
++
++void OsVendorInit(void)
++{
++	KdOsInit(&MyosFuncs);
++}
++
++static Bool MyosMouseInit(void)
++{
++	return TRUE;
++}
++
++static void MyosMouseFini(void)
++{
++}
++
++const KdMouseFuncs MyosMouseFuncs = {
++	MyosMouseInit,
++	MyosMouseFini,
++};
+diff --git a/kdrive/src/kdrive.h b/kdrive/src/kdrive.h
+index a13ffa6..02ac3f7 100644
+--- a/kdrive/src/kdrive.h
++++ b/kdrive/src/kdrive.h
+@@ -383,6 +383,8 @@ void ProcessInputEvents(void);
+ 
+ extern const KdMouseFuncs LinuxMouseFuncs;
+ extern const KdKeyboardFuncs LinuxKeyboardFuncs;
++extern const KdMouseFuncs MyosMouseFuncs;
++extern const KdKeyboardFuncs MyosKeyboardFuncs;
+ 
+ /* kmap.c */
+ 

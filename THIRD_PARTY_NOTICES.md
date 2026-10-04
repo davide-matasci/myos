@@ -42,6 +42,8 @@ under its own license.
 | GNU Make | 4.4.1 | **GPL-3.0-or-later** | https://ftp.gnu.org/gnu/make/ |
 | Lua | 5.4.7 | MIT | https://www.lua.org/ |
 | X client libraries (package `x11-libs`): xorgproto, xtrans, libXau, xcb-proto, libxcb, libX11 | see `packages/x11-libs/versions.env` | MIT / X11-style (X.Org, The Open Group and others; each upstream `COPYING`) | https://www.x.org/releases/individual/ |
+| TinyX `Xfbdev` (package `tinyx`; the X server) | `TINYX_REV` in `packages/tinyx/versions.env` | **GPL-3.0** (TinyX's changes; the X.Org code it started from is MIT/X11) | https://github.com/tinycorelinux/tinyx |
+| libfontenc, libXfont 1.x, libXdmcp's header (linked into / used to build `Xfbdev`) | see `packages/tinyx/versions.env` | MIT / X11-style | https://www.x.org/releases/individual/lib/ |
 | Mbed TLS (TLS for `curl`, `lynx`, `user/tls`) | 3.6.2 | Apache-2.0 OR GPL-2.0-or-later (myos uses it under Apache-2.0) | https://github.com/Mbed-TLS/mbedtls |
 | curl | 8.11.1 | curl license (MIT-style) | https://curl.se/ |
 | Mozilla CA certificate bundle (`/lib/cacert.pem`, from curl.se) | latest at build time | **MPL-2.0** | https://curl.se/docs/caextract.html |
@@ -68,17 +70,19 @@ Files in this repository that carry notices from upstream (kept as required):
 ## Source code for copyleft components
 
 The following programs in the image are under copyleft licenses
-(GPL-2.0-only, GPL-3.0-or-later, LGPL-2.1, MPL-2.0): **Git, Lynx, GNU Make,
-TinyCC, and the Mozilla CA bundle.** (Vim's and Mbed TLS's licenses also allow
+(GPL-2.0-only, GPL-3.0-or-later, GPL-3.0, LGPL-2.1, MPL-2.0): **Git, Lynx,
+GNU Make, TinyCC, TinyX (`Xfbdev`), and the Mozilla CA bundle.** (Vim's and Mbed TLS's licenses also allow
 redistribution; Mbed TLS is used here under its Apache-2.0 option.)
 
 The complete corresponding source for each of them is:
 
 1. the pinned upstream source named in the table above (exact revision or
-   version and, where available, SHA-256 in `ports/<name>/versions.env`), plus
+   version and, where available, SHA-256 in `ports/<name>/versions.env` or
+   `packages/<name>/versions.env`), plus
 2. the myos build scripts and patches in this repository, at the git commit
-   from which the image was built (`ports/<name>/`, `scripts/`,
-   `toolchain/`).
+   from which the image was built (`ports/<name>/`, `packages/<name>/`,
+   `scripts/`, `toolchain/`). The TinyX patches (`packages/tinyx/*.myos.patch`,
+   the new `kdrive/myos` files among them) are under TinyX's license.
 
 If you received a myos image or ISO from the maintainers and would like these
 sources on a physical medium, or cannot download them from the locations above,
