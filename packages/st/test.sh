@@ -1,9 +1,9 @@
 # st, installed as a package, on Xfbdev (the tinyx package), without a
 # window manager: st starts a shell on a pty; st_smoke gives st's window the
 # focus, as a window manager would, and sees the shell's first line (lit
-# pixels in the screen's top left, st_smoke.c); the host types a line through the QEMU
-# monitor, st writes it to the pty and the shell saves it with st's TERM;
-# st exits with it.
+# pixels in the screen's top left, st_smoke.c); the host types a line
+# through the QEMU monitor, st writes it to the pty and the shell saves it
+# with st's TERM; st exits with it.
 
 st_run() {
 	Xfbdev :0 -br > /tmp/st-server.log 2>&1 &
