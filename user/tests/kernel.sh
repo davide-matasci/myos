@@ -123,6 +123,25 @@ keymap_ctl() {
 }
 t keymap keymap_ctl
 
+# The board description (docs/pci-acpi-smp.md): one line per component,
+# each ending in the source it came from. The CPUs and the interrupt
+# controller are always there; the console UART and the PCIe host bridge
+# too, except on a PC, whose arch does not need them described (QEMU's
+# `pc` has no SPCR and no MCFG); no component reads differently from the
+# two sources.
+platform() {
+	cat /proc/platform
+	grep -q '^source [a-z+]*$' /proc/platform || return 1
+	grep -q '^cpus [0-9]* ([a-z]*)$' /proc/platform || return 1
+	grep -q '^intc [a-z0-9]* 0x[0-9a-f]* ' /proc/platform || return 1
+	if ! grep -q '^intc apic ' /proc/platform; then
+		grep -q '^uart [a-z0-9]* 0x[0-9a-f]* ' /proc/platform || return 1
+		grep -q '^pci ecam 0x[0-9a-f]* 0x[0-9a-f]* bus [0-9]*-[0-9]* (' /proc/platform || return 1
+	fi
+	! grep -q 'differs' /proc/platform
+}
+t platform platform
+
 # A module's character device is a directory: the NIC's `data` is the
 # device, its `ctl` names the MAC and whether its interrupt works.
 net_ctl() {

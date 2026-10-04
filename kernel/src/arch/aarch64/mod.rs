@@ -59,30 +59,40 @@ pub fn ap_init(logical: usize) {
     crate::user::ap_init();
 }
 
-/// GICv2 `compatible` strings (QEMU `virt`: `arm,cortex-a15-gic`).
-const GIC_COMPAT: &[&str] = &["arm,cortex-a15-gic", "arm,gic-400", "arm,cortex-a9-gic"];
+/// The ACPI tables describe the platform when the firmware has them (EDK2);
+/// the device tree fills in the rest.
+pub const PREFER_ACPI: bool = true;
 
-/// Take the board's device bases from the device tree: the GICv2
+/// Take the board's device bases from the platform description: the GICv2
 /// distributor and CPU interface, the PL011 console, the PL031 RTC and the
-/// PCIe host bridge (ECAM, bus range, 32-bit MMIO window). Required: no
-/// tree, no boot. Returns the board model for the boot log.
-pub fn apply_dt() -> Result<Option<&'static str>, &'static str> {
-    if crate::dt::get().is_none() {
-        return Err("no device tree from the bootloader");
+/// PCIe host bridge (ECAM, bus range, 32-bit MMIO window). Required: a
+/// board the description does not cover does not boot.
+pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str> {
+    use crate::platform::{Intc, UartKind};
+    if p.source.is_none() {
+        return Err("no ACPI tables and no device tree from the bootloader");
     }
-    let (gicd, _) = crate::dt::reg(GIC_COMPAT, 0).ok_or("device tree: no GICv2 distributor")?;
-    let (gicc, _) = crate::dt::reg(GIC_COMPAT, 1).ok_or("device tree: no GICv2 CPU interface")?;
-    interrupts::set_gic(gicd as usize, gicc as usize);
-    let (uart, _) = crate::dt::reg(&["arm,pl011"], 0).ok_or("device tree: no PL011 UART")?;
-    serial::set_base(uart as usize);
-    if let Some((rtc, _)) = crate::dt::reg(&["arm,pl031"], 0) {
-        clock::set_rtc_base(rtc as usize);
+    match p.intc.map(|c| c.value) {
+        Some(Intc::GicV2 { gicd, gicc }) => interrupts::set_gic(gicd as usize, gicc as usize),
+        Some(Intc::GicV3 { .. }) => return Err("platform: GICv3 is not supported yet"),
+        _ => return Err("platform: no GICv2"),
     }
-    let host = crate::dt::pci_host().ok_or("device tree: no PCIe host bridge")?;
-    let (mmio, mmio_size) = crate::dt::pci_mmio_window(crate::dt::PCI_SPACE_MEM32)
-        .ok_or("device tree: PCIe host bridge has no 32-bit MMIO range")?;
-    pci::set_host(host.ecam_base, host.ecam_size, host.bus_end, mmio, mmio_size);
-    Ok(crate::dt::model())
+    match p.uart.map(|c| c.value) {
+        Some(uart) if uart.kind == UartKind::Pl011 && !uart.io => {
+            serial::set_base(uart.base as usize)
+        }
+        _ => return Err("platform: no PL011 UART"),
+    }
+    if let Some(rtc) = p.rtc {
+        clock::set_rtc_base(rtc.value.base as usize);
+    }
+    let host = p.pci.ok_or("platform: no PCIe host bridge")?.value;
+    let (mmio, mmio_size) = p
+        .pci_windows
+        .and_then(|w| w.value.mmio32)
+        .ok_or("platform: PCIe host bridge has no 32-bit MMIO range")?;
+    pci::set_host(host.ecam, host.ecam_size, host.bus_end, mmio, mmio_size);
+    Ok(())
 }
 
 /// A GICv2 interrupt specifier (`type, number, flags`): SPI `n` is INTID
