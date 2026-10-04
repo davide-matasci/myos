@@ -189,7 +189,12 @@ fine because every caller re-checks. `WAIT_ANY` waiters (`SYS_POLL`,
 `SYS_NANOSLEEP` with `SLEEP_ANY_EVENT`, the Linux `ppoll`) are woken by
 every wake and by `wake_any` after device/file writes, the last close of a
 module file and exits — that is what lets `poll` and `netd` sleep instead of
-spinning on `gettimeofday`.
+spinning on `gettimeofday`. `wake_any` skips the task scan when no `WAIT_ANY`
+waiter is registered, but bumps the sequence first, and `block_until`
+registers a `WAIT_ANY` waiter before it checks the sequence: either the
+producer sees the waiter or the waiter sees the bump. (Before, a unix-socket
+write landing between a poller's scan and its registration was missed until
+some other event: the X server then left a client's requests unanswered.)
 
 `SYS_POLL` (`poll(fds, nfds, timeout_ms)`, `sys_poll`) scans a `struct
 pollfd` array with `task::fd_poll` and sleeps on `WAIT_ANY` until the first
