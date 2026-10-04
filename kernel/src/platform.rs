@@ -64,6 +64,11 @@ pub struct Uart {
     pub io: bool,
     /// Its interrupt, as the interrupt controller numbers it.
     pub irq: Option<u32>,
+    /// A 16550's register stride (`reg-shift`: register `n` at
+    /// `base + (n << reg_shift)`) and access width in bytes (`reg-io-width`,
+    /// the SPCR's access size); 0 and 1 for the classic byte-wide layout.
+    pub reg_shift: u8,
+    pub reg_width: u8,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -228,11 +233,21 @@ fn fill_acpi(p: &mut Platform) {
             _ => None,
         };
         if let Some(kind) = kind {
+            // A 16550's GAS access size: 1 byte, 2 word, 3 dword; the stride
+            // follows it (a 32-bit 16550 has its registers 4 bytes apart). A
+            // PL011's registers have one layout.
+            let reg_width: u8 = match (kind, s.access) {
+                (UartKind::Ns16550, 2) => 2,
+                (UartKind::Ns16550, 3) => 4,
+                _ => 1,
+            };
             let uart = Uart {
                 kind,
                 base: s.base,
                 io: s.io,
                 irq: (s.gsiv != 0).then_some(s.gsiv),
+                reg_shift: reg_width.trailing_zeros() as u8,
+                reg_width,
             };
             offer(&mut p.uart, uart, from, &mut p.differs, DIFFERS_UART);
         }
@@ -368,6 +383,9 @@ pub fn text() -> alloc::vec::Vec<u8> {
         s += &format!("uart {kind} {}0x{:x}", if u.io { "io " } else { "" }, u.base);
         if let Some(irq) = u.irq {
             s += &format!(" irq {irq}");
+        }
+        if u.reg_shift != 0 || u.reg_width != 1 {
+            s += &format!(" shift {} width {}", u.reg_shift, u.reg_width);
         }
         s += &format!(" {}\n", tag(c.from, DIFFERS_UART));
     }

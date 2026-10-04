@@ -122,6 +122,10 @@ jobs:
           - id: aarch64
             args: aarch64 test-full
             required: true
+          - id: aarch64-gicv3
+            args: aarch64 test-full
+            gic: "3"
+            required: true
           - id: riscv64
             args: riscv64 test-full
             required: true
@@ -149,6 +153,9 @@ jobs:
         continue-on-error: ${{ !matrix.required }}
         env:
           MYOS_SKIP_KERNEL_REBUILD: "1"
+          # The aarch64 boots' GIC version (2 when unset): the launcher
+          # dumps the matching device tree into the ESP before each boot.
+          MYOS_AARCH64_GIC: ${{ matrix.gic }}
         run: ./target/debug/myos ${{ matrix.args }}
 
   boot-mini:
@@ -178,6 +185,10 @@ jobs:
           - id: aarch64
             args: aarch64 test-mini
             required: true
+          - id: aarch64-gicv3
+            args: aarch64 test-mini
+            gic: "3"
+            required: true
           - id: riscv64
             args: riscv64 test-mini
             required: true
@@ -205,6 +216,9 @@ jobs:
         continue-on-error: ${{ !matrix.required }}
         env:
           MYOS_SKIP_KERNEL_REBUILD: "1"
+          # The aarch64 boots' GIC version (2 when unset): the launcher
+          # dumps the matching device tree into the ESP before each boot.
+          MYOS_AARCH64_GIC: ${{ matrix.gic }}
         run: ./target/debug/myos ${{ matrix.args }}
 
   iso:

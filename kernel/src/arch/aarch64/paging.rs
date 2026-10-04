@@ -1,7 +1,7 @@
 //! Map device MMIO on TTBR0. Limine already owns TTBR1 (higher half + HHDM).
 //!
 //! Base revision 3+ HHDM does not include device MMIO, so the UART, the
-//! GICv2 and the PCIe windows (addresses from the device tree) need their
+//! GIC and the PCIe windows (addresses from the device tree) need their
 //! own identity map. TTBR0 is unspecified at handoff and free for the
 //! kernel.
 
