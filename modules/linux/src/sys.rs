@@ -287,6 +287,34 @@ pub fn close(fd: usize) -> R {
     if task::fd_close(fd) { Ok(0) } else { Err(EBADF) }
 }
 
+/// `ftruncate(fd, len)`. The VFS cuts a file only to nothing (an `O_TRUNC`
+/// open of it): a longer length is a zero written at its end, a shorter
+/// non-zero one is refused.
+pub fn ftruncate(fd: usize, len: usize) -> R {
+    const O_WRONLY: usize = 1;
+    const O_TRUNC: usize = 0o1000;
+    let path = files::get(fd).filter(|e| !e.dir && e.sock.is_none()).ok_or(EINVAL)?.path;
+    let real = real_path(&path)?;
+    let size = fs::stat(&real).ok_or(EBADF)?.size as usize;
+    if len == 0 && size != 0 {
+        let t = native(user::open_path(&path, O_WRONLY | O_TRUNC), EIO)?;
+        task::fd_close(t);
+    } else if len > size {
+        fs::write(&real, len - 1, &[0]).ok_or(EIO)?;
+    } else if len != 0 && len < size {
+        return Err(EINVAL);
+    }
+    Ok(0)
+}
+
+pub fn truncate(path: usize, len: usize) -> R {
+    const O_WRONLY: usize = 1;
+    let fd = openat(AT_FDCWD, path, O_WRONLY)?;
+    let r = ftruncate(fd, len);
+    close(fd).ok();
+    r
+}
+
 fn put_stat(buf: usize, st: &fs::StatInfo) -> R {
     put(buf, &super::arch::stat_bytes(st.mode, st.size as u64, st.ino as u64, st.nlink as u64, st.dev as u64))?;
     Ok(0)
@@ -499,6 +527,12 @@ pub fn fcntl(fd: usize, cmd: usize, arg: usize) -> R {
     const F_SETFD: usize = 2;
     const F_GETFL: usize = 3;
     const F_SETFL: usize = 4;
+    const F_GETLK: usize = 5;
+    const F_SETLK: usize = 6;
+    const F_SETLKW: usize = 7;
+    const F_OFD_GETLK: usize = 36;
+    const F_OFD_SETLK: usize = 37;
+    const F_OFD_SETLKW: usize = 38;
     const F_DUPFD_CLOEXEC: usize = 1030;
     if task::fd_kind(fd).is_none() {
         return Err(EBADF);
@@ -524,6 +558,13 @@ pub fn fcntl(fd: usize, cmd: usize, arg: usize) -> R {
             let sock = files::get(fd).and_then(|e| e.sock).is_some_and(|s| s.nonblock);
             Ok(2 | if sock || files::nonblock(fd) { O_NONBLOCK } else { 0 }) // O_RDWR
         }
+        // Record locks are granted and not kept (see `flock`): F_GETLK
+        // always finds the range free (`l_type` = F_UNLCK).
+        F_GETLK | F_OFD_GETLK => {
+            put(arg, &2i16.to_le_bytes())?;
+            Ok(0)
+        }
+        F_SETLK | F_SETLKW | F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
         _ => Err(EINVAL),
     }
 }
@@ -616,6 +657,16 @@ pub fn mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, off: 
 
 /// `pread64(fd, buf, count, offset)`: a read at `offset` that leaves the
 /// file position alone.
+/// `flock`: granted and not kept. myos has no file locks; a lock taken by
+/// cargo, SQLite or git against another copy of itself is all this skips.
+pub fn flock(fd: usize) -> R {
+    if task::fd_kind(fd).is_none() {
+        Err(EBADF)
+    } else {
+        Ok(0)
+    }
+}
+
 pub fn pread(fd: usize, buf: usize, count: usize, off: usize) -> R {
     let mut tmp = alloc::vec![0u8; count.min(1 << 20)];
     let n = task::fd_pread(fd, off, &mut tmp).ok_or(ESPIPE)?;

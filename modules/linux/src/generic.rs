@@ -18,10 +18,13 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         24 => ret(sys::dup3(a[0], a[1], false, a[2])),
         25 => ret(sys::fcntl(a[0], a[1], a[2])),
         29 => ret(sys::ioctl(a[0], a[1], a[2])),
+        32 => ret(sys::flock(a[0])),
         34 => ret(sys::mkdirat(a[0], a[1])),
         35 => ret(sys::unlinkat(a[0], a[1], a[2])),
         36 => ret(sys::symlinkat(a[0], a[1], a[2])),
         38 | 276 => ret(sys::renameat(a[0], a[1], a[2], a[3])), // renameat, renameat2
+        45 => ret(sys::truncate(a[0], a[1])),
+        46 => ret(sys::ftruncate(a[0], a[1])),
         48 | 439 => ret(sys::faccessat(a[0], a[1])),          // faccessat, faccessat2
         49 => ret(sys::chdir(a[0])),
         50 => ret(sys::fchdir(a[0])),

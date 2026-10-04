@@ -193,9 +193,10 @@ Files: `read`, `write`, `readv`, `writev`, `open`, `openat`, `close`, `stat`,
 `lstat`, `fstat`, `newfstatat`, `lseek`, `getdents64`, `ioctl` (the tty
 requests from the terminal's ctl file, `docs/tty.md`; `FIONBIO` on sockets;
 the console keymap and module devices natively), `access`,
-`faccessat`, `pipe`, `pipe2`, `dup`, `dup2`, `dup3`, `fcntl` (dup;
-`O_NONBLOCK` on sockets, other flags are no-ops), `getcwd`, `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`,
-`rename(at/at2)`, `symlink(at)`, `readlink(at)`, `poll`, `umask`.
+`faccessat`, `pipe`, `pipe2`, `eventfd(2)`, `dup`, `dup2`, `dup3`, `fcntl`
+(dup, fd flags, record locks), `flock`, `truncate`, `ftruncate`, `getcwd`,
+`chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`, `rename(at/at2)`,
+`symlink(at)`, `readlink(at)`, `poll`, `umask`.
 
 Memory: `brk`, `mmap` (anonymous, and private file mappings), `munmap`,
 `mprotect`, `madvise` (no-op). Files also: `pread64`.
@@ -330,6 +331,13 @@ the kernel does not keep a per-task copy at syscall entry.
   successful exec closes the close-on-exec fds (the `on_exec` hook), and a
   non-blocking pipe end that would block gives `EAGAIN` (from the core's
   pipe readiness, as libgloss does for native programs).
+- An eventfd is a pipe (its write end kept aside): a non-zero write wakes
+  a reader, a read returns how many writes it collected. No semaphore mode
+  and no initial value.
+- File locks (`flock`, `fcntl` record locks) are granted and not kept:
+  myos has none, and a lock only guards against another copy of the same
+  program (cargo, SQLite, git). `ftruncate` cuts a file to nothing or
+  grows it; a shorter non-zero length is refused (`EINVAL`).
 - Sockets: IPv4 clients only (no `listen`/`accept`, no IPv6, no Unix
   sockets or `socketpair`); no half-close (`shutdown` hangs up only for
   `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are
