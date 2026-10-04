@@ -315,6 +315,16 @@ pub fn truncate(path: usize, len: usize) -> R {
     r
 }
 
+/// `madvise`: `MADV_DONTNEED` drops the pages (they read as zero, or as
+/// the file, next time: allocators count on it); other advice is ignored.
+pub fn madvise(addr: usize, len: usize, advice: usize) -> R {
+    const MADV_DONTNEED: usize = 4;
+    if advice == MADV_DONTNEED && !task::mmap_discard(addr, len) {
+        return Err(EINVAL);
+    }
+    Ok(0)
+}
+
 /// `fsync`, `fdatasync`, `fchmod`, `fchown`: done once `fd` is valid.
 /// myos keeps no owners or permission bits, and ext2 writes a file's
 /// cached blocks back when its last fd closes.

@@ -1458,6 +1458,33 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     va
 }
 
+/// `madvise(MADV_DONTNEED)`: free the frames of `[addr, addr + len)` in the
+/// mmap window but keep its regions, so a page reads as new on its next
+/// touch (`fault_in`: zeroed, or from the file). Allocators release memory
+/// this way and count on it reading as zero afterwards. A device's pages
+/// stay.
+pub(crate) fn mmap_discard(addr: usize, len: usize) -> bool {
+    if addr % PAGE != 0 {
+        return false;
+    }
+    let pages = len.div_ceil(PAGE);
+    let (base, _span, stack_off) = task::current_user_map();
+    let area_lo = mmap_base_va(base, stack_off) as usize;
+    let area_hi = mmap_limit_va(base, stack_off) as usize;
+    if addr < area_lo || addr.saturating_add(pages * PAGE) > area_hi {
+        return false;
+    }
+    let aspace = task::current_aspace();
+    for i in 0..pages {
+        let va = addr + i * PAGE;
+        if task::mmap_backing(va).is_some_and(|(prot, _)| prot & task::MMAP_DEVICE == 0) {
+            free_mapped_page(aspace, va as u64);
+        }
+    }
+    flush_user_tlb();
+    true
+}
+
 pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     if addr % PAGE != 0 || len == 0 {
         return SYSERR;

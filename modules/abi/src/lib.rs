@@ -10,7 +10,8 @@
 /// ioctl, a device's state is its `ctl` file and `poll` says when it is ready.
 /// 20 added [`ModuleVfsOps::open`] (a file one program holds at a time).
 /// 21 added [`KernelApi::fork_from`] (posix_spawn's child on its own stack).
-pub const ABI_VERSION: u32 = 21;
+/// 22 added [`KernelApi::mmap_discard`] (`madvise(MADV_DONTNEED)`).
+pub const ABI_VERSION: u32 = 22;
 
 /// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
 pub const MYOS_WAIT_ANY: usize = usize::MAX;
@@ -632,6 +633,11 @@ pub struct KernelApi {
     /// Fork, the child resuming like the caller of the syscall in `regs`
     /// (result 0) on stack `sp`: its pid, or negative.
     pub fork_from: unsafe extern "C" fn(regs: *mut u64, sp: usize) -> i32,
+    // --- ABI 22 ---
+    /// Drop the pages of `[addr, addr + len)` in the caller's mmap window:
+    /// they read as new on the next touch (zero, or the file's contents).
+    /// 0, or negative when the range is outside the window.
+    pub mmap_discard: unsafe extern "C" fn(addr: usize, len: usize) -> i32,
 }
 
 /// A memory-mapped device from the device tree (`KernelApi::dt_mmio_find`).

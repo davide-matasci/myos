@@ -200,7 +200,9 @@ the console keymap and module devices natively), `access`,
 `symlink(at)`, `readlink(at)`, `poll`, `umask`.
 
 Memory: `brk`, `mmap` (anonymous, and private file mappings), `munmap`,
-`mprotect`, `madvise` (no-op). Files also: `pread64`, `pwrite64`,
+`mprotect`, `madvise` (`MADV_DONTNEED` drops the pages, which read as
+zero or as their file next time, as allocators such as rustc's Scudo
+expect; other advice is ignored). Files also: `pread64`, `pwrite64`,
 `pwritev(2)`.
 
 Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve`,

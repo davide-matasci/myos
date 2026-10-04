@@ -66,7 +66,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
             task::yield_now();
             0
         }
-        28 => 0, // madvise
+        28 => ret(sys::madvise(a[0], a[1], a[2])),
         32 => ret(sys::dup(a[0], 0)),
         33 => ret(sys::dup3(a[0], a[1], true, 0)), // dup2
         35 => ret(sys::nanosleep(a[0], false)),
