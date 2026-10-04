@@ -30,6 +30,7 @@ MYOS_VIM_VERSION="$MYOS_ROOT/target/.myos-vim-version"
 MYOS_NCURSES_VERSION="$MYOS_ROOT/target/.myos-ncurses-version"
 MYOS_X11_LIBS_VERSION="$MYOS_ROOT/target/.myos-x11-libs-version"
 MYOS_TINYX_VERSION="$MYOS_ROOT/target/.myos-tinyx-version"
+MYOS_DWM_VERSION="$MYOS_ROOT/target/.myos-dwm-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
@@ -694,6 +695,30 @@ myos_tinyx_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/xfbdev-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/tinyx-smoke-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_dwm_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_x11_libs_version_hash
+      find "$(myos_port_dir dwm)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_dwm_is_current() {
+  local arch
+  [[ -f "$MYOS_DWM_VERSION" ]] \
+    && [[ "$(cat "$MYOS_DWM_VERSION")" == "$(myos_dwm_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/dwm-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/dwm-smoke-${arch}-unknown-none" ]] || return 1
   done
 }
 
