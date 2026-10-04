@@ -124,16 +124,20 @@ keymap_ctl() {
 t keymap keymap_ctl
 
 # The board description (docs/pci-acpi-smp.md): one line per component,
-# each ending in the source it came from; the interrupt controller, the
-# console UART and the PCIe host bridge are always there, and no component
-# reads differently from the two sources.
+# each ending in the source it came from. The CPUs and the interrupt
+# controller are always there; the console UART and the PCIe host bridge
+# too, except on a PC, whose arch does not need them described (QEMU's
+# `pc` has no SPCR and no MCFG); no component reads differently from the
+# two sources.
 platform() {
 	cat /proc/platform
 	grep -q '^source \(acpi\|dt\|acpi+dt\)$' /proc/platform || return 1
 	grep -q '^cpus [0-9]* (\(acpi\|dt\))$' /proc/platform || return 1
 	grep -q '^intc \(apic\|gicv2\|gicv3\|plic\) 0x' /proc/platform || return 1
-	grep -q '^uart \(pl011\|ns16550\) ' /proc/platform || return 1
-	grep -q '^pci ecam 0x[0-9a-f]* 0x[0-9a-f]* bus [0-9]*-[0-9]* (' /proc/platform || return 1
+	if ! grep -q '^intc apic ' /proc/platform; then
+		grep -q '^uart \(pl011\|ns16550\) ' /proc/platform || return 1
+		grep -q '^pci ecam 0x[0-9a-f]* 0x[0-9a-f]* bus [0-9]*-[0-9]* (' /proc/platform || return 1
+	fi
 	! grep -q 'differs' /proc/platform
 }
 t platform platform

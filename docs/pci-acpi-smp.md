@@ -73,7 +73,8 @@ PL011 and a PCIe host bridge with a 32-bit MMIO window; riscv64 a PLIC, a
 16550, the timebase and a host bridge with a 64-bit window; x86_64
 nothing (the LAPIC base comes from its MSR, the console from COM1, PCI
 configuration space from port 0xCF8), so a PC without ACPI tables boots
-too. A missing source or component stops the boot with `fatal: platform:
+too (QEMU's `pc` machine publishes neither an SPCR nor an MCFG: its
+description is the CPUs and the LAPIC). A missing source or component stops the boot with `fatal: platform:
 ...` on the UART at QEMU `virt`'s address (the one assumption left, so
 the message has somewhere to go).
 
