@@ -707,6 +707,7 @@ myos_tinyx_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/xfbdev-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/tinyx-smoke-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/startx-${arch}-unknown-none" ]] || return 1
   done
 }
 

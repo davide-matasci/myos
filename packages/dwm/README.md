@@ -6,9 +6,11 @@ an X server without a mouse.
 
 ```sh
 get-myos x11-libs tinyx x11-xft x11-fonts dwm
-Xfbdev :0 -br &
-DISPLAY=:0 dwm &
+startx
 ```
+
+`startx` (the tinyx package) runs the server and dwm, and stops the server
+when dwm quits (Alt+Shift+Q).
 
 The stock configuration (`config.def.h`): Alt is the modifier, Alt+B toggles
 the bar, Alt+J/K move the focus, Alt+Return zooms, Alt+Shift+C closes a

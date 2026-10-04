@@ -27,8 +27,9 @@ statically.
    locale data, which x11-libs does not ship yet). Then `dmenu` (Alt+P), on
    Xft too.
    More fonts (a proportional DejaVu Sans) when a client wants them.
-3. **xinit / startx**: start the server and a session (a window manager
-   and a terminal) together.
+3. **A session file**: `startx` (`packages/tinyx`) runs the server and one
+   client (dwm); a `~/.xinitrc`-like script to start a terminal next to the
+   window manager once there is a terminal.
 
 Gaps that may show up on the way:
 
