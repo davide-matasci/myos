@@ -3,6 +3,9 @@
 
 #include <stddef.h>
 
+struct termios;
+struct winsize;
+
 /* Per-process fd table size (kernel/src/task/mod.rs MAX_FDS). */
 #define MYOS_MAX_FDS 64
 
@@ -92,9 +95,21 @@ long myos_syscall1(long nr, long a0);
 long myos_syscall2(long nr, long a0, long a1);
 long myos_syscall3(long nr, long a0, long a1, long a2);
 
+/* The terminal behind an fd, through its files (ttyctl.c, docs/tty.md). */
+#define MYOS_TTY_PATH 64
+#define MYOS_TTY_CTL 256
 int myos_fd_is_tty(int fd);
-void myos_fd_set_tty(int fd, int on);
-void myos_fd_dup_tty(int oldfd, int newfd);
+/* The directory of the terminal `fd` is open on (/dev/console, /dev/pts/N)
+ * into `dir`, `*master` set when the fd is a pty's master end; -1 with
+ * ENOTTY when it is not a terminal. `dir` and `master` may be NULL. */
+int myos_tty_dir(int fd, char *dir, size_t cap, int *master);
+/* Read the terminal's termios and/or window size (either may be NULL). */
+int myos_tty_get(int fd, struct termios *t, struct winsize *w);
+/* Write the termios, or the window size, to the terminal. */
+int myos_tty_set(int fd, const struct termios *t);
+int myos_tty_set_winsize(int fd, unsigned rows, unsigned cols);
+/* Write lines to the terminal's ctl (`ctty`, `flush`, `winsize`). */
+int myos_tty_write(int fd, const char *text);
 
 void myos_fd_path_set(int fd, const char *path);
 const char *myos_fd_path_get(int fd);

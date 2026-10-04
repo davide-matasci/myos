@@ -20,6 +20,7 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/mmap.c \
 	%D%/fd_path.c \
 	%D%/termios.c \
+	%D%/ttyctl.c \
 	%D%/socket.c \
 	%D%/inet.c \
 	%D%/netdb.c \

@@ -105,6 +105,13 @@ pty_clone() {
 }
 t pty_clone pty_clone
 
+# isatty through the libc (the /proc/self/fd link, no ioctl): the shell's
+# stdin is the console, its captured stdout a file.
+isatty_fds() {
+	[ -t 0 ] && ! [ -t 1 ]
+}
+t isatty isatty_fds
+
 linux_loaded() {
 	grep -q "^linux$" /proc/modules
 }

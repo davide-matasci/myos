@@ -10,10 +10,15 @@ _start:
     movq %r12, %rdi
     movq %r13, %rsi
     call main
+    // main's return goes through newlib's exit: the atexit handlers and
+    // the stdio flush, which a file or pipe on stdout needs (a terminal
+    // is line buffered). exit does not return; the raw syscall is a guard.
     movl %eax, %edi
+    call exit
     movl $1, %eax
     syscall
 
     .globl myos_init_environ
     .globl myos_libc_init
     .extern main
+    .extern exit

@@ -12,11 +12,15 @@ void sync(void) {
 }
 
 char *ttyname(int fd) {
-    if (isatty(fd)) {
-        return "/dev/console";
+    static char name[MYOS_TTY_PATH];
+    int master;
+
+    if (myos_tty_dir(fd, name, sizeof name - 5, &master) != 0 || master) {
+        errno = ENOTTY;
+        return NULL;
     }
-    errno = ENOTTY;
-    return NULL;
+    strcat(name, "/data");
+    return name;
 }
 
 char *getpass(const char *prompt) {

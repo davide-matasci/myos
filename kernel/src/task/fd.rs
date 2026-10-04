@@ -409,8 +409,7 @@ pub fn fd_pipe_peer(fd: usize) -> Option<usize> {
     })
 }
 
-/// Open `/dev/pts/clone` (or the old `/dev/ptmx`): allocate a pty pair,
-/// take the master fd.
+/// Open `/dev/pts/clone`: allocate a pty pair, take the master fd.
 pub fn fd_open_pty_master() -> Option<usize> {
     let id = crate::pty::alloc()?;
     let out = with_process_mut(|t| {

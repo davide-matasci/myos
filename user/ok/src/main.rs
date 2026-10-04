@@ -335,61 +335,74 @@ fn smoke_signal() {
     }
 }
 
-fn smoke_ioctl() {
-    const TIOCGWINSZ: usize = 0x5413;
-    let mut ws = [0u16; 4];
-
-    // Prefer /dev/tty; also exercise Console fd 1.
-    // Winsize is FB character cells when a framebuffer is present (else 24×80).
-    let tty_fd = open(b"/dev/tty");
-    let fd = tty_fd.unwrap_or(1);
-    if ioctl(fd, TIOCGWINSZ, ws.as_mut_ptr() as usize) == usize::MAX
-        || ws[0] == 0
-        || ws[1] == 0
-    {
-        if tty_fd.is_some() {
-            close(fd);
+fn smoke_tty() {
+    // The console through its files (docs/tty.md): init has no controlling
+    // terminal yet, but its fd 1 is the console, so /proc/self/fd/1 names
+    // /dev/console/data; the console's ctl has a window size, and /dev/null
+    // is not a terminal.
+    let mut path = [0u8; 80];
+    let Some(mut n) = readlink(b"/proc/self/fd/1", &mut path[..64]) else {
+        status_fail("tty link");
+        return;
+    };
+    if !path[..n].ends_with(b"/data") {
+        status_fail("tty link data");
+        return;
+    }
+    n -= 4;
+    path[n..n + 3].copy_from_slice(b"ctl");
+    n += 3;
+    let Some(fd) = open(&path[..n]) else {
+        status_fail("tty ctl open");
+        return;
+    };
+    let mut text = [0u8; 512];
+    let mut len = 0;
+    loop {
+        let got = read(fd, &mut text[len..]);
+        if got == 0 || got == usize::MAX || len + got >= text.len() {
+            break;
         }
-        status_fail("ioctl tty fail");
-        return;
+        len += got;
     }
-    if let Some(fd) = tty_fd {
-        close(fd);
-    }
-
-    let mut ws1 = [0u16; 4];
-    if ioctl(1, TIOCGWINSZ, ws1.as_mut_ptr() as usize) == usize::MAX
-        || ws1[0] != ws[0]
-        || ws1[1] != ws[1]
-    {
-        status_fail("ioctl fd1 fail");
+    close(fd);
+    // `winsize ROWS COLS`, both nonzero.
+    let Some(line) = text[..len]
+        .split(|&b| b == b'\n')
+        .find_map(|l| l.strip_prefix(b"winsize "))
+    else {
+        status_fail("tty ctl winsize");
         return;
+    };
+    let mut nums = line.split(|&b| b == b' ').map(|w| {
+        w.iter().fold(Some(0u32), |acc, &d| {
+            acc.and_then(|v| d.is_ascii_digit().then(|| v * 10 + (d - b'0') as u32))
+        })
+    });
+    match (nums.next(), nums.next()) {
+        (Some(Some(rows)), Some(Some(cols))) if rows > 0 && cols > 0 => {}
+        _ => {
+            status_fail("tty ctl winsize");
+            return;
+        }
     }
 
     let Some(dn) = open(b"/dev/null") else {
-        status_fail("ioctl null open fail");
+        status_fail("tty null open");
         return;
     };
-    let r = ioctl(dn, TIOCGWINSZ, ws.as_mut_ptr() as usize);
+    let mut link = *b"/proc/self/fd/\0\0\0";
+    link[14] = b'0' + (dn / 10) as u8;
+    link[15] = b'0' + (dn % 10) as u8;
+    let mut target = [0u8; 64];
+    let m = readlink(&link[..16], &mut target).unwrap_or(0);
     close(dn);
-    if r != usize::MAX {
-        status_fail("ioctl null should fail");
+    if m == 0 || target[..m].ends_with(b"/data") {
+        status_fail("tty null is no terminal");
         return;
     }
 
-    let Some((rfd, wfd)) = pipe() else {
-        status_fail("ioctl pipe open fail");
-        return;
-    };
-    let r = ioctl(rfd, TIOCGWINSZ, ws.as_mut_ptr() as usize);
-    close(rfd);
-    close(wfd);
-    if r != usize::MAX {
-        status_fail("ioctl pipe should fail");
-        return;
-    }
-
-    status_ok("ioctl");
+    status_ok("tty");
 }
 
 fn smoke_proc(buf: &mut [u8]) {
@@ -446,7 +459,7 @@ fn main() -> ! {
     smoke_disk();
     smoke_vfs();
     smoke_tmp_dev();
-    smoke_ioctl();
+    smoke_tty();
     smoke_signal();
     exit();
 }

@@ -126,20 +126,13 @@ int main(int argc, char **argv) {
     char name[32];
     if (openpty(&m, NULL, name, NULL, NULL) != 0) {
         /* Reproduce step-by-step so the failure names the exact call. */
-        int dm = open("/dev/ptmx", O_RDWR | O_NOCTTY);
-        printf("[ FAIL ] pty openpty (%s); open=%d", strerror(errno), dm);
+        int dm = open("/dev/pts/clone", O_RDWR | O_NOCTTY);
+        printf("[ FAIL ] pty openpty (%s); clone=%d", strerror(errno), dm);
         if (dm >= 0) {
-            unsigned int n = 0;
-            int rc = ioctl(dm, TIOCGPTN, &n);
-            printf(" TIOCGPTN=%d errno=%s", rc, strerror(errno));
-            if (rc == 0) {
-                printf(" n=%u", n);
-                char sp[32];
-                snprintf(sp, sizeof(sp), "/dev/pts/%u", n);
-                int ds = open(sp, O_RDWR | O_NOCTTY);
-                printf(" slave=%d errno=%s", ds, strerror(errno));
-                if (ds >= 0) close(ds);
-            }
+            char link[32], target[64];
+            snprintf(link, sizeof link, "/proc/self/fd/%d", dm);
+            ssize_t n = readlink(link, target, sizeof target - 1);
+            printf(" link=%.*s errno=%s", n < 0 ? 0 : (int)n, target, strerror(errno));
             close(dm);
         }
         printf("\n");
