@@ -563,8 +563,46 @@ pub(super) fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
 }
 
 /// Replace the current image with the ELF at `path` (cwd-relative or
-/// absolute); returns only on failure.
+/// absolute), or run the script there through its `#!` interpreter; returns
+/// only on failure.
 pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> usize {
+    exec_path_depth(path, arg_refs, env_refs, 0)
+}
+
+/// Longest `#!` line read (Linux reads 256 bytes).
+const SHEBANG_MAX: usize = 256;
+
+/// `#!interpreter [arg]`: exec the interpreter with the arg (if any) and the
+/// script's path in front of the script's arguments (`argv[0]` dropped), as
+/// other Unix kernels do. The interpreter has to be a program, not another
+/// script.
+fn exec_script(script: &str, line: &[u8], arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8) -> usize {
+    if depth > 0 {
+        return SYSERR;
+    }
+    let line = &line[..line.len().min(SHEBANG_MAX)];
+    let line = line.split(|&b| b == b'\n').next().unwrap_or(&[]).trim_ascii();
+    let (interp, arg) = match line.iter().position(|b| b.is_ascii_whitespace()) {
+        Some(i) => (&line[..i], line[i..].trim_ascii()),
+        None => (line, &[][..]),
+    };
+    let Ok(interp) = core::str::from_utf8(interp) else {
+        return SYSERR;
+    };
+    if interp.is_empty() {
+        return SYSERR;
+    }
+    let mut args: Vec<&[u8]> = Vec::with_capacity(arg_refs.len() + 2);
+    args.push(interp.as_bytes());
+    if !arg.is_empty() {
+        args.push(arg);
+    }
+    args.push(script.as_bytes());
+    args.extend(arg_refs.iter().skip(1));
+    exec_path_depth(interp, &args, env_refs, depth + 1)
+}
+
+fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
@@ -607,6 +645,9 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
         owned = v;
         &owned
     };
+    if let Some(line) = bytes.strip_prefix(b"#!") {
+        return exec_script(&path, line, arg_refs, env_refs, depth);
+    }
     // A foreign-personality image that is dynamically linked also needs its
     // interpreter (the dynamic linker). Read it before the current image is
     // replaced, so a missing one fails the exec cleanly.

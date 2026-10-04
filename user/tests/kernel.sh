@@ -1,5 +1,5 @@
 # The kernel's own tests: what has no port directory of its own. The exec
-# limits, and the Linux compatibility layer (docs/linux-compat.md): its
+# limits, #! scripts, and the Linux compatibility layer (docs/linux-compat.md): its
 # module is in every image and loaded at boot when the image was built with
 # the feature (`--features linux_compat`), with the musl test programs.
 
@@ -15,6 +15,24 @@ exec_limits() {
 	[ $# -eq 40 ] && [ ${#Y} -eq 711 ]
 }
 t exec_limits exec_limits
+
+# #! scripts: exec runs the interpreter with the script's path in front of
+# its arguments, and the line's one argument before that; a missing
+# interpreter fails the exec. sbase env execs them itself (the shell would
+# fall back to running them on its own).
+exec_script() {
+	printf '#!/bin/sh\necho "$0 $*"\n' > /tmp/script1
+	printf '#!/bin/sh -e\nfalse\necho not reached\n' > /tmp/script2
+	printf '#!/nonexistent/sh\necho no\n' > /tmp/script3
+	out=$(/bin/sbase/env /tmp/script1 a b)
+	echo "script1: $out"
+	[ "$out" = "/tmp/script1 a b" ] || return 1
+	out=$(/bin/sbase/env /tmp/script2)
+	echo "script2: $out"
+	[ -z "$out" ] || return 1
+	! /bin/sbase/env /tmp/script3 > /dev/null 2>&1
+}
+t exec_script exec_script
 
 # One open file description per open, shared by a fork's and a dup's copies
 # of the fd (POSIX): a child's writes advance the offset the parent writes
