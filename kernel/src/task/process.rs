@@ -6,6 +6,7 @@
 //! starts and freed when its slot is recycled.
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 use super::*;
 
@@ -25,7 +26,6 @@ pub(super) const NO_ROOT: Root = Root { buf: [0; ROOT_CAP], len: 0 };
 
 /// Per-process state (see the module doc). Only the leader slot of a
 /// process has one; its threads reach it through `Task::tgid`.
-#[derive(Clone, Copy)]
 pub(super) struct Process {
     pub fds: [FdEntry; MAX_FDS],
     pub user_base: u64,
@@ -41,8 +41,9 @@ pub(super) struct Process {
     /// Absolute cwd (POSIX). Survives exec; copied on fork. Always starts with `/`.
     pub cwd: [u8; 256],
     pub cwd_len: u16,
-    /// The mmap regions (in the window after the brk heap).
-    pub mmap: [MmapRegion; MAX_MMAP_REGIONS],
+    /// The mmap regions (in the window after the brk heap), sorted by
+    /// address, none empty; at most [`MAX_MMAP_REGIONS`].
+    pub mmap: Vec<MmapRegion>,
     /// The files the regions page in from; an entry no region names is free.
     pub mapped_files: [crate::fs::Vnode; MAX_MAPPED_FILES],
     /// Session id (slot of the session leader). Inherited on fork. New
@@ -81,7 +82,7 @@ static EMPTY_PROC: Process = Process {
     exec_name_len: 0,
     cwd: root_cwd_buf(),
     cwd_len: 1,
-    mmap: EMPTY_MMAP,
+    mmap: Vec::new(),
     mapped_files: [crate::fs::Vnode::EMPTY; MAX_MAPPED_FILES],
     sid: 0,
     pgid: 0,
@@ -91,7 +92,8 @@ static EMPTY_PROC: Process = Process {
 };
 
 /// A new, empty process block (heap; never staged on the kernel stack: a
-/// `Process` is several KiB).
+/// `Process` is several KiB). The bitwise copy of [`EMPTY_PROC`] is sound:
+/// its only owning field, the empty `mmap`, allocates nothing.
 pub(super) fn new_process() -> Box<Process> {
     let mut b = Box::<Process>::new_uninit();
     unsafe {
@@ -105,7 +107,10 @@ pub(super) fn new_process() -> Box<Process> {
 pub(super) fn fork_process(src: &Process) -> Box<Process> {
     let mut b = Box::<Process>::new_uninit();
     let mut b = unsafe {
-        core::ptr::copy_nonoverlapping(src, b.as_mut_ptr(), 1);
+        let p = b.as_mut_ptr();
+        core::ptr::copy_nonoverlapping(src, p, 1);
+        // The bitwise copy shares `src`'s region list: give the child its own.
+        core::ptr::write(&raw mut (*p).mmap, src.mmap.clone());
         b.assume_init()
     };
     for fd in b.fds.iter_mut() {

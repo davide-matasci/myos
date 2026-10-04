@@ -185,7 +185,7 @@ pub fn replace_user(
         p.user_argc = user_argc;
         p.user_argv = user_argv;
         p.brk_cur = heap_base_for(user_base, stack_off);
-        p.mmap = EMPTY_MMAP;
+        p.mmap.clear();
         // POSIX exec: ignored signals, the blocked mask and pending signals
         // survive; caught ones revert to SIG_DFL (signal_table_exec below).
     });
@@ -640,12 +640,11 @@ pub fn die() -> ! {
             let span = p.image_span;
             let off = p.stack_off;
             let brk = p.brk_cur;
-            let mmap = p.mmap;
+            let mmap = core::mem::take(&mut p.mmap);
             p.user_base = 0;
             p.image_span = 0;
             p.stack_off = 0;
             p.brk_cur = 0;
-            p.mmap = EMPTY_MMAP;
             if aspace != 0 {
                 out = Some((aspace, base, span, off, brk, mmap));
             }
