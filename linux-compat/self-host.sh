@@ -14,6 +14,7 @@
 # What it does not build yet is copied from this system: the C and std
 # userland the kernel embeds (the std demo programs, c-hello, oksh, getty
 # and login) and `http`, whose TLS library is mbedtls over newlib.
+# docs/linux-compat.md, "Building myos in myos", lists what is missing.
 
 D=$1
 REV=${2:-master}

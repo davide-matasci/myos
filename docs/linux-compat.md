@@ -316,6 +316,42 @@ On x86_64 the callee-saved registers (rbx, rbp, r12-r15) are reported as 0
 in `uc_mcontext` and not restored from it: the handler preserves them, and
 the kernel does not keep a per-task copy at syscall entry.
 
+## Building myos in myos
+
+`linux-compat/self-host.sh DIR [REV]` (in the image as `/lib/self-host.sh`)
+builds the x86_64 kernel inside myos with Alpine's Rust toolchain:
+
+```sh
+mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /disk ext2
+sh /lib/self-host.sh /disk          # REV: the branch to build (master)
+```
+
+It installs Alpine's rust, cargo, rust-src, lld, clang, bash, busybox and
+git into `DIR/alpine` with `get-alpine`, clones (or updates) the source,
+builds `core`, `alloc` and `compiler_builtins` once for
+`x86_64-unknown-none` into Alpine's `rustlib` (Alpine ships them for its
+own target only; the kernel's `build.rs` builds every module and user
+program in a target directory of its own), then runs
+`cargo build -p kernel` under `linux --root`. Each step is skipped when its
+result is already there. The scratch disk needs a few GiB.
+
+Not built there yet, copied from the running system instead: the C and
+`std` programs the kernel embeds (the std demos, c-hello, oksh, getty,
+login) and `http`, whose TLS library is mbedtls over newlib
+(`MYOS_PREBUILT=http` has `kernel/build.rs` take it as it is). Build
+scripts are linked with clang: Alpine's gcc is not position-independent,
+which the Linux layer requires.
+
+Under TCG a first run takes hours: `core` and `alloc` take about 25
+minutes, each module or user program one to three. Known gaps:
+
+- file times: the VFS reports none (`st_mtime` is 0), so cargo does not
+  see a changed source and rebuilds nothing after an update; a fresh
+  `target/` is needed;
+- `http` (mbedtls and newlib: autotools, `make`, `python3`) and the other
+  C programs are not built in myos;
+- non-PIE Linux programs (Alpine's gcc) do not run (see Limits).
+
 ## Limits
 
 - PIE musl binaries only (static-PIE or dynamically linked), no glibc ones
