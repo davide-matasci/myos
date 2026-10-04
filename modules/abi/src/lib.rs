@@ -8,7 +8,8 @@
 /// Bump this when [`KernelApi`] layout or meaning changes. 19 took `fd_ioctl`
 /// out of the table and the ioctl hook out of [`ModuleChrOps`]: there is no
 /// ioctl, a device's state is its `ctl` file and `poll` says when it is ready.
-pub const ABI_VERSION: u32 = 19;
+/// 20 added [`ModuleVfsOps::open`] (a file one program holds at a time).
+pub const ABI_VERSION: u32 = 20;
 
 /// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
 pub const MYOS_WAIT_ANY: usize = usize::MAX;
@@ -120,13 +121,25 @@ pub struct ModuleVfsOps {
     /// write or the last close of one of its files (both wake pollers), the
     /// backend calls `KernelApi::wake_any`.
     pub poll: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> u32>,
+    // --- ABI 20: exclusive files ---
+    /// Optional: an `open(2)` of `path` (not a `dup` or a `fork`): 0 lets it
+    /// through, negative refuses it (a file one program holds at a time).
+    /// `release` follows when the last fd of the file closes.
+    pub open: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
 }
+
+/// [`ModuleVfsOps::read`]: nothing to read yet. A read through an fd waits
+/// until `poll` reports [`MYOS_POLLIN`] (or a signal), then reads again.
+pub const MYOS_READ_WAIT: i32 = -11;
 
 /// `poll(2)` bits (Linux values), for [`ModuleVfsOps::poll`].
 pub const MYOS_POLLIN: u32 = 0x1;
 pub const MYOS_POLLOUT: u32 = 0x4;
 pub const MYOS_POLLERR: u32 = 0x8;
 pub const MYOS_POLLHUP: u32 = 0x10;
+/// [`ModuleVfsOps::poll`]: readiness changes without a wake (a device the
+/// kernel polls, like the keyboard): pollers re-check the file every 10 ms.
+pub const MYOS_POLL_RECHECK: u32 = 0x8000_0000;
 
 /// Module-provided block device (`KernelApi::blk_register`). Sector size is
 /// 512 bytes; `buf` lengths are whole sectors. `ctx` is the value given at

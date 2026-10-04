@@ -128,6 +128,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         release: None,
         mmap: None,
         poll: None,
+        open: None,
     };
     let rc = unsafe {
         (api.vfs_mount)(

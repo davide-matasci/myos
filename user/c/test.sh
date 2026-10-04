@@ -15,6 +15,32 @@ t fb /bin/etc/fb_smoke
 # poll: timeouts, waking on pipe and unix socket events (not before),
 # POLLHUP/POLLERR/POLLNVAL, EAGAIN, EINTR (poll_smoke.c).
 t poll /bin/etc/poll_smoke
+# /dev/console/kbd: held by one program at a time; the host types Shift+A
+# through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
+# and the smoke checks the four press and release events (kbd_smoke.c).
+kbd_events() {
+	: > /tmp/kbd.out
+	/bin/etc/kbd_smoke >> /tmp/kbd.out 2>&1 &
+	pid=$!
+	i=0
+	while [ $i -lt 30 ] && ! grep -q -e ready -e "FAIL ]" /tmp/kbd.out 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	grep -q ready /tmp/kbd.out && echo "HOST c-smokes sendkey shift-a" >&3
+	# Well inside the launcher's 180 s watchdog: a smoke that hangs fails
+	# this test, not the boot.
+	i=0
+	while [ $i -lt 60 ] && ! grep -q -e "OK ] kbd" -e "FAIL ]" /tmp/kbd.out 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill $pid 2>/dev/null
+	wait $pid 2>/dev/null
+	cat /tmp/kbd.out
+	contains "[ OK ] kbd" /tmp/kbd.out
+}
+t kbd kbd_events
 # netd listen/accept: the smoke announces TCP 2323; the host connects back
 # through QEMU's port forward (the HOST request runs host.sh tcp-ping),
 # sends "ping" and expects "pong", then 280 KB of numbered lines (more than

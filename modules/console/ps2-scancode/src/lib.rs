@@ -345,6 +345,224 @@ pub fn set2_make_to_keycode(sc: u8) -> Option<u8> {
     })
 }
 
+/// Every key press and release, in Linux `KEY_*` numbering
+/// (`input-event-codes.h`, the codes virtio-input delivers): the raw
+/// keyboard (`/dev/console/kbd`). Unlike [`Decoder`], which keeps only what
+/// the tty turns into characters, it reports releases and every key.
+#[derive(Clone, Debug)]
+pub struct RawDecoder {
+    set: ScancodeSet,
+    extended: bool,
+    set2_break: bool,
+    /// Bytes of a Pause sequence still to swallow.
+    pause_skip: u8,
+}
+
+/// Linux `KEY_PAUSE`: its scancodes have no release, so it comes as both.
+const KEY_PAUSE: u16 = 119;
+
+impl RawDecoder {
+    pub fn new(set: ScancodeSet) -> Self {
+        Self {
+            set,
+            extended: false,
+            set2_break: false,
+            pause_skip: 0,
+        }
+    }
+
+    pub fn switch_set(&mut self, set: ScancodeSet) {
+        *self = Self::new(set);
+    }
+
+    /// One byte from the 8042 data port: `(KEY_* code, pressed)` once a key
+    /// event is complete, `None` for prefixes, controller replies and keys
+    /// without a code.
+    pub fn feed(&mut self, sc: u8) -> Option<(u16, bool)> {
+        if self.pause_skip > 0 {
+            self.pause_skip -= 1;
+            return (self.pause_skip == 0).then_some((KEY_PAUSE, false));
+        }
+        if matches!(sc, 0x00 | 0xEE | 0xFA | 0xFC | 0xFD | 0xFE) {
+            return None;
+        }
+        match sc {
+            0xE0 => {
+                self.extended = true;
+                return None;
+            }
+            0xE1 => {
+                // Set 1: E1 1D 45 E1 9D C5; set 2: E1 14 77 E1 F0 14 F0 77.
+                self.pause_skip = if self.set == ScancodeSet::Set1 { 5 } else { 7 };
+                return Some((KEY_PAUSE, true));
+            }
+            0xF0 if self.set == ScancodeSet::Set2 => {
+                self.set2_break = true;
+                return None;
+            }
+            _ => {}
+        }
+        let extended = core::mem::replace(&mut self.extended, false);
+        let (code, pressed) = match self.set {
+            ScancodeSet::Set1 => (sc & 0x7F, sc & 0x80 == 0),
+            ScancodeSet::Set2 => {
+                let pressed = !core::mem::replace(&mut self.set2_break, false);
+                let code = if extended { set2_extended_to_set1(sc) } else { set2_to_set1(sc) };
+                (code?, pressed)
+            }
+        };
+        set1_to_linux(code, extended).map(|key| (key, pressed))
+    }
+}
+
+/// A set-1 make code (`extended`: behind `E0`) → Linux `KEY_*`. Plain makes
+/// 1..=0x58 are the Linux codes themselves (Esc 1 .. F12 88).
+pub fn set1_to_linux(code: u8, extended: bool) -> Option<u16> {
+    if !extended {
+        return (1..=0x58).contains(&code).then_some(code as u16);
+    }
+    Some(match code {
+        0x1C => 96,  // keypad Enter
+        0x1D => 97,  // right Ctrl
+        0x35 => 98,  // keypad /
+        0x37 => 99,  // Print Screen (SysRq)
+        0x38 => 100, // right Alt (AltGr)
+        0x47 => 102, // Home
+        0x48 => 103, // Up
+        0x49 => 104, // Page Up
+        0x4B => 105, // Left
+        0x4D => 106, // Right
+        0x4F => 107, // End
+        0x50 => 108, // Down
+        0x51 => 109, // Page Down
+        0x52 => 110, // Insert
+        0x53 => 111, // Delete
+        0x5B => 125, // left Meta (Windows)
+        0x5C => 126, // right Meta
+        0x5D => 127, // Menu (Compose)
+        // E0 2A / E0 36: the fake shifts around some extended keys.
+        _ => return None,
+    })
+}
+
+/// Set-2 make (no prefix) → set-1 make, every key.
+fn set2_to_set1(sc: u8) -> Option<u8> {
+    Some(match sc {
+        0x76 => 0x01, // Esc
+        0x16 => 0x02,
+        0x1E => 0x03,
+        0x26 => 0x04,
+        0x25 => 0x05,
+        0x2E => 0x06,
+        0x36 => 0x07,
+        0x3D => 0x08,
+        0x3E => 0x09,
+        0x46 => 0x0A,
+        0x45 => 0x0B,
+        0x4E => 0x0C,
+        0x55 => 0x0D,
+        0x66 => 0x0E, // Backspace
+        0x0D => 0x0F, // Tab
+        0x15 => 0x10, // q
+        0x1D => 0x11,
+        0x24 => 0x12,
+        0x2D => 0x13,
+        0x2C => 0x14,
+        0x35 => 0x15,
+        0x3C => 0x16,
+        0x43 => 0x17,
+        0x44 => 0x18,
+        0x4D => 0x19,
+        0x54 => 0x1A,
+        0x5B => 0x1B,
+        0x5A => 0x1C, // Enter
+        0x14 => 0x1D, // left Ctrl
+        0x1C => 0x1E, // a
+        0x1B => 0x1F,
+        0x23 => 0x20,
+        0x2B => 0x21,
+        0x34 => 0x22,
+        0x33 => 0x23,
+        0x3B => 0x24,
+        0x42 => 0x25,
+        0x4B => 0x26,
+        0x4C => 0x27,
+        0x52 => 0x28,
+        0x0E => 0x29, // `
+        0x12 => 0x2A, // left Shift
+        0x5D => 0x2B, // \
+        0x1A => 0x2C, // z
+        0x22 => 0x2D,
+        0x21 => 0x2E,
+        0x2A => 0x2F,
+        0x32 => 0x30,
+        0x31 => 0x31,
+        0x3A => 0x32,
+        0x41 => 0x33,
+        0x49 => 0x34,
+        0x4A => 0x35,
+        0x59 => 0x36, // right Shift
+        0x7C => 0x37, // keypad *
+        0x11 => 0x38, // left Alt
+        0x29 => 0x39, // Space
+        0x58 => 0x3A, // Caps Lock
+        0x05 => 0x3B, // F1
+        0x06 => 0x3C,
+        0x04 => 0x3D,
+        0x0C => 0x3E,
+        0x03 => 0x3F,
+        0x0B => 0x40,
+        0x83 => 0x41, // F7
+        0x0A => 0x42,
+        0x01 => 0x43,
+        0x09 => 0x44, // F10
+        0x77 => 0x45, // Num Lock
+        0x7E => 0x46, // Scroll Lock
+        0x6C => 0x47, // keypad 7
+        0x75 => 0x48,
+        0x7D => 0x49,
+        0x7B => 0x4A, // keypad -
+        0x6B => 0x4B,
+        0x73 => 0x4C,
+        0x74 => 0x4D,
+        0x79 => 0x4E, // keypad +
+        0x69 => 0x4F,
+        0x72 => 0x50,
+        0x7A => 0x51,
+        0x70 => 0x52, // keypad 0
+        0x71 => 0x53, // keypad .
+        0x61 => 0x56, // ISO 102nd
+        0x78 => 0x57, // F11
+        0x07 => 0x58, // F12
+        _ => return None,
+    })
+}
+
+/// Set-2 make behind `E0` → set-1 make behind `E0`.
+fn set2_extended_to_set1(sc: u8) -> Option<u8> {
+    Some(match sc {
+        0x5A => 0x1C, // keypad Enter
+        0x14 => 0x1D, // right Ctrl
+        0x4A => 0x35, // keypad /
+        0x7C => 0x37, // Print Screen
+        0x11 => 0x38, // right Alt
+        0x6C => 0x47, // Home
+        0x75 => 0x48, // Up
+        0x7D => 0x49, // Page Up
+        0x6B => 0x4B, // Left
+        0x74 => 0x4D, // Right
+        0x69 => 0x4F, // End
+        0x72 => 0x50, // Down
+        0x7A => 0x51, // Page Down
+        0x70 => 0x52, // Insert
+        0x71 => 0x53, // Delete
+        0x1F => 0x5B, // left Meta
+        0x27 => 0x5C, // right Meta
+        0x2F => 0x5D, // Menu
+        _ => return None,
+    })
+}
+
 /// Decode a byte sequence and append keycodes to `out`.
 pub fn decode_sequence(set: ScancodeSet, bytes: &[u8], out: &mut allocless::Vec) {
     let mut dec = Decoder::new(set);
@@ -428,7 +646,45 @@ fn regression_altgr() -> bool {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
+
+    fn raw_all(set: ScancodeSet, bytes: &[u8]) -> std::vec::Vec<(u16, bool)> {
+        let mut dec = RawDecoder::new(set);
+        bytes.iter().filter_map(|&b| dec.feed(b)).collect()
+    }
+
+    #[test]
+    fn raw_set1_press_release_and_extended() {
+        // a, Shift+a, Up, right Ctrl, F12.
+        assert_eq!(
+            raw_all(ScancodeSet::Set1, &[0x1E, 0x9E, 0x2A, 0x1E, 0x9E, 0xAA, 0xE0, 0x48, 0xE0, 0xC8]),
+            [(30, true), (30, false), (42, true), (30, true), (30, false), (42, false), (103, true), (103, false)]
+        );
+        assert_eq!(raw_all(ScancodeSet::Set1, &[0xE0, 0x1D, 0xE0, 0x9D, 0x58, 0xD8]), [(97, true), (97, false), (88, true), (88, false)]);
+    }
+
+    #[test]
+    fn raw_set2_matches_set1() {
+        // a, Shift+a, Up, F12, F7 (the one code above 0x7F).
+        assert_eq!(
+            raw_all(ScancodeSet::Set2, &[0x1C, 0xF0, 0x1C, 0x12, 0x1C, 0xF0, 0x1C, 0xF0, 0x12, 0xE0, 0x75, 0xE0, 0xF0, 0x75]),
+            [(30, true), (30, false), (42, true), (30, true), (30, false), (42, false), (103, true), (103, false)]
+        );
+        assert_eq!(raw_all(ScancodeSet::Set2, &[0x07, 0xF0, 0x07, 0x83]), [(88, true), (88, false), (65, true)]);
+    }
+
+    #[test]
+    fn raw_fake_shifts_and_pause() {
+        // Print Screen with its fake shift in set 1: E0 2A E0 37 / E0 B7 E0 AA.
+        assert_eq!(raw_all(ScancodeSet::Set1, &[0xE0, 0x2A, 0xE0, 0x37, 0xE0, 0xB7, 0xE0, 0xAA]), [(99, true), (99, false)]);
+        assert_eq!(raw_all(ScancodeSet::Set1, &[0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, 0x1E]), [(119, true), (119, false), (30, true)]);
+        assert_eq!(
+            raw_all(ScancodeSet::Set2, &[0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77, 0x1C]),
+            [(119, true), (119, false), (30, true)]
+        );
+    }
 
     fn decode_all(set: ScancodeSet, bytes: &[u8]) -> allocless::Vec {
         let mut out = allocless::Vec::new();

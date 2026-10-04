@@ -160,8 +160,9 @@ unsafe fn drain_events(dev: &mut Dev) {
         let slot = (dev.last_used as usize) % (dev.num as usize);
         let used_elem = unsafe { dev.used.add(4 + slot * 8) };
         dcache_civac(used_elem, 8);
-        let id = unsafe { core::ptr::read_volatile(used_elem as *const u16) };
-        let _len = unsafe { core::ptr::read_volatile(used_elem.add(2) as *const u32) };
+        // `struct virtq_used_elem { le32 id; le32 len; }`; `len` is always
+        // one event here.
+        let id = unsafe { core::ptr::read_volatile(used_elem as *const u32) } as u16;
 
         let va = dev.event_va[id as usize];
         dcache_civac(va, EVENT_SIZE as usize);
@@ -181,6 +182,11 @@ fn handle_event(type_: u16, code: u16, value: u32) {
     }
     if type_ != EV_KEY {
         return;
+    }
+    // Value 2 is evdev's auto-repeat: the raw keyboard has presses and
+    // releases only (its reader repeats keys itself).
+    if value != 2 {
+        kbd::raw_key(code, value != 0);
     }
     // Linux KEY_* codes for modifiers.
     const KEY_LEFTSHIFT: u16 = 42;
@@ -208,6 +214,10 @@ fn handle_event(type_: u16, code: u16, value: u32) {
             CTRL.store(true, Ordering::SeqCst);
         }
         _ => {
+            // Held by `/dev/console/kbd`: no characters for the tty.
+            if kbd::grabbed() {
+                return;
+            }
             let Some(kc) = canonical(code) else {
                 return;
             };
@@ -344,14 +354,18 @@ pub fn present() -> bool {
 }
 
 pub fn poll_byte() -> Option<u8> {
-    if !READY.load(Ordering::SeqCst) {
-        return None;
-    }
-    {
-        let mut guard = DEV.lock();
-        if let Some(dev) = guard.as_mut() {
-            unsafe { drain_events(dev) };
-        }
-    }
+    pump();
     FIFO.lock().pop()
+}
+
+/// Take the device's pending events (into the tty FIFO, or the raw queue
+/// while `/dev/console/kbd` is held).
+pub fn pump() {
+    if !READY.load(Ordering::SeqCst) {
+        return;
+    }
+    let mut guard = DEV.lock();
+    if let Some(dev) = guard.as_mut() {
+        unsafe { drain_events(dev) };
+    }
 }

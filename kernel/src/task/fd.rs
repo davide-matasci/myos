@@ -185,7 +185,14 @@ fn user_buf_ok(
 pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
     let writable = crate::fs::open_writable(flags);
     let append = crate::fs::open_append(flags);
-    let id = open_file_alloc(node, writable, append)?;
+    // A file one program holds at a time (`/dev/console/kbd`) may say no.
+    if !crate::fs::vfs::open_hook(&node) {
+        return None;
+    }
+    let Some(id) = open_file_alloc(node, writable, append) else {
+        crate::fs::vfs::open_hook_undo(&node);
+        return None;
+    };
     let fd = with_process_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
@@ -199,6 +206,7 @@ pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
         crate::fs::vfs::open_ref(&node);
     } else {
         open_file_unref(id);
+        crate::fs::vfs::open_hook_undo(&node);
     }
     fd
 }
@@ -390,8 +398,10 @@ pub fn fd_poll(fd: usize) -> (u16, bool) {
             // other file is always readable and writable.
             let bits = open_file_node(id)
                 .and_then(|node| crate::fs::poll(&node))
-                .map_or(POLLIN | POLLOUT, |b| b as u16);
-            (bits, false)
+                .unwrap_or((POLLIN | POLLOUT) as u32);
+            // A polled device (the raw keyboard) is re-checked like the tty.
+            let recheck = bits & myos_abi::MYOS_POLL_RECHECK != 0;
+            (bits as u16, recheck)
         }
     }
 }
@@ -567,7 +577,16 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 };
                 let mut tmp = [0u8; FILE_READ_TMP];
                 let want = len.min(tmp.len());
-                let n = crate::fs::read(&node, pos, &mut tmp[..want]);
+                let seq = wait_seq();
+                let Some(n) = crate::fs::vfs::read_or_wait(&node, pos, &mut tmp[..want]) else {
+                    // A device with nothing yet (the raw keyboard): wait for
+                    // it, re-checking at the keyboard's polling rate.
+                    if crate::signal::interrupt_wait() {
+                        return 0;
+                    }
+                    block_until(WAIT_ANY, seq, deadline_ms(10));
+                    continue;
+                };
                 // Not under TASKS: the copy may page in the buffer.
                 if n != 0 && !user::copy_to_user(current_aspace(), buf, &tmp[..n]) {
                     return usize::MAX;

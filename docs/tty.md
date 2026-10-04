@@ -8,6 +8,7 @@ about a terminal, or any device, goes through one.
 ```
 /dev/console/data        the hardware console (serial and framebuffer)
 /dev/console/ctl
+/dev/console/kbd         the keyboard's presses and releases, for a program that takes it
 /dev/pts/clone           open: allocates a pty pair, returns its master fd
 /dev/pts/N/master        the master end, what clone returned (never opened by name)
 /dev/pts/N/data          the slave, the terminal a session runs on
@@ -61,6 +62,36 @@ flush.
 $ echo 'lflag 0' > $(readlink /proc/self/tty)/ctl     # raw mode
 $ echo 'winsize 50 132' > /dev/pts/0/ctl
 ```
+
+## The raw keyboard
+
+`/dev/console/kbd` is the local keyboard (PS/2 on x86_64, virtio-input on
+aarch64 and riscv64) as key events, for programs that need more than the
+characters a terminal gives: a game, a graphical session drawing on
+`/dev/fb` (`docs/fb.md`). One event per line:
+
+```
+d 42          Left Shift pressed
+d 30 A        A pressed (with Shift held, the keymap gives "A")
+u 30          A released
+u 42
+```
+
+`d <code>[ <char>]` is a press, `u <code>` a release. The code is Linux's
+`KEY_*` number (`linux/input-event-codes.h`) on every arch: Left Ctrl 29,
+Enter 28, the arrows 103/105/106/108. The character is what the loaded keymap
+(`docs/keymap.md`) gives the key with the Shift and AltGr held now, as UTF-8;
+it is left out for space, control characters (Enter, Backspace, Tab, Esc),
+keys the keymap does not map and every key while no keymap is loaded. There is
+no autorepeat: a held key is one `d` and, later, one `u`.
+
+Opening the file takes the keyboard: until its last fd closes (or its
+holder exits) the console tty gets no keys from it. Serial input still
+reaches the tty, so the serial console stays usable. One program holds the
+file at a time; another open fails. Reads return whole lines; a read waits
+for the next event, `poll` reports `POLLIN` while one is queued. The queue
+holds 128 events and drops new ones while full. The file exists when the
+console module found a keyboard ([`modules/console/src/kbdev.rs`](../modules/console/src/kbdev.rs)).
 
 ## Ptys
 

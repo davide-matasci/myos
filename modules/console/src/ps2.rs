@@ -13,7 +13,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ps2_scancode::{Decoder, ScancodeSet};
+use ps2_scancode::{Decoder, RawDecoder, ScancodeSet};
 use crate::kbd::{self, ByteFifo};
 use crate::lock::Lock as Mutex;
 use crate::{status_fail, status_ok};
@@ -34,12 +34,15 @@ const CFG_TRANSLATE: u8 = 1 << 6;
 
 static READY: AtomicBool = AtomicBool::new(false);
 static DECODER: Mutex<Option<Decoder>> = Mutex::new(None);
+/// The same bytes as every press and release (`/dev/console/kbd`).
+static RAW_DECODER: Mutex<Option<RawDecoder>> = Mutex::new(None);
 /// Multi-byte sequences (CSI arrows) ready to drain from `poll_byte`.
 static FIFO: Mutex<ByteFifo> = Mutex::new(ByteFifo::new());
 
 pub fn init() {
     if let Some((dec, translate)) = probe_and_enable() {
         *DECODER.lock() = Some(dec);
+        *RAW_DECODER.lock() = Some(RawDecoder::new(ScancodeSet::Set1));
         READY.store(true, Ordering::SeqCst);
         status_ok(if translate { "keyboard (xlate, set 1)" } else { "keyboard (raw, set 1)" });
         if ps2_scancode::self_test() {
@@ -62,31 +65,63 @@ pub fn poll_byte() -> Option<u8> {
     if !READY.load(Ordering::SeqCst) {
         return None;
     }
-    if let Some(b) = FIFO.lock().pop() {
-        return Some(b);
+    for _ in 0..PUMP_MAX {
+        if let Some(b) = FIFO.lock().pop() {
+            return Some(b);
+        }
+        if !feed_one() {
+            break;
+        }
     }
+    FIFO.lock().pop()
+}
+
+/// Take the controller's pending bytes (into the tty FIFO, or the raw queue
+/// while `/dev/console/kbd` is held).
+pub fn pump() {
+    if !READY.load(Ordering::SeqCst) {
+        return;
+    }
+    for _ in 0..PUMP_MAX {
+        if !feed_one() {
+            break;
+        }
+    }
+}
+
+/// Bytes one call takes from the controller at most.
+const PUMP_MAX: usize = 64;
+
+/// Read and decode one byte from the controller; false when none waits.
+fn feed_one() -> bool {
     let status = inb(STATUS);
     if status & ST_OUT_FULL == 0 {
-        return None;
+        return false;
     }
     if status & ST_AUX != 0 {
         let _ = inb(DATA);
-        return None;
+        return true;
     }
     let sc = inb(DATA);
-    let mut guard = DECODER.lock();
-    let dec = guard.as_mut()?;
-    let kc = dec.feed(sc)?;
-    if let Some(kb) = kbd::translate(kc, dec.shift(), dec.altgr(), dec.ctrl()) {
-        let bytes = kb.as_slice();
-        if bytes.len() <= 1 {
-            return bytes.first().copied();
-        }
-        FIFO.lock().push_bytes(bytes);
-        FIFO.lock().pop()
-    } else {
-        None
+    if let Some((code, pressed)) = RAW_DECODER.lock().as_mut().and_then(|d| d.feed(sc)) {
+        kbd::raw_key(code, pressed);
     }
+    let mut guard = DECODER.lock();
+    let Some(dec) = guard.as_mut() else {
+        return true;
+    };
+    // The character decoder sees every byte too, so its modifiers stay
+    // right; held by `/dev/console/kbd`, the tty gets no characters.
+    let Some(kc) = dec.feed(sc) else {
+        return true;
+    };
+    if kbd::grabbed() {
+        return true;
+    }
+    if let Some(kb) = kbd::translate(kc, dec.shift(), dec.altgr(), dec.ctrl()) {
+        FIFO.lock().push_bytes(kb.as_slice());
+    }
+    true
 }
 
 fn probe_and_enable() -> Option<(Decoder, bool)> {
