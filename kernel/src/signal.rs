@@ -131,9 +131,17 @@ pub fn interrupt_wait() -> bool {
 /// - `pid < 0`: process group `-pid`
 ///
 /// Returns `false` if `sig` is invalid or no matching live user task was found.
+/// Signal 0 sends nothing: it only asks whether a target exists.
 pub fn kill(pid: isize, sig: u32) -> bool {
-    if sig == 0 || sig > 31 {
+    if sig > 31 {
         return false;
+    }
+    if sig == 0 {
+        return match pid {
+            1.. => task::is_live_user(pid as usize),
+            0 => true,
+            _ => (0..task::task_slots()).any(|id| task::task_pgid(id) == Some((-pid) as usize)),
+        };
     }
     if pid > 0 {
         return send_one(pid as usize, sig);
