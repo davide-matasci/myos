@@ -23,9 +23,6 @@ patch_copy() {
   patch -d "$WORK" -p0 --forward --batch < "$MYOS/${base}.myos.patch"
 }
 
-patch_copy echo
-patch_copy ls
-patch_copy pwd
 patch_copy touch
 
 if [[ ! -f "$WORK/getconf.h" ]]; then

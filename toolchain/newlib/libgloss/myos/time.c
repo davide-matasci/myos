@@ -5,15 +5,11 @@
 #include <time.h>
 #include <sys/time.h>
 
-#ifndef CLOCK_REALTIME
-#define CLOCK_REALTIME 0
-#endif
-#ifndef CLOCK_MONOTONIC
-#define CLOCK_MONOTONIC 1
-#endif
+/* <time.h> declares clock_gettime and the CLOCK_* ids: the installed
+ * features.h sets _POSIX_TIMERS (toolchain/newlib/build-libgloss.sh). */
 
 int
-clock_gettime(int clock_id, struct timespec *tp)
+clock_gettime(clockid_t clock_id, struct timespec *tp)
 {
     struct timeval tv;
 

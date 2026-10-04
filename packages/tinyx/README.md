@@ -46,8 +46,8 @@ Fonts: libXfont's built-in `fixed` and `cursor` (the font path is
 | `builtin-fonts.myos.patch` | `KDRIVESERVER` in `dix-config.h`, which registers libXfont's built-in fonts |
 
 `include/` and `myos_compat.h` hold the libc bits TinyX expects
-(`linux/fb.h` for `fbdev.c`, `net/if.h`, `lstat`, a `getservbyname` that
-finds nothing).
+(`linux/fb.h` for `fbdev.c`, `net/if.h`, `lstat`); libgloss's
+`getservbyname` finds nothing, so xtrans uses the port number.
 
 ## The test
 

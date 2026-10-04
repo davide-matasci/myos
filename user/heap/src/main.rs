@@ -131,11 +131,14 @@ fn main() -> ! {
     run_prog(b"/bin/std/echo", &[]);
     run_prog(b"/bin/etc/hello", &[]);
     run_prog(b"/bin/sbase/true", &[]);
-    run_prog(b"/bin/sbase/echo", &[]);
-    run_prog(b"/bin/sbase/ls", &[]);
+    // sbase's option parser reads argv[0] (unpatched upstream, like most C
+    // programs); the no-argv exec is covered by the programs above. The
+    // markers come from the exit status: sbase is not patched to print them.
+    let _ = run_prog_exit(b"/bin/sbase/echo", &[b"echo"], 0, b"[ OK ] sbase\n");
+    let _ = run_prog_exit(b"/bin/sbase/ls", &[b"ls"], 0, b"[ OK ] sls\n");
     run_prog(b"/bin/sbase/echo", &[b"echo", b"[ OK ] sbase argv"]);
     run_prog(b"/bin/sbase/ls", &[b"ls", b"/bin/sbase"]);
-    run_prog(b"/bin/sbase/pwd", &[]);
+    run_prog(b"/bin/sbase/pwd", &[b"pwd"]);
     // TinyCC JIT: -nostdlib skips libgloss, so hi.c emits SYS_WRITE=0 itself.
     // Needle is printed by the JIT'd main, not by heap.
     const HI_C: &[u8] = br#"

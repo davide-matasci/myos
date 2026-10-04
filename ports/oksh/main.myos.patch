@@ -1,35 +1,6 @@
 --- main.c
 +++ main.c
-@@ -153,7 +153,10 @@
- 	struct env env;
- 	pid_t ppid;
- 
--	kshname = argv[0];
-+	if (argc > 0 && argv != NULL && argv[0] != NULL)
-+		kshname = argv[0];
-+	else
-+		kshname = "sh";
- 
- #ifdef HAVE_PLEDGE
- 	if (issetugid()) { /* could later drop privileges */
-@@ -209,15 +212,7 @@
- 	init_histvec();
- 
- 	def_path = _PATH_DEFPATH;
--	{
--		size_t len = confstr(_CS_PATH, NULL, 0);
--		char *new;
--
--		if (len > 0) {
--			confstr(_CS_PATH, new = alloc(len + 1, APERM), len + 1);
--			def_path = new;
--		}
--	}
-+	/* myos: PATH is _PATH_DEFPATH (/s:/c:/); skip confstr. */
- 
- 	/* Set PATH to def_path (will set the path global variable).
- 	 * (import of environment below will probably change this setting).
-@@ -278,6 +268,12 @@
+@@ -278,6 +278,12 @@
  		for (wp = environ; *wp != NULL; wp++)
  			typeset(*wp, IMPORT|EXPORT, 0, 0, 0);
  
@@ -42,18 +13,7 @@
  	kshpid = procpid = getpid();
  	typeset(initifs, 0, 0, 0, 0);	/* for security */
  
-@@ -307,8 +303,8 @@
- 			/* setstr can't fail here */
- 			setstr(pwd_v, current_wd, KSH_RETURN_ERROR);
- 	}
--	ppid = getppid();
--	setint(global("PPID"), (int64_t) ppid);
-+	(void)ppid;
-+	setint(global("PPID"), (int64_t) 0);
- #ifndef SMALL
- 	/* setstr can't fail here */
- 	setstr(global(version_param), ksh_version, KSH_RETURN_ERROR);
-@@ -325,19 +321,16 @@
+@@ -325,15 +331,12 @@
  
  	ksheuid = geteuid();
  	init_username();
@@ -72,13 +32,7 @@
  	}
  
  	/* Set this before parsing arguments */
--	Flag(FPRIVILEGED) = getuid() != ksheuid || getgid() != getegid();
-+	Flag(FPRIVILEGED) = 0;
- 
- 	/* this to note if monitor is set on command line (see below) */
- 	Flag(FMONITOR) = 127;
-@@ -387,9 +380,11 @@
- 	i = Flag(FMONITOR) != 127;
+@@ -388,8 +391,10 @@
  	Flag(FMONITOR) = 0;
  	j_init(i);
  	/* Do this after j_init(), as tty_fd is not initialized 'til then */
@@ -91,7 +45,7 @@
  
  	l = genv->loc;
  	l->argv = make_argv(argc - (argi - 1), &argv[argi - 1]);
-@@ -449,7 +444,7 @@
+@@ -449,7 +454,7 @@
  
  	if (Flag(FTALKING)) {
  		hist_init(s);
@@ -100,7 +54,7 @@
  	} else
  		Flag(FTRACKALL) = 1;	/* set after ENV */
  
-@@ -768,7 +763,8 @@
+@@ -768,7 +773,8 @@
  		if (shf)
  			shf_close(shf);
  		reclaim();

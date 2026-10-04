@@ -41,7 +41,6 @@ VIM_SRCS=(
   vim9class.c vim9cmds.c vim9compile.c vim9execute.c vim9expr.c
   vim9generics.c vim9instr.c vim9script.c vim9type.c
   viminfo.c window.c bufwrite.c
-  myos_stubs.c
 )
 
 link_prog() {

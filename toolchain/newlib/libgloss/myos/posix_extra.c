@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/random.h>
 #include <unistd.h>
 
 #include "myos_syscalls.h"
@@ -230,4 +231,78 @@ int execle(const char *path, const char *arg0, ...) {
     envp = va_arg(ap, char **);
     va_end(ap);
     return execve(path, argv, envp);
+}
+
+/* vfork: a fork. The child may do anything a forked child may, which is
+ * more than vfork promises, not less. */
+pid_t vfork(void) {
+    return fork();
+}
+
+/* daemon(3): fork, let the parent exit, a session of its own; `nochdir`
+ * keeps the working directory, `noclose` keeps the standard descriptors
+ * (else they go to /dev/null). */
+int daemon(int nochdir, int noclose) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid > 0) {
+        _exit(0);
+    }
+    if (setsid() < 0) {
+        return -1;
+    }
+    if (!nochdir && chdir("/") < 0) {
+        return -1;
+    }
+    if (!noclose) {
+        int fd = open("/dev/null", O_RDWR);
+        if (fd < 0) {
+            return -1;
+        }
+        if (dup2(fd, 0) < 0 || dup2(fd, 1) < 0 || dup2(fd, 2) < 0) {
+            close(fd);
+            return -1;
+        }
+        if (fd > 2) {
+            close(fd);
+        }
+    }
+    return 0;
+}
+
+/* getrandom(2) from /dev/urandom (the kernel's generator, docs/testing.md
+ * `urandom`): never blocks, so GRND_NONBLOCK and GRND_RANDOM change nothing. */
+ssize_t getrandom(void *buf, size_t buflen, unsigned int flags) {
+    if ((flags & ~(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE)) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+    size_t got = 0;
+    while (got < buflen) {
+        ssize_t n = read(fd, (char *)buf + got, buflen - got);
+        if (n < 0) {
+            if (errno == EINTR && got == 0) {
+                continue;
+            }
+            int e = errno;
+            close(fd);
+            if (got > 0) {
+                return (ssize_t)got;
+            }
+            errno = e;
+            return -1;
+        }
+        if (n == 0) {
+            break;
+        }
+        got += (size_t)n;
+    }
+    close(fd);
+    return (ssize_t)got;
 }

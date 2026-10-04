@@ -1,14 +1,6 @@
 --- c_sh.c
 +++ c_sh.c
-@@ -4,7 +4,6 @@
-  * built-in Bourne commands
-  */
- 
--#include <sys/resource.h>
- #include <sys/stat.h>
- #include <sys/time.h>
- 
-@@ -712,15 +711,10 @@
+@@ -712,15 +712,10 @@
  int
  c_times(char **wp)
  {
@@ -28,13 +20,10 @@
  
  	return 0;
  }
-@@ -731,70 +725,17 @@
- int
- timex(struct op *t, int f, volatile int *xerrok)
- {
--#define TF_NOARGS	BIT(0)
--#define TF_NOREAL	BIT(1)		/* don't report real time */
--#define TF_POSIX	BIT(2)		/* report in posix format */
+@@ -734,67 +729,14 @@
+ #define TF_NOARGS	BIT(0)
+ #define TF_NOREAL	BIT(1)		/* don't report real time */
+ #define TF_POSIX	BIT(2)		/* report in posix format */
 -	int rv = 0;
 -	struct rusage ru0, ru1, cru0, cru1;
 -	struct timeval usrtime, systime;
@@ -94,10 +83,7 @@
 -	shf_flush(shl_out);
 -
 -	return rv;
-+#define TF_NOARGS	BIT(0)
-+#define TF_NOREAL	BIT(1)		/* don't report real time */
-+#define TF_POSIX	BIT(2)		/* report in posix format */
-+	/* myos: no clock_gettime/getrusage; still run the command. */
++	/* myos: no getrusage; still run the command. */
 +	(void)f;
 +	if (t->left)
 +		return execute(t->left, f | XTIME, xerrok);
@@ -108,7 +94,7 @@
  void
  timex_hook(struct op *t, char **volatile *app)
  {
-@@ -860,17 +798,9 @@
+@@ -860,17 +802,9 @@
  		bi_errorf("too many arguments");
  		return 1;
  	}

@@ -58,6 +58,12 @@
 #define	LINE_MAX		 2048	/* max bytes in an input line */
 #define	RE_DUP_MAX		  255	/* max RE's in interval notation */
 
+/* myos: runtime limits newlib's headers leave out (sbase's split, ubase's
+ * getty). */
+#define	SSIZE_MAX		__LONG_MAX__	/* max value of a ssize_t */
+#define	HOST_NAME_MAX		   64	/* max bytes in a host name */
+#define	LOGIN_NAME_MAX		  256	/* max bytes in a login name */
+
 
 /* myos: POSIX.1-2017 / XSI minimum values (<limits.h> "Minimum Values").
  * newlib does not define them; os-test's limits suite checks each one and
