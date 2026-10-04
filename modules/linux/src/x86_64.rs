@@ -60,14 +60,14 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         19 => ret(sys::rw_vec(a[0], a[1], a[2], false)), // readv
         20 => ret(sys::rw_vec(a[0], a[1], a[2], true)),  // writev
         21 => ret(sys::faccessat(AT_FDCWD, a[0])),       // access
-        22 => ret(sys::pipe2(a[0])),
+        22 => ret(sys::pipe2(a[0], 0)),
         24 => {
             task::yield_now();
             0
         }
         28 => 0, // madvise
         32 => ret(sys::dup(a[0], 0)),
-        33 => ret(sys::dup3(a[0], a[1], true)), // dup2
+        33 => ret(sys::dup3(a[0], a[1], true, 0)), // dup2
         35 => ret(sys::nanosleep(a[0], false)),
         39 => task::current_pid(),
         41 => ret(net::socket(a[0], a[1])),
@@ -136,8 +136,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         269 | 439 => ret(sys::faccessat(a[0], a[1])), // faccessat, faccessat2
         271 => ret(sys::ppoll(a[0], a[1], a[2])),
         273 => 0, // set_robust_list
-        292 => ret(sys::dup3(a[0], a[1], false)),
-        293 => ret(sys::pipe2(a[0])),
+        292 => ret(sys::dup3(a[0], a[1], false, a[2])),
+        293 => ret(sys::pipe2(a[0], a[1])),
         302 => ret(sys::prlimit(a[1], a[3])),
         318 => ret(sys::getrandom(a[0], a[1])),
         _ => err(ENOSYS),

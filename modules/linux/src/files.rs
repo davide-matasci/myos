@@ -26,13 +26,58 @@ pub struct FdPath {
 
 static PATHS: Mutex<[Vec<FdPath>; MAX_TASKS]> = Mutex::new([const { Vec::new() }; MAX_TASKS]);
 
+/// A process's fd flags, a bit per fd (native fds are below 64): which
+/// close on exec (`FD_CLOEXEC`), which are non-blocking (`O_NONBLOCK`,
+/// a socket's is in its `Sock`).
+#[derive(Clone, Copy)]
+struct Flags {
+    cloexec: u64,
+    nonblock: u64,
+}
+
+static FLAGS: Mutex<[Flags; MAX_TASKS]> = Mutex::new([Flags { cloexec: 0, nonblock: 0 }; MAX_TASKS]);
+
+fn bit(fd: usize) -> u64 {
+    if fd < 64 { 1 << fd } else { 0 }
+}
+
 pub fn on_fork(parent: usize, child: usize) {
     let mut t = PATHS.lock();
     t[child] = t[parent].clone();
+    let mut f = FLAGS.lock();
+    f[child] = f[parent];
 }
 
 pub fn on_spawn(slot: usize) {
     PATHS.lock()[slot] = Vec::new();
+    FLAGS.lock()[slot] = Flags { cloexec: 0, nonblock: 0 };
+}
+
+/// Set fd's close-on-exec flag.
+pub fn set_cloexec(fd: usize, on: bool) {
+    let mut f = FLAGS.lock();
+    let e = &mut f[task::current_pid()];
+    e.cloexec = if on { e.cloexec | bit(fd) } else { e.cloexec & !bit(fd) };
+}
+
+pub fn cloexec(fd: usize) -> bool {
+    FLAGS.lock()[task::current_pid()].cloexec & bit(fd) != 0
+}
+
+pub fn set_nonblock(fd: usize, on: bool) {
+    let mut f = FLAGS.lock();
+    let e = &mut f[task::current_pid()];
+    e.nonblock = if on { e.nonblock | bit(fd) } else { e.nonblock & !bit(fd) };
+}
+
+pub fn nonblock(fd: usize) -> bool {
+    FLAGS.lock()[task::current_pid()].nonblock & bit(fd) != 0
+}
+
+/// A successful exec in `slot`: the fds to close now (and forget).
+pub fn take_cloexec(slot: usize) -> u64 {
+    let mut f = FLAGS.lock();
+    core::mem::replace(&mut f[slot].cloexec, 0)
 }
 
 pub fn get(fd: usize) -> Option<FdPath> {
@@ -62,14 +107,20 @@ pub fn with_sock<T>(fd: usize, f: impl FnOnce(&mut Sock) -> T) -> Option<T> {
 
 pub fn remove(fd: usize) {
     PATHS.lock()[task::current_pid()].retain(|e| e.fd != fd);
+    set_cloexec(fd, false);
+    set_nonblock(fd, false);
 }
 
-/// `new` now refers to what `old` does (dup/dup2/F_DUPFD).
+/// `new` now refers to what `old` does (dup/dup2/F_DUPFD), without
+/// close-on-exec; `O_NONBLOCK` belongs to what both refer to.
 pub fn dup(old: usize, new: usize) {
+    let nb = nonblock(old);
     match get(old) {
         Some(e) => put(FdPath { fd: new, pos: 0, ..e }),
         None => remove(new),
     }
+    set_cloexec(new, false);
+    set_nonblock(new, nb);
 }
 
 pub fn set_pos(fd: usize, pos: usize) {

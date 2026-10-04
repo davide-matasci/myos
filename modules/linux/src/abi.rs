@@ -21,6 +21,10 @@ pub const ENOTTY: usize = 25;
 pub const ESPIPE: usize = 29;
 pub const ERANGE: usize = 34;
 pub const ENOSYS: usize = 38;
+
+/// `open` / `pipe2` / `dup3` flags.
+pub const O_NONBLOCK: usize = 0o4000;
+pub const O_CLOEXEC: usize = 0o2000000;
 pub const ETIMEDOUT: usize = 110;
 pub const ENODEV: usize = 19;
 

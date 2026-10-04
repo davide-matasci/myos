@@ -14,7 +14,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     match nr {
         17 => ret(sys::getcwd(a[0], a[1])),
         23 => ret(sys::dup(a[0], 0)),
-        24 => ret(sys::dup3(a[0], a[1], false)),
+        24 => ret(sys::dup3(a[0], a[1], false, a[2])),
         25 => ret(sys::fcntl(a[0], a[1], a[2])),
         29 => ret(sys::ioctl(a[0], a[1], a[2])),
         34 => ret(sys::mkdirat(a[0], a[1])),
@@ -26,7 +26,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         50 => ret(sys::fchdir(a[0])),
         56 => ret(sys::openat(a[0], a[1], a[2])),
         57 => ret(sys::close(a[0])),
-        59 => ret(sys::pipe2(a[0])),
+        59 => ret(sys::pipe2(a[0], a[1])),
         61 => ret(sys::getdents64(a[0], a[1], a[2])),
         62 => ret(sys::lseek(a[0], a[1], a[2])),
         63 => ret(sys::read(a[0], a[1], a[2])),

@@ -157,8 +157,16 @@ fn real_path_nofollow(path: &str) -> R2<String> {
 
 // ---- files ----------------------------------------------------------------
 
+/// A non-blocking pipe end that would block (bits: readable 1, writable 2).
+fn would_block(fd: usize, ready: u32) -> bool {
+    files::nonblock(fd) && task::fd_poll_bits(fd).is_some_and(|b| b & ready == 0)
+}
+
 pub fn read(fd: usize, buf: usize, len: usize) -> R {
     let io = || native(user::sys_read(fd, buf, len), EBADF);
+    if would_block(fd, 1) {
+        return Err(EAGAIN);
+    }
     match files::get(fd) {
         Some(e) if e.dir => Err(EISDIR),
         Some(e) if e.sock.is_some() => net::recv(fd, false, io),
@@ -168,6 +176,9 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
 
 pub fn write(fd: usize, buf: usize, len: usize) -> R {
     let io = || native(task::fd_write(fd, buf, len), EBADF);
+    if would_block(fd, 2) {
+        return Err(EAGAIN);
+    }
     if is_socket(fd) { net::send(fd, io) } else { io() }
 }
 
@@ -214,6 +225,7 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
     const O_DIRECTORY: usize = 0o200000;
     const O_NOFOLLOW: usize = 0o400000;
     const O_CLOEXEC: usize = 0o2000000;
+    const O_NONBLOCK: usize = 0o4000;
     let p = pty_alias(path_at(dirfd, path)?);
     let real = real_path(&p)?;
     let st = fs::stat(&real);
@@ -225,6 +237,7 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
         // getdents64 is served from the path table.
         let fd = native(user::open_path(&p, 0), EMFILE)?;
         files::set(fd, view_path(&p), true);
+        files::set_cloexec(fd, flags & O_CLOEXEC != 0);
         return Ok(fd);
     }
     if flags & O_DIRECTORY != 0 {
@@ -239,6 +252,8 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
     let native_flags = flags & !(O_EXCL | O_LARGEFILE | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     let fd = native(user::open_path(&p, native_flags), ENOENT)?;
     files::set(fd, view_path(&p), false);
+    files::set_cloexec(fd, flags & O_CLOEXEC != 0);
+    files::set_nonblock(fd, flags & O_NONBLOCK != 0);
     Ok(fd)
 }
 
@@ -343,19 +358,25 @@ pub fn getdents64(fd: usize, buf: usize, count: usize) -> R {
     Ok(out.len())
 }
 
-/// `FIONBIO` on a socket; the terminal requests from the terminal's ctl
-/// text (`tty`, docs/tty.md). myos has no ioctl of its own: anything else
-/// is `ENOTTY`.
+/// `FIONBIO`, `FIOCLEX` / `FIONCLEX`; the terminal requests from the
+/// terminal's ctl text (`tty`, docs/tty.md). myos has no ioctl of its own:
+/// anything else is `ENOTTY`.
 pub fn ioctl(fd: usize, req: usize, arg: usize) -> R {
     use super::tty;
     const FIONBIO: usize = 0x5421;
-    if req == FIONBIO && is_socket(fd) {
-        let mut on = [0u8; 4];
-        get(arg, &mut on)?;
-        net::set_nonblock(fd, on != [0; 4]);
-        return Ok(0);
-    }
+    const FIONCLEX: usize = 0x5450;
+    const FIOCLEX: usize = 0x5451;
     match req {
+        FIONBIO => {
+            let mut on = [0u8; 4];
+            get(arg, &mut on)?;
+            set_nonblock(fd, on != [0; 4]);
+            Ok(0)
+        }
+        FIOCLEX | FIONCLEX => {
+            files::set_cloexec(fd, req == FIOCLEX);
+            Ok(0)
+        }
         tty::TCGETS => put(arg, &tty::termios(fd)?).map(|_| 0),
         tty::TCSETS | tty::TCSETSW | tty::TCSETSF => {
             let mut t = [0u8; tty::TERMIOS_LEN];
@@ -381,10 +402,13 @@ pub fn faccessat(dirfd: usize, path: usize) -> R {
     fs::stat(&real).map(|_| 0).ok_or(ENOENT)
 }
 
-pub fn pipe2(fds: usize) -> R {
+pub fn pipe2(fds: usize, flags: usize) -> R {
     let (r, w) = task::pipe_open().ok_or(EMFILE)?;
-    files::remove(r);
-    files::remove(w);
+    for fd in [r, w] {
+        files::remove(fd);
+        files::set_cloexec(fd, flags & O_CLOEXEC != 0);
+        files::set_nonblock(fd, flags & O_NONBLOCK != 0);
+    }
     let mut b = [0u8; 8];
     b[..4].copy_from_slice(&(r as i32).to_le_bytes());
     b[4..].copy_from_slice(&(w as i32).to_le_bytes());
@@ -398,7 +422,7 @@ pub fn dup(fd: usize, min: usize) -> R {
     Ok(new)
 }
 
-pub fn dup3(old: usize, new: usize, same_ok: bool) -> R {
+pub fn dup3(old: usize, new: usize, same_ok: bool, flags: usize) -> R {
     if old == new {
         return if !same_ok {
             Err(EINVAL)
@@ -412,6 +436,7 @@ pub fn dup3(old: usize, new: usize, same_ok: bool) -> R {
         return Err(EBADF);
     }
     files::dup(old, new);
+    files::set_cloexec(new, flags & O_CLOEXEC != 0);
     Ok(new)
 }
 
@@ -425,20 +450,36 @@ pub fn fcntl(fd: usize, cmd: usize, arg: usize) -> R {
     if task::fd_kind(fd).is_none() {
         return Err(EBADF);
     }
-    const O_NONBLOCK: usize = 0o4000;
+    const FD_CLOEXEC: usize = 1;
     match cmd {
-        F_DUPFD | F_DUPFD_CLOEXEC => dup(fd, arg),
-        // No close-on-exec flag yet; only sockets can be non-blocking.
-        F_GETFD | F_SETFD => Ok(0),
+        F_DUPFD => dup(fd, arg),
+        F_DUPFD_CLOEXEC => {
+            let new = dup(fd, arg)?;
+            files::set_cloexec(new, true);
+            Ok(new)
+        }
+        F_GETFD => Ok(if files::cloexec(fd) { FD_CLOEXEC } else { 0 }),
+        F_SETFD => {
+            files::set_cloexec(fd, arg & FD_CLOEXEC != 0);
+            Ok(0)
+        }
         F_SETFL => {
-            net::set_nonblock(fd, arg & O_NONBLOCK != 0);
+            set_nonblock(fd, arg & O_NONBLOCK != 0);
             Ok(0)
         }
         F_GETFL => {
-            let nonblock = files::get(fd).and_then(|e| e.sock).is_some_and(|s| s.nonblock);
-            Ok(2 | if nonblock { O_NONBLOCK } else { 0 }) // O_RDWR
+            let sock = files::get(fd).and_then(|e| e.sock).is_some_and(|s| s.nonblock);
+            Ok(2 | if sock || files::nonblock(fd) { O_NONBLOCK } else { 0 }) // O_RDWR
         }
         _ => Err(EINVAL),
+    }
+}
+
+/// `O_NONBLOCK` on `fd`: a socket's state, or the flag `read` / `write`
+/// honour on a pipe.
+fn set_nonblock(fd: usize, on: bool) {
+    if !net::set_nonblock(fd, on) {
+        files::set_nonblock(fd, on);
     }
 }
 

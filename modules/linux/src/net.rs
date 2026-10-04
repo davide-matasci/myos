@@ -163,6 +163,7 @@ pub fn socket(domain: usize, ty: usize) -> R {
         return Err(EMFILE);
     }
     files::set_sock(fd, conv, Sock { stream, nonblock: ty & SOCK_NONBLOCK != 0, peer: None });
+    files::set_cloexec(fd, ty & SOCK_CLOEXEC != 0);
     Ok(fd)
 }
 

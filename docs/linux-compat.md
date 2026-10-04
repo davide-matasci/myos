@@ -324,8 +324,12 @@ the kernel does not keep a per-task copy at syscall entry.
 - Threads run on their process's home CPU, interleaved, not in parallel
   (`docs/threads.md`).
 - No other `clone` with `CLONE_VM` but not `CLONE_THREAD` than
-  posix_spawn's, no shared file mappings (`MAP_SHARED`), no `O_CLOEXEC`
-  and no `O_NONBLOCK` outside sockets.
+  posix_spawn's, and no shared file mappings (`MAP_SHARED`).
+- Close-on-exec (`O_CLOEXEC`, `FD_CLOEXEC`, `FIOCLEX`) and `O_NONBLOCK`
+  outside sockets are flags the layer keeps per fd (`files.rs`): a
+  successful exec closes the close-on-exec fds (the `on_exec` hook), and a
+  non-blocking pipe end that would block gives `EAGAIN` (from the core's
+  pipe readiness, as libgloss does for native programs).
 - Sockets: IPv4 clients only (no `listen`/`accept`, no IPv6, no Unix
   sockets or `socketpair`); no half-close (`shutdown` hangs up only for
   `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are
