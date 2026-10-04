@@ -9,7 +9,8 @@
 /// out of the table and the ioctl hook out of [`ModuleChrOps`]: there is no
 /// ioctl, a device's state is its `ctl` file and `poll` says when it is ready.
 /// 20 added [`ModuleVfsOps::open`] (a file one program holds at a time).
-pub const ABI_VERSION: u32 = 20;
+/// 21 added [`KernelApi::fork_from`] (posix_spawn's child on its own stack).
+pub const ABI_VERSION: u32 = 21;
 
 /// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
 pub const MYOS_WAIT_ANY: usize = usize::MAX;
@@ -627,6 +628,10 @@ pub struct KernelApi {
     /// What `fd` is open on, as `/proc/self/fd` names it (`/dev/pts/3/data`,
     /// `/dev/pts/3/master`, `pipe:[N]`), into `buf`: its length, or negative.
     pub fd_path: unsafe extern "C" fn(fd: usize, buf: *mut u8, cap: usize) -> i32,
+    // --- ABI 21 ---
+    /// Fork, the child resuming like the caller of the syscall in `regs`
+    /// (result 0) on stack `sp`: its pid, or negative.
+    pub fork_from: unsafe extern "C" fn(regs: *mut u64, sp: usize) -> i32,
 }
 
 /// A memory-mapped device from the device tree (`KernelApi::dt_mmio_find`).

@@ -129,7 +129,7 @@ Linux ones. It is killed by its own fault; the kernel stays up.
 | `modules/linux/src/generic.rs` | the `asm-generic` syscall numbers and `struct stat` aarch64 and riscv64 share |
 | `modules/linux/src/sys.rs` | the handlers: decode Linux arguments, call the native implementation, return `-errno` |
 | `modules/linux/src/signal.rs` | `rt_sigaction` & co., handler delivery, `rt_sigreturn`, the sigreturn trampoline page |
-| `modules/linux/src/thread.rs` | `clone` (threads and the fork form), `futex`, `set_tid_address`, thread `exit` |
+| `modules/linux/src/thread.rs` | `clone` (threads, the fork form and posix_spawn's), `futex`, `set_tid_address`, thread `exit` |
 | `modules/linux/src/abi.rs` | errno values, signal-number and sigset translation, `dirent64` layout |
 | `modules/linux/src/files.rs` | paths of the fds a Linux process opened (`fstat`, `getdents64`, `fchdir`, `*at`) |
 | `linux-compat/launcher.c` | the `linux` command |
@@ -215,8 +215,11 @@ Threads: `clone` with `CLONE_THREAD` (and `CLONE_VM`, `CLONE_FS`,
 `REQUEUE`/`CMP_REQUEUE` as a wake of every waiter) maps onto the core's
 `wait_addr`/`wake_addr`; a thread's `exit` clears and wakes its
 `CLEAR_TID` word, which is what `pthread_join` waits on. `clone` without
-`CLONE_THREAD` is only the fork form (`CLONE_VM` alone, as `posix_spawn`
-uses it, is not supported).
+`CLONE_THREAD` is the fork form, or `posix_spawn`'s (`CLONE_VM |
+CLONE_VFORK` with a stack, what Rust's `Command` uses through musl): a fork
+whose child starts on that stack (the core's `fork_from`). Its memory is a
+copy rather than shared, which posix_spawn does not notice: its child
+reports a failed exec through a pipe the parent waits on.
 
 Signals: `rt_sigaction` (handlers with `SA_SIGINFO`, `SA_RESTART`,
 `SA_NODEFER`, `SA_RESETHAND`, `sa_mask`), `rt_sigreturn`, `rt_sigprocmask`,
@@ -320,9 +323,9 @@ the kernel does not keep a per-task copy at syscall entry.
   queueing.
 - Threads run on their process's home CPU, interleaved, not in parallel
   (`docs/threads.md`).
-- No `posix_spawn` (`clone` with `CLONE_VM` but not `CLONE_THREAD`), no
-  shared file mappings (`MAP_SHARED`), no `O_CLOEXEC` and no `O_NONBLOCK`
-  outside sockets.
+- No other `clone` with `CLONE_VM` but not `CLONE_THREAD` than
+  posix_spawn's, no shared file mappings (`MAP_SHARED`), no `O_CLOEXEC`
+  and no `O_NONBLOCK` outside sockets.
 - Sockets: IPv4 clients only (no `listen`/`accept`, no IPv6, no Unix
   sockets or `socketpair`); no half-close (`shutdown` hangs up only for
   `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are

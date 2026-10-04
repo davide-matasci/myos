@@ -112,6 +112,7 @@ static API: KernelApi = KernelApi {
     tty_ctl_read: api_tty_ctl_read,
     tty_ctl_write: api_tty_ctl_write,
     fd_path: api_fd_path,
+    fork_from: api_fork_from,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1144,6 +1145,16 @@ unsafe extern "C" fn api_thread_spawn_from(regs: *mut u64, sp: usize, set_tls: i
     start.rsp = sp;
     let tls = (set_tls != 0).then_some(tls);
     crate::task::spawn_thread(start, tls).map_or(-1, |t| t as i32)
+}
+
+unsafe extern "C" fn api_fork_from(regs: *mut u64, sp: usize) -> i32 {
+    if regs.is_null() {
+        return -1;
+    }
+    let regs = crate::user::SyscallRegs::from_ptr(regs);
+    let mut start = crate::user::caller_regs(&regs);
+    start.rsp = sp;
+    crate::task::fork_current(start).map_or(-1, |p| p as i32)
 }
 
 unsafe extern "C" fn api_thread_exit(code: u8) -> ! {

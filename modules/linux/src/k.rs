@@ -204,6 +204,11 @@ pub mod task {
         let t = unsafe { (api().thread_spawn_from)(regs.0, sp, i32::from(tls.is_some()), tls.unwrap_or(0)) };
         (t >= 0).then_some(t as usize)
     }
+    /// Fork, the child resuming after the syscall in `regs` on stack `sp`.
+    pub fn fork_from(regs: &super::user::SyscallRegs, sp: usize) -> Option<usize> {
+        let pid = unsafe { (api().fork_from)(regs.0, sp) };
+        (pid >= 0).then_some(pid as usize)
+    }
     pub fn wait_seq() -> u64 {
         unsafe { (api().wait_seq)() }
     }
