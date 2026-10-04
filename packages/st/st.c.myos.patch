@@ -1,0 +1,14 @@
+st keeps TERMCAP for the shell it starts: on myos it is the path of the
+termcap file (/lib/termcap, which has st's entries), not an entry of the
+outer terminal, and ncurses finds no description without it.
+
+--- a/st.c
++++ b/st.c
+@@ -691,7 +691,6 @@
+ 
+ 	unsetenv("COLUMNS");
+ 	unsetenv("LINES");
+-	unsetenv("TERMCAP");
+ 	setenv("LOGNAME", pw->pw_name, 1);
+ 	setenv("USER", pw->pw_name, 1);
+ 	setenv("SHELL", sh, 1);
