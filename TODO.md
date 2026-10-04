@@ -59,10 +59,11 @@ platform: ...` line on the default QEMU `virt` UART address.
 ## Module follow-ups
 
 - **Unregister paths**: `rmmod` unloads a module only while it provides
-  nothing (the kernel counts its registrations and refuses otherwise). To
-  unload a driver or a filesystem, the blk/chr/fs/console/personality
-  registries need unregister paths and a check that no fd, mount or task
-  still uses them.
+  nothing (the kernel counts its registrations and refuses otherwise).
+  Block devices unregister (`blk_unregister`, refused while mounted or
+  open: a USB stick pulled out). To unload a driver or a filesystem, the
+  chr/fs/console/personality registries need the same and a check that no
+  fd, mount or task still uses them.
 - **Hotplug notification**: a hot-added device appears after `rescan` is
   written to `/proc/pci` (`module_rescan`); no ACPI/QEMU hotplug interrupt
   triggers that by itself. virtio-net probes once (netd binds the one

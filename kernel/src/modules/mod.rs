@@ -10,6 +10,8 @@
 
 pub mod elf;
 mod registry;
+mod services;
+mod threads;
 
 use crate::console;
 use alloc::alloc::{Layout, alloc, dealloc};
@@ -112,11 +114,16 @@ static API: KernelApi = KernelApi {
     tty_ctl_read: api_tty_ctl_read,
     tty_ctl_write: api_tty_ctl_write,
     fd_path: api_fd_path,
+    blk_unregister: api_blk_unregister,
+    service_register: api_service_register,
+    service_lookup: api_service_lookup,
+    thread_spawn: api_thread_spawn,
+    wake: api_wake,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
 /// device, or with their own wording); the loader announces the others.
-const SELF_REPORTING: &[&str] = &["console", "virtio_blk", "nvme", "virtio_net", "netfs", "pci_enum", "acpi"];
+const SELF_REPORTING: &[&str] = &["console", "virtio_blk", "nvme", "virtio_net", "netfs", "pci_enum", "acpi", "xhci", "usb_hub", "usb_storage"];
 
 /// Load the modules Limine placed in RAM (`module_path` entries of
 /// limine.conf, in order). Each is named after its path's last component.
@@ -1210,4 +1217,48 @@ unsafe extern "C" fn api_rng_fill(buf: *mut u8, len: usize) {
     }
     let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
     crate::rng::fill(out);
+}
+
+// --- ABI 21: hot-pluggable buses (docs/usb.md) ---
+
+unsafe extern "C" fn api_blk_unregister(dev: u32) -> i32 {
+    match crate::blk::unregister(dev) {
+        Ok(()) => 0,
+        Err(()) => myos_abi::MYOS_EBUSY,
+    }
+}
+
+unsafe extern "C" fn api_service_register(name: StrRef, table: *const core::ffi::c_void) -> i32 {
+    let Some(name) = str_ref(name) else {
+        return -1;
+    };
+    noted(services::register(name, table as usize))
+}
+
+unsafe extern "C" fn api_service_lookup(name: StrRef) -> *const core::ffi::c_void {
+    let Some(name) = str_ref(name) else {
+        return core::ptr::null();
+    };
+    match services::lookup(name) {
+        Some(table) => {
+            // The table's owner may call back into the module from now on:
+            // it stays loaded (a registration pins it).
+            registry::note_registration();
+            table as *const core::ffi::c_void
+        }
+        None => core::ptr::null(),
+    }
+}
+
+unsafe extern "C" fn api_thread_spawn(
+    name: StrRef,
+    entry: unsafe extern "C" fn(*mut core::ffi::c_void),
+    ctx: *mut core::ffi::c_void,
+) -> i32 {
+    let _ = name;
+    noted(threads::spawn(entry, ctx))
+}
+
+unsafe extern "C" fn api_wake(key: usize) {
+    crate::task::wake(key);
 }

@@ -1,0 +1,33 @@
+[workspace]
+
+[package]
+name = "xhci_host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "xHCI USB host controller kernel module: the USB bus service for the class driver modules (usb_hub, usb_storage)."
+
+[[bin]]
+name = "xhci"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+# Register, TRB and context layouts of the xHCI specification (MIT OR
+# Apache-2.0, rust-osdev); the driver logic is this module's.
+xhci = "0.9.2"
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

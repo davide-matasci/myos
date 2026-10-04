@@ -9,7 +9,11 @@
 /// out of the table and the ioctl hook out of [`ModuleChrOps`]: there is no
 /// ioctl, a device's state is its `ctl` file and `poll` says when it is ready.
 /// 20 added [`ModuleVfsOps::open`] (a file one program holds at a time).
-pub const ABI_VERSION: u32 = 20;
+/// 21 added what hot-pluggable buses need (`docs/usb.md`): `blk_unregister`,
+/// the service registry modules reach each other through
+/// (`service_register` / `service_lookup`), module threads (`thread_spawn`)
+/// and targeted wakes (`wake`), plus the USB bus types below.
+pub const ABI_VERSION: u32 = 21;
 
 /// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
 pub const MYOS_WAIT_ANY: usize = usize::MAX;
@@ -627,6 +631,187 @@ pub struct KernelApi {
     /// What `fd` is open on, as `/proc/self/fd` names it (`/dev/pts/3/data`,
     /// `/dev/pts/3/master`, `pipe:[N]`), into `buf`: its length, or negative.
     pub fd_path: unsafe extern "C" fn(fd: usize, buf: *mut u8, cap: usize) -> i32,
+    // --- ABI 21: hot-pluggable buses (docs/usb.md) ---
+    /// Take the block device `dev` (a `blk_register` id) out of `/dev`: 0,
+    /// or [`MYOS_EBUSY`] while a filesystem is mounted from it or an fd is
+    /// open on it (the driver then keeps the device, failing its I/O).
+    pub blk_unregister: unsafe extern "C" fn(dev: u32) -> i32,
+    /// Publish `table` (a `#[repr(C)]` function table that lives as long as
+    /// the module) under `name` for other modules: a bus its class drivers
+    /// reach through `service_lookup` ([`USB_SERVICE`]). 0, or negative
+    /// (name taken, table full). Counted as a registration.
+    pub service_register: unsafe extern "C" fn(name: StrRef, table: *const core::ffi::c_void) -> i32,
+    /// The table published under `name`, or null. A module that found one
+    /// stays loaded (`rmmod` refuses it): the table's owner may call back
+    /// into it.
+    pub service_lookup: unsafe extern "C" fn(name: StrRef) -> *const core::ffi::c_void,
+    /// A kernel thread running `entry(ctx)` in task context (it may block
+    /// on `block_until`, sleep, and call every `KernelApi` function a
+    /// syscall may): 0, or negative (no thread slot left: [`MYOS_MAX_MODULE_THREADS`]).
+    /// The module stays loaded while it runs.
+    pub thread_spawn: unsafe extern "C" fn(
+        name: StrRef,
+        entry: unsafe extern "C" fn(ctx: *mut core::ffi::c_void),
+        ctx: *mut core::ffi::c_void,
+    ) -> i32,
+    /// Wake the tasks blocked on `key` (`block_until`), and the `poll`
+    /// sleepers. Safe from interrupt context.
+    pub wake: unsafe extern "C" fn(key: usize),
+}
+
+/// `blk_unregister`: the device is mounted or open.
+pub const MYOS_EBUSY: i32 = -16;
+/// Kernel threads modules may run (`thread_spawn`), in all.
+pub const MYOS_MAX_MODULE_THREADS: usize = 8;
+
+// ---- ABI 21: the USB bus (docs/usb.md) ------------------------------------
+//
+// A host controller module (`xhci`) publishes a [`UsbHostOps`] table as the
+// service [`USB_SERVICE`]; class driver modules (`usb_hub`, `usb_storage`)
+// look it up and register a [`UsbDriverOps`]. The host enumerates devices
+// on its own thread (`thread_spawn`) and offers every interface to the
+// drivers there, so `probe` and `disconnect` run in task context and may
+// block in the host's transfers.
+
+/// The name the host controller publishes its [`UsbHostOps`] under.
+pub const USB_SERVICE: &str = "usb";
+/// [`UsbHostOps::version`].
+pub const USB_HOST_VERSION: u32 = 1;
+
+/// Device speeds ([`UsbDeviceInfo::speed`], `hub_attach`).
+pub const USB_SPEED_LOW: u8 = 1;
+pub const USB_SPEED_FULL: u8 = 2;
+pub const USB_SPEED_HIGH: u8 = 3;
+pub const USB_SPEED_SUPER: u8 = 4;
+
+/// Transfer results below zero: the device is gone, the endpoint stalled
+/// (`clear_halt` recovers it), the controller reported another error, the
+/// transfer did not complete in time.
+pub const USB_EGONE: i32 = -6;
+pub const USB_ESTALL: i32 = -32;
+pub const USB_EIO: i32 = -5;
+pub const USB_ETIMEDOUT: i32 = -110;
+
+/// Endpoints one interface may have ([`UsbInterfaceInfo::endpoints`]).
+pub const USB_MAX_ENDPOINTS: usize = 15;
+
+/// One endpoint of an interface, as its descriptor says: the address
+/// (direction in bit 7: IN), the attributes (transfer type in bits 1:0:
+/// 0 control, 1 isochronous, 2 bulk, 3 interrupt), the max packet size and
+/// the polling interval.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct UsbEndpoint {
+    pub address: u8,
+    pub attributes: u8,
+    pub max_packet: u16,
+    pub interval: u8,
+}
+
+/// An interface of the device's active configuration, as offered to
+/// [`UsbDriverOps::probe`].
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct UsbInterfaceInfo {
+    pub number: u8,
+    pub class: u8,
+    pub subclass: u8,
+    pub protocol: u8,
+    pub n_endpoints: u8,
+    pub endpoints: [UsbEndpoint; USB_MAX_ENDPOINTS],
+}
+
+/// A device the host enumerated: `id` names it in every [`UsbHostOps`]
+/// call; `parent` is the hub it hangs from (0: a root port) and `port` the
+/// port number on it; `depth` the number of hubs above it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UsbDeviceInfo {
+    pub id: u32,
+    pub parent: u32,
+    pub vendor: u16,
+    pub product: u16,
+    pub class: u8,
+    pub subclass: u8,
+    pub protocol: u8,
+    pub speed: u8,
+    pub port: u8,
+    pub depth: u8,
+    pub n_interfaces: u8,
+    /// `bConfigurationValue` of the active configuration.
+    pub config: u8,
+}
+
+/// The completion of a transfer queued with `interrupt_start`: `status` is
+/// the bytes moved, or a `USB_E*` error ([`USB_EGONE`]: the device went
+/// away; the transfer is not re-queued).
+pub type UsbCompletion = unsafe extern "C" fn(ctx: *mut core::ffi::c_void, status: i32);
+
+/// The USB host controller, for class drivers (the [`USB_SERVICE`] table).
+/// Transfers block until they complete (task context only); the hub calls
+/// run on the host's thread (from a hub driver's completion callback).
+#[repr(C)]
+pub struct UsbHostOps {
+    pub version: u32,
+    /// Register a class driver. The host offers it, on its thread, every
+    /// interface no driver claimed yet and every one enumerated later.
+    pub driver_register: unsafe extern "C" fn(ops: *const UsbDriverOps) -> i32,
+    /// A control transfer on endpoint 0 (`request_type` bit 7: device to
+    /// host): the bytes moved in the data stage, or a `USB_E*` error.
+    pub control: unsafe extern "C" fn(
+        dev: u32,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        data: *mut u8,
+        len: u16,
+    ) -> i32,
+    /// A bulk transfer on `endpoint` (the address with its direction bit):
+    /// bytes moved (a short IN transfer moves less than `len`), or an error.
+    pub bulk: unsafe extern "C" fn(dev: u32, endpoint: u8, data: *mut u8, len: usize, timeout_ms: u32) -> i32,
+    /// Queue one interrupt IN transfer on `endpoint`; `done(ctx, status)`
+    /// runs on the host's thread when it completes. One outstanding
+    /// transfer per endpoint. 0, or negative.
+    pub interrupt_start: unsafe extern "C" fn(
+        dev: u32,
+        endpoint: u8,
+        data: *mut u8,
+        len: usize,
+        done: UsbCompletion,
+        ctx: *mut core::ffi::c_void,
+    ) -> i32,
+    /// Recover a stalled bulk or interrupt endpoint. 0 ok.
+    pub clear_halt: unsafe extern "C" fn(dev: u32, endpoint: u8) -> i32,
+    /// `dev` is a hub with `ports` downstream ports (a USB 2 hub: its
+    /// transaction translator think time and whether it has one per port):
+    /// the controller learns so before children are attached. 0 ok.
+    pub hub_configure: unsafe extern "C" fn(dev: u32, ports: u8, tt_think: u8, multi_tt: u8) -> i32,
+    /// A device at `speed` is on `port` of hub `dev`, reset and enabled:
+    /// enumerate it as `dev`'s child and offer its interfaces. Its id, or
+    /// negative.
+    pub hub_attach: unsafe extern "C" fn(dev: u32, port: u8, speed: u8) -> i32,
+    /// The device on `port` of hub `dev` is gone: its drivers are told, its
+    /// children (a hub's) first, and its slot freed.
+    pub hub_detach: unsafe extern "C" fn(dev: u32, port: u8),
+    /// `dev`'s description into `*info`: 0, or [`USB_EGONE`].
+    pub device_info: unsafe extern "C" fn(dev: u32, info: *mut UsbDeviceInfo) -> i32,
+}
+
+// Function tables with a name: shared between the modules' threads.
+unsafe impl Sync for UsbHostOps {}
+unsafe impl Sync for UsbDriverOps {}
+
+/// A USB class driver (`UsbHostOps::driver_register`).
+#[repr(C)]
+pub struct UsbDriverOps {
+    pub name: StrRef,
+    /// An interface no driver claimed: 0 takes it (the driver owns its
+    /// endpoints from now on), negative passes.
+    pub probe: unsafe extern "C" fn(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceInfo) -> i32,
+    /// The device behind an interface this driver took is gone: forget it
+    /// (its transfers fail with [`USB_EGONE`] from now on).
+    pub disconnect: unsafe extern "C" fn(dev: u32, intf: u8),
 }
 
 /// A memory-mapped device from the device tree (`KernelApi::dt_mmio_find`).
