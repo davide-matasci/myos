@@ -13,6 +13,7 @@ use crate::k::user::{self, SyscallRegs};
 pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     match nr {
         17 => ret(sys::getcwd(a[0], a[1])),
+        19 => ret(sys::eventfd2(a[0], a[1])),
         23 => ret(sys::dup(a[0], 0)),
         24 => ret(sys::dup3(a[0], a[1], false, a[2])),
         25 => ret(sys::fcntl(a[0], a[1], a[2])),

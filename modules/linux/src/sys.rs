@@ -167,6 +167,9 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
     if would_block(fd, 1) {
         return Err(EAGAIN);
     }
+    if files::event_writer(fd).is_some() {
+        return eventfd_read(fd, buf, len);
+    }
     match files::get(fd) {
         Some(e) if e.dir => Err(EISDIR),
         Some(e) if e.sock.is_some() => net::recv(fd, false, io),
@@ -176,6 +179,9 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
 
 pub fn write(fd: usize, buf: usize, len: usize) -> R {
     let io = || native(task::fd_write(fd, buf, len), EBADF);
+    if let Some(w) = files::event_writer(fd) {
+        return eventfd_write(w, buf, len);
+    }
     if would_block(fd, 2) {
         return Err(EAGAIN);
     }
@@ -273,6 +279,10 @@ fn pty_alias(path: String) -> String {
 }
 
 pub fn close(fd: usize) -> R {
+    if let Some(w) = files::event_writer(fd) {
+        files::set_event_writer(fd, None);
+        close(w).ok();
+    }
     files::remove(fd);
     if task::fd_close(fd) { Ok(0) } else { Err(EBADF) }
 }
@@ -414,6 +424,49 @@ pub fn pipe2(fds: usize, flags: usize) -> R {
     b[4..].copy_from_slice(&(w as i32).to_le_bytes());
     put(fds, &b)?;
     Ok(0)
+}
+
+/// `eventfd2(initval, flags)` as a native pipe: the eventfd is the read
+/// end, the write end is kept aside (`files::event_writer`). A write of a
+/// non-zero count puts a byte in the pipe; a read takes what is there and
+/// gives the number of bytes as the count. Enough for a wakeup (libcurl's),
+/// not for exact counts: no semaphore mode, no initial value.
+pub fn eventfd2(init: usize, flags: usize) -> R {
+    const EFD_SEMAPHORE: usize = 1;
+    if init != 0 || flags & EFD_SEMAPHORE != 0 {
+        return Err(EINVAL);
+    }
+    let (r, w) = task::pipe_open().ok_or(EMFILE)?;
+    for fd in [r, w] {
+        files::remove(fd);
+        files::set_cloexec(fd, flags & O_CLOEXEC != 0);
+    }
+    files::set_nonblock(r, flags & O_NONBLOCK != 0);
+    files::set_event_writer(r, Some(w));
+    Ok(r)
+}
+
+fn eventfd_read(fd: usize, buf: usize, len: usize) -> R {
+    if len < 8 {
+        return Err(EINVAL);
+    }
+    // The bytes land in the caller's buffer, then their number replaces them.
+    let n = native(user::sys_read(fd, buf, 8), EBADF)?;
+    put(buf, &(n as u64).to_le_bytes())?;
+    Ok(8)
+}
+
+fn eventfd_write(writer: usize, buf: usize, len: usize) -> R {
+    if len < 8 {
+        return Err(EINVAL);
+    }
+    let mut v = [0u8; 8];
+    get(buf, &mut v)?;
+    if u64::from_le_bytes(v) != 0 {
+        // Any one byte of the caller's buffer will do.
+        native(task::fd_write(writer, buf, 1), EBADF)?;
+    }
+    Ok(8)
 }
 
 pub fn dup(fd: usize, min: usize) -> R {

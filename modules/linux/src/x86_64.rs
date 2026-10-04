@@ -136,6 +136,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         269 | 439 => ret(sys::faccessat(a[0], a[1])), // faccessat, faccessat2
         271 => ret(sys::ppoll(a[0], a[1], a[2])),
         273 => 0, // set_robust_list
+        284 => ret(sys::eventfd2(a[0], 0)),
+        290 => ret(sys::eventfd2(a[0], a[1])),
         292 => ret(sys::dup3(a[0], a[1], false, a[2])),
         293 => ret(sys::pipe2(a[0], a[1])),
         302 => ret(sys::prlimit(a[1], a[3])),

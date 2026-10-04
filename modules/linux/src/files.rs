@@ -33,9 +33,13 @@ static PATHS: Mutex<[Vec<FdPath>; MAX_TASKS]> = Mutex::new([const { Vec::new() }
 struct Flags {
     cloexec: u64,
     nonblock: u64,
+    /// An eventfd's pipe write end (`sys::eventfd2`), by its read end: fd + 1.
+    writer: [u8; 64],
 }
 
-static FLAGS: Mutex<[Flags; MAX_TASKS]> = Mutex::new([Flags { cloexec: 0, nonblock: 0 }; MAX_TASKS]);
+const NO_FLAGS: Flags = Flags { cloexec: 0, nonblock: 0, writer: [0; 64] };
+
+static FLAGS: Mutex<[Flags; MAX_TASKS]> = Mutex::new([NO_FLAGS; MAX_TASKS]);
 
 fn bit(fd: usize) -> u64 {
     if fd < 64 { 1 << fd } else { 0 }
@@ -50,7 +54,7 @@ pub fn on_fork(parent: usize, child: usize) {
 
 pub fn on_spawn(slot: usize) {
     PATHS.lock()[slot] = Vec::new();
-    FLAGS.lock()[slot] = Flags { cloexec: 0, nonblock: 0 };
+    FLAGS.lock()[slot] = NO_FLAGS;
 }
 
 /// Set fd's close-on-exec flag.
@@ -72,6 +76,18 @@ pub fn set_nonblock(fd: usize, on: bool) {
 
 pub fn nonblock(fd: usize) -> bool {
     FLAGS.lock()[task::current_pid()].nonblock & bit(fd) != 0
+}
+
+/// The write end of eventfd `fd`, if it is one.
+pub fn event_writer(fd: usize) -> Option<usize> {
+    let w = *FLAGS.lock()[task::current_pid()].writer.get(fd)?;
+    (w != 0).then(|| w as usize - 1)
+}
+
+pub fn set_event_writer(fd: usize, writer: Option<usize>) {
+    if let Some(slot) = FLAGS.lock()[task::current_pid()].writer.get_mut(fd) {
+        *slot = writer.map_or(0, |w| w as u8 + 1);
+    }
 }
 
 /// A successful exec in `slot`: the fds to close now (and forget).
@@ -109,6 +125,7 @@ pub fn remove(fd: usize) {
     PATHS.lock()[task::current_pid()].retain(|e| e.fd != fd);
     set_cloexec(fd, false);
     set_nonblock(fd, false);
+    set_event_writer(fd, None);
 }
 
 /// `new` now refers to what `old` does (dup/dup2/F_DUPFD), without
