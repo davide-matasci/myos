@@ -534,6 +534,21 @@ pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
     backend_ioctl(node.mount as usize, node.path_str(), request, arg)
 }
 
+/// The absolute path of an open vnode: its mount's prefix and the path
+/// inside it (what `/proc/self/fd/N` points at).
+pub fn vnode_path(node: &Vnode) -> String {
+    let mounts = MOUNTS.lock();
+    let prefix = mounts.get(node.mount as usize).map_or("", |m| m.prefix.as_str());
+    let rel = node.path_str();
+    let mut path = String::from("/");
+    path.push_str(prefix);
+    if !prefix.is_empty() && !rel.is_empty() {
+        path.push('/');
+    }
+    path.push_str(rel);
+    path
+}
+
 /// The page holding byte `offset` (page aligned) of a device file, from its
 /// module's `mmap` hook (`/dev/fb/data`); `None` for anything else.
 pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {

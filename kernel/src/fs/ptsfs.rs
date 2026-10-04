@@ -1,16 +1,31 @@
-//! ptsfs: slave nodes at `/dev/pts/N` (one per live pty pair, see [`crate::pty`]).
+//! ptsfs: the ptys at `/dev/pts/…` (`docs/tty.md`, [`crate::pty`]).
 //!
-//! Stat/list-only backend: pty fd I/O does not route through VFS — opening a
-//! slave node creates an `FdEntry::PtySlave` fd in [`crate::task`], and all
-//! reads/writes/ioctls go through the pty module directly. This backend
-//! exists so the POSIX `/dev/pts/N` naming (and `listdir` for pty discovery)
-//! resolves through the normal VFS tree.
+//! `clone` hands out pairs: opening it allocates one and returns the master
+//! fd. Each live pair is a directory `N/` with `master` (the end `clone`
+//! returned, the only way to hold it), `data` (the slave, the terminal a
+//! session runs on) and `ctl` (the pair's control file: termios, window
+//! size, `ctty`, `flush`, as text).
+//!
+//! Only `ctl` is read and written through the VFS. Opening `clone` or
+//! `data` makes a pty fd in [`crate::task`] whose I/O goes straight to the
+//! pty module, so this backend is stat/list for those, and `master` is
+//! never openable by path.
 
 use crate::fs::StatInfo;
 use crate::pty;
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFCHR: u32 = 0o020000;
+const S_IFREG: u32 = 0o100000;
+
+enum Node {
+    Clone,
+    /// `N`, the pair's directory.
+    Dir(usize),
+    Master(usize),
+    Data(usize),
+    Ctl(usize),
+}
 
 fn parse_index(name: &str) -> Option<usize> {
     if name.is_empty() || name.len() > 2 {
@@ -21,6 +36,24 @@ fn parse_index(name: &str) -> Option<usize> {
         return None;
     }
     Some(n)
+}
+
+fn parse(name: &str) -> Option<Node> {
+    if name == "clone" {
+        return Some(Node::Clone);
+    }
+    let (index, member) = match name.split_once('/') {
+        Some((index, member)) => (index, Some(member)),
+        None => (name, None),
+    };
+    let id = parse_index(index)?;
+    match member {
+        None => Some(Node::Dir(id)),
+        Some("master") => Some(Node::Master(id)),
+        Some("data") => Some(Node::Data(id)),
+        Some("ctl") => Some(Node::Ctl(id)),
+        Some(_) => None,
+    }
 }
 
 pub fn lookup(_name: &str) -> Option<&'static [u8]> {
@@ -35,36 +68,64 @@ pub fn create(_name: &str) -> bool {
     false
 }
 
-pub fn truncate(_name: &str) -> bool {
-    false
+/// A control file takes the shell's truncating open (`echo … > ctl`).
+pub fn truncate(name: &str) -> bool {
+    matches!(parse(name), Some(Node::Ctl(_)))
 }
 
-pub fn read(_name: &str, _pos: usize, _out: &mut [u8]) -> usize {
-    0
+pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
+    let Some(Node::Ctl(id)) = parse(name) else {
+        return 0;
+    };
+    let Some(text) = pty::ctl_text(id) else {
+        return 0;
+    };
+    let n = out.len().min(text.len().saturating_sub(pos));
+    if n != 0 {
+        out[..n].copy_from_slice(&text[pos..pos + n]);
+    }
+    n
 }
 
-pub fn write(_name: &str, _pos: usize, _buf: &[u8]) -> Option<usize> {
-    None
+pub fn write(name: &str, _pos: usize, buf: &[u8]) -> Option<usize> {
+    match parse(name)? {
+        Node::Ctl(id) => pty::ctl_write(id, buf),
+        _ => None,
+    }
+}
+
+fn push_name(buf: &mut [u8], n: &mut usize, name: &[u8]) -> bool {
+    if *n + name.len() + 1 > buf.len() {
+        return false;
+    }
+    buf[*n..*n + name.len()].copy_from_slice(name);
+    *n += name.len();
+    buf[*n] = b'\n';
+    *n += 1;
+    true
 }
 
 pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
-    if !rel.is_empty() && rel != "." {
-        return 0;
-    }
     let mut n = 0;
-    for id in 0..pty::MAX_PTYS {
-        if !pty::slave_exists(id) {
-            continue;
+    if rel.is_empty() || rel == "." {
+        push_name(buf, &mut n, b"clone");
+        for id in 0..pty::MAX_PTYS {
+            if !pty::slave_exists(id) {
+                continue;
+            }
+            let name = alloc::format!("{}", id);
+            if !push_name(buf, &mut n, name.as_bytes()) {
+                break;
+            }
         }
-        let name = alloc::format!("{}", id);
-        let need = name.len() + 1;
-        if n + need > buf.len() {
-            break;
+        return n;
+    }
+    if let Some(Node::Dir(_)) = parse(rel) {
+        for name in [b"master".as_slice(), b"data".as_slice(), b"ctl".as_slice()] {
+            if !push_name(buf, &mut n, name) {
+                break;
+            }
         }
-        buf[n..n + name.len()].copy_from_slice(name.as_bytes());
-        n += name.len();
-        buf[n] = b'\n';
-        n += 1;
     }
     n
 }
@@ -79,12 +140,23 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             dev: 0,
         });
     }
-    let idx = parse_index(name)?;
+    // Inodes: 2 for clone, then one range of MAX_PTYS per member.
+    let range = |base: u32, id: usize| base + id as u32;
+    let (mode, ino, size) = match parse(name)? {
+        Node::Clone => (S_IFCHR | 0o666, 2, 0),
+        Node::Dir(id) => (S_IFDIR | 0o755, range(10, id), 0),
+        Node::Master(id) => (S_IFCHR | 0o600, range(20, id), 0),
+        Node::Data(id) => (S_IFCHR | 0o620, range(30, id), 0),
+        Node::Ctl(id) => {
+            let len = pty::ctl_text(id).map_or(0, |t| t.len());
+            (S_IFREG | 0o644, range(40, id), u32::try_from(len).unwrap_or(u32::MAX))
+        }
+    };
     Some(StatInfo {
-        mode: S_IFCHR | 0o620,
-        size: 0,
-        ino: 200 + idx as u32,
-        nlink: 1,
+        mode,
+        size,
+        ino,
+        nlink: if mode & S_IFDIR != 0 { 2 } else { 1 },
         dev: 0,
     })
 }

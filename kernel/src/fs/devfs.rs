@@ -1,8 +1,10 @@
-//! devfs: device nodes at `/dev/…` (`null`, `tty`, `console`, `vd*`, `nvme*n1`).
+//! devfs: device nodes at `/dev/…` (`null`, `tty`, `console/`, `vd*`, `nvme*n1`).
 //!
-//! `/dev/console` is the hardware console (serial+fb). `/dev/tty` is the
+//! `/dev/console` is the hardware console (serial+fb), a directory like
+//! every terminal (`docs/tty.md`): `data` is the terminal, `ctl` its control
+//! file (termios, window size, `ctty`, `flush` as text). `/dev/tty` is the
 //! process controlling terminal: open is gated in [`crate::fs::open`] and
-//! aliases to console when a ctty is set.
+//! aliases to the console's `data` when a ctty is set.
 
 use crate::blk;
 use crate::fs::{IoctlResult, StatInfo};
@@ -12,13 +14,19 @@ use crate::task;
 const S_IFDIR: u32 = 0o040000;
 const S_IFCHR: u32 = 0o020000;
 const S_IFBLK: u32 = 0o060000;
+const S_IFREG: u32 = 0o100000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Node {
     Null,
     Zero,
     Tty,
+    /// `console`, the directory.
+    ConsoleDir,
+    /// `console/data`, the hardware console.
     Console,
+    /// `console/ctl`, its control file.
+    ConsoleCtl,
     Ptmx,
     Urandom,
     Block(u32),
@@ -90,7 +98,9 @@ fn parse(name: &str) -> Option<Node> {
         "null" => Some(Node::Null),
         "zero" => Some(Node::Zero),
         "tty" => Some(Node::Tty),
-        "console" => Some(Node::Console),
+        "console" => Some(Node::ConsoleDir),
+        "console/data" => Some(Node::Console),
+        "console/ctl" => Some(Node::ConsoleCtl),
         "ptmx" => Some(Node::Ptmx),
         "urandom" | "random" => Some(Node::Urandom),
         _ => parse_chr(name)
@@ -118,8 +128,40 @@ pub fn create(_name: &str) -> bool {
 }
 
 pub fn truncate(name: &str) -> bool {
-    // O_TRUNC on char/block devices is a no-op.
-    parse(name).is_some()
+    // O_TRUNC on char/block devices is a no-op; a control file takes the
+    // shell's truncating open (`echo … > ctl`) the same way.
+    parse(name).is_some_and(|n| n != Node::ConsoleDir)
+}
+
+/// The text of `/dev/console/ctl`: the console termios and the screen's size.
+fn console_ctl_text() -> alloc::vec::Vec<u8> {
+    let (rows, cols) = crate::console::winsize();
+    crate::tty::ctl_text(&input::termios(), rows, cols)
+}
+
+/// A write to `/dev/console/ctl`. A `winsize` line is accepted and ignored:
+/// the console is the size of the screen. The console has no output buffer,
+/// so `flush out` has nothing to do.
+fn console_ctl_write(text: &[u8]) -> Option<usize> {
+    use crate::tty::CtlAction;
+    for action in crate::tty::ctl_parse(&input::termios(), text)? {
+        match action {
+            CtlAction::Termios(t) => input::set_termios(t),
+            CtlAction::Winsize(..) => {}
+            CtlAction::Ctty => task::set_ctty(),
+            CtlAction::Flush { input: true, .. } => input::flush_input(),
+            CtlAction::Flush { .. } => {}
+        }
+    }
+    Some(text.len())
+}
+
+fn copy_at(data: &[u8], pos: usize, out: &mut [u8]) -> usize {
+    let n = out.len().min(data.len().saturating_sub(pos));
+    if n != 0 {
+        out[..n].copy_from_slice(&data[pos..pos + n]);
+    }
+    n
 }
 
 pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
@@ -137,6 +179,8 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
                 input::read(out)
             }
         }
+        Some(Node::ConsoleDir) => 0,
+        Some(Node::ConsoleCtl) => copy_at(&console_ctl_text(), pos, out),
         // ptmx I/O routes through FdEntry::PtyMaster in crate::task; a plain
         // VFS read on the node itself has no peer session — report EIO-ish 0.
         Some(Node::Ptmx) => 0,
@@ -170,6 +214,8 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
             task::print_bytes(buf);
             Some(buf.len())
         }
+        Some(Node::ConsoleDir) => None,
+        Some(Node::ConsoleCtl) => console_ctl_write(buf),
         Some(Node::Ptmx) => None,
         // Writes to the RNG pool are ignored (no RNDADDENTROPY ioctl yet).
         Some(Node::Urandom) => Some(buf.len()),
@@ -189,12 +235,15 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
 }
 
 pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
-    if !rel.is_empty() && rel != "." {
-        return 0;
-    }
     const NAMES: &[&[u8]] = &[b"null", b"zero", b"tty", b"console", b"ptmx", b"urandom", b"random"];
+    const CONSOLE: &[&[u8]] = &[b"data", b"ctl"];
+    let names = match rel {
+        "" | "." => NAMES,
+        "console" => CONSOLE,
+        _ => return 0,
+    };
     let mut n = 0;
-    for name in NAMES {
+    for name in names {
         let need = name.len() + 1;
         if n + need > buf.len() {
             break;
@@ -203,6 +252,9 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         n += name.len();
         buf[n] = b'\n';
         n += 1;
+    }
+    if rel == "console" {
+        return n;
     }
     for id in 0..blk::count() {
         let mut name = [0u8; 16];
@@ -261,10 +313,24 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
         }),
+        Node::ConsoleDir => Some(StatInfo {
+            mode: S_IFDIR | 0o755,
+            size: 0,
+            ino: 8,
+            nlink: 2,
+            dev: 0,
+        }),
         Node::Console => Some(StatInfo {
             mode: S_IFCHR | 0o666,
             size: 0,
             ino: 4,
+            nlink: 1,
+            dev: 0,
+        }),
+        Node::ConsoleCtl => Some(StatInfo {
+            mode: S_IFREG | 0o644,
+            size: u32::try_from(console_ctl_text().len()).unwrap_or(u32::MAX),
+            ino: 9,
             nlink: 1,
             dev: 0,
         }),
@@ -307,7 +373,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     }
 }
 
-/// Linux-compatible tty ioctls for the hardware console (`/dev/console`).
+/// Linux-compatible tty ioctls for the hardware console (`/dev/console/data`).
 ///
 /// `TIOCSCTTY` is handled in [`crate::task::fd_ioctl`] (sets `Task.has_ctty`).
 /// `/dev/tty` open is gated there too; when allowed it aliases to console.
@@ -338,6 +404,7 @@ pub fn ioctl(name: &str, request: usize, arg: usize) -> IoctlResult {
     match parse(name) {
         // `/dev/tty` open aliases to console; keep both for leftover/stat paths.
         Some(Node::Tty) | Some(Node::Console) => tty_ioctl(request),
+        Some(Node::ConsoleDir) | Some(Node::ConsoleCtl) => IoctlResult::Notty,
         // pty pair ioctls are handled per-fd in crate::task (they need
         // userspace copies); the bare node has no pair attached.
         Some(Node::Ptmx) => IoctlResult::Notty,

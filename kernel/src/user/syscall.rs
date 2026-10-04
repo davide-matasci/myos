@@ -409,9 +409,11 @@ pub(crate) fn open_path(path: &str, flags: usize) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
-    // pty nodes: /dev/ptmx (master, allocates a pair) and /dev/pts/N (slave).
-    // Existence is still validated through the VFS tree; the resulting fd is
-    // a pty fd, not a plain file fd (I/O routes via crate::pty).
+    // The pty ends (docs/tty.md): /dev/pts/clone allocates a pair and
+    // returns its master, /dev/pts/N/data is the slave. The fd is a pty fd,
+    // not a plain file fd (I/O routes via crate::pty). /dev/pts/N/master is
+    // only ever what clone returned, never opened by name. /dev/ptmx and
+    // the flat /dev/pts/N are the old names, kept until libc has moved.
     let path_rel = path.trim_start_matches('/');
     if path_rel == "dev/ptmx" {
         if fs::open("/dev/ptmx", flags as u32).is_none() {
@@ -420,22 +422,23 @@ pub(crate) fn open_path(path: &str, flags: usize) -> usize {
         return task::fd_open_pty_master().unwrap_or(SYSERR);
     }
     if let Some(rest) = path_rel.strip_prefix("dev/pts/") {
-        if let Ok(id) = rest.parse::<usize>() {
-            return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
+        if rest == "clone" {
+            return task::fd_open_pty_master().unwrap_or(SYSERR);
+        }
+        let (index, member) = rest.split_once('/').unwrap_or((rest, ""));
+        if let Ok(id) = index.parse::<usize>() {
+            match member {
+                "" | "data" => return task::fd_open_pty_slave(id).unwrap_or(SYSERR),
+                "master" => return SYSERR,
+                _ => {}
+            }
         }
     }
     // /dev/tty in a pty session (a forkpty child and what it started: an SSH
-    // login, the tty smoke) is that pty's slave, not the console. Sessions
-    // are not real yet (setsid is a no-op in libgloss), so the claim is
-    // looked up along the parent chain.
+    // login, the tty smoke) is that pty's slave, not the console.
     if path_rel == "dev/tty" {
-        let mut pid = Some(task::current_pid());
-        for _ in 0..16 {
-            let Some(p) = pid else { break };
-            if let Some(id) = crate::pty::claimed_by(p) {
-                return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
-            }
-            pid = task::parent_pid(p);
+        if let Some(id) = crate::pty::for_session(task::current_pid()) {
+            return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
         }
     }
     // Named FIFO: the fd is a pipe end, not a file vnode.

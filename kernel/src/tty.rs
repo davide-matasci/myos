@@ -15,6 +15,9 @@
 //! property ptys need (a shell's raw/cooked state never touches another
 //! session or the console).
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 /// Matches libgloss `<termios.h>` `struct termios` layout (56 bytes).
 pub const TERMIOS_LEN: usize = 56;
 
@@ -280,4 +283,141 @@ impl TtyIn {
     pub fn available(&self) -> usize {
         (self.head + RING - self.tail) % RING
     }
+
+    /// Discard the pending input: the committed ring, the edit line and a
+    /// pending EOF (`flush in` on the control file).
+    pub fn flush_input(&mut self) {
+        self.tail = self.head;
+        self.edit_len = 0;
+        self.eof = false;
+    }
+}
+
+/// What a write to a terminal's control file asks for (see [`ctl_parse`]).
+pub enum CtlAction {
+    /// New termios, the lines of the write folded into the current one.
+    Termios(Termios),
+    /// `winsize ROWS COLS`.
+    Winsize(u16, u16),
+    /// `ctty`: make the terminal the caller's controlling terminal.
+    Ctty,
+    /// `flush [in|out|both]`: discard pending input and/or output.
+    Flush { input: bool, output: bool },
+}
+
+/// The text of a terminal's control file, `ctl` next to its `data`
+/// (`docs/tty.md`): the state one field per line, what a write takes back.
+///
+/// ```text
+/// iflag 0x400              the termios flags, Linux values
+/// oflag 0x5
+/// cflag 0xb0
+/// lflag 0x8a3b
+/// cc 03 1c 7f 15 04 00 01 …   the 32 control characters, two hex digits each
+/// speed 0 0                input and output speed
+/// winsize 24 80            rows and columns
+/// ```
+pub fn ctl_text(t: &Termios, rows: u16, cols: u16) -> Vec<u8> {
+    let mut s = alloc::format!(
+        "iflag 0x{:x}\noflag 0x{:x}\ncflag 0x{:x}\nlflag 0x{:x}\ncc",
+        t.c_iflag, t.c_oflag, t.c_cflag, t.c_lflag
+    );
+    for b in t.c_cc {
+        s.push_str(&alloc::format!(" {b:02x}"));
+    }
+    s.push_str(&alloc::format!(
+        "\nspeed {} {}\nwinsize {rows} {cols}\n",
+        t.c_ispeed, t.c_ospeed
+    ));
+    s.into_bytes()
+}
+
+/// Parse a write to a control file: the lines of [`ctl_text`] (a flag line
+/// changes that flag only, a `cc` line the characters it lists) and the
+/// commands `ctty` and `flush [in|out|both]`. Numbers are `0x` hex or
+/// decimal. The write is all or nothing: an unknown word, a bad number or a
+/// line with too many words fails it (`None`) and nothing is applied, so it
+/// has to carry whole lines.
+pub fn ctl_parse(current: &Termios, text: &[u8]) -> Option<Vec<CtlAction>> {
+    let text = core::str::from_utf8(text).ok()?;
+    let mut termios = *current;
+    let mut changed = false;
+    let mut actions = Vec::new();
+    for line in text.lines() {
+        let mut words = line.split_ascii_whitespace();
+        let Some(key) = words.next() else {
+            continue;
+        };
+        match key {
+            "iflag" | "oflag" | "cflag" | "lflag" => {
+                let v = number(words.next()?)?;
+                match key {
+                    "iflag" => termios.c_iflag = v,
+                    "oflag" => termios.c_oflag = v,
+                    "cflag" => termios.c_cflag = v,
+                    _ => termios.c_lflag = v,
+                }
+                changed = true;
+            }
+            "cc" => {
+                let mut i = 0;
+                for w in words.by_ref() {
+                    if i >= termios.c_cc.len() {
+                        return None;
+                    }
+                    termios.c_cc[i] = u8::from_str_radix(w, 16).ok()?;
+                    i += 1;
+                }
+                if i == 0 {
+                    return None;
+                }
+                changed = true;
+            }
+            "speed" => {
+                termios.c_ispeed = number(words.next()?)?;
+                termios.c_ospeed = number(words.next()?)?;
+                changed = true;
+            }
+            "winsize" => {
+                let rows = u16::try_from(number(words.next()?)?).ok()?;
+                let cols = u16::try_from(number(words.next()?)?).ok()?;
+                actions.push(CtlAction::Winsize(rows, cols));
+            }
+            "ctty" => actions.push(CtlAction::Ctty),
+            "flush" => {
+                let (input, output) = match words.next() {
+                    None | Some("both") => (true, true),
+                    Some("in") => (true, false),
+                    Some("out") => (false, true),
+                    Some(_) => return None,
+                };
+                actions.push(CtlAction::Flush { input, output });
+            }
+            _ => return None,
+        }
+        if words.next().is_some() {
+            return None;
+        }
+    }
+    if changed {
+        actions.insert(0, CtlAction::Termios(termios));
+    }
+    Some(actions)
+}
+
+fn number(word: &str) -> Option<u32> {
+    match word.strip_prefix("0x") {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => word.parse().ok(),
+    }
+}
+
+/// The directory of the calling process's controlling terminal
+/// (`/proc/self/tty`): the pty its session claimed, else the console when
+/// it has one, else none.
+pub fn ctty_dir() -> Option<String> {
+    if let Some(id) = crate::pty::for_session(crate::task::current_pid()) {
+        return Some(alloc::format!("/dev/pts/{id}"));
+    }
+    crate::task::has_ctty().then(|| String::from("/dev/console"))
 }

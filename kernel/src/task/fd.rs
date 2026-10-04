@@ -15,10 +15,11 @@ pub(super) enum FdEntry {
     File(usize),
     PipeRead(usize),
     PipeWrite(usize),
-    /// PTY master end (`/dev/ptmx`): writes feed slave input, reads drain
-    /// slave output. Refcounted like pipes.
+    /// PTY master end (`/dev/pts/N/master`, from opening `/dev/pts/clone`):
+    /// writes feed slave input, reads drain slave output. Refcounted like
+    /// pipes.
     PtyMaster(usize),
-    /// PTY slave end (`/dev/pts/N`): the session-side tty.
+    /// PTY slave end (`/dev/pts/N/data`): the session-side tty.
     PtySlave(usize),
 }
 
@@ -408,7 +409,8 @@ pub fn fd_pipe_peer(fd: usize) -> Option<usize> {
     })
 }
 
-/// Open `/dev/ptmx`: allocate a pty pair, take the master fd.
+/// Open `/dev/pts/clone` (or the old `/dev/ptmx`): allocate a pty pair,
+/// take the master fd.
 pub fn fd_open_pty_master() -> Option<usize> {
     let id = crate::pty::alloc()?;
     let out = with_process_mut(|t| {
@@ -426,7 +428,7 @@ pub fn fd_open_pty_master() -> Option<usize> {
     out
 }
 
-/// Open `/dev/pts/N`: take a slave fd on an existing pair. Opening does NOT
+/// Open `/dev/pts/N/data`: take a slave fd on an existing pair. Opening does NOT
 /// claim the controlling-terminal session (Linux only binds a ctty via
 /// `TIOCSCTTY`); `fd_open_pty_slave` deliberately skips `claim_session` so a
 /// plain `openpty` can never scope SIGHUP/^C to a foreign process group.
@@ -799,6 +801,23 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
     })
 }
 
+/// What `fd` is open on, as `/proc/self/fd/N` names it: a path for a file
+/// or a terminal (`/dev/console/data`, `/dev/pts/N/data`, the master end as
+/// `/dev/pts/N/master`), `pipe:[N]` for a pipe end.
+pub fn fd_path(fd: usize) -> Option<alloc::string::String> {
+    use alloc::format;
+    use alloc::string::String;
+    let entry = with_process_mut(|t| t.fds.get(fd).copied())?;
+    Some(match entry {
+        FdEntry::Empty => return None,
+        FdEntry::Stdin | FdEntry::Console => String::from("/dev/console/data"),
+        FdEntry::File(id) => crate::fs::vfs::vnode_path(&open_file_node(id)?),
+        FdEntry::PipeRead(id) | FdEntry::PipeWrite(id) => format!("pipe:[{id}]"),
+        FdEntry::PtyMaster(id) => format!("/dev/pts/{id}/master"),
+        FdEntry::PtySlave(id) => format!("/dev/pts/{id}/data"),
+    })
+}
+
 /// The file behind `fd` (for file-backed `mmap`), if it is a regular file.
 pub fn fd_file_node(fd: usize) -> Option<crate::fs::Vnode> {
     match with_process_mut(|t| t.fds.get(fd).copied())? {
@@ -837,7 +856,7 @@ fn fd_is_console_tty(entry: FdEntry) -> bool {
                 return false;
             };
             let p = node.path_str();
-            p == "tty" || p == "console"
+            p == "tty" || p == "console/data"
         }
         _ => false,
     }
