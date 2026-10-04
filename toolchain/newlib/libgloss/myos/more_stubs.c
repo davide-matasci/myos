@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/utsname.h>
 #include <unistd.h>
 
@@ -320,4 +321,32 @@ int uname(struct utsname *buf) {
     strncpy(buf->version, "myos", sizeof(buf->version));
     strncpy(buf->machine, "myos", sizeof(buf->machine));
     return 0;
+}
+
+pid_t getppid(void) {
+    return (pid_t)myos_syscall0(MYOS_SYS_GETPPID);
+}
+
+/* 4 KiB pages on all three arches. */
+int getpagesize(void) {
+    return 4096;
+}
+
+int getdtablesize(void) {
+    return MYOS_OPEN_MAX;
+}
+
+/* No interval timers: callers fall back (the X server's scheduler runs
+ * without its SIGALRM time slices). */
+int setitimer(int which, const struct itimerval *value, struct itimerval *old) {
+    (void)which;
+    (void)value;
+    (void)old;
+    return myos_nosys();
+}
+
+int getitimer(int which, struct itimerval *value) {
+    (void)which;
+    (void)value;
+    return myos_nosys();
 }

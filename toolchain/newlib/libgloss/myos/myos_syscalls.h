@@ -71,6 +71,10 @@ struct winsize;
  * event a poller cares about (console/pipe/pty/device traffic, an exit). */
 #define MYOS_SYS_NANOSLEEP 52
 #define MYOS_SLEEP_ANY_EVENT 1
+#define MYOS_SYS_GETPPID 60
+
+/* fds per process (kernel MAX_FDS): sysconf(_SC_OPEN_MAX), getdtablesize. */
+#define MYOS_OPEN_MAX 64
 #define MYOS_WAIT_NOHANG 1
 
 #define MYOS_STR_(x) #x

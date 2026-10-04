@@ -1,0 +1,28 @@
+diff --git a/dix/dixfonts.c b/dix/dixfonts.c
+index 667ff21..194cecf 100644
+--- a/dix/dixfonts.c
++++ b/dix/dixfonts.c
+@@ -1853,6 +1853,10 @@ DeleteClientFontStuff(ClientPtr client)
+     }
+ }
+ 
++#ifdef KDRIVESERVER
++extern void BuiltinRegisterFpeFunctions(void);	/* libXfont */
++#endif
++
+ void
+ InitFonts()
+ {
+diff --git a/include/dix-config.h.in b/include/dix-config.h.in
+index 121977a..02870a5 100644
+--- a/include/dix-config.h.in
++++ b/include/dix-config.h.in
+@@ -248,4 +248,8 @@
+ #define _X_UNUSED
+ #endif
+ 
++/* Build a kdrive server: dix/dixfonts.c registers libXfont's built-in
++ * fonts (the "built-ins" font path element) only then. */
++#undef KDRIVESERVER
++
+ #endif /* _DIX_CONFIG_H_ */
