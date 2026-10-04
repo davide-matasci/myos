@@ -15,9 +15,11 @@ use super::files;
 use super::sys::{get_bytes, native, put, R};
 use crate::k::{fs, signal, task, time, user};
 
+const AF_UNIX: usize = 1;
 const AF_INET: usize = 2;
 const SOCK_STREAM: usize = 1;
 const SOCK_DGRAM: usize = 2;
+const SOCK_SEQPACKET: usize = 5;
 const SOCK_NONBLOCK: usize = 0o4000;
 const SOCK_CLOEXEC: usize = 0o2000000;
 const MSG_DONTWAIT: usize = 0x40;
@@ -149,20 +151,36 @@ pub fn socket(domain: usize, ty: usize) -> R {
         _ => return Err(EPROTOTYPE),
     };
     let proto = if stream { "tcp" } else { "udp" };
-    // `/net` is the system's, also inside a `linux --root` chroot (a bind):
-    // the conversation is kept by its VFS path.
-    let dir = user::resolve_copied_path(&format!("/net/{proto}")).ok_or(EAFNOSUPPORT)?;
     // Reading `clone` allocates a conversation and names it.
+    let dir = net_dir(proto)?;
+    let id = conv_id(&format!("{dir}/clone"))?;
+    open_conv(proto, &id, ty, stream)
+}
+
+/// `/net/{proto}`'s VFS path. `/net` is the system's, also inside a
+/// `linux --root` chroot (a bind): conversations are kept by VFS path.
+fn net_dir(proto: &str) -> Result<String, usize> {
+    user::resolve_copied_path(&format!("/net/{proto}")).ok_or(EAFNOSUPPORT)
+}
+
+/// The conversation number read from `file` (`clone` or `listen`).
+fn conv_id(file: &str) -> Result<String, usize> {
     let mut b = [0u8; 8];
-    let n = fs::read(&format!("{dir}/clone"), 0, &mut b).unwrap_or(0);
-    let id = core::str::from_utf8(&b[..n]).ok().map(str::trim).filter(|s| !s.is_empty()).ok_or(EMFILE)?;
-    let conv = format!("{dir}/{id}");
+    let n = fs::read(file, 0, &mut b).unwrap_or(0);
+    let id = core::str::from_utf8(&b[..n]).ok().map(str::trim).filter(|s| !s.is_empty());
+    id.map(String::from).ok_or(EMFILE)
+}
+
+/// Conversation `id` of `/net/{proto}` as a socket: its `data` open.
+fn open_conv(proto: &str, id: &str, ty: usize, stream: bool) -> R {
+    let conv = format!("{}/{id}", net_dir(proto)?);
     let fd = user::open_path(&format!("/net/{proto}/{id}/data"), 2);
     if fd >= signal::SYSERR_EINTR {
         let _ = fs::write(&format!("{conv}/ctl"), 0, b"hangup");
         return Err(EMFILE);
     }
     files::set_sock(fd, conv, Sock { stream, nonblock: ty & SOCK_NONBLOCK != 0, peer: None });
+    files::set_cloexec(fd, ty & SOCK_CLOEXEC != 0);
     Ok(fd)
 }
 
@@ -315,6 +333,39 @@ pub fn getsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -
 /// and a client socket binds implicitly).
 pub fn ignored(fd: usize) -> R {
     sock(fd).map(|_| 0)
+}
+
+/// `socketpair(AF_UNIX, ...)`: a `/net/unix` conversation and the one its
+/// `pair` connects to it (taken from its `listen`), both kept as sockets
+/// like TCP's. Stream semantics for `SOCK_SEQPACKET` too: no message
+/// boundaries, and no fd passing.
+pub fn socketpair(domain: usize, ty: usize, sv: usize) -> R {
+    if domain != AF_UNIX {
+        return Err(EAFNOSUPPORT);
+    }
+    if !matches!(ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC), SOCK_STREAM | SOCK_SEQPACKET) {
+        return Err(EPROTOTYPE);
+    }
+    let dir = net_dir("unix")?;
+    let id = conv_id(&format!("{dir}/clone"))?;
+    let conv = format!("{dir}/{id}");
+    let a = open_conv("unix", &id, ty, true)?;
+    let b = fs::write(&format!("{conv}/ctl"), 0, b"pair")
+        .ok_or(EMFILE)
+        .and_then(|_| conv_id(&format!("{conv}/listen")))
+        .and_then(|id| open_conv("unix", &id, ty, true));
+    let b = match b {
+        Ok(b) => b,
+        Err(e) => {
+            super::sys::close(a).ok();
+            return Err(e);
+        }
+    };
+    let mut v = [0u8; 8];
+    v[..4].copy_from_slice(&(a as i32).to_le_bytes());
+    v[4..].copy_from_slice(&(b as i32).to_le_bytes());
+    put(sv, &v)?;
+    Ok(0)
 }
 
 /// `listen` and `accept`: no listening sockets yet.

@@ -14,6 +14,7 @@ const CLONE_VM: usize = 0x100;
 const CLONE_FS: usize = 0x200;
 const CLONE_FILES: usize = 0x400;
 const CLONE_SIGHAND: usize = 0x800;
+const CLONE_VFORK: usize = 0x4000;
 const CLONE_THREAD: usize = 0x1_0000;
 const CLONE_SETTLS: usize = 0x8_0000;
 const CLONE_PARENT_SETTID: usize = 0x10_0000;
@@ -30,15 +31,22 @@ pub fn on_new_task(slot: usize) {
 }
 
 /// `clone(flags, stack, ptid, tls, ctid)` (the arch passes them in this
-/// order). Two forms: a thread (`CLONE_THREAD`, sharing what the core's
-/// threads share), and the fork-equivalent one (exit signal in the low
-/// byte, nothing shared, no new stack).
+/// order). Three forms: a thread (`CLONE_THREAD`, sharing what the core's
+/// threads share), the fork-equivalent one (exit signal in the low byte,
+/// nothing shared, no new stack), and posix_spawn's.
 pub fn clone(regs: &SyscallRegs, flags: usize, stack: usize, ptid: usize, tls: usize, ctid: usize) -> R {
     if flags & CLONE_THREAD == 0 {
-        if flags & !0xff != 0 || stack != 0 {
-            return Err(ENOSYS);
-        }
-        return sys::fork(regs);
+        return match (flags & !0xff, stack) {
+            (0, 0) => sys::fork(regs),
+            // posix_spawn (musl's, Rust's `Command`): CLONE_VM | CLONE_VFORK,
+            // the child on a stack of its own until it execs. A fork whose
+            // child starts on that stack does: its memory is a copy, not
+            // shared, but all the child reports (a failed exec) goes through
+            // a pipe, and the parent waits on that pipe as CLONE_VFORK would
+            // make it wait.
+            (f, sp) if f == CLONE_VM | CLONE_VFORK && sp != 0 => task::fork_from(regs, sp).ok_or(EAGAIN),
+            _ => Err(ENOSYS),
+        };
     }
     const SHARED: usize = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
     if flags & SHARED != SHARED || stack == 0 {

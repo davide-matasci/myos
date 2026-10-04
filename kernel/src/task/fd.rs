@@ -148,21 +148,13 @@ pub(super) fn fd_drop(entry: FdEntry) {
     }
 }
 
-/// Lock-free user-buffer check from a TASKS snapshot.
+/// Whether `[buf, buf + len)` is user memory of process `t` (the caller
+/// holds `TASKS`, in `with_process_mut`).
 ///
-/// Must not take `TASKS`: `fd_read` of a file re-checks the dest buffer
-/// inside `with_process_mut`. Routing through `user::buffer_ok` re-locks
+/// Must not take `TASKS` itself: routing through `user::buffer_ok` re-locks
 /// (`current_user_map` / `mmap_contains`) and deadlocks the same CPU —
 /// hang after `/ok` prints `user ok`, on the first `read` of `/msg`.
-fn user_buf_ok(
-    buf: usize,
-    len: usize,
-    user_base: usize,
-    image_span: usize,
-    stack_off: usize,
-    brk: usize,
-    mmap: &[MmapRegion],
-) -> bool {
+fn user_buf_ok(buf: usize, len: usize, t: &Process) -> bool {
     if len == 0 {
         return true;
     }
@@ -170,7 +162,10 @@ fn user_buf_ok(
         Some(e) => e,
         None => return false,
     };
-    let stack = stack_off;
+    let user_base = t.user_base as usize;
+    let image_span = t.image_span;
+    let brk = t.brk_cur as usize;
+    let stack = t.stack_off as usize;
     let stack_bytes = crate::user::USER_STACK_PAGES * crate::user::PAGE;
     let in_code = buf >= user_base && end <= user_base + image_span;
     let in_stack = buf >= user_base + stack && end <= user_base + stack + stack_bytes;
@@ -179,7 +174,7 @@ fn user_buf_ok(
     if in_code || in_stack || in_heap {
         return true;
     }
-    mmap_range_in(mmap, buf, len)
+    mmap_range_in(&t.mmap, buf, len)
 }
 
 pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
@@ -548,24 +543,11 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         return 0;
     }
     loop {
-        // Copy out only what the check needs: a whole `Task` is ~10 KiB
-        // (fd table + mmap table) and used to be copied twice per read.
-        let (entry, map, mmap) = with_process_mut(|t| {
-            (
-                t.fds.get(fd).copied().unwrap_or(FdEntry::Empty),
-                (
-                    t.user_base,
-                    t.image_span,
-                    t.stack_off,
-                    t.brk_cur as usize,
-                ),
-                t.mmap,
-            )
+        let (entry, ok) = with_process_mut(|t| {
+            let entry = t.fds.get(fd).copied().unwrap_or(FdEntry::Empty);
+            (entry, user_buf_ok(buf, len.min(FILE_READ_TMP), t))
         });
-        let (user_base, image_span, stack_off, brk) = map;
-        let user_base = user_base as usize;
-        let stack_off = stack_off as usize;
-        if !user_buf_ok(buf, len.min(FILE_READ_TMP), user_base, image_span, stack_off, brk, &mmap) {
+        if !ok {
             return usize::MAX;
         }
         match entry {
@@ -660,28 +642,11 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
     let mut total = 0usize;
     while total < len {
         let chunk = (len - total).min(FILE_IO_TMP);
-        let (entry, map, mmap) = with_process_mut(|t| {
-            (
-                t.fds.get(fd).copied().unwrap_or(FdEntry::Empty),
-                (
-                    t.user_base,
-                    t.image_span,
-                    t.stack_off,
-                    t.brk_cur as usize,
-                ),
-                t.mmap,
-            )
+        let (entry, ok) = with_process_mut(|t| {
+            let entry = t.fds.get(fd).copied().unwrap_or(FdEntry::Empty);
+            (entry, user_buf_ok(buf + total, chunk, t))
         });
-        let (user_base, image_span, stack_off, brk) = map;
-        if !user_buf_ok(
-            buf + total,
-            chunk,
-            user_base as usize,
-            image_span,
-            stack_off as usize,
-            brk,
-            &mmap,
-        ) {
+        if !ok {
             return if total == 0 { usize::MAX } else { total };
         }
         let mut tmp = [0u8; FILE_IO_TMP];

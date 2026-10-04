@@ -207,6 +207,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 1,
             nlink: 2,
             dev: 0,
+            mtime: 0,
         });
     }
     if !valid_rel(name) {
@@ -222,6 +223,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: crate::fs::vfs::data_ino(e.data),
             nlink: 1,
             dev: 0,
+            mtime: 0,
         });
     }
     if is_dir_path(&files, name) {
@@ -231,6 +233,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: crate::fs::vfs::dir_ino(name),
             nlink: 2,
             dev: 0,
+            mtime: 0,
         });
     }
     None

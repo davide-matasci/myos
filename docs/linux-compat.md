@@ -129,7 +129,7 @@ Linux ones. It is killed by its own fault; the kernel stays up.
 | `modules/linux/src/generic.rs` | the `asm-generic` syscall numbers and `struct stat` aarch64 and riscv64 share |
 | `modules/linux/src/sys.rs` | the handlers: decode Linux arguments, call the native implementation, return `-errno` |
 | `modules/linux/src/signal.rs` | `rt_sigaction` & co., handler delivery, `rt_sigreturn`, the sigreturn trampoline page |
-| `modules/linux/src/thread.rs` | `clone` (threads and the fork form), `futex`, `set_tid_address`, thread `exit` |
+| `modules/linux/src/thread.rs` | `clone` (threads, the fork form and posix_spawn's), `futex`, `set_tid_address`, thread `exit` |
 | `modules/linux/src/abi.rs` | errno values, signal-number and sigset translation, `dirent64` layout |
 | `modules/linux/src/files.rs` | paths of the fds a Linux process opened (`fstat`, `getdents64`, `fchdir`, `*at`) |
 | `linux-compat/launcher.c` | the `linux` command |
@@ -193,14 +193,21 @@ Files: `read`, `write`, `readv`, `writev`, `open`, `openat`, `close`, `stat`,
 `lstat`, `fstat`, `newfstatat`, `lseek`, `getdents64`, `ioctl` (the tty
 requests from the terminal's ctl file, `docs/tty.md`; `FIONBIO` on sockets;
 the console keymap and module devices natively), `access`,
-`faccessat`, `pipe`, `pipe2`, `dup`, `dup2`, `dup3`, `fcntl` (dup;
-`O_NONBLOCK` on sockets, other flags are no-ops), `getcwd`, `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`,
-`rename(at/at2)`, `symlink(at)`, `readlink(at)`, `poll`, `umask`.
+`faccessat`, `pipe`, `pipe2`, `eventfd(2)`, `dup`, `dup2`, `dup3`, `fcntl`
+(dup, fd flags, record locks), `flock`, `truncate`, `ftruncate`, `fsync`,
+`fdatasync`, `chmod`, `chown` (and their `f`, `l`, `at` forms), `getcwd`,
+`chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`, `rename(at/at2)`,
+`symlink(at)`, `readlink(at)`, `poll`, `umask`.
 
 Memory: `brk`, `mmap` (anonymous, and private file mappings), `munmap`,
-`mprotect`, `madvise` (no-op). Files also: `pread64`.
+`mprotect`, `madvise` (`MADV_DONTNEED` drops the pages, which read as
+zero or as their file next time, as allocators such as rustc's Scudo
+expect; other advice is ignored). Files also: `pread64`, `pwrite64`,
+`pwritev(2)`.
 
-Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve`,
+Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve` (a
+`#!` script runs its interpreter, with the line's one optional argument;
+a file that is neither an ELF nor a script fails with `ENOEXEC`),
 `exit` (the thread), `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`,
 `getpid`, `gettid`, `getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`,
 `setsid`, `uname`, `arch_prctl`, `set_tid_address`, `set_robust_list`,
@@ -215,8 +222,11 @@ Threads: `clone` with `CLONE_THREAD` (and `CLONE_VM`, `CLONE_FS`,
 `REQUEUE`/`CMP_REQUEUE` as a wake of every waiter) maps onto the core's
 `wait_addr`/`wake_addr`; a thread's `exit` clears and wakes its
 `CLEAR_TID` word, which is what `pthread_join` waits on. `clone` without
-`CLONE_THREAD` is only the fork form (`CLONE_VM` alone, as `posix_spawn`
-uses it, is not supported).
+`CLONE_THREAD` is the fork form, or `posix_spawn`'s (`CLONE_VM |
+CLONE_VFORK` with a stack, what Rust's `Command` uses through musl): a fork
+whose child starts on that stack (the core's `fork_from`). Its memory is a
+copy rather than shared, which posix_spawn does not notice: its child
+reports a failed exec through a pipe the parent waits on.
 
 Signals: `rt_sigaction` (handlers with `SA_SIGINFO`, `SA_RESTART`,
 `SA_NODEFER`, `SA_RESETHAND`, `sa_mask`), `rt_sigreturn`, `rt_sigprocmask`,
@@ -287,7 +297,7 @@ reserved first. That needed core `mmap` work, which native programs share:
   `mprotect` of part of a mapping split the mapping;
 - free address space is reused (first fit) instead of only growing;
 - a larger window (4 GiB on x86_64, 960 MiB on aarch64 / riscv64, whose
-  user address spaces span 1 GiB) and 256 mappings per process.
+  user address spaces span 1 GiB) and 4096 mappings per process.
 
 ## Signal handlers
 
@@ -306,6 +316,41 @@ On x86_64 the callee-saved registers (rbx, rbp, r12-r15) are reported as 0
 in `uc_mcontext` and not restored from it: the handler preserves them, and
 the kernel does not keep a per-task copy at syscall entry.
 
+## Building myos in myos
+
+`linux-compat/self-host.sh DIR [REV]` (in the image as `/lib/self-host.sh`)
+builds the x86_64 kernel inside myos with Alpine's Rust toolchain:
+
+```sh
+mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /disk ext2
+sh /lib/self-host.sh /disk          # REV: the branch to build (master)
+```
+
+It installs Alpine's rust, cargo, rust-src, lld, clang, bash, busybox and
+git into `DIR/alpine` with `get-alpine`, clones (or updates) the source,
+builds `core`, `alloc` and `compiler_builtins` once for
+`x86_64-unknown-none` into Alpine's `rustlib` (Alpine ships them for its
+own target only; the kernel's `build.rs` builds every module and user
+program in a target directory of its own), then runs
+`cargo build -p kernel` under `linux --root`. Each step is skipped when its
+result is already there. The scratch disk needs a few GiB.
+
+Not built there yet, copied from the running system instead: the C and
+`std` programs the kernel embeds (the std demos, c-hello, oksh, getty,
+login) and `http`, whose TLS library is mbedtls over newlib
+(`MYOS_PREBUILT=http` has `kernel/build.rs` take it as it is). Build
+scripts are linked with clang: Alpine's gcc is not position-independent,
+which the Linux layer requires.
+
+The kernel it builds boots: with it in the image instead of the host's,
+`cargo run -- test-mini` passes. Under TCG a first run takes hours:
+`core` and `alloc` about 25 minutes, each module or user program one to
+three, the kernel crate itself an hour. Known gaps:
+
+- `http` (mbedtls and newlib: autotools, `make`, `python3`) and the other
+  C programs are not built in myos;
+- non-PIE Linux programs (Alpine's gcc) do not run (see Limits).
+
 ## Limits
 
 - PIE musl binaries only (static-PIE or dynamically linked), no glibc ones
@@ -320,29 +365,59 @@ the kernel does not keep a per-task copy at syscall entry.
   queueing.
 - Threads run on their process's home CPU, interleaved, not in parallel
   (`docs/threads.md`).
-- No `posix_spawn` (`clone` with `CLONE_VM` but not `CLONE_THREAD`), no
-  shared file mappings (`MAP_SHARED`), no `O_CLOEXEC` and no `O_NONBLOCK`
-  outside sockets.
-- Sockets: IPv4 clients only (no `listen`/`accept`, no IPv6, no Unix
-  sockets or `socketpair`); no half-close (`shutdown` hangs up only for
+- No other `clone` with `CLONE_VM` but not `CLONE_THREAD` than
+  posix_spawn's, and no shared file mappings (`MAP_SHARED`).
+- Close-on-exec (`O_CLOEXEC`, `FD_CLOEXEC`, `FIOCLEX`) and `O_NONBLOCK`
+  outside sockets are flags the layer keeps per fd (`files.rs`): a
+  successful exec closes the close-on-exec fds (the `on_exec` hook), and a
+  non-blocking pipe end that would block gives `EAGAIN` (from the core's
+  pipe readiness, as libgloss does for native programs).
+- An eventfd is a pipe (its write end kept aside): a non-zero write wakes
+  a reader, a read returns how many writes it collected. No semaphore mode
+  and no initial value.
+- `socketpair(AF_UNIX, SOCK_STREAM | SOCK_SEQPACKET)` is a `/net/unix`
+  pair (`docs/sockets-unix.md`), its ends kept like TCP sockets (Rust's
+  `Command` reports a failed exec through one). Stream semantics for
+  both: no message boundaries, and no fd passing.
+- File locks (`flock`, `fcntl` record locks) are granted and not kept:
+  myos has none, and a lock only guards against another copy of the same
+  program (cargo, SQLite, git). `ftruncate` cuts a file to nothing or
+  grows it; a shorter non-zero length is refused (`EINVAL`). The
+  filesystems have no holes: growing a file, or `pwrite` past its end,
+  writes the zeros in between.
+- `chmod`, `chown` and `fsync` succeed and do nothing: myos keeps no
+  owners or permission bits, and ext2 writes a file back when its last fd
+  closes.
+- File times: `stat` reports a file's modification time (as `st_mtime`,
+  `st_atime` and `st_ctime`) where the filesystem keeps one, ext2; the
+  in-kernel filesystems (tmpfs, `/bin`, `/dev`, ...) report 0. A build tool
+  (cargo, make) sees a changed source on ext2 only. Times cannot be set
+  (`utimensat` is missing).
+- Sockets: IPv4 clients and `socketpair` only (no `listen`/`accept`, no
+  IPv6, no other Unix sockets); no half-close (`shutdown` hangs up only for
   `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are
   ignored; `poll` reports a connected socket writable even with no send
   room left (a nonblocking write then says `EAGAIN`).
 - The native limits apply:
   - exec: up to 1024 arguments and 1024 environment strings, at most
-    128 KiB together; a program file of at most 16 MiB from a writable
-    filesystem (the initramfs has no limit) whose loaded image spans at
-    most 1152 pages (4.5 MiB). Shared objects are mapped with `mmap` and
-    do not count;
+    128 KiB together. A dynamically linked, position-independent program
+    (most of Alpine's) is mapped from its file like a shared object: its
+    dynamic linker is loaded as the image, the program's segments become
+    mmap regions paged in on first touch, so only the mmap window bounds
+    its size (Alpine's cargo is 23 MB). Any other program is read whole: a
+    file of at most 16 MiB from a writable filesystem (the initramfs has
+    no limit) whose loaded image spans at most 1152 pages (4.5 MiB);
   - a per-process `mmap` window of 4 GiB (x86_64) / 960 MiB (aarch64,
-    riscv64) with at most 256 mappings; adjacent mappings with the same
+    riscv64) with at most 4096 mappings; adjacent mappings with the same
     protection and backing are merged (musl's malloc makes hundreds of
-    small neighbouring ones: jq peaks at 188). At most 64 distinct files
+    small neighbouring ones: jq peaks at 188; rustc's Scudo allocator
+    needs more than 256 to compile `core`). At most 64 distinct files
     are mapped at once; a file mapping past that is read in whole when it
     is made;
   - a 16 MiB `brk` heap;
   - 64 fds per process, 512 open file descriptions in the system, 64 tasks
-    in total;
+    in total, 64 pipes in the system (and 24 named FIFOs), each with a
+    4 KiB buffer;
   - `/tmp` (tmpfs) files of at most 16 MiB each, all of them in the
     kernel heap (a quarter of the memory, 64 MiB to 1 GiB: 256 MiB in the
     1 GiB CI guests).

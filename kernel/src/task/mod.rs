@@ -69,10 +69,11 @@ enum State {
 /// stack (built by `user::caller_regs`). Defined per arch.
 pub use crate::arch::UserRegs;
 
-/// Enough for a dynamically linked program: each shared object takes a
-/// region per segment (Python with its C extension modules for `urllib`
-/// needs more than 64).
-pub const MAX_MMAP_REGIONS: usize = 256;
+/// Mappings a process can hold (Linux's default is 65530). Each shared
+/// object takes a region per segment, and an allocator such as rustc's
+/// (Scudo) maps and re-protects its size classes piecemeal: compiling
+/// `core` needs more than 256.
+pub const MAX_MMAP_REGIONS: usize = 4096;
 
 /// Distinct files a process can have mapped at once (a file mapping past
 /// this is copied in whole at `mmap` time instead of paged in).
@@ -98,8 +99,6 @@ pub struct MmapRegion {
 /// same pages into the child instead of copying them.
 pub const MMAP_DEVICE: u32 = 1 << 31;
 
-const EMPTY_MMAP_REGION: MmapRegion = MmapRegion { va: 0, pages: 0, prot: 0, file: 0, fpage: 0 };
-const EMPTY_MMAP: [MmapRegion; MAX_MMAP_REGIONS] = [EMPTY_MMAP_REGION; MAX_MMAP_REGIONS];
 
 /// The scheduler's record of one thread (see [`Process`] for what the
 /// threads of a process share). Small and `Copy`: it is written whole into

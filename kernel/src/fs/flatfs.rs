@@ -128,6 +128,7 @@ impl<const N: usize> FlatFs<N> {
                 ino: 1,
                 nlink: 2,
                 dev: 0,
+                mtime: 0,
             });
         }
         let files = self.files.lock();
@@ -137,6 +138,7 @@ impl<const N: usize> FlatFs<N> {
             ino: crate::fs::vfs::data_ino(s.data),
             nlink: 1,
             dev: 0,
+            mtime: 0,
         })
     }
 }

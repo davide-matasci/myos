@@ -138,6 +138,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 1,
             nlink: 2,
             dev: 0,
+            mtime: 0,
         });
     }
     // Inodes: 2 for clone, then one range of MAX_PTYS per member.
@@ -158,5 +159,6 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         ino,
         nlink: if mode & S_IFDIR != 0 { 2 } else { 1 },
         dev: 0,
+        mtime: 0,
     })
 }

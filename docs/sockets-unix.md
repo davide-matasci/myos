@@ -65,7 +65,8 @@ lock, so the unix conversations have their own spinlock.
 
 - Passing file descriptors (`SCM_RIGHTS`) and credentials (`SCM_CREDENTIALS`,
   `SO_PEERCRED`), and shared memory between processes: see `TODO.md`.
-- The Linux layer (`modules/linux/src/net.rs`) maps only `AF_INET`.
+- The Linux layer (`modules/linux/src/net.rs`) maps `AF_INET` and, of
+  `AF_UNIX`, only `socketpair`.
 
 ## Test
 

@@ -1,6 +1,8 @@
 //! Per-process heap break and mmap region bookkeeping (kept in the leader
 //! slot, shared by the process's threads).
 
+use alloc::vec::Vec;
+
 use super::*;
 
 fn region_end(r: &MmapRegion) -> usize {
@@ -17,15 +19,18 @@ pub(super) fn mmap_range_in(mmap: &[MmapRegion], ptr: usize, len: usize) -> bool
     };
     let mut cur = ptr;
     while cur < end {
-        match mmap
-            .iter()
-            .find(|r| r.pages != 0 && (r.va as usize) <= cur && cur < region_end(r))
-        {
+        match region_at(mmap, cur) {
             Some(r) => cur = region_end(r),
             None => return false,
         }
     }
     true
+}
+
+/// The region of the sorted `mmap` that holds address `va`.
+fn region_at(mmap: &[MmapRegion], va: usize) -> Option<&MmapRegion> {
+    let i = mmap.partition_point(|r| region_end(r) <= va);
+    mmap.get(i).filter(|r| r.va as usize <= va)
 }
 
 /// The part `[a, b)` of `r` (page aligned, inside it), with its file
@@ -41,32 +46,27 @@ fn piece(r: &MmapRegion, a: usize, b: usize) -> MmapRegion {
     }
 }
 
-/// Remove `[lo, hi)` from the table, splitting regions it cuts. Returns the
-/// pieces removed, or `None` if a split needs a free entry and the table is
-/// full (nothing is changed then).
-fn carve(mmap: &mut [MmapRegion; MAX_MMAP_REGIONS], lo: usize, hi: usize) -> Option<alloc::vec::Vec<MmapRegion>> {
-    let mut out = [EMPTY_MMAP_REGION; MAX_MMAP_REGIONS];
-    let mut n = 0;
-    let mut removed = alloc::vec::Vec::new();
-    let mut keep = |r: MmapRegion| -> Option<()> {
-        *out.get_mut(n)? = r;
-        n += 1;
-        Some(())
-    };
-    for r in mmap.iter().filter(|r| r.pages != 0) {
+/// Remove `[lo, hi)` from the sorted table, splitting regions it cuts.
+/// Returns the pieces removed, or `None` if a split would take the table
+/// past [`MAX_MMAP_REGIONS`] (nothing is changed then).
+fn carve(mmap: &mut Vec<MmapRegion>, lo: usize, hi: usize) -> Option<Vec<MmapRegion>> {
+    let first = mmap.partition_point(|r| region_end(r) <= lo);
+    let last = first + mmap[first..].partition_point(|r| (r.va as usize) < hi);
+    let mut kept = Vec::new();
+    let mut removed = Vec::new();
+    for r in &mmap[first..last] {
         let (rlo, rhi) = (r.va as usize, region_end(r));
-        if rhi <= lo || rlo >= hi {
-            keep(*r)?;
-            continue;
-        }
         removed.push(piece(r, rlo.max(lo), rhi.min(hi)));
         for (a, b) in [(rlo, lo), (hi, rhi)] {
             if a < b {
-                keep(piece(r, a, b))?;
+                kept.push(piece(r, a, b));
             }
         }
     }
-    *mmap = out;
+    if mmap.len() - (last - first) + kept.len() > MAX_MMAP_REGIONS {
+        return None;
+    }
+    mmap.splice(first..last, kept);
     Some(removed)
 }
 
@@ -87,11 +87,12 @@ pub fn set_brk(brk: u64) {
 /// reclaimed them). Used after in-place exec frees anonymous maps before
 /// `expand_user_elf` so a later `reclaim_user_aspace` / exit cannot double-free.
 pub fn clear_mmap() {
-    with_process_mut(|t| t.mmap = EMPTY_MMAP);
+    with_process_mut(|t| t.mmap.clear());
 }
 
-pub fn mmap_regions() -> [MmapRegion; MAX_MMAP_REGIONS] {
-    with_process_mut(|t| t.mmap)
+/// A copy of the current process's regions, sorted by address.
+pub fn mmap_regions() -> Vec<MmapRegion> {
+    with_process_mut(|t| t.mmap.clone())
 }
 
 pub fn mmap_contains(ptr: usize, len: usize) -> bool {
@@ -100,20 +101,20 @@ pub fn mmap_contains(ptr: usize, len: usize) -> bool {
 
 /// Lowest free `len`-byte gap in `[area_lo, area_hi)` (page aligned).
 pub fn mmap_alloc(area_lo: usize, area_hi: usize, len: usize) -> Option<usize> {
-    let mut regions = mmap_regions();
-    regions.sort_unstable_by_key(|r| r.va);
-    let mut cand = area_lo;
-    for r in regions.iter().filter(|r| r.pages != 0) {
-        let (lo, hi) = (r.va as usize, region_end(r));
-        if hi <= cand {
-            continue;
+    with_process_mut(|t| {
+        let mut cand = area_lo;
+        for r in &t.mmap {
+            let (lo, hi) = (r.va as usize, region_end(r));
+            if hi <= cand {
+                continue;
+            }
+            if cand.checked_add(len)? <= lo {
+                break;
+            }
+            cand = hi;
         }
-        if cand.checked_add(len)? <= lo {
-            break;
-        }
-        cand = hi;
-    }
-    (cand.checked_add(len)? <= area_hi).then_some(cand)
+        (cand.checked_add(len)? <= area_hi).then_some(cand)
+    })
 }
 
 /// Record a new mapping, backed by `file` from byte `off` (page aligned)
@@ -130,23 +131,22 @@ pub fn mmap_add(va: u64, pages: u32, prot: u32, file: Option<(&crate::fs::Vnode,
                 None => return false,
             },
         };
-        let r = MmapRegion { va, pages, prot, file, fpage };
-        let added = match t.mmap.iter_mut().find(|r| r.pages == 0) {
-            Some(slot) => {
-                *slot = r;
-                true
-            }
-            None => false,
-        };
-        let joined = coalesce(&mut t.mmap, (!added).then_some(r));
-        added || joined
+        let i = t.mmap.partition_point(|r| r.va < va);
+        t.mmap.insert(i, MmapRegion { va, pages, prot, file, fpage });
+        coalesce(&mut t.mmap);
+        if t.mmap.len() > MAX_MMAP_REGIONS {
+            // It joined no neighbour: the table is full.
+            t.mmap.remove(i);
+            return false;
+        }
+        true
     })
 }
 
 /// The `mapped_files` entry for `node`: the one already holding it, else
 /// one no region names any more.
 fn mapped_file_slot(t: &mut Process, node: &crate::fs::Vnode) -> Option<usize> {
-    let used = |i: usize| t.mmap.iter().any(|r| r.pages != 0 && r.file as usize == i + 1);
+    let used = |i: usize| t.mmap.iter().any(|r| r.file as usize == i + 1);
     if let Some(i) = (0..MAX_MAPPED_FILES).find(|&i| used(i) && t.mapped_files[i] == *node) {
         return Some(i);
     }
@@ -161,7 +161,7 @@ fn mapped_file_slot(t: &mut Process, node: &crate::fs::Vnode) -> Option<usize> {
 pub fn mmap_backing(va: usize) -> Option<(u32, Option<(crate::fs::Vnode, usize)>)> {
     let page = crate::user::PAGE;
     with_process_mut(|t| {
-        let r = t.mmap.iter().find(|r| r.pages != 0 && r.va as usize <= va && va < region_end(r))?;
+        let r = region_at(&t.mmap, va)?;
         let file = (r.file != 0).then(|| {
             let off = (r.fpage as usize + (va - r.va as usize) / page) * page;
             (t.mapped_files[r.file as usize - 1], off)
@@ -170,50 +170,24 @@ pub fn mmap_backing(va: usize) -> Option<(u32, Option<(crate::fs::Vnode, usize)>
     })
 }
 
-/// Merge adjacent regions with the same protection, and fold `extra` (a
-/// region that found no free slot) into a neighbour if it touches one.
-/// Returns whether `extra` was folded in.
-fn coalesce(regions: &mut [MmapRegion; MAX_MMAP_REGIONS], mut extra: Option<MmapRegion>) -> bool {
+/// Merge neighbouring regions that continue each other (same protection
+/// and backing) in the sorted table.
+fn coalesce(regions: &mut Vec<MmapRegion>) {
     let page = crate::user::PAGE as u64;
     let joinable = |a: &MmapRegion, b: &MmapRegion| {
-        a.pages != 0
-            && b.pages != 0
-            && a.prot == b.prot
+        a.prot == b.prot
             && a.file == b.file
             && (a.file == 0 || a.fpage + a.pages == b.fpage)
             && a.va + a.pages as u64 * page == b.va
     };
-    let mut folded = false;
-    let mut changed = true;
-    while changed {
-        changed = false;
-        if let Some(x) = extra {
-            for r in regions.iter_mut() {
-                if joinable(r, &x) {
-                    r.pages += x.pages;
-                } else if joinable(&x, r) {
-                    r.va = x.va;
-                    r.pages += x.pages;
-                } else {
-                    continue;
-                }
-                extra = None;
-                folded = true;
-                changed = true;
-                break;
-            }
+    regions.dedup_by(|b, a| {
+        if joinable(a, b) {
+            a.pages += b.pages;
+            true
+        } else {
+            false
         }
-        for i in 0..MAX_MMAP_REGIONS {
-            for j in 0..MAX_MMAP_REGIONS {
-                if i != j && joinable(&regions[i], &regions[j]) {
-                    regions[i].pages += regions[j].pages;
-                    regions[j] = EMPTY_MMAP_REGION;
-                    changed = true;
-                }
-            }
-        }
-    }
-    folded
+    });
 }
 
 /// Forget `[va, va + pages)` (callers free the frames). False if the table
@@ -231,18 +205,20 @@ pub fn mmap_set_prot(va: u64, pages: u32, prot: u32) -> bool {
     let lo = va as usize;
     let hi = lo + pages as usize * page;
     with_process_mut(|t| {
-        let saved = t.mmap;
+        let saved = t.mmap.clone();
         let Some(parts) = carve(&mut t.mmap, lo, hi) else {
             return false;
         };
-        for part in parts {
-            let Some(r) = t.mmap.iter_mut().find(|r| r.pages == 0) else {
-                t.mmap = saved;
-                return false;
-            };
-            *r = MmapRegion { prot: prot | (part.prot & MMAP_DEVICE), ..part };
+        let at = t.mmap.partition_point(|r| (r.va as usize) < lo);
+        let reprotected = parts
+            .into_iter()
+            .map(|part| MmapRegion { prot: prot | (part.prot & MMAP_DEVICE), ..part });
+        t.mmap.splice(at..at, reprotected);
+        coalesce(&mut t.mmap);
+        if t.mmap.len() > MAX_MMAP_REGIONS {
+            t.mmap = saved;
+            return false;
         }
-        coalesce(&mut t.mmap, None);
         true
     })
 }
