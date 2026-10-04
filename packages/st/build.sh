@@ -46,7 +46,8 @@ for arch in x86_64 aarch64 riscv64; do
     -I"$stage/include" -I"$stage/include/freetype2" st.c x.c \
     -o "$ROOT/target/st-${arch}-unknown-none" -L"$stage/lib" \
     -lXft -lXrender -lfontconfig -lexpat -lfreetype -lX11 -lxcb -lXau -lm)
-  "$cc" -O2 -Wall -Wextra "$HERE/st_smoke.c" -o "$ROOT/target/st-smoke-${arch}-unknown-none"
+  "$cc" -O2 -Wall -Wextra -I"$stage/include" "$HERE/st_smoke.c" \
+    -o "$ROOT/target/st-smoke-${arch}-unknown-none" -L"$stage/lib" -lX11 -lxcb -lXau
 done
 
 myos_st_version_hash >"$MYOS_ST_VERSION"

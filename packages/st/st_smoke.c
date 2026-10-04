@@ -5,6 +5,8 @@
  *   st_smoke text    wait for text in st's first line: lit pixels in the
  *                    screen's top left corner (st's window, with no window
  *                    manager, sits at 0,0 on the black root)
+ *   st_smoke probe   the server's view when the typed keys did not arrive:
+ *                    the pointer, the input focus and the top-level windows
  *
  * Prints "[ OK ] st <mode>", or what it last saw.
  */
@@ -15,6 +17,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <X11/Xlib.h>
 
 /* The corner looked at: a few characters of the first line. */
 #define BOX_W 64
@@ -47,15 +50,48 @@ static int lit_pixels(int fd, unsigned pitch) {
     return lit;
 }
 
+/* Where the keys go: the pointer (the focus follows it, PointerRoot, with
+ * no window manager), the focus and each top-level window. */
+static int probe(void) {
+    Display *dpy = XOpenDisplay(":0");
+    Window root, child, focus, parent, *kids = NULL;
+    int rx, ry, wx, wy, revert;
+    unsigned mask, nkids = 0;
+
+    if (!dpy) {
+        printf("probe: no display\n");
+        return 1;
+    }
+    root = DefaultRootWindow(dpy);
+    XQueryPointer(dpy, root, &root, &child, &rx, &ry, &wx, &wy, &mask);
+    XGetInputFocus(dpy, &focus, &revert);
+    printf("probe: pointer %d,%d over 0x%lx, focus 0x%lx\n", rx, ry, child, focus);
+    if (XQueryTree(dpy, root, &root, &parent, &kids, &nkids)) {
+        for (unsigned i = 0; i < nkids; i++) {
+            XWindowAttributes wa;
+            if (XGetWindowAttributes(dpy, kids[i], &wa)) {
+                printf("probe: window 0x%lx %dx%d+%d+%d %s\n", kids[i], wa.width, wa.height, wa.x, wa.y,
+                       wa.map_state == IsViewable ? "viewable" : "unmapped");
+            }
+        }
+        XFree(kids);
+    }
+    XCloseDisplay(dpy);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     char line[128];
     unsigned w, h, depth, pitch;
     int ctl, fd, lit = 0;
     ssize_t n;
 
-    if (argc != 2 || (strcmp(argv[1], "server") && strcmp(argv[1], "text"))) {
-        fprintf(stderr, "usage: st_smoke server|text\n");
+    if (argc != 2 || (strcmp(argv[1], "server") && strcmp(argv[1], "text") && strcmp(argv[1], "probe"))) {
+        fprintf(stderr, "usage: st_smoke server|text|probe\n");
         return 2;
+    }
+    if (!strcmp(argv[1], "probe")) {
+        return probe();
     }
     if (!strcmp(argv[1], "server")) {
         for (int i = 0; i < 60; i++) {

@@ -20,12 +20,22 @@ st_run() {
 		spid=$!
 		if /bin/etc/st_smoke text; then
 			echo "HOST c-smokes sendkey o k ret" >&3
-			# st exits with its shell.
-			wait $spid
-			st=$?
+			i=0
+			while [ $i -lt 60 ] && [ ! -s /tmp/st-typed ]; do
+				sleep 1
+				i=$((i + 1))
+			done
 			typed=$(cat /tmp/st-typed 2>/dev/null)
-			echo "st exited with $st, the shell got: $typed"
-			[ $st = 0 ] && [ "$typed" = "ok st-256color" ] && ok=1
+			echo "the shell got: $typed"
+			if [ "$typed" = "ok st-256color" ]; then
+				# st exits with its shell.
+				wait $spid
+				st=$?
+				echo "st exited with $st"
+				[ $st = 0 ] && ok=1
+			else
+				/bin/etc/st_smoke probe
+			fi
 		fi
 		[ $ok = 1 ] || { kill $spid 2>/dev/null; wait $spid 2>/dev/null; }
 	fi
