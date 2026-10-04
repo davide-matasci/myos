@@ -1,4 +1,4 @@
-//! procfs: generated nodes at `/proc/…` (`mounts`, `pci`, `cpuinfo`, `acpi/…`)
+//! procfs: generated nodes at `/proc/…` (`mounts`, `pci`, `cpuinfo`, `platform`, `acpi/…`)
 //! and the calling process's view under `self/`: `fd/N` links to what fd N
 //! is open on, `tty` to its controlling terminal's directory (`docs/tty.md`).
 
@@ -105,8 +105,8 @@ fn dyn_writable(name: &str) -> bool {
 /// Preserves any previously attached writer on replace.
 pub fn register_dynamic(name: &str, data: &'static [u8]) -> bool {
     if name.is_empty() || name.len() > MAX_NAME || name == "mounts" || name == "cpuinfo"
-        || name == "meminfo" || name == "interrupts" || name == "modules" || name == "self"
-        || name.starts_with("self/")
+        || name == "meminfo" || name == "interrupts" || name == "modules" || name == "platform"
+        || name == "self" || name.starts_with("self/")
     {
         return false;
     }
@@ -243,6 +243,9 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     if name == "modules" {
         return copy_at(&crate::modules::modules_text(), pos, out);
     }
+    if name == "platform" {
+        return copy_at(&crate::platform::text(), pos, out);
+    }
     if let Some((_, data)) = dyn_get(name) {
         return copy_at(data, pos, out);
     }
@@ -255,7 +258,7 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 fn list_root(buf: &mut [u8]) -> usize {
     // Dynamic nodes all live under `acpi/` (see `list_acpi`).
     const FIXED: &[&[u8]] =
-        &[b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"pci", b"acpi", b"self"];
+        &[b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"platform", b"pci", b"acpi", b"self"];
     let mut off = 0usize;
     for name in FIXED {
         if off + name.len() + 1 > buf.len() {
@@ -430,6 +433,16 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             mode: S_IFREG | 0o444,
             size: u32::try_from(text.len()).unwrap_or(u32::MAX),
             ino: 12,
+            nlink: 1,
+            dev: 0,
+        });
+    }
+    if name == "platform" {
+        let text = crate::platform::text();
+        return Some(StatInfo {
+            mode: S_IFREG | 0o444,
+            size: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            ino: 13,
             nlink: 1,
             dev: 0,
         });

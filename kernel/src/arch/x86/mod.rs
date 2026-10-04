@@ -50,9 +50,15 @@ pub fn ap_init(logical: usize) {
     crate::user::ap_init();
 }
 
-/// No device tree on x86_64 (ACPI describes the platform); nothing to apply.
-pub fn apply_dt() -> Result<Option<&'static str>, &'static str> {
-    Ok(None)
+/// ACPI describes the platform; there is no device tree.
+pub const PREFER_ACPI: bool = true;
+
+/// Nothing to apply: the LAPIC base comes from its MSR, the console from
+/// the COM1 port, PCI configuration space from port 0xCF8. The description
+/// is informative here (`/proc/platform`), and optional: a PC without ACPI
+/// tables boots too.
+pub fn apply_platform(_p: &crate::platform::Platform) -> Result<(), &'static str> {
+    Ok(())
 }
 
 /// No device-tree interrupt specifiers on x86_64.

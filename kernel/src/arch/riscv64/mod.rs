@@ -51,31 +51,43 @@ pub fn ap_init(logical: usize) {
     crate::user::ap_init();
 }
 
-/// Take the board's device bases from the device tree: the PLIC, the
-/// 16550 console, the goldfish RTC, the `time` CSR rate and the PCIe host
-/// bridge (ECAM, bus range, 64-bit MMIO window). Required: no tree, no
-/// boot. Returns the board model for the boot log.
-pub fn apply_dt() -> Result<Option<&'static str>, &'static str> {
-    if crate::dt::get().is_none() {
+/// The device tree describes the platform: the RISC-V ACPI tables (RHCT,
+/// the PLIC in the MADT) are younger than the firmware that runs here.
+pub const PREFER_ACPI: bool = false;
+
+/// Take the board's device bases from the platform description: the PLIC,
+/// the 16550 console, the goldfish RTC, the `time` CSR rate and the PCIe
+/// host bridge (ECAM, bus range, 64-bit MMIO window). Required: a board
+/// the description does not cover does not boot.
+pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str> {
+    use crate::platform::{Intc, UartKind};
+    if p.source.is_none() {
         return Err("no device tree from the bootloader");
     }
-    let (plic, _) = crate::dt::reg(&["sifive,plic-1.0.0", "riscv,plic0"], 0)
-        .ok_or("device tree: no PLIC")?;
-    interrupts::plic::set_base(plic as usize);
-    let (uart, _) = crate::dt::reg(&["ns16550a", "ns16550"], 0).ok_or("device tree: no 16550 UART")?;
-    serial::set_base(uart as usize);
-    if let Some((rtc, _)) = crate::dt::reg(&["google,goldfish-rtc"], 0) {
-        clock::set_rtc_base(rtc as usize);
+    match p.intc.map(|c| c.value) {
+        Some(Intc::Plic { base }) => interrupts::plic::set_base(base as usize),
+        _ => return Err("platform: no PLIC"),
     }
-    let hz = crate::dt::timebase_frequency().ok_or("device tree: no timebase-frequency")?;
+    match p.uart.map(|c| c.value) {
+        Some(uart) if uart.kind == UartKind::Ns16550 && !uart.io => {
+            serial::set_base(uart.base as usize)
+        }
+        _ => return Err("platform: no 16550 UART"),
+    }
+    if let Some(rtc) = p.rtc {
+        clock::set_rtc_base(rtc.value.base as usize);
+    }
+    let hz = p.timer_hz.ok_or("platform: no timebase-frequency")?.value;
     clock::set_timebase(hz);
-    let host = crate::dt::pci_host().ok_or("device tree: no PCIe host bridge")?;
+    let host = p.pci.ok_or("platform: no PCIe host bridge")?.value;
     // The 64-bit window: the 32-bit one (0x4000_0000 on QEMU `virt`) is
     // user address space in Sv39 root[1].
-    let (mmio, mmio_size) = crate::dt::pci_mmio_window(crate::dt::PCI_SPACE_MEM64)
-        .ok_or("device tree: PCIe host bridge has no 64-bit MMIO range")?;
-    pci::set_host(host.ecam_base, host.ecam_size, host.bus_end, mmio, mmio_size);
-    Ok(crate::dt::model())
+    let (mmio, mmio_size) = p
+        .pci_windows
+        .and_then(|w| w.value.mmio64)
+        .ok_or("platform: PCIe host bridge has no 64-bit MMIO range")?;
+    pci::set_host(host.ecam, host.ecam_size, host.bus_end, mmio, mmio_size);
+    Ok(())
 }
 
 /// A PLIC interrupt specifier: the source number.

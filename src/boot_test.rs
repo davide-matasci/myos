@@ -70,6 +70,7 @@ impl Mode {
 const BOOT_MARKERS: [&str; 33] = [
     "Hello from myos",
     "[ OK ] heap",
+    "[ OK ] platform",
     "[ OK ] interrupts",
     "task a",
     "task b",
