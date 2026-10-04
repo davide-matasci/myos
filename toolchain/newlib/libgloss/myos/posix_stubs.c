@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "myos_syscalls.h"
@@ -230,6 +231,13 @@ int utimensat(int dirfd, const char *path, const struct timespec times[2], int f
     (void)times;
     (void)flags;
     /* Timestamps are not stored; succeed so git commit/index touches work. */
+    return 0;
+}
+
+int utimes(const char *path, const struct timeval times[2]) {
+    (void)path;
+    (void)times;
+    /* Timestamps are not stored, as for utimensat (fontconfig's cache). */
     return 0;
 }
 
