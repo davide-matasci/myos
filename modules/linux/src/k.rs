@@ -423,6 +423,7 @@ pub mod signal {
     pub const SYSERR_EINTR: usize = myos_abi::MYOS_SYSERR_EINTR;
     pub const HANDLER_IGN: usize = myos_abi::MYOS_HANDLER_IGN;
     pub const SIGSEGV: u32 = myos_abi::MYOS_SIGSEGV;
+    pub const SA_NOCLDWAIT: u32 = myos_abi::MYOS_SA_NOCLDWAIT;
 
     pub fn interrupt_wait() -> bool {
         unsafe { (api().signal_interrupt_wait)() != 0 }

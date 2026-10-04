@@ -49,6 +49,9 @@ pub const HANDLER_IGN: usize = 1;
 pub const SA_RESTART: u32 = 0x1000_0000;
 pub const SA_NODEFER: u32 = 0x4000_0000;
 pub const SA_RESETHAND: u32 = 0x8000_0000;
+/// On `SIGCHLD`: children leave no zombie (the kernel reaps them, as when
+/// `SIGCHLD` is ignored). Not Linux's 2, which is newlib's `SA_SIGINFO`.
+pub const SA_NOCLDWAIT: u32 = myos_abi::MYOS_SA_NOCLDWAIT;
 
 /// Returned by a syscall interrupted by a caught signal (libgloss: `EINTR`).
 pub const SYSERR_EINTR: usize = usize::MAX - 3;

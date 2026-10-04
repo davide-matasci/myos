@@ -30,10 +30,6 @@ TinyX's `Xfbdev` on `/dev/fb` and `/dev/console/kbd`
 
 Gaps that may show up on the way:
 
-- `SA_NOCLDWAIT` (and children of a process ignoring `SIGCHLD` reaped by
-  the kernel): dwm reaps in a handler instead (`packages/dwm`).
-- `kill(pid, 0)` fails (`kill -0` in the shell): the kernel refuses signal
-  0 instead of only checking that the target exists.
 - `setitimer` fails (`ENOSYS`) and `alarm` is missing: the server runs its
   plain scheduler (it prints "scheduling timer: Function not implemented");
   `xterm`'s blinking will want a timer.
