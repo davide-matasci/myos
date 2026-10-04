@@ -23,6 +23,7 @@ if [ -z "$D" ]; then
 fi
 R=$D/alpine
 SRC=/src/myos
+URL=https://github.com/davide-matasci/myos
 ARCH=x86_64
 TARGET=$ARCH-unknown-none
 
@@ -46,10 +47,10 @@ fi
 if [ ! -d $R$SRC/.git ]; then
 	say "cloning myos ($REV)"
 	mkdir -p $R/src
-	linux --root $R git clone --depth 1 -b $REV https://github.com/davide-matasci/myos $SRC || exit 1
+	linux --root $R git clone --depth 1 -b $REV $URL $SRC || exit 1
 else
 	say "updating myos ($REV)"
-	linux --root $R git -C $SRC fetch --depth 1 origin $REV || exit 1
+	linux --root $R git -C $SRC fetch --depth 1 $URL $REV || exit 1
 	linux --root $R git -C $SRC checkout -q FETCH_HEAD || exit 1
 fi
 
