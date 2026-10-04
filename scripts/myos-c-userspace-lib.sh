@@ -28,6 +28,7 @@ MYOS_RIPGREP_VERSION="$MYOS_ROOT/target/.myos-ripgrep-version"
 MYOS_TCC_VERSION="$MYOS_ROOT/target/.myos-tcc-version"
 MYOS_VIM_VERSION="$MYOS_ROOT/target/.myos-vim-version"
 MYOS_NCURSES_VERSION="$MYOS_ROOT/target/.myos-ncurses-version"
+MYOS_X11_LIBS_VERSION="$MYOS_ROOT/target/.myos-x11-libs-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
@@ -578,6 +579,29 @@ myos_ncurses_is_current() {
   done
 }
 
+
+myos_x11_libs_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      find "$(myos_port_dir x11-libs)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_x11_libs_is_current() {
+  local arch
+  [[ -f "$MYOS_X11_LIBS_VERSION" ]] \
+    && [[ "$(cat "$MYOS_X11_LIBS_VERSION")" == "$(myos_x11_libs_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/x11-libs-${arch}/lib/x11/lib/libX11.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/x11-smoke-${arch}-unknown-none" ]] || return 1
+  done
+}
 
 myos_zlib_version_hash() {
   local h

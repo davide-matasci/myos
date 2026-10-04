@@ -174,7 +174,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `user/get-myos` | `get-myos`: installs packages (ports the image does not carry) from a mirror, `docs/packages.md` |
 | `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` (`mount SRC TARGET FSTYPE`, `bind` for a bind mount) |
 | `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, curl, dropbear, ...), one `port.env` descriptor each (`docs/ports.md`) |
-| `packages/` | Ports CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test; `get-myos NAME` installs them, `docs/packages.md`); moving a directory here (or back to `ports/`) is the whole change |
+| `packages/` | Ports CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test, x11-libs; `get-myos NAME` installs them, `docs/packages.md`); moving a directory here (or back to `ports/`) is the whole change |
 | `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters |
 | `toolchain/std/` | Rust `std` PAL skeleton, sysroot build scripts (the `sysroot` port) |
 | `targets/` | Custom Rust target specs (`x86_64-unknown-myos`, `aarch64-unknown-myos`, `riscv64imac-unknown-myos`) |

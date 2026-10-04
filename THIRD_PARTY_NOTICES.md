@@ -41,6 +41,7 @@ under its own license.
 | Lynx | 2.9.3 | **GPL-2.0-only** | https://invisible-island.net/lynx/ |
 | GNU Make | 4.4.1 | **GPL-3.0-or-later** | https://ftp.gnu.org/gnu/make/ |
 | Lua | 5.4.7 | MIT | https://www.lua.org/ |
+| X client libraries (package `x11-libs`): xorgproto, xtrans, libXau, xcb-proto, libxcb, libX11 | see `packages/x11-libs/versions.env` | MIT / X11-style (X.Org, The Open Group and others; each upstream `COPYING`) | https://www.x.org/releases/individual/ |
 | Mbed TLS (TLS for `curl`, `lynx`, `user/tls`) | 3.6.2 | Apache-2.0 OR GPL-2.0-or-later (myos uses it under Apache-2.0) | https://github.com/Mbed-TLS/mbedtls |
 | curl | 8.11.1 | curl license (MIT-style) | https://curl.se/ |
 | Mozilla CA certificate bundle (`/lib/cacert.pem`, from curl.se) | latest at build time | **MPL-2.0** | https://curl.se/docs/caextract.html |
