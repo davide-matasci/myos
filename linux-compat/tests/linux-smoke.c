@@ -198,6 +198,28 @@ static void check_toolchain_calls(char *self) {
               waitpid(c, &status, 0) == c && WIFEXITED(status) && WEXITSTATUS(status) == 5,
           "posix_spawn");
 
+    /* A `#!` script runs its interpreter (here this binary, as "child"); a
+     * file that is neither fails the exec and leaves the caller as it was. */
+    const char *script = "/tmp/linux-smoke.sh";
+    int sfd = open(script, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    if (sfd >= 0) {
+        write(sfd, "#!", 2);
+        write(sfd, self, strlen(self));
+        write(sfd, " child\n", 7);
+        close(sfd);
+    }
+    char *sargs[] = {(char *)script, NULL};
+    check(sfd >= 0 && posix_spawn(&c, script, NULL, NULL, sargs, NULL) == 0 &&
+              waitpid(c, &status, 0) == c && WIFEXITED(status) && WEXITSTATUS(status) == 5,
+          "#! script");
+    sfd = open(script, O_WRONLY | O_TRUNC);
+    if (sfd >= 0) {
+        write(sfd, "echo not an executable\n", 23);
+        close(sfd);
+    }
+    check(sfd >= 0 && execv(script, sargs) == -1 && errno == ENOEXEC, "exec of a non-ELF: ENOEXEC");
+    unlink(script);
+
     /* pipe2 flags: close-on-exec kept per fd, an empty non-blocking end. */
     int p[2];
     char ch;
