@@ -86,6 +86,10 @@ keycode 0x35 = - _ none none
 | aarch64 | virtio-input | Linux `KEY_*` (same numbers for alphanumerics) |
 | riscv64 | virtio-input | same as aarch64                        |
 
+`/dev/console/kbd` reports keys by their Linux `KEY_*` number on every
+arch (the PS/2 driver converts; `docs/tty.md`), with the character this
+keymap gives them.
+
 Modifiers tracked: **Shift**, **AltGr** (Right Alt), **Ctrl** (Left/Right).
 Caps Lock is ignored in v1.
 

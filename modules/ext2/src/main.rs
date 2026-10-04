@@ -255,6 +255,7 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         release: Some(ext2_release::<S>),
         mmap: None,
         poll: None,
+        open: None,
     }
 }
 

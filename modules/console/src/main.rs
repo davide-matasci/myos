@@ -1,7 +1,8 @@
 //! Console module: the framebuffer text screen (ANSI-capable, status-line
 //! colouring, block cursor), `/dev/fb` for programs that draw on the screen
 //! themselves ([`fbdev`]), the local keyboards (PS/2 on x86_64,
-//! virtio-input on the `virt` boards) and the loadable keymap.
+//! virtio-input on the `virt` boards; raw presses and releases at
+//! `/dev/console/kbd`, [`kbdev`]) and the loadable keymap.
 //!
 //! Serial is the kernel's; this module paints what the kernel also sends to
 //! serial, and feeds keyboard bytes into the kernel's console line
@@ -14,6 +15,7 @@ mod fb;
 mod fbdev;
 mod font;
 mod kbd;
+mod kbdev;
 mod keymap;
 mod lock;
 #[cfg(target_arch = "x86_64")]
@@ -196,6 +198,9 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
         *FB.lock() = Some(w);
     }
     keyboard::init();
+    if keyboard::present() && kbdev::mount() != 0 {
+        status_fail("console: /dev/console/kbd");
+    }
     let rc = unsafe { (api.console_register)(&OPS) };
     if screen && fbdev::mount(info) != 0 {
         status_fail("console: /dev/fb");

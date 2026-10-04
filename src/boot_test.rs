@@ -214,13 +214,31 @@ fn handle_host_request(req: &str, ports: &[crate::ports::Port]) {
     };
     let req = req.to_string();
     std::thread::spawn(move || {
-        let status = Command::new("bash").arg(&script).args(&args).current_dir(repo_root()).status();
+        let status = Command::new("bash")
+            .arg(&script)
+            .args(&args)
+            .current_dir(repo_root())
+            .env("MYOS_QEMU_MONITOR", monitor_socket())
+            .status();
         match status {
             Ok(s) if s.success() => {}
             Ok(s) => eprintln!("boot test: HOST {req}: {script} exited with {s}"),
             Err(e) => eprintln!("boot test: HOST {req}: {script} did not start: {e}"),
         }
     });
+}
+
+/// The QEMU monitor of a test boot, a unix socket the host scripts reach as
+/// `$MYOS_QEMU_MONITOR` (`sendkey` types on the guest's keyboard).
+pub fn monitor_socket() -> PathBuf {
+    std::env::temp_dir().join(format!("myos-monitor-{}.sock", std::process::id()))
+}
+
+/// The `-monitor` argument for [`monitor_socket`].
+pub fn monitor_arg() -> String {
+    let path = monitor_socket();
+    let _ = std::fs::remove_file(&path);
+    format!("unix:{},server=on,wait=off", path.display())
 }
 
 /// The checkout the launcher was built from: the descriptors and the host

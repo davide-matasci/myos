@@ -526,6 +526,47 @@ fn open_ref_release(node: &Vnode) {
     }
 }
 
+/// The module ops behind `node`, if a module serves it.
+fn module_ops(node: &Vnode) -> Option<ModuleVfsOps> {
+    match MOUNTS.lock().get(node.mount as usize)?.backend {
+        MountBackend::Module(ops) => Some(ops),
+        MountBackend::Kernel(_) => None,
+    }
+}
+
+/// An `open(2)` of `node` is about to become an fd: its module's `open` hook
+/// may refuse it (a file one program holds at a time).
+pub fn open_hook(node: &Vnode) -> bool {
+    let Some(open) = module_ops(node).and_then(|ops| ops.open) else {
+        return true;
+    };
+    let rel = node.path_str();
+    unsafe { (open)(rel.as_ptr(), rel.len()) >= 0 }
+}
+
+/// [`open_hook`] let `node` through but no fd came of it: undo, as the last
+/// close would.
+pub fn open_hook_undo(node: &Vnode) {
+    if let Some(release) = module_ops(node).and_then(|ops| ops.release) {
+        let rel = node.path_str();
+        let _ = unsafe { (release)(rel.as_ptr(), rel.len()) };
+    }
+}
+
+/// Read `node` at `pos` for an fd: `None` when its module has nothing yet
+/// and the reader should wait ([`myos_abi::MYOS_READ_WAIT`]).
+pub fn read_or_wait(node: &Vnode, pos: usize, out: &mut [u8]) -> Option<usize> {
+    if let Some(read) = module_ops(node).and_then(|ops| ops.read) {
+        let rel = node.path_str();
+        let rc = unsafe { (read)(rel.as_ptr(), rel.len(), pos, out.as_mut_ptr(), out.len()) };
+        if rc == myos_abi::MYOS_READ_WAIT {
+            return None;
+        }
+        return Some(if rc < 0 { 0 } else { (rc as usize).min(out.len()) });
+    }
+    Some(read(node, pos, out))
+}
+
 /// Device/filesystem ioctl on an open vnode.
 pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
     backend_ioctl(node.mount as usize, node.path_str(), request, arg)
@@ -683,46 +724,48 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     let mut n = backend_listdir(m, rel, buf);
     // Surface mount points that live below the listed directory, so the tree
     // is browsable even though mount prefixes are virtual (issue #79): `/` shows
-    // top-level mounts (`bin`, …), `/bin` shows the port categories, etc.
-    if rel.is_empty() || rel == "." {
-        for other in mounts.iter() {
-            if other.prefix.is_empty() {
-                continue;
-            }
-            // The next path segment of `other` relative to this mount.
-            let child = if m.prefix.is_empty() {
-                match other.prefix.split_once('/') {
-                    Some((head, _)) => head,
-                    None => other.prefix.as_str(),
-                }
-            } else if other.prefix.starts_with(&m.prefix)
-                && other.prefix.as_bytes().get(m.prefix.len()) == Some(&b'/')
-            {
-                let rest = &other.prefix[m.prefix.len() + 1..];
-                match rest.split_once('/') {
-                    Some((head, _)) => head,
-                    None => rest,
-                }
-            } else {
-                continue;
-            };
-            if child.is_empty() || child.contains('\n') {
-                continue;
-            }
-            // Skip if the backend has already listed this name.
-            if buf_contains_entry(&buf[..n], child) {
-                continue;
-            }
-            let name = child.as_bytes();
-            let need = name.len() + 1;
-            if n + need > buf.len() {
-                break;
-            }
-            buf[n..n + name.len()].copy_from_slice(name);
-            n += name.len();
-            buf[n] = b'\n';
-            n += 1;
+    // top-level mounts (`bin`, …), `/bin` the port categories, `/dev/console`
+    // the console module's `kbd`.
+    let rel = if rel == "." { "" } else { rel.trim_end_matches('/') };
+    let dir = match (m.prefix.is_empty(), rel.is_empty()) {
+        (true, _) => String::from(rel),
+        (false, true) => m.prefix.clone(),
+        (false, false) => alloc::format!("{}/{}", m.prefix, rel),
+    };
+    for other in mounts.iter() {
+        if other.prefix.is_empty() {
+            continue;
         }
+        // The next path segment of `other` below the listed directory.
+        let rest = if dir.is_empty() {
+            other.prefix.as_str()
+        } else if other.prefix.starts_with(dir.as_str())
+            && other.prefix.as_bytes().get(dir.len()) == Some(&b'/')
+        {
+            &other.prefix[dir.len() + 1..]
+        } else {
+            continue;
+        };
+        let child = match rest.split_once('/') {
+            Some((head, _)) => head,
+            None => rest,
+        };
+        if child.is_empty() || child.contains('\n') {
+            continue;
+        }
+        // Skip if the backend has already listed this name.
+        if buf_contains_entry(&buf[..n], child) {
+            continue;
+        }
+        let name = child.as_bytes();
+        let need = name.len() + 1;
+        if n + need > buf.len() {
+            break;
+        }
+        buf[n..n + name.len()].copy_from_slice(name);
+        n += name.len();
+        buf[n] = b'\n';
+        n += 1;
     }
     drop(mounts);
     // Binds whose target is in this directory (a package's program in

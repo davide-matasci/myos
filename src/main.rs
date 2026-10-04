@@ -513,7 +513,7 @@ fn run_test_bios(bios_path: &str, mode: Mode) {
         .arg("-display")
         .arg("none")
         .arg("-monitor")
-        .arg("none")
+        .arg(boot_test::monitor_arg())
         .arg("-gdb")
         .arg("tcp::1234")
         .arg("-device")
@@ -581,7 +581,7 @@ fn run_test_uefi(uefi_path: &str, mode: Mode) {
         .arg("-display")
         .arg("none")
         .arg("-monitor")
-        .arg("none")
+        .arg(boot_test::monitor_arg())
         .arg("-device")
         .arg("isa-debug-exit,iobase=0xf4,iosize=0x04")
         .arg("-nic")
@@ -655,11 +655,12 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     // The screen in every boot, the headless CI ones too: it is `/dev/fb`
     // (docs/fb.md), which the boot tests draw on.
     cmd.arg("-device").arg("ramfb");
+    // The keyboard in every boot too: the boot tests type on it through
+    // the monitor (`/dev/console/kbd`, docs/tty.md).
+    cmd.arg("-device").arg("virtio-keyboard-device");
     if ci {
         cmd.arg("-display").arg("none");
-        cmd.arg("-monitor").arg("none");
-    } else {
-        cmd.arg("-device").arg("virtio-keyboard-device");
+        cmd.arg("-monitor").arg(boot_test::monitor_arg());
     }
     cmd
 }
@@ -1086,11 +1087,12 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     // The screen in every boot, the headless CI ones too: it is `/dev/fb`
     // (docs/fb.md), which the boot tests draw on.
     cmd.arg("-device").arg("ramfb");
+    // The keyboard in every boot too: the boot tests type on it through
+    // the monitor (`/dev/console/kbd`, docs/tty.md).
+    cmd.arg("-device").arg("virtio-keyboard-device");
     if ci {
         cmd.arg("-display").arg("none");
-        cmd.arg("-monitor").arg("none");
-    } else {
-        cmd.arg("-device").arg("virtio-keyboard-device");
+        cmd.arg("-monitor").arg(boot_test::monitor_arg());
     }
     cmd
 }

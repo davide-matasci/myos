@@ -126,7 +126,10 @@ input; its keyboard is polled, so a watched tty re-checks every 10 ms when
 one is present), regular files (always ready), and module files through
 the optional `ModuleVfsOps::poll` hook (ABI 17): netfs reports a socket's
 bytes, hangup, finished connect, queued accept and, for `/net/unix`, room
-in the peer's buffer. libgloss's `poll`/`select` are one call, and so is
+in the peer's buffer; a hook that adds `MYOS_POLL_RECHECK` is re-checked
+every 10 ms like the tty (`/dev/console/kbd`, a polled device, ABI 19),
+and a module `read` that returns `MYOS_READ_WAIT` makes an fd read wait for
+the file the same way. libgloss's `poll`/`select` are one call, and so is
 every blocking wait of its socket library (`pollselect.c`, `socket.c`).
 
 Deadlines use `time::monotonic_ns()` (x86: TSC calibrated against PIT
