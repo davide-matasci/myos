@@ -141,11 +141,33 @@ impl TaskTable {
 
     /// The process block of leader slot `pid` (a user process).
     pub fn proc(&self, pid: usize) -> &Process {
-        self.procs[pid].as_deref().expect("task slot has no process block")
+        match self.procs[pid].as_deref() {
+            Some(p) => p,
+            None => self.no_proc(pid),
+        }
     }
 
     pub fn proc_mut(&mut self, pid: usize) -> &mut Process {
-        self.procs[pid].as_deref_mut().expect("task slot has no process block")
+        if self.procs[pid].is_none() {
+            self.no_proc(pid);
+        }
+        self.procs[pid].as_deref_mut().unwrap()
+    }
+
+    /// A slot that leads no process was asked for its block: a kernel
+    /// thread, an idle task and a non-leader thread have none, a recycled
+    /// slot lost its; say which and who was running.
+    fn no_proc(&self, pid: usize) -> ! {
+        let t = &self.tasks[pid];
+        panic!(
+            "task slot {pid} has no process block (state {} user_rip {:#x} tgid {} ppid {}; current slot {} on cpu {})",
+            t.state as u8,
+            t.user_rip,
+            t.tgid,
+            t.ppid,
+            super::current_slot(),
+            crate::smp::cpu_id(),
+        )
     }
 
     /// The process block of slot `pid`, if it leads a process (kernel
