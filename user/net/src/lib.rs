@@ -203,7 +203,12 @@ pub fn device_capabilities() -> DeviceCapabilities {
     let mut caps = DeviceCapabilities::default();
     caps.medium = Medium::Ethernet;
     caps.max_transmission_unit = MTU;
-    caps.max_burst_size = Some(1);
+    // No burst limit: smoltcp caps every advertised TCP window at
+    // `max_burst_size` segments, and a limit of 1 let a download move one
+    // segment per round trip through the guest (~130 KB/s). The virtio RX
+    // ring holds 16 frames, and QEMU's user network holds back what does not
+    // fit instead of dropping it.
+    caps.max_burst_size = None;
     // Driver did not negotiate virtio checksum offload. In smoltcp 0.12,
     // `Checksum::Both` (default) means the *stack* verifies RX and computes TX
     // in software. `Checksum::None` / `ignored()` skips checksums entirely.
