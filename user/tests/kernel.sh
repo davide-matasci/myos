@@ -142,6 +142,46 @@ platform() {
 }
 t platform platform
 
+# USB (docs/usb.md): every boot has an xHCI controller with a hub on its
+# first port and a memory stick behind the hub, the same FAT volume as
+# /dev/vda. The stick is enumerated on the USB thread after the modules
+# load, so the test waits for /dev/sda; /proc/usb lists the hub and the
+# stick with their drivers; the volume mounts and reads.
+wait_for() {
+	n=$1
+	shift
+	while ! "$@" 2>/dev/null; do
+		n=$((n - 1))
+		[ $n -gt 0 ] || return 1
+		sleep 1
+	done
+}
+usb_disk() {
+	wait_for 30 test -e /dev/sda || { cat /proc/usb; return 1; }
+	cat /proc/usb
+	grep -q ' hub ' /proc/usb || return 1
+	grep -q ':usb_storage' /proc/usb || return 1
+	mount /dev/sda /usb fat || return 1
+	[ "$(cat /usb/msg)" = fat-msg ]
+}
+t usb_disk usb_disk
+
+# Hot-plug: the host plugs a second stick into a root port through the
+# QEMU monitor (user/tests/host.sh); it enumerates and reads; pulled out
+# again, its /dev entry goes (nothing holds it).
+usb_hotplug() {
+	echo "HOST tests usb-plug" >&3
+	wait_for 30 test -e /dev/sdb || { cat /proc/usb; return 1; }
+	cat /proc/usb
+	/bin/sbase/dd if=/dev/sdb of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
+	[ "$(/bin/coreutils/wc -c < /tmp/usb-sdb.bin)" -eq 512 ] || return 1
+	echo "HOST tests usb-unplug" >&3
+	wait_for 30 sh -c '! test -e /dev/sdb' || { cat /proc/usb; return 1; }
+	cat /proc/usb
+	! grep -q gone /proc/usb
+}
+t usb_hotplug usb_hotplug
+
 # A module's character device is a directory: the NIC's `data` is the
 # device, its `ctl` names the MAC and whether its interrupt works.
 net_ctl() {

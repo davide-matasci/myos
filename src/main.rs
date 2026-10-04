@@ -295,6 +295,33 @@ fn fsck_scratch_disk() -> bool {
     }
 }
 
+fn usb_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/usb.img")
+}
+
+fn usb_hot_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/usb-hot.img")
+}
+
+/// The USB bus of every boot (docs/usb.md): an xHCI controller, a hub on
+/// its first port and a memory stick behind the hub (`/dev/sda`: the same
+/// FAT volume as `/dev/vda`, in its own file since QEMU locks images). A
+/// second stick's drive is defined but plugged into root port 2 only by the
+/// hot-plug test, through the monitor (`user/tests/host.sh usb-plug`).
+fn add_usb(cmd: &mut Command) {
+    let fat = fat_img_path();
+    for dest in [usb_img_path(), usb_hot_img_path()] {
+        std::fs::copy(&fat, &dest).unwrap_or_else(|e| panic!("copy {} to {}: {e}", fat.display(), dest.display()));
+    }
+    cmd.arg("-device").arg("qemu-xhci,id=xhci");
+    cmd.arg("-device").arg("usb-hub,bus=xhci.0,port=1,id=usbhub");
+    cmd.arg("-drive")
+        .arg(format!("if=none,id=usb0,format=raw,file={}", usb_img_path().display()));
+    cmd.arg("-device").arg("usb-storage,bus=xhci.0,port=1.1,drive=usb0,id=usbdisk");
+    cmd.arg("-drive")
+        .arg(format!("if=none,id=usbhot,format=raw,file={}", usb_hot_img_path().display()));
+}
+
 fn add_virtio_blk_x86(cmd: &mut Command) {
     write_empty_blk_image();
     let fat = fat_img_path();
@@ -311,6 +338,7 @@ fn add_virtio_blk_x86(cmd: &mut Command) {
     cmd.arg("-device")
         .arg("virtio-blk-pci,drive=vd1,disable-modern=on");
     add_nvme(cmd);
+    add_usb(cmd);
 }
 
 fn add_virtio_blk_aarch64(cmd: &mut Command) {
@@ -326,6 +354,7 @@ fn add_virtio_blk_aarch64(cmd: &mut Command) {
     ));
     cmd.arg("-device").arg("virtio-blk-device,drive=vd1");
     add_nvme(cmd);
+    add_usb(cmd);
 }
 
 fn add_virtio_blk_riscv64(cmd: &mut Command) {
