@@ -9,4 +9,6 @@ struct utsname {
     char machine[32];
 };
 
+int uname(struct utsname *buf);
+
 #endif /* _MYOS_SYS_UTSNAME_H_ */
