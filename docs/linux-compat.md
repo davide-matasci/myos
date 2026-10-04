@@ -345,7 +345,9 @@ the kernel does not keep a per-task copy at syscall entry.
 - File locks (`flock`, `fcntl` record locks) are granted and not kept:
   myos has none, and a lock only guards against another copy of the same
   program (cargo, SQLite, git). `ftruncate` cuts a file to nothing or
-  grows it; a shorter non-zero length is refused (`EINVAL`).
+  grows it; a shorter non-zero length is refused (`EINVAL`). The
+  filesystems have no holes: growing a file, or `pwrite` past its end,
+  writes the zeros in between.
 - `chmod`, `chown` and `fsync` succeed and do nothing: myos keeps no
   owners or permission bits, and ext2 writes a file back when its last fd
   closes.

@@ -300,7 +300,7 @@ pub fn ftruncate(fd: usize, len: usize) -> R {
         let t = native(user::open_path(&path, O_WRONLY | O_TRUNC), EIO)?;
         task::fd_close(t);
     } else if len > size {
-        fs::write(&real, len - 1, &[0]).ok_or(EIO)?;
+        write_at(&real, len - 1, &[0])?;
     } else if len != 0 && len < size {
         return Err(EINVAL);
     }
@@ -697,13 +697,26 @@ pub fn pread(fd: usize, buf: usize, count: usize, off: usize) -> R {
     Ok(n)
 }
 
+/// Write `data` at `off` of the file at VFS path `real`. The filesystems
+/// write no further than the end of a file: a gap before `off` is filled
+/// with zeros first, which is what reading the hole would give.
+fn write_at(real: &str, off: usize, data: &[u8]) -> R {
+    let zeros = [0u8; 4096];
+    let mut end = fs::stat(real).ok_or(EBADF)?.size as usize;
+    while end < off {
+        let n = (off - end).min(zeros.len());
+        end += fs::write(real, end, &zeros[..n]).filter(|&w| w > 0).ok_or(EIO)?;
+    }
+    fs::write(real, off, data).ok_or(EIO)
+}
+
 /// `pwrite64`: the VFS writes at a position by path (the fd's offset stays).
 pub fn pwrite(fd: usize, buf: usize, count: usize, off: usize) -> R {
     let path = files::get(fd).filter(|e| !e.dir && e.sock.is_none()).ok_or(ESPIPE)?.path;
     let real = real_path(&path)?;
     let mut tmp = alloc::vec![0u8; count.min(1 << 20)];
     get(buf, &mut tmp)?;
-    fs::write(&real, off, &tmp).ok_or(EIO)
+    write_at(&real, off, &tmp)
 }
 
 /// `pwritev` / `pwritev2` (flags ignored): one `pwrite` per buffer.
