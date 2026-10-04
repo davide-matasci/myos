@@ -12,30 +12,25 @@ The screen is `/dev/fb` (`docs/fb.md`), the keyboard `/dev/console/kbd`
 (`docs/tty.md`, Linux `KEY_*` codes: X keycode = code + 8), clients connect
 over `/net/unix` (`/tmp/.X11-unix/X0` is a name there,
 `docs/sockets-unix.md`). libc has `readv`/`writev` and a single-threaded
-pthread API, and `packages/x11-libs` builds the client libraries (libxcb,
-libX11; `packages/x11-libs/README.md`). Everything is MIT/X11 licensed and
+pthread API, `packages/x11-libs` builds the client libraries (libxcb,
+libX11; `packages/x11-libs/README.md`) and `packages/tinyx` the server,
+TinyX's `Xfbdev` on `/dev/fb` and `/dev/console/kbd`
+(`packages/tinyx/README.md`; GPL-3.0, the rest MIT/X11). Everything is
 linked statically.
 
-1. **`packages/tinyx`**: TinyX's `Xfbdev` (Tiny Core's kdrive fork, MIT),
-   with a myos backend: the screen from `/dev/fb/ctl` (`graphics` written,
-   `data` mapped shared), the keyboard from `/dev/console/kbd`, no pointer
-   driver (the core pointer exists, never moves). Built without MIT-SHM, XKB,
-   GLX/DRI, Xinerama, DPMS; `-dumbSched` (no `SIGALRM` timer). Fonts:
-   `fixed` and `cursor` from font-misc-misc as PCF, no FreeType.
-2. **First clients, libX11 only**: `xsetroot`, `xev`, a tiny window manager
+1. **First clients, libX11 only**: `xsetroot`, `xev`, a tiny window manager
    (TinyWM, public domain).
-3. **A terminal**: `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from
+2. **A terminal**: `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from
    `ports/termcap`; libX11's locale data, which x11-libs does not ship yet).
    `st` would need Xft, fontconfig and FreeType.
-4. **Test** (the packages' `test.sh`, full mode): start `Xfbdev :0`,
-   `xsetroot -solid red` and check a pixel of `/dev/fb/data`, `xev` while
-   the host types through the monitor (`user/c/host.sh sendkey`), kill the
-   server and check the console has the screen and the keyboard back.
+3. **xinit / startx**: start the server and a session (a window manager
+   and a terminal) together.
 
 Gaps that may show up on the way:
 
-- `setitimer`/`alarm` (libgloss has neither): needed if `-dumbSched` is not
-  enough, and by `xterm`'s blinking.
+- `setitimer` fails (`ENOSYS`) and `alarm` is missing: the server runs its
+  plain scheduler (it prints "scheduling timer: Function not implemented");
+  `xterm`'s blinking will want a timer.
 - `/net/unix` buffers 8 KiB per end and has 32 conversations: enough to
   start, slow for big replies (`GetImage`, large `PutImage`).
 - A real `pthread_create` (on `thread_spawn` / `wait_addr`) if a client

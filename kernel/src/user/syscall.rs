@@ -117,6 +117,8 @@ const SYS_INSMOD: usize = 58;
 /// `rmmod(name, len)`: unload the kernel module `name` when nothing it
 /// registered is in place. 0 ok, `SYSERR` on any failure.
 const SYS_RMMOD: usize = 59;
+/// `getppid()`: the calling process's parent.
+const SYS_GETPPID: usize = 60;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
@@ -263,6 +265,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_GETTID => task::current_tid(),
         SYS_INSMOD => sys_insmod(a0, a1),
         SYS_RMMOD => sys_rmmod(a0, a1),
+        SYS_GETPPID => task::current_ppid(),
         SYS_LINUX_NEXT_EXEC => {
             if crate::personality::request_next_exec() { 0 } else { SYSERR }
         }

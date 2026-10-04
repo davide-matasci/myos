@@ -1,0 +1,141 @@
+diff --git a/Xext/Makefile.am b/Xext/Makefile.am
+index 6dc829e..e87a860 100644
+--- a/Xext/Makefile.am
++++ b/Xext/Makefile.am
+@@ -12,8 +12,7 @@ AM_CFLAGS = $(DIX_CFLAGS)
+ BUILTIN_SRCS =			\
+ 	shape.c			\
+ 	sleepuntil.c		\
+-	sleepuntil.h		\
+-	xtest.c
++	sleepuntil.h
+ 
+ # Sources always included in libXextmodule.la & libXext.la
+ MODULE_SRCS =			\
+@@ -24,9 +23,11 @@ MODULE_SRCS =			\
+ 
+ # Optional sources included if extension enabled by configure.ac rules
+ 
+-# MIT Shared Memory extension
++# MIT Shared Memory extension: not built (no SysV shared memory)
+ MITSHM_SRCS = shm.c shmint.h
+-BUILTIN_SRCS += $(MITSHM_SRCS)
++
++# XTEST: not built
++XTEST_SRCS = xtest.c
+ 
+ # XResource extension: lets clients get data about per-client resource usage
+ RES_SRCS = xres.c
+@@ -58,6 +59,7 @@ libXext_la_SOURCES =		$(BUILTIN_SRCS) $(MODULE_SRCS)
+ 
+ EXTRA_DIST = \
+ 	$(MITSHM_SRCS) \
++	$(XTEST_SRCS) \
+ 	$(RES_SRCS) \
+ 	$(SCREENSAVER_SRCS) \
+ 	$(BIGFONT_SRCS) \
+diff --git a/fb/fboverlay.c b/fb/fboverlay.c
+index 005a08c..99faef1 100644
+--- a/fb/fboverlay.c
++++ b/fb/fboverlay.c
+@@ -391,7 +391,9 @@ fbOverlayFinishScreenInit(ScreenPtr pScreen,
+         ))
+         return FALSE;
+     /* MI thinks there's no frame buffer */
++#ifdef MITSHM
+     ShmRegisterFbFuncs(pScreen);
++#endif
+     pScreen->minInstalledCmaps = 1;
+     pScreen->maxInstalledCmaps = 2;
+ 
+diff --git a/mi/miinitext.c b/mi/miinitext.c
+index 5edb683..6524898 100644
+--- a/mi/miinitext.c
++++ b/mi/miinitext.c
+@@ -88,10 +88,14 @@ extern Bool noXFixesExtension;
+ #define INITARGS void
+ typedef void (*InitExtension)(INITARGS);
+ 
++#ifdef MITSHM
+ #define _XSHM_SERVER_
+ #include <X11/extensions/shmstr.h>
++#endif
++#ifdef XTEST
+ #define _XTEST_SERVER_
+ #include <X11/extensions/XTest.h>
++#endif
+ #ifdef XF86BIGFONT
+ #include <X11/extensions/xf86bigfproto.h>
+ #endif
+@@ -100,8 +104,12 @@ typedef void (*InitExtension)(INITARGS);
+ #endif
+ 
+ /* FIXME: this whole block of externs should be from the appropriate headers */
++#ifdef MITSHM
+ extern void ShmExtensionInit(INITARGS);
++#endif
++#ifdef XTEST
+ extern void XTestExtensionInit(INITARGS);
++#endif
+ extern void BigReqExtensionInit(INITARGS);
+ #ifdef SCREENSAVER
+ extern void ScreenSaverExtensionInit (INITARGS);
+@@ -147,7 +155,9 @@ static const ExtensionToggle ExtensionToggleList[] =
+ #ifdef SCREENSAVER
+     { "MIT-SCREEN-SAVER", &noScreenSaverExtension },
+ #endif
++#ifdef MITSHM
+     { SHMNAME, &noMITShmExtension },
++#endif
+     { "RANDR", &noRRExtension },
+     { "RENDER", &noRenderExtension },
+     { "SHAPE", &noShapeExtension },
+@@ -160,7 +170,9 @@ static const ExtensionToggle ExtensionToggleList[] =
+     { "XFree86-Bigfont", &noXFree86BigfontExtension },
+ #endif
+     { "XFIXES", &noXFixesExtension },
++#ifdef XTEST
+     { "XTEST", &noTestExtensions },
++#endif
+     { NULL, NULL }
+ };
+ 
+@@ -197,8 +209,12 @@ InitExtensions(argc, argv)
+     char	*argv[];
+ {
+     if (!noShapeExtension) ShapeExtensionInit();
++#ifdef MITSHM
+     if (!noMITShmExtension) ShmExtensionInit();
++#endif
++#ifdef XTEST
+     if (!noTestExtensions) XTestExtensionInit();
++#endif
+     if (!noBigReqExtension) BigReqExtensionInit();
+ #if defined(SCREENSAVER) && !defined(PRINT_ONLY_SERVER)
+     if (!noScreenSaverExtension) ScreenSaverExtensionInit ();
+diff --git a/mi/miscrinit.c b/mi/miscrinit.c
+index 6bd4df7..b8b94cc 100644
+--- a/mi/miscrinit.c
++++ b/mi/miscrinit.c
+@@ -38,9 +38,11 @@ from The Open Group.
+ #include "pixmapstr.h"
+ #include "dix.h"
+ #include "miline.h"
++#ifdef MITSHM
+ #define _XSHM_SERVER_
+ #include <X11/extensions/XShm.h>
+ #include "shmint.h"
++#endif
+ 
+ /* We use this structure to propogate some information from miScreenInit to
+  * miCreateScreenResources.  miScreenInit allocates the structure, fills it
+@@ -240,7 +242,9 @@ miScreenInit(pScreen, pbits, xsize, ysize, dpix, dpiy, width,
+     pScreen->visuals = visuals;
+     if (width)
+     {
++#ifdef MITSHM
+ 	ShmRegisterFbFuncs(pScreen);
++#endif
+ 	pScreen->CloseScreen = miCloseScreen;
+     }
+     /* else CloseScreen */
