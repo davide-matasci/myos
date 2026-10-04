@@ -15,19 +15,25 @@ over `/net/unix` (`/tmp/.X11-unix/X0` is a name there,
 pthread API, `packages/x11-libs` builds the client libraries (libxcb,
 libX11; `packages/x11-libs/README.md`) and `packages/tinyx` the server,
 TinyX's `Xfbdev` on `/dev/fb` and `/dev/console/kbd`
-(`packages/tinyx/README.md`; GPL-3.0, the rest MIT/X11). Everything is
-linked statically.
+(`packages/tinyx/README.md`; GPL-3.0, the rest MIT/X11), and
+`packages/dwm` the window manager (dwm drawing with core X fonts,
+`packages/dwm/README.md`). Everything is linked statically.
 
-1. **First clients, libX11 only**: `xsetroot`, `xev`, a tiny window manager
-   (TinyWM, public domain).
-2. **A terminal**: `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from
+1. **First clients, libX11 only**: `xsetroot`, `xev`.
+2. **A terminal**, the one dwm's Alt+Shift+Return starts: `st` drawing with
+   core fonts like dwm (its `x.c` uses Xft throughout, a bigger patch than
+   dwm's `drw.c`), or `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from
    `ports/termcap`; libX11's locale data, which x11-libs does not ship yet).
-   `st` would need Xft, fontconfig and FreeType.
+   Then `dmenu` (Alt+P), with dwm's core-font `drw.c`.
 3. **xinit / startx**: start the server and a session (a window manager
    and a terminal) together.
 
 Gaps that may show up on the way:
 
+- `SA_NOCLDWAIT` (and children of a process ignoring `SIGCHLD` reaped by
+  the kernel): dwm reaps in a handler instead (`packages/dwm`).
+- `kill(pid, 0)` fails (`kill -0` in the shell): the kernel refuses signal
+  0 instead of only checking that the target exists.
 - `setitimer` fails (`ENOSYS`) and `alarm` is missing: the server runs its
   plain scheduler (it prints "scheduling timer: Function not implemented");
   `xterm`'s blinking will want a timer.

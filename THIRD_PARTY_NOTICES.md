@@ -44,6 +44,7 @@ under its own license.
 | X client libraries (package `x11-libs`): xorgproto, xtrans, libXau, xcb-proto, libxcb, libX11 | see `packages/x11-libs/versions.env` | MIT / X11-style (X.Org, The Open Group and others; each upstream `COPYING`) | https://www.x.org/releases/individual/ |
 | TinyX `Xfbdev` (package `tinyx`; the X server) | `TINYX_REV` in `packages/tinyx/versions.env` | **GPL-3.0** (TinyX's changes; the X.Org code it started from is MIT/X11) | https://github.com/tinycorelinux/tinyx |
 | libfontenc, libXfont 1.x, libXdmcp's header (linked into / used to build `Xfbdev`) | see `packages/tinyx/versions.env` | MIT / X11-style | https://www.x.org/releases/individual/lib/ |
+| dwm (package `dwm`; the window manager) | `DWM_VERSION` in `packages/dwm/versions.env` | MIT/X Consortium | https://dwm.suckless.org/ |
 | Mbed TLS (TLS for `curl`, `lynx`, `user/tls`) | 3.6.2 | Apache-2.0 OR GPL-2.0-or-later (myos uses it under Apache-2.0) | https://github.com/Mbed-TLS/mbedtls |
 | curl | 8.11.1 | curl license (MIT-style) | https://curl.se/ |
 | Mozilla CA certificate bundle (`/lib/cacert.pem`, from curl.se) | latest at build time | **MPL-2.0** | https://curl.se/docs/caextract.html |
