@@ -28,6 +28,22 @@ struct hostent {
 };
 #define h_addr h_addr_list[0]
 
+/* The services database: myos has none, the lookups find nothing. */
+struct servent {
+    char *s_name;
+    char **s_aliases;
+    int s_port;
+    char *s_proto;
+};
+
+/* gethostbyname's error, with hstrerror's text for it. */
+extern int h_errno;
+#define HOST_NOT_FOUND 1
+#define TRY_AGAIN      2
+#define NO_RECOVERY    3
+#define NO_DATA        4
+#define NO_ADDRESS     NO_DATA
+
 #define AI_PASSIVE     0x0001
 #define AI_CANONNAME   0x0002
 #define AI_NUMERICHOST 0x0004
@@ -35,6 +51,8 @@ struct hostent {
 
 #define NI_NUMERICHOST 1
 #define NI_NUMERICSERV 2
+#define NI_MAXHOST     1025
+#define NI_MAXSERV     32
 
 #define EAI_AGAIN    -3
 #define EAI_FAIL     -4
@@ -54,6 +72,9 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen,
     char *host, socklen_t hostlen, char *serv, socklen_t servlen, int flags);
 
 struct hostent *gethostbyname(const char *name);
+struct servent *getservbyname(const char *name, const char *proto);
+struct servent *getservbyport(int port, const char *proto);
+const char *hstrerror(int err);
 
 #ifdef __cplusplus
 }

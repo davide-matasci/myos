@@ -28,8 +28,9 @@ for hdr in search.h endian.h regex.h; do
     cp "$NEWLIB_SRC/newlib/libc/include/$hdr" "$inc/$hdr"
   fi
 done
-# newlib defines _POSIX_THREADS (which guards <pthread.h>) and the UNIX98
-# mutex types only for RTEMS and Cygwin. libgloss implements the API for
+# newlib defines _POSIX_THREADS (which guards <pthread.h>), the UNIX98
+# mutex types and _POSIX_TIMERS (which guards clock_gettime, nanosleep and
+# the CLOCK_* ids) only for RTEMS and Cygwin. libgloss implements the API for
 # single-threaded programs (pthread.c), so the installed features.h declares
 # it for myos; every program sees the same pthread_mutexattr_t. Only the
 # sysroot copy: newlib's own build keeps them off (its stdio would call
@@ -47,6 +48,15 @@ s = s.replace(tail, """/* myos: libgloss pthread.c (one thread per process). */
 #endif
 #ifndef _UNIX98_THREAD_MUTEX_ATTRIBUTES
 #define _UNIX98_THREAD_MUTEX_ATTRIBUTES 1
+#endif
+/* myos: libgloss time.c (clock_gettime, CLOCK_REALTIME and
+ * CLOCK_MONOTONIC) and sleep.c (nanosleep); <time.h> declares them only
+ * with these. */
+#ifndef _POSIX_TIMERS
+#define _POSIX_TIMERS 1
+#endif
+#ifndef _POSIX_MONOTONIC_CLOCK
+#define _POSIX_MONOTONIC_CLOCK 200112L
 #endif
 
 """ + tail)
@@ -118,6 +128,7 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/sys/un.h" "$inc/sys/un.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/utsname.h" "$inc/sys/utsname.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/mman.h" "$inc/sys/mman.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/uio.h" "$inc/sys/uio.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/sys/random.h" "$inc/sys/random.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/utmp.h" "$inc/utmp.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
 mkdir -p "$inc/arpa" "$inc/netinet"

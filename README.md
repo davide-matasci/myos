@@ -307,7 +307,7 @@ unsafe extern "C" fn module_rescan() // optional: probe for new devices after a 
 Syscall 9 (`brk`) backs per-process heap. `user/lib` exposes `brk`, `heap_init`, bump `GlobalAlloc`. `user/ok` smoke-tests every boot. `user/heap` = CI-only heavy suite. `std` programs link prebuilt sysroot (`toolchain/std/build-sysroot.sh`).
 
 ### C Userspace (newlib + libgloss)
-Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs). No new kernel syscalls needed: `readv`/`writev` (`<sys/uio.h>`) are libc over `read`/`write`, and the pthread API is there for single-threaded programs (`pthread_create` fails, `docs/threads.md`; an empty `libpthread.a` keeps `-lpthread` linking).
+Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs). No new kernel syscalls needed: `readv`/`writev` (`<sys/uio.h>`), `vfork`, `daemon` and `getrandom` (from `/dev/urandom`) are libc over the existing primitives, the netdb service lookups find nothing (no services database), and the pthread API is there for single-threaded programs (`pthread_create` fails, `docs/threads.md`; an empty `libpthread.a` keeps `-lpthread` linking). A port's `myos_compat.h` / `myos_stubs.c` holds only what newlib's headers lack or what has no honest implementation on myos (rlimits, `getrusage`, `alarm`: no timer signals); what libgloss provides is never redefined there.
 
 ```sh
 ./toolchain/newlib/build.sh         # fetch newlib 4.4.0, build libc + libgloss/myos
