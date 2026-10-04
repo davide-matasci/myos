@@ -48,14 +48,11 @@ const REP_TXCREDIT: u8 = 5;
 
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
-/// TLS ClientHello / cert fragments need more than the old 512-byte slots
+/// Most a request to netd takes; netd reads `/dev/netd` with a buffer this
+/// size and gets one whole request per read (`RingBuf::pop`). TLS
+/// ClientHello / cert fragments need more than the old 512-byte slots
 /// (HTTPS handshake timed out in CI).
 const MSG_CAP: usize = 2048;
-/// Most a request to netd may take: one read of `/dev/netd` carries it, and
-/// the kernel copies a read through `FILE_IO_TMP` (kernel/src/task/fd.rs,
-/// 2042 bytes). A longer one reached netd cut short, and netd dropped it: a
-/// TCP write lost every full 2042-byte chunk.
-const READ_CAP: usize = 2042;
 const RING: usize = 128; /* SSH writev/kex burst; was 32 — riscv EIO */
 const MAX_CONV: usize = 32;
 /// Per-conversation RX staging. Cert chains exceed 512; drop = TLS timeout.
@@ -94,7 +91,7 @@ impl RingBuf {
     };
 
     fn push(&mut self, src: &[u8]) -> bool {
-        if self.count as usize >= RING || src.is_empty() || src.len() > READ_CAP {
+        if self.count as usize >= RING || src.is_empty() || src.len() > MSG_CAP {
             return false;
         }
         let i = self.head as usize % RING;
@@ -105,19 +102,22 @@ impl RingBuf {
         true
     }
 
-    fn pop(&mut self, dst: &mut [u8]) -> usize {
+    /// The oldest request into `dst`: whole, or not at all (`None` when
+    /// `dst` is too small: a cut request is lost, netd drops it).
+    fn pop(&mut self, dst: &mut [u8]) -> Option<usize> {
         if self.count == 0 {
-            return 0;
+            return Some(0);
         }
         let i = self.tail as usize % RING;
-        let n = (self.slots[i].len as usize).min(dst.len()).min(MSG_CAP);
-        if n != 0 {
-            dst[..n].copy_from_slice(&self.slots[i].buf[..n]);
+        let n = self.slots[i].len as usize;
+        if n > dst.len() {
+            return None;
         }
+        dst[..n].copy_from_slice(&self.slots[i].buf[..n]);
         self.slots[i].len = 0;
         self.tail = self.tail.wrapping_add(1);
         self.count -= 1;
-        n
+        Some(n)
     }
 }
 
@@ -1005,7 +1005,7 @@ unsafe extern "C" fn net_write(
             // TCP takes what one request carries and netd has room for; none
             // left refuses the write (the kernel returns what earlier chunks
             // took). A datagram goes whole or not at all.
-            let max = READ_CAP - REQ_HDR;
+            let max = MSG_CAP - REQ_HDR;
             let n = if p == PROTO_TCP {
                 src.len().min(max).min(state().convs[id as usize].tx_room as usize)
             } else if src.len() <= max {
@@ -1071,8 +1071,7 @@ unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
     let out = unsafe { core::slice::from_raw_parts_mut(buf, buf_len) };
     // No serial spam here: CI login typing matches against the serial log, and
     // leftover TEMP `[cr] n typ=` lines stole keystrokes / timed out WaitLogin.
-    let n = state().req.pop(out);
-    n as i32
+    state().req.pop(out).map_or(-1, |n| n as i32)
 }
 
 unsafe extern "C" fn chr_write(buf: *const u8, buf_len: usize) -> i32 {
