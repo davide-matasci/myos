@@ -68,9 +68,10 @@ echo "login:$SRC/target/ubase-login-$TARGET" >> $T/ubase-manifest-$ARCH.txt
 # 4. The kernel. A stable rustc: RUSTC_BOOTSTRAP for the unstable
 # features, core and alloc built from source for the bare-metal target
 # (Alpine ships the library for its own target only), and lld for the
-# link (there is no rust-lld).
+# link (there is no rust-lld). The environment is the Linux one: cargo and
+# the build scripts find their tools through PATH.
 say "building the kernel"
-linux --root $R env RUSTC_BOOTSTRAP=1 \
+linux --root $R /usr/bin/env PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/root RUSTC_BOOTSTRAP=1 \
 	CARGO_UNSTABLE_BUILD_STD=core,alloc \
 	CARGO_UNSTABLE_BUILD_STD_FEATURES=compiler-builtins-mem \
 	CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER=ld.lld \
