@@ -5,10 +5,13 @@
  *   dwm_smoke bar    wait for dwm's bar: the selected tag's box, #005577,
  *                    at the top left
  *   dwm_smoke gone   wait for it to be gone (dwm hid the bar)
+ *   dwm_smoke probe  whether the server answers a new connection's setup
+ *                    within 10 s (when the bar does not come)
  *
  * Prints "[ OK ] dwm <mode>", or what it last saw.
  */
 #include <fcntl.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -32,6 +35,34 @@ static int server_up(void) {
     return up;
 }
 
+/* Send an X connection setup (little endian, protocol 11.0, no auth) and
+ * wait for the first byte of the server's answer (1: success). */
+static int probe(void) {
+    static const unsigned char setup[12] = {'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    struct sockaddr_un a = {.sun_family = AF_UNIX, .sun_path = "/tmp/.X11-unix/X0"};
+    struct pollfd p;
+    unsigned char b;
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+    if (fd < 0 || connect(fd, (struct sockaddr *)&a, sizeof a) < 0) {
+        printf("probe: no connection\n");
+        return 1;
+    }
+    if (write(fd, setup, sizeof setup) != sizeof setup) {
+        printf("probe: setup not sent\n");
+        return 1;
+    }
+    p.fd = fd;
+    p.events = POLLIN;
+    if (poll(&p, 1, 10000) != 1 || read(fd, &b, 1) != 1) {
+        printf("probe: the server does not answer\n");
+        return 1;
+    }
+    printf("probe: the server answers (%d)\n", b);
+    close(fd);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     char line[128];
     unsigned w, h, depth, pitch;
@@ -39,9 +70,13 @@ int main(int argc, char **argv) {
     ssize_t n;
     int ctl, fd, want_bar;
 
-    if (argc != 2 || (strcmp(argv[1], "server") && strcmp(argv[1], "bar") && strcmp(argv[1], "gone"))) {
-        fprintf(stderr, "usage: dwm_smoke server|bar|gone\n");
+    if (argc != 2 || (strcmp(argv[1], "server") && strcmp(argv[1], "bar") && strcmp(argv[1], "gone")
+                      && strcmp(argv[1], "probe"))) {
+        fprintf(stderr, "usage: dwm_smoke server|bar|gone|probe\n");
         return 2;
+    }
+    if (!strcmp(argv[1], "probe")) {
+        return probe();
     }
     if (!strcmp(argv[1], "server")) {
         for (int i = 0; i < 60; i++) {

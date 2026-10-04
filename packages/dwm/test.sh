@@ -5,7 +5,8 @@
 # dwm_smoke.c reads the pixel.
 
 # On a failure: the /net conversations (a client that cannot reach the
-# server's unix socket falls back to TCP).
+# server's unix socket falls back to TCP), whether the server still answers
+# a new client, and whether dwm was still running.
 dwm_net_state() {
 	for proto in unix tcp; do
 		printf '/net/%s:' $proto
@@ -30,9 +31,12 @@ dwm_run() {
 				/bin/etc/dwm_smoke bar && ok=1
 			fi
 		fi
-		[ $ok = 1 ] || dwm_net_state
+		[ $ok = 1 ] || { dwm_net_state; /bin/etc/dwm_smoke probe; }
 		kill $dpid 2>/dev/null
 		wait $dpid 2>/dev/null
+		# 143 (SIGTERM): dwm was still running.
+		st=$?
+		[ $ok = 1 ] || echo "dwm's exit status: $st"
 	fi
 	kill $xpid 2>/dev/null
 	wait $xpid 2>/dev/null
