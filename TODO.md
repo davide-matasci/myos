@@ -42,11 +42,6 @@ Gaps that may show up on the way:
 - A real `pthread_create` (on `thread_spawn` / `wait_addr`) if a client
   needs threads; the libgloss pthread functions are single-threaded.
 - MIT-SHM, and with it fast image transfers, needs the shared memory below.
-- A client started before the server: libxcb tries TCP localhost:6000 when
-  the unix socket is not there, and netd has no loopback, so that connect
-  never ends; and a TCP socket closed right after `socket()` leaks its
-  netfs conversation (a race with netd's clone reply). Being fixed apart
-  from the X packages.
 
 ## x86_64 interrupt routing beyond MSI-X
 

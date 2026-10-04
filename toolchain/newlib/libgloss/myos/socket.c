@@ -1269,6 +1269,14 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         errno = EINVAL;
         return -1;
     }
+    /* netd has no loopback interface: a SYN to 127/8 leaves through the NIC
+     * and nothing answers it, so a blocking connect would time out after
+     * CONNECT_TIMEOUT_MS and a nonblocking one never complete. (X clients
+     * try localhost:6000 when the server's unix socket is not there.) */
+    if ((ntohl(in->sin_addr.s_addr) >> 24) == 127) {
+        errno = ECONNREFUSED;
+        return -1;
+    }
     {
         size_t pos = 0;
         int n;
