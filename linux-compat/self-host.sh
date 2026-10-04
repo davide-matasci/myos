@@ -11,10 +11,9 @@
 # Each step is skipped when its result is already there, so a second run
 # goes on where the first stopped. REV is the branch to build (master).
 #
-# What it does not build yet: the userland the kernel embeds (the std demo
-# programs, c-hello, oksh, getty and login) is copied from this system, and
-# the TLS library of the embedded `http` (mbedtls over newlib) is not built
-# here at all (docs/linux-compat.md, "Building myos in myos").
+# What it does not build yet is copied from this system: the C and std
+# userland the kernel embeds (the std demo programs, c-hello, oksh, getty
+# and login) and `http`, whose TLS library is mbedtls over newlib.
 
 D=$1
 REV=${2:-master}
@@ -43,15 +42,20 @@ if [ ! -e $R/usr/bin/env ]; then
 	linux --root $R /bin/busybox --install -s || exit 1
 fi
 
-# 2. The source.
+# 2. The source: cloned, or brought to REV's latest commit.
 if [ ! -d $R$SRC/.git ]; then
 	say "cloning myos ($REV)"
 	mkdir -p $R/src
 	linux --root $R git clone --depth 1 -b $REV https://github.com/davide-matasci/myos $SRC || exit 1
+else
+	say "updating myos ($REV)"
+	linux --root $R git -C $SRC fetch --depth 1 origin $REV || exit 1
+	linux --root $R git -C $SRC checkout -q FETCH_HEAD || exit 1
 fi
 
 # 3. The userland the kernel embeds, from this system (building it needs
-# newlib and the patched std sysroot).
+# newlib and the patched std sysroot; `http` needs mbedtls over newlib, and
+# MYOS_PREBUILT below has kernel/build.rs take it as it is).
 T=$R$SRC/target
 mkdir -p $T
 cp /bin/std/hello $T/std-hello-$ARCH-unknown-myos
@@ -62,6 +66,7 @@ cp /bin/etc/hello $T/c-hello-$TARGET
 cp /bin/custom/sh $T/oksh-$TARGET
 cp /bin/ubase/getty $T/ubase-getty-$TARGET
 cp /bin/ubase/login $T/ubase-login-$TARGET
+cp /bin/custom/http $T/http-$TARGET
 echo "getty:$SRC/target/ubase-getty-$TARGET" > $T/ubase-manifest-$ARCH.txt
 echo "login:$SRC/target/ubase-login-$TARGET" >> $T/ubase-manifest-$ARCH.txt
 
@@ -100,6 +105,6 @@ fi
 
 # 5. The kernel.
 say "building the kernel"
-alpine cargo build --release --config $SRC/.cargo/config.toml --manifest-path $SRC/Cargo.toml \
-	-p kernel --target $TARGET || exit 1
+alpine MYOS_PREBUILT=http cargo build --release --config $SRC/.cargo/config.toml \
+	--manifest-path $SRC/Cargo.toml -p kernel --target $TARGET || exit 1
 say "built $R$SRC/target/$TARGET/release/kernel"
