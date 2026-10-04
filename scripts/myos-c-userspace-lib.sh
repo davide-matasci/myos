@@ -600,15 +600,25 @@ myos_write_cross_cc() {
   for f in "$@"; do
     flags="$flags $(printf '%q' "$f")"
   done
-  # newlib's printf wants the long-double and soft-float helpers these
-  # arches lack (the sbase port carries them).
+  # newlib's printf wants the long-double helpers these arches lack (the
+  # sbase port carries them). riscv64 has no FPU: its float and double
+  # arithmetic, conversions and compares are compiler-rt's
+  # (ports/curl/build-softfloat-riscv64.sh); sbase's own versions of those
+  # are renamed away, so only its long-double ones are linked.
   case "$arch" in
     aarch64) extra="$out.helpers.o"
       clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
         -c "$MYOS_ROOT/ports/sbase/trunctfdf2.c" -o "$extra" ;;
-    riscv64) extra="$out.helpers.o"
+    riscv64)
+      local sf="$MYOS_ROOT/target/libsoftfloat-riscv64.a" nmbin sym renames=()
+      "$MYOS_ROOT/ports/curl/build-softfloat-riscv64.sh" >/dev/null
+      nmbin="$(command -v llvm-nm 2>/dev/null || echo nm)"
+      for sym in $("$nmbin" --defined-only -g "$sf" | awk '$2 == "T" { print $3 }'); do
+        renames+=("-D$sym=__myos_sbase$sym")
+      done
       clang --target="$elf" -ffreestanding -fPIC -O2 -w -isystem "$sysroot/include" \
-        -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$extra" ;;
+        "${renames[@]}" -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$out.helpers.o"
+      extra="$out.helpers.o $sf" ;;
   esac
   cat > "$out" <<EOC
 #!/usr/bin/env bash
