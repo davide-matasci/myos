@@ -1,10 +1,11 @@
-//! virtio-net: modern virtio 1.0 PCI `/dev/netN`.
+//! virtio-net: modern virtio 1.0 PCI `/dev/netN/`.
 //!
 //! Speaks only through [`myos_abi::KernelApi`]. Ethernet frames only; no IP.
-//! Reads never block (a `0` means "no frame"), but the RX queue raises an
-//! interrupt (MSI-X on x86_64, the INTx line elsewhere) and
-//! [`MYOS_IOCTL_NET_WAIT_RX`] lets `netd` sleep until a frame, another kernel
-//! event or a timeout instead of polling the ring.
+//! `data` reads never block (a `0` means "no frame"), but the RX queue
+//! raises an interrupt (MSI-X on x86_64, the INTx line elsewhere) that wakes
+//! the pollers, so `netd` sleeps in `poll` on `data` until a frame instead
+//! of polling the ring. `ctl` names the device's MAC and whether that
+//! interrupt works (`mac 52:54:00:12:34:56`, `irq on|off`).
 
 #![no_std]
 #![no_main]
@@ -12,8 +13,7 @@
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use myos_abi::{
-    status_ok, ABI_VERSION, KernelApi, MYOS_IOCTL_NET_GETMAC, MYOS_IOCTL_NET_WAIT_RX,
-    MYOS_IRQ_INTX, MYOS_WAIT_ANY, ModuleChrOps,
+    status_ok, ABI_VERSION, KernelApi, MYOS_IRQ_INTX, MYOS_POLLIN, MYOS_POLLOUT, ModuleChrOps,
 };
 
 const VENDOR: u16 = 0x1AF4;
@@ -92,10 +92,6 @@ struct Net {
     irq_ok: bool,
 }
 
-/// Longest `NET_WAIT_RX` sleep when the caller passes 0 (a lost interrupt
-/// then costs at most this much latency instead of a hang).
-const WAIT_RX_CAP_NS: u64 = 10_000_000_000;
-
 static mut NETS: [Option<Net>; MAX_NET] = [None, None, None, None];
 static mut API: Option<&'static KernelApi> = None;
 
@@ -105,8 +101,11 @@ unsafe extern "C" fn net0_read(buf: *mut u8, buf_len: usize) -> i32 {
 unsafe extern "C" fn net0_write(buf: *const u8, buf_len: usize) -> i32 {
     net_write_n(0, buf, buf_len)
 }
-unsafe extern "C" fn net0_ioctl(request: u64, arg: usize) -> i32 {
-    net_ioctl_n(0, request, arg)
+unsafe extern "C" fn net0_poll() -> u32 {
+    net_poll_n(0)
+}
+unsafe extern "C" fn net0_ctl(buf: *mut u8, cap: usize) -> i32 {
+    net_ctl_n(0, buf, cap)
 }
 unsafe extern "C" fn net1_read(buf: *mut u8, buf_len: usize) -> i32 {
     net_read_n(1, buf, buf_len)
@@ -114,8 +113,11 @@ unsafe extern "C" fn net1_read(buf: *mut u8, buf_len: usize) -> i32 {
 unsafe extern "C" fn net1_write(buf: *const u8, buf_len: usize) -> i32 {
     net_write_n(1, buf, buf_len)
 }
-unsafe extern "C" fn net1_ioctl(request: u64, arg: usize) -> i32 {
-    net_ioctl_n(1, request, arg)
+unsafe extern "C" fn net1_poll() -> u32 {
+    net_poll_n(1)
+}
+unsafe extern "C" fn net1_ctl(buf: *mut u8, cap: usize) -> i32 {
+    net_ctl_n(1, buf, cap)
 }
 unsafe extern "C" fn net2_read(buf: *mut u8, buf_len: usize) -> i32 {
     net_read_n(2, buf, buf_len)
@@ -123,8 +125,11 @@ unsafe extern "C" fn net2_read(buf: *mut u8, buf_len: usize) -> i32 {
 unsafe extern "C" fn net2_write(buf: *const u8, buf_len: usize) -> i32 {
     net_write_n(2, buf, buf_len)
 }
-unsafe extern "C" fn net2_ioctl(request: u64, arg: usize) -> i32 {
-    net_ioctl_n(2, request, arg)
+unsafe extern "C" fn net2_poll() -> u32 {
+    net_poll_n(2)
+}
+unsafe extern "C" fn net2_ctl(buf: *mut u8, cap: usize) -> i32 {
+    net_ctl_n(2, buf, cap)
 }
 unsafe extern "C" fn net3_read(buf: *mut u8, buf_len: usize) -> i32 {
     net_read_n(3, buf, buf_len)
@@ -132,30 +137,41 @@ unsafe extern "C" fn net3_read(buf: *mut u8, buf_len: usize) -> i32 {
 unsafe extern "C" fn net3_write(buf: *const u8, buf_len: usize) -> i32 {
     net_write_n(3, buf, buf_len)
 }
-unsafe extern "C" fn net3_ioctl(request: u64, arg: usize) -> i32 {
-    net_ioctl_n(3, request, arg)
+unsafe extern "C" fn net3_poll() -> u32 {
+    net_poll_n(3)
+}
+unsafe extern "C" fn net3_ctl(buf: *mut u8, cap: usize) -> i32 {
+    net_ctl_n(3, buf, cap)
 }
 
 static OPS: [ModuleChrOps; MAX_NET] = [
     ModuleChrOps {
         read: net0_read,
         write: net0_write,
-        ioctl: Some(net0_ioctl),
+        poll: Some(net0_poll),
+        ctl_read: Some(net0_ctl),
+        ctl_write: None,
     },
     ModuleChrOps {
         read: net1_read,
         write: net1_write,
-        ioctl: Some(net1_ioctl),
+        poll: Some(net1_poll),
+        ctl_read: Some(net1_ctl),
+        ctl_write: None,
     },
     ModuleChrOps {
         read: net2_read,
         write: net2_write,
-        ioctl: Some(net2_ioctl),
+        poll: Some(net2_poll),
+        ctl_read: Some(net2_ctl),
+        ctl_write: None,
     },
     ModuleChrOps {
         read: net3_read,
         write: net3_write,
-        ioctl: Some(net3_ioctl),
+        poll: Some(net3_poll),
+        ctl_read: Some(net3_ctl),
+        ctl_write: None,
     },
 ];
 
@@ -532,8 +548,8 @@ fn probe(api: &KernelApi, pci_index: u32, slot_index: usize) -> Option<Net> {
     // RX interrupts: route the function's interrupt to `net_irq`, point the
     // RX queue at the MSI-X entry the kernel chose (or leave INTx), and let
     // the device interrupt for RX completions (the TX queue keeps
-    // AVAIL_F_NO_INTERRUPT). Failure leaves the device in poll mode; the
-    // WAIT_RX ioctl then reports it so netd keeps its timed polling.
+    // AVAIL_F_NO_INTERRUPT). Failure leaves the device in poll mode; `ctl`
+    // says `irq off` then, so netd keeps its timed polling.
     let mut msix_entry: u16 = MYOS_IRQ_INTX;
     let name = b"virtio-net";
     let rc = unsafe {
@@ -601,8 +617,8 @@ fn api_ref() -> Option<&'static KernelApi> {
 }
 
 /// Interrupt handler: ack the device (ISR read deasserts a legacy INTx line;
-/// harmless under MSI-X) and wake pollers sleeping on "any event", which is
-/// what `NET_WAIT_RX` and libgloss `poll()` block on.
+/// harmless under MSI-X) and wake the pollers: `netd` sleeps in `poll` on
+/// `data`.
 unsafe extern "C" fn net_irq(ctx: *mut core::ffi::c_void) {
     let idx = ctx as usize;
     if let Some(net) = net_slot(idx) {
@@ -619,49 +635,45 @@ fn rx_available(net: &Net) -> bool {
     used_idx(&net.rx) != net.rx.last_used
 }
 
-fn net_ioctl_n(idx: usize, request: u64, arg: usize) -> i32 {
-    if request == MYOS_IOCTL_NET_WAIT_RX {
-        let net = match net_slot(idx) {
-            Some(n) => n,
-            None => return -1,
-        };
-        let api = match api_ref() {
-            Some(a) => a,
-            None => return -1,
-        };
-        if !net.irq_ok {
-            return -1;
-        }
-        // Sequence first, then the ring check: an interrupt in between bumps
-        // the sequence and `block_until` returns at once (no lost wakeup).
-        let seq = unsafe { (api.wait_seq)() };
-        if rx_available(net) {
-            return 0;
-        }
-        let mut ns = arg as u64;
-        if ns == 0 || ns > WAIT_RX_CAP_NS {
-            ns = WAIT_RX_CAP_NS;
-        }
-        let deadline = unsafe { (api.monotonic_ns)() }.saturating_add(ns).max(1);
-        unsafe { (api.block_until)(MYOS_WAIT_ANY, seq, deadline) };
-        return 0;
-    }
-    if request != MYOS_IOCTL_NET_GETMAC {
+/// `poll` bits of `data`: readable when the RX ring holds a frame, always
+/// writable.
+fn net_poll_n(idx: usize) -> u32 {
+    let readable = net_slot(idx).is_some_and(|net| rx_available(net));
+    if readable { MYOS_POLLIN | MYOS_POLLOUT } else { MYOS_POLLOUT }
+}
+
+/// The text of `ctl`: `mac 52:54:00:12:34:56` and `irq on|off` (whether the
+/// RX queue interrupts, so a reader knows if `poll` on `data` wakes by itself).
+fn net_ctl_n(idx: usize, buf: *mut u8, cap: usize) -> i32 {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let Some(net) = net_slot(idx) else {
         return -1;
-    }
-    if arg == 0 {
-        return -1;
-    }
-    let net = match net_slot(idx) {
-        Some(n) => n,
-        None => return -1,
     };
-    let api = match api_ref() {
-        Some(a) => a,
-        None => return -1,
-    };
-    let rc = unsafe { (api.copy_to_user)(arg, net.mac.as_ptr(), 6) };
-    if rc < 0 { -1 } else { 0 }
+    let mut text = [0u8; 32];
+    let mut n = 0;
+    for b in b"mac " {
+        text[n] = *b;
+        n += 1;
+    }
+    for (i, b) in net.mac.iter().enumerate() {
+        if i != 0 {
+            text[n] = b':';
+            n += 1;
+        }
+        text[n] = HEX[(b >> 4) as usize];
+        text[n + 1] = HEX[(b & 0xf) as usize];
+        n += 2;
+    }
+    let irq: &[u8] = if net.irq_ok { b"\nirq on\n" } else { b"\nirq off\n" };
+    for b in irq {
+        text[n] = *b;
+        n += 1;
+    }
+    if !buf.is_null() {
+        let copy = n.min(cap);
+        unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), buf, copy) };
+    }
+    n as i32
 }
 
 fn net_read_n(idx: usize, buf: *mut u8, buf_len: usize) -> i32 {

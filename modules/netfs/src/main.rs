@@ -1063,6 +1063,12 @@ unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
     bits
 }
 
+/// `poll` bits of `/dev/netd/data`: readable while a request waits for netd.
+unsafe extern "C" fn chr_poll() -> u32 {
+    let _held = lock();
+    if state().req.count != 0 { MYOS_POLLIN | MYOS_POLLOUT } else { MYOS_POLLOUT }
+}
+
 unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
     let _held = lock();
     if buf.is_null() {
@@ -1131,7 +1137,9 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     let chr = ModuleChrOps {
         read: chr_read,
         write: chr_write,
-        ioctl: None,
+        poll: Some(chr_poll),
+        ctl_read: None,
+        ctl_write: None,
     };
     let chr_rc = unsafe { (api.dev_register)(b"netd".as_ptr(), 4, &chr) };
     // Stay loaded even if one hook fails: InitFailed would free the image while

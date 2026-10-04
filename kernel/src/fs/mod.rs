@@ -12,7 +12,7 @@ pub mod libfs;
 mod tmpfs;
 pub mod vfs;
 
-pub use vfs::{IoctlResult, StatInfo, Vnode};
+pub use vfs::{StatInfo, Vnode};
 
 fn path_is_dev_tty(path: &str) -> bool {
     let path = path.trim_start_matches('/');
@@ -63,14 +63,9 @@ pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
     vfs::device_frame(node, offset)
 }
 
-/// `poll` readiness of a module file (see [`vfs::poll`]).
+/// `poll` readiness of a device or module file (see [`vfs::poll`]).
 pub fn poll(node: &Vnode) -> Option<u32> {
     vfs::poll(node)
-}
-
-/// Device/filesystem ioctl on an open vnode.
-pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
-    vfs::ioctl(node, request, arg)
 }
 
 /// The console's control file (`/dev/console/ctl`, docs/tty.md), for an fd
@@ -363,7 +358,7 @@ fn ro_ops(
         rename: reject_rename,
         symlink: reject_symlink,
         readlink: reject_readlink,
-        ioctl: None,
+        poll: None,
         writable: false,
     }
 }
@@ -399,7 +394,7 @@ fn rw_ops(
         rename,
         symlink,
         readlink,
-        ioctl: None,
+        poll: None,
         writable: true,
     }
 }
@@ -498,7 +493,7 @@ pub fn init() {
             reject_symlink,
             reject_readlink,
         );
-        ops.ioctl = Some(devfs::ioctl);
+        ops.poll = Some(devfs::poll);
         vfs::mount("devfs", "dev", ops);
     }
     // The ptys: /dev/pts/clone and /dev/pts/N/{master,data,ctl}. Only ctl

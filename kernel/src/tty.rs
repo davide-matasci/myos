@@ -270,6 +270,9 @@ pub enum CtlAction {
     Ctty,
     /// `flush [in|out|both]`: discard pending input and/or output.
     Flush { input: bool, output: bool },
+    /// `keymap PATH`: the console loads the keyboard map in that file
+    /// (`docs/keymap.md`); a pty refuses it.
+    Keymap(String),
 }
 
 /// The text of a terminal's control file, `ctl` next to its `data`
@@ -301,7 +304,7 @@ pub fn ctl_text(t: &Termios, rows: u16, cols: u16) -> Vec<u8> {
 
 /// Parse a write to a control file: the lines of [`ctl_text`] (a flag line
 /// changes that flag only, a `cc` line the characters it lists) and the
-/// commands `ctty` and `flush [in|out|both]`. Numbers are `0x` hex or
+/// commands `ctty`, `flush [in|out|both]` and `keymap PATH`. Numbers are `0x` hex or
 /// decimal. The write is all or nothing: an unknown word, a bad number or a
 /// line with too many words fails it (`None`) and nothing is applied, so it
 /// has to carry whole lines.
@@ -360,6 +363,7 @@ pub fn ctl_parse(current: &Termios, text: &[u8]) -> Option<Vec<CtlAction>> {
                 };
                 actions.push(CtlAction::Flush { input, output });
             }
+            "keymap" => actions.push(CtlAction::Keymap(String::from(words.next()?))),
             _ => return None,
         }
         if words.next().is_some() {
