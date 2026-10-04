@@ -31,7 +31,7 @@ const SYS_MUNMAP: usize = 24;
 const SYS_MPROTECT: usize = 25;
 const SYS_LSEEK: usize = 26;
 const SYS_MOUNT: usize = 27;
-const SYS_IOCTL: usize = 28;
+// 28 was `ioctl`, gone: a device's state is its `ctl` file (docs/tty.md).
 const SYS_SETSID: usize = 29;
 const SYS_SETPGID: usize = 30;
 const SYS_GETPGID: usize = 31;
@@ -235,7 +235,6 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_MPROTECT => sys_mprotect(a0, a1, a2),
         SYS_LSEEK => sys_lseek(a0, a1, a2),
         SYS_MOUNT => sys_mount(a0),
-        SYS_IOCTL => sys_ioctl(a0, a1, a2),
         SYS_SETSID => sys_setsid(),
         SYS_SETPGID => sys_setpgid(a0, a1),
         SYS_GETPGID => sys_getpgid(a0),
@@ -458,10 +457,6 @@ pub(crate) fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
 
 fn sys_close(fd: usize) -> usize {
     if task::fd_close(fd) { 0 } else { SYSERR }
-}
-
-fn sys_ioctl(fd: usize, request: usize, arg: usize) -> usize {
-    task::fd_ioctl(fd, request, arg)
 }
 
 /// Become a session leader: `sid = pid` (task slot), new process group

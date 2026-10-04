@@ -1,19 +1,14 @@
 //! Loadable keyboard keymap (keycode → character).
 //!
 //! Empty at boot: PS/2 / virtio key events produce no console ASCII until
-//! userspace loads a map via [`KDSKMAP`] on `/dev/console`. Serial stdin is
-//! unaffected.
+//! userspace loads a map (`keymap PATH` written to `/dev/console/ctl`,
+//! `docs/keymap.md`). Serial stdin is unaffected.
 //!
 //! v1 levels are single `u8` bytes (ASCII or Latin-1). UTF-8 multi-byte
 //! characters are out of scope — see `docs/keymap.md`.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::lock::Lock as Mutex;
-
-/// `ioctl(console, KDSKMAP, &KeymapIoctl)` — load map text from userspace.
-pub const KDSKMAP: usize = 0x5480;
-/// `ioctl(console, KDGKMAP, &mut u32)` — write 1 if a map is loaded, else 0.
-pub const KDGKMAP: usize = 0x5481;
 
 /// Max keycode slot (set-1 make codes + Delete/ISO extras fit in 0..127).
 pub const NKEYS: usize = 128;

@@ -344,8 +344,8 @@ pub fn getdents64(fd: usize, buf: usize, count: usize) -> R {
 }
 
 /// `FIONBIO` on a socket; the terminal requests from the terminal's ctl
-/// text (`tty`, docs/tty.md); the rest (the console keymap, module devices)
-/// through the native ioctl.
+/// text (`tty`, docs/tty.md). myos has no ioctl of its own: anything else
+/// is `ENOTTY`.
 pub fn ioctl(fd: usize, req: usize, arg: usize) -> R {
     use super::tty;
     const FIONBIO: usize = 0x5421;
@@ -372,7 +372,7 @@ pub fn ioctl(fd: usize, req: usize, arg: usize) -> R {
         }
         tty::TIOCGPTN => put(arg, &tty::pty_index(fd)?.to_ne_bytes()).map(|_| 0),
         tty::TIOCSPTLCK => tty::pty_index(fd).map(|_| 0),
-        _ => native(task::fd_ioctl(fd, req, arg), ENOTTY),
+        _ => Err(ENOTTY),
     }
 }
 

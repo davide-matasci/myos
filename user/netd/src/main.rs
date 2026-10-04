@@ -13,7 +13,7 @@ use myos_net::smoltcp::wire::{
     Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, IpEndpoint, Ipv4Address,
 };
 use myos_net::{build_interface, Net0Device, VirtualInstant};
-use myos_user::{close, heap_init, open_flags, read, write, write_fd, Heap, O_RDWR};
+use myos_user::{close, heap_init, open_flags, poll, read, write, write_fd, Heap, PollFd, O_RDWR, POLLIN};
 
 #[global_allocator]
 static GLOBAL: Heap = Heap;
@@ -323,7 +323,7 @@ fn reply(fd: usize, typ: u8, conv: u16, status: i32, payload: &[u8]) {
 }
 
 fn open_chan() -> Option<usize> {
-    open_flags(b"/dev/netd", O_RDWR)
+    open_flags(b"/dev/netd/data", O_RDWR)
 }
 
 fn wait_devices() -> (Net0Device, usize) {
@@ -339,11 +339,11 @@ fn wait_devices() -> (Net0Device, usize) {
                 }
                 close(dev.fd());
                 if !printed_netd {
-                    write(b"netd: no /dev/netd\n");
+                    write(b"netd: no /dev/netd/data\n");
                     printed_netd = true;
                 }
             } else if !printed_net0 {
-                write(b"netd: no /dev/net0\n");
+                write(b"netd: no /dev/net0/data\n");
                 printed_net0 = true;
             }
         }
@@ -1193,10 +1193,10 @@ fn main() -> ! {
     let mut local_ports = LOCAL_PORT_BASE;
     let mut ticks: u32 = 0;
     let mut dhcp_ok = poll_dhcp(&mut iface, &mut device, &mut sockets, dhcp, &mut clock);
-    // RX interrupts available? (The ioctl fails on a poll-mode device.) Not
-    // announced on the console: netd starts around the `login:` prompt and a
-    // line there confuses serial-driven harnesses; `/proc/interrupts` shows it.
-    let mut rx_irq = device.wait_rx(1);
+    // RX interrupts available? (`irq on` in the NIC's ctl.) Not announced on
+    // the console: netd starts around the `login:` prompt and a line there
+    // confuses serial-driven harnesses; `/proc/interrupts` shows it.
+    let rx_irq = device.rx_irq();
 
     // Daemon poll: nic, /dev/netd requests, sockets. Bound work per tick.
     loop {
@@ -1372,12 +1372,16 @@ fn main() -> ! {
                 }
             }
             if rx_irq {
-                // Woken by the NIC's RX interrupt, a netfs request or any other
-                // kernel event; the ring is re-checked inside the ioctl so a
-                // frame that landed just before cannot be missed.
-                if !device.wait_rx(ns) {
-                    rx_irq = false;
-                }
+                // Sleep until a frame (the NIC's RX interrupt wakes the
+                // pollers; the kernel checks the ring again before it
+                // sleeps, so one that landed just before is not missed) or a
+                // request on the channel, at most until the next timer.
+                let ms = ns.div_ceil(1_000_000).clamp(1, i32::MAX as u64) as i32;
+                let mut fds = [
+                    PollFd { fd: device.fd() as i32, events: POLLIN, revents: 0 },
+                    PollFd { fd: chan as i32, events: POLLIN, revents: 0 },
+                ];
+                let _ = poll(&mut fds, ms);
             } else {
                 myos_user::sleep_ns(ns, true);
             }

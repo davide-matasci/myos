@@ -75,17 +75,6 @@ impl Vnode {
     }
 }
 
-/// Result of a filesystem/device ioctl before any userspace copy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IoctlResult {
-    /// Success; syscall returns 0.
-    Ok,
-    /// Not a tty / no handler (ENOTTY → SYSERR).
-    Notty,
-    /// Bad argument or device error (SYSERR).
-    Bad,
-}
-
 /// Operations provided by an in-kernel filesystem backend.
 #[derive(Clone, Copy)]
 pub struct MountOps {
@@ -113,9 +102,9 @@ pub struct MountOps {
     pub symlink: fn(&str, &str) -> bool,
     /// Read symlink target into `buf`; returns bytes written.
     pub readlink: fn(&str, &mut [u8]) -> Option<usize>,
-    /// Optional ioctl on a path relative to this mount. `None` → ENOTTY.
-    /// Args: (rel_path, request, arg). Pointer args are not copied here.
-    pub ioctl: Option<fn(&str, usize, usize) -> IoctlResult>,
+    /// Optional `poll` readiness of a path relative to this mount: the bits
+    /// that hold now, or `None` for a file that is always ready.
+    pub poll: Option<fn(&str) -> Option<u32>>,
     /// Mount accepts write opens / creates.
     pub writable: bool,
 }
@@ -526,11 +515,6 @@ fn open_ref_release(node: &Vnode) {
     }
 }
 
-/// Device/filesystem ioctl on an open vnode.
-pub fn ioctl(node: &Vnode, request: usize, arg: usize) -> IoctlResult {
-    backend_ioctl(node.mount as usize, node.path_str(), request, arg)
-}
-
 /// The absolute path of an open vnode: its mount's prefix and the path
 /// inside it (what `/proc/self/fd/N` points at).
 pub fn vnode_path(node: &Vnode) -> String {
@@ -560,16 +544,18 @@ pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
 }
 
 /// The `poll` bits (`myos_abi::MYOS_POLL*`) that hold now for `node`, from
-/// its module's `poll` hook; `None` when the backend has none (a file that
-/// is always ready).
+/// its backend's `poll` hook; `None` when there is none (a file that is
+/// always ready).
 pub fn poll(node: &Vnode) -> Option<u32> {
     let backend = MOUNTS.lock().get(node.mount as usize)?.backend;
-    let MountBackend::Module(ops) = backend else {
-        return None;
-    };
-    let poll = ops.poll?;
     let rel = node.path_str();
-    Some(unsafe { poll(rel.as_ptr(), rel.len()) })
+    match backend {
+        MountBackend::Kernel(ops) => (ops.poll?)(rel),
+        MountBackend::Module(ops) => {
+            let poll = ops.poll?;
+            Some(unsafe { poll(rel.as_ptr(), rel.len()) })
+        }
+    }
 }
 
 /// Current size of the vnode path (for `O_APPEND`), if known.
@@ -984,24 +970,6 @@ fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Option<usize>
     match backend {
         MountBackend::Kernel(ops) => (ops.write)(rel, pos, buf),
         MountBackend::Module(ops) => module_write(&ops, rel, pos, buf),
-    }
-}
-
-fn backend_ioctl(idx: usize, rel: &str, request: usize, arg: usize) -> IoctlResult {
-    let backend = {
-        let mounts = MOUNTS.lock();
-        let Some(m) = mounts.get(idx) else {
-            return IoctlResult::Notty;
-        };
-        m.backend
-    };
-    match backend {
-        MountBackend::Kernel(ops) => match ops.ioctl {
-            Some(f) => f(rel, request, arg),
-            None => IoctlResult::Notty,
-        },
-        // Module VFS mounts have no ioctl hook yet.
-        MountBackend::Module(_) => IoctlResult::Notty,
     }
 }
 

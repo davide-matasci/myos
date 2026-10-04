@@ -82,7 +82,6 @@ static API: KernelApi = KernelApi {
     fd_dup2: api_fd_dup2,
     fd_close: api_fd_close,
     fd_write: api_fd_write,
-    fd_ioctl: api_fd_ioctl,
     pipe_open: api_pipe_open,
     mmap: api_mmap,
     signal_get_action: api_signal_get_action,
@@ -1012,10 +1011,6 @@ unsafe extern "C" fn api_fd_close(fd: usize) -> i32 {
 
 unsafe extern "C" fn api_fd_write(fd: usize, buf_user: usize, len: usize) -> usize {
     crate::task::fd_write(fd, buf_user, len)
-}
-
-unsafe extern "C" fn api_fd_ioctl(fd: usize, request: usize, arg: usize) -> usize {
-    crate::task::fd_ioctl(fd, request, arg)
 }
 
 /// Copy `text` into the module's buffer, cut at `cap`: its full length.

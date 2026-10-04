@@ -268,9 +268,6 @@ pub mod task {
     pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
         unsafe { (api().fd_write)(fd, buf, len) }
     }
-    pub fn fd_ioctl(fd: usize, req: usize, arg: usize) -> usize {
-        unsafe { (api().fd_ioctl)(fd, req, arg) }
-    }
     /// The ctl text of the terminal `fd` is open on; `None` if not a terminal.
     pub fn tty_ctl_read(fd: usize) -> Option<alloc::vec::Vec<u8>> {
         let mut buf = alloc::vec![0u8; 512];

@@ -105,6 +105,35 @@ pty_clone() {
 }
 t pty_clone pty_clone
 
+# The console's keyboard map is a line of its ctl (docs/keymap.md): init
+# loaded the Swiss one; `keymap PATH` loads another; a missing file is
+# refused and leaves the loaded map; a pty has no keymap.
+keymap_ctl() {
+	grep -q '^keymap /lib/kbd/ch.map$' /dev/console/ctl || return 1
+	echo 'keymap /lib/kbd/us.map' > /dev/console/ctl || return 1
+	grep -q '^keymap /lib/kbd/us.map$' /dev/console/ctl || return 1
+	echo 'keymap /lib/kbd/none.map' > /dev/console/ctl 2>/dev/null && return 1
+	grep -q '^keymap /lib/kbd/us.map$' /dev/console/ctl || return 1
+	exec 6<> /dev/pts/clone || return 1
+	d=$(readlink /proc/self/fd/6)
+	d=${d%/master}
+	echo 'keymap /lib/kbd/us.map' > $d/ctl 2>/dev/null && return 1
+	exec 6>&-
+	echo 'keymap /lib/kbd/ch.map' > /dev/console/ctl
+}
+t keymap keymap_ctl
+
+# A module's character device is a directory: the NIC's `data` is the
+# device, its `ctl` names the MAC and whether its interrupt works.
+net_ctl() {
+	[ -d /dev/net0 ] || return 0
+	[ -c /dev/net0/data ] || return 1
+	[ "$(ls /dev/net0 | sort | tr '\n' ' ')" = "ctl data " ] || return 1
+	grep -q '^mac [0-9a-f:]*$' /dev/net0/ctl || return 1
+	grep -q '^irq o' /dev/net0/ctl
+}
+t net_ctl net_ctl
+
 # isatty through the libc (the /proc/self/fd link, no ioctl): the shell's
 # stdin is the console, its captured stdout a file.
 isatty_fds() {

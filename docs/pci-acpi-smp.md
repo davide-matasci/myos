@@ -63,12 +63,13 @@ before the GIC/PLIC EOI. `/proc/interrupts` lists counts per registered
 interrupt plus spurious ones.
 
 virtio-net uses this for its RX queue: `AVAIL_F_NO_INTERRUPT` is cleared on
-the RX ring only, the handler acks the ISR and calls `wake_any`, and the
-`MYOS_IOCTL_NET_WAIT_RX` ioctl blocks `netd` (sequence-checked against the
-used ring, so a frame that lands between the check and the sleep is not
-missed) until a frame, another kernel event or a timeout. `netd` falls back
-to its 2–10 ms timed polling when the ioctl reports no interrupt (poll-mode
-device). Reads of `/dev/netN` stay non-blocking.
+the RX ring only, the handler acks the ISR and calls `wake_any`, which ends
+the `poll` `netd` sleeps in on `/dev/net0/data` and its netfs channel (the
+kernel's poll reads the wait sequence before it asks the module's readiness
+hook, so a frame that lands between the check and the sleep is not missed).
+The NIC's `ctl` says `irq on` when that works; on `irq off` (a poll-mode
+device) `netd` keeps its 2–10 ms timed polling. Reads of `/dev/netN/data`
+stay non-blocking.
 
 ## AML opcode set (custom interpreter — not ACPICA)
 

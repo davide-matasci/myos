@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use myos_user::{
     Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SIGTERM, close, exec, exit, exit_code, fork,
-    heap_init, ioctl, kill, listdir, mkdir, mount, open, open_flags, pipe, read, readlink, rename,
+    heap_init, kill, listdir, mkdir, mount, open, open_flags, pipe, read, readlink, rename,
     rmdir, status_fail, status_ok, status_warn, symlink, unlink, wait_status, write_fd,
 };
 
@@ -66,17 +66,24 @@ fn smoke_vfs() {
     status_ok("vda");
     if buf_has(&buf[..n], b"net0") {
         status_ok("net0");
-        if let Some(fd) = open_flags(b"/dev/net0", O_RDWR) {
-            let mut mac = [0u8; 6];
-            // Keep in sync with myos_abi::MYOS_IOCTL_NET_GETMAC.
-            const MYOS_IOCTL_NET_GETMAC: usize = 0x4d01;
-            if ioctl(fd, MYOS_IOCTL_NET_GETMAC, mac.as_mut_ptr() as usize) != usize::MAX
-                && mac.iter().any(|&b| b != 0)
-                && mac[0] & 1 == 0
+        // The NIC is a directory: `data` is the device, `ctl` names its MAC
+        // (`mac 52:54:00:12:34:56`), a usable one being unicast and non-zero.
+        if let Some(fd) = open(b"/dev/net0/ctl") {
+            let mut text = [0u8; 128];
+            let m = read(fd, &mut text);
+            close(fd);
+            let hex = |c: u8| (c as char).to_digit(16);
+            if m != usize::MAX
+                && m >= 21
+                && &text[..4] == b"mac "
+                && text[4..21].iter().enumerate().all(|(i, &c)| {
+                    if i % 3 == 2 { c == b':' } else { hex(c).is_some() }
+                })
+                && text[4..21] != *b"00:00:00:00:00:00"
+                && hex(text[5]).is_some_and(|d| d & 1 == 0)
             {
                 status_ok("netmac");
             }
-            close(fd);
         }
     }
     if buf_has(&buf[..n], b"vdb") {
@@ -387,17 +394,20 @@ fn smoke_tty() {
         }
     }
 
+    // The keyboard map init loaded is a line of the console's ctl too
+    // (`keymap PATH`, docs/keymap.md).
+    if !text[..len]
+        .split(|&b| b == b'\n')
+        .any(|l| l.starts_with(b"keymap /lib/kbd/"))
+    {
+        status_fail("tty ctl keymap");
+        return;
+    }
+
     let Some(dn) = open(b"/dev/null") else {
         status_fail("tty null open");
         return;
     };
-    // The native ioctl no longer knows the terminal requests.
-    const TCGETS: usize = 0x5401;
-    let mut termios = [0u8; 56];
-    if ioctl(1, TCGETS, termios.as_mut_ptr() as usize) != usize::MAX {
-        status_fail("tty ioctl should fail");
-        return;
-    }
 
     let mut link = *b"/proc/self/fd/\0\0\0";
     link[14] = b'0' + (dn / 10) as u8;

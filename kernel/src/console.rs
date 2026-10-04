@@ -20,12 +20,14 @@ use myos_abi::{
 };
 use spin::{Mutex, Once};
 
+use alloc::string::String;
+
 use crate::arch::SerialPort;
 
-/// `ioctl(console, KDSKMAP, &KeymapIoctl)` — load map text from userspace.
-pub const KDSKMAP: usize = 0x5480;
-/// `ioctl(console, KDGKMAP, &mut u32)` — write 1 if a map is loaded, else 0.
-pub const KDGKMAP: usize = 0x5481;
+/// The file the loaded keymap came from (`keymap` on the console's ctl).
+static KEYMAP_PATH: Mutex<Option<String>> = Mutex::new(None);
+/// Longest keymap text (`docs/keymap.md`).
+const KEYMAP_MAX: usize = 8192;
 
 /// The boot framebuffer Limine handed over (for the module), if any.
 static FB_INFO: Once<FramebufferInfo> = Once::new();
@@ -161,14 +163,37 @@ pub fn keyboard_poll_byte() -> Option<u8> {
     (0..=255).contains(&b).then_some(b as u8)
 }
 
-/// `KDSKMAP`: install a keymap from its text form (see `docs/keymap.md`).
-pub fn keymap_load(text: &[u8]) -> bool {
+/// Install a keymap from its text form (see `docs/keymap.md`). The module
+/// reports a parse error itself.
+fn keymap_load(text: &[u8]) -> bool {
     OPS.get().is_some_and(|ops| unsafe { (ops.keymap_load)(text.as_ptr(), text.len()) } == 0)
 }
 
-/// `KDGKMAP`: a keymap is loaded.
-pub fn keymap_loaded() -> bool {
-    OPS.get().is_some_and(|ops| unsafe { (ops.keymap_loaded)() } != 0)
+/// `keymap PATH` written to the console's control file (`docs/keymap.md`):
+/// load the map text in the file at `path`, in the caller's view of the
+/// tree. False when the file cannot be read, is empty or too long, or the
+/// module refuses it; the loaded map stays in those cases.
+pub fn keymap_load_file(path: &str) -> bool {
+    let mut real = [0u8; crate::fs::vfs::PATH_MAX];
+    let Some(n) = crate::fs::resolve_user_path(path, &mut real) else {
+        return false;
+    };
+    let Ok(real) = core::str::from_utf8(&real[..n]) else {
+        return false;
+    };
+    let Some(text) = crate::fs::read_all(real, KEYMAP_MAX + 1) else {
+        return false;
+    };
+    if text.is_empty() || text.len() > KEYMAP_MAX || !keymap_load(&text) {
+        return false;
+    }
+    *KEYMAP_PATH.lock() = Some(String::from(path));
+    true
+}
+
+/// The file the loaded keymap came from, if one was loaded this boot.
+pub fn keymap_path() -> Option<String> {
+    KEYMAP_PATH.lock().clone()
 }
 
 pub fn write_byte(byte: u8) {
