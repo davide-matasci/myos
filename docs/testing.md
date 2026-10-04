@@ -107,8 +107,9 @@ prints `HOST <port> <args>` to fd 3, the launcher runs
 the effect (a file the session touched, a reply on its socket) with a
 bound. The script's messages go to its stderr; its exit status is logged,
 the guest test decides. A test boot's QEMU monitor is a unix socket the
-scripts find in `$MYOS_QEMU_MONITOR`: `user/c/host.sh sendkey` types on the
-guest's keyboard through it (`/dev/console/kbd`).
+scripts find in `$MYOS_QEMU_MONITOR`: `user/c/host.sh sendkey KEYS...` types
+on the guest's keyboard through it (`/dev/console/kbd`), the keys in order
+(several `HOST` requests run in parallel, so one per key would not keep it).
 
 ## On the host
 
