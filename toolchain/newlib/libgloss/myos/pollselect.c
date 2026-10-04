@@ -12,6 +12,7 @@
  */
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/select.h>
 #include <sys/time.h>
@@ -177,4 +178,31 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
         }
     }
     return pr;
+}
+
+/* select with a timespec and, if `sigmask` is non-NULL, that signal mask
+ * while it waits. The mask is set and restored around select(): a signal
+ * unblocked by it that arrives before the wait starts runs its handler
+ * there and does not end the wait (POSIX makes the swap atomic). */
+int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+    const struct timespec *timeout, const sigset_t *sigmask) {
+    struct timeval tv, *tvp = NULL;
+    sigset_t old;
+    int r, saved;
+
+    if (timeout != NULL) {
+        tv.tv_sec = timeout->tv_sec;
+        tv.tv_usec = timeout->tv_nsec / 1000;
+        tvp = &tv;
+    }
+    if (sigmask != NULL && sigprocmask(SIG_SETMASK, sigmask, &old) != 0) {
+        return -1;
+    }
+    r = select(nfds, readfds, writefds, exceptfds, tvp);
+    if (sigmask != NULL) {
+        saved = errno;
+        sigprocmask(SIG_SETMASK, &old, NULL);
+        errno = saved;
+    }
+    return r;
 }
