@@ -151,14 +151,29 @@ pub fn socket(domain: usize, ty: usize) -> R {
         _ => return Err(EPROTOTYPE),
     };
     let proto = if stream { "tcp" } else { "udp" };
-    // `/net` is the system's, also inside a `linux --root` chroot (a bind):
-    // the conversation is kept by its VFS path.
-    let dir = user::resolve_copied_path(&format!("/net/{proto}")).ok_or(EAFNOSUPPORT)?;
     // Reading `clone` allocates a conversation and names it.
+    let dir = net_dir(proto)?;
+    let id = conv_id(&format!("{dir}/clone"))?;
+    open_conv(proto, &id, ty, stream)
+}
+
+/// `/net/{proto}`'s VFS path. `/net` is the system's, also inside a
+/// `linux --root` chroot (a bind): conversations are kept by VFS path.
+fn net_dir(proto: &str) -> Result<String, usize> {
+    user::resolve_copied_path(&format!("/net/{proto}")).ok_or(EAFNOSUPPORT)
+}
+
+/// The conversation number read from `file` (`clone` or `listen`).
+fn conv_id(file: &str) -> Result<String, usize> {
     let mut b = [0u8; 8];
-    let n = fs::read(&format!("{dir}/clone"), 0, &mut b).unwrap_or(0);
-    let id = core::str::from_utf8(&b[..n]).ok().map(str::trim).filter(|s| !s.is_empty()).ok_or(EMFILE)?;
-    let conv = format!("{dir}/{id}");
+    let n = fs::read(file, 0, &mut b).unwrap_or(0);
+    let id = core::str::from_utf8(&b[..n]).ok().map(str::trim).filter(|s| !s.is_empty());
+    id.map(String::from).ok_or(EMFILE)
+}
+
+/// Conversation `id` of `/net/{proto}` as a socket: its `data` open.
+fn open_conv(proto: &str, id: &str, ty: usize, stream: bool) -> R {
+    let conv = format!("{}/{id}", net_dir(proto)?);
     let fd = user::open_path(&format!("/net/{proto}/{id}/data"), 2);
     if fd >= signal::SYSERR_EINTR {
         let _ = fs::write(&format!("{conv}/ctl"), 0, b"hangup");
@@ -244,17 +259,11 @@ fn ctl_connect(conv: &str, ([a, b, c, d], port): Addr) -> Result<(), usize> {
 }
 
 pub fn sendto(fd: usize, buf: usize, len: usize, to: usize, tolen: usize) -> R {
-    if files::pair(fd) {
-        return super::sys::write(fd, buf, len);
-    }
     send_to(fd, to, tolen)?;
     super::sys::write(fd, buf, len)
 }
 
 pub fn recvfrom(fd: usize, buf: usize, len: usize, flags: usize, from: usize, fromlen: usize) -> R {
-    if files::pair(fd) {
-        return super::sys::read(fd, buf, len);
-    }
     let n = recv(fd, flags & MSG_DONTWAIT != 0, || native(user::sys_read(fd, buf, len), EBADF))?;
     if let Some(peer) = sock(fd)?.1.peer {
         put_addr(from, fromlen, peer)?;
@@ -272,18 +281,12 @@ fn msghdr(msg: usize) -> Result<[usize; 4], usize> {
 
 pub fn sendmsg(fd: usize, msg: usize) -> R {
     let [name, namelen, iov, iovlen] = msghdr(msg)?;
-    if files::pair(fd) {
-        return super::sys::rw_vec(fd, iov, iovlen, true);
-    }
     send_to(fd, name, namelen)?;
     super::sys::rw_vec(fd, iov, iovlen, true)
 }
 
 pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
     let [name, _, iov, iovlen] = msghdr(msg)?;
-    if files::pair(fd) {
-        return super::sys::rw_vec(fd, iov, iovlen, false);
-    }
     let n = recv(fd, flags & MSG_DONTWAIT != 0, || super::sys::rw_vec(fd, iov, iovlen, false))?;
     if let Some(peer) = sock(fd)?.1.peer {
         put_addr(name, msg + 8, peer)?;
@@ -296,17 +299,6 @@ pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
 
 /// Only a full shutdown hangs up: `/net` has no half-close.
 pub fn shutdown(fd: usize, how: usize) -> R {
-    const SHUT_RD: usize = 0;
-    if files::pair(fd) {
-        // Done writing: the peer reads to the end of what is there.
-        if how != SHUT_RD
-            && let Some(w) = files::writer(fd)
-        {
-            files::set_writer(fd, None);
-            super::sys::close(w).ok();
-        }
-        return Ok(0);
-    }
     let (conv, _) = sock(fd)?;
     if how == SHUT_RDWR {
         let _ = fs::write(&format!("{conv}/ctl"), 0, b"hangup");
@@ -343,10 +335,10 @@ pub fn ignored(fd: usize) -> R {
     sock(fd).map(|_| 0)
 }
 
-/// `socketpair(AF_UNIX, ...)` as two native pipes: each end is one pipe's
-/// read end, and its writes go to the other pipe (`files::writer`). Enough
-/// for a channel between a parent and a child (Rust's `Command` reports a
-/// failed exec through one); no message boundaries, no passing of fds.
+/// `socketpair(AF_UNIX, ...)`: a `/net/unix` conversation and the one its
+/// `pair` connects to it (taken from its `listen`), both kept as sockets
+/// like TCP's. Stream semantics for `SOCK_SEQPACKET` too: no message
+/// boundaries, and no fd passing.
 pub fn socketpair(domain: usize, ty: usize, sv: usize) -> R {
     if domain != AF_UNIX {
         return Err(EAFNOSUPPORT);
@@ -354,25 +346,25 @@ pub fn socketpair(domain: usize, ty: usize, sv: usize) -> R {
     if !matches!(ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC), SOCK_STREAM | SOCK_SEQPACKET) {
         return Err(EPROTOTYPE);
     }
-    let (ar, aw) = task::pipe_open().ok_or(EMFILE)?;
-    let Some((br, bw)) = task::pipe_open() else {
-        task::fd_close(ar);
-        task::fd_close(aw);
-        return Err(EMFILE);
+    let dir = net_dir("unix")?;
+    let id = conv_id(&format!("{dir}/clone"))?;
+    let conv = format!("{dir}/{id}");
+    let a = open_conv("unix", &id, ty, true)?;
+    let b = fs::write(&format!("{conv}/ctl"), 0, b"pair")
+        .ok_or(EMFILE)
+        .and_then(|_| conv_id(&format!("{conv}/listen")))
+        .and_then(|id| open_conv("unix", &id, ty, true));
+    let b = match b {
+        Ok(b) => b,
+        Err(e) => {
+            super::sys::close(a).ok();
+            return Err(e);
+        }
     };
-    for fd in [ar, aw, br, bw] {
-        files::remove(fd);
-    }
-    files::set_writer(ar, Some(bw));
-    files::set_writer(br, Some(aw));
-    for fd in [ar, br] {
-        files::set_cloexec(fd, ty & SOCK_CLOEXEC != 0);
-        files::set_nonblock(fd, ty & SOCK_NONBLOCK != 0);
-    }
-    let mut b = [0u8; 8];
-    b[..4].copy_from_slice(&(ar as i32).to_le_bytes());
-    b[4..].copy_from_slice(&(br as i32).to_le_bytes());
-    put(sv, &b)?;
+    let mut v = [0u8; 8];
+    v[..4].copy_from_slice(&(a as i32).to_le_bytes());
+    v[4..].copy_from_slice(&(b as i32).to_le_bytes());
+    put(sv, &v)?;
     Ok(0)
 }
 

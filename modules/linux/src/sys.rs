@@ -167,7 +167,7 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
     if would_block(fd, 1) {
         return Err(EAGAIN);
     }
-    if files::event(fd) {
+    if files::writer(fd).is_some() {
         return eventfd_read(fd, buf, len);
     }
     match files::get(fd) {
@@ -180,7 +180,7 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
 pub fn write(fd: usize, buf: usize, len: usize) -> R {
     let io = || native(task::fd_write(fd, buf, len), EBADF);
     if let Some(w) = files::writer(fd) {
-        return if files::event(fd) { eventfd_write(w, buf, len) } else { write(w, buf, len) };
+        return eventfd_write(w, buf, len);
     }
     if would_block(fd, 2) {
         return Err(EAGAIN);
@@ -197,8 +197,6 @@ pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
     if cnt > 1024 {
         return Err(EINVAL);
     }
-    // A socketpair end writes to its peer's pipe.
-    let wfd = files::writer(fd).filter(|_| write && files::pair(fd)).unwrap_or(fd);
     let io = || {
         let mut total = 0usize;
         for i in 0..cnt {
@@ -207,7 +205,7 @@ pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
             if len == 0 {
                 continue;
             }
-            let r = if write { task::fd_write(wfd, base, len) } else { user::sys_read(fd, base, len) };
+            let r = if write { task::fd_write(fd, base, len) } else { user::sys_read(fd, base, len) };
             if native_failed(r) {
                 return if total > 0 { Ok(total) } else { native(r, EBADF) };
             }
@@ -315,6 +313,19 @@ pub fn truncate(path: usize, len: usize) -> R {
     let r = ftruncate(fd, len);
     close(fd).ok();
     r
+}
+
+/// `fsync`, `fdatasync`, `fchmod`, `fchown`: done once `fd` is valid.
+/// myos keeps no owners or permission bits, and ext2 writes a file's
+/// cached blocks back when its last fd closes.
+pub fn fd_noop(fd: usize) -> R {
+    task::fd_kind(fd).map(|_| 0).ok_or(EBADF)
+}
+
+/// `chmod`, `chown` and their `at` forms: done once the file exists.
+pub fn path_noop(dirfd: usize, path: usize) -> R {
+    let real = real_path(&path_at(dirfd, path)?)?;
+    fs::stat(&real).map(|_| 0).ok_or(ENOENT)
 }
 
 fn put_stat(buf: usize, st: &fs::StatInfo) -> R {
@@ -473,7 +484,6 @@ pub fn eventfd2(init: usize, flags: usize) -> R {
     }
     files::set_nonblock(r, flags & O_NONBLOCK != 0);
     files::set_writer(r, Some(w));
-    files::set_event(r, true);
     Ok(r)
 }
 

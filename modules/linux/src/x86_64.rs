@@ -106,6 +106,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         87 => ret(sys::unlinkat(AT_FDCWD, a[0], 0)),     // unlink
         88 => ret(sys::symlinkat(a[0], AT_FDCWD, a[1])),
         89 => ret(sys::readlinkat(AT_FDCWD, a[0], a[1], a[2])),
+        74 | 75 | 91 | 93 => ret(sys::fd_noop(a[0])), // fsync, fdatasync, fchmod, fchown
+        90 | 92 | 94 => ret(sys::path_noop(AT_FDCWD, a[0])), // chmod, chown, lchown
         95 => 0o022, // umask
         96 => result(user::sys_gettimeofday(a[0], a[1]), EFAULT),
         97 => ret(sys::prlimit(a[0], a[1])), // getrlimit
@@ -133,6 +135,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         234 => ret(sys::kill(a[1], a[2])),               // tgkill
         257 => ret(sys::openat(a[0], a[1], a[2])),
         258 => ret(sys::mkdirat(a[0], a[1])),
+        260 | 268 => ret(sys::path_noop(a[0], a[1])), // fchownat, fchmodat
         262 => ret(sys::fstatat(a[0], a[1], a[2], a[3])),
         263 => ret(sys::unlinkat(a[0], a[1], a[2])),
         264 | 316 => ret(sys::renameat(a[0], a[1], a[2], a[3])), // renameat, renameat2

@@ -28,6 +28,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         48 | 439 => ret(sys::faccessat(a[0], a[1])),          // faccessat, faccessat2
         49 => ret(sys::chdir(a[0])),
         50 => ret(sys::fchdir(a[0])),
+        52 | 55 => ret(sys::fd_noop(a[0])),         // fchmod, fchown
+        53 | 54 => ret(sys::path_noop(a[0], a[1])), // fchmodat, fchownat
         56 => ret(sys::openat(a[0], a[1], a[2])),
         57 => ret(sys::close(a[0])),
         59 => ret(sys::pipe2(a[0], a[1])),
@@ -44,6 +46,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         78 => ret(sys::readlinkat(a[0], a[1], a[2], a[3])),
         79 => ret(sys::fstatat(a[0], a[1], a[2], a[3])), // newfstatat
         80 => ret(sys::fstat(a[0], a[1])),
+        82 | 83 => ret(sys::fd_noop(a[0])), // fsync, fdatasync
         93 => thread::exit(a[0]),
         94 => task::user_exit(a[0] as u8), // exit_group
         96 => thread::set_tid_address(a[0]),

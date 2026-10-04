@@ -194,7 +194,8 @@ Files: `read`, `write`, `readv`, `writev`, `open`, `openat`, `close`, `stat`,
 requests from the terminal's ctl file, `docs/tty.md`; `FIONBIO` on sockets;
 the console keymap and module devices natively), `access`,
 `faccessat`, `pipe`, `pipe2`, `eventfd(2)`, `dup`, `dup2`, `dup3`, `fcntl`
-(dup, fd flags, record locks), `flock`, `truncate`, `ftruncate`, `getcwd`,
+(dup, fd flags, record locks), `flock`, `truncate`, `ftruncate`, `fsync`,
+`fdatasync`, `chmod`, `chown` (and their `f`, `l`, `at` forms), `getcwd`,
 `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`, `rename(at/at2)`,
 `symlink(at)`, `readlink(at)`, `poll`, `umask`.
 
@@ -335,16 +336,19 @@ the kernel does not keep a per-task copy at syscall entry.
 - An eventfd is a pipe (its write end kept aside): a non-zero write wakes
   a reader, a read returns how many writes it collected. No semaphore mode
   and no initial value.
-- `socketpair(AF_UNIX, SOCK_STREAM | SOCK_SEQPACKET)` is two pipes, each
-  end reading one and writing the other: a channel between a parent and
-  its child (Rust's `Command` reports a failed exec through one). No
-  message boundaries, no fd passing, and a `dup` of an end only reads.
+- `socketpair(AF_UNIX, SOCK_STREAM | SOCK_SEQPACKET)` is a `/net/unix`
+  pair (`docs/sockets-unix.md`), its ends kept like TCP sockets (Rust's
+  `Command` reports a failed exec through one). Stream semantics for
+  both: no message boundaries, and no fd passing.
 - File locks (`flock`, `fcntl` record locks) are granted and not kept:
   myos has none, and a lock only guards against another copy of the same
   program (cargo, SQLite, git). `ftruncate` cuts a file to nothing or
   grows it; a shorter non-zero length is refused (`EINVAL`).
-- Sockets: IPv4 clients only (no `listen`/`accept`, no IPv6, no Unix
-  sockets but `socketpair`'s); no half-close (`shutdown` hangs up only for
+- `chmod`, `chown` and `fsync` succeed and do nothing: myos keeps no
+  owners or permission bits, and ext2 writes a file back when its last fd
+  closes.
+- Sockets: IPv4 clients and `socketpair` only (no `listen`/`accept`, no
+  IPv6, no other Unix sockets); no half-close (`shutdown` hangs up only for
   `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are
   ignored; `poll` reports a connected socket writable even with no send
   room left (a nonblocking write then says `EAGAIN`).
