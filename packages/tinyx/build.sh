@@ -93,7 +93,9 @@ build_arch() {
   for p in "$HERE"/*.myos.patch; do
     patch -d "$dir/tinyx" -p1 --forward --batch -s < "$p"
   done
-  (cd "$dir/tinyx" && autoreconf -fi >autoreconf.log 2>&1) \
+  # xtrans.m4 comes from the x11-libs stage, not the host.
+  (cd "$dir/tinyx" && ACLOCAL_PATH="$stage$PREFIX/share/aclocal" \
+    autoreconf -fi >autoreconf.log 2>&1) \
     || { tail -20 "$dir/tinyx/autoreconf.log" >&2; exit 1; }
   CPPFLAGS="$CPPFLAGS -DINITARGS=void" configure_make "$dir/tinyx" --with-kdrive-os=myos \
     --disable-xvesa --enable-xfbdev --disable-xdmcp --disable-xdm-auth-1 --disable-dpms \
