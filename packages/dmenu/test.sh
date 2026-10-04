@@ -44,9 +44,13 @@ dmenu_run_pick() {
 	want=$(uname)
 	mkdir -p /tmp/dmenu-cache
 	rm -f /tmp/dmenu-ran /tmp/dmenu-cache/dmenu_run
-	listed=$(XDG_CACHE_HOME=/tmp/dmenu-cache dmenu_path | grep -x -e uname -e dmenu -e sh)
-	echo "dmenu_path lists" $listed
-	if [ "$(echo "$listed" | wc -l)" -eq 3 ] && dmenu_server; then
+	XDG_CACHE_HOME=/tmp/dmenu-cache dmenu_path > /tmp/dmenu-path.out
+	missing=
+	for p in uname dmenu sh; do
+		grep -q -x $p /tmp/dmenu-path.out || missing="$missing $p"
+	done
+	[ -z "$missing" ] || echo "dmenu_path leaves out$missing"
+	if [ -z "$missing" ] && dmenu_server; then
 		# The shell dmenu_run pipes the pick into writes to its stdout.
 		XDG_CACHE_HOME=/tmp/dmenu-cache DISPLAY=:0 dmenu_run > /tmp/dmenu-ran 2> /tmp/dmenu.log
 		if /bin/etc/dmenu_smoke bar; then
