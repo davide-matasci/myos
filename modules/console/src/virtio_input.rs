@@ -160,8 +160,9 @@ unsafe fn drain_events(dev: &mut Dev) {
         let slot = (dev.last_used as usize) % (dev.num as usize);
         let used_elem = unsafe { dev.used.add(4 + slot * 8) };
         dcache_civac(used_elem, 8);
-        let id = unsafe { core::ptr::read_volatile(used_elem as *const u16) };
-        let _len = unsafe { core::ptr::read_volatile(used_elem.add(2) as *const u32) };
+        // `struct virtq_used_elem { le32 id; le32 len; }`; `len` is always
+        // one event here.
+        let id = unsafe { core::ptr::read_volatile(used_elem as *const u32) } as u16;
 
         let va = dev.event_va[id as usize];
         dcache_civac(va, EVENT_SIZE as usize);

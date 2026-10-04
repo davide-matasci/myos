@@ -28,8 +28,10 @@ kbd_events() {
 		i=$((i + 1))
 	done
 	grep -q ready /tmp/kbd.out && echo "HOST c-smokes sendkey shift-a" >&3
+	# Well inside the launcher's 180 s watchdog: a smoke that hangs fails
+	# this test, not the boot.
 	i=0
-	while [ $i -lt 180 ] && ! grep -q -e "OK ] kbd" -e "FAIL ]" /tmp/kbd.out 2>/dev/null; do
+	while [ $i -lt 60 ] && ! grep -q -e "OK ] kbd" -e "FAIL ]" /tmp/kbd.out 2>/dev/null; do
 		sleep 1
 		i=$((i + 1))
 	done
