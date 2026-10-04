@@ -380,6 +380,16 @@ fn nested_elf(
         );
     }
 
+    // A kernel built inside myos (linux-compat/self-host.sh) takes a program
+    // it cannot build there from the running system: MYOS_PREBUILT lists
+    // them, each already at target/<bin>-<target>.
+    println!("cargo:rerun-if-env-changed=MYOS_PREBUILT");
+    if env::var("MYOS_PREBUILT").is_ok_and(|v| v.split(',').any(|b| b == bin)) {
+        let stable = stable_elf(manifest_dir, bin, target);
+        assert!(stable.is_file(), "MYOS_PREBUILT names {bin}, but {} is missing", stable.display());
+        return hand_out(&stable, bin, env_key, out);
+    }
+
     let td = PathBuf::from(out).join(td_name);
     // Nested target dirs reuse myos-user rlibs aggressively; drop deps when
     // the shared user library changed so fork/exec stubs stay in sync.
@@ -465,11 +475,23 @@ fn nested_elf(
     if need_image_base {
         assert_elf_linked_at_user_base(&elf, bin, target);
     }
-    let ws_target = manifest_dir.join("../target");
-    std::fs::create_dir_all(&ws_target).expect("workspace target dir");
-    let stable = ws_target.join(format!("{bin}-{target}"));
+    let stable = stable_elf(manifest_dir, bin, target);
     std::fs::copy(&elf, &stable)
         .unwrap_or_else(|e| panic!("copy {bin} ELF to {}: {e}", stable.display()));
+    hand_out(&stable, bin, env_key, out)
+}
+
+/// `bin`'s ELF for `target` where the image builders take it:
+/// `target/<bin>-<target>`.
+fn stable_elf(manifest_dir: &Path, bin: &str, target: &str) -> PathBuf {
+    let ws_target = manifest_dir.join("../target");
+    std::fs::create_dir_all(&ws_target).expect("workspace target dir");
+    ws_target.join(format!("{bin}-{target}"))
+}
+
+/// Watch the program's ELF at `stable`, and give an embedded one a
+/// content-hashed copy (and its env var).
+fn hand_out(stable: &Path, bin: &str, env_key: &str, out: &str) -> Option<PathBuf> {
     // Path string alone is not enough: same path with new bytes left bootfs
     // include_bytes! stale (rust-cache reused a fingerprint). Watch the stable
     // copy, and give an embedded program a content-hashed file name.
@@ -477,7 +499,7 @@ fn nested_elf(
     if env_key == "_unused" {
         return None;
     }
-    let bytes = std::fs::read(&elf).unwrap_or_default();
+    let bytes = std::fs::read(stable).unwrap_or_default();
     let mut hash = 0xcbf29ce484222325u64;
     for b in &bytes {
         hash ^= u64::from(*b);
