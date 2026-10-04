@@ -27,9 +27,4 @@ ssize_t getline(char **lineptr, size_t *n, FILE *stream);
 #define WCOREDUMP(s) 0
 #endif
 
-/* newlib's sigaction has no SA_NOCLDWAIT; git only sets it. */
-#ifndef SA_NOCLDWAIT
-#define SA_NOCLDWAIT 2
-#endif
-
 #endif /* _MYOS_GIT_COMPAT_H_ */
