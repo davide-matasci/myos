@@ -744,16 +744,49 @@ pub fn fork(regs: &SyscallRegs) -> R {
 }
 
 pub fn execve(path: usize, argv: usize, envp: usize) -> R {
-    let p = path_at(AT_FDCWD, path)?;
-    let args = user_str_array(argv, user::MAX_ARGC)?;
+    const ENOEXEC: usize = 8;
+    let mut p = path_at(AT_FDCWD, path)?;
+    let mut args = user_str_array(argv, user::MAX_ARGC)?;
     let env = user_str_array(envp, user::MAX_ENVC)?;
+    let real = real_path(&p)?;
+    if let Some((interp, arg)) = script_interpreter(&real)? {
+        // `#!interp [arg]`: run the interpreter on the script, as Linux does.
+        let mut v = Vec::from([interp.clone().into_bytes()]);
+        v.extend(arg.map(String::into_bytes));
+        v.push(p.into_bytes());
+        v.extend(args.into_iter().skip(1));
+        (p, args) = (interp, v);
+    }
     // The native exec limit on the strings' total size (NULs included).
     if args.iter().chain(&env).map(|s| s.len() + 1).sum::<usize>() > user::MAX_EXEC_STRINGS {
         return Err(E2BIG);
     }
     let arg_refs: Vec<&[u8]> = args.iter().map(|s| s.as_slice()).collect();
     let env_refs: Vec<&[u8]> = env.iter().map(|s| s.as_slice()).collect();
-    native(user::exec_linux(&p, &arg_refs, &env_refs), ENOENT)
+    // A file that is there but did not run is not an executable.
+    let missing = if fs::stat(&real).is_some() { ENOEXEC } else { ENOENT };
+    native(user::exec_linux(&p, &arg_refs, &env_refs), missing)
+}
+
+/// The interpreter of a `#!` script at VFS path `real`, and its optional
+/// argument (the rest of the line), if the file is one.
+fn script_interpreter(real: &str) -> R2<Option<(String, Option<String>)>> {
+    const ENOEXEC: usize = 8;
+    let mut head = [0u8; 256];
+    let n = fs::read(real, 0, &mut head).unwrap_or(0);
+    let Some(line) = head[..n].strip_prefix(b"#!") else {
+        return Ok(None);
+    };
+    let end = line.iter().position(|&b| b == b'\n').ok_or(ENOEXEC)?;
+    let line = core::str::from_utf8(&line[..end]).map_err(|_| ENOEXEC)?.trim();
+    let (interp, arg) = match line.split_once([' ', '\t']) {
+        Some((i, a)) => (i, Some(a.trim()).filter(|a| !a.is_empty())),
+        None => (line, None),
+    };
+    if interp.is_empty() {
+        return Err(ENOEXEC);
+    }
+    Ok(Some((String::from(interp), arg.map(String::from))))
 }
 
 pub fn wait4(pid: usize, status: usize, options: usize, rusage: usize) -> R {

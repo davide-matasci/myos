@@ -205,7 +205,9 @@ zero or as their file next time, as allocators such as rustc's Scudo
 expect; other advice is ignored). Files also: `pread64`, `pwrite64`,
 `pwritev(2)`.
 
-Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve`,
+Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve` (a
+`#!` script runs its interpreter, with the line's one optional argument;
+a file that is neither an ELF nor a script fails with `ENOEXEC`),
 `exit` (the thread), `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`,
 `getpid`, `gettid`, `getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`,
 `setsid`, `uname`, `arch_prctl`, `set_tid_address`, `set_robust_list`,
