@@ -22,7 +22,7 @@ fc-list
 | libXrender, libXft | `versions.env` | MIT |
 
 All static, on top of a copy of x11-libs' stage: `target/x11-xft-<arch>`
-holds both, as if at `/lib/x11`, for the packages that link Xft (dwm). Built
+holds both, as if at `/lib/x11`, for the packages that link Xft (dwm, st, dmenu). Built
 through the same cross `cc` as the X libraries (`myos_write_cross_cc` in
 `scripts/myos-c-userspace-lib.sh`). FreeType without compressed fonts,
 PNG glyphs or HarfBuzz.

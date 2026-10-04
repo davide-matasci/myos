@@ -18,18 +18,16 @@ TinyX's `Xfbdev` on `/dev/fb` and `/dev/console/kbd`
 (`packages/tinyx/README.md`; GPL-3.0, the rest MIT/X11),
 `packages/x11-xft` the client-side fonts (FreeType, fontconfig, Xft) with
 `packages/x11-fonts` (DejaVu Sans Mono), and `packages/dwm` the window
-manager, unpatched (`packages/dwm/README.md`). Everything is linked
+manager, unpatched (`packages/dwm/README.md`), with what its keys start:
+`packages/st` the terminal and `packages/dmenu` the menu
+(`packages/st/README.md`, `packages/dmenu/README.md`). Everything is linked
 statically.
 
 1. **First clients, libX11 only**: `xsetroot`, `xev`.
-2. **A terminal**, the one dwm's Alt+Shift+Return starts: `st` on Xft, or
-   `xterm` (needs Xt, Xaw, Xmu, Xpm; termcap from `ports/termcap`; libX11's
-   locale data, which x11-libs does not ship yet). Then `dmenu` (Alt+P), on
-   Xft too.
-   More fonts (a proportional DejaVu Sans) when a client wants them.
+2. More fonts (a proportional DejaVu Sans) when a client wants them.
 3. **A session file**: `startx` (`packages/tinyx`) runs the server and one
    client (dwm); a `~/.xinitrc`-like script to start a terminal next to the
-   window manager once there is a terminal.
+   window manager.
 
 Gaps that may show up on the way:
 
