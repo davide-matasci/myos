@@ -1,14 +1,8 @@
-/* Runtime stubs for Lynx on myos — only symbols not already in libgloss. */
+/* Runtime stubs for Lynx on myos — only what differs from libgloss. */
 #include <errno.h>
-#include <fcntl.h>
-#include <stdlib.h>
-#include <unistd.h>
 
-int dup(int oldfd) {
-    return fcntl(oldfd, F_DUPFD, 0);
-}
-
-/* system(3) — refuse external commands. */
+/* system(3) — refuse external commands (lynx would shell out for
+ * downloads and editors). */
 int system(const char *cmd) {
     (void)cmd;
     errno = ENOSYS;
