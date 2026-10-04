@@ -345,9 +345,6 @@ which the Linux layer requires.
 Under TCG a first run takes hours: `core` and `alloc` take about 25
 minutes, each module or user program one to three. Known gaps:
 
-- file times: the VFS reports none (`st_mtime` is 0), so cargo does not
-  see a changed source and rebuilds nothing after an update; a fresh
-  `target/` is needed;
 - `http` (mbedtls and newlib: autotools, `make`, `python3`) and the other
   C programs are not built in myos;
 - non-PIE Linux programs (Alpine's gcc) do not run (see Limits).
@@ -389,6 +386,11 @@ minutes, each module or user program one to three. Known gaps:
 - `chmod`, `chown` and `fsync` succeed and do nothing: myos keeps no
   owners or permission bits, and ext2 writes a file back when its last fd
   closes.
+- File times: `stat` reports a file's modification time (as `st_mtime`,
+  `st_atime` and `st_ctime`) where the filesystem keeps one, ext2; the
+  in-kernel filesystems (tmpfs, `/bin`, `/dev`, ...) report 0. A build tool
+  (cargo, make) sees a changed source on ext2 only. Times cannot be set
+  (`utimensat` is missing).
 - Sockets: IPv4 clients and `socketpair` only (no `listen`/`accept`, no
   IPv6, no other Unix sockets); no half-close (`shutdown` hangs up only for
   `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are

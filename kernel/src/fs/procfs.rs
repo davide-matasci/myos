@@ -351,6 +351,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 1,
             nlink: 2,
             dev: 0,
+            mtime: 0,
         });
     }
     if name == "acpi" {
@@ -360,6 +361,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 3,
             nlink: 2,
             dev: 0,
+            mtime: 0,
         });
     }
     if let Some(node) = parse_self(name) {
@@ -382,6 +384,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino,
             nlink: if mode & S_IFDIR != 0 { 2 } else { 1 },
             dev: 0,
+            mtime: 0,
         });
     }
     if name == "mounts" {
@@ -392,6 +395,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 2,
             nlink: 1,
             dev: 0,
+            mtime: 0,
         });
     }
     if name == "cpuinfo" {
@@ -402,6 +406,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 4,
             nlink: 1,
             dev: 0,
+            mtime: 0,
         });
     }
     if name == "meminfo" {
@@ -412,6 +417,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 10,
             nlink: 1,
             dev: 0,
+            mtime: 0,
         });
     }
     if name == "interrupts" {
@@ -422,6 +428,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 11,
             nlink: 1,
             dev: 0,
+            mtime: 0,
         });
     }
     if name == "modules" {
@@ -432,6 +439,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 12,
             nlink: 1,
             dev: 0,
+            mtime: 0,
         });
     }
     if let Some((ino, data)) = dyn_get(name) {
@@ -446,6 +454,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino,
             nlink: 1,
             dev: 0,
+            mtime: 0,
         });
     }
     if let Some(data) = stub_acpi(name) {
@@ -462,6 +471,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino,
             nlink: 1,
             dev: 0,
+            mtime: 0,
         });
     }
     None

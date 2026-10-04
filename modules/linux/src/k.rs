@@ -371,6 +371,8 @@ pub mod fs {
         pub ino: usize,
         pub nlink: u32,
         pub dev: usize,
+        /// Last modification, seconds since the epoch (0: not kept).
+        pub mtime: u64,
     }
 
     pub fn stat(path: &str) -> Option<StatInfo> {
@@ -384,6 +386,7 @@ pub mod fs {
             ino: st.ino as usize,
             nlink: st.nlink,
             dev: st.dev as usize,
+            mtime: st.mtime,
         })
     }
     pub fn listdir(path: &str, buf: &mut [u8]) -> usize {

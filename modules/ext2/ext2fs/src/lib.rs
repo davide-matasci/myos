@@ -85,4 +85,6 @@ pub struct Stat {
     pub size: u64,
     pub ino: u32,
     pub links: u16,
+    /// Last modification, in seconds since the epoch.
+    pub mtime: u32,
 }

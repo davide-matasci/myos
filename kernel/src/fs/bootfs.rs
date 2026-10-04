@@ -157,6 +157,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 1,
             nlink: 2,
             dev: 0,
+            mtime: 0,
         });
     }
     if is_dir_prefix(name) {
@@ -166,6 +167,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: crate::fs::vfs::dir_ino(name),
             nlink: 2,
             dev: 0,
+            mtime: 0,
         });
     }
     let files = FILES.lock();
@@ -177,6 +179,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 ino: crate::fs::vfs::data_ino(slot.data),
                 nlink: 1,
                 dev: 0,
+                mtime: 0,
             });
         }
     }

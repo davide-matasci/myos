@@ -863,6 +863,7 @@ unsafe extern "C" fn api_vfs_stat(path: StrRef, out: *mut PathStat) -> i32 {
                     size: st.size as u64,
                     ino: st.ino as u64,
                     dev: st.dev as u64,
+                    mtime: st.mtime,
                 };
             }
             0

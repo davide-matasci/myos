@@ -15,6 +15,14 @@ ext2_big() {
 	cat /disk/t/[a-m]* > /tmp/big && cp /tmp/big /disk/big && cmp /tmp/big /disk/big \
 		&& rm /disk/t/* /tmp/big && rmdir /disk/t
 }
+# A file's modification time, as a Linux program's stat sees it (ext2 keeps
+# times; the in-kernel filesystems do not).
+ext2_mtime() {
+	echo x > /disk/m && linux /bin/linux/linux-smoke mtime /disk/m && rm /disk/m
+}
 t ext2_disk ext2_disk
 t ext2_link ext2_link
 t ext2_big ext2_big
+if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
+	t ext2_mtime ext2_mtime
+fi

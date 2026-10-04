@@ -155,8 +155,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     }
 }
 
-/// The x86_64 `struct stat` (144 bytes).
-pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64) -> [u8; 144] {
+/// The x86_64 `struct stat` (144 bytes); `mtime` stands for all three times.
+pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64, mtime: u64) -> [u8; 144] {
     let mut b = [0u8; 144];
     let mut put = |off: usize, v: &[u8]| b[off..off + v.len()].copy_from_slice(v);
     put(0, &dev.to_le_bytes());
@@ -167,6 +167,9 @@ pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64) -> [u8; 
     put(48, &size.to_le_bytes());
     put(56, &4096u64.to_le_bytes()); // st_blksize
     put(64, &size.div_ceil(512).to_le_bytes()); // st_blocks
+    for off in [72, 88, 104] {
+        put(off, &mtime.to_le_bytes()); // st_atime, st_mtime, st_ctime
+    }
     b
 }
 

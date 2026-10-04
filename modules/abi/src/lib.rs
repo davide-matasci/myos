@@ -11,7 +11,8 @@
 /// 20 added [`ModuleVfsOps::open`] (a file one program holds at a time).
 /// 21 added [`KernelApi::fork_from`] (posix_spawn's child on its own stack).
 /// 22 added [`KernelApi::mmap_discard`] (`madvise(MADV_DONTNEED)`).
-pub const ABI_VERSION: u32 = 22;
+/// 23 added `mtime` to [`VfsStatInfo`] and [`PathStat`].
+pub const ABI_VERSION: u32 = 23;
 
 /// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
 pub const MYOS_WAIT_ANY: usize = usize::MAX;
@@ -31,6 +32,8 @@ pub struct VfsStatInfo {
     pub size: u32,
     pub ino: u32,
     pub nlink: u32,
+    /// Last modification, in seconds since the epoch (0: not kept).
+    pub mtime: u64,
 }
 
 /// Module-provided VFS backend hooks. Function pointers may be null only where
@@ -269,6 +272,8 @@ pub struct PathStat {
     pub size: u64,
     pub ino: u64,
     pub dev: u64,
+    /// Last modification, in seconds since the epoch (0: not kept).
+    pub mtime: u64,
 }
 
 /// `path_resolve` modes: the task's own view (cwd applied, chroot-relative),

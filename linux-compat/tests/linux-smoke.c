@@ -271,6 +271,12 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
     }
+    /* `mtime FILE`: the file's modification time is a real date (after
+     * 2001), as a filesystem that keeps times reports it. */
+    if (argc > 2 && strcmp(argv[1], "mtime") == 0) {
+        struct stat st;
+        return stat(argv[2], &st) == 0 && st.st_mtime > 1000000000 ? 0 : 1;
+    }
 
     struct utsname u;
     check(uname(&u) == 0 && strcmp(u.sysname, "Linux") == 0, "uname");

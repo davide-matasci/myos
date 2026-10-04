@@ -339,7 +339,8 @@ pub fn path_noop(dirfd: usize, path: usize) -> R {
 }
 
 fn put_stat(buf: usize, st: &fs::StatInfo) -> R {
-    put(buf, &super::arch::stat_bytes(st.mode, st.size as u64, st.ino as u64, st.nlink as u64, st.dev as u64))?;
+    let b = super::arch::stat_bytes(st.mode, st.size as u64, st.ino as u64, st.nlink as u64, st.dev as u64, st.mtime);
+    put(buf, &b)?;
     Ok(0)
 }
 
@@ -355,7 +356,7 @@ pub fn fstatat(dirfd: usize, path: usize, buf: usize, flags: usize) -> R {
 
 pub fn fstat(fd: usize, buf: usize) -> R {
     if is_socket(fd) {
-        put(buf, &super::arch::stat_bytes(0o140777, 0, fd as u64 + 1, 1, 0))?;
+        put(buf, &super::arch::stat_bytes(0o140777, 0, fd as u64 + 1, 1, 0, 0))?;
         return Ok(0);
     }
     if let Some(e) = files::get(fd) {
@@ -368,7 +369,7 @@ pub fn fstat(fd: usize, buf: usize) -> R {
         task::FdKind::Pipe => (0o010600, 0),
         task::FdKind::File { size } => (0o100644, size as u64),
     };
-    put(buf, &super::arch::stat_bytes(mode, size, fd as u64 + 1, 1, 0))?;
+    put(buf, &super::arch::stat_bytes(mode, size, fd as u64 + 1, 1, 0, 0))?;
     Ok(0)
 }
 
