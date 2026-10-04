@@ -41,10 +41,13 @@ window manager (dmenu grabs the keyboard):
   the server's socket and for the bar (the selected item's `#005577` along
   the screen's top), the host types `b` and Return through the QEMU monitor,
   and dmenu prints `beta`.
-- `dmenu_run`: `dmenu_path` lists a `#!` script put in a `PATH` directory
-  (and `dmenu`, `sh`); `dmenu_run` shows the bar, the host types `z`, `z` and
+- `dmenu_run`: `dmenu_path` lists a `#!` script put in `/bin/custom` (and
+  `dmenu`, `sh`); `dmenu_run` shows the bar, the host types `z`, `z` and
   Return, and the shell it pipes the pick into runs the script.
 
 ## Not yet
 
+- Programs in a directory added to `PATH`: the shell (oksh) sets its own
+  `PATH` whatever it inherits (`TODO.md`), so `dmenu_path` lists the default
+  directories, where packages install.
 - Xinerama (one screen anyway).

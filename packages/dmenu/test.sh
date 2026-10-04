@@ -5,7 +5,7 @@
 #     dmenu_smoke.c); "b" and Return select "beta", which it prints.
 #   dmenu_run: dwm's Alt+P. dmenu_path lists the programs of PATH (stest,
 #     the list cached under XDG_CACHE_HOME), "zz" and Return pick a #!
-#     script there and the shell dmenu_run pipes into runs it.
+#     script put in /bin/custom and the shell dmenu_run pipes into runs it.
 
 dmenu_server() {
 	Xfbdev :0 -br > /tmp/dmenu-server.log 2>&1 &
@@ -41,17 +41,15 @@ t dmenu dmenu_pick
 
 dmenu_run_pick() {
 	ok=0
-	mkdir -p /tmp/dmenu-bin /tmp/dmenu-cache
-	printf '#!/bin/sh\necho ran > /tmp/dmenu-ran\n' > /tmp/dmenu-bin/zzdmenu
-	chmod +x /tmp/dmenu-bin/zzdmenu
+	# Where packages install, on the shell's PATH (oksh sets its own).
+	printf '#!/bin/sh\necho ran > /tmp/dmenu-ran\n' > /bin/custom/zzdmenu
+	chmod +x /bin/custom/zzdmenu
+	mkdir -p /tmp/dmenu-cache
 	rm -f /tmp/dmenu-ran /tmp/dmenu-cache/dmenu_run
-	listed=$(PATH=/tmp/dmenu-bin:$PATH XDG_CACHE_HOME=/tmp/dmenu-cache dmenu_path | grep -x -e zzdmenu -e dmenu -e sh)
+	listed=$(XDG_CACHE_HOME=/tmp/dmenu-cache dmenu_path | grep -x -e zzdmenu -e dmenu -e sh)
 	echo "dmenu_path lists" $listed
-	if [ "$(echo "$listed" | wc -l)" -ne 3 ]; then
-		ls -l /tmp/dmenu-bin
-		echo "stest -flx /tmp/dmenu-bin:" $(stest -flx /tmp/dmenu-bin)
-	elif dmenu_server; then
-		PATH=/tmp/dmenu-bin:$PATH XDG_CACHE_HOME=/tmp/dmenu-cache DISPLAY=:0 dmenu_run 2> /tmp/dmenu.log
+	if [ "$(echo "$listed" | wc -l)" -eq 3 ] && dmenu_server; then
+		XDG_CACHE_HOME=/tmp/dmenu-cache DISPLAY=:0 dmenu_run 2> /tmp/dmenu.log
 		if /bin/etc/dmenu_smoke bar; then
 			echo "HOST c-smokes sendkey z z ret" >&3
 			for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -63,7 +61,8 @@ dmenu_run_pick() {
 		[ $ok = 1 ] || echo "the script did not run"
 		dmenu_server_stop
 	fi
-	cat /tmp/dmenu.log /tmp/dmenu-server.log
+	rm -f /bin/custom/zzdmenu
+	cat /tmp/dmenu.log /tmp/dmenu-server.log 2>/dev/null
 	[ $ok = 1 ]
 }
 t dmenu_run dmenu_run_pick

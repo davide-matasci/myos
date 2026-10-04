@@ -39,6 +39,14 @@ Gaps that may show up on the way:
 - A real `pthread_create` (on `thread_spawn` / `wait_addr`) if a client
   needs threads; the libgloss pthread functions are single-threaded.
 - MIT-SHM, and with it fast image transfers, needs the shared memory below.
+- oksh sets `PATH` to its default whatever it inherits
+  (`ports/oksh/main.myos.patch`), so `PATH=~/bin:$PATH dmenu_run` (or any
+  script) sees the default. The override keeps SSH logins working (dropbear
+  passes `/usr/sbin:/usr/bin:/sbin:/bin`): respecting an inherited `PATH`
+  wants dropbear's `DEFAULT_ROOT_PATH` set to myos's directories first.
+- libgloss's `setsid` only starts a process group (`SYS_SETSID` corrupted
+  netfs writes, not root-caused): sessions are approximated along the
+  parent chain (`kernel/src/pty.rs`).
 
 ## riscv64 soft-float: sbase's double helpers are wrong
 
