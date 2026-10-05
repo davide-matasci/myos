@@ -48,21 +48,6 @@ Gaps that may show up on the way:
   netfs writes, not root-caused): sessions are approximated along the
   parent chain (`kernel/src/pty.rs`).
 
-## riscv64 soft-float: sbase's double helpers are wrong
-
-`ports/sbase/riscv64-softfloat.c` implements riscv64's (no FPU) double
-arithmetic, conversions and compares by hand, and they are broken: 80 + 100
-gave 116, 80 * 1000 not 80000, `a == a` was false (the compares take
-`long double` arguments where the compiler passes `double`). fontconfig's
-font weights came out as garbage with them. The X packages now take those
-functions from compiler-rt (`target/libsoftfloat-riscv64.a`, which curl
-already used) and only the long-double conversions from sbase's file
-(`myos_write_cross_cc`), but the other ports linking the file still get the
-broken ones: sbase, ubase, oksh, dropbear, tcc, vim, lua, make, git, lynx,
-os-test's prebuilt tests and the C smokes. Fix: the same split for each, or the file reduced to its
-long-double part with compiler-rt for the rest, then a riscv64 test that
-checks double arithmetic (lua would show it).
-
 ## x86_64 interrupt routing beyond MSI-X
 
 aarch64 and riscv64 take their PCI INTx routing, controller bases and

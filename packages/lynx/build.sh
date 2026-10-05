@@ -75,15 +75,10 @@ link_prog() {
       extra+=("$ROOT/target/lynx-obj-${arch}/trunctfdf2.o")
     fi
   elif [[ "$arch" == "riscv64" ]]; then
-    # Quad/long-double + soft-float shims (riscv64-softfloat.c already has trunc/extend TF).
+    # The long-double conversions and compiler-rt's soft float.
     "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$prefix/${triple}/include" \
       -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$ROOT/target/lynx-obj-${arch}/riscv64-softfloat.o"
-    extra+=("$ROOT/target/lynx-obj-${arch}/riscv64-softfloat.o")
-    if [[ ! -f "$ROOT/target/libsoftfloat-riscv64.a" ]]; then
-      echo "missing target/libsoftfloat-riscv64.a" >&2
-      return 1
-    fi
-    extra+=("$ROOT/target/libsoftfloat-riscv64.a")
+    extra+=("$ROOT/target/lynx-obj-${arch}/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   echo "  LD lynx ($triple)"

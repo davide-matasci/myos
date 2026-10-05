@@ -55,7 +55,7 @@ link_prog() {
   elif [[ "$arch" == "riscv64" && -f "$ROOT/ports/sbase/riscv64-softfloat.c" ]]; then
     "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$prefix/${triple}/include" \
       -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$ROOT/target/lua-obj-${arch}/riscv64-softfloat.o"
-    extra+=("$ROOT/target/lua-obj-${arch}/riscv64-softfloat.o")
+    extra+=("$ROOT/target/lua-obj-${arch}/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   echo "  LD lua ($triple)"

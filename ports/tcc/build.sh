@@ -176,7 +176,7 @@ build_arch() {
       -D__extendsftf2=__myos_tcc_unused_extendsftf2 \
       -D__trunctfsf2=__myos_tcc_unused_trunctfsf2 \
       -c "$rvsoft" -o "$objdir/riscv64-softfloat.o"
-    extra+=("$objdir/riscv64-softfloat.o")
+    extra+=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
@@ -224,18 +224,16 @@ build_libtcc1() {
       srcs+=(lib-arm64.c)
       extra_src+=("$MYOS/clear_cache.c")
       if [[ "$arch" == "riscv64" ]]; then
-        # Guest links need the soft-float DF/SF helpers (rv64imac target).
-        # The TF* symbols are renamed away: lib-arm64.o owns IEEE-128.
-        # The implementations are integer-only (see the file header) so
-        # guest programs never recurse into them.
-        obj="$odir/riscv64-softfloat.o"
-        "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -I"$WORK" \
-          -D__trunctfdf2=__myos_tcc_unused_trunctfdf2 \
-          -D__extenddftf2=__myos_tcc_unused_extenddftf2 \
-          -D__extendsftf2=__myos_tcc_unused_extendsftf2 \
-          -D__trunctfsf2=__myos_tcc_unused_trunctfsf2 \
-          -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$obj"
-        objs+=("$obj")
+        # Guest links need the soft-float double and float helpers (the
+        # rv64imac target has no FPU): compiler-rt's, the members of
+        # target/libsoftfloat-riscv64.a unpacked into this archive. The
+        # long-double ones are lib-arm64.o's (IEEE-128); the sbase file
+        # carries only those now, so it is not needed here.
+        mkdir -p "$odir/softfloat"
+        (cd "$odir/softfloat" && "$(command -v llvm-ar 2>/dev/null || echo ar)" x "$(myos_riscv64_softfloat)")
+        for obj in "$odir"/softfloat/*.o; do
+          objs+=("$obj")
+        done
       fi
       ;;
     *)

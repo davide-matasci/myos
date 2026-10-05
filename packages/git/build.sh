@@ -53,10 +53,7 @@ build_arch() {
   elif [[ "$arch" == "riscv64" ]]; then
     "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$objdir/riscv64-softfloat.o"
-    extra_obj+=("$objdir/riscv64-softfloat.o")
-    "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-      -c "$MYOS/riscv64-sf-arith.c" -o "$objdir/riscv64-sf-arith.o"
-    extra_obj+=("$objdir/riscv64-sf-arith.o")
+    extra_obj+=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   MYOS_GIT_ARCH="$arch" MYOS_GIT_ROOT="$ROOT" \
