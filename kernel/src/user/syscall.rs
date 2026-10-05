@@ -1445,7 +1445,8 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     }
     let map_len = pages * PAGE;
     let aspace = task::current_aspace();
-    let va = if flags & MAP_FIXED != 0 {
+    let fixed = flags & MAP_FIXED != 0;
+    if fixed {
         if hint == 0 || hint % PAGE != 0 {
             return SYSERR;
         }
@@ -1459,38 +1460,41 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             return SYSERR;
         }
         release_mmap_range(aspace, &old, hint as u64, pages);
-        hint
-    } else {
-        match task::mmap_alloc(area_lo, area_hi, map_len) {
-            Some(v) => v,
-            None => return SYSERR,
+    }
+    // Record the region, at `hint` or in the lowest free gap (found and
+    // recorded in one step: another thread may be mapping too), before its
+    // pages are mapped: its address, or `None` when the table is full.
+    let record = |prot: u32, file: Option<(&fs::Vnode, usize)>| {
+        if fixed {
+            task::mmap_add(hint as u64, pages as u32, prot, file).then_some(hint)
+        } else {
+            task::mmap_add_free(area_lo, area_hi, pages as u32, prot, file)
         }
     };
     if let (true, Some(node)) = (device, &file) {
+        let Some(va) = record(prot as u32 | task::MMAP_DEVICE, None) else {
+            return SYSERR;
+        };
         for i in 0..pages {
             if let Some(frame) = fs::device_frame(node, offset + i * PAGE) {
                 map_user_page_prot(aspace, (va + i * PAGE) as u64, frame, prot);
             }
-        }
-        if !task::mmap_add(va as u64, pages as u32, prot as u32 | task::MMAP_DEVICE, None) {
-            for i in 0..pages {
-                unmap_user_page(aspace, (va + i * PAGE) as u64);
-            }
-            flush_user_tlb();
-            return SYSERR;
         }
         flush_user_tlb();
         return va;
     }
     // The pages get their frames on first touch (`fault_in`), so a large
     // reservation or a big library costs only what is used.
-    if task::mmap_add(va as u64, pages as u32, prot as u32, file.as_ref().map(|node| (node, offset))) {
+    if let Some(va) = record(prot as u32, file.as_ref().map(|node| (node, offset))) {
         flush_user_tlb();
         return va;
     }
     // A file mapping fails there when the mapped-file table is full: read
     // the file in whole now, as an anonymous region.
     let Some(node) = file else {
+        return SYSERR;
+    };
+    let Some(va) = record(prot as u32, None) else {
         return SYSERR;
     };
     let mut mapped = 0usize;
@@ -1505,13 +1509,6 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         sync_icache(page_va as usize, PAGE);
         sync_icache(mm::hhdm(frame) as usize, PAGE);
         mapped += PAGE;
-    }
-    if !task::mmap_add(va as u64, pages as u32, prot as u32, None) {
-        for i in 0..pages {
-            free_mapped_page(aspace, (va + i * PAGE) as u64);
-        }
-        flush_user_tlb();
-        return SYSERR;
     }
     flush_user_tlb();
     va
