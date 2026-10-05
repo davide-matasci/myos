@@ -15,4 +15,12 @@ struct myos_stat2_buf {
     int64_t mtime;
 };
 
+/* MYOS_SYS_STAT3: myos_stat2_buf and the owner (the user the file's label
+ * names, else 0). The permission bits are what the caller may do. */
+struct myos_stat3_buf {
+    struct myos_stat2_buf s;
+    uint32_t uid;
+    uint32_t gid;
+};
+
 #endif

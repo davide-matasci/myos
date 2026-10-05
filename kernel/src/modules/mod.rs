@@ -827,7 +827,7 @@ unsafe extern "C" fn api_task_is_live_user(id: usize) -> i32 {
 }
 
 unsafe extern "C" fn api_task_has_root() -> i32 {
-    i32::from(crate::task::has_root())
+    i32::from(crate::task::has_ns())
 }
 
 unsafe extern "C" fn api_path_resolve(path: StrRef, mode: u32, out: *mut u8, cap: usize) -> i32 {
@@ -854,18 +854,27 @@ unsafe extern "C" fn api_path_resolve(path: StrRef, mode: u32, out: *mut u8, cap
     }
 }
 
+// The path calls below act for the current process (the Linux layer's
+// syscalls): the same checks as the native ones (docs/security.md).
+use crate::sec::Rights;
+
+fn may(path: &str, need: Rights) -> bool {
+    crate::sec::allowed(path, need)
+}
+
 unsafe extern "C" fn api_vfs_stat(path: StrRef, out: *mut PathStat) -> i32 {
     let Some(path) = str_ref(path) else {
         return -1;
     };
-    if out.is_null() {
+    if out.is_null() || crate::sec::rights_on(path).is_empty() {
         return -1;
     }
     match crate::fs::stat(path) {
         Some(st) => {
+            let is_dir = st.mode & crate::fs::S_IFMT == 0o040000;
             unsafe {
                 *out = PathStat {
-                    mode: st.mode,
+                    mode: (st.mode & !0o777) | crate::sec::mode_bits(path, is_dir),
                     nlink: st.nlink,
                     size: st.size as u64,
                     ino: st.ino as u64,
@@ -887,34 +896,37 @@ unsafe extern "C" fn api_vfs_listdir(path: StrRef, buf: *mut u8, cap: usize) -> 
     if buf.is_null() {
         return -1;
     }
+    if !may(path, Rights::READ) {
+        return -1;
+    }
     let out = unsafe { core::slice::from_raw_parts_mut(buf, cap) };
     crate::fs::listdir(path, out).min(i32::MAX as usize) as i32
 }
 
 unsafe extern "C" fn api_vfs_mkdir(path: StrRef) -> i32 {
     match str_ref(path) {
-        Some(p) if crate::fs::mkdir(p) => 0,
+        Some(p) if may(p, Rights::CREATE) && crate::fs::mkdir(p) => 0,
         _ => -1,
     }
 }
 
 unsafe extern "C" fn api_vfs_rmdir(path: StrRef) -> i32 {
     match str_ref(path) {
-        Some(p) if crate::fs::rmdir(p) => 0,
+        Some(p) if may(p, Rights::REMOVE) && crate::fs::rmdir(p) => 0,
         _ => -1,
     }
 }
 
 unsafe extern "C" fn api_vfs_unlink(path: StrRef) -> i32 {
     match str_ref(path) {
-        Some(p) if crate::fs::unlink(p) => 0,
+        Some(p) if may(p, Rights::REMOVE) && crate::fs::unlink(p) => 0,
         _ => -1,
     }
 }
 
 unsafe extern "C" fn api_vfs_rename(old: StrRef, new: StrRef) -> i32 {
     match (str_ref(old), str_ref(new)) {
-        (Some(o), Some(n)) if crate::fs::rename(o, n) => 0,
+        (Some(o), Some(n)) if may(o, Rights::REMOVE) && may(n, Rights::CREATE) && crate::fs::rename(o, n) => 0,
         _ => -1,
     }
 }
@@ -924,14 +936,14 @@ unsafe extern "C" fn api_vfs_set_times(path: StrRef, atime: u64, mtime: u64) -> 
         if t == myos_abi::MYOS_TIME_OMIT { crate::fs::SetTime::Omit } else { crate::fs::SetTime::At(t) }
     };
     match str_ref(path) {
-        Some(p) if crate::fs::set_times(p, time(atime), time(mtime)) => 0,
+        Some(p) if may(p, Rights::SETATTR) && crate::fs::set_times(p, time(atime), time(mtime)) => 0,
         _ => -1,
     }
 }
 
 unsafe extern "C" fn api_vfs_symlink(target: StrRef, link: StrRef) -> i32 {
     match (str_ref(target), str_ref(link)) {
-        (Some(t), Some(l)) if crate::fs::symlink(t, l) => 0,
+        (Some(t), Some(l)) if may(l, Rights::CREATE) && crate::fs::symlink(t, l) => 0,
         _ => -1,
     }
 }
@@ -941,6 +953,9 @@ unsafe extern "C" fn api_vfs_readlink(path: StrRef, buf: *mut u8, cap: usize) ->
         return -1;
     };
     if buf.is_null() {
+        return -1;
+    }
+    if !may(path, Rights::READ) {
         return -1;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(buf, cap) };
@@ -954,6 +969,9 @@ unsafe extern "C" fn api_vfs_read(path: StrRef, pos: usize, buf: *mut u8, cap: u
     let (Some(path), false) = (str_ref(path), buf.is_null()) else {
         return -1;
     };
+    if !may(path, Rights::READ) {
+        return -1;
+    }
     let Some(node) = crate::fs::open(path, 0) else {
         return -1;
     };
@@ -965,6 +983,9 @@ unsafe extern "C" fn api_vfs_write(path: StrRef, pos: usize, buf: *const u8, len
     let (Some(path), false) = (str_ref(path), buf.is_null()) else {
         return -1;
     };
+    if !may(path, Rights::WRITE) {
+        return -1;
+    }
     let Some(node) = crate::fs::open(path, 1) else {
         return -1;
     };

@@ -304,6 +304,9 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     add(&mut entries, "usr/lib/.keep", Some(b"\n".to_vec()));
     // /mnt: a directory to mount a disk on (mount(2) wants an existing one).
     add(&mut entries, "mnt/.keep", Some(b"\n".to_vec()));
+    // The security policy (docs/security.md); the kernel carries the same
+    // file as its fallback.
+    add(&mut entries, "etc/policy", read(&manifest_dir.join("etc/policy")));
 
     // The `linux` launcher of the Linux compatibility layer (native, always
     // shipped: with the module loaded, `linux PROGRAM` works in any build).

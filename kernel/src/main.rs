@@ -25,6 +25,7 @@ mod modules;
 mod pipe;
 mod platform;
 mod rng;
+mod sec;
 mod signal;
 mod smp;
 mod pty;
@@ -187,6 +188,8 @@ pub(crate) fn kernel_main() -> ! {
     let _ = fs::register("rootfs", "msg", MSG_OK);
     console::status_ok("fat message");
 
+    // Who may do what (docs/security.md): read before the first process.
+    sec::init();
     user::init();
     input::init();
     if input::keyboard_present() {

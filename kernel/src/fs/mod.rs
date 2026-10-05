@@ -90,9 +90,19 @@ pub fn open_append(flags: u32) -> bool {
     vfs::open_append(flags)
 }
 
-/// Stat `path` on the best matching mount.
+/// Stat `path` on the best matching mount (or a directory a namespace
+/// makes up, `@` and the process's path, see [`virtual_to_real`]).
 pub fn stat(path: &str) -> Option<StatInfo> {
+    if let Some(virt) = path.strip_prefix('@') {
+        return Some(StatInfo { mode: 0o040555, size: 0, ino: 0, nlink: 2, dev: 0, mtime: 0, atime: 0 })
+            .filter(|_| synthetic_dir(virt));
+    }
     vfs::stat(path)
+}
+
+/// `virt` is a directory the current process's namespace makes up.
+fn synthetic_dir(virt: &str) -> bool {
+    crate::task::with_ns(|n| matches!(n.and_then(|n| n.map(virt)), Some(crate::task::ns::Mapped::Synthetic)))
 }
 
 /// Set the access and modification times of `path`.
@@ -107,6 +117,19 @@ pub fn set_times_node(node: &Vnode, atime: SetTime, mtime: SetTime) -> bool {
 
 /// List entries at `path` into `buf` (newline-separated basenames).
 pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
+    if let Some(virt) = path.strip_prefix('@') {
+        let names = crate::task::with_ns(|n| n.map(|n| n.children(virt)).unwrap_or_default());
+        let mut off = 0;
+        for name in names {
+            if off + name.len() + 1 > buf.len() {
+                break;
+            }
+            buf[off..off + name.len()].copy_from_slice(name.as_bytes());
+            buf[off + name.len()] = b'\n';
+            off += name.len() + 1;
+        }
+        return off;
+    }
     vfs::listdir(path, buf)
 }
 
@@ -222,10 +245,11 @@ pub fn resolve_user_path_nofollow(path: &str, out: &mut [u8]) -> Option<usize> {
 }
 
 fn resolve_user_path_with(path: &str, out: &mut [u8], follow_last: bool) -> Option<usize> {
-    // Unjailed and no symlinks anywhere (the common case): resolve straight
-    // into `out` — no extra buffers on the kernel stack of every path syscall.
+    // The whole tree and no symlinks anywhere (the common case): resolve
+    // straight into `out` — no extra buffers on the kernel stack of every
+    // path syscall.
     let follow = vfs::symlinks_possible();
-    if !crate::task::has_root() && !follow {
+    if !crate::task::has_ns() && !follow {
         let n = resolve_user_path_virtual(path, out)?;
         if !out[..n].starts_with(PROC_SELF) {
             return Some(n);
@@ -248,18 +272,28 @@ fn resolve_user_path_with(path: &str, out: &mut [u8], follow_last: bool) -> Opti
 /// The directory of procfs symlinks (`procfs::readlink`).
 const PROC_SELF: &[u8] = b"/proc/self/";
 
-/// The real path behind `virt` (a canonical path in the task's view): the
-/// task's chroot prefix + `virt`.
+/// The real path behind `virt` (a canonical path in the task's view),
+/// through its namespace: the binding's source, or `@` and `virt` for a
+/// directory the namespace makes up (see [`stat`], [`listdir`]); `None`
+/// when no binding leads there.
 fn virtual_to_real(virt: &[u8], out: &mut [u8]) -> Option<usize> {
-    let mut root = [0u8; crate::task::ROOT_CAP];
-    let rn = crate::task::root(&mut root);
-    let tail: &[u8] = if rn != 0 && virt == b"/" { &[] } else { virt };
-    if rn + tail.len() > out.len() {
+    let virt_s = core::str::from_utf8(virt).ok()?;
+    let mapped = crate::task::with_ns(|n| match n {
+        None => Some(None),
+        Some(n) => match n.map(virt_s)? {
+            crate::task::ns::Mapped::Real(r) => Some(Some(r)),
+            crate::task::ns::Mapped::Synthetic => Some(Some(alloc::format!("@{virt_s}"))),
+        },
+    })?;
+    let real: &[u8] = match &mapped {
+        None => virt,
+        Some(r) => r.as_bytes(),
+    };
+    if real.len() > out.len() {
         return None;
     }
-    out[..rn].copy_from_slice(&root[..rn]);
-    out[rn..rn + tail.len()].copy_from_slice(tail);
-    Some(rn + tail.len())
+    out[..real.len()].copy_from_slice(real);
+    Some(real.len())
 }
 
 /// Symlinks followed while resolving one path (Linux's `MAXSYMLINKS`).

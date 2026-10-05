@@ -205,8 +205,11 @@ int _open(const char *path, int flags, ...) {
         return -1;
     }
     if (ret == (long)MYOS_SYSERR) {
-        /* No controlling terminal → ENXIO (Linux open(/dev/tty) semantics). */
-        errno = myos_path_is_dev_tty(path) ? ENXIO : ENOENT;
+        /* No controlling terminal → ENXIO (Linux open(/dev/tty) semantics);
+         * a file the caller can see but not open so: the policy refused it
+         * (docs/security.md). */
+        struct stat seen;
+        errno = myos_path_is_dev_tty(path) ? ENXIO : myos_stat_path(path, &seen) == 0 ? EACCES : ENOENT;
         return -1;
     }
     if (flags & O_NONBLOCK) {
@@ -339,16 +342,17 @@ void *_sbrk(ptrdiff_t incr) {
     return old;
 }
 
-static int myos_fill_stat(struct stat *st, const struct myos_stat2_buf *src)
+static int myos_fill_stat(struct stat *st, const struct myos_stat3_buf *src3)
 {
+    const struct myos_stat2_buf *src = &src3->s;
     memset(st, 0, sizeof(*st));
     st->st_mode = src->st_mode;
     st->st_size = (off_t)src->st_size;
     st->st_ino = src->st_ino;
     st->st_nlink = src->st_nlink;
     st->st_dev = (dev_t)src->st_dev;
-    st->st_uid = 0;
-    st->st_gid = 0;
+    st->st_uid = src3->uid;
+    st->st_gid = src3->gid;
     st->st_blksize = 4096;
     st->st_blocks = (src->st_size + 511) / 512;
     st->st_atime = (time_t)src->atime;
@@ -360,7 +364,7 @@ static int myos_fill_stat(struct stat *st, const struct myos_stat2_buf *src)
 
 static int myos_stat_path(const char *path, struct stat *st)
 {
-    struct myos_stat2_buf buf;
+    struct myos_stat3_buf buf;
 
     if (st == NULL) {
         errno = EINVAL;
@@ -368,7 +372,7 @@ static int myos_stat_path(const char *path, struct stat *st)
     }
     /* Always ask the kernel so st_dev is mount-specific (find loop checks). */
     long ret = myos_syscall3(
-        MYOS_SYS_STAT2,
+        MYOS_SYS_STAT3,
         (long)(uintptr_t)path,
         (long)strlen(path),
         (long)(uintptr_t)&buf);

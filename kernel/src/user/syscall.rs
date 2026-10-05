@@ -134,6 +134,20 @@ const SYS_UMOUNT: usize = 64;
 /// `settimeofday(tv)`: set the wall clock to `tv` (two `i64`s, seconds and
 /// microseconds, as `gettimeofday` writes them). The RTC is not written.
 const SYS_SETTIMEOFDAY: usize = 65;
+/// `stat3(path, len, out)`: [`SYS_STAT2`] and the owner's uid
+/// ([`MyosStat3Buf`]).
+const SYS_STAT3: usize = 66;
+/// `setuser(buf, len)`: `buf` is the user's name, a NUL and the password.
+/// Run the caller as that user in their login domain (docs/security.md).
+const SYS_SETUSER: usize = 67;
+/// `ns(spec, len)`: replace the caller's namespace by the bindings of
+/// `spec`, one per line: `TARGET SOURCE RIGHTS` (`/dev/sda /dev/sda
+/// read,write`), the sources named in the current namespace, the rights
+/// at most the current ones there (`task::ns`).
+const SYS_NS: usize = 68;
+/// `policy_load(path, len)`: read the policy at `path` and make it the
+/// system's (`write` on `kernel.policy`).
+const SYS_POLICY_LOAD: usize = 69;
 /// `utimens` / `futimens` time values: now, or leave the time as it is.
 const UTIME_NOW: i64 = -1;
 const UTIME_OMIT: i64 = -2;
@@ -289,6 +303,10 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_FUTIMENS => sys_futimens(a0, a1),
         SYS_UMOUNT => sys_umount(a0, a1),
         SYS_SETTIMEOFDAY => sys_settimeofday(a0),
+        SYS_STAT3 => sys_stat3(a0, a1, a2),
+        SYS_SETUSER => sys_setuser(a0, a1),
+        SYS_NS => sys_ns(a0, a1),
+        SYS_POLICY_LOAD => sys_policy_load(a0, a1),
         SYS_LINUX_NEXT_EXEC => {
             if crate::personality::request_next_exec() { 0 } else { SYSERR }
         }
@@ -373,6 +391,32 @@ pub(crate) fn resolve_copied_path_nofollow(path: &str) -> Option<alloc::string::
         .map(|s| alloc::string::String::from(s))
 }
 
+use crate::sec::Rights;
+
+/// May the current process do `need` to `real` (a real path)? Its domain's
+/// rights under the policy, narrowed by its namespace (docs/security.md).
+fn may(real: &str, need: Rights) -> bool {
+    crate::sec::allowed(real, need)
+}
+
+/// The rights `open` `flags` ask for on an existing file.
+fn open_rights(flags: u32) -> Rights {
+    let mut need = Rights::NONE;
+    if !fs::open_writable(flags) || flags & 3 == 2 {
+        need = need | Rights::READ;
+    }
+    if fs::open_writable(flags) {
+        need = need | if fs::open_append(flags) { Rights::APPEND } else { Rights::WRITE };
+    }
+    if flags & O_TRUNC != 0 {
+        need = need | Rights::WRITE;
+    }
+    need
+}
+
+const O_CREAT: u32 = 0o100;
+const O_TRUNC: u32 = 0o1000;
+
 fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
     if len == 0 || len > MAX_PATH {
         return None;
@@ -408,6 +452,9 @@ fn sys_insmod(ptr: usize, path_len: usize) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
+    if !may(&path, Rights::READ) || !crate::sec::allowed_object("kernel.modules", None, Rights::WRITE) {
+        return SYSERR;
+    }
     match crate::modules::insmod(&path) {
         Ok(()) => 0,
         Err(e) => {
@@ -424,6 +471,9 @@ fn sys_rmmod(ptr: usize, name_len: usize) -> usize {
     let Ok(name) = core::str::from_utf8(&buf[..name_len]) else {
         return SYSERR;
     };
+    if !crate::sec::allowed_object("kernel.modules", None, Rights::WRITE) {
+        return SYSERR;
+    }
     match crate::modules::rmmod(name) {
         Ok(()) => 0,
         Err(e) => {
@@ -438,6 +488,15 @@ pub(crate) fn open_path(path: &str, flags: usize) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
+    // A new file needs `create` (and what it is opened for) on the label
+    // its path gives it.
+    let mut need = open_rights(flags as u32);
+    if flags as u32 & O_CREAT != 0 && fs::stat(&path).is_none() {
+        need = need | Rights::CREATE;
+    }
+    if !may(&path, need) {
+        return SYSERR;
+    }
     // The pty ends (docs/tty.md): /dev/pts/clone allocates a pair and
     // returns its master, /dev/pts/N/data is the slave. The fd is a pty fd,
     // not a plain file fd (I/O routes via crate::pty). /dev/pts/N/master is
@@ -511,6 +570,9 @@ pub(crate) fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
 }
 
 fn sys_settimeofday(tv_ptr: usize) -> usize {
+    if !crate::sec::allowed_object("kernel.clock", None, Rights::WRITE) {
+        return SYSERR;
+    }
     let mut raw = [0u8; 16];
     if !user_range_ok(tv_ptr, raw.len()) || !read_user_bytes(task::current_aspace(), tv_ptr, &mut raw) {
         return SYSERR;
@@ -518,6 +580,95 @@ fn sys_settimeofday(tv_ptr: usize) -> usize {
     let secs = i64::from_le_bytes(raw[..8].try_into().unwrap());
     let usec = i64::from_le_bytes(raw[8..].try_into().unwrap());
     if crate::time::set_wall(secs, usec) { 0 } else { SYSERR }
+}
+
+fn sys_setuser(ptr: usize, len: usize) -> usize {
+    let mut buf = [0u8; 256];
+    if len == 0 || len > buf.len() || !user_range_ok(ptr, len) || !read_user_bytes(task::current_aspace(), ptr, &mut buf[..len]) {
+        return SYSERR;
+    }
+    let buf = &buf[..len];
+    let (name, password) = match buf.iter().position(|&b| b == 0) {
+        Some(i) => (&buf[..i], &buf[i + 1..]),
+        None => (buf, &[][..]),
+    };
+    let Ok(name) = core::str::from_utf8(name) else {
+        return SYSERR;
+    };
+    if crate::sec::setuser(name, password) { 0 } else { SYSERR }
+}
+
+/// Longest [`SYS_NS`] spec and policy file read.
+const NS_SPEC_MAX: usize = 4096;
+const POLICY_MAX: usize = 64 * 1024;
+
+fn sys_ns(ptr: usize, len: usize) -> usize {
+    let mut spec = alloc::vec![0u8; len.min(NS_SPEC_MAX)];
+    if len == 0 || len > NS_SPEC_MAX || !user_range_ok(ptr, len) || !read_user_bytes(task::current_aspace(), ptr, &mut spec) {
+        return SYSERR;
+    }
+    let Ok(spec) = core::str::from_utf8(&spec) else {
+        return SYSERR;
+    };
+    let mut binds = Vec::new();
+    for line in spec.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let mut w = line.split_whitespace();
+        let (Some(target), Some(source), rights) = (w.next(), w.next(), w.next().unwrap_or("all")) else {
+            return SYSERR;
+        };
+        let Some(rights) = Rights::parse_list(rights) else {
+            return SYSERR;
+        };
+        let mut t = [0u8; MAX_PATH];
+        let Some(tn) = fs::vfs::resolve_against_cwd("/", target, &mut t) else {
+            return SYSERR;
+        };
+        // The source as the caller names it now, with no more rights than
+        // the caller has there.
+        let Some(real) = resolve_copied_path(source) else {
+            return SYSERR;
+        };
+        if real.starts_with('@') || fs::stat(&real).is_none() {
+            return SYSERR;
+        }
+        let target = alloc::string::String::from(core::str::from_utf8(&t[..tn]).unwrap_or("/"));
+        let rights = rights & task::ns_rights(&real);
+        binds.push(task::ns::Binding { target, source: real, rights });
+    }
+    // The cwd stays where it is when the new namespace still names it.
+    let real_cwd = resolve_copied_path(".");
+    let ns = task::ns::Namespace { binds };
+    let cwd = real_cwd.and_then(|c| ns.to_virtual(&c)).unwrap_or_else(|| alloc::string::String::from("/"));
+    task::set_ns(Some(ns));
+    if task::set_cwd(cwd.as_bytes()) { 0 } else { SYSERR }
+}
+
+fn sys_policy_load(ptr: usize, len: usize) -> usize {
+    let Some(buf) = copy_user_path(ptr, len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..len]) else {
+        return SYSERR;
+    };
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    if !may(&path, Rights::READ) {
+        return SYSERR;
+    }
+    let Some(text) = fs::read_all(&path, POLICY_MAX) else {
+        return SYSERR;
+    };
+    let Ok(text) = core::str::from_utf8(&text) else {
+        return SYSERR;
+    };
+    match crate::sec::load(text) {
+        Ok(()) => 0,
+        Err(e) => {
+            crate::console::status_fail(&alloc::format!("policy {path}: {e}"));
+            SYSERR
+        }
+    }
 }
 
 pub(crate) fn sys_setsid() -> usize {
@@ -603,7 +754,7 @@ pub(super) fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
 /// absolute), or run the script there through its `#!` interpreter; returns
 /// only on failure.
 pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> usize {
-    exec_path_depth(path, arg_refs, env_refs, 0)
+    exec_path_depth(path, arg_refs, env_refs, 0, None)
 }
 
 /// Longest `#!` line read (Linux reads 256 bytes).
@@ -613,7 +764,15 @@ const SHEBANG_MAX: usize = 256;
 /// script's path in front of the script's arguments (`argv[0]` dropped), as
 /// other Unix kernels do. The interpreter has to be a program, not another
 /// script.
-fn exec_script(script: &str, line: &[u8], arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8) -> usize {
+/// A script's own `exec` rule wins over its interpreter's (`script_ctx`).
+fn exec_script(
+    script: &str,
+    line: &[u8],
+    arg_refs: &[&[u8]],
+    env_refs: &[&[u8]],
+    depth: u8,
+    script_ctx: Option<crate::sec::Ctx>,
+) -> usize {
     if depth > 0 {
         return SYSERR;
     }
@@ -636,13 +795,25 @@ fn exec_script(script: &str, line: &[u8], arg_refs: &[&[u8]], env_refs: &[&[u8]]
     }
     args.push(script.as_bytes());
     args.extend(arg_refs.iter().skip(1));
-    exec_path_depth(interp, &args, env_refs, depth + 1)
+    exec_path_depth(interp, &args, env_refs, depth + 1, script_ctx)
 }
 
-fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8) -> usize {
+fn exec_path_depth(
+    path: &str,
+    arg_refs: &[&[u8]],
+    env_refs: &[&[u8]],
+    depth: u8,
+    script_ctx: Option<crate::sec::Ctx>,
+) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
+    // `exec` on the program (a script's interpreter too); its `exec` rule
+    // may move the process into another domain (docs/security.md).
+    if !may(&path, Rights::EXEC) {
+        return SYSERR;
+    }
+    let new_ctx = script_ctx.or_else(|| crate::sec::exec_ctx(&path));
     let basename = path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes();
     task::set_exec_name(basename);
     // A dynamically linked Linux program is mapped from its file, like the
@@ -691,7 +862,7 @@ fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8
         // exec does not return here either.
         let line = line[..line.len().min(SHEBANG_MAX)].to_vec();
         drop(owned);
-        return exec_script(&path, &line, arg_refs, env_refs, depth);
+        return exec_script(&path, &line, arg_refs, env_refs, depth, new_ctx);
     }
     // Not a loadable ELF: fail before anything of the current image goes,
     // or the caller is left with no code to return to.
@@ -715,6 +886,9 @@ fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8
     // end first.
     if !task::exec_alone() {
         return SYSERR;
+    }
+    if let Some(ctx) = new_ctx {
+        task::set_sec_ctx(ctx);
     }
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any
     // current_slot()-backed lookup so we expand/replace the running task.
@@ -906,6 +1080,9 @@ fn sys_listdir(path_ptr: usize, path_len: usize, buf: usize) -> usize {
     let Some(path) = resolve_copied_path(&path) else {
         return SYSERR;
     };
+    if !may(&path, Rights::READ) {
+        return SYSERR;
+    }
     let mut kbuf = [0u8; LISTDIR_CAP];
     let n = fs::listdir(&path, &mut kbuf).min(LISTDIR_CAP);
     let aspace = task::current_aspace();
@@ -937,20 +1114,28 @@ struct MyosStat2Buf {
     st_mtime: i64,
 }
 
+/// `stat` of a user path (the last component not followed): the real path
+/// and what the filesystem says, the permission bits replaced by what the
+/// caller may do (`crate::sec::mode_bits`). A file the caller has no right
+/// at all on is not there for it.
+fn stat_user_path(path_ptr: usize, path_len: usize) -> Option<(alloc::string::String, fs::StatInfo)> {
+    let buf = copy_user_path(path_ptr, path_len)?;
+    let path = core::str::from_utf8(&buf[..path_len]).ok()?;
+    let path = resolve_copied_path_nofollow(path)?;
+    if crate::sec::rights_on(&path).is_empty() {
+        return None;
+    }
+    let mut info = fs::stat(&path)?;
+    let is_dir = info.mode & fs::S_IFMT == S_IFDIR;
+    info.mode = (info.mode & !0o777) | crate::sec::mode_bits(&path, is_dir);
+    Some((path, info))
+}
+
 fn sys_stat2(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
     if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStat2Buf>()) {
         return SYSERR;
     }
-    let Some(buf) = copy_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
-        return SYSERR;
-    };
-    let Some(path) = resolve_copied_path_nofollow(path) else {
-        return SYSERR;
-    };
-    let Some(info) = fs::stat(&path) else {
+    let Some((_, info)) = stat_user_path(path_ptr, path_len) else {
         return SYSERR;
     };
     let out = MyosStat2Buf {
@@ -964,6 +1149,45 @@ fn sys_stat2(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
     };
     let bytes = unsafe {
         core::slice::from_raw_parts(&out as *const MyosStat2Buf as *const u8, core::mem::size_of::<MyosStat2Buf>())
+    };
+    if write_user_bytes(task::current_aspace(), out_ptr, bytes) { 0 } else { SYSERR }
+}
+
+/// [`SYS_STAT3`]'s result: [`MyosStat2Buf`] and the owner.
+#[repr(C)]
+struct MyosStat3Buf {
+    st_mode: u32,
+    st_nlink: u32,
+    st_ino: u32,
+    st_dev: u32,
+    st_size: u64,
+    st_atime: i64,
+    st_mtime: i64,
+    /// The user the file's label names (`home(alice)`), else 0.
+    st_uid: u32,
+    st_gid: u32,
+}
+
+fn sys_stat3(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
+    if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStat3Buf>()) {
+        return SYSERR;
+    }
+    let Some((path, info)) = stat_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let out = MyosStat3Buf {
+        st_mode: info.mode,
+        st_nlink: info.nlink,
+        st_ino: info.ino,
+        st_dev: info.dev,
+        st_size: u64::from(info.size),
+        st_atime: info.atime as i64,
+        st_mtime: info.mtime as i64,
+        st_uid: crate::sec::owner_uid(&path),
+        st_gid: 0,
+    };
+    let bytes = unsafe {
+        core::slice::from_raw_parts(&out as *const MyosStat3Buf as *const u8, core::mem::size_of::<MyosStat3Buf>())
     };
     if write_user_bytes(task::current_aspace(), out_ptr, bytes) { 0 } else { SYSERR }
 }
@@ -996,32 +1220,23 @@ fn sys_utimens(path_ptr: usize, path_len: usize, times: usize) -> usize {
     let (Some(path), Some((atime, mtime))) = (resolve_copied_path(path), read_set_times(times)) else {
         return SYSERR;
     };
-    if fs::set_times(&path, atime, mtime) { 0 } else { SYSERR }
+    if may(&path, Rights::SETATTR) && fs::set_times(&path, atime, mtime) { 0 } else { SYSERR }
 }
 
 fn sys_futimens(fd: usize, times: usize) -> usize {
     let (Some(node), Some((atime, mtime))) = (task::fd_file_node(fd), read_set_times(times)) else {
         return SYSERR;
     };
-    if fs::set_times_node(&node, atime, mtime) { 0 } else { SYSERR }
+    if may(&fs::vfs::vnode_path(&node), Rights::SETATTR) && fs::set_times_node(&node, atime, mtime) { 0 } else { SYSERR }
 }
 
 fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
     if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStatBuf>()) {
         return SYSERR;
     }
-    let Some(buf) = copy_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
-        return SYSERR;
-    };
     // Native `stat` and `lstat` share this call: the last component is not
     // followed (a symlink reports itself), as before symlinks were followed.
-    let Some(path) = resolve_copied_path_nofollow(path) else {
-        return SYSERR;
-    };
-    let Some(info) = fs::stat(&path) else {
+    let Some((_, info)) = stat_user_path(path_ptr, path_len) else {
         return SYSERR;
     };
     let out = MyosStatBuf {
@@ -1224,6 +1439,9 @@ pub(crate) fn chdir_path(path: &str) -> usize {
     let Some(real) = resolve_copied_path(path) else {
         return SYSERR;
     };
+    if !may(&real, Rights::READ) {
+        return SYSERR;
+    }
     let Some(info) = fs::stat(&real) else {
         return SYSERR;
     };
@@ -1242,21 +1460,22 @@ pub(crate) fn chdir_path(path: &str) -> usize {
 }
 
 /// mkfifo(path, mode): create a named pipe. Only tmpfs (`/tmp`) supports
-/// FIFOs; the mode is not tracked (everything is root on myos).
+/// FIFOs; the mode is not tracked (the policy decides who may use it).
 fn sys_mkfifo(path_ptr: usize, path_len: usize, _mode: usize) -> usize {
     let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
         return SYSERR;
     };
-    if fs::stat(&path).is_some() || !fs::vfs::mkfifo(&path) {
+    if fs::stat(&path).is_some() || !may(&path, Rights::CREATE) || !fs::vfs::mkfifo(&path) {
         return SYSERR;
     }
     0
 }
 
-/// chroot(2): make `path` (a directory) the caller's `/`. Everything is root
-/// on myos, so there is no privilege check. The cwd keeps pointing at the
-/// same directory when it lies inside the new root, and moves to the new `/`
-/// otherwise (so `..` from the cwd cannot walk out of the jail).
+/// chroot(2): make `path` (a directory) the caller's `/`: a namespace of
+/// one binding (`task::ns`), with the rights the caller has there. Anyone
+/// may: it only narrows what the caller can name. The cwd keeps pointing at
+/// the same directory when it lies inside the new root, and moves to the new
+/// `/` otherwise (so `..` from the cwd cannot walk out of the jail).
 fn sys_chroot(path_ptr: usize, path_len: usize) -> usize {
     let Some(buf) = copy_user_path(path_ptr, path_len) else {
         return SYSERR;
@@ -1270,16 +1489,17 @@ fn sys_chroot(path_ptr: usize, path_len: usize) -> usize {
     let Some(info) = fs::stat(&real) else {
         return SYSERR;
     };
-    if (info.mode & fs::S_IFMT) != S_IFDIR || real.len() > task::ROOT_CAP {
+    if (info.mode & fs::S_IFMT) != S_IFDIR || real.starts_with('@') {
         return SYSERR;
     }
     // Real path of the current cwd, to re-express it under the new root.
     let Some(real_cwd) = resolve_copied_path(".") else {
         return SYSERR;
     };
-    if !task::set_root(real.as_bytes()) {
-        return SYSERR;
-    }
+    let rights = task::ns_rights(&real);
+    task::set_ns(Some(task::ns::Namespace {
+        binds: alloc::vec![task::ns::Binding { target: alloc::string::String::from("/"), source: real.clone(), rights }],
+    }));
     let new_cwd = if real == "/" {
         real_cwd.as_str()
     } else if real_cwd == real {
@@ -1342,21 +1562,21 @@ fn sys_mkdir(path_ptr: usize, path_len: usize, _mode: usize) -> usize {
     let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
         return SYSERR;
     };
-    if fs::mkdir(&path) { 0 } else { SYSERR }
+    if may(&path, Rights::CREATE) && fs::mkdir(&path) { 0 } else { SYSERR }
 }
 
 fn sys_rmdir(path_ptr: usize, path_len: usize) -> usize {
     let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
         return SYSERR;
     };
-    if fs::rmdir(&path) { 0 } else { SYSERR }
+    if may(&path, Rights::REMOVE) && fs::rmdir(&path) { 0 } else { SYSERR }
 }
 
 fn sys_unlink(path_ptr: usize, path_len: usize) -> usize {
     let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
         return SYSERR;
     };
-    if fs::unlink(&path) { 0 } else { SYSERR }
+    if may(&path, Rights::REMOVE) && fs::unlink(&path) { 0 } else { SYSERR }
 }
 
 /// `a0`=old_ptr, `a1`=new_ptr, `a2`=(old_len<<16)|new_len
@@ -1370,6 +1590,12 @@ fn sys_rename(old_ptr: usize, new_ptr: usize, packed_lens: usize) -> usize {
     let Some(new) = copy_resolved_user_path(new_ptr, new_len) else {
         return SYSERR;
     };
+    // A move removes the old name and creates the new one (replacing a file
+    // there removes it too).
+    let replaced = fs::stat(&new).is_some();
+    if !may(&old, Rights::REMOVE) || !may(&new, if replaced { Rights::CREATE | Rights::REMOVE } else { Rights::CREATE }) {
+        return SYSERR;
+    }
     if fs::rename(&old, &new) { 0 } else { SYSERR }
 }
 
@@ -1388,7 +1614,7 @@ fn sys_symlink(target_ptr: usize, link_ptr: usize, packed_lens: usize) -> usize 
     let Some(linkpath) = copy_resolved_user_path(link_ptr, link_len) else {
         return SYSERR;
     };
-    if fs::symlink(target, &linkpath) {
+    if may(&linkpath, Rights::CREATE) && fs::symlink(target, &linkpath) {
         0
     } else {
         SYSERR
@@ -1409,6 +1635,9 @@ fn sys_readlink(path_ptr: usize, buf_ptr: usize, packed: usize) -> usize {
     let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
         return SYSERR;
     };
+    if !may(&path, Rights::READ) {
+        return SYSERR;
+    }
     let mut tmp = [0u8; MAX_PATH];
     let cap = buf_len.min(tmp.len());
     let Some(n) = fs::readlink(&path, &mut tmp[..cap]) else {
@@ -1769,6 +1998,12 @@ fn sys_mount(args_ptr: usize) -> usize {
     let Some(tgt) = resolve_copied_path(tgt) else {
         return SYSERR;
     };
+    // `mount` on the directory mounted over; a bind reads its source, a
+    // disk is read and written.
+    let source_need = if fstype == "bind" { Rights::READ } else { Rights::READ | Rights::WRITE };
+    if !may(&tgt, Rights::MOUNT) || !may(&src, source_need) {
+        return SYSERR;
+    }
     if fstype == "bind" {
         return if fs::vfs::bind(&src, &tgt) { 0 } else { SYSERR };
     }
@@ -1803,7 +2038,7 @@ fn sys_umount(ptr: usize, len: usize) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
-    if fs::vfs::unmount(&path) { 0 } else { SYSERR }
+    if may(&path, Rights::MOUNT) && fs::vfs::unmount(&path) { 0 } else { SYSERR }
 }
 
 /// The auxiliary vector for an image about to start with a foreign

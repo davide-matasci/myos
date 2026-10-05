@@ -1,28 +1,14 @@
 //! The process block: what the threads of a process share, kept on the heap
 //! and reached through the leader's slot. The scheduler's own record of a
 //! thread is the (small, `Copy`) [`Task`]; this is the large, per-process
-//! part — the fd table, the address-space layout, cwd and chroot, mmap
-//! regions, job control and signal dispositions — allocated when a process
-//! starts and freed when its slot is recycled.
+//! part — the fd table, the address-space layout, cwd and namespace, mmap
+//! regions, job control, signal dispositions and the security context —
+//! allocated when a process starts and freed when its slot is recycled.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use super::*;
-
-/// Longest chroot prefix (real absolute path) a process can carry.
-pub const ROOT_CAP: usize = 128;
-
-/// chroot(2) prefix: absolute real path of the process's `/`, or empty
-/// (`len == 0`) for the real root. Inherited on fork, kept across exec;
-/// `cwd` is relative to it (the path the process itself sees).
-#[derive(Clone, Copy)]
-pub(super) struct Root {
-    pub buf: [u8; ROOT_CAP],
-    pub len: u8,
-}
-
-pub(super) const NO_ROOT: Root = Root { buf: [0; ROOT_CAP], len: 0 };
 
 /// Per-process state (see the module doc). Only the leader slot of a
 /// process has one; its threads reach it through `Task::tgid`.
@@ -59,7 +45,12 @@ pub(super) struct Process {
     pub has_ctty: bool,
     /// Ignored signals bitmask (SIGKILL cannot be ignored). See `signal`.
     pub sig_ignored: u32,
-    pub root: Root,
+    /// What the process can name (`None`: the whole tree). Inherited on
+    /// fork, kept across exec; `cwd` is a path in it.
+    pub ns: Option<Box<super::ns::Namespace>>,
+    /// The user and domain it runs as (`crate::sec`). Inherited on fork;
+    /// exec and `setuser` change it.
+    pub ctx: crate::sec::Ctx,
 }
 
 const fn root_cwd_buf() -> [u8; 256] {
@@ -88,12 +79,13 @@ static EMPTY_PROC: Process = Process {
     pgid: 0,
     has_ctty: false,
     sig_ignored: 0,
-    root: NO_ROOT,
+    ns: None,
+    ctx: crate::sec::Ctx::BOOT,
 };
 
 /// A new, empty process block (heap; never staged on the kernel stack: a
 /// `Process` is several KiB). The bitwise copy of [`EMPTY_PROC`] is sound:
-/// its only owning field, the empty `mmap`, allocates nothing.
+/// its owning fields, the empty `mmap` and `ns`, allocate nothing.
 pub(super) fn new_process() -> Box<Process> {
     let mut b = Box::<Process>::new_uninit();
     unsafe {
@@ -109,8 +101,10 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
     let mut b = unsafe {
         let p = b.as_mut_ptr();
         core::ptr::copy_nonoverlapping(src, p, 1);
-        // The bitwise copy shares `src`'s region list: give the child its own.
+        // The bitwise copy shares `src`'s region list and namespace: give
+        // the child its own.
         core::ptr::write(&raw mut (*p).mmap, src.mmap.clone());
+        core::ptr::write(&raw mut (*p).ns, src.ns.clone());
         b.assume_init()
     };
     for fd in b.fds.iter_mut() {
@@ -150,6 +144,11 @@ impl TaskTable {
             Some(p) => p,
             None => self.no_proc(pid),
         }
+    }
+
+    /// The process block of slot `pid`, if it leads a process.
+    pub fn proc_opt_mut(&mut self, pid: usize) -> Option<&mut Process> {
+        self.procs.get_mut(pid).and_then(|p| p.as_deref_mut())
     }
 
     pub fn proc_mut(&mut self, pid: usize) -> &mut Process {
