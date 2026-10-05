@@ -1,5 +1,5 @@
 /*
- * get-myos [-r ROOT] [-m MIRROR] [-u] PACKAGE...
+ * get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
  *
  * Install myos packages: the programs CI builds but the image does not
  * carry (packages/<name>, docs/packages.md). A package is a gzip tar of the
@@ -7,23 +7,32 @@
  * unpacked under ROOT (default /tmp/pkg, on the tmpfs) and bind-mounted
  * where the image would have them (a directory the image lacks, or a file
  * into one it has), so programs find their files at the usual paths and
- * PATH needs no change.
+ * PATH needs no change. A package's runtime dependencies (the `deps` field
+ * of its index line, from the port's PORT_RDEPS) are installed first.
  *
- * The mirror holds one index per architecture (<arch>-index.txt: name,
- * version, size, SHA-256 and file of every package) and the tarballs
- * (<arch>-<name>.tar.gz). The index is downloaded once into
- * ROOT/var/lib/get-myos/index; -u refreshes it. A package streams from
- * curl through gunzip and the tar reader into ROOT (nothing is stored: a
- * tmpfs file holds 16 MiB at most, less than some packages); its SHA-256
- * is checked over the stream, and only a package whose checksum matches
- * is bound and recorded. MYOS_MIRROR or -m overrides the default,
- * the project's rolling GitHub release; the full boot test uses the
- * host-served mirror of the build's own packages (http://10.0.2.2:8765).
+ * The mirror holds one index per architecture (<arch>-index.txt: a header
+ * naming the build's release and syscall ABI, then name, version, size,
+ * SHA-256, file and dependencies of every package), the list of what the
+ * image lacks (<arch>-packages.txt) and the tarballs (<arch>-<name>.tar.gz).
+ * The index is downloaded once into ROOT/var/lib/get-myos/index; -u
+ * refreshes it and upgrades the installed packages whose version changed.
+ * -l lists the mirror's packages. An index whose ABI is above the running
+ * system's (/lib/myos-release, written by the image build) is refused: its
+ * programs could call syscalls this kernel lacks.
+ *
+ * A package streams from curl through gunzip and the tar reader into ROOT
+ * (nothing is stored: a tmpfs file holds 16 MiB at most, less than some
+ * packages); its SHA-256 is checked over the stream, and only a package
+ * whose checksum matches is bound and recorded (ROOT/var/lib/get-myos/pkgs/
+ * <name> holds its version). MYOS_MIRROR or -m overrides the default, the
+ * project's rolling GitHub release; the full boot test uses the host-served
+ * mirror of the build's own packages (http://10.0.2.2:8765).
  *
  * The download, tar and gzip code is shared with get-alpine (pkgtools.c).
  * Uses fputs, not printf: newlib's printf needs extra soft-float helpers on
  * aarch64 and riscv64.
  */
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -45,6 +54,11 @@
 #endif
 
 #define DEFAULT_MIRROR "https://github.com/davide-matasci/myos/releases/download/rolling"
+
+/* The running system's release (src/release.rs), written by the image build. */
+#ifndef MYOS_RELEASE_FILE
+#define MYOS_RELEASE_FILE "/lib/myos-release"
+#endif
 
 /* libgloss/myos mount(2): SYS_MOUNT; "bind" makes SOURCE visible at TARGET. */
 int mount(const char *source, const char *target, const char *fstype, ...);
@@ -70,23 +84,100 @@ static void mirror_url(char *url, size_t cap, const char *file) {
     }
 }
 
-static int update_index(void) {
-    char url[512], index[PATH_MAX_GV];
-    if (db_path(index, "index") != 0) {
+/* Fetch FILE of the mirror into ROOT/var/lib/get-myos/<db>. */
+static int fetch_db(const char *file, const char *db) {
+    char url[512], path[PATH_MAX_GV];
+    if (db_path(path, db) != 0) {
         return die("root path too long", NULL);
     }
-    mkdirs(index, 0);
-    mirror_url(url, sizeof url, MYOS_ARCH "-index.txt");
+    mkdirs(path, 0);
+    mirror_url(url, sizeof url, file);
     say("fetching ", url, NULL);
-    if (download(url, index) != 0) {
-        return die("cannot download the index: ", url);
+    return download(url, path);
+}
+
+static int update_index(void) {
+    if (fetch_db(MYOS_ARCH "-index.txt", "index") != 0) {
+        return die("cannot download the index", NULL);
+    }
+    /* What there is to install (-l); an older mirror has no such list. */
+    if (fetch_db(MYOS_ARCH "-packages.txt", "packages") != 0) {
+        char path[PATH_MAX_GV];
+        if (db_path(path, "packages") == 0) {
+            unlink(path);
+        }
     }
     return 0;
 }
 
-/* The index line of `want` ("name version size sha256 file") into line. */
-static int find_package(const char *want, char *line, size_t cap) {
-    char index[PATH_MAX_GV];
+/* The value of `key=` in a "key=value key=value" line, "" when absent. */
+static void field_of(const char *line, const char *key, char *out, size_t cap) {
+    out[0] = '\0';
+    size_t kl = strlen(key);
+    for (const char *p = line; *p != '\0'; p++) {
+        if ((p == line || p[-1] == ' ') && strncmp(p, key, kl) == 0 && p[kl] == '=') {
+            copy_field(out, cap, p + kl + 1, strcspn(p + kl + 1, " \n"));
+            return;
+        }
+    }
+}
+
+/* The index header, "# myos release=... commit=... abi=...": release and
+ * abi, "" each when the index has no header (an older build's). */
+static void index_release(char *release, size_t rcap, char *abi, size_t acap) {
+    char index[PATH_MAX_GV], line[256];
+    release[0] = abi[0] = '\0';
+    FILE *f = db_path(index, "index") == 0 ? fopen(index, "r") : NULL;
+    if (f == NULL) {
+        return;
+    }
+    if (fgets(line, sizeof line, f) != NULL && strncmp(line, "# myos ", 7) == 0) {
+        field_of(line + 7, "release", release, rcap);
+        field_of(line + 7, "abi", abi, acap);
+    }
+    fclose(f);
+}
+
+/* The running system's release file, written by the image build:
+ * "release=... commit=... abi=..."; abi is "" when the image has none. */
+static void system_release(char *release, size_t rcap, char *abi, size_t acap) {
+    char line[256];
+    release[0] = abi[0] = '\0';
+    FILE *f = fopen(MYOS_RELEASE_FILE, "r");
+    if (f == NULL) {
+        return;
+    }
+    if (fgets(line, sizeof line, f) != NULL) {
+        field_of(line, "release", release, rcap);
+        field_of(line, "abi", abi, acap);
+    }
+    fclose(f);
+}
+
+/* The index's packages were built against a syscall ABI this kernel has:
+ * the numbers only grow, so a greater one means calls the kernel lacks. */
+static int check_abi(void) {
+    char rel[32], abi[16], srel[32], sabi[16];
+    index_release(rel, sizeof rel, abi, sizeof abi);
+    system_release(srel, sizeof srel, sabi, sizeof sabi);
+    if (abi[0] == '\0' || sabi[0] == '\0') {
+        return 0; /* an older index or image: nothing to compare */
+    }
+    if (atoi(abi) > atoi(sabi)) {
+        say("the mirror's packages need a newer myos: syscall ABI ", abi, NULL);
+        return die("this system has ABI ", sabi);
+    }
+    return 0;
+}
+
+/* One index line: "name version size sha256 file [deps]"; deps are comma
+ * separated, "-" (or absent, in an older index) for none. */
+typedef struct {
+    char name[128], version[64], size[24], csum[72], file[160], deps[256];
+} package;
+
+static int find_package(const char *want, package *pkg) {
+    char index[PATH_MAX_GV], line[1024];
     if (db_path(index, "index") != 0) {
         return -1;
     }
@@ -95,13 +186,25 @@ static int find_package(const char *want, char *line, size_t cap) {
         return -1;
     }
     int found = -1;
-    while (fgets(line, (int)cap, f) != NULL) {
+    while (fgets(line, sizeof line, f) != NULL) {
         size_t n = strcspn(line, " \n");
-        if (n == strlen(want) && memcmp(line, want, n) == 0) {
-            line[strcspn(line, "\n")] = '\0';
-            found = 0;
-            break;
+        if (n != strlen(want) || memcmp(line, want, n) != 0) {
+            continue;
         }
+        char *fields[6] = {pkg->name, pkg->version, pkg->size, pkg->csum, pkg->file, pkg->deps};
+        size_t caps[6] = {sizeof pkg->name, sizeof pkg->version, sizeof pkg->size,
+                          sizeof pkg->csum, sizeof pkg->file, sizeof pkg->deps};
+        const char *p = line;
+        for (int i = 0; i < 6; i++) {
+            n = strcspn(p, " \n");
+            copy_field(fields[i], caps[i], p, n);
+            p += n + (p[n] == ' ');
+        }
+        if (pkg->deps[0] == '\0') {
+            strcpy(pkg->deps, "-");
+        }
+        found = 0;
+        break;
     }
     fclose(f);
     return found;
@@ -277,14 +380,28 @@ static int bind_all(void) {
     return 0;
 }
 
-static int installed(const char *name) {
+/* The recorded version of an installed package into version[cap]; -1 when
+ * the package is not installed. */
+static int installed(const char *name, char *version, size_t cap) {
     char rel[PATH_MAX_GV], path[PATH_MAX_GV];
     if (strlen(name) + 8 > sizeof rel) {
-        return 0;
+        return -1;
     }
     strcpy(rel, "pkgs/");
     strcat(rel, name);
-    return db_path(path, rel) == 0 && access(path, F_OK) == 0;
+    if (db_path(path, rel) != 0) {
+        return -1;
+    }
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return -1;
+    }
+    version[0] = '\0';
+    if (fgets(version, (int)cap, f) != NULL) {
+        version[strcspn(version, "\n")] = '\0';
+    }
+    fclose(f);
+    return 0;
 }
 
 static void mark_installed(const char *name, const char *version) {
@@ -303,27 +420,48 @@ static void mark_installed(const char *name, const char *version) {
     }
 }
 
-static int install(const char *want) {
-    static char line[1024];
-    if (find_package(want, line, sizeof line) != 0) {
+/* A chain of dependencies longer than this is a loop (the packer refuses
+ * one, so an index never has it). */
+#define MAX_DEPTH 16
+
+/* Bring `want` to the index's version: its dependencies first (depth
+ * first, each once), then itself when it is not installed or installed at
+ * another version (an upgrade: the new files replace the old under ROOT,
+ * the binds are by path and keep pointing at them, and are redone anyway).
+ * `asked` marks a package named on the command line, which says so when
+ * there is nothing to do; a dependency already there is silent. */
+static int install(const char *want, int depth, int asked) {
+    package pkg;
+    char have[64];
+    if (depth > MAX_DEPTH) {
+        return die("dependency chain too long at ", want);
+    }
+    if (find_package(want, &pkg) != 0) {
         return die("not in the index: ", want);
     }
-    char name[128], version[64], size[24], csum[72], file[160];
-    char *fields[5] = {name, version, size, csum, file};
-    size_t caps[5] = {sizeof name, sizeof version, sizeof size, sizeof csum, sizeof file};
-    const char *p = line;
-    for (int i = 0; i < 5; i++) {
-        size_t n = strcspn(p, " ");
-        copy_field(fields[i], caps[i], p, n);
-        p += n + (p[n] != '\0');
-    }
-    if (installed(name)) {
-        say(name, " already installed", NULL);
+    int present = installed(pkg.name, have, sizeof have) == 0;
+    if (present && strcmp(have, pkg.version) == 0) {
+        if (asked) {
+            say(pkg.name, " already installed", NULL);
+        }
         return 0;
     }
+    if (strcmp(pkg.deps, "-") != 0) {
+        /* Not strtok: the recursion would share its state. */
+        for (char *d = pkg.deps; d != NULL && *d != '\0';) {
+            char *comma = strchr(d, ',');
+            if (comma != NULL) {
+                *comma = '\0';
+            }
+            if (install(d, depth + 1, 0) != 0) {
+                return 1;
+            }
+            d = comma != NULL ? comma + 1 : NULL;
+        }
+    }
     char url[512], hex[65];
-    mirror_url(url, sizeof url, file);
-    say(name, " ", version);
+    mirror_url(url, sizeof url, pkg.file);
+    say(pkg.name, " ", present ? "upgrade" : pkg.version);
     /* A transient failure should not fail the whole install; a retry
      * rewrites the files of the attempt before it. */
     int attempt = 1;
@@ -334,19 +472,87 @@ static int install(const char *want) {
         say("retrying ", url, NULL);
         sleep(2);
     }
-    if (strcmp(hex, csum) != 0) {
+    if (strcmp(hex, pkg.csum) != 0) {
         /* The files are under ROOT but not bound nor recorded. */
-        return die("checksum mismatch: ", file);
+        return die("checksum mismatch: ", pkg.file);
     }
     if (bind_all() != 0) {
         return 1;
     }
-    mark_installed(name, version);
+    mark_installed(pkg.name, pkg.version);
+    return 0;
+}
+
+/* -u: every recorded package to the (refreshed) index's version. */
+static int upgrade_all(void) {
+    char dir[PATH_MAX_GV];
+    if (db_path(dir, "pkgs") != 0) {
+        return 1;
+    }
+    DIR *d = opendir(dir);
+    if (d == NULL) {
+        return 0; /* nothing installed */
+    }
+    int rc = 0;
+    struct dirent *e;
+    while (rc == 0 && (e = readdir(d)) != NULL) {
+        if (e->d_name[0] != '.') {
+            rc = install(e->d_name, 0, 0);
+        }
+    }
+    closedir(d);
+    return rc;
+}
+
+/* -l: the mirror's packages (packages.txt, else every index entry), one
+ * line each: name, version, dependencies, "installed", "upgrade" (installed
+ * at another version) or "-"; the releases first. */
+static int list_packages(void) {
+    char rel[32], abi[16], srel[32], sabi[16], path[PATH_MAX_GV], line[1024];
+    index_release(rel, sizeof rel, abi, sizeof abi);
+    system_release(srel, sizeof srel, sabi, sizeof sabi);
+    fputs("mirror: release ", stdout);
+    fputs(rel[0] != '\0' ? rel : "unknown", stdout);
+    fputs(" abi ", stdout);
+    fputs(abi[0] != '\0' ? abi : "unknown", stdout);
+    fputs("\nsystem: release ", stdout);
+    fputs(srel[0] != '\0' ? srel : "unknown", stdout);
+    fputs(" abi ", stdout);
+    fputs(sabi[0] != '\0' ? sabi : "unknown", stdout);
+    fputs("\n", stdout);
+    FILE *f = db_path(path, "packages") == 0 ? fopen(path, "r") : NULL;
+    if (f == NULL) {
+        f = db_path(path, "index") == 0 ? fopen(path, "r") : NULL;
+    }
+    if (f == NULL) {
+        return die("no index", NULL);
+    }
+    while (fgets(line, sizeof line, f) != NULL) {
+        package pkg;
+        char have[64];
+        line[strcspn(line, " \n")] = '\0';
+        if (line[0] == '\0' || line[0] == '#' || find_package(line, &pkg) != 0) {
+            continue;
+        }
+        const char *state = "-";
+        if (installed(pkg.name, have, sizeof have) == 0) {
+            state = strcmp(have, pkg.version) == 0 ? "installed" : "upgrade";
+        }
+        fputs(pkg.name, stdout);
+        fputs(" ", stdout);
+        fputs(pkg.version, stdout);
+        fputs(" ", stdout);
+        fputs(pkg.deps, stdout);
+        fputs(" ", stdout);
+        fputs(state, stdout);
+        fputs("\n", stdout);
+    }
+    fclose(f);
     return 0;
 }
 
 int main(int argc, char **argv) {
-    int update = 0, i = 1;
+    int update = 0, list = 0, i = 1;
     const char *m = getenv("MYOS_MIRROR");
     pkg_prog = "get-myos";
     pkg_root = "/tmp/pkg";
@@ -358,16 +564,19 @@ int main(int argc, char **argv) {
             copy_field(mirror, sizeof mirror, argv[++i], sizeof mirror);
         } else if (strcmp(argv[i], "-u") == 0) {
             update = 1;
+        } else if (strcmp(argv[i], "-l") == 0) {
+            list = 1;
         } else {
             break;
         }
     }
-    if (i >= argc && !update) {
-        fputs("usage: get-myos [-r ROOT] [-m MIRROR] [-u] PACKAGE...\n"
-              "  Install myos (" MYOS_ARCH ") packages into ROOT (default /tmp/pkg) and\n"
-              "  bind their files where the image has them (/bin/custom/NAME, /lib/NAME)\n"
+    if (i >= argc && !update && !list) {
+        fputs("usage: get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...\n"
+              "  Install myos (" MYOS_ARCH ") packages and what they need into ROOT (default\n"
+              "  /tmp/pkg) and bind their files where the image has them (/bin/custom/NAME, /lib/NAME)\n"
               "  -m  the mirror (default $MYOS_MIRROR, else " DEFAULT_MIRROR ")\n"
-              "  -u  refresh the index\n",
+              "  -u  refresh the index and upgrade the installed packages it changed\n"
+              "  -l  list the mirror's packages: version, dependencies, installed or not\n",
               stderr);
         return 2;
     }
@@ -386,8 +595,17 @@ int main(int argc, char **argv) {
     if ((update || access(index, F_OK) != 0) && update_index() != 0) {
         return 1;
     }
+    if (list) {
+        return list_packages();
+    }
+    if (check_abi() != 0) {
+        return 1;
+    }
+    if (update && upgrade_all() != 0) {
+        return 1;
+    }
     for (; i < argc; i++) {
-        if (install(argv[i]) != 0) {
+        if (install(argv[i], 0, 1) != 0) {
             return 1;
         }
     }

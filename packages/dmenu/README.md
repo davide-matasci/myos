@@ -7,7 +7,7 @@ you pick. dwm's Alt+P runs its `dmenu_run`, which lists the programs of
 `PATH` and runs the one you pick.
 
 ```sh
-get-myos x11-libs tinyx x11-xft x11-fonts dwm dmenu
+get-myos tinyx dwm dmenu    # the Xft stack and the fonts come with them
 startx                  # then Alt+P in dwm
 ```
 

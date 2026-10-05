@@ -9,6 +9,9 @@ mod initramfs {
 mod ports {
     include!("src/ports.rs");
 }
+mod release {
+    include!("src/release.rs");
+}
 
 use limine_image::{
     BOOT_MODULES, bios_install, boot_module_files, fetch_limine, write_esp_image,
@@ -55,6 +58,10 @@ fn main() {
     println!("cargo:rerun-if-changed=src/limine_dir.rs");
     println!("cargo:rerun-if-changed=src/initramfs.rs");
     println!("cargo:rerun-if-changed=src/ports.rs");
+    println!("cargo:rerun-if-changed=src/release.rs");
+    // lib/myos-release names the commit: a new commit or checkout re-packs.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/logs/HEAD");
     // A new or moved port directory (ports/ <-> packages/) changes the image.
     println!("cargo:rerun-if-changed=ports");
     println!("cargo:rerun-if-changed=packages");

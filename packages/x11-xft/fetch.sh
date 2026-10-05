@@ -11,18 +11,29 @@ SRC="$ROOT/target/x11-xft-src"
 CACHE="$ROOT/target/crate-fetch-x11-xft"
 mkdir -p "$SRC" "$CACHE"
 
-# fetch NAME VERSION URL SHA256
+# fetch NAME VERSION SHA256 URL...: the tarball from the first URL that
+# answers (a mirror of the same bytes after the upstream one), checked
+# against the pin, unpacked into SRC.
 fetch() {
-  local name="$1" version="$2" url="$3" sha="$4"
-  local tarball="$CACHE/$name-$version.tar.gz"
+  local name="$1" version="$2" sha="$3"
+  shift 3
+  local tarball="$CACHE/$name-$version.tar.${1##*.tar.}"
   if [[ -f "$SRC/$name-$version/configure" ]]; then
     return
   fi
   if [[ ! -f "$tarball" ]]; then
     echo "==> fetch $name $version"
-    # freedesktop.org sometimes refuses a burst of CI fetches (HTTP 418),
-    # which --retry alone does not retry.
-    curl -L --fail --retry 5 --retry-delay 5 --retry-all-errors -o "$tarball.partial" "$url"
+    local url
+    for url in "$@"; do
+      # freedesktop.org refuses a burst of CI fetches (HTTP 418) for a while,
+      # which --retry alone does not retry; the next URL is a mirror.
+      if curl -L --fail --retry 3 --retry-delay 10 --retry-all-errors -o "$tarball.partial" "$url"; then
+        break
+      fi
+      echo "fetch $url failed; trying the next mirror" >&2
+      rm -f "$tarball.partial"
+    done
+    [[ -f "$tarball.partial" ]] || { echo "error: cannot fetch $name $version" >&2; exit 1; }
     mv "$tarball.partial" "$tarball"
   fi
   local got
@@ -33,12 +44,18 @@ fetch() {
     exit 1
   fi
   rm -rf "$SRC/$name-$version"
-  tar -xzf "$tarball" -C "$SRC"
+  if [[ "$tarball" == *.xz ]] && ! command -v xz >/dev/null 2>&1; then
+    # The CI image has python3 but no xz.
+    python3 -c 'import lzma, sys; sys.stdout.buffer.write(lzma.decompress(sys.stdin.buffer.read()))' \
+      < "$tarball" | tar -xf - -C "$SRC"
+  else
+    tar -xf "$tarball" -C "$SRC"
+  fi
 }
 
-fetch expat "$EXPAT_VERSION" "$EXPAT_URL" "$EXPAT_SHA256"
-fetch freetype "$FREETYPE_VERSION" "$FREETYPE_URL" "$FREETYPE_SHA256"
-fetch fontconfig "$FONTCONFIG_VERSION" "$FONTCONFIG_URL" "$FONTCONFIG_SHA256"
-fetch libXrender "$LIBXRENDER_VERSION" "$LIBXRENDER_URL" "$LIBXRENDER_SHA256"
-fetch libXft "$LIBXFT_VERSION" "$LIBXFT_URL" "$LIBXFT_SHA256"
+fetch expat "$EXPAT_VERSION" "$EXPAT_SHA256" "$EXPAT_URL"
+fetch freetype "$FREETYPE_VERSION" "$FREETYPE_SHA256" "$FREETYPE_URL"
+fetch fontconfig "$FONTCONFIG_VERSION" "$FONTCONFIG_SHA256" "$FONTCONFIG_URL" "$FONTCONFIG_MIRROR_URL"
+fetch libXrender "$LIBXRENDER_VERSION" "$LIBXRENDER_SHA256" "$LIBXRENDER_URL"
+fetch libXft "$LIBXFT_VERSION" "$LIBXFT_SHA256" "$LIBXFT_URL"
 echo "font stack sources -> $SRC"

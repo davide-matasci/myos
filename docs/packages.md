@@ -10,17 +10,40 @@ packages is decided by their directory: `packages/<name>` instead of
 ## On the guest
 
 ```sh
-get-myos [-r ROOT] [-m MIRROR] [-u] PACKAGE...
+get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
 ```
 
-- Downloads `<arch>-index.txt` from the mirror once (into
-  `ROOT/var/lib/get-myos/index`; `-u` refreshes it), then streams each
-  package's `<arch>-<name>.tar.gz` from `curl` through gunzip and tar
+- Downloads `<arch>-index.txt` (and `<arch>-packages.txt`) from the mirror
+  once (into `ROOT/var/lib/get-myos/`; `-u` refreshes them), then streams
+  each package's `<arch>-<name>.tar.gz` from `curl` through gunzip and tar
   straight into `ROOT` (default `/tmp/pkg`, on the tmpfs), checking the
   SHA-256 of the stream against the index at the end (a mismatch leaves the
   files unbound and the package not recorded). The tarball is never stored:
   a tmpfs file holds at most 16 MiB and the riscv64 `os-test` package is
   bigger than that.
+- **Dependencies**: a package's index line names the packages it needs on
+  the running system (`PORT_RDEPS` in its descriptor, `docs/ports.md`:
+  `st` needs `x11-xft` and `x11-fonts`, `x11-xft` needs `x11-libs`), and
+  `get-myos` installs them first, depth first, each once; `get-myos st`
+  is the whole install. A package already installed at the index's
+  version is skipped.
+- **Versions**: the index records each package's version (its build's
+  input hash) and, in a header line, the build's **release**
+  (`release=YYYYMMDDHHMM`, the commit date in UTC, so a later build has
+  the greater number), commit and syscall **ABI** (`src/release.rs`). The
+  image carries the same for the running system in `/lib/myos-release`.
+  `get-myos -u` refreshes the index and brings every installed package
+  whose version changed to the new one (the files are rewritten under
+  `ROOT` and bound again; the binds are by path). `get-myos -l` lists the
+  mirror's packages: version, dependencies, `installed`, `upgrade`
+  (installed at another version) or `-`, after the mirror's and the
+  system's release and ABI.
+- **Compatibility**: the syscall numbers only grow (`AGENTS.md`), so a
+  package built against ABI *N* runs on any kernel with ABI ≥ *N*;
+  `get-myos` refuses an index whose ABI is above the system's (its
+  programs could call syscalls this kernel lacks) and says which release
+  the system has. An index or an image from before the header has no ABI
+  to compare, and installs as before.
 - Then **bind-mounts** the unpacked files where the image has them: the
   first directory of a file's path that the running system lacks
   (`/tmp/pkg/lib/vim` at `/lib/vim`, `lib/os-test`), or the file itself
@@ -52,11 +75,16 @@ while a port is in the image).
 | File | Content |
 |------|---------|
 | `<arch>-<name>.tar.gz` | ustar, gzip `-n`: the port's files at their image paths (`bin/custom/vim`, `lib/vim/vimrc`), mode 0755/0644, mtime 0, a program's aliases as files of their own; reproducible for the same inputs |
-| `<arch>-index.txt` | one line per package: `name version size sha256 file`; the version is the port's input hash (its stamp), a user program's the tarball's own hash |
+| `<arch>-index.txt` | a header, `# myos release=<YYYYMMDDHHMM> commit=<short hash> abi=<syscall count>` (`src/release.rs`), then one line per package: `name version size sha256 file deps`; the version is the port's input hash (its stamp), a user program's the tarball's own hash; `deps` the runtime dependencies (`PORT_RDEPS`), comma separated, `-` for none. `cargo run -- packages` refuses a dependency that is not a package with files, or a loop |
 | `<arch>-packages.txt` | the names of the ports the image does not carry (`packages/`): what there is to install; the index also has the image's ports, whose tarballs test the mechanism |
 
 A mirror is any HTTP server with these files in one directory. The flat
 names are what GitHub release assets allow.
+
+The image has the same header's fields in `/lib/myos-release`
+(`release=... commit=... abi=...`, written by the initramfs packer from the
+checkout and `kernel/src/user/syscall.rs`): what `get-myos` compares the
+index with.
 
 ## In CI
 
@@ -66,9 +94,12 @@ names are what GitHub release assets allow.
   guest reaches it as `http://10.0.2.2:8765` on QEMU's user network;
   `index.txt` and `packages.txt` there are the arch's) and installs
   **every package of the build** as its first test (`install_packages` in
-  `user/tests/run.sh`), so the tests that use one (git in `heap`, os-test
-  with `make`, the packages' own `test.sh`) find it at its image path. The
-  boot job needs `gzip` and `sha256sum`.
+  `user/tests/run.sh`: first one package with dependencies alone, checking
+  they came with it, then all of them), so the tests that use one (git in
+  `heap`, os-test with `make`, the packages' own `test.sh`) find it at its
+  image path; get-myos's own test (`user/get-myos/test.sh`) then checks
+  the listing and an upgrade (a package recorded at a stale version is
+  fetched again by `-u`). The boot job needs `gzip` and `sha256sum`.
 - The build job writes the packages of the three arches (`cargo run --
   packages`) and uploads them as the `myos-packages` artifact (7 days).
 

@@ -6,7 +6,7 @@ built for myos. Core protocol, no mouse, no XKB, no GL; the screen is
 `/dev/fb` (`docs/fb.md`), the keyboard `/dev/console/kbd` (`docs/tty.md`).
 
 ```sh
-get-myos x11-libs tinyx
+get-myos tinyx
 startx some-x-client        # dwm when no client is named
 ```
 

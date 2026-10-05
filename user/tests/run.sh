@@ -67,6 +67,24 @@ contains() {
 install_packages() {
 	names=$(curl -fsS $MIRROR/packages.txt | tr "\n" " ") || return 1
 	echo "packages: $names"
+	# The first package with dependencies alone first, on the fresh system:
+	# get-myos must install them with it (the deps field of the index).
+	first=
+	get-myos -m $MIRROR -l > /tmp/get-myos-list || return 1
+	while read -r name version deps state; do
+		case "$name:$deps" in
+		mirror:* | system:* | *:- | *:) ;;
+		*) first=$name; break ;;
+		esac
+	done < /tmp/get-myos-list
+	if [ -n "$first" ]; then
+		deps=$(echo "$deps" | tr "," " ")
+		echo "$first needs: $deps"
+		get-myos -m $MIRROR $first || return 1
+		for d in $deps; do
+			[ -s /tmp/pkg/var/lib/get-myos/pkgs/$d ] || { echo "missing dependency $d"; return 1; }
+		done
+	fi
 	get-myos -m $MIRROR $names
 }
 if [ "$MODE" = full ]; then

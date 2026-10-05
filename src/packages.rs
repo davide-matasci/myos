@@ -3,10 +3,16 @@
 //! architecture, under `target/packages/`:
 //!
 //! ```text
-//! <arch>-index.txt          name version size sha256 file, one line per package
+//! <arch>-index.txt          `# myos release=... commit=... abi=...`, then one line
+//!                           per package: name version size sha256 file deps
 //! <arch>-packages.txt       the names of the ports the image does not carry (packages/)
 //! <arch>-<name>.tar.gz      the package
 //! ```
+//!
+//! `deps` are the package's runtime dependencies (`PORT_RDEPS`), comma
+//! separated, `-` for none; the header is the build's release
+//! (`src/release.rs`), which `get-myos` compares with the system's
+//! `/lib/myos-release`.
 //!
 //! `get-myos` (user/get-myos) installs them on a running system from a
 //! mirror with this layout: the project's rolling GitHub release, or the
@@ -23,6 +29,7 @@ use std::process::Command;
 
 use crate::initramfs::{Entry, install_port};
 use crate::ports;
+use crate::release::Release;
 
 /// The mirror's host port. The guest reaches the host's loopback as
 /// 10.0.2.2 on QEMU's user network, so no forward is needed (a `guestfwd`
@@ -36,12 +43,14 @@ pub const MIRROR_PORT: u16 = 8765;
 pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
     let out = manifest_dir.join("target/packages");
     std::fs::create_dir_all(&out).expect("create target/packages");
-    let mut index = String::new();
+    let all = ports::load_all(manifest_dir);
+    check_rdeps(&all);
+    let mut index = format!("# myos {}", Release::current(manifest_dir).text());
     // The ports the image lacks: what `get-myos` is for, and what the full
     // boot test installs (an image port installed over itself would bind
     // its files over the image's).
     let mut packages = String::new();
-    for port in ports::load_all(manifest_dir) {
+    for port in &all {
         if port.files.is_empty() {
             continue;
         }
@@ -49,9 +58,9 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
             packages.push_str(&port.name);
             packages.push('\n');
         }
-        ensure_built(manifest_dir, &port, arch);
+        ensure_built(manifest_dir, port, arch);
         let mut entries: Vec<Entry> = Vec::new();
-        install_port(&mut entries, &port, manifest_dir, arch);
+        install_port(&mut entries, port, manifest_dir, arch);
         if entries.is_empty() {
             continue;
         }
@@ -76,11 +85,40 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
         let version = std::fs::read_to_string(manifest_dir.join("target").join(&port.stamp))
             .map(|s| s.trim().chars().take(12).collect::<String>())
             .unwrap_or_else(|_| sha.chars().take(12).collect());
-        index.push_str(&format!("{} {version} {size} {sha} {file}\n", port.name));
+        let deps = if port.rdeps.is_empty() { "-".to_string() } else { port.rdeps.join(",") };
+        index.push_str(&format!("{} {version} {size} {sha} {file} {deps}\n", port.name));
     }
     std::fs::write(out.join(format!("{arch}-index.txt")), index).expect("write package index");
     std::fs::write(out.join(format!("{arch}-packages.txt")), packages).expect("write package list");
     out
+}
+
+/// Every runtime dependency (`PORT_RDEPS`) names a package with files, and
+/// no chain of them loops: `get-myos` installs them depth first.
+fn check_rdeps(all: &[ports::Port]) {
+    let find = |name: &str| all.iter().find(|p| p.name == name);
+    for port in all {
+        for dep in &port.rdeps {
+            let Some(d) = find(dep) else {
+                panic!("port {}: PORT_RDEPS names an unknown port {dep:?}", port.name);
+            };
+            assert!(
+                d.role == ports::Role::Package && !d.files.is_empty(),
+                "port {}: PORT_RDEPS entry {dep:?} is not a package with files (an image port is always there)",
+                port.name
+            );
+        }
+        let mut chain = vec![port.name.as_str()];
+        let mut stack: Vec<(&str, usize)> = port.rdeps.iter().map(|d| (d.as_str(), 1)).collect();
+        while let Some((name, depth)) = stack.pop() {
+            chain.truncate(depth);
+            assert!(!chain.contains(&name), "PORT_RDEPS loop: {} -> {name}", chain.join(" -> "));
+            chain.push(name);
+            if let Some(d) = find(name) {
+                stack.extend(d.rdeps.iter().map(|x| (x.as_str(), depth + 1)));
+            }
+        }
+    }
 }
 
 /// Run a port's build script when its ready file for `arch` is missing: a

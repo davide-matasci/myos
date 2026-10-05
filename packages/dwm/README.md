@@ -5,7 +5,7 @@ X server of the `tinyx` package. It is driven from the keyboard, which suits
 an X server without a mouse.
 
 ```sh
-get-myos x11-libs tinyx x11-xft x11-fonts dwm st dmenu
+get-myos tinyx dwm st dmenu   # the Xft stack and the fonts come with them
 startx
 ```
 
