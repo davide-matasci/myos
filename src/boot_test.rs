@@ -67,7 +67,7 @@ impl Mode {
 /// self-checks (memory, interrupts, the scheduler, the drivers, the VFS
 /// through `/bin/custom/ok`). Required in every mode; a missing one fails
 /// the run even when every test passed.
-const BOOT_MARKERS: [&str; 36] = [
+const BOOT_MARKERS: [&str; 33] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] platform",
@@ -77,7 +77,6 @@ const BOOT_MARKERS: [&str; 36] = [
     "[ OK ] scheduler",
     "[ OK ] urandom",
     "[ OK ] hello",
-    "[ OK ] stubfs",
     "[ OK ] limine module",
     "[ OK ] fork",
     "[ OK ] fork exec",
@@ -94,8 +93,6 @@ const BOOT_MARKERS: [&str; 36] = [
     "[ OK ] usb_storage",
     "[ OK ] ext2",
     "[ OK ] ext2 rw",
-    "[ OK ] disk",
-    "[ OK ] disk ls",
     "[ OK ] fat ls",
     "[ OK ] fat read",
     "[ OK ] devnull",

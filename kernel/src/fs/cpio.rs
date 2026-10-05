@@ -1,16 +1,12 @@
 //! Minimal newc (cpio) parser for the initramfs Limine module.
 //!
-//! The archive layout mirrors the VFS tree: `bin/<category>/<name>` entries are
-//! registered into the matching `/bin/…` mount (binfs or a flatfs instance),
-//! `lib/…` entries into libfs, and `etc/…` into bootfs at `/etc/…`.
-//! Longest-prefix routing preserves each mount's capacity and the
-//! `/bin/<category>/<name>` layout the shell's `_PATH_DEFPATH` expects.
+//! The archive layout is the tree under `/`: every entry is registered into
+//! rootfs at its path (`bin/sbase/ls`, `lib/newlib/lib/libc.a`, `etc/…`).
 //!
 //! The module buffer is Limine-mapped for the kernel's lifetime, so each entry's
 //! bytes are `'static` and can be handed to `register()` without copying.
 
-use crate::fs::flatfs::{COREUTILS, SBASE, TCC, UBASE};
-use crate::fs::{binfs, bootfs, libfs};
+use crate::fs::rootfs;
 use alloc::vec::Vec;
 
 fn hex(s: &[u8]) -> usize {
@@ -86,32 +82,7 @@ pub fn parse(data: &'static [u8]) -> usize {
     count
 }
 
-/// Route one archive entry to the mount that serves its path.
+/// One archive entry into rootfs, at its path.
 fn route(name: &str, bytes: &'static [u8]) {
-    if let Some(rest) = name.strip_prefix("bin/sbase/") {
-        let _ = SBASE.register(rest, bytes);
-    } else if let Some(rest) = name.strip_prefix("bin/ubase/") {
-        let _ = UBASE.register(rest, bytes);
-    } else if let Some(rest) = name.strip_prefix("bin/coreutils/") {
-        let _ = COREUTILS.register(rest, bytes);
-    } else if let Some(rest) = name.strip_prefix("bin/tcc/") {
-        let _ = TCC.register(rest, bytes);
-    } else if let Some(rest) = name.strip_prefix("lib/") {
-        let _ = libfs::register(rest, bytes);
-    } else if let Some(rest) = name.strip_prefix("bin/") {
-        let _ = binfs::register(rest, bytes);
-    } else if let Some(rest) = name.strip_prefix("etc/") {
-        // Flat bootfs name (prefer libfs for nested data; bootfs MAX_FILES=32).
-        let _ = bootfs::register(&alloc::format!("etc/{rest}"), bytes);
-    } else if let Some(rest) = name.strip_prefix(".ssh/") {
-        // root's home is `/`, so its ssh keys live at /.ssh (dropbear reads
-        // ~/.ssh/authorized_keys). bootfs serves these flat like etc/.
-        let _ = bootfs::register(&alloc::format!(".ssh/{rest}"), bytes);
-    } else if let Some(rest) = name.strip_prefix("mnt/") {
-        // /mnt, an empty directory to mount a disk on.
-        let _ = bootfs::register(&alloc::format!("mnt/{rest}"), bytes);
-    } else if let Some(rest) = name.strip_prefix("usr/") {
-        // /usr tree for os-test paths suite (/usr, /usr/bin, /usr/bin/env, …).
-        let _ = bootfs::register(&alloc::format!("usr/{rest}"), bytes);
-    }
+    let _ = rootfs::register(name, bytes);
 }

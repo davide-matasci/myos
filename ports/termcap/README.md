@@ -8,7 +8,7 @@ from its `st.info`; st sets `TERM=st-256color`).
 ## Path
 
 - Source: `ports/termcap/termcap`
-- Initramfs entry: `lib/termcap` → VFS `/lib/termcap` (via libfs)
+- Initramfs entry: `lib/termcap` → `/lib/termcap`
 - Getty sets `TERMCAP=/lib/termcap` (and `TERM=linux`) so ncurses `tgetent`
   loads the `linux` entry without a full terminfo database.
 

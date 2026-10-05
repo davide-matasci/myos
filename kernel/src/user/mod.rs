@@ -36,7 +36,7 @@ pub const PAGE: usize = 4096;
 /// Keep modest: bumping this also sizes `[u64; N]` on the task stack and used to
 /// force `elf_scratch_mut` to grab N contiguous frames before init could run.
 const MAX_INIT_PAGES: usize = 1024;
-/// Cap for in-place `expand_user_elf` of larger bootfs ELFs (uutils / ripgrep / git).
+/// Cap for in-place `expand_user_elf` of larger rootfs ELFs (uutils / ripgrep / git).
 /// Must stay within QEMU RAM given leaked post-exec frames (x86 CI is 1024 MiB).
 /// Full feat_common_core (~2.4k pages) OOMed; ship a smaller multicall instead.
 /// Phase-1 git static-pie spans ~1080 pages (BSS included); keep ≤1152 so

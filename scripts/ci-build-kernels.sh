@@ -247,9 +247,6 @@ HELLO_OK_ELFS=(
   target/console-x86_64-unknown-none
   target/console-aarch64-unknown-none-softfloat
   target/console-riscv64imac-unknown-none-elf
-  target/stubfs-x86_64-unknown-none
-  target/stubfs-aarch64-unknown-none-softfloat
-  target/stubfs-riscv64imac-unknown-none-elf
   target/hello-x86_64-unknown-none
   target/hello-aarch64-unknown-none-softfloat
   target/hello-riscv64imac-unknown-none-elf

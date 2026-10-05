@@ -46,7 +46,6 @@ fn ensure_artifact(manifest: &Path, artifact: &str, script: &str) {
 const MODULES: &[(&str, &str)] = &[
     ("console", "console"),
     ("hello", "hello"),
-    ("stubfs", "stubfs"),
     ("pci_enum", "pci_enum"),
     ("acpi", "acpi"),
     ("virtio_blk", "virtio_blk"),
@@ -114,10 +113,10 @@ fn main() {
     );
     // The Rust userspace programs: every `user/<name>/port.env` (and a
     // `packages/<name>/port.env` of kind `user`), built for this arch; the
-    // ones with PORT_EMBED are generated into binfs (`user_embed.rs`).
+    // ones with PORT_EMBED are generated into rootfs (`user_embed.rs`).
     let repo = manifest.join("..");
     println!("cargo:rerun-if-changed={}", repo.join("src/ports.rs").display());
-    let mut embed = String::from("pub fn register_all() {\n");
+    let mut embed = String::from("pub fn user() {\n");
     for port in ports::load_all(&repo) {
         if port.kind != ports::Kind::User {
             continue;
@@ -140,7 +139,8 @@ fn main() {
         );
         if let (Some(path), Some(bytes)) = (&port.embed, embedded) {
             embed.push_str(&format!(
-                "    let _ = register({path:?}, include_bytes!(r\"{}\"));\n",
+                "    let _ = register({:?}, include_bytes!(r\"{}\"));\n",
+                format!("bin/{path}"),
                 bytes.display()
             ));
         }
@@ -242,7 +242,7 @@ fn embed_ubase_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
         );
     }
     let text = std::fs::read_to_string(&manifest).expect("read ubase manifest");
-    let mut body = String::from("pub fn register_all() {\n");
+    let mut body = String::from("pub fn ubase() {\n");
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -263,7 +263,8 @@ fn embed_ubase_manifest(manifest_dir: &Path, arch: &str, out_dir: &Path) {
         }
         println!("cargo:rerun-if-changed={}", path.display());
         body.push_str(&format!(
-            "    let _ = super::register({name:?}, include_bytes!(r\"{}\"));\n",
+            "    let _ = register({:?}, include_bytes!(r\"{}\"));\n",
+            format!("bin/ubase/{name}"),
             path.display()
         ));
     }
