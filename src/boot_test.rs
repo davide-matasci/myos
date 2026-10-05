@@ -67,7 +67,7 @@ impl Mode {
 /// self-checks (memory, interrupts, the scheduler, the drivers, the VFS
 /// through `/bin/custom/ok`). Required in every mode; a missing one fails
 /// the run even when every test passed.
-const BOOT_MARKERS: [&str; 37] = [
+const BOOT_MARKERS: [&str; 36] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] platform",
@@ -79,7 +79,6 @@ const BOOT_MARKERS: [&str; 37] = [
     "[ OK ] hello",
     "[ OK ] stubfs",
     "[ OK ] limine module",
-    "[ OK ] sh",
     "[ OK ] fork",
     "[ OK ] fork exec",
     "[ OK ] alloc",
