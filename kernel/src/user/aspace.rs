@@ -252,32 +252,46 @@ pub fn fault_in(va: usize, access: Access) -> bool {
         return false;
     }
     let aspace = task::current_aspace();
-    let flags = crate::arch::irq_save();
-    crate::arch::irq_off();
-    let guard = FAULT_LOCK.lock();
-    // Another thread may have paged it in meanwhile: then only the
-    // protection is (re)applied.
-    let frame = virt_to_phys(aspace, page as u64).unwrap_or_else(|| {
+    // The new page is filled before the lock is taken: a file read is a
+    // disk request, which every other fault would wait for.
+    let fresh = virt_to_phys(aspace, page as u64).is_none().then(|| {
         let frame = mm::alloc_frame_site(4);
         if let Some((node, off)) = file {
             // Past the end of the file the frame stays zero.
             let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
             let _ = fs::read(&node, off, dst);
         }
+        if prot & PROT_EXEC != 0 {
+            sync_icache(mm::hhdm(frame) as usize, PAGE);
+        }
         frame
     });
-    map_user_page_prot(aspace, page as u64, frame, prot);
-    if prot & PROT_EXEC != 0 {
-        sync_icache(mm::hhdm(frame) as usize, PAGE);
-        sync_icache(page, PAGE);
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    let guard = FAULT_LOCK.lock();
+    // Another thread may have paged it in meanwhile: then only the
+    // protection is (re)applied.
+    let frame = match (virt_to_phys(aspace, page as u64), fresh) {
+        (Some(mapped), fresh) => {
+            if let Some(frame) = fresh {
+                mm::free_frame(frame);
+            }
+            Some(mapped)
+        }
+        (None, fresh) => fresh,
+    };
+    if let Some(frame) = frame {
+        map_user_page_prot(aspace, page as u64, frame, prot);
+        // The page was not mapped before: no other CPU can hold a
+        // translation for it (one that faults on it meanwhile flushes its
+        // own here), so this CPU's entry for it is all there is to drop.
+        crate::arch::flush_tlb_page_local(page);
     }
-    // The page was not mapped before: no other CPU can hold a translation
-    // for it (one that faults on it meanwhile flushes its own TLB here), so
-    // a local flush does, without riscv64's shootdown IPI per fault.
-    crate::arch::flush_tlb_local();
     drop(guard);
     crate::arch::irq_restore(flags);
-    true
+    // Mapped when looked at first and gone by the lock (unmapped by
+    // another thread): look again.
+    frame.is_some() || fault_in(va, access)
 }
 
 pub(super) fn free_mapped_page(aspace: u64, va: u64) {

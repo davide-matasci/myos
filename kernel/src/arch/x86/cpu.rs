@@ -144,11 +144,19 @@ pub fn flush_tlb_local() {
     }
 }
 
+/// Flush this CPU's translation of the page at `va`.
+pub fn flush_tlb_page_local(va: usize) {
+    unsafe {
+        core::arch::asm!("invlpg [{v}]", v = in(reg) va, options(nostack, preserves_flags));
+    }
+}
+
 /// Make freshly written code at `start..start+size` visible to instruction
-/// fetch (x86 I-caches are coherent: only the TLB needs a reload).
+/// fetch: nothing to do, x86 instruction fetch sees stores through any
+/// mapping (and QEMU's translator tracks them by physical page). Mapping
+/// changes are flushed by their callers.
 pub fn sync_icache(start: usize, size: usize) {
     let _ = (start, size);
-    flush_tlb_local();
 }
 
 /// Zero a 4 KiB page with word stores (the kernel is built unoptimized and

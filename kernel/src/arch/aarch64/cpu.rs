@@ -112,6 +112,20 @@ pub fn flush_tlb_local() {
     }
 }
 
+/// Flush the translation of the page at `va` (every ASID); the whole TLB
+/// when running at EL2.
+pub fn flush_tlb_page_local(va: usize) {
+    if current_el() >= 2 {
+        crate::arch::upaging::flush_user_tlb();
+        return;
+    }
+    unsafe {
+        core::arch::asm!("dsb ishst", options(nostack));
+        core::arch::asm!("tlbi vaae1is, {x}", x = in(reg) va >> 12, options(nostack));
+        core::arch::asm!("dsb ish; isb", options(nostack));
+    }
+}
+
 /// Make freshly written code at `start..start+size` visible to instruction
 /// fetch: clean the D-cache to PoU and invalidate the I-cache.
 pub fn sync_icache(start: usize, size: usize) {
