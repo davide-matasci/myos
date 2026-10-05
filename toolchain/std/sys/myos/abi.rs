@@ -25,6 +25,12 @@ pub const SYS_SYMLINK: usize = 21;
 pub const SYS_READLINK: usize = 22;
 pub const SYS_GETTIMEOFDAY: usize = 33;
 pub const SYS_NANOSLEEP: usize = 52;
+pub const SYS_STAT2: usize = 61;
+pub const SYS_UTIMENS: usize = 62;
+pub const SYS_FUTIMENS: usize = 63;
+/// `utimens` / `futimens` time values: now, or leave the time as it is.
+pub const UTIME_NOW: i64 = -1;
+pub const UTIME_OMIT: i64 = -2;
 
 pub const STDIN_FILENO: i32 = 0;
 pub const STDOUT_FILENO: i32 = 1;
@@ -106,23 +112,40 @@ pub fn open(path: &[u8]) -> isize {
     }
 }
 
+/// Kernel `MyosStat2Buf`, written by `SYS_STAT2`. Times are seconds since
+/// the epoch, 0 where the filesystem keeps none.
 #[repr(C)]
+#[derive(Default)]
 pub struct StatBuf {
     pub st_mode: u32,
-    pub st_size: u32,
-    pub st_ino: u32,
     pub st_nlink: u32,
+    pub st_ino: u32,
     pub st_dev: u32,
+    pub st_size: u64,
+    pub st_atime: i64,
+    pub st_mtime: i64,
 }
 
+/// `lstat`: the last path component is not followed.
 #[inline]
 pub fn stat(path: &[u8], out: &mut StatBuf) -> isize {
-    let ret = raw_stat(path.as_ptr() as usize, path.len(), out as *mut StatBuf as usize);
-    if ret == usize::MAX {
-        -1
-    } else {
-        0
-    }
+    let ret = raw_syscall3(SYS_STAT2, path.as_ptr() as usize, path.len(), out as *mut StatBuf as usize);
+    if ret == usize::MAX { -1 } else { 0 }
+}
+
+/// Set the access and modification times of `path` (symlinks followed):
+/// seconds, [`UTIME_NOW`] or [`UTIME_OMIT`].
+#[inline]
+pub fn utimens(path: &[u8], times: &[i64; 2]) -> isize {
+    let ret = raw_syscall3(SYS_UTIMENS, path.as_ptr() as usize, path.len(), times.as_ptr() as usize);
+    if ret == usize::MAX { -1 } else { 0 }
+}
+
+/// [`utimens`] for an open file.
+#[inline]
+pub fn futimens(fd: i32, times: &[i64; 2]) -> isize {
+    let ret = raw_syscall3(SYS_FUTIMENS, fd as usize, times.as_ptr() as usize, 0);
+    if ret == usize::MAX { -1 } else { 0 }
 }
 
 /// Replace the current process image. Does not return on success.
@@ -882,15 +905,15 @@ fn raw_nanosleep(ns: usize, flags: usize) -> usize {
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn raw_stat(ptr: usize, len: usize, out: usize) -> usize {
+fn raw_syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
     let ret: usize;
     unsafe {
         core::arch::asm!(
             "syscall",
-            in("rax") SYS_STAT,
-            in("rdi") ptr,
-            in("rsi") len,
-            in("rdx") out,
+            in("rax") nr,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
             lateout("rax") ret,
             out("rcx") _,
             out("r11") _,
@@ -905,15 +928,15 @@ fn raw_stat(ptr: usize, len: usize, out: usize) -> usize {
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-fn raw_stat(ptr: usize, len: usize, out: usize) -> usize {
+fn raw_syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
     let ret: usize;
     unsafe {
         core::arch::asm!(
             "svc #0",
-            in("x8") SYS_STAT,
-            in("x0") ptr,
-            in("x1") len,
-            in("x2") out,
+            in("x8") nr,
+            in("x0") a0,
+            in("x1") a1,
+            in("x2") a2,
             lateout("x0") ret,
             options(nostack),
         );
@@ -923,15 +946,15 @@ fn raw_stat(ptr: usize, len: usize, out: usize) -> usize {
 
 #[cfg(target_arch = "riscv64")]
 #[inline]
-fn raw_stat(ptr: usize, len: usize, out: usize) -> usize {
+fn raw_syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
     let ret: usize;
     unsafe {
         core::arch::asm!(
             "ecall",
-            in("a7") SYS_STAT,
-            in("a0") ptr,
-            in("a1") len,
-            in("a2") out,
+            in("a7") nr,
+            in("a0") a0,
+            in("a1") a1,
+            in("a2") a2,
             lateout("a0") ret,
             options(nostack),
         );

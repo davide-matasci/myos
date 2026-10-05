@@ -1,4 +1,4 @@
-//! Minimal filetime backend for myos (read timestamps via MetadataExt; sets unsupported).
+//! filetime backend for myos: times through std (`fs::Metadata`, `File::set_times`); never on a symlink itself.
 use crate::FileTime;
 use std::fs;
 use std::io;

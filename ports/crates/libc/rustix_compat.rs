@@ -641,7 +641,6 @@ enosys! {
     pub unsafe fn flock(fd: c_int, operation: c_int) -> c_int;
     pub unsafe fn fstatfs(fd: c_int, buf: *mut statfs) -> c_int;
     pub unsafe fn fstatvfs(fd: c_int, buf: *mut statvfs) -> c_int;
-    pub unsafe fn futimens(fd: c_int, times: *const timespec) -> c_int;
     pub unsafe fn getgroups(size: c_int, list: *mut gid_t) -> c_int;
     pub unsafe fn getpeername(fd: c_int, addr: *mut sockaddr, len: *mut socklen_t) -> c_int;
     pub unsafe fn getpgid(pid: pid_t) -> pid_t;
