@@ -93,6 +93,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         61 => ret(sys::wait4(a[0], a[1], a[2], a[3])),
         62 => ret(sys::kill(a[0], a[1])),
         63 => ret(sys::uname(a[0])),
+        170 => ret(sys::sethostname(a[0], a[1])),
         72 => ret(sys::fcntl(a[0], a[1], a[2])),
         73 => ret(sys::flock(a[0])),
         76 => ret(sys::truncate(a[0], a[1])),

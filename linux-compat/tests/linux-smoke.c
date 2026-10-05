@@ -281,6 +281,13 @@ int main(int argc, char **argv) {
     struct utsname u;
     check(uname(&u) == 0 && strcmp(u.sysname, "Linux") == 0, "uname");
 
+    /* The host name is the kernel's: sethostname sets what uname reports. */
+    char host[65];
+    strcpy(host, u.nodename);
+    check(sethostname("lxhost", 6) == 0 && uname(&u) == 0 && strcmp(u.nodename, "lxhost") == 0
+              && sethostname(host, strlen(host)) == 0,
+          "sethostname");
+
     char cwd[256];
     check(getcwd(cwd, sizeof cwd) != NULL && cwd[0] == '/', "getcwd");
 

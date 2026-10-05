@@ -76,6 +76,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         157 => result(user::sys_setsid(), EPERM),
         158 => 0, // getgroups: none
         160 => ret(sys::uname(a[0])),
+        161 => ret(sys::sethostname(a[0], a[1])),
         163 => ret(sys::prlimit(a[0], a[1])), // getrlimit
         164 => 0,                             // setrlimit
         166 => 0o022,                         // umask

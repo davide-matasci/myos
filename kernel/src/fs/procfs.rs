@@ -1,6 +1,7 @@
-//! procfs: generated nodes at `/proc/…` (`mounts`, `pci`, `cpuinfo`, `platform`, `acpi/…`)
-//! and the calling process's view under `self/`: `fd/N` links to what fd N
-//! is open on, `tty` to its controlling terminal's directory (`docs/tty.md`).
+//! procfs: generated nodes at `/proc/…` (`mounts`, `pci`, `cpuinfo`, `platform`, `acpi/…`),
+//! the calling process's view under `self/`: `fd/N` links to what fd N is
+//! open on, `tty` to its controlling terminal's directory (`docs/tty.md`),
+//! and the system's name at `sys/kernel/hostname` (writable).
 
 use crate::fs::StatInfo;
 use crate::fs::vfs;
@@ -44,6 +45,9 @@ pub fn create(_name: &str) -> bool {
 /// shell's `O_TRUNC` open has nothing to cut and succeeds; the others are
 /// read-only.
 pub fn truncate(name: &str) -> bool {
+    if name == HOSTNAME_PATH {
+        return true;
+    }
     let nodes = DYN.lock();
     nodes
         .iter()
@@ -54,7 +58,10 @@ pub fn truncate(name: &str) -> bool {
 /// Write handler for dynamic nodes that registered a writer (e.g. `/proc/pci`
 /// rescan). After a successful `pci` write the drivers probe for devices that
 /// appeared (`module_rescan`, `crate::modules::rescan_all`).
-pub fn write(name: &str, _pos: usize, buf: &[u8]) -> Option<usize> {
+pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
+    if name == HOSTNAME_PATH {
+        return hostname_write(pos, buf);
+    }
     let writer = {
         let nodes = DYN.lock();
         let mut found = None;
@@ -148,6 +155,46 @@ fn dyn_get(name: &str) -> Option<(u32, &'static [u8])> {
         }
     }
     None
+}
+
+/// The longest host name (Linux's `HOST_NAME_MAX`).
+const HOSTNAME_MAX: usize = 64;
+
+/// `sys/kernel/hostname`: the name and its length; "myos" until a write.
+static HOSTNAME: Mutex<([u8; HOSTNAME_MAX], usize)> = Mutex::new({
+    let mut b = [0u8; HOSTNAME_MAX];
+    b[0] = b'm';
+    b[1] = b'y';
+    b[2] = b'o';
+    b[3] = b's';
+    (b, 4)
+});
+
+const HOSTNAME_PATH: &str = "sys/kernel/hostname";
+
+fn hostname_text() -> alloc::vec::Vec<u8> {
+    let h = HOSTNAME.lock();
+    let mut v = h.0[..h.1].to_vec();
+    v.push(b'\n');
+    v
+}
+
+/// A write at `pos` replaces the name from there on (`echo name >` writes
+/// it at 0); the newline that ends it is not part of the name. Longer than
+/// [`HOSTNAME_MAX`] is refused.
+fn hostname_write(pos: usize, buf: &[u8]) -> Option<usize> {
+    let mut h = HOSTNAME.lock();
+    let keep = pos.min(h.1);
+    let mut end = keep + buf.len();
+    while end > keep && buf[end - keep - 1] == b'\n' {
+        end -= 1;
+    }
+    if end > HOSTNAME_MAX {
+        return None;
+    }
+    h.0[keep..end].copy_from_slice(&buf[..end - keep]);
+    h.1 = end;
+    Some(buf.len())
 }
 
 fn cpuinfo_text() -> alloc::vec::Vec<u8> {
@@ -246,6 +293,9 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     if name == "platform" {
         return copy_at(&crate::platform::text(), pos, out);
     }
+    if name == HOSTNAME_PATH {
+        return copy_at(&hostname_text(), pos, out);
+    }
     if let Some((_, data)) = dyn_get(name) {
         return copy_at(data, pos, out);
     }
@@ -258,7 +308,7 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 fn list_root(buf: &mut [u8]) -> usize {
     // Dynamic nodes all live under `acpi/` (see `list_acpi`).
     const FIXED: &[&[u8]] =
-        &[b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"platform", b"pci", b"acpi", b"self"];
+        &[b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"platform", b"pci", b"acpi", b"self", b"sys"];
     let mut off = 0usize;
     for name in FIXED {
         if off + name.len() + 1 > buf.len() {
@@ -331,7 +381,14 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     if parse_self(rel).is_some() {
         return list_self(rel, buf);
     }
-    0
+    let entry: &[u8] = match rel {
+        "sys" => b"kernel\n",
+        "sys/kernel" => b"hostname\n",
+        _ => return 0,
+    };
+    let n = entry.len().min(buf.len());
+    buf[..n].copy_from_slice(&entry[..n]);
+    n
 }
 
 fn stub_acpi(name: &str) -> Option<&'static [u8]> {
@@ -353,6 +410,28 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             size: 0,
             ino: 1,
             nlink: 2,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        });
+    }
+    if name == "sys" || name == "sys/kernel" {
+        return Some(StatInfo {
+            mode: S_IFDIR | 0o555,
+            size: 0,
+            ino: if name == "sys" { 90 } else { 91 },
+            nlink: 2,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        });
+    }
+    if name == HOSTNAME_PATH {
+        return Some(StatInfo {
+            mode: S_IFREG | 0o644,
+            size: hostname_text().len() as u32,
+            ino: 92,
+            nlink: 1,
             dev: 0,
             mtime: 0,
             atime: 0,
