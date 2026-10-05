@@ -129,7 +129,10 @@ is back, so an AP's lagging echo never garbles the line), then watches:
   (mini) or 10 minutes (full), and the whole run has its budget;
 - the kernel's own **boot markers** (`[ OK ] heap`, `[ OK ] scheduler`,
   the drivers, the VFS checks of `/bin/custom/ok`), which init prints
-  before the login prompt: required whatever the tests say;
+  before the login prompt: required whatever the tests say. `ok` runs on
+  every boot, so it writes to a disk (`mkfs.ext2` on `/dev/nvme0n1`) and
+  expects the FAT mount only once it found the launcher's FAT volume
+  (`/msg` reading `fat-msg`); in another VM it leaves the disks alone;
 - after the boot, `e2fsck -fn` on the scratch disk (`target/scratch.img`,
   the guest's `/dev/nvme1n1`) when the ext2 tests left a filesystem on it;
   skipped without e2fsprogs.
