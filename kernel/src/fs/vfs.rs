@@ -169,6 +169,16 @@ struct Mount {
     backend: MountBackend,
 }
 
+/// The prefix of an unmounted entry: no path matches it. The entry stays in
+/// the table (open vnodes name their mount by index) until a mount reuses it.
+const GONE: &str = "\0";
+
+impl Mount {
+    fn gone(&self) -> bool {
+        self.prefix == GONE
+    }
+}
+
 static MOUNTS: Mutex<Vec<Mount>> = Mutex::new(Vec::new());
 
 /// Attach an in-kernel backend at `prefix` (empty string = root).
@@ -185,9 +195,10 @@ pub fn mount(name: &str, prefix: &str, ops: MountOps) {
 
 /// Attach a module backend at `prefix`. `ops` must live for the kernel lifetime.
 ///
-/// A second mount with the same prefix replaces the existing one (no umount).
-/// That lets userspace retry `vd*` disks at `/fat` until the right volume is bound.
-/// `source` is the userspace path (`/dev/vda`) or `none` when there is no block device.
+/// A second module mount with the same prefix replaces the existing one (a
+/// module loaded again). `mount(2)` refuses a mount point instead
+/// ([`mount_point_free`]). `source` is the userspace path (`/dev/vda`) or
+/// `none` when there is no block device.
 pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -> bool {
     attach_module(name, prefix, ops, source, true)
 }
@@ -219,18 +230,85 @@ fn attach_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str, uniq
     if unique && mounts.iter().any(|m| m.name == name) {
         return false;
     }
-    mounts.push(Mount {
+    let mount = Mount {
         name: String::from(name),
         prefix: String::from(prefix),
         source: String::from(source),
         backend: MountBackend::Module(ops),
-    });
+    };
+    match mounts.iter_mut().find(|m| m.gone()) {
+        Some(slot) => *slot = mount,
+        None => mounts.push(mount),
+    }
+    true
+}
+
+/// `prefix` (an absolute path without its leading `/`) can take a mount: an
+/// existing directory that is not a mount point already. The root, `/`, is
+/// one.
+pub fn mount_point_free(prefix: &str) -> bool {
+    if prefix.is_empty() || MOUNTS.lock().iter().any(|m| m.prefix == prefix) {
+        return false;
+    }
+    stat(prefix).is_some_and(|st| st.mode & super::S_IFMT == 0o040000)
+}
+
+/// A mount point lies at `prefix` or below it: such a directory can be
+/// neither removed nor renamed, its mount would hang from nothing.
+pub fn holds_mount(prefix: &str) -> bool {
+    let prefix = normalize_path(prefix);
+    MOUNTS.lock().iter().any(|m| {
+        !m.gone()
+            && !m.prefix.is_empty()
+            && (prefix.is_empty()
+                || m.prefix == prefix
+                || (m.prefix.starts_with(prefix) && m.prefix.as_bytes().get(prefix.len()) == Some(&b'/')))
+    })
+}
+
+/// `umount(2)`: detach the block-device mount at `prefix`. Refused for the
+/// kernel's own trees, and while the mount is busy: a mount below it, a bind
+/// into or out of it, an open file on it. The filesystem's `unmount` hook
+/// then writes back what it caches.
+pub fn unmount(prefix: &str) -> bool {
+    let prefix = normalize_path(prefix);
+    let ops = {
+        let mut mounts = MOUNTS.lock();
+        let Some(idx) = mounts.iter().position(|m| m.prefix == prefix) else {
+            return false;
+        };
+        let MountBackend::Module(ops) = mounts[idx].backend else {
+            return false;
+        };
+        if !mounts[idx].source.starts_with("/dev/") {
+            return false;
+        }
+        let below = alloc::format!("{prefix}/");
+        if mounts.iter().any(|m| m.prefix.starts_with(below.as_str())) {
+            return false;
+        }
+        let under = |p: &str| p == prefix || p.starts_with(below.as_str());
+        if BINDS.lock().iter().any(|(target, source)| under(target) || under(source)) {
+            return false;
+        }
+        if OPEN_REFS.lock().iter().any(|r| r.in_use && r.count > 0 && r.mount as usize == idx) {
+            return false;
+        }
+        let m = &mut mounts[idx];
+        m.prefix = String::from(GONE);
+        m.name.clear();
+        m.source.clear();
+        ops
+    };
+    if let Some(unmount) = ops.unmount {
+        unsafe { unmount() };
+    }
     true
 }
 
 /// A mount has `source` (`/dev/sda`) as its block device.
 pub fn source_mounted(source: &str) -> bool {
-    MOUNTS.lock().iter().any(|m| m.source == source)
+    MOUNTS.lock().iter().any(|m| !m.gone() && m.source == source)
 }
 
 /// Open fds on `rel` of the mount at `prefix` (`"dev"`, `"sda"`: the block
@@ -258,7 +336,7 @@ pub fn open_refs(prefix: &str, rel: &str) -> u32 {
 pub fn mounts_text() -> Vec<u8> {
     let mounts = MOUNTS.lock();
     let mut out = Vec::new();
-    for m in mounts.iter() {
+    for m in mounts.iter().filter(|m| !m.gone()) {
         let source = if m.source.is_empty() {
             "none"
         } else {
@@ -686,6 +764,9 @@ pub fn mkdir(path: &str) -> bool {
 
 /// Remove empty directory at `path`.
 pub fn rmdir(path: &str) -> bool {
+    if holds_mount(path) {
+        return false;
+    }
     let Some((idx, ref rel)) = resolve_index(path) else {
         return false;
     };
@@ -714,6 +795,9 @@ pub fn unlink(path: &str) -> bool {
 
 /// Rename within a single mount (`old` and `new` must resolve to the same mount).
 pub fn rename(old: &str, new: &str) -> bool {
+    if holds_mount(old) {
+        return false;
+    }
     let Some((idx_o, ref rel_o)) = resolve_index(old) else {
         return false;
     };
@@ -785,7 +869,7 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
         (false, false) => alloc::format!("{}/{}", m.prefix, rel),
     };
     for other in mounts.iter() {
-        if other.prefix.is_empty() {
+        if other.prefix.is_empty() || other.gone() {
             continue;
         }
         // The next path segment of `other` below the listed directory.

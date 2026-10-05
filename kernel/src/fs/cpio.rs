@@ -107,6 +107,9 @@ fn route(name: &str, bytes: &'static [u8]) {
         // root's home is `/`, so its ssh keys live at /.ssh (dropbear reads
         // ~/.ssh/authorized_keys). bootfs serves these flat like etc/.
         let _ = bootfs::register(&alloc::format!(".ssh/{rest}"), bytes);
+    } else if let Some(rest) = name.strip_prefix("mnt/") {
+        // /mnt, an empty directory to mount a disk on.
+        let _ = bootfs::register(&alloc::format!("mnt/{rest}"), bytes);
     } else if let Some(rest) = name.strip_prefix("usr/") {
         // /usr tree for os-test paths suite (/usr, /usr/bin, /usr/bin/env, …).
         let _ = bootfs::register(&alloc::format!("usr/{rest}"), bytes);

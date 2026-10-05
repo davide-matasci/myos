@@ -247,6 +247,13 @@ unsafe extern "C" fn ext2_release<const S: usize>(_path: *const u8, _path_len: u
     rc(with_fs::<S, _>(|fs| fs.sync()))
 }
 
+/// `umount(2)`: write back what is cached and free the slot.
+unsafe extern "C" fn ext2_unmount<const S: usize>() {
+    if let Some(fs) = with_slot(S, |f| f.take()) {
+        let _ = fs.unmount();
+    }
+}
+
 /// The hooks of slot `S`.
 fn ops<const S: usize>() -> ModuleVfsOps {
     ModuleVfsOps {
@@ -269,6 +276,7 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         poll: None,
         open: None,
         set_times: Some(ext2_set_times::<S>),
+        unmount: Some(ext2_unmount::<S>),
     }
 }
 
