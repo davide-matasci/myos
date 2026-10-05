@@ -16,8 +16,15 @@
 /// 22 added [`KernelApi::fork_from`] (posix_spawn's child on its own stack).
 /// 23 added [`KernelApi::mmap_discard`] (`madvise(MADV_DONTNEED)`).
 /// 24 added `mtime` to [`VfsStatInfo`] and [`PathStat`].
-/// 25 added [`KernelApi::thread_place`] (a new thread's own CPU).
-pub const ABI_VERSION: u32 = 25;
+/// 25 added `atime` to both, [`ModuleVfsOps::set_times`] and
+/// [`KernelApi::vfs_set_times`] (`utimensat`).
+/// 26 added [`ModuleVfsOps::unmount`] (`umount(2)`).
+/// 27 added [`KernelApi::thread_place`] (a new thread's own CPU).
+pub const ABI_VERSION: u32 = 27;
+
+/// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
+/// that keeps the current value.
+pub const MYOS_TIME_OMIT: u64 = u64::MAX;
 
 /// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
 pub const MYOS_WAIT_ANY: usize = usize::MAX;
@@ -39,6 +46,9 @@ pub struct VfsStatInfo {
     pub nlink: u32,
     /// Last modification, in seconds since the epoch (0: not kept).
     pub mtime: u64,
+    /// Last access as set by `set_times` (reads need not change it), in
+    /// seconds since the epoch (0: not kept).
+    pub atime: u64,
 }
 
 /// Module-provided VFS backend hooks. Function pointers may be null only where
@@ -136,6 +146,16 @@ pub struct ModuleVfsOps {
     /// through, negative refuses it (a file one program holds at a time).
     /// `release` follows when the last fd of the file closes.
     pub open: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
+    // --- ABI 25: file times ---
+    /// Optional: set `path`'s access and modification times, in seconds
+    /// since the epoch ([`MYOS_TIME_OMIT`] keeps one): 0, or negative.
+    /// Without it the mount's times cannot be set.
+    pub set_times: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, atime: u64, mtime: u64) -> i32>,
+    // --- ABI 26: unmount ---
+    /// Optional: `umount(2)` detached this mount (no file on it is open):
+    /// write back what is cached and forget the filesystem. The hooks are
+    /// not called for it again.
+    pub unmount: Option<unsafe extern "C" fn()>,
 }
 
 /// [`ModuleVfsOps::read`]: nothing to read yet. A read through an fd waits
@@ -281,6 +301,8 @@ pub struct PathStat {
     pub dev: u64,
     /// Last modification, in seconds since the epoch (0: not kept).
     pub mtime: u64,
+    /// Last access, in seconds since the epoch (0: not kept).
+    pub atime: u64,
 }
 
 /// `path_resolve` modes: the task's own view (cwd applied, chroot-relative),
@@ -677,6 +699,12 @@ pub struct KernelApi {
     /// 0, or negative when the range is outside the window.
     pub mmap_discard: unsafe extern "C" fn(addr: usize, len: usize) -> i32,
     // --- ABI 25 ---
+    /// Set the access and modification times (seconds since the epoch,
+    /// [`MYOS_TIME_OMIT`] keeps one) of the file at VFS `path` (a real
+    /// path, as `vfs_stat`'s): 0, or negative (no such file, or a mount
+    /// that keeps no times).
+    pub vfs_set_times: unsafe extern "C" fn(path: StrRef, atime: u64, mtime: u64) -> i32,
+    // --- ABI 27 ---
     /// Give thread `tid`, new from `thread_spawn_from` and not run yet, a
     /// CPU of its own: until then it waits for its creator's syscall to
     /// end, so what it must find when it starts is set up first.
@@ -699,8 +727,8 @@ pub const MYOS_MAX_MODULE_THREADS: usize = 8;
 
 /// The name the host controller publishes its [`UsbHostOps`] under.
 pub const USB_SERVICE: &str = "usb";
-/// [`UsbHostOps::version`].
-pub const USB_HOST_VERSION: u32 = 1;
+/// [`UsbHostOps::version`]. 2 added [`UsbHostOps::interface_label`].
+pub const USB_HOST_VERSION: u32 = 2;
 
 /// Device speeds ([`UsbDeviceInfo::speed`], `hub_attach`).
 pub const USB_SPEED_LOW: u8 = 1;
@@ -718,6 +746,8 @@ pub const USB_ETIMEDOUT: i32 = -110;
 
 /// Endpoints one interface may have ([`UsbInterfaceInfo::endpoints`]).
 pub const USB_MAX_ENDPOINTS: usize = 15;
+/// Bytes of an interface's label ([`UsbHostOps::interface_label`]).
+pub const USB_LABEL_MAX: usize = 8;
 
 /// One endpoint of an interface, as its descriptor says: the address
 /// (direction in bit 7: IN), the attributes (transfer type in bits 1:0:
@@ -820,6 +850,10 @@ pub struct UsbHostOps {
     pub hub_detach: unsafe extern "C" fn(dev: u32, port: u8),
     /// `dev`'s description into `*info`: 0, or [`USB_EGONE`].
     pub device_info: unsafe extern "C" fn(dev: u32, info: *mut UsbDeviceInfo) -> i32,
+    /// What the driver that took interface `intf` of `dev` made of it (a
+    /// disk's name), shown after the driver's name in `/proc/usb`: at most
+    /// [`USB_LABEL_MAX`] bytes, longer is cut. 0, or [`USB_EGONE`].
+    pub interface_label: unsafe extern "C" fn(dev: u32, intf: u8, label: *const u8, len: usize) -> i32,
 }
 
 // Function tables with a name: shared between the modules' threads.

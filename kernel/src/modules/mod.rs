@@ -121,6 +121,7 @@ static API: KernelApi = KernelApi {
     wake: api_wake,
     fork_from: api_fork_from,
     mmap_discard: api_mmap_discard,
+    vfs_set_times: api_vfs_set_times,
     thread_place: api_thread_place,
 };
 
@@ -872,6 +873,7 @@ unsafe extern "C" fn api_vfs_stat(path: StrRef, out: *mut PathStat) -> i32 {
                     ino: st.ino as u64,
                     dev: st.dev as u64,
                     mtime: st.mtime,
+                    atime: st.atime,
                 };
             }
             0
@@ -915,6 +917,16 @@ unsafe extern "C" fn api_vfs_unlink(path: StrRef) -> i32 {
 unsafe extern "C" fn api_vfs_rename(old: StrRef, new: StrRef) -> i32 {
     match (str_ref(old), str_ref(new)) {
         (Some(o), Some(n)) if crate::fs::rename(o, n) => 0,
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_set_times(path: StrRef, atime: u64, mtime: u64) -> i32 {
+    let time = |t: u64| {
+        if t == myos_abi::MYOS_TIME_OMIT { crate::fs::SetTime::Omit } else { crate::fs::SetTime::At(t) }
+    };
+    match str_ref(path) {
+        Some(p) if crate::fs::set_times(p, time(atime), time(mtime)) => 0,
         _ => -1,
     }
 }

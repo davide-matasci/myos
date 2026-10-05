@@ -75,6 +75,7 @@ SKIP = {
     "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK", "S_IFMT", "S_IFREG", "S_IFDIR", "S_IFLNK",
     "DT_UNKNOWN", "DT_REG", "DT_DIR", "DT_LNK", "CLOCK_REALTIME", "CLOCK_MONOTONIC",
     "F_DUPFD", "F_GETFD", "F_SETFD", "F_GETFL", "F_SETFL", "FD_CLOEXEC", "AT_FDCWD",
+    "futimens",
     # Types / macros handled in the types block below
     "cmsghdr", "msghdr", "siginfo_t", "rlimit", "fsid_t", "in_addr", "in6_addr",
     "sockaddr", "sockaddr_in", "sockaddr_in6", "sockaddr_storage", "linger", "ip_mreq",

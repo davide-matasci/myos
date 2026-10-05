@@ -3,8 +3,9 @@
 # directory of programs onto it; rename the directory, run one of them from
 # the disk and read it through a symlink; then a file past the direct and
 # single-indirect blocks (7-10 MB, under the tmpfs file cap it is built in),
-# compared with its source, and remove the directory. The host checks the
-# disk with `e2fsck -fn` after the boot.
+# compared with its source, and remove the directory; set a file's times;
+# unmount it and mount it again, the files still there.
+# The host checks the disk with `e2fsck -fn` after the boot.
 # The block cache (kernel/src/blk/cache.rs) on the raw scratch disk, before
 # it is formatted: what is read back is what was written, a write into the
 # middle of a cached page included, and the cache keeps what was read.
@@ -18,24 +19,37 @@ blk_cache() {
 		&& grep -q "^BlockCacheKiB: [1-9]" /proc/meminfo && rm /tmp/a /tmp/b /tmp/c
 }
 ext2_disk() {
-	mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /disk ext2 && cp -r /bin/sbase /disk/s
+	mkdir -p /tmp/disk && mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /tmp/disk ext2 && cp -r /bin/sbase /tmp/disk/s
 }
 ext2_link() {
-	mv /disk/s /disk/t && /disk/t/ls -d /disk/t && ln -s t/ls /disk/l && readlink /disk/l && cmp /disk/l /disk/t/ls
+	mv /tmp/disk/s /tmp/disk/t && /tmp/disk/t/ls -d /tmp/disk/t && ln -s t/ls /tmp/disk/l && readlink /tmp/disk/l && cmp /tmp/disk/l /tmp/disk/t/ls
 }
 ext2_big() {
-	cat /disk/t/[a-m]* > /tmp/big && cp /tmp/big /disk/big && cmp /tmp/big /disk/big \
-		&& rm /disk/t/* /tmp/big && rmdir /disk/t
+	cat /tmp/disk/t/[a-m]* > /tmp/big && cp /tmp/big /tmp/disk/big && cmp /tmp/big /tmp/disk/big \
+		&& rm /tmp/disk/t/* /tmp/big && rmdir /tmp/disk/t
 }
-# A file's modification time, as a Linux program's stat sees it (ext2 keeps
-# times; the in-kernel filesystems do not).
+# Setting a file's times on the disk (the ext2 module's set_times).
+ext2_times() {
+	/bin/sbase/touch -T 946782240 /tmp/disk/m && /bin/sbase/ls -l /tmp/disk/m | grep -q "Jan 02  2000" \
+		&& rm /tmp/disk/m
+}
+# A file's modification time, as a Linux program's stat sees it.
 ext2_mtime() {
-	echo x > /disk/m && linux /bin/linux/linux-smoke mtime /disk/m && rm /disk/m
+	echo x > /tmp/disk/m && linux /bin/linux/linux-smoke mtime /tmp/disk/m && rm /tmp/disk/m
 }
 t blk_cache blk_cache
 t ext2_disk ext2_disk
 t ext2_link ext2_link
 t ext2_big ext2_big
+t ext2_times ext2_times
 if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
 	t ext2_mtime ext2_mtime
 fi
+# umount writes back what the module caches: the directory is empty while
+# the disk is not mounted, the file is back once it is again.
+ext2_remount() {
+	echo kept > /tmp/disk/k && umount /tmp/disk || return 1
+	[ -z "$(ls -A /tmp/disk)" ] || { echo "files left after umount"; return 1; }
+	mount /dev/nvme1n1 /tmp/disk ext2 && [ "$(cat /tmp/disk/k)" = kept ] && rm /tmp/disk/k
+}
+t ext2_remount ext2_remount

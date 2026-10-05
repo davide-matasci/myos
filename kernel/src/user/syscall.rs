@@ -119,6 +119,21 @@ const SYS_INSMOD: usize = 58;
 const SYS_RMMOD: usize = 59;
 /// `getppid()`: the calling process's parent.
 const SYS_GETPPID: usize = 60;
+/// `stat2(path, len, out)`: `stat` with a 64-bit size and the access and
+/// modification times ([`MyosStat2Buf`]). The last component is not
+/// followed, as for `stat`.
+const SYS_STAT2: usize = 61;
+/// `utimens(path, len, times)`: set the access and modification times of
+/// `path` (symlinks followed) from `times`, two `i64`s: seconds since the
+/// epoch, [`UTIME_NOW`] or [`UTIME_OMIT`]; a null `times` sets both to now.
+const SYS_UTIMENS: usize = 62;
+/// `futimens(fd, times)`: [`SYS_UTIMENS`] for an open file.
+const SYS_FUTIMENS: usize = 63;
+/// `umount(path, len)`: detach the block-device mount at `path`.
+const SYS_UMOUNT: usize = 64;
+/// `utimens` / `futimens` time values: now, or leave the time as it is.
+const UTIME_NOW: i64 = -1;
+const UTIME_OMIT: i64 = -2;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
@@ -266,6 +281,10 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_INSMOD => sys_insmod(a0, a1),
         SYS_RMMOD => sys_rmmod(a0, a1),
         SYS_GETPPID => task::current_ppid(),
+        SYS_STAT2 => sys_stat2(a0, a1, a2),
+        SYS_UTIMENS => sys_utimens(a0, a1, a2),
+        SYS_FUTIMENS => sys_futimens(a0, a1),
+        SYS_UMOUNT => sys_umount(a0, a1),
         SYS_LINUX_NEXT_EXEC => {
             if crate::personality::request_next_exec() { 0 } else { SYSERR }
         }
@@ -889,6 +908,88 @@ struct MyosStatBuf {
     st_ino: u32,
     st_nlink: u32,
     st_dev: u32,
+}
+
+/// [`SYS_STAT2`]'s result.
+#[repr(C)]
+struct MyosStat2Buf {
+    st_mode: u32,
+    st_nlink: u32,
+    st_ino: u32,
+    st_dev: u32,
+    st_size: u64,
+    /// Seconds since the epoch, 0 where the filesystem keeps none.
+    st_atime: i64,
+    st_mtime: i64,
+}
+
+fn sys_stat2(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
+    if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStat2Buf>()) {
+        return SYSERR;
+    }
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(path) = resolve_copied_path_nofollow(path) else {
+        return SYSERR;
+    };
+    let Some(info) = fs::stat(&path) else {
+        return SYSERR;
+    };
+    let out = MyosStat2Buf {
+        st_mode: info.mode,
+        st_nlink: info.nlink,
+        st_ino: info.ino,
+        st_dev: info.dev,
+        st_size: u64::from(info.size),
+        st_atime: info.atime as i64,
+        st_mtime: info.mtime as i64,
+    };
+    let bytes = unsafe {
+        core::slice::from_raw_parts(&out as *const MyosStat2Buf as *const u8, core::mem::size_of::<MyosStat2Buf>())
+    };
+    if write_user_bytes(task::current_aspace(), out_ptr, bytes) { 0 } else { SYSERR }
+}
+
+/// The two times of `utimens` / `futimens` at user `times` (null: both now).
+fn read_set_times(times: usize) -> Option<(fs::SetTime, fs::SetTime)> {
+    if times == 0 {
+        return Some((fs::SetTime::Now, fs::SetTime::Now));
+    }
+    let mut raw = [0u8; 16];
+    if !user_range_ok(times, raw.len()) || !read_user_bytes(task::current_aspace(), times, &mut raw) {
+        return None;
+    }
+    let one = |b: &[u8]| match i64::from_ne_bytes(b.try_into().unwrap()) {
+        UTIME_NOW => Some(fs::SetTime::Now),
+        UTIME_OMIT => Some(fs::SetTime::Omit),
+        t if t >= 0 => Some(fs::SetTime::At(t as u64)),
+        _ => None,
+    };
+    Some((one(&raw[..8])?, one(&raw[8..])?))
+}
+
+fn sys_utimens(path_ptr: usize, path_len: usize, times: usize) -> usize {
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let (Some(path), Some((atime, mtime))) = (resolve_copied_path(path), read_set_times(times)) else {
+        return SYSERR;
+    };
+    if fs::set_times(&path, atime, mtime) { 0 } else { SYSERR }
+}
+
+fn sys_futimens(fd: usize, times: usize) -> usize {
+    let (Some(node), Some((atime, mtime))) = (task::fd_file_node(fd), read_set_times(times)) else {
+        return SYSERR;
+    };
+    if fs::set_times_node(&node, atime, mtime) { 0 } else { SYSERR }
 }
 
 fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
@@ -1666,15 +1767,29 @@ fn sys_mount(args_ptr: usize) -> usize {
     let Some(dev) = fs::blk_id_from_path(&src) else {
         return SYSERR;
     };
-    let prefix = tgt.trim_start_matches('/');
-    if prefix.is_empty() || prefix.contains('/') || fstype.is_empty() {
+    if fstype.is_empty() {
         return SYSERR;
     }
-    if fs::mount_fstype(dev, prefix, fstype, &src) {
+    if fs::mount_fstype(dev, tgt.trim_start_matches('/'), fstype, &src) {
         0
     } else {
         SYSERR
     }
+}
+
+/// `umount(2)`: `a0`/`a1` the mount point. 0, or `SYSERR` when nothing
+/// that can be unmounted is mounted there or the mount is busy.
+fn sys_umount(ptr: usize, len: usize) -> usize {
+    let Some(buf) = copy_user_path(ptr, len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..len]) else {
+        return SYSERR;
+    };
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    if fs::vfs::unmount(&path) { 0 } else { SYSERR }
 }
 
 /// The auxiliary vector for an image about to start with a foreign

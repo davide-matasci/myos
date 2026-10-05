@@ -351,7 +351,23 @@ impl<D: Device> Fs<D> {
         self.run(|fs| {
             let ino = fs.resolve(path)?;
             let n = fs.inode(ino)?;
-            Ok(Stat { kind: n.kind(), mode: n.mode, size: n.size, ino, links: n.links, mtime: n.mtime })
+            Ok(Stat { kind: n.kind(), mode: n.mode, size: n.size, ino, links: n.links, mtime: n.mtime, atime: n.atime })
+        })
+    }
+
+    /// Set the access and modification times of `path` (seconds since the
+    /// epoch; `None` keeps one).
+    pub fn set_times(&mut self, path: &str, atime: Option<u32>, mtime: Option<u32>) -> Result<()> {
+        self.op(|fs| {
+            let ino = fs.resolve(path)?;
+            let mut node = fs.inode(ino)?;
+            if let Some(t) = atime {
+                node.atime = t;
+            }
+            if let Some(t) = mtime {
+                node.mtime = t;
+            }
+            fs.write_inode(ino, &node)
         })
     }
 

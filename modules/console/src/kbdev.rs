@@ -29,7 +29,7 @@ unsafe extern "C" fn kbd_stat(path: *const u8, len: usize, out: *mut VfsStatInfo
         return -1;
     }
     unsafe {
-        *out = VfsStatInfo { mode: S_IFREG | 0o444, size: 0, ino: 1, nlink: 1, mtime: 0 };
+        *out = VfsStatInfo { mode: S_IFREG | 0o444, size: 0, ino: 1, nlink: 1, mtime: 0, atime: 0 };
     }
     0
 }
@@ -92,6 +92,8 @@ pub fn mount() -> i32 {
         mmap: None,
         poll: Some(kbd_poll),
         open: Some(kbd_open),
+        set_times: None,
+        unmount: None,
     };
     const PREFIX: &[u8] = b"dev/console/kbd";
     unsafe { (api().vfs_mount)(b"kbd".as_ptr(), 3, PREFIX.as_ptr(), PREFIX.len(), &ops) }

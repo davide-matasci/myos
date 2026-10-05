@@ -102,11 +102,6 @@ pub struct FrameBufferWriter<'a> {
     cursor_visible: bool,
     /// True while the inverted block is painted at (row, col).
     cursor_on: bool,
-    /// Cursor rendering is only meaningful while the console mirrors bytes to
-    /// this framebuffer: otherwise (oversized GOP, mirror=off) the painted
-    /// text freezes at boot status lines while the console row/col keeps
-    /// advancing on serial, so a drawn cursor would float over stale pixels.
-    pub cursor_active: bool,
     /// Inclusive scroll-region top row (0-based).
     scroll_top: usize,
     /// Inclusive scroll-region bottom row (0-based); `usize::MAX` = last row.
@@ -149,7 +144,6 @@ impl FrameBufferWriter<'static> {
             saved_row: 0,
             cursor_visible: true,
             cursor_on: false,
-            cursor_active: true,
             scroll_top: 0,
             scroll_bottom: usize::MAX,
         }
@@ -157,11 +151,6 @@ impl FrameBufferWriter<'static> {
 }
 
 impl FrameBufferWriter<'_> {
-    /// Raw framebuffer size in bytes (pitch × height).
-    pub fn fb_bytes(&self) -> usize {
-        self.pitch.saturating_mul(self.height)
-    }
-
     fn cols(&self) -> usize {
         (self.width / FONT_W).max(1)
     }
@@ -272,9 +261,11 @@ impl FrameBufferWriter<'_> {
         // Color status tags that arrive via the plain byte path (modules +
         // userspace `write_str`), including when the prefix is split across
         // writes. Serial stays plain.
-        if byte == b'\n' {
+        // A line starts again after CR too: a shell redrawing its line
+        // (oksh on Up or Tab) sends CR, then the prompt and the line.
+        if byte == b'\n' || byte == b'\r' {
             self.flush_prefix_plain();
-            self.put_byte_colored(b'\n', self.fg);
+            self.put_byte_colored(byte, self.fg);
             self.line_start = true;
             return;
         }
@@ -579,7 +570,7 @@ impl FrameBufferWriter<'_> {
     /// Timer-driven blink phase: toggle the painted block (DECTCEM-hidden
     /// cursors stay hidden). Callers must already hold the FB lock.
     pub fn blink_toggle(&mut self) {
-        if self.cursor_active && self.cursor_visible {
+        if self.cursor_visible {
             if self.cursor_on {
                 self.cursor_out();
             } else {
@@ -590,7 +581,7 @@ impl FrameBufferWriter<'_> {
 
     /// Paint the block cursor at the current cell when userspace allows it.
     fn cursor_in(&mut self) {
-        if self.cursor_active && self.cursor_visible && !self.cursor_on {
+        if self.cursor_visible && !self.cursor_on {
             let (r, c) = (self.row, self.col);
             self.cursor_on = true;
             self.invert_cell(r, c);

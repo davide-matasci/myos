@@ -3,7 +3,7 @@
 #
 # An ext2 image OUT whose /alpine is an Alpine Linux root for ARCH with
 # PACKAGE... and their dependencies installed: what
-#     get-alpine -r /disk/alpine PACKAGE...
+#     get-alpine -r /mnt/alpine PACKAGE...
 # leaves on a disk, made on the host by get-alpine itself, built for the
 # host. The full boot test attaches it to the guest (docs/testing.md):
 # installing a toolchain in the emulated guest takes hours, mounting one

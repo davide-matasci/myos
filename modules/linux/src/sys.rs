@@ -339,7 +339,7 @@ pub fn path_noop(dirfd: usize, path: usize) -> R {
 }
 
 fn put_stat(buf: usize, st: &fs::StatInfo) -> R {
-    let b = super::arch::stat_bytes(st.mode, st.size as u64, st.ino as u64, st.nlink as u64, st.dev as u64, st.mtime);
+    let b = super::arch::stat_bytes(st.mode, st.size as u64, st.ino as u64, st.nlink as u64, st.dev as u64, st.atime, st.mtime);
     put(buf, &b)?;
     Ok(0)
 }
@@ -356,7 +356,7 @@ pub fn fstatat(dirfd: usize, path: usize, buf: usize, flags: usize) -> R {
 
 pub fn fstat(fd: usize, buf: usize) -> R {
     if is_socket(fd) {
-        put(buf, &super::arch::stat_bytes(0o140777, 0, fd as u64 + 1, 1, 0, 0))?;
+        put(buf, &super::arch::stat_bytes(0o140777, 0, fd as u64 + 1, 1, 0, 0, 0))?;
         return Ok(0);
     }
     if let Some(e) = files::get(fd) {
@@ -369,8 +369,53 @@ pub fn fstat(fd: usize, buf: usize) -> R {
         task::FdKind::Pipe => (0o010600, 0),
         task::FdKind::File { size } => (0o100644, size as u64),
     };
-    put(buf, &super::arch::stat_bytes(mode, size, fd as u64 + 1, 1, 0, 0))?;
+    put(buf, &super::arch::stat_bytes(mode, size, fd as u64 + 1, 1, 0, 0, 0))?;
     Ok(0)
+}
+
+/// `utimensat`'s `tv_nsec` values: now, or leave the time as it is.
+const UTIME_NOW: u64 = (1 << 30) - 1;
+const UTIME_OMIT: u64 = (1 << 30) - 2;
+
+/// The two times at user `ptr` (two `{seconds, sub}` pairs, the second word
+/// nanoseconds or microseconds; `nsec` says which encodes
+/// `UTIME_NOW`/`UTIME_OMIT`), as seconds or `MYOS_TIME_OMIT`; null: now.
+fn user_times(ptr: usize, nsec: bool) -> R2<(u64, u64)> {
+    let now = now_us() / 1_000_000;
+    if ptr == 0 {
+        return Ok((now, now));
+    }
+    let mut b = [0u8; 32];
+    get(ptr, &mut b)?;
+    let word = |i: usize| u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap());
+    let one = |sec: u64, sub: u64| match sub {
+        UTIME_NOW if nsec => Ok(now),
+        UTIME_OMIT if nsec => Ok(myos_abi::MYOS_TIME_OMIT),
+        _ if (sec as i64) < 0 => Err(EINVAL),
+        _ => Ok(sec),
+    };
+    Ok((one(word(0), word(1))?, one(word(2), word(3))?))
+}
+
+/// `utimensat`; a null `path` is `futimens(dirfd)`.
+pub fn utimensat(dirfd: usize, path: usize, times: usize, flags: usize) -> R {
+    let real = if path == 0 {
+        real_path(&files::get(dirfd).ok_or(EBADF)?.path)?
+    } else {
+        let p = path_at(dirfd, path)?;
+        if flags & AT_SYMLINK_NOFOLLOW != 0 { real_path_nofollow(&p)? } else { real_path(&p)? }
+    };
+    let (atime, mtime) = user_times(times, true)?;
+    fs::stat(&real).ok_or(ENOENT)?;
+    if fs::set_times(&real, atime, mtime) { Ok(0) } else { Err(EROFS) }
+}
+
+/// `utimes` (x86_64): `struct timeval` times.
+pub fn utimes(path: usize, times: usize) -> R {
+    let real = real_path(&path_at(AT_FDCWD, path)?)?;
+    let (atime, mtime) = user_times(times, false)?;
+    fs::stat(&real).ok_or(ENOENT)?;
+    if fs::set_times(&real, atime, mtime) { Ok(0) } else { Err(EROFS) }
 }
 
 pub fn lseek(fd: usize, off: usize, whence: usize) -> R {
@@ -845,14 +890,39 @@ pub fn sched_getaffinity(len: usize, mask: usize) -> R {
     Ok(size)
 }
 
+/// The kernel's host name file (`docs/linux-compat.md`).
+const HOSTNAME: &str = "/proc/sys/kernel/hostname";
+
 pub fn uname(buf: usize) -> R {
     let mut b = [0u8; 6 * 65];
+    let mut host = [0u8; 65];
+    let mut n = fs::read(HOSTNAME, 0, &mut host).unwrap_or(0);
+    while n > 0 && host[n - 1] == b'\n' {
+        n -= 1;
+    }
     let fields: [&[u8]; 6] =
-        [b"Linux", b"myos", b"6.1.0-myos-compat", b"#1 myos", super::arch::MACHINE, b"(none)"];
+        [b"Linux", &host[..n.min(64)], b"6.1.0-myos-compat", b"#1 myos", super::arch::MACHINE, b"(none)"];
     for (i, f) in fields.iter().enumerate() {
         b[i * 65..i * 65 + f.len()].copy_from_slice(f);
     }
     put(buf, &b)?;
+    Ok(0)
+}
+
+pub fn sethostname(name: usize, len: usize) -> R {
+    if len > 64 {
+        return Err(EINVAL);
+    }
+    let mut b = [0u8; 65];
+    if len > 0 {
+        get(name, &mut b[..len])?;
+    }
+    if b[..len].contains(&b'\n') {
+        return Err(EINVAL);
+    }
+    // The newline ends the name, and makes an empty one a write of 1 byte.
+    b[len] = b'\n';
+    fs::write(HOSTNAME, 0, &b[..=len]).ok_or(EPERM)?;
     Ok(0)
 }
 

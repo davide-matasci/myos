@@ -56,7 +56,7 @@ get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
 - The mirror is `-m`, else `$MYOS_MIRROR`, else the project's rolling
   GitHub release (`.../releases/download/rolling`). Downloads go through
   `curl` (in every image, with the CA bundle).
-- `ROOT` can be anywhere writable (`-r /ext2/pkg` on the ext2 disk); only
+- `ROOT` can be anywhere writable (`-r /mnt/pkg` on an ext2 disk mounted at `/mnt`); only
   the binds are lost at reboot, running `get-myos` again re-binds without
   downloading.
 

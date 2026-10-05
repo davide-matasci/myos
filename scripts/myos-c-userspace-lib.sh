@@ -588,6 +588,17 @@ myos_ncurses_is_current() {
 }
 
 
+# The soft-float runtime of riscv64 (no F or D extension): compiler-rt's
+# builtins for the double and float arithmetic, compares and integer
+# conversions (ports/curl/build-softfloat-riscv64.sh), printed as the
+# archive to link after the long-double helpers of
+# ports/sbase/riscv64-softfloat.c. Every riscv64 link needs both: newlib's
+# printf and strtod call them.
+myos_riscv64_softfloat() {
+  "$MYOS_ROOT/ports/curl/build-softfloat-riscv64.sh" >/dev/null
+  echo "$MYOS_ROOT/target/libsoftfloat-riscv64.a"
+}
+
 # myos_write_cross_cc ARCH OUT [CFLAG...]: write OUT, a cc for autoconf
 # ports: clang against the newlib sysroot with the CFLAGs, and for a link
 # ld.lld with crt0, libc and libgloss the way scripts/build-c-smokes.sh
@@ -606,24 +617,16 @@ myos_write_cross_cc() {
     flags="$flags $(printf '%q' "$f")"
   done
   # newlib's printf wants the long-double helpers these arches lack (the
-  # sbase port carries them). riscv64 has no FPU: its float and double
-  # arithmetic, conversions and compares are compiler-rt's
-  # (ports/curl/build-softfloat-riscv64.sh); sbase's own versions of those
-  # are renamed away, so only its long-double ones are linked.
+  # sbase port carries them); riscv64 has no FPU, so its float and double
+  # arithmetic, conversions and compares are compiler-rt's as well.
   case "$arch" in
     aarch64) extra="$out.helpers.o"
       clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
         -c "$MYOS_ROOT/ports/sbase/trunctfdf2.c" -o "$extra" ;;
     riscv64)
-      local sf="$MYOS_ROOT/target/libsoftfloat-riscv64.a" nmbin sym renames=()
-      "$MYOS_ROOT/ports/curl/build-softfloat-riscv64.sh" >/dev/null
-      nmbin="$(command -v llvm-nm 2>/dev/null || echo nm)"
-      for sym in $("$nmbin" --defined-only -g "$sf" | awk '$2 == "T" { print $3 }'); do
-        renames+=("-D$sym=__myos_sbase$sym")
-      done
-      clang --target="$elf" -ffreestanding -fPIC -O2 -w -isystem "$sysroot/include" \
-        "${renames[@]}" -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$out.helpers.o"
-      extra="$out.helpers.o $sf" ;;
+      clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
+        -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$out.helpers.o"
+      extra="$out.helpers.o $(myos_riscv64_softfloat)" ;;
   esac
   cat > "$out" <<EOC
 #!/usr/bin/env bash

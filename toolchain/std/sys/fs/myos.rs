@@ -6,7 +6,8 @@ use crate::os::myos::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, Owned
 use crate::path::{Path, PathBuf};
 use crate::sys::fd::FileDesc;
 use crate::sys::myos::abi;
-use crate::sys::time::SystemTime;
+use crate::sys::time::{SystemTime, UNIX_EPOCH};
+use crate::time::Duration;
 use crate::sys::{cvt, unsupported, unsupported_err, AsInner, FromInner, IntoInner};
 use crate::fmt;
 
@@ -26,6 +27,13 @@ pub struct FileAttr {
     is_dir: bool,
     is_file: bool,
     is_symlink: bool,
+    mode: u32,
+    nlink: u32,
+    ino: u32,
+    dev: u32,
+    /// Seconds since the epoch, 0 where the filesystem keeps none.
+    atime: i64,
+    mtime: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -39,7 +47,10 @@ pub struct OpenOptions {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub struct FileTimes {}
+pub struct FileTimes {
+    accessed: Option<SystemTime>,
+    modified: Option<SystemTime>,
+}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FilePermissions {}
@@ -87,14 +98,24 @@ fn stat_path(path: &Path) -> io::Result<FileAttr> {
     if bytes.is_empty() {
         return Err(io::const_error!(ErrorKind::InvalidInput, "empty path"));
     }
-    let mut buf = abi::StatBuf { st_mode: 0, st_size: 0, st_ino: 0, st_nlink: 0, st_dev: 0 };
-    cvt(abi::stat(bytes, &mut buf))?;
+    let mut buf = abi::StatBuf::default();
+    if abi::stat(bytes, &mut buf) < 0 {
+        // The kernel's one stat error: the path does not resolve (libgloss
+        // says ENOENT too). uutils touch creates a file only on NotFound.
+        return Err(io::Error::from_raw_os_error(2));
+    }
     let fmt = buf.st_mode & S_IFMT;
     Ok(FileAttr {
-        size: buf.st_size as u64,
+        size: buf.st_size,
         is_dir: fmt == S_IFDIR,
         is_file: fmt == S_IFREG,
         is_symlink: fmt == S_IFLNK,
+        mode: buf.st_mode,
+        nlink: buf.st_nlink,
+        ino: buf.st_ino,
+        dev: buf.st_dev,
+        atime: buf.st_atime,
+        mtime: buf.st_mtime,
     })
 }
 
@@ -111,12 +132,34 @@ pub fn set_perm(_path: &Path, _perm: FilePermissions) -> io::Result<()> {
     unsupported()
 }
 
-pub fn set_times(_path: &Path, _times: FileTimes) -> io::Result<()> {
-    unsupported()
+/// One `FileTimes` entry as the kernel's seconds; unset leaves it as it is.
+fn kernel_time(t: Option<SystemTime>) -> io::Result<i64> {
+    match t {
+        None => Ok(abi::UTIME_OMIT),
+        Some(t) => t
+            .sub_time(&UNIX_EPOCH)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_secs()).ok())
+            .ok_or(io::const_error!(ErrorKind::InvalidInput, "file time before the epoch")),
+    }
+}
+
+fn kernel_times(times: FileTimes) -> io::Result<[i64; 2]> {
+    Ok([kernel_time(times.accessed)?, kernel_time(times.modified)?])
+}
+
+pub fn set_times(path: &Path, times: FileTimes) -> io::Result<()> {
+    cvt(abi::utimens(path.as_os_str().as_bytes(), &kernel_times(times)?))?;
+    Ok(())
 }
 
 pub fn set_times_nofollow(_path: &Path, _times: FileTimes) -> io::Result<()> {
+    // The kernel sets times through symlinks only, never on the link.
     unsupported()
+}
+
+fn system_time(secs: i64) -> SystemTime {
+    UNIX_EPOCH.checked_add_duration(&Duration::from_secs(secs.max(0) as u64)).unwrap_or(UNIX_EPOCH)
 }
 
 impl FileAttr {
@@ -137,11 +180,35 @@ impl FileAttr {
     }
 
     pub fn modified(&self) -> io::Result<SystemTime> {
-        unsupported()
+        Ok(system_time(self.mtime))
     }
 
     pub fn accessed(&self) -> io::Result<SystemTime> {
-        unsupported()
+        Ok(system_time(self.atime))
+    }
+
+    pub fn mode(&self) -> u32 {
+        self.mode
+    }
+
+    pub fn nlink(&self) -> u64 {
+        u64::from(self.nlink.max(1))
+    }
+
+    pub fn ino(&self) -> u64 {
+        u64::from(self.ino)
+    }
+
+    pub fn dev(&self) -> u64 {
+        u64::from(self.dev)
+    }
+
+    pub fn atime(&self) -> i64 {
+        self.atime
+    }
+
+    pub fn mtime(&self) -> i64 {
+        self.mtime
     }
 
     pub fn created(&self) -> io::Result<SystemTime> {
@@ -158,8 +225,12 @@ impl FilePermissions {
 }
 
 impl FileTimes {
-    pub fn set_accessed(&mut self, _t: SystemTime) {}
-    pub fn set_modified(&mut self, _t: SystemTime) {}
+    pub fn set_accessed(&mut self, t: SystemTime) {
+        self.accessed = Some(t);
+    }
+    pub fn set_modified(&mut self, t: SystemTime) {
+        self.modified = Some(t);
+    }
 }
 
 impl FileType {
@@ -361,8 +432,9 @@ impl File {
         unsupported()
     }
 
-    pub fn set_times(&self, _times: FileTimes) -> io::Result<()> {
-        unsupported()
+    pub fn set_times(&self, times: FileTimes) -> io::Result<()> {
+        cvt(abi::futimens(self.0.as_raw_fd(), &kernel_times(times)?))?;
+        Ok(())
     }
 }
 

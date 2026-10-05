@@ -377,6 +377,8 @@ pub mod fs {
         pub dev: usize,
         /// Last modification, seconds since the epoch (0: not kept).
         pub mtime: u64,
+        /// Last access, seconds since the epoch (0: not kept).
+        pub atime: u64,
     }
 
     pub fn stat(path: &str) -> Option<StatInfo> {
@@ -391,7 +393,13 @@ pub mod fs {
             nlink: st.nlink,
             dev: st.dev as usize,
             mtime: st.mtime,
+            atime: st.atime,
         })
+    }
+    /// Set a file's access and modification times (`myos_abi::MYOS_TIME_OMIT`
+    /// keeps one).
+    pub fn set_times(path: &str, atime: u64, mtime: u64) -> bool {
+        unsafe { (api().vfs_set_times)(sref(path), atime, mtime) == 0 }
     }
     pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
         let n = unsafe { (api().vfs_listdir)(sref(path), buf.as_mut_ptr(), buf.len()) };

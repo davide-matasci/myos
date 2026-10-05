@@ -120,15 +120,10 @@ pub(crate) fn kernel_main() -> ! {
     console::write_banner(HELLO);
     console::write_str("\n");
     if fb_w != 0 {
-        // Keep this on serial so CI logs show GOP vs VBE size + mirror mode.
+        // Keep this on serial so CI logs show the GOP or VBE size.
         let mut buf = [0u8; 64];
         let n = fb_geom_msg(&mut buf, fb_w, fb_h);
         console::write_str(core::str::from_utf8(&buf[..n]).unwrap_or("fb?\n"));
-        if console::mirrors_bytes() {
-            console::write_str("fb mirror=on\n");
-        } else {
-            console::write_str("fb mirror=off\n");
-        }
     }
     let _ = limine_boot::base_revision_supported();
     if let Some(model) = platform::get().model {
@@ -188,7 +183,7 @@ pub(crate) fn kernel_main() -> ! {
     // netfs, fat, ext2), and
     // they load in that order. More can follow at runtime with `insmod` from /lib/modules.
     modules::load_limine_modules();
-    // /msg lives on bootfs; /ok mounts /dev/vda as fat at /fat.
+    // /msg lives on bootfs; /ok mounts /dev/vda as fat at /tmp/fat.
     let _ = fs::register("bootfs", "msg", MSG_OK);
     console::status_ok("fat message");
 

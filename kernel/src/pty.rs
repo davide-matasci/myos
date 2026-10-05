@@ -211,8 +211,9 @@ pub fn ctl_write(id: usize, text: &[u8]) -> Option<usize> {
     let p = pty_at(id)?;
     let current = p.term.lock().termios;
     let actions = crate::tty::ctl_parse(&current, text)?;
-    // The keyboard map is the console's: refused before anything is applied.
-    if actions.iter().any(|a| matches!(a, CtlAction::Keymap(_))) {
+    // The keyboard map and the screen are the console's: refused before
+    // anything is applied.
+    if actions.iter().any(|a| matches!(a, CtlAction::Keymap(_) | CtlAction::Mirror(_))) {
         return None;
     }
     for action in actions {
@@ -220,7 +221,7 @@ pub fn ctl_write(id: usize, text: &[u8]) -> Option<usize> {
             CtlAction::Termios(t) => p.term.lock().set_termios(t),
             CtlAction::Winsize(rows, cols) => *p.winsize.lock() = (rows, cols),
             CtlAction::Ctty => claim_session(id),
-            CtlAction::Keymap(_) => {}
+            CtlAction::Keymap(_) | CtlAction::Mirror(_) => {}
             CtlAction::Flush { input, output } => {
                 if input {
                     p.term.lock().flush_input();

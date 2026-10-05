@@ -12,7 +12,7 @@ pub mod libfs;
 mod tmpfs;
 pub mod vfs;
 
-pub use vfs::{StatInfo, Vnode};
+pub use vfs::{SetTime, StatInfo, Vnode};
 
 fn path_is_dev_tty(path: &str) -> bool {
     let path = path.trim_start_matches('/');
@@ -98,6 +98,16 @@ pub fn stat(path: &str) -> Option<StatInfo> {
     vfs::stat(path)
 }
 
+/// Set the access and modification times of `path`.
+pub fn set_times(path: &str, atime: SetTime, mtime: SetTime) -> bool {
+    vfs::set_times(path, atime, mtime)
+}
+
+/// Set the access and modification times of an open vnode.
+pub fn set_times_node(node: &Vnode, atime: SetTime, mtime: SetTime) -> bool {
+    vfs::set_times_node(node, atime, mtime)
+}
+
 /// List entries at `path` into `buf` (newline-separated basenames).
 pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     vfs::listdir(path, buf)
@@ -158,11 +168,11 @@ pub fn register_chrdev(name: &str, ops: myos_abi::ModuleChrOps) -> bool {
     devfs::register_chrdev(name, ops)
 }
 
-/// Bind `dev` to `fstype` and mount at `prefix` (single path component).
-/// The target directory need not exist. Re-mounting the same prefix replaces
-/// the previous module mount so a later `vd*` can overlay `/fat`.
+/// Bind `dev` to `fstype` and mount it at `prefix`: an existing directory
+/// that is not a mount point yet, at the top level or below it. A disk is
+/// mounted once.
 pub fn mount_fstype(source_dev: u32, prefix: &str, fstype_name: &str, source: &str) -> bool {
-    if prefix.is_empty() || prefix.contains('/') {
+    if !vfs::mount_point_free(prefix) || vfs::source_mounted(source) {
         return false;
     }
     let Some(ops) = fstype::bind(fstype_name, source_dev) else {
@@ -366,6 +376,7 @@ fn ro_ops(
         symlink: reject_symlink,
         readlink: reject_readlink,
         poll: None,
+        set_times: None,
         writable: false,
     }
 }
@@ -402,6 +413,7 @@ fn rw_ops(
         symlink,
         readlink,
         poll: None,
+        set_times: None,
         writable: true,
     }
 }
@@ -465,22 +477,25 @@ pub fn init() {
     vfs::mount(
         "tmpfs",
         "tmp",
-        rw_ops(
-            tmpfs::lookup,
-            tmpfs::stat,
-            tmpfs::listdir_at,
-            tmpfs::register,
-            tmpfs::create,
-            tmpfs::truncate,
-            tmpfs::read,
-            tmpfs::write,
-            tmpfs::mkdir,
-            tmpfs::rmdir,
-            tmpfs::unlink,
-            tmpfs::rename,
-            tmpfs::symlink,
-            tmpfs::readlink,
-        ),
+        vfs::MountOps {
+            set_times: Some(tmpfs::set_times),
+            ..rw_ops(
+                tmpfs::lookup,
+                tmpfs::stat,
+                tmpfs::listdir_at,
+                tmpfs::register,
+                tmpfs::create,
+                tmpfs::truncate,
+                tmpfs::read,
+                tmpfs::write,
+                tmpfs::mkdir,
+                tmpfs::rmdir,
+                tmpfs::unlink,
+                tmpfs::rename,
+                tmpfs::symlink,
+                tmpfs::readlink,
+            )
+        },
     );
     // Device nodes are fixed; mutation ops stay rejected.
     {

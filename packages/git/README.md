@@ -19,7 +19,7 @@ myos libgloss + static zlib for `x86_64` / `aarch64` / `riscv64`.
 | `build.sh` | Cross-compile → `target/git-<arch>-unknown-none` (links `ports/zlib`) |
 | `myos-git-cc.sh` | Compile/link wrapper (crt0 + `libz.a` + newlib) |
 | `config.mak` | Phase-1 `NO_*` flags + undo host-Linux uname detections |
-| `include/` | Headers newlib lacks (`syslog.h`, `sys/statvfs.h`, `netinet/tcp.h`) |
+| `include/` | Headers newlib lacks (`sys/statvfs.h`, `netinet/tcp.h`) |
 | `myos_stubs.c` / `myos_compat.h` | What libgloss has no honest implementation for (`prctl`, `sync_file_range`, `statvfs`, `alarm`) + compile-only definitions |
 
 Thin wrappers: `scripts/fetch-git.sh`, `scripts/build-git.sh` (and
@@ -73,7 +73,7 @@ git log
 - No network remotes (no curl/openssl in this port).
 - `ftruncate` is a successful no-op in libgloss (no SYS_FTRUNCATE yet); enough for Phase-1 index write-after-fill.
 - `getrandom` is a software LCG stand-in (not cryptographic).
-- `chmod` / `fchmodat` / `utimensat` are successful no-ops (VFS has no mode/mtime yet); needed so git config lock + commit touches succeed.
+- `chmod` / `fchmodat` are successful no-ops (the VFS keeps no modes); `utime` / `utimensat` set real access and modification times (libgloss).
 - Built with `NO_MMAP` (file-backed mmap is not implemented; git uses read+malloc).
 - `_fstat` must report real `st_size` via the open-path table (a zero size made config rewrite crash).
 - Newlib must be built with `HAVE_RENAME` so `rename()` uses libgloss `_rename` (not `link`+`unlink`; `_link` is still EROFS).

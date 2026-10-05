@@ -93,6 +93,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         61 => ret(sys::wait4(a[0], a[1], a[2], a[3])),
         62 => ret(sys::kill(a[0], a[1])),
         63 => ret(sys::uname(a[0])),
+        170 => ret(sys::sethostname(a[0], a[1])),
         72 => ret(sys::fcntl(a[0], a[1], a[2])),
         73 => ret(sys::flock(a[0])),
         76 => ret(sys::truncate(a[0], a[1])),
@@ -139,6 +140,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         258 => ret(sys::mkdirat(a[0], a[1])),
         260 | 268 => ret(sys::path_noop(a[0], a[1])), // fchownat, fchmodat
         262 => ret(sys::fstatat(a[0], a[1], a[2], a[3])),
+        235 => ret(sys::utimes(a[0], a[1])),
+        280 => ret(sys::utimensat(a[0], a[1], a[2], a[3])),
         263 => ret(sys::unlinkat(a[0], a[1], a[2])),
         264 | 316 => ret(sys::renameat(a[0], a[1], a[2], a[3])), // renameat, renameat2
         266 => ret(sys::symlinkat(a[0], a[1], a[2])),
@@ -157,8 +160,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     }
 }
 
-/// The x86_64 `struct stat` (144 bytes); `mtime` stands for all three times.
-pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64, mtime: u64) -> [u8; 144] {
+/// The x86_64 `struct stat` (144 bytes); `ctime` is the modification time.
+pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64, atime: u64, mtime: u64) -> [u8; 144] {
     let mut b = [0u8; 144];
     let mut put = |off: usize, v: &[u8]| b[off..off + v.len()].copy_from_slice(v);
     put(0, &dev.to_le_bytes());
@@ -169,9 +172,9 @@ pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64, mtime: u
     put(48, &size.to_le_bytes());
     put(56, &4096u64.to_le_bytes()); // st_blksize
     put(64, &size.div_ceil(512).to_le_bytes()); // st_blocks
-    for off in [72, 88, 104] {
-        put(off, &mtime.to_le_bytes()); // st_atime, st_mtime, st_ctime
-    }
+    put(72, &atime.to_le_bytes()); // st_atime
+    put(88, &mtime.to_le_bytes()); // st_mtime
+    put(104, &mtime.to_le_bytes()); // st_ctime: the modification time
     b
 }
 

@@ -13,6 +13,8 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <utime.h>
+#include <sys/myos_extra.h> /* lstat */
 
 #include "myos_syscalls.h"
 
@@ -225,20 +227,109 @@ int unlinkat(int dirfd, const char *path, int flags) {
     return unlink(full);
 }
 
-int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags) {
-    (void)dirfd;
-    (void)path;
-    (void)times;
-    (void)flags;
-    /* Timestamps are not stored; succeed so git commit/index touches work. */
+/* timespec pair (NULL = both now) -> the kernel's two int64_t seconds. */
+static int myos_times_from_timespec(const struct timespec ts[2], int64_t out[2]) {
+    for (int i = 0; i < 2; i++) {
+        if (ts[i].tv_nsec == UTIME_NOW) {
+            out[i] = MYOS_UTIME_NOW;
+        } else if (ts[i].tv_nsec == UTIME_OMIT) {
+            out[i] = MYOS_UTIME_OMIT;
+        } else if (ts[i].tv_nsec < 0 || ts[i].tv_nsec >= 1000000000L || ts[i].tv_sec < 0) {
+            errno = EINVAL;
+            return -1;
+        } else {
+            out[i] = (int64_t)ts[i].tv_sec; /* the kernel keeps seconds */
+        }
+    }
     return 0;
 }
 
-int utimes(const char *path, const struct timeval times[2]) {
-    (void)path;
-    (void)times;
-    /* Timestamps are not stored, as for utimensat (fontconfig's cache). */
+static int myos_utimens_path(const char *path, const int64_t *times) {
+    struct stat st;
+    long ret = myos_syscall3(
+        MYOS_SYS_UTIMENS, (long)(uintptr_t)path, (long)strlen(path), (long)(uintptr_t)times);
+    if (ret == (long)MYOS_SYSERR) {
+        /* A missing file, or a filesystem that keeps no times. */
+        errno = stat(path, &st) == 0 ? EROFS : ENOENT;
+        return -1;
+    }
     return 0;
+}
+
+int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags) {
+    char full[512];
+    int64_t t[2];
+    if (times != NULL && myos_times_from_timespec(times, t) < 0) {
+        return -1;
+    }
+    if (path == NULL) {
+        return futimens(dirfd, times); /* Linux: NULL path = dirfd itself */
+    }
+    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
+        return -1;
+    }
+    if (flags & AT_SYMLINK_NOFOLLOW) {
+        /* The kernel sets times through symlinks only, never on the link. */
+        struct stat st;
+        if (lstat(full, &st) == 0 && S_ISLNK(st.st_mode)) {
+            errno = EOPNOTSUPP;
+            return -1;
+        }
+    }
+    return myos_utimens_path(full, times != NULL ? t : NULL);
+}
+
+int futimens(int fd, const struct timespec times[2]) {
+    int64_t t[2];
+    if (times != NULL && myos_times_from_timespec(times, t) < 0) {
+        return -1;
+    }
+    long ret = myos_syscall2(MYOS_SYS_FUTIMENS, fd, (long)(uintptr_t)(times != NULL ? t : NULL));
+    if (ret == (long)MYOS_SYSERR) {
+        errno = fcntl(fd, F_GETFD) < 0 ? EBADF : EROFS;
+        return -1;
+    }
+    return 0;
+}
+
+/* timeval pair (NULL = both now) -> timespec pair. */
+static const struct timespec *myos_timespec_from_timeval(const struct timeval tv[2],
+                                                         struct timespec ts[2]) {
+    if (tv == NULL) {
+        return NULL;
+    }
+    for (int i = 0; i < 2; i++) {
+        ts[i].tv_sec = tv[i].tv_sec;
+        ts[i].tv_nsec = tv[i].tv_usec * 1000L;
+    }
+    return ts;
+}
+
+int utimes(const char *path, const struct timeval times[2]) {
+    struct timespec ts[2];
+    return utimensat(AT_FDCWD, path, myos_timespec_from_timeval(times, ts), 0);
+}
+
+int lutimes(const char *path, const struct timeval times[2]) {
+    struct timespec ts[2];
+    return utimensat(AT_FDCWD, path, myos_timespec_from_timeval(times, ts), AT_SYMLINK_NOFOLLOW);
+}
+
+int futimes(int fd, const struct timeval times[2]) {
+    struct timespec ts[2];
+    return futimens(fd, myos_timespec_from_timeval(times, ts));
+}
+
+int utime(const char *path, const struct utimbuf *times) {
+    struct timespec ts[2];
+    if (times == NULL) {
+        return utimensat(AT_FDCWD, path, NULL, 0);
+    }
+    ts[0].tv_sec = times->actime;
+    ts[0].tv_nsec = 0;
+    ts[1].tv_sec = times->modtime;
+    ts[1].tv_nsec = 0;
+    return utimensat(AT_FDCWD, path, ts, 0);
 }
 
 DIR *fdopendir(int fd) {

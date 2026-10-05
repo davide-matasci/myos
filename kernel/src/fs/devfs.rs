@@ -173,8 +173,9 @@ pub fn truncate(name: &str) -> bool {
     parse(name).is_some_and(|n| !matches!(n, Node::ConsoleDir | Node::ChrDir(_)))
 }
 
-/// The text of `/dev/console/ctl`: the console termios, the screen's size
-/// and the keyboard map (`keymap PATH`, or `keymap none`).
+/// The text of `/dev/console/ctl`: the console termios, the screen's size,
+/// the keyboard map (`keymap PATH`, or `keymap none`) and whether output is
+/// mirrored to the screen (`mirror on|off`).
 pub fn console_ctl_text() -> alloc::vec::Vec<u8> {
     let (rows, cols) = crate::console::winsize();
     let mut text = crate::tty::ctl_text(&input::termios(), rows, cols);
@@ -183,14 +184,15 @@ pub fn console_ctl_text() -> alloc::vec::Vec<u8> {
         Some(path) => text.extend_from_slice(path.as_bytes()),
         None => text.extend_from_slice(b"none"),
     }
-    text.push(b'\n');
+    text.extend_from_slice(if crate::console::mirrors_bytes() { b"\nmirror on\n" } else { b"\nmirror off\n" });
     text
 }
 
 /// A write to `/dev/console/ctl`. A `winsize` line is accepted and ignored:
 /// the console is the size of the screen. The console has no output buffer,
 /// so `flush out` has nothing to do. `keymap PATH` loads the keyboard map in
-/// that file (`docs/keymap.md`).
+/// that file (`docs/keymap.md`), `mirror on|off` turns the screen copy of
+/// the output on or off.
 pub fn console_ctl_write(text: &[u8]) -> Option<usize> {
     use crate::tty::CtlAction;
     let actions = crate::tty::ctl_parse(&input::termios(), text)?;
@@ -209,6 +211,7 @@ pub fn console_ctl_write(text: &[u8]) -> Option<usize> {
             CtlAction::Winsize(..) => {}
             CtlAction::Ctty => task::set_ctty(),
             CtlAction::Flush { input: true, .. } => input::flush_input(),
+            CtlAction::Mirror(on) => crate::console::set_mirror(on),
             CtlAction::Flush { .. } | CtlAction::Keymap(_) => {}
         }
     }
@@ -354,6 +357,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     let node = parse(name)?;
@@ -365,6 +369,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::Tty => Some(StatInfo {
             mode: S_IFCHR | 0o666,
@@ -373,6 +378,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::ConsoleDir => Some(StatInfo {
             mode: S_IFDIR | 0o755,
@@ -381,6 +387,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::Console => Some(StatInfo {
             mode: S_IFCHR | 0o666,
@@ -389,6 +396,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::ConsoleCtl => Some(StatInfo {
             mode: S_IFREG | 0o644,
@@ -397,6 +405,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::Urandom => Some(StatInfo {
             mode: S_IFCHR | 0o666,
@@ -405,6 +414,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::Block(id) => {
             let bytes = blk::capacity_bytes(id).unwrap_or(0);
@@ -420,6 +430,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 nlink: 1,
                 dev: 0,
                 mtime: 0,
+                atime: 0,
             })
         }
         Node::ChrDir(i) => Some(StatInfo {
@@ -429,6 +440,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::ChrData(i) => Some(StatInfo {
             mode: S_IFCHR | 0o666,
@@ -437,6 +449,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::ChrCtl(i) => Some(StatInfo {
             mode: S_IFREG | 0o644,
@@ -445,6 +458,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
     }
 }

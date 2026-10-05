@@ -43,8 +43,13 @@ pub fn user_fault_kill(kind: &str, detail: &str) -> ! {
 
 pub fn task_ctx() -> String {
     let id = task::current_id();
+    // A dead canary says the task ran off its kernel stack before the fault.
+    let stack = match task::current_stack_intact() {
+        Some(false) => " kstack overflowed",
+        _ => "",
+    };
     match task::current_user_pc_sp() {
-        Some((rip, rsp)) => format!(" task={id} user rip={rip:#x} rsp={rsp:#x}"),
-        None => format!(" task={id} kernel"),
+        Some((rip, rsp)) => format!(" task={id} user rip={rip:#x} rsp={rsp:#x}{stack}"),
+        None => format!(" task={id} kernel{stack}"),
     }
 }

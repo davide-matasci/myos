@@ -360,6 +360,32 @@ pub fn current_kernel_stack_top() -> usize {
     t
 }
 
+/// The word above a kernel stack's lowest one (riscv64 keeps its CPU footer
+/// in the first), which an overflow overwrites before it leaves the stack.
+/// `schedule` checks it on the task leaving a CPU and panics naming that
+/// task, instead of letting the overflow corrupt whatever the heap placed
+/// below the stack: another task's saved context, say, which fails much
+/// later with a jump to 0 in a task that did nothing wrong.
+const STACK_CANARY: usize = 0x6b73_7461_636b_2121; // "kstack!!"
+
+pub(crate) fn arm_stack(top: usize) {
+    unsafe { ((top - STACK_SIZE + 8) as *mut usize).write_volatile(STACK_CANARY) }
+}
+
+/// True for a stack whose canary is in place (and for no stack at all: the
+/// boot CPU's first task runs on Limine's).
+pub(crate) fn stack_intact(top: usize) -> bool {
+    top == 0 || unsafe { ((top - STACK_SIZE + 8) as *const usize).read_volatile() } == STACK_CANARY
+}
+
+/// For a fault report: whether the current task's kernel stack canary is in
+/// place; `None` when the scheduler lock is held (the fault may be under it).
+pub fn current_stack_intact() -> Option<bool> {
+    let id = current_slot();
+    let top = TASKS.try_lock()?[id].kernel_stack_top;
+    Some(stack_intact(top))
+}
+
 pub fn set_exec_name(name: &[u8]) {
     with_process_mut(|t| {
         let n = name.len().min(t.exec_name.len());

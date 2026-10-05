@@ -32,20 +32,19 @@
  	}
  
  	/* Set this before parsing arguments */
-@@ -388,8 +391,10 @@
+@@ -388,8 +391,9 @@
  	Flag(FMONITOR) = 0;
  	j_init(i);
  	/* Do this after j_init(), as tty_fd is not initialized 'til then */
 -	if (Flag(FTALKING))
 -		x_init();
 +	if (Flag(FTALKING)) {
-+		write(1, "[ OK ] sh\n", 9);	/* CI readiness marker */
 +		x_init();	/* emacs line editor on a raw-mode console tty */
 +	}
  
  	l = genv->loc;
  	l->argv = make_argv(argc - (argi - 1), &argv[argi - 1]);
-@@ -449,7 +454,7 @@
+@@ -449,7 +453,7 @@
  
  	if (Flag(FTALKING)) {
  		hist_init(s);
@@ -54,7 +53,7 @@
  	} else
  		Flag(FTRACKALL) = 1;	/* set after ENV */
  
-@@ -768,7 +773,8 @@
+@@ -768,7 +772,8 @@
  		if (shf)
  			shf_close(shf);
  		reclaim();

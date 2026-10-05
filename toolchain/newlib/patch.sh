@@ -293,8 +293,23 @@ __END_DECLS' 1
   fi
 }
 
+patch_stat_h() {
+  # newlib defines futimens/utimensat's UTIME_NOW and UTIME_OMIT for Cygwin
+  # and RTEMS only; myos implements both calls (libgloss posix_stubs.c).
+  local f="$NEWLIB_SRC/newlib/libc/include/sys/stat.h"
+  if ! grep -q 'stat-utime-myos' "$f"; then
+    patch_edit "$f" \
+'#if defined(__CYGWIN__) || defined(__rtems__)
+/* Special tv_nsec values for futimens(2) and utimensat(2). */' \
+'#if defined(__CYGWIN__) || defined(__rtems__) || 1 /* stat-utime-myos */
+/* Special tv_nsec values for futimens(2) and utimensat(2). */' 1
+    echo "patched sys/stat.h: UTIME_NOW and UTIME_OMIT"
+  fi
+}
+
 patch_config_sub
 patch_configure_host
+patch_stat_h
 patch_string_h_basename
 install_endian_h
 patch_search_h

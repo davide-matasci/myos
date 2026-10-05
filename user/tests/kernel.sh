@@ -1,7 +1,8 @@
 # The kernel's own tests: what has no port directory of its own. The exec
-# limits, #! scripts, and the Linux compatibility layer (docs/linux-compat.md): its
-# module is in every image and loaded at boot when the image was built with
-# the feature (`--features linux_compat`), with the musl test programs.
+# limits, #! scripts, the console's CR, and the Linux compatibility layer
+# (docs/linux-compat.md): its module is in every image and loaded at boot
+# when the image was built with the feature (`--features linux_compat`),
+# with the musl test programs.
 
 # exec limits: 40 arguments and a 711-byte environment string through oksh
 # (libgloss execve) into sbase programs.
@@ -164,7 +165,8 @@ t platform platform
 # first port and a memory stick behind the hub, the same FAT volume as
 # /dev/vda. The stick is enumerated on the USB thread after the modules
 # load, so the test waits for /dev/sda; /proc/usb lists the hub and the
-# stick with their drivers; the volume mounts and reads.
+# stick with their drivers, the stick's line naming its disk; the volume
+# mounts and reads.
 wait_for() {
 	n=$1
 	shift
@@ -178,11 +180,32 @@ usb_disk() {
 	wait_for 30 test -e /dev/sda || { cat /proc/usb; return 1; }
 	cat /proc/usb
 	grep -q ' hub ' /proc/usb || return 1
-	grep -q ':usb_storage' /proc/usb || return 1
-	mount /dev/sda /usb fat || return 1
-	[ "$(cat /usb/msg)" = fat-msg ]
+	grep -q ':usb_storage sda$' /proc/usb || return 1
+	mkdir -p /tmp/usb && mount /dev/sda /tmp/usb fat || return 1
+	[ "$(cat /tmp/usb/msg)" = fat-msg ]
 }
 t usb_disk usb_disk
+
+# mount(2) takes any existing directory that is not a mount point yet, at
+# the top level as below it, and umount gives the directory back; a busy
+# mount stays, and a directory a mount hangs from is neither renamed nor
+# removed (README, VFS). The stick of usb_disk is the disk.
+mount_rules() {
+	umount /tmp/usb && ! [ -e /tmp/usb/msg ] || return 1
+	mount /dev/sda /tmp/none fat 2>&1 | grep -q 'no such directory' || return 1
+	mount /dev/sda /mnt fat && [ "$(cat /mnt/msg)" = fat-msg ] || return 1
+	mount /dev/sda /tmp/usb fat 2>&1 | grep -q 'already mounted' || return 1
+	umount /mnt && mkdir -p /tmp/a/b && mount /dev/sda /tmp/a/b fat || return 1
+	grep -q '^/dev/sda /tmp/a/b fat ' /proc/mounts || return 1
+	mount /dev/sda /tmp/a/b fat 2>&1 | grep -q 'already a mount point' || return 1
+	! mv /tmp/a /tmp/c 2>/dev/null || return 1
+	exec 4< /tmp/a/b/msg
+	umount /tmp/a/b 2>&1 | grep -q busy || return 1
+	exec 4<&-
+	umount /tmp/a/b && rmdir /tmp/a/b /tmp/a || return 1
+	umount /tmp 2>&1 | grep -q 'not a mount point of a disk'
+}
+t mount_rules mount_rules
 
 # Hot-plug: the host plugs a second stick into a root port through the
 # QEMU monitor (user/tests/host.sh); it enumerates and reads; pulled out
@@ -191,6 +214,7 @@ usb_hotplug() {
 	echo "HOST tests usb-plug" >&3
 	wait_for 30 test -e /dev/sdb || { cat /proc/usb; return 1; }
 	cat /proc/usb
+	grep -q 'port 2 super .*:usb_storage sdb$' /proc/usb || return 1
 	/bin/sbase/dd if=/dev/sdb of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
 	[ "$(/bin/coreutils/wc -c < /tmp/usb-sdb.bin)" -eq 512 ] || return 1
 	echo "HOST tests usb-unplug" >&3
@@ -217,6 +241,36 @@ isatty_fds() {
 	[ -t 0 ] && ! [ -t 1 ]
 }
 t isatty isatty_fds
+
+# CR on the screen goes back to the line's start, as a shell redrawing its
+# line needs (oksh on Up or Tab: CR, the prompt, the line). The top row's
+# first two 8x8 cells, read back from the framebuffer with the cursor moved
+# away (it blinks): "QQ" changes them, "QQ", CR and two spaces leaves them as
+# on a cleared screen (with the CR dropped the spaces would land after the
+# Qs).
+console_cells() {
+	printf '\033[H\033[J%b\033[10;1H' "$1" > /dev/console/data
+	for y in 0 1 2 3 4 5 6 7; do
+		dd if=/dev/fb/data bs=64 count=1 skip=$((y * pitch / 64)) 2> /dev/null
+	done | cksum
+}
+
+console_cr() {
+	read -r w h depth chan pitch mode < /dev/fb/ctl
+	# The runner turned the screen copy off (run.sh): on for the check.
+	mirror=$(grep '^mirror ' /dev/console/ctl)
+	echo 'mirror on' > /dev/console/ctl || return 1
+	grep -q '^mirror on$' /dev/console/ctl || return 1
+	blank=$(console_cells '')
+	qq=$(console_cells 'QQ')
+	cr=$(console_cells 'QQ\r  ')
+	printf '\033[H\033[J\n' > /dev/console/data
+	echo "$mirror" > /dev/console/ctl
+	echo "cleared: $blank; QQ: $qq; QQ, CR, spaces: $cr"
+	[ "$qq" != "$blank" ] || { echo "QQ did not reach the screen"; return 1; }
+	[ "$cr" = "$blank" ] || { echo "QQ, CR, spaces: the Qs are still there"; return 1; }
+}
+t console_cr console_cr
 
 linux_loaded() {
 	grep -q "^linux$" /proc/modules
@@ -259,8 +313,8 @@ lx_python_net() {
 # libraries and allocator reservation need over 500 MiB of address space,
 # of which `--version` touches some 30 MiB.
 lx_rustc() {
-	mount /dev/nvme2n1 /alpine-rust ext2 || return 1
-	out=$(linux --root /alpine-rust/alpine rustc --version)
+	mkdir -p /tmp/alpine-rust && mount /dev/nvme2n1 /tmp/alpine-rust ext2 || return 1
+	out=$(linux --root /tmp/alpine-rust/alpine rustc --version)
 	echo "$out"
 	case "$out" in "rustc 1."*) ;; *) return 1 ;; esac
 }
