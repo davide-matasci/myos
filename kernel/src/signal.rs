@@ -141,23 +141,37 @@ pub fn kill(pid: isize, sig: u32) -> bool {
     }
     if sig == 0 {
         return match pid {
-            1.. => task::is_live_user(pid as usize),
+            1.. => task::is_live_user(pid as usize) && may_signal(pid as usize),
             0 => true,
-            _ => (0..task::task_slots()).any(|id| task::task_pgid(id) == Some((-pid) as usize)),
+            _ => (0..task::task_slots()).any(|id| task::task_pgid(id) == Some((-pid) as usize) && may_signal(id)),
         };
     }
     if pid > 0 {
-        return send_one(pid as usize, sig);
+        return may_signal(pid as usize) && send_one(pid as usize, sig);
     }
-    if pid == 0 {
+    let pgid = if pid == 0 {
         let Some(pgid) = task::current_pgid() else {
             return false;
         };
-        return kill_pg(pgid, sig);
+        pgid
+    } else {
+        // pid < 0 → process group -pid
+        (-pid) as usize
+    };
+    // The members the caller may signal (docs/security.md: `proc(user)`).
+    let mut any = false;
+    for id in 0..task::task_slots() {
+        if task::task_pgid(id) == Some(pgid) && may_signal(id) && send_one(id, sig) {
+            any = true;
+        }
     }
-    // pid < 0 → process group -pid
-    let pgid = (-pid) as usize;
-    kill_pg(pgid, sig)
+    any
+}
+
+/// The caller may signal process `id`: itself, or one whose user's
+/// `proc(user)` label its domain has `signal` on.
+fn may_signal(id: usize) -> bool {
+    id == task::current_pid() || task::sec_ctx_of(id).is_none_or(crate::sec::may_signal)
 }
 
 /// Deliver `sig` to every live user task in process group `pgid`.

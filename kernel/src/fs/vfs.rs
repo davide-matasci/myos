@@ -993,6 +993,15 @@ static BINDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 /// Binds rewritten while resolving one path (binds of binds).
 const MAX_BIND_HOPS: usize = 8;
 
+/// The path a file is stored at: `path` (absolute) with every bind mount
+/// it lies under replaced by its source. What labels are taken from
+/// (`crate::sec`), so that a second name gives no second label.
+pub fn canonical(path: &str) -> Option<String> {
+    let mut out = String::from("/");
+    out.push_str(&unbind(normalize_path(path))?);
+    Some(out)
+}
+
 /// `path` with the longest bind it lies under replaced by its source, until
 /// none applies. `None` on a bind loop.
 fn unbind(path: &str) -> Option<String> {

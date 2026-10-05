@@ -1,7 +1,9 @@
 //! procfs: generated nodes at `/proc/…` (`mounts`, `pci`, `cpuinfo`, `platform`, `acpi/…`),
 //! the calling process's view under `self/`: `fd/N` links to what fd N is
 //! open on, `tty` to its controlling terminal's directory (`docs/tty.md`),
-//! and the system's name at `sys/kernel/hostname` (writable).
+//! the system's name at `sys/kernel/hostname` (writable), and the security
+//! context: `self/ctx` (the caller's uid, user and domain) and
+//! `sys/security/users` (docs/security.md).
 
 use crate::fs::StatInfo;
 use crate::fs::vfs;
@@ -235,9 +237,28 @@ fn self_link(node: &SelfNode) -> Option<alloc::string::String> {
     }
 }
 
-/// `readlink` on `self/fd/N` and `self/tty`.
+/// The text files made per read: the caller's security context and the
+/// policy's users.
+fn generated(name: &str) -> Option<alloc::string::String> {
+    match name {
+        "self/ctx" => Some(crate::sec::ctx_text()),
+        "sys/security/users" => Some(crate::sec::users_text()),
+        _ => None,
+    }
+}
+
+/// `readlink` on `self/fd/N` and `self/tty`: the target as the caller's
+/// namespace names it (the real path without one).
 pub fn readlink(name: &str, buf: &mut [u8]) -> Option<usize> {
-    let target = self_link(&parse_self(name)?)?;
+    let real = self_link(&parse_self(name)?)?;
+    let target = if real.starts_with('/') {
+        crate::task::with_ns(|n| match n {
+            None => Some(real.clone()),
+            Some(n) => n.to_virtual(&real),
+        })?
+    } else {
+        real
+    };
     let n = target.len().min(buf.len());
     buf[..n].copy_from_slice(&target.as_bytes()[..n]);
     Some(n)
@@ -258,6 +279,7 @@ fn list_self(name: &str, buf: &mut [u8]) -> usize {
     match parse_self(name) {
         Some(SelfNode::Dir) => {
             push(b"fd");
+            push(b"ctx");
             if crate::tty::ctty_dir().is_some() {
                 push(b"tty");
             }
@@ -275,6 +297,9 @@ fn list_self(name: &str, buf: &mut [u8]) -> usize {
 }
 
 pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
+    if let Some(text) = generated(name) {
+        return copy_at(text.as_bytes(), pos, out);
+    }
     if name == "mounts" {
         return copy_at(&vfs::mounts_text(), pos, out);
     }
@@ -382,8 +407,9 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         return list_self(rel, buf);
     }
     let entry: &[u8] = match rel {
-        "sys" => b"kernel\n",
+        "sys" => b"kernel\nsecurity\n",
         "sys/kernel" => b"hostname\n",
+        "sys/security" => b"users\n",
         _ => return 0,
     };
     let n = entry.len().min(buf.len());
@@ -415,11 +441,26 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             atime: 0,
         });
     }
-    if name == "sys" || name == "sys/kernel" {
+    if let Some(text) = generated(name) {
+        return Some(StatInfo {
+            mode: S_IFREG | 0o444,
+            size: text.len() as u32,
+            ino: if name == "self/ctx" { 94 } else { 95 },
+            nlink: 1,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        });
+    }
+    if name == "sys" || name == "sys/kernel" || name == "sys/security" {
         return Some(StatInfo {
             mode: S_IFDIR | 0o555,
             size: 0,
-            ino: if name == "sys" { 90 } else { 91 },
+            ino: match name {
+                "sys" => 90,
+                "sys/kernel" => 91,
+                _ => 93,
+            },
             nlink: 2,
             dev: 0,
             mtime: 0,

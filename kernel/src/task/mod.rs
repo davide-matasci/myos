@@ -11,6 +11,7 @@ mod fd;
 pub mod fpu;
 mod jobs;
 mod lifecycle;
+pub mod ns;
 mod process;
 mod sched;
 mod signals;
@@ -20,7 +21,6 @@ mod vm;
 pub use fd::*;
 pub use jobs::*;
 pub use lifecycle::*;
-pub use process::ROOT_CAP;
 use process::*;
 pub use sched::*;
 pub use signals::*;
@@ -412,31 +412,70 @@ pub fn cwd(out: &mut [u8]) -> usize {
     })
 }
 
-/// chroot prefix of the current process (real absolute path); 0 bytes = real `/`.
-pub fn root(out: &mut [u8]) -> usize {
-    with_process_mut(|p| {
-        let n = (p.root.len as usize).min(out.len());
-        out[..n].copy_from_slice(&p.root.buf[..n]);
-        n
-    })
+/// True when the current process has a namespace (sees part of the tree).
+pub fn has_ns() -> bool {
+    with_process_opt(|p| p.is_some_and(|p| p.ns.is_some()))
 }
 
-/// True when the current process is chrooted (non-empty prefix).
-pub fn has_root() -> bool {
-    with_process_mut(|p| p.root.len != 0)
+/// Run `f` on the current process's namespace (`None`: the whole tree).
+pub fn with_ns<R>(f: impl FnOnce(Option<&ns::Namespace>) -> R) -> R {
+    with_process_opt(|p| f(p.and_then(|p| p.ns.as_deref())))
 }
 
-/// Set the chroot prefix (canonical real absolute path; `/` clears it).
-pub fn set_root(path: &[u8]) -> bool {
-    if path.is_empty() || path[0] != b'/' || path.len() > ROOT_CAP {
-        return false;
+/// Give the current process the namespace `n` (`None`: the whole tree).
+pub fn set_ns(n: Option<ns::Namespace>) {
+    let n = n.map(alloc::boxed::Box::new);
+    with_process_opt(|p| {
+        if let Some(p) = p {
+            p.ns = n;
+        }
+    });
+}
+
+/// What the current process's namespace lets it do to `real` (everything
+/// without one, or outside a process).
+pub fn ns_rights(real: &str) -> crate::sec::Rights {
+    with_ns(|n| n.map_or(crate::sec::Rights::ALL, |n| n.rights(real)))
+}
+
+/// The current process's user and domain (`None` for the kernel's own
+/// threads: no checks).
+pub fn sec_ctx() -> Option<crate::sec::Ctx> {
+    with_process_opt(|p| p.map(|p| p.ctx))
+}
+
+/// Run the current process as `ctx` (all its threads).
+pub fn set_sec_ctx(ctx: crate::sec::Ctx) {
+    with_process_opt(|p| {
+        if let Some(p) = p {
+            p.ctx = ctx;
+        }
+    });
+}
+
+/// The user and domain process `pid` runs as.
+pub fn sec_ctx_of(pid: usize) -> Option<crate::sec::Ctx> {
+    let flags = irq_save();
+    irq_off();
+    let tasks = TASKS.lock();
+    let ctx = tasks.proc_opt(pid).map(|p| p.ctx);
+    drop(tasks);
+    irq_restore(flags);
+    ctx
+}
+
+/// Re-map every process's user and domain (a new policy, `crate::sec::load`).
+pub fn remap_sec_ctx(mut f: impl FnMut(crate::sec::Ctx) -> crate::sec::Ctx) {
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    for pid in 0..MAX_TASKS {
+        if let Some(p) = tasks.proc_opt_mut(pid) {
+            p.ctx = f(p.ctx);
+        }
     }
-    let path = if path == b"/" { &path[..0] } else { path };
-    let mut r = NO_ROOT;
-    r.buf[..path.len()].copy_from_slice(path);
-    r.len = path.len() as u8;
-    with_process_mut(|p| p.root = r);
-    true
+    drop(tasks);
+    irq_restore(flags);
 }
 
 /// Set absolute cwd. `path` must be a canonical absolute path (`/` or `/…`).
@@ -461,6 +500,19 @@ pub fn save_user_context(rip: usize, rsp: usize) {
 
 /// Run `f` on the current process block: the state the running thread
 /// shares with the other threads of its process (see [`Process`]).
+/// Run `f` on the current process, if the running thread belongs to one
+/// (`None` for the kernel's own threads).
+fn with_process_opt<R>(f: impl FnOnce(Option<&mut Process>) -> R) -> R {
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    let pid = tasks[current_slot()].tgid;
+    let out = f(tasks.proc_opt_mut(pid));
+    drop(tasks);
+    irq_restore(flags);
+    out
+}
+
 fn with_process_mut<R>(f: impl FnOnce(&mut Process) -> R) -> R {
     // Timer schedule also takes TASKS; nesting that while IF=1 deadlocks the
     // same CPU (seen as a hang after fork child's open/read).

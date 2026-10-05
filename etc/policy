@@ -1,0 +1,83 @@
+# The myos security policy (docs/security.md). The kernel reads it at boot
+# (its own copy of this file when /etc/policy does not parse); `sec load
+# FILE` makes another one the system's until the next boot. What it does
+# not grant is refused, for every user: there is no superuser.
+mode enforcing
+boot system init
+login -> shell
+
+# Users. The uid is the position (root is 0). A user without a password
+# can only be entered by a domain with `write` on kernel.users (login).
+user root    domains: admin shell untrusted   login: admin
+user system  domains: init netd login smoke
+
+# Labels: the last rule that matches a file's path names its label;
+# `$u` captures a path component as the label's owner.
+label /**                    sys.file
+label /bin/**                sys.bin
+label /lib/**                sys.lib
+label /usr/**                sys.lib
+label /etc/**                sys.etc
+label /etc/policy            sys.policy
+label /var/run/**            sys.run
+label /tmp/**                tmp
+label /tmp/pkg/**            sys.pkg
+label /home/$u/**            home($u)
+label /home/$u/.ssh/**       secret($u)
+label /mnt/**                mnt
+label /dev/**                dev
+label /dev/console/**        dev.tty
+label /dev/pts/**            dev.tty
+label /dev/tty               dev.tty
+label /dev/null              dev.common
+label /dev/zero              dev.common
+label /dev/random            dev.common
+label /dev/urandom           dev.common
+label /proc/**               proc
+label /net/**                net
+
+# Domains: what a program running for user `self` may do. Kernel objects:
+# kernel.modules (insmod, rmmod), kernel.clock (settimeofday),
+# kernel.policy (sec load), kernel.users (setuser without a password),
+# proc(user) (signals to that user's processes).
+domain init:
+    sys.file {read} sys.bin {read exec} sys.lib {read} sys.etc {read}
+    dev.tty {read write} dev.common {read write} proc {read}
+    proc(*) {signal}
+domain netd:
+    sys.file {read} sys.lib {read} sys.etc {read}
+    dev {read write} dev.common {read write} dev.tty {write} proc {read} net {all}
+domain login:
+    sys.file {read} sys.bin {read exec} sys.lib {read} sys.etc {read}
+    dev.tty {read write setattr} dev.common {read write} proc {read}
+    sys.run {read write} kernel.users {write}
+# The boot smoke (/bin/custom/ok): mounts and uses the test disks.
+domain smoke:
+    sys.file {read} sys.bin {read exec} sys.lib {read} sys.etc {read}
+    tmp {all} dev {read write} dev.tty {read write} dev.common {read write}
+    proc {read} proc(self) {signal}
+# The administrator: the whole system, but not other users' secrets.
+domain admin:
+    sys.file {all} sys.bin {all} sys.lib {all} sys.etc {all} sys.policy {all} sys.run {all}
+    sys.pkg {all} tmp {all} mnt {all} dev {all} dev.tty {all} dev.common {all}
+    proc {all} net {all} unlabeled {all}
+    home(*) {all} secret(self) {all}
+    kernel.modules {write} kernel.clock {write} kernel.policy {write}
+    kernel.users {write} proc(*) {signal}
+# A user's shell: the system to read and run, their own files, /tmp.
+domain shell:
+    sys.file {read} sys.bin {read exec} sys.lib {read exec} sys.etc {read}
+    sys.pkg {read exec} tmp {all} mnt {read}
+    home(self) {all} secret(self) {read write create remove}
+    dev.tty {read write setattr} dev.common {read write} proc {read}
+    net {read write} proc(self) {signal}
+# Programs a user does not trust: read the system and their files, no more.
+domain untrusted:
+    sys.file {read} sys.bin {read exec} sys.lib {read exec} sys.pkg {read exec}
+    home(self) {read} dev.tty {read write} dev.common {read write} proc {read}
+
+# Transitions: exec of these programs enters the domain, for a user whose
+# `domains:` list it.
+exec /bin/custom/netd    -> netd
+exec /bin/custom/ok      -> smoke
+exec /bin/ubase/getty    -> login
