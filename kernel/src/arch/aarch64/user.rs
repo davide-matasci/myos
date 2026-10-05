@@ -44,6 +44,8 @@ pub const SYSCALL_PC: usize = 32;
 pub const SYSCALL_SP: usize = 34;
 /// The syscall number register (x8).
 pub const SYSCALL_NR_REG: Option<usize> = Some(8);
+/// The fourth to sixth arguments: x3, x4, x5.
+pub const SYSCALL_ARGS_3_5: [usize; 3] = [3, 4, 5];
 /// The result register (x0).
 const SYSCALL_RESULT: usize = 0;
 /// Length of the `svc` instruction.

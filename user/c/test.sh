@@ -31,6 +31,10 @@ t child /bin/etc/child_smoke
 # constants libgloss gained for the ports, and the soft float's double
 # arithmetic, compares, conversions and printf (libc_smoke.c).
 t libc /bin/etc/libc_smoke
+# The *at calls: a directory fd and the cwd stand for their directory
+# whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a
+# symlink, lstat does not (at_smoke.c).
+t at /bin/etc/at_smoke
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).

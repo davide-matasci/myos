@@ -222,36 +222,50 @@ pub fn blk_id_from_path(path: &str) -> Option<u32> {
 pub const S_IFBLK: u32 = 0o060000;
 pub const S_IFMT: u32 = 0o170000;
 
-/// Resolve `path` against the current task cwd into `out`, in the task's
-/// own view of the tree (canonical absolute; after chroot `/` is the jail).
-/// `..` is resolved here, so it can never climb above that `/`.
-pub fn resolve_user_path_virtual(path: &str, out: &mut [u8]) -> Option<usize> {
+/// Resolve `path` against `dir` (a canonical absolute path in the task's
+/// own view of the tree; `None`: its cwd) into `out`, in that view
+/// (canonical absolute; in a namespace `/` is its root). `..` is resolved
+/// here, so it can never climb above that `/`.
+pub fn resolve_user_path_virtual(dir: Option<&str>, path: &str, out: &mut [u8]) -> Option<usize> {
     let mut cwd = [0u8; 256];
-    let n = crate::task::cwd(&mut cwd);
-    let cwd = core::str::from_utf8(&cwd[..n]).unwrap_or("/");
-    vfs::resolve_against_cwd(cwd, path, out)
+    let dir = match dir {
+        Some(dir) => dir,
+        None if path.starts_with('/') => "/",
+        None => {
+            let n = crate::task::cwd(&mut cwd);
+            if n == 0 {
+                return None;
+            }
+            core::str::from_utf8(&cwd[..n]).ok()?
+        }
+    };
+    vfs::resolve_against_cwd(dir, path, out)
 }
 
-/// Resolve `path` into the real absolute path (`out`) the VFS understands:
-/// the virtual path from [`resolve_user_path_virtual`], with symlinks
-/// followed (the last component too), under the task's chroot prefix.
+/// Resolve `path` (relative to the cwd) into the real absolute path (`out`)
+/// the VFS understands: the virtual path from [`resolve_user_path_virtual`],
+/// with symlinks followed (the last component too), through the task's
+/// namespace.
 pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Option<usize> {
-    resolve_user_path_with(path, out, true)
+    resolve_user_path_at(None, path, out, true)
 }
 
 /// Like [`resolve_user_path`], but a symlink in the last component is not
 /// followed (`lstat`, `readlink`, `unlink`, `rename`, `symlink`, ...).
 pub fn resolve_user_path_nofollow(path: &str, out: &mut [u8]) -> Option<usize> {
-    resolve_user_path_with(path, out, false)
+    resolve_user_path_at(None, path, out, false)
 }
 
-fn resolve_user_path_with(path: &str, out: &mut [u8], follow_last: bool) -> Option<usize> {
+/// [`resolve_user_path`] relative to `dir` (see
+/// [`resolve_user_path_virtual`]), the last component followed when it is
+/// a symlink if `follow_last`.
+pub fn resolve_user_path_at(dir: Option<&str>, path: &str, out: &mut [u8], follow_last: bool) -> Option<usize> {
     // The whole tree and no symlinks anywhere (the common case): resolve
     // straight into `out` — no extra buffers on the kernel stack of every
     // path syscall.
     let follow = vfs::symlinks_possible();
     if !crate::task::has_ns() && !follow {
-        let n = resolve_user_path_virtual(path, out)?;
+        let n = resolve_user_path_virtual(dir, path, out)?;
         if !out[..n].starts_with(PROC_SELF) {
             return Some(n);
         }
@@ -263,7 +277,7 @@ fn resolve_user_path_with(path: &str, out: &mut [u8], follow_last: bool) -> Opti
         return Some(vn);
     }
     let mut virt = [0u8; vfs::PATH_MAX];
-    let mut vn = resolve_user_path_virtual(path, &mut virt)?;
+    let mut vn = resolve_user_path_virtual(dir, path, &mut virt)?;
     if follow || virt[..vn].starts_with(PROC_SELF) {
         vn = follow_symlinks(&mut virt, vn, follow_last)?;
     }

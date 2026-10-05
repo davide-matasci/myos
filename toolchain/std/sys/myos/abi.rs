@@ -2,33 +2,38 @@
 
 pub const SYS_WRITE: usize = 0;
 pub const SYS_EXIT: usize = 1;
-pub const SYS_OPEN: usize = 2;
 pub const SYS_READ: usize = 3;
 pub const SYS_CLOSE: usize = 4;
-pub const SYS_EXEC: usize = 5;
 pub const SYS_FORK: usize = 6;
 pub const SYS_WAIT: usize = 7;
-pub const SYS_LISTDIR: usize = 8;
 pub const SYS_BRK: usize = 9;
 pub const SYS_PIPE: usize = 10;
 pub const SYS_DUP2: usize = 11;
-pub const SYS_STAT: usize = 12;
 pub const SYS_EXECNAME: usize = 13;
 pub const SYS_DUPFD: usize = 14;
-pub const SYS_CHDIR: usize = 15;
 pub const SYS_GETCWD: usize = 16;
-pub const SYS_MKDIR: usize = 17;
-pub const SYS_RMDIR: usize = 18;
-pub const SYS_UNLINK: usize = 19;
-pub const SYS_RENAME: usize = 20;
-pub const SYS_SYMLINK: usize = 21;
-pub const SYS_READLINK: usize = 22;
 pub const SYS_LSEEK: usize = 26;
 pub const SYS_GETTIMEOFDAY: usize = 33;
 pub const SYS_NANOSLEEP: usize = 52;
-pub const SYS_STAT2: usize = 61;
-pub const SYS_UTIMENS: usize = 62;
-pub const SYS_FUTIMENS: usize = 63;
+/// The path calls (`kernel/src/user/at.rs`): a directory fd ([`AT_FDCWD`]:
+/// the cwd) and a path `(ptr, len)` relative to it; [`AT_EMPTY_PATH`] with
+/// an empty path is the fd's own file.
+pub const SYS_OPENAT: usize = 70;
+pub const SYS_STATAT: usize = 71;
+pub const SYS_MKNODAT: usize = 72;
+pub const SYS_SYMLINKAT: usize = 73;
+pub const SYS_UNLINKAT: usize = 74;
+pub const SYS_RENAMEAT: usize = 75;
+pub const SYS_READLINKAT: usize = 76;
+pub const SYS_UTIMENSAT: usize = 77;
+pub const SYS_CHDIRAT: usize = 78;
+pub const SYS_LISTDIRAT: usize = 79;
+pub const SYS_EXECAT: usize = 80;
+pub const AT_FDCWD: usize = -100isize as usize;
+pub const AT_SYMLINK_NOFOLLOW: usize = 0x100;
+pub const AT_REMOVEDIR: usize = 0x200;
+pub const AT_EMPTY_PATH: usize = 0x1000;
+pub const MKNOD_DIR: usize = 0;
 /// `utimens` / `futimens` time values: now, or leave the time as it is.
 pub const UTIME_NOW: i64 = -1;
 pub const UTIME_OMIT: i64 = -2;
@@ -115,18 +120,9 @@ pub fn nanosleep(dur: crate::time::Duration) -> bool {
     raw_nanosleep(ns as usize, 0) == 0
 }
 
-#[inline]
-pub fn open(path: &[u8]) -> isize {
-    let ret = raw_open(path.as_ptr() as usize, path.len());
-    if ret == usize::MAX {
-        -1
-    } else {
-        ret as isize
-    }
-}
 
-/// Kernel `MyosStat2Buf`, written by `SYS_STAT2`. Times are seconds since
-/// the epoch, 0 where the filesystem keeps none.
+/// Kernel `MyosStat`, written by `statat`. Times are seconds since the
+/// epoch, 0 where the filesystem keeps none.
 #[repr(C)]
 #[derive(Default)]
 pub struct StatBuf {
@@ -137,28 +133,97 @@ pub struct StatBuf {
     pub st_size: u64,
     pub st_atime: i64,
     pub st_mtime: i64,
+    pub st_uid: u32,
+    pub st_gid: u32,
 }
 
-/// `lstat`: the last path component is not followed.
-#[inline]
-pub fn stat(path: &[u8], out: &mut StatBuf) -> isize {
-    let ret = raw_syscall3(SYS_STAT2, path.as_ptr() as usize, path.len(), out as *mut StatBuf as usize);
-    if ret == usize::MAX { -1 } else { 0 }
-}
-
-/// Set the access and modification times of `path` (symlinks followed):
-/// seconds, [`UTIME_NOW`] or [`UTIME_OMIT`].
-#[inline]
-pub fn utimens(path: &[u8], times: &[i64; 2]) -> isize {
-    let ret = raw_syscall3(SYS_UTIMENS, path.as_ptr() as usize, path.len(), times.as_ptr() as usize);
-    if ret == usize::MAX { -1 } else { 0 }
-}
-
-/// `open` with [`O_WRONLY`], [`O_CREAT`], ... flags.
-#[inline]
-pub fn open_flags(path: &[u8], flags: usize) -> isize {
-    let ret = raw_syscall3(SYS_OPEN, path.as_ptr() as usize, path.len(), flags);
+fn ok(ret: usize) -> isize {
     if ret == usize::MAX { -1 } else { ret as isize }
+}
+
+/// An fd on `path` with [`O_WRONLY`], [`O_CREAT`], ... flags.
+#[inline]
+pub fn openat(dirfd: usize, path: &[u8], flags: usize) -> isize {
+    ok(raw_syscall6(SYS_OPENAT, dirfd, path.as_ptr() as usize, path.len(), flags, 0, 0))
+}
+
+/// `stat` of `path` relative to `dirfd` ([`AT_SYMLINK_NOFOLLOW`]: of a
+/// symlink itself; [`AT_EMPTY_PATH`] and no path: of the fd).
+#[inline]
+pub fn statat(dirfd: usize, path: &[u8], flags: usize, out: &mut StatBuf) -> isize {
+    ok(raw_syscall6(SYS_STATAT, dirfd, path.as_ptr() as usize, path.len(), flags, out as *mut StatBuf as usize, 0))
+}
+
+/// A new directory ([`MKNOD_DIR`]) at `path`.
+#[inline]
+pub fn mknodat(path: &[u8], kind: usize) -> isize {
+    ok(raw_syscall6(SYS_MKNODAT, AT_FDCWD, path.as_ptr() as usize, path.len(), kind, 0, 0))
+}
+
+/// Remove `path` ([`AT_REMOVEDIR`]: an empty directory).
+#[inline]
+pub fn unlinkat(path: &[u8], flags: usize) -> isize {
+    ok(raw_syscall6(SYS_UNLINKAT, AT_FDCWD, path.as_ptr() as usize, path.len(), flags, 0, 0))
+}
+
+#[inline]
+pub fn renameat(old: &[u8], new: &[u8]) -> isize {
+    ok(raw_syscall6(SYS_RENAMEAT, AT_FDCWD, old.as_ptr() as usize, old.len(), AT_FDCWD, new.as_ptr() as usize, new.len()))
+}
+
+/// A symlink at `link` holding `target`.
+#[inline]
+pub fn symlinkat(target: &[u8], link: &[u8]) -> isize {
+    ok(raw_syscall6(SYS_SYMLINKAT, target.as_ptr() as usize, target.len(), AT_FDCWD, link.as_ptr() as usize, link.len(), 0))
+}
+
+/// The link's target into `buf`: its length, or -1.
+#[inline]
+pub fn readlinkat(path: &[u8], buf: &mut [u8]) -> isize {
+    ok(raw_syscall6(SYS_READLINKAT, AT_FDCWD, path.as_ptr() as usize, path.len(), buf.as_mut_ptr() as usize, buf.len(), 0))
+}
+
+/// Set the access and modification times (seconds, [`UTIME_NOW`] or
+/// [`UTIME_OMIT`]) of `path` relative to `dirfd`, with `statat`'s flags.
+#[inline]
+pub fn utimensat(dirfd: usize, path: &[u8], times: &[i64; 2], flags: usize) -> isize {
+    ok(raw_syscall6(SYS_UTIMENSAT, dirfd, path.as_ptr() as usize, path.len(), times.as_ptr() as usize, flags, 0))
+}
+
+/// Make the directory at `path` the cwd.
+#[inline]
+pub fn chdirat(path: &[u8]) -> isize {
+    ok(raw_syscall6(SYS_CHDIRAT, AT_FDCWD, path.as_ptr() as usize, path.len(), 0, 0, 0))
+}
+
+/// The cwd into `buf` (with a NUL after it): its length, or -1.
+#[inline]
+pub fn getcwd(buf: &mut [u8]) -> isize {
+    ok(raw_syscall3(SYS_GETCWD, buf.as_mut_ptr() as usize, buf.len(), 0))
+}
+
+/// The names in the directory at `path`, one per line, into `buf`: the
+/// bytes written (all of `buf`: there may be more), or -1.
+#[inline]
+pub fn listdirat(path: &[u8], buf: &mut [u8]) -> isize {
+    ok(raw_syscall6(SYS_LISTDIRAT, AT_FDCWD, path.as_ptr() as usize, path.len(), buf.as_mut_ptr() as usize, buf.len(), 0))
+}
+
+/// Replace the current process image with the program at `path`. Does not
+/// return on success.
+#[inline]
+pub fn exec(path: &[u8], args: &[&[u8]]) -> ! {
+    // `[argc, (ptr,len)…, envc, (ptr,len)…]`; the kernel enforces its limits
+    // (and fails the exec past them).
+    let mut pack = crate::vec::Vec::with_capacity(2 + 2 * args.len());
+    pack.push(args.len());
+    for s in args {
+        pack.push(s.as_ptr() as usize);
+        pack.push(s.len());
+    }
+    pack.push(0);
+    raw_syscall6(SYS_EXECAT, AT_FDCWD, path.as_ptr() as usize, path.len(), pack.as_ptr() as usize, 0, 0);
+    exit(127);
 }
 
 /// The new offset, or -1 (a pipe or a terminal has none).
@@ -166,67 +231,6 @@ pub fn open_flags(path: &[u8], flags: usize) -> isize {
 pub fn lseek(fd: i32, offset: i64, whence: usize) -> i64 {
     let ret = raw_syscall3(SYS_LSEEK, fd as usize, offset as usize, whence);
     if ret == usize::MAX { -1 } else { ret as i64 }
-}
-
-/// `mkdir`, `rmdir` and `unlink`: the path, its length and one argument.
-#[inline]
-pub fn path_call(nr: usize, path: &[u8], arg: usize) -> isize {
-    let ret = raw_syscall3(nr, path.as_ptr() as usize, path.len(), arg);
-    if ret == usize::MAX { -1 } else { 0 }
-}
-
-/// `rename` and `symlink`: two paths, their lengths packed as
-/// `(a_len << 16) | b_len`.
-#[inline]
-pub fn path_pair(nr: usize, a: &[u8], b: &[u8]) -> isize {
-    if a.is_empty() || b.is_empty() || a.len() > 0xffff || b.len() > 0xffff {
-        return -1;
-    }
-    let ret = raw_syscall3(nr, a.as_ptr() as usize, b.as_ptr() as usize, (a.len() << 16) | b.len());
-    if ret == usize::MAX { -1 } else { 0 }
-}
-
-/// The link's target into `buf`: its length, or -1.
-#[inline]
-pub fn readlink(path: &[u8], buf: &mut [u8]) -> isize {
-    let size = buf.len().min(0xffff);
-    if path.is_empty() || path.len() > 0xffff || size == 0 {
-        return -1;
-    }
-    let ret = raw_syscall3(SYS_READLINK, path.as_ptr() as usize, buf.as_mut_ptr() as usize, (path.len() << 16) | size);
-    if ret == usize::MAX { -1 } else { ret as isize }
-}
-
-/// [`utimens`] for an open file.
-#[inline]
-pub fn futimens(fd: i32, times: &[i64; 2]) -> isize {
-    let ret = raw_syscall3(SYS_FUTIMENS, fd as usize, times.as_ptr() as usize, 0);
-    if ret == usize::MAX { -1 } else { 0 }
-}
-
-/// Replace the current process image. Does not return on success.
-#[inline]
-pub fn exec(path: &[u8], args: &[&[u8]]) -> ! {
-    exec_env(path, args, &[]);
-}
-
-/// Like [`exec`], but passes a `KEY=value` environment block to the new image.
-#[inline]
-pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) -> ! {
-    if args.is_empty() && env.is_empty() {
-        raw_exec(path.as_ptr() as usize, path.len(), 0);
-    }
-    // `[argc, (ptr,len)…, envc, (ptr,len)…]`; the kernel enforces its limits
-    // (and fails the exec past them).
-    let mut pack = crate::vec::Vec::with_capacity(2 + 2 * (args.len() + env.len()));
-    for list in [args, env] {
-        pack.push(list.len());
-        for s in list {
-            pack.push(s.as_ptr() as usize);
-            pack.push(s.len());
-        }
-    }
-    raw_exec(path.as_ptr() as usize, path.len(), pack.as_ptr() as usize);
 }
 
 /// Parent: child pid. Child: `0`. Error: `-1`.
@@ -488,47 +492,6 @@ fn raw_exit(code: usize) -> ! {
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn raw_open(ptr: usize, len: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") SYS_OPEN,
-            in("rdi") ptr,
-            in("rsi") len,
-            in("rdx") 0usize,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            lateout("rdi") _,
-            lateout("rsi") _,
-            lateout("rdx") _,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn raw_open(ptr: usize, len: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") SYS_OPEN,
-            in("x0") ptr,
-            in("x1") len,
-            in("x2") 0usize,
-            lateout("x0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
 fn raw_fork() -> usize {
     let ret: usize;
     unsafe {
@@ -666,38 +629,6 @@ fn raw_dup2(oldfd: usize, newfd: usize) -> usize {
     ret
 }
 
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn raw_exec(path: usize, path_len: usize, args: usize) -> ! {
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") SYS_EXEC,
-            in("rdi") path,
-            in("rsi") path_len,
-            in("rdx") args,
-            options(noreturn),
-        );
-        core::hint::unreachable_unchecked();
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn raw_exec(path: usize, path_len: usize, args: usize) -> ! {
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") SYS_EXEC,
-            in("x0") path,
-            in("x1") path_len,
-            in("x2") args,
-            options(noreturn),
-        );
-        core::hint::unreachable_unchecked();
-    }
-}
-
 #[cfg(target_arch = "riscv64")]
 #[inline]
 fn raw_close(fd: usize) -> usize {
@@ -797,32 +728,6 @@ fn raw_exit(code: usize) -> ! {
 
 #[cfg(target_arch = "riscv64")]
 #[inline]
-fn raw_open(ptr: usize, len: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") SYS_OPEN,
-            inout("a0") ptr => ret,
-            in("a1") len,
-            // SYS_OPEN flags (a2). Must be 0 for std File::open — unlike
-            // myos_user/libc which pass flags explicitly. Leaving a2 unset
-            // reused leftover register state (e.g. StatBuf* / listdir buf),
-            // so open can fail when (flags & O_ACCMODE) == 3.
-            // Consumers (uutils) statically link libstd: coreutils stamp must
-            // include myos_sysroot_version_hash or CI skips rebuild
-            // ("uutils coreutils up to date") and this fix never ships.
-            in("a2") 0usize,
-            lateout("a1") _,
-            lateout("a2") _,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline]
 fn raw_fork() -> usize {
     unsafe extern "C" {
         fn sys_fork_raw() -> usize;
@@ -888,22 +793,6 @@ fn raw_dup2(oldfd: usize, newfd: usize) -> usize {
         );
     }
     ret
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline]
-fn raw_exec(path: usize, path_len: usize, args: usize) -> ! {
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") SYS_EXEC,
-            in("a0") path,
-            in("a1") path_len,
-            in("a2") args,
-            options(noreturn),
-        );
-        core::hint::unreachable_unchecked();
-    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1018,41 +907,24 @@ fn raw_syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
     ret
 }
 
-/// Must match kernel `LISTDIR_CAP` / libgloss `MYOS_DIRBUF`.
-pub const LISTDIR_CAP: usize = 4096;
-
-/// List directory entries at `path` (newline-separated basenames) into `buf`.
-/// `buf` must be at least [`LISTDIR_CAP`] bytes. Returns byte count, or `-1` on error.
-#[inline]
-pub fn listdir(path: &[u8], buf: &mut [u8]) -> isize {
-    if buf.len() < LISTDIR_CAP {
-        return -1;
-    }
-    let ret = raw_listdir(path.as_ptr() as usize, path.len(), buf.as_mut_ptr() as usize);
-    if ret == usize::MAX {
-        -1
-    } else {
-        ret as isize
-    }
-}
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn raw_listdir(ptr: usize, len: usize, buf: usize) -> usize {
+fn raw_syscall6(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> usize {
     let ret: usize;
     unsafe {
         core::arch::asm!(
             "syscall",
-            in("rax") SYS_LISTDIR,
-            in("rdi") ptr,
-            in("rsi") len,
-            in("rdx") buf,
+            in("rax") nr,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            in("r10") a3,
+            in("r8") a4,
+            in("r9") a5,
             lateout("rax") ret,
             out("rcx") _,
             out("r11") _,
-            lateout("rdi") _,
-            lateout("rsi") _,
-            lateout("rdx") _,
             options(nostack),
         );
     }
@@ -1061,16 +933,18 @@ fn raw_listdir(ptr: usize, len: usize, buf: usize) -> usize {
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-fn raw_listdir(ptr: usize, len: usize, buf: usize) -> usize {
+fn raw_syscall6(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> usize {
     let ret: usize;
     unsafe {
         core::arch::asm!(
             "svc #0",
-            in("x8") SYS_LISTDIR,
-            in("x0") ptr,
-            in("x1") len,
-            in("x2") buf,
-            lateout("x0") ret,
+            in("x8") nr,
+            inlateout("x0") a0 => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
+            in("x4") a4,
+            in("x5") a5,
             options(nostack),
         );
     }
@@ -1079,16 +953,18 @@ fn raw_listdir(ptr: usize, len: usize, buf: usize) -> usize {
 
 #[cfg(target_arch = "riscv64")]
 #[inline]
-fn raw_listdir(ptr: usize, len: usize, buf: usize) -> usize {
+fn raw_syscall6(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> usize {
     let ret: usize;
     unsafe {
         core::arch::asm!(
             "ecall",
-            in("a7") SYS_LISTDIR,
-            in("a0") ptr,
-            in("a1") len,
-            in("a2") buf,
-            lateout("a0") ret,
+            in("a7") nr,
+            inlateout("a0") a0 => ret,
+            in("a1") a1,
+            in("a2") a2,
+            in("a3") a3,
+            in("a4") a4,
+            in("a5") a5,
             options(nostack),
         );
     }

@@ -84,14 +84,14 @@ exec /bin/custom/netd -> netd
 
 | Operation | Rights |
 |---|---|
-| `open` | `read` and/or `write` (`append` with `O_APPEND`, `write` with `O_TRUNC`); a new file `create` too |
-| `stat`, `lstat` | any right (a file the caller has none on is not there for it) |
-| `listdir`, `chdir`, `readlink` | `read` |
-| `mkdir`, `mkfifo`, `symlink` | `create` (on the new name) |
-| `unlink`, `rmdir` | `remove` |
-| `rename` | `remove` on the old name, `create` on the new one (`remove` too when it replaces a file) |
-| `exec` | `exec` (a script's interpreter too) |
-| `utimensat`, `futimens` | `setattr` |
+| `openat` | `read` and/or `write` (`append` with `O_APPEND`, `write` with `O_TRUNC`); a new file `create` too |
+| `statat` | any right (a file the caller has none on is not there for it); none for an fd's own file (`fstat`) |
+| `listdirat`, `chdirat`, `readlinkat` | `read` |
+| `mknodat`, `symlinkat` | `create` (on the new name) |
+| `unlinkat` | `remove` |
+| `renameat` | `remove` on the old name, `create` on the new one (`remove` too when it replaces a file) |
+| `execat` | `exec` (a script's interpreter too) |
+| `utimensat` | `setattr` |
 | `mount`, `umount` | `mount` on the directory; a disk `read write`, a bind's source `read` |
 | `insmod`, `rmmod` | `read` on the module, `write` on `kernel.modules` |
 | `kill` | `signal` on `proc(target's user)` |
@@ -157,8 +157,8 @@ sec ns /bin:read,exec /lib:read /dev/sda:read,write -- B
   most the caller's there, so a namespace only narrows. There is no way back
   to a name the namespace lacks: `mount` and `bind` need names too.
 - The policy still applies: the namespace hides, the policy refuses.
-- A namespace is inherited on fork and kept across exec. `chroot DIR` is a
-  namespace of one binding, `DIR` at `/`.
+- A namespace is inherited on fork and kept across exec. `chroot DIR`
+  (libc) is a namespace of one binding, `DIR` at `/`.
 - `/proc/self/fd/N` names a file as the namespace does; a file it cannot
   name has no link to re-open.
 - A file handed over as an open fd (`sec ns ... -- B < /dev/sdb`) works:

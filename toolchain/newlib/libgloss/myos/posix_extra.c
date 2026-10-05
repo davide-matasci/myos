@@ -143,49 +143,6 @@ int truncate(const char *path, off_t length) {
     return ret;
 }
 
-int fchdir(int fd) {
-    const char *path = myos_fd_path_get(fd);
-    struct stat st;
-    if (path == NULL) {
-        errno = EBADF;
-        return -1;
-    }
-    if (stat(path, &st) < 0) {
-        return -1;
-    }
-    if (!S_ISDIR(st.st_mode)) {
-        errno = ENOTDIR;
-        return -1;
-    }
-    return chdir(path);
-}
-
-int mkdirat(int dirfd, const char *path, mode_t mode) {
-    char full[512];
-    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
-        return -1;
-    }
-    return mkdir(full, mode);
-}
-
-int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
-    char a[512];
-    char b[512];
-    if (myos_fd_path_resolve(olddirfd, oldpath, a, sizeof a) < 0
-        || myos_fd_path_resolve(newdirfd, newpath, b, sizeof b) < 0) {
-        return -1;
-    }
-    return rename(a, b);
-}
-
-ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t size) {
-    char full[512];
-    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
-        return -1;
-    }
-    return readlink(full, buf, size);
-}
-
 extern char **environ;
 
 int execv(const char *path, char *const argv[]) {

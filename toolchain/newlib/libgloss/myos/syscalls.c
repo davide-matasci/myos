@@ -12,7 +12,6 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
-#include "myos_stat.h"
 
 static int myos_err(long ret) {
     if (ret == (long)MYOS_SYSERR) {
@@ -32,12 +31,6 @@ int myos_fd_is_tty(int fd) {
     int tty = myos_tty_dir(fd, NULL, 0, NULL) == 0;
     errno = saved;
     return tty;
-}
-
-/* `/dev/tty` = controlling tty (the kernel rejects the open with ENXIO when
- * the process has no ctty). */
-static int myos_path_is_dev_tty(const char *path) {
-    return path != NULL && strcmp(path, "/dev/tty") == 0;
 }
 
 /* Hangup /net conversations tracked by userspace BSD sockets (socket.c).
@@ -131,7 +124,6 @@ int _close(int fd) {
         errno = EBADF;
         return -1;
     }
-    myos_fd_path_clear(fd);
     myos_fd_nonblock_clear(fd);
     return 0;
 }
@@ -156,74 +148,6 @@ void _exit(int status) {
 #define MYOS_K_O_APPEND 0x400
 #define MYOS_K_O_NONBLOCK 0x800
 
-static int myos_stat_path(const char *path, struct stat *st);
-
-static long myos_kernel_oflags(int flags) {
-    long k = (long)(flags & O_ACCMODE);
-    if (flags & O_CREAT) {
-        k |= MYOS_K_O_CREAT;
-    }
-    if (flags & O_TRUNC) {
-        k |= MYOS_K_O_TRUNC;
-    }
-    if (flags & O_APPEND) {
-        k |= MYOS_K_O_APPEND;
-    }
-    if (flags & O_NONBLOCK) {
-        k |= MYOS_K_O_NONBLOCK; /* FIFO open: no wait for the peer */
-    }
-    return k;
-}
-
-int _open(const char *path, int flags, ...) {
-    if (path == NULL) {
-        errno = ENOENT;
-        return -1;
-    }
-    /* O_CREAT|O_EXCL: the kernel has no exclusive-create flag, so refuse an
-     * existing path here. Without it mkstemp()/mkdtemp() never saw EEXIST and
-     * could not step past a name already taken (pids — and so newlib's
-     * pid-seeded temp names — repeat once task slots are recycled). */
-    if ((flags & O_CREAT) && (flags & O_EXCL)) {
-        struct stat ex;
-        if (myos_stat_path(path, &ex) == 0) {
-            errno = EEXIST;
-            return -1;
-        }
-    }
-    /* Writable opens are accepted for mounts that support them (tmpfs/devfs).
-     * Read-only mounts are rejected by the kernel; map that to EROFS/ENOENT. */
-    long ret = myos_syscall3(
-        MYOS_SYS_OPEN, (long)(uintptr_t)path, (long)strlen(path),
-        myos_kernel_oflags(flags));
-    if (ret == (long)MYOS_EINTR) {
-        errno = EINTR; /* blocking FIFO open interrupted by a caught signal */
-        return -1;
-    }
-    if (ret == (long)MYOS_ENXIO) {
-        errno = ENXIO; /* FIFO: O_WRONLY|O_NONBLOCK and no reader */
-        return -1;
-    }
-    if (ret == (long)MYOS_SYSERR) {
-        /* No controlling terminal → ENXIO (Linux open(/dev/tty) semantics);
-         * a file the caller can see but not open so: the policy refused it
-         * (docs/security.md). */
-        struct stat seen;
-        errno = myos_path_is_dev_tty(path) ? ENXIO : myos_stat_path(path, &seen) == 0 ? EACCES : ENOENT;
-        return -1;
-    }
-    if (flags & O_NONBLOCK) {
-        /* Only FIFOs get userspace O_NONBLOCK reads from open(): other paths
-         * (ttys, ptys, files) keep their historical blocking behaviour
-         * that dropbear/curl rely on; fcntl(F_SETFL) still sets it anywhere. */
-        struct stat st;
-        if (myos_stat_path(path, &st) == 0 && S_ISFIFO(st.st_mode)) {
-            myos_fd_nonblock_set((int)ret, 1);
-        }
-    }
-    myos_fd_path_set((int)ret, path);
-    return (int)ret;
-}
 
 int _read(int fd, void *buf, size_t cnt) {
 
@@ -340,86 +264,6 @@ void *_sbrk(ptrdiff_t incr) {
     }
     cur = next;
     return old;
-}
-
-static int myos_fill_stat(struct stat *st, const struct myos_stat3_buf *src3)
-{
-    const struct myos_stat2_buf *src = &src3->s;
-    memset(st, 0, sizeof(*st));
-    st->st_mode = src->st_mode;
-    st->st_size = (off_t)src->st_size;
-    st->st_ino = src->st_ino;
-    st->st_nlink = src->st_nlink;
-    st->st_dev = (dev_t)src->st_dev;
-    st->st_uid = src3->uid;
-    st->st_gid = src3->gid;
-    st->st_blksize = 4096;
-    st->st_blocks = (src->st_size + 511) / 512;
-    st->st_atime = (time_t)src->atime;
-    st->st_mtime = (time_t)src->mtime;
-    /* No separate change time: the last modification stands in for it. */
-    st->st_ctime = (time_t)src->mtime;
-    return 0;
-}
-
-static int myos_stat_path(const char *path, struct stat *st)
-{
-    struct myos_stat3_buf buf;
-
-    if (st == NULL) {
-        errno = EINVAL;
-        return -1;
-    }
-    /* Always ask the kernel so st_dev is mount-specific (find loop checks). */
-    long ret = myos_syscall3(
-        MYOS_SYS_STAT3,
-        (long)(uintptr_t)path,
-        (long)strlen(path),
-        (long)(uintptr_t)&buf);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = ENOENT;
-        return -1;
-    }
-    return myos_fill_stat(st, &buf);
-}
-
-int _fstat(int fd, struct stat *st) {
-    const char *path;
-
-    if (st == NULL) {
-        errno = EINVAL;
-        return -1;
-    }
-    if (myos_fd_is_tty(fd)) {
-        memset(st, 0, sizeof(*st));
-        st->st_mode = S_IFCHR | 0666;
-        st->st_rdev = (dev_t)fd;
-        st->st_nlink = 1;
-        return 0;
-    }
-    /* Prefer path-based SYS_STAT so st_size/mode match the open file.
-     * A stub size of 0 made git's config mmap path treat MAP_FAILED+len0 as
-     * NULL and then page-fault while rewriting .git/config (cr2≈0x23). */
-    path = myos_fd_path_get(fd);
-    if (path != NULL) {
-        return myos_stat_path(path, st);
-    }
-    memset(st, 0, sizeof(*st));
-    st->st_mode = S_IFREG | 0444;
-    st->st_nlink = 1;
-    return 0;
-}
-
-int _lstat(const char *path, struct stat *st) {
-    return myos_stat_path(path, st);
-}
-
-int lstat(const char *path, struct stat *st) {
-    return _lstat(path, st);
-}
-
-int _stat(const char *path, struct stat *st) {
-    return myos_stat_path(path, st);
 }
 
 int _getpid(void) {

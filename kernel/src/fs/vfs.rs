@@ -641,6 +641,21 @@ pub fn vnode_path(node: &Vnode) -> String {
     path
 }
 
+/// The absolute path of `node`'s file, `None` once it is unlinked or gone.
+pub fn node_path(node: &Vnode) -> Option<String> {
+    let (idx, rel, gone) = node::name(node)?;
+    if gone {
+        return None;
+    }
+    let mounts = MOUNTS.lock();
+    let prefix = mounts.get(idx)?.prefix.as_str();
+    Some(match (prefix.is_empty(), rel.is_empty()) {
+        (true, _) => alloc::format!("/{rel}"),
+        (false, true) => alloc::format!("/{prefix}"),
+        (false, false) => alloc::format!("/{prefix}/{rel}"),
+    })
+}
+
 /// `node`'s file is the one at `path` (absolute, canonical).
 pub fn node_at(node: &Vnode, path: &str) -> bool {
     let Some((idx, rel)) = node::location(node) else {
@@ -820,26 +835,73 @@ fn reap() {
 /// node is used, and to write while names go or move (`unlink`, `rmdir`,
 /// `rename`): where a node's file is and what its filesystem has there
 /// change together, so an fd never reaches a file that took its file's
-/// old name. A waiter yields rather than spins: a holder may be waiting
-/// for a disk (USB storage blocks) with the waiter's CPU its only one.
+/// old name. A syscall holds it across resolving its paths and acting on
+/// them ([`hold_read`], [`hold_write`]), so a path relative to a directory
+/// fd is relative to that directory whatever moves meanwhile. A waiter
+/// yields rather than spins: a holder may be waiting for a disk (USB
+/// storage blocks) with the waiter's CPU its only one.
 static TREE: spin::RwLock<()> = spin::RwLock::new(());
 
-fn tree_read() -> spin::RwLockReadGuard<'static, ()> {
+/// The task holding [`TREE`] to write (`usize::MAX`: none): the calls it
+/// makes while it does go through without taking it again.
+static TREE_WRITER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// [`TREE`] held, or nothing for the task that holds it to write already.
+/// The guards are held for their drop, never read.
+#[allow(dead_code)]
+pub enum TreeGuard {
+    Read(spin::RwLockReadGuard<'static, ()>),
+    Write(spin::RwLockWriteGuard<'static, ()>),
+    Nested,
+}
+
+impl Drop for TreeGuard {
+    fn drop(&mut self) {
+        if let TreeGuard::Write(_) = self {
+            TREE_WRITER.store(usize::MAX, core::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+fn writing() -> bool {
+    TREE_WRITER.load(core::sync::atomic::Ordering::Acquire) == crate::task::current_id()
+}
+
+/// Hold the tree to read: a syscall that resolves a path and uses the file
+/// (one that may wait for long, a FIFO's peer, must drop it first). A task
+/// must not ask to write while it holds it to read.
+pub fn hold_read() -> TreeGuard {
+    if writing() {
+        return TreeGuard::Nested;
+    }
     loop {
         if let Some(guard) = TREE.try_read() {
-            return guard;
+            return TreeGuard::Read(guard);
         }
         crate::task::yield_now();
     }
 }
 
-fn tree_write() -> spin::RwLockWriteGuard<'static, ()> {
+/// Hold the tree to write: a syscall that removes or moves names.
+pub fn hold_write() -> TreeGuard {
+    if writing() {
+        return TreeGuard::Nested;
+    }
     loop {
         if let Some(guard) = TREE.try_write() {
-            return guard;
+            TREE_WRITER.store(crate::task::current_id(), core::sync::atomic::Ordering::Release);
+            return TreeGuard::Write(guard);
         }
         crate::task::yield_now();
     }
+}
+
+fn tree_read() -> TreeGuard {
+    hold_read()
+}
+
+fn tree_write() -> TreeGuard {
+    hold_write()
 }
 
 /// A module filesystem that can hold symlinks (one with `readlink`, such
