@@ -1,7 +1,7 @@
 # The kernel's own tests: what has no port directory of its own. The exec
 # limits, #! scripts, the console's CR, and the Linux compatibility layer
-# (docs/linux-compat.md): its module is in every image and loaded at boot when the image was built with
-# the feature (`--features linux_compat`), with the musl test programs.
+# (docs/linux-compat.md): its module is in every image and loaded at boot
+# when the image was built with the feature (`--features linux_compat`), with the musl test programs.
 
 # exec limits: 40 arguments and a 711-byte environment string through oksh
 # (libgloss execve) into sbase programs.
@@ -219,20 +219,24 @@ isatty_fds() {
 t isatty isatty_fds
 
 # CR on the screen goes back to the line's start, as a shell redrawing its
-# line needs (oksh on Up or Tab: CR, the prompt, the line). "QQ", CR and two
-# spaces leave the top row's first two 8x8 cells blank; with the CR dropped
-# the spaces would land after the Qs.
+# line needs (oksh on Up or Tab: CR, the prompt, the line). "QQ" lights the
+# top row's first two 8x8 cells; "QQ", CR and two spaces leaves them blank
+# (with the CR dropped the spaces would land after the Qs).
+console_cells() {
+	for y in 0 1 2 3 4 5 6 7; do
+		dd if=/dev/fb/data bs=64 count=1 skip=$((y * $1 / 64)) 2> /dev/null
+	done | tr -d '\000' | wc -c
+}
+
 console_cr() {
 	read -r w h depth chan pitch mode < /dev/fb/ctl
+	printf '\033[H\033[JQQ' > /dev/console/data
+	qq=$(console_cells $pitch)
 	printf '\033[H\033[JQQ\r  ' > /dev/console/data
-	lit=
-	for y in 0 1 2 3 4 5 6 7; do
-		lit=$lit$(dd if=/dev/fb/data bs=64 count=1 skip=$((y * pitch / 64)) 2> /dev/null |
-			od -An -tx1 | tr -d ' 0\n')
-	done
+	cr=$(console_cells $pitch)
 	printf '\033[H\033[J\n' > /dev/console/data
-	echo "the first two cells: ${lit:-blank}"
-	[ -z "$lit" ]
+	echo "lit bytes in the first two cells: $qq after QQ, $cr after QQ, CR, spaces"
+	[ "$qq" -gt 0 ] && [ "$cr" -eq 0 ]
 }
 t console_cr console_cr
 
