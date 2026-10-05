@@ -355,6 +355,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if name == "acpi" {
@@ -365,6 +366,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if let Some(node) = parse_self(name) {
@@ -388,6 +390,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: if mode & S_IFDIR != 0 { 2 } else { 1 },
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if name == "mounts" {
@@ -399,6 +402,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if name == "cpuinfo" {
@@ -410,6 +414,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if name == "meminfo" {
@@ -421,6 +426,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if name == "interrupts" {
@@ -432,6 +438,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if name == "modules" {
@@ -443,6 +450,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if name == "platform" {
@@ -454,6 +462,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if let Some((ino, data)) = dyn_get(name) {
@@ -469,6 +478,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if let Some(data) = stub_acpi(name) {
@@ -486,6 +496,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     None

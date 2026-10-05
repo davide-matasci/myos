@@ -12,7 +12,7 @@ pub mod libfs;
 mod tmpfs;
 pub mod vfs;
 
-pub use vfs::{StatInfo, Vnode};
+pub use vfs::{SetTime, StatInfo, Vnode};
 
 fn path_is_dev_tty(path: &str) -> bool {
     let path = path.trim_start_matches('/');
@@ -96,6 +96,16 @@ pub fn open_append(flags: u32) -> bool {
 /// Stat `path` on the best matching mount.
 pub fn stat(path: &str) -> Option<StatInfo> {
     vfs::stat(path)
+}
+
+/// Set the access and modification times of `path`.
+pub fn set_times(path: &str, atime: SetTime, mtime: SetTime) -> bool {
+    vfs::set_times(path, atime, mtime)
+}
+
+/// Set the access and modification times of an open vnode.
+pub fn set_times_node(node: &Vnode, atime: SetTime, mtime: SetTime) -> bool {
+    vfs::set_times_node(node, atime, mtime)
 }
 
 /// List entries at `path` into `buf` (newline-separated basenames).
@@ -366,6 +376,7 @@ fn ro_ops(
         symlink: reject_symlink,
         readlink: reject_readlink,
         poll: None,
+        set_times: None,
         writable: false,
     }
 }
@@ -402,6 +413,7 @@ fn rw_ops(
         symlink,
         readlink,
         poll: None,
+        set_times: None,
         writable: true,
     }
 }
@@ -465,22 +477,25 @@ pub fn init() {
     vfs::mount(
         "tmpfs",
         "tmp",
-        rw_ops(
-            tmpfs::lookup,
-            tmpfs::stat,
-            tmpfs::listdir_at,
-            tmpfs::register,
-            tmpfs::create,
-            tmpfs::truncate,
-            tmpfs::read,
-            tmpfs::write,
-            tmpfs::mkdir,
-            tmpfs::rmdir,
-            tmpfs::unlink,
-            tmpfs::rename,
-            tmpfs::symlink,
-            tmpfs::readlink,
-        ),
+        vfs::MountOps {
+            set_times: Some(tmpfs::set_times),
+            ..rw_ops(
+                tmpfs::lookup,
+                tmpfs::stat,
+                tmpfs::listdir_at,
+                tmpfs::register,
+                tmpfs::create,
+                tmpfs::truncate,
+                tmpfs::read,
+                tmpfs::write,
+                tmpfs::mkdir,
+                tmpfs::rmdir,
+                tmpfs::unlink,
+                tmpfs::rename,
+                tmpfs::symlink,
+                tmpfs::readlink,
+            )
+        },
     );
     // Device nodes are fixed; mutation ops stay rejected.
     {

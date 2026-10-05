@@ -354,6 +354,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     let node = parse(name)?;
@@ -365,6 +366,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::Tty => Some(StatInfo {
             mode: S_IFCHR | 0o666,
@@ -373,6 +375,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::ConsoleDir => Some(StatInfo {
             mode: S_IFDIR | 0o755,
@@ -381,6 +384,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::Console => Some(StatInfo {
             mode: S_IFCHR | 0o666,
@@ -389,6 +393,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::ConsoleCtl => Some(StatInfo {
             mode: S_IFREG | 0o644,
@@ -397,6 +402,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::Urandom => Some(StatInfo {
             mode: S_IFCHR | 0o666,
@@ -405,6 +411,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::Block(id) => {
             let bytes = blk::capacity_bytes(id).unwrap_or(0);
@@ -420,6 +427,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 nlink: 1,
                 dev: 0,
                 mtime: 0,
+                atime: 0,
             })
         }
         Node::ChrDir(i) => Some(StatInfo {
@@ -429,6 +437,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::ChrData(i) => Some(StatInfo {
             mode: S_IFCHR | 0o666,
@@ -437,6 +446,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
         Node::ChrCtl(i) => Some(StatInfo {
             mode: S_IFREG | 0o644,
@@ -445,6 +455,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         }),
     }
 }

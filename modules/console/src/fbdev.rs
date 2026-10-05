@@ -164,6 +164,7 @@ unsafe extern "C" fn fb_stat(path: *const u8, len: usize, out: *mut VfsStatInfo)
             ino,
             nlink: if node == Node::Root { 2 } else { 1 },
             mtime: 0,
+            atime: 0,
         };
     }
     0
@@ -280,6 +281,7 @@ pub fn mount(fb: FramebufferInfo) -> i32 {
         mmap: Some(fb_mmap),
         poll: None,
         open: None,
+        set_times: None,
     };
     unsafe { (api().vfs_mount)(b"fb".as_ptr(), 2, b"dev/fb".as_ptr(), 6, &ops) }
 }

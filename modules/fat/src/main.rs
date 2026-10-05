@@ -109,6 +109,7 @@ unsafe extern "C" fn fat_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
                     mmap: None,
                     poll: None,
                     open: None,
+                    set_times: None,
                 };
             }
             0

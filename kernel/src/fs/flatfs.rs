@@ -129,6 +129,7 @@ impl<const N: usize> FlatFs<N> {
                 nlink: 2,
                 dev: 0,
                 mtime: 0,
+                atime: 0,
             });
         }
         let files = self.files.lock();
@@ -139,6 +140,7 @@ impl<const N: usize> FlatFs<N> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         })
     }
 }

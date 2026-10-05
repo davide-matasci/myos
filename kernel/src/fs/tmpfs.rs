@@ -5,7 +5,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::fs::StatInfo;
@@ -37,9 +37,39 @@ enum Kind {
 struct Entry {
     path: String,
     kind: Kind,
+    /// Seconds since the epoch: set at creation and by `set_times`; reads
+    /// do not change `atime`.
+    atime: u64,
+    /// Seconds since the epoch: creation, a write or truncate, a directory's
+    /// entries changing, `set_times`.
+    mtime: u64,
+}
+
+impl Entry {
+    fn new(path: &str, kind: Kind, now: u64) -> Entry {
+        Entry { path: String::from(path), kind, atime: now, mtime: now }
+    }
 }
 
 static ENTRIES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+/// The mount root's times (it has no entry).
+static ROOT_ATIME: AtomicU64 = AtomicU64::new(0);
+static ROOT_MTIME: AtomicU64 = AtomicU64::new(0);
+
+/// The current time for a change, read before taking `ENTRIES` (reading the
+/// clock may go to the RTC).
+fn now() -> u64 {
+    crate::time::unix_seconds().unwrap_or(0).max(0) as u64
+}
+
+/// A directory's entries changed: its modification time is now.
+fn touch_dir(entries: &mut [Entry], dir: &str, now: u64) {
+    if dir.is_empty() {
+        ROOT_MTIME.store(now, Ordering::Relaxed);
+    } else if let Some(i) = find_index(entries, dir) {
+        entries[i].mtime = now;
+    }
+}
 
 fn valid_component(name: &str) -> bool {
     !name.is_empty()
@@ -109,6 +139,7 @@ pub fn create(name: &str) -> bool {
     if !valid_rel_path(name) {
         return false;
     }
+    let now = now();
     let mut entries = ENTRIES.lock();
     if let Some(i) = find_index(&entries, name) {
         return matches!(entries[i].kind, Kind::File(_));
@@ -119,10 +150,8 @@ pub fn create(name: &str) -> bool {
     if entries.len() >= MAX_ENTRIES {
         return false;
     }
-    entries.push(Entry {
-        path: String::from(name),
-        kind: Kind::File(Vec::new()),
-    });
+    entries.push(Entry::new(name, Kind::File(Vec::new()), now));
+    touch_dir(&mut entries, parent_of(name), now);
     true
 }
 
@@ -130,6 +159,7 @@ pub fn truncate(name: &str) -> bool {
     if !valid_rel_path(name) {
         return false;
     }
+    let now = now();
     let mut entries = ENTRIES.lock();
     let Some(i) = find_index(&entries, name) else {
         return false;
@@ -137,6 +167,7 @@ pub fn truncate(name: &str) -> bool {
     match &mut entries[i].kind {
         Kind::File(data) => {
             data.clear();
+            entries[i].mtime = now;
             true
         }
         _ => false,
@@ -165,11 +196,13 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
     if !valid_rel_path(name) {
         return None;
     }
+    let now = now();
     let mut entries = ENTRIES.lock();
     let Some(i) = find_index(&entries, name) else {
         return None;
     };
-    let Kind::File(data) = &mut entries[i].kind else {
+    let entry = &mut entries[i];
+    let Kind::File(data) = &mut entry.kind else {
         return None;
     };
     if pos > data.len() {
@@ -190,6 +223,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         data.resize(end, 0);
     }
     data[pos..end].copy_from_slice(buf);
+    entry.mtime = now;
     Some(buf.len())
 }
 
@@ -198,6 +232,7 @@ pub fn mkfifo(name: &str) -> bool {
     if !valid_rel_path(name) {
         return false;
     }
+    let now = now();
     let mut entries = ENTRIES.lock();
     if find_index(&entries, name).is_some()
         || !parent_ok(&entries, name)
@@ -208,10 +243,8 @@ pub fn mkfifo(name: &str) -> bool {
     let Some(id) = crate::pipe::alloc_named() else {
         return false;
     };
-    entries.push(Entry {
-        path: String::from(name),
-        kind: Kind::Fifo(id),
-    });
+    entries.push(Entry::new(name, Kind::Fifo(id), now));
+    touch_dir(&mut entries, parent_of(name), now);
     true
 }
 
@@ -231,6 +264,7 @@ pub fn mkdir(name: &str) -> bool {
     if !valid_rel_path(name) {
         return false;
     }
+    let now = now();
     let mut entries = ENTRIES.lock();
     if find_index(&entries, name).is_some() {
         return false;
@@ -241,10 +275,8 @@ pub fn mkdir(name: &str) -> bool {
     if entries.len() >= MAX_ENTRIES {
         return false;
     }
-    entries.push(Entry {
-        path: String::from(name),
-        kind: Kind::Dir,
-    });
+    entries.push(Entry::new(name, Kind::Dir, now));
+    touch_dir(&mut entries, parent_of(name), now);
     true
 }
 
@@ -252,6 +284,7 @@ pub fn rmdir(name: &str) -> bool {
     if !valid_rel_path(name) {
         return false;
     }
+    let now = now();
     let mut entries = ENTRIES.lock();
     let Some(i) = find_index(&entries, name) else {
         return false;
@@ -263,6 +296,7 @@ pub fn rmdir(name: &str) -> bool {
         return false;
     }
     entries.remove(i);
+    touch_dir(&mut entries, parent_of(name), now);
     true
 }
 
@@ -270,27 +304,22 @@ pub fn unlink(name: &str) -> bool {
     if !valid_rel_path(name) {
         return false;
     }
+    let now = now();
     let mut entries = ENTRIES.lock();
     let Some(i) = find_index(&entries, name) else {
         return false;
     };
     match entries[i].kind {
-        Kind::File(_) => {
-            entries.remove(i);
-            true
-        }
+        Kind::File(_) => {}
         Kind::Symlink(_) => {
-            entries.remove(i);
             SYMLINKS.fetch_sub(1, Ordering::Relaxed);
-            true
         }
-        Kind::Fifo(id) => {
-            crate::pipe::fifo_unlink(id);
-            entries.remove(i);
-            true
-        }
-        Kind::Dir => false,
+        Kind::Fifo(id) => crate::pipe::fifo_unlink(id),
+        Kind::Dir => return false,
     }
+    entries.remove(i);
+    touch_dir(&mut entries, parent_of(name), now);
+    true
 }
 
 pub fn rename(old: &str, new: &str) -> bool {
@@ -300,12 +329,22 @@ pub fn rename(old: &str, new: &str) -> bool {
     if old == new {
         return true;
     }
+    let now = now();
+    let mut entries = ENTRIES.lock();
+    if !rename_locked(&mut entries, old, new) {
+        return false;
+    }
+    touch_dir(&mut entries, parent_of(old), now);
+    touch_dir(&mut entries, parent_of(new), now);
+    true
+}
+
+fn rename_locked(entries: &mut Vec<Entry>, old: &str, new: &str) -> bool {
     // Refuse renaming a directory into itself.
     if new.starts_with(old) && new.as_bytes().get(old.len()) == Some(&b'/') {
         return false;
     }
-    let mut entries = ENTRIES.lock();
-    let Some(old_i) = find_index(&entries, old) else {
+    let Some(old_i) = find_index(entries, old) else {
         return false;
     };
     let is_dir = matches!(entries[old_i].kind, Kind::Dir);
@@ -314,7 +353,7 @@ pub fn rename(old: &str, new: &str) -> bool {
     // Without this, git init dies on the second config write (config.lock →
     // config) after core.repositoryformatversion already created config —
     // commit_lock_file rename failed with ENOENT on all boot arches.
-    if let Some(new_i) = find_index(&entries, new) {
+    if let Some(new_i) = find_index(entries, new) {
         if is_dir || matches!(entries[new_i].kind, Kind::Dir) {
             return false;
         }
@@ -330,7 +369,7 @@ pub fn rename(old: &str, new: &str) -> bool {
         return true;
     }
 
-    if !parent_ok(&entries, new) {
+    if !parent_ok(entries, new) {
         return false;
     }
 
@@ -378,6 +417,7 @@ pub fn symlink(target: &str, linkpath: &str) -> bool {
     if target.is_empty() || target.len() > LINK_CAP {
         return false;
     }
+    let now = now();
     let mut entries = ENTRIES.lock();
     if find_index(&entries, linkpath).is_some() {
         return false;
@@ -388,10 +428,8 @@ pub fn symlink(target: &str, linkpath: &str) -> bool {
     if entries.len() >= MAX_ENTRIES {
         return false;
     }
-    entries.push(Entry {
-        path: String::from(linkpath),
-        kind: Kind::Symlink(String::from(target)),
-    });
+    entries.push(Entry::new(linkpath, Kind::Symlink(String::from(target)), now));
+    touch_dir(&mut entries, parent_of(linkpath), now);
     SYMLINKS.fetch_add(1, Ordering::Relaxed);
     true
 }
@@ -471,7 +509,8 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             ino: 1,
             nlink: 2,
             dev: 0,
-            mtime: 0,
+            mtime: ROOT_MTIME.load(Ordering::Relaxed),
+            atime: ROOT_ATIME.load(Ordering::Relaxed),
         });
     }
     if !valid_rel_path(name) {
@@ -491,6 +530,35 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         ino: (i as u32) + 2,
         nlink,
         dev: 0,
-        mtime: 0,
+        mtime: entries[i].mtime,
+        atime: entries[i].atime,
     })
+}
+
+/// Set a path's access and modification times (`None` keeps one); the mount
+/// root (`""`) included.
+pub fn set_times(name: &str, atime: Option<u64>, mtime: Option<u64>) -> bool {
+    if name.is_empty() || name == "." {
+        if let Some(t) = atime {
+            ROOT_ATIME.store(t, Ordering::Relaxed);
+        }
+        if let Some(t) = mtime {
+            ROOT_MTIME.store(t, Ordering::Relaxed);
+        }
+        return true;
+    }
+    if !valid_rel_path(name) {
+        return false;
+    }
+    let mut entries = ENTRIES.lock();
+    let Some(i) = find_index(&entries, name) else {
+        return false;
+    };
+    if let Some(t) = atime {
+        entries[i].atime = t;
+    }
+    if let Some(t) = mtime {
+        entries[i].mtime = t;
+    }
+    true
 }

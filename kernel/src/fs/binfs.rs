@@ -155,6 +155,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if !valid_rel(name) {
@@ -169,6 +170,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 1,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if is_dir_path(&files, name) {
@@ -179,6 +181,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     None
