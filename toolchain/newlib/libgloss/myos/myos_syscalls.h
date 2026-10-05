@@ -82,6 +82,13 @@ struct winsize;
 #define MYOS_UTIME_OMIT (-2LL)
 /* settimeofday(tv): two int64_t, seconds and microseconds (time.c). */
 #define MYOS_SYS_SETTIMEOFDAY 65
+/* stat2 and the owner's uid (myos_stat.h). */
+#define MYOS_SYS_STAT3 66
+/* setuser(buf, len): "name\0password"; ns(spec, len); policy_load(path,
+ * len) (docs/security.md, pwdgrp.c). */
+#define MYOS_SYS_SETUSER 67
+#define MYOS_SYS_NS 68
+#define MYOS_SYS_POLICY_LOAD 69
 
 /* fds per process (kernel MAX_FDS): sysconf(_SC_OPEN_MAX), getdtablesize. */
 #define MYOS_OPEN_MAX 64

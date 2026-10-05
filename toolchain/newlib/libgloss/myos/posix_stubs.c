@@ -480,10 +480,6 @@ long sysconf(int name) {
     return -1;
 }
 
-uid_t getuid(void) {
-    return 0;
-}
-
 gid_t getgid(void) {
     return 0;
 }
