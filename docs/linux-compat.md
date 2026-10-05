@@ -74,9 +74,9 @@ LLVM and gcc: ~300 MB of downloads, ~600 MB installed) on the scratch disk
 of a test boot:
 
 ```sh
-mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /disk ext2
-get-alpine -r /disk/alpine rust
-linux --root /disk/alpine rustc --version
+mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /mnt ext2
+get-alpine -r /mnt/alpine rust
+linux --root /mnt/alpine rustc --version
 ```
 
 Under emulation that download takes a couple of hours (the mirror drops
@@ -322,8 +322,8 @@ the kernel does not keep a per-task copy at syscall entry.
 builds the x86_64 kernel inside myos with Alpine's Rust toolchain:
 
 ```sh
-mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /disk ext2
-sh /lib/self-host.sh /disk          # REV: the branch to build (master)
+mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /mnt ext2
+sh /lib/self-host.sh /mnt           # REV: the branch to build (master)
 ```
 
 It installs Alpine's rust, cargo, rust-src, lld, clang, bash, busybox and

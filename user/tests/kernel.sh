@@ -181,10 +181,31 @@ usb_disk() {
 	cat /proc/usb
 	grep -q ' hub ' /proc/usb || return 1
 	grep -q ':usb_storage sda$' /proc/usb || return 1
-	mount /dev/sda /usb fat || return 1
-	[ "$(cat /usb/msg)" = fat-msg ]
+	mkdir -p /tmp/usb && mount /dev/sda /tmp/usb fat || return 1
+	[ "$(cat /tmp/usb/msg)" = fat-msg ]
 }
 t usb_disk usb_disk
+
+# mount(2) takes any existing directory that is not a mount point yet, at
+# the top level as below it, and umount gives the directory back; a busy
+# mount stays, and a directory a mount hangs from is neither renamed nor
+# removed (README, VFS). The stick of usb_disk is the disk.
+mount_rules() {
+	umount /tmp/usb && ! [ -e /tmp/usb/msg ] || return 1
+	mount /dev/sda /tmp/none fat 2>&1 | grep -q 'no such directory' || return 1
+	mount /dev/sda /mnt fat && [ "$(cat /mnt/msg)" = fat-msg ] || return 1
+	mount /dev/sda /tmp/usb fat 2>&1 | grep -q 'already mounted' || return 1
+	umount /mnt && mkdir -p /tmp/a/b && mount /dev/sda /tmp/a/b fat || return 1
+	grep -q '^/dev/sda /tmp/a/b fat ' /proc/mounts || return 1
+	mount /dev/sda /tmp/a/b fat 2>&1 | grep -q 'already a mount point' || return 1
+	! mv /tmp/a /tmp/c 2>/dev/null || return 1
+	exec 4< /tmp/a/b/msg
+	umount /tmp/a/b 2>&1 | grep -q busy || return 1
+	exec 4<&-
+	umount /tmp/a/b && rmdir /tmp/a/b /tmp/a || return 1
+	umount /tmp 2>&1 | grep -q 'not a mount point of a disk'
+}
+t mount_rules mount_rules
 
 # Hot-plug: the host plugs a second stick into a root port through the
 # QEMU monitor (user/tests/host.sh); it enumerates and reads; pulled out
@@ -292,8 +313,8 @@ lx_python_net() {
 # libraries and allocator reservation need over 500 MiB of address space,
 # of which `--version` touches some 30 MiB.
 lx_rustc() {
-	mount /dev/nvme2n1 /alpine-rust ext2 || return 1
-	out=$(linux --root /alpine-rust/alpine rustc --version)
+	mkdir -p /tmp/alpine-rust && mount /dev/nvme2n1 /tmp/alpine-rust ext2 || return 1
+	out=$(linux --root /tmp/alpine-rust/alpine rustc --version)
 	echo "$out"
 	case "$out" in "rustc 1."*) ;; *) return 1 ;; esac
 }
