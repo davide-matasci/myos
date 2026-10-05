@@ -2,8 +2,10 @@
 
 ## Architecture
 
-**Wall clock:** `SYS_GETTIMEOFDAY` (29) backed by platform RTC (CMOS / PL031 / goldfish).
-Required for X.509 notBefore/notAfter checks — not a workaround.
+**Wall clock:** `SYS_GETTIMEOFDAY` (33) backed by platform RTC (CMOS / PL031 / goldfish).
+Required for X.509 notBefore/notAfter checks — not a workaround. `SYS_SETTIMEOFDAY`
+(65; `date MMDDhhmmYYYY`, `clock_settime`) moves it until the next boot; the RTC is not
+written.
 
 **TLS:** build-time **mbedtls** port (`ports/mbedtls/`) + reusable **`user/tls`** Rust FFI
 crate. Chosen over Plan 9 `/net/tls` in netfs+netd because it is the smaller modular path;

@@ -21,6 +21,10 @@
 //! is calibrated and the RTC has one-second resolution), so `tv_usec` never
 //! jumps at a second edge, where it used to restart from the edge the next
 //! RTC read happened to see (a 300 ms sleep measured 144 ms or 336 ms).
+//!
+//! `settimeofday` ([`set_wall`]) does not write the RTC: it keeps the
+//! difference to the RTC's time (`SET_ADJUST_NS`) and adds it from then on,
+//! until the next boot.
 
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
@@ -30,6 +34,8 @@ static TICKS: AtomicU64 = AtomicU64::new(0);
 /// `wall_ns = monotonic_ns + WALL_OFFSET_NS`; valid once the RTC was read.
 static WALL_VALID: AtomicBool = AtomicBool::new(false);
 static WALL_OFFSET_NS: AtomicI64 = AtomicI64::new(0);
+/// What `settimeofday` added to the RTC's time (0 until it is called).
+static SET_ADJUST_NS: AtomicI64 = AtomicI64::new(0);
 /// Monotonic ns of the last RTC read.
 static RTC_READ_AT_NS: AtomicU64 = AtomicU64::new(0);
 
@@ -112,9 +118,31 @@ pub fn timeval() -> Option<(i64, i64)> {
     Some((wall / 1_000_000_000, (wall % 1_000_000_000) / 1_000))
 }
 
-/// Unix nanoseconds at monotonic `now`, reading the RTC when the offset is
-/// not known yet or is due for a check.
+/// Set the wall clock to `secs` + `usec` (Unix time). The RTC keeps its own
+/// time; the difference holds until the next boot.
+pub fn set_wall(secs: i64, usec: i64) -> bool {
+    if !(0..1_000_000).contains(&usec) || secs < 0 {
+        return false;
+    }
+    let Some(target) = secs.checked_mul(1_000_000_000).and_then(|ns| ns.checked_add(usec * 1_000)) else {
+        return false;
+    };
+    let Some(rtc_wall) = rtc_wall_ns(monotonic_ns()) else {
+        return false;
+    };
+    SET_ADJUST_NS.store(target.wrapping_sub(rtc_wall), Ordering::Relaxed);
+    true
+}
+
+/// Unix nanoseconds at monotonic `now`: the RTC's time plus what
+/// `settimeofday` set.
 fn wall_ns(now: u64) -> Option<i64> {
+    Some(rtc_wall_ns(now)?.wrapping_add(SET_ADJUST_NS.load(Ordering::Relaxed)))
+}
+
+/// The RTC's Unix nanoseconds at monotonic `now`, reading the RTC when the
+/// offset is not known yet or is due for a check.
+fn rtc_wall_ns(now: u64) -> Option<i64> {
     let valid = WALL_VALID.load(Ordering::Relaxed);
     let due = now.saturating_sub(RTC_READ_AT_NS.load(Ordering::Relaxed)) >= RTC_TTL_NS;
     if !valid || due {
