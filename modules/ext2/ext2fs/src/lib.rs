@@ -87,4 +87,7 @@ pub struct Stat {
     pub links: u16,
     /// Last modification, in seconds since the epoch.
     pub mtime: u32,
+    /// Last access, in seconds since the epoch (set at creation and by
+    /// [`Fs::set_times`]; reads leave it).
+    pub atime: u32,
 }

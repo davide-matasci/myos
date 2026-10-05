@@ -16,7 +16,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ext2fs::{Device, Fs, Kind};
-use myos_abi::{ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo};
+use myos_abi::{ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo, MYOS_TIME_OMIT};
 
 /// The kernel's table, set once by `module_init` before anything runs.
 static mut API: Option<&'static KernelApi> = None;
@@ -139,6 +139,7 @@ unsafe extern "C" fn ext2_stat<const S: usize>(path: *const u8, path_len: usize,
             ino: st.ino,
             nlink: st.links as u32,
             mtime: u64::from(st.mtime),
+            atime: u64::from(st.atime),
         }
     };
     0
@@ -231,6 +232,16 @@ unsafe extern "C" fn ext2_readlink<const S: usize>(path: *const u8, path_len: us
     count(with_fs::<S, _>(|fs| fs.readlink(path, out)))
 }
 
+/// An inode keeps 32-bit seconds; `MYOS_TIME_OMIT` keeps the time.
+fn inode_time(t: u64) -> Option<u32> {
+    (t != MYOS_TIME_OMIT).then(|| t.min(u64::from(u32::MAX)) as u32)
+}
+
+unsafe extern "C" fn ext2_set_times<const S: usize>(path: *const u8, path_len: usize, atime: u64, mtime: u64) -> i32 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.set_times(path, inode_time(atime), inode_time(mtime))))
+}
+
 /// The last fd on a file closed: write what is cached to the disk.
 unsafe extern "C" fn ext2_release<const S: usize>(_path: *const u8, _path_len: usize) -> i32 {
     rc(with_fs::<S, _>(|fs| fs.sync()))
@@ -257,6 +268,7 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         mmap: None,
         poll: None,
         open: None,
+        set_times: Some(ext2_set_times::<S>),
     }
 }
 

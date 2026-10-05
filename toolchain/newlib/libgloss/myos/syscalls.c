@@ -339,7 +339,7 @@ void *_sbrk(ptrdiff_t incr) {
     return old;
 }
 
-static int myos_fill_stat(struct stat *st, const struct myos_stat_buf *src)
+static int myos_fill_stat(struct stat *st, const struct myos_stat2_buf *src)
 {
     memset(st, 0, sizeof(*st));
     st->st_mode = src->st_mode;
@@ -351,12 +351,16 @@ static int myos_fill_stat(struct stat *st, const struct myos_stat_buf *src)
     st->st_gid = 0;
     st->st_blksize = 4096;
     st->st_blocks = (src->st_size + 511) / 512;
+    st->st_atime = (time_t)src->atime;
+    st->st_mtime = (time_t)src->mtime;
+    /* No separate change time: the last modification stands in for it. */
+    st->st_ctime = (time_t)src->mtime;
     return 0;
 }
 
 static int myos_stat_path(const char *path, struct stat *st)
 {
-    struct myos_stat_buf buf;
+    struct myos_stat2_buf buf;
 
     if (st == NULL) {
         errno = EINVAL;
@@ -364,7 +368,7 @@ static int myos_stat_path(const char *path, struct stat *st)
     }
     /* Always ask the kernel so st_dev is mount-specific (find loop checks). */
     long ret = myos_syscall3(
-        MYOS_SYS_STAT,
+        MYOS_SYS_STAT2,
         (long)(uintptr_t)path,
         (long)strlen(path),
         (long)(uintptr_t)&buf);

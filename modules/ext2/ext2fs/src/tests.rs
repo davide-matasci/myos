@@ -253,3 +253,22 @@ fn full_disk_is_no_space() {
     drop(fs.unmount().unwrap());
     e2fsck_clean(&path);
 }
+
+#[test]
+fn set_times_sticks() {
+    let path = image("times", 8 << 20);
+    mkfs(&mut open(&path), 8 << 20).unwrap();
+    let mut fs = Fs::mount(open(&path)).unwrap();
+    fs.create("f").unwrap();
+    let st = fs.stat("f").unwrap();
+    assert_eq!((st.atime, st.mtime), (1_700_000_000, 1_700_000_000));
+    fs.set_times("f", Some(946_684_800), None).unwrap();
+    fs.set_times("f", None, Some(978_307_200)).unwrap();
+    drop(fs);
+    let mut fs = Fs::mount(open(&path)).unwrap();
+    let st = fs.stat("f").unwrap();
+    assert_eq!((st.atime, st.mtime), (946_684_800, 978_307_200));
+    assert!(matches!(fs.set_times("missing", Some(0), Some(0)), Err(Error::NotFound)));
+    drop(fs);
+    e2fsck_clean(&path);
+}

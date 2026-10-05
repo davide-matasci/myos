@@ -1,7 +1,9 @@
-//! Minimal `MetadataExt` for myos until real stat metadata is wired through std.
+//! `MetadataExt` for myos: what the kernel's stat reports (no owners, no
+//! sub-second times, the change time is the modification time).
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use crate::fs::Metadata;
+use crate::sys::AsInner;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait MetadataExt {
@@ -42,16 +44,16 @@ pub trait MetadataExt {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl MetadataExt for Metadata {
     fn dev(&self) -> u64 {
-        0
+        self.as_inner().dev()
     }
     fn ino(&self) -> u64 {
-        0
+        self.as_inner().ino()
     }
     fn mode(&self) -> u32 {
-        0o100644
+        self.as_inner().mode()
     }
     fn nlink(&self) -> u64 {
-        1
+        self.as_inner().nlink()
     }
     fn uid(&self) -> u32 {
         0
@@ -72,19 +74,19 @@ impl MetadataExt for Metadata {
         self.len().div_ceil(512)
     }
     fn atime(&self) -> i64 {
-        0
+        self.as_inner().atime()
     }
     fn atime_nsec(&self) -> i64 {
         0
     }
     fn mtime(&self) -> i64 {
-        0
+        self.as_inner().mtime()
     }
     fn mtime_nsec(&self) -> i64 {
         0
     }
     fn ctime(&self) -> i64 {
-        0
+        self.as_inner().mtime()
     }
     fn ctime_nsec(&self) -> i64 {
         0

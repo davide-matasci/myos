@@ -154,6 +154,12 @@ mod syscalls {
     const SYS_KILL: usize = 34;
     const SYS_SIGACTION: usize = 35;
     const SYS_GETPID: usize = 36;
+    const SYS_STAT2: usize = 61;
+    const SYS_UTIMENS: usize = 62;
+    const SYS_FUTIMENS: usize = 63;
+    /// `utimens` / `futimens` time values: now, or leave the time as it is.
+    const KERNEL_UTIME_NOW: i64 = -1;
+    const KERNEL_UTIME_OMIT: i64 = -2;
 
     static mut MYOS_ERRNO: c_int = 0;
 
@@ -385,17 +391,20 @@ mod syscalls {
         ret as pid_t
     }
 
-    /// Kernel `MyosStatBuf` layout (must match `kernel/src/user.rs`).
+    /// Kernel `MyosStat2Buf` layout (must match `kernel/src/user/syscall.rs`).
     #[repr(C)]
+    #[derive(Default)]
     struct KernelStat {
         st_mode: u32,
-        st_size: u32,
-        st_ino: u32,
         st_nlink: u32,
+        st_ino: u32,
         st_dev: u32,
+        st_size: u64,
+        st_atime: i64,
+        st_mtime: i64,
     }
 
-    /// Path-based stat via SYS_STAT. Unlike open+fstat, this works for directories
+    /// Path-based stat via SYS_STAT2. Unlike open+fstat, this works for directories
     /// (VFS refuses to open dirs, which broke rustix/uutils `ls`).
     pub unsafe fn sys_stat(path: *const c_char, buf: *mut super::stat) -> c_int {
         if path.is_null() || buf.is_null() {
@@ -403,14 +412,8 @@ mod syscalls {
             return -1;
         }
         let len = cstr_len(path);
-        let mut kstat = KernelStat {
-            st_mode: 0,
-            st_size: 0,
-            st_ino: 0,
-            st_nlink: 0,
-            st_dev: 0,
-        };
-        let ret = raw_syscall(SYS_STAT, path as usize, len, &mut kstat as *mut _ as usize);
+        let mut kstat = KernelStat::default();
+        let ret = raw_syscall(SYS_STAT2, path as usize, len, &mut kstat as *mut _ as usize);
         if ret == usize::MAX {
             set_errno(ENOENT);
             return -1;
@@ -426,7 +429,55 @@ mod syscalls {
         };
         (*buf).st_size = kstat.st_size as off_t;
         (*buf).st_blksize = 4096;
-        (*buf).st_blocks = ((kstat.st_size as u64).div_ceil(512)) as blkcnt_t;
+        (*buf).st_blocks = kstat.st_size.div_ceil(512) as blkcnt_t;
+        (*buf).st_atime = kstat.st_atime as time_t;
+        (*buf).st_mtime = kstat.st_mtime as time_t;
+        (*buf).st_ctime = kstat.st_mtime as time_t;
+        0
+    }
+
+    /// `timespec[2]` (null = both now) -> the kernel's two `i64` seconds.
+    unsafe fn kernel_times(times: *const super::timespec, out: &mut [i64; 2]) -> Option<usize> {
+        if times.is_null() {
+            return Some(0);
+        }
+        for (i, t) in out.iter_mut().enumerate() {
+            let ts = &*times.add(i);
+            *t = match ts.tv_nsec {
+                super::UTIME_NOW => KERNEL_UTIME_NOW,
+                super::UTIME_OMIT => KERNEL_UTIME_OMIT,
+                0..=999_999_999 if ts.tv_sec >= 0 => ts.tv_sec as i64,
+                _ => {
+                    set_errno(EINVAL);
+                    return None;
+                }
+            };
+        }
+        Some(out.as_ptr() as usize)
+    }
+
+    /// utimensat on a path (relative to the cwd), following symlinks.
+    pub unsafe fn sys_utimens(path: *const c_char, times: *const super::timespec) -> c_int {
+        let mut raw = [0i64; 2];
+        let Some(times) = kernel_times(times, &mut raw) else {
+            return -1;
+        };
+        if raw_syscall(SYS_UTIMENS, path as usize, cstr_len(path), times) == usize::MAX {
+            set_errno(ENOENT);
+            return -1;
+        }
+        0
+    }
+
+    pub unsafe fn sys_futimens(fd: c_int, times: *const super::timespec) -> c_int {
+        let mut raw = [0i64; 2];
+        let Some(times) = kernel_times(times, &mut raw) else {
+            return -1;
+        };
+        if raw_syscall(SYS_FUTIMENS, fd as usize, times, 0) == usize::MAX {
+            set_errno(EBADF);
+            return -1;
+        }
         0
     }
 }
@@ -525,6 +576,21 @@ pub unsafe extern "C" fn fstat(fd: c_int, buf: *mut stat) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn stat(path: *const c_char, buf: *mut stat) -> c_int {
     syscalls::sys_stat(path, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn utimensat(dirfd: c_int, path: *const c_char, times: *const timespec, flags: c_int) -> c_int {
+    // Only cwd-relative or absolute paths, and never the symlink itself.
+    if dirfd != AT_FDCWD || flags != 0 {
+        syscalls::set_errno(ENOSYS);
+        return -1;
+    }
+    syscalls::sys_utimens(path, times)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn futimens(fd: c_int, times: *const timespec) -> c_int {
+    syscalls::sys_futimens(fd, times)
 }
 
 #[no_mangle]
@@ -956,7 +1022,6 @@ enosys! {
     pub unsafe fn chmod(path: *const c_char, mode: mode_t) -> c_int;
     pub unsafe fn fchown(fd: c_int, owner: uid_t, group: gid_t) -> c_int;
     pub unsafe fn chown(path: *const c_char, owner: uid_t, group: gid_t) -> c_int;
-    pub unsafe fn utimensat(dirfd: c_int, path: *const c_char, times: *const timespec, flags: c_int) -> c_int;
     pub unsafe fn ftruncate(fd: c_int, length: off_t) -> c_int;
     pub unsafe fn truncate(path: *const c_char, length: off_t) -> c_int;
     pub unsafe fn fsync(fd: c_int) -> c_int;

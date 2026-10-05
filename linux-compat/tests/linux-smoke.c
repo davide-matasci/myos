@@ -294,6 +294,19 @@ int main(int argc, char **argv) {
     check(fd >= 0 && read(fd, buf, sizeof buf) == 12 && strcmp(buf, "hello linux\n") == 0,
           "open/read");
     check(fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 12, "fstat");
+
+    /* File times: a new tmpfs file's are real dates; utimensat sets both,
+     * futimens one of them (UTIME_OMIT keeps the other). */
+    check(st.st_mtime > 1000000000 && st.st_atime > 1000000000, "tmpfs times");
+    struct timespec ts[2] = {{1000, 0}, {2000, 0}};
+    check(utimensat(AT_FDCWD, path, ts, 0) == 0 && stat(path, &st) == 0 && st.st_atime == 1000
+              && st.st_mtime == 2000,
+          "utimensat");
+    ts[0].tv_nsec = UTIME_OMIT;
+    ts[1].tv_sec = 3000;
+    check(fd >= 0 && futimens(fd, ts) == 0 && stat(path, &st) == 0 && st.st_atime == 1000
+              && st.st_mtime == 3000,
+          "futimens");
     close(fd);
 
     /* readdir. */

@@ -3,8 +3,8 @@
 # directory of programs onto it; rename the directory, run one of them from
 # the disk and read it through a symlink; then a file past the direct and
 # single-indirect blocks (7-10 MB, under the tmpfs file cap it is built in),
-# compared with its source, and remove the directory. The host checks the
-# disk with `e2fsck -fn` after the boot.
+# compared with its source, and remove the directory; set a file's times.
+# The host checks the disk with `e2fsck -fn` after the boot.
 ext2_disk() {
 	mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /disk ext2 && cp -r /bin/sbase /disk/s
 }
@@ -15,14 +15,19 @@ ext2_big() {
 	cat /disk/t/[a-m]* > /tmp/big && cp /tmp/big /disk/big && cmp /tmp/big /disk/big \
 		&& rm /disk/t/* /tmp/big && rmdir /disk/t
 }
-# A file's modification time, as a Linux program's stat sees it (ext2 keeps
-# times; the in-kernel filesystems do not).
+# Setting a file's times on the disk (the ext2 module's set_times).
+ext2_times() {
+	/bin/sbase/touch -T 946782240 /disk/m && /bin/sbase/ls -l /disk/m | grep -q "Jan 02  2000" \
+		&& rm /disk/m
+}
+# A file's modification time, as a Linux program's stat sees it.
 ext2_mtime() {
 	echo x > /disk/m && linux /bin/linux/linux-smoke mtime /disk/m && rm /disk/m
 }
 t ext2_disk ext2_disk
 t ext2_link ext2_link
 t ext2_big ext2_big
+t ext2_times ext2_times
 if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
 	t ext2_mtime ext2_mtime
 fi

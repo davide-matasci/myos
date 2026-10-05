@@ -18,8 +18,31 @@ pub struct StatInfo {
     /// use `ino == 1`. Assigned by [`backend_stat`] as `mount_index + 1`.
     pub dev: u32,
     /// Last modification, in seconds since the epoch: 0 where the
-    /// filesystem keeps none (only module filesystems such as ext2 do).
+    /// filesystem keeps none (tmpfs and module filesystems such as ext2 do).
     pub mtime: u64,
+    /// Last access as set by `utimens` (reads do not change it), in seconds
+    /// since the epoch: 0 where the filesystem keeps none.
+    pub atime: u64,
+}
+
+/// A time for [`set_times`]: a value, now, or left as it is
+/// (`UTIME_NOW` / `UTIME_OMIT`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetTime {
+    At(u64),
+    Now,
+    Omit,
+}
+
+impl SetTime {
+    /// The seconds to store, `None` to keep the current value.
+    pub fn resolve(self) -> Option<u64> {
+        match self {
+            SetTime::At(t) => Some(t),
+            SetTime::Now => Some(crate::time::unix_seconds().unwrap_or(0).max(0) as u64),
+            SetTime::Omit => None,
+        }
+    }
 }
 
 /// Stable inode for a directory path relative to a mount root.
@@ -108,6 +131,9 @@ pub struct MountOps {
     /// Optional `poll` readiness of a path relative to this mount: the bits
     /// that hold now, or `None` for a file that is always ready.
     pub poll: Option<fn(&str) -> Option<u32>>,
+    /// Optional: set a path's access and modification times (seconds since
+    /// the epoch; `None` keeps one). `None` for a mount that keeps no times.
+    pub set_times: Option<fn(&str, Option<u64>, Option<u64>) -> bool>,
     /// Mount accepts write opens / creates.
     pub writable: bool,
 }
@@ -415,6 +441,20 @@ pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
 pub fn stat(path: &str) -> Option<StatInfo> {
     let (idx, ref rel) = resolve_index(path)?;
     backend_stat(idx, rel)
+}
+
+/// Set the access and modification times of `path` on the best matching
+/// mount: false when there is no such file or the mount keeps no times.
+pub fn set_times(path: &str, atime: SetTime, mtime: SetTime) -> bool {
+    let Some((idx, ref rel)) = resolve_index(path) else {
+        return false;
+    };
+    backend_set_times(idx, rel, atime, mtime)
+}
+
+/// [`set_times`] for an open vnode (`futimens`).
+pub fn set_times_node(node: &Vnode, atime: SetTime, mtime: SetTime) -> bool {
+    backend_set_times(node.mount as usize, node.path_str(), atime, mtime)
 }
 
 /// Read from an open vnode at `pos` into `out`. Returns bytes read.
@@ -1016,6 +1056,25 @@ fn backend_truncate(idx: usize, rel: &str) -> bool {
     }
 }
 
+fn backend_set_times(idx: usize, rel: &str, atime: SetTime, mtime: SetTime) -> bool {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return false;
+        };
+        m.backend
+    };
+    // "Now" is read here, outside the backend's locks.
+    let (atime, mtime) = (atime.resolve(), mtime.resolve());
+    match backend {
+        MountBackend::Kernel(ops) => ops.set_times.is_some_and(|f| f(rel, atime, mtime)),
+        MountBackend::Module(ops) => ops.set_times.is_some_and(|f| {
+            let omit = myos_abi::MYOS_TIME_OMIT;
+            unsafe { f(rel.as_ptr(), rel.len(), atime.unwrap_or(omit), mtime.unwrap_or(omit)) == 0 }
+        }),
+    }
+}
+
 fn backend_read(idx: usize, rel: &str, pos: usize, out: &mut [u8]) -> usize {
     let backend = {
         let mounts = MOUNTS.lock();
@@ -1166,6 +1225,7 @@ fn module_stat(ops: &ModuleVfsOps, rel: &str) -> Option<StatInfo> {
         nlink: out.nlink,
         dev: 0,
         mtime: out.mtime,
+        atime: out.atime,
     })
 }
 

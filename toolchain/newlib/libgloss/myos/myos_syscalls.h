@@ -72,6 +72,14 @@ struct winsize;
 #define MYOS_SYS_NANOSLEEP 52
 #define MYOS_SLEEP_ANY_EVENT 1
 #define MYOS_SYS_GETPPID 60
+/* stat with 64-bit size and the access/modification times (myos_stat.h). */
+#define MYOS_SYS_STAT2 61
+/* utimens(path, len, times) / futimens(fd, times): times is two int64_t
+ * seconds, MYOS_UTIME_NOW or MYOS_UTIME_OMIT; NULL sets both to now. */
+#define MYOS_SYS_UTIMENS 62
+#define MYOS_SYS_FUTIMENS 63
+#define MYOS_UTIME_NOW (-1LL)
+#define MYOS_UTIME_OMIT (-2LL)
 
 /* fds per process (kernel MAX_FDS): sysconf(_SC_OPEN_MAX), getdtablesize. */
 #define MYOS_OPEN_MAX 64

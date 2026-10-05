@@ -158,6 +158,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     if is_dir_prefix(name) {
@@ -168,6 +169,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             nlink: 2,
             dev: 0,
             mtime: 0,
+            atime: 0,
         });
     }
     let files = FILES.lock();
@@ -180,6 +182,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 nlink: 1,
                 dev: 0,
                 mtime: 0,
+                atime: 0,
             });
         }
     }
