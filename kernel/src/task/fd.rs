@@ -583,11 +583,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 let mut tmp = [0u8; FILE_IO_TMP];
                 let want = len.min(tmp.len());
                 let seq = wait_seq();
-                let n = pipe::read(id, &mut tmp[..want]);
-                if n == usize::MAX {
-                    return usize::MAX;
-                }
-                if n == 0 && pipe::read_would_block(id) {
+                let Some(n) = pipe::read(id, &mut tmp[..want]) else {
                     // A signal that terminates or is caught breaks the wait
                     // (Ctrl+C while a `cat`/`yes` pipe read is blocked).
                     if crate::signal::interrupt_wait() {
@@ -595,6 +591,9 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                     }
                     block_until(key_pipe(id), seq, 0);
                     continue;
+                };
+                if n == usize::MAX {
+                    return usize::MAX;
                 }
                 let aspace = current_aspace();
                 if !user::copy_to_user(aspace, buf, &tmp[..n]) {
