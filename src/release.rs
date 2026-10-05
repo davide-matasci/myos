@@ -27,9 +27,12 @@ pub struct Release {
 impl Release {
     /// The build's release, from the checkout and the kernel source.
     pub fn current(manifest_dir: &Path) -> Release {
+        // safe.directory: in CI the checkout belongs to another user than the
+        // container's, and actions/checkout's own exception is in a HOME the
+        // later steps do not see.
         let git = |args: &[&str]| {
             Command::new("git")
-                .arg("-C")
+                .args(["-c", "safe.directory=*", "-C"])
                 .arg(manifest_dir)
                 .args(args)
                 .env("TZ", "UTC")
@@ -41,7 +44,10 @@ impl Release {
         };
         let id = git(&["log", "-1", "--date=format-local:%Y%m%d%H%M", "--format=%cd"])
             .unwrap_or_else(|| "0".to_string());
-        let commit = git(&["rev-parse", "--short=8", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+        // Without git, the commit CI is building, if it says.
+        let commit = git(&["rev-parse", "--short=8", "HEAD"])
+            .or_else(|| std::env::var("GITHUB_SHA").ok().map(|s| s.chars().take(8).collect()))
+            .unwrap_or_else(|| "unknown".to_string());
         Release { id, commit, abi: syscall_abi(manifest_dir) }
     }
 
