@@ -1,14 +1,11 @@
-//! Tiny VFS facade: syscalls and modules talk to [`vfs`]; bootfs is one mount.
+//! Tiny VFS facade: syscalls and modules talk to [`vfs`]; rootfs is one mount.
 
-pub mod binfs;
-pub mod bootfs;
 pub mod cpio;
-mod flatfs;
 mod devfs;
 pub mod ptsfs;
 mod fstype;
 mod procfs;
-pub mod libfs;
+pub mod rootfs;
 mod tmpfs;
 pub mod vfs;
 
@@ -143,7 +140,7 @@ pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
     vfs::readlink(path, buf)
 }
 
-/// Register `name` on mount `mount_name` (bootfs copies into its table).
+/// Register `name` on mount `mount_name` (rootfs keeps the bytes).
 pub fn register(mount_name: &str, name: &str, bytes: &'static [u8]) -> bool {
     vfs::register(mount_name, name, bytes)
 }
@@ -333,23 +330,6 @@ fn reject_readlink(_path: &str, _buf: &mut [u8]) -> Option<usize> {
     None
 }
 
-/// Read-only [`vfs::MountOps`] for a [`flatfs::FlatFs`] static. The closures
-/// capture nothing (they name the static), so they coerce to `fn` pointers.
-macro_rules! flat_ops {
-    ($fs:path) => {
-        ro_ops(
-            |n| $fs.lookup(n),
-            |n| $fs.stat(n),
-            |rel, buf| $fs.listdir_at(rel, buf),
-            |n, bytes| $fs.register(n, bytes),
-            |_| false,
-            |_| false,
-            |n, pos, out| $fs.read(n, pos, out),
-            |_, _, _| None,
-        )
-    };
-}
-
 fn ro_ops(
     lookup: fn(&str) -> Option<&'static [u8]>,
     stat: fn(&str) -> Option<StatInfo>,
@@ -418,62 +398,24 @@ fn rw_ops(
     }
 }
 
-/// Mount bootfs at `/`, binfs at `/bin/`, and the port trees under typed
-/// `/bin/…` prefixes (the flatfs instances at `/bin/sbase/`, `/bin/ubase/`,
-/// `/bin/tcc/` and `/bin/coreutils/`), plus libfs at
-/// `/lib/`, tmpfs at `/tmp/`, devfs at `/dev/`, procfs at `/proc/`.
-/// Embedded user ELFs live under `/bin/<category>/…` (see binfs).
+/// Mount rootfs at `/` (the image's files, read-only), tmpfs at `/tmp/`,
+/// devfs at `/dev/` with ptsfs at `/dev/pts/`, procfs at `/proc/`.
 pub fn init() {
     vfs::mount(
-        "bootfs",
+        "rootfs",
         "",
         ro_ops(
-            bootfs::lookup,
-            bootfs::stat,
-            bootfs::listdir_at,
-            bootfs::register,
-            bootfs::create,
-            bootfs::truncate,
-            bootfs::read,
-            bootfs::write,
+            rootfs::lookup,
+            rootfs::stat,
+            rootfs::listdir_at,
+            rootfs::register,
+            rootfs::create,
+            rootfs::truncate,
+            rootfs::read,
+            rootfs::write,
         ),
     );
-    bootfs::init_embedded();
-    vfs::mount(
-        "binfs",
-        "bin",
-        ro_ops(
-            binfs::lookup,
-            binfs::stat,
-            binfs::listdir_at,
-            binfs::register,
-            binfs::create,
-            binfs::truncate,
-            binfs::read,
-            binfs::write,
-        ),
-    );
-    binfs::init_embedded();
-    vfs::mount("sbasefs", "bin/sbase", flat_ops!(flatfs::SBASE));
-    vfs::mount("ubasefs", "bin/ubase", flat_ops!(flatfs::UBASE));
-    flatfs::init_embedded();
-    vfs::mount("tccfs", "bin/tcc", flat_ops!(flatfs::TCC));
-    vfs::mount("coreutilsfs", "bin/coreutils", flat_ops!(flatfs::COREUTILS));
-    vfs::mount(
-        "libfs",
-        "lib",
-        ro_ops(
-            libfs::lookup,
-            libfs::stat,
-            libfs::listdir_at,
-            libfs::register,
-            libfs::create,
-            libfs::truncate,
-            libfs::read,
-            libfs::write,
-        ),
-    );
-    libfs::init_embedded();
+    rootfs::init_embedded();
     vfs::mount(
         "tmpfs",
         "tmp",
@@ -562,9 +504,10 @@ pub fn init() {
     );
 }
 
-/// Ingest Limine ESP modules into bootfs (overrides embedded names).
+/// Ingest the Limine modules into rootfs (the initramfs overrides embedded
+/// programs).
 pub fn init_limine() {
-    bootfs::init_limine();
+    rootfs::init_limine();
 }
 
 

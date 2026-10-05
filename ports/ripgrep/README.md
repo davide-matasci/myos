@@ -39,7 +39,7 @@ feature set on nightly-2026-07-26.
 
 ## Runtime / kernel
 
-- ELF registered as `/c/rg` on coreutilsfs (separate from uutils multicall)
+- The ELF is `/bin/coreutils/rg` (its own file, not a name of the uutils multicall)
 - `MAX_INIT_PAGES` raised to 1024 so the ~721-page PT_LOAD span loads
 
 ## Runtime fixes (myos std + ignore)

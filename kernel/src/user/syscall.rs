@@ -630,7 +630,7 @@ fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8
     // A dynamically linked Linux program is mapped from its file, like the
     // shared objects its dynamic linker maps: that linker is the image.
     let mapped = mapped_program(&path);
-    // Static lookup for bootfs/`/t/tcc`; VFS read for tmpfs `tcc -o` output.
+    // Static lookup for rootfs (`/bin/tcc/tcc`); VFS read for tmpfs `tcc -o` output.
     // The file is read into the kernel heap; what gets mapped is still capped
     // by the image limits (`MAX_EXPAND_PAGES`). A successful exec never
     // returns, so the copy is freed explicitly before the new image runs.

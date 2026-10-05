@@ -14,7 +14,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Interactive shell** — getty → login (`root`, empty password) → [oksh](https://github.com/ibara/oksh) 7.9
 - **Rust kernel** — `#![no_std]`, higher-half link, HHDM memory, preemptive round-robin scheduler
 - **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, NVMe, xHCI USB with hubs and sticks, virtio-net, netfs, FAT16, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
-- **VFS with multiple backends** — bootfs, tmpfs, devfs, procfs, FAT16, ext2
+- **VFS with multiple backends** — rootfs, tmpfs, devfs, procfs, FAT16, ext2
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos dwm st dmenu` brings the Xft stack and the fonts with them, then `startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase, ubase, uutils coreutils, ripgrep, TinyCC (all fetched at build)
@@ -105,7 +105,7 @@ Boot (Limine)
        └─ Kernel (higher-half, #![no_std])
             ├─ Heap (linked-list allocator, a quarter of RAM: 64 MiB to 1 GiB)
             ├─ Scheduler (round-robin kernel threads + user tasks)
-            ├─ VFS (mount table → bootfs / tmpfs / devfs / procfs / ext2 / netfs)
+            ├─ VFS (mount table → rootfs / tmpfs / devfs / procfs / ext2 / netfs)
             ├─ Modules (Limine list, in order): console, hello, pci_enum,
             │     acpi, virtio_blk, nvme, xhci, usb_hub, usb_storage, virtio_net, netfs, fat, ext2
             └─ Userspace (ELF processes)
@@ -136,7 +136,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `src/main.rs` | Host launcher: QEMU (BIOS/UEFI/AArch64/RISC-V) + second virtio-blk disk |
 | `src/limine_image.rs` | GPT+FAT ESP writer + Limine fetch + `limine.conf` + `fat.img` |
 | `build.rs` | Fetch Limine; wrap x86_64 kernel in BIOS+UEFI images; write `fat.img` |
-| `kernel/src/main.rs` | `#![no_std]` Limine entry: heap, IRQs, scheduler, bootfs, Limine modules, user init |
+| `kernel/src/main.rs` | `#![no_std]` Limine entry: heap, IRQs, scheduler, rootfs, Limine modules, user init |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
 | `kernel/src/platform.rs` | The board description, filled once at boot from the ACPI static tables (`acpi.rs`: MADT, MCFG, SPCR, GTDT) and the device tree (`dt.rs`, `fdt` crate), shown by `/proc/platform` (`docs/pci-acpi-smp.md`) |
 | `kernel/src/dt.rs` | Device tree (aarch64, riscv64): fills the platform description; PCI INTx `interrupt-map`, `virtio,mmio` nodes |
@@ -147,7 +147,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `kernel/src/input.rs` | Stdin line discipline: module keyboard + serial → fd 0 |
 | `kernel/src/heap.rs` | `linked_list_allocator` heap sized from memory (also holds tmpfs data) |
 | `kernel/src/task/` | Scheduler records (`Task`) + per-process blocks (`process.rs`): yield, preemption, fork/exec/wait |
-| `kernel/src/fs/` | VFS + bootfs/tmpfs/devfs/procfs backends |
+| `kernel/src/fs/` | VFS + rootfs/tmpfs/devfs/procfs backends |
 | `kernel/src/modules/` | ELF64 loader, KernelApi wrappers, loaded-module registry |
 | `modules/abi` | Shared `#[repr(C)]` KernelApi (v14: PCI/DMA/`dev_register`/`blk_register`/`console_register`/`personality_register`/`dt_mmio_find`) |
 | `modules/virtq` | Split virtqueue helpers shared by the virtio modules |
@@ -258,8 +258,8 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 ## VFS & Filesystems (Summary)
 
 - **VFS** — mount table with longest-prefix routing and bind mounts (`mount SRC TARGET bind`: a directory or file seen at a second place too, the target need not exist; `get-myos` installs packages this way); `vfs::mounts_text()` exports `/proc/mounts`
-- **Mounting a disk** — `mount /dev/sda /mnt ext2`: the target is any existing directory that is not a mount point yet, at the top level (`/mnt`, an empty directory of the image) or anywhere below (`mkdir /tmp/usb`); a disk is mounted once. `umount DIR` gives the directory back once no file on the disk is open and nothing is mounted below it, after the filesystem's `unmount` hook wrote back what it caches (ext2). A directory a mount hangs from can be neither renamed nor removed. The kernel's own trees (`/bin`, `/lib`, `/tmp`, `/dev`, `/proc`) cannot be unmounted
-- **bootfs** — read-only embedded namespace at `/`; Limine ESP modules override; demos use `myos_` prefix
+- **Mounting a disk** — `mount /dev/sda /mnt ext2`: the target is any existing directory that is not a mount point yet, at the top level (`/mnt`, an empty directory of the image) or anywhere below (`mkdir /tmp/usb`); a disk is mounted once. `umount DIR` gives the directory back once no file on the disk is open and nothing is mounted below it, after the filesystem's `unmount` hook wrote back what it caches (ext2). A directory a mount hangs from can be neither renamed nor removed. The kernel's own trees (`/`, `/tmp`, `/dev`, `/proc`) cannot be unmounted
+- **rootfs** — the read-only tree at `/`: every file of the image in one sorted table (the programs the kernel embeds, the Limine modules, the initramfs, which overrides an embedded program; a module's `vfs_register`); a directory is implied by its files (`mnt/.keep` for an empty one). `/tmp`, `/dev`, `/proc` and module filesystems are mounted over it
 - **procfs** — `/proc/mounts` (generated, not stored bytes); `/proc/sys/kernel/hostname` holds the host name ("myos" at boot; `echo name > /proc/sys/kernel/hostname`, or `hostname name`, sets it, up to 64 bytes)
 - **tmpfs/devfs** — writable mount for `O_CREAT`; device nodes
 - **virtio-blk / NVMe** — modules registering `/dev/vda`… and `/dev/nvme0n1` through `blk_register`; loaded before the filesystem modules
@@ -276,7 +276,7 @@ Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, cal
 | | Boot (Limine) | Runtime (`insmod`) |
 |---|---|---|
 | Bytes live in | `boot/modules/<name>` on the ESP, listed in `limine.conf` (`module_path`, load order) | `/lib/modules/<name>` in the initramfs (or any file) |
-| Loaded by | `modules::load_limine_modules` right after bootfs | `SYS_INSMOD` from `/bin/custom/insmod` |
+| Loaded by | `modules::load_limine_modules` right after rootfs | `SYS_INSMOD` from `/bin/custom/insmod` |
 
 `/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1`, `/dev/vdb`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, nvme), the USB bus (xhci, then its class drivers usb_hub and usb_storage), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `limine.conf` when the feature is on.
 

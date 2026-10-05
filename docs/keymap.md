@@ -19,8 +19,7 @@ const DEFAULT_KEYMAP: &[u8] = b"/lib/kbd/ch.map";
 Switch the default to US by pointing that constant at `/lib/kbd/us.map`.
 
 Both maps (`modules/console/keymaps/` in the repo) ship in the initramfs
-under `/lib/kbd/` (libfs nested tree — not bootfs/`/etc`, which is flat and
-too small for reliable packing).
+under `/lib/kbd/`.
 
 `user/init` loads CH first; when the console's control file cannot be opened
 or refuses the line it prints a distinct `[ FAIL ] keymap {ctl|load} ch` and

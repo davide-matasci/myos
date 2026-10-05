@@ -132,7 +132,7 @@ const SELF_REPORTING: &[&str] = &["console", "virtio_blk", "nvme", "virtio_net",
 /// limine.conf, in order). Each is named after its path's last component.
 ///
 /// Non-module files in the list are skipped: the `initramfs` cpio archive
-/// (bootfs parses it) and userspace ELFs (`MissingInit`), so bootfs can reuse
+/// (rootfs unpacks it) and userspace ELFs (`MissingInit`), so rootfs can reuse
 /// the same Limine modules. Failures are logged, never fatal.
 pub fn load_limine_modules() {
     let Some(resp) = crate::limine_boot::MODULES.response() else {
@@ -414,7 +414,7 @@ unsafe extern "C" fn api_vfs_register(
         unsafe { core::slice::from_raw_parts(data, data_len) }
     };
     let leaked: &'static [u8] = alloc::boxed::Box::leak(src.to_vec().into_boxed_slice());
-    noted(crate::fs::register("bootfs", name, leaked))
+    noted(crate::fs::register("rootfs", name, leaked))
 }
 
 unsafe extern "C" fn api_vfs_register_static(
@@ -438,7 +438,7 @@ unsafe extern "C" fn api_vfs_register_static(
     } else {
         unsafe { core::slice::from_raw_parts(data, data_len) }
     };
-    noted(crate::fs::register_static("bootfs", name, bytes))
+    noted(crate::fs::register_static("rootfs", name, bytes))
 }
 
 unsafe extern "C" fn api_vfs_mount(

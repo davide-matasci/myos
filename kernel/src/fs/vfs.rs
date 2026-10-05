@@ -47,8 +47,8 @@ impl SetTime {
 
 /// Stable inode for a directory path relative to a mount root.
 ///
-/// Nested RO trees (binfs/libfs) used to return `ino == 1` for every directory,
-/// so find(1) treated `/bin/std` as `/bin` and `/lib/newlib` as `/lib`. Hash the
+/// A read-only tree (rootfs) that returned `ino == 1` for every directory made
+/// find(1) treat `/bin/std` as `/bin` and `/lib/newlib` as `/lib`. Hash the
 /// relative path and force the high bit so values never collide with the mount
 /// root (`ino == 1`) or file inodes from [`data_ino`].
 pub(crate) fn dir_ino(path: &str) -> u32 {
@@ -183,7 +183,7 @@ static MOUNTS: Mutex<Vec<Mount>> = Mutex::new(Vec::new());
 
 /// Attach an in-kernel backend at `prefix` (empty string = root).
 ///
-/// Source is `none` (no block device). `name` is the fstype (`bootfs`, `tmpfs`, ...).
+/// Source is `none` (no block device). `name` is the fstype (`rootfs`, `tmpfs`, ...).
 pub fn mount(name: &str, prefix: &str, ops: MountOps) {
     MOUNTS.lock().push(Mount {
         name: String::from(name),
@@ -847,8 +847,8 @@ pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
 
 /// List directory entries at `path` into `buf` (newline-separated basenames).
 ///
-/// When listing the root mount (`/` / `.`), also append other mount prefixes
-/// (e.g. `s`, `c`) so tools like `/s/ls` show bootfs files and mount points.
+/// A listing also shows the mount points below the listed directory
+/// (`/` lists `tmp`, `dev`, `proc` next to rootfs's own directories).
 pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     let Some((idx, ref rel)) = resolve_index(path) else {
         return 0;
@@ -938,7 +938,7 @@ fn buf_contains_entry(dir_buf: &[u8], child: &str) -> bool {
     false
 }
 
-/// Register `name` on mount `mount_name` (copying `bytes` into bootfs storage).
+/// Register `name` on mount `mount_name` (rootfs: a module's `vfs_register`).
 pub fn register(mount_name: &str, name: &str, bytes: &'static [u8]) -> bool {
     let Some(idx) = mount_index(mount_name) else {
         return false;
