@@ -220,25 +220,26 @@ isatty_fds() {
 t isatty isatty_fds
 
 # CR on the screen goes back to the line's start, as a shell redrawing its
-# line needs (oksh on Up or Tab: CR, the prompt, the line). "QQ" lights the
-# top row's first two 8x8 cells; "QQ", CR and two spaces leaves them blank
-# (with the CR dropped the spaces would land after the Qs).
+# line needs (oksh on Up or Tab: CR, the prompt, the line). The top row's
+# first two 8x8 cells, read back from the framebuffer with the cursor moved
+# away (it blinks): "QQ" changes them, "QQ", CR and two spaces leaves them as
+# on a cleared screen (with the CR dropped the spaces would land after the
+# Qs).
 console_cells() {
-	lit=$(for y in 0 1 2 3 4 5 6 7; do
-		dd if=/dev/fb/data bs=64 count=1 skip=$((y * $1 / 64)) 2> /dev/null
-	done | tr -d '\000')
-	echo ${#lit}
+	printf '\033[H\033[J%b\033[10;1H' "$1" > /dev/console/data
+	for y in 0 1 2 3 4 5 6 7; do
+		dd if=/dev/fb/data bs=64 count=1 skip=$((y * pitch / 64)) 2> /dev/null
+	done | od -An -tx1 | tr -d ' \n'
 }
 
 console_cr() {
 	read -r w h depth chan pitch mode < /dev/fb/ctl
-	printf '\033[H\033[JQQ' > /dev/console/data
-	qq=$(console_cells $pitch)
-	printf '\033[H\033[JQQ\r  ' > /dev/console/data
-	cr=$(console_cells $pitch)
+	blank=$(console_cells '')
+	qq=$(console_cells 'QQ')
+	cr=$(console_cells 'QQ\r  ')
 	printf '\033[H\033[J\n' > /dev/console/data
-	echo "lit bytes in the first two cells: $qq after QQ, $cr after QQ, CR, spaces"
-	[ "$qq" -gt 0 ] && [ "$cr" -eq 0 ]
+	[ "$qq" != "$blank" ] || { echo "QQ did not reach the screen"; return 1; }
+	[ "$cr" = "$blank" ] || { echo "QQ, CR, spaces: the Qs are still there"; return 1; }
 }
 t console_cr console_cr
 
