@@ -37,6 +37,14 @@ at `entry(arg)` on its own stack, a Linux `clone` thread like a forked child
 
 - `thread_exit` ends the calling thread. A thread is nobody's child: its
   slot is freed once it is off its kernel stack.
+- Every thread has a 64 KiB kernel stack (`task::STACK_SIZE`), a heap
+  allocation with a canary word at its bottom that `schedule` checks on
+  every switch away from it: a thread that ran off its stack panics the
+  kernel naming itself (`kernel stack overflow: task N`), instead of
+  corrupting whatever the heap placed below, another stack's saved context
+  for instance, which would fail much later with a jump to address 0 in a
+  task that did nothing wrong. An aarch64 kernel fault report carries the
+  link register and the stack pointer at the fault for the same reason.
 - The process ends with its last thread. The leader carries the process, so
   it always goes last: a leader whose own thread ends waits for the others,
   then exits the process (closes its fds, reports to the parent, frees the

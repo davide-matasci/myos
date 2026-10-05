@@ -372,6 +372,7 @@ pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
     let sp = unsafe { seed_stack(stack_base as *mut u8, STACK_SIZE, trampoline as *const () as usize) };
     let top = stack_base + STACK_SIZE;
     crate::arch::stamp_stack_cpu(top, crate::smp::cpu_id());
+    super::arm_stack(top);
     Some((slot, stack_base, sp, top))
 }
 
@@ -514,6 +515,7 @@ fn spawn_inner(
     let top = stack as usize + STACK_SIZE;
     // BSP-created tasks start on CPU 0; schedule restamps on migrate.
     crate::arch::stamp_stack_cpu(top, 0);
+    super::arm_stack(top);
 
     let mut tasks = TASKS.lock();
     let slot = tasks
