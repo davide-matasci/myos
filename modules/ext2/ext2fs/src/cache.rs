@@ -87,6 +87,26 @@ impl<D: Device> Cache<D> {
         Ok(f(&self.slots[i].data))
     }
 
+    /// Read whole blocks from `first` on into `out` without keeping them:
+    /// file data, which would push the metadata out of the cache. A cached
+    /// block (written and not yet flushed) comes from the cache, the others
+    /// in one request when none is.
+    pub fn read_through(&mut self, first: u32, out: &mut [u8]) -> Result<()> {
+        let bs = self.block_size;
+        let blocks = first..first + (out.len() / bs) as u32;
+        if !self.index.range(blocks.clone()).any(|_| true) {
+            return if self.dev.read(self.offset(first), out) { Ok(()) } else { Err(Error::Io) };
+        }
+        for (b, dst) in blocks.zip(out.chunks_mut(bs)) {
+            match self.index.get(&b) {
+                Some(&i) => dst.copy_from_slice(&self.slots[i].data),
+                None if self.dev.read(self.offset(b), dst) => {}
+                None => return Err(Error::Io),
+            }
+        }
+        Ok(())
+    }
+
     /// Change `block` (written at the next flush).
     pub fn modify<T>(&mut self, block: u32, f: impl FnOnce(&mut [u8]) -> T) -> Result<T> {
         let i = self.slot(block, false)?;

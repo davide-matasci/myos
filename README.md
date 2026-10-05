@@ -141,7 +141,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `kernel/src/platform.rs` | The board description, filled once at boot from the ACPI static tables (`acpi.rs`: MADT, MCFG, SPCR, GTDT) and the device tree (`dt.rs`, `fdt` crate), shown by `/proc/platform` (`docs/pci-acpi-smp.md`) |
 | `kernel/src/dt.rs` | Device tree (aarch64, riscv64): fills the platform description; PCI INTx `interrupt-map`, `virtio,mmio` nodes |
 | `kernel/src/mm.rs` | Physical frame allocator (after 256 KiB heap; page tables, user pages, virtqueues) |
-| `kernel/src/blk.rs` | Block-device registry filled by driver modules (`blk_register`); `/dev/<name>` + sector/byte I/O |
+| `kernel/src/blk.rs` | Block-device registry filled by driver modules (`blk_register`); `/dev/<name>` + sector/byte I/O, through the block cache (`blk/cache.rs`) |
 | `kernel/src/arch/` | All per-arch code: boot, UART, interrupts, PCI, user entry/paging (`user`, `upaging`), context switch, FPU, clock, SMP glue |
 | `kernel/src/console.rs` | Serial console + the `console` module's screen/keyboard hooks (early-output replay) |
 | `kernel/src/input.rs` | Stdin line discipline: module keyboard + serial → fd 0 |
@@ -264,6 +264,7 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 - **procfs** — `/proc/mounts` (generated, not stored bytes); `/proc/sys/kernel/hostname` holds the host name ("myos" at boot; `echo name > /proc/sys/kernel/hostname`, or `hostname name`, sets it, up to 64 bytes)
 - **tmpfs/devfs** — writable mount for `O_CREAT`; device nodes
 - **virtio-blk / NVMe** — modules registering `/dev/vda`… and `/dev/nvme0n1` through `blk_register`; loaded before the filesystem modules
+- **Block cache** — what is read from a disk is kept in 4 KiB pages, up to an eighth of RAM (least recently used out first, all of it given back when memory runs out; `BlockCacheKiB` in `/proc/meminfo`); writes go to the disk and update it
 - **FAT16 module** — parses BPB, walks cluster chain, registers `/msg` from root `MSG`
 - **ext2 module** — the ext2 Linux and e2fsprogs know (1/2/4 KiB blocks, block groups, indirect blocks up to triple, symlinks, rename, sparse superblocks, files over 2 GiB), bound via `mount(2)` fstype `ext2` on a disk `mkfs.ext2` (or Linux's `mke2fs -t ext2`) formatted; `cargo test -p ext2fs` checks it against `e2fsck` and `debugfs`. CI boots carry an empty 4 GiB scratch disk (`/dev/nvme1n1`) for big filesystems
 - **virtio-net / netfs / netd** — kernel virtio-net → `/dev/net0/data` Ethernet; netfs mounts Plan 9 `/net`; netd runs smoltcp in userspace over `/dev/netd/data`; `/ping <ipv4>` uses `/net/icmp`

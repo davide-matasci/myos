@@ -92,7 +92,8 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
     let site = |i: usize| FRAME_SITE_COUNTS[i].load(Ordering::Relaxed);
     alloc::format!(
         "FramesAlloc: {}\nFramesFree: {}\nFramesLive: {}\nLiveKiB: {}\n\
-         SiteVirtq: {}\nSiteFault0: {}\nSiteExec: {}\nSitePageTable: {}\nSiteMmap: {}\nSiteOther: {}\n",
+         SiteVirtq: {}\nSiteFault0: {}\nSiteExec: {}\nSitePageTable: {}\nSiteMmap: {}\nSiteOther: {}\n\
+         BlockCacheKiB: {}\n",
         a,
         f,
         a - f,
@@ -103,8 +104,16 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
         site(3),
         site(4),
         site(5),
+        crate::blk::cache_frames() as u64 * (PAGE / 1024),
     )
     .into_bytes()
+}
+
+/// All usable RAM, in 4 KiB frames.
+pub fn usable_frames() -> u64 {
+    limine_boot::MEMMAP.response().map_or(0, |r| {
+        r.entries().iter().filter(|e| e.type_ == memmap::MEMMAP_USABLE).map(|e| e.length / PAGE).sum()
+    })
 }
 
 /// Physical `[start, end)` of the Limine-loaded kernel image.
@@ -250,10 +259,12 @@ fn validate_free_frame(phys: u64) {
     }
 }
 
-/// Allocate a 4 KiB frame, zero it, return its physical address.
+/// Allocate a 4 KiB frame, zero it, return its physical address. When
+/// memory runs out the block cache gives its frames back first.
 pub fn alloc_frame() -> u64 {
     // Prefer reclaimed user frames (process exit / abandoned exec).
-    let Some(phys) = with_frames(|| pop_free().or_else(|| bump_run(1, PAGE))) else {
+    let take = || with_frames(|| pop_free().or_else(|| bump_run(1, PAGE)));
+    let Some(phys) = take().or_else(|| (crate::blk::release_cache() > 0).then(take).flatten()) else {
         out_of_memory();
     };
     unsafe {

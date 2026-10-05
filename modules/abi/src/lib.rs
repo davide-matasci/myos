@@ -19,7 +19,8 @@
 /// 25 added `atime` to both, [`ModuleVfsOps::set_times`] and
 /// [`KernelApi::vfs_set_times`] (`utimensat`).
 /// 26 added [`ModuleVfsOps::unmount`] (`umount(2)`).
-pub const ABI_VERSION: u32 = 26;
+/// 27 added [`KernelApi::thread_place`] (a new thread's own CPU).
+pub const ABI_VERSION: u32 = 27;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -703,6 +704,11 @@ pub struct KernelApi {
     /// path, as `vfs_stat`'s): 0, or negative (no such file, or a mount
     /// that keeps no times).
     pub vfs_set_times: unsafe extern "C" fn(path: StrRef, atime: u64, mtime: u64) -> i32,
+    // --- ABI 27 ---
+    /// Give thread `tid`, new from `thread_spawn_from` and not run yet, a
+    /// CPU of its own: until then it waits for its creator's syscall to
+    /// end, so what it must find when it starts is set up first.
+    pub thread_place: unsafe extern "C" fn(tid: i32),
 }
 
 /// `blk_unregister`: the device is mounted or open.

@@ -205,6 +205,7 @@ pub(crate) fn kernel_main() -> ! {
     user::spawn_init();
     // kernel_main is the BSP's idle task from here on: run whatever is Ready
     // for CPU 0, halt until the next interrupt otherwise.
+    task::become_idle();
     while !user::both_exited() {
         task::idle_step();
     }

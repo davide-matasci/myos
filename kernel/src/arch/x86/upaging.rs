@@ -251,13 +251,15 @@ pub fn flush_user_tlb() {
             options(nostack, preserves_flags),
         );
     }
-    // x86 user tasks are affinity-pinned (no live migration). Each aspace is
-    // only ever loaded on its home CPU, so remotes cannot cache its entries.
-    // Broadcasting a TLB IPI barrier after every map/unmap (~ELF load, brk,
-    // munmap, exit reclaim) roughly doubled MYOS_CI_MINI under -smp 4 TCG and
-    // pushed GH runners past the 600s wall — do not paper that with a longer
-    // QEMU timeout. Soft-ACK `tlb_shootdown` stays for unload fallback /
-    // future float. aarch64/riscv still shoot down (float or different rules).
+    // Other CPUs only when one has this aspace loaded (a thread of the
+    // process runs there): a CR3 switch drops the rest. Broadcasting a TLB
+    // IPI barrier after every map/unmap (~ELF load, brk, munmap, exit
+    // reclaim) roughly doubled MYOS_CI_MINI under -smp 4 TCG and pushed GH
+    // runners past the 600s wall — do not paper that with a longer QEMU
+    // timeout. aarch64's `tlbi ...is` broadcasts; riscv shoots down.
+    if crate::task::aspace_loaded_elsewhere(crate::task::current_aspace()) {
+        crate::smp::tlb_shootdown();
+    }
 }
 
 pub fn map_heap_page(pml4_phys: u64, va: u64, pa: u64) {

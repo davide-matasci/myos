@@ -1,6 +1,8 @@
 //! A mounted filesystem: the superblock and group descriptors in memory,
 //! block and inode allocation, and the public operations.
 
+use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -20,7 +22,13 @@ pub struct Fs<D: Device> {
     gdt_dirty: Vec<bool>,
     /// Just after the last block allocated, where the next search starts.
     last_alloc: u32,
+    /// Paths resolved since the tree last changed, with their inodes: a
+    /// file's every read names it, and a lookup scans whole directories.
+    resolved: BTreeMap<String, u32>,
 }
+
+/// Most paths [`Fs::resolve`] remembers (it forgets them all past that).
+const RESOLVED_MAX: usize = 1024;
 
 impl<D: Device> Fs<D> {
     /// Mount the filesystem on `dev`.
@@ -43,6 +51,7 @@ impl<D: Device> Fs<D> {
             gdt,
             gdt_dirty: vec![false; gdt_blocks as usize],
             last_alloc: 0,
+            resolved: BTreeMap::new(),
         };
         for g in 0..geo.groups {
             let (bb, ib, it) = (fs.gd32(g, G_BLOCK_BITMAP), fs.gd32(g, G_INODE_BITMAP), fs.gd32(g, G_INODE_TABLE));
@@ -119,9 +128,10 @@ impl<D: Device> Fs<D> {
 
     /// Run a public operation that changes the tree and flush what it
     /// changed, even if it failed half way (what it did is consistent on
-    /// disk).
+    /// disk). The paths resolved before may name other inodes now.
     fn op<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         let r = f(self);
+        self.resolved.clear();
         let flushed = self.flush();
         let v = r?;
         flushed?;
@@ -264,6 +274,18 @@ impl<D: Device> Fs<D> {
 
     /// The inode at `path` (symlinks are not followed).
     pub(crate) fn resolve(&mut self, path: &str) -> Result<u32> {
+        if let Some(&ino) = self.resolved.get(path) {
+            return Ok(ino);
+        }
+        let ino = self.walk(path)?;
+        if self.resolved.len() >= RESOLVED_MAX {
+            self.resolved.clear();
+        }
+        self.resolved.insert(String::from(path), ino);
+        Ok(ino)
+    }
+
+    fn walk(&mut self, path: &str) -> Result<u32> {
         let mut ino = ROOT_INO;
         for name in path.split('/').filter(|c| !c.is_empty() && *c != ".") {
             let dir = self.inode(ino)?;

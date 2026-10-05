@@ -21,12 +21,19 @@ what the threads share. Each task has a `tgid`, the slot of its leader
 (its own for a single-threaded process), and the shared state is always
 reached through it (`with_process_mut`). A thread's id (tid) is its slot.
 
-Threads of one process run on the process's home CPU. Every user process
-already has one (see `user_affinity` in `task/lifecycle.rs`), and that is
-what keeps TLB maintenance local: an address space is only ever loaded on
-one CPU, so `munmap`/`mprotect` flush just that CPU. The threads of a
-process therefore interleave on it and do not run in parallel; different
-processes still spread over the CPUs.
+Every thread gets a home CPU of its own, round-robin like the processes
+(`user_affinity` in `task/lifecycle.rs`), so the threads of a process run
+in parallel. A new thread first waits on its creator's CPU, which runs the
+syscall with interrupts off, until `place_thread` moves it: the Linux
+layer's `clone` stores the thread ids the new thread reads first
+(`CLONE_PARENT_SETTID`, ...) before it does.
+
+An address space is then loaded on several CPUs. A mapping removed or
+narrowed (`munmap`, `mprotect`, `madvise`, a shrinking `brk`) is flushed on
+every CPU that has it loaded (`flush_user_tlb`: an IPI shootdown on x86 and
+riscv64, the inner-shareable `tlbi` on aarch64), and the frames it unmapped
+are freed only after that flush (`free_mapped_page` keeps them until then):
+before it, another thread could still reach them through its TLB.
 
 A new thread starts in user mode from a full register image
 (`task::UserRegs`, the same one a forked child resumes with): a native thread

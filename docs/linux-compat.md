@@ -180,7 +180,8 @@ The module's other needs are plain `KernelApi` services added with ABI 13:
 `fpu_save` / `fpu_restore`, the thread pointer, `thread_spawn_from` (a
 thread resuming like the caller of a syscall on a new stack, for `clone`),
 `wait_addr` / `wake_addr` (for `futex`), `task_sleep_until`, `wall_time_us`
-and `rng_fill`; ABI 25 added `vfs_set_times`. The module uses `alloc` (`Vec`, `String`) through the
+and `rng_fill`; ABI 25 added `vfs_set_times`, ABI 27 `thread_place` (a
+`clone`d thread's own CPU, once its ids are stored). The module uses `alloc` (`Vec`, `String`) through the
 kernel heap (`KernelApi::alloc` / `dealloc`).
 
 ## Supported syscalls
@@ -242,7 +243,9 @@ ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
 too. See Sockets below.
 
 Time and misc: `clock_gettime`, `gettimeofday`, `time`, `nanosleep`,
-`clock_nanosleep`, `getrandom`; `poll` (x86_64) and `ppoll`.
+`clock_nanosleep`, `getrandom`; `poll` (x86_64) and `ppoll`;
+`sched_getaffinity` (every online CPU, so cargo and rustc run their jobs in
+parallel) and `sched_setaffinity` (accepted; the core places tasks).
 
 Anything else returns `ENOSYS`.
 
@@ -364,8 +367,6 @@ three, the kernel crate itself an hour. Known gaps:
   user mode is not interrupted until its next syscall (only `SIGKILL` acts
   on the interrupt return). No alternate signal stacks, no real-time signal
   queueing.
-- Threads run on their process's home CPU, interleaved, not in parallel
-  (`docs/threads.md`).
 - No other `clone` with `CLONE_VM` but not `CLONE_THREAD` than
   posix_spawn's, and no shared file mappings (`MAP_SHARED`).
 - Close-on-exec (`O_CLOEXEC`, `FD_CLOEXEC`, `FIOCLEX`) and `O_NONBLOCK`

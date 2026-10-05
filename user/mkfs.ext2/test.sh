@@ -6,6 +6,18 @@
 # compared with its source, and remove the directory; set a file's times;
 # unmount it and mount it again, the files still there.
 # The host checks the disk with `e2fsck -fn` after the boot.
+# The block cache (kernel/src/blk/cache.rs) on the raw scratch disk, before
+# it is formatted: what is read back is what was written, a write into the
+# middle of a cached page included, and the cache keeps what was read.
+blk_cache() {
+	dd if=/bin/sbase/ls of=/tmp/a bs=4096 count=8 2>/dev/null \
+		&& dd if=/tmp/a of=/dev/nvme1n1 bs=4096 2>/dev/null \
+		&& dd if=/dev/nvme1n1 of=/tmp/b bs=4096 count=8 2>/dev/null && cmp /tmp/a /tmp/b \
+		&& cp /tmp/a /tmp/c && echo cached | dd of=/tmp/c bs=1 seek=5000 conv=notrunc 2>/dev/null \
+		&& echo cached | dd of=/dev/nvme1n1 bs=1 seek=5000 conv=notrunc 2>/dev/null \
+		&& dd if=/dev/nvme1n1 of=/tmp/b bs=4096 count=8 2>/dev/null && cmp /tmp/c /tmp/b \
+		&& grep -q "^BlockCacheKiB: [1-9]" /proc/meminfo && rm /tmp/a /tmp/b /tmp/c
+}
 ext2_disk() {
 	mkdir -p /tmp/disk && mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /tmp/disk ext2 && cp -r /bin/sbase /tmp/disk/s
 }
@@ -25,6 +37,7 @@ ext2_times() {
 ext2_mtime() {
 	echo x > /tmp/disk/m && linux /bin/linux/linux-smoke mtime /tmp/disk/m && rm /tmp/disk/m
 }
+t blk_cache blk_cache
 t ext2_disk ext2_disk
 t ext2_link ext2_link
 t ext2_big ext2_big

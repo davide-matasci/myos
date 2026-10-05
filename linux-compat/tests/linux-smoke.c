@@ -198,6 +198,15 @@ static void check_toolchain_calls(char *self) {
               waitpid(c, &status, 0) == c && WIFEXITED(status) && WEXITSTATUS(status) == 5,
           "posix_spawn");
 
+    /* The online CPUs, as cargo and rustc count them for their jobs. */
+    unsigned long cpus[16] = {0};
+    long got = syscall(SYS_sched_getaffinity, 0, sizeof cpus, cpus);
+    int n = 0;
+    for (int i = 0; got > 0 && i < got / 8; i++) {
+        n += __builtin_popcountl(cpus[i]);
+    }
+    check(got > 0 && n >= 1 && n == sysconf(_SC_NPROCESSORS_ONLN), "sched_getaffinity");
+
     /* A `#!` script runs its interpreter (here this binary, as "child"); a
      * file that is neither fails the exec and leaves the caller as it was. */
     const char *script = "/tmp/linux-smoke.sh";

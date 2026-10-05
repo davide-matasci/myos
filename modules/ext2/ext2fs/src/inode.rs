@@ -2,6 +2,7 @@
 //! disk blocks (12 direct pointers, then single, double and triple indirect
 //! blocks).
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::fs::Fs;
@@ -239,18 +240,39 @@ impl<D: Device> Fs<D> {
         let bs = self.geo.block_size;
         let mut node = *node;
         let mut done = 0;
+        // Whole blocks that follow each other on the disk, read together:
+        // the first block, where they go in `out`, and how many.
+        let mut run: Option<(u32, usize, usize)> = None;
         while done < want {
             let at = pos + done as u64;
             let (n, into) = (at / bs as u64, (at % bs as u64) as usize);
             let take = (bs - into).min(want - done);
             let b = self.bmap(&mut node, n, false)?;
-            let dst = &mut out[done..done + take];
-            if b == 0 {
-                dst.fill(0);
-            } else {
-                self.cache.read(b, |blk| dst.copy_from_slice(&blk[into..into + take]))?;
+            let whole = b != 0 && take == bs;
+            match run {
+                Some((first, at, k)) if whole && first + k as u32 == b && at + k * bs == done => {
+                    run = Some((first, at, k + 1));
+                }
+                _ => {
+                    if let Some((first, at, k)) = run.take() {
+                        self.cache.read_through(first, &mut out[at..at + k * bs])?;
+                    }
+                    let dst = &mut out[done..done + take];
+                    if whole {
+                        run = Some((b, done, 1));
+                    } else if b == 0 {
+                        dst.fill(0);
+                    } else {
+                        let mut blk = vec![0; bs];
+                        self.cache.read_through(b, &mut blk)?;
+                        dst.copy_from_slice(&blk[into..into + take]);
+                    }
+                }
             }
             done += take;
+        }
+        if let Some((first, at, k)) = run {
+            self.cache.read_through(first, &mut out[at..at + k * bs])?;
         }
         Ok(done)
     }

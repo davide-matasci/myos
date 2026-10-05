@@ -122,6 +122,7 @@ static API: KernelApi = KernelApi {
     fork_from: api_fork_from,
     mmap_discard: api_mmap_discard,
     vfs_set_times: api_vfs_set_times,
+    thread_place: api_thread_place,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1178,6 +1179,12 @@ unsafe extern "C" fn api_fork_from(regs: *mut u64, sp: usize) -> i32 {
     crate::task::fork_current(start).map_or(-1, |p| p as i32)
 }
 
+unsafe extern "C" fn api_thread_place(tid: i32) {
+    if tid >= 0 {
+        crate::task::place_thread(tid as usize);
+    }
+}
+
 unsafe extern "C" fn api_mmap_discard(addr: usize, len: usize) -> i32 {
     if crate::user::mmap_discard(addr, len) { 0 } else { -1 }
 }
@@ -1211,8 +1218,8 @@ unsafe extern "C" fn api_task_yield() {
 
 unsafe extern "C" fn api_wall_time_us() -> u64 {
     match crate::time::timeval() {
-        Some((s, us)) => s as u64 * 1_000_000 + us as u64,
-        None => 0,
+        Some((s, us)) if s >= 0 => s as u64 * 1_000_000 + us as u64,
+        _ => 0,
     }
 }
 

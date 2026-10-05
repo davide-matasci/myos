@@ -100,20 +100,34 @@ pub fn mmap_contains(ptr: usize, len: usize) -> bool {
 }
 
 /// Lowest free `len`-byte gap in `[area_lo, area_hi)` (page aligned).
-pub fn mmap_alloc(area_lo: usize, area_hi: usize, len: usize) -> Option<usize> {
-    with_process_mut(|t| {
-        let mut cand = area_lo;
-        for r in &t.mmap {
-            let (lo, hi) = (r.va as usize, region_end(r));
-            if hi <= cand {
-                continue;
-            }
-            if cand.checked_add(len)? <= lo {
-                break;
-            }
-            cand = hi;
+fn free_gap(mmap: &[MmapRegion], area_lo: usize, area_hi: usize, len: usize) -> Option<usize> {
+    let mut cand = area_lo;
+    for r in mmap {
+        let (lo, hi) = (r.va as usize, region_end(r));
+        if hi <= cand {
+            continue;
         }
-        (cand.checked_add(len)? <= area_hi).then_some(cand)
+        if cand.checked_add(len)? <= lo {
+            break;
+        }
+        cand = hi;
+    }
+    (cand.checked_add(len)? <= area_hi).then_some(cand)
+}
+
+/// Record a new mapping as [`mmap_add`] does, in the lowest free gap of
+/// `[area_lo, area_hi)` that holds it: its address. Found and recorded in
+/// one step, so threads mapping at once get gaps of their own.
+pub fn mmap_add_free(
+    area_lo: usize,
+    area_hi: usize,
+    pages: u32,
+    prot: u32,
+    file: Option<(&crate::fs::Vnode, usize)>,
+) -> Option<usize> {
+    with_process_mut(|t| {
+        let va = free_gap(&t.mmap, area_lo, area_hi, pages as usize * crate::user::PAGE)?;
+        add_region(t, va as u64, pages, prot, file).then_some(va)
     })
 }
 
@@ -123,24 +137,26 @@ pub fn mmap_alloc(area_lo: usize, area_hi: usize, len: usize) -> Option<usize> {
 /// as musl's map many small neighbouring blocks, hundreds of mappings in
 /// few runs. False when the region or the mapped-file table is full.
 pub fn mmap_add(va: u64, pages: u32, prot: u32, file: Option<(&crate::fs::Vnode, usize)>) -> bool {
-    with_process_mut(|t| {
-        let (file, fpage) = match file {
-            None => (0, 0),
-            Some((node, off)) => match mapped_file_slot(t, node) {
-                Some(i) => (i as u32 + 1, (off / crate::user::PAGE) as u32),
-                None => return false,
-            },
-        };
-        let i = t.mmap.partition_point(|r| r.va < va);
-        t.mmap.insert(i, MmapRegion { va, pages, prot, file, fpage });
-        coalesce(&mut t.mmap);
-        if t.mmap.len() > MAX_MMAP_REGIONS {
-            // It joined no neighbour: the table is full.
-            t.mmap.remove(i);
-            return false;
-        }
-        true
-    })
+    with_process_mut(|t| add_region(t, va, pages, prot, file))
+}
+
+fn add_region(t: &mut Process, va: u64, pages: u32, prot: u32, file: Option<(&crate::fs::Vnode, usize)>) -> bool {
+    let (file, fpage) = match file {
+        None => (0, 0),
+        Some((node, off)) => match mapped_file_slot(t, node) {
+            Some(i) => (i as u32 + 1, (off / crate::user::PAGE) as u32),
+            None => return false,
+        },
+    };
+    let i = t.mmap.partition_point(|r| r.va < va);
+    t.mmap.insert(i, MmapRegion { va, pages, prot, file, fpage });
+    coalesce(&mut t.mmap);
+    if t.mmap.len() > MAX_MMAP_REGIONS {
+        // It joined no neighbour: the table is full.
+        t.mmap.remove(i);
+        return false;
+    }
+    true
 }
 
 /// The `mapped_files` entry for `node`: the one already holding it, else

@@ -107,7 +107,31 @@ pub(super) fn align_up_usize(v: usize, align: usize) -> usize {
 
 pub(super) use crate::arch::upaging::{create_aspace, free_user_page_tables, map_heap_page, map_user_code_page, map_user_stack_page, pick_user_base, unmap_user_page, virt_to_phys};
 pub use crate::arch::upaging::{read_aspace, switch_aspace};
-pub(super) use crate::arch::upaging::flush_user_tlb;
+/// Frames unmapped from an address space that another CPU has loaded (a
+/// thread of the process runs there), with that address space: the next
+/// [`flush_user_tlb`] of it frees them, once no CPU can reach them.
+static UNMAPPED: Mutex<alloc::vec::Vec<(u64, u64)>> = Mutex::new(alloc::vec::Vec::new());
+
+/// Flush the current address space's user translations (on every CPU that
+/// has it loaded), then free the frames unmapped from it before.
+pub(super) fn flush_user_tlb() {
+    let aspace = task::current_aspace();
+    // Taken before the flush: it covers only what was unmapped by then.
+    let mut freed = alloc::vec::Vec::new();
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    UNMAPPED.lock().retain(|&(a, frame)| {
+        if a == aspace {
+            freed.push(frame);
+        }
+        a != aspace
+    });
+    crate::arch::irq_restore(flags);
+    crate::arch::upaging::flush_user_tlb();
+    for frame in freed {
+        mm::free_frame(frame);
+    }
+}
 
 /// Unmap and free anonymous mmap pages for `aspace` (table entries are left
 /// to the caller); a device's pages are only unmapped. Shared by in-place
@@ -252,32 +276,46 @@ pub fn fault_in(va: usize, access: Access) -> bool {
         return false;
     }
     let aspace = task::current_aspace();
-    let flags = crate::arch::irq_save();
-    crate::arch::irq_off();
-    let guard = FAULT_LOCK.lock();
-    // Another thread may have paged it in meanwhile: then only the
-    // protection is (re)applied.
-    let frame = virt_to_phys(aspace, page as u64).unwrap_or_else(|| {
+    // The new page is filled before the lock is taken: a file read is a
+    // disk request, which every other fault would wait for.
+    let fresh = virt_to_phys(aspace, page as u64).is_none().then(|| {
         let frame = mm::alloc_frame_site(4);
         if let Some((node, off)) = file {
             // Past the end of the file the frame stays zero.
             let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
             let _ = fs::read(&node, off, dst);
         }
+        if prot & PROT_EXEC != 0 {
+            sync_icache(mm::hhdm(frame) as usize, PAGE);
+        }
         frame
     });
-    map_user_page_prot(aspace, page as u64, frame, prot);
-    if prot & PROT_EXEC != 0 {
-        sync_icache(mm::hhdm(frame) as usize, PAGE);
-        sync_icache(page, PAGE);
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    let guard = FAULT_LOCK.lock();
+    // Another thread may have paged it in meanwhile: then only the
+    // protection is (re)applied.
+    let frame = match (virt_to_phys(aspace, page as u64), fresh) {
+        (Some(mapped), fresh) => {
+            if let Some(frame) = fresh {
+                mm::free_frame(frame);
+            }
+            Some(mapped)
+        }
+        (None, fresh) => fresh,
+    };
+    if let Some(frame) = frame {
+        map_user_page_prot(aspace, page as u64, frame, prot);
+        // The page was not mapped before: no other CPU can hold a
+        // translation for it (one that faults on it meanwhile flushes its
+        // own here), so this CPU's entry for it is all there is to drop.
+        crate::arch::flush_tlb_page_local(page);
     }
-    // The page was not mapped before: no other CPU can hold a translation
-    // for it (one that faults on it meanwhile flushes its own TLB here), so
-    // a local flush does, without riscv64's shootdown IPI per fault.
-    crate::arch::flush_tlb_local();
     drop(guard);
     crate::arch::irq_restore(flags);
-    true
+    // Mapped when looked at first and gone by the lock (unmapped by
+    // another thread): look again.
+    frame.is_some() || fault_in(va, access)
 }
 
 pub(super) fn free_mapped_page(aspace: u64, va: u64) {
@@ -288,6 +326,14 @@ pub(super) fn free_mapped_page(aspace: u64, va: u64) {
     // If unmap failed to clear, refuse to free — avoids freelist double-free when
     // reclaim walks overlapping VA ranges (code span vs heap/mmap).
     if virt_to_phys(aspace, va).is_some() {
+        return;
+    }
+    // Another CPU may still hold a translation to it: freed after the flush.
+    if task::aspace_loaded_elsewhere(aspace) {
+        let flags = crate::arch::irq_save();
+        crate::arch::irq_off();
+        UNMAPPED.lock().push((aspace, phys));
+        crate::arch::irq_restore(flags);
         return;
     }
     mm::free_frame(phys);

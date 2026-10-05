@@ -11,11 +11,13 @@
 //!
 //! Paths are relative to the filesystem root, `/`-separated, without a
 //! leading `/`, and are not resolved through symlinks (the caller does that,
-//! with [`Fs::readlink`]). Metadata and data go through a block cache: a
-//! call that changes the tree (create, mkdir, rename, unlink, ...) flushes
-//! it before it returns; file data written with [`Fs::write`] stays there
-//! until such a call, [`Fs::sync`] (the module calls it when a file's last
-//! fd closes), an eviction or [`Fs::unmount`].
+//! with [`Fs::readlink`]). Metadata and written data go through a block
+//! cache: a call that changes the tree (create, mkdir, rename, unlink, ...)
+//! flushes it before it returns; file data written with [`Fs::write`] stays
+//! there until such a call, [`Fs::sync`] (the module calls it when a file's
+//! last fd closes), an eviction or [`Fs::unmount`]. File data that is read
+//! bypasses it (a large file would push the metadata out), in one device
+//! request per run of blocks that follow each other on the disk.
 //!
 //! `no_std` + `alloc`, used by the ext2 kernel module and by `mkfs.ext2`, and
 //! tested on the host against e2fsprogs (`cargo test -p ext2fs`).

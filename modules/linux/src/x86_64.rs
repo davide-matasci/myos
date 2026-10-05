@@ -129,6 +129,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         200 => ret(sys::kill(a[0], a[1])), // tkill
         201 => ret(sys::time(a[0])),
         202 => ret(thread::futex(a[0], a[1], a[2], a[3], a[5])),
+        203 => 0, // sched_setaffinity: the core places tasks
+        204 => ret(sys::sched_getaffinity(a[1], a[2])),
         217 => ret(sys::getdents64(a[0], a[1], a[2])),
         218 => thread::set_tid_address(a[0]),
         228 => ret(sys::clock_gettime(a[1])),

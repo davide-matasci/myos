@@ -6,9 +6,11 @@
 //! A thread's own slot has its registers, kernel stack, thread pointer,
 //! blocked/pending signals and scheduling state.
 //!
-//! All threads of a process run on its home CPU (`affinity`): an address
-//! space is only ever loaded on one CPU, which keeps TLB maintenance local
-//! (see `user_affinity`). They interleave; they do not run in parallel.
+//! A new thread gets a home CPU of its own (`place_thread`, round-robin as
+//! `user_affinity` places processes), so the threads of a process run in
+//! parallel. Their address space is then loaded on several CPUs: a mapping
+//! removed or narrowed is flushed on all of them before its frame is freed
+//! (`user::flush_user_tlb`).
 //!
 //! The process ends with its last thread. The leader carries it, so it goes
 //! last: a leader whose thread ends waits for the others, then exits the
@@ -19,6 +21,8 @@ use super::*;
 
 /// Start a thread in the current process that enters user mode with
 /// `regs`, with thread pointer `tls` (`None`: the caller's). Returns its tid.
+/// It waits on this CPU, which runs the syscall with interrupts off, until
+/// [`place_thread`] gives it a CPU of its own.
 pub fn spawn_thread(regs: UserRegs, tls: Option<u64>) -> Option<usize> {
     let regs = {
         let mut r = regs;
@@ -37,7 +41,7 @@ pub fn spawn_thread(regs: UserRegs, tls: Option<u64>) -> Option<usize> {
     };
     let mut tasks = TASKS.lock();
     let pid = tasks[me].tgid;
-    let affinity = tasks[pid].affinity;
+    let affinity = tasks[me].affinity;
     tasks[slot] = Task {
         state: State::Ready,
         stack_base,
@@ -63,6 +67,25 @@ pub fn spawn_thread(regs: UserRegs, tls: Option<u64>) -> Option<usize> {
     irq_restore(flags);
     note_ready(affinity);
     Some(slot)
+}
+
+/// Give thread `tid`, new from [`spawn_thread`] and not run yet, a home CPU
+/// of its own. Its creator calls this once it has set up what the thread
+/// must find when it starts (`clone`'s thread ids).
+pub fn place_thread(tid: usize) {
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    let fresh = tid < MAX_TASKS && tasks[tid].state == State::Ready && tasks[tid].start_regs.is_some();
+    let affinity = if fresh { user_affinity() } else { None };
+    if affinity.is_some() {
+        tasks[tid].affinity = affinity;
+    }
+    drop(tasks);
+    irq_restore(flags);
+    if affinity.is_some() {
+        note_ready(affinity);
+    }
 }
 
 /// End the calling thread with `code`. The leader carries the process, so

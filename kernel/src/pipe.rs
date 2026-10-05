@@ -194,14 +194,19 @@ pub fn fifo_attach(id: usize, read: bool, write: bool) -> bool {
     true
 }
 
-pub fn read(id: usize, out: &mut [u8]) -> usize {
+/// Read what the pipe holds into `out`: the bytes read, 0 at the end (empty,
+/// every writer gone), `None` when it is empty but a writer may still
+/// write (the reader waits), `usize::MAX` for no such pipe. Both decided
+/// under one lock: a write landing between an empty read and a separate
+/// check made an empty read look like the end.
+pub fn read(id: usize, out: &mut [u8]) -> Option<usize> {
     let n = {
         let mut pipes = PIPES.lock();
         let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
-            return usize::MAX;
+            return Some(usize::MAX);
         };
         if p.len == 0 {
-            return 0;
+            return p.write_closed.then_some(0);
         }
         let was_full = p.len >= PIPE_BUF;
         let n = out.len().min(p.len);
@@ -211,13 +216,13 @@ pub fn read(id: usize, out: &mut [u8]) -> usize {
         p.head = (p.head + n) % PIPE_BUF;
         p.len -= n;
         if !was_full {
-            return n;
+            return Some(n);
         }
         n
     };
     // Space freed in a full pipe: a blocked writer can continue.
     notify(id);
-    n
+    Some(n)
 }
 
 pub fn write(id: usize, data: &[u8]) -> usize {

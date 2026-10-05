@@ -111,6 +111,13 @@ pub fn flush_tlb_local() {
     }
 }
 
+/// Flush this hart's translation of the page at `va`.
+pub fn flush_tlb_page_local(va: usize) {
+    unsafe {
+        core::arch::asm!("sfence.vma {v}, zero", v = in(reg) va, options(nostack));
+    }
+}
+
 /// Make freshly written code visible to instruction fetch.
 pub fn sync_icache(start: usize, size: usize) {
     let _ = start;

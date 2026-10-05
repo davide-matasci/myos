@@ -867,6 +867,29 @@ pub fn kill(pid: usize, sig: usize) -> R {
     if crate::k::signal::kill(pid as isize, n) { Ok(0) } else { Err(ESRCH) }
 }
 
+/// `sched_getaffinity`: every online CPU (`processor_count` in
+/// `/proc/cpuinfo`); a task runs where the core puts it. Rust's
+/// `available_parallelism` and musl's `sysconf(_SC_NPROCESSORS_ONLN)` count
+/// these bits: without them cargo builds one job at a time. The size of
+/// the mask written is the result, as on Linux.
+pub fn sched_getaffinity(len: usize, mask: usize) -> R {
+    let mut b = [0u8; 256];
+    let n = fs::read("/proc/cpuinfo", 0, &mut b).unwrap_or(0);
+    let cpus = core::str::from_utf8(&b[..n])
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("processor_count: ")))
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 64);
+    let size = cpus.div_ceil(64) * 8;
+    if len < size {
+        return Err(EINVAL);
+    }
+    let bits: u64 = if cpus == 64 { u64::MAX } else { (1 << cpus) - 1 };
+    put(mask, &bits.to_le_bytes())?;
+    Ok(size)
+}
+
 /// The kernel's host name file (`docs/linux-compat.md`).
 const HOSTNAME: &str = "/proc/sys/kernel/hostname";
 
