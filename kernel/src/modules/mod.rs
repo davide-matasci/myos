@@ -132,9 +132,8 @@ const SELF_REPORTING: &[&str] = &["console", "virtio_blk", "nvme", "virtio_net",
 /// Load the modules Limine placed in RAM (`module_path` entries of
 /// limine.conf, in order). Each is named after its path's last component.
 ///
-/// Non-module files in the list are skipped: the `initramfs` cpio archive
-/// (rootfs unpacks it) and userspace ELFs (`MissingInit`), so rootfs can reuse
-/// the same Limine modules. Failures are logged, never fatal.
+/// The `initramfs` cpio archive in the list is skipped (rootfs unpacks it).
+/// Failures are logged, never fatal.
 pub fn load_limine_modules() {
     let Some(resp) = crate::limine_boot::MODULES.response() else {
         return;
@@ -159,7 +158,6 @@ pub fn load_limine_modules() {
                     console::status_ok(name);
                 }
             }
-            Err(elf::LoadError::MissingInit) => {}
             Err(e) => {
                 console::status_fail(&alloc::format!("limine module {name}: {e}"));
             }

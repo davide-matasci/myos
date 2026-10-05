@@ -415,7 +415,6 @@ pub fn init() {
             rootfs::write,
         ),
     );
-    rootfs::init_embedded();
     vfs::mount(
         "tmpfs",
         "tmp",
@@ -504,8 +503,7 @@ pub fn init() {
     );
 }
 
-/// Ingest the Limine modules into rootfs (the initramfs overrides embedded
-/// programs).
+/// Unpack the initramfs into rootfs.
 pub fn init_limine() {
     rootfs::init_limine();
 }

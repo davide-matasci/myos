@@ -34,7 +34,6 @@ files=(
   target/fat-*
   target/ext2-*
   target/linux-*
-  target/ok-*
   target/.myos-ci-kernel-version
   target/limine-v*
 )
@@ -62,7 +61,7 @@ required=(
   target/riscv64imac-unknown-none-elf/debug/kernel
   "${image_files[@]}"
 )
-for m in console hello pci_enum acpi virtio_blk nvme xhci usb_hub usb_storage virtio_net netfs fat ext2 linux ok; do
+for m in console hello pci_enum acpi virtio_blk nvme xhci usb_hub usb_storage virtio_net netfs fat ext2 linux; do
   for t in x86_64-unknown-none aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
     required+=("target/${m}-${t}")
   done

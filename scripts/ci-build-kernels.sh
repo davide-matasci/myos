@@ -55,9 +55,8 @@ linux_compat_members() {
 }
 
 # The version stamps of every image port, the toolchains included
-# (scripts/ports.sh --stamps): they encode the userspace content
-# kernel/build.rs embeds via include_bytes! and myos build.rs packs into the
-# initramfs / Limine images.
+# (scripts/ports.sh --stamps): they encode the userspace content myos
+# build.rs packs into the initramfs / Limine images.
 PORT_STAMPS=()
 while read -r stamp; do
   PORT_STAMPS+=("$stamp")
@@ -104,7 +103,7 @@ kernel_inputs_hash() {
     (
       cd "$ROOT"
       {
-        # Kernel + nested crates that kernel/build.rs compiles into embeds.
+        # Kernel + the modules and user programs kernel/build.rs builds.
         hash_tree kernel
         hash_tree modules
         hash_tree user
@@ -289,9 +288,6 @@ HELLO_OK_ELFS=(
   target/linux-launcher-x86_64-unknown-none
   target/linux-launcher-aarch64-unknown-none
   target/linux-launcher-riscv64-unknown-none
-  target/ok-x86_64-unknown-none
-  target/ok-aarch64-unknown-none-softfloat
-  target/ok-riscv64imac-unknown-none-elf
 )
 
 # Everything the images are packed from: the kernels, the modules and every
@@ -322,10 +318,9 @@ artifacts_ready() {
 do_clean_and_build() {
   echo "==> kernel inputs changed or artifacts missing; clean + build"
   # The ports were built above (before the hash snapshot); build.rs only
-  # checks them. Clean so the images and the embeds are rebuilt from them.
+  # checks them. Clean so the images are rebuilt from them.
   cargo clean -p myos
-  # Artifact-dep kernel skips build.rs when ELFs change but sources do not;
-  # stale include_bytes! in bootfs caused x86 #GP after std cat ok in CI.
+  # Artifact-dep kernel skips build.rs when ELFs change but sources do not.
   cargo clean -p kernel --target x86_64-unknown-none
   cargo clean -p kernel --target aarch64-unknown-none-softfloat
   cargo clean -p kernel --target riscv64imac-unknown-none-elf
