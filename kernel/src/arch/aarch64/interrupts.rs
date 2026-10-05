@@ -274,6 +274,7 @@ sync_el:
     stp x0, x1, [sp, #16 * 0]
     stp x2, x3, [sp, #16 * 1]
     str x30, [sp, #16 * 2]
+    mov x0, sp
     bl aarch64_sync_handler
 
 exception_unhandled:
@@ -281,6 +282,7 @@ exception_unhandled:
     stp x0, x1, [sp, #16 * 0]
     stp x2, x3, [sp, #16 * 1]
     str x30, [sp, #16 * 2]
+    mov x0, sp
     bl aarch64_unhandled_exception
     b exception_hang
 
@@ -862,7 +864,7 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
             &alloc::format!("ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x} sp_el0={sp_el0:#x}"),
         );
     }
-    super::exception::aarch64_sync_abort("user sync abort", esr, elr, far, Some(sp_el0));
+    super::exception::aarch64_sync_abort("user sync abort", esr, elr, far, Some(sp_el0), None);
 }
 
 fn read_esr_elr_far() -> (u64, u64, u64) {
@@ -883,16 +885,27 @@ fn read_esr_elr_far() -> (u64, u64, u64) {
     (esr, elr, far)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn aarch64_sync_handler() -> ! {
-    let (esr, elr, far) = read_esr_elr_far();
-    super::exception::aarch64_sync_abort("kernel sync abort", esr, elr, far, None);
+/// The x30 and sp at a kernel fault, from the 16 * 4 frame `sync_el` and
+/// `exception_unhandled` push (x30 at [sp, #16 * 2]): with `elr` at 0 or in
+/// the weeds, the link register still names the caller of the bad `blr`
+/// (a `ret` to 0 leaves it 0), and sp says which kernel stack it ran on.
+fn kernel_frame_lr_sp(frame: *const u64) -> (u64, u64) {
+    let lr = unsafe { frame.add(4).read() };
+    (lr, frame as u64 + 16 * 4)
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn aarch64_unhandled_exception() -> ! {
+extern "C" fn aarch64_sync_handler(frame: *const u64) -> ! {
     let (esr, elr, far) = read_esr_elr_far();
-    super::exception::aarch64_sync_abort("unhandled exception", esr, elr, far, None);
+    let lr_sp = kernel_frame_lr_sp(frame);
+    super::exception::aarch64_sync_abort("kernel sync abort", esr, elr, far, None, Some(lr_sp));
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn aarch64_unhandled_exception(frame: *const u64) -> ! {
+    let (esr, elr, far) = read_esr_elr_far();
+    let lr_sp = kernel_frame_lr_sp(frame);
+    super::exception::aarch64_sync_abort("unhandled exception", esr, elr, far, None, Some(lr_sp));
 }
 
 fn read32(addr: usize) -> u32 {

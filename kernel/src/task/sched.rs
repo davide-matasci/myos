@@ -73,6 +73,7 @@ pub fn schedule() {
             let old_sp = core::ptr::addr_of_mut!(tasks[current].sp);
             let new_sp = tasks[next].sp;
             let kstack = tasks[next].kernel_stack_top;
+            let old_kstack = tasks[current].kernel_stack_top;
             let aspace = tasks[next].aspace;
             let old_user = tasks[current].aspace != 0;
             // Leave `current` Running so peers cannot pick/reclaim it until it
@@ -83,14 +84,21 @@ pub fn schedule() {
             tasks[next].state = State::Running;
             set_current_slot(next);
             SWITCHED_FROM[cpu.min(crate::smp::MAX_CPUS - 1)].store(current, Ordering::SeqCst);
-            Some((old_sp, new_sp, kstack, aspace, current, next, old_user))
+            Some((old_sp, new_sp, kstack, old_kstack, aspace, current, next, old_user))
         }
     };
 
-    let Some((old_sp, new_sp, kstack, aspace, old, next, old_user)) = switch else {
+    let Some((old_sp, new_sp, kstack, old_kstack, aspace, old, next, old_user)) = switch else {
         irq_restore(flags);
         return;
     };
+
+    // The task leaving this CPU must still be on its kernel stack: an
+    // overflow is reported here, by the task that did it, not later by the
+    // owner of whatever the heap placed below (`arm_stack`).
+    if !super::stack_intact(old_kstack) {
+        panic!("kernel stack overflow: task {old} ran below its kernel stack (top {old_kstack:#x})");
+    }
 
     if kstack != 0 {
         let cpu = crate::smp::cpu_id();
@@ -601,6 +609,7 @@ pub fn ap_idle_loop(logical: usize) -> ! {
     let base = stack as usize;
     let top = base + STACK_SIZE;
     crate::arch::stamp_stack_cpu(top, logical);
+    super::arm_stack(top);
     if logical < crate::smp::MAX_CPUS {
         AP_IDLE_STACK_BASE[logical].store(base, Ordering::SeqCst);
     }
