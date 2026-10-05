@@ -162,7 +162,7 @@ static int check_double(void) {
     volatile float f = 1.5f;
     char buf[64];
     nan = nan / nan;
-    if (a + b != 180.0 || a * c != 80000.0 || (a + b) / 8 != 22.5 || b - c != -920.0) {
+    if (a + b != 180.0 || a * c != 80000.0 || (a + b) / 8 != 22.5 || b - c != -900.0) {
         return fail("double arithmetic");
     }
     if (!(a == a) || a == b || !(a < b) || !(b >= a) || a > b || !(a <= a) || !(a != b)) {
