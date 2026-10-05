@@ -382,13 +382,9 @@ fn backend_openable(idx: usize, rel: &str) -> bool {
 
 /// Resolve `path` to a vnode suitable for open/read/write.
 ///
-/// Directories (including mount roots like `/bin/sbase`) may be opened
-/// read-only so userspace `*at(dirfd, …)` and `which` PATH walks work.
+/// Directories (including mount roots like `/bin/sbase`, and `/`) may be
+/// opened read-only: a directory fd, the cwd.
 pub fn open(path: &str, flags: u32) -> Option<Vnode> {
-    let rel_check = normalize_path(path);
-    if rel_check.is_empty() {
-        return None;
-    }
     reap();
     let _tree = tree_read();
     let (idx, ref rel) = resolve_index(path)?;
