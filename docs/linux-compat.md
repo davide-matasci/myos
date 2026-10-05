@@ -241,7 +241,9 @@ ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
 too. See Sockets below.
 
 Time and misc: `clock_gettime`, `gettimeofday`, `time`, `nanosleep`,
-`clock_nanosleep`, `getrandom`; `poll` (x86_64) and `ppoll`.
+`clock_nanosleep`, `getrandom`; `poll` (x86_64) and `ppoll`;
+`sched_getaffinity` (every online CPU, so cargo and rustc run their jobs in
+parallel) and `sched_setaffinity` (accepted; the core places tasks).
 
 Anything else returns `ENOSYS`.
 

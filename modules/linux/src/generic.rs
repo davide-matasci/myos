@@ -55,6 +55,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         101 => ret(sys::nanosleep(a[0], false)),
         113 => ret(sys::clock_gettime(a[1])),
         115 => ret(sys::nanosleep(a[2], a[1] & 1 != 0)), // clock_nanosleep
+        122 => 0, // sched_setaffinity: the core places tasks
+        123 => ret(sys::sched_getaffinity(a[1], a[2])),
         124 => {
             task::yield_now();
             0
