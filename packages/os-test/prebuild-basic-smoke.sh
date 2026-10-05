@@ -130,7 +130,7 @@ link_one() {
     mkdir -p "$(dirname "$sf")"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$sf"
-    extra+=("$sf")
+    extra+=("$sf" "$(myos_riscv64_softfloat)")
   fi
 
   # Link -lm for stdio float printf and any suite that needs it.

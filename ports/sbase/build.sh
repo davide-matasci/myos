@@ -148,7 +148,7 @@ build_arch() {
     extra=("$objdir/trunctfdf2.o")
   elif [[ "$arch" == "riscv64" ]]; then
     compile "$cc" "$inc" "$myos/riscv64-softfloat.c" "$objdir/riscv64-softfloat.o"
-    extra=("$objdir/riscv64-softfloat.o")
+    extra=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   local make_objs=()

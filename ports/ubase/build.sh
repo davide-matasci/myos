@@ -130,7 +130,7 @@ build_arch() {
   elif [[ "$arch" == "riscv64" ]]; then
     if [[ -f "$ROOT/ports/sbase/riscv64-softfloat.c" ]]; then
       compile "$cc" "$inc" "$ROOT/ports/sbase/riscv64-softfloat.c" "$objdir/riscv64-softfloat.o"
-      extra=("$objdir/riscv64-softfloat.o")
+      extra=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
     fi
   fi
 

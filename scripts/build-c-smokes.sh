@@ -49,7 +49,7 @@ for arch in x86_64 aarch64 riscv64; do
   elif [[ "$arch" == "riscv64" ]]; then
     sf="$ROOT/target/c-smokes-${arch}-softfloat.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$sf"
-    extra+=("$sf")
+    extra+=("$sf" "$(myos_riscv64_softfloat)")
   fi
   for entry in "${smokes[@]}"; do
     name="${entry%% *}"

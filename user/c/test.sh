@@ -28,7 +28,8 @@ t netconv /bin/etc/netconv_smoke
 # the wait (child_smoke.c).
 t child /bin/etc/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
-# constants libgloss gained for the ports (libc_smoke.c).
+# constants libgloss gained for the ports, and the soft float's double
+# arithmetic, compares, conversions and printf (libc_smoke.c).
 t libc /bin/etc/libc_smoke
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,

@@ -90,7 +90,7 @@ build_arch() {
   elif [[ "$arch" == "riscv64" ]]; then
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$objdir/riscv64-softfloat.o"
-    objs+=("$objdir/riscv64-softfloat.o")
+    objs+=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   # myos gap shims (dup, vfork, getloadavg) + guile stubs.

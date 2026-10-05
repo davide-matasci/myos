@@ -126,7 +126,7 @@ for arch in x86_64 aarch64 riscv64; do
         -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$ROOT/target/tcp-listen-smoke-aarch64-trunctfdf2.o"
     fi
   elif [[ "$arch" == "riscv64" ]]; then
-    extra_objs+=("$ROOT/target/tcp-listen-smoke-riscv64-softfloat.o")
+    extra_objs+=("$ROOT/target/tcp-listen-smoke-riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
     if [[ ! -f "$ROOT/target/tcp-listen-smoke-riscv64-softfloat.o" ]]; then
       "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
         -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$ROOT/target/tcp-listen-smoke-riscv64-softfloat.o"

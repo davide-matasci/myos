@@ -8,6 +8,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
 #include <sys/stat.h>
@@ -150,9 +151,47 @@ static int check_termios(void) {
     return (t.c_cflag & CSIZE) == CS7 && VSTART < NCCS && VEOL < NCCS ? 0 : fail("termios");
 }
 
+/* The soft float of the arches without an FPU in the image (riscv64:
+ * compiler-rt's helpers, the long-double conversions of
+ * ports/sbase/riscv64-softfloat.c): arithmetic, compares, the integer
+ * conversions, and printf and strtod through them. Hand-written helpers
+ * once made 80 + 100 give 116 and a == a false. volatile keeps the
+ * compiler from folding the arithmetic at build time. */
+static int check_double(void) {
+    volatile double a = 80.0, b = 100.0, c = 1000.0, nan = 0.0;
+    volatile float f = 1.5f;
+    char buf[64];
+    nan = nan / nan;
+    if (a + b != 180.0 || a * c != 80000.0 || (a + b) / 8 != 22.5 || b - c != -920.0) {
+        return fail("double arithmetic");
+    }
+    if (!(a == a) || a == b || !(a < b) || !(b >= a) || a > b || !(a <= a) || !(a != b)) {
+        return fail("double compares");
+    }
+    if (nan == nan || nan < a || nan > a || !(nan != nan)) {
+        return fail("nan compares");
+    }
+    if ((int)(a * c) != 80000 || (long long)-(a + b) != -180 || (unsigned)(b / 8) != 12
+        || (double)(int)-7 != -7.0 || (double)4000000000ULL != 4e9) {
+        return fail("double conversions");
+    }
+    if (f * 2 != 3.0f || !(f < 2.0f) || (double)f != 1.5) {
+        return fail("float arithmetic");
+    }
+    snprintf(buf, sizeof buf, "%.1f %g %.3f", (double)(a + b), (double)(a * c), (double)(a + b) / 8);
+    if (strcmp(buf, "180.0 80000 22.500") != 0) {
+        printf("printf: %s\n", buf);
+        return fail("double printf");
+    }
+    if (strtod("2.5e2", NULL) != 250.0 || atof("0.125") * 8 != 1.0) {
+        return fail("strtod");
+    }
+    return 0;
+}
+
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()
-        || check_termios()) {
+        || check_termios() || check_double()) {
         return 1;
     }
     printf("[ OK ] libc\n");
