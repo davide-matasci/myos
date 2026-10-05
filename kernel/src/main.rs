@@ -178,7 +178,7 @@ pub(crate) fn kernel_main() -> ! {
     rng::init();
     console::status_ok("urandom");
     // Every driver and filesystem is a module: Limine placed them in RAM in
-    // the `module_path` order of limine.conf (console, stubfs, hello,
+    // the `module_path` order of limine.conf (console, hello,
     // pci_enum, acpi, virtio_blk, nvme, xhci, usb_hub, usb_storage, virtio_net,
     // netfs, fat, ext2), and
     // they load in that order. More can follow at runtime with `insmod` from /lib/modules.

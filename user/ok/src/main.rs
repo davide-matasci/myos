@@ -54,11 +54,6 @@ fn fat_msg_ok() -> bool {
 
 fn smoke_vfs() {
     let mut buf = [0u8; myos_user::LISTDIR_BUF];
-    let n = listdir(b"/disk", &mut buf);
-    if n != usize::MAX && n > 0 && buf_has(&buf[..n], b"ping") {
-        status_ok("disk ls");
-    }
-
     let n = listdir(b"/dev", &mut buf);
     if n == usize::MAX || n == 0 || !buf_has(&buf[..n], b"vda") {
         status_warn("vda missing");
@@ -223,20 +218,6 @@ fn ext2_format() -> bool {
         return false;
     }
     true
-}
-
-fn smoke_disk() {
-    let Some(fd) = open(b"/disk/ping") else {
-        status_fail("disk open fail");
-        return;
-    };
-    let mut buf = [0u8; 16];
-    let n = read(fd, &mut buf);
-    close(fd);
-    const WANT: &[u8] = b"disk-msg\n";
-    if n >= WANT.len() && &buf[..WANT.len()] == WANT {
-        status_ok("disk");
-    }
 }
 
 fn smoke_tmp_dev() {
@@ -506,7 +487,6 @@ fn main() -> ! {
     // Echoes bootfs /msg (`[ OK ] fat`); no duplicate status line.
     do_msg();
 
-    smoke_disk();
     smoke_vfs();
     smoke_tmp_dev();
     smoke_tty();

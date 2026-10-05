@@ -106,10 +106,10 @@ Boot (Limine)
             ├─ Heap (linked-list allocator, a quarter of RAM: 64 MiB to 1 GiB)
             ├─ Scheduler (round-robin kernel threads + user tasks)
             ├─ VFS (mount table → bootfs / tmpfs / devfs / procfs / ext2 / netfs)
-            ├─ Modules (Limine list, in order): console, stubfs, hello, pci_enum,
+            ├─ Modules (Limine list, in order): console, hello, pci_enum,
             │     acpi, virtio_blk, nvme, xhci, usb_hub, usb_storage, virtio_net, netfs, fat, ext2
             └─ Userspace (ELF processes)
-                 ├─ /ok smoke (always-on alloc/user/fat/disk/proc markers)
+                 ├─ /ok smoke (always-on alloc/user/fat/proc markers)
                  ├─ /netd (smoltcp over /dev/net0/data; only opener of net0)
                  ├─ getty → login → /sh (oksh 7.9 via newlib/libgloss)
                  └─ CI /heap: std / C / sbase / uutils / ripgrep / tcc
@@ -158,7 +158,6 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `modules/usb_hub` | USB hub class driver: ports, resets, the devices behind a hub |
 | `modules/usb_storage` | USB mass storage (bulk-only, SCSI): `/dev/sdX`, gone with the stick |
 | `modules/hello` | Sample module (`[ OK ] hello`) |
-| `modules/stubfs` | Sample prefixed mount via `vfs_mount` at `/disk` |
 | `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` |
 | `modules/ext2` | Writable ext2: `ModuleVfsOps` over the `ext2fs` crate (`modules/ext2/ext2fs`, also `mkfs.ext2`'s), host-tested against e2fsprogs |
 | `modules/virtio_net` | Modern virtio-pci net: `/dev/net0/` (`data` Ethernet frames, `ctl` the MAC and interrupt), RX interrupt wakes `poll` |
@@ -166,7 +165,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `modules/linux` | Linux syscall compatibility layer: a syscall *personality* (`personality_register`) for musl binaries |
 | `user/init` | PID1: smoke fork/`/ok`, fork `/netd`, exec `/sh` (baked in) |
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
-| `user/ok` | Slim always-on boot smoke (alloc/user/fat/disk/proc) |
+| `user/ok` | Slim always-on boot smoke (alloc/user/fat/proc) |
 | `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/ripgrep/tcc/bigalloc) |
 | `user/netd` | Userspace smoltcp over `/dev/net0/data` |
 | `user/insmod` | `insmod /lib/modules/<name>`: load a kernel module at runtime (`SYS_INSMOD`) |
@@ -279,7 +278,7 @@ Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, cal
 | Bytes live in | `boot/modules/<name>` on the ESP, listed in `limine.conf` (`module_path`, load order) | `/lib/modules/<name>` in the initramfs (or any file) |
 | Loaded by | `modules::load_limine_modules` right after bootfs | `SYS_INSMOD` from `/bin/custom/insmod` |
 
-`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1`, `/dev/vdb`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then stubfs, hello, pci_enum, acpi, the block drivers (virtio_blk, nvme), the USB bus (xhci, then its class drivers usb_hub and usb_storage), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `limine.conf` when the feature is on.
+`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1`, `/dev/vdb`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, nvme), the USB bus (xhci, then its class drivers usb_hub and usb_storage), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `limine.conf` when the feature is on.
 
 Module exports:
 ```rust

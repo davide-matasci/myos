@@ -46,7 +46,6 @@ fn ensure_artifact(manifest: &Path, artifact: &str, script: &str) {
 const MODULES: &[(&str, &str)] = &[
     ("console", "console"),
     ("hello", "hello"),
-    ("stubfs", "stubfs"),
     ("pci_enum", "pci_enum"),
     ("acpi", "acpi"),
     ("virtio_blk", "virtio_blk"),
