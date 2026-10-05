@@ -407,7 +407,7 @@ pub fn utimensat(dirfd: usize, path: usize, times: usize, flags: usize) -> R {
     };
     let (atime, mtime) = user_times(times, true)?;
     fs::stat(&real).ok_or(ENOENT)?;
-    if fs::set_times(&real, atime, mtime) { Ok(0) } else { Err(EPERM) }
+    if fs::set_times(&real, atime, mtime) { Ok(0) } else { Err(EROFS) }
 }
 
 /// `utimes` (x86_64): `struct timeval` times.
@@ -415,7 +415,7 @@ pub fn utimes(path: usize, times: usize) -> R {
     let real = real_path(&path_at(AT_FDCWD, path)?)?;
     let (atime, mtime) = user_times(times, false)?;
     fs::stat(&real).ok_or(ENOENT)?;
-    if fs::set_times(&real, atime, mtime) { Ok(0) } else { Err(EPERM) }
+    if fs::set_times(&real, atime, mtime) { Ok(0) } else { Err(EROFS) }
 }
 
 pub fn lseek(fd: usize, off: usize, whence: usize) -> R {

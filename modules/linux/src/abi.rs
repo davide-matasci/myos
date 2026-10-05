@@ -19,6 +19,7 @@ pub const EINVAL: usize = 22;
 pub const EMFILE: usize = 24;
 pub const ENOTTY: usize = 25;
 pub const ESPIPE: usize = 29;
+pub const EROFS: usize = 30;
 pub const ERANGE: usize = 34;
 pub const ENOSYS: usize = 38;
 

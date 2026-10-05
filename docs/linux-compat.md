@@ -180,7 +180,7 @@ The module's other needs are plain `KernelApi` services added with ABI 13:
 `fpu_save` / `fpu_restore`, the thread pointer, `thread_spawn_from` (a
 thread resuming like the caller of a syscall on a new stack, for `clone`),
 `wait_addr` / `wake_addr` (for `futex`), `task_sleep_until`, `wall_time_us`
-and `rng_fill`. The module uses `alloc` (`Vec`, `String`) through the
+and `rng_fill`; ABI 25 added `vfs_set_times`. The module uses `alloc` (`Vec`, `String`) through the
 kernel heap (`KernelApi::alloc` / `dealloc`).
 
 ## Supported syscalls
@@ -197,7 +197,7 @@ the console keymap and module devices natively), `access`,
 (dup, fd flags, record locks), `flock`, `truncate`, `ftruncate`, `fsync`,
 `fdatasync`, `chmod`, `chown` (and their `f`, `l`, `at` forms), `getcwd`,
 `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`, `rename(at/at2)`,
-`symlink(at)`, `readlink(at)`, `poll`, `umask`.
+`symlink(at)`, `readlink(at)`, `utimensat`, `utimes`, `poll`, `umask`.
 
 Memory: `brk`, `mmap` (anonymous, and private file mappings), `munmap`,
 `mprotect`, `madvise` (`MADV_DONTNEED` drops the pages, which read as
@@ -388,11 +388,12 @@ three, the kernel crate itself an hour. Known gaps:
 - `chmod`, `chown` and `fsync` succeed and do nothing: myos keeps no
   owners or permission bits, and ext2 writes a file back when its last fd
   closes.
-- File times: `stat` reports a file's modification time (as `st_mtime`,
-  `st_atime` and `st_ctime`) where the filesystem keeps one, ext2; the
-  in-kernel filesystems (tmpfs, `/bin`, `/dev`, ...) report 0. A build tool
-  (cargo, make) sees a changed source on ext2 only. Times cannot be set
-  (`utimensat` is missing).
+- File times: `stat` reports a file's access and modification times in
+  whole seconds (`st_ctime` is the modification time) where the filesystem
+  keeps them, tmpfs and ext2; the read-only and device filesystems (`/bin`,
+  `/dev`, `/proc`, ...) and FAT report 0. `utimensat`, `futimens` and
+  `utimes` set them there (`UTIME_NOW`, `UTIME_OMIT`; nanoseconds are
+  dropped) and fail with `EROFS` elsewhere.
 - Sockets: IPv4 clients and `socketpair` only (no `listen`/`accept`, no
   IPv6, no other Unix sockets); no half-close (`shutdown` hangs up only for
   `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are
