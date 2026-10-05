@@ -94,6 +94,11 @@ pub fn mount() -> i32 {
         open: Some(kbd_open),
         set_times: None,
         unmount: None,
+        unlink_keep: None,
+        read_ino: None,
+        write_ino: None,
+        stat_ino: None,
+        forget_ino: None,
     };
     const PREFIX: &[u8] = b"dev/console/kbd";
     unsafe { (api().vfs_mount)(b"kbd".as_ptr(), 3, PREFIX.as_ptr(), PREFIX.len(), &ops) }

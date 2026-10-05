@@ -4,11 +4,12 @@
 //! The filesystems below the VFS find a file by its path in the mount. A
 //! [`Vnode`] is a counted reference to an entry here that knows where its
 //! file is now: a rename moves the entries at and below the old name
-//! ([`moved`]); a file unlinked while it is referenced keeps its data
-//! under a name no path can reach until the last reference goes
-//! ([`hide`], then the VFS reaps it); one its filesystem cannot keep is
-//! dead ([`kill`]): its reads fail rather than reach a new file that took
-//! the name. Two opens of one file share its entry.
+//! ([`moved`]); a file unlinked while it is referenced is kept until the
+//! last reference goes ([`hide`], then the VFS reaps it): tmpfs keeps it
+//! under a name no path can reach, a module filesystem (ext2) by its inode
+//! number; one its filesystem cannot keep is dead ([`kill`]): its reads
+//! fail rather than reach a new file that took the name. Two opens of one
+//! file share its entry.
 //!
 //! [`NODES`] is a leaf lock: nothing else is taken while it is held, so a
 //! reference may be dropped anywhere (under `TASKS` too).
@@ -20,12 +21,21 @@ use spin::Mutex;
 
 use super::vfs::PATH_MAX;
 
+/// How a file unlinked while held is kept ([`hide`]).
+#[derive(Clone)]
+pub(super) enum Kept {
+    /// Under a name no path reaches ([`hidden_name`]).
+    Name(String),
+    /// By its inode number (`ModuleVfsOps::unlink_keep`).
+    Ino(u64),
+}
+
 struct Node {
     mount: u16,
     /// Where the file is in its mount (for a hidden one: where it was).
     rel: String,
-    /// The name it is kept under after an unlink.
-    hidden: Option<String>,
+    /// How it is kept after an unlink.
+    hidden: Option<Kept>,
     /// Its filesystem no longer has it.
     dead: bool,
     /// The [`Vnode`]s on it.
@@ -44,9 +54,9 @@ impl Node {
 
 static NODES: Mutex<Vec<Option<Node>>> = Mutex::new(Vec::new());
 
-/// Hidden files whose last reference went, `(mount, hidden name)`, for the
-/// VFS to remove outside every lock.
-static REAP: Mutex<Vec<(u16, String)>> = Mutex::new(Vec::new());
+/// Kept files whose last reference went, for the VFS to remove outside
+/// every lock.
+static REAP: Mutex<Vec<(u16, Kept)>> = Mutex::new(Vec::new());
 
 /// Numbers the hidden names: unique until reboot.
 static HIDDEN_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -135,18 +145,37 @@ impl Rel {
     }
 }
 
-/// Where `node`'s file is now: its mount and the path its filesystem
-/// knows it by. `None` once it is dead.
-pub(super) fn location(node: &Vnode) -> Option<(usize, Rel)> {
+/// Where a node's file is: a path in its mount, or the inode number a
+/// module filesystem keeps an unlinked one by.
+pub enum Loc {
+    Path(Rel),
+    Ino(u64),
+}
+
+/// Where `node`'s file is now: its mount and where in it. `None` once it is
+/// dead.
+pub(super) fn locate(node: &Vnode) -> Option<(usize, Loc)> {
     let nodes = NODES.lock();
     let n = nodes.get(node.id as usize)?.as_ref()?;
     if n.dead {
         return None;
     }
-    let name = n.hidden.as_deref().unwrap_or(&n.rel);
+    let name = match &n.hidden {
+        Some(Kept::Ino(ino)) => return Some((n.mount as usize, Loc::Ino(*ino))),
+        Some(Kept::Name(name)) => name,
+        None => &n.rel,
+    };
     let mut rel = Rel { len: name.len(), buf: [0; PATH_MAX] };
     rel.buf.get_mut(..name.len())?.copy_from_slice(name.as_bytes());
-    Some((n.mount as usize, rel))
+    Some((n.mount as usize, Loc::Path(rel)))
+}
+
+/// [`locate`] for a file reached by a path (not one kept by its inode).
+pub(super) fn location(node: &Vnode) -> Option<(usize, Rel)> {
+    match locate(node)? {
+        (idx, Loc::Path(rel)) => Some((idx, rel)),
+        (_, Loc::Ino(_)) => None,
+    }
 }
 
 /// `node`'s mount, the path it has (or had) there, and whether it is gone
@@ -182,11 +211,11 @@ pub(super) fn hidden_name() -> String {
     alloc::format!("\0unlinked{}", HIDDEN_SEQ.fetch_add(1, Ordering::Relaxed))
 }
 
-/// The file at `rel` of `mount` was unlinked but is kept as `hidden`.
-pub(super) fn hide(mount: usize, rel: &str, hidden: &str) {
+/// The file at `rel` of `mount` was unlinked but is kept.
+pub(super) fn hide(mount: usize, rel: &str, kept: &Kept) {
     for n in NODES.lock().iter_mut().flatten() {
         if n.named(mount, rel) {
-            n.hidden = Some(String::from(hidden));
+            n.hidden = Some(kept.clone());
         }
     }
 }
@@ -194,7 +223,7 @@ pub(super) fn hide(mount: usize, rel: &str, hidden: &str) {
 /// The file kept as `hidden` of `mount` is back under its name.
 pub(super) fn unhide(mount: usize, hidden: &str) {
     for n in NODES.lock().iter_mut().flatten() {
-        if n.mount as usize == mount && n.hidden.as_deref() == Some(hidden) {
+        if n.mount as usize == mount && matches!(&n.hidden, Some(Kept::Name(h)) if h == hidden) {
             n.hidden = None;
         }
     }
@@ -237,7 +266,7 @@ pub(super) fn opens_at(mount: usize, rel: &str) -> u32 {
     NODES.lock().iter().flatten().filter(|n| n.named(mount, rel)).map(|n| n.opens).sum()
 }
 
-/// The hidden files nothing references any more.
-pub(super) fn take_reaped() -> Vec<(u16, String)> {
+/// The kept files nothing references any more.
+pub(super) fn take_reaped() -> Vec<(u16, Kept)> {
     core::mem::take(&mut *REAP.lock())
 }

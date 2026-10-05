@@ -4,6 +4,7 @@
 # the disk and read it through a symlink; then a file past the direct and
 # single-indirect blocks (7-10 MB, under the tmpfs file cap it is built in),
 # compared with its source, and remove the directory; set a file's times;
+# keep files an fd holds past an unlink and a rename over them;
 # unmount it and mount it again, the files still there.
 # The host checks the disk with `e2fsck -fn` after the boot.
 # The block cache (kernel/src/blk/cache.rs) on the raw scratch disk, before
@@ -33,6 +34,23 @@ ext2_times() {
 	/bin/sbase/touch -T 946782240 /tmp/disk/m && /bin/sbase/ls -l /tmp/disk/m | grep -q "Jan 02  2000" \
 		&& rm /tmp/disk/m
 }
+# A file unlinked, or replaced by a rename, while an fd holds it stays
+# readable through the fd (the module keeps its inode until the fd closes),
+# apart from the new file that took its name.
+ext2_held() {
+	echo one > /tmp/disk/h
+	echo two > /tmp/disk/r
+	exec 4< /tmp/disk/h 5< /tmp/disk/r
+	rm /tmp/disk/h
+	echo new > /tmp/disk/h
+	echo three > /tmp/disk/s
+	mv /tmp/disk/s /tmp/disk/r
+	got=$(cat <&4) got2=$(cat <&5)
+	exec 4<&- 5<&-
+	echo "unlinked: $got, replaced: $got2"
+	[ "$got" = one ] && [ "$got2" = two ] && [ "$(cat /tmp/disk/h)" = new ] && [ "$(cat /tmp/disk/r)" = three ] \
+		&& rm /tmp/disk/h /tmp/disk/r
+}
 # A file's modification time, as a Linux program's stat sees it.
 ext2_mtime() {
 	echo x > /tmp/disk/m && linux /bin/linux/linux-smoke mtime /tmp/disk/m && rm /tmp/disk/m
@@ -42,6 +60,7 @@ t ext2_disk ext2_disk
 t ext2_link ext2_link
 t ext2_big ext2_big
 t ext2_times ext2_times
+t ext2_held ext2_held
 if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
 	t ext2_mtime ext2_mtime
 fi

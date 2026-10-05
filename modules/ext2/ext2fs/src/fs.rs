@@ -400,17 +400,21 @@ impl<D: Device> Fs<D> {
     pub fn write(&mut self, path: &str, pos: u64, buf: &[u8]) -> Result<usize> {
         self.run(|fs| {
             let ino = fs.resolve(path)?;
-            let mut node = fs.inode(ino)?;
-            match node.kind() {
-                Kind::Dir => return Err(Error::IsDir),
-                Kind::File => {}
-                _ => return Err(Error::Invalid),
-            }
-            let n = fs.write_data(&mut node, pos, buf)?;
-            node.mtime = fs.now();
-            fs.write_inode(ino, &node)?;
-            Ok(n)
+            fs.write_at(ino, pos, buf)
         })
+    }
+
+    fn write_at(&mut self, ino: u32, pos: u64, buf: &[u8]) -> Result<usize> {
+        let mut node = self.inode(ino)?;
+        match node.kind() {
+            Kind::Dir => return Err(Error::IsDir),
+            Kind::File => {}
+            _ => return Err(Error::Invalid),
+        }
+        let n = self.write_data(&mut node, pos, buf)?;
+        node.mtime = self.now();
+        self.write_inode(ino, &node)?;
+        Ok(n)
     }
 
     /// Create the empty regular file `path` (fine if one is there already).
@@ -490,6 +494,65 @@ impl<D: Device> Fs<D> {
             fs.dir_remove(dir_ino, name.as_bytes())?;
             fs.drop_link(ino)
         })
+    }
+
+    /// Remove the name `path` (not a directory) but keep its inode for
+    /// whoever still holds the file: its number, for the `*_ino` calls
+    /// until [`Fs::forget`]. An inode no name links and nothing forgets
+    /// (the system stopped first) is lost space `e2fsck` gives back.
+    pub fn unlink_keep(&mut self, path: &str) -> Result<u32> {
+        self.op(|fs| {
+            let (dir_ino, dir, name) = fs.parent(path)?;
+            let (ino, _) = fs.lookup(&dir, name.as_bytes())?.ok_or(Error::NotFound)?;
+            let mut node = fs.inode(ino)?;
+            if node.is_dir() {
+                return Err(Error::IsDir);
+            }
+            fs.dir_remove(dir_ino, name.as_bytes())?;
+            node.links = node.links.saturating_sub(1);
+            fs.write_inode(ino, &node)?;
+            Ok(ino)
+        })
+    }
+
+    /// The inode [`Fs::unlink_keep`] kept is let go: freed when no name
+    /// links it any more.
+    pub fn forget(&mut self, ino: u32) -> Result<()> {
+        self.op(|fs| {
+            let mut node = fs.inode(ino)?;
+            if node.links > 0 || node.is_dir() {
+                return Ok(());
+            }
+            fs.free_data(&mut node)?;
+            node.dtime = fs.now().max(1);
+            fs.write_inode(ino, &node)?;
+            fs.free_inode(ino, false)
+        })
+    }
+
+    /// [`Fs::stat`] of the inode `ino`.
+    pub fn stat_ino(&mut self, ino: u32) -> Result<Stat> {
+        self.run(|fs| {
+            let n = fs.inode(ino)?;
+            Ok(Stat { kind: n.kind(), mode: n.mode, size: n.size, ino, links: n.links, mtime: n.mtime, atime: n.atime })
+        })
+    }
+
+    /// [`Fs::read`] of the file with inode `ino`.
+    pub fn read_ino(&mut self, ino: u32, pos: u64, out: &mut [u8]) -> Result<usize> {
+        self.run(|fs| {
+            let node = fs.inode(ino)?;
+            match node.kind() {
+                Kind::File => fs.read_data(&node, pos, out),
+                Kind::Dir => Err(Error::IsDir),
+                _ => Err(Error::Invalid),
+            }
+        })
+    }
+
+    /// [`Fs::write`] to the file with inode `ino`.
+    pub fn write_ino(&mut self, ino: u32, pos: u64, buf: &[u8]) -> Result<usize> {
+        self.run(|fs| fs.write_at(ino, pos, buf))
     }
 
     /// Move `old` to `new`, replacing what `new` names (an empty directory

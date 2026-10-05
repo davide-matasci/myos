@@ -488,8 +488,27 @@ pub fn stat(path: &str) -> Option<StatInfo> {
 /// Stat an open vnode.
 pub fn stat_node(node: &Vnode) -> Option<StatInfo> {
     let _tree = tree_read();
-    let (idx, rel) = node::location(node)?;
-    backend_stat(idx, rel.as_str())
+    match node::locate(node)? {
+        (idx, node::Loc::Path(rel)) => backend_stat(idx, rel.as_str()),
+        (idx, node::Loc::Ino(ino)) => {
+            let stat = kept_ops(idx)?.stat_ino?;
+            let mut out = myos_abi::VfsStatInfo::default();
+            if unsafe { stat(ino, &mut out) } != 0 {
+                return None;
+            }
+            let info = StatInfo { mode: out.mode, size: out.size, ino: out.ino, nlink: out.nlink, dev: 0, mtime: out.mtime, atime: out.atime };
+            Some(StatInfo { dev: (idx as u32).wrapping_add(1), ..info })
+        }
+    }
+}
+
+/// The hooks of the module filesystem mounted as `idx`, for a file it
+/// keeps by its inode number.
+fn kept_ops(idx: usize) -> Option<ModuleVfsOps> {
+    match MOUNTS.lock().get(idx)?.backend {
+        MountBackend::Module(ops) => Some(ops),
+        MountBackend::Kernel(_) => None,
+    }
 }
 
 /// Set the access and modification times of `path` on the best matching
@@ -514,17 +533,30 @@ pub fn set_times_node(node: &Vnode, atime: SetTime, mtime: SetTime) -> bool {
 /// Read from an open vnode at `pos` into `out`. Returns bytes read.
 pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
     let _tree = tree_read();
-    let Some((idx, rel)) = node::location(node) else {
-        return 0;
-    };
-    backend_read(idx, rel.as_str(), pos, out)
+    match node::locate(node) {
+        Some((idx, node::Loc::Path(rel))) => backend_read(idx, rel.as_str(), pos, out),
+        Some((idx, node::Loc::Ino(ino))) => {
+            let Some(read) = kept_ops(idx).and_then(|ops| ops.read_ino) else {
+                return 0;
+            };
+            let rc = unsafe { read(ino, pos, out.as_mut_ptr(), out.len()) };
+            if rc < 0 { 0 } else { (rc as usize).min(out.len()) }
+        }
+        None => 0,
+    }
 }
 
 /// Write to an open vnode at `pos`. Returns bytes written, or `None` on error.
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     let _tree = tree_read();
-    let (idx, rel) = node::location(node)?;
-    backend_write(idx, rel.as_str(), pos, buf)
+    match node::locate(node)? {
+        (idx, node::Loc::Path(rel)) => backend_write(idx, rel.as_str(), pos, buf),
+        (idx, node::Loc::Ino(ino)) => {
+            let write = kept_ops(idx)?.write_ino?;
+            let rc = unsafe { write(ino, pos, buf.as_ptr(), buf.len()) };
+            if rc < 0 { None } else { Some(rc as usize) }
+        }
+    }
 }
 
 /// One more open file description on `node` (an `open` that became an
@@ -782,10 +814,11 @@ pub fn rename(old: &str, new: &str) -> bool {
     // Only a file that is not a directory replaces one (the rename could
     // not go ahead otherwise, and the file would be hidden for nothing).
     let replaces = backend_stat(idx_o, rel_o).is_some_and(|st| !is_dir_mode(st.mode));
-    let hidden = if replaces { hide_held(idx_n, rel_n) } else { None };
+    let kept = if replaces { hide_held(idx_n, rel_n) } else { None };
     if !backend_rename(idx_o, rel_o, rel_n) {
-        if let Some(hidden) = hidden {
-            // Put the file it was to replace back.
+        // Put the file it was to replace back (one a module keeps by its
+        // inode has no name left to go back to).
+        if let Some(node::Kept::Name(hidden)) = kept {
             if backend_rename(idx_n, &hidden, rel_n) {
                 node::unhide(idx_n, &hidden);
             }
@@ -798,32 +831,53 @@ pub fn rename(old: &str, new: &str) -> bool {
 }
 
 /// The regular file at `rel` of mount `idx` is about to go: when something
-/// holds it and its filesystem can keep it (tmpfs), move it to a hidden
-/// name instead and return that. The VFS removes it once the last
-/// [`Vnode`] on it is gone ([`reap`]). A module filesystem cannot yet: its
-/// nodes die.
-fn hide_held(idx: usize, rel: &str) -> Option<String> {
-    let keeps = matches!(MOUNTS.lock().get(idx).map(|m| m.backend), Some(MountBackend::Kernel(ops)) if ops.writable);
-    if !keeps || !node::referenced(idx, rel) {
+/// holds it and its filesystem can keep it, unlink it so that it is kept
+/// and say how: tmpfs moves it to a hidden name, a module filesystem with
+/// `unlink_keep` (ext2) keeps its inode. The VFS lets it go once the last
+/// [`Vnode`] on it is gone ([`reap`]). On any other filesystem its nodes
+/// die.
+fn hide_held(idx: usize, rel: &str) -> Option<node::Kept> {
+    if !node::referenced(idx, rel) || !backend_stat(idx, rel).is_some_and(|st| st.mode & S_IFMT == S_IFREG) {
         return None;
     }
-    if !backend_stat(idx, rel).is_some_and(|st| st.mode & S_IFMT == S_IFREG) {
-        return None;
-    }
-    let hidden = node::hidden_name();
-    if !backend_rename(idx, rel, &hidden) {
-        return None;
-    }
-    node::hide(idx, rel, &hidden);
-    Some(hidden)
+    let backend = MOUNTS.lock().get(idx)?.backend;
+    let kept = match backend {
+        MountBackend::Kernel(ops) if ops.writable => {
+            let hidden = node::hidden_name();
+            if !backend_rename(idx, rel, &hidden) {
+                return None;
+            }
+            node::Kept::Name(hidden)
+        }
+        MountBackend::Module(ops) => {
+            let unlink_keep = ops.unlink_keep?;
+            let ino = unsafe { unlink_keep(rel.as_ptr(), rel.len()) };
+            if ino <= 0 {
+                return None;
+            }
+            node::Kept::Ino(ino as u64)
+        }
+        MountBackend::Kernel(_) => return None,
+    };
+    node::hide(idx, rel, &kept);
+    Some(kept)
 }
 
-/// Remove the hidden files nothing references any more. Called where no
-/// lock is held: on the way into the calls that change the tree, and after
-/// a close.
+/// Remove the kept files nothing references any more. Called where no lock
+/// is held: on the way into the calls that change the tree, and after a
+/// close.
 fn reap() {
-    for (idx, hidden) in node::take_reaped() {
-        let _ = backend_unlink(idx as usize, &hidden);
+    for (idx, kept) in node::take_reaped() {
+        match kept {
+            node::Kept::Name(hidden) => {
+                let _ = backend_unlink(idx as usize, &hidden);
+            }
+            node::Kept::Ino(ino) => {
+                if let Some(forget) = kept_ops(idx as usize).and_then(|ops| ops.forget_ino) {
+                    let _ = unsafe { forget(ino) };
+                }
+            }
+        }
     }
 }
 

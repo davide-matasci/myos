@@ -277,3 +277,27 @@ fn set_times_sticks() {
     drop(fs);
     e2fsck_clean(&path);
 }
+
+#[test]
+fn unlinked_file_kept_until_forgotten() {
+    let path = image("kept", 8 << 20);
+    mkfs(&mut open(&path), 8 << 20).unwrap();
+    let mut fs = Fs::mount(open(&path)).unwrap();
+    let data = pattern(70_000, 3);
+    fs.create("f").unwrap();
+    write_all(&mut fs, "f", &data, 4096);
+    let ino = fs.unlink_keep("f").unwrap();
+    assert!(matches!(fs.stat("f"), Err(Error::NotFound)));
+    // Still readable and writable by its inode, apart from a new "f".
+    fs.create("f").unwrap();
+    let mut back = vec![0u8; data.len()];
+    assert_eq!(fs.read_ino(ino, 0, &mut back).unwrap(), data.len());
+    assert_eq!(back, data);
+    assert_eq!(fs.write_ino(ino, 70_000, b"more").unwrap(), 4);
+    assert_eq!(fs.stat_ino(ino).unwrap().size, 70_004);
+    assert_eq!(fs.stat("f").unwrap().size, 0);
+    // Forgotten, it is freed: the image is clean.
+    fs.forget(ino).unwrap();
+    drop(fs.unmount().unwrap());
+    e2fsck_clean(&path);
+}

@@ -283,6 +283,11 @@ pub fn mount(fb: FramebufferInfo) -> i32 {
         open: None,
         set_times: None,
         unmount: None,
+        unlink_keep: None,
+        read_ino: None,
+        write_ino: None,
+        stat_ino: None,
+        forget_ino: None,
     };
     unsafe { (api().vfs_mount)(b"fb".as_ptr(), 2, b"dev/fb".as_ptr(), 6, &ops) }
 }
