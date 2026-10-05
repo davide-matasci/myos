@@ -59,17 +59,3 @@ unsigned alarm(unsigned seconds) {
     (void)seconds;
     return 0;
 }
-
-/* utime over libgloss's utimensat, which stores nothing (no timestamp
- * syscall yet): git's index touches succeed and change no mtime. */
-int utime(const char *path, const struct utimbuf *times) {
-    struct timespec ts[2];
-    if (times) {
-        ts[0].tv_sec = times->actime;
-        ts[0].tv_nsec = 0;
-        ts[1].tv_sec = times->modtime;
-        ts[1].tv_nsec = 0;
-        return utimensat(AT_FDCWD, path, ts, 0);
-    }
-    return utimensat(AT_FDCWD, path, NULL, 0);
-}
