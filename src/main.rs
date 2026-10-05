@@ -18,6 +18,7 @@ mod initramfs;
 mod packages;
 #[allow(dead_code)]
 mod ports;
+mod release;
 
 use boot_test::Mode;
 

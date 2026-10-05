@@ -56,7 +56,11 @@ pub struct Port {
     pub role: Role,
     pub kind: Kind,
     pub core: bool,
+    /// Ports built before this one (`PORT_DEPS`): build order only.
     pub deps: Vec<String>,
+    /// Packages this one needs on the running system (`PORT_RDEPS`):
+    /// `get-myos` installs them first. Only a package can be one.
+    pub rdeps: Vec<String>,
     /// Build script, repo-relative (`None`: nothing to build).
     pub build: Option<String>,
     /// Version stamp the build script writes, `target/`-relative
@@ -220,6 +224,7 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
         kind,
         core: get("PORT_CORE") == "1",
         deps: list("PORT_DEPS"),
+        rdeps: list("PORT_RDEPS"),
         build,
         stamp,
         outputs: list("PORT_OUTPUTS"),

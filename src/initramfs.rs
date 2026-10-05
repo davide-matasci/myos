@@ -141,6 +141,11 @@ fn add(entries: &mut Vec<Entry>, rel: &str, data: Option<Vec<u8>>) {
     }
 }
 
+/// A generated file with its mode.
+fn add_mode(entries: &mut Vec<Entry>, rel: &str, data: Vec<u8>, mode: u32) {
+    entries.push(Entry { name: rel.to_string(), data, ino: entries.len() as u64 + 1, nlink: 1, mode });
+}
+
 /// Add a hardlink group: every `name` shares `data` under one inode (nlink =
 /// count). Only the first name carries the bytes; the rest are zero-length
 /// links, so the archive stores the ELF once instead of once per alias.
@@ -390,6 +395,15 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         }
     }
     }
+
+    // The build's release (src/release.rs): what get-myos compares a
+    // mirror's index with before installing from it.
+    add_mode(
+        &mut entries,
+        "lib/myos-release",
+        crate::release::Release::current(manifest_dir).text().into_bytes(),
+        0o100644,
+    );
 
     // Loadable keyboard maps (Swiss German default; US alternate).
     // Served at /lib/kbd/*.map via libfs (cpio lib/ → libfs nested tree).

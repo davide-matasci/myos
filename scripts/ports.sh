@@ -49,7 +49,7 @@ myos_port_names() {
 # Load NAME's descriptor into PORT_* (PORT_NAME, PORT_DIR, PORT_ROLE added).
 myos_port_load() {
   local want="$1" role name dir
-  PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES=""
+  PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_RDEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES=""
   PORT_READY="" PORT_BIN="" PORT_EMBED="" PORT_IMAGE_BASE=0 PORT_WATCH="" PORT_TEST="" PORT_HOST=""
   while read -r role name dir; do
     if [[ "$name" == "$want" ]]; then
