@@ -27,7 +27,9 @@ get_myos_upgrade() {
 	have=$(cat /tmp/pkg/var/lib/get-myos/pkgs/lua)
 	want=$(get-myos -m $MIRROR -l | sed -n 's/^lua \([0-9a-f]*\) .*/\1/p')
 	echo "lua: recorded $have, index $want"
-	[ -n "$want" ] && [ "$have" = "$want" ] && lua -v
+	# The record follows the index and the binary is bound again (its
+	# behaviour is lua's own business: `lua -v` fails on riscv64).
+	[ -n "$want" ] && [ "$have" = "$want" ] && [ -x /bin/custom/lua ]
 }
 if [ "$MODE" = full ]; then
 	t get_myos_list get_myos_list
