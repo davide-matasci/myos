@@ -71,16 +71,14 @@ fn open_file_unref(id: usize) -> Option<crate::fs::Vnode> {
     if f.refs > 0 {
         return None;
     }
-    let node = f.node;
-    *slot = None;
-    Some(node)
+    slot.take().map(|f| f.node)
 }
 
 /// `(node, pos, writable, append)` of a description.
 fn open_file_get(id: usize) -> Option<(crate::fs::Vnode, usize, bool, bool)> {
     let files = OPEN_FILES.lock();
     let f = files.get(id)?.as_ref()?;
-    Some((f.node, f.pos, f.writable, f.append))
+    Some((f.node.clone(), f.pos, f.writable, f.append))
 }
 
 fn open_file_node(id: usize) -> Option<crate::fs::Vnode> {
@@ -184,7 +182,7 @@ pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
     if !crate::fs::vfs::open_hook(&node) {
         return None;
     }
-    let Some(id) = open_file_alloc(node, writable, append) else {
+    let Some(id) = open_file_alloc(node.clone(), writable, append) else {
         crate::fs::vfs::open_hook_undo(&node);
         return None;
     };
@@ -843,8 +841,7 @@ fn fd_is_console_tty(entry: FdEntry) -> bool {
             let Some(node) = open_file_node(id) else {
                 return false;
             };
-            let p = node.path_str();
-            p == "tty" || p == "console/data"
+            crate::fs::vfs::node_at(&node, "/dev/tty") || crate::fs::vfs::node_at(&node, "/dev/console/data")
         }
         _ => false,
     }

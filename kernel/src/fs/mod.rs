@@ -4,6 +4,7 @@ pub mod cpio;
 mod devfs;
 pub mod ptsfs;
 mod fstype;
+mod node;
 mod procfs;
 pub mod rootfs;
 mod tmpfs;

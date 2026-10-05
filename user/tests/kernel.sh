@@ -57,6 +57,41 @@ c" ]
 }
 t fd_offsets fd_offsets
 
+# An fd holds its file, not its name: it follows a rename (of the file or
+# of a directory above it), a new file that takes the old name is not the
+# one it reads or writes, and a file unlinked under it stays readable,
+# under a name no listing shows, until it is closed.
+fd_identity() {
+	echo one > /tmp/fdi.a
+	exec 4< /tmp/fdi.a 5>> /tmp/fdi.a
+	mv /tmp/fdi.a /tmp/fdi.b
+	echo new > /tmp/fdi.a
+	echo two >&5
+	got=$(cat <&4)
+	exec 4<&- 5>&-
+	echo "renamed: $got"
+	[ "$got" = "one
+two" ] && [ "$(cat /tmp/fdi.a)" = new ] || return 1
+	mkdir /tmp/fdi.d
+	echo three > /tmp/fdi.d/f
+	exec 4< /tmp/fdi.d/f
+	mv /tmp/fdi.d /tmp/fdi.e
+	got=$(cat <&4)
+	exec 4<&-
+	echo "directory renamed: $got"
+	[ "$got" = three ] || return 1
+	exec 4< /tmp/fdi.b
+	rm /tmp/fdi.b /tmp/fdi.a /tmp/fdi.e/f
+	rmdir /tmp/fdi.e
+	listed=$(ls -a /tmp | grep -c unlinked)
+	got=$(cat <&4)
+	exec 4<&-
+	echo "unlinked: $got, listed $listed"
+	[ "$got" = "one
+two" ] && [ "$listed" = 0 ]
+}
+t fd_identity fd_identity
+
 # rmmod: a module that provides nothing (hello) unloads and loads again;
 # one with a registration (the block driver's disks) is refused and keeps
 # working.

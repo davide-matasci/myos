@@ -30,8 +30,9 @@ pub(super) struct Process {
     /// The mmap regions (in the window after the brk heap), sorted by
     /// address, none empty; at most [`MAX_MMAP_REGIONS`].
     pub mmap: Vec<MmapRegion>,
-    /// The files the regions page in from; an entry no region names is free.
-    pub mapped_files: [crate::fs::Vnode; MAX_MAPPED_FILES],
+    /// The files the regions page in from; an entry no region names is free
+    /// (it lets its file go when it is reused, or at exec and exit).
+    pub mapped_files: [Option<crate::fs::Vnode>; MAX_MAPPED_FILES],
     /// Session id (slot of the session leader). Inherited on fork. New
     /// spawns start as their own session (`sid == slot`); `setsid` creates a
     /// fresh session for a forked child.
@@ -74,7 +75,7 @@ static EMPTY_PROC: Process = Process {
     cwd: root_cwd_buf(),
     cwd_len: 1,
     mmap: Vec::new(),
-    mapped_files: [crate::fs::Vnode::EMPTY; MAX_MAPPED_FILES],
+    mapped_files: [const { None }; MAX_MAPPED_FILES],
     sid: 0,
     pgid: 0,
     has_ctty: false,
@@ -85,7 +86,7 @@ static EMPTY_PROC: Process = Process {
 
 /// A new, empty process block (heap; never staged on the kernel stack: a
 /// `Process` is several KiB). The bitwise copy of [`EMPTY_PROC`] is sound:
-/// its owning fields, the empty `mmap` and `ns`, allocate nothing.
+/// its owning fields, the empty `mmap`, `ns` and `mapped_files`, own nothing.
 pub(super) fn new_process() -> Box<Process> {
     let mut b = Box::<Process>::new_uninit();
     unsafe {
@@ -101,10 +102,11 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
     let mut b = unsafe {
         let p = b.as_mut_ptr();
         core::ptr::copy_nonoverlapping(src, p, 1);
-        // The bitwise copy shares `src`'s region list and namespace: give
-        // the child its own.
+        // The bitwise copy shares `src`'s region list, namespace and mapped
+        // files: give the child its own.
         core::ptr::write(&raw mut (*p).mmap, src.mmap.clone());
         core::ptr::write(&raw mut (*p).ns, src.ns.clone());
+        core::ptr::write(&raw mut (*p).mapped_files, src.mapped_files.clone());
         b.assume_init()
     };
     for fd in b.fds.iter_mut() {
