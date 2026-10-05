@@ -20,7 +20,9 @@ fetch() {
   fi
   if [[ ! -f "$tarball" ]]; then
     echo "==> fetch $name $version"
-    curl -L --fail --retry 5 --retry-delay 2 -o "$tarball.partial" "$url"
+    # freedesktop.org sometimes refuses a burst of CI fetches (HTTP 418),
+    # which --retry alone does not retry.
+    curl -L --fail --retry 5 --retry-delay 5 --retry-all-errors -o "$tarball.partial" "$url"
     mv "$tarball.partial" "$tarball"
   fi
   local got

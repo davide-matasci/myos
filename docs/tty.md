@@ -102,7 +102,9 @@ terminal, a session claims it with `ctty` on the pair's `ctl` (what `forkpty`
 does for its child). The pair's termios, window size and session belong to
 the pair: both ends see them. When the last fd on both ends is closed the
 directory disappears. Closing the last master fd hangs up the session
-(`SIGHUP`, then `EIO` on the slave), closing the last slave fd makes the
+(`SIGHUP` to the claimant's process group, then `EIO` on the slave; `setsid`
+in libgloss only makes the caller lead a new group, which keeps the hangup
+from its parent's group), closing the last slave fd makes the
 master's reads report `EIO` once drained ([`kernel/src/pty.rs`](../kernel/src/pty.rs)).
 
 ## libc

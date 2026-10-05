@@ -86,7 +86,9 @@ Blocking waits (console/pty/pipe reads, full-pipe writes, FIFO opens,
 - restarts transparently if, by then, nothing acts on the signal.
 
 `poll` (and `select`, built on it) waits in the kernel (`SYS_POLL`) and
-returns `EINTR` like any other blocking call.
+returns `EINTR` like any other blocking call. `pselect` sets its mask
+around `select` rather than atomically: a signal it unblocks that arrives
+just before the wait runs its handler without ending the wait.
 `sigsuspend` waits with a temporary mask and the handler returns to the
 previous one. `signal()` installs BSD-style handlers (`SA_RESTART`).
 

@@ -563,8 +563,46 @@ pub(super) fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
 }
 
 /// Replace the current image with the ELF at `path` (cwd-relative or
-/// absolute); returns only on failure.
+/// absolute), or run the script there through its `#!` interpreter; returns
+/// only on failure.
 pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> usize {
+    exec_path_depth(path, arg_refs, env_refs, 0)
+}
+
+/// Longest `#!` line read (Linux reads 256 bytes).
+const SHEBANG_MAX: usize = 256;
+
+/// `#!interpreter [arg]`: exec the interpreter with the arg (if any) and the
+/// script's path in front of the script's arguments (`argv[0]` dropped), as
+/// other Unix kernels do. The interpreter has to be a program, not another
+/// script.
+fn exec_script(script: &str, line: &[u8], arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8) -> usize {
+    if depth > 0 {
+        return SYSERR;
+    }
+    let line = &line[..line.len().min(SHEBANG_MAX)];
+    let line = line.split(|&b| b == b'\n').next().unwrap_or(&[]).trim_ascii();
+    let (interp, arg) = match line.iter().position(|b| b.is_ascii_whitespace()) {
+        Some(i) => (&line[..i], line[i..].trim_ascii()),
+        None => (line, &[][..]),
+    };
+    let Ok(interp) = core::str::from_utf8(interp) else {
+        return SYSERR;
+    };
+    if interp.is_empty() {
+        return SYSERR;
+    }
+    let mut args: Vec<&[u8]> = Vec::with_capacity(arg_refs.len() + 2);
+    args.push(interp.as_bytes());
+    if !arg.is_empty() {
+        args.push(arg);
+    }
+    args.push(script.as_bytes());
+    args.extend(arg_refs.iter().skip(1));
+    exec_path_depth(interp, &args, env_refs, depth + 1)
+}
+
+fn exec_path_depth(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]], depth: u8) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
@@ -575,16 +613,16 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     let mapped = mapped_program(&path);
     // Static lookup for bootfs/`/t/tcc`; VFS read for tmpfs `tcc -o` output.
     // The file is read into the kernel heap; what gets mapped is still capped
-    // by the image limits (`MAX_EXPAND_PAGES`).
+    // by the image limits (`MAX_EXPAND_PAGES`). A successful exec never
+    // returns, so the copy is freed explicitly before the new image runs.
     const EXEC_FILE_MAX: usize = 16 * 1024 * 1024;
-    let owned;
+    let mut owned: Option<Vec<u8>> = None;
     let bytes: &[u8] = if let Some(m) = &mapped {
         &m.interp
     } else if let Some(b) = fs::lookup(&path) {
         b
     } else if let Some(v) = fs::read_all(&path, EXEC_FILE_MAX) {
-        owned = v;
-        &owned
+        owned.insert(v)
     } else {
         // /lib-style read-only mounts expose files through the vnode path
         // (open + size + read) even where the read_all direct-backend shortcut
@@ -609,12 +647,17 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
             }
             pos += n;
         }
-        owned = v;
-        &owned
+        owned.insert(v)
     };
-    // Not a loadable ELF (a script: the caller's shell runs it itself on
-    // the error): fail before anything of the current image goes, or the
-    // caller is left with no code to return to.
+    if let Some(line) = bytes.strip_prefix(b"#!") {
+        // Only the line is kept (the script's file freed): the interpreter's
+        // exec does not return here either.
+        let line = line[..line.len().min(SHEBANG_MAX)].to_vec();
+        drop(owned);
+        return exec_script(&path, &line, arg_refs, env_refs, depth);
+    }
+    // Not a loadable ELF: fail before anything of the current image goes,
+    // or the caller is left with no code to return to.
     if elf::image_span(bytes).is_err() {
         return SYSERR;
     }
@@ -740,6 +783,9 @@ pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> u
     // set_loaded_aspace go through current_slot()/cpu_id() — re-pin before
     // mutating the running task and resuming.
     crate::arch::sync_cpu_id_reg();
+    // Nothing of the file or of the dynamic linker's is read from here on.
+    drop(owned);
+    drop(interp);
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
     if let Some(m) = &mapped {
         if !m.map(aspace, program_at) {

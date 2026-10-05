@@ -31,6 +31,8 @@ MYOS_NCURSES_VERSION="$MYOS_ROOT/target/.myos-ncurses-version"
 MYOS_X11_LIBS_VERSION="$MYOS_ROOT/target/.myos-x11-libs-version"
 MYOS_TINYX_VERSION="$MYOS_ROOT/target/.myos-tinyx-version"
 MYOS_DWM_VERSION="$MYOS_ROOT/target/.myos-dwm-version"
+MYOS_ST_VERSION="$MYOS_ROOT/target/.myos-st-version"
+MYOS_DMENU_VERSION="$MYOS_ROOT/target/.myos-dmenu-version"
 MYOS_X11_XFT_VERSION="$MYOS_ROOT/target/.myos-x11-xft-version"
 MYOS_X11_FONTS_VERSION="$MYOS_ROOT/target/.myos-x11-fonts-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
@@ -774,6 +776,56 @@ myos_dwm_is_current() {
     [[ -f "$MYOS_ROOT/target/dwm-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/dwm-smoke-${arch}-unknown-none" ]] || return 1
   done
+}
+
+myos_st_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_x11_xft_version_hash
+      find "$(myos_port_dir st)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_st_is_current() {
+  local arch
+  [[ -f "$MYOS_ST_VERSION" ]] \
+    && [[ "$(cat "$MYOS_ST_VERSION")" == "$(myos_st_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/st-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/st-smoke-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_dmenu_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_x11_xft_version_hash
+      find "$(myos_port_dir dmenu)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_dmenu_is_current() {
+  local arch
+  [[ -f "$MYOS_DMENU_VERSION" ]] \
+    && [[ "$(cat "$MYOS_DMENU_VERSION")" == "$(myos_dmenu_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/dmenu-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/stest-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/dmenu-smoke-${arch}-unknown-none" ]] || return 1
+  done
+  [[ -f "$MYOS_ROOT/target/dmenu_run" && -f "$MYOS_ROOT/target/dmenu_path" ]]
 }
 
 myos_zlib_version_hash() {

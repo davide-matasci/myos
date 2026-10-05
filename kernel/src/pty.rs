@@ -181,9 +181,10 @@ pub fn claimed_by(pid: usize) -> Option<usize> {
 }
 
 /// The pty of `pid`'s session: the one it or an ancestor claimed (`ctty`
-/// on the control file, TIOCSCTTY). Sessions are not real yet (setsid is
-/// a no-op in libgloss), so the claim is looked up along the parent chain:
-/// a forkpty child and what it started (an SSH login, the tty smoke).
+/// on the control file, TIOCSCTTY). Sessions are not real yet (libgloss's
+/// setsid only starts a process group), so the claim is looked up along the
+/// parent chain: a forkpty child and what it started (an SSH login, the tty
+/// smoke).
 pub fn for_session(pid: usize) -> Option<usize> {
     let mut pid = Some(pid);
     for _ in 0..16 {

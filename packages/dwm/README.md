@@ -5,7 +5,7 @@ X server of the `tinyx` package. It is driven from the keyboard, which suits
 an X server without a mouse.
 
 ```sh
-get-myos x11-libs tinyx x11-xft x11-fonts dwm
+get-myos x11-libs tinyx x11-xft x11-fonts dwm st dmenu
 startx
 ```
 
@@ -15,7 +15,7 @@ when dwm quits (Alt+Shift+Q).
 The stock configuration (`config.def.h`): Alt is the modifier, Alt+B toggles
 the bar, Alt+J/K move the focus, Alt+Return zooms, Alt+Shift+C closes a
 window, Alt+1..9 switch tags, Alt+Shift+Q quits. Alt+Shift+Return starts
-`st` and Alt+P `dmenu_run`, neither of which is ported yet. The bar's font
+`st` (the `st` package) and Alt+P `dmenu_run` (the `dmenu` package). The bar's font
 is fontconfig's `monospace` (DejaVu Sans Mono, the `x11-fonts` package).
 
 ## What it is built from
@@ -42,5 +42,4 @@ the server itself has drawn.
 
 ## Not yet
 
-- `st` and `dmenu`, the programs the default key bindings start.
 - Xinerama (one screen anyway).

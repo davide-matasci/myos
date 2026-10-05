@@ -12,25 +12,26 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 cc=riscv64-unknown-myos-cc
 inc="$ROOT/target/newlib-riscv64/riscv64-unknown-myos/include"
 
-if [[ -f "$OUT" && -f "$SRC/.stamp" ]]; then
-  echo "softfloat riscv64 up to date"
-  exit 0
-fi
-
-mkdir -p "$SRC" "$OBJ"
 FILES=(
   adddf3.c subdf3.c muldf3.c divdf3.c comparedf2.c comparesf2.c
   addsf3.c subsf3.c mulsf3.c divsf3.c
   fixdfsi.c fixdfdi.c fixunsdfsi.c fixunsdfdi.c
-  fixsfsi.c fixunssfsi.c
+  fixsfsi.c fixunssfsi.c fixsfdi.c fixunssfdi.c
   floatsidf.c floatdidf.c floatunsidf.c floatundidf.c
-  floatsisf.c floatunsisf.c
+  floatsisf.c floatunsisf.c floatdisf.c floatundisf.c
   truncdfsf2.c extendsfdf2.c ashldi3.c ashrdi3.c lshrdi3.c
   int_lib.h int_types.h int_util.h int_endianness.h int_math.h
   fp_lib.h fp_mode.h fp_add_impl.inc fp_div_impl.inc fp_mul_impl.inc
   fp_extend_impl.inc fp_trunc_impl.inc fp_extend.h fp_trunc.h
-  int_to_fp_impl.inc fp_fixint_impl.inc fp_fixuint_impl.inc fp_compare_impl.inc
+  int_to_fp.h int_to_fp_impl.inc fp_fixint_impl.inc fp_fixuint_impl.inc fp_compare_impl.inc
 )
+# The stamp names the files: a changed list rebuilds the archive.
+if [[ -f "$OUT" && "$(cat "$SRC/.stamp" 2>/dev/null)" == "${FILES[*]}" ]]; then
+  echo "softfloat riscv64 up to date"
+  exit 0
+fi
+rm -rf "$OBJ"
+mkdir -p "$SRC" "$OBJ"
 # Prefer jsDelivr; fall back to GitHub raw with retries (ISO hit HTTP 429 on raw bursts).
 fetch_one() {
   local out="$1"; shift
@@ -64,6 +65,7 @@ for f in "$SRC"/*.c; do
   bn=$(basename "$f" .c)
   "$cc" -ffreestanding -fPIC -O2 -I"$SRC" -isystem "$inc" -c "$f" -o "$OBJ/$bn.o"
 done
+rm -f "$OUT"
 ar rcs "$OUT" "$OBJ"/*.o
-echo ok >"$SRC/.stamp"
+echo "${FILES[*]}" >"$SRC/.stamp"
 echo "softfloat -> $OUT"

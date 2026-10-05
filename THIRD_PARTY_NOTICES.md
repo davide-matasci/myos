@@ -46,6 +46,8 @@ under its own license.
 | TinyX `Xfbdev` (package `tinyx`; the X server) | `TINYX_REV` in `packages/tinyx/versions.env` | **GPL-3.0** (TinyX's changes; the X.Org code it started from is MIT/X11) | https://github.com/tinycorelinux/tinyx |
 | libfontenc, libXfont 1.x, libXdmcp's header (linked into / used to build `Xfbdev`) | see `packages/tinyx/versions.env` | MIT / X11-style | https://www.x.org/releases/individual/lib/ |
 | dwm (package `dwm`; the window manager) | `DWM_VERSION` in `packages/dwm/versions.env` | MIT/X Consortium | https://dwm.suckless.org/ |
+| st (package `st`; the terminal), and the `st` / `st-256color` entries of `/lib/termcap` (`ports/termcap/termcap`, converted from its `st.info`, notice kept in the file) | `ST_VERSION` in `packages/st/versions.env` | MIT/X Consortium | https://st.suckless.org/ |
+| dmenu (package `dmenu`; the menu, with `stest`, `dmenu_run`, `dmenu_path`) | `DMENU_VERSION` in `packages/dmenu/versions.env` | MIT/X Consortium | https://tools.suckless.org/dmenu/ |
 | Xft font stack (package `x11-xft`): expat, FreeType, fontconfig, libXrender, libXft | see `packages/x11-xft/versions.env` | expat, libXrender, libXft: MIT; fontconfig: MIT-style (HPND); FreeType: the FreeType License (FTL, used instead of its GPL-2.0 alternative; credit below) | https://libexpat.github.io/ https://freetype.org/ https://www.freedesktop.org/wiki/Software/fontconfig/ https://www.x.org/releases/individual/lib/ |
 | DejaVu Sans Mono (package `x11-fonts`, `/lib/fonts`) | `DEJAVU_VERSION` in `packages/x11-fonts/versions.env` | Bitstream Vera Fonts license and Arev Fonts license (DejaVu's changes public domain); the text ships as `/lib/fonts/LICENSE.DejaVu` | https://dejavu-fonts.github.io/ |
 | Mbed TLS (TLS for `curl`, `lynx`, `user/tls`) | 3.6.2 | Apache-2.0 OR GPL-2.0-or-later (myos uses it under Apache-2.0) | https://github.com/Mbed-TLS/mbedtls |
@@ -63,7 +65,8 @@ Files in this repository that carry notices from upstream (kept as required):
 `toolchain/newlib/libgloss/myos/{basename.c,dirname.c}` (newlib, Shaun Jackman),
 `toolchain/newlib/libgloss/myos/inet.c` (Paul Vixie / ISC),
 `toolchain/newlib/libgloss/myos/sys/syslimits.h` (UC Regents),
-`ports/ripgrep/pcre2-headers/pcre2.h` (University of Cambridge).
+`ports/ripgrep/pcre2-headers/pcre2.h` (University of Cambridge),
+`ports/termcap/termcap`'s `st` entries (the st authors).
 
 ## Optional components (`--features linux_compat`) and build-time tools
 

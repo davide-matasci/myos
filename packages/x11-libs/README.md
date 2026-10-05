@@ -38,6 +38,12 @@ functions; `build.sh` writes it.
 ## What the package installs
 
 - `/lib/X11/XErrorDB`: the error messages `XGetErrorText` prints.
+- `/lib/X11/locale`: libX11's locale data for the C locale (`locale.alias`,
+  `locale.dir`, `compose.dir`, `C/XLC_LOCALE` and its Compose file,
+  `iso8859-1/Compose`). `XOpenIM` opens libX11's own input method only when
+  the locale's Compose file exists (with no `XMODIFIERS`, the default), and
+  fails otherwise: there is no input method server. dmenu needs it; st
+  retries with `@im=local`.
 - `/bin/etc/x11_smoke`: the boot test (`test.sh`, full mode). With no X
   server on myos yet, it is both ends: a stand-in server on
   `/tmp/.X11-unix/X5` that answers the connection setup and the handful of
@@ -47,6 +53,6 @@ functions; `build.sh` writes it.
 
 ## Not yet
 
-- libX11's locale data (`/lib/X11/locale`, input methods): the first client
-  that needs it (`xterm`) brings it.
+- The other locales' data (`/lib/X11/locale`): nothing on myos sets a
+  locale other than C (no `LANG`).
 - IPv6 displays, threads (`XInitThreads`), XKB.
