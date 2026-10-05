@@ -272,9 +272,11 @@ impl FrameBufferWriter<'_> {
         // Color status tags that arrive via the plain byte path (modules +
         // userspace `write_str`), including when the prefix is split across
         // writes. Serial stays plain.
-        if byte == b'\n' {
+        // A line starts again after CR too: a shell redrawing its line
+        // (oksh on Up or Tab) sends CR, then the prompt and the line.
+        if byte == b'\n' || byte == b'\r' {
             self.flush_prefix_plain();
-            self.put_byte_colored(b'\n', self.fg);
+            self.put_byte_colored(byte, self.fg);
             self.line_start = true;
             return;
         }

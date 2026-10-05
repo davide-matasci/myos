@@ -203,9 +203,6 @@ pub fn write_byte(byte: u8) {
 
 fn write_byte_unlocked(byte: u8) {
     SerialPort::new().write_byte(byte);
-    if byte == b'\r' {
-        return;
-    }
     if MIRROR_BYTES.load(Ordering::Relaxed) {
         screen_write(CONSOLE_TEXT, &[byte]);
     }
