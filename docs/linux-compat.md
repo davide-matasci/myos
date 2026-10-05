@@ -210,7 +210,8 @@ Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve` (a
 a file that is neither an ELF nor a script fails with `ENOEXEC`),
 `exit` (the thread), `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`,
 `getpid`, `gettid`, `getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`,
-`setsid`, `uname`, `arch_prctl`, `set_tid_address`, `set_robust_list`,
+`setsid`, `uname` (the node name is the kernel's host name,
+`/proc/sys/kernel/hostname`), `sethostname`, `arch_prctl`, `set_tid_address`, `set_robust_list`,
 `prlimit64`, `getrlimit`, `get/set uid/gid` (everything is root),
 `sched_yield`.
 

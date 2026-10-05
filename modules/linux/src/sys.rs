@@ -867,14 +867,39 @@ pub fn kill(pid: usize, sig: usize) -> R {
     if crate::k::signal::kill(pid as isize, n) { Ok(0) } else { Err(ESRCH) }
 }
 
+/// The kernel's host name file (`docs/linux-compat.md`).
+const HOSTNAME: &str = "/proc/sys/kernel/hostname";
+
 pub fn uname(buf: usize) -> R {
     let mut b = [0u8; 6 * 65];
+    let mut host = [0u8; 65];
+    let mut n = fs::read(HOSTNAME, 0, &mut host).unwrap_or(0);
+    while n > 0 && host[n - 1] == b'\n' {
+        n -= 1;
+    }
     let fields: [&[u8]; 6] =
-        [b"Linux", b"myos", b"6.1.0-myos-compat", b"#1 myos", super::arch::MACHINE, b"(none)"];
+        [b"Linux", &host[..n.min(64)], b"6.1.0-myos-compat", b"#1 myos", super::arch::MACHINE, b"(none)"];
     for (i, f) in fields.iter().enumerate() {
         b[i * 65..i * 65 + f.len()].copy_from_slice(f);
     }
     put(buf, &b)?;
+    Ok(0)
+}
+
+pub fn sethostname(name: usize, len: usize) -> R {
+    if len > 64 {
+        return Err(EINVAL);
+    }
+    let mut b = [0u8; 65];
+    if len > 0 {
+        get(name, &mut b[..len])?;
+    }
+    if b[..len].contains(&b'\n') {
+        return Err(EINVAL);
+    }
+    // The newline ends the name, and makes an empty one a write of 1 byte.
+    b[len] = b'\n';
+    fs::write(HOSTNAME, 0, &b[..=len]).ok_or(EPERM)?;
     Ok(0)
 }
 
