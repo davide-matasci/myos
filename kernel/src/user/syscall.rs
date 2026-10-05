@@ -287,7 +287,11 @@ fn sys_thread_spawn(regs: &SyscallRegs, params: usize) -> usize {
     if entry == 0 || stack == 0 {
         return SYSERR;
     }
-    task::spawn_thread(thread_start(regs, entry, stack, arg), Some(tls)).unwrap_or(SYSERR)
+    let Some(tid) = task::spawn_thread(thread_start(regs, entry, stack, arg), Some(tls)) else {
+        return SYSERR;
+    };
+    task::place_thread(tid);
+    tid
 }
 
 fn sys_wait_addr(addr: usize, expected: usize, timeout_ns: usize) -> usize {

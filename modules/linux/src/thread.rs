@@ -55,18 +55,18 @@ pub fn clone(regs: &SyscallRegs, flags: usize, stack: usize, ptid: usize, tls: u
     // The child resumes like a forked one (result 0), on its own stack.
     let tls = (flags & CLONE_SETTLS != 0).then_some(tls as u64);
     let tid = task::spawn_thread_from(regs, stack, tls).ok_or(EAGAIN)?;
-    // The new thread cannot run before this syscall returns (it shares this
-    // CPU, and the syscall runs with interrupts off), so it finds these set.
-    // Parent and child share their memory: both ids are stored from here.
-    for (flag, at) in [(CLONE_PARENT_SETTID, ptid), (CLONE_CHILD_SETTID, ctid)] {
-        if flags & flag != 0 {
-            put(at, &(tid as u32).to_le_bytes())?;
-        }
-    }
+    // The new thread does not run before it is placed on a CPU of its own,
+    // so it finds these set. Parent and child share their memory: both ids
+    // are stored from here.
+    let ids = [(CLONE_PARENT_SETTID, ptid), (CLONE_CHILD_SETTID, ctid)]
+        .into_iter()
+        .filter(|&(flag, _)| flags & flag != 0)
+        .try_for_each(|(_, at)| put(at, &(tid as u32).to_le_bytes()));
     if flags & CLONE_CHILD_CLEARTID != 0 {
         CLEAR_TID[tid].store(ctid, Ordering::Relaxed);
     }
-    Ok(tid)
+    task::place_thread(tid);
+    ids.map(|()| tid)
 }
 
 /// `set_tid_address(addr)`: the calling thread's end clears and wakes `addr`.

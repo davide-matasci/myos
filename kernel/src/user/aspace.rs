@@ -107,7 +107,31 @@ pub(super) fn align_up_usize(v: usize, align: usize) -> usize {
 
 pub(super) use crate::arch::upaging::{create_aspace, free_user_page_tables, map_heap_page, map_user_code_page, map_user_stack_page, pick_user_base, unmap_user_page, virt_to_phys};
 pub use crate::arch::upaging::{read_aspace, switch_aspace};
-pub(super) use crate::arch::upaging::flush_user_tlb;
+/// Frames unmapped from an address space that another CPU has loaded (a
+/// thread of the process runs there), with that address space: the next
+/// [`flush_user_tlb`] of it frees them, once no CPU can reach them.
+static UNMAPPED: Mutex<alloc::vec::Vec<(u64, u64)>> = Mutex::new(alloc::vec::Vec::new());
+
+/// Flush the current address space's user translations (on every CPU that
+/// has it loaded), then free the frames unmapped from it before.
+pub(super) fn flush_user_tlb() {
+    let aspace = task::current_aspace();
+    // Taken before the flush: it covers only what was unmapped by then.
+    let mut freed = alloc::vec::Vec::new();
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    UNMAPPED.lock().retain(|&(a, frame)| {
+        if a == aspace {
+            freed.push(frame);
+        }
+        a != aspace
+    });
+    crate::arch::irq_restore(flags);
+    crate::arch::upaging::flush_user_tlb();
+    for frame in freed {
+        mm::free_frame(frame);
+    }
+}
 
 /// Unmap and free anonymous mmap pages for `aspace` (table entries are left
 /// to the caller); a device's pages are only unmapped. Shared by in-place
@@ -302,6 +326,14 @@ pub(super) fn free_mapped_page(aspace: u64, va: u64) {
     // If unmap failed to clear, refuse to free — avoids freelist double-free when
     // reclaim walks overlapping VA ranges (code span vs heap/mmap).
     if virt_to_phys(aspace, va).is_some() {
+        return;
+    }
+    // Another CPU may still hold a translation to it: freed after the flush.
+    if task::aspace_loaded_elsewhere(aspace) {
+        let flags = crate::arch::irq_save();
+        crate::arch::irq_off();
+        UNMAPPED.lock().push((aspace, phys));
+        crate::arch::irq_restore(flags);
         return;
     }
     mm::free_frame(phys);

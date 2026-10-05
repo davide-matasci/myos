@@ -16,7 +16,8 @@
 /// 22 added [`KernelApi::fork_from`] (posix_spawn's child on its own stack).
 /// 23 added [`KernelApi::mmap_discard`] (`madvise(MADV_DONTNEED)`).
 /// 24 added `mtime` to [`VfsStatInfo`] and [`PathStat`].
-pub const ABI_VERSION: u32 = 24;
+/// 25 added [`KernelApi::thread_place`] (a new thread's own CPU).
+pub const ABI_VERSION: u32 = 25;
 
 /// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
 pub const MYOS_WAIT_ANY: usize = usize::MAX;
@@ -675,6 +676,11 @@ pub struct KernelApi {
     /// they read as new on the next touch (zero, or the file's contents).
     /// 0, or negative when the range is outside the window.
     pub mmap_discard: unsafe extern "C" fn(addr: usize, len: usize) -> i32,
+    // --- ABI 25 ---
+    /// Give thread `tid`, new from `thread_spawn_from` and not run yet, a
+    /// CPU of its own: until then it waits for its creator's syscall to
+    /// end, so what it must find when it starts is set up first.
+    pub thread_place: unsafe extern "C" fn(tid: i32),
 }
 
 /// `blk_unregister`: the device is mounted or open.

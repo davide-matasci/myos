@@ -204,6 +204,10 @@ pub mod task {
         let t = unsafe { (api().thread_spawn_from)(regs.0, sp, i32::from(tls.is_some()), tls.unwrap_or(0)) };
         (t >= 0).then_some(t as usize)
     }
+    /// Give the new thread `tid` a CPU of its own (it waits until then).
+    pub fn place_thread(tid: usize) {
+        unsafe { (api().thread_place)(tid as i32) }
+    }
     /// Drop the pages of `[addr, addr + len)`: they read as new next time.
     pub fn mmap_discard(addr: usize, len: usize) -> bool {
         unsafe { (api().mmap_discard)(addr, len) == 0 }

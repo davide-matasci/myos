@@ -204,6 +204,13 @@ fn set_loaded_aspace(a: u64) {
     LOADED_ASPACE[cpu].store(a, Ordering::SeqCst);
 }
 
+/// Has a CPU other than this one `aspace` loaded (a thread of its process
+/// runs there, or ran there last)? Its TLB may then hold translations of it.
+pub fn aspace_loaded_elsewhere(aspace: u64) -> bool {
+    let me = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    (0..crate::smp::MAX_CPUS).any(|i| i != me && LOADED_ASPACE[i].load(Ordering::SeqCst) == aspace)
+}
+
 fn current_slot() -> usize {
     let cpu = crate::smp::cpu_id();
     CURRENT[cpu.min(crate::smp::MAX_CPUS - 1)].load(Ordering::SeqCst)

@@ -365,8 +365,6 @@ three, the kernel crate itself an hour. Known gaps:
   user mode is not interrupted until its next syscall (only `SIGKILL` acts
   on the interrupt return). No alternate signal stacks, no real-time signal
   queueing.
-- Threads run on their process's home CPU, interleaved, not in parallel
-  (`docs/threads.md`).
 - No other `clone` with `CLONE_VM` but not `CLONE_THREAD` than
   posix_spawn's, and no shared file mappings (`MAP_SHARED`).
 - Close-on-exec (`O_CLOEXEC`, `FD_CLOEXEC`, `FIOCLEX`) and `O_NONBLOCK`
