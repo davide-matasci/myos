@@ -13,10 +13,115 @@ use crate::fmt;
 
 #[path = "unsupported.rs"]
 mod stub;
-pub use stub::{
-    Dir, DirBuilder, canonicalize, copy, exists, link, readlink, remove_dir_all, rename, rmdir,
-    symlink, unlink,
-};
+pub use stub::{canonicalize, link};
+pub use crate::sys::fs::common::{Dir, copy, exists, remove_dir_all};
+
+/// The errno values the calls below report. The kernel has one failure
+/// value, so each call works out its cause the way libgloss does.
+const ENOENT: i32 = 2;
+const EEXIST: i32 = 17;
+const ENOTDIR: i32 = 20;
+const EISDIR: i32 = 21;
+const EINVAL: i32 = 22;
+const ESPIPE: i32 = 29;
+const EROFS: i32 = 30;
+const ENAMETOOLONG: i32 = 36;
+const ENOTEMPTY: i32 = 39;
+
+fn os_err<T>(code: i32) -> io::Result<T> {
+    Err(io::Error::from_raw_os_error(code))
+}
+
+/// The kernel's stat of `path` (the last component not followed), if any.
+fn kstat(bytes: &[u8]) -> Option<abi::StatBuf> {
+    let mut buf = abi::StatBuf::default();
+    (abi::stat(bytes, &mut buf) == 0).then_some(buf)
+}
+
+/// Why a call that needed `path` to exist failed: it does not, or it does
+/// and the filesystem refused (read-only, or no such operation there).
+fn missing_or(bytes: &[u8], code: i32) -> i32 {
+    if kstat(bytes).is_some() { code } else { ENOENT }
+}
+
+fn path_bytes(path: &Path) -> io::Result<&[u8]> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() {
+        return os_err(ENOENT);
+    }
+    if bytes.len() > 0xffff {
+        return os_err(ENAMETOOLONG);
+    }
+    Ok(bytes)
+}
+
+#[derive(Debug)]
+pub struct DirBuilder {}
+
+impl DirBuilder {
+    pub fn new() -> DirBuilder {
+        DirBuilder {}
+    }
+
+    pub fn mkdir(&self, p: &Path) -> io::Result<()> {
+        let bytes = path_bytes(p)?;
+        if abi::path_call(abi::SYS_MKDIR, bytes, 0o777) == 0 {
+            return Ok(());
+        }
+        // `create_dir_all` takes EEXIST for an existing directory.
+        os_err(missing_or(bytes, EEXIST))
+    }
+}
+
+pub fn unlink(p: &Path) -> io::Result<()> {
+    let bytes = path_bytes(p)?;
+    // A directory is rmdir's (Linux says EISDIR), whatever a filesystem's
+    // unlink would do with it.
+    match kstat(bytes) {
+        None => return os_err(ENOENT),
+        Some(st) if st.st_mode & S_IFMT == S_IFDIR => return os_err(EISDIR),
+        Some(_) => {}
+    }
+    if abi::path_call(abi::SYS_UNLINK, bytes, 0) == 0 { Ok(()) } else { os_err(EROFS) }
+}
+
+pub fn rmdir(p: &Path) -> io::Result<()> {
+    let bytes = path_bytes(p)?;
+    if abi::path_call(abi::SYS_RMDIR, bytes, 0) == 0 {
+        return Ok(());
+    }
+    match kstat(bytes) {
+        None => os_err(ENOENT),
+        Some(st) if st.st_mode & S_IFMT != S_IFDIR => os_err(ENOTDIR),
+        Some(_) => os_err(ENOTEMPTY),
+    }
+}
+
+pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
+    let (a, b) = (path_bytes(old)?, path_bytes(new)?);
+    if abi::path_pair(abi::SYS_RENAME, a, b) == 0 {
+        return Ok(());
+    }
+    os_err(missing_or(a, EROFS))
+}
+
+pub fn symlink(original: &Path, link: &Path) -> io::Result<()> {
+    let (a, b) = (path_bytes(original)?, path_bytes(link)?);
+    if abi::path_pair(abi::SYS_SYMLINK, a, b) == 0 {
+        return Ok(());
+    }
+    os_err(if kstat(b).is_some() { EEXIST } else { EROFS })
+}
+
+pub fn readlink(p: &Path) -> io::Result<PathBuf> {
+    let bytes = path_bytes(p)?;
+    let mut buf = [0u8; 1024];
+    let n = abi::readlink(bytes, &mut buf);
+    if n < 0 {
+        return os_err(missing_or(bytes, EINVAL));
+    }
+    Ok(PathBuf::from(OsStr::from_bytes(&buf[..n as usize])))
+}
 
 #[derive(Debug)]
 pub struct File(FileDesc);
@@ -289,48 +394,53 @@ impl OpenOptions {
     }
 }
 
-/// Bootfs is read-only. Avoid reading all `OpenOptions` flags in one LLVM
-/// frame (patched std + `File::open` blew the user stack and double-faulted).
+/// The kernel's open flags for `opts` (the same checks as the unix std).
+/// Kept out of [`open_path`]'s frame: reading every `OpenOptions` flag in one
+/// LLVM frame once blew the user stack (patched std + `File::open`).
 #[inline(never)]
-fn open_path(path: &Path, opts: &OpenOptions) -> io::Result<File> {
-    if opts.write {
-        return Err(io::const_error!(
-            ErrorKind::Unsupported,
-            "myos bootfs is read-only"
-        ));
+fn open_flags(opts: &OpenOptions) -> io::Result<usize> {
+    let writes = opts.write || opts.append;
+    let access = match (opts.read, writes) {
+        (true, false) => 0,
+        (false, true) => abi::O_WRONLY,
+        (true, true) => abi::O_RDWR,
+        (false, false) => return os_err(EINVAL),
+    };
+    if !opts.write && (opts.truncate || opts.create || opts.create_new) && !opts.append {
+        return os_err(EINVAL);
     }
-    if opts.append {
-        return Err(io::const_error!(
-            ErrorKind::Unsupported,
-            "myos bootfs is read-only"
-        ));
+    if opts.append && opts.truncate && !opts.create_new {
+        return os_err(EINVAL);
+    }
+    let mut flags = access;
+    if opts.create || opts.create_new {
+        flags |= abi::O_CREAT;
     }
     if opts.truncate {
-        return Err(io::const_error!(
-            ErrorKind::Unsupported,
-            "myos bootfs is read-only"
-        ));
+        flags |= abi::O_TRUNC;
     }
-    if opts.create {
-        return Err(io::const_error!(
-            ErrorKind::Unsupported,
-            "myos bootfs is read-only"
-        ));
+    if opts.append {
+        flags |= abi::O_APPEND;
     }
-    if opts.create_new {
-        return Err(io::const_error!(
-            ErrorKind::Unsupported,
-            "myos bootfs is read-only"
-        ));
+    Ok(flags)
+}
+
+#[inline(never)]
+fn open_path(path: &Path, opts: &OpenOptions) -> io::Result<File> {
+    let flags = open_flags(opts)?;
+    let bytes = path_bytes(path)?;
+    // No exclusive create in the kernel: refuse an existing path here.
+    if opts.create_new && kstat(bytes).is_some() {
+        return os_err(EEXIST);
     }
-    if !opts.read {
-        return Err(io::const_error!(ErrorKind::InvalidInput, "read access required"));
+    let fd = abi::open_flags(bytes, flags);
+    if fd < 0 {
+        return os_err(match kstat(bytes) {
+            None => ENOENT,
+            Some(st) if st.st_mode & S_IFMT == S_IFDIR => EISDIR,
+            Some(_) => EROFS,
+        });
     }
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.is_empty() {
-        return Err(io::const_error!(ErrorKind::InvalidInput, "empty path"));
-    }
-    let fd = cvt(abi::open(bytes))?;
     Ok(File(unsafe { FileDesc::from_raw_fd(fd as RawFd) }))
 }
 
@@ -340,9 +450,10 @@ impl File {
         open_path(path, opts)
     }
 
+    /// fstat: the path the fd is open on (`/proc/self/fd/N`), then stat.
     pub fn file_attr(&self) -> io::Result<FileAttr> {
-        // No fstat yet; unsupported keeps callers on the open/read path.
-        unsupported()
+        let link = crate::format!("/proc/self/fd/{}", self.0.as_raw_fd());
+        stat_path(&readlink(Path::new(&link))?)
     }
 
     pub fn fsync(&self) -> io::Result<()> {
@@ -412,8 +523,14 @@ impl File {
         Ok(())
     }
 
-    pub fn seek(&self, _pos: SeekFrom) -> io::Result<u64> {
-        unsupported()
+    pub fn seek(&self, pos: SeekFrom) -> io::Result<u64> {
+        let (offset, whence) = match pos {
+            SeekFrom::Start(off) => (off as i64, 0),
+            SeekFrom::Current(off) => (off, 1),
+            SeekFrom::End(off) => (off, 2),
+        };
+        let ret = abi::lseek(self.0.as_raw_fd(), offset, whence);
+        if ret < 0 { os_err(ESPIPE) } else { Ok(ret as u64) }
     }
 
     pub fn size(&self) -> Option<io::Result<u64>> {
@@ -421,7 +538,7 @@ impl File {
     }
 
     pub fn tell(&self) -> io::Result<u64> {
-        unsupported()
+        self.seek(SeekFrom::Current(0))
     }
 
     pub fn duplicate(&self) -> io::Result<File> {

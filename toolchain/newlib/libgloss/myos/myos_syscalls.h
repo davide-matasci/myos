@@ -80,6 +80,8 @@ struct winsize;
 #define MYOS_SYS_FUTIMENS 63
 #define MYOS_UTIME_NOW (-1LL)
 #define MYOS_UTIME_OMIT (-2LL)
+/* settimeofday(tv): two int64_t, seconds and microseconds (time.c). */
+#define MYOS_SYS_SETTIMEOFDAY 65
 
 /* fds per process (kernel MAX_FDS): sysconf(_SC_OPEN_MAX), getdtablesize. */
 #define MYOS_OPEN_MAX 64

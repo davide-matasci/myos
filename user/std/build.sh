@@ -27,5 +27,6 @@ for triple in "${MYOS_USER_TRIPLES[@]+"${MYOS_USER_TRIPLES[@]}"}"; do
   build_example echo "$HERE/echo/Cargo.toml" std-echo "$triple"
   build_example bigalloc "$HERE/bigalloc/Cargo.toml" bigalloc "$triple"
   build_example sleep "$HERE/sleep/Cargo.toml" std-sleep "$triple"
+  build_example fs "$HERE/fs/Cargo.toml" std-fs "$triple"
 done
 echo "$(myos_std_hello_version_hash)" >"$MYOS_STD_HELLO_VERSION"

@@ -131,6 +131,9 @@ const SYS_UTIMENS: usize = 62;
 const SYS_FUTIMENS: usize = 63;
 /// `umount(path, len)`: detach the block-device mount at `path`.
 const SYS_UMOUNT: usize = 64;
+/// `settimeofday(tv)`: set the wall clock to `tv` (two `i64`s, seconds and
+/// microseconds, as `gettimeofday` writes them). The RTC is not written.
+const SYS_SETTIMEOFDAY: usize = 65;
 /// `utimens` / `futimens` time values: now, or leave the time as it is.
 const UTIME_NOW: i64 = -1;
 const UTIME_OMIT: i64 = -2;
@@ -285,6 +288,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_UTIMENS => sys_utimens(a0, a1, a2),
         SYS_FUTIMENS => sys_futimens(a0, a1),
         SYS_UMOUNT => sys_umount(a0, a1),
+        SYS_SETTIMEOFDAY => sys_settimeofday(a0),
         SYS_LINUX_NEXT_EXEC => {
             if crate::personality::request_next_exec() { 0 } else { SYSERR }
         }
@@ -504,6 +508,16 @@ pub(crate) fn sys_gettimeofday(tv_ptr: usize, _tz: usize) -> usize {
         return SYSERR;
     }
     0
+}
+
+fn sys_settimeofday(tv_ptr: usize) -> usize {
+    let mut raw = [0u8; 16];
+    if !user_range_ok(tv_ptr, raw.len()) || !read_user_bytes(task::current_aspace(), tv_ptr, &mut raw) {
+        return SYSERR;
+    }
+    let secs = i64::from_le_bytes(raw[..8].try_into().unwrap());
+    let usec = i64::from_le_bytes(raw[8..].try_into().unwrap());
+    if crate::time::set_wall(secs, usec) { 0 } else { SYSERR }
 }
 
 pub(crate) fn sys_setsid() -> usize {

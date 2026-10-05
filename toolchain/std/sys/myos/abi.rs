@@ -23,6 +23,7 @@ pub const SYS_UNLINK: usize = 19;
 pub const SYS_RENAME: usize = 20;
 pub const SYS_SYMLINK: usize = 21;
 pub const SYS_READLINK: usize = 22;
+pub const SYS_LSEEK: usize = 26;
 pub const SYS_GETTIMEOFDAY: usize = 33;
 pub const SYS_NANOSLEEP: usize = 52;
 pub const SYS_STAT2: usize = 61;
@@ -35,6 +36,14 @@ pub const UTIME_OMIT: i64 = -2;
 pub const STDIN_FILENO: i32 = 0;
 pub const STDOUT_FILENO: i32 = 1;
 pub const STDERR_FILENO: i32 = 2;
+
+/// `open` flags on top of the access mode (0 read, 1 write, 2 both), as
+/// libgloss passes them (`syscalls.c`).
+pub const O_WRONLY: usize = 1;
+pub const O_RDWR: usize = 2;
+pub const O_CREAT: usize = 0x40;
+pub const O_TRUNC: usize = 0x200;
+pub const O_APPEND: usize = 0x400;
 
 pub const EBADF: i32 = 9;
 pub const F_DUPFD_CLOEXEC: i32 = 1030;
@@ -49,24 +58,28 @@ pub fn close(fd: i32) -> isize {
     }
 }
 
+/// A read's or write's result: the count, or minus an errno for the
+/// kernel's failure values (`SYSERR` and the distinct EIO, ENXIO and EINTR,
+/// `kernel/src/task/fd.rs`), so `cvt` reports what happened.
 #[inline]
-pub fn write(fd: i32, buf: &[u8]) -> isize {
-    let ret = raw_write(fd as usize, buf.as_ptr() as usize, buf.len());
-    if ret == usize::MAX {
-        -1
-    } else {
-        ret as isize
+fn io_result(ret: usize) -> isize {
+    match usize::MAX - ret {
+        0 => -1,
+        1 => -5, // EIO: the pty's other end is gone
+        2 => -6, // ENXIO
+        3 => -4, // EINTR: a caught signal
+        _ => ret as isize,
     }
 }
 
 #[inline]
+pub fn write(fd: i32, buf: &[u8]) -> isize {
+    io_result(raw_write(fd as usize, buf.as_ptr() as usize, buf.len()))
+}
+
+#[inline]
 pub fn read(fd: i32, buf: &mut [u8]) -> isize {
-    let ret = raw_read(fd as usize, buf.as_mut_ptr() as usize, buf.len());
-    if ret == usize::MAX {
-        -1
-    } else {
-        ret as isize
-    }
+    io_result(raw_read(fd as usize, buf.as_mut_ptr() as usize, buf.len()))
 }
 
 #[inline]
@@ -139,6 +152,49 @@ pub fn stat(path: &[u8], out: &mut StatBuf) -> isize {
 pub fn utimens(path: &[u8], times: &[i64; 2]) -> isize {
     let ret = raw_syscall3(SYS_UTIMENS, path.as_ptr() as usize, path.len(), times.as_ptr() as usize);
     if ret == usize::MAX { -1 } else { 0 }
+}
+
+/// `open` with [`O_WRONLY`], [`O_CREAT`], ... flags.
+#[inline]
+pub fn open_flags(path: &[u8], flags: usize) -> isize {
+    let ret = raw_syscall3(SYS_OPEN, path.as_ptr() as usize, path.len(), flags);
+    if ret == usize::MAX { -1 } else { ret as isize }
+}
+
+/// The new offset, or -1 (a pipe or a terminal has none).
+#[inline]
+pub fn lseek(fd: i32, offset: i64, whence: usize) -> i64 {
+    let ret = raw_syscall3(SYS_LSEEK, fd as usize, offset as usize, whence);
+    if ret == usize::MAX { -1 } else { ret as i64 }
+}
+
+/// `mkdir`, `rmdir` and `unlink`: the path, its length and one argument.
+#[inline]
+pub fn path_call(nr: usize, path: &[u8], arg: usize) -> isize {
+    let ret = raw_syscall3(nr, path.as_ptr() as usize, path.len(), arg);
+    if ret == usize::MAX { -1 } else { 0 }
+}
+
+/// `rename` and `symlink`: two paths, their lengths packed as
+/// `(a_len << 16) | b_len`.
+#[inline]
+pub fn path_pair(nr: usize, a: &[u8], b: &[u8]) -> isize {
+    if a.is_empty() || b.is_empty() || a.len() > 0xffff || b.len() > 0xffff {
+        return -1;
+    }
+    let ret = raw_syscall3(nr, a.as_ptr() as usize, b.as_ptr() as usize, (a.len() << 16) | b.len());
+    if ret == usize::MAX { -1 } else { 0 }
+}
+
+/// The link's target into `buf`: its length, or -1.
+#[inline]
+pub fn readlink(path: &[u8], buf: &mut [u8]) -> isize {
+    let size = buf.len().min(0xffff);
+    if path.is_empty() || path.len() > 0xffff || size == 0 {
+        return -1;
+    }
+    let ret = raw_syscall3(SYS_READLINK, path.as_ptr() as usize, buf.as_mut_ptr() as usize, (path.len() << 16) | size);
+    if ret == usize::MAX { -1 } else { ret as isize }
 }
 
 /// [`utimens`] for an open file.

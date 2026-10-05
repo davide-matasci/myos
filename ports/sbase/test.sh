@@ -51,3 +51,18 @@ sbase_logger() {
 	[ "$out" = "tag: hello" ]
 }
 t sbase_logger sbase_logger
+
+# Setting the clock (clock_settime, kept until the next boot; the RTC keeps
+# its time): date sets 2030-01-02 03:04 UTC and reads it back, then puts the
+# time back a minute ahead (date sets whole minutes; ahead, so no file
+# later looks older than one before).
+sbase_date() {
+	now=$(/bin/sbase/date +%s) || return 1
+	/bin/sbase/date -u 010203042030 || return 1
+	d=$(/bin/sbase/date -u +%Y%m%d%H%M)
+	/bin/sbase/date -u $(/bin/sbase/date -u -d $((now + 60)) +%m%d%H%M%Y) || return 1
+	echo "set: $d, back: $(/bin/sbase/date -u)"
+	case $d in 20300102030[45]) ;; *) return 1 ;; esac
+	[ $(/bin/sbase/date +%s) -ge $now ]
+}
+t sbase_date sbase_date
