@@ -35,22 +35,28 @@ cc 03 00 7f 00 04 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 speed 0 0
 winsize 100 160
 keymap /lib/kbd/ch.map
+mirror on
 ```
 
 The four flag lines and `speed` are the termios fields with Linux's bit values
 (`toolchain/newlib/libgloss/myos/termios.h`), `cc` the 32 control characters
 (`VINTR` first) as two hex digits each, `winsize` rows and columns. The console
-has one more line, `keymap`: the file its keyboard map was loaded from, or
-`none`. A write takes the same lines back, and a line changes only what it
-names: `lflag 0` puts the terminal in raw mode and leaves the rest alone,
-`cc 03` sets `VINTR` only. Numbers are `0x` hex or decimal. Three more lines
-are commands:
+has two more lines: `keymap`, the file its keyboard map was loaded from, or
+`none`; `mirror`, whether its output goes to the screen as well as to the
+serial port (`on`, the default) or to the serial port only (`off`: scrolling
+a big framebuffer is slow under emulation, so the boot tests' runner turns it
+off while they run). A write takes the same lines back, and a line changes
+only what it names: `lflag 0` puts the terminal in raw mode and leaves the
+rest alone, `cc 03` sets `VINTR` only, `mirror off` stops the screen copy.
+Numbers are `0x` hex or decimal. Three more lines are commands:
 
 | Line | Effect |
 |------|--------|
 | `ctty` | the terminal becomes the writer's controlling terminal (what `TIOCSCTTY` does) |
 | `flush [in\|out\|both]` | discard the pending input and/or output; `both` when nothing is given |
 | `keymap PATH` | the console loads the keyboard map in that file (`docs/keymap.md`); a pty refuses it |
+
+A pty refuses `mirror` too.
 
 A write applies all its lines or none: an unknown word, a bad number, a line
 with extra words or a keymap that cannot be loaded fails it with nothing

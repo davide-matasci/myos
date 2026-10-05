@@ -236,17 +236,15 @@ console_cells() {
 
 console_cr() {
 	read -r w h depth chan pitch mode < /dev/fb/ctl
-	# The console draws its text only on a framebuffer of at most 2 MiB
-	# (console::set_framebuffer: scrolling a bigger one is too slow under
-	# TCG); the bios and uefi boots' 1280x800 gets none.
-	if [ $((pitch * h)) -gt 2097152 ]; then
-		echo "no console text on a ${w}x${h} framebuffer: nothing to check"
-		return 0
-	fi
+	# The runner turned the screen copy off (run.sh): on for the check.
+	mirror=$(grep '^mirror ' /dev/console/ctl)
+	echo 'mirror on' > /dev/console/ctl || return 1
+	grep -q '^mirror on$' /dev/console/ctl || return 1
 	blank=$(console_cells '')
 	qq=$(console_cells 'QQ')
 	cr=$(console_cells 'QQ\r  ')
 	printf '\033[H\033[J\n' > /dev/console/data
+	echo "$mirror" > /dev/console/ctl
 	echo "cleared: $blank; QQ: $qq; QQ, CR, spaces: $cr"
 	[ "$qq" != "$blank" ] || { echo "QQ did not reach the screen"; return 1; }
 	[ "$cr" = "$blank" ] || { echo "QQ, CR, spaces: the Qs are still there"; return 1; }

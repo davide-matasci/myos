@@ -189,9 +189,6 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     let screen = unsafe { (api.framebuffer_info)(&mut info) } == 0 && info.addr != 0;
     if screen {
         let mut w = FrameBufferWriter::from_info(&info);
-        // Cursor rendering only makes sense while the kernel mirrors bytes
-        // to the screen (it stops above ~2 MiB of framebuffer, see there).
-        w.cursor_active = w.fb_bytes() <= 2 * 1024 * 1024;
         w.clear();
         *FB.lock() = Some(w);
     }

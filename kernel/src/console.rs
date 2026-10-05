@@ -35,10 +35,11 @@ static FB_INFO: Once<FramebufferInfo> = Once::new();
 static OPS: Once<ModuleConsoleOps> = Once::new();
 /// Serializes every console write end-to-end (serial + screen).
 static OUT: Mutex<()> = Mutex::new(());
-/// When false, high-volume `write_byte`/`write_str` stay serial-only.
-/// Boot `status_*` / banners still paint the screen. Oversized GOP (typical
-/// UEFI 1280×800+) makes every newline memmove megabytes under TCG; that
-/// was the ~6× BIOS→UEFI gap on prebuilt os-test (CI #34814552381).
+/// When false, `write_byte`/`write_str` stay serial-only; boot `status_*`
+/// lines and banners still paint the screen. On by default; `mirror off` in
+/// `/dev/console/ctl` turns it off (`set_mirror`): every newline on a big
+/// framebuffer moves megabytes, which under TCG slows a chatty boot test
+/// several times (CI #34814552381), so the test runner does.
 static MIRROR_BYTES: AtomicBool = AtomicBool::new(true);
 
 /// Boot output before the module loads: `(kind, text)` records, replayed on
@@ -60,11 +61,6 @@ static EARLY: Mutex<Early> = Mutex::new(Early {
 /// Record the boot framebuffer (before any output). The screen itself is
 /// painted by the console module once it loads.
 pub fn set_framebuffer(info: FramebufferInfo) {
-    // ~800×600×4bpp ≈ 1.8MiB; above that, skip per-byte mirroring: keep
-    // winsize from the full GOP (so the oksh curl line stays ≤160 cols) but
-    // newline scroll under TCG was the UEFI~6× BIOS gap (CI #34814552381).
-    let bytes = info.pitch.saturating_mul(info.height);
-    MIRROR_BYTES.store(bytes <= 2 * 1024 * 1024, Ordering::Relaxed);
     FB_INFO.call_once(|| info);
 }
 
@@ -126,9 +122,19 @@ pub fn mirrors_bytes() -> bool {
     MIRROR_BYTES.load(Ordering::Relaxed)
 }
 
+/// `mirror on|off` (`/dev/console/ctl`): whether output goes to the screen
+/// as well as to the serial port.
+pub fn set_mirror(on: bool) {
+    MIRROR_BYTES.store(on, Ordering::Relaxed);
+}
+
 /// Timer-IRQ blink for the framebuffer block cursor (the module skips the
-/// tick if a paint holds its lock).
+/// tick if a paint holds its lock). Not while the screen is not mirrored:
+/// the cursor would blink over text that no longer moves.
 pub fn cursor_blink() {
+    if !mirrors_bytes() {
+        return;
+    }
     if let Some(ops) = OPS.get() {
         unsafe { (ops.blink)() };
     }
