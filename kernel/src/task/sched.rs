@@ -3,6 +3,17 @@
 
 use super::*;
 
+/// Per CPU: its idle task's slot (`become_idle`), `usize::MAX` before.
+static IDLE_SLOT: [AtomicUsize; crate::smp::MAX_CPUS] =
+    [const { AtomicUsize::new(usize::MAX) }; crate::smp::MAX_CPUS];
+
+/// The calling task is this CPU's idle task from now on: `schedule` runs it
+/// only when nothing else can run here.
+pub fn become_idle() {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    IDLE_SLOT[cpu].store(current_slot(), Ordering::SeqCst);
+}
+
 pub fn enable_preempt() {
     PREEMPT_ON.store(true, Ordering::SeqCst);
 }
@@ -44,7 +55,9 @@ pub fn schedule() {
 
         crate::smp::note_schedule();
         let cpu = crate::smp::cpu_id();
+        let idle = IDLE_SLOT[cpu.min(crate::smp::MAX_CPUS - 1)].load(Ordering::Relaxed);
         let mut next = current;
+        let mut idle_ready = false;
         for off in 1..MAX_TASKS {
             let i = (current + off) % MAX_TASKS;
             if tasks[i].state != State::Ready {
@@ -60,8 +73,20 @@ pub fn schedule() {
             if slot_on_cpu(i) {
                 continue;
             }
+            if i == idle {
+                idle_ready = true;
+                continue;
+            }
             next = i;
             break;
+        }
+        // The idle task only when nothing else can run here: a task that
+        // keeps running keeps its address space, where a round through the
+        // idle task loaded the kernel's and back (a whole TLB flush each
+        // way, every tick).
+        let current_runs = matches!(tasks[current].state, State::Running | State::Ready);
+        if next == current && idle_ready && !current_runs {
+            next = idle;
         }
 
         if next == current {
@@ -657,6 +682,7 @@ fn ap_idle_bringup() {
     }
     set_loaded_aspace(k);
     crate::smp::mark_running(logical);
+    become_idle();
     enable_preempt();
     // IRQs only after CURRENT/idle exist *and* we left the Limine stack.
     irq_on();
