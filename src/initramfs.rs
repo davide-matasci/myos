@@ -166,16 +166,10 @@ fn add_hardlink_group(entries: &mut Vec<Entry>, names: &[String], data: Option<V
 
 
 /// Pack what one port of the image ships (`PORT_FILES`, see docs/ports.md).
-/// A user program the kernel embeds (`PORT_EMBED`) is optional here: the CI
-/// boot jobs pack the aarch64/riscv64 initramfs from ci-build.tar, which
-/// carries only what the kernel does not embed.
 pub(crate) fn install_port(entries: &mut Vec<Entry>, port: &crate::ports::Port, manifest_dir: &Path, arch: &str) {
     use crate::ports::{FileSpec, expand};
     let target = manifest_dir.join("target");
-    let optional = port.embed.is_some();
-    let take = |path: &Path| -> Option<Vec<u8>> {
-        if optional { read_optional(&[path]) } else { read(path) }
-    };
+    let take = |path: &Path| -> Option<Vec<u8>> { read(path) };
     for f in &port.files {
         match f {
             FileSpec::Bin { src, paths } => {

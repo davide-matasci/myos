@@ -115,12 +115,6 @@ fn main() {
         );
     }
 
-    let ok_path = manifest.join("target").join("ok-x86_64-unknown-none");
-    println!("cargo:rerun-if-changed={}", ok_path.display());
-    let ok = std::fs::read(&ok_path).unwrap_or_else(|_| {
-        panic!("ok ELF missing at {}", ok_path.display())
-    });
-
     let limine = fetch_limine(&limine_dir);
     let bootx64 = std::fs::read(limine.bootx64()).expect("BOOTX64.EFI");
     let bios_sys = std::fs::read(limine.bios_sys()).expect("limine-bios.sys");
@@ -133,7 +127,6 @@ fn main() {
         &bootx64,
         Some(&bios_sys),
         &modules,
-        &ok,
         &initramfs_bytes,
     );
     bios_install(&limine.tool(), &bios_path);
@@ -159,7 +152,6 @@ fn main() {
     println!("cargo:rustc-env=LIMINE_DIR={}", limine_dir.display());
     // Artifact-dep kernel is not at target/<triple>/debug/kernel.
     println!("cargo:rustc-env=KERNEL_PATH={}", kernel_path.display());
-    println!("cargo:rustc-env=OK_PATH={}", ok_path.display());
     // Hand the active feature set to the host binary (the boot test's QEMU
     // budget depends on the Linux layer; build scripts can't use #[cfg] on a
     // separate binary; the crate can, but this keeps one source of truth).

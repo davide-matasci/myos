@@ -50,7 +50,7 @@ myos_port_names() {
 myos_port_load() {
   local want="$1" role name dir
   PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_RDEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES=""
-  PORT_READY="" PORT_BIN="" PORT_EMBED="" PORT_IMAGE_BASE=0 PORT_WATCH="" PORT_TEST="" PORT_HOST=""
+  PORT_READY="" PORT_BIN="" PORT_IMAGE_BASE=0 PORT_WATCH="" PORT_TEST="" PORT_HOST=""
   while read -r role name dir; do
     if [[ "$name" == "$want" ]]; then
       PORT_NAME="$name" PORT_DIR="$dir" PORT_ROLE="$role"
@@ -117,12 +117,9 @@ myos_port_outputs() {
 }
 
 # The target/ files the image (or the package) of NAME is packed from, for
-# ARCH ("" = all arches): what a boot job must have. A user program the
-# kernel embeds (PORT_EMBED) is served from the kernel when its file is
-# absent, so it is not listed.
+# ARCH ("" = all arches): what a boot job must have.
 myos_port_image_files() {
   myos_port_load "$1" || return 1
-  [[ -z "$PORT_EMBED" ]] || return 0
   local only="${2:-}" spec kind a b c arch
   for spec in $PORT_FILES; do
     IFS=: read -r kind a b c <<<"$spec"

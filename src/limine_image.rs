@@ -71,7 +71,7 @@ pub fn limine_conf(head_extra: &str, kernel_extra: &str) -> String {
     for m in boot_modules() {
         s.push_str(&format!("    module_path: boot():/boot/modules/{m}\n"));
     }
-    s.push_str("    module_path: boot():/boot/ok\n    module_path: boot():/boot/initramfs\n");
+    s.push_str("    module_path: boot():/boot/initramfs\n");
     s
 }
 
@@ -222,7 +222,6 @@ pub fn write_esp_image(
     efi_bytes: &[u8],
     bios_sys: Option<&[u8]>,
     modules: &[DiskFile],
-    ok: &[u8],
     initramfs: &[u8],
 ) {
     write_esp_image_ex(
@@ -232,7 +231,6 @@ pub fn write_esp_image(
         efi_bytes,
         bios_sys,
         modules,
-        ok,
         initramfs,
         &limine_conf("", ""),
         &[],
@@ -246,7 +244,6 @@ pub fn write_esp_image_ex(
     efi_bytes: &[u8],
     bios_sys: Option<&[u8]>,
     modules: &[DiskFile],
-    ok: &[u8],
     initramfs: &[u8],
     limine_conf: &str,
     extra: &[DiskFile],
@@ -259,10 +256,6 @@ pub fn write_esp_image_ex(
         DiskFile {
             path: "boot/kernel".into(),
             data: kernel.to_vec(),
-        },
-        DiskFile {
-            path: "boot/ok".into(),
-            data: ok.to_vec(),
         },
         DiskFile {
             path: "boot/initramfs".into(),
@@ -343,7 +336,6 @@ pub fn write_x86_iso(
     iso_root: &Path,
     kernel: &Path,
     modules_dir: &Path,
-    ok: &Path,
     initramfs: &Path,
     limine: &LimineFiles,
 ) {
@@ -374,7 +366,6 @@ pub fn write_x86_iso(
             &format!("boot/modules/{m}"),
         );
     }
-    copy(ok, "boot/ok");
     copy(initramfs, "boot/initramfs");
     copy(&limine.bios_sys(), "boot/limine/limine-bios.sys");
     copy(&limine.bios_cd(), "boot/limine/limine-bios-cd.bin");
