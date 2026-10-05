@@ -207,7 +207,21 @@ mod cmos {
         (v & 0x0f) + ((v >> 4) * 10)
     }
 
+    /// Held across a read of the clock: CMOS is an index port and a data
+    /// port, and two CPUs reading at once read each other's registers.
+    static CMOS: spin::Mutex<()> = spin::Mutex::new(());
+
     pub fn unix_seconds() -> Option<i64> {
+        let flags = crate::arch::irq_save();
+        crate::arch::irq_off();
+        let held = CMOS.lock();
+        let t = read_clock();
+        drop(held);
+        crate::arch::irq_restore(flags);
+        t
+    }
+
+    fn read_clock() -> Option<i64> {
         // UIP wait: keep this tiny. Under QEMU TCG each `in`/`out` is
         // expensive; the old 10_000-iteration spin dominated every
         // gettimeofday when UIP looked set (or when callers hammered us).
@@ -251,6 +265,10 @@ mod cmos {
             // QEMU usually sets century; fall back to 2000+.
             2000 + year as i64
         };
+        // A torn read (century or year caught mid-update) is no date.
+        if !(1970..2200).contains(&full_year) {
+            return None;
+        }
         Some(ymd_hms_to_unix(
             full_year,
             month as u32,

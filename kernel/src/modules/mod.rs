@@ -1206,8 +1206,8 @@ unsafe extern "C" fn api_task_yield() {
 
 unsafe extern "C" fn api_wall_time_us() -> u64 {
     match crate::time::timeval() {
-        Some((s, us)) => s as u64 * 1_000_000 + us as u64,
-        None => 0,
+        Some((s, us)) if s >= 0 => s as u64 * 1_000_000 + us as u64,
+        _ => 0,
     }
 }
 
