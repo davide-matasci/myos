@@ -58,19 +58,69 @@ int initgroups(const char *user, gid_t group) {
     return 0;
 }
 
+#define MYOS_HOSTNAME_FILE "/proc/sys/kernel/hostname"
+
+/* The kernel keeps the host name in /proc/sys/kernel/hostname ("myos" at
+ * boot); n bytes of it without the newline go to buf. */
+static int myos_hostname_read(char *buf, size_t size, size_t *n) {
+    int fd = open(MYOS_HOSTNAME_FILE, O_RDONLY);
+    ssize_t r;
+    if (fd < 0) {
+        return -1;
+    }
+    r = read(fd, buf, size);
+    close(fd);
+    if (r < 0) {
+        return -1;
+    }
+    while (r > 0 && buf[r - 1] == '\n') {
+        r--;
+    }
+    *n = (size_t)r;
+    return 0;
+}
+
 int gethostname(char *name, size_t len) {
-    const char *hn = "myos";
+    char hn[72];
     size_t n;
     if (name == NULL || len == 0) {
         errno = EINVAL;
         return -1;
     }
-    n = strlen(hn);
+    if (myos_hostname_read(hn, sizeof hn, &n) < 0) {
+        memcpy(hn, "myos", 4);
+        n = 4;
+    }
     if (n + 1 > len) {
         errno = ENAMETOOLONG;
         return -1;
     }
-    memcpy(name, hn, n + 1);
+    memcpy(name, hn, n);
+    name[n] = '\0';
+    return 0;
+}
+
+int sethostname(const char *name, size_t len) {
+    int fd;
+    ssize_t w;
+    if (name == NULL && len != 0) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (len > 64 || memchr(name, '\n', len) != NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if ((fd = open(MYOS_HOSTNAME_FILE, O_WRONLY | O_TRUNC)) < 0) {
+        return -1;
+    }
+    /* an empty name is written as its newline: a write of 0 bytes is none */
+    w = len != 0 ? write(fd, name, len) : write(fd, "\n", 1);
+    close(fd);
+    if (w < 0) {
+        errno = EINVAL;
+        return -1;
+    }
     return 0;
 }
 
@@ -316,7 +366,9 @@ int uname(struct utsname *buf) {
         return -1;
     }
     strncpy(buf->sysname, "myos", sizeof(buf->sysname));
-    strncpy(buf->nodename, "myos", sizeof(buf->nodename));
+    if (gethostname(buf->nodename, sizeof(buf->nodename)) < 0) {
+        strncpy(buf->nodename, "myos", sizeof(buf->nodename));
+    }
     strncpy(buf->release, "0.1", sizeof(buf->release));
     strncpy(buf->version, "myos", sizeof(buf->version));
     strncpy(buf->machine, "myos", sizeof(buf->machine));

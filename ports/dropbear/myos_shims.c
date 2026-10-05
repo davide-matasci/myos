@@ -40,20 +40,6 @@ int setresgid(gid_t rgid, gid_t egid, gid_t sgid) {
 	return setgid(egid);
 }
 
-/* --- syslog stubs: DROPBEAR_SYSLOG is 0, -E/-F log to stderr --- */
-void syslog(int priority, const char *format, ...) {
-	(void)priority;
-	(void)format;
-}
-
-void openlog(const char *ident, int logopt, int facility) {
-	(void)ident;
-	(void)logopt;
-	(void)facility;
-}
-
-void closelog(void) {}
-
 /* --- rlimit: dropbear only disables core dumps with it; myos has neither
  * limits nor cores --- */
 int getrlimit(int resource, struct rlimit *rlim) {

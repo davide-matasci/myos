@@ -30,3 +30,24 @@ sbase_touch() {
 	[ -n "$(/bin/sbase/find /tmp/tt2 -newer /tmp/tt1)" ] && rm /tmp/tt1 /tmp/tt2
 }
 t sbase_touch sbase_touch
+
+# The host name: hostname sets it (sethostname into the kernel's
+# /proc/sys/kernel/hostname), uname -n and the file show it.
+sbase_hostname() {
+	old=$(/bin/sbase/hostname) || return 1
+	/bin/sbase/hostname testhost || return 1
+	n=$(/bin/sbase/uname -n)
+	f=$(/bin/sbase/cat /proc/sys/kernel/hostname)
+	/bin/sbase/hostname "$old"
+	echo "uname -n: $n, file: $f, back: $(/bin/sbase/hostname)"
+	[ "$n" = testhost ] && [ "$f" = testhost ] && [ "$(/bin/sbase/hostname)" = "$old" ]
+}
+t sbase_hostname sbase_hostname
+
+# syslog: logger's message is a line on the console, and with -s on stderr.
+sbase_logger() {
+	out=$(/bin/sbase/logger -s -t tag hello 2>&1)
+	echo "logger: $out"
+	[ "$out" = "tag: hello" ]
+}
+t sbase_logger sbase_logger

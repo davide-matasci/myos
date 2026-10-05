@@ -81,7 +81,7 @@ done
 mkdir -p "$PORT/sys"
 cp "$ROOT"/toolchain/newlib/libgloss/myos/sys/*.h "$PORT/sys/"
 
-for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios ttyctl socket inet netdb pollselect pty search sleep uio pthread; do
+for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ getline dirent cwd basename dirname time pwdgrp readlink mmap mount fd_path termios ttyctl socket inet netdb pollselect pty search sleep uio pthread syslog; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
@@ -130,6 +130,8 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/sys/mman.h" "$inc/sys/mman.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/uio.h" "$inc/sys/uio.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/random.h" "$inc/sys/random.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/sys/utime.h" "$inc/sys/utime.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/sys/syslog.h" "$inc/sys/syslog.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/syslog.h" "$inc/syslog.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/utmp.h" "$inc/utmp.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
 mkdir -p "$inc/arpa" "$inc/netinet"
