@@ -165,7 +165,8 @@ t platform platform
 # first port and a memory stick behind the hub, the same FAT volume as
 # /dev/vda. The stick is enumerated on the USB thread after the modules
 # load, so the test waits for /dev/sda; /proc/usb lists the hub and the
-# stick with their drivers; the volume mounts and reads.
+# stick with their drivers, the stick's line naming its disk; the volume
+# mounts and reads.
 wait_for() {
 	n=$1
 	shift
@@ -179,7 +180,7 @@ usb_disk() {
 	wait_for 30 test -e /dev/sda || { cat /proc/usb; return 1; }
 	cat /proc/usb
 	grep -q ' hub ' /proc/usb || return 1
-	grep -q ':usb_storage' /proc/usb || return 1
+	grep -q ':usb_storage sda$' /proc/usb || return 1
 	mount /dev/sda /usb fat || return 1
 	[ "$(cat /usb/msg)" = fat-msg ]
 }
@@ -192,6 +193,7 @@ usb_hotplug() {
 	echo "HOST tests usb-plug" >&3
 	wait_for 30 test -e /dev/sdb || { cat /proc/usb; return 1; }
 	cat /proc/usb
+	grep -q 'port 2 super .*:usb_storage sdb$' /proc/usb || return 1
 	/bin/sbase/dd if=/dev/sdb of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
 	[ "$(/bin/coreutils/wc -c < /tmp/usb-sdb.bin)" -eq 512 ] || return 1
 	echo "HOST tests usb-unplug" >&3
