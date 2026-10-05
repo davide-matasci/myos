@@ -44,7 +44,13 @@ fetch() {
     exit 1
   fi
   rm -rf "$SRC/$name-$version"
-  tar -xf "$tarball" -C "$SRC"
+  if [[ "$tarball" == *.xz ]] && ! command -v xz >/dev/null 2>&1; then
+    # The CI image has python3 but no xz.
+    python3 -c 'import lzma, sys; sys.stdout.buffer.write(lzma.decompress(sys.stdin.buffer.read()))' \
+      < "$tarball" | tar -xf - -C "$SRC"
+  else
+    tar -xf "$tarball" -C "$SRC"
+  fi
 }
 
 fetch expat "$EXPAT_VERSION" "$EXPAT_SHA256" "$EXPAT_URL"

@@ -43,6 +43,8 @@ ENV CI=true \
 #   - git curl wget file patch bc ca-certificates python3: source fetch, SSL,
 #     checkout sync, wire-myos.py / port patching.
 #   - openssh-client: full-boot dropbear SSH smoke (host → guest via hostfwd).
+#   - xz-utils: .tar.xz upstream tarballs (fontconfig); the fetch scripts fall
+#     back to python3's lzma on an image without it.
 #   - e2fsprogs: the ext2 host tests and the boots' scratch-disk e2fsck.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -65,6 +67,7 @@ RUN apt-get update \
         sudo \
         ca-certificates \
         python3 \
+        xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root CI user with passwordless sudo (available for interactive debugging).
