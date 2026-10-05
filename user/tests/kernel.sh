@@ -1,7 +1,8 @@
 # The kernel's own tests: what has no port directory of its own. The exec
-# limits, #! scripts, and the Linux compatibility layer (docs/linux-compat.md): its
-# module is in every image and loaded at boot when the image was built with
-# the feature (`--features linux_compat`), with the musl test programs.
+# limits, #! scripts, the console's CR, and the Linux compatibility layer
+# (docs/linux-compat.md): its module is in every image and loaded at boot
+# when the image was built with the feature (`--features linux_compat`),
+# with the musl test programs.
 
 # exec limits: 40 arguments and a 711-byte environment string through oksh
 # (libgloss execve) into sbase programs.
@@ -217,6 +218,38 @@ isatty_fds() {
 	[ -t 0 ] && ! [ -t 1 ]
 }
 t isatty isatty_fds
+
+# CR on the screen goes back to the line's start, as a shell redrawing its
+# line needs (oksh on Up or Tab: CR, the prompt, the line). The top row's
+# first two 8x8 cells, read back from the framebuffer with the cursor moved
+# away (it blinks): "QQ" changes them, "QQ", CR and two spaces leaves them as
+# on a cleared screen (with the CR dropped the spaces would land after the
+# Qs).
+console_cells() {
+	printf '\033[H\033[J%b\033[10;1H' "$1" > /dev/console/data
+	for y in 0 1 2 3 4 5 6 7; do
+		dd if=/dev/fb/data bs=64 count=1 skip=$((y * pitch / 64)) 2> /dev/null
+	done | cksum
+}
+
+console_cr() {
+	read -r w h depth chan pitch mode < /dev/fb/ctl
+	# The console draws its text only on a framebuffer of at most 2 MiB
+	# (console::set_framebuffer: scrolling a bigger one is too slow under
+	# TCG); the bios and uefi boots' 1280x800 gets none.
+	if [ $((pitch * h)) -gt 2097152 ]; then
+		echo "no console text on a ${w}x${h} framebuffer: nothing to check"
+		return 0
+	fi
+	blank=$(console_cells '')
+	qq=$(console_cells 'QQ')
+	cr=$(console_cells 'QQ\r  ')
+	printf '\033[H\033[J\n' > /dev/console/data
+	echo "cleared: $blank; QQ: $qq; QQ, CR, spaces: $cr"
+	[ "$qq" != "$blank" ] || { echo "QQ did not reach the screen"; return 1; }
+	[ "$cr" = "$blank" ] || { echo "QQ, CR, spaces: the Qs are still there"; return 1; }
+}
+t console_cr console_cr
 
 linux_loaded() {
 	grep -q "^linux$" /proc/modules

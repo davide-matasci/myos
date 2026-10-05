@@ -77,9 +77,7 @@ unsafe extern "C" fn write_kind(buf: *const u8, len: usize, kind: u32) {
         CONSOLE_INFO => w.put_str_colored(text(buf, len), fb::DIM),
         _ => {
             for &b in bytes {
-                if b != b'\r' {
-                    w.put_byte(b);
-                }
+                w.put_byte(b);
             }
         }
     }
