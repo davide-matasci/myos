@@ -48,6 +48,48 @@ Gaps that may show up on the way:
   netfs writes, not root-caused): sessions are approximated along the
   parent chain (`kernel/src/pty.rs`).
 
+## Self-hosting speed: a shared page cache
+
+Building core+alloc inside myos (the first step of `linux-compat/self-host.sh`)
+takes ~1020 s under TCG with `-smp 4`; Alpine's Linux takes 591 s in the
+same QEMU (41 s natively). The kernel side is mostly gone (page faults,
+syscalls, disk reads: `/proc/cpuinfo`-style counters, not kept); what is
+left is rustc itself running ~1.7x slower. QEMU's `info jit` points at
+why: for the same build myos made it translate 2.6x more code and
+invalidate translated code 5x more often than Linux did.
+
+QEMU keeps translated code by physical address. Linux maps a shared
+library's pages from its page cache into every process, so rustc's
+`librustc_driver` is translated once for the whole build. myos copies each
+file page into a fresh frame on every fault (`user::fault_in`) and frees
+it at exit, so every rustc process gets its code translated again, and the
+freed frames, reused for data, invalidate what was translated in them.
+
+- **A page cache**: file pages kept in frames owned by the file (keyed by
+  mount + inode, or by the block cache's chunk when the file's blocks are
+  page-aligned), refcounted by the mappings that use them. A read-only or
+  private-not-yet-written mapping maps the cached frame itself; a write to
+  a private mapping copies it first (copy-on-write fault). Eviction only of
+  pages no mapping holds; the block cache (`kernel/src/blk/cache.rs`) can
+  shrink to what the page cache does not cover.
+- The same refcounted pages give `MAP_SHARED` of files and copy-on-write
+  `fork` (below and in "Passing file descriptors and shared memory").
+
+Smaller, measured on the way:
+
+- **fork copies everything**: `fork` (and posix_spawn's `fork_from`) copies
+  the whole image, heap and touched mmap pages at once; cargo spawning
+  rustc copies cargo each time. Copy-on-write, or a spawn that maps nothing
+  of the parent's, would make it cheap.
+- **Fault-around**: a fault maps one page; mapping the cached neighbours of
+  a file page at once (Linux maps 16) cuts the 900k faults of the build.
+- **NVMe moves a page per command** (`modules/nvme`: one PRP); with a PRP
+  list a run of blocks is one command, and the block cache could read
+  ahead.
+- **The 1 kHz tick** runs on every CPU, idle ones too (each takes the
+  scheduler lock); a tickless idle CPU would leave QEMU's vCPU thread
+  asleep.
+
 ## riscv64 soft-float: sbase's double helpers are wrong
 
 `ports/sbase/riscv64-softfloat.c` implements riscv64's (no FPU) double
@@ -112,8 +154,9 @@ the scan out of the hot path once the task table grows.
 
 ## Idle-pull load balancing
 
-User tasks are pinned to a home CPU chosen round-robin at spawn/fork (the
-pinning is what keeps TLB flushes local). An idle CPU could steal a Ready task
+User tasks are pinned to a home CPU chosen round-robin at spawn/fork, and
+threads at their creation (an address space loaded on several CPUs is
+flushed on all of them: `user::flush_user_tlb`). An idle CPU could steal a Ready task
 whose home CPU is busy; needs a cross-CPU TLB shootdown on migration and the
 NX #PF / leave races noted in `docs/pci-acpi-smp.md` resolved first.
 
