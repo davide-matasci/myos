@@ -45,6 +45,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         73 => ret(sys::ppoll(a[0], a[1], a[2])),
         78 => ret(sys::readlinkat(a[0], a[1], a[2], a[3])),
         79 => ret(sys::fstatat(a[0], a[1], a[2], a[3])), // newfstatat
+        88 => ret(sys::utimensat(a[0], a[1], a[2], a[3])),
         80 => ret(sys::fstat(a[0], a[1])),
         82 | 83 => ret(sys::fd_noop(a[0])), // fsync, fdatasync
         93 => thread::exit(a[0]),
@@ -110,9 +111,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     }
 }
 
-/// The `asm-generic` `struct stat` (128 bytes); `mtime` stands for all
-/// three times.
-pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64, mtime: u64) -> [u8; 128] {
+/// The `asm-generic` `struct stat` (128 bytes); `ctime` is the
+/// modification time.
+pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64, atime: u64, mtime: u64) -> [u8; 128] {
     let mut b = [0u8; 128];
     let mut put = |off: usize, v: &[u8]| b[off..off + v.len()].copy_from_slice(v);
     put(0, &dev.to_le_bytes());
@@ -123,9 +124,9 @@ pub fn stat_bytes(mode: u32, size: u64, ino: u64, nlink: u64, dev: u64, mtime: u
     put(48, &size.to_le_bytes());
     put(56, &4096u32.to_le_bytes()); // st_blksize
     put(64, &size.div_ceil(512).to_le_bytes()); // st_blocks
-    for off in [72, 88, 104] {
-        put(off, &mtime.to_le_bytes()); // st_atime, st_mtime, st_ctime
-    }
+    put(72, &atime.to_le_bytes()); // st_atime
+    put(88, &mtime.to_le_bytes()); // st_mtime
+    put(104, &mtime.to_le_bytes()); // st_ctime: the modification time
     b
 }
 
