@@ -459,21 +459,29 @@ fn sys_rmmod(ptr: usize, name_len: usize) -> usize {
 pub(crate) fn open_path(path: &str, flags: usize) -> usize {
     let tree = fs::vfs::hold_read();
     match resolve_copied_path(path) {
-        Some(real) => open_real(real, flags, tree),
+        Some(real) => open_real(real, None, flags, tree),
         None => SYSERR,
     }
 }
 
 /// Open the file at `path` (real, resolved) for the caller, with the tree
-/// held since it was resolved (`tree`; let go before a wait).
-pub(super) fn open_real(path: alloc::string::String, flags: usize, tree: fs::vfs::TreeGuard) -> usize {
+/// held since it was resolved (`tree`; let go before a wait). `cap`: the
+/// rights of the directory fd it was found beneath, for a file the
+/// caller's namespace cannot name (see `at`); the new fd grants them too.
+pub(super) fn open_real(
+    path: alloc::string::String,
+    cap: Option<Rights>,
+    flags: usize,
+    tree: fs::vfs::TreeGuard,
+) -> usize {
     // A new file needs `create` (and what it is opened for) on the label
     // its path gives it.
     let mut need = open_rights(flags as u32);
     if flags as u32 & O_CREAT != 0 && fs::stat(&path).is_none() {
         need = need | Rights::CREATE;
     }
-    if !may(&path, need) {
+    let rights = cap.unwrap_or_else(|| task::ns_rights(&path));
+    if !crate::sec::allowed_in(&path, need, rights) {
         return SYSERR;
     }
     // The pty ends (docs/tty.md): /dev/pts/clone allocates a pair and
@@ -515,7 +523,7 @@ pub(super) fn open_real(path: alloc::string::String, flags: usize, tree: fs::vfs
     let Some(node) = fs::open(&path, flags as u32) else {
         return SYSERR;
     };
-    match task::fd_open(node, flags as u32) {
+    match task::fd_open(node, flags as u32, rights) {
         Some(fd) => fd,
         None => SYSERR,
     }

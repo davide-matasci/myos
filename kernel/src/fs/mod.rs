@@ -360,6 +360,62 @@ fn follow_symlinks(virt: &mut [u8; vfs::PATH_MAX], mut vn: usize, follow_last: b
     Some(vn)
 }
 
+/// The real path `path` (relative) names beneath the real directory
+/// `base`, symlinks followed (the last component only if `follow_last`),
+/// without ever leaving `base`: a `..` above it, an absolute symlink target
+/// or a relative one leading out fails the walk (a directory fd its
+/// holder's namespace cannot name, `user::at`).
+pub fn resolve_beneath(base: &str, path: &str, follow_last: bool) -> Option<alloc::string::String> {
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    if path.starts_with('/') {
+        return None;
+    }
+    // The components below `base` walked so far (link-free), and the ones
+    // still to walk, the next last.
+    let mut done: Vec<String> = Vec::new();
+    let mut todo: Vec<String> = path.rsplit('/').map(String::from).collect();
+    let mut hops = 0;
+    let joined = |done: &[String]| {
+        let mut real = String::from(base.trim_end_matches('/'));
+        for c in done {
+            real.push('/');
+            real.push_str(c);
+        }
+        if real.is_empty() {
+            real.push('/');
+        }
+        real
+    };
+    while let Some(c) = todo.pop() {
+        match c.as_str() {
+            "" | "." => continue,
+            ".." => {
+                done.pop()?;
+                continue;
+            }
+            _ => done.push(c),
+        }
+        if todo.is_empty() && !follow_last {
+            continue;
+        }
+        let mut target = [0u8; vfs::PATH_MAX];
+        let Some(tn) = vfs::readlink(&joined(&done), &mut target) else {
+            continue;
+        };
+        hops += 1;
+        let target = core::str::from_utf8(&target[..tn]).ok()?;
+        if hops > MAX_SYMLINKS || target.is_empty() || target.starts_with('/') {
+            return None;
+        }
+        // The target replaces the link, relative to the directory holding it.
+        done.pop();
+        todo.extend(target.rsplit('/').map(String::from));
+    }
+    let real = joined(&done);
+    (real.len() <= vfs::PATH_MAX).then_some(real)
+}
+
 fn reject_mkdir(_path: &str) -> bool {
     false
 }

@@ -75,44 +75,106 @@ fn user_path(ptr: usize, len: usize) -> Option<String> {
     core::str::from_utf8(&buf[..len]).ok().map(String::from)
 }
 
-/// The directory `dirfd` is open on, in the caller's view of the tree
-/// (`None`: [`AT_FDCWD`], the cwd). `Err` when it is no directory, or one
-/// the caller's namespace does not name.
-fn base(dirfd: usize) -> Result<Option<String>, ()> {
+/// Where a path relative to a directory fd starts.
+enum Base {
+    /// [`AT_FDCWD`]: the cwd.
+    Cwd,
+    /// A directory the caller's namespace names: its path in that view.
+    Named(String),
+    /// One it does not name (the fd came from a process that could, or
+    /// from before a `ns`): a capability. Its real path, and the rights the
+    /// fd grants beneath it; paths resolve beneath it only.
+    Cap(String, Rights),
+}
+
+/// Where `dirfd` starts a relative path; `Err` when it is no directory (or
+/// one unlinked since).
+fn base(dirfd: usize) -> Result<Base, ()> {
     if dirfd == AT_FDCWD {
-        return Ok(None);
+        return Ok(Base::Cwd);
     }
     let node = task::fd_file_node(dirfd).ok_or(())?;
     if fs::vfs::stat_node(&node).is_none_or(|st| st.mode & fs::S_IFMT != S_IFDIR) {
         return Err(());
     }
     let real = fs::vfs::node_path(&node).ok_or(())?;
-    task::with_ns(|ns| match ns {
-        None => Some(real),
+    let virt = task::with_ns(|ns| match ns {
+        None => Some(real.clone()),
         Some(ns) => ns.to_virtual(&real),
-    })
-    .map(Some)
-    .ok_or(())
+    });
+    match virt {
+        Some(virt) => Ok(Base::Named(virt)),
+        None => Ok(Base::Cap(real, task::fd_rights(dirfd).ok_or(())?)),
+    }
 }
 
-/// `path` relative to `dirfd`, as an absolute path in the caller's view.
+/// `path` relative to `dirfd`, as an absolute path in the caller's view
+/// (`None` beneath a capability: it has no name there).
 fn virtual_at(dirfd: usize, path: &str) -> Option<String> {
-    let dir = if path.starts_with('/') { None } else { base(dirfd).ok()? };
+    let dir = match path.starts_with('/') {
+        true => None,
+        false => match base(dirfd).ok()? {
+            Base::Cwd => None,
+            Base::Named(dir) => Some(dir),
+            Base::Cap(..) => return None,
+        },
+    };
     let mut out = [0u8; MAX_PATH];
     let n = fs::resolve_user_path_virtual(dir.as_deref(), path, &mut out)?;
     core::str::from_utf8(&out[..n]).ok().map(String::from)
 }
 
-/// The real path `path` names relative to `dirfd`, symlinks followed (in
-/// the last component only if `follow`).
-fn resolve(dirfd: usize, path: &str, follow: bool) -> Option<String> {
+/// A file a path names: its real path, and the rights the caller has on it
+/// before the policy's.
+struct Found {
+    real: String,
+    /// The capability's rights when it was found beneath one ([`Base::Cap`]),
+    /// else `None`: the namespace's.
+    cap: Option<Rights>,
+}
+
+impl Found {
+    fn ns_rights(&self) -> Rights {
+        self.cap.unwrap_or_else(|| task::ns_rights(&self.real))
+    }
+
+    /// May the caller do `need` to the file (`may`, with a capability's
+    /// rights in place of the namespace's)?
+    fn may(&self, need: Rights) -> bool {
+        crate::sec::allowed_in(&self.real, need, self.ns_rights())
+    }
+}
+
+/// The file `path` names relative to `dirfd`, symlinks followed (in the
+/// last component only if `follow`).
+fn resolve(dirfd: usize, path: &str, follow: bool) -> Option<Found> {
     if path.is_empty() {
         return None;
     }
-    let dir = if path.starts_with('/') { None } else { base(dirfd).ok()? };
+    let dir = match path.starts_with('/') {
+        true => None,
+        false => match base(dirfd).ok()? {
+            Base::Cwd => None,
+            Base::Named(dir) => Some(dir),
+            Base::Cap(real, rights) => {
+                let real = fs::resolve_beneath(&real, path, follow)?;
+                return Some(Found { real, cap: Some(rights) });
+            }
+        },
+    };
     let mut out = [0u8; MAX_PATH];
     let n = fs::resolve_user_path_at(dir.as_deref(), path, &mut out, follow)?;
-    core::str::from_utf8(&out[..n]).ok().map(String::from)
+    let real = core::str::from_utf8(&out[..n]).ok().map(String::from)?;
+    Some(Found { real, cap: None })
+}
+
+/// The file open `fd` is on, with the rights it grants (its own, see
+/// `OpenFile::rights`); `None` for one unlinked.
+fn fd_found(fd: usize) -> Option<(fs::Vnode, Found)> {
+    let node = task::fd_file_node(fd)?;
+    let real = fs::vfs::node_path(&node)?;
+    let cap = Some(task::fd_rights(fd)?);
+    Some((node, Found { real, cap }))
 }
 
 /// The file an empty path with [`AT_EMPTY_PATH`] names: `fd`'s.
@@ -126,7 +188,7 @@ pub(super) fn sys_openat(dirfd: usize, ptr: usize, len: usize, flags: usize) -> 
     };
     let tree = fs::vfs::hold_read();
     match resolve(dirfd, &path, true) {
-        Some(real) => open_real(real, flags, tree),
+        Some(f) => open_real(f.real, f.cap, flags, tree),
         None => SYSERR,
     }
 }
@@ -165,10 +227,10 @@ impl MyosStat {
     }
 }
 
-/// The type and the caller's rights on `real` as `stat` mode bits.
-fn checked_mode(real: &str, mode: u32) -> u32 {
+/// The type and the caller's rights on `f` as `stat` mode bits.
+fn checked_mode(f: &Found, mode: u32) -> u32 {
     let is_dir = mode & fs::S_IFMT == S_IFDIR;
-    (mode & !0o777) | crate::sec::mode_bits(real, is_dir)
+    (mode & !0o777) | crate::sec::mode_bits_in(&f.real, is_dir, f.ns_rights())
 }
 
 /// `stat` of open `fd`: a terminal or pipe has no file of its own; a file
@@ -181,10 +243,10 @@ fn stat_fd(fd: usize) -> Option<MyosStat> {
         task::FdKind::File { .. } => {
             let node = task::fd_file_node(fd)?;
             let mut info = fs::vfs::stat_node(&node)?;
-            let uid = match fs::vfs::node_path(&node) {
-                Some(real) => {
-                    info.mode = checked_mode(&real, info.mode);
-                    crate::sec::owner_uid(&real)
+            let uid = match fd_found(fd) {
+                Some((_, f)) => {
+                    info.mode = checked_mode(&f, info.mode);
+                    crate::sec::owner_uid(&f.real)
                 }
                 // Unlinked: what the fd was opened for.
                 None => {
@@ -208,14 +270,14 @@ pub(super) fn sys_statat(dirfd: usize, ptr: usize, len: usize, flags: usize, out
         stat_fd(dirfd)
     } else {
         let _tree = fs::vfs::hold_read();
-        resolve(dirfd, &path, flags & AT_SYMLINK_NOFOLLOW == 0).and_then(|real| {
+        resolve(dirfd, &path, flags & AT_SYMLINK_NOFOLLOW == 0).and_then(|f| {
             // A file the caller has no right at all on is not there for it.
-            if crate::sec::rights_on(&real).is_empty() {
+            if crate::sec::rights_in(&f.real, f.ns_rights()).is_empty() {
                 return None;
             }
-            let mut info = fs::stat(&real)?;
-            info.mode = checked_mode(&real, info.mode);
-            Some(MyosStat::new(&info, crate::sec::owner_uid(&real)))
+            let mut info = fs::stat(&f.real)?;
+            info.mode = checked_mode(&f, info.mode);
+            Some(MyosStat::new(&info, crate::sec::owner_uid(&f.real)))
         })
     };
     let Some(st) = st else {
@@ -232,15 +294,15 @@ pub(super) fn sys_mknodat(dirfd: usize, ptr: usize, len: usize, kind: usize) -> 
         return SYSERR;
     };
     let _tree = fs::vfs::hold_read();
-    let Some(real) = resolve(dirfd, &path, false) else {
+    let Some(f) = resolve(dirfd, &path, false) else {
         return SYSERR;
     };
-    if fs::stat(&real).is_some() || !may(&real, Rights::CREATE) {
+    if fs::stat(&f.real).is_some() || !f.may(Rights::CREATE) {
         return SYSERR;
     }
     let made = match kind {
-        MKNOD_DIR => fs::mkdir(&real),
-        MKNOD_FIFO => fs::vfs::mkfifo(&real),
+        MKNOD_DIR => fs::mkdir(&f.real),
+        MKNOD_FIFO => fs::vfs::mkfifo(&f.real),
         _ => false,
     };
     if made { 0 } else { SYSERR }
@@ -255,10 +317,10 @@ pub(super) fn sys_symlinkat(target_ptr: usize, target_len: usize, dirfd: usize, 
         return SYSERR;
     }
     let _tree = fs::vfs::hold_read();
-    let Some(real) = resolve(dirfd, &path, false) else {
+    let Some(f) = resolve(dirfd, &path, false) else {
         return SYSERR;
     };
-    if may(&real, Rights::CREATE) && fs::symlink(&target, &real) { 0 } else { SYSERR }
+    if f.may(Rights::CREATE) && fs::symlink(&target, &f.real) { 0 } else { SYSERR }
 }
 
 pub(super) fn sys_unlinkat(dirfd: usize, ptr: usize, len: usize, flags: usize) -> usize {
@@ -266,13 +328,13 @@ pub(super) fn sys_unlinkat(dirfd: usize, ptr: usize, len: usize, flags: usize) -
         return SYSERR;
     };
     let _tree = fs::vfs::hold_write();
-    let Some(real) = resolve(dirfd, &path, false) else {
+    let Some(f) = resolve(dirfd, &path, false) else {
         return SYSERR;
     };
-    if !may(&real, Rights::REMOVE) {
+    if !f.may(Rights::REMOVE) {
         return SYSERR;
     }
-    let removed = if flags & AT_REMOVEDIR != 0 { fs::rmdir(&real) } else { fs::unlink(&real) };
+    let removed = if flags & AT_REMOVEDIR != 0 { fs::rmdir(&f.real) } else { fs::unlink(&f.real) };
     if removed { 0 } else { SYSERR }
 }
 
@@ -293,11 +355,11 @@ pub(super) fn sys_renameat(
     };
     // A move removes the old name and creates the new one (replacing a file
     // there removes it too).
-    let replaced = fs::stat(&new).is_some();
-    if !may(&old, Rights::REMOVE) || !may(&new, if replaced { Rights::CREATE | Rights::REMOVE } else { Rights::CREATE }) {
+    let replaced = fs::stat(&new.real).is_some();
+    if !old.may(Rights::REMOVE) || !new.may(if replaced { Rights::CREATE | Rights::REMOVE } else { Rights::CREATE }) {
         return SYSERR;
     }
-    if fs::rename(&old, &new) { 0 } else { SYSERR }
+    if fs::rename(&old.real, &new.real) { 0 } else { SYSERR }
 }
 
 pub(super) fn sys_readlinkat(dirfd: usize, ptr: usize, len: usize, buf: usize, size: usize) -> usize {
@@ -310,14 +372,14 @@ pub(super) fn sys_readlinkat(dirfd: usize, ptr: usize, len: usize, buf: usize, s
     let mut target = [0u8; MAX_PATH];
     let n = {
         let _tree = fs::vfs::hold_read();
-        let Some(real) = resolve(dirfd, &path, false) else {
+        let Some(f) = resolve(dirfd, &path, false) else {
             return SYSERR;
         };
-        if !may(&real, Rights::READ) {
+        if !f.may(Rights::READ) {
             return SYSERR;
         }
         let cap = size.min(target.len());
-        match fs::readlink(&real, &mut target[..cap]) {
+        match fs::readlink(&f.real, &mut target[..cap]) {
             Some(n) => n,
             None => return SYSERR,
         }
@@ -349,16 +411,15 @@ pub(super) fn sys_utimensat(dirfd: usize, ptr: usize, len: usize, times: usize, 
     };
     let _tree = fs::vfs::hold_read();
     if empty_path(&path, flags) {
-        let Some(node) = task::fd_file_node(dirfd) else {
+        let Some((node, f)) = fd_found(dirfd) else {
             return SYSERR;
         };
-        let real = fs::vfs::vnode_path(&node);
-        return if may(&real, Rights::SETATTR) && fs::set_times_node(&node, atime, mtime) { 0 } else { SYSERR };
+        return if f.may(Rights::SETATTR) && fs::set_times_node(&node, atime, mtime) { 0 } else { SYSERR };
     }
-    let Some(real) = resolve(dirfd, &path, flags & AT_SYMLINK_NOFOLLOW == 0) else {
+    let Some(f) = resolve(dirfd, &path, flags & AT_SYMLINK_NOFOLLOW == 0) else {
         return SYSERR;
     };
-    if may(&real, Rights::SETATTR) && fs::set_times(&real, atime, mtime) { 0 } else { SYSERR }
+    if f.may(Rights::SETATTR) && fs::set_times(&f.real, atime, mtime) { 0 } else { SYSERR }
 }
 
 pub(super) fn sys_chdirat(dirfd: usize, ptr: usize, len: usize, flags: usize) -> usize {
@@ -370,25 +431,24 @@ pub(super) fn sys_chdirat(dirfd: usize, ptr: usize, len: usize, flags: usize) ->
 
 /// `chdirat` of a path already in kernel memory: the cwd becomes the
 /// directory's node, which it follows wherever it moves, or a directory
-/// the caller's namespace makes up.
+/// the caller's namespace makes up. The cwd has a name in the caller's
+/// view: a directory beneath a capability cannot be it.
 pub(super) fn chdir_at(dirfd: usize, path: &str, flags: usize) -> usize {
     let _tree = fs::vfs::hold_read();
-    let (real, node) = if empty_path(path, flags) {
-        let Some(node) = task::fd_file_node(dirfd) else {
+    let (f, node) = if empty_path(path, flags) {
+        let Some((node, f)) = fd_found(dirfd) else {
             return SYSERR;
         };
-        let Some(real) = fs::vfs::node_path(&node) else {
-            return SYSERR;
-        };
-        (real, Some(node))
+        (f, Some(node))
     } else {
-        let Some(real) = resolve(dirfd, path, true) else {
+        let Some(f) = resolve(dirfd, path, true) else {
             return SYSERR;
         };
-        let node = if real.starts_with('@') { None } else { fs::open(&real, 0) };
-        (real, node)
+        let node = if f.real.starts_with('@') { None } else { fs::open(&f.real, 0) };
+        (f, node)
     };
-    if !may(&real, Rights::READ) || fs::stat(&real).is_none_or(|st| st.mode & fs::S_IFMT != S_IFDIR) {
+    let real = &f.real;
+    if !f.may(Rights::READ) || fs::stat(real).is_none_or(|st| st.mode & fs::S_IFMT != S_IFDIR) {
         return SYSERR;
     }
     if node.is_none() && !real.starts_with('@') {
@@ -398,7 +458,7 @@ pub(super) fn chdir_at(dirfd: usize, path: &str, flags: usize) -> usize {
     let virt = match &node {
         Some(_) => task::with_ns(|ns| match ns {
             None => Some(real.clone()),
-            Some(ns) => ns.to_virtual(&real),
+            Some(ns) => ns.to_virtual(real),
         }),
         None => Some(String::from(&real[1..])),
     };
@@ -419,18 +479,14 @@ pub(super) fn sys_listdirat(dirfd: usize, ptr: usize, len: usize, buf: usize, ca
     let mut names = alloc::vec![0u8; cap];
     let n = {
         let _tree = fs::vfs::hold_read();
-        let real = if empty_path(&path, flags) {
-            task::fd_file_node(dirfd).and_then(|node| fs::vfs::node_path(&node))
-        } else {
-            resolve(dirfd, &path, true)
-        };
-        let Some(real) = real else {
+        let f = if empty_path(&path, flags) { fd_found(dirfd).map(|(_, f)| f) } else { resolve(dirfd, &path, true) };
+        let Some(f) = f else {
             return SYSERR;
         };
-        if !may(&real, Rights::READ) {
+        if !f.may(Rights::READ) {
             return SYSERR;
         }
-        fs::listdir(&real, &mut names).min(cap)
+        fs::listdir(&f.real, &mut names).min(cap)
     };
     if write_user_bytes(task::current_aspace(), buf, &names[..n]) { n } else { SYSERR }
 }

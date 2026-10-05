@@ -109,10 +109,15 @@ fn synthetic(real: &str) -> bool {
 /// What the current process may do to the file at `real` (a real path):
 /// the policy's rights narrowed by its namespace.
 pub fn rights_on(real: &str) -> Rights {
+    rights_in(real, crate::task::ns_rights(real))
+}
+
+/// [`rights_on`] with the namespace's rights replaced by `ns` (those of a
+/// directory fd the file was found beneath, `user::at`).
+pub fn rights_in(real: &str, ns: Rights) -> Rights {
     if synthetic(real) {
         return Rights::READ;
     }
-    let ns = crate::task::ns_rights(real);
     match current() {
         None => ns,
         Some((p, u, d)) => p.rights(u, d, &p.label_of(&canonical(real))) & ns,
@@ -123,10 +128,16 @@ pub fn rights_on(real: &str) -> Rights {
 /// the policy is logged (and let through in permissive mode); one by the
 /// namespace is not: the process cannot name the file.
 pub fn allowed(real: &str, need: Rights) -> bool {
+    allowed_in(real, need, crate::task::ns_rights(real))
+}
+
+/// [`allowed`] with the namespace's rights replaced by `ns` (those of a
+/// directory fd the file was found beneath, `user::at`).
+pub fn allowed_in(real: &str, need: Rights, ns: Rights) -> bool {
     if synthetic(real) {
         return Rights::READ.contains(need);
     }
-    if !crate::task::ns_rights(real).contains(need) {
+    if !ns.contains(need) {
         return false;
     }
     let Some((p, u, d)) = current() else {
@@ -223,7 +234,12 @@ pub fn exec_ctx(real: &str) -> Option<Ctx> {
 /// current process may do (`r` read, `w` write, `x` exec, or for a
 /// directory read), the group's and others' are clear.
 pub fn mode_bits(real: &str, is_dir: bool) -> u32 {
-    let r = rights_on(real);
+    mode_bits_in(real, is_dir, crate::task::ns_rights(real))
+}
+
+/// [`mode_bits`] with the namespace's rights replaced by `ns`.
+pub fn mode_bits_in(real: &str, is_dir: bool, ns: Rights) -> u32 {
+    let r = rights_in(real, ns);
     let mut m = 0;
     if r.contains(Rights::READ) {
         m |= 0o400;

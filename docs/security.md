@@ -98,7 +98,9 @@ exec /bin/custom/netd -> netd
 
 An fd keeps the access it was opened with: passing it to another process
 (inheritance, a namespace that cannot name the file) is a deliberate grant,
-not checked again.
+not checked again. A call on an fd's own file (`futimens`, `fdopendir`,
+`fstat`'s permission bits) checks the policy against the rights its
+opener's namespace had there, not the caller's.
 
 `stat` shows what the caller may do: the owner's permission bits are
 `r` (read), `w` (write, or create in a directory), `x` (exec, or read for a
@@ -163,6 +165,17 @@ sec ns /bin:read,exec /lib:read /dev/sda:read,write -- B
   name has no link to re-open.
 - A file handed over as an open fd (`sec ns ... -- B < /dev/sdb`) works:
   the fd is the grant.
+- A directory handed over as an open fd that the namespace cannot name is
+  a **capability** (`sec ns ... -- B 3< /srv/data`): the `*at` calls on it
+  (`openat(3, "x/y", ...)`, `mkdirat`, `unlinkat`, `renameat`, ...) work
+  beneath it, with the rights its opener's namespace had on the directory
+  when it was opened (all of them without a namespace) in place of the
+  namespace's, and the policy still applies. Paths stay beneath it: `..`
+  above it, an absolute path, an absolute symlink target or a relative one
+  leading out fails. A directory opened beneath it is a capability with the
+  same rights, beneath which the same holds. It has no name in the
+  holder's view, so it cannot be the cwd (`fchdir` fails) nor hold a
+  program to exec.
 
 ## Limits
 
