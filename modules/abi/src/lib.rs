@@ -18,7 +18,8 @@
 /// 24 added `mtime` to [`VfsStatInfo`] and [`PathStat`].
 /// 25 added `atime` to both, [`ModuleVfsOps::set_times`] and
 /// [`KernelApi::vfs_set_times`] (`utimensat`).
-pub const ABI_VERSION: u32 = 25;
+/// 26 added [`ModuleVfsOps::unmount`] (`umount(2)`).
+pub const ABI_VERSION: u32 = 26;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -149,6 +150,11 @@ pub struct ModuleVfsOps {
     /// since the epoch ([`MYOS_TIME_OMIT`] keeps one): 0, or negative.
     /// Without it the mount's times cannot be set.
     pub set_times: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, atime: u64, mtime: u64) -> i32>,
+    // --- ABI 26: unmount ---
+    /// Optional: `umount(2)` detached this mount (no file on it is open):
+    /// write back what is cached and forget the filesystem. The hooks are
+    /// not called for it again.
+    pub unmount: Option<unsafe extern "C" fn()>,
 }
 
 /// [`ModuleVfsOps::read`]: nothing to read yet. A read through an fd waits

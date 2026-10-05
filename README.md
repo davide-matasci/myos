@@ -176,7 +176,8 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `user/echo/cat/ls` | Bootfs demos (`/myos_echo`, `/myos_cat`, `/myos_ls`) |
 | `user/std` | The Rust `std` demo programs (`/bin/std/{hello,cat,echo,bigalloc}`) |
 | `user/get-myos` | `get-myos`: installs packages (ports the image does not carry) from a mirror, `docs/packages.md` |
-| `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` (`mount SRC TARGET FSTYPE`, `bind` for a bind mount) |
+| `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` (`mount SRC TARGET FSTYPE`, `bind` for a bind mount); says why a mount failed |
+| `user/umount` | `umount DIR` detaches the disk mounted there (`SYS_UMOUNT`) |
 | `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, curl, dropbear, ...), one `port.env` descriptor each (`docs/ports.md`) |
 | `packages/` | Ports CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu; `get-myos NAME` installs them, `docs/packages.md`); moving a directory here (or back to `ports/`) is the whole change |
 | `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters |
@@ -258,6 +259,7 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 ## VFS & Filesystems (Summary)
 
 - **VFS** — mount table with longest-prefix routing and bind mounts (`mount SRC TARGET bind`: a directory or file seen at a second place too, the target need not exist; `get-myos` installs packages this way); `vfs::mounts_text()` exports `/proc/mounts`
+- **Mounting a disk** — `mount /dev/sda /mnt ext2`: the target is any existing directory that is not a mount point yet, at the top level (`/mnt`, an empty directory of the image) or anywhere below (`mkdir /tmp/usb`); a disk is mounted once. `umount DIR` gives the directory back once no file on the disk is open and nothing is mounted below it, after the filesystem's `unmount` hook wrote back what it caches (ext2). A directory a mount hangs from can be neither renamed nor removed. The kernel's own trees (`/bin`, `/lib`, `/tmp`, `/dev`, `/proc`) cannot be unmounted
 - **bootfs** — read-only embedded namespace at `/`; Limine ESP modules override; demos use `myos_` prefix
 - **procfs** — `/proc/mounts` (generated, not stored bytes)
 - **tmpfs/devfs** — writable mount for `O_CREAT`; device nodes
@@ -286,7 +288,7 @@ unsafe extern "C" fn module_exit()   // optional: run by rmmod
 unsafe extern "C" fn module_rescan() // optional: probe for new devices after a /proc/pci rescan
 ```
 
-`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v25 (append-only; v25 added file times, a filesystem's `set_times` hook and `vfs_set_times`; v21 added `blk_unregister`, the service registry (`service_register` / `service_lookup`) modules reach each other through, module threads (`thread_spawn`), `wake` and the USB bus types, `docs/usb.md`; v19 took `ioctl` out, v20 added the `open` hook that makes a file exclusive, `/dev/console/kbd`). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices: the directory `/dev/<name>/` with `data` and an optional text `ctl`, and a `poll` hook for `data`'s readiness), `fs_register` / `vfs_mount` (filesystems; a backend's optional `mmap` hook maps device memory, `docs/fb.md`, and its `poll` hook reports readiness for `poll`), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
+`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v26 (append-only; v26 added a filesystem's `unmount` hook (`umount`); v25 added file times, a filesystem's `set_times` hook and `vfs_set_times`; v21 added `blk_unregister`, the service registry (`service_register` / `service_lookup`) modules reach each other through, module threads (`thread_spawn`), `wake` and the USB bus types, `docs/usb.md`; v19 took `ioctl` out, v20 added the `open` hook that makes a file exclusive, `/dev/console/kbd`). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices: the directory `/dev/<name>/` with `data` and an optional text `ctl`, and a `poll` hook for `data`'s readiness), `fs_register` / `vfs_mount` (filesystems; a backend's optional `mmap` hook maps device memory, `docs/fb.md`, and its `poll` hook reports readiness for `poll`), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
 
 ### Adding a module
 1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)

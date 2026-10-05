@@ -308,6 +308,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         Some(b"#!/bin/sh\nexec \"$@\"\n".to_vec()),
     );
     add(&mut entries, "usr/lib/.keep", Some(b"\n".to_vec()));
+    // /mnt: a directory to mount a disk on (mount(2) wants an existing one).
+    add(&mut entries, "mnt/.keep", Some(b"\n".to_vec()));
 
     // The `linux` launcher of the Linux compatibility layer (native, always
     // shipped: with the module loaded, `linux PROGRAM` works in any build).

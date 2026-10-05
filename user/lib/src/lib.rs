@@ -334,7 +334,9 @@ pub fn rmmod(name: &[u8]) -> bool {
     unsafe { sys3(59, buf.as_ptr() as usize, n, 0) != usize::MAX }
 }
 
-/// Mount `src` (a `/dev/vd*` node) at `tgt` using `fstype` (`fat`).
+/// Mount `src` (a block device, `/dev/vda`) at `tgt`, an existing directory
+/// that is not a mount point yet, using `fstype` (`fat`, `ext2`); `bind`
+/// makes `src` visible at `tgt` too.
 pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
     const CAP: usize = 128;
     let mut src_buf = [0u8; CAP];
@@ -356,6 +358,28 @@ pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
     unsafe { sys3(27, pack.as_ptr() as usize, 0, 0) != usize::MAX }
 }
 
+
+/// Detach the block-device mount at `path` (`SYS_UMOUNT` = 64): false when
+/// nothing that can be unmounted is mounted there, or it is busy.
+pub fn umount(path: &[u8]) -> bool {
+    let mut buf = [0u8; 128];
+    let n = copy_exec_bytes(&mut buf, path);
+    if n == 0 {
+        return false;
+    }
+    unsafe { sys3(64, buf.as_ptr() as usize, n, 0) != usize::MAX }
+}
+
+/// The mode bits of `path` (`SYS_STAT` = 12, a symlink not followed), or
+/// `None` when it does not exist.
+pub fn stat_mode(path: &[u8]) -> Option<u32> {
+    let mut buf = [0u8; 128];
+    let n = copy_exec_bytes(&mut buf, path);
+    // st_mode, st_size, st_ino, st_nlink, st_dev
+    let mut out = [0u32; 5];
+    let ret = unsafe { sys3(12, buf.as_ptr() as usize, n, out.as_mut_ptr() as usize) };
+    (ret != usize::MAX).then_some(out[0])
+}
 
 /// Wall-clock time (`SYS_GETTIMEOFDAY` = 33). Returns `(sec, usec)` or `None`.
 pub fn gettimeofday() -> Option<(i64, i64)> {

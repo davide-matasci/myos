@@ -8,7 +8,8 @@ use alloc::vec::Vec;
 use myos_user::{
     Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SIGTERM, close, exec, exit, exit_code, fork,
     heap_init, kill, listdir, mkdir, mount, open, open_flags, pipe, read, readlink, rename,
-    rmdir, status_fail, status_ok, status_warn, symlink, unlink, wait_status, write_fd,
+    rmdir, stat_mode, status_fail, status_ok, status_warn, symlink, umount, unlink, wait_status,
+    write_fd,
 };
 
 #[global_allocator]
@@ -41,7 +42,7 @@ fn is_vd(name: &[u8]) -> bool {
 }
 
 fn fat_msg_ok() -> bool {
-    let Some(fd) = open(b"/fat/msg") else {
+    let Some(fd) = open(b"/tmp/fat/msg") else {
         return false;
     };
     let mut msg = [0u8; 16];
@@ -101,7 +102,13 @@ fn smoke_vfs() {
         status_warn("nvme missing");
     }
 
-    // ESP/empty can be vda on aarch64/riscv; try every vd* until /fat/msg is ours.
+    // ESP/empty can be vda on aarch64/riscv; try every vd* until /tmp/fat/msg
+    // is ours, unmounting the others. A second run finds the first one's.
+    let mut found = fat_msg_ok();
+    if !found && !mkdir(b"/tmp/fat") {
+        status_fail("fat mkdir fail");
+        return;
+    }
     let mut vds = [[0u8; 3]; 8];
     let mut nv = 0usize;
     for name in buf[..n].split(|&b| b == b'\n') {
@@ -111,19 +118,8 @@ fn smoke_vfs() {
         }
     }
 
-    let mut found = false;
-    for i in 0..nv {
-        let name = &vds[i];
-        let mut src = [0u8; 8];
-        src[..5].copy_from_slice(b"/dev/");
-        src[5..8].copy_from_slice(name);
-        if !mount(&src, b"/fat", b"fat") {
-            continue;
-        }
-        if fat_msg_ok() {
-            found = true;
-            break;
-        }
+    if !found {
+        found = mount_test_fat(&vds[..nv]);
     }
     if !found {
         // Not a test boot (a VM's own virtio disks): nothing to check.
@@ -131,11 +127,11 @@ fn smoke_vfs() {
         return;
     }
 
-    let n = listdir(b"/fat", &mut buf);
+    let n = listdir(b"/tmp/fat", &mut buf);
     if n != usize::MAX && n > 0 && buf_has(&buf[..n], b"msg") {
         status_ok("fat ls");
     }
-    let Some(fd) = open(b"/fat/msg") else {
+    let Some(fd) = open(b"/tmp/fat/msg") else {
         status_fail("fat open fail");
         return;
     };
@@ -155,29 +151,11 @@ fn smoke_vfs() {
 }
 
 fn smoke_ext2() {
-    match fork() {
-        Some(0) => {
-            exec(b"/bin/custom/mkfs.ext2", &[b"mkfs.ext2", b"/dev/nvme0n1"]);
-            status_fail("ext2 mkfs exec fail");
-            exit_code(1);
-        }
-        Some(_) => match wait_status() {
-            Some((_, 0)) => {}
-            _ => {
-                status_fail("ext2 mkfs fail");
-                return;
-            }
-        },
-        None => {
-            status_fail("ext2 fork fail");
-            return;
-        }
-    }
-    if !mount(b"/dev/nvme0n1", b"/ext2", b"ext2") {
-        status_fail("ext2 mount fail");
+    // A second run checks the disk the first one formatted and mounted.
+    if stat_mode(b"/tmp/ext2").is_none() && !ext2_format() {
         return;
     }
-    let Some(fd) = open_flags(b"/ext2/msg", O_WRONLY | O_CREAT | O_TRUNC) else {
+    let Some(fd) = open_flags(b"/tmp/ext2/msg", O_WRONLY | O_CREAT | O_TRUNC) else {
         status_fail("ext2 open fail");
         return;
     };
@@ -187,7 +165,7 @@ fn smoke_ext2() {
         return;
     }
     close(fd);
-    let Some(fd) = open_flags(b"/ext2/msg", O_RDONLY) else {
+    let Some(fd) = open_flags(b"/tmp/ext2/msg", O_RDONLY) else {
         status_fail("ext2 reopen fail");
         return;
     };
@@ -200,6 +178,51 @@ fn smoke_ext2() {
     } else {
         status_fail("ext2 read fail");
     }
+}
+
+/// Mount the `vd*` disks on /tmp/fat in turn until one is the launcher's
+/// volume; the others are unmounted again.
+fn mount_test_fat(vds: &[[u8; 3]]) -> bool {
+    for name in vds {
+        let mut src = [0u8; 8];
+        src[..5].copy_from_slice(b"/dev/");
+        src[5..8].copy_from_slice(name);
+        if !mount(&src, b"/tmp/fat", b"fat") {
+            continue;
+        }
+        if fat_msg_ok() {
+            return true;
+        }
+        umount(b"/tmp/fat");
+    }
+    false
+}
+
+/// `mkfs.ext2` the scratch disk and mount it on /tmp/ext2.
+fn ext2_format() -> bool {
+    match fork() {
+        Some(0) => {
+            exec(b"/bin/custom/mkfs.ext2", &[b"mkfs.ext2", b"/dev/nvme0n1"]);
+            status_fail("ext2 mkfs exec fail");
+            exit_code(1);
+        }
+        Some(_) => match wait_status() {
+            Some((_, 0)) => {}
+            _ => {
+                status_fail("ext2 mkfs fail");
+                return false;
+            }
+        },
+        None => {
+            status_fail("ext2 fork fail");
+            return false;
+        }
+    }
+    if !mkdir(b"/tmp/ext2") || !mount(b"/dev/nvme0n1", b"/tmp/ext2", b"ext2") {
+        status_fail("ext2 mount fail");
+        return false;
+    }
+    true
 }
 
 fn smoke_disk() {

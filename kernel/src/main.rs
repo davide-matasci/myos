@@ -183,7 +183,7 @@ pub(crate) fn kernel_main() -> ! {
     // netfs, fat, ext2), and
     // they load in that order. More can follow at runtime with `insmod` from /lib/modules.
     modules::load_limine_modules();
-    // /msg lives on bootfs; /ok mounts /dev/vda as fat at /fat.
+    // /msg lives on bootfs; /ok mounts /dev/vda as fat at /tmp/fat.
     let _ = fs::register("bootfs", "msg", MSG_OK);
     console::status_ok("fat message");
 

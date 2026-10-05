@@ -168,11 +168,11 @@ pub fn register_chrdev(name: &str, ops: myos_abi::ModuleChrOps) -> bool {
     devfs::register_chrdev(name, ops)
 }
 
-/// Bind `dev` to `fstype` and mount at `prefix` (single path component).
-/// The target directory need not exist. Re-mounting the same prefix replaces
-/// the previous module mount so a later `vd*` can overlay `/fat`.
+/// Bind `dev` to `fstype` and mount it at `prefix`: an existing directory
+/// that is not a mount point yet, at the top level or below it. A disk is
+/// mounted once.
 pub fn mount_fstype(source_dev: u32, prefix: &str, fstype_name: &str, source: &str) -> bool {
-    if prefix.is_empty() || prefix.contains('/') {
+    if !vfs::mount_point_free(prefix) || vfs::source_mounted(source) {
         return false;
     }
     let Some(ops) = fstype::bind(fstype_name, source_dev) else {

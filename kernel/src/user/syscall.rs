@@ -129,6 +129,8 @@ const SYS_STAT2: usize = 61;
 const SYS_UTIMENS: usize = 62;
 /// `futimens(fd, times)`: [`SYS_UTIMENS`] for an open file.
 const SYS_FUTIMENS: usize = 63;
+/// `umount(path, len)`: detach the block-device mount at `path`.
+const SYS_UMOUNT: usize = 64;
 /// `utimens` / `futimens` time values: now, or leave the time as it is.
 const UTIME_NOW: i64 = -1;
 const UTIME_OMIT: i64 = -2;
@@ -282,6 +284,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_STAT2 => sys_stat2(a0, a1, a2),
         SYS_UTIMENS => sys_utimens(a0, a1, a2),
         SYS_FUTIMENS => sys_futimens(a0, a1),
+        SYS_UMOUNT => sys_umount(a0, a1),
         SYS_LINUX_NEXT_EXEC => {
             if crate::personality::request_next_exec() { 0 } else { SYSERR }
         }
@@ -1763,15 +1766,29 @@ fn sys_mount(args_ptr: usize) -> usize {
     let Some(dev) = fs::blk_id_from_path(&src) else {
         return SYSERR;
     };
-    let prefix = tgt.trim_start_matches('/');
-    if prefix.is_empty() || prefix.contains('/') || fstype.is_empty() {
+    if fstype.is_empty() {
         return SYSERR;
     }
-    if fs::mount_fstype(dev, prefix, fstype, &src) {
+    if fs::mount_fstype(dev, tgt.trim_start_matches('/'), fstype, &src) {
         0
     } else {
         SYSERR
     }
+}
+
+/// `umount(2)`: `a0`/`a1` the mount point. 0, or `SYSERR` when nothing
+/// that can be unmounted is mounted there or the mount is busy.
+fn sys_umount(ptr: usize, len: usize) -> usize {
+    let Some(buf) = copy_user_path(ptr, len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..len]) else {
+        return SYSERR;
+    };
+    let Some(path) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    if fs::vfs::unmount(&path) { 0 } else { SYSERR }
 }
 
 /// The auxiliary vector for an image about to start with a foreign

@@ -83,8 +83,8 @@ Plug: a root port's change event or a hub's status report, then the
 enumeration above. Unplug: the block device is unregistered
 (`blk_unregister`) when nothing holds it; while a filesystem is mounted
 from it or an fd is open on it the kernel refuses (`MYOS_EBUSY`) and the
-entry stays in `/dev`, failing its I/O, until the mount is gone (there is
-no `umount` yet) and the fds are closed. `/proc/usb` marks such a device
+entry stays in `/dev`, failing its I/O, until the disk is unmounted
+(`umount`) and the fds are closed. `/proc/usb` marks such a device
 `gone`.
 
 ## `/proc/usb`
