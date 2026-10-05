@@ -272,6 +272,109 @@ console_cr() {
 }
 t console_cr console_cr
 
+# Security (docs/security.md). The tests run as root in the admin domain.
+# A policy with two more users, alice and bob (passwords alice-pw and
+# bob-pw), their homes under /tmp/sec/home and programs under /tmp/sec/bin
+# that run untrusted, is loaded for the tests and put back after them.
+SEC=/bin/etc/sec
+sec_as() {
+	user=$1
+	shift
+	$SEC as $user -p $user-pw "$@"
+}
+sec_setup() {
+	[ "$($SEC ctx)" = "0 root admin" ] || return 1
+	mkdir -p /tmp/sec/home/alice/.ssh /tmp/sec/home/bob /tmp/sec/bin || return 1
+	cp /bin/sbase/cat /bin/sbase/cp /bin/etc/sec /tmp/sec/bin/ || return 1
+	echo disk-a > /tmp/sec/disk-a && echo disk-b > /tmp/sec/disk-b || return 1
+	cat /etc/policy > /tmp/sec/policy || return 1
+	for u in alice bob; do
+		h=$(printf '%s' "salt$u-pw" | /bin/sbase/sha256sum | cut -d' ' -f1)
+		echo "user $u groups: dev domains: shell untrusted password: sha256:salt:$h" >> /tmp/sec/policy
+	done
+	printf '%s\n' 'label /tmp/sec/home/$u/** home($u)' 'label /tmp/sec/home/$u/.ssh/** secret($u)' \
+		'label /tmp/sec/bin/** sys.bin' 'exec /tmp/sec/bin/** -> untrusted' >> /tmp/sec/policy
+	printf '#!/bin/custom/sh\n/bin/etc/sec ctx\n' > /tmp/sec/bin/ctx.sh
+	# Only alice may write her secrets, not even root.
+	$SEC load /tmp/sec/policy && echo note > /tmp/sec/home/bob/note \
+		&& ! (echo x > /tmp/sec/home/alice/.ssh/key) 2> /dev/null \
+		&& sec_as alice /bin/custom/sh -c 'echo secret > /tmp/sec/home/alice/.ssh/key'
+}
+# A user's processes run as them, in their login domain, once the password
+# is right.
+sec_users() {
+	out=$(sec_as alice $SEC ctx)
+	echo "alice: $out"
+	[ "$out" = "2 alice shell" ] || return 1
+	! $SEC as alice -p wrong $SEC ctx 2> /dev/null
+}
+# Each user's home is theirs: alice writes hers, bob can neither read nor
+# list it nor write there, and her keys are hers too.
+sec_homes() {
+	sec_as alice /bin/custom/sh -c 'echo hi > /tmp/sec/home/alice/f && cat /tmp/sec/home/alice/.ssh/key' || return 1
+	! sec_as bob /bin/sbase/cat /tmp/sec/home/alice/f 2> /dev/null || return 1
+	! sec_as bob /bin/sbase/ls /tmp/sec/home/alice > /dev/null 2>&1 || return 1
+	! sec_as bob /bin/custom/sh -c 'echo x > /tmp/sec/home/alice/g' 2> /dev/null || return 1
+	! sec_as alice /bin/sbase/cat /tmp/sec/home/bob/note 2> /dev/null || return 1
+	# stat shows what the caller may do, and the owner from the label.
+	l=$(sec_as bob /bin/sbase/ls -l /tmp/sec/home/bob/note)
+	echo "bob: $l"
+	case $l in -rwx------*bob*) ;; *) return 1 ;; esac
+	! sec_as alice /bin/sbase/test -w /etc/policy
+}
+# A program under /tmp/sec/bin runs untrusted (a script too, whatever its
+# interpreter): it reads its user's home and writes nothing there, and its
+# user's secrets are out of reach.
+sec_untrusted() {
+	out=$(sec_as alice /tmp/sec/bin/sec ctx)
+	echo "untrusted: $out"
+	[ "$out" = "2 alice untrusted" ] || return 1
+	out=$(sec_as alice /tmp/sec/bin/ctx.sh)
+	echo "script: $out"
+	[ "$out" = "2 alice untrusted" ] || return 1
+	[ "$(sec_as alice /tmp/sec/bin/cat /tmp/sec/home/alice/f)" = hi ] || return 1
+	! sec_as alice /tmp/sec/bin/cp /tmp/sec/home/alice/f /tmp/sec/home/alice/h 2> /dev/null || return 1
+	! sec_as alice /tmp/sec/bin/cat /tmp/sec/home/alice/.ssh/key 2> /dev/null
+}
+# Signals: a user's processes, not another user's (init is system's).
+sec_signal() {
+	sec_as alice /bin/custom/sh -c '/bin/sbase/kill -0 $$' || return 1
+	! sec_as alice /bin/sbase/kill -0 1 2> /dev/null
+}
+# Namespaces: a program sees only what it is given. Given disk-a (read
+# only) as /tmp/sec/a, it reads that and not disk-b, and writes nothing; /
+# lists only what is bound. An open fd it is handed is a deliberate grant.
+sec_ns() {
+	ns="$SEC ns /bin:read,exec /tmp/sec/a=/tmp/sec/disk-a:read --"
+	[ "$($ns /bin/sbase/cat /tmp/sec/a)" = disk-a ] || return 1
+	! $ns /bin/sbase/cat /tmp/sec/disk-b 2> /dev/null || return 1
+	! $ns /bin/custom/sh -c 'echo x > /tmp/sec/a' 2> /dev/null || return 1
+	out=$($ns /bin/sbase/ls / | tr '\n' ' ')
+	echo "ls /: $out"
+	[ "$out" = "bin tmp " ] || return 1
+	[ "$($ns /bin/sbase/cat < /tmp/sec/disk-b)" = disk-b ]
+}
+# A Linux program is held to the same policy (the layer's file calls): it
+# sees alice's file as her, not bob's.
+sec_linux() {
+	sec_as alice linux /bin/linux/linux-smoke mtime /tmp/sec/home/alice/f || return 1
+	! sec_as alice linux /bin/linux/linux-smoke mtime /tmp/sec/home/bob/note
+}
+# The policy as it was: the users' processes are gone, alice and bob too.
+sec_restore() {
+	$SEC load /etc/policy && [ "$($SEC ctx)" = "0 root admin" ] && /bin/coreutils/rm -r /tmp/sec
+}
+t sec_setup sec_setup
+t sec_users sec_users
+t sec_homes sec_homes
+t sec_untrusted sec_untrusted
+t sec_signal sec_signal
+t sec_ns sec_ns
+if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
+	t sec_linux sec_linux
+fi
+t sec_restore sec_restore
+
 linux_loaded() {
 	grep -q "^linux$" /proc/modules
 }

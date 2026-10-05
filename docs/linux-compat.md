@@ -213,7 +213,8 @@ a file that is neither an ELF nor a script fails with `ENOEXEC`),
 `getpid`, `gettid`, `getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`,
 `setsid`, `uname` (the node name is the kernel's host name,
 `/proc/sys/kernel/hostname`), `sethostname`, `arch_prctl`, `set_tid_address`, `set_robust_list`,
-`prlimit64`, `getrlimit`, `get/set uid/gid` (everything is root),
+`prlimit64`, `getrlimit`, `get/set uid/gid` (uid and gid 0 whoever runs the
+program: what it may do is the security policy's, `docs/security.md`),
 `sched_yield`.
 
 Threads: `clone` with `CLONE_THREAD` (and `CLONE_VM`, `CLONE_FS`,
@@ -387,9 +388,11 @@ three, the kernel crate itself an hour. Known gaps:
   grows it; a shorter non-zero length is refused (`EINVAL`). The
   filesystems have no holes: growing a file, or `pwrite` past its end,
   writes the zeros in between.
-- `chmod`, `chown` and `fsync` succeed and do nothing: myos keeps no
-  owners or permission bits, and ext2 writes a file back when its last fd
-  closes.
+- `chmod`, `chown` and `fsync` succeed and do nothing: what a program may
+  do to a file is the security policy's (`docs/security.md`), and ext2
+  writes a file back when its last fd closes. `stat`'s permission bits are
+  the owner's only and say what the calling program may do; the layer's
+  file calls are checked like the native ones.
 - File times: `stat` reports a file's access and modification times in
   whole seconds (`st_ctime` is the modification time) where the filesystem
   keeps them, tmpfs and ext2; the read-only and device filesystems (`/bin`,
