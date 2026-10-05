@@ -110,6 +110,11 @@ fn exercise(path: &Path, big: usize) {
     write_all(&mut fs, "a/small", b"hello ext2\n", 2048);
     let large = pattern(big, 7);
     write_all(&mut fs, "a/b/large", &large, 2048);
+    // Read back before the flush: the blocks still cached come from the
+    // cache, the others (evicted) from the disk, in one call.
+    let mut back = vec![0u8; large.len() - 1000];
+    assert_eq!(fs.read("a/b/large", 1000, &mut back).unwrap(), back.len());
+    assert!(back[..] == large[1000..]);
     // A hole: a write past the end.
     fs.create("sparse").unwrap();
     fs.write("sparse", 300_000, b"tail").unwrap();
