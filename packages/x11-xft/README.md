@@ -7,7 +7,7 @@ through the server's RENDER extension (libXrender). This is what dwm, st and
 dmenu expect upstream; the fonts are the `x11-fonts` package.
 
 ```sh
-get-myos x11-libs tinyx x11-xft x11-fonts
+get-myos tinyx x11-xft x11-fonts    # x11-xft brings x11-libs with it
 fc-match monospace        # DejaVuSansMono.ttf: "DejaVu Sans Mono" "Book"
 fc-list
 ```

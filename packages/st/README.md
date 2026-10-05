@@ -4,7 +4,7 @@
 of the `tinyx` package: the terminal dwm's Alt+Shift+Return starts.
 
 ```sh
-get-myos x11-libs tinyx x11-xft x11-fonts dwm st
+get-myos tinyx dwm st     # st brings x11-xft, x11-fonts and x11-libs with it
 startx                  # then Alt+Shift+Return in dwm
 startx st               # or st alone, without a window manager
 ```
