@@ -1,7 +1,9 @@
 //! myos I/O error strings.
 //!
-//! The kernel currently returns a single `SYSERR` (`usize::MAX`) for failed
-//! syscalls; std maps that to `-1` → raw os error `1`. Do **not** use the
+//! The kernel returns one `SYSERR` (`usize::MAX`) for most failed syscalls;
+//! std maps that to `-1` → raw os error `1`. Reads and writes tell EIO, ENXIO
+//! and EINTR apart (`abi::io_result`), and the file calls work out an errno
+//! of their own (`sys/fs/myos.rs`). Do **not** use the
 //! upstream `generic` backend: its `error_string` always returns
 //! `"operation successful"`, which hid real open/read failures (e.g. riscv64
 //! `uutils cat` after findnest).
@@ -12,39 +14,66 @@ pub fn errno() -> i32 {
     0
 }
 
-pub fn is_interrupted(_code: i32) -> bool {
-    false
+pub fn is_interrupted(code: i32) -> bool {
+    code == 4 // EINTR
 }
 
 pub fn decode_error_kind(code: i32) -> io::ErrorKind {
+    use io::ErrorKind::*;
     match code {
-        0 => io::ErrorKind::Uncategorized,
-        // std `cvt(-1)` → raw os error 1 (kernel SYSERR has no distinct errno yet)
-        1 => io::ErrorKind::Other,
-        2 => io::ErrorKind::NotFound,
-        9 => io::ErrorKind::InvalidInput, // EBADF
-        12 => io::ErrorKind::OutOfMemory,
-        13 => io::ErrorKind::PermissionDenied,
-        17 => io::ErrorKind::AlreadyExists,
-        20 => io::ErrorKind::NotADirectory,
-        22 => io::ErrorKind::InvalidInput,
-        38 => io::ErrorKind::Unsupported,
-        _ => io::ErrorKind::Uncategorized,
+        0 => Uncategorized,
+        // std `cvt(-1)` → raw os error 1: the kernel's one failure value,
+        // where a call cannot tell more (`sys/fs/myos.rs` does for its calls)
+        1 => Other,
+        2 => NotFound,
+        4 => Interrupted,
+        5 => Other, // EIO
+        6 => NotFound, // ENXIO: no such device (a FIFO without a reader)
+        9 => InvalidInput, // EBADF
+        11 => WouldBlock,
+        12 => OutOfMemory,
+        13 => PermissionDenied,
+        17 => AlreadyExists,
+        18 => CrossesDevices,
+        20 => NotADirectory,
+        21 => IsADirectory,
+        22 => InvalidInput,
+        28 => StorageFull,
+        29 => NotSeekable,
+        30 => ReadOnlyFilesystem,
+        32 => BrokenPipe,
+        36 => InvalidFilename,
+        38 => Unsupported,
+        39 => DirectoryNotEmpty,
+        _ => Uncategorized,
     }
 }
 
 pub fn error_string(errno: i32) -> String {
     match errno {
-        0 => "success".to_string(),
-        1 => "syscall failed".to_string(),
-        2 => "no such file or directory".to_string(),
-        9 => "bad file descriptor".to_string(),
-        12 => "out of memory".to_string(),
-        13 => "permission denied".to_string(),
-        17 => "file exists".to_string(),
-        20 => "not a directory".to_string(),
-        22 => "invalid argument".to_string(),
-        38 => "function not implemented".to_string(),
-        n => format!("os error {n}"),
+        0 => "success",
+        1 => "syscall failed",
+        2 => "no such file or directory",
+        4 => "interrupted system call",
+        5 => "input/output error",
+        6 => "no such device or address",
+        9 => "bad file descriptor",
+        11 => "resource temporarily unavailable",
+        12 => "out of memory",
+        13 => "permission denied",
+        17 => "file exists",
+        18 => "invalid cross-device link",
+        20 => "not a directory",
+        21 => "is a directory",
+        22 => "invalid argument",
+        28 => "no space left on device",
+        29 => "illegal seek",
+        30 => "read-only file system",
+        32 => "broken pipe",
+        36 => "file name too long",
+        38 => "function not implemented",
+        39 => "directory not empty",
+        n => return format!("os error {n}"),
     }
+    .to_string()
 }
