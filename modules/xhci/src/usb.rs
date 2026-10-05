@@ -7,8 +7,8 @@ use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 
 use myos_abi::{
-    USB_EGONE, USB_EIO, USB_ETIMEDOUT, USB_MAX_ENDPOINTS, USB_SPEED_FULL, USB_SPEED_HIGH,
-    USB_SPEED_LOW, USB_SPEED_SUPER, UsbDeviceInfo, UsbDriverOps, UsbEndpoint, UsbInterfaceInfo,
+    USB_EGONE, USB_EIO, USB_ETIMEDOUT, USB_LABEL_MAX, USB_MAX_ENDPOINTS, USB_SPEED_FULL,
+    USB_SPEED_HIGH, USB_SPEED_LOW, USB_SPEED_SUPER, UsbDeviceInfo, UsbDriverOps, UsbEndpoint, UsbInterfaceInfo,
 };
 use xhci::context::{
     Device32Byte, Device64Byte, DeviceHandler, EndpointType, Input32Byte, Input64Byte,
@@ -31,6 +31,9 @@ pub struct Interface {
     pub info: UsbInterfaceInfo,
     /// Index into `DRIVERS` of the driver that took it.
     pub driver: Option<usize>,
+    /// The driver's name for what it made of it (`interface_label`).
+    pub label: [u8; USB_LABEL_MAX],
+    pub label_len: u8,
 }
 
 pub struct Device {
@@ -672,6 +675,8 @@ fn parse_config(dev: &mut Device, cfg: &[u8]) {
                             endpoints: [UsbEndpoint::default(); USB_MAX_ENDPOINTS],
                         },
                         driver: None,
+                        label: [0; USB_LABEL_MAX],
+                        label_len: 0,
                     });
                     cur = Some(slot);
                     n_if += 1;
@@ -903,6 +908,10 @@ pub fn proc_text(out: &mut [u8]) -> usize {
                         w.str(":");
                         w.bytes(unsafe { core::slice::from_raw_parts(drv.name.ptr, drv.name.len) });
                     }
+                }
+                if intf.label_len != 0 {
+                    w.str(" ");
+                    w.bytes(&intf.label[..usize::from(intf.label_len)]);
                 }
             }
             if dev.hub_ports != 0 {

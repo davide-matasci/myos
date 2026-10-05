@@ -307,6 +307,8 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
         return -1;
     }
     d.blk = id;
+    // `/proc/usb` names the disk on its interface's line.
+    let _ = unsafe { (host().interface_label)(dev.id, intf.number, name.as_ptr(), name.len()) };
     0
 }
 

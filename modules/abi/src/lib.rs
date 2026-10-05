@@ -693,8 +693,8 @@ pub const MYOS_MAX_MODULE_THREADS: usize = 8;
 
 /// The name the host controller publishes its [`UsbHostOps`] under.
 pub const USB_SERVICE: &str = "usb";
-/// [`UsbHostOps::version`].
-pub const USB_HOST_VERSION: u32 = 1;
+/// [`UsbHostOps::version`]. 2 added [`UsbHostOps::interface_label`].
+pub const USB_HOST_VERSION: u32 = 2;
 
 /// Device speeds ([`UsbDeviceInfo::speed`], `hub_attach`).
 pub const USB_SPEED_LOW: u8 = 1;
@@ -712,6 +712,8 @@ pub const USB_ETIMEDOUT: i32 = -110;
 
 /// Endpoints one interface may have ([`UsbInterfaceInfo::endpoints`]).
 pub const USB_MAX_ENDPOINTS: usize = 15;
+/// Bytes of an interface's label ([`UsbHostOps::interface_label`]).
+pub const USB_LABEL_MAX: usize = 8;
 
 /// One endpoint of an interface, as its descriptor says: the address
 /// (direction in bit 7: IN), the attributes (transfer type in bits 1:0:
@@ -814,6 +816,10 @@ pub struct UsbHostOps {
     pub hub_detach: unsafe extern "C" fn(dev: u32, port: u8),
     /// `dev`'s description into `*info`: 0, or [`USB_EGONE`].
     pub device_info: unsafe extern "C" fn(dev: u32, info: *mut UsbDeviceInfo) -> i32,
+    /// What the driver that took interface `intf` of `dev` made of it (a
+    /// disk's name), shown after the driver's name in `/proc/usb`: at most
+    /// [`USB_LABEL_MAX`] bytes, longer is cut. 0, or [`USB_EGONE`].
+    pub interface_label: unsafe extern "C" fn(dev: u32, intf: u8, label: *const u8, len: usize) -> i32,
 }
 
 // Function tables with a name: shared between the modules' threads.

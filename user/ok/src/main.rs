@@ -89,14 +89,14 @@ fn smoke_vfs() {
     if buf_has(&buf[..n], b"vdb") {
         status_ok("vdb");
     }
-    if buf_has(&buf[..n], b"nvme0n1") {
+    let nvme = buf_has(&buf[..n], b"nvme0n1");
+    if nvme {
         status_ok("nvme");
         if let Some(fd) = open(b"/dev/nvme0n1") {
             let mut sec = [0u8; 512];
             let _ = read(fd, &mut sec);
             close(fd);
         }
-        smoke_ext2();
     } else {
         status_warn("nvme missing");
     }
@@ -126,7 +126,8 @@ fn smoke_vfs() {
         }
     }
     if !found {
-        status_fail("fat mount fail");
+        // Not a test boot (a VM's own virtio disks): nothing to check.
+        status_warn("no test FAT volume");
         return;
     }
 
@@ -144,6 +145,12 @@ fn smoke_vfs() {
     const WANT: &[u8] = b"fat-msg\n";
     if nr >= WANT.len() && &msg[..WANT.len()] == WANT {
         status_ok("fat read");
+    }
+    // The launcher's FAT volume says this is a test boot, whose NVMe disk
+    // is a scratch image: formatting it anywhere else (a VM's own disks)
+    // would wipe them on every boot.
+    if nvme {
+        smoke_ext2();
     }
 }
 
@@ -451,11 +458,13 @@ fn smoke_proc(buf: &mut [u8]) {
         nr += n;
     }
     close(fd);
+    // The FAT mount is there only when the boot carries the launcher's
+    // volume (smoke_vfs); another VM's disks are not mounted.
+    let fat = fat_msg_ok();
     if !buf_has(&buf[..nr], b"tmpfs")
         || !buf_has(&buf[..nr], b"devfs")
         || !buf_has(&buf[..nr], b"procfs")
-        || !buf_has(&buf[..nr], b"fat")
-        || !buf_has(&buf[..nr], b"/dev/vd")
+        || fat && (!buf_has(&buf[..nr], b"fat") || !buf_has(&buf[..nr], b"/dev/vd"))
     {
         status_fail("proc read fail");
         return;

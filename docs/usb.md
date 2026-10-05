@@ -94,15 +94,19 @@ One line per device:
 ```
 controller 0 ports 8 irq on events 86 irqs 83
 0x001 parent 0x000 port 5 full 0409:55aa class 09 if0=09/00/00:usb_hub hub 8
-0x002 parent 0x001 port 1 full 46f4:0001 class 00 if0=08/06/50:usb_storage
-0x003 parent 0x000 port 2 super 46f4:0001 class 00 if0=08/06/50:usb_storage
+0x002 parent 0x001 port 1 full 46f4:0001 class 00 if0=08/06/50:usb_storage sda
+0x003 parent 0x000 port 2 super 46f4:0001 class 00 if0=08/06/50:usb_storage sdb
 ```
 
 a line per controller (its root ports, whether its interrupt is on, the
 events and interrupts seen), then one per device: the id (controller in
 the high byte), the parent hub (0: a root port) and port, the speed,
 vendor:product, the device class and each interface's class/subclass/
-protocol with the driver that took it (a hub: its port count).
+protocol with the driver that took it and what the driver made of it (a
+disk: its name in `/dev`, the label `usb_storage` hands the host through
+`interface_label` once the disk is registered), a hub its port count. The
+port path (parent and port, up to the root) says where a disk is plugged
+in.
 
 ## Testing
 

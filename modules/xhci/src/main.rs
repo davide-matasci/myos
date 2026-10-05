@@ -21,7 +21,8 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use myos_abi::{
-    ABI_VERSION, KernelApi, MYOS_IRQ_INTX, StrRef, USB_EGONE, USB_HOST_VERSION, USB_SERVICE,
+    ABI_VERSION, KernelApi, MYOS_IRQ_INTX, StrRef, USB_EGONE, USB_HOST_VERSION, USB_LABEL_MAX,
+    USB_SERVICE,
     UsbCompletion, UsbDeviceInfo, UsbDriverOps, UsbHostOps, status_fail, status_ok,
 };
 
@@ -126,6 +127,7 @@ static HOST_OPS: UsbHostOps = UsbHostOps {
     hub_attach,
     hub_detach,
     device_info,
+    interface_label,
 };
 
 unsafe extern "C" fn driver_register(ops: *const UsbDriverOps) -> i32 {
@@ -221,6 +223,25 @@ unsafe extern "C" fn device_info(dev: u32, info: *mut UsbDeviceInfo) -> i32 {
     unsafe {
         *info = d.info;
     }
+    0
+}
+
+unsafe extern "C" fn interface_label(dev: u32, intf: u8, label: *const u8, len: usize) -> i32 {
+    let Some((_, d)) = usb::lookup(dev) else {
+        return USB_EGONE;
+    };
+    let Some(i) = d.interfaces.iter_mut().flatten().find(|i| i.info.number == intf) else {
+        return -1;
+    };
+    let len = len.min(USB_LABEL_MAX);
+    if len != 0 {
+        if label.is_null() {
+            return -1;
+        }
+        i.label[..len].copy_from_slice(unsafe { core::slice::from_raw_parts(label, len) });
+    }
+    i.label_len = len as u8;
+    proc_update();
     0
 }
 
