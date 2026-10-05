@@ -40,7 +40,6 @@ has a default, so a minimal port needs only `PORT_FILES`.
 | `PORT_READY` | the first file output | a `target/` file whose presence means the port was built (`build.rs` runs the script when it is missing). Needed when the first output is a directory |
 | `PORT_FILES` | | what the image (or the package) gets, see below |
 | `PORT_BIN` | | `user` only: the crate's binary name (`myos_cat`) |
-| `PORT_EMBED` | | `user` only: the kernel embeds the program at `/bin/` and this path (`custom/cat`), so a boot works without the initramfs |
 | `PORT_IMAGE_BASE` | `0` | `user` only: `1` links the program at `USER_BASE` as `ET_EXEC` on aarch64 and riscv64 (programs with absolute vtables: netd, ping, http, dns) |
 | `PORT_WATCH` | | `user` only: extra source files the kernel build watches, relative to the crate (`../lib/src/lib.rs`) |
 | `PORT_TEST` | | the port's boot test script, in the port directory (`test.sh`): packed as `lib/myos-tests/ports/<group>-<name>.sh` (`0` core image port, `1` image port, `2` package), run by the test runner in that order (`docs/testing.md`) |
@@ -67,16 +66,16 @@ path in the image (the initramfs root is `/`).
 | `tree:<target dir>:<dir>` | a directory tree (os-test sources and prebuilt tests), keeping the host exec bits |
 
 A missing source file fails the build: the packer never silently leaves a
-file out. The one exception is a `user` program with `PORT_EMBED`: the kernel
-embeds it in rootfs, so its file in the initramfs is optional.
+file out. The kernel embeds no program: every one, `init` included, comes
+from the initramfs.
 
 ## What reads the descriptors
 
 - `build.rs`: for every image port with a build script, runs the script
   when `PORT_READY` is missing (the scripts skip themselves when current),
   and watches `port.env`, the `file:` sources and the test script.
-- `kernel/build.rs`: builds every `user` port for the kernel's arch and
-  generates the rootfs registrations of the embedded ones.
+- `kernel/build.rs`: builds every `user` port for the kernel's arch into
+  `target/<bin>-<triple>`, where the initramfs packer takes it.
 - `src/initramfs.rs`: packs `PORT_FILES` of every image port, for the arch
   being imaged.
 - `scripts/ports.sh`: the shell side. `--list`, `--outputs NAME`,

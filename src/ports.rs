@@ -77,8 +77,6 @@ pub struct Port {
     pub host: Option<String>,
     /// Cargo bin name (`User` kind).
     pub bin: String,
-    /// binfs path the kernel embeds the program under (`User` kind).
-    pub embed: Option<String>,
     /// Link at `USER_BASE` (ET_EXEC with absolute vtables).
     pub image_base: bool,
     /// Extra files whose change rebuilds the program (`User` kind, port-relative).
@@ -230,7 +228,6 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
         outputs: list("PORT_OUTPUTS"),
         ready: Some(get("PORT_READY")).filter(|s| !s.is_empty()),
         bin,
-        embed: Some(get("PORT_EMBED")).filter(|s| !s.is_empty()),
         image_base: get("PORT_IMAGE_BASE") == "1",
         watch: list("PORT_WATCH"),
     })

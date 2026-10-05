@@ -64,7 +64,8 @@ pub(crate) const MAX_EXEC_STRINGS: usize = 128 * 1024;
 const SYSERR: usize = usize::MAX;
 /// open(2) of a FIFO for writing with O_NONBLOCK and no reader (ENXIO).
 const SYSERR_ENXIO: usize = usize::MAX - 2;
-const INIT_ELF: &[u8] = include_bytes!(env!("USER_INIT_PATH"));
+/// The first process, from the initramfs.
+const INIT_PATH: &str = "/bin/custom/init";
 
 static USERS_ALIVE: AtomicUsize = AtomicUsize::new(0);
 
@@ -89,11 +90,14 @@ pub fn ap_init() {
     crate::arch::user_ap_init();
 }
 
-/// Load the nested `user/init` ELF at USER_BASE and spawn one process.
+/// Load `/bin/custom/init` from rootfs at USER_BASE and spawn it.
 pub fn spawn_init() {
     let base = pick_user_base();
     USER_BASE.store(base, Ordering::SeqCst);
-    let (aspace, entry, span, off) = load_user_elf(INIT_ELF, true).expect("init ELF");
+    let Some(elf) = crate::fs::lookup(INIT_PATH) else {
+        panic!("no {INIT_PATH}: the initramfs carries init");
+    };
+    let (aspace, entry, span, off) = load_user_elf(elf, true).expect("init ELF");
     let (rsp, argv) = build_argv_stack(aspace, base, off, &[], &[], &[]).expect("init stack");
     task::spawn_user(aspace, entry, rsp, base, span, off, 0, argv);
     USERS_ALIVE.fetch_add(1, Ordering::SeqCst);

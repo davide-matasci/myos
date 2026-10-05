@@ -151,12 +151,8 @@ fn build_iso() -> PathBuf {
     // Artifact-dep kernel lives at CARGO_BIN_FILE_KERNEL_kernel, not
     // target/<triple>/debug/kernel (ISO #1 panicked on that missing path).
     let kernel = Path::new(env!("KERNEL_PATH"));
-    let ok = Path::new(env!("OK_PATH"));
     if !kernel.is_file() {
         panic!("kernel ELF missing at {}", kernel.display());
-    }
-    if !ok.is_file() {
-        panic!("ok ELF missing at {}", ok.display());
     }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target = manifest.join("target");
@@ -166,7 +162,7 @@ fn build_iso() -> PathBuf {
     let limine = fetch_limine(Path::new(env!("LIMINE_DIR")));
     let dest = target.join("myos-x86_64.iso");
     let iso_root = target.join("iso_root");
-    write_x86_iso(&dest, &iso_root, kernel, &target, ok, &initramfs_path, &limine);
+    write_x86_iso(&dest, &iso_root, kernel, &target, &initramfs_path, &limine);
     dest
 }
 
@@ -722,10 +718,6 @@ fn build_aarch64_image() -> PathBuf {
         &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
         "aarch64-unknown-none-softfloat",
     );
-    let ok_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ok-aarch64-unknown-none-softfloat");
-    let ok = std::fs::read(&ok_path)
-        .unwrap_or_else(|_| panic!("ok ELF missing at {}", ok_path.display()));
     let limine_dir = PathBuf::from(env!("LIMINE_DIR"));
     let limine = if limine_dir.join("BOOTAA64.EFI").is_file() {
         fetch_limine(&limine_dir)
@@ -769,7 +761,6 @@ fn build_aarch64_image() -> PathBuf {
         &efi,
         None,
         &modules,
-        &ok,
         &initramfs,
         &aarch64_limine_conf(),
         &[DiskFile {
@@ -1154,10 +1145,6 @@ fn build_riscv64_image() -> PathBuf {
         &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
         "riscv64imac-unknown-none-elf",
     );
-    let ok_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ok-riscv64imac-unknown-none-elf");
-    let ok = std::fs::read(&ok_path)
-        .unwrap_or_else(|_| panic!("ok ELF missing at {}", ok_path.display()));
     let limine_dir = PathBuf::from(env!("LIMINE_DIR"));
     let limine = if limine_dir.join("BOOTRISCV64.EFI").is_file() {
         fetch_limine(&limine_dir)
@@ -1199,7 +1186,6 @@ fn build_riscv64_image() -> PathBuf {
         &efi,
         None,
         &modules,
-        &ok,
         &initramfs,
         &riscv_limine_conf(),
         &[DiskFile {
