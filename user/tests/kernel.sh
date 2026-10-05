@@ -229,7 +229,7 @@ console_cells() {
 	printf '\033[H\033[J%b\033[10;1H' "$1" > /dev/console/data
 	for y in 0 1 2 3 4 5 6 7; do
 		dd if=/dev/fb/data bs=64 count=1 skip=$((y * pitch / 64)) 2> /dev/null
-	done | od -An -tx1 | tr -d ' \n'
+	done | od -A n -t x1 | tr -d ' \n'
 }
 
 console_cr() {
