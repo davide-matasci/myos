@@ -4,10 +4,15 @@
 //!
 //! The kernel has no block driver of its own: a device appears when a
 //! module registers it with a name (`vda`, `nvme0n1`, …) and a
-//! [`ModuleBlkOps`] table, and is addressed by the id that returned.
+//! [`ModuleBlkOps`] table, and is addressed by the id that returned. What
+//! is read is kept in the block cache ([`cache`]).
+
+mod cache;
 
 use myos_abi::ModuleBlkOps;
 use spin::Mutex;
+
+pub use cache::{frames as cache_frames, release as release_cache};
 
 pub const MAX_DISKS: usize = 16;
 pub const SECTOR: usize = 512;
@@ -65,6 +70,8 @@ pub fn unregister(dev: u32) -> Result<(), ()> {
     match devs.get_mut(dev as usize) {
         Some(slot @ Some(_)) => {
             *slot = None;
+            drop(devs);
+            cache::forget(dev);
             Ok(())
         }
         _ => Err(()),
@@ -110,8 +117,9 @@ pub fn capacity_bytes(dev: u32) -> Option<u64> {
     capacity_sectors(dev).map(|s| s.saturating_mul(SECTOR as u64))
 }
 
-/// Read `buf.len()` bytes starting at `lba`. `buf.len()` must be a multiple
-/// of 512. Fails if the device does not exist (does not panic).
+/// Read `buf.len()` bytes starting at `lba`, through the block cache.
+/// `buf.len()` must be a multiple of 512. Fails if the device does not
+/// exist (does not panic).
 pub fn read(dev: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
     if buf.len() % SECTOR != 0 {
         return Err(());
@@ -120,8 +128,15 @@ pub fn read(dev: u32, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
         return Ok(());
     }
     let d = get(dev).ok_or(())?;
-    let rc = unsafe { (d.ops.read)(d.ctx, lba, buf.as_mut_ptr(), buf.len()) };
-    if rc == 0 { Ok(()) } else { Err(()) }
+    let device = |lba: u64, buf: &mut [u8]| {
+        let rc = unsafe { (d.ops.read)(d.ctx, lba, buf.as_mut_ptr(), buf.len()) };
+        if rc == 0 { Ok(()) } else { Err(()) }
+    };
+    // The cache keeps whole pages of the disk: it needs to know its end.
+    match capacity_sectors(dev) {
+        Some(sectors) => cache::read(dev, lba, buf, sectors, device),
+        None => device(lba, buf),
+    }
 }
 
 /// Write `buf.len()` bytes starting at `lba`. `buf.len()` must be a multiple
@@ -135,6 +150,7 @@ pub fn write(dev: u32, lba: u64, buf: &[u8]) -> Result<(), ()> {
     }
     let d = get(dev).ok_or(())?;
     let rc = unsafe { (d.ops.write)(d.ctx, lba, buf.as_ptr(), buf.len()) };
+    cache::wrote(dev, lba, buf);
     if rc == 0 { Ok(()) } else { Err(()) }
 }
 
