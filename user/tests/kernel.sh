@@ -229,7 +229,7 @@ console_cells() {
 	printf '\033[H\033[J%b\033[10;1H' "$1" > /dev/console/data
 	for y in 0 1 2 3 4 5 6 7; do
 		dd if=/dev/fb/data bs=64 count=1 skip=$((y * pitch / 64)) 2> /dev/null
-	done | od -A n -t x1 | tr -d ' \n'
+	done | cksum
 }
 
 console_cr() {
@@ -238,6 +238,7 @@ console_cr() {
 	qq=$(console_cells 'QQ')
 	cr=$(console_cells 'QQ\r  ')
 	printf '\033[H\033[J\n' > /dev/console/data
+	echo "cleared: $blank; QQ: $qq; QQ, CR, spaces: $cr"
 	[ "$qq" != "$blank" ] || { echo "QQ did not reach the screen"; return 1; }
 	[ "$cr" = "$blank" ] || { echo "QQ, CR, spaces: the Qs are still there"; return 1; }
 }
