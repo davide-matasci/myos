@@ -72,8 +72,10 @@ pub fn irq_from_dt(_cells: &[u32]) -> Option<u32> {
     None
 }
 
-/// The 1 kHz LAPIC tick already bounds sleep latency; no deadline timer.
-pub fn timer_deadline(_deadline_ns: u64) {}
+/// Fire this CPU's timer at a sleep's deadline when it is before the next tick.
+pub fn timer_deadline(deadline_ns: u64) {
+    interrupts::timer_deadline(deadline_ns);
+}
 
 /// Route a PCI function's interrupt: MSI-X entry 0 → a LAPIC vector on the
 /// BSP (no IOAPIC / PIRQ routing needed).

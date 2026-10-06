@@ -215,12 +215,15 @@ Deadlines use `time::monotonic_ns()` (x86: TSC at the rate CPUID leaf 15H/16H st
 channel 2 at boot; aarch64: `CNTVCT_EL0`; riscv64: `time` CSR). Each timer
 IRQ calls `task::timer_tick()`, which only scans `TASKS` once the earliest
 deadline (`NEXT_DEADLINE`) has passed. The x86 LAPIC tick is calibrated
-against that clock to 1 kHz (it used to fire 10-20k times per second per
-CPU, each tick taking the scheduler lock). aarch64/riscv64 tick at 100 Hz
+against that clock to 100 Hz (it used to fire 10-20k times per second per
+CPU, each tick taking the scheduler lock; at 1 kHz the ticks cost a
+self-hosted core+alloc build 10-14% under TCG). All three tick at 100 Hz
 but are tickless for deadlines: `block_until` calls
-`arch::timer_deadline`, which pulls the CPU's own timer (`cntv_cval_el0` /
-`stimecmp`, absolute compare values) in to the new deadline, and every
-re-arm programs `min(next tick, task::next_deadline_ns())`, so a 1 ms
+`arch::timer_deadline`, which pulls the CPU's own timer in to the new
+deadline (aarch64/riscv64: `cntv_cval_el0` / `stimecmp`, absolute compare
+values; x86: the periodic LAPIC timer's current count, cut short and put
+back at the tick), and every re-arm programs `min(next tick,
+task::next_deadline_ns())`, so a 1 ms
 `nanosleep` ends after about 1 ms instead of at the next 10 ms boundary.
 
 Idle: `kernel_main` (task 0) is the BSP's idle task, `ap_idle_body` the APs'.

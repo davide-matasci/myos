@@ -1,7 +1,8 @@
 /* poll-smoke: boot-CI guest test for SYS_POLL (kernel/src/user/syscall.rs,
  * libgloss pollselect.c).
  *
- * A timeout that really elapses; a wait that ends when a child writes to a
+ * A timeout that really elapses, and a short one that is not rounded up to
+ * the scheduler tick; a wait that ends when a child writes to a
  * pipe (not before), with only that fd reported among several; POLLHUP when
  * the writer goes, POLLERR when the reader does, POLLNVAL for a closed fd; a
  * nonblocking read saying EAGAIN; a unix socket and a unix listener waking
@@ -106,6 +107,15 @@ int main(void) {
     long t0 = now_ms();
     if (poll(p, 2, 200) != 0 || now_ms() - t0 < 150) {
         return fail("timeout");
+    }
+    /* Short timeouts end at their deadline, not at a 10 ms tick: 20 of
+     * 1 ms took ~30 ms, ~90 ms when they waited for the 4 CPUs' ticks. */
+    t0 = now_ms();
+    for (int i = 0; i < 20; i++) {
+        poll(p, 2, 1);
+    }
+    if (now_ms() - t0 > 65) {
+        return fail("1 ms timeouts rounded up to the tick");
     }
     /* A child writes to b: only b is reported. */
     pid_t pid = later(write_byte, b[1]);
