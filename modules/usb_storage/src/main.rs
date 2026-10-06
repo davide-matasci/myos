@@ -307,6 +307,9 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     let (Some(ep_in), Some(ep_out)) = (ep_in, ep_out) else {
         return -1;
     };
+    // Free any slot/name still held by a disk unplugged while busy and since
+    // released, so a fresh plug reuses it instead of running the table out.
+    reclaim_gone();
     let Some(slot) = disks().iter().position(|d| d.is_none()) else {
         return -1;
     };
@@ -354,7 +357,28 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     0
 }
 
+/// Reclaim disks that were unplugged while busy. `blk_unregister` refuses a
+/// disk that is mounted or held open, so such a disk stays as a `gone` entry
+/// failing its I/O — but nothing calls back when the mount or the last fd
+/// finally goes, so the entry (and its `/dev` name and table slot) would leak
+/// forever. Sweep here instead, retrying the unregister: on every disconnect
+/// and before a probe takes a slot, so repeated unplug-while-busy cannot leak
+/// the table empty and stop hot-plug working.
+fn reclaim_gone() {
+    for slot in 0..MAX_DISKS {
+        let (gone, blk) = match disks()[slot].as_ref() {
+            Some(d) => (d.gone, d.blk),
+            None => continue,
+        };
+        if gone && blk >= 0 && api().blk_unregister(blk as u32) == 0 {
+            disks()[slot] = None;
+        }
+    }
+}
+
 unsafe extern "C" fn disconnect(dev: u32, intf: u8) {
+    // First reclaim any earlier disk whose holder has since let go.
+    reclaim_gone();
     for slot in 0..MAX_DISKS {
         let Some(d) = disks()[slot].as_mut() else {
             continue;
@@ -364,7 +388,8 @@ unsafe extern "C" fn disconnect(dev: u32, intf: u8) {
         }
         d.gone = true;
         // Gone from /dev, unless a filesystem is mounted from it or a
-        // program holds it open: then the entry stays, failing its I/O.
+        // program holds it open: then the entry stays, failing its I/O,
+        // until `reclaim_gone` frees it once the holder lets go.
         if d.blk >= 0 && api().blk_unregister(d.blk as u32) == 0 {
             disks()[slot] = None;
         } else {
