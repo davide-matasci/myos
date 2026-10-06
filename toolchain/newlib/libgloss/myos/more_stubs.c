@@ -124,16 +124,22 @@ int sethostname(const char *name, size_t len) {
     return 0;
 }
 
-/* Phase-1 git index writes call ftruncate after writing the full blob.
- * No SYS_FTRUNCATE yet; treat as success so commit/add work on tmpfs when
- * the fd already holds the intended bytes (hashfile write path). */
 int ftruncate(int fd, off_t length) {
-    (void)fd;
-    (void)length;
+    if (length < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (myos_syscall3(MYOS_SYS_FTRUNCATE, fd, (long)length, 0) == (long)MYOS_SYSERR) {
+        /* Not an fd, not open for writing (EBADF), or not a file that can
+         * be resized (EINVAL). */
+        errno = myos_syscall3(MYOS_SYS_FDFLAGS, fd, MYOS_FD_GET, 0) == (long)MYOS_SYSERR ? EBADF : EINVAL;
+        return -1;
+    }
     return 0;
 }
 
-int pipe(int fildes[2]) {
+/* pipe2's O_CLOEXEC: both ends close at exec. */
+int myos_pipe_flags(int fildes[2], int cloexec) {
     unsigned long fds[2];
     long ret;
 
@@ -142,7 +148,7 @@ int pipe(int fildes[2]) {
         return -1;
     }
     /* Kernel writes usize[2], not int[2]. */
-    ret = myos_syscall1(MYOS_SYS_PIPE, (long)(uintptr_t)fds);
+    ret = myos_syscall2(MYOS_SYS_PIPE, (long)(uintptr_t)fds, cloexec ? MYOS_FD_CLOEXEC : 0);
     if (ret == (long)MYOS_SYSERR) {
         errno = EMFILE;
         return -1;
@@ -152,6 +158,10 @@ int pipe(int fildes[2]) {
     myos_fd_nonblock_clear(fildes[0]);
     myos_fd_nonblock_clear(fildes[1]);
     return 0;
+}
+
+int pipe(int fildes[2]) {
+    return myos_pipe_flags(fildes, 0);
 }
 
 int _pipe(int fildes[2]) {

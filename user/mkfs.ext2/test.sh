@@ -51,6 +51,11 @@ ext2_held() {
 	[ "$got" = one ] && [ "$got2" = two ] && [ "$(cat /tmp/disk/h)" = new ] && [ "$(cat /tmp/disk/r)" = three ] \
 		&& rm /tmp/disk/h /tmp/disk/r
 }
+# The file calls on the disk: O_EXCL, ftruncate (blocks given back, zeros
+# when it grows again), pread/pwrite, close-on-exec (fileio_smoke.c).
+ext2_files() {
+	/bin/etc/fileio_smoke /tmp/disk
+}
 # A file's modification time, as a Linux program's stat sees it.
 ext2_mtime() {
 	echo x > /tmp/disk/m && linux /bin/linux/linux-smoke mtime /tmp/disk/m && rm /tmp/disk/m
@@ -61,6 +66,7 @@ t ext2_link ext2_link
 t ext2_big ext2_big
 t ext2_times ext2_times
 t ext2_held ext2_held
+t ext2_files ext2_files
 if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
 	t ext2_mtime ext2_mtime
 fi

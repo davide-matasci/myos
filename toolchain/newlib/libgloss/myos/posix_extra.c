@@ -28,7 +28,13 @@ int dup3(int oldfd, int newfd, int flags) {
         errno = EINVAL;
         return -1;
     }
-    return dup2(oldfd, newfd);
+    if (dup2(oldfd, newfd) < 0) {
+        return -1;
+    }
+    if (flags & O_CLOEXEC) {
+        fcntl(newfd, F_SETFD, FD_CLOEXEC);
+    }
+    return newfd;
 }
 
 int pipe2(int fds[2], int flags) {
@@ -36,7 +42,7 @@ int pipe2(int fds[2], int flags) {
         errno = EINVAL;
         return -1;
     }
-    if (pipe(fds) < 0) {
+    if (myos_pipe_flags(fds, flags & O_CLOEXEC) < 0) {
         return -1;
     }
     if (flags & O_NONBLOCK) {
@@ -54,47 +60,6 @@ int fsync(int fd) {
 
 int fdatasync(int fd) {
     return fsync(fd);
-}
-
-/* Positional I/O via lseek; the file offset is restored afterwards. */
-ssize_t pread(int fd, void *buf, size_t count, off_t offset) {
-    off_t cur;
-    ssize_t n;
-    int saved;
-    if (offset < 0) {
-        errno = EINVAL;
-        return -1;
-    }
-    cur = lseek(fd, 0, SEEK_CUR);
-    if (cur < 0 || lseek(fd, offset, SEEK_SET) < 0) {
-        errno = ESPIPE;
-        return -1;
-    }
-    n = read(fd, buf, count);
-    saved = errno;
-    lseek(fd, cur, SEEK_SET);
-    errno = saved;
-    return n;
-}
-
-ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset) {
-    off_t cur;
-    ssize_t n;
-    int saved;
-    if (offset < 0) {
-        errno = EINVAL;
-        return -1;
-    }
-    cur = lseek(fd, 0, SEEK_CUR);
-    if (cur < 0 || lseek(fd, offset, SEEK_SET) < 0) {
-        errno = ESPIPE;
-        return -1;
-    }
-    n = write(fd, buf, count);
-    saved = errno;
-    lseek(fd, cur, SEEK_SET);
-    errno = saved;
-    return n;
 }
 
 /* stdio locking: libgloss is single-threaded. */

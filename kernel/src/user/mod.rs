@@ -65,6 +65,8 @@ pub(crate) const MAX_EXEC_STRINGS: usize = 128 * 1024;
 const SYSERR: usize = usize::MAX;
 /// open(2) of a FIFO for writing with O_NONBLOCK and no reader (ENXIO).
 const SYSERR_ENXIO: usize = usize::MAX - 2;
+/// An `O_CREAT|O_EXCL` open of a name that is taken (EEXIST).
+const SYSERR_EEXIST: usize = usize::MAX - 4;
 /// The first process, from the initramfs.
 const INIT_PATH: &str = "/bin/custom/init";
 

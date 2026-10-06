@@ -22,7 +22,8 @@
 /// 27 added [`KernelApi::thread_place`] (a new thread's own CPU).
 /// 28 added the hooks that keep a file unlinked while it is held
 /// ([`ModuleVfsOps::unlink_keep`] and the `*_ino` ones).
-pub const ABI_VERSION: u32 = 28;
+/// 29 added [`ModuleVfsOps::set_size`] and `set_size_ino` (`ftruncate`).
+pub const ABI_VERSION: u32 = 29;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -174,6 +175,13 @@ pub struct ModuleVfsOps {
     pub stat_ino: Option<unsafe extern "C" fn(ino: u64, out: *mut VfsStatInfo) -> i32>,
     /// Nothing holds the file `unlink_keep` kept any more: free it.
     pub forget_ino: Option<unsafe extern "C" fn(ino: u64) -> i32>,
+    // --- ABI 29: file sizes ---
+    /// Optional: make the file `path` `size` bytes long, cut or grown with
+    /// zeros (`ftruncate`): 0, or negative. Without it the mount's files
+    /// cannot be resized (only emptied, by `truncate`).
+    pub set_size: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, size: u64) -> i32>,
+    /// [`ModuleVfsOps::set_size`] of a file `unlink_keep` kept.
+    pub set_size_ino: Option<unsafe extern "C" fn(ino: u64, size: u64) -> i32>,
 }
 
 /// [`ModuleVfsOps::read`]: nothing to read yet. A read through an fd waits
@@ -274,12 +282,15 @@ pub const MYOS_MAX_ARGC: usize = 1024;
 pub const MYOS_MAX_ENVC: usize = 1024;
 pub const MYOS_MAX_EXEC_STRINGS: usize = 128 * 1024;
 
-/// Native syscall results: anything from [`MYOS_SYSERR_EINTR`] up is a
+/// Native syscall results: anything from [`MYOS_SYSERR_LOWEST`] up is a
 /// failure sentinel (`usize::MAX` the generic one).
 pub const MYOS_SYSERR: usize = usize::MAX;
 pub const MYOS_SYSERR_EIO: usize = usize::MAX - 1;
 pub const MYOS_SYSERR_ENXIO: usize = usize::MAX - 2;
 pub const MYOS_SYSERR_EINTR: usize = usize::MAX - 3;
+pub const MYOS_SYSERR_EEXIST: usize = usize::MAX - 4;
+pub const MYOS_SYSERR_ESPIPE: usize = usize::MAX - 5;
+pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_ESPIPE;
 
 /// Native signal dispositions (`signal_get_action`): default, ignore; any
 /// other value is a caught handler's address. Native signal numbers are

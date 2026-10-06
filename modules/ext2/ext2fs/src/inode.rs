@@ -322,16 +322,95 @@ impl<D: Device> Fs<D> {
         Ok(())
     }
 
-    /// Free block `b` and, `depth` levels down, the blocks it points to.
-    fn free_tree(&mut self, b: u32, depth: usize) -> Result<()> {
+    /// Make `node` `size` bytes long; the caller writes the inode. A
+    /// shorter file gives back the blocks past its end (indirect ones too)
+    /// and the tail of its last block is zeroed, so that a later growth
+    /// reads zeros there; a longer one ends in a hole, which reads as zeros.
+    pub(crate) fn resize_data(&mut self, node: &mut Inode, size: u64) -> Result<()> {
+        if size > u32::MAX as u64 && !self.geo.large_file {
+            return Err(Error::TooBig);
+        }
+        let bs = self.geo.block_size as u64;
+        if size < node.size {
+            if size % bs != 0 {
+                let b = self.bmap(node, size / bs, false)?;
+                if b != 0 {
+                    let into = (size % bs) as usize;
+                    self.cache.modify(b, |blk| blk[into..].fill(0))?;
+                }
+            }
+            let keep = size.div_ceil(bs);
+            let per = (self.geo.block_size / 512) as u32;
+            let mut freed = 0;
+            for slot in keep.min(NDIRECT as u64) as usize..NDIRECT {
+                if node.block[slot] != 0 {
+                    self.free_block(node.block[slot])?;
+                    node.block[slot] = 0;
+                    freed += 1;
+                }
+            }
+            let p = self.geo.ptrs();
+            let (mut first, mut span) = (NDIRECT as u64, p);
+            for level in 0..3 {
+                let slot = IND + level;
+                if node.block[slot] != 0 && self.trim_tree(node.block[slot], level + 1, first, span, keep, &mut freed)? {
+                    node.block[slot] = 0;
+                }
+                first += span;
+                span *= p;
+            }
+            node.sectors -= freed * per;
+        }
+        node.size = size;
+        Ok(())
+    }
+
+    /// Free the blocks of the subtree under indirect block `b` (`depth`
+    /// levels of pointers, covering the `span` logical blocks from
+    /// `first`) that lie at or past logical block `keep`, counting them in
+    /// `freed`: true when `b` itself went too.
+    fn trim_tree(&mut self, b: u32, depth: usize, first: u64, span: u64, keep: u64, freed: &mut u32) -> Result<bool> {
+        if first + span <= keep {
+            return Ok(false);
+        }
+        if first >= keep {
+            *freed += self.free_tree(b, depth)?;
+            return Ok(true);
+        }
+        let child = span / self.geo.ptrs();
+        let ptrs: Vec<u32> = self.cache.read(b, |blk| blk.chunks_exact(4).map(|c| get32(c, 0)).collect())?;
+        for (i, &ptr) in ptrs.iter().enumerate() {
+            let at = first + i as u64 * child;
+            if ptr == 0 || at + child <= keep {
+                continue;
+            }
+            let gone = if depth == 1 {
+                self.free_block(ptr)?;
+                *freed += 1;
+                true
+            } else {
+                self.trim_tree(ptr, depth - 1, at, child, keep, freed)?
+            };
+            if gone {
+                self.cache.modify(b, |blk| put32(blk, i * 4, 0))?;
+            }
+        }
+        Ok(false)
+    }
+
+    /// Free block `b` and, `depth` levels down, the blocks it points to:
+    /// how many blocks that was.
+    fn free_tree(&mut self, b: u32, depth: usize) -> Result<u32> {
+        let mut n = 1;
         if depth > 0 {
             let ptrs: Vec<u32> = self.cache.read(b, |blk| {
                 blk.chunks_exact(4).map(|c| get32(c, 0)).filter(|&p| p != 0).collect()
             })?;
             for p in ptrs {
-                self.free_tree(p, depth - 1)?;
+                n += self.free_tree(p, depth - 1)?;
             }
         }
-        self.free_block(b)
+        self.free_block(b)?;
+        Ok(n)
     }
 }

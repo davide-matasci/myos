@@ -165,10 +165,10 @@ opendir(const char *name)
 		return NULL;
 	}
 	/* Checked through the fd, so it is the file listed whatever is renamed
-	 * meanwhile (O_NONBLOCK: a FIFO does not wait for a writer). A
-	 * directory a namespace makes up has no fd: checked and listed by its
-	 * path. */
-	fd = open(name, O_RDONLY | O_NONBLOCK);
+	 * meanwhile (O_NONBLOCK: a FIFO does not wait for a writer; O_CLOEXEC:
+	 * a program it execs does not inherit it). A directory a namespace
+	 * makes up has no fd: checked and listed by its path. */
+	fd = open(name, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
 	if ((fd >= 0 ? fstat(fd, &st) : stat(name, &st)) < 0) {
 		if (fd >= 0) {
 			close(fd);

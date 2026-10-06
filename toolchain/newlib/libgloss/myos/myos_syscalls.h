@@ -9,13 +9,13 @@ struct winsize;
 /* Per-process fd table size (kernel/src/task/mod.rs MAX_FDS). */
 #define MYOS_MAX_FDS 64
 
-#define MYOS_SYS_WRITE 0
 #define MYOS_SYS_EXIT 1
-#define MYOS_SYS_READ 3
 #define MYOS_SYS_CLOSE 4
 #define MYOS_SYS_FORK 6
 #define MYOS_SYS_WAIT 7
 #define MYOS_SYS_BRK 9
+/* pipe(fds, flags), dupfd(fd, min, flags): MYOS_FD_CLOEXEC in flags makes
+ * the new fds close at exec. */
 #define MYOS_SYS_PIPE 10
 #define MYOS_SYS_DUP2 11
 #define MYOS_SYS_EXECNAME 13
@@ -97,6 +97,20 @@ struct winsize;
 #define MYOS_AT_SYMLINK_NOFOLLOW 0x100
 #define MYOS_AT_REMOVEDIR 0x200
 #define MYOS_AT_EMPTY_PATH 0x1000
+/* pread(fd, buf, len, offset, flags) and pwrite(...): at the file position,
+ * which advances, or with MYOS_FILE_AT at `offset`, the position left as it
+ * is (MYOS_ESPIPE on a pipe or terminal). They are read and write too.
+ * ftruncate(fd, size): cut or grow (with zeros) a file open for writing.
+ * fdflags(fd, op, flags): MYOS_FD_GET returns the fd's flags, MYOS_FD_SET
+ * replaces them; the one flag is MYOS_FD_CLOEXEC (the fd closes at exec). */
+#define MYOS_SYS_PREAD 81
+#define MYOS_SYS_PWRITE 82
+#define MYOS_SYS_FTRUNCATE 83
+#define MYOS_SYS_FDFLAGS 84
+#define MYOS_FILE_AT 1
+#define MYOS_FD_GET 0
+#define MYOS_FD_SET 1
+#define MYOS_FD_CLOEXEC 1
 #define MYOS_MKNOD_DIR 0
 #define MYOS_MKNOD_FIFO 1
 #define MYOS_UTIME_NOW (-1LL)
@@ -117,6 +131,10 @@ struct winsize;
 #define MYOS_ENXIO ((unsigned long)-3)
 /* A blocking syscall interrupted by a caught signal (kernel SYSERR_EINTR). */
 #define MYOS_EINTR ((unsigned long)-4)
+/* An O_CREAT|O_EXCL open of a name that is taken. */
+#define MYOS_EEXIST ((unsigned long)-5)
+/* A read or write at an offset on a pipe or terminal. */
+#define MYOS_ESPIPE ((unsigned long)-6)
 
 /* Sleep `ns` nanoseconds (sleep.c). 0 = slept (or an event with
  * MYOS_SLEEP_ANY_EVENT); -1 with errno = EINTR when a caught signal ran. */
@@ -131,6 +149,8 @@ long myos_syscall6(long nr, long a0, long a1, long a2, long a3, long a4, long a5
 /* The names in a directory, one per line, into buf: `path` relative to
  * `dirfd` (at.c's dirfd and flag values, AT_EMPTY_PATH for the fd's own);
  * the bytes written, -1 with errno set. */
+/* pipe(2) with both ends closing at exec when `cloexec` (pipe2). */
+int myos_pipe_flags(int fildes[2], int cloexec);
 long myos_listdirat(int dirfd, const char *path, char *buf, size_t cap, int flags);
 
 /* The terminal behind an fd, through its files (ttyctl.c, docs/tty.md). */

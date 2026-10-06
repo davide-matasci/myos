@@ -34,7 +34,7 @@ pub fn ret(r: R) -> usize {
 
 /// A native result that is one of its failure sentinels.
 fn native_failed(r: usize) -> bool {
-    r >= crate::k::signal::SYSERR_EINTR
+    r >= crate::k::signal::SYSERR_LOWEST
 }
 
 pub(super) fn native(r: usize, generic: usize) -> R {
@@ -226,7 +226,6 @@ pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
 pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
     const O_ACCMODE: usize = 3;
     const O_CREAT: usize = 0o100;
-    const O_EXCL: usize = 0o200;
     const O_LARGEFILE: usize = 0o100000;
     const O_DIRECTORY: usize = 0o200000;
     const O_NOFOLLOW: usize = 0o400000;
@@ -249,13 +248,12 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
     if flags & O_DIRECTORY != 0 {
         return Err(if st.is_some() { ENOTDIR } else { ENOENT });
     }
-    if flags & O_CREAT != 0 && flags & O_EXCL != 0 && st.is_some() {
-        return Err(EEXIST);
-    }
     if flags & O_CREAT == 0 && st.is_none() {
         return Err(ENOENT);
     }
-    let native_flags = flags & !(O_EXCL | O_LARGEFILE | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    // `O_EXCL` is the native one: the name is checked and created in one
+    // step (`EEXIST` when it is taken).
+    let native_flags = flags & !(O_LARGEFILE | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     let fd = native(user::open_path(&p, native_flags), ENOENT)?;
     files::set(fd, view_path(&p), false);
     files::set_cloexec(fd, flags & O_CLOEXEC != 0);
@@ -287,24 +285,10 @@ pub fn close(fd: usize) -> R {
     if task::fd_close(fd) { Ok(0) } else { Err(EBADF) }
 }
 
-/// `ftruncate(fd, len)`. The VFS cuts a file only to nothing (an `O_TRUNC`
-/// open of it): a longer length is a zero written at its end, a shorter
-/// non-zero one is refused.
+/// `ftruncate(fd, len)`: the native one, on a file opened for writing.
 pub fn ftruncate(fd: usize, len: usize) -> R {
-    const O_WRONLY: usize = 1;
-    const O_TRUNC: usize = 0o1000;
-    let path = files::get(fd).filter(|e| !e.dir && e.sock.is_none()).ok_or(EINVAL)?.path;
-    let real = real_path(&path)?;
-    let size = fs::stat(&real).ok_or(EBADF)?.size as usize;
-    if len == 0 && size != 0 {
-        let t = native(user::open_path(&path, O_WRONLY | O_TRUNC), EIO)?;
-        task::fd_close(t);
-    } else if len > size {
-        write_at(&real, len - 1, &[0])?;
-    } else if len != 0 && len < size {
-        return Err(EINVAL);
-    }
-    Ok(0)
+    files::get(fd).filter(|e| !e.dir && e.sock.is_none()).ok_or(EINVAL)?;
+    native(user::sys_ftruncate(fd, len), EINVAL)
 }
 
 pub fn truncate(path: usize, len: usize) -> R {

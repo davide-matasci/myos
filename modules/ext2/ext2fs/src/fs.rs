@@ -446,6 +446,31 @@ impl<D: Device> Fs<D> {
         })
     }
 
+    /// Make the file `path` `size` bytes long: cut, or grown with zeros.
+    pub fn set_size(&mut self, path: &str, size: u64) -> Result<()> {
+        self.op(|fs| {
+            let ino = fs.resolve(path)?;
+            fs.resize(ino, size)
+        })
+    }
+
+    /// [`Fs::set_size`] of the file with inode `ino`.
+    pub fn set_size_ino(&mut self, ino: u32, size: u64) -> Result<()> {
+        self.op(|fs| fs.resize(ino, size))
+    }
+
+    fn resize(&mut self, ino: u32, size: u64) -> Result<()> {
+        let mut node = self.inode(ino)?;
+        match node.kind() {
+            Kind::File => {}
+            Kind::Dir => return Err(Error::IsDir),
+            _ => return Err(Error::Invalid),
+        }
+        self.resize_data(&mut node, size)?;
+        node.mtime = self.now();
+        self.write_inode(ino, &node)
+    }
+
     pub fn mkdir(&mut self, path: &str) -> Result<()> {
         self.op(|fs| {
             let (dir_ino, dir, name) = fs.parent(path)?;

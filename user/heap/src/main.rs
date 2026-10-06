@@ -139,17 +139,18 @@ fn main() -> ! {
     run_prog(b"/bin/sbase/echo", &[b"echo", b"[ OK ] sbase argv"]);
     run_prog(b"/bin/sbase/ls", &[b"ls", b"/bin/sbase"]);
     run_prog(b"/bin/sbase/pwd", &[b"pwd"]);
-    // TinyCC JIT: -nostdlib skips libgloss, so hi.c emits SYS_WRITE=0 itself.
+    // TinyCC JIT: -nostdlib skips libgloss, so hi.c makes the write itself:
+    // `pwrite` (82) with offset and flags 0, at the file position.
     // Needle is printed by the JIT'd main, not by heap.
     const HI_C: &[u8] = br#"
 __attribute__((used))
 long write(int fd, const void *buf, unsigned long n);
 #ifdef __x86_64__
-__asm__(".text\n.globl write\nwrite:\n mov $0, %rax\n syscall\n ret\n");
+__asm__(".text\n.globl write\nwrite:\n mov $82, %rax\n xor %r10, %r10\n xor %r8, %r8\n syscall\n ret\n");
 #elif defined(__aarch64__)
-__asm__(".text\n.globl write\nwrite:\n mov x8, 0\n .int 0xd4000001\n ret\n");
+__asm__(".text\n.globl write\nwrite:\n mov x8, 82\n mov x3, 0\n mov x4, 0\n .int 0xd4000001\n ret\n");
 #elif defined(__riscv)
-__asm__(".text\n.globl write\nwrite:\n li a7, 0\n ecall\n ret\n");
+__asm__(".text\n.globl write\nwrite:\n li a7, 82\n li a3, 0\n li a4, 0\n ecall\n ret\n");
 #endif
 int main(void) { write(1, "[ OK ] tcc\n", 11); return 0; }
 "#;
