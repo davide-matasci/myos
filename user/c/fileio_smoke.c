@@ -395,6 +395,14 @@ static void locks(void) {
     unlink(f);
 }
 
+/* fstat of what `path` names now (an fd's view, not the path's twice). */
+static int stat_named(const char *path, struct stat *st) {
+    int fd = open(path, O_RDONLY), ok;
+    ok = fd >= 0 && fstat(fd, st) == 0;
+    close(fd);
+    return ok;
+}
+
 static void inodes(void) {
     const char *a = in_dir("inode-a"), *b = in_dir("inode-b");
     struct stat before, after;
@@ -404,18 +412,18 @@ static void inodes(void) {
     unlink(b);
     fd = open(a, O_RDWR | O_CREAT | O_TRUNC, 0644);
     check(fd >= 0 && write(fd, "one", 3) == 3, "open inode-a");
-    check(stat(a, &before) == 0, "stat inode-a");
+    check(fstat(fd, &before) == 0, "fstat inode-a");
     /* The fd follows the file through a rename. */
     check(rename(a, b) == 0, "rename");
     check(pwrite(fd, "two", 3, 3) == 3, "write after the rename");
-    check(stat(b, &after) == 0 && after.st_size == 6, "the write reached the renamed file");
+    check(stat_named(b, &after) && after.st_size == 6, "the write reached the renamed file");
     check(after.st_ino == before.st_ino, "the inode number stays across a rename");
     /* A file renamed over keeps living for its fds. */
     close(open(a, O_WRONLY | O_CREAT | O_TRUNC, 0644));
     check(rename(a, b) == 0, "rename over");
     check(pread(fd, buf, 6, 0) == 6 && memcmp(buf, "onetwo", 6) == 0, "the replaced file is still read");
     check(fstat(fd, &after) == 0 && after.st_ino == before.st_ino, "fstat: still the same file");
-    check(stat(b, &after) == 0 && after.st_ino != before.st_ino && after.st_size == 0, "the name is the new file");
+    check(stat_named(b, &after) && after.st_ino != before.st_ino && after.st_size == 0, "the name is the new file");
     close(fd);
     unlink(b);
 }
