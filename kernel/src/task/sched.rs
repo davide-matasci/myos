@@ -515,10 +515,8 @@ pub fn wake_task(slot: usize) {
     kick(kicks);
 }
 
-/// The earliest pending sleep deadline (monotonic ns; `u64::MAX` for none),
-/// for arches that program their timer for it instead of waiting for the
-/// next periodic tick (aarch64, riscv64; x86 ticks at 1 kHz).
-#[allow(dead_code)]
+/// The earliest pending sleep deadline (monotonic ns; `u64::MAX` for none):
+/// each arch programs its timer for it when it comes before the next tick.
 pub fn next_deadline_ns() -> u64 {
     NEXT_DEADLINE.load(Ordering::SeqCst)
 }

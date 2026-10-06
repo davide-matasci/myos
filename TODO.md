@@ -68,7 +68,7 @@ sized with `ftruncate`).
 ## Self-hosting speed
 
 Building core+alloc inside myos (the first step of `linux-compat/self-host.sh`)
-takes ~1250 s under TCG with `-smp 4` (it varies by ±15% between runs on a
+takes ~1150 s under TCG with `-smp 4` (it varies by ±15% between runs on a
 shared host); Alpine's Linux takes 591 s in the same QEMU (41 s natively).
 
 QEMU's `info jit` showed myos making QEMU translate more code and
@@ -79,12 +79,10 @@ that: 30x fewer invalidations, 21% less translated code, no flush of
 QEMU's code buffer. The build did not get faster: translation was not
 the bottleneck. The build runs mostly on one vCPU (15 min of its CPU in
 both kernels), so the gap to Linux is in how fast that vCPU runs rustc.
-Not yet measured:
+The x86 tick went from 1 kHz to 100 Hz (1156 s against 1290-1338 s);
+an idle CPU still ticks (a tickless one would leave QEMU's vCPU thread
+asleep). Not yet measured:
 
-- **The 1 kHz tick**: ~2000 schedules a second on every CPU, idle ones
-  too (each takes the scheduler lock). Every interrupt makes QEMU leave its
-  translated code; Linux ticks at 100-250 Hz and not at all when idle, and
-  a tickless idle CPU would leave QEMU's vCPU thread asleep.
 - **TLB flushes**: ~1.1M partial flushes per build (each costs QEMU its
   softmmu TLB entries for the page, then refills).
 
