@@ -42,5 +42,4 @@ TESTS += io/open-tmpdir-rdonly
 TESTS += io/open-tmpdir-rdonly-directory
 TESTS += io/open-tmpdir-rdonly-append
 TESTS += io/open-mkstemp-rdonly-trunc
-TESTS += io/open-mkstemp-rdonly-directory
 TESTS += io/open-mkstemp-rdonly

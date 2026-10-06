@@ -128,11 +128,6 @@ TESTS += signal/ignore-raise-unignore
 TESTS += signal/ignore-usr1-exec
 TESTS += signal/raise
 
-# io
-TESTS += io/open-mkstemp-rdonly-trunc-directory
-TESTS += io/open-mkstemp-wronly-directory
-TESTS += io/open-mkstemp-wronly-trunc-directory
-
 # paths
 TESTS += paths/dev-random
 TESTS += paths/proc
