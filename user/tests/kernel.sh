@@ -294,6 +294,69 @@ usb_hotplug_busy_reuse() {
 }
 t usb_hotplug_busy_reuse usb_hotplug_busy_reuse
 
+# Live frame count (allocated minus freed) from /proc/meminfo.
+frames_live() {
+	set -- $(grep '^FramesLive:' /proc/meminfo)
+	echo "$2"
+}
+
+# Exiting a process must free all of its memory. Fork many children that exit
+# at once (no exec, so the page cache does not grow) and confirm the live
+# frame count returns to its baseline: a per-exit leak would ratchet it up.
+mem_fork_no_leak() {
+	frames_live > /dev/null # warm the grep path (caches its code once)
+	before=$(frames_live)
+	i=0
+	while [ $i -lt 60 ]; do
+		(:)
+		i=$((i + 1))
+	done
+	after=$(frames_live)
+	echo "mem: fork/exit x60 FramesLive $before -> $after (delta $((after - before)))"
+	[ "$((after - before))" -le 8 ]
+}
+t mem_fork_no_leak mem_fork_no_leak
+
+# The same across fork+exec+exit of a real program. Its code is cached on the
+# first run (PageCacheKiB), so after a warm-up the repeated runs must add no
+# persistent frames.
+mem_exec_no_leak() {
+	/bin/etc/hello > /dev/null 2>&1 # warm: cache the program's pages
+	frames_live > /dev/null
+	before=$(frames_live)
+	i=0
+	while [ $i -lt 40 ]; do
+		/bin/etc/hello > /dev/null 2>&1
+		i=$((i + 1))
+	done
+	after=$(frames_live)
+	echo "mem: exec x40 FramesLive $before -> $after (delta $((after - before)))"
+	[ "$((after - before))" -le 16 ]
+}
+t mem_exec_no_leak mem_exec_no_leak
+
+# A memory hog must not crash the kernel, and its pages must all come back.
+# memhog mmaps and touches a large region; the kernel either serves it (and
+# reclaims every page on exit) or, when memory runs low, fails the fault so
+# the hog dies — never aborting the kernel. Either way we must reach here with
+# the live frame count back at its baseline.
+#
+# The sleep is load-bearing: a dying process is reaped by its parent (SIGCHLD)
+# *before* it frees its address space — `reclaim_user_aspace` runs afterwards on
+# the exiting task and the big heap/mmap walk can be preempted, so for a moment
+# after the shell returns the hog's ~256 MiB is still live. It is all freed a
+# beat later; sample after it settles, not in that window.
+mem_hog_survives() {
+	frames_live > /dev/null
+	before=$(frames_live)
+	/bin/etc/memhog 256 || true # may be SIGSEGV-killed under pressure
+	sleep 1                     # let the exiting hog finish reclaiming
+	after=$(frames_live)
+	echo "mem: hog 256MiB FramesLive $before -> $after (delta $((after - before)))"
+	[ "$((after - before))" -le 64 ]
+}
+t mem_hog_survives mem_hog_survives
+
 # A module's character device is a directory: the NIC's `data` is the
 # device, its `ctl` names the MAC and whether its interrupt works.
 net_ctl() {
