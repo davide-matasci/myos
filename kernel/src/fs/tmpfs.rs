@@ -35,7 +35,11 @@ enum Kind {
 }
 
 struct Entry {
+    /// For a file unlinked while held (`unlink_keep`): `\0` and its id, a
+    /// name no path reaches (the VFS refuses a NUL) and listings leave out.
     path: String,
+    /// The file's id (`vfs::FileOps`) and inode number: unique until reboot.
+    id: u64,
     kind: Kind,
     /// Seconds since the epoch: set at creation and by `set_times`; reads
     /// do not change `atime`.
@@ -47,7 +51,68 @@ struct Entry {
 
 impl Entry {
     fn new(path: &str, kind: Kind, now: u64) -> Entry {
-        Entry { path: String::from(path), kind, atime: now, mtime: now }
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        Entry { path: String::from(path), id, kind, atime: now, mtime: now }
+    }
+}
+
+/// The next file id (1 is the mount root's inode number).
+static NEXT_ID: AtomicU64 = AtomicU64::new(2);
+
+/// The tmpfs's files by id: what an open file uses ([`crate::fs::vfs::FileOps`]).
+pub const FILES: crate::fs::vfs::FileOps = crate::fs::vfs::FileOps {
+    id: file_id,
+    read: |id, pos, out| read_at(At::Id(id), pos, out),
+    write: |id, pos, buf| write_at(At::Id(id), pos, buf),
+    stat: |id| stat_at(At::Id(id)),
+    set_size: |id, size| set_size_at(At::Id(id), size),
+    set_times: |id, atime, mtime| set_times_at(At::Id(id), atime, mtime),
+    unlink_keep,
+    forget,
+};
+
+/// How a call names its entry: by path in the mount, or by the id an open
+/// file keeps.
+#[derive(Clone, Copy)]
+enum At<'a> {
+    Path(&'a str),
+    Id(u64),
+}
+
+fn index_at(entries: &[Entry], at: At) -> Option<usize> {
+    match at {
+        At::Path(name) if valid_rel_path(name) => find_index(entries, name),
+        At::Path(_) => None,
+        At::Id(id) => entries.iter().position(|e| e.id == id),
+    }
+}
+
+/// The id of the entry at `name`.
+fn file_id(name: &str) -> Option<u64> {
+    let entries = ENTRIES.lock();
+    index_at(&entries, At::Path(name)).map(|i| entries[i].id)
+}
+
+/// Unlink the file at `name` but keep it, by its id, for whoever holds it.
+fn unlink_keep(name: &str) -> bool {
+    let now = now();
+    let mut entries = ENTRIES.lock();
+    let Some(i) = index_at(&entries, At::Path(name)) else {
+        return false;
+    };
+    if !matches!(entries[i].kind, Kind::File(_)) {
+        return false;
+    }
+    entries[i].path = alloc::format!("\0{}", entries[i].id);
+    touch_dir(&mut entries, parent_of(name), now);
+    true
+}
+
+/// The file `unlink_keep` kept is let go.
+fn forget(id: u64) {
+    let mut entries = ENTRIES.lock();
+    if let Some(i) = entries.iter().position(|e| e.id == id && e.path.starts_with('\0')) {
+        entries.remove(i);
     }
 }
 
@@ -176,12 +241,16 @@ pub fn truncate(name: &str) -> bool {
 
 /// Make the file `name` `size` bytes long: cut, or grown with zeros.
 pub fn set_size(name: &str, size: usize) -> bool {
-    if !valid_rel_path(name) || size > FILE_CAP {
+    set_size_at(At::Path(name), size)
+}
+
+fn set_size_at(at: At, size: usize) -> bool {
+    if size > FILE_CAP {
         return false;
     }
     let now = now();
     let mut entries = ENTRIES.lock();
-    let Some(i) = find_index(&entries, name) else {
+    let Some(i) = index_at(&entries, at) else {
         return false;
     };
     let Kind::File(data) = &mut entries[i].kind else {
@@ -199,11 +268,12 @@ pub fn set_size(name: &str, size: usize) -> bool {
 }
 
 pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
-    if !valid_rel_path(name) {
-        return 0;
-    }
+    read_at(At::Path(name), pos, out)
+}
+
+fn read_at(at: At, pos: usize, out: &mut [u8]) -> usize {
     let entries = ENTRIES.lock();
-    let Some(i) = find_index(&entries, name) else {
+    let Some(i) = index_at(&entries, at) else {
         return 0;
     };
     let Kind::File(data) = &entries[i].kind else {
@@ -217,14 +287,13 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 }
 
 pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
-    if !valid_rel_path(name) {
-        return None;
-    }
+    write_at(At::Path(name), pos, buf)
+}
+
+fn write_at(at: At, pos: usize, buf: &[u8]) -> Option<usize> {
     let now = now();
     let mut entries = ENTRIES.lock();
-    let Some(i) = find_index(&entries, name) else {
-        return None;
-    };
+    let i = index_at(&entries, at)?;
     let entry = &mut entries[i];
     let Kind::File(data) = &mut entry.kind else {
         return None;
@@ -535,11 +604,12 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             atime: ROOT_ATIME.load(Ordering::Relaxed),
         });
     }
-    if !valid_rel_path(name) {
-        return None;
-    }
+    stat_at(At::Path(name))
+}
+
+fn stat_at(at: At) -> Option<StatInfo> {
     let entries = ENTRIES.lock();
-    let i = find_index(&entries, name)?;
+    let i = index_at(&entries, at)?;
     let (mode, size, nlink) = match &entries[i].kind {
         Kind::Dir => (S_IFDIR | 0o755, 0u32, 2u32),
         Kind::File(data) => (S_IFREG | 0o755, data.len() as u32, 1u32),
@@ -549,7 +619,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     Some(StatInfo {
         mode,
         size,
-        ino: (i as u32) + 2,
+        ino: entries[i].id as u32,
         nlink,
         dev: 0,
         mtime: entries[i].mtime,
@@ -569,11 +639,12 @@ pub fn set_times(name: &str, atime: Option<u64>, mtime: Option<u64>) -> bool {
         }
         return true;
     }
-    if !valid_rel_path(name) {
-        return false;
-    }
+    set_times_at(At::Path(name), atime, mtime)
+}
+
+fn set_times_at(at: At, atime: Option<u64>, mtime: Option<u64>) -> bool {
     let mut entries = ENTRIES.lock();
-    let Some(i) = find_index(&entries, name) else {
+    let Some(i) = index_at(&entries, at) else {
         return false;
     };
     if let Some(t) = atime {

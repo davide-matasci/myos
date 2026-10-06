@@ -67,6 +67,12 @@ const SYSERR: usize = usize::MAX;
 const SYSERR_ENXIO: usize = usize::MAX - 2;
 /// An `O_CREAT|O_EXCL` open of a name that is taken (EEXIST).
 const SYSERR_EEXIST: usize = usize::MAX - 4;
+/// An `O_NOFOLLOW` open of a symlink (ELOOP).
+const SYSERR_ELOOP: usize = usize::MAX - 6;
+/// An `O_DIRECTORY` open of something else (ENOTDIR).
+const SYSERR_ENOTDIR: usize = usize::MAX - 7;
+/// A file lock someone else holds, asked for without waiting (EAGAIN).
+const SYSERR_EAGAIN: usize = usize::MAX - 8;
 /// The first process, from the initramfs.
 const INIT_PATH: &str = "/bin/custom/init";
 

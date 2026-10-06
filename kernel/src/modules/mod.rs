@@ -123,6 +123,7 @@ static API: KernelApi = KernelApi {
     mmap_discard: api_mmap_discard,
     vfs_set_times: api_vfs_set_times,
     thread_place: api_thread_place,
+    fd_lockctl: api_fd_lockctl,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1037,6 +1038,13 @@ unsafe extern "C" fn api_fd_kind(fd: usize, size: *mut usize) -> i32 {
 
 unsafe extern "C" fn api_fd_poll_bits(fd: usize) -> i32 {
     crate::task::fd_poll_bits(fd).map_or(-1, |b| b as i32)
+}
+
+unsafe extern "C" fn api_fd_lockctl(fd: usize, cmd: usize, lock: *mut myos_abi::MyosLockRange) -> usize {
+    match unsafe { lock.as_mut() } {
+        Some(lock) => crate::user::lockctl(fd, cmd, lock),
+        None => usize::MAX,
+    }
 }
 
 unsafe extern "C" fn api_fd_dup_min(fd: usize, min: usize) -> i32 {

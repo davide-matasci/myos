@@ -138,6 +138,24 @@ const SYS_FTRUNCATE: usize = 83;
 /// `fdflags(fd, op, flags)`: the fd's own flags ([`FD_CLOEXEC`]):
 /// [`FD_GET`] returns them, [`FD_SET`] replaces them.
 const SYS_FDFLAGS: usize = 84;
+/// `flock(fd, op)`: [`LOCK_SH`] or [`LOCK_EX`] the whole file for the
+/// fd's open file description, or [`LOCK_UN`]; with [`LOCK_NB`] `EAGAIN`
+/// rather than a wait when someone else holds it (`fs::lock`).
+const SYS_FLOCK: usize = 85;
+/// `lockctl(fd, cmd, lock)`: a record lock on the fd's file, `lock` a
+/// `myos_abi::MyosLockRange` (kind, start, length, owner): [`LOCKCTL_GET`] writes the first conflicting lock into it
+/// (or an unlock), [`LOCKCTL_SET`] sets it (`EAGAIN` when someone else's
+/// conflicts), [`LOCKCTL_WAIT`] waits for it. The process owns the lock,
+/// or with [`LOCKCTL_OFD`] the fd's open file description.
+const SYS_LOCKCTL: usize = 86;
+const LOCK_SH: usize = 1;
+const LOCK_EX: usize = 2;
+const LOCK_NB: usize = 4;
+const LOCK_UN: usize = 8;
+const LOCKCTL_GET: usize = 0;
+const LOCKCTL_SET: usize = 1;
+const LOCKCTL_WAIT: usize = 2;
+const LOCKCTL_OFD: usize = 0x10;
 /// `pread`/`pwrite` flags: at the offset given, not the file position.
 const FILE_AT: usize = 1;
 /// `fdflags` operations, and its one flag: the fd closes at exec (also
@@ -300,6 +318,8 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
             if task::fd_set_size(a0, a1) { 0 } else { SYSERR }
         }
         SYS_FDFLAGS => sys_fdflags(a0, a1, a2),
+        SYS_FLOCK => sys_flock(a0, a1),
+        SYS_LOCKCTL => sys_lockctl(a0, a1, a2),
         at::SYS_OPENAT..=at::SYS_EXECAT => {
             let [a3, a4, a5] = regs.args_3_5();
             match nr {
@@ -424,6 +444,11 @@ const O_EXCL: u32 = 0o200;
 const O_TRUNC: u32 = 0o1000;
 /// The new fd closes at exec.
 const O_CLOEXEC: u32 = 0o2000000;
+/// A symlink in the last component is not followed but refused (`ELOOP`).
+const O_NOFOLLOW: u32 = 0o400000;
+/// Only a directory opens (`ENOTDIR`).
+const O_DIRECTORY: u32 = 0o200000;
+const S_IFLNK: u32 = 0o120000;
 
 pub(super) fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
     if len == 0 || len > MAX_PATH {
@@ -485,7 +510,7 @@ fn sys_rmmod(ptr: usize, name_len: usize) -> usize {
 pub(crate) fn open_path(path: &str, flags: usize) -> usize {
     let excl = open_excl(flags);
     let tree = if excl { fs::vfs::hold_write() } else { fs::vfs::hold_read() };
-    let real = if excl { resolve_copied_path_nofollow(path) } else { resolve_copied_path(path) };
+    let real = if open_follows(flags) { resolve_copied_path(path) } else { resolve_copied_path_nofollow(path) };
     match real {
         Some(real) => open_real(real, None, flags, tree),
         None => SYSERR,
@@ -498,6 +523,13 @@ pub(crate) fn open_path(path: &str, flags: usize) -> usize {
 /// (one at the name means it is taken).
 pub(super) fn open_excl(flags: usize) -> bool {
     flags as u32 & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL
+}
+
+/// Whether an open with `flags` follows a symlink in the last component:
+/// not for `O_NOFOLLOW` (a symlink there is `ELOOP`) nor for a new file
+/// ([`open_excl`]).
+pub(super) fn open_follows(flags: usize) -> bool {
+    !open_excl(flags) && flags as u32 & O_NOFOLLOW == 0
 }
 
 /// Open the file at `path` (real, resolved) for the caller, with the tree
@@ -523,6 +555,14 @@ pub(super) fn open_real(
     }
     if exists && open_excl(flags) {
         return SYSERR_EEXIST;
+    }
+    // Not followed (`open_follows`): what the name is itself.
+    let kind = fs::stat(&path).map(|st| st.mode & fs::S_IFMT);
+    if flags as u32 & O_NOFOLLOW != 0 && kind == Some(S_IFLNK) {
+        return SYSERR_ELOOP;
+    }
+    if flags as u32 & O_DIRECTORY != 0 && kind.is_some_and(|k| k != S_IFDIR) {
+        return SYSERR_ENOTDIR;
     }
     let fd = open_fd(path, rights, flags, tree);
     if fd < task::MAX_FDS && flags as u32 & O_CLOEXEC != 0 {
@@ -1244,6 +1284,100 @@ fn sys_dupfd(oldfd: usize, minfd: usize, flags: usize) -> usize {
     match task::fd_dup_min(oldfd, minfd, flags & FD_CLOEXEC != 0) {
         Some(fd) => fd,
         None => SYSERR,
+    }
+}
+
+fn lock_result(r: Result<(), fs::lock::Refused>) -> usize {
+    match r {
+        Ok(()) => 0,
+        Err(fs::lock::Refused::Busy) => SYSERR_EAGAIN,
+        Err(fs::lock::Refused::Interrupted) => crate::signal::SYSERR_EINTR,
+    }
+}
+
+fn sys_flock(fd: usize, op: usize) -> usize {
+    use fs::lock::{Kind, Owner, TO_END};
+    let Some((node, desc)) = task::fd_lock_target(fd) else {
+        return SYSERR;
+    };
+    let owner = Owner::Flock(desc);
+    let kind = match op & !LOCK_NB {
+        LOCK_SH => Kind::Shared,
+        LOCK_EX => Kind::Exclusive,
+        LOCK_UN => return lock_result(fs::lock::set(node, owner, None, 0, TO_END, false)),
+        _ => return SYSERR,
+    };
+    match fs::lock::set(node, owner, Some(kind), 0, TO_END, false) {
+        Err(fs::lock::Refused::Busy) if op & LOCK_NB == 0 => {
+            // A conversion lets go of the old lock before it waits (as
+            // Linux does), so two processes converting cannot wait for
+            // each other forever.
+            let _ = fs::lock::set(node, owner, None, 0, TO_END, false);
+            lock_result(fs::lock::set(node, owner, Some(kind), 0, TO_END, true))
+        }
+        r => lock_result(r),
+    }
+}
+
+fn sys_lockctl(fd: usize, cmd: usize, ptr: usize) -> usize {
+    const N: usize = core::mem::size_of::<LockRange>();
+    let mut raw = [0u8; N];
+    if !buffer_ok(ptr, N) || !copy_from_user(task::current_aspace(), ptr, &mut raw) {
+        return SYSERR;
+    }
+    let mut lock: LockRange = unsafe { core::mem::transmute(raw) };
+    let ret = lockctl(fd, cmd, &mut lock);
+    if ret == 0 && cmd & !LOCKCTL_OFD == LOCKCTL_GET {
+        let out: [u8; N] = unsafe { core::mem::transmute(lock) };
+        if !copy_to_user(task::current_aspace(), ptr, &out) {
+            return SYSERR;
+        }
+    }
+    ret
+}
+
+/// [`SYS_LOCKCTL`]'s lock (the module ABI's, which `KernelApi::fd_lockctl`
+/// takes too).
+type LockRange = myos_abi::MyosLockRange;
+
+/// [`SYS_LOCKCTL`] with the lock in kernel memory.
+pub(crate) fn lockctl(fd: usize, cmd: usize, lock: &mut LockRange) -> usize {
+    use fs::lock::{Kind, Owner, TO_END};
+    let Some((node, desc)) = task::fd_lock_target(fd) else {
+        return SYSERR;
+    };
+    let owner = if cmd & LOCKCTL_OFD != 0 { Owner::Ofd(desc) } else { Owner::Process(task::current_pid()) };
+    let kind = match lock.kind {
+        0 => Some(Kind::Shared),
+        1 => Some(Kind::Exclusive),
+        2 => None,
+        _ => return SYSERR,
+    };
+    let end = if lock.len == 0 { TO_END } else { lock.start.saturating_add(lock.len) };
+    match cmd & !LOCKCTL_OFD {
+        LOCKCTL_GET => {
+            let Some(kind) = kind else {
+                return SYSERR;
+            };
+            match fs::lock::conflict(node, owner, kind, lock.start, end) {
+                Some(l) => {
+                    lock.kind = if l.kind == Kind::Exclusive { 1 } else { 0 };
+                    lock.start = l.start;
+                    lock.len = if l.end == TO_END { 0 } else { l.end - l.start };
+                    lock.pid = match l.owner {
+                        Owner::Process(pid) => pid as i64,
+                        _ => -1,
+                    };
+                }
+                None => lock.kind = 2,
+            }
+            0
+        }
+        LOCKCTL_SET | LOCKCTL_WAIT => {
+            let wait = cmd & !LOCKCTL_OFD == LOCKCTL_WAIT;
+            lock_result(fs::lock::set(node, owner, kind, lock.start, end, wait))
+        }
+        _ => SYSERR,
     }
 }
 

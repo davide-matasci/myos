@@ -626,6 +626,8 @@ pub fn die() -> ! {
     // Closed outside TASKS below: dropping pipe/pty ends wakes their peers
     // (and a pty hangup signals the session), which take TASKS themselves.
     let mut fds_to_drop: Option<[FdEntry; MAX_FDS]> = None;
+    // Its record locks go with it (`fs::lock`).
+    let mut lock_owner = None;
     let reclaim = {
         let mut tasks = TASKS.lock();
         let id = current_slot();
@@ -645,6 +647,7 @@ pub fn die() -> ! {
             let aspace = tasks[id].aspace;
             tasks[id].aspace = 0;
             tasks[id].exited = true;
+            lock_owner = Some(crate::fs::lock::Owner::Process(tasks[id].tgid));
             let p = tasks.proc_mut(id);
             fds_to_drop = Some(p.fds);
             p.fds = [FdEntry::Empty; MAX_FDS];
@@ -669,6 +672,9 @@ pub fn die() -> ! {
         for entry in fds {
             fd_drop(entry);
         }
+    }
+    if let Some(owner) = lock_owner {
+        crate::fs::lock::release(owner);
     }
     // Notify the parent now that the TASKS lock is dropped: the exit status
     // is final, so the parent can reap it while this task still frees its

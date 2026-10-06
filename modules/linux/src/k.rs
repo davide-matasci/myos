@@ -44,6 +44,7 @@ const SYS_GETTIMEOFDAY: usize = 33;
 const SYS_WAITPID: usize = 46;
 const SYS_PREAD: usize = 81;
 const SYS_FTRUNCATE: usize = 83;
+const SYS_FLOCK: usize = 85;
 
 /// A native syscall that does not read the register block.
 fn native(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
@@ -131,6 +132,13 @@ pub mod user {
     }
     pub fn sys_ftruncate(fd: usize, size: usize) -> usize {
         native(SYS_FTRUNCATE, fd, size, 0)
+    }
+    pub fn sys_flock(fd: usize, op: usize) -> usize {
+        native(SYS_FLOCK, fd, op, 0)
+    }
+    /// A record lock on `fd`'s file (`fs::lock`): 0 or a native failure.
+    pub fn fd_lockctl(fd: usize, cmd: usize, lock: &mut myos_abi::MyosLockRange) -> usize {
+        unsafe { (api().fd_lockctl)(fd, cmd, lock) }
     }
     pub fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         native(SYS_MPROTECT, addr, len, prot)
@@ -453,6 +461,9 @@ pub mod signal {
     pub const SYSERR_EINTR: usize = myos_abi::MYOS_SYSERR_EINTR;
     pub const SYSERR_EEXIST: usize = myos_abi::MYOS_SYSERR_EEXIST;
     pub const SYSERR_ESPIPE: usize = myos_abi::MYOS_SYSERR_ESPIPE;
+    pub const SYSERR_ELOOP: usize = myos_abi::MYOS_SYSERR_ELOOP;
+    pub const SYSERR_ENOTDIR: usize = myos_abi::MYOS_SYSERR_ENOTDIR;
+    pub const SYSERR_EAGAIN: usize = myos_abi::MYOS_SYSERR_EAGAIN;
     /// The lowest of the native failure sentinels: a result at or above it
     /// failed.
     pub const SYSERR_LOWEST: usize = myos_abi::MYOS_SYSERR_LOWEST;

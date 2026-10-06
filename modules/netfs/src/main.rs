@@ -1140,6 +1140,8 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         forget_ino: None,
         set_size: None,
         set_size_ino: None,
+        file_id: None,
+        set_times_ino: None,
         readlink: None,
     };
     let mount_rc = unsafe {

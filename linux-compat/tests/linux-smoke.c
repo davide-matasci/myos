@@ -261,7 +261,33 @@ static void check_toolchain_calls(char *self) {
     check(pwrite(fd, "ab", 2, 10) == 2 && pread(fd, b, 2, 10) == 2 && memcmp(b, "ab", 2) == 0,
           "pwrite");
     check(flock(fd, LOCK_EX) == 0 && fsync(fd) == 0 && flock(fd, LOCK_UN) == 0, "flock, fsync");
+    /* Locks are kept: another process meets them. */
+    struct flock fl = {.l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 10};
+    check(flock(fd, LOCK_EX) == 0 && fcntl(fd, F_SETLK, &fl) == 0, "F_SETLK");
+    pid_t pid = fork();
+    if (pid == 0) {
+        int mine = open("/tmp/linux-smoke.trunc", O_RDWR);
+        struct flock want = {.l_type = F_RDLCK, .l_whence = SEEK_SET, .l_start = 5, .l_len = 1};
+        struct flock ofd = {.l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 9, .l_len = 1};
+        struct flock free_ = {.l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 10, .l_len = 0};
+        int ok = flock(mine, LOCK_EX | LOCK_NB) < 0 && errno == EWOULDBLOCK &&
+                 fcntl(mine, F_SETLK, &want) < 0 && errno == EAGAIN &&
+                 fcntl(mine, F_GETLK, &want) == 0 && want.l_type == F_WRLCK && want.l_pid == getppid() &&
+                 fcntl(mine, F_OFD_SETLK, &ofd) < 0 && errno == EAGAIN && fcntl(mine, F_SETLK, &free_) == 0;
+        _exit(ok ? 0 : 1);
+    }
+    int lstatus = 0;
+    check(pid > 0 && waitpid(pid, &lstatus, 0) == pid && WIFEXITED(lstatus) && WEXITSTATUS(lstatus) == 0,
+          "flock and record locks are kept");
     close(fd);
+    /* No hard links; O_NOFOLLOW and O_DIRECTORY are kept. */
+    check(link("/tmp/linux-smoke.trunc", "/tmp/linux-smoke.link") < 0 && errno == EPERM, "link: EPERM");
+    unlink("/tmp/linux-smoke.link");
+    check(symlink("linux-smoke.trunc", "/tmp/linux-smoke.link") == 0 &&
+              open("/tmp/linux-smoke.link", O_RDONLY | O_NOFOLLOW) < 0 && errno == ELOOP,
+          "O_NOFOLLOW");
+    check(open("/tmp/linux-smoke.trunc", O_RDONLY | O_DIRECTORY) < 0 && errno == ENOTDIR, "O_DIRECTORY");
+    unlink("/tmp/linux-smoke.link");
     unlink("/tmp/linux-smoke.trunc");
 
     /* MADV_DONTNEED: the pages read as zero again (allocators count on it). */

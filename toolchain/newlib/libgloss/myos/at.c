@@ -173,6 +173,8 @@ int _access(const char *path, int mode) {
 #define MYOS_K_O_NONBLOCK 0x800
 #define MYOS_K_O_EXCL 0x80
 #define MYOS_K_O_CLOEXEC 0x80000
+#define MYOS_K_O_DIRECTORY 0x10000
+#define MYOS_K_O_NOFOLLOW 0x20000
 
 static long k_oflags(int flags) {
     long k = (long)(flags & O_ACCMODE);
@@ -194,6 +196,12 @@ static long k_oflags(int flags) {
     if (flags & O_CLOEXEC) {
         k |= MYOS_K_O_CLOEXEC;
     }
+    if (flags & O_NOFOLLOW) {
+        k |= MYOS_K_O_NOFOLLOW; /* ELOOP for a symlink */
+    }
+    if (flags & O_DIRECTORY) {
+        k |= MYOS_K_O_DIRECTORY; /* ENOTDIR for anything but a directory */
+    }
     return k;
 }
 
@@ -207,6 +215,10 @@ int openat(int dirfd, const char *path, int flags, ...) {
     ret = myos_syscall6(MYOS_SYS_OPENAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, k_oflags(flags), 0, 0);
     if (ret == (long)MYOS_EEXIST) {
         errno = EEXIST; /* O_CREAT|O_EXCL: the name is taken (mkstemp tries another) */
+        return -1;
+    }
+    if (ret == (long)MYOS_ELOOP || ret == (long)MYOS_ENOTDIR) {
+        errno = ret == (long)MYOS_ELOOP ? ELOOP : ENOTDIR;
         return -1;
     }
     if (ret == (long)MYOS_EINTR) {

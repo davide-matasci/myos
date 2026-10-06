@@ -423,6 +423,49 @@ PYVALIST
   done
 }
 
+# newlib's fcntl takes an int third argument ("only called from fdopen"),
+# which cuts the struct flock pointer of F_GETLK/F_SETLK/F_SETLKW in half on
+# a 64-bit target. Make it variadic, as <fcntl.h> declares it, and hand the
+# full word to libgloss's _fcntl (posix_stubs.c), which narrows it again for
+# the int commands (myos-fcntl-long).
+patch_fcntl_arg() {
+  local f="$NEWLIB_SRC/newlib/libc/syscalls/sysfcntl.c"
+  if ! grep -q 'myos-fcntl-long' "$f"; then
+    python3 - "$f" <<'PYFCNTL'
+import sys
+f = sys.argv[1]
+s = open(f).read()
+old = """int
+fcntl (int fd,
+     int flag,
+     int arg)
+{
+#ifdef HAVE_FCNTL
+  return _fcntl_r (_REENT, fd, flag, arg);"""
+new = """#include <stdarg.h>
+extern int _fcntl (int, int, long);
+
+int
+fcntl (int fd,
+     int flag,
+     ...)
+{
+#ifdef HAVE_FCNTL
+  /* myos-fcntl-long: the argument may be a pointer. */
+  va_list ap;
+  long arg;
+  va_start (ap, flag);
+  arg = va_arg (ap, long);
+  va_end (ap);
+  return _fcntl (fd, flag, arg);"""
+assert old in s, f"{f}: fcntl definition not found"
+open(f, "w").write(s.replace(old, new, 1))
+PYFCNTL
+    echo "patched sysfcntl.c: fcntl passes a full-width argument (myos-fcntl-long)"
+  fi
+}
+
 patch_valist
+patch_fcntl_arg
 patch_tmpfile
 patch_x86_longjmp_val0

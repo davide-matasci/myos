@@ -34,6 +34,13 @@ pub const SYS_PREAD: usize = 81;
 pub const SYS_PWRITE: usize = 82;
 pub const SYS_FTRUNCATE: usize = 83;
 pub const SYS_FDFLAGS: usize = 84;
+/// `flock(fd, op)`: [`LOCK_SH`], [`LOCK_EX`] or [`LOCK_UN`], `|`
+/// [`LOCK_NB`] not to wait (EAGAIN instead).
+pub const SYS_FLOCK: usize = 85;
+pub const LOCK_SH: usize = 1;
+pub const LOCK_EX: usize = 2;
+pub const LOCK_NB: usize = 4;
+pub const LOCK_UN: usize = 8;
 pub const FILE_AT: usize = 1;
 pub const FD_SET: usize = 1;
 pub const FD_CLOEXEC: usize = 1;
@@ -91,6 +98,9 @@ fn io_result(ret: usize) -> isize {
         3 => -4, // EINTR: a caught signal
         4 => -17, // EEXIST
         5 => -29, // ESPIPE: an offset on a pipe or terminal
+        6 => -40, // ELOOP: O_NOFOLLOW on a symlink
+        7 => -20, // ENOTDIR: O_DIRECTORY on something else
+        8 => -11, // EAGAIN: a lock someone else holds
         _ => ret as isize,
     }
 }
@@ -121,6 +131,12 @@ pub fn read_at(fd: i32, buf: &mut [u8], offset: u64) -> isize {
 #[inline]
 pub fn ftruncate(fd: i32, size: u64) -> isize {
     ok(raw_syscall6(SYS_FTRUNCATE, fd as usize, size as usize, 0, 0, 0, 0))
+}
+
+/// Lock (or unlock) the whole file `fd` is open on, for its description.
+#[inline]
+pub fn flock(fd: i32, op: usize) -> isize {
+    io_result(raw_syscall6(SYS_FLOCK, fd as usize, op, 0, 0, 0, 0))
 }
 
 /// Make `fd` close at exec.

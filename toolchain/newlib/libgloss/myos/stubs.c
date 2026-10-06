@@ -23,12 +23,13 @@ int _lseek(int fd, off_t pos, int whence) {
 }
 
 
-/* Hardlink not implemented. Newlib rename() must use HAVE_RENAME → _rename;
- * without that it falls back to link+unlink and surfaces EROFS on git init. */
+/* myos has no hard links: a file has one name (docs/security.md). EPERM is
+ * what Linux says for a filesystem without them; git then renames its
+ * objects into place instead. */
 int _link(const char *oldpath, const char *newpath) {
     (void)oldpath;
     (void)newpath;
-    errno = EROFS;
+    errno = EPERM;
     return -1;
 }
 

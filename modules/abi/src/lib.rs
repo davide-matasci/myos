@@ -23,7 +23,10 @@
 /// 28 added the hooks that keep a file unlinked while it is held
 /// ([`ModuleVfsOps::unlink_keep`] and the `*_ino` ones).
 /// 29 added [`ModuleVfsOps::set_size`] and `set_size_ino` (`ftruncate`).
-pub const ABI_VERSION: u32 = 29;
+/// 30 added [`ModuleVfsOps::file_id`] and `set_times_ino` (a filesystem
+/// with file ids has its open files used by them, not by their paths) and
+/// [`KernelApi::fd_lockctl`] (record locks).
+pub const ABI_VERSION: u32 = 30;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -162,16 +165,15 @@ pub struct ModuleVfsOps {
     // --- ABI 28: files held after an unlink ---
     /// Optional: remove the name `path` (not a directory) but keep its
     /// file, which something still holds (an open fd, a mapping): its
-    /// inode number (> 0), or negative. The kernel uses the file through
-    /// `read_ino`, `write_ino` and `stat_ino` from then on and calls
-    /// `forget_ino` when the last holder lets go. Without it, a held file a
-    /// name no longer leads to is gone for its holders.
+    /// inode number (> 0), or negative. The kernel calls `forget_ino` when
+    /// the last holder lets go. Without it, a held file a name no longer
+    /// leads to is gone for its holders.
     pub unlink_keep: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i64>,
-    /// [`ModuleVfsOps::read`] of a file `unlink_keep` kept.
+    /// [`ModuleVfsOps::read`] of the file with inode `ino` (see `file_id`).
     pub read_ino: Option<unsafe extern "C" fn(ino: u64, pos: usize, buf: *mut u8, buf_len: usize) -> i32>,
-    /// [`ModuleVfsOps::write`] of a file `unlink_keep` kept.
+    /// [`ModuleVfsOps::write`] of the file with inode `ino`.
     pub write_ino: Option<unsafe extern "C" fn(ino: u64, pos: usize, buf: *const u8, buf_len: usize) -> i32>,
-    /// [`ModuleVfsOps::stat`] of a file `unlink_keep` kept.
+    /// [`ModuleVfsOps::stat`] of the file with inode `ino`.
     pub stat_ino: Option<unsafe extern "C" fn(ino: u64, out: *mut VfsStatInfo) -> i32>,
     /// Nothing holds the file `unlink_keep` kept any more: free it.
     pub forget_ino: Option<unsafe extern "C" fn(ino: u64) -> i32>,
@@ -180,8 +182,17 @@ pub struct ModuleVfsOps {
     /// zeros (`ftruncate`): 0, or negative. Without it the mount's files
     /// cannot be resized (only emptied, by `truncate`).
     pub set_size: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, size: u64) -> i32>,
-    /// [`ModuleVfsOps::set_size`] of a file `unlink_keep` kept.
+    /// [`ModuleVfsOps::set_size`] of the file with inode `ino`.
     pub set_size_ino: Option<unsafe extern "C" fn(ino: u64, size: u64) -> i32>,
+    // --- ABI 30: files by inode ---
+    /// Optional: the inode number (> 0) of the file or directory at `path`,
+    /// or negative. With it, an open file is used by its inode from then on
+    /// (`read_ino`, `write_ino`, `stat_ino`, `set_size_ino`,
+    /// `set_times_ino`), whatever is renamed meanwhile: a module that
+    /// gives inodes has all of them, and `unlink_keep` and `forget_ino`.
+    pub file_id: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i64>,
+    /// [`ModuleVfsOps::set_times`] of the file with inode `ino`.
+    pub set_times_ino: Option<unsafe extern "C" fn(ino: u64, atime: u64, mtime: u64) -> i32>,
 }
 
 /// [`ModuleVfsOps::read`]: nothing to read yet. A read through an fd waits
@@ -290,7 +301,10 @@ pub const MYOS_SYSERR_ENXIO: usize = usize::MAX - 2;
 pub const MYOS_SYSERR_EINTR: usize = usize::MAX - 3;
 pub const MYOS_SYSERR_EEXIST: usize = usize::MAX - 4;
 pub const MYOS_SYSERR_ESPIPE: usize = usize::MAX - 5;
-pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_ESPIPE;
+pub const MYOS_SYSERR_ELOOP: usize = usize::MAX - 6;
+pub const MYOS_SYSERR_ENOTDIR: usize = usize::MAX - 7;
+pub const MYOS_SYSERR_EAGAIN: usize = usize::MAX - 8;
+pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EAGAIN;
 
 /// Native signal dispositions (`signal_get_action`): default, ignore; any
 /// other value is a caught handler's address. Native signal numbers are
@@ -738,7 +752,34 @@ pub struct KernelApi {
     /// CPU of its own: until then it waits for its creator's syscall to
     /// end, so what it must find when it starts is set up first.
     pub thread_place: unsafe extern "C" fn(tid: i32),
+    // --- ABI 30 ---
+    /// The native `lockctl(fd, cmd, lock)` (`kernel/src/user/syscall.rs`)
+    /// with `lock` in kernel memory: a record lock on `fd`'s file
+    /// ([`MyosLockRange`]). 0, or a native failure value
+    /// ([`MYOS_SYSERR_EAGAIN`], [`MYOS_SYSERR_EINTR`]).
+    pub fd_lockctl: unsafe extern "C" fn(fd: usize, cmd: usize, lock: *mut MyosLockRange) -> usize,
 }
+
+/// A record lock for `fd_lockctl` and the native `lockctl`: `kind` 0
+/// shared (`F_RDLCK`), 1 exclusive (`F_WRLCK`), 2 none (`F_UNLCK`); the
+/// bytes `start..start + len` (`len` 0: to the file's end); `pid` the owner
+/// a get found (-1 for an open file description's).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct MyosLockRange {
+    pub kind: u32,
+    pub _pad: u32,
+    pub start: u64,
+    pub len: u64,
+    pub pid: i64,
+}
+
+/// `lockctl` commands, and the flag that makes the open file description
+/// own the lock rather than the process (Linux's `F_OFD_*`).
+pub const MYOS_LOCKCTL_GET: usize = 0;
+pub const MYOS_LOCKCTL_SET: usize = 1;
+pub const MYOS_LOCKCTL_WAIT: usize = 2;
+pub const MYOS_LOCKCTL_OFD: usize = 0x10;
 
 /// `blk_unregister`: the device is mounted or open.
 pub const MYOS_EBUSY: i32 = -16;
