@@ -185,6 +185,12 @@ sec ns /bin:read,exec /lib:read /dev/sda:read,write -- B
 
 - Labels are path rules only: a label cannot be set on a single file (no
   extended attributes).
+- No hard links, on purpose: a file has one name, so its label (from that
+  name) is the only one it has. A second name elsewhere would give the
+  same file another label, and another binding of a namespace could reach
+  it. `link`/`linkat` fail with `EPERM`; git renames its objects into
+  place instead. A file with several names on an ext2 disk made elsewhere
+  is reached by any of them, each its own label.
 - `chmod`/`chown` do nothing, and there is one group database entry (root)
   for libc; the policy's groups only feed `shared(group)` rules.
 - Linux programs see uid and gid 0 whoever runs them (their rights are

@@ -297,8 +297,83 @@ int fchownat(int dirfd, const char *path, uid_t owner, gid_t group, int flags) {
 }
 
 
-/* newlib libc exports fcntl() when HAVE_FCNTL; we supply the syscall glue. */
-int _fcntl(int fd, int cmd, int arg) {
+/* F_GETLK, F_SETLK, F_SETLKW: newlib's struct flock to the kernel's
+ * lock range (from l_whence to an absolute start, a negative l_len to the
+ * bytes before l_start) and back for F_GETLK. */
+static int myos_record_lock(int fd, int cmd, struct flock *fl) {
+    struct myos_lock_range r = {0};
+    long long start = fl->l_start;
+    long long len = fl->l_len;
+    long ret;
+
+    switch (fl->l_type) {
+    case F_RDLCK: r.kind = MYOS_LOCK_SHARED; break;
+    case F_WRLCK: r.kind = MYOS_LOCK_EXCLUSIVE; break;
+    case F_UNLCK: r.kind = MYOS_LOCK_UNLOCK; break;
+    default: errno = EINVAL; return -1;
+    }
+    if (fl->l_whence == SEEK_CUR) {
+        off_t pos = lseek(fd, 0, SEEK_CUR);
+        if (pos < 0) {
+            return -1;
+        }
+        start += pos;
+    } else if (fl->l_whence == SEEK_END) {
+        struct stat st;
+        if (fstat(fd, &st) < 0) {
+            return -1;
+        }
+        start += st.st_size;
+    } else if (fl->l_whence != SEEK_SET) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (len < 0) {
+        start += len;
+        len = -len;
+    }
+    if (start < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    r.start = (unsigned long long)start;
+    r.len = (unsigned long long)len;
+    ret = myos_syscall3(MYOS_SYS_LOCKCTL, fd,
+                        cmd == F_GETLK ? MYOS_LOCKCTL_GET : cmd == F_SETLK ? MYOS_LOCKCTL_SET : MYOS_LOCKCTL_WAIT,
+                        (long)&r);
+    if (ret == (long)MYOS_EAGAIN) {
+        errno = EAGAIN;
+        return -1;
+    }
+    if (ret == (long)MYOS_EINTR) {
+        errno = EINTR;
+        return -1;
+    }
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EBADF;
+        return -1;
+    }
+    if (cmd == F_GETLK) {
+        fl->l_type = r.kind == MYOS_LOCK_SHARED ? F_RDLCK : r.kind == MYOS_LOCK_EXCLUSIVE ? F_WRLCK : F_UNLCK;
+        if (r.kind != MYOS_LOCK_UNLOCK) {
+            fl->l_whence = SEEK_SET;
+            fl->l_start = (off_t)r.start;
+            fl->l_len = (off_t)r.len;
+            fl->l_pid = (short)r.pid;
+        }
+    }
+    return 0;
+}
+
+/* newlib libc exports fcntl() when HAVE_FCNTL; we supply the syscall glue.
+ * `wide` is the whole argument word (a pointer for the lock commands,
+ * toolchain/newlib/patch.sh patch_fcntl_arg); the others take an int. */
+int _fcntl(int fd, int cmd, long wide) {
+    int arg = (int)wide;
+
+    if (cmd == F_GETLK || cmd == F_SETLK || cmd == F_SETLKW) {
+        return myos_record_lock(fd, cmd, (struct flock *)wide);
+    }
     if (cmd == F_DUPFD
 #ifdef F_DUPFD_CLOEXEC
         || cmd == F_DUPFD_CLOEXEC

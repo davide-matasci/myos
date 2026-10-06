@@ -333,3 +333,24 @@ fn set_size_cuts_and_grows() {
         e2fsck_clean(&path);
     }
 }
+
+#[test]
+fn file_id_follows_the_file() {
+    let path = image("fileid", 8 << 20);
+    mkfs(&mut open(&path), 8 << 20).unwrap();
+    let mut fs = Fs::mount(open(&path)).unwrap();
+    fs.create("a").unwrap();
+    let ino = fs.file_id("a").unwrap();
+    // The id is the file's: a rename keeps it, the id reaches the file.
+    fs.rename("a", "b").unwrap();
+    assert_eq!(fs.file_id("b").unwrap(), ino);
+    assert!(matches!(fs.file_id("a"), Err(Error::NotFound)));
+    assert_eq!(fs.write_ino(ino, 0, b"data").unwrap(), 4);
+    assert_eq!(fs.stat("b").unwrap().size, 4);
+    fs.set_times_ino(ino, Some(946_684_800), None).unwrap();
+    fs.set_times_ino(ino, None, Some(978_307_200)).unwrap();
+    let st = fs.stat("b").unwrap();
+    assert_eq!((st.atime, st.mtime), (946_684_800, 978_307_200));
+    drop(fs.unmount().unwrap());
+    e2fsck_clean(&path);
+}

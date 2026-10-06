@@ -15,11 +15,6 @@
 
 #include "myos_syscalls.h"
 
-static int myos_rofs(void) {
-    errno = EROFS;
-    return -1;
-}
-
 static int myos_nosys(void) {
     errno = ENOSYS;
     return -1;
@@ -243,18 +238,62 @@ pid_t getpgrp(void) {
 }
 
 int flock(int fd, int operation) {
-    (void)fd;
-    (void)operation;
-    return myos_nosys();
+    long ret = myos_syscall2(MYOS_SYS_FLOCK, fd, operation);
+    if (ret == (long)MYOS_EAGAIN) {
+        errno = EWOULDBLOCK;
+        return -1;
+    }
+    if (ret == (long)MYOS_EINTR) {
+        errno = EINTR;
+        return -1;
+    }
+    if (ret == (long)MYOS_SYSERR) {
+        int op = operation & ~LOCK_NB;
+        errno = op == LOCK_SH || op == LOCK_EX || op == LOCK_UN ? EBADF : EINVAL;
+        return -1;
+    }
+    return 0;
 }
 
+/* lockf: an exclusive record lock from the position on (`len` 0: to the
+ * end, negative: the bytes before it), through fcntl's. */
+int lockf(int fd, int cmd, off_t len) {
+    struct flock fl = {.l_whence = SEEK_CUR, .l_start = 0, .l_len = len};
+    switch (cmd) {
+    case F_ULOCK:
+        fl.l_type = F_UNLCK;
+        return fcntl(fd, F_SETLK, &fl);
+    case F_LOCK:
+        fl.l_type = F_WRLCK;
+        return fcntl(fd, F_SETLKW, &fl);
+    case F_TLOCK:
+        fl.l_type = F_WRLCK;
+        return fcntl(fd, F_SETLK, &fl);
+    case F_TEST:
+        fl.l_type = F_WRLCK;
+        if (fcntl(fd, F_GETLK, &fl) < 0) {
+            return -1;
+        }
+        if (fl.l_type == F_UNLCK) {
+            return 0;
+        }
+        errno = EACCES;
+        return -1;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+}
+
+/* No hard links (see _link). */
 int linkat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath, int flags) {
     (void)olddirfd;
     (void)oldpath;
     (void)newdirfd;
     (void)newpath;
     (void)flags;
-    return myos_rofs();
+    errno = EPERM;
+    return -1;
 }
 
 /* Real SYS_SIGPROCMASK: kernel keeps a per-task blocked mask and returns the

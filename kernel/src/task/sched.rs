@@ -232,6 +232,10 @@ pub const KEY_SIGNAL: usize = 0x5_0000;
 pub const fn key_threads(pid: usize) -> usize {
     0x6_0000 + pid
 }
+/// Waiters for a file lock on node `node` (`fs::lock`).
+pub const fn key_lock(node: usize) -> usize {
+    0x10_0000 + node
+}
 /// Threads of process `pid` waiting on user address `addr` (`wait_addr`):
 /// bit 63 set, the pid above the 48-bit user address.
 pub const fn key_addr(pid: usize, addr: usize) -> usize {

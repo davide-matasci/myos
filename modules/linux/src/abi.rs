@@ -22,10 +22,26 @@ pub const ESPIPE: usize = 29;
 pub const EROFS: usize = 30;
 pub const ERANGE: usize = 34;
 pub const ENOSYS: usize = 38;
+pub const ELOOP: usize = 40;
 
 /// `open` / `pipe2` / `dup3` flags.
 pub const O_NONBLOCK: usize = 0o4000;
 pub const O_CLOEXEC: usize = 0o2000000;
+/// `open` flags that arm64 numbers its own way (musl's open adds
+/// `O_LARGEFILE` to every call there, so mistaking it for `O_NOFOLLOW`
+/// would refuse every symlink).
+#[cfg(target_arch = "aarch64")]
+pub const O_DIRECTORY: usize = 0o40000;
+#[cfg(target_arch = "aarch64")]
+pub const O_NOFOLLOW: usize = 0o100000;
+#[cfg(target_arch = "aarch64")]
+pub const O_LARGEFILE: usize = 0o400000;
+#[cfg(not(target_arch = "aarch64"))]
+pub const O_DIRECTORY: usize = 0o200000;
+#[cfg(not(target_arch = "aarch64"))]
+pub const O_NOFOLLOW: usize = 0o400000;
+#[cfg(not(target_arch = "aarch64"))]
+pub const O_LARGEFILE: usize = 0o100000;
 pub const ETIMEDOUT: usize = 110;
 pub const ENODEV: usize = 19;
 
@@ -45,6 +61,9 @@ pub fn result(ret: usize, generic: usize) -> usize {
         x if x == crate::k::signal::SYSERR_EINTR => err(EINTR),
         x if x == crate::k::signal::SYSERR_EEXIST => err(EEXIST),
         x if x == crate::k::signal::SYSERR_ESPIPE => err(ESPIPE),
+        x if x == crate::k::signal::SYSERR_ELOOP => err(ELOOP),
+        x if x == crate::k::signal::SYSERR_ENOTDIR => err(ENOTDIR),
+        x if x == crate::k::signal::SYSERR_EAGAIN => err(EAGAIN),
         x => x,
     }
 }

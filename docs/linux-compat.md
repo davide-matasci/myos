@@ -382,10 +382,13 @@ three, the kernel crate itself an hour. Known gaps:
   pair (`docs/sockets-unix.md`), its ends kept like TCP sockets (Rust's
   `Command` reports a failed exec through one). Stream semantics for
   both: no message boundaries, and no fd passing.
-- File locks (`flock`, `fcntl` record locks) are granted and not kept:
-  myos has none, and a lock only guards against another copy of the same
-  program (cargo, SQLite, git). `ftruncate` and `O_CREAT|O_EXCL` are the
-  native ones (any length; the name checked and created in one step).
+- File locks are the native ones (`README.md`, "File locks"): `flock`,
+  `fcntl`'s record locks (`F_SETLK`, `F_SETLKW`, `F_GETLK`) and the open
+  file description's (`F_OFD_SETLK`, ...), so cargo, SQLite and git
+  guard against each other as on Linux. `ftruncate` and `O_CREAT|O_EXCL`
+  are native too (any length; the name checked and created in one step).
+  `O_NOFOLLOW` and `O_DIRECTORY` are kept (`ELOOP`, `ENOTDIR`). `link` and
+  `linkat` fail with `EPERM`: myos has no hard links.
   `pwrite` past the end of a file leaves zeros in the gap.
 - `chmod`, `chown` and `fsync` succeed and do nothing: what a program may
   do to a file is the security policy's (`docs/security.md`), and ext2

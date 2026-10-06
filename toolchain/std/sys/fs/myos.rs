@@ -8,7 +8,7 @@ use crate::sys::fd::FileDesc;
 use crate::sys::myos::abi;
 use crate::sys::time::{SystemTime, UNIX_EPOCH};
 use crate::time::Duration;
-use crate::sys::{cvt, unsupported, unsupported_err, AsInner, FromInner, IntoInner};
+use crate::sys::{cvt, unsupported, AsInner, FromInner, IntoInner};
 use crate::fmt;
 
 #[path = "unsupported.rs"]
@@ -476,23 +476,35 @@ impl File {
     }
 
     pub fn lock(&self) -> io::Result<()> {
-        unsupported()
+        self.flock(abi::LOCK_EX)
     }
 
     pub fn lock_shared(&self) -> io::Result<()> {
-        unsupported()
+        self.flock(abi::LOCK_SH)
     }
 
     pub fn try_lock(&self) -> Result<(), TryLockError> {
-        Err(TryLockError::Error(unsupported_err()))
+        self.try_flock(abi::LOCK_EX)
     }
 
     pub fn try_lock_shared(&self) -> Result<(), TryLockError> {
-        Err(TryLockError::Error(unsupported_err()))
+        self.try_flock(abi::LOCK_SH)
     }
 
     pub fn unlock(&self) -> io::Result<()> {
-        unsupported()
+        self.flock(abi::LOCK_UN)
+    }
+
+    fn flock(&self, op: usize) -> io::Result<()> {
+        cvt(abi::flock(self.0.as_raw_fd(), op)).map(drop)
+    }
+
+    fn try_flock(&self, op: usize) -> Result<(), TryLockError> {
+        match self.flock(op | abi::LOCK_NB) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(TryLockError::WouldBlock),
+            Err(e) => Err(TryLockError::Error(e)),
+        }
     }
 
     pub fn truncate(&self, size: u64) -> io::Result<()> {

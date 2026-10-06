@@ -144,10 +144,32 @@ pub(super) fn fd_drop(entry: FdEntry) {
         FdEntry::PtySlave(id) => crate::pty::drop_slave(id),
         FdEntry::File(id) => {
             if let Some(node) = open_file_unref(id) {
+                // The description's own locks go with it (`fs::lock`).
+                crate::fs::lock::release(crate::fs::lock::Owner::Flock(id));
+                crate::fs::lock::release(crate::fs::lock::Owner::Ofd(id));
                 crate::fs::vfs::close_ref(&node);
             }
         }
         _ => {}
+    }
+}
+
+/// The calling process closes an fd that was `entry`: its record locks on
+/// that file go (POSIX), whatever other fd it still has on it.
+fn records_released(entry: FdEntry) {
+    if let FdEntry::File(id) = entry {
+        if let Some(node) = open_file_node(id) {
+            crate::fs::lock::closed(node.key(), current_pid());
+        }
+    }
+}
+
+/// What a lock on `fd` is taken on and by: its file's node key and its
+/// open file description (`fs::lock`); `None` for an fd on no file.
+pub fn fd_lock_target(fd: usize) -> Option<(usize, usize)> {
+    match with_process_mut(|t| t.fds.get(fd).copied())? {
+        FdEntry::File(id) => Some((open_file_node(id)?.key(), id)),
+        _ => None,
     }
 }
 
@@ -484,6 +506,7 @@ pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
         t.cloexec &= !(1 << newfd);
         (true, prev)
     });
+    records_released(dropped);
     fd_drop(dropped);
     ok
 }
@@ -886,6 +909,7 @@ pub fn fd_close(fd: usize) -> bool {
     if entry == FdEntry::Empty {
         return false;
     }
+    records_released(entry);
     // Outside TASKS: dropping a pipe/pty end wakes peers / signals a session.
     fd_drop(entry);
     true

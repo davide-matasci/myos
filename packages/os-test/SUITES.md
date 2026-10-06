@@ -67,6 +67,10 @@ until they pass honestly (no xfails):
 - `io/open-tmpdir-*` — these exit 0 only if a directory can be opened for
   writing; POSIX-correct `EISDIR` reads as a failure under the exit-0 harness
   (they need per-test expected outputs, not a kernel change)
+- `io/open-mkstemp-*-directory` — `O_DIRECTORY` on a regular file: the
+  POSIX outcome is `open: ENOTDIR` (exit 1), which the exit-0 harness reads
+  as a failure. They were listed while myos ignored `O_DIRECTORY` and the
+  open wrongly succeeded; `fileio_smoke` checks the `ENOTDIR` now
 - `process/zombie-setpgid-move` (hang), `process/limbo-*`,
   `process/fork-setpgid-*undo*`/`-invalid` — pgid edge cases
 - `paths/*` FHS directories (`/var`, `/run`, `/usr/share`, `/sbin`, …) and

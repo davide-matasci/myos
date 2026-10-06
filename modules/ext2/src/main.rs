@@ -292,6 +292,19 @@ unsafe extern "C" fn ext2_forget_ino<const S: usize>(ino: u64) -> i32 {
     rc(with_fs::<S, _>(|fs| fs.forget(ino)))
 }
 
+unsafe extern "C" fn ext2_file_id<const S: usize>(path: *const u8, path_len: usize) -> i64 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    match with_fs::<S, _>(|fs| fs.file_id(path)) {
+        Some(Ok(ino)) => i64::from(ino),
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn ext2_set_times_ino<const S: usize>(ino: u64, atime: u64, mtime: u64) -> i32 {
+    let Some(ino) = ino32(ino) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.set_times_ino(ino, inode_time(atime), inode_time(mtime))))
+}
+
 unsafe extern "C" fn ext2_set_size_ino<const S: usize>(ino: u64, size: u64) -> i32 {
     let Some(ino) = ino32(ino) else { return -1 };
     rc(with_fs::<S, _>(|fs| fs.set_size_ino(ino, size)))
@@ -339,6 +352,8 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         forget_ino: Some(ext2_forget_ino::<S>),
         set_size: Some(ext2_set_size::<S>),
         set_size_ino: Some(ext2_set_size_ino::<S>),
+        file_id: Some(ext2_file_id::<S>),
+        set_times_ino: Some(ext2_set_times_ino::<S>),
     }
 }
 
