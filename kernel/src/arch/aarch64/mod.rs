@@ -4,6 +4,8 @@ mod interrupts;
 pub use interrupts::{ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
 mod paging;
 pub mod pci;
+mod power;
+pub use power::POWER_METHODS;
 mod serial;
 pub use serial::SerialPort;
 
@@ -51,8 +53,6 @@ fn current_el() -> u64 {
     }
     (el >> 2) & 3
 }
-
-/// PSCI SYSTEM_OFF. EL1 uses HVC (QEMU virt conduit); EL2 uses SMC.
 
 pub fn ap_init(logical: usize) {
     interrupts::ap_init(logical);
@@ -144,15 +144,9 @@ pub fn idle_wait() {
     }
 }
 
+/// Power off (PSCI `SYSTEM_OFF`): QEMU exits. The code is not passed on.
 pub fn exit_qemu(_code: u32) {
-    let cmd: u64 = 0x8400_0008;
-    unsafe {
-        if current_el() >= 2 {
-            core::arch::asm!("smc #0", in("x0") cmd, options(nostack));
-        } else {
-            core::arch::asm!("hvc #0", in("x0") cmd, options(nostack));
-        }
-    }
+    power::psci(power::SYSTEM_OFF);
 }
 
 pub fn halt() -> ! {

@@ -325,6 +325,23 @@ pub fn unmount(prefix: &str) -> bool {
     true
 }
 
+/// Shutdown (`crate::power`): unmount every block-device mount, the deepest
+/// first, so each filesystem writes back what it caches. The binds go
+/// first: no process is left to use them. The prefixes still busy (an fd
+/// the caller holds there) are returned.
+pub fn unmount_all() -> Vec<String> {
+    BINDS.lock().clear();
+    let mut prefixes: Vec<String> = MOUNTS
+        .lock()
+        .iter()
+        .filter(|m| !m.gone() && matches!(m.backend, MountBackend::Module(_)) && m.source.starts_with("/dev/"))
+        .map(|m| m.prefix.clone())
+        .collect();
+    prefixes.sort_by_key(|p| core::cmp::Reverse(p.len()));
+    prefixes.retain(|p| !unmount(p));
+    prefixes
+}
+
 /// A mount has `source` (`/dev/sda`) as its block device.
 pub fn source_mounted(source: &str) -> bool {
     MOUNTS.lock().iter().any(|m| !m.gone() && m.source == source)

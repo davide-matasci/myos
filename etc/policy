@@ -39,7 +39,8 @@ label /net/**                net
 # Domains: what a program running for user `self` may do. Kernel objects:
 # kernel.modules (insmod, rmmod), kernel.clock (settimeofday),
 # kernel.policy (sec load), kernel.users (setuser without a password),
-# proc(user) (signals to that user's processes).
+# kernel.power (poweroff, reboot, halt), proc(user) (signals to that
+# user's processes).
 domain init:
     sys.file {read} sys.bin {read exec} sys.lib {read} sys.etc {read}
     dev.tty {read write} dev.common {read write} proc {read}
@@ -63,7 +64,7 @@ domain admin:
     proc {all} net {all} unlabeled {all}
     home(*) {all} secret(self) {all}
     kernel.modules {write} kernel.clock {write} kernel.policy {write}
-    kernel.users {write} proc(*) {signal}
+    kernel.users {write} kernel.power {write} proc(*) {signal}
 # A user's shell: the system to read and run, their own files, /tmp.
 domain shell:
     sys.file {read} sys.bin {read exec} sys.lib {read exec} sys.etc {read}

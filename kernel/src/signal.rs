@@ -29,6 +29,7 @@ pub const SIGHUP: u32 = 1;
 pub const SIGINT: u32 = 2;
 pub const SIGKILL: u32 = 9;
 pub const SIGSEGV: u32 = 11;
+pub const SIGTERM: u32 = 15;
 pub const SIGURG: u32 = 16;
 pub const SIGSTOP: u32 = 17;
 pub const SIGTSTP: u32 = 18;

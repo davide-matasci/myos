@@ -4,6 +4,8 @@ mod interrupts;
 pub use interrupts::{enable_ipi, ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
 pub mod paging;
 pub mod pci;
+mod power;
+pub use power::POWER_METHODS;
 mod serial;
 pub use serial::SerialPort;
 
@@ -43,8 +45,6 @@ pub fn wait_for_interrupt_proof() {
     interrupts::wait_for_interrupt_proof();
 }
 
-
-/// SBI System Reset extension shutdown (QEMU virt).
 
 pub fn ap_init(logical: usize) {
     interrupts::ap_init(logical);
@@ -135,18 +135,9 @@ pub fn idle_wait() {
     }
 }
 
+/// Power off (SBI `SRST` shutdown): QEMU exits. The code is not passed on.
 pub fn exit_qemu(_code: u32) {
-    const SBI_SRST: u64 = 0x5352_5354; // "SRST"
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") SBI_SRST,
-            in("a6") 0u64,
-            in("a0") 0u64,
-            in("a1") 0u64,
-            options(nomem, nostack),
-        );
-    }
+    power::system_reset(power::SHUTDOWN);
 }
 
 pub fn halt() -> ! {
