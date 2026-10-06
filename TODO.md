@@ -194,9 +194,10 @@ can take the same table entry and slot id. When the waiter's timeout
 fires, `abort_endpoint` sends Stop Endpoint and Set TR Dequeue Pointer
 for the old slot and DCI, which may now be the new device's, with the new
 device's ring as the dequeue pointer; a late completion is written into
-the new device's `pending` state. Not seen to fail, and not tied to the
-switch-frame crashes (the writes stay in xHCI memory), but it is a real
-race on hot-plug.
+the new device's `pending` state. Not seen to fail (the switch-frame
+crashes during USB enumeration were the scheduler resuming a woken task
+from a stale frame, fixed in `schedule`), but it is a real race on
+hot-plug.
 
 Fix: a device generation (or the slot id) checked by the waiter after
 `wait` returns, before it touches the endpoint; or detach waits for the

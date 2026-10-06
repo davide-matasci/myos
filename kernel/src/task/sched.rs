@@ -107,6 +107,16 @@ pub fn schedule() {
             // so a Blocked task that is still leaving this CPU is not made
             // Ready (and picked elsewhere) before `task_switch` saved its sp.
             tasks[next].state = State::Running;
+            // A task woken while it was still this CPU's CURRENT (halting in
+            // `block_until`, or preempted there by the timer) is Ready
+            // already. Left Ready, a peer could pick it before task_switch
+            // saved its sp and resume it from the frame it left the last
+            // time, long since overwritten by its own stack (CI: the USB
+            // thread's "switch frame: its frame changed"). Running until
+            // `finish_switch`, like any task leaving a CPU.
+            if tasks[current].state == State::Ready {
+                tasks[current].state = State::Running;
+            }
             // The frame of the syscall a task is in follows the task, not the
             // CPU: aarch64 exec resumes through it, and a syscall that blocked
             // here found another task's frame in the CPU's cell when it ran
@@ -206,8 +216,9 @@ pub(super) fn forget_frame(slot: usize) {
 
 /// The frame `task_switch` resumes `next` from must return into the
 /// kernel. One overwritten while its task was off its CPU (zeroed, during
-/// USB enumeration in CI) jumps to 0; report it here, with the stack around
-/// it, instead of as a fault at address 0 afterwards.
+/// USB enumeration in CI: a woken task picked by a peer while still leaving
+/// its CPU, resumed from its previous frame) jumps to 0; report it here,
+/// with the stack around it, instead of as a fault at address 0 afterwards.
 fn check_switch_frame(next: usize, sp: usize) {
     let ra = unsafe { crate::arch::switch::frame_return(sp) };
     let anchor = check_switch_frame as *const () as usize;
