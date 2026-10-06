@@ -323,6 +323,7 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
         wake_pending: false,
         tgid: slot,
         group_exit: false,
+        syscall_frame: 0,
     };
     // Before the child becomes runnable on another CPU (TASKS still held;
     // TASKS → SIG_TABLES is the lock order).
@@ -570,6 +571,7 @@ fn spawn_inner(
         wake_pending: false,
         tgid: slot,
         group_exit: false,
+        syscall_frame: 0,
     };
     signal_table_reset(slot);
     fpu::reset(slot);
