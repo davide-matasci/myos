@@ -73,7 +73,8 @@ exec /bin/custom/netd -> netd
 - **Kernel objects** are labels without a path: `kernel.modules` (`insmod`,
   `rmmod`: `write`), `kernel.clock` (`settimeofday`: `write`),
   `kernel.policy` (`sec load`: `write`), `kernel.users` (entering a user who
-  has no password: `write`), `proc(USER)` (signalling that user's
+  has no password: `write`), `kernel.power` (`poweroff`, `reboot`, `halt`:
+  `write`, `docs/power.md`), `proc(USER)` (signalling that user's
   processes: `signal`). A process may always signal itself.
 - **Transitions.** `exec PATTERN -> DOMAIN`: exec of a matching program
   moves the process into the domain, when its user lists it in `domains:`
@@ -95,6 +96,7 @@ exec /bin/custom/netd -> netd
 | `mount`, `umount` | `mount` on the directory; a disk `read write`, a bind's source `read` |
 | `insmod`, `rmmod` | `read` on the module, `write` on `kernel.modules` |
 | `kill` | `signal` on `proc(target's user)` |
+| `power` (`poweroff`, `reboot`, `halt`) | `write` on `kernel.power` |
 
 An fd keeps the access it was opened with: passing it to another process
 (inheritance, a namespace that cannot name the file) is a deliberate grant,

@@ -214,7 +214,9 @@ a file that is neither an ELF nor a script fails with `ENOEXEC`),
 `exit` (the thread), `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`,
 `getpid`, `gettid`, `getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`,
 `setsid`, `uname` (the node name is the kernel's host name,
-`/proc/sys/kernel/hostname`), `sethostname`, `arch_prctl`, `set_tid_address`, `set_robust_list`,
+`/proc/sys/kernel/hostname`), `sethostname`, `reboot` (the native
+`power`, `docs/power.md`; turning Ctrl-Alt-Del on or off does nothing),
+`arch_prctl`, `set_tid_address`, `set_robust_list`,
 `prlimit64`, `getrlimit`, `get/set uid/gid` (uid and gid 0 whoever runs the
 program: what it may do is the security policy's, `docs/security.md`),
 `sched_yield`.
