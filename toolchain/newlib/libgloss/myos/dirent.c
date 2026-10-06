@@ -164,15 +164,24 @@ opendir(const char *name)
 		errno = ENOENT;
 		return NULL;
 	}
-	if (stat(name, &st) < 0) {
+	/* Checked through the fd, so it is the file listed whatever is renamed
+	 * meanwhile (O_NONBLOCK: a FIFO does not wait for a writer). A
+	 * directory a namespace makes up has no fd: checked and listed by its
+	 * path. */
+	fd = open(name, O_RDONLY | O_NONBLOCK);
+	if ((fd >= 0 ? fstat(fd, &st) : stat(name, &st)) < 0) {
+		if (fd >= 0) {
+			close(fd);
+		}
 		return NULL;
 	}
 	if (!S_ISDIR(st.st_mode)) {
+		if (fd >= 0) {
+			close(fd);
+		}
 		errno = ENOTDIR;
 		return NULL;
 	}
-	/* A directory a namespace makes up has no fd: listed by its path. */
-	fd = open(name, O_RDONLY);
 	d = dir_new(fd, name);
 	if (d == NULL && fd >= 0) {
 		close(fd);
