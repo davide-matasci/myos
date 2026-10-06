@@ -165,12 +165,55 @@ pub fn schedule() {
     // unpinned kernel threads yield across CPUs). Do NOT IPI-kick: AP timers
     // pick up foreign-affinity Ready; fork kicks when a parallel child is
     // RR-homed onto another AP.
-    let _ = old;
+    check_switch_frame(next, new_sp);
     unsafe {
         task_switch(old_sp, new_sp);
     }
     finish_switch();
     irq_restore(flags);
+}
+
+/// The frame `task_switch` resumes `next` from must return into the
+/// kernel. One overwritten while its task was off its CPU (zeroed, during
+/// USB enumeration in CI) jumps to 0; report it here, with the stack around
+/// it, instead of as a fault at address 0 afterwards.
+fn check_switch_frame(next: usize, sp: usize) {
+    let ra = unsafe { crate::arch::switch::frame_return(sp) };
+    let anchor = check_switch_frame as *const () as usize;
+    if ra.abs_diff(anchor) < 64 << 20 {
+        return;
+    }
+    let (base, top, state, affinity) = {
+        let tasks = TASKS.lock();
+        let t = &tasks[next];
+        (t.stack_base, t.kernel_stack_top, t.state as u8, t.affinity)
+    };
+    let hhdm = crate::limine_boot::hhdm_offset() as usize;
+    crate::console::status_fail(&alloc::format!(
+        "switch frame: task {next} (state {state} affinity {affinity:?}) resumes at {ra:#x}: sp {sp:#x} \
+         (phys {:#x}) stack {base:#x}..{top:#x}, cpu {}",
+        sp.wrapping_sub(hhdm),
+        crate::smp::cpu_id(),
+    ));
+    // The words around the frame, runs of zeros collapsed: how much was
+    // overwritten, and with what alignment, says what wrote it.
+    let from = (sp.saturating_sub(512) & !7).max(base);
+    let to = (sp + 512).min(top);
+    let mut addr = from;
+    while addr < to {
+        let w = unsafe { core::ptr::read_volatile(addr as *const usize) };
+        if w == 0 {
+            let start = addr;
+            while addr < to && unsafe { core::ptr::read_volatile(addr as *const usize) } == 0 {
+                addr += 8;
+            }
+            crate::console::write_str(&alloc::format!("  {start:#x}..{addr:#x} zero ({} bytes)\n", addr - start));
+            continue;
+        }
+        crate::console::write_str(&alloc::format!("  {addr:#x}: {w:#x}\n"));
+        addr += 8;
+    }
+    panic!("switch frame of task {next} overwritten");
 }
 
 /// Per CPU: the task this CPU just switched away from, still marked Running

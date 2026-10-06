@@ -50,3 +50,12 @@ pub unsafe fn seed_stack(stack: *mut u8, size: usize, entry: usize) -> usize {
     debug_assert_eq!(sp % 16, 0);
     sp
 }
+
+/// The address the switch frame saved at `sp` returns to (the `ret` address above the six saved registers).
+///
+/// # Safety
+///
+/// `sp` is a saved stack pointer of a task that is off its CPU.
+pub unsafe fn frame_return(sp: usize) -> usize {
+    unsafe { core::ptr::read_volatile((sp + 48) as *const usize) }
+}
