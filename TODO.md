@@ -185,6 +185,27 @@ Left as they are for now: the std port's single-threaded `static mut`
 task there; changing them rebuilds the sysroot and every Rust port), and
 the arch tables (GDT/TSS, page tables, per-CPU syscall frames).
 
+## xHCI: a transfer that outlives its device
+
+A task in a bulk transfer (`modules/xhci/src/usb.rs` `bulk`: a read of
+`/dev/sdb`) blocks in `hc::wait` holding `&mut Device` and `&mut Endpoint`
+into the static device table. If the stick is pulled meanwhile, the USB
+thread detaches the device (`detach_id`): its table entry becomes `None`,
+its rings and contexts go back to the DMA pool, and a stick plugged next
+can take the same table entry and slot id. When the waiter's timeout
+fires, `abort_endpoint` sends Stop Endpoint and Set TR Dequeue Pointer
+for the old slot and DCI, which may now be the new device's, with the new
+device's ring as the dequeue pointer; a late completion is written into
+the new device's `pending` state. Not seen to fail, and not tied to the
+switch-frame crashes (the writes stay in xHCI memory), but it is a real
+race on hot-plug.
+
+Fix: a device generation (or the slot id) checked by the waiter after
+`wait` returns, before it touches the endpoint; or detach waits for the
+device's waiters to leave (a per-device busy count), failing their
+transfers first. The lock work above (one table behind a lock) is the
+natural place for it.
+
 ## Per-key wait queues
 
 `task::wake(key)` takes the global task lock and scans all 64 slots to find
