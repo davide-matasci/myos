@@ -411,7 +411,8 @@ cmd_push() {
     echo "registry skip push ${port}: nothing to pack"
     return 0
   fi
-  tar -C "$ROOT" --zstd -cf "$tmp/${port}.tar.zst" -T "$list"
+  # zstd on every core: the kernels package (the disk images) is large.
+  tar -C "$ROOT" -I 'zstd -T0' -cf "$tmp/${port}.tar.zst" -T "$list"
   # oras push rejects absolute file paths; push from $tmp with a relative name.
   set +e
   (
