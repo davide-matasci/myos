@@ -446,6 +446,7 @@ int main(int argc, char **argv) {
     check(tcgetattr(0, &t) == 0 && (t.c_lflag & ICANON) && t.c_cc[VINTR] == 3, "tcgetattr");
     check(ioctl(0, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0, "TIOCGWINSZ");
     check(ln > 5 && strcmp(link + ln - 5, "/data") == 0, "fd link names the terminal");
+    check(readlink("/no/such/link", link, sizeof link) == -1 && errno == ENOENT, "readlink of nothing: ENOENT");
     check(tcgetattr(1, &t) == -1 && errno == ENOTTY, "tcgetattr on a file: ENOTTY");
 
     check_toolchain_calls(argv[0]);
