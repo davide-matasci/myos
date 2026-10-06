@@ -260,21 +260,76 @@ fn validate_free_frame(phys: u64) {
     }
 }
 
-/// Allocate a 4 KiB frame, zero it, return its physical address. When
-/// memory runs out the block cache, then the page cache's unmapped pages,
-/// give their frames back first.
-pub fn alloc_frame() -> u64 {
+/// All usable RAM in frames, read once from the memmap and cached (the
+/// memmap walk is not free, and `try_alloc_frame_user` consults it often).
+fn usable_total() -> u64 {
+    static CACHE: AtomicU64 = AtomicU64::new(0);
+    let c = CACHE.load(Ordering::Relaxed);
+    if c != 0 {
+        return c;
+    }
+    let n = usable_frames();
+    CACHE.store(n, Ordering::Relaxed);
+    n
+}
+
+/// Frames the allocator has handed out and not got back (block / page cache
+/// included — those are reclaimable, which the reserve check accounts for).
+pub fn live_frames() -> u64 {
+    FRAME_ALLOC_COUNT
+        .load(Ordering::Relaxed)
+        .saturating_sub(FRAME_FREE_COUNT.load(Ordering::Relaxed))
+}
+
+/// Frames kept in reserve for the kernel: user-driven allocations stop here
+/// so a memory-hungry process cannot starve the kernel into an allocation
+/// failure (which aborts it). ~1.5% of RAM, within a sane range.
+fn user_reserve() -> u64 {
+    (usable_total() / 64).clamp(512, 16384)
+}
+
+/// The core allocation: a freelist page or a bump-cursor page, reclaiming the
+/// caches when both are dry. `None` only when no frame is left anywhere.
+fn raw_alloc() -> Option<u64> {
     // Prefer reclaimed user frames (process exit / abandoned exec).
     let take = || with_frames(|| pop_free().or_else(|| bump_run(1, PAGE)));
     let reclaimed = || crate::blk::release_cache() + crate::fs::pagecache::release_unmapped() > 0;
-    let Some(phys) = take().or_else(|| reclaimed().then(take).flatten()) else {
-        out_of_memory();
-    };
+    let phys = take().or_else(|| reclaimed().then(take).flatten())?;
     unsafe {
         zero_page(hhdm(phys));
     }
     FRAME_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-    phys
+    Some(phys)
+}
+
+/// Allocate a 4 KiB frame, zero it, return its physical address. When
+/// memory runs out the block cache, then the page cache's unmapped pages,
+/// give their frames back first. For kernel-critical allocations: it may dip
+/// into the [`user_reserve`], and aborts only when truly nothing is left.
+pub fn alloc_frame() -> u64 {
+    raw_alloc().unwrap_or_else(|| out_of_memory())
+}
+
+/// Allocate a frame for a user-driven request (demand fault, heap growth, a
+/// fork's address-space copy). Returns `None` — for the caller to turn into
+/// a fault/ENOMEM against the offending process — once satisfying it would
+/// cross into the kernel's reserve, after first reclaiming the caches. This
+/// keeps a memory bomb from panicking the kernel: the bomb is killed, the
+/// kernel lives.
+pub fn try_alloc_frame_user(site: usize) -> Option<u64> {
+    let reserve = user_reserve();
+    if live_frames().saturating_add(reserve) >= usable_total() {
+        // Reclaim what the caches hold, then re-check against the line.
+        let _ = crate::blk::release_cache() + crate::fs::pagecache::release_unmapped();
+        if live_frames().saturating_add(reserve) >= usable_total() {
+            return None;
+        }
+    }
+    let phys = raw_alloc()?;
+    if site < FRAME_SITE_COUNTS.len() {
+        FRAME_SITE_COUNTS[site].fetch_add(1, Ordering::Relaxed);
+    }
+    Some(phys)
 }
 
 /// Take the freelist's head, or `None` when it is empty. Caller holds
