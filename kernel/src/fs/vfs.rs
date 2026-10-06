@@ -119,6 +119,9 @@ pub struct MountOps {
     /// Optional: set a path's access and modification times (seconds since
     /// the epoch; `None` keeps one). `None` for a mount that keeps no times.
     pub set_times: Option<fn(&str, Option<u64>, Option<u64>) -> bool>,
+    /// Optional: make a file that many bytes long, cut or grown with zeros
+    /// (`ftruncate`). `None` for a mount whose files cannot be resized.
+    pub set_size: Option<fn(&str, usize) -> bool>,
     /// Mount accepts write opens / creates.
     pub writable: bool,
 }
@@ -570,6 +573,22 @@ pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     // After the write: a page read before it is then dropped, or not kept.
     pagecache::invalidate(node);
     written
+}
+
+/// Make an open vnode `size` bytes long, cut or grown with zeros
+/// (`ftruncate`): false when its filesystem cannot.
+pub fn set_size(node: &Vnode, size: usize) -> bool {
+    let _tree = tree_read();
+    match node::locate(node) {
+        Some((idx, node::Loc::Path(rel))) => backend_set_size(idx, rel.as_str(), size),
+        Some((idx, node::Loc::Ino(ino))) => {
+            let Some(set_size) = kept_ops(idx).and_then(|ops| ops.set_size_ino) else {
+                return false;
+            };
+            unsafe { set_size(ino, size as u64) == 0 }
+        }
+        None => false,
+    }
 }
 
 /// One more open file description on `node` (an `open` that became an
@@ -1332,6 +1351,23 @@ fn backend_truncate(idx: usize, rel: &str) -> bool {
     match backend {
         MountBackend::Kernel(ops) => (ops.truncate)(rel),
         MountBackend::Module(ops) => module_path_i32(ops.truncate, rel),
+    }
+}
+
+fn backend_set_size(idx: usize, rel: &str, size: usize) -> bool {
+    let backend = {
+        let mounts = MOUNTS.lock();
+        let Some(m) = mounts.get(idx) else {
+            return false;
+        };
+        m.backend
+    };
+    match backend {
+        MountBackend::Kernel(ops) => ops.set_size.is_some_and(|set_size| set_size(rel, size)),
+        MountBackend::Module(ops) => match ops.set_size {
+            Some(set_size) => unsafe { set_size(rel.as_ptr(), rel.len(), size as u64) == 0 },
+            None => false,
+        },
     }
 }
 

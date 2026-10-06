@@ -149,9 +149,11 @@ void _exit(int status) {
 #define MYOS_K_O_NONBLOCK 0x800
 
 
-int _read(int fd, void *buf, size_t cnt) {
+/* read(2) and pread(2): MYOS_SYS_PREAD at the file position (flags 0) or at
+ * `off` (MYOS_FILE_AT). */
+static ssize_t read_at(int fd, void *buf, size_t cnt, off_t off, long flags) {
 
-    /* Honour O_NONBLOCK before the blocking SYS_READ (dropbear's signal-pipe
+    /* Honour O_NONBLOCK before the blocking read (dropbear's signal-pipe
      * drain must not hang): ask the kernel whether the read would block. */
     if (myos_fd_nonblock_get(fd)) {
         struct pollfd p = {fd, POLLIN, 0};
@@ -162,7 +164,11 @@ int _read(int fd, void *buf, size_t cnt) {
     }
 
     for (;;) {
-        long ret = myos_syscall3(MYOS_SYS_READ, fd, (long)(uintptr_t)buf, (long)cnt);
+        long ret = myos_syscall6(MYOS_SYS_PREAD, fd, (long)(uintptr_t)buf, (long)cnt, (long)off, flags, 0);
+        if (ret == (long)MYOS_ESPIPE) {
+            errno = ESPIPE;
+            return -1;
+        }
         if (ret == (long)MYOS_EINTR) {
             errno = EINTR; /* a caught signal interrupted a blocked read */
             return -1;
@@ -193,44 +199,62 @@ int _read(int fd, void *buf, size_t cnt) {
                 return -1;
             }
         }
-        return (int)ret;
+        return (ssize_t)ret;
     }
 }
 
-int _write(int fd, const void *buf, size_t cnt) {
+int _read(int fd, void *buf, size_t cnt) {
+    return (int)read_at(fd, buf, cnt, 0, 0);
+}
+
+ssize_t pread(int fd, void *buf, size_t cnt, off_t off) {
+    if (off < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return read_at(fd, buf, cnt, off, MYOS_FILE_AT);
+}
+
+/* write(2) and pwrite(2), as read_at. */
+static ssize_t write_at(int fd, const void *buf, size_t cnt, off_t off, long flags) {
     long ret;
     size_t done = 0;
 
     for (;;) {
-        ret = myos_syscall3(MYOS_SYS_WRITE, fd, (long)(uintptr_t)buf + done, (long)(cnt - done));
+        ret = myos_syscall6(MYOS_SYS_PWRITE, fd, (long)(uintptr_t)buf + done, (long)(cnt - done),
+                            (long)(off + (off_t)done), flags, 0);
+        if (ret == (long)MYOS_ESPIPE) {
+            errno = ESPIPE;
+            return -1;
+        }
         if (ret == (long)MYOS_EINTR) {
             errno = EINTR; /* a caught signal interrupted a blocked write */
-            return done ? (int)done : -1;
+            return done ? (ssize_t)done : -1;
         }
         if (ret == (long)MYOS_EIO) {
             errno = EIO; /* pty peer gone */
-            return done ? (int)done : -1;
+            return done ? (ssize_t)done : -1;
         }
         if (ret == (long)MYOS_SYSERR) {
             /* A stream socket refuses a write while it has no room. */
             switch (myos_socket_write_failed(fd)) {
             case 1:
                 errno = EAGAIN;
-                return done ? (int)done : -1;
+                return done ? (ssize_t)done : -1;
             case 2:
                 errno = EPIPE;
-                return done ? (int)done : -1;
+                return done ? (ssize_t)done : -1;
             case 3:
                 continue; /* waited for room; retry */
             case 4:
                 errno = ENOTCONN;
-                return done ? (int)done : -1;
+                return done ? (ssize_t)done : -1;
             case 5:
                 errno = EINTR; /* a caught signal ended the wait */
-                return done ? (int)done : -1;
+                return done ? (ssize_t)done : -1;
             }
             myos_set_errno_io();
-            return done ? (int)done : -1;
+            return done ? (ssize_t)done : -1;
         }
         done += (size_t)ret;
         /* A blocking stream socket took part of it (no more room): write
@@ -238,8 +262,20 @@ int _write(int fd, const void *buf, size_t cnt) {
         if (ret > 0 && done < cnt && myos_socket_write_all(fd)) {
             continue;
         }
-        return (int)done;
+        return (ssize_t)done;
     }
+}
+
+int _write(int fd, const void *buf, size_t cnt) {
+    return (int)write_at(fd, buf, cnt, 0, 0);
+}
+
+ssize_t pwrite(int fd, const void *buf, size_t cnt, off_t off) {
+    if (off < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return write_at(fd, buf, cnt, off, MYOS_FILE_AT);
 }
 
 int _isatty(int fd) {

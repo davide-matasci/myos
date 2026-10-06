@@ -35,6 +35,10 @@ t libc /bin/etc/libc_smoke
 # whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a
 # symlink, lstat does not (at_smoke.c).
 t at /bin/etc/at_smoke
+# O_EXCL creates a name once, racers or not, and a symlink there is taken;
+# ftruncate; pread/pwrite leave the position, ESPIPE on a pipe; close-on-exec
+# fds are gone after exec (fileio_smoke.c; on ext2 in mkfs.ext2's test).
+t fileio /bin/etc/fileio_smoke
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).

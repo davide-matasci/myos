@@ -198,6 +198,11 @@ unsafe extern "C" fn ext2_truncate<const S: usize>(path: *const u8, path_len: us
     rc(with_fs::<S, _>(|fs| fs.truncate(path)))
 }
 
+unsafe extern "C" fn ext2_set_size<const S: usize>(path: *const u8, path_len: usize, size: u64) -> i32 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.set_size(path, size)))
+}
+
 unsafe extern "C" fn ext2_mkdir<const S: usize>(path: *const u8, path_len: usize) -> i32 {
     let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
     rc(with_fs::<S, _>(|fs| fs.mkdir(path)))
@@ -287,6 +292,11 @@ unsafe extern "C" fn ext2_forget_ino<const S: usize>(ino: u64) -> i32 {
     rc(with_fs::<S, _>(|fs| fs.forget(ino)))
 }
 
+unsafe extern "C" fn ext2_set_size_ino<const S: usize>(ino: u64, size: u64) -> i32 {
+    let Some(ino) = ino32(ino) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.set_size_ino(ino, size)))
+}
+
 /// The last fd on a file closed: write what is cached to the disk.
 unsafe extern "C" fn ext2_release<const S: usize>(_path: *const u8, _path_len: usize) -> i32 {
     rc(with_fs::<S, _>(|fs| fs.sync()))
@@ -327,6 +337,8 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         write_ino: Some(ext2_write_ino::<S>),
         stat_ino: Some(ext2_stat_ino::<S>),
         forget_ino: Some(ext2_forget_ino::<S>),
+        set_size: Some(ext2_set_size::<S>),
+        set_size_ino: Some(ext2_set_size_ino::<S>),
     }
 }
 

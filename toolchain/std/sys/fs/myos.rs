@@ -422,9 +422,13 @@ fn open_flags(opts: &OpenOptions) -> io::Result<usize> {
     if opts.append && opts.truncate && !opts.create_new {
         return os_err(EINVAL);
     }
-    let mut flags = access;
+    // As on Unix, no fd std opens is inherited by a program it execs.
+    let mut flags = access | abi::O_CLOEXEC;
     if opts.create || opts.create_new {
         flags |= abi::O_CREAT;
+    }
+    if opts.create_new {
+        flags |= abi::O_EXCL;
     }
     if opts.truncate {
         flags |= abi::O_TRUNC;
@@ -439,11 +443,10 @@ fn open_flags(opts: &OpenOptions) -> io::Result<usize> {
 fn open_path(path: &Path, opts: &OpenOptions) -> io::Result<File> {
     let flags = open_flags(opts)?;
     let bytes = path_bytes(path)?;
-    // No exclusive create in the kernel: refuse an existing path here.
-    if opts.create_new && kstat(bytes).is_some() {
+    let fd = abi::openat(abi::AT_FDCWD, bytes, flags);
+    if fd == abi::SYSERR_EEXIST {
         return os_err(EEXIST);
     }
-    let fd = abi::openat(abi::AT_FDCWD, bytes, flags);
     if fd < 0 {
         return os_err(match kstat(bytes) {
             None => ENOENT,
@@ -492,8 +495,8 @@ impl File {
         unsupported()
     }
 
-    pub fn truncate(&self, _size: u64) -> io::Result<()> {
-        unsupported()
+    pub fn truncate(&self, size: u64) -> io::Result<()> {
+        cvt(abi::ftruncate(self.0.as_raw_fd(), size)).map(drop)
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {

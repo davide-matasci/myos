@@ -14,6 +14,9 @@ use super::*;
 /// process has one; its threads reach it through `Task::tgid`.
 pub(super) struct Process {
     pub fds: [FdEntry; MAX_FDS],
+    /// Bit `i`: fd `i` closes at exec (`FD_CLOEXEC`). Inherited on fork;
+    /// clear for a free fd (`fd::fd_close` and `fd_dup2` clear it).
+    pub cloexec: u64,
     pub user_base: u64,
     pub image_span: usize,
     pub stack_off: u64,
@@ -68,6 +71,7 @@ const fn root_cwd_buf() -> [u8; 256] {
 /// (set by the spawner).
 static EMPTY_PROC: Process = Process {
     fds: [FdEntry::Empty; MAX_FDS],
+    cloexec: 0,
     user_base: 0,
     image_span: 0,
     stack_off: 0,

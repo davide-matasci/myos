@@ -101,6 +101,10 @@ An fd keeps the access it was opened with: passing it to another process
 not checked again. A call on an fd's own file (`futimens`, `fdopendir`,
 `fstat`'s permission bits) checks the policy against the rights its
 opener's namespace had there, not the caller's.
+`ftruncate` needs an fd opened for writing. Because an fd is a grant, a
+program can keep one from the programs it execs: an fd marked
+close-on-exec (`O_CLOEXEC`, `FD_CLOEXEC`) is closed by the exec. libc's
+`opendir` and Rust's `std` open their fds so.
 
 `stat` shows what the caller may do: the owner's permission bits are
 `r` (read), `w` (write, or create in a directory), `x` (exec, or read for a

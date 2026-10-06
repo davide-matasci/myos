@@ -1,8 +1,6 @@
 //! Raw myos syscalls (matches `user/lib` numbering).
 
-pub const SYS_WRITE: usize = 0;
 pub const SYS_EXIT: usize = 1;
-pub const SYS_READ: usize = 3;
 pub const SYS_CLOSE: usize = 4;
 pub const SYS_FORK: usize = 6;
 pub const SYS_WAIT: usize = 7;
@@ -29,6 +27,16 @@ pub const SYS_UTIMENSAT: usize = 77;
 pub const SYS_CHDIRAT: usize = 78;
 pub const SYS_LISTDIRAT: usize = 79;
 pub const SYS_EXECAT: usize = 80;
+/// `pread`/`pwrite(fd, buf, len, offset, flags)`: at the file position, or
+/// with [`FILE_AT`] at `offset`; `ftruncate(fd, size)`; `fdflags(fd, op,
+/// flags)` ([`FD_SET`] with [`FD_CLOEXEC`]: the fd closes at exec).
+pub const SYS_PREAD: usize = 81;
+pub const SYS_PWRITE: usize = 82;
+pub const SYS_FTRUNCATE: usize = 83;
+pub const SYS_FDFLAGS: usize = 84;
+pub const FILE_AT: usize = 1;
+pub const FD_SET: usize = 1;
+pub const FD_CLOEXEC: usize = 1;
 pub const AT_FDCWD: usize = -100isize as usize;
 pub const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 pub const AT_REMOVEDIR: usize = 0x200;
@@ -49,6 +57,13 @@ pub const O_RDWR: usize = 2;
 pub const O_CREAT: usize = 0x40;
 pub const O_TRUNC: usize = 0x200;
 pub const O_APPEND: usize = 0x400;
+/// With [`O_CREAT`]: only a new file (the open fails when the name is taken).
+pub const O_EXCL: usize = 0x80;
+/// The fd closes at exec (std opens every fd so, as on Unix).
+pub const O_CLOEXEC: usize = 0x80000;
+
+/// [`openat`]'s result for an `O_CREAT|O_EXCL` open of a name that is taken.
+pub const SYSERR_EEXIST: isize = (usize::MAX - 4) as isize;
 
 pub const EBADF: i32 = 9;
 pub const F_DUPFD_CLOEXEC: i32 = 1030;
@@ -64,8 +79,9 @@ pub fn close(fd: i32) -> isize {
 }
 
 /// A read's or write's result: the count, or minus an errno for the
-/// kernel's failure values (`SYSERR` and the distinct EIO, ENXIO and EINTR,
-/// `kernel/src/task/fd.rs`), so `cvt` reports what happened.
+/// kernel's failure values (`SYSERR` and the distinct EIO, ENXIO, EINTR,
+/// EEXIST and ESPIPE, `kernel/src/task/fd.rs`), so `cvt` reports what
+/// happened.
 #[inline]
 fn io_result(ret: usize) -> isize {
     match usize::MAX - ret {
@@ -73,18 +89,44 @@ fn io_result(ret: usize) -> isize {
         1 => -5, // EIO: the pty's other end is gone
         2 => -6, // ENXIO
         3 => -4, // EINTR: a caught signal
+        4 => -17, // EEXIST
+        5 => -29, // ESPIPE: an offset on a pipe or terminal
         _ => ret as isize,
     }
 }
 
 #[inline]
 pub fn write(fd: i32, buf: &[u8]) -> isize {
-    io_result(raw_write(fd as usize, buf.as_ptr() as usize, buf.len()))
+    io_result(raw_syscall6(SYS_PWRITE, fd as usize, buf.as_ptr() as usize, buf.len(), 0, 0, 0))
 }
 
 #[inline]
 pub fn read(fd: i32, buf: &mut [u8]) -> isize {
-    io_result(raw_read(fd as usize, buf.as_mut_ptr() as usize, buf.len()))
+    io_result(raw_syscall6(SYS_PREAD, fd as usize, buf.as_mut_ptr() as usize, buf.len(), 0, 0, 0))
+}
+
+/// [`write`] at `offset`, the file position left as it is.
+#[inline]
+pub fn write_at(fd: i32, buf: &[u8], offset: u64) -> isize {
+    io_result(raw_syscall6(SYS_PWRITE, fd as usize, buf.as_ptr() as usize, buf.len(), offset as usize, FILE_AT, 0))
+}
+
+/// [`read`] at `offset`, the file position left as it is.
+#[inline]
+pub fn read_at(fd: i32, buf: &mut [u8], offset: u64) -> isize {
+    io_result(raw_syscall6(SYS_PREAD, fd as usize, buf.as_mut_ptr() as usize, buf.len(), offset as usize, FILE_AT, 0))
+}
+
+/// Make the file `fd` is open on for writing `size` bytes long.
+#[inline]
+pub fn ftruncate(fd: i32, size: u64) -> isize {
+    ok(raw_syscall6(SYS_FTRUNCATE, fd as usize, size as usize, 0, 0, 0, 0))
+}
+
+/// Make `fd` close at exec.
+#[inline]
+pub fn set_cloexec(fd: i32) -> isize {
+    ok(raw_syscall6(SYS_FDFLAGS, fd as usize, FD_SET, FD_CLOEXEC, 0, 0, 0))
 }
 
 #[inline]
@@ -256,7 +298,8 @@ pub fn wait_status(status: &mut u8) -> isize {
 
 #[inline]
 pub fn pipe(fds: &mut [usize; 2]) -> isize {
-    let ret = raw_pipe(fds.as_mut_ptr() as usize);
+    // Both ends close at exec; a child gets what it needs by `dup2`.
+    let ret = raw_syscall6(SYS_PIPE, fds.as_mut_ptr() as usize, FD_CLOEXEC, 0, 0, 0, 0);
     if ret == usize::MAX {
         -1
     } else {
@@ -311,82 +354,6 @@ fn raw_close(fd: usize) -> usize {
             "svc #0",
             in("x8") SYS_CLOSE,
             in("x0") fd,
-            lateout("x0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn raw_write(fd: usize, ptr: usize, len: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") SYS_WRITE,
-            in("rdi") fd,
-            in("rsi") ptr,
-            in("rdx") len,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn raw_write(fd: usize, ptr: usize, len: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") SYS_WRITE,
-            in("x0") fd,
-            in("x1") ptr,
-            in("x2") len,
-            lateout("x0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn raw_read(fd: usize, buf: usize, len: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") SYS_READ,
-            in("rdi") fd,
-            in("rsi") buf,
-            in("rdx") len,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn raw_read(fd: usize, buf: usize, len: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") SYS_READ,
-            in("x0") fd,
-            in("x1") buf,
-            in("x2") len,
             lateout("x0") ret,
             options(nostack),
         );
@@ -561,40 +528,6 @@ fn raw_wait(status_ptr: usize) -> usize {
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn raw_pipe(fds_ptr: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") SYS_PIPE,
-            in("rdi") fds_ptr,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn raw_pipe(fds_ptr: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") SYS_PIPE,
-            in("x0") fds_ptr,
-            lateout("x0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
 fn raw_dup2(oldfd: usize, newfd: usize) -> usize {
     let ret: usize;
     unsafe {
@@ -638,42 +571,6 @@ fn raw_close(fd: usize) -> usize {
             "ecall",
             in("a7") SYS_CLOSE,
             in("a0") fd,
-            lateout("a0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline]
-fn raw_write(fd: usize, ptr: usize, len: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") SYS_WRITE,
-            in("a0") fd,
-            in("a1") ptr,
-            in("a2") len,
-            lateout("a0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline]
-fn raw_read(fd: usize, buf: usize, len: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") SYS_READ,
-            in("a0") fd,
-            in("a1") buf,
-            in("a2") len,
             lateout("a0") ret,
             options(nostack),
         );
@@ -757,21 +654,6 @@ fn raw_wait(status_ptr: usize) -> usize {
             "ecall",
             in("a7") SYS_WAIT,
             inout("a0") status_ptr => ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline]
-fn raw_pipe(fds_ptr: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") SYS_PIPE,
-            inout("a0") fds_ptr => ret,
             options(nostack),
         );
     }

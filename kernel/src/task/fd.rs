@@ -211,7 +211,8 @@ pub fn fd_open(node: crate::fs::Vnode, flags: u32, rights: crate::sec::Rights) -
     fd
 }
 
-pub fn pipe_open() -> Option<(usize, usize)> {
+/// A pipe: its read and write ends, both closing at exec if `cloexec`.
+pub fn pipe_open(cloexec: bool) -> Option<(usize, usize)> {
     let id = pipe::alloc()?;
     let out = with_process_mut(|t| {
         let mut read_fd = None;
@@ -233,6 +234,9 @@ pub fn pipe_open() -> Option<(usize, usize)> {
         pipe::add_writer(id);
         t.fds[r] = FdEntry::PipeRead(id);
         t.fds[w] = FdEntry::PipeWrite(id);
+        if cloexec {
+            t.cloexec |= 1 << r | 1 << w;
+        }
         Some((r, w))
     });
     if out.is_none() {
@@ -476,14 +480,17 @@ pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
         }
         let prev = t.fds[newfd];
         t.fds[newfd] = fd_clone(old);
+        // The copy stays open across exec, whatever `oldfd` does.
+        t.cloexec &= !(1 << newfd);
         (true, prev)
     });
     fd_drop(dropped);
     ok
 }
 
-/// First free fd >= `minfd` that clones `oldfd` (fcntl F_DUPFD).
-pub fn fd_dup_min(oldfd: usize, minfd: usize) -> Option<usize> {
+/// First free fd >= `minfd` that clones `oldfd` (fcntl `F_DUPFD`; closing
+/// at exec if `cloexec`, `F_DUPFD_CLOEXEC`).
+pub fn fd_dup_min(oldfd: usize, minfd: usize, cloexec: bool) -> Option<usize> {
     if oldfd >= MAX_FDS || minfd >= MAX_FDS {
         return None;
     }
@@ -495,6 +502,9 @@ pub fn fd_dup_min(oldfd: usize, minfd: usize) -> Option<usize> {
         for i in minfd..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
                 t.fds[i] = fd_clone(old);
+                if cloexec {
+                    t.cloexec |= 1 << i;
+                }
                 return Some(i);
             }
         }
@@ -518,6 +528,10 @@ const FILE_READ_TMP: usize = 4096;
 /// generic SYSERR (EBADF in libgloss); this distinct value lets libgloss map
 /// the hangup to `EIO` (Linux: read on a hung-up pty returns EIO).
 pub const SYSERR_EIO: usize = usize::MAX - 1;
+
+/// A read or write at an offset on an fd that has none (a pipe, a
+/// terminal): `ESPIPE`.
+pub const SYSERR_ESPIPE: usize = usize::MAX - 5;
 
 /// Distinct syscall error for pty peer-gone (`EIO`): `usize::MAX` is the
 /// generic SYSERR (libgloss maps it to EBADF), so read/write return `MAX-1`
@@ -543,7 +557,10 @@ pub fn fd_read_stdin(buf: usize, len: usize) -> usize {
     n
 }
 
-pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
+/// Read up to `len` bytes from `fd` into user `buf`: at the file position,
+/// which advances, or (`at`) at that offset of a file, the position left as
+/// it is.
+pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
     if len == 0 {
         return 0;
     }
@@ -555,6 +572,9 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
         if !ok {
             return usize::MAX;
         }
+        if at.is_some() && !matches!(entry, FdEntry::File(_) | FdEntry::Empty) {
+            return SYSERR_ESPIPE;
+        }
         match entry {
             FdEntry::Stdin => return fd_read_stdin(buf, len),
             FdEntry::File(id) => {
@@ -562,6 +582,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 let Some((node, pos, ..)) = open_file_get(id) else {
                     return usize::MAX;
                 };
+                let pos = at.unwrap_or(pos);
                 let mut tmp = [0u8; FILE_READ_TMP];
                 let want = len.min(tmp.len());
                 let seq = wait_seq();
@@ -581,7 +602,9 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
                 if with_process_mut(|t| t.fds.get(fd).copied()) != Some(FdEntry::File(id)) {
                     return usize::MAX;
                 }
-                open_file_advance(id, n);
+                if at.is_none() {
+                    open_file_advance(id, n);
+                }
                 return n;
             }
             FdEntry::PipeRead(id) => {
@@ -639,7 +662,10 @@ pub fn fd_read(fd: usize, buf: usize, len: usize) -> usize {
     }
 }
 
-pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
+/// Write `len` bytes of user `buf` to `fd`: at the file position (the end
+/// with `O_APPEND`), which advances, or (`at`) at that offset of a file,
+/// the position left as it is.
+pub fn fd_write(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
     if len == 0 {
         return 0;
     }
@@ -652,6 +678,9 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
         });
         if !ok {
             return if total == 0 { usize::MAX } else { total };
+        }
+        if at.is_some() && !matches!(entry, FdEntry::File(_) | FdEntry::Empty) {
+            return SYSERR_ESPIPE;
         }
         let mut tmp = [0u8; FILE_IO_TMP];
         if !user::copy_from_user(current_aspace(), buf + total, &mut tmp[..chunk]) {
@@ -673,10 +702,10 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                     if !writable {
                         return if total == 0 { usize::MAX } else { total };
                     }
-                    let write_pos = if append {
-                        crate::fs::size_of(&node).unwrap_or(pos)
-                    } else {
-                        pos
+                    let write_pos = match at {
+                        Some(at) => at + total,
+                        None if append => crate::fs::size_of(&node).unwrap_or(pos),
+                        None => pos,
                     };
                     let Some(n) = crate::fs::write(&node, write_pos, &tmp[..chunk]) else {
                         return if total == 0 { usize::MAX } else { total };
@@ -687,7 +716,9 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
                     if n == 0 {
                         return if total == 0 { usize::MAX } else { total };
                     }
-                    open_file_set_pos(id, write_pos + n);
+                    if at.is_none() {
+                        open_file_set_pos(id, write_pos + n);
+                    }
                     total += n;
                     break;
                 }
@@ -742,6 +773,18 @@ pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
         }
     }
     total
+}
+
+/// Make the file `fd` is open on (for writing) `size` bytes long
+/// (`ftruncate`): cut, or grown with zeros. The position stays.
+pub fn fd_set_size(fd: usize, size: usize) -> bool {
+    let Some(FdEntry::File(id)) = with_process_mut(|t| t.fds.get(fd).copied()) else {
+        return false;
+    };
+    match open_file_get(id) {
+        Some((node, _, true, _)) => crate::fs::set_size(&node, size),
+        _ => false,
+    }
 }
 
 pub fn fd_lseek(fd: usize, offset: i64, whence: usize) -> usize {
@@ -837,6 +880,7 @@ pub fn fd_close(fd: usize) -> bool {
         // open/pipe/socket reuses the lowest fd (os-test stdio/puts does
         // close(0); close(1); pipe() and expects the pipe on 0,1).
         t.fds[fd] = FdEntry::Empty;
+        t.cloexec &= !(1 << fd);
         entry
     });
     if entry == FdEntry::Empty {
@@ -845,6 +889,41 @@ pub fn fd_close(fd: usize) -> bool {
     // Outside TASKS: dropping a pipe/pty end wakes peers / signals a session.
     fd_drop(entry);
     true
+}
+
+/// Whether `fd` closes at exec (`F_GETFD`); `None` for a free fd.
+pub fn fd_cloexec(fd: usize) -> Option<bool> {
+    if fd >= MAX_FDS {
+        return None;
+    }
+    with_process_mut(|t| (t.fds[fd] != FdEntry::Empty).then_some(t.cloexec & 1 << fd != 0))
+}
+
+/// Make `fd` close at exec or stay open (`F_SETFD`): false for a free fd.
+pub fn fd_set_cloexec(fd: usize, on: bool) -> bool {
+    if fd >= MAX_FDS {
+        return false;
+    }
+    with_process_mut(|t| {
+        if t.fds[fd] == FdEntry::Empty {
+            return false;
+        }
+        if on {
+            t.cloexec |= 1 << fd;
+        } else {
+            t.cloexec &= !(1 << fd);
+        }
+        true
+    })
+}
+
+/// Close the fds marked close-on-exec: the new image of an exec never sees
+/// them.
+pub fn fd_close_on_exec() {
+    let marked = with_process_mut(|t| t.cloexec);
+    for fd in (0..MAX_FDS).filter(|fd| marked & 1 << fd != 0) {
+        fd_close(fd);
+    }
 }
 
 /// Whether the current task has a controlling terminal.

@@ -175,7 +175,7 @@ fn conv_id(file: &str) -> Result<String, usize> {
 fn open_conv(proto: &str, id: &str, ty: usize, stream: bool) -> R {
     let conv = format!("{}/{id}", net_dir(proto)?);
     let fd = user::open_path(&format!("/net/{proto}/{id}/data"), 2);
-    if fd >= signal::SYSERR_EINTR {
+    if fd >= signal::SYSERR_LOWEST {
         let _ = fs::write(&format!("{conv}/ctl"), 0, b"hangup");
         return Err(EMFILE);
     }

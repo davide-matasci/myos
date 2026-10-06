@@ -77,6 +77,11 @@ pub fn console_ctl_write(text: &[u8]) -> Option<usize> {
     devfs::console_ctl_write(text)
 }
 
+/// Make an open vnode `size` bytes long (see [`vfs::set_size`]).
+pub fn set_size(node: &Vnode, size: usize) -> bool {
+    vfs::set_size(node, size)
+}
+
 /// Size of an open vnode (for `O_APPEND`).
 pub fn size_of(node: &Vnode) -> Option<usize> {
     vfs::size_of(node)
@@ -463,6 +468,7 @@ fn ro_ops(
         readlink: reject_readlink,
         poll: None,
         set_times: None,
+        set_size: None,
         writable: false,
     }
 }
@@ -500,6 +506,7 @@ fn rw_ops(
         readlink,
         poll: None,
         set_times: None,
+        set_size: None,
         writable: true,
     }
 }
@@ -526,6 +533,7 @@ pub fn init() {
         "tmp",
         vfs::MountOps {
             set_times: Some(tmpfs::set_times),
+            set_size: Some(tmpfs::set_size),
             ..rw_ops(
                 tmpfs::lookup,
                 tmpfs::stat,

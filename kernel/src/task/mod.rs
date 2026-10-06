@@ -50,6 +50,8 @@ pub const STACK_SIZE: usize = 64 * 1024;
 /// (6) before the child execs, so 16 was exhausted and exec failed. 64 for
 /// larger programs; libgloss tracks per-fd flags up to `MYOS_MAX_FDS`.
 pub const MAX_FDS: usize = 64;
+// `Process::cloexec` keeps a bit per fd.
+const _: () = assert!(MAX_FDS <= 64);
 
 
 #[derive(Clone, Copy, PartialEq, Eq)]

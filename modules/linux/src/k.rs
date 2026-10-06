@@ -30,7 +30,6 @@ fn sref(s: &str) -> StrRef {
 
 // Native syscall numbers (`kernel/src/user/syscall.rs`, append-only).
 const SYS_EXIT: usize = 1;
-const SYS_READ: usize = 3;
 const SYS_FORK: usize = 6;
 const SYS_BRK: usize = 9;
 const SYS_GETCWD: usize = 16;
@@ -43,6 +42,8 @@ const SYS_GETPGID: usize = 31;
 const SYS_GETSID: usize = 32;
 const SYS_GETTIMEOFDAY: usize = 33;
 const SYS_WAITPID: usize = 46;
+const SYS_PREAD: usize = 81;
+const SYS_FTRUNCATE: usize = 83;
 
 /// A native syscall that does not read the register block.
 fn native(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
@@ -123,8 +124,13 @@ pub mod user {
         unsafe { (api().personality_exec)(sref(path), a.as_ptr(), a.len(), e.as_ptr(), e.len()) }
     }
 
+    /// A read at the file position (`pread` with no offset: the register
+    /// block is null, so the offset and flags arguments are 0).
     pub fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
-        native(SYS_READ, fd, buf, len)
+        native(SYS_PREAD, fd, buf, len)
+    }
+    pub fn sys_ftruncate(fd: usize, size: usize) -> usize {
+        native(SYS_FTRUNCATE, fd, size, 0)
     }
     pub fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         native(SYS_MPROTECT, addr, len, prot)
@@ -445,6 +451,11 @@ pub mod signal {
     use super::*;
 
     pub const SYSERR_EINTR: usize = myos_abi::MYOS_SYSERR_EINTR;
+    pub const SYSERR_EEXIST: usize = myos_abi::MYOS_SYSERR_EEXIST;
+    pub const SYSERR_ESPIPE: usize = myos_abi::MYOS_SYSERR_ESPIPE;
+    /// The lowest of the native failure sentinels: a result at or above it
+    /// failed.
+    pub const SYSERR_LOWEST: usize = myos_abi::MYOS_SYSERR_LOWEST;
     pub const HANDLER_IGN: usize = myos_abi::MYOS_HANDLER_IGN;
     pub const SIGSEGV: u32 = myos_abi::MYOS_SIGSEGV;
     pub const SA_NOCLDWAIT: u32 = myos_abi::MYOS_SA_NOCLDWAIT;

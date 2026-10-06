@@ -138,9 +138,7 @@ pub const CLOCK_MONOTONIC: clockid_t = 1;
 mod syscalls {
     use super::*;
 
-    const SYS_WRITE: usize = 0;
     const SYS_EXIT: usize = 1;
-    const SYS_READ: usize = 3;
     const SYS_CLOSE: usize = 4;
     const SYS_FORK: usize = 6;
     const SYS_WAIT: usize = 7;
@@ -158,6 +156,9 @@ mod syscalls {
     const SYS_STATAT: usize = 71;
     const SYS_READLINKAT: usize = 76;
     const SYS_UTIMENSAT: usize = 77;
+    /// Read and write, at the file position (offset and flags 0).
+    const SYS_PREAD: usize = 81;
+    const SYS_PWRITE: usize = 82;
     const K_AT_FDCWD: usize = AT_FDCWD as isize as usize;
     pub const K_AT_SYMLINK_NOFOLLOW: usize = 0x100;
     pub const K_AT_EMPTY_PATH: usize = 0x1000;
@@ -292,7 +293,7 @@ mod syscalls {
     }
 
     pub unsafe fn sys_write(fd: c_int, buf: *const c_void, len: size_t) -> ssize_t {
-        let ret = raw_syscall(SYS_WRITE, fd as usize, buf as usize, len);
+        let ret = raw_syscall6(SYS_PWRITE, fd as usize, buf as usize, len, 0, 0, 0);
         if ret == usize::MAX {
             set_errno(EIO);
             -1
@@ -302,7 +303,7 @@ mod syscalls {
     }
 
     pub unsafe fn sys_read(fd: c_int, buf: *mut c_void, len: size_t) -> ssize_t {
-        let ret = raw_syscall(SYS_READ, fd as usize, buf as usize, len);
+        let ret = raw_syscall6(SYS_PREAD, fd as usize, buf as usize, len, 0, 0, 0);
         if ret == usize::MAX {
             set_errno(EIO);
             -1

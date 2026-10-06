@@ -386,10 +386,9 @@ three, the kernel crate itself an hour. Known gaps:
   both: no message boundaries, and no fd passing.
 - File locks (`flock`, `fcntl` record locks) are granted and not kept:
   myos has none, and a lock only guards against another copy of the same
-  program (cargo, SQLite, git). `ftruncate` cuts a file to nothing or
-  grows it; a shorter non-zero length is refused (`EINVAL`). The
-  filesystems have no holes: growing a file, or `pwrite` past its end,
-  writes the zeros in between.
+  program (cargo, SQLite, git). `ftruncate` and `O_CREAT|O_EXCL` are the
+  native ones (any length; the name checked and created in one step).
+  `pwrite` past the end of a file leaves zeros in the gap.
 - `chmod`, `chown` and `fsync` succeed and do nothing: what a program may
   do to a file is the security policy's (`docs/security.md`), and ext2
   writes a file back when its last fd closes. `stat`'s permission bits are

@@ -109,7 +109,7 @@ fn trampoline() -> Result<usize, usize> {
     const MAP_ANON: usize = 0x20;
     let page = crate::k::user::PAGE;
     let va = crate::k::user::do_mmap(0, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if va >= crate::k::signal::SYSERR_EINTR {
+    if va >= crate::k::signal::SYSERR_LOWEST {
         return Err(ENOMEM);
     }
     put(va, arch::TRAMP_CODE)?;
