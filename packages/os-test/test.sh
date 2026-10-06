@@ -1,5 +1,5 @@
 # The curated os-test list (misc/ci-boot.tests: POSIX core, non-basic,
-# signal handlers, myos chroot/FIFO; 331 prebuilt tests): a thin writable
+# signal handlers, myos chroot/FIFO; 327 prebuilt tests): a thin writable
 # copy of the suite under /tmp/o, `make report`, and every test must pass.
 # Full mode only (the list takes a while under TCG). The report's progress
 # goes to the console: one line per test.

@@ -44,6 +44,10 @@ Gaps that may show up on the way:
   script) sees the default. The override keeps SSH logins working (dropbear
   passes `/usr/sbin:/usr/bin:/sbin:/bin`): respecting an inherited `PATH`
   wants dropbear's `DEFAULT_ROOT_PATH` set to myos's directories first.
+- `setpgid` on a child that has exec'd succeeds (POSIX: `EACCES`); the
+  kernel would remember the exec and say so with a failure value of its own
+  (os-test `process/fork-exec-setpgid-in-parent`, deferred in
+  `packages/os-test/SUITES.md`).
 - libgloss's `setsid` only starts a process group (`SYS_SETSID` corrupted
   netfs writes, not root-caused): sessions are approximated along the
   parent chain (`kernel/src/pty.rs`).

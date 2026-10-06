@@ -61,7 +61,8 @@ make SUITES=basic report
 - `misc/myos-report.sh` grades them as upstream's `misc/html.c` does: a test
   with expectations (`<suite>.expect/<test>.*`, read from `/lib/os-test`
   when the staged copy has none) passes when its outcome equals one of them
-  (`*.unknown.*` excepted); a test without any passes on `exit: 0`. So
+  (`*.unknown.*` included: outcomes upstream has seen but not judged); a
+  test without any passes on `exit: 0`. So
   `open: ENOTDIR` passes where POSIX wants that error, and a `printf` test
   passes only when it printed the right text.
 
@@ -76,7 +77,7 @@ pass_rate=NN% (P/T)
 The full boot test (`packages/os-test/test.sh`, `docs/testing.md`) runs a
 **thin curated set**: the basic smoke list **plus** ~100 tests spanning
 non-basic suites (`limits`, `io`, `malloc`, `paths`, `process`, `signal`,
-`stdio`, `udp`) **plus** `misc/ci-expansion.tests` (154: POSIX core, more
+`stdio`, `udp`) **plus** `misc/ci-expansion.tests` (150: POSIX core, more
 non-basic, signal handlers, and the myos `chroot`/FIFO suite). See
 `SUITES.md` for the full suite inventory, the selection rationale and the
 deferred tests. Not the full ~1187 basic suite (CI #860/#866 timed out).

@@ -1,8 +1,10 @@
 # Grade every out/**.out the way upstream's html.c does: a test whose suite
 # ships expectations (SUITE.expect/NAME.*, from the suite here or
-# /lib/os-test) passes when its outcome equals one of them, NAME.unknown.*
-# excepted (outcomes not yet judged good or bad); a test without any passes
-# on "exit: 0" (myos-run.sh writes the outcome as upstream's run.sh does).
+# /lib/os-test) passes when its outcome equals one of them; a test without
+# any passes on "exit: 0" (myos-run.sh writes the outcome as upstream's
+# run.sh does). NAME.unknown.* are outcomes upstream has seen but not judged
+# good or bad: matching one passes here (the suite claims nothing against
+# it), where html.c reports "unknown".
 # compile_error is counted apart. So a test whose POSIX outcome is an error
 # (open: ENOTDIR) passes by printing it, not by exiting 0.
 # Enumerate with find -print (one path per line), not $(find | sort):
@@ -60,9 +62,6 @@ while IFS= read -r f || [ -n "$f" ]; do
   for e in "$exp/$name".*; do
     [ -f "$e" ] || continue
     rated=1
-    case "${e#"$exp/$name".}" in
-      unknown.*) continue ;;
-    esac
     slurp "$e"
     if [ "$text" = "$outcome" ]; then
       good=1
