@@ -176,7 +176,10 @@ fn mapped_file_slot(t: &mut Process, node: &crate::fs::Vnode) -> Option<usize> {
 /// regions.
 pub fn mmap_backing(va: usize) -> Option<(u32, Option<(crate::fs::Vnode, usize)>)> {
     let page = crate::user::PAGE;
-    with_process_mut(|t| {
+    // An idle task or the boot task has no process, and so no mappings: a
+    // fault there is the kernel's, reported as such.
+    with_process_opt(|t| {
+        let t = t?;
         let r = region_at(&t.mmap, va)?;
         let file = t.mapped_files.get((r.file as usize).wrapping_sub(1)).and_then(|f| {
             let off = (r.fpage as usize + (va - r.va as usize) / page) * page;

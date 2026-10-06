@@ -211,6 +211,7 @@ impl TaskTable {
         self.tasks[slot] = EMPTY;
         self.tasks[slot].stack_base = stack_base;
         self.procs[slot] = None;
+        super::sched::forget_frame(slot);
     }
 }
 
