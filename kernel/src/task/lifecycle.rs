@@ -137,7 +137,7 @@ pub(super) fn parent_has_active_child(tasks: &TaskTable, ppid: usize) -> bool {
         }
         match tasks[i].state {
             State::Ready | State::Running | State::Blocked => return true,
-            State::Unused | State::Dead => {}
+            State::Unused | State::Dead | State::Claimed => {}
         }
     }
     false
@@ -323,6 +323,7 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
         wake_pending: false,
         tgid: slot,
         group_exit: false,
+        syscall_frame: 0,
     };
     // Before the child becomes runnable on another CPU (TASKS still held;
     // TASKS → SIG_TABLES is the lock order).
@@ -344,7 +345,8 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
 /// A free task slot with a kernel stack seeded to start at `trampoline`:
 /// `(slot, stack_base, sp, stack_top)`. Reuses the kernel stack a reaped
 /// task left behind when it can (avoids kernel-heap allocations). Call with
-/// irqs off; `None` when every slot is taken.
+/// irqs off; `None` when every slot is taken. The slot is `Claimed` until
+/// the caller installs its task there.
 pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
     let (slot, kept) = {
         let mut tasks = TASKS.lock();
@@ -359,32 +361,21 @@ pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
             })
             .or_else(|| tasks.iter().position(|t| t.state == State::Unused))?;
         let kept = tasks[slot].stack_base;
-        // Reserve the slot before releasing TASKS: the caller only fills it
-        // after a second lock, so on SMP another CPU's `claim_slot` could
-        // otherwise select the same slot in between and two tasks would share
-        // it. Marking it Running takes it out of both selection arms; the
-        // scheduler runs only Ready tasks and `wake` only promotes Blocked,
-        // so it stays inert, and user_rip is still 0 so every "is this task
-        // alive" check skips it, until the caller overwrites it wholesale.
-        tasks[slot].state = State::Running;
+        // Taken before the lock goes: a fork on another CPU used to find the
+        // same slot free until this caller installed its task, and seeded the
+        // kernel stack again under the child already running on it.
+        tasks.recycle(slot);
+        tasks[slot].state = State::Claimed;
+        tasks[slot].tgid = slot;
         (slot, kept)
-    };
-    // Release the reservation (back to a free slot) when the stack cannot be
-    // allocated, so a failed claim does not leak the slot forever. The
-    // callers run with interrupts off, as the lock above relies on.
-    let unreserve = || {
-        TASKS.lock()[slot].state = State::Unused;
     };
     let stack_base = if kept != 0 {
         kept
     } else {
-        let Some(layout) = Layout::from_size_align(STACK_SIZE, 16).ok() else {
-            unreserve();
-            return None;
-        };
-        let stack = unsafe { alloc(layout) };
+        let stack = Layout::from_size_align(STACK_SIZE, 16)
+            .map_or(core::ptr::null_mut(), |layout| unsafe { alloc(layout) });
         if stack.is_null() {
-            unreserve();
+            TASKS.lock()[slot].state = State::Unused;
             return None;
         }
         stack as usize
@@ -580,6 +571,7 @@ fn spawn_inner(
         wake_pending: false,
         tgid: slot,
         group_exit: false,
+        syscall_frame: 0,
     };
     signal_table_reset(slot);
     fpu::reset(slot);

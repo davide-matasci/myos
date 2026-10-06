@@ -63,6 +63,10 @@ enum State {
     /// `wake` matching its `wait_key`, its `wake_at` deadline, or a signal.
     Blocked,
     Dead,
+    /// Taken by `claim_slot` for the task its caller installs next (a fork,
+    /// a new thread): nothing else may take the slot, or its kernel stack,
+    /// in between.
+    Claimed,
 }
 
 /// The user registers a new task starts with: a forked child resumes after
@@ -149,6 +153,10 @@ struct Task {
     /// Set in the leader once the process is ending (`exit_group`): its
     /// other threads are being killed, and the exit status is final.
     group_exit: bool,
+    /// The trap frame of the syscall the task is in while it is off its CPU
+    /// (`arch::syscall_frame`, which `schedule` saves and restores): a
+    /// syscall that blocks resumes with its own frame wherever it runs.
+    syscall_frame: usize,
 }
 
 const EMPTY: Task = Task {
@@ -173,6 +181,7 @@ const EMPTY: Task = Task {
     wake_pending: false,
     tgid: 0,
     group_exit: false,
+    syscall_frame: 0,
 };
 
 static TASKS: Mutex<TaskTable> = Mutex::new(TaskTable::new());

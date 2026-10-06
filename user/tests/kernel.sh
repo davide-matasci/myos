@@ -469,6 +469,22 @@ lx_dyn() {
 	cat $OUT/linux-dyn.log
 	contains "LINUX-DYN OK" $OUT/linux-dyn.log
 }
+# The page cache (kernel/src/fs/pagecache.rs): the libraries one run maps
+# serve the next (PageCacheKiB), and one rewritten in between is read as it
+# is now. libsmoke2.so overwritten with libsmoke.so has no smoke2_name for
+# linux-dyn's dlopen; put back, it has again.
+lx_pagecache() {
+	mkdir -p /tmp/pc && cp /lib/libsmoke.so /lib/libsmoke2.so /tmp/pc || return 1
+	LD_LIBRARY_PATH=/tmp/pc linux /bin/linux/linux-dyn || return 1
+	grep "^PageCacheKiB: [1-9]" /proc/meminfo || return 1
+	cp /tmp/pc/libsmoke.so /tmp/pc/libsmoke2.so
+	if LD_LIBRARY_PATH=/tmp/pc linux /bin/linux/linux-dyn; then
+		echo "the rewritten libsmoke2.so was not seen"
+		return 1
+	fi
+	cp /lib/libsmoke2.so /tmp/pc/libsmoke2.so
+	LD_LIBRARY_PATH=/tmp/pc linux /bin/linux/linux-dyn && rm -r /tmp/pc
+}
 # A real Alpine package, downloaded at run time (jq + oniguruma + musl), run
 # chrooted in its Alpine root: it counts the binds of /dev, /proc and /net
 # into that root it sees in /proc/mounts (3, doubled).
@@ -511,6 +527,7 @@ lx_insmod() {
 if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t linux_smoke lx_smoke
 	t linux_dyn lx_dyn
+	t linux_pagecache lx_pagecache
 	if [ "$MODE" = full ]; then
 		t alpine_jq lx_alpine
 		t alpine_python lx_python

@@ -1716,7 +1716,7 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
     let mut off = 0;
     while off < map_len {
         let va = (addr + off) as u64;
-        let Some(phys) = virt_to_phys(aspace, va) else {
+        let Some(mut phys) = virt_to_phys(aspace, va) else {
             // An mmap page not touched yet takes the new protection when
             // it is paged in.
             if va >= area_lo {
@@ -1725,6 +1725,14 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
             }
             return SYSERR;
         };
+        // A page shared through the page cache becomes this process's own
+        // before it may be written.
+        if prot & PROT_WRITE != 0 && fs::pagecache::is_cached(phys) {
+            let own = mm::alloc_frame_site(4);
+            unsafe { core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(own), PAGE) };
+            free_mapped_page(aspace, va);
+            phys = own;
+        }
         map_user_page_prot(aspace, va, phys, prot);
         if prot & PROT_EXEC != 0 {
             // mprotect RW→RX: clean D-cache, invalidate I-cache for this range.
@@ -1980,6 +1988,17 @@ fn exec_auxv(elf_bytes: &[u8], base: u64, entry: usize, interp_base: Option<usiz
     aux.push(AT_PAGESZ, PAGE);
     aux.push(AT_ENTRY, entry);
     aux.push(AT_CLKTCK, 100);
+    // Every process is root. libc reads the ids here at startup, and musl
+    // treats a process whose four are not all given as setuid ("secure"):
+    // it ignores LD_LIBRARY_PATH and LD_PRELOAD.
+    const AT_UID: usize = 11;
+    const AT_EUID: usize = 12;
+    const AT_GID: usize = 13;
+    const AT_EGID: usize = 14;
+    const AT_SECURE: usize = 23;
+    for id in [AT_UID, AT_EUID, AT_GID, AT_EGID, AT_SECURE] {
+        aux.push(id, 0);
+    }
     if let Some(b) = interp_base {
         const AT_BASE: usize = 7;
         aux.push(AT_BASE, b);

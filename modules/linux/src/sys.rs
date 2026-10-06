@@ -687,7 +687,10 @@ pub fn readlinkat(dirfd: usize, path: usize, buf: usize, size: usize) -> R {
     let real = real_path_nofollow(&path_at(dirfd, path)?)?;
     let mut tmp = [0u8; MAX_PATH];
     let cap = size.min(tmp.len());
-    let n = fs::readlink(&real, &mut tmp[..cap]).ok_or(EINVAL)?;
+    // Not a symlink is EINVAL, no such file ENOENT (musl's dynamic linker
+    // takes ENOENT for /proc/self/exe, which myos has not, and skips an
+    // $ORIGIN rpath; any other error fails the library's load).
+    let n = fs::readlink(&real, &mut tmp[..cap]).ok_or_else(|| if fs::stat(&real).is_some() { EINVAL } else { ENOENT })?;
     put(buf, &tmp[..n])?;
     Ok(n)
 }

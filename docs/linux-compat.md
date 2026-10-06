@@ -166,7 +166,9 @@ the kernel):
   (`sstatus.FS`); native programs are soft-float;
 - exec (`user/syscall.rs`): with the personality pending or active, the
   new image gets the SysV auxv entries (`AT_PHDR`, `AT_PHNUM`, `AT_ENTRY`,
-  `AT_BASE`, ...) and its `PT_INTERP` dynamic linker is mapped (see below).
+  `AT_BASE`, ..., and the ids, all 0: without `AT_UID`/`AT_EUID`/`AT_GID`/
+  `AT_EGID` musl runs as setuid and ignores `LD_LIBRARY_PATH`) and its
+  `PT_INTERP` dynamic linker is mapped (see below).
   `KernelApi::personality_exec` is the exec that keeps the personality
   (Linux `execve`); `SYS_LINUX_NEXT_EXEC` sets the pending bit for the
   launcher.
@@ -293,7 +295,10 @@ reserved first. That needed core `mmap` work, which native programs share:
 - demand paging: a mapping takes no memory until it is used. The first
   touch of a page, a page fault from userspace or a kernel copy into a user
   buffer, gives it a frame, zeroed or read from the file
-  (`user::fault_in`). rustc reserves 256 MiB for its allocator and maps
+  (`user::fault_in`). A page mapped without write permission (code,
+  constant data) is the page cache's frame for it, shared by every process
+  that maps it (`fs/pagecache.rs`); a writable one is a private copy of it.
+  rustc reserves 256 MiB for its allocator and maps
   some 250 MiB of libraries, and `rustc --version` touches about 30 MiB of
   it. A file changed or deleted while mapped gives its new contents (or
   zeros) to the pages not touched yet;

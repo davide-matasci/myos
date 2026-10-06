@@ -107,6 +107,12 @@ pub fn schedule() {
             // so a Blocked task that is still leaving this CPU is not made
             // Ready (and picked elsewhere) before `task_switch` saved its sp.
             tasks[next].state = State::Running;
+            // The frame of the syscall a task is in follows the task, not the
+            // CPU: aarch64 exec resumes through it, and a syscall that blocked
+            // here found another task's frame in the CPU's cell when it ran
+            // again (`arch::syscall_frame`).
+            tasks[current].syscall_frame = crate::arch::syscall_frame() as usize;
+            crate::arch::set_syscall_frame(tasks[next].syscall_frame as *mut u64);
             set_current_slot(next);
             SWITCHED_FROM[cpu.min(crate::smp::MAX_CPUS - 1)].store(current, Ordering::SeqCst);
             Some((old_sp, new_sp, kstack, old_kstack, aspace, current, next, old_user))
