@@ -298,6 +298,42 @@ usb_hotplug_busy_reuse() {
 }
 t usb_hotplug_busy_reuse usb_hotplug_busy_reuse
 
+# Live frame count (allocated minus freed) from /proc/meminfo.
+frames_live() {
+	set -- $(grep '^FramesLive:' /proc/meminfo)
+	echo "$2"
+}
+
+# A userspace memory hog must never abort the kernel. `memhog` mmaps and
+# touches a large region in chunks; the kernel either serves it in full or,
+# under real memory pressure, fails the fault so the hog dies (SIGSEGV) — the
+# graceful out-of-memory path this change adds, in place of the old frame
+# allocator panic that took the whole kernel down. Either way the kernel stays
+# up and reclaims the hog's data pages.
+#
+# We assert the kernel is still alive afterwards (it answers a syscall) and
+# that the bulk of the 256 MiB came back. The reclaim bound is deliberately
+# loose: the private page-table frames of an exited process still leak on
+# aarch64 and riscv64 (a few hundred frames at most — "concern #2" in TODO.md),
+# far below the ~65k a "nothing was reclaimed" regression would strand. Full
+# reclaim-to-baseline, with its own `mem_fork_no_leak` / `mem_exec_no_leak`
+# probes, lands with that fix.
+#
+# The sleep is load-bearing: a dying process is reaped by its parent (SIGCHLD)
+# *before* it frees its address space — `reclaim_user_aspace` runs afterwards on
+# the exiting task and the big mmap walk can be preempted, so for a moment after
+# the shell returns the hog's pages are still live. Sample after it settles.
+mem_hog_survives() {
+	frames_live > /dev/null
+	before=$(frames_live)
+	/bin/etc/memhog 256 || true # may be SIGSEGV-killed under pressure
+	sleep 1                     # let the exiting hog finish reclaiming
+	after=$(frames_live)
+	echo "mem: hog 256MiB FramesLive $before -> $after (delta $((after - before)))"
+	[ -n "$after" ] && [ "$((after - before))" -le 4096 ]
+}
+t mem_hog_survives mem_hog_survives
+
 # A module's character device is a directory: the NIC's `data` is the
 # device, its `ctl` names the MAC and whether its interrupt works.
 net_ctl() {

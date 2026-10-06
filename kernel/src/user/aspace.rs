@@ -14,23 +14,43 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
         return None;
     }
     // Heap, not kstack: MAX_ELF_PAGES×8 ≈ 9KiB on every fork's syscall stack.
+    // The copies use `try_alloc_frame_user`, so a fork under memory pressure
+    // fails with ENOMEM (handled by the caller) instead of aborting the kernel;
+    // frames taken before a failure are freed so a failed fork leaks nothing.
     let mut frames = alloc::vec![0u64; n_pages];
+    let free_all = |frames: &[u64]| frames.iter().copied().filter(|&f| f != 0).for_each(mm::free_frame);
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
-        let phys = virt_to_phys(src, va)?;
-        frames[i] = mm::alloc_frame_site(2);
+        let Some(phys) = virt_to_phys(src, va) else {
+            free_all(&frames);
+            return None;
+        };
+        let Some(dst) = mm::try_alloc_frame_user(2) else {
+            free_all(&frames);
+            return None;
+        };
+        frames[i] = dst;
         unsafe {
-            core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(frames[i]), PAGE);
+            core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(dst), PAGE);
         }
-        sync_icache(mm::hhdm(frames[i]) as usize, PAGE);
+        sync_icache(mm::hhdm(dst) as usize, PAGE);
     }
     let stack_va = base + stack_off;
     let mut stack_frames = [0u64; USER_STACK_PAGES];
     for i in 0..USER_STACK_PAGES {
-        let phys = virt_to_phys(src, stack_va + (i * PAGE) as u64)?;
-        stack_frames[i] = mm::alloc_frame_site(2);
+        let Some(phys) = virt_to_phys(src, stack_va + (i * PAGE) as u64) else {
+            free_all(&frames);
+            free_all(&stack_frames);
+            return None;
+        };
+        let Some(dst) = mm::try_alloc_frame_user(2) else {
+            free_all(&frames);
+            free_all(&stack_frames);
+            return None;
+        };
+        stack_frames[i] = dst;
         unsafe {
-            core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(stack_frames[i]), PAGE);
+            core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(dst), PAGE);
         }
     }
     let aspace = create_aspace(&frames[..n_pages], &stack_frames, base, stack_off);
@@ -38,16 +58,17 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     let heap_end = align_up_usize(brk_cur as usize, PAGE);
     let mut va = heap_base as usize;
     while va < heap_end {
-        if virt_to_phys(src, va as u64).is_some() {
-            let phys = mm::alloc_frame_site(2);
+        if let Some(phys) = virt_to_phys(src, va as u64) {
+            // The code and stack frames now belong to `aspace`; on failure
+            // reclaim the whole partial child (heap mapped so far included).
+            let Some(dst) = mm::try_alloc_frame_user(2) else {
+                reclaim_user_aspace(aspace, base, span, stack_off, va as u64, &[]);
+                return None;
+            };
             unsafe {
-                core::ptr::copy_nonoverlapping(
-                    mm::hhdm(virt_to_phys(src, va as u64)?),
-                    mm::hhdm(phys),
-                    PAGE,
-                );
+                core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(dst), PAGE);
             }
-            map_heap_page(aspace, va as u64, phys);
+            map_heap_page(aspace, va as u64, dst);
         }
         va += PAGE;
     }
@@ -287,25 +308,37 @@ pub fn fault_in(va: usize, access: Access) -> bool {
     let aspace = task::current_aspace();
     // The new page is filled before the lock is taken: a file read is a
     // disk request, which every other fault would wait for.
-    let fresh = virt_to_phys(aspace, page as u64).is_none().then(|| {
+    //
+    // A writable (anonymous or private) page is the memory a hog grows without
+    // bound, so it comes from `try_alloc_frame_user`: once that would eat into
+    // the kernel's reserve it returns None, and the fault fails (SIGSEGV to the
+    // faulting process) instead of letting the frame allocator abort the whole
+    // kernel. The read-only shared page is a program's code/rodata, bounded by
+    // its size and kept safe by that same reserve.
+    let fresh = if virt_to_phys(aspace, page as u64).is_none() {
         let frame = match &file {
-            // Nothing may write to the page: the file's page from the page
-            // cache, the frame every mapping of it shares.
             Some((node, off)) if prot & PROT_WRITE == 0 => fs::pagecache::map(node, off / PAGE),
             // A private copy of it (zero past the end of the file).
             Some((node, off)) => {
-                let frame = mm::alloc_frame_site(4);
+                let Some(frame) = mm::try_alloc_frame_user(4) else {
+                    return false;
+                };
                 let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
                 fs::pagecache::copy(node, off / PAGE, dst);
                 frame
             }
-            None => mm::alloc_frame_site(4),
+            None => match mm::try_alloc_frame_user(4) {
+                Some(frame) => frame,
+                None => return false,
+            },
         };
         if prot & PROT_EXEC != 0 {
             sync_icache(mm::hhdm(frame) as usize, PAGE);
         }
-        frame
-    });
+        Some(frame)
+    } else {
+        None
+    };
     let flags = crate::arch::irq_save();
     crate::arch::irq_off();
     let guard = FAULT_LOCK.lock();

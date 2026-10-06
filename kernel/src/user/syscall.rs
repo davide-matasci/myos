@@ -1482,7 +1482,16 @@ pub(crate) fn sys_brk(req: usize) -> usize {
         let mut mapped_any = false;
         while va < map_end {
             if virt_to_phys(aspace, va as u64).is_none() {
-                let frame = mm::alloc_frame_site(4);
+                // Out of memory: grant only what is already mapped rather than
+                // aborting the kernel. The break stops at this page, so the
+                // caller's allocator sees the growth fall short (ENOMEM).
+                let Some(frame) = mm::try_alloc_frame_user(4) else {
+                    if mapped_any {
+                        flush_user_tlb();
+                    }
+                    task::set_brk(va as u64);
+                    return va;
+                };
                 // alloc_frame returns a zeroed frame.
                 map_heap_page(aspace, va as u64, frame);
                 mapped_any = true;

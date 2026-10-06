@@ -245,3 +245,40 @@ the speed of every image-heavy client) needs the same.
   on top, sized with `ftruncate`; the Linux layer's `mmap` would stop refusing
   `MAP_SHARED`. Anonymous `MAP_SHARED` (shared across `fork`) falls out of
   the same refcounted pages.
+
+## User page tables leak on exit (aarch64, riscv64)
+
+Exiting a process must return every frame it used; on exit `die` →
+`reclaim_user_aspace` frees the data pages and then `free_user_page_tables`
+is meant to free the private paging tree. It does, correctly, on **x86_64**.
+Two arches still leak:
+
+- **aarch64**: `free_user_page_tables` is a no-op
+  (`kernel/src/arch/aarch64/upaging.rs`) — the L0/L1/L2/L3 frames of every
+  dead process leak forever. A fork/exec/exit loop ratchets `FramesLive`
+  (`/proc/meminfo`) up a handful of frames per process until the box runs
+  out: an unprivileged, unbounded memory-exhaustion vector. This is
+  "concern #2" (a userspace process's exit not freeing all its memory).
+- **riscv64**: fork+exit and the memory hog reclaim cleanly, but the
+  **`exec`** path leaks ~41 frames per `exec` (seen as `mem_exec_no_leak`
+  delta ≈ 1640 over 40 execs). Likely the in-place reload / abandon path in
+  `kernel/src/user/{image.rs,syscall.rs}` dropping a table or cached frame
+  the x86 path releases.
+
+The fix is the aarch64 twin of the Sv39 / PML4 teardown already done for the
+other arches (walk L0[0] → L1[1] → L2[*] → L3, freeing the table frames),
+plus the riscv exec-path leak. **It must be SMP-safe**: a first naive
+aarch64 teardown freed the table frames inline, racing the hardware
+page-table walker on peer CPUs (`unload_user_aspace` caps its remote
+eviction) and corrupting the freelist — a kernel data abort in
+`finish_switch` after the frames were recycled into a kernel stack. Route
+the table frees through the same deferred-until-after-shootdown path the
+data pages use (`aspace::UNMAPPED` + `flush_user_tlb`), i.e. free the tables
+only once no CPU can still walk them.
+
+Regression guard (to land **with** the fix, not before it): the
+`mem_fork_no_leak` and `mem_exec_no_leak` probes and a stricter
+reclaim-delta assertion in `mem_hog_survives`, all in
+`user/tests/kernel.sh`, driven by the shipped `/bin/etc/memhog`. They pass
+on x86 today and fail on aarch64/riscv until this is fixed; PR #266 ships
+only the survival half of `mem_hog_survives` so it stays green on every arch.
