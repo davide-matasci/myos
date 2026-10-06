@@ -952,6 +952,32 @@ pub fn sethostname(name: usize, len: usize) -> R {
     Ok(0)
 }
 
+/// `reboot(magic, magic2, cmd, arg)`: power off, halt or restart through
+/// the native `power` (docs/power.md), `EPERM` without `write` on
+/// `kernel.power`. Turning Ctrl-Alt-Del off or on (an init's first call)
+/// does nothing: the console has no such key.
+pub fn reboot(magic: usize, magic2: usize, cmd: usize) -> R {
+    const MAGIC: u32 = 0xfee1_dead;
+    const MAGIC2: [u32; 4] = [672_274_793, 85_072_278, 369_367_448, 537_993_216];
+    const CMD_RESTART: u32 = 0x0123_4567;
+    const CMD_HALT: u32 = 0xcdef_0123;
+    const CMD_POWER_OFF: u32 = 0x4321_fedc;
+    const CMD_CAD_ON: u32 = 0x89ab_cdef;
+    const CMD_CAD_OFF: u32 = 0;
+    if magic as u32 != MAGIC || !MAGIC2.contains(&(magic2 as u32)) {
+        return Err(EINVAL);
+    }
+    let action = match cmd as u32 {
+        CMD_CAD_ON | CMD_CAD_OFF => return Ok(0),
+        CMD_RESTART => myos_abi::MYOS_POWER_REBOOT,
+        CMD_HALT => myos_abi::MYOS_POWER_HALT,
+        CMD_POWER_OFF => myos_abi::MYOS_POWER_OFF,
+        _ => return Err(EINVAL),
+    };
+    user::sys_power(action);
+    Err(EPERM)
+}
+
 // ---- time -----------------------------------------------------------------
 
 /// The `struct timespec` at `ts` as a deadline in [`now_us`] time: as is
