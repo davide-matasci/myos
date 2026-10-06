@@ -307,8 +307,7 @@ impl Policy {
                 (ParamSel::Name(n), Some(p)) => n == p,
                 _ => false,
             };
-            // `*` covers every label, whatever its owner.
-            if param_ok || matches!(rule.kind, KindSel::Any) {
+            if param_ok {
                 r = r | rule.rights;
             }
         }
@@ -544,7 +543,10 @@ fn parse_rules(p: &mut Policy, text: &str) -> Result<Vec<Rule>, String> {
         let target = rest[..open].trim();
         let rights = Rights::parse_list(&rest[open + 1..close])
             .ok_or_else(|| format!("`{}`: unknown right", &rest[open..=close]))?;
-        let (kind, param) = if target == "*" { ("*", None) } else { split_param(target)? };
+        // A bare `*` is every kind and every owner; `*(self)` / `*(name)`
+        // keep their owner restriction (the grant in `rights` requires the
+        // owner to match, so the `*` kind alone must not stand in for it).
+        let (kind, param) = if target == "*" { ("*", Some("*")) } else { split_param(target)? };
         if kind.is_empty() || kind.contains(char::is_whitespace) {
             return Err(format!("`{target}`: one label per `{{rights}}`"));
         }

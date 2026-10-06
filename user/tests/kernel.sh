@@ -408,11 +408,47 @@ sec_linux() {
 sec_restore() {
 	$SEC load /etc/policy && [ "$($SEC ctx)" = "0 root admin" ] && /bin/coreutils/rm -r /tmp/sec
 }
+# alice knows only her own password; she must not become another user (bob
+# needs his password; root/system are passwordless but only a domain with
+# kernel.users write may enter them), nor load a policy.
+sec_escalate() {
+	for spec in "bob -p wrong" "bob -p alice-pw" "root" "system"; do
+		out=$(sec_as alice $SEC as $spec $SEC ctx 2> /dev/null)
+		echo "alice -> $spec: ${out:-refused}"
+		case $out in
+		""|*alice*) ;;
+		*) echo "ESCALATION: alice became [$out]"; return 1 ;;
+		esac
+	done
+	if sec_as alice $SEC load /tmp/sec/policy 2> /dev/null; then
+		echo "ESCALATION: alice loaded a policy"; return 1
+	fi
+	return 0
+}
+# A domain written `*(self) {read}` grants read on the caller's OWN files
+# only, never another user's (regression: the `*` kind must not stand in for
+# the owner match).
+sec_wildcard() {
+	cat /tmp/sec/policy > /tmp/sec/wpolicy || return 1
+	h=$(printf '%s' "saltprobe-pw" | /bin/sbase/sha256sum | cut -d' ' -f1)
+	printf '%s
+' "user probe groups: dev domains: probe login: probe password: sha256:salt:$h" 		'domain probe:' '    *(self) {read} sys.bin {read exec} sys.lib {read exec} dev.tty {read write} dev.common {read write} proc {read}' 		>> /tmp/sec/wpolicy || return 1
+	$SEC load /tmp/sec/wpolicy || return 1
+	mkdir -p /tmp/sec/home/probe && echo pf > /tmp/sec/home/probe/pf || return 1
+	# Own file: allowed. Alice's file: must be denied.
+	[ "$($SEC as probe -p probe-pw /bin/sbase/cat /tmp/sec/home/probe/pf 2>/dev/null)" = pf ] || return 1
+	if $SEC as probe -p probe-pw /bin/sbase/cat /tmp/sec/home/alice/f 2>/dev/null | grep -q hi; then
+		echo "ESCALATION: probe (*(self)) read alice's file"; $SEC load /tmp/sec/policy; return 1
+	fi
+	$SEC load /tmp/sec/policy
+}
 t sec_setup sec_setup
 t sec_users sec_users
 t sec_homes sec_homes
 t sec_untrusted sec_untrusted
 t sec_signal sec_signal
+t sec_escalate sec_escalate
+t sec_wildcard sec_wildcard
 t sec_ns sec_ns
 t sec_cap sec_cap
 if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
