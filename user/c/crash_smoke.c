@@ -38,6 +38,10 @@ static void put_num(long n) {
 
 /* A page we own, for "valid pointer" arguments. */
 static unsigned char page[8192] __attribute__((aligned(4096)));
+/* A page filled with 0xff: passed where a syscall reads a struct or path
+ * from the pointer, so every field it decodes is hostile (usize::MAX, a
+ * non-canonical handler, a never-terminated path). */
+static unsigned char hpage[8192] __attribute__((aligned(4096)));
 
 /* Hostile scalar values reused for every argument position. */
 static const unsigned long VALUES[] = {
@@ -108,6 +112,7 @@ static void try_call(long nr, long a0, long a1, long a2, long a3, long a4, long 
 
 int main(void) {
     memset(page, 0, sizeof page);
+    memset(hpage, 0xff, sizeof hpage);
     puts_raw("crash_smoke: start\n");
     /* Real objects so the fd-taking syscalls (lseek, pread/pwrite, ftruncate,
      * flock, lockctl, fdflags, dup2) reach their offset/size arithmetic with a
@@ -121,7 +126,10 @@ int main(void) {
     if (pipe(pfd) != 0) {
         pfd[0] = pfd[1] = -1;
     }
-    long fds[] = {ffd, pfd[0], pfd[1], 0, 1, 2};
+    /* A real directory fd, so the *at syscalls reach their dir-capability
+     * path resolution with a valid base instead of bailing on a bad fd. */
+    int dfd = open("/tmp", O_RDONLY | O_DIRECTORY);
+    long fds[] = {ffd, pfd[0], pfd[1], dfd, 0, 1, 2};
     const int NFD = (int)(sizeof fds / sizeof fds[0]);
 
     for (long nr = 0; nr <= 90; nr++) {
@@ -150,6 +158,23 @@ int main(void) {
                 try_call(nr, fds[f], x, x, x, x, x);
                 try_call(nr, fds[f], p, x, x, x, x);
             }
+        }
+    }
+    /* Struct/path-pointer pass: hand each syscall a pointer to an all-0xff
+     * page, so the ones that decode a struct (mmap args, sigaction, thread
+     * spawn params, poll sets) or a path see hostile contents rather than
+     * the zeroed "valid pointer" the sweep above used. */
+    unsigned long h = (unsigned long)(uintptr_t)hpage;
+    for (long nr = 0; nr <= 90; nr++) {
+        if (denied(nr)) {
+            continue;
+        }
+        puts_raw("hnr=");
+        put_num(nr);
+        try_call(nr, h, h, h, h, h, h);
+        try_call(nr, 0, h, h, h, h, h);
+        for (int f = 0; f < NFD; f++) {
+            try_call(nr, fds[f], h, h, h, h, h);
         }
     }
     puts_raw("crash_smoke: SURVIVED\n");
