@@ -1040,7 +1040,7 @@ unsafe extern "C" fn api_fd_poll_bits(fd: usize) -> i32 {
 }
 
 unsafe extern "C" fn api_fd_dup_min(fd: usize, min: usize) -> i32 {
-    crate::task::fd_dup_min(fd, min).map_or(-1, |n| n as i32)
+    crate::task::fd_dup_min(fd, min, false).map_or(-1, |n| n as i32)
 }
 
 unsafe extern "C" fn api_fd_dup2(old: usize, new: usize) -> i32 {
@@ -1052,7 +1052,7 @@ unsafe extern "C" fn api_fd_close(fd: usize) -> i32 {
 }
 
 unsafe extern "C" fn api_fd_write(fd: usize, buf_user: usize, len: usize) -> usize {
-    crate::task::fd_write(fd, buf_user, len)
+    crate::task::fd_write(fd, buf_user, len, None)
 }
 
 /// Copy `text` into the module's buffer, cut at `cap`: its full length.
@@ -1090,7 +1090,7 @@ unsafe extern "C" fn api_pipe_open(read_fd: *mut usize, write_fd: *mut usize) ->
     if read_fd.is_null() || write_fd.is_null() {
         return -1;
     }
-    match crate::task::pipe_open() {
+    match crate::task::pipe_open(false) {
         Some((r, w)) => {
             unsafe {
                 *read_fd = r;

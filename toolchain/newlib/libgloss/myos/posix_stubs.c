@@ -304,7 +304,13 @@ int _fcntl(int fd, int cmd, int arg) {
         || cmd == F_DUPFD_CLOEXEC
 #endif
     ) {
-        long ret = myos_syscall3(MYOS_SYS_DUPFD, fd, arg, 0);
+        long flags = 0;
+#ifdef F_DUPFD_CLOEXEC
+        if (cmd == F_DUPFD_CLOEXEC) {
+            flags = MYOS_FD_CLOEXEC;
+        }
+#endif
+        long ret = myos_syscall3(MYOS_SYS_DUPFD, fd, arg, flags);
         if (ret == (long)MYOS_SYSERR) {
             errno = EBADF;
             return -1;
@@ -315,16 +321,16 @@ int _fcntl(int fd, int cmd, int arg) {
 
     switch (cmd) {
     case F_GETFD:
-        /* Validity only; CLOEXEC not tracked. Accept stdio + shell FDBASE range. */
-        if (fd < 0 || fd >= 16) {
+    case F_SETFD: {
+        long ret = cmd == F_GETFD ? myos_syscall3(MYOS_SYS_FDFLAGS, fd, MYOS_FD_GET, 0)
+                                  : myos_syscall3(MYOS_SYS_FDFLAGS, fd, MYOS_FD_SET,
+                                                  (arg & FD_CLOEXEC) ? MYOS_FD_CLOEXEC : 0);
+        if (ret == (long)MYOS_SYSERR) {
             errno = EBADF;
             return -1;
         }
-        return 0;
-    case F_SETFD:
-        (void)fd;
-        (void)arg;
-        return 0;
+        return cmd == F_GETFD ? ((ret & MYOS_FD_CLOEXEC) ? FD_CLOEXEC : 0) : 0;
+    }
     case F_GETFL: {
         int sockfl = myos_socket_fcntl(fd, F_GETFL, 0);
         if (sockfl >= 0) {

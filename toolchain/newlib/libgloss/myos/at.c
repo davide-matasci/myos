@@ -171,6 +171,8 @@ int _access(const char *path, int mode) {
 #define MYOS_K_O_TRUNC 0x200
 #define MYOS_K_O_APPEND 0x400
 #define MYOS_K_O_NONBLOCK 0x800
+#define MYOS_K_O_EXCL 0x80
+#define MYOS_K_O_CLOEXEC 0x80000
 
 static long k_oflags(int flags) {
     long k = (long)(flags & O_ACCMODE);
@@ -186,6 +188,12 @@ static long k_oflags(int flags) {
     if (flags & O_NONBLOCK) {
         k |= MYOS_K_O_NONBLOCK; /* FIFO open: no wait for the peer */
     }
+    if (flags & O_EXCL) {
+        k |= MYOS_K_O_EXCL; /* with O_CREAT: only a new file */
+    }
+    if (flags & O_CLOEXEC) {
+        k |= MYOS_K_O_CLOEXEC;
+    }
     return k;
 }
 
@@ -196,15 +204,11 @@ int openat(int dirfd, const char *path, int flags, ...) {
     if (len < 0) {
         return -1;
     }
-    /* O_CREAT|O_EXCL: the kernel has no exclusive-create flag, so refuse an
-     * existing path here. Without it mkstemp()/mkdtemp() never saw EEXIST and
-     * could not step past a name already taken (pids — and so newlib's
-     * pid-seeded temp names — repeat once task slots are recycled). */
-    if ((flags & O_CREAT) && (flags & O_EXCL) && fstatat(dirfd, path, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-        errno = EEXIST;
+    ret = myos_syscall6(MYOS_SYS_OPENAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, k_oflags(flags), 0, 0);
+    if (ret == (long)MYOS_EEXIST) {
+        errno = EEXIST; /* O_CREAT|O_EXCL: the name is taken (mkstemp tries another) */
         return -1;
     }
-    ret = myos_syscall6(MYOS_SYS_OPENAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, k_oflags(flags), 0, 0);
     if (ret == (long)MYOS_EINTR) {
         errno = EINTR; /* blocking FIFO open interrupted by a caught signal */
         return -1;

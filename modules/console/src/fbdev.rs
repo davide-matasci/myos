@@ -288,6 +288,8 @@ pub fn mount(fb: FramebufferInfo) -> i32 {
         write_ino: None,
         stat_ino: None,
         forget_ino: None,
+        set_size: None,
+        set_size_ino: None,
     };
     unsafe { (api().vfs_mount)(b"fb".as_ptr(), 2, b"dev/fb".as_ptr(), 6, &ops) }
 }

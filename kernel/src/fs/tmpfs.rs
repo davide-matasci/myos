@@ -174,6 +174,30 @@ pub fn truncate(name: &str) -> bool {
     }
 }
 
+/// Make the file `name` `size` bytes long: cut, or grown with zeros.
+pub fn set_size(name: &str, size: usize) -> bool {
+    if !valid_rel_path(name) || size > FILE_CAP {
+        return false;
+    }
+    let now = now();
+    let mut entries = ENTRIES.lock();
+    let Some(i) = find_index(&entries, name) else {
+        return false;
+    };
+    let Kind::File(data) = &mut entries[i].kind else {
+        return false;
+    };
+    if size > data.len() && data.try_reserve_exact(size - data.len()).is_err() {
+        return false;
+    }
+    data.resize(size, 0);
+    if size < data.capacity() / 2 {
+        data.shrink_to_fit();
+    }
+    entries[i].mtime = now;
+    true
+}
+
 pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     if !valid_rel_path(name) {
         return 0;
@@ -205,9 +229,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
     let Kind::File(data) = &mut entry.kind else {
         return None;
     };
-    if pos > data.len() {
-        return None;
-    }
+    // A write past the end leaves zeros in the gap.
     let end = pos.checked_add(buf.len())?;
     if end > FILE_CAP {
         return None;

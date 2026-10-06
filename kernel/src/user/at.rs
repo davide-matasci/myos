@@ -13,7 +13,8 @@ use super::*;
 use crate::sec::Rights;
 
 /// `openat(dirfd, path, len, flags)`: an fd on the file (`O_CREAT`
-/// creates it).
+/// creates it; with `O_EXCL` only a new one, `EEXIST` when the name is
+/// taken, by a symlink too; `O_CLOEXEC`: the fd closes at exec).
 pub(super) const SYS_OPENAT: usize = 70;
 /// `statat(dirfd, path, len, flags, out)`: [`MyosStat`] of the file
 /// ([`AT_SYMLINK_NOFOLLOW`]: of a symlink itself).
@@ -186,8 +187,9 @@ pub(super) fn sys_openat(dirfd: usize, ptr: usize, len: usize, flags: usize) -> 
     let Some(path) = user_path(ptr, len) else {
         return SYSERR;
     };
-    let tree = fs::vfs::hold_read();
-    match resolve(dirfd, &path, true) {
+    let excl = open_excl(flags);
+    let tree = if excl { fs::vfs::hold_write() } else { fs::vfs::hold_read() };
+    match resolve(dirfd, &path, !excl) {
         Some(f) => open_real(f.real, f.cap, flags, tree),
         None => SYSERR,
     }

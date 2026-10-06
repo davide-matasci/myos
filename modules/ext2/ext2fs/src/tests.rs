@@ -301,3 +301,35 @@ fn unlinked_file_kept_until_forgotten() {
     drop(fs.unmount().unwrap());
     e2fsck_clean(&path);
 }
+
+#[test]
+fn set_size_cuts_and_grows() {
+    for (name, args) in [("size1k", &["-b", "1024"][..]), ("size4k", &["-b", "4096"][..])] {
+        let path = image(name, 64 << 20);
+        mke2fs(&path, args);
+        let mut fs = Fs::mount(open(&path)).unwrap();
+        // Past the double indirect blocks of a 1 KiB filesystem.
+        let data = pattern(8 << 20, 7);
+        fs.create("f").unwrap();
+        write_all(&mut fs, "f", &data, 65536);
+        // Cut mid-block: the rest reads as zeros once it grows back.
+        fs.set_size("f", 70_001).unwrap();
+        assert_eq!(fs.stat("f").unwrap().size, 70_001);
+        fs.set_size("f", 300_000).unwrap();
+        let back = read_all(&mut fs, "f");
+        assert_eq!(back.len(), 300_000);
+        assert_eq!(back[..70_001], data[..70_001]);
+        assert!(back[70_001..].iter().all(|&b| b == 0));
+        // To nothing, and the same by inode for a kept file.
+        fs.set_size("f", 0).unwrap();
+        assert_eq!(read_all(&mut fs, "f").len(), 0);
+        write_all(&mut fs, "f", &data[..20_000], 4096);
+        let ino = fs.unlink_keep("f").unwrap();
+        fs.set_size_ino(ino, 5).unwrap();
+        assert_eq!(fs.stat_ino(ino).unwrap().size, 5);
+        fs.forget(ino).unwrap();
+        // Every block given back is free again: e2fsck finds no leak.
+        drop(fs.unmount().unwrap());
+        e2fsck_clean(&path);
+    }
+}

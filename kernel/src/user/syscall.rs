@@ -8,10 +8,9 @@ use super::*;
 // 19 unlink, 20 rename, 21 symlink, 22 readlink, 43 chroot (a namespace,
 // `ns`), 44 mkfifo, 61 stat2, 62 utimens, 63 futimens, 66 stat3: the path
 // calls are the `*at` ones (`at`, 70 on). 28 was `ioctl`: a device's state
-// is its `ctl` file (docs/tty.md).
-const SYS_WRITE: usize = 0;
+// is its `ctl` file (docs/tty.md). 0 write and 3 read: `pwrite` and
+// `pread` (82, 81) do both, at the file position or at an offset.
 const SYS_EXIT: usize = 1;
-const SYS_READ: usize = 3;
 const SYS_CLOSE: usize = 4;
 pub(super) const SYS_FORK: usize = 6;
 const SYS_WAIT: usize = 7;
@@ -125,6 +124,27 @@ const SYS_NS: usize = 68;
 /// `policy_load(path, len)`: read the policy at `path` and make it the
 /// system's (`write` on `kernel.policy`).
 const SYS_POLICY_LOAD: usize = 69;
+/// `pread(fd, buf, len, offset, flags)`: read up to `len` bytes into
+/// `buf`, at the file position, which advances, or with [`FILE_AT`] at
+/// `offset`, the position left as it is (`ESPIPE` on a pipe or terminal).
+/// The bytes read; 0 at the end of the file.
+const SYS_PREAD: usize = 81;
+/// `pwrite(fd, buf, len, offset, flags)`: [`SYS_PREAD`]'s write (at the
+/// end with `O_APPEND`, unless [`FILE_AT`]). The bytes written.
+const SYS_PWRITE: usize = 82;
+/// `ftruncate(fd, size)`: make the file `fd` is open on for writing `size`
+/// bytes long, cut or grown with zeros.
+const SYS_FTRUNCATE: usize = 83;
+/// `fdflags(fd, op, flags)`: the fd's own flags ([`FD_CLOEXEC`]):
+/// [`FD_GET`] returns them, [`FD_SET`] replaces them.
+const SYS_FDFLAGS: usize = 84;
+/// `pread`/`pwrite` flags: at the offset given, not the file position.
+const FILE_AT: usize = 1;
+/// `fdflags` operations, and its one flag: the fd closes at exec (also
+/// `dupfd`'s and `pipe`'s flags argument).
+const FD_GET: usize = 0;
+const FD_SET: usize = 1;
+const FD_CLOEXEC: usize = 1;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
@@ -223,17 +243,15 @@ pub extern "C" fn syscall_dispatch(
 /// `KernelApi::native_syscall`).
 pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: &mut SyscallRegs) -> usize {
     match nr {
-        SYS_WRITE => sys_write(a0, a1, a2),
         SYS_EXIT => sys_exit(a0),
-        SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
         SYS_FORK => sys_fork(regs),
         SYS_WAIT => sys_wait(a0, a1),
         SYS_WAITPID => sys_waitpid(a0, a1, a2),
         SYS_BRK => sys_brk(a0),
-        SYS_PIPE => sys_pipe(a0),
+        SYS_PIPE => sys_pipe(a0, a1),
         SYS_DUP2 => sys_dup2(a0, a1),
-        SYS_DUPFD => sys_dupfd(a0, a1),
+        SYS_DUPFD => sys_dupfd(a0, a1, a2),
         SYS_EXECNAME => sys_exec_name(a0, a1),
         SYS_GETCWD => sys_getcwd(a0, a1),
         SYS_MMAP => sys_mmap(a0),
@@ -273,6 +291,15 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_SETUSER => sys_setuser(a0, a1),
         SYS_NS => sys_ns(a0, a1),
         SYS_POLICY_LOAD => sys_policy_load(a0, a1),
+        SYS_PREAD | SYS_PWRITE => {
+            let [offset, flags, _] = regs.args_3_5();
+            let at = (flags & FILE_AT != 0).then_some(offset);
+            if nr == SYS_PREAD { task::fd_read(a0, a1, a2, at) } else { task::fd_write(a0, a1, a2, at) }
+        }
+        SYS_FTRUNCATE => {
+            if task::fd_set_size(a0, a1) { 0 } else { SYSERR }
+        }
+        SYS_FDFLAGS => sys_fdflags(a0, a1, a2),
         at::SYS_OPENAT..=at::SYS_EXECAT => {
             let [a3, a4, a5] = regs.args_3_5();
             match nr {
@@ -351,10 +378,6 @@ fn sys_nanosleep(ns: usize, flags: usize) -> usize {
     }
 }
 
-fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
-    task::fd_write(fd, ptr, len)
-}
-
 /// The real path behind `path`, symlinks followed.
 pub(crate) fn resolve_copied_path(path: &str) -> Option<alloc::string::String> {
     let mut abs = [0u8; MAX_PATH];
@@ -397,7 +420,10 @@ fn open_rights(flags: u32) -> Rights {
 }
 
 const O_CREAT: u32 = 0o100;
+const O_EXCL: u32 = 0o200;
 const O_TRUNC: u32 = 0o1000;
+/// The new fd closes at exec.
+const O_CLOEXEC: u32 = 0o2000000;
 
 pub(super) fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
     if len == 0 || len > MAX_PATH {
@@ -457,11 +483,21 @@ fn sys_rmmod(ptr: usize, name_len: usize) -> usize {
 
 /// open(2) of a cwd-relative or absolute path already in kernel memory.
 pub(crate) fn open_path(path: &str, flags: usize) -> usize {
-    let tree = fs::vfs::hold_read();
-    match resolve_copied_path(path) {
+    let excl = open_excl(flags);
+    let tree = if excl { fs::vfs::hold_write() } else { fs::vfs::hold_read() };
+    let real = if excl { resolve_copied_path_nofollow(path) } else { resolve_copied_path(path) };
+    match real {
         Some(real) => open_real(real, None, flags, tree),
         None => SYSERR,
     }
+}
+
+/// Whether open `flags` ask for a new file (`O_CREAT|O_EXCL`): the caller
+/// holds the tree for writing from resolving to creating, so that no one
+/// else creates the name in between, and does not follow a symlink there
+/// (one at the name means it is taken).
+pub(super) fn open_excl(flags: usize) -> bool {
+    flags as u32 & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL
 }
 
 /// Open the file at `path` (real, resolved) for the caller, with the tree
@@ -477,13 +513,27 @@ pub(super) fn open_real(
     // A new file needs `create` (and what it is opened for) on the label
     // its path gives it.
     let mut need = open_rights(flags as u32);
-    if flags as u32 & O_CREAT != 0 && fs::stat(&path).is_none() {
+    let exists = fs::stat(&path).is_some();
+    if flags as u32 & O_CREAT != 0 && !exists {
         need = need | Rights::CREATE;
     }
     let rights = cap.unwrap_or_else(|| task::ns_rights(&path));
     if !crate::sec::allowed_in(&path, need, rights) {
         return SYSERR;
     }
+    if exists && open_excl(flags) {
+        return SYSERR_EEXIST;
+    }
+    let fd = open_fd(path, rights, flags, tree);
+    if fd < task::MAX_FDS && flags as u32 & O_CLOEXEC != 0 {
+        task::fd_set_cloexec(fd, true);
+    }
+    fd
+}
+
+/// [`open_real`] once the checks passed: the fd, of whatever kind the file
+/// makes it.
+fn open_fd(path: alloc::string::String, rights: Rights, flags: usize, tree: fs::vfs::TreeGuard) -> usize {
     // The pty ends (docs/tty.md): /dev/pts/clone allocates a pair and
     // returns its master, /dev/pts/N/data is the slave. The fd is a pty fd,
     // not a plain file fd (I/O routes via crate::pty). /dev/pts/N/master is
@@ -527,10 +577,6 @@ pub(super) fn open_real(
         Some(fd) => fd,
         None => SYSERR,
     }
-}
-
-pub(crate) fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
-    task::fd_read(fd, buf, len)
 }
 
 fn sys_close(fd: usize) -> usize {
@@ -863,6 +909,8 @@ fn exec_path_depth(
     if let Some(ctx) = new_ctx {
         task::set_sec_ctx(ctx);
     }
+    // What the new image may not inherit (`FD_CLOEXEC`).
+    task::fd_close_on_exec();
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any
     // current_slot()-backed lookup so we expand/replace the running task.
     crate::arch::sync_cpu_id_reg();
@@ -1082,11 +1130,11 @@ pub(crate) fn sys_waitpid(status_ptr: usize, options: usize, pid: usize) -> usiz
     )
 }
 
-fn sys_pipe(fds_ptr: usize) -> usize {
+fn sys_pipe(fds_ptr: usize, flags: usize) -> usize {
     if !user_range_ok(fds_ptr, 2 * core::mem::size_of::<usize>()) {
         return SYSERR;
     }
-    let Some((r, w)) = task::pipe_open() else {
+    let Some((r, w)) = task::pipe_open(flags & FD_CLOEXEC != 0) else {
         return SYSERR;
     };
     let mut buf = [0u8; 2 * core::mem::size_of::<usize>()];
@@ -1192,10 +1240,21 @@ fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     }
 }
 
-fn sys_dupfd(oldfd: usize, minfd: usize) -> usize {
-    match task::fd_dup_min(oldfd, minfd) {
+fn sys_dupfd(oldfd: usize, minfd: usize, flags: usize) -> usize {
+    match task::fd_dup_min(oldfd, minfd, flags & FD_CLOEXEC != 0) {
         Some(fd) => fd,
         None => SYSERR,
+    }
+}
+
+fn sys_fdflags(fd: usize, op: usize, flags: usize) -> usize {
+    match op {
+        FD_GET => match task::fd_cloexec(fd) {
+            Some(cloexec) => if cloexec { FD_CLOEXEC } else { 0 },
+            None => SYSERR,
+        },
+        FD_SET if task::fd_set_cloexec(fd, flags & FD_CLOEXEC != 0) => 0,
+        _ => SYSERR,
     }
 }
 
