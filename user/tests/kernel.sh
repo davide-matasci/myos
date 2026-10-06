@@ -181,8 +181,9 @@ t keymap keymap_ctl
 # each ending in the source it came from. The CPUs and the interrupt
 # controller are always there; the console UART and the PCIe host bridge
 # too, except on a PC, whose arch does not need them described (QEMU's
-# `pc` has no SPCR and no MCFG); no component reads differently from the
-# two sources.
+# `pc` has no SPCR and no MCFG); an arm board names its PSCI conduit
+# (power-off, reboot); no component reads differently from the two
+# sources.
 platform() {
 	cat /proc/platform
 	grep -q '^source [a-z+]*$' /proc/platform || return 1
@@ -191,6 +192,9 @@ platform() {
 	if ! grep -q '^intc apic ' /proc/platform; then
 		grep -q '^uart [a-z0-9]* 0x[0-9a-f]* ' /proc/platform || return 1
 		grep -q '^pci ecam 0x[0-9a-f]* 0x[0-9a-f]* bus [0-9]*-[0-9]* (' /proc/platform || return 1
+	fi
+	if grep -q '^intc gic' /proc/platform; then
+		grep -q '^psci [hs][vm]c ([a-z]*)$' /proc/platform || return 1
 	fi
 	! grep -q 'differs' /proc/platform
 }
@@ -376,6 +380,17 @@ sec_signal() {
 	sec_as alice /bin/custom/sh -c '/bin/sbase/kill -0 $$' || return 1
 	! sec_as alice /bin/sbase/kill -0 1 2> /dev/null
 }
+# Taking the system down needs `write` on kernel.power (docs/power.md):
+# alice is refused (the program's status 1), whatever the name it runs
+# under.
+sec_power() {
+	for cmd in poweroff reboot halt; do
+		sec_as alice /bin/custom/$cmd
+		status=$?
+		echo "$cmd: $status"
+		[ $status -eq 1 ] || return 1
+	done
+}
 # Namespaces: a program sees only what it is given. Given disk-a (read
 # only) as /tmp/sec/a, it reads that and not disk-b, and writes nothing; /
 # lists only what is bound. An open fd it is handed is a deliberate grant.
@@ -413,6 +428,7 @@ t sec_users sec_users
 t sec_homes sec_homes
 t sec_untrusted sec_untrusted
 t sec_signal sec_signal
+t sec_power sec_power
 t sec_ns sec_ns
 t sec_cap sec_cap
 if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then

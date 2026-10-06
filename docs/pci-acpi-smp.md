@@ -47,9 +47,11 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
    the firmware that runs here). Only tables that name the platform are
    read, and no AML: the MADT (CPUs; the local APIC, or the GICD, GICC,
    GICR and ITS entries), the MCFG (PCIe ECAM and bus range), the SPCR
-   (the console UART and its interrupt) and the GTDT (the arm timer
-   interrupts). Allocation-free, read in place through the HHDM.
-   `modules/acpi` keeps `/proc/acpi` and the `_S5` power-off.
+   (the console UART and its interrupt), the GTDT (the arm timer
+   interrupts) and the FADT's arm boot flags (PSCI). Allocation-free,
+   read in place through the HHDM. `modules/acpi` keeps `/proc/acpi` and
+   the ACPI power methods (`_S5` power-off, the reset register:
+   `docs/power.md`).
 2. **The device tree** (`kernel/src/dt.rs`, the `fdt` crate, MPL-2.0),
    when Limine hands one over. It fills what nothing described yet and is
    compared against what the tables did: a component both describe
@@ -67,6 +69,7 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
 | PCIe host bridge | MCFG: ECAM base, bus range | `pci-host-ecam-generic`: `reg`, `bus-range` |
 | PCIe MMIO windows, INTx routing | — (in AML) | `ranges` (the 32-bit entry on aarch64, the 64-bit one on riscv64), `interrupt-map` / `interrupt-map-mask` |
 | virtio-mmio transports | — | `virtio,mmio`, for modules through `KernelApi::dt_mmio_find`, in ascending address order |
+| PSCI (aarch64 power-off and reset, `docs/power.md`) | FADT arm boot flags: PSCI compliant, HVC or SMC | `arm,psci-1.0` / `arm,psci-0.2` / `arm,psci`: `method` |
 
 What each arch requires of the description: aarch64 a GIC (v2: the
 distributor and the CPU interface; v3: the distributor and the
@@ -146,7 +149,12 @@ stay non-blocking.
 
 ## AML opcode set (custom interpreter — not ACPICA)
 
-Used to resolve `Name (_S5_, Package …)` in the DSDT for `/proc/acpi/s5`:
+Used to resolve `Name (_S5_, Package …)` in the DSDT for `/proc/acpi/s5`
+and the ACPI power-off (`docs/power.md`). The name is found by its bytes:
+the segment `_S5_` right after a NameOp (`0x08`, the root prefix `\` may
+come between) and followed by a PackageOp. The opcodes are not walked:
+staying in step would take every one of them (a `0x08` in a buffer is no
+NameOp).
 
 | Opcode | Encoding | Role |
 |--------|----------|------|
@@ -155,16 +163,11 @@ Used to resolve `Name (_S5_, Package …)` in the DSDT for `/proc/acpi/s5`:
 | WordPrefix | `0x0B` | `u16` LE |
 | DWordPrefix | `0x0C` | `u32` LE |
 | QWordPrefix | `0x0E` | `u64` LE |
-| StringPrefix | `0x0D` | skipped when scanning |
-| NameOp | `0x08` | locate `_S5_` |
+| NameOp | `0x08` | before `_S5_` |
 | PackageOp | `0x12` | read `slp_typa` / `slp_typb` |
-| ScopeOp / MethodOp | `0x10` / `0x14` | scan past |
-| ExtOp + DeviceOp | `0x5B 0x82` | scan past |
 | ReturnOp | `0xA4` | unwrap integer |
-| NameString | Root `\`, `^`, Dual/Multi/NameSeg | path match ending `_S5_` |
 
-PkgLength encoding is implemented. BufferOp / Field / OpRegion / control flow
-beyond the above are **not** executed — scan-only.
+PkgLength encoding is implemented. Nothing is executed.
 
 ## Blocking waits, idle CPUs and wakeups
 

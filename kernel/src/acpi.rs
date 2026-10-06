@@ -2,8 +2,9 @@
 //! description on x86_64 and on aarch64 firmware that has one (EDK2). Only
 //! the tables that name the platform are read, and no AML: MADT (the CPUs
 //! and the interrupt controller), MCFG (PCIe ECAM), SPCR (the console
-//! UART), GTDT (the arm timers). `modules/acpi` keeps `/proc/acpi` and the
-//! `_S5` power-off. Everything here runs before the heap exists, so nothing
+//! UART), GTDT (the arm timers), the FADT's arm boot flags (PSCI).
+//! `modules/acpi` keeps `/proc/acpi` and the ACPI power methods (`_S5`
+//! power-off, the reset register: `docs/power.md`). Everything here runs before the heap exists, so nothing
 //! allocates; tables are read in place through the HHDM.
 
 use crate::limine_boot;
@@ -241,4 +242,12 @@ pub fn gtdt() -> Option<Gtdt> {
         return None;
     }
     Some(Gtdt { el1_phys: t.u32(56)?, el1_virt: t.u32(64)? })
+}
+
+/// How the FADT's arm boot flags (ACPI 5.1) say PSCI is called: `Some(true)`
+/// through HVC, `Some(false)` through SMC, `None` when they name no PSCI.
+pub fn fadt_psci_hvc() -> Option<bool> {
+    let t = find(b"FACP")?;
+    let flags = t.u8(129)?;
+    (flags & 1 != 0).then_some(flags & 2 != 0)
 }

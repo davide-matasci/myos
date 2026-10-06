@@ -1,16 +1,17 @@
-//! Minimal ACPI: RSDP → XSDT/RSDT, MADT/MCFG/FADT/DSDT summary + AML `_S5`.
+//! Minimal ACPI: RSDP → XSDT/RSDT, MADT/MCFG/FADT/DSDT summary + AML `_S5`,
+//! and the ACPI power-off and reset methods (`power`).
 //!
-//! Supported AML opcodes (see docs/pci-acpi-smp.md):
-//! Zero, One, Ones, Byte/Word/DWord/QWordPrefix, StringPrefix,
-//! NameOp, PackageOp, BufferOp (skip), ScopeOp/DeviceOp/MethodOp (skip body),
-//! ReturnOp, ExtOp+Mutex/Event/Field/IndexField/BankField/OpRegion (skip),
-//! DefName path walk to find `_S5`.
+//! The AML read (see docs/pci-acpi-smp.md): `Name (_S5, Package ...)`
+//! found by its bytes, its integers (Zero, One, Ones, Byte/Word/DWord/
+//! QWordPrefix, ReturnOp) read.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use myos_abi::{status_info, status_ok, status_warn, ABI_VERSION, KernelApi};
+
+mod power;
 
 const AML_ZERO: u8 = 0x00;
 const AML_ONE: u8 = 0x01;
@@ -20,15 +21,10 @@ const AML_WORD: u8 = 0x0B;
 const AML_DWORD: u8 = 0x0C;
 const AML_STRING: u8 = 0x0D;
 const AML_QWORD: u8 = 0x0E;
-const AML_SCOPE: u8 = 0x10;
 const AML_BUFFER: u8 = 0x11;
 const AML_PACKAGE: u8 = 0x12;
-const AML_METHOD: u8 = 0x14;
-const AML_EXT: u8 = 0x5B;
 const AML_NAME: u8 = 0x08;
 const AML_RETURN: u8 = 0xA4;
-const AML_DEVICE: u8 = 0x82; // ExtOp 0x82 after 0x5B? Actually DeviceOp is ExtOpPrefix+0x82
-// Device is Ext: 0x5B 0x82. Method is 0x14. Scope is 0x10.
 
 #[inline(never)]
 #[unsafe(no_mangle)]
@@ -84,6 +80,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     push(&mut tables_buf, &mut tables_len, b"# sig  phys  length\n");
 
     let mut dsdt_phys = 0u64;
+    let mut fadt: &[u8] = &[];
     let mut madt_cpus = 0u32;
     let mut mcfg_base = 0u64;
 
@@ -126,7 +123,8 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
                     }
                 } else if sig == b"FACP" {
                     // FADT: DSDT at 40 (32-bit) or X_DSDT at 140 (64-bit).
-                    if let Some(f) = unsafe { read_va(va, 148.min(tlen as usize)) } {
+                    if let Some(f) = unsafe { read_va(va, (tlen as usize).min(4096)) } {
+                        fadt = f;
                         if f.len() >= 44 {
                             let d32 = u32::from_le_bytes(f[40..44].try_into().unwrap_or([0; 4])) as u64;
                             if d32 != 0 {
@@ -171,6 +169,8 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
             b"slp_typa: -\nslp_typb: -\nnote: _S5 not found or unsupported AML\n",
         );
     }
+
+    power::register(api, fadt, aml_ok.then_some((typa, typb)));
 
     // Leak buffers into procfs.
     publish_alloc(api, "acpi/info", &info_buf[..info_len]);
@@ -268,100 +268,24 @@ fn eval_s5(dsdt_va: usize) -> (u8, u8, bool) {
     find_s5_package(aml)
 }
 
+/// `Name (_S5, Package (N) {SLP_TYPa, SLP_TYPb, ...})`: the name segment
+/// `_S5_` right after a NameOp (the root prefix `\` may come between),
+/// followed by a PackageOp. Found by looking for those bytes rather than by
+/// walking the opcodes, which would need every one of them to stay in step
+/// (a 0x08 in a buffer is no NameOp).
 fn find_s5_package(aml: &[u8]) -> (u8, u8, bool) {
-    let mut i = 0usize;
-    while i + 5 < aml.len() {
-        if aml[i] == AML_NAME {
-            let (name_end, name) = parse_name_string(&aml[i + 1..]);
-            if name_end == 0 {
-                i += 1;
-                continue;
+    for i in 1..aml.len().saturating_sub(4) {
+        if &aml[i..i + 4] != b"_S5_" {
+            continue;
+        }
+        let named = aml[i - 1] == AML_NAME || (aml[i - 1] == b'\\' && i >= 2 && aml[i - 2] == AML_NAME);
+        if named && aml[i + 4] == AML_PACKAGE {
+            if let Some((a, b)) = parse_s5_pkg(&aml[i + 4..]) {
+                return (a, b, true);
             }
-            let after_name = i + 1 + name_end;
-            if name_is_s5(&name) && after_name < aml.len() && aml[after_name] == AML_PACKAGE {
-                if let Some((a, b)) = parse_s5_pkg(&aml[after_name..]) {
-                    return (a, b, true);
-                }
-            }
-            i = after_name;
-            continue;
         }
-        // Skip Scope/Method/Device bodies by walking pkg length when obvious.
-        if aml[i] == AML_SCOPE || aml[i] == AML_METHOD {
-            i += 1;
-            continue;
-        }
-        if aml[i] == AML_EXT && i + 1 < aml.len() && aml[i + 1] == AML_DEVICE {
-            i += 2;
-            continue;
-        }
-        i += 1;
     }
     (0, 0, false)
-}
-
-fn name_is_s5(name: &[u8]) -> bool {
-    // Match `_S5_`, `\_S5_`, or ending with `_S5_`.
-    if name.len() >= 4 {
-        let n = &name[name.len() - 4..];
-        return n == b"_S5_";
-    }
-    false
-}
-
-fn parse_name_string(data: &[u8]) -> (usize, [u8; 16]) {
-    let mut out = [0u8; 16];
-    if data.is_empty() {
-        return (0, out);
-    }
-    let mut i = 0usize;
-    let mut o = 0usize;
-    // Root `\`, parent `^`, DualName 0x2E, MultiName 0x2F, or 4-char NameSeg.
-    if data[0] == b'\\' {
-        out[o] = b'\\';
-        o += 1;
-        i += 1;
-    }
-    while i < data.len() && data[i] == b'^' {
-        if o < 16 {
-            out[o] = b'^';
-            o += 1;
-        }
-        i += 1;
-    }
-    if i >= data.len() {
-        return (0, out);
-    }
-    let segs = if data[i] == 0x2E {
-        i += 1;
-        2usize
-    } else if data[i] == 0x2F {
-        i += 1;
-        if i >= data.len() {
-            return (0, out);
-        }
-        let c = data[i] as usize;
-        i += 1;
-        c
-    } else if data[i] == 0x00 {
-        // NullName
-        return (i + 1, out);
-    } else {
-        1usize
-    };
-    for _ in 0..segs {
-        if i + 4 > data.len() {
-            return (0, out);
-        }
-        for _ in 0..4 {
-            if o < 16 {
-                out[o] = data[i];
-                o += 1;
-            }
-            i += 1;
-        }
-    }
-    (i, out)
 }
 
 fn parse_s5_pkg(data: &[u8]) -> Option<(u8, u8)> {

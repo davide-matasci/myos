@@ -29,7 +29,8 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 /// 30 added [`ModuleVfsOps::file_id`] and `set_times_ino` (a filesystem
 /// with file ids has its open files used by them, not by their paths) and
 /// [`KernelApi::fd_lockctl`] (record locks).
-pub const ABI_VERSION: u32 = 30;
+/// 31 added [`KernelApi::power_register`] (power-off and reboot methods).
+pub const ABI_VERSION: u32 = 31;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -761,6 +762,13 @@ pub struct KernelApi {
     /// ([`MyosLockRange`]). 0, or a native failure value
     /// ([`MYOS_SYSERR_EAGAIN`], [`MYOS_SYSERR_EINTR`]).
     pub fd_lockctl: unsafe extern "C" fn(fd: usize, cmd: usize, lock: *mut MyosLockRange) -> usize,
+    // --- ABI 31 ---
+    /// Add `method` for `action` ([`MYOS_POWER_OFF`], [`MYOS_POWER_REBOOT`]),
+    /// tried before the arch's own methods once the system is going down
+    /// (`docs/power.md`): it returns only when it failed. `name` is for the
+    /// log (`power off via NAME`). 0, or negative. Counted as a
+    /// registration.
+    pub power_register: unsafe extern "C" fn(action: u32, name: StrRef, method: unsafe extern "C" fn()) -> i32,
 }
 
 /// Where a module keeps the table `module_init` received: set once there,
@@ -1244,7 +1252,21 @@ impl KernelApi {
     pub fn fd_lockctl(&self, fd: usize, cmd: usize, lock: &mut MyosLockRange) -> usize {
         unsafe { (self.fd_lockctl)(fd, cmd, lock) }
     }
+
+    /// # Safety
+    ///
+    /// `method` can run at any time, from any CPU, until the machine goes
+    /// down: it must stay valid as long as the module is loaded (the
+    /// registration keeps it loaded).
+    pub unsafe fn power_register(&self, action: u32, name: &str, method: unsafe extern "C" fn()) -> i32 {
+        unsafe { (self.power_register)(action, StrRef::new(name), method) }
+    }
 }
+
+/// The native `power(action)`'s actions, and [`KernelApi::power_register`]'s.
+pub const MYOS_POWER_OFF: u32 = 0;
+pub const MYOS_POWER_REBOOT: u32 = 1;
+pub const MYOS_POWER_HALT: u32 = 2;
 
 /// A record lock for `fd_lockctl` and the native `lockctl`: `kind` 0
 /// shared (`F_RDLCK`), 1 exclusive (`F_WRLCK`), 2 none (`F_UNLCK`); the

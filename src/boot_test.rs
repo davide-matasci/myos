@@ -113,6 +113,9 @@ const LOGIN_BOUND: Duration = Duration::from_secs(60);
 /// Pause between typed bytes, and the echo-sync wait per byte.
 const TYPE_DELAY: Duration = Duration::from_millis(40);
 const ECHO_WAIT: Duration = Duration::from_secs(5);
+/// `poweroff` stops the processes (a few seconds at most), unmounts the
+/// disks and powers off: QEMU exits well within this.
+const POWER_OFF_BOUND: Duration = Duration::from_secs(60);
 
 /// Everything QEMU wrote to the serial console so far (CR normalized to LF)
 /// and when it last grew.
@@ -190,6 +193,32 @@ fn wait_for(serial: &Shared, deadline: Instant, ready: impl Fn(&str) -> bool) ->
             return true;
         }
         if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// After the tests: type `poweroff` at the prompt the runner returned to
+/// and wait for QEMU to exit by itself, the kernel having stopped the
+/// processes, unmounted the disks and powered the board off
+/// (docs/power.md).
+fn power_off(stdin: &mut ChildStdin, serial: &Shared, child: &mut Child) -> bool {
+    let deadline = Instant::now() + POWER_OFF_BOUND;
+    if !wait_for(serial, deadline, |t| at_prompt(t) && typed_after(t, "$ ").is_empty())
+        || !type_synced(stdin, serial, "$ ", "poweroff")
+    {
+        eprintln!("boot test: could not type `poweroff`");
+        return false;
+    }
+    loop {
+        if let Some(status) = child.try_wait().expect("wait on qemu") {
+            let via = snapshot(serial).lines().find(|l| l.contains("power off via ")).map(str::to_string);
+            eprintln!("boot test: QEMU exited ({status}) after `poweroff`: {}", via.as_deref().unwrap_or("no method named"));
+            return status.success() && via.is_some();
+        }
+        if Instant::now() > deadline {
+            eprintln!("boot test: QEMU still running {POWER_OFF_BOUND:?} after `poweroff`");
             return false;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -418,10 +447,11 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    let powered_off = power_off(&mut stdin, &serial, &mut child);
     let _ = child.kill();
     let _ = child.wait();
     // The ext2 tests leave a filesystem on the scratch disk: e2fsprogs must
-    // find it clean (`src/main.rs`).
+    // find it clean (`src/main.rs`), the power-off having unmounted it.
     let disk_ok = crate::fsck_scratch_disk();
 
     let text = snapshot(&serial);
@@ -441,7 +471,17 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
     if results.len() as u32 != total {
         eprintln!("error: the runner reported {total} tests, {} TEST lines were seen", results.len());
     }
-    if !failed.is_empty() || !missing.is_empty() || passed != total || total == 0 || results.len() as u32 != total || !disk_ok {
+    if !powered_off {
+        eprintln!("error: `poweroff` did not power the machine off");
+    }
+    if !failed.is_empty()
+        || !missing.is_empty()
+        || passed != total
+        || total == 0
+        || results.len() as u32 != total
+        || !disk_ok
+        || !powered_off
+    {
         std::process::exit(1);
     }
     std::process::exit(0);

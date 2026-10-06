@@ -25,6 +25,7 @@ mod pci;
 mod modules;
 mod pipe;
 mod platform;
+mod power;
 mod rng;
 mod sec;
 mod signal;

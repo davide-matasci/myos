@@ -84,6 +84,15 @@ pub fn monotonic_ns() -> u64 {
     crate::arch::clock::monotonic_ns()
 }
 
+/// Busy-wait `ns` nanoseconds (a device's settle time, where nothing may
+/// sleep).
+pub fn spin_ns(ns: u64) {
+    let end = monotonic_ns() + ns;
+    while monotonic_ns() < end {
+        core::hint::spin_loop();
+    }
+}
+
 /// `counter / hz` in nanoseconds without overflowing for ~hundreds of years.
 #[allow(dead_code)]
 pub(crate) fn counter_to_ns(counter: u64, hz: u64) -> u64 {

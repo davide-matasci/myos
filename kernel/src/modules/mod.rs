@@ -124,6 +124,7 @@ static API: KernelApi = KernelApi {
     vfs_set_times: api_vfs_set_times,
     thread_place: api_thread_place,
     fd_lockctl: api_fd_lockctl,
+    power_register: api_power_register,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1038,6 +1039,13 @@ unsafe extern "C" fn api_fd_kind(fd: usize, size: *mut usize) -> i32 {
 
 unsafe extern "C" fn api_fd_poll_bits(fd: usize) -> i32 {
     crate::task::fd_poll_bits(fd).map_or(-1, |b| b as i32)
+}
+
+unsafe extern "C" fn api_power_register(action: u32, name: StrRef, method: unsafe extern "C" fn()) -> i32 {
+    let (Some(action), Some(name)) = (crate::power::Action::from_raw(action as usize), str_ref(name)) else {
+        return -1;
+    };
+    noted(crate::power::register(action, name, method))
 }
 
 unsafe extern "C" fn api_fd_lockctl(fd: usize, cmd: usize, lock: *mut myos_abi::MyosLockRange) -> usize {

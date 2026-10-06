@@ -422,7 +422,30 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
     // Sort + dedupe by path (later duplicates win for the same path).
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries.dedup_by(|a, b| a.name == b.name);
+    first_link_carries_data(&mut entries);
     write_newc(&entries)
+}
+
+/// A hard-link group's bytes go with its first entry in archive order: the
+/// kernel's reader (`kernel/src/fs/cpio.rs`) takes them from there for the
+/// names after it, and the sort may have put an alias first (`halt` before
+/// `poweroff`).
+fn first_link_carries_data(entries: &mut [Entry]) {
+    let mut first: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    for i in 0..entries.len() {
+        if entries[i].nlink <= 1 {
+            continue;
+        }
+        match first.get(&entries[i].ino) {
+            None => {
+                first.insert(entries[i].ino, i);
+            }
+            Some(&f) if !entries[i].data.is_empty() => {
+                entries[f].data = std::mem::take(&mut entries[i].data);
+            }
+            Some(_) => {}
+        }
+    }
 }
 
 /// Serialize entries as a newc archive with a `TRAILER!!!` terminator.

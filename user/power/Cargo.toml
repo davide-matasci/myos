@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "power"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "poweroff, reboot, halt: take the system down (docs/power.md)"
+
+[[bin]]
+name = "power"
+test = false
+bench = false
+
+[dependencies]
+myos-user = { path = "../lib" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

@@ -72,6 +72,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         136 => ret(lsig::rt_sigpending(a[0])),
         137 => ret(lsig::rt_sigtimedwait(a[0], a[1], a[2])),
         139 => lsig::rt_sigreturn(regs),
+        142 => ret(sys::reboot(a[0], a[1], a[2])),
         144 | 146 => 0, // setgid, setuid
         154 => result(user::sys_setpgid(a[0], a[1]), EPERM),
         155 => result(user::sys_getpgid(a[0]), ESRCH),

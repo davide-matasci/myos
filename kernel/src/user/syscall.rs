@@ -148,6 +148,10 @@ const SYS_FLOCK: usize = 85;
 /// conflicts), [`LOCKCTL_WAIT`] waits for it. The process owns the lock,
 /// or with [`LOCKCTL_OFD`] the fd's open file description.
 const SYS_LOCKCTL: usize = 86;
+/// `power(action)`: power off, reboot or halt (`myos_abi::MYOS_POWER_*`,
+/// `write` on `kernel.power`): the processes are stopped and the disks
+/// unmounted first (`crate::power`). Returns only on failure.
+const SYS_POWER: usize = 87;
 const LOCK_SH: usize = 1;
 const LOCK_EX: usize = 2;
 const LOCK_NB: usize = 4;
@@ -320,6 +324,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_FDFLAGS => sys_fdflags(a0, a1, a2),
         SYS_FLOCK => sys_flock(a0, a1),
         SYS_LOCKCTL => sys_lockctl(a0, a1, a2),
+        SYS_POWER => sys_power(a0),
         at::SYS_OPENAT..=at::SYS_EXECAT => {
             let [a3, a4, a5] = regs.args_3_5();
             match nr {
@@ -785,6 +790,17 @@ fn sys_getpid() -> usize {
 }
 
 /// `kill(pid, sig)` — `pid` is interpreted as signed (`isize`) for pgid rules.
+fn sys_power(action: usize) -> usize {
+    let Some(action) = crate::power::Action::from_raw(action) else {
+        return SYSERR;
+    };
+    if !crate::sec::allowed_object("kernel.power", None, Rights::WRITE) {
+        return SYSERR;
+    }
+    crate::power::perform(action);
+    SYSERR
+}
+
 fn sys_kill(pid: usize, sig: usize) -> usize {
     if crate::signal::kill(pid as isize, sig as u32) {
         0
