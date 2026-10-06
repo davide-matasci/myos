@@ -21,7 +21,7 @@ MYOS_ARCHES=(x86_64 aarch64 riscv64)
 
 # `<role> <name> <dir>` per port, image ports first. The name is the
 # directory's unless the descriptor sets PORT_NAME.
-myos_port_dirs() {
+myos_port_scan() {
   local role base d name
   for role in image package; do
     local bases="ports user toolchain"
@@ -37,13 +37,19 @@ myos_port_dirs() {
   done | sort -u -k2,2
 }
 
+# The scan runs once, when this file is sourced: every lookup below
+# (myos_port_load, in loops over every port) reads the list from memory.
+# Rescanning the descriptors per lookup made a single `--build-list all`
+# take seconds, and the CI registry script runs it on every pull.
+MYOS_PORT_DIRS="$(myos_port_scan)"
+
 myos_port_names() {
   local want="${1:-all}" role name dir
   while read -r role name dir; do
     if [[ "$want" == all || "$want" == "$role" ]]; then
       echo "$name"
     fi
-  done < <(myos_port_dirs)
+  done <<<"$MYOS_PORT_DIRS"
 }
 
 # Load NAME's descriptor into PORT_* (PORT_NAME, PORT_DIR, PORT_ROLE added).
@@ -58,7 +64,7 @@ myos_port_load() {
       source "$dir/port.env"
       return 0
     fi
-  done < <(myos_port_dirs)
+  done <<<"$MYOS_PORT_DIRS"
   echo "error: no port named $want (ports/*/port.env, packages/*/port.env)" >&2
   return 1
 }
