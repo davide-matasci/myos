@@ -54,10 +54,16 @@ make SUITES=basic report
   boot CI window).
 - `make` / `make report` compile with guest `tcc` against the packed newlib
   sysroot, run each binary, and print a summary via `misc/myos-report.sh`.
-- Per-test outcomes live under `out/<suite>/.../*.out`:
-  - empty → pass (exit 0)
-  - `compile_error` → tcc could not link/build
-  - `exit: N` → runtime failure
+- Per-test outcomes live under `out/<suite>/.../*.out`, written as upstream's
+  `misc/run.sh` writes them: the test's output, then `exit: N` when the
+  output is empty or N is 2 or more (`compile_error` when tcc could not
+  build it).
+- `misc/myos-report.sh` grades them as upstream's `misc/html.c` does: a test
+  with expectations (`<suite>.expect/<test>.*`, read from `/lib/os-test`
+  when the staged copy has none) passes when its outcome equals one of them
+  (`*.unknown.*` excepted); a test without any passes on `exit: 0`. So
+  `open: ENOTDIR` passes where POSIX wants that error, and a `printf` test
+  passes only when it printed the right text.
 
 The report ends with a machine-readable line:
 
@@ -70,7 +76,7 @@ pass_rate=NN% (P/T)
 The full boot test (`packages/os-test/test.sh`, `docs/testing.md`) runs a
 **thin curated set**: the basic smoke list **plus** ~100 tests spanning
 non-basic suites (`limits`, `io`, `malloc`, `paths`, `process`, `signal`,
-`stdio`, `udp`) **plus** `misc/ci-expansion.tests` (141: POSIX core, more
+`stdio`, `udp`) **plus** `misc/ci-expansion.tests` (154: POSIX core, more
 non-basic, signal handlers, and the myos `chroot`/FIFO suite). See
 `SUITES.md` for the full suite inventory, the selection rationale and the
 deferred tests. Not the full ~1187 basic suite (CI #860/#866 timed out).
@@ -105,7 +111,7 @@ Launcher notes:
 The test passes only when **every curated test passed** (`pass_rate=100%
 (T/T)`); otherwise it prints the report's failure list. A test that cannot
 pass yet belongs in `SUITES.md` (deferred), not in the curated lists. A
-second test checks `basic/pwd/setpwent` (its `.out` must be empty).
+second test checks `basic/pwd/setpwent` (its `.out` must be `exit: 0`).
 
 The mini list skips os-test (too slow for the mini window).
 

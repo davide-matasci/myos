@@ -1,5 +1,6 @@
 # Boot CI curated non-basic subset — suite-prefixed paths (suite/rel, no .c).
-# Prefer tests whose POSIX expect is exit 0 (myos harness: exit 0 = pass).
+# A test passes when its outcome is one of its expectations (io.expect/...),
+# or exits 0 when it has none (misc/myos-report.sh).
 # Trimmed after libgloss/kernel rollback: only suites that pass on master
 # libc (malloc/paths/stdio/io). Re-expand suite-by-suite with curl+SSH green.
 
