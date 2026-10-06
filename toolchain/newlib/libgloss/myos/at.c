@@ -231,12 +231,17 @@ int openat(int dirfd, const char *path, int flags, ...) {
     }
     if (failed(ret)) {
         /* No controlling terminal → ENXIO (Linux open(/dev/tty) semantics);
-         * a file the caller can see but not open so: the policy refused it
+         * a directory opened to write, create or truncate: EISDIR; another
+         * file the caller can see but not open so: the policy refused it
          * (docs/security.md). */
         if (strcmp(path, "/dev/tty") == 0) {
             errno = ENXIO;
+        } else if (fstatat(dirfd, path, &st, 0) != 0) {
+            errno = ENOENT;
+        } else if (S_ISDIR(st.st_mode) && ((flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC)))) {
+            errno = EISDIR;
         } else {
-            errno = fstatat(dirfd, path, &st, 0) == 0 ? EACCES : ENOENT;
+            errno = EACCES;
         }
         return -1;
     }

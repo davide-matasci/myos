@@ -1,5 +1,5 @@
 # The curated os-test list (misc/ci-boot.tests: POSIX core, non-basic,
-# signal handlers, myos chroot/FIFO; 315 prebuilt tests): a thin writable
+# signal handlers, myos chroot/FIFO; 326 prebuilt tests): a thin writable
 # copy of the suite under /tmp/o, `make report`, and every test must pass.
 # Full mode only (the list takes a while under TCG). The report's progress
 # goes to the console: one line per test.
@@ -16,10 +16,12 @@ ostest_report() {
 	pt=$(echo "$rate" | sed 's/.*(\(.*\)).*/\1/')
 	[ "${pt%/*}" = "${pt#*/}" ] && [ "${pt#*/}" -gt 0 ]
 }
-# setpwent (basic/pwd): the runner writes the test's .out; a non-empty one is
-# a compile error or a bad exit (the prebuilt tests have no .err).
+# setpwent (basic/pwd): the runner writes the test's outcome, "exit: 0" when
+# it ran clean (anything else is a compile error, output or a bad exit).
 ostest_setpwent() {
-	[ -f /tmp/o/out/basic/pwd/setpwent.out ] && [ ! -s /tmp/o/out/basic/pwd/setpwent.out ]
+	[ -f /tmp/o/out/basic/pwd/setpwent.out ] || return 1
+	IFS= read -r outcome < /tmp/o/out/basic/pwd/setpwent.out
+	[ "$outcome" = "exit: 0" ]
 }
 t os_test ostest_report
 t os_test_setpwent ostest_setpwent

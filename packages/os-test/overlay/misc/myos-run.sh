@@ -1,8 +1,10 @@
 # Compile and run one os-test test on myos: tcc + newlib sysroot.
 # Usage: myos-run.sh <cc> <cflags> <src.c> <test-name>
-# Outcome semantics mirror upstream misc/run.sh: on compile failure the
-# outcome word is the whole .out; on run, a nonzero exit appends
-# "exit: CODE" (any nonzero is a failure here — tests use errx(1, ...)).
+# The .out is what upstream misc/run.sh writes, so it can be graded against
+# the suite's expectations (misc/myos-report.sh): the test's output, then
+# "exit: CODE" when the output is empty or CODE is 2 or more (errx(1, ...)
+# is a reported outcome, its message the result). A compile failure makes
+# the whole .out "compile_error".
 #
 # Boot CI thin smoke: if prebuilt/$T exists (host-built ELF packed at
 # /lib/os-test/prebuilt/… and staged by ci-smoke-copy.sh), skip guest tcc
@@ -79,7 +81,7 @@ if [ -n "$PREBUILT" ]; then
 	# Capture $? before any if-statement: oksh resets $? to the if
 	# statement's own status (0 when the condition fails and there is no
 	# else), which reported every failed test as "exit: 0".
-	if [ "$CODE" -ne 0 ]; then
+	if [ ! -s "$OUT" ] || [ "$CODE" -ge 2 ]; then
 		echo "exit: $CODE" >> "$OUT"
 	fi
 	rm -f -- "$BIN"
@@ -93,7 +95,7 @@ if ! "$CC" $CFLAGS "$SRC" -o "$BIN" -lm 2> "out/$T.err"; then
 fi
 run_in_suite "$BIN"
 CODE=$?
-if [ "$CODE" -ne 0 ]; then
+if [ ! -s "$OUT" ] || [ "$CODE" -ge 2 ]; then
 	echo "exit: $CODE" >> "$OUT"
 fi
 rm -f -- "$BIN"

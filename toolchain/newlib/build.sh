@@ -19,8 +19,9 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 
 # HAVE_FCNTL: libc fcntl() must call _fcntl (libgloss), not return ENOSYS
 # (oksh savefd / F_DUPFD). HAVE_RENAME: libc rename() must call _rename
-# (SYS_RENAME), not link+unlink — our _link stub is EROFS and that broke
-# git init's commit_lock_file. Also set via configure.host; CFLAGS is reliable.
+# (SYS_RENAME), not link+unlink — myos has no hard links, and the fallback
+# broke git init's commit_lock_file. Also set via configure.host; CFLAGS is
+# reliable.
 # --enable-newlib-io-c99-formats: printf and scanf take C99's z, j, t and
 # hh length modifiers (sbase wc and cksum print with %zu).
 # SIGNAL_PROVIDED: newlib's userspace signal()/raise() emulation is replaced

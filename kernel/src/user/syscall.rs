@@ -564,6 +564,11 @@ pub(super) fn open_real(
     if flags as u32 & O_DIRECTORY != 0 && kind.is_some_and(|k| k != S_IFDIR) {
         return SYSERR_ENOTDIR;
     }
+    // A directory is written through its calls (mkdir, unlink, ...), never
+    // opened for it (libc: EISDIR).
+    if kind == Some(S_IFDIR) && (fs::open_writable(flags as u32) || flags as u32 & (O_CREAT | O_TRUNC) != 0) {
+        return SYSERR;
+    }
     let fd = open_fd(path, rights, flags, tree);
     if fd < task::MAX_FDS && flags as u32 & O_CLOEXEC != 0 {
         task::fd_set_cloexec(fd, true);

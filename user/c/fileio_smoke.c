@@ -7,10 +7,11 @@
  * close-on-exec: O_CLOEXEC, F_SETFD, F_DUPFD_CLOEXEC and pipe2 fds are gone
  * in a program the process execs, dup2's copy and the others are not;
  * O_NOFOLLOW refuses a symlink (ELOOP) and O_DIRECTORY anything but a
- * directory (ENOTDIR); flock and fcntl record locks (kernel/src/fs/lock.rs)
- * conflict across processes, wait, and go with their owner; a file is its
- * inode, not its name: an fd follows it through a rename and keeps it after
- * an unlink, and its inode number stays.
+ * directory (ENOTDIR), and a directory opened to write, create or truncate
+ * is EISDIR; flock and fcntl record locks (kernel/src/fs/lock.rs) conflict
+ * across processes, wait, and go with their owner; a file is its inode, not
+ * its name: an fd follows it through a rename and keeps it after an unlink,
+ * and its inode number stays.
  *
  * `fileio_smoke [DIR]` works in DIR (default /tmp): the ext2 test runs it
  * on the scratch disk. `fileio_smoke child FD...` is the exec'd program: FD
@@ -244,6 +245,10 @@ static void open_flags(void) {
     fd = open(dir, O_RDONLY | O_DIRECTORY);
     check(fd >= 0, "O_DIRECTORY on a directory");
     close(fd);
+    /* A directory is not opened to write, create or truncate (EISDIR). */
+    check(open(dir, O_WRONLY) < 0 && errno == EISDIR, "a directory for writing: EISDIR");
+    check(open(dir, O_RDWR | O_CREAT, 0644) < 0 && errno == EISDIR, "O_CREAT of a directory: EISDIR");
+    check(open(dir, O_RDONLY | O_TRUNC) < 0 && errno == EISDIR, "O_TRUNC of a directory: EISDIR");
     unlink(l);
     unlink(f);
 }

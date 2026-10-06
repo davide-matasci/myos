@@ -22,7 +22,7 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 
 **Non-basic** = everything except `basic` (and the non-runtime `include` /
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`
-(~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (141 paths:
+(~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (150 paths:
 POSIX core + non-basic + the myos suite). Wired the same way as basic: thin
 `ci-smoke-copy.sh` staging + host prebuild + `make … TESTLIST=… report`.
 
@@ -64,13 +64,17 @@ until they pass honestly (no xfails):
   simply be swapped in.
 - `io/ofd-*` — open-file-description locks (`F_OFD_SETLK`/`F_OFD_GETLK`) are
   not implemented; `io/ofd-setlk-wr-dup-rd` hangs
-- `io/open-tmpdir-*` — these exit 0 only if a directory can be opened for
-  writing; POSIX-correct `EISDIR` reads as a failure under the exit-0 harness
-  (they need per-test expected outputs, not a kernel change)
-- `io/open-mkstemp-*-directory` — `O_DIRECTORY` on a regular file: the
-  POSIX outcome is `open: ENOTDIR` (exit 1), which the exit-0 harness reads
-  as a failure. They were listed while myos ignored `O_DIRECTORY` and the
-  open wrongly succeeded; `fileio_smoke` checks the `ENOTDIR` now
+- `stdio/printf-c-pos-args` — POSIX's numbered arguments (`%3$c`) need
+  newlib's `--enable-newlib-io-pos-args`, whose `get_arg` takes `&ap` of a
+  `va_list` parameter: on x86_64 that is an array type, decayed to a
+  pointer, and the program faults (CI run on PR #259). Without the option
+  the conversions print literally
+- `process/fork-setsid-setpgid`, `-in-parent`, `-move` — a session leader
+  cannot change its process group (`EPERM`); libgloss's `setsid` only starts
+  a process group (TODO.md), so there is no session leader to refuse
+- `process/fork-exec-setpgid-in-parent` — a parent cannot move a child that
+  has exec'd (`EACCES`); the kernel does not remember the exec, and its one
+  `setpgid` failure is `EPERM`
 - `process/zombie-setpgid-move` (hang), `process/limbo-*`,
   `process/fork-setpgid-*undo*`/`-invalid` — pgid edge cases
 - `paths/*` FHS directories (`/var`, `/run`, `/usr/share`, `/sbin`, …) and
