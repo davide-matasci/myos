@@ -101,7 +101,7 @@ pub fn setsid() -> Option<usize> {
 }
 
 fn task_exists(t: &Task) -> bool {
-    t.state != State::Unused
+    !matches!(t.state, State::Unused | State::Claimed)
 }
 
 /// `getpgid(pid)`: `pid == 0` means the caller. Returns the process group id,

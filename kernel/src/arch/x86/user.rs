@@ -64,6 +64,11 @@ pub const SYSCALL_RESTART_IS_NR: bool = true;
 /// x86 forks via the iret path and keeps no live trap frame pointer.
 pub fn set_syscall_frame(_frame: *mut u64) {}
 
+/// No frame is kept here (x86 enters every syscall at the task's `rsp0`).
+pub fn syscall_frame() -> *mut usize {
+    core::ptr::null_mut()
+}
+
 /// Nothing to do before `enter_user` after exec.
 pub fn exec_resume(_entry: usize, _rsp: usize, _argc: usize, _argv: usize) {}
 

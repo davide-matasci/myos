@@ -288,7 +288,9 @@ reloads `tp` from the CPU-id footer the scheduler stamps at the base of the
 task's kernel stack, so `cpu_id()` is right on every hart even though user
 TLS lives in `tp`; the `sepc=0` corruption that once forced the WFI park was
 the trap vector's t0 clobber (fixed in #179). The aarch64/riscv64 syscall
-frame pointer used by fork/exec is per CPU (`SYSCALL_FRAMES`).
+frame pointer used by fork/exec is a per-CPU cell (`SYSCALL_FRAMES`) that
+`schedule` saves with the outgoing task and restores for the incoming one,
+so a syscall that blocked and resumes (on any CPU) finds its own frame.
 `note_schedule` → `/proc/cpuinfo`. QEMU `-smp 4` on x86/aarch64 (interactive
 + CI); riscv stays `-smp 2` (Limine panics `missing struct riscv_hart for
 BSP` at 4). The packed `boot/virt.dtb` is always dumped with `-smp 2` so

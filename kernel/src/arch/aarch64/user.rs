@@ -55,7 +55,10 @@ pub const SYSCALL_RESTART_IS_NR: bool = false;
 
 /// Live trap frame of the syscall running on each CPU: a syscall sets it on
 /// entry and clears it on exit; fork and exec read it on the same CPU. One
-/// cell per CPU, so user tasks on several CPUs never see each other's frame.
+/// cell per CPU, so user tasks on several CPUs never see each other's frame,
+/// and `schedule` keeps it with the task across a switch (`Task::syscall_frame`),
+/// so a syscall that blocked finds its own frame again, not that of the
+/// task that ran a syscall on this CPU meanwhile.
 static mut SYSCALL_FRAMES: [*mut usize; MAX_CPUS] = [core::ptr::null_mut(); MAX_CPUS];
 
 /// Record the live trap frame for fork/exec resume.
@@ -68,8 +71,7 @@ pub fn set_syscall_frame(frame: *mut u64) {
 
 /// The frame recorded by [`set_syscall_frame`] on this CPU (null outside a
 /// syscall).
-#[allow(dead_code)]
-fn syscall_frame() -> *mut usize {
+pub fn syscall_frame() -> *mut usize {
     let cpu = crate::smp::cpu_id().min(MAX_CPUS - 1);
     unsafe { core::ptr::addr_of!(SYSCALL_FRAMES[cpu]).read() }
 }
