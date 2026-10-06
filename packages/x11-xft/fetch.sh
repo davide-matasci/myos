@@ -27,7 +27,7 @@ fetch() {
     for url in "$@"; do
       # freedesktop.org refuses a burst of CI fetches (HTTP 418) for a while,
       # which --retry alone does not retry; the next URL is a mirror.
-      if curl -L --fail --retry 3 --retry-delay 10 --retry-all-errors -o "$tarball.partial" "$url"; then
+      if curl -L --fail --connect-timeout 20 --retry 3 --retry-delay 10 --retry-all-errors -o "$tarball.partial" "$url"; then
         break
       fi
       echo "fetch $url failed; trying the next mirror" >&2
@@ -54,7 +54,7 @@ fetch() {
 }
 
 fetch expat "$EXPAT_VERSION" "$EXPAT_SHA256" "$EXPAT_URL"
-fetch freetype "$FREETYPE_VERSION" "$FREETYPE_SHA256" "$FREETYPE_URL"
+fetch freetype "$FREETYPE_VERSION" "$FREETYPE_SHA256" "$FREETYPE_URL" "$FREETYPE_MIRROR_URL"
 fetch fontconfig "$FONTCONFIG_VERSION" "$FONTCONFIG_SHA256" "$FONTCONFIG_URL" "$FONTCONFIG_MIRROR_URL"
 fetch libXrender "$LIBXRENDER_VERSION" "$LIBXRENDER_SHA256" "$LIBXRENDER_URL"
 fetch libXft "$LIBXFT_VERSION" "$LIBXFT_SHA256" "$LIBXFT_URL"
