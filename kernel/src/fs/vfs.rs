@@ -7,6 +7,7 @@ use spin::Mutex;
 use myos_abi::ModuleVfsOps;
 
 use super::node;
+use super::pagecache;
 pub use super::node::Vnode;
 
 /// Metadata returned by [`stat`].
@@ -256,6 +257,11 @@ pub fn holds_mount(prefix: &str) -> bool {
 /// then writes back what it caches.
 pub fn unmount(prefix: &str) -> bool {
     let prefix = normalize_path(prefix);
+    // The page cache's hold on its files would keep it busy.
+    let idx = MOUNTS.lock().iter().position(|m| m.prefix == prefix);
+    if let Some(idx) = idx {
+        pagecache::forget_mount(idx);
+    }
     reap();
     let ops = {
         let mut mounts = MOUNTS.lock();
@@ -419,7 +425,11 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
                 return None;
             }
         }
-        return Some(node::get(idx, rel));
+        let node = node::get(idx, rel);
+        if wants_write && trunc {
+            pagecache::invalidate(&node);
+        }
+        return Some(node);
     }
 
     if creat {
@@ -549,14 +559,17 @@ pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
 /// Write to an open vnode at `pos`. Returns bytes written, or `None` on error.
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     let _tree = tree_read();
-    match node::locate(node)? {
+    let written = match node::locate(node)? {
         (idx, node::Loc::Path(rel)) => backend_write(idx, rel.as_str(), pos, buf),
         (idx, node::Loc::Ino(ino)) => {
             let write = kept_ops(idx)?.write_ino?;
             let rc = unsafe { write(ino, pos, buf.as_ptr(), buf.len()) };
             if rc < 0 { None } else { Some(rc as usize) }
         }
-    }
+    };
+    // After the write: a page read before it is then dropped, or not kept.
+    pagecache::invalidate(node);
+    written
 }
 
 /// One more open file description on `node` (an `open` that became an
@@ -777,6 +790,8 @@ pub fn unlink(path: &str) -> bool {
     if rel.is_empty() || !backend_has_write(idx) {
         return false;
     }
+    // The page cache lets go of it first: it would be kept for the cache.
+    pagecache::forget_at(idx, rel);
     if hide_held(idx, rel).is_some() {
         return true;
     }
@@ -814,6 +829,9 @@ pub fn rename(old: &str, new: &str) -> bool {
     // Only a file that is not a directory replaces one (the rename could
     // not go ahead otherwise, and the file would be hidden for nothing).
     let replaces = backend_stat(idx_o, rel_o).is_some_and(|st| !is_dir_mode(st.mode));
+    if replaces {
+        pagecache::forget_at(idx_n, rel_n);
+    }
     let kept = if replaces { hide_held(idx_n, rel_n) } else { None };
     if !backend_rename(idx_o, rel_o, rel_n) {
         // Put the file it was to replace back (one a module keeps by its

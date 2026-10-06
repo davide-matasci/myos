@@ -5,6 +5,7 @@ mod devfs;
 pub mod ptsfs;
 mod fstype;
 mod node;
+pub mod pagecache;
 mod procfs;
 pub mod rootfs;
 mod tmpfs;

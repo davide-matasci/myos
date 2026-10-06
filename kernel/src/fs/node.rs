@@ -67,6 +67,13 @@ pub struct Vnode {
     id: u32,
 }
 
+impl Vnode {
+    /// Its entry's number: the same for every reference to the file.
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+}
+
 impl PartialEq for Vnode {
     fn eq(&self, other: &Vnode) -> bool {
         self.id == other.id

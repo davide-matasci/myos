@@ -1507,7 +1507,7 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
     let mut off = 0;
     while off < map_len {
         let va = (addr + off) as u64;
-        let Some(phys) = virt_to_phys(aspace, va) else {
+        let Some(mut phys) = virt_to_phys(aspace, va) else {
             // An mmap page not touched yet takes the new protection when
             // it is paged in.
             if va >= area_lo {
@@ -1516,6 +1516,14 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
             }
             return SYSERR;
         };
+        // A page shared through the page cache becomes this process's own
+        // before it may be written.
+        if prot & PROT_WRITE != 0 && fs::pagecache::is_cached(phys) {
+            let own = mm::alloc_frame_site(4);
+            unsafe { core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(own), PAGE) };
+            free_mapped_page(aspace, va);
+            phys = own;
+        }
         map_user_page_prot(aspace, va, phys, prot);
         if prot & PROT_EXEC != 0 {
             // mprotect RW→RX: clean D-cache, invalidate I-cache for this range.

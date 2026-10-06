@@ -32,6 +32,11 @@ fn each_user_page(aspace: u64, va: usize, len: usize, access: Access, mut f: imp
             // V-set/phys-0 leaf (corrupt PTE): never dereference hhdm(0).
             return false;
         }
+        // A page the page cache shares is mapped without write permission,
+        // and the copy would write to every process's copy of the file.
+        if access == Access::Write && fs::pagecache::is_cached(phys) {
+            return false;
+        }
         f(unsafe { mm::hhdm(phys).add(off) }, done, n);
         done += n;
     }

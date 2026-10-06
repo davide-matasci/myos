@@ -81,8 +81,9 @@ fn copy_mmap_pages(src: u64, dst: u64) {
         let end = r.va.saturating_add(r.pages as u64 * PAGE as u64);
         while va < end {
             if let Some(phys) = virt_to_phys(src, va) {
-                // A device's pages are shared with the child, not copied.
-                if r.prot & task::MMAP_DEVICE != 0 {
+                // A device's pages are shared with the child, not copied,
+                // and so are a file's from the page cache.
+                if r.prot & task::MMAP_DEVICE != 0 || fs::pagecache::share(phys) {
                     map_user_page_prot(dst, va, phys, r.prot as usize);
                     va += PAGE as u64;
                     continue;
@@ -129,6 +130,14 @@ pub(super) fn flush_user_tlb() {
     crate::arch::irq_restore(flags);
     crate::arch::upaging::flush_user_tlb();
     for frame in freed {
+        release_frame(frame);
+    }
+}
+
+/// A user frame no mapping of this one uses any more: back to the page
+/// cache when it is one of its frames, freed otherwise.
+pub(super) fn release_frame(frame: u64) {
+    if !fs::pagecache::release(frame) {
         mm::free_frame(frame);
     }
 }
@@ -279,12 +288,19 @@ pub fn fault_in(va: usize, access: Access) -> bool {
     // The new page is filled before the lock is taken: a file read is a
     // disk request, which every other fault would wait for.
     let fresh = virt_to_phys(aspace, page as u64).is_none().then(|| {
-        let frame = mm::alloc_frame_site(4);
-        if let Some((node, off)) = file {
-            // Past the end of the file the frame stays zero.
-            let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
-            let _ = fs::read(&node, off, dst);
-        }
+        let frame = match &file {
+            // Nothing may write to the page: the file's page from the page
+            // cache, the frame every mapping of it shares.
+            Some((node, off)) if prot & PROT_WRITE == 0 => fs::pagecache::map(node, off / PAGE),
+            // A private copy of it (zero past the end of the file).
+            Some((node, off)) => {
+                let frame = mm::alloc_frame_site(4);
+                let dst = unsafe { core::slice::from_raw_parts_mut(mm::hhdm(frame), PAGE) };
+                fs::pagecache::copy(node, off / PAGE, dst);
+                frame
+            }
+            None => mm::alloc_frame_site(4),
+        };
         if prot & PROT_EXEC != 0 {
             sync_icache(mm::hhdm(frame) as usize, PAGE);
         }
@@ -298,7 +314,7 @@ pub fn fault_in(va: usize, access: Access) -> bool {
     let frame = match (virt_to_phys(aspace, page as u64), fresh) {
         (Some(mapped), fresh) => {
             if let Some(frame) = fresh {
-                mm::free_frame(frame);
+                release_frame(frame);
             }
             Some(mapped)
         }
@@ -336,7 +352,7 @@ pub(super) fn free_mapped_page(aspace: u64, va: u64) {
         crate::arch::irq_restore(flags);
         return;
     }
-    mm::free_frame(phys);
+    release_frame(phys);
 }
 
 fn align_up_u64(x: u64, a: u64) -> u64 {
