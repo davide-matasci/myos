@@ -63,6 +63,10 @@ enum State {
     /// `wake` matching its `wait_key`, its `wake_at` deadline, or a signal.
     Blocked,
     Dead,
+    /// Taken by `claim_slot` for the task its caller installs next (a fork,
+    /// a new thread): nothing else may take the slot, or its kernel stack,
+    /// in between.
+    Claimed,
 }
 
 /// The user registers a new task starts with: a forked child resumes after
