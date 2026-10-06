@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![no_main]
 
 //! `mkfs.ext2 DEVICE`: format a whole block device as ext2 (the `ext2fs`

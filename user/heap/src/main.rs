@@ -1,8 +1,11 @@
 #![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![no_main]
 
 //! CI-only heavy smoke: std / C / sbase / uutils / ripgrep / tcc / bigalloc.
 //! Always-on boot uses slim `/ok` instead; the boot tests run `heap` (user/tests/shell.sh).
+
+use core::cell::UnsafeCell;
 
 use myos_user::{status_ok, 
     close, exec, exit, exit_code, fork, mkdir, open_flags, wait_status, write, write_fd, O_CREAT,
@@ -266,11 +269,14 @@ int main(void) {
 
 /// Stacks for the threads of [`thread_smoke`].
 #[repr(C, align(16))]
-struct Stack([u8; 16 * 1024]);
-static mut STACKS: [Stack; 5] = [const { Stack([0; 16 * 1024]) }; 5];
+struct Stack(UnsafeCell<[u8; 16 * 1024]>);
+// SAFETY: nothing reads or writes a stack as data: each is only the stack
+// of the one thread `thread_smoke` starts on it.
+unsafe impl Sync for Stack {}
+static STACKS: [Stack; 5] = [const { Stack(UnsafeCell::new([0; 16 * 1024])) }; 5];
 
 fn stack_top(i: usize) -> usize {
-    unsafe { core::ptr::addr_of!(STACKS[i]) as usize + core::mem::size_of::<Stack>() }
+    STACKS[i].0.get() as usize + core::mem::size_of::<Stack>()
 }
 
 /// Threads share the process's memory: workers bump a shared counter and

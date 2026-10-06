@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![no_main]
 
 use myos_user::{status_ok, close, exit, exit_code, open, open_flags, read, write, write_fd, O_RDWR, O_WRONLY};
