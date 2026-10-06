@@ -92,37 +92,43 @@ and `pread`/`pwrite` became real (`README.md`, "File I/O"):
    device's memory (a module's `mmap` hook, `/dev/fb/data`). Pages owned
    by the file and refcounted by the mappings that use them, `write(2)`
    and the mappings seeing each other, written back on `msync`, `munmap`
-   and the last close; the Linux layer's `mmap` stops refusing it. This is
-   the page cache of "Self-hosting speed" below and the shared memory of
+   and the last close; the Linux layer's `mmap` stops refusing it. The
+   page cache (`kernel/src/fs/pagecache.rs`) has the shared, counted
+   frames; what is missing is writing through them (it drops a file's
+   pages on a write today). The same pages give the shared memory of
    "Passing file descriptors and shared memory" (`shm_open`,
    `memfd_create`, sized with `ftruncate`).
 
-## Self-hosting speed: a shared page cache
+## Self-hosting speed
 
 Building core+alloc inside myos (the first step of `linux-compat/self-host.sh`)
-takes ~1020 s under TCG with `-smp 4`; Alpine's Linux takes 591 s in the
-same QEMU (41 s natively). The kernel side is mostly gone (page faults,
-syscalls, disk reads: `/proc/cpuinfo`-style counters, not kept); what is
-left is rustc itself running ~1.7x slower. QEMU's `info jit` points at
-why: for the same build myos made it translate 2.6x more code and
-invalidate translated code 5x more often than Linux did.
+takes ~1250 s under TCG with `-smp 4` (it varies by ±15% between runs on a
+shared host); Alpine's Linux takes 591 s in the same QEMU (41 s natively).
 
-QEMU keeps translated code by physical address. Linux maps a shared
-library's pages from its page cache into every process, so rustc's
-`librustc_driver` is translated once for the whole build. myos copies each
-file page into a fresh frame on every fault (`user::fault_in`) and frees
-it at exit, so every rustc process gets its code translated again, and the
-freed frames, reused for data, invalidate what was translated in them.
+QEMU's `info jit` showed myos making QEMU translate more code and
+invalidate translated code far more often than Linux (QEMU keeps translated
+code by physical address, and myos copied every file page into a fresh
+frame per process). The page cache (`kernel/src/fs/pagecache.rs`) fixed
+that: 30x fewer invalidations, 21% less translated code, no flush of
+QEMU's code buffer. The build did not get faster: translation was not
+the bottleneck. The build runs mostly on one vCPU (15 min of its CPU in
+both kernels), so the gap to Linux is in how fast that vCPU runs rustc.
+Not yet measured:
 
-- **A page cache**: file pages kept in frames owned by the file (keyed by
-  mount + inode, or by the block cache's chunk when the file's blocks are
-  page-aligned), refcounted by the mappings that use them. A read-only or
-  private-not-yet-written mapping maps the cached frame itself; a write to
-  a private mapping copies it first (copy-on-write fault). Eviction only of
-  pages no mapping holds; the block cache (`kernel/src/blk/cache.rs`) can
-  shrink to what the page cache does not cover.
-- The same refcounted pages give `MAP_SHARED` of files and copy-on-write
-  `fork` (below and in "Passing file descriptors and shared memory").
+- **The 1 kHz tick**: ~2000 schedules a second on every CPU, idle ones
+  too (each takes the scheduler lock). Every interrupt makes QEMU leave its
+  translated code; Linux ticks at 100-250 Hz and not at all when idle, and
+  a tickless idle CPU would leave QEMU's vCPU thread asleep.
+- **TLB flushes**: ~1.1M partial flushes per build (each costs QEMU its
+  softmmu TLB entries for the page, then refills).
+
+What the page cache leaves open:
+
+- **Copy-on-write private pages**: a writable private mapping gets a copy
+  of the file page at the first fault, read or write; mapping the cached
+  frame read-only until the first write would share data pages too.
+- **`/proc/self/exe`**: missing; an `$ORIGIN` rpath (rustc's) works only
+  because musl takes ENOENT from it as "no origin".
 
 Smaller, measured on the way:
 
@@ -135,9 +141,6 @@ Smaller, measured on the way:
 - **NVMe moves a page per command** (`modules/nvme`: one PRP); with a PRP
   list a run of blocks is one command, and the block cache could read
   ahead.
-- **The 1 kHz tick** runs on every CPU, idle ones too (each takes the
-  scheduler lock); a tickless idle CPU would leave QEMU's vCPU thread
-  asleep.
 
 ## x86_64 interrupt routing beyond MSI-X
 
