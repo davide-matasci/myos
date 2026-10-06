@@ -1900,7 +1900,9 @@ impl MappedProgram {
         let Ok(span) = elf::image_span(&self.head) else {
             return false;
         };
-        let bias = at - (span.min_vaddr & !(page - 1));
+        let Some(bias) = at.checked_sub(span.min_vaddr & !(page - 1)) else {
+            return false;
+        };
         let mut ok = true;
         let _ = elf::for_each_load_segment(&self.head, |seg| {
             let prot = elf::pf_to_prot(seg.flags) as u32;
@@ -1959,8 +1961,11 @@ fn exec_auxv(elf_bytes: &[u8], base: u64, entry: usize, interp_base: Option<usiz
             phdr = va;
             break;
         }
-        if ty == 1 && off <= phoff && phoff < off + filesz {
-            phdr = va + (phoff - off);
+        // `off <= phoff && phoff < off + filesz`, written so a crafted
+        // `filesz` cannot overflow the add; the aux values are handed to
+        // userspace, so wrapping a malformed one only faults that program.
+        if ty == 1 && off <= phoff && phoff - off < filesz {
+            phdr = va.wrapping_add(phoff - off);
         }
     }
     const AT_PHDR: usize = 3;
@@ -1969,7 +1974,7 @@ fn exec_auxv(elf_bytes: &[u8], base: u64, entry: usize, interp_base: Option<usiz
     const AT_PAGESZ: usize = 6;
     const AT_ENTRY: usize = 9;
     const AT_CLKTCK: usize = 17;
-    aux.push(AT_PHDR, (bias + phdr) as usize);
+    aux.push(AT_PHDR, bias.wrapping_add(phdr) as usize);
     aux.push(AT_PHENT, phent as usize);
     aux.push(AT_PHNUM, phnum as usize);
     aux.push(AT_PAGESZ, PAGE);
