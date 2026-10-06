@@ -1774,6 +1774,17 @@ fn exec_auxv(elf_bytes: &[u8], base: u64, entry: usize, interp_base: Option<usiz
     aux.push(AT_PAGESZ, PAGE);
     aux.push(AT_ENTRY, entry);
     aux.push(AT_CLKTCK, 100);
+    // Every process is root. libc reads the ids here at startup, and musl
+    // treats a process whose four are not all given as setuid ("secure"):
+    // it ignores LD_LIBRARY_PATH and LD_PRELOAD.
+    const AT_UID: usize = 11;
+    const AT_EUID: usize = 12;
+    const AT_GID: usize = 13;
+    const AT_EGID: usize = 14;
+    const AT_SECURE: usize = 23;
+    for id in [AT_UID, AT_EUID, AT_GID, AT_EGID, AT_SECURE] {
+        aux.push(id, 0);
+    }
     if let Some(b) = interp_base {
         const AT_BASE: usize = 7;
         aux.push(AT_BASE, b);

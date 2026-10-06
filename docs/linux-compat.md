@@ -166,7 +166,9 @@ the kernel):
   (`sstatus.FS`); native programs are soft-float;
 - exec (`user/syscall.rs`): with the personality pending or active, the
   new image gets the SysV auxv entries (`AT_PHDR`, `AT_PHNUM`, `AT_ENTRY`,
-  `AT_BASE`, ...) and its `PT_INTERP` dynamic linker is mapped (see below).
+  `AT_BASE`, ..., and the ids, all 0: without `AT_UID`/`AT_EUID`/`AT_GID`/
+  `AT_EGID` musl runs as setuid and ignores `LD_LIBRARY_PATH`) and its
+  `PT_INTERP` dynamic linker is mapped (see below).
   `KernelApi::personality_exec` is the exec that keeps the personality
   (Linux `execve`); `SYS_LINUX_NEXT_EXEC` sets the pending bit for the
   launcher.
