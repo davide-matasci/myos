@@ -62,6 +62,9 @@ pub unsafe fn seed_stack(stack: *mut u8, size: usize, entry: usize) -> usize {
     sp
 }
 
+/// Bytes of the frame `task_switch` saves at a task's stack pointer.
+pub const FRAME_BYTES: usize = 112;
+
 /// The address the switch frame saved at `sp` returns to (ra).
 ///
 /// # Safety
