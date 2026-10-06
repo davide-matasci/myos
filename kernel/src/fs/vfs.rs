@@ -579,7 +579,7 @@ pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
 /// (`ftruncate`): false when its filesystem cannot.
 pub fn set_size(node: &Vnode, size: usize) -> bool {
     let _tree = tree_read();
-    match node::locate(node) {
+    let done = match node::locate(node) {
         Some((idx, node::Loc::Path(rel))) => backend_set_size(idx, rel.as_str(), size),
         Some((idx, node::Loc::Ino(ino))) => {
             let Some(set_size) = kept_ops(idx).and_then(|ops| ops.set_size_ino) else {
@@ -588,7 +588,10 @@ pub fn set_size(node: &Vnode, size: usize) -> bool {
             unsafe { set_size(ino, size as u64) == 0 }
         }
         None => false,
-    }
+    };
+    // As after a write: the pages past the new end are gone or zero now.
+    pagecache::invalidate(node);
+    done
 }
 
 /// One more open file description on `node` (an `open` that became an
