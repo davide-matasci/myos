@@ -7,10 +7,11 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use myos_abi::{ABI_VERSION, KernelApi, ModuleBlkOps, status_ok};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleBlkOps, status_ok};
 
 const SECTOR: usize = 512;
 /// The DMA buffer: one page, what a command's PRP1 covers.
@@ -65,7 +66,7 @@ struct Ctrl {
 }
 
 static mut CTRLS: [Option<Ctrl>; MAX_CTRL] = [const { None }; MAX_CTRL];
-static mut API: Option<&'static KernelApi> = None;
+static API: ApiCell = ApiCell::new();
 
 static OPS: ModuleBlkOps = ModuleBlkOps {
     read: blk_read,
@@ -74,12 +75,12 @@ static OPS: ModuleBlkOps = ModuleBlkOps {
 };
 
 fn api() -> &'static KernelApi {
-    unsafe { (*core::ptr::addr_of!(API)).expect("nvme: API") }
+    API.get()
 }
 
 fn dma_page() -> Option<(u64, *mut u8)> {
     let mut phys = 0u64;
-    let va = unsafe { (api().dma_alloc)(1, &mut phys) };
+    let va = api().dma_alloc(1, &mut phys);
     if va.is_null() { None } else { Some((phys, va)) }
 }
 
@@ -411,12 +412,12 @@ fn probe(api: &KernelApi) -> usize {
     let mut new = 0;
     for i in 0..MAX_CTRL as u32 {
         let (mut bus, mut slot, mut func) = (0u8, 0u8, 0u8);
-        if unsafe { (api.pci_find_class)(CLASS_MASS, SUBCLASS_NVME, i, &mut bus, &mut slot, &mut func) } != 0 {
+        if api.pci_find_class(CLASS_MASS, SUBCLASS_NVME, i, &mut bus, &mut slot, &mut func) != 0 {
             break;
         }
-        unsafe { (api.pci_enable)(bus, slot, func) };
+        api.pci_enable(bus, slot, func);
         let (mut va, mut size) = (0usize, 0u64);
-        if unsafe { (api.pci_bar_map)(bus, slot, func, 0, &mut va, &mut size) } != 0 {
+        if api.pci_bar_map(bus, slot, func, 0, &mut va, &mut size) != 0 {
             continue;
         }
         let Some(n) = attach(va) else {
@@ -424,7 +425,7 @@ fn probe(api: &KernelApi) -> usize {
         };
         // nvme{n}n1 (n < 10: MAX_CTRL is 4).
         let name = [b'n', b'v', b'm', b'e', b'0' + n as u8, b'n', b'1'];
-        if unsafe { (api.blk_register)(name.as_ptr(), name.len(), &OPS, n) } < 0 {
+        if api.blk_register(core::str::from_utf8(&name).unwrap_or_default(), &OPS, n) < 0 {
             break;
         }
         new += 1;
@@ -511,11 +512,9 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     if api.abi_version != ABI_VERSION {
         return -2;
     }
-    unsafe {
-        *core::ptr::addr_of_mut!(API) = Some(api);
-    }
+    unsafe { API.set(api) };
     if probe(api) == 0 {
-        unsafe { (api.write_str)(b"nvme none\n".as_ptr(), 10) };
+        api.write_str("nvme none\n");
     } else {
         status_ok(api, "nvme");
     }

@@ -8,6 +8,7 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use myos_abi::{status_info, status_ok, status_warn, ABI_VERSION, KernelApi};
 
@@ -32,177 +33,172 @@ const AML_DEVICE: u8 = 0x82; // ExtOp 0x82 after 0x5B? Actually DeviceOp is ExtO
 #[inline(never)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
-    unsafe {
-        if api.is_null() {
-            return -1;
-        }
-        let api = &*api;
-        if api.abi_version != ABI_VERSION {
-            return -2;
-        }
+    let Some(api) = (unsafe { api.as_ref() }) else {
+        return -1;
+    };
+    if api.abi_version != ABI_VERSION {
+        return -2;
+    }
 
-        let rsdp = (api.acpi_rsdp)();
-        if rsdp == 0 {
-            publish(
-                api,
-                b"acpi/info",
-                b"source: none\nnote: no RSDP (DT-only firmware; ACPI stubs)\n",
-            );
-            publish(api, b"acpi/tables", b"# no ACPI tables\n");
-            publish(
-                api,
-                b"acpi/s5",
-                b"slp_typa: -\nslp_typb: -\nnote: no AML (non-ACPI arch or missing RSDP)\n",
-            );
-            status_info(api, "acpi: no RSDP (stub)");
-            return 0;
-        }
+    let rsdp = api.acpi_rsdp();
+    if rsdp == 0 {
+        publish(
+            api,
+            "acpi/info",
+            b"source: none\nnote: no RSDP (DT-only firmware; ACPI stubs)\n",
+        );
+        publish(api, "acpi/tables", b"# no ACPI tables\n");
+        publish(
+            api,
+            "acpi/s5",
+            b"slp_typa: -\nslp_typb: -\nnote: no AML (non-ACPI arch or missing RSDP)\n",
+        );
+        status_info(api, "acpi: no RSDP (stub)");
+        return 0;
+    }
 
-        let hhdm = (api.hhdm_offset)();
-        let mut info_buf = [0u8; 256];
-        let mut info_len = 0usize;
-        push(&mut info_buf, &mut info_len, b"source: limine-rsdp\nrsdp: 0x");
-        hex_usize(&mut info_buf, &mut info_len, rsdp);
-        push(&mut info_buf, &mut info_len, b"\n");
+    let hhdm = api.hhdm_offset();
+    let mut info_buf = [0u8; 256];
+    let mut info_len = 0usize;
+    push(&mut info_buf, &mut info_len, b"source: limine-rsdp\nrsdp: 0x");
+    hex_usize(&mut info_buf, &mut info_len, rsdp);
+    push(&mut info_buf, &mut info_len, b"\n");
 
-        let Some(rsdp_bytes) = read_va(rsdp, 36) else {
-            status_warn(api, "acpi: bad RSDP map");
-            return -3;
-        };
-        // Prefer XSDT (rev >= 2).
-        let rev = rsdp_bytes[15];
-        let use_xsdt = rev >= 2 && rsdp_bytes.len() >= 36;
-        let root_phys = if use_xsdt {
-            u64::from_le_bytes(rsdp_bytes[24..32].try_into().unwrap_or([0; 8]))
-        } else {
-            u32::from_le_bytes(rsdp_bytes[16..20].try_into().unwrap_or([0; 4])) as u64
-        };
-        let root_va = phys_to_va(root_phys, hhdm);
-        push(&mut info_buf, &mut info_len, if use_xsdt { b"root: XSDT\n" } else { b"root: RSDT\n" });
+    let Some(rsdp_bytes) = (unsafe { read_va(rsdp, 36) }) else {
+        status_warn(api, "acpi: bad RSDP map");
+        return -3;
+    };
+    // Prefer XSDT (rev >= 2).
+    let rev = rsdp_bytes[15];
+    let use_xsdt = rev >= 2 && rsdp_bytes.len() >= 36;
+    let root_phys = if use_xsdt {
+        u64::from_le_bytes(rsdp_bytes[24..32].try_into().unwrap_or([0; 8]))
+    } else {
+        u32::from_le_bytes(rsdp_bytes[16..20].try_into().unwrap_or([0; 4])) as u64
+    };
+    let root_va = phys_to_va(root_phys, hhdm);
+    push(&mut info_buf, &mut info_len, if use_xsdt { b"root: XSDT\n" } else { b"root: RSDT\n" });
 
-        let mut tables_buf = [0u8; 1024];
-        let mut tables_len = 0usize;
-        push(&mut tables_buf, &mut tables_len, b"# sig  phys  length\n");
+    let mut tables_buf = [0u8; 1024];
+    let mut tables_len = 0usize;
+    push(&mut tables_buf, &mut tables_len, b"# sig  phys  length\n");
 
-        let mut dsdt_phys = 0u64;
-        let mut madt_cpus = 0u32;
-        let mut mcfg_base = 0u64;
+    let mut dsdt_phys = 0u64;
+    let mut madt_cpus = 0u32;
+    let mut mcfg_base = 0u64;
 
-        if let Some(hdr) = read_va(root_va, 36) {
-            let root_len = u32::from_le_bytes(hdr[4..8].try_into().unwrap_or([0; 4])) as usize;
-            let entry_size = if use_xsdt { 8usize } else { 4usize };
-            let entries = root_len.saturating_sub(36) / entry_size;
-            if let Some(body) = read_va(root_va, root_len.min(4096)) {
-                for i in 0..entries {
-                    let off = 36 + i * entry_size;
-                    if off + entry_size > body.len() {
-                        break;
+    if let Some(hdr) = unsafe { read_va(root_va, 36) } {
+        let root_len = u32::from_le_bytes(hdr[4..8].try_into().unwrap_or([0; 4])) as usize;
+        let entry_size = if use_xsdt { 8usize } else { 4usize };
+        let entries = root_len.saturating_sub(36) / entry_size;
+        if let Some(body) = unsafe { read_va(root_va, root_len.min(4096)) } {
+            for i in 0..entries {
+                let off = 36 + i * entry_size;
+                if off + entry_size > body.len() {
+                    break;
+                }
+                let phys = if use_xsdt {
+                    u64::from_le_bytes(body[off..off + 8].try_into().unwrap_or([0; 8]))
+                } else {
+                    u32::from_le_bytes(body[off..off + 4].try_into().unwrap_or([0; 4])) as u64
+                };
+                if phys == 0 {
+                    continue;
+                }
+                let va = phys_to_va(phys, hhdm);
+                let Some(th) = (unsafe { read_va(va, 8) }) else { continue };
+                let sig = &th[0..4];
+                let tlen = u32::from_le_bytes(th[4..8].try_into().unwrap_or([0; 4]));
+                push(&mut tables_buf, &mut tables_len, sig);
+                push(&mut tables_buf, &mut tables_len, b"  0x");
+                hex_u64(&mut tables_buf, &mut tables_len, phys);
+                push(&mut tables_buf, &mut tables_len, b"  ");
+                dec_u32(&mut tables_buf, &mut tables_len, tlen);
+                push(&mut tables_buf, &mut tables_len, b"\n");
+
+                if sig == b"APIC" {
+                    madt_cpus = count_madt_cpus(va, tlen as usize);
+                } else if sig == b"MCFG" {
+                    if let Some(m) = unsafe { read_va(va, 60) } {
+                        if m.len() >= 52 {
+                            mcfg_base = u64::from_le_bytes(m[44..52].try_into().unwrap_or([0; 8]));
+                        }
                     }
-                    let phys = if use_xsdt {
-                        u64::from_le_bytes(body[off..off + 8].try_into().unwrap_or([0; 8]))
-                    } else {
-                        u32::from_le_bytes(body[off..off + 4].try_into().unwrap_or([0; 4])) as u64
-                    };
-                    if phys == 0 {
-                        continue;
-                    }
-                    let va = phys_to_va(phys, hhdm);
-                    let Some(th) = read_va(va, 8) else { continue };
-                    let sig = &th[0..4];
-                    let tlen = u32::from_le_bytes(th[4..8].try_into().unwrap_or([0; 4]));
-                    push(&mut tables_buf, &mut tables_len, sig);
-                    push(&mut tables_buf, &mut tables_len, b"  0x");
-                    hex_u64(&mut tables_buf, &mut tables_len, phys);
-                    push(&mut tables_buf, &mut tables_len, b"  ");
-                    dec_u32(&mut tables_buf, &mut tables_len, tlen);
-                    push(&mut tables_buf, &mut tables_len, b"\n");
-
-                    if sig == b"APIC" {
-                        madt_cpus = count_madt_cpus(va, tlen as usize);
-                    } else if sig == b"MCFG" {
-                        if let Some(m) = read_va(va, 60) {
-                            if m.len() >= 52 {
-                                mcfg_base = u64::from_le_bytes(m[44..52].try_into().unwrap_or([0; 8]));
+                } else if sig == b"FACP" {
+                    // FADT: DSDT at 40 (32-bit) or X_DSDT at 140 (64-bit).
+                    if let Some(f) = unsafe { read_va(va, 148.min(tlen as usize)) } {
+                        if f.len() >= 44 {
+                            let d32 = u32::from_le_bytes(f[40..44].try_into().unwrap_or([0; 4])) as u64;
+                            if d32 != 0 {
+                                dsdt_phys = d32;
                             }
                         }
-                    } else if sig == b"FACP" {
-                        // FADT: DSDT at 40 (32-bit) or X_DSDT at 140 (64-bit).
-                        if let Some(f) = read_va(va, 148.min(tlen as usize)) {
-                            if f.len() >= 44 {
-                                let d32 = u32::from_le_bytes(f[40..44].try_into().unwrap_or([0; 4])) as u64;
-                                if d32 != 0 {
-                                    dsdt_phys = d32;
-                                }
-                            }
-                            if f.len() >= 148 {
-                                let xd = u64::from_le_bytes(f[140..148].try_into().unwrap_or([0; 8]));
-                                if xd != 0 {
-                                    dsdt_phys = xd;
-                                }
+                        if f.len() >= 148 {
+                            let xd = u64::from_le_bytes(f[140..148].try_into().unwrap_or([0; 8]));
+                            if xd != 0 {
+                                dsdt_phys = xd;
                             }
                         }
                     }
                 }
             }
         }
-
-        push(&mut info_buf, &mut info_len, b"madt_cpus: ");
-        dec_u32(&mut info_buf, &mut info_len, madt_cpus);
-        push(&mut info_buf, &mut info_len, b"\nmcfg_base: 0x");
-        hex_u64(&mut info_buf, &mut info_len, mcfg_base);
-        push(&mut info_buf, &mut info_len, b"\n");
-
-        let mut s5_buf = [0u8; 128];
-        let mut s5_len = 0usize;
-        let (typa, typb, aml_ok) = if dsdt_phys != 0 {
-            eval_s5(phys_to_va(dsdt_phys, hhdm))
-        } else {
-            (0, 0, false)
-        };
-        if aml_ok {
-            push(&mut s5_buf, &mut s5_len, b"slp_typa: ");
-            dec_u32(&mut s5_buf, &mut s5_len, typa as u32);
-            push(&mut s5_buf, &mut s5_len, b"\nslp_typb: ");
-            dec_u32(&mut s5_buf, &mut s5_len, typb as u32);
-            push(&mut s5_buf, &mut s5_len, b"\nsource: AML _S5\n");
-        } else {
-            push(
-                &mut s5_buf,
-                &mut s5_len,
-                b"slp_typa: -\nslp_typb: -\nnote: _S5 not found or unsupported AML\n",
-            );
-        }
-
-        // Leak buffers into procfs.
-        publish_alloc(api, b"acpi/info", &info_buf[..info_len]);
-        publish_alloc(api, b"acpi/tables", &tables_buf[..tables_len]);
-        publish_alloc(api, b"acpi/s5", &s5_buf[..s5_len]);
-
-        if aml_ok {
-            status_ok(api, "acpi: tables+AML _S5");
-        } else {
-            status_ok(api, "acpi: tables");
-        }
-        let _ = status_info;
-        0
     }
+
+    push(&mut info_buf, &mut info_len, b"madt_cpus: ");
+    dec_u32(&mut info_buf, &mut info_len, madt_cpus);
+    push(&mut info_buf, &mut info_len, b"\nmcfg_base: 0x");
+    hex_u64(&mut info_buf, &mut info_len, mcfg_base);
+    push(&mut info_buf, &mut info_len, b"\n");
+
+    let mut s5_buf = [0u8; 128];
+    let mut s5_len = 0usize;
+    let (typa, typb, aml_ok) = if dsdt_phys != 0 {
+        eval_s5(phys_to_va(dsdt_phys, hhdm))
+    } else {
+        (0, 0, false)
+    };
+    if aml_ok {
+        push(&mut s5_buf, &mut s5_len, b"slp_typa: ");
+        dec_u32(&mut s5_buf, &mut s5_len, typa as u32);
+        push(&mut s5_buf, &mut s5_len, b"\nslp_typb: ");
+        dec_u32(&mut s5_buf, &mut s5_len, typb as u32);
+        push(&mut s5_buf, &mut s5_len, b"\nsource: AML _S5\n");
+    } else {
+        push(
+            &mut s5_buf,
+            &mut s5_len,
+            b"slp_typa: -\nslp_typb: -\nnote: _S5 not found or unsupported AML\n",
+        );
+    }
+
+    // Leak buffers into procfs.
+    publish_alloc(api, "acpi/info", &info_buf[..info_len]);
+    publish_alloc(api, "acpi/tables", &tables_buf[..tables_len]);
+    publish_alloc(api, "acpi/s5", &s5_buf[..s5_len]);
+
+    if aml_ok {
+        status_ok(api, "acpi: tables+AML _S5");
+    } else {
+        status_ok(api, "acpi: tables");
+    }
+    let _ = status_info;
+    0
 }
 
-fn publish(api: &KernelApi, name: &[u8], data: &'static [u8]) {
-    unsafe {
-        let _ = (api.proc_register)(name.as_ptr(), name.len(), data.as_ptr(), data.len());
-    }
+fn publish(api: &KernelApi, name: &str, data: &'static [u8]) {
+    let _ = api.proc_register(name, data);
 }
 
-fn publish_alloc(api: &KernelApi, name: &[u8], data: &[u8]) {
-    unsafe {
-        let p = (api.alloc)(data.len().max(1), 8);
-        if p.is_null() {
-            return;
-        }
-        core::ptr::copy_nonoverlapping(data.as_ptr(), p, data.len());
-        let _ = (api.proc_register)(name.as_ptr(), name.len(), p, data.len());
+fn publish_alloc(api: &KernelApi, name: &str, data: &[u8]) {
+    let p = api.alloc(data.len().max(1), 8);
+    if p.is_null() {
+        return;
     }
+    // SAFETY: `p` is a fresh allocation of at least `data.len()` bytes.
+    let copy = unsafe { core::slice::from_raw_parts_mut(p, data.len()) };
+    copy.copy_from_slice(data);
+    let _ = api.proc_register(name, copy);
 }
 
 fn phys_to_va(phys: u64, hhdm: u64) -> usize {
@@ -213,64 +209,63 @@ fn phys_to_va(phys: u64, hhdm: u64) -> usize {
     }
 }
 
+/// # Safety
+///
+/// A non-zero `va` maps `len` readable bytes (a firmware table in the HHDM).
 unsafe fn read_va<'a>(va: usize, len: usize) -> Option<&'a [u8]> {
     if va == 0 || len == 0 {
         return None;
     }
-    Some(core::slice::from_raw_parts(va as *const u8, len))
+    Some(unsafe { core::slice::from_raw_parts(va as *const u8, len) })
 }
 
 fn count_madt_cpus(va: usize, len: usize) -> u32 {
-    unsafe {
-        let Some(b) = read_va(va, len.min(4096)) else {
-            return 0;
-        };
-        if b.len() < 44 {
-            return 0;
-        }
-        let mut off = 44usize;
-        let mut n = 0u32;
-        while off + 2 <= b.len() {
-            let typ = b[off];
-            let entry_len = b[off + 1] as usize;
-            if entry_len < 2 || off + entry_len > b.len() {
-                break;
-            }
-            // Type 0 = Local APIC, type 9 = x2APIC — count enabled.
-            if typ == 0 && entry_len >= 8 {
-                let flags = u32::from_le_bytes(b[off + 4..off + 8].try_into().unwrap_or([0; 4]));
-                if flags & 1 != 0 {
-                    n += 1;
-                }
-            } else if typ == 9 && entry_len >= 16 {
-                let flags = u32::from_le_bytes(b[off + 8..off + 12].try_into().unwrap_or([0; 4]));
-                if flags & 1 != 0 {
-                    n += 1;
-                }
-            }
-            off += entry_len;
-        }
-        n
+    let Some(b) = (unsafe { read_va(va, len.min(4096)) }) else {
+        return 0;
+    };
+    if b.len() < 44 {
+        return 0;
     }
+    let mut off = 44usize;
+    let mut n = 0u32;
+    while off + 2 <= b.len() {
+        let typ = b[off];
+        let entry_len = b[off + 1] as usize;
+        if entry_len < 2 || off + entry_len > b.len() {
+            break;
+        }
+        // Type 0 = Local APIC, type 9 = x2APIC — count enabled.
+        if typ == 0 && entry_len >= 8 {
+            let flags = u32::from_le_bytes(b[off + 4..off + 8].try_into().unwrap_or([0; 4]));
+            if flags & 1 != 0 {
+                n += 1;
+            }
+        } else if typ == 9 && entry_len >= 16 {
+            let flags = u32::from_le_bytes(b[off + 8..off + 12].try_into().unwrap_or([0; 4]));
+            if flags & 1 != 0 {
+                n += 1;
+            }
+        }
+        off += entry_len;
+    }
+    n
 }
 
 /// Scan DSDT AML for `Name (_S5, Package (N) { … })` and read first two integers.
 fn eval_s5(dsdt_va: usize) -> (u8, u8, bool) {
-    unsafe {
-        let Some(hdr) = read_va(dsdt_va, 8) else {
-            return (0, 0, false);
-        };
-        let tlen = u32::from_le_bytes(hdr[4..8].try_into().unwrap_or([0; 4])) as usize;
-        if tlen < 36 || tlen > 512 * 1024 {
-            return (0, 0, false);
-        }
-        let Some(table) = read_va(dsdt_va, tlen) else {
-            return (0, 0, false);
-        };
-        // AML starts after 36-byte SDT header (DSDT).
-        let aml = &table[36..];
-        find_s5_package(aml)
+    let Some(hdr) = (unsafe { read_va(dsdt_va, 8) }) else {
+        return (0, 0, false);
+    };
+    let tlen = u32::from_le_bytes(hdr[4..8].try_into().unwrap_or([0; 4])) as usize;
+    if tlen < 36 || tlen > 512 * 1024 {
+        return (0, 0, false);
     }
+    let Some(table) = (unsafe { read_va(dsdt_va, tlen) }) else {
+        return (0, 0, false);
+    };
+    // AML starts after 36-byte SDT header (DSDT).
+    let aml = &table[36..];
+    find_s5_package(aml)
 }
 
 fn find_s5_package(aml: &[u8]) -> (u8, u8, bool) {

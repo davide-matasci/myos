@@ -9,6 +9,7 @@
 //! tracks modifiers and emits key positions.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 /// Esc (set-1 make `0x01`, set-2 `0x76`).
 pub const KEY_ESC: u8 = 0x01;

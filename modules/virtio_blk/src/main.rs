@@ -7,8 +7,9 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
-use myos_abi::{ABI_VERSION, KernelApi, ModuleBlkOps, status_ok};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleBlkOps, status_ok};
 use virtq::{Ring, SECTOR};
 
 const MAX_DISKS: usize = 8;
@@ -22,7 +23,7 @@ struct Dev {
 }
 
 static mut DEVS: [Option<Dev>; MAX_DISKS] = [const { None }; MAX_DISKS];
-static mut API: Option<&'static KernelApi> = None;
+static API: ApiCell = ApiCell::new();
 
 static OPS: ModuleBlkOps = ModuleBlkOps {
     read: blk_read,
@@ -31,7 +32,7 @@ static OPS: ModuleBlkOps = ModuleBlkOps {
 };
 
 fn api() -> &'static KernelApi {
-    unsafe { (*core::ptr::addr_of!(API)).expect("virtio_blk: API") }
+    API.get()
 }
 
 fn dma_page() -> Option<(u64, *mut u8)> {
@@ -40,7 +41,7 @@ fn dma_page() -> Option<(u64, *mut u8)> {
 
 fn dma_pages(n: usize) -> Option<(u64, *mut u8)> {
     let mut phys = 0u64;
-    let va = unsafe { (api().dma_alloc)(n, &mut phys) };
+    let va = api().dma_alloc(n, &mut phys);
     if va.is_null() { None } else { Some((phys, va)) }
 }
 
@@ -92,9 +93,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     if api.abi_version != ABI_VERSION {
         return -2;
     }
-    unsafe {
-        *core::ptr::addr_of_mut!(API) = Some(api);
-    }
+    unsafe { API.set(api) };
     if probe(api) > 0 {
         status_ok(api, "virtio block");
     }
@@ -130,7 +129,7 @@ fn probe(api: &KernelApi) -> usize {
         };
         let name = [b'v', b'd', b'a' + n as u8];
         devs[n] = Some(d);
-        let rc = unsafe { (api.blk_register)(name.as_ptr(), name.len(), &OPS, n) };
+        let rc = api.blk_register(core::str::from_utf8(&name).unwrap_or_default(), &OPS, n);
         if rc < 0 {
             devs[n] = None;
             return;
@@ -199,16 +198,16 @@ mod transport {
         let api = api();
         for i in 0..MAX_DISKS as u32 {
             let (mut bus, mut slot, mut func) = (0u8, 0u8, 0u8);
-            if unsafe { (api.pci_find)(VENDOR, DEV_BLK_LEGACY, i, &mut bus, &mut slot, &mut func) } != 0 {
+            if api.pci_find(VENDOR, DEV_BLK_LEGACY, i, &mut bus, &mut slot, &mut func) != 0 {
                 break;
             }
-            let bar = unsafe { (api.pci_cfg_read32)(bus, slot, func, 0x10) };
+            let bar = api.pci_cfg_read32(bus, slot, func, 0x10);
             if bar == 0 || bar == 0xFFFF_FFFF || bar & 1 == 0 || known((bar & 0xFFFC) as usize) {
                 continue;
             }
             // I/O space + memory space + bus master.
-            let cmd = unsafe { (api.pci_cfg_read32)(bus, slot, func, 4) };
-            unsafe { (api.pci_cfg_write32)(bus, slot, func, 4, cmd | 0x0007) };
+            let cmd = api.pci_cfg_read32(bus, slot, func, 4);
+            api.pci_cfg_write32(bus, slot, func, 4, cmd | 0x0007);
             if let Some(d) = setup((bar & 0xFFFC) as u16) {
                 found(d);
             }
@@ -324,14 +323,10 @@ mod transport {
     /// Every `virtio,mmio` node of the device tree that is a block device,
     /// except the ones `known` by their window base.
     pub fn probe(known: impl Fn(usize) -> bool, mut found: impl FnMut(Dev)) {
-        let compat = myos_abi::StrRef {
-            ptr: b"virtio,mmio".as_ptr(),
-            len: b"virtio,mmio".len(),
-        };
         let mut i = 0;
         loop {
             let mut node = myos_abi::MmioDevice::default();
-            if unsafe { (api().dt_mmio_find)(compat, i, &mut node) } != 0 {
+            if api().dt_mmio_find("virtio,mmio", i, &mut node) != 0 {
                 break;
             }
             i += 1;

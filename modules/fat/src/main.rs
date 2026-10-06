@@ -5,8 +5,9 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
-use myos_abi::{ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo};
 
 const SECTOR: usize = 512;
 const MAX_ENTRIES: usize = 32;
@@ -47,29 +48,26 @@ static mut VOL: FatVol = FatVol {
     entries: unsafe { core::mem::MaybeUninit::zeroed().assume_init() },
 };
 
-static mut API: *const KernelApi = core::ptr::null();
+static API: ApiCell = ApiCell::new();
 
 #[inline(never)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
-    unsafe {
-        if api.is_null() {
-            return -1;
-        }
-        let api = &*api;
-        if api.abi_version != ABI_VERSION {
-            return -2;
-        }
-        match run(api) {
-            Ok(()) => 0,
-            Err(e) => e,
-        }
+    let Some(api) = (unsafe { api.as_ref() }) else {
+        return -1;
+    };
+    if api.abi_version != ABI_VERSION {
+        return -2;
+    }
+    unsafe { API.set(api) };
+    match run(api) {
+        Ok(()) => 0,
+        Err(e) => e,
     }
 }
 
-unsafe fn run(api: &KernelApi) -> Result<(), i32> {
-    API = api as *const KernelApi;
-    let rc = (api.fs_register)(b"fat".as_ptr(), 3, fat_bind);
+fn run(api: &KernelApi) -> Result<(), i32> {
+    let rc = api.fs_register("fat", fat_bind);
     if rc != 0 {
         return Err(rc);
     }
@@ -80,14 +78,14 @@ unsafe extern "C" fn fat_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
     if ops.is_null() {
         return -1;
     }
-    let Some(api) = (unsafe { API.as_ref() }) else {
+    let Some(api) = API.try_get() else {
         return -1;
     };
     let vol = unsafe { &mut *core::ptr::addr_of_mut!(VOL) };
     // Re-bind is allowed: CI may mount twice, and /ok retries every vd*.
     vol.ready = false;
     vol.count = 0;
-    match unsafe { init_volume(api, dev_id) } {
+    match init_volume(api, vol, dev_id) {
         Ok(()) => {
             unsafe {
                 *ops = ModuleVfsOps {
@@ -128,7 +126,7 @@ unsafe extern "C" fn fat_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
     }
 }
 
-unsafe fn init_volume(api: &KernelApi, dev: u32) -> Result<(), i32> {
+fn init_volume(api: &KernelApi, vol: &mut FatVol, dev: u32) -> Result<(), i32> {
     let mut sec = [0u8; SECTOR];
     blk_read(api, dev, 0, &mut sec)?;
 
@@ -161,7 +159,6 @@ unsafe fn init_volume(api: &KernelApi, dev: u32) -> Result<(), i32> {
     let root_lba = reserved + u64::from(fats) * fat_sz16;
     let data_lba = root_lba + u64::from(root_sectors);
 
-    let vol = &mut *core::ptr::addr_of_mut!(VOL);
     vol.dev = dev;
     vol.fat_lba = reserved;
     vol.data_lba = data_lba;
@@ -174,7 +171,7 @@ unsafe fn init_volume(api: &KernelApi, dev: u32) -> Result<(), i32> {
         while i + 32 <= SECTOR {
             let ent = &sec[i..i + 32];
             if ent[0] == 0 {
-                return finish_volume(api);
+                return finish_volume(api, vol);
             }
             i += 32;
             if ent[0] == 0xE5 {
@@ -205,11 +202,10 @@ unsafe fn init_volume(api: &KernelApi, dev: u32) -> Result<(), i32> {
             vol.count += 1;
         }
     }
-    finish_volume(api)
+    finish_volume(api, vol)
 }
 
-unsafe fn finish_volume(api: &KernelApi) -> Result<(), i32> {
-    let vol = &mut *core::ptr::addr_of_mut!(VOL);
+fn finish_volume(api: &KernelApi, vol: &mut FatVol) -> Result<(), i32> {
     let nent = (vol.count as usize).min(MAX_ENTRIES);
     vol.count = nent as u8;
     for i in 0..nent {
@@ -273,7 +269,7 @@ fn entry_bytes(name: &[u8]) -> Option<&'static [u8]> {
         return None;
     }
     let len = (ent.size as usize).min(FILE_CAP);
-    Some(unsafe { core::slice::from_raw_parts(ent.data.as_ptr(), len) })
+    Some(&ent.data[..len])
 }
 
 unsafe extern "C" fn fat_lookup(
@@ -285,42 +281,44 @@ unsafe extern "C" fn fat_lookup(
     if path.is_null() || out_data.is_null() || out_len.is_null() {
         return -1;
     }
-    let path = match core::str::from_utf8(core::slice::from_raw_parts(path, path_len)) {
+    let path = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(path, path_len) }) {
         Ok(p) => p,
         Err(_) => return -1,
     };
     let Some(data) = entry_bytes(path.as_bytes()) else {
         return -1;
     };
-    *out_data = data.as_ptr();
-    *out_len = data.len();
+    unsafe {
+        *out_data = data.as_ptr();
+        *out_len = data.len();
+    }
     0
 }
 
 unsafe extern "C" fn fat_stat(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
-    if out.is_null() {
+    let Some(out) = (unsafe { out.as_mut() }) else {
         return -1;
-    }
-    let path = match core::str::from_utf8(core::slice::from_raw_parts(path, path_len)) {
+    };
+    let path = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(path, path_len) }) {
         Ok(p) => p,
         Err(_) => return -1,
     };
     if path.is_empty() || path == "." || path == ".." {
-        (*out).mode = S_IFDIR | 0o755;
-        (*out).size = 0;
-        (*out).ino = 1;
-        (*out).nlink = 2;
+        out.mode = S_IFDIR | 0o755;
+        out.size = 0;
+        out.ino = 1;
+        out.nlink = 2;
         return 0;
     }
     let Some(idx) = entry_index(path) else {
         return -1;
     };
-    let vol = &*core::ptr::addr_of!(VOL);
+    let vol = unsafe { &*core::ptr::addr_of!(VOL) };
     let ent = &vol.entries[idx];
-    (*out).mode = S_IFREG | 0o444;
-    (*out).size = ent.size;
-    (*out).ino = (idx as u32) + 2;
-    (*out).nlink = 1;
+    out.mode = S_IFREG | 0o444;
+    out.size = ent.size;
+    out.ino = (idx as u32) + 2;
+    out.nlink = 1;
     0
 }
 
@@ -334,17 +332,18 @@ unsafe extern "C" fn fat_listdir(
     if buf.is_null() || out_len.is_null() {
         return -1;
     }
-    let rel = match core::str::from_utf8(core::slice::from_raw_parts(path, path_len)) {
+    let rel = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(path, path_len) }) {
         Ok(p) => p,
         Err(_) => return -1,
     };
     if !rel.is_empty() && rel != "." {
         return -1;
     }
-    let vol = &*core::ptr::addr_of!(VOL);
+    let vol = unsafe { &*core::ptr::addr_of!(VOL) };
     if !vol.ready {
         return -1;
     }
+    let out = unsafe { core::slice::from_raw_parts_mut(buf, buf_len) };
     let mut n = 0usize;
     let nent = (vol.count as usize).min(MAX_ENTRIES);
     for i in 0..nent {
@@ -355,19 +354,19 @@ unsafe extern "C" fn fat_listdir(
         }
         let name = &ent.name[..name_len];
         let need = name.len() + 1;
-        if n + need > buf_len {
+        if n + need > out.len() {
             break;
         }
-        core::ptr::copy_nonoverlapping(name.as_ptr(), buf.add(n), name.len());
+        out[n..n + name.len()].copy_from_slice(name);
         n += name.len();
-        *buf.add(n) = b'\n';
+        out[n] = b'\n';
         n += 1;
     }
-    *out_len = n;
+    unsafe { *out_len = n };
     0
 }
 
-unsafe fn read_file(
+fn read_file(
     api: &KernelApi,
     dev: u32,
     fat_lba: u64,
@@ -401,7 +400,7 @@ unsafe fn read_file(
     Ok(copied)
 }
 
-unsafe fn fat_next(api: &KernelApi, dev: u32, fat_lba: u64, cluster: u16) -> Result<u16, i32> {
+fn fat_next(api: &KernelApi, dev: u32, fat_lba: u64, cluster: u16) -> Result<u16, i32> {
     let off = cluster as u64 * 2;
     let mut sec = [0u8; SECTOR];
     blk_read(api, dev, fat_lba + off / SECTOR as u64, &mut sec)?;
@@ -409,8 +408,8 @@ unsafe fn fat_next(api: &KernelApi, dev: u32, fat_lba: u64, cluster: u16) -> Res
     Ok(u16_le(&sec, e))
 }
 
-unsafe fn blk_read(api: &KernelApi, dev: u32, lba: u64, buf: &mut [u8; SECTOR]) -> Result<(), i32> {
-    let rc = (api.blk_read)(dev, lba, buf.as_mut_ptr(), SECTOR);
+fn blk_read(api: &KernelApi, dev: u32, lba: u64, buf: &mut [u8; SECTOR]) -> Result<(), i32> {
+    let rc = api.blk_read(dev, lba, buf);
     if rc == 0 { Ok(()) } else { Err(-1) }
 }
 

@@ -8,6 +8,7 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
 
@@ -16,13 +17,13 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ext2fs::{Device, Fs, Kind};
-use myos_abi::{ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo, MYOS_TIME_OMIT};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo, MYOS_TIME_OMIT};
 
 /// The kernel's table, set once by `module_init` before anything runs.
-static mut API: Option<&'static KernelApi> = None;
+static API: ApiCell = ApiCell::new();
 
 fn api() -> &'static KernelApi {
-    unsafe { (*core::ptr::addr_of!(API)).expect("ext2: no KernelApi") }
+    API.get()
 }
 
 /// The kernel heap, through the ABI.
@@ -30,7 +31,7 @@ struct KernelHeap;
 
 unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe { (api().alloc)(layout.size(), layout.align()) }
+        api().alloc(layout.size(), layout.align())
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { (api().dealloc)(ptr, layout.size(), layout.align()) }
@@ -45,13 +46,13 @@ struct Blk(u32);
 
 impl Device for Blk {
     fn read(&mut self, offset: u64, buf: &mut [u8]) -> bool {
-        unsafe { (api().blk_read_at)(self.0, offset, buf.as_mut_ptr(), buf.len()) == buf.len() as i32 }
+        api().blk_read_at(self.0, offset, buf) == buf.len() as i32
     }
     fn write(&mut self, offset: u64, buf: &[u8]) -> bool {
-        unsafe { (api().blk_write_at)(self.0, offset, buf.as_ptr(), buf.len()) == buf.len() as i32 }
+        api().blk_write_at(self.0, offset, buf) == buf.len() as i32
     }
     fn now(&mut self) -> u32 {
-        (unsafe { (api().wall_time_us)() } / 1_000_000) as u32
+        (api().wall_time_us() / 1_000_000) as u32
     }
 }
 
@@ -395,8 +396,8 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     if api.abi_version != ABI_VERSION {
         return -2;
     }
-    unsafe { *core::ptr::addr_of_mut!(API) = Some(api) };
-    unsafe { (api.fs_register)(b"ext2".as_ptr(), 4, ext2_bind) }
+    unsafe { API.set(api) };
+    api.fs_register("ext2", ext2_bind)
 }
 
 #[inline(never)]
