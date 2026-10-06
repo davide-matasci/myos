@@ -24,8 +24,6 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 # reliable.
 # --enable-newlib-io-c99-formats: printf and scanf take C99's z, j, t and
 # hh length modifiers (sbase wc and cksum print with %zu).
-# --enable-newlib-io-pos-args: POSIX's numbered arguments (%2$s), which
-# translated messages reorder with (os-test stdio/printf-c-pos-args).
 # SIGNAL_PROVIDED: newlib's userspace signal()/raise() emulation is replaced
 # by kernel delivery (libgloss signal.c); raise() becomes kill(getpid(), sig).
 TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL -DHAVE_RENAME -DSIGNAL_PROVIDED"
@@ -47,7 +45,6 @@ build_one() {
     --prefix="$prefix" \
     --disable-multilib \
     --enable-newlib-io-c99-formats \
-    --enable-newlib-io-pos-args \
     CC="${CC:-clang}" \
     CXX="${CXX:-clang++}" \
     CC_FOR_TARGET="${triple}-cc" \

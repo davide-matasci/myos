@@ -64,6 +64,11 @@ until they pass honestly (no xfails):
   simply be swapped in.
 - `io/ofd-*` — open-file-description locks (`F_OFD_SETLK`/`F_OFD_GETLK`) are
   not implemented; `io/ofd-setlk-wr-dup-rd` hangs
+- `stdio/printf-c-pos-args` — POSIX's numbered arguments (`%3$c`) need
+  newlib's `--enable-newlib-io-pos-args`, whose `get_arg` takes `&ap` of a
+  `va_list` parameter: on x86_64 that is an array type, decayed to a
+  pointer, and the program faults (CI run on PR #259). Without the option
+  the conversions print literally
 - `process/fork-setsid-setpgid`, `-in-parent`, `-move` — a session leader
   cannot change its process group (`EPERM`); libgloss's `setsid` only starts
   a process group (TODO.md), so there is no session leader to refuse
