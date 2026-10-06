@@ -4,6 +4,9 @@
 //! they receive a [`KernelApi`] from `module_init` and call through it.
 
 #![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
+
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// Bump this when [`KernelApi`] layout or meaning changes. 19 took `fd_ioctl`
 /// out of the table and the ioctl hook out of [`ModuleChrOps`]: there is no
@@ -760,6 +763,489 @@ pub struct KernelApi {
     pub fd_lockctl: unsafe extern "C" fn(fd: usize, cmd: usize, lock: *mut MyosLockRange) -> usize,
 }
 
+/// Where a module keeps the table `module_init` received: set once there,
+/// read through [`ApiCell::get`] by every later call, from any CPU.
+pub struct ApiCell(AtomicPtr<KernelApi>);
+
+impl ApiCell {
+    pub const fn new() -> Self {
+        Self(AtomicPtr::new(core::ptr::null_mut()))
+    }
+
+    /// Keep `api` for [`ApiCell::get`].
+    ///
+    /// # Safety
+    ///
+    /// `api` is the table `module_init` received: the kernel keeps it for as
+    /// long as the module is loaded.
+    pub unsafe fn set(&self, api: *const KernelApi) {
+        self.0.store(api.cast_mut(), Ordering::Release);
+    }
+
+    /// The table, or `None` before `module_init` kept it.
+    pub fn try_get(&self) -> Option<&'static KernelApi> {
+        // SAFETY: `set` was handed a table that outlives the module.
+        unsafe { self.0.load(Ordering::Acquire).as_ref() }
+    }
+
+    /// The table; panics before `module_init` kept it.
+    pub fn get(&self) -> &'static KernelApi {
+        self.try_get().expect("KernelApi not set")
+    }
+}
+
+impl Default for ApiCell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StrRef {
+    /// `s` as the kernel takes it (it copies what it keeps).
+    pub const fn new(s: &str) -> Self {
+        Self::from_bytes(s.as_bytes())
+    }
+
+    pub const fn from_bytes(s: &[u8]) -> Self {
+        Self {
+            ptr: s.as_ptr(),
+            len: s.len(),
+        }
+    }
+}
+
+/// Safe calls into the kernel: a method per table entry, of the same name,
+/// taking slices and references where the entry takes pointer and length
+/// pairs and out pointers (`api.blk_read(dev, lba, buf)` for
+/// `unsafe { (api.blk_read)(dev, lba, buf.as_mut_ptr(), buf.len()) }`).
+/// The kernel copies or checks everything these hand it (names, function
+/// tables, user addresses), so a module needs no `unsafe` to call them.
+/// The entries that stay `unsafe` have no method and are called through
+/// their field: `dealloc` (a pointer from `alloc`), the saved registers of
+/// a syscall (`native_syscall`, `fork_from`, `thread_spawn_from`,
+/// `personality_exec`'s strings) and the FP/SIMD save area (`fpu_save`,
+/// `fpu_restore`, 16-byte aligned).
+impl KernelApi {
+    pub fn write_str(&self, s: &str) {
+        self.write_bytes(s.as_bytes());
+    }
+
+    /// `write_str` for bytes that need not be UTF-8.
+    pub fn write_bytes(&self, s: &[u8]) {
+        unsafe { (self.write_str)(s.as_ptr(), s.len()) }
+    }
+
+    pub fn alloc(&self, size: usize, align: usize) -> *mut u8 {
+        unsafe { (self.alloc)(size, align) }
+    }
+
+    pub fn blk_read(&self, dev: u32, lba: u64, buf: &mut [u8]) -> i32 {
+        unsafe { (self.blk_read)(dev, lba, buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn vfs_register(&self, name: &str, data: &[u8]) -> i32 {
+        unsafe { (self.vfs_register)(name.as_ptr(), name.len(), data.as_ptr(), data.len()) }
+    }
+
+    pub fn vfs_register_static(&self, name: &str, data: &'static [u8]) -> i32 {
+        unsafe { (self.vfs_register_static)(name.as_ptr(), name.len(), data.as_ptr(), data.len()) }
+    }
+
+    pub fn vfs_mount(&self, name: &str, prefix: &str, ops: &ModuleVfsOps) -> i32 {
+        unsafe { (self.vfs_mount)(name.as_ptr(), name.len(), prefix.as_ptr(), prefix.len(), ops) }
+    }
+
+    pub fn blk_write(&self, dev: u32, lba: u64, buf: &[u8]) -> i32 {
+        unsafe { (self.blk_write)(dev, lba, buf.as_ptr(), buf.len()) }
+    }
+
+    pub fn blk_count(&self) -> u32 {
+        unsafe { (self.blk_count)() }
+    }
+
+    pub fn fs_register(&self, name: &str, bind: FsBind) -> i32 {
+        unsafe { (self.fs_register)(name.as_ptr(), name.len(), bind) }
+    }
+
+    pub fn blk_read_at(&self, dev: u32, offset: u64, buf: &mut [u8]) -> i32 {
+        unsafe { (self.blk_read_at)(dev, offset, buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn blk_write_at(&self, dev: u32, offset: u64, buf: &[u8]) -> i32 {
+        unsafe { (self.blk_write_at)(dev, offset, buf.as_ptr(), buf.len()) }
+    }
+
+    pub fn pci_cfg_read32(&self, bus: u8, slot: u8, func: u8, off: u8) -> u32 {
+        unsafe { (self.pci_cfg_read32)(bus, slot, func, off) }
+    }
+
+    pub fn pci_cfg_write32(&self, bus: u8, slot: u8, func: u8, off: u8, val: u32) {
+        unsafe { (self.pci_cfg_write32)(bus, slot, func, off, val) }
+    }
+
+    pub fn pci_enable(&self, bus: u8, slot: u8, func: u8) {
+        unsafe { (self.pci_enable)(bus, slot, func) }
+    }
+
+    pub fn pci_find(
+        &self,
+        vendor: u16,
+        device: u16,
+        index: u32,
+        bus: &mut u8,
+        slot: &mut u8,
+        func: &mut u8,
+    ) -> i32 {
+        unsafe { (self.pci_find)(vendor, device, index, bus, slot, func) }
+    }
+
+    pub fn pci_bar_map(&self, bus: u8, slot: u8, func: u8, bar: u8, va: &mut usize, size: &mut u64) -> i32 {
+        unsafe { (self.pci_bar_map)(bus, slot, func, bar, va, size) }
+    }
+
+    pub fn dma_alloc(&self, n_pages: usize, phys: &mut u64) -> *mut u8 {
+        unsafe { (self.dma_alloc)(n_pages, phys) }
+    }
+
+    pub fn dev_register(&self, name: &str, ops: &ModuleChrOps) -> i32 {
+        unsafe { (self.dev_register)(name.as_ptr(), name.len(), ops) }
+    }
+
+    pub fn copy_to_user(&self, dst_user: usize, src: &[u8]) -> i32 {
+        unsafe { (self.copy_to_user)(dst_user, src.as_ptr(), src.len()) }
+    }
+
+    pub fn proc_register(&self, name: &str, data: &[u8]) -> i32 {
+        unsafe { (self.proc_register)(name.as_ptr(), name.len(), data.as_ptr(), data.len()) }
+    }
+
+    pub fn acpi_rsdp(&self) -> usize {
+        unsafe { (self.acpi_rsdp)() }
+    }
+
+    pub fn hhdm_offset(&self) -> u64 {
+        unsafe { (self.hhdm_offset)() }
+    }
+
+    pub fn proc_set_writer(
+        &self,
+        name: &str,
+        writer: Option<unsafe extern "C" fn(*const u8, usize) -> i32>,
+    ) -> i32 {
+        unsafe { (self.proc_set_writer)(name.as_ptr(), name.len(), writer) }
+    }
+
+    /// `ctx` is handed back to `handler`, which says what it points to.
+    pub fn pci_irq_enable(
+        &self,
+        bus: u8,
+        slot: u8,
+        func: u8,
+        name: &str,
+        handler: IrqHandler,
+        ctx: *mut core::ffi::c_void,
+        msix_entry: &mut u16,
+    ) -> i32 {
+        unsafe { (self.pci_irq_enable)(bus, slot, func, name.as_ptr(), name.len(), handler, ctx, msix_entry) }
+    }
+
+    pub fn wake_any(&self) {
+        unsafe { (self.wake_any)() }
+    }
+
+    pub fn wait_seq(&self) -> u64 {
+        unsafe { (self.wait_seq)() }
+    }
+
+    pub fn block_until(&self, key: usize, seq: u64, deadline_ns: u64) {
+        unsafe { (self.block_until)(key, seq, deadline_ns) }
+    }
+
+    pub fn monotonic_ns(&self) -> u64 {
+        unsafe { (self.monotonic_ns)() }
+    }
+
+    pub fn blk_register(&self, name: &str, ops: &ModuleBlkOps, ctx: usize) -> i32 {
+        unsafe { (self.blk_register)(name.as_ptr(), name.len(), ops, ctx) }
+    }
+
+    pub fn pci_find_class(
+        &self,
+        class: u8,
+        subclass: u8,
+        index: u32,
+        bus: &mut u8,
+        slot: &mut u8,
+        func: &mut u8,
+    ) -> i32 {
+        unsafe { (self.pci_find_class)(class, subclass, index, bus, slot, func) }
+    }
+
+    pub fn framebuffer_info(&self, out: &mut FramebufferInfo) -> i32 {
+        unsafe { (self.framebuffer_info)(out) }
+    }
+
+    pub fn console_register(&self, ops: &ModuleConsoleOps) -> i32 {
+        unsafe { (self.console_register)(ops) }
+    }
+
+    pub fn personality_register(&self, ops: &PersonalityOps) -> i32 {
+        unsafe { (self.personality_register)(ops) }
+    }
+
+    pub fn copy_from_user(&self, src_user: usize, dst: &mut [u8]) -> i32 {
+        unsafe { (self.copy_from_user)(src_user, dst.as_mut_ptr(), dst.len()) }
+    }
+
+    pub fn user_buffer_ok(&self, ptr: usize, len: usize) -> bool {
+        unsafe { (self.user_buffer_ok)(ptr, len) != 0 }
+    }
+
+    pub fn current_tid(&self) -> usize {
+        unsafe { (self.current_tid)() }
+    }
+
+    pub fn current_pid(&self) -> usize {
+        unsafe { (self.current_pid)() }
+    }
+
+    pub fn current_ppid(&self) -> usize {
+        unsafe { (self.current_ppid)() }
+    }
+
+    pub fn task_is_live_user(&self, id: usize) -> bool {
+        unsafe { (self.task_is_live_user)(id) != 0 }
+    }
+
+    pub fn task_has_root(&self) -> bool {
+        unsafe { (self.task_has_root)() != 0 }
+    }
+
+    pub fn path_resolve(&self, path: &str, mode: u32, out: &mut [u8]) -> i32 {
+        unsafe { (self.path_resolve)(StrRef::new(path), mode, out.as_mut_ptr(), out.len()) }
+    }
+
+    pub fn vfs_stat(&self, path: &str, out: &mut PathStat) -> i32 {
+        unsafe { (self.vfs_stat)(StrRef::new(path), out) }
+    }
+
+    pub fn vfs_listdir(&self, path: &str, buf: &mut [u8]) -> i32 {
+        unsafe { (self.vfs_listdir)(StrRef::new(path), buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn vfs_mkdir(&self, path: &str) -> i32 {
+        unsafe { (self.vfs_mkdir)(StrRef::new(path)) }
+    }
+
+    pub fn vfs_rmdir(&self, path: &str) -> i32 {
+        unsafe { (self.vfs_rmdir)(StrRef::new(path)) }
+    }
+
+    pub fn vfs_unlink(&self, path: &str) -> i32 {
+        unsafe { (self.vfs_unlink)(StrRef::new(path)) }
+    }
+
+    pub fn vfs_rename(&self, old: &str, new: &str) -> i32 {
+        unsafe { (self.vfs_rename)(StrRef::new(old), StrRef::new(new)) }
+    }
+
+    pub fn vfs_symlink(&self, target: &str, link: &str) -> i32 {
+        unsafe { (self.vfs_symlink)(StrRef::new(target), StrRef::new(link)) }
+    }
+
+    pub fn vfs_readlink(&self, path: &str, buf: &mut [u8]) -> i32 {
+        unsafe { (self.vfs_readlink)(StrRef::new(path), buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn open_path(&self, path: &str, flags: usize) -> usize {
+        unsafe { (self.open_path)(StrRef::new(path), flags) }
+    }
+
+    pub fn chdir_path(&self, path: &str) -> usize {
+        unsafe { (self.chdir_path)(StrRef::new(path)) }
+    }
+
+    pub fn fd_pread(&self, fd: usize, pos: usize, buf: &mut [u8]) -> i32 {
+        unsafe { (self.fd_pread)(fd, pos, buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn fd_kind(&self, fd: usize, size: &mut usize) -> i32 {
+        unsafe { (self.fd_kind)(fd, size) }
+    }
+
+    pub fn fd_poll_bits(&self, fd: usize) -> i32 {
+        unsafe { (self.fd_poll_bits)(fd) }
+    }
+
+    pub fn fd_dup_min(&self, fd: usize, min: usize) -> i32 {
+        unsafe { (self.fd_dup_min)(fd, min) }
+    }
+
+    pub fn fd_dup2(&self, old: usize, new: usize) -> i32 {
+        unsafe { (self.fd_dup2)(old, new) }
+    }
+
+    pub fn fd_close(&self, fd: usize) -> i32 {
+        unsafe { (self.fd_close)(fd) }
+    }
+
+    pub fn fd_write(&self, fd: usize, buf_user: usize, len: usize) -> usize {
+        unsafe { (self.fd_write)(fd, buf_user, len) }
+    }
+
+    pub fn pipe_open(&self, read_fd: &mut usize, write_fd: &mut usize) -> i32 {
+        unsafe { (self.pipe_open)(read_fd, write_fd) }
+    }
+
+    pub fn mmap(&self, addr: usize, len: usize, prot: usize, flags: usize, fd: isize, off: usize) -> usize {
+        unsafe { (self.mmap)(addr, len, prot, flags, fd, off) }
+    }
+
+    pub fn signal_get_action(&self, id: usize, sig: u32, handler: &mut usize, flags: &mut u32, mask: &mut u32) {
+        unsafe { (self.signal_get_action)(id, sig, handler, flags, mask) }
+    }
+
+    pub fn signal_set_action(&self, id: usize, sig: u32, handler: usize, flags: u32, mask: u32, tramp: usize) -> i32 {
+        unsafe { (self.signal_set_action)(id, sig, handler, flags, mask, tramp) }
+    }
+
+    pub fn signal_blocked(&self, id: usize) -> u32 {
+        unsafe { (self.signal_blocked)(id) }
+    }
+
+    pub fn signal_set_blocked(&self, id: usize, mask: u32) {
+        unsafe { (self.signal_set_blocked)(id, mask) }
+    }
+
+    pub fn signal_pending(&self, id: usize) -> u32 {
+        unsafe { (self.signal_pending)(id) }
+    }
+
+    pub fn signal_take(&self, id: usize, set: u32) -> i32 {
+        unsafe { (self.signal_take)(id, set) }
+    }
+
+    pub fn signal_kill(&self, pid: isize, sig: u32) -> i32 {
+        unsafe { (self.signal_kill)(pid, sig) }
+    }
+
+    pub fn signal_sigsuspend(&self, mask: u32) -> usize {
+        unsafe { (self.signal_sigsuspend)(mask) }
+    }
+
+    pub fn signal_interrupt_wait(&self) -> bool {
+        unsafe { (self.signal_interrupt_wait)() != 0 }
+    }
+
+    pub fn signal_terminate(&self, sig: u32) -> ! {
+        unsafe { (self.signal_terminate)(sig) }
+    }
+
+    pub fn thread_pointer_get(&self) -> u64 {
+        unsafe { (self.thread_pointer_get)() }
+    }
+
+    pub fn thread_pointer_set(&self, v: u64) {
+        unsafe { (self.thread_pointer_set)(v) }
+    }
+
+    pub fn thread_exit(&self, code: u8) -> ! {
+        unsafe { (self.thread_exit)(code) }
+    }
+
+    pub fn wait_addr(&self, addr: usize, expected: u32, deadline_ns: u64) -> i32 {
+        unsafe { (self.wait_addr)(addr, expected, deadline_ns) }
+    }
+
+    pub fn wake_addr(&self, addr: usize, max: usize) -> usize {
+        unsafe { (self.wake_addr)(addr, max) }
+    }
+
+    pub fn task_sleep_until(&self, deadline_ns: u64) {
+        unsafe { (self.task_sleep_until)(deadline_ns) }
+    }
+
+    pub fn task_yield(&self) {
+        unsafe { (self.task_yield)() }
+    }
+
+    pub fn wall_time_us(&self) -> u64 {
+        unsafe { (self.wall_time_us)() }
+    }
+
+    pub fn rng_fill(&self, buf: &mut [u8]) {
+        unsafe { (self.rng_fill)(buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn dt_mmio_find(&self, compatible: &str, index: usize, out: &mut MmioDevice) -> i32 {
+        unsafe { (self.dt_mmio_find)(StrRef::new(compatible), index, out) }
+    }
+
+    pub fn vfs_read(&self, path: &str, pos: usize, buf: &mut [u8]) -> i32 {
+        unsafe { (self.vfs_read)(StrRef::new(path), pos, buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn vfs_write(&self, path: &str, pos: usize, buf: &[u8]) -> i32 {
+        unsafe { (self.vfs_write)(StrRef::new(path), pos, buf.as_ptr(), buf.len()) }
+    }
+
+    pub fn tty_ctl_read(&self, fd: usize, buf: &mut [u8]) -> i32 {
+        unsafe { (self.tty_ctl_read)(fd, buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn tty_ctl_write(&self, fd: usize, text: &[u8]) -> i32 {
+        unsafe { (self.tty_ctl_write)(fd, text.as_ptr(), text.len()) }
+    }
+
+    pub fn fd_path(&self, fd: usize, buf: &mut [u8]) -> i32 {
+        unsafe { (self.fd_path)(fd, buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn blk_unregister(&self, dev: u32) -> i32 {
+        unsafe { (self.blk_unregister)(dev) }
+    }
+
+    /// Other modules reach `table` as a `T` (`UsbHostOps` for [`USB_SERVICE`]).
+    pub fn service_register<T: Sync>(&self, name: &str, table: &'static T) -> i32 {
+        unsafe { (self.service_register)(StrRef::new(name), (table as *const T).cast()) }
+    }
+
+    /// The table published under `name`, or null; the caller knows its type.
+    pub fn service_lookup(&self, name: &str) -> *const core::ffi::c_void {
+        unsafe { (self.service_lookup)(StrRef::new(name)) }
+    }
+
+    /// `ctx` is handed to `entry`, which says what it points to.
+    pub fn thread_spawn(
+        &self,
+        name: &str,
+        entry: unsafe extern "C" fn(ctx: *mut core::ffi::c_void),
+        ctx: *mut core::ffi::c_void,
+    ) -> i32 {
+        unsafe { (self.thread_spawn)(StrRef::new(name), entry, ctx) }
+    }
+
+    pub fn wake(&self, key: usize) {
+        unsafe { (self.wake)(key) }
+    }
+
+    pub fn mmap_discard(&self, addr: usize, len: usize) -> i32 {
+        unsafe { (self.mmap_discard)(addr, len) }
+    }
+
+    pub fn vfs_set_times(&self, path: &str, atime: u64, mtime: u64) -> i32 {
+        unsafe { (self.vfs_set_times)(StrRef::new(path), atime, mtime) }
+    }
+
+    pub fn thread_place(&self, tid: i32) {
+        unsafe { (self.thread_place)(tid) }
+    }
+
+    pub fn fd_lockctl(&self, fd: usize, cmd: usize, lock: &mut MyosLockRange) -> usize {
+        unsafe { (self.fd_lockctl)(fd, cmd, lock) }
+    }
+}
+
 /// A record lock for `fd_lockctl` and the native `lockctl`: `kind` 0
 /// shared (`F_RDLCK`), 1 exclusive (`F_WRLCK`), 2 none (`F_UNLCK`); the
 /// bytes `start..start + len` (`len` 0: to the file's end); `pid` the owner
@@ -926,6 +1412,55 @@ pub struct UsbHostOps {
     pub interface_label: unsafe extern "C" fn(dev: u32, intf: u8, label: *const u8, len: usize) -> i32,
 }
 
+/// Safe calls into the host, as [`KernelApi`]'s methods: the host checks
+/// what it is handed. `interrupt_start` stays `unsafe` (its buffer is
+/// written after it returns) and is called through its field.
+impl UsbHostOps {
+    pub fn driver_register(&self, ops: &'static UsbDriverOps) -> i32 {
+        unsafe { (self.driver_register)(ops) }
+    }
+
+    /// A control transfer whose data stage is `data` (empty: none; at most
+    /// `u16::MAX` bytes of it are used).
+    pub fn control(&self, dev: u32, request_type: u8, request: u8, value: u16, index: u16, data: &mut [u8]) -> i32 {
+        let len = data.len().min(u16::MAX as usize) as u16;
+        unsafe { (self.control)(dev, request_type, request, value, index, data.as_mut_ptr(), len) }
+    }
+
+    pub fn bulk(&self, dev: u32, endpoint: u8, data: &mut [u8], timeout_ms: u32) -> i32 {
+        unsafe { (self.bulk)(dev, endpoint, data.as_mut_ptr(), data.len(), timeout_ms) }
+    }
+
+    /// `bulk` on an OUT endpoint: the host only reads `data`.
+    pub fn bulk_out(&self, dev: u32, endpoint: u8, data: &[u8], timeout_ms: u32) -> i32 {
+        unsafe { (self.bulk)(dev, endpoint, data.as_ptr().cast_mut(), data.len(), timeout_ms) }
+    }
+
+    pub fn clear_halt(&self, dev: u32, endpoint: u8) -> i32 {
+        unsafe { (self.clear_halt)(dev, endpoint) }
+    }
+
+    pub fn hub_configure(&self, dev: u32, ports: u8, tt_think: u8, multi_tt: u8) -> i32 {
+        unsafe { (self.hub_configure)(dev, ports, tt_think, multi_tt) }
+    }
+
+    pub fn hub_attach(&self, dev: u32, port: u8, speed: u8) -> i32 {
+        unsafe { (self.hub_attach)(dev, port, speed) }
+    }
+
+    pub fn hub_detach(&self, dev: u32, port: u8) {
+        unsafe { (self.hub_detach)(dev, port) }
+    }
+
+    pub fn device_info(&self, dev: u32, info: &mut UsbDeviceInfo) -> i32 {
+        unsafe { (self.device_info)(dev, info) }
+    }
+
+    pub fn interface_label(&self, dev: u32, intf: u8, label: &[u8]) -> i32 {
+        unsafe { (self.interface_label)(dev, intf, label.as_ptr(), label.len()) }
+    }
+}
+
 // Function tables with a name: shared between the modules' threads.
 unsafe impl Sync for UsbHostOps {}
 unsafe impl Sync for UsbDriverOps {}
@@ -956,38 +1491,30 @@ pub struct MmioDevice {
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).
 pub fn status_ok(api: &KernelApi, label: &str) {
-    unsafe {
-        (api.write_str)(b"[ OK ] ".as_ptr(), 7);
-        (api.write_str)(label.as_bytes().as_ptr(), label.len());
-        (api.write_str)(b"\n".as_ptr(), 1);
-    }
+    api.write_str("[ OK ] ");
+    api.write_str(label);
+    api.write_str("\n");
 }
 
 /// Emit `[ FAIL ] label\n` via `KernelApi::write_str`.
 pub fn status_fail(api: &KernelApi, label: &str) {
-    unsafe {
-        (api.write_str)(b"[ FAIL ] ".as_ptr(), 9);
-        (api.write_str)(label.as_bytes().as_ptr(), label.len());
-        (api.write_str)(b"\n".as_ptr(), 1);
-    }
+    api.write_str("[ FAIL ] ");
+    api.write_str(label);
+    api.write_str("\n");
 }
 
 /// Emit `[ INFO ] label\n` via `KernelApi::write_str`.
 pub fn status_info(api: &KernelApi, label: &str) {
-    unsafe {
-        (api.write_str)(b"[ INFO ] ".as_ptr(), 9);
-        (api.write_str)(label.as_bytes().as_ptr(), label.len());
-        (api.write_str)(b"\n".as_ptr(), 1);
-    }
+    api.write_str("[ INFO ] ");
+    api.write_str(label);
+    api.write_str("\n");
 }
 
 /// Emit `[ WARN ] label\n` via `KernelApi::write_str`.
 pub fn status_warn(api: &KernelApi, label: &str) {
-    unsafe {
-        (api.write_str)(b"[ WARN ] ".as_ptr(), 9);
-        (api.write_str)(label.as_bytes().as_ptr(), label.len());
-        (api.write_str)(b"\n".as_ptr(), 1);
-    }
+    api.write_str("[ WARN ] ");
+    api.write_str(label);
+    api.write_str("\n");
 }
 
 /// `module_init` — required. Return 0 on success.
