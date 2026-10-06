@@ -10,6 +10,7 @@
  * it with the other c-smokes and run it by hand (or wire a `t` line locally).
  */
 #define _GNU_SOURCE 1
+#include <fcntl.h>
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
@@ -108,6 +109,21 @@ static void try_call(long nr, long a0, long a1, long a2, long a3, long a4, long 
 int main(void) {
     memset(page, 0, sizeof page);
     puts_raw("crash_smoke: start\n");
+    /* Real objects so the fd-taking syscalls (lseek, pread/pwrite, ftruncate,
+     * flock, lockctl, fdflags, dup2) reach their offset/size arithmetic with a
+     * valid fd. Each call runs in a child, so a child closing/truncating these
+     * does not disturb the parent's copies. */
+    int ffd = open("/tmp/crash_smoke.f", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (ffd >= 0) {
+        write(ffd, "0123456789", 10);
+    }
+    int pfd[2];
+    if (pipe(pfd) != 0) {
+        pfd[0] = pfd[1] = -1;
+    }
+    long fds[] = {ffd, pfd[0], pfd[1], 0, 1, 2};
+    const int NFD = (int)(sizeof fds / sizeof fds[0]);
+
     for (long nr = 0; nr <= 90; nr++) {
         if (denied(nr)) {
             continue;
@@ -126,6 +142,14 @@ int main(void) {
             try_call(nr, p, len, p, len, p, len);
             try_call(nr, 0, p, len, p, len, p);
             try_call(nr, p, p, p, len, len, len);
+        }
+        /* A valid fd in arg0, hostile offsets/sizes/pointers after it. */
+        for (int f = 0; f < NFD; f++) {
+            for (unsigned v = 0; v < NVAL; v++) {
+                unsigned long x = VALUES[v];
+                try_call(nr, fds[f], x, x, x, x, x);
+                try_call(nr, fds[f], p, x, x, x, x);
+            }
         }
     }
     puts_raw("crash_smoke: SURVIVED\n");
