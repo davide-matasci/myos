@@ -7,7 +7,7 @@ newlib + libgloss/myos userspace. Follows the same pattern as
 ## Layout
 
 - `versions.env` — pinned tarball version + sha256 (fetched at build).
-- `fetch.sh` — download + checksum the official ftp.gnu.org tarball.
+- `fetch.sh` — download (a GNU mirror, then ftp.gnu.org) + checksum the official tarball.
 - `prepare.sh` — extract into `target/make-myos-build`, copy `config.h`.
 - `config.h` — feature set matched to what libgloss/myos implements.
 - `myos_compat.h` — declarations newlib headers hide or omit.
