@@ -287,11 +287,15 @@ static SWITCHED_FROM: [AtomicUsize; crate::smp::MAX_CPUS] =
 /// the previous task is off this CPU's stack now, so peers may run it.
 pub(super) fn finish_switch() {
     let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    // Clear SWITCHED_FROM under TASKS, where `wake` reads it: cleared before
+    // the lock, a wake in between made a Blocked `prev` Ready at once, a peer
+    // resumed it before its frame was recorded, and this late update then
+    // turned it Ready while it ran there.
+    let mut tasks = TASKS.lock();
     let prev = SWITCHED_FROM[cpu].swap(usize::MAX, Ordering::SeqCst);
     if prev == usize::MAX {
         return;
     }
-    let mut tasks = TASKS.lock();
     remember_frame(prev, tasks[prev].sp, cpu);
     if tasks[prev].state == State::Running {
         tasks[prev].state = State::Ready;
