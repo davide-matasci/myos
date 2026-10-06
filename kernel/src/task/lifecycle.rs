@@ -358,14 +358,33 @@ pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
                     && t.stack_base != 0
             })
             .or_else(|| tasks.iter().position(|t| t.state == State::Unused))?;
-        (slot, tasks[slot].stack_base)
+        let kept = tasks[slot].stack_base;
+        // Reserve the slot before releasing TASKS: the caller only fills it
+        // after a second lock, so on SMP another CPU's `claim_slot` could
+        // otherwise select the same slot in between and two tasks would share
+        // it. Marking it Running takes it out of both selection arms; the
+        // scheduler runs only Ready tasks and `wake` only promotes Blocked,
+        // so it stays inert, and user_rip is still 0 so every "is this task
+        // alive" check skips it, until the caller overwrites it wholesale.
+        tasks[slot].state = State::Running;
+        (slot, kept)
+    };
+    // Release the reservation (back to a free slot) when the stack cannot be
+    // allocated, so a failed claim does not leak the slot forever. The
+    // callers run with interrupts off, as the lock above relies on.
+    let unreserve = || {
+        TASKS.lock()[slot].state = State::Unused;
     };
     let stack_base = if kept != 0 {
         kept
     } else {
-        let layout = Layout::from_size_align(STACK_SIZE, 16).ok()?;
+        let Some(layout) = Layout::from_size_align(STACK_SIZE, 16).ok() else {
+            unreserve();
+            return None;
+        };
         let stack = unsafe { alloc(layout) };
         if stack.is_null() {
+            unreserve();
             return None;
         }
         stack as usize
