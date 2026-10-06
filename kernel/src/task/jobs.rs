@@ -111,7 +111,12 @@ pub fn getpgid(pid: usize) -> Option<usize> {
     irq_off();
     let out = {
         let tasks = TASKS.lock();
-        process_of(&tasks, if pid == 0 { current_slot() } else { pid }).map(|p| tasks.proc(p).pgid)
+        // `process_of` resolves to a leader slot, but a pid that names a
+        // kernel thread or idle task resolves to one with no process block;
+        // `proc_opt` returns None (ESRCH) there instead of panicking.
+        process_of(&tasks, if pid == 0 { current_slot() } else { pid })
+            .and_then(|p| tasks.proc_opt(p))
+            .map(|p| p.pgid)
     };
     irq_restore(flags);
     out
@@ -129,7 +134,9 @@ pub fn getsid(pid: usize) -> Option<usize> {
     irq_off();
     let out = {
         let tasks = TASKS.lock();
-        process_of(&tasks, if pid == 0 { current_slot() } else { pid }).map(|p| tasks.proc(p).sid)
+        process_of(&tasks, if pid == 0 { current_slot() } else { pid })
+            .and_then(|p| tasks.proc_opt(p))
+            .map(|p| p.sid)
     };
     irq_restore(flags);
     out
@@ -162,6 +169,12 @@ pub fn setpgid(pid: usize, pgid: usize) -> bool {
             return false;
         }
         if !task_exists(&tasks[caller]) {
+            return false;
+        }
+        // Both must lead a real process: a pid naming a kernel thread or idle
+        // task resolves to a leader slot with no process block, and the
+        // `.proc()` below would panic on it.
+        if tasks.proc_opt(target).is_none() || tasks.proc_opt(caller).is_none() {
             return false;
         }
         if tasks.proc(target).sid != tasks.proc(caller).sid {

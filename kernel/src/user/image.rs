@@ -26,7 +26,10 @@ pub(super) fn load_user_elf(bytes: &[u8], relocate: bool) -> Option<(u64, usize,
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
-    let load_bias = base - info.min_vaddr;
+    // A crafted ELF whose lowest vaddr is above the load base would make
+    // this bias underflow (span_from caps it below IMAGE_VADDR_MAX; a real
+    // image's min_vaddr is 0 for PIE or the base for ET_EXEC).
+    let load_bias = base.checked_sub(info.min_vaddr)?;
     let entry = match elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, relocate) {
         Ok(e) => e,
         Err(_) => return None,
@@ -184,7 +187,10 @@ pub(super) fn reload_user_elf(
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
-    let load_bias = base - info.min_vaddr;
+    // A crafted ELF whose lowest vaddr is above the load base would make
+    // this bias underflow (span_from caps it below IMAGE_VADDR_MAX; a real
+    // image's min_vaddr is 0 for PIE or the base for ET_EXEC).
+    let load_bias = base.checked_sub(info.min_vaddr)?;
     let entry = match elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, relocate) {
         Ok(e) => e,
         Err(_) => return None,
@@ -308,7 +314,10 @@ pub(super) fn expand_user_elf(
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
     }
-    let load_bias = base - info.min_vaddr;
+    // A crafted ELF whose lowest vaddr is above the load base would make
+    // this bias underflow (span_from caps it below IMAGE_VADDR_MAX; a real
+    // image's min_vaddr is 0 for PIE or the base for ET_EXEC).
+    let load_bias = base.checked_sub(info.min_vaddr)?;
     let entry = match elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, relocate) {
         Ok(e) => e,
         Err(_) => return None,
@@ -503,7 +512,8 @@ pub(crate) fn map_elf_unrelocated(
     let pages = info.span.div_ceil(PAGE);
     let guard = ELF_SCRATCH_LOCK.lock();
     let buf = elf_scratch_mut(info.span)?;
-    let entry = elf::realize_as(bytes, buf.as_mut_ptr(), va - info.min_vaddr, false).ok()?;
+    let load_bias = va.checked_sub(info.min_vaddr)?;
+    let entry = elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, false).ok()?;
     let mut runs: Vec<(u64, u32, u32)> = Vec::new();
     for i in 0..pages {
         let page_lo = info.min_vaddr + (i * PAGE) as u64;

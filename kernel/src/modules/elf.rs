@@ -206,6 +206,13 @@ pub fn image_span(bytes: &[u8]) -> Result<ImageSpan, LoadError> {
     span_from(&hdr, bytes)
 }
 
+/// The highest virtual address a loadable image may reach. Real images (PIE
+/// at 0, `ET_EXEC` near `USER_BASE`, dynamic linkers, kernel modules) sit far
+/// below this; a crafted ELF claiming an address near the top of the 64-bit
+/// space is rejected here so the loaders' later `vaddr + memsz`, page round-up
+/// and `load_addr - min_vaddr` arithmetic cannot overflow or underflow.
+const IMAGE_VADDR_MAX: u64 = 1 << 46;
+
 fn span_from(hdr: &Ehdr, bytes: &[u8]) -> Result<ImageSpan, LoadError> {
     let mut min_v = u64::MAX;
     let mut max_v = 0u64;
@@ -219,9 +226,21 @@ fn span_from(hdr: &Ehdr, bytes: &[u8]) -> Result<ImageSpan, LoadError> {
             continue;
         }
         let vaddr = u64_at(bytes, p + 16)?;
+        let filesz = u64_at(bytes, p + 32)?;
         let memsz = u64_at(bytes, p + 40)?;
+        // A malformed segment — one whose file size exceeds its memory size
+        // (realize would copy past the image buffer), whose end wraps, or
+        // whose end sits beyond the address space a real image uses — is
+        // rejected here, the one place every loader passes through.
+        if filesz > memsz {
+            return Err(LoadError::Unsupported);
+        }
+        let end = vaddr.checked_add(memsz).ok_or(LoadError::Unsupported)?;
+        if end > IMAGE_VADDR_MAX {
+            return Err(LoadError::Unsupported);
+        }
         min_v = min_v.min(vaddr);
-        max_v = max_v.max(vaddr.saturating_add(memsz));
+        max_v = max_v.max(end);
         nload += 1;
     }
     if nload == 0 || min_v >= max_v {
