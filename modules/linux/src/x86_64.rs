@@ -95,7 +95,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         63 => ret(sys::uname(a[0])),
         170 => ret(sys::sethostname(a[0], a[1])),
         72 => ret(sys::fcntl(a[0], a[1], a[2])),
-        73 => ret(sys::flock(a[0])),
+        73 => ret(sys::flock(a[0], a[1])),
         76 => ret(sys::truncate(a[0], a[1])),
         77 => ret(sys::ftruncate(a[0], a[1])),
         79 => ret(sys::getcwd(a[0], a[1])),
@@ -105,6 +105,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         83 => ret(sys::mkdirat(AT_FDCWD, a[0])),
         84 => ret(sys::unlinkat(AT_FDCWD, a[0], 0x200)), // rmdir
         87 => ret(sys::unlinkat(AT_FDCWD, a[0], 0)),     // unlink
+        86 | 265 => err(EPERM),                          // link, linkat: no hard links
         88 => ret(sys::symlinkat(a[0], AT_FDCWD, a[1])),
         89 => ret(sys::readlinkat(AT_FDCWD, a[0], a[1], a[2])),
         74 | 75 | 91 | 93 => ret(sys::fd_noop(a[0])), // fsync, fdatasync, fchmod, fchown

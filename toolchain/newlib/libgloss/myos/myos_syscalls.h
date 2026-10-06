@@ -111,6 +111,28 @@ struct winsize;
 #define MYOS_FD_GET 0
 #define MYOS_FD_SET 1
 #define MYOS_FD_CLOEXEC 1
+/* flock(fd, op): op is LOCK_SH, LOCK_EX or LOCK_UN, | LOCK_NB not to wait
+ * (the values of <sys/file.h>). lockctl(fd, cmd, struct myos_lock_range *):
+ * a record lock, MYOS_LOCKCTL_GET (the range is filled with the first
+ * conflicting lock, or its kind set to MYOS_LOCK_UNLOCK), _SET or _WAIT,
+ * | MYOS_LOCKCTL_OFD for a lock of the open file description rather than
+ * the process. MYOS_EAGAIN: someone else holds a conflicting lock. */
+#define MYOS_SYS_FLOCK 85
+#define MYOS_SYS_LOCKCTL 86
+#define MYOS_LOCKCTL_GET 0
+#define MYOS_LOCKCTL_SET 1
+#define MYOS_LOCKCTL_WAIT 2
+#define MYOS_LOCKCTL_OFD 0x10
+#define MYOS_LOCK_SHARED 0
+#define MYOS_LOCK_EXCLUSIVE 1
+#define MYOS_LOCK_UNLOCK 2
+struct myos_lock_range {
+    unsigned int kind;
+    unsigned int pad;
+    unsigned long long start;
+    unsigned long long len; /* 0: to the end of the file, however long */
+    long long pid;          /* GET: the holder, -1 for a description's lock */
+};
 #define MYOS_MKNOD_DIR 0
 #define MYOS_MKNOD_FIFO 1
 #define MYOS_UTIME_NOW (-1LL)
@@ -135,6 +157,11 @@ struct winsize;
 #define MYOS_EEXIST ((unsigned long)-5)
 /* A read or write at an offset on a pipe or terminal. */
 #define MYOS_ESPIPE ((unsigned long)-6)
+/* An O_NOFOLLOW open of a symlink; an O_DIRECTORY open of something else. */
+#define MYOS_ELOOP ((unsigned long)-7)
+#define MYOS_ENOTDIR ((unsigned long)-8)
+/* A lock someone else holds (flock and lockctl without waiting). */
+#define MYOS_EAGAIN ((unsigned long)-9)
 
 /* Sleep `ns` nanoseconds (sleep.c). 0 = slept (or an event with
  * MYOS_SLEEP_ANY_EVENT); -1 with errno = EINTR when a caught signal ran. */

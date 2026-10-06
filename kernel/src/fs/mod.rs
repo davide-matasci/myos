@@ -4,6 +4,7 @@ pub mod cpio;
 mod devfs;
 pub mod ptsfs;
 mod fstype;
+pub mod lock;
 mod node;
 pub mod pagecache;
 mod procfs;
@@ -469,6 +470,7 @@ fn ro_ops(
         poll: None,
         set_times: None,
         set_size: None,
+        files: None,
         writable: false,
     }
 }
@@ -507,6 +509,7 @@ fn rw_ops(
         poll: None,
         set_times: None,
         set_size: None,
+        files: None,
         writable: true,
     }
 }
@@ -534,6 +537,7 @@ pub fn init() {
         vfs::MountOps {
             set_times: Some(tmpfs::set_times),
             set_size: Some(tmpfs::set_size),
+            files: Some(tmpfs::FILES),
             ..rw_ops(
                 tmpfs::lookup,
                 tmpfs::stat,

@@ -44,60 +44,26 @@ Gaps that may show up on the way:
   script) sees the default. The override keeps SSH logins working (dropbear
   passes `/usr/sbin:/usr/bin:/sbin:/bin`): respecting an inherited `PATH`
   wants dropbear's `DEFAULT_ROOT_PATH` set to myos's directories first.
+- `setpgid` on a child that has exec'd succeeds (POSIX: `EACCES`); the
+  kernel would remember the exec and say so with a failure value of its own
+  (os-test `process/fork-exec-setpgid-in-parent`, deferred in
+  `packages/os-test/SUITES.md`).
 - libgloss's `setsid` only starts a process group (`SYS_SETSID` corrupted
   netfs writes, not root-caused): sessions are approximated along the
   parent chain (`kernel/src/pty.rs`).
 
-## File primitives, part 2 (one PR)
+## `MAP_SHARED` of regular files
 
-What libc still fakes about files after `O_EXCL`, `ftruncate`, close-on-exec
-and `pread`/`pwrite` became real (`README.md`, "File I/O"):
-
-1. **Hard links**: `linkat` fails with `EROFS` (libgloss `more_stubs.c`).
-   ext2 links natively (an inode's link count, which `unlink_keep` and
-   `forget` already honour); tmpfs keeps a file under its one name, so it
-   needs its entries split into names and files (a refcounted file a name
-   points to) first. The node table (`kernel/src/fs/node.rs`) maps a node
-   to one location: two names of one file are two nodes unless it is keyed
-   by the file (mount + inode) rather than its path. A new `linkat`
-   syscall and a module hook (ABI append), `st_nlink` from the filesystem.
-2. **File locks**: `flock` is `ENOSYS`, `fcntl` record locks
-   (`F_SETLK`/`F_SETLKW`/`F_GETLK`) do not exist, and the Linux layer grants
-   both without keeping them. A kernel lock table keyed by node: `flock`
-   locks owned by the open file description, record locks by the process,
-   released on the last close and at exit, `F_SETLKW` and `LOCK_EX` without
-   `LOCK_NB` waiting (interruptible) on the node. git, vim's swap files,
-   SQLite and cargo use them.
-3. **`O_NOFOLLOW` and `O_DIRECTORY`** on `openat`: refuse a symlink in the
-   last component (`ELOOP`), or anything but a directory (`ENOTDIR`). The
-   resolution already knows (`resolve(.., follow)`, `fs::resolve_beneath`);
-   the Linux layer strips both today. With them, `opendir` and the
-   `*at` walks of a tree (`rm -r`, `find`) are safe against a symlink
-   swapped in mid-walk.
-
-## Filesystems on inodes and shared file mappings (one PR)
-
-1. **An inode interface for filesystems**: every hook of `MountOps` and
-   `ModuleVfsOps` takes a path relative to the mount, so each read and
-   write is a lookup from the mount's root inside the filesystem (ext2
-   caches the last resolutions, `Fs::resolved`); only files kept past an
-   unlink have inode calls (`read_ino`, ...). Hooks on a file id the
-   filesystem hands out at lookup (ext2's inode number, a tmpfs file's
-   index) for `read`, `write`, `stat`, `set_size`, `set_times`, the path
-   ones only for lookup and the namespace changes (`create`, `unlink`,
-   `rename`, ...). The node table keeps the id next to the location; the
-   `*_ino` hooks become the normal ones. An ABI break for the filesystem
-   modules (fat, ext2, netfs, console's devices).
-2. **`MAP_SHARED` of regular files**: a shared mapping works only for a
-   device's memory (a module's `mmap` hook, `/dev/fb/data`). Pages owned
-   by the file and refcounted by the mappings that use them, `write(2)`
-   and the mappings seeing each other, written back on `msync`, `munmap`
-   and the last close; the Linux layer's `mmap` stops refusing it. The
-   page cache (`kernel/src/fs/pagecache.rs`) has the shared, counted
-   frames; what is missing is writing through them (it drops a file's
-   pages on a write today). The same pages give the shared memory of
-   "Passing file descriptors and shared memory" (`shm_open`,
-   `memfd_create`, sized with `ftruncate`).
+A shared mapping works only for a device's memory (a module's `mmap` hook,
+`/dev/fb/data`). Pages owned by the file (its node, `kernel/src/fs/node.rs`,
+which filesystems now key by inode) and refcounted by the mappings that use
+them, `write(2)` and the mappings seeing each other, written back on
+`msync`, `munmap` and the last close; the Linux layer's `mmap` stops
+refusing it. The page cache (`kernel/src/fs/pagecache.rs`) has the shared,
+counted frames; what is missing is writing through them (a write drops the
+file's pages from it today). The same pages give the shared memory of
+"Passing file descriptors and shared memory" (`shm_open`, `memfd_create`,
+sized with `ftruncate`).
 
 ## Self-hosting speed
 

@@ -122,8 +122,33 @@ pub struct MountOps {
     /// Optional: make a file that many bytes long, cut or grown with zeros
     /// (`ftruncate`). `None` for a mount whose files cannot be resized.
     pub set_size: Option<fn(&str, usize) -> bool>,
+    /// Optional: the mount's files by id (see [`FileOps`]).
+    pub files: Option<FileOps>,
     /// Mount accepts write opens / creates.
     pub writable: bool,
+}
+
+/// A filesystem's files by the id it gives each (an inode number): the
+/// path is looked up once, at open, and an open file is used by its id
+/// from then on, whatever is renamed meanwhile ([`node`]). The module form
+/// is `ModuleVfsOps::file_id` and the `*_ino` hooks.
+#[derive(Clone, Copy)]
+pub struct FileOps {
+    /// The id of the file (or directory) at a path.
+    pub id: fn(&str) -> Option<u64>,
+    pub read: fn(u64, usize, &mut [u8]) -> usize,
+    pub write: fn(u64, usize, &[u8]) -> Option<usize>,
+    pub stat: fn(u64) -> Option<StatInfo>,
+    /// Make the file that many bytes long, cut or grown with zeros.
+    pub set_size: fn(u64, usize) -> bool,
+    /// Access and modification times, seconds since the epoch (`None`
+    /// keeps one).
+    pub set_times: fn(u64, Option<u64>, Option<u64>) -> bool,
+    /// Remove the name of a regular file but keep the file, which something
+    /// holds: false if it cannot.
+    pub unlink_keep: fn(&str) -> bool,
+    /// Nothing holds the file `unlink_keep` kept any more: free it.
+    pub forget: fn(u64),
 }
 
 /// Helper for RO backends: copy from a `lookup` result.
@@ -415,7 +440,7 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
             if wants_write || creat || trunc {
                 return None;
             }
-            return Some(node::get(idx, rel));
+            return Some(node::get(idx, rel, backend_file_id(idx, rel)));
         }
     }
 
@@ -428,7 +453,7 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
                 return None;
             }
         }
-        let node = node::get(idx, rel);
+        let node = node::get(idx, rel, backend_file_id(idx, rel));
         if wants_write && trunc {
             pagecache::invalidate(&node);
         }
@@ -445,7 +470,7 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
         if trunc {
             let _ = backend_truncate(idx, rel);
         }
-        return Some(node::get(idx, rel));
+        return Some(node::get(idx, rel, backend_file_id(idx, rel)));
     }
     None
 }
@@ -502,25 +527,8 @@ pub fn stat(path: &str) -> Option<StatInfo> {
 pub fn stat_node(node: &Vnode) -> Option<StatInfo> {
     let _tree = tree_read();
     match node::locate(node)? {
+        (idx, node::Loc::File(id)) => file_stat(idx, id),
         (idx, node::Loc::Path(rel)) => backend_stat(idx, rel.as_str()),
-        (idx, node::Loc::Ino(ino)) => {
-            let stat = kept_ops(idx)?.stat_ino?;
-            let mut out = myos_abi::VfsStatInfo::default();
-            if unsafe { stat(ino, &mut out) } != 0 {
-                return None;
-            }
-            let info = StatInfo { mode: out.mode, size: out.size, ino: out.ino, nlink: out.nlink, dev: 0, mtime: out.mtime, atime: out.atime };
-            Some(StatInfo { dev: (idx as u32).wrapping_add(1), ..info })
-        }
-    }
-}
-
-/// The hooks of the module filesystem mounted as `idx`, for a file it
-/// keeps by its inode number.
-fn kept_ops(idx: usize) -> Option<ModuleVfsOps> {
-    match MOUNTS.lock().get(idx)?.backend {
-        MountBackend::Module(ops) => Some(ops),
-        MountBackend::Kernel(_) => None,
     }
 }
 
@@ -537,24 +545,19 @@ pub fn set_times(path: &str, atime: SetTime, mtime: SetTime) -> bool {
 /// [`set_times`] for an open vnode (`futimens`).
 pub fn set_times_node(node: &Vnode, atime: SetTime, mtime: SetTime) -> bool {
     let _tree = tree_read();
-    let Some((idx, rel)) = node::location(node) else {
-        return false;
-    };
-    backend_set_times(idx, rel.as_str(), atime, mtime)
+    match node::locate(node) {
+        Some((idx, node::Loc::File(id))) => file_set_times(idx, id, atime, mtime),
+        Some((idx, node::Loc::Path(rel))) => backend_set_times(idx, rel.as_str(), atime, mtime),
+        None => false,
+    }
 }
 
 /// Read from an open vnode at `pos` into `out`. Returns bytes read.
 pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
     let _tree = tree_read();
     match node::locate(node) {
+        Some((idx, node::Loc::File(id))) => file_read(idx, id, pos, out),
         Some((idx, node::Loc::Path(rel))) => backend_read(idx, rel.as_str(), pos, out),
-        Some((idx, node::Loc::Ino(ino))) => {
-            let Some(read) = kept_ops(idx).and_then(|ops| ops.read_ino) else {
-                return 0;
-            };
-            let rc = unsafe { read(ino, pos, out.as_mut_ptr(), out.len()) };
-            if rc < 0 { 0 } else { (rc as usize).min(out.len()) }
-        }
         None => 0,
     }
 }
@@ -563,12 +566,8 @@ pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     let _tree = tree_read();
     let written = match node::locate(node)? {
+        (idx, node::Loc::File(id)) => file_write(idx, id, pos, buf),
         (idx, node::Loc::Path(rel)) => backend_write(idx, rel.as_str(), pos, buf),
-        (idx, node::Loc::Ino(ino)) => {
-            let write = kept_ops(idx)?.write_ino?;
-            let rc = unsafe { write(ino, pos, buf.as_ptr(), buf.len()) };
-            if rc < 0 { None } else { Some(rc as usize) }
-        }
     };
     // After the write: a page read before it is then dropped, or not kept.
     pagecache::invalidate(node);
@@ -580,13 +579,8 @@ pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
 pub fn set_size(node: &Vnode, size: usize) -> bool {
     let _tree = tree_read();
     let done = match node::locate(node) {
+        Some((idx, node::Loc::File(id))) => file_set_size(idx, id, size),
         Some((idx, node::Loc::Path(rel))) => backend_set_size(idx, rel.as_str(), size),
-        Some((idx, node::Loc::Ino(ino))) => {
-            let Some(set_size) = kept_ops(idx).and_then(|ops| ops.set_size_ino) else {
-                return false;
-            };
-            unsafe { set_size(ino, size as u64) == 0 }
-        }
         None => false,
     };
     // As after a write: the pages past the new end are gone or zero now.
@@ -669,7 +663,8 @@ pub fn open_hook_undo(node: &Vnode) {
 pub fn read_or_wait(node: &Vnode, pos: usize, out: &mut [u8]) -> Option<usize> {
     {
         let _tree = tree_read();
-        if let Some((ops, rel)) = module_location(node) {
+        let by_path = matches!(node::locate(node), Some((_, node::Loc::Path(_))));
+        if let Some((ops, rel)) = module_location(node).filter(|_| by_path) {
             if let Some(read) = ops.read {
                 let rel = rel.as_str();
                 let rc = unsafe { (read)(rel.as_ptr(), rel.len(), pos, out.as_mut_ptr(), out.len()) };
@@ -814,7 +809,7 @@ pub fn unlink(path: &str) -> bool {
     }
     // The page cache lets go of it first: it would be kept for the cache.
     pagecache::forget_at(idx, rel);
-    if hide_held(idx, rel).is_some() {
+    if hide_held(idx, rel) {
         return true;
     }
     if !backend_unlink(idx, rel) {
@@ -852,17 +847,13 @@ pub fn rename(old: &str, new: &str) -> bool {
     // not go ahead otherwise, and the file would be hidden for nothing).
     let replaces = backend_stat(idx_o, rel_o).is_some_and(|st| !is_dir_mode(st.mode));
     if replaces {
+        // The rename goes ahead now (`old` is there and neither name is a
+        // directory): the file it replaces is kept for whoever holds it,
+        // the page cache aside.
         pagecache::forget_at(idx_n, rel_n);
+        hide_held(idx_n, rel_n);
     }
-    let kept = if replaces { hide_held(idx_n, rel_n) } else { None };
     if !backend_rename(idx_o, rel_o, rel_n) {
-        // Put the file it was to replace back (one a module keeps by its
-        // inode has no name left to go back to).
-        if let Some(node::Kept::Name(hidden)) = kept {
-            if backend_rename(idx_n, &hidden, rel_n) {
-                node::unhide(idx_n, &hidden);
-            }
-        }
         return false;
     }
     node::kill(idx_n, rel_n);
@@ -871,53 +862,27 @@ pub fn rename(old: &str, new: &str) -> bool {
 }
 
 /// The regular file at `rel` of mount `idx` is about to go: when something
-/// holds it and its filesystem can keep it, unlink it so that it is kept
-/// and say how: tmpfs moves it to a hidden name, a module filesystem with
-/// `unlink_keep` (ext2) keeps its inode. The VFS lets it go once the last
-/// [`Vnode`] on it is gone ([`reap`]). On any other filesystem its nodes
-/// die.
-fn hide_held(idx: usize, rel: &str) -> Option<node::Kept> {
+/// holds it and its filesystem gives file ids, unlink it but have the
+/// filesystem keep it by its id ([`FileOps::unlink_keep`]): true then. The
+/// VFS lets it go once the last [`Vnode`] on it is gone ([`reap`]). On
+/// any other filesystem its nodes die.
+fn hide_held(idx: usize, rel: &str) -> bool {
     if !node::referenced(idx, rel) || !backend_stat(idx, rel).is_some_and(|st| st.mode & S_IFMT == S_IFREG) {
-        return None;
+        return false;
     }
-    let backend = MOUNTS.lock().get(idx)?.backend;
-    let kept = match backend {
-        MountBackend::Kernel(ops) if ops.writable => {
-            let hidden = node::hidden_name();
-            if !backend_rename(idx, rel, &hidden) {
-                return None;
-            }
-            node::Kept::Name(hidden)
-        }
-        MountBackend::Module(ops) => {
-            let unlink_keep = ops.unlink_keep?;
-            let ino = unsafe { unlink_keep(rel.as_ptr(), rel.len()) };
-            if ino <= 0 {
-                return None;
-            }
-            node::Kept::Ino(ino as u64)
-        }
-        MountBackend::Kernel(_) => return None,
-    };
-    node::hide(idx, rel, &kept);
-    Some(kept)
+    if !backend_unlink_keep(idx, rel) {
+        return false;
+    }
+    node::hide(idx, rel);
+    true
 }
 
-/// Remove the kept files nothing references any more. Called where no lock
-/// is held: on the way into the calls that change the tree, and after a
-/// close.
+/// Have the filesystems forget the kept files nothing references any more.
+/// Called where no lock is held: on the way into the calls that change the
+/// tree, and after a close.
 fn reap() {
-    for (idx, kept) in node::take_reaped() {
-        match kept {
-            node::Kept::Name(hidden) => {
-                let _ = backend_unlink(idx as usize, &hidden);
-            }
-            node::Kept::Ino(ino) => {
-                if let Some(forget) = kept_ops(idx as usize).and_then(|ops| ops.forget_ino) {
-                    let _ = unsafe { forget(ino) };
-                }
-            }
-        }
+    for (idx, id) in node::take_reaped() {
+        file_forget(idx as usize, id);
     }
 }
 
@@ -1113,8 +1078,9 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     n
 }
 
-/// The listing in `buf[..n]` without the files unlinked while held (their
-/// hidden names hold a NUL, [`node::hidden_name`]): its new length.
+/// The listing in `buf[..n]` without the files unlinked while held (tmpfs
+/// keeps them under a name holding a NUL, `tmpfs::unlink_keep`): its new
+/// length.
 fn without_hidden(buf: &mut [u8], n: usize) -> usize {
     if !buf[..n].contains(&0) {
         return n;
@@ -1292,6 +1258,112 @@ fn backend_stat(idx: usize, rel: &str) -> Option<StatInfo> {
     // find(1)/du(1)/rm(1) loop detection needs distinct st_dev per mount.
     info.dev = (idx as u32).wrapping_add(1);
     Some(info)
+}
+
+fn backend_of(idx: usize) -> Option<MountBackend> {
+    MOUNTS.lock().get(idx).map(|m| m.backend)
+}
+
+/// The id mount `idx`'s filesystem gives the file at `rel` ([`FileOps`]),
+/// if it gives ids.
+fn backend_file_id(idx: usize, rel: &str) -> Option<u64> {
+    match backend_of(idx)? {
+        MountBackend::Kernel(ops) => (ops.files?.id)(rel),
+        MountBackend::Module(ops) => {
+            let id = unsafe { ops.file_id?(rel.as_ptr(), rel.len()) };
+            (id > 0).then_some(id as u64)
+        }
+    }
+}
+
+fn file_read(idx: usize, id: u64, pos: usize, out: &mut [u8]) -> usize {
+    match backend_of(idx) {
+        Some(MountBackend::Kernel(ops)) => ops.files.map_or(0, |f| (f.read)(id, pos, out)),
+        Some(MountBackend::Module(ops)) => {
+            let Some(read) = ops.read_ino else {
+                return 0;
+            };
+            let rc = unsafe { read(id, pos, out.as_mut_ptr(), out.len()) };
+            if rc < 0 { 0 } else { (rc as usize).min(out.len()) }
+        }
+        None => 0,
+    }
+}
+
+fn file_write(idx: usize, id: u64, pos: usize, buf: &[u8]) -> Option<usize> {
+    match backend_of(idx)? {
+        MountBackend::Kernel(ops) => (ops.files?.write)(id, pos, buf),
+        MountBackend::Module(ops) => {
+            let rc = unsafe { ops.write_ino?(id, pos, buf.as_ptr(), buf.len()) };
+            if rc < 0 { None } else { Some(rc as usize) }
+        }
+    }
+}
+
+fn file_stat(idx: usize, id: u64) -> Option<StatInfo> {
+    let info = match backend_of(idx)? {
+        MountBackend::Kernel(ops) => (ops.files?.stat)(id)?,
+        MountBackend::Module(ops) => {
+            let mut out = myos_abi::VfsStatInfo::default();
+            if unsafe { ops.stat_ino?(id, &mut out) } != 0 {
+                return None;
+            }
+            StatInfo { mode: out.mode, size: out.size, ino: out.ino, nlink: out.nlink, dev: 0, mtime: out.mtime, atime: out.atime }
+        }
+    };
+    Some(StatInfo { dev: (idx as u32).wrapping_add(1), ..info })
+}
+
+fn file_set_size(idx: usize, id: u64, size: usize) -> bool {
+    match backend_of(idx) {
+        Some(MountBackend::Kernel(ops)) => ops.files.is_some_and(|f| (f.set_size)(id, size)),
+        Some(MountBackend::Module(ops)) => ops.set_size_ino.is_some_and(|f| unsafe { f(id, size as u64) == 0 }),
+        None => false,
+    }
+}
+
+fn file_set_times(idx: usize, id: u64, atime: SetTime, mtime: SetTime) -> bool {
+    let Some(backend) = backend_of(idx) else {
+        return false;
+    };
+    // "Now" is read here, outside the backend's locks.
+    let (atime, mtime) = (atime.resolve(), mtime.resolve());
+    match backend {
+        MountBackend::Kernel(ops) => ops.files.is_some_and(|f| (f.set_times)(id, atime, mtime)),
+        MountBackend::Module(ops) => ops.set_times_ino.is_some_and(|f| {
+            let omit = myos_abi::MYOS_TIME_OMIT;
+            unsafe { f(id, atime.unwrap_or(omit), mtime.unwrap_or(omit)) == 0 }
+        }),
+    }
+}
+
+/// Unlink the regular file at `rel` but keep it by its id for whoever holds
+/// it: false when the filesystem cannot.
+fn backend_unlink_keep(idx: usize, rel: &str) -> bool {
+    match backend_of(idx) {
+        Some(MountBackend::Kernel(ops)) => ops.files.is_some_and(|f| (f.unlink_keep)(rel)),
+        Some(MountBackend::Module(ops)) => {
+            ops.unlink_keep.is_some_and(|f| unsafe { f(rel.as_ptr(), rel.len()) } > 0)
+        }
+        None => false,
+    }
+}
+
+/// The kept file `id` of mount `idx` is let go.
+fn file_forget(idx: usize, id: u64) {
+    match backend_of(idx) {
+        Some(MountBackend::Kernel(ops)) => {
+            if let Some(f) = ops.files {
+                (f.forget)(id);
+            }
+        }
+        Some(MountBackend::Module(ops)) => {
+            if let Some(forget) = ops.forget_ino {
+                let _ = unsafe { forget(id) };
+            }
+        }
+        None => {}
+    }
 }
 
 fn backend_listdir(m: &Mount, rel: &str, buf: &mut [u8]) -> usize {

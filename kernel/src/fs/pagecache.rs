@@ -42,16 +42,16 @@ struct Frame {
     /// The mappings of it.
     maps: u32,
     /// The file page it holds while the cache has it: (node, page index).
-    page: Option<(u32, u32)>,
+    page: Option<(usize, u32)>,
 }
 
 struct Cache {
-    files: BTreeMap<u32, File>,
+    files: BTreeMap<usize, File>,
     frames: BTreeMap<u64, Frame>,
     /// Frames the cache has (with a `page`).
     held: usize,
     /// Files with a page being read in ([`map`]), and how many.
-    reading: BTreeMap<u32, u32>,
+    reading: BTreeMap<usize, u32>,
     /// Bumped by every invalidation of a file the cache has or reads: a
     /// page read meanwhile may be older than the file, so it is not kept.
     changes: u64,
@@ -84,7 +84,7 @@ fn bytes(frame: u64) -> &'static mut [u8] {
 /// A page read while the file changed is not kept: the caller's mapping
 /// owns that frame alone (its [`release`] says no, and the caller frees it).
 pub fn map(node: &Vnode, page: usize) -> u64 {
-    let (id, index) = (node.id(), page as u32);
+    let (id, index) = (node.key(), page as u32);
     let cached = locked(|c| {
         let frame = *c.files.get(&id)?.pages.get(&index)?;
         c.frames.get_mut(&frame)?.maps += 1;
@@ -179,7 +179,7 @@ pub fn is_cached(frame: u64) -> bool {
 /// `node`'s file changed (a write, a truncation): its pages leave the cache.
 /// Nothing to do for the files it neither has nor reads (most writes).
 pub fn invalidate(node: &Vnode) {
-    let id = node.id();
+    let id = node.key();
     if locked(|c| c.files.contains_key(&id) || c.reading.contains_key(&id)) {
         drop_files(|fid, _| fid == id);
     }
@@ -198,11 +198,11 @@ pub fn forget_mount(mount: usize) {
 
 /// Drop the files `pick` chooses and their pages, the mapped ones staying
 /// with their mappings.
-fn drop_files(pick: impl Fn(u32, &File) -> bool) {
+fn drop_files(pick: impl Fn(usize, &File) -> bool) {
     let mut frees = Vec::new();
     let nodes = locked(|c| {
         c.changes += 1;
-        let ids: Vec<u32> = c.files.iter().filter(|(id, f)| pick(**id, f)).map(|(id, _)| *id).collect();
+        let ids: Vec<usize> = c.files.iter().filter(|(id, f)| pick(**id, f)).map(|(id, _)| *id).collect();
         let mut nodes = Vec::new();
         for id in ids {
             let Some(file) = c.files.remove(&id) else {

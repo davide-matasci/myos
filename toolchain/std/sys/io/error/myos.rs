@@ -45,6 +45,7 @@ pub fn decode_error_kind(code: i32) -> io::ErrorKind {
         36 => InvalidFilename,
         38 => Unsupported,
         39 => DirectoryNotEmpty,
+        40 => FilesystemLoop,
         _ => Uncategorized,
     }
 }
@@ -73,6 +74,7 @@ pub fn error_string(errno: i32) -> String {
         36 => "file name too long",
         38 => "function not implemented",
         39 => "directory not empty",
+        40 => "too many levels of symbolic links",
         n => return format!("os error {n}"),
     }
     .to_string()

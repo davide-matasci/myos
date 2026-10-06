@@ -360,15 +360,30 @@ impl<D: Device> Fs<D> {
     pub fn set_times(&mut self, path: &str, atime: Option<u32>, mtime: Option<u32>) -> Result<()> {
         self.op(|fs| {
             let ino = fs.resolve(path)?;
-            let mut node = fs.inode(ino)?;
-            if let Some(t) = atime {
-                node.atime = t;
-            }
-            if let Some(t) = mtime {
-                node.mtime = t;
-            }
-            fs.write_inode(ino, &node)
+            fs.retime(ino, atime, mtime)
         })
+    }
+
+    /// [`Fs::set_times`] of the inode `ino`.
+    pub fn set_times_ino(&mut self, ino: u32, atime: Option<u32>, mtime: Option<u32>) -> Result<()> {
+        self.op(|fs| fs.retime(ino, atime, mtime))
+    }
+
+    fn retime(&mut self, ino: u32, atime: Option<u32>, mtime: Option<u32>) -> Result<()> {
+        let mut node = self.inode(ino)?;
+        if let Some(t) = atime {
+            node.atime = t;
+        }
+        if let Some(t) = mtime {
+            node.mtime = t;
+        }
+        self.write_inode(ino, &node)
+    }
+
+    /// The inode of the file or directory at `path`: what the `*_ino`
+    /// calls take.
+    pub fn file_id(&mut self, path: &str) -> Result<u32> {
+        self.run(|fs| fs.resolve(path))
     }
 
     /// Call `f` with each name in the directory `path` (not `.` and `..`)

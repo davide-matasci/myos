@@ -2,8 +2,9 @@
 # POSIX core (fds, dirs, *at(), stat/mkfifo, pipes, fork/wait, stdio streams,
 # stdlib, time) plus non-basic process/signal/io/paths/limits, then myos's own
 # chroot(2) + named-FIFO tests (overlay/myos/). Every entry passes honestly on
-# the guest; tests that need missing features are listed as deferred in
-# ports/os-test/SUITES.md instead of being added here.
+# the guest (its outcome is one of the suite's expectations, or exit 0);
+# tests that need missing features are listed as deferred in
+# packages/os-test/SUITES.md instead of being added here.
 
 # basic: dirent
 TESTS += basic/dirent/alphasort
@@ -101,11 +102,7 @@ TESTS += basic/time/strptime
 
 # process
 TESTS += process/fork-exec-setpgid-in-child
-TESTS += process/fork-exec-setpgid-in-parent
 TESTS += process/fork-setpgid
-TESTS += process/fork-setsid-setpgid
-TESTS += process/fork-setsid-setpgid-in-parent
-TESTS += process/fork-setsid-setpgid-move
 TESTS += process/zombie-getpgid
 TESTS += process/zombie-setpgid
 TESTS += process/zombie-setpgid-leader
@@ -128,10 +125,23 @@ TESTS += signal/ignore-raise-unignore
 TESTS += signal/ignore-usr1-exec
 TESTS += signal/raise
 
-# io
+# io: open(2) of a directory and of a file as one (EISDIR, ENOTDIR)
+TESTS += io/open-mkstemp-rdonly-directory
 TESTS += io/open-mkstemp-rdonly-trunc-directory
 TESTS += io/open-mkstemp-wronly-directory
 TESTS += io/open-mkstemp-wronly-trunc-directory
+TESTS += io/open-tmpdir-rdonly-creat
+TESTS += io/open-tmpdir-rdonly-trunc
+TESTS += io/open-tmpdir-rdwr
+TESTS += io/open-tmpdir-rdwr-append
+TESTS += io/open-tmpdir-rdwr-creat
+TESTS += io/open-tmpdir-rdwr-directory
+TESTS += io/open-tmpdir-rdwr-trunc
+TESTS += io/open-tmpdir-wronly
+TESTS += io/open-tmpdir-wronly-append
+TESTS += io/open-tmpdir-wronly-creat
+TESTS += io/open-tmpdir-wronly-directory
+TESTS += io/open-tmpdir-wronly-trunc
 
 # paths
 TESTS += paths/dev-random

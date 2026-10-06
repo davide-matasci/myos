@@ -226,12 +226,13 @@ pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
 pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
     const O_ACCMODE: usize = 3;
     const O_CREAT: usize = 0o100;
-    const O_LARGEFILE: usize = 0o100000;
-    const O_DIRECTORY: usize = 0o200000;
-    const O_NOFOLLOW: usize = 0o400000;
-    const O_CLOEXEC: usize = 0o2000000;
     const O_NONBLOCK: usize = 0o4000;
     let p = pty_alias(path_at(dirfd, path)?);
+    if flags & O_NOFOLLOW != 0
+        && fs::stat(&real_path_nofollow(&p)?).is_some_and(|s| s.mode & fs::S_IFMT == 0o120000)
+    {
+        return Err(ELOOP);
+    }
     let real = real_path(&p)?;
     let st = fs::stat(&real);
     if st.as_ref().is_some_and(|s| s.mode & fs::S_IFMT == 0o040000) {
@@ -611,13 +612,12 @@ pub fn fcntl(fd: usize, cmd: usize, arg: usize) -> R {
             let sock = files::get(fd).and_then(|e| e.sock).is_some_and(|s| s.nonblock);
             Ok(2 | if sock || files::nonblock(fd) { O_NONBLOCK } else { 0 }) // O_RDWR
         }
-        // Record locks are granted and not kept (see `flock`): F_GETLK
-        // always finds the range free (`l_type` = F_UNLCK).
-        F_GETLK | F_OFD_GETLK => {
-            put(arg, &2i16.to_le_bytes())?;
-            Ok(0)
-        }
-        F_SETLK | F_SETLKW | F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
+        F_GETLK => record_lock(fd, arg, myos_abi::MYOS_LOCKCTL_GET, false),
+        F_SETLK => record_lock(fd, arg, myos_abi::MYOS_LOCKCTL_SET, false),
+        F_SETLKW => record_lock(fd, arg, myos_abi::MYOS_LOCKCTL_WAIT, false),
+        F_OFD_GETLK => record_lock(fd, arg, myos_abi::MYOS_LOCKCTL_GET, true),
+        F_OFD_SETLK => record_lock(fd, arg, myos_abi::MYOS_LOCKCTL_SET, true),
+        F_OFD_SETLKW => record_lock(fd, arg, myos_abi::MYOS_LOCKCTL_WAIT, true),
         _ => Err(EINVAL),
     }
 }
@@ -715,12 +715,51 @@ pub fn mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, off: 
 /// file position alone.
 /// `flock`: granted and not kept. myos has no file locks; a lock taken by
 /// cargo, SQLite or git against another copy of itself is all this skips.
-pub fn flock(fd: usize) -> R {
+/// `flock(fd, op)`: the native one (the operations' values are Linux's).
+pub fn flock(fd: usize, op: usize) -> R {
     if task::fd_kind(fd).is_none() {
-        Err(EBADF)
-    } else {
-        Ok(0)
+        return Err(EBADF);
     }
+    native(user::sys_flock(fd, op), EINVAL)
+}
+
+/// `fcntl`'s record locks on the native ones: `arg` is a Linux `struct
+/// flock` (`l_type`, `l_whence`, `l_start`, `l_len`, `l_pid`), its start
+/// made absolute here. `ofd`: the open file description owns the lock.
+fn record_lock(fd: usize, arg: usize, cmd: usize, ofd: bool) -> R {
+    const SEEK_CUR: i16 = 1;
+    const SEEK_END: i16 = 2;
+    let mut raw = [0u8; 32];
+    get(arg, &mut raw)?;
+    let l_type = i16::from_le_bytes([raw[0], raw[1]]);
+    let whence = i16::from_le_bytes([raw[2], raw[3]]);
+    let start = i64::from_le_bytes(raw[8..16].try_into().unwrap());
+    let len = i64::from_le_bytes(raw[16..24].try_into().unwrap());
+    let base = match whence {
+        SEEK_CUR => lseek(fd, 0, 1)? as i64,
+        SEEK_END => match task::fd_kind(fd) {
+            Some(task::FdKind::File { size }) => size as i64,
+            _ => return Err(EINVAL),
+        },
+        _ => 0,
+    };
+    // A negative length covers the bytes before the start.
+    let (start, len) = if len < 0 { (base + start + len, -len) } else { (base + start, len) };
+    if start < 0 || !(0..=2).contains(&l_type) {
+        return Err(EINVAL);
+    }
+    let mut lock = myos_abi::MyosLockRange { kind: l_type as u32, _pad: 0, start: start as u64, len: len as u64, pid: 0 };
+    let cmd = cmd | if ofd { myos_abi::MYOS_LOCKCTL_OFD } else { 0 };
+    native(user::fd_lockctl(fd, cmd, &mut lock), EBADF)?;
+    if cmd & !myos_abi::MYOS_LOCKCTL_OFD == myos_abi::MYOS_LOCKCTL_GET {
+        raw[0..2].copy_from_slice(&(lock.kind as i16).to_le_bytes());
+        raw[2..4].copy_from_slice(&0i16.to_le_bytes());
+        raw[8..16].copy_from_slice(&(lock.start as i64).to_le_bytes());
+        raw[16..24].copy_from_slice(&(lock.len as i64).to_le_bytes());
+        raw[24..28].copy_from_slice(&(lock.pid as i32).to_le_bytes());
+        put(arg, &raw)?;
+    }
+    Ok(0)
 }
 
 pub fn pread(fd: usize, buf: usize, count: usize, off: usize) -> R {
