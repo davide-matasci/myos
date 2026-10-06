@@ -726,7 +726,13 @@ pub fn fd_write(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                         return if total == 0 { usize::MAX } else { total };
                     }
                     let write_pos = match at {
-                        Some(at) => at + total,
+                        // `at` is a user-supplied pwrite offset; a hostile value
+                        // near usize::MAX would overflow the running total. Fail
+                        // the write instead of faulting the kernel.
+                        Some(at) => match at.checked_add(total) {
+                            Some(p) => p,
+                            None => return if total == 0 { usize::MAX } else { total },
+                        },
                         None if append => crate::fs::size_of(&node).unwrap_or(pos),
                         None => pos,
                     };
