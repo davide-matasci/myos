@@ -141,6 +141,43 @@ platform: ...` line on the default QEMU `virt` UART address.
   their disk at mount time), so nothing declares dependencies yet; a module
   that does could name them for `insmod` to refuse or defer.
 
+## Driver state behind locks (`unsafe` follow-up)
+
+The modules call the kernel through safe methods (`myos_abi::KernelApi`,
+`UsbHostOps`) and keep the table in an `ApiCell`, but most drivers still
+keep their devices in a `static mut` table and hand out `&'static mut`
+from it: `virtio_blk::dev`, `nvme::ctrl`, `virtio_net::net_slot`,
+`xhci` (`controller`, `usb::lookup` / `table` / `device_at`, `dma` `FREE`),
+`usb_hub::hubs`, `usb_storage::disks`, `netfs::state` / `conv_mut` (and
+`unix` `CONVS`), the console's `fbdev` `INFO` / `pixels`, `fat`'s `VOL`, and
+the kernel's `devfs::chr_table`. Nothing stops two of those references to
+one device from living at once (an interrupt handler and a task, two CPUs,
+the xHCI thread calling a class driver's `probe` that calls back into the
+host): undefined behavior today's code survives because the shared fields
+are atomics and the timing is forgiving.
+
+Put each table behind a lock, one driver per PR, simple ones first
+(`nvme`, `virtio_blk`, `fat`, `netfs`), xHCI last:
+
+- State an interrupt handler touches needs an interrupt-safe lock (or the
+  handler only touches atomics, as `virtio_net`'s ISR read does).
+- The xHCI host calls driver hooks (`probe`, `disconnect`, completions) that
+  call back into it: hold no lock across a callback, or the plain mutex
+  deadlocks.
+- A device in use while another is added (`module_rescan`, USB hot-plug)
+  must not be moved: keep slots fixed, as now.
+
+Each step removes the `static mut` accesses of that driver (about 80 `unsafe`
+blocks in all) and is worth a full boot. What stays `unsafe` afterwards is
+hardware access (MMIO, DMA rings, cache maintenance), the raw pointers of
+the C ABI's callbacks, and the arch code: those want short helpers with
+`SAFETY:` comments rather than fewer blocks.
+
+Left as they are for now: the std port's single-threaded `static mut`
+(`toolchain/std/sys/myos/alloc.rs`, `sys/args/myos.rs`: a process is one
+task there; changing them rebuilds the sysroot and every Rust port), and
+the arch tables (GDT/TSS, page tables, per-CPU syscall frames).
+
 ## Per-key wait queues
 
 `task::wake(key)` takes the global task lock and scans all 64 slots to find
