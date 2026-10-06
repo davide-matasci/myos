@@ -6,6 +6,9 @@ use spin::Mutex;
 
 use myos_abi::ModuleVfsOps;
 
+use super::node;
+pub use super::node::Vnode;
+
 /// Metadata returned by [`stat`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatInfo {
@@ -79,25 +82,6 @@ pub(crate) fn data_ino(data: &[u8]) -> u32 {
     match h & 0x7fff_ffff {
         0 | 1 => 2,
         x => x,
-    }
-}
-
-/// Open file identity: mount index + path relative to that mount.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Vnode {
-    pub mount: u16,
-    pub path_len: u16,
-    pub path: [u8; Vnode::PATH_CAP],
-}
-
-impl Vnode {
-    /// As long as a tmpfs path: deep trees (gcc's plugin headers) on a
-    /// mounted disk need more than 96.
-    pub const PATH_CAP: usize = 255;
-    pub const EMPTY: Vnode = Vnode { mount: 0, path_len: 0, path: [0; Vnode::PATH_CAP] };
-
-    pub fn path_str(&self) -> &str {
-        core::str::from_utf8(&self.path[..self.path_len as usize]).unwrap_or("")
     }
 }
 
@@ -272,6 +256,7 @@ pub fn holds_mount(prefix: &str) -> bool {
 /// then writes back what it caches.
 pub fn unmount(prefix: &str) -> bool {
     let prefix = normalize_path(prefix);
+    reap();
     let ops = {
         let mut mounts = MOUNTS.lock();
         let Some(idx) = mounts.iter().position(|m| m.prefix == prefix) else {
@@ -291,7 +276,7 @@ pub fn unmount(prefix: &str) -> bool {
         if BINDS.lock().iter().any(|(target, source)| under(target) || under(source)) {
             return false;
         }
-        if OPEN_REFS.lock().iter().any(|r| r.in_use && r.count > 0 && r.mount as usize == idx) {
+        if node::on_mount(idx) {
             return false;
         }
         let m = &mut mounts[idx];
@@ -317,16 +302,7 @@ pub fn open_refs(prefix: &str, rel: &str) -> u32 {
     let Some(mount) = MOUNTS.lock().iter().position(|m| m.prefix == prefix) else {
         return 0;
     };
-    let refs = OPEN_REFS.lock();
-    refs.iter()
-        .filter(|r| {
-            r.in_use
-                && r.mount as usize == mount
-                && r.path_len as usize == rel.len()
-                && &r.path[..rel.len()] == rel.as_bytes()
-        })
-        .map(|r| r.count)
-        .sum()
+    node::opens_at(mount, rel)
 }
 
 /// Linux-shaped `/proc/mounts` snapshot (`source target fstype opts 0 0\n`).
@@ -374,6 +350,7 @@ const O_APPEND: u32 = 0o2000;
 const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
 const S_IFLNK: u32 = 0o120000;
+const S_IFREG: u32 = 0o100000;
 
 /// True if `flags` request write access.
 pub fn open_writable(flags: u32) -> bool {
@@ -405,17 +382,13 @@ fn backend_openable(idx: usize, rel: &str) -> bool {
 
 /// Resolve `path` to a vnode suitable for open/read/write.
 ///
-/// Directories (including mount roots like `/bin/sbase`) may be opened
-/// read-only so userspace `*at(dirfd, …)` and `which` PATH walks work.
+/// Directories (including mount roots like `/bin/sbase`, and `/`) may be
+/// opened read-only: a directory fd, the cwd.
 pub fn open(path: &str, flags: u32) -> Option<Vnode> {
-    let rel_check = normalize_path(path);
-    if rel_check.is_empty() {
-        return None;
-    }
+    reap();
+    let _tree = tree_read();
     let (idx, ref rel) = resolve_index(path)?;
-    // An open file keeps its mount-relative path in the vnode: refuse what
-    // does not fit rather than open a truncated path.
-    if rel.len() > Vnode::PATH_CAP {
+    if rel.len() > PATH_MAX {
         return None;
     }
 
@@ -433,7 +406,7 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
             if wants_write || creat || trunc {
                 return None;
             }
-            return Some(make_vnode(idx, rel));
+            return Some(node::get(idx, rel));
         }
     }
 
@@ -446,7 +419,7 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
                 return None;
             }
         }
-        return Some(make_vnode(idx, rel));
+        return Some(node::get(idx, rel));
     }
 
     if creat {
@@ -459,21 +432,9 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
         if trunc {
             let _ = backend_truncate(idx, rel);
         }
-        return Some(make_vnode(idx, rel));
+        return Some(node::get(idx, rel));
     }
     None
-}
-
-fn make_vnode(idx: usize, rel: &str) -> Vnode {
-    let mut node = Vnode {
-        mount: idx as u16,
-        path_len: 0,
-        path: [0; Vnode::PATH_CAP],
-    };
-    let len = rel.len().min(Vnode::PATH_CAP);
-    node.path[..len].copy_from_slice(&rel.as_bytes()[..len]);
-    node.path_len = len as u16;
-    node
 }
 
 /// Look up file bytes for `path` on the best matching mount.
@@ -482,6 +443,7 @@ pub fn lookup(path: &str) -> Option<&'static [u8]> {
     if rel.is_empty() {
         return None;
     }
+    let _tree = tree_read();
     let (idx, ref rel) = resolve_index(path)?;
     backend_lookup(idx, rel)
 }
@@ -494,6 +456,7 @@ pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
         }
         return Some(b.to_vec());
     }
+    let _tree = tree_read();
     let (idx, ref rel) = resolve_index(path)?;
     if rel.is_empty() {
         return None;
@@ -517,13 +480,41 @@ pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
 
 /// Stat `path` on the best matching mount.
 pub fn stat(path: &str) -> Option<StatInfo> {
+    let _tree = tree_read();
     let (idx, ref rel) = resolve_index(path)?;
     backend_stat(idx, rel)
+}
+
+/// Stat an open vnode.
+pub fn stat_node(node: &Vnode) -> Option<StatInfo> {
+    let _tree = tree_read();
+    match node::locate(node)? {
+        (idx, node::Loc::Path(rel)) => backend_stat(idx, rel.as_str()),
+        (idx, node::Loc::Ino(ino)) => {
+            let stat = kept_ops(idx)?.stat_ino?;
+            let mut out = myos_abi::VfsStatInfo::default();
+            if unsafe { stat(ino, &mut out) } != 0 {
+                return None;
+            }
+            let info = StatInfo { mode: out.mode, size: out.size, ino: out.ino, nlink: out.nlink, dev: 0, mtime: out.mtime, atime: out.atime };
+            Some(StatInfo { dev: (idx as u32).wrapping_add(1), ..info })
+        }
+    }
+}
+
+/// The hooks of the module filesystem mounted as `idx`, for a file it
+/// keeps by its inode number.
+fn kept_ops(idx: usize) -> Option<ModuleVfsOps> {
+    match MOUNTS.lock().get(idx)?.backend {
+        MountBackend::Module(ops) => Some(ops),
+        MountBackend::Kernel(_) => None,
+    }
 }
 
 /// Set the access and modification times of `path` on the best matching
 /// mount: false when there is no such file or the mount keeps no times.
 pub fn set_times(path: &str, atime: SetTime, mtime: SetTime) -> bool {
+    let _tree = tree_read();
     let Some((idx, ref rel)) = resolve_index(path) else {
         return false;
     };
@@ -532,137 +523,82 @@ pub fn set_times(path: &str, atime: SetTime, mtime: SetTime) -> bool {
 
 /// [`set_times`] for an open vnode (`futimens`).
 pub fn set_times_node(node: &Vnode, atime: SetTime, mtime: SetTime) -> bool {
-    backend_set_times(node.mount as usize, node.path_str(), atime, mtime)
+    let _tree = tree_read();
+    let Some((idx, rel)) = node::location(node) else {
+        return false;
+    };
+    backend_set_times(idx, rel.as_str(), atime, mtime)
 }
 
 /// Read from an open vnode at `pos` into `out`. Returns bytes read.
 pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
-    backend_read(node.mount as usize, node.path_str(), pos, out)
+    let _tree = tree_read();
+    match node::locate(node) {
+        Some((idx, node::Loc::Path(rel))) => backend_read(idx, rel.as_str(), pos, out),
+        Some((idx, node::Loc::Ino(ino))) => {
+            let Some(read) = kept_ops(idx).and_then(|ops| ops.read_ino) else {
+                return 0;
+            };
+            let rc = unsafe { read(ino, pos, out.as_mut_ptr(), out.len()) };
+            if rc < 0 { 0 } else { (rc as usize).min(out.len()) }
+        }
+        None => 0,
+    }
 }
 
 /// Write to an open vnode at `pos`. Returns bytes written, or `None` on error.
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
-    backend_write(node.mount as usize, node.path_str(), pos, buf)
+    let _tree = tree_read();
+    match node::locate(node)? {
+        (idx, node::Loc::Path(rel)) => backend_write(idx, rel.as_str(), pos, buf),
+        (idx, node::Loc::Ino(ino)) => {
+            let write = kept_ops(idx)?.write_ino?;
+            let rc = unsafe { write(ino, pos, buf.as_ptr(), buf.len()) };
+            if rc < 0 { None } else { Some(rc as usize) }
+        }
+    }
 }
 
-/// Per-path open refcounts for module-backed File nodes.
-///
-/// Fork copies fd tables without a new `open()`, so several tasks can hold
-/// fds on the same vnode (dropbear forks and the parent closes the accepted
-/// socket while the child still writes to it). The module `release` hook
-/// (netfs → REQ_CLOSE) must fire only when the LAST holder closes — POSIX
-/// close semantics.
-const OPEN_REFS_CAP: usize = 256;
-struct OpenRef {
-    in_use: bool,
-    mount: u16,
-    path_len: u16,
-    path: [u8; Vnode::PATH_CAP],
-    count: u32,
-}
-static OPEN_REFS: Mutex<Vec<OpenRef>> = Mutex::new(Vec::new());
-
-/// Last fd on `node` closed: see [`open_ref`].
-pub fn close_ref(node: &Vnode) {
-    open_ref_release(node);
-}
-
-/// Record one more fd reference on `node` (open, dup, fork-inherited fd).
-/// Find-or-create and increment under one lock (no TOCTOU with release).
+/// One more open file description on `node` (an `open` that became an
+/// fd). A fork's and a dup's fds share theirs: see [`close_ref`].
 pub fn open_ref(node: &Vnode) {
-    let mut refs = OPEN_REFS.lock();
-    for i in 0..refs.len() {
-        if refs[i].in_use
-            && refs[i].mount == node.mount
-            && refs[i].path_len == node.path_len
-            && refs[i].path[..node.path_len as usize]
-                == node.path[..node.path_len as usize]
-        {
-            refs[i].count = refs[i].count.saturating_add(1);
-            return;
-        }
-    }
-    for i in 0..refs.len() {
-        if !refs[i].in_use {
-            refs[i].in_use = true;
-            refs[i].mount = node.mount;
-            refs[i].path_len = node.path_len;
-            refs[i].path[..node.path_len as usize]
-                .copy_from_slice(&node.path[..node.path_len as usize]);
-            refs[i].count = 1;
-            return;
-        }
-    }
-    if refs.len() < OPEN_REFS_CAP {
-        refs.push(OpenRef {
-            in_use: true,
-            mount: node.mount,
-            path_len: node.path_len,
-            path: node.path,
-            count: 1,
-        });
-    }
-    // Cap exhausted: silently skip — better a leaked conv than a spurious hangup.
+    node::opened(node);
 }
 
-/// Lookup-only release. Never create a slot on miss (that used to allocate
-/// count=0 then fire hangup while another task still held the fd — dropbear
-/// parent close vs child banner write → EIO on riscv64).
-fn open_ref_release(node: &Vnode) {
-    let (mount, fire, path_len, path) = {
-        let mut refs = OPEN_REFS.lock();
-        let mut slot = None;
-        for i in 0..refs.len() {
-            if refs[i].in_use
-                && refs[i].mount == node.mount
-                && refs[i].path_len == node.path_len
-                && refs[i].path[..node.path_len as usize]
-                    == node.path[..node.path_len as usize]
-            {
-                slot = Some(i);
-                break;
-            }
-        }
-        let Some(slot) = slot else {
-            return;
+/// An open file description on `node` went away. The last one runs its
+/// module's `release` hook (netfs tears its connection down): only then,
+/// as the parent of a fork may close an accepted socket the child still
+/// writes to (dropbear).
+pub fn close_ref(node: &Vnode) {
+    if node::closed(node) {
+        let backend = {
+            let _tree = tree_read();
+            node::location(node).and_then(|(idx, rel)| {
+                let ops = match MOUNTS.lock().get(idx)?.backend {
+                    MountBackend::Module(ops) => ops,
+                    MountBackend::Kernel(_) => return None,
+                };
+                if let Some(release) = ops.release {
+                    let rel = rel.as_str();
+                    let _ = unsafe { (release)(rel.as_ptr(), rel.len()) };
+                }
+                Some(())
+            })
         };
-        if refs[slot].count > 0 {
-            refs[slot].count -= 1;
-        }
-        let done = refs[slot].count == 0;
-        if done {
-            refs[slot].in_use = false;
-        }
-        let m = refs[slot].mount;
-        let pl = refs[slot].path_len;
-        let p = refs[slot].path;
-        (m, done, pl, p)
-    };
-    if !fire {
-        return;
-    }
-    // Last holder closed: call the module release hook (netfs tears down
-    // only on /data; ctl/status are no-ops there). Do NOT synthesize a ctl
-    // hangup write — that raced the req ring and double-closed with release.
-    let rel = core::str::from_utf8(&path[..path_len as usize]).unwrap_or("");
-    let backend = {
-        let mounts = MOUNTS.lock();
-        mounts.get(mount as usize).map(|m| m.backend)
-    };
-    if let Some(MountBackend::Module(ops)) = backend {
-        if let Some(release) = ops.release {
-            let _ = unsafe { (release)(rel.as_ptr(), rel.len()) };
-            // A peer that just went away (a socket's hangup) is news for
-            // pollers.
+        // A peer that just went away (a socket's hangup) is news for
+        // pollers.
+        if backend.is_some() {
             crate::task::wake_any();
         }
     }
+    reap();
 }
 
-/// The module ops behind `node`, if a module serves it.
-fn module_ops(node: &Vnode) -> Option<ModuleVfsOps> {
-    match MOUNTS.lock().get(node.mount as usize)?.backend {
-        MountBackend::Module(ops) => Some(ops),
+/// The module ops behind `node` and its path there, if a module serves it.
+fn module_location(node: &Vnode) -> Option<(ModuleVfsOps, node::Rel)> {
+    let (idx, rel) = node::location(node)?;
+    match MOUNTS.lock().get(idx)?.backend {
+        MountBackend::Module(ops) => Some((ops, rel)),
         MountBackend::Kernel(_) => None,
     }
 }
@@ -670,60 +606,108 @@ fn module_ops(node: &Vnode) -> Option<ModuleVfsOps> {
 /// An `open(2)` of `node` is about to become an fd: its module's `open` hook
 /// may refuse it (a file one program holds at a time).
 pub fn open_hook(node: &Vnode) -> bool {
-    let Some(open) = module_ops(node).and_then(|ops| ops.open) else {
+    let _tree = tree_read();
+    let Some((ops, rel)) = module_location(node) else {
         return true;
     };
-    let rel = node.path_str();
+    let Some(open) = ops.open else {
+        return true;
+    };
+    let rel = rel.as_str();
     unsafe { (open)(rel.as_ptr(), rel.len()) >= 0 }
 }
 
 /// [`open_hook`] let `node` through but no fd came of it: undo, as the last
 /// close would.
 pub fn open_hook_undo(node: &Vnode) {
-    if let Some(release) = module_ops(node).and_then(|ops| ops.release) {
-        let rel = node.path_str();
-        let _ = unsafe { (release)(rel.as_ptr(), rel.len()) };
+    let _tree = tree_read();
+    if let Some((ops, rel)) = module_location(node) {
+        if let Some(release) = ops.release {
+            let rel = rel.as_str();
+            let _ = unsafe { (release)(rel.as_ptr(), rel.len()) };
+        }
     }
 }
 
 /// Read `node` at `pos` for an fd: `None` when its module has nothing yet
 /// and the reader should wait ([`myos_abi::MYOS_READ_WAIT`]).
 pub fn read_or_wait(node: &Vnode, pos: usize, out: &mut [u8]) -> Option<usize> {
-    if let Some(read) = module_ops(node).and_then(|ops| ops.read) {
-        let rel = node.path_str();
-        let rc = unsafe { (read)(rel.as_ptr(), rel.len(), pos, out.as_mut_ptr(), out.len()) };
-        if rc == myos_abi::MYOS_READ_WAIT {
-            return None;
+    {
+        let _tree = tree_read();
+        if let Some((ops, rel)) = module_location(node) {
+            if let Some(read) = ops.read {
+                let rel = rel.as_str();
+                let rc = unsafe { (read)(rel.as_ptr(), rel.len(), pos, out.as_mut_ptr(), out.len()) };
+                if rc == myos_abi::MYOS_READ_WAIT {
+                    return None;
+                }
+                return Some(if rc < 0 { 0 } else { (rc as usize).min(out.len()) });
+            }
         }
-        return Some(if rc < 0 { 0 } else { (rc as usize).min(out.len()) });
     }
     Some(read(node, pos, out))
 }
 
 /// The absolute path of an open vnode: its mount's prefix and the path
-/// inside it (what `/proc/self/fd/N` points at).
+/// inside it (what `/proc/self/fd/N` points at), ` (deleted)` after it for
+/// a file that has been unlinked.
 pub fn vnode_path(node: &Vnode) -> String {
+    let Some((idx, rel, gone)) = node::name(node) else {
+        return String::new();
+    };
     let mounts = MOUNTS.lock();
-    let prefix = mounts.get(node.mount as usize).map_or("", |m| m.prefix.as_str());
-    let rel = node.path_str();
+    let prefix = mounts.get(idx).map_or("", |m| m.prefix.as_str());
     let mut path = String::from("/");
     path.push_str(prefix);
     if !prefix.is_empty() && !rel.is_empty() {
         path.push('/');
     }
-    path.push_str(rel);
+    path.push_str(&rel);
+    if gone {
+        path.push_str(" (deleted)");
+    }
     path
+}
+
+/// The absolute path of `node`'s file, `None` once it is unlinked or gone.
+pub fn node_path(node: &Vnode) -> Option<String> {
+    let (idx, rel, gone) = node::name(node)?;
+    if gone {
+        return None;
+    }
+    let mounts = MOUNTS.lock();
+    let prefix = mounts.get(idx)?.prefix.as_str();
+    Some(match (prefix.is_empty(), rel.is_empty()) {
+        (true, _) => alloc::format!("/{rel}"),
+        (false, true) => alloc::format!("/{prefix}"),
+        (false, false) => alloc::format!("/{prefix}/{rel}"),
+    })
+}
+
+/// `node`'s file is the one at `path` (absolute, canonical).
+pub fn node_at(node: &Vnode, path: &str) -> bool {
+    let Some((idx, rel)) = node::location(node) else {
+        return false;
+    };
+    let mounts = MOUNTS.lock();
+    let Some(m) = mounts.get(idx) else {
+        return false;
+    };
+    let rest = path.strip_prefix('/').and_then(|p| p.strip_prefix(m.prefix.as_str()));
+    match rest {
+        Some(rest) if m.prefix.is_empty() => rest == rel.as_str(),
+        Some(rest) => rest.strip_prefix('/').unwrap_or(rest) == rel.as_str() && (rest.is_empty() || rest.starts_with('/')),
+        None => false,
+    }
 }
 
 /// The page holding byte `offset` (page aligned) of a device file, from its
 /// module's `mmap` hook (`/dev/fb/data`); `None` for anything else.
 pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
-    let backend = MOUNTS.lock().get(node.mount as usize)?.backend;
-    let MountBackend::Module(ops) = backend else {
-        return None;
-    };
+    let _tree = tree_read();
+    let (ops, rel) = module_location(node)?;
     let mmap = ops.mmap?;
-    let rel = node.path_str();
+    let rel = rel.as_str();
     let phys = unsafe { mmap(rel.as_ptr(), rel.len(), offset) };
     (phys != 0 && phys % crate::user::PAGE as u64 == 0).then_some(phys)
 }
@@ -732,8 +716,10 @@ pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
 /// its backend's `poll` hook; `None` when there is none (a file that is
 /// always ready).
 pub fn poll(node: &Vnode) -> Option<u32> {
-    let backend = MOUNTS.lock().get(node.mount as usize)?.backend;
-    let rel = node.path_str();
+    let _tree = tree_read();
+    let (idx, rel) = node::location(node)?;
+    let backend = MOUNTS.lock().get(idx)?.backend;
+    let rel = rel.as_str();
     match backend {
         MountBackend::Kernel(ops) => (ops.poll?)(rel),
         MountBackend::Module(ops) => {
@@ -743,13 +729,14 @@ pub fn poll(node: &Vnode) -> Option<u32> {
     }
 }
 
-/// Current size of the vnode path (for `O_APPEND`), if known.
+/// Current size of an open vnode (for `O_APPEND`), if known.
 pub fn size_of(node: &Vnode) -> Option<usize> {
-    backend_stat(node.mount as usize, node.path_str()).map(|s| s.size as usize)
+    stat_node(node).map(|s| s.size as usize)
 }
 
 /// Create directory at `path` (must resolve to a writable mount).
 pub fn mkdir(path: &str) -> bool {
+    let _tree = tree_read();
     let Some((idx, ref rel)) = resolve_index(path) else {
         return false;
     };
@@ -767,37 +754,48 @@ pub fn rmdir(path: &str) -> bool {
     if holds_mount(path) {
         return false;
     }
+    reap();
+    let _tree = tree_write();
     let Some((idx, ref rel)) = resolve_index(path) else {
         return false;
     };
-    if rel.is_empty() {
+    if rel.is_empty() || !backend_has_write(idx) || !backend_rmdir(idx, rel) {
         return false;
     }
-    if !backend_has_write(idx) {
-        return false;
-    }
-    backend_rmdir(idx, rel)
+    node::kill(idx, rel);
+    true
 }
 
-/// Unlink file or symlink at `path`.
+/// Unlink file or symlink at `path`. A file something still holds (an
+/// open fd, a mapping) stays readable and writable through it.
 pub fn unlink(path: &str) -> bool {
+    reap();
+    let _tree = tree_write();
     let Some((idx, ref rel)) = resolve_index(path) else {
         return false;
     };
-    if rel.is_empty() {
+    if rel.is_empty() || !backend_has_write(idx) {
         return false;
     }
-    if !backend_has_write(idx) {
+    if hide_held(idx, rel).is_some() {
+        return true;
+    }
+    if !backend_unlink(idx, rel) {
         return false;
     }
-    backend_unlink(idx, rel)
+    node::kill(idx, rel);
+    true
 }
 
-/// Rename within a single mount (`old` and `new` must resolve to the same mount).
+/// Rename within a single mount (`old` and `new` must resolve to the same
+/// mount). What is open below `old` follows it; a file `new` replaces
+/// stays for whoever holds it.
 pub fn rename(old: &str, new: &str) -> bool {
     if holds_mount(old) {
         return false;
     }
+    reap();
+    let _tree = tree_write();
     let Some((idx_o, ref rel_o)) = resolve_index(old) else {
         return false;
     };
@@ -810,7 +808,150 @@ pub fn rename(old: &str, new: &str) -> bool {
     if !backend_has_write(idx_o) {
         return false;
     }
-    backend_rename(idx_o, rel_o, rel_n)
+    if rel_o == rel_n {
+        return backend_rename(idx_o, rel_o, rel_n);
+    }
+    // Only a file that is not a directory replaces one (the rename could
+    // not go ahead otherwise, and the file would be hidden for nothing).
+    let replaces = backend_stat(idx_o, rel_o).is_some_and(|st| !is_dir_mode(st.mode));
+    let kept = if replaces { hide_held(idx_n, rel_n) } else { None };
+    if !backend_rename(idx_o, rel_o, rel_n) {
+        // Put the file it was to replace back (one a module keeps by its
+        // inode has no name left to go back to).
+        if let Some(node::Kept::Name(hidden)) = kept {
+            if backend_rename(idx_n, &hidden, rel_n) {
+                node::unhide(idx_n, &hidden);
+            }
+        }
+        return false;
+    }
+    node::kill(idx_n, rel_n);
+    node::moved(idx_o, rel_o, rel_n);
+    true
+}
+
+/// The regular file at `rel` of mount `idx` is about to go: when something
+/// holds it and its filesystem can keep it, unlink it so that it is kept
+/// and say how: tmpfs moves it to a hidden name, a module filesystem with
+/// `unlink_keep` (ext2) keeps its inode. The VFS lets it go once the last
+/// [`Vnode`] on it is gone ([`reap`]). On any other filesystem its nodes
+/// die.
+fn hide_held(idx: usize, rel: &str) -> Option<node::Kept> {
+    if !node::referenced(idx, rel) || !backend_stat(idx, rel).is_some_and(|st| st.mode & S_IFMT == S_IFREG) {
+        return None;
+    }
+    let backend = MOUNTS.lock().get(idx)?.backend;
+    let kept = match backend {
+        MountBackend::Kernel(ops) if ops.writable => {
+            let hidden = node::hidden_name();
+            if !backend_rename(idx, rel, &hidden) {
+                return None;
+            }
+            node::Kept::Name(hidden)
+        }
+        MountBackend::Module(ops) => {
+            let unlink_keep = ops.unlink_keep?;
+            let ino = unsafe { unlink_keep(rel.as_ptr(), rel.len()) };
+            if ino <= 0 {
+                return None;
+            }
+            node::Kept::Ino(ino as u64)
+        }
+        MountBackend::Kernel(_) => return None,
+    };
+    node::hide(idx, rel, &kept);
+    Some(kept)
+}
+
+/// Remove the kept files nothing references any more. Called where no lock
+/// is held: on the way into the calls that change the tree, and after a
+/// close.
+fn reap() {
+    for (idx, kept) in node::take_reaped() {
+        match kept {
+            node::Kept::Name(hidden) => {
+                let _ = backend_unlink(idx as usize, &hidden);
+            }
+            node::Kept::Ino(ino) => {
+                if let Some(forget) = kept_ops(idx as usize).and_then(|ops| ops.forget_ino) {
+                    let _ = unsafe { forget(ino) };
+                }
+            }
+        }
+    }
+}
+
+/// Held to read while a path is resolved and the file it names used, or a
+/// node is used, and to write while names go or move (`unlink`, `rmdir`,
+/// `rename`): where a node's file is and what its filesystem has there
+/// change together, so an fd never reaches a file that took its file's
+/// old name. A syscall holds it across resolving its paths and acting on
+/// them ([`hold_read`], [`hold_write`]), so a path relative to a directory
+/// fd is relative to that directory whatever moves meanwhile. A waiter
+/// yields rather than spins: a holder may be waiting for a disk (USB
+/// storage blocks) with the waiter's CPU its only one.
+static TREE: spin::RwLock<()> = spin::RwLock::new(());
+
+/// The task holding [`TREE`] to write (`usize::MAX`: none): the calls it
+/// makes while it does go through without taking it again.
+static TREE_WRITER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// [`TREE`] held, or nothing for the task that holds it to write already.
+/// The guards are held for their drop, never read.
+#[allow(dead_code)]
+pub enum TreeGuard {
+    Read(spin::RwLockReadGuard<'static, ()>),
+    Write(spin::RwLockWriteGuard<'static, ()>),
+    Nested,
+}
+
+impl Drop for TreeGuard {
+    fn drop(&mut self) {
+        if let TreeGuard::Write(_) = self {
+            TREE_WRITER.store(usize::MAX, core::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+fn writing() -> bool {
+    TREE_WRITER.load(core::sync::atomic::Ordering::Acquire) == crate::task::current_id()
+}
+
+/// Hold the tree to read: a syscall that resolves a path and uses the file
+/// (one that may wait for long, a FIFO's peer, must drop it first). A task
+/// must not ask to write while it holds it to read.
+pub fn hold_read() -> TreeGuard {
+    if writing() {
+        return TreeGuard::Nested;
+    }
+    loop {
+        if let Some(guard) = TREE.try_read() {
+            return TreeGuard::Read(guard);
+        }
+        crate::task::yield_now();
+    }
+}
+
+/// Hold the tree to write: a syscall that removes or moves names.
+pub fn hold_write() -> TreeGuard {
+    if writing() {
+        return TreeGuard::Nested;
+    }
+    loop {
+        if let Some(guard) = TREE.try_write() {
+            TREE_WRITER.store(crate::task::current_id(), core::sync::atomic::Ordering::Release);
+            return TreeGuard::Write(guard);
+        }
+        crate::task::yield_now();
+    }
+}
+
+fn tree_read() -> TreeGuard {
+    hold_read()
+}
+
+fn tree_write() -> TreeGuard {
+    hold_write()
 }
 
 /// A module filesystem that can hold symlinks (one with `readlink`, such
@@ -824,6 +965,7 @@ pub fn symlinks_possible() -> bool {
 
 /// Create symlink at `linkpath` with contents `target`.
 pub fn symlink(target: &str, linkpath: &str) -> bool {
+    let _tree = tree_read();
     let Some((idx, ref rel)) = resolve_index(linkpath) else {
         return false;
     };
@@ -838,6 +980,7 @@ pub fn symlink(target: &str, linkpath: &str) -> bool {
 
 /// Read symlink target at `path` into `buf`.
 pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
+    let _tree = tree_read();
     let (idx, ref rel) = resolve_index(path)?;
     if rel.is_empty() {
         return None;
@@ -850,6 +993,7 @@ pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
 /// A listing also shows the mount points below the listed directory
 /// (`/` lists `tmp`, `dev`, `proc` next to rootfs's own directories).
 pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
+    let _tree = tree_read();
     let Some((idx, ref rel)) = resolve_index(path) else {
         return 0;
     };
@@ -857,7 +1001,8 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     let Some(m) = mounts.get(idx) else {
         return 0;
     };
-    let mut n = backend_listdir(m, rel, buf);
+    let n = backend_listdir(m, rel, buf);
+    let mut n = without_hidden(buf, n);
     // Surface mount points that live below the listed directory, so the tree
     // is browsable even though mount prefixes are virtual (issue #79): `/` shows
     // top-level mounts (`bin`, …), `/bin` the port categories, `/dev/console`
@@ -928,6 +1073,24 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     n
 }
 
+/// The listing in `buf[..n]` without the files unlinked while held (their
+/// hidden names hold a NUL, [`node::hidden_name`]): its new length.
+fn without_hidden(buf: &mut [u8], n: usize) -> usize {
+    if !buf[..n].contains(&0) {
+        return n;
+    }
+    let (mut from, mut to) = (0, 0);
+    while from < n {
+        let end = buf[from..n].iter().position(|&b| b == b'\n').map_or(n, |i| from + i + 1);
+        if !buf[from..end].contains(&0) {
+            buf.copy_within(from..end, to);
+            to += end - from;
+        }
+        from = end;
+    }
+    to
+}
+
 /// True if `dir_buf` (newline-separated basenames) already contains `child`.
 fn buf_contains_entry(dir_buf: &[u8], child: &str) -> bool {
     for line in dir_buf.split(|b| *b == b'\n') {
@@ -961,6 +1124,10 @@ fn mount_index(name: &str) -> Option<usize> {
 /// The mount `path` lives on and the path relative to it (bind mounts
 /// applied).
 fn resolve_index(path: &str) -> Option<(usize, String)> {
+    // A NUL is in no path: it marks the hidden names of unlinked files.
+    if path.contains('\0') {
+        return None;
+    }
     let path = unbind(normalize_path(path))?;
     let mounts = MOUNTS.lock();
     let mut best: Option<(usize, usize, &str)> = None;
@@ -1040,6 +1207,7 @@ pub fn bind(source: &str, target: &str) -> bool {
 
 /// True when `path` resolves into the tmpfs mount (the only fs with FIFOs).
 fn tmpfs_rel(path: &str) -> Option<String> {
+    let _tree = tree_read();
     let (idx, rel) = resolve_index(path)?;
     let mounts = MOUNTS.lock();
     (mounts.get(idx)?.name == "tmpfs").then_some(rel)

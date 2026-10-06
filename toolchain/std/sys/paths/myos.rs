@@ -4,14 +4,26 @@ use crate::ffi::{OsStr, OsString};
 use crate::io;
 use crate::marker::PhantomData;
 use crate::path::{self, PathBuf};
+use crate::os::myos::ffi::{OsStrExt, OsStringExt};
 use crate::sys::args;
+use crate::sys::myos::abi;
 use crate::fmt;
 
 pub fn getcwd() -> io::Result<PathBuf> {
-    Ok(PathBuf::from("/"))
+    let mut buf = crate::vec![0u8; 257];
+    let n = abi::getcwd(&mut buf);
+    if n < 0 {
+        // A cwd that has been removed.
+        return Err(io::Error::from_raw_os_error(2));
+    }
+    buf.truncate(n as usize);
+    Ok(PathBuf::from(OsString::from_vec(buf)))
 }
 
-pub fn chdir(_: &path::Path) -> io::Result<()> {
+pub fn chdir(p: &path::Path) -> io::Result<()> {
+    if abi::chdirat(p.as_os_str().as_bytes()) < 0 {
+        return Err(io::Error::from_raw_os_error(2));
+    }
     Ok(())
 }
 

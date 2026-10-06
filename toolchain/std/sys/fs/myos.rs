@@ -28,6 +28,9 @@ const EROFS: i32 = 30;
 const ENAMETOOLONG: i32 = 36;
 const ENOTEMPTY: i32 = 39;
 
+/// The longest path the kernel takes.
+const PATH_MAX: usize = 256;
+
 fn os_err<T>(code: i32) -> io::Result<T> {
     Err(io::Error::from_raw_os_error(code))
 }
@@ -35,7 +38,7 @@ fn os_err<T>(code: i32) -> io::Result<T> {
 /// The kernel's stat of `path` (the last component not followed), if any.
 fn kstat(bytes: &[u8]) -> Option<abi::StatBuf> {
     let mut buf = abi::StatBuf::default();
-    (abi::stat(bytes, &mut buf) == 0).then_some(buf)
+    (abi::statat(abi::AT_FDCWD, bytes, abi::AT_SYMLINK_NOFOLLOW, &mut buf) == 0).then_some(buf)
 }
 
 /// Why a call that needed `path` to exist failed: it does not, or it does
@@ -49,7 +52,7 @@ fn path_bytes(path: &Path) -> io::Result<&[u8]> {
     if bytes.is_empty() {
         return os_err(ENOENT);
     }
-    if bytes.len() > 0xffff {
+    if bytes.len() > PATH_MAX {
         return os_err(ENAMETOOLONG);
     }
     Ok(bytes)
@@ -65,7 +68,7 @@ impl DirBuilder {
 
     pub fn mkdir(&self, p: &Path) -> io::Result<()> {
         let bytes = path_bytes(p)?;
-        if abi::path_call(abi::SYS_MKDIR, bytes, 0o777) == 0 {
+        if abi::mknodat(bytes, abi::MKNOD_DIR) == 0 {
             return Ok(());
         }
         // `create_dir_all` takes EEXIST for an existing directory.
@@ -82,12 +85,12 @@ pub fn unlink(p: &Path) -> io::Result<()> {
         Some(st) if st.st_mode & S_IFMT == S_IFDIR => return os_err(EISDIR),
         Some(_) => {}
     }
-    if abi::path_call(abi::SYS_UNLINK, bytes, 0) == 0 { Ok(()) } else { os_err(EROFS) }
+    if abi::unlinkat(bytes, 0) == 0 { Ok(()) } else { os_err(EROFS) }
 }
 
 pub fn rmdir(p: &Path) -> io::Result<()> {
     let bytes = path_bytes(p)?;
-    if abi::path_call(abi::SYS_RMDIR, bytes, 0) == 0 {
+    if abi::unlinkat(bytes, abi::AT_REMOVEDIR) == 0 {
         return Ok(());
     }
     match kstat(bytes) {
@@ -99,7 +102,7 @@ pub fn rmdir(p: &Path) -> io::Result<()> {
 
 pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
     let (a, b) = (path_bytes(old)?, path_bytes(new)?);
-    if abi::path_pair(abi::SYS_RENAME, a, b) == 0 {
+    if abi::renameat(a, b) == 0 {
         return Ok(());
     }
     os_err(missing_or(a, EROFS))
@@ -107,7 +110,7 @@ pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
 
 pub fn symlink(original: &Path, link: &Path) -> io::Result<()> {
     let (a, b) = (path_bytes(original)?, path_bytes(link)?);
-    if abi::path_pair(abi::SYS_SYMLINK, a, b) == 0 {
+    if abi::symlinkat(a, b) == 0 {
         return Ok(());
     }
     os_err(if kstat(b).is_some() { EEXIST } else { EROFS })
@@ -116,7 +119,7 @@ pub fn symlink(original: &Path, link: &Path) -> io::Result<()> {
 pub fn readlink(p: &Path) -> io::Result<PathBuf> {
     let bytes = path_bytes(p)?;
     let mut buf = [0u8; 1024];
-    let n = abi::readlink(bytes, &mut buf);
+    let n = abi::readlinkat(bytes, &mut buf);
     if n < 0 {
         return os_err(missing_or(bytes, EINVAL));
     }
@@ -169,8 +172,7 @@ pub struct FileType {
 
 pub struct ReadDir {
     root: PathBuf,
-    buf: [u8; abi::LISTDIR_CAP],
-    len: usize,
+    buf: crate::vec::Vec<u8>,
     pos: usize,
 }
 
@@ -183,14 +185,18 @@ pub fn readdir(path: &Path) -> io::Result<ReadDir> {
     let bytes = path.as_os_str().as_bytes();
     // Empty path is cwd; kernel/libgloss treat "" like "/".
     let path_bytes = if bytes.is_empty() { b".".as_slice() } else { bytes };
-    let mut buf = [0u8; abi::LISTDIR_CAP];
-    let n = cvt(abi::listdir(path_bytes, &mut buf))? as usize;
-    Ok(ReadDir {
-        root: path.to_path_buf(),
-        buf,
-        len: n,
-        pos: 0,
-    })
+    // The kernel fills the buffer when there may be more: grow it until the
+    // names fit (up to its limit).
+    let mut buf = crate::vec![0u8; 4096];
+    loop {
+        let n = cvt(abi::listdirat(path_bytes, &mut buf))? as usize;
+        if n < buf.len() || buf.len() >= 256 * 1024 {
+            buf.truncate(n);
+            break;
+        }
+        buf = crate::vec![0u8; buf.len() * 2];
+    }
+    Ok(ReadDir { root: path.to_path_buf(), buf, pos: 0 })
 }
 
 const S_IFMT: u32 = 0o170000;
@@ -198,13 +204,10 @@ const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 const S_IFLNK: u32 = 0o120000;
 
-fn stat_path(path: &Path) -> io::Result<FileAttr> {
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.is_empty() {
-        return Err(io::const_error!(ErrorKind::InvalidInput, "empty path"));
-    }
+/// `stat` of `path` relative to `dirfd`, with `statat`'s flags.
+fn stat_at(dirfd: usize, bytes: &[u8], flags: usize) -> io::Result<FileAttr> {
     let mut buf = abi::StatBuf::default();
-    if abi::stat(bytes, &mut buf) < 0 {
+    if abi::statat(dirfd, bytes, flags, &mut buf) < 0 {
         // The kernel's one stat error: the path does not resolve (libgloss
         // says ENOENT too). uutils touch creates a file only on NotFound.
         return Err(io::Error::from_raw_os_error(2));
@@ -224,13 +227,20 @@ fn stat_path(path: &Path) -> io::Result<FileAttr> {
     })
 }
 
+fn stat_path(path: &Path, flags: usize) -> io::Result<FileAttr> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() {
+        return Err(io::const_error!(ErrorKind::InvalidInput, "empty path"));
+    }
+    stat_at(abi::AT_FDCWD, bytes, flags)
+}
+
 pub fn stat(path: &Path) -> io::Result<FileAttr> {
-    stat_path(path)
+    stat_path(path, 0)
 }
 
 pub fn lstat(path: &Path) -> io::Result<FileAttr> {
-    // myos has no distinct lstat yet; same as stat.
-    stat_path(path)
+    stat_path(path, abi::AT_SYMLINK_NOFOLLOW)
 }
 
 pub fn set_perm(_path: &Path, _perm: FilePermissions) -> io::Result<()> {
@@ -254,13 +264,13 @@ fn kernel_times(times: FileTimes) -> io::Result<[i64; 2]> {
 }
 
 pub fn set_times(path: &Path, times: FileTimes) -> io::Result<()> {
-    cvt(abi::utimens(path.as_os_str().as_bytes(), &kernel_times(times)?))?;
+    cvt(abi::utimensat(abi::AT_FDCWD, path_bytes(path)?, &kernel_times(times)?, 0))?;
     Ok(())
 }
 
-pub fn set_times_nofollow(_path: &Path, _times: FileTimes) -> io::Result<()> {
-    // The kernel sets times through symlinks only, never on the link.
-    unsupported()
+pub fn set_times_nofollow(path: &Path, times: FileTimes) -> io::Result<()> {
+    cvt(abi::utimensat(abi::AT_FDCWD, path_bytes(path)?, &kernel_times(times)?, abi::AT_SYMLINK_NOFOLLOW))?;
+    Ok(())
 }
 
 fn system_time(secs: i64) -> SystemTime {
@@ -433,7 +443,7 @@ fn open_path(path: &Path, opts: &OpenOptions) -> io::Result<File> {
     if opts.create_new && kstat(bytes).is_some() {
         return os_err(EEXIST);
     }
-    let fd = abi::open_flags(bytes, flags);
+    let fd = abi::openat(abi::AT_FDCWD, bytes, flags);
     if fd < 0 {
         return os_err(match kstat(bytes) {
             None => ENOENT,
@@ -450,10 +460,8 @@ impl File {
         open_path(path, opts)
     }
 
-    /// fstat: the path the fd is open on (`/proc/self/fd/N`), then stat.
     pub fn file_attr(&self) -> io::Result<FileAttr> {
-        let link = crate::format!("/proc/self/fd/{}", self.0.as_raw_fd());
-        stat_path(&readlink(Path::new(&link))?)
+        stat_at(self.0.as_raw_fd() as usize, b"", abi::AT_EMPTY_PATH)
     }
 
     pub fn fsync(&self) -> io::Result<()> {
@@ -550,7 +558,7 @@ impl File {
     }
 
     pub fn set_times(&self, times: FileTimes) -> io::Result<()> {
-        cvt(abi::futimens(self.0.as_raw_fd(), &kernel_times(times)?))?;
+        cvt(abi::utimensat(self.0.as_raw_fd() as usize, b"", &kernel_times(times)?, abi::AT_EMPTY_PATH))?;
         Ok(())
     }
 }
@@ -608,13 +616,13 @@ impl Iterator for ReadDir {
     type Item = io::Result<DirEntry>;
 
     fn next(&mut self) -> Option<io::Result<DirEntry>> {
-        while self.pos < self.len {
+        while self.pos < self.buf.len() {
             let start = self.pos;
-            while self.pos < self.len && self.buf[self.pos] != b'\n' {
+            while self.pos < self.buf.len() && self.buf[self.pos] != b'\n' {
                 self.pos += 1;
             }
             let end = self.pos;
-            if self.pos < self.len {
+            if self.pos < self.buf.len() {
                 self.pos += 1; // skip newline
             }
             if end == start {
@@ -644,7 +652,7 @@ impl DirEntry {
     }
 
     pub fn metadata(&self) -> io::Result<FileAttr> {
-        stat_path(&self.path())
+        stat_path(&self.path(), abi::AT_SYMLINK_NOFOLLOW)
     }
 
     pub fn file_type(&self) -> io::Result<FileType> {

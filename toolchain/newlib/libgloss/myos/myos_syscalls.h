@@ -11,27 +11,16 @@ struct winsize;
 
 #define MYOS_SYS_WRITE 0
 #define MYOS_SYS_EXIT 1
-#define MYOS_SYS_OPEN 2
 #define MYOS_SYS_READ 3
 #define MYOS_SYS_CLOSE 4
-#define MYOS_SYS_EXEC 5
 #define MYOS_SYS_FORK 6
 #define MYOS_SYS_WAIT 7
-#define MYOS_SYS_LISTDIR 8
 #define MYOS_SYS_BRK 9
 #define MYOS_SYS_PIPE 10
 #define MYOS_SYS_DUP2 11
-#define MYOS_SYS_STAT 12
 #define MYOS_SYS_EXECNAME 13
 #define MYOS_SYS_DUPFD 14
-#define MYOS_SYS_CHDIR 15
 #define MYOS_SYS_GETCWD 16
-#define MYOS_SYS_MKDIR 17
-#define MYOS_SYS_RMDIR 18
-#define MYOS_SYS_UNLINK 19
-#define MYOS_SYS_RENAME 20
-#define MYOS_SYS_SYMLINK 21
-#define MYOS_SYS_READLINK 22
 #define MYOS_SYS_MMAP 23
 #define MYOS_SYS_MUNMAP 24
 #define MYOS_SYS_MPROTECT 25
@@ -52,8 +41,6 @@ struct winsize;
 #define MYOS_SYS_SIGCHLD_TAKE 39
 #define MYOS_SYS_SIGCHLD_PENDING 41
 #define MYOS_SYS_PIPE_PEER 42
-#define MYOS_SYS_CHROOT 43
-#define MYOS_SYS_MKFIFO 44
 /* Return from a signal handler: the trampoline is done with the frame at the
  * stack pointer (signal.c, kernel/src/signal.rs). */
 #define MYOS_SYS_SIGRETURN 45
@@ -72,23 +59,48 @@ struct winsize;
 #define MYOS_SYS_NANOSLEEP 52
 #define MYOS_SLEEP_ANY_EVENT 1
 #define MYOS_SYS_GETPPID 60
-/* stat with 64-bit size and the access/modification times (myos_stat.h). */
-#define MYOS_SYS_STAT2 61
-/* utimens(path, len, times) / futimens(fd, times): times is two int64_t
- * seconds, MYOS_UTIME_NOW or MYOS_UTIME_OMIT; NULL sets both to now. */
-#define MYOS_SYS_UTIMENS 62
-#define MYOS_SYS_FUTIMENS 63
-#define MYOS_UTIME_NOW (-1LL)
-#define MYOS_UTIME_OMIT (-2LL)
 /* settimeofday(tv): two int64_t, seconds and microseconds (time.c). */
 #define MYOS_SYS_SETTIMEOFDAY 65
-/* stat2 and the owner's uid (myos_stat.h). */
-#define MYOS_SYS_STAT3 66
 /* setuser(buf, len): "name\0password"; ns(spec, len); policy_load(path,
  * len) (docs/security.md, pwdgrp.c). */
 #define MYOS_SYS_SETUSER 67
 #define MYOS_SYS_NS 68
 #define MYOS_SYS_POLICY_LOAD 69
+/* The path calls (at.c, kernel/src/user/at.rs): a directory fd
+ * (MYOS_AT_FDCWD: the cwd) and a path (pointer, length) relative to it;
+ * MYOS_AT_EMPTY_PATH with an empty path is the fd's own file.
+ *   openat(dirfd, path, len, flags)           an fd
+ *   statat(dirfd, path, len, flags, out)      struct myos_stat (myos_stat.h)
+ *   mknodat(dirfd, path, len, kind)           MYOS_MKNOD_DIR or _FIFO
+ *   symlinkat(target, tlen, dirfd, path, len)
+ *   unlinkat(dirfd, path, len, flags)         MYOS_AT_REMOVEDIR: a directory
+ *   renameat(odirfd, old, olen, ndirfd, new, nlen)
+ *   readlinkat(dirfd, path, len, buf, size)   the target's length
+ *   utimensat(dirfd, path, len, times, flags) times: two int64_t seconds,
+ *                                             MYOS_UTIME_NOW or _OMIT; NULL:
+ *                                             both now
+ *   chdirat(dirfd, path, len, flags)
+ *   listdirat(dirfd, path, len, buf, cap, flags)  names, one per line
+ *   execat(dirfd, path, len, pack, flags)     the exec block (_execve) */
+#define MYOS_SYS_OPENAT 70
+#define MYOS_SYS_STATAT 71
+#define MYOS_SYS_MKNODAT 72
+#define MYOS_SYS_SYMLINKAT 73
+#define MYOS_SYS_UNLINKAT 74
+#define MYOS_SYS_RENAMEAT 75
+#define MYOS_SYS_READLINKAT 76
+#define MYOS_SYS_UTIMENSAT 77
+#define MYOS_SYS_CHDIRAT 78
+#define MYOS_SYS_LISTDIRAT 79
+#define MYOS_SYS_EXECAT 80
+#define MYOS_AT_FDCWD (-100L)
+#define MYOS_AT_SYMLINK_NOFOLLOW 0x100
+#define MYOS_AT_REMOVEDIR 0x200
+#define MYOS_AT_EMPTY_PATH 0x1000
+#define MYOS_MKNOD_DIR 0
+#define MYOS_MKNOD_FIFO 1
+#define MYOS_UTIME_NOW (-1LL)
+#define MYOS_UTIME_OMIT (-2LL)
 
 /* fds per process (kernel MAX_FDS): sysconf(_SC_OPEN_MAX), getdtablesize. */
 #define MYOS_OPEN_MAX 64
@@ -114,6 +126,12 @@ long myos_syscall0(long nr);
 long myos_syscall1(long nr, long a0);
 long myos_syscall2(long nr, long a0, long a1);
 long myos_syscall3(long nr, long a0, long a1, long a2);
+long myos_syscall6(long nr, long a0, long a1, long a2, long a3, long a4, long a5);
+
+/* The names in a directory, one per line, into buf: `path` relative to
+ * `dirfd` (at.c's dirfd and flag values, AT_EMPTY_PATH for the fd's own);
+ * the bytes written, -1 with errno set. */
+long myos_listdirat(int dirfd, const char *path, char *buf, size_t cap, int flags);
 
 /* The terminal behind an fd, through its files (ttyctl.c, docs/tty.md). */
 #define MYOS_TTY_PATH 64
@@ -131,11 +149,6 @@ int myos_tty_set_winsize(int fd, unsigned rows, unsigned cols);
 /* Write lines to the terminal's ctl (`ctty`, `flush`, `winsize`). */
 int myos_tty_write(int fd, const char *text);
 
-void myos_fd_path_set(int fd, const char *path);
-const char *myos_fd_path_get(int fd);
-void myos_fd_path_clear(int fd);
-void myos_fd_path_dup(int oldfd, int newfd);
-int myos_fd_path_resolve(int dirfd, const char *path, char *out, size_t outsz);
 
 /* Userspace BSD sockets (socket.c); weak stubs in syscalls.c. */
 void myos_socket_on_close(int fd);

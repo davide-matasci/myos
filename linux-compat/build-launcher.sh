@@ -22,12 +22,14 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 
 for arch in "${ARCHES[@]}"; do
   out="$ROOT/target/linux-launcher-$arch-unknown-none"
-  if [[ -f "$out" && "$out" -nt "$SRC" && "$out" -nt "${BASH_SOURCE[0]}" ]]; then
+  triple="$arch-unknown-myos"
+  nl="$ROOT/target/newlib-$arch"
+  # A libgloss change (the syscalls it makes) needs a new launcher too.
+  if [[ -f "$out" && "$out" -nt "$SRC" && "$out" -nt "${BASH_SOURCE[0]}" \
+        && "$out" -nt "$nl/$triple/lib/libgloss.a" ]]; then
     continue
   fi
   echo "==> linux launcher ($arch, myos newlib)"
-  triple="$arch-unknown-myos"
-  nl="$ROOT/target/newlib-$arch"
   obj="$ROOT/target/linux-launcher-$arch.o"
   "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$nl/$triple/include" \
     -c "$SRC" -o "$obj"

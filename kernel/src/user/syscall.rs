@@ -3,35 +3,29 @@
 
 use super::*;
 
+// The numbers only grow; a call that went keeps its number unused. Gone:
+// 2 open, 5 exec, 8 listdir, 12 stat, 15 chdir, 17 mkdir, 18 rmdir,
+// 19 unlink, 20 rename, 21 symlink, 22 readlink, 43 chroot (a namespace,
+// `ns`), 44 mkfifo, 61 stat2, 62 utimens, 63 futimens, 66 stat3: the path
+// calls are the `*at` ones (`at`, 70 on). 28 was `ioctl`: a device's state
+// is its `ctl` file (docs/tty.md).
 const SYS_WRITE: usize = 0;
 const SYS_EXIT: usize = 1;
-const SYS_OPEN: usize = 2;
 const SYS_READ: usize = 3;
 const SYS_CLOSE: usize = 4;
-const SYS_EXEC: usize = 5;
 pub(super) const SYS_FORK: usize = 6;
 const SYS_WAIT: usize = 7;
-const SYS_LISTDIR: usize = 8;
 const SYS_BRK: usize = 9;
 const SYS_PIPE: usize = 10;
 const SYS_DUP2: usize = 11;
-pub const SYS_STAT: usize = 12;
 const SYS_EXECNAME: usize = 13;
 const SYS_DUPFD: usize = 14;
-const SYS_CHDIR: usize = 15;
 const SYS_GETCWD: usize = 16;
-const SYS_MKDIR: usize = 17;
-const SYS_RMDIR: usize = 18;
-const SYS_UNLINK: usize = 19;
-const SYS_RENAME: usize = 20;
-const SYS_SYMLINK: usize = 21;
-const SYS_READLINK: usize = 22;
 const SYS_MMAP: usize = 23;
 const SYS_MUNMAP: usize = 24;
 const SYS_MPROTECT: usize = 25;
 const SYS_LSEEK: usize = 26;
 const SYS_MOUNT: usize = 27;
-// 28 was `ioctl`, gone: a device's state is its `ctl` file (docs/tty.md).
 const SYS_SETSID: usize = 29;
 const SYS_SETPGID: usize = 30;
 const SYS_GETPGID: usize = 31;
@@ -54,10 +48,6 @@ const SYS_SIGCHLD_TAKE: usize = 39;
 const SYS_SIGCHLD_PENDING: usize = 41;
 /// Peer fd of a pipe end (the old SIGCHLD self-pipe wake).
 const SYS_PIPE_PEER: usize = 42;
-/// chroot(path): confine the caller (and its future children) to `path`.
-const SYS_CHROOT: usize = 43;
-/// mkfifo(path, mode): create a named pipe (tmpfs only).
-const SYS_MKFIFO: usize = 44;
 /// sigreturn(): the libc signal trampoline is done with the frame at the
 /// user stack pointer (see `crate::signal`).
 const SYS_SIGRETURN: usize = 45;
@@ -119,24 +109,11 @@ const SYS_INSMOD: usize = 58;
 const SYS_RMMOD: usize = 59;
 /// `getppid()`: the calling process's parent.
 const SYS_GETPPID: usize = 60;
-/// `stat2(path, len, out)`: `stat` with a 64-bit size and the access and
-/// modification times ([`MyosStat2Buf`]). The last component is not
-/// followed, as for `stat`.
-const SYS_STAT2: usize = 61;
-/// `utimens(path, len, times)`: set the access and modification times of
-/// `path` (symlinks followed) from `times`, two `i64`s: seconds since the
-/// epoch, [`UTIME_NOW`] or [`UTIME_OMIT`]; a null `times` sets both to now.
-const SYS_UTIMENS: usize = 62;
-/// `futimens(fd, times)`: [`SYS_UTIMENS`] for an open file.
-const SYS_FUTIMENS: usize = 63;
 /// `umount(path, len)`: detach the block-device mount at `path`.
 const SYS_UMOUNT: usize = 64;
 /// `settimeofday(tv)`: set the wall clock to `tv` (two `i64`s, seconds and
 /// microseconds, as `gettimeofday` writes them). The RTC is not written.
 const SYS_SETTIMEOFDAY: usize = 65;
-/// `stat3(path, len, out)`: [`SYS_STAT2`] and the owner's uid
-/// ([`MyosStat3Buf`]).
-const SYS_STAT3: usize = 66;
 /// `setuser(buf, len)`: `buf` is the user's name, a NUL and the password.
 /// Run the caller as that user in their login domain (docs/security.md).
 const SYS_SETUSER: usize = 67;
@@ -148,9 +125,6 @@ const SYS_NS: usize = 68;
 /// `policy_load(path, len)`: read the policy at `path` and make it the
 /// system's (`write` on `kernel.policy`).
 const SYS_POLICY_LOAD: usize = 69;
-/// `utimens` / `futimens` time values: now, or leave the time as it is.
-const UTIME_NOW: i64 = -1;
-const UTIME_OMIT: i64 = -2;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
@@ -189,6 +163,15 @@ impl SyscallRegs {
     }
     pub fn set_sp(&mut self, v: usize) {
         unsafe { *self.0.add(Self::SP) = v as u64 }
+    }
+    /// The fourth to sixth syscall arguments (the first three are the
+    /// dispatcher's own); zeros for a call a module makes without a block
+    /// (`KernelApi::native_syscall`).
+    pub fn args_3_5(&self) -> [usize; 3] {
+        if self.0.is_null() {
+            return [0; 3];
+        }
+        crate::arch::SYSCALL_ARGS_3_5.map(|i| unsafe { *self.0.add(i) as usize })
     }
     pub fn nr_reg(&self) -> usize {
         Self::NR_REG.map_or(0, |i| unsafe { *self.0.add(i) as usize })
@@ -242,28 +225,17 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
     match nr {
         SYS_WRITE => sys_write(a0, a1, a2),
         SYS_EXIT => sys_exit(a0),
-        SYS_OPEN => sys_open(a0, a1, a2),
         SYS_READ => sys_read(a0, a1, a2),
         SYS_CLOSE => sys_close(a0),
-        SYS_EXEC => sys_exec(a0, a1, a2),
         SYS_FORK => sys_fork(regs),
         SYS_WAIT => sys_wait(a0, a1),
         SYS_WAITPID => sys_waitpid(a0, a1, a2),
-        SYS_LISTDIR => sys_listdir(a0, a1, a2),
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0),
         SYS_DUP2 => sys_dup2(a0, a1),
         SYS_DUPFD => sys_dupfd(a0, a1),
-        SYS_STAT => sys_stat(a0, a1, a2),
         SYS_EXECNAME => sys_exec_name(a0, a1),
-        SYS_CHDIR => sys_chdir(a0, a1),
         SYS_GETCWD => sys_getcwd(a0, a1),
-        SYS_MKDIR => sys_mkdir(a0, a1, a2),
-        SYS_RMDIR => sys_rmdir(a0, a1),
-        SYS_UNLINK => sys_unlink(a0, a1),
-        SYS_RENAME => sys_rename(a0, a1, a2),
-        SYS_SYMLINK => sys_symlink(a0, a1, a2),
-        SYS_READLINK => sys_readlink(a0, a1, a2),
         SYS_MMAP => sys_mmap(a0),
         SYS_MUNMAP => sys_munmap(a0, a1),
         SYS_MPROTECT => sys_mprotect(a0, a1, a2),
@@ -283,8 +255,6 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_SIGCHLD_TAKE => sys_sigchld_take(),
         SYS_SIGCHLD_PENDING => sys_sigchld_pending(),
         SYS_PIPE_PEER => sys_pipe_peer(a0),
-        SYS_CHROOT => sys_chroot(a0, a1),
-        SYS_MKFIFO => sys_mkfifo(a0, a1, a2),
         SYS_SIGRETURN => crate::signal::sigreturn(regs),
         SYS_SIGPENDING => crate::signal::sigpending(),
         SYS_SIGSUSPEND => crate::signal::sigsuspend(a0 as u32),
@@ -298,15 +268,27 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_INSMOD => sys_insmod(a0, a1),
         SYS_RMMOD => sys_rmmod(a0, a1),
         SYS_GETPPID => task::current_ppid(),
-        SYS_STAT2 => sys_stat2(a0, a1, a2),
-        SYS_UTIMENS => sys_utimens(a0, a1, a2),
-        SYS_FUTIMENS => sys_futimens(a0, a1),
         SYS_UMOUNT => sys_umount(a0, a1),
         SYS_SETTIMEOFDAY => sys_settimeofday(a0),
-        SYS_STAT3 => sys_stat3(a0, a1, a2),
         SYS_SETUSER => sys_setuser(a0, a1),
         SYS_NS => sys_ns(a0, a1),
         SYS_POLICY_LOAD => sys_policy_load(a0, a1),
+        at::SYS_OPENAT..=at::SYS_EXECAT => {
+            let [a3, a4, a5] = regs.args_3_5();
+            match nr {
+                at::SYS_OPENAT => at::sys_openat(a0, a1, a2, a3),
+                at::SYS_STATAT => at::sys_statat(a0, a1, a2, a3, a4),
+                at::SYS_MKNODAT => at::sys_mknodat(a0, a1, a2, a3),
+                at::SYS_SYMLINKAT => at::sys_symlinkat(a0, a1, a2, a3, a4),
+                at::SYS_UNLINKAT => at::sys_unlinkat(a0, a1, a2, a3),
+                at::SYS_RENAMEAT => at::sys_renameat(a0, a1, a2, a3, a4, a5),
+                at::SYS_READLINKAT => at::sys_readlinkat(a0, a1, a2, a3, a4),
+                at::SYS_UTIMENSAT => at::sys_utimensat(a0, a1, a2, a3, a4),
+                at::SYS_CHDIRAT => at::sys_chdirat(a0, a1, a2, a3),
+                at::SYS_LISTDIRAT => at::sys_listdirat(a0, a1, a2, a3, a4, a5),
+                _ => at::sys_execat(a0, a1, a2, a3, a4),
+            }
+        }
         SYS_LINUX_NEXT_EXEC => {
             if crate::personality::request_next_exec() { 0 } else { SYSERR }
         }
@@ -395,7 +377,7 @@ use crate::sec::Rights;
 
 /// May the current process do `need` to `real` (a real path)? Its domain's
 /// rights under the policy, narrowed by its namespace (docs/security.md).
-fn may(real: &str, need: Rights) -> bool {
+pub(super) fn may(real: &str, need: Rights) -> bool {
     crate::sec::allowed(real, need)
 }
 
@@ -417,7 +399,7 @@ fn open_rights(flags: u32) -> Rights {
 const O_CREAT: u32 = 0o100;
 const O_TRUNC: u32 = 0o1000;
 
-fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
+pub(super) fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
     if len == 0 || len > MAX_PATH {
         return None;
     }
@@ -430,16 +412,6 @@ fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
         return None;
     }
     Some(buf)
-}
-
-fn sys_open(ptr: usize, path_len: usize, flags: usize) -> usize {
-    let Some(buf) = copy_user_path(ptr, path_len) else {
-        return SYSERR;
-    };
-    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
-        return SYSERR;
-    };
-    open_path(path, flags)
 }
 
 fn sys_insmod(ptr: usize, path_len: usize) -> usize {
@@ -485,16 +457,31 @@ fn sys_rmmod(ptr: usize, name_len: usize) -> usize {
 
 /// open(2) of a cwd-relative or absolute path already in kernel memory.
 pub(crate) fn open_path(path: &str, flags: usize) -> usize {
-    let Some(path) = resolve_copied_path(path) else {
-        return SYSERR;
-    };
+    let tree = fs::vfs::hold_read();
+    match resolve_copied_path(path) {
+        Some(real) => open_real(real, None, flags, tree),
+        None => SYSERR,
+    }
+}
+
+/// Open the file at `path` (real, resolved) for the caller, with the tree
+/// held since it was resolved (`tree`; let go before a wait). `cap`: the
+/// rights of the directory fd it was found beneath, for a file the
+/// caller's namespace cannot name (see `at`); the new fd grants them too.
+pub(super) fn open_real(
+    path: alloc::string::String,
+    cap: Option<Rights>,
+    flags: usize,
+    tree: fs::vfs::TreeGuard,
+) -> usize {
     // A new file needs `create` (and what it is opened for) on the label
     // its path gives it.
     let mut need = open_rights(flags as u32);
     if flags as u32 & O_CREAT != 0 && fs::stat(&path).is_none() {
         need = need | Rights::CREATE;
     }
-    if !may(&path, need) {
+    let rights = cap.unwrap_or_else(|| task::ns_rights(&path));
+    if !crate::sec::allowed_in(&path, need, rights) {
         return SYSERR;
     }
     // The pty ends (docs/tty.md): /dev/pts/clone allocates a pair and
@@ -523,8 +510,10 @@ pub(crate) fn open_path(path: &str, flags: usize) -> usize {
             return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
         }
     }
-    // Named FIFO: the fd is a pipe end, not a file vnode.
+    // Named FIFO: the fd is a pipe end, not a file vnode. Opening one waits
+    // for its other end: not with the tree held.
     if let Some(id) = fs::vfs::fifo_id(&path) {
+        drop(tree);
         return match task::fd_open_fifo(id, flags as u32) {
             Ok(fd) => fd,
             Err(task::FifoOpenErr::NoReader) => SYSERR_ENXIO,
@@ -534,7 +523,7 @@ pub(crate) fn open_path(path: &str, flags: usize) -> usize {
     let Some(node) = fs::open(&path, flags as u32) else {
         return SYSERR;
     };
-    match task::fd_open(node, flags as u32) {
+    match task::fd_open(node, flags as u32, rights) {
         Some(fd) => fd,
         None => SYSERR,
     }
@@ -635,12 +624,12 @@ fn sys_ns(ptr: usize, len: usize) -> usize {
         let rights = rights & task::ns_rights(&real);
         binds.push(task::ns::Binding { target, source: real, rights });
     }
-    // The cwd stays where it is when the new namespace still names it.
-    let real_cwd = resolve_copied_path(".");
+    // The cwd stays where it is when the new namespace still names it, and
+    // is its `/` otherwise (`chroot`).
     let ns = task::ns::Namespace { binds };
-    let cwd = real_cwd.and_then(|c| ns.to_virtual(&c)).unwrap_or_else(|| alloc::string::String::from("/"));
+    let keeps = resolve_copied_path(".").is_some_and(|c| ns.to_virtual(&c).is_some());
     task::set_ns(Some(ns));
-    if task::set_cwd(cwd.as_bytes()) { 0 } else { SYSERR }
+    if keeps { 0 } else { chdir_path("/") }
 }
 
 fn sys_policy_load(ptr: usize, len: usize) -> usize {
@@ -732,22 +721,6 @@ fn sys_sigprocmask(how: usize, set: usize, oset: usize) -> usize {
     } else {
         SYSERR
     }
-}
-
-pub(super) fn sys_exec(ptr: usize, path_len: usize, args_ptr: usize) -> usize {
-    let Some(buf) = copy_user_path(ptr, path_len) else {
-        return SYSERR;
-    };
-    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
-        return SYSERR;
-    };
-    let (arg_bufs, env_bufs) = match copy_user_exec_pack(args_ptr) {
-        Ok(v) => v,
-        Err(()) => return SYSERR,
-    };
-    let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
-    let env_refs: Vec<&[u8]> = env_bufs.iter().map(|s| s.as_slice()).collect();
-    exec_path(path, &arg_refs, &env_refs)
 }
 
 /// Replace the current image with the ELF at `path` (cwd-relative or
@@ -1018,7 +991,7 @@ fn exec_path_depth(
 
 /// Copy the native exec argument block `[argc, (ptr,len)…, envc, (ptr,len)…]`
 /// in from the caller (see [`MAX_ARGC`], [`MAX_ENVC`], [`MAX_EXEC_STRINGS`]).
-fn copy_user_exec_pack(args_ptr: usize) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), ()> {
+pub(super) fn copy_user_exec_pack(args_ptr: usize) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), ()> {
     if args_ptr == 0 {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -1056,205 +1029,6 @@ fn copy_user_exec_pack(args_ptr: usize) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), 
     let args = list(MAX_ARGC, &mut off)?;
     let env = list(MAX_ENVC, &mut off)?;
     Ok((args, env))
-}
-
-fn sys_listdir(path_ptr: usize, path_len: usize, buf: usize) -> usize {
-    // Match libgloss MYOS_DIRBUF / myos_user::LISTDIR_BUF so /s listings
-    // (~100 names) are not truncated. Callers must pass a mapped buffer of
-    // this size (user_range_ok); a 512-byte stack buf fails the check.
-    const LISTDIR_CAP: usize = 4096;
-    if buf == 0 || !user_range_ok(buf, LISTDIR_CAP) {
-        return SYSERR;
-    }
-    let path = if path_len == 0 {
-        alloc::string::String::from(".")
-    } else {
-        let Some(pbuf) = copy_user_path(path_ptr, path_len) else {
-            return SYSERR;
-        };
-        match core::str::from_utf8(&pbuf[..path_len]) {
-            Ok(p) => alloc::string::String::from(p),
-            Err(_) => return SYSERR,
-        }
-    };
-    let Some(path) = resolve_copied_path(&path) else {
-        return SYSERR;
-    };
-    if !may(&path, Rights::READ) {
-        return SYSERR;
-    }
-    let mut kbuf = [0u8; LISTDIR_CAP];
-    let n = fs::listdir(&path, &mut kbuf).min(LISTDIR_CAP);
-    let aspace = task::current_aspace();
-    if !write_user_bytes(aspace, buf, &kbuf[..n]) {
-        return SYSERR;
-    }
-    n
-}
-
-#[repr(C)]
-struct MyosStatBuf {
-    st_mode: u32,
-    st_size: u32,
-    st_ino: u32,
-    st_nlink: u32,
-    st_dev: u32,
-}
-
-/// [`SYS_STAT2`]'s result.
-#[repr(C)]
-struct MyosStat2Buf {
-    st_mode: u32,
-    st_nlink: u32,
-    st_ino: u32,
-    st_dev: u32,
-    st_size: u64,
-    /// Seconds since the epoch, 0 where the filesystem keeps none.
-    st_atime: i64,
-    st_mtime: i64,
-}
-
-/// `stat` of a user path (the last component not followed): the real path
-/// and what the filesystem says, the permission bits replaced by what the
-/// caller may do (`crate::sec::mode_bits`). A file the caller has no right
-/// at all on is not there for it.
-fn stat_user_path(path_ptr: usize, path_len: usize) -> Option<(alloc::string::String, fs::StatInfo)> {
-    let buf = copy_user_path(path_ptr, path_len)?;
-    let path = core::str::from_utf8(&buf[..path_len]).ok()?;
-    let path = resolve_copied_path_nofollow(path)?;
-    if crate::sec::rights_on(&path).is_empty() {
-        return None;
-    }
-    let mut info = fs::stat(&path)?;
-    let is_dir = info.mode & fs::S_IFMT == S_IFDIR;
-    info.mode = (info.mode & !0o777) | crate::sec::mode_bits(&path, is_dir);
-    Some((path, info))
-}
-
-fn sys_stat2(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
-    if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStat2Buf>()) {
-        return SYSERR;
-    }
-    let Some((_, info)) = stat_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    let out = MyosStat2Buf {
-        st_mode: info.mode,
-        st_nlink: info.nlink,
-        st_ino: info.ino,
-        st_dev: info.dev,
-        st_size: u64::from(info.size),
-        st_atime: info.atime as i64,
-        st_mtime: info.mtime as i64,
-    };
-    let bytes = unsafe {
-        core::slice::from_raw_parts(&out as *const MyosStat2Buf as *const u8, core::mem::size_of::<MyosStat2Buf>())
-    };
-    if write_user_bytes(task::current_aspace(), out_ptr, bytes) { 0 } else { SYSERR }
-}
-
-/// [`SYS_STAT3`]'s result: [`MyosStat2Buf`] and the owner.
-#[repr(C)]
-struct MyosStat3Buf {
-    st_mode: u32,
-    st_nlink: u32,
-    st_ino: u32,
-    st_dev: u32,
-    st_size: u64,
-    st_atime: i64,
-    st_mtime: i64,
-    /// The user the file's label names (`home(alice)`), else 0.
-    st_uid: u32,
-    st_gid: u32,
-}
-
-fn sys_stat3(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
-    if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStat3Buf>()) {
-        return SYSERR;
-    }
-    let Some((path, info)) = stat_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    let out = MyosStat3Buf {
-        st_mode: info.mode,
-        st_nlink: info.nlink,
-        st_ino: info.ino,
-        st_dev: info.dev,
-        st_size: u64::from(info.size),
-        st_atime: info.atime as i64,
-        st_mtime: info.mtime as i64,
-        st_uid: crate::sec::owner_uid(&path),
-        st_gid: 0,
-    };
-    let bytes = unsafe {
-        core::slice::from_raw_parts(&out as *const MyosStat3Buf as *const u8, core::mem::size_of::<MyosStat3Buf>())
-    };
-    if write_user_bytes(task::current_aspace(), out_ptr, bytes) { 0 } else { SYSERR }
-}
-
-/// The two times of `utimens` / `futimens` at user `times` (null: both now).
-fn read_set_times(times: usize) -> Option<(fs::SetTime, fs::SetTime)> {
-    if times == 0 {
-        return Some((fs::SetTime::Now, fs::SetTime::Now));
-    }
-    let mut raw = [0u8; 16];
-    if !user_range_ok(times, raw.len()) || !read_user_bytes(task::current_aspace(), times, &mut raw) {
-        return None;
-    }
-    let one = |b: &[u8]| match i64::from_ne_bytes(b.try_into().unwrap()) {
-        UTIME_NOW => Some(fs::SetTime::Now),
-        UTIME_OMIT => Some(fs::SetTime::Omit),
-        t if t >= 0 => Some(fs::SetTime::At(t as u64)),
-        _ => None,
-    };
-    Some((one(&raw[..8])?, one(&raw[8..])?))
-}
-
-fn sys_utimens(path_ptr: usize, path_len: usize, times: usize) -> usize {
-    let Some(buf) = copy_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
-        return SYSERR;
-    };
-    let (Some(path), Some((atime, mtime))) = (resolve_copied_path(path), read_set_times(times)) else {
-        return SYSERR;
-    };
-    if may(&path, Rights::SETATTR) && fs::set_times(&path, atime, mtime) { 0 } else { SYSERR }
-}
-
-fn sys_futimens(fd: usize, times: usize) -> usize {
-    let (Some(node), Some((atime, mtime))) = (task::fd_file_node(fd), read_set_times(times)) else {
-        return SYSERR;
-    };
-    if may(&fs::vfs::vnode_path(&node), Rights::SETATTR) && fs::set_times_node(&node, atime, mtime) { 0 } else { SYSERR }
-}
-
-fn sys_stat(path_ptr: usize, path_len: usize, out_ptr: usize) -> usize {
-    if out_ptr == 0 || !user_range_ok(out_ptr, core::mem::size_of::<MyosStatBuf>()) {
-        return SYSERR;
-    }
-    // Native `stat` and `lstat` share this call: the last component is not
-    // followed (a symlink reports itself), as before symlinks were followed.
-    let Some((_, info)) = stat_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    let out = MyosStatBuf {
-        st_mode: info.mode,
-        st_size: info.size,
-        st_ino: info.ino,
-        st_nlink: info.nlink,
-        st_dev: info.dev,
-    };
-    if !write_user_bytes(task::current_aspace(), out_ptr, unsafe {
-        core::slice::from_raw_parts(
-            &out as *const MyosStatBuf as *const u8,
-            core::mem::size_of::<MyosStatBuf>(),
-        )
-    }) {
-        return SYSERR;
-    }
-    0
 }
 
 /// The calling thread's user registers as a new task starts with them:
@@ -1425,96 +1199,9 @@ fn sys_dupfd(oldfd: usize, minfd: usize) -> usize {
     }
 }
 
-fn sys_chdir(path_ptr: usize, path_len: usize) -> usize {
-    let Some(buf) = copy_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
-        return SYSERR;
-    };
-    chdir_path(path)
-}
-
+/// chdir(2) of a path already in kernel memory (the Linux layer).
 pub(crate) fn chdir_path(path: &str) -> usize {
-    let Some(real) = resolve_copied_path(path) else {
-        return SYSERR;
-    };
-    if !may(&real, Rights::READ) {
-        return SYSERR;
-    }
-    let Some(info) = fs::stat(&real) else {
-        return SYSERR;
-    };
-    if (info.mode & fs::S_IFMT) != S_IFDIR {
-        return SYSERR;
-    }
-    // cwd is kept in the task's own (possibly chrooted) view of the tree.
-    let mut virt = [0u8; MAX_PATH];
-    let Some(vn) = fs::resolve_user_path_virtual(path, &mut virt) else {
-        return SYSERR;
-    };
-    if !task::set_cwd(&virt[..vn]) {
-        return SYSERR;
-    }
-    0
-}
-
-/// mkfifo(path, mode): create a named pipe. Only tmpfs (`/tmp`) supports
-/// FIFOs; the mode is not tracked (the policy decides who may use it).
-fn sys_mkfifo(path_ptr: usize, path_len: usize, _mode: usize) -> usize {
-    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    if fs::stat(&path).is_some() || !may(&path, Rights::CREATE) || !fs::vfs::mkfifo(&path) {
-        return SYSERR;
-    }
-    0
-}
-
-/// chroot(2): make `path` (a directory) the caller's `/`: a namespace of
-/// one binding (`task::ns`), with the rights the caller has there. Anyone
-/// may: it only narrows what the caller can name. The cwd keeps pointing at
-/// the same directory when it lies inside the new root, and moves to the new
-/// `/` otherwise (so `..` from the cwd cannot walk out of the jail).
-fn sys_chroot(path_ptr: usize, path_len: usize) -> usize {
-    let Some(buf) = copy_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
-        return SYSERR;
-    };
-    let Some(real) = resolve_copied_path(path) else {
-        return SYSERR;
-    };
-    let Some(info) = fs::stat(&real) else {
-        return SYSERR;
-    };
-    if (info.mode & fs::S_IFMT) != S_IFDIR || real.starts_with('@') {
-        return SYSERR;
-    }
-    // Real path of the current cwd, to re-express it under the new root.
-    let Some(real_cwd) = resolve_copied_path(".") else {
-        return SYSERR;
-    };
-    let rights = task::ns_rights(&real);
-    task::set_ns(Some(task::ns::Namespace {
-        binds: alloc::vec![task::ns::Binding { target: alloc::string::String::from("/"), source: real.clone(), rights }],
-    }));
-    let new_cwd = if real == "/" {
-        real_cwd.as_str()
-    } else if real_cwd == real {
-        "/"
-    } else if real_cwd.starts_with(real.as_str())
-        && real_cwd.as_bytes().get(real.len()) == Some(&b'/')
-    {
-        &real_cwd[real.len()..]
-    } else {
-        "/"
-    };
-    if !task::set_cwd(new_cwd.as_bytes()) {
-        return SYSERR;
-    }
-    0
+    at::chdir_at(at::AT_FDCWD, path, 0)
 }
 
 pub(crate) fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> usize {
@@ -1526,124 +1213,15 @@ pub(crate) fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> usize {
     }
     let mut cwd = [0u8; MAX_PATH];
     let n = task::cwd(&mut cwd);
-    // POSIX getcwd needs room for the pathname and a trailing NUL.
-    if n + 1 > buf_len {
+    // POSIX getcwd needs room for the pathname and a trailing NUL. The cwd
+    // may be gone (removed).
+    if n == 0 || n + 1 > buf_len {
         return SYSERR;
     }
     let mut tmp = [0u8; MAX_PATH + 1];
     tmp[..n].copy_from_slice(&cwd[..n]);
     tmp[n] = 0;
     if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n + 1]) {
-        return SYSERR;
-    }
-    n
-}
-
-/// A user path for calls that act on the last component itself (mkdir,
-/// rmdir, unlink, rename, symlink, readlink, mkfifo): symlinks are followed
-/// on the way there, not in the last component.
-fn copy_resolved_user_path(ptr: usize, len: usize) -> Option<alloc::string::String> {
-    let buf = copy_user_path(ptr, len)?;
-    let path = core::str::from_utf8(&buf[..len]).ok()?;
-    resolve_copied_path_nofollow(path)
-}
-
-/// Pack two lengths into one register: `(len_a << 16) | len_b` (each <= MAX_PATH).
-fn unpack_two_lens(packed: usize) -> Option<(usize, usize)> {
-    let a = packed >> 16;
-    let b = packed & 0xffff;
-    if a == 0 || a > MAX_PATH || b == 0 || b > MAX_PATH {
-        return None;
-    }
-    Some((a, b))
-}
-
-fn sys_mkdir(path_ptr: usize, path_len: usize, _mode: usize) -> usize {
-    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    if may(&path, Rights::CREATE) && fs::mkdir(&path) { 0 } else { SYSERR }
-}
-
-fn sys_rmdir(path_ptr: usize, path_len: usize) -> usize {
-    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    if may(&path, Rights::REMOVE) && fs::rmdir(&path) { 0 } else { SYSERR }
-}
-
-fn sys_unlink(path_ptr: usize, path_len: usize) -> usize {
-    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    if may(&path, Rights::REMOVE) && fs::unlink(&path) { 0 } else { SYSERR }
-}
-
-/// `a0`=old_ptr, `a1`=new_ptr, `a2`=(old_len<<16)|new_len
-fn sys_rename(old_ptr: usize, new_ptr: usize, packed_lens: usize) -> usize {
-    let Some((old_len, new_len)) = unpack_two_lens(packed_lens) else {
-        return SYSERR;
-    };
-    let Some(old) = copy_resolved_user_path(old_ptr, old_len) else {
-        return SYSERR;
-    };
-    let Some(new) = copy_resolved_user_path(new_ptr, new_len) else {
-        return SYSERR;
-    };
-    // A move removes the old name and creates the new one (replacing a file
-    // there removes it too).
-    let replaced = fs::stat(&new).is_some();
-    if !may(&old, Rights::REMOVE) || !may(&new, if replaced { Rights::CREATE | Rights::REMOVE } else { Rights::CREATE }) {
-        return SYSERR;
-    }
-    if fs::rename(&old, &new) { 0 } else { SYSERR }
-}
-
-/// `a0`=target_ptr, `a1`=link_ptr, `a2`=(target_len<<16)|link_len
-fn sys_symlink(target_ptr: usize, link_ptr: usize, packed_lens: usize) -> usize {
-    let Some((target_len, link_len)) = unpack_two_lens(packed_lens) else {
-        return SYSERR;
-    };
-    // Target is opaque text (may be relative); do not cwd-resolve it.
-    let Some(tbuf) = copy_user_path(target_ptr, target_len) else {
-        return SYSERR;
-    };
-    let Ok(target) = core::str::from_utf8(&tbuf[..target_len]) else {
-        return SYSERR;
-    };
-    let Some(linkpath) = copy_resolved_user_path(link_ptr, link_len) else {
-        return SYSERR;
-    };
-    if may(&linkpath, Rights::CREATE) && fs::symlink(target, &linkpath) {
-        0
-    } else {
-        SYSERR
-    }
-}
-
-/// `a0`=path_ptr, `a1`=buf_ptr, `a2`=(path_len<<16)|buf_len
-fn sys_readlink(path_ptr: usize, buf_ptr: usize, packed: usize) -> usize {
-    // The buffer may be bigger than a path (libc passes `PATH_MAX`): only
-    // the path length is bounded; the target fits in `MAX_PATH` bytes.
-    let (path_len, buf_len) = (packed >> 16, packed & 0xffff);
-    if path_len == 0 || path_len > MAX_PATH {
-        return SYSERR;
-    }
-    if buf_ptr == 0 || buf_len == 0 || !user_range_ok(buf_ptr, buf_len) {
-        return SYSERR;
-    }
-    let Some(path) = copy_resolved_user_path(path_ptr, path_len) else {
-        return SYSERR;
-    };
-    if !may(&path, Rights::READ) {
-        return SYSERR;
-    }
-    let mut tmp = [0u8; MAX_PATH];
-    let cap = buf_len.min(tmp.len());
-    let Some(n) = fs::readlink(&path, &mut tmp[..cap]) else {
-        return SYSERR;
-    };
-    if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n]) {
         return SYSERR;
     }
     n

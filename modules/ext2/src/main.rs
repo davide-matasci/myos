@@ -127,22 +127,24 @@ unsafe extern "C" fn ext2_lookup(_: *const u8, _: usize, _: *mut *const u8, _: *
 unsafe extern "C" fn ext2_stat<const S: usize>(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
     let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
     let Some(Ok(st)) = with_fs::<S, _>(|fs| fs.stat(path)) else { return -1 };
+    unsafe { *out = stat_info(&st) };
+    0
+}
+
+fn stat_info(st: &ext2fs::Stat) -> VfsStatInfo {
     let kind: u32 = match st.kind {
         Kind::Dir => 0o040000,
         Kind::Symlink => 0o120000,
         _ => 0o100000,
     };
-    unsafe {
-        *out = VfsStatInfo {
-            mode: kind | (st.mode as u32 & 0o7777),
-            size: st.size.min(u32::MAX as u64) as u32,
-            ino: st.ino,
-            nlink: st.links as u32,
-            mtime: u64::from(st.mtime),
-            atime: u64::from(st.atime),
-        }
-    };
-    0
+    VfsStatInfo {
+        mode: kind | (st.mode as u32 & 0o7777),
+        size: st.size.min(u32::MAX as u64) as u32,
+        ino: st.ino,
+        nlink: st.links as u32,
+        mtime: u64::from(st.mtime),
+        atime: u64::from(st.atime),
+    }
 }
 
 unsafe extern "C" fn ext2_listdir<const S: usize>(
@@ -242,6 +244,49 @@ unsafe extern "C" fn ext2_set_times<const S: usize>(path: *const u8, path_len: u
     rc(with_fs::<S, _>(|fs| fs.set_times(path, inode_time(atime), inode_time(mtime))))
 }
 
+unsafe extern "C" fn ext2_unlink_keep<const S: usize>(path: *const u8, path_len: usize) -> i64 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    match with_fs::<S, _>(|fs| fs.unlink_keep(path)) {
+        Some(Ok(ino)) => i64::from(ino),
+        _ => -1,
+    }
+}
+
+/// An inode number from the kernel (one `unlink_keep` gave).
+fn ino32(ino: u64) -> Option<u32> {
+    u32::try_from(ino).ok()
+}
+
+unsafe extern "C" fn ext2_read_ino<const S: usize>(ino: u64, pos: usize, buf: *mut u8, buf_len: usize) -> i32 {
+    let (Some(ino), Some(out)) = (ino32(ino), unsafe { bytes_mut(buf, buf_len) }) else {
+        return -1;
+    };
+    count(with_fs::<S, _>(|fs| fs.read_ino(ino, pos as u64, out))).max(0)
+}
+
+unsafe extern "C" fn ext2_write_ino<const S: usize>(ino: u64, pos: usize, buf: *const u8, buf_len: usize) -> i32 {
+    let (Some(ino), Some(src)) = (ino32(ino), unsafe { bytes(buf, buf_len) }) else {
+        return -1;
+    };
+    count(with_fs::<S, _>(|fs| fs.write_ino(ino, pos as u64, src)))
+}
+
+unsafe extern "C" fn ext2_stat_ino<const S: usize>(ino: u64, out: *mut VfsStatInfo) -> i32 {
+    let Some(ino) = ino32(ino) else { return -1 };
+    match with_fs::<S, _>(|fs| fs.stat_ino(ino)) {
+        Some(Ok(st)) => {
+            unsafe { *out = stat_info(&st) };
+            0
+        }
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn ext2_forget_ino<const S: usize>(ino: u64) -> i32 {
+    let Some(ino) = ino32(ino) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.forget(ino)))
+}
+
 /// The last fd on a file closed: write what is cached to the disk.
 unsafe extern "C" fn ext2_release<const S: usize>(_path: *const u8, _path_len: usize) -> i32 {
     rc(with_fs::<S, _>(|fs| fs.sync()))
@@ -277,6 +322,11 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         open: None,
         set_times: Some(ext2_set_times::<S>),
         unmount: Some(ext2_unmount::<S>),
+        unlink_keep: Some(ext2_unlink_keep::<S>),
+        read_ino: Some(ext2_read_ino::<S>),
+        write_ino: Some(ext2_write_ino::<S>),
+        stat_ino: Some(ext2_stat_ino::<S>),
+        forget_ino: Some(ext2_forget_ino::<S>),
     }
 }
 

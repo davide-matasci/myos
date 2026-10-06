@@ -1,6 +1,7 @@
 //! Usermode: nested `user/init` ELF, per-process page tables, syscalls.
 
 mod aspace;
+mod at;
 mod enter;
 mod image;
 mod syscall;

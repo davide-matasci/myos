@@ -34,6 +34,11 @@ struct OpenFile {
     pos: usize,
     writable: bool,
     append: bool,
+    /// What it lets its holder do beneath it, for a directory: the rights
+    /// its opener's namespace had there (docs/security.md). A path relative
+    /// to a directory fd its holder's namespace cannot name is checked
+    /// against these instead.
+    rights: crate::sec::Rights,
     /// The fds referring to it, over every process.
     refs: u32,
 }
@@ -48,10 +53,10 @@ static OPEN_FILES: Mutex<[Option<OpenFile>; MAX_OPEN_FILES]> =
     Mutex::new([const { None }; MAX_OPEN_FILES]);
 
 /// A new description with one reference; `None` when the table is full.
-fn open_file_alloc(node: crate::fs::Vnode, writable: bool, append: bool) -> Option<usize> {
+fn open_file_alloc(node: crate::fs::Vnode, writable: bool, append: bool, rights: crate::sec::Rights) -> Option<usize> {
     let mut files = OPEN_FILES.lock();
     let id = files.iter().position(Option::is_none)?;
-    files[id] = Some(OpenFile { node, pos: 0, writable, append, refs: 1 });
+    files[id] = Some(OpenFile { node, pos: 0, writable, append, rights, refs: 1 });
     Some(id)
 }
 
@@ -71,16 +76,14 @@ fn open_file_unref(id: usize) -> Option<crate::fs::Vnode> {
     if f.refs > 0 {
         return None;
     }
-    let node = f.node;
-    *slot = None;
-    Some(node)
+    slot.take().map(|f| f.node)
 }
 
 /// `(node, pos, writable, append)` of a description.
 fn open_file_get(id: usize) -> Option<(crate::fs::Vnode, usize, bool, bool)> {
     let files = OPEN_FILES.lock();
     let f = files.get(id)?.as_ref()?;
-    Some((f.node, f.pos, f.writable, f.append))
+    Some((f.node.clone(), f.pos, f.writable, f.append))
 }
 
 fn open_file_node(id: usize) -> Option<crate::fs::Vnode> {
@@ -177,14 +180,16 @@ fn user_buf_ok(buf: usize, len: usize, t: &Process) -> bool {
     mmap_range_in(&t.mmap, buf, len)
 }
 
-pub fn fd_open(node: crate::fs::Vnode, flags: u32) -> Option<usize> {
+/// An fd on `node`, opened with `flags`, granting `rights` beneath it (see
+/// [`OpenFile::rights`]).
+pub fn fd_open(node: crate::fs::Vnode, flags: u32, rights: crate::sec::Rights) -> Option<usize> {
     let writable = crate::fs::open_writable(flags);
     let append = crate::fs::open_append(flags);
     // A file one program holds at a time (`/dev/console/kbd`) may say no.
     if !crate::fs::vfs::open_hook(&node) {
         return None;
     }
-    let Some(id) = open_file_alloc(node, writable, append) else {
+    let Some(id) = open_file_alloc(node.clone(), writable, append, rights) else {
         crate::fs::vfs::open_hook_undo(&node);
         return None;
     };
@@ -806,6 +811,14 @@ pub fn fd_path(fd: usize) -> Option<alloc::string::String> {
     })
 }
 
+/// What `fd` grants beneath it (a file description's `rights`).
+pub fn fd_rights(fd: usize) -> Option<crate::sec::Rights> {
+    match with_process_mut(|t| t.fds.get(fd).copied())? {
+        FdEntry::File(id) => OPEN_FILES.lock().get(id)?.as_ref().map(|f| f.rights),
+        _ => None,
+    }
+}
+
 /// The file behind `fd` (for file-backed `mmap`), if it is a regular file.
 pub fn fd_file_node(fd: usize) -> Option<crate::fs::Vnode> {
     match with_process_mut(|t| t.fds.get(fd).copied())? {
@@ -843,8 +856,7 @@ fn fd_is_console_tty(entry: FdEntry) -> bool {
             let Some(node) = open_file_node(id) else {
                 return false;
             };
-            let p = node.path_str();
-            p == "tty" || p == "console/data"
+            crate::fs::vfs::node_at(&node, "/dev/tty") || crate::fs::vfs::node_at(&node, "/dev/console/data")
         }
         _ => false,
     }

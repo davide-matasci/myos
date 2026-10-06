@@ -133,57 +133,6 @@ int ftruncate(int fd, off_t length) {
     return 0;
 }
 
-/* Named pipes live on tmpfs (/tmp); other mounts refuse them. */
-int mkfifo(const char *path, mode_t mode) {
-    struct stat st;
-    if (path == NULL || *path == '\0') {
-        errno = ENOENT;
-        return -1;
-    }
-    long ret = myos_syscall3(MYOS_SYS_MKFIFO, (long)(uintptr_t)path,
-        (long)strlen(path), (long)mode);
-    if (ret == (long)MYOS_SYSERR) {
-        if (stat(path, &st) == 0) {
-            errno = EEXIST;
-        } else {
-            /* Missing parent -> ENOENT; existing dir on a FIFO-less fs -> EPERM. */
-            char dir[256];
-            const char *slash = strrchr(path, '/');
-            size_t n = slash == NULL ? 0 : (size_t)(slash - path);
-            if (slash == path) {
-                n = 1;
-            }
-            if (n == 0) {
-                dir[0] = '.';
-                n = 1;
-            } else if (n < sizeof dir) {
-                memcpy(dir, path, n);
-            } else {
-                n = 0;
-            }
-            dir[n] = '\0';
-            errno = (n != 0 && stat(dir, &st) == 0) ? EPERM : ENOENT;
-        }
-        return -1;
-    }
-    return 0;
-}
-
-int rmdir(const char *path) {
-    long ret;
-    if (path == NULL) {
-        errno = ENOENT;
-        return -1;
-    }
-    ret = myos_syscall3(
-        MYOS_SYS_RMDIR, (long)(uintptr_t)path, (long)strlen(path), 0);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = EROFS;
-        return -1;
-    }
-    return 0;
-}
-
 int pipe(int fildes[2]) {
     unsigned long fds[2];
     long ret;
@@ -319,21 +268,6 @@ int sigprocmask(int how, const sigset_t *restrict set, sigset_t *restrict oset) 
     }
     if (oset != NULL) {
         *oset = (sigset_t)kold;
-    }
-    return 0;
-}
-
-int chroot(const char *path) {
-    struct stat st;
-    if (path == NULL || *path == '\0') {
-        errno = ENOENT;
-        return -1;
-    }
-    if (myos_syscall2(MYOS_SYS_CHROOT, (long)(uintptr_t)path,
-            (long)strlen(path)) == (long)MYOS_SYSERR) {
-        errno = stat(path, &st) != 0 ? ENOENT
-            : !S_ISDIR(st.st_mode) ? ENOTDIR : ENAMETOOLONG;
-        return -1;
     }
     return 0;
 }

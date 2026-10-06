@@ -84,21 +84,23 @@ exec /bin/custom/netd -> netd
 
 | Operation | Rights |
 |---|---|
-| `open` | `read` and/or `write` (`append` with `O_APPEND`, `write` with `O_TRUNC`); a new file `create` too |
-| `stat`, `lstat` | any right (a file the caller has none on is not there for it) |
-| `listdir`, `chdir`, `readlink` | `read` |
-| `mkdir`, `mkfifo`, `symlink` | `create` (on the new name) |
-| `unlink`, `rmdir` | `remove` |
-| `rename` | `remove` on the old name, `create` on the new one (`remove` too when it replaces a file) |
-| `exec` | `exec` (a script's interpreter too) |
-| `utimensat`, `futimens` | `setattr` |
+| `openat` | `read` and/or `write` (`append` with `O_APPEND`, `write` with `O_TRUNC`); a new file `create` too |
+| `statat` | any right (a file the caller has none on is not there for it); none for an fd's own file (`fstat`) |
+| `listdirat`, `chdirat`, `readlinkat` | `read` |
+| `mknodat`, `symlinkat` | `create` (on the new name) |
+| `unlinkat` | `remove` |
+| `renameat` | `remove` on the old name, `create` on the new one (`remove` too when it replaces a file) |
+| `execat` | `exec` (a script's interpreter too) |
+| `utimensat` | `setattr` |
 | `mount`, `umount` | `mount` on the directory; a disk `read write`, a bind's source `read` |
 | `insmod`, `rmmod` | `read` on the module, `write` on `kernel.modules` |
 | `kill` | `signal` on `proc(target's user)` |
 
 An fd keeps the access it was opened with: passing it to another process
 (inheritance, a namespace that cannot name the file) is a deliberate grant,
-not checked again.
+not checked again. A call on an fd's own file (`futimens`, `fdopendir`,
+`fstat`'s permission bits) checks the policy against the rights its
+opener's namespace had there, not the caller's.
 
 `stat` shows what the caller may do: the owner's permission bits are
 `r` (read), `w` (write, or create in a directory), `x` (exec, or read for a
@@ -157,12 +159,23 @@ sec ns /bin:read,exec /lib:read /dev/sda:read,write -- B
   most the caller's there, so a namespace only narrows. There is no way back
   to a name the namespace lacks: `mount` and `bind` need names too.
 - The policy still applies: the namespace hides, the policy refuses.
-- A namespace is inherited on fork and kept across exec. `chroot DIR` is a
-  namespace of one binding, `DIR` at `/`.
+- A namespace is inherited on fork and kept across exec. `chroot DIR`
+  (libc) is a namespace of one binding, `DIR` at `/`.
 - `/proc/self/fd/N` names a file as the namespace does; a file it cannot
   name has no link to re-open.
 - A file handed over as an open fd (`sec ns ... -- B < /dev/sdb`) works:
   the fd is the grant.
+- A directory handed over as an open fd that the namespace cannot name is
+  a **capability** (`sec ns ... -- B 3< /srv/data`): the `*at` calls on it
+  (`openat(3, "x/y", ...)`, `mkdirat`, `unlinkat`, `renameat`, ...) work
+  beneath it, with the rights its opener's namespace had on the directory
+  when it was opened (all of them without a namespace) in place of the
+  namespace's, and the policy still applies. Paths stay beneath it: `..`
+  above it, an absolute path, an absolute symlink target or a relative one
+  leading out fails. A directory opened beneath it is a capability with the
+  same rights, beneath which the same holds. It has no name in the
+  holder's view, so it cannot be the cwd (`fchdir` fails) nor hold a
+  program to exec.
 
 ## Limits
 

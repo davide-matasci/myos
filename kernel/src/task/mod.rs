@@ -403,13 +403,32 @@ pub fn exec_name(out: &mut [u8]) -> usize {
     })
 }
 
+/// The cwd, in the process's view of the tree: where its directory is now,
+/// as its namespace names it. 0 when that directory is gone (or the
+/// namespace no longer names it): relative paths then lead nowhere.
 pub fn cwd(out: &mut [u8]) -> usize {
-    with_process_mut(|t| {
-        let n = t.cwd_len as usize;
-        let n = n.min(out.len()).min(t.cwd.len());
+    let (node, n) = with_process_mut(|t| {
+        let n = (t.cwd_len as usize).min(out.len()).min(t.cwd.len());
         out[..n].copy_from_slice(&t.cwd[..n]);
-        n
-    })
+        (t.cwd_node.clone(), n)
+    });
+    let Some(node) = node else {
+        return n;
+    };
+    let Some(real) = crate::fs::vfs::node_path(&node) else {
+        return 0;
+    };
+    let virt = with_ns(|ns| match ns {
+        None => Some(real),
+        Some(ns) => ns.to_virtual(&real),
+    });
+    match virt {
+        Some(v) if v.len() <= out.len() => {
+            out[..v.len()].copy_from_slice(v.as_bytes());
+            v.len()
+        }
+        _ => 0,
+    }
 }
 
 /// True when the current process has a namespace (sees part of the tree).
@@ -478,16 +497,20 @@ pub fn remap_sec_ctx(mut f: impl FnMut(crate::sec::Ctx) -> crate::sec::Ctx) {
     irq_restore(flags);
 }
 
-/// Set absolute cwd. `path` must be a canonical absolute path (`/` or `/…`).
-pub fn set_cwd(path: &[u8]) -> bool {
+/// Set the cwd: the directory `node`, which it follows wherever it moves,
+/// or, for a directory a namespace makes up (no node), the canonical
+/// absolute `path` in the process's view (`/` or `/…`).
+pub fn set_cwd(path: &[u8], node: Option<crate::fs::Vnode>) -> bool {
     if path.is_empty() || path[0] != b'/' || path.len() > 256 {
         return false;
     }
-    with_process_mut(|t| {
+    let old = with_process_mut(|t| {
         t.cwd = [0; 256];
         t.cwd[..path.len()].copy_from_slice(path);
         t.cwd_len = path.len() as u16;
+        core::mem::replace(&mut t.cwd_node, node)
     });
+    drop(old);
     true
 }
 

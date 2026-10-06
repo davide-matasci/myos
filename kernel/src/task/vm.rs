@@ -163,11 +163,11 @@ fn add_region(t: &mut Process, va: u64, pages: u32, prot: u32, file: Option<(&cr
 /// one no region names any more.
 fn mapped_file_slot(t: &mut Process, node: &crate::fs::Vnode) -> Option<usize> {
     let used = |i: usize| t.mmap.iter().any(|r| r.file as usize == i + 1);
-    if let Some(i) = (0..MAX_MAPPED_FILES).find(|&i| used(i) && t.mapped_files[i] == *node) {
+    if let Some(i) = (0..MAX_MAPPED_FILES).find(|&i| used(i) && t.mapped_files[i].as_ref() == Some(node)) {
         return Some(i);
     }
     let i = (0..MAX_MAPPED_FILES).find(|&i| !used(i))?;
-    t.mapped_files[i] = *node;
+    t.mapped_files[i] = Some(node.clone());
     Some(i)
 }
 
@@ -178,9 +178,9 @@ pub fn mmap_backing(va: usize) -> Option<(u32, Option<(crate::fs::Vnode, usize)>
     let page = crate::user::PAGE;
     with_process_mut(|t| {
         let r = region_at(&t.mmap, va)?;
-        let file = (r.file != 0).then(|| {
+        let file = t.mapped_files.get((r.file as usize).wrapping_sub(1)).and_then(|f| {
             let off = (r.fpage as usize + (va - r.va as usize) / page) * page;
-            (t.mapped_files[r.file as usize - 1], off)
+            Some((f.clone()?, off))
         });
         Some((r.prot, file))
     })

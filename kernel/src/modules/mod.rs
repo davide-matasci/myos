@@ -837,7 +837,7 @@ unsafe extern "C" fn api_path_resolve(path: StrRef, mode: u32, out: *mut u8, cap
     match mode {
         myos_abi::MYOS_PATH_VIRTUAL => {
             let mut b = [0u8; 256];
-            match crate::fs::resolve_user_path_virtual(path, &mut b) {
+            match crate::fs::resolve_user_path_virtual(None, path, &mut b) {
                 Some(n) => put_str(out, cap, &b[..n]),
                 None => -1,
             }

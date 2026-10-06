@@ -24,14 +24,19 @@ pub(super) struct Process {
     /// Basename from the last successful exec (multicall argv[0] fallback).
     pub exec_name: [u8; 32],
     pub exec_name_len: u8,
-    /// Absolute cwd (POSIX). Survives exec; copied on fork. Always starts with `/`.
+    /// The cwd's directory (`task::cwd`), which it follows wherever it moves;
+    /// `None` for one a namespace makes up. Survives exec; shared on fork.
+    pub cwd_node: Option<crate::fs::Vnode>,
+    /// The cwd as an absolute path in the process's view when it was set:
+    /// what it is without a node. Always starts with `/`.
     pub cwd: [u8; 256],
     pub cwd_len: u16,
     /// The mmap regions (in the window after the brk heap), sorted by
     /// address, none empty; at most [`MAX_MMAP_REGIONS`].
     pub mmap: Vec<MmapRegion>,
-    /// The files the regions page in from; an entry no region names is free.
-    pub mapped_files: [crate::fs::Vnode; MAX_MAPPED_FILES],
+    /// The files the regions page in from; an entry no region names is free
+    /// (it lets its file go when it is reused, or at exec and exit).
+    pub mapped_files: [Option<crate::fs::Vnode>; MAX_MAPPED_FILES],
     /// Session id (slot of the session leader). Inherited on fork. New
     /// spawns start as their own session (`sid == slot`); `setsid` creates a
     /// fresh session for a forked child.
@@ -71,10 +76,11 @@ static EMPTY_PROC: Process = Process {
     brk_cur: 0,
     exec_name: [0; 32],
     exec_name_len: 0,
+    cwd_node: None,
     cwd: root_cwd_buf(),
     cwd_len: 1,
     mmap: Vec::new(),
-    mapped_files: [crate::fs::Vnode::EMPTY; MAX_MAPPED_FILES],
+    mapped_files: [const { None }; MAX_MAPPED_FILES],
     sid: 0,
     pgid: 0,
     has_ctty: false,
@@ -85,7 +91,8 @@ static EMPTY_PROC: Process = Process {
 
 /// A new, empty process block (heap; never staged on the kernel stack: a
 /// `Process` is several KiB). The bitwise copy of [`EMPTY_PROC`] is sound:
-/// its owning fields, the empty `mmap` and `ns`, allocate nothing.
+/// its owning fields, the empty `mmap`, `ns`, `mapped_files` and `cwd_node`,
+/// own nothing.
 pub(super) fn new_process() -> Box<Process> {
     let mut b = Box::<Process>::new_uninit();
     unsafe {
@@ -101,10 +108,12 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
     let mut b = unsafe {
         let p = b.as_mut_ptr();
         core::ptr::copy_nonoverlapping(src, p, 1);
-        // The bitwise copy shares `src`'s region list and namespace: give
-        // the child its own.
+        // The bitwise copy shares `src`'s region list, namespace, mapped
+        // files and cwd: give the child its own.
         core::ptr::write(&raw mut (*p).mmap, src.mmap.clone());
         core::ptr::write(&raw mut (*p).ns, src.ns.clone());
+        core::ptr::write(&raw mut (*p).mapped_files, src.mapped_files.clone());
+        core::ptr::write(&raw mut (*p).cwd_node, src.cwd_node.clone());
         b.assume_init()
     };
     for fd in b.fds.iter_mut() {

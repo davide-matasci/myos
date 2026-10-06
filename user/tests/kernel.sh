@@ -57,6 +57,41 @@ c" ]
 }
 t fd_offsets fd_offsets
 
+# An fd holds its file, not its name: it follows a rename (of the file or
+# of a directory above it), a new file that takes the old name is not the
+# one it reads or writes, and a file unlinked under it stays readable,
+# under a name no listing shows, until it is closed.
+fd_identity() {
+	echo one > /tmp/fdi.a
+	exec 4< /tmp/fdi.a 5>> /tmp/fdi.a
+	mv /tmp/fdi.a /tmp/fdi.b
+	echo new > /tmp/fdi.a
+	echo two >&5
+	got=$(cat <&4)
+	exec 4<&- 5>&-
+	echo "renamed: $got"
+	[ "$got" = "one
+two" ] && [ "$(cat /tmp/fdi.a)" = new ] || return 1
+	mkdir /tmp/fdi.d
+	echo three > /tmp/fdi.d/f
+	exec 4< /tmp/fdi.d/f
+	mv /tmp/fdi.d /tmp/fdi.e
+	got=$(cat <&4)
+	exec 4<&-
+	echo "directory renamed: $got"
+	[ "$got" = three ] || return 1
+	exec 4< /tmp/fdi.b
+	rm /tmp/fdi.b /tmp/fdi.a /tmp/fdi.e/f
+	rmdir /tmp/fdi.e
+	listed=$(ls -a /tmp | grep -c unlinked)
+	got=$(cat <&4)
+	exec 4<&-
+	echo "unlinked: $got, listed $listed"
+	[ "$got" = "one
+two" ] && [ "$listed" = 0 ]
+}
+t fd_identity fd_identity
+
 # rmmod: a module that provides nothing (hello) unloads and loads again;
 # one with a registration (the block driver's disks) is refused and keeps
 # working.
@@ -354,6 +389,15 @@ sec_ns() {
 	[ "$out" = "bin tmp " ] || return 1
 	[ "$($ns /bin/sbase/cat < /tmp/sec/disk-b)" = disk-b ]
 }
+# A directory fd is a capability: a program handed one its namespace
+# cannot name works beneath it with the rights it was opened with (all of
+# them, or read only), and never above it (user/c/at_smoke.c).
+sec_cap() {
+	mkdir -p /tmp/sec/cap/sub && echo in > /tmp/sec/cap/f || return 1
+	$SEC ns /bin:read,exec -- /bin/etc/at_smoke cap 3< /tmp/sec/cap || return 1
+	$SEC ns /bin:read,exec /tmp/sec/cap:read -- /bin/custom/sh -c \
+		"$SEC ns /bin:read,exec -- /bin/etc/at_smoke capro 3< /tmp/sec/cap"
+}
 # A Linux program is held to the same policy (the layer's file calls): it
 # sees alice's file as her, not bob's.
 sec_linux() {
@@ -370,6 +414,7 @@ t sec_homes sec_homes
 t sec_untrusted sec_untrusted
 t sec_signal sec_signal
 t sec_ns sec_ns
+t sec_cap sec_cap
 if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
 	t sec_linux sec_linux
 fi

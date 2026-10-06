@@ -28,19 +28,6 @@ static int myos_nosys(void) {
     return -1;
 }
 
-int access(const char *path, int mode) {
-    struct stat st;
-    (void)mode;
-    if (path == NULL) {
-        errno = EINVAL;
-        return -1;
-    }
-    if (stat(path, &st) < 0) {
-        return -1;
-    }
-    return 0;
-}
-
 int creat(const char *path, mode_t mode) {
     (void)mode;
     return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
@@ -53,74 +40,11 @@ int chmod(const char *path, mode_t mode) {
     return 0;
 }
 
-int mkdir(const char *path, mode_t mode) {
-    long ret;
-    if (path == NULL) {
-        errno = ENOENT;
-        return -1;
-    }
-    ret = myos_syscall3(
-        MYOS_SYS_MKDIR, (long)(uintptr_t)path, (long)strlen(path), (long)mode);
-    if (ret == (long)MYOS_SYSERR) {
-        /* The kernel folds every failure into one generic error. Distinguish
-         * EEXIST (path already exists as a directory) so `mkdir -p` works: it
-         * only tolerates EEXIST, and a generic EROFS made it abort on any
-         * pre-existing directory. */
-        struct stat st;
-        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
-            errno = EEXIST;
-        } else {
-            errno = EROFS;
-        }
-        return -1;
-    }
-    return 0;
-}
-
 mode_t umask(mode_t mask) {
     static mode_t cur = 022;
     mode_t old = cur;
     cur = mask;
     return old;
-}
-
-int symlink(const char *target, const char *linkpath) {
-    size_t tlen;
-    size_t llen;
-    long packed;
-    long ret;
-
-    if (target == NULL || linkpath == NULL) {
-        errno = ENOENT;
-        return -1;
-    }
-    tlen = strlen(target);
-    llen = strlen(linkpath);
-    if (tlen == 0 || llen == 0 || tlen > 0xffff || llen > 0xffff) {
-        errno = ENAMETOOLONG;
-        return -1;
-    }
-    packed = (long)((tlen << 16) | llen);
-    ret = myos_syscall3(
-        MYOS_SYS_SYMLINK,
-        (long)(uintptr_t)target,
-        (long)(uintptr_t)linkpath,
-        packed);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = EROFS;
-        return -1;
-    }
-    return 0;
-}
-
-int mknod(const char *path, mode_t mode, dev_t dev) {
-    (void)dev;
-    /* Only FIFOs can be created; device nodes live in the kernel's devfs. */
-    if (S_ISFIFO(mode)) {
-        return mkfifo(path, mode & 07777);
-    }
-    errno = EPERM;
-    return -1;
 }
 
 int chown(const char *path, uid_t owner, gid_t group) {
@@ -135,161 +59,6 @@ int lchown(const char *path, uid_t owner, gid_t group) {
     (void)owner;
     (void)group;
     return myos_rofs();
-}
-
-#ifndef AT_FDCWD
-#define AT_FDCWD (-100)
-#endif
-
-int openat(int dirfd, const char *path, int flags, ...) {
-    char full[512];
-    mode_t mode = 0;
-    va_list ap;
-
-    if (path == NULL) {
-        errno = ENOENT;
-        return -1;
-    }
-    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
-        return -1;
-    }
-    if (flags & O_CREAT) {
-        va_start(ap, flags);
-        mode = (mode_t)va_arg(ap, int);
-        va_end(ap);
-        return open(full, flags, mode);
-    }
-    return open(full, flags);
-}
-
-int faccessat(int dirfd, const char *path, int mode, int flags) {
-    char full[512];
-    (void)flags;
-    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
-        return -1;
-    }
-    return access(full, mode);
-}
-
-int mkfifoat(int dirfd, const char *path, mode_t mode) {
-    char full[512];
-    if (path == NULL) {
-        errno = ENOENT;
-        return -1;
-    }
-    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
-        return -1;
-    }
-    return mkfifo(full, mode);
-}
-
-int mknodat(int dirfd, const char *path, mode_t mode, dev_t dev) {
-    char full[512];
-    if (path == NULL) {
-        errno = ENOENT;
-        return -1;
-    }
-    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
-        return -1;
-    }
-    return mknod(full, mode, dev);
-}
-
-int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
-    char full[512];
-    (void)flags;
-    if (st == NULL) {
-        errno = EINVAL;
-        return -1;
-    }
-    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
-        return -1;
-    }
-    return stat(full, st);
-}
-
-#ifndef AT_REMOVEDIR
-#define AT_REMOVEDIR 0x200
-#endif
-
-int unlinkat(int dirfd, const char *path, int flags) {
-    char full[512];
-    if (path == NULL) {
-        errno = ENOENT;
-        return -1;
-    }
-    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
-        return -1;
-    }
-    if (flags & AT_REMOVEDIR) {
-        return rmdir(full);
-    }
-    return unlink(full);
-}
-
-/* timespec pair (NULL = both now) -> the kernel's two int64_t seconds. */
-static int myos_times_from_timespec(const struct timespec ts[2], int64_t out[2]) {
-    for (int i = 0; i < 2; i++) {
-        if (ts[i].tv_nsec == UTIME_NOW) {
-            out[i] = MYOS_UTIME_NOW;
-        } else if (ts[i].tv_nsec == UTIME_OMIT) {
-            out[i] = MYOS_UTIME_OMIT;
-        } else if (ts[i].tv_nsec < 0 || ts[i].tv_nsec >= 1000000000L || ts[i].tv_sec < 0) {
-            errno = EINVAL;
-            return -1;
-        } else {
-            out[i] = (int64_t)ts[i].tv_sec; /* the kernel keeps seconds */
-        }
-    }
-    return 0;
-}
-
-static int myos_utimens_path(const char *path, const int64_t *times) {
-    struct stat st;
-    long ret = myos_syscall3(
-        MYOS_SYS_UTIMENS, (long)(uintptr_t)path, (long)strlen(path), (long)(uintptr_t)times);
-    if (ret == (long)MYOS_SYSERR) {
-        /* A missing file, or a filesystem that keeps no times. */
-        errno = stat(path, &st) == 0 ? EROFS : ENOENT;
-        return -1;
-    }
-    return 0;
-}
-
-int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags) {
-    char full[512];
-    int64_t t[2];
-    if (times != NULL && myos_times_from_timespec(times, t) < 0) {
-        return -1;
-    }
-    if (path == NULL) {
-        return futimens(dirfd, times); /* Linux: NULL path = dirfd itself */
-    }
-    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
-        return -1;
-    }
-    if (flags & AT_SYMLINK_NOFOLLOW) {
-        /* The kernel sets times through symlinks only, never on the link. */
-        struct stat st;
-        if (lstat(full, &st) == 0 && S_ISLNK(st.st_mode)) {
-            errno = EOPNOTSUPP;
-            return -1;
-        }
-    }
-    return myos_utimens_path(full, times != NULL ? t : NULL);
-}
-
-int futimens(int fd, const struct timespec times[2]) {
-    int64_t t[2];
-    if (times != NULL && myos_times_from_timespec(times, t) < 0) {
-        return -1;
-    }
-    long ret = myos_syscall2(MYOS_SYS_FUTIMENS, fd, (long)(uintptr_t)(times != NULL ? t : NULL));
-    if (ret == (long)MYOS_SYSERR) {
-        errno = fcntl(fd, F_GETFD) < 0 ? EBADF : EROFS;
-        return -1;
-    }
-    return 0;
 }
 
 /* timeval pair (NULL = both now) -> timespec pair. */
@@ -330,12 +99,6 @@ int utime(const char *path, const struct utimbuf *times) {
     ts[1].tv_sec = times->modtime;
     ts[1].tv_nsec = 0;
     return utimensat(AT_FDCWD, path, ts, 0);
-}
-
-DIR *fdopendir(int fd) {
-    (void)fd;
-    errno = ENOSYS;
-    return NULL;
 }
 
 extern char **environ;
@@ -521,7 +284,6 @@ int dup2(int oldfd, int newfd) {
         errno = EBADF;
         return -1;
     }
-    myos_fd_path_dup(oldfd, newfd);
     return newfd;
 }
 
@@ -532,18 +294,6 @@ int fchownat(int dirfd, const char *path, uid_t owner, gid_t group, int flags) {
     (void)group;
     (void)flags;
     return myos_rofs();
-}
-
-int symlinkat(const char *target, int dirfd, const char *path) {
-    char full[512];
-    if (path == NULL) {
-        errno = ENOENT;
-        return -1;
-    }
-    if (myos_fd_path_resolve(dirfd, path, full, sizeof full) < 0) {
-        return -1;
-    }
-    return symlink(target, full);
 }
 
 
@@ -559,7 +309,6 @@ int _fcntl(int fd, int cmd, int arg) {
             errno = EBADF;
             return -1;
         }
-        myos_fd_path_dup(fd, (int)ret);
         myos_fd_nonblock_dup(fd, (int)ret);
         return (int)ret;
     }
@@ -657,16 +406,8 @@ pid_t getsid(pid_t pid) {
 
 /* getpwnam/getgrnam live in pwdgrp.c (root:root only). */
 
-int _mkdir(const char *path, mode_t mode) {
-    return mkdir(path, mode);
-}
-
 int _chmod(const char *path, mode_t mode) {
     return chmod(path, mode);
-}
-
-int _access(const char *path, int mode) {
-    return access(path, mode);
 }
 
 int _creat(const char *path, mode_t mode) {
@@ -677,6 +418,3 @@ mode_t _umask(mode_t mask) {
     return umask(mask);
 }
 
-int _symlink(const char *target, const char *linkpath) {
-    return symlink(target, linkpath);
-}

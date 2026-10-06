@@ -33,6 +33,7 @@ smokes=(
   "child-smoke user/c/child_smoke.c"
   "libc-smoke user/c/libc_smoke.c"
   "sec user/c/sec.c"
+  "at-smoke user/c/at_smoke.c"
 )
 for arch in x86_64 aarch64 riscv64; do
   triple="${arch}-unknown-myos"
@@ -67,4 +68,4 @@ for arch in x86_64 aarch64 riscv64; do
 done
 
 myos_c_smokes_version_hash > "$MYOS_C_SMOKES_VERSION"
-echo "c smokes -> target/{c-hello,c-socket_smoke,tcp-listen-smoke,pty-smoke,urandom-smoke,tty-smoke,unix-smoke,fb-smoke,poll-smoke,kbd-smoke,uio-smoke,pthread-smoke,netconv-smoke,child-smoke,libc-smoke,sec}-<arch>-unknown-none"
+echo "c smokes -> target/{c-hello,c-socket_smoke,tcp-listen-smoke,pty-smoke,urandom-smoke,tty-smoke,unix-smoke,fb-smoke,poll-smoke,kbd-smoke,uio-smoke,pthread-smoke,netconv-smoke,child-smoke,libc-smoke,sec,at-smoke}-<arch>-unknown-none"

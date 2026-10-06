@@ -7,16 +7,21 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 source "$HERE/versions.env"
 
 TARBALL="$ROOT/target/make-${MAKE_VERSION}.tar.gz"
-URL="https://ftp.gnu.org/gnu/make/make-${MAKE_VERSION}.tar.gz"
 
+# The tarball from the first of MAKE_URLS that answers.
 fetch() {
-  echo "==> fetch make $MAKE_VERSION ($URL)"
+  local url
   mkdir -p "$ROOT/target"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$TARBALL" "$URL"
-  else
-    wget -q -O "$TARBALL" "$URL"
-  fi
+  for url in $MAKE_URLS; do
+    echo "==> fetch make $MAKE_VERSION ($url)"
+    if curl -fsSL --connect-timeout 20 --retry 2 -o "$TARBALL" "$url"; then
+      return
+    fi
+    echo "fetch $url failed; trying the next mirror" >&2
+    rm -f "$TARBALL"
+  done
+  echo "error: cannot fetch make $MAKE_VERSION" >&2
+  exit 1
 }
 
 if [[ -f "$TARBALL" ]]; then

@@ -186,6 +186,7 @@ pub fn replace_user(
         p.user_argv = user_argv;
         p.brk_cur = heap_base_for(user_base, stack_off);
         p.mmap.clear();
+        p.mapped_files = [const { None }; MAX_MAPPED_FILES];
         // POSIX exec: ignored signals, the blocked mask and pending signals
         // survive; caught ones revert to SIG_DFL (signal_table_exec below).
     });
@@ -652,6 +653,8 @@ pub fn die() -> ! {
             let off = p.stack_off;
             let brk = p.brk_cur;
             let mmap = core::mem::take(&mut p.mmap);
+            p.mapped_files = [const { None }; MAX_MAPPED_FILES];
+            p.cwd_node = None;
             p.user_base = 0;
             p.image_span = 0;
             p.stack_off = 0;

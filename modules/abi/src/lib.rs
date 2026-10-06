@@ -20,7 +20,9 @@
 /// [`KernelApi::vfs_set_times`] (`utimensat`).
 /// 26 added [`ModuleVfsOps::unmount`] (`umount(2)`).
 /// 27 added [`KernelApi::thread_place`] (a new thread's own CPU).
-pub const ABI_VERSION: u32 = 27;
+/// 28 added the hooks that keep a file unlinked while it is held
+/// ([`ModuleVfsOps::unlink_keep`] and the `*_ino` ones).
+pub const ABI_VERSION: u32 = 28;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -156,6 +158,22 @@ pub struct ModuleVfsOps {
     /// write back what is cached and forget the filesystem. The hooks are
     /// not called for it again.
     pub unmount: Option<unsafe extern "C" fn()>,
+    // --- ABI 28: files held after an unlink ---
+    /// Optional: remove the name `path` (not a directory) but keep its
+    /// file, which something still holds (an open fd, a mapping): its
+    /// inode number (> 0), or negative. The kernel uses the file through
+    /// `read_ino`, `write_ino` and `stat_ino` from then on and calls
+    /// `forget_ino` when the last holder lets go. Without it, a held file a
+    /// name no longer leads to is gone for its holders.
+    pub unlink_keep: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i64>,
+    /// [`ModuleVfsOps::read`] of a file `unlink_keep` kept.
+    pub read_ino: Option<unsafe extern "C" fn(ino: u64, pos: usize, buf: *mut u8, buf_len: usize) -> i32>,
+    /// [`ModuleVfsOps::write`] of a file `unlink_keep` kept.
+    pub write_ino: Option<unsafe extern "C" fn(ino: u64, pos: usize, buf: *const u8, buf_len: usize) -> i32>,
+    /// [`ModuleVfsOps::stat`] of a file `unlink_keep` kept.
+    pub stat_ino: Option<unsafe extern "C" fn(ino: u64, out: *mut VfsStatInfo) -> i32>,
+    /// Nothing holds the file `unlink_keep` kept any more: free it.
+    pub forget_ino: Option<unsafe extern "C" fn(ino: u64) -> i32>,
 }
 
 /// [`ModuleVfsOps::read`]: nothing to read yet. A read through an fd waits

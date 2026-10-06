@@ -105,8 +105,24 @@ pub fn open(path: &[u8]) -> Option<usize> {
     open_flags(path, 0)
 }
 
+/// The path calls (`kernel/src/user/at.rs`): a directory fd (`AT_FDCWD`:
+/// the cwd) and a path relative to it.
+const SYS_OPENAT: usize = 70;
+const SYS_STATAT: usize = 71;
+const SYS_MKNODAT: usize = 72;
+const SYS_SYMLINKAT: usize = 73;
+const SYS_UNLINKAT: usize = 74;
+const SYS_RENAMEAT: usize = 75;
+const SYS_READLINKAT: usize = 76;
+const SYS_LISTDIRAT: usize = 79;
+const SYS_EXECAT: usize = 80;
+const AT_FDCWD: usize = -100isize as usize;
+const AT_SYMLINK_NOFOLLOW: usize = 0x100;
+const AT_REMOVEDIR: usize = 0x200;
+const MKNOD_DIR: usize = 0;
+
 pub fn open_flags(path: &[u8], flags: u32) -> Option<usize> {
-    let fd = unsafe { sys_open(path.as_ptr() as usize, path.len(), flags as usize) };
+    let fd = unsafe { sys6(SYS_OPENAT, AT_FDCWD, path.as_ptr() as usize, path.len(), flags as usize, 0, 0) };
     if fd == usize::MAX { None } else { Some(fd) }
 }
 
@@ -171,7 +187,7 @@ pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
     let path_ptr = et_exec_fixup_ptr(path.as_ptr() as usize);
     if argc == 0 && envc == 0 {
         unsafe {
-            sys_exec(path_ptr, path.len(), 0);
+            sys6(SYS_EXECAT, AT_FDCWD, path_ptr, path.len(), 0, 0, 0);
         }
         return;
     }
@@ -206,7 +222,7 @@ pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
         pack[env_base + 2 + i * 2] = env_lens[i];
     }
     unsafe {
-        sys_exec(path_ptr, path.len(), pack.as_ptr() as usize);
+        sys6(SYS_EXECAT, AT_FDCWD, path_ptr, path.len(), pack.as_ptr() as usize, 0, 0);
     }
 }
 
@@ -245,67 +261,47 @@ pub fn dup2(oldfd: usize, newfd: usize) -> bool {
     unsafe { sys_dup2(oldfd, newfd) != usize::MAX }
 }
 
-/// Must match kernel `SYS_LISTDIR` / libgloss `MYOS_DIRBUF`.
+/// The size of the buffer callers list a directory into.
 pub const LISTDIR_BUF: usize = 4096;
 
-/// List directory entries at `path` (newline-separated) into `buf`.
-/// `buf` must hold at least [`LISTDIR_BUF`] bytes (kernel listdir cap).
+/// List directory entries at `path` (newline-separated) into `buf`: the
+/// bytes written (all of `buf`: there may be more), `usize::MAX` on error.
 pub fn listdir(path: &[u8], buf: &mut [u8]) -> usize {
-    if buf.len() < LISTDIR_BUF {
-        return usize::MAX;
-    }
     unsafe {
-        sys_listdir(
-            path.as_ptr() as usize,
-            path.len(),
-            buf.as_mut_ptr() as usize,
-        )
+        sys6(SYS_LISTDIRAT, AT_FDCWD, path.as_ptr() as usize, path.len(), buf.as_mut_ptr() as usize, buf.len(), 0)
     }
 }
 
-fn pack_lens(a: usize, b: usize) -> usize {
-    (a << 16) | b
+/// A path call on `path` (relative to the cwd) with one more argument.
+fn path_call(nr: usize, path: &[u8], arg: usize) -> bool {
+    unsafe { sys6(nr, AT_FDCWD, path.as_ptr() as usize, path.len(), arg, 0, 0) != usize::MAX }
 }
 
 pub fn mkdir(path: &[u8]) -> bool {
-    unsafe { sys3(17, path.as_ptr() as usize, path.len(), 0o755) != usize::MAX }
+    path_call(SYS_MKNODAT, path, MKNOD_DIR)
 }
 
 pub fn rmdir(path: &[u8]) -> bool {
-    unsafe { sys3(18, path.as_ptr() as usize, path.len(), 0) != usize::MAX }
+    path_call(SYS_UNLINKAT, path, AT_REMOVEDIR)
 }
 
 pub fn unlink(path: &[u8]) -> bool {
-    unsafe { sys3(19, path.as_ptr() as usize, path.len(), 0) != usize::MAX }
+    path_call(SYS_UNLINKAT, path, 0)
 }
 
 pub fn rename(old: &[u8], new: &[u8]) -> bool {
-    let packed = pack_lens(old.len(), new.len());
-    unsafe { sys3(20, old.as_ptr() as usize, new.as_ptr() as usize, packed) != usize::MAX }
+    let (o, n) = (old.as_ptr() as usize, new.as_ptr() as usize);
+    unsafe { sys6(SYS_RENAMEAT, AT_FDCWD, o, old.len(), AT_FDCWD, n, new.len()) != usize::MAX }
 }
 
 pub fn symlink(target: &[u8], linkpath: &[u8]) -> bool {
-    let packed = pack_lens(target.len(), linkpath.len());
-    unsafe {
-        sys3(
-            21,
-            target.as_ptr() as usize,
-            linkpath.as_ptr() as usize,
-            packed,
-        ) != usize::MAX
-    }
+    let (t, l) = (target.as_ptr() as usize, linkpath.as_ptr() as usize);
+    unsafe { sys6(SYS_SYMLINKAT, t, target.len(), AT_FDCWD, l, linkpath.len(), 0) != usize::MAX }
 }
 
 pub fn readlink(path: &[u8], buf: &mut [u8]) -> Option<usize> {
-    let packed = pack_lens(path.len(), buf.len());
-    let n = unsafe {
-        sys3(
-            22,
-            path.as_ptr() as usize,
-            buf.as_mut_ptr() as usize,
-            packed,
-        )
-    };
+    let (p, b) = (path.as_ptr() as usize, buf.as_mut_ptr() as usize);
+    let n = unsafe { sys6(SYS_READLINKAT, AT_FDCWD, p, path.len(), b, buf.len(), 0) };
     if n == usize::MAX { None } else { Some(n) }
 }
 
@@ -370,14 +366,15 @@ pub fn umount(path: &[u8]) -> bool {
     unsafe { sys3(64, buf.as_ptr() as usize, n, 0) != usize::MAX }
 }
 
-/// The mode bits of `path` (`SYS_STAT` = 12, a symlink not followed), or
-/// `None` when it does not exist.
+/// The mode bits of `path` (a symlink not followed), or `None` when it
+/// does not exist.
 pub fn stat_mode(path: &[u8]) -> Option<u32> {
     let mut buf = [0u8; 128];
     let n = copy_exec_bytes(&mut buf, path);
-    // st_mode, st_size, st_ino, st_nlink, st_dev
-    let mut out = [0u32; 5];
-    let ret = unsafe { sys3(12, buf.as_ptr() as usize, n, out.as_mut_ptr() as usize) };
+    // The kernel's `MyosStat`: st_mode first, 48 bytes in all.
+    let mut out = [0u32; 12];
+    let (p, o) = (buf.as_ptr() as usize, out.as_mut_ptr() as usize);
+    let ret = unsafe { sys6(SYS_STATAT, AT_FDCWD, p, n, AT_SYMLINK_NOFOLLOW, o, 0) };
     (ret != usize::MAX).then_some(out[0])
 }
 
@@ -564,6 +561,62 @@ fn write_u32(mut n: u32) {
 // System-V dispatch. Wrappers lateout those so LLVM reloads them.
 
 #[cfg(target_arch = "x86_64")]
+unsafe fn sys6(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "syscall",
+        inout("rax") nr => ret,
+        in("rdi") a0,
+        in("rsi") a1,
+        in("rdx") a2,
+        in("r10") a3,
+        in("r8") a4,
+        in("r9") a5,
+        out("rcx") _,
+        out("r11") _,
+        lateout("rdi") _,
+        lateout("rsi") _,
+        lateout("rdx") _,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn sys6(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "svc #0",
+        in("x8") nr,
+        inout("x0") a0 => ret,
+        in("x1") a1,
+        in("x2") a2,
+        in("x3") a3,
+        in("x4") a4,
+        in("x5") a5,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn sys6(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "ecall",
+        in("a7") nr,
+        inout("a0") a0 => ret,
+        in("a1") a1,
+        in("a2") a2,
+        in("a3") a3,
+        in("a4") a4,
+        in("a5") a5,
+        options(nostack),
+    );
+    ret
+}
+
+#[cfg(target_arch = "x86_64")]
 unsafe fn sys3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
@@ -640,26 +693,6 @@ unsafe fn sys_exit(code: usize) -> ! {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sys_open(ptr: usize, len: usize, flags: usize) -> usize {
-    let ret: usize;
-    core::arch::asm!(
-        "syscall",
-        in("rax") 2usize,
-        in("rdi") ptr,
-        in("rsi") len,
-        in("rdx") flags,
-        lateout("rax") ret,
-        out("rcx") _,
-        out("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
-        lateout("rdx") _,
-        options(nostack),
-    );
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
 unsafe fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
@@ -689,22 +722,6 @@ unsafe fn sys_close(fd: usize) {
         lateout("rdi") _,
         lateout("rsi") _,
         lateout("rdx") _,
-        options(nostack),
-    );
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn sys_exec(ptr: usize, len: usize, args: usize) {
-    core::arch::asm!(
-        "syscall",
-        in("rax") 5usize,
-        in("rdi") ptr,
-        in("rsi") len,
-        inout("rdx") args => _,
-        out("rcx") _,
-        out("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
         options(nostack),
     );
 }
@@ -785,26 +802,6 @@ unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sys_listdir(path: usize, path_len: usize, buf: usize) -> usize {
-    let ret: usize;
-    core::arch::asm!(
-        "syscall",
-        in("rax") 8usize,
-        in("rdi") path,
-        in("rsi") path_len,
-        in("rdx") buf,
-        lateout("rax") ret,
-        out("rcx") _,
-        out("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
-        lateout("rdx") _,
-        options(nostack),
-    );
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
 unsafe fn sys_brk(addr: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
@@ -847,20 +844,6 @@ unsafe fn sys_exit(code: usize) -> ! {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn sys_open(ptr: usize, len: usize, flags: usize) -> usize {
-    let ret: usize;
-    core::arch::asm!(
-        "svc #0",
-        in("x8") 2usize,
-        inout("x0") ptr => ret,
-        in("x1") len,
-        in("x2") flags,
-        options(nostack),
-    );
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
 unsafe fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
@@ -880,18 +863,6 @@ unsafe fn sys_close(fd: usize) {
         "svc #0",
         in("x8") 4usize,
         in("x0") fd,
-        options(nostack),
-    );
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn sys_exec(ptr: usize, len: usize, args: usize) {
-    core::arch::asm!(
-        "svc #0",
-        in("x8") 5usize,
-        in("x0") ptr,
-        in("x1") len,
-        in("x2") args,
         options(nostack),
     );
 }
@@ -951,20 +922,6 @@ unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn sys_listdir(path: usize, path_len: usize, buf: usize) -> usize {
-    let ret: usize;
-    core::arch::asm!(
-        "svc #0",
-        in("x8") 8usize,
-        inout("x0") path => ret,
-        in("x1") path_len,
-        in("x2") buf,
-        options(nostack),
-    );
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
 unsafe fn sys_brk(addr: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
@@ -1001,20 +958,6 @@ unsafe fn sys_exit(code: usize) -> ! {
 }
 
 #[cfg(target_arch = "riscv64")]
-unsafe fn sys_open(ptr: usize, len: usize, flags: usize) -> usize {
-    let ret: usize;
-    core::arch::asm!(
-        "ecall",
-        in("a7") 2usize,
-        inout("a0") ptr => ret,
-        in("a1") len,
-        in("a2") flags,
-        options(nostack),
-    );
-    ret
-}
-
-#[cfg(target_arch = "riscv64")]
 unsafe fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
@@ -1034,18 +977,6 @@ unsafe fn sys_close(fd: usize) {
         "ecall",
         in("a7") 4usize,
         in("a0") fd,
-        options(nostack),
-    );
-}
-
-#[cfg(target_arch = "riscv64")]
-unsafe fn sys_exec(ptr: usize, len: usize, args: usize) {
-    core::arch::asm!(
-        "ecall",
-        in("a7") 5usize,
-        in("a0") ptr,
-        in("a1") len,
-        in("a2") args,
         options(nostack),
     );
 }
@@ -1090,20 +1021,6 @@ unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
         in("a0") oldfd,
         in("a1") newfd,
         lateout("a0") ret,
-        options(nostack),
-    );
-    ret
-}
-
-#[cfg(target_arch = "riscv64")]
-unsafe fn sys_listdir(path: usize, path_len: usize, buf: usize) -> usize {
-    let ret: usize;
-    core::arch::asm!(
-        "ecall",
-        in("a7") 8usize,
-        inout("a0") path => ret,
-        in("a1") path_len,
-        in("a2") buf,
         options(nostack),
     );
     ret
