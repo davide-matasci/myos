@@ -93,7 +93,7 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
     alloc::format!(
         "FramesAlloc: {}\nFramesFree: {}\nFramesLive: {}\nLiveKiB: {}\n\
          SiteVirtq: {}\nSiteFault0: {}\nSiteExec: {}\nSitePageTable: {}\nSiteMmap: {}\nSiteOther: {}\n\
-         BlockCacheKiB: {}\n",
+         BlockCacheKiB: {}\nPageCacheKiB: {}\n",
         a,
         f,
         a - f,
@@ -105,6 +105,7 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
         site(4),
         site(5),
         crate::blk::cache_frames() as u64 * (PAGE / 1024),
+        crate::fs::pagecache::frames() as u64 * (PAGE / 1024),
     )
     .into_bytes()
 }
@@ -260,11 +261,13 @@ fn validate_free_frame(phys: u64) {
 }
 
 /// Allocate a 4 KiB frame, zero it, return its physical address. When
-/// memory runs out the block cache gives its frames back first.
+/// memory runs out the block cache, then the page cache's unmapped pages,
+/// give their frames back first.
 pub fn alloc_frame() -> u64 {
     // Prefer reclaimed user frames (process exit / abandoned exec).
     let take = || with_frames(|| pop_free().or_else(|| bump_run(1, PAGE)));
-    let Some(phys) = take().or_else(|| (crate::blk::release_cache() > 0).then(take).flatten()) else {
+    let reclaimed = || crate::blk::release_cache() + crate::fs::pagecache::release_unmapped() > 0;
+    let Some(phys) = take().or_else(|| reclaimed().then(take).flatten()) else {
         out_of_memory();
     };
     unsafe {

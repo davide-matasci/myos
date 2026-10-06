@@ -6,6 +6,7 @@ pub mod ptsfs;
 mod fstype;
 pub mod lock;
 mod node;
+pub mod pagecache;
 mod procfs;
 pub mod rootfs;
 mod tmpfs;

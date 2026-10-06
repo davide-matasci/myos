@@ -7,6 +7,7 @@ use spin::Mutex;
 use myos_abi::ModuleVfsOps;
 
 use super::node;
+use super::pagecache;
 pub use super::node::Vnode;
 
 /// Metadata returned by [`stat`].
@@ -284,6 +285,11 @@ pub fn holds_mount(prefix: &str) -> bool {
 /// then writes back what it caches.
 pub fn unmount(prefix: &str) -> bool {
     let prefix = normalize_path(prefix);
+    // The page cache's hold on its files would keep it busy.
+    let idx = MOUNTS.lock().iter().position(|m| m.prefix == prefix);
+    if let Some(idx) = idx {
+        pagecache::forget_mount(idx);
+    }
     reap();
     let ops = {
         let mut mounts = MOUNTS.lock();
@@ -447,7 +453,11 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
                 return None;
             }
         }
-        return Some(node::get(idx, rel, backend_file_id(idx, rel)));
+        let node = node::get(idx, rel, backend_file_id(idx, rel));
+        if wants_write && trunc {
+            pagecache::invalidate(&node);
+        }
+        return Some(node);
     }
 
     if creat {
@@ -555,21 +565,27 @@ pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
 /// Write to an open vnode at `pos`. Returns bytes written, or `None` on error.
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     let _tree = tree_read();
-    match node::locate(node)? {
+    let written = match node::locate(node)? {
         (idx, node::Loc::File(id)) => file_write(idx, id, pos, buf),
         (idx, node::Loc::Path(rel)) => backend_write(idx, rel.as_str(), pos, buf),
-    }
+    };
+    // After the write: a page read before it is then dropped, or not kept.
+    pagecache::invalidate(node);
+    written
 }
 
 /// Make an open vnode `size` bytes long, cut or grown with zeros
 /// (`ftruncate`): false when its filesystem cannot.
 pub fn set_size(node: &Vnode, size: usize) -> bool {
     let _tree = tree_read();
-    match node::locate(node) {
+    let done = match node::locate(node) {
         Some((idx, node::Loc::File(id))) => file_set_size(idx, id, size),
         Some((idx, node::Loc::Path(rel))) => backend_set_size(idx, rel.as_str(), size),
         None => false,
-    }
+    };
+    // As after a write: the pages past the new end are gone or zero now.
+    pagecache::invalidate(node);
+    done
 }
 
 /// One more open file description on `node` (an `open` that became an
@@ -791,6 +807,8 @@ pub fn unlink(path: &str) -> bool {
     if rel.is_empty() || !backend_has_write(idx) {
         return false;
     }
+    // The page cache lets go of it first: it would be kept for the cache.
+    pagecache::forget_at(idx, rel);
     if hide_held(idx, rel) {
         return true;
     }
@@ -830,7 +848,9 @@ pub fn rename(old: &str, new: &str) -> bool {
     let replaces = backend_stat(idx_o, rel_o).is_some_and(|st| !is_dir_mode(st.mode));
     if replaces {
         // The rename goes ahead now (`old` is there and neither name is a
-        // directory): the file it replaces is kept for whoever holds it.
+        // directory): the file it replaces is kept for whoever holds it,
+        // the page cache aside.
+        pagecache::forget_at(idx_n, rel_n);
         hide_held(idx_n, rel_n);
     }
     if !backend_rename(idx_o, rel_o, rel_n) {
