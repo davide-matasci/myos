@@ -35,7 +35,6 @@ smokes=(
   "sec user/c/sec.c"
   "at-smoke user/c/at_smoke.c"
   "fileio-smoke user/c/fileio_smoke.c"
-  "crash-smoke user/c/crash_smoke.c"
 )
 for arch in x86_64 aarch64 riscv64; do
   triple="${arch}-unknown-myos"

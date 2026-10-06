@@ -86,5 +86,3 @@ net_listen() {
 	contains "[ OK ] listen" /tmp/listen.out
 }
 t listen net_listen
-# Kernel stress probe (temporary, valid-fd sweep).
-t crash /bin/etc/crash_smoke

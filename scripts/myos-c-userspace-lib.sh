@@ -175,7 +175,7 @@ myos_c_smokes_version_hash() {
         "$MYOS_ROOT/user/c/uio_smoke.c" "$MYOS_ROOT/user/c/pthread_smoke.c" \
         "$MYOS_ROOT/user/c/netconv_smoke.c" "$MYOS_ROOT/user/c/child_smoke.c" \
         "$MYOS_ROOT/user/c/libc_smoke.c" "$MYOS_ROOT/user/c/sec.c" "$MYOS_ROOT/user/c/at_smoke.c" \
-        "$MYOS_ROOT/user/c/fileio_smoke.c" "$MYOS_ROOT/user/c/crash_smoke.c" \
+        "$MYOS_ROOT/user/c/fileio_smoke.c" \
         "$MYOS_ROOT/scripts/build-c-smokes.sh"
     } | sha256sum | awk '{print $1}'
   )"
@@ -188,7 +188,7 @@ myos_c_smokes_is_current() {
     && [[ "$(cat "$MYOS_C_SMOKES_VERSION")" == "$(myos_c_smokes_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke uio-smoke pthread-smoke netconv-smoke child-smoke libc-smoke sec at-smoke fileio-smoke crash-smoke; do
+    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke uio-smoke pthread-smoke netconv-smoke child-smoke libc-smoke sec at-smoke fileio-smoke; do
       [[ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ]] || return 1
     done
   done
