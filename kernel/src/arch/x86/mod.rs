@@ -5,6 +5,8 @@ mod interrupts;
 pub use interrupts::{ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
 mod paging;
 pub mod pci;
+mod power;
+pub use power::POWER_METHODS;
 mod serial;
 pub use serial::SerialPort;
 
@@ -46,8 +48,6 @@ pub fn wait_for_interrupt_proof() {
     interrupts::wait_for_interrupt_proof();
 }
 
-/// QEMU `isa-debug-exit` at iobase 0xf4. A no-op if the device was not added.
-
 pub fn ap_init(logical: usize) {
     interrupts::ap_init(logical);
     crate::user::ap_init();
@@ -72,8 +72,10 @@ pub fn irq_from_dt(_cells: &[u32]) -> Option<u32> {
     None
 }
 
-/// The 1 kHz LAPIC tick already bounds sleep latency; no deadline timer.
-pub fn timer_deadline(_deadline_ns: u64) {}
+/// Fire this CPU's timer at a sleep's deadline when it is before the next tick.
+pub fn timer_deadline(deadline_ns: u64) {
+    interrupts::timer_deadline(deadline_ns);
+}
 
 /// Route a PCI function's interrupt: MSI-X entry 0 → a LAPIC vector on the
 /// BSP (no IOAPIC / PIRQ routing needed).
@@ -100,6 +102,8 @@ pub fn idle_wait() {
     }
 }
 
+/// QEMU `isa-debug-exit` at iobase 0xf4 (the test runs: its exit status is
+/// `code << 1 | 1`). A no-op if the device was not added.
 pub fn exit_qemu(code: u32) {
     unsafe {
         core::arch::asm!(

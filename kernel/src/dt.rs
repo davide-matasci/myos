@@ -341,4 +341,10 @@ pub fn fill(p: &mut Platform) {
             offer_pci_windows(p, windows, from);
         }
     }
+    let psci = fdt.find_compatible(&["arm,psci-1.0", "arm,psci-0.2", "arm,psci"]);
+    match psci.and_then(|n| n.property("method")).and_then(|m| m.as_str()) {
+        Some("hvc") => offer_psci(p, PsciConduit::Hvc, from),
+        Some("smc") => offer_psci(p, PsciConduit::Smc, from),
+        _ => {}
+    }
 }

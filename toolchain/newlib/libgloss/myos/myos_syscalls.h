@@ -119,6 +119,13 @@ struct winsize;
  * the process. MYOS_EAGAIN: someone else holds a conflicting lock. */
 #define MYOS_SYS_FLOCK 85
 #define MYOS_SYS_LOCKCTL 86
+/* power(action): power off, reboot or halt, after the processes are
+ * stopped and the disks unmounted (docs/power.md). Returns only on
+ * failure (no `write` on kernel.power). */
+#define MYOS_SYS_POWER 87
+#define MYOS_POWER_OFF 0
+#define MYOS_POWER_REBOOT 1
+#define MYOS_POWER_HALT 2
 #define MYOS_LOCKCTL_GET 0
 #define MYOS_LOCKCTL_SET 1
 #define MYOS_LOCKCTL_WAIT 2

@@ -133,13 +133,16 @@ is back, so an AP's lagging echo never garbles the line), then watches:
   every boot, so it writes to a disk (`mkfs.ext2` on `/dev/nvme0n1`) and
   expects the FAT mount only once it found the launcher's FAT volume
   (`/msg` reading `fat-msg`); in another VM it leaves the disks alone;
-- after the boot, `e2fsck -fn` on the scratch disk (`target/scratch.img`,
+- after the tests, `poweroff` typed at the prompt: QEMU must exit by
+  itself, the console naming the method (`power off via ...`,
+  `docs/power.md`);
+- then `e2fsck -fn` on the scratch disk (`target/scratch.img`,
   the guest's `/dev/nvme1n1`) when the ext2 tests left a filesystem on it;
   skipped without e2fsprogs.
 
-It exits 0 only when every test passed and every marker was seen, and
-prints a one-line summary with the failed tests' names. The full serial
-output is in the log either way.
+It exits 0 only when every test passed, every marker was seen and the
+machine powered off, and prints a one-line summary with the failed tests'
+names. The full serial output is in the log either way.
 
 ## Adding a test
 

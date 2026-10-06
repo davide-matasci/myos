@@ -20,6 +20,7 @@
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -322,6 +323,11 @@ int main(int argc, char **argv) {
     check(sethostname("lxhost", 6) == 0 && uname(&u) == 0 && strcmp(u.nodename, "lxhost") == 0
               && sethostname(host, strlen(host)) == 0,
           "sethostname");
+
+    /* reboot(2): an init's Ctrl-Alt-Del setting is accepted (and does
+     * nothing), an unknown command refused; nothing here takes the
+     * system down. */
+    check(reboot(RB_DISABLE_CAD) == 0 && reboot(0x12345678) == -1 && errno == EINVAL, "reboot");
 
     char cwd[256];
     check(getcwd(cwd, sizeof cwd) != NULL && cwd[0] == '/', "getcwd");

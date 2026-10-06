@@ -372,6 +372,18 @@ pub fn umount(path: &[u8]) -> bool {
     unsafe { sys3(64, buf.as_ptr() as usize, n, 0) != usize::MAX }
 }
 
+/// The actions of [`power`].
+pub const POWER_OFF: usize = 0;
+pub const POWER_REBOOT: usize = 1;
+pub const POWER_HALT: usize = 2;
+
+/// Power off, reboot or halt (`SYS_POWER` = 87) once the kernel has
+/// stopped the other processes and unmounted the disks (`docs/power.md`).
+/// Returns only when refused (no `write` on `kernel.power`).
+pub fn power(action: usize) {
+    unsafe { sys3(87, action, 0, 0) };
+}
+
 /// The mode bits of `path` (a symlink not followed), or `None` when it
 /// does not exist.
 pub fn stat_mode(path: &[u8]) -> Option<u32> {

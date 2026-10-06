@@ -68,7 +68,7 @@ sized with `ftruncate`).
 ## Self-hosting speed
 
 Building core+alloc inside myos (the first step of `linux-compat/self-host.sh`)
-takes ~1250 s under TCG with `-smp 4` (it varies by ±15% between runs on a
+takes ~1150 s under TCG with `-smp 4` (it varies by ±15% between runs on a
 shared host); Alpine's Linux takes 591 s in the same QEMU (41 s natively).
 
 QEMU's `info jit` showed myos making QEMU translate more code and
@@ -79,12 +79,10 @@ that: 30x fewer invalidations, 21% less translated code, no flush of
 QEMU's code buffer. The build did not get faster: translation was not
 the bottleneck. The build runs mostly on one vCPU (15 min of its CPU in
 both kernels), so the gap to Linux is in how fast that vCPU runs rustc.
-Not yet measured:
+The x86 tick went from 1 kHz to 100 Hz (1156 s against 1290-1338 s);
+an idle CPU still ticks (a tickless one would leave QEMU's vCPU thread
+asleep). Not yet measured:
 
-- **The 1 kHz tick**: ~2000 schedules a second on every CPU, idle ones
-  too (each takes the scheduler lock). Every interrupt makes QEMU leave its
-  translated code; Linux ticks at 100-250 Hz and not at all when idle, and
-  a tickless idle CPU would leave QEMU's vCPU thread asleep.
 - **TLB flushes**: ~1.1M partial flushes per build (each costs QEMU its
   softmmu TLB entries for the page, then refills).
 
@@ -184,6 +182,27 @@ Left as they are for now: the std port's single-threaded `static mut`
 (`toolchain/std/sys/myos/alloc.rs`, `sys/args/myos.rs`: a process is one
 task there; changing them rebuilds the sysroot and every Rust port), and
 the arch tables (GDT/TSS, page tables, per-CPU syscall frames).
+
+## xHCI: a transfer that outlives its device
+
+A task in a bulk transfer (`modules/xhci/src/usb.rs` `bulk`: a read of
+`/dev/sdb`) blocks in `hc::wait` holding `&mut Device` and `&mut Endpoint`
+into the static device table. If the stick is pulled meanwhile, the USB
+thread detaches the device (`detach_id`): its table entry becomes `None`,
+its rings and contexts go back to the DMA pool, and a stick plugged next
+can take the same table entry and slot id. When the waiter's timeout
+fires, `abort_endpoint` sends Stop Endpoint and Set TR Dequeue Pointer
+for the old slot and DCI, which may now be the new device's, with the new
+device's ring as the dequeue pointer; a late completion is written into
+the new device's `pending` state. Not seen to fail, and not tied to the
+switch-frame crashes (the writes stay in xHCI memory), but it is a real
+race on hot-plug.
+
+Fix: a device generation (or the slot id) checked by the waiter after
+`wait` returns, before it touches the endpoint; or detach waits for the
+device's waiters to leave (a per-device busy count), failing their
+transfers first. The lock work above (one table behind a lock) is the
+natural place for it.
 
 ## Per-key wait queues
 

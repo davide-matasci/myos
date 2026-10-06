@@ -165,12 +165,106 @@ pub fn schedule() {
     // unpinned kernel threads yield across CPUs). Do NOT IPI-kick: AP timers
     // pick up foreign-affinity Ready; fork kicks when a parallel child is
     // RR-homed onto another AP.
-    let _ = old;
+    check_switch_frame(next, new_sp);
     unsafe {
         task_switch(old_sp, new_sp);
     }
     finish_switch();
     irq_restore(flags);
+}
+
+/// Per task: where its switch frame was saved when it last left a CPU, a
+/// checksum of the frame, and that CPU (`check_switch_frame`). Zero sp:
+/// not recorded (a new stack).
+static LEFT_SP: [AtomicUsize; MAX_TASKS] = [const { AtomicUsize::new(0) }; MAX_TASKS];
+static LEFT_SUM: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
+static LEFT_CPU: [AtomicUsize; MAX_TASKS] = [const { AtomicUsize::new(0) }; MAX_TASKS];
+
+fn frame_sum(sp: usize) -> u64 {
+    let mut sum = 0xcbf2_9ce4_8422_2325u64;
+    for off in (0..crate::arch::switch::FRAME_BYTES).step_by(8) {
+        let w = unsafe { core::ptr::read_volatile((sp + off) as *const u64) };
+        sum = (sum ^ w).wrapping_mul(0x100_0000_01b3);
+    }
+    sum
+}
+
+/// `slot` left `cpu` with its frame saved at `sp` (`finish_switch`).
+fn remember_frame(slot: usize, sp: usize, cpu: usize) {
+    if sp == 0 {
+        return;
+    }
+    LEFT_SUM[slot].store(frame_sum(sp), Ordering::Relaxed);
+    LEFT_CPU[slot].store(cpu, Ordering::Relaxed);
+    LEFT_SP[slot].store(sp, Ordering::Relaxed);
+}
+
+/// `slot` starts on a new stack: nothing to compare its first frame with.
+pub(super) fn forget_frame(slot: usize) {
+    LEFT_SP[slot].store(0, Ordering::Relaxed);
+}
+
+/// The frame `task_switch` resumes `next` from must return into the
+/// kernel. One overwritten while its task was off its CPU (zeroed, during
+/// USB enumeration in CI) jumps to 0; report it here, with the stack around
+/// it, instead of as a fault at address 0 afterwards.
+fn check_switch_frame(next: usize, sp: usize) {
+    let ra = unsafe { crate::arch::switch::frame_return(sp) };
+    let anchor = check_switch_frame as *const () as usize;
+    let (left_sp, left_sum, left_cpu) = (
+        LEFT_SP[next].load(Ordering::Relaxed),
+        LEFT_SUM[next].load(Ordering::Relaxed),
+        LEFT_CPU[next].load(Ordering::Relaxed),
+    );
+    // What changed since the task left its CPU: the saved stack pointer
+    // (another context stored its own there) or the frame it points at
+    // (memory written over).
+    let changed = if left_sp == 0 {
+        None
+    } else if left_sp != sp {
+        Some(alloc::format!("its saved sp changed from {left_sp:#x} since it left cpu {left_cpu}"))
+    } else if frame_sum(sp) != left_sum {
+        Some(alloc::format!("its frame changed since it left cpu {left_cpu}"))
+    } else {
+        None
+    };
+    if changed.is_none() && ra.abs_diff(anchor) < 64 << 20 {
+        return;
+    }
+    if let Some(what) = &changed {
+        crate::console::status_fail(&alloc::format!("switch frame: task {next}: {what}"));
+    }
+    let (base, top, state, affinity) = {
+        let tasks = TASKS.lock();
+        let t = &tasks[next];
+        (t.stack_base, t.kernel_stack_top, t.state as u8, t.affinity)
+    };
+    let hhdm = crate::limine_boot::hhdm_offset() as usize;
+    crate::console::status_fail(&alloc::format!(
+        "switch frame: task {next} (state {state} affinity {affinity:?}) resumes at {ra:#x}: sp {sp:#x} \
+         (phys {:#x}) stack {base:#x}..{top:#x}, cpu {}",
+        sp.wrapping_sub(hhdm),
+        crate::smp::cpu_id(),
+    ));
+    // The words around the frame, runs of zeros collapsed: how much was
+    // overwritten, and with what alignment, says what wrote it.
+    let from = (sp.saturating_sub(512) & !7).max(base);
+    let to = (sp + 512).min(top);
+    let mut addr = from;
+    while addr < to {
+        let w = unsafe { core::ptr::read_volatile(addr as *const usize) };
+        if w == 0 {
+            let start = addr;
+            while addr < to && unsafe { core::ptr::read_volatile(addr as *const usize) } == 0 {
+                addr += 8;
+            }
+            crate::console::write_str(&alloc::format!("  {start:#x}..{addr:#x} zero ({} bytes)\n", addr - start));
+            continue;
+        }
+        crate::console::write_str(&alloc::format!("  {addr:#x}: {w:#x}\n"));
+        addr += 8;
+    }
+    panic!("switch frame of task {next} overwritten");
 }
 
 /// Per CPU: the task this CPU just switched away from, still marked Running
@@ -187,6 +281,7 @@ pub(super) fn finish_switch() {
         return;
     }
     let mut tasks = TASKS.lock();
+    remember_frame(prev, tasks[prev].sp, cpu);
     if tasks[prev].state == State::Running {
         tasks[prev].state = State::Ready;
     } else if tasks[prev].state == State::Blocked && tasks[prev].wake_pending {
@@ -515,10 +610,8 @@ pub fn wake_task(slot: usize) {
     kick(kicks);
 }
 
-/// The earliest pending sleep deadline (monotonic ns; `u64::MAX` for none),
-/// for arches that program their timer for it instead of waiting for the
-/// next periodic tick (aarch64, riscv64; x86 ticks at 1 kHz).
-#[allow(dead_code)]
+/// The earliest pending sleep deadline (monotonic ns; `u64::MAX` for none):
+/// each arch programs its timer for it when it comes before the next tick.
 pub fn next_deadline_ns() -> u64 {
     NEXT_DEADLINE.load(Ordering::SeqCst)
 }
@@ -691,6 +784,7 @@ fn ap_idle_bringup() {
         t.kernel_stack_top = top;
         t.affinity = Some(logical);
     }
+    forget_frame(slot);
     drop(tasks);
     set_current_slot(slot);
     // APs may still hold Limine's early TTBR0; install the BSP kernel/device

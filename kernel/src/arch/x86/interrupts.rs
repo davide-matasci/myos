@@ -217,8 +217,10 @@ pub fn init() {
     x86_64::instructions::interrupts::enable();
 }
 
-/// Scheduler tick period.
-const TICK_HZ: u64 = 1000;
+/// Scheduler tick rate: 100 Hz, as on aarch64 and riscv64 ([`timer_deadline`]
+/// brings a sleep's wake-up forward). At 1 kHz the ticks and the vCPU exits
+/// they cause cost a self-hosted core+alloc build 10-14% under TCG.
+const TICK_HZ: u64 = 100;
 /// Fallback when the TSC is not calibrated (no PIT): the historical
 /// INIT_COUNT, "several kHz" in QEMU.
 const FALLBACK_INIT_COUNT: u32 = 100_000;
@@ -227,8 +229,9 @@ static INIT_COUNT_CACHED: AtomicUsize = AtomicUsize::new(0);
 /// LAPIC timer INIT_COUNT for [`TICK_HZ`], measured once on the BSP against
 /// the calibrated TSC (`time::init` runs before interrupts come up). The old
 /// fixed 100_000 fired 10-20k ticks per second per CPU under QEMU, and every
-/// tick takes the scheduler lock; 1 kHz keeps preemption and the UART drain
-/// (16-byte FIFO fills in ~4 ms at 38400 baud) and cuts that overhead.
+/// tick takes the scheduler lock. The tick also drains the UART: QEMU holds
+/// input back while the 16-byte FIFO is full, so a slower drain delays
+/// typed input but loses none.
 fn timer_init_count() -> u32 {
     let cached = INIT_COUNT_CACHED.load(Ordering::SeqCst);
     if cached != 0 {
@@ -247,7 +250,7 @@ fn timer_init_count() -> u32 {
         let elapsed = u64::from(0xFFFF_FFFFu32 - lapic_r(CUR_COUNT));
         lapic_w(INIT_COUNT, 0);
         let per_tick = elapsed * 1000 / 20 / TICK_HZ;
-        // Sanity: 1 kHz needs at least a few thousand counts; cap at 2^31.
+        // Sanity: a tick needs at least a few thousand counts; cap at 2^31.
         if per_tick < 1_000 || per_tick > u64::from(u32::MAX / 2) {
             FALLBACK_INIT_COUNT
         } else {
@@ -258,6 +261,49 @@ fn timer_init_count() -> u32 {
     count
 }
 
+/// The CPUs whose current timer period [`cut_period`] cut short.
+static SHORTENED: [AtomicBool; crate::smp::MAX_CPUS] = [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+
+/// Fire this CPU's timer at `deadline_ns` (monotonic) when that comes before
+/// its next tick: the one LAPIC timer stays periodic, its current period is
+/// cut to end at the deadline, and the tick puts the normal period back
+/// (cutting it again for a deadline still ahead).
+pub fn timer_deadline(deadline_ns: u64) {
+    if crate::time::clock_hz() == 0 {
+        return; // no calibrated count per ns: wake on the tick
+    }
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        cut_period(crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1), deadline_ns);
+    });
+}
+
+/// Cut this CPU's current timer period to end at `deadline_ns` if it would
+/// end later, but not under 1% of a tick: the period repeats until the tick
+/// handler puts the normal one back, and a period of a few counts (a
+/// deadline that just passed) kept QEMU's main loop firing the timer, which
+/// starved the serial input. Interrupts off.
+fn cut_period(cpu: usize, deadline_ns: u64) {
+    let left_ns = deadline_ns.saturating_sub(crate::time::monotonic_ns());
+    let per_tick = u128::from(timer_init_count());
+    let counts = (u128::from(left_ns) * per_tick * u128::from(TICK_HZ) / 1_000_000_000).max(per_tick / 100);
+    if counts < u128::from(lapic_r(CUR_COUNT)) {
+        SHORTENED[cpu].store(true, Ordering::Relaxed);
+        lapic_w(INIT_COUNT, counts as u32);
+    }
+}
+
+/// At a tick: the normal period back after a cut one, then cut again for
+/// the earliest sleep deadline still ahead (`task::next_deadline_ns`).
+fn rearm_period() {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    if SHORTENED[cpu].swap(false, Ordering::Relaxed) {
+        lapic_w(INIT_COUNT, timer_init_count());
+    }
+    let deadline = crate::task::next_deadline_ns();
+    if deadline != u64::MAX && deadline > crate::time::monotonic_ns() {
+        cut_period(cpu, deadline);
+    }
+}
 
 /// Secondary CPU: IDT already built by BSP; enable this CPU's local APIC timer.
 pub fn ap_init(logical: usize) {
@@ -533,6 +579,7 @@ extern "x86-interrupt" fn timer(frame: InterruptStackFrame) {
         crate::task::wake(crate::task::KEY_CONSOLE);
     }
     crate::task::timer_tick();
+    rearm_period();
     lapic_w(EOI, 0);
     crate::task::schedule();
     if frame.code_segment.0 & 3 == 3 {

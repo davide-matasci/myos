@@ -576,6 +576,7 @@ fn spawn_inner(
     signal_table_reset(slot);
     fpu::reset(slot);
     tp::reset(slot);
+    super::sched::forget_frame(slot);
     crate::personality::on_spawn(slot);
     let aff = tasks[slot].affinity;
     drop(tasks);

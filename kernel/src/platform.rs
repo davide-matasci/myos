@@ -100,6 +100,13 @@ pub struct PciWindows {
     pub mmio64: Option<(u64, u64)>,
 }
 
+/// aarch64: how the PSCI firmware is called.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PsciConduit {
+    Hvc,
+    Smc,
+}
+
 /// A component both sources described differently.
 pub const DIFFERS_CPUS: u8 = 1;
 pub const DIFFERS_INTC: u8 = 2;
@@ -124,6 +131,8 @@ pub struct Platform {
     pub timer_irqs: Option<Component<(u32, u32)>>,
     pub pci: Option<Component<PciHost>>,
     pub pci_windows: Option<Component<PciWindows>>,
+    /// aarch64: PSCI (power-off, reboot: `crate::power`).
+    pub psci: Option<Component<PsciConduit>>,
     /// `DIFFERS_*` bits: the second source disagreed with the first there.
     pub differs: u8,
 }
@@ -141,6 +150,7 @@ impl Platform {
         timer_irqs: None,
         pci: None,
         pci_windows: None,
+        psci: None,
         differs: 0,
     };
 }
@@ -264,6 +274,10 @@ fn fill_acpi(p: &mut Platform) {
     if let Some(g) = acpi::gtdt() {
         p.timer_irqs = Some(Component { value: (g.el1_phys, g.el1_virt), from });
     }
+    if let Some(hvc) = acpi::fadt_psci_hvc() {
+        let conduit = if hvc { PsciConduit::Hvc } else { PsciConduit::Smc };
+        p.psci = Some(Component { value: conduit, from });
+    }
 }
 
 /// The device tree's view: what it describes that nothing filled yet, and
@@ -305,6 +319,12 @@ pub fn offer_pci(p: &mut Platform, host: PciHost, from: Source) {
 pub fn offer_pci_windows(p: &mut Platform, windows: PciWindows, from: Source) {
     if p.pci_windows.is_none() {
         p.pci_windows = Some(Component { value: windows, from });
+    }
+}
+
+pub fn offer_psci(p: &mut Platform, conduit: PsciConduit, from: Source) {
+    if p.psci.is_none() {
+        p.psci = Some(Component { value: conduit, from });
     }
 }
 
@@ -416,6 +436,13 @@ pub fn text() -> alloc::vec::Vec<u8> {
         if let Some((base, size)) = c.value.mmio64 {
             s += &format!("pci mmio64 0x{base:x} 0x{size:x} ({})\n", c.from.name());
         }
+    }
+    if let Some(c) = p.psci {
+        let conduit = match c.value {
+            PsciConduit::Hvc => "hvc",
+            PsciConduit::Smc => "smc",
+        };
+        s += &format!("psci {conduit} ({})\n", c.from.name());
     }
     s.into_bytes()
 }

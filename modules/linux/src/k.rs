@@ -37,6 +37,7 @@ const SYS_WAITPID: usize = 46;
 const SYS_PREAD: usize = 81;
 const SYS_FTRUNCATE: usize = 83;
 const SYS_FLOCK: usize = 85;
+const SYS_POWER: usize = 87;
 
 /// A native syscall that does not read the register block.
 fn native(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
@@ -143,6 +144,11 @@ pub mod user {
     }
     pub fn sys_gettimeofday(tv: usize, tz: usize) -> usize {
         native(SYS_GETTIMEOFDAY, tv, tz, 0)
+    }
+    /// Take the system down (`myos_abi::MYOS_POWER_*`): returns only when
+    /// refused.
+    pub fn sys_power(action: u32) -> usize {
+        native(SYS_POWER, action as usize, 0, 0)
     }
     pub fn sys_setpgid(pid: usize, pgid: usize) -> usize {
         native(SYS_SETPGID, pid, pgid, 0)
