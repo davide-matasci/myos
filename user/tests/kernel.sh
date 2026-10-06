@@ -263,6 +263,41 @@ usb_hotplug() {
 }
 t usb_hotplug usb_hotplug
 
+# Unplug while busy, then reuse. A disk pulled out while a filesystem is
+# mounted from it (or an fd holds it) cannot be unregistered, so it stays as a
+# `gone` entry failing its I/O. Nothing calls back when the mount/fd finally
+# goes, so unless usb_storage sweeps released `gone` disks, its /dev name and
+# table slot leak: the next stick lands on sdc (then sdd…) and repeated
+# unplug-while-busy runs the table out. Here: mount the stick, pull it while
+# mounted, unmount, re-plug — the fresh stick must reuse sdb (not leak to sdc),
+# and the kernel must not fault across the busy unplug.
+usb_hotplug_busy_reuse() {
+	mkdir -p /tmp/usbm
+	# Settle from the previous test's unplug before we drive our own.
+	sleep 2
+	echo "HOST tests usb-plug" >&3
+	wait_for 40 sh -c 'grep -q "port 2 .*usb_storage sdb" /proc/usb' \
+		|| { echo "reuse: no sdb to start"; cat /proc/usb; return 1; }
+	# Mount it, then pull it while mounted: blk_unregister is refused, so the
+	# disk must stay as a `gone` entry failing its I/O (and not fault).
+	mount /dev/sdb /tmp/usbm fat || { echo "reuse: mount failed"; cat /proc/usb; return 1; }
+	echo "HOST tests usb-unplug" >&3
+	sleep 3
+	# Let go: the mount was the only holder, so the disk is now reclaimable.
+	umount /tmp/usbm || { echo "reuse: umount failed"; cat /proc/usb; return 1; }
+	sleep 1
+	# Re-plug. The freed slot and sdb name must be reused, so the fresh stick
+	# enumerates on port 2 as sdb again and no leaked disk lingers on sdc.
+	echo "HOST tests usb-plug" >&3
+	wait_for 40 sh -c 'grep -q "port 2 .*usb_storage sdb" /proc/usb' \
+		|| { echo "reuse: replugged stick is not sdb — slot leaked"; cat /proc/usb; return 1; }
+	test -e /dev/sdc && { echo "reuse: a leaked disk lingers on sdc"; cat /proc/usb; return 1; }
+	/bin/sbase/dd if=/dev/sdb of=/dev/null bs=512 count=1 2> /dev/null || { echo "reuse: sdb will not read"; return 1; }
+	echo "HOST tests usb-unplug" >&3
+	wait_for 30 sh -c '! test -e /dev/sdb'
+}
+t usb_hotplug_busy_reuse usb_hotplug_busy_reuse
+
 # A module's character device is a directory: the NIC's `data` is the
 # device, its `ctl` names the MAC and whether its interrupt works.
 net_ctl() {
