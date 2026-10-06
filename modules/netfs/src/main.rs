@@ -11,14 +11,15 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 mod unix;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use myos_abi::{
-    status_ok, ABI_VERSION, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo, MYOS_POLLERR,
-    MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT,
+    status_ok, ABI_VERSION, ApiCell, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo,
+    MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT,
 };
 
 const S_IFDIR: u32 = 0o040000;
@@ -177,13 +178,13 @@ static mut STATE: State = State {
     convs: [Conv::EMPTY; MAX_CONV],
 };
 
-static mut API: Option<&'static KernelApi> = None;
+static API: ApiCell = ApiCell::new();
 
 /// Wake the kernel's pollers: readiness changed without a write or close
 /// (a unix reader made room for its peer).
 fn wake_any() {
-    if let Some(api) = unsafe { *core::ptr::addr_of!(API) } {
-        unsafe { (api.wake_any)() };
+    if let Some(api) = API.try_get() {
+        api.wake_any();
     }
 }
 
@@ -1110,7 +1111,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     if api.abi_version != ABI_VERSION {
         return -2;
     }
-    unsafe { *core::ptr::addr_of_mut!(API) = Some(api) };
+    unsafe { API.set(api) };
     // Build ops here (not in a static): AArch64 ET_EXEC modules do not relocate
     // fn pointers in .rodata, so kernel callbacks need slide-correct addresses.
     let ops = ModuleVfsOps {
@@ -1144,15 +1145,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         set_times_ino: None,
         readlink: None,
     };
-    let mount_rc = unsafe {
-        (api.vfs_mount)(
-            b"netfs".as_ptr(),
-            5,
-            b"net".as_ptr(),
-            3,
-            &ops as *const ModuleVfsOps,
-        )
-    };
+    let mount_rc = api.vfs_mount("netfs", "net", &ops);
     let chr = ModuleChrOps {
         read: chr_read,
         write: chr_write,
@@ -1160,11 +1153,11 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         ctl_read: None,
         ctl_write: None,
     };
-    let chr_rc = unsafe { (api.dev_register)(b"netd".as_ptr(), 4, &chr) };
+    let chr_rc = api.dev_register("netd", &chr);
     // Stay loaded even if one hook fails: InitFailed would free the image while
     // the other hook still points at it.
     if mount_rc == 0 && chr_rc == 0 {
-        unsafe { status_ok(api, "netfs") };
+        status_ok(api, "netfs");
     }
     0
 }

@@ -326,7 +326,7 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
             c.cmd_wait.slot.store(e.slot_id(), Ordering::Relaxed);
             c.cmd_wait.code.store(code, Ordering::Relaxed);
             c.cmd_wait.done.store(true, Ordering::Release);
-            unsafe { (api().wake)(c.cmd_wait.done.as_ptr() as usize) };
+            api().wake(c.cmd_wait.done.as_ptr() as usize);
         }
         Ok(event::Allowed::TransferEvent(e)) => {
             let code = e.completion_code().map_or(0xFE, |c| c as u8);
@@ -384,16 +384,16 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
             p.done.store(true, Ordering::Release);
             if p.callback.is_some() {
                 c.async_done.store(true, Ordering::Release);
-                unsafe { (api().wake)(crate::THREAD_KEY.as_ptr() as usize) };
+                api().wake(crate::THREAD_KEY.as_ptr() as usize);
             } else {
-                unsafe { (api().wake)(p.key()) };
+                api().wake(p.key());
             }
         }
         Ok(event::Allowed::PortStatusChange(e)) => {
             let port = e.port_id();
             if port >= 1 {
                 c.port_change.fetch_or(1 << (port - 1).min(63), Ordering::Release);
-                unsafe { (api().wake)(crate::THREAD_KEY.as_ptr() as usize) };
+                api().wake(crate::THREAD_KEY.as_ptr() as usize);
             }
         }
         _ => {}
@@ -405,21 +405,21 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
 /// at the event ring itself every few milliseconds, so a controller whose
 /// interrupt does not reach us (none, or routed elsewhere) still works.
 pub fn wait(c: &mut Controller, done: &AtomicBool, timeout_ms: u32) -> bool {
-    let deadline = unsafe { (api().monotonic_ns)() } + u64::from(timeout_ms) * 1_000_000;
+    let deadline = api().monotonic_ns() + u64::from(timeout_ms) * 1_000_000;
     loop {
         if done.load(Ordering::Acquire) {
             return true;
         }
-        let seq = unsafe { (api().wait_seq)() };
+        let seq = api().wait_seq();
         process_events(c);
         if done.load(Ordering::Acquire) {
             return true;
         }
-        let now = unsafe { (api().monotonic_ns)() };
+        let now = api().monotonic_ns();
         if now >= deadline {
             return false;
         }
-        unsafe { (api().block_until)(done.as_ptr() as usize, seq, deadline.min(now + 2_000_000)) };
+        api().block_until(done.as_ptr() as usize, seq, deadline.min(now + 2_000_000));
     }
 }
 

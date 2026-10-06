@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![no_main]
 
 use myos_user::{status_ok, close, dup2, exec_env, exit, fork, open, pipe, read_line, wait_status, write};
@@ -10,10 +11,12 @@ const ARG_LEN: usize = 32;
 const MAX_ENV: usize = 4;
 const ENV_LEN: usize = 48;
 
-static mut LAST_STATUS: u8 = 0;
-static mut ENV: [[u8; ENV_LEN]; MAX_ENV] = [[0; ENV_LEN]; MAX_ENV];
-static mut ENV_LENS: [usize; MAX_ENV] = [0; MAX_ENV];
-static mut ENV_COUNT: usize = 0;
+/// The variables `export` set, passed to every program the shell runs.
+struct Env {
+    vars: [[u8; ENV_LEN]; MAX_ENV],
+    lens: [usize; MAX_ENV],
+    count: usize,
+}
 
 #[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
@@ -35,10 +38,11 @@ struct Segment<'a> {
 }
 
 fn shell() -> ! {
-    init_env();
+    let mut env = Env::new();
+    let mut last_status = 0u8;
     status_ok("sh");
     smoke_fork_ping();
-    smoke_fork(b"ok", &[]);
+    smoke_fork(&env, b"ok", &[]);
     let mut line = [0u8; MAX_LINE];
     loop {
         write(PROMPT);
@@ -73,24 +77,27 @@ fn shell() -> ! {
             exit();
         }
         if segs[0].argc == 1 && segs[0].parts[0] == b"$?" {
-            print_status(unsafe { LAST_STATUS });
+            print_status(last_status);
             write(b"\n");
             continue;
         }
         if segs[0].argc == 1 && segs[0].parts[0] == b"env" {
-            print_env();
+            env.print();
             write(b"\n");
             continue;
         }
         if segs[0].argc >= 2 && segs[0].parts[0] == b"export" {
-            if export_name_value(segs[0].parts[1]) {
+            if env.export(segs[0].parts[1]) {
                 continue;
             }
         }
-        if nseg == 2 {
-            run_pipeline(&segs[0], &segs[1]);
+        let status = if nseg == 2 {
+            run_pipeline(&env, &segs[0], &segs[1])
         } else {
-            run_segment(&segs[0]);
+            run_segment(&env, &segs[0])
+        };
+        if let Some(code) = status {
+            last_status = code;
         }
     }
 }
@@ -116,7 +123,7 @@ fn smoke_fork_ping() {
     }
 }
 
-fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
+fn smoke_fork(env: &Env, name: &[u8], parts: &[&[u8]]) {
     let mut path_buf = [0u8; 32];
     let path = command_path(name, &mut path_buf);
     let mut arg_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
@@ -131,7 +138,7 @@ fn smoke_fork(name: &[u8], parts: &[&[u8]]) {
     }
     match fork() {
         Some(0) => {
-            exec_env(path, &arg_slices[..parts.len()], &env_slices()[..env_slice_count()]);
+            exec_env(path, &arg_slices[..parts.len()], &env.slices()[..env.count]);
             cmd_not_found(path, name);
             exit();
         }
@@ -151,12 +158,13 @@ fn cmd_not_found(path: &[u8], cmd: &[u8]) {
     write(b")\n");
 }
 
-fn run_segment(seg: &Segment<'_>) {
+/// Run `seg`: its exit status, if it ran.
+fn run_segment(env: &Env, seg: &Segment<'_>) -> Option<u8> {
     let mut path_buf = [0u8; 32];
     let mut arg_bufs = [[0u8; ARG_LEN]; MAX_ARGS];
     let mut arg_slices: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
     if seg.argc == 0 {
-        return;
+        return None;
     }
     let path = command_path(seg.parts[0], &mut path_buf);
     for (i, p) in seg.parts[..seg.argc].iter().enumerate() {
@@ -170,23 +178,23 @@ fn run_segment(seg: &Segment<'_>) {
     match fork() {
         Some(0) => {
             apply_stdin_redir(seg.in_path);
-            exec_env(path, &arg_slices[..seg.argc], &env_slices()[..env_slice_count()]);
+            exec_env(path, &arg_slices[..seg.argc], &env.slices()[..env.count]);
             cmd_not_found(path, seg.parts[0]);
             exit();
         }
-        Some(_) => {
-            if let Some((_, code)) = wait_status() {
-                unsafe { LAST_STATUS = code };
-            }
+        Some(_) => wait_status().map(|(_, code)| code),
+        None => {
+            write(b"fork failed\n");
+            None
         }
-        None => write(b"fork failed\n"),
     }
 }
 
-fn run_pipeline(left: &Segment<'_>, right: &Segment<'_>) {
+/// Run `left | right`: the exit status of `right`, if it ran.
+fn run_pipeline(env: &Env, left: &Segment<'_>, right: &Segment<'_>) -> Option<u8> {
     let Some((rfd, wfd)) = pipe() else {
         write(b"sh: pipe failed\n");
-        return;
+        return None;
     };
     let mut left_path = [0u8; 32];
     let mut right_path = [0u8; 32];
@@ -197,7 +205,7 @@ fn run_pipeline(left: &Segment<'_>, right: &Segment<'_>) {
     if left.argc == 0 || right.argc == 0 {
         close(rfd);
         close(wfd);
-        return;
+        return None;
     }
     let lpath = command_path(left.parts[0], &mut left_path);
     let rpath = command_path(right.parts[0], &mut right_path);
@@ -223,7 +231,7 @@ fn run_pipeline(left: &Segment<'_>, right: &Segment<'_>) {
             dup2(wfd, 1);
             close(wfd);
             apply_stdin_redir(left.in_path);
-            exec_env(lpath, &left_slices[..left.argc], &env_slices()[..env_slice_count()]);
+            exec_env(lpath, &left_slices[..left.argc], &env.slices()[..env.count]);
             cmd_not_found(lpath, left.parts[0]);
             exit();
         }
@@ -231,7 +239,7 @@ fn run_pipeline(left: &Segment<'_>, right: &Segment<'_>) {
             close(rfd);
             close(wfd);
             write(b"fork failed\n");
-            return;
+            return None;
         }
         Some(_left_pid) => {}
     }
@@ -241,7 +249,7 @@ fn run_pipeline(left: &Segment<'_>, right: &Segment<'_>) {
             dup2(rfd, 0);
             close(rfd);
             apply_stdin_redir(right.in_path);
-            exec_env(rpath, &right_slices[..right.argc], &env_slices()[..env_slice_count()]);
+            exec_env(rpath, &right_slices[..right.argc], &env.slices()[..env.count]);
             cmd_not_found(rpath, right.parts[0]);
             exit();
         }
@@ -249,16 +257,14 @@ fn run_pipeline(left: &Segment<'_>, right: &Segment<'_>) {
             close(rfd);
             close(wfd);
             write(b"fork failed\n");
-            return;
+            return None;
         }
         Some(_right_pid) => {}
     }
     close(rfd);
     close(wfd);
     let _ = wait_status();
-    if let Some((_, code)) = wait_status() {
-        unsafe { LAST_STATUS = code };
-    }
+    wait_status().map(|(_, code)| code)
 }
 
 fn apply_stdin_redir(path: Option<&[u8]>) {
@@ -361,64 +367,54 @@ fn write_bytes_escaped(bytes: &[u8]) {
 }
 
 
-fn init_env() {
-    unsafe {
-        ENV_COUNT = 0;
-        set_env(b"SHLVL=1");
+impl Env {
+    fn new() -> Self {
+        let mut env = Env {
+            vars: [[0; ENV_LEN]; MAX_ENV],
+            lens: [0; MAX_ENV],
+            count: 0,
+        };
+        env.set(b"SHLVL=1");
+        env
     }
-}
 
-fn set_env(entry: &[u8]) -> bool {
-    if entry.is_empty() {
-        return false;
-    }
-    unsafe {
-        if ENV_COUNT >= MAX_ENV {
+    fn set(&mut self, entry: &[u8]) -> bool {
+        if entry.is_empty() || self.count >= MAX_ENV {
             return false;
         }
         let n = entry.len().min(ENV_LEN);
-        ENV[ENV_COUNT][..n].copy_from_slice(&entry[..n]);
-        ENV_LENS[ENV_COUNT] = n;
-        ENV_COUNT += 1;
+        self.vars[self.count][..n].copy_from_slice(&entry[..n]);
+        self.lens[self.count] = n;
+        self.count += 1;
+        true
     }
-    true
-}
 
-fn export_name_value(token: &[u8]) -> bool {
-    if let Some(eq) = token.iter().position(|&b| b == b'=') {
-        let name = &token[..eq];
-        if name.is_empty() {
-            return false;
-        }
-        set_env(token)
-    } else {
-        false
-    }
-}
-
-fn env_slices<'a>() -> [&'a [u8]; MAX_ENV] {
-    let mut out: [&'a [u8]; MAX_ENV] = [&[]; MAX_ENV];
-    unsafe {
-        for i in 0..ENV_COUNT {
-            out[i] = &ENV[i][..ENV_LENS[i]];
+    /// `export NAME=value`.
+    fn export(&mut self, token: &[u8]) -> bool {
+        match token.iter().position(|&b| b == b'=') {
+            Some(eq) if eq > 0 => self.set(token),
+            _ => false,
         }
     }
-    out
-}
 
-fn env_slice_count() -> usize {
-    unsafe { ENV_COUNT }
-}
-
-fn print_env() {
-    let slices = env_slices();
-    let mut first = true;
-    for item in &slices[..env_slice_count()] {
-        if !first {
-            write(b"\n");
+    fn slices(&self) -> [&[u8]; MAX_ENV] {
+        let mut out: [&[u8]; MAX_ENV] = [&[]; MAX_ENV];
+        for i in 0..self.count {
+            out[i] = &self.vars[i][..self.lens[i]];
         }
-        write(item);
-        first = false;
+        out
+    }
+
+    fn print(&self) {
+        let slices = self.slices();
+        let mut first = true;
+        for item in &slices[..self.count] {
+            if !first {
+                write(b"\n");
+            }
+            write(item);
+            first = false;
+        }
     }
 }
 

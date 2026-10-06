@@ -35,7 +35,7 @@ pub fn page() -> Option<(u64, *mut u8)> {
 /// `n` contiguous pages from the kernel.
 pub fn pages(n: usize) -> Option<(u64, *mut u8)> {
     let mut phys = 0u64;
-    let va = unsafe { (api().dma_alloc)(n, &mut phys) };
+    let va = api().dma_alloc(n, &mut phys);
     if va.is_null() { None } else { Some((phys, va)) }
 }
 

@@ -57,7 +57,7 @@ fn write_phys(base: usize, lo: u32, hi: u32, phys: u64) {
 /// One DMA page from the kernel: `(phys, va)`.
 fn dma_page() -> Option<(u64, *mut u8)> {
     let mut phys = 0u64;
-    let va = unsafe { (crate::api().dma_alloc)(1, &mut phys) };
+    let va = crate::api().dma_alloc(1, &mut phys);
     if va.is_null() { None } else { Some((phys, va)) }
 }
 
@@ -319,14 +319,10 @@ fn setup(base: usize) -> Option<Dev> {
 }
 
 pub fn init() {
-    let compat = myos_abi::StrRef {
-        ptr: b"virtio,mmio".as_ptr(),
-        len: b"virtio,mmio".len(),
-    };
     let mut i = 0;
     loop {
         let mut node = myos_abi::MmioDevice::default();
-        if unsafe { (crate::api().dt_mmio_find)(compat, i, &mut node) } != 0 {
+        if crate::api().dt_mmio_find("virtio,mmio", i, &mut node) != 0 {
             break;
         }
         i += 1;

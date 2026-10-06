@@ -9,11 +9,13 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use myos_abi::{
-    status_ok, ABI_VERSION, KernelApi, MYOS_IRQ_INTX, MYOS_POLLIN, MYOS_POLLOUT, ModuleChrOps,
+    status_ok, ABI_VERSION, ApiCell, KernelApi, MYOS_IRQ_INTX, MYOS_POLLIN, MYOS_POLLOUT,
+    ModuleChrOps,
 };
 
 const VENDOR: u16 = 0x1AF4;
@@ -93,7 +95,7 @@ struct Net {
 }
 
 static mut NETS: [Option<Net>; MAX_NET] = [None, None, None, None];
-static mut API: Option<&'static KernelApi> = None;
+static API: ApiCell = ApiCell::new();
 
 unsafe extern "C" fn net0_read(buf: *mut u8, buf_len: usize) -> i32 {
     net_read_n(0, buf, buf_len)
@@ -231,13 +233,9 @@ fn dcache_civac(va: *mut u8, len: usize) {
     }
 }
 
-fn write_str(api: &KernelApi, msg: &[u8]) {
-    unsafe { (api.write_str)(msg.as_ptr(), msg.len()) }
-}
-
 fn dma_alloc(api: &KernelApi, n_pages: usize) -> Option<(*mut u8, u64)> {
     let mut phys = 0u64;
-    let va = unsafe { (api.dma_alloc)(n_pages, &mut phys) };
+    let va = api.dma_alloc(n_pages, &mut phys);
     if va.is_null() || phys == 0 {
         None
     } else {
@@ -249,7 +247,7 @@ fn pci_find_at(api: &KernelApi, vendor: u16, device: u16, index: u32) -> Option<
     let mut bus = 0u8;
     let mut slot = 0u8;
     let mut func = 0u8;
-    let rc = unsafe { (api.pci_find)(vendor, device, index, &mut bus, &mut slot, &mut func) };
+    let rc = api.pci_find(vendor, device, index, &mut bus, &mut slot, &mut func);
     if rc == 0 {
         Some((bus, slot, func))
     } else {
@@ -311,7 +309,7 @@ fn map_bar(
     }
     let mut va = 0usize;
     let mut size = 0u64;
-    let rc = unsafe { (api.pci_bar_map)(bus, slot, func, bar, &mut va, &mut size) };
+    let rc = api.pci_bar_map(bus, slot, func, bar, &mut va, &mut size);
     if rc != 0 || va == 0 || size == 0 {
         return None;
     }
@@ -320,12 +318,12 @@ fn map_bar(
 }
 
 fn walk_caps(api: &KernelApi, bus: u8, slot: u8, func: u8) -> Option<Caps> {
-    let cmdsts = unsafe { (api.pci_cfg_read32)(bus, slot, func, 4) };
+    let cmdsts = api.pci_cfg_read32(bus, slot, func, 4);
     let sts = (cmdsts >> 16) as u16;
     if sts & PCI_STATUS_CAP_LIST == 0 {
         return None;
     }
-    let mut cap = (unsafe { (api.pci_cfg_read32)(bus, slot, func, 0x34) } & 0xFC) as u8;
+    let mut cap = (api.pci_cfg_read32(bus, slot, func, 0x34) & 0xFC) as u8;
     let mut cache: [Option<(usize, u64)>; 6] = [None; 6];
     let mut common = 0usize;
     let mut notify = 0usize;
@@ -335,15 +333,15 @@ fn walk_caps(api: &KernelApi, bus: u8, slot: u8, func: u8) -> Option<Caps> {
     let mut hops = 0u8;
     while cap != 0 && hops < 64 {
         hops += 1;
-        let w0 = unsafe { (api.pci_cfg_read32)(bus, slot, func, cap) };
+        let w0 = api.pci_cfg_read32(bus, slot, func, cap);
         let id = (w0 & 0xFF) as u8;
         let next = ((w0 >> 8) & 0xFF) as u8;
         if id == PCI_CAP_VNDR {
             let cfg_type = ((w0 >> 24) & 0xFF) as u8;
-            let w1 = unsafe { (api.pci_cfg_read32)(bus, slot, func, cap.wrapping_add(4)) };
+            let w1 = api.pci_cfg_read32(bus, slot, func, cap.wrapping_add(4));
             let bar = (w1 & 0xFF) as u8;
-            let off = unsafe { (api.pci_cfg_read32)(bus, slot, func, cap.wrapping_add(8)) };
-            let len = unsafe { (api.pci_cfg_read32)(bus, slot, func, cap.wrapping_add(12)) };
+            let off = api.pci_cfg_read32(bus, slot, func, cap.wrapping_add(8));
+            let len = api.pci_cfg_read32(bus, slot, func, cap.wrapping_add(12));
             if let Some((va, size)) = map_bar(api, bus, slot, func, bar, &mut cache) {
                 let start = off as u64;
                 let end = start.saturating_add(u64::from(len));
@@ -353,9 +351,7 @@ fn walk_caps(api: &KernelApi, bus: u8, slot: u8, func: u8) -> Option<Caps> {
                         VIRTIO_PCI_CAP_COMMON => common = mmio,
                         VIRTIO_PCI_CAP_NOTIFY => {
                             notify = mmio;
-                            notify_mult = unsafe {
-                                (api.pci_cfg_read32)(bus, slot, func, cap.wrapping_add(16))
-                            };
+                            notify_mult = api.pci_cfg_read32(bus, slot, func, cap.wrapping_add(16));
                         }
                         VIRTIO_PCI_CAP_DEVICE => device = mmio,
                         VIRTIO_PCI_CAP_ISR => isr = mmio,
@@ -482,7 +478,7 @@ fn post_rx(net: &Net, i: u16) {
 fn probe(api: &KernelApi, pci_index: u32, slot_index: usize) -> Option<Net> {
     let (bus, slot, func) = pci_find_net(api, pci_index)?;
 
-    unsafe { (api.pci_enable)(bus, slot, func) };
+    api.pci_enable(bus, slot, func);
 
     let caps = walk_caps(api, bus, slot, func)?;
     let common = caps.common;
@@ -551,19 +547,15 @@ fn probe(api: &KernelApi, pci_index: u32, slot_index: usize) -> Option<Net> {
     // AVAIL_F_NO_INTERRUPT). Failure leaves the device in poll mode; `ctl`
     // says `irq off` then, so netd keeps its timed polling.
     let mut msix_entry: u16 = MYOS_IRQ_INTX;
-    let name = b"virtio-net";
-    let rc = unsafe {
-        (api.pci_irq_enable)(
-            bus,
-            slot,
-            func,
-            name.as_ptr(),
-            name.len(),
-            net_irq,
-            slot_index as *mut core::ffi::c_void,
-            &mut msix_entry,
-        )
-    };
+    let rc = api.pci_irq_enable(
+        bus,
+        slot,
+        func,
+        "virtio-net",
+        net_irq,
+        slot_index as *mut core::ffi::c_void,
+        &mut msix_entry,
+    );
     if rc == 0 {
         let mut ok = true;
         if msix_entry != MYOS_IRQ_INTX {
@@ -610,12 +602,6 @@ fn net_slot(idx: usize) -> Option<&'static mut Net> {
     }
 }
 
-fn api_ref() -> Option<&'static KernelApi> {
-    // Stored as Option<&'static _> (never a nullable raw pointer) so CodeQL
-    // rust/access-invalid-pointer does not treat the init-time null as live.
-    unsafe { core::ptr::addr_of!(API).read() }
-}
-
 /// Interrupt handler: ack the device (ISR read deasserts a legacy INTx line;
 /// harmless under MSI-X) and wake the pollers: `netd` sleeps in `poll` on
 /// `data`.
@@ -626,8 +612,8 @@ unsafe extern "C" fn net_irq(ctx: *mut core::ffi::c_void) {
             let _ = r8(net.isr);
         }
     }
-    if let Some(api) = api_ref() {
-        unsafe { (api.wake_any)() };
+    if let Some(api) = API.try_get() {
+        api.wake_any();
     }
 }
 
@@ -759,43 +745,40 @@ fn net_write_n(idx: usize, buf: *const u8, buf_len: usize) -> i32 {
 #[inline(never)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
-    unsafe {
-        if api.is_null() {
-            return -1;
-        }
-        let api: &'static KernelApi = &*api;
-        if api.abi_version != ABI_VERSION {
-            return -2;
-        }
-        core::ptr::addr_of_mut!(API).write(Some(api));
-        let mut registered = 0usize;
-        let mut pci_index = 0u32;
-        while registered < MAX_NET {
-            match probe(api, pci_index, registered) {
-                Some(net) => {
-                    let slot = registered;
-                    *core::ptr::addr_of_mut!(NETS[slot]) = Some(net);
-                    let mut name = *b"net0";
-                    name[3] = b'0' + (slot as u8);
-                    let rc = (api.dev_register)(name.as_ptr(), 4, &OPS[slot]);
-                    if rc != 0 {
-                        *core::ptr::addr_of_mut!(NETS[slot]) = None;
-                        // Slot full or name clash — stop trying further NICs.
-                        break;
-                    }
-                    registered += 1;
-                    pci_index += 1;
-                }
-                None => break,
-            }
-        }
-        if registered == 0 {
-            write_str(api, b"virtio-net skip\n");
-        } else {
-            status_ok(api, "virtio-net");
-        }
-        0
+    if api.is_null() {
+        return -1;
     }
+    let api: &'static KernelApi = unsafe { &*api };
+    if api.abi_version != ABI_VERSION {
+        return -2;
+    }
+    unsafe { API.set(api) };
+    const NAMES: [&str; MAX_NET] = ["net0", "net1", "net2", "net3"];
+    let mut registered = 0usize;
+    let mut pci_index = 0u32;
+    while registered < MAX_NET {
+        match probe(api, pci_index, registered) {
+            Some(net) => {
+                let slot = registered;
+                unsafe { *core::ptr::addr_of_mut!(NETS[slot]) = Some(net) };
+                let rc = api.dev_register(NAMES[slot], &OPS[slot]);
+                if rc != 0 {
+                    unsafe { *core::ptr::addr_of_mut!(NETS[slot]) = None };
+                    // Slot full or name clash — stop trying further NICs.
+                    break;
+                }
+                registered += 1;
+                pci_index += 1;
+            }
+            None => break,
+        }
+    }
+    if registered == 0 {
+        api.write_str("virtio-net skip\n");
+    } else {
+        status_ok(api, "virtio-net");
+    }
+    0
 }
 
 #[inline(never)]

@@ -248,7 +248,7 @@ unsafe extern "C" fn fb_mmap(path: *const u8, len: usize, offset: usize) -> u64 
     let (Some(Node::Data), Some(fb)) = (node(path, len), info()) else {
         return 0;
     };
-    let Some(base) = fb.addr.checked_sub(unsafe { (api().hhdm_offset)() }) else {
+    let Some(base) = fb.addr.checked_sub(api().hhdm_offset()) else {
         return 0;
     };
     if base % PAGE as u64 != 0 || offset % PAGE != 0 || offset >= fb_len(fb).next_multiple_of(PAGE) {
@@ -293,5 +293,5 @@ pub fn mount(fb: FramebufferInfo) -> i32 {
         file_id: None,
         set_times_ino: None,
     };
-    unsafe { (api().vfs_mount)(b"fb".as_ptr(), 2, b"dev/fb".as_ptr(), 6, &ops) }
+    api().vfs_mount("fb", "dev/fb", &ops)
 }

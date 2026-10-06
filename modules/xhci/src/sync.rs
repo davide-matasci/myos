@@ -17,7 +17,7 @@ impl Spin {
 
     pub fn lock(&self) -> Guard<'_> {
         while self.0.swap(true, Ordering::Acquire) {
-            unsafe { (crate::api().task_yield)() };
+            crate::api().task_yield();
         }
         Guard(self)
     }

@@ -7,11 +7,13 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use core::ffi::c_void;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use myos_abi::{
-    ABI_VERSION, KernelApi, StrRef, USB_EGONE, USB_HOST_VERSION, USB_SERVICE, USB_SPEED_FULL,
+    ABI_VERSION, ApiCell, KernelApi, StrRef, USB_EGONE, USB_HOST_VERSION, USB_SERVICE, USB_SPEED_FULL,
     USB_SPEED_HIGH, USB_SPEED_LOW, USB_SPEED_SUPER, UsbDeviceInfo, UsbDriverOps, UsbHostOps,
     UsbInterfaceInfo, status_fail, status_ok,
 };
@@ -49,8 +51,9 @@ struct Hub {
     gone: bool,
 }
 
-static mut API: Option<&'static KernelApi> = None;
-static mut HOST: Option<&'static UsbHostOps> = None;
+static API: ApiCell = ApiCell::new();
+/// The host's table, kept by `module_init`.
+static HOST: AtomicPtr<UsbHostOps> = AtomicPtr::new(core::ptr::null_mut());
 static mut HUBS: [Option<Hub>; MAX_HUBS] = [const { None }; MAX_HUBS];
 
 static DRIVER: UsbDriverOps = UsbDriverOps {
@@ -60,11 +63,12 @@ static DRIVER: UsbDriverOps = UsbDriverOps {
 };
 
 fn api() -> &'static KernelApi {
-    unsafe { (*core::ptr::addr_of!(API)).expect("usb_hub: API") }
+    API.get()
 }
 
 fn host() -> &'static UsbHostOps {
-    unsafe { (*core::ptr::addr_of!(HOST)).expect("usb_hub: host") }
+    // SAFETY: the host's service table, which outlives this module.
+    unsafe { HOST.load(Ordering::Acquire).as_ref() }.expect("usb_hub: host")
 }
 
 fn hubs() -> &'static mut [Option<Hub>; MAX_HUBS] {
@@ -72,20 +76,20 @@ fn hubs() -> &'static mut [Option<Hub>; MAX_HUBS] {
 }
 
 fn sleep_ms(ms: u64) {
-    let until = unsafe { (api().monotonic_ns)() } + ms * 1_000_000;
-    unsafe { (api().task_sleep_until)(until) };
+    let until = api().monotonic_ns() + ms * 1_000_000;
+    api().task_sleep_until(until);
 }
 
 fn control(dev: u32, rt: u8, req: u8, value: u16, index: u16, data: &mut [u8]) -> i32 {
-    unsafe { (host().control)(dev, rt, req, value, index, data.as_mut_ptr(), data.len() as u16) }
+    host().control(dev, rt, req, value, index, data)
 }
 
 fn set_port_feature(dev: u32, port: u8, feature: u16) -> i32 {
-    unsafe { (host().control)(dev, RT_PORT_OUT, SET_FEATURE, feature, u16::from(port), core::ptr::null_mut(), 0) }
+    control(dev, RT_PORT_OUT, SET_FEATURE, feature, u16::from(port), &mut [])
 }
 
 fn clear_port_feature(dev: u32, port: u8, feature: u16) -> i32 {
-    unsafe { (host().control)(dev, RT_PORT_OUT, CLEAR_FEATURE, feature, u16::from(port), core::ptr::null_mut(), 0) }
+    control(dev, RT_PORT_OUT, CLEAR_FEATURE, feature, u16::from(port), &mut [])
 }
 
 /// `wPortStatus`, `wPortChange` of `port`.
@@ -137,7 +141,7 @@ fn connect(hub: &Hub, port: u8) {
     } else {
         USB_SPEED_FULL
     };
-    let r = unsafe { (host().hub_attach)(hub.dev, port, speed) };
+    let r = host().hub_attach(hub.dev, port, speed);
     if r < 0 {
         status_fail(api(), "usb_hub: a device did not enumerate");
     }
@@ -156,10 +160,10 @@ fn port_changed(hub: &Hub, port: u8) {
     if change & 1 != 0 {
         let _ = clear_port_feature(hub.dev, port, C_PORT_CONNECTION);
         if status & 1 != 0 {
-            unsafe { (host().hub_detach)(hub.dev, port) };
+            host().hub_detach(hub.dev, port);
             connect(hub, port);
         } else {
-            unsafe { (host().hub_detach)(hub.dev, port) };
+            host().hub_detach(hub.dev, port);
         }
     }
 }
@@ -232,7 +236,7 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     let tt_think = ((characteristics >> 5) & 3) as u8;
     let multi_tt = u8::from(dev.protocol == 2);
     let power_delay_ms = u64::from(d[5]) * 2;
-    if unsafe { (host().hub_configure)(dev.id, ports, tt_think, multi_tt) } < 0 {
+    if host().hub_configure(dev.id, ports, tt_think, multi_tt) < 0 {
         status_fail(api(), "usb_hub: hub slot");
         return -1;
     }
@@ -294,23 +298,18 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     if api.abi_version != ABI_VERSION {
         return -2;
     }
-    unsafe {
-        *core::ptr::addr_of_mut!(API) = Some(api);
-    }
-    let name = StrRef { ptr: USB_SERVICE.as_ptr(), len: USB_SERVICE.len() };
-    let table = unsafe { (api.service_lookup)(name) } as *const UsbHostOps;
+    unsafe { API.set(api) };
+    let table = api.service_lookup(USB_SERVICE) as *const UsbHostOps;
     if table.is_null() {
-        unsafe { (api.write_str)(b"usb_hub: no usb host\n".as_ptr(), 21) };
+        api.write_str("usb_hub: no usb host\n");
         return -3;
     }
     let host: &'static UsbHostOps = unsafe { &*table };
     if host.version != USB_HOST_VERSION {
         return -4;
     }
-    unsafe {
-        *core::ptr::addr_of_mut!(HOST) = Some(host);
-    }
-    if unsafe { (host.driver_register)(&DRIVER) } != 0 {
+    HOST.store(table.cast_mut(), Ordering::Release);
+    if host.driver_register(&DRIVER) != 0 {
         return -5;
     }
     status_ok(api, "usb_hub");
@@ -325,6 +324,6 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     let api = api();
     status_fail(api, "usb_hub: panic");
     loop {
-        unsafe { (api.task_yield)() };
+        api.task_yield();
     }
 }

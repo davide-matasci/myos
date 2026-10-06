@@ -298,6 +298,16 @@ unsafe extern "C" fn module_rescan() // optional: probe for new devices after a 
 
 `KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v30 (append-only; v30 added a filesystem's `file_id` and `set_times_ino` hooks (the `*_ino` hooks are how an open file is reached) and `fd_lockctl` (file locks for the Linux layer); v29 added a filesystem's `set_size` and `set_size_ino` hooks (`ftruncate`); v28 added the hooks that keep a file unlinked while it is held (`unlink_keep`, `read_ino`, `write_ino`, `stat_ino`, `forget_ino`); v27 added `thread_place`; v26 added a filesystem's `unmount` hook (`umount`); v25 added file times, a filesystem's `set_times` hook and `vfs_set_times`; v21 added `blk_unregister`, the service registry (`service_register` / `service_lookup`) modules reach each other through, module threads (`thread_spawn`), `wake` and the USB bus types, `docs/usb.md`; v19 took `ioctl` out, v20 added the `open` hook that makes a file exclusive, `/dev/console/kbd`). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices: the directory `/dev/<name>/` with `data` and an optional text `ctl`, and a `poll` hook for `data`'s readiness), `fs_register` / `vfs_mount` (filesystems; a backend's optional `mmap` hook maps device memory, `docs/fb.md`, and its `poll` hook reports readiness for `poll`), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
 
+A module calls the table through its safe methods, one per entry with the
+same name (`api.blk_read(dev, lba, &mut buf)` for
+`(api.blk_read)(dev, lba, ptr, len)`): they take slices, `&str` and
+references, and the kernel copies or checks what it is handed, so no
+`unsafe` is needed. The few entries that cannot be safe (`dealloc`, the
+saved registers of a syscall, the FP/SIMD save area) have no method. A
+module keeps the table `module_init` received in a `static API: ApiCell`
+(`API.get()` afterwards), and every module crate denies
+`unsafe_op_in_unsafe_fn`.
+
 ### Adding a module
 1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)
 2. Add it to the module list in `kernel/build.rs` (builds `target/foo-<triple>` for every arch) and to `BOOT_MODULES` in `src/limine_image.rs` at the position it must load (that also ships it in the initramfs and generates the `module_path` line); list the ELFs in `scripts/ci-build-kernels.sh` / `ci-pack-build-artifacts.sh`

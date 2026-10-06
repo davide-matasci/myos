@@ -782,7 +782,7 @@ pub fn detach_id(c: &mut Controller, id: u32) {
         if ep.pending.active.load(Ordering::Acquire) {
             ep.pending.code.store(0xFF, Ordering::Relaxed);
             ep.pending.done.store(true, Ordering::Release);
-            unsafe { (api().wake)(ep.pending.key()) };
+            api().wake(ep.pending.key());
         }
     }
     for i in 0..MAX_INTERFACES {

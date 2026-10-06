@@ -5,27 +5,19 @@
 
 use alloc::string::String;
 
-use myos_abi::{KernelApi, MYOS_MAX_TASKS, StrRef};
+use myos_abi::{ApiCell, KernelApi, MYOS_MAX_TASKS, StrRef};
 
 pub const MAX_TASKS: usize = MYOS_MAX_TASKS;
 
-static mut API: Option<&'static KernelApi> = None;
+static API: ApiCell = ApiCell::new();
 
 pub(crate) fn set_api(api: &'static KernelApi) {
-    unsafe {
-        *core::ptr::addr_of_mut!(API) = Some(api);
-    }
+    // SAFETY: a `'static` table outlives the module.
+    unsafe { API.set(api) }
 }
 
 pub(crate) fn api() -> &'static KernelApi {
-    unsafe { (*core::ptr::addr_of!(API)).expect("linux: API") }
-}
-
-fn sref(s: &str) -> StrRef {
-    StrRef {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+    API.get()
 }
 
 // Native syscall numbers (`kernel/src/user/syscall.rs`, append-only).
@@ -73,32 +65,32 @@ pub mod user {
     }
 
     pub fn buffer_ok(ptr: usize, len: usize) -> bool {
-        unsafe { (api().user_buffer_ok)(ptr, len) != 0 }
+        api().user_buffer_ok(ptr, len)
     }
 
     pub fn copy_to_user(ptr: usize, bytes: &[u8]) -> bool {
-        unsafe { (api().copy_to_user)(ptr, bytes.as_ptr(), bytes.len()) == 0 }
+        api().copy_to_user(ptr, bytes) == 0
     }
 
     pub fn copy_from_user(ptr: usize, out: &mut [u8]) -> bool {
-        unsafe { (api().copy_from_user)(ptr, out.as_mut_ptr(), out.len()) == 0 }
+        api().copy_from_user(ptr, out) == 0
     }
 
     pub fn open_path(path: &str, flags: usize) -> usize {
-        unsafe { (api().open_path)(sref(path), flags) }
+        api().open_path(path, flags)
     }
 
     pub fn chdir_path(path: &str) -> usize {
-        unsafe { (api().chdir_path)(sref(path)) }
+        api().chdir_path(path)
     }
 
     pub fn do_mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: isize, off: usize) -> usize {
-        unsafe { (api().mmap)(addr, len, prot, flags, fd, off) }
+        api().mmap(addr, len, prot, flags, fd, off)
     }
 
     fn resolve(path: &str, mode: u32) -> Option<String> {
         let mut b = [0u8; 256];
-        let n = unsafe { (api().path_resolve)(sref(path), mode, b.as_mut_ptr(), b.len()) };
+        let n = api().path_resolve(path, mode, &mut b);
         if n < 0 {
             return None;
         }
@@ -118,11 +110,11 @@ pub mod user {
     /// Exec with the personality kept (`execve`): native result.
     pub fn exec_linux(path: &str, args: &[&[u8]], env: &[&[u8]]) -> usize {
         let to_refs = |v: &[&[u8]]| -> alloc::vec::Vec<StrRef> {
-            v.iter().map(|s| StrRef { ptr: s.as_ptr(), len: s.len() }).collect()
+            v.iter().map(|s| StrRef::from_bytes(s)).collect()
         };
         let a = to_refs(args);
         let e = to_refs(env);
-        unsafe { (api().personality_exec)(sref(path), a.as_ptr(), a.len(), e.as_ptr(), e.len()) }
+        unsafe { (api().personality_exec)(StrRef::new(path), a.as_ptr(), a.len(), e.as_ptr(), e.len()) }
     }
 
     /// A read at the file position (`pread` with no offset: the register
@@ -138,7 +130,7 @@ pub mod user {
     }
     /// A record lock on `fd`'s file (`fs::lock`): 0 or a native failure.
     pub fn fd_lockctl(fd: usize, cmd: usize, lock: &mut myos_abi::MyosLockRange) -> usize {
-        unsafe { (api().fd_lockctl)(fd, cmd, lock) }
+        api().fd_lockctl(fd, cmd, lock)
     }
     pub fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         native(SYS_MPROTECT, addr, len, prot)
@@ -185,22 +177,22 @@ pub mod task {
     pub use myos_abi::MYOS_WAIT_ANY as WAIT_ANY;
 
     pub fn current_id() -> usize {
-        unsafe { (api().current_tid)() }
+        api().current_tid()
     }
     pub fn current_tid() -> usize {
         current_id()
     }
     pub fn current_pid() -> usize {
-        unsafe { (api().current_pid)() }
+        api().current_pid()
     }
     pub fn current_ppid() -> usize {
-        unsafe { (api().current_ppid)() }
+        api().current_ppid()
     }
     pub fn is_live_user(id: usize) -> bool {
-        unsafe { (api().task_is_live_user)(id) != 0 }
+        api().task_is_live_user(id)
     }
     pub fn yield_now() {
-        unsafe { (api().task_yield)() }
+        api().task_yield()
     }
     /// `exit_group`: end the process.
     pub fn user_exit(code: u8) -> ! {
@@ -210,7 +202,7 @@ pub mod task {
         }
     }
     pub fn thread_exit(code: u8) -> ! {
-        unsafe { (api().thread_exit)(code) }
+        api().thread_exit(code)
     }
     /// A thread resuming like the caller of the syscall in `regs` (result 0)
     /// on stack `sp`, with thread pointer `tls` (`None`: the caller's).
@@ -220,11 +212,11 @@ pub mod task {
     }
     /// Give the new thread `tid` a CPU of its own (it waits until then).
     pub fn place_thread(tid: usize) {
-        unsafe { (api().thread_place)(tid as i32) }
+        api().thread_place(tid as i32)
     }
     /// Drop the pages of `[addr, addr + len)`: they read as new next time.
     pub fn mmap_discard(addr: usize, len: usize) -> bool {
-        unsafe { (api().mmap_discard)(addr, len) == 0 }
+        api().mmap_discard(addr, len) == 0
     }
     /// Fork, the child resuming after the syscall in `regs` on stack `sp`.
     pub fn fork_from(regs: &super::user::SyscallRegs, sp: usize) -> Option<usize> {
@@ -232,14 +224,14 @@ pub mod task {
         (pid >= 0).then_some(pid as usize)
     }
     pub fn wait_seq() -> u64 {
-        unsafe { (api().wait_seq)() }
+        api().wait_seq()
     }
     pub fn block_until(key: usize, seq: u64, deadline_ns: u64) {
-        unsafe { (api().block_until)(key, seq, deadline_ns) }
+        api().block_until(key, seq, deadline_ns)
     }
     /// Sleep until the monotonic deadline (a signal may end it early).
     pub fn sleep_until(deadline_ns: u64, _any: bool) {
-        unsafe { (api().task_sleep_until)(deadline_ns) }
+        api().task_sleep_until(deadline_ns)
     }
 
     pub enum AddrWait {
@@ -251,7 +243,7 @@ pub mod task {
     }
 
     pub fn wait_addr(addr: usize, expected: u32, deadline: u64) -> AddrWait {
-        match unsafe { (api().wait_addr)(addr, expected, deadline) } {
+        match api().wait_addr(addr, expected, deadline) {
             myos_abi::MYOS_WAIT_WOKEN => AddrWait::Woken,
             myos_abi::MYOS_WAIT_CHANGED => AddrWait::Changed,
             myos_abi::MYOS_WAIT_TIMEOUT => AddrWait::TimedOut,
@@ -260,7 +252,7 @@ pub mod task {
         }
     }
     pub fn wake_addr(addr: usize, max: usize) -> usize {
-        unsafe { (api().wake_addr)(addr, max) }
+        api().wake_addr(addr, max)
     }
 
     pub enum FdKind {
@@ -271,7 +263,7 @@ pub mod task {
 
     pub fn fd_kind(fd: usize) -> Option<FdKind> {
         let mut size = 0usize;
-        match unsafe { (api().fd_kind)(fd, &mut size) } {
+        match api().fd_kind(fd, &mut size) {
             myos_abi::MYOS_FD_TTY => Some(FdKind::Tty),
             myos_abi::MYOS_FD_PIPE => Some(FdKind::Pipe),
             myos_abi::MYOS_FD_FILE => Some(FdKind::File { size }),
@@ -279,26 +271,26 @@ pub mod task {
         }
     }
     pub fn fd_poll_bits(fd: usize) -> Option<u32> {
-        let b = unsafe { (api().fd_poll_bits)(fd) };
+        let b = api().fd_poll_bits(fd);
         (b >= 0).then_some(b as u32)
     }
     pub fn fd_dup_min(fd: usize, min: usize) -> Option<usize> {
-        let n = unsafe { (api().fd_dup_min)(fd, min) };
+        let n = api().fd_dup_min(fd, min);
         (n >= 0).then_some(n as usize)
     }
     pub fn fd_dup2(old: usize, new: usize) -> bool {
-        unsafe { (api().fd_dup2)(old, new) == 0 }
+        api().fd_dup2(old, new) == 0
     }
     pub fn fd_close(fd: usize) -> bool {
-        unsafe { (api().fd_close)(fd) == 0 }
+        api().fd_close(fd) == 0
     }
     pub fn fd_write(fd: usize, buf: usize, len: usize) -> usize {
-        unsafe { (api().fd_write)(fd, buf, len) }
+        api().fd_write(fd, buf, len)
     }
     /// The ctl text of the terminal `fd` is open on; `None` if not a terminal.
     pub fn tty_ctl_read(fd: usize) -> Option<alloc::vec::Vec<u8>> {
         let mut buf = alloc::vec![0u8; 512];
-        let n = unsafe { (api().tty_ctl_read)(fd, buf.as_mut_ptr(), buf.len()) };
+        let n = api().tty_ctl_read(fd, &mut buf);
         if n < 0 {
             return None;
         }
@@ -306,12 +298,12 @@ pub mod task {
         Some(buf)
     }
     pub fn tty_ctl_write(fd: usize, text: &[u8]) -> bool {
-        unsafe { (api().tty_ctl_write)(fd, text.as_ptr(), text.len()) == 0 }
+        api().tty_ctl_write(fd, text) == 0
     }
     /// What `fd` is open on, as /proc/self/fd names it.
     pub fn fd_path(fd: usize) -> Option<alloc::vec::Vec<u8>> {
         let mut buf = alloc::vec![0u8; 128];
-        let n = unsafe { (api().fd_path)(fd, buf.as_mut_ptr(), buf.len()) };
+        let n = api().fd_path(fd, &mut buf);
         if n < 0 {
             return None;
         }
@@ -320,34 +312,34 @@ pub mod task {
     }
     pub fn pipe_open() -> Option<(usize, usize)> {
         let (mut r, mut w) = (0usize, 0usize);
-        (unsafe { (api().pipe_open)(&mut r, &mut w) } == 0).then_some((r, w))
+        (api().pipe_open(&mut r, &mut w) == 0).then_some((r, w))
     }
     /// Read at `pos` of the file behind `fd` (position left alone); `None`
     /// when the fd is not a file.
     pub fn fd_pread(fd: usize, pos: usize, out: &mut [u8]) -> Option<usize> {
-        let n = unsafe { (api().fd_pread)(fd, pos, out.as_mut_ptr(), out.len()) };
+        let n = api().fd_pread(fd, pos, out);
         (n >= 0).then_some(n as usize)
     }
 
     pub fn signal_get_action(id: usize, sig: u32) -> (usize, u32, u32) {
         let (mut h, mut f, mut m) = (0usize, 0u32, 0u32);
-        unsafe { (api().signal_get_action)(id, sig, &mut h, &mut f, &mut m) };
+        api().signal_get_action(id, sig, &mut h, &mut f, &mut m);
         (h, f, m)
     }
     pub fn signal_set_action(id: usize, sig: u32, handler: usize, flags: u32, mask: u32, tramp: usize) -> bool {
-        unsafe { (api().signal_set_action)(id, sig, handler, flags, mask, tramp) == 0 }
+        api().signal_set_action(id, sig, handler, flags, mask, tramp) == 0
     }
     pub fn signal_blocked(id: usize) -> u32 {
-        unsafe { (api().signal_blocked)(id) }
+        api().signal_blocked(id)
     }
     pub fn signal_set_blocked_mask(id: usize, mask: u32) {
-        unsafe { (api().signal_set_blocked)(id, mask) }
+        api().signal_set_blocked(id, mask)
     }
     pub fn signal_pending(id: usize) -> u32 {
-        unsafe { (api().signal_pending)(id) }
+        api().signal_pending(id)
     }
     pub fn signal_take_from(id: usize, set: u32) -> Option<u32> {
-        let s = unsafe { (api().signal_take)(id, set) };
+        let s = api().signal_take(id, set);
         (s >= 0).then_some(s as u32)
     }
 
@@ -370,10 +362,10 @@ pub mod task {
     #[cfg(target_arch = "x86_64")]
     pub mod tp {
         pub fn get() -> u64 {
-            unsafe { (super::api().thread_pointer_get)() }
+            super::api().thread_pointer_get()
         }
         pub fn set(v: u64) {
-            unsafe { (super::api().thread_pointer_set)(v) }
+            super::api().thread_pointer_set(v)
         }
     }
 }
@@ -397,7 +389,7 @@ pub mod fs {
 
     pub fn stat(path: &str) -> Option<StatInfo> {
         let mut st = myos_abi::PathStat::default();
-        if unsafe { (api().vfs_stat)(sref(path), &mut st) } != 0 {
+        if api().vfs_stat(path, &mut st) != 0 {
             return None;
         }
         Some(StatInfo {
@@ -413,44 +405,44 @@ pub mod fs {
     /// Set a file's access and modification times (`myos_abi::MYOS_TIME_OMIT`
     /// keeps one).
     pub fn set_times(path: &str, atime: u64, mtime: u64) -> bool {
-        unsafe { (api().vfs_set_times)(sref(path), atime, mtime) == 0 }
+        api().vfs_set_times(path, atime, mtime) == 0
     }
     pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
-        let n = unsafe { (api().vfs_listdir)(sref(path), buf.as_mut_ptr(), buf.len()) };
+        let n = api().vfs_listdir(path, buf);
         n.max(0) as usize
     }
     pub fn mkdir(path: &str) -> bool {
-        unsafe { (api().vfs_mkdir)(sref(path)) == 0 }
+        api().vfs_mkdir(path) == 0
     }
     pub fn rmdir(path: &str) -> bool {
-        unsafe { (api().vfs_rmdir)(sref(path)) == 0 }
+        api().vfs_rmdir(path) == 0
     }
     pub fn unlink(path: &str) -> bool {
-        unsafe { (api().vfs_unlink)(sref(path)) == 0 }
+        api().vfs_unlink(path) == 0
     }
     pub fn rename(old: &str, new: &str) -> bool {
-        unsafe { (api().vfs_rename)(sref(old), sref(new)) == 0 }
+        api().vfs_rename(old, new) == 0
     }
     pub fn symlink(target: &str, link: &str) -> bool {
-        unsafe { (api().vfs_symlink)(sref(target), sref(link)) == 0 }
+        api().vfs_symlink(target, link) == 0
     }
     pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
-        let n = unsafe { (api().vfs_readlink)(sref(path), buf.as_mut_ptr(), buf.len()) };
+        let n = api().vfs_readlink(path, buf);
         (n >= 0).then_some(n as usize)
     }
     /// Read at `pos` of the file at `path` without an fd.
     pub fn read(path: &str, pos: usize, out: &mut [u8]) -> Option<usize> {
-        let n = unsafe { (api().vfs_read)(sref(path), pos, out.as_mut_ptr(), out.len()) };
+        let n = api().vfs_read(path, pos, out);
         (n >= 0).then_some(n as usize)
     }
     /// Write at `pos` of the file at `path` without an fd.
     pub fn write(path: &str, pos: usize, src: &[u8]) -> Option<usize> {
-        let n = unsafe { (api().vfs_write)(sref(path), pos, src.as_ptr(), src.len()) };
+        let n = api().vfs_write(path, pos, src);
         (n >= 0).then_some(n as usize)
     }
     /// The task's own absolute view of `path` (cwd applied, chroot-relative).
     pub fn resolve_user_path_virtual(path: &str, out: &mut [u8]) -> Option<usize> {
-        let n = unsafe { (api().path_resolve)(sref(path), myos_abi::MYOS_PATH_VIRTUAL, out.as_mut_ptr(), out.len()) };
+        let n = api().path_resolve(path, myos_abi::MYOS_PATH_VIRTUAL, out);
         (n >= 0).then_some(n as usize)
     }
 }
@@ -472,16 +464,16 @@ pub mod signal {
     pub const SA_NOCLDWAIT: u32 = myos_abi::MYOS_SA_NOCLDWAIT;
 
     pub fn interrupt_wait() -> bool {
-        unsafe { (api().signal_interrupt_wait)() != 0 }
+        api().signal_interrupt_wait()
     }
     pub fn kill(pid: isize, sig: u32) -> bool {
-        unsafe { (api().signal_kill)(pid, sig) == 0 }
+        api().signal_kill(pid, sig) == 0
     }
     pub fn sigsuspend(mask: u32) -> usize {
-        unsafe { (api().signal_sigsuspend)(mask) }
+        api().signal_sigsuspend(mask)
     }
     pub fn terminate(sig: u32) -> ! {
-        unsafe { (api().signal_terminate)(sig) }
+        api().signal_terminate(sig)
     }
 }
 
@@ -489,11 +481,11 @@ pub mod time {
     use super::*;
 
     pub fn monotonic_ns() -> u64 {
-        unsafe { (api().monotonic_ns)() }
+        api().monotonic_ns()
     }
     /// `(sec, usec)` wall clock, `None` without an RTC.
     pub fn timeval() -> Option<(i64, i64)> {
-        let us = unsafe { (api().wall_time_us)() };
+        let us = api().wall_time_us();
         (us != 0).then(|| ((us / 1_000_000) as i64, (us % 1_000_000) as i64))
     }
 }
@@ -502,6 +494,6 @@ pub mod rng {
     use super::*;
 
     pub fn fill(out: &mut [u8]) {
-        unsafe { (api().rng_fill)(out.as_mut_ptr(), out.len()) }
+        api().rng_fill(out)
     }
 }

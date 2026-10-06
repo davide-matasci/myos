@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![no_main]
 
 use myos_user::{close, exit, mount, open, read, stat_mode, write, write_fd};

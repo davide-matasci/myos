@@ -2,22 +2,20 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use myos_abi::{KernelApi, ABI_VERSION};
 
 #[inline(never)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
-    unsafe {
-        if api.is_null() {
-            return -1;
-        }
-        let api = &*api;
-        if api.abi_version != ABI_VERSION {
-            return -2;
-        }
-        0
+    let Some(api) = (unsafe { api.as_ref() }) else {
+        return -1;
+    };
+    if api.abi_version != ABI_VERSION {
+        return -2;
     }
+    0
 }
 
 #[inline(never)]

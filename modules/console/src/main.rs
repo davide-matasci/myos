@@ -10,6 +10,7 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 mod fb;
 mod fbdev;
@@ -29,18 +30,18 @@ use ps2 as keyboard;
 use virtio_input as keyboard;
 
 use myos_abi::{
-    ABI_VERSION, CONSOLE_BANNER, CONSOLE_INFO, CONSOLE_STATUS_FAIL, CONSOLE_STATUS_INFO,
+    ABI_VERSION, ApiCell, CONSOLE_BANNER, CONSOLE_INFO, CONSOLE_STATUS_FAIL, CONSOLE_STATUS_INFO,
     CONSOLE_STATUS_OK, CONSOLE_STATUS_WARN, FramebufferInfo, KernelApi, ModuleConsoleOps,
 };
 
 use fb::FrameBufferWriter;
 use lock::Lock;
 
-static mut API: Option<&'static KernelApi> = None;
+static API: ApiCell = ApiCell::new();
 static FB: Lock<Option<FrameBufferWriter<'static>>> = Lock::new(None);
 
 pub(crate) fn api() -> &'static KernelApi {
-    unsafe { (*core::ptr::addr_of!(API)).expect("console: API") }
+    API.get()
 }
 
 /// `[ OK ] label` on the kernel console (serial + this screen).
@@ -182,11 +183,9 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     if api.abi_version != ABI_VERSION {
         return -2;
     }
-    unsafe {
-        *core::ptr::addr_of_mut!(API) = Some(api);
-    }
+    unsafe { API.set(api) };
     let mut info = FramebufferInfo::default();
-    let screen = unsafe { (api.framebuffer_info)(&mut info) } == 0 && info.addr != 0;
+    let screen = api.framebuffer_info(&mut info) == 0 && info.addr != 0;
     if screen {
         let mut w = FrameBufferWriter::from_info(&info);
         w.clear();
@@ -196,7 +195,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     if keyboard::present() && kbdev::mount() != 0 {
         status_fail("console: /dev/console/kbd");
     }
-    let rc = unsafe { (api.console_register)(&OPS) };
+    let rc = api.console_register(&OPS);
     if screen && fbdev::mount(info) != 0 {
         status_fail("console: /dev/fb");
     }

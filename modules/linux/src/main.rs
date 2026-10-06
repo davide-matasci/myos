@@ -22,6 +22,7 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
 
@@ -62,7 +63,7 @@ struct KernelHeap;
 
 unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe { (k::api().alloc)(layout.size(), layout.align()) }
+        k::api().alloc(layout.size(), layout.align())
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { (k::api().dealloc)(ptr, layout.size(), layout.align()) }
@@ -149,7 +150,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
         return -2;
     }
     k::set_api(api);
-    let rc = unsafe { (api.personality_register)(&OPS) };
+    let rc = api.personality_register(&OPS);
     if rc == 0 {
         status_ok(api, "linux");
     }

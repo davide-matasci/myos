@@ -104,6 +104,5 @@ pub fn mount() -> i32 {
         file_id: None,
         set_times_ino: None,
     };
-    const PREFIX: &[u8] = b"dev/console/kbd";
-    unsafe { (api().vfs_mount)(b"kbd".as_ptr(), 3, PREFIX.as_ptr(), PREFIX.len(), &ops) }
+    api().vfs_mount("kbd", "dev/console/kbd", &ops)
 }

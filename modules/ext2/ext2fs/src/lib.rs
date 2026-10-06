@@ -23,6 +23,7 @@
 //! tested on the host against e2fsprogs (`cargo test -p ext2fs`).
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 extern crate alloc;
 #[cfg(test)]

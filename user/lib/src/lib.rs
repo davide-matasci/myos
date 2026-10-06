@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod alloc;
 pub mod args;
@@ -563,16 +564,16 @@ fn write_u32(mut n: u32) {
 }
 
 unsafe fn sys_write(fd: usize, ptr: usize, len: usize) -> usize {
-    sys6(SYS_PWRITE, fd, ptr, len, 0, 0, 0)
+    unsafe { sys6(SYS_PWRITE, fd, ptr, len, 0, 0, 0) }
 }
 
 unsafe fn sys_read(fd: usize, buf: usize, len: usize) -> usize {
-    sys6(SYS_PREAD, fd, buf, len, 0, 0, 0)
+    unsafe { sys6(SYS_PREAD, fd, buf, len, 0, 0, 0) }
 }
 
 /// A pipe; no flags (both ends stay open across exec).
 unsafe fn sys_pipe(fds_ptr: usize) -> usize {
-    sys6(SYS_PIPE, fds_ptr, 0, 0, 0, 0, 0)
+    unsafe { sys6(SYS_PIPE, fds_ptr, 0, 0, 0, 0, 0) }
 }
 
 // x86 syscall_entry clobbers rdi/rsi/rdx when shuffling args into the
@@ -581,145 +582,163 @@ unsafe fn sys_pipe(fds_ptr: usize) -> usize {
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys6(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "syscall",
-        inout("rax") nr => ret,
-        in("rdi") a0,
-        in("rsi") a1,
-        in("rdx") a2,
-        in("r10") a3,
-        in("r8") a4,
-        in("r9") a5,
-        out("rcx") _,
-        out("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
-        lateout("rdx") _,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inout("rax") nr => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            in("r10") a3,
+            in("r8") a4,
+            in("r9") a5,
+            out("rcx") _,
+            out("r11") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "aarch64")]
 unsafe fn sys6(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "svc #0",
-        in("x8") nr,
-        inout("x0") a0 => ret,
-        in("x1") a1,
-        in("x2") a2,
-        in("x3") a3,
-        in("x4") a4,
-        in("x5") a5,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") nr,
+            inout("x0") a0 => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
+            in("x4") a4,
+            in("x5") a5,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys6(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "ecall",
-        in("a7") nr,
-        inout("a0") a0 => ret,
-        in("a1") a1,
-        in("a2") a2,
-        in("a3") a3,
-        in("a4") a4,
-        in("a5") a5,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") nr,
+            inout("a0") a0 => ret,
+            in("a1") a1,
+            in("a2") a2,
+            in("a3") a3,
+            in("a4") a4,
+            in("a5") a5,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "syscall",
-        inout("rax") nr => ret,
-        in("rdi") a0,
-        in("rsi") a1,
-        in("rdx") a2,
-        out("rcx") _,
-        out("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
-        lateout("rdx") _,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inout("rax") nr => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            out("rcx") _,
+            out("r11") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "aarch64")]
 unsafe fn sys3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "svc #0",
-        in("x8") nr,
-        inout("x0") a0 => ret,
-        in("x1") a1,
-        in("x2") a2,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") nr,
+            inout("x0") a0 => ret,
+            in("x1") a1,
+            in("x2") a2,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "ecall",
-        in("a7") nr,
-        inout("a0") a0 => ret,
-        in("a1") a1,
-        in("a2") a2,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") nr,
+            inout("a0") a0 => ret,
+            in("a1") a1,
+            in("a2") a2,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys_exit(code: usize) -> ! {
-    core::arch::asm!(
-        "syscall",
-        in("rax") 1usize,
-        in("rdi") code,
-        options(noreturn, nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 1usize,
+            in("rdi") code,
+            options(noreturn, nostack),
+        );
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys_close(fd: usize) {
-    core::arch::asm!(
-        "syscall",
-        in("rax") 4usize,
-        in("rdi") fd,
-        out("rcx") _,
-        out("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
-        lateout("rdx") _,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 4usize,
+            in("rdi") fd,
+            out("rcx") _,
+            out("r11") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            options(nostack),
+        );
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys_fork() -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "syscall",
-        in("rax") 6usize,
-        lateout("rax") ret,
-        out("rcx") _,
-        out("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
-        lateout("rdx") _,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 6usize,
+            lateout("rax") ret,
+            out("rcx") _,
+            out("r11") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            options(nostack),
+        );
+    }
     ret
 }
 
@@ -728,88 +747,100 @@ unsafe fn sys_wait(status_ptr: usize) -> usize {
     let ret: usize;
     // a1/rsi = options; must be 0 (blocking). Leaving rsi unset made WNOHANG
     // spuriously active when bit0 was set in leftover register state.
-    core::arch::asm!(
-        "syscall",
-        in("rax") 7usize,
-        in("rdi") status_ptr,
-        in("rsi") 0usize,
-        lateout("rax") ret,
-        out("rcx") _,
-        out("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
-        lateout("rdx") _,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 7usize,
+            in("rdi") status_ptr,
+            in("rsi") 0usize,
+            lateout("rax") ret,
+            out("rcx") _,
+            out("r11") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "syscall",
-        in("rax") 11usize,
-        in("rdi") oldfd,
-        in("rsi") newfd,
-        lateout("rax") ret,
-        out("rcx") _,
-        out("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
-        lateout("rdx") _,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 11usize,
+            in("rdi") oldfd,
+            in("rsi") newfd,
+            lateout("rax") ret,
+            out("rcx") _,
+            out("r11") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "x86_64")]
 unsafe fn sys_brk(addr: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "syscall",
-        in("rax") 9usize,
-        in("rdi") addr,
-        lateout("rax") ret,
-        out("rcx") _,
-        out("r11") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
-        lateout("rdx") _,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 9usize,
+            in("rdi") addr,
+            lateout("rax") ret,
+            out("rcx") _,
+            out("r11") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "aarch64")]
 unsafe fn sys_exit(code: usize) -> ! {
-    core::arch::asm!(
-        "svc #0",
-        in("x8") 1usize,
-        in("x0") code,
-        options(noreturn, nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 1usize,
+            in("x0") code,
+            options(noreturn, nostack),
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
 unsafe fn sys_close(fd: usize) {
-    core::arch::asm!(
-        "svc #0",
-        in("x8") 4usize,
-        in("x0") fd,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 4usize,
+            in("x0") fd,
+            options(nostack),
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
 unsafe fn sys_fork() -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "svc #0",
-        in("x8") 6usize,
-        lateout("x0") ret,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 6usize,
+            lateout("x0") ret,
+            options(nostack),
+        );
+    }
     ret
 }
 
@@ -817,104 +848,120 @@ unsafe fn sys_fork() -> usize {
 unsafe fn sys_wait(status_ptr: usize) -> usize {
     let ret: usize;
     // a1/x1 = options; zero = blocking wait (see x86_64 sys_wait comment).
-    core::arch::asm!(
-        "svc #0",
-        in("x8") 7usize,
-        in("x0") status_ptr,
-        in("x1") 0usize,
-        lateout("x0") ret,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 7usize,
+            in("x0") status_ptr,
+            in("x1") 0usize,
+            lateout("x0") ret,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "aarch64")]
 unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "svc #0",
-        in("x8") 11usize,
-        in("x0") oldfd,
-        in("x1") newfd,
-        lateout("x0") ret,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 11usize,
+            in("x0") oldfd,
+            in("x1") newfd,
+            lateout("x0") ret,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "aarch64")]
 unsafe fn sys_brk(addr: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "svc #0",
-        in("x8") 9usize,
-        inout("x0") addr => ret,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 9usize,
+            inout("x0") addr => ret,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys_exit(code: usize) -> ! {
-    core::arch::asm!(
-        "ecall",
-        in("a7") 1usize,
-        in("a0") code,
-        options(noreturn, nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") 1usize,
+            in("a0") code,
+            options(noreturn, nostack),
+        );
+    }
 }
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys_close(fd: usize) {
-    core::arch::asm!(
-        "ecall",
-        in("a7") 4usize,
-        in("a0") fd,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") 4usize,
+            in("a0") fd,
+            options(nostack),
+        );
+    }
 }
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys_fork() -> usize {
-    sys_fork_raw()
+    unsafe { sys_fork_raw() }
 }
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys_wait(status_ptr: usize) -> usize {
     let ret: usize;
     // a1 = options; zero = blocking wait (see x86_64 sys_wait comment).
-    core::arch::asm!(
-        "ecall",
-        in("a7") 7usize,
-        inout("a0") status_ptr => ret,
-        in("a1") 0usize,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") 7usize,
+            inout("a0") status_ptr => ret,
+            in("a1") 0usize,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "ecall",
-        in("a7") 11usize,
-        in("a0") oldfd,
-        in("a1") newfd,
-        lateout("a0") ret,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") 11usize,
+            in("a0") oldfd,
+            in("a1") newfd,
+            lateout("a0") ret,
+            options(nostack),
+        );
+    }
     ret
 }
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys_brk(addr: usize) -> usize {
     let ret: usize;
-    core::arch::asm!(
-        "ecall",
-        in("a7") 9usize,
-        inout("a0") addr => ret,
-        options(nostack),
-    );
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") 9usize,
+            inout("a0") addr => ret,
+            options(nostack),
+        );
+    }
     ret
 }

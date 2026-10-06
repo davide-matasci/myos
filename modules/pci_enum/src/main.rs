@@ -18,51 +18,48 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use core::sync::atomic::{AtomicPtr, Ordering};
-use myos_abi::{status_info, status_ok, status_warn, ABI_VERSION, KernelApi};
+use myos_abi::{status_info, status_ok, status_warn, ApiCell, ABI_VERSION, KernelApi};
 
 const MAX_DEV: usize = 64;
 const BUF_CAP: usize = 8192;
 const LINE_CAP: usize = 160;
 const WRITE_CAP: usize = 64;
 
-static API: AtomicPtr<KernelApi> = AtomicPtr::new(core::ptr::null_mut());
+static API: ApiCell = ApiCell::new();
 static BUF: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
 #[inline(never)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
-    unsafe {
-        if api.is_null() {
-            return -1;
-        }
-        let api_ref = &*api;
-        if api_ref.abi_version != ABI_VERSION {
-            return -2;
-        }
-
-        let buf = (api_ref.alloc)(BUF_CAP, 8);
-        if buf.is_null() {
-            status_warn(api_ref, "pci_enum: alloc");
-            return -3;
-        }
-        API.store(api.cast_mut(), Ordering::Release);
-        BUF.store(buf, Ordering::Release);
-
-        let found = publish(api_ref, buf);
-        let name = b"pci";
-        let wr = (api_ref.proc_set_writer)(name.as_ptr(), name.len(), Some(pci_proc_write));
-        if wr != 0 {
-            status_warn(api_ref, "pci_enum: proc_set_writer");
-            // Still usable read-only if writer attach failed.
-        }
-        let mut msg = [0u8; 32];
-        let ml = format_count(&mut msg, found);
-        status_ok(api_ref, core::str::from_utf8(&msg[..ml]).unwrap_or("pci"));
-        let _ = status_info;
-        0
+    let Some(api_ref) = (unsafe { api.as_ref() }) else {
+        return -1;
+    };
+    if api_ref.abi_version != ABI_VERSION {
+        return -2;
     }
+
+    let buf = api_ref.alloc(BUF_CAP, 8);
+    if buf.is_null() {
+        status_warn(api_ref, "pci_enum: alloc");
+        return -3;
+    }
+    unsafe { API.set(api) };
+    BUF.store(buf, Ordering::Release);
+
+    let found = publish(api_ref, buf);
+    let wr = api_ref.proc_set_writer("pci", Some(pci_proc_write));
+    if wr != 0 {
+        status_warn(api_ref, "pci_enum: proc_set_writer");
+        // Still usable read-only if writer attach failed.
+    }
+    let mut msg = [0u8; 32];
+    let ml = format_count(&mut msg, found);
+    status_ok(api_ref, core::str::from_utf8(&msg[..ml]).unwrap_or("pci"));
+    let _ = status_info;
+    0
 }
 
 /// `write(2)` handler for `/proc/pci`. Accepts `rescan` (+ optional whitespace/newline).
@@ -85,9 +82,8 @@ unsafe extern "C" fn pci_proc_write(data: *const u8, data_len: usize) -> i32 {
     if !is_rescan_cmd(&tmp[..data_len]) {
         return -1;
     }
-    let api = API.load(Ordering::Acquire);
     let buf = BUF.load(Ordering::Acquire);
-    let Some(api_ref) = (unsafe { api.as_ref() }) else {
+    let Some(api_ref) = API.try_get() else {
         return -1;
     };
     if buf.is_null() {
@@ -120,49 +116,45 @@ fn is_rescan_cmd(raw: &[u8]) -> bool {
 /// Walk config space, format `/proc/pci`, and (re)register the node.
 /// Full rebuild drops devices that are gone since the last snapshot.
 fn publish(api: &KernelApi, buf: *mut u8) -> usize {
-    unsafe {
-        let out = core::slice::from_raw_parts_mut(buf, BUF_CAP);
-        let mut len = 0usize;
-        push_str(
-            out,
-            &mut len,
-            "# bus:slot.func vendor:device [name] class:sub:prog [class]\n",
-        );
-        push_str(
-            out,
-            &mut len,
-            "# write \"rescan\" to re-enumerate (boot snapshot + on-demand)\n",
-        );
+    // SAFETY: `buf` is the BUF_CAP-byte buffer `module_init` allocated.
+    let out = unsafe { core::slice::from_raw_parts_mut(buf, BUF_CAP) };
+    let mut len = 0usize;
+    push_str(
+        out,
+        &mut len,
+        "# bus:slot.func vendor:device [name] class:sub:prog [class]\n",
+    );
+    push_str(
+        out,
+        &mut len,
+        "# write \"rescan\" to re-enumerate (boot snapshot + on-demand)\n",
+    );
 
-        let mut found = 0usize;
-        for bus in 0u8..32 {
-            for slot in 0u8..32 {
-                let id0 = (api.pci_cfg_read32)(bus, slot, 0, 0);
-                if id0 as u16 == 0xFFFF {
+    let mut found = 0usize;
+    for bus in 0u8..32 {
+        for slot in 0u8..32 {
+            let id0 = api.pci_cfg_read32(bus, slot, 0, 0);
+            if id0 as u16 == 0xFFFF {
+                continue;
+            }
+            let hdr = (api.pci_cfg_read32(bus, slot, 0, 0x0C) >> 16) as u8;
+            let funcs = if hdr & 0x80 != 0 { 8u8 } else { 1u8 };
+            for func in 0..funcs {
+                let id = api.pci_cfg_read32(bus, slot, func, 0);
+                let vend = id as u16;
+                if vend == 0xFFFF {
                     continue;
                 }
-                let hdr = ((api.pci_cfg_read32)(bus, slot, 0, 0x0C) >> 16) as u8;
-                let funcs = if hdr & 0x80 != 0 { 8u8 } else { 1u8 };
-                for func in 0..funcs {
-                    let id = (api.pci_cfg_read32)(bus, slot, func, 0);
-                    let vend = id as u16;
-                    if vend == 0xFFFF {
-                        continue;
-                    }
-                    let dev = (id >> 16) as u16;
-                    let classw = (api.pci_cfg_read32)(bus, slot, func, 0x08);
-                    let class = (classw >> 24) as u8;
-                    let sub = (classw >> 16) as u8;
-                    let prog = (classw >> 8) as u8;
-                    let mut line = [0u8; LINE_CAP];
-                    let n = format_dev(&mut line, bus, slot, func, vend, dev, class, sub, prog);
-                    push_bytes(out, &mut len, &line[..n]);
-                    push_str(out, &mut len, "\n");
-                    found += 1;
-                    if found >= MAX_DEV || len + LINE_CAP >= BUF_CAP {
-                        break;
-                    }
-                }
+                let dev = (id >> 16) as u16;
+                let classw = api.pci_cfg_read32(bus, slot, func, 0x08);
+                let class = (classw >> 24) as u8;
+                let sub = (classw >> 16) as u8;
+                let prog = (classw >> 8) as u8;
+                let mut line = [0u8; LINE_CAP];
+                let n = format_dev(&mut line, bus, slot, func, vend, dev, class, sub, prog);
+                push_bytes(out, &mut len, &line[..n]);
+                push_str(out, &mut len, "\n");
+                found += 1;
                 if found >= MAX_DEV || len + LINE_CAP >= BUF_CAP {
                     break;
                 }
@@ -171,14 +163,16 @@ fn publish(api: &KernelApi, buf: *mut u8) -> usize {
                 break;
             }
         }
-
-        let name = b"pci";
-        let rc = (api.proc_register)(name.as_ptr(), name.len(), buf, len);
-        if rc != 0 {
-            status_warn(api, "pci_enum: proc_register");
+        if found >= MAX_DEV || len + LINE_CAP >= BUF_CAP {
+            break;
         }
-        found
     }
+
+    let rc = api.proc_register("pci", &out[..len]);
+    if rc != 0 {
+        status_warn(api, "pci_enum: proc_register");
+    }
+    found
 }
 
 fn push_str(out: &mut [u8], len: &mut usize, s: &str) {

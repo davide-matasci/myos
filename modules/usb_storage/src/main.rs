@@ -9,9 +9,12 @@
 
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
+
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use myos_abi::{
-    ABI_VERSION, KernelApi, ModuleBlkOps, StrRef, USB_ESTALL, USB_HOST_VERSION, USB_SERVICE,
+    ABI_VERSION, ApiCell, KernelApi, ModuleBlkOps, StrRef, USB_ESTALL, USB_HOST_VERSION, USB_SERVICE,
     UsbDeviceInfo, UsbDriverOps, UsbHostOps, UsbInterfaceInfo, status_fail, status_ok,
 };
 
@@ -37,8 +40,9 @@ struct Disk {
     name: [u8; 3],
 }
 
-static mut API: Option<&'static KernelApi> = None;
-static mut HOST: Option<&'static UsbHostOps> = None;
+static API: ApiCell = ApiCell::new();
+/// The host's table, kept by `module_init`.
+static HOST: AtomicPtr<UsbHostOps> = AtomicPtr::new(core::ptr::null_mut());
 static mut DISKS: [Option<Disk>; MAX_DISKS] = [const { None }; MAX_DISKS];
 
 static DRIVER: UsbDriverOps = UsbDriverOps {
@@ -54,11 +58,12 @@ static OPS: ModuleBlkOps = ModuleBlkOps {
 };
 
 fn api() -> &'static KernelApi {
-    unsafe { (*core::ptr::addr_of!(API)).expect("usb_storage: API") }
+    API.get()
 }
 
 fn host() -> &'static UsbHostOps {
-    unsafe { (*core::ptr::addr_of!(HOST)).expect("usb_storage: host") }
+    // SAFETY: the host's service table, which outlives this module.
+    unsafe { HOST.load(Ordering::Acquire).as_ref() }.expect("usb_storage: host")
 }
 
 fn disks() -> &'static mut [Option<Disk>; MAX_DISKS] {
@@ -66,28 +71,56 @@ fn disks() -> &'static mut [Option<Disk>; MAX_DISKS] {
 }
 
 fn sleep_ms(ms: u64) {
-    let until = unsafe { (api().monotonic_ns)() } + ms * 1_000_000;
-    unsafe { (api().task_sleep_until)(until) };
+    let until = api().monotonic_ns() + ms * 1_000_000;
+    api().task_sleep_until(until);
 }
 
 /// One request at a time per disk: wait for the holder.
 fn acquire(d: &Disk) {
-    while d.busy.swap(true, core::sync::atomic::Ordering::Acquire) {
-        unsafe { (api().task_yield)() };
+    while d.busy.swap(true, Ordering::Acquire) {
+        api().task_yield();
     }
 }
 
 fn release(d: &Disk) {
-    d.busy.store(false, core::sync::atomic::Ordering::Release);
+    d.busy.store(false, Ordering::Release);
 }
 
-fn bulk(dev: u32, ep: u8, data: *mut u8, len: usize) -> i32 {
-    unsafe { (host().bulk)(dev, ep, data, len, TIMEOUT_MS) }
+fn bulk(dev: u32, ep: u8, data: &mut [u8]) -> i32 {
+    host().bulk(dev, ep, data, TIMEOUT_MS)
 }
 
-/// One SCSI command: the CBW, `data` (`to_host` IN) and the CSW. The bytes
-/// moved, or negative (a failed command, a transport error).
-fn scsi(d: &mut Disk, cb: &[u8], data: *mut u8, len: usize, to_host: bool) -> i32 {
+/// The data stage of a SCSI command.
+enum Data<'a> {
+    None,
+    In(&'a mut [u8]),
+    Out(&'a [u8]),
+}
+
+impl Data<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Data::None => 0,
+            Data::In(b) => b.len(),
+            Data::Out(b) => b.len(),
+        }
+    }
+
+    /// The same buffer again, for a retry.
+    fn reborrow(&mut self) -> Data<'_> {
+        match self {
+            Data::None => Data::None,
+            Data::In(b) => Data::In(b),
+            Data::Out(b) => Data::Out(b),
+        }
+    }
+}
+
+/// One SCSI command: the CBW, `data` and the CSW. The bytes moved, or
+/// negative (a failed command, a transport error).
+fn scsi(d: &mut Disk, cb: &[u8], data: Data<'_>) -> i32 {
+    let len = data.len();
+    let to_host = matches!(data, Data::In(_));
     d.tag = d.tag.wrapping_add(1);
     let mut cbw = [0u8; 31];
     cbw[..4].copy_from_slice(b"USBC");
@@ -97,15 +130,19 @@ fn scsi(d: &mut Disk, cb: &[u8], data: *mut u8, len: usize, to_host: bool) -> i3
     cbw[13] = 0; // LUN
     cbw[14] = cb.len() as u8;
     cbw[15..15 + cb.len()].copy_from_slice(cb);
-    let r = bulk(d.dev, d.ep_out, cbw.as_mut_ptr(), 31);
+    let r = bulk(d.dev, d.ep_out, &mut cbw);
     if r < 0 {
         return r;
     }
     let mut moved = 0usize;
     if len > 0 {
-        let r = bulk(d.dev, if to_host { d.ep_in } else { d.ep_out }, data, len);
+        let (ep, r) = match data {
+            Data::None => (d.ep_out, 0),
+            Data::In(buf) => (d.ep_in, bulk(d.dev, d.ep_in, buf)),
+            Data::Out(buf) => (d.ep_out, host().bulk_out(d.dev, d.ep_out, buf, TIMEOUT_MS)),
+        };
         if r == USB_ESTALL {
-            let _ = unsafe { (host().clear_halt)(d.dev, if to_host { d.ep_in } else { d.ep_out }) };
+            let _ = host().clear_halt(d.dev, ep);
         } else if r < 0 {
             return r;
         } else {
@@ -113,10 +150,10 @@ fn scsi(d: &mut Disk, cb: &[u8], data: *mut u8, len: usize, to_host: bool) -> i3
         }
     }
     let mut csw = [0u8; 13];
-    let mut r = bulk(d.dev, d.ep_in, csw.as_mut_ptr(), 13);
+    let mut r = bulk(d.dev, d.ep_in, &mut csw);
     if r == USB_ESTALL {
-        let _ = unsafe { (host().clear_halt)(d.dev, d.ep_in) };
-        r = bulk(d.dev, d.ep_in, csw.as_mut_ptr(), 13);
+        let _ = host().clear_halt(d.dev, d.ep_in);
+        r = bulk(d.dev, d.ep_in, &mut csw);
     }
     if r < 0 {
         return r;
@@ -133,24 +170,22 @@ fn scsi(d: &mut Disk, cb: &[u8], data: *mut u8, len: usize, to_host: bool) -> i3
 
 /// Bulk-only mass storage reset, then both endpoints cleared.
 fn reset_recovery(d: &Disk) {
-    unsafe {
-        (host().control)(d.dev, 0x21, 0xFF, 0, u16::from(d.intf), core::ptr::null_mut(), 0);
-        (host().clear_halt)(d.dev, d.ep_in);
-        (host().clear_halt)(d.dev, d.ep_out);
-    }
+    host().control(d.dev, 0x21, 0xFF, 0, u16::from(d.intf), &mut []);
+    host().clear_halt(d.dev, d.ep_in);
+    host().clear_halt(d.dev, d.ep_out);
 }
 
 fn request_sense(d: &mut Disk) {
     let mut sense = [0u8; 18];
     let cb = [0x03u8, 0, 0, 0, 18, 0];
-    let _ = scsi(d, &cb, sense.as_mut_ptr(), 18, true);
+    let _ = scsi(d, &cb, Data::In(&mut sense));
 }
 
 /// Wait for the unit (a stick needs a moment after power): true when ready.
 fn unit_ready(d: &mut Disk) -> bool {
     for _ in 0..10 {
         let cb = [0u8; 6];
-        if scsi(d, &cb, core::ptr::null_mut(), 0, false) >= 0 {
+        if scsi(d, &cb, Data::None) >= 0 {
             return true;
         }
         request_sense(d);
@@ -164,7 +199,7 @@ fn read_capacity(d: &mut Disk) -> Option<u64> {
     let mut cap = [0u8; 8];
     let cb = [0x25u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     for _ in 0..3 {
-        if scsi(d, &cb, cap.as_mut_ptr(), 8, true) == 8 {
+        if scsi(d, &cb, Data::In(&mut cap)) == 8 {
             let last = u32::from_be_bytes([cap[0], cap[1], cap[2], cap[3]]);
             let block = u32::from_be_bytes([cap[4], cap[5], cap[6], cap[7]]);
             if block as usize != SECTOR {
@@ -177,8 +212,11 @@ fn read_capacity(d: &mut Disk) -> Option<u64> {
     None
 }
 
-/// READ(10) / WRITE(10) of `buf` (whole sectors) at `lba`.
-fn rw(d: &mut Disk, lba: u64, buf: *mut u8, len: usize, write: bool) -> i32 {
+/// READ(10) (`Data::In`) / WRITE(10) (`Data::Out`) of `buf`, whole
+/// sectors, at `lba`.
+fn rw(d: &mut Disk, lba: u64, mut buf: Data<'_>) -> i32 {
+    let len = buf.len();
+    let write = matches!(buf, Data::Out(_));
     if lba > u64::from(u32::MAX) || len / SECTOR > 0xFFFF {
         return -1;
     }
@@ -189,7 +227,7 @@ fn rw(d: &mut Disk, lba: u64, buf: *mut u8, len: usize, write: bool) -> i32 {
     cb[2..6].copy_from_slice(&lba.to_be_bytes());
     cb[7..9].copy_from_slice(&sectors.to_be_bytes());
     for attempt in 0..2 {
-        let r = scsi(d, &cb, buf, len, !write);
+        let r = scsi(d, &cb, buf.reborrow());
         if r == len as i32 {
             return 0;
         }
@@ -217,8 +255,10 @@ unsafe extern "C" fn blk_read(ctx: usize, lba: u64, buf: *mut u8, len: usize) ->
     if d.gone {
         return -1;
     }
+    // SAFETY: the kernel hands `len` bytes at `buf` for the call.
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf, len) };
     acquire(d);
-    let r = rw(d, lba, buf, len, false);
+    let r = rw(d, lba, Data::In(buf));
     release(d);
     r
 }
@@ -233,9 +273,10 @@ unsafe extern "C" fn blk_write(ctx: usize, lba: u64, buf: *const u8, len: usize)
     if d.gone {
         return -1;
     }
+    // SAFETY: the kernel hands `len` bytes at `buf` for the call.
+    let buf = unsafe { core::slice::from_raw_parts(buf, len) };
     acquire(d);
-    // `rw` only reads from `buf` when writing.
-    let r = rw(d, lba, buf as *mut u8, len, true);
+    let r = rw(d, lba, Data::Out(buf));
     release(d);
     r
 }
@@ -288,7 +329,7 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     // INQUIRY (what it is; the answer is not needed), ready, capacity.
     let mut inquiry = [0u8; 36];
     let cb = [0x12u8, 0, 0, 0, 36, 0];
-    let _ = scsi(d, &cb, inquiry.as_mut_ptr(), 36, true);
+    let _ = scsi(d, &cb, Data::In(&mut inquiry));
     if !unit_ready(d) {
         status_fail(api(), "usb_storage: unit not ready");
         disks()[slot] = None;
@@ -300,7 +341,8 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
         return -1;
     };
     d.capacity = capacity;
-    let id = unsafe { (api().blk_register)(name.as_ptr(), 3, &OPS, slot) };
+    // `sdX`: always ASCII.
+    let id = api().blk_register(core::str::from_utf8(&name).unwrap_or_default(), &OPS, slot);
     if id < 0 {
         status_fail(api(), "usb_storage: blk_register");
         disks()[slot] = None;
@@ -308,7 +350,7 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     }
     d.blk = id;
     // `/proc/usb` names the disk on its interface's line.
-    let _ = unsafe { (host().interface_label)(dev.id, intf.number, name.as_ptr(), name.len()) };
+    let _ = host().interface_label(dev.id, intf.number, &name);
     0
 }
 
@@ -323,7 +365,7 @@ unsafe extern "C" fn disconnect(dev: u32, intf: u8) {
         d.gone = true;
         // Gone from /dev, unless a filesystem is mounted from it or a
         // program holds it open: then the entry stays, failing its I/O.
-        if d.blk >= 0 && unsafe { (api().blk_unregister)(d.blk as u32) } == 0 {
+        if d.blk >= 0 && api().blk_unregister(d.blk as u32) == 0 {
             disks()[slot] = None;
         } else {
             status_fail(api(), "usb_storage: disk unplugged while in use");
@@ -341,23 +383,18 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     if api.abi_version != ABI_VERSION {
         return -2;
     }
-    unsafe {
-        *core::ptr::addr_of_mut!(API) = Some(api);
-    }
-    let name = StrRef { ptr: USB_SERVICE.as_ptr(), len: USB_SERVICE.len() };
-    let table = unsafe { (api.service_lookup)(name) } as *const UsbHostOps;
+    unsafe { API.set(api) };
+    let table = api.service_lookup(USB_SERVICE) as *const UsbHostOps;
     if table.is_null() {
-        unsafe { (api.write_str)(b"usb_storage: no usb host\n".as_ptr(), 25) };
+        api.write_str("usb_storage: no usb host\n");
         return -3;
     }
     let host: &'static UsbHostOps = unsafe { &*table };
     if host.version != USB_HOST_VERSION {
         return -4;
     }
-    unsafe {
-        *core::ptr::addr_of_mut!(HOST) = Some(host);
-    }
-    if unsafe { (host.driver_register)(&DRIVER) } != 0 {
+    HOST.store(table.cast_mut(), Ordering::Release);
+    if host.driver_register(&DRIVER) != 0 {
         return -5;
     }
     status_ok(api, "usb_storage");
@@ -372,6 +409,6 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     let api = api();
     status_fail(api, "usb_storage: panic");
     loop {
-        unsafe { (api.task_yield)() };
+        api.task_yield();
     }
 }

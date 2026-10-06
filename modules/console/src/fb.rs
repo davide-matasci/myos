@@ -853,13 +853,7 @@ impl FrameBufferWriter<'_> {
             && src_off + copy_len <= self.buffer.len()
             && dst_off + copy_len <= self.buffer.len()
         {
-            unsafe {
-                core::ptr::copy(
-                    self.buffer.as_ptr().add(src_off),
-                    self.buffer.as_mut_ptr().add(dst_off),
-                    copy_len,
-                );
-            }
+            self.buffer.copy_within(src_off..src_off + copy_len, dst_off);
         }
         self.clear_region(0, bottom, self.cols(), bottom + 1);
         self.cursor_in();
@@ -881,13 +875,7 @@ impl FrameBufferWriter<'_> {
             && src_off + copy_len <= self.buffer.len()
             && dst_off + copy_len <= self.buffer.len()
         {
-            unsafe {
-                core::ptr::copy(
-                    self.buffer.as_ptr().add(src_off),
-                    self.buffer.as_mut_ptr().add(dst_off),
-                    copy_len,
-                );
-            }
+            self.buffer.copy_within(src_off..src_off + copy_len, dst_off);
         }
         self.clear_region(0, top, self.cols(), top + 1);
         self.cursor_in();
