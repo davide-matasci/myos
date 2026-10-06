@@ -1644,6 +1644,11 @@ pub(crate) fn mmap_discard(addr: usize, len: usize) -> bool {
         return false;
     }
     let pages = len.div_ceil(PAGE);
+    // No range past the window is valid; checked first, the multiply below
+    // cannot overflow (a user length near usize::MAX would).
+    if pages > MMAP_AREA_PAGES {
+        return false;
+    }
     let (base, _span, stack_off) = task::current_user_map();
     let area_lo = mmap_base_va(base, stack_off) as usize;
     let area_hi = mmap_limit_va(base, stack_off) as usize;
@@ -1666,6 +1671,9 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
         return SYSERR;
     }
     let pages = len.div_ceil(PAGE);
+    if pages > MMAP_AREA_PAGES {
+        return SYSERR;
+    }
     let map_len = pages * PAGE;
     // Only the mmap window. Allowing munmap of brk/code/stack punched
     // holes while brk_cur still covered them (load faults) and — worse —
@@ -1693,6 +1701,9 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         return SYSERR;
     }
     let pages = len.div_ceil(PAGE);
+    if pages > MMAP_AREA_PAGES {
+        return SYSERR;
+    }
     let map_len = pages * PAGE;
     let (base, _span, stack_off) = task::current_user_map();
     let lo = base as usize;

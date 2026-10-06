@@ -59,6 +59,7 @@ static const unsigned long VALUES[] = {
  * the whole machine (or this test's own init/getty) shares. */
 static int denied(long nr) {
     switch (nr) {
+    /* Globally destructive: would change state the whole machine shares. */
     case 6:   /* fork   */
     case 27:  /* mount  */
     case 34:  /* kill   */
@@ -67,6 +68,16 @@ static int denied(long nr) {
     case 64:  /* umount */
     case 65:  /* settimeofday */
     case 69:  /* policy_load  */
+    /* Blocking: they wait indefinitely, which the watchdog would have to
+     * kill every time. We hunt arithmetic faults, not blocking behaviour. */
+    case 7:   /* wait        */
+    case 38:  /* poll        */
+    case 46:  /* waitpid     */
+    case 48:  /* sigsuspend  */
+    case 49:  /* sigwait     */
+    case 52:  /* nanosleep   */
+    case 55:  /* wait_addr   */
+    case 85:  /* flock       */
         return 1;
     default:
         return 0;
@@ -85,7 +96,7 @@ static void try_call(long nr, long a0, long a1, long a2, long a3, long a4, long 
         _exit(0);
     }
     int st;
-    for (long i = 0; i < 2000000; i++) {
+    for (long i = 0; i < 200000; i++) {
         if (waitpid(pid, &st, WNOHANG) == pid) {
             return;
         }
