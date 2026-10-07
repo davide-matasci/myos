@@ -1626,12 +1626,13 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             return SYSERR;
         }
         // MAP_FIXED replaces whatever is mapped there (a dynamic linker maps
-        // each segment over the span it reserved first).
+        // each segment over the span it reserved first). Its pages go before
+        // its record, as in `sys_munmap`.
         let old = task::mmap_regions();
+        release_mmap_range(aspace, &old, hint as u64, pages);
         if !task::mmap_remove(hint as u64, pages as u32) {
             return SYSERR;
         }
-        release_mmap_range(aspace, &old, hint as u64, pages);
     }
     // Record the region, at `hint` or in the lowest free gap (found and
     // recorded in one step: another thread may be mapping too), before its
@@ -1739,12 +1740,18 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     if addr < area_lo || addr.saturating_add(map_len) > area_hi {
         return SYSERR;
     }
+    // The pages go first, the region's record only after them: once the
+    // record is gone another thread's `mmap` may get the range, and must not
+    // find this mapping's pages still in it (it would write to a frame freed
+    // here a moment later, and read a new zeroed page after). A split past
+    // the table's limit then fails with the pages dropped: the range reads
+    // as new, as after `madvise`.
     let old = task::mmap_regions();
+    release_mmap_range(task::current_aspace(), &old, addr as u64, pages);
+    flush_user_tlb();
     if !task::mmap_remove(addr as u64, pages as u32) {
         return SYSERR;
     }
-    release_mmap_range(task::current_aspace(), &old, addr as u64, pages);
-    flush_user_tlb();
     0
 }
 
