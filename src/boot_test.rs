@@ -12,6 +12,7 @@
 //! kernel's own boot markers, and exits 0 only when every test passed.
 
 use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command};
 use std::sync::{Arc, Mutex};
@@ -311,6 +312,42 @@ fn fail(serial: &Shared, child: &mut Child, why: &str) -> ! {
     std::process::exit(1);
 }
 
+/// A guest that went silent is asked where its CPUs are before it is
+/// killed: the QEMU monitor's `info registers -a`, every CPU's registers
+/// (the PC of a spin or a halt, by `addr2line` on the kernel). `None` when
+/// the monitor does not answer within a few seconds (QEMU itself stuck).
+fn cpu_registers() -> Option<String> {
+    let mut mon = UnixStream::connect(monitor_socket()).ok()?;
+    mon.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
+    let mut buf = [0u8; 4096];
+    // The banner and the prompt.
+    let _ = mon.read(&mut buf);
+    mon.write_all(b"info registers -a\n").ok()?;
+    let mut out = String::new();
+    loop {
+        match mon.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => out.push_str(&String::from_utf8_lossy(&buf[..n])),
+        }
+    }
+    // The first line is the monitor echoing the command (with its line
+    // editor's escape codes), the last its prompt again.
+    let body = out.split_once('\n').map_or("", |(_, rest)| rest);
+    let body = body.trim().trim_end_matches("(qemu)").trim();
+    (!body.is_empty()).then(|| body.to_string())
+}
+
+/// A stall: the console stopped, nothing else says why (a riscv64 boot
+/// went silent at a USB unplug, issue #329). Dump the CPUs first, then
+/// fail as usual.
+fn fail_stalled(serial: &Shared, child: &mut Child, why: &str) -> ! {
+    match cpu_registers() {
+        Some(regs) => eprintln!("--- cpu registers (QEMU monitor) ---\n{regs}\n---"),
+        None => eprintln!("boot test: the QEMU monitor did not answer: no CPU registers"),
+    }
+    fail(serial, child, why)
+}
+
 /// Boot test on a QEMU `child` started with `-serial stdio` and piped
 /// stdio. Does not return: exits the process with the result.
 pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
@@ -440,7 +477,7 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
             fail(&serial, &mut child, &format!("QEMU exited ({status}) before the tests were done"));
         }
         if last_change.elapsed() > stall {
-            fail(&serial, &mut child, &format!("no console output for {stall:?} (stall)"));
+            fail_stalled(&serial, &mut child, &format!("no console output for {stall:?} (stall)"));
         }
         if Instant::now() > deadline {
             fail(&serial, &mut child, &format!("the {budget:?} budget ran out"));
