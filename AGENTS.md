@@ -82,6 +82,7 @@ cargo run -- test-full                     # full list: + packages, HTTPS, SSH, 
 cargo run -- packages                      # the package tarballs + indexes (target/packages/)
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
 cargo test -p ps2-scancode -p ext2fs      # host unit tests (ext2fs needs e2fsprogs)
+cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patched smoltcp (after a build)
 ```
 
 - Test on every arch you could have affected; arch-specific code needs all

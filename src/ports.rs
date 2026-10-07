@@ -81,6 +81,10 @@ pub struct Port {
     pub image_base: bool,
     /// Extra files whose change rebuilds the program (`User` kind, port-relative).
     pub watch: Vec<String>,
+    /// A script `kernel/build.rs` runs before it builds the program (`User`
+    /// kind, repo-relative like `build`): sources the crate's build needs
+    /// first, such as a patched dependency.
+    pub prepare: Option<String>,
 }
 
 impl Port {
@@ -177,15 +181,20 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
         "toolchain" => Kind::Toolchain,
         other => panic!("port {name}: unknown PORT_KIND {other:?}"),
     };
-    let build = get("PORT_BUILD");
-    let build = if build.is_empty() {
-        None
-    } else if build.contains('/') {
-        Some(build)
-    } else {
-        let rel = dir.to_string_lossy().to_string();
-        Some(format!("{rel}/{build}"))
+    // A script: a name is in the port directory, a path with `/` is
+    // repo-relative.
+    let script = |key: &str| {
+        let s = get(key);
+        if s.is_empty() {
+            None
+        } else if s.contains('/') {
+            Some(s)
+        } else {
+            Some(format!("{}/{s}", dir.to_string_lossy()))
+        }
     };
+    let build = script("PORT_BUILD");
+    let prepare = script("PORT_PREPARE");
     let list = |k: &str| get(k).split_whitespace().map(str::to_string).collect::<Vec<_>>();
     let bin = if get("PORT_BIN").is_empty() { name.clone() } else { get("PORT_BIN") };
     let stamp = if get("PORT_STAMP").is_empty() {
@@ -230,6 +239,7 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
         bin,
         image_base: get("PORT_IMAGE_BASE") == "1",
         watch: list("PORT_WATCH"),
+        prepare,
     })
 }
 

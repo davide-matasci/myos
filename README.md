@@ -256,7 +256,7 @@ Attached as second virtio-blk in all QEMU runs. Holds `/msg` for `[ OK ] fat` / 
 
 ## Real Hardware
 
-Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `target/uefi.img` for UEFI). Framebuffer mirrors serial — boot progress scrolls on screen.
+Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `target/uefi.img` for UEFI). Framebuffer mirrors serial — boot progress scrolls on screen. A VPS without custom ISOs takes the release's hybrid ISO written over its disk from the provider's rescue system (`curl -L .../myos-x86_64.iso | dd of=/dev/sda`); to reach it over SSH, bring your own key (`docs/ssh.md`).
 
 **stdin** merges keyboard and serial. Keyboard characters come from a **loadable keymap** (default Swiss German via `user/init` → `/lib/kbd/ch.map`, US fallback; see `docs/keymap.md`). Serial always available and does not need a map.
 

@@ -857,6 +857,23 @@ fn ensure_user_at_user_base(cargo: &str, target: &str, bin: &str) {
         }
     }
 
+    // What the crate's build needs first (`PORT_PREPARE`: netd's patched
+    // smoltcp), as kernel/build.rs does before its own build of it.
+    if let Some(script) = ports::load_all(&root)
+        .into_iter()
+        .find(|p| p.kind == ports::Kind::User && p.bin == bin)
+        .and_then(|p| p.prepare)
+    {
+        let ok = Command::new("bash")
+            .arg(root.join(&script))
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            eprintln!("error: {script} failed for {bin}");
+            exit(1);
+        }
+    }
+
     let td = target_dir.join(format!("{bin}-prelink-{target}"));
     let _ = std::fs::remove_dir_all(&td);
     let mut rustflags = if target.contains("aarch64") {
