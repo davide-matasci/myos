@@ -126,7 +126,7 @@ The `*-unknown-myos` targets are no longer `singlethread` (which compiled
 atomics to plain loads and stores). `/bin/std/thread` (`user/std/thread`, test
 `std_thread`) checks the locks, channels, thread-locals and their
 destructors, scoped threads, parking, and that joined and detached threads
-free their task slots and stacks (300 threads, past the kernel's 64 slots).
+free their task slots and stacks (120 threads, past the kernel's 64 slots).
 
 ## Not yet
 

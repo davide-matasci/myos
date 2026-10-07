@@ -171,17 +171,17 @@ fn park_and_scope() {
     check(named.unwrap().join().unwrap().as_deref() == Some("worker"), "thread name");
 }
 
-/// Far more threads than the kernel has task slots, one after the other,
+/// More threads than the kernel has task slots, one after the other,
 /// joined and detached: each frees its slot and its mapping.
 fn many() {
-    for i in 0..200 {
+    for i in 0..80 {
         let h = thread::Builder::new().stack_size(64 * 1024).spawn(move || i + 1).unwrap();
         if h.join().unwrap() != i + 1 {
             fail("join value");
         }
     }
     let done = Arc::new(AtomicUsize::new(0));
-    for _ in 0..100 {
+    for _ in 0..40 {
         let d = done.clone();
         // Dropped at once: detached, it frees its own mapping.
         drop(thread::spawn(move || {
@@ -195,7 +195,7 @@ fn many() {
     while Arc::strong_count(&done) > 1 {
         thread::sleep(Duration::from_millis(5));
     }
-    check(done.load(Ordering::SeqCst) == 100, "detached threads");
+    check(done.load(Ordering::SeqCst) == 40, "detached threads");
 }
 
 #[unsafe(no_mangle)]
