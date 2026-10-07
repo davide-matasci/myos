@@ -2,22 +2,23 @@
 //! command and event rings, the interrupter, and the transfer rings of the
 //! devices' endpoints with their completion records.
 //!
-//! Two contexts touch a controller. Task context (the USB thread, a class
-//! driver's caller) enqueues commands and transfers under locks and waits
-//! for their completion records. The interrupt handler (or, without an
-//! interrupt, whoever waits) consumes the event ring: it fills the records,
-//! flags port changes and wakes the waiters. The handler takes no lock and
-//! allocates nothing; the two meet only through atomics.
+//! Two contexts touch a controller, through `&Controller`. Task context
+//! (the USB thread, a class driver's caller) enqueues commands and
+//! transfers under locks and waits for their completion records. The
+//! interrupt handler (or, without an interrupt, whoever waits) consumes
+//! the event ring: it fills the records, flags port changes and wakes the
+//! waiters. The handler takes no lock and allocates nothing; the two meet
+//! only through atomics.
 
+use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::num::NonZeroUsize;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
-use myos_abi::{USB_EGONE, USB_EIO, USB_ESTALL, USB_ETIMEDOUT, UsbCompletion};
+use myos_abi::{SleepLock, USB_EGONE, USB_EIO, USB_ESTALL, USB_ETIMEDOUT, UsbCompletion};
 use xhci::accessor::Mapper;
 use xhci::ring::trb::{Link, command, event, transfer};
 
-use crate::sync::Spin;
 use crate::{api, dma};
 
 /// TRBs per ring: one 4 KiB segment, the last TRB a Link back to the start.
@@ -60,6 +61,9 @@ pub struct Ring {
     last_chain: bool,
 }
 
+// SAFETY: the TRBs are the ring's own page.
+unsafe impl Send for Ring {}
+
 /// The slot after `i`, skipping the Link TRB.
 pub fn next_slot(i: usize) -> usize {
     if i + 1 >= TRBS - 1 { 0 } else { i + 1 }
@@ -95,12 +99,12 @@ impl Ring {
         self.phys + (i * TRB_BYTES) as u64
     }
 
-    /// The slot index of the TRB at `phys`, if on this ring.
-    pub fn index_of(&self, phys: u64) -> Option<usize> {
-        if phys < self.phys || phys >= self.phys + (TRBS * TRB_BYTES) as u64 {
+    /// The slot index of the TRB at `phys`, if on the ring at `base`.
+    pub fn index_in(base: u64, phys: u64) -> Option<usize> {
+        if phys < base || phys >= base + (TRBS * TRB_BYTES) as u64 {
             return None;
         }
-        Some(((phys - self.phys) / TRB_BYTES as u64) as usize)
+        Some(((phys - base) / TRB_BYTES as u64) as usize)
     }
 
     /// Where the next TRB goes, with the cycle state (`Set TR Dequeue`).
@@ -134,15 +138,19 @@ impl Ring {
         i
     }
 
-    fn trb_len(&self, i: usize) -> u32 {
-        let t = unsafe { core::ptr::read_volatile(self.trbs.add(i)) };
+    /// The transfer length of TRB `i` of the ring at `trbs`.
+    pub fn trb_len_at(trbs: *mut [u32; 4], i: usize) -> u32 {
+        // SAFETY: a ring is one page of `TRBS` TRBs and `i` is below that.
+        let t = unsafe { core::ptr::read_volatile(trbs.add(i)) };
         t[2] & 0x1_FFFF
     }
 }
 
 /// One transfer descriptor in flight on an endpoint, filled in by the event
 /// handler. `td_start..td_start + td_trbs` are its TRBs (Link excluded),
-/// `total` the bytes they carry.
+/// `total` the bytes they carry. Atomics only: the handler reads and
+/// writes it with no lock held, and it lives in the device's slot
+/// (`usb::Slot`), outside the lock a transfer holds.
 pub struct Pending {
     pub active: AtomicBool,
     pub done: AtomicBool,
@@ -155,10 +163,12 @@ pub struct Pending {
     pub td_trbs: AtomicU32,
     pub total: AtomicU32,
     /// An asynchronous transfer (`interrupt_start`): the USB thread runs
-    /// this when `done`.
-    pub callback: Option<(UsbCompletion, *mut c_void)>,
-    pub user: *mut u8,
-    pub user_len: usize,
+    /// the endpoint's callback when `done`.
+    pub has_callback: AtomicBool,
+    /// The endpoint's ring (base and TRBs), for the handler to find the
+    /// TD's TRBs; null while the endpoint does not exist.
+    pub ring_phys: AtomicU64,
+    pub ring_trbs: AtomicPtr<[u32; 4]>,
 }
 
 impl Pending {
@@ -172,10 +182,22 @@ impl Pending {
             td_start: AtomicU32::new(0),
             td_trbs: AtomicU32::new(0),
             total: AtomicU32::new(0),
-            callback: None,
-            user: core::ptr::null_mut(),
-            user_len: 0,
+            has_callback: AtomicBool::new(false),
+            ring_phys: AtomicU64::new(0),
+            ring_trbs: AtomicPtr::new(core::ptr::null_mut()),
         }
+    }
+
+    /// The endpoint's ring, for the handler.
+    pub fn set_ring(&self, ring: &Ring) {
+        self.ring_phys.store(ring.phys, Ordering::Relaxed);
+        self.ring_trbs.store(ring.trbs, Ordering::Release);
+    }
+
+    /// No endpoint any more.
+    pub fn clear_ring(&self) {
+        self.ring_trbs.store(core::ptr::null_mut(), Ordering::Release);
+        self.ring_phys.store(0, Ordering::Relaxed);
     }
 
     pub fn arm(&self, td_start: usize, td_trbs: usize, total: usize) {
@@ -205,12 +227,11 @@ impl Pending {
     }
 }
 
-/// An endpoint of an addressed device: its transfer ring and the one TD in
-/// flight on it (`lock` serialises its users).
+/// An endpoint of an addressed device: its transfer ring, and what the
+/// one TD in flight on it (`Pending`, in the device's slot) has to hand
+/// back. Reached through the device's lock.
 pub struct Endpoint {
     pub ring: Ring,
-    pub pending: Pending,
-    pub lock: Spin,
     pub address: u8,
     /// Transfer type (`bmAttributes & 3`): 0 control, 2 bulk, 3 interrupt.
     pub kind: u8,
@@ -219,6 +240,11 @@ pub struct Endpoint {
     pub bounce: *mut u8,
     pub bounce_phys: u64,
     pub bounce_len: usize,
+    /// An asynchronous transfer (`interrupt_start`): its callback and the
+    /// caller's buffer, which gets the bytes when the TD is done.
+    pub callback: Option<(UsbCompletion, *mut c_void)>,
+    pub user: *mut u8,
+    pub user_len: usize,
 }
 
 /// The command ring's one command in flight.
@@ -228,10 +254,30 @@ pub struct CmdWait {
     pub slot: AtomicU8,
 }
 
-/// A controller and what hangs from it. `devices` is indexed by the table
-/// slot of `crate::usb::Device` (not the xHCI slot id).
+/// The event ring and the consumer's place on it.
+struct EventRing {
+    trbs: *mut [u32; 4],
+    phys: u64,
+    deq: usize,
+    cycle: bool,
+}
+
+/// The bulk bounce buffer.
+pub struct Bounce {
+    pub va: *mut u8,
+    pub phys: u64,
+    pub len: usize,
+}
+
+// SAFETY: the buffer is the controller's own pages.
+unsafe impl Send for Bounce {}
+
+/// A controller and what hangs from it, reached as `&Controller` from
+/// every context: each part is an atomic, behind a lock, or written by
+/// one context alone (the USB thread for the DCBAA, `init` for the rest).
+/// The devices are in `crate::usb`'s table, indexed by the table slot
+/// (not the xHCI slot id).
 pub struct Controller {
-    pub regs: Regs,
     pub mmio_base: usize,
     /// The first port's `PORTSC` (operational base + 0x400).
     pub portsc_base: usize,
@@ -239,79 +285,98 @@ pub struct Controller {
     pub ports: u8,
     pub slots: u8,
     pub csz64: bool,
+    /// The device context base address array: the USB thread alone
+    /// writes it (`attach`, `detach_id`).
     pub dcbaa: *mut u64,
-    pub cmd: Ring,
-    pub cmd_lock: Spin,
+    /// The command ring, held from a command to its completion.
+    pub cmd: SleepLock<Ring>,
     pub cmd_wait: CmdWait,
-    evt: *mut [u32; 4],
-    evt_phys: u64,
-    evt_deq: usize,
-    evt_cycle: bool,
-    pub irq_on: bool,
-    /// One consumer of the event ring at a time (the interrupt handler, or
-    /// a waiter polling): the other skips its turn.
+    /// The event ring: whoever holds `evt_busy` is its one consumer (the
+    /// interrupt handler, or a waiter polling); the other skips its turn.
+    evt: UnsafeCell<EventRing>,
     evt_busy: AtomicBool,
+    /// The interrupt is routed (`pci_irq_enable` succeeded).
+    pub irq_on: AtomicBool,
     /// Events handled, for the boot log.
     pub events: AtomicU32,
     /// Root ports whose status changed (bit = port index), for the thread.
     pub port_change: AtomicU64,
     /// An asynchronous transfer completed: the thread runs its callback.
     pub async_done: AtomicBool,
-    pub bounce: *mut u8,
-    pub bounce_phys: u64,
-    pub bounce_len: usize,
-    pub bounce_lock: Spin,
-    /// Which xHCI slot ids are in use: `slot_owner[slot] = device table index + 1`.
-    pub slot_owner: [u8; 256],
+    /// The bulk bounce buffer, held for a transfer.
+    pub bounce: SleepLock<Bounce>,
+    /// Which xHCI slot ids are in use: `slot_owner[slot] = device table
+    /// index + 1` (the thread writes, the event handler reads).
+    pub slot_owner: [AtomicU8; 256],
     /// Root port protocol major version (2 or 3), from the supported
     /// protocol capabilities; 0 unknown.
     pub port_major: [u8; 64],
 }
 
+// SAFETY: see the struct: nothing in it is written through a shared
+// reference but atomics, the locked parts, and the event ring under
+// `evt_busy`; the raw pointers are the controller's own DMA pages.
+unsafe impl Sync for Controller {}
+unsafe impl Send for Controller {}
+
+impl Controller {
+    /// The registers as the `xhci` crate reaches them, made per use (a
+    /// few capability reads): the crate wants `&mut` for a write, and the
+    /// contexts that write (the handler, the thread, a transfer) must not
+    /// share one.
+    pub fn regs(&self) -> Regs {
+        // SAFETY: the BAR the kernel mapped for this controller.
+        unsafe { Regs::new(self.mmio_base, Ident) }
+    }
+}
+
 /// `USBSTS` / `IMAN` acknowledgement and the event ring: what the interrupt
 /// handler does. Also run by waiters when the controller has no interrupt.
-pub fn process_events(c: &mut Controller) {
+pub fn process_events(c: &Controller) {
     if c.evt_busy.swap(true, Ordering::AcqRel) {
         return;
     }
-    let sts = c.regs.operational.usbsts.read_volatile();
+    let mut regs = c.regs();
+    let sts = regs.operational.usbsts.read_volatile();
     if sts.event_interrupt() {
-        c.regs.operational.usbsts.update_volatile(|s| {
+        regs.operational.usbsts.update_volatile(|s| {
             s.clear_event_interrupt();
         });
     }
     if sts.port_change_detect() {
-        c.regs.operational.usbsts.update_volatile(|s| {
+        regs.operational.usbsts.update_volatile(|s| {
             s.clear_port_change_detect();
         });
     }
-    let mut ir = c.regs.interrupter_register_set.interrupter_mut(0);
+    let mut ir = regs.interrupter_register_set.interrupter_mut(0);
     let iman = ir.iman.read_volatile();
     if iman.interrupt_pending() {
         ir.iman.update_volatile(|m| {
             m.clear_interrupt_pending();
         });
     }
+    // SAFETY: `evt_busy` is ours until the store below: no other consumer.
+    let ev = unsafe { &mut *c.evt.get() };
     let mut any = false;
     loop {
-        dma::invalidate(unsafe { c.evt.add(c.evt_deq) } as *mut u8, TRB_BYTES);
-        let raw = unsafe { core::ptr::read_volatile(c.evt.add(c.evt_deq)) };
-        if (raw[3] & 1 != 0) != c.evt_cycle {
+        dma::invalidate(unsafe { ev.trbs.add(ev.deq) } as *mut u8, TRB_BYTES);
+        let raw = unsafe { core::ptr::read_volatile(ev.trbs.add(ev.deq)) };
+        if (raw[3] & 1 != 0) != ev.cycle {
             break;
         }
         any = true;
         c.events.fetch_add(1, Ordering::Relaxed);
         handle_event(c, raw);
-        c.evt_deq += 1;
-        if c.evt_deq == TRBS {
-            c.evt_deq = 0;
-            c.evt_cycle = !c.evt_cycle;
+        ev.deq += 1;
+        if ev.deq == TRBS {
+            ev.deq = 0;
+            ev.cycle = !ev.cycle;
         }
     }
     if any || iman.interrupt_pending() {
         // The dequeue pointer, clearing Event Handler Busy (write 1).
-        let p = c.evt_phys + (c.evt_deq * TRB_BYTES) as u64;
-        c.regs.interrupter_register_set.interrupter_mut(0).erdp.update_volatile(|r| {
+        let p = ev.phys + (ev.deq * TRB_BYTES) as u64;
+        regs.interrupter_register_set.interrupter_mut(0).erdp.update_volatile(|r| {
             r.set_event_ring_dequeue_pointer(p);
             r.clear_event_handler_busy();
         });
@@ -319,7 +384,7 @@ pub fn process_events(c: &mut Controller) {
     c.evt_busy.store(false, Ordering::Release);
 }
 
-fn handle_event(c: &mut Controller, raw: [u32; 4]) {
+fn handle_event(c: &Controller, raw: [u32; 4]) {
     match event::Allowed::try_from(raw) {
         Ok(event::Allowed::CommandCompletion(e)) => {
             let code = e.completion_code().map_or(0xFE, |c| c as u8);
@@ -333,16 +398,18 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
             let slot = e.slot_id() as usize;
             let dci = e.endpoint_id() as usize;
             let residual = e.trb_transfer_length();
-            let Some(dev) = c.slot_owner.get(slot).and_then(|&o| crate::usb::device_at(c.index, o)) else {
+            let owner = c.slot_owner.get(slot).map(|o| o.load(Ordering::Acquire));
+            let Some(p) = owner.and_then(|o| crate::usb::pending_at(c.index, o, dci)) else {
                 return;
             };
-            let Some(ep) = dev.endpoint_mut(dci) else {
-                return;
-            };
-            let p = &ep.pending;
             if !p.active.load(Ordering::Acquire) || p.done.load(Ordering::Acquire) {
                 return;
             }
+            let trbs = p.ring_trbs.load(Ordering::Acquire);
+            if trbs.is_null() {
+                return;
+            }
+            let ring_phys = p.ring_phys.load(Ordering::Relaxed);
             // Bytes moved: the TD's total less this TRB's residual and the
             // TRBs after it the controller skipped (a short packet ends a TD).
             let total = p.total.load(Ordering::Relaxed);
@@ -350,7 +417,7 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
             let n = p.td_trbs.load(Ordering::Relaxed) as usize;
             // The TD's slots, from `start`, skipping the Link TRB: which
             // one the event names, and the bytes of the ones after it.
-            let idx = ep.ring.index_of(e.trb_pointer());
+            let idx = Ring::index_in(ring_phys, e.trb_pointer());
             let (mut k, mut slot) = (n - 1, start);
             for pos in 0..n {
                 if Some(slot) == idx {
@@ -362,7 +429,7 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
             let mut moved = total.saturating_sub(residual);
             let mut after = next_slot(slot);
             for _ in k + 1..n {
-                moved = moved.saturating_sub(ep.ring.trb_len(after));
+                moved = moved.saturating_sub(Ring::trb_len_at(trbs, after));
                 after = next_slot(after);
             }
             // A short packet before the last TRB: the controller skips to
@@ -382,7 +449,7 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
             p.transferred.store(moved, Ordering::Relaxed);
             p.code.store(code, Ordering::Relaxed);
             p.done.store(true, Ordering::Release);
-            if p.callback.is_some() {
+            if p.has_callback.load(Ordering::Acquire) {
                 c.async_done.store(true, Ordering::Release);
                 api().wake(crate::THREAD_KEY.as_ptr() as usize);
             } else {
@@ -404,7 +471,7 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
 /// timeout. The interrupt handler wakes the waiter; the waiter also looks
 /// at the event ring itself every few milliseconds, so a controller whose
 /// interrupt does not reach us (none, or routed elsewhere) still works.
-pub fn wait(c: &mut Controller, done: &AtomicBool, timeout_ms: u32) -> bool {
+pub fn wait(c: &Controller, done: &AtomicBool, timeout_ms: u32) -> bool {
     let deadline = api().monotonic_ns() + u64::from(timeout_ms) * 1_000_000;
     loop {
         if done.load(Ordering::Acquire) {
@@ -425,15 +492,15 @@ pub fn wait(c: &mut Controller, done: &AtomicBool, timeout_ms: u32) -> bool {
 
 /// Run `trb` on the command ring: the completion code and the slot id of
 /// the event (the command lock is held for the duration).
-pub fn command(c: &mut Controller, trb: [u32; 4]) -> Result<(u8, u8), i32> {
-    let _held = unsafe { &*(&c.cmd_lock as *const Spin) }.lock();
+pub fn command(c: &Controller, trb: [u32; 4]) -> Result<(u8, u8), i32> {
+    let mut cmd = c.cmd.lock();
     c.cmd_wait.done.store(false, Ordering::Relaxed);
-    c.cmd.push(trb);
+    cmd.push(trb);
     dma::wmb();
-    c.regs.doorbell.update_volatile_at(0, |d| {
+    c.regs().doorbell.update_volatile_at(0, |d| {
         d.set_doorbell_target(0);
     });
-    let ok = wait(c, unsafe { &*(&c.cmd_wait.done as *const AtomicBool) }, 2000);
+    let ok = wait(c, &c.cmd_wait.done, 2000);
     if !ok {
         return Err(USB_ETIMEDOUT);
     }
@@ -443,18 +510,18 @@ pub fn command(c: &mut Controller, trb: [u32; 4]) -> Result<(u8, u8), i32> {
 }
 
 /// Ring the doorbell of `dci` on `slot`.
-pub fn ring_doorbell(c: &mut Controller, slot: u8, dci: u8) {
+pub fn ring_doorbell(c: &Controller, slot: u8, dci: u8) {
     dma::wmb();
-    c.regs.doorbell.update_volatile_at(usize::from(slot), |d| {
+    c.regs().doorbell.update_volatile_at(usize::from(slot), |d| {
         d.set_doorbell_target(dci);
     });
 }
 
 /// Enqueue a TD of Normal TRBs moving `len` bytes at `phys` (chained, every
 /// TRB below 64 KiB and inside one 64 KiB region, the last with IOC, all
-/// with ISP) and arm `ep.pending`. The caller holds the endpoint lock and
-/// rings the doorbell.
-pub fn enqueue_normal(ep: &mut Endpoint, phys: u64, len: usize) -> Result<(), i32> {
+/// with ISP) and arm `pending`, the endpoint's record. The caller holds
+/// the device's lock and rings the doorbell.
+pub fn enqueue_normal(ep: &mut Endpoint, pending: &Pending, phys: u64, len: usize) -> Result<(), i32> {
     let mut chunks: [(u64, usize); 8] = [(0, 0); 8];
     let mut n = 0;
     let (mut p, mut left) = (phys, len);
@@ -486,14 +553,15 @@ pub fn enqueue_normal(ep: &mut Endpoint, phys: u64, len: usize) -> Result<(), i3
         }
         ep.ring.push(t.into_raw());
     }
-    ep.pending.arm(start, n, len);
+    pending.arm(start, n, len);
     Ok(())
 }
 
 /// A control transfer's TD: Setup, an optional Data stage of `len` bytes at
-/// `phys` (IN when `to_host`), Status. Arms `ep.pending`.
+/// `phys` (IN when `to_host`), Status. Arms `pending`, the endpoint's record.
 pub fn enqueue_control(
     ep: &mut Endpoint,
+    pending: &Pending,
     request_type: u8,
     request: u8,
     value: u16,
@@ -538,7 +606,7 @@ pub fn enqueue_control(
     ep.ring.push(status.into_raw());
     // Bytes counted: the data stage only (the setup TRB's 8 are immediate
     // and the event for the status stage reports 0 residual).
-    ep.pending.arm(start, n, usize::from(len));
+    pending.arm(start, n, usize::from(len));
 }
 
 /// Bring the controller at `mmio` up: BIOS handoff, reset, the device
@@ -705,7 +773,6 @@ pub fn init(mmio: usize, index: u8) -> Result<Controller, &'static str> {
     };
 
     Ok(Controller {
-        regs,
         mmio_base: mmio,
         portsc_base: mmio + usize::from(caplength) + 0x400,
         index,
@@ -713,23 +780,16 @@ pub fn init(mmio: usize, index: u8) -> Result<Controller, &'static str> {
         slots,
         csz64,
         dcbaa,
-        cmd,
-        cmd_lock: Spin::new(),
+        cmd: SleepLock::new(&crate::API, cmd),
         cmd_wait: CmdWait { done: AtomicBool::new(false), code: AtomicU8::new(0), slot: AtomicU8::new(0) },
-        evt: evt as *mut [u32; 4],
-        evt_phys,
-        evt_deq: 0,
-        evt_cycle: true,
-        irq_on: false,
+        evt: UnsafeCell::new(EventRing { trbs: evt as *mut [u32; 4], phys: evt_phys, deq: 0, cycle: true }),
         evt_busy: AtomicBool::new(false),
+        irq_on: AtomicBool::new(false),
         events: AtomicU32::new(0),
         port_change: AtomicU64::new(0),
         async_done: AtomicBool::new(false),
-        bounce,
-        bounce_phys,
-        bounce_len,
-        bounce_lock: Spin::new(),
-        slot_owner: [0; 256],
+        bounce: SleepLock::new(&crate::API, Bounce { va: bounce, phys: bounce_phys, len: bounce_len }),
+        slot_owner: [const { AtomicU8::new(0) }; 256],
         port_major,
     })
 }
@@ -779,7 +839,7 @@ fn portsc_write(c: &Controller, port: usize, value: u32) {
     unsafe { core::ptr::write_volatile(portsc_ptr(c, port), value) }
 }
 
-pub fn port_status(c: &mut Controller, port: usize) -> PortStatus {
+pub fn port_status(c: &Controller, port: usize) -> PortStatus {
     let s = portsc_read(c, port);
     PortStatus {
         connected: s & PORTSC_CCS != 0,
@@ -789,14 +849,14 @@ pub fn port_status(c: &mut Controller, port: usize) -> PortStatus {
 }
 
 /// Acknowledge every change bit of `port`.
-pub fn port_ack(c: &mut Controller, port: usize) {
+pub fn port_ack(c: &Controller, port: usize) {
     let s = portsc_read(c, port);
     portsc_write(c, port, (s & PORTSC_KEEP) | (s & PORTSC_CHANGES));
 }
 
 /// Reset `port` (USB 2: required before a device answers; USB 3 ports
 /// enable themselves, a reset is harmless): true once enabled.
-pub fn port_reset(c: &mut Controller, port: usize) -> bool {
+pub fn port_reset(c: &Controller, port: usize) -> bool {
     let s = portsc_read(c, port);
     portsc_write(c, port, (s & PORTSC_KEEP) | PORTSC_PP | PORTSC_PR);
     for _ in 0..100 {

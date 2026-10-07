@@ -32,11 +32,26 @@ do. Every driver hook (`probe`, `disconnect`, the completion callback of
 `interrupt_start`) runs on that thread too, so a hub's `probe` may reset
 its ports and enumerate its children synchronously through `hub_attach`.
 Transfers started by a class driver from another context (a `blk_read`
-from a user task) run there: the endpoint rings are per endpoint, the
-command ring and the bulk bounce buffer are locked, completions are
-atomics the interrupt handler fills and `wake`s (the last ABI 21 entry) the
-waiter with. Without an interrupt (`pci_irq_enable` failed) the bus still
-works: a waiter polls the event ring every 2 ms, the thread every second.
+from a user task) run there: a device's table entry is behind a
+`myos_abi::SleepLock` the transfer holds until its completion (the
+thread holds it while it enumerates the device), the command ring and
+the bulk bounce buffer are locked, and the completions are atomics
+outside the entry's lock, which the interrupt handler fills and `wake`s
+(the last ABI 21 entry) the waiter with. The host holds no device lock
+across a driver hook: `probe`, `disconnect` and a completion callback
+call back in. A device pulled out has its waiters failed (`USB_EGONE`)
+before `detach` waits for its lock, so the lock comes free at once.
+Without an interrupt (`pci_irq_enable` failed) the bus still works: a
+waiter polls the event ring every 2 ms, the thread every second.
+
+The controller itself is reached as `&Controller` from every context:
+its command ring and bulk bounce buffer are each behind a `SleepLock`,
+the event ring belongs to whoever holds its busy flag (the handler, or a
+polling waiter), and the rest is atomics or written by one context alone.
+The locks nest in one order: a class driver's own slot lock (a disk's),
+then the host's device entry, then the command ring or the bounce
+buffer. The host never holds a device lock across a driver hook, so the
+reverse never happens, and the interrupt handler holds none.
 
 ## Enumeration
 

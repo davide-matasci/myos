@@ -6,6 +6,12 @@
 //! with the host's `clear_halt`. The disk goes away with its device
 //! (`blk_unregister`), unless a filesystem is mounted from it: then it stays
 //! in `/dev`, failing its I/O, until the mount is gone.
+//!
+//! Each disk is behind a `SleepLock`, held for a request (which waits in
+//! the host for its transfers) and by the USB thread's `probe` and
+//! `disconnect`: a disk pulled out while a request is on it has the host
+//! fail the request first (`USB_EGONE`), so `disconnect` gets the lock as
+//! soon as that returns.
 
 #![no_std]
 #![no_main]
@@ -14,8 +20,8 @@
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use myos_abi::{
-    ABI_VERSION, ApiCell, KernelApi, ModuleBlkOps, StrRef, USB_ESTALL, USB_HOST_VERSION, USB_SERVICE,
-    UsbDeviceInfo, UsbDriverOps, UsbHostOps, UsbInterfaceInfo, status_fail, status_ok,
+    ABI_VERSION, ApiCell, KernelApi, ModuleBlkOps, SleepLock, StrRef, USB_ESTALL, USB_HOST_VERSION,
+    USB_SERVICE, UsbDeviceInfo, UsbDriverOps, UsbHostOps, UsbInterfaceInfo, status_fail, status_ok,
 };
 
 const MAX_DISKS: usize = 8;
@@ -36,14 +42,15 @@ struct Disk {
     capacity: u64,
     tag: u32,
     gone: bool,
-    busy: core::sync::atomic::AtomicBool,
     name: [u8; 3],
 }
 
 static API: ApiCell = ApiCell::new();
 /// The host's table, kept by `module_init`.
 static HOST: AtomicPtr<UsbHostOps> = AtomicPtr::new(core::ptr::null_mut());
-static mut DISKS: [Option<Disk>; MAX_DISKS] = [const { None }; MAX_DISKS];
+/// The disks, a lock per slot; a slot's index is the block device's
+/// context. The USB thread alone fills and empties slots.
+static DISKS: [SleepLock<Option<Disk>>; MAX_DISKS] = [const { SleepLock::new(&API, None) }; MAX_DISKS];
 
 static DRIVER: UsbDriverOps = UsbDriverOps {
     name: StrRef { ptr: b"usb_storage".as_ptr(), len: 11 },
@@ -66,24 +73,15 @@ fn host() -> &'static UsbHostOps {
     unsafe { HOST.load(Ordering::Acquire).as_ref() }.expect("usb_storage: host")
 }
 
-fn disks() -> &'static mut [Option<Disk>; MAX_DISKS] {
-    unsafe { &mut *core::ptr::addr_of_mut!(DISKS) }
+/// Run `f` on the disk in slot `i` with its lock held; `None` for an
+/// empty slot.
+fn with_disk<R>(i: usize, f: impl FnOnce(&mut Disk) -> R) -> Option<R> {
+    DISKS.get(i)?.lock().as_mut().map(f)
 }
 
 fn sleep_ms(ms: u64) {
     let until = api().monotonic_ns() + ms * 1_000_000;
     api().task_sleep_until(until);
-}
-
-/// One request at a time per disk: wait for the holder.
-fn acquire(d: &Disk) {
-    while d.busy.swap(true, Ordering::Acquire) {
-        api().task_yield();
-    }
-}
-
-fn release(d: &Disk) {
-    d.busy.store(false, Ordering::Release);
 }
 
 fn bulk(dev: u32, ep: u8, data: &mut [u8]) -> i32 {
@@ -241,59 +239,38 @@ fn rw(d: &mut Disk, lba: u64, mut buf: Data<'_>) -> i32 {
     -1
 }
 
-fn disk(ctx: usize) -> Option<&'static mut Disk> {
-    disks().get_mut(ctx)?.as_mut()
-}
-
 unsafe extern "C" fn blk_read(ctx: usize, lba: u64, buf: *mut u8, len: usize) -> i32 {
     if buf.is_null() || len % SECTOR != 0 {
         return -1;
     }
-    let Some(d) = disk(ctx) else {
-        return -1;
-    };
-    if d.gone {
-        return -1;
-    }
     // SAFETY: the kernel hands `len` bytes at `buf` for the call.
     let buf = unsafe { core::slice::from_raw_parts_mut(buf, len) };
-    acquire(d);
-    let r = rw(d, lba, Data::In(buf));
-    release(d);
-    r
+    with_disk(ctx, |d| if d.gone { -1 } else { rw(d, lba, Data::In(buf)) }).unwrap_or(-1)
 }
 
 unsafe extern "C" fn blk_write(ctx: usize, lba: u64, buf: *const u8, len: usize) -> i32 {
     if buf.is_null() || len % SECTOR != 0 {
         return -1;
     }
-    let Some(d) = disk(ctx) else {
-        return -1;
-    };
-    if d.gone {
-        return -1;
-    }
     // SAFETY: the kernel hands `len` bytes at `buf` for the call.
     let buf = unsafe { core::slice::from_raw_parts(buf, len) };
-    acquire(d);
-    let r = rw(d, lba, Data::Out(buf));
-    release(d);
-    r
+    with_disk(ctx, |d| if d.gone { -1 } else { rw(d, lba, Data::Out(buf)) }).unwrap_or(-1)
 }
 
 unsafe extern "C" fn blk_capacity(ctx: usize) -> u64 {
-    disk(ctx).map_or(0, |d| d.capacity)
+    with_disk(ctx, |d| d.capacity).unwrap_or(0)
 }
 
 /// The lowest `sdX` letter no disk in the table uses.
 fn free_name() -> Option<[u8; 3]> {
-    for letter in b'a'..=b'z' {
-        let name = [b's', b'd', letter];
-        if !disks().iter().flatten().any(|d| d.name == name) {
-            return Some(name);
+    let mut used = [false; 26];
+    for slot in &DISKS {
+        if let Some(d) = slot.lock().as_ref() {
+            used[usize::from(d.name[2] - b'a')] = true;
         }
     }
-    None
+    let letter = used.iter().position(|&u| !u)? as u8;
+    Some([b's', b'd', b'a' + letter])
 }
 
 unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceInfo) -> i32 {
@@ -310,13 +287,17 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     // Free any slot/name still held by a disk unplugged while busy and since
     // released, so a fresh plug reuses it instead of running the table out.
     reclaim_gone();
-    let Some(slot) = disks().iter().position(|d| d.is_none()) else {
-        return -1;
-    };
+    // The name before the slot: `free_name` looks at every slot.
     let Some(name) = free_name() else {
         return -1;
     };
-    disks()[slot] = Some(Disk {
+    let Some((slot, mut free)) = DISKS.iter().enumerate().find_map(|(i, s)| {
+        let s = s.lock();
+        s.is_none().then_some((i, s))
+    }) else {
+        return -1;
+    };
+    let d = free.insert(Disk {
         dev: dev.id,
         intf: intf.number,
         ep_in,
@@ -325,22 +306,20 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
         capacity: 0,
         tag: 0,
         gone: false,
-        busy: core::sync::atomic::AtomicBool::new(false),
         name,
     });
-    let d = disks()[slot].as_mut().unwrap();
     // INQUIRY (what it is; the answer is not needed), ready, capacity.
     let mut inquiry = [0u8; 36];
     let cb = [0x12u8, 0, 0, 0, 36, 0];
     let _ = scsi(d, &cb, Data::In(&mut inquiry));
     if !unit_ready(d) {
         status_fail(api(), "usb_storage: unit not ready");
-        disks()[slot] = None;
+        *free = None;
         return -1;
     }
     let Some(capacity) = read_capacity(d) else {
         status_fail(api(), "usb_storage: no capacity, or a sector not 512 bytes");
-        disks()[slot] = None;
+        *free = None;
         return -1;
     };
     d.capacity = capacity;
@@ -348,7 +327,7 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     let id = api().blk_register(core::str::from_utf8(&name).unwrap_or_default(), &OPS, slot);
     if id < 0 {
         status_fail(api(), "usb_storage: blk_register");
-        disks()[slot] = None;
+        *free = None;
         return -1;
     }
     d.blk = id;
@@ -365,13 +344,13 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
 /// and before a probe takes a slot, so repeated unplug-while-busy cannot leak
 /// the table empty and stop hot-plug working.
 fn reclaim_gone() {
-    for slot in 0..MAX_DISKS {
-        let (gone, blk) = match disks()[slot].as_ref() {
-            Some(d) => (d.gone, d.blk),
-            None => continue,
+    for slot in &DISKS {
+        let mut slot = slot.lock();
+        let Some(d) = slot.as_ref() else {
+            continue;
         };
-        if gone && blk >= 0 && api().blk_unregister(blk as u32) == 0 {
-            disks()[slot] = None;
+        if d.gone && d.blk >= 0 && api().blk_unregister(d.blk as u32) == 0 {
+            *slot = None;
         }
     }
 }
@@ -379,8 +358,9 @@ fn reclaim_gone() {
 unsafe extern "C" fn disconnect(dev: u32, intf: u8) {
     // First reclaim any earlier disk whose holder has since let go.
     reclaim_gone();
-    for slot in 0..MAX_DISKS {
-        let Some(d) = disks()[slot].as_mut() else {
+    for slot in &DISKS {
+        let mut slot = slot.lock();
+        let Some(d) = slot.as_mut() else {
             continue;
         };
         if d.dev != dev || d.intf != intf {
@@ -391,7 +371,7 @@ unsafe extern "C" fn disconnect(dev: u32, intf: u8) {
         // program holds it open: then the entry stays, failing its I/O,
         // until `reclaim_gone` frees it once the holder lets go.
         if d.blk >= 0 && api().blk_unregister(d.blk as u32) == 0 {
-            disks()[slot] = None;
+            *slot = None;
         } else {
             status_fail(api(), "usb_storage: disk unplugged while in use");
         }

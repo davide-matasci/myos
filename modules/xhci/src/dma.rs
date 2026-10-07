@@ -4,30 +4,37 @@
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
+use myos_abi::Lock;
+
 use crate::api;
-use crate::sync::Spin;
 
 const POOL: usize = 128;
-static mut FREE: [(u64, usize); POOL] = [(0, 0); POOL];
-static mut FREE_N: usize = 0;
-static LOCK: Spin = Spin::new();
+
+/// The pages given back, `(phys, va)`, the last freed first.
+struct Pool {
+    free: [(u64, usize); POOL],
+    n: usize,
+}
+
+static FREE: Lock<Pool> = Lock::new(Pool { free: [(0, 0); POOL], n: 0 });
 
 /// One zeroed page: `(phys, va)`.
 pub fn page() -> Option<(u64, *mut u8)> {
-    {
-        let _held = LOCK.lock();
-        let n = unsafe { *core::ptr::addr_of!(FREE_N) };
-        if n > 0 {
-            let (phys, va) = unsafe { (*core::ptr::addr_of!(FREE))[n - 1] };
-            unsafe {
-                *core::ptr::addr_of_mut!(FREE_N) = n - 1;
-            }
-            let va = va as *mut u8;
-            unsafe {
-                core::ptr::write_bytes(va, 0, 4096);
-            }
-            return Some((phys, va));
+    let recycled = {
+        let mut pool = FREE.lock();
+        if pool.n > 0 {
+            pool.n -= 1;
+            Some(pool.free[pool.n])
+        } else {
+            None
         }
+    };
+    if let Some((phys, va)) = recycled {
+        let va = va as *mut u8;
+        unsafe {
+            core::ptr::write_bytes(va, 0, 4096);
+        }
+        return Some((phys, va));
     }
     pages(1)
 }
@@ -41,13 +48,11 @@ pub fn pages(n: usize) -> Option<(u64, *mut u8)> {
 
 /// A page back to the pool (dropped when the pool is full).
 pub fn free(phys: u64, va: *mut u8) {
-    let _held = LOCK.lock();
-    let n = unsafe { *core::ptr::addr_of!(FREE_N) };
-    if n < POOL {
-        unsafe {
-            (*core::ptr::addr_of_mut!(FREE))[n] = (phys, va as usize);
-            *core::ptr::addr_of_mut!(FREE_N) = n + 1;
-        }
+    let mut pool = FREE.lock();
+    if pool.n < POOL {
+        let n = pool.n;
+        pool.free[n] = (phys, va as usize);
+        pool.n = n + 1;
     }
 }
 

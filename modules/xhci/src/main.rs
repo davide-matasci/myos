@@ -28,7 +28,9 @@ use myos_abi::{
 };
 
 static API: ApiCell = ApiCell::new();
-static mut CONTROLLERS: [Option<hc::Controller>; hc::MAX_CTRL] = [const { None }; hc::MAX_CTRL];
+/// The controllers, each set once by `probe` and read by every context
+/// after (`controller`).
+static CONTROLLERS: [sync::Once<hc::Controller>; hc::MAX_CTRL] = [const { sync::Once::new() }; hc::MAX_CTRL];
 /// The USB thread sleeps on this key; the event handler, `driver_register`
 /// and the hub calls wake it.
 pub static THREAD_KEY: AtomicU32 = AtomicU32::new(0);
@@ -40,8 +42,8 @@ pub fn api() -> &'static KernelApi {
     API.get()
 }
 
-pub fn controller(i: u8) -> Option<&'static mut hc::Controller> {
-    unsafe { (*core::ptr::addr_of_mut!(CONTROLLERS)).get_mut(usize::from(i))?.as_mut() }
+pub fn controller(i: u8) -> Option<&'static hc::Controller> {
+    CONTROLLERS.get(usize::from(i))?.get()
 }
 
 /// Sleep the calling task `ms` milliseconds.
@@ -135,66 +137,66 @@ unsafe extern "C" fn driver_register(ops: *const UsbDriverOps) -> i32 {
     if ops.is_null() {
         return -1;
     }
-    let drivers = unsafe { &mut *core::ptr::addr_of_mut!(usb::DRIVERS) };
+    let mut drivers = usb::DRIVERS.lock();
     let Some(slot) = drivers.iter().position(|d| d.is_none()) else {
         return -1;
     };
+    // SAFETY: a driver's table lives as long as its module, which stays
+    // loaded while it is registered here (`docs/usb.md`).
     drivers[slot] = Some(unsafe { &*ops });
+    drop(drivers);
     REOFFER.store(true, Ordering::Release);
     wake_thread();
     0
 }
 
+/// `usb::with_device` for a hook: the device's lock held for `f`, and
+/// `USB_EGONE` when the device is not there.
+fn on_device(dev: u32, f: impl FnOnce(&hc::Controller, &usb::Slot, &mut usb::Device) -> i32) -> i32 {
+    usb::with_device(dev, f).unwrap_or_else(|e| e)
+}
+
 unsafe extern "C" fn control(dev: u32, request_type: u8, request: u8, value: u16, index: u16, data: *mut u8, len: u16) -> i32 {
-    let Some((c, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
     if len != 0 && data.is_null() {
         return -1;
     }
-    usb::control(c, d, request_type, request, value, index, data, len)
+    on_device(dev, |c, s, d| usb::control(c, s, d, request_type, request, value, index, data, len))
 }
 
 unsafe extern "C" fn bulk(dev: u32, endpoint: u8, data: *mut u8, len: usize, timeout_ms: u32) -> i32 {
-    let Some((c, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
     if data.is_null() && len != 0 {
         return -1;
     }
-    usb::bulk(c, d, endpoint, data, len, timeout_ms)
+    on_device(dev, |c, s, d| usb::bulk(c, s, d, endpoint, data, len, timeout_ms))
 }
 
 unsafe extern "C" fn interrupt_start(dev: u32, endpoint: u8, data: *mut u8, len: usize, done: UsbCompletion, ctx: *mut c_void) -> i32 {
-    let Some((c, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
     if data.is_null() || len == 0 {
         return -1;
     }
-    usb::interrupt_start(c, d, endpoint, data, len, done, ctx)
+    on_device(dev, |c, s, d| usb::interrupt_start(c, s, d, endpoint, data, len, done, ctx))
 }
 
 unsafe extern "C" fn clear_halt(dev: u32, endpoint: u8) -> i32 {
-    let Some((c, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
-    usb::clear_halt(c, d, endpoint)
+    on_device(dev, |c, s, d| usb::clear_halt(c, s, d, endpoint))
 }
 
 unsafe extern "C" fn hub_configure(dev: u32, ports: u8, tt_think: u8, multi_tt: u8) -> i32 {
-    let Some((c, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
-    usb::hub_configure(c, d, ports, tt_think, multi_tt != 0)
+    on_device(dev, |c, _, d| usb::hub_configure(c, d, ports, tt_think, multi_tt != 0))
+}
+
+/// The controller of the hub `dev`, if the hub is there.
+fn hub_controller(dev: u32) -> Option<&'static hc::Controller> {
+    let index = usb::with_device(dev, |c, _, _| c.index).ok()?;
+    controller(index)
 }
 
 unsafe extern "C" fn hub_attach(dev: u32, port: u8, speed: u8) -> i32 {
-    let Some((c, _)) = usb::lookup(dev) else {
+    let Some(c) = hub_controller(dev) else {
         return USB_EGONE;
     };
-    if usb::find(c.index, dev, port).is_some() {
-        usb::detach_id(c, usb::find(c.index, dev, port).unwrap());
+    if let Some(child) = usb::find(c.index, dev, port) {
+        usb::detach_id(c, child);
     }
     match usb::attach(c, Some((dev, port)), 0, speed) {
         Ok(id) => id as i32,
@@ -206,7 +208,7 @@ unsafe extern "C" fn hub_attach(dev: u32, port: u8, speed: u8) -> i32 {
 }
 
 unsafe extern "C" fn hub_detach(dev: u32, port: u8) {
-    let Some((c, _)) = usb::lookup(dev) else {
+    let Some(c) = hub_controller(dev) else {
         return;
     };
     if let Some(child) = usb::find(c.index, dev, port) {
@@ -215,35 +217,36 @@ unsafe extern "C" fn hub_detach(dev: u32, port: u8) {
 }
 
 unsafe extern "C" fn device_info(dev: u32, info: *mut UsbDeviceInfo) -> i32 {
-    let Some((_, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
     if info.is_null() {
         return -1;
     }
-    unsafe {
-        *info = d.info;
-    }
-    0
+    on_device(dev, |_, _, d| {
+        unsafe {
+            *info = d.info;
+        }
+        0
+    })
 }
 
 unsafe extern "C" fn interface_label(dev: u32, intf: u8, label: *const u8, len: usize) -> i32 {
-    let Some((_, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
-    let Some(i) = d.interfaces.iter_mut().flatten().find(|i| i.info.number == intf) else {
-        return -1;
-    };
     let len = len.min(USB_LABEL_MAX);
-    if len != 0 {
-        if label.is_null() {
-            return -1;
-        }
-        i.label[..len].copy_from_slice(unsafe { core::slice::from_raw_parts(label, len) });
+    if len != 0 && label.is_null() {
+        return -1;
     }
-    i.label_len = len as u8;
-    proc_update();
-    0
+    let rc = on_device(dev, |_, _, d| {
+        let Some(i) = d.interfaces.iter_mut().flatten().find(|i| i.info.number == intf) else {
+            return -1;
+        };
+        if len != 0 {
+            i.label[..len].copy_from_slice(unsafe { core::slice::from_raw_parts(label, len) });
+        }
+        i.label_len = len as u8;
+        0
+    });
+    if rc == 0 {
+        proc_update();
+    }
+    rc
 }
 
 // ---- Interrupts and the thread -----------------------------------------------
@@ -264,7 +267,7 @@ unsafe extern "C" fn irq_handler(ctx: *mut c_void) {
 
 /// A root port's status changed (or the initial scan): a new device is
 /// reset and enumerated, a vanished one detached.
-fn root_port(c: &mut hc::Controller, port: usize) {
+fn root_port(c: &hc::Controller, port: usize) {
     let s = hc::port_status(c, port);
     hc::port_ack(c, port);
     let present = usb::find(c.index, 0, port as u8 + 1);
@@ -301,7 +304,7 @@ pub fn enumeration_failed(e: i32) {
     let mut buf = [0u8; 96];
     let mut w = Writer { buf: &mut buf, len: 0 };
     w.str("usb: ");
-    w.str(unsafe { *core::ptr::addr_of!(usb::STEP) });
+    w.str(*usb::STEP.lock());
     w.str(" failed (");
     if e < 0 {
         w.str("-");
@@ -333,7 +336,7 @@ unsafe extern "C" fn thread_main(_ctx: *mut c_void) {
             let Some(c) = controller(i) else {
                 continue;
             };
-            if !c.irq_on {
+            if !c.irq_on.load(Ordering::Relaxed) {
                 hc::process_events(c);
             }
             let changed = c.port_change.swap(0, Ordering::AcqRel);
@@ -361,7 +364,7 @@ unsafe extern "C" fn thread_main(_ctx: *mut c_void) {
             continue;
         }
         // Without an interrupt the ring is polled every 20 ms.
-        let polled = (0..hc::MAX_CTRL as u8).any(|i| controller(i).is_some_and(|c| !c.irq_on));
+        let polled = (0..hc::MAX_CTRL as u8).any(|i| controller(i).is_some_and(|c| !c.irq_on.load(Ordering::Relaxed)));
         let now = api().monotonic_ns();
         let deadline = if polled { now + 20_000_000 } else { now + 1_000_000_000 };
         api().block_until(THREAD_KEY.as_ptr() as usize, seq, deadline);
@@ -388,7 +391,7 @@ fn probe(api: &KernelApi) -> usize {
         if ((class >> 8) & 0xFF) as u8 != PROGIF_XHCI {
             continue;
         }
-        let Some(index) = (unsafe { (*core::ptr::addr_of!(CONTROLLERS)).iter().position(|c| c.is_none()) }) else {
+        let Some(index) = CONTROLLERS.iter().position(|c| c.get().is_none()) else {
             break;
         };
         api.pci_enable(bus, slot, func);
@@ -396,7 +399,7 @@ fn probe(api: &KernelApi) -> usize {
         if api.pci_bar_map(bus, slot, func, 0, &mut va, &mut size) != 0 || size < 0x1000 {
             continue;
         }
-        if unsafe { (*core::ptr::addr_of!(CONTROLLERS)).iter().flatten().any(|c| c.mmio() == va) } {
+        if CONTROLLERS.iter().filter_map(sync::Once::get).any(|c| c.mmio() == va) {
             continue;
         }
         match hc::init(va, index as u8) {
@@ -405,14 +408,12 @@ fn probe(api: &KernelApi) -> usize {
                 // raises one as soon as it runs (the ports with devices),
                 // and a handler finding no controller would leave IP set,
                 // which blocks every later interrupt.
-                unsafe {
-                    (*core::ptr::addr_of_mut!(CONTROLLERS))[index] = Some(c);
-                }
+                CONTROLLERS[index].set(c);
                 let mut msix = 0u16;
                 let rc = api.pci_irq_enable(bus, slot, func, "xhci", irq_handler, index as *mut c_void, &mut msix);
                 let _ = msix == MYOS_IRQ_INTX;
                 if let Some(c) = controller(index as u8) {
-                    c.irq_on = rc == 0;
+                    c.irq_on.store(rc == 0, Ordering::Release);
                 }
                 new += 1;
             }
@@ -463,7 +464,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
             }
             w.dec(u32::from(c.ports));
             w.str(" ports");
-            w.str(if c.irq_on { " irq" } else { " polled" });
+            w.str(if c.irq_on.load(Ordering::Relaxed) { " irq" } else { " polled" });
         }
     }
     let n = w.len;
