@@ -62,4 +62,4 @@ and `/dev/fb/ctl` says `text` again.
 - A mouse (`kdrive/myos` has none; the core pointer never moves).
 - Rotation and modes: one framebuffer, at the mode the bootloader set.
 - Fonts beyond the built-in two (`/lib/X11/fonts`).
-- Clients beyond dwm, st and dmenu (`TODO.md`).
+- Clients beyond dwm, st and dmenu (issue #273).

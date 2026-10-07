@@ -49,6 +49,6 @@ window manager (dmenu grabs the keyboard):
 ## Not yet
 
 - Programs in a directory added to `PATH`: the shell (oksh) sets its own
-  `PATH` whatever it inherits (`TODO.md`), so `dmenu_path` lists the default
+  `PATH` whatever it inherits (issue #273), so `dmenu_path` lists the default
   directories, where packages install.
 - Xinerama (one screen anyway).

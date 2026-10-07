@@ -63,7 +63,8 @@ cargo run -- [uefi|aarch64|riscv64]  # build and boot in QEMU (default: x86 BIOS
 - The aarch64 and riscv64 kernels are built by the launcher; to just
   type-check: `cargo check -p kernel --target {x86_64-unknown-none,aarch64-unknown-none-softfloat,riscv64imac-unknown-none-elf}`.
 - First builds are slow (fetching and cross-building ports, newlib, the
-  `std` sysroot). Everything lands in `target/`.
+  `std` sysroot). Everything lands in `target/`. Pulling CI's cached ports
+  instead is much faster: "Fast local setup" below.
 
 ## Testing
 
@@ -99,6 +100,70 @@ cargo test -p ps2-scancode -p ext2fs      # host unit tests (ext2fs needs e2fspr
   by the launcher to the guest (`docs/packages.md`). In a sandbox with a
   TLS-intercepting proxy, append its CA to `target/cacert.pem` for local
   runs only and restore it afterwards; never commit it.
+
+## Fast local setup (fresh container, cloud agent)
+
+Building every port from source takes hours; CI's port cache on GHCR gets a
+fresh Ubuntu container to its first boot in about 10 minutes (pull ~1 min,
+first `cargo build` ~4 min, a `test-mini` boot ~95 s on 4 cores). In order:
+
+```sh
+sudo apt install qemu-system-x86 qemu-system-arm qemu-system-misc \
+  qemu-efi-aarch64 qemu-efi-riscv64 clang lld make git libc6-dev rsync \
+  patch curl zstd e2fsprogs
+# The cache keys hash `sha256sum PATH` output, absolute paths included:
+# work from CI's checkout path, or every pull misses.
+sudo mkdir -p /__w/myos && sudo ln -sfn "$PWD" /__w/myos/myos && cd /__w/myos/myos
+export GITHUB_REPOSITORY=davide-matasci/myos
+./scripts/ci-registry.sh pull all            # every port CI built for these sources
+# What CI's build job runs next: each port's build script, which skips a
+# current port but still installs what it stages (libtcc1.a into newlib).
+./scripts/ports.sh --build-list all | while read -r _ s; do "./$s"; done
+cargo build && cargo run -- uefi test-mini
+```
+
+What breaks in an agent sandbox (Claude Code on the web and the like):
+
+- **Its `GITHUB_TOKEN` / `GH_TOKEN` is scoped to this repository.** GHCR
+  refuses it (`registry miss ...: login failed`) and GitHub refuses it for
+  the upstreams `scripts/git-retry.sh` clones ("could not read Username").
+  The packages and upstreams are public: run the pull, the port loop and
+  the cargo commands under `env -u GITHUB_TOKEN -u GH_TOKEN`.
+- **GitHub `/archive/` tarballs of other repositories may get a 403**
+  (release assets and git clones work). Only mbedtls is fetched that way;
+  when `ports/mbedtls/fetch.sh` fails, lay the same tree out from its tag:
+  ```sh
+  . ports/mbedtls/versions.env
+  git clone -q --depth 1 --branch "v$MBEDTLS_VERSION" https://github.com/Mbed-TLS/mbedtls target/mbedtls-src
+  rm -rf target/mbedtls-src/{.git,programs,tests,docs}
+  echo "$MBEDTLS_VERSION" > target/.mbedtls-src-version
+  ```
+- **The launcher's OVMF download fails behind a TLS-intercepting proxy**
+  (`InvalidCertificate(UnknownIssuer)`: the `ovmf-prebuilt` crate has its own
+  CA roots). curl it into the crate's cache; the tag and sha256 are
+  `Source::LATEST` in `~/.cargo/registry/src/*/ovmf-prebuilt-*/src/source_constants.rs`:
+  ```sh
+  tag=edk2-stable202605-r1 sha=8ae4d2d73161cc2335f5675d3b8b6edfa0642301679764a246940488ea3ce20d
+  curl -fsSL -o /tmp/ovmf.tar.xz "https://github.com/rust-osdev/ovmf-prebuilt/releases/download/$tag/$tag-bin.tar.xz"
+  echo "$sha  /tmp/ovmf.tar.xz" | sha256sum -c - && mkdir -p target/ovmf \
+    && tar -xJf /tmp/ovmf.tar.xz -C target/ovmf --strip-components=1 && printf %s "$sha" > target/ovmf/sha256
+  ```
+- Paths outside the checkout (`/__w`) and running without the token may
+  need the user's permission in the agent's settings; ask rather than work
+  around a refusal.
+
+Intermittent failures (a race, a flaky boot) need a loop, not one CI run:
+a race may fail a few boots in ten or none in twenty-five, so a green run
+says little. Boot the unfixed base the same number of times first; a fix
+is shown only when the base fails and the fix does not. Loading the host
+CPUs (`sha256sum /dev/zero &` a few times) widens TCG's timing windows.
+`scripts/local-ci.sh` defaults to single-threaded TCG (`MYOS_TCG_SINGLE=1`),
+which hides SMP races: hunt those with `cargo run` directly.
+
+```sh
+for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
+  && rm /tmp/boot$i.log || echo "run $i failed"; done
+```
 
 ## CI (GitHub Actions)
 
@@ -146,6 +211,12 @@ cargo test -p ps2-scancode -p ext2fs      # host unit tests (ext2fs needs e2fspr
   limits, commands or CI change.
 - Kernel limits (heap, fds, tasks, mmap windows) are documented in the
   relevant `docs/` page; change both together.
+- **Pending work is a GitHub issue**, not a TODO file or a list in a doc:
+  a follow-up, a known bug or a limit worth lifting that a change leaves
+  open gets an issue (what and why, where in the code, a `bug` or
+  `enhancement` label, "**Low priority.**" first when it is). Search the
+  open issues before opening one, and point to it as `issue #N` from code
+  comments and docs.
 - Commits: one topic each, subject `area: what changed` (imperative or
   descriptive, no trailing period), body explaining why. One branch and one
   PR per change; never force-push a shared branch.

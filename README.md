@@ -30,7 +30,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 ## Prerequisites
 
 - [rustup](https://rustup.rs/) — `rust-toolchain.toml` pins **nightly-2026-07-26** and installs components automatically
-- QEMU (`qemu-system-x86`, `qemu-system-arm`, `qemu-efi-aarch64`, `qemu-efi-riscv64`)
+- QEMU (`qemu-system-x86`, `qemu-system-arm`, `qemu-system-misc` for riscv64, `qemu-efi-aarch64`, `qemu-efi-riscv64`)
 - `clang` + `lld` — cross-compiler and linker for C userspace on every arch (`ld.lld`)
 - `make` — newlib build
 - `git` — fetching upstream port sources
@@ -40,13 +40,20 @@ This is a starting point to grow into a real OS, not a feature dump.
 - `patch` — applying `.myos.patch` files
 - `curl` — fetching the pinned Limine binary on first build
 - `xorriso` — hybrid ISO output (`cargo run -- iso` only)
+- `zstd` — unpacking CI's cached ports (`scripts/ci-registry.sh pull`)
+- `e2fsprogs` — the boot test checks the scratch disk's ext2 with `e2fsck`
 
 On Ubuntu:
 
 ```sh
-sudo apt install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
-  clang lld make git gh libc6-dev rsync patch curl xorriso
+sudo apt install qemu-system-x86 qemu-system-arm qemu-system-misc \
+  qemu-efi-aarch64 qemu-efi-riscv64 clang lld make git gh libc6-dev rsync \
+  patch curl xorriso zstd e2fsprogs
 ```
+
+Building every port from source takes hours on the first run. Pulling the
+ones CI already built takes about a minute: see "Fast local setup" in
+`AGENTS.md`, which also covers sandboxes behind a proxy.
 
 On macOS (Homebrew):
 
