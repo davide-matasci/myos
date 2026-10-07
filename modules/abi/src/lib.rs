@@ -3,7 +3,8 @@
 //! This is the modular ABI. Modules do not link against kernel `.dynsym`;
 //! they receive a [`KernelApi`] from `module_init` and call through it.
 //! The helpers a module keeps its own state in are here too: the table in
-//! an [`ApiCell`], the rest behind a [`Lock`].
+//! an [`ApiCell`], the rest behind a [`Lock`] (or a [`SleepLock`] when it
+//! is held across a wait).
 
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -11,8 +12,10 @@
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 mod lock;
+mod sleep_lock;
 
 pub use lock::{Lock, LockGuard};
+pub use sleep_lock::{SleepGuard, SleepLock};
 
 /// Bump this when [`KernelApi`] layout or meaning changes. 19 took `fd_ioctl`
 /// out of the table and the ioctl hook out of [`ModuleChrOps`]: there is no

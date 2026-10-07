@@ -316,11 +316,12 @@ references, and the kernel copies or checks what it is handed, so no
 `unsafe` is needed. The few entries that cannot be safe (`dealloc`, the
 saved registers of a syscall, the FP/SIMD save area) have no method. A
 module keeps the table `module_init` received in a `static API: ApiCell`
-(`API.get()` afterwards) and its own state behind a `myos_abi::Lock` (a
-block driver's disks are one lock per slot, held for a request: nvme and
-virtio_blk so far, the other drivers still hand `&'static mut` out of a
-`static mut`, issue #279), and every module crate denies
-`unsafe_op_in_unsafe_fn`.
+(`API.get()` afterwards) and its own state behind a `myos_abi::Lock`, a
+spin lock, or a `SleepLock` when it is held across a wait (a block driver's
+disks are one lock per slot, held for a request; usb_storage's requests
+wait in the USB host, so its slots sleep). The USB host and hub still hand
+`&'static mut` out of a `static mut` (issue #300). Every module crate
+denies `unsafe_op_in_unsafe_fn`.
 
 ### Adding a module
 1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)
