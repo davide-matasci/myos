@@ -56,4 +56,5 @@ CI QEMU smoke initially saw `rg` abort with exit **101** on file search while
 3. **`fs::metadata` was `unsupported()`** (`FileAttr(!)`). Implemented via
    `SYS_STAT` in `toolchain/std/sys/fs/myos.rs` + `abi::stat`.
 
-Heap smoke uses `-j1 --no-mmap --no-config` (myos is `singlethread`, no mmap).
+Heap smoke uses `-j1 --no-mmap --no-config` (rg mmap is optional); `test.sh` searches a
+tree with `-j4`, the walker and the searchers on `std::thread`.

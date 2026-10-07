@@ -25,7 +25,6 @@
   "stack-probes": {
     "kind": "inline"
   },
-  "singlethread": true,
   "static-position-independent-executables": true,
   "target-pointer-width": 64
 }

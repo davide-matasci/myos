@@ -94,17 +94,44 @@ wakes may be spurious, so callers re-check their condition.
 | 55 | `wait_addr(addr, expected, timeout_ns)` | `0` woken, `1` the word differed, `2` timed out (`timeout_ns` 0 = none); `EINTR` on a signal |
 | 56 | `wake_addr(addr, count)` | returns how many it woke |
 | 57 | `gettid()` | the calling thread's id |
+| 88 | `set_tp(value)` | make `value` the calling thread's thread pointer, as `thread_spawn`'s `tls` is a new thread's (x86_64 user code cannot write the FS base) |
+| 89 | `yield()` | let the other tasks ready on this CPU run first |
 
 `user/heap` (`thread_smoke`, `[ OK ] threads` in boot CI) checks shared
 memory, wait/wake, and that a process exits while one of its threads sleeps
 on an address and another spins in user mode.
 
+## Rust `std::thread`
+
+The std port (`toolchain/std`) runs `std::thread` on these calls:
+
+- **Spawning** (`sys/thread/myos.rs`): a thread gets one mapping: a guard
+  page, its stack (1 MiB by default, paged in as it is touched) and a top
+  page holding its TLS table and the word its handle waits on. Whoever is
+  last frees the mapping: `join` once the thread has ended, or the thread
+  itself when its handle was dropped first (detached). A thread ends in a
+  few instructions that touch no memory but that word once a joiner may
+  free its stack, with its signals blocked so no handler frame lands there.
+- **Locks**: std's futex-based `Mutex`, `Condvar`, `RwLock`, `Once` and
+  thread parking, on `wait_addr` / `wake_addr` (`pal/myos/futex.rs`). The
+  heap (`brk`) takes a `Mutex`.
+- **Thread-locals** (`sys/thread_local/key/myos.rs`): a table of 499 keys
+  per thread at the thread pointer, its word 0 pointing at itself so x86_64
+  code reads it at `fs:0`; the main thread's is a static, installed with
+  `set_tp` before `main`. std runs a thread's destructors when it ends.
+- `available_parallelism` counts the CPUs of `/proc/cpu`
+  (`docs/proc.md`), `yield_now` is `yield`.
+
+The `*-unknown-myos` targets are no longer `singlethread` (which compiled
+atomics to plain loads and stores). `/bin/std/thread` (`user/std/thread`, test
+`std_thread`) checks the locks, channels, thread-locals and their
+destructors, scoped threads, parking, and that joined and detached threads
+free their task slots and stacks (300 threads, past the kernel's 64 slots).
+
 ## Not yet
 
-- Parallelism within a process (threads of other processes do run on other
-  CPUs): it needs TLB shootdowns for shared address spaces.
-- Threads in newlib and Rust `std::thread` for native programs; the Linux
-  layer runs musl's pthreads (see `docs/linux-compat.md`). libgloss has
+- Threads in newlib for native C programs (Rust has `std::thread`, above;
+  the Linux layer runs musl's pthreads, see `docs/linux-compat.md`). libgloss has
   the pthread API for one thread (`toolchain/newlib/libgloss/myos/pthread.c`):
   mutexes count their locks (a relock is `EDEADLK`, not a hang), a timed
   condition wait sleeps to its deadline, once and keys work, and

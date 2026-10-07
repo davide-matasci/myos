@@ -196,7 +196,52 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             (
                 '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }',
-                '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }\n    target_os = "myos" => {\n        mod myos;\n        pub use myos::sleep;\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{Thread, available_parallelism, current_os_id, set_name, yield_now, DEFAULT_MIN_STACK_SIZE};\n    }',
+                '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }\n    target_os = "myos" => {\n        mod myos;\n        pub use myos::{Thread, available_parallelism, current_os_id, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::set_name;\n    }',
+            ),
+        ],
+    ),
+    (
+        "std/src/sys/sync/mutex/mod.rs",
+        [
+            (
+                '        target_os = "hermit",\n',
+                '        target_os = "hermit",\n        target_os = "myos",\n',
+            ),
+        ],
+    ),
+    (
+        "std/src/sys/sync/condvar/mod.rs",
+        [
+            (
+                '        target_os = "hermit",\n',
+                '        target_os = "hermit",\n        target_os = "myos",\n',
+            ),
+        ],
+    ),
+    (
+        "std/src/sys/sync/once/mod.rs",
+        [
+            (
+                '        target_os = "hermit",\n',
+                '        target_os = "hermit",\n        target_os = "myos",\n',
+            ),
+        ],
+    ),
+    (
+        "std/src/sys/sync/rwlock/mod.rs",
+        [
+            (
+                '        target_os = "hermit",\n',
+                '        target_os = "hermit",\n        target_os = "myos",\n',
+            ),
+        ],
+    ),
+    (
+        "std/src/sys/sync/thread_parking/mod.rs",
+        [
+            (
+                '        target_os = "hermit",\n',
+                '        target_os = "hermit",\n        target_os = "myos",\n',
             ),
         ],
     ),
@@ -248,13 +293,16 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
     (
         "std/src/sys/thread_local/mod.rs",
         [
+            # `std` runs the destructors itself (`sys/thread/myos.rs`), as on
+            # Hermit and Xous.
             (
-                '        target_os = "uefi",\n        target_os = "zkvm",',
-                '        target_os = "uefi",\n        target_os = "myos",\n        target_os = "zkvm",',
+                '        any(\n            target_os = "hermit",\n            target_os = "xous",\n        ) => {',
+                '        any(\n            target_os = "hermit",\n            target_os = "myos",\n            target_os = "xous",\n        ) => {',
             ),
+            # Keys in a table at the thread pointer (`sys/thread_local/key/myos.rs`).
             (
-                '            target_os = "uefi",\n            target_os = "zkvm",',
-                '            target_os = "uefi",\n            target_os = "myos",\n            target_os = "zkvm",',
+                '        target_os = "xous" => {\n            mod racy;',
+                '        target_os = "myos" => {\n            mod racy;\n            mod myos;\n            pub(super) use racy::LazyKey;\n            pub(super) use myos::{Key, get, set};\n            pub(crate) use myos::{Table, init_main, init_table, run_dtors};\n            use myos::{create, destroy};\n        }\n        target_os = "xous" => {\n            mod racy;',
             ),
         ],
     ),
@@ -498,6 +546,7 @@ def main() -> None:
         (repo / "toolchain/std/sys/process/myos.rs", patch_root / "std/src/sys/process/myos.rs"),
         (repo / "toolchain/std/sys/time/myos.rs", patch_root / "std/src/sys/time/myos.rs"),
         (repo / "toolchain/std/sys/thread/myos.rs", patch_root / "std/src/sys/thread/myos.rs"),
+        (repo / "toolchain/std/sys/thread_local/key/myos.rs", patch_root / "std/src/sys/thread_local/key/myos.rs"),
         (repo / "toolchain/std/sys/io/error/myos.rs", patch_root / "std/src/sys/io/error/myos.rs"),
         (repo / "toolchain/std/os/myos", patch_root / "std/src/os/myos"),
     ]
