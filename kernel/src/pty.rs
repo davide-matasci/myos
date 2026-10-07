@@ -371,7 +371,6 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
         // OPOST/ONLCR: LF expands to CRLF in the output stream.
         let expand = post && onlcr && b == b'\n';
         loop {
-            let seq = crate::task::wait_seq();
             if p.master_refs.load(Ordering::SeqCst) == 0 {
                 notify(id);
                 return if n == 0 { usize::MAX } else { n };
@@ -392,8 +391,16 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
                 break;
             }
             drop(out);
-            // Ring full: let the master drain it.
+            // Ring full: wake the master's reader, then wait for room. The
+            // wait sequence is read after that wake, then the ring looked at
+            // again: our own wake would end the wait at once, and the write
+            // spun here with interrupts off, never letting a reader on this
+            // CPU run to drain the ring.
             notify(id);
+            let seq = crate::task::wait_seq();
+            if p.out.lock().len < OUT_CAP {
+                continue;
+            }
             crate::task::block_until(crate::task::key_pty(id), seq, 0);
         }
     }

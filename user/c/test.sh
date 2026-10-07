@@ -4,6 +4,9 @@ t pty /bin/etc/pty_smoke 2
 # More pty pairs at once than the kernel once had (four), their names and
 # inodes distinct, a closed pair's index used again (pty_smoke.c).
 t ptys /bin/etc/pty_smoke 4
+# Writers faster than their reader: a write into a full pty waits for room,
+# also on the reader's CPU (pty_smoke.c).
+t pty_flood /bin/etc/pty_smoke 5
 t urandom /bin/etc/urandom_smoke
 # The tty: the line editor's keys and ^C, driven through a pty (tty_smoke.c).
 t tty /bin/etc/tty_smoke
