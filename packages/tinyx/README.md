@@ -59,7 +59,9 @@ and `/dev/fb/ctl` says `text` again.
 
 ## Not yet
 
-- A mouse (`kdrive/myos` has none; the core pointer never moves).
+- A mouse (`kdrive/myos` has none; the core pointer never moves): issue
+  #302.
 - Rotation and modes: one framebuffer, at the mode the bootloader set.
-- Fonts beyond the built-in two (`/lib/X11/fonts`).
-- Clients beyond dwm, st and dmenu (issue #273).
+- Fonts beyond the built-in two (`/lib/X11/fonts`): issue #303.
+- MIT-SHM (`no-shm-xtest.myos.patch`): it needs shared memory between
+  processes, issue #283.
