@@ -31,7 +31,7 @@ const MAP_PRIVATE: usize = 0x02;
 const MAP_FIXED: usize = 0x10;
 const MAP_ANON: usize = 0x20;
 
-pub use crate::arch::{DEFAULT_USER_BASE, HEAP_PAGES, MMAP_AREA_PAGES, USER_STACK_PAGES};
+pub use crate::arch::{DEFAULT_USER_BASE, HEAP_PAGES, MMAP_AREA_PAGES, USER_STACK_PAGES, USER_WINDOW};
 pub const PAGE: usize = 4096;
 /// Cap for fresh `load_user_elf` (init + typical programs) and on-stack frame arrays.
 /// Keep modest: bumping this also sizes `[u64; N]` on the task stack and used to

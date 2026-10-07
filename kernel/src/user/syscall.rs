@@ -955,6 +955,15 @@ fn exec_path_depth(
     depth: u8,
     script_ctx: Option<crate::sec::Ctx>,
 ) -> usize {
+    // The program's name in the caller's view: what a script's interpreter
+    // is handed (the real path may be one the caller's namespace lacks).
+    let mut virt = [0u8; MAX_PATH];
+    let Some(vn) = fs::resolve_user_path_virtual(None, path, &mut virt) else {
+        return SYSERR;
+    };
+    let Ok(virt) = core::str::from_utf8(&virt[..vn]) else {
+        return SYSERR;
+    };
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
@@ -1012,7 +1021,7 @@ fn exec_path_depth(
         // exec does not return here either.
         let line = line[..line.len().min(SHEBANG_MAX)].to_vec();
         drop(owned);
-        return exec_script(&path, &line, arg_refs, env_refs, depth, new_ctx);
+        return exec_script(virt, &line, arg_refs, env_refs, depth, new_ctx);
     }
     // Not a loadable ELF: fail before anything of the current image goes,
     // or the caller is left with no code to return to.
@@ -1636,7 +1645,8 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         if offset % PAGE != 0 || fd < 0 {
             return SYSERR;
         }
-        match task::fd_file_node(fd as usize) {
+        // Mapping a file reads it.
+        match task::fd_file_node(fd as usize).filter(|_| task::fd_readable(fd as usize)) {
             Some(node) => Some(node),
             None => return SYSERR,
         }
@@ -1899,10 +1909,14 @@ fn sys_mount(args_ptr: usize) -> usize {
     let Some(tgt) = resolve_copied_path(tgt) else {
         return SYSERR;
     };
-    // `mount` on the directory mounted over; a bind reads its source, a
+    // A mount changes the tree for every process: `write` on kernel.mounts,
+    // and `mount` on the directory mounted over; a bind reads its source, a
     // disk is read and written.
     let source_need = if fstype == "bind" { Rights::READ } else { Rights::READ | Rights::WRITE };
-    if !may(&tgt, Rights::MOUNT) || !may(&src, source_need) {
+    if !crate::sec::allowed_object("kernel.mounts", None, Rights::WRITE)
+        || !may(&tgt, Rights::MOUNT)
+        || !may(&src, source_need)
+    {
         return SYSERR;
     }
     if fstype == "bind" {
@@ -1939,7 +1953,10 @@ fn sys_umount(ptr: usize, len: usize) -> usize {
     let Some(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
-    if may(&path, Rights::MOUNT) && fs::vfs::unmount(&path) { 0 } else { SYSERR }
+    if !crate::sec::allowed_object("kernel.mounts", None, Rights::WRITE) || !may(&path, Rights::MOUNT) {
+        return SYSERR;
+    }
+    if fs::vfs::unmount(&path) { 0 } else { SYSERR }
 }
 
 /// The auxiliary vector for an image about to start with a foreign
@@ -1989,6 +2006,10 @@ fn mapped_program(path: &str) -> Option<MappedProgram> {
     }
     let name = name.split(|&b| b == 0).next()?;
     let interp_path = resolve_copied_path(core::str::from_utf8(name).ok()?)?;
+    // The dynamic linker runs as the image: `exec` on it, as on the program.
+    if !may(&interp_path, Rights::EXEC) {
+        return None;
+    }
     let interp = match fs::lookup(&interp_path) {
         Some(b) => alloc::borrow::Cow::Borrowed(b),
         None => alloc::borrow::Cow::Owned(fs::read_all(&interp_path, 16 << 20)?),
@@ -2126,6 +2147,10 @@ fn exec_interp(elf_bytes: &[u8]) -> Result<Option<alloc::borrow::Cow<'static, [u
     };
     let path = core::str::from_utf8(path).map_err(|_| ())?;
     let real = resolve_copied_path(path).ok_or(())?;
+    // The dynamic linker runs as the image: `exec` on it, as on the program.
+    if !may(&real, Rights::EXEC) {
+        return Err(());
+    }
     if let Some(b) = fs::lookup(&real) {
         return Ok(Some(Cow::Borrowed(b)));
     }

@@ -589,6 +589,34 @@ sec_nologin() {
 	! $SEC as system $SEC ctx 2> /dev/null || { echo "ESCALATION: system entered"; return 1; }
 	[ "$($SEC as root $SEC ctx)" = "0 root admin" ]
 }
+# A mount or bind changes the tree for every process: it needs `write` on
+# kernel.mounts, which `tmp {all}` does not give. alice cannot bind her
+# home over /tmp (where a later root write would land in her files, run as
+# packages), and the bind does not take: /tmp/sec is still there after.
+# (A bind cannot be removed until reboot, so the test makes none.)
+sec_mount() {
+	! sec_as alice /bin/custom/mount /tmp/sec/home/alice /tmp bind 2> /dev/null \
+		|| { echo "ESCALATION: alice bound over /tmp"; return 1; }
+	[ -f /tmp/sec/policy ] || { echo "ESCALATION: alice's bind over /tmp took effect"; return 1; }
+	! sec_as alice /bin/custom/umount /tmp 2> /dev/null || { echo "ESCALATION: alice unmounted /tmp"; return 1; }
+	return 0
+}
+# A network conversation is its maker's: alice reads the status and data of
+# her own TCP and unix conversations, bob cannot see them at all (the bytes
+# of another user's connection are not his to read). The console keyboard
+# is the administrator's (`dev`), not every terminal user's.
+sec_net() {
+	n=$(sec_as alice /bin/sbase/cat /net/tcp/clone) || return 1
+	sec_as alice /bin/sbase/cat /net/tcp/$n/status > /dev/null || return 1
+	! sec_as bob /bin/sbase/cat /net/tcp/$n/status 2> /dev/null || { echo "LEAK: bob read alice's tcp $n"; return 1; }
+	! sec_as bob /bin/sbase/cat /net/tcp/$n/data 2> /dev/null || { echo "LEAK: bob read alice's tcp $n data"; return 1; }
+	u=$(sec_as alice /bin/sbase/cat /net/unix/clone) || return 1
+	[ "$(sec_as alice /bin/sbase/cat /net/unix/$u/status)" = open ] || return 1
+	! sec_as bob /bin/sbase/cat /net/unix/$u/status 2> /dev/null || { echo "LEAK: bob read alice's unix $u"; return 1; }
+	! sec_as bob /bin/sbase/cat /net/unix/$u/data 2> /dev/null || { echo "LEAK: bob read alice's unix $u data"; return 1; }
+	! sec_as alice /bin/sbase/cat /dev/console/kbd > /dev/null 2>&1 || { echo "LEAK: alice opened the keyboard"; return 1; }
+	return 0
+}
 # Signals: a user's processes, not another user's (init is system's).
 sec_signal() {
 	sec_as alice /bin/custom/sh -c '/bin/sbase/kill -0 $$' || return 1
@@ -679,6 +707,8 @@ t sec_untrusted sec_untrusted
 t sec_rename sec_rename
 t sec_append sec_append
 t sec_nologin sec_nologin
+t sec_mount sec_mount
+t sec_net sec_net
 t sec_signal sec_signal
 t sec_escalate sec_escalate
 t sec_wildcard sec_wildcard

@@ -12,7 +12,7 @@ The files are those of `/net/tcp`, plus `listen`:
 
 | File | |
 |------|-|
-| `clone` | reading it makes a conversation and returns its number `N` |
+| `clone` | reading it makes a conversation and returns its number `N`; its files are the reading process's user's alone (`docs/security.md`) |
 | `N/ctl` | commands: `announce NAME`, `connect NAME`, `pair`, `hangup` |
 | `N/data` | the byte stream; `st_size` is the number of bytes waiting |
 | `N/status` | `open`, `announced`, `connected` or `hangup` |

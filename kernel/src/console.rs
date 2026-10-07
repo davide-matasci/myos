@@ -187,6 +187,10 @@ pub fn keymap_load_file(path: &str) -> bool {
     let Ok(real) = core::str::from_utf8(&real[..n]) else {
         return false;
     };
+    // Read for the caller: the policy decides, as for any file it opens.
+    if !crate::sec::allowed(real, crate::sec::Rights::READ) {
+        return false;
+    }
     let Some(text) = crate::fs::read_all(real, KEYMAP_MAX + 1) else {
         return false;
     };
