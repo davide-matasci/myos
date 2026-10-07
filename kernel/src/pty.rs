@@ -375,13 +375,6 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
                 notify(id);
                 return if n == 0 { usize::MAX } else { n };
             }
-            // A signal must break the wait: otherwise a slave writing to a
-            // full ring whose master never reads spins unkillably in the
-            // kernel (not even SIGKILL reaches it).
-            if crate::signal::interrupt_wait() {
-                notify(id);
-                return if n == 0 { usize::MAX } else { n };
-            }
             let mut out = p.out.lock();
             if expand {
                 // Push CRLF as a unit; if only one slot is free, push the CR
@@ -398,14 +391,16 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
                 break;
             }
             drop(out);
-            // Ring full: wake the master to drain it, THEN read the wait
-            // sequence and sleep. Reading the sequence after `notify` (which
-            // bumps it) is what makes `block_until` actually sleep until the
-            // master's drain wakes us; reading it before (the old bug) made
-            // `block_until` return at once, busy-spinning the CPU. Re-check
-            // under the lock so a drain racing between the notify and the
-            // sleep is not missed.
+            // Ring full: wake the master to drain it, then sleep until it
+            // has. The sequence is read after `notify` (which bumps it), or
+            // `block_until` returns at once and the write spins; the ring is
+            // looked at again before sleeping, so a drain between the two
+            // is not missed. A signal breaks the wait: a slave writing to a
+            // ring whose master never reads must stay killable.
             notify(id);
+            if crate::signal::interrupt_wait() {
+                return if n == 0 { usize::MAX } else { n };
+            }
             let seq = crate::task::wait_seq();
             if p.out.lock().len == OUT_CAP {
                 crate::task::block_until(crate::task::key_pty(id), seq, 0);
