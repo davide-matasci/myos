@@ -141,9 +141,15 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
                 '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }',
                 '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }\n    target_os = "myos" => {\n        mod myos;\n        use myos as imp;\n    }',
             ),
+        ],
+    ),
+    # The heap is dlmalloc, as on Xous (`sys/myos/alloc.rs`).
+    (
+        "std/Cargo.toml",
+        [
             (
-                '        target_os = "hermit",',
-                '        target_os = "hermit",\n        target_os = "myos",',
+                'target_os = "xous", target_os = "vexos",',
+                'target_os = "xous", target_os = "vexos", target_os = "myos",',
             ),
         ],
     ),
