@@ -9,6 +9,7 @@ are issue #291.
 /proc/<pid>/task/                   its threads (their tids), the leader first
 /proc/<pid>/task/<tid>/status       a thread, one line
 /proc/cpu                           the uptime and each CPU's idle time
+/proc/meminfo                       RAM: total, free, available; the allocator's counters
 ```
 
 `ls /proc` lists the processes. A thread is a task slot and its tid is the
@@ -70,6 +71,22 @@ cpu1 idle 71552
 
 A CPU's idle time is the time it spent halted (`hlt` / `wfi`): the busy share
 over an interval is `1 - Δidle / Δuptime`.
+
+## Memory
+
+`/proc/meminfo` is the frame allocator's counters, `Name: value` lines. A
+system monitor reads the last three, in KiB:
+
+| Line | What |
+|------|------|
+| `MemTotalKiB` | all usable RAM |
+| `MemFreeKiB` | the part nothing holds |
+| `MemAvailableKiB` | that and the block and page caches, which give their memory back when it runs out |
+
+The others count frames: allocated and freed since boot (`FramesAlloc`,
+`FramesFree`, the live ones in `FramesLive` and `LiveKiB`), allocations per
+kernel call site (`Site*`, for leak hunting), and the caches' sizes
+(`BlockCacheKiB`, `PageCacheKiB`).
 
 ## How the time is counted
 
