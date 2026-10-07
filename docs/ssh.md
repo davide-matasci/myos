@@ -22,7 +22,7 @@ dropbear -r /tmp/ssh/hostkey -D /tmp/ssh -p 22   # runs in the background
 Then `ssh root@<address>` from your machine; `ssh -t` for a login on a
 pty. Typing a key at a VPS's web console is error-prone: paste it if the
 console lets you, or `curl -o /tmp/ssh/authorized_keys` it from a server
-you control, by address (DNS reaches QEMU's resolver only, issue #320).
+you control (`https://github.com/<you>.keys` works).
 
 Nothing of this survives a reboot: `/tmp` is in memory, and so is the host
 key (`ssh` warns that it changed). Nothing starts dropbear at boot either.

@@ -4,8 +4,10 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::fmt::Write;
 
 use myos_net::smoltcp::iface::{Interface, SocketHandle, SocketSet};
 use myos_net::smoltcp::phy::Device;
@@ -38,6 +40,8 @@ const REP_ERR: u8 = 4;
 /// (u16 payload): netfs lets the writers send that many more (its TX_CAP
 /// bounds what waits here).
 const REP_TXCREDIT: u8 = 5;
+/// The DHCP lease as `/net/ndb` text (empty: none), see [`ndb_text`].
+const REP_NDB: u8 = 6;
 
 
 
@@ -356,6 +360,7 @@ fn poll_dhcp(
     device: &mut Net0Device,
     sockets: &mut SocketSet<'_>,
     dhcp: SocketHandle,
+    chan: usize,
     clock: &mut VirtualInstant,
 ) -> bool {
     for _ in 0..DHCP_POLLS {
@@ -367,27 +372,54 @@ fn poll_dhcp(
             // Nothing arrived: wait a little instead of spinning on the NIC.
             myos_user::sleep_ns(1_000_000, false);
         }
-        match sockets.get_mut::<dhcpv4::Socket>(dhcp).poll() {
-            Some(dhcpv4::Event::Configured(cfg)) => {
-                iface.update_ip_addrs(|addrs| {
-                    addrs.clear();
-                    let _ = addrs.push(IpCidr::Ipv4(cfg.address));
-                });
-                if let Some(router) = cfg.router {
-                    let _ = iface.routes_mut().add_default_ipv4_route(router);
-                } else {
-                    iface.routes_mut().remove_default_ipv4_route();
-                }
+        if let Some(event) = sockets.get_mut::<dhcpv4::Socket>(dhcp).poll() {
+            if apply_lease(iface, chan, event) {
                 return true;
             }
-            Some(dhcpv4::Event::Deconfigured) => {
-                iface.update_ip_addrs(|addrs| addrs.clear());
-                iface.routes_mut().remove_default_ipv4_route();
-            }
-            None => {}
         }
     }
     false
+}
+
+/// Configure the interface from a DHCP event and hand the lease to netfs
+/// (`/net/ndb`); true when configured.
+fn apply_lease(iface: &mut Interface, chan: usize, event: dhcpv4::Event<'_>) -> bool {
+    match event {
+        dhcpv4::Event::Configured(cfg) => {
+            iface.update_ip_addrs(|addrs| {
+                addrs.clear();
+                let _ = addrs.push(IpCidr::Ipv4(cfg.address));
+            });
+            if let Some(router) = cfg.router {
+                let _ = iface.routes_mut().add_default_ipv4_route(router);
+            } else {
+                iface.routes_mut().remove_default_ipv4_route();
+            }
+            reply(chan, REP_NDB, 0, 0, ndb_text(&cfg).as_bytes());
+            true
+        }
+        dhcpv4::Event::Deconfigured => {
+            iface.update_ip_addrs(|addrs| addrs.clear());
+            iface.routes_mut().remove_default_ipv4_route();
+            reply(chan, REP_NDB, 0, 0, b"");
+            false
+        }
+    }
+}
+
+/// A lease the way Plan 9's `/net/ndb` shows it: the address line, then
+/// one indented `dns=` line per server (libgloss's resolver reads those).
+fn ndb_text(cfg: &dhcpv4::Config<'_>) -> String {
+    let mut s = String::new();
+    let _ = write!(s, "ip={} ipmask={}", cfg.address.address(), cfg.address.netmask());
+    if let Some(router) = cfg.router {
+        let _ = write!(s, " ipgw={router}");
+    }
+    s.push('\n');
+    for dns in cfg.dns_servers.iter() {
+        let _ = writeln!(s, "\tdns={dns}");
+    }
+    s
 }
 
 fn handle_clone(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, proto: u8, conv: u16) {
@@ -1193,7 +1225,7 @@ fn main() -> ! {
     let mut convs = [Conv::EMPTY; MAX_CONV];
     let mut local_ports = LOCAL_PORT_BASE;
     let mut ticks: u32 = 0;
-    let mut dhcp_ok = poll_dhcp(&mut iface, &mut device, &mut sockets, dhcp, &mut clock);
+    let mut dhcp_ok = poll_dhcp(&mut iface, &mut device, &mut sockets, dhcp, chan, &mut clock);
     // RX interrupts available? (`irq on` in the NIC's ctl.) Not announced on
     // the console: netd starts around the `login:` prompt and a line there
     // confuses serial-driven harnesses; `/proc/interrupts` shows it.
@@ -1207,25 +1239,8 @@ fn main() -> ! {
         iface.poll(now, &mut device, &mut sockets);
 
         if !dhcp_ok {
-            match sockets.get_mut::<dhcpv4::Socket>(dhcp).poll() {
-                Some(dhcpv4::Event::Configured(cfg)) => {
-                    iface.update_ip_addrs(|addrs| {
-                        addrs.clear();
-                        let _ = addrs.push(IpCidr::Ipv4(cfg.address));
-                    });
-                    if let Some(router) = cfg.router {
-                        let _ = iface.routes_mut().add_default_ipv4_route(router);
-                    } else {
-                        iface.routes_mut().remove_default_ipv4_route();
-                    }
-                    dhcp_ok = true;
-                }
-                Some(dhcpv4::Event::Deconfigured) => {
-                    iface.update_ip_addrs(|addrs| addrs.clear());
-                    iface.routes_mut().remove_default_ipv4_route();
-                    dhcp_ok = false;
-                }
-                None => {}
+            if let Some(event) = sockets.get_mut::<dhcpv4::Socket>(dhcp).poll() {
+                dhcp_ok = apply_lease(&mut iface, chan, event);
             }
         }
 

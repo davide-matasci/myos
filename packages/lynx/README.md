@@ -32,7 +32,7 @@ Default config is `packages/lynx/lynx.cfg`, packed as `/lib/lynx.cfg` (myos has 
 ## Reuse (no duplication)
 
 - Sockets: `toolchain/newlib/libgloss/myos/socket.c` over `/net` (no new stubs)
-- DNS: libgloss `gethostbyname` / `getaddrinfo` (`netdb.c`) — same `/net/udp` → QEMU `10.0.2.3:53` path as curl and `user/lib/src/dns.rs`. Lynx is IPv4-only (`ENABLE_IPV6` off), so `HTTCP.c` calls `gethostbyname`; both symbols share `resolve_a`.
+- DNS: libgloss `gethostbyname` / `getaddrinfo` (`netdb.c`) — same `/net/udp` path to the DHCP lease's DNS servers (`/net/ndb`) as curl and `user/lib/src/dns.rs`. Lynx is IPv4-only (`ENABLE_IPV6` off), so `HTTCP.c` calls `gethostbyname`; both symbols share `resolve_a`.
 - Screen: `packages/ncurses`
 - TLS: `ports/mbedtls` (+ tidy_tls glue only)
 

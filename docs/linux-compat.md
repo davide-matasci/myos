@@ -269,8 +269,10 @@ pollers (a write retries while netd's request ring is full, or a TCP
 conversation has no send room left: 8 KiB queued in netd). A datagram
 socket sends to the last address it was given, and reads one datagram at a
 time. A chrooted process reaches `/net` through the bind `linux --root` sets
-up, and `get-alpine` gives a new root an `/etc/resolv.conf` naming the
-resolver the system uses (QEMU's `10.0.2.3`) for musl.
+up, and `get-alpine` gives a new root an `/etc/resolv.conf` for musl naming
+the DNS servers the system uses: the `dns=` lines of `/net/ndb`, QEMU's
+`10.0.2.3` without any. It is written once, when the root has none, so a
+root moved to another network needs it edited or removed.
 
 ## Dynamic linking
 

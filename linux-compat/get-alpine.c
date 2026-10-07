@@ -660,6 +660,28 @@ static int install(const char *want, int depth) {
     return 0;
 }
 
+/* A `nameserver` line per `dns=` server of the DHCP lease in /net/ndb
+ * (netd's, Plan 9 style), or QEMU user networking's 10.0.2.3. */
+static void write_resolv_conf(FILE *f) {
+    char ndb[257];
+    ssize_t n = 0;
+    int fd = open("/net/ndb", O_RDONLY), any = 0;
+    if (fd >= 0) {
+        n = read(fd, ndb, sizeof ndb - 1);
+        close(fd);
+    }
+    ndb[n > 0 ? n : 0] = '\0';
+    for (char *p = strstr(ndb, "dns="); p != NULL; p = strstr(p, "dns=")) {
+        p += 4;
+        size_t len = strcspn(p, " \t\n");
+        fprintf(f, "nameserver %.*s\n", (int)len, p);
+        any = 1;
+    }
+    if (!any) {
+        fputs("nameserver 10.0.2.3\n", f);
+    }
+}
+
 int main(int argc, char **argv) {
     int update = 0, i = 1;
     pkg_prog = "get-alpine";
@@ -695,11 +717,12 @@ int main(int argc, char **argv) {
             mkdirs(path, 1);
         }
     }
-    /* The resolver the system uses (QEMU user networking's DNS), for musl. */
+    /* The DNS servers the system uses, for musl: the `dns=` lines of the
+     * DHCP lease (/net/ndb), QEMU user networking's when it names none. */
     if (under_root(path, "etc/resolv.conf") == 0 && access(path, F_OK) != 0) {
         FILE *f = fopen(path, "w");
         if (f != NULL) {
-            fputs("nameserver 10.0.2.3\n", f);
+            write_resolv_conf(f);
             fclose(f);
         }
     }
