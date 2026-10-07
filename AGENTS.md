@@ -211,6 +211,12 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   limits, commands or CI change.
 - Kernel limits (heap, fds, tasks, mmap windows) are documented in the
   relevant `docs/` page; change both together.
+- **Pending work is a GitHub issue**, not a TODO file or a list in a doc:
+  a follow-up, a known bug or a limit worth lifting that a change leaves
+  open gets an issue (what and why, where in the code, a `bug` or
+  `enhancement` label, "**Low priority.**" first when it is). Search the
+  open issues before opening one, and point to it as `issue #N` from code
+  comments and docs.
 - Commits: one topic each, subject `area: what changed` (imperative or
   descriptive, no trailing period), body explaining why. One branch and one
   PR per change; never force-push a shared branch.

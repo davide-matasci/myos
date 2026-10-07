@@ -314,7 +314,7 @@ frames_live() {
 # We assert the kernel is still alive afterwards (it answers a syscall) and
 # that the bulk of the 256 MiB came back. The reclaim bound is deliberately
 # loose: the private page-table frames of an exited process still leak on
-# aarch64 and riscv64 (a few hundred frames at most — "concern #2" in TODO.md),
+# aarch64 and riscv64 (a few hundred frames at most — issue #284),
 # far below the ~65k a "nothing was reclaimed" regression would strand. Full
 # reclaim-to-baseline, with its own `mem_fork_no_leak` / `mem_exec_no_leak`
 # probes, lands with that fix.

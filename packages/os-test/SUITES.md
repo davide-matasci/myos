@@ -71,7 +71,7 @@ until they pass honestly (no xfails):
   the conversions print literally
 - `process/fork-setsid-setpgid`, `-in-parent`, `-move` — a session leader
   cannot change its process group (`EPERM`); libgloss's `setsid` only starts
-  a process group (TODO.md), so there is no session leader to refuse
+  a process group (issue #273), so there is no session leader to refuse
 - `process/fork-exec-setpgid-in-parent` — a parent cannot move a child that
   has exec'd (`EACCES`); the kernel does not remember the exec, and its one
   `setpgid` failure is `EPERM`
