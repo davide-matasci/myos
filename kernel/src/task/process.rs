@@ -59,6 +59,11 @@ pub(super) struct Process {
     /// The user and domain it runs as (`crate::sec`). Inherited on fork;
     /// exec and `setuser` change it.
     pub ctx: crate::sec::Ctx,
+    /// Nanoseconds of CPU time of its threads that have ended (`acct`).
+    pub ended_cpu_ns: u64,
+    /// Nanoseconds of CPU time of its children it has reaped, theirs
+    /// included (`wait`).
+    pub child_cpu_ns: u64,
 }
 
 const fn root_cwd_buf() -> [u8; 256] {
@@ -91,6 +96,8 @@ static EMPTY_PROC: Process = Process {
     sig_ignored: 0,
     ns: None,
     ctx: crate::sec::Ctx::BOOT,
+    ended_cpu_ns: 0,
+    child_cpu_ns: 0,
 };
 
 /// A new, empty process block (heap; never staged on the kernel stack: a
@@ -125,6 +132,8 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
     }
     b.exec_name = [0; 32];
     b.exec_name_len = 0;
+    b.ended_cpu_ns = 0;
+    b.child_cpu_ns = 0;
     b
 }
 

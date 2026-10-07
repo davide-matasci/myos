@@ -9,6 +9,8 @@
 
 mod fd;
 pub mod fpu;
+pub mod info;
+mod acct;
 mod jobs;
 mod lifecycle;
 pub mod ns;
@@ -18,6 +20,7 @@ mod signals;
 mod thread;
 pub mod tp;
 mod vm;
+pub use acct::idle_ns;
 pub use fd::*;
 pub use jobs::*;
 pub use lifecycle::*;
@@ -157,6 +160,9 @@ struct Task {
     /// (`arch::syscall_frame`, which `schedule` saves and restores): a
     /// syscall that blocks resumes with its own frame wherever it runs.
     syscall_frame: usize,
+    /// What `/proc` calls it (`docs/proc.md`): the program it last exec'd,
+    /// what its creator was called, or a kernel thread's name; NUL-padded.
+    name: [u8; NAME_MAX],
 }
 
 const EMPTY: Task = Task {
@@ -182,7 +188,18 @@ const EMPTY: Task = Task {
     tgid: 0,
     group_exit: false,
     syscall_frame: 0,
+    name: [0; NAME_MAX],
 };
+
+/// The longest task name (Linux's `TASK_COMM_LEN` less its NUL).
+pub const NAME_MAX: usize = 15;
+
+/// Name `t` (cut to [`NAME_MAX`] bytes).
+fn set_name(t: &mut Task, name: &[u8]) {
+    let n = name.len().min(NAME_MAX);
+    t.name = [0; NAME_MAX];
+    t.name[..n].copy_from_slice(&name[..n]);
+}
 
 static TASKS: Mutex<TaskTable> = Mutex::new(TaskTable::new());
 
@@ -408,6 +425,11 @@ pub fn set_exec_name(name: &[u8]) {
         t.exec_name[..n].copy_from_slice(&name[..n]);
         t.exec_name_len = n as u8;
     });
+}
+
+/// Name the calling thread in `/proc` (exec: the program's basename).
+pub fn set_current_name(name: &[u8]) {
+    with_thread_mut(|t| set_name(t, name));
 }
 
 pub fn exec_name(out: &mut [u8]) -> usize {

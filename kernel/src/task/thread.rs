@@ -57,8 +57,10 @@ pub fn spawn_thread(regs: UserRegs, tls: Option<u64>) -> Option<usize> {
         sig_blocked: tasks[me].sig_blocked,
         affinity,
         tgid: pid,
+        name: tasks[me].name,
         ..EMPTY
     };
+    super::acct::start(slot);
     signal_thread_reset(slot);
     fpu::fork(slot);
     tp::init(slot, tls);
@@ -103,7 +105,25 @@ pub fn thread_exit(code: u8) -> ! {
         die();
     }
     // Nothing of the process is this thread's to free.
+    hand_over_cpu_time();
     retire(Some(key_threads(pid)));
+}
+
+/// An ending thread (not the leader) gives its CPU time to its process,
+/// which counts it from now on (`/proc/<pid>/status`).
+fn hand_over_cpu_time() {
+    let flags = irq_save();
+    irq_off();
+    let mut tasks = TASKS.lock();
+    let me = current_slot();
+    super::acct::charge(me);
+    let ns = super::acct::take_cpu_ns(me);
+    let pid = tasks[me].tgid;
+    if let Some(p) = tasks.proc_opt_mut(pid) {
+        p.ended_cpu_ns += ns;
+    }
+    drop(tasks);
+    irq_restore(flags);
 }
 
 /// End the whole process with `code`, or because of `sig` (non-zero): the
@@ -121,6 +141,7 @@ pub fn exit_group(code: u8, sig: u32) -> ! {
         wait_for_threads(pid);
         die();
     }
+    hand_over_cpu_time();
     retire(Some(key_threads(pid)));
 }
 
