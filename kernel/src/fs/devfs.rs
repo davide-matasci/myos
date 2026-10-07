@@ -226,6 +226,11 @@ fn copy_at(data: &[u8], pos: usize, out: &mut [u8]) -> usize {
     n
 }
 
+/// A read of `name` waits for the console's next key (`MountOps::waits`).
+pub fn read_waits(name: &str) -> bool {
+    matches!(parse(name), Some(Node::Tty) | Some(Node::Console))
+}
+
 pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     match parse(name) {
         Some(Node::Null) => 0,

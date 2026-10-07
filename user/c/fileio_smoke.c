@@ -13,7 +13,8 @@
  * its name: an fd follows it through a rename and keeps it after an unlink,
  * and its inode number stays; a read of a file gives all that was asked
  * for, up to its end, in one call (not a 4 KiB chunk: fontconfig took that
- * for a damaged cache).
+ * for a damaged cache); a rename does not wait for a process reading the
+ * console (which held the filesystem tree until the next key).
  *
  * `fileio_smoke [DIR]` works in DIR (default /tmp): the ext2 test runs it
  * on the scratch disk. `fileio_smoke child FD...` is the exec'd program: FD
@@ -463,6 +464,38 @@ static void whole_reads(void) {
     close(fd);
 }
 
+/* A rename while another process waits in a read of the console. */
+static void console_reader(void) {
+    const char *a = in_dir("tree-a"), *b = in_dir("tree-b");
+    pid_t reader, renamer;
+    int st = 0, i;
+
+    close(open(a, O_WRONLY | O_CREAT | O_TRUNC, 0644));
+    reader = fork();
+    if (reader == 0) {
+        char c;
+        int fd = open("/dev/console/data", O_RDONLY);
+        _exit(fd >= 0 && read(fd, &c, 1) >= 0 ? 0 : 1);
+    }
+    usleep(300000);
+    renamer = fork();
+    if (renamer == 0) {
+        _exit(rename(a, b) == 0 ? 0 : 1);
+    }
+    for (i = 0; i < 50 && waitpid(renamer, &st, WNOHANG) == 0; i++) {
+        usleep(100000);
+    }
+    check(i < 50, "a rename waited for a process reading the console");
+    kill(reader, SIGKILL);
+    waitpid(reader, NULL, 0);
+    if (i == 50) {
+        waitpid(renamer, &st, 0);
+    }
+    check(WIFEXITED(st) && WEXITSTATUS(st) == 0, "rename next to a console reader");
+    unlink(a);
+    unlink(b);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return child(argc, argv);
@@ -475,5 +508,8 @@ int main(int argc, char **argv) {
     locks();
     inodes();
     whole_reads();
+    if (argc == 1) {
+        console_reader();
+    }
     return failures != 0;
 }

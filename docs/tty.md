@@ -99,6 +99,11 @@ for the next event, `poll` reports `POLLIN` while one is queued. The queue
 holds 128 events and drops new ones while full. The file exists when the
 console module found a keyboard ([`modules/console/src/kbdev.rs`](../modules/console/src/kbdev.rs)).
 
+A read of the console (`/dev/console/data`, `/dev/tty`) waits for as long as
+it takes, a shell at its prompt until the next key, without holding the
+filesystem tree: a rename, unlink or new file elsewhere does not wait for
+that key (devfs's `waits`, `kernel/src/fs/vfs.rs`).
+
 ## Ptys
 
 Opening `/dev/pts/clone` allocates a pair and returns the master fd; the
