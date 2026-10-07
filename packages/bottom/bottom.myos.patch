@@ -1,0 +1,665 @@
+diff -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml	2006-07-24 01:21:28.000000000 +0000
++++ b/Cargo.toml	2026-10-07 18:13:05.231746540 +0000
+@@ -223,6 +223,7 @@
+ 
+ [dependencies.crossterm]
+ version = "0.29.0"
++features = ["libc"]
+ 
+ [dependencies.ctrlc]
+ version = "3.5.2"
+@@ -379,7 +380,7 @@
+     "Win32_System_Threading",
+ ]
+ 
+-[target."cfg(unix)".dependencies.libc]
++[target."cfg(any(unix, target_os = \"myos\"))".dependencies.libc]
+ version = "0.2.189"
+ 
+ [lints.clippy]
+diff -ruN a/src/canvas/dialogs/process_kill_dialog.rs b/src/canvas/dialogs/process_kill_dialog.rs
+--- a/src/canvas/dialogs/process_kill_dialog.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/canvas/dialogs/process_kill_dialog.rs	2026-10-07 18:13:05.232171827 +0000
+@@ -2,7 +2,7 @@
+ 
+ use std::time::Instant;
+ 
+-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+ use ratatui::widgets::ListState;
+ use ratatui::{
+     Frame,
+@@ -11,7 +11,7 @@
+     widgets::{Paragraph, Wrap},
+ };
+ 
+-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+ use crate::canvas::components::scroll_bar::{
+     ScrollBarArgs, dialog_scroll_bar_area, draw_scroll_bar,
+ };
+@@ -126,6 +126,44 @@
+             "31: USR2",
+         ];
+     }
++    // myos numbers its signals as newlib does (the BSD numbers, LOST at 29).
++    target_os = "myos" => {
++        const DEFAULT_KILL_SIGNAL: usize = 15;
++        const SIGNAL_TEXT: [&str; 32] = [
++            "0: Cancel",
++            "1: HUP",
++            "2: INT",
++            "3: QUIT",
++            "4: ILL",
++            "5: TRAP",
++            "6: ABRT",
++            "7: EMT",
++            "8: FPE",
++            "9: KILL",
++            "10: BUS",
++            "11: SEGV",
++            "12: SYS",
++            "13: PIPE",
++            "14: ALRM",
++            "15: TERM",
++            "16: URG",
++            "17: STOP",
++            "18: TSTP",
++            "19: CONT",
++            "20: CHLD",
++            "21: TTIN",
++            "22: TTOU",
++            "23: IO",
++            "24: XCPU",
++            "25: XFSZ",
++            "26: VTALRM",
++            "27: PROF",
++            "28: WINCH",
++            "29: LOST",
++            "30: USR1",
++            "31: USR2",
++        ];
++    }
+     target_os = "freebsd" => {
+         const DEFAULT_KILL_SIGNAL: usize = 15;
+         const SIGNAL_TEXT: [&str; 34] = [
+@@ -176,7 +214,7 @@
+ /// Note that signals are not available for Windows.
+ #[derive(Debug)]
+ pub(crate) enum ButtonState {
+-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+     Signals {
+         state: ListState,
+         last_button_draw_area: Rect,
+@@ -240,7 +278,7 @@
+             let pids = state.pids;
+ 
+             match button_state {
+-                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+                 ButtonState::Signals { state, .. } => {
+                     use crate::utils::process_killer;
+ 
+@@ -274,7 +312,7 @@
+                                     }
+                                 }
+                             }
+-                            any(target_os = "linux", target_os = "macos", target_os = "freebsd") => {
++                            any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos") => {
+                                 use crate::utils::process_killer;
+ 
+                                 for pid in pids {
+@@ -300,7 +338,7 @@
+     }
+ 
+     pub fn on_char(&mut self, c: char) {
+-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+         const MAX_KEY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+ 
+         match c {
+@@ -309,7 +347,7 @@
+             'k' => self.on_up_key(),
+             'l' => self.on_right_key(),
+             '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
+-                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+                 if let Some(value) = c.to_digit(10)
+                     && let ProcessKillDialogState::Selecting(ProcessKillSelectingInner {
+                         button_state: ButtonState::Signals { state, .. },
+@@ -358,7 +396,7 @@
+                 }
+             }
+             'g' => {
+-                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+                 {
+                     if let Some(('g', last_press)) = self.last_char {
+                         if last_press.elapsed() <= MAX_KEY_TIMEOUT {
+@@ -374,7 +412,7 @@
+                 }
+             }
+             'G' => {
+-                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+                 self.go_to_last();
+             }
+             _ => {}
+@@ -388,7 +426,7 @@
+     pub fn on_click(&mut self, x: u16, y: u16) -> bool {
+         if let ProcessKillDialogState::Selecting(state) = &mut self.state {
+             match &mut state.button_state {
+-                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+                 ButtonState::Signals {
+                     state,
+                     last_button_draw_area,
+@@ -454,7 +492,7 @@
+         }
+     }
+ 
+-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+     fn scroll_up_by(state: &mut ListState, amount: usize) {
+         if let Some(selected) = state.selected() {
+             if let Some(new_position) = selected.checked_sub(amount) {
+@@ -465,7 +503,7 @@
+         }
+     }
+ 
+-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+     fn scroll_down_by(state: &mut ListState, amount: usize) {
+         if let Some(selected) = state.selected() {
+             let new_position = selected + amount;
+@@ -481,7 +519,7 @@
+     pub fn on_up_key(&mut self) {
+         self.last_char = None;
+ 
+-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+         if let ProcessKillDialogState::Selecting(ProcessKillSelectingInner {
+             button_state: ButtonState::Signals { state, .. },
+             ..
+@@ -495,7 +533,7 @@
+     pub fn on_down_key(&mut self) {
+         self.last_char = None;
+ 
+-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+         if let ProcessKillDialogState::Selecting(ProcessKillSelectingInner {
+             button_state: ButtonState::Signals { state, .. },
+             ..
+@@ -509,7 +547,7 @@
+     pub fn on_page_up(&mut self) {
+         self.last_char = None;
+ 
+-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+         if let ProcessKillDialogState::Selecting(ProcessKillSelectingInner {
+             button_state:
+                 ButtonState::Signals {
+@@ -528,7 +566,7 @@
+     pub fn on_page_down(&mut self) {
+         self.last_char = None;
+ 
+-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+         if let ProcessKillDialogState::Selecting(ProcessKillSelectingInner {
+             button_state:
+                 ButtonState::Signals {
+@@ -546,7 +584,7 @@
+     pub fn go_to_first(&mut self) {
+         self.last_char = None;
+ 
+-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+         if let ProcessKillDialogState::Selecting(ProcessKillSelectingInner {
+             button_state: ButtonState::Signals { state, .. },
+             ..
+@@ -559,7 +597,7 @@
+     pub fn go_to_last(&mut self) {
+         self.last_char = None;
+ 
+-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+         if let ProcessKillDialogState::Selecting(ProcessKillSelectingInner {
+             button_state: ButtonState::Signals { state, .. },
+             ..
+@@ -581,7 +619,7 @@
+             }
+         } else {
+             cfg_select! {
+-                any(target_os = "linux", target_os = "macos", target_os = "freebsd") => {
++                any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos") => {
+                     ButtonState::Signals { state: ListState::default().with_selected(Some(DEFAULT_KILL_SIGNAL)), last_button_draw_area: Rect::default() }
+                 }
+                 _ => {
+@@ -610,7 +648,7 @@
+         // FIXME: Not sure if we need this. We can probably handle this better in the
+         // draw function later.
+ 
+-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+         {
+             if let ProcessKillDialogState::Selecting(ProcessKillSelectingInner {
+                 button_state: ButtonState::Signals { state, .. },
+@@ -669,7 +707,7 @@
+             .wrap(Wrap { trim: true });
+ 
+         let title = match button_state {
+-            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+             ButtonState::Signals { .. } => {
+                 Line::styled(" Select Signal ", styles.widget_title_style)
+             }
+@@ -685,7 +723,7 @@
+         let num_lines = text.line_count(block.inner(draw_area).width) as u16;
+ 
+         match button_state {
+-            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+             ButtonState::Signals {
+                 state,
+                 last_button_draw_area,
+@@ -892,7 +930,7 @@
+ /// Return the signal number to send given the index on a list.
+ ///
+ /// On Linux, we need to skip 32 and 33, so we add 2 to the index if it's >= 32.
+-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+ fn get_signal_from_index(index: usize) -> usize {
+     if cfg!(target_os = "linux") && index >= 32 {
+         index + 2
+@@ -903,7 +941,7 @@
+ 
+ #[cfg(test)]
+ mod tests {
+-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
++    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "myos"))]
+     use super::*;
+ 
+     #[test]
+diff -ruN a/src/collection/processes/unix/process_ext.rs b/src/collection/processes/unix/process_ext.rs
+--- a/src/collection/processes/unix/process_ext.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/collection/processes/unix/process_ext.rs	2026-10-07 18:13:05.232578045 +0000
+@@ -163,7 +163,7 @@
+                 gpu_mem_percent: 0.0,
+                 #[cfg(feature = "gpu")]
+                 gpu_util: 0,
+-                #[cfg(unix)]
++                #[cfg(any(unix, target_os = "myos"))]
+                 nice,
+                 priority,
+             });
+@@ -257,6 +257,14 @@
+                 _ => '?'
+             }
+         }
++        target_os = "myos" => {
++            match status {
++                ProcessStatus::Run => 'R',
++                ProcessStatus::Sleep => 'S',
++                ProcessStatus::Zombie => 'Z',
++                _ => '?'
++            }
++        }
+         _ => {
+             '?'
+         }
+diff -ruN a/src/collection/processes/unix.rs b/src/collection/processes/unix.rs
+--- a/src/collection/processes/unix.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/collection/processes/unix.rs	2026-10-07 18:13:05.232727292 +0000
+@@ -5,7 +5,7 @@
+ pub use user_table::*;
+ 
+ cfg_select! {
+-    all(target_family = "unix", not(target_os = "linux")) => {
++    all(any(target_family = "unix", target_os = "myos"), not(target_os = "linux")) => {
+         mod process_ext;
+         pub(crate) use process_ext::*;
+ 
+diff -ruN a/src/collection/processes.rs b/src/collection/processes.rs
+--- a/src/collection/processes.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/collection/processes.rs	2026-10-07 18:13:05.250692735 +0000
+@@ -22,7 +22,7 @@
+         pub mod freebsd;
+         pub(crate) use self::freebsd::*;
+     }
+-    unix => {
++    any(unix, target_os = "myos") => {
+         pub(crate) struct GenericProcessExt;
+         impl UnixProcessExt for GenericProcessExt {}
+     }
+@@ -30,7 +30,7 @@
+ }
+ 
+ cfg_select! {
+-    unix => {
++    any(unix, target_os = "myos") => {
+         pub mod unix;
+         pub use self::unix::*;
+     }
+@@ -46,7 +46,7 @@
+         /// A Windows process ID.
+         pub type Pid = usize;
+     }
+-    unix => {
++    any(unix, target_os = "myos") => {
+         /// A UNIX process ID.
+         pub type Pid = libc::pid_t;
+     }
+@@ -132,7 +132,7 @@
+ 
+     /// This is the *effective* user ID of the process. This is only used on
+     /// Unix platforms.
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     pub uid: Option<libc::uid_t>,
+ 
+     /// This is the process' user.
+@@ -158,7 +158,7 @@
+     pub process_type: ProcessType,
+ 
+     /// The nice value (user-settable scheduling hint).
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     pub nice: i32,
+ 
+     /// The kernel scheduling priority.
+@@ -181,7 +181,7 @@
+                     time_diff,
+                 )
+             }
+-            any(target_os = "freebsd", target_os = "macos", target_os = "windows", target_os = "android", target_os = "ios") => {
++            any(target_os = "freebsd", target_os = "macos", target_os = "windows", target_os = "android", target_os = "ios", target_os = "myos") => {
+                 sysinfo_process_data(self)
+             }
+             _ => {
+@@ -238,6 +238,14 @@
+                 _ => "Unknown",
+             }
+         }
++        target_os = "myos" => {
++            match status {
++                ProcessStatus::Run => "Runnable",
++                ProcessStatus::Sleep => "Sleeping",
++                ProcessStatus::Zombie => "Zombie",
++                _ => "Unknown",
++            }
++        }
+         _ => {
+             "Unknown"
+         }
+diff -ruN a/src/collection.rs b/src/collection.rs
+--- a/src/collection.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/collection.rs	2026-10-07 18:13:05.233034186 +0000
+@@ -183,7 +183,7 @@
+     #[cfg(feature = "battery")]
+     battery_list: Option<Vec<Battery>>,
+ 
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     user_table: processes::UserTable,
+ 
+     #[cfg(feature = "gpu")]
+@@ -232,7 +232,7 @@
+             #[cfg(feature = "battery")]
+             battery_list: None,
+             filters,
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             user_table: Default::default(),
+             #[cfg(feature = "gpu")]
+             gpu_pids: None,
+diff -ruN a/src/options/config/process.rs b/src/options/config/process.rs
+--- a/src/options/config/process.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/options/config/process.rs	2026-10-07 18:13:05.233318159 +0000
+@@ -90,7 +90,7 @@
+ 
+     #[test]
+     fn valid_process_column_config() {
+-        #[cfg(unix)]
++        #[cfg(any(unix, target_os = "myos"))]
+         let config = r#"
+             columns = ["CPU%", "PiD", "user", "MEM", "virt", "Tread", "T.Write", "Rps", "W/s", "tiMe", "USER", "state", "prioRity", "Nice"]
+         "#;
+@@ -117,7 +117,7 @@
+                 ProcWidgetColumn::User,
+                 ProcWidgetColumn::State,
+                 ProcWidgetColumn::Priority,
+-                #[cfg(unix)]
++                #[cfg(any(unix, target_os = "myos"))]
+                 ProcWidgetColumn::Nice,
+             ],
+         );
+diff -ruN a/src/utils/process_killer.rs b/src/utils/process_killer.rs
+--- a/src/utils/process_killer.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/utils/process_killer.rs	2026-10-07 18:13:05.233465200 +0000
+@@ -57,7 +57,7 @@
+ }
+ 
+ /// Kills a process, given a PID, for UNIX.
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ pub fn kill_process_given_pid(pid: Pid, signal: usize) -> anyhow::Result<()> {
+     // SAFETY: the signal should be valid, and we act properly on an error (exit
+     // code not 0).
+diff -ruN a/src/widgets/process_table/process_columns.rs b/src/widgets/process_table/process_columns.rs
+--- a/src/widgets/process_table/process_columns.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/widgets/process_table/process_columns.rs	2026-10-07 18:13:05.233672264 +0000
+@@ -30,7 +30,7 @@
+     State,
+     User,
+     Time,
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     Nice,
+     Priority,
+     #[cfg(feature = "gpu")]
+@@ -66,7 +66,7 @@
+             ProcColumn::GpuMemValue | ProcColumn::GpuMemPercent => &["GMem", "GMem%"],
+             #[cfg(feature = "gpu")]
+             ProcColumn::GpuUtilPercent => &["GPU%"],
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             ProcColumn::Nice => &["Nice"],
+             ProcColumn::Priority => &["Priority"],
+         }
+@@ -91,7 +91,7 @@
+             ProcColumn::State => "State",
+             ProcColumn::User => "User",
+             ProcColumn::Time => "Time",
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             ProcColumn::Nice => "Nice",
+             ProcColumn::Priority => "Priority",
+             #[cfg(feature = "gpu")]
+@@ -112,7 +112,7 @@
+             ProcColumn::Pid => "PID(p)".into(),
+             ProcColumn::Name => "Name(n)".into(),
+             ProcColumn::Command => "Command(n)".into(),
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             ProcColumn::Nice => "Nice".into(),
+             ProcColumn::Priority => "Priority".into(),
+             _ => self.text(),
+@@ -183,7 +183,7 @@
+             ProcColumn::Priority => {
+                 data.sort_by(|a, b| sort_partial_fn(descending)(a.priority, b.priority));
+             }
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             ProcColumn::Nice => {
+                 data.sort_by(|a, b| sort_partial_fn(descending)(a.nice, b.nice));
+             }
+@@ -220,7 +220,7 @@
+             "state" => Some(ProcColumn::State),
+             "user" => Some(ProcColumn::User),
+             "time" => Some(ProcColumn::Time),
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             "nice" => Some(ProcColumn::Nice),
+             "priority" => Some(ProcColumn::Priority),
+             #[cfg(feature = "gpu")]
+@@ -259,7 +259,7 @@
+             ProcColumn::User => ProcWidgetColumn::User,
+             ProcColumn::Time => ProcWidgetColumn::Time,
+             ProcColumn::Priority => ProcWidgetColumn::Priority,
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             ProcColumn::Nice => ProcWidgetColumn::Nice,
+             #[cfg(feature = "gpu")]
+             ProcColumn::GpuMemPercent | ProcColumn::GpuMemValue => ProcWidgetColumn::GpuMem,
+diff -ruN a/src/widgets/process_table/process_data.rs b/src/widgets/process_table/process_data.rs
+--- a/src/widgets/process_table/process_data.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/widgets/process_table/process_data.rs	2026-10-07 18:13:05.233843138 +0000
+@@ -236,7 +236,7 @@
+     /// The process "type". Used to colour things.
+     #[cfg(target_os = "linux")]
+     pub process_type: ProcessType,
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     pub nice: i32,
+     pub priority: i32,
+ }
+@@ -285,7 +285,7 @@
+             gpu_usage: process.gpu_util,
+             #[cfg(target_os = "linux")]
+             process_type: process.process_type,
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             nice: process.nice,
+             priority: process.priority,
+         }
+@@ -319,7 +319,7 @@
+     fn to_string(&self, column: &ProcColumn) -> String {
+         match column {
+             &ProcColumn::Priority => self.priority.to_string(),
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             ProcColumn::Nice => self.nice.to_string(),
+             ProcColumn::CpuPercent => format!("{:.1}%", self.cpu_usage_percent),
+             ProcColumn::MemValue | ProcColumn::MemPercent => self.mem_usage.to_string(),
+@@ -354,7 +354,7 @@
+         // TODO: Also maybe just pull in the to_string call but add a variable for the
+         // differences.
+         Some(match column {
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             ProcColumn::Nice => self.nice.to_string().into(),
+             &ProcColumn::Priority => self.priority.to_string().into(),
+             ProcColumn::CpuPercent => format!("{:.1}%", self.cpu_usage_percent).into(),
+diff -ruN a/src/widgets/process_table/query/attribute.rs b/src/widgets/process_table/query/attribute.rs
+--- a/src/widgets/process_table/query/attribute.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/widgets/process_table/query/attribute.rs	2026-10-07 18:13:05.234036643 +0000
+@@ -32,7 +32,7 @@
+     State(Regex),
+     User(Regex),
+     Time(TimeQuery),
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     Nice(NumericalQuery),
+     Priority(NumericalQuery),
+     #[cfg(feature = "gpu")]
+@@ -68,7 +68,7 @@
+             ProcessAttribute::Time(time) => time.check(process.time),
+             // TODO: It's a bit silly for some of these, like nice/priority, where it's casted to an
+             // f64.
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             ProcessAttribute::Nice(cmp) => cmp.check(process.nice as f64),
+             ProcessAttribute::Priority(cmp) => cmp.check(process.priority as f64),
+             #[cfg(feature = "gpu")]
+@@ -127,7 +127,7 @@
+         PrefixType::WritePerSecond => Ok(ProcessAttribute::WritePerSecond(query)),
+         PrefixType::TotalRead => Ok(ProcessAttribute::TotalRead(query)),
+         PrefixType::TotalWrite => Ok(ProcessAttribute::TotalWrite(query)),
+-        #[cfg(unix)]
++        #[cfg(any(unix, target_os = "myos"))]
+         PrefixType::Nice => Ok(ProcessAttribute::Nice(query)),
+         PrefixType::Priority => Ok(ProcessAttribute::Priority(query)),
+         #[cfg(feature = "gpu")]
+diff -ruN a/src/widgets/process_table/query.rs b/src/widgets/process_table/query.rs
+--- a/src/widgets/process_table/query.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/widgets/process_table/query.rs	2026-10-07 18:13:05.234262975 +0000
+@@ -191,7 +191,7 @@
+     State,
+     User,
+     Time,
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     Nice,
+     Priority,
+     #[cfg(feature = "gpu")]
+@@ -237,7 +237,7 @@
+         } else if multi_eq_ignore_ascii_case!(s, "time") {
+             result = Time;
+         } else if multi_eq_ignore_ascii_case!(s, "nice") {
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             {
+                 result = Nice;
+             }
+diff -ruN a/src/widgets/process_table.rs b/src/widgets/process_table.rs
+--- a/src/widgets/process_table.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/widgets/process_table.rs	2026-10-07 18:13:05.234548474 +0000
+@@ -156,7 +156,7 @@
+         State => SortColumn::hard(State, 9),
+         Time => SortColumn::new(Time),
+         Priority => SortColumn::new(Priority).default_descending(),
+-        #[cfg(unix)]
++        #[cfg(any(unix, target_os = "myos"))]
+         Nice => SortColumn::new(Nice),
+         #[cfg(feature = "gpu")]
+         GpuMemValue => SortColumn::new(GpuMemValue).default_descending(),
+@@ -194,7 +194,7 @@
+     State,
+     Time,
+     Priority,
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     Nice,
+     #[cfg(feature = "gpu")]
+     GpuMem,
+@@ -341,7 +341,7 @@
+                             ProcWidgetColumn::State => State,
+                             ProcWidgetColumn::Time => Time,
+                             ProcWidgetColumn::Priority => Priority,
+-                            #[cfg(unix)]
++                            #[cfg(any(unix, target_os = "myos"))]
+                             ProcWidgetColumn::Nice => Nice,
+                             #[cfg(feature = "gpu")]
+                             ProcWidgetColumn::GpuMem => {
+@@ -401,7 +401,7 @@
+                     User => ProcWidgetColumn::User,
+                     Time => ProcWidgetColumn::Time,
+                     Priority => ProcWidgetColumn::Priority,
+-                    #[cfg(unix)]
++                    #[cfg(any(unix, target_os = "myos"))]
+                     Nice => ProcWidgetColumn::Nice,
+                     #[cfg(feature = "gpu")]
+                     GpuMemValue | GpuMemPercent => ProcWidgetColumn::GpuMem,
+@@ -1188,9 +1188,9 @@
+             total_write: 0,
+             process_state: "N/A",
+             process_char: '?',
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             user: Some("root".into()),
+-            #[cfg(not(target_family = "unix"))]
++            #[cfg(not(any(target_family = "unix", target_os = "myos")))]
+             user: Some("N/A".into()),
+             num_similar: 0,
+             disabled: false,
+@@ -1201,7 +1201,7 @@
+             gpu_usage: 0,
+             #[cfg(target_os = "linux")]
+             process_type: crate::collection::processes::ProcessType::Regular,
+-            #[cfg(unix)]
++            #[cfg(any(unix, target_os = "myos"))]
+             nice: 0,
+             priority: -20,
+         };

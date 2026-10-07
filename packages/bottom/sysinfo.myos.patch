@@ -1,0 +1,676 @@
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2026-10-07 14:23:01.965116553 +0000
++++ b/src/lib.rs	2026-10-07 14:24:38.372890187 +0000
+@@ -50,6 +50,13 @@
+         #[cfg(test)]
+         pub(crate) const MIN_USERS: usize = 1;
+     }
++    target_os = "myos" => {
++        mod myos;
++        use crate::myos as sys;
++
++        #[cfg(test)]
++        pub(crate) const MIN_USERS: usize = 0;
++    }
+     windows => {
+         mod windows;
+         use crate::windows as sys;
+diff -ruN a/src/myos/cpu.rs b/src/myos/cpu.rs
+--- a/src/myos/cpu.rs	1970-01-01 00:00:00.000000000 +0000
++++ b/src/myos/cpu.rs	2026-10-07 14:23:33.263764694 +0000
+@@ -0,0 +1,29 @@
++// Take a look at the license at the top of the repository in the LICENSE file.
++
++/// A CPU (`cpuN` in `/proc/cpu`): its busy share since the last refresh.
++pub(crate) struct CpuInner {
++    pub(crate) name: String,
++    pub(crate) usage: f32,
++}
++
++impl CpuInner {
++    pub(crate) fn cpu_usage(&self) -> f32 {
++        self.usage
++    }
++
++    pub(crate) fn name(&self) -> &str {
++        &self.name
++    }
++
++    pub(crate) fn frequency(&self) -> u64 {
++        0
++    }
++
++    pub(crate) fn vendor_id(&self) -> &str {
++        ""
++    }
++
++    pub(crate) fn brand(&self) -> &str {
++        ""
++    }
++}
+diff -ruN a/src/myos/mod.rs b/src/myos/mod.rs
+--- a/src/myos/mod.rs	1970-01-01 00:00:00.000000000 +0000
++++ b/src/myos/mod.rs	2026-10-07 14:23:31.275764740 +0000
+@@ -0,0 +1,90 @@
++// Take a look at the license at the top of the repository in the LICENSE file.
++
++//! myos: CPUs, memory and processes from the kernel's text files in `/proc`
++//! (`/proc/cpu`, `/proc/meminfo`, `/proc/<pid>/status`; myos's
++//! `docs/proc.md`). Disks, networks, components and users are not reported
++//! there: those parts are the `unknown` ones.
++
++cfg_select! {
++    feature = "system" => {
++        pub mod cpu;
++        #[path = "../unknown/motherboard.rs"]
++        pub mod motherboard;
++        pub mod process;
++        #[path = "../unknown/product.rs"]
++        pub mod product;
++        pub mod system;
++
++        pub(crate) use self::cpu::CpuInner;
++        pub(crate) use self::motherboard::MotherboardInner;
++        pub(crate) use self::process::ProcessInner;
++        pub(crate) use self::product::ProductInner;
++        pub(crate) use self::system::SystemInner;
++        pub use self::system::{MINIMUM_CPU_UPDATE_INTERVAL, SUPPORTED_SIGNALS};
++    }
++    _ => {}
++}
++cfg_select! {
++    feature = "disk" => {
++        #[path = "../unknown/disk.rs"]
++        pub mod disk;
++
++        pub(crate) use self::disk::{DiskInner, DisksInner};
++    }
++    _ => {}
++}
++cfg_select! {
++    feature = "component" => {
++        #[path = "../unknown/component.rs"]
++        pub mod component;
++
++        pub(crate) use self::component::{ComponentInner, ComponentsInner};
++    }
++    _ => {}
++}
++cfg_select! {
++    feature = "network" => {
++        #[path = "../unknown/network.rs"]
++        pub mod network;
++
++        pub(crate) use self::network::{NetworkDataInner, NetworksInner};
++    }
++    _ => {}
++}
++cfg_select! {
++    feature = "user" => {
++        #[path = "../unknown/groups.rs"]
++        pub mod groups;
++        #[path = "../unknown/users.rs"]
++        pub mod users;
++
++        pub(crate) use self::groups::get_groups;
++        pub(crate) use self::users::{get_users, UserInner};
++    }
++    _ => {}
++}
++
++#[doc = include_str!("../../md_doc/is_supported.md")]
++pub const IS_SUPPORTED_SYSTEM: bool = true;
++
++/// The contents of a `/proc` file, `None` when it cannot be read (a
++/// process that exited between listing `/proc` and opening its file).
++pub(crate) fn read_proc(path: &str) -> Option<String> {
++    std::fs::read_to_string(path).ok()
++}
++
++/// `/proc/cpu`: the uptime and each CPU's idle time, in milliseconds.
++pub(crate) fn cpu_times() -> Option<(u64, Vec<u64>)> {
++    let text = read_proc("/proc/cpu")?;
++    let mut uptime = None;
++    let mut idle = Vec::new();
++    for line in text.lines() {
++        let mut words = line.split_whitespace();
++        match (words.next(), words.next(), words.next()) {
++            (Some("uptime"), Some(ms), None) => uptime = ms.parse().ok(),
++            (Some(cpu), Some("idle"), Some(ms)) if cpu.starts_with("cpu") => idle.push(ms.parse().ok()?),
++            _ => {}
++        }
++    }
++    Some((uptime?, idle))
++}
+diff -ruN a/src/myos/process.rs b/src/myos/process.rs
+--- a/src/myos/process.rs	1970-01-01 00:00:00.000000000 +0000
++++ b/src/myos/process.rs	2026-10-07 14:24:00.387764074 +0000
+@@ -0,0 +1,239 @@
++// Take a look at the license at the top of the repository in the LICENSE file.
++
++use crate::{DiskUsage, Gid, Pid, ProcessStatus, Signal, Uid};
++
++use std::ffi::{OsStr, OsString};
++use std::fmt;
++use std::path::Path;
++use std::process::ExitStatus;
++
++impl fmt::Display for ProcessStatus {
++    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
++        f.write_str(match *self {
++            ProcessStatus::Run => "Runnable",
++            ProcessStatus::Sleep => "Sleeping",
++            ProcessStatus::Zombie => "Zombie",
++            _ => "Unknown",
++        })
++    }
++}
++
++/// A process as `/proc/<pid>/status` shows it. myos keeps no resident size:
++/// the memory is the virtual size (image, stack, heap, mappings).
++pub(crate) struct ProcessInner {
++    pub(crate) pid: Pid,
++    pub(crate) parent: Option<Pid>,
++    pub(crate) session: Option<Pid>,
++    pub(crate) name: OsString,
++    pub(crate) cmd: Vec<OsString>,
++    pub(crate) status: ProcessStatus,
++    pub(crate) memory: u64,
++    /// Seconds since the epoch, and seconds since then.
++    pub(crate) start_time: u64,
++    pub(crate) run_time: u64,
++    /// Its CPU time (milliseconds), and the uptime when it was read: the
++    /// usage is the CPU time over the uptime between two refreshes.
++    pub(crate) cpu_ms: u64,
++    pub(crate) read_at_ms: u64,
++    pub(crate) cpu_usage: f32,
++    pub(crate) updated: bool,
++    pub(crate) exists: bool,
++}
++
++/// The fields of a `/proc/<pid>/status` line (myos's `docs/proc.md`).
++pub(crate) struct Status<'a> {
++    pub(crate) name: &'a str,
++    pub(crate) state: &'a str,
++    pub(crate) ppid: usize,
++    pub(crate) sid: usize,
++    pub(crate) size_kib: u64,
++    pub(crate) cpu_ms: u64,
++    pub(crate) start_ms: u64,
++}
++
++impl<'a> Status<'a> {
++    pub(crate) fn parse(line: &'a str) -> Option<Self> {
++        let w: Vec<&str> = line.split_whitespace().collect();
++        if w.len() < 12 {
++            return None;
++        }
++        Some(Status {
++            name: w[1],
++            state: w[2],
++            ppid: w[3].parse().ok()?,
++            sid: w[5].parse().ok()?,
++            size_kib: w[7].parse().ok()?,
++            cpu_ms: w[8].parse().ok()?,
++            start_ms: w[10].parse().ok()?,
++        })
++    }
++}
++
++impl ProcessInner {
++    pub(crate) fn new(pid: Pid) -> Self {
++        Self {
++            pid,
++            parent: None,
++            session: None,
++            name: OsString::new(),
++            cmd: Vec::new(),
++            status: ProcessStatus::Unknown(0),
++            memory: 0,
++            start_time: 0,
++            run_time: 0,
++            cpu_ms: 0,
++            read_at_ms: 0,
++            cpu_usage: 0.,
++            updated: false,
++            exists: true,
++        }
++    }
++
++    /// Take in a fresh status line read at uptime `now_ms`, the system
++    /// booted at `boot_time` (seconds since the epoch).
++    pub(crate) fn update(&mut self, s: &Status<'_>, now_ms: u64, boot_time: u64) {
++        let name = if s.name == "-" { "" } else { s.name };
++        if self.name != name {
++            self.name = name.into();
++            self.cmd = vec![self.name.clone()];
++        }
++        self.parent = (s.ppid != 0).then(|| Pid::from(s.ppid));
++        self.session = (s.sid != 0).then(|| Pid::from(s.sid));
++        self.status = match s.state {
++            "running" | "ready" => ProcessStatus::Run,
++            "blocked" => ProcessStatus::Sleep,
++            "zombie" => ProcessStatus::Zombie,
++            _ => ProcessStatus::Unknown(0),
++        };
++        self.memory = s.size_kib * 1024;
++        self.start_time = boot_time + s.start_ms / 1000;
++        self.run_time = now_ms.saturating_sub(s.start_ms) / 1000;
++        // A first reading, or a pid reused by a newer process: no usage yet.
++        let elapsed = now_ms.saturating_sub(self.read_at_ms);
++        self.cpu_usage = if self.read_at_ms == 0 || s.cpu_ms < self.cpu_ms || elapsed == 0 {
++            0.
++        } else {
++            (s.cpu_ms - self.cpu_ms) as f32 * 100. / elapsed as f32
++        };
++        self.cpu_ms = s.cpu_ms;
++        self.read_at_ms = now_ms;
++        self.updated = true;
++    }
++
++    pub(crate) fn kill_with(&self, signal: Signal) -> Option<bool> {
++        let signal = super::system::convert_signal(signal)?;
++        Some(unsafe { libc::kill(self.pid.0 as libc::pid_t, signal) } == 0)
++    }
++
++    pub(crate) fn name(&self) -> &OsStr {
++        &self.name
++    }
++
++    pub(crate) fn cmd(&self) -> &[OsString] {
++        &self.cmd
++    }
++
++    pub(crate) fn exe(&self) -> Option<&Path> {
++        None
++    }
++
++    pub(crate) fn pid(&self) -> Pid {
++        self.pid
++    }
++
++    pub(crate) fn cgroup_limits(&self) -> Option<crate::CGroupLimits> {
++        None
++    }
++
++    pub(crate) fn environ(&self) -> &[OsString] {
++        &[]
++    }
++
++    pub(crate) fn cwd(&self) -> Option<&Path> {
++        None
++    }
++
++    pub(crate) fn root(&self) -> Option<&Path> {
++        None
++    }
++
++    pub(crate) fn memory(&self) -> u64 {
++        self.memory
++    }
++
++    pub(crate) fn virtual_memory(&self) -> u64 {
++        self.memory
++    }
++
++    pub(crate) fn parent(&self) -> Option<Pid> {
++        self.parent
++    }
++
++    pub(crate) fn status(&self) -> ProcessStatus {
++        self.status
++    }
++
++    pub(crate) fn start_time(&self) -> u64 {
++        self.start_time
++    }
++
++    pub(crate) fn run_time(&self) -> u64 {
++        self.run_time
++    }
++
++    pub(crate) fn cpu_usage(&self) -> f32 {
++        self.cpu_usage
++    }
++
++    pub(crate) fn accumulated_cpu_time(&self) -> u64 {
++        self.cpu_ms
++    }
++
++    pub(crate) fn disk_usage(&self) -> DiskUsage {
++        DiskUsage::default()
++    }
++
++    pub(crate) fn user_id(&self) -> Option<&Uid> {
++        None
++    }
++
++    pub(crate) fn effective_user_id(&self) -> Option<&Uid> {
++        None
++    }
++
++    pub(crate) fn group_id(&self) -> Option<Gid> {
++        None
++    }
++
++    pub(crate) fn effective_group_id(&self) -> Option<Gid> {
++        None
++    }
++
++    pub(crate) fn wait(&self) -> Option<ExitStatus> {
++        None
++    }
++
++    pub(crate) fn session_id(&self) -> Option<Pid> {
++        self.session
++    }
++
++    pub(crate) fn switch_updated(&mut self) -> bool {
++        std::mem::replace(&mut self.updated, false)
++    }
++
++    pub(crate) fn set_nonexistent(&mut self) {
++        self.exists = false;
++    }
++
++    pub(crate) fn exists(&self) -> bool {
++        self.exists
++    }
++
++    pub(crate) fn open_files(&self) -> Option<usize> {
++        None
++    }
++
++    pub(crate) fn open_files_limit(&self) -> Option<usize> {
++        None
++    }
++}
+diff -ruN a/src/myos/system.rs b/src/myos/system.rs
+--- a/src/myos/system.rs	1970-01-01 00:00:00.000000000 +0000
++++ b/src/myos/system.rs	2026-10-07 14:24:29.523763407 +0000
+@@ -0,0 +1,285 @@
++// Take a look at the license at the top of the repository in the LICENSE file.
++
++use super::cpu::CpuInner;
++use super::process::{ProcessInner, Status};
++use super::{cpu_times, read_proc};
++use crate::{
++    Cpu, CpuRefreshKind, LoadAvg, MemoryRefreshKind, Pid, Process, ProcessRefreshKind,
++    ProcessesToUpdate,
++};
++
++use std::collections::HashMap;
++use std::time::{Duration, SystemTime, UNIX_EPOCH};
++
++declare_signals! {
++    libc::c_int,
++    Signal::Hangup => libc::SIGHUP,
++    Signal::Interrupt => libc::SIGINT,
++    Signal::Quit => libc::SIGQUIT,
++    Signal::Kill => libc::SIGKILL,
++    Signal::User1 => libc::SIGUSR1,
++    Signal::User2 => libc::SIGUSR2,
++    Signal::Pipe => libc::SIGPIPE,
++    Signal::Alarm => libc::SIGALRM,
++    Signal::Term => libc::SIGTERM,
++    Signal::Child => libc::SIGCHLD,
++    Signal::Continue => libc::SIGCONT,
++    Signal::Stop => libc::SIGSTOP,
++    _ => None,
++}
++
++#[doc = include_str!("../../md_doc/supported_signals.md")]
++pub const SUPPORTED_SIGNALS: &[crate::Signal] = supported_signals();
++/// The kernel charges CPU time at each tick (10 ms): shorter intervals
++/// would mostly measure the tick.
++#[doc = include_str!("../../md_doc/minimum_cpu_update_interval.md")]
++pub const MINIMUM_CPU_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
++
++pub(crate) struct SystemInner {
++    process_list: HashMap<Pid, Process>,
++    cpus: Vec<Cpu>,
++    global_cpu_usage: f32,
++    /// `/proc/cpu` at the last CPU refresh: the uptime and each CPU's idle
++    /// time (milliseconds).
++    cpu_read: Option<(u64, Vec<u64>)>,
++    mem_total: u64,
++    mem_free: u64,
++    mem_available: u64,
++}
++
++/// `/proc/meminfo`'s `Mem*KiB` lines, in bytes: total, free, available.
++fn memory() -> Option<(u64, u64, u64)> {
++    let text = read_proc("/proc/meminfo")?;
++    let field = |name: &str| {
++        text.lines()
++            .find_map(|l| l.strip_prefix(name)?.strip_prefix(':'))
++            .and_then(|v| v.trim().parse::<u64>().ok())
++            .map(|kib| kib * 1024)
++    };
++    Some((field("MemTotalKiB")?, field("MemFreeKiB")?, field("MemAvailableKiB")?))
++}
++
++fn boot_time(uptime_ms: u64) -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map_or(0, |d| d.as_secs())
++        .saturating_sub(uptime_ms / 1000)
++}
++
++impl SystemInner {
++    pub(crate) fn new() -> Self {
++        Self {
++            process_list: Default::default(),
++            cpus: Vec::new(),
++            global_cpu_usage: 0.,
++            cpu_read: None,
++            mem_total: 0,
++            mem_free: 0,
++            mem_available: 0,
++        }
++    }
++
++    pub(crate) fn refresh_memory_specifics(&mut self, refresh_kind: MemoryRefreshKind) {
++        if refresh_kind.ram()
++            && let Some((total, free, available)) = memory()
++        {
++            self.mem_total = total;
++            self.mem_free = free;
++            self.mem_available = available;
++        }
++    }
++
++    pub(crate) fn cgroup_limits(&self) -> Option<crate::CGroupLimits> {
++        None
++    }
++
++    /// Each CPU's usage is its busy share of the time since the last
++    /// refresh: one minus its idle time over the uptime that passed.
++    pub(crate) fn refresh_cpu_specifics(&mut self, refresh_kind: CpuRefreshKind) {
++        let Some((uptime, idle)) = cpu_times() else {
++            return;
++        };
++        if self.cpus.len() != idle.len() {
++            self.cpus = (0..idle.len())
++                .map(|i| Cpu {
++                    inner: CpuInner {
++                        name: format!("cpu{i}"),
++                        usage: 0.,
++                    },
++                })
++                .collect();
++            self.cpu_read = None;
++        }
++        if refresh_kind.cpu_usage() {
++            if let Some((last_uptime, last_idle)) = &self.cpu_read {
++                let span = uptime.saturating_sub(*last_uptime);
++                if span > 0 {
++                    for ((cpu, now), last) in self.cpus.iter_mut().zip(&idle).zip(last_idle) {
++                        let idle_share = now.saturating_sub(*last) as f32 / span as f32;
++                        cpu.inner.usage = ((1. - idle_share) * 100.).clamp(0., 100.);
++                    }
++                }
++            }
++            self.global_cpu_usage = if self.cpus.is_empty() {
++                0.
++            } else {
++                self.cpus.iter().map(|c| c.inner.usage).sum::<f32>() / self.cpus.len() as f32
++            };
++            self.cpu_read = Some((uptime, idle));
++        }
++    }
++
++    pub(crate) fn refresh_cpu_list(&mut self, refresh_kind: CpuRefreshKind) {
++        self.cpus.clear();
++        self.refresh_cpu_specifics(refresh_kind);
++    }
++
++    pub(crate) fn refresh_processes_specifics(
++        &mut self,
++        processes_to_update: ProcessesToUpdate<'_>,
++        _refresh_kind: ProcessRefreshKind,
++    ) -> usize {
++        let Some((now_ms, _)) = cpu_times() else {
++            return 0;
++        };
++        let boot_time = boot_time(now_ms);
++        let pids: Vec<Pid> = match processes_to_update {
++            ProcessesToUpdate::All => std::fs::read_dir("/proc")
++                .map(|dir| {
++                    dir.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<usize>().ok())
++                        .map(Pid::from)
++                        .collect()
++                })
++                .unwrap_or_default(),
++            ProcessesToUpdate::Some(pids) => pids.to_vec(),
++        };
++        let mut updated = 0;
++        for pid in pids {
++            // Gone since the listing: skipped, and dropped by the caller.
++            let Some(line) = read_proc(&format!("/proc/{}/status", pid.0)) else {
++                continue;
++            };
++            let Some(status) = Status::parse(&line) else {
++                continue;
++            };
++            let process = self.process_list.entry(pid).or_insert_with(|| Process {
++                inner: ProcessInner::new(pid),
++            });
++            process.inner.update(&status, now_ms, boot_time);
++            updated += 1;
++        }
++        updated
++    }
++
++    // COMMON PART
++    //
++    // Need to be moved into a "common" file to avoid duplication.
++
++    pub(crate) fn processes(&self) -> &HashMap<Pid, Process> {
++        &self.process_list
++    }
++
++    pub(crate) fn processes_mut(&mut self) -> &mut HashMap<Pid, Process> {
++        &mut self.process_list
++    }
++
++    pub(crate) fn process(&self, pid: Pid) -> Option<&Process> {
++        self.process_list.get(&pid)
++    }
++
++    pub(crate) fn global_cpu_usage(&self) -> f32 {
++        self.global_cpu_usage
++    }
++
++    pub(crate) fn cpus(&self) -> &[Cpu] {
++        &self.cpus
++    }
++
++    pub(crate) fn total_memory(&self) -> u64 {
++        self.mem_total
++    }
++
++    pub(crate) fn free_memory(&self) -> u64 {
++        self.mem_free
++    }
++
++    pub(crate) fn available_memory(&self) -> u64 {
++        self.mem_available
++    }
++
++    pub(crate) fn used_memory(&self) -> u64 {
++        self.mem_total.saturating_sub(self.mem_available)
++    }
++
++    pub(crate) fn total_swap(&self) -> u64 {
++        0
++    }
++
++    pub(crate) fn free_swap(&self) -> u64 {
++        0
++    }
++
++    pub(crate) fn used_swap(&self) -> u64 {
++        0
++    }
++
++    pub(crate) fn uptime() -> u64 {
++        cpu_times().map_or(0, |(ms, _)| ms / 1000)
++    }
++
++    pub(crate) fn boot_time() -> u64 {
++        cpu_times().map_or(0, |(ms, _)| boot_time(ms))
++    }
++
++    pub(crate) fn load_average() -> LoadAvg {
++        LoadAvg {
++            one: 0.,
++            five: 0.,
++            fifteen: 0.,
++        }
++    }
++
++    pub(crate) fn name() -> Option<String> {
++        Some("myos".to_owned())
++    }
++
++    pub(crate) fn long_os_version() -> Option<String> {
++        Some("myos".to_owned())
++    }
++
++    pub(crate) fn kernel_version() -> Option<String> {
++        None
++    }
++
++    pub(crate) fn os_version() -> Option<String> {
++        None
++    }
++
++    pub(crate) fn distribution_id() -> String {
++        std::env::consts::OS.to_owned()
++    }
++
++    pub(crate) fn distribution_id_like() -> Vec<String> {
++        Vec::new()
++    }
++
++    pub(crate) fn kernel_name() -> Option<&'static str> {
++        Some("myos")
++    }
++
++    pub(crate) fn host_name() -> Option<String> {
++        read_proc("/proc/sys/kernel/hostname").map(|h| h.trim().to_owned())
++    }
++
++    pub(crate) fn cpu_arch() -> Option<String> {
++        Some(std::env::consts::ARCH.to_owned())
++    }
++
++    pub(crate) fn physical_core_count() -> Option<usize> {
++        cpu_times().map(|(_, idle)| idle.len())
++    }
++
++    pub(crate) fn open_files_limit() -> Option<usize> {
++        None
++    }
++}

@@ -1,0 +1,32 @@
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2026-10-07 14:08:02.625583877 +0000
++++ b/src/lib.rs	2026-10-07 14:08:02.654301142 +0000
+@@ -98,6 +98,28 @@
+ #[cfg(target_os = "redox")]
+ pub use self::target_redox::home_dir;
+ 
++// myos: the home directory is $HOME; there are no XDG user directories.
++#[cfg(target_os = "myos")]
++mod target_myos {
++    use std::collections::HashMap;
++    use std::path::{Path, PathBuf};
++
++    pub fn home_dir() -> Option<PathBuf> {
++        std::env::var_os("HOME").and_then(super::is_absolute_path)
++    }
++
++    pub fn user_dir(_user_dir_name: &str) -> Option<PathBuf> {
++        None
++    }
++
++    pub fn user_dirs(_home_dir_path: &Path) -> HashMap<String, PathBuf> {
++        HashMap::new()
++    }
++}
++
++#[cfg(target_os = "myos")]
++pub use self::target_myos::{home_dir, user_dir, user_dirs};
++
+ #[cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))]
+ mod xdg_user_dirs;
+ 

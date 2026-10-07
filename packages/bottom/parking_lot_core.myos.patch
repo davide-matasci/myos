@@ -1,0 +1,109 @@
+diff -ruN a/src/thread_parker/mod.rs b/src/thread_parker/mod.rs
+--- a/src/thread_parker/mod.rs	2026-10-07 15:00:30.072174831 +0000
++++ b/src/thread_parker/mod.rs	2026-10-07 15:00:46.882877912 +0000
+@@ -57,6 +57,9 @@
+     } else if #[cfg(unix)] {
+         #[path = "unix.rs"]
+         mod imp;
++    } else if #[cfg(target_os = "myos")] {
++        #[path = "myos.rs"]
++        mod imp;
+     } else if #[cfg(windows)] {
+         #[path = "windows/mod.rs"]
+         mod imp;
+diff -ruN a/src/thread_parker/myos.rs b/src/thread_parker/myos.rs
+--- a/src/thread_parker/myos.rs	1970-01-01 00:00:00.000000000 +0000
++++ b/src/thread_parker/myos.rs	2026-10-07 15:00:46.859713607 +0000
+@@ -0,0 +1,92 @@
++// Copyright 2016 Amanieu d'Antras
++//
++// Licensed under the Apache License, Version 2.0, <LICENSE-APACHE or
++// http://apache.org/licenses/LICENSE-2.0> or the MIT license <LICENSE-MIT or
++// http://opensource.org/licenses/MIT>, at your option. This file may not be
++// copied, modified, or distributed except according to those terms.
++
++//! myos: a parked thread sleeps in std's thread parking (the kernel's
++//! `wait_addr`) until it is unparked, as on Linux with a futex.
++
++use core::sync::atomic::{AtomicBool, Ordering};
++use std::sync::OnceLock;
++use std::thread::{self, Thread};
++use std::time::Instant;
++
++// Helper type for putting a thread to sleep until some other thread wakes it up
++pub struct ThreadParker {
++    parked: AtomicBool,
++    /// The thread this parker belongs to: only it parks on it.
++    thread: OnceLock<Thread>,
++}
++
++impl super::ThreadParkerT for ThreadParker {
++    type UnparkHandle = UnparkHandle;
++
++    const IS_CHEAP_TO_CONSTRUCT: bool = true;
++
++    #[inline]
++    fn new() -> ThreadParker {
++        ThreadParker {
++            parked: AtomicBool::new(false),
++            thread: OnceLock::new(),
++        }
++    }
++
++    #[inline]
++    unsafe fn prepare_park(&self) {
++        self.thread.get_or_init(thread::current);
++        self.parked.store(true, Ordering::Relaxed);
++    }
++
++    #[inline]
++    unsafe fn timed_out(&self) -> bool {
++        self.parked.load(Ordering::Relaxed)
++    }
++
++    #[inline]
++    unsafe fn park(&self) {
++        while self.parked.load(Ordering::Acquire) {
++            thread::park();
++        }
++    }
++
++    #[inline]
++    unsafe fn park_until(&self, timeout: Instant) -> bool {
++        while self.parked.load(Ordering::Acquire) {
++            let now = Instant::now();
++            if now >= timeout {
++                return false;
++            }
++            thread::park_timeout(timeout - now);
++        }
++        true
++    }
++
++    #[inline]
++    unsafe fn unpark_lock(&self) -> UnparkHandle {
++        // The handle first: once `parked` is clear, the thread may return
++        // and its parker go away.
++        let thread = self.thread.get().cloned();
++        self.parked.store(false, Ordering::Release);
++        UnparkHandle { thread }
++    }
++}
++
++pub struct UnparkHandle {
++    thread: Option<Thread>,
++}
++
++impl super::UnparkHandleT for UnparkHandle {
++    #[inline]
++    unsafe fn unpark(self) {
++        if let Some(thread) = self.thread {
++            thread.unpark();
++        }
++    }
++}
++
++#[inline]
++pub fn thread_yield() {
++    thread::yield_now();
++}

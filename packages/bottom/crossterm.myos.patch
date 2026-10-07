@@ -1,0 +1,476 @@
+diff -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml	2026-10-07 14:03:50.149162967 +0000
++++ b/Cargo.toml	2026-10-07 14:03:57.812030870 +0000
+@@ -199,7 +199,7 @@
+ version = "0.8"
+ optional = true
+ 
+-[target."cfg(unix)".dependencies.libc]
++[target."cfg(any(unix, target_os = \"myos\"))".dependencies.libc]
+ version = "0.2"
+ optional = true
+ default-features = false
+diff -ruN a/src/cursor/sys.rs b/src/cursor/sys.rs
+--- a/src/cursor/sys.rs	2026-10-07 14:03:50.150780767 +0000
++++ b/src/cursor/sys.rs	2026-10-07 14:03:57.809263912 +0000
+@@ -1,6 +1,6 @@
+ //! This module provides platform related functions.
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ #[cfg(feature = "events")]
+ pub use self::unix::position;
+ #[cfg(windows)]
+@@ -15,6 +15,6 @@
+ #[cfg(windows)]
+ pub(crate) mod windows;
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ #[cfg(feature = "events")]
+ pub(crate) mod unix;
+diff -ruN a/src/event/filter.rs b/src/event/filter.rs
+--- a/src/event/filter.rs	2026-10-07 14:03:50.150857506 +0000
++++ b/src/event/filter.rs	2026-10-07 14:03:57.808023003 +0000
+@@ -6,22 +6,22 @@
+     fn eval(&self, event: &InternalEvent) -> bool;
+ }
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ #[derive(Debug, Clone)]
+ pub(crate) struct CursorPositionFilter;
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ impl Filter for CursorPositionFilter {
+     fn eval(&self, event: &InternalEvent) -> bool {
+         matches!(*event, InternalEvent::CursorPosition(_, _))
+     }
+ }
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ #[derive(Debug, Clone)]
+ pub(crate) struct KeyboardEnhancementFlagsFilter;
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ impl Filter for KeyboardEnhancementFlagsFilter {
+     fn eval(&self, event: &InternalEvent) -> bool {
+         // This filter checks for either a KeyboardEnhancementFlags response or
+@@ -35,11 +35,11 @@
+     }
+ }
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ #[derive(Debug, Clone)]
+ pub(crate) struct PrimaryDeviceAttributesFilter;
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ impl Filter for PrimaryDeviceAttributesFilter {
+     fn eval(&self, event: &InternalEvent) -> bool {
+         matches!(*event, InternalEvent::PrimaryDeviceAttributes)
+@@ -50,7 +50,7 @@
+ pub(crate) struct EventFilter;
+ 
+ impl Filter for EventFilter {
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     fn eval(&self, event: &InternalEvent) -> bool {
+         matches!(*event, InternalEvent::Event(_))
+     }
+@@ -62,7 +62,7 @@
+ }
+ 
+ #[cfg(test)]
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ mod tests {
+     use super::{
+         super::Event, CursorPositionFilter, EventFilter, Filter, InternalEvent,
+diff -ruN a/src/event/read.rs b/src/event/read.rs
+--- a/src/event/read.rs	2026-10-07 14:03:50.150878612 +0000
++++ b/src/event/read.rs	2026-10-07 14:03:57.808134192 +0000
+@@ -1,6 +1,6 @@
+ use std::{collections::vec_deque::VecDeque, io, time::Duration};
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ use crate::event::source::unix::UnixInternalEventSource;
+ #[cfg(windows)]
+ use crate::event::source::windows::WindowsEventSource;
+@@ -19,7 +19,7 @@
+     fn default() -> Self {
+         #[cfg(windows)]
+         let source = WindowsEventSource::new();
+-        #[cfg(unix)]
++        #[cfg(any(unix, target_os = "myos"))]
+         let source = UnixInternalEventSource::new();
+ 
+         let source = source.ok().map(|x| Box::new(x) as Box<dyn EventSource>);
+@@ -130,7 +130,7 @@
+     use std::io;
+     use std::{collections::VecDeque, time::Duration};
+ 
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     use super::super::filter::CursorPositionFilter;
+     use super::{super::Event, EventSource, Filter, InternalEvent, InternalEventReader};
+ 
+@@ -172,7 +172,7 @@
+     }
+ 
+     #[test]
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     fn test_poll_returns_true_for_matching_event_in_queue_at_back() {
+         let mut reader = InternalEventReader {
+             events: vec![
+@@ -201,7 +201,7 @@
+     }
+ 
+     #[test]
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     fn test_read_returns_matching_event_in_queue_at_back() {
+         const CURSOR_EVENT: InternalEvent = InternalEvent::CursorPosition(10, 20);
+ 
+@@ -215,7 +215,7 @@
+     }
+ 
+     #[test]
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     fn test_read_does_not_consume_skipped_event() {
+         const SKIPPED_EVENT: InternalEvent = InternalEvent::Event(Event::Resize(10, 10));
+         const CURSOR_EVENT: InternalEvent = InternalEvent::CursorPosition(10, 20);
+diff -ruN a/src/event/source/unix/myos.rs b/src/event/source/unix/myos.rs
+--- a/src/event/source/unix/myos.rs	1970-01-01 00:00:00.000000000 +0000
++++ b/src/event/source/unix/myos.rs	2026-10-07 14:04:16.712973195 +0000
+@@ -0,0 +1,130 @@
++//! The event source on myos: the terminal's input, waited for with
++//! `poll(2)`. myos sends no `SIGWINCH`, so a change of the terminal's size
++//! is found by looking at it while waiting (at most every quarter second).
++
++use std::{collections::VecDeque, io, time::Duration};
++
++use crate::event::timeout::PollTimeout;
++use crate::event::Event;
++use crate::event::{source::EventSource, sys::unix::parse::parse_event, InternalEvent};
++use crate::terminal::sys::file_descriptor::{tty_fd, FileDesc};
++
++const TTY_BUFFER_SIZE: usize = 1_024;
++
++/// How long one wait lasts before the size is looked at again.
++const SIZE_CHECK: Duration = Duration::from_millis(250);
++
++pub(crate) struct UnixInternalEventSource {
++    parser: Parser,
++    tty_buffer: [u8; TTY_BUFFER_SIZE],
++    tty: FileDesc<'static>,
++    size: Option<(u16, u16)>,
++}
++
++impl UnixInternalEventSource {
++    pub fn new() -> io::Result<Self> {
++        UnixInternalEventSource::from_file_descriptor(tty_fd()?)
++    }
++
++    pub(crate) fn from_file_descriptor(input_fd: FileDesc<'static>) -> io::Result<Self> {
++        Ok(UnixInternalEventSource {
++            parser: Parser::default(),
++            tty_buffer: [0u8; TTY_BUFFER_SIZE],
++            tty: input_fd,
++            size: crate::terminal::size().ok(),
++        })
++    }
++
++    /// A resize event when the terminal's size changed since last looked at.
++    fn resized(&mut self) -> Option<InternalEvent> {
++        let now = crate::terminal::size().ok()?;
++        if self.size.replace(now) == Some(now) {
++            return None;
++        }
++        Some(InternalEvent::Event(Event::Resize(now.0, now.1)))
++    }
++}
++
++impl EventSource for UnixInternalEventSource {
++    fn try_read(&mut self, timeout: Option<Duration>) -> io::Result<Option<InternalEvent>> {
++        let timeout = PollTimeout::new(timeout);
++
++        while timeout.leftover().map_or(true, |t| !t.is_zero()) {
++            if let Some(event) = self.parser.next() {
++                return Ok(Some(event));
++            }
++            if let Some(event) = self.resized() {
++                return Ok(Some(event));
++            }
++            let wait = timeout.leftover().map_or(SIZE_CHECK, |t| t.min(SIZE_CHECK));
++            let mut fd = libc::pollfd {
++                fd: self.tty.raw_fd(),
++                events: libc::POLLIN,
++                revents: 0,
++            };
++            let ready = unsafe { libc::poll(&mut fd, 1, wait.as_millis() as libc::c_int) };
++            if ready < 0 {
++                let e = io::Error::last_os_error();
++                if e.kind() == io::ErrorKind::Interrupted {
++                    continue;
++                }
++                return Err(e);
++            }
++            if ready > 0 && fd.revents & libc::POLLIN != 0 {
++                // Raw mode: a read returns what has arrived, at least a byte.
++                let read_count = self.tty.read(&mut self.tty_buffer)?;
++                if read_count > 0 {
++                    self.parser
++                        .advance(&self.tty_buffer[..read_count], read_count == TTY_BUFFER_SIZE);
++                }
++                if let Some(event) = self.parser.next() {
++                    return Ok(Some(event));
++                }
++            }
++        }
++        Ok(None)
++    }
++}
++
++// The parser of the other unix sources (`tty.rs`).
++#[derive(Debug)]
++struct Parser {
++    buffer: Vec<u8>,
++    internal_events: VecDeque<InternalEvent>,
++}
++
++impl Default for Parser {
++    fn default() -> Self {
++        Parser {
++            buffer: Vec::with_capacity(256),
++            internal_events: VecDeque::with_capacity(128),
++        }
++    }
++}
++
++impl Parser {
++    fn advance(&mut self, buffer: &[u8], more: bool) {
++        for (idx, byte) in buffer.iter().enumerate() {
++            let more = idx + 1 < buffer.len() || more;
++
++            self.buffer.push(*byte);
++
++            match parse_event(&self.buffer, more) {
++                Ok(Some(ie)) => {
++                    self.internal_events.push_back(ie);
++                    self.buffer.clear();
++                }
++                Ok(None) => {}
++                Err(_) => self.buffer.clear(),
++            }
++        }
++    }
++}
++
++impl Iterator for Parser {
++    type Item = InternalEvent;
++
++    fn next(&mut self) -> Option<Self::Item> {
++        self.internal_events.pop_front()
++    }
++}
+diff -ruN a/src/event/source/unix.rs b/src/event/source/unix.rs
+--- a/src/event/source/unix.rs	2026-10-07 14:03:50.150993585 +0000
++++ b/src/event/source/unix.rs	2026-10-07 14:04:30.441301891 +0000
+@@ -1,11 +1,17 @@
+-#[cfg(feature = "use-dev-tty")]
++#[cfg(all(feature = "use-dev-tty", not(target_os = "myos")))]
+ pub(crate) mod tty;
+ 
+-#[cfg(not(feature = "use-dev-tty"))]
++#[cfg(all(not(feature = "use-dev-tty"), not(target_os = "myos")))]
+ pub(crate) mod mio;
+ 
+-#[cfg(feature = "use-dev-tty")]
++#[cfg(target_os = "myos")]
++pub(crate) mod myos;
++
++#[cfg(all(feature = "use-dev-tty", not(target_os = "myos")))]
+ pub(crate) use self::tty::UnixInternalEventSource;
+ 
+-#[cfg(not(feature = "use-dev-tty"))]
++#[cfg(all(not(feature = "use-dev-tty"), not(target_os = "myos")))]
+ pub(crate) use self::mio::UnixInternalEventSource;
++
++#[cfg(target_os = "myos")]
++pub(crate) use self::myos::UnixInternalEventSource;
+diff -ruN a/src/event/source.rs b/src/event/source.rs
+--- a/src/event/source.rs	2026-10-07 14:03:50.151026864 +0000
++++ b/src/event/source.rs	2026-10-07 14:03:57.808290102 +0000
+@@ -4,7 +4,7 @@
+ use super::sys::Waker;
+ use super::InternalEvent;
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ pub(crate) mod unix;
+ #[cfg(windows)]
+ pub(crate) mod windows;
+diff -ruN a/src/event/stream.rs b/src/event/stream.rs
+--- a/src/event/stream.rs	2026-10-07 14:03:50.151044641 +0000
++++ b/src/event/stream.rs	2026-10-07 14:03:57.808582737 +0000
+@@ -106,7 +106,7 @@
+             Ok(true) => match read_internal(&EventFilter) {
+                 Ok(InternalEvent::Event(event)) => Poll::Ready(Some(Ok(event))),
+                 Err(e) => Poll::Ready(Some(Err(e))),
+-                #[cfg(unix)]
++                #[cfg(any(unix, target_os = "myos"))]
+                 _ => unreachable!(),
+             },
+             Ok(false) => {
+diff -ruN a/src/event/sys.rs b/src/event/sys.rs
+--- a/src/event/sys.rs	2026-10-07 14:03:50.152005660 +0000
++++ b/src/event/sys.rs	2026-10-07 14:03:57.808472215 +0000
+@@ -1,9 +1,9 @@
+-#[cfg(all(unix, feature = "event-stream"))]
++#[cfg(all(any(unix, target_os = "myos"), feature = "event-stream"))]
+ pub(crate) use unix::waker::Waker;
+ #[cfg(all(windows, feature = "event-stream"))]
+ pub(crate) use windows::waker::Waker;
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ pub(crate) mod unix;
+ #[cfg(windows)]
+ pub(crate) mod windows;
+diff -ruN a/src/event.rs b/src/event.rs
+--- a/src/event.rs	2026-10-07 14:03:50.152123801 +0000
++++ b/src/event.rs	2026-10-07 14:03:57.808692962 +0000
+@@ -249,7 +249,7 @@
+ pub fn read() -> std::io::Result<Event> {
+     match read_internal(&EventFilter)? {
+         InternalEvent::Event(event) => Ok(event),
+-        #[cfg(unix)]
++        #[cfg(any(unix, target_os = "myos"))]
+         _ => unreachable!(),
+     }
+ }
+@@ -875,7 +875,7 @@
+             first = false;
+             match modifier {
+                 KeyModifiers::SHIFT => f.write_str("Shift")?,
+-                #[cfg(unix)]
++                #[cfg(any(unix, target_os = "myos"))]
+                 KeyModifiers::CONTROL => f.write_str("Control")?,
+                 #[cfg(windows)]
+                 KeyModifiers::CONTROL => f.write_str("Ctrl")?,
+@@ -1476,13 +1476,13 @@
+     /// An event.
+     Event(Event),
+     /// A cursor position (`col`, `row`).
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     CursorPosition(u16, u16),
+     /// The progressive keyboard enhancement flags enabled by the terminal.
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     KeyboardEnhancementFlags(KeyboardEnhancementFlags),
+     /// Attributes and architectural class of the terminal.
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     PrimaryDeviceAttributes,
+ }
+ 
+diff -ruN a/src/terminal/sys/file_descriptor.rs b/src/terminal/sys/file_descriptor.rs
+--- a/src/terminal/sys/file_descriptor.rs	2026-10-07 14:03:50.152828819 +0000
++++ b/src/terminal/sys/file_descriptor.rs	2026-10-07 14:03:57.818931377 +0000
+@@ -10,7 +10,7 @@
+     marker::PhantomData,
+     os::unix::{
+         io::{IntoRawFd, RawFd},
+-        prelude::AsRawFd,
++        io::AsRawFd,
+     },
+ };
+ 
+diff -ruN a/src/terminal/sys/unix.rs b/src/terminal/sys/unix.rs
+--- a/src/terminal/sys/unix.rs	2026-10-07 14:03:50.152862648 +0000
++++ b/src/terminal/sys/unix.rs	2026-10-07 14:07:17.065990400 +0000
+@@ -75,7 +75,7 @@
+         STDOUT_FILENO
+     };
+ 
+-    if wrap_with_result(unsafe { ioctl(fd, TIOCGWINSZ.into(), &mut size) }).is_ok() {
++    if wrap_with_result(unsafe { ioctl(fd, TIOCGWINSZ.into(), &mut size as *mut winsize as *mut libc::c_void) }).is_ok() {
+         return Ok(size.into());
+     }
+ 
+diff -ruN a/src/terminal/sys.rs b/src/terminal/sys.rs
+--- a/src/terminal/sys.rs	2026-10-07 14:03:50.152921756 +0000
++++ b/src/terminal/sys.rs	2026-10-07 14:03:57.807692760 +0000
+@@ -1,9 +1,9 @@
+ //! This module provides platform related functions.
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ #[cfg(feature = "events")]
+ pub use self::unix::supports_keyboard_enhancement;
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ pub(crate) use self::unix::{
+     disable_raw_mode, enable_raw_mode, is_raw_mode_enabled, size, window_size,
+ };
+@@ -21,7 +21,7 @@
+ #[cfg(windows)]
+ mod windows;
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ pub mod file_descriptor;
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ mod unix;
+diff -ruN a/src/terminal.rs b/src/terminal.rs
+--- a/src/terminal.rs	2026-10-07 14:03:50.152940229 +0000
++++ b/src/terminal.rs	2026-10-07 14:03:57.809359248 +0000
+@@ -105,7 +105,7 @@
+ ///
+ /// Please have a look at the [raw mode](./index.html#raw-mode) section.
+ pub fn is_raw_mode_enabled() -> io::Result<bool> {
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "myos"))]
+     {
+         Ok(sys::is_raw_mode_enabled())
+     }
+diff -ruN a/src/tty.rs b/src/tty.rs
+--- a/src/tty.rs	2026-10-07 14:03:50.152972617 +0000
++++ b/src/tty.rs	2026-10-07 14:03:57.809180587 +0000
+@@ -3,7 +3,7 @@
+ //! This module defines the IsTty trait and the is_tty method to
+ //! return true if the item represents a terminal.
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "myos"))]
+ use std::os::unix::io::AsRawFd;
+ #[cfg(windows)]
+ use std::os::windows::io::AsRawHandle;
+@@ -26,7 +26,7 @@
+ 
+ /// On UNIX, the `isatty()` function returns true if a file
+ /// descriptor is a terminal.
+-#[cfg(all(unix, feature = "libc"))]
++#[cfg(all(any(unix, target_os = "myos"), feature = "libc"))]
+ impl<S: AsRawFd> IsTty for S {
+     fn is_tty(&self) -> bool {
+         let fd = self.as_raw_fd();
+@@ -34,7 +34,7 @@
+     }
+ }
+ 
+-#[cfg(all(unix, not(feature = "libc")))]
++#[cfg(all(any(unix, target_os = "myos"), not(feature = "libc")))]
+ impl<S: AsRawFd> IsTty for S {
+     fn is_tty(&self) -> bool {
+         let fd = self.as_raw_fd();
