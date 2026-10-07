@@ -2,12 +2,17 @@
 //!
 //! Root-only, FAT16 only (no subdirs, no FAT32). Does not automount.
 //! `/msg` on bootfs is provided by the kernel, not this module.
+//!
+//! One volume, read whole at bind time and kept behind a lock that a bind
+//! or a file hook holds for its whole run; a hook copies out what it
+//! returns, so nothing of the volume outlives the lock (`lookup` always
+//! fails, the bytes go through `read`).
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, Lock, ModuleVfsOps, VfsStatInfo};
 
 const SECTOR: usize = 512;
 const MAX_ENTRIES: usize = 32;
@@ -27,6 +32,17 @@ struct Entry {
     loaded: bool,
 }
 
+impl Entry {
+    const EMPTY: Self = Self {
+        name: [0; NAME_CAP],
+        name_len: 0,
+        cluster: 0,
+        size: 0,
+        data: [0; FILE_CAP],
+        loaded: false,
+    };
+}
+
 #[repr(C)]
 struct FatVol {
     ready: bool,
@@ -38,15 +54,15 @@ struct FatVol {
     entries: [Entry; MAX_ENTRIES],
 }
 
-static mut VOL: FatVol = FatVol {
+static VOL: Lock<FatVol> = Lock::new(FatVol {
     ready: false,
     dev: 0,
     fat_lba: 0,
     data_lba: 0,
     spc: 0,
     count: 0,
-    entries: unsafe { core::mem::MaybeUninit::zeroed().assume_init() },
-};
+    entries: [Entry::EMPTY; MAX_ENTRIES],
+});
 
 static API: ApiCell = ApiCell::new();
 
@@ -81,11 +97,11 @@ unsafe extern "C" fn fat_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
     let Some(api) = API.try_get() else {
         return -1;
     };
-    let vol = unsafe { &mut *core::ptr::addr_of_mut!(VOL) };
+    let mut vol = VOL.lock();
     // Re-bind is allowed: CI may mount twice, and /ok retries every vd*.
     vol.ready = false;
     vol.count = 0;
-    match init_volume(api, vol, dev_id) {
+    match init_volume(api, &mut vol, dev_id) {
         Ok(()) => {
             unsafe {
                 *ops = ModuleVfsOps {
@@ -93,7 +109,7 @@ unsafe extern "C" fn fat_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
                     stat: fat_stat,
                     listdir: fat_listdir,
                     register: None,
-                    read: None,
+                    read: Some(fat_read),
                     write: None,
                     create: None,
                     truncate: None,
@@ -241,8 +257,7 @@ fn short_name_len(name8: &[u8]) -> usize {
     end
 }
 
-fn entry_index(name: &str) -> Option<usize> {
-    let vol = unsafe { &*core::ptr::addr_of!(VOL) };
+fn entry_index(vol: &FatVol, name: &str) -> Option<usize> {
     if !vol.ready {
         return None;
     }
@@ -260,11 +275,9 @@ fn entry_index(name: &str) -> Option<usize> {
     None
 }
 
-fn entry_bytes(name: &[u8]) -> Option<&'static [u8]> {
-    let name = core::str::from_utf8(name).ok()?;
-    let idx = entry_index(name)?;
-    let vol = unsafe { &*core::ptr::addr_of!(VOL) };
-    let ent = &vol.entries[idx];
+/// The bytes of the file `name`, once `finish_volume` read them.
+fn entry_bytes<'a>(vol: &'a FatVol, name: &str) -> Option<&'a [u8]> {
+    let ent = &vol.entries[entry_index(vol, name)?];
     if !ent.loaded {
         return None;
     }
@@ -272,27 +285,27 @@ fn entry_bytes(name: &[u8]) -> Option<&'static [u8]> {
     Some(&ent.data[..len])
 }
 
-unsafe extern "C" fn fat_lookup(
-    path: *const u8,
-    path_len: usize,
-    out_data: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
-    if path.is_null() || out_data.is_null() || out_len.is_null() {
+unsafe extern "C" fn fat_lookup(_: *const u8, _: usize, _: *mut *const u8, _: *mut usize) -> i32 {
+    -1
+}
+
+unsafe extern "C" fn fat_read(path: *const u8, path_len: usize, pos: usize, buf: *mut u8, cap: usize) -> i32 {
+    if path.is_null() || buf.is_null() {
         return -1;
     }
     let path = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(path, path_len) }) {
         Ok(p) => p,
         Err(_) => return -1,
     };
-    let Some(data) = entry_bytes(path.as_bytes()) else {
+    let vol = VOL.lock();
+    let Some(data) = entry_bytes(&vol, path) else {
         return -1;
     };
-    unsafe {
-        *out_data = data.as_ptr();
-        *out_len = data.len();
+    let n = cap.min(data.len().saturating_sub(pos));
+    if n != 0 {
+        unsafe { core::ptr::copy_nonoverlapping(data[pos..].as_ptr(), buf, n) };
     }
-    0
+    n as i32
 }
 
 unsafe extern "C" fn fat_stat(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
@@ -310,10 +323,10 @@ unsafe extern "C" fn fat_stat(path: *const u8, path_len: usize, out: *mut VfsSta
         out.nlink = 2;
         return 0;
     }
-    let Some(idx) = entry_index(path) else {
+    let vol = VOL.lock();
+    let Some(idx) = entry_index(&vol, path) else {
         return -1;
     };
-    let vol = unsafe { &*core::ptr::addr_of!(VOL) };
     let ent = &vol.entries[idx];
     out.mode = S_IFREG | 0o444;
     out.size = ent.size;
@@ -339,7 +352,7 @@ unsafe extern "C" fn fat_listdir(
     if !rel.is_empty() && rel != "." {
         return -1;
     }
-    let vol = unsafe { &*core::ptr::addr_of!(VOL) };
+    let vol = VOL.lock();
     if !vol.ready {
         return -1;
     }
