@@ -21,12 +21,12 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::signal::{SIGHUP, SIGINT};
 use crate::tty::{CtlAction, TtyIn, OPOST, ONLCR};
 
-pub const MAX_PTYS: usize = 4;
 const OUT_CAP: usize = 4096;
 
 pub struct Pty {
@@ -75,36 +75,59 @@ impl OutRing {
     }
 }
 
-static PTYS: Mutex<[Option<Pty>; MAX_PTYS]> = Mutex::new([const { None }; MAX_PTYS]);
-/// Ids freed by full-pair teardown (both ends' fds closed).
-static FREE_IDS: Mutex<[bool; MAX_PTYS]> = Mutex::new([false; MAX_PTYS]);
+/// The pairs by id, as many as are open (no fixed limit: each holds an fd,
+/// so the fd limits bound them). A freed id is reused first.
+static PTYS: Mutex<Vec<Option<Box<Pty>>>> = Mutex::new(Vec::new());
 
 fn pty_at(id: usize) -> Option<&'static Pty> {
     let guard = PTYS.lock();
-    // SAFETY: entries are only ever *replaced* with None (never moved), and
-    // callers hold a reference-counted claim on the pair while using it.
-    let ptr = guard.get(id).and_then(|s| s.as_ref())? as *const Pty;
+    // SAFETY: a pair is boxed (the table growing never moves it) and only
+    // freed by replacing its slot with None, and callers hold a
+    // reference-counted claim on the pair while using it.
+    let ptr = &**guard.get(id)?.as_ref()? as *const Pty;
     drop(guard);
     Some(unsafe { &*ptr })
 }
 
+/// `pty` on the heap, or `None` when the heap is full (a failed `clone`,
+/// not a kernel panic).
+fn try_box(pty: Pty) -> Option<Box<Pty>> {
+    let layout = core::alloc::Layout::new::<Pty>();
+    // SAFETY: a fresh allocation of `Pty`'s layout, written before the Box
+    // owns it.
+    unsafe {
+        let raw = alloc::alloc::alloc(layout) as *mut Pty;
+        if raw.is_null() {
+            return None;
+        }
+        raw.write(pty);
+        Some(Box::from_raw(raw))
+    }
+}
+
 /// Allocate a pair. The caller owns the initial master reference.
 pub fn alloc() -> Option<usize> {
+    let pty = try_box(Pty {
+        term: Mutex::new(TtyIn::new()),
+        out: Mutex::new(OutRing::new()),
+        winsize: Mutex::new((24, 80)),
+        master_refs: AtomicUsize::new(1),
+        slave_refs: AtomicUsize::new(0),
+        session: AtomicUsize::new(usize::MAX),
+    })?;
     let mut ptys = PTYS.lock();
-    for (id, slot) in ptys.iter_mut().enumerate() {
-        if slot.is_none() {
-            *slot = Some(Pty {
-                term: Mutex::new(TtyIn::new()),
-                out: Mutex::new(OutRing::new()),
-                winsize: Mutex::new((24, 80)),
-                master_refs: AtomicUsize::new(1),
-                slave_refs: AtomicUsize::new(0),
-                session: AtomicUsize::new(usize::MAX),
-            });
-            return Some(id);
-        }
+    if let Some(id) = ptys.iter().position(Option::is_none) {
+        ptys[id] = Some(pty);
+        return Some(id);
     }
-    None
+    ptys.try_reserve(1).ok()?;
+    ptys.push(Some(pty));
+    Some(ptys.len() - 1)
+}
+
+/// One past the highest pair id in use: the ids to look at.
+pub fn id_bound() -> usize {
+    PTYS.lock().len()
 }
 
 fn session_pgid(id: usize) -> Option<usize> {
@@ -118,11 +141,15 @@ fn session_pgid(id: usize) -> Option<usize> {
 
 fn free_if_dead(id: usize) {
     let mut ptys = PTYS.lock();
-    if let Some(p) = ptys[id].as_ref() {
-        if p.master_refs.load(Ordering::SeqCst) == 0 && p.slave_refs.load(Ordering::SeqCst) == 0 {
-            ptys[id] = None;
-            FREE_IDS.lock()[id] = true;
-        }
+    let Some(slot) = ptys.get_mut(id) else { return };
+    if slot
+        .as_ref()
+        .is_some_and(|p| p.master_refs.load(Ordering::SeqCst) == 0 && p.slave_refs.load(Ordering::SeqCst) == 0)
+    {
+        // Dropped after the lock: the pair is a few KiB.
+        let pty = slot.take();
+        drop(ptys);
+        drop(pty);
     }
 }
 
@@ -177,7 +204,8 @@ pub fn claim_session(id: usize) {
 /// means to that process and its descendants.
 pub fn claimed_by(pid: usize) -> Option<usize> {
     let ptys = PTYS.lock();
-    (0..MAX_PTYS).find(|&id| ptys[id].as_ref().is_some_and(|p| p.session.load(Ordering::SeqCst) == pid))
+    ptys.iter()
+        .position(|slot| slot.as_ref().is_some_and(|p| p.session.load(Ordering::SeqCst) == pid))
 }
 
 /// The pty of `pid`'s session: the one it or an ancestor claimed (`ctty`

@@ -112,6 +112,9 @@ directory disappears. Closing the last master fd hangs up the session
 in libgloss only makes the caller lead a new group, which keeps the hangup
 from its parent's group), closing the last slave fd makes the
 master's reads report `EIO` once drained ([`kernel/src/pty.rs`](../kernel/src/pty.rs)).
+There is no fixed number of pairs: each takes a few KiB of kernel heap and
+holds at least one fd, so the fd limits bound them, and a freed index is
+reused first.
 
 ## libc
 
