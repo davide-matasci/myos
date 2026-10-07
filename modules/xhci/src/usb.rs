@@ -7,7 +7,7 @@ use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 
 use myos_abi::{
-    USB_EGONE, USB_EIO, USB_ETIMEDOUT, USB_LABEL_MAX, USB_MAX_ENDPOINTS, USB_SPEED_FULL,
+    Lock, USB_EGONE, USB_EIO, USB_ETIMEDOUT, USB_LABEL_MAX, USB_MAX_ENDPOINTS, USB_SPEED_FULL,
     USB_SPEED_HIGH, USB_SPEED_LOW, USB_SPEED_SUPER, UsbDeviceInfo, UsbDriverOps, UsbEndpoint, UsbInterfaceInfo,
 };
 use xhci::context::{
@@ -61,17 +61,17 @@ pub struct Device {
 }
 
 /// The enumeration step that failed last, for the boot log.
-pub static mut STEP: &str = "";
+pub static STEP: Lock<&'static str> = Lock::new("");
 
 fn step(s: &'static str) {
-    unsafe {
-        *core::ptr::addr_of_mut!(STEP) = s;
-    }
+    *STEP.lock() = s;
 }
 
 pub static mut DEVICES: [[Option<Device>; MAX_DEVICES]; hc::MAX_CTRL] =
     [const { [const { None }; MAX_DEVICES] }; hc::MAX_CTRL];
-pub static mut DRIVERS: [Option<&'static UsbDriverOps>; MAX_DRIVERS] = [None; MAX_DRIVERS];
+/// The class drivers, in registration order (`driver_register` adds one
+/// from any task; the thread copies the list out before calling into it).
+pub static DRIVERS: Lock<[Option<&'static UsbDriverOps>; MAX_DRIVERS]> = Lock::new([None; MAX_DRIVERS]);
 
 const INPUT_CTX_BYTES: usize = 33 * 64;
 const OUT_CTX_BYTES: usize = 32 * 64;
@@ -716,7 +716,8 @@ pub fn offer(c: &mut Controller, dev: &mut Device) {
         }
         let info = intf.info;
         let dinfo = dev.info;
-        for (k, drv) in unsafe { (*core::ptr::addr_of!(DRIVERS)).iter().enumerate() } {
+        let drivers = *DRIVERS.lock();
+        for (k, drv) in drivers.iter().enumerate() {
             let Some(drv) = drv else {
                 continue;
             };
@@ -790,7 +791,9 @@ pub fn detach_id(c: &mut Controller, id: u32) {
             continue;
         };
         if let Some(k) = intf.driver {
-            if let Some(drv) = unsafe { (*core::ptr::addr_of!(DRIVERS))[k] } {
+            // The driver, copied out: no lock across its callback.
+            let drv = DRIVERS.lock()[k];
+            if let Some(drv) = drv {
                 unsafe { (drv.disconnect)(id, intf.info.number) };
             }
         }
@@ -904,7 +907,7 @@ pub fn proc_text(out: &mut [u8]) -> usize {
                 w.str("/");
                 w.hex2(intf.info.protocol);
                 if let Some(k) = intf.driver {
-                    if let Some(drv) = unsafe { (*core::ptr::addr_of!(DRIVERS))[k] } {
+                    if let Some(drv) = DRIVERS.lock()[k] {
                         w.str(":");
                         w.bytes(unsafe { core::slice::from_raw_parts(drv.name.ptr, drv.name.len) });
                     }

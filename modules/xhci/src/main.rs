@@ -135,11 +135,14 @@ unsafe extern "C" fn driver_register(ops: *const UsbDriverOps) -> i32 {
     if ops.is_null() {
         return -1;
     }
-    let drivers = unsafe { &mut *core::ptr::addr_of_mut!(usb::DRIVERS) };
+    let mut drivers = usb::DRIVERS.lock();
     let Some(slot) = drivers.iter().position(|d| d.is_none()) else {
         return -1;
     };
+    // SAFETY: a driver's table lives as long as its module, which stays
+    // loaded while it is registered here (`docs/usb.md`).
     drivers[slot] = Some(unsafe { &*ops });
+    drop(drivers);
     REOFFER.store(true, Ordering::Release);
     wake_thread();
     0
@@ -301,7 +304,7 @@ pub fn enumeration_failed(e: i32) {
     let mut buf = [0u8; 96];
     let mut w = Writer { buf: &mut buf, len: 0 };
     w.str("usb: ");
-    w.str(unsafe { *core::ptr::addr_of!(usb::STEP) });
+    w.str(*usb::STEP.lock());
     w.str(" failed (");
     if e < 0 {
         w.str("-");
