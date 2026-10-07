@@ -8,7 +8,8 @@ t urandom /bin/etc/urandom_smoke
 # The tty: the line editor's keys and ^C, driven through a pty (tty_smoke.c).
 t tty /bin/etc/tty_smoke
 # AF_UNIX over /net/unix: socketpair, listen/accept/connect with a forked
-# client, a transfer larger than the buffers, EOF, names (unix_smoke.c).
+# client, a transfer larger than the buffers, 60000 bytes ahead of the reader,
+# 48 conversations at once, EOF, names (unix_smoke.c).
 t unix /bin/etc/unix_smoke
 # /dev/fb: the geometry in ctl, a MAP_SHARED mapping of data that is the
 # framebuffer itself (shared with read/write and a forked child), a

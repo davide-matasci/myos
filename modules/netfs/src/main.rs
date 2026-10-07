@@ -13,8 +13,11 @@
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 mod unix;
 
+use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use myos_abi::{
@@ -179,6 +182,22 @@ static mut STATE: State = State {
 };
 
 static API: ApiCell = ApiCell::new();
+
+/// The kernel heap, through the ABI: the unix conversations and their
+/// buffers grow as they are used (`unix`).
+struct KernelHeap;
+
+unsafe impl GlobalAlloc for KernelHeap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        API.get().alloc(layout.size(), layout.align())
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { (API.get().dealloc)(ptr, layout.size(), layout.align()) }
+    }
+}
+
+#[global_allocator]
+static HEAP: KernelHeap = KernelHeap;
 
 /// Wake the kernel's pollers: readiness changed without a write or close
 /// (a unix reader made room for its peer).

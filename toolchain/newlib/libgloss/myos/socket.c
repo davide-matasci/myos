@@ -20,7 +20,9 @@
 
 #include "myos_syscalls.h"
 
-#define MYOS_MAX_SOCKS 16
+/* As many sockets as fds: the fd limit is the only one (an X server takes a
+ * socket per client). */
+#define MYOS_MAX_SOCKS MYOS_OPEN_MAX
 #define UN_NAME_CAP ((int)sizeof(((struct sockaddr_un *)0)->sun_path))
 #define CONNECT_TIMEOUT_MS 30000
 
