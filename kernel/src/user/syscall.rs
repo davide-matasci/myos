@@ -1082,6 +1082,7 @@ fn exec_path_depth(
     drop(owned);
     drop(interp);
     task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
+    task::set_current_name(path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes());
     if let Some(m) = &mapped {
         if !m.map(aspace, program_at) {
             task::user_exit(127);

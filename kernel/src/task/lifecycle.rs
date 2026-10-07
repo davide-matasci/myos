@@ -205,8 +205,15 @@ pub fn replace_user(
     set_loaded_aspace(aspace);
 }
 
+/// Start a kernel thread at `entry`, named "kthread" in `/proc`.
 pub fn spawn(entry: fn()) {
+    spawn_named(b"kthread", entry);
+}
+
+/// Start a kernel thread at `entry`, named `name` in `/proc`.
+pub fn spawn_named(name: &[u8], entry: fn()) {
     spawn_inner(
+        name,
         0,
         Some(entry),
         0,
@@ -233,6 +240,7 @@ pub fn spawn_user(
     user_argv: usize,
 ) {
     spawn_inner(
+        b"init",
         aspace,
         None,
         user_rip,
@@ -331,7 +339,9 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
         tgid: slot,
         group_exit: false,
         syscall_frame: 0,
+        name: tasks[current_slot()].name,
     };
+    super::acct::start(slot);
     // Before the child becomes runnable on another CPU (TASKS still held;
     // TASKS → SIG_TABLES is the lock order).
     signal_table_fork(ppid, slot);
@@ -465,6 +475,13 @@ pub fn wait_child(
             if let Some(i) = reap {
                 let code = tasks[i].exit_code;
                 let term_sig = tasks[i].term_sig;
+                // The child's CPU time, its own children's included, is
+                // the parent's from now on (`/proc/<pid>/status`).
+                let child_ns = super::acct::cpu_ns(i)
+                    + tasks.proc_opt(i).map_or(0, |p| p.ended_cpu_ns + p.child_cpu_ns);
+                if let Some(p) = tasks.proc_opt_mut(parent) {
+                    p.child_cpu_ns += child_ns;
+                }
                 if reapable(&tasks, i) {
                     tasks.recycle(i);
                 } else {
@@ -511,6 +528,7 @@ pub fn wait_child(
 }
 
 fn spawn_inner(
+    name: &[u8],
     aspace: u64,
     entry: Option<fn()>,
     user_rip: usize,
@@ -579,7 +597,10 @@ fn spawn_inner(
         tgid: slot,
         group_exit: false,
         syscall_frame: 0,
+        name: [0; NAME_MAX],
     };
+    set_name(&mut tasks[slot], name);
+    super::acct::start(slot);
     signal_table_reset(slot);
     fpu::reset(slot);
     tp::reset(slot);

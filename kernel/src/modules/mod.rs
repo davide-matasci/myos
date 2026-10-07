@@ -1326,8 +1326,7 @@ unsafe extern "C" fn api_thread_spawn(
     entry: unsafe extern "C" fn(*mut core::ffi::c_void),
     ctx: *mut core::ffi::c_void,
 ) -> i32 {
-    let _ = name;
-    noted(threads::spawn(entry, ctx))
+    noted(threads::spawn(str_ref(name).unwrap_or("module"), entry, ctx))
 }
 
 unsafe extern "C" fn api_wake(key: usize) {

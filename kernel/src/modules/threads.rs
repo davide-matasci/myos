@@ -13,8 +13,9 @@ type Entry = unsafe extern "C" fn(*mut c_void);
 
 static THREADS: Mutex<[Option<(Entry, usize)>; MAX]> = Mutex::new([None; MAX]);
 
-/// Start `entry(ctx)` on a new kernel task: false when every slot is taken.
-pub fn spawn(entry: Entry, ctx: *mut c_void) -> bool {
+/// Start `entry(ctx)` on a new kernel task named `name` in `/proc`: false
+/// when every slot is taken.
+pub fn spawn(name: &str, entry: Entry, ctx: *mut c_void) -> bool {
     const TRAMPOLINES: [fn(); MAX] = [
         || run(0),
         || run(1),
@@ -33,7 +34,7 @@ pub fn spawn(entry: Entry, ctx: *mut c_void) -> bool {
         threads[slot] = Some((entry, ctx as usize));
         slot
     };
-    crate::task::spawn(TRAMPOLINES[slot]);
+    crate::task::spawn_named(name.as_bytes(), TRAMPOLINES[slot]);
     true
 }
 
