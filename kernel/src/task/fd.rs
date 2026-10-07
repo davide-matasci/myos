@@ -32,6 +32,9 @@ pub(super) enum FdEntry {
 struct OpenFile {
     node: crate::fs::Vnode,
     pos: usize,
+    /// Opened for reading (not `O_WRONLY`): a read needs it, as the policy
+    /// only asked `read` of the opener then.
+    readable: bool,
     writable: bool,
     append: bool,
     /// Opened with `O_APPEND` by a process the policy let `append` to the
@@ -57,11 +60,30 @@ static OPEN_FILES: Mutex<[Option<OpenFile>; MAX_OPEN_FILES]> =
     Mutex::new([const { None }; MAX_OPEN_FILES]);
 
 /// A new description with one reference; `None` when the table is full.
-fn open_file_alloc(node: crate::fs::Vnode, writable: bool, append: bool, rights: crate::sec::Rights) -> Option<usize> {
+fn open_file_alloc(
+    node: crate::fs::Vnode,
+    readable: bool,
+    writable: bool,
+    append: bool,
+    rights: crate::sec::Rights,
+) -> Option<usize> {
     let mut files = OPEN_FILES.lock();
     let id = files.iter().position(Option::is_none)?;
-    files[id] = Some(OpenFile { node, pos: 0, writable, append, append_only: false, rights, refs: 1 });
+    files[id] = Some(OpenFile { node, pos: 0, readable, writable, append, append_only: false, rights, refs: 1 });
     Some(id)
+}
+
+fn open_file_readable(id: usize) -> bool {
+    matches!(OPEN_FILES.lock().get(id), Some(Some(f)) if f.readable)
+}
+
+/// Whether file `fd` was opened for reading (a terminal or pipe end is).
+pub fn fd_readable(fd: usize) -> bool {
+    match with_process_mut(|t| t.fds.get(fd).copied()) {
+        Some(FdEntry::File(id)) => open_file_readable(id),
+        Some(FdEntry::Empty) | None => false,
+        Some(_) => true,
+    }
 }
 
 /// Make `fd` append-only (see [`OpenFile::append_only`]).
@@ -223,13 +245,14 @@ fn user_buf_ok(buf: usize, len: usize, t: &Process) -> bool {
 /// An fd on `node`, opened with `flags`, granting `rights` beneath it (see
 /// [`OpenFile::rights`]).
 pub fn fd_open(node: crate::fs::Vnode, flags: u32, rights: crate::sec::Rights) -> Option<usize> {
+    let readable = flags & 3 != 1;
     let writable = crate::fs::open_writable(flags);
     let append = crate::fs::open_append(flags);
     // A file one program holds at a time (`/dev/console/kbd`) may say no.
     if !crate::fs::vfs::open_hook(&node) {
         return None;
     }
-    let Some(id) = open_file_alloc(node.clone(), writable, append, rights) else {
+    let Some(id) = open_file_alloc(node.clone(), readable, writable, append, rights) else {
         crate::fs::vfs::open_hook_undo(&node);
         return None;
     };
@@ -620,7 +643,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
             FdEntry::Stdin => return fd_read_stdin(buf, len),
             FdEntry::File(id) => {
                 // Snapshot then read without holding a lock (devfs tty may yield).
-                let Some((node, pos, ..)) = open_file_get(id) else {
+                let Some((node, pos, ..)) = open_file_get(id).filter(|_| open_file_readable(id)) else {
                     return usize::MAX;
                 };
                 let pos = at.unwrap_or(pos);

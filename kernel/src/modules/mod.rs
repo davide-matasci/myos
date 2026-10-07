@@ -125,6 +125,7 @@ static API: KernelApi = KernelApi {
     thread_place: api_thread_place,
     fd_lockctl: api_fd_lockctl,
     power_register: api_power_register,
+    current_uid: api_current_uid,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -566,7 +567,7 @@ unsafe extern "C" fn api_copy_to_user(dst_user: usize, src: *const u8, len: usiz
     }
     let slice = unsafe { core::slice::from_raw_parts(src, len) };
     let aspace = crate::task::current_aspace();
-    if crate::user::copy_to_user(aspace, dst_user, slice) {
+    if crate::user::buffer_ok(dst_user, len) && crate::user::copy_to_user(aspace, dst_user, slice) {
         0
     } else {
         -1
@@ -805,7 +806,11 @@ unsafe extern "C" fn api_copy_from_user(src_user: usize, dst: *mut u8, len: usiz
         return 0;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(dst, len) };
-    if crate::user::copy_from_user(crate::task::current_aspace(), src_user, out) { 0 } else { -1 }
+    if crate::user::buffer_ok(src_user, len) && crate::user::copy_from_user(crate::task::current_aspace(), src_user, out) {
+        0
+    } else {
+        -1
+    }
 }
 
 unsafe extern "C" fn api_user_buffer_ok(ptr: usize, len: usize) -> i32 {
@@ -822,6 +827,10 @@ unsafe extern "C" fn api_current_pid() -> usize {
 
 unsafe extern "C" fn api_current_ppid() -> usize {
     crate::task::current_ppid()
+}
+
+unsafe extern "C" fn api_current_uid() -> u32 {
+    crate::sec::current_uid()
 }
 
 unsafe extern "C" fn api_task_is_live_user(id: usize) -> i32 {
@@ -1013,7 +1022,7 @@ unsafe extern "C" fn api_chdir_path(path: StrRef) -> usize {
 }
 
 unsafe extern "C" fn api_fd_pread(fd: usize, pos: usize, buf: *mut u8, len: usize) -> i32 {
-    let Some(node) = crate::task::fd_file_node(fd) else {
+    let Some(node) = crate::task::fd_file_node(fd).filter(|_| crate::task::fd_readable(fd)) else {
         return -1;
     };
     if buf.is_null() {

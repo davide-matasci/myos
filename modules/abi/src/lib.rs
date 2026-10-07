@@ -39,7 +39,7 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// with file ids has its open files used by them, not by their paths) and
 /// [`KernelApi::fd_lockctl`] (record locks).
 /// 31 added [`KernelApi::power_register`] (power-off and reboot methods).
-pub const ABI_VERSION: u32 = 31;
+pub const ABI_VERSION: u32 = 32;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -780,6 +780,9 @@ pub struct KernelApi {
     /// log (`power off via NAME`). 0, or negative. Counted as a
     /// registration.
     pub power_register: unsafe extern "C" fn(action: u32, name: StrRef, method: unsafe extern "C" fn()) -> i32,
+    /// The uid of the user the current process runs for (docs/security.md),
+    /// `u32::MAX` in a kernel task: what a module's objects belong to.
+    pub current_uid: unsafe extern "C" fn() -> u32,
 }
 
 /// Where a module keeps the table `module_init` received: set once there,
@@ -1030,6 +1033,10 @@ impl KernelApi {
 
     pub fn current_ppid(&self) -> usize {
         unsafe { (self.current_ppid)() }
+    }
+
+    pub fn current_uid(&self) -> u32 {
+        unsafe { (self.current_uid)() }
     }
 
     pub fn task_is_live_user(&self, id: usize) -> bool {

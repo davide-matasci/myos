@@ -627,16 +627,18 @@ fn sync_icache(start: *mut u8, size: usize) {
     crate::arch::sync_icache(start as usize, size);
 }
 
+// An offset from the file near `usize::MAX` must not overflow the end of
+// the range (a hostile header): such a field is just past the end.
 fn u16_at(b: &[u8], o: usize) -> Result<u16, LoadError> {
-    let s = b.get(o..o + 2).ok_or(LoadError::Truncated)?;
+    let s = o.checked_add(2).and_then(|e| b.get(o..e)).ok_or(LoadError::Truncated)?;
     Ok(u16::from_le_bytes([s[0], s[1]]))
 }
 fn u32_at(b: &[u8], o: usize) -> Result<u32, LoadError> {
-    let s = b.get(o..o + 4).ok_or(LoadError::Truncated)?;
+    let s = o.checked_add(4).and_then(|e| b.get(o..e)).ok_or(LoadError::Truncated)?;
     Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 fn u64_at(b: &[u8], o: usize) -> Result<u64, LoadError> {
-    let s = b.get(o..o + 8).ok_or(LoadError::Truncated)?;
+    let s = o.checked_add(8).and_then(|e| b.get(o..e)).ok_or(LoadError::Truncated)?;
     Ok(u64::from_le_bytes([
         s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
     ]))

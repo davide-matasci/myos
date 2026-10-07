@@ -209,8 +209,10 @@ expect; other advice is ignored). Files also: `pread64`, `pwrite64`,
 `pwritev(2)`.
 
 Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve` (a
-`#!` script runs its interpreter, with the line's one optional argument;
-a file that is neither an ELF nor a script fails with `ENOEXEC`),
+`#!` script runs its interpreter, with the line's one optional argument,
+the kernel's way: `exec` on the script and its `exec` rule apply,
+`docs/security.md`; a file that is neither an ELF nor a script fails with
+`ENOEXEC`),
 `exit` (the thread), `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`,
 `getpid`, `gettid`, `getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`,
 `setsid`, `uname` (the node name is the kernel's host name,

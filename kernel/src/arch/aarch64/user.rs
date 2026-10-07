@@ -5,6 +5,9 @@ use crate::smp::MAX_CPUS;
 
 /// User images load at L1[1] on QEMU virt RAM.
 pub const DEFAULT_USER_BASE: u64 = 0x4000_0000;
+/// The span above the user base that user mappings may lie in (the
+/// kernel's own mappings start outside it): what a user pointer may name.
+pub const USER_WINDOW: u64 = 1 << 30;
 /// The mmap window (after the brk heap), see x86: 960 MiB, the rest of the
 /// 1 GiB span after the largest image, the stack and the heap.
 pub const MMAP_AREA_PAGES: usize = 245760;
