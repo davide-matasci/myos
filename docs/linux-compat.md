@@ -468,10 +468,10 @@ Without the feature (the quick list, the normal PR CI), the test instead
 runs `insmod /lib/modules/linux` and expects `[ OK ] linux` and the module
 in `/proc/modules`: the module is built and loadable in every build.
 
-CI builds the musl pieces in every run (`linux-compat` in
+CI builds the musl pieces when their inputs change (`linux-compat` in
 `ci-ports.yml`, cached in the GHCR registry by `scripts/ci-registry.sh`
 under a hash of `linux-compat/`, newlib and zlib) and packs them into
-`ci-build.tar`. The full boot (daily, or `full_boot` on dispatch;
+`ci-build.tar.zst`. The full boot (daily, or `full_boot` on dispatch;
 `MYOS_CI_FEATURES=linux_compat`) builds all four disk images with the
 layer, so bios, uefi, aarch64 and riscv64 run the tests above. On master
 the **iso** job builds the x86_64 hybrid ISO with `--features linux_compat`,

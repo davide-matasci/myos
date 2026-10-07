@@ -35,31 +35,13 @@ defaults:
     shell: bash
 
 jobs:
-  wire-myos:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install pinned nightly + rust-src
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-07-26
-          components: rust-src
-
-      - name: Verify wire-myos.py on pinned nightly
-        run: |
-          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
-          ./toolchain/std/check-wire.sh
-
+  # The ports workflow also checks wire-myos.py against the pinned nightly.
   ports:
-    needs: wire-myos
     uses: ./.github/workflows/ci-ports.yml
     secrets: inherit
 
   runtime:
-    needs: [ports, wire-myos]
-    if: always() && !cancelled() && needs.wire-myos.result == 'success' && needs.ports.result == 'success'
+    needs: ports
     # contents: write for the publish job (the rolling release on pushes to
     # master); a called workflow cannot have more than its caller.
     permissions:

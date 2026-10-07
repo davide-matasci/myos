@@ -104,8 +104,9 @@ cargo test -p ps2-scancode -p ext2fs      # host unit tests (ext2fs needs e2fspr
 
 - `ci.yml` calls `ci-ports.yml` (cross-builds each port, cached as OCI
   artifacts on GHCR keyed by a hash of its inputs, `scripts/ci-registry.sh`;
-  the two toolchain jobs run only when the registry lacks them) and
-  `ci-runtime.yml` (build job → boot jobs).
+  its plan job, `scripts/ci-ports-plan.sh`, starts a toolchain or port job
+  only for what the registry lacks) and `ci-runtime.yml` (build job → boot
+  jobs).
 - Pull requests run **test-mini** on bios, uefi, aarch64 and riscv64. The
   Linux layer's musl pieces are built and cached like a port
   (`linux-compat`) in every run.

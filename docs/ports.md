@@ -19,7 +19,8 @@ ports, and no Cargo feature per port.
 The role is the directory: **moving `ports/foo` to `packages/foo` takes foo
 out of the image, moving it back puts it in**, with no other change. CI
 builds and caches both roles the same way (`ci-ports.yml` reads its matrices
-from `scripts/ports.sh --matrix`).
+from `scripts/ports.sh --matrix`, and runs a job only for a port the
+registry lacks, `scripts/ci-ports-plan.sh`).
 
 ## The descriptor
 

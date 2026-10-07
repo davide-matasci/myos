@@ -1,5 +1,5 @@
 name: CI runtime
-# build packs complete ci-build.tar; boot/boot-mini ONLY extract + assert + QEMU.
+# build packs complete ci-build.tar.zst; boot/boot-mini ONLY extract + assert + QEMU.
 on:
   workflow_call:
     inputs:
@@ -75,13 +75,16 @@ jobs:
           chmod +x scripts/*.sh
           ./scripts/ci-pack-build-artifacts.sh
 
+      # Already zstd-compressed (multithreaded): zipping it again at the
+      # default level took longer than the upload itself.
       - name: Upload CI build artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ci-build
-          path: ci-build.tar
+          path: ci-build.tar.zst
           if-no-files-found: error
           retention-days: 1
+          compression-level: 0
 
       # The packages of the three arches (docs/packages.md): what the
       # publish job puts on the rolling release after the boots pass.
@@ -95,6 +98,11 @@ jobs:
           path: target/packages
           if-no-files-found: error
           retention-days: 7
+
+      # The registry pushes the build step left running in the background.
+      - name: Finish registry pushes
+        if: always()
+        run: ./scripts/ci-registry-push-wait.sh
 
   boot:
     name: boot (${{ matrix.id }})
@@ -140,12 +148,12 @@ jobs:
       - name: Extract and assert CI artifacts
         run: |
           chmod +x scripts/*.sh
-          if [[ ! -f ci-build.tar ]]; then
-            echo "::error::ci-build.tar missing after download; build job must upload it"
+          if [[ ! -f ci-build.tar.zst ]]; then
+            echo "::error::ci-build.tar.zst missing after download; build job must upload it"
             exit 1
           fi
-          echo "==> extracting ci-build.tar"
-          tar -xf ci-build.tar
+          echo "==> extracting ci-build.tar.zst"
+          tar --zstd -xf ci-build.tar.zst
           # Fail hard if incomplete; never rebuild here.
           ./scripts/ci-assert-boot-artifacts.sh
 
@@ -203,12 +211,12 @@ jobs:
       - name: Extract and assert CI artifacts
         run: |
           chmod +x scripts/*.sh
-          if [[ ! -f ci-build.tar ]]; then
-            echo "::error::ci-build.tar missing after download; build job must upload it"
+          if [[ ! -f ci-build.tar.zst ]]; then
+            echo "::error::ci-build.tar.zst missing after download; build job must upload it"
             exit 1
           fi
-          echo "==> extracting ci-build.tar"
-          tar -xf ci-build.tar
+          echo "==> extracting ci-build.tar.zst"
+          tar --zstd -xf ci-build.tar.zst
           # Fail hard if incomplete; never rebuild here.
           ./scripts/ci-assert-boot-artifacts.sh
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Assert that ci-build.tar (already extracted) has everything boot / boot-mini
+# Assert that ci-build.tar.zst (already extracted) has everything boot / boot-mini
 # need to run QEMU. NO compile / rebuild / registry / toolchain install.
 #
-# Boot jobs must call this after `tar -xf ci-build.tar`; building and packing
+# Boot jobs must call this after extracting ci-build.tar.zst; building and packing
 # belong in the build job (and the ports job). Missing bits =
 # fail the build job's pack (scripts/ci-pack-build-artifacts.sh).
 set -euo pipefail
@@ -45,7 +45,7 @@ while read -r f; do
 done < <(./scripts/ports.sh --all-files all)
 
 if [[ "$missing" -ne 0 ]]; then
-  echo "::error::ci-build.tar is incomplete for boot/boot-mini."
+  echo "::error::ci-build.tar.zst is incomplete for boot/boot-mini."
   echo "::error::The build job must pack these via scripts/ci-pack-build-artifacts.sh"
   echo "::error::(kernels --print-members + ports.sh --all-files all). Boot jobs do not rebuild."
   echo "target/ listing:"

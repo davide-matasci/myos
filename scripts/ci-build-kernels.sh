@@ -329,8 +329,10 @@ do_clean_and_build() {
   "$ROOT/linux-compat/build-launcher.sh"
   "$ROOT/linux-compat/build.sh"
   cargo build "${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"}"
-  cargo build -p kernel --target aarch64-unknown-none-softfloat
-  cargo build -p kernel --target riscv64imac-unknown-none-elf
+  # One cargo run for both: it builds the two targets side by side. The
+  # port scripts their nested builds call (ports/mbedtls/build.sh, every
+  # arch at once) already ran for the x86_64 build above: up to date here.
+  cargo build -p kernel --target aarch64-unknown-none-softfloat --target riscv64imac-unknown-none-elf
 }
 
 mkdir -p target
@@ -422,7 +424,8 @@ test -f target/bios.img
 od -An -tx1 -N 16 target/bios.img
 
 # Persist stamp+artifacts to GHCR so the next CI re-run is a true no-op
-# (rust-cache does not re-save on an exact key hit).
-if [[ -x "$ROOT/scripts/ci-registry.sh" ]]; then
+# (rust-cache does not re-save on an exact key hit). The CI build job pushes
+# them itself, in the background (MYOS_CI_KERNELS_PUSH=0).
+if [[ "${MYOS_CI_KERNELS_PUSH:-1}" != 0 && -x "$ROOT/scripts/ci-registry.sh" ]]; then
   "$ROOT/scripts/ci-registry.sh" push kernels || true
 fi

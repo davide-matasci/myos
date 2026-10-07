@@ -5,7 +5,8 @@ name: CI ports
 # toolchain/std directory with a port.env and a build script), so adding a
 # port does not touch this file. Everything is cached on GHCR under a hash
 # of its inputs (scripts/ci-registry.sh): the plan job asks the registry
-# whether the two toolchains are there, and their jobs run only when not.
+# which pieces it lacks (scripts/ci-ports-plan.sh), and only those get a
+# job. When the registry has everything, no port job starts at all.
 on:
   workflow_call:
 
@@ -21,6 +22,25 @@ defaults:
     shell: bash
 
 jobs:
+  # wire-myos.py patches the std sources the sysroot is built from: check it
+  # against the pinned nightly before anything is built (beside the plan).
+  wire-myos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned nightly + rust-src
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src
+
+      - name: Verify wire-myos.py on pinned nightly
+        run: |
+          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
+          ./toolchain/std/check-wire.sh
+
   plan:
     runs-on: ubuntu-latest
     # The same container (and so the same workspace path) as the jobs that
@@ -30,30 +50,18 @@ jobs:
       options: -e HOME=/root
     timeout-minutes: 5
     outputs:
-      ports: ${{ steps.matrix.outputs.ports }}
-      sysroot: ${{ steps.toolchains.outputs.sysroot }}
-      newlib: ${{ steps.toolchains.outputs.newlib }}
+      ports: ${{ steps.plan.outputs.ports }}
+      sysroot: ${{ steps.plan.outputs.sysroot }}
+      newlib: ${{ steps.plan.outputs.newlib }}
     steps:
       - uses: actions/checkout@v6
-      - name: Ports matrix from the descriptors
-        id: matrix
-        run: |
-          chmod +x scripts/*.sh
-          echo "ports=$(./scripts/ports.sh --matrix)" >> "$GITHUB_OUTPUT"
-          ./scripts/ports.sh --matrix
-      - name: Which toolchains the registry lacks
-        id: toolchains
+      - name: What the registry lacks
+        id: plan
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
-          for t in sysroot newlib; do
-            if ./scripts/ci-registry.sh exists "$t"; then
-              echo "$t=false" >> "$GITHUB_OUTPUT"
-            else
-              echo "$t=true" >> "$GITHUB_OUTPUT"
-            fi
-          done
+          chmod +x scripts/*.sh
+          ./scripts/ci-ports-plan.sh
 
   sysroot:
     runs-on: ubuntu-latest
@@ -61,7 +69,7 @@ jobs:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
     timeout-minutes: 45
-    needs: plan
+    needs: [plan, wire-myos]
     if: needs.plan.outputs.sysroot == 'true'
     steps:
       - uses: actions/checkout@v6
@@ -105,7 +113,7 @@ jobs:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
     timeout-minutes: 45
-    needs: plan
+    needs: [plan, wire-myos]
     if: needs.plan.outputs.newlib == 'true'
     steps:
       - uses: actions/checkout@v6
@@ -134,11 +142,13 @@ jobs:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
     timeout-minutes: 45
-    needs: [plan, sysroot, newlib]
+    needs: [plan, wire-myos, sysroot, newlib]
     if: |
       always() &&
       !cancelled() &&
       needs.plan.result == 'success' &&
+      needs.wire-myos.result == 'success' &&
+      needs.plan.outputs.ports != '[]' &&
       (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped') &&
       (needs.newlib.result == 'success' || needs.newlib.result == 'skipped')
     strategy:

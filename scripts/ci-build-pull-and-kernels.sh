@@ -17,7 +17,7 @@ fi
 # Every port with a build script (scripts/ports.sh --build-list all: newlib
 # first, then the image ports and the packages, which the build job packs
 # too) and the Linux layer's musl pieces. Each is one small OCI artifact, so
-# the pulls run several at a time; a port the registry lacks is built by
+# the pulls run several at a time (they wait on the network, not the CPU); a port the registry lacks is built by
 # ci-build-kernels.sh and pushed here afterwards. A hit is never pushed
 # again: that round trip per port used to cost as much as the pulls.
 pieces=()
@@ -30,7 +30,7 @@ jobs=0
 for p in "${pieces[@]}"; do
   ./scripts/ci-registry.sh pull "$p" >"$logs/$p" 2>&1 || true &
   jobs=$((jobs + 1))
-  if (( jobs >= 6 )); then
+  if (( jobs >= 12 )); then
     wait -n || true
     jobs=$((jobs - 1))
   fi
@@ -43,8 +43,22 @@ for p in "${pieces[@]}"; do
 done
 rm -rf "$logs"
 
-./scripts/ci-build-kernels.sh
+MYOS_CI_KERNELS_PUSH=0 ./scripts/ci-build-kernels.sh
 
-for p in "${misses[@]+"${misses[@]}"}"; do
-  ./scripts/ci-registry.sh push "$p" || true
-done
+# The pushes (the kernels when built here, a port the registry lacked) only
+# serve later runs: they go on in the background while the job tests, packs
+# and uploads, and the job's last step waits for them
+# (ci-registry-push-wait.sh). Detached, with no handle on this step's
+# output, so the step ends now.
+pushes=("${misses[@]+"${misses[@]}"}" kernels)
+state="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/myos-ci-push"
+rm -rf "$state"
+mkdir -p "$state"
+setsid nohup bash -c '
+  for p in "$@"; do
+    ./scripts/ci-registry.sh push "$p" || true
+  done
+  touch "'"$state"'/done"
+' push-bg "${pushes[@]}" </dev/null >"$state/log" 2>&1 &
+echo "$!" >"$state/pid"
+echo "==> registry pushes in the background: ${pushes[*]}"
