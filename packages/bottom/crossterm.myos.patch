@@ -150,12 +150,18 @@ diff -ruN a/src/event/read.rs b/src/event/read.rs
 diff -ruN a/src/event/source/unix/myos.rs b/src/event/source/unix/myos.rs
 --- a/src/event/source/unix/myos.rs	1970-01-01 00:00:00.000000000 +0000
 +++ b/src/event/source/unix/myos.rs	2026-10-07 14:04:16.712973195 +0000
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,143 @@
 +//! The event source on myos: the terminal's input, waited for with
 +//! `poll(2)`. myos sends no `SIGWINCH`, so a change of the terminal's size
-+//! is found by looking at it while waiting (at most every quarter second).
++//! is found by looking at it while waiting, every quarter second: a look
++//! costs a few system calls (`/dev/tty` and the terminal's `ctl` file), and
++//! callers poll in a loop with short timeouts (bottom: 20 ms).
 +
-+use std::{collections::VecDeque, io, time::Duration};
++use std::{
++    collections::VecDeque,
++    io,
++    time::{Duration, Instant},
++};
 +
 +use crate::event::timeout::PollTimeout;
 +use crate::event::Event;
@@ -164,7 +170,7 @@ diff -ruN a/src/event/source/unix/myos.rs b/src/event/source/unix/myos.rs
 +
 +const TTY_BUFFER_SIZE: usize = 1_024;
 +
-+/// How long one wait lasts before the size is looked at again.
++/// How often the size is looked at.
 +const SIZE_CHECK: Duration = Duration::from_millis(250);
 +
 +pub(crate) struct UnixInternalEventSource {
@@ -172,6 +178,7 @@ diff -ruN a/src/event/source/unix/myos.rs b/src/event/source/unix/myos.rs
 +    tty_buffer: [u8; TTY_BUFFER_SIZE],
 +    tty: FileDesc<'static>,
 +    size: Option<(u16, u16)>,
++    size_checked: Instant,
 +}
 +
 +impl UnixInternalEventSource {
@@ -185,11 +192,17 @@ diff -ruN a/src/event/source/unix/myos.rs b/src/event/source/unix/myos.rs
 +            tty_buffer: [0u8; TTY_BUFFER_SIZE],
 +            tty: input_fd,
 +            size: crate::terminal::size().ok(),
++            size_checked: Instant::now(),
 +        })
 +    }
 +
-+    /// A resize event when the terminal's size changed since last looked at.
++    /// A resize event when the terminal's size changed since last looked at
++    /// (at most every `SIZE_CHECK`).
 +    fn resized(&mut self) -> Option<InternalEvent> {
++        if self.size_checked.elapsed() < SIZE_CHECK {
++            return None;
++        }
++        self.size_checked = Instant::now();
 +        let now = crate::terminal::size().ok()?;
 +        if self.size.replace(now) == Some(now) {
 +            return None;
