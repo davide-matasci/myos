@@ -33,7 +33,10 @@ narrowed (`munmap`, `mprotect`, `madvise`, a shrinking `brk`) is flushed on
 every CPU that has it loaded (`flush_user_tlb`: an IPI shootdown on x86 and
 riscv64, the inner-shareable `tlbi` on aarch64), and the frames it unmapped
 are freed only after that flush (`free_mapped_page` keeps them until then):
-before it, another thread could still reach them through its TLB.
+before it, another thread could still reach them through its TLB. A change
+that only adds mappings (the heap growing, an `mmap` that is not `MAP_FIXED`)
+asks no other CPU to flush on x86_64 and aarch64, which cache no missing
+translation (`flush_user_tlb_added`); riscv64 may, and flushes everywhere.
 
 A new thread starts in user mode from a full register image
 (`task::UserRegs`, the same one a forked child resumes with): a native thread

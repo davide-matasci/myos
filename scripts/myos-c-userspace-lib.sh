@@ -33,6 +33,7 @@ MYOS_X11_LIBS_VERSION="$MYOS_ROOT/target/.myos-x11-libs-version"
 MYOS_TINYX_VERSION="$MYOS_ROOT/target/.myos-tinyx-version"
 MYOS_DWM_VERSION="$MYOS_ROOT/target/.myos-dwm-version"
 MYOS_ST_VERSION="$MYOS_ROOT/target/.myos-st-version"
+MYOS_BOTTOM_VERSION="$MYOS_ROOT/target/.myos-bottom-version"
 MYOS_DMENU_VERSION="$MYOS_ROOT/target/.myos-dmenu-version"
 MYOS_X11_XFT_VERSION="$MYOS_ROOT/target/.myos-x11-xft-version"
 MYOS_X11_APPS_VERSION="$MYOS_ROOT/target/.myos-x11-apps-version"
@@ -177,7 +178,7 @@ myos_c_smokes_version_hash() {
         "$MYOS_ROOT/user/c/uio_smoke.c" "$MYOS_ROOT/user/c/pthread_smoke.c" \
         "$MYOS_ROOT/user/c/netconv_smoke.c" "$MYOS_ROOT/user/c/child_smoke.c" \
         "$MYOS_ROOT/user/c/libc_smoke.c" "$MYOS_ROOT/user/c/sec.c" "$MYOS_ROOT/user/c/at_smoke.c" \
-        "$MYOS_ROOT/user/c/fileio_smoke.c" "$MYOS_ROOT/user/c/memhog.c" \
+        "$MYOS_ROOT/user/c/fileio_smoke.c" "$MYOS_ROOT/user/c/fault_smoke.c" "$MYOS_ROOT/user/c/memhog.c" \
         "$MYOS_ROOT/scripts/build-c-smokes.sh"
     } | sha256sum | awk '{print $1}'
   )"
@@ -190,7 +191,7 @@ myos_c_smokes_is_current() {
     && [[ "$(cat "$MYOS_C_SMOKES_VERSION")" == "$(myos_c_smokes_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke uio-smoke pthread-smoke netconv-smoke child-smoke libc-smoke sec at-smoke fileio-smoke memhog; do
+    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke uio-smoke pthread-smoke netconv-smoke child-smoke libc-smoke sec at-smoke fileio-smoke fault-smoke memhog; do
       [[ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ]] || return 1
     done
   done
@@ -830,6 +831,35 @@ myos_st_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/st-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/st-smoke-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_bottom_version_hash() {
+  local h
+  h="$(
+    {
+      # Rust: the std sysroot, and the myos libc/errno/rustix crates the
+      # Rust ports share (ports/coreutils/prepare.sh); C: newlib (btm_smoke,
+      # and libgloss behind the libc crate).
+      myos_sysroot_version_hash
+      myos_newlib_version_hash
+      find "$(myos_port_dir bottom)" "$MYOS_ROOT/ports/crates/libc" \
+        "$MYOS_ROOT/ports/coreutils/crates" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      sha256sum "$MYOS_ROOT/ports/coreutils/prepare.sh" "$MYOS_ROOT/ports/coreutils/versions.env"
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_bottom_is_current() {
+  local arch
+  [[ -f "$MYOS_BOTTOM_VERSION" ]] \
+    && [[ "$(cat "$MYOS_BOTTOM_VERSION")" == "$(myos_bottom_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/btm-${arch}-unknown-myos" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/btm-smoke-${arch}-unknown-none" ]] || return 1
   done
 }
 

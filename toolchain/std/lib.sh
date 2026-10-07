@@ -66,6 +66,11 @@ myos_install_std_rlibs() {
   local deps_dir="$2"
   local dest="$MYOS_SYSROOT/lib/rustlib/${triple}/lib"
   mkdir -p "$dest"
+  # Replace, not add to: a rebuilt std whose crate hash changed (a new
+  # dependency) would otherwise sit beside the old one, and rustc refuses
+  # to pick ("multiple candidates for rlib dependency std"); so would a
+  # stale one left in the build's deps.
+  rm -f "$dest"/*.rlib "$dest"/*.rmeta
   shopt -s nullglob
   local artifacts=( "$deps_dir"/*.rlib "$deps_dir"/*.rmeta )
   shopt -u nullglob
@@ -107,6 +112,8 @@ myos_cargo_build_std() {
   fi
 
   myos_export_toolchain_env
+  # Only this build's rlibs in deps: they are what gets installed.
+  rm -rf "$target_dir/${triple}"
   cargo "+$MYOS_NIGHTLY" build \
     -Z build-std=std,panic_abort \
     -Z build-std-features=compiler-builtins-mem \
@@ -172,7 +179,7 @@ myos_std_hello_is_current() {
     && [[ "$(cat "$MYOS_STD_HELLO_VERSION")" == "$(myos_std_hello_version_hash)" ]] \
     || return 1
   for triple in "${MYOS_USER_TRIPLES[@]+"${MYOS_USER_TRIPLES[@]}"}"; do
-    for name in hello cat echo bigalloc sleep fs thread; do
+    for name in hello cat echo bigalloc sleep fs thread alloc; do
       [[ -f "$MYOS_ROOT/target/std-${name}-${triple}" ]] || return 1
     done
   done

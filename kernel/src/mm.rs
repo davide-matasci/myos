@@ -85,15 +85,23 @@ pub fn alloc_frame_site(site: usize) -> u64 {
 
 /// `/proc/meminfo`: frame allocator counters (4 KiB frames). `FramesLive` is
 /// allocated minus freed; the `Site*` lines are cumulative allocations per
-/// call site, the same numbers the out-of-memory panic prints.
+/// call site, the same numbers the out-of-memory panic prints. The `Mem*`
+/// lines are what a system monitor shows: all usable RAM, the part nothing
+/// holds, and that plus the caches.
 pub fn meminfo_text() -> alloc::vec::Vec<u8> {
     let a = FRAME_ALLOC_COUNT.load(Ordering::Relaxed);
     let f = FRAME_FREE_COUNT.load(Ordering::Relaxed);
     let site = |i: usize| FRAME_SITE_COUNTS[i].load(Ordering::Relaxed);
+    // All usable RAM, what no one holds, and the caches that give theirs
+    // back when memory runs out (`raw_alloc`): free plus those is available.
+    let total = usable_total();
+    let free = total.saturating_sub(a - f);
+    let caches = (crate::blk::cache_frames() as u64, crate::fs::pagecache::frames() as u64);
     alloc::format!(
         "FramesAlloc: {}\nFramesFree: {}\nFramesLive: {}\nLiveKiB: {}\n\
          SiteVirtq: {}\nSiteFault0: {}\nSiteExec: {}\nSitePageTable: {}\nSiteMmap: {}\nSiteOther: {}\n\
-         BlockCacheKiB: {}\nPageCacheKiB: {}\n",
+         BlockCacheKiB: {}\nPageCacheKiB: {}\n\
+         MemTotalKiB: {}\nMemFreeKiB: {}\nMemAvailableKiB: {}\n",
         a,
         f,
         a - f,
@@ -104,8 +112,11 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
         site(3),
         site(4),
         site(5),
-        crate::blk::cache_frames() as u64 * (PAGE / 1024),
-        crate::fs::pagecache::frames() as u64 * (PAGE / 1024),
+        caches.0 * (PAGE / 1024),
+        caches.1 * (PAGE / 1024),
+        total * (PAGE / 1024),
+        free * (PAGE / 1024),
+        (free + caches.0 + caches.1) * (PAGE / 1024),
     )
     .into_bytes()
 }

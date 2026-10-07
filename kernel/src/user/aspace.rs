@@ -135,6 +135,22 @@ pub use crate::arch::upaging::{read_aspace, switch_aspace};
 /// [`retire_aspace`] when the address space itself goes.
 static UNMAPPED: Mutex<alloc::vec::Vec<(u64, u64)>> = Mutex::new(alloc::vec::Vec::new());
 
+/// After a change that only added mappings (none removed, narrowed or
+/// moved): no CPU can hold a translation that is now wrong, as x86_64 and
+/// aarch64 keep no missing ones, so no other CPU is asked to flush. riscv64
+/// may keep a missing translation: there it is [`flush_user_tlb`].
+///
+/// A multithreaded process grows its heap and maps memory all the time; a
+/// shootdown each time waits for every CPU, some spinning on a lock with
+/// interrupts off, and slowed the whole system to a crawl.
+pub(super) fn flush_user_tlb_added() {
+    if cfg!(target_arch = "riscv64") {
+        flush_user_tlb();
+    } else {
+        crate::arch::flush_tlb_local();
+    }
+}
+
 /// Flush the current address space's user translations (on every CPU that
 /// has it loaded), then free the frames unmapped from it before.
 pub(super) fn flush_user_tlb() {

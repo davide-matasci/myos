@@ -5,7 +5,19 @@
 myos has **no `socket()` syscall** and no kernel socket table. Networking is:
 
 1. Kernel: virtio-net → `/dev/net0/data` + netfs Plan 9 `/net` + `/dev/netd/data` channel
-2. Userspace `netd`: smoltcp over `/dev/net0/data`
+2. Userspace `netd`: smoltcp over `/dev/net0/data`, its address, mask and
+   default gateway from DHCP. The gateway may lie outside the address's
+   prefix (Hetzner Cloud gives a /32 and the gateway 172.31.1.1): smoltcp
+   carries a myos patch for that, accepting ARP from a router of a route
+   (`user/net/smoltcp/`, applied into `target/smoltcp-myos` before netd is
+   built, `PORT_PREPARE`). netd hands the lease to netfs, which shows it
+   as `/net/ndb`, Plan 9 style:
+   ```
+   ip=10.0.2.15 ipmask=255.255.255.0 ipgw=10.0.2.2
+   	dns=10.0.2.4
+   ```
+   One `dns=` line per DNS server the lease names; the file is empty until
+   DHCP is done (and after the lease is lost)
 3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}`; a conversation's
    files are the user's whose process read `clone` (an accepted
    connection: the listener's), no other user's (`docs/security.md`)
@@ -22,7 +34,7 @@ sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.
 | `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` to ctl; blocking waits for `connected`; **O_NONBLOCK** → `EINPROGRESS`, then `poll`/`select` **POLLOUT** (+ `SO_ERROR`) when netd reports Established. netd has no loopback: a connect to 127.0.0.0/8 fails at once with **ECONNREFUSED** (nothing would ever answer its SYN) |
 | `send`/`recv`/`read`/`write` | ordinary fd I/O on data; empty connected read blocks (in `SYS_POLL`) unless `O_NONBLOCK` (then EAGAIN); hangup → EOF. A TCP write takes what netd has room for (below): a blocking one waits for the rest, `O_NONBLOCK` gets a short write or EAGAIN, a hung-up peer EPIPE |
 | `close` | hangup via ctl (`hangup`) then close data (hook from `_close`) |
-| `getaddrinfo` | DNS A lookup over `/net/udp` to QEMU DNS `10.0.2.3:53` (same as `user/lib/dns.rs`) |
+| `getaddrinfo` | DNS A lookup over `/net/udp` to the `dns=` servers of `/net/ndb` in turn, QEMU's `10.0.2.3` when it names none (same as `user/lib/dns.rs`). The launcher moves QEMU's DNS to `10.0.2.4`, so the boot tests' lookups show the lease is followed |
 | `poll`/`select` | the kernel's `SYS_POLL`: netfs's `poll` hook reports **POLLIN** for bytes, a hangup or an accept not yet taken, **POLLOUT** once "connected" while the conversation has send room; the library adds **POLLOUT** for a connected UDP socket, arms a listener's `accept` before waiting and finishes a connect (`myos_socket_poll_prepare` / `_done`) |
 
 A read of a UDP conversation's `data` returns one datagram (netfs keeps

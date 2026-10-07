@@ -190,9 +190,36 @@ pub enum ResolveError {
     Name,
 }
 
-/// Resolve `host` to an IPv4 A record via QEMU DNS (`10.0.2.3:53`).
+/// Resolve `host` to an IPv4 A record through the DNS servers of netd's
+/// DHCP lease (`dns=` in `/net/ndb`), QEMU's `10.0.2.3` when it names none.
+/// Same as libgloss's `netdb.c`.
 pub fn resolve_a(host: &[u8]) -> Result<[u8; 4], ResolveError> {
-    let dns_server = b"10.0.2.3";
+    let mut ndb = [0u8; 256];
+    let mut n = 0;
+    if let Some(fd) = open(b"/net/ndb") {
+        n = read(fd, &mut ndb);
+        close(fd);
+        if n == usize::MAX {
+            n = 0;
+        }
+    }
+    let mut result = Err(ResolveError::NoResponse);
+    let mut tried = false;
+    for word in ndb[..n].split(|&b| b == b' ' || b == b'\t' || b == b'\n') {
+        // A dotted IPv4 address fits `connect_ctl`'s buffer.
+        if let Some(server) = word.strip_prefix(b"dns=").filter(|s| (7..=15).contains(&s.len())) {
+            tried = true;
+            result = resolve_via(server, host);
+            if result.is_ok() {
+                return result;
+            }
+        }
+    }
+    if tried { result } else { resolve_via(b"10.0.2.3", host) }
+}
+
+/// Ask the DNS server `dns_server` (a dotted IPv4 address) for `host`.
+fn resolve_via(dns_server: &[u8], host: &[u8]) -> Result<[u8; 4], ResolveError> {
     let dns_port: u16 = 53;
 
     let mut query = [0u8; 512];

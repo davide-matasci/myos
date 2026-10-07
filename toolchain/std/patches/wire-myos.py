@@ -141,9 +141,15 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
                 '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }',
                 '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }\n    target_os = "myos" => {\n        mod myos;\n        use myos as imp;\n    }',
             ),
+        ],
+    ),
+    # The heap is dlmalloc, as on Xous (`sys/myos/alloc.rs`).
+    (
+        "std/Cargo.toml",
+        [
             (
-                '        target_os = "hermit",',
-                '        target_os = "hermit",\n        target_os = "myos",',
+                'target_os = "xous", target_os = "vexos",',
+                'target_os = "xous", target_os = "vexos", target_os = "myos",',
             ),
         ],
     ),
@@ -477,6 +483,34 @@ impl From<OwnedFd> for crate::fs::File {{
         crate::sys::FromInner::from_inner(crate::sys::FromInner::from_inner(
             crate::sys::FromInner::from_inner(owned_fd),
         ))
+    }}
+}}
+
+// The raw fd of a File, through its OwnedFd (as on unix).
+#[stable(feature = "rust1", since = "1.0.0")]
+#[cfg(target_os = "myos")]
+impl AsRawFd for crate::fs::File {{
+    #[inline]
+    fn as_raw_fd(&self) -> RawFd {{
+        self.as_fd().as_raw_fd()
+    }}
+}}
+
+#[stable(feature = "from_raw_os", since = "1.1.0")]
+#[cfg(target_os = "myos")]
+impl FromRawFd for crate::fs::File {{
+    #[inline]
+    unsafe fn from_raw_fd(fd: RawFd) -> crate::fs::File {{
+        crate::fs::File::from(unsafe {{ OwnedFd::from_raw_fd(fd) }})
+    }}
+}}
+
+#[stable(feature = "into_raw_os", since = "1.4.0")]
+#[cfg(target_os = "myos")]
+impl IntoRawFd for crate::fs::File {{
+    #[inline]
+    fn into_raw_fd(self) -> RawFd {{
+        OwnedFd::from(self).into_raw_fd()
     }}
 }}
 '''

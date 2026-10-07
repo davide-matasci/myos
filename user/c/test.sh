@@ -4,6 +4,9 @@ t pty /bin/etc/pty_smoke 2
 # More pty pairs at once than the kernel once had (four), their names and
 # inodes distinct, a closed pair's index used again (pty_smoke.c).
 t ptys /bin/etc/pty_smoke 4
+# Writers faster than their reader: a write into a full pty waits for room,
+# also on the reader's CPU (pty_smoke.c).
+t pty_flood /bin/etc/pty_smoke 5
 t urandom /bin/etc/urandom_smoke
 # The tty: the line editor's keys and ^C, driven through a pty (tty_smoke.c).
 t tty /bin/etc/tty_smoke
@@ -47,6 +50,11 @@ t at /bin/etc/at_smoke
 # its end; a rename does not wait for a process reading the console
 # (fileio_smoke.c; on ext2 in mkfs.ext2's test).
 t fileio /bin/etc/fileio_smoke
+# A write to a pty whose master is open but never read blocks, and a signal
+# ends it: the writer stays killable (fault_smoke.c; a CPU fault from
+# userspace is contained the same way, but a test cannot fault on purpose:
+# the host treats the kernel's `user fault` line as a failure).
+t fault /bin/etc/fault_smoke
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).

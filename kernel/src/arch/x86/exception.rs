@@ -94,6 +94,16 @@ pub fn x86_general_protection(rip: u64, rsp: u64, code: u64, rbp: u64, user: boo
     ));
 }
 
+/// Any other exception (`name`: `#UD`, `#DE`, `#MF`, ...): from ring 3 it
+/// kills the faulting task, whose program ran a trapping instruction; from
+/// the kernel it is fatal.
+pub fn x86_exception(name: &str, rip: u64, rsp: u64, code: u64, user: bool) -> ! {
+    if user {
+        user_fault_kill(name, &format!("rip={rip:#x} rsp={rsp:#x} code={code:#x}{ctx}", ctx = task_ctx()));
+    }
+    fatal_line(&format!("{name} rip={rip:#x} rsp={rsp:#x} code={code:#x} kernel{ctx}", ctx = task_ctx()));
+}
+
 pub fn x86_double_fault(rip: u64, rsp: u64) -> ! {
     fatal_line(&format!(
         "double fault rip={rip:#x} rsp={rsp:#x}{ctx}",

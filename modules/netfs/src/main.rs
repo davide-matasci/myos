@@ -3,6 +3,7 @@
 //! Lookup always fails; bytes go through the ABI v7 `read`/`write` hooks.
 //! Syscalls run with interrupts off — never busy-spin, never sleep.
 //! `/net/unix` (local connections) is served here alone, see [`unix`].
+//! `/net/ndb` shows netd's DHCP lease (address, gateway, DNS servers).
 //!
 //! Module calls take no kernel lock: netd's replies (`/dev/netd` writes) land
 //! on one CPU while a reader drains `data` on another, so every entry point
@@ -48,6 +49,8 @@ const REP_ERR: u8 = 4;
 /// Bytes of a TCP conv's sends that netd moved into its socket (u16
 /// payload): the writers may queue that many more (`Conv::tx_room`).
 const REP_TXCREDIT: u8 = 5;
+/// netd's DHCP lease as `/net/ndb` text (empty: none); conv is unused.
+const REP_NDB: u8 = 6;
 
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
@@ -64,6 +67,8 @@ const DATA_CAP: usize = 8192;
 /// takes what fits and a full conv refuses it (the writer waits for POLLOUT).
 const TX_CAP: u16 = 8192;
 const STATUS_CAP: usize = 64;
+/// `/net/ndb`: an address line and a few `dns=` lines.
+const NDB_CAP: usize = 256;
 
 #[derive(Clone, Copy)]
 struct Msg {
@@ -186,12 +191,16 @@ impl Conv {
 struct State {
     req: RingBuf,
     convs: [Conv; MAX_CONV],
+    ndb_len: u16,
+    ndb: [u8; NDB_CAP],
 }
 
-/// The request ring and the tcp, udp and icmp conversations.
+/// The request ring, the tcp, udp and icmp conversations and the lease.
 static STATE: Lock<State> = Lock::new(State {
     req: RingBuf::EMPTY,
     convs: [Conv::EMPTY; MAX_CONV],
+    ndb_len: 0,
+    ndb: [0; NDB_CAP],
 });
 
 static API: ApiCell = ApiCell::new();
@@ -263,6 +272,8 @@ fn parse_u16(s: &str) -> Option<u16> {
 #[derive(Clone, Copy)]
 enum Node {
     Root,
+    /// `/net/ndb`: the network configuration, Plan 9 style.
+    Ndb,
     Proto(u8),
     Clone(u8),
     ConvDir(u8, u16),
@@ -276,7 +287,7 @@ enum Node {
 impl Node {
     fn proto(self) -> Option<u8> {
         match self {
-            Node::Root => None,
+            Node::Root | Node::Ndb => None,
             Node::Proto(p) | Node::Clone(p) => Some(p),
             Node::ConvDir(p, _)
             | Node::Ctl(p, _)
@@ -290,6 +301,9 @@ impl Node {
 fn parse_path(path: &str) -> Option<Node> {
     if path.is_empty() || path == "." || path == ".." {
         return Some(Node::Root);
+    }
+    if path == "ndb" {
+        return Some(Node::Ndb);
     }
     let mut it = path.split('/');
     let a = it.next()?;
@@ -525,6 +539,12 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
         return;
     }
     let payload = &buf[REP_HDR..REP_HDR + plen];
+    if typ == REP_NDB {
+        let n = payload.len().min(NDB_CAP);
+        st.ndb[..n].copy_from_slice(&payload[..n]);
+        st.ndb_len = n as u16;
+        return;
+    }
     // CLONE_OK must (re)install over an unused *or closing* slot.
     // Pump-accept reuses netd indices as soon as TCP hits Closed while netfs
     // may still hold used+closing for the prior occupant. Leaving that
@@ -705,6 +725,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
             None => return -1,
         },
         Node::Root => (S_IFDIR | 0o755, 0u32, 1u32),
+        Node::Ndb => (S_IFREG | 0o444, st.ndb_len as u32, 2),
         Node::Proto(p) => (S_IFDIR | 0o755, 0, 10 + p as u32),
         Node::Clone(p) => (S_IFREG | 0o666, 0, 20 + p as u32),
         Node::ConvDir(p, id) => {
@@ -775,6 +796,7 @@ unsafe extern "C" fn net_listdir(
             let _ = put_bytes(dst, &mut n, b"udp");
             let _ = put_bytes(dst, &mut n, b"icmp");
             let _ = put_bytes(dst, &mut n, b"unix");
+            let _ = put_bytes(dst, &mut n, b"ndb");
         }
         Node::Proto(p) => {
             let _ = put_bytes(dst, &mut n, b"clone");
@@ -820,6 +842,7 @@ unsafe extern "C" fn net_read(
         return unix::read(node, pos, out);
     }
     match node {
+        Node::Ndb => copy_at(&st.ndb[..st.ndb_len as usize], pos, out),
         Node::Clone(p) => {
             if pos > 0 {
                 return 0;

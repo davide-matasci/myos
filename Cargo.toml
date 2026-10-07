@@ -2,6 +2,8 @@
 resolver = "3"
 members = ["kernel", "modules/abi", "modules/console/ps2-scancode", "modules/ext2/ext2fs"]
 default-members = ["."]
+# Crates fetched and patched into target/ (user/net/smoltcp) are their own.
+exclude = ["target"]
 
 [package]
 name = "myos"

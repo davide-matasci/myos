@@ -402,7 +402,10 @@ fn add_virtio_net(cmd: &mut Command) {
     // on :8765 and starts that server *before* QEMU. Only add guestfwd when the
     // host port is already listening so CI (example.com via user-net, no :8765)
     // does not abort QEMU before the kernel runs.
-    let mut netdev = String::from("user,id=net0");
+    // The DNS server moves off QEMU's default 10.0.2.3, the address the
+    // resolvers fall back to without a lease: name lookups then show they
+    // use the server DHCP gives (`/net/ndb`, issue #320).
+    let mut netdev = String::from("user,id=net0,dns=10.0.2.4");
     if host_http_8765_listening() {
         netdev.push_str(",guestfwd=tcp:10.0.2.100:80-tcp:127.0.0.1:8765");
     }
@@ -854,6 +857,23 @@ fn ensure_user_at_user_base(cargo: &str, target: &str, bin: &str) {
                     }
                 }
             }
+        }
+    }
+
+    // What the crate's build needs first (`PORT_PREPARE`: netd's patched
+    // smoltcp), as kernel/build.rs does before its own build of it.
+    if let Some(script) = ports::load_all(&root)
+        .into_iter()
+        .find(|p| p.kind == ports::Kind::User && p.bin == bin)
+        .and_then(|p| p.prepare)
+    {
+        let ok = Command::new("bash")
+            .arg(root.join(&script))
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            eprintln!("error: {script} failed for {bin}");
+            exit(1);
         }
     }
 

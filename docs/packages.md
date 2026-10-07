@@ -121,7 +121,7 @@ binaries there: the tag names the commit they were built from, whose
 
 `packages/`: git, lua, lynx, make, os-test, vim, x11-libs (the X client
 libraries for the X packages, with libX11's error database and their
-test), tinyx (the X server, `Xfbdev`), x11-xft (FreeType, fontconfig and Xft for the X clients) and x11-fonts (DejaVu Sans Mono), dwm (the window manager), st (the terminal), dmenu (the menu), x11-apps (xev), clear (ncurses' terminal-clearing program), and ncurses (a build dependency of vim, lynx and clear, nothing in the
+test), tinyx (the X server, `Xfbdev`), x11-xft (FreeType, fontconfig and Xft for the X clients) and x11-fonts (DejaVu Sans Mono), dwm (the window manager), st (the terminal), dmenu (the menu), x11-apps (xev), bottom (`btm`, the system monitor), clear (ncurses' terminal-clearing program), and ncurses (a build dependency of vim, lynx and clear, nothing in the
 image). Everything a boot needs
 stays in `ports/` (and zlib, which get-myos links). The full test list
 installs them all; the ISO (`cargo run -- iso`) carries the image only.

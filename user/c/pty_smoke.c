@@ -12,6 +12,12 @@
  * `pty_smoke 4`: more pairs at once than the kernel once allowed (it had
  * four), each with its own two-digit-capable name and inode numbers and a
  * line through it, and a closed pair's index used again.
+ *
+ * `pty_smoke 5`: writers faster than their reader. Children each write
+ * eight times what a pair's output ring holds to their slave while the
+ * parent drains the masters one after the other: a writer waits for room,
+ * also when it shares a CPU with the reader (the kernel once spun there with
+ * interrupts off, and the reader on that CPU never ran).
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -96,8 +102,71 @@ static int many(void) {
     return 0;
 }
 
+#define FLOOD_PAIRS 5
+#define FLOOD_BYTES (32 * 1024)
+
+static int flood(void) {
+    int m[FLOOD_PAIRS];
+    pid_t pid[FLOOD_PAIRS];
+    for (int i = 0; i < FLOOD_PAIRS; i++) {
+        int sl;
+        if (openpty(&m[i], &sl, NULL, NULL, NULL) != 0) {
+            printf("[ FAIL ] flood openpty (%s)\n", strerror(errno));
+            return 1;
+        }
+        pid[i] = fork();
+        if (pid[i] < 0) {
+            printf("[ FAIL ] flood fork (%s)\n", strerror(errno));
+            return 1;
+        }
+        if (pid[i] == 0) {
+            char chunk[4096];
+            memset(chunk, 'a' + i, sizeof chunk);
+            for (int k = 0; k < i; k++) {
+                close(m[k]);
+            }
+            close(m[i]);
+            for (int sent = 0; sent < FLOOD_BYTES; sent += (int)sizeof chunk) {
+                if (write(sl, chunk, sizeof chunk) != (ssize_t)sizeof chunk) {
+                    _exit(1);
+                }
+            }
+            _exit(0);
+        }
+        close(sl);
+    }
+    for (int i = 0; i < FLOOD_PAIRS; i++) {
+        char buf[4096];
+        long got = 0;
+        for (;;) {
+            ssize_t n = read(m[i], buf, sizeof buf);
+            if (n <= 0) {
+                break; /* EIO: the child closed its slave */
+            }
+            for (ssize_t k = 0; k < n; k++) {
+                if (buf[k] != 'a' + i) {
+                    printf("[ FAIL ] flood pair %d: a byte from elsewhere\n", i);
+                    return 1;
+                }
+            }
+            got += n;
+        }
+        int st = 0;
+        waitpid(pid[i], &st, 0);
+        if (got != FLOOD_BYTES || !WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+            printf("[ FAIL ] flood pair %d: %ld bytes, status %d\n", i, got, st);
+            return 1;
+        }
+        close(m[i]);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     int stage = (argc > 1) ? atoi(argv[1]) : 0;
+    if (stage == 5) {
+        return flood();
+    }
     if (stage == 4) {
         return many();
     }
