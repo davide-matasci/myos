@@ -43,6 +43,7 @@ has a default, so a minimal port needs only `PORT_FILES`.
 | `PORT_BIN` | | `user` only: the crate's binary name (`myos_cat`) |
 | `PORT_IMAGE_BASE` | `0` | `user` only: `1` links the program at `USER_BASE` as `ET_EXEC` on aarch64 and riscv64 (programs with absolute vtables: netd, ping, http, dns) |
 | `PORT_WATCH` | | `user` only: extra source files the kernel build watches, relative to the crate (`../lib/src/lib.rs`) |
+| `PORT_PREPARE` | | `user` only: a script `kernel/build.rs` runs before it builds the crate, named like `PORT_BUILD`: what the build needs in `target/` first. netd's fetches smoltcp and applies myos's patches to it (`user/net/smoltcp/prepare.sh`, its `[patch.crates-io]`) |
 | `PORT_TEST` | | the port's boot test script, in the port directory (`test.sh`): packed as `lib/myos-tests/ports/<group>-<name>.sh` (`0` core image port, `1` image port, `2` package), run by the test runner in that order (`docs/testing.md`) |
 | `PORT_HOST` | | the host's side of that test, in the port directory (`host.sh`): not packed; the launcher runs it with the arguments of a `HOST <name> <args>` line the guest test prints (dropbear's SSH clients, the listen test's peer) |
 

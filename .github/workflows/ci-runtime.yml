@@ -65,8 +65,10 @@ jobs:
           chmod +x scripts/*.sh
           ./scripts/ci-build-pull-and-kernels.sh
 
-      - name: Host unit tests (PS/2 decode; ext2 against e2fsprogs)
-        run: cargo test -p ps2-scancode -p ext2fs
+      - name: Host unit tests (PS/2 decode; ext2 against e2fsprogs; netd's patched smoltcp)
+        run: |
+          cargo test -p ps2-scancode -p ext2fs
+          cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib
 
       - name: Pack CI build artifacts
         env:

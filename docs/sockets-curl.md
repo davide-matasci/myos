@@ -5,7 +5,12 @@
 myos has **no `socket()` syscall** and no kernel socket table. Networking is:
 
 1. Kernel: virtio-net → `/dev/net0/data` + netfs Plan 9 `/net` + `/dev/netd/data` channel
-2. Userspace `netd`: smoltcp over `/dev/net0/data`
+2. Userspace `netd`: smoltcp over `/dev/net0/data`, its address, mask and
+   default gateway from DHCP. The gateway may lie outside the address's
+   prefix (Hetzner Cloud gives a /32 and the gateway 172.31.1.1): smoltcp
+   carries a myos patch for that, accepting ARP from a router of a route
+   (`user/net/smoltcp/`, applied into `target/smoltcp-myos` before netd is
+   built, `PORT_PREPARE`). DNS goes to QEMU's 10.0.2.3 only (issue #320)
 3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}`; a conversation's
    files are the user's whose process read `clone` (an accepted
    connection: the listener's), no other user's (`docs/security.md`)

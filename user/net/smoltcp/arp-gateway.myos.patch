@@ -1,0 +1,125 @@
+smoltcp: accept ARP from a router of ours outside every prefix of ours
+
+An interface whose address is a /32, with its default gateway elsewhere
+(Hetzner Cloud: the public address as a /32, gateway 172.31.1.1, an
+on-link route), never learns the gateway's MAC: an ARP packet from an
+address outside the interface's prefixes is dropped, so nothing reaches
+the gateway. A router named by a route is on-link by definition: its ARP
+is accepted too. With a test (tests/ipv4.rs). Derived from smoltcp, so
+under smoltcp's license (0BSD).
+
+diff --git a/src/iface/interface/ipv4.rs b/src/iface/interface/ipv4.rs
+--- a/src/iface/interface/ipv4.rs
++++ b/src/iface/interface/ipv4.rs
+@@ -279,7 +279,12 @@
+                     return None;
+                 }
+ 
+-                if !self.in_same_network(&IpAddress::Ipv4(source_protocol_addr)) {
++                // A router of ours is on-link even outside every prefix of
++                // ours: a /32 address with its gateway elsewhere (Hetzner
++                // Cloud hands out 172.31.1.1 that way, as on-link routes).
++                if !self.in_same_network(&IpAddress::Ipv4(source_protocol_addr))
++                    && !self.routes.has_router(&IpAddress::Ipv4(source_protocol_addr))
++                {
+                     net_debug!("arp: source IP address not in same network as us");
+                     return None;
+                 }
+diff --git a/src/iface/interface/tests/ipv4.rs b/src/iface/interface/tests/ipv4.rs
+--- a/src/iface/interface/tests/ipv4.rs
++++ b/src/iface/interface/tests/ipv4.rs
+@@ -474,6 +474,79 @@
+ #[rstest]
+ #[case(Medium::Ethernet)]
+ #[cfg(feature = "medium-ethernet")]
++fn test_arp_reply_from_gateway_outside_prefix(#[case] medium: Medium) {
++    let (mut iface, mut sockets, _device) = setup(medium);
++
++    // A /32 address and a default route through a gateway outside it.
++    let local_ip_addr = Ipv4Address::new(192, 0, 2, 10);
++    let gateway_ip_addr = Ipv4Address::new(172, 31, 1, 1);
++    let local_hw_addr = EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
++    let gateway_hw_addr = EthernetAddress([0x52, 0x54, 0x00, 0x00, 0x00, 0x01]);
++    iface.update_ip_addrs(|addrs| {
++        addrs.clear();
++        addrs.push(IpCidr::new(IpAddress::Ipv4(local_ip_addr), 32)).unwrap();
++    });
++    iface
++        .routes_mut()
++        .add_default_ipv4_route(gateway_ip_addr)
++        .unwrap();
++
++    let reply = |source_protocol_addr| {
++        let mut eth_bytes = vec![0u8; 42];
++        let repr = ArpRepr::EthernetIpv4 {
++            operation: ArpOperation::Reply,
++            source_hardware_addr: gateway_hw_addr,
++            source_protocol_addr,
++            target_hardware_addr: local_hw_addr,
++            target_protocol_addr: local_ip_addr,
++        };
++        let mut frame = EthernetFrame::new_unchecked(&mut eth_bytes);
++        frame.set_dst_addr(local_hw_addr);
++        frame.set_src_addr(gateway_hw_addr);
++        frame.set_ethertype(EthernetProtocol::Arp);
++        repr.emit(&mut ArpPacket::new_unchecked(frame.payload_mut()));
++        eth_bytes
++    };
++
++    // Another address outside the prefix is still not learned.
++    let other_ip_addr = Ipv4Address::new(198, 51, 100, 7);
++    let frame = reply(other_ip_addr);
++    iface.inner.process_ethernet(
++        &mut sockets,
++        PacketMeta::default(),
++        &frame[..],
++        &mut iface.fragments,
++    );
++    assert_eq!(
++        iface.inner.lookup_hardware_addr(
++            MockTxToken,
++            &IpAddress::Ipv4(other_ip_addr),
++            &mut iface.fragmenter,
++        ),
++        Err(DispatchError::NeighborPending)
++    );
++
++    // The gateway's reply is learned: traffic to the internet goes to it.
++    let frame = reply(gateway_ip_addr);
++    iface.inner.process_ethernet(
++        &mut sockets,
++        PacketMeta::default(),
++        &frame[..],
++        &mut iface.fragments,
++    );
++    assert_eq!(
++        iface.inner.lookup_hardware_addr(
++            MockTxToken,
++            &IpAddress::Ipv4(Ipv4Address::new(1, 1, 1, 1)),
++            &mut iface.fragmenter,
++        ),
++        Ok((HardwareAddress::Ethernet(gateway_hw_addr), MockTxToken))
++    );
++}
++
++#[rstest]
++#[case(Medium::Ethernet)]
++#[cfg(feature = "medium-ethernet")]
+ fn test_handle_other_arp_request(#[case] medium: Medium) {
+     let (mut iface, mut sockets, _device) = setup(medium);
+ 
+diff --git a/src/iface/route.rs b/src/iface/route.rs
+--- a/src/iface/route.rs
++++ b/src/iface/route.rs
+@@ -146,6 +146,11 @@
+         }
+     }
+ 
++    /// Whether `addr` is the router of one of the routes.
++    pub(crate) fn has_router(&self, addr: &IpAddress) -> bool {
++        self.storage.iter().any(|route| route.via_router == *addr)
++    }
++
+     pub(crate) fn lookup(&self, addr: &IpAddress, timestamp: Instant) -> Option<IpAddress> {
+         assert!(addr.is_unicast());
+ 
