@@ -3,19 +3,23 @@
 //! offers, powers the ports, resets the one a device appears on, and hands
 //! the child to the host (`hub_attach`); the hub's status-change interrupt
 //! endpoint tells it about connects and disconnects from then on. All of
-//! this runs on the host's USB thread (probe, the completion callback).
+//! this runs on the host's USB thread (probe, the completion callback),
+//! so the hub table's lock is never contended; it is taken only around
+//! the table itself, never across a host call, since `hub_attach`
+//! enumerates the child on this same thread and a nested hub's `probe`
+//! comes back here.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 
 use myos_abi::{
-    ABI_VERSION, ApiCell, KernelApi, StrRef, USB_EGONE, USB_HOST_VERSION, USB_SERVICE, USB_SPEED_FULL,
-    USB_SPEED_HIGH, USB_SPEED_LOW, USB_SPEED_SUPER, UsbDeviceInfo, UsbDriverOps, UsbHostOps,
-    UsbInterfaceInfo, status_fail, status_ok,
+    ABI_VERSION, ApiCell, KernelApi, Lock, StrRef, USB_EGONE, USB_HOST_VERSION, USB_SERVICE,
+    USB_SPEED_FULL, USB_SPEED_HIGH, USB_SPEED_LOW, USB_SPEED_SUPER, UsbDeviceInfo, UsbDriverOps,
+    UsbHostOps, UsbInterfaceInfo, status_fail, status_ok,
 };
 
 const MAX_HUBS: usize = 8;
@@ -38,23 +42,27 @@ const RT_HUB_IN: u8 = 0xA0;
 const RT_PORT_IN: u8 = 0xA3;
 const RT_PORT_OUT: u8 = 0x23;
 
+/// A hub, as the hooks copy it out of [`HUBS`]: a hub that is gone is not
+/// in the table.
+#[derive(Clone, Copy)]
 struct Hub {
     dev: u32,
     intf: u8,
     ports: u8,
     super_speed: bool,
-    /// The status-change interrupt endpoint and its report (one bit per
-    /// port, bit 0 the hub itself).
+    /// The status-change interrupt endpoint and the length of its report
+    /// (one bit per port, bit 0 the hub itself; the bytes in [`REPORTS`]).
     status_ep: u8,
     report_len: usize,
-    report: [u8; 8],
-    gone: bool,
 }
 
 static API: ApiCell = ApiCell::new();
 /// The host's table, kept by `module_init`.
 static HOST: AtomicPtr<UsbHostOps> = AtomicPtr::new(core::ptr::null_mut());
-static mut HUBS: [Option<Hub>; MAX_HUBS] = [const { None }; MAX_HUBS];
+static HUBS: Lock<[Option<Hub>; MAX_HUBS]> = Lock::new([None; MAX_HUBS]);
+/// Each hub's status-change report: the host writes it when the transfer
+/// completes, outside any lock of this module, so it is atomics.
+static REPORTS: [[AtomicU8; 8]; MAX_HUBS] = [const { [const { AtomicU8::new(0) }; 8] }; MAX_HUBS];
 
 static DRIVER: UsbDriverOps = UsbDriverOps {
     name: StrRef { ptr: b"usb_hub".as_ptr(), len: 7 },
@@ -71,8 +79,9 @@ fn host() -> &'static UsbHostOps {
     unsafe { HOST.load(Ordering::Acquire).as_ref() }.expect("usb_hub: host")
 }
 
-fn hubs() -> &'static mut [Option<Hub>; MAX_HUBS] {
-    unsafe { &mut *core::ptr::addr_of_mut!(HUBS) }
+/// The hub in slot `i`, if any (a copy).
+fn hub_at(i: usize) -> Option<Hub> {
+    *HUBS.lock().get(i)?
 }
 
 fn sleep_ms(ms: u64) {
@@ -168,11 +177,15 @@ fn port_changed(hub: &Hub, port: u8) {
     }
 }
 
+/// Queue the status-change transfer of the hub in slot `i`.
 fn arm(i: usize) {
-    let hub = hubs()[i].as_mut().unwrap();
-    let r = unsafe {
-        (host().interrupt_start)(hub.dev, hub.status_ep, hub.report.as_mut_ptr(), hub.report_len, status_done, i as *mut c_void)
+    let Some(hub) = hub_at(i) else {
+        return;
     };
+    // The report's bytes: the atomics are contiguous, and the host writes
+    // them only before `status_done` runs.
+    let report = REPORTS[i][0].as_ptr();
+    let r = unsafe { (host().interrupt_start)(hub.dev, hub.status_ep, report, hub.report_len, status_done, i as *mut c_void) };
     if r < 0 && r != USB_EGONE {
         status_fail(api(), "usb_hub: status endpoint");
     }
@@ -181,29 +194,27 @@ fn arm(i: usize) {
 /// The status-change report arrived (the USB thread).
 unsafe extern "C" fn status_done(ctx: *mut c_void, status: i32) {
     let i = ctx as usize;
-    let Some(hub) = hubs().get(i).and_then(|h| h.as_ref()) else {
+    let Some(hub) = hub_at(i) else {
         return;
     };
-    if hub.gone || status == USB_EGONE {
+    if status == USB_EGONE {
         return;
     }
     if status > 0 {
-        let report = hub.report;
-        let ports = hub.ports;
-        for port in 1..=ports {
+        let report = REPORTS[i].each_ref().map(|b| b.load(Ordering::Acquire));
+        for port in 1..=hub.ports {
             let byte = usize::from(port / 8);
             if byte < report.len() && report[byte] & (1 << (port % 8)) != 0 {
-                let Some(hub) = hubs()[i].as_ref() else {
+                // `port_changed` may detach and attach: the hub itself may
+                // be gone by now.
+                let Some(hub) = hub_at(i) else {
                     return;
                 };
-                if hub.gone {
-                    return;
-                }
-                port_changed(hub, port);
+                port_changed(&hub, port);
             }
         }
     }
-    if hubs()[i].as_ref().is_some_and(|h| !h.gone) {
+    if hub_at(i).is_some() {
         arm(i);
     }
 }
@@ -220,7 +231,7 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     else {
         return -1;
     };
-    let Some(slot) = hubs().iter().position(|h| h.is_none()) else {
+    let Some(slot) = HUBS.lock().iter().position(|h| h.is_none()) else {
         return -1;
     };
     let super_speed = dev.speed == USB_SPEED_SUPER;
@@ -240,15 +251,13 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
         status_fail(api(), "usb_hub: hub slot");
         return -1;
     }
-    hubs()[slot] = Some(Hub {
+    HUBS.lock()[slot] = Some(Hub {
         dev: dev.id,
         intf: intf.number,
         ports,
         super_speed,
         status_ep,
         report_len: (usize::from(ports) + 8) / 8,
-        report: [0; 8],
-        gone: false,
     });
     for port in 1..=ports {
         let _ = set_port_feature(dev.id, port, PORT_POWER);
@@ -256,30 +265,28 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     sleep_ms(power_delay_ms + 100);
     // The devices already plugged in.
     for port in 1..=ports {
-        let Some(hub) = hubs()[slot].as_ref() else {
+        // A child's enumeration may have detached this hub meanwhile.
+        let Some(hub) = hub_at(slot) else {
             return 0;
         };
-        if hub.gone {
-            return 0;
-        }
         if let Some((status, change)) = port_status(dev.id, port) {
             if change & 1 != 0 {
                 let _ = clear_port_feature(dev.id, port, C_PORT_CONNECTION);
             }
             if status & 1 != 0 {
-                connect(hub, port);
+                connect(&hub, port);
             }
         }
     }
-    if hubs()[slot].as_ref().is_some_and(|h| !h.gone) {
+    if hub_at(slot).is_some() {
         arm(slot);
     }
     0
 }
 
 unsafe extern "C" fn disconnect(dev: u32, intf: u8) {
-    for h in hubs().iter_mut() {
-        if h.as_ref().is_some_and(|h| h.dev == dev && h.intf == intf) {
+    for h in HUBS.lock().iter_mut() {
+        if h.is_some_and(|h| h.dev == dev && h.intf == intf) {
             // The host detached the children already; the slot is free once
             // the pending status transfer has reported (it fails with
             // USB_EGONE and does not re-arm).
