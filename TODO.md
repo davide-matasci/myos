@@ -283,3 +283,20 @@ reclaim-delta assertion in `mem_hog_survives`, all in
 `user/tests/kernel.sh`, driven by the shipped `/bin/etc/memhog`. They pass
 on x86 today and fail on aarch64/riscv until this is fixed; PR #266 ships
 only the survival half of `mem_hog_survives` so it stays green on every arch.
+
+## Low priority
+
+- **`block_until` keeps a stale CPU number across its halt**
+  (`kernel/src/task/sched.rs`). The loop reads `cpu` before it halts; a
+  timer interrupt in the halt can switch the task away, and it can resume
+  on another CPU. Back in the loop it then clears `CPU_IDLE` and swaps
+  `NEED_RESCHED` of the CPU it left, so that CPU, perhaps truly idle now,
+  looks busy to `wake` and `kick` and picks up a wake only at its next tick
+  (up to 10 ms). Nothing breaks; re-read `cpu_id()` after the halt, and
+  mark the CPU busy when a task resumes on it.
+- **Port cache keys depend on the checkout path**: the `*_version_hash`
+  functions (`scripts/myos-c-userspace-lib.sh`) hash `sha256sum PATH`
+  output, which includes the absolute path, so a checkout anywhere but CI's
+  `/__w/myos/myos` misses every GHCR artifact (AGENTS.md, "Fast local
+  setup"). Hashing relative paths fixes it, at the cost of one rebuild of
+  every port in CI.
