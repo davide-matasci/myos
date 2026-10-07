@@ -304,19 +304,52 @@ frames_live() {
 	echo "$2"
 }
 
+# Set `before` to the live frame count once it holds still for a second (at
+# most a few): what the previous tests started may still be taking memory,
+# like the xHCI driver's DMA pages for a USB unplug (never given back), and
+# would count against the probe below.
+frames_quiet() {
+	n=0
+	before=$(frames_live)
+	while [ $n -lt 5 ]; do
+		sleep 1
+		now=$(frames_live)
+		[ "$now" = "$before" ] && break
+		before=$now
+		n=$((n + 1))
+	done
+}
+
+# Set `after` to the live frame count once the children that just exited
+# have let go of their memory, as far as LIMIT frames above `before`: a
+# parent reaps a child before the child, still in its exit on another CPU,
+# has freed its address space (see mem_hog_survives), so the last one's
+# frames may still be live. Sampled again for a few seconds while above the
+# limit; a leak stays there. Run in this shell, not in `$(...)`, so the
+# samples count the same processes as `before`.
+frames_settled() {
+	n=0
+	after=$(frames_live)
+	while [ "$((after - before))" -gt "$1" ] && [ $n -lt 5 ]; do
+		sleep 1
+		after=$(frames_live)
+		n=$((n + 1))
+	done
+}
+
 # Exiting a process must free all of its memory, page tables included
 # (issue #284). Fork many children that exit at once (no exec, so the page
 # cache does not grow) and confirm the live frame count returns to its
 # baseline: a per-exit leak would ratchet it up.
 mem_fork_no_leak() {
 	frames_live > /dev/null # warm the grep path (caches its code once)
-	before=$(frames_live)
+	frames_quiet
 	i=0
 	while [ $i -lt 60 ]; do
 		(:)
 		i=$((i + 1))
 	done
-	after=$(frames_live)
+	frames_settled 8
 	echo "mem: fork/exit x60 FramesLive $before -> $after (delta $((after - before)))"
 	[ "$((after - before))" -le 8 ]
 }
@@ -328,13 +361,13 @@ t mem_fork_no_leak mem_fork_no_leak
 mem_exec_no_leak() {
 	/bin/etc/hello > /dev/null 2>&1 # warm: cache the program's pages
 	frames_live > /dev/null
-	before=$(frames_live)
+	frames_quiet
 	i=0
 	while [ $i -lt 40 ]; do
 		/bin/etc/hello > /dev/null 2>&1
 		i=$((i + 1))
 	done
-	after=$(frames_live)
+	frames_settled 16
 	echo "mem: exec x40 FramesLive $before -> $after (delta $((after - before)))"
 	[ "$((after - before))" -le 16 ]
 }
