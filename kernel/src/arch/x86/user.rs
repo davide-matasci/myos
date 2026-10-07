@@ -53,6 +53,8 @@ pub const SYSCALL_PC: usize = 1;
 pub const SYSCALL_SP: usize = 0;
 /// The number travels in rax, which the result overwrites.
 pub const SYSCALL_NR_REG: Option<usize> = None;
+/// The thread pointer is not in the block: it is the FS base.
+pub const SYSCALL_TP_REG: Option<usize> = None;
 /// The fourth to sixth arguments: r10, r8, r9 (the first three, rdi, rsi
 /// and rdx, reach the dispatcher as its own arguments).
 pub const SYSCALL_ARGS_3_5: [usize; 3] = [5, 2, 3];

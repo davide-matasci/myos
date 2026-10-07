@@ -3,6 +3,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(missing_docs, nonstandard_style)]
 
+pub mod futex;
 #[path = "../unsupported/common.rs"]
 mod unsupported_common;
 pub use unsupported_common::{cleanup, unsupported, unsupported_err};
@@ -17,6 +18,8 @@ pub fn abort_internal() -> ! {
 
 // SAFETY: must be called only once during runtime initialization.
 pub unsafe fn init(argc: isize, argv: *const *const u8, _sigpipe: u8) {
+    // Before anything uses a thread-local.
+    crate::sys::thread_local::key::init_main();
     unsafe {
         crate::sys::args::init(argc, argv);
     }

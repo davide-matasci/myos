@@ -343,6 +343,81 @@ pub fn wait() -> isize {
     }
 }
 
+// Threads and the memory they run on (`docs/threads.md`).
+pub const SYS_MMAP: usize = 23;
+pub const SYS_MUNMAP: usize = 24;
+pub const SYS_MPROTECT: usize = 25;
+pub const SYS_SIGPROCMASK: usize = 37;
+pub const SYS_THREAD_SPAWN: usize = 53;
+pub const SYS_THREAD_EXIT: usize = 54;
+pub const SYS_WAIT_ADDR: usize = 55;
+pub const SYS_WAKE_ADDR: usize = 56;
+pub const SYS_GETTID: usize = 57;
+pub const SYS_SET_TP: usize = 89;
+pub const SYS_YIELD: usize = 90;
+const PROT_READ: usize = 1;
+const PROT_WRITE: usize = 2;
+const MAP_PRIVATE: usize = 0x02;
+const MAP_ANON: usize = 0x20;
+/// `wait_addr`'s results besides 0 (woken, maybe spuriously).
+pub const WAIT_ADDR_CHANGED: usize = 1;
+pub const WAIT_ADDR_TIMEOUT: usize = 2;
+
+/// `len` bytes of new zeroed memory, paged in on first touch.
+pub fn mmap_anon(len: usize) -> Option<usize> {
+    let args: [u64; 6] = [0, len as u64, (PROT_READ | PROT_WRITE) as u64, (MAP_PRIVATE | MAP_ANON) as u64, u64::MAX, 0];
+    let ret = raw_syscall3(SYS_MMAP, args.as_ptr() as usize, 0, 0);
+    (ret != usize::MAX).then_some(ret)
+}
+
+pub fn munmap(addr: usize, len: usize) -> bool {
+    raw_syscall3(SYS_MUNMAP, addr, len, 0) != usize::MAX
+}
+
+/// Make `[addr, addr + len)` fault on any access.
+pub fn mprotect_none(addr: usize, len: usize) -> bool {
+    raw_syscall3(SYS_MPROTECT, addr, len, 0) != usize::MAX
+}
+
+/// Block every signal the calling thread can block.
+pub fn block_signals() {
+    let all: u32 = !0;
+    raw_syscall3(SYS_SIGPROCMASK, 0, &raw const all as usize, 0);
+}
+
+/// Start a thread at `entry(arg)` on the stack whose top is `stack_top`,
+/// with thread pointer `tp`; its tid.
+pub fn thread_spawn(entry: usize, stack_top: usize, arg: usize, tp: usize) -> Option<usize> {
+    let params: [u64; 4] = [entry as u64, stack_top as u64, arg as u64, tp as u64];
+    let ret = raw_syscall3(SYS_THREAD_SPAWN, params.as_ptr() as usize, 0, 0);
+    (ret != usize::MAX).then_some(ret)
+}
+
+/// Block while `word` holds `expected`, up to `timeout_ns` (0: no limit).
+/// 0 (woken, maybe spuriously, or a signal), [`WAIT_ADDR_CHANGED`] or
+/// [`WAIT_ADDR_TIMEOUT`].
+pub fn wait_addr(word: *const u32, expected: u32, timeout_ns: u64) -> usize {
+    raw_syscall3(SYS_WAIT_ADDR, word as usize, expected as usize, timeout_ns as usize)
+}
+
+/// Wake up to `count` threads waiting on `word`; how many it woke.
+pub fn wake_addr(word: *const u32, count: usize) -> usize {
+    raw_syscall3(SYS_WAKE_ADDR, word as usize, count, 0)
+}
+
+pub fn gettid() -> usize {
+    raw_syscall3(SYS_GETTID, 0, 0, 0)
+}
+
+/// Make `tp` the calling thread's thread pointer.
+pub fn set_tp(tp: usize) {
+    raw_syscall3(SYS_SET_TP, tp, 0, 0);
+}
+
+pub fn yield_now() {
+    raw_syscall3(SYS_YIELD, 0, 0, 0);
+}
+
 #[cfg(target_arch = "x86_64")]
 #[inline]
 fn raw_close(fd: usize) -> usize {

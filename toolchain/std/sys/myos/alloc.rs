@@ -9,6 +9,8 @@ const HEAP_PAGES: usize = 180;
 #[cfg(not(target_arch = "aarch64"))]
 const HEAP_PAGES: usize = 256;
 
+// Under `LOCK`: one thread at a time in the heap.
+static LOCK: crate::sys::sync::Mutex = crate::sys::sync::Mutex::new();
 static mut BRK_END: usize = 0;
 static mut BRK_PTR: usize = 0;
 static mut BRK_INIT: bool = false;
@@ -38,6 +40,13 @@ fn init_heap() {
 
 #[inline]
 pub unsafe fn alloc(layout: Layout) -> *mut u8 {
+    LOCK.lock();
+    let p = unsafe { alloc_locked(layout) };
+    unsafe { LOCK.unlock() };
+    p
+}
+
+unsafe fn alloc_locked(layout: Layout) -> *mut u8 {
     init_heap();
     let align = layout.align().max(1);
     let size = layout.size().max(1);

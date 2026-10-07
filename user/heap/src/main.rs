@@ -101,7 +101,8 @@ fn main() -> ! {
     }
     let _ = run_prog_exit(b"/bin/coreutils/ls", &[b"ls", b"/tmp/findnest"], 0, b"[ OK ] uutils ls\n");
     // Write a needle under /tmp and search with /c/rg (full ripgrep + PCRE2).
-    // -j1 / --no-mmap / --no-config: myos is single-threaded; rg mmap is optional.
+    // -j1 / --no-mmap / --no-config: rg mmap is optional; the threaded search
+    // is ports/ripgrep/test.sh's.
     if let Some(fd) = open_flags(b"/tmp/rg-needle.txt", O_WRONLY | O_CREAT | O_TRUNC) {
         let _ = write_fd(fd, b"hello ripgrep needle world\n");
         close(fd);

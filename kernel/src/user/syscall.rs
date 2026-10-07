@@ -159,6 +159,13 @@ const SYS_POWER: usize = 87;
 /// receives what was left of the timer before and its interval.
 const SYS_ITIMER: usize = 88;
 const ITIMER_REAL: usize = 0;
+/// `set_tp(value)`: make `value` the calling thread's thread pointer (its
+/// TLS base: the FS base on x86_64, `tpidr_el0` on aarch64, `tp` on
+/// riscv64), as `thread_spawn`'s `tls` is a new thread's. x86_64 user code
+/// cannot write the FS base itself.
+const SYS_SET_TP: usize = 89;
+/// `yield()`: let the other tasks ready on this CPU run first.
+const SYS_YIELD: usize = 90;
 const LOCK_SH: usize = 1;
 const LOCK_EX: usize = 2;
 const LOCK_NB: usize = 4;
@@ -191,6 +198,7 @@ impl SyscallRegs {
     const PC: usize = crate::arch::SYSCALL_PC;
     const SP: usize = crate::arch::SYSCALL_SP;
     const NR_REG: Option<usize> = crate::arch::SYSCALL_NR_REG;
+    const TP_REG: Option<usize> = crate::arch::SYSCALL_TP_REG;
 
     /// Length of the syscall instruction (`syscall` / `svc` / `ecall`).
     pub const INSN_LEN: usize = crate::arch::SYSCALL_INSN_LEN;
@@ -227,6 +235,13 @@ impl SyscallRegs {
     }
     pub fn set_nr_reg(&mut self, v: usize) {
         if let Some(i) = Self::NR_REG {
+            unsafe { *self.0.add(i) = v as u64 }
+        }
+    }
+    /// The thread pointer the return path loads, where it is in the block
+    /// (riscv64's `tp`; elsewhere `task::tp` sets it).
+    pub fn set_tp(&mut self, v: usize) {
+        if let (Some(i), false) = (Self::TP_REG, self.0.is_null()) {
             unsafe { *self.0.add(i) = v as u64 }
         }
     }
@@ -333,6 +348,15 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_LOCKCTL => sys_lockctl(a0, a1, a2),
         SYS_POWER => sys_power(a0),
         SYS_ITIMER => sys_itimer(a0, a1, a2),
+        SYS_SET_TP => {
+            task::tp::set(a0 as u64);
+            regs.set_tp(a0);
+            0
+        }
+        SYS_YIELD => {
+            task::yield_now();
+            0
+        }
         at::SYS_OPENAT..=at::SYS_EXECAT => {
             let [a3, a4, a5] = regs.args_3_5();
             match nr {
@@ -1649,12 +1673,13 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             return SYSERR;
         }
         // MAP_FIXED replaces whatever is mapped there (a dynamic linker maps
-        // each segment over the span it reserved first).
+        // each segment over the span it reserved first). Its pages go before
+        // its record, as in `sys_munmap`.
         let old = task::mmap_regions();
+        release_mmap_range(aspace, &old, hint as u64, pages);
         if !task::mmap_remove(hint as u64, pages as u32) {
             return SYSERR;
         }
-        release_mmap_range(aspace, &old, hint as u64, pages);
     }
     // Record the region, at `hint` or in the lowest free gap (found and
     // recorded in one step: another thread may be mapping too), before its
@@ -1762,12 +1787,18 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     if addr < area_lo || addr.saturating_add(map_len) > area_hi {
         return SYSERR;
     }
+    // The pages go first, the region's record only after them: once the
+    // record is gone another thread's `mmap` may get the range, and must not
+    // find this mapping's pages still in it (it would write to a frame freed
+    // here a moment later, and read a new zeroed page after). A split past
+    // the table's limit then fails with the pages dropped: the range reads
+    // as new, as after `madvise`.
     let old = task::mmap_regions();
+    release_mmap_range(task::current_aspace(), &old, addr as u64, pages);
+    flush_user_tlb();
     if !task::mmap_remove(addr as u64, pages as u32) {
         return SYSERR;
     }
-    release_mmap_range(task::current_aspace(), &old, addr as u64, pages);
-    flush_user_tlb();
     0
 }
 
