@@ -674,7 +674,9 @@ static void write_resolv_conf(FILE *f) {
     for (char *p = strstr(ndb, "dns="); p != NULL; p = strstr(p, "dns=")) {
         p += 4;
         size_t len = strcspn(p, " \t\n");
-        fprintf(f, "nameserver %.*s\n", (int)len, p);
+        fputs("nameserver ", f);
+        fwrite(p, 1, len, f);
+        fputc('\n', f);
         any = 1;
     }
     if (!any) {
