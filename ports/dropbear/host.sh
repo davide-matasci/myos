@@ -5,6 +5,8 @@
 # port forward, both must exit 0: multi-session accept on dropbear and netd
 # (a parked accept plus the listen hold). Each session echoes its tag and
 # writes its PATH to /tmp/ssh-ok-<tag>, which the guest test waits for.
+# Then a login on a pty (`-tt`, commands on its input) writes its
+# controlling terminal and whether /dev/tty opens to /tmp/ssh-tty.
 set -u
 port="${1:?port}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,6 +39,21 @@ one() {
   return 1
 }
 
+# A login on a pty. Its commands are typed after a pause, once the shell
+# is up; `exit` ends it.
+tty_login() {
+  local out
+  out="$( { sleep 3
+      echo 'readlink /proc/self/tty > /tmp/ssh-tty.tmp; echo x > /dev/tty && echo tty-ok >> /tmp/ssh-tty.tmp; mv /tmp/ssh-tty.tmp /tmp/ssh-tty'
+      sleep 3; echo exit; sleep 2; } | timeout 30 ssh -tt -4 -i "$key" -p "$port" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes \
+    -o PreferredAuthentications=publickey -o KexAlgorithms=curve25519-sha256 \
+    -o ConnectTimeout=8 -o ConnectionAttempts=1 "root@127.0.0.1" 2>&1)" && return 0
+  echo "$out" > "$dir/err-tty"
+  return 1
+}
+
 # Early SYNs before dropbear has armed accept leave half-open sessions on
 # slow arches: give it time, and never probe the port. B starts a second
 # after A so both are live together while the second SYN usually meets a
@@ -49,7 +66,10 @@ while (( SECONDS < deadline )); do
   one b & pb=$!
   if wait "$pa" && wait "$pb"; then
     echo "boot test: ssh $port: two sessions ok" >&2
-    exit 0
+    if tty_login; then
+      echo "boot test: ssh $port: pty login ok" >&2
+      exit 0
+    fi
   fi
   # Failed attempts can leave SynReceived orphans until the handshake-age
   # reclaim (~10 s); flooding starved riscv64.
