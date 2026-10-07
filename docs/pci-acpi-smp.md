@@ -236,7 +236,10 @@ unless `NEED_RESCHED[cpu]` was set meanwhile. A task that blocks with
 nothing else runnable halts the same way on its own stack; `schedule` never
 picks a woken task that is still some CPU's `CURRENT`, and a wake that lands
 while the task is mid-switch (`SWITCHED_FROM`) is deferred to
-`finish_switch` (`wake_pending`). `wake` marks the woken task's home CPU
+`finish_switch` (`wake_pending`). A task leaving a CPU stays Running until
+`finish_switch`, also one a wake already made Ready while it halted there:
+left Ready, a peer could resume it from its previous, stale switch frame
+before `task_switch` saved the new one. `wake` marks the woken task's home CPU
 (or the CPU it is halting on, or any idle CPU for a floating task) and sends
 a **targeted** reschedule IPI (`arch::ipi_reschedule_cpu`: the LAPIC ICR with
 a destination, a GIC SGI to one CPU (v2: a CPUTargetList bit, v3: the affinity in `ICC_SGI1R_EL1`), SBI IPI with a single
