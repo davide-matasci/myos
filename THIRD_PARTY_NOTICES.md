@@ -25,6 +25,8 @@ under its own license.
 | Limine bootloader (BIOS/UEFI binaries) | 12.6.1 | BSD-2-Clause | https://github.com/limine-bootloader/limine (`src/limine_image.rs`) |
 | newlib + libgloss (C library; `toolchain/newlib/`) | 4.4.0 | Mostly BSD-style permissive licenses; see `COPYING.NEWLIB` / `COPYING.LIBGLOSS` in the upstream source | https://sourceware.org/git/newlib-cygwin.git |
 | Rust `std` and `core` (patched; `toolchain/std/`), linked into Rust userspace programs | pinned nightly (`rust-toolchain.toml`) | MIT OR Apache-2.0 | https://github.com/rust-lang/rust |
+| dlmalloc (the Rust crate: a port of Doug Lea's malloc, public domain), the heap of the myos `std` (`toolchain/std/sys/myos/alloc.rs`), linked into Rust userspace programs | 0.2.13 (as `std`'s `Cargo.lock` pins it) | MIT OR Apache-2.0 | https://github.com/alexcrichton/dlmalloc-rs |
+| Rust crates in the kernel / `user/netd` | see `Cargo.toml` | `limine`: MIT OR Apache-2.0; `spin`: MIT; `x86_64`, `linked_list_allocator`, `pic8259`: MIT/Apache-2.0; `smoltcp`: 0BSD; `fdt` (device tree parser, used unmodified): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://crates.io |
 | Rust crates in the kernel / `user/netd` | see `Cargo.toml` | `limine`: MIT OR Apache-2.0; `spin`: MIT; `x86_64`, `linked_list_allocator`, `pic8259`: MIT/Apache-2.0; `smoltcp`: 0BSD (netd's carries a myos patch, `user/net/smoltcp/*.myos.patch`, under the same license); `fdt` (device tree parser, used unmodified): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://crates.io |
 | Rust crates in the `xhci` module (`modules/xhci/Cargo.toml`) | `xhci` 0.9.2 | `xhci` (register, TRB and context layouts, used unmodified) and its dependencies `accessor`, `bit_field`, `num-derive`, `num-traits`, `paste`: MIT OR Apache-2.0 | https://github.com/rust-osdev/xhci |
 | sbase | `SBASE_REV` in `ports/sbase/versions.env` | MIT | https://git.suckless.org/sbase |
@@ -42,6 +44,7 @@ under its own license.
 | Lynx | 2.9.3 | **GPL-2.0-only** | https://invisible-island.net/lynx/ |
 | GNU Make | 4.4.1 | **GPL-3.0-or-later** | https://ftp.gnu.org/gnu/make/ |
 | Lua | 5.4.7 | MIT | https://www.lua.org/ |
+| bottom (package `bottom`, `btm`) + its Rust dependencies | `packages/bottom/versions.env` (dependencies: bottom's `Cargo.lock`) | bottom, crossterm, sysinfo, ratatui: MIT (the myos patches to them: the same); dependencies: MIT / Apache-2.0 and similar permissive licenses (Zlib, Unlicense OR MIT); `option-ext` 0.2.0 (used unmodified, through `dirs-sys`): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://github.com/ClementTsang/bottom |
 | X client libraries (package `x11-libs`): xorgproto, xtrans, libXau, xcb-proto, libxcb, libX11 | see `packages/x11-libs/versions.env` | MIT / X11-style (X.Org, The Open Group and others; each upstream `COPYING`) | https://www.x.org/releases/individual/ |
 | TinyX `Xfbdev` (package `tinyx`; the X server) | `TINYX_REV` in `packages/tinyx/versions.env` | **GPL-3.0** (TinyX's changes; the X.Org code it started from is MIT/X11) | https://github.com/tinycorelinux/tinyx |
 | libfontenc, libXfont 1.x, libXdmcp's header (linked into / used to build `Xfbdev`) | see `packages/tinyx/versions.env` | MIT / X11-style | https://www.x.org/releases/individual/lib/ |
@@ -83,7 +86,8 @@ Files in this repository that carry notices from upstream (kept as required):
 
 The following programs in the image are under copyleft licenses
 (GPL-2.0-only, GPL-3.0-or-later, GPL-3.0, LGPL-2.1, MPL-2.0): **Git, Lynx,
-GNU Make, TinyCC, TinyX (`Xfbdev`), and the Mozilla CA bundle.** (Vim's and Mbed TLS's licenses also allow
+GNU Make, TinyCC, TinyX (`Xfbdev`), the Mozilla CA bundle, and `option-ext` in
+the bottom package.** (Vim's and Mbed TLS's licenses also allow
 redistribution; Mbed TLS is used here under its Apache-2.0 option.)
 
 The complete corresponding source for each of them is:

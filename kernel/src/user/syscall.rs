@@ -166,6 +166,10 @@ const ITIMER_REAL: usize = 0;
 const SYS_SET_TP: usize = 89;
 /// `yield()`: let the other tasks ready on this CPU run first.
 const SYS_YIELD: usize = 90;
+/// `clock_monotonic()`: nanoseconds since boot on the monotonic clock (the
+/// one timers and `/proc/cpu` count on), which setting the wall clock does
+/// not move.
+const SYS_CLOCK_MONOTONIC: usize = 91;
 const LOCK_SH: usize = 1;
 const LOCK_EX: usize = 2;
 const LOCK_NB: usize = 4;
@@ -357,6 +361,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
             task::yield_now();
             0
         }
+        SYS_CLOCK_MONOTONIC => crate::time::monotonic_ns() as usize,
         at::SYS_OPENAT..=at::SYS_EXECAT => {
             let [a3, a4, a5] = regs.args_3_5();
             match nr {
@@ -1570,7 +1575,7 @@ pub(crate) fn sys_brk(req: usize) -> usize {
                 // caller's allocator sees the growth fall short (ENOMEM).
                 let Some(frame) = mm::try_alloc_frame_user(4) else {
                     if mapped_any {
-                        flush_user_tlb();
+                        flush_user_tlb_added();
                     }
                     task::set_brk(va as u64);
                     return va;
@@ -1586,7 +1591,7 @@ pub(crate) fn sys_brk(req: usize) -> usize {
         // the 2 MiB TLS arena on aarch64/riscv) that left stale non-present
         // TLB entries → intermittent load faults mid-heap (HTTPS montmul).
         if mapped_any {
-            flush_user_tlb();
+            flush_user_tlb_added();
         }
     } else if req < cur {
         // Shrink: free the pages above the new break, so mapped heap always
@@ -1708,6 +1713,8 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
             task::mmap_add_free(area_lo, area_hi, pages as u32, prot, file)
         }
     };
+    // Only a MAP_FIXED one replaces mappings: the others only add some.
+    let flush = || if fixed { flush_user_tlb() } else { flush_user_tlb_added() };
     if let (true, Some(node)) = (device, &file) {
         let Some(va) = record(prot as u32 | task::MMAP_DEVICE, None) else {
             return SYSERR;
@@ -1717,13 +1724,13 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
                 map_user_page_prot(aspace, (va + i * PAGE) as u64, frame, prot);
             }
         }
-        flush_user_tlb();
+        flush();
         return va;
     }
     // The pages get their frames on first touch (`fault_in`), so a large
     // reservation or a big library costs only what is used.
     if let Some(va) = record(prot as u32, file.as_ref().map(|node| (node, offset))) {
-        flush_user_tlb();
+        flush();
         return va;
     }
     // A file mapping fails there when the mapped-file table is full: read
@@ -1747,7 +1754,7 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         sync_icache(mm::hhdm(frame) as usize, PAGE);
         mapped += PAGE;
     }
-    flush_user_tlb();
+    flush();
     va
 }
 
