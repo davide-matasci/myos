@@ -451,9 +451,10 @@ console_cr() {
 t console_cr console_cr
 
 # Security (docs/security.md). The tests run as root in the admin domain.
-# A policy with two more users, alice and bob (passwords alice-pw and
+# A policy with three more users, alice and bob (passwords alice-pw and
 # bob-pw), their homes under /tmp/sec/home and programs under /tmp/sec/bin
-# that run untrusted, is loaded for the tests and put back after them.
+# that run untrusted, and carol (carol-pw), whose domain `app` may only
+# append to /tmp, is loaded for the tests and put back after them.
 SEC=/bin/etc/sec
 sec_as() {
 	user=$1
@@ -470,8 +471,12 @@ sec_setup() {
 		h=$(printf '%s' "salt$u-pw" | /bin/sbase/sha256sum | cut -d' ' -f1)
 		echo "user $u groups: dev domains: shell untrusted password: sha256:salt:$h" >> /tmp/sec/policy
 	done
+	h=$(printf '%s' "saltcarol-pw" | /bin/sbase/sha256sum | cut -d' ' -f1)
+	echo "user carol domains: app login: app password: sha256:salt:$h" >> /tmp/sec/policy
 	printf '%s\n' 'label /tmp/sec/home/$u/** home($u)' 'label /tmp/sec/home/$u/.ssh/** secret($u)' \
-		'label /tmp/sec/bin/** sys.bin' 'exec /tmp/sec/bin/** -> untrusted' >> /tmp/sec/policy
+		'label /tmp/sec/bin/** sys.bin' 'exec /tmp/sec/bin/** -> untrusted' 'domain app:' \
+		'    sys.file {read} sys.bin {read exec} sys.lib {read exec} dev.tty {read write}' \
+		'    dev.common {read write} proc {read} tmp {read append exec}' >> /tmp/sec/policy
 	printf '#!/bin/custom/sh\n/bin/etc/sec ctx\n' > /tmp/sec/bin/ctx.sh
 	# Only alice may write her secrets, not even root.
 	$SEC load /tmp/sec/policy && echo note > /tmp/sec/home/bob/note \
@@ -513,6 +518,43 @@ sec_untrusted() {
 	[ "$(sec_as alice /tmp/sec/bin/cat /tmp/sec/home/alice/f)" = hi ] || return 1
 	! sec_as alice /tmp/sec/bin/cp /tmp/sec/home/alice/f /tmp/sec/home/alice/h 2> /dev/null || return 1
 	! sec_as alice /tmp/sec/bin/cat /tmp/sec/home/alice/.ssh/key 2> /dev/null
+}
+# A rename takes a directory's files along, to names the label rules may
+# read differently: it needs `remove` on each and `create` where they go.
+# Root may not move alice's home out of /tmp/sec/home (her keys would be
+# `tmp`), alice may not move /tmp/sec/home itself (bob's files would be
+# hers), nor a file into bob's home in place of his; alice moves her own
+# directory, root moves bob's home to another user's name (its label stays
+# a home) and back.
+sec_rename() {
+	mkdir -p /tmp/sec/home/alice/d && echo in-d > /tmp/sec/home/alice/d/f || return 1
+	! /bin/sbase/mv /tmp/sec/home/alice /tmp/sec/stolen 2> /dev/null || { echo "ESCALATION: root moved alice's home"; return 1; }
+	! sec_as alice /bin/sbase/mv /tmp/sec/home /tmp/sec/h2 2> /dev/null \
+		|| { echo "ESCALATION: alice moved /tmp/sec/home"; return 1; }
+	! sec_as alice /bin/custom/sh -c 'echo mine > /tmp/sec/home/alice/m && /bin/sbase/mv /tmp/sec/home/alice/m /tmp/sec/home/bob/note' 2> /dev/null \
+		|| return 1
+	[ "$(cat /tmp/sec/home/bob/note)" = note ] || return 1
+	[ "$(sec_as alice /bin/sbase/cat /tmp/sec/home/alice/.ssh/key)" = secret ] && [ ! -e /tmp/sec/stolen ] || return 1
+	sec_as alice /bin/sbase/mv /tmp/sec/home/alice/d /tmp/sec/home/alice/e \
+		&& [ "$(sec_as alice /bin/sbase/cat /tmp/sec/home/alice/e/f)" = in-d ] || return 1
+	/bin/sbase/mv /tmp/sec/home/bob /tmp/sec/home/bob2 && /bin/sbase/mv /tmp/sec/home/bob2 /tmp/sec/home/bob \
+		&& [ "$(sec_as bob /bin/sbase/cat /tmp/sec/home/bob/note)" = note ]
+}
+# An `append` grant without `write` (carol on /tmp): the file opens with
+# O_APPEND and the fd adds to the end only, whatever pwrite's offset, and
+# does not truncate (fileio_smoke.c, `append`).
+sec_append() {
+	printf 'line1\n' > /tmp/sec/app.txt || return 1
+	[ "$(sec_as carol $SEC ctx)" = "4 carol app" ] || return 1
+	sec_as carol /bin/etc/fileio_smoke append /tmp/sec/app.txt || return 1
+	[ "$(cat /tmp/sec/app.txt)" = "line1
+PW" ]
+}
+# `login: none`: system is nobody's to enter, not even from a domain with
+# kernel.users write (admin); root, with no password, is.
+sec_nologin() {
+	! $SEC as system $SEC ctx 2> /dev/null || { echo "ESCALATION: system entered"; return 1; }
+	[ "$($SEC as root $SEC ctx)" = "0 root admin" ]
 }
 # Signals: a user's processes, not another user's (init is system's).
 sec_signal() {
@@ -563,8 +605,9 @@ sec_restore() {
 	$SEC load /etc/policy && [ "$($SEC ctx)" = "0 root admin" ] && /bin/coreutils/rm -r /tmp/sec
 }
 # alice knows only her own password; she must not become another user (bob
-# needs his password; root/system are passwordless but only a domain with
-# kernel.users write may enter them), nor load a policy.
+# needs his password; root is passwordless but only a domain with
+# kernel.users write may enter it; system has `login: none`), nor load a
+# policy.
 sec_escalate() {
 	for spec in "bob -p wrong" "bob -p alice-pw" "root" "system"; do
 		out=$(sec_as alice $SEC as $spec $SEC ctx 2> /dev/null)
@@ -600,6 +643,9 @@ t sec_setup sec_setup
 t sec_users sec_users
 t sec_homes sec_homes
 t sec_untrusted sec_untrusted
+t sec_rename sec_rename
+t sec_append sec_append
+t sec_nologin sec_nologin
 t sec_signal sec_signal
 t sec_escalate sec_escalate
 t sec_wildcard sec_wildcard

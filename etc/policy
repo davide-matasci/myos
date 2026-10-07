@@ -7,9 +7,10 @@ boot system init
 login -> shell
 
 # Users. The uid is the position (root is 0). A user without a password
-# can only be entered by a domain with `write` on kernel.users (login).
+# can only be entered by a domain with `write` on kernel.users (login);
+# one with `login: none` by nobody: system only runs what init starts.
 user root    domains: admin shell untrusted   login: admin
-user system  domains: init netd login smoke
+user system  domains: init netd login smoke   login: none
 
 # Labels: the last rule that matches a file's path names its label;
 # `$u` captures a path component as the label's owner.

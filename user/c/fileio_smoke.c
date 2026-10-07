@@ -4,6 +4,7 @@
  * a symlink there counts as taken; ftruncate cuts a file and grows it with
  * zeros, the position staying; pread and pwrite leave the position alone, a
  * write past the end leaves zeros in the gap, and both are ESPIPE on a pipe;
+ * pwrite on an O_APPEND fd appends (as on Linux);
  * close-on-exec: O_CLOEXEC, F_SETFD, F_DUPFD_CLOEXEC and pipe2 fds are gone
  * in a program the process execs, dup2's copy and the others are not;
  * O_NOFOLLOW refuses a symlink (ELOOP) and O_DIRECTORY anything but a
@@ -18,7 +19,10 @@
  *
  * `fileio_smoke [DIR]` works in DIR (default /tmp): the ext2 test runs it
  * on the scratch disk. `fileio_smoke child FD...` is the exec'd program: FD
- * prefixed with `-` must be closed, plain FD open.
+ * prefixed with `-` must be closed, plain FD open. `fileio_smoke append
+ * FILE` is run by a user the policy lets `append` to FILE but not `write`
+ * (user/tests/kernel.sh): an O_APPEND fd takes writes at the end only and
+ * no ftruncate, and the file opens for nothing else.
  */
 #define _GNU_SOURCE 1 /* pipe2 */
 #include <errno.h>
@@ -132,7 +136,7 @@ static void positional(void) {
     const char *f = in_dir("pos");
     char buf[64];
     struct stat st;
-    int fd, pfd[2], zeros = 1;
+    int fd, afd, pfd[2], zeros = 1;
 
     fd = open(f, O_RDWR | O_CREAT | O_TRUNC, 0644);
     check(fd >= 0, "open pos");
@@ -149,6 +153,13 @@ static void positional(void) {
         zeros &= buf[i] == 0;
     }
     check(zeros && buf[10] == 'z', "the gap reads as zeros");
+    /* O_APPEND: pwrite's offset is ignored, the write goes to the end. */
+    afd = open(f, O_RDWR | O_APPEND);
+    check(afd >= 0, "open pos O_APPEND");
+    check(pwrite(afd, "E", 1, 0) == 1, "pwrite on an O_APPEND fd");
+    check(pread(fd, buf, 1, 0) == 1 && buf[0] == '0', "pwrite on an O_APPEND fd left the start alone");
+    check(pread(fd, buf, 1, 21) == 1 && buf[0] == 'E', "pwrite on an O_APPEND fd wrote at the end");
+    close(afd);
 
     /* ftruncate: cut, then grown with zeros; the position stays. */
     check(ftruncate(fd, 4) == 0, "ftruncate cut");
@@ -496,9 +507,39 @@ static void console_reader(void) {
     unlink(b);
 }
 
+/* An `append` grant without `write` (docs/security.md): the file opens
+ * with O_APPEND and for nothing else, and the fd only ever adds to the end. */
+static int append_only(const char *f) {
+    char buf[8];
+    struct stat st;
+    int fd = open(f, O_WRONLY | O_APPEND);
+    check(fd >= 0, "open O_APPEND with the append right");
+    if (fd < 0) {
+        return 1;
+    }
+    check(fstat(fd, &st) == 0 && st.st_size > 0, "the file has something to keep");
+    check(pwrite(fd, "P", 1, 0) == 1, "pwrite on the append-only fd");
+    check(ftruncate(fd, 0) < 0, "no ftruncate of an append-only fd");
+    check(lseek(fd, 0, SEEK_SET) == 0 && write(fd, "W", 1) == 1, "write after lseek 0");
+    close(fd);
+    check(open(f, O_WRONLY) < 0, "no open for writing");
+    check(open(f, O_RDONLY | O_TRUNC) < 0, "no open with O_TRUNC");
+    check(open(f, O_RDWR | O_APPEND | O_TRUNC) < 0, "no open with O_APPEND|O_TRUNC");
+    fd = open(f, O_RDONLY);
+    check(fd >= 0, "open to read");
+    check(fstat(fd, &st) == 0 && st.st_size == (off_t)(strlen("line1\n") + 2), "both writes went to the end");
+    check(pread(fd, buf, 6, 0) == 6 && memcmp(buf, "line1\n", 6) == 0, "the start is as it was");
+    check(pread(fd, buf, 2, 6) == 2 && memcmp(buf, "PW", 2) == 0, "the end holds the writes, in order");
+    close(fd);
+    return failures != 0;
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return child(argc, argv);
+    }
+    if (argc == 3 && strcmp(argv[1], "append") == 0) {
+        return append_only(argv[2]);
     }
     snprintf(dir, sizeof dir, "%s", argc > 1 ? argv[1] : "/tmp");
     excl();

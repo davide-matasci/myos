@@ -928,7 +928,7 @@ unsafe extern "C" fn api_vfs_unlink(path: StrRef) -> i32 {
 
 unsafe extern "C" fn api_vfs_rename(old: StrRef, new: StrRef) -> i32 {
     match (str_ref(old), str_ref(new)) {
-        (Some(o), Some(n)) if may(o, Rights::REMOVE) && may(n, Rights::CREATE) && crate::fs::rename(o, n) => 0,
+        (Some(o), Some(n)) if crate::sec::may_rename(o, None, n, None, crate::fs::stat(n).is_some()) && crate::fs::rename(o, n) => 0,
         _ => -1,
     }
 }

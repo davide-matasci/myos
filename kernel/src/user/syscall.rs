@@ -582,9 +582,14 @@ pub(super) fn open_real(
     if kind == Some(S_IFDIR) && (fs::open_writable(flags as u32) || flags as u32 & (O_CREAT | O_TRUNC) != 0) {
         return SYSERR;
     }
+    // An `append` grant without `write`: the fd appends and does no more.
+    let append_only = need.contains(Rights::APPEND) && !crate::sec::rights_in(&path, rights).contains(Rights::WRITE);
     let fd = open_fd(path, rights, flags, tree);
     if fd < task::MAX_FDS && flags as u32 & O_CLOEXEC != 0 {
         task::fd_set_cloexec(fd, true);
+    }
+    if fd < task::MAX_FDS && append_only {
+        task::fd_set_append_only(fd);
     }
     fd
 }

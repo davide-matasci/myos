@@ -219,6 +219,8 @@ pub struct User {
     /// Where a successful `setuser` puts the process (else the policy's
     /// `login` domain).
     pub login: Option<u16>,
+    /// `login: none`: `setuser` never enters this user (a system account).
+    pub nologin: bool,
     pub home: String,
     /// `sha256:SALT:HEX` (the digest of SALT followed by the password).
     pub password: Option<(String, [u8; 32])>,
@@ -324,7 +326,11 @@ impl Policy {
 
     /// The domain `setuser` puts `user` in.
     pub fn login_domain(&self, user: u16) -> Option<u16> {
-        self.users.get(user as usize).and_then(|u| u.login).or(self.login)
+        let u = self.users.get(user as usize)?;
+        if u.nologin {
+            return None;
+        }
+        u.login.or(self.login)
     }
 }
 
@@ -478,7 +484,7 @@ fn split_param(text: &str) -> Result<(&str, Option<&str>), String> {
     }
 }
 
-/// `user NAME groups: a b domains: c d login: d home: /h password: sha256:S:H`
+/// `user NAME groups: a b domains: c d login: d|none home: /h password: sha256:S:H`
 fn parse_user(p: &mut Policy, rest: &str) -> Result<(), String> {
     let mut words = rest.split_whitespace();
     let name = words.next().ok_or_else(|| String::from("user NAME ..."))?;
@@ -490,6 +496,7 @@ fn parse_user(p: &mut Policy, rest: &str) -> Result<(), String> {
         groups: Vec::new(),
         domains: Vec::new(),
         login: None,
+        nologin: false,
         home: String::from("/"),
         password: None,
     };
@@ -502,6 +509,7 @@ fn parse_user(p: &mut Policy, rest: &str) -> Result<(), String> {
         match key {
             "groups" => user.groups.push(intern(&mut p.groups, w)),
             "domains" => user.domains.push(p.domain_id(w).ok_or_else(|| format!("no domain `{w}`"))?),
+            "login" if w == "none" => user.nologin = true,
             "login" => user.login = Some(p.domain_id(w).ok_or_else(|| format!("no domain `{w}`"))?),
             "home" => user.home = String::from(w),
             "password" => user.password = Some(parse_password(w)?),
