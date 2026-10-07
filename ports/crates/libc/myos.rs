@@ -149,6 +149,7 @@ mod syscalls {
     const SYS_KILL: usize = 34;
     const SYS_SIGACTION: usize = 35;
     const SYS_GETPID: usize = 36;
+    const SYS_POLL: usize = 38;
     /// The path calls (`kernel/src/user/at.rs`): a directory fd (`AT_FDCWD`,
     /// the kernel's value too: the cwd) and a path `(ptr, len)` relative to
     /// it; `K_AT_EMPTY_PATH` with an empty path is the fd's own file.
@@ -445,6 +446,23 @@ mod syscalls {
         }
     }
 
+    /// `poll(fds, nfds, timeout_ms)`: the kernel's own call, on the same
+    /// `struct pollfd`; EINTR when a signal cut the wait short.
+    pub unsafe fn sys_poll(fds: *mut super::pollfd, nfds: super::nfds_t, timeout: c_int) -> c_int {
+        let ret = raw_syscall(SYS_POLL, fds as usize, nfds as usize, timeout as isize as usize);
+        match usize::MAX - ret {
+            0 => {
+                set_errno(EINVAL);
+                -1
+            }
+            3 => {
+                set_errno(EINTR);
+                -1
+            }
+            _ => ret as c_int,
+        }
+    }
+
     pub unsafe fn sys_getpid() -> pid_t {
         let ret = raw_syscall(SYS_GETPID, 0, 0, 0);
         ret as pid_t
@@ -664,12 +682,7 @@ pub unsafe extern "C" fn fcntl(fd: c_int, cmd: c_int, arg: c_ulong) -> c_int {
 /// ioctl syscall behind this, anything else is ENOTTY.
 #[no_mangle]
 pub unsafe extern "C" fn ioctl(fd: c_int, request: c_ulong, arg: *mut c_void) -> c_int {
-    const TCGETS: c_ulong = 0x5401;
-    const TCSETS: c_ulong = 0x5402;
-    const TCFLSH: c_ulong = 0x540B;
     const TIOCSCTTY: c_ulong = 0x540E;
-    const TIOCGWINSZ: c_ulong = 0x5413;
-    const TIOCSWINSZ: c_ulong = 0x5414;
     if fd < 0 {
         syscalls::set_errno(EBADF);
         return -1;
@@ -709,6 +722,91 @@ pub unsafe extern "C" fn ioctl(fd: c_int, request: c_ulong, arg: *mut c_void) ->
     if ok { 0 } else { -1 }
 }
 
+pub use tty::{termios, winsize};
+
+pub type tcflag_t = u32;
+pub type nfds_t = c_ulong;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct pollfd {
+    pub fd: c_int,
+    pub events: c_short,
+    pub revents: c_short,
+}
+
+pub const POLLIN: c_short = 0x1;
+pub const POLLPRI: c_short = 0x2;
+pub const POLLOUT: c_short = 0x4;
+pub const POLLERR: c_short = 0x8;
+pub const POLLHUP: c_short = 0x10;
+pub const POLLNVAL: c_short = 0x20;
+
+/// `tcsetattr`'s actions: the terminal takes the new state at once in all
+/// three (myos has no output queue to drain); `TCSAFLUSH` drops pending
+/// input first.
+pub const TCSANOW: c_int = 0;
+pub const TCSADRAIN: c_int = 1;
+pub const TCSAFLUSH: c_int = 2;
+pub const TCGETS: c_ulong = 0x5401;
+pub const TCSETS: c_ulong = 0x5402;
+pub const TCFLSH: c_ulong = 0x540B;
+pub const TIOCGWINSZ: c_ulong = 0x5413;
+pub const TIOCSWINSZ: c_ulong = 0x5414;
+pub const VTIME: usize = 5;
+pub const VMIN: usize = 6;
+
+// The termios bits the kernel keeps (Linux's values, docs/tty.md).
+pub const IGNBRK: tcflag_t = 0o1;
+pub const BRKINT: tcflag_t = 0o2;
+pub const PARMRK: tcflag_t = 0o10;
+pub const ISTRIP: tcflag_t = 0o40;
+pub const INLCR: tcflag_t = 0o100;
+pub const IGNCR: tcflag_t = 0o200;
+pub const ICRNL: tcflag_t = 0o400;
+pub const IXON: tcflag_t = 0o2000;
+pub const OPOST: tcflag_t = 0o1;
+pub const CSIZE: tcflag_t = 0o60;
+pub const CS8: tcflag_t = 0o60;
+pub const PARENB: tcflag_t = 0o400;
+pub const ISIG: tcflag_t = 0o1;
+pub const ICANON: tcflag_t = 0o2;
+pub const ECHO: tcflag_t = 0o10;
+pub const ECHONL: tcflag_t = 0o100;
+pub const IEXTEN: tcflag_t = 0o100000;
+
+#[no_mangle]
+pub unsafe extern "C" fn tcgetattr(fd: c_int, t: *mut termios) -> c_int {
+    ioctl(fd, TCGETS, t as *mut c_void)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tcsetattr(fd: c_int, action: c_int, t: *const termios) -> c_int {
+    if action == TCSAFLUSH && ioctl(fd, TCFLSH, 0 as *mut c_void) != 0 {
+        return -1;
+    }
+    ioctl(fd, TCSETS, t as *mut c_void)
+}
+
+/// The raw mode of `cfmakeraw(3)`: bytes as they come, one at a time, no
+/// echo, no signals from keys, no output processing.
+#[no_mangle]
+pub unsafe extern "C" fn cfmakeraw(t: *mut termios) {
+    let t = &mut *t;
+    t.c_iflag &= !(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+    t.c_oflag &= !OPOST;
+    t.c_lflag &= !(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    t.c_cflag &= !(CSIZE | PARENB);
+    t.c_cflag |= CS8;
+    t.c_cc[VMIN] = 1;
+    t.c_cc[VTIME] = 0;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn poll(fds: *mut pollfd, nfds: nfds_t, timeout: c_int) -> c_int {
+    syscalls::sys_poll(fds, nfds, timeout)
+}
+
 /// The terminal behind an fd, through its files (docs/tty.md): a directory
 /// with `data` (the terminal) and `ctl` (its state as text), found from the
 /// fd's `/proc/self/fd` link.
@@ -717,6 +815,7 @@ mod tty {
 
     /// `struct termios` as libgloss lays it out (56 bytes).
     #[repr(C)]
+    #[derive(Clone, Copy)]
     pub struct termios {
         pub c_iflag: u32,
         pub c_oflag: u32,
@@ -728,6 +827,7 @@ mod tty {
     }
 
     #[repr(C)]
+    #[derive(Clone, Copy)]
     pub struct winsize {
         pub ws_row: u16,
         pub ws_col: u16,
@@ -1049,6 +1149,26 @@ pub unsafe extern "C" fn clock_gettime(_clk: clockid_t, tp: *mut timespec) -> c_
 #[no_mangle]
 pub unsafe extern "C" fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t {
     syscalls::sys_readlink(path, buf, bufsiz)
+}
+
+/// newlib's `struct passwd` (its `uid_t` and `gid_t` are 16 bits).
+#[repr(C)]
+pub struct passwd {
+    pub pw_name: *mut c_char,
+    pub pw_passwd: *mut c_char,
+    pub pw_uid: u16,
+    pub pw_gid: u16,
+    pub pw_comment: *mut c_char,
+    pub pw_gecos: *mut c_char,
+    pub pw_dir: *mut c_char,
+    pub pw_shell: *mut c_char,
+}
+
+// From libgloss (the policy's users, `/proc/sys/security/users`): only for
+// a program that links it (`-lgloss`).
+extern "C" {
+    pub fn getpwuid(uid: uid_t) -> *mut passwd;
+    pub fn getpwnam(name: *const c_char) -> *mut passwd;
 }
 
 // Stubs for symbols rustix may reference on first compile pass.
