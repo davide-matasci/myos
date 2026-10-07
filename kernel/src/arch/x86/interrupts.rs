@@ -455,7 +455,7 @@ macro_rules! user_exc {
     ($name:ident, $label:literal) => {
         extern "x86-interrupt" fn $name(frame: InterruptStackFrame) {
             let user = frame.code_segment.0 & 3 == 3;
-            crate::exception::x86_user_exception(
+            super::exception::x86_exception(
                 $label,
                 frame.instruction_pointer.as_u64(),
                 frame.stack_pointer.as_u64(),
@@ -470,7 +470,7 @@ macro_rules! user_exc_code {
     ($name:ident, $label:literal) => {
         extern "x86-interrupt" fn $name(frame: InterruptStackFrame, code: u64) {
             let user = frame.code_segment.0 & 3 == 3;
-            crate::exception::x86_user_exception(
+            super::exception::x86_exception(
                 $label,
                 frame.instruction_pointer.as_u64(),
                 frame.stack_pointer.as_u64(),
