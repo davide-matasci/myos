@@ -14,8 +14,15 @@ if myos_clear_is_current; then
   exit 0
 fi
 
-# ncurses prepares the source tree (target/ncurses-src), generates its headers
-# and builds libncurses.a for the three arches; clear reuses all of it.
+# clear compiles ncurses source files (progs/*.c) against its internal and
+# generated headers, so it needs the ncurses source tree (target/ncurses-src)
+# and the configured build tree (target/ncurses-myos-build) present, not just
+# the library. The ncurses registry caches only the library and public headers
+# (PORT_OUTPUTS), so in a fresh CI container build.sh sees the cached library,
+# reports "up to date" and never runs prepare.sh — leaving no source to
+# compile. Run prepare.sh explicitly (idempotent; fetches and configures) to
+# materialize both trees, then build.sh for libncurses.a (a no-op when cached).
+"$(myos_port_dir ncurses)/prepare.sh"
 "$(myos_port_dir ncurses)/build.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
