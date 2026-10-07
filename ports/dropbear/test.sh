@@ -1,7 +1,8 @@
 # dropbear: the host opens two SSH sessions at once through QEMU's port
 # forward (the HOST request runs host.sh; pubkey auth with the test key);
-# each session touches a file in /tmp when it gets in. Full mode only (the
-# host needs an ssh client and the time).
+# each session writes its PATH to a file in /tmp when it gets in: myos's
+# directories (DEFAULT_ROOT_PATH in localoptions.h; the shell keeps what it
+# inherits). Full mode only (the host needs an ssh client and the time).
 [ "$MODE" = full ] || return 0
 
 ssh_two_clients() {
@@ -18,6 +19,8 @@ ssh_two_clients() {
 	kill $pid 2>/dev/null
 	wait $pid 2>/dev/null
 	cat /tmp/dropbear.out
-	[ -f /tmp/ssh-ok-a ] && [ -f /tmp/ssh-ok-b ]
+	[ -f /tmp/ssh-ok-a ] && [ -f /tmp/ssh-ok-b ] || return 1
+	cat /tmp/ssh-ok-a
+	[ "$(cat /tmp/ssh-ok-a)" = /bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc ]
 }
 t ssh ssh_two_clients

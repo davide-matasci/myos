@@ -4,7 +4,7 @@
 # Two SSH sessions at once (pubkey auth with the test key) through QEMU's
 # port forward, both must exit 0: multi-session accept on dropbear and netd
 # (a parked accept plus the listen hold). Each session echoes its tag and
-# touches /tmp/ssh-ok-<tag>, which the guest test waits for.
+# writes its PATH to /tmp/ssh-ok-<tag>, which the guest test waits for.
 set -u
 port="${1:?port}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,7 +31,7 @@ one() {
     -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes \
     -o PreferredAuthentications=publickey -o KexAlgorithms=curve25519-sha256 \
     -o ConnectTimeout=8 -o ConnectionAttempts=1 \
-    "root@127.0.0.1" "echo $tag; : > /tmp/ssh-ok-$tag" 2>&1)" \
+    "root@127.0.0.1" "echo $tag; echo \"\$PATH\" > /tmp/ssh-ok-$tag" 2>&1)" \
     && [[ "$out" == *"$tag"* ]] && return 0
   echo "$out" > "$dir/err-$tag"
   return 1
