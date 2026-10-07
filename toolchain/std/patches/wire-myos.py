@@ -479,6 +479,34 @@ impl From<OwnedFd> for crate::fs::File {{
         ))
     }}
 }}
+
+// The raw fd of a File, through its OwnedFd (as on unix).
+#[stable(feature = "rust1", since = "1.0.0")]
+#[cfg(target_os = "myos")]
+impl AsRawFd for crate::fs::File {{
+    #[inline]
+    fn as_raw_fd(&self) -> RawFd {{
+        self.as_fd().as_raw_fd()
+    }}
+}}
+
+#[stable(feature = "from_raw_os", since = "1.1.0")]
+#[cfg(target_os = "myos")]
+impl FromRawFd for crate::fs::File {{
+    #[inline]
+    unsafe fn from_raw_fd(fd: RawFd) -> crate::fs::File {{
+        crate::fs::File::from(unsafe {{ OwnedFd::from_raw_fd(fd) }})
+    }}
+}}
+
+#[stable(feature = "into_raw_os", since = "1.4.0")]
+#[cfg(target_os = "myos")]
+impl IntoRawFd for crate::fs::File {{
+    #[inline]
+    fn into_raw_fd(self) -> RawFd {{
+        OwnedFd::from(self).into_raw_fd()
+    }}
+}}
 '''
     path.write_text(text + impls)
     print(f"added myos File/Stdio fd impls in {path}")
