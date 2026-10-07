@@ -66,6 +66,11 @@ myos_install_std_rlibs() {
   local deps_dir="$2"
   local dest="$MYOS_SYSROOT/lib/rustlib/${triple}/lib"
   mkdir -p "$dest"
+  # Replace, not add to: a rebuilt std whose crate hash changed (a new
+  # dependency) would otherwise sit beside the old one, and rustc refuses
+  # to pick ("multiple candidates for rlib dependency std"); so would a
+  # stale one left in the build's deps.
+  rm -f "$dest"/*.rlib "$dest"/*.rmeta
   shopt -s nullglob
   local artifacts=( "$deps_dir"/*.rlib "$deps_dir"/*.rmeta )
   shopt -u nullglob
@@ -107,6 +112,8 @@ myos_cargo_build_std() {
   fi
 
   myos_export_toolchain_env
+  # Only this build's rlibs in deps: they are what gets installed.
+  rm -rf "$target_dir/${triple}"
   cargo "+$MYOS_NIGHTLY" build \
     -Z build-std=std,panic_abort \
     -Z build-std-features=compiler-builtins-mem \
