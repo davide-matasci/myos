@@ -446,6 +446,21 @@ net_ctl() {
 }
 t net_ctl net_ctl
 
+# netd's DHCP lease in /net/ndb: QEMU's, whose DNS server the launcher moves
+# to 10.0.2.4 (add_virtio_net); the full mode's lookups go there.
+net_lease() {
+	[ -d /dev/net0 ] || return 0
+	i=0
+	while [ ! -s /net/ndb ] && [ $i -lt 10 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	grep -q '^ip=10\.0\.2\.15 ipmask=255\.255\.255\.0 ipgw=10\.0\.2\.2$' /net/ndb \
+		&& grep -q '^	dns=10\.0\.2\.4$' /net/ndb \
+		|| { cat /net/ndb; return 1; }
+}
+t net_lease net_lease
+
 # isatty through the libc (the /proc/self/fd link, no ioctl): the shell's
 # stdin is the console, its captured stdout a file.
 isatty_fds() {

@@ -1,5 +1,6 @@
 /*
- * getaddrinfo / gethostbyname via Plan 9 /net/udp to QEMU DNS (10.0.2.3:53).
+ * getaddrinfo / gethostbyname via Plan 9 /net/udp to the DNS servers of
+ * netd's DHCP lease (`dns=` in /net/ndb), QEMU's 10.0.2.3 when it names none.
  * Logic mirrors user/lib/src/dns.rs — keep behaviour in sync.
  */
 #include <arpa/inet.h>
@@ -16,6 +17,8 @@
 #define STATUS_POLLS 400000
 #define DATA_POLLS   400000
 #define DNS_BUF      1024
+#define MAX_DNS      3
+#define NDB_BUF      256
 
 static int encode_name(unsigned char *dst, size_t dstcap, const char *name) {
     size_t pos = 0;
@@ -123,15 +126,92 @@ static int buf_has(const char *hay, size_t n, const char *needle) {
     return 0;
 }
 
+/* The `dns=` servers of /net/ndb (at most `max`), or QEMU's 10.0.2.3. */
+static int dns_servers(struct in_addr *out, int max) {
+    char ndb[NDB_BUF + 1];
+    ssize_t n = 0;
+    int fd = open("/net/ndb", O_RDONLY);
+    int count = 0;
+    char *p;
+    if (fd >= 0) {
+        n = read(fd, ndb, NDB_BUF);
+        close(fd);
+    }
+    ndb[n > 0 ? n : 0] = '\0';
+    for (p = strstr(ndb, "dns="); p != NULL && count < max; p = strstr(p, "dns=")) {
+        char addr[16];
+        size_t len;
+        p += 4;
+        len = strcspn(p, " \t\n");
+        if (len < sizeof addr) {
+            memcpy(addr, p, len);
+            addr[len] = '\0';
+            if (inet_pton(AF_INET, addr, &out[count]) == 1) {
+                count++;
+            }
+        }
+    }
+    if (count == 0) {
+        inet_pton(AF_INET, "10.0.2.3", &out[0]);
+        count = 1;
+    }
+    return count;
+}
+
+/* Send `query` to `server`:53 and take the first A record of its answer. */
+static int query_server(const struct in_addr *server, const unsigned char *query,
+    size_t qlen, unsigned char ip[4]) {
+    unsigned char rbuf[DNS_BUF];
+    struct sockaddr_in dest;
+    ssize_t nr;
+    int sock;
+    int i;
+
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        return -1;
+    }
+    memset(&dest, 0, sizeof dest);
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(53);
+    dest.sin_addr = *server;
+    if (connect(sock, (struct sockaddr *)&dest, sizeof dest) < 0) {
+        close(sock);
+        return -1;
+    }
+    if (send(sock, query, qlen, 0) < 0) {
+        close(sock);
+        return -1;
+    }
+    /* Bound the DNS wait: nonblock + poll EAGAIN (blocking recv would wait forever). */
+    (void)fcntl(sock, F_SETFL, O_NONBLOCK);
+    for (i = 0; i < DATA_POLLS; i++) {
+        nr = recv(sock, rbuf, sizeof rbuf, 0);
+        if (nr < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            break;
+        }
+        if (nr == 0) {
+            continue;
+        }
+        if (parse_a_record(rbuf, (size_t)nr, ip) == 0) {
+            close(sock);
+            return 0;
+        }
+    }
+    close(sock);
+    return -1;
+}
+
 static int resolve_a(const char *host, unsigned char ip[4]) {
     unsigned char query[512];
     size_t qpos = 0;
     int name_len;
-    int sock;
-    struct sockaddr_in dest;
+    struct in_addr servers[MAX_DNS];
+    int nservers;
     int i;
-    unsigned char rbuf[DNS_BUF];
-    ssize_t nr;
 
     /* If already an IPv4 literal */
     if (inet_pton(AF_INET, host, ip) == 1) {
@@ -159,41 +239,12 @@ static int resolve_a(const char *host, unsigned char ip[4]) {
     query[qpos++] = 0x00;
     query[qpos++] = 0x01; /* IN */
 
-    sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        return -1;
-    }
-    memset(&dest, 0, sizeof dest);
-    dest.sin_family = AF_INET;
-    dest.sin_port = htons(53);
-    inet_pton(AF_INET, "10.0.2.3", &dest.sin_addr);
-    if (connect(sock, (struct sockaddr *)&dest, sizeof dest) < 0) {
-        close(sock);
-        return -1;
-    }
-    if (send(sock, query, qpos, 0) < 0) {
-        close(sock);
-        return -1;
-    }
-    /* Bound the DNS wait: nonblock + poll EAGAIN (blocking recv would wait forever). */
-    (void)fcntl(sock, F_SETFL, O_NONBLOCK);
-    for (i = 0; i < DATA_POLLS; i++) {
-        nr = recv(sock, rbuf, sizeof rbuf, 0);
-        if (nr < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                continue;
-            }
-            break;
-        }
-        if (nr == 0) {
-            continue;
-        }
-        if (parse_a_record(rbuf, (size_t)nr, ip) == 0) {
-            close(sock);
+    nservers = dns_servers(servers, MAX_DNS);
+    for (i = 0; i < nservers; i++) {
+        if (query_server(&servers[i], query, qpos, ip) == 0) {
             return 0;
         }
     }
-    close(sock);
     (void)buf_has;
     (void)STATUS_POLLS;
     return -1;
