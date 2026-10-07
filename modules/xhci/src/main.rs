@@ -148,56 +148,53 @@ unsafe extern "C" fn driver_register(ops: *const UsbDriverOps) -> i32 {
     0
 }
 
+/// `usb::with_device` for a hook: the device's lock held for `f`, and
+/// `USB_EGONE` when the device is not there.
+fn on_device(dev: u32, f: impl FnOnce(&mut hc::Controller, &usb::Slot, &mut usb::Device) -> i32) -> i32 {
+    usb::with_device(dev, f).unwrap_or_else(|e| e)
+}
+
 unsafe extern "C" fn control(dev: u32, request_type: u8, request: u8, value: u16, index: u16, data: *mut u8, len: u16) -> i32 {
-    let Some((c, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
     if len != 0 && data.is_null() {
         return -1;
     }
-    usb::control(c, d, request_type, request, value, index, data, len)
+    on_device(dev, |c, s, d| usb::control(c, s, d, request_type, request, value, index, data, len))
 }
 
 unsafe extern "C" fn bulk(dev: u32, endpoint: u8, data: *mut u8, len: usize, timeout_ms: u32) -> i32 {
-    let Some((c, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
     if data.is_null() && len != 0 {
         return -1;
     }
-    usb::bulk(c, d, endpoint, data, len, timeout_ms)
+    on_device(dev, |c, s, d| usb::bulk(c, s, d, endpoint, data, len, timeout_ms))
 }
 
 unsafe extern "C" fn interrupt_start(dev: u32, endpoint: u8, data: *mut u8, len: usize, done: UsbCompletion, ctx: *mut c_void) -> i32 {
-    let Some((c, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
     if data.is_null() || len == 0 {
         return -1;
     }
-    usb::interrupt_start(c, d, endpoint, data, len, done, ctx)
+    on_device(dev, |c, s, d| usb::interrupt_start(c, s, d, endpoint, data, len, done, ctx))
 }
 
 unsafe extern "C" fn clear_halt(dev: u32, endpoint: u8) -> i32 {
-    let Some((c, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
-    usb::clear_halt(c, d, endpoint)
+    on_device(dev, |c, s, d| usb::clear_halt(c, s, d, endpoint))
 }
 
 unsafe extern "C" fn hub_configure(dev: u32, ports: u8, tt_think: u8, multi_tt: u8) -> i32 {
-    let Some((c, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
-    usb::hub_configure(c, d, ports, tt_think, multi_tt != 0)
+    on_device(dev, |c, _, d| usb::hub_configure(c, d, ports, tt_think, multi_tt != 0))
+}
+
+/// The controller of the hub `dev`, if the hub is there.
+fn hub_controller(dev: u32) -> Option<&'static mut hc::Controller> {
+    let index = usb::with_device(dev, |c, _, _| c.index).ok()?;
+    controller(index)
 }
 
 unsafe extern "C" fn hub_attach(dev: u32, port: u8, speed: u8) -> i32 {
-    let Some((c, _)) = usb::lookup(dev) else {
+    let Some(c) = hub_controller(dev) else {
         return USB_EGONE;
     };
-    if usb::find(c.index, dev, port).is_some() {
-        usb::detach_id(c, usb::find(c.index, dev, port).unwrap());
+    if let Some(child) = usb::find(c.index, dev, port) {
+        usb::detach_id(c, child);
     }
     match usb::attach(c, Some((dev, port)), 0, speed) {
         Ok(id) => id as i32,
@@ -209,7 +206,7 @@ unsafe extern "C" fn hub_attach(dev: u32, port: u8, speed: u8) -> i32 {
 }
 
 unsafe extern "C" fn hub_detach(dev: u32, port: u8) {
-    let Some((c, _)) = usb::lookup(dev) else {
+    let Some(c) = hub_controller(dev) else {
         return;
     };
     if let Some(child) = usb::find(c.index, dev, port) {
@@ -218,35 +215,36 @@ unsafe extern "C" fn hub_detach(dev: u32, port: u8) {
 }
 
 unsafe extern "C" fn device_info(dev: u32, info: *mut UsbDeviceInfo) -> i32 {
-    let Some((_, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
     if info.is_null() {
         return -1;
     }
-    unsafe {
-        *info = d.info;
-    }
-    0
+    on_device(dev, |_, _, d| {
+        unsafe {
+            *info = d.info;
+        }
+        0
+    })
 }
 
 unsafe extern "C" fn interface_label(dev: u32, intf: u8, label: *const u8, len: usize) -> i32 {
-    let Some((_, d)) = usb::lookup(dev) else {
-        return USB_EGONE;
-    };
-    let Some(i) = d.interfaces.iter_mut().flatten().find(|i| i.info.number == intf) else {
-        return -1;
-    };
     let len = len.min(USB_LABEL_MAX);
-    if len != 0 {
-        if label.is_null() {
-            return -1;
-        }
-        i.label[..len].copy_from_slice(unsafe { core::slice::from_raw_parts(label, len) });
+    if len != 0 && label.is_null() {
+        return -1;
     }
-    i.label_len = len as u8;
-    proc_update();
-    0
+    let rc = on_device(dev, |_, _, d| {
+        let Some(i) = d.interfaces.iter_mut().flatten().find(|i| i.info.number == intf) else {
+            return -1;
+        };
+        if len != 0 {
+            i.label[..len].copy_from_slice(unsafe { core::slice::from_raw_parts(label, len) });
+        }
+        i.label_len = len as u8;
+        0
+    });
+    if rc == 0 {
+        proc_update();
+    }
+    rc
 }
 
 // ---- Interrupts and the thread -----------------------------------------------

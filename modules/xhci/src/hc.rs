@@ -11,7 +11,7 @@
 
 use core::ffi::c_void;
 use core::num::NonZeroUsize;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use myos_abi::{USB_EGONE, USB_EIO, USB_ESTALL, USB_ETIMEDOUT, UsbCompletion};
 use xhci::accessor::Mapper;
@@ -95,12 +95,12 @@ impl Ring {
         self.phys + (i * TRB_BYTES) as u64
     }
 
-    /// The slot index of the TRB at `phys`, if on this ring.
-    pub fn index_of(&self, phys: u64) -> Option<usize> {
-        if phys < self.phys || phys >= self.phys + (TRBS * TRB_BYTES) as u64 {
+    /// The slot index of the TRB at `phys`, if on the ring at `base`.
+    pub fn index_in(base: u64, phys: u64) -> Option<usize> {
+        if phys < base || phys >= base + (TRBS * TRB_BYTES) as u64 {
             return None;
         }
-        Some(((phys - self.phys) / TRB_BYTES as u64) as usize)
+        Some(((phys - base) / TRB_BYTES as u64) as usize)
     }
 
     /// Where the next TRB goes, with the cycle state (`Set TR Dequeue`).
@@ -134,15 +134,19 @@ impl Ring {
         i
     }
 
-    fn trb_len(&self, i: usize) -> u32 {
-        let t = unsafe { core::ptr::read_volatile(self.trbs.add(i)) };
+    /// The transfer length of TRB `i` of the ring at `trbs`.
+    pub fn trb_len_at(trbs: *mut [u32; 4], i: usize) -> u32 {
+        // SAFETY: a ring is one page of `TRBS` TRBs and `i` is below that.
+        let t = unsafe { core::ptr::read_volatile(trbs.add(i)) };
         t[2] & 0x1_FFFF
     }
 }
 
 /// One transfer descriptor in flight on an endpoint, filled in by the event
 /// handler. `td_start..td_start + td_trbs` are its TRBs (Link excluded),
-/// `total` the bytes they carry.
+/// `total` the bytes they carry. Atomics only: the handler reads and
+/// writes it with no lock held, and it lives in the device's slot
+/// (`usb::Slot`), outside the lock a transfer holds.
 pub struct Pending {
     pub active: AtomicBool,
     pub done: AtomicBool,
@@ -155,10 +159,12 @@ pub struct Pending {
     pub td_trbs: AtomicU32,
     pub total: AtomicU32,
     /// An asynchronous transfer (`interrupt_start`): the USB thread runs
-    /// this when `done`.
-    pub callback: Option<(UsbCompletion, *mut c_void)>,
-    pub user: *mut u8,
-    pub user_len: usize,
+    /// the endpoint's callback when `done`.
+    pub has_callback: AtomicBool,
+    /// The endpoint's ring (base and TRBs), for the handler to find the
+    /// TD's TRBs; null while the endpoint does not exist.
+    pub ring_phys: AtomicU64,
+    pub ring_trbs: AtomicPtr<[u32; 4]>,
 }
 
 impl Pending {
@@ -172,10 +178,22 @@ impl Pending {
             td_start: AtomicU32::new(0),
             td_trbs: AtomicU32::new(0),
             total: AtomicU32::new(0),
-            callback: None,
-            user: core::ptr::null_mut(),
-            user_len: 0,
+            has_callback: AtomicBool::new(false),
+            ring_phys: AtomicU64::new(0),
+            ring_trbs: AtomicPtr::new(core::ptr::null_mut()),
         }
+    }
+
+    /// The endpoint's ring, for the handler.
+    pub fn set_ring(&self, ring: &Ring) {
+        self.ring_phys.store(ring.phys, Ordering::Relaxed);
+        self.ring_trbs.store(ring.trbs, Ordering::Release);
+    }
+
+    /// No endpoint any more.
+    pub fn clear_ring(&self) {
+        self.ring_trbs.store(core::ptr::null_mut(), Ordering::Release);
+        self.ring_phys.store(0, Ordering::Relaxed);
     }
 
     pub fn arm(&self, td_start: usize, td_trbs: usize, total: usize) {
@@ -205,12 +223,11 @@ impl Pending {
     }
 }
 
-/// An endpoint of an addressed device: its transfer ring and the one TD in
-/// flight on it (`lock` serialises its users).
+/// An endpoint of an addressed device: its transfer ring, and what the
+/// one TD in flight on it (`Pending`, in the device's slot) has to hand
+/// back. Reached through the device's lock.
 pub struct Endpoint {
     pub ring: Ring,
-    pub pending: Pending,
-    pub lock: Spin,
     pub address: u8,
     /// Transfer type (`bmAttributes & 3`): 0 control, 2 bulk, 3 interrupt.
     pub kind: u8,
@@ -219,6 +236,11 @@ pub struct Endpoint {
     pub bounce: *mut u8,
     pub bounce_phys: u64,
     pub bounce_len: usize,
+    /// An asynchronous transfer (`interrupt_start`): its callback and the
+    /// caller's buffer, which gets the bytes when the TD is done.
+    pub callback: Option<(UsbCompletion, *mut c_void)>,
+    pub user: *mut u8,
+    pub user_len: usize,
 }
 
 /// The command ring's one command in flight.
@@ -333,16 +355,17 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
             let slot = e.slot_id() as usize;
             let dci = e.endpoint_id() as usize;
             let residual = e.trb_transfer_length();
-            let Some(dev) = c.slot_owner.get(slot).and_then(|&o| crate::usb::device_at(c.index, o)) else {
+            let Some(p) = c.slot_owner.get(slot).and_then(|&o| crate::usb::pending_at(c.index, o, dci)) else {
                 return;
             };
-            let Some(ep) = dev.endpoint_mut(dci) else {
-                return;
-            };
-            let p = &ep.pending;
             if !p.active.load(Ordering::Acquire) || p.done.load(Ordering::Acquire) {
                 return;
             }
+            let trbs = p.ring_trbs.load(Ordering::Acquire);
+            if trbs.is_null() {
+                return;
+            }
+            let ring_phys = p.ring_phys.load(Ordering::Relaxed);
             // Bytes moved: the TD's total less this TRB's residual and the
             // TRBs after it the controller skipped (a short packet ends a TD).
             let total = p.total.load(Ordering::Relaxed);
@@ -350,7 +373,7 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
             let n = p.td_trbs.load(Ordering::Relaxed) as usize;
             // The TD's slots, from `start`, skipping the Link TRB: which
             // one the event names, and the bytes of the ones after it.
-            let idx = ep.ring.index_of(e.trb_pointer());
+            let idx = Ring::index_in(ring_phys, e.trb_pointer());
             let (mut k, mut slot) = (n - 1, start);
             for pos in 0..n {
                 if Some(slot) == idx {
@@ -362,7 +385,7 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
             let mut moved = total.saturating_sub(residual);
             let mut after = next_slot(slot);
             for _ in k + 1..n {
-                moved = moved.saturating_sub(ep.ring.trb_len(after));
+                moved = moved.saturating_sub(Ring::trb_len_at(trbs, after));
                 after = next_slot(after);
             }
             // A short packet before the last TRB: the controller skips to
@@ -382,7 +405,7 @@ fn handle_event(c: &mut Controller, raw: [u32; 4]) {
             p.transferred.store(moved, Ordering::Relaxed);
             p.code.store(code, Ordering::Relaxed);
             p.done.store(true, Ordering::Release);
-            if p.callback.is_some() {
+            if p.has_callback.load(Ordering::Acquire) {
                 c.async_done.store(true, Ordering::Release);
                 api().wake(crate::THREAD_KEY.as_ptr() as usize);
             } else {
@@ -452,9 +475,9 @@ pub fn ring_doorbell(c: &mut Controller, slot: u8, dci: u8) {
 
 /// Enqueue a TD of Normal TRBs moving `len` bytes at `phys` (chained, every
 /// TRB below 64 KiB and inside one 64 KiB region, the last with IOC, all
-/// with ISP) and arm `ep.pending`. The caller holds the endpoint lock and
-/// rings the doorbell.
-pub fn enqueue_normal(ep: &mut Endpoint, phys: u64, len: usize) -> Result<(), i32> {
+/// with ISP) and arm `pending`, the endpoint's record. The caller holds
+/// the device's lock and rings the doorbell.
+pub fn enqueue_normal(ep: &mut Endpoint, pending: &Pending, phys: u64, len: usize) -> Result<(), i32> {
     let mut chunks: [(u64, usize); 8] = [(0, 0); 8];
     let mut n = 0;
     let (mut p, mut left) = (phys, len);
@@ -486,14 +509,15 @@ pub fn enqueue_normal(ep: &mut Endpoint, phys: u64, len: usize) -> Result<(), i3
         }
         ep.ring.push(t.into_raw());
     }
-    ep.pending.arm(start, n, len);
+    pending.arm(start, n, len);
     Ok(())
 }
 
 /// A control transfer's TD: Setup, an optional Data stage of `len` bytes at
-/// `phys` (IN when `to_host`), Status. Arms `ep.pending`.
+/// `phys` (IN when `to_host`), Status. Arms `pending`, the endpoint's record.
 pub fn enqueue_control(
     ep: &mut Endpoint,
+    pending: &Pending,
     request_type: u8,
     request: u8,
     value: u16,
@@ -538,7 +562,7 @@ pub fn enqueue_control(
     ep.ring.push(status.into_raw());
     // Bytes counted: the data stage only (the setup TRB's 8 are immediate
     // and the event for the status stage reports 0 residual).
-    ep.pending.arm(start, n, usize::from(len));
+    pending.arm(start, n, usize::from(len));
 }
 
 /// Bring the controller at `mmio` up: BIOS handoff, reset, the device
