@@ -25,7 +25,7 @@ under its own license.
 | Limine bootloader (BIOS/UEFI binaries) | 12.6.1 | BSD-2-Clause | https://github.com/limine-bootloader/limine (`src/limine_image.rs`) |
 | newlib + libgloss (C library; `toolchain/newlib/`) | 4.4.0 | Mostly BSD-style permissive licenses; see `COPYING.NEWLIB` / `COPYING.LIBGLOSS` in the upstream source | https://sourceware.org/git/newlib-cygwin.git |
 | Rust `std` and `core` (patched; `toolchain/std/`), linked into Rust userspace programs | pinned nightly (`rust-toolchain.toml`) | MIT OR Apache-2.0 | https://github.com/rust-lang/rust |
-| Rust crates in the kernel / `user/netd` | see `Cargo.toml` | `limine`: MIT OR Apache-2.0; `spin`: MIT; `x86_64`, `linked_list_allocator`, `pic8259`: MIT/Apache-2.0; `smoltcp`: 0BSD; `fdt` (device tree parser, used unmodified): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://crates.io |
+| Rust crates in the kernel / `user/netd` | see `Cargo.toml` | `limine`: MIT OR Apache-2.0; `spin`: MIT; `x86_64`, `linked_list_allocator`, `pic8259`: MIT/Apache-2.0; `smoltcp`: 0BSD (netd's carries a myos patch, `user/net/smoltcp/*.myos.patch`, under the same license); `fdt` (device tree parser, used unmodified): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://crates.io |
 | Rust crates in the `xhci` module (`modules/xhci/Cargo.toml`) | `xhci` 0.9.2 | `xhci` (register, TRB and context layouts, used unmodified) and its dependencies `accessor`, `bit_field`, `num-derive`, `num-traits`, `paste`: MIT OR Apache-2.0 | https://github.com/rust-osdev/xhci |
 | sbase | `SBASE_REV` in `ports/sbase/versions.env` | MIT | https://git.suckless.org/sbase |
 | ubase | `UBASE_REV` in `ports/ubase/versions.env` | MIT | https://github.com/michaelforney/ubase |
