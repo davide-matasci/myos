@@ -28,6 +28,7 @@ MYOS_RIPGREP_VERSION="$MYOS_ROOT/target/.myos-ripgrep-version"
 MYOS_TCC_VERSION="$MYOS_ROOT/target/.myos-tcc-version"
 MYOS_VIM_VERSION="$MYOS_ROOT/target/.myos-vim-version"
 MYOS_NCURSES_VERSION="$MYOS_ROOT/target/.myos-ncurses-version"
+MYOS_CLEAR_VERSION="$MYOS_ROOT/target/.myos-clear-version"
 MYOS_X11_LIBS_VERSION="$MYOS_ROOT/target/.myos-x11-libs-version"
 MYOS_TINYX_VERSION="$MYOS_ROOT/target/.myos-tinyx-version"
 MYOS_DWM_VERSION="$MYOS_ROOT/target/.myos-dwm-version"
@@ -587,6 +588,31 @@ myos_ncurses_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/ncurses-${arch}/lib/libncurses.a" ]] || return 1
+  done
+}
+
+# clear: ncurses' progs/{clear,clear_cmd,tty_settings}.c linked against the
+# ncurses library. No own source pin — fold in the ncurses hash, which already
+# covers newlib, the ncurses source and its build.
+myos_clear_version_hash() {
+  local h
+  h="$(
+    {
+      myos_ncurses_version_hash
+      find "$(myos_port_dir clear)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_clear_is_current() {
+  local arch
+  [[ -f "$MYOS_CLEAR_VERSION" ]] \
+    && [[ "$(cat "$MYOS_CLEAR_VERSION")" == "$(myos_clear_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/clear-${arch}-unknown-none" ]] || return 1
   done
 }
 
