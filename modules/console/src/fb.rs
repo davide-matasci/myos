@@ -1,8 +1,11 @@
 //! Pixel framebuffer writer using the built-in 8x8 font.
 //!
 //! Interprets a minimal ANSI/VT100 CSI subset so userspace TUIs (vim) can
-//! position the cursor, clear regions, and set colors. Serial stays raw — only
-//! the framebuffer path parses escapes.
+//! position the cursor, clear regions, and set colors (the 8 ANSI ones, the
+//! 256 of xterm and RGB). Text is UTF-8: a character takes one cell (two for
+//! a wide one, none for a combining mark), drawn with the font's glyph or as
+//! `?` without one. Serial stays raw — only the framebuffer path parses
+//! escapes.
 
 use core::fmt;
 
@@ -106,6 +109,10 @@ pub struct FrameBufferWriter<'a> {
     scroll_top: usize,
     /// Inclusive scroll-region bottom row (0-based); `usize::MAX` = last row.
     scroll_bottom: usize,
+    /// A UTF-8 character being decoded: its bits so far, and how many
+    /// continuation bytes it still needs.
+    utf8_char: u32,
+    utf8_left: u8,
 }
 
 impl FrameBufferWriter<'static> {
@@ -146,6 +153,8 @@ impl FrameBufferWriter<'static> {
             cursor_on: false,
             scroll_top: 0,
             scroll_bottom: usize::MAX,
+            utf8_char: 0,
+            utf8_left: 0,
         }
     }
 }
@@ -190,6 +199,7 @@ impl FrameBufferWriter<'_> {
         self.csi_param_count = 0;
         self.csi_has_digit = false;
         self.csi_private = false;
+        self.utf8_left = 0;
     }
 
     pub fn put_str_colored(&mut self, s: &str, fg: (u8, u8, u8)) {
@@ -199,8 +209,8 @@ impl FrameBufferWriter<'_> {
         self.prefix_len = 0;
         self.line_start = false;
         self.reset_ansi_parser();
-        for byte in s.bytes() {
-            self.put_byte_colored(byte, fg);
+        for c in s.chars() {
+            self.put_char_colored(c, fg);
         }
         self.fg = saved;
         if s.as_bytes().last() == Some(&0x0a) {
@@ -238,6 +248,11 @@ impl FrameBufferWriter<'_> {
     }
 
     pub fn put_byte(&mut self, byte: u8) {
+        // A character cut short by a byte that does not continue it.
+        if self.utf8_left > 0 && byte & 0xC0 != 0x80 {
+            self.utf8_left = 0;
+            self.put_char_colored(char::REPLACEMENT_CHARACTER, self.fg);
+        }
         // ANSI/VT100 first: never paint ESC/CSI as glyphs, and never feed the
         // status-prefix detector while a sequence is in flight.
         match self.ansi_state {
@@ -256,6 +271,13 @@ impl FrameBufferWriter<'_> {
                 self.handle_csi_byte(byte);
                 return;
             }
+        }
+
+        if byte >= 0x80 {
+            self.flush_prefix_plain();
+            self.line_start = false;
+            self.put_utf8_byte(byte);
+            return;
         }
 
         // Color status tags that arrive via the plain byte path (modules +
@@ -715,20 +737,40 @@ impl FrameBufferWriter<'_> {
                     self.fg = ANSI_FG_BRIGHT[(p - 90) as usize];
                 }
                 100..=107 => {
-                    // Bright backgrounds — approximate with normal bg palette.
-                    self.bg = ANSI_BG[(p - 100) as usize];
+                    // Bright backgrounds are the bright colors (as in xterm):
+                    // programs put dark text on them (btm's selected row).
+                    self.bg = ANSI_FG_BRIGHT[(p - 100) as usize];
                 }
-                // 38 / 48 extended colors: skip (optionally consume 2 more args).
+                // 38 / 48 extended colors: CSI 38;5;n (xterm's 256) or
+                // 38;2;r;g;b, the same with 48 for the background.
                 38 | 48 => {
-                    // CSI 38;5;n or 38;2;r;g;b — skip rest of this attribute.
-                    if i + 1 < count {
-                        let mode = self.csi_params[i + 1];
-                        if mode == 5 && i + 2 < count {
-                            i += 2; // consumed 38;5;n
-                        } else if mode == 2 && i + 4 < count {
-                            i += 4; // consumed 38;2;r;g;b
+                    let (params, base) = (self.csi_params, i);
+                    let arg = |k: usize| params[base + k];
+                    let color = if i + 2 < count && arg(1) == 5 {
+                        let n = arg(2).min(255) as u8;
+                        i += 2;
+                        Some(if p == 48 && n < 8 {
+                            ANSI_BG[n as usize]
                         } else {
-                            i += 1;
+                            color_256(n)
+                        })
+                    } else if i + 4 < count && arg(1) == 2 {
+                        let c = (
+                            arg(2).min(255) as u8,
+                            arg(3).min(255) as u8,
+                            arg(4).min(255) as u8,
+                        );
+                        i += 4;
+                        Some(c)
+                    } else {
+                        i = count; // malformed: drop the rest
+                        None
+                    };
+                    if let Some(c) = color {
+                        if p == 38 {
+                            self.fg = c;
+                        } else {
+                            self.bg = c;
                         }
                     }
                 }
@@ -789,6 +831,56 @@ impl FrameBufferWriter<'_> {
         self.put_byte_colored(b' ', TEXT);
     }
 
+    /// A byte of a UTF-8 character: a lead byte starts one, a continuation
+    /// byte adds to it, and the last one draws it. Invalid ones draw `?`.
+    fn put_utf8_byte(&mut self, byte: u8) {
+        if self.utf8_left > 0 {
+            self.utf8_char = self.utf8_char << 6 | (byte & 0x3F) as u32;
+            self.utf8_left -= 1;
+            if self.utf8_left == 0 {
+                let c = char::from_u32(self.utf8_char)
+                    .filter(|c| !c.is_ascii())
+                    .unwrap_or(char::REPLACEMENT_CHARACTER);
+                self.put_char_colored(c, self.fg);
+            }
+            return;
+        }
+        (self.utf8_char, self.utf8_left) = match byte {
+            0xC2..=0xDF => ((byte & 0x1F) as u32, 1),
+            0xE0..=0xEF => ((byte & 0x0F) as u32, 2),
+            0xF0..=0xF4 => ((byte & 0x07) as u32, 3),
+            _ => {
+                self.put_char_colored(char::REPLACEMENT_CHARACTER, self.fg);
+                return;
+            }
+        };
+    }
+
+    /// A character in as many cells as a terminal gives it: ASCII (and the
+    /// controls) through `put_byte_colored`, a combining mark in none, a
+    /// wide (East Asian, emoji) character in two.
+    fn put_char_colored(&mut self, c: char, fg: (u8, u8, u8)) {
+        if c.is_ascii() {
+            self.put_byte_colored(c as u8, fg);
+            return;
+        }
+        if zero_width(c) {
+            return;
+        }
+        let glyph = font::glyph_char(c).unwrap_or_else(|| font::glyph(b'?'));
+        let cells = if wide(c) { 2 } else { 1 };
+        self.cursor_out();
+        // A wide character that does not fit the line starts the next one.
+        if self.col + cells > self.cols() {
+            self.newline();
+        }
+        for _ in 0..cells {
+            self.draw_glyph(self.col, self.row, glyph, fg);
+            self.col += 1;
+        }
+        self.cursor_in();
+    }
+
     fn put_byte_colored(&mut self, byte: u8, fg: (u8, u8, u8)) {
         self.cursor_out();
         match byte {
@@ -813,7 +905,12 @@ impl FrameBufferWriter<'_> {
                 if self.col >= cols {
                     self.newline();
                 }
-                self.draw_glyph(self.col, self.row, byte, fg);
+                let glyph = font::glyph(if (0x20..0x7F).contains(&byte) {
+                    byte
+                } else {
+                    b'?'
+                });
+                self.draw_glyph(self.col, self.row, glyph, fg);
                 self.col += 1;
             }
         }
@@ -881,12 +978,7 @@ impl FrameBufferWriter<'_> {
         self.cursor_in();
     }
 
-    fn draw_glyph(&mut self, col: usize, row: usize, byte: u8, fg: (u8, u8, u8)) {
-        let glyph = font::glyph(if (0x20..0x7F).contains(&byte) {
-            byte
-        } else {
-            b'?'
-        });
+    fn draw_glyph(&mut self, col: usize, row: usize, glyph: [u8; 8], fg: (u8, u8, u8)) {
         let x0 = col * FONT_W;
         let y0 = row * FONT_H;
         for (dy, bits) in glyph.iter().copied().enumerate() {
@@ -948,6 +1040,42 @@ fn match_status_prefix(buf: &[u8]) -> PrefixMatch {
     } else {
         PrefixMatch::None
     }
+}
+
+/// xterm's 256 colors: the 16 ANSI ones (this console's), a 6x6x6 cube,
+/// then 24 grays.
+fn color_256(n: u8) -> (u8, u8, u8) {
+    match n {
+        0..=7 => ANSI_FG[n as usize],
+        8..=15 => ANSI_FG_BRIGHT[n as usize - 8],
+        16..=231 => {
+            let level = |v: u8| if v == 0 { 0 } else { 55 + 40 * v };
+            let n = n - 16;
+            (level(n / 36), level(n / 6 % 6), level(n % 6))
+        }
+        _ => {
+            let v = 8 + 10 * (n - 232);
+            (v, v, v)
+        }
+    }
+}
+
+/// Characters that take no cell: combining marks, zero-width spaces and
+/// joiners, variation selectors.
+fn zero_width(c: char) -> bool {
+    matches!(c as u32,
+        0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x200B..=0x200F
+        | 0x2060..=0x2064 | 0x20D0..=0x20FF | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F
+        | 0xFEFF | 0xE0100..=0xE01EF)
+}
+
+/// Characters that take two cells (East Asian wide and full-width, emoji).
+fn wide(c: char) -> bool {
+    matches!(c as u32,
+        0x1100..=0x115F | 0x2E80..=0x303E | 0x3041..=0x33FF | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF | 0xA000..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x1F300..=0x1F64F
+        | 0x1F900..=0x1F9FF | 0x20000..=0x3FFFD)
 }
 
 fn scale(channel: u8, bits: u8) -> u8 {

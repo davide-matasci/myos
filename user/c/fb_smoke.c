@@ -8,6 +8,13 @@
  * MAP_PRIVATE mapping is a copy. Then the screen goes back to text by a
  * `text` write, by closing ctl, and by the exit of a child holding it.
  * Prints [ OK ] fb.
+ *
+ * `fb_smoke text`: the text console's UTF-8 (modules/console/src/fb.rs,
+ * font.rs, docs/tty.md). Draws characters at the top left through
+ * /dev/console/data and reads the two cells back from /dev/fb/data: a
+ * box-drawing, block or braille character is drawn, in one cell; one
+ * without a glyph is a single '?', a wide one two cells, a combining mark
+ * none; xterm's 256 colors and RGB are colors. Prints [ OK ] fb text.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -77,7 +84,110 @@ static int read_at(int fd, off_t off, void *buf, size_t n) {
     return lseek(fd, off, SEEK_SET) == off && read(fd, buf, n) == (ssize_t)n ? 0 : -1;
 }
 
-int main(void) {
+/* The text console's first two cells (8x8 pixels each) after drawing `s`
+ * on a cleared screen; 0 when they could be read. */
+#define CELLS_W 16
+static int cells(int con, int fb, unsigned pitch, const char *s, uint32_t out[8][CELLS_W]) {
+    char buf[64];
+    int n = snprintf(buf, sizeof buf, "\033[H\033[J%s\033[10;1H", s);
+    if (write(con, buf, (size_t)n) != n) {
+        return -1;
+    }
+    for (int y = 0; y < 8; y++) {
+        if (read_at(fb, (off_t)y * pitch, out[y], sizeof out[y]) < 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int text_main(void) {
+    struct geom g;
+    if (geometry(&g) < 0 || g.depth != 32 || g.width < CELLS_W) {
+        return fail("text: ctl");
+    }
+    /* The runner turned the screen copy off (run.sh): on for the check. */
+    char line[512];
+    int ctl = open("/dev/console/ctl", O_RDWR);
+    ssize_t n = ctl < 0 ? -1 : read(ctl, line, sizeof line - 1);
+    if (n <= 0) {
+        return fail("text: console ctl");
+    }
+    line[n] = '\0';
+    char *mirror = strstr(line, "mirror ");
+    char *end = mirror ? strchr(mirror, '\n') : NULL;
+    if (end == NULL || ctl_write(ctl, "mirror on\n") < 0) {
+        return fail("text: mirror on");
+    }
+    end[1] = '\0';
+    int con = open("/dev/console/data", O_WRONLY);
+    int fb = open(DATA, O_RDONLY);
+    if (con < 0 || fb < 0) {
+        return fail("text: open");
+    }
+
+    static const struct {
+        const char *name, *s;
+    } samples[] = {
+        {"blank", ""},
+        {"?", "?"},
+        {"??", "??"},
+        {"line", "\u2500"},     /* ─ */
+        {"half", "\u2584"},     /* ▄ */
+        {"dots", "\u28ff"},     /* ⣿ */
+        {"e-acute", "\u00e9"},  /* é: no glyph */
+        {"wide", "\u4e2d"},     /* 中 */
+        {"e", "e"},
+        {"e+comb", "e\u0301"},  /* e, combining acute */
+        {"block", "\u2588"},    /* █ */
+        {"256", "\033[38;5;196m\u2588\033[m"},
+        {"rgb", "\033[38;2;255;0;0m\u2588\033[m"},
+    };
+    enum { BLANK, Q, QQ, LINE, HALF, DOTS, E_ACUTE, WIDE, E, E_COMB, BLOCK, C256, RGB, SAMPLES };
+    static uint32_t px[SAMPLES][8][CELLS_W];
+    for (int i = 0; i < SAMPLES; i++) {
+        if (cells(con, fb, g.pitch, samples[i].s, px[i]) < 0) {
+            return fail("text: draw");
+        }
+    }
+    write(con, "\033[H\033[J\n", 7);
+    ctl_write(ctl, mirror);
+    close(ctl);
+
+#define SAME(a, b) (memcmp(px[a], px[b], sizeof px[a]) == 0)
+    const char *bad = NULL;
+    for (int i = LINE; i <= DOTS && bad == NULL; i++) {
+        if (SAME(i, BLANK) || SAME(i, Q) || SAME(i, QQ)) {
+            bad = samples[i].name;
+        }
+    }
+    if (bad == NULL && (SAME(LINE, HALF) || SAME(HALF, DOTS))) {
+        bad = "line, half and dots alike";
+    }
+    if (bad == NULL && !SAME(E_ACUTE, Q)) {
+        bad = "e-acute is not one '?'";
+    }
+    if (bad == NULL && !SAME(WIDE, QQ)) {
+        bad = "wide is not two cells";
+    }
+    if (bad == NULL && !SAME(E_COMB, E)) {
+        bad = "the combining mark took a cell";
+    }
+    if (bad == NULL && (!SAME(C256, RGB) || SAME(C256, BLOCK))) {
+        bad = "256 colors / RGB";
+    }
+    if (bad != NULL) {
+        printf("[ FAIL ] fb text: %s\n", bad);
+        return 1;
+    }
+    printf("[ OK ] fb text\n");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "text") == 0) {
+        return text_main();
+    }
     struct geom g;
     struct stat st;
     uint32_t want[PIXELS], got[PIXELS];

@@ -1,4 +1,7 @@
-//! Public-domain 8x8 bitmap font (IBM VGA / font8x8 by Daniel Hepper).
+//! Public-domain 8x8 bitmap font (IBM VGA / font8x8 by Daniel Hepper) for
+//! ASCII, and the glyphs terminal programs draw their frames and graphs with,
+//! drawn from code: box drawing, block elements, braille patterns and a few
+//! symbols (`glyph_char`).
 //!
 //! Each glyph is 8 rows; the least-significant bit of a row is the leftmost pixel.
 
@@ -110,4 +113,183 @@ pub fn glyph(byte: u8) -> [u8; 8] {
     } else {
         [0xFF; 8]
     }
+}
+
+/// The glyph of a character, `None` when the font has none (drawn as `?`).
+pub fn glyph_char(c: char) -> Option<[u8; 8]> {
+    let cp = c as u32;
+    Some(match cp {
+        0x20..=0x7E => glyph(cp as u8),
+        0xA0 => glyph(b' '),
+        0xB0 => [0x1C, 0x36, 0x1C, 0x00, 0x00, 0x00, 0x00, 0x00], // °
+        0xB7 => [0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00], // ·
+        0x2010..=0x2015 => glyph(b'-'),                           // dashes
+        0x2018 | 0x2019 => glyph(b'\''),
+        0x201C | 0x201D => glyph(b'"'),
+        0x2022 => [0x00, 0x00, 0x18, 0x3C, 0x3C, 0x18, 0x00, 0x00], // •
+        0x2026 => [0x00, 0x00, 0x00, 0x00, 0x00, 0xDB, 0xDB, 0x00], // …
+        0x2190 => [0x00, 0x04, 0x06, 0x7F, 0x06, 0x04, 0x00, 0x00], // ←
+        0x2191 => [0x18, 0x3C, 0x7E, 0x18, 0x18, 0x18, 0x18, 0x00], // ↑
+        0x2192 => [0x00, 0x20, 0x60, 0xFE, 0x60, 0x20, 0x00, 0x00], // →
+        0x2193 => [0x18, 0x18, 0x18, 0x18, 0x7E, 0x3C, 0x18, 0x00], // ↓
+        0x2500..=0x257F => box_drawing(cp),
+        0x2580..=0x259F => block(cp),
+        0x25B2 => [0x18, 0x18, 0x3C, 0x3C, 0x7E, 0x7E, 0xFF, 0x00], // ▲
+        0x25B6 => [0x03, 0x0F, 0x3F, 0xFF, 0x3F, 0x0F, 0x03, 0x00], // ▶
+        0x25BC => [0xFF, 0x7E, 0x7E, 0x3C, 0x3C, 0x18, 0x18, 0x00], // ▼
+        0x25C0 => [0xC0, 0xF0, 0xFC, 0xFF, 0xFC, 0xF0, 0xC0, 0x00], // ◀
+        0x25CF => [0x00, 0x3C, 0x7E, 0x7E, 0x7E, 0x7E, 0x3C, 0x00], // ●
+        0x2800..=0x28FF => braille(cp as u8),
+        _ => return None,
+    })
+}
+
+/// The arms of the box-drawing characters U+2500–257F, two bits each from
+/// the low bits: up, down, left, right; 0 none, 1 light, 2 heavy, 3 double
+/// (dashed lines are drawn solid, arcs as corners; the diagonals are 0).
+static BOX_ARMS: [u8; 128] = [
+    0x50, 0xA0, 0x05, 0x0A, 0x50, 0xA0, 0x05, 0x0A, // 2500
+    0x50, 0xA0, 0x05, 0x0A, 0x44, 0x84, 0x48, 0x88, // 2508
+    0x14, 0x24, 0x18, 0x28, 0x41, 0x81, 0x42, 0x82, // 2510
+    0x11, 0x21, 0x12, 0x22, 0x45, 0x85, 0x46, 0x49, // 2518
+    0x4A, 0x86, 0x89, 0x8A, 0x15, 0x25, 0x16, 0x19, // 2520
+    0x1A, 0x26, 0x29, 0x2A, 0x54, 0x64, 0x94, 0xA4, // 2528
+    0x58, 0x68, 0x98, 0xA8, 0x51, 0x61, 0x91, 0xA1, // 2530
+    0x52, 0x62, 0x92, 0xA2, 0x55, 0x65, 0x95, 0xA5, // 2538
+    0x56, 0x59, 0x5A, 0x66, 0x96, 0x69, 0x99, 0xA6, // 2540
+    0xA9, 0x6A, 0x9A, 0xAA, 0x50, 0xA0, 0x05, 0x0A, // 2548
+    0xF0, 0x0F, 0xC4, 0x4C, 0xCC, 0x34, 0x1C, 0x3C, // 2550
+    0xC1, 0x43, 0xC3, 0x31, 0x13, 0x33, 0xC5, 0x4F, // 2558
+    0xCF, 0x35, 0x1F, 0x3F, 0xF4, 0x5C, 0xFC, 0xF1, // 2560
+    0x53, 0xF3, 0xF5, 0x5F, 0xFF, 0x44, 0x14, 0x11, // 2568
+    0x41, 0x00, 0x00, 0x00, 0x10, 0x01, 0x40, 0x04, // 2570
+    0x20, 0x02, 0x80, 0x08, 0x90, 0x09, 0x60, 0x06, // 2578
+];
+
+/// A box-drawing character from its arms, the way CP437's 8x8 glyphs draw
+/// them: a light line is one row across or two columns down, a heavy one
+/// twice that, a double one two thin lines. A horizontal arm runs from its
+/// edge across the vertical lines' columns.
+fn box_drawing(cp: u32) -> [u8; 8] {
+    let mut g = [0u8; 8];
+    match cp {
+        0x2571 => return diagonal(true, false),
+        0x2572 => return diagonal(false, true),
+        0x2573 => return diagonal(true, true),
+        _ => {}
+    }
+    let arms = BOX_ARMS[(cp - 0x2500) as usize];
+    let weight = |shift: u8| (arms >> shift) & 3;
+    // Columns of a vertical arm, rows of a horizontal one, by weight.
+    let across = |w: u8| -> u8 {
+        match w {
+            1 => 0x18,
+            2 => 0x3C,
+            3 => 0x24,
+            _ => 0,
+        }
+    };
+    let rows = |w: u8| -> &'static [usize] {
+        match w {
+            1 => &[3],
+            2 => &[3, 4],
+            3 => &[2, 4],
+            _ => &[],
+        }
+    };
+    // The vertical arms reach the horizontal lines' far row, so they meet.
+    let (left, right) = (rows(weight(4)), rows(weight(6)));
+    let top = left.iter().chain(right).copied().min().unwrap_or(3);
+    let bottom = left.iter().chain(right).copied().max().unwrap_or(3);
+    for y in 0..=bottom {
+        g[y] |= across(weight(0)); // up
+    }
+    for y in top..8 {
+        g[y] |= across(weight(2)); // down
+    }
+    for &y in left {
+        g[y] |= 0x1F; // left: x 0..=4
+    }
+    for &y in right {
+        g[y] |= 0xF8; // right: x 3..=7
+    }
+    // Arcs (U+256D–2570): the corner's outer pixel off, for a round look.
+    match cp {
+        0x256D => g[3] &= !0x08, // ╭
+        0x256E => g[3] &= !0x10, // ╮
+        0x256F => g[3] &= !0x10, // ╯
+        0x2570 => g[3] &= !0x08, // ╰
+        _ => {}
+    }
+    g
+}
+
+fn diagonal(rising: bool, falling: bool) -> [u8; 8] {
+    let mut g = [0u8; 8];
+    for (y, row) in g.iter_mut().enumerate() {
+        if rising {
+            *row |= 1 << (7 - y);
+        }
+        if falling {
+            *row |= 1 << y;
+        }
+    }
+    g
+}
+
+/// Block elements U+2580–259F: halves, eighths, shades and quadrants.
+fn block(cp: u32) -> [u8; 8] {
+    let mut g = [0u8; 8];
+    let n = cp - 0x2580;
+    match n {
+        0x00 => g[..4].fill(0xFF),                     // ▀ upper half
+        0x01..=0x08 => g[8 - n as usize..].fill(0xFF), // ▁..█ lower eighths
+        0x09..=0x0F => g.fill(0xFF >> (n - 8)),        // ▉..▏ left eighths
+        0x10 => g.fill(0xF0),                          // ▐ right half
+        0x11..=0x13 => {
+            // ░ ▒ ▓
+            let pat: [u8; 2] = match n {
+                0x11 => [0x11, 0x44],
+                0x12 => [0x55, 0xAA],
+                _ => [0xEE, 0xBB],
+            };
+            for (y, row) in g.iter_mut().enumerate() {
+                *row = pat[y % 2];
+            }
+        }
+        0x14 => g[0] = 0xFF,  // ▔ upper eighth
+        0x15 => g.fill(0x80), // ▕ right eighth
+        _ => {
+            // ▖..▟ quadrants: upper left, upper right, lower left, lower right.
+            const QUADS: [u8; 10] = [
+                0b0100, 0b1000, 0b0001, 0b1101, 0b1001, 0b0111, 0b1011, 0b0010, 0b0110, 0b1110,
+            ];
+            let q = QUADS[(n - 0x16) as usize];
+            for (y, row) in g.iter_mut().enumerate() {
+                let (l, r) = if y < 4 {
+                    (q & 1, q & 2)
+                } else {
+                    (q & 4, q & 8)
+                };
+                *row = if l != 0 { 0x0F } else { 0 } | if r != 0 { 0xF0 } else { 0 };
+            }
+        }
+    }
+    g
+}
+
+/// A braille pattern (U+2800 + dots): eight dots in two columns of four, 2x2
+/// pixels each, so a graph drawn with them reads as a line. Dots 1-3 and 7
+/// run down the left column, 4-6 and 8 down the right.
+fn braille(dots: u8) -> [u8; 8] {
+    const LEFT: [u8; 4] = [0x01, 0x02, 0x04, 0x40];
+    const RIGHT: [u8; 4] = [0x08, 0x10, 0x20, 0x80];
+    let mut g = [0u8; 8];
+    for i in 0..4 {
+        let row = if dots & LEFT[i] != 0 { 0x06 } else { 0 }
+            | if dots & RIGHT[i] != 0 { 0x60 } else { 0 };
+        g[2 * i] = row;
+        g[2 * i + 1] = row;
+    }
+    g
 }

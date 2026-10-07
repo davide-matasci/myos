@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # The fonts for Xft clients: DejaVu Sans Mono (regular, bold, oblique, bold
-# oblique) and the DejaVu license, from the pinned release tarball into
+# oblique), DejaVu Sans (regular: the braille patterns and other symbols
+# the Mono faces lack, which fontconfig falls back to) and the DejaVu
+# license, from the pinned release tarball into
 # target/x11-fonts (installed in /lib/fonts, where the x11-xft package's
 # fonts.conf looks). Unpacked with python3's tarfile (.tar.bz2 only, and
 # bzip2 is not a build prerequisite).
@@ -42,6 +44,7 @@ wanted = {
     f"{top}/ttf/DejaVuSansMono-Bold.ttf": "DejaVuSansMono-Bold.ttf",
     f"{top}/ttf/DejaVuSansMono-Oblique.ttf": "DejaVuSansMono-Oblique.ttf",
     f"{top}/ttf/DejaVuSansMono-BoldOblique.ttf": "DejaVuSansMono-BoldOblique.ttf",
+    f"{top}/ttf/DejaVuSans.ttf": "DejaVuSans.ttf",
     f"{top}/LICENSE": "LICENSE.DejaVu",
 }
 with tarfile.open(tarball, "r:bz2") as t:
