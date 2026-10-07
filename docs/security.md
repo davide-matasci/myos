@@ -32,6 +32,7 @@ boot system init                # the first process (init): user and domain
 login -> shell                  # the domain `setuser` enters by default
 
 user root    domains: admin shell untrusted   login: admin
+user system  domains: init netd login   login: none
 user alice   groups: dev   domains: shell untrusted   home: /home/alice   password: sha256:SALT:HEX
 
 label /**                 sys.file
@@ -50,7 +51,9 @@ exec /bin/custom/netd -> netd
 
 - **Users.** `user NAME` with `groups:`, `domains:` (the domains exec may
   move the user's processes into), `login:` (the domain `setuser` puts them
-  in, else the `login ->` line's), `home:` (default `/`) and `password:`. A
+  in, else the `login ->` line's; `none`: `setuser` never enters the user,
+  for an account like `system` that only runs what init starts), `home:`
+  (default `/`) and `password:`. A
   user's uid is the position of its line, from 0. `/proc/sys/security/users`
   lists them for libgloss (`getpwnam`, `getpwuid`, `getpwent`).
 - **Labels.** `label PATTERN KIND[(OWNER)]`. A pattern is an absolute path
@@ -90,7 +93,7 @@ exec /bin/custom/netd -> netd
 | `listdirat`, `chdirat`, `readlinkat` | `read` |
 | `mknodat`, `symlinkat` | `create` (on the new name) |
 | `unlinkat` | `remove` |
-| `renameat` | `remove` on the old name, `create` on the new one (`remove` too when it replaces a file) |
+| `renameat` | `remove` on the old name, `create` on the new one (`remove` too when it replaces a file); for a directory, `remove` on every name beneath it and `create` on where each goes |
 | `execat` | `exec` (a script's interpreter too) |
 | `utimensat` | `setattr` |
 | `mount`, `umount` | `mount` on the directory; a disk `read write`, a bind's source `read` |
@@ -103,7 +106,10 @@ An fd keeps the access it was opened with: passing it to another process
 not checked again. A call on an fd's own file (`futimens`, `fdopendir`,
 `fstat`'s permission bits) checks the policy against the rights its
 opener's namespace had there, not the caller's.
-`ftruncate` needs an fd opened for writing. Because an fd is a grant, a
+`ftruncate` needs an fd opened for writing, by a process that may `write`
+the file: an fd a process could only `append` to is append-only, and takes
+every write at the end (`pwrite`'s offset is ignored on an `O_APPEND` fd,
+as on Linux). Because an fd is a grant, a
 program can keep one from the programs it execs: an fd marked
 close-on-exec (`O_CLOEXEC`, `FD_CLOEXEC`) is closed by the exec. libc's
 `opendir` and Rust's `std` open their fds so.
@@ -132,7 +138,9 @@ printf '%s' "SALTpassword" | sha256sum
 A user without a password can only be entered from a domain with `write`
 on `kernel.users`: `login` (the domain getty and login run in) and
 `admin`. So nothing else can become root, which has no password by
-default; give it one in the policy to require it at the console.
+default; give it one in the policy to require it at the console. A user
+with `login: none` is entered by nobody: `system`, whose processes init
+starts, is one, so it cannot be typed at the console.
 
 ## The default policy
 
@@ -201,3 +209,9 @@ sec ns /bin:read,exec /lib:read /dev/sda:read,write -- B
   and domain by name across it.
 - Per-user `/tmp` is a namespace away (bind `/tmp/USER` at `/tmp`); login
   does not set one up yet.
+- The terminals share one label, `dev.tty`: a domain that may open its own
+  pty (`/dev/pts/N/data`) may open any user's, and the console. Keep
+  `dev.tty` out of the domains of programs that need no terminal.
+- A rename of a directory walks its tree to check every name (the labels
+  beneath the new name may differ): a large tree takes a moment, and one
+  whose directory listing exceeds 256 KiB is refused.

@@ -357,9 +357,10 @@ pub(super) fn sys_renameat(
         return SYSERR;
     };
     // A move removes the old name and creates the new one (replacing a file
-    // there removes it too).
+    // there removes it too), and takes what is beneath a directory along
+    // (`sec::may_rename`).
     let replaced = fs::stat(&new.real).is_some();
-    if !old.may(Rights::REMOVE) || !new.may(if replaced { Rights::CREATE | Rights::REMOVE } else { Rights::CREATE }) {
+    if !crate::sec::may_rename(&old.real, old.cap, &new.real, new.cap, replaced) {
         return SYSERR;
     }
     if fs::rename(&old.real, &new.real) { 0 } else { SYSERR }

@@ -147,6 +147,60 @@ pub fn allowed_in(real: &str, need: Rights, ns: Rights) -> bool {
     p.rights(u, d, &label).contains(need) || refused(&p, u, d, real, &label, need)
 }
 
+/// May the current process rename the file at `old` to `new` (real paths)?
+/// A move removes the old name and creates the new one (`replaced`: it
+/// removes a file there too), and for a directory every name beneath it
+/// moves with it, to a path the label rules may read differently (a home
+/// moved out of `/home` is a home no more): each needs `remove` where it
+/// is and `create` where it goes, so a rename grants its caller nothing it
+/// could not get by creating and removing the names itself. `old_ns` and
+/// `new_ns` stand in for the namespace's rights beneath a directory fd the
+/// name was found through (`user::at`).
+pub fn may_rename(old: &str, old_ns: Option<Rights>, new: &str, new_ns: Option<Rights>, replaced: bool) -> bool {
+    let ns = |real: &str, fixed: Option<Rights>| fixed.unwrap_or_else(|| crate::task::ns_rights(real));
+    let need_new = if replaced { Rights::CREATE | Rights::REMOVE } else { Rights::CREATE };
+    if !allowed_in(old, Rights::REMOVE, ns(old, old_ns)) || !allowed_in(new, need_new, ns(new, new_ns)) {
+        return false;
+    }
+    if !crate::fs::stat(old).is_some_and(|st| st.mode & crate::fs::S_IFMT == S_IFDIR) {
+        return true;
+    }
+    // The names beneath `old`, depth first, without the stack growing with
+    // the tree's depth.
+    let mut todo: alloc::vec::Vec<String> = alloc::vec![String::new()];
+    let mut names = alloc::vec![0u8; RENAME_LIST_MAX];
+    while let Some(rel) = todo.pop() {
+        let dir = format!("{old}{rel}");
+        let n = crate::fs::listdir(&dir, &mut names);
+        // A listing the buffer could not hold: not every name was checked.
+        if n == names.len() || (n > 0 && names[n - 1] != b'\n') {
+            return false;
+        }
+        for name in names[..n].split(|&b| b == b'\n').filter(|s| !s.is_empty()) {
+            let Ok(name) = core::str::from_utf8(name) else {
+                return false;
+            };
+            let sub = format!("{rel}/{name}");
+            let (from, to) = (format!("{old}{sub}"), format!("{new}{sub}"));
+            if !allowed_in(&from, Rights::REMOVE, ns(&from, old_ns))
+                || !allowed_in(&to, Rights::CREATE, ns(&to, new_ns))
+            {
+                return false;
+            }
+            if crate::fs::stat(&from).is_some_and(|st| st.mode & crate::fs::S_IFMT == S_IFDIR) {
+                todo.push(sub);
+            }
+        }
+    }
+    true
+}
+
+/// The longest listing of one directory [`may_rename`] walks (names and
+/// newlines).
+const RENAME_LIST_MAX: usize = 256 * 1024;
+/// A directory, in a `stat` mode.
+const S_IFDIR: u32 = 0o040000;
+
 /// May the current process do `need` to a kernel object (`kernel.modules`,
 /// `kernel.clock`, `kernel.policy`, `kernel.users`, `proc(alice)`)?
 pub fn allowed_object(kind: &str, param: Option<&str>, need: Rights) -> bool {

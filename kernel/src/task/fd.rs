@@ -34,6 +34,10 @@ struct OpenFile {
     pos: usize,
     writable: bool,
     append: bool,
+    /// Opened with `O_APPEND` by a process the policy let `append` to the
+    /// file but not `write` (docs/security.md): writes go to the end only,
+    /// and `ftruncate` is refused.
+    append_only: bool,
     /// What it lets its holder do beneath it, for a directory: the rights
     /// its opener's namespace had there (docs/security.md). A path relative
     /// to a directory fd its holder's namespace cannot name is checked
@@ -56,8 +60,22 @@ static OPEN_FILES: Mutex<[Option<OpenFile>; MAX_OPEN_FILES]> =
 fn open_file_alloc(node: crate::fs::Vnode, writable: bool, append: bool, rights: crate::sec::Rights) -> Option<usize> {
     let mut files = OPEN_FILES.lock();
     let id = files.iter().position(Option::is_none)?;
-    files[id] = Some(OpenFile { node, pos: 0, writable, append, rights, refs: 1 });
+    files[id] = Some(OpenFile { node, pos: 0, writable, append, append_only: false, rights, refs: 1 });
     Some(id)
+}
+
+/// Make `fd` append-only (see [`OpenFile::append_only`]).
+pub fn fd_set_append_only(fd: usize) {
+    let Some(FdEntry::File(id)) = with_process_mut(|t| t.fds.get(fd).copied()) else {
+        return;
+    };
+    if let Some(Some(f)) = OPEN_FILES.lock().get_mut(id) {
+        f.append_only = true;
+    }
+}
+
+fn open_file_append_only(id: usize) -> bool {
+    matches!(OPEN_FILES.lock().get(id), Some(Some(f)) if f.append_only)
 }
 
 fn open_file_ref(id: usize) {
@@ -707,7 +725,9 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
 
 /// Write `len` bytes of user `buf` to `fd`: at the file position (the end
 /// with `O_APPEND`), which advances, or (`at`) at that offset of a file,
-/// the position left as it is.
+/// the position left as it is. With `O_APPEND` the offset is ignored and
+/// the write goes to the end (as on Linux; an `append`-only grant could not
+/// hold otherwise).
 pub fn fd_write(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
     if len == 0 {
         return 0;
@@ -746,6 +766,7 @@ pub fn fd_write(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                         return if total == 0 { usize::MAX } else { total };
                     }
                     let write_pos = match at {
+                        _ if append => crate::fs::size_of(&node).unwrap_or(pos),
                         // `at` is a user-supplied pwrite offset; a hostile value
                         // near usize::MAX would overflow the running total. Fail
                         // the write instead of faulting the kernel.
@@ -753,7 +774,6 @@ pub fn fd_write(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                             Some(p) => p,
                             None => return if total == 0 { usize::MAX } else { total },
                         },
-                        None if append => crate::fs::size_of(&node).unwrap_or(pos),
                         None => pos,
                     };
                     let Some(n) = crate::fs::write(&node, write_pos, &tmp[..chunk]) else {
@@ -824,14 +844,14 @@ pub fn fd_write(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
     total
 }
 
-/// Make the file `fd` is open on (for writing) `size` bytes long
-/// (`ftruncate`): cut, or grown with zeros. The position stays.
+/// Make the file `fd` is open on (for writing, not append-only) `size`
+/// bytes long (`ftruncate`): cut, or grown with zeros. The position stays.
 pub fn fd_set_size(fd: usize, size: usize) -> bool {
     let Some(FdEntry::File(id)) = with_process_mut(|t| t.fds.get(fd).copied()) else {
         return false;
     };
     match open_file_get(id) {
-        Some((node, _, true, _)) => crate::fs::set_size(&node, size),
+        Some((node, _, true, _)) if !open_file_append_only(id) => crate::fs::set_size(&node, size),
         _ => false,
     }
 }
