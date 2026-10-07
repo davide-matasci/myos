@@ -4,10 +4,13 @@
  * and says ESRCH for a reaped child. A plain parent keeps its exited child
  * as a zombie for waitpid; one with SA_NOCLDWAIT on SIGCHLD (reported back
  * by sigaction), or ignoring SIGCHLD, gets none: waitpid finds no child
- * (ECHILD), whether asked after the exit or while waiting for it. Prints
- * [ OK ] child.
+ * (ECHILD), whether asked after the exit or while waiting for it. A parent
+ * may move its child to another process group until the child execs, and
+ * gets EACCES after. A child's setsid makes it a session leader with no
+ * controlling terminal, out of its parent's reach. Prints [ OK ] child.
  */
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -59,6 +62,92 @@ static int no_zombies(const char *how) {
     return 0;
 }
 
+/* setpgid on a child: allowed before its exec, EACCES after. */
+static int setpgid_exec(void) {
+    int go[2], execd[2], status;
+    char c;
+    if (pipe(go) != 0 || pipe(execd) != 0 || fcntl(execd[1], F_SETFD, FD_CLOEXEC) != 0) {
+        return fail("pipes");
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(go[1]);
+        close(execd[0]);
+        (void)!read(go[0], &c, 1);
+        execl("/bin/sbase/sleep", "sleep", "10", (char *)NULL);
+        _exit(127);
+    }
+    close(go[0]);
+    close(execd[1]);
+    if (pid < 0 || setpgid(pid, pid) != 0) {
+        return fail("setpgid on a child before its exec");
+    }
+    (void)!write(go[1], "g", 1);
+    /* The close-on-exec end closes at the exec: EOF. */
+    if (read(execd[0], &c, 1) != 0) {
+        return fail("the child's exec");
+    }
+    errno = 0;
+    if (setpgid(pid, getpgrp()) != -1 || errno != EACCES) {
+        return fail("setpgid on a child after its exec: not EACCES");
+    }
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    close(go[1]);
+    close(execd[0]);
+    return 0;
+}
+
+/* A forked child starts a session: it leads it and a group of the same
+ * id, has no controlling terminal, cannot start another or change its group,
+ * and its parent, now in another session, cannot move it either. Its own
+ * child inherits the session. */
+static int setsid_child(void) {
+    int go[2], status;
+    char c;
+    if (pipe(go) != 0) {
+        return fail("pipe");
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(go[0]);
+        pid_t me = getpid();
+        if (setsid() != me || getsid(0) != me || getpgrp() != me) {
+            _exit(1);
+        }
+        if (setsid() != -1 || errno != EPERM || setpgid(0, 0) != -1 || errno != EPERM) {
+            _exit(2);
+        }
+        if (open("/dev/tty", O_RDWR) >= 0) {
+            _exit(3);
+        }
+        pid_t g = fork();
+        if (g == 0) {
+            _exit(getsid(0) == me && getsid(getppid()) == me ? 0 : 1);
+        }
+        if (g < 0 || waitpid(g, &status, 0) != g || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            _exit(4);
+        }
+        (void)!write(go[1], "s", 1);
+        sleep(10);
+        _exit(0);
+    }
+    close(go[1]);
+    if (pid < 0 || read(go[0], &c, 1) != 1) {
+        waitpid(pid, &status, 0);
+        printf("[ FAIL ] child setsid: step %d\n", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        return 1;
+    }
+    errno = 0;
+    if (getsid(pid) != pid || getsid(0) == pid || setpgid(pid, getpgrp()) != -1 || errno != EPERM) {
+        return fail("setsid: the parent's view");
+    }
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    close(go[0]);
+    return 0;
+}
+
 int main(void) {
     struct sigaction old;
     int status;
@@ -87,6 +176,13 @@ int main(void) {
     usleep(300 * 1000);
     if (pid < 0 || waitpid(pid, &status, WNOHANG) != pid || WEXITSTATUS(status) != 7) {
         return fail("a plain parent's zombie");
+    }
+
+    if (setsid_child() != 0) {
+        return 1;
+    }
+    if (setpgid_exec() != 0) {
+        return 1;
     }
 
     /* SA_NOCLDWAIT (with the default action), then SIGCHLD ignored. */

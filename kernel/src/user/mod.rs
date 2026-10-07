@@ -73,6 +73,8 @@ const SYSERR_ELOOP: usize = usize::MAX - 6;
 const SYSERR_ENOTDIR: usize = usize::MAX - 7;
 /// A file lock someone else holds, asked for without waiting (EAGAIN).
 const SYSERR_EAGAIN: usize = usize::MAX - 8;
+/// `setpgid` of a child that has exec'd (`myos_abi::MYOS_SYSERR_EACCES`).
+const SYSERR_EACCES: usize = usize::MAX - 9;
 /// The first process, from the initramfs.
 const INIT_PATH: &str = "/bin/custom/init";
 

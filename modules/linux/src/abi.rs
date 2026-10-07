@@ -12,6 +12,7 @@ pub const EBADF: usize = 9;
 pub const ECHILD: usize = 10;
 pub const EAGAIN: usize = 11;
 pub const ENOMEM: usize = 12;
+pub const EACCES: usize = 13;
 pub const EFAULT: usize = 14;
 pub const EEXIST: usize = 17;
 pub const ENOTDIR: usize = 20;
@@ -64,6 +65,7 @@ pub fn result(ret: usize, generic: usize) -> usize {
         x if x == crate::k::signal::SYSERR_ELOOP => err(ELOOP),
         x if x == crate::k::signal::SYSERR_ENOTDIR => err(ENOTDIR),
         x if x == crate::k::signal::SYSERR_EAGAIN => err(EAGAIN),
+        x if x == crate::k::signal::SYSERR_EACCES => err(EACCES),
         x => x,
     }
 }

@@ -73,6 +73,29 @@ back at the frame. The kernel restores the mask, PC, SP, the result
 register and the syscall-number register (`x8` / `a7`), so the interrupted
 code sees its syscall return normally.
 
+## Process groups and sessions
+
+What `kill(0)`, `kill(-pgid)` and a terminal's `^C` and hangup reach
+([`kernel/src/task/jobs.rs`](../kernel/src/task/jobs.rs)). A process
+spawned by the kernel leads its own session and group; a forked child
+inherits both. `setpgid` moves the caller, or a child that has not exec'd
+yet (`EACCES` after), into a new group or one of its session; a session
+leader cannot change its group (`EPERM`). `setsid` starts a session and a
+group led by the caller, with no controlling terminal, and fails (`EPERM`)
+for a process that already leads a group. A pty the new session claims
+becomes its terminal (`docs/tty.md`). Like a Linux pid, a task id is not
+handed out again while a group or session still goes by it.
+
+## Timers
+
+`setitimer(ITIMER_REAL)`, `getitimer` and `alarm` are one kernel timer per
+process, on the monotonic clock, kept in the leader's task slot: the timer
+interrupt sends `SIGALRM` once it is due and re-arms it by its interval
+(expiries missed under load are one signal, as on Linux). A fork starts
+without one, exec keeps it. Like any signal it acts when the process next
+enters or leaves the kernel ("Delivery"): it ends a blocking wait (`EINTR`)
+at once.
+
 ## Interrupted syscalls
 
 Blocking waits (console/pty/pipe reads, full-pipe writes, FIFO opens,
@@ -105,6 +128,7 @@ previous one. `signal()` installs BSD-style handlers (`SA_RESTART`).
 | 48 | `sigsuspend(mask)` | always `EINTR` |
 | 49 | `sigwait(set)` | returns the signal taken |
 | 50 | `sigaction2(sig, act, oact)` | 4-word struct: `{handler, flags, mask, trampoline}` |
+| 88 | `itimer(which, new, old)` | the process's `ITIMER_REAL`: `SIGALRM` when it is due, then every interval (`setitimer`, `getitimer`, `alarm`) |
 
 Syscalls 39, 41 and 42 (`SIGCHLD_TAKE`, `SIGCHLD_PENDING`, `PIPE_PEER`) are
 the old libgloss SIGCHLD polling, kept for binaries built before this.
@@ -113,6 +137,7 @@ the old libgloss SIGCHLD polling, kept for binaries built before this.
 
 - Asynchronous delivery of signals other than `SIGKILL` to a process that
   makes no syscalls (on the interrupt-return path).
-- `sigaltstack` / `SA_ONSTACK`, `sigqueue` / real-time signals, `alarm` /
-  timers, `ppoll`.
+- `sigaltstack` / `SA_ONSTACK`, `sigqueue` / real-time signals, `ppoll`.
+- `ITIMER_VIRTUAL` and `ITIMER_PROF` (`ENOSYS`): they need CPU time
+  accounting.
 - Stop/continue and job control.

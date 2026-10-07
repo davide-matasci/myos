@@ -152,6 +152,13 @@ const SYS_LOCKCTL: usize = 86;
 /// `write` on `kernel.power`): the processes are stopped and the disks
 /// unmounted first (`crate::power`). Returns only on failure.
 const SYS_POWER: usize = 87;
+/// `itimer(which, new, old)`: the process's interval timer `which` (only
+/// [`ITIMER_REAL`], `SIGALRM` on the monotonic clock). `new` (if not 0)
+/// points at two `u64`, the microseconds until it fires (0 disarms it) and
+/// the interval it fires at from then on (0 = once); `old` (if not 0)
+/// receives what was left of the timer before and its interval.
+const SYS_ITIMER: usize = 88;
+const ITIMER_REAL: usize = 0;
 const LOCK_SH: usize = 1;
 const LOCK_EX: usize = 2;
 const LOCK_NB: usize = 4;
@@ -325,6 +332,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_FLOCK => sys_flock(a0, a1),
         SYS_LOCKCTL => sys_lockctl(a0, a1, a2),
         SYS_POWER => sys_power(a0),
+        SYS_ITIMER => sys_itimer(a0, a1, a2),
         at::SYS_OPENAT..=at::SYS_EXECAT => {
             let [a3, a4, a5] = regs.args_3_5();
             match nr {
@@ -764,10 +772,10 @@ pub(crate) fn sys_setsid() -> usize {
 }
 
 pub(crate) fn sys_setpgid(pid: usize, pgid: usize) -> usize {
-    if task::setpgid(pid, pgid) {
-        0
-    } else {
-        SYSERR
+    match task::setpgid(pid, pgid) {
+        Ok(()) => 0,
+        Err(task::SetpgidError::Execd) => SYSERR_EACCES,
+        Err(task::SetpgidError::Refused) => SYSERR,
     }
 }
 
@@ -787,6 +795,39 @@ pub(crate) fn sys_getsid(pid: usize) -> usize {
 
 fn sys_getpid() -> usize {
     task::current_pid()
+}
+
+/// `setitimer`/`getitimer` for `ITIMER_REAL`: two little-endian u64s
+/// (microseconds left, interval) read from `new_ptr`, the previous pair
+/// written to `old_ptr`; either may be 0.
+fn sys_itimer(which: usize, new_ptr: usize, old_ptr: usize) -> usize {
+    if which != ITIMER_REAL {
+        return SYSERR;
+    }
+    let aspace = task::current_aspace();
+    let new = if new_ptr == 0 {
+        None
+    } else {
+        let mut raw = [0u8; 16];
+        if !user_range_ok(new_ptr, raw.len()) || !read_user_bytes(aspace, new_ptr, &mut raw) {
+            return SYSERR;
+        }
+        let us = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap()).saturating_mul(1000);
+        Some((us(&raw[..8]), us(&raw[8..])))
+    };
+    if old_ptr != 0 && !user_range_ok(old_ptr, 16) {
+        return SYSERR;
+    }
+    let (left, every) = task::itimer_swap(task::current_pid(), new);
+    if old_ptr != 0 {
+        let mut raw = [0u8; 16];
+        raw[..8].copy_from_slice(&left.div_ceil(1000).to_le_bytes());
+        raw[8..].copy_from_slice(&(every / 1000).to_le_bytes());
+        if !write_user_bytes(aspace, old_ptr, &raw) {
+            return SYSERR;
+        }
+    }
+    0
 }
 
 /// `kill(pid, sig)` — `pid` is interpreted as signed (`isize`) for pgid rules.
@@ -972,6 +1013,7 @@ fn exec_path_depth(
     }
     // What the new image may not inherit (`FD_CLOEXEC`).
     task::fd_close_on_exec();
+    task::mark_execd();
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any
     // current_slot()-backed lookup so we expand/replace the running task.
     crate::arch::sync_cpu_id_reg();

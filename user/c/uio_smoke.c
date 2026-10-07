@@ -17,6 +17,10 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+/* One of the three buffers the nonblocking writev gathers: together more
+ * than a unix socket end holds. */
+#define CHUNK (32 * 1024)
+
 static int fail(const char *what) {
     printf("[ FAIL ] uio %s (errno %d)\n", what, errno);
     return 1;
@@ -73,25 +77,26 @@ int main(void) {
         return fail("socket bytes");
     }
 
-    /* Nonblocking, more than the peer buffers: a short count, those bytes. */
+    /* Nonblocking, more than the peer buffers (64 KiB): a short count, those
+     * bytes. */
     if (fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL) | O_NONBLOCK) < 0) {
         return fail("O_NONBLOCK");
     }
-    static char big[3][4096], back[3 * 4096];
+    static char big[3][CHUNK], back[3 * CHUNK];
     for (int i = 0; i < 3; i++) {
         memset(big[i], 'a' + i, sizeof big[i]);
     }
-    struct iovec fill[3] = {{big[0], 4096}, {big[1], 4096}, {big[2], 4096}};
+    struct iovec fill[3] = {{big[0], CHUNK}, {big[1], CHUNK}, {big[2], CHUNK}};
     ssize_t n = writev(sv[0], fill, 3);
-    if (n <= 0 || n >= 3 * 4096) {
-        printf("[ FAIL ] uio short writev: %ld of %d\n", (long)n, 3 * 4096);
+    if (n <= 0 || n >= 3 * CHUNK) {
+        printf("[ FAIL ] uio short writev: %ld of %d\n", (long)n, 3 * CHUNK);
         return 1;
     }
     if (read_all(sv[1], back, (size_t)n) < 0) {
         return fail("reading the short writev");
     }
     for (ssize_t i = 0; i < n; i++) {
-        if (back[i] != 'a' + i / 4096) {
+        if (back[i] != 'a' + i / CHUNK) {
             printf("[ FAIL ] uio byte %ld of the short writev\n", (long)i);
             return 1;
         }

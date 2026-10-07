@@ -110,5 +110,5 @@ on an address and another spins in user mode.
   condition wait sleeps to its deadline, once and keys work, and
   `pthread_create` fails with `EAGAIN`. Libraries that lock "in case"
   (libxcb, libX11) build and run on it; a real `pthread_create` on
-  `thread_spawn` and `wait_addr` would replace the stubs.
+  `thread_spawn` and `wait_addr` would replace the stubs (issue #301).
 - `exec` from a thread other than the leader.

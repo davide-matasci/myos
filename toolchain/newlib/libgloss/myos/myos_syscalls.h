@@ -123,6 +123,10 @@ struct winsize;
  * stopped and the disks unmounted (docs/power.md). Returns only on
  * failure (no `write` on kernel.power). */
 #define MYOS_SYS_POWER 87
+/* itimer(which, new, old): ITIMER_REAL only (SIGALRM); new and old point
+ * at two u64, the microseconds until it fires (0: disarmed) and its
+ * interval (0: once). Either may be 0. */
+#define MYOS_SYS_ITIMER 88
 #define MYOS_POWER_OFF 0
 #define MYOS_POWER_REBOOT 1
 #define MYOS_POWER_HALT 2
@@ -169,6 +173,8 @@ struct myos_lock_range {
 #define MYOS_ENOTDIR ((unsigned long)-8)
 /* A lock someone else holds (flock and lockctl without waiting). */
 #define MYOS_EAGAIN ((unsigned long)-9)
+/* setpgid of a child that has exec'd. */
+#define MYOS_EACCES ((unsigned long)-10)
 
 /* Sleep `ns` nanoseconds (sleep.c). 0 = slept (or an event with
  * MYOS_SLEEP_ANY_EVENT); -1 with errno = EINTR when a caught signal ran. */

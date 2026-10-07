@@ -4,9 +4,11 @@
  * socketpair both ways and EOF on close; then a listener: a second listener
  * of the same name is refused, connecting to an unknown name too, a
  * nonblocking accept with nothing queued says EAGAIN. A forked client
- * connects, they exchange a greeting and the client sends 64 KiB, more than
+ * connects, they exchange a greeting and the client sends 256 KiB, more than
  * one end buffers, so its writes wait for the reader. Closing the listener
- * frees its name. Prints [ OK ] unix.
+ * frees its name. An end takes 60000 bytes before anyone reads (more than
+ * the 8 KiB it once held), and 48 conversations are open at once (more
+ * than the 32 there once were). Prints [ OK ] unix.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -19,7 +21,11 @@
 #include <unistd.h>
 
 #define NAME "/tmp/.unix-smoke"
-#define BULK (64 * 1024)
+#define BULK (256 * 1024)
+/* Socketpairs a process (and its child) opens at once: two conversations
+ * each, several fds each. */
+#define PAIRS 12
+#define AHEAD 60000
 
 static int fail(const char *what) {
     printf("[ FAIL ] unix %s (errno %d)\n", what, errno);
@@ -98,6 +104,56 @@ static int client(void) {
     return 0;
 }
 
+/* PAIRS socketpairs open, a byte through the last one. */
+static int open_pairs(int sv[PAIRS][2]) {
+    char c;
+    for (int i = 0; i < PAIRS; i++) {
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv[i]) < 0) {
+            return -1;
+        }
+    }
+    if (write(sv[PAIRS - 1][0], "x", 1) != 1 || read(sv[PAIRS - 1][1], &c, 1) != 1 || c != 'x') {
+        return -1;
+    }
+    return 0;
+}
+
+static int many(void) {
+    int mine[PAIRS][2], ready[2], go[2], st;
+    char c;
+    pid_t pid;
+
+    if (pipe(ready) != 0 || pipe(go) != 0) {
+        return fail("pipe");
+    }
+    pid = fork();
+    if (pid == 0) {
+        int theirs[PAIRS][2];
+        c = open_pairs(theirs) == 0 ? 'y' : 'n';
+        (void)!write(ready[1], &c, 1);
+        (void)!read(go[0], &c, 1);
+        _exit(0);
+    }
+    if (pid < 0 || read(ready[0], &c, 1) != 1 || c != 'y') {
+        return fail("a child's socketpairs");
+    }
+    int ok = open_pairs(mine) == 0;
+    (void)!write(go[1], "g", 1);
+    waitpid(pid, &st, 0);
+    if (!ok) {
+        return fail("socketpairs past 32 conversations");
+    }
+    for (int i = 0; i < PAIRS; i++) {
+        close(mine[i][0]);
+        close(mine[i][1]);
+    }
+    close(ready[0]);
+    close(ready[1]);
+    close(go[0]);
+    close(go[1]);
+    return 0;
+}
+
 int main(void) {
     static char bulk[BULK];
     char buf[8];
@@ -116,6 +172,28 @@ int main(void) {
         return fail("socketpair EOF");
     }
     close(sv[0]);
+
+    /* One end holds AHEAD bytes before its reader reads any. */
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+        return fail("socketpair");
+    }
+    for (int i = 0; i < AHEAD; i++) {
+        bulk[i] = (char)(i * 13);
+    }
+    if (write(sv[0], bulk, AHEAD) != AHEAD) {
+        return fail("60000 bytes ahead of the reader");
+    }
+    for (int i = 0, n; i < AHEAD; i += n) {
+        n = read(sv[1], bulk + BULK / 2, AHEAD - i);
+        if (n <= 0 || memcmp(bulk + BULK / 2, bulk + i, n) != 0) {
+            return fail("60000 bytes read back");
+        }
+    }
+    close(sv[0]);
+    close(sv[1]);
+    if (many() != 0) {
+        return 1;
+    }
 
     int ls = listener(NAME);
     if (ls < 0) {

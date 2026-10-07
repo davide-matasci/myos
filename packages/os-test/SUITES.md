@@ -22,7 +22,7 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 
 **Non-basic** = everything except `basic` (and the non-runtime `include` /
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`
-(~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (150 paths:
+(~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (155 paths:
 POSIX core + non-basic + the myos suite). Wired the same way as basic: thin
 `ci-smoke-copy.sh` staging + host prebuild + `make … TESTLIST=… report`.
 
@@ -55,8 +55,8 @@ until they pass honestly (no xfails):
 - `process/fork-setpgid-*-undo*`, `fork-setpgid-on-parent`, `limbo-getpgid` —
   pgid edge cases still red
 - `udp/connect-reconnect*`, `connect-unconnect-getpeername` — peer/unconnect edge cases
-- `process/waitpid-pgid` — needs waitpid(pgid) filtering (waitpid currently
-  ignores pid)
+- `process/waitpid-pgid`, `waitpid-pgid-empty-on-setsid` — need
+  waitpid(pgid) filtering (waitpid currently ignores pid)
 - `basic/signal/sigismember`, `sigaddset`, `sigdelset` — newlib's macros
   shift by the (negative / huge) signal number unchecked; clang turns that UB
   into a trap. newlib's checked versions (`libc/unix/sigset.c`) use bit
@@ -69,12 +69,6 @@ until they pass honestly (no xfails):
   `va_list` parameter: on x86_64 that is an array type, decayed to a
   pointer, and the program faults (CI run on PR #259). Without the option
   the conversions print literally
-- `process/fork-setsid-setpgid`, `-in-parent`, `-move` — a session leader
-  cannot change its process group (`EPERM`); libgloss's `setsid` only starts
-  a process group (issue #273), so there is no session leader to refuse
-- `process/fork-exec-setpgid-in-parent` — a parent cannot move a child that
-  has exec'd (`EACCES`); the kernel does not remember the exec, and its one
-  `setpgid` failure is `EPERM`
 - `process/zombie-setpgid-move` (hang), `process/limbo-*`,
   `process/fork-setpgid-*undo*`/`-invalid` — pgid edge cases
 - `paths/*` FHS directories (`/var`, `/run`, `/usr/share`, `/sbin`, …) and
@@ -82,7 +76,7 @@ until they pass honestly (no xfails):
 - `basic/stdlib/strtod` — passes on x86_64, fails on riscv64 (cause not yet
   investigated)
 - Not buildable against newlib/libgloss yet (not in any list): pty API
-  (`posix_openpt`/`grantpt`/`unlockpt`), `ppoll`, `timer_*`, `alarm`,
+  (`posix_openpt`/`grantpt`/`unlockpt`), `ppoll`, `timer_*`,
   `getppid`, `SA_ONSTACK`/`sigaltstack`, `sigqueue`, `sigtimedwait` /
   `sigwaitinfo`, `siginfo_t.si_pid`, `struct rlimit`
 

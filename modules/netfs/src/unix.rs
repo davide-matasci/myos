@@ -12,24 +12,32 @@
 //!   this one's `listen` the same way (`socketpair`);
 //! - `hangup`: close the connection both ways (`shutdown`).
 //!
-//! Each end buffers what its peer wrote, up to [`BUF_CAP`] bytes. As for
+//! Each end buffers what its peer wrote, up to [`BUF_CAP`] bytes (allocated
+//! as it fills, let go of once it is drained). As for
 //! tcp, reads and writes never wait: an empty `data` reads 0 bytes (`status`
 //! says `hangup` once the peer is gone), and a write takes what fits, failing
 //! when nothing does. Waiting is the socket library's job (libgloss
 //! `socket.c`). The last close of `data` ends the conversation; a listener's
-//! queued, never-accepted connections end with it.
+//! queued, never-accepted connections end with it. There is no fixed
+//! number of conversations: each holds an fd, so the fd limits bound them,
+//! and a full kernel heap refuses a new one (or a write) rather than
+//! failing the kernel.
 //!
 //! A client and its server usually run on different CPUs at once, so every
 //! entry point takes the lock on [`CONVS`] (module calls run with interrupts
 //! off and no kernel lock).
 
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+
 use myos_abi::{Lock, MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT};
 
 use crate::{Node, put_bytes, put_dec, S_IFDIR, S_IFREG};
 
-pub const MAX_CONV: usize = 32;
-/// Bytes one end holds for its reader.
-const BUF_CAP: usize = 8192;
+/// Bytes one end holds for its reader: a whole large X reply or image.
+const BUF_CAP: usize = 64 * 1024;
+/// A drained buffer bigger than this is let go of.
+const BUF_KEEP: usize = 4096;
 /// `sizeof(sun_path)`.
 const NAME_CAP: usize = 108;
 /// Connections a listener queues before `connect` is refused.
@@ -55,8 +63,7 @@ struct Conv {
     /// Conversations waiting to be handed out through `listen`.
     queue: [u16; BACKLOG],
     queued: usize,
-    rx_len: usize,
-    rx: [u8; BUF_CAP],
+    rx: VecDeque<u8>,
 }
 
 impl Conv {
@@ -67,8 +74,7 @@ impl Conv {
         name: [0; NAME_CAP],
         queue: [0; BACKLOG],
         queued: 0,
-        rx_len: 0,
-        rx: [0; BUF_CAP],
+        rx: VecDeque::new(),
     };
 
     fn status(&self) -> &'static [u8] {
@@ -82,26 +88,34 @@ impl Conv {
     }
 }
 
-static CONVS: Lock<[Conv; MAX_CONV]> = Lock::new([Conv::FREE; MAX_CONV]);
+/// The conversations by number; a free slot is used again first.
+static CONVS: Lock<Vec<Conv>> = Lock::new(Vec::new());
 
 /// Run `f` on the conversations with their lock held.
-fn with<R>(f: impl FnOnce(&mut [Conv; MAX_CONV]) -> R) -> R {
+fn with<R>(f: impl FnOnce(&mut Vec<Conv>) -> R) -> R {
     f(&mut CONVS.lock())
 }
 
-fn get(convs: &mut [Conv; MAX_CONV], id: u16) -> Option<&mut Conv> {
+fn get(convs: &mut Vec<Conv>, id: u16) -> Option<&mut Conv> {
     convs.get_mut(id as usize).filter(|c| c.state != State::Free)
 }
 
-fn alloc(convs: &mut [Conv; MAX_CONV]) -> Option<u16> {
-    let i = convs.iter().position(|c| c.state == State::Free)?;
+fn alloc(convs: &mut Vec<Conv>) -> Option<u16> {
+    let i = match convs.iter().position(|c| c.state == State::Free) {
+        Some(i) => i,
+        None if convs.len() < u16::MAX as usize && convs.try_reserve(1).is_ok() => {
+            convs.push(Conv::FREE);
+            convs.len() - 1
+        }
+        None => return None,
+    };
     convs[i] = Conv::FREE;
     convs[i].state = State::Open;
     Some(i as u16)
 }
 
 /// Connect `a` and `b` (both just made or `Open`).
-fn link(convs: &mut [Conv; MAX_CONV], a: u16, b: u16) {
+fn link(convs: &mut Vec<Conv>, a: u16, b: u16) {
     convs[a as usize].state = State::Connected;
     convs[a as usize].peer = Some(b);
     convs[b as usize].state = State::Connected;
@@ -109,7 +123,7 @@ fn link(convs: &mut [Conv; MAX_CONV], a: u16, b: u16) {
 }
 
 /// End `id`'s connection: both ends see `hangup`.
-fn disconnect(convs: &mut [Conv; MAX_CONV], id: u16) {
+fn disconnect(convs: &mut Vec<Conv>, id: u16) {
     if let Some(peer) = convs[id as usize].peer.take() {
         convs[peer as usize].peer = None;
         convs[peer as usize].state = State::Hangup;
@@ -120,14 +134,14 @@ fn disconnect(convs: &mut [Conv; MAX_CONV], id: u16) {
 }
 
 /// The listener whose name is `name`.
-fn listener(convs: &[Conv; MAX_CONV], name: &[u8]) -> Option<u16> {
+fn listener(convs: &[Conv], name: &[u8]) -> Option<u16> {
     let i = convs
         .iter()
         .position(|c| c.state == State::Listening && &c.name[..c.name_len] == name)?;
     Some(i as u16)
 }
 
-fn enqueue(convs: &mut [Conv; MAX_CONV], on: u16, id: u16) -> bool {
+fn enqueue(convs: &mut Vec<Conv>, on: u16, id: u16) -> bool {
     let c = &mut convs[on as usize];
     if c.queued == BACKLOG {
         return false;
@@ -164,7 +178,7 @@ pub fn stat(node: Node) -> Option<(u32, u32, u32)> {
         let ino = 1000 + id as u32 * 8 + tag;
         Some(match tag {
             0 => (S_IFDIR | 0o755, 0, ino),
-            2 => (S_IFREG | 0o666, c.rx_len as u32, ino),
+            2 => (S_IFREG | 0o666, c.rx.len() as u32, ino),
             3 => (S_IFREG | 0o666, c.status().len() as u32, ino),
             4 => (S_IFREG | 0o666, c.queued as u32, ino),
             _ => (S_IFREG | 0o666, 0, ino),
@@ -212,12 +226,12 @@ pub fn poll(node: Node) -> u32 {
         let Some(c) = get(convs, id) else {
             return MYOS_POLLERR | MYOS_POLLHUP;
         };
-        let (readable, state, peer) = (c.rx_len != 0 || c.queued != 0, c.state, c.peer);
+        let (readable, state, peer) = (!c.rx.is_empty() || c.queued != 0, c.state, c.peer);
         let mut bits = if readable { MYOS_POLLIN } else { 0 };
         if state == State::Hangup {
             bits |= MYOS_POLLIN | MYOS_POLLHUP;
         }
-        if state == State::Connected && peer.is_some_and(|p| convs[p as usize].rx_len < BUF_CAP) {
+        if state == State::Connected && peer.is_some_and(|p| convs[p as usize].rx.len() < BUF_CAP) {
             bits |= MYOS_POLLOUT;
         }
         bits
@@ -239,10 +253,13 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
             let Some(c) = get(convs, id) else {
                 return -1;
             };
-            let n = out.len().min(c.rx_len);
-            out[..n].copy_from_slice(&c.rx[..n]);
-            c.rx.copy_within(n..c.rx_len, 0);
-            c.rx_len -= n;
+            let n = out.len().min(c.rx.len());
+            for (o, b) in out.iter_mut().zip(c.rx.drain(..n)) {
+                *o = b;
+            }
+            if c.rx.is_empty() && c.rx.capacity() > BUF_KEEP {
+                c.rx = VecDeque::new();
+            }
             n as i32
         }
         Node::Status(_, id) => {
@@ -287,20 +304,20 @@ pub fn write(node: Node, src: &[u8]) -> i32 {
                 return -1;
             };
             let p = &mut convs[peer as usize];
-            let n = src.len().min(BUF_CAP - p.rx_len);
-            if n == 0 {
-                // Full: the library waits for the reader and retries.
+            let n = src.len().min(BUF_CAP - p.rx.len());
+            // Full (or no heap for it): the library waits for the reader and
+            // retries.
+            if n == 0 || p.rx.try_reserve(n).is_err() {
                 return -1;
             }
-            p.rx[p.rx_len..p.rx_len + n].copy_from_slice(&src[..n]);
-            p.rx_len += n;
+            p.rx.extend(&src[..n]);
             n as i32
         }
         _ => -1,
     })
 }
 
-fn ctl(convs: &mut [Conv; MAX_CONV], id: u16, cmd: &[u8]) -> bool {
+fn ctl(convs: &mut Vec<Conv>, id: u16, cmd: &[u8]) -> bool {
     let open = convs[id as usize].state == State::Open;
     if cmd == b"hangup" {
         disconnect(convs, id);

@@ -37,8 +37,9 @@ pub struct Pty {
     winsize: Mutex<(u16, u16)>,
     master_refs: AtomicUsize,
     slave_refs: AtomicUsize,
-    /// Session leader recorded at first slave open / TIOCSCTTY. `usize::MAX`
-    /// when unset.
+    /// The session that made the pair its controlling terminal (TIOCSCTTY,
+    /// `ctty`), its leader's pid. `usize::MAX` when unset; a claim lasts
+    /// while the leader lives ([`crate::task::session_alive`]).
     session: AtomicUsize,
 }
 
@@ -130,13 +131,14 @@ pub fn id_bound() -> usize {
     PTYS.lock().len()
 }
 
+/// The live session that claimed pair `id`.
+fn session_of(id: usize) -> Option<usize> {
+    let sess = pty_at(id)?.session.load(Ordering::SeqCst);
+    (sess != usize::MAX && crate::task::session_alive(sess)).then_some(sess)
+}
+
 fn session_pgid(id: usize) -> Option<usize> {
-    let p = pty_at(id)?;
-    let sess = p.session.load(Ordering::SeqCst);
-    if sess == usize::MAX {
-        return None;
-    }
-    crate::task::task_pgid(sess)
+    crate::task::task_pgid(session_of(id)?)
 }
 
 fn free_if_dead(id: usize) {
@@ -190,39 +192,34 @@ pub fn drop_slave(id: usize) {
     free_if_dead(id);
 }
 
-/// Record the caller as the pty's session leader (first slave open,
-/// TIOCSCTTY). Only the first claim wins, matching "session leader" rules.
+/// Make the pair the controlling terminal of the caller's session
+/// (TIOCSCTTY, `ctty` on the control file). Only a session leader can, and
+/// only while no live session holds the pair; anything else is ignored.
 pub fn claim_session(id: usize) {
     let Some(p) = pty_at(id) else { return };
     let me = crate::task::current_pid();
+    if crate::task::getsid(0) != Some(me) {
+        return;
+    }
+    let held = p.session.load(Ordering::SeqCst);
+    if held != usize::MAX && crate::task::session_alive(held) {
+        return;
+    }
     let _ = p
         .session
-        .compare_exchange(usize::MAX, me, Ordering::SeqCst, Ordering::SeqCst);
+        .compare_exchange(held, me, Ordering::SeqCst, Ordering::SeqCst);
 }
 
-/// The pty whose session `pid` claimed (TIOCSCTTY), if any: what `/dev/tty`
-/// means to that process and its descendants.
-pub fn claimed_by(pid: usize) -> Option<usize> {
-    let ptys = PTYS.lock();
-    ptys.iter()
-        .position(|slot| slot.as_ref().is_some_and(|p| p.session.load(Ordering::SeqCst) == pid))
-}
-
-/// The pty of `pid`'s session: the one it or an ancestor claimed (`ctty`
-/// on the control file, TIOCSCTTY). Sessions are not real yet (libgloss's
-/// setsid only starts a process group), so the claim is looked up along the
-/// parent chain: a forkpty child and what it started (an SSH login, the tty
-/// smoke).
+/// The pty that `pid`'s session claimed, if any: its controlling terminal,
+/// what `/dev/tty` and `/proc/self/tty` mean to it.
 pub fn for_session(pid: usize) -> Option<usize> {
-    let mut pid = Some(pid);
-    for _ in 0..16 {
-        let p = pid?;
-        if let Some(id) = claimed_by(p) {
-            return Some(id);
-        }
-        pid = crate::task::parent_pid(p);
-    }
-    None
+    let sid = crate::task::getsid(pid)?;
+    let ptys = PTYS.lock();
+    let id = ptys
+        .iter()
+        .position(|slot| slot.as_ref().is_some_and(|p| p.session.load(Ordering::SeqCst) == sid))?;
+    drop(ptys);
+    crate::task::session_alive(sid).then_some(id)
 }
 
 /// The text of `/dev/pts/N/ctl` (`crate::tty::ctl_text`).

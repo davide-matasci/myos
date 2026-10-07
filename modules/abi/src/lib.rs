@@ -314,7 +314,9 @@ pub const MYOS_SYSERR_ESPIPE: usize = usize::MAX - 5;
 pub const MYOS_SYSERR_ELOOP: usize = usize::MAX - 6;
 pub const MYOS_SYSERR_ENOTDIR: usize = usize::MAX - 7;
 pub const MYOS_SYSERR_EAGAIN: usize = usize::MAX - 8;
-pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EAGAIN;
+/// `setpgid` of a child that has exec'd.
+pub const MYOS_SYSERR_EACCES: usize = usize::MAX - 9;
+pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EACCES;
 
 /// Native signal dispositions (`signal_get_action`): default, ignore; any
 /// other value is a caught handler's address. Native signal numbers are

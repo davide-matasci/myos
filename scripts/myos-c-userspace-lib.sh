@@ -34,6 +34,7 @@ MYOS_DWM_VERSION="$MYOS_ROOT/target/.myos-dwm-version"
 MYOS_ST_VERSION="$MYOS_ROOT/target/.myos-st-version"
 MYOS_DMENU_VERSION="$MYOS_ROOT/target/.myos-dmenu-version"
 MYOS_X11_XFT_VERSION="$MYOS_ROOT/target/.myos-x11-xft-version"
+MYOS_X11_APPS_VERSION="$MYOS_ROOT/target/.myos-x11-apps-version"
 MYOS_X11_FONTS_VERSION="$MYOS_ROOT/target/.myos-x11-fonts-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
@@ -830,6 +831,29 @@ myos_dmenu_is_current() {
     [[ -f "$MYOS_ROOT/target/dmenu-smoke-${arch}-unknown-none" ]] || return 1
   done
   [[ -f "$MYOS_ROOT/target/dmenu_run" && -f "$MYOS_ROOT/target/dmenu_path" ]]
+}
+
+myos_x11_apps_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_x11_xft_version_hash
+      find "$(myos_port_dir x11-apps)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | sha256sum | awk '{print $1}'
+  )"
+  printf '%s' "$h"
+}
+
+myos_x11_apps_is_current() {
+  local arch
+  [[ -f "$MYOS_X11_APPS_VERSION" ]] \
+    && [[ "$(cat "$MYOS_X11_APPS_VERSION")" == "$(myos_x11_apps_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/xev-${arch}-unknown-none" ]] || return 1
+  done
 }
 
 myos_zlib_version_hash() {
