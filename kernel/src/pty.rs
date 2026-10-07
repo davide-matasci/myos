@@ -371,8 +371,14 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
         // OPOST/ONLCR: LF expands to CRLF in the output stream.
         let expand = post && onlcr && b == b'\n';
         loop {
-            let seq = crate::task::wait_seq();
             if p.master_refs.load(Ordering::SeqCst) == 0 {
+                notify(id);
+                return if n == 0 { usize::MAX } else { n };
+            }
+            // A signal must break the wait: otherwise a slave writing to a
+            // full ring whose master never reads spins unkillably in the
+            // kernel (not even SIGKILL reaches it).
+            if crate::signal::interrupt_wait() {
                 notify(id);
                 return if n == 0 { usize::MAX } else { n };
             }
@@ -392,9 +398,18 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
                 break;
             }
             drop(out);
-            // Ring full: let the master drain it.
+            // Ring full: wake the master to drain it, THEN read the wait
+            // sequence and sleep. Reading the sequence after `notify` (which
+            // bumps it) is what makes `block_until` actually sleep until the
+            // master's drain wakes us; reading it before (the old bug) made
+            // `block_until` return at once, busy-spinning the CPU. Re-check
+            // under the lock so a drain racing between the notify and the
+            // sleep is not missed.
             notify(id);
-            crate::task::block_until(crate::task::key_pty(id), seq, 0);
+            let seq = crate::task::wait_seq();
+            if p.out.lock().len == OUT_CAP {
+                crate::task::block_until(crate::task::key_pty(id), seq, 0);
+            }
         }
     }
     notify(id);

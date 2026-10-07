@@ -524,6 +524,17 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
         }
         _ => {
             let sepc = unsafe { *frame.add(32) };
+            // SPP (sstatus bit 8) clear => the trap came from U-mode: an
+            // illegal instruction (scause 2), an `ebreak` (3) or a misaligned
+            // access. Kill the task instead of halting the machine; only a
+            // genuine S-mode trap is fatal.
+            if unsafe { *frame.add(33) } & 0x100 == 0 {
+                let stval_s = stval;
+                crate::exception::user_fault_kill(
+                    "trap",
+                    &alloc::format!("scause={code:#x} sepc={sepc:#x} stval={stval_s:#x}{}", crate::exception::task_ctx()),
+                );
+            }
             super::exception::riscv64_trap(code, sepc, stval);
         }
     }

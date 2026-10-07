@@ -1673,6 +1673,13 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         }
     }
     let map_len = pages * PAGE;
+    // A file mapping reads from `offset + (0..map_len)`; a hostile offset near
+    // usize::MAX would overflow that (a kernel abort, overflow checks on), and
+    // an offset past the u32 page-index the region stores (vm.rs `fpage`) would
+    // silently truncate. Reject both; Linux returns EINVAL here.
+    if file.is_some() && (offset.checked_add(map_len).is_none() || offset / PAGE > u32::MAX as usize) {
+        return SYSERR;
+    }
     let aspace = task::current_aspace();
     let fixed = flags & MAP_FIXED != 0;
     if fixed {

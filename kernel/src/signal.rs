@@ -322,6 +322,12 @@ pub fn on_syscall_exit(regs: &mut SyscallRegs, nr: usize, a0: usize, ret: usize)
                 // No room on the user stack: what Linux does too.
                 terminate(SIGSEGV);
             }
+            // The trampoline is returned to directly (x86 `sysretq` loads it
+            // into RIP): a non-canonical address there would #GP in ring 0 on
+            // real hardware. It must be a mapped user address.
+            if !crate::user::buffer_ok(tramp, 1) {
+                terminate(SIGSEGV);
+            }
             regs.set_pc(tramp);
             regs.set_sp(frame_va);
             ret
@@ -362,7 +368,14 @@ pub fn sigreturn(regs: &mut SyscallRegs) -> usize {
         terminate(SIGSEGV);
     }
     task::signal_set_blocked_mask(task::current_id(), word(F_MASK) as u32);
-    regs.set_pc(word(F_PC) as usize);
+    // The restored PC is returned to directly (x86 `sysretq` loads it into
+    // RIP): a forged non-canonical value would #GP in ring 0 on real
+    // hardware. Require a mapped user address; kill the task otherwise.
+    let pc = word(F_PC) as usize;
+    if !crate::user::buffer_ok(pc, 1) {
+        terminate(SIGSEGV);
+    }
+    regs.set_pc(pc);
     regs.set_sp(word(F_SP) as usize);
     regs.set_nr_reg(word(F_NR_REG) as usize);
     word(F_RET) as usize

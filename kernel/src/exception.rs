@@ -41,6 +41,17 @@ pub fn user_fault_kill(kind: &str, detail: &str) -> ! {
 }
 
 
+/// A synchronous CPU exception (`name`) taken on x86: a user one kills the
+/// faulting task (its program ran a trapping instruction), a kernel one is
+/// fatal. Used for the vectors that are otherwise left non-present and would
+/// otherwise escalate to a double fault (`#UD`, `#DE`, `#MF`, ...).
+pub fn x86_user_exception(name: &str, rip: u64, rsp: u64, code: u64, user: bool) -> ! {
+    if user {
+        user_fault_kill(name, &format!("rip={rip:#x} rsp={rsp:#x} code={code:#x}{}", task_ctx()));
+    }
+    fatal_line(&format!("{name} rip={rip:#x} rsp={rsp:#x} code={code:#x} kernel{}", task_ctx()));
+}
+
 pub fn task_ctx() -> String {
     let id = task::current_id();
     // A dead canary says the task ran off its kernel stack before the fault.
