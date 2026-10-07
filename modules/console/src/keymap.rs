@@ -8,7 +8,7 @@
 //! characters are out of scope — see `docs/keymap.md`.
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::lock::Lock as Mutex;
+use myos_abi::Lock as Mutex;
 
 /// Max keycode slot (set-1 make codes + Delete/ISO extras fit in 0..127).
 pub const NKEYS: usize = 128;

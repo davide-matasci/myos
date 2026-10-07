@@ -11,10 +11,10 @@
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use core::sync::atomic::{Ordering, compiler_fence};
+use core::sync::atomic::{AtomicUsize, Ordering, compiler_fence};
 
 use myos_abi::{
-    status_ok, ABI_VERSION, ApiCell, KernelApi, MYOS_IRQ_INTX, MYOS_POLLIN, MYOS_POLLOUT,
+    status_ok, ABI_VERSION, ApiCell, KernelApi, Lock, MYOS_IRQ_INTX, MYOS_POLLIN, MYOS_POLLOUT,
     ModuleChrOps,
 };
 
@@ -87,14 +87,22 @@ struct Net {
     tx_buf_va: *mut u8,
     tx_buf_phys: u64,
     mac: [u8; 6],
-    /// ISR status byte (virtio-pci ISR capability); read in the interrupt
-    /// handler to deassert a legacy INTx line. 0 when the cap is absent.
-    isr: usize,
     /// The RX queue raises interrupts (`pci_irq_enable` succeeded).
     irq_ok: bool,
 }
 
-static mut NETS: [Option<Net>; MAX_NET] = [None, None, None, None];
+// SAFETY: the pointers are the device's own rings and buffers, used only
+// by whoever holds its slot in `NETS`.
+unsafe impl Send for Net {}
+
+/// The devices, a lock per slot, held for a `data` read or write (one RX
+/// and one TX buffer per device) or a look at `ctl`. The interrupt handler
+/// never takes it: what it needs is in [`ISR`].
+static NETS: [Lock<Option<Net>>; MAX_NET] = [const { Lock::new(None) }; MAX_NET];
+/// Per slot, the device's ISR status byte (virtio-pci ISR capability), read
+/// by the interrupt handler to deassert a legacy INTx line; 0 before the
+/// device is up or when the cap is absent.
+static ISR: [AtomicUsize; MAX_NET] = [const { AtomicUsize::new(0) }; MAX_NET];
 static API: ApiCell = ApiCell::new();
 
 unsafe extern "C" fn net0_read(buf: *mut u8, buf_len: usize) -> i32 {
@@ -537,7 +545,6 @@ fn probe(api: &KernelApi, pci_index: u32, slot_index: usize) -> Option<Net> {
         tx_buf_va,
         tx_buf_phys,
         mac,
-        isr: caps.isr,
         irq_ok: false,
     };
 
@@ -547,6 +554,7 @@ fn probe(api: &KernelApi, pci_index: u32, slot_index: usize) -> Option<Net> {
     // AVAIL_F_NO_INTERRUPT). Failure leaves the device in poll mode; `ctl`
     // says `irq off` then, so netd keeps its timed polling.
     let mut msix_entry: u16 = MYOS_IRQ_INTX;
+    ISR[slot_index].store(caps.isr, Ordering::Release);
     let rc = api.pci_irq_enable(
         bus,
         slot,
@@ -590,27 +598,20 @@ fn probe(api: &KernelApi, pci_index: u32, slot_index: usize) -> Option<Net> {
     Some(net)
 }
 
-fn net_slot(idx: usize) -> Option<&'static mut Net> {
-    if idx >= MAX_NET {
-        return None;
-    }
-    // Index the live static slot directly so the pointer is always in-bounds
-    // (CodeQL rust/access-invalid-pointer on `*addr_of_mut!(NETS)`).
-    unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(NETS[idx]);
-        slot.as_mut()
-    }
+/// Run `f` on the device in slot `idx` with its lock held; `None` for an
+/// empty slot.
+fn with_net<R>(idx: usize, f: impl FnOnce(&mut Net) -> R) -> Option<R> {
+    NETS.get(idx)?.lock().as_mut().map(f)
 }
 
 /// Interrupt handler: ack the device (ISR read deasserts a legacy INTx line;
 /// harmless under MSI-X) and wake the pollers: `netd` sleeps in `poll` on
-/// `data`.
+/// `data`. Atomics only: a handler must not wait for the slot's lock.
 unsafe extern "C" fn net_irq(ctx: *mut core::ffi::c_void) {
     let idx = ctx as usize;
-    if let Some(net) = net_slot(idx) {
-        if net.isr != 0 {
-            let _ = r8(net.isr);
-        }
+    let isr = ISR.get(idx).map_or(0, |a| a.load(Ordering::Acquire));
+    if isr != 0 {
+        let _ = r8(isr);
     }
     if let Some(api) = API.try_get() {
         api.wake_any();
@@ -624,17 +625,18 @@ fn rx_available(net: &Net) -> bool {
 /// `poll` bits of `data`: readable when the RX ring holds a frame, always
 /// writable.
 fn net_poll_n(idx: usize) -> u32 {
-    let readable = net_slot(idx).is_some_and(|net| rx_available(net));
+    let readable = with_net(idx, |net| rx_available(net)).unwrap_or(false);
     if readable { MYOS_POLLIN | MYOS_POLLOUT } else { MYOS_POLLOUT }
 }
 
 /// The text of `ctl`: `mac 52:54:00:12:34:56` and `irq on|off` (whether the
 /// RX queue interrupts, so a reader knows if `poll` on `data` wakes by itself).
 fn net_ctl_n(idx: usize, buf: *mut u8, cap: usize) -> i32 {
+    with_net(idx, |net| ctl_text(net, buf, cap)).unwrap_or(-1)
+}
+
+fn ctl_text(net: &Net, buf: *mut u8, cap: usize) -> i32 {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let Some(net) = net_slot(idx) else {
-        return -1;
-    };
     let mut text = [0u8; 32];
     let mut n = 0;
     for b in b"mac " {
@@ -666,10 +668,11 @@ fn net_read_n(idx: usize, buf: *mut u8, buf_len: usize) -> i32 {
     if buf.is_null() {
         return -1;
     }
-    let net = match net_slot(idx) {
-        Some(n) => n,
-        None => return -1,
-    };
+    with_net(idx, |net| read_frame(net, buf, buf_len)).unwrap_or(-1)
+}
+
+/// The next received frame into `buf`; 0 when none waits.
+fn read_frame(net: &mut Net, buf: *mut u8, buf_len: usize) -> i32 {
     let used = used_idx(&net.rx);
     if used == net.rx.last_used {
         return 0;
@@ -705,10 +708,12 @@ fn net_write_n(idx: usize, buf: *const u8, buf_len: usize) -> i32 {
     if buf.is_null() {
         return -1;
     }
-    let net = match net_slot(idx) {
-        Some(n) => n,
-        None => return -1,
-    };
+    with_net(idx, |net| write_frame(net, buf, buf_len)).unwrap_or(-1)
+}
+
+/// Send `buf` as one frame (cut at [`ETH_MAX`]) and wait for the device to
+/// take it; the bytes sent.
+fn write_frame(net: &mut Net, buf: *const u8, buf_len: usize) -> i32 {
     let frame = if buf_len > ETH_MAX { ETH_MAX } else { buf_len };
     unsafe {
         core::ptr::write_bytes(net.tx_buf_va, 0, HDR_SIZE);
@@ -760,10 +765,10 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         match probe(api, pci_index, registered) {
             Some(net) => {
                 let slot = registered;
-                unsafe { *core::ptr::addr_of_mut!(NETS[slot]) = Some(net) };
+                *NETS[slot].lock() = Some(net);
                 let rc = api.dev_register(NAMES[slot], &OPS[slot]);
                 if rc != 0 {
-                    unsafe { *core::ptr::addr_of_mut!(NETS[slot]) = None };
+                    *NETS[slot].lock() = None;
                     // Slot full or name clash — stop trying further NICs.
                     break;
                 }

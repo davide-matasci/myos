@@ -9,7 +9,7 @@
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleBlkOps, status_ok};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, Lock, ModuleBlkOps, status_ok};
 use virtq::{Ring, SECTOR};
 
 const MAX_DISKS: usize = 8;
@@ -22,7 +22,16 @@ struct Dev {
     base: usize,
 }
 
-static mut DEVS: [Option<Dev>; MAX_DISKS] = [const { None }; MAX_DISKS];
+// SAFETY: the ring's pointers are the device's own virtqueue and DMA page,
+// used only by whoever holds its slot in `DEVS`.
+unsafe impl Send for Dev {}
+
+/// The disks, a lock per slot: a request holds its disk's from the
+/// descriptors going in to the used ring saying it is done (one ring and
+/// one DMA page per disk, so its I/O is serial), and a probe fills a free
+/// slot without touching the others. A slot is never moved or emptied: its
+/// index is the block device's context.
+static DEVS: [Lock<Option<Dev>>; MAX_DISKS] = [const { Lock::new(None) }; MAX_DISKS];
 static API: ApiCell = ApiCell::new();
 
 static OPS: ModuleBlkOps = ModuleBlkOps {
@@ -45,42 +54,44 @@ fn dma_pages(n: usize) -> Option<(u64, *mut u8)> {
     if va.is_null() { None } else { Some((phys, va)) }
 }
 
-fn dev(i: usize) -> Option<&'static mut Dev> {
-    unsafe { (*core::ptr::addr_of_mut!(DEVS)).get_mut(i)?.as_mut() }
+/// Run `f` on the disk in slot `i` with its lock held; `None` for an
+/// empty slot.
+fn with_dev<R>(i: usize, f: impl FnOnce(&mut Dev) -> R) -> Option<R> {
+    DEVS.get(i)?.lock().as_mut().map(f)
 }
 
 unsafe extern "C" fn blk_read(ctx: usize, lba: u64, buf: *mut u8, len: usize) -> i32 {
     if buf.is_null() || len % SECTOR != 0 {
         return -1;
     }
-    let Some(d) = dev(ctx) else {
-        return -1;
-    };
-    let base = d.base;
     let buf = unsafe { core::slice::from_raw_parts_mut(buf, len) };
-    match unsafe { d.ring.read_buf(lba, buf, || transport::notify(base)) } {
-        Ok(()) => 0,
-        Err(()) => -1,
-    }
+    with_dev(ctx, |d| {
+        let base = d.base;
+        match unsafe { d.ring.read_buf(lba, buf, || transport::notify(base)) } {
+            Ok(()) => 0,
+            Err(()) => -1,
+        }
+    })
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn blk_write(ctx: usize, lba: u64, buf: *const u8, len: usize) -> i32 {
     if buf.is_null() || len % SECTOR != 0 {
         return -1;
     }
-    let Some(d) = dev(ctx) else {
-        return -1;
-    };
-    let base = d.base;
     let buf = unsafe { core::slice::from_raw_parts(buf, len) };
-    match unsafe { d.ring.write_buf(lba, buf, || transport::notify(base)) } {
-        Ok(()) => 0,
-        Err(()) => -1,
-    }
+    with_dev(ctx, |d| {
+        let base = d.base;
+        match unsafe { d.ring.write_buf(lba, buf, || transport::notify(base)) } {
+            Ok(()) => 0,
+            Err(()) => -1,
+        }
+    })
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn blk_capacity(ctx: usize) -> u64 {
-    dev(ctx).map_or(0, |d| d.capacity)
+    with_dev(ctx, |d| d.capacity).unwrap_or(0)
 }
 
 #[inline(never)]
@@ -114,7 +125,7 @@ pub unsafe extern "C" fn module_rescan() {
 /// Whether a device with this register base (an I/O port base on x86, an
 /// MMIO window elsewhere) is already up: a rescan must not reset it.
 fn known(base: usize) -> bool {
-    unsafe { (*core::ptr::addr_of!(DEVS)).iter().flatten().any(|d| d.base == base) }
+    DEVS.iter().any(|s| s.lock().as_ref().is_some_and(|d| d.base == base))
 }
 
 /// Every virtio-blk device of the transport: the new ones come up and
@@ -123,15 +134,17 @@ fn known(base: usize) -> bool {
 fn probe(api: &KernelApi) -> usize {
     let mut new = 0usize;
     transport::probe(known, |d| {
-        let devs = unsafe { &mut *core::ptr::addr_of_mut!(DEVS) };
-        let Some(n) = devs.iter().position(|s| s.is_none()) else {
+        let Some((n, mut free)) = DEVS.iter().enumerate().find_map(|(i, s)| {
+            let s = s.lock();
+            s.is_none().then_some((i, s))
+        }) else {
             return;
         };
         let name = [b'v', b'd', b'a' + n as u8];
-        devs[n] = Some(d);
+        *free = Some(d);
         let rc = api.blk_register(core::str::from_utf8(&name).unwrap_or_default(), &OPS, n);
         if rc < 0 {
-            devs[n] = None;
+            *free = None;
             return;
         }
         new += 1;

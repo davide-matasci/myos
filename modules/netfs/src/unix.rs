@@ -24,14 +24,13 @@
 //! failing the kernel.
 //!
 //! A client and its server usually run on different CPUs at once, so every
-//! entry point takes [`LOCK`] (module calls run with interrupts off and no
-//! kernel lock).
+//! entry point takes the lock on [`CONVS`] (module calls run with interrupts
+//! off and no kernel lock).
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
 
-use myos_abi::{MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT};
+use myos_abi::{Lock, MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT};
 
 use crate::{Node, put_bytes, put_dec, S_IFDIR, S_IFREG};
 
@@ -89,21 +88,12 @@ impl Conv {
     }
 }
 
-static LOCK: AtomicBool = AtomicBool::new(false);
 /// The conversations by number; a free slot is used again first.
-static mut CONVS: Vec<Conv> = Vec::new();
+static CONVS: Lock<Vec<Conv>> = Lock::new(Vec::new());
 
-/// Run `f` on the conversations with [`LOCK`] held.
+/// Run `f` on the conversations with their lock held.
 fn with<R>(f: impl FnOnce(&mut Vec<Conv>) -> R) -> R {
-    while LOCK
-        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        core::hint::spin_loop();
-    }
-    let out = f(unsafe { &mut *core::ptr::addr_of_mut!(CONVS) });
-    LOCK.store(false, Ordering::Release);
-    out
+    f(&mut CONVS.lock())
 }
 
 fn get(convs: &mut Vec<Conv>, id: u16) -> Option<&mut Conv> {
