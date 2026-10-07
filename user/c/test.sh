@@ -29,7 +29,8 @@ t pthread /bin/etc/pthread_smoke
 # sockets closed right after socket() leak none (netconv_smoke.c).
 t netconv /bin/etc/netconv_smoke
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
-# the wait; setpgid on a child before its exec, EACCES after (child_smoke.c).
+# the wait; setpgid on a child before its exec, EACCES after; a child's
+# setsid: its own session, no controlling terminal (child_smoke.c).
 t child /bin/etc/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports, and the soft float's double

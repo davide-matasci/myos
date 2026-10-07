@@ -73,6 +73,19 @@ back at the frame. The kernel restores the mask, PC, SP, the result
 register and the syscall-number register (`x8` / `a7`), so the interrupted
 code sees its syscall return normally.
 
+## Process groups and sessions
+
+What `kill(0)`, `kill(-pgid)` and a terminal's `^C` and hangup reach
+([`kernel/src/task/jobs.rs`](../kernel/src/task/jobs.rs)). A process
+spawned by the kernel leads its own session and group; a forked child
+inherits both. `setpgid` moves the caller, or a child that has not exec'd
+yet (`EACCES` after), into a new group or one of its session; a session
+leader cannot change its group (`EPERM`). `setsid` starts a session and a
+group led by the caller, with no controlling terminal, and fails (`EPERM`)
+for a process that already leads a group. A pty the new session claims
+becomes its terminal (`docs/tty.md`). Like a Linux pid, a task id is not
+handed out again while a group or session still goes by it.
+
 ## Timers
 
 `setitimer(ITIMER_REAL)`, `getitimer` and `alarm` are one kernel timer per

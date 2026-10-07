@@ -6,7 +6,8 @@
  * by sigaction), or ignoring SIGCHLD, gets none: waitpid finds no child
  * (ECHILD), whether asked after the exit or while waiting for it. A parent
  * may move its child to another process group until the child execs, and
- * gets EACCES after. Prints [ OK ] child.
+ * gets EACCES after. A child's setsid makes it a session leader with no
+ * controlling terminal, out of its parent's reach. Prints [ OK ] child.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -97,6 +98,56 @@ static int setpgid_exec(void) {
     return 0;
 }
 
+/* A forked child starts a session: it leads it and a group of the same
+ * id, has no controlling terminal, cannot start another or change its group,
+ * and its parent, now in another session, cannot move it either. Its own
+ * child inherits the session. */
+static int setsid_child(void) {
+    int go[2], status;
+    char c;
+    if (pipe(go) != 0) {
+        return fail("pipe");
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(go[0]);
+        pid_t me = getpid();
+        if (setsid() != me || getsid(0) != me || getpgrp() != me) {
+            _exit(1);
+        }
+        if (setsid() != -1 || errno != EPERM || setpgid(0, 0) != -1 || errno != EPERM) {
+            _exit(2);
+        }
+        if (open("/dev/tty", O_RDWR) >= 0) {
+            _exit(3);
+        }
+        pid_t g = fork();
+        if (g == 0) {
+            _exit(getsid(0) == me && getsid(getppid()) == me ? 0 : 1);
+        }
+        if (g < 0 || waitpid(g, &status, 0) != g || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            _exit(4);
+        }
+        (void)!write(go[1], "s", 1);
+        sleep(10);
+        _exit(0);
+    }
+    close(go[1]);
+    if (pid < 0 || read(go[0], &c, 1) != 1) {
+        waitpid(pid, &status, 0);
+        printf("[ FAIL ] child setsid: step %d\n", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        return 1;
+    }
+    errno = 0;
+    if (getsid(pid) != pid || getsid(0) == pid || setpgid(pid, getpgrp()) != -1 || errno != EPERM) {
+        return fail("setsid: the parent's view");
+    }
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    close(go[0]);
+    return 0;
+}
+
 int main(void) {
     struct sigaction old;
     int status;
@@ -127,10 +178,14 @@ int main(void) {
         return fail("a plain parent's zombie");
     }
 
-    /* SA_NOCLDWAIT (with the default action), then SIGCHLD ignored. */
+    if (setsid_child() != 0) {
+        return 1;
+    }
     if (setpgid_exec() != 0) {
         return 1;
     }
+
+    /* SA_NOCLDWAIT (with the default action), then SIGCHLD ignored. */
     if (set_sigchld(SIG_DFL, SA_NOCLDWAIT) != 0) {
         return fail("sigaction SA_NOCLDWAIT");
     }

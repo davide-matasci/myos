@@ -360,14 +360,16 @@ pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
     let (slot, kept) = {
         let mut tasks = TASKS.lock();
         free_dead_orphans(&mut tasks);
+        let named = super::jobs::named_ids(&tasks);
+        let free = |i: usize| tasks[i].state == State::Unused || reapable(&tasks, i);
+        let kept_stack = |i: usize| tasks[i].user_rip == 0 && tasks[i].aspace == 0 && tasks[i].stack_base != 0;
+        let unnamed = |i: usize| named & (1 << i) == 0;
+        // Best a slot no group or session goes by, with a kernel stack to
+        // reuse; then without the stack; then any.
         let slot = (0..MAX_TASKS)
-            .find(|&i| {
-                let t = &tasks[i];
-                (t.state == State::Unused || reapable(&tasks, i))
-                    && t.user_rip == 0
-                    && t.aspace == 0
-                    && t.stack_base != 0
-            })
+            .find(|&i| free(i) && kept_stack(i) && unnamed(i))
+            .or_else(|| (0..MAX_TASKS).find(|&i| tasks[i].state == State::Unused && unnamed(i)))
+            .or_else(|| (0..MAX_TASKS).find(|&i| free(i) && kept_stack(i)))
             .or_else(|| tasks.iter().position(|t| t.state == State::Unused))?;
         let kept = tasks[slot].stack_base;
         // Taken before the lock goes: a fork on another CPU used to find the
@@ -538,9 +540,10 @@ fn spawn_inner(
     super::arm_stack(top);
 
     let mut tasks = TASKS.lock();
-    let slot = tasks
-        .iter()
-        .position(|t| t.state == State::Unused)
+    let named = super::jobs::named_ids(&tasks);
+    let slot = (0..MAX_TASKS)
+        .find(|&i| tasks[i].state == State::Unused && named & (1 << i) == 0)
+        .or_else(|| tasks.iter().position(|t| t.state == State::Unused))
         .expect("no task slot");
     let brk_cur = if user_rip != 0 {
         heap_base_for(user_base, stack_off)

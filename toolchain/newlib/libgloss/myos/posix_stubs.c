@@ -442,16 +442,14 @@ int setpriority(int which, id_t who, int prio) {
 }
 
 int setsid(void) {
-    /* TEMP bisect (revert): SYS_SETSID corrupts the netfs write path after
-     * setsid — kernel page fault reproducible via tcp_fork_smoke with
-     * setsid + accepted fd >= 5, and dropbear's banner write fails with
-     * EIO. Until root-caused, only the process group half: the caller leads
-     * a new group (a no-op for a group leader), so a pty's hangup and ^C,
-     * sent to its claimant's group, stay with what the caller starts (st's
-     * shell, a forkpty child) instead of reaching its parent's group, the
-     * login session and init. Returns pid as the sid. */
-    (void)setpgid(0, 0);
-    return (int)getpid();
+    /* SYS_SETSID: a new session and process group led by the caller, no
+     * controlling terminal; EPERM when it already leads a group. */
+    long ret = myos_syscall3(MYOS_SYS_SETSID, 0, 0, 0);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EPERM;
+        return -1;
+    }
+    return (int)ret;
 }
 
 int setpgid(pid_t pid, pid_t pgid) {

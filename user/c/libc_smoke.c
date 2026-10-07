@@ -69,8 +69,7 @@ static int check_vfork(void) {
 
 /* A child daemonizes with its descriptors kept, then writes its pid and
  * session id to a file: a different pid from the child we forked (daemon
- * forked once more). The session is not checked: libgloss's setsid is
- * still a no-op (posix_stubs.c), so daemon's process keeps its parent's. */
+ * forked once more), leading a session of its own. */
 static int check_daemon(void) {
     const char *path = "/tmp/libc-smoke-daemon";
     unlink(path);
@@ -114,7 +113,7 @@ static int check_daemon(void) {
     int n = fscanf(f, "%d %d", &dpid, &dsid);
     fclose(f);
     unlink(path);
-    if (n != 2 || dpid == (int)pid || dpid <= 0) {
+    if (n != 2 || dpid == (int)pid || dpid <= 0 || dsid != dpid) {
         printf("[ FAIL ] libc daemon: pid %d sid %d (forked %d)\n", dpid, dsid, (int)pid);
         return 1;
     }

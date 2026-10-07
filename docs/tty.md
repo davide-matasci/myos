@@ -109,13 +109,17 @@ that key (devfs's `waits`, `kernel/src/fs/vfs.rs`).
 Opening `/dev/pts/clone` allocates a pair and returns the master fd; the
 master's name in `/proc/self/fd` tells its index, so there is no `TIOCGPTN`.
 The slave is `/dev/pts/N/data`; opening it does not make it the controlling
-terminal, a session claims it with `ctty` on the pair's `ctl` (what `forkpty`
-does for its child). The pair's termios, window size and session belong to
+terminal: a session leader (a process that called `setsid`, which also
+drops the console as its terminal) claims it with `ctty` on the pair's `ctl`
+(`TIOCSCTTY`, what `forkpty`'s child, dropbear's login and st do). From then
+on the pair is the controlling terminal of every process in that session,
+its `/dev/tty` and `/proc/self/tty`, until the leader exits; a claim by a
+process that leads no session, or of a pair another live session holds, is
+ignored. The pair's termios, window size and session belong to
 the pair: both ends see them. When the last fd on both ends is closed the
 directory disappears. Closing the last master fd hangs up the session
-(`SIGHUP` to the claimant's process group, then `EIO` on the slave; `setsid`
-in libgloss only makes the caller lead a new group, which keeps the hangup
-from its parent's group), closing the last slave fd makes the
+(`SIGHUP` to the session leader's process group, then `EIO` on the slave),
+closing the last slave fd makes the
 master's reads report `EIO` once drained ([`kernel/src/pty.rs`](../kernel/src/pty.rs)).
 There is no fixed number of pairs: each takes a few KiB of kernel heap and
 holds at least one fd, so the fd limits bound them, and a freed index is
