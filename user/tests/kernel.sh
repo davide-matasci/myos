@@ -361,6 +361,47 @@ mem_hog_survives() {
 }
 t mem_hog_survives mem_hog_survives
 
+# /proc/<pid> (docs/proc.md): the shell running the tests is listed with its
+# one thread, a child it starts names it as its parent once it has exec'd,
+# and the USB host's thread is there as a kernel thread.
+proc_pid() {
+	ls /proc | grep -qx "$$" || { echo "no $$ in /proc"; return 1; }
+	read pid name state ppid pgid sid threads size cpu child start kind < /proc/$$/status
+	[ "$pid" = "$$" ] && [ "$threads" = 1 ] && [ "$kind" = user ] || { cat /proc/$$/status; return 1; }
+	[ "$(ls /proc/$$/task)" = "$$" ] || { ls /proc/$$/task; return 1; }
+	read tid tpid tname rest < /proc/$$/task/$$/status
+	[ "$tid" = "$$" ] && [ "$tpid" = "$$" ] && [ "$tname" = "$name" ] || { cat /proc/$$/task/$$/status; return 1; }
+	sleep 10 &
+	kid=$!
+	wait_for 10 grep -q "^$kid sleep blocked $$ " /proc/$kid/status
+	rc=$?
+	cat /proc/$kid/status
+	kill $kid
+	wait $kid
+	[ $rc -eq 0 ] && cat /proc/*/status | grep -q " usb .* kernel$"
+}
+t proc_pid proc_pid
+
+# CPU time: the shell's own grows as it computes, its children's once it
+# has waited for one that computed; the CPUs' idle time grows across a sleep.
+proc_cpu_time() {
+	read pid name state ppid pgid sid threads size cpu0 child0 rest < /proc/$$/status
+	i=0
+	while [ $i -lt 2000 ]; do i=$((i + 1)); done
+	sh -c 'i=0; while [ $i -lt 2000 ]; do i=$((i + 1)); done'
+	read pid name state ppid pgid sid threads size cpu1 child1 rest < /proc/$$/status
+	echo "cpu $cpu0 -> $cpu1, children $child0 -> $child1"
+	[ "$cpu1" -gt "$cpu0" ] && [ "$child1" -gt "$child0" ] || return 1
+	idle0=0
+	while read c what ms; do [ "$what" = idle ] && idle0=$((idle0 + ms)); done < /proc/cpu
+	sleep 1
+	idle1=0
+	while read c what ms; do [ "$what" = idle ] && idle1=$((idle1 + ms)); done < /proc/cpu
+	echo "idle $idle0 -> $idle1"
+	[ "$idle1" -gt "$idle0" ]
+}
+t proc_cpu_time proc_cpu_time
+
 # A module's character device is a directory: the NIC's `data` is the
 # device, its `ctl` names the MAC and whether its interrupt works.
 net_ctl() {

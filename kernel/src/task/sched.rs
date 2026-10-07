@@ -12,6 +12,10 @@ static IDLE_SLOT: [AtomicUsize; crate::smp::MAX_CPUS] =
 pub fn become_idle() {
     let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     IDLE_SLOT[cpu].store(current_slot(), Ordering::SeqCst);
+    let flags = irq_save();
+    irq_off();
+    set_name(&mut TASKS.lock()[current_slot()], b"idle");
+    irq_restore(flags);
 }
 
 pub fn enable_preempt() {
@@ -52,6 +56,9 @@ pub fn schedule() {
     let switch = {
         let mut tasks = TASKS.lock();
         let current = current_slot();
+        // Every pass, not only a switch: a task alone on its CPU is charged
+        // at each tick.
+        super::acct::charge(current);
 
         crate::smp::note_schedule();
         let cpu = crate::smp::cpu_id();
@@ -394,7 +401,7 @@ pub fn blocked_count() -> usize {
 
 fn halt(cpu: usize) {
     IDLE_HALTS[cpu].fetch_add(1, Ordering::Relaxed);
-    crate::arch::idle_wait();
+    super::acct::idle(current_slot(), crate::arch::idle_wait);
 }
 
 pub fn wait_seq() -> u64 {
@@ -854,6 +861,7 @@ fn ap_idle_bringup() {
         t.affinity = Some(logical);
     }
     forget_frame(slot);
+    super::acct::start(slot);
     drop(tasks);
     set_current_slot(slot);
     // APs may still hold Limine's early TTBR0; install the BSP kernel/device
