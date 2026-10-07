@@ -69,6 +69,23 @@ $ echo 'lflag 0' > $(readlink /proc/self/tty)/ctl     # raw mode
 $ echo 'winsize 50 132' > /dev/pts/0/ctl
 ```
 
+## The screen
+
+The console's framebuffer copy (`modules/console/src/fb.rs`) draws an 8x8
+font and understands the VT100/xterm escapes full-screen programs use:
+cursor movement, erasing, scroll regions, the cursor's visibility, and
+colors, the 8 ANSI ones (`30`–`37`, `40`–`47`, bright `90`–`97`), xterm's
+256 (`38;5;N`, `48;5;N`) and RGB (`38;2;R;G;B`, `48;2;R;G;B`).
+
+Text is UTF-8. A character takes one cell, a wide one (East Asian, emoji)
+two and a combining mark none, as a terminal program counts them. Besides
+ASCII, the font draws box drawing (U+2500–257F: light, heavy, double and
+rounded lines), block elements (U+2580–259F: halves, eighths, shades,
+quadrants), braille patterns (U+2800–28FF, which programs such as `btm`
+draw graphs with) and a few symbols (arrows, triangles, `•`, `…`, `°`). Any
+other character is a `?` in its cells, as are bytes that are not UTF-8.
+The serial port gets the bytes as written.
+
 ## The raw keyboard
 
 `/dev/console/kbd` is the local keyboard (PS/2 on x86_64, virtio-input on

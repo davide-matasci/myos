@@ -19,6 +19,10 @@ t unix /bin/etc/unix_smoke
 # MAP_PRIVATE one that is a copy, and the screen handed to a program and back
 # by `text`, the last close of ctl and its holder's exit (fb_smoke.c).
 t fb /bin/etc/fb_smoke
+# The text console's UTF-8: box-drawing, block and braille characters drawn
+# in one cell each, one without a glyph a single '?', a wide one two cells,
+# a combining mark none; 256 colors and RGB (fb_smoke.c).
+t fb_text /bin/etc/fb_smoke text
 # poll: timeouts, waking on pipe and unix socket events (not before),
 # POLLHUP/POLLERR/POLLNVAL, EAGAIN, EINTR (poll_smoke.c).
 t poll /bin/etc/poll_smoke
