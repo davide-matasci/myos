@@ -82,7 +82,7 @@ until they pass honestly (no xfails):
 - `basic/stdlib/strtod` — passes on x86_64, fails on riscv64 (cause not yet
   investigated)
 - Not buildable against newlib/libgloss yet (not in any list): pty API
-  (`posix_openpt`/`grantpt`/`unlockpt`), `ppoll`, `timer_*`, `alarm`,
+  (`posix_openpt`/`grantpt`/`unlockpt`), `ppoll`, `timer_*`,
   `getppid`, `SA_ONSTACK`/`sigaltstack`, `sigqueue`, `sigtimedwait` /
   `sigwaitinfo`, `siginfo_t.si_pid`, `struct rlimit`
 

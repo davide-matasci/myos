@@ -142,6 +142,11 @@ struct Task {
     wait_key: usize,
     /// Monotonic-ns deadline of a `Blocked` task, 0 = none.
     wake_at: u64,
+    /// The process's `ITIMER_REAL` (in the leader's slot): when its next
+    /// `SIGALRM` is due (monotonic ns, 0 = disarmed) and the interval it
+    /// re-arms with (0 = once). A fork starts disarmed; exec keeps it.
+    alarm_at: u64,
+    alarm_every: u64,
     /// A wake arrived while the task was still leaving a CPU (mid task
     /// switch); `finish_switch` turns it into `Ready`.
     wake_pending: bool,
@@ -178,6 +183,8 @@ const EMPTY: Task = Task {
     affinity: None,
     wait_key: 0,
     wake_at: 0,
+    alarm_at: 0,
+    alarm_every: 0,
     wake_pending: false,
     tgid: 0,
     group_exit: false,

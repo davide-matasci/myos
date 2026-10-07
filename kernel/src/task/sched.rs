@@ -631,6 +631,57 @@ pub fn next_deadline_ns() -> u64 {
     NEXT_DEADLINE.load(Ordering::SeqCst)
 }
 
+/// Process `i`'s `ITIMER_REAL` at `now` (under `TASKS`): `SIGALRM` once it
+/// is due, re-armed by its interval; returns when it is next due
+/// (`u64::MAX`: disarmed). A due alarm whose signal could not be sent yet
+/// stays due, so the next tick tries again.
+fn alarm_tick(tasks: &mut TaskTable, i: usize, now: u64, kicks: &mut u64) -> u64 {
+    let (at, every) = (tasks[i].alarm_at, tasks[i].alarm_every);
+    if !super::signals::signal_live(&tasks[i]) {
+        tasks[i].alarm_at = 0;
+        return u64::MAX;
+    }
+    if at > now {
+        return at;
+    }
+    let Some(k) = super::signals::signal_send_locked(tasks, i, crate::signal::SIGALRM) else {
+        return at;
+    };
+    *kicks |= k;
+    // Late by more than one interval: the missed expiries are one signal.
+    let next = if every == 0 { 0 } else { at + every * ((now - at) / every + 1) };
+    tasks[i].alarm_at = next;
+    if next == 0 { u64::MAX } else { next }
+}
+
+/// Set process `pid`'s `ITIMER_REAL` to fire in `value_ns` (0 = disarm),
+/// then every `interval_ns`; returns what was left of the old one and its
+/// interval.
+pub fn itimer_swap(pid: usize, new: Option<(u64, u64)>) -> (u64, u64) {
+    if pid >= MAX_TASKS {
+        return (0, 0);
+    }
+    let flags = irq_save();
+    irq_off();
+    let now = crate::time::monotonic_ns();
+    let old = {
+        let mut tasks = TASKS.lock();
+        let t = &mut tasks[pid];
+        let left = if t.alarm_at == 0 { 0 } else { t.alarm_at.saturating_sub(now).max(1) };
+        let old = (left, t.alarm_every);
+        if let Some((value, interval)) = new {
+            t.alarm_at = if value == 0 { 0 } else { now.saturating_add(value) };
+            t.alarm_every = if value == 0 { 0 } else { interval };
+            if t.alarm_at != 0 {
+                NEXT_DEADLINE.fetch_min(t.alarm_at, Ordering::SeqCst);
+            }
+        }
+        old
+    };
+    irq_restore(flags);
+    old
+}
+
 /// Called from every timer IRQ (before `schedule`): wake tasks whose
 /// deadline passed. One atomic load on the common path.
 pub fn timer_tick() {
@@ -646,6 +697,9 @@ pub fn timer_tick() {
         let mut next = u64::MAX;
         let mut woke = false;
         for i in 0..MAX_TASKS {
+            if tasks[i].alarm_at != 0 {
+                next = next.min(alarm_tick(&mut tasks, i, now, &mut kicks));
+            }
             if tasks[i].state != State::Blocked || tasks[i].wake_at == 0 {
                 continue;
             }

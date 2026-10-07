@@ -32,7 +32,8 @@ t netconv /bin/etc/netconv_smoke
 t child /bin/etc/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports, and the soft float's double
-# arithmetic, compares, conversions and printf (libc_smoke.c).
+# arithmetic, compares, conversions and printf; setitimer and alarm (SIGALRM
+# on time, a blocking read cut short, the default action) (libc_smoke.c).
 t libc /bin/etc/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
 # whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a

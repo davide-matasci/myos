@@ -1,17 +1,21 @@
 /* The libc functions libgloss gained for the ports' shims to go
  * (toolchain/newlib/libgloss/myos/posix_extra.c, netdb.c): getrandom from
- * /dev/urandom, vfork, daemon, the service lookups that find nothing, and the termios and netinet constants the headers now carry.
+ * /dev/urandom, vfork, daemon, the service lookups that find nothing, and the termios and netinet constants the headers now carry;
+ * the interval timer and alarm (SIGALRM on time, a blocking read cut short,
+ * the default action).
  * Prints one `[ OK ] libc` or a `[ FAIL ] libc ...` line; the boot test
  * reads the exit status. */
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
@@ -189,9 +193,81 @@ static int check_double(void) {
     return 0;
 }
 
+static volatile sig_atomic_t alarms;
+
+static void on_alarm(int sig) {
+    (void)sig;
+    alarms++;
+}
+
+static int check_timers(void) {
+    struct itimerval it = {{0, 50000}, {0, 50000}}, left;
+    struct sigaction sa;
+    int fds[2], st, i, n;
+    char c;
+    pid_t pid;
+
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_alarm;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGALRM, &sa, NULL) != 0) {
+        return fail("sigaction SIGALRM");
+    }
+    /* Every 50 ms: three within a couple of seconds whatever the load. */
+    if (setitimer(ITIMER_REAL, &it, NULL) != 0) {
+        return fail("setitimer");
+    }
+    for (i = 0; i < 200 && alarms < 3; i++) {
+        usleep(10000);
+    }
+    if (alarms < 3) {
+        return fail("SIGALRM every 50 ms");
+    }
+    if (getitimer(ITIMER_REAL, &left) != 0 || left.it_interval.tv_sec != 0 || left.it_interval.tv_usec != 50000
+        || left.it_value.tv_sec != 0 || left.it_value.tv_usec > 50000) {
+        return fail("getitimer");
+    }
+    memset(&it, 0, sizeof it);
+    if (setitimer(ITIMER_REAL, &it, NULL) != 0) {
+        return fail("setitimer to disarm");
+    }
+    n = alarms;
+    usleep(200000);
+    if (alarms != n) {
+        return fail("a disarmed timer fired");
+    }
+    /* alarm: the seconds left of the one before, rounded up. */
+    if (alarm(5) != 0 || alarm(1) != 5) {
+        return fail("alarm's seconds left");
+    }
+    if (pipe(fds) != 0) {
+        return fail("pipe");
+    }
+    errno = 0;
+    if (read(fds[0], &c, 1) != -1 || errno != EINTR || alarms != n + 1) {
+        return fail("SIGALRM ends a blocking read");
+    }
+    close(fds[0]);
+    close(fds[1]);
+    /* Uncaught, SIGALRM ends the process. */
+    pid = fork();
+    if (pid == 0) {
+        signal(SIGALRM, SIG_DFL);
+        alarm(1);
+        for (i = 0; i < 50; i++) {
+            usleep(100000);
+        }
+        _exit(0);
+    }
+    if (pid < 0 || waitpid(pid, &st, 0) != pid || !WIFSIGNALED(st) || WTERMSIG(st) != SIGALRM) {
+        return fail("SIGALRM's default action");
+    }
+    return 0;
+}
+
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()
-        || check_termios() || check_double()) {
+        || check_termios() || check_double() || check_timers()) {
         return 1;
     }
     printf("[ OK ] libc\n");

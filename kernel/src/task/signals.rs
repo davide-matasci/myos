@@ -123,27 +123,40 @@ pub fn signal_send(id: usize, sig: u32) {
     if id >= MAX_TASKS || sig == 0 || sig > 31 {
         return;
     }
-    let bit = 1u32 << sig;
-    let kicks = with_sig(|tasks, tabs| {
-        let t = &tasks[id];
-        let live = t.user_rip != 0
-            && matches!(t.state, State::Ready | State::Running | State::Blocked);
-        if !live {
-            return 0;
-        }
-        let blocked = t.sig_blocked & bit != 0 && bit & UNBLOCKABLE == 0;
-        if !blocked && matches!(disposition(tasks, tabs, id, sig), Disposition::Ignore) {
-            return 0;
-        }
-        tasks[id].sig_pending |= bit;
-        // A signal that acts ends any blocking wait (EINTR / termination).
-        if !blocked {
-            wake_task_locked(tasks, id)
-        } else {
-            0
-        }
-    });
+    let kicks = with_sig(|tasks, tabs| send_locked(tasks, tabs, id, sig));
     kick_cpus_mask(kicks);
+}
+
+/// `sig` to `id` for a caller that holds `TASKS` (the timer interrupt's
+/// `SIGALRM`): `None` when the handler tables are busy, to retry later;
+/// otherwise the CPUs to kick.
+pub(super) fn signal_send_locked(tasks: &mut TaskTable, id: usize, sig: u32) -> Option<u64> {
+    let mut tabs = SIG_TABLES.try_lock()?;
+    Some(send_locked(tasks, &mut tabs, id, sig))
+}
+
+/// Whether `t` is a user task a signal can still reach.
+pub(super) fn signal_live(t: &Task) -> bool {
+    t.user_rip != 0 && matches!(t.state, State::Ready | State::Running | State::Blocked)
+}
+
+fn send_locked(tasks: &mut TaskTable, tabs: &mut [SigTable; MAX_TASKS], id: usize, sig: u32) -> u64 {
+    let bit = 1u32 << sig;
+    let t = &tasks[id];
+    if !signal_live(t) {
+        return 0;
+    }
+    let blocked = t.sig_blocked & bit != 0 && bit & UNBLOCKABLE == 0;
+    if !blocked && matches!(disposition(tasks, tabs, id, sig), Disposition::Ignore) {
+        return 0;
+    }
+    tasks[id].sig_pending |= bit;
+    // A signal that acts ends any blocking wait (EINTR / termination).
+    if !blocked {
+        wake_task_locked(tasks, id)
+    } else {
+        0
+    }
 }
 
 /// True if a pending signal should break `id` out of a blocking wait: one
