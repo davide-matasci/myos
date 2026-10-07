@@ -92,7 +92,8 @@ hash_tree() {
     -type f \( \
       -name '*.rs' -o -name '*.c' -o -name '*.h' -o -name '*.S' -o \
       -name 'Cargo.toml' -o -name 'build.rs' -o \
-      -name 'link.ld' -o -name '*.ld' -o -name '*.json' -o -name '*.txt' \
+      -name 'link.ld' -o -name '*.ld' -o -name '*.json' -o -name '*.txt' -o \
+      -name '*.patch' -o -name '*.env' -o -name '*.sh' \
     \) -print0 2>/dev/null \
     | sort -z | xargs -0 -r sha256sum
 }
@@ -192,7 +193,8 @@ kernel_inputs_diag() {
         -type f \( \
           -name '*.rs' -o -name '*.c' -o -name '*.h' -o -name '*.S' -o \
           -name 'Cargo.toml' -o -name 'build.rs' -o \
-          -name 'link.ld' -o -name '*.ld' -o -name '*.json' -o -name '*.txt' \
+          -name 'link.ld' -o -name '*.ld' -o -name '*.json' -o -name '*.txt' -o \
+          -name '*.patch' -o -name '*.env' -o -name '*.sh' \
         \) -print0 2>/dev/null \
         | sort -z | xargs -0 -r sha256sum
     }

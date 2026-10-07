@@ -17,6 +17,11 @@ bench = false
 myos-user = { path = "../lib" }
 myos-net = { path = "../net" }
 
+# smoltcp with myos's patches (user/net/smoltcp), which kernel/build.rs
+# prepares before it builds netd (PORT_PREPARE).
+[patch.crates-io]
+smoltcp = { path = "../../target/smoltcp-myos" }
+
 [profile.dev]
 panic = "abort"
 opt-level = "s"

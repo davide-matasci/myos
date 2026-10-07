@@ -75,6 +75,9 @@ fn main() {
         }
         println!("cargo:rerun-if-changed={}", repo.join(&port.dir).join("port.env").display());
         let crate_rel = format!("../{}", port.dir.display());
+        if let Some(script) = &port.prepare {
+            prepare(&repo, script, &port.bin);
+        }
         let watch: Vec<String> = port.watch.clone();
         let watch_refs: Vec<&str> = watch.iter().map(String::as_str).collect();
         nested_elf(
@@ -90,6 +93,23 @@ fn main() {
         );
     }
 
+}
+
+/// Run a user program's `PORT_PREPARE` script (repo-relative), unless the
+/// program comes prebuilt (`MYOS_PREBUILT`, see `nested_elf`).
+fn prepare(repo: &Path, script: &str, bin: &str) {
+    if env::var("MYOS_PREBUILT").is_ok_and(|v| v.split(',').any(|b| b == bin)) {
+        return;
+    }
+    let path = repo.join(script);
+    println!("cargo:rerun-if-changed={}", path.display());
+    let status = Command::new("bash")
+        .arg(&path)
+        .status()
+        .unwrap_or_else(|e| panic!("failed to run {script} for {bin}: {e}"));
+    if !status.success() {
+        panic!("{script} failed for {bin}");
+    }
 }
 
 /// Ping/netd on AArch64/RISC-V are ET_EXEC. netd has absolute smoltcp vtables;
