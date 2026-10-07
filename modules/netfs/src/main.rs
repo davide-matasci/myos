@@ -6,20 +6,22 @@
 //!
 //! Module calls take no kernel lock: netd's replies (`/dev/netd` writes) land
 //! on one CPU while a reader drains `data` on another, so every entry point
-//! holds [`LOCK`]. Without it a reply appended during a read was lost (curl:
-//! "end of response with N bytes missing").
+//! holds the lock on [`STATE`]. Without it a reply appended during a read
+//! was lost (curl: "end of response with N bytes missing").
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 mod unix;
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::alloc::{GlobalAlloc, Layout};
 
 use myos_abi::{
-    status_ok, ABI_VERSION, ApiCell, KernelApi, ModuleChrOps, ModuleVfsOps, VfsStatInfo,
-    MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT,
+    status_ok, ABI_VERSION, ApiCell, KernelApi, Lock, LockGuard, ModuleChrOps, ModuleVfsOps,
+    VfsStatInfo, MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT,
 };
 
 const S_IFDIR: u32 = 0o040000;
@@ -173,12 +175,29 @@ struct State {
     convs: [Conv; MAX_CONV],
 }
 
-static mut STATE: State = State {
+/// The request ring and the tcp, udp and icmp conversations.
+static STATE: Lock<State> = Lock::new(State {
     req: RingBuf::EMPTY,
     convs: [Conv::EMPTY; MAX_CONV],
-};
+});
 
 static API: ApiCell = ApiCell::new();
+
+/// The kernel heap, through the ABI: the unix conversations and their
+/// buffers grow as they are used (`unix`).
+struct KernelHeap;
+
+unsafe impl GlobalAlloc for KernelHeap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        API.get().alloc(layout.size(), layout.align())
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { (API.get().dealloc)(ptr, layout.size(), layout.align()) }
+    }
+}
+
+#[global_allocator]
+static HEAP: KernelHeap = KernelHeap;
 
 /// Wake the kernel's pollers: readiness changed without a write or close
 /// (a unix reader made room for its peer).
@@ -188,31 +207,10 @@ fn wake_any() {
     }
 }
 
-fn state() -> &'static mut State {
-    unsafe { &mut *core::ptr::addr_of_mut!(STATE) }
-}
-
-static LOCK: AtomicBool = AtomicBool::new(false);
-
-/// [`LOCK`] held until dropped.
-struct Held;
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        LOCK.store(false, Ordering::Release);
-    }
-}
-
-/// Take [`LOCK`] for the rest of an entry point. The unix conversations have
-/// their own lock, taken inside this one, never the other way round.
-fn lock() -> Held {
-    while LOCK
-        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        core::hint::spin_loop();
-    }
-    Held
+/// Take [`STATE`] for the rest of an entry point. The unix conversations
+/// have their own lock, taken inside this one, never the other way round.
+fn lock() -> LockGuard<'static, State> {
+    STATE.lock()
 }
 
 fn proto_name(p: u8) -> Option<&'static str> {
@@ -352,12 +350,12 @@ fn encode_req(typ: u8, conv: u16, proto: u8, payload: &[u8], out: &mut [u8]) -> 
     Some(n)
 }
 
-fn enqueue_req(typ: u8, conv: u16, proto: u8, payload: &[u8]) -> bool {
+fn enqueue_req(req: &mut RingBuf, typ: u8, conv: u16, proto: u8, payload: &[u8]) -> bool {
     let mut tmp = [0u8; MSG_CAP];
     let Some(n) = encode_req(typ, conv, proto, payload, &mut tmp) else {
         return false;
     };
-    state().req.push(&tmp[..n])
+    req.push(&tmp[..n])
 }
 
 fn status_is(c: &Conv, needle: &[u8]) -> bool {
@@ -390,12 +388,11 @@ fn accept_ready(c: &Conv) -> bool {
     seq.is_some_and(|seq| seq != c.taken)
 }
 
-fn alloc_conv(proto: u8) -> Option<u16> {
-    let st = state();
+fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
     // First pass: truly free slots.
     for i in 0..MAX_CONV {
-        if !st.convs[i].used {
-            st.convs[i] = Conv {
+        if !convs[i].used {
+            convs[i] = Conv {
                 used: true,
                 closing: false,
                 suppress_stale_hangup: false,
@@ -415,13 +412,13 @@ fn alloc_conv(proto: u8) -> Option<u16> {
     // ctl hangup). Skip `closing` — those still await netd's CLOSE ack.
     // Without reclaim, curl after https can starve at MAX_CONV.
     for i in 0..MAX_CONV {
-        let c = &st.convs[i];
+        let c = &convs[i];
         if c.used
             && !c.closing
             && c.data_len == 0
             && (status_is(c, b"hangup") || status_is(c, b"error"))
         {
-            st.convs[i] = Conv {
+            convs[i] = Conv {
                 used: true,
                 closing: false,
                 suppress_stale_hangup: false,
@@ -440,20 +437,12 @@ fn alloc_conv(proto: u8) -> Option<u16> {
     None
 }
 
-fn conv_ok(id: u16, proto: u8) -> bool {
-    let i = id as usize;
-    let st = state();
-    i < MAX_CONV && st.convs[i].used && st.convs[i].proto == proto
+fn conv_ok(convs: &[Conv; MAX_CONV], id: u16, proto: u8) -> bool {
+    convs.get(id as usize).is_some_and(|c| c.used && c.proto == proto)
 }
 
-fn conv_mut(id: u16) -> Option<&'static mut Conv> {
-    let i = id as usize;
-    let st = state();
-    if i >= MAX_CONV || !st.convs[i].used {
-        None
-    } else {
-        Some(&mut st.convs[i])
-    }
+fn conv_mut(convs: &mut [Conv; MAX_CONV], id: u16) -> Option<&mut Conv> {
+    convs.get_mut(id as usize).filter(|c| c.used)
 }
 
 fn set_status(c: &mut Conv, s: &[u8]) {
@@ -465,15 +454,15 @@ fn set_status(c: &mut Conv, s: &[u8]) {
 /// Give netd back the room the reader made: batched (the request ring is
 /// small) unless the buffer ran empty; kept for a later read or `stat` (the
 /// readers' poll) if the ring is full.
-fn return_credit(id: u16, p: u8) {
-    let Some(c) = conv_mut(id) else {
+fn return_credit(st: &mut State, id: u16, p: u8) {
+    let Some(c) = conv_mut(&mut st.convs, id) else {
         return;
     };
     let owed = c.credit;
     if owed == 0 || (c.data_len != 0 && (owed as usize) < DATA_CAP / 4) {
         return;
     }
-    if enqueue_req(REQ_CREDIT, id, p, &owed.to_le_bytes()) {
+    if enqueue_req(&mut st.req, REQ_CREDIT, id, p, &owed.to_le_bytes()) {
         c.credit = 0;
     }
 }
@@ -499,7 +488,7 @@ fn append_data(c: &mut Conv, src: &[u8]) {
     c.data_len = (have + n) as u16;
 }
 
-fn apply_reply(buf: &[u8]) {
+fn apply_reply(st: &mut State, buf: &[u8]) {
     if buf.len() < REP_HDR {
         return;
     }
@@ -526,12 +515,12 @@ fn apply_reply(buf: &[u8]) {
             Ok("icmp") => PROTO_ICMP,
             Ok("tcp") => PROTO_TCP,
             // Empty payload: client clone after alloc_conv — keep proto.
-            _ if state().convs[conv as usize].used && !state().convs[conv as usize].closing => {
-                state().convs[conv as usize].proto
+            _ if st.convs[conv as usize].used && !st.convs[conv as usize].closing => {
+                st.convs[conv as usize].proto
             }
             _ => PROTO_TCP,
         };
-        let slot = &mut state().convs[conv as usize];
+        let slot = &mut st.convs[conv as usize];
         // A client clone closed before netd acked it: its CLOSE is queued
         // behind this ack and frees the slot. Reinstalling here would
         // swallow that hangup (suppress_stale_hangup) and leak the slot.
@@ -562,7 +551,7 @@ fn apply_reply(buf: &[u8]) {
         }
         return;
     }
-    let Some(c) = conv_mut(conv) else {
+    let Some(c) = conv_mut(&mut st.convs, conv) else {
         return;
     };
     match typ {
@@ -663,7 +652,7 @@ unsafe extern "C" fn net_lookup(
 }
 
 unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
-    let _held = lock();
+    let st = &mut *lock();
     if out.is_null() {
         return -1;
     }
@@ -683,21 +672,21 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
         Node::Proto(p) => (S_IFDIR | 0o755, 0, 10 + p as u32),
         Node::Clone(p) => (S_IFREG | 0o666, 0, 20 + p as u32),
         Node::ConvDir(p, id) => {
-            if !conv_ok(id, p) {
+            if !conv_ok(&st.convs, id, p) {
                 return -1;
             }
             (S_IFDIR | 0o755, 0, 100 + id as u32)
         }
         Node::Listen(_, _) => return -1,
         Node::Ctl(p, id) | Node::Data(p, id) | Node::Status(p, id) => {
-            if !conv_ok(id, p) {
+            if !conv_ok(&st.convs, id, p) {
                 return -1;
             }
             let size = match node {
-                Node::Status(_, _) => state().convs[id as usize].status_len as u32,
+                Node::Status(_, _) => st.convs[id as usize].status_len as u32,
                 Node::Data(p, _) => {
-                    return_credit(id, p);
-                    state().convs[id as usize].data_len as u32
+                    return_credit(st, id, p);
+                    st.convs[id as usize].data_len as u32
                 }
                 _ => 0,
             };
@@ -725,7 +714,7 @@ unsafe extern "C" fn net_listdir(
     buf_len: usize,
     out_len: *mut usize,
 ) -> i32 {
-    let _held = lock();
+    let st = &mut *lock();
     if buf.is_null() || out_len.is_null() {
         return -1;
     }
@@ -753,7 +742,6 @@ unsafe extern "C" fn net_listdir(
         }
         Node::Proto(p) => {
             let _ = put_bytes(dst, &mut n, b"clone");
-            let st = state();
             for i in 0..MAX_CONV {
                 if st.convs[i].used && st.convs[i].proto == p {
                     let _ = put_dec(dst, &mut n, i as u16);
@@ -761,7 +749,7 @@ unsafe extern "C" fn net_listdir(
             }
         }
         Node::ConvDir(p, id) => {
-            if !conv_ok(id, p) {
+            if !conv_ok(&st.convs, id, p) {
                 return -1;
             }
             let _ = put_bytes(dst, &mut n, b"ctl");
@@ -782,7 +770,7 @@ unsafe extern "C" fn net_read(
     buf: *mut u8,
     buf_len: usize,
 ) -> i32 {
-    let _held = lock();
+    let st = &mut *lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -800,10 +788,10 @@ unsafe extern "C" fn net_read(
             if pos > 0 {
                 return 0;
             }
-            let Some(id) = alloc_conv(p) else {
+            let Some(id) = alloc_conv(&mut st.convs, p) else {
                 return 0;
             };
-            let _ = enqueue_req(REQ_CLONE, id, p, &[]);
+            let _ = enqueue_req(&mut st.req, REQ_CLONE, id, p, &[]);
             let mut tmp = [0u8; 8];
             let mut n = 0usize;
             let mut x = id;
@@ -827,7 +815,7 @@ unsafe extern "C" fn net_read(
             copy_at(&tmp[..n], 0, out)
         }
         Node::Data(p, id) => {
-            let Some(c) = conv_mut(id) else {
+            let Some(c) = conv_mut(&mut st.convs, id) else {
                 return -1;
             };
             if c.proto != p {
@@ -855,11 +843,11 @@ unsafe extern "C" fn net_read(
             }
             c.data_len = (have - used) as u16;
             c.credit += used as u16;
-            return_credit(id, p);
+            return_credit(st, id, p);
             n as i32
         }
         Node::Status(p, id) => {
-            let Some(c) = conv_mut(id) else {
+            let Some(c) = conv_mut(&mut st.convs, id) else {
                 return -1;
             };
             if c.proto != p {
@@ -868,7 +856,7 @@ unsafe extern "C" fn net_read(
             copy_at(&c.status[..c.status_len as usize], pos, out)
         }
         Node::Ctl(p, id) => {
-            let Some(c) = conv_mut(id) else {
+            let Some(c) = conv_mut(&mut st.convs, id) else {
                 return -1;
             };
             if c.proto != p {
@@ -908,7 +896,7 @@ fn trim_ctl(buf: &[u8]) -> &[u8] {
 /// parent and child share the data fd open count, so hangup fires only when
 /// the last holder closes. Explicit ctl `hangup` write still tears down.
 unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
-    let _held = lock();
+    let st = &mut *lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -926,19 +914,18 @@ unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
         Node::Ctl(_, _) | Node::Status(_, _) => return 0,
         _ => return 0,
     };
-    if !conv_ok(id, p) {
+    if !conv_ok(&st.convs, id, p) {
         return 0;
     }
-    teardown_conv(id);
+    teardown_conv(st, id);
     0
 }
 
-fn teardown_conv(id: u16) {
+fn teardown_conv(st: &mut State, id: u16) {
     let i = id as usize;
     if i >= MAX_CONV {
         return;
     }
-    let st = state();
     if !st.convs[i].used {
         return;
     }
@@ -949,7 +936,7 @@ fn teardown_conv(id: u16) {
         return;
     }
     set_status(&mut st.convs[i], b"hangup");
-    if !enqueue_req(REQ_CLOSE, id, st.convs[i].proto, &[]) {
+    if !enqueue_req(&mut st.req, REQ_CLOSE, id, st.convs[i].proto, &[]) {
         // Ring full: leave used+hangup for second-pass reclaim; clone's
         // drop_conv still cleans netd when the id is reused.
         return;
@@ -964,7 +951,7 @@ unsafe extern "C" fn net_write(
     buf: *const u8,
     buf_len: usize,
 ) -> i32 {
-    let _held = lock();
+    let st = &mut *lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -979,35 +966,35 @@ unsafe extern "C" fn net_write(
     }
     match node {
         Node::Ctl(p, id) => {
-            if !conv_ok(id, p) {
+            if !conv_ok(&st.convs, id, p) {
                 return -1;
             }
             let cmd = trim_ctl(src);
             if cmd == b"hangup" {
                 {
-                    let c = &mut state().convs[id as usize];
+                    let c = &mut st.convs[id as usize];
                     if c.closing {
                         return src.len() as i32;
                     }
                     set_status(c, b"hangup");
                 }
-                if !enqueue_req(REQ_CLOSE, id, p, &[]) {
+                if !enqueue_req(&mut st.req, REQ_CLOSE, id, p, &[]) {
                     return -1;
                 }
-                state().convs[id as usize].closing = true;
+                st.convs[id as usize].closing = true;
             } else {
-                if !enqueue_req(REQ_CTL, id, p, cmd) {
+                if !enqueue_req(&mut st.req, REQ_CTL, id, p, cmd) {
                     return -1;
                 }
                 // The library consumed that accept: no longer pollable.
                 if let Some(seq) = cmd.strip_prefix(b"taken ").and_then(parse_u32) {
-                    state().convs[id as usize].taken = seq;
+                    st.convs[id as usize].taken = seq;
                 }
             }
             src.len() as i32
         }
         Node::Data(p, id) => {
-            if !conv_ok(id, p) {
+            if !conv_ok(&st.convs, id, p) {
                 return -1;
             }
             // TCP takes what one request carries and netd has room for; none
@@ -1015,17 +1002,17 @@ unsafe extern "C" fn net_write(
             // took). A datagram goes whole or not at all.
             let max = MSG_CAP - REQ_HDR;
             let n = if p == PROTO_TCP {
-                src.len().min(max).min(state().convs[id as usize].tx_room as usize)
+                src.len().min(max).min(st.convs[id as usize].tx_room as usize)
             } else if src.len() <= max {
                 src.len()
             } else {
                 return -1;
             };
-            if n == 0 || !enqueue_req(REQ_SEND, id, p, &src[..n]) {
+            if n == 0 || !enqueue_req(&mut st.req, REQ_SEND, id, p, &src[..n]) {
                 return -1;
             }
             if p == PROTO_TCP {
-                state().convs[id as usize].tx_room -= n as u16;
+                st.convs[id as usize].tx_room -= n as u16;
             }
             n as i32
         }
@@ -1037,7 +1024,7 @@ unsafe extern "C" fn net_write(
 /// hangup to read, a connection up for writing, a connection to accept.
 /// netd's replies arrive as writes to `/dev/netd`, which wake the pollers.
 unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
-    let _held = lock();
+    let st = &mut *lock();
     let Some(node) = (unsafe { c_str(path, path_len) }).and_then(parse_path) else {
         return MYOS_POLLERR | MYOS_POLLHUP;
     };
@@ -1047,12 +1034,12 @@ unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
     let Node::Data(p, id) = node else {
         return MYOS_POLLIN | MYOS_POLLOUT;
     };
-    if !conv_ok(id, p) {
+    if !conv_ok(&st.convs, id, p) {
         return MYOS_POLLERR | MYOS_POLLHUP;
     }
     // As a reader's `stat` used to: hand back room the reads made.
-    return_credit(id, p);
-    let c = &state().convs[id as usize];
+    return_credit(st, id, p);
+    let c = &st.convs[id as usize];
     let mut bits = 0;
     if c.data_len != 0 || accept_ready(c) {
         bits |= MYOS_POLLIN;
@@ -1073,23 +1060,22 @@ unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
 
 /// `poll` bits of `/dev/netd/data`: readable while a request waits for netd.
 unsafe extern "C" fn chr_poll() -> u32 {
-    let _held = lock();
-    if state().req.count != 0 { MYOS_POLLIN | MYOS_POLLOUT } else { MYOS_POLLOUT }
+    if lock().req.count != 0 { MYOS_POLLIN | MYOS_POLLOUT } else { MYOS_POLLOUT }
 }
 
 unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
-    let _held = lock();
+    let st = &mut *lock();
     if buf.is_null() {
         return -1;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(buf, buf_len) };
     // No serial spam here: CI login typing matches against the serial log, and
     // leftover TEMP `[cr] n typ=` lines stole keystrokes / timed out WaitLogin.
-    state().req.pop(out).map_or(-1, |n| n as i32)
+    st.req.pop(out).map_or(-1, |n| n as i32)
 }
 
 unsafe extern "C" fn chr_write(buf: *const u8, buf_len: usize) -> i32 {
-    let _held = lock();
+    let st = &mut *lock();
     if buf_len == 0 {
         return 0;
     }
@@ -1097,7 +1083,7 @@ unsafe extern "C" fn chr_write(buf: *const u8, buf_len: usize) -> i32 {
         return -1;
     }
     let src = unsafe { core::slice::from_raw_parts(buf, buf_len) };
-    apply_reply(src);
+    apply_reply(st, src);
     buf_len as i32
 }
 

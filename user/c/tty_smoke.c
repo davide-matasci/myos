@@ -124,10 +124,6 @@ int main(void) {
         return 1;
     }
     if (pid == 0) {
-        /* A process group of its own: the pty's ^C and hangup go to the
-         * shell and its children, not to this program and the console shell
-         * (libgloss has no sessions yet, so forkpty does not isolate). */
-        setpgid(0, 0);
         setenv("TERM", "linux", 1);
         execl("/bin/sh", "sh", (char *)NULL);
         _exit(127);

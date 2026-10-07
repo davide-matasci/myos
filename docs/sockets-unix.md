@@ -30,13 +30,15 @@ The files are those of `/net/tcp`, plus `listen`:
   this one's `listen` (`socketpair`).
 - `hangup` ends the connection both ways (`shutdown`).
 
-Each end buffers up to 8 KiB written by its peer. Reads and writes never
+Each end buffers up to 64 KiB written by its peer, allocated as it fills
+and let go of once read. Reads and writes never
 wait, as for TCP: an empty `data` reads 0 bytes (`status` turns `hangup`
 when the peer is gone; what is buffered can still be read first), and a
 write takes what fits and fails when nothing does. The last close of a
 conversation's `data` ends it; a listener's queued, never-accepted
-connections end with it (their clients see `hangup`). Up to 32
-conversations exist at once.
+connections end with it (their clients see `hangup`). There is no fixed
+number of conversations: each holds an fd, so the fd limits bound them;
+with the kernel heap full, `clone` (or a write) is refused.
 
 The code is `modules/netfs/src/unix.rs`. A client and its server usually
 run on different CPUs at the same time and module calls take no kernel
@@ -71,8 +73,9 @@ lock, so the unix conversations have their own spinlock.
 ## Test
 
 `user/c/unix_smoke.c` (`t unix` in `user/c/test.sh`, in the mini list):
-`socketpair` both ways and EOF, `EADDRINUSE` and `ECONNREFUSED`, a
-nonblocking `accept`, `poll` on a listener, a forked client exchanging a
-greeting and then sending 64 KiB (more than the buffer, so its writes wait
+`socketpair` both ways and EOF, 60000 bytes written before the reader
+reads any, 48 conversations open at once, `EADDRINUSE` and `ECONNREFUSED`,
+a nonblocking `accept`, `poll` on a listener, a forked client exchanging a
+greeting and then sending 256 KiB (more than the buffer, so its writes wait
 for the reader), EOF after it closes, and the name free again after the
 listener closes.

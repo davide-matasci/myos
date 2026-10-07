@@ -2,11 +2,17 @@
 //!
 //! This is the modular ABI. Modules do not link against kernel `.dynsym`;
 //! they receive a [`KernelApi`] from `module_init` and call through it.
+//! The helpers a module keeps its own state in are here too: the table in
+//! an [`ApiCell`], the rest behind a [`Lock`].
 
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::sync::atomic::{AtomicPtr, Ordering};
+
+mod lock;
+
+pub use lock::{Lock, LockGuard};
 
 /// Bump this when [`KernelApi`] layout or meaning changes. 19 took `fd_ioctl`
 /// out of the table and the ioctl hook out of [`ModuleChrOps`]: there is no
@@ -308,7 +314,9 @@ pub const MYOS_SYSERR_ESPIPE: usize = usize::MAX - 5;
 pub const MYOS_SYSERR_ELOOP: usize = usize::MAX - 6;
 pub const MYOS_SYSERR_ENOTDIR: usize = usize::MAX - 7;
 pub const MYOS_SYSERR_EAGAIN: usize = usize::MAX - 8;
-pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EAGAIN;
+/// `setpgid` of a child that has exec'd.
+pub const MYOS_SYSERR_EACCES: usize = usize::MAX - 9;
+pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EACCES;
 
 /// Native signal dispositions (`signal_get_action`): default, ignore; any
 /// other value is a caught handler's address. Native signal numbers are

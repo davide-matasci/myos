@@ -11,6 +11,8 @@
 //! too: `/dev/<name>/data` is the device, `/dev/<name>/ctl` its control file
 //! when the module gives it one ([`myos_abi::ModuleChrOps`]).
 
+use spin::Mutex;
+
 use crate::blk;
 use crate::fs::StatInfo;
 use crate::input;
@@ -52,11 +54,9 @@ struct ChrDev {
     ops: myos_abi::ModuleChrOps,
 }
 
-static mut CHR: [Option<ChrDev>; MAX_CHR] = [None; MAX_CHR];
-
-fn chr_table() -> &'static mut [Option<ChrDev>; MAX_CHR] {
-    unsafe { &mut *core::ptr::addr_of_mut!(CHR) }
-}
+/// The modules' character devices; a slot's index is in its `Node`. Held
+/// only to look one up or to add one, never across a call into its module.
+static CHR: Mutex<[Option<ChrDev>; MAX_CHR]> = Mutex::new([None; MAX_CHR]);
 
 /// Register a module character device: the directory `/dev/<name>/` with
 /// `data` and, when `ops` has a control file, `ctl`.
@@ -64,7 +64,7 @@ pub fn register_chrdev(name: &str, ops: myos_abi::ModuleChrOps) -> bool {
     if name.is_empty() || name.len() > CHR_NAME_MAX || name.contains('/') {
         return false;
     }
-    let table = chr_table();
+    let mut table = CHR.lock();
     for slot in table.iter() {
         if let Some(c) = slot {
             if &c.name[..c.name_len as usize] == name.as_bytes() {
@@ -88,18 +88,13 @@ pub fn register_chrdev(name: &str, ops: myos_abi::ModuleChrOps) -> bool {
 }
 
 fn parse_chr(name: &str) -> Option<usize> {
-    for (i, slot) in chr_table().iter().enumerate() {
-        if let Some(c) = slot {
-            if &c.name[..c.name_len as usize] == name.as_bytes() {
-                return Some(i);
-            }
-        }
-    }
-    None
+    CHR.lock()
+        .iter()
+        .position(|slot| slot.is_some_and(|c| &c.name[..c.name_len as usize] == name.as_bytes()))
 }
 
 fn chr(i: usize) -> Option<ChrDev> {
-    chr_table().get(i).and_then(|s| *s)
+    *CHR.lock().get(i)?
 }
 
 /// The module gave the device a control file.
@@ -336,10 +331,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         buf[n] = b'\n';
         n += 1;
     }
-    for slot in chr_table().iter() {
-        let Some(c) = slot else {
-            continue;
-        };
+    for c in CHR.lock().iter().flatten() {
         let name = &c.name[..c.name_len as usize];
         let need = name.len() + 1;
         if n + need > buf.len() {

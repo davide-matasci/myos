@@ -94,8 +94,8 @@ wakes may be spurious, so callers re-check their condition.
 | 55 | `wait_addr(addr, expected, timeout_ns)` | `0` woken, `1` the word differed, `2` timed out (`timeout_ns` 0 = none); `EINTR` on a signal |
 | 56 | `wake_addr(addr, count)` | returns how many it woke |
 | 57 | `gettid()` | the calling thread's id |
-| 88 | `set_tp(value)` | make `value` the calling thread's thread pointer, as `thread_spawn`'s `tls` is a new thread's (x86_64 user code cannot write the FS base) |
-| 89 | `yield()` | let the other tasks ready on this CPU run first |
+| 89 | `set_tp(value)` | make `value` the calling thread's thread pointer, as `thread_spawn`'s `tls` is a new thread's (x86_64 user code cannot write the FS base) |
+| 90 | `yield()` | let the other tasks ready on this CPU run first |
 
 `user/heap` (`thread_smoke`, `[ OK ] threads` in boot CI) checks shared
 memory, wait/wake, and that a process exits while one of its threads sleeps
@@ -137,5 +137,5 @@ free their task slots and stacks (120 threads, past the kernel's 64 slots).
   condition wait sleeps to its deadline, once and keys work, and
   `pthread_create` fails with `EAGAIN`. Libraries that lock "in case"
   (libxcb, libX11) build and run on it; a real `pthread_create` on
-  `thread_spawn` and `wait_addr` would replace the stubs.
+  `thread_spawn` and `wait_addr` would replace the stubs (issue #301).
 - `exec` from a thread other than the leader.

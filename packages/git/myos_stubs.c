@@ -52,10 +52,3 @@ int fstatvfs(int fd, struct statvfs *buf) {
     (void)fd;
     return statvfs("/", buf);
 }
-
-/* No timer signals on myos (docs/signals.md): git's progress meter never
- * ticks, the command still runs. */
-unsigned alarm(unsigned seconds) {
-    (void)seconds;
-    return 0;
-}

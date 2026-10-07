@@ -349,17 +349,64 @@ int getdtablesize(void) {
     return MYOS_OPEN_MAX;
 }
 
-/* No interval timers: callers fall back (the X server's scheduler runs
- * without its SIGALRM time slices). */
+/* The interval timers: ITIMER_REAL (SIGALRM) is the kernel's (itimer);
+ * ITIMER_VIRTUAL and ITIMER_PROF would need CPU time accounting. */
+static unsigned long long tv_us(const struct timeval *tv) {
+    return (unsigned long long)tv->tv_sec * 1000000ULL + (unsigned long long)tv->tv_usec;
+}
+
+static void us_tv(unsigned long long us, struct timeval *tv) {
+    tv->tv_sec = (time_t)(us / 1000000ULL);
+    tv->tv_usec = (suseconds_t)(us % 1000000ULL);
+}
+
+static int itimer(int which, const struct itimerval *value, struct itimerval *old) {
+    unsigned long long set[2], was[2];
+    if (which == ITIMER_VIRTUAL || which == ITIMER_PROF) {
+        return myos_nosys();
+    }
+    if (which != ITIMER_REAL || (value && (value->it_value.tv_usec < 0 || value->it_value.tv_usec >= 1000000 ||
+                                            value->it_interval.tv_usec < 0 || value->it_interval.tv_usec >= 1000000))) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (value) {
+        set[0] = tv_us(&value->it_value);
+        set[1] = tv_us(&value->it_interval);
+    }
+    if (myos_syscall3(MYOS_SYS_ITIMER, 0, value ? (long)set : 0, old ? (long)was : 0) == (long)MYOS_SYSERR) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (old) {
+        us_tv(was[0], &old->it_value);
+        us_tv(was[1], &old->it_interval);
+    }
+    return 0;
+}
+
 int setitimer(int which, const struct itimerval *value, struct itimerval *old) {
-    (void)which;
-    (void)value;
-    (void)old;
-    return myos_nosys();
+    if (!value) {
+        errno = EFAULT;
+        return -1;
+    }
+    return itimer(which, value, old);
 }
 
 int getitimer(int which, struct itimerval *value) {
-    (void)which;
-    (void)value;
-    return myos_nosys();
+    if (!value) {
+        errno = EFAULT;
+        return -1;
+    }
+    return itimer(which, NULL, value);
+}
+
+/* SIGALRM in `seconds` (0 cancels); the seconds that were left of the
+ * previous alarm, rounded up. */
+unsigned alarm(unsigned seconds) {
+    struct itimerval it = {{0, 0}, {(time_t)seconds, 0}}, old;
+    if (itimer(ITIMER_REAL, &it, &old) != 0) {
+        return 0;
+    }
+    return (unsigned)old.it_value.tv_sec + (old.it_value.tv_usec != 0);
 }

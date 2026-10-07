@@ -14,7 +14,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use myos_abi::{FramebufferInfo, ModuleVfsOps, VfsStatInfo};
+use myos_abi::{FramebufferInfo, Lock, ModuleVfsOps, VfsStatInfo};
 
 use crate::{FB, api};
 
@@ -24,15 +24,16 @@ const PAGE: usize = 4096;
 
 /// The screen belongs to a program (`graphics` written to `ctl`).
 static GRAPHICS: AtomicBool = AtomicBool::new(false);
-static mut INFO: Option<FramebufferInfo> = None;
+/// The framebuffer, from [`mount`] on.
+static INFO: Lock<Option<FramebufferInfo>> = Lock::new(None);
 
 /// Whether the text console must leave the screen alone.
 pub fn graphics() -> bool {
     GRAPHICS.load(Ordering::Relaxed)
 }
 
-fn info() -> Option<&'static FramebufferInfo> {
-    unsafe { (*core::ptr::addr_of!(INFO)).as_ref() }
+fn info() -> Option<FramebufferInfo> {
+    *INFO.lock()
 }
 
 /// Bytes of pixel memory (`pitch * height`).
@@ -40,11 +41,32 @@ fn fb_len(fb: &FramebufferInfo) -> usize {
     (fb.pitch * fb.height) as usize
 }
 
-fn pixels() -> &'static mut [u8] {
-    match info() {
-        Some(fb) => unsafe { core::slice::from_raw_parts_mut(fb.addr as *mut u8, fb_len(fb)) },
-        None => &mut [],
-    }
+/// Pixel memory from `pos` on, for a copy of up to `fb_len(fb) - pos`
+/// bytes: `read_pixels` and `write_pixels` check that. Through a raw
+/// pointer, never a slice: the text console paints the same memory, and a
+/// program's `mmap` of it is not this module's to see.
+fn pixels(fb: &FramebufferInfo, pos: usize) -> *mut u8 {
+    (fb.addr as *mut u8).wrapping_add(pos)
+}
+
+/// `cap` bytes of pixel memory from `pos` into `buf`, fewer at the end;
+/// how many.
+fn read_pixels(fb: &FramebufferInfo, pos: usize, buf: *mut u8, cap: usize) -> usize {
+    let n = cap.min(fb_len(fb).saturating_sub(pos));
+    // SAFETY: the kernel mapped `fb.addr..fb.addr + fb_len(fb)` for the
+    // module (`framebuffer_info`), `pos + n` is within it, and `buf` is
+    // the kernel's buffer of `cap` bytes.
+    unsafe { core::ptr::copy_nonoverlapping(pixels(fb, pos), buf, n) };
+    n
+}
+
+/// `len` bytes of `buf` into pixel memory at `pos`, fewer at the end; how
+/// many.
+fn write_pixels(fb: &FramebufferInfo, pos: usize, buf: *const u8, len: usize) -> usize {
+    let n = len.min(fb_len(fb).saturating_sub(pos));
+    // SAFETY: as for `read_pixels`, with `buf` the kernel's `len` bytes.
+    unsafe { core::ptr::copy_nonoverlapping(buf, pixels(fb, pos), n) };
+    n
 }
 
 /// Give the screen back to the text console: cleared, since it cannot
@@ -154,8 +176,8 @@ unsafe extern "C" fn fb_stat(path: *const u8, len: usize, out: *mut VfsStatInfo)
     };
     let (mode, size, ino) = match node {
         Node::Root => (S_IFDIR | 0o755, 0, 1),
-        Node::Ctl => (S_IFREG | 0o666, ctl_line(fb).len, 2),
-        Node::Data => (S_IFREG | 0o666, fb_len(fb), 3),
+        Node::Ctl => (S_IFREG | 0o666, ctl_line(&fb).len, 2),
+        Node::Data => (S_IFREG | 0o666, fb_len(&fb), 3),
     };
     unsafe {
         *out = VfsStatInfo {
@@ -192,30 +214,27 @@ unsafe extern "C" fn fb_read(path: *const u8, len: usize, pos: usize, buf: *mut 
     let (Some(node), Some(fb)) = (node(path, len), info()) else {
         return -1;
     };
-    let line;
-    let src: &[u8] = match node {
-        Node::Root => return -1,
+    match node {
+        Node::Root => -1,
         Node::Ctl => {
-            line = ctl_line(fb);
-            &line.buf[..line.len]
+            let line = ctl_line(&fb);
+            let n = cap.min(line.len.saturating_sub(pos));
+            if n != 0 {
+                unsafe { core::ptr::copy_nonoverlapping(line.buf[pos..].as_ptr(), buf, n) };
+            }
+            n as i32
         }
-        Node::Data => pixels(),
-    };
-    let n = cap.min(src.len().saturating_sub(pos));
-    if n != 0 {
-        unsafe { core::ptr::copy_nonoverlapping(src[pos..].as_ptr(), buf, n) };
+        Node::Data => read_pixels(&fb, pos, buf, cap) as i32,
     }
-    n as i32
 }
 
 unsafe extern "C" fn fb_write(path: *const u8, len: usize, pos: usize, buf: *const u8, n: usize) -> i32 {
-    let Some(node) = node(path, len) else {
+    let (Some(node), Some(fb)) = (node(path, len), info()) else {
         return -1;
     };
-    let src = unsafe { core::slice::from_raw_parts(buf, n) };
     match node {
         Node::Root => -1,
-        Node::Ctl => match src.trim_ascii() {
+        Node::Ctl => match unsafe { core::slice::from_raw_parts(buf, n) }.trim_ascii() {
             b"graphics" => {
                 GRAPHICS.store(true, Ordering::Relaxed);
                 n as i32
@@ -226,12 +245,7 @@ unsafe extern "C" fn fb_write(path: *const u8, len: usize, pos: usize, buf: *con
             }
             _ => -1,
         },
-        Node::Data => {
-            let dst = pixels();
-            let n = n.min(dst.len().saturating_sub(pos));
-            dst[pos..pos + n].copy_from_slice(&src[..n]);
-            n as i32
-        }
+        Node::Data => write_pixels(&fb, pos, buf, n) as i32,
     }
 }
 
@@ -251,7 +265,7 @@ unsafe extern "C" fn fb_mmap(path: *const u8, len: usize, offset: usize) -> u64 
     let Some(base) = fb.addr.checked_sub(api().hhdm_offset()) else {
         return 0;
     };
-    if base % PAGE as u64 != 0 || offset % PAGE != 0 || offset >= fb_len(fb).next_multiple_of(PAGE) {
+    if base % PAGE as u64 != 0 || offset % PAGE != 0 || offset >= fb_len(&fb).next_multiple_of(PAGE) {
         return 0;
     }
     base + offset as u64
@@ -259,7 +273,7 @@ unsafe extern "C" fn fb_mmap(path: *const u8, len: usize, offset: usize) -> u64 
 
 /// Mount `/dev/fb` over the framebuffer `fb`. 0 ok, negative on error.
 pub fn mount(fb: FramebufferInfo) -> i32 {
-    unsafe { *core::ptr::addr_of_mut!(INFO) = Some(fb) };
+    *INFO.lock() = Some(fb);
     // Built here, not in a static: aarch64 ET_EXEC modules do not relocate
     // fn pointers in .rodata (see netfs).
     let ops = ModuleVfsOps {

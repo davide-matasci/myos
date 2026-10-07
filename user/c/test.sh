@@ -8,7 +8,8 @@ t urandom /bin/etc/urandom_smoke
 # The tty: the line editor's keys and ^C, driven through a pty (tty_smoke.c).
 t tty /bin/etc/tty_smoke
 # AF_UNIX over /net/unix: socketpair, listen/accept/connect with a forked
-# client, a transfer larger than the buffers, EOF, names (unix_smoke.c).
+# client, a transfer larger than the buffers, 60000 bytes ahead of the reader,
+# 48 conversations at once, EOF, names (unix_smoke.c).
 t unix /bin/etc/unix_smoke
 # /dev/fb: the geometry in ctl, a MAP_SHARED mapping of data that is the
 # framebuffer itself (shared with read/write and a forked child), a
@@ -28,11 +29,13 @@ t pthread /bin/etc/pthread_smoke
 # sockets closed right after socket() leak none (netconv_smoke.c).
 t netconv /bin/etc/netconv_smoke
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
-# the wait (child_smoke.c).
+# the wait; setpgid on a child before its exec, EACCES after; a child's
+# setsid: its own session, no controlling terminal (child_smoke.c).
 t child /bin/etc/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports, and the soft float's double
-# arithmetic, compares, conversions and printf (libc_smoke.c).
+# arithmetic, compares, conversions and printf; setitimer and alarm (SIGALRM
+# on time, a blocking read cut short, the default action) (libc_smoke.c).
 t libc /bin/etc/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
 # whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a

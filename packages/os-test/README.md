@@ -77,7 +77,7 @@ pass_rate=NN% (P/T)
 The full boot test (`packages/os-test/test.sh`, `docs/testing.md`) runs a
 **thin curated set**: the basic smoke list **plus** ~100 tests spanning
 non-basic suites (`limits`, `io`, `malloc`, `paths`, `process`, `signal`,
-`stdio`, `udp`) **plus** `misc/ci-expansion.tests` (150: POSIX core, more
+`stdio`, `udp`) **plus** `misc/ci-expansion.tests` (155: POSIX core, more
 non-basic, signal handlers, and the myos `chroot`/FIFO suite). See
 `SUITES.md` for the full suite inventory, the selection rationale and the
 deferred tests. Not the full ~1187 basic suite (CI #860/#866 timed out).

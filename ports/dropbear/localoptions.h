@@ -28,6 +28,12 @@
  * 0/1 flag — setting it to 0 crashes svr_getopts (expand_homedir_path(NULL)). */
 #define DROPBEAR_PUTENV 1
 
+/* The PATH a session's shell gets: myos's directories, as login's
+ * (ports/ubase/config.h). oksh keeps what it inherits. */
+#define MYOS_PATH "/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc"
+#define DEFAULT_PATH MYOS_PATH
+#define DEFAULT_ROOT_PATH MYOS_PATH
+
 /* --- channels: tcp fwd left at defaults (listener over netfs) --- */
 
 /* --- compression: off (keeps the port free of a zlib dependency) --- */
