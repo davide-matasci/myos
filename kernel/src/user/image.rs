@@ -234,6 +234,15 @@ pub(super) fn reload_user_elf(
     // and the exec wrapper all flush after their unmaps; this path was the
     // only one that skipped it.
     free_heap_window(aspace, base, stack_off);
+    // The old image's pages past the new span (a large shell exec'ing a small
+    // program keeps its `stack_off`): no longer part of the image, and no
+    // reclaim walks them, so each such exec leaked them on exit (issue #284;
+    // x86's table teardown frees leftover leaves, which hid it there).
+    let mut va = base + (n_pages * PAGE) as u64;
+    while va < base + stack_off {
+        free_mapped_page(aspace, va);
+        va += PAGE as u64;
+    }
     flush_user_tlb();
     Some((entry as usize, n_pages * PAGE, stack_off))
 }

@@ -304,20 +304,47 @@ frames_live() {
 	echo "$2"
 }
 
-# A userspace memory hog must never abort the kernel. `memhog` mmaps and
-# touches a large region in chunks; the kernel either serves it in full or,
-# under real memory pressure, fails the fault so the hog dies (SIGSEGV) — the
-# graceful out-of-memory path this change adds, in place of the old frame
-# allocator panic that took the whole kernel down. Either way the kernel stays
-# up and reclaims the hog's data pages.
-#
-# We assert the kernel is still alive afterwards (it answers a syscall) and
-# that the bulk of the 256 MiB came back. The reclaim bound is deliberately
-# loose: the private page-table frames of an exited process still leak on
-# aarch64 and riscv64 (a few hundred frames at most — issue #284),
-# far below the ~65k a "nothing was reclaimed" regression would strand. Full
-# reclaim-to-baseline, with its own `mem_fork_no_leak` / `mem_exec_no_leak`
-# probes, lands with that fix.
+# Exiting a process must free all of its memory, page tables included
+# (issue #284). Fork many children that exit at once (no exec, so the page
+# cache does not grow) and confirm the live frame count returns to its
+# baseline: a per-exit leak would ratchet it up.
+mem_fork_no_leak() {
+	frames_live > /dev/null # warm the grep path (caches its code once)
+	before=$(frames_live)
+	i=0
+	while [ $i -lt 60 ]; do
+		(:)
+		i=$((i + 1))
+	done
+	after=$(frames_live)
+	echo "mem: fork/exit x60 FramesLive $before -> $after (delta $((after - before)))"
+	[ "$((after - before))" -le 8 ]
+}
+t mem_fork_no_leak mem_fork_no_leak
+
+# The same across fork+exec+exit of a real program. Its code is cached on the
+# first run (PageCacheKiB), so after a warm-up the repeated runs must add no
+# persistent frames.
+mem_exec_no_leak() {
+	/bin/etc/hello > /dev/null 2>&1 # warm: cache the program's pages
+	frames_live > /dev/null
+	before=$(frames_live)
+	i=0
+	while [ $i -lt 40 ]; do
+		/bin/etc/hello > /dev/null 2>&1
+		i=$((i + 1))
+	done
+	after=$(frames_live)
+	echo "mem: exec x40 FramesLive $before -> $after (delta $((after - before)))"
+	[ "$((after - before))" -le 16 ]
+}
+t mem_exec_no_leak mem_exec_no_leak
+
+# A userspace memory hog must never abort the kernel, and its pages must all
+# come back. `memhog` mmaps and touches a large region in chunks; the kernel
+# either serves it in full or, under real memory pressure, fails the fault so
+# the hog dies (SIGSEGV). Either way the kernel stays up and the live frame
+# count returns to its baseline.
 #
 # The sleep is load-bearing: a dying process is reaped by its parent (SIGCHLD)
 # *before* it frees its address space — `reclaim_user_aspace` runs afterwards on
@@ -330,7 +357,7 @@ mem_hog_survives() {
 	sleep 1                     # let the exiting hog finish reclaiming
 	after=$(frames_live)
 	echo "mem: hog 256MiB FramesLive $before -> $after (delta $((after - before)))"
-	[ -n "$after" ] && [ "$((after - before))" -le 4096 ]
+	[ -n "$after" ] && [ "$((after - before))" -le 64 ]
 }
 t mem_hog_survives mem_hog_survives
 

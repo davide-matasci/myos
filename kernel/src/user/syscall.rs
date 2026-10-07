@@ -1013,7 +1013,9 @@ fn exec_path_depth(
                     {
                         v
                     } else if let Some(v) = load_user_elf(bytes, relocate) {
-                        // Fresh aspace: reclaim code/stack/heap (mmap already freed).
+                        // Fresh aspace: reclaim code/stack/heap (mmap already
+                        // freed), with the task on the new one already.
+                        task::set_current_aspace(v.0);
                         reclaim_user_aspace(
                             cur_aspace,
                             base_u,
