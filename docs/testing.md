@@ -127,7 +127,9 @@ is back, so an AP's lagging echo never garbles the line), then watches:
 - the kernel's crash reports (`exception:`, `user panic`, a user fault)
   end the run at once;
 - a **stall watchdog**: the console must print something within 3 minutes
-  (mini) or 10 minutes (full), and the whole run has its budget;
+  (mini) or 10 minutes (full), and the whole run has its budget. A stall
+  ends with every CPU's registers from the QEMU monitor (`info registers
+  -a`): where the guest spins or halts, by `addr2line` on the kernel;
 - the kernel's own **boot markers** (`[ OK ] heap`, `[ OK ] scheduler`,
   the drivers, the VFS checks of `/bin/custom/ok`), which init prints
   before the login prompt: required whatever the tests say. `ok` runs on
