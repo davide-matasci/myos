@@ -24,7 +24,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::keymap;
-use crate::lock::Lock;
+use myos_abi::Lock;
 
 pub const KEY_ESC: u8 = 0x01;
 pub const KEY_UP: u8 = 0x48;

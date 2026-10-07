@@ -8,7 +8,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::kbd::{self, ByteFifo};
-use crate::lock::Lock as Mutex;
+use myos_abi::Lock as Mutex;
 use crate::status_ok;
 use virtq::{dcache_civac, dsb};
 

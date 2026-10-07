@@ -1,4 +1,9 @@
-//! A minimal spin lock (`spin::Mutex` is not available to modules).
+//! A spin lock for a module's own state (`spin::Mutex` is not available
+//! to modules): a device table, a queue, a cursor.
+//!
+//! The holder spins with interrupts as they are, so state an interrupt
+//! handler touches is taken with [`Lock::try_lock`] from the handler (the
+//! console's cursor blink) or kept in atomics.
 
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
@@ -9,10 +14,12 @@ pub struct Lock<T> {
     value: UnsafeCell<T>,
 }
 
+// SAFETY: the value is reached only through a guard, one at a time.
 unsafe impl<T: Send> Sync for Lock<T> {}
 unsafe impl<T: Send> Send for Lock<T> {}
 
-pub struct Guard<'a, T> {
+/// The value, exclusively, until the guard is dropped.
+pub struct LockGuard<'a, T> {
     lock: &'a Lock<T>,
 }
 
@@ -24,7 +31,7 @@ impl<T> Lock<T> {
         }
     }
 
-    pub fn lock(&self) -> Guard<'_, T> {
+    pub fn lock(&self) -> LockGuard<'_, T> {
         while self
             .held
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -32,32 +39,35 @@ impl<T> Lock<T> {
         {
             core::hint::spin_loop();
         }
-        Guard { lock: self }
+        LockGuard { lock: self }
     }
 
     /// The lock if nobody holds it (interrupt context).
-    pub fn try_lock(&self) -> Option<Guard<'_, T>> {
+    pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
         self.held
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
-            .map(|_| Guard { lock: self })
+            .map(|_| LockGuard { lock: self })
     }
 }
 
-impl<T> Deref for Guard<'_, T> {
+impl<T> Deref for LockGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
+        // SAFETY: the guard holds the lock.
         unsafe { &*self.lock.value.get() }
     }
 }
 
-impl<T> DerefMut for Guard<'_, T> {
+impl<T> DerefMut for LockGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: the guard holds the lock, and `&mut self` is the only
+        // way to the value through it.
         unsafe { &mut *self.lock.value.get() }
     }
 }
 
-impl<T> Drop for Guard<'_, T> {
+impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.held.store(false, Ordering::Release);
     }
