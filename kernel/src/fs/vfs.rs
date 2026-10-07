@@ -579,6 +579,22 @@ pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
     }
 }
 
+/// Whether a read of `node` returns as much as asked for, as far as the
+/// file goes: a plain file (by id: tmpfs, ext2, FAT; or a regular file of a
+/// kernel filesystem: the image's, `/proc`'s), not a device, a socket or a
+/// pipe, whose reads return what there is now.
+pub fn reads_whole(node: &Vnode) -> bool {
+    let _tree = tree_read();
+    match node::locate(node) {
+        Some((_, node::Loc::File(_))) => true,
+        Some((idx, node::Loc::Path(rel))) => {
+            matches!(backend_of(idx), Some(MountBackend::Kernel(_)))
+                && backend_stat(idx, rel.as_str()).is_some_and(|st| st.mode & S_IFMT == S_IFREG)
+        }
+        None => false,
+    }
+}
+
 /// Write to an open vnode at `pos`. Returns bytes written, or `None` on error.
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     let _tree = tree_read();

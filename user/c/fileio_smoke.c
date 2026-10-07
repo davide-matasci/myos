@@ -11,7 +11,9 @@
  * is EISDIR; flock and fcntl record locks (kernel/src/fs/lock.rs) conflict
  * across processes, wait, and go with their owner; a file is its inode, not
  * its name: an fd follows it through a rename and keeps it after an unlink,
- * and its inode number stays.
+ * and its inode number stays; a read of a file gives all that was asked
+ * for, up to its end, in one call (not a 4 KiB chunk: fontconfig took that
+ * for a damaged cache).
  *
  * `fileio_smoke [DIR]` works in DIR (default /tmp): the ext2 test runs it
  * on the scratch disk. `fileio_smoke child FD...` is the exec'd program: FD
@@ -433,6 +435,34 @@ static void inodes(void) {
     unlink(b);
 }
 
+#define WHOLE 20000
+
+/* One read gives a file's bytes up to the count or the end, on DIR's
+ * filesystem and on the image's. */
+static void whole_reads(void) {
+    static char out[WHOLE], in[WHOLE];
+    const char *f = in_dir("whole");
+    struct stat st;
+    int fd, i;
+
+    for (i = 0; i < WHOLE; i++) {
+        out[i] = (char)(i * 7 + i / 251);
+    }
+    fd = open(f, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0 && write(fd, out, WHOLE) == WHOLE, "write 20000 bytes");
+    check(lseek(fd, 0, SEEK_SET) == 0, "lseek to 0");
+    check(read(fd, in, WHOLE) == WHOLE && memcmp(in, out, WHOLE) == 0, "one read of 20000 bytes");
+    check(read(fd, in, 100) == 0, "a read at the end");
+    check(pread(fd, in, WHOLE, 15000) == WHOLE - 15000 && memcmp(in, out + 15000, WHOLE - 15000) == 0,
+          "one pread up to the end");
+    close(fd);
+    unlink(f);
+    fd = open("/bin/sh", O_RDONLY);
+    check(fd >= 0 && fstat(fd, &st) == 0 && st.st_size > WHOLE, "open /bin/sh");
+    check(read(fd, in, WHOLE) == WHOLE, "one read of 20000 bytes of /bin/sh");
+    close(fd);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return child(argc, argv);
@@ -444,5 +474,6 @@ int main(int argc, char **argv) {
     open_flags();
     locks();
     inodes();
+    whole_reads();
     return failures != 0;
 }

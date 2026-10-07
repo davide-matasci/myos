@@ -625,10 +625,30 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                 if with_process_mut(|t| t.fds.get(fd).copied()) != Some(FdEntry::File(id)) {
                     return usize::MAX;
                 }
-                if at.is_none() {
-                    open_file_advance(id, n);
+                // A plain file gives all that was asked for, up to its end,
+                // as on Unix: fontconfig reads its cache in one read and took
+                // the first chunk for a damaged cache.
+                let mut total = n;
+                if n == want && total < len && crate::fs::vfs::reads_whole(&node) {
+                    while total < len {
+                        let want = (len - total).min(tmp.len());
+                        let n = crate::fs::vfs::read(&node, pos + total, &mut tmp[..want]);
+                        if n == 0
+                            || !user::buffer_ok(buf + total, n)
+                            || !user::copy_to_user(current_aspace(), buf + total, &tmp[..n])
+                        {
+                            break;
+                        }
+                        total += n;
+                        if n < want {
+                            break;
+                        }
+                    }
                 }
-                return n;
+                if at.is_none() {
+                    open_file_advance(id, total);
+                }
+                return total;
             }
             FdEntry::PipeRead(id) => {
                 let mut tmp = [0u8; FILE_IO_TMP];
