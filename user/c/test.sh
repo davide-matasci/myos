@@ -1,6 +1,9 @@
 # The C smokes: ptys (openpty round trip through the line discipline, EIO
 # once the slave closes) and /dev/urandom (non-zero, distinct, changing).
 t pty /bin/etc/pty_smoke 2
+# More pty pairs at once than the kernel once had (four), their names and
+# inodes distinct, a closed pair's index used again (pty_smoke.c).
+t ptys /bin/etc/pty_smoke 4
 t urandom /bin/etc/urandom_smoke
 # The tty: the line editor's keys and ^C, driven through a pty (tty_smoke.c).
 t tty /bin/etc/tty_smoke
@@ -37,7 +40,9 @@ t libc /bin/etc/libc_smoke
 t at /bin/etc/at_smoke
 # O_EXCL creates a name once, racers or not, and a symlink there is taken;
 # ftruncate; pread/pwrite leave the position, ESPIPE on a pipe; close-on-exec
-# fds are gone after exec (fileio_smoke.c; on ext2 in mkfs.ext2's test).
+# fds are gone after exec; one read gives a file's bytes up to the count or
+# its end; a rename does not wait for a process reading the console
+# (fileio_smoke.c; on ext2 in mkfs.ext2's test).
 t fileio /bin/etc/fileio_smoke
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,

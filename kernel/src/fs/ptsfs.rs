@@ -28,11 +28,11 @@ enum Node {
 }
 
 fn parse_index(name: &str) -> Option<usize> {
-    if name.is_empty() || name.len() > 2 {
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     let n: usize = name.parse().ok()?;
-    if n >= pty::MAX_PTYS || !pty::slave_exists(n) {
+    if !pty::slave_exists(n) {
         return None;
     }
     Some(n)
@@ -109,7 +109,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     let mut n = 0;
     if rel.is_empty() || rel == "." {
         push_name(buf, &mut n, b"clone");
-        for id in 0..pty::MAX_PTYS {
+        for id in 0..pty::id_bound() {
             if !pty::slave_exists(id) {
                 continue;
             }
@@ -142,16 +142,18 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             atime: 0,
         });
     }
-    // Inodes: 2 for clone, then one range of MAX_PTYS per member.
-    let range = |base: u32, id: usize| base + id as u32;
+    // Inodes: 2 for clone, then four per pair (its directory and members).
+    let ino = |id: usize, member: u32| {
+        u32::try_from(id).map_or(u32::MAX, |id| 10 + id.saturating_mul(4).saturating_add(member))
+    };
     let (mode, ino, size) = match parse(name)? {
         Node::Clone => (S_IFCHR | 0o666, 2, 0),
-        Node::Dir(id) => (S_IFDIR | 0o755, range(10, id), 0),
-        Node::Master(id) => (S_IFCHR | 0o600, range(20, id), 0),
-        Node::Data(id) => (S_IFCHR | 0o620, range(30, id), 0),
+        Node::Dir(id) => (S_IFDIR | 0o755, ino(id, 0), 0),
+        Node::Master(id) => (S_IFCHR | 0o600, ino(id, 1), 0),
+        Node::Data(id) => (S_IFCHR | 0o620, ino(id, 2), 0),
         Node::Ctl(id) => {
             let len = pty::ctl_text(id).map_or(0, |t| t.len());
-            (S_IFREG | 0o644, range(40, id), u32::try_from(len).unwrap_or(u32::MAX))
+            (S_IFREG | 0o644, ino(id, 3), u32::try_from(len).unwrap_or(u32::MAX))
         }
     };
     Some(StatInfo {

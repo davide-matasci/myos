@@ -124,6 +124,10 @@ pub struct MountOps {
     pub set_size: Option<fn(&str, usize) -> bool>,
     /// Optional: the mount's files by id (see [`FileOps`]).
     pub files: Option<FileOps>,
+    /// Optional: the paths whose `read` may wait for as long as it takes
+    /// (the console waits for a key): read without the tree held, which
+    /// would hold off every rename, unlink and new file meanwhile.
+    pub waits: Option<fn(&str) -> bool>,
     /// Mount accepts write opens / creates.
     pub writable: bool,
 }
@@ -571,11 +575,34 @@ pub fn set_times_node(node: &Vnode, atime: SetTime, mtime: SetTime) -> bool {
 
 /// Read from an open vnode at `pos` into `out`. Returns bytes read.
 pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
-    let _tree = tree_read();
+    let tree = tree_read();
     match node::locate(node) {
         Some((idx, node::Loc::File(id))) => file_read(idx, id, pos, out),
-        Some((idx, node::Loc::Path(rel))) => backend_read(idx, rel.as_str(), pos, out),
+        Some((idx, node::Loc::Path(rel))) => {
+            // A shell at its prompt reads the console until the next key: a
+            // writer (fontconfig renaming its cache) would wait for it.
+            if backend_waits(idx, rel.as_str()) {
+                drop(tree);
+            }
+            backend_read(idx, rel.as_str(), pos, out)
+        }
         None => 0,
+    }
+}
+
+/// Whether a read of `node` returns as much as asked for, as far as the
+/// file goes: a plain file (by id: tmpfs, ext2, FAT; or a regular file of a
+/// kernel filesystem: the image's, `/proc`'s), not a device, a socket or a
+/// pipe, whose reads return what there is now.
+pub fn reads_whole(node: &Vnode) -> bool {
+    let _tree = tree_read();
+    match node::locate(node) {
+        Some((_, node::Loc::File(_))) => true,
+        Some((idx, node::Loc::Path(rel))) => {
+            matches!(backend_of(idx), Some(MountBackend::Kernel(_)))
+                && backend_stat(idx, rel.as_str()).is_some_and(|st| st.mode & S_IFMT == S_IFREG)
+        }
+        None => false,
     }
 }
 
@@ -1479,6 +1506,14 @@ fn backend_set_times(idx: usize, rel: &str, atime: SetTime, mtime: SetTime) -> b
             let omit = myos_abi::MYOS_TIME_OMIT;
             unsafe { f(rel.as_ptr(), rel.len(), atime.unwrap_or(omit), mtime.unwrap_or(omit)) == 0 }
         }),
+    }
+}
+
+/// Mount `idx`'s read of `rel` may wait at length ([`MountOps::waits`]).
+fn backend_waits(idx: usize, rel: &str) -> bool {
+    match backend_of(idx) {
+        Some(MountBackend::Kernel(ops)) => ops.waits.is_some_and(|waits| waits(rel)),
+        _ => false,
     }
 }
 

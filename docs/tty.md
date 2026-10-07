@@ -99,6 +99,11 @@ for the next event, `poll` reports `POLLIN` while one is queued. The queue
 holds 128 events and drops new ones while full. The file exists when the
 console module found a keyboard ([`modules/console/src/kbdev.rs`](../modules/console/src/kbdev.rs)).
 
+A read of the console (`/dev/console/data`, `/dev/tty`) waits for as long as
+it takes, a shell at its prompt until the next key, without holding the
+filesystem tree: a rename, unlink or new file elsewhere does not wait for
+that key (devfs's `waits`, `kernel/src/fs/vfs.rs`).
+
 ## Ptys
 
 Opening `/dev/pts/clone` allocates a pair and returns the master fd; the
@@ -112,6 +117,9 @@ directory disappears. Closing the last master fd hangs up the session
 in libgloss only makes the caller lead a new group, which keeps the hangup
 from its parent's group), closing the last slave fd makes the
 master's reads report `EIO` once drained ([`kernel/src/pty.rs`](../kernel/src/pty.rs)).
+There is no fixed number of pairs: each takes a few KiB of kernel heap and
+holds at least one fd, so the fd limits bound them, and a freed index is
+reused first.
 
 ## libc
 

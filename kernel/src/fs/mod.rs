@@ -471,6 +471,7 @@ fn ro_ops(
         set_times: None,
         set_size: None,
         files: None,
+        waits: None,
         writable: false,
     }
 }
@@ -510,6 +511,7 @@ fn rw_ops(
         set_times: None,
         set_size: None,
         files: None,
+        waits: None,
         writable: true,
     }
 }
@@ -575,6 +577,7 @@ pub fn init() {
             reject_readlink,
         );
         ops.poll = Some(devfs::poll);
+        ops.waits = Some(devfs::read_waits);
         vfs::mount("devfs", "dev", ops);
     }
     // The ptys: /dev/pts/clone and /dev/pts/N/{master,data,ctl}. Only ctl

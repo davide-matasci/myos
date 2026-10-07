@@ -8,6 +8,10 @@
  *   3. child exit closes last slave fd -> master read returns EIO.
  *
  * PASS = both lines read on the master, then EIO. Exit code 0/1.
+ *
+ * `pty_smoke 4`: more pairs at once than the kernel once allowed (it had
+ * four), each with its own two-digit-capable name and inode numbers and a
+ * line through it, and a closed pair's index used again.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -15,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 extern void *memmem(const void *, size_t, const void *, size_t);
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -40,8 +45,62 @@ static int read_until(int fd, const char *needle, int max_chunks) {
     return -1;
 }
 
+#define MANY 12
+
+/* Stage 4: MANY pairs open at once. */
+static int many(void) {
+    int m[MANY], sl[MANY];
+    char names[MANY][32];
+    struct stat st[MANY];
+    for (int i = 0; i < MANY; i++) {
+        if (openpty(&m[i], &sl[i], names[i], NULL, NULL) != 0) {
+            printf("[ FAIL ] ptys openpty %d of %d (%s)\n", i + 1, MANY, strerror(errno));
+            return 1;
+        }
+        if (stat(names[i], &st[i]) != 0) {
+            printf("[ FAIL ] ptys stat %s (%s)\n", names[i], strerror(errno));
+            return 1;
+        }
+        for (int j = 0; j < i; j++) {
+            if (strcmp(names[i], names[j]) == 0 || st[i].st_ino == st[j].st_ino) {
+                printf("[ FAIL ] ptys %s and %s share a name or an inode\n", names[i], names[j]);
+                return 1;
+            }
+        }
+    }
+    for (int i = 0; i < MANY; i++) {
+        char rb[8];
+        if (write(m[i], "x\n", 2) != 2 || read(sl[i], rb, sizeof rb) != 2 || rb[0] != 'x') {
+            printf("[ FAIL ] ptys line through %s\n", names[i]);
+            return 1;
+        }
+    }
+    /* The third pair's index is free again once both its ends close. */
+    close(m[2]);
+    close(sl[2]);
+    char again[32];
+    int am = -1, as = -1;
+    if (openpty(&am, &as, again, NULL, NULL) != 0 || strcmp(again, names[2]) != 0) {
+        printf("[ FAIL ] ptys %s not reused (got %s)\n", names[2], am < 0 ? "none" : again);
+        return 1;
+    }
+    close(am);
+    close(as);
+    for (int i = 0; i < MANY; i++) {
+        if (i != 2) {
+            close(m[i]);
+            close(sl[i]);
+        }
+    }
+    printf("[ OK ] ptys %d pairs\n", MANY);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     int stage = (argc > 1) ? atoi(argv[1]) : 0;
+    if (stage == 4) {
+        return many();
+    }
     if (stage >= 3) {
         /* Stage 3: forkpty child writes without exec'ing cat. */
         int m = -1; char nm[32];
