@@ -156,6 +156,13 @@ fn fork_child_affinity(tasks: &TaskTable, ppid: usize) -> (Option<usize>, bool) 
     }
 }
 
+/// The calling thread runs on `aspace` from now on: exec's fresh address
+/// space, set before the old one is reclaimed, so a preemption during that
+/// reclaim never loads the old one again (`retire_aspace`).
+pub fn set_current_aspace(aspace: u64) {
+    with_thread_mut(|t| t.aspace = aspace);
+}
+
 /// In-place exec: replace the current task's user image. Does not spawn,
 /// does not bump USERS_ALIVE, does not note_exit. Keeps the fd table so
 /// shell redirects and pipes survive exec.

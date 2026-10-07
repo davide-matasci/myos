@@ -131,7 +131,8 @@ pub(super) use crate::arch::upaging::{create_aspace, free_user_page_tables, map_
 pub use crate::arch::upaging::{read_aspace, switch_aspace};
 /// Frames unmapped from an address space that another CPU has loaded (a
 /// thread of the process runs there), with that address space: the next
-/// [`flush_user_tlb`] of it frees them, once no CPU can reach them.
+/// [`flush_user_tlb`] of it frees them, once no CPU can reach them, or
+/// [`retire_aspace`] when the address space itself goes.
 static UNMAPPED: Mutex<alloc::vec::Vec<(u64, u64)>> = Mutex::new(alloc::vec::Vec::new());
 
 /// Flush the current address space's user translations (on every CPU that
@@ -268,8 +269,52 @@ pub fn reclaim_user_aspace(
         va += PAGE as u64;
     }
     free_mmap_regions(aspace, mmap);
-    free_user_page_tables(aspace);
     flush_user_tlb();
+    retire_aspace(aspace);
+}
+
+/// Reclaimed address spaces some CPU still had loaded (`unload_user_aspace`
+/// stopped waiting for it): what is left of them is freed by a later
+/// [`retire_aspace`], once no CPU has them loaded.
+static RETIRED: Mutex<alloc::vec::Vec<u64>> = Mutex::new(alloc::vec::Vec::new());
+
+/// Free what is left of the reclaimed `aspace`, its data frames deferred in
+/// [`UNMAPPED`] and its page tables, once no CPU has it loaded: at once in
+/// the usual case, else at a later reclaim. A CPU that has an address space
+/// loaded may walk its tables at any time (speculatively too): tables freed
+/// under it were recycled while it still read them (a kernel data abort in
+/// `finish_switch` on aarch64). The process's own task no longer names it
+/// (`die`, exec), so no CPU loads it again.
+fn retire_aspace(aspace: u64) {
+    let mut ready = alloc::vec::Vec::new();
+    let mut frames = alloc::vec::Vec::new();
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    {
+        let mut retired = RETIRED.lock();
+        retired.push(aspace);
+        retired.retain(|&a| {
+            if task::aspace_loaded_anywhere(a) {
+                return true;
+            }
+            ready.push(a);
+            false
+        });
+    }
+    UNMAPPED.lock().retain(|&(a, frame)| {
+        if ready.contains(&a) {
+            frames.push(frame);
+            return false;
+        }
+        true
+    });
+    crate::arch::irq_restore(flags);
+    for a in ready {
+        free_user_page_tables(a);
+    }
+    for frame in frames {
+        release_frame(frame);
+    }
 }
 
 /// How a fault touched a page.

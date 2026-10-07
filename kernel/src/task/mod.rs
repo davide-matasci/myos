@@ -222,6 +222,11 @@ pub fn aspace_loaded_elsewhere(aspace: u64) -> bool {
     (0..crate::smp::MAX_CPUS).any(|i| i != me && LOADED_ASPACE[i].load(Ordering::SeqCst) == aspace)
 }
 
+/// Some CPU, this one included, has `aspace` loaded.
+pub fn aspace_loaded_anywhere(aspace: u64) -> bool {
+    LOADED_ASPACE.iter().any(|a| a.load(Ordering::SeqCst) == aspace)
+}
+
 fn current_slot() -> usize {
     let cpu = crate::smp::cpu_id();
     CURRENT[cpu.min(crate::smp::MAX_CPUS - 1)].load(Ordering::SeqCst)

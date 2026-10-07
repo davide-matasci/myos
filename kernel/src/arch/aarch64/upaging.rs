@@ -126,10 +126,41 @@ pub fn switch_aspace(aspace: u64) {
     }
 }
 
-/// Free private user page tables for an abandoned aspace: not reclaimed on
-/// aarch64 yet (the L0/L1/L2/L3 frames of a dead process are leaked).
+/// Free private user page tables for an abandoned aspace (data pages must
+/// already be unmapped and freed, and no CPU may have it loaded).
+///
+/// `create_aspace_aarch64` gives each aspace its own L0, the L1 under L0[0]
+/// and the L2 under L1[1], and `aarch64_l3_table_mut` adds L3 tables under
+/// that L2. Only that tree is freed (L3 → L2 → L1 → L0): the other L0 and L1
+/// entries are value-copies of the kernel's and point at its tables.
 pub fn free_user_page_tables(aspace: u64) {
-    let _ = aspace;
+    const TABLE: u64 = 0b11;
+    let l0_phys = aspace & PA;
+    if l0_phys == 0 || l0_phys == task::kernel_aspace() & PA {
+        return;
+    }
+    unsafe {
+        let l0 = &mut *mm::table(l0_phys);
+        if l0[0] & 0b11 == TABLE {
+            let l1_phys = l0[0] & PA;
+            let l1 = &mut *mm::table(l1_phys);
+            if l1[1] & 0b11 == TABLE {
+                let l2_phys = l1[1] & PA;
+                let l2 = &mut *mm::table(l2_phys);
+                for slot in l2.iter_mut() {
+                    if *slot & 0b11 == TABLE {
+                        mm::free_frame(*slot & PA);
+                        *slot = 0;
+                    }
+                }
+                mm::free_frame(l2_phys);
+                l1[1] = 0;
+            }
+            mm::free_frame(l1_phys);
+            l0[0] = 0;
+        }
+        mm::free_frame(l0_phys);
+    }
 }
 
 /// A new address space with `code` mapped RWX at `base` and `stack` RW at
