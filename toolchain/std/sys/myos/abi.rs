@@ -355,6 +355,7 @@ pub const SYS_WAKE_ADDR: usize = 56;
 pub const SYS_GETTID: usize = 57;
 pub const SYS_SET_TP: usize = 89;
 pub const SYS_YIELD: usize = 90;
+pub const SYS_CLOCK_MONOTONIC: usize = 91;
 const PROT_READ: usize = 1;
 const PROT_WRITE: usize = 2;
 const MAP_PRIVATE: usize = 0x02;
@@ -416,6 +417,11 @@ pub fn set_tp(tp: usize) {
 
 pub fn yield_now() {
     raw_syscall3(SYS_YIELD, 0, 0, 0);
+}
+
+/// Nanoseconds since boot on the kernel's monotonic clock.
+pub fn clock_monotonic_ns() -> u64 {
+    raw_syscall3(SYS_CLOCK_MONOTONIC, 0, 0, 0) as u64
 }
 
 #[cfg(target_arch = "x86_64")]

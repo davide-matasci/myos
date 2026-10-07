@@ -166,6 +166,10 @@ const ITIMER_REAL: usize = 0;
 const SYS_SET_TP: usize = 89;
 /// `yield()`: let the other tasks ready on this CPU run first.
 const SYS_YIELD: usize = 90;
+/// `clock_monotonic()`: nanoseconds since boot on the monotonic clock (the
+/// one timers and `/proc/cpu` count on), which setting the wall clock does
+/// not move.
+const SYS_CLOCK_MONOTONIC: usize = 91;
 const LOCK_SH: usize = 1;
 const LOCK_EX: usize = 2;
 const LOCK_NB: usize = 4;
@@ -357,6 +361,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
             task::yield_now();
             0
         }
+        SYS_CLOCK_MONOTONIC => crate::time::monotonic_ns() as usize,
         at::SYS_OPENAT..=at::SYS_EXECAT => {
             let [a3, a4, a5] = regs.args_3_5();
             match nr {

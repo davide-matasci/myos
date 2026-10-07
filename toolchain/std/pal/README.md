@@ -104,7 +104,8 @@ after slim `/ok`).
 Networking and fork-aware `std` process support are still stubs or unsupported
 paths in libstd. `std::thread` runs native threads (`sys/thread/myos.rs`,
 `sys/thread_local/key/myos.rs`, `futex.rs`; `docs/threads.md`);
-`thread::sleep` blocks the task in the kernel (`SYS_NANOSLEEP`).
+`thread::sleep` blocks the task in the kernel (`SYS_NANOSLEEP`); `Instant`
+reads the kernel's monotonic clock (`SYS_CLOCK_MONOTONIC`).
 
 Long term: upstream `target_os = "myos"` in Rust — see `toolchain/std/upstream/README.md`.
 Sysroot tarballs are built locally or cached in CI workflow artifacts only (nothing is published publicly).

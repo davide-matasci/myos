@@ -1,7 +1,8 @@
 //! Wall clock / monotonic for myos.
 //!
-//! `SystemTime::now` reads `SYS_GETTIMEOFDAY` (33). Instant has no monotonic
-//! source yet and stays at zero so callers (e.g. ripgrep) do not panic.
+//! `SystemTime::now` reads `SYS_GETTIMEOFDAY` (33), `Instant::now` the
+//! kernel's monotonic clock (`SYS_CLOCK_MONOTONIC`, 91: time since boot,
+//! which setting the wall clock does not move).
 
 use crate::time::Duration;
 
@@ -17,7 +18,7 @@ pub const UNIX_EPOCH: SystemTime = SystemTime(Duration::from_secs(0));
 
 impl Instant {
     pub fn now() -> Instant {
-        Instant(Duration::ZERO)
+        Instant(Duration::from_nanos(crate::sys::myos::abi::clock_monotonic_ns()))
     }
 
     pub fn checked_sub_instant(&self, other: &Instant) -> Option<Duration> {
