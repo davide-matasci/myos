@@ -1666,19 +1666,19 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     if pages == 0 || pages > MMAP_AREA_PAGES {
         return SYSERR;
     }
+    let map_len = pages * PAGE;
+    // A file or device mapping reads from `offset + (0..map_len)`: an offset
+    // near usize::MAX would overflow that (a kernel abort, overflow checks
+    // on), and one past the u32 page index the region stores (vm.rs
+    // `fpage`) would be cut. Both are refused, as Linux's EINVAL.
+    if file.is_some() && (offset.checked_add(map_len).is_none() || offset / PAGE > u32::MAX as usize) {
+        return SYSERR;
+    }
     if let (true, Some(node)) = (device, &file) {
         // Every page must be the device's (none past its end).
         if !(0..pages).all(|i| fs::device_frame(node, offset + i * PAGE).is_some()) {
             return SYSERR;
         }
-    }
-    let map_len = pages * PAGE;
-    // A file mapping reads from `offset + (0..map_len)`; a hostile offset near
-    // usize::MAX would overflow that (a kernel abort, overflow checks on), and
-    // an offset past the u32 page-index the region stores (vm.rs `fpage`) would
-    // silently truncate. Reject both; Linux returns EINVAL here.
-    if file.is_some() && (offset.checked_add(map_len).is_none() || offset / PAGE > u32::MAX as usize) {
-        return SYSERR;
     }
     let aspace = task::current_aspace();
     let fixed = flags & MAP_FIXED != 0;
