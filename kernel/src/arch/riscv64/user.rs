@@ -47,6 +47,8 @@ pub const SYSCALL_PC: usize = 32;
 pub const SYSCALL_SP: usize = 34;
 /// The syscall number register (a7).
 pub const SYSCALL_NR_REG: Option<usize> = Some(17);
+/// The thread pointer register (tp, x4), restored from the frame.
+pub const SYSCALL_TP_REG: Option<usize> = Some(4);
 /// The fourth to sixth arguments: a3, a4, a5 (x13..x15).
 pub const SYSCALL_ARGS_3_5: [usize; 3] = [13, 14, 15];
 /// The result register (a0).
