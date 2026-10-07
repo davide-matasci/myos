@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ps2_scancode::{Decoder, RawDecoder, ScancodeSet};
 use crate::kbd::{self, ByteFifo};
-use crate::lock::Lock as Mutex;
+use myos_abi::Lock as Mutex;
 use crate::{status_fail, status_ok};
 
 const DATA: u16 = 0x60;

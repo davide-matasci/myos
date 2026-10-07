@@ -20,12 +20,10 @@
 //! queued, never-accepted connections end with it.
 //!
 //! A client and its server usually run on different CPUs at once, so every
-//! entry point takes [`LOCK`] (module calls run with interrupts off and no
-//! kernel lock).
+//! entry point takes the lock on [`CONVS`] (module calls run with interrupts
+//! off and no kernel lock).
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
-use myos_abi::{MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT};
+use myos_abi::{Lock, MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT};
 
 use crate::{Node, put_bytes, put_dec, S_IFDIR, S_IFREG};
 
@@ -84,20 +82,11 @@ impl Conv {
     }
 }
 
-static LOCK: AtomicBool = AtomicBool::new(false);
-static mut CONVS: [Conv; MAX_CONV] = [Conv::FREE; MAX_CONV];
+static CONVS: Lock<[Conv; MAX_CONV]> = Lock::new([Conv::FREE; MAX_CONV]);
 
-/// Run `f` on the conversations with [`LOCK`] held.
+/// Run `f` on the conversations with their lock held.
 fn with<R>(f: impl FnOnce(&mut [Conv; MAX_CONV]) -> R) -> R {
-    while LOCK
-        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        core::hint::spin_loop();
-    }
-    let out = f(unsafe { &mut *core::ptr::addr_of_mut!(CONVS) });
-    LOCK.store(false, Ordering::Release);
-    out
+    f(&mut CONVS.lock())
 }
 
 fn get(convs: &mut [Conv; MAX_CONV], id: u16) -> Option<&mut Conv> {

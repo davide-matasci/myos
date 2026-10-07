@@ -18,7 +18,6 @@ mod font;
 mod kbd;
 mod kbdev;
 mod keymap;
-mod lock;
 #[cfg(target_arch = "x86_64")]
 mod ps2;
 #[cfg(not(target_arch = "x86_64"))]
@@ -31,11 +30,10 @@ use virtio_input as keyboard;
 
 use myos_abi::{
     ABI_VERSION, ApiCell, CONSOLE_BANNER, CONSOLE_INFO, CONSOLE_STATUS_FAIL, CONSOLE_STATUS_INFO,
-    CONSOLE_STATUS_OK, CONSOLE_STATUS_WARN, FramebufferInfo, KernelApi, ModuleConsoleOps,
+    CONSOLE_STATUS_OK, CONSOLE_STATUS_WARN, FramebufferInfo, KernelApi, Lock, ModuleConsoleOps,
 };
 
 use fb::FrameBufferWriter;
-use lock::Lock;
 
 static API: ApiCell = ApiCell::new();
 static FB: Lock<Option<FrameBufferWriter<'static>>> = Lock::new(None);

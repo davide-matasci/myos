@@ -7,7 +7,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::lock::Lock as Mutex;
+use myos_abi::Lock as Mutex;
 
 use super::net::Sock;
 use crate::k::task;
