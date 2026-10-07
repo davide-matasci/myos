@@ -148,22 +148,22 @@ pub fn getsid(pid: usize) -> Option<usize> {
 /// - `pid == 0` → caller; `pgid == 0` → use the *target* process id as the new
 ///   group id (create a group led by that process).
 /// - Target must exist and share the caller's session.
-/// - Caller may change only itself or a direct child (`ppid == caller`).
-///   Full POSIX also requires the child not to have `exec`'d yet; we do not
-///   track post-exec and allow any same-session direct child.
+/// - Caller may change only itself or a direct child (`ppid == caller`)
+///   that has not exec'd since the fork ([`SetpgidError::Execd`]).
 /// - New `pgid` must be the target's pid (new group) or an existing `pgid` in
 ///   the same session. Session leaders may not leave their group (EPERM)
 ///   except a no-op that keeps the current `pgid`.
 ///
-/// Returns `true` on success, `false` on ESRCH/EPERM/EINVAL (all mapped to
-/// SYSERR in the syscall layer).
-pub fn setpgid(pid: usize, pgid: usize) -> bool {
+/// Fails with [`SetpgidError::Execd`] (EACCES) or else
+/// [`SetpgidError::Refused`] (ESRCH/EPERM/EINVAL, the generic SYSERR).
+pub fn setpgid(pid: usize, pgid: usize) -> Result<(), SetpgidError> {
     let flags = irq_save();
     irq_off();
     let mut tasks = TASKS.lock();
     let caller = tasks[current_slot()].tgid;
     let target = if pid == 0 { caller } else { pid };
 
+    let mut execd = false;
     let ok = (|| {
         if target >= MAX_TASKS || !task_exists(&tasks[target]) || tasks[target].tgid != target {
             return false;
@@ -181,6 +181,10 @@ pub fn setpgid(pid: usize, pgid: usize) -> bool {
             return false;
         }
         if target != caller && tasks[target].ppid != caller {
+            return false;
+        }
+        if target != caller && tasks.proc(target).execd {
+            execd = true;
             return false;
         }
 
@@ -213,5 +217,18 @@ pub fn setpgid(pid: usize, pgid: usize) -> bool {
 
     drop(tasks);
     irq_restore(flags);
-    ok
+    match (ok, execd) {
+        (true, _) => Ok(()),
+        (false, true) => Err(SetpgidError::Execd),
+        (false, false) => Err(SetpgidError::Refused),
+    }
+}
+
+/// Why `setpgid` failed.
+pub enum SetpgidError {
+    /// The target is a child that has exec'd (POSIX `EACCES`).
+    Execd,
+    /// Anything else (no such process, another session, not a child, no
+    /// such group, a session leader).
+    Refused,
 }

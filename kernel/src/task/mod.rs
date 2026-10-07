@@ -409,6 +409,11 @@ pub fn current_stack_intact() -> Option<bool> {
     Some(stack_intact(top))
 }
 
+/// The current process is past the point of no return of an exec.
+pub fn mark_execd() {
+    with_process_mut(|t| t.execd = true);
+}
+
 pub fn set_exec_name(name: &[u8]) {
     with_process_mut(|t| {
         let n = name.len().min(t.exec_name.len());

@@ -22,7 +22,7 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 
 **Non-basic** = everything except `basic` (and the non-runtime `include` /
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`
-(~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (150 paths:
+(~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (151 paths:
 POSIX core + non-basic + the myos suite). Wired the same way as basic: thin
 `ci-smoke-copy.sh` staging + host prebuild + `make … TESTLIST=… report`.
 
@@ -72,9 +72,6 @@ until they pass honestly (no xfails):
 - `process/fork-setsid-setpgid`, `-in-parent`, `-move` — a session leader
   cannot change its process group (`EPERM`); libgloss's `setsid` only starts
   a process group (issue #273), so there is no session leader to refuse
-- `process/fork-exec-setpgid-in-parent` — a parent cannot move a child that
-  has exec'd (`EACCES`); the kernel does not remember the exec, and its one
-  `setpgid` failure is `EPERM`
 - `process/zombie-setpgid-move` (hang), `process/limbo-*`,
   `process/fork-setpgid-*undo*`/`-invalid` — pgid edge cases
 - `paths/*` FHS directories (`/var`, `/run`, `/usr/share`, `/sbin`, …) and

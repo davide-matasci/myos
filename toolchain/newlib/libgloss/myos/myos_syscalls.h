@@ -173,6 +173,8 @@ struct myos_lock_range {
 #define MYOS_ENOTDIR ((unsigned long)-8)
 /* A lock someone else holds (flock and lockctl without waiting). */
 #define MYOS_EAGAIN ((unsigned long)-9)
+/* setpgid of a child that has exec'd. */
+#define MYOS_EACCES ((unsigned long)-10)
 
 /* Sleep `ns` nanoseconds (sleep.c). 0 = slept (or an event with
  * MYOS_SLEEP_ANY_EVENT); -1 with errno = EINTR when a caught signal ran. */

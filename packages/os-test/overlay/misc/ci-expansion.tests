@@ -102,6 +102,7 @@ TESTS += basic/time/strptime
 
 # process
 TESTS += process/fork-exec-setpgid-in-child
+TESTS += process/fork-exec-setpgid-in-parent
 TESTS += process/fork-setpgid
 TESTS += process/zombie-getpgid
 TESTS += process/zombie-setpgid

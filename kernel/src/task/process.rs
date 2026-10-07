@@ -48,6 +48,9 @@ pub(super) struct Process {
     /// spawns start in their own group (`pgid == slot`); `setsid` also puts
     /// the caller in a new group (`pgid = pid`).
     pub pgid: usize,
+    /// It has exec'd since it was forked: its parent may no longer move it
+    /// to another process group (`setpgid`: `EACCES`).
+    pub execd: bool,
     /// Controlling terminal attached (phase-1: system console only).
     /// Inherited on fork; set by TIOCSCTTY; cleared by SYS_SETSID.
     pub has_ctty: bool,
@@ -87,6 +90,7 @@ static EMPTY_PROC: Process = Process {
     mapped_files: [const { None }; MAX_MAPPED_FILES],
     sid: 0,
     pgid: 0,
+    execd: false,
     has_ctty: false,
     sig_ignored: 0,
     ns: None,
@@ -125,6 +129,7 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
     }
     b.exec_name = [0; 32];
     b.exec_name_len = 0;
+    b.execd = false;
     b
 }
 

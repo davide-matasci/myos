@@ -456,10 +456,14 @@ int setsid(void) {
 
 int setpgid(pid_t pid, pid_t pgid) {
     /* SYS_SETPGID: move pid (0 = self) into process group pgid (0 = create
-     * group with the target's pid). Phase-1: same session; self or direct
-     * child only; new pgid must be target pid or an existing group in the
-     * session. */
+     * group with the target's pid). Same session; self or a child that has
+     * not exec'd (EACCES); new pgid must be target pid or an existing group
+     * in the session. */
     long ret = myos_syscall3(MYOS_SYS_SETPGID, (long)pid, (long)pgid, 0);
+    if (ret == (long)MYOS_EACCES) {
+        errno = EACCES;
+        return -1;
+    }
     if (ret == (long)MYOS_SYSERR) {
         errno = EPERM;
         return -1;

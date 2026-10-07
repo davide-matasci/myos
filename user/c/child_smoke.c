@@ -4,10 +4,12 @@
  * and says ESRCH for a reaped child. A plain parent keeps its exited child
  * as a zombie for waitpid; one with SA_NOCLDWAIT on SIGCHLD (reported back
  * by sigaction), or ignoring SIGCHLD, gets none: waitpid finds no child
- * (ECHILD), whether asked after the exit or while waiting for it. Prints
- * [ OK ] child.
+ * (ECHILD), whether asked after the exit or while waiting for it. A parent
+ * may move its child to another process group until the child execs, and
+ * gets EACCES after. Prints [ OK ] child.
  */
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -59,6 +61,42 @@ static int no_zombies(const char *how) {
     return 0;
 }
 
+/* setpgid on a child: allowed before its exec, EACCES after. */
+static int setpgid_exec(void) {
+    int go[2], execd[2], status;
+    char c;
+    if (pipe(go) != 0 || pipe(execd) != 0 || fcntl(execd[1], F_SETFD, FD_CLOEXEC) != 0) {
+        return fail("pipes");
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(go[1]);
+        close(execd[0]);
+        (void)!read(go[0], &c, 1);
+        execl("/bin/sbase/sleep", "sleep", "10", (char *)NULL);
+        _exit(127);
+    }
+    close(go[0]);
+    close(execd[1]);
+    if (pid < 0 || setpgid(pid, pid) != 0) {
+        return fail("setpgid on a child before its exec");
+    }
+    (void)!write(go[1], "g", 1);
+    /* The close-on-exec end closes at the exec: EOF. */
+    if (read(execd[0], &c, 1) != 0) {
+        return fail("the child's exec");
+    }
+    errno = 0;
+    if (setpgid(pid, getpgrp()) != -1 || errno != EACCES) {
+        return fail("setpgid on a child after its exec: not EACCES");
+    }
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    close(go[1]);
+    close(execd[0]);
+    return 0;
+}
+
 int main(void) {
     struct sigaction old;
     int status;
@@ -90,6 +128,9 @@ int main(void) {
     }
 
     /* SA_NOCLDWAIT (with the default action), then SIGCHLD ignored. */
+    if (setpgid_exec() != 0) {
+        return 1;
+    }
     if (set_sigchld(SIG_DFL, SA_NOCLDWAIT) != 0) {
         return fail("sigaction SA_NOCLDWAIT");
     }

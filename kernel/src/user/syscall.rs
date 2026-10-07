@@ -772,10 +772,10 @@ pub(crate) fn sys_setsid() -> usize {
 }
 
 pub(crate) fn sys_setpgid(pid: usize, pgid: usize) -> usize {
-    if task::setpgid(pid, pgid) {
-        0
-    } else {
-        SYSERR
+    match task::setpgid(pid, pgid) {
+        Ok(()) => 0,
+        Err(task::SetpgidError::Execd) => SYSERR_EACCES,
+        Err(task::SetpgidError::Refused) => SYSERR,
     }
 }
 
@@ -1013,6 +1013,7 @@ fn exec_path_depth(
     }
     // What the new image may not inherit (`FD_CLOEXEC`).
     task::fd_close_on_exec();
+    task::mark_execd();
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any
     // current_slot()-backed lookup so we expand/replace the running task.
     crate::arch::sync_cpu_id_reg();
