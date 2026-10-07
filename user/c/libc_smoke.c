@@ -1,6 +1,8 @@
 /* The libc functions libgloss gained for the ports' shims to go
  * (toolchain/newlib/libgloss/myos/posix_extra.c, netdb.c): getrandom from
- * /dev/urandom, vfork, daemon, the service lookups that find nothing, and the termios and netinet constants the headers now carry;
+ * /dev/urandom, vfork, daemon, the service lookups that find nothing, the
+ * resolver (localhost, a missing name failing in bounded time), and the
+ * termios and netinet constants the headers now carry;
  * the interval timer and alarm (SIGALRM on time, a blocking read cut short,
  * the default action).
  * Prints one `[ OK ] libc` or a `[ FAIL ] libc ...` line; the boot test
@@ -9,6 +11,9 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -139,7 +144,37 @@ static int check_netdb(void) {
     }
     char host[NI_MAXHOST];
     (void)host;
-    return IPPORT_RESERVED == 1024 ? 0 : fail("IPPORT_RESERVED");
+    if (IPPORT_RESERVED != 1024) {
+        return fail("IPPORT_RESERVED");
+    }
+    /* localhost resolves without a lookup; a name no server knows fails,
+     * and in bounded time: the resolver used to read its socket 400000
+     * times over instead of waiting for the answer (an X client falling
+     * back to localhost:6000 spun for minutes on it). */
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo("localhost", NULL, &hints, &res) != 0 || res == NULL
+        || ((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr != htonl(INADDR_LOOPBACK)) {
+        return fail("getaddrinfo localhost");
+    }
+    freeaddrinfo(res);
+    struct timeval t0, t1;
+    gettimeofday(&t0, NULL);
+    int rc = getaddrinfo("nonexistent.invalid", NULL, &hints, &res);
+    gettimeofday(&t1, NULL);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_usec - t0.tv_usec) / 1000L;
+    if (rc == 0) {
+        freeaddrinfo(res);
+        return fail("nonexistent.invalid resolved");
+    }
+    if (ms > 10000) {
+        printf("[ FAIL ] libc getaddrinfo of a missing name took %ld ms\n", ms);
+        return 1;
+    }
+    return 0;
 }
 
 static int check_termios(void) {

@@ -8,14 +8,16 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include "myos_fmt.h"
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
-#define STATUS_POLLS 400000
-#define DATA_POLLS   400000
+/* How long one DNS server gets to answer. */
+#define DNS_TIMEOUT_MS 5000
 #define DNS_BUF      1024
 #define MAX_DNS      3
 #define NDB_BUF      256
@@ -158,14 +160,22 @@ static int dns_servers(struct in_addr *out, int max) {
     return count;
 }
 
+static long elapsed_ms(const struct timeval *start) {
+    struct timeval now;
+    if (gettimeofday(&now, NULL) != 0) {
+        return 0;
+    }
+    return (now.tv_sec - start->tv_sec) * 1000L + (now.tv_usec - start->tv_usec) / 1000L;
+}
+
 /* Send `query` to `server`:53 and take the first A record of its answer. */
 static int query_server(const struct in_addr *server, const unsigned char *query,
     size_t qlen, unsigned char ip[4]) {
     unsigned char rbuf[DNS_BUF];
     struct sockaddr_in dest;
+    struct timeval start;
     ssize_t nr;
     int sock;
-    int i;
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
@@ -183,9 +193,33 @@ static int query_server(const struct in_addr *server, const unsigned char *query
         close(sock);
         return -1;
     }
-    /* Bound the DNS wait: nonblock + poll EAGAIN (blocking recv would wait forever). */
+    /* Wait for the answer in the kernel's poll (DNS_TIMEOUT_MS at most), not
+     * by reading the socket again and again: that spun for minutes, hogging
+     * a CPU and netd, when the server had nothing to say. The first answer
+     * is the server's word, an A record or not (a name it does not know):
+     * nothing more is waited for from it. */
     (void)fcntl(sock, F_SETFL, O_NONBLOCK);
-    for (i = 0; i < DATA_POLLS; i++) {
+    if (gettimeofday(&start, NULL) != 0) {
+        close(sock);
+        return -1;
+    }
+    for (;;) {
+        struct pollfd p;
+        long left = DNS_TIMEOUT_MS - elapsed_ms(&start);
+        int r;
+        if (left <= 0) {
+            break;
+        }
+        p.fd = sock;
+        p.events = POLLIN;
+        p.revents = 0;
+        r = poll(&p, 1, (int)left);
+        if (r < 0 && errno == EINTR) {
+            continue;
+        }
+        if (r <= 0) {
+            break;
+        }
         nr = recv(sock, rbuf, sizeof rbuf, 0);
         if (nr < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -196,10 +230,9 @@ static int query_server(const struct in_addr *server, const unsigned char *query
         if (nr == 0) {
             continue;
         }
-        if (parse_a_record(rbuf, (size_t)nr, ip) == 0) {
-            close(sock);
-            return 0;
-        }
+        r = parse_a_record(rbuf, (size_t)nr, ip);
+        close(sock);
+        return r == 0 ? 0 : -1;
     }
     close(sock);
     return -1;
@@ -215,6 +248,16 @@ static int resolve_a(const char *host, unsigned char ip[4]) {
 
     /* If already an IPv4 literal */
     if (inet_pton(AF_INET, host, ip) == 1) {
+        return 0;
+    }
+    /* localhost is the loopback address, as /etc/hosts says elsewhere: no
+     * DNS server knows the name (an X client that found no unix socket
+     * tries localhost:6000 next, and waited on that lookup). */
+    if (strcmp(host, "localhost") == 0) {
+        ip[0] = 127;
+        ip[1] = 0;
+        ip[2] = 0;
+        ip[3] = 1;
         return 0;
     }
 
@@ -246,7 +289,6 @@ static int resolve_a(const char *host, unsigned char ip[4]) {
         }
     }
     (void)buf_has;
-    (void)STATUS_POLLS;
     return -1;
 }
 
