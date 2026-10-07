@@ -279,10 +279,47 @@ fn stack_top(i: usize) -> usize {
     STACKS[i].0.get() as usize + core::mem::size_of::<Stack>()
 }
 
+/// How many threads `/proc/<pid>/task` lists for process `pid`.
+fn proc_threads(pid: usize) -> usize {
+    let mut path = [0u8; 32];
+    let mut n = 0;
+    for &b in b"/proc/" {
+        path[n] = b;
+        n += 1;
+    }
+    let mut digits = [0u8; 20];
+    let mut d = 0;
+    let mut v = pid;
+    loop {
+        digits[d] = b'0' + (v % 10) as u8;
+        d += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    while d > 0 {
+        d -= 1;
+        path[n] = digits[d];
+        n += 1;
+    }
+    for &b in b"/task" {
+        path[n] = b;
+        n += 1;
+    }
+    let mut buf = [0u8; 512];
+    let len = myos_user::listdir(&path[..n], &mut buf);
+    if len == usize::MAX {
+        return 0;
+    }
+    buf[..len].iter().filter(|&&b| b == b'\n').count()
+}
+
 /// Threads share the process's memory: workers bump a shared counter and
-/// report through wait/wake on an address. Then a forked child exits while
-/// one of its threads sleeps on an address and another spins in user mode
-/// (never making a syscall): both must end with it.
+/// report through wait/wake on an address. Then a forked child, whose three
+/// threads `/proc/<pid>/task` must list, exits while one of its threads
+/// sleeps on an address and another spins in user mode (never making a
+/// syscall): both must end with it.
 fn thread_smoke() {
     use core::sync::atomic::{AtomicU32, Ordering::SeqCst};
     use myos_user::thread;
@@ -328,7 +365,7 @@ fn thread_smoke() {
             let _ = thread::spawn(sleeper, stack_top(WORKERS), 0, 0);
             let _ = thread::spawn(spinner, stack_top(WORKERS + 1), 0, 0);
             myos_user::sleep_ns(50_000_000, false);
-            exit_code(7);
+            exit_code(if proc_threads(myos_user::getpid()) == 3 { 7 } else { 8 });
         }
         Some(_) => ok &= matches!(wait_status(), Some((_, 7))),
         None => ok = false,

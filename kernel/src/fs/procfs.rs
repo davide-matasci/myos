@@ -3,7 +3,9 @@
 //! open on, `tty` to its controlling terminal's directory (`docs/tty.md`),
 //! the system's name at `sys/kernel/hostname` (writable), and the security
 //! context: `self/ctx` (the caller's uid, user and domain) and
-//! `sys/security/users` (docs/security.md).
+//! `sys/security/users` (docs/security.md); every process at `<pid>/` and
+//! its threads at `<pid>/task/<tid>/`, and the CPUs' idle time at `cpu`
+//! (`docs/proc.md`).
 
 use crate::fs::StatInfo;
 use crate::fs::vfs;
@@ -237,13 +239,157 @@ fn self_link(node: &SelfNode) -> Option<alloc::string::String> {
     }
 }
 
+/// The nodes of a process: `<n>/…`, where `n` is a pid or the tid of one
+/// of its threads (seen as its process, as on Linux).
+enum PidNode {
+    Dir(usize),
+    Status(usize),
+    TaskDir(usize),
+    Thread(usize),
+    ThreadStatus(usize),
+}
+
+/// A decimal id as procfs names it: no sign, no leading zero.
+fn parse_id(s: &str) -> Option<usize> {
+    if s.is_empty() || s.len() > 4 || !s.bytes().all(|b| b.is_ascii_digit()) || (s.len() > 1 && s.starts_with('0')) {
+        return None;
+    }
+    s.parse().ok()
+}
+
+/// `name` as a process node: its pid (a tid resolves to its process) and
+/// the thread, both live.
+fn parse_pid(name: &str) -> Option<PidNode> {
+    let mut parts = name.split('/');
+    let pid = crate::task::info::pid_of(parse_id(parts.next()?)?)?;
+    let node = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (None, ..) => PidNode::Dir(pid),
+        (Some("status"), None, ..) => PidNode::Status(pid),
+        (Some("task"), None, ..) => PidNode::TaskDir(pid),
+        (Some("task"), Some(t), rest, None) => {
+            let tid = parse_id(t)?;
+            if crate::task::info::pid_of(tid)? != pid {
+                return None;
+            }
+            match rest {
+                None => PidNode::Thread(tid),
+                Some("status") => PidNode::ThreadStatus(tid),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some(node)
+}
+
+/// A name for a status line: one word (no spaces), `-` when it has none.
+fn push_name(out: &mut alloc::string::String, name: &[u8]) {
+    let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    if len == 0 {
+        out.push('-');
+    }
+    for &b in &name[..len] {
+        out.push(if b.is_ascii_graphic() { b as char } else { '_' });
+    }
+}
+
+fn ms(ns: u64) -> u64 {
+    ns / 1_000_000
+}
+
+/// `<pid>/status`: one line, fields in the order `docs/proc.md` lists them.
+fn process_status(pid: usize) -> Option<alloc::string::String> {
+    use core::fmt::Write;
+    let p = crate::task::info::process_info(pid)?;
+    let mut out = alloc::format!("{} ", p.pid);
+    push_name(&mut out, &p.name);
+    let _ = writeln!(
+        out,
+        " {} {} {} {} {} {} {} {} {} {}",
+        p.state,
+        p.ppid,
+        p.pgid,
+        p.sid,
+        p.threads,
+        p.size_kib,
+        ms(p.cpu_ns),
+        ms(p.child_cpu_ns),
+        ms(p.start_ns),
+        if p.kernel { "kernel" } else { "user" },
+    );
+    Some(out)
+}
+
+/// `<pid>/task/<tid>/status`: one line, fields in the order `docs/proc.md`
+/// lists them.
+fn thread_status(tid: usize) -> Option<alloc::string::String> {
+    use core::fmt::Write;
+    let t = crate::task::info::thread_info(tid)?;
+    let mut out = alloc::format!("{} {} ", t.tid, t.pid);
+    push_name(&mut out, &t.name);
+    let _ = write!(out, " {} ", t.state);
+    match t.cpu {
+        Some(c) => {
+            let _ = write!(out, "{c}");
+        }
+        None => out.push('-'),
+    }
+    let _ = writeln!(
+        out,
+        " {:#x} {} {} {:#x} {:#x}",
+        t.wait_key,
+        ms(t.cpu_ns),
+        ms(t.start_ns),
+        t.sig_pending,
+        t.sig_blocked,
+    );
+    Some(out)
+}
+
+/// `cpu`: the uptime, then each online CPU's idle time (ms).
+fn cpu_text() -> alloc::string::String {
+    use core::fmt::Write;
+    let mut out = alloc::format!("uptime {}\n", ms(crate::time::monotonic_ns()));
+    for c in (0..crate::smp::MAX_CPUS).filter(|&c| crate::smp::cpu_online(c) || c == 0) {
+        let _ = writeln!(out, "cpu{c} idle {}", ms(crate::task::idle_ns(c)));
+    }
+    out
+}
+
+/// The inode of a process node: from 0x1000_0000, eight per pid and per
+/// tid (no other procfs node is that high).
+fn pid_ino(name: &str) -> u32 {
+    let (id, kind) = match parse_pid(name) {
+        Some(PidNode::Dir(p)) => (p, 0),
+        Some(PidNode::Status(p)) => (p, 1),
+        Some(PidNode::TaskDir(p)) => (p, 2),
+        Some(PidNode::Thread(t)) => (t, 3),
+        Some(PidNode::ThreadStatus(t)) => (t, 4),
+        None => (0, 7),
+    };
+    0x1000_0000 + (id as u32) * 8 + kind
+}
+
+fn ids_text(ids: &[usize]) -> alloc::string::String {
+    let mut out = alloc::string::String::new();
+    for id in ids {
+        out.push_str(&alloc::format!("{id}\n"));
+    }
+    out
+}
+
 /// The text files made per read: the caller's security context and the
 /// policy's users.
 fn generated(name: &str) -> Option<alloc::string::String> {
     match name {
         "self/ctx" => Some(crate::sec::ctx_text()),
         "sys/security/users" => Some(crate::sec::users_text()),
-        _ => None,
+        "cpu" => Some(cpu_text()),
+        _ => match parse_pid(name)? {
+            PidNode::Status(pid) => process_status(pid),
+            PidNode::ThreadStatus(tid) => thread_status(tid),
+            _ => None,
+        },
     }
 }
 
@@ -332,19 +478,22 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 
 fn list_root(buf: &mut [u8]) -> usize {
     // Dynamic nodes all live under `acpi/` (see `list_acpi`).
-    const FIXED: &[&[u8]] =
-        &[b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"platform", b"pci", b"acpi", b"self", b"sys"];
+    const FIXED: &[&[u8]] = &[
+        b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"platform", b"pci", b"acpi", b"self", b"sys",
+        b"cpu",
+    ];
     let mut off = 0usize;
     for name in FIXED {
         if off + name.len() + 1 > buf.len() {
-            break;
+            return off;
         }
         buf[off..off + name.len()].copy_from_slice(name);
         off += name.len();
         buf[off] = b'\n';
         off += 1;
     }
-    off
+    // The processes; their other threads resolve but are not listed.
+    off + copy_at(ids_text(&crate::task::info::processes()).as_bytes(), 0, &mut buf[off..])
 }
 
 fn list_acpi(buf: &mut [u8]) -> usize {
@@ -406,6 +555,15 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     if parse_self(rel).is_some() {
         return list_self(rel, buf);
     }
+    let pid_entries = match parse_pid(rel) {
+        Some(PidNode::Dir(_)) => Some(alloc::string::String::from("status\ntask\n")),
+        Some(PidNode::TaskDir(pid)) => crate::task::info::threads_of(pid).map(|t| ids_text(&t)),
+        Some(PidNode::Thread(_)) => Some(alloc::string::String::from("status\n")),
+        _ => None,
+    };
+    if let Some(text) = pid_entries {
+        return copy_at(text.as_bytes(), 0, buf);
+    }
     let entry: &[u8] = match rel {
         "sys" => b"kernel\nsecurity\n",
         "sys/kernel" => b"hostname\n",
@@ -445,8 +603,24 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
             size: text.len() as u32,
-            ino: if name == "self/ctx" { 94 } else { 95 },
+            ino: match name {
+                "self/ctx" => 94,
+                "sys/security/users" => 95,
+                "cpu" => 96,
+                _ => pid_ino(name),
+            },
             nlink: 1,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        });
+    }
+    if let Some(PidNode::Dir(_) | PidNode::TaskDir(_) | PidNode::Thread(_)) = parse_pid(name) {
+        return Some(StatInfo {
+            mode: S_IFDIR | 0o555,
+            size: 0,
+            ino: pid_ino(name),
+            nlink: 2,
             dev: 0,
             mtime: 0,
             atime: 0,
