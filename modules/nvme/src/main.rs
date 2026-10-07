@@ -11,7 +11,7 @@
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleBlkOps, status_ok};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, Lock, ModuleBlkOps, status_ok};
 
 const SECTOR: usize = 512;
 /// The DMA buffer: one page, what a command's PRP1 covers.
@@ -65,7 +65,16 @@ struct Ctrl {
     capacity: u64,
 }
 
-static mut CTRLS: [Option<Ctrl>; MAX_CTRL] = [const { None }; MAX_CTRL];
+// SAFETY: the pointers are the controller's own queues and DMA page, used
+// only by whoever holds its slot in `CTRLS`.
+unsafe impl Send for Ctrl {}
+
+/// The attached controllers, a lock per slot: a command holds its
+/// controller's from the submission to the completion (one queue pair and
+/// one DMA page per controller, so its I/O is serial), and a probe fills a
+/// free slot without touching the others. A slot is never moved or
+/// emptied: its index is the block device's context.
+static CTRLS: [Lock<Option<Ctrl>>; MAX_CTRL] = [const { Lock::new(None) }; MAX_CTRL];
 static API: ApiCell = ApiCell::new();
 
 static OPS: ModuleBlkOps = ModuleBlkOps {
@@ -84,8 +93,10 @@ fn dma_page() -> Option<(u64, *mut u8)> {
     if va.is_null() { None } else { Some((phys, va)) }
 }
 
-fn ctrl(i: usize) -> Option<&'static mut Ctrl> {
-    unsafe { (*core::ptr::addr_of_mut!(CTRLS)).get_mut(i)?.as_mut() }
+/// Run `f` on the controller in slot `i` with its lock held; `None` for
+/// an empty slot.
+fn with_ctrl<R>(i: usize, f: impl FnOnce(&mut Ctrl) -> R) -> Option<R> {
+    CTRLS.get(i)?.lock().as_mut().map(f)
 }
 
 fn r32(bar: usize, off: u32) -> u32 {
@@ -390,18 +401,24 @@ fn setup(bar: usize) -> Option<Ctrl> {
 }
 
 
-/// `bar_va` is a controller's BAR0 (not yet attached). True once it is
-/// initialised and in the table.
+/// Whether the controller with this BAR0 is already attached: a rescan
+/// must not reset it.
+fn known(bar_va: usize) -> bool {
+    CTRLS.iter().any(|s| s.lock().as_ref().is_some_and(|c| c.bar == bar_va))
+}
+
 /// Bring up the controller at `bar_va` into a free slot; its index, or
 /// `None` when it is already attached, fails to come up or the table is full.
 fn attach(bar_va: usize) -> Option<usize> {
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(CTRLS) };
-    if table.iter().flatten().any(|c| c.bar == bar_va) {
+    if known(bar_va) {
         return None;
     }
     let c = setup(bar_va)?;
-    let slot = table.iter().position(|s| s.is_none())?;
-    table[slot] = Some(c);
+    let (slot, mut free) = CTRLS.iter().enumerate().find_map(|(i, s)| {
+        let s = s.lock();
+        s.is_none().then_some((i, s))
+    })?;
+    *free = Some(c);
     Some(slot)
 }
 
@@ -478,25 +495,21 @@ unsafe extern "C" fn blk_read(ctx: usize, lba: u64, buf: *mut u8, len: usize) ->
     if buf.is_null() || len % SECTOR != 0 {
         return -1;
     }
-    let Some(c) = ctrl(ctx) else {
-        return -1;
-    };
-    rw(c, lba, unsafe { core::slice::from_raw_parts_mut(buf, len) }, false)
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+    with_ctrl(ctx, |c| rw(c, lba, buf, false)).unwrap_or(-1)
 }
 
 unsafe extern "C" fn blk_write(ctx: usize, lba: u64, buf: *const u8, len: usize) -> i32 {
     if buf.is_null() || len % SECTOR != 0 {
         return -1;
     }
-    let Some(c) = ctrl(ctx) else {
-        return -1;
-    };
     // `rw` only reads from `buf` when writing.
-    rw(c, lba, unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, len) }, true)
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, len) };
+    with_ctrl(ctx, |c| rw(c, lba, buf, true)).unwrap_or(-1)
 }
 
 unsafe extern "C" fn blk_capacity(ctx: usize) -> u64 {
-    ctrl(ctx).map_or(0, |c| c.capacity)
+    with_ctrl(ctx, |c| c.capacity).unwrap_or(0)
 }
 
 const CLASS_MASS: u8 = 0x01;
