@@ -40,7 +40,6 @@ pub fn user_fault_kill(kind: &str, detail: &str) -> ! {
     task::user_exit(128u8.wrapping_add(11));
 }
 
-
 pub fn task_ctx() -> String {
     let id = task::current_id();
     // A dead canary says the task ran off its kernel stack before the fault.

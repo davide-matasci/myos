@@ -28,6 +28,7 @@ label /home/$u/.ssh/**       secret($u)
 label /mnt/**                mnt
 label /dev/**                dev
 label /dev/console/**        dev.tty
+label /dev/console/kbd       dev
 label /dev/pts/**            dev.tty
 label /dev/tty               dev.tty
 label /dev/null              dev.common
@@ -40,8 +41,9 @@ label /net/**                net
 # Domains: what a program running for user `self` may do. Kernel objects:
 # kernel.modules (insmod, rmmod), kernel.clock (settimeofday),
 # kernel.policy (sec load), kernel.users (setuser without a password),
-# kernel.power (poweroff, reboot, halt), proc(user) (signals to that
-# user's processes).
+# kernel.power (poweroff, reboot, halt), kernel.mounts (mount, umount: the
+# tree changes for every process), proc(user) (signals to that user's
+# processes).
 domain init:
     sys.file {read} sys.bin {read exec} sys.lib {read} sys.etc {read}
     dev.tty {read write} dev.common {read write} proc {read}
@@ -57,7 +59,7 @@ domain login:
 domain smoke:
     sys.file {read} sys.bin {read exec} sys.lib {read} sys.etc {read}
     tmp {all} dev {read write} dev.tty {read write} dev.common {read write}
-    proc {read} proc(self) {signal}
+    proc {read} proc(self) {signal} kernel.mounts {write}
 # The administrator: the whole system, but not other users' secrets.
 domain admin:
     sys.file {all} sys.bin {all} sys.lib {all} sys.etc {all} sys.policy {all} sys.run {all}
@@ -65,7 +67,8 @@ domain admin:
     proc {all} net {all} unlabeled {all}
     home(*) {all} secret(self) {all}
     kernel.modules {write} kernel.clock {write} kernel.policy {write}
-    kernel.users {write} kernel.power {write} proc(*) {signal}
+    kernel.users {write} kernel.power {write} kernel.mounts {write}
+    proc(*) {signal}
 # A user's shell: the system to read and run, their own files, /tmp.
 domain shell:
     sys.file {read} sys.bin {read exec} sys.lib {read exec} sys.etc {read}

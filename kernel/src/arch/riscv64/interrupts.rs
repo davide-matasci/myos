@@ -342,10 +342,15 @@ fn rearm_timer() {
     arm_timer();
 }
 
+/// Whether the trap came from user mode: the saved `sstatus.SPP` is clear.
+fn from_user(frame: *const u64) -> bool {
+    (unsafe { *frame.add(33) } & 0x100) == 0
+}
+
 /// After an interrupt's reschedule: act on a `SIGKILL` if it came from
-/// user mode (the saved `sstatus.SPP` is clear).
+/// user mode.
 fn preempted(frame: *mut u64) {
-    if unsafe { *frame.add(33) } & 0x100 == 0 {
+    if from_user(frame) {
         crate::signal::on_user_preempted();
     }
 }
@@ -524,6 +529,15 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
         }
         _ => {
             let sepc = unsafe { *frame.add(32) };
+            // From U-mode (an illegal instruction, scause 2; an `ebreak`, 3;
+            // a misaligned access): kill the task instead of halting the
+            // machine. Only a genuine S-mode trap is fatal.
+            if from_user(frame) {
+                crate::exception::user_fault_kill(
+                    "trap",
+                    &alloc::format!("scause={code:#x} sepc={sepc:#x} stval={stval:#x}{}", crate::exception::task_ctx()),
+                );
+            }
             super::exception::riscv64_trap(code, sepc, stval);
         }
     }

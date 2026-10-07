@@ -4,6 +4,23 @@
 
 use super::*;
 
+/// The process task `id` belongs to: itself for a process, its leader for
+/// a thread; `None` for an unused slot or a kernel task.
+pub fn task_tgid(id: usize) -> Option<usize> {
+    if id >= MAX_TASKS {
+        return None;
+    }
+    let flags = irq_save();
+    irq_off();
+    let out = {
+        let tasks = TASKS.lock();
+        let t = &tasks[id];
+        if t.user_rip != 0 && t.state != State::Unused { Some(t.tgid) } else { None }
+    };
+    irq_restore(flags);
+    out
+}
+
 pub fn task_pgid(id: usize) -> Option<usize> {
     if id >= MAX_TASKS {
         return None;

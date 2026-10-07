@@ -50,6 +50,11 @@ t at /bin/etc/at_smoke
 # its end; a rename does not wait for a process reading the console
 # (fileio_smoke.c; on ext2 in mkfs.ext2's test).
 t fileio /bin/etc/fileio_smoke
+# A write to a pty whose master is open but never read blocks, and a signal
+# ends it: the writer stays killable (fault_smoke.c; a CPU fault from
+# userspace is contained the same way, but a test cannot fault on purpose:
+# the host treats the kernel's `user fault` line as a failure).
+t fault /bin/etc/fault_smoke
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).

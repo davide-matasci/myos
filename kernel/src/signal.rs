@@ -170,10 +170,15 @@ pub fn kill(pid: isize, sig: u32) -> bool {
     any
 }
 
-/// The caller may signal process `id`: itself, or one whose user's
-/// `proc(user)` label its domain has `signal` on.
+/// The caller may signal task `id` (a process, or a thread of one: the
+/// process's rules apply): itself, or one whose user's `proc(user)` label
+/// its domain has `signal` on. A task that is no process's is nobody's to
+/// signal.
 fn may_signal(id: usize) -> bool {
-    id == task::current_pid() || task::sec_ctx_of(id).is_none_or(crate::sec::may_signal)
+    let Some(pid) = task::task_tgid(id) else {
+        return false;
+    };
+    pid == task::current_pid() || task::sec_ctx_of(pid).is_some_and(crate::sec::may_signal)
 }
 
 /// Deliver `sig` to every live user task in process group `pgid`.
@@ -317,6 +322,12 @@ pub fn on_syscall_exit(regs: &mut SyscallRegs, nr: usize, a0: usize, ret: usize)
                 // No room on the user stack: what Linux does too.
                 terminate(SIGSEGV);
             }
+            // The trampoline is returned to directly (x86 `sysretq` loads it
+            // into RIP): a non-canonical address there would #GP in ring 0 on
+            // real hardware. It must be a mapped user address.
+            if !crate::user::buffer_ok(tramp, 1) {
+                terminate(SIGSEGV);
+            }
             regs.set_pc(tramp);
             regs.set_sp(frame_va);
             ret
@@ -357,7 +368,14 @@ pub fn sigreturn(regs: &mut SyscallRegs) -> usize {
         terminate(SIGSEGV);
     }
     task::signal_set_blocked_mask(task::current_id(), word(F_MASK) as u32);
-    regs.set_pc(word(F_PC) as usize);
+    // The restored PC is returned to directly (x86 `sysretq` loads it into
+    // RIP): a forged non-canonical value would #GP in ring 0 on real
+    // hardware. Require a mapped user address; kill the task otherwise.
+    let pc = word(F_PC) as usize;
+    if !crate::user::buffer_ok(pc, 1) {
+        terminate(SIGSEGV);
+    }
+    regs.set_pc(pc);
     regs.set_sp(word(F_SP) as usize);
     regs.set_nr_reg(word(F_NR_REG) as usize);
     word(F_RET) as usize
@@ -419,13 +437,13 @@ pub fn sigprocmask(how: usize, set: Option<usize>, oset: Option<usize>) -> bool 
     }
     let cur = task::signal_blocked(id);
     if let Some(out) = oset {
-        if !crate::user::copy_to_user(task::current_aspace(), out, &cur.to_le_bytes()) {
+        if !crate::user::buffer_ok(out, 4) || !crate::user::copy_to_user(task::current_aspace(), out, &cur.to_le_bytes()) {
             return false;
         }
     }
     if let Some(inp) = set {
         let mut buf = [0u8; 4];
-        if !crate::user::copy_from_user(task::current_aspace(), inp, &mut buf) {
+        if !crate::user::buffer_ok(inp, 4) || !crate::user::copy_from_user(task::current_aspace(), inp, &mut buf) {
             return false;
         }
         let mask = u32::from_le_bytes(buf);
@@ -461,14 +479,14 @@ pub fn sigaction(sig: u32, act: Option<usize>, oact: Option<usize>, with_tramp: 
         for (i, w) in words.iter().enumerate() {
             bytes[i * 8..i * 8 + 8].copy_from_slice(&(*w as u64).to_le_bytes());
         }
-        if !crate::user::copy_to_user(task::current_aspace(), out, &bytes) {
+        if !crate::user::buffer_ok(out, bytes.len()) || !crate::user::copy_to_user(task::current_aspace(), out, &bytes) {
             return false;
         }
     }
     if let Some(inp) = act {
         let mut bytes = [0u8; 4 * 8];
         let len = if with_tramp { 4 * 8 } else { 3 * 8 };
-        if !crate::user::copy_from_user(task::current_aspace(), inp, &mut bytes[..len]) {
+        if !crate::user::buffer_ok(inp, len) || !crate::user::copy_from_user(task::current_aspace(), inp, &mut bytes[..len]) {
             return false;
         }
         let word = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap()) as usize;
