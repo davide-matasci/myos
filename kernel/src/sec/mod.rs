@@ -320,6 +320,12 @@ pub fn owner_uid(real: &str) -> u32 {
     label.param.and_then(|o| p.user_id(&o)).map_or(0, u32::from)
 }
 
+/// The current process's uid (`KernelApi::current_uid`); `u32::MAX` for the
+/// kernel itself, which is no user's.
+pub fn current_uid() -> u32 {
+    current().map_or(u32::MAX, |(_, u, _)| u32::from(u))
+}
+
 /// `/proc/self/ctx`: `uid user domain`.
 pub fn ctx_text() -> String {
     match current() {

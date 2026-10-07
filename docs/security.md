@@ -77,8 +77,11 @@ exec /bin/custom/netd -> netd
   `rmmod`: `write`), `kernel.clock` (`settimeofday`: `write`),
   `kernel.policy` (`sec load`: `write`), `kernel.users` (entering a user who
   has no password: `write`), `kernel.power` (`poweroff`, `reboot`, `halt`:
-  `write`, `docs/power.md`), `proc(USER)` (signalling that user's
-  processes: `signal`). A process may always signal itself.
+  `write`, `docs/power.md`), `kernel.mounts` (`mount`, `umount`: `write`; a
+  mount or bind changes the tree for every process, so `mount` on a
+  directory alone, which `all` grants, is not enough), `proc(USER)`
+  (signalling that user's processes, their threads included: `signal`). A
+  process may always signal itself.
 - **Transitions.** `exec PATTERN -> DOMAIN`: exec of a matching program
   moves the process into the domain, when its user lists it in `domains:`
   (otherwise the program runs in the caller's domain). The last matching
@@ -94,14 +97,15 @@ exec /bin/custom/netd -> netd
 | `mknodat`, `symlinkat` | `create` (on the new name) |
 | `unlinkat` | `remove` |
 | `renameat` | `remove` on the old name, `create` on the new one (`remove` too when it replaces a file); for a directory, `remove` on every name beneath it and `create` on where each goes |
-| `execat` | `exec` (a script's interpreter too) |
+| `execat` | `exec` (a script's interpreter and a Linux program's dynamic linker too) |
 | `utimensat` | `setattr` |
-| `mount`, `umount` | `mount` on the directory; a disk `read write`, a bind's source `read` |
+| `mount`, `umount` | `write` on `kernel.mounts`, `mount` on the directory; a disk `read write`, a bind's source `read` |
 | `insmod`, `rmmod` | `read` on the module, `write` on `kernel.modules` |
 | `kill` | `signal` on `proc(target's user)` |
 | `power` (`poweroff`, `reboot`, `halt`) | `write` on `kernel.power` |
 
-An fd keeps the access it was opened with: passing it to another process
+An fd keeps the access it was opened with (one opened `O_WRONLY` does not
+read, whatever its holder may do): passing it to another process
 (inheritance, a namespace that cannot name the file) is a deliberate grant,
 not checked again. A call on an fd's own file (`futimens`, `fdopendir`,
 `fstat`'s permission bits) checks the policy against the rights its
@@ -153,6 +157,12 @@ starts, is one, so it cannot be typed at the console.
   `/tmp`, the terminals, the network, their own processes.
 - `untrusted` reads the system and its user's home, and nothing more: no
   writes anywhere, no `/tmp`, no network, no secrets.
+- `/net` is every user's (`net {read write}`), but a conversation
+  (`/net/tcp/N`, `/net/unix/N`: `docs/sockets-curl.md`,
+  `docs/sockets-unix.md`) belongs to the user whose process made it (an
+  accepted connection to the listener's): only that user's processes open
+  its files. The console keyboard itself (`/dev/console/kbd`) is `dev`:
+  the administrator's, not every terminal user's.
 
 ## Namespaces
 
@@ -210,8 +220,9 @@ sec ns /bin:read,exec /lib:read /dev/sda:read,write -- B
 - Per-user `/tmp` is a namespace away (bind `/tmp/USER` at `/tmp`); login
   does not set one up yet.
 - The terminals share one label, `dev.tty`: a domain that may open its own
-  pty (`/dev/pts/N/data`) may open any user's, and the console. Keep
-  `dev.tty` out of the domains of programs that need no terminal.
+  pty (`/dev/pts/N/data`) may open any user's, and the console (its input
+  and its control file, the keymap included). Keep `dev.tty` out of the
+  domains of programs that need no terminal.
 - A rename of a directory walks its tree to check every name (the labels
   beneath the new name may differ): a large tree takes a moment, and one
   whose directory listing exceeds 256 KiB is refused.

@@ -6,7 +6,9 @@ myos has **no `socket()` syscall** and no kernel socket table. Networking is:
 
 1. Kernel: virtio-net → `/dev/net0/data` + netfs Plan 9 `/net` + `/dev/netd/data` channel
 2. Userspace `netd`: smoltcp over `/dev/net0/data`
-3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}`
+3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}`; a conversation's
+   files are the user's whose process read `clone` (an accepted
+   connection: the listener's), no other user's (`docs/security.md`)
 
 This feature adds a **libgloss userspace shim** that implements a trimmed BSD
 sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.

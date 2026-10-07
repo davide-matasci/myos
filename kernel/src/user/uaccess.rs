@@ -12,8 +12,15 @@ pub(super) fn write_user_bytes(aspace: u64, va: usize, src: &[u8]) -> bool {
 /// Walk `va..va+len` page by page: `f(hhdm pointer, offset into the
 /// buffer, bytes in this page)`. An mmap page of the current process not
 /// touched yet is paged in for `access` (never under `TASKS`: `fault_in`
-/// takes it). False if a page is unmapped.
+/// takes it). False if a page is unmapped, or the range leaves the user
+/// window: a user address space shares the kernel's tables, so a kernel
+/// address would translate too (a syscall that forgot its range check
+/// must not read or write the kernel through a user pointer).
 fn each_user_page(aspace: u64, va: usize, len: usize, access: Access, mut f: impl FnMut(*mut u8, usize, usize)) -> bool {
+    let base = user_base() as usize;
+    if va < base || va.checked_add(len).is_none_or(|end| end > base + USER_WINDOW as usize) {
+        return false;
+    }
     let mut done = 0;
     while done < len {
         let at = va + done;

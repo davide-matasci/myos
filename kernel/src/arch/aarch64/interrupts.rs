@@ -864,7 +864,14 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
             &alloc::format!("ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x} sp_el0={sp_el0:#x}"),
         );
     }
-    super::exception::aarch64_sync_abort("user sync abort", esr, elr, far, Some(sp_el0), None);
+    // Any other synchronous exception from EL0 (an undefined instruction,
+    // EC 0x00; a `brk`, EC 0x3c; a trapped FP exception, ...): this is the
+    // lower-EL handler, so it always came from userspace — kill the task
+    // instead of halting the machine (`aarch64_sync_abort` is fatal).
+    crate::exception::user_fault_kill(
+        "sync exception",
+        &alloc::format!("ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x} sp_el0={sp_el0:#x}"),
+    );
 }
 
 fn read_esr_elr_far() -> (u64, u64, u64) {

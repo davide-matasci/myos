@@ -149,6 +149,18 @@ struct Conv {
     /// TCP: bytes the writers may still queue in netd (up to [`TX_CAP`]);
     /// REP_TXCREDIT gives back what netd moved into its socket.
     tx_room: u16,
+    /// The uid of the user whose process read `clone` (an accepted
+    /// connection: the listener's), the only one whose processes may open
+    /// its files; [`NO_OWNER`] until an accepted connection is claimed.
+    owner: u32,
+}
+
+/// [`Conv::owner`] of a conversation nobody may open yet.
+const NO_OWNER: u32 = u32::MAX;
+
+/// The uid of the user the calling process runs for.
+fn uid() -> u32 {
+    API.get().current_uid()
 }
 
 /// [`Conv::taken`] before the first `taken`.
@@ -167,6 +179,7 @@ impl Conv {
         status: [0; STATUS_CAP],
         taken: NO_SEQ,
         tx_room: TX_CAP,
+        owner: NO_OWNER,
     };
 }
 
@@ -404,6 +417,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 status: [0; STATUS_CAP],
                 taken: NO_SEQ,
                 tx_room: TX_CAP,
+                owner: uid(),
             };
             return Some(i as u16);
         }
@@ -430,6 +444,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 status: [0; STATUS_CAP],
                 taken: NO_SEQ,
                 tx_room: TX_CAP,
+                owner: uid(),
             };
             return Some(i as u16);
         }
@@ -437,8 +452,18 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
     None
 }
 
+/// Conversation `id` is one of `proto`'s and the caller's user's (the
+/// file calls: a user's connections are not another's to read, write or
+/// hang up).
 fn conv_ok(convs: &[Conv; MAX_CONV], id: u16, proto: u8) -> bool {
-    convs.get(id as usize).is_some_and(|c| c.used && c.proto == proto)
+    convs.get(id as usize).is_some_and(|c| c.used && c.proto == proto && c.owner == uid())
+}
+
+/// The conversation an "accepted <N> ..." status names.
+fn accepted_id(status: &[u8]) -> Option<u16> {
+    let rest = status.strip_prefix(b"accepted ")?;
+    let n = rest.split(|&b| b == b' ').next()?;
+    parse_u16(core::str::from_utf8(n).ok()?)
 }
 
 fn conv_mut(convs: &mut [Conv; MAX_CONV], id: u16) -> Option<&mut Conv> {
@@ -529,6 +554,9 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
             return;
         }
         if !slot.used || slot.closing {
+            // An accept clone (netd's, with its proto) is the listener's
+            // user's once that listener's status names it.
+            let owner = if payload.is_empty() { slot.owner } else { NO_OWNER };
             *slot = Conv {
                 used: true,
                 closing: false,
@@ -544,6 +572,7 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 status: [0; STATUS_CAP],
                 taken: NO_SEQ,
                 tx_room: TX_CAP,
+                owner,
             };
             set_status(slot, b"cloned");
         } else if slot.status_len == 0 {
@@ -581,6 +610,13 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 && (status_is(c, b"hangup") || status_is(c, b"error"))
             {
                 *c = Conv::EMPTY;
+            }
+            // A connection this listener accepted belongs to its user.
+            if let Some(accepted) = accepted_id(payload) {
+                let owner = st.convs[conv as usize].owner;
+                if let Some(a) = st.convs.get_mut(accepted as usize).filter(|a| a.used) {
+                    a.owner = owner;
+                }
             }
         }
         REP_TXCREDIT => {

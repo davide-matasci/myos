@@ -168,6 +168,22 @@ pub fn init() {
         idt.breakpoint.set_handler_fn(breakpoint);
         idt.page_fault.set_handler_fn(page_fault);
         idt.general_protection_fault.set_handler_fn(general_protection);
+        // The exceptions a userspace instruction can raise that would
+        // otherwise hit a non-present IDT gate and escalate to a double
+        // fault (a `ud2` from EL0 took the whole machine down). Each kills
+        // the faulting task when it came from ring 3, like #GP/#PF.
+        idt.divide_error.set_handler_fn(divide_error);
+        idt.debug.set_handler_fn(debug_exc);
+        idt.overflow.set_handler_fn(overflow_exc);
+        idt.bound_range_exceeded.set_handler_fn(bound_range);
+        idt.invalid_opcode.set_handler_fn(invalid_opcode);
+        idt.device_not_available.set_handler_fn(device_not_available);
+        idt.x87_floating_point.set_handler_fn(x87_fp);
+        idt.simd_floating_point.set_handler_fn(simd_fp);
+        idt.invalid_tss.set_handler_fn(invalid_tss);
+        idt.segment_not_present.set_handler_fn(segment_not_present);
+        idt.stack_segment_fault.set_handler_fn(stack_segment);
+        idt.alignment_check.set_handler_fn(alignment_check);
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault)
@@ -433,6 +449,49 @@ extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _code: u64) -
         frame.stack_pointer.as_u64(),
     );
 }
+
+/// A vector with no error code: kill the task if it faulted in ring 3.
+macro_rules! user_exc {
+    ($name:ident, $label:literal) => {
+        extern "x86-interrupt" fn $name(frame: InterruptStackFrame) {
+            let user = frame.code_segment.0 & 3 == 3;
+            super::exception::x86_exception(
+                $label,
+                frame.instruction_pointer.as_u64(),
+                frame.stack_pointer.as_u64(),
+                0,
+                user,
+            );
+        }
+    };
+}
+/// A vector that pushes an error code.
+macro_rules! user_exc_code {
+    ($name:ident, $label:literal) => {
+        extern "x86-interrupt" fn $name(frame: InterruptStackFrame, code: u64) {
+            let user = frame.code_segment.0 & 3 == 3;
+            super::exception::x86_exception(
+                $label,
+                frame.instruction_pointer.as_u64(),
+                frame.stack_pointer.as_u64(),
+                code,
+                user,
+            );
+        }
+    };
+}
+user_exc!(divide_error, "divide error");
+user_exc!(debug_exc, "debug");
+user_exc!(overflow_exc, "overflow");
+user_exc!(bound_range, "bound range exceeded");
+user_exc!(invalid_opcode, "invalid opcode");
+user_exc!(device_not_available, "device not available");
+user_exc!(x87_fp, "x87 floating point");
+user_exc!(simd_fp, "simd floating point");
+user_exc_code!(invalid_tss, "invalid tss");
+user_exc_code!(segment_not_present, "segment not present");
+user_exc_code!(stack_segment, "stack segment fault");
+user_exc_code!(alignment_check, "alignment check");
 
 extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, code: u64) {
     let user = frame.code_segment.0 & 3 == 3;

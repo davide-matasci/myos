@@ -57,6 +57,10 @@ enum State {
 
 struct Conv {
     state: State,
+    /// The uid of the user whose process read `clone` (a connection made
+    /// by `connect`: the listener's), the only one whose processes may
+    /// open its files.
+    owner: u32,
     peer: Option<u16>,
     name_len: usize,
     name: [u8; NAME_CAP],
@@ -69,6 +73,7 @@ struct Conv {
 impl Conv {
     const FREE: Self = Self {
         state: State::Free,
+        owner: crate::NO_OWNER,
         peer: None,
         name_len: 0,
         name: [0; NAME_CAP],
@@ -100,6 +105,12 @@ fn get(convs: &mut Vec<Conv>, id: u16) -> Option<&mut Conv> {
     convs.get_mut(id as usize).filter(|c| c.state != State::Free)
 }
 
+/// [`get`] for a file call: the caller's user's conversations only.
+fn get_own(convs: &mut Vec<Conv>, id: u16) -> Option<&mut Conv> {
+    let uid = crate::uid();
+    get(convs, id).filter(|c| c.owner == uid)
+}
+
 fn alloc(convs: &mut Vec<Conv>) -> Option<u16> {
     let i = match convs.iter().position(|c| c.state == State::Free) {
         Some(i) => i,
@@ -111,6 +122,7 @@ fn alloc(convs: &mut Vec<Conv>) -> Option<u16> {
     };
     convs[i] = Conv::FREE;
     convs[i].state = State::Open;
+    convs[i].owner = crate::uid();
     Some(i as u16)
 }
 
@@ -174,7 +186,7 @@ pub fn stat(node: Node) -> Option<(u32, u32, u32)> {
             Node::Listen(_, id) => (id, 4),
             Node::Root => return None,
         };
-        let c = get(convs, id)?;
+        let c = get_own(convs, id)?;
         let ino = 1000 + id as u32 * 8 + tag;
         Some(match tag {
             0 => (S_IFDIR | 0o755, 0, ino),
@@ -197,7 +209,7 @@ pub fn listdir(node: Node, dst: &mut [u8], n: &mut usize) -> bool {
             }
             true
         }
-        Node::ConvDir(_, id) if get(convs, id).is_some() => {
+        Node::ConvDir(_, id) if get_own(convs, id).is_some() => {
             for leaf in [&b"ctl"[..], b"data", b"status", b"listen"] {
                 let _ = put_bytes(dst, n, leaf);
             }
@@ -223,7 +235,7 @@ pub fn poll(node: Node) -> u32 {
         let (Node::Data(_, id) | Node::Listen(_, id)) = node else {
             return MYOS_POLLIN | MYOS_POLLOUT;
         };
-        let Some(c) = get(convs, id) else {
+        let Some(c) = get_own(convs, id) else {
             return MYOS_POLLERR | MYOS_POLLHUP;
         };
         let (readable, state, peer) = (!c.rx.is_empty() || c.queued != 0, c.state, c.peer);
@@ -250,7 +262,7 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
             }
         }
         Node::Data(_, id) => {
-            let Some(c) = get(convs, id) else {
+            let Some(c) = get_own(convs, id) else {
                 return -1;
             };
             let n = out.len().min(c.rx.len());
@@ -263,13 +275,13 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
             n as i32
         }
         Node::Status(_, id) => {
-            let Some(c) = get(convs, id) else {
+            let Some(c) = get_own(convs, id) else {
                 return -1;
             };
             crate::copy_at(c.status(), pos, out)
         }
         Node::Listen(_, id) => {
-            let Some(c) = get(convs, id) else {
+            let Some(c) = get_own(convs, id) else {
                 return -1;
             };
             if c.queued == 0 {
@@ -281,7 +293,7 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
             dec(next, out)
         }
         Node::Ctl(_, id) => {
-            if get(convs, id).is_none() { -1 } else { 0 }
+            if get_own(convs, id).is_none() { -1 } else { 0 }
         }
         _ => -1,
     })
@@ -290,7 +302,7 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
 pub fn write(node: Node, src: &[u8]) -> i32 {
     with(|convs| match node {
         Node::Ctl(_, id) => {
-            if get(convs, id).is_none() {
+            if get_own(convs, id).is_none() {
                 return -1;
             }
             if ctl(convs, id, crate::trim_ctl(src)) {
@@ -300,7 +312,7 @@ pub fn write(node: Node, src: &[u8]) -> i32 {
             }
         }
         Node::Data(_, id) => {
-            let Some(peer) = get(convs, id).and_then(|c| c.peer) else {
+            let Some(peer) = get_own(convs, id).and_then(|c| c.peer) else {
                 return -1;
             };
             let p = &mut convs[peer as usize];
@@ -350,6 +362,8 @@ fn ctl(convs: &mut Vec<Conv>, id: u16, cmd: &[u8]) -> bool {
         let Some(end) = alloc(convs) else {
             return false;
         };
+        // The server's end is the listener's user's.
+        convs[end as usize].owner = convs[server as usize].owner;
         link(convs, id, end);
         return enqueue(convs, server, end);
     }
@@ -363,7 +377,7 @@ pub fn release(node: Node) {
         return;
     };
     with(|convs| {
-        if get(convs, id).is_none() {
+        if get_own(convs, id).is_none() {
             return;
         }
         let c = &mut convs[id as usize];

@@ -391,17 +391,20 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
                 break;
             }
             drop(out);
-            // Ring full: wake the master's reader, then wait for room. The
-            // wait sequence is read after that wake, then the ring looked at
-            // again: our own wake would end the wait at once, and the write
-            // spun here with interrupts off, never letting a reader on this
-            // CPU run to drain the ring.
+            // Ring full: wake the master to drain it, then sleep until it
+            // has. The sequence is read after `notify` (which bumps it), or
+            // `block_until` returns at once and the write spins; the ring is
+            // looked at again before sleeping, so a drain between the two
+            // is not missed. A signal breaks the wait: a slave writing to a
+            // ring whose master never reads must stay killable.
             notify(id);
-            let seq = crate::task::wait_seq();
-            if p.out.lock().len < OUT_CAP {
-                continue;
+            if crate::signal::interrupt_wait() {
+                return if n == 0 { usize::MAX } else { n };
             }
-            crate::task::block_until(crate::task::key_pty(id), seq, 0);
+            let seq = crate::task::wait_seq();
+            if p.out.lock().len == OUT_CAP {
+                crate::task::block_until(crate::task::key_pty(id), seq, 0);
+            }
         }
     }
     notify(id);
