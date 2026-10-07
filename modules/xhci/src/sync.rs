@@ -1,30 +1,47 @@
-//! A spinlock for task context. The interrupt handler never takes one: it
-//! works on the event ring and the completion records (atomics) only, so a
-//! task holding a lock on the interrupted CPU cannot deadlock it. Waiters
-//! yield the CPU rather than spin, since the holder may be a task that was
-//! preempted mid-transfer.
+//! A set-once cell: a controller is written into its slot by `probe`
+//! before anything reads it, and read as `&'static Controller` by every
+//! context after.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU8, Ordering};
 
-pub struct Spin(AtomicBool);
+const EMPTY: u8 = 0;
+const WRITING: u8 = 1;
+const SET: u8 = 2;
 
-pub struct Guard<'a>(&'a Spin);
-
-impl Spin {
-    pub const fn new() -> Self {
-        Spin(AtomicBool::new(false))
-    }
-
-    pub fn lock(&self) -> Guard<'_> {
-        while self.0.swap(true, Ordering::Acquire) {
-            crate::api().task_yield();
-        }
-        Guard(self)
-    }
+pub struct Once<T> {
+    state: AtomicU8,
+    value: UnsafeCell<Option<T>>,
 }
 
-impl Drop for Guard<'_> {
-    fn drop(&mut self) {
-        self.0.0.store(false, Ordering::Release);
+// SAFETY: the value is written once, before `SET` is published, and only
+// read after.
+unsafe impl<T: Send + Sync> Sync for Once<T> {}
+
+impl<T> Once<T> {
+    pub const fn new() -> Self {
+        Self { state: AtomicU8::new(EMPTY), value: UnsafeCell::new(None) }
+    }
+
+    /// Store `value`: false when the cell already holds one.
+    pub fn set(&self, value: T) -> bool {
+        if self.state.compare_exchange(EMPTY, WRITING, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            return false;
+        }
+        // SAFETY: `WRITING` is ours alone, and no reader sees the value
+        // before `SET`.
+        unsafe {
+            *self.value.get() = Some(value);
+        }
+        self.state.store(SET, Ordering::Release);
+        true
+    }
+
+    pub fn get(&self) -> Option<&T> {
+        if self.state.load(Ordering::Acquire) != SET {
+            return None;
+        }
+        // SAFETY: set once, never written again.
+        unsafe { (*self.value.get()).as_ref() }
     }
 }

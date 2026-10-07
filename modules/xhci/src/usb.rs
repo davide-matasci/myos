@@ -143,7 +143,7 @@ fn slot_of(id: u32) -> Option<&'static Slot> {
 /// Run `f` on the device `id`, its controller and its slot, with the
 /// slot's lock held: `USB_EGONE` when there is no such device or it is
 /// gone.
-pub fn with_device<R>(id: u32, f: impl FnOnce(&mut Controller, &Slot, &mut Device) -> R) -> Result<R, i32> {
+pub fn with_device<R>(id: u32, f: impl FnOnce(&Controller, &Slot, &mut Device) -> R) -> Result<R, i32> {
     let c = crate::controller((id >> 8) as u8).ok_or(USB_EGONE)?;
     let s = slot_of(id).ok_or(USB_EGONE)?;
     let mut dev = s.dev.lock();
@@ -278,7 +278,7 @@ fn install_endpoint(s: &Slot, dev: &mut Device, ep: Endpoint) {
 
 /// A control transfer on `dev`'s endpoint 0 (the host's `control`): bytes
 /// moved in the data stage, or an error.
-pub fn control(c: &mut Controller, s: &Slot, dev: &mut Device, request_type: u8, request: u8, value: u16, index: u16, data: *mut u8, len: u16) -> i32 {
+pub fn control(c: &Controller, s: &Slot, dev: &mut Device, request_type: u8, request: u8, value: u16, index: u16, data: *mut u8, len: u16) -> i32 {
     if usize::from(len) > CONTROL_MAX {
         return USB_EIO;
     }
@@ -315,7 +315,7 @@ pub fn control(c: &mut Controller, s: &Slot, dev: &mut Device, request_type: u8,
 
 /// A transfer that did not complete: stop the endpoint and move its
 /// dequeue pointer past the TD, so the ring is usable again.
-fn abort_endpoint(c: &mut Controller, slot: u8, ep: &mut Endpoint) {
+fn abort_endpoint(c: &Controller, slot: u8, ep: &mut Endpoint) {
     let dci = dci_of(ep.address) as u8;
     let _ = hc::command(c, hc::trb_stop_endpoint(slot, dci));
     let _ = hc::command(c, hc::trb_set_tr_dequeue(slot, dci, ep.ring.enqueue_pointer()));
@@ -323,24 +323,24 @@ fn abort_endpoint(c: &mut Controller, slot: u8, ep: &mut Endpoint) {
 
 /// A bulk transfer (the host's `bulk`): through the controller's bounce
 /// buffer, in pieces of its size.
-pub fn bulk(c: &mut Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut u8, len: usize, timeout_ms: u32) -> i32 {
+pub fn bulk(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut u8, len: usize, timeout_ms: u32) -> i32 {
     let slot = dev.slot;
     let to_host = address & 0x80 != 0;
     let Some(ep) = dev.endpoint_by_address(address) else {
         return USB_EIO;
     };
     let p = &s.pending[dci_of(address)];
-    let _bounce = unsafe { &*(&c.bounce_lock as *const crate::sync::Spin) }.lock();
+    let bounce = c.bounce.lock();
     let mut done_bytes = 0usize;
     while done_bytes < len {
-        let chunk = (len - done_bytes).min(c.bounce_len);
+        let chunk = (len - done_bytes).min(bounce.len);
         if !to_host {
             unsafe {
-                core::ptr::copy_nonoverlapping(data.add(done_bytes), c.bounce, chunk);
+                core::ptr::copy_nonoverlapping(data.add(done_bytes), bounce.va, chunk);
             }
         }
-        dma::clean(c.bounce, chunk);
-        if let Err(e) = hc::enqueue_normal(ep, p, c.bounce_phys, chunk) {
+        dma::clean(bounce.va, chunk);
+        if let Err(e) = hc::enqueue_normal(ep, p, bounce.phys, chunk) {
             return e;
         }
         hc::ring_doorbell(c, slot, dci_of(address) as u8);
@@ -356,9 +356,9 @@ pub fn bulk(c: &mut Controller, s: &Slot, dev: &mut Device, address: u8, data: *
         }
         let moved = (r as usize).min(chunk);
         if to_host {
-            dma::invalidate(c.bounce, moved);
+            dma::invalidate(bounce.va, moved);
             unsafe {
-                core::ptr::copy_nonoverlapping(c.bounce, data.add(done_bytes), moved);
+                core::ptr::copy_nonoverlapping(bounce.va, data.add(done_bytes), moved);
             }
         }
         done_bytes += moved;
@@ -370,7 +370,7 @@ pub fn bulk(c: &mut Controller, s: &Slot, dev: &mut Device, address: u8, data: *
 }
 
 /// Queue an interrupt IN transfer (the host's `interrupt_start`).
-pub fn interrupt_start(c: &mut Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut u8, len: usize, done: myos_abi::UsbCompletion, ctx: *mut c_void) -> i32 {
+pub fn interrupt_start(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut u8, len: usize, done: myos_abi::UsbCompletion, ctx: *mut c_void) -> i32 {
     let slot = dev.slot;
     let Some(ep) = dev.endpoint_by_address(address) else {
         return USB_EIO;
@@ -429,7 +429,7 @@ fn take_completion(s: &Slot) -> Option<(myos_abi::UsbCompletion, *mut c_void, i3
 /// Completed asynchronous transfers: copy their data out and run their
 /// callbacks (the USB thread), each with no lock held: a callback starts
 /// the next transfer.
-pub fn run_async_completions(c: &mut Controller) {
+pub fn run_async_completions(c: &Controller) {
     for i in 0..MAX_DEVICES {
         let Some(s) = slot_at(c.index, i) else {
             continue;
@@ -441,7 +441,7 @@ pub fn run_async_completions(c: &mut Controller) {
 }
 
 /// Recover a stalled endpoint (the host's `clear_halt`).
-pub fn clear_halt(c: &mut Controller, s: &Slot, dev: &mut Device, address: u8) -> i32 {
+pub fn clear_halt(c: &Controller, s: &Slot, dev: &mut Device, address: u8) -> i32 {
     let slot = dev.slot;
     let Some(ep) = dev.endpoint_by_address(address) else {
         return USB_EIO;
@@ -457,7 +457,7 @@ pub fn clear_halt(c: &mut Controller, s: &Slot, dev: &mut Device, address: u8) -
 
 /// Enumerate the device on `root_port` (1-based) of controller `c`, or on
 /// `port` of hub `parent`, at `speed`: the new device's id.
-pub fn attach(c: &mut Controller, parent: Option<(u32, u8)>, root_port: u8, speed: u8) -> Result<u32, i32> {
+pub fn attach(c: &Controller, parent: Option<(u32, u8)>, root_port: u8, speed: u8) -> Result<u32, i32> {
     let ctrl = c.index;
     let (depth, route, tt, parent_id, hub_port, root_port) = match parent {
         None => (0u8, 0u32, None, 0u32, 0u8, root_port),
@@ -522,7 +522,7 @@ pub fn attach(c: &mut Controller, parent: Option<(u32, u8)>, root_port: u8, spee
         core::ptr::write_volatile(c.dcbaa.add(usize::from(slot)), out_phys);
     }
     dma::clean(c.dcbaa as *mut u8, 4096);
-    c.slot_owner[usize::from(slot)] = index as u8 + 1;
+    c.slot_owner[usize::from(slot)].store(index as u8 + 1, Ordering::Release);
     s.gone.store(false, Ordering::Release);
     let id = dev.info.id;
     let dev = entry.insert(dev);
@@ -545,7 +545,7 @@ pub fn attach(c: &mut Controller, parent: Option<(u32, u8)>, root_port: u8, spee
 
 /// Address the device, read its descriptors and configure its endpoints
 /// (the slot's lock held throughout).
-fn enumerate(c: &mut Controller, s: &Slot, dev: &mut Device) -> Result<(), i32> {
+fn enumerate(c: &Controller, s: &Slot, dev: &mut Device) -> Result<(), i32> {
     let csz64 = c.csz64;
     let slot = dev.slot;
     // Input context: slot + endpoint 0.
@@ -823,7 +823,7 @@ pub fn offer(s: &Slot) {
 
 /// Every unclaimed interface of every device, to the drivers (a driver
 /// registered after the devices were enumerated).
-pub fn offer_all(c: &mut Controller) {
+pub fn offer_all(c: &Controller) {
     for i in 0..MAX_DEVICES {
         let Some(s) = slot_at(c.index, i) else {
             continue;
@@ -853,7 +853,7 @@ pub fn find(ctrl: u8, parent: u32, port: u8) -> Option<u32> {
 
 /// Tear `id` down: its children first (a hub), its drivers told, its
 /// transfers failed, its slot disabled, its memory back to the pool.
-pub fn detach_id(c: &mut Controller, id: u32) {
+pub fn detach_id(c: &Controller, id: u32) {
     let ctrl = c.index;
     let Some(s) = slot_of(id) else {
         return;
@@ -905,7 +905,7 @@ pub fn detach_id(c: &mut Controller, id: u32) {
         core::ptr::write_volatile(c.dcbaa.add(usize::from(slot)), 0);
     }
     dma::clean(c.dcbaa as *mut u8, 4096);
-    c.slot_owner[usize::from(slot)] = 0;
+    c.slot_owner[usize::from(slot)].store(0, Ordering::Release);
     for p in &s.pending {
         p.clear_ring();
     }
@@ -919,7 +919,7 @@ pub fn detach_id(c: &mut Controller, id: u32) {
 }
 
 /// A hub's slot context learns its port count (the host's `hub_configure`).
-pub fn hub_configure(c: &mut Controller, dev: &mut Device, ports: u8, tt_think: u8, multi_tt: bool) -> i32 {
+pub fn hub_configure(c: &Controller, dev: &mut Device, ports: u8, tt_think: u8, multi_tt: bool) -> i32 {
     let csz64 = c.csz64;
     let slot = dev.slot;
     dev.hub_ports = ports;
@@ -975,7 +975,7 @@ pub fn proc_text(out: &mut [u8]) -> usize {
         w.dec(u32::from(ctrl));
         w.str(" ports ");
         w.dec(u32::from(c.ports));
-        w.str(if c.irq_on { " irq on" } else { " irq off" });
+        w.str(if c.irq_on.load(Ordering::Relaxed) { " irq on" } else { " irq off" });
         w.str(" events ");
         w.dec(c.events.load(Ordering::Relaxed));
         w.str(" irqs ");

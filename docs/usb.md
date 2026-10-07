@@ -44,6 +44,15 @@ before `detach` waits for its lock, so the lock comes free at once.
 Without an interrupt (`pci_irq_enable` failed) the bus still works: a
 waiter polls the event ring every 2 ms, the thread every second.
 
+The controller itself is reached as `&Controller` from every context:
+its command ring and bulk bounce buffer are each behind a `SleepLock`,
+the event ring belongs to whoever holds its busy flag (the handler, or a
+polling waiter), and the rest is atomics or written by one context alone.
+The locks nest in one order: a class driver's own slot lock (a disk's),
+then the host's device entry, then the command ring or the bounce
+buffer. The host never holds a device lock across a driver hook, so the
+reverse never happens, and the interrupt handler holds none.
+
 ## Enumeration
 
 A root port's connect event (or the initial scan) wakes the thread: it

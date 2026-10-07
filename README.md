@@ -319,8 +319,10 @@ module keeps the table `module_init` received in a `static API: ApiCell`
 (`API.get()` afterwards) and its own state behind a `myos_abi::Lock`, a
 spin lock, or a `SleepLock` when it is held across a wait (a block driver's
 disks are one lock per slot, held for a request; usb_storage's requests
-wait in the USB host, so its slots sleep). The USB host and hub still hand
-`&'static mut` out of a `static mut` (issue #300). Every module crate
+and the USB host's transfers wait for their completion, so those sleep).
+No module has a `static mut`; what stays `unsafe` is hardware access
+(MMIO, DMA rings, cache maintenance) and the raw pointers of the C ABI's
+callbacks, in short helpers with `SAFETY:` comments. Every module crate
 denies `unsafe_op_in_unsafe_fn`.
 
 ### Adding a module
