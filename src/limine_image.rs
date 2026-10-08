@@ -76,17 +76,22 @@ pub fn boot_list() -> String {
 /// `global_dtb`), `kernel_extra` after each `path:` (riscv64's
 /// `paging_mode`). Limine loads the kernel and the initramfs, nothing else.
 pub fn limine_conf(head_extra: &str, kernel_extra: &str, slots: &[&str]) -> String {
-    let entries: Vec<(String, String)> = slots.iter().map(|s| (format!("myos {s}"), format!("boot/{s}"))).collect();
+    let entries: Vec<(String, String, String)> = slots
+        .iter()
+        .map(|s| (format!("myos {s}"), format!("boot/{s}"), format!("    cmdline: slot={s}\n")))
+        .collect();
     limine_conf_entries(head_extra, kernel_extra, &entries)
 }
 
-/// The Limine config with an entry per `(name, directory)`.
-fn limine_conf_entries(head_extra: &str, kernel_extra: &str, entries: &[(String, String)]) -> String {
+/// The Limine config with an entry per `(name, directory, extra lines)`;
+/// a slot's entry tells the kernel which slot it is (`cmdline: slot=a`,
+/// `/proc/cmdline`), which `get-myos --upgrade` reads to write the other.
+fn limine_conf_entries(head_extra: &str, kernel_extra: &str, entries: &[(String, String, String)]) -> String {
     let timeout = if entries.len() > 1 { 3 } else { 0 };
     let mut conf = format!("serial: yes\ntimeout: {timeout}\ndefault_entry: 1\n{head_extra}");
-    for (name, dir) in entries {
+    for (name, dir, extra) in entries {
         conf += &format!(
-            "\n/{name}\n    protocol: limine\n    path: boot():/{dir}/kernel\n{kernel_extra}    module_path: boot():/{dir}/initramfs\n"
+            "\n/{name}\n    protocol: limine\n    path: boot():/{dir}/kernel\n{kernel_extra}    module_path: boot():/{dir}/initramfs\n{extra}"
         );
     }
     conf
@@ -284,6 +289,12 @@ pub fn write_esp_image_ex(
             path: "boot/a/initramfs".into(),
             data: initramfs.to_vec(),
         },
+        // The slot's release (`/lib/myos-release` of its initramfs): what
+        // `get-myos --upgrade` compares the mirror's with.
+        DiskFile {
+            path: "boot/a/version".into(),
+            data: crate::release::Release::current(Path::new(env!("CARGO_MANIFEST_DIR"))).text().into_bytes(),
+        },
         DiskFile {
             path: "boot/limine/limine.conf".into(),
             data: limine_conf.as_bytes().to_vec(),
@@ -424,7 +435,7 @@ pub fn write_x86_iso(
         copy(&entry.path(), &rel);
     }
 
-    let conf = limine_conf_entries("", "", &[("myos".into(), "boot".into())]);
+    let conf = limine_conf_entries("", "", &[("myos".into(), "boot".into(), String::new())]);
     let conf = conf.as_bytes();
     for rel in ["boot/limine/limine.conf", "EFI/BOOT/limine.conf", "limine.conf"] {
         let dst = iso_root.join(rel);

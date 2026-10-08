@@ -387,6 +387,9 @@ fn generated(name: &str) -> Option<alloc::string::String> {
         "self/ctx" => Some(crate::sec::ctx_text()),
         "sys/security/users" => Some(crate::sec::users_text()),
         "cpu" => Some(cpu_text()),
+        // What limine.conf's `cmdline:` gave this boot (`slot=a`: the boot
+        // slot it came from, docs/install.md), and a newline.
+        "cmdline" => Some(alloc::format!("{}\n", crate::limine_boot::cmdline())),
         "partitions" => Some(crate::blk::partitions_text()),
         _ => match parse_pid(name)? {
             PidNode::Status(pid) => process_status(pid),
@@ -483,7 +486,7 @@ fn list_root(buf: &mut [u8]) -> usize {
     // Dynamic nodes all live under `acpi/` (see `list_acpi`).
     const FIXED: &[&[u8]] = &[
         b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"platform", b"pci", b"acpi", b"self", b"sys",
-        b"cpu", b"partitions",
+        b"cpu", b"partitions", b"cmdline",
     ];
     let mut off = 0usize;
     for name in FIXED {
@@ -610,6 +613,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 "self/ctx" => 94,
                 "sys/security/users" => 95,
                 "cpu" => 96,
+                "cmdline" => 98,
                 "partitions" => 97,
                 _ => pid_ino(name),
             },
