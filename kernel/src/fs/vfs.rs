@@ -214,7 +214,7 @@ pub fn mount(name: &str, prefix: &str, ops: MountOps) {
 ///
 /// A second module mount with the same prefix replaces the existing one (a
 /// module loaded again). `mount(2)` refuses a mount point instead
-/// ([`mount_point_free`]). `source` is the userspace path (`/dev/vda`) or
+/// ([`mount_point_free`]). `source` is the userspace path (`/dev/vda/data`) or
 /// `none` when there is no block device.
 pub fn mount_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str) -> bool {
     attach_module(name, prefix, ops, source, true)
@@ -346,13 +346,13 @@ pub fn unmount_all() -> Vec<String> {
     prefixes
 }
 
-/// A mount has `source` (`/dev/sda`) as its block device.
+/// A mount has `source` (`/dev/sda/data`) as its block device.
 pub fn source_mounted(source: &str) -> bool {
     MOUNTS.lock().iter().any(|m| !m.gone() && m.source == source)
 }
 
 /// Open fds on `rel` of the mount at `prefix` (`"dev"`, `"sda"`: the block
-/// device `/dev/sda`), counting a fork's and a dup's copies.
+/// device `/dev/sda/data`), counting a fork's and a dup's copies.
 pub fn open_refs(prefix: &str, rel: &str) -> u32 {
     let Some(mount) = MOUNTS.lock().iter().position(|m| m.prefix == prefix) else {
         return 0;

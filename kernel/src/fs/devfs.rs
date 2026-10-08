@@ -1,4 +1,4 @@
-//! devfs: device nodes at `/dev/…` (`null`, `tty`, `console/`, `vd*`, `nvme*n1`
+//! devfs: device nodes at `/dev/…` (`null`, `tty`, `console/`, the disks
 //! and the modules' character devices).
 //!
 //! `/dev/console` is the hardware console (serial+fb), a directory like
@@ -10,6 +10,9 @@
 //! A module's character device (`KernelApi::dev_register`) is a directory
 //! too: `/dev/<name>/data` is the device, `/dev/<name>/ctl` its control file
 //! when the module gives it one ([`myos_abi::ModuleChrOps`]).
+//!
+//! So is a disk (`vda`, `nvme0n1`, `sda`, [`crate::blk`]): `/dev/<name>/data`
+//! is the whole disk, `/dev/<name>/p<N>` its partition in GPT entry `N`.
 
 use spin::Mutex;
 
@@ -35,6 +38,9 @@ enum Node {
     /// `console/ctl`, its control file.
     ConsoleCtl,
     Urandom,
+    /// `<disk>`, a disk's directory.
+    BlkDir(u32),
+    /// `<disk>/data` or `<disk>/p<N>`.
     Block(u32),
     /// `<name>`, a module device's directory.
     ChrDir(usize),
@@ -114,9 +120,14 @@ fn chr_ctl_text(i: usize) -> alloc::vec::Vec<u8> {
     buf
 }
 
-/// `/dev/<name>` of a registered block device (`vda`, `nvme0n1`, …).
-fn parse_blk(name: &str) -> Option<u32> {
-    blk::by_name(name)
+/// `/dev/<name>` of a disk or a disk's member (`vda`, `nvme0n1/data`,
+/// `sda/p1`), its partitions read first ([`blk::scan`]).
+fn parse_blk(name: &str) -> Option<Node> {
+    blk::scan();
+    match name.contains('/') {
+        true => blk::by_path(name).map(Node::Block),
+        false => blk::disk_by_name(name).map(Node::BlkDir),
+    }
 }
 
 fn parse(name: &str) -> Option<Node> {
@@ -130,23 +141,26 @@ fn parse(name: &str) -> Option<Node> {
         "urandom" | "random" => Some(Node::Urandom),
         _ => {
             if let Some((dir, member)) = name.split_once('/') {
-                let i = parse_chr(dir)?;
+                let Some(i) = parse_chr(dir) else {
+                    return parse_blk(name);
+                };
                 return match member {
                     "data" => Some(Node::ChrData(i)),
                     "ctl" if chr_has_ctl(i) => Some(Node::ChrCtl(i)),
                     _ => None,
                 };
             }
-            parse_chr(name)
-                .map(Node::ChrDir)
-                .or_else(|| parse_blk(name).map(Node::Block))
+            parse_chr(name).map(Node::ChrDir).or_else(|| parse_blk(name))
         }
     }
 }
 
-/// Block-device id for `/dev/<name>` (`vdX`, `nvmeXn1`, …).
+/// Block-device id for `/dev/<name>` (`vda/data`, `nvme1n1/p2`, …).
 pub fn blk_id(name: &str) -> Option<u32> {
-    parse_blk(name)
+    match parse(name)? {
+        Node::Block(id) => Some(id),
+        _ => None,
+    }
 }
 
 /// No static file bytes; open uses [`stat`] / custom read-write.
@@ -165,7 +179,7 @@ pub fn create(_name: &str) -> bool {
 pub fn truncate(name: &str) -> bool {
     // O_TRUNC on char/block devices is a no-op; a control file takes the
     // shell's truncating open (`echo … > ctl`) the same way.
-    parse(name).is_some_and(|n| !matches!(n, Node::ConsoleDir | Node::ChrDir(_)))
+    parse(name).is_some_and(|n| !matches!(n, Node::ConsoleDir | Node::ChrDir(_) | Node::BlkDir(_)))
 }
 
 /// The text of `/dev/console/ctl`: the console termios, the screen's size,
@@ -251,7 +265,7 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
             out.len()
         }
         Some(Node::Block(id)) => blk::read_bytes(id, pos as u64, out).unwrap_or(0),
-        Some(Node::ChrDir(_)) => 0,
+        Some(Node::BlkDir(_)) | Some(Node::ChrDir(_)) => 0,
         Some(Node::ChrData(i)) => match chr(i) {
             Some(c) => {
                 let n = unsafe { (c.ops.read)(out.as_mut_ptr(), out.len()) };
@@ -277,7 +291,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         // Writes to the RNG pool are ignored (no RNDADDENTROPY ioctl yet).
         Some(Node::Urandom) => Some(buf.len()),
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
-        Some(Node::ChrDir(_)) => None,
+        Some(Node::BlkDir(_)) | Some(Node::ChrDir(_)) => None,
         Some(Node::ChrData(i)) => {
             let n = unsafe { (chr(i)?.ops.write)(buf.as_ptr(), buf.len()) };
             if n < 0 { None } else { Some(n as usize) }
@@ -291,53 +305,36 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
 }
 
 pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
-    const NAMES: &[&[u8]] = &[b"null", b"zero", b"tty", b"console", b"urandom", b"random"];
-    const DATA_CTL: &[&[u8]] = &[b"data", b"ctl"];
-    const DATA: &[&[u8]] = &[b"data"];
-    let names = match rel {
-        "" | "." => NAMES,
-        "console" => DATA_CTL,
-        _ => match parse_chr(rel) {
-            Some(i) if chr_has_ctl(i) => DATA_CTL,
-            Some(_) => DATA,
-            None => return 0,
+    const NAMES: &[&str] = &["null", "zero", "tty", "console", "urandom", "random"];
+    let names: alloc::vec::Vec<alloc::string::String> = match rel {
+        "" | "." => {
+            blk::scan();
+            let chr: alloc::vec::Vec<alloc::string::String> = CHR
+                .lock()
+                .iter()
+                .flatten()
+                .map(|c| alloc::string::String::from_utf8_lossy(&c.name[..c.name_len as usize]).into_owned())
+                .collect();
+            NAMES.iter().map(|&n| n.into()).chain(blk::disks()).chain(chr).collect()
+        }
+        "console" => alloc::vec!["data".into(), "ctl".into()],
+        _ => match (parse_chr(rel), parse(rel)) {
+            (Some(i), _) if chr_has_ctl(i) => alloc::vec!["data".into(), "ctl".into()],
+            (Some(_), _) => alloc::vec!["data".into()],
+            (None, Some(Node::BlkDir(disk))) => {
+                let parts = blk::parts(disk).into_iter().map(|p| alloc::format!("p{}", p.number));
+                core::iter::once("data".into()).chain(parts).collect()
+            }
+            _ => return 0,
         },
     };
     let mut n = 0;
-    for name in names {
+    for name in &names {
         let need = name.len() + 1;
         if n + need > buf.len() {
             break;
         }
-        buf[n..n + name.len()].copy_from_slice(name);
-        n += name.len();
-        buf[n] = b'\n';
-        n += 1;
-    }
-    if rel != "" && rel != "." {
-        return n;
-    }
-    for id in 0..blk::count() {
-        let mut name = [0u8; 16];
-        let Some(len) = blk::name(id, &mut name) else {
-            continue;
-        };
-        let need = len + 1;
-        if n + need > buf.len() {
-            break;
-        }
-        buf[n..n + len].copy_from_slice(&name[..len]);
-        n += len;
-        buf[n] = b'\n';
-        n += 1;
-    }
-    for c in CHR.lock().iter().flatten() {
-        let name = &c.name[..c.name_len as usize];
-        let need = name.len() + 1;
-        if n + need > buf.len() {
-            break;
-        }
-        buf[n..n + name.len()].copy_from_slice(name);
+        buf[n..n + name.len()].copy_from_slice(name.as_bytes());
         n += name.len();
         buf[n] = b'\n';
         n += 1;
@@ -423,13 +420,22 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             Some(StatInfo {
                 mode: S_IFBLK | 0o666,
                 size,
-                ino: 10 + id,
+                ino: 100 + id,
                 nlink: 1,
                 dev: 0,
                 mtime: 0,
                 atime: 0,
             })
         }
+        Node::BlkDir(id) => Some(StatInfo {
+            mode: S_IFDIR | 0o755,
+            size: 0,
+            ino: 100 + blk::MAX_DEVS as u32 + id,
+            nlink: 2,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        }),
         Node::ChrDir(i) => Some(StatInfo {
             mode: S_IFDIR | 0o755,
             size: 0,

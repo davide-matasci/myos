@@ -1,4 +1,4 @@
-# ext2 on the scratch disk (/dev/nvme1n1, the launcher's sparse 4 GiB
+# ext2 on the scratch disk (/dev/nvme1n1/data, the launcher's sparse 4 GiB
 # target/scratch.img, empty at every boot): format and mount it and copy
 # programs into a directory on it (sixteen names of the sbase multicall
 # ELF, a copy each); rename the directory, run one of them from the disk
@@ -13,15 +13,15 @@
 # middle of a cached page included, and the cache keeps what was read.
 blk_cache() {
 	dd if=/bin/sbase/ls of=/tmp/a bs=4096 count=8 2>/dev/null \
-		&& dd if=/tmp/a of=/dev/nvme1n1 bs=4096 2>/dev/null \
-		&& dd if=/dev/nvme1n1 of=/tmp/b bs=4096 count=8 2>/dev/null && cmp /tmp/a /tmp/b \
+		&& dd if=/tmp/a of=/dev/nvme1n1/data bs=4096 2>/dev/null \
+		&& dd if=/dev/nvme1n1/data of=/tmp/b bs=4096 count=8 2>/dev/null && cmp /tmp/a /tmp/b \
 		&& cp /tmp/a /tmp/c && echo cached | dd of=/tmp/c bs=1 seek=5000 conv=notrunc 2>/dev/null \
-		&& echo cached | dd of=/dev/nvme1n1 bs=1 seek=5000 conv=notrunc 2>/dev/null \
-		&& dd if=/dev/nvme1n1 of=/tmp/b bs=4096 count=8 2>/dev/null && cmp /tmp/c /tmp/b \
+		&& echo cached | dd of=/dev/nvme1n1/data bs=1 seek=5000 conv=notrunc 2>/dev/null \
+		&& dd if=/dev/nvme1n1/data of=/tmp/b bs=4096 count=8 2>/dev/null && cmp /tmp/c /tmp/b \
 		&& grep -q "^BlockCacheKiB: [1-9]" /proc/meminfo && rm /tmp/a /tmp/b /tmp/c
 }
 ext2_disk() {
-	mkdir -p /tmp/disk && mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /tmp/disk ext2 \
+	mkdir -p /tmp/disk && mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /tmp/disk ext2 \
 		&& mkdir /tmp/disk/s && cp /bin/sbase/[a-c]* /bin/sbase/ls /tmp/disk/s
 }
 ext2_link() {
@@ -83,6 +83,6 @@ fi
 ext2_remount() {
 	echo kept > /tmp/disk/k && umount /tmp/disk || return 1
 	[ -z "$(ls -A /tmp/disk)" ] || { echo "files left after umount"; return 1; }
-	mount /dev/nvme1n1 /tmp/disk ext2 && [ "$(cat /tmp/disk/k)" = kept ] && rm /tmp/disk/k
+	mount /dev/nvme1n1/data /tmp/disk ext2 && [ "$(cat /tmp/disk/k)" = kept ] && rm /tmp/disk/k
 }
 t ext2_remount ext2_remount

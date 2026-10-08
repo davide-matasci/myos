@@ -1,6 +1,6 @@
 //! USB mass storage class driver (`docs/usb.md`): a memory stick or a disk
 //! enclosure speaking the bulk-only transport with SCSI commands (class 8,
-//! subclass 6, protocol 0x50), as `/dev/sdX` through
+//! subclass 6, protocol 0x50), as `/dev/sdX/` through
 //! `KernelApi::blk_register`. One request at a time per disk: a command
 //! block (CBW) out, the data, a status block (CSW) in; a stall is cleared
 //! with the host's `clear_halt`. The disk goes away with its device
