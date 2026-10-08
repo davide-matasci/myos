@@ -1,0 +1,73 @@
+--- a/Xext/Makefile.am
++++ b/Xext/Makefile.am
+@@ -12,8 +12,7 @@
+ BUILTIN_SRCS =			\
+ 	shape.c			\
+ 	sleepuntil.c		\
+-	sleepuntil.h		\
+-	xtest.c
++	sleepuntil.h
+ 
+ # Sources always included in libXextmodule.la & libXext.la
+ MODULE_SRCS =			\
+@@ -28,6 +27,9 @@
+ MITSHM_SRCS = shm.c shmint.h
+ BUILTIN_SRCS += $(MITSHM_SRCS)
+ 
++# XTEST: not built
++XTEST_SRCS = xtest.c
++
+ # XResource extension: lets clients get data about per-client resource usage
+ RES_SRCS = xres.c
+ if RES
+@@ -58,6 +60,7 @@
+ 
+ EXTRA_DIST = \
+ 	$(MITSHM_SRCS) \
++	$(XTEST_SRCS) \
+ 	$(RES_SRCS) \
+ 	$(SCREENSAVER_SRCS) \
+ 	$(BIGFONT_SRCS) \
+--- a/mi/miinitext.c
++++ b/mi/miinitext.c
+@@ -90,8 +90,10 @@
+ 
+ #define _XSHM_SERVER_
+ #include <X11/extensions/shmstr.h>
++#ifdef XTEST
+ #define _XTEST_SERVER_
+ #include <X11/extensions/XTest.h>
++#endif
+ #ifdef XF86BIGFONT
+ #include <X11/extensions/xf86bigfproto.h>
+ #endif
+@@ -101,7 +103,9 @@
+ 
+ /* FIXME: this whole block of externs should be from the appropriate headers */
+ extern void ShmExtensionInit(INITARGS);
++#ifdef XTEST
+ extern void XTestExtensionInit(INITARGS);
++#endif
+ extern void BigReqExtensionInit(INITARGS);
+ #ifdef SCREENSAVER
+ extern void ScreenSaverExtensionInit (INITARGS);
+@@ -160,7 +164,9 @@
+     { "XFree86-Bigfont", &noXFree86BigfontExtension },
+ #endif
+     { "XFIXES", &noXFixesExtension },
++#ifdef XTEST
+     { "XTEST", &noTestExtensions },
++#endif
+     { NULL, NULL }
+ };
+ 
+@@ -198,7 +204,9 @@
+ {
+     if (!noShapeExtension) ShapeExtensionInit();
+     if (!noMITShmExtension) ShmExtensionInit();
++#ifdef XTEST
+     if (!noTestExtensions) XTestExtensionInit();
++#endif
+     if (!noBigReqExtension) BigReqExtensionInit();
+ #if defined(SCREENSAVER) && !defined(PRINT_ONLY_SERVER)
+     if (!noScreenSaverExtension) ScreenSaverExtensionInit ();

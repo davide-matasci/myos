@@ -63,8 +63,6 @@ it already owns the screen and paints the text console on it.
   x86_64, 64 MiB on aarch64 and riscv64).
 - No mouse yet, and keyboard input still reaches programs only as tty bytes
   (`kernel/src/input.rs`); a raw input device is the next step for a GUI.
-- The Linux layer's `mmap` still refuses every `MAP_SHARED` file mapping
-  (`modules/linux/src/sys.rs`), `/dev/fb/data` included.
 - Programs written for Linux's `/dev/fb0` (fbdev ioctls) need a small shim
   over these files, as the socket library is one over `/net`.
 

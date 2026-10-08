@@ -127,6 +127,9 @@ struct winsize;
  * at two u64, the microseconds until it fires (0: disarmed) and its
  * interval (0: once). Either may be 0. */
 #define MYOS_SYS_ITIMER 88
+/* msync(addr, len, flags): the shared file mappings in the range are
+ * written back to their files (the flags make no difference). */
+#define MYOS_SYS_MSYNC 92
 #define MYOS_POWER_OFF 0
 #define MYOS_POWER_REBOOT 1
 #define MYOS_POWER_HALT 2

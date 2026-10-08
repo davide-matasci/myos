@@ -202,8 +202,8 @@ the console keymap and module devices natively), `access`,
 `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`, `rename(at/at2)`,
 `symlink(at)`, `readlink(at)`, `utimensat`, `utimes`, `poll`, `umask`.
 
-Memory: `brk`, `mmap` (anonymous, and private file mappings), `munmap`,
-`mprotect`, `madvise` (`MADV_DONTNEED` drops the pages, which read as
+Memory: `brk`, `mmap` (anonymous, shared anonymous, private and shared
+file mappings), `munmap`, `mprotect`, `msync`, `madvise` (`MADV_DONTNEED` drops the pages, which read as
 zero or as their file next time, as allocators such as rustc's Scudo
 expect; other advice is ignored). Files also: `pread64`, `pwrite64`,
 `pwritev(2)`.
@@ -250,7 +250,9 @@ ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
 too. See Sockets below.
 
 Time and misc: `clock_gettime`, `gettimeofday`, `time`, `nanosleep`,
-`clock_nanosleep`, `getrandom`; `poll` (x86_64) and `ppoll`;
+`clock_nanosleep`, `getrandom`; `memfd_create` (a file of `/dev/shm`
+created and unlinked at once, as libgloss's; sealing is accepted and not
+done); `poll` (x86_64) and `ppoll`;
 `sched_getaffinity` (every online CPU, so cargo and rustc run their jobs in
 parallel) and `sched_setaffinity` (accepted; the core places tasks).
 
@@ -296,8 +298,15 @@ ones) from `/lib`, `/usr/local/lib`, `/usr/lib` with `open`, `read`,
 `pread64` and `mmap` of the file, and maps each segment over the span it
 reserved first. That needed core `mmap` work, which native programs share:
 
-- file-backed `MAP_PRIVATE` mappings (the pages are a private copy of the
-  file, never written back; `MAP_SHARED` file mappings are refused);
+- file-backed mappings: `MAP_PRIVATE` (the pages are a private copy of
+  the file, never written back) and `MAP_SHARED` (the pages are the file's,
+  the page cache's frames for them, shared by every process that maps them
+  and with `read` and `write`, and written back to the file by `msync`,
+  `munmap`, exit and exec; through a read-only fd a shared mapping may not
+  be written), and `MAP_SHARED | MAP_ANONYMOUS` (a tmpfs file no name
+  reaches, shared with forked children: `fs::anon_file`; a tmpfs file is
+  bytes in the kernel heap the mapping is written back to, so a segment
+  costs its size twice, up to 16 MiB, issue #338);
 - demand paging: a mapping takes no memory until it is used. The first
   touch of a page, a page fault from userspace or a kernel copy into a user
   buffer, gives it a frame, zeroed or read from the file
@@ -380,7 +389,9 @@ three, the kernel crate itself an hour. Known gaps:
   on the interrupt return). No alternate signal stacks, no real-time signal
   queueing.
 - No other `clone` with `CLONE_VM` but not `CLONE_THREAD` than
-  posix_spawn's, and no shared file mappings (`MAP_SHARED`).
+  posix_spawn's.
+- No System V IPC (`shmget`, `semget`, `msgget`): a Linux program has
+  POSIX shared memory (`shm_open`, `memfd_create`, `MAP_SHARED`).
 - Close-on-exec (`O_CLOEXEC`, `FD_CLOEXEC`, `FIOCLEX`) and `O_NONBLOCK`
   outside sockets are flags the layer keeps per fd (`files.rs`): a
   successful exec closes the close-on-exec fds (the `on_exec` hook), and a

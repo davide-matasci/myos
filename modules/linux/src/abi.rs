@@ -44,7 +44,6 @@ pub const O_NOFOLLOW: usize = 0o400000;
 #[cfg(not(target_arch = "aarch64"))]
 pub const O_LARGEFILE: usize = 0o100000;
 pub const ETIMEDOUT: usize = 110;
-pub const ENODEV: usize = 19;
 
 /// A Linux error return: `-errno` in the result register.
 pub const fn err(errno: usize) -> usize {

@@ -38,6 +38,16 @@ struct Node {
     /// The open file descriptions on it (`open_ref`): its module's
     /// `release` hook runs when the last one closes.
     opens: u32,
+    /// The page cache holds one of the `refs` (it has pages of the file).
+    cached: bool,
+}
+
+impl Node {
+    /// Unlinked, and the page cache is all that holds it: its pages are
+    /// to go ([`take_orphans`]), and the file with them.
+    fn orphaned(&self) -> bool {
+        self.hidden && self.cached && self.refs == 1
+    }
 }
 
 impl Node {
@@ -52,6 +62,10 @@ static NODES: Mutex<Vec<Option<Node>>> = Mutex::new(Vec::new());
 /// Kept files (mount, file id) whose last reference went, for the VFS to
 /// have their filesystem forget outside every lock.
 static REAP: Mutex<Vec<(u16, u64)>> = Mutex::new(Vec::new());
+
+/// Unlinked files the page cache alone holds ([`Node::orphaned`]), for it
+/// to let go of (`pagecache::reap_hidden`, from the VFS's `reap`).
+static ORPHANS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 /// A reference to a file (see the module doc). Cloning one takes another
 /// reference; dropping the last frees the entry.
@@ -100,6 +114,11 @@ impl Drop for Vnode {
         };
         n.refs -= 1;
         if n.refs > 0 {
+            let orphaned = n.orphaned();
+            drop(nodes);
+            if orphaned {
+                ORPHANS.lock().push(self.id);
+            }
             return;
         }
         let n = slot.take().unwrap();
@@ -123,8 +142,12 @@ pub(super) fn get(mount: usize, rel: &str, file: Option<u64>) -> Vnode {
         nodes[id].as_mut().unwrap().refs += 1;
         return Vnode { id: id as u32 };
     }
-    let node = Node { mount: mount as u16, rel: String::from(rel), file, hidden: false, dead: false, refs: 1, opens: 0 };
-    let id = match nodes.iter().position(Option::is_none) {
+    let node = Node { mount: mount as u16, rel: String::from(rel), file, hidden: false, dead: false, refs: 1, opens: 0, cached: false };
+    Vnode { id: insert(&mut nodes, node) as u32 }
+}
+
+fn insert(nodes: &mut Vec<Option<Node>>, node: Node) -> usize {
+    match nodes.iter().position(Option::is_none) {
         Some(id) => {
             nodes[id] = Some(node);
             id
@@ -133,8 +156,15 @@ pub(super) fn get(mount: usize, rel: &str, file: Option<u64>) -> Vnode {
             nodes.push(Some(node));
             nodes.len() - 1
         }
-    };
-    Vnode { id: id as u32 }
+    }
+}
+
+/// A reference to a file of `mount` with the id `file` that no name
+/// reaches (`vfs::anon_file`): kept, as an unlinked file is, while it is
+/// referenced.
+pub(super) fn kept(mount: usize, file: u64) -> Vnode {
+    let node = Node { mount: mount as u16, rel: String::new(), file: Some(file), hidden: true, dead: false, refs: 1, opens: 0, cached: false };
+    Vnode { id: insert(&mut NODES.lock(), node) as u32 }
 }
 
 /// A path in a mount, copied out of the table (no allocation per read).
@@ -214,13 +244,44 @@ pub(super) fn referenced(mount: usize, rel: &str) -> bool {
     NODES.lock().iter().flatten().any(|n| n.named(mount, rel))
 }
 
+/// Something other than the page cache holds the file at `rel` of `mount`
+/// (an fd, a mapping, a cwd).
+pub(super) fn held(mount: usize, rel: &str) -> bool {
+    NODES.lock().iter().flatten().any(|n| n.named(mount, rel) && (n.opens > 0 || n.refs > n.cached as u32))
+}
+
+/// The page cache has pages of `node`'s file, or has let go of them.
+pub(super) fn set_cached(node: &Vnode, cached: bool) {
+    if let Some(Some(n)) = NODES.lock().get_mut(node.id as usize) {
+        n.cached = cached;
+    }
+}
+
 /// The file at `rel` of `mount` was unlinked but is kept by its id.
 pub(super) fn hide(mount: usize, rel: &str) {
-    for n in NODES.lock().iter_mut().flatten() {
-        if n.named(mount, rel) && n.file.is_some() {
-            n.hidden = true;
+    let mut orphans = Vec::new();
+    for (id, n) in NODES.lock().iter_mut().enumerate() {
+        if let Some(n) = n {
+            if n.named(mount, rel) && n.file.is_some() {
+                n.hidden = true;
+                if n.orphaned() {
+                    orphans.push(id as u32);
+                }
+            }
         }
     }
+    ORPHANS.lock().append(&mut orphans);
+}
+
+/// The unlinked files the page cache alone holds, noted since the last
+/// call ([`orphaned`] says whether each still is).
+pub(super) fn take_orphans() -> Vec<u32> {
+    core::mem::take(&mut *ORPHANS.lock())
+}
+
+/// Node `id` is an unlinked file the page cache alone holds.
+pub(super) fn orphaned(id: u32) -> bool {
+    matches!(NODES.lock().get(id as usize), Some(Some(n)) if n.orphaned())
 }
 
 /// The files at and below `rel` of `mount` are gone.

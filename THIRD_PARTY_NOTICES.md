@@ -35,7 +35,7 @@ under its own license.
 | ripgrep (+ its Rust dependencies) | 15.2.0 | Unlicense OR MIT | https://github.com/BurntSushi/ripgrep |
 | PCRE2 (for ripgrep) | 10.45 | BSD-3-Clause | https://github.com/PCRE2Project/pcre2 |
 | oksh (`/sh`) | 7.9 | Public domain (core) + BSD/ISC (portability files) | https://github.com/ibara/oksh |
-| Dropbear SSH | 2026.94 | MIT-style (plus BSD / public-domain parts; see upstream `LICENSE`) | https://matt.ucc.asn.au/dropbear/ |
+| Dropbear SSH | 2026.94 | MIT-style (plus BSD / public-domain parts; see upstream `LICENSE`; the myos patch, `ports/dropbear/*.myos.patch`, under the same license) | https://matt.ucc.asn.au/dropbear/ |
 | TinyCC (`tcc`) and `libtcc1` | `TCC_REV` in `ports/tcc/versions.env` | **LGPL-2.1** | https://github.com/TinyCC/tinycc |
 | Vim | 9.2.0 | Vim license (GPL-compatible, "charityware") | https://github.com/vim/vim |
 | ncurses | 6.5 | X11/MIT-style | https://ftp.gnu.org/gnu/ncurses/ |
@@ -45,7 +45,7 @@ under its own license.
 | GNU Make | 4.4.1 | **GPL-3.0-or-later** | https://ftp.gnu.org/gnu/make/ |
 | Lua | 5.4.7 | MIT | https://www.lua.org/ |
 | bottom (package `bottom`, `btm`) + its Rust dependencies | `packages/bottom/versions.env` (dependencies: bottom's `Cargo.lock`) | bottom, crossterm, sysinfo, ratatui: MIT (the myos patches to them: the same); dependencies: MIT / Apache-2.0 and similar permissive licenses (Zlib, Unlicense OR MIT); `option-ext` 0.2.0 (used unmodified, through `dirs-sys`): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://github.com/ClementTsang/bottom |
-| X client libraries (package `x11-libs`): xorgproto, xtrans, libXau, xcb-proto, libxcb, libX11 | see `packages/x11-libs/versions.env` | MIT / X11-style (X.Org, The Open Group and others; each upstream `COPYING`) | https://www.x.org/releases/individual/ |
+| X client libraries (package `x11-libs`): xorgproto, xtrans, libXau, xcb-proto, libxcb, libX11, libXext | see `packages/x11-libs/versions.env` | MIT / X11-style (X.Org, The Open Group and others; each upstream `COPYING`) | https://www.x.org/releases/individual/ |
 | TinyX `Xfbdev` (package `tinyx`; the X server) | `TINYX_REV` in `packages/tinyx/versions.env` | **GPL-3.0** (TinyX's changes; the X.Org code it started from is MIT/X11) | https://github.com/tinycorelinux/tinyx |
 | libfontenc, libXfont 1.x, libXdmcp's header (linked into / used to build `Xfbdev`) | see `packages/tinyx/versions.env` | MIT / X11-style | https://www.x.org/releases/individual/lib/ |
 | dwm (package `dwm`; the window manager) | `DWM_VERSION` in `packages/dwm/versions.env` | MIT/X Consortium | https://dwm.suckless.org/ |

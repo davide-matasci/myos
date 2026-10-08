@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prepare the dropbear source tree for myos builds.
-# Extracts the verified tarball into target/dropbear-myos-build and installs
-# myos overlays (config.h, localoptions.h). Upstream sources stay patch-free.
+# Extracts the verified tarball into target/dropbear-myos-build, applies the
+# *.myos.patch files and installs myos overlays (config.h, localoptions.h).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -24,7 +24,11 @@ extract_dropbear() {
   rm -f "$tmp"
 }
 
-if [[ ! -f "$WORK/src/default_options.h" ]]; then
+# A fresh tree whenever the patches change: they apply to pristine sources.
+PATCHES=("$HERE"/*.myos.patch)
+PATCH_STAMP="$(cat "${PATCHES[@]}" | sha256sum | awk '{print $1}')"
+if [[ ! -f "$WORK/src/default_options.h" ]] \
+  || [[ "$(cat "$WORK/.myos-patches" 2>/dev/null)" != "$PATCH_STAMP" ]]; then
   rm -rf "$WORK"
   mkdir -p "$WORK"
   extract_dropbear
@@ -34,6 +38,10 @@ if [[ ! -f "$WORK/src/default_options.h" ]]; then
     ls -la "$WORK/src" >&2 || true
     exit 1
   fi
+  for p in "${PATCHES[@]}"; do
+    patch -d "$WORK" -p0 --forward --batch < "$p"
+  done
+  printf '%s' "$PATCH_STAMP" > "$WORK/.myos-patches"
 fi
 
 # myos overlays win (copied after extraction; idempotent on re-runs).
