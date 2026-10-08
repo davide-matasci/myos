@@ -306,8 +306,9 @@ t usb_hotplug_busy_reuse usb_hotplug_busy_reuse
 # block the endpoint: issue #280.)
 usb_hub_replug() {
 	echo "HOST tests hub-unplug" >&3
+	# The stick goes first (a detach takes the children first), the hub after.
 	wait_for 30 sh -c '! test -e /dev/sda' || { cat /proc/usb; return 1; }
-	! grep -q ' hub ' /proc/usb || { cat /proc/usb; return 1; }
+	wait_for 30 sh -c '! grep -q " hub " /proc/usb' || { cat /proc/usb; return 1; }
 	echo "HOST tests hub-plug" >&3
 	wait_for 30 grep -q ' hub ' /proc/usb || { cat /proc/usb; return 1; }
 	sleep 2
