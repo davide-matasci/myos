@@ -48,8 +48,14 @@ int _kill(int pid, int sig) {
     return 0;
 }
 
+/* pthread.c: the pthread_atfork handlers, and the child's thread state. */
+void __myos_fork_prepare(void);
+void __myos_fork_done(int child);
+
 int _fork(void) {
+    __myos_fork_prepare();
     long ret = myos_syscall0(MYOS_SYS_FORK);
+    __myos_fork_done(ret == 0);
     if (ret == (long)MYOS_SYSERR) {
         errno = EAGAIN;
         return -1;
