@@ -697,18 +697,63 @@ pub fn readlinkat(dirfd: usize, path: usize, buf: usize, size: usize) -> R {
 
 // ---- memory ---------------------------------------------------------------
 
-/// Anonymous or file-backed (a private copy of the file: `MAP_SHARED` file
-/// mappings are refused, as the native layer cannot write them back).
+/// Anonymous or file-backed: the native `mmap` (its flag values are
+/// Linux's), a private copy of the file or a shared mapping of it.
 pub fn mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, off: usize) -> R {
-    const MAP_SHARED: usize = 0x01;
     const MAP_ANONYMOUS: usize = 0x20;
-    if flags & MAP_SHARED != 0 && flags & MAP_ANONYMOUS == 0 {
-        return Err(ENODEV);
-    }
     if flags & MAP_ANONYMOUS == 0 && task::fd_kind(fd).is_none() {
         return Err(EBADF);
     }
     native(user::do_mmap(addr, len, prot, flags, fd as isize, off), ENOMEM)
+}
+
+/// `memfd_create(name, flags)`: a file of `/dev/shm` created and unlinked
+/// at once (as libgloss's), named after `name`, this process and a
+/// counter. Sealing is accepted and not done; huge pages are refused.
+pub fn memfd_create(name: usize, flags: usize) -> R {
+    const MFD_CLOEXEC: usize = 1;
+    const MFD_ALLOW_SEALING: usize = 2;
+    const O_RDWR: usize = 2;
+    const O_CREAT: usize = 0o100;
+    const O_EXCL: usize = 0o200;
+    if flags & !(MFD_CLOEXEC | MFD_ALLOW_SEALING) != 0 {
+        return Err(EINVAL);
+    }
+    let raw = user_cstr(name, 249)?;
+    let name = String::from_utf8(raw).map_err(|_| EINVAL)?;
+    if name.contains('/') {
+        return Err(EINVAL);
+    }
+    static SEQ: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    for _ in 0..100 {
+        let seq = SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let path = alloc::format!("/dev/shm/memfd:{name}.{}.{seq}", task::current_pid());
+        let fd = match native(user::open_path(&path, O_RDWR | O_CREAT | O_EXCL), ENOENT) {
+            Ok(fd) => fd,
+            // Taken: a name of a program of the same pid, from before the
+            // counter went round (never, in practice).
+            Err(e) if e == EEXIST => continue,
+            Err(e) => return Err(e),
+        };
+        files::set(fd, view_path(&path), false);
+        files::set_cloexec(fd, flags & MFD_CLOEXEC != 0);
+        if let Ok(real) = real_path_nofollow(&path) {
+            fs::unlink(&real);
+        }
+        return Ok(fd);
+    }
+    Err(EEXIST)
+}
+
+/// `msync`: the native one (the flags are Linux's values too).
+pub fn msync(addr: usize, len: usize, flags: usize) -> R {
+    const MS_ASYNC: usize = 1;
+    const MS_INVALIDATE: usize = 2;
+    const MS_SYNC: usize = 4;
+    if flags & !(MS_ASYNC | MS_INVALIDATE | MS_SYNC) != 0 || flags & MS_ASYNC != 0 && flags & MS_SYNC != 0 {
+        return Err(EINVAL);
+    }
+    native(user::sys_msync(addr, len, flags), ENOMEM)
 }
 
 /// `pread64(fd, buf, count, offset)`: a read at `offset` that leaves the

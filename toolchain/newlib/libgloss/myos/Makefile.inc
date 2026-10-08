@@ -18,6 +18,7 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/environ.c \
 	%D%/getline.c \
 	%D%/mmap.c \
+	%D%/shm.c \
 	%D%/at.c \
 	%D%/termios.c \
 	%D%/ttyctl.c \

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cross-build TinyX's Xfbdev for the three arches, with the myos patches
 # (*.myos.patch: the kdrive OS layer on /dev/fb and /dev/console/kbd, no
-# MIT-SHM or XTEST, current proto headers) and libfontenc and libXfont 1.x,
+# XTEST, current proto headers) and libfontenc and libXfont 1.x,
 # against the X libraries of packages/x11-libs. Static, like everything; the
 # fonts are libXfont's built-in `fixed` and `cursor`. Then the boot test
 # tinyx_smoke, an X client, and startx, which runs a session.
@@ -106,7 +106,7 @@ build_arch() {
   "$cc" -O2 -Wall -Wextra "$HERE/startx.c" -o "$ROOT/target/startx-${arch}-unknown-none"
   "$cc" -O2 -Wall -Wextra -I"$stage$PREFIX/include" "$HERE/tinyx_smoke.c" \
     -o "$ROOT/target/tinyx-smoke-${arch}-unknown-none" \
-    -L"$stage$PREFIX/lib" -lX11 -lxcb -lXau
+    -L"$stage$PREFIX/lib" -lXext -lX11 -lxcb -lXau
   echo "tinyx -> target/xfbdev-${arch}-unknown-none"
 }
 

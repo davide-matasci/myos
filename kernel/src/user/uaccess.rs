@@ -40,9 +40,17 @@ fn each_user_page(aspace: u64, va: usize, len: usize, access: Access, mut f: imp
             return false;
         }
         // A page the page cache shares is mapped without write permission,
-        // and the copy would write to every process's copy of the file.
+        // and the copy would write to every process's copy of the file:
+        // only a shared writable mapping of the file (the frame is the
+        // file's page then) takes it.
         if access == Access::Write && fs::pagecache::is_cached(phys) {
-            return false;
+            let shared = aspace == task::current_aspace()
+                && task::mmap_backing(page).is_some_and(|(prot, _)| {
+                    prot & task::MMAP_SHARED != 0 && prot & PROT_WRITE as u32 != 0
+                });
+            if !shared {
+                return false;
+            }
         }
         f(unsafe { mm::hhdm(phys).add(off) }, done, n);
         done += n;
