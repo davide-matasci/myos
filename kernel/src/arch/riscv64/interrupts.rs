@@ -611,7 +611,7 @@ pub mod plic {
     }
 }
 
-const SBI_EXT_IPI: u64 = 0x7350_4949; // "IPI\0"
+const SBI_EXT_IPI: u64 = 0x73_5049; // "sPI", the SBI spec's IPI extension
 const SBI_IPI_SEND: u64 = 0;
 
 fn sbi_send_ipi(hart_mask: u64, hart_mask_base: u64) {
