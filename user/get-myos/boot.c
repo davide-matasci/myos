@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <dirent.h>
@@ -254,13 +255,15 @@ static void slot_path(char *out, const char *esp, char slot, const char *name) {
     strcat(out, name);
 }
 
-/* The file at `url`, whole, in memory (`size` bytes, malloc'd), its
- * SHA-256 `csum`: NULL when no attempt of three got it. In memory, not on
+/* The file at `url`, whole, in memory (`size` bytes, mapped: the brk heap
+ * is 4 MiB on riscv64, an initramfs some 20), its SHA-256 `csum`: NULL when
+ * no attempt of three got it; free_fetched() unmaps it. In memory, not on
  * the ESP: nothing unchecked is written there, and the download does not
  * wait on the disk (a slow one stalled the transfer). */
 static uint8_t *fetch_checked(const char *url, long long size, const char *csum) {
-    uint8_t *data = malloc(size > 0 ? (size_t)size : 1);
-    if (data == NULL) {
+    size_t len = size > 0 ? (size_t)size : 1;
+    uint8_t *data = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (data == MAP_FAILED) {
         say("out of memory for ", url, NULL);
         return NULL;
     }
@@ -293,8 +296,12 @@ static uint8_t *fetch_checked(const char *url, long long size, const char *csum)
             sleep(2);
         }
     }
-    free(data);
+    munmap(data, len);
     return NULL;
+}
+
+static void free_fetched(uint8_t *data, long long size) {
+    munmap(data, size > 0 ? (size_t)size : 1);
 }
 
 /* Download the boot files and write them into the slot of the ESP mounted
@@ -318,7 +325,7 @@ static int write_slot(const char *esp, const char *part, char slot, const boot_f
             return die("download failed: ", url);
         }
         int rc = write_file(path, (const char *)data, (size_t)b->size[i]);
-        free(data);
+        free_fetched(data, b->size[i]);
         if (rc != 0) {
             return die("cannot write ", path);
         }
