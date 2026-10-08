@@ -170,7 +170,7 @@ on the same calls, laid out as the std port's:
   `getgr*_r`, `readdir_r` and `ttyname_r`, and `flockfile` /
   `funlockfile` / `ftrylockfile` on the stream's own lock, the one stdio
   takes around each call. libX11 is built with its locks
-  (`packages/x11-libs`): a threaded client calls `XInitThreads()`.
+  (`packages/x11-libs`), which its constructor turns on before `main`.
 
 `/bin/etc/pthread_smoke` (test `pthread`) checks the API on one thread,
 then a mutex and a condition variable under contention, `errno`, keys,

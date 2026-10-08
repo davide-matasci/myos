@@ -9,13 +9,16 @@
  * round trip, XCloseDisplay. The server checks what arrived (the window's
  * size, its WM_NAME, the map). That is libxcb's and libX11's whole path:
  * the setup, request encoding, writev, poll and the replies. Then the
- * client's threads (XInitThreads, Xlib's locks on libgloss's pthreads):
+ * client's threads (Xlib's locks on libgloss's pthreads, which its
+ * constructor turns on with XInitThreads before main: the display has its
+ * lock without the client calling it):
  * four intern 50 atoms each on the one display at once, and every reply
  * reaches the thread that asked, 200 atoms all different. Prints
  * [ OK ] x11.
  */
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/Xlibint.h>
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
@@ -275,14 +278,14 @@ static int threads(Display *d) {
 }
 
 static int client(void) {
-    if (!XInitThreads()) {
-        printf("[ FAIL ] x11 XInitThreads: Xlib without threads\n");
-        return 1;
-    }
     setenv("DISPLAY", ":5", 1);
     Display *d = XOpenDisplay(NULL);
     if (!d) {
         printf("[ FAIL ] x11 XOpenDisplay\n");
+        return 1;
+    }
+    if (!d->lock) {
+        printf("[ FAIL ] x11 display without its lock: Xlib's constructor did not call XInitThreads\n");
         return 1;
     }
     int s = DefaultScreen(d);
