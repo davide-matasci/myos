@@ -26,7 +26,12 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 # hh length modifiers (sbase wc and cksum print with %zu).
 # SIGNAL_PROVIDED: newlib's userspace signal()/raise() emulation is replaced
 # by kernel delivery (libgloss signal.c); raise() becomes kill(getpid(), sig).
-TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL -DHAVE_RENAME -DSIGNAL_PROVIDED"
+# Threads (libgloss pthread.c, docs/threads.md): __DYNAMIC_REENT__ makes
+# errno and stdio reach their state through __getreent(), which
+# GETREENT_PROVIDED leaves to libgloss (each thread's own struct _reent);
+# --enable-newlib-retargetable-locking makes malloc, stdio, atexit, the
+# environment and tz lock through libgloss's __retarget_lock_* functions.
+TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL -DHAVE_RENAME -DSIGNAL_PROVIDED -D__DYNAMIC_REENT__ -DGETREENT_PROVIDED"
 
 build_one() {
   local arch="$1"
@@ -45,6 +50,7 @@ build_one() {
     --prefix="$prefix" \
     --disable-multilib \
     --enable-newlib-io-c99-formats \
+    --enable-newlib-retargetable-locking \
     CC="${CC:-clang}" \
     CXX="${CXX:-clang++}" \
     CC_FOR_TARGET="${triple}-cc" \
@@ -62,6 +68,9 @@ build_one() {
   jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
   make -j"$jobs" all-target-newlib
   make install-target-newlib
+  # libgloss defines the locks (pthread.c); libc's single-threaded defaults
+  # would otherwise be linked first and clash with them.
+  "${triple}-ar" d "$prefix/${triple}/lib/libc.a" libc_a-lock.o
   "$ROOT/toolchain/newlib/build-libgloss.sh" "$arch" "$prefix"
   echo "newlib + libgloss -> $prefix"
 }

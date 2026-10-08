@@ -131,14 +131,51 @@ atomics to plain loads and stores). `/bin/std/thread` (`user/std/thread`, test
 destructors, scoped threads, parking, and that joined and detached threads
 free their task slots and stacks (120 threads, past the kernel's 64 slots).
 
+## C threads (pthreads)
+
+libgloss (`toolchain/newlib/libgloss/myos/pthread.c`) runs POSIX threads
+on the same calls, laid out as the std port's:
+
+- **A thread** is one mapping: a guard page, its stack (1 MiB unless the
+  attributes say otherwise, paged in as touched) and on top its control
+  block, `struct __pthread`, which `pthread_t` points at and the thread
+  pointer too (word 0 points at itself, for x86_64's `fs:0`). Joining frees
+  the mapping, or the thread itself when it was detached first, ending in
+  the same register-only sequence as a std thread with its signals blocked.
+  The main thread's block is a static, and its thread pointer is only set
+  when the second thread starts: a program that never starts one runs as
+  before. The last thread to end exits the process as `exit(0)` does
+  (atexit handlers, stdio flushed); a `pthread_exit` from `main` leaves the
+  others running.
+- **newlib's state per thread**: newlib is built with `__DYNAMIC_REENT__`
+  (`toolchain/newlib/build.sh`), so `errno` and stdio reach their state
+  through `__getreent()`, which libgloss answers with the calling thread's
+  own `struct _reent` (the main thread's is newlib's `_impure_ptr`). Its
+  internal locks (malloc, stdio's streams, atexit, the environment, tz) are
+  retargeted (`--enable-newlib-retargetable-locking`) to libgloss mutexes.
+- **Locks** are one futex word on `wait_addr` / `wake_addr` (0 free, 1 held,
+  2 held with waiters). A mutex keeps its holder's tid and a recursive
+  one's count beside it, so `pthread_mutex_t` is four words in the
+  sysroot's `<sys/_pthreadtypes.h>` (`build-libgloss.sh`; newlib's own is
+  one), and `pthread_t` a pointer. A relock of a default mutex is
+  `EDEADLK`, a normal one waits for itself as POSIX says. A condition
+  variable is a sequence number its waiters sleep on; `pthread_once` a word
+  the others wait on while the first runs the routine.
+- **Keys**: 64, values per thread, destructors run when a thread ends. A
+  key made again in a deleted key's slot reads `NULL` everywhere.
+- **fork** runs the `pthread_atfork` handlers; the child is the forking
+  thread alone.
+
+`/bin/etc/pthread_smoke` (test `pthread`) checks the API on one thread,
+then a mutex and a condition variable under contention, `errno`, keys,
+stdio and malloc per thread, `pthread_once` across threads, `pthread_exit`
+with a cleanup handler, a detached thread, and 150 threads started and
+joined, past the kernel's task slots.
+
 ## Not yet
 
-- Threads in newlib for native C programs (Rust has `std::thread`, above;
-  the Linux layer runs musl's pthreads, see `docs/linux-compat.md`). libgloss has
-  the pthread API for one thread (`toolchain/newlib/libgloss/myos/pthread.c`):
-  mutexes count their locks (a relock is `EDEADLK`, not a hang), a timed
-  condition wait sleeps to its deadline, once and keys work, and
-  `pthread_create` fails with `EAGAIN`. Libraries that lock "in case"
-  (libxcb, libX11) build and run on it; a real `pthread_create` on
-  `thread_spawn` and `wait_addr` would replace the stubs (issue #301).
+- C threads: cancellation (a thread is never cancelled), read-write locks,
+  barriers and spin locks (newlib declares none of them for myos), a
+  condition variable's clock other than `CLOCK_REALTIME`, and newlib's own
+  locks held across a fork (issue #333).
 - `exec` from a thread other than the leader.
