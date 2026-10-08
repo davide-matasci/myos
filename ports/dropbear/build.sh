@@ -133,7 +133,9 @@ for arch in x86_64 aarch64 riscv64; do
     fi
   fi
 
-  # dropbear objects
+  # dropbear objects, compiled afresh: a rebuild means the sources (or the
+  # patches) changed, and reused objects would keep the old code.
+  rm -f "$ROOT/target/db_${arch}_"*.o
   objs=()
   while IFS= read -r f; do
     base="db_${arch}_$(basename "$f" .c)"
