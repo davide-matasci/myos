@@ -73,10 +73,14 @@ fn format_and_write_fat16(part: &mut [u8], files: &[DiskFile]) -> () {
     write_fat16_ent(part, fat0, 0, 0xFFF8);
     write_fat16_ent(part, fat0, 1, 0xFFFF);
     let mut next_cluster: u16 = 2;
+    // The label of the boot sector, as the root directory's first entry
+    // too: dosfstools finds a volume with only one of them in error.
+    part[root_off..root_off + 11].copy_from_slice(b"MYOS       ");
+    part[root_off + 11] = 0x08;
     let mut root = RootDir {
         off: root_off,
         len: root_sectors as usize * SECTOR,
-        used: 0,
+        used: 32,
     };
     for f in files {
         put_file(part, fat0, data_off, spc, clusters as u16, &mut next_cluster, &mut root, &f.path, &f.data);
