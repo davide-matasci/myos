@@ -6,6 +6,16 @@ MYOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export MYOS_ROOT
 
 MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
+
+# A cache key from the `sha256sum` lines (and version strings) on stdin.
+# The checkout path is cut from them first, so a port's key is the same
+# wherever the repository is checked out and a local clone pulls what CI
+# built (issue #286).
+myos_hash() {
+  awk -v root="$MYOS_ROOT/" '{ i = index($0, root); if (i) $0 = substr($0, 1, i - 1) substr($0, i + length(root)) } 1' \
+    | sha256sum | awk '{print $1}'
+}
+
 # The directory of a port: under ports/ (in the image) or packages/ (a
 # package, see docs/ports.md); a port moves between the two by moving it.
 myos_port_dir() {
@@ -94,7 +104,7 @@ myos_newlib_version_hash() {
       sha256sum "$MYOS_ROOT/toolchain/newlib/build.sh"
       sha256sum "$MYOS_ROOT/toolchain/newlib/build-libgloss.sh"
       sha256sum "$MYOS_ROOT/toolchain/newlib/tool-wrappers.sh"
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -122,7 +132,7 @@ myos_c_hello_version_hash() {
       sha256sum "$MYOS_ROOT/user/c/hello.c"
       sha256sum "$MYOS_ROOT/user/c/socket_smoke.c"
       sha256sum "$MYOS_ROOT/scripts/build-c-hello.sh"
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -148,7 +158,7 @@ myos_get_myos_version_hash() {
         "$MYOS_ROOT/user/get-myos/pkgtools.h" "$MYOS_ROOT/user/get-myos/build.sh"
       myos_newlib_version_hash
       myos_zlib_version_hash
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -181,7 +191,7 @@ myos_c_smokes_version_hash() {
         "$MYOS_ROOT/user/c/fileio_smoke.c" "$MYOS_ROOT/user/c/mmap_smoke.c" "$MYOS_ROOT/user/c/shm_smoke.c" \
         "$MYOS_ROOT/user/c/fault_smoke.c" "$MYOS_ROOT/user/c/memhog.c" \
         "$MYOS_ROOT/scripts/build-c-smokes.sh"
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -210,7 +220,7 @@ myos_sbase_version_hash() {
       sha256sum "$MYOS_ROOT/ports/sbase/bins.txt"
       find "$MYOS_ROOT/ports/sbase" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -257,7 +267,7 @@ myos_oksh_version_hash() {
       sha256sum "$MYOS_ROOT/ports/oksh/fetch.sh"
       find "$MYOS_ROOT/ports/oksh" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -283,7 +293,7 @@ myos_ubase_version_hash() {
       sha256sum "$MYOS_ROOT/ports/ubase/bins.txt"
       find "$MYOS_ROOT/ports/ubase" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -323,7 +333,7 @@ myos_coreutils_version_hash() {
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/coreutils/bins.txt"
       sha256sum "$MYOS_ROOT/ports/coreutils/cargo-config.toml"
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -367,7 +377,7 @@ myos_ripgrep_version_hash() {
         | sort -z | xargs -0 sha256sum
       myos_sysroot_version_hash
       myos_newlib_version_hash
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -404,7 +414,7 @@ myos_dropbear_version_hash() {
         "$MYOS_ROOT/ports/dropbear/myos_builtins.c" \
         "$MYOS_ROOT"/ports/dropbear/*.myos.patch || true
       myos_newlib_version_hash
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -436,7 +446,7 @@ myos_linux_compat_version_hash() {
         | sort -z | xargs -0 sha256sum 2>/dev/null || true
       myos_newlib_version_hash
       myos_zlib_version_hash
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -483,7 +493,7 @@ myos_curl_version_hash() {
       find "$MYOS_ROOT/ports/mbedtls/include" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum 2>/dev/null || true
       myos_newlib_version_hash
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -521,7 +531,7 @@ myos_tcc_version_hash() {
       find "$MYOS_ROOT/ports/tcc" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -551,7 +561,7 @@ myos_vim_version_hash() {
       sha256sum "$(myos_port_dir vim)/versions.env"
       find "$(myos_port_dir vim)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -578,7 +588,7 @@ myos_ncurses_version_hash() {
       sha256sum "$(myos_port_dir ncurses)/versions.env"
       find "$(myos_port_dir ncurses)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -603,7 +613,7 @@ myos_clear_version_hash() {
       myos_ncurses_version_hash
       find "$(myos_port_dir clear)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -706,7 +716,7 @@ myos_x11_libs_version_hash() {
       myos_newlib_version_hash
       find "$(myos_port_dir x11-libs)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -731,7 +741,7 @@ myos_tinyx_version_hash() {
       myos_zlib_version_hash
       find "$(myos_port_dir tinyx)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -756,7 +766,7 @@ myos_x11_xft_version_hash() {
       myos_x11_libs_version_hash
       find "$(myos_port_dir x11-xft)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -777,7 +787,7 @@ myos_x11_fonts_version_hash() {
   local h
   h="$(
     find "$(myos_port_dir x11-fonts)" -type f -print0 2>/dev/null \
-      | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}'
+      | sort -z | xargs -0 sha256sum | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -796,7 +806,7 @@ myos_dwm_version_hash() {
       myos_x11_xft_version_hash
       find "$(myos_port_dir dwm)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -820,7 +830,7 @@ myos_st_version_hash() {
       myos_x11_xft_version_hash
       find "$(myos_port_dir st)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -849,7 +859,7 @@ myos_bottom_version_hash() {
         "$MYOS_ROOT/ports/coreutils/crates" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/coreutils/prepare.sh" "$MYOS_ROOT/ports/coreutils/versions.env"
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -873,7 +883,7 @@ myos_dmenu_version_hash() {
       myos_x11_xft_version_hash
       find "$(myos_port_dir dmenu)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -899,7 +909,7 @@ myos_x11_apps_version_hash() {
       myos_x11_xft_version_hash
       find "$(myos_port_dir x11-apps)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -924,7 +934,7 @@ myos_zlib_version_hash() {
       sha256sum "$MYOS_ROOT/ports/zlib/versions.env"
       find "$MYOS_ROOT/ports/zlib" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -951,7 +961,7 @@ myos_git_version_hash() {
       sha256sum "$(myos_port_dir git)/versions.env"
       find "$(myos_port_dir git)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -995,7 +1005,7 @@ myos_lynx_version_hash() {
         | sort -z | xargs -0 sha256sum 2>/dev/null || true
       find "$(myos_port_dir lynx)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -1020,7 +1030,7 @@ myos_lua_version_hash() {
       sha256sum "$(myos_port_dir lua)/fetch.sh"
       find "$(myos_port_dir lua)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -1043,7 +1053,7 @@ myos_make_version_hash() {
       find "$(myos_port_dir make)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
@@ -1071,7 +1081,7 @@ myos_os_test_version_hash() {
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/sbase/trunctfdf2.c" 2>/dev/null
       sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
-    } | sha256sum | awk '{print $1}'
+    } | myos_hash
   )"
   printf '%s' "$h"
 }
