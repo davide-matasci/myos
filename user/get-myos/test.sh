@@ -73,7 +73,8 @@ boot_upgrade() {
 	get-myos -m $MIRROR --upgrade 2>&1 | grep -q 'up to date'
 }
 
-# --install on the scratch disk (4 GiB): BIOS boot, ESP and data partition
+# --install on the scratch disk (4 GiB), after every other test (t_last:
+# the host boots the disk it made next, src/main.rs `test_boots`): BIOS boot, ESP and data partition
 # (the rest of the disk); the ESP has Limine from the running one, slot a
 # at the mirror's release and a limine.conf booting it alone; the data
 # partition is an empty ext2. The running boot disk is refused.
@@ -108,5 +109,5 @@ if [ "$MODE" = full ]; then
 	t get_myos_list get_myos_list
 	t get_myos_upgrade get_myos_upgrade
 	t boot_upgrade boot_upgrade
-	t boot_install boot_install
+	t_last boot_install
 fi

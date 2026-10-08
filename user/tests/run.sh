@@ -64,6 +64,14 @@ t() {
 	fi
 }
 
+# t_last NAME: run the test NAME (a function) after every other one: the
+# tests that leave something on the scratch disk the host boots afterwards,
+# which a later test would reuse (mkfs.ext2's formats the whole disk).
+LAST=
+t_last() {
+	LAST="$LAST $1"
+}
+
 # contains NEEDLE FILE: the file has the string somewhere.
 contains() {
 	grep -q -F -- "$1" "$2"
@@ -130,6 +138,9 @@ fi
 . $TESTS/kernel.sh
 for f in $TESTS/ports/*.sh; do
 	[ -f "$f" ] && . "$f"
+done
+for f in $LAST; do
+	t $f $f
 done
 
 [ -n "$mirror" ] && echo "$mirror" > /dev/console/ctl

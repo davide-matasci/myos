@@ -157,7 +157,8 @@ cannot reach with 4 GiB of RAM). After a full list that passed, the launcher
 boots the copy again and types `sh /lib/myos-tests/run.sh reboot`, which
 checks only that the system came up from slot `b` at the release the
 upgrade wrote; then it boots the scratch disk `get-myos --install` made
-(kept as `target/installed-<name>.img`) as the boot disk, by BIOS on the
+(the full list's last test, `t_last` in `run.sh`: mkfs.ext2's formats the
+whole scratch disk; kept as `target/installed-<name>.img`) as the boot disk, by BIOS on the
 bios job and UEFI on the others, and `run.sh installed` checks it came up
 from its slot `a`.
 
