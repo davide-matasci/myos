@@ -78,9 +78,10 @@ The full boot test (`packages/os-test/test.sh`, `docs/testing.md`) runs a
 **thin curated set**: the basic smoke list **plus** ~100 tests spanning
 non-basic suites (`limits`, `io`, `malloc`, `paths`, `process`, `signal`,
 `stdio`, `udp`) **plus** `misc/ci-expansion.tests` (155: POSIX core, more
-non-basic, signal handlers, and the myos `chroot`/FIFO suite). See
-`SUITES.md` for the full suite inventory, the selection rationale and the
-deferred tests. Not the full ~1187 basic suite (CI #860/#866 timed out).
+non-basic, signal handlers, and the myos `chroot`/FIFO suite) **plus**
+`misc/ci-expansion-2.tests` (502: every other test that builds and passes on
+all three arches). 833 tests, all host-prebuilt. See `SUITES.md` for the full
+suite inventory, the selection rationale and the deferred tests.
 
 Guest staging uses a thin copy (not the whole suite):
 
@@ -90,7 +91,7 @@ make TESTLIST=misc/ci-boot.tests report
 ```
 
 `ci-boot.tests` includes `ci-basic-smoke.tests` + `ci-nonbasic-100.tests` +
-`ci-expansion.tests`.
+`ci-expansion.tests` + `ci-expansion-2.tests`.
 `ci-smoke-copy.sh` stages `Makefile` + `misc/` + suite headers + each listed
 `.c` (suite-prefixed paths for non-basic; basic-relative for the smoke list).
 
@@ -155,6 +156,7 @@ lists only once they pass honestly.
 - `overlay/misc/myos-report.sh` — pass/fail/compile_error + `pass_rate=` summary.
 - `overlay/misc/ci-basic-smoke.tests` — boot CI smoke list (`TESTS +=` paths).
 - `overlay/misc/ci-expansion.tests` — POSIX core + non-basic + myos expansion.
+- `overlay/misc/ci-expansion-2.tests` — the rest of the suite that passes on every arch.
 - `overlay/myos/` — myos-specific tests (`chroot/`, `fifo/`) + `myos.h` helpers.
 - `overlay/misc/ci-smoke-copy.sh` — thin writable staging for boot CI (copies prebuilts when present).
 - `prebuild-basic-smoke.sh` — host-build smoke ELFs into `target/os-test-prebuilt/`.

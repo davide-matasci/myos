@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Host-prebuild boot-CI curated os-test binaries (basic smoke + ~100 non-basic)
-# so the guest only runs them.
+# Host-prebuild the boot-CI curated os-test binaries (every list
+# ci-boot.tests includes) so the guest only runs them.
 #
 # Why: on x86 TCG (esp. GHA), each guest `tcc … -lm` of an os-test source is
 # ~90–120s vs ~1–2s for heap's tiny tcc. Compiling on the host against the
@@ -23,6 +23,7 @@ BOOT_LIST="$HERE/overlay/misc/ci-boot.tests"
 BASIC_LIST="$HERE/overlay/misc/ci-basic-smoke.tests"
 NONBASIC_LIST="$HERE/overlay/misc/ci-nonbasic-100.tests"
 EXPANSION_LIST="$HERE/overlay/misc/ci-expansion.tests"
+EXPANSION2_LIST="$HERE/overlay/misc/ci-expansion-2.tests"
 EMBED="${OSTEST_EMBED:-$ROOT/target/os-test-embed}"
 OUT_ROOT="$ROOT/target/os-test-prebuilt"
 
@@ -79,6 +80,7 @@ done < <({
   parse_tests "$BASIC_LIST"
   parse_tests "$NONBASIC_LIST"
   parse_tests "$EXPANSION_LIST"
+  parse_tests "$EXPANSION2_LIST"
 })
 
 if [[ ${#TESTS[@]} -eq 0 ]]; then
@@ -99,7 +101,6 @@ link_one() {
   local obj="$ROOT/target/os-test-prebuilt-obj/${arch}/${rel}.o"
   local cc="${triple}-cc"
   local extra=()
-  local suite="${rel%%/*}"
 
   if [[ ! -f "$src" ]]; then
     echo "error: missing source $src" >&2
@@ -133,13 +134,9 @@ link_one() {
     extra+=("$sf" "$(myos_riscv64_softfloat)")
   fi
 
-  # Link -lm for stdio float printf and any suite that needs it.
-  local libs=(-lc -lgloss -lg)
-  case "$suite" in
-  stdio|signal|udp|io|process|malloc|paths|limits)
-    libs+=(-lm)
-    ;;
-  esac
+  # -lm for float printf and the math/complex/fenv tests; a static archive,
+  # so it adds nothing to the tests that do not use it.
+  local libs=(-lc -lgloss -lg -lm)
 
   ld.lld -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
