@@ -20,6 +20,9 @@
 //! still mapped then stay with their mappings, and the last one frees them.
 //! The cache holds up to a quarter of usable RAM; past that, and when
 //! memory runs out ([`release_unmapped`]), the pages no mapping holds go.
+//! A file unlinked while an fd or a mapping holds it keeps its pages, the
+//! holders' view of it; once the cache is all that holds it, it lets go
+//! ([`reap_hidden`]), and the file goes.
 //!
 //! A shared writable mapping (`MAP_SHARED` of a regular file) gets the
 //! cached frame too, and writes to it ([`map_shared`]): the frame is then
@@ -156,10 +159,11 @@ fn map_as(node: &Vnode, page: usize, shared: bool, dirty: bool) -> u64 {
                 }
                 return (had, Some(frame), true);
             }
-            let file = c
-                .files
-                .entry(id)
-                .or_insert_with(|| File { node: spare.take().unwrap(), pages: BTreeMap::new(), dirty: 0 });
+            let file = c.files.entry(id).or_insert_with(|| {
+                let node = spare.take().unwrap();
+                node::set_cached(&node, true);
+                File { node, pages: BTreeMap::new(), dirty: 0 }
+            });
             file.pages.insert(index, frame);
             file.dirty += dirty as usize;
             c.frames.insert(frame, Frame { maps: 1, page: Some((id, index)), dirty });
@@ -328,7 +332,7 @@ pub fn truncated(node: &Vnode, size: usize) {
         c.held -= dropped;
         file.dirty = file.pages.len();
         if file.pages.is_empty() {
-            return c.files.remove(&id).map(|f| f.node);
+            return c.files.remove(&id).map(let_go);
         }
         None
     });
@@ -385,9 +389,31 @@ fn write_back(id: usize, pick: impl Fn(&Frame) -> bool) {
     }
 }
 
+/// A file leaves the cache: its node, no longer the cache's.
+fn let_go(file: File) -> Vnode {
+    node::set_cached(&file.node, false);
+    file.node
+}
+
+/// Let go of the unlinked files the cache alone holds (`vfs::reap`): their
+/// pages go, and the files with them.
+pub fn reap_hidden() {
+    let orphans = node::take_orphans();
+    for id in orphans {
+        // The slot may hold another file by now.
+        if node::orphaned(id) {
+            drop_pages(|fid, _| fid == id as usize, false);
+        }
+    }
+}
+
 /// Let go of the file at `rel` of mount `mount`, about to be unlinked or
-/// replaced (the cache would keep it otherwise).
+/// replaced, when nothing else holds it (the cache would keep it
+/// otherwise); a held file keeps its pages for its holders.
 pub fn forget_at(mount: usize, rel: &str) {
+    if node::held(mount, rel) {
+        return;
+    }
     let pick = |_: usize, f: &File| node::location(&f.node).is_some_and(|(m, r)| m == mount && r.as_str() == rel);
     sync_files(pick);
     drop_pages(pick, false);
@@ -434,7 +460,7 @@ fn drop_pages(pick: impl Fn(usize, &File) -> bool, keep_dirty: bool) {
             file.dirty = if keep_dirty { file.pages.len() } else { 0 };
             if file.pages.is_empty() {
                 if let Some(file) = c.files.remove(&id) {
-                    nodes.push(file.node);
+                    nodes.push(let_go(file));
                 }
             }
         }
@@ -490,7 +516,7 @@ fn evict(target: usize) -> usize {
             file.pages.remove(&index);
             if file.pages.is_empty() {
                 if let Some(file) = c.files.remove(&id) {
-                    nodes.push(file.node);
+                    nodes.push(let_go(file));
                 }
             }
         }

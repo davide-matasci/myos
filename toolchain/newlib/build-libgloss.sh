@@ -121,7 +121,7 @@ done
 mkdir -p "$PORT/sys"
 cp "$ROOT"/toolchain/newlib/libgloss/myos/sys/*.h "$PORT/sys/"
 
-for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ getline dirent at basename dirname time pwdgrp mmap mount termios ttyctl socket inet netdb pollselect pty search sleep uio pthread syslog reboot; do
+for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ getline dirent at basename dirname time pwdgrp mmap shm mount termios ttyctl socket inet netdb pollselect pty search sleep uio pthread syslog reboot; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done

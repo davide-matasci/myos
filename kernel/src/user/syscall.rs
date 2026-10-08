@@ -1667,7 +1667,10 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     // written back when the mapping goes: `MMAP_SHARED`); through a
     // read-only fd it is a private one that may not be written. A shared
     // mapping of a device (a module's `mmap` hook: `/dev/fb/data`) maps the
-    // device's own pages at once.
+    // device's own pages at once. An anonymous shared mapping is one of a
+    // tmpfs file no name reaches, made here and living by its references
+    // (the regions of this process and, after a fork, its children's).
+    let anon_shared = flags & MAP_ANON != 0 && flags & MAP_SHARED != 0;
     let file = if flags & MAP_ANON != 0 {
         None
     } else {
@@ -1685,7 +1688,9 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         _ => false,
     };
     let mut shared = 0;
-    if file.is_some() && !device && flags & MAP_SHARED != 0 {
+    if anon_shared {
+        shared = task::MMAP_SHARED;
+    } else if file.is_some() && !device && flags & MAP_SHARED != 0 {
         if task::fd_writable(fd as usize) {
             shared = task::MMAP_SHARED;
         } else if prot & PROT_WRITE != 0 {
@@ -1706,6 +1711,13 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         return SYSERR;
     }
     let map_len = pages * PAGE;
+    let (file, offset) = match file {
+        None if anon_shared => match fs::anon_file(map_len) {
+            Some(node) => (Some(node), 0),
+            None => return SYSERR,
+        },
+        file => (file, offset),
+    };
     // A file or device mapping reads from `offset + (0..map_len)`: an offset
     // near usize::MAX would overflow that (a kernel abort, overflow checks
     // on), and one past the u32 page index the region stores (vm.rs

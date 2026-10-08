@@ -707,6 +707,44 @@ pub fn mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, off: 
     native(user::do_mmap(addr, len, prot, flags, fd as isize, off), ENOMEM)
 }
 
+/// `memfd_create(name, flags)`: a file of `/dev/shm` created and unlinked
+/// at once (as libgloss's), named after `name`, this process and a
+/// counter. Sealing is accepted and not done; huge pages are refused.
+pub fn memfd_create(name: usize, flags: usize) -> R {
+    const MFD_CLOEXEC: usize = 1;
+    const MFD_ALLOW_SEALING: usize = 2;
+    const O_RDWR: usize = 2;
+    const O_CREAT: usize = 0o100;
+    const O_EXCL: usize = 0o200;
+    if flags & !(MFD_CLOEXEC | MFD_ALLOW_SEALING) != 0 {
+        return Err(EINVAL);
+    }
+    let raw = user_cstr(name, 249)?;
+    let name = String::from_utf8(raw).map_err(|_| EINVAL)?;
+    if name.contains('/') {
+        return Err(EINVAL);
+    }
+    static SEQ: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    for _ in 0..100 {
+        let seq = SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let path = alloc::format!("/dev/shm/memfd:{name}.{}.{seq}", task::current_pid());
+        let fd = match native(user::open_path(&path, O_RDWR | O_CREAT | O_EXCL), ENOENT) {
+            Ok(fd) => fd,
+            // Taken: a name of a program of the same pid, from before the
+            // counter went round (never, in practice).
+            Err(e) if e == EEXIST => continue,
+            Err(e) => return Err(e),
+        };
+        files::set(fd, view_path(&path), false);
+        files::set_cloexec(fd, flags & MFD_CLOEXEC != 0);
+        if let Ok(real) = real_path_nofollow(&path) {
+            fs::unlink(&real);
+        }
+        return Ok(fd);
+    }
+    Err(EEXIST)
+}
+
 /// `msync`: the native one (the flags are Linux's values too).
 pub fn msync(addr: usize, len: usize, flags: usize) -> R {
     const MS_ASYNC: usize = 1;

@@ -159,6 +159,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         296 | 328 => ret(sys::pwritev(a[0], a[1], a[2], a[3])), // pwritev, pwritev2
         302 => ret(sys::prlimit(a[1], a[3])),
         318 => ret(sys::getrandom(a[0], a[1])),
+        319 => ret(sys::memfd_create(a[0], a[1])),
         _ => err(ENOSYS),
     }
 }

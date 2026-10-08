@@ -938,9 +938,23 @@ fn hide_held(idx: usize, rel: &str) -> bool {
 /// Called where no lock is held: on the way into the calls that change the
 /// tree, and after a close.
 fn reap() {
+    pagecache::reap_hidden();
     for (idx, id) in node::take_reaped() {
         file_forget(idx as usize, id);
     }
+}
+
+/// A file of `size` zero bytes on the tmpfs that no name reaches, for an
+/// anonymous shared mapping (`MAP_SHARED | MAP_ANON`): it lives while
+/// referenced, as an unlinked file does. Its bytes are the tmpfs's, in the
+/// kernel heap, that the mapping's frames are written back to: the mapping
+/// costs its size twice, up to the tmpfs file cap (issue #338).
+pub fn anon_file(size: usize) -> Option<Vnode> {
+    let idx = mount_index("tmpfs")?;
+    let id = super::tmpfs::create_kept()?;
+    let node = node::kept(idx, id);
+    // Dropped unsized, the node has the tmpfs forget the file.
+    file_set_size(idx, id, size).then_some(node)
 }
 
 /// Held to read while a path is resolved and the file it names used, or a

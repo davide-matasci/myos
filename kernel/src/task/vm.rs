@@ -87,7 +87,20 @@ pub fn set_brk(brk: u64) {
 /// reclaimed them). Used after in-place exec frees anonymous maps before
 /// `expand_user_elf` so a later `reclaim_user_aspace` / exit cannot double-free.
 pub fn clear_mmap() {
-    with_process_mut(|t| t.mmap.clear());
+    with_process_mut(|t| {
+        t.mmap.clear();
+        prune_files(t);
+    });
+}
+
+/// Let go of the mapped files no region names any more: an anonymous
+/// shared mapping's file (`vfs::anon_file`) lives by its references.
+fn prune_files(t: &mut Process) {
+    for i in 0..MAX_MAPPED_FILES {
+        if t.mapped_files[i].is_some() && !t.mmap.iter().any(|r| r.file as usize == i + 1) {
+            t.mapped_files[i] = None;
+        }
+    }
 }
 
 /// A copy of the current process's regions, sorted by address.
@@ -214,7 +227,11 @@ fn coalesce(regions: &mut Vec<MmapRegion>) {
 pub fn mmap_remove(va: u64, pages: u32) -> bool {
     let lo = va as usize;
     let hi = lo + pages as usize * crate::user::PAGE;
-    with_process_mut(|t| carve(&mut t.mmap, lo, hi).is_some())
+    with_process_mut(|t| {
+        let removed = carve(&mut t.mmap, lo, hi).is_some();
+        prune_files(t);
+        removed
+    })
 }
 
 /// Record `prot` for the mapped parts of `[va, va + pages)` (a device or

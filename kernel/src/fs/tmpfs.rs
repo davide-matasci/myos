@@ -108,6 +108,21 @@ fn unlink_keep(name: &str) -> bool {
     true
 }
 
+/// A new empty file that no name reaches, kept as `unlink_keep` keeps one
+/// (`vfs::anon_file`): its id.
+pub fn create_kept() -> Option<u64> {
+    let now = now();
+    let mut entries = ENTRIES.lock();
+    if entries.len() >= MAX_ENTRIES {
+        return None;
+    }
+    let mut entry = Entry::new("", Kind::File(Vec::new()), now);
+    entry.path = alloc::format!("\0{}", entry.id);
+    let id = entry.id;
+    entries.push(entry);
+    Some(id)
+}
+
 /// The file `unlink_keep` kept is let go.
 fn forget(id: u64) {
     let mut entries = ENTRIES.lock();
@@ -564,7 +579,8 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     let mut n = 0;
     for e in entries.iter() {
         let child = if dir.is_empty() {
-            if e.path.contains('/') {
+            // A kept file (`\0` and its id) has no name.
+            if e.path.contains('/') || e.path.starts_with('\0') {
                 continue;
             }
             e.path.as_str()
