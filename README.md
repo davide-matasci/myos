@@ -14,8 +14,8 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Interactive shell** — getty → login (`root`, empty password) → [oksh](https://github.com/ibara/oksh) 7.9
 - **Security** — no superuser: every process runs for a user in a domain, every file has a label its path gives it, and `/etc/policy` says what each domain may do to each label (deny by default, SELinux-like); per-process namespaces narrow what a program can name, Plan 9 style (`sec ns`); passwords are checked by the kernel (`docs/security.md`)
 - **Rust kernel** — `#![no_std]`, higher-half link, HHDM memory, preemptive round-robin scheduler
-- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, NVMe, xHCI USB with hubs and sticks, virtio-net, netfs, FAT16, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
-- **VFS with multiple backends** — rootfs, tmpfs, devfs, procfs, FAT16, ext2
+- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, NVMe, xHCI USB with hubs and sticks, virtio-net, netfs, FAT16/FAT32, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
+- **VFS with multiple backends** — rootfs, tmpfs, devfs, procfs, FAT16/FAT32, ext2
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos dwm st dmenu` brings the Xft stack and the fonts with them, then `startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets (`get-myos x11-apps`, `packages/x11-apps/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase (one multicall ELF), ubase, ripgrep, TinyCC (all fetched at build); uutils coreutils is a package (`get-myos coreutils`)
@@ -42,13 +42,14 @@ This is a starting point to grow into a real OS, not a feature dump.
 - `xorriso` — hybrid ISO output (`cargo run -- iso` only)
 - `zstd` — unpacking CI's cached ports (`scripts/ci-registry.sh pull`)
 - `e2fsprogs` — the boot test checks the scratch disk's ext2 with `e2fsck`
+- `dosfstools`, `mtools` — `cargo test -p fatvol`, and the boot test's `fsck.fat` of the FAT test disk
 
 On Ubuntu:
 
 ```sh
 sudo apt install qemu-system-x86 qemu-system-arm qemu-system-misc \
   qemu-efi-aarch64 qemu-efi-riscv64 clang lld make git gh libc6-dev rsync \
-  patch curl xorriso zstd e2fsprogs
+  patch curl xorriso zstd e2fsprogs dosfstools mtools
 ```
 
 Building every port from source takes hours on the first run. Pulling the
@@ -170,7 +171,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `modules/usb_hub` | USB hub class driver: ports, resets, the devices behind a hub |
 | `modules/usb_storage` | USB mass storage (bulk-only, SCSI): `/dev/sdX`, gone with the stick |
 | `modules/hello` | Sample module (`[ OK ] hello`) |
-| `modules/fat` | FAT16 kernel module: `blk_read` + `vfs_register("msg")` |
+| `modules/fat` | Writable FAT16/FAT32: `ModuleVfsOps` over the `fatvol` crate (`modules/fat/fatvol`: fstool's FAT driver, with growing by zeros, rename and file times of its own), host-tested against dosfstools and mtools |
 | `modules/ext2` | Writable ext2: `ModuleVfsOps` over the `ext2fs` crate (`modules/ext2/ext2fs`, also `mkfs.ext2`'s), host-tested against e2fsprogs |
 | `modules/virtio_net` | Modern virtio-pci net: `/dev/net0/` (`data` Ethernet frames, `ctl` the MAC and interrupt), RX interrupt wakes `poll` |
 | `modules/netfs` | Plan 9 `/net` + `/dev/netd/data` channel to userspace netd; `/net/unix` local connections |
@@ -283,7 +284,7 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 - **virtio-blk / NVMe** — modules registering `/dev/vda`… and `/dev/nvme0n1` through `blk_register`; loaded before the filesystem modules
 - **Page cache** — a file's pages that processes map without write permission (programs' and libraries' code and constant data) are one frame each, shared by every mapping of them and kept for the next process (`kernel/src/fs/pagecache.rs`); a write, a truncation or an unlink drops them, up to a quarter of RAM (`PageCacheKiB` in `/proc/meminfo`). A `MAP_SHARED` mapping of a regular file through a writable fd is the file: its pages are the cache's frames, written through it by every process that maps them, seen by `read` and updated by `write` at once, and written back to the file by `msync`, `munmap`, exit and exec; a file unlinked while an fd or a mapping holds it keeps its pages for them. A `MAP_SHARED | MAP_ANON` mapping is one of a tmpfs file no name reaches, shared with forked children and gone with its last mapping. POSIX shared memory is `/dev/shm`, a tmpfs directory bound there (`shm_open`, `shm_unlink`, `memfd_create` in libgloss: the file is created and unlinked at once; System V `shmget`/`shmat`/`shmdt`/`shmctl` too, a segment being a file there, its id the file's inode number, its mode reported as 0666 since the file's protection is the policy's). A tmpfs file is bytes in the kernel heap that the mapping's frames are written back to: a segment costs its size twice, up to the tmpfs file cap of 16 MiB (issue #338)
 - **Block cache** — what is read from a disk is kept in 4 KiB pages, up to an eighth of RAM (least recently used out first, all of it given back when memory runs out; `BlockCacheKiB` in `/proc/meminfo`); writes go to the disk and update it
-- **FAT16 module** — parses BPB, walks cluster chain, registers `/msg` from root `MSG`
+- **FAT module** — FAT16 and FAT32, read-write, bound via `mount(2)` fstype `fat` on a device whose first sector is the volume's (`mount /dev/sda /mnt fat`; a partition is not a device of its own yet, issue #353): long names (VFAT), files and directories created, written, cut, grown with zeros, renamed (across directories too) and removed, file times set, both FAT copies and the FAT32 FSInfo kept up to date. FAT keeps no owners or permissions: everything reads as mode 0755 (0555 with the read-only attribute). A name a short 8.3 entry alone records is listed in lower case (`MSG` as `msg`, Linux's `shortname=lower`); lookups ignore case. The allocation table is cached and written back when the last fd on a file closes and at `umount`. The filesystem is the `fatvol` crate over fstool's FAT driver (crates.io, pinned); `cargo test -p fatvol` checks it against `fsck.fat` and mtools, and the boot test runs `fsck.fat -n` on the FAT test disk
 - **ext2 module** — the ext2 Linux and e2fsprogs know (1/2/4 KiB blocks, block groups, indirect blocks up to triple, symlinks, rename, sparse superblocks, files over 2 GiB), bound via `mount(2)` fstype `ext2` on a disk `mkfs.ext2` (or Linux's `mke2fs -t ext2`) formatted; `cargo test -p ext2fs` checks it against `e2fsck` and `debugfs`. CI boots carry an empty 4 GiB scratch disk (`/dev/nvme1n1`) for big filesystems
 - **virtio-net / netfs / netd** — kernel virtio-net → `/dev/net0/data` Ethernet; netfs mounts Plan 9 `/net`; netd runs smoltcp in userspace over `/dev/netd/data`; `/ping <ipv4>` uses `/net/icmp`
 

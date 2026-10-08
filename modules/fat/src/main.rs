@@ -1,436 +1,349 @@
-//! FAT16 root reader. Registers fstype `"fat"`; `mount(2)` binds a blk id.
+//! FAT kernel module: registers fstype `"fat"`; `mount(2)` binds a block
+//! device holding a FAT16 or FAT32 volume (from its first sector: a
+//! partition of a disk is not a device of its own yet, issue #353).
 //!
-//! Root-only, FAT16 only (no subdirs, no FAT32). Does not automount.
-//! `/msg` on bootfs is provided by the kernel, not this module.
-//!
-//! One volume, read whole at bind time and kept behind a lock that a bind
-//! or a file hook holds for its whole run; a hook copies out what it
-//! returns, so nothing of the volume outlives the lock (`lookup` always
-//! fails, the bytes go through `read`).
+//! The filesystem is the `fatvol` crate (`fatvol/`, host-tested against
+//! dosfstools and mtools: fstool's FAT driver, with growing by zeros,
+//! rename and file times of its own); this module puts it on a block
+//! device and serves the VFS hooks with it, like the ext2 module. Up to
+//! four volumes are mounted at once; the calls on each are serialized by
+//! its lock. Nothing is cached past a call but the allocation table, which
+//! `release` (the last fd on a file closed) and `umount` write back.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use myos_abi::{ApiCell, ABI_VERSION, KernelApi, Lock, ModuleVfsOps, VfsStatInfo};
+extern crate alloc;
 
-const SECTOR: usize = 512;
-const MAX_ENTRIES: usize = 32;
-const NAME_CAP: usize = 12;
-const FILE_CAP: usize = 4096;
+use core::alloc::{GlobalAlloc, Layout};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-const S_IFDIR: u32 = 0o040000;
-const S_IFREG: u32 = 0o100000;
+use fatvol::{Fat, Kind, SectorDriver};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo, MYOS_TIME_OMIT};
 
-#[repr(C)]
-struct Entry {
-    name: [u8; NAME_CAP],
-    name_len: u8,
-    cluster: u16,
-    size: u32,
-    data: [u8; FILE_CAP],
-    loaded: bool,
-}
-
-impl Entry {
-    const EMPTY: Self = Self {
-        name: [0; NAME_CAP],
-        name_len: 0,
-        cluster: 0,
-        size: 0,
-        data: [0; FILE_CAP],
-        loaded: false,
-    };
-}
-
-#[repr(C)]
-struct FatVol {
-    ready: bool,
-    dev: u32,
-    fat_lba: u64,
-    data_lba: u64,
-    spc: u8,
-    count: u8,
-    entries: [Entry; MAX_ENTRIES],
-}
-
-static VOL: Lock<FatVol> = Lock::new(FatVol {
-    ready: false,
-    dev: 0,
-    fat_lba: 0,
-    data_lba: 0,
-    spc: 0,
-    count: 0,
-    entries: [Entry::EMPTY; MAX_ENTRIES],
-});
-
+/// The kernel's table, set once by `module_init` before anything runs.
 static API: ApiCell = ApiCell::new();
 
-#[inline(never)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
-    let Some(api) = (unsafe { api.as_ref() }) else {
-        return -1;
-    };
-    if api.abi_version != ABI_VERSION {
-        return -2;
+fn api() -> &'static KernelApi {
+    API.get()
+}
+
+/// The kernel heap, through the ABI.
+struct KernelHeap;
+
+unsafe impl GlobalAlloc for KernelHeap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        api().alloc(layout.size(), layout.align())
     }
-    unsafe { API.set(api) };
-    match run(api) {
-        Ok(()) => 0,
-        Err(e) => e,
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { (api().dealloc)(ptr, layout.size(), layout.align()) }
     }
 }
 
-fn run(api: &KernelApi) -> Result<(), i32> {
-    let rc = api.fs_register("fat", fat_bind);
-    if rc != 0 {
-        return Err(rc);
-    }
-    Ok(())
-}
+#[global_allocator]
+static HEAP: KernelHeap = KernelHeap;
 
-unsafe extern "C" fn fat_bind(dev_id: u32, ops: *mut ModuleVfsOps) -> i32 {
-    if ops.is_null() {
-        return -1;
+/// A block device registered with the kernel (`blk_*` id), in 512-byte
+/// sectors.
+struct Blk(u32);
+
+impl SectorDriver for Blk {
+    type Error = ();
+    fn sector_size(&self) -> u32 {
+        512
     }
-    let Some(api) = API.try_get() else {
-        return -1;
-    };
-    let mut vol = VOL.lock();
-    // Re-bind is allowed: CI may mount twice, and /ok retries every vd*.
-    vol.ready = false;
-    vol.count = 0;
-    match init_volume(api, &mut vol, dev_id) {
-        Ok(()) => {
-            unsafe {
-                *ops = ModuleVfsOps {
-                    lookup: fat_lookup,
-                    stat: fat_stat,
-                    listdir: fat_listdir,
-                    register: None,
-                    read: Some(fat_read),
-                    write: None,
-                    create: None,
-                    truncate: None,
-                    mkdir: None,
-                    rmdir: None,
-                    unlink: None,
-                    rename: None,
-                    symlink: None,
-                    readlink: None,
-                    release: None,
-                    mmap: None,
-                    poll: None,
-                    open: None,
-                    set_times: None,
-                    unmount: None,
-                    unlink_keep: None,
-                    read_ino: None,
-                    write_ino: None,
-                    stat_ino: None,
-                    forget_ino: None,
-                    set_size: None,
-                    set_size_ino: None,
-                    file_id: None,
-                    set_times_ino: None,
-                };
-            }
-            0
-        }
-        Err(e) => e,
+    /// The ABI has no device size; the volume's own (its boot sector) is
+    /// what bounds the accesses, and the block layer refuses one past the
+    /// end of the disk.
+    fn sector_count(&self) -> u64 {
+        u64::MAX / 512
+    }
+    fn read_sectors(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+        if api().blk_read_at(self.0, lba * 512, buf) == buf.len() as i32 { Ok(()) } else { Err(()) }
+    }
+    fn write_sectors(&mut self, lba: u64, buf: &[u8]) -> Result<(), ()> {
+        if api().blk_write_at(self.0, lba * 512, buf) == buf.len() as i32 { Ok(()) } else { Err(()) }
     }
 }
 
-fn init_volume(api: &KernelApi, vol: &mut FatVol, dev: u32) -> Result<(), i32> {
-    let mut sec = [0u8; SECTOR];
-    blk_read(api, dev, 0, &mut sec)?;
+/// Mounted volumes, one per device. The VFS hooks carry no context, so
+/// every slot has a hook set of its own (`ops::<S>()`).
+const SLOTS: usize = 4;
 
-    let bps = u16_le(&sec, 11) as usize;
-    if bps != SECTOR {
-        return Err(-3);
-    }
-    let spc = sec[13];
-    if spc == 0 {
-        return Err(-3);
-    }
-    let reserved = u16_le(&sec, 14) as u64;
-    let fats = sec[16];
-    if fats == 0 {
-        return Err(-3);
-    }
-    let root_ents = u16_le(&sec, 17) as u32;
-    let totsec16 = u16_le(&sec, 19) as u32;
-    let fat_sz16 = u16_le(&sec, 22) as u64;
-    if fat_sz16 == 0 {
-        return Err(-3);
-    }
-    let _totsec = if totsec16 != 0 {
-        totsec16
-    } else {
-        u32_le(&sec, 32)
-    };
-
-    let root_sectors = (root_ents * 32).div_ceil(SECTOR as u32);
-    let root_lba = reserved + u64::from(fats) * fat_sz16;
-    let data_lba = root_lba + u64::from(root_sectors);
-
-    vol.dev = dev;
-    vol.fat_lba = reserved;
-    vol.data_lba = data_lba;
-    vol.spc = spc;
-    vol.count = 0;
-
-    for s in 0..root_sectors {
-        blk_read(api, dev, root_lba + u64::from(s), &mut sec)?;
-        let mut i = 0;
-        while i + 32 <= SECTOR {
-            let ent = &sec[i..i + 32];
-            if ent[0] == 0 {
-                return finish_volume(api, vol);
-            }
-            i += 32;
-            if ent[0] == 0xE5 {
-                continue;
-            }
-            let attr = ent[11];
-            if attr == 0x0F || attr & 0x18 != 0 {
-                continue;
-            }
-            let cluster = u16_le(ent, 26);
-            let size = u32_le(ent, 28);
-            if size == 0 || size as usize > FILE_CAP {
-                continue;
-            }
-            let name_len = short_name_len(&ent[0..8]);
-            if name_len == 0 || vol.count as usize >= MAX_ENTRIES {
-                continue;
-            }
-            let idx = vol.count as usize;
-            vol.entries[idx].name[..name_len].copy_from_slice(&ent[0..name_len]);
-            for b in &mut vol.entries[idx].name[..name_len] {
-                *b = b.to_ascii_lowercase();
-            }
-            vol.entries[idx].name_len = name_len as u8;
-            vol.entries[idx].cluster = cluster;
-            vol.entries[idx].size = size;
-            vol.entries[idx].loaded = false;
-            vol.count += 1;
-        }
-    }
-    finish_volume(api, vol)
+struct Slot {
+    held: AtomicBool,
+    fs: UnsafeCell<Option<Fat<Blk>>>,
 }
 
-fn finish_volume(api: &KernelApi, vol: &mut FatVol) -> Result<(), i32> {
-    let nent = (vol.count as usize).min(MAX_ENTRIES);
-    vol.count = nent as u8;
-    for i in 0..nent {
-        let cluster = vol.entries[i].cluster;
-        let size = vol.entries[i].size as usize;
-        let n = read_file(
-            api,
-            vol.dev,
-            vol.fat_lba,
-            vol.data_lba,
-            vol.spc,
-            cluster,
-            size,
-            &mut vol.entries[i].data,
-        )?;
-        if n != size {
-            return Err(-5);
-        }
-        vol.entries[i].loaded = true;
+unsafe impl Sync for Slot {}
+
+static MOUNTS: [Slot; SLOTS] = [const { Slot { held: AtomicBool::new(false), fs: UnsafeCell::new(None) } }; SLOTS];
+
+/// Run `f` on the volume in slot `s` (`None` if there is none), with the
+/// slot locked. A waiter yields rather than spins: the holder may have been
+/// preempted on this very CPU (see the ext2 module, issue #348).
+fn with_slot<T>(s: usize, f: impl FnOnce(&mut Option<Fat<Blk>>) -> T) -> T {
+    let slot = &MOUNTS[s];
+    while slot.held.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        api().task_yield();
     }
-    vol.ready = true;
-    Ok(())
+    let r = f(unsafe { &mut *slot.fs.get() });
+    slot.held.store(false, Ordering::Release);
+    r
 }
 
-fn short_name_len(name8: &[u8]) -> usize {
-    let mut end = 0usize;
-    for (i, &b) in name8.iter().enumerate() {
-        if b == b' ' {
-            break;
-        }
-        end = i + 1;
-    }
-    end
+/// Run `f` on the volume of slot `S`, what it changes stamped with the time now.
+fn with_fs<const S: usize, T>(f: impl FnOnce(&mut Fat<Blk>) -> T) -> Option<T> {
+    with_slot(S, |fs| {
+        fs.as_mut().map(|fs| {
+            fs.set_now((api().wall_time_us() / 1_000_000) as u32);
+            f(fs)
+        })
+    })
 }
 
-fn entry_index(vol: &FatVol, name: &str) -> Option<usize> {
-    if !vol.ready {
-        return None;
+fn rc<T>(r: Option<fatvol::Result<T>>) -> i32 {
+    match r {
+        Some(Ok(_)) => 0,
+        _ => -1,
     }
-    let nent = (vol.count as usize).min(MAX_ENTRIES);
-    for i in 0..nent {
-        let ent = &vol.entries[i];
-        let n = ent.name_len as usize;
-        if n == 0 || n > NAME_CAP {
-            continue;
-        }
-        if n == name.len() && &ent.name[..n] == name.as_bytes() {
-            return Some(i);
-        }
-    }
-    None
 }
 
-/// The bytes of the file `name`, once `finish_volume` read them.
-fn entry_bytes<'a>(vol: &'a FatVol, name: &str) -> Option<&'a [u8]> {
-    let ent = &vol.entries[entry_index(vol, name)?];
-    if !ent.loaded {
-        return None;
+/// A count of bytes as the hooks return it, or -1.
+fn count(r: Option<fatvol::Result<usize>>) -> i32 {
+    match r {
+        Some(Ok(n)) => n.min(i32::MAX as usize) as i32,
+        _ => -1,
     }
-    let len = (ent.size as usize).min(FILE_CAP);
-    Some(&ent.data[..len])
+}
+
+unsafe fn text<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
+    if ptr.is_null() {
+        return (len == 0).then_some("");
+    }
+    core::str::from_utf8(unsafe { core::slice::from_raw_parts(ptr, len) }).ok()
+}
+
+unsafe fn bytes_mut<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
+    if ptr.is_null() {
+        return (len == 0).then_some(&mut []);
+    }
+    Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
+}
+
+unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
+    if ptr.is_null() {
+        return (len == 0).then_some(&[]);
+    }
+    Some(unsafe { core::slice::from_raw_parts(ptr, len) })
 }
 
 unsafe extern "C" fn fat_lookup(_: *const u8, _: usize, _: *mut *const u8, _: *mut usize) -> i32 {
-    -1
+    -1 // no static bytes: everything is read through `read`
 }
 
-unsafe extern "C" fn fat_read(path: *const u8, path_len: usize, pos: usize, buf: *mut u8, cap: usize) -> i32 {
-    if path.is_null() || buf.is_null() {
-        return -1;
-    }
-    let path = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(path, path_len) }) {
-        Ok(p) => p,
-        Err(_) => return -1,
+unsafe extern "C" fn fat_stat<const S: usize>(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    let Some(Ok(st)) = with_fs::<S, _>(|fs| fs.stat(path)) else { return -1 };
+    // FAT keeps no owner or permissions: everything may be read, written
+    // and run, but what the read-only attribute protects.
+    let (kind, nlink) = match st.kind {
+        Kind::Dir => (0o040000, 2),
+        Kind::File => (0o100000, 1),
     };
-    let vol = VOL.lock();
-    let Some(data) = entry_bytes(&vol, path) else {
-        return -1;
+    let perm = if st.read_only { 0o555 } else { 0o755 };
+    unsafe {
+        *out = VfsStatInfo {
+            mode: kind | perm,
+            size: st.size,
+            ino: st.id,
+            nlink,
+            mtime: u64::from(st.mtime),
+            atime: u64::from(st.atime),
+        }
     };
-    let n = cap.min(data.len().saturating_sub(pos));
-    if n != 0 {
-        unsafe { core::ptr::copy_nonoverlapping(data[pos..].as_ptr(), buf, n) };
-    }
-    n as i32
-}
-
-unsafe extern "C" fn fat_stat(path: *const u8, path_len: usize, out: *mut VfsStatInfo) -> i32 {
-    let Some(out) = (unsafe { out.as_mut() }) else {
-        return -1;
-    };
-    let path = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(path, path_len) }) {
-        Ok(p) => p,
-        Err(_) => return -1,
-    };
-    if path.is_empty() || path == "." || path == ".." {
-        out.mode = S_IFDIR | 0o755;
-        out.size = 0;
-        out.ino = 1;
-        out.nlink = 2;
-        return 0;
-    }
-    let vol = VOL.lock();
-    let Some(idx) = entry_index(&vol, path) else {
-        return -1;
-    };
-    let ent = &vol.entries[idx];
-    out.mode = S_IFREG | 0o444;
-    out.size = ent.size;
-    out.ino = (idx as u32) + 2;
-    out.nlink = 1;
     0
 }
 
-unsafe extern "C" fn fat_listdir(
+unsafe extern "C" fn fat_listdir<const S: usize>(
     path: *const u8,
     path_len: usize,
     buf: *mut u8,
     buf_len: usize,
     out_len: *mut usize,
 ) -> i32 {
-    if buf.is_null() || out_len.is_null() {
+    let (Some(path), Some(out)) = (unsafe { text(path, path_len) }, unsafe { bytes_mut(buf, buf_len) }) else {
         return -1;
-    }
-    let rel = match core::str::from_utf8(unsafe { core::slice::from_raw_parts(path, path_len) }) {
-        Ok(p) => p,
-        Err(_) => return -1,
     };
-    if !rel.is_empty() && rel != "." {
-        return -1;
-    }
-    let vol = VOL.lock();
-    if !vol.ready {
-        return -1;
-    }
-    let out = unsafe { core::slice::from_raw_parts_mut(buf, buf_len) };
-    let mut n = 0usize;
-    let nent = (vol.count as usize).min(MAX_ENTRIES);
-    for i in 0..nent {
-        let ent = &vol.entries[i];
-        let name_len = ent.name_len as usize;
-        if name_len == 0 || name_len > NAME_CAP {
-            continue;
-        }
-        let name = &ent.name[..name_len];
-        let need = name.len() + 1;
-        if n + need > out.len() {
-            break;
-        }
-        out[n..n + name.len()].copy_from_slice(name);
-        n += name.len();
-        out[n] = b'\n';
-        n += 1;
-    }
+    let mut n = 0;
+    let r = with_fs::<S, _>(|fs| {
+        fs.list(path, |name| {
+            if n + name.len() + 1 > out.len() {
+                return false;
+            }
+            out[n..n + name.len()].copy_from_slice(name);
+            out[n + name.len()] = b'\n';
+            n += name.len() + 1;
+            true
+        })
+    });
     unsafe { *out_len = n };
+    rc(r)
+}
+
+unsafe extern "C" fn fat_read<const S: usize>(path: *const u8, path_len: usize, pos: usize, buf: *mut u8, buf_len: usize) -> i32 {
+    let (Some(path), Some(out)) = (unsafe { text(path, path_len) }, unsafe { bytes_mut(buf, buf_len) }) else {
+        return -1;
+    };
+    // A read past the end, or of something unreadable, reads nothing.
+    count(with_fs::<S, _>(|fs| fs.read(path, pos as u64, out))).max(0)
+}
+
+unsafe extern "C" fn fat_write<const S: usize>(path: *const u8, path_len: usize, pos: usize, buf: *const u8, buf_len: usize) -> i32 {
+    let (Some(path), Some(src)) = (unsafe { text(path, path_len) }, unsafe { bytes(buf, buf_len) }) else {
+        return -1;
+    };
+    count(with_fs::<S, _>(|fs| fs.write(path, pos as u64, src)))
+}
+
+unsafe extern "C" fn fat_create<const S: usize>(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.create(path)))
+}
+
+unsafe extern "C" fn fat_truncate<const S: usize>(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.truncate(path)))
+}
+
+unsafe extern "C" fn fat_set_size<const S: usize>(path: *const u8, path_len: usize, size: u64) -> i32 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.set_size(path, size)))
+}
+
+unsafe extern "C" fn fat_mkdir<const S: usize>(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.mkdir(path)))
+}
+
+unsafe extern "C" fn fat_rmdir<const S: usize>(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.rmdir(path)))
+}
+
+unsafe extern "C" fn fat_unlink<const S: usize>(path: *const u8, path_len: usize) -> i32 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.unlink(path)))
+}
+
+unsafe extern "C" fn fat_rename<const S: usize>(old: *const u8, old_len: usize, new: *const u8, new_len: usize) -> i32 {
+    let (Some(old), Some(new)) = (unsafe { text(old, old_len) }, unsafe { text(new, new_len) }) else {
+        return -1;
+    };
+    rc(with_fs::<S, _>(|fs| fs.rename(old, new)))
+}
+
+/// FAT keeps 32-bit-range dates; `MYOS_TIME_OMIT` keeps the time.
+fn entry_time(t: u64) -> Option<u32> {
+    (t != MYOS_TIME_OMIT).then(|| t.min(u64::from(u32::MAX)) as u32)
+}
+
+unsafe extern "C" fn fat_set_times<const S: usize>(path: *const u8, path_len: usize, atime: u64, mtime: u64) -> i32 {
+    let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
+    rc(with_fs::<S, _>(|fs| fs.set_times(path, entry_time(atime), entry_time(mtime))))
+}
+
+/// The last fd on a file closed: write what is cached to the disk.
+unsafe extern "C" fn fat_release<const S: usize>(_path: *const u8, _path_len: usize) -> i32 {
+    rc(with_fs::<S, _>(|fs| fs.sync()))
+}
+
+/// `umount(2)`: write back what is cached and free the slot.
+unsafe extern "C" fn fat_unmount<const S: usize>() {
+    if let Some(fs) = with_slot(S, |f| f.take()) {
+        let _ = fs.unmount();
+    }
+}
+
+/// The hooks of slot `S`.
+fn ops<const S: usize>() -> ModuleVfsOps {
+    ModuleVfsOps {
+        lookup: fat_lookup,
+        stat: fat_stat::<S>,
+        listdir: fat_listdir::<S>,
+        register: None,
+        read: Some(fat_read::<S>),
+        write: Some(fat_write::<S>),
+        create: Some(fat_create::<S>),
+        truncate: Some(fat_truncate::<S>),
+        mkdir: Some(fat_mkdir::<S>),
+        rmdir: Some(fat_rmdir::<S>),
+        unlink: Some(fat_unlink::<S>),
+        rename: Some(fat_rename::<S>),
+        symlink: None,
+        readlink: None,
+        release: Some(fat_release::<S>),
+        mmap: None,
+        poll: None,
+        open: None,
+        set_times: Some(fat_set_times::<S>),
+        unmount: Some(fat_unmount::<S>),
+        unlink_keep: None,
+        read_ino: None,
+        write_ino: None,
+        stat_ino: None,
+        forget_ino: None,
+        set_size: Some(fat_set_size::<S>),
+        set_size_ino: None,
+        file_id: None,
+        set_times_ino: None,
+    }
+}
+
+/// `mount(2)` of a block device with fstype fat: mount it in the slot it
+/// had (a remount) or a free one, and hand the VFS that slot's hooks.
+/// Mounting writes nothing: a disk that is not FAT (`/ok` tries each
+/// `vd*`) is left as it was.
+unsafe extern "C" fn fat_bind(dev_id: u32, ops_out: *mut ModuleVfsOps) -> i32 {
+    if ops_out.is_null() {
+        return -1;
+    }
+    let Ok(fs) = Fat::mount(Blk(dev_id)) else { return -1 };
+    let mine = |s: usize| with_slot(s, |f| f.as_ref().and_then(|f| f.device()).is_some_and(|d| d.0 == dev_id));
+    let empty = |s: usize| with_slot(s, |f| f.is_none());
+    let Some(s) = (0..SLOTS).find(|&s| mine(s)).or_else(|| (0..SLOTS).find(|&s| empty(s))) else {
+        return -1;
+    };
+    with_slot(s, |f| {
+        if let Some(old) = f.take() {
+            let _ = old.unmount();
+        }
+        *f = Some(fs);
+    });
+    let ops = match s {
+        0 => ops::<0>(),
+        1 => ops::<1>(),
+        2 => ops::<2>(),
+        _ => ops::<3>(),
+    };
+    unsafe { *ops_out = ops };
     0
 }
 
-fn read_file(
-    api: &KernelApi,
-    dev: u32,
-    fat_lba: u64,
-    data_lba: u64,
-    spc: u8,
-    mut cluster: u16,
-    file_size: usize,
-    out: &mut [u8],
-) -> Result<usize, i32> {
-    let mut copied = 0usize;
-    let mut sec = [0u8; SECTOR];
-    while copied < file_size {
-        if cluster < 2 || cluster >= 0xFFF8 {
-            break;
-        }
-        let lba = data_lba + u64::from(cluster - 2) * u64::from(spc);
-        for s in 0..spc {
-            if copied >= file_size {
-                break;
-            }
-            blk_read(api, dev, lba + u64::from(s), &mut sec)?;
-            let n = (file_size - copied).min(SECTOR);
-            out[copied..copied + n].copy_from_slice(&sec[..n]);
-            copied += n;
-        }
-        cluster = fat_next(api, dev, fat_lba, cluster)?;
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
+    if api.is_null() {
+        return -1;
     }
-    if copied != file_size {
-        return Err(-5);
+    let api = unsafe { &*api };
+    if api.abi_version != ABI_VERSION {
+        return -2;
     }
-    Ok(copied)
-}
-
-fn fat_next(api: &KernelApi, dev: u32, fat_lba: u64, cluster: u16) -> Result<u16, i32> {
-    let off = cluster as u64 * 2;
-    let mut sec = [0u8; SECTOR];
-    blk_read(api, dev, fat_lba + off / SECTOR as u64, &mut sec)?;
-    let e = (off as usize) % SECTOR;
-    Ok(u16_le(&sec, e))
-}
-
-fn blk_read(api: &KernelApi, dev: u32, lba: u64, buf: &mut [u8; SECTOR]) -> Result<(), i32> {
-    let rc = api.blk_read(dev, lba, buf);
-    if rc == 0 { Ok(()) } else { Err(-1) }
-}
-
-fn u16_le(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-fn u32_le(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+    unsafe { API.set(api) };
+    api.fs_register("fat", fat_bind)
 }
 
 #[inline(never)]

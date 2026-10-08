@@ -21,7 +21,7 @@ prompt (what the ISO is for).
 | CI | every pull request, on bios, uefi, aarch64 and riscv64 | the daily scheduled run and `workflow_dispatch` with `full_boot` |
 | budget | 4 minutes (5 with the Linux layer) | 50 minutes |
 | network | QEMU's user network only (DNS and the listen test go through it) | the host's: HTTPS, the Alpine mirror, this build's packages |
-| tests | the shell, exec, the basic programs, ext2 on the scratch disk, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear and a login on a pty, the Linux layer's Alpine packages (jq, Python, and rustc from a disk the host prepares), the curated os-test list, the packages' own tests |
+| tests | the shell, exec, the basic programs, ext2 on the scratch disk, FAT read-write, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear and a login on a pty, the Linux layer's Alpine packages (jq, Python, and rustc from a disk the host prepares), the curated os-test list, the packages' own tests |
 
 ## In the guest
 
@@ -140,8 +140,10 @@ is back, so an AP's lagging echo never garbles the line), then watches:
   itself, the console naming the method (`power off via ...`,
   `docs/power.md`);
 - then `e2fsck -fn` on the scratch disk (`target/scratch.img`,
-  the guest's `/dev/nvme1n1`) when the ext2 tests left a filesystem on it;
-  skipped without e2fsprogs.
+  the guest's `/dev/nvme1n1`) when the ext2 tests left a filesystem on it,
+  and `fsck.fat -n` on the FAT test disk (`target/fat.img`, the guest's
+  `/dev/vda`, which `fat_rw` writes to); each skipped without its tool
+  (e2fsprogs, dosfstools).
 
 It exits 0 only when every test passed, every marker was seen and the
 machine powered off, and prints a one-line summary with the failed tests'

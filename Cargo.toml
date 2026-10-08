@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "modules/abi", "modules/console/ps2-scancode", "modules/ext2/ext2fs"]
+members = ["kernel", "modules/abi", "modules/console/ps2-scancode", "modules/ext2/ext2fs", "modules/fat/fatvol"]
 default-members = ["."]
 # Crates fetched and patched into target/ (user/net/smoltcp) are their own.
 exclude = ["target"]

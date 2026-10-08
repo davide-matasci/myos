@@ -46,6 +46,8 @@ ENV CI=true \
 #   - xz-utils: .tar.xz upstream tarballs (fontconfig); the fetch scripts fall
 #     back to python3's lzma on an image without it.
 #   - e2fsprogs: the ext2 host tests and the boots' scratch-disk e2fsck.
+#   - dosfstools, mtools: the FAT host tests (fatvol) and the boots'
+#     fsck.fat of the FAT test disk.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         qemu-system-x86 \
@@ -64,6 +66,7 @@ RUN apt-get update \
         git curl wget file patch bc \
         openssh-client \
         e2fsprogs \
+        dosfstools mtools \
         sudo \
         ca-certificates \
         python3 \

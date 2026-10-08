@@ -1,0 +1,14 @@
+[package]
+name = "fatvol"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "A FAT16/FAT32 filesystem by path (no_std + alloc, host-testable): fstool's FAT driver, with growing by zeros, rename and file times of its own."
+
+[lib]
+test = true
+
+[dependencies]
+# Pinned: a new release is taken on purpose, after the host tests.
+fstool = { version = "=0.4.35", default-features = false, features = ["fat", "alloc"] }

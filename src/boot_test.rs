@@ -487,9 +487,10 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
     let powered_off = power_off(&mut stdin, &serial, &mut child);
     let _ = child.kill();
     let _ = child.wait();
-    // The ext2 tests leave a filesystem on the scratch disk: e2fsprogs must
-    // find it clean (`src/main.rs`), the power-off having unmounted it.
-    let disk_ok = crate::fsck_scratch_disk();
+    // The ext2 tests leave a filesystem on the scratch disk, the FAT test
+    // wrote to the FAT disk: e2fsprogs and dosfstools must find them clean
+    // (`src/main.rs`), the power-off having unmounted them.
+    let disk_ok = crate::fsck_scratch_disk() & crate::fsck_fat_disk();
 
     let text = snapshot(&serial);
     let missing: Vec<&str> = BOOT_MARKERS.iter().copied().filter(|m| !text.contains(m)).collect();

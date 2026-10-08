@@ -293,6 +293,32 @@ fn fsck_scratch_disk() -> bool {
     }
 }
 
+/// After a boot: the FAT test disk the guest wrote to (`fat_rw`,
+/// `user/tests/kernel.sh`) must be one dosfstools finds clean
+/// (`fsck.fat -n`; skipped without dosfstools).
+fn fsck_fat_disk() -> bool {
+    let img = fat_img_path();
+    match Command::new("fsck.fat").arg("-n").arg(&img).output() {
+        Ok(out) if out.status.success() => {
+            eprintln!("ci: fsck.fat: the FAT test disk is clean");
+            true
+        }
+        Ok(out) => {
+            eprintln!(
+                "error: fsck.fat -n {} found problems:\n{}{}",
+                img.display(),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            false
+        }
+        Err(_) => {
+            eprintln!("ci: fsck.fat not found; the FAT test disk is not checked");
+            true
+        }
+    }
+}
+
 fn usb_img_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/usb.img")
 }
