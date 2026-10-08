@@ -29,8 +29,9 @@ t poll /bin/etc/poll_smoke
 # readv/writev over a pipe, a socketpair and a nonblocking socket that
 # fills mid-writev (uio_smoke.c).
 t uio /bin/etc/uio_smoke
-# The single-threaded pthread API: mutexes, once, keys, a timed condition
-# wait (pthread_smoke.c).
+# POSIX threads: the API on one thread, then threads contending for a
+# mutex and a condition variable, errno, keys, stdio and malloc per thread,
+# and 150 threads started and joined (pthread_smoke.c).
 t pthread /bin/etc/pthread_smoke
 # netfs conversations: a connect to 127.0.0.1 is refused at once, and 200
 # sockets closed right after socket() leak none (netconv_smoke.c).

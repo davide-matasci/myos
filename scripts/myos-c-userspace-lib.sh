@@ -400,7 +400,8 @@ myos_dropbear_version_hash() {
         "$MYOS_ROOT/ports/dropbear/myos_compat.h" \
         "$MYOS_ROOT/ports/dropbear/prepare.sh" \
         "$MYOS_ROOT/ports/dropbear/myos_shims.c" \
-        "$MYOS_ROOT/ports/dropbear/myos_builtins.c" || true
+        "$MYOS_ROOT/ports/dropbear/myos_builtins.c" \
+        "$MYOS_ROOT"/ports/dropbear/*.myos.patch || true
       myos_newlib_version_hash
     } | sha256sum | awk '{print $1}'
   )"

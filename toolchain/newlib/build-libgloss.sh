@@ -30,11 +30,11 @@ for hdr in search.h endian.h regex.h; do
 done
 # newlib defines _POSIX_THREADS (which guards <pthread.h>), the UNIX98
 # mutex types and _POSIX_TIMERS (which guards clock_gettime, nanosleep and
-# the CLOCK_* ids) only for RTEMS and Cygwin. libgloss implements the API for
-# single-threaded programs (pthread.c), so the installed features.h declares
-# it for myos; every program sees the same pthread_mutexattr_t. Only the
-# sysroot copy: newlib's own build keeps them off (its stdio would call
-# pthread_setcancelstate around every lock).
+# the CLOCK_* ids) only for RTEMS and Cygwin. libgloss implements the API
+# (pthread.c), so the installed features.h declares it for myos; every
+# program sees the same pthread_mutexattr_t. Only the sysroot copy: newlib's
+# own build keeps them off (its stdio would call pthread_setcancelstate
+# around every lock).
 cp "$NEWLIB_SRC/newlib/libc/include/sys/features.h" "$inc/sys/features.h"
 python3 - "$inc/sys/features.h" <<'PY'
 import sys
@@ -42,7 +42,7 @@ path = sys.argv[1]
 s = open(path).read()
 tail = "#ifdef __cplusplus\n}\n#endif\n#endif /* _SYS_FEATURES_H */"
 assert s.count(tail) == 1, "features.h tail not found"
-s = s.replace(tail, """/* myos: libgloss pthread.c (one thread per process). */
+s = s.replace(tail, """/* myos: libgloss pthread.c. */
 #ifndef _POSIX_THREADS
 #define _POSIX_THREADS 1
 #endif
@@ -61,6 +61,46 @@ s = s.replace(tail, """/* myos: libgloss pthread.c (one thread per process). */
 
 """ + tail)
 open(path, "w").write(s)
+PY
+# The thread types libgloss's pthread.c needs wider than newlib's 32-bit
+# words: pthread_t is the thread's control block, a mutex keeps its holder
+# and recursion count beside its lock word. The rest (a condition variable,
+# once, keys, attributes) is newlib's.
+cp "$NEWLIB_SRC/newlib/libc/include/sys/_pthreadtypes.h" "$inc/sys/_pthreadtypes.h"
+python3 - "$inc/sys/_pthreadtypes.h" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+edits = [
+    ("typedef __uint32_t pthread_t;            /* identify a thread */",
+     "typedef struct __pthread *pthread_t;     /* myos: the thread's control block */"),
+    ("typedef __uint32_t pthread_mutex_t;      /* identify a mutex */",
+     """typedef struct {                         /* myos: libgloss pthread.c */
+  __uint32_t __state;   /* 0 free, 1 held, 2 held with waiters (wait_addr) */
+  __uint32_t __type;    /* PTHREAD_MUTEX_* */
+  __uint32_t __owner;   /* the holder's tid */
+  __uint32_t __count;   /* a recursive mutex's locks beyond the first */
+} pthread_mutex_t;"""),
+    ("#define _PTHREAD_MUTEX_INITIALIZER ((pthread_mutex_t) 0xFFFFFFFF)",
+     "#define _PTHREAD_MUTEX_INITIALIZER { 0, 3, 0, 0 } /* PTHREAD_MUTEX_DEFAULT */"),
+]
+for old, new in edits:
+    assert s.count(old) == 1, f"_pthreadtypes.h: {old!r} not found"
+    s = s.replace(old, new)
+open(path, "w").write(s)
+PY
+# Programs reach errno and stdio's state through __getreent(), as newlib
+# itself was built (build.sh): each thread has its own.
+python3 - "$inc/sys/config.h" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+mark = "/* myos: per-thread reent */"
+if mark not in s:
+    tail = "#endif /* __SYS_CONFIG_H__ */"
+    assert s.count(tail) == 1, "config.h tail not found"
+    s = s.replace(tail, mark + "\n#ifndef __DYNAMIC_REENT__\n#define __DYNAMIC_REENT__\n#endif\n\n" + tail)
+    open(path, "w").write(s)
 PY
 if [[ -f "$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h" ]]; then
   mkdir -p "$inc/machine"

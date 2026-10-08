@@ -35,7 +35,7 @@ under its own license.
 | ripgrep (+ its Rust dependencies) | 15.2.0 | Unlicense OR MIT | https://github.com/BurntSushi/ripgrep |
 | PCRE2 (for ripgrep) | 10.45 | BSD-3-Clause | https://github.com/PCRE2Project/pcre2 |
 | oksh (`/sh`) | 7.9 | Public domain (core) + BSD/ISC (portability files) | https://github.com/ibara/oksh |
-| Dropbear SSH | 2026.94 | MIT-style (plus BSD / public-domain parts; see upstream `LICENSE`) | https://matt.ucc.asn.au/dropbear/ |
+| Dropbear SSH | 2026.94 | MIT-style (plus BSD / public-domain parts; see upstream `LICENSE`; the myos patch, `ports/dropbear/*.myos.patch`, under the same license) | https://matt.ucc.asn.au/dropbear/ |
 | TinyCC (`tcc`) and `libtcc1` | `TCC_REV` in `ports/tcc/versions.env` | **LGPL-2.1** | https://github.com/TinyCC/tinycc |
 | Vim | 9.2.0 | Vim license (GPL-compatible, "charityware") | https://github.com/vim/vim |
 | ncurses | 6.5 | X11/MIT-style | https://ftp.gnu.org/gnu/ncurses/ |
