@@ -1,6 +1,6 @@
 //! Files through the myos std: create, write, append, seek and read back,
-//! metadata of an open file, rename, symlinks, directories (created and
-//! removed recursively), and the error each refusal reports.
+//! metadata of an open file, rename, symlinks, canonicalize, directories
+//! (created and removed recursively), and the error each refusal reports.
 #![no_main]
 
 use std::fs::{self, File, OpenOptions};
@@ -50,6 +50,12 @@ pub extern "C" fn main() {
     let link = dir.join("l");
     check(std::os::myos::fs::symlink("a/b/g", &link).is_ok(), "symlink");
     check(fs::read_link(&link).ok().as_deref() == Some(Path::new("a/b/g")), "read_link");
+
+    // canonicalize resolves to the real, absolute path, following symlinks; a
+    // path that does not exist is NotFound (issue #314: it was unsupported).
+    check(fs::canonicalize(&moved).ok().as_deref() == Some(moved.as_path()), "canonicalize");
+    check(fs::canonicalize(&link).ok().as_deref() == Some(moved.as_path()), "canonicalize follows a symlink");
+    check(kind(fs::canonicalize(dir.join("nope"))) == Some(ErrorKind::NotFound), "canonicalize of a missing path: NotFound");
 
     let missing = dir.join("missing");
     let err = File::open(&missing).unwrap_err();

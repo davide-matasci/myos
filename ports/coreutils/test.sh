@@ -13,3 +13,16 @@ uutils_touch() {
 	case $l in *"Jan  2  2000"*) ;; *) return 1 ;; esac
 }
 t uutils_touch uutils_touch
+
+# Moving a directory (issue #314): uutils mv canonicalizes the source and
+# target to reject moving a directory into itself; that path must not return
+# std's "operation not supported" (canonicalize was an unsupported stub).
+uutils_mv_dir() {
+	rm -rf /tmp/mvd /tmp/mvd2
+	mkdir -p /tmp/mvd/sub || return 1
+	echo hi >/tmp/mvd/sub/f || return 1
+	out=$(/bin/coreutils/mv /tmp/mvd /tmp/mvd2 2>&1) || { echo "mv: $out"; return 1; }
+	[ -f /tmp/mvd2/sub/f ] && [ ! -e /tmp/mvd ] || return 1
+	rm -rf /tmp/mvd2
+}
+t uutils_mv_dir uutils_mv_dir

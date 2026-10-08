@@ -13,7 +13,7 @@ use crate::fmt;
 
 #[path = "unsupported.rs"]
 mod stub;
-pub use stub::{canonicalize, link};
+pub use stub::link;
 pub use crate::sys::fs::common::{Dir, copy, exists, remove_dir_all};
 
 /// The errno values the calls below report. The kernel has one failure
@@ -124,6 +124,26 @@ pub fn readlink(p: &Path) -> io::Result<PathBuf> {
         return os_err(missing_or(bytes, EINVAL));
     }
     Ok(PathBuf::from(OsStr::from_bytes(&buf[..n as usize])))
+}
+
+pub fn canonicalize(p: &Path) -> io::Result<PathBuf> {
+    let bytes = path_bytes(p)?;
+    // The kernel resolves the path (symlinks and `.`/`..` followed) into a
+    // MAX_PATH buffer, so PATH_MAX + 1 always holds the answer and its NUL.
+    let mut buf = [0u8; PATH_MAX + 1];
+    let n = abi::realpath(bytes, &mut buf);
+    if n < 0 {
+        // A component (or a symlink target) along the way is missing.
+        return os_err(ENOENT);
+    }
+    let real = &buf[..n as usize];
+    // The kernel resolver normalizes a path even when its final component does
+    // not exist; `canonicalize` requires the whole path to exist (NotFound
+    // otherwise), so confirm the resolved target is there.
+    if kstat(real).is_none() {
+        return os_err(ENOENT);
+    }
+    Ok(PathBuf::from(OsStr::from_bytes(real)))
 }
 
 #[derive(Debug)]
