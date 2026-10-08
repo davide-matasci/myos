@@ -165,6 +165,12 @@ on the same calls, laid out as the std port's:
   key made again in a deleted key's slot reads `NULL` everywhere.
 - **fork** runs the `pthread_atfork` handlers; the child is the forking
   thread alone.
+- **Thread-safe functions** (`_POSIX_THREAD_SAFE_FUNCTIONS` in the
+  sysroot's `features.h`): newlib's `_r` functions, libgloss's `getpw*_r`,
+  `getgr*_r`, `readdir_r` and `ttyname_r`, and `flockfile` /
+  `funlockfile` / `ftrylockfile` on the stream's own lock, the one stdio
+  takes around each call. libX11 is built with its locks
+  (`packages/x11-libs`): a threaded client calls `XInitThreads()`.
 
 `/bin/etc/pthread_smoke` (test `pthread`) checks the API on one thread,
 then a mutex and a condition variable under contention, `errno`, keys,

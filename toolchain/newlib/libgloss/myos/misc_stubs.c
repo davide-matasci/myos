@@ -11,15 +11,29 @@
 void sync(void) {
 }
 
-char *ttyname(int fd) {
-    static char name[MYOS_TTY_PATH];
+int ttyname_r(int fd, char *buf, size_t len) {
+    char name[MYOS_TTY_PATH];
     int master;
 
     if (myos_tty_dir(fd, name, sizeof name - 5, &master) != 0 || master) {
-        errno = ENOTTY;
-        return NULL;
+        return ENOTTY;
     }
     strcat(name, "/data");
+    if (strlen(name) >= len) {
+        return ERANGE;
+    }
+    strcpy(buf, name);
+    return 0;
+}
+
+char *ttyname(int fd) {
+    static char name[MYOS_TTY_PATH];
+    int rc = ttyname_r(fd, name, sizeof name);
+
+    if (rc != 0) {
+        errno = rc;
+        return NULL;
+    }
     return name;
 }
 

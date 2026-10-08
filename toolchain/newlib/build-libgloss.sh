@@ -49,6 +49,12 @@ s = s.replace(tail, """/* myos: libgloss pthread.c. */
 #ifndef _UNIX98_THREAD_MUTEX_ATTRIBUTES
 #define _UNIX98_THREAD_MUTEX_ATTRIBUTES 1
 #endif
+/* myos: the _r functions (newlib's, and libgloss's getpw*_r, getgr*_r,
+ * readdir_r, ttyname_r) and stream locking (flockfile). Xlib's Xos_r.h
+ * picks the POSIX getpwnam_r by it. */
+#ifndef _POSIX_THREAD_SAFE_FUNCTIONS
+#define _POSIX_THREAD_SAFE_FUNCTIONS 200809L
+#endif
 /* myos: libgloss time.c (clock_gettime, CLOCK_REALTIME and
  * CLOCK_MONOTONIC) and sleep.c (nanosleep); <time.h> declares them only
  * with these. */

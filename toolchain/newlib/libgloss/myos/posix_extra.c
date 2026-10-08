@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/lock.h>
 #include <sys/random.h>
 #include <unistd.h>
 
@@ -62,18 +63,21 @@ int fdatasync(int fd) {
     return fsync(fd);
 }
 
-/* stdio locking: libgloss is single-threaded. */
+/* A stream's own lock, the recursive one newlib's stdio takes around each
+ * call (pthread.c makes it a mutex): a thread holds it across several. */
 void flockfile(FILE *f) {
-    (void)f;
+    _flockfile(f);
 }
 
 int ftrylockfile(FILE *f) {
-    (void)f;
-    return 0;
+    if (f->_flags & __SSTR) {
+        return 0;
+    }
+    return __lock_try_acquire_recursive(f->_lock) ? 0 : -1;
 }
 
 void funlockfile(FILE *f) {
-    (void)f;
+    _funlockfile(f);
 }
 
 int killpg(int pgrp, int sig) {
