@@ -10,13 +10,15 @@
  *   - a condition variable: a producer and two consumers pass items
  *     through a small queue, then a broadcast stops the consumers;
  *   - errno and key values per thread, a key's destructor at thread exit;
- *   - stdio and malloc from four threads at once (newlib's locks);
+ *   - stdio and malloc from four threads at once (newlib's locks), a
+ *     line written in three calls whole under flockfile; readdir_r;
  *   - once across threads, pthread_exit with a cleanup handler and a
  *     value for its joiner, a detached thread;
  *   - 150 threads started and joined, past the kernel's task slots, so
  *     each one's slot and stack are given back.
  * Prints [ OK ] pthread.
  */
+#include <dirent.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -229,7 +231,12 @@ static void *own_state(void *arg) {
             return (void *)1;
         }
         memset(p, (int)n, (size_t)(16 + i * n));
-        fprintf(shared_file, "thread %ld line %d\n", n, i);
+        /* A line in three calls, whole under the stream's lock. */
+        flockfile(shared_file);
+        fprintf(shared_file, "thread %ld", n);
+        fprintf(shared_file, " line ");
+        fprintf(shared_file, "%d\n", i);
+        funlockfile(shared_file);
         free(p);
     }
     /* errno stays this thread's while the others set theirs. */
@@ -331,12 +338,29 @@ static int with_threads(void) {
     int lines = 0;
     char line[64];
     while (fgets(line, sizeof line, shared_file)) {
-        lines += strncmp(line, "thread ", 7) == 0 && strstr(line, " line ");
+        long tn;
+        int ln;
+        char end;
+        lines += sscanf(line, "thread %ld line %d%c", &tn, &ln, &end) == 3 && end == '\n';
     }
     fclose(shared_file);
     if (lines != WORKERS * 200) {
         printf("[ FAIL ] pthread %d whole lines of %d from the threads\n", lines, WORKERS * 200);
         return 1;
+    }
+
+    /* readdir_r: the root's entries into the caller's buffer. */
+    DIR *root = opendir("/");
+    struct dirent entry, *e;
+    int found = 0;
+    while (root && readdir_r(root, &entry, &e) == 0 && e) {
+        found |= e == &entry && strcmp(entry.d_name, "bin") == 0;
+    }
+    if (root) {
+        closedir(root);
+    }
+    if (!found) {
+        return fail("readdir_r found no /bin", 0);
     }
 
     once_runs = 0;

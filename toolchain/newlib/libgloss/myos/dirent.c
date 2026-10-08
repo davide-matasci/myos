@@ -128,8 +128,12 @@ dir_new(int fd, const char *path)
 	int i;
 	size_t n;
 
+	/* Claimed with a compare-and-swap: two threads opening directories
+	 * at once get two slots. */
 	for (i = 0; i < MYOS_DIR_POOL; i++) {
-		if (!dir_used[i]) {
+		unsigned char free_slot = 0;
+		if (__atomic_compare_exchange_n(&dir_used[i], &free_slot, 1, 0,
+						__ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
 			break;
 		}
 	}
@@ -147,9 +151,9 @@ dir_new(int fd, const char *path)
 	dir_pool[i].path[n] = '\0';
 	if (dir_list(&dir_pool[i]) != 0) {
 		free(dir_pool[i].buf);
+		__atomic_store_n(&dir_used[i], 0, __ATOMIC_RELEASE);
 		return NULL;
 	}
-	dir_used[i] = 1;
 	return &dir_pool[i];
 }
 
@@ -242,6 +246,30 @@ readdir(DIR *d)
 	return NULL;
 }
 
+/* readdir into the caller's entry: a DIR keeps its own, so threads
+ * reading different streams never share one. */
+int
+readdir_r(DIR *d, struct dirent *entry, struct dirent **result)
+{
+	int saved = errno;
+	struct dirent *e;
+
+	errno = 0;
+	e = readdir(d);
+	if (e == NULL && errno != 0) {
+		int err = errno;
+		errno = saved;
+		*result = NULL;
+		return err;
+	}
+	errno = saved;
+	if (e != NULL) {
+		memcpy(entry, e, sizeof *entry);
+	}
+	*result = e ? entry : NULL;
+	return 0;
+}
+
 int
 closedir(DIR *d)
 {
@@ -256,7 +284,7 @@ closedir(DIR *d)
 	}
 	free(d->buf);
 	d->buf = NULL;
-	dir_used[slot] = 0;
+	__atomic_store_n(&dir_used[slot], 0, __ATOMIC_RELEASE);
 	return 0;
 }
 

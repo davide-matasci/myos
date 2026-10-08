@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Cross-build the X client libraries for the three arches: xorgproto, xtrans,
 # libXau, xcb-proto, libxcb (core only, no extension libraries), libX11
-# (no threads, no XKB) and libXext (MIT-SHM's XShm* among its extensions),
-# static, each with its own autoconf configure in cross mode. Installed under target/x11-libs-<arch> as if at /lib/x11 (libX11's
+# (thread-safe with XInitThreads, no XKB) and libXext (MIT-SHM's XShm*
+# among its extensions), static, each with its own autoconf configure in
+# cross mode. Installed under target/x11-libs-<arch> as if at /lib/x11 (libX11's
 # data at /lib/X11), the way the X packages find them:
 #
 #   PKG_CONFIG_SYSROOT_DIR=target/x11-libs-<arch>
@@ -90,8 +91,11 @@ build_arch() {
   done
   build_one "$arch" "libxcb-$LIBXCB_VERSION" --disable-devel-docs --without-doxygen "${no_ext[@]}"
   # newlib's malloc(0) returns a pointer; IPv6 is left to a later need.
+  # Xlib's locks are on libgloss's pthreads (XInitThreads); its constructor
+  # that would call XInitThreads by itself never runs: myos's crt0 runs no
+  # .init_array (issue #343).
   build_one "$arch" "libX11-$LIBX11_VERSION" --datadir=/lib \
-    --disable-specs --disable-xthreads --disable-thread-safety-constructor \
+    --disable-specs --enable-xthreads --disable-thread-safety-constructor \
     --disable-xkb --disable-xf86bigfont --disable-loadable-i18n \
     --disable-loadable-xcursor --disable-composecache --disable-ipv6 \
     --disable-malloc0returnsnull --without-xmlto --without-fop --without-xsltproc
