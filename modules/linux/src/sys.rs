@@ -697,18 +697,25 @@ pub fn readlinkat(dirfd: usize, path: usize, buf: usize, size: usize) -> R {
 
 // ---- memory ---------------------------------------------------------------
 
-/// Anonymous or file-backed (a private copy of the file: `MAP_SHARED` file
-/// mappings are refused, as the native layer cannot write them back).
+/// Anonymous or file-backed: the native `mmap` (its flag values are
+/// Linux's), a private copy of the file or a shared mapping of it.
 pub fn mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, off: usize) -> R {
-    const MAP_SHARED: usize = 0x01;
     const MAP_ANONYMOUS: usize = 0x20;
-    if flags & MAP_SHARED != 0 && flags & MAP_ANONYMOUS == 0 {
-        return Err(ENODEV);
-    }
     if flags & MAP_ANONYMOUS == 0 && task::fd_kind(fd).is_none() {
         return Err(EBADF);
     }
     native(user::do_mmap(addr, len, prot, flags, fd as isize, off), ENOMEM)
+}
+
+/// `msync`: the native one (the flags are Linux's values too).
+pub fn msync(addr: usize, len: usize, flags: usize) -> R {
+    const MS_ASYNC: usize = 1;
+    const MS_INVALIDATE: usize = 2;
+    const MS_SYNC: usize = 4;
+    if flags & !(MS_ASYNC | MS_INVALIDATE | MS_SYNC) != 0 || flags & MS_ASYNC != 0 && flags & MS_SYNC != 0 {
+        return Err(EINVAL);
+    }
+    native(user::sys_msync(addr, len, flags), ENOMEM)
 }
 
 /// `pread64(fd, buf, count, offset)`: a read at `offset` that leaves the

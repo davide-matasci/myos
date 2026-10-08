@@ -51,6 +51,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         9 => ret(sys::mmap(a[0], a[1], a[2], a[3], a[4], a[5])),
         10 => result(user::sys_mprotect(a[0], a[1], a[2]), ENOMEM),
         11 => result(user::sys_munmap(a[0], a[1]), EINVAL),
+        26 => ret(sys::msync(a[0], a[1], a[2])),
         12 => user::sys_brk(a[0]),
         13 => ret(lsig::rt_sigaction(a[0], a[1], a[2])),
         14 => ret(lsig::rt_sigprocmask(a[0], a[1], a[2])),

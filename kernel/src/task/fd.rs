@@ -86,6 +86,15 @@ pub fn fd_readable(fd: usize) -> bool {
     }
 }
 
+/// Whether file `fd` was opened for writing (a terminal or pipe end is).
+pub fn fd_writable(fd: usize) -> bool {
+    match with_process_mut(|t| t.fds.get(fd).copied()) {
+        Some(FdEntry::File(id)) => matches!(OPEN_FILES.lock().get(id), Some(Some(f)) if f.writable),
+        Some(FdEntry::Empty) | None => false,
+        Some(_) => true,
+    }
+}
+
 /// Make `fd` append-only (see [`OpenFile::append_only`]).
 pub fn fd_set_append_only(fd: usize) {
     let Some(FdEntry::File(id)) = with_process_mut(|t| t.fds.get(fd).copied()) else {

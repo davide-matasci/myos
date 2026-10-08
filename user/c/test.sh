@@ -57,6 +57,12 @@ t at /bin/etc/at_smoke
 # its end; a rename does not wait for a process reading the console
 # (fileio_smoke.c; on ext2 in mkfs.ext2's test).
 t fileio /bin/etc/fileio_smoke
+# MAP_SHARED mappings of a file are the file: stores read back with read()
+# and survive munmap, close and a child's exit, write() shows in them, a
+# second mapping and a forked child share them, read() lands in them,
+# msync, ftruncate, mprotect, a read-only fd (mmap_smoke.c; on ext2 in
+# mkfs.ext2's test).
+t mmap /bin/etc/mmap_smoke
 # A write to a pty whose master is open but never read blocks, and a signal
 # ends it: the writer stays killable (fault_smoke.c; a CPU fault from
 # userspace is contained the same way, but a test cannot fault on purpose:

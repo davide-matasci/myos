@@ -56,6 +56,11 @@ ext2_held() {
 ext2_files() {
 	/bin/etc/fileio_smoke /tmp/disk
 }
+# Shared mappings of files on the disk, written back through the module
+# (mmap_smoke.c).
+ext2_mmap() {
+	/bin/etc/mmap_smoke /tmp/disk
+}
 # A file's modification time, as a Linux program's stat sees it.
 ext2_mtime() {
 	echo x > /tmp/disk/m && linux /bin/linux/linux-smoke mtime /tmp/disk/m && rm /tmp/disk/m
@@ -67,6 +72,7 @@ t ext2_big ext2_big
 t ext2_times ext2_times
 t ext2_held ext2_held
 t ext2_files ext2_files
+t ext2_mmap ext2_mmap
 if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
 	t ext2_mtime ext2_mtime
 fi

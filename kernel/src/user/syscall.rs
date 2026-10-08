@@ -170,6 +170,10 @@ const SYS_YIELD: usize = 90;
 /// one timers and `/proc/cpu` count on), which setting the wall clock does
 /// not move.
 const SYS_CLOCK_MONOTONIC: usize = 91;
+/// `msync(addr, len, flags)`: write the shared file mappings in the range
+/// back to their files (the flags are taken and ignored: every msync is a
+/// synchronous one).
+const SYS_MSYNC: usize = 92;
 const LOCK_SH: usize = 1;
 const LOCK_EX: usize = 2;
 const LOCK_NB: usize = 4;
@@ -362,6 +366,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
             0
         }
         SYS_CLOCK_MONOTONIC => crate::time::monotonic_ns() as usize,
+        SYS_MSYNC => sys_msync(a0, a1),
         at::SYS_OPENAT..=at::SYS_EXECAT => {
             let [a3, a4, a5] = regs.args_3_5();
             match nr {
@@ -1083,6 +1088,7 @@ fn exec_path_depth(
                     // frames — a quiet freelist leak (and, when expand later
                     // grows into the old mmap window, `reuse_or_alloc_frame`
                     // would adopt those pages as code then double-free them).
+                    sync_shared(&old_mmap);
                     free_mmap_regions(cur_aspace, &old_mmap);
                     flush_user_tlb();
                     v
@@ -1090,6 +1096,7 @@ fn exec_path_depth(
                     // Free anonymous maps *before* expand remaps: when
                     // `stack_off` grows, the new code span can overlap the old
                     // mmap window and reuse_or_alloc would steal those frames.
+                    sync_shared(&old_mmap);
                     free_mmap_regions(cur_aspace, &old_mmap);
                     task::clear_mmap();
                     flush_user_tlb();
@@ -1636,14 +1643,31 @@ fn sys_mmap(args_ptr: usize) -> usize {
     do_mmap(hint, len, prot, flags, fd, offset)
 }
 
+/// The write back of the shared file mappings among `mmap` that touch
+/// `[lo, hi)` (every one by default), before they go.
+fn sync_shared_in(lo: usize, hi: usize) {
+    for node in task::mmap_shared_files(lo, hi) {
+        fs::pagecache::sync(&node);
+    }
+}
+
+fn sync_shared(mmap: &[task::MmapRegion]) {
+    if mmap.iter().any(|r| r.prot & task::MMAP_SHARED != 0) {
+        sync_shared_in(0, usize::MAX);
+    }
+}
+
 pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: isize, offset: usize) -> usize {
     if len == 0 {
         return SYSERR;
     }
-    // File mappings are private copies: the pages are filled from the file
-    // when first touched and never written back. A shared mapping of a
-    // device (a module's `mmap` hook: `/dev/fb/data`) maps the device's own
-    // pages at once.
+    // A private file mapping is a copy: the pages are filled from the file
+    // when first touched and never written back. A shared one through a
+    // writable fd is the file (the page cache's frames for its pages,
+    // written back when the mapping goes: `MMAP_SHARED`); through a
+    // read-only fd it is a private one that may not be written. A shared
+    // mapping of a device (a module's `mmap` hook: `/dev/fb/data`) maps the
+    // device's own pages at once.
     let file = if flags & MAP_ANON != 0 {
         None
     } else {
@@ -1660,8 +1684,18 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         Some(node) if flags & MAP_SHARED != 0 => fs::device_frame(node, offset).is_some(),
         _ => false,
     };
-    if !device && flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
+    let mut shared = 0;
+    if file.is_some() && !device && flags & MAP_SHARED != 0 {
+        if task::fd_writable(fd as usize) {
+            shared = task::MMAP_SHARED;
+        } else if prot & PROT_WRITE != 0 {
+            return SYSERR;
+        }
+    } else if !device && flags & MAP_PRIVATE == 0 && flags & MAP_FIXED == 0 {
         // Require PRIVATE or FIXED; tcc uses MAP_PRIVATE|MAP_ANON.
+        return SYSERR;
+    }
+    if flags & MAP_SHARED != 0 && flags & MAP_PRIVATE != 0 {
         return SYSERR;
     }
     let (base, _span, stack_off) = task::current_user_map();
@@ -1697,6 +1731,7 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         // MAP_FIXED replaces whatever is mapped there (a dynamic linker maps
         // each segment over the span it reserved first). Its pages go before
         // its record, as in `sys_munmap`.
+        sync_shared_in(hint, hint + map_len);
         let old = task::mmap_regions();
         release_mmap_range(aspace, &old, hint as u64, pages);
         if !task::mmap_remove(hint as u64, pages as u32) {
@@ -1729,13 +1764,14 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     }
     // The pages get their frames on first touch (`fault_in`), so a large
     // reservation or a big library costs only what is used.
-    if let Some(va) = record(prot as u32, file.as_ref().map(|node| (node, offset))) {
+    if let Some(va) = record(prot as u32 | shared, file.as_ref().map(|node| (node, offset))) {
         flush();
         return va;
     }
     // A file mapping fails there when the mapped-file table is full: read
-    // the file in whole now, as an anonymous region.
-    let Some(node) = file else {
+    // the file in whole now, as an anonymous region (not a shared one,
+    // which is the file or nothing).
+    let Some(node) = file.filter(|_| shared == 0) else {
         return SYSERR;
     };
     let Some(va) = record(prot as u32, None) else {
@@ -1818,11 +1854,36 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     // the table's limit then fails with the pages dropped: the range reads
     // as new, as after `madvise`.
     let old = task::mmap_regions();
+    // A shared mapping's pages go back to the file (whether or not another
+    // mapping of the process still holds them).
+    sync_shared_in(addr, addr + map_len);
     release_mmap_range(task::current_aspace(), &old, addr as u64, pages);
     flush_user_tlb();
     if !task::mmap_remove(addr as u64, pages as u32) {
         return SYSERR;
     }
+    0
+}
+
+/// `msync(addr, len, flags)`: the shared file mappings in `[addr, addr +
+/// len)` are written back to their files. The flags (`MS_SYNC`, `MS_ASYNC`,
+/// `MS_INVALIDATE`) make no difference: the write back is done when the
+/// call returns, and the mappings are the file.
+pub(crate) fn sys_msync(addr: usize, len: usize) -> usize {
+    if addr % PAGE != 0 {
+        return SYSERR;
+    }
+    let pages = len.div_ceil(PAGE);
+    if pages > MMAP_AREA_PAGES {
+        return SYSERR;
+    }
+    let (base, _span, stack_off) = task::current_user_map();
+    let area_lo = mmap_base_va(base, stack_off) as usize;
+    let area_hi = mmap_limit_va(base, stack_off) as usize;
+    if addr < area_lo || addr.saturating_add(pages * PAGE) > area_hi {
+        return SYSERR;
+    }
+    sync_shared_in(addr, addr + pages * PAGE);
     0
 }
 
@@ -1856,12 +1917,17 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
             return SYSERR;
         };
         // A page shared through the page cache becomes this process's own
-        // before it may be written.
+        // before it may be written; a shared mapping's stays the file's,
+        // dirty from now on.
         if prot & PROT_WRITE != 0 && fs::pagecache::is_cached(phys) {
-            let own = mm::alloc_frame_site(4);
-            unsafe { core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(own), PAGE) };
-            free_mapped_page(aspace, va);
-            phys = own;
+            if task::mmap_backing(va as usize).is_some_and(|(p, _)| p & task::MMAP_SHARED != 0) {
+                fs::pagecache::dirtied(phys);
+            } else {
+                let own = mm::alloc_frame_site(4);
+                unsafe { core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(own), PAGE) };
+                free_mapped_page(aspace, va);
+                phys = own;
+            }
         }
         map_user_page_prot(aspace, va, phys, prot);
         if prot & PROT_EXEC != 0 {

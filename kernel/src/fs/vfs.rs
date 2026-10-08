@@ -476,7 +476,7 @@ pub fn open(path: &str, flags: u32) -> Option<Vnode> {
         }
         let node = node::get(idx, rel, backend_file_id(idx, rel));
         if wants_write && trunc {
-            pagecache::invalidate(&node);
+            pagecache::truncated(&node, 0);
         }
         return Some(node);
     }
@@ -576,7 +576,7 @@ pub fn set_times_node(node: &Vnode, atime: SetTime, mtime: SetTime) -> bool {
 /// Read from an open vnode at `pos` into `out`. Returns bytes read.
 pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
     let tree = tree_read();
-    match node::locate(node) {
+    let n = match node::locate(node) {
         Some((idx, node::Loc::File(id))) => file_read(idx, id, pos, out),
         Some((idx, node::Loc::Path(rel))) => {
             // A shell at its prompt reads the console until the next key: a
@@ -587,7 +587,11 @@ pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
             backend_read(idx, rel.as_str(), pos, out)
         }
         None => 0,
-    }
+    };
+    // What its shared mappings wrote, not written back yet.
+    let n = n.min(out.len());
+    pagecache::overlay(node, pos, &mut out[..n]);
+    n
 }
 
 /// Whether a read of `node` returns as much as asked for, as far as the
@@ -608,14 +612,21 @@ pub fn reads_whole(node: &Vnode) -> bool {
 
 /// Write to an open vnode at `pos`. Returns bytes written, or `None` on error.
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
+    let written = write_through(node, pos, buf);
+    // After the write: its shared mappings show it, and a page read before
+    // it is dropped, or not kept.
+    pagecache::written(node, pos, &buf[..written.unwrap_or(0).min(buf.len())]);
+    written
+}
+
+/// [`write`] without the page cache hearing of it: the cache's own write
+/// back of a shared mapping's pages.
+pub(super) fn write_through(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     let _tree = tree_read();
-    let written = match node::locate(node)? {
+    match node::locate(node)? {
         (idx, node::Loc::File(id)) => file_write(idx, id, pos, buf),
         (idx, node::Loc::Path(rel)) => backend_write(idx, rel.as_str(), pos, buf),
-    };
-    // After the write: a page read before it is then dropped, or not kept.
-    pagecache::invalidate(node);
-    written
+    }
 }
 
 /// Make an open vnode `size` bytes long, cut or grown with zeros
@@ -628,7 +639,9 @@ pub fn set_size(node: &Vnode, size: usize) -> bool {
         None => false,
     };
     // As after a write: the pages past the new end are gone or zero now.
-    pagecache::invalidate(node);
+    if done {
+        pagecache::truncated(node, size);
+    }
     done
 }
 

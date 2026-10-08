@@ -23,9 +23,15 @@ typedef __off_t off_t;
 
 #define MAP_FAILED ((void *)-1)
 
+/* msync flags: taken, but every msync writes back before it returns. */
+#define MS_ASYNC      0x01
+#define MS_INVALIDATE 0x02
+#define MS_SYNC       0x04
+
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
 int munmap(void *addr, size_t length);
 int mprotect(void *addr, size_t length, int prot);
+int msync(void *addr, size_t length, int flags);
 
 void *_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
 int _munmap(void *addr, size_t length);

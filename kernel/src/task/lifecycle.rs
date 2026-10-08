@@ -703,14 +703,14 @@ pub fn die() -> ! {
             let off = p.stack_off;
             let brk = p.brk_cur;
             let mmap = core::mem::take(&mut p.mmap);
-            p.mapped_files = [const { None }; MAX_MAPPED_FILES];
+            let files = core::mem::replace(&mut p.mapped_files, [const { None }; MAX_MAPPED_FILES]);
             p.cwd_node = None;
             p.user_base = 0;
             p.image_span = 0;
             p.stack_off = 0;
             p.brk_cur = 0;
             if aspace != 0 {
-                out = Some((aspace, base, span, off, brk, mmap));
+                out = Some((aspace, base, span, off, brk, mmap, files));
             }
         }
         out
@@ -752,7 +752,12 @@ pub fn die() -> ! {
     // parent may already have reported the exit (`exited`), but the slot is
     // only recycled once it is Dead and off its stack (`reapable`).
     irq_on();
-    if let Some((aspace, base, span, off, brk, mmap)) = reclaim {
+    if let Some((aspace, base, span, off, brk, mmap, files)) = reclaim {
+        // Its shared file mappings go back to their files first.
+        for node in shared_files(&mmap, &files, 0, usize::MAX) {
+            crate::fs::pagecache::sync(&node);
+        }
+        drop(files);
         user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
     }
     retire(None);

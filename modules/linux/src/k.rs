@@ -28,6 +28,7 @@ const SYS_GETCWD: usize = 16;
 const SYS_MUNMAP: usize = 24;
 const SYS_MPROTECT: usize = 25;
 const SYS_LSEEK: usize = 26;
+const SYS_MSYNC: usize = 92;
 const SYS_SETSID: usize = 29;
 const SYS_SETPGID: usize = 30;
 const SYS_GETPGID: usize = 31;
@@ -138,6 +139,9 @@ pub mod user {
     }
     pub fn sys_munmap(addr: usize, len: usize) -> usize {
         native(SYS_MUNMAP, addr, len, 0)
+    }
+    pub fn sys_msync(addr: usize, len: usize, flags: usize) -> usize {
+        native(SYS_MSYNC, addr, len, flags)
     }
     pub fn sys_brk(req: usize) -> usize {
         native(SYS_BRK, req, 0, 0)

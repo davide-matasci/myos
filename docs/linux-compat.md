@@ -202,8 +202,8 @@ the console keymap and module devices natively), `access`,
 `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`, `rename(at/at2)`,
 `symlink(at)`, `readlink(at)`, `utimensat`, `utimes`, `poll`, `umask`.
 
-Memory: `brk`, `mmap` (anonymous, and private file mappings), `munmap`,
-`mprotect`, `madvise` (`MADV_DONTNEED` drops the pages, which read as
+Memory: `brk`, `mmap` (anonymous, private and shared file mappings),
+`munmap`, `mprotect`, `msync`, `madvise` (`MADV_DONTNEED` drops the pages, which read as
 zero or as their file next time, as allocators such as rustc's Scudo
 expect; other advice is ignored). Files also: `pread64`, `pwrite64`,
 `pwritev(2)`.
@@ -296,8 +296,12 @@ ones) from `/lib`, `/usr/local/lib`, `/usr/lib` with `open`, `read`,
 `pread64` and `mmap` of the file, and maps each segment over the span it
 reserved first. That needed core `mmap` work, which native programs share:
 
-- file-backed `MAP_PRIVATE` mappings (the pages are a private copy of the
-  file, never written back; `MAP_SHARED` file mappings are refused);
+- file-backed mappings: `MAP_PRIVATE` (the pages are a private copy of
+  the file, never written back) and `MAP_SHARED` (the pages are the file's,
+  the page cache's frames for them, shared by every process that maps them
+  and with `read` and `write`, and written back to the file by `msync`,
+  `munmap`, exit and exec; through a read-only fd a shared mapping may not
+  be written);
 - demand paging: a mapping takes no memory until it is used. The first
   touch of a page, a page fault from userspace or a kernel copy into a user
   buffer, gives it a frame, zeroed or read from the file
@@ -380,7 +384,8 @@ three, the kernel crate itself an hour. Known gaps:
   on the interrupt return). No alternate signal stacks, no real-time signal
   queueing.
 - No other `clone` with `CLONE_VM` but not `CLONE_THREAD` than
-  posix_spawn's, and no shared file mappings (`MAP_SHARED`).
+  posix_spawn's, and no shared anonymous mappings (`MAP_SHARED |
+  MAP_ANONYMOUS`).
 - Close-on-exec (`O_CLOEXEC`, `FD_CLOEXEC`, `FIOCLEX`) and `O_NONBLOCK`
   outside sockets are flags the layer keeps per fd (`files.rs`): a
   successful exec closes the close-on-exec fds (the `on_exec` hook), and a

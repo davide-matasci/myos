@@ -217,8 +217,8 @@ pub fn mmap_remove(va: u64, pages: u32) -> bool {
     with_process_mut(|t| carve(&mut t.mmap, lo, hi).is_some())
 }
 
-/// Record `prot` for the mapped parts of `[va, va + pages)` (a device
-/// mapping stays one).
+/// Record `prot` for the mapped parts of `[va, va + pages)` (a device or
+/// a shared mapping stays one).
 pub fn mmap_set_prot(va: u64, pages: u32, prot: u32) -> bool {
     let page = crate::user::PAGE;
     let lo = va as usize;
@@ -231,7 +231,7 @@ pub fn mmap_set_prot(va: u64, pages: u32, prot: u32) -> bool {
         let at = t.mmap.partition_point(|r| (r.va as usize) < lo);
         let reprotected = parts
             .into_iter()
-            .map(|part| MmapRegion { prot: prot | (part.prot & MMAP_DEVICE), ..part });
+            .map(|part| MmapRegion { prot: prot | (part.prot & (MMAP_DEVICE | MMAP_SHARED)), ..part });
         t.mmap.splice(at..at, reprotected);
         coalesce(&mut t.mmap);
         if t.mmap.len() > MAX_MMAP_REGIONS {
@@ -240,6 +240,28 @@ pub fn mmap_set_prot(va: u64, pages: u32, prot: u32) -> bool {
         }
         true
     })
+}
+
+/// The files of the shared mappings ([`MMAP_SHARED`]) among `mmap` that
+/// touch `[lo, hi)`, each once: what to write back when they go.
+pub fn shared_files(mmap: &[MmapRegion], files: &[Option<crate::fs::Vnode>], lo: usize, hi: usize) -> Vec<crate::fs::Vnode> {
+    let mut out: Vec<crate::fs::Vnode> = Vec::new();
+    for r in mmap {
+        if r.prot & MMAP_SHARED == 0 || (r.va as usize) >= hi || region_end(r) <= lo {
+            continue;
+        }
+        if let Some(Some(node)) = files.get((r.file as usize).wrapping_sub(1)) {
+            if !out.contains(node) {
+                out.push(node.clone());
+            }
+        }
+    }
+    out
+}
+
+/// [`shared_files`] of the current process.
+pub fn mmap_shared_files(lo: usize, hi: usize) -> Vec<crate::fs::Vnode> {
+    with_process_mut(|t| shared_files(&t.mmap, &t.mapped_files, lo, hi))
 }
 
 pub(super) fn heap_base_for(base: u64, stack_off: u64) -> u64 {
