@@ -108,7 +108,7 @@ for arch in x86_64 aarch64 riscv64; do
   # -nostdinc: never leak host glibc headers into the guest build
   # (newlib + clang resource + port stubs only).
   clang_res="$(clang -print-resource-dir)/include"
-  dbflags=(-ffreestanding -fPIC -O2 -g -nostdinc -DDEBUG_TRACE=4
+  dbflags=(-ffreestanding -fPIC -O2 -nostdinc -DDEBUG_TRACE=4
     -Wno-incompatible-function-pointer-types
     -isystem "$clang_res" -isystem "$inc" -I"$HERE/include" -I"$LTM")
 
@@ -219,6 +219,9 @@ for arch in x86_64 aarch64 riscv64; do
     "$shim_o" "$builtins_o" "$LTC_A" "$LTM_A" "${extra_objs[@]+"${extra_objs[@]}"}" \
     -L"$lib" --start-group -lc -lgloss -lg --end-group || { echo "dropbearkey link failed ($arch)"; exit 1; }
 
+  for bin in dropbear dbclient dropbearkey; do
+    "${triple}-strip" -s "$ROOT/target/${bin}-${none_triple}"
+  done
   echo "==> dropbear ($arch) linked: dropbear-${none_triple} dbclient-${none_triple} dropbearkey-${none_triple}"
 done
 

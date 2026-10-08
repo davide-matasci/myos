@@ -77,6 +77,32 @@ pub fn limine_conf(head_extra: &str, kernel_extra: &str) -> String {
     )
 }
 
+/// The kernel as a boot drive carries it: the ELF cut after its last
+/// segment, without section headers. Limine loads what the program headers
+/// name; the rest is the debug info and the symbols, a dozen MiB that the
+/// ELF under `target/` keeps (`addr2line` on a stalled boot's PC,
+/// `src/boot_test.rs`). Done here rather than with a strip tool, which the
+/// boot jobs (no Rust toolchain) do not have for the other arches.
+pub fn boot_kernel(elf: &[u8]) -> Vec<u8> {
+    assert!(
+        elf.len() >= 64 && elf[..4] == *b"\x7fELF" && elf[4] == 2 && elf[5] == 1,
+        "kernel: not a little-endian ELF64"
+    );
+    let half = |o: usize| u16::from_le_bytes([elf[o], elf[o + 1]]) as usize;
+    let word = |o: usize| u64::from_le_bytes(elf[o..o + 8].try_into().unwrap()) as usize;
+    let (phoff, phentsize, phnum) = (word(0x20), half(0x36), half(0x38));
+    let mut end = phoff + phentsize * phnum;
+    for ph in (0..phnum).map(|i| phoff + i * phentsize) {
+        // p_offset + p_filesz
+        end = end.max(word(ph + 0x08) + word(ph + 0x20));
+    }
+    let mut out = elf[..end].to_vec();
+    // e_shoff, then e_shnum and e_shstrndx: no section headers.
+    out[0x28..0x30].fill(0);
+    out[0x3c..0x40].fill(0);
+    out
+}
+
 const SECTOR: usize = 512;
 // 64 MiB no longer fits the packed boot images (55 MiB initramfs + kernels +
 // limine-bios.sys twice): the FAT16 writer ran out of clusters. 128 MiB keeps
@@ -237,7 +263,7 @@ pub fn write_esp_image_ex(
         },
         DiskFile {
             path: "boot/kernel".into(),
-            data: kernel.to_vec(),
+            data: boot_kernel(kernel),
         },
         DiskFile {
             path: "boot/initramfs".into(),
@@ -337,7 +363,9 @@ pub fn write_x86_iso(
             panic!("copy {} -> {}: {e}", src.display(), dst.display())
         });
     };
-    copy(kernel, "boot/kernel");
+    let elf = fs::read(kernel).unwrap_or_else(|e| panic!("read {}: {e}", kernel.display()));
+    fs::write(iso_root.join("boot/kernel"), boot_kernel(&elf))
+        .unwrap_or_else(|e| panic!("write iso boot/kernel: {e}"));
     copy(initramfs, "boot/initramfs");
     copy(&limine.bios_sys(), "boot/limine/limine-bios.sys");
     copy(&limine.bios_cd(), "boot/limine/limine-bios-cd.bin");
