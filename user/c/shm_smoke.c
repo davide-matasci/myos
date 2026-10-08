@@ -6,8 +6,12 @@
  * once) is written through its fd and its mapping, shared with a forked
  * child and with a program the child execs (the fd passes exec without
  * MFD_CLOEXEC, not with it); an anonymous MAP_SHARED mapping is zero,
- * shared with a forked child, and MAP_PRIVATE is not; /dev/shm has no
- * leftover entry once the fds and mappings are gone.
+ * shared with a forked child, and MAP_PRIVATE is not; a System V segment
+ * (libgloss shm.c, over a file of /dev/shm) is attached by its id in a
+ * forked child, IPC_STAT tells its size, a keyed one is found again by its
+ * key and refused with IPC_EXCL, IPC_RMID takes it away while the attached
+ * mappings go on sharing; /dev/shm has no leftover entry once the fds and
+ * mappings are gone.
  *
  * `shm_smoke child FD`: the exec'd program, maps the memfd FD and answers.
  */
@@ -17,7 +21,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ipc.h>
 #include <sys/mman.h>
+#include <sys/shm.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -202,6 +208,56 @@ static void anonymous(void) {
     }
 }
 
+static void sysv(void) {
+    struct shmid_ds ds;
+    int id, keyed, status;
+    char *p;
+    pid_t pid;
+
+    id = shmget(IPC_PRIVATE, 2 * PAGE, IPC_CREAT | 0600);
+    check(id >= 0, "shmget IPC_PRIVATE");
+    if (id < 0) {
+        return;
+    }
+    p = shmat(id, NULL, 0);
+    check(p != (void *)-1, "shmat");
+    if (p == (void *)-1) {
+        shmctl(id, IPC_RMID, NULL);
+        return;
+    }
+    check(p[0] == 0 && p[PAGE] == 0, "a new segment is zero");
+    check(shmctl(id, IPC_STAT, &ds) == 0 && ds.shm_segsz == 2 * PAGE && (ds.shm_perm.mode & 0666) == 0666,
+          "IPC_STAT");
+    strcpy(p, "parent");
+    pid = fork();
+    if (pid == 0) {
+        char *c = shmat(id, NULL, 0);
+        if (c == (void *)-1 || strcmp(c, "parent") != 0) {
+            _exit(1);
+        }
+        strcpy(c + PAGE, "child");
+        _exit(shmdt(c) == 0 ? 0 : 2);
+    }
+    check(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "a forked child attaches the segment by its id");
+    check(strcmp(p + PAGE, "child") == 0, "the child's store is in the segment");
+    check(shmctl(id, IPC_RMID, NULL) == 0, "IPC_RMID");
+    check(shmat(id, NULL, 0) == (void *)-1 && errno == EINVAL, "no attach after IPC_RMID");
+    strcpy(p + 100, "still");
+    check(strcmp(p + 100, "still") == 0, "the attached mapping lives on");
+    check(shmdt(p) == 0, "shmdt");
+    check(shmdt(p) < 0 && errno == EINVAL, "shmdt of nothing");
+
+    keyed = shmget(1234, PAGE, IPC_CREAT | IPC_EXCL | 0600);
+    check(keyed >= 0, "shmget by key");
+    check(shmget(1234, PAGE, IPC_CREAT | IPC_EXCL | 0600) < 0 && errno == EEXIST, "IPC_EXCL on a key in use");
+    check(shmget(1234, PAGE, 0) == keyed, "the key names the segment");
+    check(shmget(1234, 2 * PAGE, 0) < 0 && errno == EINVAL, "asking for more than the segment");
+    check(shmctl(keyed, IPC_RMID, NULL) == 0, "IPC_RMID of the keyed segment");
+    check(shmget(1234, PAGE, 0) < 0 && errno == ENOENT, "the key is free again");
+    check(shmget(5678, PAGE, 0) < 0 && errno == ENOENT, "an unknown key without IPC_CREAT");
+}
+
 int main(int argc, char **argv) {
     int before;
     if (argc == 3 && strcmp(argv[1], "child") == 0) {
@@ -212,6 +268,7 @@ int main(int argc, char **argv) {
     posix_shm();
     memfd();
     anonymous();
+    sysv();
     check(entries("/dev/shm") == before, "/dev/shm has no leftover entry");
     return failures != 0;
 }

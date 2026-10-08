@@ -11,6 +11,7 @@ The libraries an X client links, built from the X.Org release tarballs
 | xcb-proto | the protocol in XML and its Python generator, used at build time |
 | libxcb | the protocol library, core only (no extension libraries) |
 | libX11 | Xlib, over libxcb; no threads, no XKB |
+| libXext | the common extensions' client side: MIT-SHM (`XShm*`, on libgloss's System V shared memory), SHAPE, SYNC, ... |
 
 All static, for the three arches, under `target/x11-libs-<arch>` as if
 installed at `/lib/x11` (libX11's data at `/lib/X11`). An X package builds

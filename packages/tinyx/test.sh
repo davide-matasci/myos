@@ -1,8 +1,9 @@
 # tinyx, installed as a package: startx runs Xfbdev and, once the server
 # says it is ready, the client tinyx_smoke, which checks the screen's size,
-# paints the framebuffer red through a window and gets the Shift+A the host
-# types through the QEMU monitor (tinyx_smoke.c); when the client exits,
-# startx stops the server and the console has its screen back.
+# paints the framebuffer red through a window, puts a green MIT-SHM image
+# on it and reads it back, and gets the Shift+A the host types through the
+# QEMU monitor (tinyx_smoke.c); when the client exits, startx stops the
+# server and the console has its screen back.
 tinyx_run() {
 	: > /tmp/tinyx.out
 	startx /bin/etc/tinyx_smoke >> /tmp/tinyx.out 2>&1 &
@@ -24,6 +25,7 @@ tinyx_run() {
 	rc=$?
 	cat /tmp/tinyx.out
 	[ $rc = 0 ] || { echo "startx: exit $rc"; return 1; }
+	contains "[ OK ] tinyx shm" /tmp/tinyx.out || return 1
 	contains "[ OK ] tinyx" /tmp/tinyx.out || return 1
 	# The server's exit closed /dev/fb/ctl: the console has the screen back.
 	grep -q " text$" /dev/fb/ctl

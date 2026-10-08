@@ -66,7 +66,8 @@ t mmap /bin/etc/mmap_smoke
 # Shared memory: shm_open segments shared by name with a forked child and
 # living past shm_unlink for their holders, a memfd shared with a forked
 # and an exec'd child, anonymous MAP_SHARED mappings shared with a forked
-# child, no leftover in /dev/shm (shm_smoke.c).
+# child, System V segments by id and by key, no leftover in /dev/shm
+# (shm_smoke.c).
 t shm /bin/etc/shm_smoke
 # A write to a pty whose master is open but never read blocks, and a signal
 # ends it: the writer stays killable (fault_smoke.c; a CPU fault from

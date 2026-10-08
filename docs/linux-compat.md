@@ -390,6 +390,8 @@ three, the kernel crate itself an hour. Known gaps:
   queueing.
 - No other `clone` with `CLONE_VM` but not `CLONE_THREAD` than
   posix_spawn's.
+- No System V IPC (`shmget`, `semget`, `msgget`): a Linux program has
+  POSIX shared memory (`shm_open`, `memfd_create`, `MAP_SHARED`).
 - Close-on-exec (`O_CLOEXEC`, `FD_CLOEXEC`, `FIOCLEX`) and `O_NONBLOCK`
   outside sockets are flags the layer keeps per fd (`files.rs`): a
   successful exec closes the close-on-exec fds (the `on_exec` hook), and a
