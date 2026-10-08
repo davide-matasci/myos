@@ -130,6 +130,8 @@ struct winsize;
 /* msync(addr, len, flags): the shared file mappings in the range are
  * written back to their files (the flags make no difference). */
 #define MYOS_SYS_MSYNC 92
+/* clock_monotonic(): nanoseconds since boot (clock_gettime's CLOCK_MONOTONIC). */
+#define MYOS_SYS_CLOCK_MONOTONIC 91
 #define MYOS_POWER_OFF 0
 #define MYOS_POWER_REBOOT 1
 #define MYOS_POWER_HALT 2
