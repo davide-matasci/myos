@@ -8,13 +8,17 @@
  * was told about, a window created, named and mapped, an atom interned, a
  * round trip, XCloseDisplay. The server checks what arrived (the window's
  * size, its WM_NAME, the map). That is libxcb's and libX11's whole path:
- * the setup, request encoding, writev, poll and the replies. Prints
+ * the setup, request encoding, writev, poll and the replies. Then the
+ * client's threads (XInitThreads, Xlib's locks on libgloss's pthreads):
+ * four intern 50 atoms each on the one display at once, and every reply
+ * reaches the thread that asked, 200 atoms all different. Prints
  * [ OK ] x11.
  */
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <errno.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,7 +226,59 @@ static int serve(int fd, struct seen *seen) {
 
 /* ---- the client ---- */
 
+#define THREADS 4
+#define ATOMS 50
+
+struct interner {
+    Display *d;
+    int n;
+    Atom atoms[ATOMS];
+};
+
+static void *intern_atoms(void *arg) {
+    struct interner *t = arg;
+    for (int i = 0; i < ATOMS; i++) {
+        char name[32];
+        snprintf(name, sizeof name, "X11_SMOKE_%d_%d", t->n, i);
+        t->atoms[i] = XInternAtom(t->d, name, False);
+    }
+    return NULL;
+}
+
+/* THREADS threads intern ATOMS new atoms each: the server numbers them
+ * after X11_SMOKE's, so each must be in that range and none twice. */
+static int threads(Display *d) {
+    static struct interner t[THREADS];
+    pthread_t id[THREADS];
+    for (int i = 0; i < THREADS; i++) {
+        t[i].d = d;
+        t[i].n = i;
+        if (pthread_create(&id[i], NULL, intern_atoms, &t[i]) != 0) {
+            printf("[ FAIL ] x11 pthread_create\n");
+            return 1;
+        }
+    }
+    for (int i = 0; i < THREADS; i++) {
+        pthread_join(id[i], NULL);
+    }
+    static char got[THREADS * ATOMS];
+    for (int i = 0; i < THREADS; i++) {
+        for (int j = 0; j < ATOMS; j++) {
+            Atom a = t[i].atoms[j];
+            if (a <= FIRST_ATOM || a > FIRST_ATOM + THREADS * ATOMS || got[a - FIRST_ATOM - 1]++) {
+                printf("[ FAIL ] x11 thread %d's atom %d is %lu\n", i, j, (unsigned long)a);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static int client(void) {
+    if (!XInitThreads()) {
+        printf("[ FAIL ] x11 XInitThreads: Xlib without threads\n");
+        return 1;
+    }
     setenv("DISPLAY", ":5", 1);
     Display *d = XOpenDisplay(NULL);
     if (!d) {
@@ -245,6 +301,9 @@ static int client(void) {
     Atom a = XInternAtom(d, "X11_SMOKE", False);
     if (a != FIRST_ATOM) {
         printf("[ FAIL ] x11 InternAtom gave %lu\n", (unsigned long)a);
+        return 1;
+    }
+    if (threads(d)) {
         return 1;
     }
     XSync(d, False);

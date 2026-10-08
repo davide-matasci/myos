@@ -10,7 +10,7 @@ The libraries an X client links, built from the X.Org release tarballs
 | libXau | X authority files (`~/.Xauthority`) |
 | xcb-proto | the protocol in XML and its Python generator, used at build time |
 | libxcb | the protocol library, core only (no extension libraries) |
-| libX11 | Xlib, over libxcb; no threads, no XKB |
+| libX11 | Xlib, over libxcb; thread-safe after `XInitThreads()`, no XKB |
 
 All static, for the three arches, under `target/x11-libs-<arch>` as if
 installed at `/lib/x11` (libX11's data at `/lib/X11`). An X package builds
@@ -49,10 +49,17 @@ functions; `build.sh` writes it.
   `/tmp/.X11-unix/X5` that answers the connection setup and the handful of
   requests `XOpenDisplay` and a window's round trip send, and a libX11
   client that checks the screen it was given and creates, names and maps a
-  window, which the server checks it received.
+  window, which the server checks it received. Then four of the client's
+  threads intern 50 atoms each on its one display at once, after
+  `XInitThreads()`: 200 atoms, all different, each reply to the thread
+  that asked.
 
 ## Not yet
 
 - The other locales' data (`/lib/X11/locale`): nothing on myos sets a
   locale other than C (no `LANG`).
-- IPv6 displays, threads (`XInitThreads`), XKB.
+- IPv6 displays, XKB.
+- `XInitThreads()` at load: Xlib's locks are on libgloss's pthreads
+  (`docs/threads.md`), but upstream's constructor that turns them on by
+  itself is built out, as myos's crt0 runs no constructors (issue #343). A
+  threaded client calls `XInitThreads()` first, as before Xlib 1.8.
