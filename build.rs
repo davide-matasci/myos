@@ -15,7 +15,7 @@ mod release {
 
 use limine_image::{
     all_modules, bios_install, boot_kernel, copy_sparse, fetch_limine, write_esp_image,
-    write_fat_data_image, LIMINE_VERSION,
+    write_fat_data_image, limine_version,
 };
 use std::path::PathBuf;
 
@@ -49,7 +49,7 @@ fn main() {
     let kernel = std::fs::read(&kernel_path).expect("read x86_64 kernel ELF");
 
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    let limine_dir = manifest.join("target").join(format!("limine-v{LIMINE_VERSION}"));
+    let limine_dir = manifest.join("target").join(format!("limine-v{}", limine_version()));
     // include! pulls these into the build script; cargo does not track them
     // automatically, so image-layout fixes must force a bios.img rebuild.
     println!("cargo:rerun-if-changed=src/limine_image.rs");
@@ -59,6 +59,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/limine_fat.rs");
     println!("cargo:rerun-if-changed=src/limine_dir.rs");
     println!("cargo:rerun-if-changed=src/limine_disk.rs");
+    println!("cargo:rerun-if-changed=ports/limine/versions.env");
     println!("cargo:rerun-if-changed=src/initramfs.rs");
     println!("cargo:rerun-if-changed=src/ports.rs");
     println!("cargo:rerun-if-changed=src/release.rs");

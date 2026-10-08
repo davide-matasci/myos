@@ -18,10 +18,12 @@
  *
  * --install DISK lays the boot disk out on DISK (the running boot disk, or
  * one with a mounted partition, is refused): a GPT with a BIOS boot
- * partition (1 MiB, empty: the BIOS stage is not written, so the disk boots
- * by UEFI), the ESP (512 MiB, mkfs.fat) and the data partition (the rest,
- * mkfs.ext2); copies Limine from the running ESP onto the new one, and
- * upgrades its slot a.
+ * partition (1 MiB), the ESP (512 MiB, mkfs.fat) and the data partition
+ * (the rest, mkfs.ext2); writes Limine's files from the release (the `esp`
+ * lines of the list: the EFI binary, the device tree, the config booting
+ * slot a), fills slot a, and on x86 runs `limine bios-install` (the tool's
+ * port, ports/limine) for the BIOS stage. Nothing comes from the running
+ * system's ESP, so a system booted from the ISO installs the same.
  */
 #include <fcntl.h>
 #include <stdint.h>
@@ -196,15 +198,26 @@ static int mount_running_esp(char slot, char *name, size_t cap) {
 
 /* ---- the mirror's boot files -------------------------------------------- */
 
+/* Limine's files for an ESP --install makes: at most this many. */
+#define MAX_ESP 8
+
+typedef struct {
+    char path[96], csum[72], file[128];
+    long long size;
+} esp_file;
+
 typedef struct {
     char header[256];  /* "release=... commit=... abi=..." */
     char release[32];
     char csum[2][72], file[2][96];
     long long size[2];
+    esp_file esp[MAX_ESP];
+    int nesp;
 } boot_files;
 
 /* <arch>-boot.txt: the header, then "kernel SIZE SHA256 FILE" and the same
- * for the initramfs. */
+ * for the initramfs, and "esp PATH SIZE SHA256 FILE" for each of Limine's
+ * files on the ESP. */
 static int fetch_boot_list(const char *list_path, boot_files *b) {
     char line[512];
     FILE *f = fopen(list_path, "r");
@@ -218,6 +231,28 @@ static int fetch_boot_list(const char *list_path, boot_files *b) {
         if (strncmp(line, "# myos ", 7) == 0) {
             copy_field(b->header, sizeof b->header, line + 7, strlen(line + 7));
             word_value(b->header, "release", b->release, sizeof b->release);
+            continue;
+        }
+        if (strncmp(line, "esp ", 4) == 0 && b->nesp < MAX_ESP) {
+            esp_file *e = &b->esp[b->nesp];
+            char *p = line + 4, *sp;
+            copy_field(e->path, sizeof e->path, p, strcspn(p, " "));
+            if ((sp = strchr(p, ' ')) == NULL) {
+                continue;
+            }
+            e->size = atoll(sp + 1);
+            if ((sp = strchr(sp + 1, ' ')) == NULL) {
+                continue;
+            }
+            copy_field(e->csum, sizeof e->csum, sp + 1, strcspn(sp + 1, " "));
+            if ((sp = strchr(sp + 1, ' ')) == NULL) {
+                continue;
+            }
+            copy_field(e->file, sizeof e->file, sp + 1, strlen(sp + 1));
+            /* A path stays on the ESP: no `..`, no absolute one. */
+            if (e->path[0] != '/' && strstr(e->path, "..") == NULL) {
+                b->nesp++;
+            }
             continue;
         }
         int i = strncmp(line, "kernel ", 7) == 0 ? 0 : strncmp(line, "initramfs ", 10) == 0 ? 1 : -1;
@@ -624,73 +659,35 @@ static int write_gpt(int fd, uint64_t total) {
     return fsync(fd);
 }
 
-/* Copy a file of the running ESP to the same path on the new one. */
-static int copy_esp_file(const char *rel) {
-    char from[PATH_MAX_GV], to[PATH_MAX_GV];
-    static uint8_t buf[65536];
-    strcpy(from, RUNNING_ESP "/");
-    strcat(from, rel);
-    strcpy(to, NEW_ESP "/");
-    strcat(to, rel);
-    int in = open(from, O_RDONLY);
-    if (in < 0) {
-        return -1;
+/* Limine's files from the release (`esp` lines of the list) onto the ESP
+ * mounted at `esp`, each checked before it is written: the EFI binary,
+ * x86's limine-bios.sys, the device tree, and the config, which boots
+ * slot a. */
+static int write_limine(const char *esp, const boot_files *b,
+                        void (*url_of)(char *url, size_t cap, const char *file)) {
+    if (b->nesp == 0) {
+        return die("the mirror's boot list has no Limine files (esp lines)", NULL);
     }
-    mkdirs(to, 0);
-    int out = open(to, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    ssize_t n = 0;
-    while (out >= 0 && (n = read(in, buf, sizeof buf)) > 0) {
-        if (write(out, buf, (size_t)n) != n) {
-            n = -1;
-            break;
+    for (int i = 0; i < b->nesp; i++) {
+        const esp_file *e = &b->esp[i];
+        char url[512], path[PATH_MAX_GV];
+        if (strlen(esp) + 1 + strlen(e->path) >= sizeof path) {
+            return die("path too long: ", e->path);
         }
-    }
-    close(in);
-    if (out < 0 || close(out) != 0 || n < 0) {
-        return die("cannot copy ", rel);
-    }
-    return 0;
-}
-
-/* Limine and what its config names beside the slots: every file of
- * EFI/BOOT and boot/limine (but the config, written for the slots), the
- * files directly in boot/ (the device trees of aarch64 and riscv64) and
- * startup.nsh. */
-static int copy_limine(void) {
-    const char *dirs[] = {"EFI/BOOT", "boot/limine", "boot", ""};
-    for (size_t i = 0; i < sizeof dirs / sizeof *dirs; i++) {
-        char dir[PATH_MAX_GV];
-        strcpy(dir, RUNNING_ESP "/");
-        strcat(dir, dirs[i]);
-        DIR *d = opendir(dir);
-        if (d == NULL) {
-            continue;
+        strcpy(path, esp);
+        strcat(path, "/");
+        strcat(path, e->path);
+        url_of(url, sizeof url, e->file);
+        say("fetching ", url, NULL);
+        uint8_t *data = fetch_checked(url, e->size, e->csum);
+        if (data == NULL) {
+            return die("download failed: ", url);
         }
-        struct dirent *e;
-        int rc = 0;
-        while (rc == 0 && (e = readdir(d)) != NULL) {
-            char rel[PATH_MAX_GV], full[PATH_MAX_GV];
-            struct stat st;
-            if (e->d_name[0] == '.' || strcmp(e->d_name, "limine.conf") == 0) {
-                continue;
-            }
-            if (dirs[i][0] == '\0' && strcmp(e->d_name, "startup.nsh") != 0) {
-                continue;
-            }
-            strcpy(rel, dirs[i]);
-            if (rel[0] != '\0') {
-                strcat(rel, "/");
-            }
-            strncat(rel, e->d_name, sizeof rel - strlen(rel) - 1);
-            strcpy(full, RUNNING_ESP "/");
-            strncat(full, rel, sizeof full - strlen(full) - 1);
-            if (stat(full, &st) == 0 && S_ISREG(st.st_mode)) {
-                rc = copy_esp_file(rel);
-            }
-        }
-        closedir(d);
+        mkdirs(path, 0);
+        int rc = write_file(path, (const char *)data, (size_t)e->size);
+        free_fetched(data, e->size);
         if (rc != 0) {
-            return rc;
+            return die("cannot write ", path);
         }
     }
     return 0;
@@ -761,40 +758,33 @@ int boot_install(const char *disk_arg, const char *list_path,
     if (fetch_boot_list(list_path, &b) != 0) {
         return die("the mirror's boot file list is bad or missing", NULL);
     }
+    /* The running boot disk is refused; a system booted from the ISO has
+     * none (no slot), and installs all the same. */
     char slot = running_slot();
-    if (slot == 0) {
-        return die("this boot does not say its slot (/proc/cmdline has no slot=): "
-                   "Limine is copied from the running boot disk's ESP, which needs it", NULL);
-    }
-    if (mount_running_esp(slot, running, sizeof running) != 0) {
-        return 1;
-    }
-    size_t rl = strcspn(running, "/");
-    if (strlen(disk) == rl && strncmp(running, disk, rl) == 0) {
+    if (slot != 0 && mount_running_esp(slot, running, sizeof running) == 0) {
         umount_dir(RUNNING_ESP);
-        return die("refusing to install over the running boot disk: ", disk);
+        size_t rl = strcspn(running, "/");
+        if (strlen(disk) == rl && strncmp(running, disk, rl) == 0) {
+            return die("refusing to install over the running boot disk: ", disk);
+        }
     }
     if (disk_mounted(disk)) {
-        umount_dir(RUNNING_ESP);
         return die("a partition of the disk is mounted (/proc/mounts): ", disk);
     }
     int fd = open(data, O_RDWR);
     if (fd < 0) {
-        umount_dir(RUNNING_ESP);
         return die("no such disk: ", data);
     }
     uint64_t total = disk_sectors(fd);
     /* The ESP and some room for the data partition. */
     if (total < 2 * MIB + 512 * MIB + 64 * MIB + 34) {
         close(fd);
-        umount_dir(RUNNING_ESP);
         return die("the disk is too small (580 MiB at least): ", disk);
     }
     say("writing the boot disk layout on ", data, NULL);
     int rc = write_gpt(fd, total);
     close(fd);
     if (rc != 0) {
-        umount_dir(RUNNING_ESP);
         return die("cannot write the partition table on ", data);
     }
     /* The kernel reads the new table (its old partitions are not in use). */
@@ -808,36 +798,44 @@ int boot_install(const char *disk_arg, const char *list_path,
     char *mkfat[] = {"mkfs.fat", esp_dev, NULL};
     char *mkext2[] = {"mkfs.ext2", part_dev, NULL};
     if (run(mkfat) != 0 || run(mkext2) != 0) {
-        umount_dir(RUNNING_ESP);
         return die("cannot format the partitions of ", disk);
     }
     mkdirs(NEW_ESP, 1);
     if (mount(esp_dev, NEW_ESP, "fat") != 0) {
-        umount_dir(RUNNING_ESP);
         return die("cannot mount the new ESP ", esp_dev);
     }
-    rc = copy_limine();
+    char dir[PATH_MAX_GV];
+    slot_path(dir, NEW_ESP, 'b', "");
+    mkdirs(dir, 1);
+    copy_field(esp_part, sizeof esp_part, esp_dev + 5, strlen(esp_dev + 5));
+    rc = write_limine(NEW_ESP, &b, url_of);
     if (rc == 0) {
-        char dir[PATH_MAX_GV];
-        slot_path(dir, NEW_ESP, 'b', "");
-        mkdirs(dir, 1);
-        /* The config: the running one's global lines and its entry, for
-         * slot a alone (written before the slot, rewritten after). */
-        rc = copy_esp_file("boot/limine/limine.conf");
-        copy_field(esp_part, sizeof esp_part, esp_dev + 5, strlen(esp_dev + 5));
-        if (rc == 0) {
-            rc = write_slot(NEW_ESP, esp_part, 'a', &b, url_of);
-        }
-        if (rc == 0) {
-            /* write_conf reads NEW_ESP's copy of the running config. */
-            rc = write_conf(NEW_ESP, slot, 'a', 0);
+        rc = write_slot(NEW_ESP, esp_part, 'a', &b, url_of);
+    }
+    /* Limine's files too, as the disk has them after the slot's remount. */
+    for (int i = 0; rc == 0 && i < b.nesp; i++) {
+        char path[PATH_MAX_GV], hex[65];
+        long long size = 0;
+        strcpy(path, NEW_ESP "/");
+        strcat(path, b.esp[i].path);
+        if (sha256_file(path, hex, &size) != 0 || size != b.esp[i].size || strcmp(hex, b.esp[i].csum) != 0) {
+            rc = die("the disk does not hold what was downloaded: ", path);
         }
     }
     umount_dir(NEW_ESP);
-    umount_dir(RUNNING_ESP);
+#if defined(__x86_64__)
+    /* The BIOS stage: Limine's MBR code and its stage 2 in the BIOS boot
+     * partition (GPT entry 1), as the host does for the images. */
+    if (rc == 0) {
+        char *bios[] = {"limine", "bios-install", data, "1", NULL};
+        if (run(bios) != 0) {
+            rc = die("limine bios-install failed on ", data);
+        }
+    }
+#endif
     if (rc != 0) {
         return die("the install stopped; the disk is not bootable: ", disk);
     }
-    say("installed on ", disk, ": slot a has the mirror's release (UEFI boot; no BIOS stage yet)");
+    say("installed on ", disk, ": slot a has the mirror's release");
     return 0;
 }

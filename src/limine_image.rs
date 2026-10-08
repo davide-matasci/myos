@@ -7,11 +7,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const LIMINE_VERSION: &str = "12.6.1";
-pub const LIMINE_TARBALL_URL: &str =
-    "https://github.com/limine-bootloader/limine/releases/download/v12.6.1/limine-binary.tar.gz";
-pub const LIMINE_TARBALL_SHA256: &str =
-    "07d054e6297d8c41bee74ddd30024696e4ad811e7e73be28d98dc0a6168fbfeb";
+/// The Limine pin: `ports/limine/versions.env`, which the `limine` port
+/// (the tool in myos) builds from too.
+const LIMINE_PIN: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ports/limine/versions.env"));
+
+fn limine_pin(key: &str) -> &'static str {
+    LIMINE_PIN
+        .lines()
+        .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+        .unwrap_or_else(|| panic!("ports/limine/versions.env has no {key}"))
+        .trim()
+}
+
+/// The pinned Limine release, `12.6.1`.
+pub fn limine_version() -> &'static str {
+    limine_pin("LIMINE_VERSION")
+}
 
 /// Kernel modules loaded at boot, in load order: every driver and
 /// filesystem is one of these; the kernel embeds none. Each ships in the
@@ -165,8 +176,12 @@ pub fn fetch_limine(cache_dir: &Path) -> LimineFiles {
     let marker = cache_dir.join("BOOTX64.EFI");
     if !marker.is_file() {
         let tar_path = cache_dir.join("limine-binary.tar.gz");
-        download(LIMINE_TARBALL_URL, &tar_path);
-        verify_sha256(&tar_path, LIMINE_TARBALL_SHA256);
+        let url = format!(
+            "https://github.com/limine-bootloader/limine/releases/download/v{}/limine-binary.tar.gz",
+            limine_version()
+        );
+        download(&url, &tar_path);
+        verify_sha256(&tar_path, limine_pin("LIMINE_SHA256"));
         let status = Command::new("tar")
             .args(["-xzf"])
             .arg(&tar_path)
@@ -276,11 +291,14 @@ pub fn write_esp_image_ex(
     limine_conf: &str,
     extra: &[DiskFile],
 ) {
-    let mut files = vec![
-        DiskFile {
-            path: format!("EFI/BOOT/{efi_name}"),
-            data: efi_bytes.to_vec(),
-        },
+    let esp = limine_esp_files(efi_name, efi_bytes, bios_sys, limine_conf, extra);
+    write_slot_image(dest, kernel, initramfs, esp);
+}
+
+/// The boot disk with `esp` (Limine's files, [`limine_esp_files`]) and the
+/// kernel, the initramfs and their version in slot `a`, slot `b` empty.
+pub fn write_slot_image(dest: &Path, kernel: &[u8], initramfs: &[u8], mut esp: Vec<DiskFile>) {
+    esp.extend([
         DiskFile {
             path: "boot/a/kernel".into(),
             data: boot_kernel(kernel),
@@ -294,6 +312,26 @@ pub fn write_esp_image_ex(
         DiskFile {
             path: "boot/a/version".into(),
             data: crate::release::Release::current(Path::new(env!("CARGO_MANIFEST_DIR"))).text().into_bytes(),
+        },
+    ]);
+    write_boot_disk(dest, &esp, &["boot/b"]);
+}
+
+/// Limine's files on the ESP, beside the slots: the EFI binary `efi_name`
+/// (`BOOTX64.EFI`), x86's `limine-bios.sys`, the config and `extra` (a
+/// device tree); riscv64's `startup.nsh`. The release carries the same
+/// for `get-myos --install` (`src/packages.rs`).
+pub fn limine_esp_files(
+    efi_name: &str,
+    efi_bytes: &[u8],
+    bios_sys: Option<&[u8]>,
+    limine_conf: &str,
+    extra: &[DiskFile],
+) -> Vec<DiskFile> {
+    let mut files = vec![
+        DiskFile {
+            path: format!("EFI/BOOT/{efi_name}"),
+            data: efi_bytes.to_vec(),
         },
         DiskFile {
             path: "boot/limine/limine.conf".into(),
@@ -313,7 +351,7 @@ pub fn write_esp_image_ex(
             data: sys.to_vec(),
         });
     }
-    write_boot_disk(dest, &files, &["boot/b"]);
+    files
 }
 
 /// Raw FAT16 volume (no GPT) for the second QEMU virtio-blk disk.

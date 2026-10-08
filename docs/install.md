@@ -104,16 +104,21 @@ get-myos --install nvme1n1    # or /dev/nvme1n1, /dev/nvme1n1/data
 Erases DISK and lays the boot disk out on it: the GPT (BIOS boot 1 MiB,
 the ESP 512 MiB, the data partition over the rest of the disk, ending on a
 MiB), read by the kernel at once (a `/proc/pci` rescan); `mkfs.fat` on the
-ESP and `mkfs.ext2` on the data partition; Limine copied from the running
-ESP (`EFI/BOOT`, `boot/limine`, the device tree, `startup.nsh`), its
-`limine.conf` written for slot `a` alone; then step 3 of the upgrade fills
-slot `a` from the mirror. It refuses the running boot disk, a disk with a
-partition mounted, and one under 580 MiB.
+ESP and `mkfs.ext2` on the data partition; Limine's files from the release
+(the `esp` lines of `<arch>-boot.txt`: the EFI binary, x86's
+`limine-bios.sys`, the device tree, `startup.nsh`, and a `limine.conf` for
+slot `a` alone), each checked like the slot's; then step 3 of the upgrade
+fills slot `a` from the mirror. On x86 it then runs `limine bios-install`
+(Limine's own tool, the `limine` port, at `/bin/etc/limine`) for the BIOS
+stage: Limine's code in the MBR and its stage 2 in the BIOS boot partition,
+what the host does for the images; the disk boots by BIOS and by UEFI. It
+refuses the running boot disk, a disk with a partition mounted, and one
+under 580 MiB.
 
-The BIOS stage is not written (`limine bios-install` puts it in the MBR and
-the BIOS boot partition): a disk installed this way boots by UEFI (issue
-#365). Limine comes from the running ESP, so `--install` runs on a
-system booted from a boot disk, not from the ISO.
+Nothing comes from the running system's ESP, so a system booted from the
+ISO (`cargo run -- iso`, a live medium) installs the same: boot it, then
+`get-myos --install` the disk. An installed disk keeps the Limine it was
+installed with: `--upgrade` changes the slots only (issue #372).
 
 ## The data partition
 
@@ -142,8 +147,8 @@ The GPT's backup is at the end of the image, not of the disk: tools that
 check it (`sgdisk -e`, `parted`) offer to move it to the end, which is safe.
 A VPS without a rescue system but with custom ISOs boots the hybrid ISO
 (`cargo run -- iso`), a live medium with the kernel and the initramfs at
-`boot/` and none of this layout; `get-myos --install` cannot install from
-it yet (issue #365).
+`boot/` and none of this layout, and installs from it with `get-myos
+--install` (above).
 
 ## Inside the boot tests
 
@@ -156,4 +161,7 @@ partition. The full list then runs `get-myos --upgrade -f` against the
 host's mirror (this build's boot files) and `get-myos --install` on the
 scratch disk (`user/get-myos/test.sh`); when it passed, the launcher boots
 the disk again (`run.sh reboot`), which must come up from slot `b` at its
-release.
+release, and then the disk `--install` made (`run.sh installed`), from its
+slot `a`: by BIOS on the bios job (the BIOS stage `limine bios-install`
+wrote), by UEFI on the others. The ISO is not booted in CI: an install
+from it runs the same code.

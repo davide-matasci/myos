@@ -20,7 +20,8 @@
 # (kernel.sh), which run first. The full mode first installs every package
 # of the mirror the host serves. `reboot` is the full test's second boot,
 # of the disk the first one upgraded (get-myos --upgrade): it checks only
-# that the system came up from the slot the upgrade wrote.
+# that the system came up from the slot the upgrade wrote; `installed` the
+# third, of the disk get-myos --install made: up from its slot a.
 
 MODE=${1:-mini}
 TESTS=/lib/myos-tests
@@ -70,21 +71,26 @@ contains() {
 
 # The second boot: slot b, with b's release (its version file, which the
 # upgrade wrote, is this initramfs's /lib/myos-release), boots by default.
-booted_slot_b() {
+# The third, of the disk get-myos --install made: its slot a, likewise.
+booted_slot() {
 	cat /proc/cmdline /lib/myos-release
-	grep -q 'slot=b' /proc/cmdline || return 1
-	mkdir -p /tmp/esp-b
+	grep -q "slot=$1" /proc/cmdline || return 1
+	mkdir -p /tmp/esp-$1
 	for p in $(grep ' c12a7328-f81f-11d2-ba4b-00a0c93ec93b ' /proc/partitions | cut -d' ' -f1); do
-		mount /dev/$p /tmp/esp-b fat || continue
-		v=$(cat /tmp/esp-b/boot/b/version 2> /dev/null)
-		umount /tmp/esp-b
+		mount /dev/$p /tmp/esp-$1 fat || continue
+		v=$(cat /tmp/esp-$1/boot/$1/version 2> /dev/null)
+		umount /tmp/esp-$1
 		[ "$v" = "$(cat /lib/myos-release)" ] && return 0
 	done
-	echo "no ESP has slot b at this release"
+	echo "no ESP has slot $1 at this release"
 	return 1
 }
-if [ "$MODE" = reboot ]; then
-	t booted_slot_b booted_slot_b
+if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
+	if [ "$MODE" = reboot ]; then
+		t booted_slot_b booted_slot b
+	else
+		t booted_installed booted_slot a
+	fi
 	[ -n "$mirror" ] && echo "$mirror" > /dev/console/ctl
 	echo "TESTS DONE $passed/$total"
 	exit 0

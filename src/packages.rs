@@ -98,8 +98,9 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
 /// The release's boot files for `arch`, what `get-myos --upgrade` writes
 /// into a boot slot (`docs/install.md`): `<arch>-kernel` (as the boot disk
 /// has it) and `<arch>-initramfs` of a default build (no Linux layer,
-/// whatever this one has), listed with their sizes and SHA-256 in
-/// `<arch>-boot.txt` under the index's header.
+/// whatever this one has), and Limine's files for the ESP `get-myos
+/// --install` makes (`<arch>-esp-<path>`), listed with their sizes and
+/// SHA-256 in `<arch>-boot.txt` under the index's header.
 fn write_boot(manifest_dir: &Path, out: &Path, arch: &str) {
     let target = manifest_dir.join("target");
     let kernel = match arch {
@@ -113,11 +114,20 @@ fn write_boot(manifest_dir: &Path, out: &Path, arch: &str) {
     };
     let initramfs = crate::initramfs::build_initramfs_default(manifest_dir, arch);
     let mut list = format!("# myos {}", Release::current(manifest_dir).text());
-    for (name, data) in [("kernel", kernel), ("initramfs", initramfs)] {
-        let file = format!("{arch}-{name}");
+    let mut put = |file: String, data: &[u8]| -> String {
         let path = out.join(&file);
-        std::fs::write(&path, &data).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
-        list.push_str(&format!("{name} {} {} {file}\n", data.len(), sha256_file(&path)));
+        std::fs::write(&path, data).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        format!("{} {} {file}\n", data.len(), sha256_file(&path))
+    };
+    for (name, data) in [("kernel", kernel), ("initramfs", initramfs)] {
+        let line = put(format!("{arch}-{name}"), &data);
+        list.push_str(&format!("{name} {line}"));
+    }
+    // Limine's files for the ESP `get-myos --install` makes, as the boot
+    // images have them: `esp <path on the ESP> <size> <sha256> <file>`.
+    for f in crate::esp_limine_files(arch) {
+        let line = put(format!("{arch}-esp-{}", f.path.replace('/', "-")), &f.data);
+        list.push_str(&format!("esp {} {line}", f.path));
     }
     std::fs::write(out.join(format!("{arch}-boot.txt")), list).expect("write the boot file list");
 }

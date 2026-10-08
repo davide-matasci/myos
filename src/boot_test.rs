@@ -29,6 +29,9 @@ pub enum Mode {
     /// The full test's second boot, of the disk the first one upgraded:
     /// it comes up from the other slot (`run.sh reboot`, docs/install.md).
     Reboot,
+    /// Its third, of the disk `get-myos --install` made on the scratch
+    /// disk: it comes up from slot a (`run.sh installed`).
+    Installed,
 }
 
 impl Mode {
@@ -45,6 +48,7 @@ impl Mode {
             Mode::Mini => "mini",
             Mode::Full => "full",
             Mode::Reboot => "reboot",
+            Mode::Installed => "installed",
         }
     }
 
@@ -55,7 +59,7 @@ impl Mode {
         match self {
             Mode::Mini => Duration::from_secs(if linux_compat { 300 } else { 240 }),
             Mode::Full => Duration::from_secs(3000),
-            Mode::Reboot => Duration::from_secs(300),
+            Mode::Reboot | Mode::Installed => Duration::from_secs(300),
         }
     }
 
@@ -65,7 +69,7 @@ impl Mode {
         match self {
             Mode::Mini => Duration::from_secs(180),
             Mode::Full => Duration::from_secs(600),
-            Mode::Reboot => Duration::from_secs(180),
+            Mode::Reboot | Mode::Installed => Duration::from_secs(180),
         }
     }
 }
