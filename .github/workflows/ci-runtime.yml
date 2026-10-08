@@ -65,9 +65,13 @@ jobs:
           chmod +x scripts/*.sh
           ./scripts/ci-build-pull-and-kernels.sh
 
-      - name: Host unit tests (PS/2 decode; ext2 against e2fsprogs; netd's patched smoltcp)
+      - name: Host unit tests (PS/2 decode; ext2 against e2fsprogs; FAT against dosfstools; netd's patched smoltcp)
         run: |
-          cargo test -p ps2-scancode -p ext2fs
+          # dosfstools and mtools are in the Dockerfile; an image built
+          # before them (it is rebuilt from master) installs them here.
+          command -v fsck.fat > /dev/null && command -v mtype > /dev/null \
+            || { apt-get update -q && apt-get install -y -q --no-install-recommends dosfstools mtools; }
+          cargo test -p ps2-scancode -p ext2fs -p fatvol
           cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib
 
       - name: Pack CI build artifacts

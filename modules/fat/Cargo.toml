@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "FAT16 kernel module: registers fstype fat; mount(2) binds a block device."
+description = "FAT kernel module: registers fstype fat; mount(2) binds a block device (the filesystem is the fatvol crate)."
 
 [[bin]]
 name = "fat"
@@ -15,6 +15,7 @@ bench = false
 
 [dependencies]
 myos-abi = { path = "../abi" }
+fatvol = { path = "fatvol" }
 
 [profile.dev]
 panic = "abort"

@@ -200,6 +200,32 @@ platform() {
 }
 t platform platform
 
+# FAT read-write (the fat module, modules/fat/fatvol, host-tested against
+# dosfstools): on the launcher's FAT16 disk, which /ok mounted at /tmp/fat,
+# files and a directory with long names are written, moved across
+# directories, a time set; the volume is unmounted and mounted again and
+# all of it reads back, then goes. The host runs `fsck.fat -n` on the image
+# after the boot.
+fat_rw() {
+	d=/tmp/fat
+	dev=$(grep " $d fat " /proc/mounts | cut -d' ' -f1)
+	[ -n "$dev" ] || { echo "$d is not mounted"; return 1; }
+	mkdir "$d/A long directory" && echo one > "$d/A long directory/First File.txt" || return 1
+	dd if=/bin/sbase/ls of=$d/big bs=1024 count=100 2>/dev/null && cp $d/big /tmp/fat-big || return 1
+	mv "$d/A long directory/First File.txt" $d/moved.txt && mv "$d/A long directory" $d/dir2 || return 1
+	mkdir $d/dir2/sub && mv $d/big $d/dir2/sub/big && echo two >> $d/moved.txt || return 1
+	touch -T 981173106 $d/moved.txt || return 1
+	umount $d && mount $dev $d fat || return 1
+	ls $d
+	[ "$(cat $d/moved.txt)" = "one
+two" ] && cmp $d/dir2/sub/big /tmp/fat-big || return 1
+	l=$(ls -l $d/moved.txt)
+	echo "ls: $l"
+	case $l in *"Feb 03  2001"*) ;; *) return 1 ;; esac
+	rm -r $d/dir2 $d/moved.txt /tmp/fat-big && [ "$(ls $d)" = msg ]
+}
+t fat_rw fat_rw
+
 # USB (docs/usb.md): every boot has an xHCI controller with a hub on its
 # first port and a memory stick behind the hub, the same FAT volume as
 # /dev/vda. The stick is enumerated on the USB thread after the modules

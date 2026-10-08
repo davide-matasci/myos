@@ -214,11 +214,11 @@ fn nested_elf(
     }
     let mut rustflags = String::from("-C panic=abort");
     let is_module = MODULES.iter().any(|(_, m)| *m == bin);
-    // ext2's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
+    // ext2's and fat's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
     if target.contains("x86_64")
         && matches!(
             bin,
-            "ext2" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "virtio_blk" | "nvme" | "linux"
+            "ext2" | "fat" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "virtio_blk" | "nvme" | "linux"
                 | "xhci" | "usb_hub" | "usb_storage"
         )
     {

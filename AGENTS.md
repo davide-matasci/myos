@@ -81,7 +81,7 @@ cargo run -- aarch64 test-mini             # also riscv64, uefi
 cargo run -- test-full                     # full list: + packages, HTTPS, SSH, Alpine, curated os-test (must be 100%)
 cargo run -- packages                      # the package tarballs + indexes (target/packages/)
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
-cargo test -p ps2-scancode -p ext2fs      # host unit tests (ext2fs needs e2fsprogs)
+cargo test -p ps2-scancode -p ext2fs -p fatvol   # host unit tests (ext2fs needs e2fsprogs, fatvol dosfstools and mtools)
 cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patched smoltcp (after a build)
 ```
 
@@ -111,7 +111,7 @@ first `cargo build` ~4 min, a `test-mini` boot ~95 s on 4 cores). In order:
 ```sh
 sudo apt install qemu-system-x86 qemu-system-arm qemu-system-misc \
   qemu-efi-aarch64 qemu-efi-riscv64 clang lld make git libc6-dev rsync \
-  patch curl zstd e2fsprogs
+  patch curl zstd e2fsprogs dosfstools mtools
 export GITHUB_REPOSITORY=davide-matasci/myos
 ./scripts/ci-registry.sh pull all            # every port CI built for these sources
 # What CI's build job runs next: each port's build script, which skips a

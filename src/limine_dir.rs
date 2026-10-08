@@ -10,7 +10,7 @@ fn lookup_name(part: &[u8], _fat0: usize, data_off: usize, spc: u8, dir_cluster:
     while i + 32 <= dir_bytes.len() {
         let ent = &dir_bytes[i..i + 32];
         if ent[0] == 0 { break; }
-        if ent[0] == 0xE5 || ent[11] == 0x0F { i += 32; continue; }
+        if ent[0] == 0xE5 || ent[11] == 0x0F || ent[11] & 0x08 != 0 { i += 32; continue; }
         let long = collect_lfn(dir_bytes, i);
         let short = decode_short(ent);
         if long.as_bytes() == want || short.eq_ignore_ascii_case(name) {
