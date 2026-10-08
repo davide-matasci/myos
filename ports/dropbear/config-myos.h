@@ -59,7 +59,8 @@
 #define HAVE_ENDPWENT 1
 #define HAVE_FSYNC 1
 /* Ptys (`ssh -t`): libgloss's openpty on /dev/pts/clone (docs/tty.md).
- * A one-shot command on a pty can lose its last output (issue #304). */
+ * common-channel.c.myos.patch keeps a pty's output when its write side
+ * closes first (issue #304). */
 #define HAVE_OPENPTY 1
 #define HAVE_PTY_H 1
 
