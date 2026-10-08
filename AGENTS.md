@@ -112,9 +112,6 @@ first `cargo build` ~4 min, a `test-mini` boot ~95 s on 4 cores). In order:
 sudo apt install qemu-system-x86 qemu-system-arm qemu-system-misc \
   qemu-efi-aarch64 qemu-efi-riscv64 clang lld make git libc6-dev rsync \
   patch curl zstd e2fsprogs
-# The cache keys hash `sha256sum PATH` output, absolute paths included:
-# work from CI's checkout path, or every pull misses.
-sudo mkdir -p /__w/myos && sudo ln -sfn "$PWD" /__w/myos/myos && cd /__w/myos/myos
 export GITHUB_REPOSITORY=davide-matasci/myos
 ./scripts/ci-registry.sh pull all            # every port CI built for these sources
 # What CI's build job runs next: each port's build script, which skips a
@@ -149,9 +146,8 @@ What breaks in an agent sandbox (Claude Code on the web and the like):
   echo "$sha  /tmp/ovmf.tar.xz" | sha256sum -c - && mkdir -p target/ovmf \
     && tar -xJf /tmp/ovmf.tar.xz -C target/ovmf --strip-components=1 && printf %s "$sha" > target/ovmf/sha256
   ```
-- Paths outside the checkout (`/__w`) and running without the token may
-  need the user's permission in the agent's settings; ask rather than work
-  around a refusal.
+- Running without the token may need the user's permission in the agent's
+  settings; ask rather than work around a refusal.
 
 Intermittent failures (a race, a flaky boot) need a loop, not one CI run:
 a race may fail a few boots in ten or none in twenty-five, so a green run
