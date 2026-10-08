@@ -83,6 +83,6 @@ if [[ "$missing" -ne 0 ]]; then
 fi
 # zstd on every core: the artifact upload stores it as is (the default
 # zip deflate of the 1.6 GB tar was the slowest part of the upload).
-tar -I 'zstd -T0 -3' -cf ci-build.tar.zst "${uniq[@]}"
+tar --sparse -I 'zstd -T0 -3' -cf ci-build.tar.zst "${uniq[@]}"
 ls -lh ci-build.tar.zst
 echo "packed ${#uniq[@]} members (includes ci-build-kernels --print-members)"

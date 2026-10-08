@@ -1,66 +1,3 @@
-fn build_gpt_fat16(files: &[DiskFile]) -> Vec<u8> {
-    let mut disk = vec![0u8; IMAGE_BYTES];
-    let total_lba = (IMAGE_BYTES / SECTOR) as u64;
-    let backup_lba = total_lba - 1;
-    let esp_end = backup_lba - 33;
-    let esp_lbas = esp_end - ESP_START_LBA + 1;
-
-    write_protective_mbr(&mut disk, total_lba);
-    let mut entries = [0u8; 128 * 128];
-    // Partition 0: BIOS boot (no filesystem); limine bios-install embeds here.
-    write_gpt_entry(
-        &mut entries[0..128],
-        &[
-            0x48, 0x61, 0x68, 0x21, 0x49, 0x64, 0x6F, 0x6E, 0x74, 0x4E, 0x65, 0x65, 0x64, 0x45,
-            0x46, 0x49,
-        ],
-        &[
-            0x73, 0x6F, 0x79, 0x6D, 0x00, 0x00, 0x00, 0x40, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x03,
-        ],
-        BIOS_BOOT_START_LBA,
-        BIOS_BOOT_END_LBA,
-        4, // legacy-BIOS-bootable (bit 2)
-        "BIOS Boot",
-    );
-    // Partition 1: FAT16 ESP
-    write_gpt_entry(
-        &mut entries[128..256],
-        &[
-            0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E,
-            0xC9, 0x3B,
-        ],
-        &[
-            0x73, 0x6F, 0x79, 0x6D, 0x00, 0x00, 0x00, 0x40, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x02,
-        ],
-        ESP_START_LBA,
-        esp_end,
-        1,
-        "EFI System",
-    );
-    let entries_crc = crc32(&entries);
-    write_gpt_header(&mut disk, 1, backup_lba, 2, entries_crc, total_lba, true);
-    disk[2 * SECTOR..2 * SECTOR + entries.len()].copy_from_slice(&entries);
-    let backup_entries_lba = backup_lba - 32;
-    let off = backup_entries_lba as usize * SECTOR;
-    disk[off..off + entries.len()].copy_from_slice(&entries);
-    write_gpt_header(
-        &mut disk,
-        backup_lba,
-        1,
-        backup_entries_lba,
-        entries_crc,
-        total_lba,
-        false,
-    );
-
-    let part_off = ESP_START_LBA as usize * SECTOR;
-    let part = &mut disk[part_off..part_off + esp_lbas as usize * SECTOR];
-    format_and_write_fat16(part, files);
-    disk
-}
-
 fn write_protective_mbr(disk: &mut [u8], total_lba: u64) {
     disk[510] = 0x55;
     disk[511] = 0xAA;
@@ -96,21 +33,6 @@ fn write_gpt_entry(
     for (i, c) in name.iter().take(36).enumerate() {
         e[56 + i * 2..56 + i * 2 + 2].copy_from_slice(&c.to_le_bytes());
     }
-}
-
-fn write_gpt_header(
-    disk: &mut [u8],
-    this_lba: u64,
-    alt_lba: u64,
-    entries_lba: u64,
-    entries_crc: u32,
-    total_lba: u64,
-    primary: bool,
-) {
-    let h = gpt_header(this_lba, alt_lba, entries_lba, entries_crc, total_lba);
-    let off = this_lba as usize * SECTOR;
-    disk[off..off + 92].copy_from_slice(&h);
-    let _ = primary;
 }
 
 /// A GPT header for a disk of `total_lba` sectors with 128 entries of 128

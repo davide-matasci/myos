@@ -203,7 +203,7 @@ kernel_inputs_diag() {
     tree_diag user | sha256sum | awk -v d='tree:user' '{print $1" "d}'
     {
       sha256sum build.rs Cargo.toml 2>/dev/null || true
-      sha256sum src/limine_image.rs src/limine_gpt.rs src/limine_fat.rs \
+      sha256sum src/limine_image.rs src/limine_gpt.rs src/limine_fat.rs src/limine_disk.rs \
         src/limine_dir.rs src/initramfs.rs 2>/dev/null || true
     } | sha256sum | awk -v d='group:root-src' '{print $1" "d}'
     if [[ -f .cargo/config.toml ]]; then

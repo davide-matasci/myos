@@ -1,4 +1,5 @@
-// GPT disk + FAT16 ESP writer, plus Limine binary fetch.
+// The boot disk (src/limine_disk.rs), the Limine config, the ISO and the
+// FAT16 test disks, plus Limine binary fetch.
 //
 // Included from `build.rs` (`include!`) and compiled into the host crate.
 
@@ -68,13 +69,27 @@ pub fn boot_list() -> String {
     boot_modules().iter().map(|m| format!("{m}\n")).collect()
 }
 
-/// The Limine config: `head_extra` lines go before the entry (riscv64's
-/// `global_dtb`), `kernel_extra` after `path:` (riscv64's `paging_mode`).
-/// Limine loads the kernel and the initramfs, nothing else.
-pub fn limine_conf(head_extra: &str, kernel_extra: &str) -> String {
-    format!(
-        "serial: yes\ntimeout: 0\n{head_extra}\n/myos\n    protocol: limine\n    path: boot():/boot/kernel\n{kernel_extra}    module_path: boot():/boot/initramfs\n"
-    )
+/// The Limine config of a boot disk (`docs/install.md`): an entry per slot
+/// of `slots` (`a`, `b`: the kernel and the initramfs in `boot/<slot>/`), the
+/// first one the default, the others the fallbacks a short timeout lets one
+/// pick at the console. `head_extra` lines go before the entries (riscv64's
+/// `global_dtb`), `kernel_extra` after each `path:` (riscv64's
+/// `paging_mode`). Limine loads the kernel and the initramfs, nothing else.
+pub fn limine_conf(head_extra: &str, kernel_extra: &str, slots: &[&str]) -> String {
+    let entries: Vec<(String, String)> = slots.iter().map(|s| (format!("myos {s}"), format!("boot/{s}"))).collect();
+    limine_conf_entries(head_extra, kernel_extra, &entries)
+}
+
+/// The Limine config with an entry per `(name, directory)`.
+fn limine_conf_entries(head_extra: &str, kernel_extra: &str, entries: &[(String, String)]) -> String {
+    let timeout = if entries.len() > 1 { 3 } else { 0 };
+    let mut conf = format!("serial: yes\ntimeout: {timeout}\ndefault_entry: 1\n{head_extra}");
+    for (name, dir) in entries {
+        conf += &format!(
+            "\n/{name}\n    protocol: limine\n    path: boot():/{dir}/kernel\n{kernel_extra}    module_path: boot():/{dir}/initramfs\n"
+        );
+    }
+    conf
 }
 
 /// The kernel as a boot drive carries it: the ELF cut after its last
@@ -104,10 +119,6 @@ pub fn boot_kernel(elf: &[u8]) -> Vec<u8> {
 }
 
 const SECTOR: usize = 512;
-// 64 MiB no longer fits the packed boot images (55 MiB initramfs + kernels +
-// limine-bios.sys twice): the FAT16 writer ran out of clusters. 128 MiB keeps
-// headroom as the test suite and prebuilts grow.
-const IMAGE_BYTES: usize = 128 * 1024 * 1024;
 const BIOS_BOOT_START_LBA: u64 = 2048;
 const BIOS_BOOT_END_LBA: u64 = 4095;
 const ESP_START_LBA: u64 = 4096;
@@ -225,7 +236,8 @@ pub struct DiskFile {
     pub data: Vec<u8>,
 }
 
-/// GPT disk with a BIOS boot partition and a FAT16 ESP. `efi_name` is e.g. `BOOTX64.EFI`.
+/// The boot disk ([`write_boot_disk`]) with Limine, the kernel and the
+/// initramfs in slot `a`, slot `b` empty. `efi_name` is e.g. `BOOTX64.EFI`.
 pub fn write_esp_image(
     dest: &Path,
     kernel: &[u8],
@@ -241,11 +253,14 @@ pub fn write_esp_image(
         efi_bytes,
         bios_sys,
         initramfs,
-        &limine_conf("", ""),
+        &limine_conf("", "", &["a"]),
         &[],
     );
 }
 
+/// [`write_esp_image`] with its Limine config and `extra` files on the ESP.
+/// The config is in one place, `boot/limine/limine.conf`: switching slots
+/// rewrites that file and nothing else.
 pub fn write_esp_image_ex(
     dest: &Path,
     kernel: &[u8],
@@ -262,23 +277,15 @@ pub fn write_esp_image_ex(
             data: efi_bytes.to_vec(),
         },
         DiskFile {
-            path: "boot/kernel".into(),
+            path: "boot/a/kernel".into(),
             data: boot_kernel(kernel),
         },
         DiskFile {
-            path: "boot/initramfs".into(),
+            path: "boot/a/initramfs".into(),
             data: initramfs.to_vec(),
         },
         DiskFile {
             path: "boot/limine/limine.conf".into(),
-            data: limine_conf.as_bytes().to_vec(),
-        },
-        DiskFile {
-            path: "EFI/BOOT/limine.conf".into(),
-            data: limine_conf.as_bytes().to_vec(),
-        },
-        DiskFile {
-            path: "limine.conf".into(),
             data: limine_conf.as_bytes().to_vec(),
         },
     ];
@@ -294,17 +301,8 @@ pub fn write_esp_image_ex(
             path: "boot/limine/limine-bios.sys".into(),
             data: sys.to_vec(),
         });
-        // Also at ESP root. Limine searches root /boot /limine /boot/limine.
-        files.push(DiskFile {
-            path: "limine-bios.sys".into(),
-            data: sys.to_vec(),
-        });
     }
-    let image = build_gpt_fat16(&files);
-    if let Some(parent) = dest.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    fs::write(dest, &image).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+    write_boot_disk(dest, &files, &["boot/b"]);
 }
 
 /// Raw FAT16 volume (no GPT) for the second QEMU virtio-blk disk.
@@ -331,30 +329,21 @@ pub fn write_fat_data_image(dest: &Path) {
 /// data, unformatted.
 pub fn write_scratch_gpt_image(dest: &Path, total: u64) {
     use std::os::unix::fs::FileExt;
-    const ESP_TYPE: [u8; 16] = [
-        0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
-    ];
-    const LINUX_DATA_TYPE: [u8; 16] = [
-        0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4,
-    ];
-    const MIB: u64 = 1024 * 1024 / SECTOR as u64;
     let total_lba = total / SECTOR as u64;
-    let backup_lba = total_lba - 1;
-    let (esp_first, esp_last) = (MIB, 21 * MIB - 1);
-    let (data_first, data_last) = (32 * MIB, 96 * MIB - 1);
-    let mut entries = [0u8; 128 * 128];
+    let (esp_first, esp_last) = (MIB_LBA, 21 * MIB_LBA - 1);
     let uuid = |n: u8| [0x73, 0x63, 0x72, 0x61, 0x74, 0x63, 0x68, 0x40, 0x80, 0, 0, 0, 0, 0, 0, n];
-    write_gpt_entry(&mut entries[0..128], &ESP_TYPE, &uuid(1), esp_first, esp_last, 0, "EFI system");
-    write_gpt_entry(&mut entries[256..384], &LINUX_DATA_TYPE, &uuid(3), data_first, data_last, 0, "scratch");
-    let crc = crc32(&entries);
-
-    let mut head = vec![0u8; 34 * SECTOR];
-    write_protective_mbr(&mut head, total_lba);
-    head[SECTOR..SECTOR + 92].copy_from_slice(&gpt_header(1, backup_lba, 2, crc, total_lba));
-    head[2 * SECTOR..].copy_from_slice(&entries);
-    let mut tail = vec![0u8; 33 * SECTOR];
-    tail[..entries.len()].copy_from_slice(&entries);
-    tail[32 * SECTOR..32 * SECTOR + 92].copy_from_slice(&gpt_header(backup_lba, 1, backup_lba - 32, crc, total_lba));
+    let parts = [
+        GptPart { entry: 0, type_guid: ESP_TYPE, uuid: uuid(1), first: esp_first, last: esp_last, attrs: 0, name: "EFI system" },
+        GptPart {
+            entry: 2,
+            type_guid: LINUX_DATA_TYPE,
+            uuid: uuid(3),
+            first: 32 * MIB_LBA,
+            last: 96 * MIB_LBA - 1,
+            attrs: 0,
+            name: "scratch",
+        },
+    ];
     let mut esp = vec![0u8; ((esp_last - esp_first + 1) * SECTOR as u64) as usize];
     format_and_write_fat16(
         &mut esp,
@@ -364,11 +353,10 @@ pub fn write_scratch_gpt_image(dest: &Path, total: u64) {
         }],
     );
 
-    let f = fs::File::create(dest).unwrap_or_else(|e| panic!("create {}: {e}", dest.display()));
-    f.set_len(total).unwrap_or_else(|e| panic!("size {}: {e}", dest.display()));
-    for (at, bytes) in [(0, &head), (esp_first * SECTOR as u64, &esp), ((backup_lba - 32) * SECTOR as u64, &tail)] {
-        f.write_all_at(bytes, at).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
-    }
+    let f = fs::File::create(dest).unwrap_or_else(|e| die(dest, "create", &e));
+    f.set_len(total).unwrap_or_else(|e| die(dest, "size", &e));
+    write_gpt(&f, total_lba, &parts).unwrap_or_else(|e| die(dest, "GPT", &e));
+    f.write_all_at(&esp, esp_first * SECTOR as u64).unwrap_or_else(|e| die(dest, "write", &e));
 }
 
 pub fn bios_install(limine_tool: &Path, image: &Path) {
@@ -436,7 +424,7 @@ pub fn write_x86_iso(
         copy(&entry.path(), &rel);
     }
 
-    let conf = limine_conf("", "");
+    let conf = limine_conf_entries("", "", &[("myos".into(), "boot".into())]);
     let conf = conf.as_bytes();
     for rel in ["boot/limine/limine.conf", "EFI/BOOT/limine.conf", "limine.conf"] {
         let dst = iso_root.join(rel);
@@ -490,5 +478,6 @@ pub fn write_x86_iso(
 }
 
 include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/limine_gpt.rs"));
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/limine_disk.rs"));
 include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/limine_fat.rs"));
 include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/limine_dir.rs"));

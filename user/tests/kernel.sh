@@ -103,12 +103,14 @@ rmmod_busy() {
 	! rmmod virtio_blk && grep -q "^virtio_blk$" /proc/modules && ls /dev/vda/data
 }
 # A /proc/pci rescan re-probes the drivers: the disks are the same ones
-# after it, and still readable.
+# after it, and still readable. (A sector, not the disk's tail: tail reads
+# all of it, and on aarch64 and riscv64 vda is the 579 MiB boot disk.)
 pci_rescan() {
 	ls /dev > /tmp/dev-before.txt
 	echo rescan > /proc/pci || return 1
 	ls /dev > /tmp/dev-after.txt
-	cmp /tmp/dev-before.txt /tmp/dev-after.txt && /bin/sbase/tail -c 512 /dev/vda/data > /dev/null
+	cmp /tmp/dev-before.txt /tmp/dev-after.txt \
+		&& [ "$(dd if=/dev/vda/data bs=512 count=1 2> /dev/null | wc -c)" -eq 512 ]
 }
 # GPT partitions: the launcher's scratch disk (nvme1n1) carries a GPT with a
 # 20 MiB FAT16 of ESP type in entry 1, entry 2 empty and 64 MiB of Linux
@@ -142,10 +144,32 @@ partitions() {
 	cmp -s /tmp/parts.want /tmp/parts.got || { echo "no backup GPT"; cat /proc/partitions; return 1; }
 	mount $d/p3 /tmp/p3 ext2 && [ "$(cat /tmp/p3/k)" = kept ] && umount /tmp/p3
 }
+# The boot disk's layout (docs/install.md), where it is a disk myos sees
+# (virtio on aarch64 and riscv64; x86 boots from IDE): its ESP holds the
+# kernel and the initramfs in slot a, an empty slot b and the one
+# limine.conf, which boots slot a; the data partition is an empty ext2.
+boot_disk() {
+	data=$(grep '"myos data"$' /proc/partitions | cut -d' ' -f1)
+	[ -n "$data" ] || return 0
+	disk=${data%/*}
+	esp=$(grep "^$disk/p[0-9]* .* c12a7328-f81f-11d2-ba4b-00a0c93ec93b " /proc/partitions | cut -d' ' -f1)
+	[ -n "$esp" ] || { cat /proc/partitions; return 1; }
+	mkdir -p /tmp/boot-esp /tmp/boot-data && mount /dev/$esp /tmp/boot-esp fat || return 1
+	/bin/sbase/find /tmp/boot-esp > /tmp/boot-esp.txt
+	r=0
+	[ -s /tmp/boot-esp/boot/a/kernel ] && [ -s /tmp/boot-esp/boot/a/initramfs ] || r=1
+	[ -d /tmp/boot-esp/boot/b ] && [ -z "$(ls /tmp/boot-esp/boot/b)" ] || r=1
+	grep -q '^    path: boot():/boot/a/kernel$' /tmp/boot-esp/boot/limine/limine.conf || r=1
+	[ "$(/bin/sbase/find /tmp/boot-esp -name limine.conf | wc -l)" -eq 1 ] || r=1
+	umount /tmp/boot-esp
+	[ $r = 0 ] || { cat /tmp/boot-esp.txt; return 1; }
+	mount /dev/$data /tmp/boot-data ext2 && [ "$(ls /tmp/boot-data)" = lost+found ] && umount /tmp/boot-data
+}
 t rmmod_hello rmmod_hello
 t rmmod_busy rmmod_busy
 t pci_rescan pci_rescan
 t partitions partitions
+t boot_disk boot_disk
 
 # A terminal is a directory (docs/tty.md): `data` is the terminal, `ctl` its
 # state as text. /proc/self/fd/N names what an fd is open on, /proc/self/tty

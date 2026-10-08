@@ -57,7 +57,7 @@ fn aarch64_machine() -> String {
 /// (AAVMF) boot path hands Limine none, so the image carries QEMU's own
 /// dump of it (`global_dtb`), like riscv64.
 fn aarch64_limine_conf() -> String {
-    limine_conf("global_dtb: boot():/boot/virt-aarch64.dtb\n", "")
+    limine_conf("global_dtb: boot():/boot/virt-aarch64.dtb\n", "", &["a"])
 }
 
 /// riscv64 needs the packed DTB and Sv39 on top of the common config.
@@ -65,6 +65,7 @@ fn riscv_limine_conf() -> String {
     limine_conf(
         "randomise_hhdm_base: no\nglobal_dtb: boot():/boot/virt.dtb\n",
         "    paging_mode: sv39\n",
+        &["a"],
     )
 }
 /// Default qemu64 does not advertise x2APIC (CI #49 panicked, #50 fell back

@@ -126,7 +126,7 @@ Boot (Limine)
 ```
 
 ### Boot
-Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned Limine `v12.6.1`, writes GPT+FAT ESP, `limine.conf`, the kernel ELF (its loadable segments only: the debug info and symbols stay in the ELF under `target/`, `boot_kernel` in `src/limine_image.rs`) and the initramfs, which carries the module ELFs (`/lib/modules/<name>`, `src/limine_image.rs` `BOOT_MODULES`): Limine loads those two files and nothing else. On x86, `limine bios-install` makes the image BIOS+UEFI bootable. No `bootloader` crate, no QEMU `-kernel`, no Multiboot.
+Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned Limine `v12.6.1`, writes the boot disk (GPT, a FAT32 ESP with boot slots `a` and `b`, an ext2 data partition: `docs/install.md`), `limine.conf`, the kernel ELF (its loadable segments only: the debug info and symbols stay in the ELF under `target/`, `boot_kernel` in `src/limine_image.rs`) and the initramfs, which carries the module ELFs (`/lib/modules/<name>`, `src/limine_image.rs` `BOOT_MODULES`): Limine loads those two files and nothing else. On x86, `limine bios-install` makes the image BIOS+UEFI bootable. No `bootloader` crate, no QEMU `-kernel`, no Multiboot.
 
 ### Memory
 Kernel linked in higher half (`0xffffffff80000000` on x86_64). Limine provides HHDM; usable memory = `phys + HHDM`. Page tables allocated from bump allocator after heap. AArch64 device block (UART, GIC, virtio-mmio) identity-mapped via `TTBR0`.
@@ -144,7 +144,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | Path | Role |
 |------|------|
 | `src/main.rs` | Host launcher: QEMU (BIOS/UEFI/AArch64/RISC-V) + second virtio-blk disk |
-| `src/limine_image.rs` | GPT+FAT ESP writer + Limine fetch + `limine.conf` + `fat.img` |
+| `src/limine_image.rs` | Limine fetch + `limine.conf` + the images; the boot disk in `src/limine_disk.rs` (GPT, FAT32 ESP through `fatvol`, ext2 through `ext2fs`) |
 | `build.rs` | Fetch Limine; wrap x86_64 kernel in BIOS+UEFI images; write `fat.img` |
 | `kernel/src/main.rs` | `#![no_std]` Limine entry: heap, IRQs, scheduler, rootfs, Limine modules, user init |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
@@ -257,7 +257,7 @@ Attached as second virtio-blk in all QEMU runs. Holds `/msg` for `[ OK ] fat` / 
 
 ## Real Hardware
 
-Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `target/uefi.img` for UEFI). Framebuffer mirrors serial — boot progress scrolls on screen. A VPS without custom ISOs takes the release's hybrid ISO written over its disk from the provider's rescue system (`curl -L .../myos-x86_64.iso | dd of=/dev/sda`); to reach it over SSH, bring your own key (`docs/ssh.md`).
+Write the disk image to a USB stick or an internal drive (`target/uefi.img`; `target/bios.img` is the same disk, both BIOS and UEFI bootable). It is the installed layout (`docs/install.md`): a 512 MiB FAT32 ESP with two boot slots for upgrades (`boot/a/`, `boot/b/`) and the one `limine.conf` that picks between them, then an ext2 data partition for state that outlives an upgrade. Framebuffer mirrors serial — boot progress scrolls on screen. A VPS takes the image written over its disk from the provider's rescue system (`dd`, `docs/install.md`), or, as a live medium, the release's hybrid ISO (`curl -L .../myos-x86_64.iso | dd of=/dev/sda`); to reach it over SSH, bring your own key (`docs/ssh.md`).
 
 **stdin** merges keyboard and serial. Keyboard characters come from a **loadable keymap** (default Swiss German via `user/init` → `/lib/kbd/ch.map`, US fallback; see `docs/keymap.md`). Serial always available and does not need a map.
 

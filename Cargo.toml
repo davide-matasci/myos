@@ -15,6 +15,10 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 ovmf-prebuilt = "0.2.9"
+# The boot disk's ESP and data partition (src/limine_disk.rs), built by the
+# launcher and build.rs alike.
+fatvol = { path = "modules/fat/fatvol" }
+ext2fs = { path = "modules/ext2/ext2fs" }
 
 # What the image carries is not a feature set: every port whose directory is
 # under ports/ (and the user/ programs) is built and packed; a directory under
@@ -30,6 +34,8 @@ linux_compat = []
 
 [build-dependencies]
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
+fatvol = { path = "modules/fat/fatvol" }
+ext2fs = { path = "modules/ext2/ext2fs" }
 
 [profile.dev]
 panic = "abort"

@@ -7,8 +7,8 @@ fn format_and_write_fat16(part: &mut [u8], files: &[DiskFile]) -> () {
     // (powers of two) when the volume is large enough to overflow the FAT16
     // cluster range. Never go below 8: smaller clusters change the BPB layout
     // the in-kernel FAT driver expects (spc=1 on the 20 MiB data disk made
-    // every guest mount fail). 8 sectors fits both the 20 MiB data disk and
-    // the 128 MiB boot volume (≈32k clusters, well under 65524).
+    // every guest mount fail). 8 sectors fits the 20 MiB test disks (the
+    // boot disk's ESP is FAT32, src/limine_disk.rs).
     let root_sectors = (root_entries as u32 * 32).div_ceil(SECTOR as u32);
     let mut spc = 8u8;
     loop {
