@@ -1,0 +1,31 @@
+[workspace]
+
+[package]
+name = "mkfs-fat"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Userspace mkfs.fat: format a block device as FAT32 (the fatvol crate, over fstool)"
+
+[[bin]]
+name = "mkfs_fat"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+myos-user = { path = "../lib" }
+fatvol = { path = "../../modules/fat/fatvol" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

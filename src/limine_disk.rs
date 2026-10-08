@@ -91,66 +91,6 @@ impl ext2fs::Device for PartDev<'_> {
     }
 }
 
-/// Format the partition of `dev` as an empty FAT32 volume: 4 KiB clusters,
-/// two FATs, the root directory in cluster 2, the FSInfo sector and the
-/// backup boot sector. `hidden` is the partition's first LBA.
-fn format_fat32(dev: &mut PartDev, hidden: u32) -> std::io::Result<()> {
-    use fatvol::SectorDriver;
-    const RESERVED: u32 = 32;
-    const SPC: u32 = 8;
-    let total = dev.sectors as u32;
-    // The FAT holds an entry (4 bytes) per cluster, two reserved ones too.
-    let mut fat_sectors = 1u32;
-    loop {
-        let clusters = (total - RESERVED - 2 * fat_sectors) / SPC;
-        let need = ((clusters + 2) * 4).div_ceil(SECTOR as u32);
-        if need <= fat_sectors {
-            break;
-        }
-        fat_sectors = need;
-    }
-    let mut boot = [0u8; SECTOR];
-    boot[..3].copy_from_slice(&[0xEB, 0x58, 0x90]);
-    boot[3..11].copy_from_slice(b"MYOS    ");
-    boot[11..13].copy_from_slice(&(SECTOR as u16).to_le_bytes());
-    boot[13] = SPC as u8;
-    boot[14..16].copy_from_slice(&(RESERVED as u16).to_le_bytes());
-    boot[16] = 2;
-    boot[21] = 0xF8;
-    boot[24..26].copy_from_slice(&63u16.to_le_bytes());
-    boot[26..28].copy_from_slice(&255u16.to_le_bytes());
-    boot[28..32].copy_from_slice(&hidden.to_le_bytes());
-    boot[32..36].copy_from_slice(&total.to_le_bytes());
-    boot[36..40].copy_from_slice(&fat_sectors.to_le_bytes());
-    // Root directory cluster, FSInfo sector, backup boot sector.
-    boot[44..48].copy_from_slice(&2u32.to_le_bytes());
-    boot[48..50].copy_from_slice(&1u16.to_le_bytes());
-    boot[50..52].copy_from_slice(&6u16.to_le_bytes());
-    boot[64] = 0x80;
-    boot[66] = 0x29;
-    boot[67..71].copy_from_slice(&0x4D59_4F53u32.to_le_bytes());
-    boot[71..82].copy_from_slice(b"NO NAME    ");
-    boot[82..90].copy_from_slice(b"FAT32   ");
-    boot[510..512].copy_from_slice(&[0x55, 0xAA]);
-    let mut fsinfo = [0u8; SECTOR];
-    fsinfo[..4].copy_from_slice(&0x4161_5252u32.to_le_bytes());
-    fsinfo[484..488].copy_from_slice(&0x6141_7272u32.to_le_bytes());
-    // Free count and next free cluster unknown.
-    fsinfo[488..496].fill(0xFF);
-    fsinfo[508..512].copy_from_slice(&0xAA55_0000u32.to_le_bytes());
-    for at in [0, 6] {
-        dev.write_sectors(at, &boot)?;
-        dev.write_sectors(at + 1, &fsinfo)?;
-    }
-    // Media, end of chain (reserved), the root directory's one cluster.
-    let mut fat = [0u8; SECTOR];
-    fat[..12].copy_from_slice(&[0xF8, 0xFF, 0xFF, 0x0F, 0xFF, 0xFF, 0xFF, 0x0F, 0xFF, 0xFF, 0xFF, 0x0F]);
-    for copy in 0..2 {
-        dev.write_sectors(u64::from(RESERVED + copy * fat_sectors), &fat)?;
-    }
-    Ok(())
-}
-
 /// The boot disk image at `dest`, sparse (only what is written takes space):
 ///
 /// - partition 1, BIOS boot (1 MiB at LBA 2048), where `limine bios-install`
@@ -207,7 +147,7 @@ fn write_boot_disk(dest: &Path, files: &[DiskFile], dirs: &[&str]) {
 
     let sectors = |first: u64, last: u64| last - first + 1;
     let mut esp = PartDev { file: &f, first: ESP_START_LBA, sectors: sectors(ESP_START_LBA, ESP_END_LBA) };
-    format_fat32(&mut esp, ESP_START_LBA as u32).unwrap_or_else(|e| die(dest, "format the ESP", &e));
+    fatvol::format(&mut esp, b"MYOS       ", 0x4D59_4F53).unwrap_or_else(|e| die(dest, "format the ESP", &e));
     let mut vol = fatvol::Fat::mount(esp).unwrap_or_else(|e| die(dest, "mount the ESP", &e));
     let mkdirs = |vol: &mut fatvol::Fat<PartDev>, path: &str| {
         let mut at = String::new();

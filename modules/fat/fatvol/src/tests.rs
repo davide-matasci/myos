@@ -390,3 +390,35 @@ fn read_speed() {
     }
     std::println!("20 MiB in 8 KiB reads, 512-byte clusters: {:?}", t.elapsed());
 }
+
+/// `format` makes a FAT32 volume dosfstools finds clean, over whatever the
+/// device held, that mounts empty and takes files and directories.
+#[test]
+fn format_fat32() {
+    let dir = std::env::temp_dir().join("fatvol-tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("format-fat32.img");
+    // Not zeros: the formatter must clear what it relies on.
+    std::fs::write(&path, vec![0xA5u8; 64 << 20]).unwrap();
+    let f = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+    let mut dev = FileDev(f, 64 << 20);
+    crate::format(&mut dev, b"MYOS       ", 0x1234_5678).unwrap();
+    check(&path);
+    let mut fs = Fat::mount(dev).unwrap();
+    assert_eq!(fs.kind(), Some(crate::FatKind::Fat32));
+    let mut names = Vec::new();
+    fs.list("", |n| {
+        names.push(String::from_utf8_lossy(n).to_string());
+        true
+    })
+    .unwrap();
+    assert!(names.is_empty(), "a fresh volume lists {names:?}");
+    fs.mkdir("boot").unwrap();
+    fs.create("boot/kernel").unwrap();
+    let data: Vec<u8> = (0..300_000u32).map(|i| i as u8).collect();
+    assert_eq!(fs.write("boot/kernel", 0, &data).unwrap(), data.len());
+    fs.unmount().unwrap();
+    check(&path);
+    let out = Command::new("mtype").args(["-i"]).arg(&path).arg("::/boot/kernel").output().expect("mtools");
+    assert!(out.status.success() && out.stdout == data, "mtype read back something else");
+}
