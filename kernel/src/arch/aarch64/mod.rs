@@ -112,6 +112,21 @@ pub fn timer_deadline(deadline_ns: u64) {
     interrupts::timer_deadline(deadline_ns);
 }
 
+/// Idle CPUs stop their tick (`task::sched::halt`).
+pub const TICKLESS_IDLE: bool = true;
+
+/// Stop this CPU's tick while it halts with nothing to run: its timer fires
+/// once, at `wake_ns`. Interrupts off.
+pub fn timer_idle(wake_ns: u64) {
+    interrupts::timer_idle(wake_ns);
+}
+
+/// The tick back after [`timer_idle`]; a no-op when it was not stopped.
+/// Interrupts off.
+pub fn timer_resume() {
+    interrupts::timer_resume();
+}
+
 /// Route a PCI function's INTx line as the device tree's PCIe
 /// `interrupt-map` says (QEMU `virt`: GIC SPIs 3..6 with the standard slot
 /// swizzle); enable that SPI on CPU 0. Legacy INTx: the handler must read

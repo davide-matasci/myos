@@ -308,6 +308,40 @@ fn cut_period(cpu: usize, deadline_ns: u64) {
     }
 }
 
+/// The CPUs whose tick [`timer_idle`] stopped.
+static TICK_STOPPED: [AtomicBool; crate::smp::MAX_CPUS] = [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+
+/// This CPU halts with nothing to run: stop its periodic tick and fire its
+/// timer once, at `wake_ns` (monotonic), but not under 1% of a tick from now
+/// (see [`cut_period`]). The count is clamped to 32 bits: a fast LAPIC wakes
+/// sooner than asked, never later. Interrupts off.
+pub fn timer_idle(wake_ns: u64) {
+    if crate::time::clock_hz() == 0 {
+        return; // no calibrated count per ns: keep the tick
+    }
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    let left_ns = wake_ns.saturating_sub(crate::time::monotonic_ns());
+    let per_tick = u128::from(timer_init_count());
+    let counts = (u128::from(left_ns) * per_tick * u128::from(TICK_HZ) / 1_000_000_000)
+        .clamp(per_tick / 100, u128::from(u32::MAX));
+    SHORTENED[cpu].store(false, Ordering::Relaxed);
+    TICK_STOPPED[cpu].store(true, Ordering::Relaxed);
+    // One-shot (bit 17 clear); writing INIT_COUNT starts it.
+    lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR));
+    lapic_w(INIT_COUNT, counts as u32);
+}
+
+/// The periodic tick back on this CPU if [`timer_idle`] stopped it.
+/// Interrupts off.
+pub fn timer_resume() {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    if !TICK_STOPPED[cpu].swap(false, Ordering::Relaxed) {
+        return;
+    }
+    lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 17));
+    lapic_w(INIT_COUNT, timer_init_count());
+}
+
 /// At a tick: the normal period back after a cut one, then cut again for
 /// the earliest sleep deadline still ahead (`task::next_deadline_ns`).
 fn rearm_period() {

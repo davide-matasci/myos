@@ -42,6 +42,9 @@ pub fn schedule() {
     // (timer, yield); save/restore so we never leave IF on while locked.
     let flags = irq_save();
     irq_off();
+    // An interrupt that ended a tickless halt and switches tasks from inside
+    // it: the tick back first (`halt`).
+    crate::arch::timer_resume();
     // Soft-ACK pending TLB shootdowns while IF is off so a peer in die()
     // reclaim cannot spin forever waiting for an IPI we cannot take yet.
     crate::smp::tlb_service();
@@ -399,9 +402,33 @@ pub fn blocked_count() -> usize {
     n
 }
 
+/// The longest a halted CPU without its tick sleeps with no deadline due: a
+/// wakeup that was never kicked costs this much latency, not a hang.
+const IDLE_BACKSTOP_NS: u64 = 1_000_000_000;
+
+/// Halt until an interrupt: called with interrupts off, returns with them on.
+///
+/// Tickless idle: a CPU other than 0 stops its tick while it halts, its timer
+/// armed only for the next sleep deadline (`NEXT_DEADLINE`, or the backstop),
+/// so an idle CPU is not woken 100 times a second. Whatever ends the halt and
+/// runs something puts the tick back for preemption: this function, or
+/// `schedule` when an interrupt switches to another task from inside the
+/// halt. CPU 0 keeps ticking: its tick polls the UART, which has no
+/// interrupt, and blinks the cursor; so does every riscv64 hart
+/// (`arch::TICKLESS_IDLE`, issue #367).
 fn halt(cpu: usize) {
     IDLE_HALTS[cpu].fetch_add(1, Ordering::Relaxed);
+    let tickless = cpu != 0 && crate::arch::TICKLESS_IDLE;
+    if tickless {
+        let backstop = crate::time::monotonic_ns().saturating_add(IDLE_BACKSTOP_NS);
+        crate::arch::timer_idle(NEXT_DEADLINE.load(Ordering::SeqCst).min(backstop));
+    }
     super::acct::idle(current_slot(), crate::arch::idle_wait);
+    if tickless {
+        irq_off();
+        crate::arch::timer_resume();
+        irq_on();
+    }
 }
 
 pub fn wait_seq() -> u64 {
