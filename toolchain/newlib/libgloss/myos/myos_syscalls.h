@@ -130,6 +130,8 @@ struct winsize;
 /* msync(addr, len, flags): the shared file mappings in the range are
  * written back to their files (the flags make no difference). */
 #define MYOS_SYS_MSYNC 92
+/* clock_monotonic(): nanoseconds since boot (clock_gettime's CLOCK_MONOTONIC). */
+#define MYOS_SYS_CLOCK_MONOTONIC 91
 #define MYOS_POWER_OFF 0
 #define MYOS_POWER_REBOOT 1
 #define MYOS_POWER_HALT 2
@@ -237,6 +239,12 @@ void myos_fd_nonblock_set(int fd, int on);
 int myos_fd_nonblock_get(int fd);
 void myos_fd_nonblock_clear(int fd);
 void myos_fd_nonblock_dup(int from, int to);
+
+/* A cancellation point (pthread.c): the blocking calls take one around
+ * their body. A thread cancelled before or while it blocks in one ends
+ * there (pthread_exit(PTHREAD_CANCELED)) unless cancellation is disabled. */
+void __myos_cancel_enter(void);
+void __myos_cancel_leave(void);
 
 #endif
 

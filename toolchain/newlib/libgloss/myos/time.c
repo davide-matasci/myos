@@ -1,6 +1,7 @@
-/* myos libgloss: clock_gettime via gettimeofday, settimeofday and
- * clock_settime (the kernel keeps the set time until the next boot; the RTC
- * is not written).
+/* myos libgloss: clock_gettime (CLOCK_REALTIME via gettimeofday,
+ * CLOCK_MONOTONIC the kernel's time since boot, which settimeofday does not
+ * move), settimeofday and clock_settime (the kernel keeps the set time
+ * until the next boot; the RTC is not written).
  * Do not define time()/localtime() here — newlib libc already provides them.
  */
 
@@ -19,9 +20,14 @@ clock_gettime(clockid_t clock_id, struct timespec *tp)
 {
     struct timeval tv;
 
-    (void)clock_id;
     if (tp == NULL) {
         return -1;
+    }
+    if (clock_id == CLOCK_MONOTONIC) {
+        unsigned long ns = (unsigned long)myos_syscall0(MYOS_SYS_CLOCK_MONOTONIC);
+        tp->tv_sec = (time_t)(ns / 1000000000UL);
+        tp->tv_nsec = (long)(ns % 1000000000UL);
+        return 0;
     }
     if (gettimeofday(&tv, NULL) != 0) {
         tp->tv_sec = 0;

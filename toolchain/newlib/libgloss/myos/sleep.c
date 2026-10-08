@@ -11,8 +11,11 @@
 
 #include "myos_syscalls.h"
 
+/* A cancellation point (pthread.c), as nanosleep, sleep and usleep are. */
 int __myos_sleep_ns(unsigned long long ns, int flags) {
+    __myos_cancel_enter();
     long ret = myos_syscall2(MYOS_SYS_NANOSLEEP, (long)ns, (long)flags);
+    __myos_cancel_leave();
     if (ret == (long)MYOS_EINTR) {
         errno = EINTR;
         return -1;

@@ -49,6 +49,20 @@ s = s.replace(tail, """/* myos: libgloss pthread.c. */
 #ifndef _UNIX98_THREAD_MUTEX_ATTRIBUTES
 #define _UNIX98_THREAD_MUTEX_ATTRIBUTES 1
 #endif
+/* myos: read-write locks, barriers and spin locks, and condition
+ * variables on CLOCK_MONOTONIC (pthread_condattr_setclock). */
+#ifndef _POSIX_READER_WRITER_LOCKS
+#define _POSIX_READER_WRITER_LOCKS 200809L
+#endif
+#ifndef _POSIX_BARRIERS
+#define _POSIX_BARRIERS 200809L
+#endif
+#ifndef _POSIX_SPIN_LOCKS
+#define _POSIX_SPIN_LOCKS 200809L
+#endif
+#ifndef _POSIX_CLOCK_SELECTION
+#define _POSIX_CLOCK_SELECTION 200809L
+#endif
 /* myos: the _r functions (newlib's, and libgloss's getpw*_r, getgr*_r,
  * readdir_r, ttyname_r) and stream locking (flockfile). Xlib's Xos_r.h
  * picks the POSIX getpwnam_r by it. */
@@ -70,8 +84,9 @@ open(path, "w").write(s)
 PY
 # The thread types libgloss's pthread.c needs wider than newlib's 32-bit
 # words: pthread_t is the thread's control block, a mutex keeps its holder
-# and recursion count beside its lock word. The rest (a condition variable,
-# once, keys, attributes) is newlib's.
+# and recursion count beside its lock word, a condition variable its clock
+# beside its sequence, a read-write lock and a barrier their counts. The
+# rest (once, keys, spin locks, attributes) is newlib's.
 cp "$NEWLIB_SRC/newlib/libc/include/sys/_pthreadtypes.h" "$inc/sys/_pthreadtypes.h"
 python3 - "$inc/sys/_pthreadtypes.h" <<'PY'
 import sys
@@ -89,6 +104,29 @@ edits = [
 } pthread_mutex_t;"""),
     ("#define _PTHREAD_MUTEX_INITIALIZER ((pthread_mutex_t) 0xFFFFFFFF)",
      "#define _PTHREAD_MUTEX_INITIALIZER { 0, 3, 0, 0 } /* PTHREAD_MUTEX_DEFAULT */"),
+    ("typedef __uint32_t pthread_cond_t;       /* identify a condition variable */",
+     """typedef struct {                         /* myos: libgloss pthread.c */
+  __uint32_t __seq;     /* moves on at every signal (wait_addr) */
+  __uint32_t __clock;   /* the clockid_t of timed waits, 0: CLOCK_REALTIME */
+} pthread_cond_t;"""),
+    ("#define _PTHREAD_COND_INITIALIZER ((pthread_cond_t) 0xFFFFFFFF)",
+     "#define _PTHREAD_COND_INITIALIZER { 0, 0 }"),
+    ("typedef __uint32_t pthread_barrier_t;        /* POSIX Barrier Object */",
+     """typedef struct {                         /* myos: libgloss pthread.c */
+  __uint32_t __lock;    /* a lock word over the counts */
+  __uint32_t __count;   /* the threads a round takes */
+  __uint32_t __arrived; /* the threads waiting in this round */
+  __uint32_t __round;   /* moves on when a round completes (wait_addr) */
+} pthread_barrier_t;"""),
+    ("typedef __uint32_t pthread_rwlock_t;         /* POSIX RWLock Object */",
+     """typedef struct {                         /* myos: libgloss pthread.c */
+  __uint32_t __state;   /* readers holding it, or 0xFFFFFFFF: a writer */
+  __uint32_t __waiters; /* threads waiting for it */
+  __uint32_t __seq;     /* moves on at every release waiters see (wait_addr) */
+  __uint32_t __owner;   /* the writer's tid */
+} pthread_rwlock_t;"""),
+    ("#define _PTHREAD_RWLOCK_INITIALIZER ((pthread_rwlock_t) 0xFFFFFFFF)",
+     "#define _PTHREAD_RWLOCK_INITIALIZER { 0, 0, 0, 0 }"),
 ]
 for old, new in edits:
     assert s.count(old) == 1, f"_pthreadtypes.h: {old!r} not found"

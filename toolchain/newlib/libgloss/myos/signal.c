@@ -377,7 +377,9 @@ int sigsuspend(const sigset_t *mask) {
         errno = EFAULT;
         return -1;
     }
+    __myos_cancel_enter();
     (void)myos_syscall1(MYOS_SYS_SIGSUSPEND, (long)*mask);
+    __myos_cancel_leave();
     errno = EINTR;
     return -1;
 }
@@ -389,9 +391,11 @@ int sigwait(const sigset_t *restrict set, int *restrict sig) {
         return EINVAL;
     }
     /* POSIX: sigwait does not fail with EINTR; retry after other handlers. */
+    __myos_cancel_enter();
     do {
         r = myos_syscall1(MYOS_SYS_SIGWAIT, (long)*set);
     } while (r == (long)MYOS_EINTR);
+    __myos_cancel_leave();
     if (r <= 0 || r > 31) {
         return EINVAL;
     }

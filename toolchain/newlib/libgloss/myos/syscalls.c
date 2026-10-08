@@ -204,7 +204,10 @@ static ssize_t read_at(int fd, void *buf, size_t cnt, off_t off, long flags) {
 }
 
 int _read(int fd, void *buf, size_t cnt) {
-    return (int)read_at(fd, buf, cnt, 0, 0);
+    __myos_cancel_enter();
+    int n = (int)read_at(fd, buf, cnt, 0, 0);
+    __myos_cancel_leave();
+    return n;
 }
 
 ssize_t pread(int fd, void *buf, size_t cnt, off_t off) {
@@ -212,7 +215,10 @@ ssize_t pread(int fd, void *buf, size_t cnt, off_t off) {
         errno = EINVAL;
         return -1;
     }
-    return read_at(fd, buf, cnt, off, MYOS_FILE_AT);
+    __myos_cancel_enter();
+    ssize_t n = read_at(fd, buf, cnt, off, MYOS_FILE_AT);
+    __myos_cancel_leave();
+    return n;
 }
 
 /* write(2) and pwrite(2), as read_at. */
@@ -267,7 +273,10 @@ static ssize_t write_at(int fd, const void *buf, size_t cnt, off_t off, long fla
 }
 
 int _write(int fd, const void *buf, size_t cnt) {
-    return (int)write_at(fd, buf, cnt, 0, 0);
+    __myos_cancel_enter();
+    int n = (int)write_at(fd, buf, cnt, 0, 0);
+    __myos_cancel_leave();
+    return n;
 }
 
 ssize_t pwrite(int fd, const void *buf, size_t cnt, off_t off) {
@@ -275,7 +284,10 @@ ssize_t pwrite(int fd, const void *buf, size_t cnt, off_t off) {
         errno = EINVAL;
         return -1;
     }
-    return write_at(fd, buf, cnt, off, MYOS_FILE_AT);
+    __myos_cancel_enter();
+    ssize_t n = write_at(fd, buf, cnt, off, MYOS_FILE_AT);
+    __myos_cancel_leave();
+    return n;
 }
 
 int _isatty(int fd) {

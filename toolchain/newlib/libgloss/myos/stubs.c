@@ -63,7 +63,7 @@ int _fork(void) {
     return (int)ret;
 }
 
-int _wait(int *status) {
+static int wait_body(int *status) {
     int st = 0;
     long ret = myos_syscall3(MYOS_SYS_WAITPID, (long)(uintptr_t)&st, 0, 0);
     if (ret == (long)MYOS_EINTR) {
@@ -124,3 +124,11 @@ int _chown(const char *path, uid_t owner, gid_t group) {
 }
 
 
+
+/* A cancellation point (pthread.c). */
+int _wait(int *status) {
+    __myos_cancel_enter();
+    int r = wait_body(status);
+    __myos_cancel_leave();
+    return r;
+}

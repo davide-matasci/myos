@@ -174,7 +174,7 @@ int execvp(const char *file, char *const argv[]) {
  * keeps dropbear's `while (waitpid(-1, &st, WNOHANG) > 0)` reap loop from
  * blocking after the last zombie. WUNTRACED is ignored: nothing stops.
  */
-pid_t waitpid(pid_t pid, int *status, int options) {
+static pid_t waitpid_body(pid_t pid, int *status, int options) {
     int st = 0;
     long ret;
     long opts = 0;
@@ -501,3 +501,11 @@ mode_t _umask(mode_t mask) {
     return umask(mask);
 }
 
+
+/* A cancellation point (pthread.c). */
+pid_t waitpid(pid_t pid, int *status, int options) {
+    __myos_cancel_enter();
+    pid_t r = waitpid_body(pid, status, options);
+    __myos_cancel_leave();
+    return r;
+}
