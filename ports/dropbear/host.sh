@@ -6,7 +6,8 @@
 # (a parked accept plus the listen hold). Each session echoes its tag and
 # writes its PATH to /tmp/ssh-ok-<tag>, which the guest test waits for.
 # Then a login on a pty (`-tt`, commands on its input) writes its
-# controlling terminal and whether /dev/tty opens to /tmp/ssh-tty.
+# controlling terminal and whether /dev/tty opens to /tmp/ssh-tty, and a
+# one-shot command on a pty must print its output (issue #304).
 set -u
 port="${1:?port}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,17 +23,19 @@ trap 'rm -rf "$dir"' EXIT
 key="$dir/testkey"
 cp "$here/testkey" "$key" && chmod 600 "$key"
 
-# One session: `timeout` so a hung key exchange cannot burn the whole bound
-# (ConnectTimeout covers the TCP connect only). The KEX is pinned to
+# Every session: `timeout` so a hung key exchange cannot burn the whole
+# bound (ConnectTimeout covers the TCP connect only). The KEX is pinned to
 # curve25519: OpenSSH 10 negotiates post-quantum KEX first, which hits a
 # dropbear interop bug on aarch64.
+ssh_opts=(-4 -i "$key" -p "$port"
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+  -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes
+  -o PreferredAuthentications=publickey -o KexAlgorithms=curve25519-sha256
+  -o ConnectTimeout=8 -o ConnectionAttempts=1)
+
 one() {
   local tag="$1" out
-  out="$(timeout 20 ssh -4 -i "$key" -p "$port" \
-    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes \
-    -o PreferredAuthentications=publickey -o KexAlgorithms=curve25519-sha256 \
-    -o ConnectTimeout=8 -o ConnectionAttempts=1 \
+  out="$(timeout 20 ssh "${ssh_opts[@]}" \
     "root@127.0.0.1" "echo $tag; echo \"\$PATH\" > /tmp/ssh-ok-$tag" 2>&1)" \
     && [[ "$out" == *"$tag"* ]] && return 0
   echo "$out" > "$dir/err-$tag"
@@ -45,12 +48,20 @@ tty_login() {
   local out
   out="$( { sleep 3
       echo 'readlink /proc/self/tty > /tmp/ssh-tty.tmp; echo x > /dev/tty && echo tty-ok >> /tmp/ssh-tty.tmp; mv /tmp/ssh-tty.tmp /tmp/ssh-tty'
-      sleep 3; echo exit; sleep 2; } | timeout 30 ssh -tt -4 -i "$key" -p "$port" \
-    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes \
-    -o PreferredAuthentications=publickey -o KexAlgorithms=curve25519-sha256 \
-    -o ConnectTimeout=8 -o ConnectionAttempts=1 "root@127.0.0.1" 2>&1)" && return 0
+      sleep 3; echo exit; sleep 2; } | timeout 30 ssh -tt "${ssh_opts[@]}" \
+    "root@127.0.0.1" 2>&1)" && return 0
   echo "$out" > "$dir/err-tty"
+  return 1
+}
+
+# A one-shot command on a pty, its input at EOF at once: the client's EOF
+# and the shell's exit both came before dropbear read the output, which it
+# then lost (issue #304).
+tty_command() {
+  local out
+  out="$(timeout 20 ssh -tt "${ssh_opts[@]}" "root@127.0.0.1" 'echo pty-cmd' \
+    < /dev/null 2>&1)" && [[ "$out" == *pty-cmd* ]] && return 0
+  echo "$out" > "$dir/err-tty-cmd"
   return 1
 }
 
@@ -68,7 +79,10 @@ while (( SECONDS < deadline )); do
     echo "boot test: ssh $port: two sessions ok" >&2
     if tty_login; then
       echo "boot test: ssh $port: pty login ok" >&2
-      exit 0
+      if tty_command; then
+        echo "boot test: ssh $port: pty command ok" >&2
+        exit 0
+      fi
     fi
   fi
   # Failed attempts can leave SynReceived orphans until the handshake-age

@@ -30,8 +30,3 @@ key (`ssh` warns that it changed). Nothing starts dropbear at boot either.
 The boot test (`ports/dropbear/test.sh`, full mode) does the same with
 the repository's test key (`testkey.pub`, packed as test data under
 `/lib/myos-tests`, used only while the test runs) and a host key it makes.
-
-## Not yet
-
-- A one-shot command on a pty (`ssh -t host 'echo hi'`) can lose its
-  output: issue #304.

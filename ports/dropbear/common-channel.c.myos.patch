@@ -1,0 +1,15 @@
+--- src/common-channel.c
++++ src/common-channel.c
+@@ -1061,6 +1061,12 @@
+ 		} else {
+ 			closein = 1;
+ 		}
++	} else if (how == SHUT_WR && fd == channel->readfd) {
++		/* myos: a pty session reads and writes the same fd, the master.
++		 * Closing it for writing (the client's EOF, the child's exit)
++		 * would drop output not read yet: stop writing only, the read
++		 * side closes the fd once it is drained. */
++		closein = 1;
+ 	} else {
+ 		TRACE(("CLOSE some fd %d", fd))
+ 		m_close(fd);
