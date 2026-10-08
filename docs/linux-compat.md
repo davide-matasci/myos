@@ -90,7 +90,7 @@ into a directory and makes an ext2 image of it, to attach as a disk.
 | Where | What |
 |-------|------|
 | `kernel/build.rs` | builds `modules/linux` for the 3 arches like every module (`target/linux-<triple>`) |
-| `src/limine_image.rs` | `OPTIONAL_MODULES`: `linux` is in `limine.conf` only with `linux_compat`, in `/lib/modules` always |
+| `src/limine_image.rs` | `OPTIONAL_MODULES`: `linux` is in `/lib/modules/boot.list` only with `linux_compat`, in `/lib/modules` always |
 | `Cargo.toml` (root) | feature `linux_compat` (not in `default` or `core`) |
 | `linux-compat/build-launcher.sh` | the `linux` launcher for each arch, in every image (`build.rs` runs it) |
 | `linux-compat/build.sh` | musl, the Linux test binaries and `get-alpine` for each arch (run by `build.rs` when the feature is on) |

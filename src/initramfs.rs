@@ -341,9 +341,10 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         add(&mut entries, "lib/self-host.sh", read(&manifest_dir.join("linux-compat/self-host.sh")));
     }
 
-    // Kernel modules -> lib/modules/<name> (the same ELFs Limine loads at
-    // boot; `insmod /lib/modules/<name>` loads one that was not, e.g. the
-    // optional `linux` module in a build without its feature).
+    // Kernel modules -> lib/modules/<name>. The kernel loads the ones
+    // boot.list names at boot, in its order; `insmod /lib/modules/<name>`
+    // loads one that was not, e.g. the optional `linux` module in a build
+    // without its feature.
     for m in crate::limine_image::all_modules() {
         add(
             &mut entries,
@@ -351,6 +352,12 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
             read(&target.join(format!("{m}-{kernel_triple}"))),
         );
     }
+    add_mode(
+        &mut entries,
+        "lib/modules/boot.list",
+        crate::limine_image::boot_list().into_bytes(),
+        0o100644,
+    );
 
     // Compiler headers (stddef.h, stdarg.h, float.h, …) come from the tcc
     // source tree: newlib's sys/cdefs.h includes them (the newlib sysroot is

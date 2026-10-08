@@ -19,7 +19,7 @@
 
 ABI version: **21** (`blk_unregister`, `service_register` / `service_lookup`, `thread_spawn`, `wake` and the USB bus types, `docs/usb.md`; see `README.md` for 15–20; 14: `dt_mmio_find`: a module finds its memory-mapped devices in the device tree; 13: `personality_register`, `personality_exec`, `native_syscall` and the task / fd / VFS / signal / FPU / wait helpers a syscall personality needs: the Linux layer is a module; 12: `blk_register`, `pci_find_class`, `framebuffer_info`, `console_register`: block devices and the console are modules; 11: `pci_irq_enable`, `wake_any`, `wait_seq`, `block_until`, `monotonic_ns` for device interrupts and blocking waits; 10: `proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
 
-Boot modules come from Limine's module list (`limine.conf` `module_path` entries, `src/limine_image.rs` `BOOT_MODULES` plus the `OPTIONAL_MODULES` whose Cargo feature is on, in load order); `insmod <path>` (`SYS_INSMOD`) loads more at runtime and `/proc/modules` lists them.
+Boot modules come from the initramfs: `/lib/modules/<name>` for each name in `/lib/modules/boot.list` (`src/limine_image.rs` `BOOT_MODULES` plus the `OPTIONAL_MODULES` whose Cargo feature is on, in load order); `insmod <path>` (`SYS_INSMOD`) loads more at runtime and `/proc/modules` lists them.
 
 ## Device interrupts
 

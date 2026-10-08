@@ -125,7 +125,7 @@ Boot (Limine)
 ```
 
 ### Boot
-Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned Limine `v12.6.1`, writes GPT+FAT ESP, `limine.conf`, kernel ELF and the module ELFs (`boot/modules/<name>`, `src/limine_image.rs` `BOOT_MODULES`). On x86, `limine bios-install` makes the image BIOS+UEFI bootable. No `bootloader` crate, no QEMU `-kernel`, no Multiboot.
+Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned Limine `v12.6.1`, writes GPT+FAT ESP, `limine.conf`, the kernel ELF and the initramfs, which carries the module ELFs (`/lib/modules/<name>`, `src/limine_image.rs` `BOOT_MODULES`): Limine loads those two files and nothing else. On x86, `limine bios-install` makes the image BIOS+UEFI bootable. No `bootloader` crate, no QEMU `-kernel`, no Multiboot.
 
 ### Memory
 Kernel linked in higher half (`0xffffffff80000000` on x86_64). Limine provides HHDM; usable memory = `phys + HHDM`. Page tables allocated from bump allocator after heap. AArch64 device block (UART, GIC, virtio-mmio) identity-mapped via `TTBR0`.
@@ -293,12 +293,12 @@ Write the Limine disk image to USB/internal drive (`target/bios.img` for BIOS, `
 
 Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, calls `module_init`. The kernel embeds none of them:
 
-| | Boot (Limine) | Runtime (`insmod`) |
+| | Boot | Runtime (`insmod`) |
 |---|---|---|
-| Bytes live in | `boot/modules/<name>` on the ESP, listed in `limine.conf` (`module_path`, load order) | `/lib/modules/<name>` in the initramfs (or any file) |
-| Loaded by | `modules::load_limine_modules` right after rootfs | `SYS_INSMOD` from `/bin/custom/insmod` |
+| Bytes live in | `/lib/modules/<name>` in the initramfs, named in load order by `/lib/modules/boot.list` | `/lib/modules/<name>` in the initramfs (or any file) |
+| Loaded by | `modules::load_boot_modules` right after the initramfs is unpacked | `SYS_INSMOD` from `/bin/custom/insmod` |
 
-`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1`, `/dev/vdb`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, nvme), the USB bus (xhci, then its class drivers usb_hub and usb_storage), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `limine.conf` when the feature is on.
+`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1`, `/dev/vdb`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, nvme), the USB bus (xhci, then its class drivers usb_hub and usb_storage), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on. The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
 
 Module exports:
 ```rust
@@ -327,7 +327,7 @@ denies `unsafe_op_in_unsafe_fn`.
 
 ### Adding a module
 1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)
-2. Add it to the module list in `kernel/build.rs` (builds `target/foo-<triple>` for every arch) and to `BOOT_MODULES` in `src/limine_image.rs` at the position it must load (that also ships it in the initramfs and generates the `module_path` line); list the ELFs in `scripts/ci-build-kernels.sh` / `ci-pack-build-artifacts.sh`
+2. Add it to the module list in `kernel/build.rs` (builds `target/foo-<triple>` for every arch) and to `BOOT_MODULES` in `src/limine_image.rs` at the position it must load (that ships it in the initramfs and puts it in `/lib/modules/boot.list`); list the ELFs in `scripts/ci-build-kernels.sh` / `ci-pack-build-artifacts.sh`
 3. Or skip the boot list and load it on demand: `insmod /lib/modules/foo`
 
 ---

@@ -12,11 +12,11 @@ pub const LIMINE_TARBALL_URL: &str =
 pub const LIMINE_TARBALL_SHA256: &str =
     "07d054e6297d8c41bee74ddd30024696e4ad811e7e73be28d98dc0a6168fbfeb";
 
-/// Kernel modules Limine places in RAM at boot (`module_path` entries), in
-/// load order: the kernel's `modules::load_limine_modules` initialises them
-/// in this order. Every driver and filesystem is one of these; the kernel
-/// embeds none. Each is shipped as `boot/modules/<name>` on the ESP / ISO,
-/// and again under `/lib/modules/<name>` in the initramfs for `insmod`.
+/// Kernel modules loaded at boot, in load order: every driver and
+/// filesystem is one of these; the kernel embeds none. Each ships in the
+/// initramfs as `/lib/modules/<name>`, and `/lib/modules/boot.list` names
+/// them in this order for the kernel's `modules::load_boot_modules`; the
+/// boot drive holds only the kernel and the initramfs.
 pub const BOOT_MODULES: &[&str] = &[
     "console",
     "hello",
@@ -38,8 +38,8 @@ pub const BOOT_MODULES: &[&str] = &[
 /// boot only when the feature is on. `(module, feature)`, in load order.
 pub const OPTIONAL_MODULES: &[(&str, &str)] = &[("linux", "linux_compat")];
 
-/// The modules `limine.conf` loads: [`BOOT_MODULES`] plus the optional ones
-/// whose feature is active.
+/// The modules the kernel loads at boot: [`BOOT_MODULES`] plus the
+/// optional ones whose feature is active.
 pub fn boot_modules() -> Vec<&'static str> {
     BOOT_MODULES
         .iter()
@@ -62,34 +62,19 @@ pub fn all_modules() -> Vec<&'static str> {
         .collect()
 }
 
-/// The Limine config: `head_extra` lines go before the entry (riscv64's
-/// `global_dtb`), `kernel_extra` after `path:` (riscv64's `paging_mode`).
-pub fn limine_conf(head_extra: &str, kernel_extra: &str) -> String {
-    let mut s = format!(
-        "serial: yes\ntimeout: 0\n{head_extra}\n/myos\n    protocol: limine\n    path: boot():/boot/kernel\n{kernel_extra}"
-    );
-    for m in boot_modules() {
-        s.push_str(&format!("    module_path: boot():/boot/modules/{m}\n"));
-    }
-    s.push_str("    module_path: boot():/boot/initramfs\n");
-    s
+/// `/lib/modules/boot.list` in the initramfs: [`boot_modules`], one per
+/// line, in load order.
+pub fn boot_list() -> String {
+    boot_modules().iter().map(|m| format!("{m}\n")).collect()
 }
 
-/// The boot modules for `triple` as ESP files (`boot/modules/<name>`), read
-/// from the stable copies `target/<name>-<triple>` kernel/build.rs writes.
-pub fn boot_module_files(target_dir: &Path, triple: &str) -> Vec<DiskFile> {
-    boot_modules()
-        .into_iter()
-        .map(|m| {
-            let src = target_dir.join(format!("{m}-{triple}"));
-            let data = fs::read(&src)
-                .unwrap_or_else(|e| panic!("module {m} ELF missing at {}: {e}", src.display()));
-            DiskFile {
-                path: format!("boot/modules/{m}"),
-                data,
-            }
-        })
-        .collect()
+/// The Limine config: `head_extra` lines go before the entry (riscv64's
+/// `global_dtb`), `kernel_extra` after `path:` (riscv64's `paging_mode`).
+/// Limine loads the kernel and the initramfs, nothing else.
+pub fn limine_conf(head_extra: &str, kernel_extra: &str) -> String {
+    format!(
+        "serial: yes\ntimeout: 0\n{head_extra}\n/myos\n    protocol: limine\n    path: boot():/boot/kernel\n{kernel_extra}    module_path: boot():/boot/initramfs\n"
+    )
 }
 
 const SECTOR: usize = 512;
@@ -221,7 +206,6 @@ pub fn write_esp_image(
     efi_name: &str,
     efi_bytes: &[u8],
     bios_sys: Option<&[u8]>,
-    modules: &[DiskFile],
     initramfs: &[u8],
 ) {
     write_esp_image_ex(
@@ -230,7 +214,6 @@ pub fn write_esp_image(
         efi_name,
         efi_bytes,
         bios_sys,
-        modules,
         initramfs,
         &limine_conf("", ""),
         &[],
@@ -243,7 +226,6 @@ pub fn write_esp_image_ex(
     efi_name: &str,
     efi_bytes: &[u8],
     bios_sys: Option<&[u8]>,
-    modules: &[DiskFile],
     initramfs: &[u8],
     limine_conf: &str,
     extra: &[DiskFile],
@@ -274,7 +256,6 @@ pub fn write_esp_image_ex(
             data: limine_conf.as_bytes().to_vec(),
         },
     ];
-    files.extend_from_slice(modules);
     files.extend_from_slice(extra);
     if efi_name.contains("RISCV") {
         files.push(DiskFile {
@@ -335,7 +316,6 @@ pub fn write_x86_iso(
     dest: &Path,
     iso_root: &Path,
     kernel: &Path,
-    modules_dir: &Path,
     initramfs: &Path,
     limine: &LimineFiles,
 ) {
@@ -358,14 +338,6 @@ pub fn write_x86_iso(
         });
     };
     copy(kernel, "boot/kernel");
-    fs::create_dir_all(iso_root.join("boot/modules"))
-        .unwrap_or_else(|e| panic!("create iso boot/modules: {e}"));
-    for m in boot_modules() {
-        copy(
-            &modules_dir.join(format!("{m}-x86_64-unknown-none")),
-            &format!("boot/modules/{m}"),
-        );
-    }
     copy(initramfs, "boot/initramfs");
     copy(&limine.bios_sys(), "boot/limine/limine-bios.sys");
     copy(&limine.bios_cd(), "boot/limine/limine-bios-cd.bin");

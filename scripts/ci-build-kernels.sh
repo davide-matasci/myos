@@ -235,10 +235,10 @@ kernel_inputs_diag() {
   ) | sort
 }
 
-# Host `myos aarch64/riscv64 --ci` rebuilds the guest disk image and reads these
-# Limine modules from disk (not from the prebuilt kernel ELF). Every kernel
-# module (src/limine_image.rs BOOT_MODULES) is in the list: the kernel embeds
-# none, the images ship them under boot/modules/. GHCR kernels
+# Host `myos aarch64/riscv64 --ci` rebuilds the guest disk image and packs
+# these modules into its initramfs (not from the prebuilt kernel ELF). Every
+# kernel module (src/limine_image.rs BOOT_MODULES) is in the list: the kernel
+# embeds none, the initramfs ships them under lib/modules/. GHCR kernels
 # packages that omit them made master boot jobs panic with "hello ELF missing"
 # after a kernels cache hit (PR builds were fine because they did a full cargo
 # build). Keep them in artifacts_ready + --print-members. The ports' files

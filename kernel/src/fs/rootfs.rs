@@ -236,8 +236,8 @@ pub fn stat(name: &str) -> Option<StatInfo> {
 }
 
 /// Unpack the initramfs, the Limine module named `initramfs`, into the
-/// tree ([`crate::fs::cpio`]). The other Limine modules are the kernel's
-/// (`modules::load_limine_modules`).
+/// tree ([`crate::fs::cpio`]). It carries the kernel modules too
+/// (`modules::load_boot_modules`).
 pub fn init_limine() {
     let Some(resp) = crate::limine_boot::MODULES.response() else {
         return;

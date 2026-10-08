@@ -47,8 +47,8 @@ fn main() {
     let manifest = Path::new(&manifest_dir);
 
     // Kernel modules: built here so `target/<module>-<triple>` exists for the
-    // image builders (Limine loads them from `boot/modules/` at boot) and for
-    // the initramfs (`/lib/modules`, `insmod`). The kernel embeds none of them.
+    // initramfs (`/lib/modules`: the kernel loads the boot ones from there,
+    // `insmod` the others). The kernel embeds none of them.
     for &(dir, bin) in MODULES {
         let _ = nested_elf(
             &cargo,
