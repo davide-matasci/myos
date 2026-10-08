@@ -1,8 +1,9 @@
 # Processes in /proc
 
 `/proc` shows every process and its threads as text files, the way a `ps`
-or a `top` reads them (issue #290). It is read-only for now; control files
-are issue #291.
+or a `top` reads them: `ps` (below) lists them, and the `bottom` package's
+`btm` is an interactive `top`. It is read-only for now; control files are
+issue #291.
 
 ```
 /proc/<pid>/status                  the process, one line
@@ -71,6 +72,23 @@ cpu1 idle 71552
 
 A CPU's idle time is the time it spent halted (`hlt` / `wfi`): the busy share
 over an interval is `1 - Δidle / Δuptime`.
+
+## ps
+
+`ps` (`/bin/custom/ps`, a shell script: `user/ps/ps`) prints a row per
+process from these files, by pid: pid, parent, state, threads, virtual
+size, CPU time and name. Without options it lists the user processes; `-e`
+adds the kernel's (the idle tasks, kernel threads), and `-L` prints a row
+per thread instead (its home CPU and CPU time). A process that exits while
+`ps` reads it is left out.
+
+```
+$ ps
+  PID  PPID STATE   THR  SIZE(K)     TIME NAME
+    1    11 blocked   1     3004     0:00 netd
+    2    11 blocked   1     1468     0:00 sh
+   11     0 blocked   1     1168     0:00 init
+```
 
 ## Memory
 
