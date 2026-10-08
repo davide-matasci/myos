@@ -7,6 +7,12 @@ _start:
     movq %rdi, %r12
     movq %rsi, %r13
     call myos_init_environ
+    // The destructors (.fini_array) run at exit, after the atexit handlers
+    // main registers; the constructors (.init_array) run now, with environ
+    // set up.
+    leaq __libc_fini_array(%rip), %rdi
+    call atexit
+    call __libc_init_array
     movq %r12, %rdi
     movq %r13, %rsi
     call main
@@ -22,3 +28,6 @@ _start:
     .globl myos_libc_init
     .extern main
     .extern exit
+    .extern atexit
+    .extern __libc_init_array
+    .extern __libc_fini_array

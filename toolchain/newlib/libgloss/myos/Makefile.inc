@@ -16,6 +16,7 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/more_stubs.c \
 	%D%/ioctl.c \
 	%D%/environ.c \
+	%D%/initfini.c \
 	%D%/getline.c \
 	%D%/mmap.c \
 	%D%/shm.c \

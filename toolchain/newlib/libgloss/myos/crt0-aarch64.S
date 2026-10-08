@@ -6,6 +6,13 @@ _start:
     mov x19, x0
     mov x20, x1
     bl myos_init_environ
+    // The destructors (.fini_array) run at exit, after the atexit handlers
+    // main registers; the constructors (.init_array) run now, with environ
+    // set up.
+    adrp x0, __libc_fini_array
+    add x0, x0, :lo12:__libc_fini_array
+    bl atexit
+    bl __libc_init_array
     mov x0, x19
     mov x1, x20
     bl main
@@ -20,3 +27,6 @@ _start:
     .globl myos_libc_init
     .extern main
     .extern exit
+    .extern atexit
+    .extern __libc_init_array
+    .extern __libc_fini_array

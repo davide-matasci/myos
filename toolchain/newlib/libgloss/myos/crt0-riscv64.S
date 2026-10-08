@@ -8,6 +8,12 @@ _start:
     mv a0, s0
     mv a1, s1
     call myos_init_environ
+    // The destructors (.fini_array) run at exit, after the atexit handlers
+    // main registers; the constructors (.init_array) run now, with environ
+    // set up.
+    lla a0, __libc_fini_array
+    call atexit
+    call __libc_init_array
     mv a0, s0
     mv a1, s1
     call main
@@ -22,3 +28,6 @@ _start:
     .globl myos_libc_init
     .extern main
     .extern exit
+    .extern atexit
+    .extern __libc_init_array
+    .extern __libc_fini_array
