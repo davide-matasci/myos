@@ -3,8 +3,8 @@
 //! There is no dynamic linker against kernel `.dynsym`. The kernel copies
 //! PT_LOAD segments into the heap, applies relative relocs, looks up
 //! `module_init`, and calls it with a [`myos_abi::KernelApi`]. Boot modules
-//! come from Limine's module list (`boot/modules/<name>` in limine.conf,
-//! loaded in that order); later ones from `insmod` (`/lib/modules`).
+//! are the initramfs's `/lib/modules/<name>` that `/lib/modules/boot.list`
+//! names, loaded in that order; later ones come from `insmod`.
 //! `elf::image_span` / `elf::realize_as` are also used to load the userspace
 //! `init` ELF (no `module_init`).
 
@@ -132,42 +132,35 @@ static API: KernelApi = KernelApi {
 /// device, or with their own wording); the loader announces the others.
 const SELF_REPORTING: &[&str] = &["console", "virtio_blk", "nvme", "virtio_net", "netfs", "pci_enum", "acpi", "xhci", "usb_hub", "usb_storage"];
 
-/// Load the modules Limine placed in RAM (`module_path` entries of
-/// limine.conf, in order). Each is named after its path's last component.
-///
-/// The `initramfs` cpio archive in the list is skipped (rootfs unpacks it).
-/// Failures are logged, never fatal.
-pub fn load_limine_modules() {
-    let Some(resp) = crate::limine_boot::MODULES.response() else {
+/// Load the boot modules: the names in the initramfs's `/lib/modules/boot.list`
+/// (one per line), each from `/lib/modules/<name>`, in that order. Called
+/// once the initramfs is unpacked; the boot drive holds only the kernel and
+/// the initramfs. Failures are logged, never fatal.
+pub fn load_boot_modules() {
+    let Some(list) = crate::fs::read_all(BOOT_LIST, 4096) else {
+        console::status_fail(&alloc::format!("modules: no {BOOT_LIST}"));
         return;
     };
     let mut loaded = 0usize;
-    for file in resp.modules().iter() {
-        // Limine already mapped `address..address+size`.
-        let bytes = file.data();
-        let base = file.path().rsplit('/').next().unwrap_or("");
-        if base.is_empty() || base == "initramfs" {
+    for name in core::str::from_utf8(&list).unwrap_or("").lines().map(str::trim) {
+        if name.is_empty() {
             continue;
         }
-        // Not an ELF (a stray data file): skip without a status line.
-        if bytes.len() < 4 || &bytes[..4] != b"\x7fELF" {
-            continue;
-        }
-        let name: &'static str = alloc::boxed::Box::leak(alloc::string::String::from(base).into_boxed_str());
-        match load(name, bytes) {
+        match insmod(&alloc::format!("/lib/modules/{name}")) {
             Ok(()) => {
                 loaded += 1;
                 if !SELF_REPORTING.contains(&name) {
                     console::status_ok(name);
                 }
             }
-            Err(e) => {
-                console::status_fail(&alloc::format!("limine module {name}: {e}"));
-            }
+            Err(e) => console::status_fail(&alloc::format!("module {name}: {e}")),
         }
     }
-    console::status_ok(&alloc::format!("limine modules: {loaded}"));
+    console::status_ok(&alloc::format!("boot modules: {loaded}"));
 }
+
+/// The boot modules, in load order ([`load_boot_modules`]).
+const BOOT_LIST: &str = "/lib/modules/boot.list";
 
 /// `insmod`: load the module at `path` (a plain ELF file, named after the
 /// path's last component). Errors: not found / too large, bad image, a module

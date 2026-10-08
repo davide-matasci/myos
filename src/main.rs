@@ -23,7 +23,7 @@ mod release;
 use boot_test::Mode;
 
 use limine_image::{
-    DiskFile, LIMINE_VERSION, boot_module_files, fetch_limine, limine_conf,
+    DiskFile, LIMINE_VERSION, fetch_limine, limine_conf,
     write_esp_image_ex,
     write_fat_data_image, write_x86_iso,
 };
@@ -146,7 +146,8 @@ fn run_iso() {
     println!("{}", build_iso().display());
 }
 
-/// Write target/myos-x86_64.iso from the built kernel, modules and initramfs.
+/// Write target/myos-x86_64.iso from the built kernel and initramfs (which
+/// carries the modules).
 fn build_iso() -> PathBuf {
     // Artifact-dep kernel lives at CARGO_BIN_FILE_KERNEL_kernel, not
     // target/<triple>/debug/kernel (ISO #1 panicked on that missing path).
@@ -162,7 +163,7 @@ fn build_iso() -> PathBuf {
     let limine = fetch_limine(Path::new(env!("LIMINE_DIR")));
     let dest = target.join("myos-x86_64.iso");
     let iso_root = target.join("iso_root");
-    write_x86_iso(&dest, &iso_root, kernel, &target, &initramfs_path, &limine);
+    write_x86_iso(&dest, &iso_root, kernel, &initramfs_path, &limine);
     dest
 }
 
@@ -717,10 +718,6 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
 fn build_aarch64_image() -> PathBuf {
     let kernel = build_aarch64_kernel();
     let kernel_bytes = std::fs::read(&kernel).expect("read aarch64 kernel ELF");
-    let modules = boot_module_files(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
-        "aarch64-unknown-none-softfloat",
-    );
     let limine_dir = PathBuf::from(env!("LIMINE_DIR"));
     let limine = if limine_dir.join("BOOTAA64.EFI").is_file() {
         fetch_limine(&limine_dir)
@@ -763,7 +760,6 @@ fn build_aarch64_image() -> PathBuf {
         "BOOTAA64.EFI",
         &efi,
         None,
-        &modules,
         &initramfs,
         &aarch64_limine_conf(),
         &[DiskFile {
@@ -1161,10 +1157,6 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
 fn build_riscv64_image() -> PathBuf {
     let kernel = build_riscv64_kernel();
     let kernel_bytes = std::fs::read(&kernel).expect("read riscv64 kernel ELF");
-    let modules = boot_module_files(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
-        "riscv64imac-unknown-none-elf",
-    );
     let limine_dir = PathBuf::from(env!("LIMINE_DIR"));
     let limine = if limine_dir.join("BOOTRISCV64.EFI").is_file() {
         fetch_limine(&limine_dir)
@@ -1205,7 +1197,6 @@ fn build_riscv64_image() -> PathBuf {
         "BOOTRISCV64.EFI",
         &efi,
         None,
-        &modules,
         &initramfs,
         &riscv_limine_conf(),
         &[DiskFile {

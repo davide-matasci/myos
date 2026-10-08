@@ -14,7 +14,7 @@ mod release {
 }
 
 use limine_image::{
-    BOOT_MODULES, bios_install, boot_module_files, fetch_limine, write_esp_image,
+    all_modules, bios_install, fetch_limine, write_esp_image,
     write_fat_data_image, LIMINE_VERSION,
 };
 use std::path::PathBuf;
@@ -97,8 +97,6 @@ fn main() {
         };
         ensure_artifact(&manifest, &format!("target/{ready}"), script);
     }
-    let modules = boot_module_files(&manifest.join("target"), "x86_64-unknown-none");
-
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any
     // user ELF changes (its build.rs rerun-if-changed on every stable copy), so
     // the image (and thus the cpio) is rebuilt transitively here.
@@ -108,7 +106,7 @@ fn main() {
         .expect("write target/initramfs-x86_64.cpio");
     println!("cargo:rerun-if-changed={}", initramfs_path.display());
 
-    for m in BOOT_MODULES {
+    for m in all_modules() {
         println!(
             "cargo:rerun-if-changed={}",
             manifest.join("target").join(format!("{m}-x86_64-unknown-none")).display()
@@ -126,7 +124,6 @@ fn main() {
         "BOOTX64.EFI",
         &bootx64,
         Some(&bios_sys),
-        &modules,
         &initramfs_bytes,
     );
     bios_install(&limine.tool(), &bios_path);
