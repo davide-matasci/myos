@@ -4,6 +4,19 @@ sbase_echo() {
 }
 t sbase_echo sbase_echo
 
+# One multicall ELF: the tool is the last component of argv[0], through a
+# symlink under another directory too; a name that is no tool exits 127.
+sbase_multicall() {
+	rm -rf /tmp/sbm && mkdir /tmp/sbm || return 1
+	ln -s /bin/sbase/echo /tmp/sbm/echo && ln -s /bin/sbase/echo /tmp/sbm/nope || return 1
+	[ "$(/tmp/sbm/echo hi)" = hi ] || return 1
+	out=$(/tmp/sbm/nope 2>&1)
+	rc=$?
+	echo "nope: $rc $out"
+	[ $rc -eq 127 ] && [ "$out" = "sbase: not a tool name: nope" ] && rm -r /tmp/sbm
+}
+t sbase_multicall sbase_multicall
+
 # printf's C99 length modifiers (newlib --enable-newlib-io-c99-formats):
 # sbase wc counts with %zu.
 sbase_wc() {

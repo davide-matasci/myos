@@ -50,10 +50,11 @@ const MAX_ELF_PAGES: usize = if MAX_EXPAND_PAGES > MAX_INIT_PAGES {
     MAX_INIT_PAGES
 };
 
-/// In-place `reload_user_elf` scratch and mapping cap (sbase-cat scale).
+/// In-place `reload_user_elf` scratch and mapping cap (a small C program;
+/// bigger images, the sbase multicall ELF among them, take a fresh mapping).
 const MAX_RELOAD_PAGES: usize = 40;
 /// Minimum code pages reserved below the user stack so post-fork `exec` can
-/// `reload_user_elf` the largest newlib/sbase ELFs (today `sbase-cat`).
+/// `reload_user_elf` the small newlib ELFs (the C smokes).
 const USER_EXEC_RELOAD_PAGES: usize = 36;
 const MAX_PATH: usize = 256;
 /// exec argument and environment limits: at most this many strings each, and

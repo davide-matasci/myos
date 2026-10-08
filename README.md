@@ -18,7 +18,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **VFS with multiple backends** — rootfs, tmpfs, devfs, procfs, FAT16, ext2
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos dwm st dmenu` brings the Xft stack and the fonts with them, then `startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets (`get-myos x11-apps`, `packages/x11-apps/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
-- **Ported userspace** — sbase, ubase, uutils coreutils, ripgrep, TinyCC (all fetched at build)
+- **Ported userspace** — sbase (one multicall ELF), ubase, uutils coreutils, ripgrep, TinyCC (all fetched at build)
 - **Networking** — virtio-net kernel module (RX interrupts: MSI-X on x86_64, INTx on aarch64/riscv64) + smoltcp in userspace; `/ping` works on all arches
 - **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET; `AF_UNIX` stream sockets over `/net/unix`, kept in the kernel (`docs/sockets-unix.md`)
 - **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
@@ -355,7 +355,7 @@ Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs). `stat
 ```sh
 ./toolchain/newlib/build.sh         # fetch newlib 4.4.0, build libc + libgloss/myos
 ./scripts/build-c-hello.sh          # minimal write() smoke
-./ports/sbase/build.sh              # ~91 sbase utilities under /s/
+./ports/sbase/build.sh              # 99 sbase utilities, one multicall ELF under /bin/sbase
 ./ports/ubase/build.sh              # getty + login under /u/
 ./ports/oksh/build.sh               # oksh 7.9 as /sh
 ./packages/vim/build.sh             # vim FEAT_TINY (a package: get-myos vim)

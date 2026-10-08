@@ -1,11 +1,12 @@
 # ext2 on the scratch disk (/dev/nvme1n1, the launcher's sparse 4 GiB
-# target/scratch.img, empty at every boot): format and mount it and copy a
-# directory of programs onto it; rename the directory, run one of them from
-# the disk and read it through a symlink; then a file past the direct and
-# single-indirect blocks (7-10 MB, under the tmpfs file cap it is built in),
-# compared with its source, and remove the directory; set a file's times;
-# keep files an fd holds past an unlink and a rename over them;
-# unmount it and mount it again, the files still there.
+# target/scratch.img, empty at every boot): format and mount it and copy
+# programs into a directory on it (sixteen names of the sbase multicall
+# ELF, a copy each); rename the directory, run one of them from the disk
+# and read it through a symlink; then a file past the direct and
+# single-indirect blocks (6-9 MB: fifteen of those copies, under the tmpfs
+# file cap it is built in), compared with its source, and remove the
+# directory; set a file's times; keep files an fd holds past an unlink and
+# a rename over them; unmount it and mount it again, the files still there.
 # The host checks the disk with `e2fsck -fn` after the boot.
 # The block cache (kernel/src/blk/cache.rs) on the raw scratch disk, before
 # it is formatted: what is read back is what was written, a write into the
@@ -20,13 +21,14 @@ blk_cache() {
 		&& grep -q "^BlockCacheKiB: [1-9]" /proc/meminfo && rm /tmp/a /tmp/b /tmp/c
 }
 ext2_disk() {
-	mkdir -p /tmp/disk && mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /tmp/disk ext2 && cp -r /bin/sbase /tmp/disk/s
+	mkdir -p /tmp/disk && mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /tmp/disk ext2 \
+		&& mkdir /tmp/disk/s && cp /bin/sbase/[a-c]* /bin/sbase/ls /tmp/disk/s
 }
 ext2_link() {
 	mv /tmp/disk/s /tmp/disk/t && /tmp/disk/t/ls -d /tmp/disk/t && ln -s t/ls /tmp/disk/l && readlink /tmp/disk/l && cmp /tmp/disk/l /tmp/disk/t/ls
 }
 ext2_big() {
-	cat /tmp/disk/t/[a-m]* > /tmp/big && cp /tmp/big /tmp/disk/big && cmp /tmp/big /tmp/disk/big \
+	cat /tmp/disk/t/[a-c]* > /tmp/big && cp /tmp/big /tmp/disk/big && cmp /tmp/big /tmp/disk/big \
 		&& rm /tmp/disk/t/* /tmp/big && rmdir /tmp/disk/t
 }
 # Setting a file's times on the disk (the ext2 module's set_times).

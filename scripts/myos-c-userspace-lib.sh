@@ -249,11 +249,7 @@ myos_sbase_is_current() {
     if ((count < MYOS_SBASE_MIN_BUILT)); then
       return 1
     fi
-    while IFS= read -r line; do
-      [[ -n "$line" ]] || continue
-      local path="${line#*:}"
-      [[ -f "$path" ]] || return 1
-    done <"$manifest"
+    [[ -f "$MYOS_ROOT/target/sbase-${arch}-unknown-none" ]] || return 1
   done
 }
 

@@ -37,7 +37,7 @@ has a default, so a minimal port needs only `PORT_FILES`.
 | `PORT_RDEPS` | | packages this one needs on the running system (`st` needs `x11-xft` and `x11-fonts`, `x11-xft` needs `x11-libs`): the `deps` field of the package index, which `get-myos` installs first (`docs/packages.md`). Only a package with files can be one (an image port is always there); `cargo run -- packages` refuses an unknown name or a loop |
 | `PORT_BUILD` | | the build script: a name is in the port directory (`build.sh`), a path with `/` is repo-relative (`scripts/build-c-smokes.sh`). Empty: nothing to build (`ports/termcap` ships a checked-in file) |
 | `PORT_STAMP` | `.myos-<name>-version` | the `target/` file the script writes its input hash to when done (the sysroot's is inside the sysroot) |
-| `PORT_OUTPUTS` | | what the script leaves under `target/`, for the three arches (what the CI registry caches, with the stamp). Globs are allowed (`sbase-*-{none}`) |
+| `PORT_OUTPUTS` | | what the script leaves under `target/`, for the three arches (what the CI registry caches, with the stamp). Globs are allowed (`ubase-*-{none}`) |
 | `PORT_READY` | the first file output | a `target/` file whose presence means the port was built (`build.rs` runs the script when it is missing). Needed when the first output is a directory |
 | `PORT_FILES` | | what the image (or the package) gets, see below |
 | `PORT_BIN` | | `user` only: the crate's binary name (`myos_cat`) |
@@ -63,8 +63,8 @@ path in the image (the initramfs root is `/`).
 | `bin:<target file>:<path>[,<alias>...]` | one ELF, mode 0755; the aliases are hard links (`oksh-{none}:bin/custom/sh,bin/sh`) |
 | `data:<target file>:<path>` | a file the build produced (`cacert.pem:lib/cacert.pem`) |
 | `file:<port dir file>:<path>` | a checked-in file of the port directory (`vimrc:lib/vim/vimrc`); `build.rs` watches it |
-| `manifest:<target file>:<dir>` | every `name:/path/to/elf` line of the manifest as `<dir>/<name>` (sbase, ubase) |
-| `multicall:<elf>:<manifest>:<dir>` | the ELF once, every name of the manifest hard-linked to it under `<dir>` (uutils coreutils) |
+| `manifest:<target file>:<dir>` | every `name:/path/to/elf` line of the manifest as `<dir>/<name>` (ubase) |
+| `multicall:<elf>:<manifest>:<dir>` | the ELF once, every name of the manifest hard-linked to it under `<dir>` (sbase, uutils coreutils) |
 | `tree:<target dir>:<dir>` | a directory tree (os-test sources and prebuilt tests), keeping the host exec bits |
 
 A missing source file fails the build: the packer never silently leaves a
