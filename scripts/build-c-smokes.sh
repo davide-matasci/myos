@@ -38,6 +38,7 @@ smokes=(
   "mmap-smoke user/c/mmap_smoke.c"
   "shm-smoke user/c/shm_smoke.c"
   "fault-smoke user/c/fault_smoke.c"
+  "ctor-smoke user/c/ctor_smoke.c"
   "memhog user/c/memhog.c"
 )
 for arch in x86_64 aarch64 riscv64; do
@@ -73,4 +74,4 @@ for arch in x86_64 aarch64 riscv64; do
 done
 
 myos_c_smokes_version_hash > "$MYOS_C_SMOKES_VERSION"
-echo "c smokes -> target/{c-hello,c-socket_smoke,tcp-listen-smoke,pty-smoke,urandom-smoke,tty-smoke,unix-smoke,fb-smoke,poll-smoke,kbd-smoke,uio-smoke,pthread-smoke,netconv-smoke,child-smoke,libc-smoke,sec,at-smoke,fileio-smoke,mmap-smoke,shm-smoke,fault-smoke}-<arch>-unknown-none"
+echo "c smokes -> target/{c-hello,c-socket_smoke,tcp-listen-smoke,pty-smoke,urandom-smoke,tty-smoke,unix-smoke,fb-smoke,poll-smoke,kbd-smoke,uio-smoke,pthread-smoke,netconv-smoke,child-smoke,libc-smoke,sec,at-smoke,fileio-smoke,mmap-smoke,shm-smoke,fault-smoke,ctor-smoke}-<arch>-unknown-none"

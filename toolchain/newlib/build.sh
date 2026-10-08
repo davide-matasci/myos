@@ -32,6 +32,13 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 # --enable-newlib-retargetable-locking makes malloc, stdio, atexit, the
 # environment and tz lock through libgloss's __retarget_lock_* functions.
 TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL -DHAVE_RENAME -DSIGNAL_PROVIDED -D__DYNAMIC_REENT__ -DGETREENT_PROVIDED"
+# Constructors and destructors (crt0 runs __libc_init_array and registers
+# __libc_fini_array): clang emits .init_array and .fini_array, which ld.lld
+# and tcc's linker bound with __init_array_start and friends. newlib's own
+# check for that reads an object with ${triple}-readelf, which there is
+# none of, so it is answered here; the target configure, which make runs,
+# inherits it.
+export newlib_cv_initfinit_array=yes
 
 build_one() {
   local arch="$1"
