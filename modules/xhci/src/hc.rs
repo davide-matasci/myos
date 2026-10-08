@@ -194,10 +194,15 @@ impl Pending {
         self.ring_trbs.store(ring.trbs, Ordering::Release);
     }
 
-    /// No endpoint any more.
-    pub fn clear_ring(&self) {
+    /// No endpoint and no transfer any more (the device is gone): clean
+    /// for the next device in the entry, whose `interrupt_start` refuses
+    /// a record still `active`.
+    pub fn reset(&self) {
         self.ring_trbs.store(core::ptr::null_mut(), Ordering::Release);
         self.ring_phys.store(0, Ordering::Relaxed);
+        self.has_callback.store(false, Ordering::Relaxed);
+        self.done.store(false, Ordering::Relaxed);
+        self.active.store(false, Ordering::Release);
     }
 
     pub fn arm(&self, td_start: usize, td_trbs: usize, total: usize) {

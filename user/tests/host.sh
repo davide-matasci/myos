@@ -11,6 +11,10 @@
 #                 as fast as the monitor allows, to race the kernel's USB
 #                 detach against I/O the guest keeps in flight. Starts and
 #                 ends plugged (the caller plugs it first).
+#   hub-unplug    pull the hub out of root port 1, with the first stick
+#                 (the launcher's `usb0` drive) behind it
+#   hub-plug      push the hub back in, alone
+#   hub-disk      plug the first stick back into the hub's port 1
 #
 # `device_del` of the usb-storage also drops its `usbhot` drive backend, so a
 # re-plug must re-create the drive (`drive_add`) before `device_add`; the
@@ -21,6 +25,11 @@ IMG="target/usb-hot.img"
 DRV="drive_add 0 if=none,id=usbhot,format=raw,file=${IMG}"
 ADD="device_add usb-storage,bus=xhci.0,port=2,drive=usbhot,id=usbhot"
 DEL="device_del usbhot"
+# The hub and the stick behind it, as the launcher defines them.
+HUB_ADD="device_add usb-hub,bus=xhci.0,port=1,id=usbhub"
+HUB_DEL="device_del usbhub"
+DISK_DRV="drive_add 0 if=none,id=usb0,format=raw,file=target/usb.img"
+DISK_ADD="device_add usb-storage,bus=xhci.0,port=1.1,drive=usb0,id=usbdisk"
 
 # Send one or more monitor commands over a single connection; print any
 # QEMU error so a flaky command is not mistaken for a kernel fault.
@@ -61,9 +70,16 @@ cycle() {
   echo "boot test: monitor: usb-cycle $n" >&2
 }
 
+hub_unplug() { mon "$HUB_DEL"; echo "boot test: monitor: hub unplug" >&2; }
+hub_plug() { mon "$HUB_ADD"; echo "boot test: monitor: hub plug" >&2; }
+hub_disk() { mon "$DISK_DRV" "$DISK_ADD"; echo "boot test: monitor: hub disk plug" >&2; }
+
 case "${1:-}" in
   usb-plug) plug ;;
   usb-unplug) unplug ;;
   usb-cycle) cycle "${2:-20}" ;;
+  hub-unplug) hub_unplug ;;
+  hub-plug) hub_plug ;;
+  hub-disk) hub_disk ;;
   *) echo "host.sh: unknown request: $*" >&2; exit 2 ;;
 esac

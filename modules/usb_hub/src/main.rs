@@ -287,9 +287,9 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
 unsafe extern "C" fn disconnect(dev: u32, intf: u8) {
     for h in HUBS.lock().iter_mut() {
         if h.is_some_and(|h| h.dev == dev && h.intf == intf) {
-            // The host detached the children already; the slot is free once
-            // the pending status transfer has reported (it fails with
-            // USB_EGONE and does not re-arm).
+            // The host detached the children already and failed the
+            // pending status transfer (`status_done` got `USB_EGONE` and
+            // did not re-arm).
             *h = None;
         }
     }
