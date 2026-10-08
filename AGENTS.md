@@ -10,7 +10,7 @@ A small Rust kernel (`#![no_std]`) that boots through Limine in QEMU on
 **x86_64** (BIOS and UEFI), **AArch64** and **RISC-V** (riscv64imac), with a
 VFS, kernel modules, preemptive scheduling, signals, networking (smoltcp in
 userspace) and a C/Rust userspace built on newlib + libgloss. Ported programs
-(oksh, sbase, ubase, uutils coreutils, ripgrep, tcc, vim, git, curl,
+(oksh, sbase, ubase, ripgrep, tcc, uutils coreutils, vim, git, curl,
 dropbear, ...) are fetched and cross-built at build time; the ones a boot
 does not need are packages (`packages/`, published to a rolling GitHub
 release, installed on the running system with `get-myos`).
@@ -29,7 +29,7 @@ match the surrounding code's naming, idiom and comment density.
 | `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib), C (`user/c`: hello and the test smokes) and the boot tests' runner (`user/tests`); one `port.env` per program |
 | `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`); both are ports too (`port.env`, kind `toolchain`) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
-| `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear, ncurses; `get-myos` installs them, `docs/packages.md`); a port moves between the two by moving its directory |
+| `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (coreutils, vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear, ncurses; `get-myos` installs them, `docs/packages.md`); a port moves between the two by moving its directory |
 | `linux-compat/` | optional Linux syscall layer userspace (launcher, musl build, tests, `get-alpine`) |
 | `scripts/` | CI scripts, registry, `ports.sh` (reads the descriptors), thin wrappers for port builds |
 | `targets/` | custom Rust target specs for userspace |

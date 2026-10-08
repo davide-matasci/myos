@@ -24,7 +24,7 @@ if [[ ! -d "$ROOT/target/myos-sysroot/lib/rustlib/${TARGET}/lib" ]]; then
   "$ROOT/toolchain/std/build-sysroot.sh"
 fi
 
-"$ROOT/ports/coreutils/prepare.sh"
+"$ROOT/packages/coreutils/prepare.sh"
 
 if [[ ! -d "$UUTILS_DIR/.git" ]]; then
   echo "Cloning uutils/coreutils ${UUTILS_TAG}..."
@@ -33,19 +33,19 @@ if [[ ! -d "$UUTILS_DIR/.git" ]]; then
 fi
 
 mkdir -p "$UUTILS_DIR/.cargo"
-cp "$ROOT/ports/coreutils/cargo-config.toml" "$UUTILS_DIR/.cargo/config.toml"
+cp "$ROOT/packages/coreutils/cargo-config.toml" "$UUTILS_DIR/.cargo/config.toml"
 
-if [[ -f "$ROOT/ports/coreutils/uucore-myos.patch" ]] \
+if [[ -f "$ROOT/packages/coreutils/uucore-myos.patch" ]] \
   && ! grep -q 'mod myos_argv' "$UUTILS_DIR/src/uucore/src/lib/lib.rs" 2>/dev/null; then
-  patch -d "$UUTILS_DIR" -p1 -N --forward <"$ROOT/ports/coreutils/uucore-myos.patch"
+  patch -d "$UUTILS_DIR" -p1 -N --forward <"$ROOT/packages/coreutils/uucore-myos.patch"
 fi
-"$ROOT/ports/coreutils/patch-uucore-unix.sh"
-"$ROOT/ports/coreutils/patch-uucore-fs.sh"
-"$ROOT/ports/coreutils/patch-uu-mv.sh"
-"$ROOT/ports/coreutils/patch-uu-touch.sh"
-"$ROOT/ports/coreutils/patch-uu-ln.sh"
-"$ROOT/ports/coreutils/patch-uu-cat.sh"
-"$ROOT/ports/coreutils/patch-uu-ls.sh"
+"$ROOT/packages/coreutils/patch-uucore-unix.sh"
+"$ROOT/packages/coreutils/patch-uucore-fs.sh"
+"$ROOT/packages/coreutils/patch-uu-mv.sh"
+"$ROOT/packages/coreutils/patch-uu-touch.sh"
+"$ROOT/packages/coreutils/patch-uu-ln.sh"
+"$ROOT/packages/coreutils/patch-uu-cat.sh"
+"$ROOT/packages/coreutils/patch-uu-ls.sh"
 
 echo "==> building coreutils for ${TARGET} (${PROFILE}, features=${FEATURES})"
 cd "$UUTILS_DIR"

@@ -255,7 +255,7 @@ usb_hotplug() {
 	cat /proc/usb
 	grep -q 'port 2 super .*:usb_storage sdb$' /proc/usb || return 1
 	/bin/sbase/dd if=/dev/sdb of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
-	[ "$(/bin/coreutils/wc -c < /tmp/usb-sdb.bin)" -eq 512 ] || return 1
+	[ "$(/bin/sbase/wc -c < /tmp/usb-sdb.bin)" -eq 512 ] || return 1
 	echo "HOST tests usb-unplug" >&3
 	wait_for 30 sh -c '! test -e /dev/sdb' || { cat /proc/usb; return 1; }
 	cat /proc/usb
@@ -317,7 +317,7 @@ usb_hub_replug() {
 	cat /proc/usb
 	grep -q 'port 1 .*:usb_storage sda$' /proc/usb || return 1
 	/bin/sbase/dd if=/dev/sda of=/tmp/usb-sda.bin bs=512 count=1 2>/dev/null || return 1
-	[ "$(/bin/coreutils/wc -c < /tmp/usb-sda.bin)" -eq 512 ]
+	[ "$(/bin/sbase/wc -c < /tmp/usb-sda.bin)" -eq 512 ]
 }
 t usb_hub_replug usb_hub_replug
 
@@ -701,7 +701,7 @@ sec_linux() {
 }
 # The policy as it was: the users' processes are gone, alice and bob too.
 sec_restore() {
-	$SEC load /etc/policy && [ "$($SEC ctx)" = "0 root admin" ] && /bin/coreutils/rm -r /tmp/sec
+	$SEC load /etc/policy && [ "$($SEC ctx)" = "0 root admin" ] && /bin/sbase/rm -r /tmp/sec
 }
 # alice knows only her own password; she must not become another user (bob
 # needs his password; root is passwordless but only a domain with

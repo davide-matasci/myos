@@ -319,16 +319,16 @@ myos_coreutils_version_hash() {
       # uutils links libstd from the myos sysroot — abi.rs etc. must bust this stamp
       # (d72287e a2=0 fix was skipped in CI: "uutils coreutils up to date").
       myos_sysroot_version_hash
-      sha256sum "$MYOS_ROOT/ports/coreutils/build-uutils.sh"
-      sha256sum "$MYOS_ROOT/ports/coreutils/build.sh"
-      sha256sum "$MYOS_ROOT/ports/coreutils/prepare.sh"
-      sha256sum "$MYOS_ROOT/ports/coreutils/versions.env"
-      find "$MYOS_ROOT/ports/coreutils" -type f -print0 2>/dev/null \
+      sha256sum "$MYOS_ROOT/packages/coreutils/build-uutils.sh"
+      sha256sum "$MYOS_ROOT/packages/coreutils/build.sh"
+      sha256sum "$MYOS_ROOT/packages/coreutils/prepare.sh"
+      sha256sum "$MYOS_ROOT/packages/coreutils/versions.env"
+      find "$MYOS_ROOT/packages/coreutils" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       find "$MYOS_ROOT/ports/crates/libc" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      sha256sum "$MYOS_ROOT/ports/coreutils/bins.txt"
-      sha256sum "$MYOS_ROOT/ports/coreutils/cargo-config.toml"
+      sha256sum "$MYOS_ROOT/packages/coreutils/bins.txt"
+      sha256sum "$MYOS_ROOT/packages/coreutils/cargo-config.toml"
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -349,7 +349,7 @@ myos_coreutils_is_current() {
     triple="${arch}-unknown-myos"
     manifest="$MYOS_ROOT/target/coreutils-manifest-${arch}.txt"
     count="$(myos_coreutils_manifest_count "$manifest")" || return 1
-    expected="$(myos_bins_txt_count "$MYOS_ROOT/ports/coreutils/bins.txt")" || return 1
+    expected="$(myos_bins_txt_count "$MYOS_ROOT/packages/coreutils/bins.txt")" || return 1
     if ((count < expected)); then
       return 1
     fi
@@ -847,14 +847,14 @@ myos_bottom_version_hash() {
   h="$(
     {
       # Rust: the std sysroot, and the myos libc/errno/rustix crates the
-      # Rust ports share (ports/coreutils/prepare.sh); C: newlib (btm_smoke,
+      # Rust ports share (packages/coreutils/prepare.sh); C: newlib (btm_smoke,
       # and libgloss behind the libc crate).
       myos_sysroot_version_hash
       myos_newlib_version_hash
       find "$(myos_port_dir bottom)" "$MYOS_ROOT/ports/crates/libc" \
-        "$MYOS_ROOT/ports/coreutils/crates" -type f -print0 2>/dev/null \
+        "$MYOS_ROOT/packages/coreutils/crates" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      sha256sum "$MYOS_ROOT/ports/coreutils/prepare.sh" "$MYOS_ROOT/ports/coreutils/versions.env"
+      sha256sum "$MYOS_ROOT/packages/coreutils/prepare.sh" "$MYOS_ROOT/packages/coreutils/versions.env"
     } | myos_hash
   )"
   printf '%s' "$h"

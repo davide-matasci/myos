@@ -18,7 +18,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **VFS with multiple backends** — rootfs, tmpfs, devfs, procfs, FAT16, ext2
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos dwm st dmenu` brings the Xft stack and the fonts with them, then `startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets (`get-myos x11-apps`, `packages/x11-apps/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
-- **Ported userspace** — sbase (one multicall ELF), ubase, uutils coreutils, ripgrep, TinyCC (all fetched at build)
+- **Ported userspace** — sbase (one multicall ELF), ubase, ripgrep, TinyCC (all fetched at build); uutils coreutils is a package (`get-myos coreutils`)
 - **Networking** — virtio-net kernel module (RX interrupts: MSI-X on x86_64, INTx on aarch64/riscv64) + smoltcp in userspace; `/ping` works on all arches
 - **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET; `AF_UNIX` stream sockets over `/net/unix`, kept in the kernel (`docs/sockets-unix.md`)
 - **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
@@ -121,7 +121,7 @@ Boot (Limine)
                  ├─ /ok smoke (always-on alloc/user/fat/proc markers)
                  ├─ /netd (smoltcp over /dev/net0/data; only opener of net0)
                  ├─ getty → login → /sh (oksh 7.9 via newlib/libgloss)
-                 └─ CI /heap: std / C / sbase / uutils / ripgrep / tcc
+                 └─ CI /heap: std / C / sbase / ripgrep / tcc (+ uutils, git: full mode)
 ```
 
 ### Boot
@@ -178,7 +178,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `user/init` | PID1: smoke fork/`/ok`, fork `/netd`, exec `/sh` (baked in) |
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
 | `user/ok` | Slim always-on boot smoke (alloc/user/fat/proc) |
-| `user/heap` | CI-only heavy smoke (std/C/sbase/uutils/ripgrep/tcc/bigalloc) |
+| `user/heap` | CI-only heavy smoke (std/C/sbase/ripgrep/tcc/bigalloc; uutils and git in the full mode) |
 | `user/netd` | Userspace smoltcp over `/dev/net0/data` |
 | `user/insmod` | `insmod /lib/modules/<name>`: load a kernel module at runtime (`SYS_INSMOD`) |
 | `user/rmmod` | `rmmod <name>`: unload a kernel module that provides nothing any more (`SYS_RMMOD`) |
@@ -190,7 +190,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` (`mount SRC TARGET FSTYPE`, `bind` for a bind mount); says why a mount failed |
 | `user/umount` | `umount DIR` detaches the disk mounted there (`SYS_UMOUNT`) |
 | `user/power` | `poweroff`, `reboot`, `halt` (one program, the action its name says; `SYS_POWER`, `docs/power.md`) |
-| `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, coreutils, tcc, curl, dropbear, ...), one `port.env` descriptor each (`docs/ports.md`) |
+| `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, tcc, curl, dropbear, ...), one `port.env` descriptor each (`docs/ports.md`) |
 | `packages/` | Ports CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom; `get-myos NAME` installs them, `docs/packages.md`); moving a directory here (or back to `ports/`) is the whole change |
 | `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters |
 | `toolchain/std/` | Rust `std` PAL skeleton, sysroot build scripts (the `sysroot` port) |

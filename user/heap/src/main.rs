@@ -2,7 +2,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![no_main]
 
-//! CI-only heavy smoke: std / C / sbase / uutils / ripgrep / tcc / bigalloc.
+//! CI-only heavy smoke: std / C / sbase / uutils (full mode) / ripgrep / tcc / bigalloc.
 //! Always-on boot uses slim `/ok` instead; the boot tests run `heap` (user/tests/shell.sh).
 
 use core::cell::UnsafeCell;
@@ -68,9 +68,16 @@ fn run_prog_exit(path: &[u8], args: &[&[u8]], expect: u8, ok_msg: &[u8]) -> bool
 fn main() -> ! {
     write(b"smoke start\n");
     let _ = run_prog_exit(b"/bin/std/bigalloc", &[], 0, b"[ OK ] bigalloc\n");
-    let _ = run_prog_exit(b"/bin/coreutils/echo", &[], 0, b"[ OK ] uutils echo\n");
-    let _ = run_prog_exit(b"/bin/coreutils/true", &[], 0, b"[ OK ] uutils true\n");
-    let _ = run_prog_exit(b"/bin/coreutils/false", &[], 1, b"[ OK ] uutils false\n");
+    // uutils coreutils is a package: the full mode installs it before the
+    // tests, the mini list (`heap mini`) runs without it.
+    let uutils = !mini_mode();
+    if uutils {
+        let _ = run_prog_exit(b"/bin/coreutils/echo", &[], 0, b"[ OK ] uutils echo\n");
+        let _ = run_prog_exit(b"/bin/coreutils/true", &[], 0, b"[ OK ] uutils true\n");
+        let _ = run_prog_exit(b"/bin/coreutils/false", &[], 1, b"[ OK ] uutils false\n");
+    } else {
+        write(b"uutils skip (boot-mini)\n");
+    }
     // Recursive sbase find: needs multi-DIR libgloss (nested opendir while walking).
     if mkdir(b"/tmp/findnest")
         && mkdir(b"/tmp/findnest/a")
@@ -90,16 +97,18 @@ fn main() -> ! {
         write(b"find skip (mkdir fail)\n");
     }
     // Newly-ported uutils that need std::fs::read_dir / open.
-    if !run_prog_exit(
-        b"/bin/coreutils/cat",
-        &[b"cat", b"/tmp/findnest/a/b/c"],
-        0,
-        b"[ OK ] uutils cat\n",
-    ) {
-        write(b"uutils cat findnest failed; retry /msg\n");
-        let _ = run_prog_exit(b"/bin/coreutils/cat", &[b"cat", b"/msg"], 0, b"[ OK ] uutils cat\n");
+    if uutils {
+        if !run_prog_exit(
+            b"/bin/coreutils/cat",
+            &[b"cat", b"/tmp/findnest/a/b/c"],
+            0,
+            b"[ OK ] uutils cat\n",
+        ) {
+            write(b"uutils cat findnest failed; retry /msg\n");
+            let _ = run_prog_exit(b"/bin/coreutils/cat", &[b"cat", b"/msg"], 0, b"[ OK ] uutils cat\n");
+        }
+        let _ = run_prog_exit(b"/bin/coreutils/ls", &[b"ls", b"/tmp/findnest"], 0, b"[ OK ] uutils ls\n");
     }
-    let _ = run_prog_exit(b"/bin/coreutils/ls", &[b"ls", b"/tmp/findnest"], 0, b"[ OK ] uutils ls\n");
     // Write a needle under /tmp and search with /c/rg (full ripgrep + PCRE2).
     // -j1 / --no-mmap / --no-config: rg mmap is optional; the threaded search
     // is ports/ripgrep/test.sh's.
