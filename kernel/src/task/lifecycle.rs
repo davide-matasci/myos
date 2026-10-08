@@ -751,12 +751,20 @@ pub fn die() -> ! {
     // `aspace` already cleared, `schedule` runs it on the kernel root. The
     // parent may already have reported the exit (`exited`), but the slot is
     // only recycled once it is Dead and off its stack (`reapable`).
-    irq_on();
-    if let Some((aspace, base, span, off, brk, mmap, files)) = reclaim {
-        // Its shared file mappings go back to their files first.
-        for node in shared_files(&mmap, &files, 0, usize::MAX) {
+    // Its shared file mappings go back to their files first, still with
+    // IRQs off, as `msync` writes them: the write-back takes the locks of
+    // the filesystem module and of the block driver, which a syscall spins
+    // on with IRQs masked. Written back with IRQs on, a timer preemption
+    // inside one of those locks left this task Ready on its home CPU while
+    // the parent, woken above, spun on the lock there in a read of the same
+    // file; neither ever ran again (issue #348).
+    if let Some((_, _, _, _, _, mmap, files)) = &reclaim {
+        for node in shared_files(mmap, files, 0, usize::MAX) {
             crate::fs::pagecache::sync(&node);
         }
+    }
+    irq_on();
+    if let Some((aspace, base, span, off, brk, mmap, files)) = reclaim {
         drop(files);
         user::reclaim_user_aspace(aspace, base, span, off, brk, &mmap);
     }

@@ -70,11 +70,14 @@ unsafe impl Sync for Slot {}
 static MOUNTS: [Slot; SLOTS] = [const { Slot { held: AtomicBool::new(false), fs: UnsafeCell::new(None) } }; SLOTS];
 
 /// Run `f` on the filesystem in slot `s` (`None` if there is none), with
-/// the slot locked.
+/// the slot locked. A waiter yields rather than spins: the holder may have
+/// been preempted on this very CPU (a user task runs on its home CPU only),
+/// and a syscall waits with IRQs masked, so a spin would never see it let
+/// go (issue #348).
 fn with_slot<T>(s: usize, f: impl FnOnce(&mut Option<Fs<Blk>>) -> T) -> T {
     let slot = &MOUNTS[s];
     while slot.held.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        core::hint::spin_loop();
+        api().task_yield();
     }
     let r = f(unsafe { &mut *slot.fs.get() });
     slot.held.store(false, Ordering::Release);
