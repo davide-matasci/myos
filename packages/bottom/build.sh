@@ -94,8 +94,20 @@ EOF
   done
 } >>"$SRC/.cargo/config.toml"
 
+# Cargo fingerprints the sources and flags it builds with, not what it builds
+# against outside them: the std sysroot, newlib (behind the libc crate) and the
+# target spec. A target dir left by a build against other ones (an older local
+# build, or the one CI's cache restores into target/) holds rlibs rustc refuses
+# next to the new std ("can't find crate for `bitflags`", "found possibly newer
+# version of crate `core`"), so a triple's target dir starts over when any of
+# them changed.
+toolchain="$(cat "$MYOS_SYSROOT_VERSION") $(cat "$MYOS_NEWLIB_VERSION") $NIGHTLY"
+
 for arch in x86_64 aarch64 riscv64; do
   triple="$arch-unknown-myos"
+  tdir="$WORK/target-$triple"
+  stamp="$toolchain $(sha256sum <"$ROOT/targets/$triple.json" | cut -d' ' -f1)"
+  [[ "$(cat "$tdir/.myos-toolchain" 2>/dev/null)" == "$stamp" ]] || rm -rf "$tdir"
   echo "==> bottom ($triple)"
   (
     cd "$SRC"
@@ -104,9 +116,10 @@ for arch in x86_64 aarch64 riscv64; do
     # bitcode.
     CARGO_PROFILE_RELEASE_LTO=false cargo "+$NIGHTLY" build --release --no-default-features \
       --target "$ROOT/targets/$triple.json" --bin btm \
-      --target-dir "$WORK/target-$triple"
+      --target-dir "$tdir"
   )
-  cp "$WORK/target-$triple/$triple/release/btm" "$ROOT/target/btm-$triple"
+  echo "$stamp" >"$tdir/.myos-toolchain"
+  cp "$tdir/$triple/release/btm" "$ROOT/target/btm-$triple"
   echo "btm -> target/btm-$triple ($(du -h "$ROOT/target/btm-$triple" | cut -f1))"
 
   cc="$WORK/$arch-cc"
