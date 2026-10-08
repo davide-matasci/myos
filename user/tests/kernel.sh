@@ -298,6 +298,29 @@ usb_hotplug_busy_reuse() {
 }
 t usb_hotplug_busy_reuse usb_hotplug_busy_reuse
 
+# The hub pulled out and pushed back. Its stick goes with it; the hub comes
+# back into the same table entry, and its status-change endpoint must work
+# there: the stick plugged in behind it afterwards is seen through the
+# hub's report, not by the port scan of the hub's probe. (The pulled hub's
+# status transfer must not stay in the entry's completion records and
+# block the endpoint: issue #280.)
+usb_hub_replug() {
+	echo "HOST tests hub-unplug" >&3
+	# The stick goes first (a detach takes the children first), the hub after.
+	wait_for 30 sh -c '! test -e /dev/sda' || { cat /proc/usb; return 1; }
+	wait_for 30 sh -c '! grep -q " hub " /proc/usb' || { cat /proc/usb; return 1; }
+	echo "HOST tests hub-plug" >&3
+	wait_for 30 grep -q ' hub ' /proc/usb || { cat /proc/usb; return 1; }
+	sleep 2
+	echo "HOST tests hub-disk" >&3
+	wait_for 30 test -e /dev/sda || { cat /proc/usb; return 1; }
+	cat /proc/usb
+	grep -q 'port 1 .*:usb_storage sda$' /proc/usb || return 1
+	/bin/sbase/dd if=/dev/sda of=/tmp/usb-sda.bin bs=512 count=1 2>/dev/null || return 1
+	[ "$(/bin/coreutils/wc -c < /tmp/usb-sda.bin)" -eq 512 ]
+}
+t usb_hub_replug usb_hub_replug
+
 # Live frame count (allocated minus freed) from /proc/meminfo.
 frames_live() {
 	set -- $(grep '^FramesLive:' /proc/meminfo)

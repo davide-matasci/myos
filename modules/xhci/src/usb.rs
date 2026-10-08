@@ -873,6 +873,12 @@ pub fn detach_id(c: &Controller, id: u32) {
             api().wake(p.key());
         }
     }
+    // A transfer with a callback completes like any other, with the error
+    // (`take_completion` finds it done): the driver hears before its
+    // `disconnect`, and the record is released.
+    while let Some((f, ctx, r)) = take_completion(s) {
+        unsafe { f(ctx, r) };
+    }
     // The drivers that took its interfaces, told with the lock dropped
     // (they call back in).
     let claimed: [Option<(usize, u8)>; MAX_INTERFACES] = {
@@ -906,8 +912,10 @@ pub fn detach_id(c: &Controller, id: u32) {
     }
     dma::clean(c.dcbaa as *mut u8, 4096);
     c.slot_owner[usize::from(slot)].store(0, Ordering::Release);
+    // The records, clean for the next device in the entry, whatever a
+    // transfer that slipped in after the sweep above left in them.
     for p in &s.pending {
-        p.clear_ring();
+        p.reset();
     }
     for ep in dev.eps.into_iter().flatten() {
         dma::free(ep.ring.phys, ep.ring.trbs as *mut u8);

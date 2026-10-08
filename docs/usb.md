@@ -40,7 +40,10 @@ outside the entry's lock, which the interrupt handler fills and `wake`s
 (the last ABI 21 entry) the waiter with. The host holds no device lock
 across a driver hook: `probe`, `disconnect` and a completion callback
 call back in. A device pulled out has its waiters failed (`USB_EGONE`)
-before `detach` waits for its lock, so the lock comes free at once.
+before `detach` waits for its lock, so the lock comes free at once; a
+transfer with a callback gets the error in its callback, and the entry's
+completion records are reset with it, so the next device in the entry
+starts clean.
 Without an interrupt (`pci_irq_enable` failed) the bus still works: a
 waiter polls the event ring every 2 ms, the thread every second.
 
@@ -81,8 +84,9 @@ every connected port resets it and calls `hub_attach(hub, port, speed)`,
 which runs the same six steps as the hub's child (depth + 1 in the route
 string). Its status-change endpoint then reports connects and disconnects;
 `hub_detach(hub, port)` tears a child down: its own children first (a
-nested hub), its drivers' `disconnect`, its waiters failed with
-`USB_EGONE`, `Disable Slot`, its memory back to the module's pool.
+nested hub), its waiters failed with `USB_EGONE` (a callback transfer's
+callback runs with it), its drivers' `disconnect`, `Disable Slot`, its
+memory back to the module's pool.
 
 `usb_storage` claims an interface of class 8, subclass 6, protocol `0x50`
 with a bulk IN and a bulk OUT endpoint, runs `TEST UNIT READY` until the
