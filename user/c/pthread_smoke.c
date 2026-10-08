@@ -19,10 +19,11 @@
  *   - a read-write lock shared by readers and writers, a barrier over
  *     rounds, a spin lock under contention, a condition wait on
  *     CLOCK_MONOTONIC;
- *   - cancellation: of a thread blocked in read(), of one in a condition
- *     wait (its cleanup handler finds the mutex locked), of one with it
- *     disabled (it sleeps on, then ends at pthread_testcancel), of an
- *     asynchronous one at its next syscall, of the caller itself;
+ *   - cancellation: of a thread blocked in read() (also before it has
+ *     run), of one in a condition wait (its cleanup handler finds the
+ *     mutex locked), of one with it disabled (it sleeps on, then ends at
+ *     pthread_testcancel), of an asynchronous one at its next syscall, of
+ *     the caller itself;
  *   - fork while two threads keep malloc and stdio busy: each child can
  *     use both.
  * Prints [ OK ] pthread.
@@ -696,6 +697,14 @@ static int cancellation(void) {
     }
     if (cancelled(blocked_read, 50, "in read") || cancel_cleaned != 1) {
         return cancel_cleaned != 1 ? fail("read's cleanup handler ran", cancel_cleaned) : 1;
+    }
+    /* Cancelled before it has run at all: the signal goes to the thread
+     * (whose tid pthread_create knows), not to the process group. */
+    pthread_t early;
+    void *result;
+    if (pthread_create(&early, NULL, blocked_read, NULL) != 0 || pthread_cancel(early) != 0
+        || pthread_join(early, &result) != 0 || result != PTHREAD_CANCELED) {
+        return fail("cancel right after create", 0);
     }
     close(pipe_fds[0]);
     close(pipe_fds[1]);
