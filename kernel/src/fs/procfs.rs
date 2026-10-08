@@ -61,7 +61,8 @@ pub fn truncate(name: &str) -> bool {
 
 /// Write handler for dynamic nodes that registered a writer (e.g. `/proc/pci`
 /// rescan). After a successful `pci` write the drivers probe for devices that
-/// appeared (`module_rescan`, `crate::modules::rescan_all`).
+/// appeared (`module_rescan`, `crate::modules::rescan_all`) and the disks'
+/// partition tables are read again (`crate::blk::rescan`).
 pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
     if name == HOSTNAME_PATH {
         return hostname_write(pos, buf);
@@ -83,6 +84,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
     }
     if name == "pci" {
         crate::modules::rescan_all();
+        crate::blk::rescan();
     }
     Some(rc as usize)
 }
@@ -385,6 +387,7 @@ fn generated(name: &str) -> Option<alloc::string::String> {
         "self/ctx" => Some(crate::sec::ctx_text()),
         "sys/security/users" => Some(crate::sec::users_text()),
         "cpu" => Some(cpu_text()),
+        "partitions" => Some(crate::blk::partitions_text()),
         _ => match parse_pid(name)? {
             PidNode::Status(pid) => process_status(pid),
             PidNode::ThreadStatus(tid) => thread_status(tid),
@@ -480,7 +483,7 @@ fn list_root(buf: &mut [u8]) -> usize {
     // Dynamic nodes all live under `acpi/` (see `list_acpi`).
     const FIXED: &[&[u8]] = &[
         b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"platform", b"pci", b"acpi", b"self", b"sys",
-        b"cpu",
+        b"cpu", b"partitions",
     ];
     let mut off = 0usize;
     for name in FIXED {
@@ -607,6 +610,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 "self/ctx" => 94,
                 "sys/security/users" => 95,
                 "cpu" => 96,
+                "partitions" => 97,
                 _ => pid_ino(name),
             },
             nlink: 1,

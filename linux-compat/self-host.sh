@@ -5,7 +5,7 @@
 # where it all goes (a mounted disk: the toolchain, the source and the build
 # take several GiB):
 #
-#     mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /mnt ext2
+#     mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
 #     sh /lib/self-host.sh /mnt
 #
 # Each step is skipped when its result is already there, so a second run

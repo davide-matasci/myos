@@ -174,12 +174,12 @@ caller sees it; default `PATH`) at `PATH`, with at most `RIGHTS` (default:
 all of the caller's there):
 
 ```sh
-# B gets /dev/sda read-write and the programs it needs, and no other disk:
-sec ns /bin:read,exec /lib:read /dev/sda:read,write -- B
+# B gets /dev/sda/data read-write and the programs it needs, and no other disk:
+sec ns /bin:read,exec /lib:read /dev/sda/data:read,write -- B
 ```
 
 - A path under no binding does not exist; a directory above bindings (`/`,
-  `/dev` above `/dev/sda`) is made up and lists only them.
+  `/dev` above `/dev/sda/data`) is made up and lists only them.
 - A binding's source must be one the caller can name, and its rights are at
   most the caller's there, so a namespace only narrows. There is no way back
   to a name the namespace lacks: `mount` and `bind` need names too.
@@ -188,7 +188,7 @@ sec ns /bin:read,exec /lib:read /dev/sda:read,write -- B
   (libc) is a namespace of one binding, `DIR` at `/`.
 - `/proc/self/fd/N` names a file as the namespace does; a file it cannot
   name has no link to re-open.
-- A file handed over as an open fd (`sec ns ... -- B < /dev/sdb`) works:
+- A file handed over as an open fd (`sec ns ... -- B < /dev/sdb/data`) works:
   the fd is the grant.
 - A directory handed over as an open fd that the namespace cannot name is
   a **capability** (`sec ns ... -- B 3< /srv/data`): the `*at` calls on it

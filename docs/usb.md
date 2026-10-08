@@ -2,8 +2,9 @@
 
 Three modules give myos a USB bus: `xhci` drives the host controller and
 publishes the bus, `usb_hub` makes the devices behind hubs reachable,
-`usb_storage` turns memory sticks and disk enclosures into `/dev/sdX`. A
-device plugged in after boot is enumerated, a device pulled out is gone
+`usb_storage` turns memory sticks and disk enclosures into `/dev/sdX/`
+(`data`, the whole disk, and `p<N>` per GPT partition). A device plugged
+in after boot is enumerated, a device pulled out is gone
 from `/dev`; `/proc/usb` lists what is there. Every CI boot carries a
 controller, a hub and two sticks (one plugged in by a test).
 
@@ -132,10 +133,10 @@ in.
 The launcher gives every boot `qemu-xhci`, a `usb-hub` on its `port=1`
 (a USB 2 port, number 5 of the controller's eight: QEMU's hub is
 full-speed, and so is the stick behind it) and a `usb-storage` behind the
-hub (`/dev/sda`, the same FAT volume as `/dev/vda` in its own image file),
+hub (`/dev/sda/data`, the same FAT volume as `/dev/vda/data` in its own image file),
 plus a second stick's drive that `user/tests/host.sh usb-plug` attaches to
 `port=2` (a USB 3 port: a SuperSpeed device) through the QEMU monitor and
-`usb-unplug` removes. `kernel.sh` waits for `/dev/sda`,
+`usb-unplug` removes. `kernel.sh` waits for `/dev/sda/data`,
 checks `/proc/usb`, mounts and reads the volume (`usb_disk`), then plugs,
 reads and unplugs the second stick (`usb_hotplug`). The boot markers
 `[ OK ] xhci`, `usb_hub`, `usb_storage` cover the modules' init.

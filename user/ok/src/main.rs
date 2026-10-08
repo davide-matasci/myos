@@ -89,7 +89,7 @@ fn smoke_vfs() {
     let nvme = buf_has(&buf[..n], b"nvme0n1");
     if nvme {
         status_ok("nvme");
-        if let Some(fd) = open(b"/dev/nvme0n1") {
+        if let Some(fd) = open(b"/dev/nvme0n1/data") {
             let mut sec = [0u8; 512];
             let _ = read(fd, &mut sec);
             close(fd);
@@ -180,9 +180,10 @@ fn smoke_ext2() {
 /// volume; the others are unmounted again.
 fn mount_test_fat(vds: &[[u8; 3]]) -> bool {
     for name in vds {
-        let mut src = [0u8; 8];
+        let mut src = [0u8; 13];
         src[..5].copy_from_slice(b"/dev/");
         src[5..8].copy_from_slice(name);
+        src[8..].copy_from_slice(b"/data");
         if !mount(&src, b"/tmp/fat", b"fat") {
             continue;
         }
@@ -198,7 +199,7 @@ fn mount_test_fat(vds: &[[u8; 3]]) -> bool {
 fn ext2_format() -> bool {
     match fork() {
         Some(0) => {
-            exec(b"/bin/custom/mkfs.ext2", &[b"mkfs.ext2", b"/dev/nvme0n1"]);
+            exec(b"/bin/custom/mkfs.ext2", &[b"mkfs.ext2", b"/dev/nvme0n1/data"]);
             status_fail("ext2 mkfs exec fail");
             exit_code(1);
         }
@@ -214,7 +215,7 @@ fn ext2_format() -> bool {
             return false;
         }
     }
-    if !mkdir(b"/tmp/ext2") || !mount(b"/dev/nvme0n1", b"/tmp/ext2", b"ext2") {
+    if !mkdir(b"/tmp/ext2") || !mount(b"/dev/nvme0n1/data", b"/tmp/ext2", b"ext2") {
         status_fail("ext2 mount fail");
         return false;
     }

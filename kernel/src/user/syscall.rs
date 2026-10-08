@@ -117,7 +117,7 @@ const SYS_SETTIMEOFDAY: usize = 65;
 /// Run the caller as that user in their login domain (docs/security.md).
 const SYS_SETUSER: usize = 67;
 /// `ns(spec, len)`: replace the caller's namespace by the bindings of
-/// `spec`, one per line: `TARGET SOURCE RIGHTS` (`/dev/sda /dev/sda
+/// `spec`, one per line: `TARGET SOURCE RIGHTS` (`/dev/sda/data /dev/sda/data
 /// read,write`), the sources named in the current namespace, the rights
 /// at most the current ones there (`task::ns`).
 const SYS_NS: usize = 68;

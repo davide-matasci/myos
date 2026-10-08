@@ -145,7 +145,7 @@ pub struct MmioDevice {
 }
 
 /// The `index`-th node compatible with `compat`, in ascending `reg` order
-/// (device names such as `/dev/vda` follow it, whatever the tree's order).
+/// (device names such as `/dev/vda/` follow it, whatever the tree's order).
 pub fn mmio_device(compat: &str, index: usize) -> Option<MmioDevice> {
     let fdt = get()?;
     let matching = || {

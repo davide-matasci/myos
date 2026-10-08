@@ -25,7 +25,7 @@ use boot_test::Mode;
 use limine_image::{
     DiskFile, LIMINE_VERSION, fetch_limine, limine_conf,
     write_esp_image_ex,
-    write_fat_data_image, write_x86_iso,
+    write_fat_data_image, write_scratch_gpt_image, write_x86_iso,
 };
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use std::path::{Path, PathBuf};
@@ -197,9 +197,10 @@ fn write_nvme_blk_image() {
         .unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
 }
 
-/// The scratch disk: a second NVMe controller (`/dev/nvme1n1`), empty and
-/// sparse (only what the guest writes takes space), recreated every boot.
-/// Room for a big filesystem (an Alpine root with a toolchain).
+/// The scratch disk: a second NVMe controller (`/dev/nvme1n1/`), sparse
+/// (only what is written takes space) and recreated every boot with a GPT
+/// for the partition tests (`write_scratch_gpt_image`). Room for a big
+/// filesystem on the whole disk (an Alpine root with a toolchain).
 const SCRATCH_BYTES: u64 = 4 << 30;
 
 fn scratch_img_path() -> PathBuf {
@@ -207,15 +208,12 @@ fn scratch_img_path() -> PathBuf {
 }
 
 fn write_scratch_image() {
-    let dest = scratch_img_path();
-    let f = std::fs::File::create(&dest).unwrap_or_else(|e| panic!("create {}: {e}", dest.display()));
-    f.set_len(SCRATCH_BYTES)
-        .unwrap_or_else(|e| panic!("size {}: {e}", dest.display()));
+    write_scratch_gpt_image(&scratch_img_path(), SCRATCH_BYTES);
 }
 
 /// The full test with the Linux layer runs Alpine's rustc from a disk the
 /// host prepares (`linux-compat/alpine-disk.sh`, kept in `target/`): the
-/// third NVMe controller, `/dev/nvme2n1`, its writes dropped with the boot.
+/// third NVMe controller, `/dev/nvme2n1/data`, its writes dropped with the boot.
 static ALPINE_DISK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 fn prepare_alpine_disk(arch: &str, mode: Mode) {
@@ -328,8 +326,8 @@ fn usb_hot_img_path() -> PathBuf {
 }
 
 /// The USB bus of every boot (docs/usb.md): an xHCI controller, a hub on
-/// its first port and a memory stick behind the hub (`/dev/sda`: the same
-/// FAT volume as `/dev/vda`, in its own file since QEMU locks images). A
+/// its first port and a memory stick behind the hub (`/dev/sda/data`: the same
+/// FAT volume as `/dev/vda/data`, in its own file since QEMU locks images). A
 /// second stick's drive is defined but plugged into root port 2 only by the
 /// hot-plug test, through the monitor (`user/tests/host.sh usb-plug`).
 fn add_usb(cmd: &mut Command) {
@@ -713,7 +711,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
             "if=pflash,format=raw,unit=1,file={},snapshot=on",
             vars.display()
         ));
-    // Data disks first so they become /dev/vda and /dev/vdb; ESP boots via bootindex.
+    // Data disks first so they become /dev/vda/ and /dev/vdb/; ESP boots via bootindex.
     add_virtio_blk_aarch64(&mut cmd);
     add_virtio_net(&mut cmd);
     cmd.arg("-drive")

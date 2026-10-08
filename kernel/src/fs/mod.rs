@@ -215,21 +215,18 @@ pub fn mount_fstype(source_dev: u32, prefix: &str, fstype_name: &str, source: &s
     vfs::mount_instance(fstype_name, prefix, ops, source)
 }
 
-/// The block device `/dev/<name>` is the source of a mount or is open
-/// (`blk::unregister` refuses it then).
+/// The block device `/dev/<name>` (`sda/data`, `sda/p1`) is the source of
+/// a mount or is open (`blk::unregister` refuses it then).
 pub fn blk_in_use(name: &str) -> bool {
     let path = alloc::format!("/dev/{name}");
     vfs::source_mounted(&path) || vfs::open_refs("dev", name) > 0
 }
 
-/// Block-device id for a `/dev/<name>` path (`vdX`, `nvmeXn1`, …), if registered.
+/// Block-device id for a `/dev/<name>` path (`vda/data`, `nvme1n1/p2`, …),
+/// if registered.
 pub fn blk_id_from_path(path: &str) -> Option<u32> {
     let path = path.trim_start_matches('/');
-    let name = path.strip_prefix("dev/")?;
-    if name.contains('/') {
-        return None;
-    }
-    devfs::blk_id(name)
+    devfs::blk_id(path.strip_prefix("dev/")?)
 }
 
 pub const S_IFBLK: u32 = 0o060000;

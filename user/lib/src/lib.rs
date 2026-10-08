@@ -336,7 +336,7 @@ pub fn rmmod(name: &[u8]) -> bool {
     unsafe { sys3(59, buf.as_ptr() as usize, n, 0) != usize::MAX }
 }
 
-/// Mount `src` (a block device, `/dev/vda`) at `tgt`, an existing directory
+/// Mount `src` (a block device, `/dev/vda/data`) at `tgt`, an existing directory
 /// that is not a mount point yet, using `fstype` (`fat`, `ext2`); `bind`
 /// makes `src` visible at `tgt` too.
 pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {

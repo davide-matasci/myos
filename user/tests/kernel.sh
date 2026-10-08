@@ -100,7 +100,7 @@ rmmod_hello() {
 		&& insmod /lib/modules/hello && grep -q "^hello$" /proc/modules
 }
 rmmod_busy() {
-	! rmmod virtio_blk && grep -q "^virtio_blk$" /proc/modules && ls /dev/vda
+	! rmmod virtio_blk && grep -q "^virtio_blk$" /proc/modules && ls /dev/vda/data
 }
 # A /proc/pci rescan re-probes the drivers: the disks are the same ones
 # after it, and still readable.
@@ -108,11 +108,44 @@ pci_rescan() {
 	ls /dev > /tmp/dev-before.txt
 	echo rescan > /proc/pci || return 1
 	ls /dev > /tmp/dev-after.txt
-	cmp /tmp/dev-before.txt /tmp/dev-after.txt && /bin/sbase/tail -c 512 /dev/vda > /dev/null
+	cmp /tmp/dev-before.txt /tmp/dev-after.txt && /bin/sbase/tail -c 512 /dev/vda/data > /dev/null
+}
+# GPT partitions: the launcher's scratch disk (nvme1n1) carries a GPT with a
+# 20 MiB FAT16 of ESP type in entry 1, entry 2 empty and 64 MiB of Linux
+# data in entry 3: /dev/nvme1n1/p1 and p3, listed in /proc/partitions. A
+# partition reads no further than its end; the FAT mounts from p1, an ext2
+# made on p3 works and leaves p1 as it was. A rescan keeps a mounted
+# partition; with the primary header wiped, the backup at the end of the
+# disk gives the same partitions. (The port tests reuse the whole disk.)
+partitions() {
+	d=/dev/nvme1n1
+	[ "$(ls $d | tr '\n' ' ')" = "data p1 p3 " ] || { ls $d; return 1; }
+	[ -b $d/p1 ] && [ -b $d/p3 ] || return 1
+	cat > /tmp/parts.want <<-EOF
+	nvme1n1/p1 2048 20971520 c12a7328-f81f-11d2-ba4b-00a0c93ec93b 61726373-6374-4068-8000-000000000001 "EFI system"
+	nvme1n1/p3 65536 67108864 0fc63daf-8483-4772-8e79-3d69d8477de4 61726373-6374-4068-8000-000000000003 "scratch"
+	EOF
+	grep '^nvme1n1/' /proc/partitions > /tmp/parts.got
+	cmp -s /tmp/parts.want /tmp/parts.got || { cat /proc/partitions; return 1; }
+	[ "$(dd if=$d/p1 bs=512 skip=40959 count=1 2> /dev/null | wc -c)" -eq 512 ] || return 1
+	[ "$(dd if=$d/p1 bs=512 skip=40960 count=1 2> /dev/null | wc -c)" -eq 0 ] || return 1
+	mkdir -p /tmp/esp /tmp/p3 && mount $d/p1 /tmp/esp fat || return 1
+	[ "$(cat /tmp/esp/msg)" = scratch-esp ] && umount /tmp/esp || return 1
+	mkfs.ext2 $d/p3 > /dev/null && mount $d/p3 /tmp/p3 ext2 || return 1
+	echo kept > /tmp/p3/k && umount /tmp/p3 && mount $d/p3 /tmp/p3 ext2 || return 1
+	[ "$(cat /tmp/p3/k)" = kept ] || return 1
+	echo rescan > /proc/pci && [ "$(cat /tmp/p3/k)" = kept ] && umount /tmp/p3 || return 1
+	mount $d/p1 /tmp/esp fat && [ "$(cat /tmp/esp/msg)" = scratch-esp ] && umount /tmp/esp || return 1
+	dd if=/dev/zero of=$d/data bs=512 seek=1 count=1 conv=notrunc 2> /dev/null || return 1
+	echo rescan > /proc/pci || return 1
+	grep '^nvme1n1/' /proc/partitions > /tmp/parts.got
+	cmp -s /tmp/parts.want /tmp/parts.got || { echo "no backup GPT"; cat /proc/partitions; return 1; }
+	mount $d/p3 /tmp/p3 ext2 && [ "$(cat /tmp/p3/k)" = kept ] && umount /tmp/p3
 }
 t rmmod_hello rmmod_hello
 t rmmod_busy rmmod_busy
 t pci_rescan pci_rescan
+t partitions partitions
 
 # A terminal is a directory (docs/tty.md): `data` is the terminal, `ctl` its
 # state as text. /proc/self/fd/N names what an fd is open on, /proc/self/tty
@@ -228,8 +261,8 @@ t fat_rw fat_rw
 
 # USB (docs/usb.md): every boot has an xHCI controller with a hub on its
 # first port and a memory stick behind the hub, the same FAT volume as
-# /dev/vda. The stick is enumerated on the USB thread after the modules
-# load, so the test waits for /dev/sda; /proc/usb lists the hub and the
+# /dev/vda/data. The stick is enumerated on the USB thread after the modules
+# load, so the test waits for /dev/sda/data; /proc/usb lists the hub and the
 # stick with their drivers, the stick's line naming its disk; the volume
 # mounts and reads.
 wait_for() {
@@ -242,11 +275,11 @@ wait_for() {
 	done
 }
 usb_disk() {
-	wait_for 30 test -e /dev/sda || { cat /proc/usb; return 1; }
+	wait_for 30 test -e /dev/sda/data || { cat /proc/usb; return 1; }
 	cat /proc/usb
 	grep -q ' hub ' /proc/usb || return 1
 	grep -q ':usb_storage sda$' /proc/usb || return 1
-	mkdir -p /tmp/usb && mount /dev/sda /tmp/usb fat || return 1
+	mkdir -p /tmp/usb && mount /dev/sda/data /tmp/usb fat || return 1
 	[ "$(cat /tmp/usb/msg)" = fat-msg ]
 }
 t usb_disk usb_disk
@@ -257,12 +290,12 @@ t usb_disk usb_disk
 # removed (README, VFS). The stick of usb_disk is the disk.
 mount_rules() {
 	umount /tmp/usb && ! [ -e /tmp/usb/msg ] || return 1
-	mount /dev/sda /tmp/none fat 2>&1 | grep -q 'no such directory' || return 1
-	mount /dev/sda /mnt fat && [ "$(cat /mnt/msg)" = fat-msg ] || return 1
-	mount /dev/sda /tmp/usb fat 2>&1 | grep -q 'already mounted' || return 1
-	umount /mnt && mkdir -p /tmp/a/b && mount /dev/sda /tmp/a/b fat || return 1
-	grep -q '^/dev/sda /tmp/a/b fat ' /proc/mounts || return 1
-	mount /dev/sda /tmp/a/b fat 2>&1 | grep -q 'already a mount point' || return 1
+	mount /dev/sda/data /tmp/none fat 2>&1 | grep -q 'no such directory' || return 1
+	mount /dev/sda/data /mnt fat && [ "$(cat /mnt/msg)" = fat-msg ] || return 1
+	mount /dev/sda/data /tmp/usb fat 2>&1 | grep -q 'already mounted' || return 1
+	umount /mnt && mkdir -p /tmp/a/b && mount /dev/sda/data /tmp/a/b fat || return 1
+	grep -q '^/dev/sda/data /tmp/a/b fat ' /proc/mounts || return 1
+	mount /dev/sda/data /tmp/a/b fat 2>&1 | grep -q 'already a mount point' || return 1
 	! mv /tmp/a /tmp/c 2>/dev/null || return 1
 	exec 4< /tmp/a/b/msg
 	umount /tmp/a/b 2>&1 | grep -q busy || return 1
@@ -277,13 +310,13 @@ t mount_rules mount_rules
 # again, its /dev entry goes (nothing holds it).
 usb_hotplug() {
 	echo "HOST tests usb-plug" >&3
-	wait_for 30 test -e /dev/sdb || { cat /proc/usb; return 1; }
+	wait_for 30 test -e /dev/sdb/data || { cat /proc/usb; return 1; }
 	cat /proc/usb
 	grep -q 'port 2 super .*:usb_storage sdb$' /proc/usb || return 1
-	/bin/sbase/dd if=/dev/sdb of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
+	/bin/sbase/dd if=/dev/sdb/data of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
 	[ "$(/bin/sbase/wc -c < /tmp/usb-sdb.bin)" -eq 512 ] || return 1
 	echo "HOST tests usb-unplug" >&3
-	wait_for 30 sh -c '! test -e /dev/sdb' || { cat /proc/usb; return 1; }
+	wait_for 30 sh -c '! test -e /dev/sdb/data' || { cat /proc/usb; return 1; }
 	cat /proc/usb
 	! grep -q gone /proc/usb
 }
@@ -306,7 +339,7 @@ usb_hotplug_busy_reuse() {
 		|| { echo "reuse: no sdb to start"; cat /proc/usb; return 1; }
 	# Mount it, then pull it while mounted: blk_unregister is refused, so the
 	# disk must stay as a `gone` entry failing its I/O (and not fault).
-	mount /dev/sdb /tmp/usbm fat || { echo "reuse: mount failed"; cat /proc/usb; return 1; }
+	mount /dev/sdb/data /tmp/usbm fat || { echo "reuse: mount failed"; cat /proc/usb; return 1; }
 	echo "HOST tests usb-unplug" >&3
 	sleep 3
 	# Let go: the mount was the only holder, so the disk is now reclaimable.
@@ -317,10 +350,10 @@ usb_hotplug_busy_reuse() {
 	echo "HOST tests usb-plug" >&3
 	wait_for 40 sh -c 'grep -q "port 2 .*usb_storage sdb" /proc/usb' \
 		|| { echo "reuse: replugged stick is not sdb — slot leaked"; cat /proc/usb; return 1; }
-	test -e /dev/sdc && { echo "reuse: a leaked disk lingers on sdc"; cat /proc/usb; return 1; }
-	/bin/sbase/dd if=/dev/sdb of=/dev/null bs=512 count=1 2> /dev/null || { echo "reuse: sdb will not read"; return 1; }
+	test -e /dev/sdc/data && { echo "reuse: a leaked disk lingers on sdc"; cat /proc/usb; return 1; }
+	/bin/sbase/dd if=/dev/sdb/data of=/dev/null bs=512 count=1 2> /dev/null || { echo "reuse: sdb will not read"; return 1; }
 	echo "HOST tests usb-unplug" >&3
-	wait_for 30 sh -c '! test -e /dev/sdb'
+	wait_for 30 sh -c '! test -e /dev/sdb/data'
 }
 t usb_hotplug_busy_reuse usb_hotplug_busy_reuse
 
@@ -333,16 +366,16 @@ t usb_hotplug_busy_reuse usb_hotplug_busy_reuse
 usb_hub_replug() {
 	echo "HOST tests hub-unplug" >&3
 	# The stick goes first (a detach takes the children first), the hub after.
-	wait_for 30 sh -c '! test -e /dev/sda' || { cat /proc/usb; return 1; }
+	wait_for 30 sh -c '! test -e /dev/sda/data' || { cat /proc/usb; return 1; }
 	wait_for 30 sh -c '! grep -q " hub " /proc/usb' || { cat /proc/usb; return 1; }
 	echo "HOST tests hub-plug" >&3
 	wait_for 30 grep -q ' hub ' /proc/usb || { cat /proc/usb; return 1; }
 	sleep 2
 	echo "HOST tests hub-disk" >&3
-	wait_for 30 test -e /dev/sda || { cat /proc/usb; return 1; }
+	wait_for 30 test -e /dev/sda/data || { cat /proc/usb; return 1; }
 	cat /proc/usb
 	grep -q 'port 1 .*:usb_storage sda$' /proc/usb || return 1
-	/bin/sbase/dd if=/dev/sda of=/tmp/usb-sda.bin bs=512 count=1 2>/dev/null || return 1
+	/bin/sbase/dd if=/dev/sda/data of=/tmp/usb-sda.bin bs=512 count=1 2>/dev/null || return 1
 	[ "$(/bin/sbase/wc -c < /tmp/usb-sda.bin)" -eq 512 ]
 }
 t usb_hub_replug usb_hub_replug
@@ -837,11 +870,11 @@ lx_python_net() {
 	[ "$out" = "HTTP 200" ]
 }
 # Alpine's rustc (rust, LLVM and gcc: ~600 MB) from the disk the launcher
-# prepares on the host (linux-compat/alpine-disk.sh, /dev/nvme2n1): its
+# prepares on the host (linux-compat/alpine-disk.sh, /dev/nvme2n1/data): its
 # libraries and allocator reservation need over 500 MiB of address space,
 # of which `--version` touches some 30 MiB.
 lx_rustc() {
-	mkdir -p /tmp/alpine-rust && mount /dev/nvme2n1 /tmp/alpine-rust ext2 || return 1
+	mkdir -p /tmp/alpine-rust && mount /dev/nvme2n1/data /tmp/alpine-rust ext2 || return 1
 	out=$(linux --root /tmp/alpine-rust/alpine rustc --version)
 	echo "$out"
 	case "$out" in "rustc 1."*) ;; *) return 1 ;; esac

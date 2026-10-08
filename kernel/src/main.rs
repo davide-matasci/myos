@@ -185,7 +185,7 @@ pub(crate) fn kernel_main() -> ! {
     // virtio_blk, nvme, xhci, usb_hub, usb_storage, virtio_net, netfs, fat,
     // ext2). More can follow at runtime with `insmod` from /lib/modules.
     modules::load_boot_modules();
-    // /msg lives on rootfs; /ok mounts /dev/vda as fat at /tmp/fat.
+    // /msg lives on rootfs; /ok mounts /dev/vda/data as fat at /tmp/fat.
     let _ = fs::register("rootfs", "msg", MSG_OK);
     console::status_ok("fat message");
 

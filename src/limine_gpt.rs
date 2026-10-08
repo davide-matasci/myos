@@ -107,6 +107,15 @@ fn write_gpt_header(
     total_lba: u64,
     primary: bool,
 ) {
+    let h = gpt_header(this_lba, alt_lba, entries_lba, entries_crc, total_lba);
+    let off = this_lba as usize * SECTOR;
+    disk[off..off + 92].copy_from_slice(&h);
+    let _ = primary;
+}
+
+/// A GPT header for a disk of `total_lba` sectors with 128 entries of 128
+/// bytes, usable from LBA 34 to the backup entries.
+fn gpt_header(this_lba: u64, alt_lba: u64, entries_lba: u64, entries_crc: u32, total_lba: u64) -> [u8; 92] {
     let mut h = [0u8; 92];
     h[0..8].copy_from_slice(b"EFI PART");
     h[8..12].copy_from_slice(&0x00010000u32.to_le_bytes());
@@ -127,9 +136,7 @@ fn write_gpt_header(
     h[88..92].copy_from_slice(&entries_crc.to_le_bytes());
     let crc = crc32(&h);
     h[16..20].copy_from_slice(&crc.to_le_bytes());
-    let off = this_lba as usize * SECTOR;
-    disk[off..off + 92].copy_from_slice(&h);
-    let _ = primary;
+    h
 }
 
 fn crc32(data: &[u8]) -> u32 {

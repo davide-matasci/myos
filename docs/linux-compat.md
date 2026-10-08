@@ -74,7 +74,7 @@ LLVM and gcc: ~300 MB of downloads, ~600 MB installed) on the scratch disk
 of a test boot:
 
 ```sh
-mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /mnt ext2
+mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
 get-alpine -r /mnt/alpine rust
 linux --root /mnt/alpine rustc --version
 ```
@@ -347,7 +347,7 @@ the kernel does not keep a per-task copy at syscall entry.
 builds the x86_64 kernel inside myos with Alpine's Rust toolchain:
 
 ```sh
-mkfs.ext2 /dev/nvme1n1 && mount /dev/nvme1n1 /mnt ext2
+mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
 sh /lib/self-host.sh /mnt           # REV: the branch to build (master)
 ```
 
@@ -475,7 +475,7 @@ and fetches `http://example.com/` with `urllib` (DNS over UDP, then TCP),
 expecting `HTTP 200`. Last, it mounts the disk the launcher made on the
 host with `linux-compat/alpine-disk.sh ARCH target/alpine-rust-ARCH.img
 rust` (kept in `target/`: remove it for newer packages) and attached as
-`/dev/nvme2n1` (writes go to a QEMU snapshot), and runs `rustc --version`
+`/dev/nvme2n1/data` (writes go to a QEMU snapshot), and runs `rustc --version`
 from it, expecting `rustc 1.`. They need the Alpine mirror and
 `example.com` to be reachable.
 
