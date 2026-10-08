@@ -21,7 +21,7 @@ prompt (what the ISO is for).
 | CI | every pull request, on bios, uefi, aarch64 and riscv64 | the daily scheduled run and `workflow_dispatch` with `full_boot` |
 | budget | 4 minutes (5 with the Linux layer) | 50 minutes |
 | network | QEMU's user network only (DNS and the listen test go through it) | the host's: HTTPS, the Alpine mirror, this build's packages |
-| tests | the shell, exec, the basic programs, ext2 on the scratch disk, FAT read-write, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear and a login on a pty, the Linux layer's Alpine packages (jq, Python, and rustc from a disk the host prepares), the curated os-test list, the packages' own tests |
+| tests | the shell, exec, the basic programs, GPT partitions and ext2 on the scratch disk, FAT read-write, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear and a login on a pty, the Linux layer's Alpine packages (jq, Python, and rustc from a disk the host prepares), the curated os-test list, the packages' own tests |
 
 ## In the guest
 
@@ -118,7 +118,7 @@ on the guest's keyboard through it (`/dev/console/kbd`), the keys in order
 (`src/main.rs` sets up the machine, the disks, the network with the port
 forwards, and in the full mode the package mirror and, with the Linux
 layer, the Alpine Rust disk: `linux-compat/alpine-disk.sh` builds it once
-into `target/alpine-rust-<arch>.img`, attached as `/dev/nvme2n1` with its
+into `target/alpine-rust-<arch>.img`, attached as `/dev/nvme2n1/data` with its
 writes kept in a QEMU snapshot), waits for `login: `,
 types `root`, an empty password and the command (each byte once its echo
 is back, so an AP's lagging echo never garbles the line), then watches:
@@ -133,16 +133,16 @@ is back, so an AP's lagging echo never garbles the line), then watches:
 - the kernel's own **boot markers** (`[ OK ] heap`, `[ OK ] scheduler`,
   the drivers, the VFS checks of `/bin/custom/ok`), which init prints
   before the login prompt: required whatever the tests say. `ok` runs on
-  every boot, so it writes to a disk (`mkfs.ext2` on `/dev/nvme0n1`) and
+  every boot, so it writes to a disk (`mkfs.ext2` on `/dev/nvme0n1/data`) and
   expects the FAT mount only once it found the launcher's FAT volume
   (`/msg` reading `fat-msg`); in another VM it leaves the disks alone;
 - after the tests, `poweroff` typed at the prompt: QEMU must exit by
   itself, the console naming the method (`power off via ...`,
   `docs/power.md`);
 - then `e2fsck -fn` on the scratch disk (`target/scratch.img`,
-  the guest's `/dev/nvme1n1`) when the ext2 tests left a filesystem on it,
+  the guest's `/dev/nvme1n1/data`) when the ext2 tests left a filesystem on it,
   and `fsck.fat -n` on the FAT test disk (`target/fat.img`, the guest's
-  `/dev/vda`, which `fat_rw` writes to); each skipped without its tool
+  `/dev/vda/data`, which `fat_rw` writes to); each skipped without its tool
   (e2fsprogs, dosfstools).
 
 It exits 0 only when every test passed, every marker was seen and the

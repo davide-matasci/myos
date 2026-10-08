@@ -110,9 +110,42 @@ pci_rescan() {
 	ls /dev > /tmp/dev-after.txt
 	cmp /tmp/dev-before.txt /tmp/dev-after.txt && /bin/sbase/tail -c 512 /dev/vda/data > /dev/null
 }
+# GPT partitions: the launcher's scratch disk (nvme1n1) carries a GPT with a
+# 20 MiB FAT16 of ESP type in entry 1, entry 2 empty and 64 MiB of Linux
+# data in entry 3: /dev/nvme1n1/p1 and p3, listed in /proc/partitions. A
+# partition reads no further than its end; the FAT mounts from p1, an ext2
+# made on p3 works and leaves p1 as it was. A rescan keeps a mounted
+# partition; with the primary header wiped, the backup at the end of the
+# disk gives the same partitions. (The port tests reuse the whole disk.)
+partitions() {
+	d=/dev/nvme1n1
+	[ "$(ls $d | tr '\n' ' ')" = "data p1 p3 " ] || { ls $d; return 1; }
+	[ -b $d/p1 ] && [ -b $d/p3 ] || return 1
+	cat > /tmp/parts.want <<-EOF
+	nvme1n1/p1 2048 20971520 c12a7328-f81f-11d2-ba4b-00a0c93ec93b 61726373-6374-4068-8000-000000000001 "EFI system"
+	nvme1n1/p3 65536 67108864 0fc63daf-8483-4772-8e79-3d69d8477de4 61726373-6374-4068-8000-000000000003 "scratch"
+	EOF
+	grep '^nvme1n1/' /proc/partitions > /tmp/parts.got
+	cmp -s /tmp/parts.want /tmp/parts.got || { cat /proc/partitions; return 1; }
+	[ "$(dd if=$d/p1 bs=512 skip=40959 count=1 2> /dev/null | wc -c)" -eq 512 ] || return 1
+	[ "$(dd if=$d/p1 bs=512 skip=40960 count=1 2> /dev/null | wc -c)" -eq 0 ] || return 1
+	mkdir -p /tmp/esp /tmp/p3 && mount $d/p1 /tmp/esp fat || return 1
+	[ "$(cat /tmp/esp/msg)" = scratch-esp ] && umount /tmp/esp || return 1
+	mkfs.ext2 $d/p3 > /dev/null && mount $d/p3 /tmp/p3 ext2 || return 1
+	echo kept > /tmp/p3/k && umount /tmp/p3 && mount $d/p3 /tmp/p3 ext2 || return 1
+	[ "$(cat /tmp/p3/k)" = kept ] || return 1
+	echo rescan > /proc/pci && [ "$(cat /tmp/p3/k)" = kept ] && umount /tmp/p3 || return 1
+	mount $d/p1 /tmp/esp fat && [ "$(cat /tmp/esp/msg)" = scratch-esp ] && umount /tmp/esp || return 1
+	dd if=/dev/zero of=$d/data bs=512 seek=1 count=1 conv=notrunc 2> /dev/null || return 1
+	echo rescan > /proc/pci || return 1
+	grep '^nvme1n1/' /proc/partitions > /tmp/parts.got
+	cmp -s /tmp/parts.want /tmp/parts.got || { echo "no backup GPT"; cat /proc/partitions; return 1; }
+	mount $d/p3 /tmp/p3 ext2 && [ "$(cat /tmp/p3/k)" = kept ] && umount /tmp/p3
+}
 t rmmod_hello rmmod_hello
 t rmmod_busy rmmod_busy
 t pci_rescan pci_rescan
+t partitions partitions
 
 # A terminal is a directory (docs/tty.md): `data` is the terminal, `ctl` its
 # state as text. /proc/self/fd/N names what an fd is open on, /proc/self/tty

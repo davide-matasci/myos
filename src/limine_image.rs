@@ -324,6 +324,53 @@ pub fn write_fat_data_image(dest: &Path) {
     fs::write(dest, &part).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
 }
 
+/// The boot test's scratch disk (`docs/testing.md`): `total` bytes, sparse
+/// (only the GPT and the first partition's FAT are written), with a GPT of
+/// two partitions the guest finds as `/dev/<disk>/p1` and `p3` (entry 2 is
+/// empty): a 20 MiB FAT16 of ESP type holding `MSG`, and 64 MiB of Linux
+/// data, unformatted.
+pub fn write_scratch_gpt_image(dest: &Path, total: u64) {
+    use std::os::unix::fs::FileExt;
+    const ESP_TYPE: [u8; 16] = [
+        0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
+    ];
+    const LINUX_DATA_TYPE: [u8; 16] = [
+        0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4,
+    ];
+    const MIB: u64 = 1024 * 1024 / SECTOR as u64;
+    let total_lba = total / SECTOR as u64;
+    let backup_lba = total_lba - 1;
+    let (esp_first, esp_last) = (MIB, 21 * MIB - 1);
+    let (data_first, data_last) = (32 * MIB, 96 * MIB - 1);
+    let mut entries = [0u8; 128 * 128];
+    let uuid = |n: u8| [0x73, 0x63, 0x72, 0x61, 0x74, 0x63, 0x68, 0x40, 0x80, 0, 0, 0, 0, 0, 0, n];
+    write_gpt_entry(&mut entries[0..128], &ESP_TYPE, &uuid(1), esp_first, esp_last, 0, "EFI system");
+    write_gpt_entry(&mut entries[256..384], &LINUX_DATA_TYPE, &uuid(3), data_first, data_last, 0, "scratch");
+    let crc = crc32(&entries);
+
+    let mut head = vec![0u8; 34 * SECTOR];
+    write_protective_mbr(&mut head, total_lba);
+    head[SECTOR..SECTOR + 92].copy_from_slice(&gpt_header(1, backup_lba, 2, crc, total_lba));
+    head[2 * SECTOR..].copy_from_slice(&entries);
+    let mut tail = vec![0u8; 33 * SECTOR];
+    tail[..entries.len()].copy_from_slice(&entries);
+    tail[32 * SECTOR..32 * SECTOR + 92].copy_from_slice(&gpt_header(backup_lba, 1, backup_lba - 32, crc, total_lba));
+    let mut esp = vec![0u8; ((esp_last - esp_first + 1) * SECTOR as u64) as usize];
+    format_and_write_fat16(
+        &mut esp,
+        &[DiskFile {
+            path: "MSG".into(),
+            data: b"scratch-esp\n".to_vec(),
+        }],
+    );
+
+    let f = fs::File::create(dest).unwrap_or_else(|e| panic!("create {}: {e}", dest.display()));
+    f.set_len(total).unwrap_or_else(|e| panic!("size {}: {e}", dest.display()));
+    for (at, bytes) in [(0, &head), (esp_first * SECTOR as u64, &esp), ((backup_lba - 32) * SECTOR as u64, &tail)] {
+        f.write_all_at(bytes, at).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+    }
+}
+
 pub fn bios_install(limine_tool: &Path, image: &Path) {
     let status = Command::new(limine_tool)
         .arg("bios-install")

@@ -1,5 +1,6 @@
 # ext2 on the scratch disk (/dev/nvme1n1/data, the launcher's sparse 4 GiB
-# target/scratch.img, empty at every boot): format and mount it and copy
+# target/scratch.img, recreated at every boot; the kernel test used its
+# partitions first): format and mount it and copy
 # programs into a directory on it (sixteen names of the sbase multicall
 # ELF, a copy each); rename the directory, run one of them from the disk
 # and read it through a symlink; then a file past the direct and
