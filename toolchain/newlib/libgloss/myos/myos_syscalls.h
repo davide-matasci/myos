@@ -240,5 +240,11 @@ int myos_fd_nonblock_get(int fd);
 void myos_fd_nonblock_clear(int fd);
 void myos_fd_nonblock_dup(int from, int to);
 
+/* A cancellation point (pthread.c): the blocking calls take one around
+ * their body. A thread cancelled before or while it blocks in one ends
+ * there (pthread_exit(PTHREAD_CANCELED)) unless cancellation is disabled. */
+void __myos_cancel_enter(void);
+void __myos_cancel_leave(void);
+
 #endif
 

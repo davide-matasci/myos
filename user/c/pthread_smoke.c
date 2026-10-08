@@ -15,7 +15,16 @@
  *   - once across threads, pthread_exit with a cleanup handler and a
  *     value for its joiner, a detached thread;
  *   - 150 threads started and joined, past the kernel's task slots, so
- *     each one's slot and stack are given back.
+ *     each one's slot and stack are given back;
+ *   - a read-write lock shared by readers and writers, a barrier over
+ *     rounds, a spin lock under contention, a condition wait on
+ *     CLOCK_MONOTONIC;
+ *   - cancellation: of a thread blocked in read(), of one in a condition
+ *     wait (its cleanup handler finds the mutex locked), of one with it
+ *     disabled (it sleeps on, then ends at pthread_testcancel), of an
+ *     asynchronous one at its next syscall, of the caller itself;
+ *   - fork while two threads keep malloc and stdio busy: each child can
+ *     use both.
  * Prints [ OK ] pthread.
  */
 #include <dirent.h>
@@ -25,7 +34,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <time.h>
+#include <unistd.h>
 
 static int fail(const char *what, int rc) {
     printf("[ FAIL ] pthread %s (rc %d)\n", what, rc);
@@ -406,8 +417,354 @@ static int with_threads(void) {
     return 0;
 }
 
+/* ---- read-write locks, barriers, spin locks, clocks ---- */
+
+static pthread_rwlock_t rw = PTHREAD_RWLOCK_INITIALIZER;
+static long pair[2];
+static int torn;
+
+static void *rw_reader(void *arg) {
+    (void)arg;
+    for (int i = 0; i < 3000; i++) {
+        pthread_rwlock_rdlock(&rw);
+        if (pair[0] != pair[1]) {
+            torn = 1;
+        }
+        pthread_rwlock_unlock(&rw);
+    }
+    return NULL;
+}
+
+static void *rw_writer(void *arg) {
+    (void)arg;
+    for (int i = 0; i < 1000; i++) {
+        pthread_rwlock_wrlock(&rw);
+        pair[0]++;
+        pair[1]++;
+        pthread_rwlock_unlock(&rw);
+    }
+    return NULL;
+}
+
+/* A read lock while main holds the write lock: it times out. */
+static void *rw_timed(void *arg) {
+    (void)arg;
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_nsec += 100000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    return (void *)(long)pthread_rwlock_timedrdlock(&rw, &deadline);
+}
+
+#define ROUNDS 50
+static pthread_barrier_t barrier;
+static int arrivals[ROUNDS], serials, barrier_bad;
+
+static void *barrier_runner(void *arg) {
+    (void)arg;
+    for (int r = 0; r < ROUNDS; r++) {
+        __atomic_fetch_add(&arrivals[r], 1, __ATOMIC_RELAXED);
+        if (pthread_barrier_wait(&barrier) == PTHREAD_BARRIER_SERIAL_THREAD) {
+            __atomic_fetch_add(&serials, 1, __ATOMIC_RELAXED);
+        }
+        /* Everyone arrived before anyone left. */
+        if (__atomic_load_n(&arrivals[r], __ATOMIC_RELAXED) != WORKERS) {
+            barrier_bad = 1;
+        }
+    }
+    return NULL;
+}
+
+static pthread_spinlock_t spin;
+static long spun;
+
+static void *spinner(void *arg) {
+    (void)arg;
+    for (int i = 0; i < 20000; i++) {
+        pthread_spin_lock(&spin);
+        spun++;
+        pthread_spin_unlock(&spin);
+    }
+    return NULL;
+}
+
+static int locks(void) {
+    pthread_t t[WORKERS + 2];
+    int rc;
+
+    if ((rc = pthread_rwlock_rdlock(&rw)) != 0 || (rc = pthread_rwlock_rdlock(&rw)) != 0) {
+        return fail("rdlock", rc);
+    }
+    if ((rc = pthread_rwlock_trywrlock(&rw)) != EBUSY) {
+        return fail("trywrlock under readers", rc);
+    }
+    pthread_rwlock_unlock(&rw);
+    pthread_rwlock_unlock(&rw);
+    if ((rc = pthread_rwlock_wrlock(&rw)) != 0) {
+        return fail("wrlock", rc);
+    }
+    if ((rc = pthread_rwlock_tryrdlock(&rw)) != EBUSY || (rc = pthread_rwlock_wrlock(&rw)) != EDEADLK) {
+        return fail("relock of a write lock", rc);
+    }
+    void *result;
+    pthread_create(&t[0], NULL, rw_timed, NULL);
+    pthread_join(t[0], &result);
+    if ((long)result != ETIMEDOUT) {
+        return fail("timedrdlock under a writer", (int)(long)result);
+    }
+    if ((rc = pthread_rwlock_unlock(&rw)) != 0 || (rc = pthread_rwlock_unlock(&rw)) != EPERM) {
+        return fail("rwlock unlock", rc);
+    }
+    for (int i = 0; i < WORKERS; i++) {
+        pthread_create(&t[i], NULL, rw_reader, NULL);
+    }
+    pthread_create(&t[WORKERS], NULL, rw_writer, NULL);
+    pthread_create(&t[WORKERS + 1], NULL, rw_writer, NULL);
+    for (int i = 0; i < WORKERS + 2; i++) {
+        pthread_join(t[i], NULL);
+    }
+    if (torn || pair[0] != 2000 || pair[1] != 2000 || pthread_rwlock_destroy(&rw) != 0) {
+        printf("[ FAIL ] pthread rwlock: torn %d, pair %ld %ld\n", torn, pair[0], pair[1]);
+        return 1;
+    }
+
+    if ((rc = pthread_barrier_init(&barrier, NULL, WORKERS)) != 0) {
+        return fail("barrier_init", rc);
+    }
+    for (int i = 0; i < WORKERS; i++) {
+        pthread_create(&t[i], NULL, barrier_runner, NULL);
+    }
+    for (int i = 0; i < WORKERS; i++) {
+        pthread_join(t[i], NULL);
+    }
+    if (barrier_bad || serials != ROUNDS || pthread_barrier_destroy(&barrier) != 0) {
+        printf("[ FAIL ] pthread barrier: early leave %d, %d serial threads of %d\n",
+               barrier_bad, serials, ROUNDS);
+        return 1;
+    }
+
+    pthread_spin_init(&spin, 0);
+    for (int i = 0; i < WORKERS; i++) {
+        pthread_create(&t[i], NULL, spinner, NULL);
+    }
+    for (int i = 0; i < WORKERS; i++) {
+        pthread_join(t[i], NULL);
+    }
+    if (spun != (long)WORKERS * 20000 || pthread_spin_trylock(&spin) != 0
+        || pthread_spin_trylock(&spin) != EBUSY) {
+        printf("[ FAIL ] pthread spin lock counted %ld\n", spun);
+        return 1;
+    }
+
+    /* A condition variable on CLOCK_MONOTONIC: its deadline is on that clock,
+     * which counts from boot, far behind the time of day. */
+    pthread_condattr_t ca;
+    clockid_t clock;
+    pthread_condattr_init(&ca);
+    if (pthread_condattr_setclock(&ca, (clockid_t)42) != EINVAL
+        || (rc = pthread_condattr_setclock(&ca, CLOCK_MONOTONIC)) != 0
+        || pthread_condattr_getclock(&ca, &clock) != 0 || clock != CLOCK_MONOTONIC) {
+        return fail("condattr clock", rc);
+    }
+    pthread_cond_t c;
+    pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_init(&c, &ca);
+    struct timespec mono, wall;
+    clock_gettime(CLOCK_MONOTONIC, &mono);
+    clock_gettime(CLOCK_REALTIME, &wall);
+    if (mono.tv_sec >= wall.tv_sec) {
+        return fail("CLOCK_MONOTONIC is the time of day", (int)mono.tv_sec);
+    }
+    mono.tv_nsec += 200000000L;
+    if (mono.tv_nsec >= 1000000000L) {
+        mono.tv_sec++;
+        mono.tv_nsec -= 1000000000L;
+    }
+    long start = now_ms();
+    pthread_mutex_lock(&m);
+    rc = pthread_cond_timedwait(&c, &m, &mono);
+    pthread_mutex_unlock(&m);
+    long waited = now_ms() - start;
+    if (rc != ETIMEDOUT || waited < 190 || waited > 5000) {
+        printf("[ FAIL ] pthread monotonic timedwait: rc %d after %ld ms of 200\n", rc, waited);
+        return 1;
+    }
+    return 0;
+}
+
+/* ---- cancellation ---- */
+
+static int pipe_fds[2];
+static int cancel_cleaned;
+
+static void count_cleanup(void *arg) {
+    (void)arg;
+    cancel_cleaned++;
+}
+
+static void *blocked_read(void *arg) {
+    (void)arg;
+    char c;
+    pthread_cleanup_push(count_cleanup, NULL);
+    read(pipe_fds[0], &c, 1); /* nobody writes */
+    pthread_cleanup_pop(0);
+    return NULL;
+}
+
+static pthread_mutex_t cw_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t cw_cond = PTHREAD_COND_INITIALIZER;
+static int cw_locked_in_cleanup;
+
+static void cw_cleanup(void *arg) {
+    (void)arg;
+    /* The mutex is the cancelled thread's again: unlocking it succeeds. */
+    cw_locked_in_cleanup = pthread_mutex_unlock(&cw_lock) == 0;
+}
+
+static void *cond_waiter(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&cw_lock);
+    pthread_cleanup_push(cw_cleanup, NULL);
+    for (;;) {
+        pthread_cond_wait(&cw_cond, &cw_lock); /* nobody signals */
+    }
+    pthread_cleanup_pop(0);
+    return NULL;
+}
+
+static long slept_ms;
+
+static void *disabled_sleeper(void *arg) {
+    (void)arg;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+    long start = now_ms();
+    struct timespec t = {0, 300 * 1000 * 1000};
+    nanosleep(&t, NULL); /* not cut short: the cancellation waits */
+    slept_ms = now_ms() - start;
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_testcancel();
+    return NULL;
+}
+
+static void *async_spinner(void *arg) {
+    (void)arg;
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+    for (;;) {
+        getpid(); /* signals act on the way out of a syscall */
+    }
+    return NULL;
+}
+
+static void *self_cancel(void *arg) {
+    (void)arg;
+    pthread_cancel(pthread_self());
+    pthread_testcancel();
+    return NULL;
+}
+
+static void sleep_ms(long ms) {
+    struct timespec t = {0, ms * 1000 * 1000};
+    nanosleep(&t, NULL);
+}
+
+static int cancelled(void *(*fn)(void *), int wait_ms, const char *what) {
+    pthread_t t;
+    void *result = NULL;
+    int rc;
+    if ((rc = pthread_create(&t, NULL, fn, NULL)) != 0) {
+        return fail(what, rc);
+    }
+    if (wait_ms) {
+        sleep_ms(wait_ms);
+        if ((rc = pthread_cancel(t)) != 0) {
+            return fail(what, rc);
+        }
+    }
+    if ((rc = pthread_join(t, &result)) != 0 || result != PTHREAD_CANCELED) {
+        printf("[ FAIL ] pthread cancel %s: join %d, result %p\n", what, rc, result);
+        return 1;
+    }
+    return 0;
+}
+
+static int cancellation(void) {
+    if (pipe(pipe_fds) != 0) {
+        return fail("pipe", errno);
+    }
+    if (cancelled(blocked_read, 50, "in read") || cancel_cleaned != 1) {
+        return cancel_cleaned != 1 ? fail("read's cleanup handler ran", cancel_cleaned) : 1;
+    }
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    if (cancelled(cond_waiter, 50, "in a condition wait") || !cw_locked_in_cleanup
+        || pthread_mutex_trylock(&cw_lock) != 0) {
+        return fail("condition wait's mutex in its cleanup handler", cw_locked_in_cleanup);
+    }
+    pthread_mutex_unlock(&cw_lock);
+    if (cancelled(disabled_sleeper, 50, "while disabled") || slept_ms < 290) {
+        printf("[ FAIL ] pthread disabled cancellation cut a sleep to %ld ms of 300\n", slept_ms);
+        return 1;
+    }
+    if (cancelled(async_spinner, 50, "asynchronous") || cancelled(self_cancel, 0, "of itself")) {
+        return 1;
+    }
+    int old;
+    if (pthread_setcancelstate(7, &old) != EINVAL || pthread_setcanceltype(7, &old) != EINVAL) {
+        return fail("cancel state or type of 7", 0);
+    }
+    return 0;
+}
+
+/* ---- fork while other threads use malloc and stdio ---- */
+
+static int busy_stop;
+
+static void *busy(void *arg) {
+    FILE *f = arg;
+    while (!__atomic_load_n(&busy_stop, __ATOMIC_RELAXED)) {
+        char *p = malloc(100);
+        fprintf(f, "x");
+        free(p);
+    }
+    return NULL;
+}
+
+static int fork_busy(void) {
+    FILE *f = tmpfile();
+    pthread_t t[2];
+    if (!f) {
+        return fail("tmpfile for fork", errno);
+    }
+    for (int i = 0; i < 2; i++) {
+        pthread_create(&t[i], NULL, busy, f);
+    }
+    int bad = 0;
+    for (int i = 0; i < 20 && !bad; i++) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            /* Would wait forever on a lock a thread of the parent held. */
+            char *p = malloc(4096);
+            fprintf(f, "child");
+            fflush(f);
+            _exit(p ? 0 : 1);
+        }
+        int status = 0;
+        bad = pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status)
+            || WEXITSTATUS(status) != 0;
+    }
+    __atomic_store_n(&busy_stop, 1, __ATOMIC_RELAXED);
+    for (int i = 0; i < 2; i++) {
+        pthread_join(t[i], NULL);
+    }
+    fclose(f);
+    return bad ? fail("fork with busy threads", bad) : 0;
+}
+
 int main(void) {
-    if (alone() || with_threads()) {
+    if (alone() || with_threads() || locks() || cancellation() || fork_busy()) {
         return 1;
     }
     printf("[ OK ] pthread\n");

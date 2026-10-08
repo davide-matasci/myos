@@ -32,7 +32,7 @@ static long elapsed_ms(const struct timeval *start) {
         + (now.tv_usec - start->tv_usec) / 1000L;
 }
 
-int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+static int poll_body(struct pollfd *fds, nfds_t nfds, int timeout) {
     struct pollfd k[MYOS_POLL_MAX];
     short now[MYOS_POLL_MAX];
     struct timeval start;
@@ -92,7 +92,7 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     }
 }
 
-int select(int nfds, fd_set *readfds, fd_set *writefds,
+static int select_body(int nfds, fd_set *readfds, fd_set *writefds,
     fd_set *exceptfds, struct timeval *timeout) {
     struct pollfd pfds[FD_SETSIZE];
     int n = 0;
@@ -141,7 +141,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
         return __myos_kpoll(NULL, 0, ms) < 0 ? -1 : 0;
     }
 
-    pr = poll(pfds, (nfds_t)n, ms);
+    pr = poll_body(pfds, (nfds_t)n, ms);
     if (pr < 0) {
         return -1;
     }
@@ -184,7 +184,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
  * while it waits. The mask is set and restored around select(): a signal
  * unblocked by it that arrives before the wait starts runs its handler
  * there and does not end the wait (POSIX makes the swap atomic). */
-int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+static int pselect_body(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
     const struct timespec *timeout, const sigset_t *sigmask) {
     struct timeval tv, *tvp = NULL;
     sigset_t old;
@@ -198,11 +198,35 @@ int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
     if (sigmask != NULL && sigprocmask(SIG_SETMASK, sigmask, &old) != 0) {
         return -1;
     }
-    r = select(nfds, readfds, writefds, exceptfds, tvp);
+    r = select_body(nfds, readfds, writefds, exceptfds, tvp);
     if (sigmask != NULL) {
         saved = errno;
         sigprocmask(SIG_SETMASK, &old, NULL);
         errno = saved;
     }
+    return r;
+}
+
+/* Cancellation points (pthread.c). */
+int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+    __myos_cancel_enter();
+    int r = poll_body(fds, nfds, timeout);
+    __myos_cancel_leave();
+    return r;
+}
+
+int select(int nfds, fd_set *readfds, fd_set *writefds,
+    fd_set *exceptfds, struct timeval *timeout) {
+    __myos_cancel_enter();
+    int r = select_body(nfds, readfds, writefds, exceptfds, timeout);
+    __myos_cancel_leave();
+    return r;
+}
+
+int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+    const struct timespec *timeout, const sigset_t *sigmask) {
+    __myos_cancel_enter();
+    int r = pselect_body(nfds, readfds, writefds, exceptfds, timeout, sigmask);
+    __myos_cancel_leave();
     return r;
 }

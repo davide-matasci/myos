@@ -1029,7 +1029,7 @@ int listen(int sockfd, int backlog) {
     return 0;
 }
 
-int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+static int accept_body(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     struct myos_sock *ls = sock_by_fd(sockfd);
     struct timeval start;
     if (ls == NULL) {
@@ -1226,7 +1226,7 @@ static int accept_from_status(struct myos_sock *ls, char *status,
     return data_fd;
 }
 
-int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+static int connect_body(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     struct myos_sock *s = sock_by_fd(sockfd);
     const struct sockaddr_in *in;
     char cmd[48];
@@ -1518,4 +1518,19 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
     }
     (void)flags;
     return n;
+}
+
+/* Cancellation points (pthread.c): accept and connect wait for netd. */
+int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    __myos_cancel_enter();
+    int r = accept_body(sockfd, addr, addrlen);
+    __myos_cancel_leave();
+    return r;
+}
+
+int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    __myos_cancel_enter();
+    int r = connect_body(sockfd, addr, addrlen);
+    __myos_cancel_leave();
+    return r;
 }

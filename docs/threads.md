@@ -159,12 +159,39 @@ on the same calls, laid out as the std port's:
   sysroot's `<sys/_pthreadtypes.h>` (`build-libgloss.sh`; newlib's own is
   one), and `pthread_t` a pointer. A relock of a default mutex is
   `EDEADLK`, a normal one waits for itself as POSIX says. A condition
-  variable is a sequence number its waiters sleep on; `pthread_once` a word
+  variable is a sequence number its waiters sleep on and the clock of its
+  timed waits (`pthread_condattr_setclock`: `CLOCK_REALTIME` or
+  `CLOCK_MONOTONIC`, the kernel's time since boot); `pthread_once` a word
   the others wait on while the first runs the routine.
+- **Read-write locks, barriers, spin locks** (declared by the sysroot's
+  `features.h`). A read-write lock counts its readers or marks its writer,
+  and its waiters sleep on a sequence number a release moves on; readers
+  go first, so a thread may take its read lock again. A barrier counts the
+  threads of a round under a lock word, the last one moves the round on
+  and wakes the others (and gets `PTHREAD_BARRIER_SERIAL_THREAD`). A spin
+  lock is a word taken by exchange; a spinning thread yields its CPU now
+  and then. All three are private to a process (`wait_addr` keys its words
+  by process): `PTHREAD_PROCESS_SHARED` is `EINVAL`.
 - **Keys**: 64, values per thread, destructors run when a thread ends. A
   key made again in a deleted key's slot reads `NULL` everywhere.
-- **fork** runs the `pthread_atfork` handlers; the child is the forking
-  thread alone.
+- **Cancellation**: `pthread_cancel` marks the thread and sends it
+  `SIGLOST` (which nothing else on myos sends), with a handler that has no
+  `SA_RESTART`, so a blocking call it interrupts returns. Deferred (the
+  default), the thread ends with `PTHREAD_CANCELED` in a cancellation
+  point: `read`, `write` and the socket calls over them, `poll`, `select`,
+  `pselect`, `accept`, `connect`, `wait`, `waitpid`, `sleep`, `usleep`,
+  `nanosleep`, `sigsuspend`, `sigwait`, `pthread_join`,
+  `pthread_testcancel`, and the condition waits, which end with the mutex
+  locked again as the cleanup handlers expect. Asynchronous, it ends at
+  its next syscall: signals act on the way out of one (`signals.md`), so a
+  loop that makes none is not interrupted. With cancellation disabled the
+  thread blocks the signal, so nothing is cut short; enabled again, the
+  cancellation waits for the next cancellation point. Cleanup handlers and
+  key destructors run with cancellation disabled.
+- **fork** runs the `pthread_atfork` handlers and holds newlib's own locks
+  (atexit, every stream's, the environment, tz, malloc) across the fork,
+  so a child forked while another thread is in malloc or stdio finds them
+  free; the child is the forking thread alone.
 - **Thread-safe functions** (`_POSIX_THREAD_SAFE_FUNCTIONS` in the
   sysroot's `features.h`): newlib's `_r` functions, libgloss's `getpw*_r`,
   `getgr*_r`, `readdir_r` and `ttyname_r`, and `flockfile` /
@@ -175,13 +202,12 @@ on the same calls, laid out as the std port's:
 `/bin/etc/pthread_smoke` (test `pthread`) checks the API on one thread,
 then a mutex and a condition variable under contention, `errno`, keys,
 stdio and malloc per thread, `pthread_once` across threads, `pthread_exit`
-with a cleanup handler, a detached thread, and 150 threads started and
-joined, past the kernel's task slots.
+with a cleanup handler, a detached thread, 150 threads started and joined,
+past the kernel's task slots, read-write locks, barriers and spin locks
+under contention, a condition wait on `CLOCK_MONOTONIC`, cancellation in
+`read`, in a condition wait, while disabled, asynchronous and of the
+caller itself, and forks while two threads keep malloc and stdio busy.
 
 ## Not yet
 
-- C threads: cancellation (a thread is never cancelled), read-write locks,
-  barriers and spin locks (newlib declares none of them for myos), a
-  condition variable's clock other than `CLOCK_REALTIME`, and newlib's own
-  locks held across a fork (issue #333).
 - `exec` from a thread other than the leader.

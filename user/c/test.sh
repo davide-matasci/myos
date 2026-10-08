@@ -31,7 +31,9 @@ t poll /bin/etc/poll_smoke
 t uio /bin/etc/uio_smoke
 # POSIX threads: the API on one thread, then threads contending for a
 # mutex and a condition variable, errno, keys, stdio and malloc per thread,
-# flockfile, readdir_r, and 150 threads started and joined (pthread_smoke.c).
+# flockfile, readdir_r, 150 threads started and joined, read-write locks,
+# barriers, spin locks, a CLOCK_MONOTONIC condition wait, cancellation, and
+# forks while other threads keep malloc and stdio busy (pthread_smoke.c).
 t pthread /bin/etc/pthread_smoke
 # netfs conversations: a connect to 127.0.0.1 is refused at once, and 200
 # sockets closed right after socket() leak none (netconv_smoke.c).
