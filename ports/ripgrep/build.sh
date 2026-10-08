@@ -44,6 +44,8 @@ build_one() {
   local out="$ROOT/target/rg-${triple}"
   local pcre2="$ROOT/target/pcre2-${arch}"
 
+  # Started over when the sysroot, newlib or target spec changed.
+  myos_cargo_target_dir "$triple" "$target_dir"
   # Scrub stale pcre2-sys build-script outputs so PCRE2_LIB_DIR link lines apply.
   rm -rf "$target_dir"/*/release-myos/build/pcre2-sys-*          "$target_dir"/release-myos/build/pcre2-sys-* 2>/dev/null || true
   echo "==> ripgrep ($triple, features=pcre2)"

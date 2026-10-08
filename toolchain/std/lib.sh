@@ -127,6 +127,24 @@ myos_cargo_build_std() {
   myos_install_std_rlibs "$triple" "$target_dir/${triple}/${profile}/deps"
 }
 
+# myos_cargo_target_dir TRIPLE DIR: start DIR, a cargo target dir for TRIPLE,
+# over when what it builds against changed. Cargo fingerprints the sources
+# and flags it builds with, not the std sysroot, newlib (behind the libc
+# crate) or the target spec outside them, so a target dir left by a build
+# against other ones (an older local build, or the one CI's cache restores
+# into target/) holds binaries it calls fresh and copies out again, old std
+# and all, or rlibs rustc refuses next to the new std ("can't find crate",
+# "found possibly newer version of crate `core`").
+myos_cargo_target_dir() {
+  local triple="$1" dir="$2" stamp
+  stamp="$(cat "$MYOS_SYSROOT_VERSION" 2>/dev/null) $(cat "$MYOS_ROOT/target/.myos-newlib-version" 2>/dev/null) $MYOS_NIGHTLY $(sha256sum <"$MYOS_ROOT/targets/$triple.json" | cut -d' ' -f1)"
+  if [[ "$(cat "$dir/.myos-toolchain" 2>/dev/null)" != "$stamp" ]]; then
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    printf '%s\n' "$stamp" >"$dir/.myos-toolchain"
+  fi
+}
+
 myos_cargo_build_app() {
   local triple="$1"
   local profile="${2:-release}"
@@ -140,6 +158,7 @@ myos_cargo_build_app() {
   fi
 
   myos_export_toolchain_env
+  myos_cargo_target_dir "$triple" "$target_dir"
   cargo "+$MYOS_NIGHTLY" build \
     -Z unstable-options \
     -Z json-target-spec \
