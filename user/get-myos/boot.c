@@ -656,6 +656,14 @@ static int write_gpt(int fd, uint64_t total) {
     if (pwrite_all(fd, head, sizeof head, 0) != 0 || pwrite_all(fd, tail, sizeof tail, (total - 33) * SECTOR) != 0) {
         return -1;
     }
+    /* The BIOS boot partition starts empty: `limine bios-install` refuses
+     * one that holds what looks like a filesystem (the disk's old one). */
+    static uint8_t zero[64 * 1024];
+    for (uint64_t at = MIB * SECTOR; at < 2 * MIB * SECTOR; at += sizeof zero) {
+        if (pwrite_all(fd, zero, sizeof zero, at) != 0) {
+            return -1;
+        }
+    }
     return fsync(fd);
 }
 
