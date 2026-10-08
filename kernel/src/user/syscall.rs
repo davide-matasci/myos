@@ -170,6 +170,10 @@ const SYS_YIELD: usize = 90;
 /// one timers and `/proc/cpu` count on), which setting the wall clock does
 /// not move.
 const SYS_CLOCK_MONOTONIC: usize = 91;
+/// `realpath(2)`: the real, absolute path behind a path (symlinks and `.`/`..`
+/// resolved), written NUL-terminated to the caller's buffer. Backs the std
+/// port's `fs::canonicalize` and a real libgloss `realpath`.
+const SYS_REALPATH: usize = 92;
 const LOCK_SH: usize = 1;
 const LOCK_EX: usize = 2;
 const LOCK_NB: usize = 4;
@@ -302,6 +306,10 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_DUPFD => sys_dupfd(a0, a1, a2),
         SYS_EXECNAME => sys_exec_name(a0, a1),
         SYS_GETCWD => sys_getcwd(a0, a1),
+        SYS_REALPATH => {
+            let [a3, _a4, _a5] = regs.args_3_5();
+            sys_realpath(a0, a1, a2, a3)
+        }
         SYS_MMAP => sys_mmap(a0),
         SYS_MUNMAP => sys_munmap(a0, a1),
         SYS_MPROTECT => sys_mprotect(a0, a1, a2),
@@ -1522,6 +1530,41 @@ pub(crate) fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> usize {
     }
     let mut tmp = [0u8; MAX_PATH + 1];
     tmp[..n].copy_from_slice(&cwd[..n]);
+    tmp[n] = 0;
+    if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n + 1]) {
+        return SYSERR;
+    }
+    n
+}
+
+/// `realpath(path)`: resolve `path` (symlinks and `.`/`..` followed) to its
+/// real, absolute path and write it NUL-terminated to the caller's buffer.
+/// Returns the length without the NUL, or `SYSERR` if the path does not
+/// resolve (e.g. a component is missing) or the buffer is too small. Pure
+/// resolution — like `getcwd`, it grants no access; later file operations
+/// still go through the policy.
+fn sys_realpath(path_ptr: usize, path_len: usize, buf_ptr: usize, buf_len: usize) -> usize {
+    if buf_ptr == 0 || buf_len == 0 || !user_range_ok(buf_ptr, buf_len) {
+        return SYSERR;
+    }
+    let Some(buf) = copy_user_path(path_ptr, path_len) else {
+        return SYSERR;
+    };
+    let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
+        return SYSERR;
+    };
+    let Some(real) = resolve_copied_path(path) else {
+        return SYSERR;
+    };
+    let bytes = real.as_bytes();
+    let n = bytes.len();
+    // resolve_copied_path builds the path in a MAX_PATH buffer, so it fits;
+    // the caller needs room for it and the trailing NUL.
+    if n > MAX_PATH || n + 1 > buf_len {
+        return SYSERR;
+    }
+    let mut tmp = [0u8; MAX_PATH + 1];
+    tmp[..n].copy_from_slice(bytes);
     tmp[n] = 0;
     if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n + 1]) {
         return SYSERR;

@@ -10,6 +10,7 @@ pub const SYS_DUP2: usize = 11;
 pub const SYS_EXECNAME: usize = 13;
 pub const SYS_DUPFD: usize = 14;
 pub const SYS_GETCWD: usize = 16;
+pub const SYS_REALPATH: usize = 92;
 pub const SYS_LSEEK: usize = 26;
 pub const SYS_GETTIMEOFDAY: usize = 33;
 pub const SYS_NANOSLEEP: usize = 52;
@@ -258,6 +259,21 @@ pub fn chdirat(path: &[u8]) -> isize {
 #[inline]
 pub fn getcwd(buf: &mut [u8]) -> isize {
     ok(raw_syscall3(SYS_GETCWD, buf.as_mut_ptr() as usize, buf.len(), 0))
+}
+
+/// Resolve `path` to its real, absolute path (symlinks and `.`/`..` followed),
+/// written NUL-terminated into `buf`. Returns the length without the NUL, or
+/// `-1` if the path does not resolve or `buf` is too small.
+pub fn realpath(path: &[u8], buf: &mut [u8]) -> isize {
+    ok(raw_syscall6(
+        SYS_REALPATH,
+        path.as_ptr() as usize,
+        path.len(),
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        0,
+        0,
+    ))
 }
 
 /// The names in the directory at `path`, one per line, into `buf`: the
