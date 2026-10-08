@@ -301,7 +301,7 @@ HELLO_OK_ELFS=(
 # member list and this check agree.
 artifacts_ready() {
   local f
-  for f in target/debug/myos target/bios.img target/uefi.img \
+  for f in target/debug/myos target/bios.img target/uefi.img target/boot-kernel-x86_64 \
     target/aarch64-unknown-none-softfloat/debug/kernel \
     target/riscv64imac-unknown-none-elf/debug/kernel \
     "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
@@ -351,6 +351,7 @@ case "${1:-}" in
     echo target/debug/myos
     echo target/bios.img
     echo target/uefi.img
+    echo target/boot-kernel-x86_64
     echo target/fat.img
     echo target/aarch64-unknown-none-softfloat/debug/kernel
     echo target/riscv64imac-unknown-none-elf/debug/kernel

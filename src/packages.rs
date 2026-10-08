@@ -90,8 +90,36 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
         index.push_str(&format!("{} {version} {size} {sha} {file} {deps}\n", port.name));
     }
     std::fs::write(out.join(format!("{arch}-index.txt")), index).expect("write package index");
+    write_boot(manifest_dir, &out, arch);
     std::fs::write(out.join(format!("{arch}-packages.txt")), packages).expect("write package list");
     out
+}
+
+/// The release's boot files for `arch`, what `get-myos --upgrade` writes
+/// into a boot slot (`docs/install.md`): `<arch>-kernel` (as the boot disk
+/// has it) and `<arch>-initramfs` of a default build (no Linux layer,
+/// whatever this one has), listed with their sizes and SHA-256 in
+/// `<arch>-boot.txt` under the index's header.
+fn write_boot(manifest_dir: &Path, out: &Path, arch: &str) {
+    let target = manifest_dir.join("target");
+    let kernel = match arch {
+        "x86_64" => std::fs::read(target.join("boot-kernel-x86_64")).expect("read target/boot-kernel-x86_64 (cargo build)"),
+        _ => {
+            let (triple, _, _) = crate::initramfs::triples(arch);
+            let elf = target.join(triple).join("debug/kernel");
+            let elf = std::fs::read(&elf).unwrap_or_else(|e| panic!("read {}: {e}", elf.display()));
+            crate::limine_image::boot_kernel(&elf)
+        }
+    };
+    let initramfs = crate::initramfs::build_initramfs_default(manifest_dir, arch);
+    let mut list = format!("# myos {}", Release::current(manifest_dir).text());
+    for (name, data) in [("kernel", kernel), ("initramfs", initramfs)] {
+        let file = format!("{arch}-{name}");
+        let path = out.join(&file);
+        std::fs::write(&path, &data).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        list.push_str(&format!("{name} {} {} {file}\n", data.len(), sha256_file(&path)));
+    }
+    std::fs::write(out.join(format!("{arch}-boot.txt")), list).expect("write the boot file list");
 }
 
 /// Every runtime dependency (`PORT_RDEPS`) names a package with files, and

@@ -26,6 +26,9 @@ use std::time::{Duration, Instant};
 pub enum Mode {
     Mini,
     Full,
+    /// The full test's second boot, of the disk the first one upgraded:
+    /// it comes up from the other slot (`run.sh reboot`, docs/install.md).
+    Reboot,
 }
 
 impl Mode {
@@ -41,6 +44,7 @@ impl Mode {
         match self {
             Mode::Mini => "mini",
             Mode::Full => "full",
+            Mode::Reboot => "reboot",
         }
     }
 
@@ -51,6 +55,7 @@ impl Mode {
         match self {
             Mode::Mini => Duration::from_secs(if linux_compat { 300 } else { 240 }),
             Mode::Full => Duration::from_secs(3000),
+            Mode::Reboot => Duration::from_secs(300),
         }
     }
 
@@ -60,6 +65,7 @@ impl Mode {
         match self {
             Mode::Mini => Duration::from_secs(180),
             Mode::Full => Duration::from_secs(600),
+            Mode::Reboot => Duration::from_secs(180),
         }
     }
 }
@@ -350,7 +356,9 @@ fn fail_stalled(serial: &Shared, child: &mut Child, why: &str) -> ! {
 
 /// Boot test on a QEMU `child` started with `-serial stdio` and piped
 /// stdio. Does not return: exits the process with the result.
-pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
+/// Whether every test passed (a crash, a stall or the budget running out
+/// ends the launcher at once instead).
+pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> bool {
     let mut stdin = child.stdin.take().expect("qemu stdin");
     let mut stderr = child.stderr.take().expect("qemu stderr");
     let mut stdout = child.stdout.take().expect("qemu stdout");
@@ -520,9 +528,9 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> ! {
         || !disk_ok
         || !powered_off
     {
-        std::process::exit(1);
+        return false;
     }
-    std::process::exit(0);
+    true
 }
 
 #[cfg(test)]

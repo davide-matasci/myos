@@ -76,6 +76,8 @@ while a port is in the image).
 |------|---------|
 | `<arch>-<name>.tar.gz` | ustar, gzip `-n`: the port's files at their image paths (`bin/custom/vim`, `lib/vim/vimrc`), mode 0755/0644, mtime 0; a program's aliases (a multicall ELF's names, `bin/git`) are symlinks to the file that has its data, relative to their directory (the tmpfs has no hard links, and a copy each would multiply the program); reproducible for the same inputs |
 | `<arch>-index.txt` | a header, `# myos release=<YYYYMMDDHHMM> commit=<short hash> abi=<syscall count>` (`src/release.rs`), then one line per package: `name version size sha256 file deps`; the version is the port's input hash (its stamp), a user program's the tarball's own hash; `deps` the runtime dependencies (`PORT_RDEPS`), comma separated, `-` for none. `cargo run -- packages` refuses a dependency that is not a package with files, or a loop |
+| `<arch>-boot.txt` | the boot files of the release, for `get-myos --upgrade` and `--install` (`docs/install.md`): the index's header, then `kernel <size> <sha256> <arch>-kernel` and `initramfs <size> <sha256> <arch>-initramfs` |
+| `<arch>-kernel`, `<arch>-initramfs` | the kernel as the boot disk has it (its loadable segments) and the initramfs of a default build (no Linux layer, whatever the build that wrote them has) |
 | `<arch>-packages.txt` | the names of the ports the image does not carry (`packages/`): what there is to install; the index also has the image's ports, whose tarballs test the mechanism |
 
 A mirror is any HTTP server with these files in one directory. The flat

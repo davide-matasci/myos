@@ -93,8 +93,12 @@ jobs:
           compression-level: 0
 
       # The packages of the three arches (docs/packages.md): what the
-      # publish job puts on the rolling release after the boots pass.
+      # publish job puts on the rolling release after the boots pass, with
+      # each arch's boot files (get-myos --upgrade, docs/install.md) from
+      # the kernels this job already has.
       - name: Build packages
+        env:
+          MYOS_SKIP_KERNEL_REBUILD: "1"
         run: ./target/debug/myos packages
 
       - name: Upload packages

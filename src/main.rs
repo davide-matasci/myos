@@ -107,6 +107,9 @@ fn main() {
 
     match (what, test) {
         ("packages", _) => {
+            // The release's boot files take each arch's kernel.
+            build_aarch64_kernel();
+            build_riscv64_kernel();
             let out = packages::build_all(&PathBuf::from(env!("CARGO_MANIFEST_DIR")));
             println!("{}", out.display());
         }
@@ -460,15 +463,14 @@ fn run_bios(bios_path: &str) {
         .arg("1024")
         .arg("-smp")
         .arg("4")
-        .arg("-drive")
-        .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
         .arg("stdio")
         .arg("-nic")
         .arg("none")
         .arg("-boot")
-        .arg("order=c,menu=off");
+        .arg("menu=off");
     add_virtio_blk_x86(&mut cmd);
+    add_boot_disk(&mut cmd, Path::new(bios_path));
     add_virtio_net(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -485,8 +487,6 @@ fn run_uefi(uefi_path: &str) {
         .arg("-smp")
         .arg("4")
         .arg("-drive")
-        .arg(format!("format=raw,file={uefi_path}"))
-        .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
             code.display()
@@ -501,6 +501,7 @@ fn run_uefi(uefi_path: &str) {
         .arg("-nic")
         .arg("none");
     add_virtio_blk_x86(&mut cmd);
+    add_boot_disk(&mut cmd, Path::new(uefi_path));
     add_virtio_net(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -561,6 +562,10 @@ fn linux_compat_enabled() -> bool {
 fn run_test_bios(bios_path: &str, mode: Mode) {
     start_package_mirror("x86_64", mode);
     prepare_alpine_disk("x86_64", mode);
+    test_boots("bios", Path::new(bios_path), mode, |disk, _| qemu_test_bios(disk));
+}
+
+fn qemu_test_bios(disk: &Path) -> std::process::Child {
     let mut cmd = Command::new("qemu-system-x86_64");
     x86_machine(&mut cmd);
     cmd.arg("-cpu")
@@ -583,8 +588,6 @@ fn run_test_bios(bios_path: &str, mode: Mode) {
                 vec![]
             }
         })
-        .arg("-drive")
-        .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
         .arg("stdio")
         .arg("-display")
@@ -598,22 +601,25 @@ fn run_test_bios(bios_path: &str, mode: Mode) {
         .arg("-nic")
         .arg("none")
         .arg("-boot")
-        .arg("order=c,menu=off")
+        .arg("menu=off")
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
+    add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
-    let child = cmd
-        .stdin(Stdio::piped())
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to start qemu-system-x86_64");
-    boot_test::run(child, mode, linux_compat_enabled());
+        .expect("failed to start qemu-system-x86_64")
 }
 
 fn run_test_uefi(uefi_path: &str, mode: Mode) {
     start_package_mirror("x86_64", mode);
     prepare_alpine_disk("x86_64", mode);
+    test_boots("uefi", Path::new(uefi_path), mode, |disk, _| qemu_test_uefi(disk));
+}
+
+fn qemu_test_uefi(disk: &Path) -> std::process::Child {
     let (code, vars) = ovmf_files(Arch::X64);
     let mut cmd = Command::new("qemu-system-x86_64");
     x86_machine(&mut cmd);
@@ -643,8 +649,6 @@ fn run_test_uefi(uefi_path: &str, mode: Mode) {
             }
         })
         .arg("-drive")
-        .arg(format!("format=raw,file={uefi_path}"))
-        .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
             code.display()
@@ -666,27 +670,58 @@ fn run_test_uefi(uefi_path: &str, mode: Mode) {
         .arg("none")
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
+    add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
-    let child = cmd
-        .stdin(Stdio::piped())
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to start qemu-system-x86_64");
-    boot_test::run(child, mode, linux_compat_enabled());
+        .expect("failed to start qemu-system-x86_64")
 }
 
 fn run_test_aarch64(mode: Mode) {
+    // The image first: its kernel build makes the user programs the
+    // packages' boot files (the initramfs) take.
+    let image = build_aarch64_image();
     start_package_mirror("aarch64", mode);
     prepare_alpine_disk("aarch64", mode);
-    let image = build_aarch64_image();
-    let child = qemu_aarch64(&image, true)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start qemu-system-aarch64");
-    boot_test::run(child, mode, linux_compat_enabled());
+    test_boots("aarch64", &image, mode, |disk, _| {
+        qemu_aarch64(disk, true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to start qemu-system-aarch64")
+    });
+}
+
+/// The boot test of the boot disk `image`, on a copy of it
+/// (`target/boot-test-<name>.img`): the full list's `get-myos --upgrade`
+/// writes its other slot, and when the list passed the copy boots again
+/// ([`Mode::Reboot`]), which must come up from that slot. The copy keeps
+/// the build's image as it was.
+fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path, Mode) -> std::process::Child) -> ! {
+    let disk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("target/boot-test-{name}.img"));
+    limine_image::copy_sparse(image, &disk);
+    let linux = linux_compat_enabled();
+    let mut ok = boot_test::run(spawn(&disk, mode), mode, linux);
+    if ok && mode == Mode::Full {
+        eprintln!("boot test: the upgraded disk boots again");
+        ok = boot_test::run(spawn(&disk, Mode::Reboot), Mode::Reboot, linux);
+    }
+    exit(if ok { 0 } else { 1 })
+}
+
+/// x86: the boot disk as a third legacy virtio-blk (`/dev/vdc/`, after
+/// `add_virtio_blk_x86`'s two, so the test disks keep their names), the one
+/// the firmware boots: myos sees it (`get-myos --upgrade` writes it), which
+/// an IDE disk it is not. Not NVMe: with 4 GiB of RAM SeaBIOS maps the NVMe
+/// BAR (64-bit) above 4 GiB, out of its reach, and finds no disk to boot;
+/// the legacy virtio-blk's BAR0 is I/O ports.
+fn add_boot_disk(cmd: &mut Command, image: &Path) {
+    cmd.arg("-drive")
+        .arg(format!("if=none,id=bootdisk,format=raw,file={}", image.display()));
+    cmd.arg("-device").arg("virtio-blk-pci,drive=bootdisk,disable-modern=on,bootindex=0");
 }
 
 fn qemu_aarch64(image: &Path, ci: bool) -> Command {
@@ -1105,16 +1140,19 @@ fn riscv64_firmware() -> (PathBuf, PathBuf) {
 }
 
 fn run_test_riscv64(mode: Mode) {
+    // The image first: its kernel build makes the user programs the
+    // packages' boot files (the initramfs) take.
+    let image = build_riscv64_image();
     start_package_mirror("riscv64", mode);
     prepare_alpine_disk("riscv64", mode);
-    let image = build_riscv64_image();
-    let child = qemu_riscv64(&image, true)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start qemu-system-riscv64");
-    boot_test::run(child, mode, linux_compat_enabled());
+    test_boots("riscv64", &image, mode, |disk, _| {
+        qemu_riscv64(disk, true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to start qemu-system-riscv64")
+    });
 }
 
 fn qemu_riscv64(image: &Path, ci: bool) -> Command {

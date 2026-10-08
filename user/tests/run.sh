@@ -18,7 +18,9 @@
 # PORT_TEST; the packer names them so the core image ports come first, the
 # other image ports next, the packages last), except the kernel's own
 # (kernel.sh), which run first. The full mode first installs every package
-# of the mirror the host serves.
+# of the mirror the host serves. `reboot` is the full test's second boot,
+# of the disk the first one upgraded (get-myos --upgrade): it checks only
+# that the system came up from the slot the upgrade wrote.
 
 MODE=${1:-mini}
 TESTS=/lib/myos-tests
@@ -65,6 +67,28 @@ t() {
 contains() {
 	grep -q -F -- "$1" "$2"
 }
+
+# The second boot: slot b, with b's release (its version file, which the
+# upgrade wrote, is this initramfs's /lib/myos-release), boots by default.
+booted_slot_b() {
+	cat /proc/cmdline /lib/myos-release
+	grep -q 'slot=b' /proc/cmdline || return 1
+	mkdir -p /tmp/esp-b
+	for p in $(grep ' c12a7328-f81f-11d2-ba4b-00a0c93ec93b ' /proc/partitions | cut -d' ' -f1); do
+		mount /dev/$p /tmp/esp-b fat || continue
+		v=$(cat /tmp/esp-b/boot/b/version 2> /dev/null)
+		umount /tmp/esp-b
+		[ "$v" = "$(cat /lib/myos-release)" ] && return 0
+	done
+	echo "no ESP has slot b at this release"
+	return 1
+}
+if [ "$MODE" = reboot ]; then
+	t booted_slot_b booted_slot_b
+	[ -n "$mirror" ] && echo "$mirror" > /dev/console/ctl
+	echo "TESTS DONE $passed/$total"
+	exit 0
+fi
 
 # The full boot gets every package of this build from the host's mirror
 # first (docs/packages.md; packages.txt names the ports the image lacks,

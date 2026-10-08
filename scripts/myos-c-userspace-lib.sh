@@ -155,7 +155,8 @@ myos_get_myos_version_hash() {
   h="$(
     {
       sha256sum "$MYOS_ROOT/user/get-myos/get-myos.c" "$MYOS_ROOT/user/get-myos/pkgtools.c" \
-        "$MYOS_ROOT/user/get-myos/pkgtools.h" "$MYOS_ROOT/user/get-myos/build.sh"
+        "$MYOS_ROOT/user/get-myos/pkgtools.h" "$MYOS_ROOT/user/get-myos/boot.c" \
+        "$MYOS_ROOT/user/get-myos/boot.h" "$MYOS_ROOT/user/get-myos/build.sh"
       myos_newlib_version_hash
       myos_zlib_version_hash
     } | myos_hash

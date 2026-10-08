@@ -14,7 +14,7 @@ mod release {
 }
 
 use limine_image::{
-    all_modules, bios_install, copy_sparse, fetch_limine, write_esp_image,
+    all_modules, bios_install, boot_kernel, copy_sparse, fetch_limine, write_esp_image,
     write_fat_data_image, LIMINE_VERSION,
 };
 use std::path::PathBuf;
@@ -141,6 +141,11 @@ fn main() {
     let uefi_stable = target_dir.join("uefi.img");
     copy_sparse(&bios_path, &bios_stable);
     copy_sparse(&uefi_path, &uefi_stable);
+
+    // The kernel as the boot disk has it, at a path CI's artifacts and the
+    // packages (the release's `x86_64-kernel`, src/packages.rs) find.
+    std::fs::write(target_dir.join("boot-kernel-x86_64"), boot_kernel(&kernel))
+        .expect("write target/boot-kernel-x86_64");
 
     let fat_path = target_dir.join("fat.img");
     write_fat_data_image(&fat_path);

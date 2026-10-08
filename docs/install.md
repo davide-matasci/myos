@@ -10,7 +10,7 @@ them.
 |-----------|------|------|---------------------------------|-------|
 | 1 `BIOS Boot` | BIOS boot | 1 MiB at LBA 2048 | `/dev/vda/p1` | Limine's BIOS stage 2 (`limine bios-install`, x86) |
 | 2 `EFI System` | ESP (`c12a7328-…`) | 512 MiB, FAT32 | `/dev/vda/p2` | Limine, the boot slots and `limine.conf` |
-| 3 `myos data` | Linux data (`0fc63daf-…`) | 64 MiB, ext2 | `/dev/vda/p3` | state an upgrade keeps; empty for now |
+| 3 `myos data` | Linux data (`0fc63daf-…`) | 64 MiB (the rest of the disk after `--install`), ext2 | `/dev/vda/p3` | state an upgrade keeps; empty for now |
 
 The image is 579 MiB, written sparse: only what the partitions hold takes
 space on the host.
@@ -23,6 +23,7 @@ boot/limine/limine.conf       the only Limine config
 boot/limine/limine-bios.sys   x86: Limine's BIOS stage 3
 boot/a/kernel                 slot a: the kernel (its loadable segments)
 boot/a/initramfs              slot a: the initramfs
+boot/a/version                slot a: its release, the initramfs's /lib/myos-release
 boot/b/                       slot b: empty until an upgrade writes it
 boot/virt-aarch64.dtb         aarch64, riscv64 (virt.dtb): the device tree
 ```
@@ -41,24 +42,76 @@ default_entry: 1
     protocol: limine
     path: boot():/boot/b/kernel
     module_path: boot():/boot/b/initramfs
+    cmdline: slot=b
 
 /myos a
     protocol: limine
     path: boot():/boot/a/kernel
     module_path: boot():/boot/a/initramfs
+    cmdline: slot=a
 ```
 
 With two entries the menu waits three seconds, so the other slot can be
 picked at the console when the active one does not boot; with one (a fresh
 image: only slot `a`) it boots at once. aarch64 and riscv64 add their
 `global_dtb` (and riscv64 `paging_mode`) lines, as `src/main.rs` writes them.
+An entry's `cmdline: slot=X` is how the running system knows which slot it
+came from (`/proc/cmdline`), the fallback picked by hand included.
 
-An upgrade writes the slot that is not active, then rewrites
+An upgrade writes the slot that is not running, then rewrites
 `boot/limine/limine.conf` with that slot first. That file is the switch, and
 the only file the switch touches: Limine reads it from no other place (the
 images used to carry copies at `/limine.conf` and `/EFI/BOOT/limine.conf`).
 Writing a slot's files leaves the running one, and the config pointing at
 it, as they were until the switch.
+
+## Upgrading: `get-myos --upgrade`
+
+```sh
+get-myos --upgrade        # [-m MIRROR] [-f]
+```
+
+On the running system, as root:
+
+1. The running slot is the `slot=` of `/proc/cmdline`; the boot disk's ESP is
+   the ESP partition (`/proc/partitions`) whose `boot/<slot>/version` is
+   this system's `/lib/myos-release`. It is mounted (fat).
+2. The mirror's `<arch>-boot.txt` (`docs/packages.md`) names the release's
+   kernel and initramfs with their sizes and SHA-256. When its release is
+   not newer than the running slot's version, there is nothing to do (`-f`
+   writes the other slot anyway).
+3. The other slot's `version` goes first, then curl writes the two files
+   into the slot; the ESP is unmounted and mounted again, and what the disk
+   has is checked against the list. Then the slot's `version`.
+4. `limine.conf` is rewritten (beside it, then renamed over it) with the new
+   slot first and the running one as the fallback: the global lines are
+   kept, the entries made from the running slot's, `timeout: 3`.
+5. The ESP is unmounted. It does not reboot: `reboot` starts the new slot.
+
+A failure before step 4 leaves the running slot and the config as they
+were; the half-written slot has no `version`. The release's initramfs has no
+Linux layer (the default build's): an upgraded system gets it back with an
+image built with `--features linux_compat`.
+
+## Installing on another disk: `get-myos --install DISK`
+
+```sh
+get-myos --install nvme1n1    # or /dev/nvme1n1, /dev/nvme1n1/data
+```
+
+Erases DISK and lays the boot disk out on it: the GPT (BIOS boot 1 MiB,
+the ESP 512 MiB, the data partition over the rest of the disk, ending on a
+MiB), read by the kernel at once (a `/proc/pci` rescan); `mkfs.fat` on the
+ESP and `mkfs.ext2` on the data partition; Limine copied from the running
+ESP (`EFI/BOOT`, `boot/limine`, the device tree, `startup.nsh`), its
+`limine.conf` written for slot `a` alone; then step 3 of the upgrade fills
+slot `a` from the mirror. It refuses the running boot disk, a disk with a
+partition mounted, and one under 580 MiB.
+
+The BIOS stage is not written (`limine bios-install` puts it in the MBR and
+the BIOS boot partition): a disk installed this way boots by UEFI (issue
+#365). Limine comes from the running ESP, so `--install` runs on a
+system booted from a boot disk, not from the ISO.
 
 ## The data partition
 
@@ -87,12 +140,18 @@ The GPT's backup is at the end of the image, not of the disk: tools that
 check it (`sgdisk -e`, `parted`) offer to move it to the end, which is safe.
 A VPS without a rescue system but with custom ISOs boots the hybrid ISO
 (`cargo run -- iso`), a live medium with the kernel and the initramfs at
-`boot/` and none of this layout; installing from it to a disk is the upgrade
-tool's `--install` (issue #351).
+`boot/` and none of this layout; `get-myos --install` cannot install from
+it yet (issue #365).
 
 ## Inside the boot tests
 
-The boot tests boot slot `a`. On aarch64 and riscv64 the boot disk is a
-virtio disk myos sees, and `kernel.sh`'s `boot_disk` checks its layout: the
-slots, the one `limine.conf`, the empty ext2 data partition (x86 boots from
-an IDE disk myos has no driver for).
+The boot tests boot a copy of the image (`target/boot-test-<name>.img`, so
+the build's own stays as built), slot `a`. myos sees the boot disk on every
+arch (a virtio disk: on x86 the third, `vdc`, after the test disks), and
+`kernel.sh`'s `boot_disk` checks its layout: the slots, the one
+`limine.conf`, slot `a`'s version and `/proc/cmdline`, the empty ext2 data
+partition. The full list then runs `get-myos --upgrade -f` against the
+host's mirror (this build's boot files) and `get-myos --install` on the
+scratch disk (`user/get-myos/test.sh`); when it passed, the launcher boots
+the disk again (`run.sh reboot`), which must come up from slot `b` at its
+release.
