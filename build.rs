@@ -14,7 +14,7 @@ mod release {
 }
 
 use limine_image::{
-    all_modules, bios_install, fetch_limine, write_esp_image,
+    all_modules, bios_install, copy_sparse, fetch_limine, write_esp_image,
     write_fat_data_image, LIMINE_VERSION,
 };
 use std::path::PathBuf;
@@ -58,6 +58,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/limine_gpt.rs");
     println!("cargo:rerun-if-changed=src/limine_fat.rs");
     println!("cargo:rerun-if-changed=src/limine_dir.rs");
+    println!("cargo:rerun-if-changed=src/limine_disk.rs");
     println!("cargo:rerun-if-changed=src/initramfs.rs");
     println!("cargo:rerun-if-changed=src/ports.rs");
     println!("cargo:rerun-if-changed=src/release.rs");
@@ -129,7 +130,7 @@ fn main() {
     bios_install(&limine.tool(), &bios_path);
 
     let uefi_path = out_dir.join("uefi.img");
-    std::fs::copy(&bios_path, &uefi_path).expect("copy hybrid image to uefi.img");
+    copy_sparse(&bios_path, &uefi_path);
 
     let target_dir = manifest.join("target");
     let _ = std::fs::create_dir_all(&target_dir);
@@ -138,8 +139,8 @@ fn main() {
     // jobs fail with "Could not open .../build/myos-*/out/bios.img" on a cache hit.
     let bios_stable = target_dir.join("bios.img");
     let uefi_stable = target_dir.join("uefi.img");
-    std::fs::copy(&bios_path, &bios_stable).expect("copy bios.img to target/");
-    std::fs::copy(&uefi_path, &uefi_stable).expect("copy uefi.img to target/");
+    copy_sparse(&bios_path, &bios_stable);
+    copy_sparse(&uefi_path, &uefi_stable);
 
     let fat_path = target_dir.join("fat.img");
     write_fat_data_image(&fat_path);

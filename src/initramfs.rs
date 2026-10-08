@@ -2,7 +2,7 @@
 //
 // The kernel no longer embeds the big port trees (sbase, coreutils, ripgrep,
 // tcc, newlib sysroot). Instead they are packed into a newc archive that
-// Limine loads as a module (`boot():/boot/initramfs`); the kernel parses it at
+// Limine loads as a module (`boot():/boot/a/initramfs`); the kernel parses it at
 // boot and registers each entry into the matching `/bin/<category>/…` or
 // `/lib/…` mount. This decouples userspace from the kernel ELF so the kernel
 // shrinks and userspace can be swapped without a kernel rebuild.
