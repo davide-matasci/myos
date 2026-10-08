@@ -4,6 +4,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
+# shellcheck source=toolchain/std/lib.sh
+source "$ROOT/toolchain/std/lib.sh"
 UUTILS_DIR="$ROOT/user/uutils-coreutils"
 UUTILS_TAG="${UUTILS_TAG:-0.10.0}"
 TARGET="${MYOS_TARGET:-x86_64-unknown-myos}"
@@ -57,6 +59,9 @@ fi
 # wrapper always uses the myos sysroot and breaks host build scripts. Respect
 # .cargo/config.toml myos-rustc-cross.sh instead.
 unset RUSTC
+# The triple's outputs start over when the sysroot, newlib or target spec
+# changed (the host's build scripts under target/ stay).
+myos_cargo_target_dir "$TARGET" "$UUTILS_DIR/target/$TARGET"
 cargo +nightly-2026-07-26 build \
   --target "$TARGET_JSON" \
   --no-default-features \
