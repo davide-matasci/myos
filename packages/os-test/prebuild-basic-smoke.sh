@@ -138,7 +138,9 @@ link_one() {
   # so it adds nothing to the tests that do not use it.
   local libs=(-lc -lgloss -lg -lm)
 
-  ld.lld -pie --no-dynamic-linker -o "$out" \
+  # Stripped: the symbol tables are most of a static test's size, and the
+  # full boot installs and copies all of them (833 tests).
+  ld.lld -pie --no-dynamic-linker --strip-all -o "$out" \
     --entry=_start -z max-page-size=4096 \
     "$lib/crt0.o" "$obj" "${extra[@]+"${extra[@]}"}" \
     -L"$lib" --start-group "${libs[@]}" --end-group
