@@ -14,7 +14,11 @@
 //! fail rather than reach a new file that took the name.
 //!
 //! [`NODES`] is a leaf lock: nothing else is taken while it is held, so a
-//! reference may be dropped anywhere (under `TASKS` too).
+//! reference may be dropped anywhere (under `TASKS` too). It is taken with
+//! interrupts off ([`lock`]), as are [`REAP`] and [`ORPHANS`]: the page
+//! cache takes it inside its own interrupts-off lock (`pagecache::locked`:
+//! a reference cloned or dropped, `set_cached`), and a holder preempted on
+//! that CPU could never run again while the cache spun for it.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -59,6 +63,41 @@ impl Node {
 
 static NODES: Mutex<Vec<Option<Node>>> = Mutex::new(Vec::new());
 
+/// A lock held with interrupts off on this CPU, restored when it goes.
+struct Held<T: 'static> {
+    guard: Option<spin::MutexGuard<'static, T>>,
+    flags: u64,
+}
+
+impl<T> core::ops::Deref for Held<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.guard.as_ref().unwrap()
+    }
+}
+
+impl<T> core::ops::DerefMut for Held<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.guard.as_mut().unwrap()
+    }
+}
+
+impl<T> Drop for Held<T> {
+    fn drop(&mut self) {
+        // The lock goes before interrupts come back: a tick in between
+        // could switch to a task that spins for it.
+        self.guard = None;
+        crate::arch::irq_restore(self.flags);
+    }
+}
+
+/// Take `lock` with interrupts off (see the module doc).
+fn lock<T>(lock: &'static Mutex<T>) -> Held<T> {
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    Held { guard: Some(lock.lock()), flags }
+}
+
 /// Kept files (mount, file id) whose last reference went, for the VFS to
 /// have their filesystem forget outside every lock.
 static REAP: Mutex<Vec<(u16, u64)>> = Mutex::new(Vec::new());
@@ -96,7 +135,7 @@ impl core::fmt::Debug for Vnode {
 
 impl Clone for Vnode {
     fn clone(&self) -> Vnode {
-        if let Some(Some(n)) = NODES.lock().get_mut(self.id as usize) {
+        if let Some(Some(n)) = lock(&NODES).get_mut(self.id as usize) {
             n.refs += 1;
         }
         Vnode { id: self.id }
@@ -105,7 +144,7 @@ impl Clone for Vnode {
 
 impl Drop for Vnode {
     fn drop(&mut self) {
-        let mut nodes = NODES.lock();
+        let mut nodes = lock(&NODES);
         let Some(slot) = nodes.get_mut(self.id as usize) else {
             return;
         };
@@ -117,14 +156,14 @@ impl Drop for Vnode {
             let orphaned = n.orphaned();
             drop(nodes);
             if orphaned {
-                ORPHANS.lock().push(self.id);
+                lock(&ORPHANS).push(self.id);
             }
             return;
         }
         let n = slot.take().unwrap();
         drop(nodes);
         if let (true, Some(file)) = (n.hidden, n.file) {
-            REAP.lock().push((n.mount, file));
+            lock(&REAP).push((n.mount, file));
         }
     }
 }
@@ -133,7 +172,7 @@ impl Drop for Vnode {
 /// the id `file` (if it gives ids): the entry it already has, by its id or
 /// else by its name, or a new one.
 pub(super) fn get(mount: usize, rel: &str, file: Option<u64>) -> Vnode {
-    let mut nodes = NODES.lock();
+    let mut nodes = lock(&NODES);
     let same = |n: &Node| match file {
         Some(f) => !n.dead && !n.hidden && n.mount as usize == mount && n.file == Some(f),
         None => n.named(mount, rel),
@@ -164,7 +203,7 @@ fn insert(nodes: &mut Vec<Option<Node>>, node: Node) -> usize {
 /// referenced.
 pub(super) fn kept(mount: usize, file: u64) -> Vnode {
     let node = Node { mount: mount as u16, rel: String::new(), file: Some(file), hidden: true, dead: false, refs: 1, opens: 0, cached: false };
-    Vnode { id: insert(&mut NODES.lock(), node) as u32 }
+    Vnode { id: insert(&mut lock(&NODES), node) as u32 }
 }
 
 /// A path in a mount, copied out of the table (no allocation per read).
@@ -189,7 +228,7 @@ pub enum Loc {
 /// How to reach `node`'s file now: its mount and its id, or its path there.
 /// `None` once it is dead.
 pub(super) fn locate(node: &Vnode) -> Option<(usize, Loc)> {
-    let nodes = NODES.lock();
+    let nodes = lock(&NODES);
     let n = nodes.get(node.id as usize)?.as_ref()?;
     if n.dead {
         return None;
@@ -209,7 +248,7 @@ fn copy_rel(name: &str) -> Option<Rel> {
 /// Where `node`'s file is named now: its mount and path there. `None` once
 /// it is dead or unlinked.
 pub(super) fn location(node: &Vnode) -> Option<(usize, Rel)> {
-    let nodes = NODES.lock();
+    let nodes = lock(&NODES);
     let n = nodes.get(node.id as usize)?.as_ref()?;
     if n.dead || n.hidden {
         return None;
@@ -220,7 +259,7 @@ pub(super) fn location(node: &Vnode) -> Option<(usize, Rel)> {
 /// `node`'s mount, the path it has (or had) there, and whether it is gone
 /// from it (unlinked or dead): what `/proc/self/fd/N` shows.
 pub(super) fn name(node: &Vnode) -> Option<(usize, String, bool)> {
-    let nodes = NODES.lock();
+    let nodes = lock(&NODES);
     let n = nodes.get(node.id as usize)?.as_ref()?;
     Some((n.mount as usize, n.rel.clone(), n.dead || n.hidden))
 }
@@ -232,7 +271,7 @@ fn at_or_below(rel: &str, dir: &str) -> bool {
 
 /// `old` of `mount` is now `new`: so are the files below it.
 pub(super) fn moved(mount: usize, old: &str, new: &str) {
-    for n in NODES.lock().iter_mut().flatten() {
+    for n in lock(&NODES).iter_mut().flatten() {
         if n.mount as usize == mount && !n.dead && !n.hidden && at_or_below(&n.rel, old) {
             n.rel = alloc::format!("{new}{}", &n.rel[old.len()..]);
         }
@@ -241,26 +280,36 @@ pub(super) fn moved(mount: usize, old: &str, new: &str) {
 
 /// Something holds the file at `rel` of `mount`.
 pub(super) fn referenced(mount: usize, rel: &str) -> bool {
-    NODES.lock().iter().flatten().any(|n| n.named(mount, rel))
+    lock(&NODES).iter().flatten().any(|n| n.named(mount, rel))
 }
 
 /// Something other than the page cache holds the file at `rel` of `mount`
 /// (an fd, a mapping, a cwd).
 pub(super) fn held(mount: usize, rel: &str) -> bool {
-    NODES.lock().iter().flatten().any(|n| n.named(mount, rel) && (n.opens > 0 || n.refs > n.cached as u32))
+    lock(&NODES).iter().flatten().any(|n| n.named(mount, rel) && (n.opens > 0 || n.refs > n.cached as u32))
 }
 
-/// The page cache has pages of `node`'s file, or has let go of them.
+/// The page cache has pages of `node`'s file, or has let go of them. A
+/// file it takes that is unlinked and otherwise unheld already is an
+/// orphan from the start.
 pub(super) fn set_cached(node: &Vnode, cached: bool) {
-    if let Some(Some(n)) = NODES.lock().get_mut(node.id as usize) {
+    let orphaned = {
+        let mut nodes = lock(&NODES);
+        let Some(Some(n)) = nodes.get_mut(node.id as usize) else {
+            return;
+        };
         n.cached = cached;
+        n.orphaned()
+    };
+    if orphaned {
+        lock(&ORPHANS).push(node.id);
     }
 }
 
 /// The file at `rel` of `mount` was unlinked but is kept by its id.
 pub(super) fn hide(mount: usize, rel: &str) {
     let mut orphans = Vec::new();
-    for (id, n) in NODES.lock().iter_mut().enumerate() {
+    for (id, n) in lock(&NODES).iter_mut().enumerate() {
         if let Some(n) = n {
             if n.named(mount, rel) && n.file.is_some() {
                 n.hidden = true;
@@ -270,23 +319,23 @@ pub(super) fn hide(mount: usize, rel: &str) {
             }
         }
     }
-    ORPHANS.lock().append(&mut orphans);
+    lock(&ORPHANS).append(&mut orphans);
 }
 
 /// The unlinked files the page cache alone holds, noted since the last
 /// call ([`orphaned`] says whether each still is).
 pub(super) fn take_orphans() -> Vec<u32> {
-    core::mem::take(&mut *ORPHANS.lock())
+    core::mem::take(&mut *lock(&ORPHANS))
 }
 
 /// Node `id` is an unlinked file the page cache alone holds.
 pub(super) fn orphaned(id: u32) -> bool {
-    matches!(NODES.lock().get(id as usize), Some(Some(n)) if n.orphaned())
+    matches!(lock(&NODES).get(id as usize), Some(Some(n)) if n.orphaned())
 }
 
 /// The files at and below `rel` of `mount` are gone.
 pub(super) fn kill(mount: usize, rel: &str) {
-    for n in NODES.lock().iter_mut().flatten() {
+    for n in lock(&NODES).iter_mut().flatten() {
         if n.mount as usize == mount && !n.hidden && at_or_below(&n.rel, rel) {
             n.dead = true;
         }
@@ -295,14 +344,14 @@ pub(super) fn kill(mount: usize, rel: &str) {
 
 /// One more open file description on `node`.
 pub(super) fn opened(node: &Vnode) {
-    if let Some(Some(n)) = NODES.lock().get_mut(node.id as usize) {
+    if let Some(Some(n)) = lock(&NODES).get_mut(node.id as usize) {
         n.opens += 1;
     }
 }
 
 /// One open file description on `node` fewer: true for the last.
 pub(super) fn closed(node: &Vnode) -> bool {
-    match NODES.lock().get_mut(node.id as usize) {
+    match lock(&NODES).get_mut(node.id as usize) {
         Some(Some(n)) if n.opens > 0 => {
             n.opens -= 1;
             n.opens == 0
@@ -313,15 +362,15 @@ pub(super) fn closed(node: &Vnode) -> bool {
 
 /// Something holds a file of `mount` (it cannot be unmounted).
 pub(super) fn on_mount(mount: usize) -> bool {
-    NODES.lock().iter().flatten().any(|n| n.mount as usize == mount)
+    lock(&NODES).iter().flatten().any(|n| n.mount as usize == mount)
 }
 
 /// The open file descriptions on `rel` of `mount`.
 pub(super) fn opens_at(mount: usize, rel: &str) -> u32 {
-    NODES.lock().iter().flatten().filter(|n| n.named(mount, rel)).map(|n| n.opens).sum()
+    lock(&NODES).iter().flatten().filter(|n| n.named(mount, rel)).map(|n| n.opens).sum()
 }
 
 /// The kept files nothing references any more: (mount, file id).
 pub(super) fn take_reaped() -> Vec<(u16, u64)> {
-    core::mem::take(&mut *REAP.lock())
+    core::mem::take(&mut *lock(&REAP))
 }
