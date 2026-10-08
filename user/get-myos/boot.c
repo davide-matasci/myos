@@ -7,9 +7,9 @@
  * an entry's `cmdline: slot=X` tells the kernel which it booted
  * (/proc/cmdline).
  *
- * --upgrade writes the release's kernel and initramfs (<arch>-boot.txt on
- * the mirror: their sizes and SHA-256) into the slot that is not running,
- * reads them back from the disk (unmounted and mounted again in between)
+ * --upgrade downloads the release's kernel and initramfs (<arch>-boot.txt on
+ * the mirror: their sizes and SHA-256) into memory, checks them, writes them
+ * into the slot that is not running, reads them back from the disk (unmounted and mounted again in between)
  * against the checksums, writes the slot's version, and only then rewrites
  * limine.conf with that slot first and the running one as the fallback: a
  * failure on the way leaves the running slot and the config as they were.
@@ -254,10 +254,54 @@ static void slot_path(char *out, const char *esp, char slot, const char *name) {
     strcat(out, name);
 }
 
-/* Download the boot files into the slot of the ESP mounted at `esp` (from
- * partition /dev/<part>), then unmount, mount again and check what the disk
- * has against the list; the slot's version last. The slot's old version
- * goes first: a slot without one is never booted into by an upgrade. */
+/* The file at `url`, whole, in memory (`size` bytes, malloc'd), its
+ * SHA-256 `csum`: NULL when no attempt of three got it. In memory, not on
+ * the ESP: nothing unchecked is written there, and the download does not
+ * wait on the disk (a slow one stalled the transfer). */
+static uint8_t *fetch_checked(const char *url, long long size, const char *csum) {
+    uint8_t *data = malloc(size > 0 ? (size_t)size : 1);
+    if (data == NULL) {
+        say("out of memory for ", url, NULL);
+        return NULL;
+    }
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        int pid = 0, fd = download_open(url, &pid);
+        long long got = 0;
+        ssize_t n = 0;
+        while (fd >= 0 && got <= size) {
+            uint8_t extra;
+            n = got < size ? read(fd, data + got, (size_t)(size - got)) : read(fd, &extra, 1);
+            if (n <= 0) {
+                break;
+            }
+            got += n;
+        }
+        int rc = fd >= 0 ? download_close(fd, pid) : -1;
+        if (rc == 0 && n == 0 && got == size) {
+            sha256 s;
+            char hex[65];
+            sha256_init(&s);
+            sha256_update(&s, data, (size_t)size);
+            sha256_hex(&s, hex);
+            if (strcmp(hex, csum) == 0) {
+                return data;
+            }
+            say("checksum mismatch: ", url, NULL);
+        }
+        if (attempt < 3) {
+            say("retrying ", url, NULL);
+            sleep(2);
+        }
+    }
+    free(data);
+    return NULL;
+}
+
+/* Download the boot files and write them into the slot of the ESP mounted
+ * at `esp` (from partition /dev/<part>), then unmount, mount again and check
+ * what the disk has against the list; the slot's version last. The slot's
+ * old version goes first: a slot without one is never booted into by an
+ * upgrade. */
 static int write_slot(const char *esp, const char *part, char slot, const boot_files *b,
                       void (*url_of)(char *url, size_t cap, const char *file)) {
     char path[PATH_MAX_GV], url[512], dev[80];
@@ -269,8 +313,14 @@ static int write_slot(const char *esp, const char *part, char slot, const boot_f
         slot_path(path, esp, slot, NAMES[i]);
         url_of(url, sizeof url, b->file[i]);
         say("fetching ", url, NULL);
-        if (download(url, path) != 0) {
+        uint8_t *data = fetch_checked(url, b->size[i], b->csum[i]);
+        if (data == NULL) {
             return die("download failed: ", url);
+        }
+        int rc = write_file(path, (const char *)data, (size_t)b->size[i]);
+        free(data);
+        if (rc != 0) {
+            return die("cannot write ", path);
         }
     }
     strcpy(dev, "/dev/");
@@ -639,6 +689,34 @@ static int copy_limine(void) {
     return 0;
 }
 
+/* The disk's size in sectors: the first one a read gets nothing from.
+ * Not lseek(SEEK_END): libgloss's lseek returns an int, which riscv64's
+ * calling convention cuts to 32 bits (issue #366). */
+static uint64_t disk_sectors(int fd) {
+    uint8_t sec[SECTOR];
+    uint64_t lo = 0, hi = 1;
+    /* lo sectors are readable; find a hi that is not, then halve. */
+    for (;;) {
+        if (lseek(fd, (off_t)((hi - 1) * SECTOR), SEEK_SET) == (off_t)-1 || read(fd, sec, SECTOR) != SECTOR) {
+            break;
+        }
+        lo = hi;
+        if (hi >= (1ULL << 40)) {
+            return lo;
+        }
+        hi *= 2;
+    }
+    while (hi - lo > 1) {
+        uint64_t mid = lo + (hi - lo) / 2;
+        if (lseek(fd, (off_t)((mid - 1) * SECTOR), SEEK_SET) != (off_t)-1 && read(fd, sec, SECTOR) == SECTOR) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
 /* A partition of the disk is mounted (/proc/mounts names /dev/<disk>/...). */
 static int disk_mounted(const char *disk) {
     char line[512], prefix[80];
@@ -698,8 +776,7 @@ int boot_install(const char *disk_arg, const char *list_path,
         umount_dir(RUNNING_ESP);
         return die("no such disk: ", data);
     }
-    off_t bytes = lseek(fd, 0, SEEK_END);
-    uint64_t total = bytes > 0 ? (uint64_t)bytes / SECTOR : 0;
+    uint64_t total = disk_sectors(fd);
     /* The ESP and some room for the data partition. */
     if (total < 2 * MIB + 512 * MIB + 64 * MIB + 34) {
         close(fd);

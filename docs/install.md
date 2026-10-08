@@ -80,9 +80,11 @@ On the running system, as root:
    kernel and initramfs with their sizes and SHA-256. When its release is
    not newer than the running slot's version, there is nothing to do (`-f`
    writes the other slot anyway).
-3. The other slot's `version` goes first, then curl writes the two files
-   into the slot; the ESP is unmounted and mounted again, and what the disk
-   has is checked against the list. Then the slot's `version`.
+3. The other slot's `version` goes first. Each file is downloaded into
+   memory and checked against the list before it is written into the slot
+   (nothing unchecked reaches the ESP, and a slow disk does not stall the
+   download); the ESP is unmounted and mounted again, and what the disk has
+   is checked against the list too. Then the slot's `version`.
 4. `limine.conf` is rewritten (beside it, then renamed over it) with the new
    slot first and the running one as the fallback: the global lines are
    kept, the entries made from the running slot's, `timeout: 3`.
