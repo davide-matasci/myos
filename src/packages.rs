@@ -22,6 +22,7 @@
 //! port moving between `ports/` and `packages/` changes nothing in what
 //! it ships. See docs/packages.md.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -160,12 +161,20 @@ fn sha256_file(path: &Path) -> String {
         .to_string()
 }
 
-/// A ustar archive of regular files (the aliases of a program are written
-/// as files of their own: the guest's tmpfs has no hard links to make),
-/// mtime 0 and uid/gid 0 so the archive is reproducible.
+/// A ustar archive of regular files, mtime 0 and uid/gid 0 so the archive
+/// is reproducible. The aliases of a program (a hard-link group, which only
+/// one entry has the data of) are symlinks to that entry: the guest's tmpfs
+/// has no hard links to make, and a copy each would multiply the program
+/// (uutils' 32 names).
 fn ustar(entries: &[Entry]) -> Vec<u8> {
+    let stored: HashMap<u64, &str> = entries
+        .iter()
+        .filter(|e| e.nlink > 1 && !e.data.is_empty())
+        .map(|e| (e.ino, e.name.as_str()))
+        .collect();
     let mut out = Vec::new();
     for e in entries {
+        let link = stored.get(&e.ino).filter(|n| **n != e.name).map(|n| link_target(&e.name, n));
         let (prefix, name) = split_name(&e.name);
         let mut h = [0u8; 512];
         put(&mut h[0..100], name.as_bytes());
@@ -175,7 +184,12 @@ fn ustar(entries: &[Entry]) -> Vec<u8> {
         put(&mut h[124..136], format!("{:011o}", e.data.len()).as_bytes());
         put(&mut h[136..148], b"00000000000");
         h[148..156].copy_from_slice(b"        ");
-        h[156] = b'0';
+        if let Some(link) = &link {
+            h[156] = b'2';
+            put(&mut h[157..257], link.as_bytes());
+        } else {
+            h[156] = b'0';
+        }
         put(&mut h[257..263], b"ustar\0");
         put(&mut h[263..265], b"00");
         put(&mut h[265..297], b"root");
@@ -192,6 +206,19 @@ fn ustar(entries: &[Entry]) -> Vec<u8> {
     }
     out.extend(std::iter::repeat_n(0u8, 1024));
     out
+}
+
+/// `target` as a symlink at `link` names it: relative to the link's
+/// directory (both are archive paths), so it resolves wherever the package
+/// is unpacked.
+fn link_target(link: &str, target: &str) -> String {
+    let dir: Vec<&str> = link.split('/').collect();
+    let dir = &dir[..dir.len() - 1];
+    let target: Vec<&str> = target.split('/').collect();
+    let common = dir.iter().zip(&target).take_while(|(a, b)| a == b).count();
+    let mut parts = vec![".."; dir.len() - common];
+    parts.extend(&target[common..]);
+    parts.join("/")
 }
 
 /// A path longer than the 100-byte name field goes into prefix/name.

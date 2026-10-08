@@ -3,7 +3,7 @@
 # the bottom, crossterm, sysinfo, dirs-sys and parking_lot_core crates from
 # crates.io with their myos patches (*.myos.patch, README.md), every other
 # dependency as bottom's Cargo.lock pins it, and the myos libc, errno and
-# rustix crates the Rust ports share (ports/coreutils/prepare.sh). Then
+# rustix crates the Rust ports share (packages/coreutils/prepare.sh). Then
 # btm_smoke, the boot test's pty driver (C).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,7 +24,7 @@ RUST_LLD_BIN="$(rustc "+$NIGHTLY" --print sysroot)/lib/rustlib/$(rustc "+$NIGHTL
 "$HERE/fetch.sh"
 "$ROOT/toolchain/std/fetch-sysroot.sh"
 "$ROOT/toolchain/newlib/build.sh"
-"$ROOT/ports/coreutils/prepare.sh"
+"$ROOT/packages/coreutils/prepare.sh"
 export PATH="$ROOT/target/newlib-bin:$RUST_LLD_BIN:$PATH"
 
 WORK="$ROOT/target/bottom-build"

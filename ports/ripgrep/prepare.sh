@@ -7,7 +7,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 source "$ROOT/ports/ripgrep/versions.env"
 
 "$ROOT/ports/ripgrep/fetch.sh"
-"$ROOT/ports/coreutils/prepare.sh"
+"$ROOT/packages/coreutils/prepare.sh"
 
 RG="$ROOT/target/ripgrep-src"
 mkdir -p "$RG/.cargo"

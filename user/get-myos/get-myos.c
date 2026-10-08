@@ -254,7 +254,6 @@ typedef struct {
 
 static int unpack_entry(tar *t, char type, const char *name, const char *link, uint64_t size) {
     unpack *u = t->ctx;
-    (void)link;
     (void)size;
     while (name[0] == '.' && name[1] == '/') {
         name += 2;
@@ -278,11 +277,24 @@ static int unpack_entry(tar *t, char type, const char *name, const char *link, u
         mkdirs(path, 1);
         return 0;
     }
-    if (type != '0' && type != '\0' && type != '7') {
-        return 0; /* the packer writes regular files only */
+    if (type != '0' && type != '\0' && type != '7' && type != '2') {
+        return 0; /* the packer writes regular files and symlinks only */
     }
     mkdirs(path, 0);
     unlink(path);
+    if (type == '2') {
+        /* An alias of a program: a symlink to the file that has its data,
+         * relative to the link's directory. */
+        char target[PATH_MAX_GV];
+        copy_field(target, sizeof target, link, strlen(link));
+        if (symlink(target, path) != 0) {
+            say("cannot create symlink ", path, NULL);
+            u->failed = 1;
+            return 0;
+        }
+        note_bind(name);
+        return 0;
+    }
     u->fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
     if (u->fd < 0) {
         say("cannot write ", path, NULL);

@@ -37,7 +37,7 @@ parts empty); neither is the load average. The configuration file is
 sysinfo, dirs-sys, parking_lot_core) at the versions bottom's `Cargo.lock`
 pins; `build.sh` patches them and builds bottom against them
 (`[patch.crates-io]`), with the patched `libc`, `rustix` and `errno` of the
-other Rust ports (`ports/coreutils/prepare.sh`). The patches are under
+other Rust ports (`packages/coreutils/prepare.sh`). The patches are under
 their crates' licenses:
 
 - `sysinfo.myos.patch`: a myos backend (`src/myos/`) reading `/proc/cpu`,

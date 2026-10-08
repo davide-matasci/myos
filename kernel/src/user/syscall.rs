@@ -991,8 +991,11 @@ fn exec_path_depth(
         return SYSERR;
     }
     let new_ctx = script_ctx.or_else(|| crate::sec::exec_ctx(&path));
-    let basename = path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes();
-    task::set_exec_name(basename);
+    // The name it was run under, as the caller named it (a symlink's, not
+    // its target's, like Linux's AT_EXECFN): a multicall program run with
+    // no argv picks its tool by it (uutils' names in a package are
+    // symlinks to one file).
+    task::set_exec_name(virt.rsplit('/').next().unwrap_or(virt).as_bytes());
     // A dynamically linked Linux program is mapped from its file, like the
     // shared objects its dynamic linker maps: that linker is the image.
     let mapped = mapped_program(&path);

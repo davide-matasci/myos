@@ -18,6 +18,8 @@ linker = "rust-lld"
 
 [profile.release]
 lto = false
+# The debug info and symbols are most of the ELF (4.0 MiB, 3.3 stripped).
+strip = true
 
 [patch.crates-io]
 errno = { path = "../../target/patched-crates/errno-0.3.14" }

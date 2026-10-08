@@ -4,8 +4,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-# shellcheck source=ports/coreutils/versions.env
-source "$ROOT/ports/coreutils/versions.env"
+# shellcheck source=packages/coreutils/versions.env
+source "$ROOT/packages/coreutils/versions.env"
 
 CRATES="$HERE/crates"
 LIBC="$ROOT/ports/crates/libc"

@@ -2,20 +2,26 @@
 
 Cross-compiling [uutils/coreutils](https://github.com/uutils/coreutils) v0.10.0 for `x86_64-unknown-myos` using the patched myos sysroot.
 
+A package, not in the image: `get-myos coreutils` installs the multicall ELF
+under its 32 names in `/bin/coreutils` (sbase, first in `PATH`, has 30 of
+them). The full boot installs it before the tests, so its `test.sh` and the
+uutils stages of `heap` run there. The patched crates of `prepare.sh` are
+shared with the image's ripgrep and with bottom.
+
 ## Quick repro
 
 ```sh
 ./toolchain/std/build-sysroot.sh
-./ports/coreutils/prepare.sh   # fetch + patch errno, libc, rustix
-./ports/coreutils/build.sh              # debug: echo,true,false
-./ports/coreutils/build.sh --release
+./packages/coreutils/prepare.sh   # fetch + patch errno, libc, rustix
+./packages/coreutils/build.sh              # debug: echo,true,false
+./packages/coreutils/build.sh --release
 ```
 
 The build script:
 
 1. Clones uutils into `user/uutils-coreutils/` (gitignored)
-2. Runs `ports/coreutils/prepare.sh` — fetches `errno`, `libc`, and **crates.io `rustix`**; applies myos patches into `target/patched-crates/`
-3. Copies `ports/coreutils/cargo-config.toml` into uutils as `.cargo/config.toml` (`[patch.crates-io]` + `rustix_use_libc`)
+2. Runs `packages/coreutils/prepare.sh` — fetches `errno`, `libc`, and **crates.io `rustix`**; applies myos patches into `target/patched-crates/`
+3. Copies `packages/coreutils/cargo-config.toml` into uutils as `.cargo/config.toml` (`[patch.crates-io]` + `rustix_use_libc`)
 
 ## Stack (real rustix + patched libc)
 
@@ -28,7 +34,7 @@ Groundwork strategy: satisfy **compile-time** libc/rustix surface with Linux-com
 ## Patch layout (in git)
 
 ```
-ports/coreutils/
+packages/coreutils/
   versions.env
   cargo-config.toml      # patches errno + libc + rustix; --cfg=rustix_use_libc
   crates/errno/ …
@@ -50,7 +56,7 @@ Regenerate `rustix_compat.rs` after changing the needed symbol set:
 
 Generated output (gitignored): `target/patched-crates/{errno,libc,rustix}-*`.
 
-`ports/coreutils/crates/myos-rustix-stub/` is **deprecated** — kept only for history; the build no longer patches it in.
+`packages/coreutils/crates/myos-rustix-stub/` is **deprecated** — kept only for history; the build no longer patches it in.
 
 ## What compiled (release, x86_64)
 
