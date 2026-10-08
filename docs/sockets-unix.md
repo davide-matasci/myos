@@ -66,7 +66,8 @@ lock, so the unix conversations have their own spinlock.
 ## Not yet
 
 - Passing file descriptors (`SCM_RIGHTS`) and credentials (`SCM_CREDENTIALS`,
-  `SO_PEERCRED`), and shared memory between processes: issue #283.
+  `SO_PEERCRED`): issue #340. Shared memory between processes is there
+  (`shm_open`, `memfd_create`, System V `shmget`, `MAP_SHARED`: README).
 - The Linux layer (`modules/linux/src/net.rs`) maps `AF_INET` and, of
   `AF_UNIX`, only `socketpair`.
 

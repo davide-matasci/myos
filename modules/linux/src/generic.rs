@@ -108,10 +108,12 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         221 => ret(sys::execve(a[0], a[1], a[2])),
         222 => ret(sys::mmap(a[0], a[1], a[2], a[3], a[4], a[5])),
         226 => result(user::sys_mprotect(a[0], a[1], a[2]), ENOMEM),
+        227 => ret(sys::msync(a[0], a[1], a[2])),
         233 => ret(sys::madvise(a[0], a[1], a[2])),
         260 => ret(sys::wait4(a[0], a[1], a[2], a[3])),
         261 => ret(sys::prlimit(a[1], a[3])),
         278 => ret(sys::getrandom(a[0], a[1])),
+        279 => ret(sys::memfd_create(a[0], a[1])),
         _ => err(ENOSYS),
     }
 }

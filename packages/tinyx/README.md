@@ -39,7 +39,7 @@ Fonts: libXfont's built-in `fixed` and `cursor` (the font path is
 | Patch | What |
 |-------|------|
 | `kdrive-myos.myos.patch` | `--with-kdrive-os=myos`: `kdrive/myos` (the OS layer: nothing to switch, no mouse; the keyboard from `/dev/console/kbd`, the keymap from the console's keymap file, US when there is none) and `kdrive/fbdev/myosfb.c` (the framebuffer ioctls `fbdev.c` makes, answered from `/dev/fb/ctl`; writing `graphics` there takes the screen, the server's exit closes it and the console takes it back) |
-| `no-shm-xtest.myos.patch` | MIT-SHM (no SysV shared memory) and XTEST are not built |
+| `no-xtest.myos.patch` | XTEST is not built (MIT-SHM is, on libgloss's System V shared memory) |
 | `sync-headers.myos.patch` | SYNC's constants from xorgproto's `syncconst.h` (libXext's client `sync.h` carried them in 2007) |
 | `arches.myos.patch` | `servermd.h` entries for AArch64 and RISC-V 64 |
 | `lock-without-link.myos.patch` | the `/tmp/.X0-lock` file without `link()` (myos has no hard links) |
@@ -63,5 +63,3 @@ and `/dev/fb/ctl` says `text` again.
   #302.
 - Rotation and modes: one framebuffer, at the mode the bootloader set.
 - Fonts beyond the built-in two (`/lib/X11/fonts`): issue #303.
-- MIT-SHM (`no-shm-xtest.myos.patch`): it needs shared memory between
-  processes, issue #283.

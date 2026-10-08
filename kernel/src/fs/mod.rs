@@ -57,6 +57,12 @@ pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
     vfs::write(node, pos, buf)
 }
 
+/// A tmpfs file no name reaches, for an anonymous shared mapping (see
+/// [`vfs::anon_file`]).
+pub fn anon_file(size: usize) -> Option<Vnode> {
+    vfs::anon_file(size)
+}
+
 /// The device page at `offset` of `node`, for a shared `mmap` (see
 /// [`vfs::device_frame`]).
 pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
@@ -517,7 +523,8 @@ fn rw_ops(
 }
 
 /// Mount rootfs at `/` (the image's files, read-only), tmpfs at `/tmp/`,
-/// devfs at `/dev/` with ptsfs at `/dev/pts/`, procfs at `/proc/`.
+/// devfs at `/dev/` with ptsfs at `/dev/pts/`, procfs at `/proc/`; bind
+/// `/dev/shm`.
 pub fn init() {
     vfs::mount(
         "rootfs",
@@ -622,6 +629,11 @@ pub fn init() {
             procfs::readlink,
         ),
     );
+    // POSIX shared memory (`shm_open`, `memfd_create`): `/dev/shm` is a
+    // directory of the tmpfs (`/tmp/.shm`, label `tmp`), bound there; devfs
+    // holds no files of its own.
+    tmpfs::mkdir(".shm");
+    vfs::bind("/tmp/.shm", "/dev/shm");
 }
 
 /// Unpack the initramfs into rootfs.

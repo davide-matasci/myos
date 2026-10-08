@@ -1,4 +1,4 @@
-/* myos libgloss: mmap / munmap / mprotect. */
+/* myos libgloss: mmap / munmap / mprotect / msync. */
 #include <errno.h>
 #include <sys/types.h>
 #include <stdint.h>
@@ -64,6 +64,20 @@ int _mprotect(void *addr, size_t length, int prot) {
 
 int mprotect(void *addr, size_t length, int prot) {
     return _mprotect(addr, length, prot);
+}
+
+int msync(void *addr, size_t length, int flags) {
+    long ret;
+    if (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC) || ((flags & MS_ASYNC) && (flags & MS_SYNC))) {
+        errno = EINVAL;
+        return -1;
+    }
+    ret = myos_syscall3(MYOS_SYS_MSYNC, (long)(uintptr_t)addr, (long)length, (long)flags);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = ENOMEM;
+        return -1;
+    }
+    return 0;
 }
 
 void __clear_cache(void *start, void *end) {

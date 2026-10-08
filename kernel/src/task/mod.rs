@@ -94,7 +94,7 @@ pub const MAX_MAPPED_FILES: usize = 64;
 pub struct MmapRegion {
     pub va: u64,
     pub pages: u32,
-    /// `PROT_*` bits, plus [`MMAP_DEVICE`].
+    /// `PROT_*` bits, plus [`MMAP_DEVICE`] or [`MMAP_SHARED`].
     pub prot: u32,
     /// 0: anonymous; else the process's `mapped_files[file - 1]`.
     pub file: u32,
@@ -107,6 +107,12 @@ pub struct MmapRegion {
 /// leaves them to the device instead of freeing them, and fork maps the
 /// same pages into the child instead of copying them.
 pub const MMAP_DEVICE: u32 = 1 << 31;
+
+/// [`MmapRegion::prot`] flag: a shared mapping of a regular file
+/// (`MAP_SHARED` through a writable fd): its pages are the page cache's
+/// frames for the file's, written (`fs::pagecache::map_shared`) and
+/// written back to the file when the mapping goes, or by `msync`.
+pub const MMAP_SHARED: u32 = 1 << 30;
 
 
 /// The scheduler's record of one thread (see [`Process`] for what the

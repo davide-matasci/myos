@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Cross-build the X client libraries for the three arches: xorgproto, xtrans,
-# libXau, xcb-proto, libxcb (core only, no extension libraries) and libX11
-# (no threads, no XKB), static, each with its own autoconf configure in cross
-# mode. Installed under target/x11-libs-<arch> as if at /lib/x11 (libX11's
+# libXau, xcb-proto, libxcb (core only, no extension libraries), libX11
+# (no threads, no XKB) and libXext (MIT-SHM's XShm* among its extensions),
+# static, each with its own autoconf configure in cross mode. Installed under target/x11-libs-<arch> as if at /lib/x11 (libX11's
 # data at /lib/X11), the way the X packages find them:
 #
 #   PKG_CONFIG_SYSROOT_DIR=target/x11-libs-<arch>
@@ -95,6 +95,8 @@ build_arch() {
     --disable-xkb --disable-xf86bigfont --disable-loadable-i18n \
     --disable-loadable-xcursor --disable-composecache --disable-ipv6 \
     --disable-malloc0returnsnull --without-xmlto --without-fop --without-xsltproc
+  build_one "$arch" "libXext-$LIBXEXT_VERSION" --disable-specs --disable-malloc0returnsnull \
+    --without-xmlto --without-fop
 
   "$cc" -O2 -Wall -Wextra -I"$STAGE$PREFIX/include" "$HERE/x11_smoke.c" \
     -o "$ROOT/target/x11-smoke-${arch}-unknown-none" \

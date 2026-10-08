@@ -64,7 +64,8 @@ exec /bin/custom/netd -> netd
   name. A file no rule matches is `unlabeled`. Labels are taken from the
   file's **canonical** path, the one bind mounts resolve to, so a file
   reached through a bind has the label of where it is stored (`get-myos`'s
-  packages live under `/tmp/pkg`, labelled `sys.pkg`).
+  packages live under `/tmp/pkg`, labelled `sys.pkg`; `/dev/shm`, POSIX
+  shared memory, is `/tmp/.shm`, labelled `tmp`).
 - **Domains.** `domain NAME:` and rules on the same line or on the indented
   lines below: `KIND(OWNER) {rights}`. The owner is `self` (the process's
   user), `group` (any group of the user), `*` (anyone, or no owner), a fixed

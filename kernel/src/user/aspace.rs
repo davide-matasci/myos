@@ -103,7 +103,8 @@ fn copy_mmap_pages(src: u64, dst: u64) {
         while va < end {
             if let Some(phys) = virt_to_phys(src, va) {
                 // A device's pages are shared with the child, not copied,
-                // and so are a file's from the page cache.
+                // and so are a file's from the page cache (a shared
+                // mapping's, writable, among them).
                 if r.prot & task::MMAP_DEVICE != 0 || fs::pagecache::share(phys) {
                     map_user_page_prot(dst, va, phys, r.prot as usize);
                     va += PAGE as u64;
@@ -375,9 +376,13 @@ pub fn fault_in(va: usize, access: Access) -> bool {
     // the kernel's reserve it returns None, and the fault fails (SIGSEGV to the
     // faulting process) instead of letting the frame allocator abort the whole
     // kernel. The read-only shared page is a program's code/rodata, bounded by
-    // its size and kept safe by that same reserve.
+    // its size and kept safe by that same reserve; a shared mapping's page
+    // is the file's, bounded by the files mapped.
     let fresh = if virt_to_phys(aspace, page as u64).is_none() {
         let frame = match &file {
+            Some((node, off)) if prot & task::MMAP_SHARED as usize != 0 => {
+                fs::pagecache::map_shared(node, off / PAGE, prot & PROT_WRITE != 0)
+            }
             Some((node, off)) if prot & PROT_WRITE == 0 => fs::pagecache::map(node, off / PAGE),
             // A private copy of it (zero past the end of the file).
             Some((node, off)) => {

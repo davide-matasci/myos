@@ -6,6 +6,7 @@
  * No printf: musl's printf needs the compiler runtime's quad-float helpers
  * on aarch64/riscv64, which this build does not ship.
  */
+#define _GNU_SOURCE 1 /* memfd_create */
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -190,6 +191,65 @@ static void check_threads(void) {
 
 /* What a toolchain (cargo, rustc and its allocator, libcurl, SQLite) asks
  * of the layer besides the basics. */
+static void check_shared_memory(void) {
+    const char *name = "/linux-smoke";
+    int fd, status;
+    char *p, buf[8] = {0};
+    pid_t pid;
+
+    shm_unlink(name);
+    fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    check(fd >= 0 && ftruncate(fd, 4096) == 0, "shm_open");
+    p = fd < 0 ? MAP_FAILED : mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    check(p != MAP_FAILED, "mmap MAP_SHARED of a segment");
+    if (p != MAP_FAILED) {
+        strcpy(p, "parent");
+        pid = fork();
+        if (pid == 0) {
+            int cfd = shm_open(name, O_RDWR, 0);
+            char *c = cfd < 0 ? MAP_FAILED : mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, cfd, 0);
+            if (c == MAP_FAILED || strcmp(c, "parent") != 0) {
+                _exit(1);
+            }
+            strcpy(c + 100, "child");
+            _exit(0);
+        }
+        check(pid > 0 && waitpid(pid, &status, 0) == pid && status == 0 && strcmp(p + 100, "child") == 0,
+              "a segment shared by name with a forked child");
+        munmap(p, 4096);
+    }
+    check(shm_unlink(name) == 0 && shm_open(name, O_RDWR, 0) < 0 && errno == ENOENT, "shm_unlink");
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    fd = memfd_create("linux-smoke", MFD_CLOEXEC);
+    check(fd >= 0 && fcntl(fd, F_GETFD) == FD_CLOEXEC && ftruncate(fd, 4096) == 0, "memfd_create");
+    p = fd < 0 ? MAP_FAILED : mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    check(p != MAP_FAILED, "mmap a memfd");
+    if (p != MAP_FAILED) {
+        strcpy(p, "memfd");
+        check(pread(fd, buf, 6, 0) == 6 && strcmp(buf, "memfd") == 0, "read() of a memfd sees the mapping's store");
+        munmap(p, 4096);
+    }
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    p = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    check(p != MAP_FAILED && p[0] == 0, "mmap MAP_SHARED | MAP_ANONYMOUS");
+    if (p != MAP_FAILED) {
+        pid = fork();
+        if (pid == 0) {
+            strcpy(p, "anon");
+            _exit(0);
+        }
+        check(pid > 0 && waitpid(pid, &status, 0) == pid && status == 0 && strcmp(p, "anon") == 0,
+              "an anonymous shared mapping shared with a forked child");
+        munmap(p, 4096);
+    }
+}
+
 static void check_toolchain_calls(char *self) {
     /* posix_spawn: musl's clone(CLONE_VM | CLONE_VFORK) on a stack of its own. */
     pid_t c;
@@ -465,6 +525,10 @@ int main(int argc, char **argv) {
     check_threads();
 
     check(unlink(path) == 0 && stat(path, &st) == -1 && errno == ENOENT, "unlink/ENOENT");
+
+    /* Shared memory: a POSIX segment, a memfd and an anonymous MAP_SHARED
+     * mapping, each shared with a forked child (docs/linux-compat.md). */
+    check_shared_memory();
 
     /* The terminal: the boot test runs this with stdout in a file and stdin
      * on the console. musl's tty calls are the Linux ioctls, which the layer

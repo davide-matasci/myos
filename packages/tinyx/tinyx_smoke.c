@@ -6,10 +6,16 @@
  * framebuffer's pixels red (read back from /dev/fb/data); and with the
  * window focused, a Shift+A the host types (test.sh asks once this prints
  * "ready") arrives as a KeyPress of keycode 38 (Linux KEY_A, 30, plus 8)
- * that the keymap turns into "A". Prints [ OK ] tinyx.
+ * that the keymap turns into "A". Prints [ OK ] tinyx. Before the key:
+ * MIT-SHM, an image in a System V segment (libgloss shm.c) put to the
+ * window, green on the screen, and the window's pixels read back into
+ * the segment ([ OK ] tinyx shm).
  */
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/XShm.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdint.h>
@@ -95,6 +101,62 @@ int main(void) {
         printf("[ FAIL ] tinyx the screen at (%u, %u) is 0x%08x, not red\n", w / 4, h / 4, (unsigned)px);
         return 1;
     }
+
+    /* MIT-SHM: a 64x8 green image in a segment, put at (3w/4, h/4), seen
+     * on the screen, and the window's pixels there got back into it. */
+    int shm_major, shm_minor;
+    Bool shm_pixmaps;
+    if (!XShmQueryVersion(d, &shm_major, &shm_minor, &shm_pixmaps)) {
+        return fail("no MIT-SHM extension");
+    }
+    XShmSegmentInfo info;
+    XImage *img = XShmCreateImage(d, DefaultVisual(d, s), 24, ZPixmap, NULL, &info, 64, 8);
+    if (!img) {
+        return fail("XShmCreateImage");
+    }
+    size_t bytes = (size_t)img->bytes_per_line * img->height;
+    info.shmid = shmget(IPC_PRIVATE, bytes, IPC_CREAT | 0600);
+    if (info.shmid < 0) {
+        return fail("shmget");
+    }
+    info.shmaddr = img->data = shmat(info.shmid, NULL, 0);
+    info.readOnly = False;
+    if (info.shmaddr == (void *)-1 || !XShmAttach(d, &info)) {
+        return fail("XShmAttach");
+    }
+    XSync(d, False);
+    /* The server has it: the name may go. */
+    shmctl(info.shmid, IPC_RMID, NULL);
+    for (int y = 0; y < 8; y++) {
+        for (int x = 0; x < 64; x++) {
+            XPutPixel(img, x, y, 0x00ff00);
+        }
+    }
+    unsigned gx = 3 * w / 4, gy = h / 4;
+    GC gc = XCreateGC(d, win, 0, NULL);
+    XShmPutImage(d, win, gc, img, 0, 0, gx, gy, 64, 8, False);
+    XSync(d, False);
+    for (int i = 0; i < 50 && ((px = fb_pixel(fb, pitch, gx + 1, gy + 1)) & 0xffffff) != 0x00ff00; i++) {
+        usleep(100000);
+    }
+    if ((px & 0xffffff) != 0x00ff00) {
+        printf("[ FAIL ] tinyx shm: the screen at (%u, %u) is 0x%08x, not green\n", gx + 1, gy + 1, (unsigned)px);
+        return 1;
+    }
+    memset(img->data, 0, bytes);
+    if (!XShmGetImage(d, win, img, gx, gy, AllPlanes)) {
+        return fail("XShmGetImage");
+    }
+    if ((XGetPixel(img, 1, 1) & 0xffffff) != 0x00ff00 || (XGetPixel(img, 63, 7) & 0xffffff) != 0x00ff00) {
+        printf("[ FAIL ] tinyx shm: XShmGetImage got 0x%08lx, not green\n", XGetPixel(img, 1, 1));
+        return 1;
+    }
+    XShmDetach(d, &info);
+    XSync(d, False);
+    img->data = NULL;
+    XDestroyImage(img);
+    shmdt(info.shmaddr);
+    printf("[ OK ] tinyx shm\n");
 
     printf("ready\n");
     fflush(stdout);
