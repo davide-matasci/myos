@@ -78,7 +78,7 @@ const BOOT_MARKERS: [&str; 33] = [
     "[ OK ] scheduler",
     "[ OK ] urandom",
     "[ OK ] hello",
-    "[ OK ] limine module",
+    "[ OK ] boot modules",
     "[ OK ] fork",
     "[ OK ] fork exec",
     "[ OK ] alloc",
