@@ -15,7 +15,7 @@ use std::process::Command;
 
 /// Per-arch triples for the three flavors of user ELF in `target/`:
 /// `(kernel_triple, none_triple, myos_triple)`.
-fn triples(arch: &str) -> (&'static str, &'static str, &'static str) {
+pub(crate) fn triples(arch: &str) -> (&'static str, &'static str, &'static str) {
     match arch {
         "x86_64" => (
             "x86_64-unknown-none",
@@ -63,9 +63,23 @@ pub fn active_features() -> Vec<String> {
         .collect()
 }
 
+/// While set, no optional feature counts as active: the initramfs of a
+/// default build ([`build_initramfs_default`]), whatever this one has.
+static NO_FEATURES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// True when the given feature (`linux_compat`) is in the active set.
 pub fn feature_enabled(feature: &str) -> bool {
-    active_features().iter().any(|f| *f == feature)
+    !NO_FEATURES.load(std::sync::atomic::Ordering::Relaxed) && active_features().iter().any(|f| *f == feature)
+}
+
+/// The initramfs of a default build (no optional feature: no Linux layer),
+/// as the release's boot files carry it (`src/packages.rs`).
+#[allow(dead_code)]
+pub fn build_initramfs_default(manifest_dir: &Path, arch: &str) -> Vec<u8> {
+    NO_FEATURES.store(true, std::sync::atomic::Ordering::Relaxed);
+    let image = build_initramfs(manifest_dir, arch);
+    NO_FEATURES.store(false, std::sync::atomic::Ordering::Relaxed);
+    image
 }
 pub(crate) struct Entry {
     pub(crate) name: String,

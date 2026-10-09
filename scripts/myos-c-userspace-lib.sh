@@ -32,6 +32,7 @@ MYOS_C_SMOKES_VERSION="$MYOS_ROOT/target/.myos-c-smokes-version"
 MYOS_CURL_VERSION="$MYOS_ROOT/target/.myos-curl-version"
 MYOS_SBASE_VERSION="$MYOS_ROOT/target/.myos-sbase-version"
 MYOS_OKSH_VERSION="$MYOS_ROOT/target/.myos-oksh-version"
+MYOS_LIMINE_VERSION="$MYOS_ROOT/target/.myos-limine-version"
 MYOS_UBASE_VERSION="$MYOS_ROOT/target/.myos-ubase-version"
 MYOS_COREUTILS_VERSION="$MYOS_ROOT/target/.myos-coreutils-version"
 MYOS_RIPGREP_VERSION="$MYOS_ROOT/target/.myos-ripgrep-version"
@@ -155,7 +156,8 @@ myos_get_myos_version_hash() {
   h="$(
     {
       sha256sum "$MYOS_ROOT/user/get-myos/get-myos.c" "$MYOS_ROOT/user/get-myos/pkgtools.c" \
-        "$MYOS_ROOT/user/get-myos/pkgtools.h" "$MYOS_ROOT/user/get-myos/build.sh"
+        "$MYOS_ROOT/user/get-myos/pkgtools.h" "$MYOS_ROOT/user/get-myos/boot.c" \
+        "$MYOS_ROOT/user/get-myos/boot.h" "$MYOS_ROOT/user/get-myos/build.sh"
       myos_newlib_version_hash
       myos_zlib_version_hash
     } | myos_hash
@@ -275,6 +277,28 @@ myos_oksh_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/oksh-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_limine_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      find "$MYOS_ROOT/ports/limine" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_limine_is_current() {
+  local arch
+  [[ -f "$MYOS_LIMINE_VERSION" ]] \
+    && [[ "$(cat "$MYOS_LIMINE_VERSION")" == "$(myos_limine_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/limine-${arch}-unknown-none" ]] || return 1
   done
 }
 

@@ -22,7 +22,7 @@ under its own license.
 
 | Component | Pinned version | License | Source |
 |-----------|----------------|---------|--------|
-| Limine bootloader (BIOS/UEFI binaries) | 12.6.1 | BSD-2-Clause | https://github.com/limine-bootloader/limine (`src/limine_image.rs`) |
+| Limine bootloader (BIOS/UEFI binaries, and the `limine` tool built from the release's `limine.c` with the BIOS stage it embeds, at `/bin/etc/limine`) | 12.6.1 | BSD-2-Clause | https://github.com/limine-bootloader/limine (`ports/limine`, `src/limine_image.rs`) |
 | newlib + libgloss (C library; `toolchain/newlib/`) | 4.4.0 | Mostly BSD-style permissive licenses; see `COPYING.NEWLIB` / `COPYING.LIBGLOSS` in the upstream source | https://sourceware.org/git/newlib-cygwin.git |
 | Rust `std` and `core` (patched; `toolchain/std/`), linked into Rust userspace programs | pinned nightly (`rust-toolchain.toml`) | MIT OR Apache-2.0 | https://github.com/rust-lang/rust |
 | dlmalloc (the Rust crate: a port of Doug Lea's malloc, public domain), the heap of the myos `std` (`toolchain/std/sys/myos/alloc.rs`), linked into Rust userspace programs | 0.2.13 (as `std`'s `Cargo.lock` pins it) | MIT OR Apache-2.0 | https://github.com/alexcrichton/dlmalloc-rs |

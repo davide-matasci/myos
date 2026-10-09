@@ -25,7 +25,7 @@ for arch in x86_64 aarch64 riscv64; do
   cc="${triple}-cc"
   objs=()
   echo "==> get-myos ($triple)"
-  for src in get-myos pkgtools; do
+  for src in get-myos pkgtools boot; do
     obj="$ROOT/target/get-myos-${src}-${arch}.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$nl/include" -I"$zl/include" \
       -c "$HERE/$src.c" -o "$obj"

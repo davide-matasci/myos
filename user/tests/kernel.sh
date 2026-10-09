@@ -118,7 +118,8 @@ pci_rescan() {
 # partition reads no further than its end; the FAT mounts from p1, an ext2
 # made on p3 works and leaves p1 as it was. A rescan keeps a mounted
 # partition; with the primary header wiped, the backup at the end of the
-# disk gives the same partitions. (The port tests reuse the whole disk.)
+# disk gives the same partitions; mkfs.fat makes p3 a FAT32 volume. (The
+# port tests reuse the whole disk.)
 partitions() {
 	d=/dev/nvme1n1
 	[ "$(ls $d | tr '\n' ' ')" = "data p1 p3 " ] || { ls $d; return 1; }
@@ -142,15 +143,22 @@ partitions() {
 	echo rescan > /proc/pci || return 1
 	grep '^nvme1n1/' /proc/partitions > /tmp/parts.got
 	cmp -s /tmp/parts.want /tmp/parts.got || { echo "no backup GPT"; cat /proc/partitions; return 1; }
-	mount $d/p3 /tmp/p3 ext2 && [ "$(cat /tmp/p3/k)" = kept ] && umount /tmp/p3
+	mount $d/p3 /tmp/p3 ext2 && [ "$(cat /tmp/p3/k)" = kept ] && umount /tmp/p3 || return 1
+	# mkfs.fat: p3 becomes an empty FAT32 volume that keeps a file and a
+	# directory across a remount.
+	mkfs.fat $d/p3 && mount $d/p3 /tmp/p3 fat || return 1
+	[ -z "$(ls /tmp/p3)" ] || { ls /tmp/p3; return 1; }
+	mkdir "/tmp/p3/A dir" && cp /bin/sbase/ls "/tmp/p3/A dir/ls" && umount /tmp/p3 || return 1
+	mount $d/p3 /tmp/p3 fat && cmp /bin/sbase/ls "/tmp/p3/A dir/ls" && umount /tmp/p3
 }
-# The boot disk's layout (docs/install.md), where it is a disk myos sees
-# (virtio on aarch64 and riscv64; x86 boots from IDE): its ESP holds the
-# kernel and the initramfs in slot a, an empty slot b and the one
-# limine.conf, which boots slot a; the data partition is an empty ext2.
+# The boot disk's layout (docs/install.md; a virtio disk on every arch,
+# vdc on x86): its ESP holds the kernel, the initramfs and
+# the version in slot a, an empty slot b and the one limine.conf, which
+# boots slot a and tells the kernel so (/proc/cmdline); the data partition
+# is an empty ext2.
 boot_disk() {
 	data=$(grep '"myos data"$' /proc/partitions | cut -d' ' -f1)
-	[ -n "$data" ] || return 0
+	[ -n "$data" ] || { cat /proc/partitions; return 1; }
 	disk=${data%/*}
 	esp=$(grep "^$disk/p[0-9]* .* c12a7328-f81f-11d2-ba4b-00a0c93ec93b " /proc/partitions | cut -d' ' -f1)
 	[ -n "$esp" ] || { cat /proc/partitions; return 1; }
@@ -160,6 +168,8 @@ boot_disk() {
 	[ -s /tmp/boot-esp/boot/a/kernel ] && [ -s /tmp/boot-esp/boot/a/initramfs ] || r=1
 	[ -d /tmp/boot-esp/boot/b ] && [ -z "$(ls /tmp/boot-esp/boot/b)" ] || r=1
 	grep -q '^    path: boot():/boot/a/kernel$' /tmp/boot-esp/boot/limine/limine.conf || r=1
+	[ "$(cat /tmp/boot-esp/boot/a/version)" = "$(cat /lib/myos-release)" ] || r=1
+	grep -q 'slot=a' /proc/cmdline || r=1
 	[ "$(/bin/sbase/find /tmp/boot-esp -name limine.conf | wc -l)" -eq 1 ] || r=1
 	umount /tmp/boot-esp
 	[ $r = 0 ] || { cat /tmp/boot-esp.txt; return 1; }

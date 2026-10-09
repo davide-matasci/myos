@@ -23,8 +23,8 @@ mod release;
 use boot_test::Mode;
 
 use limine_image::{
-    DiskFile, LIMINE_VERSION, fetch_limine, limine_conf,
-    write_esp_image_ex,
+    DiskFile, fetch_limine, limine_conf, limine_esp_files, limine_version,
+    write_slot_image,
     write_fat_data_image, write_scratch_gpt_image, write_x86_iso,
 };
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
@@ -107,6 +107,9 @@ fn main() {
 
     match (what, test) {
         ("packages", _) => {
+            // The release's boot files take each arch's kernel.
+            build_aarch64_kernel();
+            build_riscv64_kernel();
             let out = packages::build_all(&PathBuf::from(env!("CARGO_MANIFEST_DIR")));
             println!("{}", out.display());
         }
@@ -460,15 +463,14 @@ fn run_bios(bios_path: &str) {
         .arg("1024")
         .arg("-smp")
         .arg("4")
-        .arg("-drive")
-        .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
         .arg("stdio")
         .arg("-nic")
         .arg("none")
         .arg("-boot")
-        .arg("order=c,menu=off");
+        .arg("menu=off");
     add_virtio_blk_x86(&mut cmd);
+    add_boot_disk(&mut cmd, Path::new(bios_path));
     add_virtio_net(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -485,8 +487,6 @@ fn run_uefi(uefi_path: &str) {
         .arg("-smp")
         .arg("4")
         .arg("-drive")
-        .arg(format!("format=raw,file={uefi_path}"))
-        .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
             code.display()
@@ -501,6 +501,7 @@ fn run_uefi(uefi_path: &str) {
         .arg("-nic")
         .arg("none");
     add_virtio_blk_x86(&mut cmd);
+    add_boot_disk(&mut cmd, Path::new(uefi_path));
     add_virtio_net(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -561,6 +562,10 @@ fn linux_compat_enabled() -> bool {
 fn run_test_bios(bios_path: &str, mode: Mode) {
     start_package_mirror("x86_64", mode);
     prepare_alpine_disk("x86_64", mode);
+    test_boots("bios", Path::new(bios_path), mode, |disk, _| qemu_test_bios(disk));
+}
+
+fn qemu_test_bios(disk: &Path) -> std::process::Child {
     let mut cmd = Command::new("qemu-system-x86_64");
     x86_machine(&mut cmd);
     cmd.arg("-cpu")
@@ -583,8 +588,6 @@ fn run_test_bios(bios_path: &str, mode: Mode) {
                 vec![]
             }
         })
-        .arg("-drive")
-        .arg(format!("format=raw,file={bios_path}"))
         .arg("-serial")
         .arg("stdio")
         .arg("-display")
@@ -598,22 +601,25 @@ fn run_test_bios(bios_path: &str, mode: Mode) {
         .arg("-nic")
         .arg("none")
         .arg("-boot")
-        .arg("order=c,menu=off")
+        .arg("menu=off")
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
+    add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
-    let child = cmd
-        .stdin(Stdio::piped())
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to start qemu-system-x86_64");
-    boot_test::run(child, mode, linux_compat_enabled());
+        .expect("failed to start qemu-system-x86_64")
 }
 
 fn run_test_uefi(uefi_path: &str, mode: Mode) {
     start_package_mirror("x86_64", mode);
     prepare_alpine_disk("x86_64", mode);
+    test_boots("uefi", Path::new(uefi_path), mode, |disk, _| qemu_test_uefi(disk));
+}
+
+fn qemu_test_uefi(disk: &Path) -> std::process::Child {
     let (code, vars) = ovmf_files(Arch::X64);
     let mut cmd = Command::new("qemu-system-x86_64");
     x86_machine(&mut cmd);
@@ -643,8 +649,6 @@ fn run_test_uefi(uefi_path: &str, mode: Mode) {
             }
         })
         .arg("-drive")
-        .arg(format!("format=raw,file={uefi_path}"))
-        .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",
             code.display()
@@ -666,27 +670,69 @@ fn run_test_uefi(uefi_path: &str, mode: Mode) {
         .arg("none")
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
+    add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
-    let child = cmd
-        .stdin(Stdio::piped())
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to start qemu-system-x86_64");
-    boot_test::run(child, mode, linux_compat_enabled());
+        .expect("failed to start qemu-system-x86_64")
 }
 
 fn run_test_aarch64(mode: Mode) {
+    // The image first: its kernel build makes the user programs the
+    // packages' boot files (the initramfs) take.
+    let image = build_aarch64_image();
     start_package_mirror("aarch64", mode);
     prepare_alpine_disk("aarch64", mode);
-    let image = build_aarch64_image();
-    let child = qemu_aarch64(&image, true)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start qemu-system-aarch64");
-    boot_test::run(child, mode, linux_compat_enabled());
+    test_boots("aarch64", &image, mode, |disk, _| {
+        qemu_aarch64(disk, true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to start qemu-system-aarch64")
+    });
+}
+
+/// The boot test of the boot disk `image`, on a copy of it
+/// (`target/boot-test-<name>.img`): the full list's `get-myos --upgrade`
+/// writes its other slot, and `get-myos --install` makes a boot disk of the
+/// scratch disk. When the list passed, the copy boots again
+/// ([`Mode::Reboot`]), which must come up from that slot, and then the
+/// installed disk ([`Mode::Installed`], kept as
+/// `target/installed-<name>.img`: every boot makes a new scratch disk) as
+/// the boot disk, by BIOS on the bios job and UEFI elsewhere. The copy keeps
+/// the build's image as it was.
+fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path, Mode) -> std::process::Child) -> ! {
+    let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+    let disk = target.join(format!("boot-test-{name}.img"));
+    limine_image::copy_sparse(image, &disk);
+    let linux = linux_compat_enabled();
+    let mut ok = boot_test::run(spawn(&disk, mode), mode, linux);
+    if ok && mode == Mode::Full {
+        let installed = target.join(format!("installed-{name}.img"));
+        limine_image::copy_sparse(&scratch_img_path(), &installed);
+        eprintln!("boot test: the upgraded disk boots again");
+        ok = boot_test::run(spawn(&disk, Mode::Reboot), Mode::Reboot, linux);
+        if ok {
+            eprintln!("boot test: the disk get-myos --install made boots");
+            ok = boot_test::run(spawn(&installed, Mode::Installed), Mode::Installed, linux);
+        }
+    }
+    exit(if ok { 0 } else { 1 })
+}
+
+/// x86: the boot disk as a third legacy virtio-blk (`/dev/vdc/`, after
+/// `add_virtio_blk_x86`'s two, so the test disks keep their names), the one
+/// the firmware boots: myos sees it (`get-myos --upgrade` writes it), which
+/// an IDE disk it is not. Not NVMe: with 4 GiB of RAM SeaBIOS maps the NVMe
+/// BAR (64-bit) above 4 GiB, out of its reach, and finds no disk to boot;
+/// the legacy virtio-blk's BAR0 is I/O ports.
+fn add_boot_disk(cmd: &mut Command, image: &Path) {
+    cmd.arg("-drive")
+        .arg(format!("if=none,id=bootdisk,format=raw,file={}", image.display()));
+    cmd.arg("-device").arg("virtio-blk-pci,drive=bootdisk,disable-modern=on,bootindex=0");
 }
 
 fn qemu_aarch64(image: &Path, ci: bool) -> Command {
@@ -743,19 +789,63 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
 fn build_aarch64_image() -> PathBuf {
     let kernel = build_aarch64_kernel();
     let kernel_bytes = std::fs::read(&kernel).expect("read aarch64 kernel ELF");
+    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/aarch64.img");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let initramfs = initramfs::build_initramfs(&manifest, "aarch64");
+    write_slot_image(&image, &kernel_bytes, &initramfs, esp_limine_files("aarch64"));
+    write_fat_data_image(&fat_img_path());
+    image
+}
+
+/// The Limine release's files (`target/limine-v<version>`, which build.rs
+/// fetched).
+fn limine_files() -> limine_image::LimineFiles {
     let limine_dir = PathBuf::from(env!("LIMINE_DIR"));
-    let limine = if limine_dir.join("BOOTAA64.EFI").is_file() {
-        fetch_limine(&limine_dir)
-    } else {
-        let fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(format!("limine-v{LIMINE_VERSION}"));
-        fetch_limine(&fallback)
-    };
-    let efi = std::fs::read(limine.bootaa64()).expect("BOOTAA64.EFI");
-    // The board's device tree, dumped by QEMU with the machine options the
-    // boot uses (the same -smp, so the CPU list matches). Regenerated every
-    // time: it is cheap and must never be stale.
+    if limine_dir.join("BOOTAA64.EFI").is_file() {
+        return fetch_limine(&limine_dir);
+    }
+    let fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("limine-v{}", limine_version()));
+    fetch_limine(&fallback)
+}
+
+/// Limine's files on `arch`'s boot disk ESP, beside the slots: the boot
+/// images and the release's `<arch>-boot.txt` (`get-myos --install`,
+/// `src/packages.rs`) take the same.
+pub(crate) fn esp_limine_files(arch: &str) -> Vec<DiskFile> {
+    let limine = limine_files();
+    let read = |p: PathBuf| std::fs::read(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+    match arch {
+        "x86_64" => limine_esp_files(
+            "BOOTX64.EFI",
+            &read(limine.bootx64()),
+            Some(&read(limine.bios_sys())),
+            &limine_conf("", "", &["a"]),
+            &[],
+        ),
+        "aarch64" => limine_esp_files(
+            "BOOTAA64.EFI",
+            &read(limine.bootaa64()),
+            None,
+            &aarch64_limine_conf(),
+            &[DiskFile { path: "boot/virt-aarch64.dtb".into(), data: aarch64_dtb() }],
+        ),
+        "riscv64" => limine_esp_files(
+            "BOOTRISCV64.EFI",
+            &read(limine.bootriscv64()),
+            None,
+            &riscv_limine_conf(),
+            &[DiskFile { path: "boot/virt.dtb".into(), data: riscv64_dtb() }],
+        ),
+        _ => panic!("no boot disk for {arch}"),
+    }
+}
+
+/// The board's device tree, dumped by QEMU with the machine options the
+/// boot uses (the same -smp, so the CPU list matches). Regenerated every
+/// time: it is cheap and must never be stale.
+fn aarch64_dtb() -> Vec<u8> {
     let dtb_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/virt-aarch64.dtb");
     let status = Command::new("qemu-system-aarch64")
         .args([
@@ -775,25 +865,7 @@ fn build_aarch64_image() -> PathBuf {
     if !status.success() || !dtb_path.is_file() {
         panic!("failed to generate target/virt-aarch64.dtb with qemu-system-aarch64");
     }
-    let dtb = std::fs::read(&dtb_path).expect("read virt-aarch64.dtb");
-    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/aarch64.img");
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let initramfs = initramfs::build_initramfs(&manifest, "aarch64");
-    write_esp_image_ex(
-        &image,
-        &kernel_bytes,
-        "BOOTAA64.EFI",
-        &efi,
-        None,
-        &initramfs,
-        &aarch64_limine_conf(),
-        &[DiskFile {
-            path: "boot/virt-aarch64.dtb".into(),
-            data: dtb,
-        }],
-    );
-    write_fat_data_image(&fat_img_path());
-    image
+    std::fs::read(&dtb_path).expect("read virt-aarch64.dtb")
 }
 
 
@@ -1105,16 +1177,19 @@ fn riscv64_firmware() -> (PathBuf, PathBuf) {
 }
 
 fn run_test_riscv64(mode: Mode) {
+    // The image first: its kernel build makes the user programs the
+    // packages' boot files (the initramfs) take.
+    let image = build_riscv64_image();
     start_package_mirror("riscv64", mode);
     prepare_alpine_disk("riscv64", mode);
-    let image = build_riscv64_image();
-    let child = qemu_riscv64(&image, true)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start qemu-system-riscv64");
-    boot_test::run(child, mode, linux_compat_enabled());
+    test_boots("riscv64", &image, mode, |disk, _| {
+        qemu_riscv64(disk, true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to start qemu-system-riscv64")
+    });
 }
 
 fn qemu_riscv64(image: &Path, ci: bool) -> Command {
@@ -1182,20 +1257,20 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
 fn build_riscv64_image() -> PathBuf {
     let kernel = build_riscv64_kernel();
     let kernel_bytes = std::fs::read(&kernel).expect("read riscv64 kernel ELF");
-    let limine_dir = PathBuf::from(env!("LIMINE_DIR"));
-    let limine = if limine_dir.join("BOOTRISCV64.EFI").is_file() {
-        fetch_limine(&limine_dir)
-    } else {
-        let fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(format!("limine-v{LIMINE_VERSION}"));
-        fetch_limine(&fallback)
-    };
-    let efi = std::fs::read(limine.bootriscv64()).expect("BOOTRISCV64.EFI");
+    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/riscv64.img");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let initramfs = initramfs::build_initramfs(&manifest, "riscv64");
+    write_slot_image(&image, &kernel_bytes, &initramfs, esp_limine_files("riscv64"));
+    write_fat_data_image(&fat_img_path());
+    image
+}
+
+/// riscv64's device tree, dumped by QEMU. Always regenerated with the same
+/// `-smp` as qemu_riscv64: a cached single-hart dump (no -smp) only lists
+/// cpu@0; when OpenSBI boots on hart 1 Limine panics "missing struct
+/// riscv_hart for BSP" before the kernel runs (CI #34824642315).
+fn riscv64_dtb() -> Vec<u8> {
     let dtb_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/virt.dtb");
-    // Always regenerate with the same `-smp` as qemu_riscv64. A cached single-hart
-    // dump (no -smp) only lists cpu@0; when OpenSBI boots on hart 1 Limine panics
-    // "missing struct riscv_hart for BSP" before the kernel runs (CI #34824642315).
     let status = Command::new("qemu-system-riscv64")
         .args([
             "-machine",
@@ -1212,25 +1287,7 @@ fn build_riscv64_image() -> PathBuf {
     if !status.success() || !dtb_path.is_file() {
         panic!("failed to generate target/virt.dtb with qemu-system-riscv64 -smp {RISCV_SMP}");
     }
-    let dtb = std::fs::read(&dtb_path).expect("read virt.dtb");
-    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/riscv64.img");
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let initramfs = initramfs::build_initramfs(&manifest, "riscv64");
-    write_esp_image_ex(
-        &image,
-        &kernel_bytes,
-        "BOOTRISCV64.EFI",
-        &efi,
-        None,
-        &initramfs,
-        &riscv_limine_conf(),
-        &[DiskFile {
-            path: "boot/virt.dtb".into(),
-            data: dtb,
-        }],
-    );
-    write_fat_data_image(&fat_img_path());
-    image
+    std::fs::read(&dtb_path).expect("read virt.dtb")
 }
 
 fn build_riscv64_kernel() -> PathBuf {

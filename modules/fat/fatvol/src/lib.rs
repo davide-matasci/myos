@@ -27,6 +27,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+mod format;
 mod raw;
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,7 @@ use alloc::vec::Vec;
 
 use fstool::fs::fat::{self, Timestamp, Volume};
 
+pub use format::format;
 pub use fstool::device::SectorDriver;
 pub use fstool::fs::fat::FatKind;
 
