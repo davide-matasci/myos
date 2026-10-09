@@ -657,6 +657,36 @@ pub fn timer_deadline(deadline_ns: u64) {
     }
 }
 
+/// The CPUs whose tick [`timer_idle`] stopped.
+static TICK_STOPPED: [AtomicBool; crate::smp::MAX_CPUS] = [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+
+/// This CPU halts with nothing to run: stop its periodic (physical) timer
+/// and fire the virtual one once, at `wake_ns` (monotonic). Interrupts off.
+pub fn timer_idle(wake_ns: u64) {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    let target = ns_to_ticks(wake_ns).max(cnt_now() + 1);
+    TICK_STOPPED[cpu].store(true, Ordering::Relaxed);
+    unsafe {
+        asm!("msr cntp_ctl_el0, {c}", c = in(reg) 0u64, options(nomem, nostack));
+        asm!("msr cntv_cval_el0, {t}", t = in(reg) target, options(nomem, nostack));
+        asm!("isb", options(nostack));
+    }
+}
+
+/// The periodic tick back on this CPU if [`timer_idle`] stopped it.
+/// Interrupts off.
+pub fn timer_resume() {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    if !TICK_STOPPED[cpu].swap(false, Ordering::Relaxed) {
+        return;
+    }
+    rearm_timers();
+    unsafe {
+        asm!("msr cntp_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
+        asm!("isb", options(nostack));
+    }
+}
+
 fn init_timer() {
     let ticks = timer_ticks();
     arm_virt_timer();

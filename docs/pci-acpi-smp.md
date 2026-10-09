@@ -229,6 +229,24 @@ back at the tick), and every re-arm programs `min(next tick,
 task::next_deadline_ns())`, so a 1 ms
 `nanosleep` ends after about 1 ms instead of at the next 10 ms boundary.
 
+Idle CPUs are tickless (issue #367): a CPU other than 0 that halts with
+nothing to run (`sched::halt`, from the idle loop and `block_until`) stops
+its tick and arms its timer once, for `NEXT_DEADLINE` or at most 1 s ahead
+(`arch::timer_idle`: x86 puts the LAPIC timer in one-shot mode, aarch64
+turns the physical timer off and sets `cntv_cval_el0`, riscv64 sets
+`stimecmp`), so an idle CPU is not woken 100 times a second. The 1 s
+backstop bounds what a wakeup that was never kicked costs. Whatever ends the
+halt and runs something puts the tick back (`arch::timer_resume`, from
+`halt` and from `schedule`, since an interrupt may switch tasks from inside
+the halt): a busy CPU keeps its 100 Hz tick for preemption. CPU 0 keeps
+ticking: its tick polls the UART, which has no interrupt, and blinks the
+cursor. So does every riscv64 hart (`arch::TICKLESS_IDLE`): under the
+single-threaded TCG the boot tests run riscv64 with, an IPI from a running
+hart reaches a halted one only at QEMU's 100 ms round-robin kick, so a TLB
+shootdown waiting for a tickless hart's ack took up to 100 ms; the halted
+hart's own tick is what let it in sooner. Each idle CPU's halts then last up to its next deadline (the
+`idle_tickless` test checks a quiet CPU averages over 20 ms a halt).
+
 Idle: `kernel_main` (task 0) is the BSP's idle task, `ap_idle_body` the APs'.
 `idle_step` runs whatever is Ready for the CPU, then halts
 (`arch::idle_wait`: `sti; hlt` / `wfi` with the pending-interrupt wakeup)

@@ -334,6 +334,25 @@ pub fn timer_deadline(deadline_ns: u64) {
     }
 }
 
+/// The harts whose tick [`timer_idle`] stopped.
+static TICK_STOPPED: [AtomicBool; crate::smp::MAX_CPUS] = [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+
+/// This hart halts with nothing to run: no tick, its timer fires once, at
+/// `wake_ns` (monotonic). Interrupts off.
+pub fn timer_idle(wake_ns: u64) {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    TICK_STOPPED[cpu].store(true, Ordering::Relaxed);
+    write_stimecmp(ns_to_ticks(wake_ns).max(read_time() + 1));
+}
+
+/// The tick back on this hart if [`timer_idle`] stopped it. Interrupts off.
+pub fn timer_resume() {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    if TICK_STOPPED[cpu].swap(false, Ordering::Relaxed) {
+        arm_timer();
+    }
+}
+
 fn init_timer() {
     arm_timer();
 }
@@ -611,7 +630,7 @@ pub mod plic {
     }
 }
 
-const SBI_EXT_IPI: u64 = 0x7350_4949; // "IPI\0"
+const SBI_EXT_IPI: u64 = 0x73_5049; // "sPI", the SBI spec's IPI extension
 const SBI_IPI_SEND: u64 = 0;
 
 fn sbi_send_ipi(hart_mask: u64, hart_mask_base: u64) {
