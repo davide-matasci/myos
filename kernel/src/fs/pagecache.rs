@@ -185,6 +185,18 @@ fn map_as(node: &Vnode, page: usize, shared: bool, dirty: bool) -> u64 {
     }
 }
 
+/// The frame holding page `page` of `node`'s file if the cache has it,
+/// mapped once more (a fault maps the cached neighbours of the page it
+/// reads, `user::fault_in`); `None` without a read.
+pub fn map_cached(node: &Vnode, page: usize) -> Option<u64> {
+    let (id, index) = (node.key(), page as u32);
+    locked(|c| {
+        let frame = *c.files.get(&id)?.pages.get(&index)?;
+        c.frames.get_mut(&frame)?.maps += 1;
+        Some(frame)
+    })
+}
+
 /// Page `page` of `node`'s file copied into `dst` (a writable private
 /// mapping's own frame), through the cache.
 pub fn copy(node: &Vnode, page: usize, dst: &mut [u8]) {

@@ -69,7 +69,9 @@ t fileio /bin/etc/fileio_smoke
 # MAP_SHARED mappings of a file are the file: stores read back with read()
 # and survive munmap, close and a child's exit, write() shows in them, a
 # second mapping and a forked child share them, read() lands in them,
-# msync, ftruncate, mprotect, a read-only fd (mmap_smoke.c; on ext2 in
+# msync, ftruncate, mprotect, a read-only fd; a MAP_PRIVATE mapping is
+# copied at its first store (from userspace, the kernel or a forked child),
+# and a fault maps the cached pages after it (mmap_smoke.c; on ext2 in
 # mkfs.ext2's test).
 t mmap /bin/etc/mmap_smoke
 # Shared memory: shm_open segments shared by name with a forked child and

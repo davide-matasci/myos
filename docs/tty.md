@@ -16,6 +16,7 @@ about a terminal, or any device, goes through one.
 /dev/tty                 POSIX: the calling process's controlling terminal (its data)
 /proc/self/fd/N          symlink to what fd N is open on, /dev/pts/3/data for a terminal
 /proc/self/tty           symlink to the controlling terminal's directory, /dev/pts/3
+/proc/self/exe           symlink to the program the process runs (the file its exec loaded)
 ```
 
 `/dev/tty` stays a plain file because POSIX names it and ported programs open

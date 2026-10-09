@@ -211,6 +211,16 @@ tty_ctl() {
 }
 t tty_ctl tty_ctl
 
+# /proc/self/exe names the program a process runs: the real path of the
+# file its exec loaded (a multicall tool's hardlink by its own name).
+proc_exe() {
+	exe=$(/bin/sbase/readlink /proc/self/exe)
+	echo "exe: $exe"
+	[ "$exe" = /bin/sbase/readlink ] || return 1
+	ls /proc/self | grep -qx exe
+}
+t proc_exe proc_exe
+
 # A pty comes from /dev/pts/clone: the fd it returns is /dev/pts/N/master,
 # the pair's directory lists master, data and ctl, its window size is set
 # through ctl, master is not openable by name, and the pair goes away with

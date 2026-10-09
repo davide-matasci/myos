@@ -97,9 +97,11 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
     let total = usable_total();
     let free = total.saturating_sub(a - f);
     let caches = (crate::blk::cache_frames() as u64, crate::fs::pagecache::frames() as u64);
+    let (faults, around) = crate::user::fault_counts();
     alloc::format!(
         "FramesAlloc: {}\nFramesFree: {}\nFramesLive: {}\nLiveKiB: {}\n\
          SiteVirtq: {}\nSiteFault0: {}\nSiteExec: {}\nSitePageTable: {}\nSiteMmap: {}\nSiteOther: {}\n\
+         Faults: {}\nFaultAround: {}\n\
          BlockCacheKiB: {}\nPageCacheKiB: {}\n\
          MemTotalKiB: {}\nMemFreeKiB: {}\nMemAvailableKiB: {}\n",
         a,
@@ -112,6 +114,8 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
         site(3),
         site(4),
         site(5),
+        faults,
+        around,
         caches.0 * (PAGE / 1024),
         caches.1 * (PAGE / 1024),
         total * (PAGE / 1024),

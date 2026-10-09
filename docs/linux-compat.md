@@ -310,9 +310,18 @@ reserved first. That needed core `mmap` work, which native programs share:
 - demand paging: a mapping takes no memory until it is used. The first
   touch of a page, a page fault from userspace or a kernel copy into a user
   buffer, gives it a frame, zeroed or read from the file
-  (`user::fault_in`). A page mapped without write permission (code,
-  constant data) is the page cache's frame for it, shared by every process
-  that maps it (`fs/pagecache.rs`); a writable one is a private copy of it.
+  (`user::fault_in`). A page of a private file mapping is the page cache's
+  frame for it, shared by every process that maps it (`fs/pagecache.rs`)
+  and mapped read-only, whatever the mapping's protection, until the first
+  store to it: that store (a protection fault from userspace, or the
+  kernel copy's check) gives the process its own copy of the page,
+  writable (copy-on-write; `mprotect` to writable copies the same way). A
+  fault on a file-backed page also maps the following pages of the
+  region that the cache already holds, up to 16 in all (fault-around,
+  read-only: a store takes the mapping's protection as above), so a
+  program's code and data are paged in with a few faults rather than one
+  per page from its second run on; `/proc/meminfo` counts the faults and
+  the pages mapped around them.
   rustc reserves 256 MiB for its allocator and maps
   some 250 MiB of libraries, and `rustc --version` touches about 30 MiB of
   it. A file changed or deleted while mapped gives its new contents (or

@@ -2,6 +2,7 @@
 //! copy for fork, free), the user VA layout, and TLB / I-cache maintenance.
 
 use super::*;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Copy this process's user code+stack+heap pages into a new aspace at the same VA.
 pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) -> Option<u64> {
@@ -103,10 +104,18 @@ fn copy_mmap_pages(src: u64, dst: u64) {
         while va < end {
             if let Some(phys) = virt_to_phys(src, va) {
                 // A device's pages are shared with the child, not copied,
-                // and so are a file's from the page cache (a shared
-                // mapping's, writable, among them).
-                if r.prot & task::MMAP_DEVICE != 0 || fs::pagecache::share(phys) {
+                // and so are a file's from the page cache: a shared
+                // mapping's writable, a private mapping's read-only in the
+                // child as in the parent, copied by its first store.
+                if r.prot & task::MMAP_DEVICE != 0 {
                     map_user_page_prot(dst, va, phys, r.prot as usize);
+                    va += PAGE as u64;
+                    continue;
+                }
+                if fs::pagecache::share(phys) {
+                    let prot = r.prot as usize;
+                    let writable = prot & PROT_WRITE != 0 && r.prot & task::MMAP_SHARED != 0;
+                    crate::arch::upaging::map_user_page_prot(dst, va, phys, writable, prot & PROT_EXEC != 0);
                     va += PAGE as u64;
                     continue;
                 }
@@ -345,19 +354,44 @@ pub enum Access {
 /// Two threads of a process touching the same new page must not both map it.
 static FAULT_LOCK: Mutex<()> = Mutex::new(());
 
+/// Pages a file-backed fault maps at once, the faulting one included: the
+/// following ones of the region that the page cache already holds (Linux
+/// maps 16 around a fault). A program's code and constant data are mostly
+/// in the cache by its second run, so they are paged in a few faults
+/// instead of one per page.
+const FAULT_AROUND: usize = 16;
+
+/// Faults handled (`/proc/meminfo`), and the pages the fault-around mapped
+/// on top of the faulting ones.
+static FAULTS: AtomicU64 = AtomicU64::new(0);
+static FAULT_AROUND_PAGES: AtomicU64 = AtomicU64::new(0);
+
+/// How many page faults were handled, and how many pages the fault-around
+/// mapped besides (`/proc/meminfo`).
+pub fn fault_counts() -> (u64, u64) {
+    (FAULTS.load(Ordering::Relaxed), FAULT_AROUND_PAGES.load(Ordering::Relaxed))
+}
+
 /// Page in the mmap page at `va` of the current process on its first touch,
 /// from userspace (a page fault) or from a kernel copy: a zeroed frame,
 /// filled from the file that backs the region. False when `va` is in no
 /// region or the region's protection forbids `access`: a real fault.
+///
+/// A private mapping of a file shares the cache's frame for a page, mapped
+/// read-only, until the first store to it: that store faults (a protection
+/// fault from userspace, or the kernel copy's check), and the page becomes
+/// the process's own copy, writable (copy-on-write). A shared mapping's
+/// page is the file's: its first store makes it dirty.
 pub fn fault_in(va: usize, access: Access) -> bool {
     let page = va & !(PAGE - 1);
-    let Some((prot, file)) = task::mmap_backing(page) else {
+    let Some((prot, file, left)) = task::mmap_backing(page) else {
         return false;
     };
     // A device's pages are mapped with the region, never paged in.
     if prot & task::MMAP_DEVICE != 0 {
         return false;
     }
+    let shared = prot & task::MMAP_SHARED != 0;
     let prot = prot as usize;
     let allowed = match access {
         Access::Read => prot != 0,
@@ -380,10 +414,10 @@ pub fn fault_in(va: usize, access: Access) -> bool {
     // is the file's, bounded by the files mapped.
     let fresh = if virt_to_phys(aspace, page as u64).is_none() {
         let frame = match &file {
-            Some((node, off)) if prot & task::MMAP_SHARED as usize != 0 => {
-                fs::pagecache::map_shared(node, off / PAGE, prot & PROT_WRITE != 0)
-            }
-            Some((node, off)) if prot & PROT_WRITE == 0 => fs::pagecache::map(node, off / PAGE),
+            Some((node, off)) if shared => fs::pagecache::map_shared(node, off / PAGE, prot & PROT_WRITE != 0),
+            // Read, or not writable at all: the cached page itself. A
+            // private mapping's store to it copies it below.
+            Some((node, off)) if prot & PROT_WRITE == 0 || access != Access::Write => fs::pagecache::map(node, off / PAGE),
             // A private copy of it (zero past the end of the file).
             Some((node, off)) => {
                 let Some(frame) = mm::try_alloc_frame_user(4) else {
@@ -410,27 +444,82 @@ pub fn fault_in(va: usize, access: Access) -> bool {
     let guard = FAULT_LOCK.lock();
     // Another thread may have paged it in meanwhile: then only the
     // protection is (re)applied.
-    let frame = match (virt_to_phys(aspace, page as u64), fresh) {
+    let (frame, copied) = match (virt_to_phys(aspace, page as u64), fresh) {
         (Some(mapped), fresh) => {
             if let Some(frame) = fresh {
                 release_frame(frame);
             }
-            Some(mapped)
+            let cached = fs::pagecache::is_cached(mapped);
+            if access == Access::Write && cached && file.is_some() && !shared {
+                // The first store to a page the cache shares: the
+                // process's own copy from now on.
+                let Some(own) = mm::try_alloc_frame_user(4) else {
+                    drop(guard);
+                    crate::arch::irq_restore(flags);
+                    return false;
+                };
+                unsafe { core::ptr::copy_nonoverlapping(mm::hhdm(mapped), mm::hhdm(own), PAGE) };
+                free_mapped_page(aspace, page as u64);
+                (Some(own), true)
+            } else {
+                if access == Access::Write && cached && shared {
+                    fs::pagecache::dirtied(mapped);
+                }
+                (Some(mapped), false)
+            }
         }
-        (None, fresh) => fresh,
+        (None, fresh) => (fresh, false),
     };
     if let Some(frame) = frame {
-        map_user_page_prot(aspace, page as u64, frame, prot);
-        // The page was not mapped before: no other CPU can hold a
-        // translation for it (one that faults on it meanwhile flushes its
-        // own here), so this CPU's entry for it is all there is to drop.
+        // A private mapping's cached page stays read-only (its store
+        // copies it, above); the process's own pages take the region's.
+        let writable = prot & PROT_WRITE != 0 && (shared || file.is_none() || !fs::pagecache::is_cached(frame));
+        crate::arch::upaging::map_user_page_prot(aspace, page as u64, frame, writable, prot & PROT_EXEC != 0);
+        // The page was not mapped before, or mapped read-only: no other CPU
+        // can hold a translation that lets it write (one that faults on it
+        // meanwhile flushes its own here), so this CPU's entry for it is all
+        // there is to drop now; a copy drops the others' below.
         crate::arch::flush_tlb_page_local(page);
+        FAULTS.fetch_add(1, Ordering::Relaxed);
+        if let Some((node, off)) = &file {
+            fault_around(aspace, page, prot, node, *off, left);
+        }
     }
     drop(guard);
     crate::arch::irq_restore(flags);
+    // The other CPUs running this process still read the page the copy
+    // replaced: the same bytes, until this CPU's store, which follows the
+    // flush. Off the lock: a peer waiting for it with interrupts off could
+    // not answer the shootdown.
+    if copied && task::aspace_loaded_elsewhere(aspace) {
+        flush_user_tlb();
+    }
     // Mapped when looked at first and gone by the lock (unmapped by
     // another thread): look again.
     frame.is_some() || fault_in(va, access)
+}
+
+/// Map the pages after `page` of its region (`left` pages from it on) that
+/// the cache holds for `node` (the file offset `off` at `page`), read-only
+/// (a store faults and takes the region's protection: a shared mapping's
+/// page dirty, a private one copied), up to [`FAULT_AROUND`] in all. Under
+/// `FAULT_LOCK`, interrupts off.
+fn fault_around(aspace: u64, page: usize, prot: usize, node: &fs::Vnode, off: usize, left: usize) {
+    for i in 1..left.min(FAULT_AROUND) {
+        let va = page + i * PAGE;
+        if virt_to_phys(aspace, va as u64).is_some() {
+            continue;
+        }
+        let Some(frame) = fs::pagecache::map_cached(node, off / PAGE + i) else {
+            continue;
+        };
+        if prot & PROT_EXEC != 0 {
+            sync_icache(mm::hhdm(frame) as usize, PAGE);
+        }
+        crate::arch::upaging::map_user_page_prot(aspace, va as u64, frame, false, prot & PROT_EXEC != 0);
+        crate::arch::flush_tlb_page_local(va);
+        FAULT_AROUND_PAGES.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 pub(super) fn free_mapped_page(aspace: u64, va: u64) {

@@ -27,6 +27,10 @@ pub(super) struct Process {
     /// Basename from the last successful exec (multicall argv[0] fallback).
     pub exec_name: [u8; 32],
     pub exec_name_len: u8,
+    /// The real path of the program it runs, the file its last exec
+    /// loaded (a script's interpreter): `/proc/self/exe`. Empty before an
+    /// exec and for a kernel thread.
+    pub exe: alloc::string::String,
     /// The cwd's directory (`task::cwd`), which it follows wherever it moves;
     /// `None` for one a namespace makes up. Survives exec; shared on fork.
     pub cwd_node: Option<crate::fs::Vnode>,
@@ -88,6 +92,7 @@ static EMPTY_PROC: Process = Process {
     brk_cur: 0,
     exec_name: [0; 32],
     exec_name_len: 0,
+    exe: alloc::string::String::new(),
     cwd_node: None,
     cwd: root_cwd_buf(),
     cwd_len: 1,
@@ -129,6 +134,7 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
         core::ptr::write(&raw mut (*p).ns, src.ns.clone());
         core::ptr::write(&raw mut (*p).mapped_files, src.mapped_files.clone());
         core::ptr::write(&raw mut (*p).cwd_node, src.cwd_node.clone());
+        core::ptr::write(&raw mut (*p).exe, src.exe.clone());
         b.assume_init()
     };
     for fd in b.fds.iter_mut() {

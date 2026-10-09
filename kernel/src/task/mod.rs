@@ -454,6 +454,18 @@ pub fn set_current_name(name: &[u8]) {
     with_thread_mut(|t| set_name(t, name));
 }
 
+/// The program the current process runs from now on (`/proc/self/exe`):
+/// the real path of the file exec loaded.
+pub fn set_exe(path: &str) {
+    with_process_mut(|t| t.exe = alloc::string::String::from(path));
+}
+
+/// The real path of the program the current process runs (`None` before
+/// an exec, and for a kernel thread).
+pub fn exe_path() -> Option<alloc::string::String> {
+    with_process_opt(|p| p.map(|p| p.exe.clone()).filter(|e| !e.is_empty()))
+}
+
 pub fn exec_name(out: &mut [u8]) -> usize {
     with_process_mut(|t| {
         let n = t.exec_name_len as usize;

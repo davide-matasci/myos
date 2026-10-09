@@ -9,6 +9,7 @@ issue #291.
 /proc/<pid>/status                  the process, one line
 /proc/<pid>/task/                   its threads (their tids), the leader first
 /proc/<pid>/task/<tid>/status       a thread, one line
+/proc/self/exe                      symlink to the program the process runs: the real path of the file its exec loaded (a script's interpreter)
 /proc/cpu                           the uptime and each CPU's idle time
 /proc/meminfo                       RAM: total, free, available; the allocator's counters
 /proc/boot/kernel                   the kernel file this boot came from, as Limine loaded it
@@ -105,7 +106,9 @@ system monitor reads the last three, in KiB:
 
 The others count frames: allocated and freed since boot (`FramesAlloc`,
 `FramesFree`, the live ones in `FramesLive` and `LiveKiB`), allocations per
-kernel call site (`Site*`, for leak hunting), and the caches' sizes
+kernel call site (`Site*`, for leak hunting), the page faults handled
+(`Faults`) and the pages the fault-around mapped besides the faulting ones
+(`FaultAround`, `docs/linux-compat.md`), and the caches' sizes
 (`BlockCacheKiB`, `PageCacheKiB`).
 
 ## How the time is counted

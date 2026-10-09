@@ -136,16 +136,43 @@ static void shared(void) {
     close(other);
     unlink(other_path);
 
-    /* A private mapping is a copy: its stores reach neither. */
+    /* A private mapping is a copy, made at the first store (it shares the
+     * file's page until then): its stores reach neither the file nor the
+     * other mappings, from userspace, from the kernel (a read() into it)
+     * or from a forked child. */
     priv = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
     check(priv != MAP_FAILED, "a MAP_PRIVATE mapping of the file");
     if (priv != MAP_FAILED) {
         check(priv[100] == 'X', "the private mapping reads the file");
         priv[100] = 'P';
         check(p[100] == 'X' && byte_at(fd, 100) == 'X', "a private store stays private");
+        check(priv[100] == 'P' && priv[0] == p[0], "the private copy keeps the page's bytes");
         p[101] = 'S';
         check(priv[101] != 'S' || priv[100] == 'P', "the private copy is the process's own");
+        other = open(other_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        check(other >= 0 && write(other, "kernel", 6) == 6, "another file again");
+        check(pread(other, priv + 200, 6, 0) == 6 && memcmp(priv + 200, "kernel", 6) == 0,
+              "read() into the private mapping");
+        check(memcmp(p + 200, "kernel", 6) != 0 && byte_at(fd, 200) == p[200], "what read() put there stays private");
+        close(other);
+        unlink(other_path);
+        pid = fork();
+        if (pid == 0) {
+            priv[300] = 'C';
+            _exit(priv[100] == 'P' && priv[300] == 'C' ? 0 : 1);
+        }
+        check(pid > 0 && waitpid(pid, &status, 0) == pid && status == 0, "a forked child has the private copy");
+        check(priv[300] != 'C' && priv[300] == p[300] && byte_at(fd, 300) == p[300], "the child's store stayed its own");
         check(munmap(priv, PAGE) == 0, "munmap the private mapping");
+    }
+    /* A private page written before it was read: a copy at once. */
+    priv = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, PAGE);
+    check(priv != MAP_FAILED, "a second MAP_PRIVATE mapping");
+    if (priv != MAP_FAILED) {
+        priv[7] = 'W';
+        check(priv[7] == 'W' && priv[8] == p[PAGE + 8] && byte_at(fd, PAGE + 7) == p[PAGE + 7] && p[PAGE + 7] != 'W',
+              "a store before any read copies the page");
+        check(munmap(priv, PAGE) == 0, "munmap the second private mapping");
     }
 
     check(msync(p, PAGES * PAGE, MS_SYNC) == 0, "msync");
@@ -237,10 +264,69 @@ static void whole(void) {
     unlink(f);
 }
 
+/* The page faults handled so far (/proc/meminfo, docs/proc.md). */
+static long faults(void) {
+    FILE *f = fopen("/proc/meminfo", "r");
+    char line[128];
+    long n = -1;
+    if (!f) {
+        return -1;
+    }
+    while (fgets(line, sizeof line, f)) {
+        if (sscanf(line, "Faults: %ld", &n) == 1) {
+            break;
+        }
+    }
+    fclose(f);
+    return n;
+}
+
+/* Fault-around: a fault on a page of a file maps the following pages the
+ * page cache holds too (16 in all). A first mapping reads the file's 16
+ * pages, a fault each (the cache has them from then on); a second mapping
+ * then reads them all with one fault. */
+static void fault_around(void) {
+    const char *f = in_dir("mmap_around");
+    int fd = make_file(f, 16);
+    unsigned char *p, *q;
+    long before, after, sum = 0;
+
+    p = mmap(NULL, 16 * PAGE, PROT_READ, MAP_PRIVATE, fd, 0);
+    check(p != MAP_FAILED, "a 16-page private mapping");
+    if (p != MAP_FAILED) {
+        for (int i = 0; i < 16; i++) {
+            sum += p[i * PAGE];
+        }
+        q = mmap(NULL, 16 * PAGE, PROT_READ, MAP_PRIVATE, fd, 0);
+        check(q != MAP_FAILED, "a second mapping of the file");
+        before = faults();
+        for (int i = 0; i < 16; i++) {
+            sum += q[i * PAGE];
+        }
+        after = faults();
+        if (before < 0 || after < 0) {
+            check(0, "/proc/meminfo counts the faults");
+        } else if (after - before > 2) {
+            printf("[ FAIL ] mmap fault-around: %ld faults for 16 cached pages\n", after - before);
+            failures++;
+        }
+        long want = 0;
+        for (int i = 0; i < 16; i++) {
+            want += 2 * pattern(i * PAGE);
+        }
+        check(sum == want, "both mappings read the file");
+        check(q == MAP_FAILED || munmap(q, 16 * PAGE) == 0, "munmap the second mapping");
+        check(munmap(p, 16 * PAGE) == 0, "munmap the first mapping");
+    }
+    close(fd);
+    unlink(f);
+}
+
 int main(int argc, char **argv) {
     snprintf(dir, sizeof dir, "%s", argc > 1 ? argv[1] : "/tmp");
     shared();
     protections();
     whole();
+    fault_around();
     return failures != 0;
 }

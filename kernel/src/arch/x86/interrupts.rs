@@ -571,7 +571,11 @@ extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFault
     } else {
         crate::user::Access::Read
     };
-    if !code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) && crate::user::fault_in(read_cr2() as usize, access) {
+    // A page not mapped yet, or a store from userspace to a present page
+    // the page cache shares read-only (`fault_in` copies it, or says it is
+    // a real violation).
+    let cow = code.contains(PageFaultErrorCode::USER_MODE) && access == crate::user::Access::Write;
+    if (!code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) || cow) && crate::user::fault_in(read_cr2() as usize, access) {
         return;
     }
     super::exception::x86_page_fault(

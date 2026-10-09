@@ -1075,6 +1075,7 @@ fn exec_path_depth(
     // the child has exec'd) may run on another CPU at once, and must find
     // the child exec'd (`setpgid`: EACCES from here on).
     task::mark_execd();
+    task::set_exe(&path);
     // What the new image may not inherit (`FD_CLOEXEC`).
     task::fd_close_on_exec();
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any
@@ -1880,7 +1881,7 @@ pub(crate) fn mmap_discard(addr: usize, len: usize) -> bool {
     let aspace = task::current_aspace();
     for i in 0..pages {
         let va = addr + i * PAGE;
-        if task::mmap_backing(va).is_some_and(|(prot, _)| prot & task::MMAP_DEVICE == 0) {
+        if task::mmap_backing(va).is_some_and(|(prot, _, _)| prot & task::MMAP_DEVICE == 0) {
             free_mapped_page(aspace, va as u64);
         }
     }
@@ -1982,7 +1983,7 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         // before it may be written; a shared mapping's stays the file's,
         // dirty from now on.
         if prot & PROT_WRITE != 0 && fs::pagecache::is_cached(phys) {
-            if task::mmap_backing(va as usize).is_some_and(|(p, _)| p & task::MMAP_SHARED != 0) {
+            if task::mmap_backing(va as usize).is_some_and(|(p, _, _)| p & task::MMAP_SHARED != 0) {
                 fs::pagecache::dirtied(phys);
             } else {
                 let own = mm::alloc_frame_site(4);
