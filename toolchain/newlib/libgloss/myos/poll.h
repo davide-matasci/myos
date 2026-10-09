@@ -17,6 +17,9 @@ typedef unsigned long nfds_t;
 #define POLLNVAL 0x0020
 #define POLLRDNORM POLLIN
 #define POLLWRNORM POLLOUT
+/* Priority band data, which no file has: never reported. */
+#define POLLRDBAND 0x0080
+#define POLLWRBAND 0x0200
 
 struct pollfd {
     int fd;

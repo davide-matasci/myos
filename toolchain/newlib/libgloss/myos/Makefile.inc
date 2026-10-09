@@ -26,6 +26,7 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/socket.c \
 	%D%/inet.c \
 	%D%/netdb.c \
+	%D%/ifaddrs.c \
 	%D%/pollselect.c \
 	%D%/pty.c \
 	%D%/sleep.c \

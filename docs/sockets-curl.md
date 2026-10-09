@@ -17,7 +17,19 @@ myos has **no `socket()` syscall** and no kernel socket table. Networking is:
    	dns=10.0.2.4
    ```
    One `dns=` line per DNS server the lease names; the file is empty until
-   DHCP is done (and after the lease is lost)
+   DHCP is done (and after the lease is lost). netd has a second smoltcp
+   interface, `lo`, on a loopback device: it carries 127.0.0.0/8 and the
+   host's own address, the NIC's interface everything else, both over one
+   socket set (a TCP listener on 0.0.0.0 answers on both). smoltcp carries a
+   second myos patch for that pair (`local-pair`: neither interface sends
+   what is the other's, and a packet that waits for the other one does not
+   silence its socket). `/net/ifaddrs` lists the interfaces, a line each in
+   index order (`getifaddrs`, `if_nametoindex`):
+   ```
+   lo 127.0.0.1 255.0.0.0 up,loopback
+   net0 10.0.2.15 255.255.255.0 up,broadcast
+   ```
+   (`-` for the address and mask until DHCP is done)
 3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}`; a conversation's
    files are the user's whose process read `clone` (an accepted
    connection: the listener's), no other user's (`docs/security.md`)
@@ -31,8 +43,9 @@ sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.
 |----------|----------------|
 | `socket(AF_INET, SOCK_STREAM, …)` | open `/net/tcp/clone`, read conv id, open `ctl` + `data`; return **data fd** |
 | `socket(…, SOCK_DGRAM, …)` | same with `/net/udp` |
-| `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` to ctl; blocking waits for `connected`; **O_NONBLOCK** → `EINPROGRESS`, then `poll`/`select` **POLLOUT** (+ `SO_ERROR`) when netd reports Established. netd has no loopback: a connect to 127.0.0.0/8 fails at once with **ECONNREFUSED** (nothing would ever answer its SYN) |
+| `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` to ctl; blocking waits for `connected`; **O_NONBLOCK** → `EINPROGRESS`, then `poll`/`select` **POLLOUT** (+ `SO_ERROR`) when netd reports Established. 127.0.0.0/8, the host's own address and 0.0.0.0 go over `lo`: a port nobody listens on is refused at once (**ECONNREFUSED**) |
 | `send`/`recv`/`read`/`write` | ordinary fd I/O on data; empty connected read blocks (in `SYS_POLL`) unless `O_NONBLOCK` (then EAGAIN); hangup → EOF. A TCP write takes what netd has room for (below): a blocking one waits for the rest, `O_NONBLOCK` gets a short write or EAGAIN, a hung-up peer EPIPE |
+| UDP `bind`/`connect`/`sendto`/`recvfrom` | see UDP below |
 | `close` | hangup via ctl (`hangup`) then close data (hook from `_close`) |
 | `getaddrinfo` | `localhost` is `127.0.0.1` without a lookup; otherwise a DNS A lookup over `/net/udp` to the `dns=` servers of `/net/ndb` in turn, QEMU's `10.0.2.3` when it names none (same as `user/lib/dns.rs`), each given 5 s to answer (the wait is in `poll`); a server's first answer is final, so a name it does not know fails at once. The launcher moves QEMU's DNS to `10.0.2.4`, so the boot tests' lookups show the lease is followed |
 | `poll`/`select` | the kernel's `SYS_POLL`: netfs's `poll` hook reports **POLLIN** for bytes, a hangup or an accept not yet taken, **POLLOUT** once "connected" while the conversation has send room; the library adds **POLLOUT** for a connected UDP socket, arms a listener's `accept` before waiting and finishes a connect (`myos_socket_poll_prepare` / `_done`) |
@@ -41,6 +54,40 @@ A read of a UDP conversation's `data` returns one datagram (netfs keeps
 their boundaries; bytes beyond the reader's buffer are dropped, as in
 `recv`). The optional Linux layer maps Linux sockets onto the same files in
 the kernel (`docs/linux-compat.md`, Sockets).
+
+### UDP
+
+Between netfs and netd every datagram carries a 12-byte header, Plan 9's
+udp "headers" layout: remote address, local address, remote port, local
+port. A conversation's readers and writers see it in "headers" mode only
+(ctl `headers` / `noheaders`, handled by netfs): otherwise a read drops it
+and a write goes to the connected peer, as plain Plan 9 `connect` users
+(the resolver, the Linux layer) expect. The socket library keeps an
+unconnected socket in headers mode (recvfrom and sendto read and write the
+addresses there) and a connected one out of it, so a program a connected
+socket is passed to by exec, which knows nothing of the socket, still
+reads and writes bare datagrams. An unconnected one passed that way shows
+it the headers (the library's socket state is per process, issue #380).
+
+netd answers the library's UDP ctl commands, tagged `#<n>`, with a status
+`#<n> ok <addr>!<port>` (the local address after it) or `#<n> fail <why>`:
+
+| ctl | |
+|-----|--|
+| `bind a.b.c.d!port[ reuse]` | port 0 picks a free one; the address may be any, 127.0.0.0/8, the host's or a broadcast one (`EADDRNOTAVAIL` otherwise); a taken port (on that address or any) is `EADDRINUSE` unless both binds asked for `SO_REUSEADDR`; a second bind `EINVAL` |
+| `connect a.b.c.d!port` | the peer: the only source datagrams are taken from, and where a header-less send goes; binds a port first if none, and fixes the source address (127.0.0.1 for 127.0.0.0/8, else the host's) |
+| `disconnect` | `connect(AF_UNSPEC)`: no peer, and the address and port bind did not choose given up (Linux's way) |
+| `autobind` | the port a first send binds, asked first so `getsockname` knows it |
+
+A datagram to a local port nobody bound is answered by an ICMP "port
+unreachable", which netd sees on the loopback device: the connected socket
+that sent it gets ECONNREFUSED. netfs keeps that error for the
+conversation: it fails the next read or write, `poll` reports POLLERR, and
+a read of `ctl` returns it once (`refused`), which is how the library takes
+it (`SO_ERROR`, the failed call's errno). `shutdown` of a UDP socket is the
+library's: reads return end of file, writes fail with EPIPE (and SIGPIPE),
+an unconnected socket gets ENOTCONN but the shutdown all the same, as on
+Linux.
 
 Both directions of a TCP conversation are flow-controlled between netfs and
 netd, so neither side ever drops bytes. Received data waits in the smoltcp
@@ -87,6 +134,9 @@ server). Most `SO_*`/`TCP_*` are ignored. `AF_UNIX` stream sockets go over
 
 ### Known gaps
 
-- No IPv6; incomplete `getsockname` for TCP/UDP (returns INADDR_ANY)
+- No IPv6; incomplete `getsockname` for TCP (returns INADDR_ANY)
+- UDP: ICMP errors from the network (not the loopback device) reach no
+  socket; no `MSG_PEEK`; a zero-length datagram on a connected socket reads
+  as nothing waiting
 - curl still a large ELF (~0.6–1.2MB stripped); many protocols disabled but not a tiny client
 - Full QEMU smoke may not have been run on the builder box — rely on CI

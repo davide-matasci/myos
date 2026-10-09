@@ -162,10 +162,11 @@ for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c "$ROOT"/toolchain/newlib
   cp "$src_f" "$PORT/"
 done
 # -I"$PORT" shadows the sysroot: sync sys/*.h too (dirent.c needs DT_FIFO).
-mkdir -p "$PORT/sys"
+mkdir -p "$PORT/sys" "$PORT/net"
 cp "$ROOT"/toolchain/newlib/libgloss/myos/sys/*.h "$PORT/sys/"
+cp "$ROOT"/toolchain/newlib/libgloss/myos/net/*.h "$PORT/net/"
 
-for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ initfini getline dirent at basename dirname time pwdgrp mmap shm mount termios ttyctl socket inet netdb pollselect pty search sleep uio pthread syslog reboot; do
+for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ initfini getline dirent at basename dirname time pwdgrp mmap shm mount termios ttyctl socket inet netdb ifaddrs pollselect pty search sleep uio pthread syslog reboot; do
   "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
@@ -221,10 +222,12 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/sys/syslog.h" "$inc/sys/syslog.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/syslog.h" "$inc/syslog.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/utmp.h" "$inc/utmp.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
-mkdir -p "$inc/arpa" "$inc/netinet"
+mkdir -p "$inc/arpa" "$inc/netinet" "$inc/net"
 cp "$ROOT/toolchain/newlib/libgloss/myos/arpa/inet.h" "$inc/arpa/inet.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/netinet/in.h" "$inc/netinet/in.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/net/if.h" "$inc/net/if.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/netdb.h" "$inc/netdb.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/ifaddrs.h" "$inc/ifaddrs.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/poll.h" "$inc/poll.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/pty.h" "$inc/pty.h"
 echo "libgloss-myos -> $libdir/libgloss.a"
