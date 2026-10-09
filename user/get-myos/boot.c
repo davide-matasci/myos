@@ -28,9 +28,14 @@
  * partition (1 MiB), the ESP (512 MiB, mkfs.fat) and the data partition
  * (the rest, mkfs.ext2); writes Limine's files from the release (the `esp`
  * lines of the list: the EFI binary, the device tree, the config booting
- * slot a), fills slot a, and on x86 runs `limine bios-install` (the tool's
- * port, ports/limine) for the BIOS stage. Nothing comes from the running
- * system's ESP, so a system booted from the ISO installs the same.
+ * slot a) and fstab (/boot/fstab once booted), which names the data
+ * partition for `mount -a` to mount at /data; fills slot a, and on x86
+ * runs `limine bios-install` (the tool's port, ports/limine) for the BIOS
+ * stage. Nothing comes from the running system's ESP, so a system booted
+ * from the ISO installs the same.
+ *
+ * The running ESP is used where it is mounted (/boot, by `mount -a` at
+ * boot), else mounted at RUNNING_ESP for the while.
  *
  * --install DISK --local needs no mirror: the list names files of the
  * running system instead (boot_local_list): the kernel and the initramfs
@@ -166,10 +171,46 @@ static char running_slot(void) {
     return (slot[0] == 'a' || slot[0] == 'b') && slot[1] == '\0' ? slot[0] : 0;
 }
 
-/* Mount the running boot disk's ESP at RUNNING_ESP: of the ESP partitions
+static void slot_path(char *out, const char *esp, char slot, const char *name);
+
+/* Where the running boot disk's ESP is mounted: /boot (`mount -a` mounts it
+ * there at boot), else RUNNING_ESP, mounted by mount_running_esp and
+ * unmounted by release_esp. */
+static char esp_dir[96];
+static int esp_premounted;
+
+/* The mount point of /dev/<part> (/proc/mounts) into out[cap]; -1 when it
+ * is not mounted. */
+static int mounted_dir(const char *part, char *out, size_t cap) {
+    char line[512], dev[80];
+    FILE *f = fopen("/proc/mounts", "r");
+    if (f == NULL) {
+        return -1;
+    }
+    strcpy(dev, "/dev/");
+    strcat(dev, part);
+    strcat(dev, " ");
+    int rc = -1;
+    while (rc != 0 && fgets(line, sizeof line, f) != NULL) {
+        if (strncmp(line, dev, strlen(dev)) == 0) {
+            const char *t = line + strlen(dev);
+            copy_field(out, cap, t, strcspn(t, " \n"));
+            rc = 0;
+        }
+    }
+    fclose(f);
+    return rc;
+}
+
+/* Unmount the running ESP if mount_running_esp mounted it. */
+static int release_esp(void) {
+    return esp_premounted ? 0 : umount_dir(esp_dir);
+}
+
+/* The running boot disk's ESP at esp_dir: of the ESP partitions
  * (/proc/partitions), the one whose running slot has this system's release
- * (several disks may carry an ESP). Its partition name ("nvme2n1/p2") into
- * name[cap]. */
+ * (several disks may carry an ESP), where it is mounted already (/boot) or
+ * mounted at RUNNING_ESP. Its partition name ("nvme2n1/p2") into name[cap]. */
 static int mount_running_esp(char slot, char *name, size_t cap) {
     char release[128], line[512];
     if (read_line("/lib/myos-release", release, sizeof release) != 0) {
@@ -189,16 +230,23 @@ static int mount_running_esp(char slot, char *name, size_t cap) {
         copy_field(part, sizeof part, line, strcspn(line, " "));
         strcpy(dev, "/dev/");
         strcat(dev, part);
-        if (mount(dev, RUNNING_ESP, "fat") != 0) {
+        esp_premounted = mounted_dir(part, esp_dir, sizeof esp_dir) == 0;
+        if (!esp_premounted) {
+            strcpy(esp_dir, RUNNING_ESP);
+            if (mount(dev, RUNNING_ESP, "fat") != 0) {
+                continue;
+            }
+        }
+        if (strlen(esp_dir) + 20 >= sizeof path) {
+            release_esp();
             continue;
         }
-        strcpy(path, RUNNING_ESP "/boot/x/version");
-        path[strlen(RUNNING_ESP) + 6] = slot;
+        slot_path(path, esp_dir, slot, "version");
         if (read_line(path, version, sizeof version) == 0 && strcmp(version, release) == 0) {
             copy_field(name, cap, part, strlen(part));
             found = 0;
         } else {
-            umount_dir(RUNNING_ESP);
+            release_esp();
         }
     }
     fclose(f);
@@ -739,14 +787,14 @@ int boot_upgrade(const char *list_path, void (*url_of)(char *url, size_t cap, co
     if (mount_running_esp(slot, part, sizeof part) != 0) {
         return 1;
     }
-    slot_path(path, RUNNING_ESP, slot, "version");
+    slot_path(path, esp_dir, slot, "version");
     read_line(path, have, sizeof have);
     word_value(have, "release", rel, sizeof rel);
     say("running slot ", (char[]){slot, '\0'}, NULL);
     say("  ", have, NULL);
     say("mirror: ", b.header, NULL);
     if (!force && atoll(b.release) <= atoll(rel)) {
-        umount_dir(RUNNING_ESP);
+        release_esp();
         say("up to date (-f writes the other slot anyway)", NULL, NULL);
         return 0;
     }
@@ -754,17 +802,17 @@ int boot_upgrade(const char *list_path, void (*url_of)(char *url, size_t cap, co
      * release's config, whose entry is slot a's. */
     static char conf[16384];
     int changed = 0;
-    int rc = write_slot(RUNNING_ESP, part, other, &b, url_of);
+    int rc = write_slot(esp_dir, part, other, &b, url_of);
     if (rc == 0) {
-        rc = refresh_limine(RUNNING_ESP, part, &b, url_of, &changed);
+        rc = refresh_limine(esp_dir, part, &b, url_of, &changed);
     }
     if (rc == 0) {
-        rc = changed > 0 ? release_conf(&b, url_of, conf, sizeof conf) : read_conf(RUNNING_ESP, conf, sizeof conf);
+        rc = changed > 0 ? release_conf(&b, url_of, conf, sizeof conf) : read_conf(esp_dir, conf, sizeof conf);
     }
     if (rc == 0) {
-        rc = write_conf(RUNNING_ESP, conf, changed > 0 ? 'a' : slot, other, slot);
+        rc = write_conf(esp_dir, conf, changed > 0 ? 'a' : slot, other, slot);
     }
-    if (umount_dir(RUNNING_ESP) != 0 && rc == 0) {
+    if (release_esp() != 0 && rc == 0) {
         rc = die("cannot unmount the ESP", NULL);
     }
     if (rc != 0) {
@@ -867,8 +915,9 @@ static int pwrite_all(int fd, const uint8_t *p, size_t n, uint64_t at) {
     return 0;
 }
 
-/* The GPT of the boot disk on the device open at fd, `total` sectors. */
-static int write_gpt(int fd, uint64_t total) {
+/* The GPT of the boot disk on the device open at fd, `total` sectors; the
+ * data partition's unique GUID into data_guid. */
+static int write_gpt(int fd, uint64_t total, uint8_t data_guid[16]) {
     static uint8_t entries[128 * 128], head[34 * SECTOR], tail[33 * SECTOR];
     uint64_t esp_first = 2 * MIB, esp_last = esp_first + 512 * MIB - 1;
     /* The data partition to the last usable sector, ending on a MiB. */
@@ -878,6 +927,7 @@ static int write_gpt(int fd, uint64_t total) {
     gpt_entry(entries, BIOS_BOOT_TYPE, MIB, 2 * MIB - 1, 4, "BIOS Boot");
     gpt_entry(entries + 128, ESP_TYPE_BYTES, esp_first, esp_last, 1, "EFI System");
     gpt_entry(entries + 256, LINUX_DATA_TYPE, data_first, data_last, 0, "myos data");
+    memcpy(data_guid, entries + 256 + 16, 16);
     uint32_t crc = crc32(entries, sizeof entries);
     uint8_t disk_guid[16];
     random_guid(disk_guid);
@@ -934,6 +984,34 @@ static int write_limine(const char *esp, const boot_files *b,
         if (rc != 0) {
             return die("cannot write ", path);
         }
+    }
+    return 0;
+}
+
+/* The ESP's fstab (at `esp`; /boot/fstab once booted): the data partition,
+ * of unique GUID `g`, at /data, for `mount -a` at boot; as the host writes
+ * it for the images (src/limine_disk.rs). */
+static int write_fstab(const char *esp, const uint8_t g[16]) {
+    static const char HEX[] = "0123456789abcdef";
+    /* The GUID's text: its first three fields little-endian. */
+    static const int ORDER[16] = {3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15};
+    char guid[37], path[PATH_MAX_GV], text[512];
+    size_t n = 0;
+    for (int i = 0; i < 16; i++) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) {
+            guid[n++] = '-';
+        }
+        guid[n++] = HEX[g[ORDER[i]] >> 4];
+        guid[n++] = HEX[g[ORDER[i]] & 15];
+    }
+    guid[n] = '\0';
+    strcpy(text, "# What `mount -a` mounts at boot (docs/install.md): PARTUUID=<guid> MOUNTPOINT FSTYPE [rw],\n"
+                 "# the partition's unique GUID from /proc/partitions; a mount point under /mnt is made.\n"
+                 "PARTUUID=");
+    strcat(text, guid);
+    strcat(text, " /data ext2\n");
+    if (esp_path(path, esp, "fstab", "") != 0 || write_file(path, text, strlen(text)) != 0) {
+        return die("cannot write the ESP's fstab", NULL);
     }
     return 0;
 }
@@ -1007,7 +1085,7 @@ int boot_install(const char *disk_arg, const char *list_path,
      * none (no slot), and installs all the same. */
     char slot = running_slot();
     if (slot != 0 && mount_running_esp(slot, running, sizeof running) == 0) {
-        umount_dir(RUNNING_ESP);
+        release_esp();
         size_t rl = strcspn(running, "/");
         if (strlen(disk) == rl && strncmp(running, disk, rl) == 0) {
             return die("refusing to install over the running boot disk: ", disk);
@@ -1027,7 +1105,8 @@ int boot_install(const char *disk_arg, const char *list_path,
         return die("the disk is too small (580 MiB at least): ", disk);
     }
     say("writing the boot disk layout on ", data, NULL);
-    int rc = write_gpt(fd, total);
+    uint8_t data_guid[16];
+    int rc = write_gpt(fd, total, data_guid);
     close(fd);
     if (rc != 0) {
         return die("cannot write the partition table on ", data);
@@ -1054,6 +1133,9 @@ int boot_install(const char *disk_arg, const char *list_path,
     mkdirs(dir, 1);
     copy_field(esp_part, sizeof esp_part, esp_dev + 5, strlen(esp_dev + 5));
     rc = write_limine(NEW_ESP, &b, url_of);
+    if (rc == 0) {
+        rc = write_fstab(NEW_ESP, data_guid);
+    }
     if (rc == 0) {
         rc = write_slot(NEW_ESP, esp_part, 'a', &b, url_of);
     }
