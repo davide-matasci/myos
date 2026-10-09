@@ -24,8 +24,9 @@ use crate::arch;
 use crate::console;
 use crate::task;
 
-/// Lock-free UART RX staging drained from timer IRQs on every CPU.
-/// Without this, a starved shell under `-smp 4` TCG can miss COM1 FIFO bytes
+/// Lock-free UART RX staging, filled from interrupt context: the UART's
+/// receive interrupt, or CPU 0's tick where the UART has none. Without
+/// this, a starved shell under `-smp 4` TCG can miss COM1 FIFO bytes
 /// (`which ls` → `which s` on CI #34824642315).
 const IRQ_RING: usize = 256;
 static IRQ_HEAD: AtomicUsize = AtomicUsize::new(0);
@@ -44,6 +45,40 @@ pub fn init() {
     *TTY.lock() = crate::tty::TtyIn::new();
     arch::serial_flush_rx();
     DRAIN_ENABLED.store(true, Ordering::Relaxed);
+    let routed = arch::serial_irq().is_some_and(|irq| crate::irq::enable(irq, "uart", uart_interrupt, 0));
+    if routed {
+        arch::serial_rx_irq_on();
+        UART_IRQ.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The UART interrupts on received data; without, CPU 0's tick drains it
+/// ([`tick`]) and CPU 0 keeps ticking while idle (`task::sched`).
+static UART_IRQ: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn uart_irq() -> bool {
+    UART_IRQ.load(Ordering::Relaxed)
+}
+
+/// The UART's receive interrupt (CPU 0): stage its bytes and wake the
+/// console reader. The wake comes even when another CPU holds the drain
+/// lock: that CPU's reader or poller then goes round once more and takes
+/// what arrived since its drain.
+unsafe extern "C" fn uart_interrupt(_ctx: *mut core::ffi::c_void) {
+    drain_uart_irq();
+    task::wake(task::KEY_CONSOLE);
+}
+
+/// CPU 0's timer tick, while the UART has no interrupt: stage its bytes so
+/// a starved shell CPU cannot overrun the FIFO (bios `which ls`→`which s`
+/// under -smp 4 TCG). When bytes land, wake the console reader (it blocks
+/// on KEY_CONSOLE, possibly on another CPU): ECHO only runs from that
+/// reader's poll — without a wake, host echo-sync waits then resends,
+/// sticky-keying `login: rroooo…` / `roootttt…`.
+pub fn tick() {
+    if !uart_irq() && drain_uart_irq() {
+        task::wake(task::KEY_CONSOLE);
+    }
 }
 
 pub fn termios() -> crate::tty::Termios {
@@ -68,7 +103,7 @@ static DRAIN_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::Atomi
 
 /// Drain UART hardware into the lock-free IRQ staging ring.
 ///
-/// Safe from timer IRQs on any CPU (`try_lock` — never spins in IRQ). `poll` /
+/// Safe from interrupts on any CPU (`try_lock` — never spins in IRQ). `poll` /
 /// `read` fold these bytes into the cooked/raw discipline. Prevents COM1 FIFO
 /// overrun when the interactive shell's CPU is starved under `-smp 4` TCG.
 /// Returns true if at least one UART byte was staged (caller may kick the
@@ -111,9 +146,15 @@ fn fold_irq_rx() {
 /// Drain UART and keyboard into the ring (call with interrupts enabled).
 pub fn poll() {
     // Fold IRQ-staged bytes, then drain UART under the same lock (no parallel
-    // `inb` vs timer). Keyboard stays polled here only.
+    // `inb` vs the interrupt). Interrupts off meanwhile: the UART's
+    // interrupt on this CPU would find the lock held and leave a
+    // level-triggered line asserted, re-entering until this drain is done,
+    // which it then never gets to finish.
     fold_irq_rx();
+    let flags = arch::irq_save();
+    arch::irq_off();
     drain_uart_irq();
+    arch::irq_restore(flags);
     fold_irq_rx();
     while let Some(b) = console::keyboard_poll_byte() {
         push_byte(b);
@@ -143,9 +184,10 @@ fn push_byte(raw: u8) {
 pub fn read(buf: &mut [u8]) -> usize {
     crate::signal::enter_input_read();
     let mut n = 0;
-    // Keyboards are polled (no IRQ), so a reader re-polls them at a modest
-    // rate; serial bytes are staged by the BSP timer, which wakes KEY_CONSOLE.
-    let keyboard = console::keyboard_present();
+    // A keyboard without an interrupt is polled: a reader re-polls it at a
+    // modest rate. Serial bytes and an interrupting keyboard wake
+    // KEY_CONSOLE.
+    let keyboard = console::keyboard_present() && !console::keyboard_irq();
     while n == 0 {
         // A signal that terminates or is caught ends the wait (EINTR).
         if crate::signal::interrupt_wait() {

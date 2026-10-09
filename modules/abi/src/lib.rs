@@ -39,7 +39,11 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// with file ids has its open files used by them, not by their paths) and
 /// [`KernelApi::fd_lockctl`] (record locks).
 /// 31 added [`KernelApi::power_register`] (power-off and reboot methods).
-pub const ABI_VERSION: u32 = 32;
+/// 32 added [`KernelApi::current_uid`].
+/// 33 added [`KernelApi::irq_enable`] and [`KernelApi::console_input`] (an
+/// interrupt-driven keyboard), and `keyboard_irq` / `cursor_blinks` to
+/// [`ModuleConsoleOps`] (CPU 0 without its tick).
+pub const ABI_VERSION: u32 = 33;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -48,8 +52,9 @@ pub const MYOS_TIME_OMIT: u64 = u64::MAX;
 /// `KernelApi::block_until` key woken by every `wake`, including `wake_any`.
 pub const MYOS_WAIT_ANY: usize = usize::MAX;
 
-/// Device interrupt handler (`KernelApi::pci_irq_enable`): runs in interrupt
-/// context on the BSP with interrupts masked; must not block or allocate.
+/// Device interrupt handler (`KernelApi::pci_irq_enable`, `irq_enable`):
+/// runs in interrupt context on the BSP with interrupts masked; must not
+/// block, allocate or take a lock that code it interrupts may hold.
 pub type IrqHandler = unsafe extern "C" fn(ctx: *mut core::ffi::c_void);
 /// `pci_irq_enable` out value: the device is on legacy INTx (read its ISR
 /// register in the handler to deassert the line).
@@ -217,8 +222,9 @@ pub const MYOS_POLLIN: u32 = 0x1;
 pub const MYOS_POLLOUT: u32 = 0x4;
 pub const MYOS_POLLERR: u32 = 0x8;
 pub const MYOS_POLLHUP: u32 = 0x10;
-/// [`ModuleVfsOps::poll`]: readiness changes without a wake (a device the
-/// kernel polls, like the keyboard): pollers re-check the file every 10 ms.
+/// [`ModuleVfsOps::poll`]: readiness changes without a wake (a polled
+/// device, like a keyboard without an interrupt): pollers re-check the file
+/// every 10 ms.
 pub const MYOS_POLL_RECHECK: u32 = 0x8000_0000;
 
 /// Module-provided block device (`KernelApi::blk_register`). Sector size is
@@ -294,6 +300,13 @@ pub struct ModuleConsoleOps {
     pub keymap_load: unsafe extern "C" fn(text: *const u8, len: usize) -> i32,
     /// 1 when a keymap is loaded.
     pub keymap_loaded: unsafe extern "C" fn() -> i32,
+    /// 1 when the keyboard interrupts on input ([`KernelApi::console_input`]):
+    /// its readers wait for that instead of re-polling it.
+    pub keyboard_irq: unsafe extern "C" fn() -> i32,
+    /// 1 while the screen shows the blinking text cursor (a screen, not
+    /// taken over by `/dev/fb`): [`ModuleConsoleOps::blink`] is worth a
+    /// timer wakeup.
+    pub cursor_blinks: unsafe extern "C" fn() -> i32,
 }
 
 // ---- ABI 13: personalities (the Linux layer is a module) --------------------
@@ -783,6 +796,17 @@ pub struct KernelApi {
     /// The uid of the user the current process runs for (docs/security.md),
     /// `u32::MAX` in a kernel task: what a module's objects belong to.
     pub current_uid: unsafe extern "C" fn() -> u32,
+    // --- ABI 33 ---
+    /// Route a board device's interrupt to `handler(ctx)` on CPU 0 and
+    /// unmask it: on x86_64 a legacy ISA IRQ (0..15, through the I/O APIC),
+    /// elsewhere the number [`MmioDevice::irq`] gives (a GIC SPI, a PLIC
+    /// source). `name` labels `/proc/interrupts`. 0, or negative when it
+    /// cannot be routed (no I/O APIC): the driver polls its device.
+    pub irq_enable: unsafe extern "C" fn(irq: u32, name: StrRef, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> i32,
+    /// Keyboard input may be waiting (the keyboard's interrupt): wake the
+    /// console's readers and pollers, which take it through
+    /// [`ModuleConsoleOps::keyboard_poll`]. Safe from interrupt context.
+    pub console_input: unsafe extern "C" fn(),
 }
 
 /// Where a module keeps the table `module_init` received: set once there,
@@ -1278,6 +1302,15 @@ impl KernelApi {
     /// registration keeps it loaded).
     pub unsafe fn power_register(&self, action: u32, name: &str, method: unsafe extern "C" fn()) -> i32 {
         unsafe { (self.power_register)(action, StrRef::new(name), method) }
+    }
+
+    /// See [`KernelApi::irq_enable`] (field).
+    pub fn irq_enable(&self, irq: u32, name: &str, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> i32 {
+        unsafe { (self.irq_enable)(irq, StrRef::new(name), handler, ctx) }
+    }
+
+    pub fn console_input(&self) {
+        unsafe { (self.console_input)() }
     }
 }
 

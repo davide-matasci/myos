@@ -408,19 +408,24 @@ const IDLE_BACKSTOP_NS: u64 = 1_000_000_000;
 
 /// Halt until an interrupt: called with interrupts off, returns with them on.
 ///
-/// Tickless idle: a CPU other than 0 stops its tick while it halts, its timer
-/// armed only for the next sleep deadline (`NEXT_DEADLINE`, or the backstop),
-/// so an idle CPU is not woken 100 times a second. Whatever ends the halt and
+/// Tickless idle: a CPU stops its tick while it halts, its timer armed only
+/// for the next sleep deadline (`NEXT_DEADLINE`, or the backstop), so an
+/// idle CPU is not woken 100 times a second. Whatever ends the halt and
 /// runs something puts the tick back for preemption: this function, or
 /// `schedule` when an interrupt switches to another task from inside the
-/// halt. CPU 0 keeps ticking: its tick polls the UART, which has no
-/// interrupt, and blinks the cursor (issue #367).
+/// halt. CPU 0 also wakes for the cursor blink while the screen shows it,
+/// and keeps ticking when the UART has no interrupt: its tick drains the
+/// UART then (`input::tick`).
 fn halt(cpu: usize) {
     IDLE_HALTS[cpu].fetch_add(1, Ordering::Relaxed);
-    let tickless = cpu != 0;
+    let tickless = cpu != 0 || crate::input::uart_irq();
     if tickless {
         let backstop = crate::time::monotonic_ns().saturating_add(IDLE_BACKSTOP_NS);
-        crate::arch::timer_idle(NEXT_DEADLINE.load(Ordering::SeqCst).min(backstop));
+        let mut wake = NEXT_DEADLINE.load(Ordering::SeqCst).min(backstop);
+        if cpu == 0 && crate::console::cursor_blinks() {
+            wake = wake.min(crate::time::next_blink_ns());
+        }
+        crate::arch::timer_idle(wake);
     }
     super::acct::idle(current_slot(), crate::arch::idle_wait);
     if tickless {

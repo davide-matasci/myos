@@ -3,7 +3,9 @@
 //!
 //! UTM SE routes the iPad keyboard through `usb-kbd` by default; add
 //! `virtio-keyboard-device` in the VM's QEMU settings (and remove `usb-kbd`
-//! if both fight). Polling only, like the x86 PS/2 driver.
+//! if both fight). Interrupt-driven when the node's interrupt can be routed
+//! (the handler only acks it and wakes the console's readers, which take
+//! the events), polled otherwise.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -84,6 +86,8 @@ unsafe impl Send for Dev {}
 
 static DEV: Mutex<Option<Dev>> = Mutex::new(None);
 static READY: AtomicBool = AtomicBool::new(false);
+/// The device interrupts on events ([`interrupt`]).
+static IRQ: AtomicBool = AtomicBool::new(false);
 static SHIFT: AtomicBool = AtomicBool::new(false);
 static ALTGR: AtomicBool = AtomicBool::new(false);
 static CTRL: AtomicBool = AtomicBool::new(false);
@@ -121,10 +125,26 @@ fn notify_raw(base: usize, desc: *mut u8, avail: *mut u8) {
     core::sync::atomic::compiler_fence(Ordering::SeqCst);
     dsb();
     w32(base, REG_QUEUE_NOTIFY, 0);
+    // Polled: nobody else acks. With the interrupt, its handler does: an
+    // ack here could take back an interrupt for an event this drain did
+    // not see, and its wake with it.
+    if !IRQ.load(Ordering::SeqCst) {
+        let isr = r32(base, REG_ISR);
+        if isr != 0 {
+            w32(base, REG_ISR_ACK, isr);
+        }
+    }
+}
+
+/// The device's interrupt: ack it and wake the console's readers (they take
+/// the events through `poll_byte` / `pump`). `ctx` is the register base.
+unsafe extern "C" fn interrupt(ctx: *mut core::ffi::c_void) {
+    let base = ctx as usize;
     let isr = r32(base, REG_ISR);
     if isr != 0 {
         w32(base, REG_ISR_ACK, isr);
     }
+    crate::api().console_input();
 }
 
 unsafe fn avail_idx_ptr(avail: *mut u8) -> *mut u16 {
@@ -278,8 +298,6 @@ fn setup(base: usize) -> Option<Dev> {
         dcache_civac(va, EVENT_SIZE as usize);
     }
 
-    unsafe { virtq::set_avail_no_interrupt(avail_va) };
-
     w32(base, REG_QUEUE_READY, 0);
     write_phys(base, REG_DESC_LO, REG_DESC_HI, desc_phys);
     write_phys(base, REG_AVAIL_LO, REG_AVAIL_HI, avail_phys);
@@ -334,6 +352,14 @@ pub fn init() {
             continue;
         }
         if let Some(dev) = setup(base) {
+            let irq = node.irq != 0
+                && crate::api().irq_enable(node.irq, "virtio-input", interrupt, base as *mut core::ffi::c_void) == 0;
+            if irq {
+                IRQ.store(true, Ordering::SeqCst);
+            } else {
+                // Polled: the device need not interrupt.
+                unsafe { virtq::set_avail_no_interrupt(dev.avail) };
+            }
             *DEV.lock() = Some(dev);
             READY.store(true, Ordering::SeqCst);
             SHIFT.store(false, Ordering::SeqCst);
@@ -347,6 +373,10 @@ pub fn init() {
 
 pub fn present() -> bool {
     READY.load(Ordering::SeqCst)
+}
+
+pub fn irq() -> bool {
+    IRQ.load(Ordering::SeqCst)
 }
 
 pub fn poll_byte() -> Option<u8> {

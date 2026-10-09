@@ -128,6 +128,9 @@ pub struct Madt {
     pub gicr: Option<(u64, u64)>,
     /// The GIC ITS base.
     pub its: Option<u64>,
+    /// The first I/O APIC (x86_64): its physical address and the first
+    /// global system interrupt (GSI) it serves.
+    pub ioapic: Option<(u64, u32)>,
 }
 
 pub fn madt() -> Option<Madt> {
@@ -145,6 +148,12 @@ pub fn madt() -> Option<Madt> {
             0 if len >= 8 => {
                 if t.u32(off + 4)? & 1 != 0 {
                     m.cpus += 1;
+                }
+            }
+            // I/O APIC: address at 4, GSI base at 8.
+            1 if len >= 12 => {
+                if m.ioapic.is_none() {
+                    m.ioapic = Some((t.u32(off + 4)? as u64, t.u32(off + 8)?));
                 }
             }
             // Local APIC address override.
@@ -176,6 +185,36 @@ pub fn madt() -> Option<Madt> {
         off += len;
     }
     Some(m)
+}
+
+/// Where legacy ISA interrupt `irq` arrives (x86_64): its GSI and the MPS
+/// INTI flags of its interrupt source override (polarity in bits 0-1,
+/// trigger mode in bits 2-3; 0 is the ISA default, edge and active high).
+/// Without an override the GSI is the IRQ number.
+#[cfg(target_arch = "x86_64")]
+pub fn isa_irq(irq: u8) -> (u32, u16) {
+    let Some(t) = find(b"APIC") else {
+        return (u32::from(irq), 0);
+    };
+    let mut off = 44;
+    while off + 2 <= t.len() {
+        let (Some(typ), Some(len)) = (t.u8(off), t.u8(off + 1)) else {
+            break;
+        };
+        let len = len as usize;
+        if len < 2 || off + len > t.len() {
+            break;
+        }
+        // Interrupt source override: bus at 2 (0, ISA), source at 3, GSI
+        // at 4, flags at 8.
+        if typ == 2 && len >= 10 && t.u8(off + 2) == Some(0) && t.u8(off + 3) == Some(irq) {
+            if let (Some(gsi), Some(lo), Some(hi)) = (t.u32(off + 4), t.u8(off + 8), t.u8(off + 9)) {
+                return (gsi, u16::from_le_bytes([lo, hi]));
+            }
+        }
+        off += len;
+    }
+    (u32::from(irq), 0)
 }
 
 /// The first PCIe configuration space allocation of the MCFG.

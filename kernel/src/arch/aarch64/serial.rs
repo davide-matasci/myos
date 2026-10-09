@@ -45,12 +45,16 @@ const UARTCR: usize = 0x30;
 const UARTIMSC: usize = 0x38;
 const UARTICR: usize = 0x44;
 
+/// UARTIMSC: the receive and receive-timeout interrupts.
+const IMSC_RX: u32 = (1 << 4) | (1 << 6);
+
 const FR_TXFF: u32 = 1 << 5;
 const FR_BUSY: u32 = 1 << 3;
 const FR_RXFE: u32 = 1 << 4;
 
 // 16550 registers (indices, before the stride).
 const THR: usize = 0;
+const IER: usize = 1;
 const LSR: usize = 5;
 const LSR_RX_READY: u32 = 1 << 0;
 const LSR_TX_IDLE: u32 = 1 << 5;
@@ -124,6 +128,18 @@ impl SerialPort {
             return;
         }
         while read32(UARTFR) & FR_BUSY != 0 {}
+    }
+}
+
+/// Interrupt on received data: a 16550's IER bit 0 (data available, or the
+/// FIFO's character timeout), a PL011's receive and receive-timeout
+/// interrupts (both clear as the FIFO is read empty).
+pub fn rx_irq_on() {
+    SerialPort::new();
+    if is_16550() {
+        reg_write(IER, 0x01);
+    } else {
+        write32(UARTIMSC, IMSC_RX);
     }
 }
 

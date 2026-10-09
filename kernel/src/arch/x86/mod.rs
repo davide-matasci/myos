@@ -2,6 +2,7 @@
 
 pub mod gdt;
 mod interrupts;
+mod ioapic;
 pub use interrupts::{ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
 mod paging;
 pub mod pci;
@@ -32,6 +33,16 @@ pub fn serial_flush_rx() {
     serial::flush_rx();
 }
 
+/// COM1's interrupt: ISA IRQ 4 (see [`irq_route`]).
+pub fn serial_irq() -> Option<u32> {
+    Some(4)
+}
+
+/// Interrupt when received data waits (after its IRQ is routed).
+pub fn serial_rx_irq_on() {
+    serial::rx_irq_on();
+}
+
 pub const QEMU_SUCCESS: u32 = 0x10;
 pub const QEMU_FAILURE: u32 = 0x11;
 
@@ -42,6 +53,7 @@ pub fn init_interrupts() {
     pci::ecam_ready();
     crate::console::status_info(&alloc::format!("pci config: {}", pci::config_source()));
     interrupts::init();
+    ioapic::init();
 }
 
 pub fn wait_for_interrupt_proof() {
@@ -70,6 +82,20 @@ pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str>
 /// No device-tree interrupt specifiers on x86_64.
 pub fn irq_from_dt(_cells: &[u32]) -> Option<u32> {
     None
+}
+
+/// Give legacy ISA interrupt `irq` (0..15) a LAPIC vector through the I/O
+/// APIC, still masked: the vector is its `irq::dispatch` number. `None`
+/// without an I/O APIC.
+pub fn irq_route(irq: u32) -> Option<u32> {
+    ioapic::route(u8::try_from(irq).ok()?)
+}
+
+/// Unmask ISA `irq` after [`irq_route`]: delivered to the BSP.
+pub fn irq_unmask(irq: u32) {
+    if let Ok(irq) = u8::try_from(irq) {
+        ioapic::unmask(irq);
+    }
 }
 
 /// Fire this CPU's timer at a sleep's deadline when it is before the next tick.

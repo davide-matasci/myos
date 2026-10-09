@@ -28,8 +28,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
-/// Monotonic tick count (timer IRQ). Not wall-calibrated; used for cache
-/// freshness and approximate sub-second timestamps.
+/// CPU 0's timer interrupts (fewer than 100 a second while it idles
+/// without its tick). Only a seed for the RNG.
 static TICKS: AtomicU64 = AtomicU64::new(0);
 /// `wall_ns = monotonic_ns + WALL_OFFSET_NS`; valid once the RTC was read.
 static WALL_VALID: AtomicBool = AtomicBool::new(false);
@@ -64,6 +64,11 @@ pub fn note_tick() {
         NEXT_BLINK_NS.store(now + BLINK_INTERVAL_NS, Ordering::Relaxed);
         crate::console::cursor_blink();
     }
+}
+
+/// When CPU 0's next tick blinks the cursor (an idle CPU 0 wakes for it).
+pub fn next_blink_ns() -> u64 {
+    NEXT_BLINK_NS.load(Ordering::Relaxed)
 }
 
 #[inline]
