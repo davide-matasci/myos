@@ -184,10 +184,10 @@ fn mapped_file_slot(t: &mut Process, node: &crate::fs::Vnode) -> Option<usize> {
     Some(i)
 }
 
-/// What backs the mmap page at `va`: its region's protection, and the file
-/// and byte offset it reads from (`None`: zero-filled). `None` outside the
-/// regions.
-pub fn mmap_backing(va: usize) -> Option<(u32, Option<(crate::fs::Vnode, usize)>)> {
+/// What backs the mmap page at `va`: its region's protection, the file and
+/// byte offset it reads from (`None`: zero-filled), and how many pages the
+/// region has from it on. `None` outside the regions.
+pub fn mmap_backing(va: usize) -> Option<(u32, Option<(crate::fs::Vnode, usize)>, usize)> {
     let page = crate::user::PAGE;
     // An idle task or the boot task has no process, and so no mappings: a
     // fault there is the kernel's, reported as such.
@@ -198,7 +198,7 @@ pub fn mmap_backing(va: usize) -> Option<(u32, Option<(crate::fs::Vnode, usize)>
             let off = (r.fpage as usize + (va - r.va as usize) / page) * page;
             Some((f.clone()?, off))
         });
-        Some((r.prot, file))
+        Some((r.prot, file, (region_end(r) - (va & !(page - 1))) / page))
     })
 }
 

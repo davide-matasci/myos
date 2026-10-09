@@ -42,16 +42,27 @@ fn each_user_page(aspace: u64, va: usize, len: usize, access: Access, mut f: imp
         // A page the page cache shares is mapped without write permission,
         // and the copy would write to every process's copy of the file:
         // only a shared writable mapping of the file (the frame is the
-        // file's page then) takes it.
-        if access == Access::Write && fs::pagecache::is_cached(phys) {
-            let shared = aspace == task::current_aspace()
-                && task::mmap_backing(page).is_some_and(|(prot, _)| {
+        // file's page then) takes it; a private writable mapping's page is
+        // copied first, as a store from userspace copies it (`fault_in`).
+        let phys = if access == Access::Write && fs::pagecache::is_cached(phys) {
+            let current = aspace == task::current_aspace();
+            let shared = current
+                && task::mmap_backing(page).is_some_and(|(prot, _, _)| {
                     prot & task::MMAP_SHARED != 0 && prot & PROT_WRITE as u32 != 0
                 });
-            if !shared {
+            if shared {
+                phys
+            } else if current && fault_in(page, Access::Write) {
+                match virt_to_phys(aspace, page as u64) {
+                    Some(own) if own != 0 => own,
+                    _ => return false,
+                }
+            } else {
                 return false;
             }
-        }
+        } else {
+            phys
+        };
         f(unsafe { mm::hhdm(phys).add(off) }, done, n);
         done += n;
     }

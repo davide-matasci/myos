@@ -710,6 +710,7 @@ pub fn die() -> ! {
             let mmap = core::mem::take(&mut p.mmap);
             let files = core::mem::replace(&mut p.mapped_files, [const { None }; MAX_MAPPED_FILES]);
             p.cwd_node = None;
+            p.exe = alloc::string::String::new();
             p.user_base = 0;
             p.image_span = 0;
             p.stack_off = 0;

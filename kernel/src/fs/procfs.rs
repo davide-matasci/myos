@@ -216,6 +216,8 @@ enum SelfNode {
     Fd(usize),
     /// `self/tty`, a link to the controlling terminal's directory.
     Tty,
+    /// `self/exe`, a link to the program the process runs.
+    Exe,
 }
 
 fn parse_self(name: &str) -> Option<SelfNode> {
@@ -223,6 +225,7 @@ fn parse_self(name: &str) -> Option<SelfNode> {
         "self" => Some(SelfNode::Dir),
         "self/fd" => Some(SelfNode::FdDir),
         "self/tty" => Some(SelfNode::Tty),
+        "self/exe" => Some(SelfNode::Exe),
         _ => {
             let n = name.strip_prefix("self/fd/")?;
             if n.is_empty() || n.len() > 3 || n.starts_with('+') {
@@ -238,6 +241,7 @@ fn self_link(node: &SelfNode) -> Option<alloc::string::String> {
     match node {
         SelfNode::Fd(fd) => crate::task::fd_path(*fd),
         SelfNode::Tty => crate::tty::ctty_dir(),
+        SelfNode::Exe => crate::task::exe_path(),
         SelfNode::Dir | SelfNode::FdDir => None,
     }
 }
@@ -400,8 +404,8 @@ fn generated(name: &str) -> Option<alloc::string::String> {
     }
 }
 
-/// `readlink` on `self/fd/N` and `self/tty`: the target as the caller's
-/// namespace names it (the real path without one).
+/// `readlink` on `self/fd/N`, `self/tty` and `self/exe`: the target as the
+/// caller's namespace names it (the real path without one).
 pub fn readlink(name: &str, buf: &mut [u8]) -> Option<usize> {
     let real = self_link(&parse_self(name)?)?;
     let target = if real.starts_with('/') {
@@ -435,6 +439,9 @@ fn list_self(name: &str, buf: &mut [u8]) -> usize {
             push(b"ctx");
             if crate::tty::ctty_dir().is_some() {
                 push(b"tty");
+            }
+            if crate::task::exe_path().is_some() {
+                push(b"exe");
             }
         }
         Some(SelfNode::FdDir) => {
@@ -699,14 +706,15 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         });
     }
     if let Some(node) = parse_self(name) {
-        // The inodes of the links are 100 (`tty`) and 101 + the fd.
+        // The inodes of the links are 99 (`exe`), 100 (`tty`) and 101 + the fd.
         let (mode, ino, size) = match node {
             SelfNode::Dir => (S_IFDIR | 0o555, 13, 0),
             SelfNode::FdDir => (S_IFDIR | 0o555, 14, 0),
-            SelfNode::Tty | SelfNode::Fd(_) => {
+            SelfNode::Tty | SelfNode::Fd(_) | SelfNode::Exe => {
                 let len = self_link(&node)?.len();
                 let ino = match node {
                     SelfNode::Fd(fd) => 101 + fd as u32,
+                    SelfNode::Exe => 99,
                     _ => 100,
                 };
                 (S_IFLNK | 0o777, ino, u32::try_from(len).unwrap_or(u32::MAX))
