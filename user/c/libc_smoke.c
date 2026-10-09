@@ -274,6 +274,7 @@ static int check_long_double(void) {
         return fail("long double printf");
     }
     if ((double)strtold("2.5e2", NULL) != 250.0 || (double)strtold("-0.1", NULL) != -0.1) {
+        printf("strtold: %a %a\n", (double)strtold("2.5e2", NULL), (double)strtold("-0.1", NULL));
         return fail("strtold");
     }
     return 0;
