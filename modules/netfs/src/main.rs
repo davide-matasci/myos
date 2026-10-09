@@ -3,7 +3,17 @@
 //! Lookup always fails; bytes go through the ABI v7 `read`/`write` hooks.
 //! Syscalls run with interrupts off — never busy-spin, never sleep.
 //! `/net/unix` (local connections) is served here alone, see [`unix`].
-//! `/net/ndb` shows netd's DHCP lease (address, gateway, DNS servers).
+//! `/net/ndb` shows netd's DHCP lease (address, gateway, DNS servers),
+//! `/net/ifaddrs` its interfaces (`lo`, `net0`: address, netmask, flags).
+//!
+//! A udp conversation's datagrams carry a header (remote address, local
+//! address, remote port, local port: [`UDP_HDR`]) between here and netd.
+//! Its readers and writers see it only in "headers" mode (ctl `headers`,
+//! `noheaders`; the socket library's unconnected sockets): otherwise a read
+//! drops it and a write sends to the connected peer. An error netd reports
+//! for the conversation (`refused`) fails its next write and leaves its
+//! reads nothing (the kernel makes a failed read an empty one), makes
+//! `poll` report POLLERR, and is what a read of its `ctl` returns (once).
 //!
 //! Module calls take no kernel lock: netd's replies (`/dev/netd` writes) land
 //! on one CPU while a reader drains `data` on another, so every entry point
@@ -51,6 +61,18 @@ const REP_ERR: u8 = 4;
 const REP_TXCREDIT: u8 = 5;
 /// netd's DHCP lease as `/net/ndb` text (empty: none); conv is unused.
 const REP_NDB: u8 = 6;
+/// An error for a udp conv's next read or write (`refused`): see the
+/// module notes.
+const REP_SOERR: u8 = 7;
+/// netd's interfaces as `/net/ifaddrs` text; conv is unused.
+const REP_IFADDRS: u8 = 8;
+/// A udp conv's new peer (address, port big-endian): its queued datagrams
+/// from anyone else go.
+const REP_PEER: u8 = 9;
+
+/// The header of a udp conv's datagrams to and from netd: remote address,
+/// local address, remote port, local port (Plan 9's udp "headers").
+const UDP_HDR: usize = 12;
 
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
@@ -69,6 +91,8 @@ const TX_CAP: u16 = 8192;
 const STATUS_CAP: usize = 64;
 /// `/net/ndb`: an address line and a few `dns=` lines.
 const NDB_CAP: usize = 256;
+/// `/net/ifaddrs`: a line per interface.
+const IFADDRS_CAP: usize = 256;
 
 #[derive(Clone, Copy)]
 struct Msg {
@@ -158,6 +182,11 @@ struct Conv {
     /// connection: the listener's), the only one whose processes may open
     /// its files; [`NO_OWNER`] until an accepted connection is claimed.
     owner: u32,
+    /// udp: readers and writers see the datagram headers.
+    headers: bool,
+    /// udp: the error netd reported, for the next read or write (empty:
+    /// none).
+    soerr: &'static [u8],
 }
 
 /// [`Conv::owner`] of a conversation nobody may open yet.
@@ -185,6 +214,8 @@ impl Conv {
         taken: NO_SEQ,
         tx_room: TX_CAP,
         owner: NO_OWNER,
+        headers: false,
+        soerr: b"",
     };
 }
 
@@ -193,6 +224,8 @@ struct State {
     convs: [Conv; MAX_CONV],
     ndb_len: u16,
     ndb: [u8; NDB_CAP],
+    ifaddrs_len: u16,
+    ifaddrs: [u8; IFADDRS_CAP],
 }
 
 /// The request ring, the tcp, udp and icmp conversations and the lease.
@@ -201,6 +234,8 @@ static STATE: Lock<State> = Lock::new(State {
     convs: [Conv::EMPTY; MAX_CONV],
     ndb_len: 0,
     ndb: [0; NDB_CAP],
+    ifaddrs_len: 0,
+    ifaddrs: [0; IFADDRS_CAP],
 });
 
 static API: ApiCell = ApiCell::new();
@@ -274,6 +309,8 @@ enum Node {
     Root,
     /// `/net/ndb`: the network configuration, Plan 9 style.
     Ndb,
+    /// `/net/ifaddrs`: the interfaces.
+    Ifaddrs,
     Proto(u8),
     Clone(u8),
     ConvDir(u8, u16),
@@ -287,7 +324,7 @@ enum Node {
 impl Node {
     fn proto(self) -> Option<u8> {
         match self {
-            Node::Root | Node::Ndb => None,
+            Node::Root | Node::Ndb | Node::Ifaddrs => None,
             Node::Proto(p) | Node::Clone(p) => Some(p),
             Node::ConvDir(p, _)
             | Node::Ctl(p, _)
@@ -304,6 +341,9 @@ fn parse_path(path: &str) -> Option<Node> {
     }
     if path == "ndb" {
         return Some(Node::Ndb);
+    }
+    if path == "ifaddrs" {
+        return Some(Node::Ifaddrs);
     }
     let mut it = path.split('/');
     let a = it.next()?;
@@ -432,6 +472,8 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 taken: NO_SEQ,
                 tx_room: TX_CAP,
                 owner: uid(),
+                headers: false,
+                soerr: b"",
             };
             return Some(i as u16);
         }
@@ -459,6 +501,8 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 taken: NO_SEQ,
                 tx_room: TX_CAP,
                 owner: uid(),
+                headers: false,
+                soerr: b"",
             };
             return Some(i as u16);
         }
@@ -527,6 +571,24 @@ fn append_data(c: &mut Conv, src: &[u8]) {
     c.data_len = (have + n) as u16;
 }
 
+/// Drop a udp conv's queued datagrams from anyone but `addr`!`port` (its
+/// header's remote address and port).
+fn keep_from(c: &mut Conv, addr: [u8; 4], port: [u8; 2]) {
+    let have = c.data_len as usize;
+    let (mut from, mut to) = (0, 0);
+    while from + 2 <= have {
+        let len = u16::from_le_bytes([c.data[from], c.data[from + 1]]) as usize;
+        let d = from + 2;
+        let keep = len >= UDP_HDR && c.data[d..d + 4] == addr && c.data[d + 8..d + 10] == port;
+        if keep {
+            c.data.copy_within(from..d + len, to);
+            to += 2 + len;
+        }
+        from = d + len;
+    }
+    c.data_len = to as u16;
+}
+
 fn apply_reply(st: &mut State, buf: &[u8]) {
     if buf.len() < REP_HDR {
         return;
@@ -543,6 +605,12 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
         let n = payload.len().min(NDB_CAP);
         st.ndb[..n].copy_from_slice(&payload[..n]);
         st.ndb_len = n as u16;
+        return;
+    }
+    if typ == REP_IFADDRS {
+        let n = payload.len().min(IFADDRS_CAP);
+        st.ifaddrs[..n].copy_from_slice(&payload[..n]);
+        st.ifaddrs_len = n as u16;
         return;
     }
     // CLONE_OK must (re)install over an unused *or closing* slot.
@@ -593,6 +661,8 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 taken: NO_SEQ,
                 tx_room: TX_CAP,
                 owner,
+                headers: false,
+                soerr: b"",
             };
             set_status(slot, b"cloned");
         } else if slot.status_len == 0 {
@@ -637,6 +707,17 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 if let Some(a) = st.convs.get_mut(accepted as usize).filter(|a| a.used) {
                     a.owner = owner;
                 }
+            }
+        }
+        REP_PEER => {
+            if let [a, b, c4, d, p0, p1] = *payload {
+                keep_from(c, [a, b, c4, d], [p0, p1]);
+            }
+        }
+        REP_SOERR => {
+            // A static name: the payload does not outlive this call.
+            if payload == b"refused" {
+                c.soerr = b"refused";
             }
         }
         REP_TXCREDIT => {
@@ -726,6 +807,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
         },
         Node::Root => (S_IFDIR | 0o755, 0u32, 1u32),
         Node::Ndb => (S_IFREG | 0o444, st.ndb_len as u32, 2),
+        Node::Ifaddrs => (S_IFREG | 0o444, st.ifaddrs_len as u32, 3),
         Node::Proto(p) => (S_IFDIR | 0o755, 0, 10 + p as u32),
         Node::Clone(p) => (S_IFREG | 0o666, 0, 20 + p as u32),
         Node::ConvDir(p, id) => {
@@ -797,6 +879,7 @@ unsafe extern "C" fn net_listdir(
             let _ = put_bytes(dst, &mut n, b"icmp");
             let _ = put_bytes(dst, &mut n, b"unix");
             let _ = put_bytes(dst, &mut n, b"ndb");
+            let _ = put_bytes(dst, &mut n, b"ifaddrs");
         }
         Node::Proto(p) => {
             let _ = put_bytes(dst, &mut n, b"clone");
@@ -843,6 +926,7 @@ unsafe extern "C" fn net_read(
     }
     match node {
         Node::Ndb => copy_at(&st.ndb[..st.ndb_len as usize], pos, out),
+        Node::Ifaddrs => copy_at(&st.ifaddrs[..st.ifaddrs_len as usize], pos, out),
         Node::Clone(p) => {
             if pos > 0 {
                 return 0;
@@ -880,17 +964,22 @@ unsafe extern "C" fn net_read(
             if c.proto != p {
                 return -1;
             }
+            if !c.soerr.is_empty() {
+                return -1;
+            }
             // Stream: ignore pos. Poll: 0 when empty (do not hang).
             let have = c.data_len as usize;
             if have == 0 {
                 return 0;
             }
             // A stream read takes what fits; a datagram read takes the next
-            // datagram, its excess bytes discarded (`append_data`).
+            // datagram (behind its header in "headers" mode), its excess
+            // bytes discarded (`append_data`).
             let (n, used) = if p == PROTO_UDP {
                 let len = u16::from_le_bytes([c.data[0], c.data[1]]) as usize;
-                let n = out.len().min(len);
-                out[..n].copy_from_slice(&c.data[2..2 + n]);
+                let skip = if c.headers { 0 } else { UDP_HDR.min(len) };
+                let n = out.len().min(len - skip);
+                out[..n].copy_from_slice(&c.data[2 + skip..2 + skip + n]);
                 (n, 2 + len)
             } else {
                 let n = out.len().min(have);
@@ -921,7 +1010,13 @@ unsafe extern "C" fn net_read(
             if c.proto != p {
                 return -1;
             }
-            0
+            // The pending error, once (SO_ERROR); empty when none.
+            if pos != 0 || c.soerr.is_empty() {
+                return 0;
+            }
+            let n = copy_at(c.soerr, 0, out);
+            c.soerr = b"";
+            n
         }
         _ => -1,
     }
@@ -1029,6 +1124,10 @@ unsafe extern "C" fn net_write(
                 return -1;
             }
             let cmd = trim_ctl(src);
+            if p == PROTO_UDP && (cmd == b"headers" || cmd == b"noheaders") {
+                st.convs[id as usize].headers = cmd == b"headers";
+                return src.len() as i32;
+            }
             if cmd == b"hangup" {
                 {
                     let c = &mut st.convs[id as usize];
@@ -1058,8 +1157,25 @@ unsafe extern "C" fn net_write(
             }
             // TCP takes what one request carries and netd has room for; none
             // left refuses the write (the kernel returns what earlier chunks
-            // took). A datagram goes whole or not at all.
+            // took). A datagram goes whole or not at all, behind its header
+            // (a zero one, the peer, unless the writer gave it).
             let max = MSG_CAP - REQ_HDR;
+            if p == PROTO_UDP {
+                let c = &st.convs[id as usize];
+                if !c.soerr.is_empty() {
+                    return -1;
+                }
+                let hdr = if c.headers { 0 } else { UDP_HDR };
+                if src.len() + hdr > max || src.len() + hdr < UDP_HDR {
+                    return -1;
+                }
+                let mut msg = [0u8; MSG_CAP];
+                msg[hdr..hdr + src.len()].copy_from_slice(src);
+                if !enqueue_req(&mut st.req, REQ_SEND, id, p, &msg[..hdr + src.len()]) {
+                    return -1;
+                }
+                return src.len() as i32;
+            }
             let n = if p == PROTO_TCP {
                 src.len().min(max).min(st.convs[id as usize].tx_room as usize)
             } else if src.len() <= max {
@@ -1109,7 +1225,13 @@ unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
     if status_is(c, b"error") {
         bits |= MYOS_POLLIN | MYOS_POLLHUP | MYOS_POLLERR;
     }
-    if c.status[..c.status_len as usize].starts_with(b"connected")
+    // A datagram can be sent at any time (unconnected: to an address).
+    if p == PROTO_UDP {
+        bits |= MYOS_POLLOUT;
+        if !c.soerr.is_empty() {
+            bits |= MYOS_POLLERR;
+        }
+    } else if c.status[..c.status_len as usize].starts_with(b"connected")
         && (p != PROTO_TCP || c.tx_room != 0)
     {
         bits |= MYOS_POLLOUT;

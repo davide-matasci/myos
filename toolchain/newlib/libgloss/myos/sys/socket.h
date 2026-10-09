@@ -34,18 +34,21 @@ typedef unsigned short sa_family_t;
 #define SO_REUSEADDR 2
 #define SO_TYPE      3
 #define SO_ERROR     4
+#define SO_BROADCAST 6
 #define SO_SNDBUF    7
 #define SO_RCVBUF    8
 #define SO_KEEPALIVE 9
 #define SO_LINGER    13
 #define SO_RCVTIMEO  20
 #define SO_SNDTIMEO  21
+#define SO_BINDTODEVICE 25
 
 #define SHUT_RD   0
 #define SHUT_WR   1
 #define SHUT_RDWR 2
 
 #define MSG_PEEK     0x2
+#define MSG_TRUNC    0x20
 #define MSG_DONTWAIT 0x40
 #define MSG_NOSIGNAL 0x4000
 

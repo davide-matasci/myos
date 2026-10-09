@@ -46,6 +46,19 @@ int myos_socket_empty_read(int fd) { (void)fd; return 0; }
 int myos_socket_write_failed(int fd) __attribute__((weak));
 int myos_socket_write_failed(int fd) { (void)fd; return 0; }
 
+/* A datagram socket's read(2) / write(2), whole (socket.c): its datagrams
+ * and errors are the library's. -2 = not a datagram socket. */
+ssize_t myos_socket_dgram_read(int fd, void *buf, size_t cnt) __attribute__((weak));
+ssize_t myos_socket_dgram_read(int fd, void *buf, size_t cnt) {
+    (void)fd; (void)buf; (void)cnt;
+    return -2;
+}
+ssize_t myos_socket_dgram_write(int fd, const void *buf, size_t cnt) __attribute__((weak));
+ssize_t myos_socket_dgram_write(int fd, const void *buf, size_t cnt) {
+    (void)fd; (void)buf; (void)cnt;
+    return -2;
+}
+
 int myos_socket_fcntl(int fd, int cmd, int arg) __attribute__((weak));
 int myos_socket_fcntl(int fd, int cmd, int arg) {
     (void)fd; (void)cmd; (void)arg;
@@ -152,6 +165,12 @@ void _exit(int status) {
 /* read(2) and pread(2): MYOS_SYS_PREAD at the file position (flags 0) or at
  * `off` (MYOS_FILE_AT). */
 static ssize_t read_at(int fd, void *buf, size_t cnt, off_t off, long flags) {
+    if (flags == 0) {
+        ssize_t n = myos_socket_dgram_read(fd, buf, cnt);
+        if (n != -2) {
+            return n;
+        }
+    }
 
     /* Honour O_NONBLOCK before the blocking read (dropbear's signal-pipe
      * drain must not hang): ask the kernel whether the read would block. */
@@ -225,6 +244,13 @@ ssize_t pread(int fd, void *buf, size_t cnt, off_t off) {
 static ssize_t write_at(int fd, const void *buf, size_t cnt, off_t off, long flags) {
     long ret;
     size_t done = 0;
+
+    if (flags == 0) {
+        ssize_t n = myos_socket_dgram_write(fd, buf, cnt);
+        if (n != -2) {
+            return n;
+        }
+    }
 
     for (;;) {
         ret = myos_syscall6(MYOS_SYS_PWRITE, fd, (long)(uintptr_t)buf + done, (long)(cnt - done),

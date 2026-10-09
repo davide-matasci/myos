@@ -1,0 +1,218 @@
+smoltcp: a loopback interface beside a NIC's, sharing the sockets
+
+netd runs two interfaces over one socket set: the NIC's, and a loopback
+one for 127.0.0.0/8 and the host's own address (a TCP listener on
+0.0.0.0 then answers both). Upstream, each interface sends what it can
+route: the NIC's would send 127.0.0.1 to the default router, the
+loopback one would take broadcasts and remote destinations, and a packet
+an interface cannot route silences its socket as if a neighbor were
+missing. set_local_only() makes an interface send only to its own
+addresses and prefixes (and leave the DHCP sockets alone: it has no
+hardware address to ask with), set_local_elsewhere() makes the other one
+leave those (and 127.0.0.0/8) alone, and a packet neither of a pair
+routes waits in its socket for the other interface. Unchanged without
+either. With tests (tests/ipv4.rs). Derived from smoltcp, so under
+smoltcp's license (0BSD).
+
+diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
+--- a/src/iface/interface/mod.rs
++++ b/src/iface/interface/mod.rs
+@@ -142,6 +142,8 @@
+     tag: u16,
+     ip_addrs: Vec<IpCidr, IFACE_MAX_ADDR_COUNT>,
+     any_ip: bool,
++    local_only: bool,
++    local_elsewhere: bool,
+     routes: Routes,
+     #[cfg(feature = "multicast")]
+     multicast: multicast::State,
+@@ -247,6 +249,8 @@
+                 hardware_addr: config.hardware_addr,
+                 ip_addrs: Vec::new(),
+                 any_ip: false,
++                local_only: false,
++                local_elsewhere: false,
+                 routes: Routes::new(),
+                 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+                 neighbor_cache: NeighborCache::new(),
+@@ -393,6 +397,26 @@
+         self.inner.any_ip = any_ip;
+     }
+ 
++    /// myos: make this the loopback interface of two sharing a socket set
++    /// (the other one is on a NIC, [`set_local_elsewhere`]): it sends only
++    /// to its own addresses and prefixes. A packet one of the two cannot
++    /// route waits in its socket for the other, which does not silence the
++    /// socket the way a missing neighbor does.
++    ///
++    /// [`set_local_elsewhere`]: Self::set_local_elsewhere
++    pub fn set_local_only(&mut self, local_only: bool) {
++        self.inner.local_only = local_only;
++    }
++
++    /// myos: the other interface of the pair of [`set_local_only`]: it no
++    /// longer sends to 127.0.0.0/8 nor to an address of its own, which the
++    /// loopback interface delivers.
++    ///
++    /// [`set_local_only`]: Self::set_local_only
++    pub fn set_local_elsewhere(&mut self, local_elsewhere: bool) {
++        self.inner.local_elsewhere = local_elsewhere;
++    }
++
+     /// Get whether AnyIP is enabled.
+     ///
+     /// See [`set_any_ip`](Self::set_any_ip) for details on AnyIP
+@@ -651,10 +675,17 @@
+         enum EgressError {
+             Exhausted,
+             Dispatch,
++            NoRoute,
+         }
+ 
+         let mut result = PollResult::None;
+         for item in sockets.items_mut() {
++            // myos: DHCP is the NIC's interface's (a loopback one has no
++            // hardware address to ask with).
++            #[cfg(feature = "socket-dhcpv4")]
++            if self.inner.local_only && matches!(item.socket, Socket::Dhcpv4(_)) {
++                continue;
++            }
+             if !item
+                 .meta
+                 .egress_permitted(self.inner.now, |ip_addr| self.inner.has_neighbor(&ip_addr))
+@@ -672,7 +703,13 @@
+ 
+                 inner
+                     .dispatch_ip(t, meta, response, &mut self.fragmenter)
+-                    .map_err(|_| EgressError::Dispatch)?;
++                    .map_err(|e| match e {
++                        // myos: the other interface of the pair sends it.
++                        DispatchError::NoRoute if inner.local_only || inner.local_elsewhere => {
++                            EgressError::NoRoute
++                        }
++                        _ => EgressError::Dispatch,
++                    })?;
+ 
+                 result = PollResult::SocketStateChanged;
+ 
+@@ -743,6 +780,7 @@
+ 
+             match result {
+                 Err(EgressError::Exhausted) => break, // Device buffer full.
++                Err(EgressError::NoRoute) => {}
+                 Err(EgressError::Dispatch) => {
+                     // `NeighborCache` already takes care of rate limiting the neighbor discovery
+                     // requests from the socket. However, without an additional rate limiting
+@@ -942,6 +980,21 @@
+         self.ip_addrs.iter().any(|cidr| cidr.contains_addr(addr))
+     }
+ 
++    /// myos: whether this interface sends to `addr` (`set_local_only`,
++    /// `set_local_elsewhere`; either way when neither is set).
++    fn routes_here(&self, addr: &IpAddress) -> bool {
++        if self.local_only {
++            return self.has_ip_addr(*addr) || self.in_same_network(addr);
++        }
++        let loopback = match addr {
++            #[cfg(feature = "proto-ipv4")]
++            IpAddress::Ipv4(a) => a.is_loopback(),
++            #[allow(unreachable_patterns)]
++            _ => false,
++        };
++        !(self.local_elsewhere && (loopback || self.has_ip_addr(*addr)))
++    }
++
+     fn route(&self, addr: &IpAddress, timestamp: Instant) -> Option<IpAddress> {
+         // Send directly.
+         // note: no need to use `self.is_broadcast()` to check for subnet-local broadcast addrs
+@@ -1133,6 +1186,11 @@
+         let mut ip_repr = packet.ip_repr();
+         assert!(!ip_repr.dst_addr().is_unspecified());
+ 
++        // myos: local destinations belong to the loopback interface.
++        if !self.routes_here(&ip_repr.dst_addr()) {
++            return Err(DispatchError::NoRoute);
++        }
++
+         // Dispatch IEEE802.15.4:
+ 
+         #[cfg(feature = "medium-ieee802154")]
+diff --git a/src/iface/interface/tests/ipv4.rs b/src/iface/interface/tests/ipv4.rs
+--- a/src/iface/interface/tests/ipv4.rs
++++ b/src/iface/interface/tests/ipv4.rs
+@@ -1170,3 +1170,75 @@
+         ))
+     );
+ }
++
++/// myos: a loopback interface beside a NIC's, sharing the sockets
++/// (`set_local_only`, `set_local_elsewhere`): local destinations leave
++/// through the loopback interface only, the rest through the NIC's only,
++/// and a datagram waits in its socket for the interface that routes it.
++#[test]
++#[cfg(all(feature = "medium-ip", feature = "socket-udp"))]
++fn test_local_only_pair() {
++    use crate::socket::udp;
++    use crate::tests::TestingDevice;
++    use crate::wire::IpEndpoint;
++
++    let own = Ipv4Address::new(192, 168, 1, 1);
++    let mut nic_dev = TestingDevice::new(Medium::Ip);
++    let mut nic = Interface::new(Config::new(HardwareAddress::Ip), &mut nic_dev, Instant::ZERO);
++    nic.update_ip_addrs(|a| a.push(IpCidr::new(own.into(), 24)).unwrap());
++    nic.routes_mut()
++        .add_default_ipv4_route(Ipv4Address::new(192, 168, 1, 254))
++        .unwrap();
++    nic.set_local_elsewhere(true);
++    let mut lo_dev = TestingDevice::new(Medium::Ip);
++    let mut lo = Interface::new(Config::new(HardwareAddress::Ip), &mut lo_dev, Instant::ZERO);
++    lo.update_ip_addrs(|a| {
++        a.push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 8)).unwrap();
++        a.push(IpCidr::new(own.into(), 32)).unwrap();
++    });
++    lo.set_local_only(true);
++
++    let mut sockets = SocketSet::new(vec![]);
++    let rx = udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 4], vec![0; 64]);
++    let tx = udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 4], vec![0; 64]);
++    let h = sockets.add(udp::Socket::new(rx, tx));
++    let s = sockets.get_mut::<udp::Socket>(h);
++    s.bind(1234).unwrap();
++    for dst in [
++        Ipv4Address::new(127, 0, 0, 1),
++        own,
++        Ipv4Address::new(10, 0, 0, 1),
++    ] {
++        s.send_slice(b"x", IpEndpoint::new(dst.into(), 53)).unwrap();
++    }
++
++    // The first datagram is local: the NIC's interface leaves it queued.
++    nic.poll(Instant::ZERO, &mut nic_dev, &mut sockets);
++    assert!(nic_dev.tx_queue.is_empty());
++    // The loopback interface takes both local ones (one per poll), then
++    // leaves the last one queued.
++    for _ in 0..3 {
++        lo.poll_egress(Instant::ZERO, &mut lo_dev, &mut sockets);
++    }
++    assert_eq!(lo_dev.tx_queue.len(), 2);
++    // And the NIC's the last one, not silenced by its earlier miss.
++    nic.poll(Instant::ZERO, &mut nic_dev, &mut sockets);
++    assert_eq!(nic_dev.tx_queue.len(), 1);
++}
++
++/// myos: a loopback interface (`set_local_only`) leaves the DHCP sockets
++/// it shares with a NIC's alone: it has no hardware address to ask with.
++#[test]
++#[cfg(all(feature = "medium-ip", feature = "socket-dhcpv4"))]
++fn test_local_only_leaves_dhcp() {
++    use crate::tests::TestingDevice;
++
++    let mut dev = TestingDevice::new(Medium::Ip);
++    let mut lo = Interface::new(Config::new(HardwareAddress::Ip), &mut dev, Instant::ZERO);
++    lo.update_ip_addrs(|a| a.push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 8)).unwrap());
++    lo.set_local_only(true);
++    let mut sockets = SocketSet::new(vec![]);
++    sockets.add(crate::socket::dhcpv4::Socket::new());
++    lo.poll(Instant::ZERO, &mut dev, &mut sockets);
++    assert!(dev.tx_queue.is_empty());
++}

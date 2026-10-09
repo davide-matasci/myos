@@ -35,9 +35,15 @@ t uio /bin/etc/uio_smoke
 # barriers, spin locks, a CLOCK_MONOTONIC condition wait, cancellation, and
 # forks while other threads keep malloc and stdio busy (pthread_smoke.c).
 t pthread /bin/etc/pthread_smoke
-# netfs conversations: a connect to 127.0.0.1 is refused at once, and 200
-# sockets closed right after socket() leak none (netconv_smoke.c).
+# netfs conversations: a connect to 127.0.0.1 nobody listens on is refused
+# at once, and 200 sockets closed right after socket() leak none
+# (netconv_smoke.c).
 t netconv /bin/etc/netconv_smoke
+# netd's loopback interface: getifaddrs and if_nametoindex; UDP over
+# 127.0.0.1 (bind, sendto/recvfrom with addresses, EADDRINUSE, connect and
+# unconnect, ECONNREFUSED after a datagram to a closed port, the host's
+# own address); TCP to a listener on 127.0.0.1 (loopback_smoke.c).
+t loopback /bin/etc/loopback_smoke
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
 # the wait; setpgid on a child before its exec, EACCES after; a child's
 # setsid: its own session, no controlling terminal (child_smoke.c).
