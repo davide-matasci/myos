@@ -16,7 +16,8 @@
  * for, up to its end, in one call (not a 4 KiB chunk: fontconfig took that
  * for a damaged cache); a rename does not wait for a process reading the
  * console (which held the filesystem tree until the next key); lseek and
- * ftello give offsets past 2 GiB whole (the scratch disk's 4 GiB).
+ * ftello give offsets past 2 GiB whole (the scratch disk's 4 GiB), and a
+ * file on a disk keeps a size past 4 GiB.
  *
  * `fileio_smoke [DIR]` works in DIR (default /tmp): the ext2 test runs it
  * on the scratch disk. `fileio_smoke child FD...` is the exec'd program: FD
@@ -535,18 +536,41 @@ static int append_only(const char *f) {
     return failures != 0;
 }
 
+/* A file past 4 GiB (on a disk: ext2's large files) keeps its whole size
+ * in stat and lseek, and its bytes up there: a sparse 5 GiB file with one
+ * byte written at 4.5 GiB. */
+static void big_file(void) {
+    const off_t gib = (off_t)1 << 30;
+    const char *f = in_dir("big");
+    struct stat st;
+    char c = 0;
+    int fd = open(f, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0 && ftruncate(fd, 5 * gib) == 0, "a 5 GiB file");
+    check(fstat(fd, &st) == 0 && st.st_size == 5 * gib, "stat of a 5 GiB file");
+    check(lseek(fd, 0, SEEK_END) == 5 * gib, "lseek to the end of a 5 GiB file");
+    check(pwrite(fd, "x", 1, 4 * gib + gib / 2) == 1 && pread(fd, &c, 1, 4 * gib + gib / 2) == 1
+          && c == 'x', "a byte at 4.5 GiB");
+    close(fd);
+    check(unlink(f) == 0, "unlink the 5 GiB file");
+}
+
 /* Offsets past 2 GiB come back whole from lseek and ftello (libgloss's
  * _lseek returned an int: riscv64 sign-extends it, so the 4 GiB scratch
  * disk's end read as 0, issue #366). */
 static void big_offsets(void) {
     const off_t gib = (off_t)1 << 30;
+    off_t end;
     int fd = open("/dev/nvme1n1/data", O_RDONLY);
     FILE *f;
     check(fd >= 0, "open the scratch disk");
     if (fd < 0) {
         return;
     }
-    check(lseek(fd, 0, SEEK_END) == 4 * gib, "lseek to the end of a 4 GiB disk");
+    end = lseek(fd, 0, SEEK_END);
+    if (end != 4 * gib) {
+        printf("lseek(SEEK_END): %lld\n", (long long)end);
+    }
+    check(end == 4 * gib, "lseek to the end of a 4 GiB disk");
     check(lseek(fd, 3 * gib, SEEK_SET) == 3 * gib && lseek(fd, 0, SEEK_CUR) == 3 * gib,
           "lseek to 3 GiB");
     f = fdopen(fd, "r");
@@ -577,6 +601,8 @@ int main(int argc, char **argv) {
     if (argc == 1) {
         console_reader();
         big_offsets();
+    } else {
+        big_file();
     }
     return failures != 0;
 }

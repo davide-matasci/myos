@@ -14,7 +14,7 @@ pub use super::node::Vnode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatInfo {
     pub mode: u32,
-    pub size: u32,
+    pub size: u64,
     pub ino: u32,
     pub nlink: u32,
     /// Filesystem device id for this mount (`st_dev`). Distinct per mount so
@@ -1379,7 +1379,7 @@ fn file_stat(idx: usize, id: u64) -> Option<StatInfo> {
             if unsafe { ops.stat_ino?(id, &mut out) } != 0 {
                 return None;
             }
-            StatInfo { mode: out.mode, size: out.size, ino: out.ino, nlink: out.nlink, dev: 0, mtime: out.mtime, atime: out.atime }
+            StatInfo { mode: out.mode, size: out.size(), ino: out.ino, nlink: out.nlink, dev: 0, mtime: out.mtime, atime: out.atime }
         }
     };
     Some(StatInfo { dev: (idx as u32).wrapping_add(1), ..info })
@@ -1689,7 +1689,7 @@ fn module_stat(ops: &ModuleVfsOps, rel: &str) -> Option<StatInfo> {
     }
     Some(StatInfo {
         mode: out.mode,
-        size: out.size,
+        size: out.size(),
         ino: out.ino,
         nlink: out.nlink,
         dev: 0,

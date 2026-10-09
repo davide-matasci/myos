@@ -187,6 +187,7 @@ unsafe extern "C" fn fb_stat(path: *const u8, len: usize, out: *mut VfsStatInfo)
             nlink: if node == Node::Root { 2 } else { 1 },
             mtime: 0,
             atime: 0,
+            size_hi: 0,
         };
     }
     0

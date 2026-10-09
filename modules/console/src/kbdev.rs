@@ -29,7 +29,7 @@ unsafe extern "C" fn kbd_stat(path: *const u8, len: usize, out: *mut VfsStatInfo
         return -1;
     }
     unsafe {
-        *out = VfsStatInfo { mode: S_IFREG | 0o444, size: 0, ino: 1, nlink: 1, mtime: 0, atime: 0 };
+        *out = VfsStatInfo { mode: S_IFREG | 0o444, size: 0, ino: 1, nlink: 1, mtime: 0, atime: 0, size_hi: 0 };
     }
     0
 }

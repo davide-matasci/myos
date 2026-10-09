@@ -394,7 +394,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         }),
         Node::ConsoleCtl => Some(StatInfo {
             mode: S_IFREG | 0o644,
-            size: u32::try_from(console_ctl_text().len()).unwrap_or(u32::MAX),
+            size: console_ctl_text().len() as u64,
             ino: 9,
             nlink: 1,
             dev: 0,
@@ -411,15 +411,9 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             atime: 0,
         }),
         Node::Block(id) => {
-            let bytes = blk::capacity_bytes(id).unwrap_or(0);
-            let size = if bytes > u32::MAX as u64 {
-                u32::MAX
-            } else {
-                bytes as u32
-            };
             Some(StatInfo {
                 mode: S_IFBLK | 0o666,
-                size,
+                size: blk::capacity_bytes(id).unwrap_or(0),
                 ino: 100 + id,
                 nlink: 1,
                 dev: 0,
@@ -456,7 +450,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         }),
         Node::ChrCtl(i) => Some(StatInfo {
             mode: S_IFREG | 0o644,
-            size: u32::try_from(chr_ctl_text(i).len()).unwrap_or(u32::MAX),
+            size: chr_ctl_text(i).len() as u64,
             ino: 50 + i as u32,
             nlink: 1,
             dev: 0,

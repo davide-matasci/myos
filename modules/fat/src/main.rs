@@ -162,6 +162,7 @@ unsafe extern "C" fn fat_stat<const S: usize>(path: *const u8, path_len: usize, 
             nlink,
             mtime: u64::from(st.mtime),
             atime: u64::from(st.atime),
+            size_hi: 0,
         }
     };
     0
