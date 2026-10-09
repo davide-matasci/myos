@@ -1070,9 +1070,13 @@ fn exec_path_depth(
     if let Some(ctx) = new_ctx {
         task::set_sec_ctx(ctx);
     }
+    // Past the point of no return: marked before the close-on-exec fds go,
+    // as a parent waiting for one of them to close (the EOF that tells it
+    // the child has exec'd) may run on another CPU at once, and must find
+    // the child exec'd (`setpgid`: EACCES from here on).
+    task::mark_execd();
     // What the new image may not inherit (`FD_CLOEXEC`).
     task::fd_close_on_exec();
-    task::mark_execd();
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any
     // current_slot()-backed lookup so we expand/replace the running task.
     crate::arch::sync_cpu_id_reg();
