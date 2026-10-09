@@ -9,8 +9,8 @@ them.
 | Partition | Type | Size | myos sees it as (a virtio disk) | Holds |
 |-----------|------|------|---------------------------------|-------|
 | 1 `BIOS Boot` | BIOS boot | 1 MiB at LBA 2048 | `/dev/vda/p1` | Limine's BIOS stage 2 (`limine bios-install`, x86) |
-| 2 `EFI System` | ESP (`c12a7328-…`) | 512 MiB, FAT32 | `/dev/vda/p2` | Limine, the boot slots and `limine.conf` |
-| 3 `myos data` | Linux data (`0fc63daf-…`) | 64 MiB (the rest of the disk after `--install`), ext2 | `/dev/vda/p3` | state an upgrade keeps; empty for now |
+| 2 `EFI System` | ESP (`c12a7328-…`) | 512 MiB, FAT32 | `/dev/vda/p2`, mounted at `/boot` | Limine, the boot slots, `limine.conf` and `fstab` |
+| 3 `myos data` | Linux data (`0fc63daf-…`) | 64 MiB (the rest of the disk after `--install`), ext2 | `/dev/vda/p3`, mounted at `/data` | state an upgrade keeps; empty for now |
 
 The image is 579 MiB, written sparse: only what the partitions hold takes
 space on the host.
@@ -26,6 +26,7 @@ boot/a/initramfs              slot a: the initramfs
 boot/a/version                slot a: its release, the initramfs's /lib/myos-release
 boot/b/                       slot b: empty until an upgrade writes it
 boot/virt-aarch64.dtb         aarch64, riscv64 (virt.dtb): the device tree
+fstab                         what `mount -a` mounts at boot (below)
 ```
 
 Each slot holds a kernel and the initramfs built with it (with the Linux
@@ -75,7 +76,8 @@ On the running system, as root:
 
 1. The running slot is the `slot=` of `/proc/cmdline`; the boot disk's ESP is
    the ESP partition (`/proc/partitions`) whose `boot/<slot>/version` is
-   this system's `/lib/myos-release`. It is mounted (fat).
+   this system's `/lib/myos-release`: the one `mount -a` mounted at
+   `/boot`, used there (it is mounted for the while when it is not).
 2. The mirror's `<arch>-boot.txt` (`docs/packages.md`) names the release's
    kernel and initramfs with their sizes and SHA-256. When its release is
    not newer than the running slot's version, there is nothing to do (`-f`
@@ -98,7 +100,8 @@ On the running system, as root:
    lines and the entries come from the running config, or, when step 4
    replaced anything, from the release's (a new Limine may read its config
    differently; lines edited by hand are lost then).
-6. The ESP is unmounted. It does not reboot: `reboot` starts the new slot.
+6. An ESP get-myos mounted itself is unmounted. It does not reboot:
+   `reboot` starts the new slot.
 
 A failure before step 4 leaves the running slot, Limine and the config as
 they were; the half-written slot has no `version`. Step 4 is the one that is
@@ -152,12 +155,64 @@ system's release (`/lib/myos-release`). From the ISO, that is the ISO's
 system, the Linux layer included (the ISO is built with it); a later
 `--upgrade` from a mirror brings the release's initramfs, which has none.
 
+## Mounted at boot: `/boot`, `/data` and the fstab
+
+init runs `mount -a` before it starts anything else (`user/mount`):
+
+1. The ESP the system booted from is mounted at `/boot`: Limine tells the
+   kernel the GPT partition it loaded the kernel from, which it shows at
+   `/proc/boot/partuuid` (that partition's unique GUID, as
+   `/proc/partitions` lists it). Booted from the ISO there is none, and
+   nothing below happens.
+2. `/tmp/mnt` is bound over `/mnt`: the root is the read-only initramfs,
+   so this is where mount points can be made. A disk mounted at
+   `/mnt/disk` is listed at `/tmp/mnt/disk` in `/proc/mounts`.
+3. Each line of `/boot/fstab` (`fstab` at the ESP's root) is mounted,
+   unless its partition is mounted already:
+
+```
+# What `mount -a` mounts at boot (docs/install.md): PARTUUID=<guid> MOUNTPOINT FSTYPE [rw],
+# the partition's unique GUID from /proc/partitions; a mount point under /mnt is made.
+PARTUUID=6d796f73-0000-4000-8000-000000000004 /data ext2
+```
+
+A partition is named only by its unique GUID (`PARTUUID=`): a disk's name
+(`nvme0n1`, `vda`) depends on the machine and on what else is plugged in,
+the GUID does not. A line naming a partition that is not there (a USB disk
+left out) is skipped; a line that is wrong (a `/dev/` path, an unknown
+option: the kernel has no read-only mounts, so `rw` is the only one) or that
+does not mount is reported. Neither stops the boot, and init says
+`mount -a: not everything mounted`. The mount point must exist, or be
+under `/mnt`, where it is made.
+
+The image builder writes the fstab of the images and `get-myos --install`
+that of the disk it lays out, each naming that disk's data partition. The
+images' partitions have fixed GUIDs (`6d796f73-…-000000000004` is the data
+partition): two disks written from the same image both match their fstab
+lines, and the first one found is mounted. Nothing else writes the fstab:
+`--upgrade` leaves it as it is.
+
+To have a disk mounted at every boot, add its line on the running system
+and try it at once (the ESP is mounted read-write):
+
+```sh
+grep nvme1n1/ /proc/partitions      # the fifth field: the partition's unique GUID
+echo 'PARTUUID=<that guid> /mnt/disk ext2' >> /boot/fstab
+mount -a                            # mounts what is not mounted yet
+```
+
+`mount PARTUUID=<guid> DIR FSTYPE` mounts one by hand. A filesystem on a
+whole disk or in an MBR partition has no partition GUID and cannot be
+listed: naming one by its filesystem's own ID (Linux's `UUID=`) would be
+the way, if it is ever needed.
+
 ## The data partition
 
-An empty ext2 (`ext2fs::mkfs`, the same code as myos's `mkfs.ext2`) for what
-must outlive an upgrade: SSH host keys and `authorized_keys` (in `/tmp` for
-now, `docs/ssh.md`), `/etc` overrides, home directories. myos does not mount
-it at boot yet; which of those move there is its own change. On a disk larger
+An empty ext2 (`ext2fs::mkfs`, the same code as myos's `mkfs.ext2`) at
+`/data`, for what must outlive an upgrade: SSH host keys and
+`authorized_keys` (in `/tmp` for now, `docs/ssh.md`), `/etc` overrides, home
+directories; which of those move there is its own change. Only the
+administrator may write it (the policy's `sys.file` label). On a disk larger
 than the image (a VPS), the space after it is left unused: growing the
 partition to the disk needs the GPT rewritten, which can come later.
 
@@ -187,9 +242,12 @@ A VPS without a rescue system but with custom ISOs boots the hybrid ISO
 The boot tests boot a copy of the image (`target/boot-test-<name>.img`, so
 the build's own stays as built), slot `a`. myos sees the boot disk on every
 arch (a virtio disk: on x86 the third, `vdc`, after the test disks), and
-`kernel.sh`'s `boot_disk` checks its layout: the slots, the one
-`limine.conf`, slot `a`'s version and `/proc/cmdline`, the empty ext2 data
-partition. It also checks that `/proc/boot/` holds slot `a`'s kernel and
+`kernel.sh`'s `boot_disk` checks its layout, as `mount -a` mounted it: the
+ESP at `/boot` (`/proc/boot/partuuid`), the slots, the one `limine.conf`,
+slot `a`'s version and `/proc/cmdline`, the fstab naming the data
+partition, the empty ext2 at `/data`; `fstab_mount` adds lines to
+`/boot/fstab` (a scratch partition under `/mnt`, a `/dev/` path, a missing
+GUID) and checks what `mount -a` does with each. It also checks that `/proc/boot/` holds slot `a`'s kernel and
 initramfs, and `/lib/myos-boot/` the ESP's Limine files. Every list ends
 with `get-myos --install --local` on the scratch disk. The full list runs
 `get-myos --upgrade -f` against the host's mirror (this build's boot files)
@@ -199,7 +257,8 @@ replace it; then `get-myos --install` on the scratch disk from the mirror,
 and last the local install over it (`user/get-myos/test.sh`). When it
 passed, the launcher boots the disk again (`run.sh reboot`), which must come
 up from slot `b` at its release, with the Limine the upgrade wrote, and then
-the disk `--install --local` made (`run.sh installed`), from its slot `a`:
+the disk `--install --local` made (`run.sh installed`), from its slot `a`
+(either with its own data partition at `/data`, from its fstab):
 by BIOS on the bios job (the BIOS stages `limine bios-install` wrote), by
 UEFI on the others. The ISO is not booted in CI: an install from it runs
 the same code.
