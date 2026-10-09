@@ -35,8 +35,26 @@ pub fn yield_now() {
 /// Same switch as `yield_now`. No-op until `enable_preempt` so the first-tick
 /// IRQ proof does not leave the Limine stack.
 pub fn schedule() {
+    let _ = pick_and_switch();
+}
+
+/// What [`pick_and_switch`] did.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    /// Ran another task; the caller is back on a CPU, Running.
+    Switched,
+    /// Nothing else to run here: the caller kept the CPU. `blocked`: it is
+    /// `Blocked` (a wait with nothing else runnable halts next).
+    Stayed { blocked: bool },
+}
+
+/// Run the next task for this CPU, if there is one: the first of the CPU's
+/// run queue and the floating tasks after the current one, else, when the
+/// current task cannot go on, a user task pulled from a busy CPU, else the
+/// CPU's idle task.
+fn pick_and_switch() -> Pick {
     if !PREEMPT_ON.load(Ordering::SeqCst) {
-        return;
+        return Pick::Stayed { blocked: false };
     }
     // Hold IF off across TASKS + switch. Caller may already have IF clear
     // (timer, yield); save/restore so we never leave IF on while locked.
@@ -56,6 +74,7 @@ pub fn schedule() {
     // - aspace/rsp0 under TASKS held the global scheduler lock across CR3 and
     //   IPI-heavy unload drains; with RR home CPUs that livelocked CI bios at
     //   the histrecall/arrow stage (peer IF-off spinning on TASKS).
+    let mut stayed_blocked = false;
     let switch = {
         let mut tasks = TASKS.lock();
         let current = current_slot();
@@ -64,47 +83,38 @@ pub fn schedule() {
         super::acct::charge(current);
 
         crate::smp::note_schedule();
-        let cpu = crate::smp::cpu_id();
-        let idle = IDLE_SLOT[cpu.min(crate::smp::MAX_CPUS - 1)].load(Ordering::Relaxed);
-        let mut next = current;
-        let mut idle_ready = false;
-        for off in 1..MAX_TASKS {
-            let i = (current + off) % MAX_TASKS;
-            if tasks[i].state != State::Ready {
-                continue;
-            }
-            if let Some(aff) = tasks[i].affinity {
-                if aff != cpu {
-                    continue;
-                }
-            }
-            // A woken task that is still some CPU's `CURRENT` (halting in
-            // `block_until`) runs there when it resumes; never pick it here.
-            if slot_on_cpu(i) {
-                continue;
-            }
-            if i == idle {
-                idle_ready = true;
-                continue;
-            }
-            next = i;
-            break;
+        let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+        let idle = IDLE_SLOT[cpu].load(Ordering::Relaxed);
+        // The run queues hold only Ready tasks that are on no CPU: a woken
+        // task still halting in `block_until` somewhere resumes there.
+        let queued = RUNQ[cpu].load(Ordering::SeqCst) | FLOAT.load(Ordering::SeqCst);
+        // A task that can go on keeps its CPU when nothing is queued: it
+        // keeps its address space too, where a round through the idle task
+        // loaded the kernel's and back (a whole TLB flush each way, every
+        // tick). The idle task runs only when nothing else can.
+        let current_runs = current != idle && matches!(tasks[current].state, State::Running | State::Ready);
+        let mut next = pick_from(queued, current).inspect(|&n| dequeue(n, tasks[n].affinity));
+        if next.is_none() && !current_runs {
+            next = pull(&mut tasks, cpu);
         }
-        // The idle task only when nothing else can run here: a task that
-        // keeps running keeps its address space, where a round through the
-        // idle task loaded the kernel's and back (a whole TLB flush each
-        // way, every tick).
-        let current_runs = matches!(tasks[current].state, State::Running | State::Ready);
-        if next == current && idle_ready && !current_runs {
-            next = idle;
-        }
+        let next = match next {
+            Some(n) => n,
+            None if !current_runs && idle != usize::MAX && idle != current => idle,
+            None => current,
+        };
 
         if next == current {
             if tasks[current].state == State::Ready {
                 tasks[current].state = State::Running;
             }
+            stayed_blocked = tasks[current].state == State::Blocked;
             None
         } else {
+            // A CPU that runs a task is not idle; the idle task is picked
+            // only by the idle loop, which says so itself.
+            if next != idle {
+                CPU_IDLE[cpu].store(false, Ordering::SeqCst);
+            }
             let old_sp = core::ptr::addr_of_mut!(tasks[current].sp);
             let new_sp = tasks[next].sp;
             let kstack = tasks[next].kernel_stack_top;
@@ -134,14 +144,14 @@ pub fn schedule() {
             tasks[current].syscall_frame = crate::arch::syscall_frame() as usize;
             crate::arch::set_syscall_frame(tasks[next].syscall_frame as *mut u64);
             set_current_slot(next);
-            SWITCHED_FROM[cpu.min(crate::smp::MAX_CPUS - 1)].store(current, Ordering::SeqCst);
+            SWITCHED_FROM[cpu].store(current, Ordering::SeqCst);
             Some((old_sp, new_sp, kstack, old_kstack, aspace, current, next, old_user))
         }
     };
 
     let Some((old_sp, new_sp, kstack, old_kstack, aspace, old, next, old_user)) = switch else {
         irq_restore(flags);
-        return;
+        return Pick::Stayed { blocked: stayed_blocked };
     };
 
     // The task leaving this CPU must still be on its kernel stack: an
@@ -191,6 +201,160 @@ pub fn schedule() {
     }
     finish_switch();
     irq_restore(flags);
+    Pick::Switched
+}
+
+// --- Run queues --------------------------------------------------------------
+//
+// The Ready tasks that are on no CPU, a bit per slot: one queue per CPU for
+// the tasks homed on it, one for the tasks that may run anywhere (the
+// kernel's floating threads). The idle tasks are never queued: `schedule`
+// falls back to its CPU's. The bits change with the task states, under
+// TASKS; the idle loop reads them without it to ask "is anything ready
+// here?", and `enqueue` to pick a CPU to kick.
+
+const _: () = assert!(MAX_TASKS <= 64);
+
+/// Per CPU: its run queue.
+static RUNQ: [AtomicU64; crate::smp::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+/// The queue of the tasks with no home.
+static FLOAT: AtomicU64 = AtomicU64::new(0);
+/// Per CPU: how many tasks it pulled from another CPU's queue (`/proc/cpuinfo`).
+static PULLS: [AtomicU64; crate::smp::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+
+pub fn pulls(cpu: usize) -> u64 {
+    PULLS.get(cpu).map_or(0, |n| n.load(Ordering::Relaxed))
+}
+
+fn queue(affinity: Option<usize>) -> &'static AtomicU64 {
+    match affinity {
+        Some(c) => &RUNQ[c.min(crate::smp::MAX_CPUS - 1)],
+        None => &FLOAT,
+    }
+}
+
+/// Task `slot`, Ready and on no CPU, joins the queue its home says (under
+/// TASKS). It is picked by its home CPU, or by an idle one: see
+/// [`kick_for`] for the kicks that get it run now.
+fn enqueue(slot: usize, affinity: Option<usize>) {
+    queue(affinity).fetch_or(1 << slot, Ordering::SeqCst);
+}
+
+fn dequeue(slot: usize, affinity: Option<usize>) {
+    queue(affinity).fetch_and(!(1 << slot), Ordering::SeqCst);
+}
+
+/// Slot `slot` leaves every queue (a recycled slot).
+pub(super) fn unqueue(slot: usize) {
+    for q in RUNQ.iter().chain(core::iter::once(&FLOAT)) {
+        q.fetch_and(!(1 << slot), Ordering::SeqCst);
+    }
+}
+
+/// Is anything queued that this CPU may run?
+fn queued_for(cpu: usize) -> bool {
+    RUNQ[cpu].load(Ordering::SeqCst) | FLOAT.load(Ordering::SeqCst) != 0
+}
+
+/// The bit of `mask` after `current`, round-robin: the first above it, or
+/// else its lowest.
+fn pick_from(mask: u64, current: usize) -> Option<usize> {
+    if mask == 0 {
+        return None;
+    }
+    let above = match current.checked_add(1) {
+        Some(n) if n < 64 => mask & (u64::MAX << n),
+        _ => 0,
+    };
+    let from = if above != 0 { above } else { mask };
+    Some(from.trailing_zeros() as usize)
+}
+
+/// Whether user tasks run on `cpu` (`user_affinity` keeps them off the BSP
+/// on x86_64 and aarch64).
+fn hosts_user(cpu: usize) -> bool {
+    cpu != 0 || crate::arch::USER_TASKS_ON_BSP
+}
+
+/// Whether another CPU may take task `t` from its home's queue: a user
+/// task with its address space (one in `die` has let it go: it finishes
+/// where it is), and not a thread that has not run yet (it waits on its
+/// creator's CPU until `place_thread`, which the creator calls once the
+/// thread's ids are stored where it will read them).
+fn pullable(slot: usize, t: &Task) -> bool {
+    t.aspace != 0 && (t.tgid == slot || t.start_regs.is_none())
+}
+
+/// A CPU with nothing to run takes a user task waiting in a busy CPU's
+/// queue and makes itself its home (issue #282): the task is on no CPU and
+/// its last CPU has switched to another root, so its address space is
+/// loaded where it runs, as a task's is after any switch. Called under
+/// TASKS for the calling CPU `cpu`; the slot, dequeued and re-homed.
+fn pull(tasks: &mut TaskTable, cpu: usize) -> Option<usize> {
+    if !hosts_user(cpu) {
+        return None;
+    }
+    for c in 0..crate::smp::MAX_CPUS {
+        // An idle CPU runs its own queue as soon as it is kicked.
+        if c == cpu || CPU_IDLE[c].load(Ordering::SeqCst) {
+            continue;
+        }
+        let mut mask = RUNQ[c].load(Ordering::SeqCst);
+        while mask != 0 {
+            let slot = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            if pullable(slot, &tasks[slot]) {
+                dequeue(slot, Some(c));
+                tasks[slot].affinity = Some(cpu);
+                PULLS[cpu].fetch_add(1, Ordering::Relaxed);
+                return Some(slot);
+            }
+        }
+    }
+    None
+}
+
+/// The CPUs to kick for task `slot`, just queued with `affinity`: its home,
+/// when it has one (`kick` IPIs it only when it is halted; the flag makes
+/// an idle loop between its pick and its halt look again); and when the
+/// home is busy, or there is none, an idle CPU that may run it, so it is
+/// pulled now rather than at the home's next tick. `from_switch`: queued by
+/// the CPU it just left, which needs no flag for it.
+fn kick_for(tasks: &TaskTable, slot: usize, affinity: Option<usize>, from_switch: bool, kicks: &mut u64) {
+    let home = affinity.map(|c| c.min(crate::smp::MAX_CPUS - 1));
+    if let Some(h) = home {
+        if !from_switch {
+            NEED_RESCHED[h].store(true, Ordering::SeqCst);
+            *kicks |= 1 << h;
+        }
+        if !pullable(slot, &tasks[slot]) || CPU_IDLE[h].load(Ordering::SeqCst) {
+            return;
+        }
+    }
+    let puller = (0..crate::smp::MAX_CPUS).find(|&c| {
+        Some(c) != home && CPU_IDLE[c].load(Ordering::SeqCst) && (home.is_none() || hosts_user(c))
+    });
+    if let Some(c) = puller {
+        NEED_RESCHED[c].store(true, Ordering::SeqCst);
+        *kicks |= 1 << c;
+    }
+}
+
+/// A task made Ready while on no CPU (spawn, fork, a new thread; under
+/// TASKS): queued and its kicks noted, to be sent once TASKS is dropped
+/// (`kick_cpus_mask`).
+pub(super) fn ready_locked(tasks: &TaskTable, slot: usize, kicks: &mut u64) {
+    let affinity = tasks[slot].affinity;
+    enqueue(slot, affinity);
+    kick_for(tasks, slot, affinity, false, kicks);
+}
+
+/// Thread `slot`, queued and not run yet, gets the home `affinity` (under
+/// TASKS): it moves queue, and the kicks follow.
+pub(super) fn rehome_locked(tasks: &mut TaskTable, slot: usize, affinity: Option<usize>, kicks: &mut u64) {
+    dequeue(slot, tasks[slot].affinity);
+    tasks[slot].affinity = affinity;
+    ready_locked(tasks, slot, kicks);
 }
 
 /// Per task: where its switch frame was saved when it last left a CPU, a
@@ -297,23 +461,39 @@ static SWITCHED_FROM: [AtomicUsize; crate::smp::MAX_CPUS] =
 /// the previous task is off this CPU's stack now, so peers may run it.
 pub(super) fn finish_switch() {
     let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-    // Clear SWITCHED_FROM under TASKS, where `wake` reads it: cleared before
-    // the lock, a wake in between made a Blocked `prev` Ready at once, a peer
-    // resumed it before its frame was recorded, and this late update then
-    // turned it Ready while it ran there.
-    let mut tasks = TASKS.lock();
-    let prev = SWITCHED_FROM[cpu].swap(usize::MAX, Ordering::SeqCst);
-    if prev == usize::MAX {
-        return;
+    let mut kicks = 0u64;
+    {
+        // Clear SWITCHED_FROM under TASKS, where `wake` reads it: cleared
+        // before the lock, a wake in between made a Blocked `prev` Ready at
+        // once, a peer resumed it before its frame was recorded, and this
+        // late update then turned it Ready while it ran there.
+        let mut tasks = TASKS.lock();
+        let prev = SWITCHED_FROM[cpu].swap(usize::MAX, Ordering::SeqCst);
+        if prev == usize::MAX {
+            return;
+        }
+        remember_frame(prev, tasks[prev].sp, cpu);
+        let ready = if tasks[prev].state == State::Running {
+            true
+        } else if tasks[prev].state == State::Blocked && tasks[prev].wake_pending {
+            // Woken while it was still on the old CPU's stack: runnable now.
+            tasks[prev].wake_pending = false;
+            true
+        } else {
+            false
+        };
+        // Queued now that it is off the CPU; the idle task waits for its
+        // CPU to have nothing else.
+        if ready {
+            tasks[prev].state = State::Ready;
+            if prev != IDLE_SLOT[cpu].load(Ordering::Relaxed) {
+                let affinity = tasks[prev].affinity;
+                enqueue(prev, affinity);
+                kick_for(&tasks, prev, affinity, true, &mut kicks);
+            }
+        }
     }
-    remember_frame(prev, tasks[prev].sp, cpu);
-    if tasks[prev].state == State::Running {
-        tasks[prev].state = State::Ready;
-    } else if tasks[prev].state == State::Blocked && tasks[prev].wake_pending {
-        // Woken while it was still on the old CPU's stack: runnable now.
-        tasks[prev].wake_pending = false;
-        tasks[prev].state = State::Ready;
-    }
+    kick(kicks);
 }
 
 /// True while `slot` is still being switched away from on some CPU: its
@@ -487,38 +667,31 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
         }
     }
     loop {
-        // Run something else on this CPU if there is anything; comes back
-        // here once we are Ready again (or at once when nothing is runnable).
-        schedule();
+        // Idle from here until something runs: a wake for this CPU
+        // meanwhile sets its flag and IPIs it. Then one pass: run something
+        // else if there is anything (it comes back here once this task was
+        // picked again, Running), or learn that there is nothing.
         let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
         CPU_IDLE[cpu].store(true, Ordering::SeqCst);
-        let still_blocked = {
-            let mut tasks = TASKS.lock();
-            match tasks[me].state {
-                State::Blocked => true,
-                State::Ready => {
-                    tasks[me].state = State::Running;
-                    false
-                }
-                _ => false,
-            }
-        };
-        if !still_blocked {
-            CPU_IDLE[cpu].store(false, Ordering::SeqCst);
-            break;
+        match pick_and_switch() {
+            // Picked from a queue: Running, on this or another CPU; or
+            // woken while halting here: Running too.
+            Pick::Switched | Pick::Stayed { blocked: false } => break,
+            Pick::Stayed { blocked: true } => {}
         }
         // Nothing else runnable here: halt on our own stack until an
-        // interrupt (timer / IPI from a waker) arrives. `idle_wait` enters
-        // with IRQs off, so a wake that already raised an IPI is pending and
-        // ends the halt immediately.
-        if !NEED_RESCHED[cpu].swap(false, Ordering::SeqCst) {
+        // interrupt (timer / IPI from a waker) arrives, unless a wake came
+        // since the pick. `idle_wait` enters with IRQs off, so a wake that
+        // already raised an IPI is pending and ends the halt immediately.
+        if !NEED_RESCHED[cpu].swap(false, Ordering::SeqCst) && !queued_for(cpu) {
             halt(cpu);
         } else {
             irq_on();
         }
         irq_off();
-        CPU_IDLE[cpu].store(false, Ordering::SeqCst);
     }
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    CPU_IDLE[cpu].store(false, Ordering::SeqCst);
     irq_restore(flags);
 }
 
@@ -535,30 +708,23 @@ fn wake_locked(tasks: &mut TaskTable, slot: usize, kicks: &mut u64) {
     // Keep a stale key from matching a later wake once the task runs again.
     t.wait_key = 0;
     t.wake_at = 0;
+    // Still leaving a CPU: `finish_switch` queues it there.
     if mid_switch(slot) {
         t.wake_pending = true;
-    } else {
-        t.state = State::Ready;
+        return;
     }
-    // Where will it run? Its home CPU, the CPU it is halting on, or any
-    // idle CPU for a floating task.
-    let mut target = None;
-    for (c, cur) in CURRENT.iter().enumerate() {
-        if cur.load(Ordering::SeqCst) == slot {
-            target = Some(c);
-        }
-    }
-    if target.is_none() {
-        target = t.affinity;
-    }
-    if target.is_none() {
-        target = (0..crate::smp::MAX_CPUS).find(|&c| CPU_IDLE[c].load(Ordering::SeqCst));
-    }
-    if let Some(c) = target {
-        let c = c.min(crate::smp::MAX_CPUS - 1);
+    t.state = State::Ready;
+    // Halting in `block_until`: it resumes on that CPU; else it is queued
+    // for its home, or for whoever takes it.
+    let halting = CURRENT.iter().position(|cur| cur.load(Ordering::SeqCst) == slot);
+    if let Some(c) = halting {
         NEED_RESCHED[c].store(true, Ordering::SeqCst);
         *kicks |= 1 << c;
+        return;
     }
+    let affinity = t.affinity;
+    enqueue(slot, affinity);
+    kick_for(tasks, slot, affinity, false, kicks);
 }
 
 /// IPI the CPUs in `kicks` that are halted (never ourselves: the caller
@@ -775,47 +941,26 @@ pub fn sleep_until(deadline: u64, wake_on_any_event: bool) -> bool {
     }
 }
 
-/// One idle-loop step: run whatever is Ready for this CPU, then halt until
-/// the next interrupt unless work arrived meanwhile.
+/// One idle-loop step: run whatever is queued for this CPU (or pull a
+/// task from a busy one), then halt until the next interrupt unless work
+/// arrived meanwhile. One pass of the scheduler decides (issue #369): the
+/// CPU says it is idle before the pick, so a task queued for it after the
+/// pick kicks it (the flag, and an IPI that is pending when it halts), and
+/// one more look at its queue catches the rest.
 pub fn idle_step() {
-    yield_now();
     let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-    CPU_IDLE[cpu].store(true, Ordering::SeqCst);
     irq_off();
-    if !NEED_RESCHED[cpu].swap(false, Ordering::SeqCst) && !ready_for_cpu(cpu) {
-        halt(cpu);
+    CPU_IDLE[cpu].store(true, Ordering::SeqCst);
+    if let Pick::Stayed { .. } = pick_and_switch() {
+        if !NEED_RESCHED[cpu].swap(false, Ordering::SeqCst) && !queued_for(cpu) {
+            halt(cpu);
+        } else {
+            irq_on();
+        }
     } else {
         irq_on();
     }
     CPU_IDLE[cpu].store(false, Ordering::SeqCst);
-}
-
-/// Is any off-CPU task Ready for `cpu`? (IRQs off; TASKS not held.)
-fn ready_for_cpu(cpu: usize) -> bool {
-    let Some(tasks) = TASKS.try_lock() else {
-        return true;
-    };
-    for i in 0..MAX_TASKS {
-        if tasks[i].state == State::Ready
-            && tasks[i].affinity.is_none_or(|a| a == cpu)
-            && !slot_on_cpu(i)
-        {
-            return true;
-        }
-    }
-    false
-}
-
-/// Spawn/fork made a task Ready: note it for its home CPU (or any idle CPU)
-/// and kick that CPU if it is halted.
-pub(super) fn note_ready(affinity: Option<usize>) {
-    let target = affinity
-        .or_else(|| (0..crate::smp::MAX_CPUS).find(|&c| CPU_IDLE[c].load(Ordering::SeqCst)));
-    if let Some(c) = target {
-        let c = c.min(crate::smp::MAX_CPUS - 1);
-        NEED_RESCHED[c].store(true, Ordering::SeqCst);
-        kick(1 << c);
-    }
 }
 
 pub(super) use crate::arch::{hlt as wait, irq_off, irq_on, irq_restore, irq_save};

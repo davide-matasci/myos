@@ -285,6 +285,8 @@ pub fn cpuinfo_text() -> alloc::vec::Vec<u8> {
         push_dec(&mut out, SCHED_TICKS[i].load(Ordering::Relaxed));
         push_str(&mut out, "\nidle_halts\t: ");
         push_dec(&mut out, crate::task::idle_halts(i));
+        push_str(&mut out, "\npulls\t\t: ");
+        push_dec(&mut out, crate::task::pulls(i));
         push_str(&mut out, "\n");
         if !ONLINE[0].load(Ordering::SeqCst) && i == 0 {
             break;

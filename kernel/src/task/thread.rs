@@ -65,9 +65,11 @@ pub fn spawn_thread(regs: UserRegs, tls: Option<u64>) -> Option<usize> {
     fpu::fork(slot);
     tp::init(slot, tls);
     crate::personality::on_thread(me, slot);
+    let mut kicks = 0u64;
+    ready_locked(&tasks, slot, &mut kicks);
     drop(tasks);
     irq_restore(flags);
-    note_ready(affinity);
+    kick_cpus_mask(kicks);
     Some(slot)
 }
 
@@ -79,15 +81,13 @@ pub fn place_thread(tid: usize) {
     irq_off();
     let mut tasks = TASKS.lock();
     let fresh = tid < MAX_TASKS && tasks[tid].state == State::Ready && tasks[tid].start_regs.is_some();
-    let affinity = if fresh { user_affinity() } else { None };
-    if affinity.is_some() {
-        tasks[tid].affinity = affinity;
+    let mut kicks = 0u64;
+    if fresh {
+        rehome_locked(&mut tasks, tid, user_affinity(), &mut kicks);
     }
     drop(tasks);
     irq_restore(flags);
-    if affinity.is_some() {
-        note_ready(affinity);
-    }
+    kick_cpus_mask(kicks);
 }
 
 /// End the calling thread with `code`. The leader carries the process, so
