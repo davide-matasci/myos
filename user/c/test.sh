@@ -86,6 +86,11 @@ t fault /bin/etc/fault_smoke
 # Constructors run before main, by priority, with environ set up;
 # destructors at exit, after the atexit handlers (ctor_smoke.c).
 t ctor /bin/etc/ctor_smoke
+# Idle-pull balancing: a forked child inherits its parent's home CPU and,
+# while the parent keeps that CPU busy, an idle CPU takes it: the two end
+# up with different homes (sched_smoke.c; nothing to check with one CPU
+# for user tasks).
+t sched /bin/etc/sched_smoke
 # The same for a program tcc builds in the guest: its own linker bounds
 # .init_array and .fini_array, and it links crti.o and crtn.o. main returns
 # 3, and the destructor turns it into 0 if the constructor ran.

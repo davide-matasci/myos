@@ -44,9 +44,16 @@ pub(super) const NO_PARENT: usize = usize::MAX;
 /// dying task still ran on it: the new child resumed from a clobbered frame
 /// (dropbear session children crashing with garbage pointers / return
 /// addresses under -smp 4).
+///
+/// Not before `finish_switch` has run on the CPU it left, either
+/// (`mid_switch`): that one looks at the slot's task, and reused by then,
+/// the slot held a new, running task, which it took for the preempted old
+/// one and queued, so two CPUs ran it (child_smoke under load: "switch
+/// frame of task 7 overwritten", the task already Dead).
 pub(super) fn reapable(tasks: &TaskTable, slot: usize) -> bool {
     tasks[slot].state == State::Dead
         && !slot_on_cpu(slot)
+        && !mid_switch(slot)
         && unsafe { core::ptr::read_volatile(core::ptr::addr_of!(tasks[slot].sp)) } != 0
 }
 
@@ -102,9 +109,10 @@ pub fn zombie_count(parent: usize) -> usize {
     }
 }
 /// Home CPU for a new top-level user task: round-robin over the online
-/// CPUs. Every user task is pinned to a home (no live migration), which is
-/// what lets `flush_user_tlb` stay local: an address space is only ever
-/// loaded on its home CPU.
+/// CPUs. A user task runs on its home, and keeps it until an idle CPU
+/// takes it while the home is busy (`sched::pull`, which makes that CPU
+/// its home): it is loaded on one CPU at a time, which is what lets
+/// `flush_user_tlb` stay local.
 ///
 /// x86_64 / aarch64 skip the BSP (it owns the console, UART drain and the
 /// kernel_main idle loop; with 3 APs under `-smp 4` user work has plenty of
@@ -144,15 +152,12 @@ pub(super) fn parent_has_active_child(tasks: &TaskTable, ppid: usize) -> bool {
 }
 
 /// Fork affinity: inherit, or RR-spread when a ctty-bearing parent already
-/// has an active child (parallel jobs). Returns `(affinity, kick)` — kick
-/// only when the child was placed on a different home than the parent.
-fn fork_child_affinity(tasks: &TaskTable, ppid: usize) -> (Option<usize>, bool) {
-    let parent_aff = tasks[ppid].affinity;
+/// has an active child (parallel jobs).
+fn fork_child_affinity(tasks: &TaskTable, ppid: usize) -> Option<usize> {
     if tasks.proc(ppid).has_ctty && parent_has_active_child(tasks, ppid) {
-        let next = user_affinity();
-        (next, next != parent_aff)
+        user_affinity()
     } else {
-        (parent_aff, false)
+        tasks[ppid].affinity
     }
 }
 
@@ -310,7 +315,7 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
 
     let mut tasks = TASKS.lock();
     tasks.install_proc(slot, child_proc);
-    let (child_aff, kick) = fork_child_affinity(&tasks, ppid);
+    let child_aff = fork_child_affinity(&tasks, ppid);
     tasks[slot] = Task {
         state: State::Ready,
         stack_base,
@@ -331,7 +336,8 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
         sig_blocked,
         // Sequential / init→getty (no ctty): inherit. Ctty parent with an
         // active sibling (make -j / pipelines): fresh AP RR home. Exec keeps
-        // this affinity. Cross-CPU wait: die() IF-on + schedule() soft TLB.
+        // this affinity; an idle CPU may take the child while the parent
+        // keeps its CPU busy (`sched::pull`).
         affinity: child_aff,
         wait_key: 0,
         wake_at: 0,
@@ -350,14 +356,12 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
     fpu::fork(slot);
     tp::fork(current_slot(), slot);
     crate::personality::on_fork(ppid, slot);
+    let mut kicks = 0u64;
+    ready_locked(&tasks, slot, &mut kicks);
     drop(tasks);
     user::note_fork();
     irq_restore(flags);
-    // Wake the child's home CPU if it is halted (another AP after RR
-    // spreading; the home CPU otherwise picks it up at its next schedule).
-    if kick {
-        note_ready(child_aff);
-    }
+    kick_cpus_mask(kicks);
     Some(slot)
 }
 
@@ -613,10 +617,11 @@ fn spawn_inner(
     tp::reset(slot);
     super::sched::forget_frame(slot);
     crate::personality::on_spawn(slot);
-    let aff = tasks[slot].affinity;
+    let mut kicks = 0u64;
+    ready_locked(&tasks, slot, &mut kicks);
     drop(tasks);
     irq_restore(flags);
-    note_ready(aff);
+    kick_cpus_mask(kicks);
 }
 
 /// `exit`: end the current process with `code`.

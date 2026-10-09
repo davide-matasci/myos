@@ -58,7 +58,7 @@ read pid name state ppid pgid sid threads size cpu children start kind < /proc/$
 | tid, pid | |
 | name | as above, per thread (a new thread is named after its creator) |
 | state | `running`, `ready`, `blocked` or `zombie` |
-| cpu | its home CPU, `-` when it may run anywhere |
+| cpu | its home CPU (an idle CPU may take it, `docs/pci-acpi-smp.md`), `-` when it may run anywhere |
 | wait | what it is blocked on (`block_until`'s key, hex), `0x0` when it is not blocked |
 | time | its CPU time |
 | start | when it started |

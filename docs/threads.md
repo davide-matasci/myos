@@ -22,7 +22,8 @@ what the threads share. Each task has a `tgid`, the slot of its leader
 reached through it (`with_process_mut`). A thread's id (tid) is its slot.
 
 Every thread gets a home CPU of its own, round-robin like the processes
-(`user_affinity` in `task/lifecycle.rs`), so the threads of a process run
+(`user_affinity` in `task/lifecycle.rs`; an idle CPU may take it from a
+busy home later, `docs/pci-acpi-smp.md`), so the threads of a process run
 in parallel. A new thread first waits on its creator's CPU, which runs the
 syscall with interrupts off, until `place_thread` moves it: the Linux
 layer's `clone` stores the thread ids the new thread reads first

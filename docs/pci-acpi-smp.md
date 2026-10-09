@@ -14,7 +14,7 @@
 | ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP |
 | Limine RSDP / MP requests | `kernel/src/limine_boot.rs` | Boot protocol |
 | AP bring-up + `/proc/cpuinfo` | `kernel/src/smp.rs` | Must run before modules; owns CPU-local state + IPI helpers |
-| Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, shared ready set |
+| Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, per-CPU run queues |
 | Proc exporters | `kernel/src/fs/procfs.rs` | Built-ins: `mounts`, `cpuinfo`, `platform`; dynamic via `proc_register` ABI |
 
 ABI version: **21** (`blk_unregister`, `service_register` / `service_lookup`, `thread_spawn`, `wake` and the USB bus types, `docs/usb.md`; see `README.md` for 15–20; 14: `dt_mmio_find`: a module finds its memory-mapped devices in the device tree; 13: `personality_register`, `personality_exec`, `native_syscall` and the task / fd / VFS / signal / FPU / wait helpers a syscall personality needs: the Linux layer is a module; 12: `blk_register`, `pci_find_class`, `framebuffer_info`, `console_register`: block devices and the console are modules; 11: `pci_irq_enable`, `wake_any`, `wait_seq`, `block_until`, `monotonic_ns` for device interrupts and blocking waits; 10: `proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
@@ -262,21 +262,50 @@ then that slow, so the boot tests use multi-threaded TCG on every arch. Each idl
 `idle_tickless` test checks a quiet CPU averages over 20 ms a halt,
 `idle_cpu0` the same of CPU 0).
 
+Run queues: the Ready tasks that are on no CPU sit in per-CPU run queues
+(`sched::RUNQ`, a bit per task slot: the tasks homed on that CPU) and one
+queue of the tasks that may run anywhere (`FLOAT`, the kernel's threads);
+the idle tasks are never queued. The bits change with the task states
+under `TASKS` (a task is queued when it is made Ready off a CPU: a wake, a
+spawn, `finish_switch` for a preempted task), so picking the next task is a
+few bit operations on the CPU's queue and the floating one, round-robin
+after the current slot, and "is anything ready here?" is a lock-free load
+(the old pick walked all 64 slots under `TASKS` on every tick, switch and
+yield, and again before every halt).
+
 Idle: `kernel_main` (task 0) is the BSP's idle task, `ap_idle_body` the APs'.
-`idle_step` runs whatever is Ready for the CPU, then halts
-(`arch::idle_wait`: `sti; hlt` / `wfi` with the pending-interrupt wakeup)
-unless `NEED_RESCHED[cpu]` was set meanwhile. A task that blocks with
-nothing else runnable halts the same way on its own stack; `schedule` never
-picks a woken task that is still some CPU's `CURRENT`, and a wake that lands
-while the task is mid-switch (`SWITCHED_FROM`) is deferred to
-`finish_switch` (`wake_pending`). A task leaving a CPU stays Running until
-`finish_switch`, also one a wake already made Ready while it halted there:
-left Ready, a peer could resume it from its previous, stale switch frame
-before `task_switch` saved the new one. `wake` marks the woken task's home CPU
-(or the CPU it is halting on, or any idle CPU for a floating task) and sends
+`idle_step` is one pass of the scheduler: the CPU marks itself idle
+(`CPU_IDLE`), picks under `TASKS` (its queue, the floating queue, else a
+pull, below) and, when that found nothing, halts (`arch::idle_wait`: `sti;
+hlt` / `wfi` with the pending-interrupt wakeup) unless `NEED_RESCHED[cpu]`
+was set or its queue filled meanwhile: a task queued for an idle CPU after
+its pick sets the flag and sends it an IPI, which is pending when it
+halts. A task that blocks with nothing else runnable halts the same way on
+its own stack, from the same single pass (`block_until`); `schedule` never
+picks a woken task that is still some CPU's `CURRENT` (it is not queued),
+and a wake that lands while the task is mid-switch (`SWITCHED_FROM`) is
+deferred to `finish_switch` (`wake_pending`). A task leaving a CPU stays
+Running until `finish_switch`, also one a wake already made Ready while it
+halted there: left Ready, a peer could resume it from its previous, stale
+switch frame before `task_switch` saved the new one. `wake` queues the
+woken task for its home CPU (or marks the CPU it is halting on), and sends
 a **targeted** reschedule IPI (`arch::ipi_reschedule_cpu`: the LAPIC ICR with
 a destination, a GIC SGI to one CPU (v2: a CPUTargetList bit, v3: the affinity in `ICC_SGI1R_EL1`), SBI IPI with a single
-hart) only when that CPU is halted. The UART's receive interrupt stages its
+hart) only when that CPU is halted.
+
+Idle-pull balancing (`sched::pull`): a CPU with nothing in its queues, and
+whose current task cannot go on, takes a user task from the queue of a busy
+CPU (one that is not idle: an idle CPU runs its own queue as soon as it is
+kicked) and makes itself its home. A user task so keeps a home, runs on one
+CPU at a time and is loaded on that CPU only (`LOADED_ASPACE`): the task is
+off every CPU while it waits, and the CPU it left switched to another root
+before `finish_switch` queued it, which flushed its TLB, so the TLB rules
+for threads (`docs/threads.md`) cover a pulled task too. A task queued for
+a busy home, or a floating task, kicks an idle CPU that may run it
+(`kick_for`), so the pull happens at once rather than at the home's next
+tick; a kernel thread is never pulled (it floats), nor is a user task onto
+the BSP where `user_affinity` keeps user tasks off it (x86_64, aarch64).
+`/proc/cpuinfo` counts the pulls per CPU. The UART's receive interrupt stages its
 bytes (`input::drain_uart_irq`, into a lock-free ring) and wakes
 `KEY_CONSOLE`; the keyboard's only wakes it (`KernelApi::console_input`),
 and the reader takes the keys. Without those interrupts the BSP's tick
@@ -287,9 +316,9 @@ the PL011 on every output byte; the FIFO-reset bits in that sequence dropped
 input that arrived while the kernel echoed, which only showed once the drain
 tick slowed down).
 
-`/proc/cpuinfo` reports `schedules`, `idle_halts` per CPU, `blocked_tasks`,
-`clock_hz` and `uptime_ms` — an idle shell should show `idle_halts` climbing
-and `schedules` nearly flat.
+`/proc/cpuinfo` reports `schedules`, `idle_halts` and `pulls` per CPU,
+`blocked_tasks`, `clock_hz` and `uptime_ms` — an idle shell should show
+`idle_halts` climbing and `schedules` nearly flat.
 
 ## SMP model per architecture
 
@@ -302,7 +331,8 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 | aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | naked `goto_address` entry, TTBR0 device map sync, `VBAR`/`use_spx`, the CPU's GIC bank (v2: banked GICC; v3: its redistributor + `ICC_*`), timers | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
 | riscv64 | `tp` / Limine `hartid` | `stvec` / `sie` (STIE+SSIE) / `stimecmp` | S-mode timer → `schedule` | SBI IPI ext → SSIP; soft reason bits in `smp` |
 
-Scheduler: global ready list + optional `affinity` (AP idle threads are pinned).
+Scheduler: per-CPU run queues + optional `affinity` (AP idle threads are
+pinned; a user task's home moves when an idle CPU pulls it, above).
 Kernel tasks use `affinity: None` (smoke `sched mask=0x3`). With more than one
 CPU online, `spawn_user` round-robins user homes: **x86_64** and **aarch64**
 over the APs (skip BSP), **riscv64** (`-smp 2`) over both harts. Fork
@@ -319,11 +349,14 @@ shootdown with soft `tlb_service` from `schedule` while IF-off (IRQ-only ACK
 previously deadlocked a cli waiter), (3) x86 `flush_user_tlb` / unload skip
 the remote IPI barrier when affinity pin guarantees the aspace was never
 loaded elsewhere — full shootdowns after every map/unmap doubled MYOS_CI_MINI
-under `-smp 4` TCG (600s wall); do not paper with a longer QEMU timeout. True `affinity: None` live migration
-remains off (NX #PF / leave races). `schedule` switches aspace/rsp0 before
+under `-smp 4` TCG (600s wall); do not paper with a longer QEMU timeout.
+A user task moves CPU only while it is Ready and off every CPU (a pull),
+never while running (`affinity: None` user tasks stay off: the NX #PF /
+leave races). `schedule` switches aspace/rsp0 before
 publishing Ready (old stays Running across the CR3 write, lock not held during
 switch); `unload_user_aspace` briefly kicks remotes then TLB-shootdowns; fork
-kicks the child's home CPU only when a child was RR-homed onto another AP.
+queues the child for its home and kicks that CPU, or an idle one that may
+pull the child while the parent keeps the home busy.
 **aarch64** user tasks were BSP-pinned while block I/O waited on BSP-targeted
 SPIs; virtio-blk/NVMe are polled now, so they take AP homes like x86 (the
 `tlbi …is` flushes are inner-shareable broadcasts anyway). **riscv64** APs

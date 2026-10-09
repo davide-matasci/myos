@@ -33,7 +33,8 @@ pub struct ThreadInfo {
     pub pid: usize,
     pub name: [u8; NAME_MAX],
     pub state: &'static str,
-    /// The CPU it runs on (its home CPU), `None` while it may run anywhere.
+    /// The CPU it runs on (its home CPU, which an idle CPU may take it to),
+    /// `None` while it may run anywhere.
     pub cpu: Option<usize>,
     /// What it is blocked on (`sched::block_until`'s key), 0 when it is not.
     pub wait_key: usize,

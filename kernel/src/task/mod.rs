@@ -145,7 +145,9 @@ struct Task {
     /// Blocked does not mean discarded: still accumulates in `sig_pending`,
     /// delivered when unblocked.
     sig_blocked: u32,
-    /// `None` = runnable on any CPU; `Some(cpu)` = pinned (idle threads).
+    /// `None` = runnable on any CPU (the kernel's threads); `Some(cpu)` =
+    /// its home, the CPU it runs on: pinned for an idle task, for a user
+    /// task until an idle CPU takes it (`sched::pull`).
     affinity: Option<usize>,
     /// What a `Blocked` task waits for (`sched::WAIT_ANY` = any event).
     wait_key: usize,
@@ -296,8 +298,10 @@ pub fn init() {
 /// sequential shell/smoke fork+exec+wait stays same-CPU (blanket post-exec
 /// RR made UEFI CI burn the 600s QEMU wall). Cross-CPU wait (pipelines /
 /// make) stays safe via `die` IF-on reclaim + soft TLB service in
-/// `schedule`. Live migration (`affinity: None`) remains off. Other arches
-/// float.
+/// `schedule`. A Ready task waiting behind a busy home is taken by an idle
+/// CPU, which becomes its home (`sched::pull`); a task runs on one CPU at
+/// a time either way, and only a CPU it last ran on lists its address
+/// space in `LOADED_ASPACE`.
 
 pub fn kernel_aspace() -> u64 {
     KERNEL_ASPACE.load(Ordering::SeqCst)
@@ -342,13 +346,13 @@ pub fn unload_user_aspace(aspace: u64) {
             }
             core::hint::spin_loop();
         }
-        // x86: affinity pin ⇒ once no CPU lists this root in LOADED_ASPACE,
-        // no remote TLB holds it (local CR3 switch above already flushed us).
-        // Skip the global IPI barrier — it dominated exit/reclaim cost under
-        // -smp 4 TCG. Still shoot down if a remote refused to drop the root
-        // (float / bug), and on other arches that may migrate.
-        // aarch64: same invariant holds (user_affinity() pins all user tasks
-        // to the BSP), so `live` is false here and the barrier is skipped.
+        // A CPU drops the root from its TLB when it switches away from it
+        // (`schedule` loads another root first, which flushes), and lists
+        // it in LOADED_ASPACE only while it has it: once no CPU lists it,
+        // no remote TLB holds it (the local switch above flushed us), on
+        // every arch, a task pulled to another CPU included. Skip the
+        // global IPI barrier then — it dominated exit/reclaim cost under
+        // -smp 4 TCG; still shoot down if a remote refused to drop the root.
         // This gate is load-bearing: a global shootdown per exit dominated
         // exit cost (observed: 1 shootdown/s and a ~10× interactive crawl
         // under -smp 4). die() now reclaims before the task is marked Dead,
