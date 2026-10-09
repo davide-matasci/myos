@@ -1,7 +1,8 @@
 /* netconv-smoke: boot-CI guest test for netfs conversation bookkeeping.
  *
- * A TCP connect to 127.0.0.1 is refused at once (netd has no loopback:
- * nothing would ever answer). Many sockets closed right after
+ * A TCP connect to a port of 127.0.0.1 nobody listens on is refused at
+ * once (netd's loopback interface answers with a reset). Many sockets
+ * closed right after
  * socket(), before netd acknowledged the clone, give every conversation
  * back: after them 16 sockets open together. Prints [ OK ] netconv.
  */
