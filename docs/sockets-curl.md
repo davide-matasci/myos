@@ -75,7 +75,7 @@ netd answers the library's UDP ctl commands, tagged `#<n>`, with a status
 | ctl | |
 |-----|--|
 | `bind a.b.c.d!port[ reuse]` | port 0 picks a free one; the address may be any, 127.0.0.0/8, the host's or a broadcast one (`EADDRNOTAVAIL` otherwise); a taken port (on that address or any) is `EADDRINUSE` unless both binds asked for `SO_REUSEADDR`; a second bind `EINVAL` |
-| `connect a.b.c.d!port` | the peer: the only source datagrams are taken from, and where a header-less send goes; binds a port first if none, and fixes the source address (127.0.0.1 for 127.0.0.0/8, else the host's) |
+| `connect a.b.c.d!port` | the peer: the only source datagrams are taken from (netfs drops those it queued from others), and where a header-less send goes; binds a port first if none, and fixes the source address (127.0.0.1 for 127.0.0.0/8, else the host's) |
 | `disconnect` | `connect(AF_UNSPEC)`: no peer, and the address and port bind did not choose given up (Linux's way) |
 | `autobind` | the port a first send binds, asked first so `getsockname` knows it |
 
@@ -85,9 +85,9 @@ that sent it gets ECONNREFUSED. netfs keeps that error for the
 conversation: it fails the next read or write, `poll` reports POLLERR, and
 a read of `ctl` returns it once (`refused`), which is how the library takes
 it (`SO_ERROR`, the failed call's errno). `shutdown` of a UDP socket is the
-library's: reads return end of file, writes fail with EPIPE (and SIGPIPE),
-an unconnected socket gets ENOTCONN but the shutdown all the same, as on
-Linux.
+library's: reads return end of file, writes fail with EPIPE (no SIGPIPE,
+which POSIX raises for streams only), an unconnected socket gets ENOTCONN
+but the shutdown all the same, as on Linux.
 
 Both directions of a TCP conversation are flow-controlled between netfs and
 netd, so neither side ever drops bytes. Received data waits in the smoltcp

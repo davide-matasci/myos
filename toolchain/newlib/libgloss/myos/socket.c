@@ -11,7 +11,8 @@
  * Connected, it reads and writes bare datagrams, so a program it is passed
  * to by exec (which knows nothing of the socket) still can. Binding,
  * connecting and their undoing are netd's (udp_ctl); an error netd reports
- * (a refused datagram) fails the next read or write and is SO_ERROR.
+ * (a refused datagram) fails the next read or write and is SO_ERROR. A
+ * connect drops the datagrams already queued from anyone else.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -29,8 +30,6 @@
 #include <sys/un.h>
 
 #include "myos_syscalls.h"
-
-#include <signal.h>
 
 /* As many sockets as fds: the fd limit is the only one (an X server takes a
  * socket per client). */
@@ -1870,10 +1869,8 @@ static ssize_t udp_send(struct myos_sock *s, const void *buf, size_t len, int fl
     unsigned char msg[UDP_HDR + UDP_MAX];
     size_t off = 0;
     long r;
+    /* No SIGPIPE: POSIX raises it for stream sockets only. */
     if (s->shut & SHUT_WR_BIT) {
-        if (!(flags & MSG_NOSIGNAL)) {
-            raise(SIGPIPE);
-        }
         errno = EPIPE;
         return -1;
     }
@@ -1937,10 +1934,14 @@ static ssize_t udp_recv(struct myos_sock *s, void *buf, size_t len, int flags,
             errno = EINTR;
             return -1;
         }
-        if (r < 0) {
+        /* A pending error leaves nothing to read (the kernel makes netfs's
+         * failed read an empty one): it goes first, as on Linux. */
+        if (r <= 0) {
             int e = udp_take_error(s);
-            errno = e ? e : EIO;
-            return -1;
+            if (e != 0 || r < 0) {
+                errno = e ? e : EIO;
+                return -1;
+            }
         }
         if (r > 0 && (!s->headers || r >= UDP_HDR)) {
             struct sockaddr_in src = s->peer;

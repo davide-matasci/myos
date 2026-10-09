@@ -11,7 +11,8 @@
 //! Its readers and writers see it only in "headers" mode (ctl `headers`,
 //! `noheaders`; the socket library's unconnected sockets): otherwise a read
 //! drops it and a write sends to the connected peer. An error netd reports
-//! for the conversation (`refused`) fails its next read or write, makes
+//! for the conversation (`refused`) fails its next write and leaves its
+//! reads nothing (the kernel makes a failed read an empty one), makes
 //! `poll` report POLLERR, and is what a read of its `ctl` returns (once).
 //!
 //! Module calls take no kernel lock: netd's replies (`/dev/netd` writes) land
@@ -65,6 +66,9 @@ const REP_NDB: u8 = 6;
 const REP_SOERR: u8 = 7;
 /// netd's interfaces as `/net/ifaddrs` text; conv is unused.
 const REP_IFADDRS: u8 = 8;
+/// A udp conv's new peer (address, port big-endian): its queued datagrams
+/// from anyone else go.
+const REP_PEER: u8 = 9;
 
 /// The header of a udp conv's datagrams to and from netd: remote address,
 /// local address, remote port, local port (Plan 9's udp "headers").
@@ -567,6 +571,24 @@ fn append_data(c: &mut Conv, src: &[u8]) {
     c.data_len = (have + n) as u16;
 }
 
+/// Drop a udp conv's queued datagrams from anyone but `addr`!`port` (its
+/// header's remote address and port).
+fn keep_from(c: &mut Conv, addr: [u8; 4], port: [u8; 2]) {
+    let have = c.data_len as usize;
+    let (mut from, mut to) = (0, 0);
+    while from + 2 <= have {
+        let len = u16::from_le_bytes([c.data[from], c.data[from + 1]]) as usize;
+        let d = from + 2;
+        let keep = len >= UDP_HDR && c.data[d..d + 4] == addr && c.data[d + 8..d + 10] == port;
+        if keep {
+            c.data.copy_within(from..d + len, to);
+            to += 2 + len;
+        }
+        from = d + len;
+    }
+    c.data_len = to as u16;
+}
+
 fn apply_reply(st: &mut State, buf: &[u8]) {
     if buf.len() < REP_HDR {
         return;
@@ -685,6 +707,11 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 if let Some(a) = st.convs.get_mut(accepted as usize).filter(|a| a.used) {
                     a.owner = owner;
                 }
+            }
+        }
+        REP_PEER => {
+            if let [a, b, c4, d, p0, p1] = *payload {
+                keep_from(c, [a, b, c4, d], [p0, p1]);
             }
         }
         REP_SOERR => {

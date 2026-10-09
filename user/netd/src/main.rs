@@ -53,6 +53,9 @@ const REP_NDB: u8 = 6;
 const REP_SOERR: u8 = 7;
 /// The interfaces as `/net/ifaddrs` text, see [`ifaddrs_text`].
 const REP_IFADDRS: u8 = 8;
+/// A UDP conv's new peer (address, port big-endian): netfs drops the
+/// datagrams it queued from anyone else, as later ones are here.
+const REP_PEER: u8 = 9;
 
 /// The per-datagram header on a UDP conv's REQ_SEND and REP_DATA (Plan 9's
 /// udp "headers" layout): remote address, local address, remote port,
@@ -875,7 +878,15 @@ fn handle_udp_ctl(
         }
     } else if let Some((addr, port)) = parse_connect(cmd) {
         let port = port.unwrap_or(0);
-        udp_connect(convs, sockets, iface, i, addr, port, local_ports)
+        let r = udp_connect(convs, sockets, iface, i, addr, port, local_ports);
+        if r.is_ok() {
+            let c = &convs[i];
+            let mut peer = [0u8; 6];
+            peer[..4].copy_from_slice(&c.remote4.octets());
+            peer[4..].copy_from_slice(&c.remote_port.to_be_bytes());
+            reply(chan, REP_PEER, i as u16, 0, &peer);
+        }
+        r
     } else if cmd == b"disconnect" {
         udp_disconnect(convs, sockets, i);
         Ok(())
