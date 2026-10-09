@@ -738,7 +738,7 @@ static void start_threading(void) {
 }
 
 static void thread_main(struct __pthread *t) {
-    t->tid = (uint32_t)myos_syscall0(SYS_GETTID);
+    __atomic_store_n(&t->tid, (uint32_t)myos_syscall0(SYS_GETTID), __ATOMIC_RELAXED);
     pthread_exit(t->start(t->arg));
 }
 
@@ -769,11 +769,15 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
     /* thread_spawn's {entry, stack, arg, tls}: the stack grows down from
      * the control block, which is also the argument and thread pointer. */
     uint64_t spawn[4] = { (uintptr_t)thread_main, (uintptr_t)t, (uintptr_t)t, (uintptr_t)t };
-    if (myos_syscall1(SYS_THREAD_SPAWN, (long)spawn) == (long)MYOS_SYSERR) {
+    long tid = myos_syscall1(SYS_THREAD_SPAWN, (long)spawn);
+    if (tid == (long)MYOS_SYSERR) {
         __atomic_fetch_sub(&live, 1, __ATOMIC_RELAXED);
         munmap(base, len);
         return EAGAIN;
     }
+    /* Known before pthread_create returns, whether or not the thread has
+     * run yet: pthread_cancel signals it by it. */
+    __atomic_store_n(&t->tid, (uint32_t)tid, __ATOMIC_RELAXED);
     *thread = t;
     return 0;
 }
@@ -1188,7 +1192,7 @@ int pthread_cancel(pthread_t t) {
             cancel_act(t);
         }
     } else if (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != EXITED) {
-        kill((pid_t)t->tid, CANCEL_SIGNAL);
+        kill((pid_t)__atomic_load_n(&t->tid, __ATOMIC_RELAXED), CANCEL_SIGNAL);
     }
     return 0;
 }

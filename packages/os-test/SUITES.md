@@ -23,7 +23,8 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 **Non-basic** = everything except `basic` (and the non-runtime `include` /
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`
 (~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (155 paths:
-POSIX core + non-basic + the myos suite). Wired the same way as basic: thin
+POSIX core + non-basic + the myos suite) and `misc/ci-expansion-2.tests`
+(502 paths: the rest of the suite that passes). Wired the same way as basic: thin
 `ci-smoke-copy.sh` staging + host prebuild + `make … TESTLIST=… report`.
 
 ## `ci-expansion.tests` (POSIX core + non-basic + myos)
@@ -45,6 +46,18 @@ across fork, nested chroot, error cases) and named FIFOs (`stat` type,
 `EEXIST`/`ENOENT`, blocking rendezvous + EOF, `O_NONBLOCK` open semantics,
 re-use across sessions, `mknod(S_IFIFO)` / `mkfifoat`).
 
+## `ci-expansion-2.tests` (the rest that passes)
+
+Every runtime test outside the other lists was host-built for all three
+arches and booted in batches; the list keeps the 502 that build and pass on
+bios, aarch64 and riscv64: most of `basic/` (wchar, wctype, pthread, stdlib,
+stdio, unistd, time, fenv, complex, ndbm, pwd/grp, locale, sys_mman,
+sys_shm, termios, syslog, ...), the `paths` FHS checks (a missing directory
+is one of their expected outcomes), the `process/fork-setpgid-*undo*` tests
+and a few `stdio` printf cases. Of the 1352 candidates, 632 build against
+newlib + libgloss on all three arches today; what fails or does not build is
+below.
+
 ## Deferred from curated set (implemented but not yet green)
 
 These have real support started in-tree but are **not** in `ci-nonbasic-100.tests`
@@ -52,8 +65,9 @@ until they pass honestly (no xfails):
 
 - `io/open-clofork-fork`, `io/dup3-clofork-fork` — kernel `fd_clofork_mask` +
   libgloss O_CLOFORK; still failing child fstat after fork on CI
-- `process/fork-setpgid-*-undo*`, `fork-setpgid-on-parent`, `limbo-getpgid` —
-  pgid edge cases still red
+- `process/fork-setpgid-on-parent`, `-on-parent-move`, `-invalid`,
+  `limbo-setpgid` — pgid edge cases still red; `limbo-getpgid` passes on
+  x86_64 and aarch64 but not riscv64 (issue #375)
 - `udp/connect-reconnect*`, `connect-unconnect-getpeername` — peer/unconnect edge cases
 - `process/waitpid-pgid`, `waitpid-pgid-empty-on-setsid` — need
   waitpid(pgid) filtering (waitpid currently ignores pid)
@@ -69,13 +83,23 @@ until they pass honestly (no xfails):
   `va_list` parameter: on x86_64 that is an array type, decayed to a
   pointer, and the program faults (CI run on PR #259). Without the option
   the conversions print literally
-- `process/zombie-setpgid-move` (hang), `process/limbo-*`,
-  `process/fork-setpgid-*undo*`/`-invalid` — pgid edge cases
-- `paths/*` FHS directories (`/var`, `/run`, `/usr/share`, `/sbin`, …) and
-  `/dev/{fd,stdin,stdout,stderr,full}` — not present in the image
-- `basic/stdlib/strtod` — passes on x86_64, fails on riscv64 (cause not yet
-  investigated)
-- Not buildable against newlib/libgloss yet (not in any list): pty API
+- `process/zombie-setpgid-move` (hang)
+- `basic/math/nanl` — overflows the stack on aarch64: the `long double`
+  conversion stubs (`ports/sbase/trunctfdf2.c`) call themselves (issue #374)
+- `basic/complex/*` (25) — results differ from the expected ones in the
+  last bits; `basic/unistd` (16), `basic/sys_socket` (13), `basic/stdlib`
+  (5) and a few more in `stdio`, `sys_stat`, `wchar`, `netdb`, `time`,
+  `sys_wait`, `sys_times`, `sys_select`, `sys_shm`, `pthread`, `locale` —
+  missing or partial libc/kernel support
+- `limits/*` (35) — the POSIX/XSI limit macros newlib does not define
+  (`PAGESIZE`, `HOST_NAME_MAX`, `PTHREAD_*`, `SEM_*`, `AIO_*`, `NL_*`, ...)
+- `process/waitpid-pgid-empty-on-setpgid*`, `stdio/printf-Lf-width-precision-pos-args`
+- Not buildable against newlib/libgloss on every arch yet (not in any
+  list; 720 of the 1352 candidates; 825 build for x86_64, 750 for aarch64,
+  632 for riscv64): most of `basic/math` (174: riscv64imac is soft-float and
+  its `<fenv.h>` has no `FE_*` exception flags), `basic/threads`, `spawn`,
+  `semaphore`, `mqueue`, `aio`, `sched`, `libintl`, `utmpx`, `dlfcn`,
+  `iconv`, `wordexp`, the pty API
   (`posix_openpt`/`grantpt`/`unlockpt`), `ppoll`, `timer_*`,
   `getppid`, `SA_ONSTACK`/`sigaltstack`, `sigqueue`, `sigtimedwait` /
   `sigwaitinfo`, `siginfo_t.si_pid`, `struct rlimit`
