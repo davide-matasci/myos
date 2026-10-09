@@ -256,45 +256,6 @@ pub struct DiskFile {
     pub data: Vec<u8>,
 }
 
-/// The boot disk ([`write_boot_disk`]) with Limine, the kernel and the
-/// initramfs in slot `a`, slot `b` empty. `efi_name` is e.g. `BOOTX64.EFI`.
-pub fn write_esp_image(
-    dest: &Path,
-    kernel: &[u8],
-    efi_name: &str,
-    efi_bytes: &[u8],
-    bios_sys: Option<&[u8]>,
-    initramfs: &[u8],
-) {
-    write_esp_image_ex(
-        dest,
-        kernel,
-        efi_name,
-        efi_bytes,
-        bios_sys,
-        initramfs,
-        &limine_conf("", "", &["a"]),
-        &[],
-    );
-}
-
-/// [`write_esp_image`] with its Limine config and `extra` files on the ESP.
-/// The config is in one place, `boot/limine/limine.conf`: switching slots
-/// rewrites that file and nothing else.
-pub fn write_esp_image_ex(
-    dest: &Path,
-    kernel: &[u8],
-    efi_name: &str,
-    efi_bytes: &[u8],
-    bios_sys: Option<&[u8]>,
-    initramfs: &[u8],
-    limine_conf: &str,
-    extra: &[DiskFile],
-) {
-    let esp = limine_esp_files(efi_name, efi_bytes, bios_sys, limine_conf, extra);
-    write_slot_image(dest, kernel, initramfs, esp);
-}
-
 /// The boot disk with `esp` (Limine's files, [`limine_esp_files`]) and the
 /// kernel, the initramfs and their version in slot `a`, slot `b` empty.
 pub fn write_slot_image(dest: &Path, kernel: &[u8], initramfs: &[u8], mut esp: Vec<DiskFile>) {

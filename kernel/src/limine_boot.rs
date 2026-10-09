@@ -2,7 +2,7 @@
 
 use limine::memmap;
 use limine::request::{
-    DtbRequest, ExecutableAddressRequest, ExecutableCmdlineRequest, FramebufferRequest,
+    DtbRequest, ExecutableAddressRequest, ExecutableCmdlineRequest, ExecutableFileRequest, FramebufferRequest,
     HhdmRequest, MemmapRequest, ModulesRequest, MpRequest, RsdpRequest,
 };
 use limine::{BaseRevision, RequestsEndMarker, RequestsStartMarker};
@@ -53,6 +53,11 @@ pub static RSDP: RsdpRequest = RsdpRequest::new();
 #[used]
 #[unsafe(link_section = ".limine_requests")]
 pub static CMDLINE: ExecutableCmdlineRequest = ExecutableCmdlineRequest::new();
+
+/// The kernel's own file as Limine loaded it (`/proc/boot/kernel`).
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+pub static EXECUTABLE_FILE: ExecutableFileRequest = ExecutableFileRequest::new();
 
 #[used]
 #[unsafe(link_section = ".limine_requests_end")]
@@ -108,6 +113,24 @@ pub fn alloc_usable(size: usize) -> usize {
 /// The kernel command line, empty without one.
 pub fn cmdline() -> &'static str {
     CMDLINE.response().map_or("", |r| r.cmdline())
+}
+
+/// The files this boot came from, as Limine loaded them (`/proc/boot/`,
+/// what `get-myos --install --local` copies onto a disk): `kernel`, the
+/// kernel's file, and `initramfs`, the module of that name. Limine keeps
+/// both mapped for the life of the kernel.
+pub fn boot_file(name: &str) -> Option<&'static [u8]> {
+    let file = match name {
+        "kernel" => EXECUTABLE_FILE.response()?.executable_file(),
+        "initramfs" => MODULES
+            .response()?
+            .modules()
+            .iter()
+            .find(|f| f.path().rsplit('/').next() == Some("initramfs"))?,
+        _ => return None,
+    };
+    let data = file.data();
+    Some(unsafe { core::slice::from_raw_parts(data.as_ptr(), data.len()) })
 }
 
 /// Limine RSDP virtual address, or `None` when firmware has no ACPI.

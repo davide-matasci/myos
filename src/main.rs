@@ -162,7 +162,7 @@ fn build_iso() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target = manifest.join("target");
     let initramfs_path = target.join("initramfs-x86_64.cpio");
-    std::fs::write(&initramfs_path, initramfs::build_initramfs(&manifest, "x86_64"))
+    std::fs::write(&initramfs_path, initramfs::build_initramfs(&manifest, "x86_64", &esp_limine_files("x86_64")))
         .expect("write target/initramfs-x86_64.cpio");
     let limine = fetch_limine(Path::new(env!("LIMINE_DIR")));
     let dest = target.join("myos-x86_64.iso");
@@ -791,8 +791,9 @@ fn build_aarch64_image() -> PathBuf {
     let kernel_bytes = std::fs::read(&kernel).expect("read aarch64 kernel ELF");
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/aarch64.img");
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let initramfs = initramfs::build_initramfs(&manifest, "aarch64");
-    write_slot_image(&image, &kernel_bytes, &initramfs, esp_limine_files("aarch64"));
+    let esp = esp_limine_files("aarch64");
+    let initramfs = initramfs::build_initramfs(&manifest, "aarch64", &esp);
+    write_slot_image(&image, &kernel_bytes, &initramfs, esp);
     write_fat_data_image(&fat_img_path());
     image
 }
@@ -1258,8 +1259,9 @@ fn build_riscv64_image() -> PathBuf {
     let kernel_bytes = std::fs::read(&kernel).expect("read riscv64 kernel ELF");
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/riscv64.img");
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let initramfs = initramfs::build_initramfs(&manifest, "riscv64");
-    write_slot_image(&image, &kernel_bytes, &initramfs, esp_limine_files("riscv64"));
+    let esp = esp_limine_files("riscv64");
+    let initramfs = initramfs::build_initramfs(&manifest, "riscv64", &esp);
+    write_slot_image(&image, &kernel_bytes, &initramfs, esp);
     write_fat_data_image(&fat_img_path());
     image
 }

@@ -171,6 +171,12 @@ boot_disk() {
 	[ "$(cat /tmp/boot-esp/boot/a/version)" = "$(cat /lib/myos-release)" ] || r=1
 	grep -q 'slot=a' /proc/cmdline || r=1
 	[ "$(/bin/sbase/find /tmp/boot-esp -name limine.conf | wc -l)" -eq 1 ] || r=1
+	# What this boot came from (/proc/boot/) is slot a's, and Limine's files
+	# the initramfs carries for `get-myos --install --local` are the ESP's.
+	cmp /proc/boot/kernel /tmp/boot-esp/boot/a/kernel && cmp /proc/boot/initramfs /tmp/boot-esp/boot/a/initramfs || r=1
+	while read -r what path size sum file; do
+		cmp "$file" "/tmp/boot-esp/$path" || r=1
+	done < /lib/myos-boot/boot.txt
 	umount /tmp/boot-esp
 	[ $r = 0 ] || { cat /tmp/boot-esp.txt; return 1; }
 	mount /dev/$data /tmp/boot-data ext2 && [ "$(ls /tmp/boot-data)" = lost+found ] && umount /tmp/boot-data
