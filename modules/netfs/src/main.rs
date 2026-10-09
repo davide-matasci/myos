@@ -8,9 +8,11 @@
 //!
 //! A udp conversation's datagrams carry a header (remote address, local
 //! address, remote port, local port: [`UDP_HDR`]) between here and netd.
-//! Its readers and writers see it only in "headers" mode (ctl `headers`,
-//! `noheaders`; the socket library's unconnected sockets): otherwise a read
-//! drops it and a write sends to the connected peer. An error netd reports
+//! `data` leaves it out: a read gives the bare datagram, a write sends one
+//! to the connected peer. `hdata`, the same datagrams, has it: a read gives
+//! the sender, a write names the destination (the socket library's
+//! sendto/recvfrom, through an fd of its own, so the socket's fd an exec'd
+//! program inherits only ever has bare datagrams). An error netd reports
 //! for the conversation (`refused`) fails its next write and leaves its
 //! reads nothing (the kernel makes a failed read an empty one), makes
 //! `poll` report POLLERR, and is what a read of its `ctl` returns (once).
@@ -182,8 +184,6 @@ struct Conv {
     /// connection: the listener's), the only one whose processes may open
     /// its files; [`NO_OWNER`] until an accepted connection is claimed.
     owner: u32,
-    /// udp: readers and writers see the datagram headers.
-    headers: bool,
     /// udp: the error netd reported, for the next read or write (empty:
     /// none).
     soerr: &'static [u8],
@@ -214,7 +214,6 @@ impl Conv {
         taken: NO_SEQ,
         tx_room: TX_CAP,
         owner: NO_OWNER,
-        headers: false,
         soerr: b"",
     };
 }
@@ -319,6 +318,8 @@ enum Node {
     Status(u8, u16),
     /// `/net/unix/N/listen`: connections waiting to be accepted.
     Listen(u8, u16),
+    /// `/net/udp/N/hdata`: `data` with the datagrams' headers.
+    Hdata(u16),
 }
 
 impl Node {
@@ -331,6 +332,7 @@ impl Node {
             | Node::Data(p, _)
             | Node::Status(p, _)
             | Node::Listen(p, _) => Some(p),
+            Node::Hdata(_) => Some(PROTO_UDP),
         }
     }
 }
@@ -363,6 +365,9 @@ fn parse_path(path: &str) -> Option<Node> {
                 None => Some(Node::ConvDir(proto, conv)),
                 Some("ctl") if it.next().is_none() => Some(Node::Ctl(proto, conv)),
                 Some("data") if it.next().is_none() => Some(Node::Data(proto, conv)),
+                Some("hdata") if it.next().is_none() && proto == PROTO_UDP => {
+                    Some(Node::Hdata(conv))
+                }
                 Some("status") if it.next().is_none() => Some(Node::Status(proto, conv)),
                 Some("listen") if it.next().is_none() && proto == PROTO_UNIX => {
                     Some(Node::Listen(proto, conv))
@@ -472,8 +477,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 taken: NO_SEQ,
                 tx_room: TX_CAP,
                 owner: uid(),
-                headers: false,
-                soerr: b"",
+                        soerr: b"",
             };
             return Some(i as u16);
         }
@@ -501,8 +505,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 taken: NO_SEQ,
                 tx_room: TX_CAP,
                 owner: uid(),
-                headers: false,
-                soerr: b"",
+                        soerr: b"",
             };
             return Some(i as u16);
         }
@@ -661,8 +664,7 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 taken: NO_SEQ,
                 tx_room: TX_CAP,
                 owner,
-                headers: false,
-                soerr: b"",
+                        soerr: b"",
             };
             set_status(slot, b"cloned");
         } else if slot.status_len == 0 {
@@ -817,6 +819,13 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
             (S_IFDIR | 0o755, 0, 100 + id as u32)
         }
         Node::Listen(_, _) => return -1,
+        Node::Hdata(id) => {
+            if !conv_ok(&st.convs, id, PROTO_UDP) {
+                return -1;
+            }
+            return_credit(st, id, PROTO_UDP);
+            (S_IFREG | 0o666, st.convs[id as usize].data_len as u32, 200 + (id as u32) * 4)
+        }
         Node::Ctl(p, id) | Node::Data(p, id) | Node::Status(p, id) => {
             if !conv_ok(&st.convs, id, p) {
                 return -1;
@@ -895,6 +904,9 @@ unsafe extern "C" fn net_listdir(
             }
             let _ = put_bytes(dst, &mut n, b"ctl");
             let _ = put_bytes(dst, &mut n, b"data");
+            if p == PROTO_UDP {
+                let _ = put_bytes(dst, &mut n, b"hdata");
+            }
             let _ = put_bytes(dst, &mut n, b"status");
         }
         _ => return -1,
@@ -924,6 +936,11 @@ unsafe extern "C" fn net_read(
     if node.proto() == Some(PROTO_UNIX) {
         return unix::read(node, pos, out);
     }
+    // hdata is data with the headers.
+    let (node, hdr) = match node {
+        Node::Hdata(id) => (Node::Data(PROTO_UDP, id), true),
+        n => (n, false),
+    };
     match node {
         Node::Ndb => copy_at(&st.ndb[..st.ndb_len as usize], pos, out),
         Node::Ifaddrs => copy_at(&st.ifaddrs[..st.ifaddrs_len as usize], pos, out),
@@ -973,11 +990,11 @@ unsafe extern "C" fn net_read(
                 return 0;
             }
             // A stream read takes what fits; a datagram read takes the next
-            // datagram (behind its header in "headers" mode), its excess
-            // bytes discarded (`append_data`).
+            // datagram (behind its header from hdata), its excess bytes
+            // discarded (`append_data`).
             let (n, used) = if p == PROTO_UDP {
                 let len = u16::from_le_bytes([c.data[0], c.data[1]]) as usize;
-                let skip = if c.headers { 0 } else { UDP_HDR.min(len) };
+                let skip = if hdr { 0 } else { UDP_HDR.min(len) };
                 let n = out.len().min(len - skip);
                 out[..n].copy_from_slice(&c.data[2 + skip..2 + skip + n]);
                 (n, 2 + len)
@@ -1118,16 +1135,16 @@ unsafe extern "C" fn net_write(
     if node.proto() == Some(PROTO_UNIX) {
         return unix::write(node, src);
     }
+    let (node, hdr) = match node {
+        Node::Hdata(id) => (Node::Data(PROTO_UDP, id), true),
+        n => (n, false),
+    };
     match node {
         Node::Ctl(p, id) => {
             if !conv_ok(&st.convs, id, p) {
                 return -1;
             }
             let cmd = trim_ctl(src);
-            if p == PROTO_UDP && (cmd == b"headers" || cmd == b"noheaders") {
-                st.convs[id as usize].headers = cmd == b"headers";
-                return src.len() as i32;
-            }
             if cmd == b"hangup" {
                 {
                     let c = &mut st.convs[id as usize];
@@ -1158,14 +1175,14 @@ unsafe extern "C" fn net_write(
             // TCP takes what one request carries and netd has room for; none
             // left refuses the write (the kernel returns what earlier chunks
             // took). A datagram goes whole or not at all, behind its header
-            // (a zero one, the peer, unless the writer gave it).
+            // (a zero one, the peer, unless an hdata writer gave it).
             let max = MSG_CAP - REQ_HDR;
             if p == PROTO_UDP {
                 let c = &st.convs[id as usize];
                 if !c.soerr.is_empty() {
                     return -1;
                 }
-                let hdr = if c.headers { 0 } else { UDP_HDR };
+                let hdr = if hdr { 0 } else { UDP_HDR };
                 if src.len() + hdr > max || src.len() + hdr < UDP_HDR {
                     return -1;
                 }
@@ -1206,8 +1223,10 @@ unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
     if node.proto() == Some(PROTO_UNIX) {
         return unix::poll(node);
     }
-    let Node::Data(p, id) = node else {
-        return MYOS_POLLIN | MYOS_POLLOUT;
+    let (p, id) = match node {
+        Node::Data(p, id) => (p, id),
+        Node::Hdata(id) => (PROTO_UDP, id),
+        _ => return MYOS_POLLIN | MYOS_POLLOUT,
     };
     if !conv_ok(&st.convs, id, p) {
         return MYOS_POLLERR | MYOS_POLLHUP;

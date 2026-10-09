@@ -842,8 +842,9 @@ fn handle_ctl(
 }
 
 /// A UDP conv's ctl commands. The socket library tags its own with a last
-/// `#<n>` word and gets "#<n> ok <addr>!<port>" (the local address after
-/// it) or "#<n> fail <why>" back; `connect` without a tag is the plain
+/// `#<n>` word and gets "#<n> ok <addr>!<port>[ <addr>!<port>]" (the local
+/// address after it, then the peer's if connected) or "#<n> fail <why>"
+/// back; `connect` without a tag is the plain
 /// Plan 9 one (DNS, the Linux layer), answered "connected".
 ///
 /// - `bind <addr>!<port>[ reuse]`: port 0 picks a free one; `reuse` is
@@ -853,6 +854,8 @@ fn handle_ctl(
 /// - `disconnect`: no peer; gives up an address or port bind did not set.
 /// - `autobind`: a port, as a first send would bind (the socket library
 ///   asks first, to know it).
+/// - `local`: nothing; the answer (an fd's socket the library learns of
+///   after an exec).
 fn handle_udp_ctl(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
@@ -892,6 +895,8 @@ fn handle_udp_ctl(
         Ok(())
     } else if cmd == b"autobind" {
         udp_autobind(convs, sockets, i, local_ports)
+    } else if cmd == b"local" {
+        Ok(())
     } else {
         Err("inval")
     };
@@ -909,6 +914,9 @@ fn handle_udp_ctl(
         Ok(()) => {
             let c = &convs[i];
             let _ = write!(out, " ok {}!{}", c.local4, c.local_port);
+            if c.have_remote {
+                let _ = write!(out, " {}!{}", c.remote4, c.remote_port);
+            }
         }
         Err(why) => {
             let _ = write!(out, " fail {why}");

@@ -16,8 +16,9 @@ pub const MMAP_AREA_PAGES: usize = 245760;
 /// User stack below the heap: 1 MiB.
 pub const USER_STACK_PAGES: usize = 256;
 /// Per-process brk heap capacity: the TLS arena is a 2 MiB brk allocation,
-/// so the window must fit that plus headroom.
-pub const HEAP_PAGES: usize = 1024;
+/// and GNU make's report over the curated os-test lists needs more than
+/// 4 MiB; 16 MiB, as on the other arches.
+pub const HEAP_PAGES: usize = 4096;
 /// The process lives in Sv39 root[1]: 1 GiB.
 pub const USER_SPAN_PAGES: usize = 1 << 18;
 

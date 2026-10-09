@@ -42,7 +42,8 @@ t netconv /bin/etc/netconv_smoke
 # netd's loopback interface: getifaddrs and if_nametoindex; UDP over
 # 127.0.0.1 (bind, sendto/recvfrom with addresses, EADDRINUSE, connect and
 # unconnect, ECONNREFUSED after a datagram to a closed port, the host's
-# own address); TCP to a listener on 127.0.0.1 (loopback_smoke.c).
+# own address); TCP to a listener on 127.0.0.1; a UDP socket passed by exec
+# (bare datagrams to read(), then the socket calls) (loopback_smoke.c).
 t loopback /bin/etc/loopback_smoke
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
 # the wait; setpgid on a child before its exec, EACCES after; a child's

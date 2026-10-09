@@ -184,7 +184,7 @@ pub fn stat(node: Node) -> Option<(u32, u32, u32)> {
             Node::Data(_, id) => (id, 2),
             Node::Status(_, id) => (id, 3),
             Node::Listen(_, id) => (id, 4),
-            Node::Root | Node::Ndb | Node::Ifaddrs => return None,
+            Node::Root | Node::Ndb | Node::Ifaddrs | Node::Hdata(_) => return None,
         };
         let c = get_own(convs, id)?;
         let ino = 1000 + id as u32 * 8 + tag;
