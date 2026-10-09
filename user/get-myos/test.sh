@@ -6,7 +6,8 @@
 # system. Then the boot disk (docs/install.md): --upgrade writes the
 # mirror's kernel and initramfs into slot b of the running boot disk and
 # makes it the default (the launcher boots the disk again to check it comes
-# up from b), and --install lays a boot disk out on the scratch disk.
+# up from b), and --install lays a boot disk out on the scratch disk, from
+# the mirror and, in every mode, with --local from the running system.
 release_file() {
 	cat /lib/myos-release
 	grep -q '^release=[0-9]* commit=[0-9a-f]* abi=[0-9][0-9]*$' /lib/myos-release

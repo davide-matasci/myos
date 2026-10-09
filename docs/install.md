@@ -85,13 +85,27 @@ On the running system, as root:
    (nothing unchecked reaches the ESP, and a slow disk does not stall the
    download); the ESP is unmounted and mounted again, and what the disk has
    is checked against the list too. Then the slot's `version`.
-4. `limine.conf` is rewritten (beside it, then renamed over it) with the new
-   slot first and the running one as the fallback: the global lines are
-   kept, the entries made from the running slot's, `timeout: 3`.
-5. The ESP is unmounted. It does not reboot: `reboot` starts the new slot.
+4. Limine's files on the ESP are brought to the release's (the `esp` lines
+   of the list, `limine.conf` aside), those whose SHA-256 differs: each new
+   one is written beside the old (`BOOTX64.EFI.new`), all of them are read
+   back after a remount, then each is renamed over the old one (a FAT rename
+   rewrites one directory entry). On x86 a new `limine-bios.sys` reruns
+   `limine bios-install` on the boot disk: the BIOS stage (the MBR code and
+   stage 2) must be the same version as that file. It says what it
+   replaced.
+5. `limine.conf` is rewritten (beside it, then renamed over it) with the new
+   slot first and the running one as the fallback, `timeout: 3`: the global
+   lines and the entries come from the running config, or, when step 4
+   replaced anything, from the release's (a new Limine may read its config
+   differently; lines edited by hand are lost then).
+6. The ESP is unmounted. It does not reboot: `reboot` starts the new slot.
 
-A failure before step 4 leaves the running slot and the config as they
-were; the half-written slot has no `version`. The release's initramfs has no
+A failure before step 4 leaves the running slot, Limine and the config as
+they were; the half-written slot has no `version`. Step 4 is the one that is
+not atomic: the renames happen one after the other, and `limine bios-install`
+rewrites sectors in place, so a power cut in that moment can leave a disk
+whose Limine pieces do not match. It runs only when the release's Limine
+differs, which is rare (a new Limine pin). The release's initramfs has no
 Linux layer (the default build's): an upgraded system gets it back with an
 image built with `--features linux_compat`.
 
@@ -117,8 +131,26 @@ under 580 MiB.
 
 Nothing comes from the running system's ESP, so a system booted from the
 ISO (`cargo run -- iso`, a live medium) installs the same: boot it, then
-`get-myos --install` the disk. An installed disk keeps the Limine it was
-installed with: `--upgrade` changes the slots only (issue #372).
+`get-myos --install` the disk.
+
+### Without a network: `--install DISK --local`
+
+```sh
+get-myos --install nvme1n1 --local
+```
+
+Installs the running system itself, with no mirror: the kernel and the
+initramfs this boot came from, which the kernel shows at `/proc/boot/kernel`
+and `/proc/boot/initramfs` (what Limine loaded, kept in memory for the
+kernel's life, so it works however the system booted: the ISO from a CD or
+a USB stick, a disk), and Limine's files from the initramfs, which carries
+the ESP's at `/lib/myos-boot/` with a `boot.txt` in the release list's
+format. get-myos writes the list of those (`/tmp/pkg/var/lib/get-myos/
+local-boot`, the files named by their paths) and installs from it as from
+a mirror's: the same layout, checks and BIOS stage; slot `a` gets this
+system's release (`/lib/myos-release`). From the ISO, that is the ISO's
+system, the Linux layer included (the ISO is built with it); a later
+`--upgrade` from a mirror brings the release's initramfs, which has none.
 
 ## The data partition
 
@@ -148,7 +180,7 @@ check it (`sgdisk -e`, `parted`) offer to move it to the end, which is safe.
 A VPS without a rescue system but with custom ISOs boots the hybrid ISO
 (`cargo run -- iso`), a live medium with the kernel and the initramfs at
 `boot/` and none of this layout, and installs from it with `get-myos
---install` (above).
+--install` (above; `--local` when it has no network).
 
 ## Inside the boot tests
 
@@ -157,11 +189,17 @@ the build's own stays as built), slot `a`. myos sees the boot disk on every
 arch (a virtio disk: on x86 the third, `vdc`, after the test disks), and
 `kernel.sh`'s `boot_disk` checks its layout: the slots, the one
 `limine.conf`, slot `a`'s version and `/proc/cmdline`, the empty ext2 data
-partition. The full list then runs `get-myos --upgrade -f` against the
-host's mirror (this build's boot files) and `get-myos --install` on the
-scratch disk (`user/get-myos/test.sh`); when it passed, the launcher boots
-the disk again (`run.sh reboot`), which must come up from slot `b` at its
-release, and then the disk `--install` made (`run.sh installed`), from its
-slot `a`: by BIOS on the bios job (the BIOS stage `limine bios-install`
-wrote), by UEFI on the others. The ISO is not booted in CI: an install
-from it runs the same code.
+partition. It also checks that `/proc/boot/` holds slot `a`'s kernel and
+initramfs, and `/lib/myos-boot/` the ESP's Limine files. Every list ends
+with `get-myos --install --local` on the scratch disk. The full list runs
+`get-myos --upgrade -f` against the host's mirror (this build's boot files)
+after making the disk's Limine stale (its EFI binary changed; on x86
+`limine-bios.sys` too and the BIOS stage erased), so the upgrade has to
+replace it; then `get-myos --install` on the scratch disk from the mirror,
+and last the local install over it (`user/get-myos/test.sh`). When it
+passed, the launcher boots the disk again (`run.sh reboot`), which must come
+up from slot `b` at its release, with the Limine the upgrade wrote, and then
+the disk `--install --local` made (`run.sh installed`), from its slot `a`:
+by BIOS on the bios job (the BIOS stages `limine bios-install` wrote), by
+UEFI on the others. The ISO is not booted in CI: an install from it runs
+the same code.

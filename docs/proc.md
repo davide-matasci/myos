@@ -11,6 +11,8 @@ issue #291.
 /proc/<pid>/task/<tid>/status       a thread, one line
 /proc/cpu                           the uptime and each CPU's idle time
 /proc/meminfo                       RAM: total, free, available; the allocator's counters
+/proc/boot/kernel                   the kernel file this boot came from, as Limine loaded it
+/proc/boot/initramfs                the initramfs this boot came from (get-myos --install --local)
 ```
 
 `ls /proc` lists the processes. A thread is a task slot and its tid is the
