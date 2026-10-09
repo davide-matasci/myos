@@ -24,6 +24,7 @@ BASIC_LIST="$HERE/overlay/misc/ci-basic-smoke.tests"
 NONBASIC_LIST="$HERE/overlay/misc/ci-nonbasic-100.tests"
 EXPANSION_LIST="$HERE/overlay/misc/ci-expansion.tests"
 EXPANSION2_LIST="$HERE/overlay/misc/ci-expansion-2.tests"
+UDP_LIST="$HERE/overlay/misc/ci-udp.tests"
 EMBED="${OSTEST_EMBED:-$ROOT/target/os-test-embed}"
 OUT_ROOT="$ROOT/target/os-test-prebuilt"
 
@@ -81,6 +82,7 @@ done < <({
   parse_tests "$NONBASIC_LIST"
   parse_tests "$EXPANSION_LIST"
   parse_tests "$EXPANSION2_LIST"
+  parse_tests "$UDP_LIST"
 })
 
 if [[ ${#TESTS[@]} -eq 0 ]]; then

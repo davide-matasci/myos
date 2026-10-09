@@ -24,7 +24,8 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`
 (~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (155 paths:
 POSIX core + non-basic + the myos suite) and `misc/ci-expansion-2.tests`
-(502 paths: the rest of the suite that passes). Wired the same way as basic: thin
+(502 paths: the rest of the suite that passes) and `misc/ci-udp.tests` (the
+udp suite's 207). Wired the same way as basic: thin
 `ci-smoke-copy.sh` staging + host prebuild + `make … TESTLIST=… report`.
 
 ## `ci-expansion.tests` (POSIX core + non-basic + myos)
@@ -58,6 +59,17 @@ and a few `stdio` printf cases. Of the 1352 candidates, 632 build against
 newlib + libgloss on all three arches today; what fails or does not build is
 below.
 
+## `ci-udp.tests` (the udp suite)
+
+All 207 tests of `udp/`: binding (port 0, conflicts and `SO_REUSEADDR`,
+loopback, LAN and broadcast addresses), connect and unconnect, reconnects,
+`getsockname`/`getpeername`, `sendto`/`recvfrom` between two or three
+sockets, `shutdown`, `poll`, and the ECONNREFUSED a datagram to a closed
+port gives a connected socket (the ICMP "port unreachable" netd's loopback
+interface sees). The LAN tests find the interface with `getifaddrs`. Many
+tests wait 50 ms for that ICMP error: the boot tests run them under TCG
+all the same.
+
 ## Deferred from curated set (implemented but not yet green)
 
 These have real support started in-tree but are **not** in `ci-nonbasic-100.tests`
@@ -68,7 +80,6 @@ until they pass honestly (no xfails):
 - `process/fork-setpgid-on-parent`, `-on-parent-move`, `-invalid`,
   `limbo-setpgid` — pgid edge cases still red; `limbo-getpgid` passes on
   x86_64 and aarch64 but not riscv64 (issue #375)
-- `udp/connect-reconnect*`, `connect-unconnect-getpeername` — peer/unconnect edge cases
 - `process/waitpid-pgid`, `waitpid-pgid-empty-on-setsid` — need
   waitpid(pgid) filtering (waitpid currently ignores pid)
 - `basic/signal/sigismember`, `sigaddset`, `sigdelset` — newlib's macros
@@ -104,11 +115,9 @@ until they pass honestly (no xfails):
   `getppid`, `SA_ONSTACK`/`sigaltstack`, `sigqueue`, `sigtimedwait` /
   `sigwaitinfo`, `siginfo_t.si_pid`, `struct rlimit`
 
-- **udp/** curated entries temporarily removed (2026-09-21): `socket.c` UDP
-  bind-ephemeral / getsockname / AF_UNSPEC unconnect from this PR regressed
-  aarch64 interactive curl TLS and riscv64 dropbear SSH (`bad packet size`).
-  Restored master `socket.c` to unblock full-boot; re-land UDP libc support
-  in a follow-up with curl/SSH smokes held green.
+- **udp/** entries were removed from `ci-nonbasic-100.tests` on 2026-09-21
+  (below); the whole suite is curated in `ci-udp.tests` since netd has a
+  loopback interface and libgloss full UDP sockets (`docs/sockets-curl.md`).
 
 ## 2026-09-21 networking regression rollback
 

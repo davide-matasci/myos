@@ -1,9 +1,11 @@
 # Full-boot CI curated os-test set: basic smoke + ~100 non-basic +
 # the POSIX-core/non-basic/myos expansion + the rest of the suite that
-# passes on every arch (ci-expansion-2.tests).
+# passes on every arch (ci-expansion-2.tests) + the udp suite
+# (ci-udp.tests).
 # Paths in ci-basic-smoke.tests are relative to basic/; non-basic entries
 # are suite-prefixed (suite/rel). Makefile accepts both forms.
 include misc/ci-basic-smoke.tests
 include misc/ci-nonbasic-100.tests
 include misc/ci-expansion.tests
 include misc/ci-expansion-2.tests
+include misc/ci-udp.tests
