@@ -59,18 +59,23 @@ the kernel (`docs/linux-compat.md`, Sockets).
 
 Between netfs and netd every datagram carries a 12-byte header, Plan 9's
 udp "headers" layout: remote address, local address, remote port, local
-port. A conversation's readers and writers see it in "headers" mode only
-(ctl `headers` / `noheaders`, handled by netfs): otherwise a read drops it
-and a write goes to the connected peer, as plain Plan 9 `connect` users
-(the resolver, the Linux layer) expect. The socket library keeps an
-unconnected socket in headers mode (recvfrom and sendto read and write the
-addresses there) and a connected one out of it, so a program a connected
-socket is passed to by exec, which knows nothing of the socket, still
-reads and writes bare datagrams. An unconnected one passed that way shows
-it the headers (the library's socket state is per process, issue #380).
+port. A conversation's `data` leaves it out: a read gives the bare
+datagram, a write sends one to the connected peer, as plain Plan 9
+`connect` users (the resolver, the Linux layer) expect. Its `hdata` has
+the same datagrams with the header: a read tells the sender, a write names
+the destination. The socket library's `recvfrom` and `sendto` go through
+an fd of `hdata` it keeps to itself, close-on-exec; the socket's fd is the
+`data` one. A program a socket is passed to by exec therefore reads and
+writes bare datagrams with `read`/`write`, and its first socket call on the
+fd (the library's table of sockets is per process) finds it by its name,
+`/proc/self/fd/N` → `/net/udp/N/data` or `/net/tcp/N/data`: the library
+takes the socket on from the conversation's state (a UDP socket's address
+and peer asked of netd, a TCP one's status); what the exec'ing program kept
+to itself, like `O_NONBLOCK`, is not passed on.
 
 netd answers the library's UDP ctl commands, tagged `#<n>`, with a status
-`#<n> ok <addr>!<port>` (the local address after it) or `#<n> fail <why>`:
+`#<n> ok <addr>!<port>[ <addr>!<port>]` (the local address after it, then
+the peer's if connected) or `#<n> fail <why>`:
 
 | ctl | |
 |-----|--|
@@ -78,6 +83,7 @@ netd answers the library's UDP ctl commands, tagged `#<n>`, with a status
 | `connect a.b.c.d!port` | the peer: the only source datagrams are taken from (netfs drops those it queued from others), and where a header-less send goes; binds a port first if none, and fixes the source address (127.0.0.1 for 127.0.0.0/8, else the host's) |
 | `disconnect` | `connect(AF_UNSPEC)`: no peer, and the address and port bind did not choose given up (Linux's way) |
 | `autobind` | the port a first send binds, asked first so `getsockname` knows it |
+| `local` | nothing: the answer, for a socket taken on after an exec |
 
 A datagram to a local port nobody bound is answered by an ICMP "port
 unreachable", which netd sees on the loopback device: the connected socket
@@ -136,7 +142,7 @@ server). Most `SO_*`/`TCP_*` are ignored. `AF_UNIX` stream sockets go over
 
 - No IPv6; incomplete `getsockname` for TCP (returns INADDR_ANY)
 - UDP: ICMP errors from the network (not the loopback device) reach no
-  socket; no `MSG_PEEK`; a zero-length datagram on a connected socket reads
-  as nothing waiting
+  socket; no `MSG_PEEK`; a zero-length datagram reads as nothing waiting
+  to a program that reads `data` without the library
 - curl still a large ELF (~0.6–1.2MB stripped); many protocols disabled but not a tiny client
 - Full QEMU smoke may not have been run on the builder box — rely on CI

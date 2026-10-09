@@ -7,8 +7,10 @@
  * (recvfrom), a second bind of a taken port fails, connect and unconnect
  * (AF_UNSPEC), a datagram to a port nobody bound refuses the next send
  * (ECONNREFUSED), the host's own address is local too. TCP: a listener
- * accepts a connection to 127.0.0.1 and both ends talk. Prints
- * [ OK ] loopback.
+ * accepts a connection to 127.0.0.1 and both ends talk. An unconnected UDP
+ * socket passed by exec: the new program reads a bare datagram with
+ * read(), then uses the fd as the socket it is (getsockname, sendto,
+ * recvfrom). Prints [ OK ] loopback.
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -17,7 +19,9 @@
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define TCP_PORT 7701
@@ -193,9 +197,69 @@ static int tcp(void) {
     return 0;
 }
 
-int main(void) {
+/* The exec'd side of exec_udp: `fd` is the socket, bound to `port`. */
+static int exec_child(int fd, unsigned short port) {
+    char buf[8];
+    struct sockaddr_in local;
+    struct sockaddr_in from;
+    socklen_t len = sizeof from;
+    /* read() knows nothing of sockets: the bare datagram. */
+    if (read(fd, buf, sizeof buf) != 2 || memcmp(buf, "ab", 2) != 0) {
+        return fail("exec: read of the inherited socket");
+    }
+    if (local_of(fd, &local) < 0 || local.sin_port != htons(port)) {
+        return fail("exec: getsockname of the inherited socket");
+    }
+    if (recvfrom(fd, buf, sizeof buf, 0, (struct sockaddr *)&from, &len) != 2
+        || memcmp(buf, "cd", 2) != 0
+        || sendto(fd, "ef", 2, 0, (struct sockaddr *)&from, sizeof from) != 2) {
+        return fail("exec: recvfrom/sendto on the inherited socket");
+    }
+    return 0;
+}
+
+static int exec_udp(void) {
+    struct sockaddr_in loopback = addr_of(htonl(INADDR_LOOPBACK), 0);
+    struct sockaddr_in a_addr;
+    char fd_arg[8];
+    char port_arg[8];
+    char buf[8];
+    int status;
+    pid_t pid;
+    int a = socket(AF_INET, SOCK_DGRAM, 0);
+    int b = socket(AF_INET, SOCK_DGRAM, 0);
+    if (a < 0 || b < 0 || bind(a, (struct sockaddr *)&loopback, sizeof loopback) < 0
+        || local_of(a, &a_addr) < 0
+        || sendto(b, "ab", 2, 0, (struct sockaddr *)&a_addr, sizeof a_addr) != 2
+        || sendto(b, "cd", 2, 0, (struct sockaddr *)&a_addr, sizeof a_addr) != 2) {
+        return fail("exec: setup");
+    }
+    usleep(100 * 1000);
+    snprintf(fd_arg, sizeof fd_arg, "%d", a);
+    snprintf(port_arg, sizeof port_arg, "%u", ntohs(a_addr.sin_port));
+    pid = fork();
+    if (pid == 0) {
+        execl("/bin/etc/loopback_smoke", "loopback_smoke", "exec", fd_arg, port_arg, (char *)NULL);
+        _exit(127);
+    }
+    if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status)
+        || WEXITSTATUS(status) != 0) {
+        return fail("exec: the exec'd program");
+    }
+    if (recv(b, buf, sizeof buf, 0) != 2 || memcmp(buf, "ef", 2) != 0) {
+        return fail("exec: the exec'd program's answer");
+    }
+    close(a);
+    close(b);
+    return 0;
+}
+
+int main(int argc, char **argv) {
     in_addr_t own;
-    if (interfaces(&own) || udp(own) || tcp()) {
+    if (argc == 4 && strcmp(argv[1], "exec") == 0) {
+        return exec_child(atoi(argv[2]), (unsigned short)atoi(argv[3]));
+    }
+    if (interfaces(&own) || udp(own) || tcp() || exec_udp()) {
         return 1;
     }
     printf("[ OK ] loopback\n");
