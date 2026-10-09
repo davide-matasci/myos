@@ -938,32 +938,10 @@ static int write_limine(const char *esp, const boot_files *b,
     return 0;
 }
 
-/* The disk's size in sectors: the first one a read gets nothing from.
- * Not lseek(SEEK_END): libgloss's lseek returns an int, which riscv64's
- * calling convention cuts to 32 bits (issue #366). */
+/* The disk's size in sectors (0 when it cannot tell). */
 static uint64_t disk_sectors(int fd) {
-    uint8_t sec[SECTOR];
-    uint64_t lo = 0, hi = 1;
-    /* lo sectors are readable; find a hi that is not, then halve. */
-    for (;;) {
-        if (lseek(fd, (off_t)((hi - 1) * SECTOR), SEEK_SET) == (off_t)-1 || read(fd, sec, SECTOR) != SECTOR) {
-            break;
-        }
-        lo = hi;
-        if (hi >= (1ULL << 40)) {
-            return lo;
-        }
-        hi *= 2;
-    }
-    while (hi - lo > 1) {
-        uint64_t mid = lo + (hi - lo) / 2;
-        if (lseek(fd, (off_t)((mid - 1) * SECTOR), SEEK_SET) != (off_t)-1 && read(fd, sec, SECTOR) == SECTOR) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo;
+    off_t end = lseek(fd, 0, SEEK_END);
+    return end > 0 ? (uint64_t)end / SECTOR : 0;
 }
 
 /* A partition of the disk is mounted (/proc/mounts names /dev/<disk>/...). */

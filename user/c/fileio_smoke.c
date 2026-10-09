@@ -15,7 +15,8 @@
  * and its inode number stays; a read of a file gives all that was asked
  * for, up to its end, in one call (not a 4 KiB chunk: fontconfig took that
  * for a damaged cache); a rename does not wait for a process reading the
- * console (which held the filesystem tree until the next key).
+ * console (which held the filesystem tree until the next key); lseek and
+ * ftello give offsets past 2 GiB whole (the scratch disk's 4 GiB).
  *
  * `fileio_smoke [DIR]` works in DIR (default /tmp): the ext2 test runs it
  * on the scratch disk. `fileio_smoke child FD...` is the exec'd program: FD
@@ -534,6 +535,30 @@ static int append_only(const char *f) {
     return failures != 0;
 }
 
+/* Offsets past 2 GiB come back whole from lseek and ftello (libgloss's
+ * _lseek returned an int: riscv64 sign-extends it, so the 4 GiB scratch
+ * disk's end read as 0, issue #366). */
+static void big_offsets(void) {
+    const off_t gib = (off_t)1 << 30;
+    int fd = open("/dev/nvme1n1/data", O_RDONLY);
+    FILE *f;
+    check(fd >= 0, "open the scratch disk");
+    if (fd < 0) {
+        return;
+    }
+    check(lseek(fd, 0, SEEK_END) == 4 * gib, "lseek to the end of a 4 GiB disk");
+    check(lseek(fd, 3 * gib, SEEK_SET) == 3 * gib && lseek(fd, 0, SEEK_CUR) == 3 * gib,
+          "lseek to 3 GiB");
+    f = fdopen(fd, "r");
+    check(f != NULL && fseeko(f, 0, SEEK_END) == 0 && ftello(f) == 4 * gib,
+          "ftello at the end of a 4 GiB disk");
+    if (f != NULL) {
+        fclose(f);
+    } else {
+        close(fd);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return child(argc, argv);
@@ -551,6 +576,7 @@ int main(int argc, char **argv) {
     whole_reads();
     if (argc == 1) {
         console_reader();
+        big_offsets();
     }
     return failures != 0;
 }

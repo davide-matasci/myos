@@ -63,8 +63,8 @@ t at /bin/etc/at_smoke
 # O_EXCL creates a name once, racers or not, and a symlink there is taken;
 # ftruncate; pread/pwrite leave the position, ESPIPE on a pipe; close-on-exec
 # fds are gone after exec; one read gives a file's bytes up to the count or
-# its end; a rename does not wait for a process reading the console
-# (fileio_smoke.c; on ext2 in mkfs.ext2's test).
+# its end; a rename does not wait for a process reading the console; lseek
+# and ftello past 2 GiB (fileio_smoke.c; on ext2 in mkfs.ext2's test).
 t fileio /bin/etc/fileio_smoke
 # MAP_SHARED mappings of a file are the file: stores read back with read()
 # and survive munmap, close and a child's exit, write() shows in them, a
