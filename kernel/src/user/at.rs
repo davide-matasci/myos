@@ -65,6 +65,9 @@ const UTIME_NOW: i64 = -1;
 const UTIME_OMIT: i64 = -2;
 /// Longest `listdirat` result.
 const LISTDIR_MAX: usize = 256 * 1024;
+/// More than the longest name and its newline (a FAT long name is 255
+/// UTF-16 units, up to 765 bytes of UTF-8): see `sys_listdirat`.
+const LISTDIR_NAME_MARGIN: usize = 1024;
 
 const S_IFCHR: u32 = 0o020000;
 const S_IFIFO: u32 = 0o010000;
@@ -480,7 +483,12 @@ pub(super) fn sys_listdirat(dirfd: usize, ptr: usize, len: usize, buf: usize, ca
     let Some(path) = user_path(ptr, len) else {
         return SYSERR;
     };
-    let mut names = alloc::vec![0u8; cap];
+    // The file systems stop at the last whole name that fits, which can
+    // leave the buffer short of full with names still to come. List into a
+    // longer one: what does not fit the caller's is a full buffer, which
+    // tells it to ask again with a larger one; a listing shorter than its
+    // buffer is then whole (a name is far shorter than the margin).
+    let mut names = alloc::vec![0u8; cap + LISTDIR_NAME_MARGIN];
     let n = {
         let _tree = fs::vfs::hold_read();
         let f = if empty_path(&path, flags) { fd_found(dirfd).map(|(_, f)| f) } else { resolve(dirfd, &path, true) };
