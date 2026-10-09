@@ -414,11 +414,10 @@ const IDLE_BACKSTOP_NS: u64 = 1_000_000_000;
 /// runs something puts the tick back for preemption: this function, or
 /// `schedule` when an interrupt switches to another task from inside the
 /// halt. CPU 0 keeps ticking: its tick polls the UART, which has no
-/// interrupt, and blinks the cursor; so does every riscv64 hart
-/// (`arch::TICKLESS_IDLE`, issue #367).
+/// interrupt, and blinks the cursor (issue #367).
 fn halt(cpu: usize) {
     IDLE_HALTS[cpu].fetch_add(1, Ordering::Relaxed);
-    let tickless = cpu != 0 && crate::arch::TICKLESS_IDLE;
+    let tickless = cpu != 0;
     if tickless {
         let backstop = crate::time::monotonic_ns().saturating_add(IDLE_BACKSTOP_NS);
         crate::arch::timer_idle(NEXT_DEADLINE.load(Ordering::SeqCst).min(backstop));

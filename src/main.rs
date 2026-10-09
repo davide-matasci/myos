@@ -1233,12 +1233,11 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
-    // riscv64 keeps -smp 2 for OpenSBI/DTB but WFI-parks the AP (!ONLINE).
-    // Default MTTCG still schedules that parked hart and reopens the classic
-    // ripgrep/HTTPS `sepc=0` expand race under load (PR #151/#164). Single-thread
-    // TCG matches local-ci and keeps one ONLINE hart without AP TCG contention.
-    // Set MYOS_TCG_SINGLE=0 only when deliberately testing MTTCG.
-    if std::env::var("MYOS_TCG_SINGLE").as_deref() != Ok("0") {
+    // Multi-threaded TCG, as on x86 and aarch64: one host thread per hart.
+    // Single-threaded TCG (MYOS_TCG_SINGLE=1, local-ci.sh) runs one hart at a
+    // time, so an IPI to a halted hart waits for QEMU's 100 ms round-robin
+    // kick, and a tickless idle hart made TLB shootdowns that slow.
+    if std::env::var("MYOS_TCG_SINGLE").as_deref() == Ok("1") {
         cmd.arg("-accel").arg("tcg,thread=single");
     }
     // The screen in every boot, the headless CI ones too: it is `/dev/fb`

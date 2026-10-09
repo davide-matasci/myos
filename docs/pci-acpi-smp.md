@@ -240,11 +240,10 @@ halt and runs something puts the tick back (`arch::timer_resume`, from
 `halt` and from `schedule`, since an interrupt may switch tasks from inside
 the halt): a busy CPU keeps its 100 Hz tick for preemption. CPU 0 keeps
 ticking: its tick polls the UART, which has no interrupt, and blinks the
-cursor. So does every riscv64 hart (`arch::TICKLESS_IDLE`): under the
-single-threaded TCG the boot tests run riscv64 with, an IPI from a running
-hart reaches a halted one only at QEMU's 100 ms round-robin kick, so a TLB
-shootdown waiting for a tickless hart's ack took up to 100 ms; the halted
-hart's own tick is what let it in sooner. Each idle CPU's halts then last up to its next deadline (the
+cursor. Under single-threaded TCG (`MYOS_TCG_SINGLE=1`, `local-ci.sh`) an IPI
+to a halted CPU waits for QEMU's 100 ms round-robin kick, since one host
+thread runs every vCPU; TLB shootdowns waiting for a tickless CPU's ack are
+then that slow, so the boot tests use multi-threaded TCG on every arch. Each idle CPU's halts then last up to its next deadline (the
 `idle_tickless` test checks a quiet CPU averages over 20 ms a halt).
 
 Idle: `kernel_main` (task 0) is the BSP's idle task, `ap_idle_body` the APs'.

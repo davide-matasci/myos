@@ -112,9 +112,6 @@ pub fn timer_deadline(deadline_ns: u64) {
     interrupts::timer_deadline(deadline_ns);
 }
 
-/// Idle CPUs stop their tick (`task::sched::halt`).
-pub const TICKLESS_IDLE: bool = true;
-
 /// Stop this CPU's tick while it halts with nothing to run: its timer fires
 /// once, at `wake_ns`. Interrupts off.
 pub fn timer_idle(wake_ns: u64) {
