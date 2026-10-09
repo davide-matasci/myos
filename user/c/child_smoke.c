@@ -7,13 +7,23 @@
  * (ECHILD), whether asked after the exit or while waiting for it. A parent
  * may move its child to another process group until the child execs, and
  * gets EACCES after. A child's setsid makes it a session leader with no
- * controlling terminal, out of its parent's reach. Prints [ OK ] child.
+ * controlling terminal, out of its parent's reach. A fork shares the
+ * parent's pages copy-on-write: the child sees the values from before the
+ * fork, and a store by either side, to data, bss, heap, stack or a private
+ * mapping, is its own, also two forks deep and after a store the kernel
+ * makes (a read into the page). A large program exec'ing a smaller one
+ * that is still too large to be reloaded in place leaves the new program
+ * an empty heap (the old image's pages past the new span are gone).
+ * Prints [ OK ] child.
  */
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -148,6 +158,148 @@ static int setsid_child(void) {
     return 0;
 }
 
+static int data_page = 1;
+static int bss_page;
+
+/* An image larger than the shell's (3 MiB of bss): exec'ing the shell
+ * from it moves the stack down, and the shell's heap starts where this
+ * image had its pages, made read-only first like a program's text. */
+static char big_image[3 << 20];
+
+/* The shell exec'd from this larger image must get a working heap. */
+static int exec_shrink(void) {
+    int status;
+    uintptr_t lo = ((uintptr_t)big_image + 4095) & ~(uintptr_t)4095;
+    uintptr_t hi = ((uintptr_t)big_image + sizeof big_image) & ~(uintptr_t)4095;
+    big_image[sizeof big_image - 1] = 1;
+    if (mprotect((void *)lo, hi - lo, PROT_READ) != 0) {
+        return fail("mprotect of the large image");
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/bin/sh", "sh", "-c", "x=$(echo heap) && [ \"$x\" = heap ]", (char *)NULL);
+        _exit(127);
+    }
+    if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return fail("the shell exec'd from a larger image");
+    }
+    return 0;
+}
+
+/* Every page `kind` a process has: data, bss, heap, stack and a private
+ * anonymous mapping, each holding `v` (`set`) or checked for it (`check`). */
+static int *heap_page, *stack_page, *map_page;
+static int *const *pages[] = {(int *const *)&data_page, (int *const *)&bss_page, &heap_page, &stack_page, &map_page};
+static const char *kinds[] = {"data", "bss", "heap", "stack", "mmap"};
+
+static void set_pages(int v) {
+    data_page = v;
+    bss_page = v;
+    *heap_page = v;
+    *stack_page = v;
+    *map_page = v;
+}
+
+/* The first kind that does not hold `v`, or -1. */
+static int check_pages(int v) {
+    int vals[5] = {data_page, bss_page, *heap_page, *stack_page, *map_page};
+    for (int i = 0; i < 5; i++) {
+        if (vals[i] != v) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* The child's side of `cow`: the values of before the fork, then its own
+ * stores, the parent's not seen even after it stored, and the same for a
+ * grandchild. The exit status is the first kind that was wrong + 1, 0
+ * when none, 10 + that for the grandchild's view. */
+static int cow_child(int go, int v) {
+    char c;
+    int status, bad;
+    if ((bad = check_pages(v)) >= 0) {
+        return bad + 1;
+    }
+    set_pages(v + 1);
+    /* The parent stores v + 2 before it writes the byte. */
+    (void)!read(go, &c, 1);
+    if ((bad = check_pages(v + 1)) >= 0) {
+        return bad + 1;
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        if ((bad = check_pages(v + 1)) >= 0) {
+            _exit(10 + bad + 1);
+        }
+        set_pages(v + 3);
+        _exit(check_pages(v + 3) >= 0 ? 20 : 0);
+    }
+    if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) {
+        return 30;
+    }
+    if (WEXITSTATUS(status) != 0) {
+        return WEXITSTATUS(status);
+    }
+    if ((bad = check_pages(v + 1)) >= 0) {
+        return bad + 1;
+    }
+    /* A store the kernel makes into a shared page (read into it) is this
+     * process's own too. */
+    int fd[2];
+    int saved = *heap_page;
+    if (pipe(fd) != 0 || write(fd[1], &v, sizeof v) != sizeof v || read(fd[0], heap_page, sizeof v) != sizeof v) {
+        return 40;
+    }
+    if (*heap_page != v) {
+        return 41;
+    }
+    *heap_page = saved;
+    return 0;
+}
+
+/* Fork shares pages copy-on-write: each side keeps its own stores. */
+static int cow(void) {
+    int go[2], status, bad;
+    char what[64];
+    int stack_slot = 0;
+    heap_page = malloc(4096);
+    stack_page = &stack_slot;
+    map_page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (heap_page == NULL || map_page == MAP_FAILED || pipe(go) != 0) {
+        return fail("cow setup");
+    }
+    set_pages(100);
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(go[1]);
+        _exit(cow_child(go[0], 100));
+    }
+    close(go[0]);
+    if (pid < 0) {
+        return fail("cow fork");
+    }
+    set_pages(102);
+    (void)!write(go[1], "g", 1);
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) {
+        return fail("cow child");
+    }
+    if (WEXITSTATUS(status) != 0) {
+        int code = WEXITSTATUS(status);
+        const char *kind = code >= 1 && code <= 5 ? kinds[code - 1] : code >= 11 && code <= 15 ? kinds[code - 11] : "?";
+        snprintf(what, sizeof what, "cow: the child's view of %s (code %d)", kind, code);
+        return fail(what);
+    }
+    if ((bad = check_pages(102)) >= 0) {
+        snprintf(what, sizeof what, "cow: the child's store to %s reached the parent", kinds[bad]);
+        return fail(what);
+    }
+    close(go[1]);
+    free(heap_page);
+    munmap(map_page, 4096);
+    return 0;
+}
+
 int main(void) {
     struct sigaction old;
     int status;
@@ -182,6 +334,12 @@ int main(void) {
         return 1;
     }
     if (setpgid_exec() != 0) {
+        return 1;
+    }
+    if (cow() != 0) {
+        return 1;
+    }
+    if (exec_shrink() != 0) {
         return 1;
     }
 

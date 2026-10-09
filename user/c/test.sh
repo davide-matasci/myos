@@ -47,7 +47,9 @@ t netconv /bin/etc/netconv_smoke
 t loopback /bin/etc/loopback_smoke
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
 # the wait; setpgid on a child before its exec, EACCES after; a child's
-# setsid: its own session, no controlling terminal (child_smoke.c).
+# setsid: its own session, no controlling terminal; fork shares the pages
+# copy-on-write: each side's stores are its own, two forks deep; the shell
+# exec'd from a larger image gets an empty heap (child_smoke.c).
 t child /bin/etc/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports, the resolver (localhost without

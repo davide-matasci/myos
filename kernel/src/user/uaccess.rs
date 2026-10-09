@@ -39,20 +39,15 @@ fn each_user_page(aspace: u64, va: usize, len: usize, access: Access, mut f: imp
             // V-set/phys-0 leaf (corrupt PTE): never dereference hhdm(0).
             return false;
         }
-        // A page the page cache shares is mapped without write permission,
-        // and the copy would write to every process's copy of the file:
-        // only a shared writable mapping of the file (the frame is the
-        // file's page then) takes it; a private writable mapping's page is
-        // copied first, as a store from userspace copies it (`fault_in`).
-        let phys = if access == Access::Write && fs::pagecache::is_cached(phys) {
-            let current = aspace == task::current_aspace();
-            let shared = current
-                && task::mmap_backing(page).is_some_and(|(prot, _, _)| {
-                    prot & task::MMAP_SHARED != 0 && prot & PROT_WRITE as u32 != 0
-                });
-            if shared {
-                phys
-            } else if current && fault_in(page, Access::Write) {
+        // A page mapped without write permission is one the page cache
+        // shares (a private mapping's, copied at its first store) or one a
+        // fork shares (`LEAF_COW`, copied the same way), or a read-only
+        // page: a store from userspace would fault, so the copy takes the
+        // same way through `fault_in`, which copies the page or refuses.
+        let writable = crate::arch::upaging::leaf_mut(aspace, page as u64)
+            .is_some_and(|p| crate::arch::upaging::leaf_writable(unsafe { *p }));
+        let phys = if access == Access::Write && !writable {
+            if aspace == task::current_aspace() && fault_in(page, Access::Write) {
                 match virt_to_phys(aspace, page as u64) {
                     Some(own) if own != 0 => own,
                     _ => return false,

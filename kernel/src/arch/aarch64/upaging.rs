@@ -254,6 +254,81 @@ pub fn unmap_user_page(aspace: u64, va: u64) {
     }
 }
 
+/// A bit of a page descriptor reserved for software (bits 58:55): the
+/// page's frame is shared with another address space by a fork, copied
+/// before a store (`user::cow`).
+pub const LEAF_COW: u64 = 1 << 55;
+/// Another: the page was writable before the share (its copy is again).
+pub const LEAF_COW_WRITE: u64 = 1 << 56;
+
+/// AP[2]: 1 for a read-only page (`AP_RO`), 0 for a writable one.
+const AP_READ_ONLY: u64 = 1 << 7;
+
+/// The leaf entry of `va` in `aspace`, if `va` is mapped: a pointer into
+/// the page table, for the `leaf_*` helpers to read and change it in
+/// place. Allocates nothing.
+pub fn leaf_mut(aspace: u64, va: u64) -> Option<*mut u64> {
+    const TABLE: u64 = 0b11;
+    let page = aarch64_user_page_idx(va);
+    let l3_idx = page % USER_L3_PAGES;
+    let l2_idx = page / USER_L3_PAGES;
+    if l2_idx >= USER_L2_TABLES {
+        return None;
+    }
+    unsafe {
+        let l0 = &*mm::table(aspace);
+        let l1_phys = l0[0] & PA;
+        if l1_phys == 0 {
+            return None;
+        }
+        let l1 = &*mm::table(l1_phys);
+        let l2_phys = l1[1] & PA;
+        if l2_phys == 0 {
+            return None;
+        }
+        let l2 = &*mm::table(l2_phys);
+        if l2[l2_idx] & 0b11 != TABLE {
+            return None;
+        }
+        let l3 = &mut *mm::table(l2[l2_idx] & PA);
+        if l3[l3_idx] & 0b11 != PAGE_DESC {
+            return None;
+        }
+        Some(&mut l3[l3_idx] as *mut u64)
+    }
+}
+
+/// Set the leaf entry of `va` to `pte` as it is (the tables made as needed).
+pub fn set_leaf(aspace: u64, va: u64, pte: u64) {
+    let page = aarch64_user_page_idx(va);
+    let Some(l3) = aarch64_l3_table_mut(aspace, page) else {
+        return;
+    };
+    unsafe {
+        (*l3)[page % USER_L3_PAGES] = pte;
+    }
+}
+
+pub fn leaf_phys(pte: u64) -> u64 {
+    pte & PA
+}
+
+pub fn leaf_with_phys(pte: u64, phys: u64) -> u64 {
+    (pte & !PA) | (phys & PA)
+}
+
+pub fn leaf_writable(pte: u64) -> bool {
+    pte & AP_READ_ONLY == 0
+}
+
+pub fn leaf_with_write(pte: u64, w: bool) -> u64 {
+    if w { pte & !AP_READ_ONLY } else { pte | AP_READ_ONLY }
+}
+
+pub fn leaf_executable(pte: u64) -> bool {
+    pte & UXN == 0
+}
+
 /// Map a code page: RW so the loader can fill it, and executable.
 pub fn map_user_code_page(aspace: u64, va: u64, pa: u64) {
     map_user_page_aarch64(aspace, va, pa, false);

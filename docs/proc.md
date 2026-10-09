@@ -108,8 +108,12 @@ The others count frames: allocated and freed since boot (`FramesAlloc`,
 `FramesFree`, the live ones in `FramesLive` and `LiveKiB`), allocations per
 kernel call site (`Site*`, for leak hunting), the page faults handled
 (`Faults`) and the pages the fault-around mapped besides the faulting ones
-(`FaultAround`, `docs/linux-compat.md`), and the caches' sizes
-(`BlockCacheKiB`, `PageCacheKiB`).
+(`FaultAround`, `docs/linux-compat.md`), the forks and the pages a store
+copied after one (`Forks`, `CowCopies`: a fork shares the parent's pages
+copy-on-write, `README.md`), the system calls made (`Syscalls`), the user
+TLB flushes of a whole address space and of one page and the shootdowns
+sent to other CPUs (`TlbFlushes`, `TlbPageFlushes`, `TlbShootdowns`), and
+the caches' sizes (`BlockCacheKiB`, `PageCacheKiB`).
 
 ## How the time is counted
 

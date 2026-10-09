@@ -193,8 +193,16 @@ fn tlb_all_seen(epoch: u64) -> bool {
     true
 }
 
+/// TLB shootdowns sent (`/proc/meminfo`).
+static TLB_SHOOTDOWNS: AtomicU64 = AtomicU64::new(0);
+
+pub fn tlb_shootdowns() -> u64 {
+    TLB_SHOOTDOWNS.load(Ordering::Relaxed)
+}
+
 /// Invalidate this CPU's user TLB and ask every other online CPU to do the same.
 pub fn tlb_shootdown() {
+    TLB_SHOOTDOWNS.fetch_add(1, Ordering::Relaxed);
     let others = online_count().saturating_sub(1);
     if others == 0 {
         flush_tlb_local();

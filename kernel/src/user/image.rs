@@ -112,7 +112,7 @@ fn apply_elf_load_prots(aspace: u64, bytes: &[u8], base: u64, image_pages: usize
 }
 
 pub(super) fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
-    if let Some(phys) = virt_to_phys(aspace, va) {
+    if let Some(phys) = own_frame(aspace, va) {
         phys
     } else {
         let frame = mm::alloc_frame_site(1);
@@ -197,7 +197,9 @@ pub(super) fn reload_user_elf(
     };
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
-        let Some(phys) = virt_to_phys(aspace, va) else {
+        // A frame a fork shares is replaced first: the new image is this
+        // process's alone.
+        let Some(phys) = own_frame(aspace, va) else {
             return None;
         };
         let off = i * PAGE;
@@ -260,13 +262,21 @@ fn free_heap_window(aspace: u64, base: u64, stack_off: u64) {
 /// Grow the current aspace and load a large ELF (up to [`MAX_EXPAND_PAGES`]).
 /// Used when [`reload_user_elf`] is too small but we already have an aspace
 /// (post-fork exec of release uutils / ripgrep).
-/// Free stack/heap pages from a prior expand/load when the stack window moves,
-/// and **always** drop the old heap window on in-place exec.
+/// Free the old image's pages past the new code span, and stack/heap pages
+/// from a prior expand/load when the stack window moves, and **always**
+/// drop the old heap window on in-place exec.
 ///
 /// Pages that fall inside the new code span `[base, base+new_stack_off)` are
 /// kept for `reuse_or_alloc_frame` to turn into code. Without stack reclaim,
 /// each uutils→rg-sized expand abandons `USER_STACK_PAGES + HEAP_PAGES` frames
 /// and riscv UEFI walks the freelist dry → classic `sepc=0` after the next ecall.
+///
+/// The old image's pages past the new span go too: a program larger than
+/// [`MAX_RELOAD_PAGES`] exec'd by a larger one still (`st -e /bin/sh`) moves
+/// the stack down, and those pages would sit in the new stack and heap
+/// windows, read-only text where the new program expects an empty heap
+/// (`sys_brk` keeps a page it finds mapped). The forked copies they used to
+/// be were writable, which hid it; copy-on-write keeps their protection.
 ///
 /// Heap is freed even when `stack_off` is unchanged: in-place reload/expand used
 /// to leave prior brk pages mapped while `replace_user` reset `brk_cur` to
@@ -277,6 +287,11 @@ fn free_abandoned_stack_heap(aspace: u64, base: u64, old_stack_off: u64, new_sta
         return;
     }
     let new_code_end = base + new_stack_off;
+    let mut va = new_code_end;
+    while va < base + old_stack_off {
+        free_mapped_page(aspace, va);
+        va += PAGE as u64;
+    }
     if old_stack_off != new_stack_off {
         for i in 0..USER_STACK_PAGES {
             let va = base + old_stack_off + (i * PAGE) as u64;
@@ -357,7 +372,9 @@ pub(super) fn expand_user_elf(
 
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
-        let Some(phys) = virt_to_phys(aspace, va) else {
+        // A frame a fork shares is replaced first: the new image is this
+        // process's alone.
+        let Some(phys) = own_frame(aspace, va) else {
             return None;
         };
         let off = i * PAGE;

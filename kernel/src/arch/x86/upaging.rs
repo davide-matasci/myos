@@ -233,6 +233,70 @@ pub fn unmap_user_page(aspace: u64, va: u64) {
     }
 }
 
+/// The physical-address bits of a leaf entry.
+const LEAF_PA: u64 = 0x000f_ffff_ffff_f000;
+
+/// A bit of a leaf entry the hardware ignores (AVL): the page's frame is
+/// shared with another address space by a fork, copied before a store
+/// (`user::cow`).
+pub const LEAF_COW: u64 = 1 << 9;
+/// Another: the page was writable before the share (its copy is again).
+pub const LEAF_COW_WRITE: u64 = 1 << 10;
+
+/// The leaf entry of `va` in `aspace`, if `va` is mapped: a pointer into
+/// the page table, for the `leaf_*` helpers to read and change it in
+/// place. Allocates nothing.
+pub fn leaf_mut(aspace: u64, va: u64) -> Option<*mut u64> {
+    let i4 = ((va >> 39) & 0x1ff) as usize;
+    let i3 = ((va >> 30) & 0x1ff) as usize;
+    let i2 = ((va >> 21) & 0x1ff) as usize;
+    let i1 = ((va >> 12) & 0x1ff) as usize;
+    unsafe {
+        let pml4 = &*mm::table(aspace);
+        if pml4[i4] & PRESENT == 0 {
+            return None;
+        }
+        let pdpt = &*mm::table(pml4[i4]);
+        if pdpt[i3] & PRESENT == 0 || pdpt[i3] & HUGE != 0 {
+            return None;
+        }
+        let pd = &*mm::table(pdpt[i3]);
+        if pd[i2] & PRESENT == 0 || pd[i2] & HUGE != 0 {
+            return None;
+        }
+        let pt = &mut *mm::table(pd[i2]);
+        if pt[i1] & PRESENT == 0 {
+            return None;
+        }
+        Some(&mut pt[i1] as *mut u64)
+    }
+}
+
+/// Set the leaf entry of `va` to `pte` as it is (the tables made as needed).
+pub fn set_leaf(aspace: u64, va: u64, pte: u64) {
+    map_page_x86(aspace, va, pte & LEAF_PA, pte & !LEAF_PA);
+}
+
+pub fn leaf_phys(pte: u64) -> u64 {
+    pte & LEAF_PA
+}
+
+pub fn leaf_with_phys(pte: u64, phys: u64) -> u64 {
+    (pte & !LEAF_PA) | (phys & LEAF_PA)
+}
+
+pub fn leaf_writable(pte: u64) -> bool {
+    pte & WRITE != 0
+}
+
+pub fn leaf_with_write(pte: u64, w: bool) -> u64 {
+    if w { pte | WRITE } else { pte & !WRITE }
+}
+
+pub fn leaf_executable(pte: u64) -> bool {
+    pte & NX == 0
+}
+
 /// Map a code page: RW so the loader can fill it, and executable.
 pub fn map_user_code_page(aspace: u64, va: u64, pa: u64) {
     map_page_x86(aspace, va, pa, PRESENT | WRITE | USER);
