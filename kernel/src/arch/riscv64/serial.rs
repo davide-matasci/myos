@@ -16,6 +16,7 @@ fn uart0() -> usize {
     BASE.load(Ordering::Relaxed)
 }
 const THR: usize = 0x00;
+const IER: usize = 0x01;
 const LSR: usize = 0x05;
 
 const LSR_TX_IDLE: u8 = 1 << 5;
@@ -60,6 +61,12 @@ impl SerialPort {
     pub fn flush(&mut self) {
         while read8(LSR) & LSR_TX_IDLE == 0 {}
     }
+}
+
+/// Interrupt on received data (IER bit 0: data available, or the FIFO's
+/// character timeout).
+pub fn rx_irq_on() {
+    write8(IER, 0x01);
 }
 
 pub fn read_byte() -> Option<u8> {

@@ -33,10 +33,14 @@ use myos_abi::{
     CONSOLE_STATUS_OK, CONSOLE_STATUS_WARN, FramebufferInfo, KernelApi, Lock, ModuleConsoleOps,
 };
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use fb::FrameBufferWriter;
 
 static API: ApiCell = ApiCell::new();
 static FB: Lock<Option<FrameBufferWriter<'static>>> = Lock::new(None);
+/// [`FB`] holds the screen.
+static SCREEN: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn api() -> &'static KernelApi {
     API.get()
@@ -138,6 +142,16 @@ unsafe extern "C" fn keyboard_present() -> i32 {
     i32::from(keyboard::present())
 }
 
+unsafe extern "C" fn keyboard_irq() -> i32 {
+    i32::from(keyboard::irq())
+}
+
+/// The text screen is there and not taken over by `/dev/fb`. No lock: the
+/// kernel asks with interrupts off, from its idle loop.
+unsafe extern "C" fn cursor_blinks() -> i32 {
+    i32::from(SCREEN.load(Ordering::Relaxed) && !fbdev::graphics())
+}
+
 unsafe extern "C" fn keyboard_poll() -> i32 {
     keyboard::poll_byte().map_or(-1, i32::from)
 }
@@ -169,6 +183,8 @@ static OPS: ModuleConsoleOps = ModuleConsoleOps {
     keyboard_poll,
     keymap_load,
     keymap_loaded,
+    keyboard_irq,
+    cursor_blinks,
 };
 
 #[inline(never)]
@@ -188,6 +204,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
         let mut w = FrameBufferWriter::from_info(&info);
         w.clear();
         *FB.lock() = Some(w);
+        SCREEN.store(true, Ordering::Relaxed);
     }
     keyboard::init();
     if keyboard::present() && kbdev::mount() != 0 {

@@ -718,10 +718,9 @@ extern "C" fn aarch64_irq_handler(spsr: u64) {
         crate::time::note_tick();
         crate::rng::stir_tick();
         rearm_timers();
-        // BSP stages PL011 RX so a blocked console reader is woken instead
-        // of polling the UART itself (see x86 timer).
-        if crate::smp::cpu_id() == 0 && crate::input::drain_uart_irq() {
-            crate::task::wake(crate::task::KEY_CONSOLE);
+        // The BSP stages UART input when the UART has no interrupt.
+        if crate::smp::cpu_id() == 0 {
+            crate::input::tick();
         }
         crate::task::timer_tick();
     }

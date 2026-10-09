@@ -423,11 +423,9 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             crate::time::note_tick();
             crate::rng::stir_tick();
             rearm_timer();
-            // BSP stages 16550 RX so a blocked console reader is woken instead
-            // of polling the UART itself (see x86 timer). The CI #150 hang
-            // once blamed on this was the trap-vector t0 clobber, fixed since.
-            if crate::smp::cpu_id() == 0 && crate::input::drain_uart_irq() {
-                crate::task::wake(crate::task::KEY_CONSOLE);
+            // The BSP stages UART input when the UART has no interrupt.
+            if crate::smp::cpu_id() == 0 {
+                crate::input::tick();
             }
             crate::task::timer_tick();
             crate::task::schedule();

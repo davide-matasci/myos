@@ -193,16 +193,15 @@ pub fn init() {
         idt[IPI_TLB_VECTOR].set_handler_fn(ipi_tlb);
         idt[IPI_RESCHED_VECTOR].set_handler_fn(ipi_resched);
         idt[SPURIOUS_VECTOR].set_handler_fn(spurious);
-        // Device (MSI-X) vectors: one IDT stub per vector, all funnelled into
-        // `irq::dispatch`.
-        idt[MSI_VECTOR_BASE].set_handler_fn(msi_irq0);
-        idt[MSI_VECTOR_BASE + 1].set_handler_fn(msi_irq1);
-        idt[MSI_VECTOR_BASE + 2].set_handler_fn(msi_irq2);
-        idt[MSI_VECTOR_BASE + 3].set_handler_fn(msi_irq3);
-        idt[MSI_VECTOR_BASE + 4].set_handler_fn(msi_irq4);
-        idt[MSI_VECTOR_BASE + 5].set_handler_fn(msi_irq5);
-        idt[MSI_VECTOR_BASE + 6].set_handler_fn(msi_irq6);
-        idt[MSI_VECTOR_BASE + 7].set_handler_fn(msi_irq7);
+        // Device vectors (MSI-X messages, I/O APIC pins): one IDT stub per
+        // vector, all funnelled into `irq::dispatch`.
+        let stubs: [extern "x86-interrupt" fn(InterruptStackFrame); DEVICE_VECTORS as usize] = [
+            dev_irq0, dev_irq1, dev_irq2, dev_irq3, dev_irq4, dev_irq5, dev_irq6, dev_irq7, dev_irq8, dev_irq9,
+            dev_irq10, dev_irq11, dev_irq12, dev_irq13, dev_irq14, dev_irq15,
+        ];
+        for (i, stub) in stubs.into_iter().enumerate() {
+            idt[DEVICE_VECTOR_BASE + i as u8].set_handler_fn(stub);
+        }
         idt
     });
     idt.load();
@@ -245,9 +244,9 @@ static INIT_COUNT_CACHED: AtomicUsize = AtomicUsize::new(0);
 /// LAPIC timer INIT_COUNT for [`TICK_HZ`], measured once on the BSP against
 /// the calibrated TSC (`time::init` runs before interrupts come up). The old
 /// fixed 100_000 fired 10-20k ticks per second per CPU under QEMU, and every
-/// tick takes the scheduler lock. The tick also drains the UART: QEMU holds
-/// input back while the 16-byte FIFO is full, so a slower drain delays
-/// typed input but loses none.
+/// tick takes the scheduler lock. A tick also drains a UART without its
+/// interrupt (`input::tick`): QEMU holds input back while the 16-byte FIFO
+/// is full, so a slower drain delays typed input but loses none.
 fn timer_init_count() -> u32 {
     let cached = INIT_COUNT_CACHED.load(Ordering::SeqCst);
     if cached != 0 {
@@ -387,27 +386,42 @@ pub fn wait_for_interrupt_proof() {
 
 extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {}
 
-/// First LAPIC vector handed to PCI MSI-X devices (8 vectors).
-pub const MSI_VECTOR_BASE: u8 = 48;
-const MSI_VECTORS: u8 = 8;
-static NEXT_MSI_VECTOR: AtomicUsize = AtomicUsize::new(0);
+/// First LAPIC vector handed to devices (PCI MSI-X, I/O APIC pins).
+const DEVICE_VECTOR_BASE: u8 = 48;
+const DEVICE_VECTORS: u8 = 16;
+static NEXT_DEVICE_VECTOR: AtomicUsize = AtomicUsize::new(0);
 
-macro_rules! msi_stub {
+/// A fresh device vector (its `irq::dispatch` number), or `None` when all
+/// are taken.
+pub fn alloc_vector() -> Option<u8> {
+    let n = NEXT_DEVICE_VECTOR.fetch_add(1, Ordering::SeqCst);
+    (n < DEVICE_VECTORS as usize).then(|| DEVICE_VECTOR_BASE + n as u8)
+}
+
+macro_rules! dev_stub {
     ($name:ident, $n:expr) => {
         extern "x86-interrupt" fn $name(_frame: InterruptStackFrame) {
-            crate::irq::dispatch(u32::from(MSI_VECTOR_BASE) + $n);
+            crate::irq::dispatch(u32::from(DEVICE_VECTOR_BASE) + $n);
             lapic_w(EOI, 0);
         }
     };
 }
-msi_stub!(msi_irq0, 0);
-msi_stub!(msi_irq1, 1);
-msi_stub!(msi_irq2, 2);
-msi_stub!(msi_irq3, 3);
-msi_stub!(msi_irq4, 4);
-msi_stub!(msi_irq5, 5);
-msi_stub!(msi_irq6, 6);
-msi_stub!(msi_irq7, 7);
+dev_stub!(dev_irq0, 0);
+dev_stub!(dev_irq1, 1);
+dev_stub!(dev_irq2, 2);
+dev_stub!(dev_irq3, 3);
+dev_stub!(dev_irq4, 4);
+dev_stub!(dev_irq5, 5);
+dev_stub!(dev_irq6, 6);
+dev_stub!(dev_irq7, 7);
+dev_stub!(dev_irq8, 8);
+dev_stub!(dev_irq9, 9);
+dev_stub!(dev_irq10, 10);
+dev_stub!(dev_irq11, 11);
+dev_stub!(dev_irq12, 12);
+dev_stub!(dev_irq13, 13);
+dev_stub!(dev_irq14, 14);
+dev_stub!(dev_irq15, 15);
 
 /// Program MSI-X table entry 0 of the PCI function to raise a fresh LAPIC
 /// vector on the BSP, and enable MSI-X. Returns the vector (`irq::dispatch`
@@ -446,11 +460,7 @@ pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     if apic_id > 0xFF {
         return None;
     }
-    let n = NEXT_MSI_VECTOR.fetch_add(1, Ordering::SeqCst);
-    if n >= MSI_VECTORS as usize {
-        return None;
-    }
-    let vector = u32::from(MSI_VECTOR_BASE) + n as u32;
+    let vector = u32::from(alloc_vector()?);
     let entry = va + offset as usize;
     unsafe {
         // Mask the entry while programming it (vector control bit 0).
@@ -663,13 +673,9 @@ extern "x86-interrupt" fn timer(frame: InterruptStackFrame) {
     TIMER_FIRED.store(true, Ordering::SeqCst);
     crate::time::note_tick();
     crate::rng::stir_tick();
-    // BSP drains COM1 so a starved shell CPU cannot overrun the FIFO
-    // (bios `which ls`→`which s` under -smp 4 TCG). When bytes land, wake
-    // the console reader (it blocks on KEY_CONSOLE, possibly on another CPU):
-    // ECHO only runs from that reader's poll — without a wake, host echo-sync
-    // waits then resends, sticky-keying `login: rroooo…` / `roootttt…`.
-    if crate::smp::cpu_id() == 0 && crate::input::drain_uart_irq() {
-        crate::task::wake(crate::task::KEY_CONSOLE);
+    // The BSP stages UART input when the UART has no interrupt.
+    if crate::smp::cpu_id() == 0 {
+        crate::input::tick();
     }
     crate::task::timer_tick();
     rearm_period();

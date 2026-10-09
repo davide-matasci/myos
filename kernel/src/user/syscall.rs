@@ -1363,11 +1363,11 @@ fn sys_poll(fds_ptr: usize, nfds: usize, timeout_ms: isize) -> usize {
             return crate::signal::SYSERR_EINTR;
         }
         // Sleep until anything happens (pipe, pty, console, device and
-        // module traffic, an exit all wake pollers) or the deadline. The
-        // keyboard is polled, not interrupt-driven: a watched console tty
+        // module traffic, an exit all wake pollers) or the deadline. A
+        // keyboard without an interrupt is polled: a watched console tty
         // re-checks at its rate, as `input::read` does.
         let mut until = deadline;
-        if tty && crate::input::keyboard_present() {
+        if tty && crate::input::keyboard_present() && !crate::console::keyboard_irq() {
             let keyboard = task::deadline_ms(10);
             until = if until == 0 { keyboard } else { until.min(keyboard) };
         }

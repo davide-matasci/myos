@@ -29,6 +29,16 @@ pub fn serial_read_byte() -> Option<u8> {
 
 pub fn serial_flush_rx() {}
 
+/// The console UART's interrupt, as the platform description gives it.
+pub fn serial_irq() -> Option<u32> {
+    crate::platform::get().uart.and_then(|u| u.value.irq)
+}
+
+/// Interrupt when received data waits (after its interrupt is routed).
+pub fn serial_rx_irq_on() {
+    serial::rx_irq_on();
+}
+
 pub const QEMU_SUCCESS: u32 = 0x10;
 pub const QEMU_FAILURE: u32 = 0x11;
 
@@ -96,6 +106,17 @@ pub fn irq_from_dt(cells: &[u32]) -> Option<u32> {
         [src] if *src != 0 && *src < 1024 => Some(*src),
         _ => None,
     }
+}
+
+/// A device's interrupt, a PLIC source, is its own `irq::dispatch` number;
+/// it stays disabled until [`irq_unmask`].
+pub fn irq_route(irq: u32) -> Option<u32> {
+    (1..1024).contains(&irq).then_some(irq)
+}
+
+/// Enable PLIC source `irq`, delivered to the BSP.
+pub fn irq_unmask(irq: u32) {
+    interrupts::plic::enable(irq);
 }
 
 /// Program this hart's timer for a sleep deadline sooner than its next tick.

@@ -113,7 +113,10 @@ holder exits) the console tty gets no keys from it. Serial input still
 reaches the tty, so the serial console stays usable. One program holds the
 file at a time; another open fails. Reads return whole lines; a read waits
 for the next event, `poll` reports `POLLIN` while one is queued. The queue
-holds 128 events and drops new ones while full. The file exists when the
+holds 128 events and drops new ones while full. The keyboard interrupts
+on input where the platform can route it (IRQ 1 through the I/O APIC, the
+virtio-input device's interrupt); otherwise it is polled every 10 ms while
+someone waits. The file exists when the
 console module found a keyboard ([`modules/console/src/kbdev.rs`](../modules/console/src/kbdev.rs)).
 
 A read of the console (`/dev/console/data`, `/dev/tty`) waits for as long as

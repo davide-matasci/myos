@@ -162,6 +162,17 @@ pub fn keyboard_present() -> bool {
     OPS.get().is_some_and(|ops| unsafe { (ops.keyboard_present)() } != 0)
 }
 
+/// The keyboard interrupts on input: its readers need not re-poll it.
+pub fn keyboard_irq() -> bool {
+    OPS.get().is_some_and(|ops| unsafe { (ops.keyboard_irq)() } != 0)
+}
+
+/// The screen shows the blinking cursor ([`cursor_blink`] does something):
+/// CPU 0 wakes for it while idle.
+pub fn cursor_blinks() -> bool {
+    mirrors_bytes() && OPS.get().is_some_and(|ops| unsafe { (ops.cursor_blinks)() } != 0)
+}
+
 /// Next keyboard byte, keymap-translated, if one is pending.
 pub fn keyboard_poll_byte() -> Option<u8> {
     let ops = OPS.get()?;
