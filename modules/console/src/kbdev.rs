@@ -62,11 +62,12 @@ unsafe extern "C" fn kbd_release(path: *const u8, len: usize) -> i32 {
     0
 }
 
-/// Readable while events are queued; the keyboard is polled, not
-/// interrupt-driven, so pollers re-check.
+/// Readable while events are queued. A keyboard without an interrupt is
+/// polled: pollers re-check it.
 unsafe extern "C" fn kbd_poll(_: *const u8, _: usize) -> u32 {
     keyboard::pump();
-    MYOS_POLL_RECHECK | if kbd::raw_pending() { MYOS_POLLIN } else { 0 }
+    let recheck = if keyboard::irq() { 0 } else { MYOS_POLL_RECHECK };
+    recheck | if kbd::raw_pending() { MYOS_POLLIN } else { 0 }
 }
 
 /// Mount `/dev/console/kbd`. 0 ok, negative on error.

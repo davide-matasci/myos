@@ -30,9 +30,22 @@ use an MSI-X table entry or the INTx line:
 
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
-| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`MSI_VECTOR_BASE` 48 + n, 8 vectors; no IOAPIC / PIRQ routing; a BSP with an x2APIC id above 255 would need interrupt remapping, so it gets no MSI) | vector |
+| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 16 vectors shared with the I/O APIC pins below; no PIRQ routing; a BSP with an x2APIC id above 255 would need interrupt remapping, so it gets no MSI) | vector |
 | aarch64 | INTx → GIC SPI, level, priority 0x80, delivered to the BSP (GICv2: `ITARGETSR` CPU 0; GICv3: `IROUTER` to its affinity); the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
 | riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
+
+A board device's own interrupt goes through `irq::enable` (modules:
+`KernelApi::irq_enable`, ABI 33), which registers the handler before it
+unmasks the line. On aarch64 and riscv64 the number is the one the device
+tree or the SPCR gives (a GIC SPI, a PLIC source; `MmioDevice::irq` for a
+module). On x86_64 it is a legacy ISA IRQ: `arch/x86/ioapic.rs` drives the
+MADT's first I/O APIC, takes the GSI and polarity/trigger from the
+interrupt source overrides, and points the pin at a fresh device vector
+on the BSP (the 8259s stay masked). The console's input uses it: the UART's
+receive interrupt (COM1's IRQ 4, the SPCR's or device tree's on the
+others), the PS/2 keyboard's IRQ 1 and the virtio-input device's. A PC
+without an MADT I/O APIC routes nothing: the UART is then drained by CPU
+0's tick and the keyboard polled, as before.
 
 ## The platform description
 
@@ -204,12 +217,13 @@ some other event: the X server then left a client's requests unanswered.)
 pollfd` array with `task::fd_poll` and sleeps on `WAIT_ANY` until the first
 fd is ready, the timeout, or a signal. Readiness comes from each object:
 pipes and ptys (data, room, the peer gone), the console tty (committed
-input; its keyboard is polled, so a watched tty re-checks every 10 ms when
-one is present), regular files (always ready), and module files through
+input; a keyboard without an interrupt is polled, so a watched tty then
+re-checks every 10 ms), regular files (always ready), and module files through
 the optional `ModuleVfsOps::poll` hook (ABI 17): netfs reports a socket's
 bytes, hangup, finished connect, queued accept and, for `/net/unix`, room
 in the peer's buffer; a hook that adds `MYOS_POLL_RECHECK` is re-checked
-every 10 ms like the tty (`/dev/console/kbd`, a polled device, ABI 20),
+every 10 ms like the tty (`/dev/console/kbd` when its keyboard has no
+interrupt, ABI 20),
 and a module `read` that returns `MYOS_READ_WAIT` makes an fd read wait for
 the file the same way. libgloss's `poll`/`select` are one call, and so is
 every blocking wait of its socket library (`pollselect.c`, `socket.c`).
@@ -229,7 +243,7 @@ back at the tick), and every re-arm programs `min(next tick,
 task::next_deadline_ns())`, so a 1 ms
 `nanosleep` ends after about 1 ms instead of at the next 10 ms boundary.
 
-Idle CPUs are tickless (issue #367): a CPU other than 0 that halts with
+Idle CPUs are tickless (issue #367): a CPU that halts with
 nothing to run (`sched::halt`, from the idle loop and `block_until`) stops
 its tick and arms its timer once, for `NEXT_DEADLINE` or at most 1 s ahead
 (`arch::timer_idle`: x86 puts the LAPIC timer in one-shot mode, aarch64
@@ -238,13 +252,15 @@ turns the physical timer off and sets `cntv_cval_el0`, riscv64 sets
 backstop bounds what a wakeup that was never kicked costs. Whatever ends the
 halt and runs something puts the tick back (`arch::timer_resume`, from
 `halt` and from `schedule`, since an interrupt may switch tasks from inside
-the halt): a busy CPU keeps its 100 Hz tick for preemption. CPU 0 keeps
-ticking: its tick polls the UART, which has no interrupt, and blinks the
-cursor. Under single-threaded TCG (`MYOS_TCG_SINGLE=1`, `local-ci.sh`) an IPI
+the halt): a busy CPU keeps its 100 Hz tick for preemption. CPU 0 also
+wakes for the cursor blink (every 500 ms, while the screen shows the text
+console), and keeps its tick where the UART has no interrupt (no I/O APIC):
+that tick drains the UART then (`input::tick`). Under single-threaded TCG (`MYOS_TCG_SINGLE=1`, `local-ci.sh`) an IPI
 to a halted CPU waits for QEMU's 100 ms round-robin kick, since one host
 thread runs every vCPU; TLB shootdowns waiting for a tickless CPU's ack are
 then that slow, so the boot tests use multi-threaded TCG on every arch. Each idle CPU's halts then last up to its next deadline (the
-`idle_tickless` test checks a quiet CPU averages over 20 ms a halt).
+`idle_tickless` test checks a quiet CPU averages over 20 ms a halt,
+`idle_cpu0` the same of CPU 0).
 
 Idle: `kernel_main` (task 0) is the BSP's idle task, `ap_idle_body` the APs'.
 `idle_step` runs whatever is Ready for the CPU, then halts
@@ -260,9 +276,11 @@ before `task_switch` saved the new one. `wake` marks the woken task's home CPU
 (or the CPU it is halting on, or any idle CPU for a floating task) and sends
 a **targeted** reschedule IPI (`arch::ipi_reschedule_cpu`: the LAPIC ICR with
 a destination, a GIC SGI to one CPU (v2: a CPUTargetList bit, v3: the affinity in `ICC_SGI1R_EL1`), SBI IPI with a single
-hart) only when that CPU is halted. The console reader re-polls keyboards
-every 10 ms (they have no IRQ); the BSP timer stages UART RX on all three
-arches and wakes `KEY_CONSOLE`.
+hart) only when that CPU is halted. The UART's receive interrupt stages its
+bytes (`input::drain_uart_irq`, into a lock-free ring) and wakes
+`KEY_CONSOLE`; the keyboard's only wakes it (`KernelApi::console_input`),
+and the reader takes the keys. Without those interrupts the BSP's tick
+stages UART RX and the console reader re-polls the keyboard every 10 ms.
 
 The UARTs are programmed once (`SerialPort::new` used to reprogram COM1 /
 the PL011 on every output byte; the FIFO-reset bits in that sequence dropped

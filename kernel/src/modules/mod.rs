@@ -126,6 +126,8 @@ static API: KernelApi = KernelApi {
     fd_lockctl: api_fd_lockctl,
     power_register: api_power_register,
     current_uid: api_current_uid,
+    irq_enable: api_irq_enable,
+    console_input: api_console_input,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1048,6 +1050,20 @@ unsafe extern "C" fn api_power_register(action: u32, name: StrRef, method: unsaf
         return -1;
     };
     noted(crate::power::register(action, name, method))
+}
+
+unsafe extern "C" fn api_irq_enable(
+    irq: u32,
+    name: StrRef,
+    handler: myos_abi::IrqHandler,
+    ctx: *mut core::ffi::c_void,
+) -> i32 {
+    let name = str_ref(name).filter(|n| !n.is_empty()).unwrap_or("irq");
+    noted(crate::irq::enable(irq, name, handler, ctx as usize))
+}
+
+unsafe extern "C" fn api_console_input() {
+    crate::task::wake(crate::task::KEY_CONSOLE);
 }
 
 unsafe extern "C" fn api_fd_lockctl(fd: usize, cmd: usize, lock: *mut myos_abi::MyosLockRange) -> usize {

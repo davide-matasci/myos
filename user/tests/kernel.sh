@@ -583,6 +583,29 @@ idle_tickless() {
 }
 t idle_tickless idle_tickless
 
+# The console's input interrupts (issue #367): the UART's receive interrupt
+# and the keyboard's (PS/2 IRQ 1 through the I/O APIC on x86_64, the
+# virtio-input device's elsewhere) are in /proc/interrupts, so nothing
+# polls them and CPU 0 idles without its tick too: across a 2 s sleep its
+# halts average more than 20 ms (the cursor blink wakes it twice a second).
+console_irqs() {
+	grep -q ' uart$' /proc/interrupts \
+		&& grep -Eq ' (ps2 keyboard|virtio-input)$' /proc/interrupts \
+		|| { cat /proc/interrupts; return 1; }
+}
+t console_irqs console_irqs
+idle_cpu0() {
+	set -A s0 $(idle_stats)
+	n=$((${#s0[*]} / 2))
+	sleep 2
+	set -A s1 $(idle_stats)
+	halts=$((s1[0] - s0[0]))
+	idle=$((s1[n] - s0[n]))
+	echo "CPU 0: $halts halts, $idle ms idle"
+	[ $idle -ge 1000 ] && [ $((halts * 20)) -lt $idle ]
+}
+t idle_cpu0 idle_cpu0
+
 # A module's character device is a directory: the NIC's `data` is the
 # device, its `ctl` names the MAC and whether its interrupt works.
 net_ctl() {

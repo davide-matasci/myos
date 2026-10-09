@@ -661,11 +661,13 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                 let seq = wait_seq();
                 let Some(n) = crate::fs::vfs::read_or_wait(&node, pos, &mut tmp[..want]) else {
                     // A device with nothing yet (the raw keyboard): wait for
-                    // it, re-checking at the keyboard's polling rate.
+                    // it, re-checking at the keyboard's polling rate when it
+                    // is polled (`MYOS_POLL_RECHECK`).
                     if crate::signal::interrupt_wait() {
                         return 0;
                     }
-                    block_until(WAIT_ANY, seq, deadline_ms(10));
+                    let polled = crate::fs::poll(&node).is_some_and(|b| b & myos_abi::MYOS_POLL_RECHECK != 0);
+                    block_until(WAIT_ANY, seq, if polled { deadline_ms(10) } else { 0 });
                     continue;
                 };
                 // Not under TASKS: the copy may page in the buffer.

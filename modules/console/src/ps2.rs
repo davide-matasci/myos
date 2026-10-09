@@ -1,4 +1,7 @@
-//! PS/2 keyboard via the 8042 controller (poll, no PIC IRQ).
+//! PS/2 keyboard via the 8042 controller: IRQ 1 through the I/O APIC when
+//! the kernel can route it, polled otherwise. The interrupt only wakes the
+//! console's readers; they read the controller (`poll_byte`, `pump`), which
+//! lowers the line for the next byte's edge.
 //!
 //! Works on QEMU i8042 and typical PC hardware (including USB keyboards in
 //! legacy PS/2 mode). If probe/init fails we stay on serial-only stdin.
@@ -33,6 +36,8 @@ const CFG_MOUSE_CLK_DISABLE: u8 = 1 << 5;
 const CFG_TRANSLATE: u8 = 1 << 6;
 
 static READY: AtomicBool = AtomicBool::new(false);
+/// IRQ 1 is on ([`interrupt`]).
+static IRQ: AtomicBool = AtomicBool::new(false);
 static DECODER: Mutex<Option<Decoder>> = Mutex::new(None);
 /// The same bytes as every press and release (`/dev/console/kbd`).
 static RAW_DECODER: Mutex<Option<RawDecoder>> = Mutex::new(None);
@@ -40,7 +45,11 @@ static RAW_DECODER: Mutex<Option<RawDecoder>> = Mutex::new(None);
 static FIFO: Mutex<ByteFifo> = Mutex::new(ByteFifo::new());
 
 pub fn init() {
-    if let Some((dec, translate)) = probe_and_enable() {
+    // The handler first: the controller raises IRQ 1 as soon as the probe
+    // enables it.
+    let irq = crate::api().irq_enable(1, "ps2 keyboard", interrupt, core::ptr::null_mut()) == 0;
+    if let Some((dec, translate)) = probe_and_enable(irq) {
+        IRQ.store(irq, Ordering::SeqCst);
         *DECODER.lock() = Some(dec);
         *RAW_DECODER.lock() = Some(RawDecoder::new(ScancodeSet::Set1));
         READY.store(true, Ordering::SeqCst);
@@ -55,6 +64,15 @@ pub fn init() {
 
 pub fn present() -> bool {
     READY.load(Ordering::SeqCst)
+}
+
+pub fn irq() -> bool {
+    IRQ.load(Ordering::SeqCst)
+}
+
+/// IRQ 1: a byte waits in the controller. The readers take it.
+unsafe extern "C" fn interrupt(_ctx: *mut core::ffi::c_void) {
+    crate::api().console_input();
 }
 
 /// Non-blocking: one keyboard byte from the keyboard, if any.
@@ -124,7 +142,9 @@ fn feed_one() -> bool {
     true
 }
 
-fn probe_and_enable() -> Option<(Decoder, bool)> {
+/// Find and set up the keyboard; with `irq`, the controller raises IRQ 1
+/// when a keyboard byte waits.
+fn probe_and_enable(irq: bool) -> Option<(Decoder, bool)> {
     flush_output();
     if !write_cmd(0xAD) || !write_cmd(0xA7) {
         return None;
@@ -137,7 +157,8 @@ fn probe_and_enable() -> Option<(Decoder, bool)> {
     // Enable set-2→set-1 translation at the controller (standard PC behavior).
     let cfg = (cfg & !(CFG_KBD_IRQ | CFG_MOUSE_IRQ | CFG_KBD_CLK_DISABLE))
         | CFG_MOUSE_CLK_DISABLE
-        | CFG_TRANSLATE;
+        | CFG_TRANSLATE
+        | if irq { CFG_KBD_IRQ } else { 0 };
     if !write_cmd(0x60) || !write_data(cfg) {
         return None;
     }

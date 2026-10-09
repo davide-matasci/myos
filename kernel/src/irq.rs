@@ -1,19 +1,22 @@
 //! Device interrupt registry: one handler per interrupt number, shared by
 //! the three architectures' second-level dispatch.
 //!
-//! * x86_64: MSI-X messages land on LAPIC vectors `MSI_VECTOR_BASE..`; the
-//!   IDT stubs call [`dispatch`] with the vector.
-//! * aarch64: PCI INTx lines are GIC SPIs; `aarch64_irq_handler` passes
-//!   any non-timer, non-SGI INTID here.
-//! * riscv64: PCI INTx lines are PLIC sources; the supervisor external
-//!   interrupt claims from the PLIC and passes the source id here.
+//! * x86_64: MSI-X messages and I/O APIC pins (the legacy ISA interrupts)
+//!   land on LAPIC vectors `DEVICE_VECTOR_BASE..`; the IDT stubs call
+//!   [`dispatch`] with the vector.
+//! * aarch64: PCI INTx lines and the board's devices are GIC SPIs;
+//!   `aarch64_irq_handler` passes any non-timer, non-SGI INTID here.
+//! * riscv64: PCI INTx lines and the board's devices are PLIC sources; the
+//!   supervisor external interrupt claims from the PLIC and passes the
+//!   source id here.
 //!
 //! Handlers run in interrupt context on the CPU that took the interrupt
 //! (CPU 0: every interrupt is routed to the BSP). They ack the device
 //! (virtio ISR read) and typically `task::wake*` a sleeper.
 //!
 //! Modules get this through `KernelApi::pci_irq_enable`, which also picks
-//! the delivery mechanism per arch (`pci_irq_setup`).
+//! the delivery mechanism per arch (`pci_irq_setup`), and
+//! `KernelApi::irq_enable` for a board device's own interrupt ([`enable`]).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
@@ -66,6 +69,22 @@ pub fn register(irq: u32, name: &str, handler: Handler, ctx: usize) -> bool {
         name: n,
         name_len: len as u8,
     });
+    true
+}
+
+/// Route platform interrupt `irq` to `handler(ctx)` on CPU 0: on x86_64 a
+/// legacy ISA IRQ (through the I/O APIC), elsewhere a GIC SPI or a PLIC
+/// source (the number the device tree or the SPCR gives). The handler is in
+/// place before the line is unmasked. False when it cannot be routed: the
+/// caller polls its device.
+pub fn enable(irq: u32, name: &str, handler: Handler, ctx: usize) -> bool {
+    let Some(n) = crate::arch::irq_route(irq) else {
+        return false;
+    };
+    if !register(n, name, handler, ctx) {
+        return false;
+    }
+    crate::arch::irq_unmask(irq);
     true
 }
 

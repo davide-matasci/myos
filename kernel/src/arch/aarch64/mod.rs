@@ -29,6 +29,16 @@ pub fn serial_read_byte() -> Option<u8> {
 
 pub fn serial_flush_rx() {}
 
+/// The console UART's interrupt, as the platform description gives it.
+pub fn serial_irq() -> Option<u32> {
+    crate::platform::get().uart.and_then(|u| u.value.irq)
+}
+
+/// Interrupt when received data waits (after its interrupt is routed).
+pub fn serial_rx_irq_on() {
+    serial::rx_irq_on();
+}
+
 pub const QEMU_SUCCESS: u32 = 0x10;
 pub const QEMU_FAILURE: u32 = 0x11;
 
@@ -105,6 +115,17 @@ pub fn irq_from_dt(cells: &[u32]) -> Option<u32> {
         [1, n, _] if *n < 16 => Some(16 + n),
         _ => None,
     }
+}
+
+/// A device's interrupt, a GIC SPI, is its own `irq::dispatch` number;
+/// it stays disabled until [`irq_unmask`].
+pub fn irq_route(irq: u32) -> Option<u32> {
+    (32..1020).contains(&irq).then_some(irq)
+}
+
+/// Enable GIC SPI `irq`, delivered to the BSP.
+pub fn irq_unmask(irq: u32) {
+    interrupts::gic_enable_spi(irq);
 }
 
 /// Program this CPU's timer for a sleep deadline sooner than its next tick.

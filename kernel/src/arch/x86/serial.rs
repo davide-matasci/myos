@@ -79,6 +79,13 @@ pub fn read_byte() -> Option<u8> {
     Some(b)
 }
 
+/// Interrupt on received data (IER bit 0: data available, or the FIFO's
+/// character timeout). MCR's OUT2, set at init, gates the line to the PIC.
+pub fn rx_irq_on() {
+    SerialPort::new();
+    outb(COM1 + 1, 0x01);
+}
+
 /// Discard anything already in the RX FIFO (call once during boot).
 pub fn flush_rx() {
     for _ in 0..256 {
