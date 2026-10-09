@@ -44,9 +44,16 @@ pub(super) const NO_PARENT: usize = usize::MAX;
 /// dying task still ran on it: the new child resumed from a clobbered frame
 /// (dropbear session children crashing with garbage pointers / return
 /// addresses under -smp 4).
+///
+/// Not before `finish_switch` has run on the CPU it left, either
+/// (`mid_switch`): that one looks at the slot's task, and reused by then,
+/// the slot held a new, running task, which it took for the preempted old
+/// one and queued, so two CPUs ran it (child_smoke under load: "switch
+/// frame of task 7 overwritten", the task already Dead).
 pub(super) fn reapable(tasks: &TaskTable, slot: usize) -> bool {
     tasks[slot].state == State::Dead
         && !slot_on_cpu(slot)
+        && !mid_switch(slot)
         && unsafe { core::ptr::read_volatile(core::ptr::addr_of!(tasks[slot].sp)) } != 0
 }
 

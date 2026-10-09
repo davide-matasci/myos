@@ -497,8 +497,9 @@ pub(super) fn finish_switch() {
 }
 
 /// True while `slot` is still being switched away from on some CPU: its
-/// saved stack pointer is not valid until `finish_switch` runs there.
-fn mid_switch(slot: usize) -> bool {
+/// saved stack pointer is not valid until `finish_switch` runs there, and
+/// `finish_switch` still expects the task that left in the slot.
+pub(super) fn mid_switch(slot: usize) -> bool {
     SWITCHED_FROM.iter().any(|s| s.load(Ordering::SeqCst) == slot)
 }
 
