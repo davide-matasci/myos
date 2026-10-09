@@ -52,9 +52,9 @@ t child /bin/etc/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports, the resolver (localhost without
 # a lookup, a name no server knows failing in bounded time), and the soft
-# float's double arithmetic, compares, conversions and printf; setitimer and
-# alarm (SIGALRM on time, a blocking read cut short, the default action)
-# (libc_smoke.c).
+# float's double arithmetic, compares, conversions and printf, the long
+# double conversions (issue #374); setitimer and alarm (SIGALRM on time, a
+# blocking read cut short, the default action) (libc_smoke.c).
 t libc /bin/etc/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
 # whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a
