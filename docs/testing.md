@@ -21,7 +21,7 @@ prompt (what the ISO is for).
 | CI | every pull request, on bios, uefi, aarch64 and riscv64 | the daily scheduled run and `workflow_dispatch` with `full_boot` |
 | budget | 4 minutes (5 with the Linux layer) | 50 minutes |
 | network | QEMU's user network only (DNS and the listen test go through it) | the host's: HTTPS, the Alpine mirror, this build's packages |
-| tests | the shell, exec, the basic programs, GPT partitions and ext2 on the scratch disk, FAT read-write, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear and a login on a pty, the Linux layer's Alpine packages (jq, Python, and rustc from a disk the host prepares), the curated os-test list, the packages' own tests, `get-myos --upgrade` of the boot disk and `--install` on the scratch disk, then a **second boot** of the upgraded disk, which must come up from slot `b`, and a **third** of the disk `--install` made (by BIOS on the bios job) (`docs/install.md`) |
+| tests | the shell, exec, the basic programs, GPT partitions and ext2 on the scratch disk, FAT read-write, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear and a login on a pty, the Linux layer's Alpine packages (jq, Python, and rustc from a disk the host prepares), the curated os-test list, the packages' own tests, `get-myos --upgrade` of the boot disk (Limine made stale first) and `--install` on the scratch disk, then a **second boot** of the upgraded disk, which must come up from slot `b`, and a **third** of the disk `--install --local` made (by BIOS on the bios job) (`docs/install.md`) |
 
 ## In the guest
 
@@ -156,8 +156,8 @@ test disks, which keep their names: not NVMe, whose 64-bit BAR SeaBIOS
 cannot reach with 4 GiB of RAM). After a full list that passed, the launcher
 boots the copy again and types `sh /lib/myos-tests/run.sh reboot`, which
 checks only that the system came up from slot `b` at the release the
-upgrade wrote; then it boots the scratch disk `get-myos --install` made
-(the full list's last test, `t_last` in `run.sh`: mkfs.ext2's formats the
+upgrade wrote; then it boots the scratch disk `get-myos --install --local`
+made (the list's last test, `t_last` in `run.sh`: mkfs.ext2's formats the
 whole scratch disk; kept as `target/installed-<name>.img`) as the boot disk, by BIOS on the
 bios job and UEFI on the others, and `run.sh installed` checks it came up
 from its slot `a`.

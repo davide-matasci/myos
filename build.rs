@@ -14,8 +14,8 @@ mod release {
 }
 
 use limine_image::{
-    all_modules, bios_install, boot_kernel, copy_sparse, fetch_limine, write_esp_image,
-    write_fat_data_image, limine_version,
+    all_modules, bios_install, boot_kernel, copy_sparse, fetch_limine, limine_conf, limine_esp_files,
+    write_fat_data_image, write_slot_image, limine_version,
 };
 use std::path::PathBuf;
 
@@ -102,7 +102,13 @@ fn main() {
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any
     // user ELF changes (its build.rs rerun-if-changed on every stable copy), so
     // the image (and thus the cpio) is rebuilt transitively here.
-    let initramfs_bytes = initramfs::build_initramfs(&manifest, "x86_64");
+    // Limine's files of the ESP: the disk images' and, under lib/myos-boot,
+    // the initramfs's (`get-myos --install --local`).
+    let limine = fetch_limine(&limine_dir);
+    let bootx64 = std::fs::read(limine.bootx64()).expect("BOOTX64.EFI");
+    let bios_sys = std::fs::read(limine.bios_sys()).expect("limine-bios.sys");
+    let esp = limine_esp_files("BOOTX64.EFI", &bootx64, Some(&bios_sys), &limine_conf("", "", &["a"]), &[]);
+    let initramfs_bytes = initramfs::build_initramfs(&manifest, "x86_64", &esp);
     let initramfs_path = manifest.join("target/initramfs-x86_64.cpio");
     std::fs::write(&initramfs_path, &initramfs_bytes)
         .expect("write target/initramfs-x86_64.cpio");
@@ -115,19 +121,8 @@ fn main() {
         );
     }
 
-    let limine = fetch_limine(&limine_dir);
-    let bootx64 = std::fs::read(limine.bootx64()).expect("BOOTX64.EFI");
-    let bios_sys = std::fs::read(limine.bios_sys()).expect("limine-bios.sys");
-
     let bios_path = out_dir.join("bios.img");
-    write_esp_image(
-        &bios_path,
-        &kernel,
-        "BOOTX64.EFI",
-        &bootx64,
-        Some(&bios_sys),
-        &initramfs_bytes,
-    );
+    write_slot_image(&bios_path, &kernel, &initramfs_bytes, esp);
     bios_install(&limine.tool(), &bios_path);
 
     let uefi_path = out_dir.join("uefi.img");

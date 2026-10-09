@@ -75,9 +75,9 @@ pub fn feature_enabled(feature: &str) -> bool {
 /// The initramfs of a default build (no optional feature: no Linux layer),
 /// as the release's boot files carry it (`src/packages.rs`).
 #[allow(dead_code)]
-pub fn build_initramfs_default(manifest_dir: &Path, arch: &str) -> Vec<u8> {
+pub fn build_initramfs_default(manifest_dir: &Path, arch: &str, esp: &[crate::limine_image::DiskFile]) -> Vec<u8> {
     NO_FEATURES.store(true, std::sync::atomic::Ordering::Relaxed);
-    let image = build_initramfs(manifest_dir, arch);
+    let image = build_initramfs(manifest_dir, arch, esp);
     NO_FEATURES.store(false, std::sync::atomic::Ordering::Relaxed);
     image
 }
@@ -153,6 +153,36 @@ fn add(entries: &mut Vec<Entry>, rel: &str, data: Option<Vec<u8>>) {
             mode: 0o100755,
         });
     }
+}
+
+/// Limine's files of the boot disk's ESP (`esp`, as the boot images and the
+/// release have them) under `lib/myos-boot/`, and `lib/myos-boot/boot.txt`
+/// listing them as the release's `<arch>-boot.txt` does (`esp PATH SIZE
+/// SHA256 FILE`, FILE the path here): what `get-myos --install --local`
+/// writes beside the running kernel and initramfs (`/proc/boot/`), with no
+/// mirror (docs/install.md).
+fn add_boot_files(entries: &mut Vec<Entry>, esp: &[crate::limine_image::DiskFile]) {
+    let mut list = String::new();
+    for f in esp {
+        let rel = format!("lib/myos-boot/{}", f.path.replace('/', "-"));
+        list.push_str(&format!("esp {} {} {} /{rel}\n", f.path, f.data.len(), sha256_hex(&f.data)));
+        add_mode(entries, &rel, f.data.clone(), 0o100644);
+    }
+    add_mode(entries, "lib/myos-boot/boot.txt", list.into_bytes(), 0o100644);
+}
+
+/// The SHA-256 of `data` in hex (`sha256sum`, as the release's lists).
+fn sha256_hex(data: &[u8]) -> String {
+    use std::io::Write;
+    let mut child = Command::new("sha256sum")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("run sha256sum");
+    child.stdin.take().expect("sha256sum stdin").write_all(data).expect("write to sha256sum");
+    let out = child.wait_with_output().expect("wait for sha256sum");
+    assert!(out.status.success(), "sha256sum failed");
+    String::from_utf8_lossy(&out.stdout).split_whitespace().next().expect("sha256sum output").to_string()
 }
 
 /// A generated file with its mode.
@@ -290,10 +320,11 @@ fn collect_tree(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
     }
 }
 
-/// Build the newc initramfs archive for `arch` from the ELFs under `target/`.
+/// Build the newc initramfs archive for `arch` from the ELFs under `target/`,
+/// with `esp`, Limine's files of the boot disk's ESP, under `lib/myos-boot/`.
 /// Every file a port of the image ships must exist (`read` panics
 /// otherwise): `build.rs` runs the missing ports' build scripts before this.
-pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
+pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_image::DiskFile]) -> Vec<u8> {
     let target = manifest_dir.join("target");
     let (kernel_triple, _none_triple, _myos_triple) = triples(arch);
     let mut entries: Vec<Entry> = Vec::new();
@@ -424,6 +455,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str) -> Vec<u8> {
         crate::release::Release::current(manifest_dir).text().into_bytes(),
         0o100644,
     );
+    add_boot_files(&mut entries, esp);
 
     // Loadable keyboard maps (Swiss German default; US alternate).
     // Served at /lib/kbd/*.map via libfs (cpio lib/ → libfs nested tree).

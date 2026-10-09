@@ -1,7 +1,7 @@
 /*
  * get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
  * get-myos [-m MIRROR] --upgrade [-f]
- * get-myos [-m MIRROR] --install DISK
+ * get-myos [-m MIRROR] --install DISK [--local]
  *
  * Install myos packages: the programs CI builds but the image does not
  * carry (packages/<name>, docs/packages.md). A package is a gzip tar of the
@@ -32,7 +32,8 @@
  *
  * --upgrade and --install put the release's kernel and initramfs
  * (<arch>-boot.txt) into a boot slot of the boot disk (boot.c,
- * docs/install.md).
+ * docs/install.md); --install --local the running system's, with no
+ * mirror (a system booted from the ISO, offline).
  *
  * The download, tar and gzip code is shared with get-alpine (pkgtools.c).
  * Uses fputs, not printf: newlib's printf needs extra soft-float helpers on
@@ -570,9 +571,20 @@ static int list_packages(void) {
     return 0;
 }
 
-/* --upgrade and --install: the mirror's boot file list, then boot.c. */
-static int boot(const char *disk, int force) {
+/* --upgrade and --install: the mirror's boot file list (--local: the
+ * running system's), then boot.c. */
+static int boot(const char *disk, int force, int local) {
     char path[PATH_MAX_GV];
+    if (local) {
+        if (db_path(path, "local-boot") != 0) {
+            return die("root path too long", NULL);
+        }
+        mkdirs(path, 0);
+        if (boot_local_list(path) != 0) {
+            return 1;
+        }
+        return boot_install(disk, path, mirror_url);
+    }
     if (fetch_db(MYOS_ARCH "-boot.txt", "boot") != 0 || db_path(path, "boot") != 0) {
         return die("the mirror has no boot files (" MYOS_ARCH "-boot.txt)", NULL);
     }
@@ -580,7 +592,7 @@ static int boot(const char *disk, int force) {
 }
 
 int main(int argc, char **argv) {
-    int update = 0, list = 0, upgrade = 0, force = 0, i = 1;
+    int update = 0, list = 0, upgrade = 0, force = 0, local = 0, i = 1;
     const char *install_disk = NULL;
     const char *m = getenv("MYOS_MIRROR");
     pkg_prog = "get-myos";
@@ -601,13 +613,15 @@ int main(int argc, char **argv) {
             force = 1;
         } else if (strcmp(argv[i], "--install") == 0 && i + 1 < argc) {
             install_disk = argv[++i];
+        } else if (strcmp(argv[i], "--local") == 0) {
+            local = 1;
         } else {
             break;
         }
     }
-    if (i >= argc && !update && !list && !upgrade && install_disk == NULL) {
+    if ((i >= argc && !update && !list && !upgrade && install_disk == NULL) || (local && install_disk == NULL)) {
         fputs("usage: get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...\n"
-              "       get-myos [-m MIRROR] --upgrade [-f] | --install DISK\n"
+              "       get-myos [-m MIRROR] --upgrade [-f] | --install DISK [--local]\n"
               "  Install myos (" MYOS_ARCH ") packages and what they need into ROOT (default\n"
               "  /tmp/pkg) and bind their files where the image has them (/bin/custom/NAME, /lib/NAME)\n"
               "  -m  the mirror (default $MYOS_MIRROR, else " DEFAULT_MIRROR ")\n"
@@ -615,7 +629,8 @@ int main(int argc, char **argv) {
               "  -l  list the mirror's packages: version, dependencies, installed or not\n"
               "  --upgrade  write the mirror's kernel and initramfs into the boot slot that is\n"
               "             not running and boot it by default (-f: even when not newer)\n"
-              "  --install  lay the boot disk out on DISK (erasing it) and fill its slot a\n",
+              "  --install  lay the boot disk out on DISK (erasing it) and fill its slot a\n"
+              "             (--local: with the running system, no mirror needed)\n",
               stderr);
         return 2;
     }
@@ -628,7 +643,7 @@ int main(int argc, char **argv) {
     }
     mkdirs(pkg_root, 1);
     if (upgrade || install_disk != NULL) {
-        return boot(install_disk, force);
+        return boot(install_disk, force, local);
     }
     char index[PATH_MAX_GV];
     if (db_path(index, "index") != 0) {

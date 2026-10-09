@@ -9,5 +9,7 @@
 int boot_upgrade(const char *list_path, void (*url_of)(char *url, size_t cap, const char *file), int force);
 int boot_install(const char *disk, const char *list_path,
                  void (*url_of)(char *url, size_t cap, const char *file));
+/* --install --local: the running system's boot files as a list at `path`. */
+int boot_local_list(const char *path);
 
 #endif

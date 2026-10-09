@@ -5,7 +5,8 @@
 //! context: `self/ctx` (the caller's uid, user and domain) and
 //! `sys/security/users` (docs/security.md); every process at `<pid>/` and
 //! its threads at `<pid>/task/<tid>/`, and the CPUs' idle time at `cpu`
-//! (`docs/proc.md`).
+//! (`docs/proc.md`), and the kernel and the initramfs this boot came from
+//! at `boot/` (`get-myos --install --local`, docs/install.md).
 
 use crate::fs::StatInfo;
 use crate::fs::vfs;
@@ -479,6 +480,9 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     if let Some(data) = stub_acpi(name) {
         return copy_at(data, pos, out);
     }
+    if let Some(data) = name.strip_prefix("boot/").and_then(crate::limine_boot::boot_file) {
+        return copy_at(data, pos, out);
+    }
     0
 }
 
@@ -486,7 +490,7 @@ fn list_root(buf: &mut [u8]) -> usize {
     // Dynamic nodes all live under `acpi/` (see `list_acpi`).
     const FIXED: &[&[u8]] = &[
         b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"platform", b"pci", b"acpi", b"self", b"sys",
-        b"cpu", b"partitions", b"cmdline",
+        b"cpu", b"partitions", b"cmdline", b"boot",
     ];
     let mut off = 0usize;
     for name in FIXED {
@@ -574,6 +578,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         "sys" => b"kernel\nsecurity\n",
         "sys/kernel" => b"hostname\n",
         "sys/security" => b"users\n",
+        "boot" => b"kernel\ninitramfs\n",
         _ => return 0,
     };
     let n = entry.len().min(buf.len());
@@ -644,6 +649,28 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 _ => 93,
             },
             nlink: 2,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        });
+    }
+    if name == "boot" {
+        return Some(StatInfo {
+            mode: S_IFDIR | 0o555,
+            size: 0,
+            ino: 87,
+            nlink: 2,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        });
+    }
+    if let Some(data) = name.strip_prefix("boot/").and_then(crate::limine_boot::boot_file) {
+        return Some(StatInfo {
+            mode: S_IFREG | 0o444,
+            size: u32::try_from(data.len()).unwrap_or(u32::MAX),
+            ino: if name == "boot/kernel" { 88 } else { 89 },
+            nlink: 1,
             dev: 0,
             mtime: 0,
             atime: 0,

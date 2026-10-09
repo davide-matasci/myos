@@ -16,6 +16,13 @@
  * A mirror whose release is not newer than the running slot's is left alone
  * unless forced (-f).
  *
+ * --upgrade also brings Limine's files on the ESP to the release's (the
+ * `esp` lines of the list) when they differ: each new one is written beside
+ * the old (`.new`), read back after a remount and renamed over it; on x86 a
+ * new limine-bios.sys reruns `limine bios-install` for the BIOS stage that
+ * goes with it, and limine.conf's global lines then come from the
+ * release's config, which the new Limine reads.
+ *
  * --install DISK lays the boot disk out on DISK (the running boot disk, or
  * one with a mounted partition, is refused): a GPT with a BIOS boot
  * partition (1 MiB), the ESP (512 MiB, mkfs.fat) and the data partition
@@ -24,6 +31,12 @@
  * slot a), fills slot a, and on x86 runs `limine bios-install` (the tool's
  * port, ports/limine) for the BIOS stage. Nothing comes from the running
  * system's ESP, so a system booted from the ISO installs the same.
+ *
+ * --install DISK --local needs no mirror: the list names files of the
+ * running system instead (boot_local_list): the kernel and the initramfs
+ * this boot came from (/proc/boot/), Limine's files from the initramfs
+ * (/lib/myos-boot/). A file of a list whose name starts with `/` is read
+ * from there, any other is downloaded from the mirror.
  */
 #include <fcntl.h>
 #include <stdint.h>
@@ -278,9 +291,66 @@ static int fetch_boot_list(const char *list_path, boot_files *b) {
     return have == 3 && b->header[0] != '\0' ? 0 : -1;
 }
 
-/* ---- writing a slot ----------------------------------------------------- */
-
 static const char *NAMES[2] = {"kernel", "initramfs"};
+
+/* --install --local: the running system's boot files as a list at `path`,
+ * in the mirror's format, with absolute paths: the release of
+ * /lib/myos-release, the kernel and the initramfs this boot came from
+ * (/proc/boot/, their checksums taken here), and Limine's files the
+ * initramfs carries (/lib/myos-boot/boot.txt, the `esp` lines). */
+int boot_local_list(const char *path) {
+    static const char *FILES[2] = {"/proc/boot/kernel", "/proc/boot/initramfs"};
+    char release[256], line[512], hex[65], size[24];
+    if (read_line("/lib/myos-release", release, sizeof release) != 0) {
+        return die("no /lib/myos-release", NULL);
+    }
+    FILE *out = fopen(path, "w");
+    FILE *esp = fopen("/lib/myos-boot/boot.txt", "r");
+    if (out == NULL || esp == NULL) {
+        if (out != NULL) {
+            fclose(out);
+        }
+        if (esp != NULL) {
+            fclose(esp);
+        }
+        return die("no Limine files in this system (/lib/myos-boot/boot.txt)", NULL);
+    }
+    fputs("# myos ", out);
+    fputs(release, out);
+    fputs("\n", out);
+    int rc = 0;
+    for (int i = 0; i < 2; i++) {
+        long long n = 0;
+        if (sha256_file(FILES[i], hex, &n) != 0 || n <= 0) {
+            rc = die("cannot read ", FILES[i]);
+            break;
+        }
+        char *p = size + sizeof size - 1;
+        *p = '\0';
+        do {
+            *--p = (char)('0' + n % 10);
+            n /= 10;
+        } while (n > 0);
+        fputs(NAMES[i], out);
+        fputs(" ", out);
+        fputs(p, out);
+        fputs(" ", out);
+        fputs(hex, out);
+        fputs(" ", out);
+        fputs(FILES[i], out);
+        fputs("\n", out);
+    }
+    while (rc == 0 && fgets(line, sizeof line, esp) != NULL) {
+        fputs(line, out);
+    }
+    fclose(esp);
+    if (fclose(out) != 0 && rc == 0) {
+        rc = die("cannot write ", path);
+    }
+    return rc;
+}
+
+/* ---- writing a slot ----------------------------------------------------- */
 
 /* ESP-relative path of a slot's file into out: "<esp>/boot/<slot>/<name>". */
 static void slot_path(char *out, const char *esp, char slot, const char *name) {
@@ -290,12 +360,23 @@ static void slot_path(char *out, const char *esp, char slot, const char *name) {
     strcat(out, name);
 }
 
-/* The file at `url`, whole, in memory (`size` bytes, mapped: the brk heap
- * is 4 MiB on riscv64, an initramfs some 20), its SHA-256 `csum`: NULL when
- * no attempt of three got it; free_fetched() unmaps it. In memory, not on
- * the ESP: nothing unchecked is written there, and the download does not
- * wait on the disk (a slow one stalled the transfer). */
-static uint8_t *fetch_checked(const char *url, long long size, const char *csum) {
+/* The file `file` of a list, whole, in memory (`size` bytes, mapped: the
+ * brk heap is 4 MiB on riscv64, an initramfs some 20), its SHA-256 `csum`:
+ * NULL when no attempt of three got it; free_fetched() unmaps it. A file
+ * named by an absolute path is the running system's (--local), read from
+ * there; any other is downloaded from the mirror. In memory, not on the
+ * ESP: nothing unchecked is written there, and the download does not wait
+ * on the disk (a slow one stalled the transfer). */
+static uint8_t *fetch_checked(const char *file, long long size, const char *csum,
+                              void (*url_of)(char *url, size_t cap, const char *file)) {
+    char url[512];
+    int local = file[0] == '/';
+    if (local) {
+        copy_field(url, sizeof url, file, strlen(file));
+    } else {
+        url_of(url, sizeof url, file);
+    }
+    say(local ? "reading " : "fetching ", url, NULL);
     size_t len = size > 0 ? (size_t)size : 1;
     uint8_t *data = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (data == MAP_FAILED) {
@@ -303,7 +384,7 @@ static uint8_t *fetch_checked(const char *url, long long size, const char *csum)
         return NULL;
     }
     for (int attempt = 1; attempt <= 3; attempt++) {
-        int pid = 0, fd = download_open(url, &pid);
+        int pid = 0, fd = local ? open(url, O_RDONLY) : download_open(url, &pid);
         long long got = 0;
         ssize_t n = 0;
         while (fd >= 0 && got <= size) {
@@ -314,7 +395,7 @@ static uint8_t *fetch_checked(const char *url, long long size, const char *csum)
             }
             got += n;
         }
-        int rc = fd >= 0 ? download_close(fd, pid) : -1;
+        int rc = fd < 0 ? -1 : local ? close(fd) : download_close(fd, pid);
         if (rc == 0 && n == 0 && got == size) {
             sha256 s;
             char hex[65];
@@ -339,25 +420,54 @@ static void free_fetched(uint8_t *data, long long size) {
     munmap(data, size > 0 ? (size_t)size : 1);
 }
 
-/* Download the boot files and write them into the slot of the ESP mounted
- * at `esp` (from partition /dev/<part>), then unmount, mount again and check
+/* Unmount the ESP at `esp` and mount its partition /dev/<part> there again:
+ * what is read after comes from the disk. */
+static int remount_esp(const char *esp, const char *part) {
+    char dev[80];
+    strcpy(dev, "/dev/");
+    strcat(dev, part);
+    if (umount_dir(esp) != 0 || mount(dev, esp, "fat") != 0) {
+        return die("cannot mount the ESP again: ", dev);
+    }
+    return 0;
+}
+
+/* The file at `path` has `size` bytes of SHA-256 `csum`. */
+static int file_is(const char *path, long long size, const char *csum) {
+    char hex[65];
+    long long got = 0;
+    return sha256_file(path, hex, &got) == 0 && got == size && strcmp(hex, csum) == 0;
+}
+
+/* "<esp>/<rel><suffix>" into out[PATH_MAX_GV]. */
+static int esp_path(char *out, const char *esp, const char *rel, const char *suffix) {
+    if (strlen(esp) + 1 + strlen(rel) + strlen(suffix) >= PATH_MAX_GV) {
+        return die("path too long: ", rel);
+    }
+    strcpy(out, esp);
+    strcat(out, "/");
+    strcat(out, rel);
+    strcat(out, suffix);
+    return 0;
+}
+
+/* Get the boot files and write them into the slot of the ESP mounted at
+ * `esp` (from partition /dev/<part>), then unmount, mount again and check
  * what the disk has against the list; the slot's version last. The slot's
  * old version goes first: a slot without one is never booted into by an
  * upgrade. */
 static int write_slot(const char *esp, const char *part, char slot, const boot_files *b,
                       void (*url_of)(char *url, size_t cap, const char *file)) {
-    char path[PATH_MAX_GV], url[512], dev[80];
+    char path[PATH_MAX_GV];
     slot_path(path, esp, slot, "");
     mkdirs(path, 1);
     slot_path(path, esp, slot, "version");
     unlink(path);
     for (int i = 0; i < 2; i++) {
         slot_path(path, esp, slot, NAMES[i]);
-        url_of(url, sizeof url, b->file[i]);
-        say("fetching ", url, NULL);
-        uint8_t *data = fetch_checked(url, b->size[i], b->csum[i]);
+        uint8_t *data = fetch_checked(b->file[i], b->size[i], b->csum[i], url_of);
         if (data == NULL) {
-            return die("download failed: ", url);
+            return die("cannot get ", b->file[i]);
         }
         int rc = write_file(path, (const char *)data, (size_t)b->size[i]);
         free_fetched(data, b->size[i]);
@@ -365,17 +475,13 @@ static int write_slot(const char *esp, const char *part, char slot, const boot_f
             return die("cannot write ", path);
         }
     }
-    strcpy(dev, "/dev/");
-    strcat(dev, part);
-    if (umount_dir(esp) != 0 || mount(dev, esp, "fat") != 0) {
-        return die("cannot mount the ESP again: ", dev);
+    if (remount_esp(esp, part) != 0) {
+        return 1;
     }
     for (int i = 0; i < 2; i++) {
-        char hex[65];
-        long long size = 0;
         slot_path(path, esp, slot, NAMES[i]);
-        if (sha256_file(path, hex, &size) != 0 || size != b->size[i] || strcmp(hex, b->csum[i]) != 0) {
-            return die("the disk does not hold what was downloaded: ", path);
+        if (!file_is(path, b->size[i], b->csum[i])) {
+            return die("the disk does not hold what the list has: ", path);
         }
     }
     char version[260];
@@ -408,17 +514,13 @@ static void entry_for(char *out, size_t cap, const char *entry, char from, char 
     out[n] = '\0';
 }
 
-/* Rewrite the config at `esp` to boot `first` by default and offer `second`
- * (0: none) in a menu, the entries made from the one of `template` (the
- * slot the config was written for); the global lines stay, but the
- * timeout. Written beside it, then renamed over it. */
-static int write_conf(const char *esp, char template, char first, char second) {
-    static char conf[16384], entry[4096], out[16384], one[4096];
-    char path[PATH_MAX_GV], tmp[PATH_MAX_GV];
+/* The config at `esp` into conf[cap], NUL-terminated. */
+static int read_conf(const char *esp, char *conf, size_t cap) {
+    char path[PATH_MAX_GV];
     strcpy(path, esp);
     strcat(path, "/boot/limine/limine.conf");
     int fd = open(path, O_RDONLY);
-    ssize_t n = fd < 0 ? -1 : read(fd, conf, sizeof conf - 1);
+    ssize_t n = fd < 0 ? -1 : read(fd, conf, cap - 1);
     if (fd >= 0) {
         close(fd);
     }
@@ -426,6 +528,19 @@ static int write_conf(const char *esp, char template, char first, char second) {
         return die("cannot read ", path);
     }
     conf[n] = '\0';
+    return 0;
+}
+
+/* Rewrite the config at `esp` to boot `first` by default and offer `second`
+ * (0: none) in a menu, from `conf` (the running config, or the release's
+ * when Limine changed): its global lines, but the timeout, and the
+ * entries made from its one of `template` (the slot it was written for).
+ * Written beside the old, then renamed over it. */
+static int write_conf(const char *esp, const char *conf, char template, char first, char second) {
+    static char entry[4096], out[16384], one[4096];
+    char path[PATH_MAX_GV], tmp[PATH_MAX_GV];
+    strcpy(path, esp);
+    strcat(path, "/boot/limine/limine.conf");
     /* The global lines: those before the first entry, timeout aside. */
     out[0] = '\0';
     entry[0] = '\0';
@@ -495,6 +610,120 @@ static int write_conf(const char *esp, char template, char first, char second) {
 
 /* ---- --upgrade ---------------------------------------------------------- */
 
+#define LIMINE_CONF "boot/limine/limine.conf"
+
+#if defined(__x86_64__)
+/* The BIOS stage: Limine's MBR code and its stage 2 in the BIOS boot
+ * partition (GPT entry 1) of /dev/<disk>/data, as the host does for the
+ * images; the one that goes with the ESP's limine-bios.sys. */
+static int bios_install(const char *disk) {
+    char data[96];
+    strcpy(data, "/dev/");
+    strcat(data, disk);
+    strcat(data, "/data");
+    char *argv[] = {"limine", "bios-install", data, "1", NULL};
+    if (run(argv) != 0) {
+        return die("limine bios-install failed on ", data);
+    }
+    return 0;
+}
+#endif
+
+/* Bring Limine's files on the running ESP (mounted at `esp` from /dev/<part>)
+ * to the release's, those that differ (limine.conf aside: write_conf makes
+ * it): each new one beside the old (`.new`), all of them read back after a
+ * remount, then renamed over the old ones; a new limine-bios.sys reruns
+ * `limine bios-install` (x86). *changed counts the replaced files. A
+ * failure before the renames leaves the old files in place. */
+static int refresh_limine(const char *esp, const char *part, const boot_files *b,
+                          void (*url_of)(char *url, size_t cap, const char *file), int *changed) {
+    int stale[MAX_ESP] = {0}, n = 0;
+    char path[PATH_MAX_GV], tmp[PATH_MAX_GV];
+    *changed = 0;
+    for (int i = 0; i < b->nesp; i++) {
+        const esp_file *e = &b->esp[i];
+        if (strcmp(e->path, LIMINE_CONF) == 0 || esp_path(path, esp, e->path, "") != 0
+            || file_is(path, e->size, e->csum)) {
+            continue;
+        }
+        uint8_t *data = fetch_checked(e->file, e->size, e->csum, url_of);
+        if (data == NULL) {
+            return die("cannot get ", e->file);
+        }
+        esp_path(tmp, esp, e->path, ".new");
+        mkdirs(tmp, 0);
+        int rc = write_file(tmp, (const char *)data, (size_t)e->size);
+        free_fetched(data, e->size);
+        if (rc != 0) {
+            return die("cannot write ", tmp);
+        }
+        stale[i] = 1;
+        n++;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    if (remount_esp(esp, part) != 0) {
+        return 1;
+    }
+    for (int i = 0; i < b->nesp; i++) {
+        esp_path(tmp, esp, b->esp[i].path, ".new");
+        if (stale[i] && !file_is(tmp, b->esp[i].size, b->esp[i].csum)) {
+            return die("the disk does not hold what the list has: ", tmp);
+        }
+    }
+    int bios = 0;
+    for (int i = 0; i < b->nesp; i++) {
+        if (!stale[i]) {
+            continue;
+        }
+        esp_path(path, esp, b->esp[i].path, "");
+        esp_path(tmp, esp, b->esp[i].path, ".new");
+        if (rename(tmp, path) != 0) {
+            return die("cannot replace ", path);
+        }
+        say("Limine: replaced ", b->esp[i].path, NULL);
+        bios |= strcmp(b->esp[i].path, "boot/limine/limine-bios.sys") == 0;
+        (*changed)++;
+    }
+#if defined(__x86_64__)
+    if (bios) {
+        char disk[64];
+        copy_field(disk, sizeof disk, part, strcspn(part, "/"));
+        if (bios_install(disk) != 0) {
+            return 1;
+        }
+        say("Limine: rewrote the BIOS stage on ", disk, NULL);
+    }
+#else
+    (void)bios;
+#endif
+    return 0;
+}
+
+/* The release's limine.conf (its `esp` line) into conf[cap]. */
+static int release_conf(const boot_files *b, void (*url_of)(char *url, size_t cap, const char *file),
+                        char *conf, size_t cap) {
+    for (int i = 0; i < b->nesp; i++) {
+        const esp_file *e = &b->esp[i];
+        if (strcmp(e->path, LIMINE_CONF) != 0) {
+            continue;
+        }
+        if (e->size <= 0 || (size_t)e->size >= cap) {
+            return die("the release's limine.conf is too big", NULL);
+        }
+        uint8_t *data = fetch_checked(e->file, e->size, e->csum, url_of);
+        if (data == NULL) {
+            return die("cannot get ", e->file);
+        }
+        memcpy(conf, data, (size_t)e->size);
+        conf[e->size] = '\0';
+        free_fetched(data, e->size);
+        return 0;
+    }
+    return die("the boot list has no limine.conf (esp line)", NULL);
+}
+
 int boot_upgrade(const char *list_path, void (*url_of)(char *url, size_t cap, const char *file), int force) {
     boot_files b;
     if (fetch_boot_list(list_path, &b) != 0) {
@@ -521,15 +750,28 @@ int boot_upgrade(const char *list_path, void (*url_of)(char *url, size_t cap, co
         say("up to date (-f writes the other slot anyway)", NULL, NULL);
         return 0;
     }
+    /* The slot, then Limine, then the config: a new Limine reads the
+     * release's config, whose entry is slot a's. */
+    static char conf[16384];
+    int changed = 0;
     int rc = write_slot(RUNNING_ESP, part, other, &b, url_of);
     if (rc == 0) {
-        rc = write_conf(RUNNING_ESP, slot, other, slot);
+        rc = refresh_limine(RUNNING_ESP, part, &b, url_of, &changed);
+    }
+    if (rc == 0) {
+        rc = changed > 0 ? release_conf(&b, url_of, conf, sizeof conf) : read_conf(RUNNING_ESP, conf, sizeof conf);
+    }
+    if (rc == 0) {
+        rc = write_conf(RUNNING_ESP, conf, changed > 0 ? 'a' : slot, other, slot);
     }
     if (umount_dir(RUNNING_ESP) != 0 && rc == 0) {
         rc = die("cannot unmount the ESP", NULL);
     }
     if (rc != 0) {
-        return die("the upgrade stopped: the running slot and limine.conf are as they were", NULL);
+        return die(changed > 0 ? "the upgrade stopped after Limine was replaced: the running slot and "
+                                 "limine.conf are as they were"
+                               : "the upgrade stopped: the running slot and limine.conf are as they were",
+                   NULL);
     }
     say("slot ", (char[]){other, '\0'}, " has the new release and boots by default: reboot to start it");
     say("(the boot menu offers slot ", (char[]){slot, '\0'}, " for 3 seconds as the fallback)");
@@ -678,18 +920,13 @@ static int write_limine(const char *esp, const boot_files *b,
     }
     for (int i = 0; i < b->nesp; i++) {
         const esp_file *e = &b->esp[i];
-        char url[512], path[PATH_MAX_GV];
-        if (strlen(esp) + 1 + strlen(e->path) >= sizeof path) {
-            return die("path too long: ", e->path);
+        char path[PATH_MAX_GV];
+        if (esp_path(path, esp, e->path, "") != 0) {
+            return 1;
         }
-        strcpy(path, esp);
-        strcat(path, "/");
-        strcat(path, e->path);
-        url_of(url, sizeof url, e->file);
-        say("fetching ", url, NULL);
-        uint8_t *data = fetch_checked(url, e->size, e->csum);
+        uint8_t *data = fetch_checked(e->file, e->size, e->csum, url_of);
         if (data == NULL) {
-            return die("download failed: ", url);
+            return die("cannot get ", e->file);
         }
         mkdirs(path, 0);
         int rc = write_file(path, (const char *)data, (size_t)e->size);
@@ -822,12 +1059,10 @@ int boot_install(const char *disk_arg, const char *list_path,
     }
     /* Limine's files too, as the disk has them after the slot's remount. */
     for (int i = 0; rc == 0 && i < b.nesp; i++) {
-        char path[PATH_MAX_GV], hex[65];
-        long long size = 0;
-        strcpy(path, NEW_ESP "/");
-        strcat(path, b.esp[i].path);
-        if (sha256_file(path, hex, &size) != 0 || size != b.esp[i].size || strcmp(hex, b.esp[i].csum) != 0) {
-            rc = die("the disk does not hold what was downloaded: ", path);
+        char path[PATH_MAX_GV];
+        esp_path(path, NEW_ESP, b.esp[i].path, "");
+        if (!file_is(path, b.esp[i].size, b.esp[i].csum)) {
+            rc = die("the disk does not hold what the list has: ", path);
         }
     }
     umount_dir(NEW_ESP);
@@ -835,15 +1070,13 @@ int boot_install(const char *disk_arg, const char *list_path,
     /* The BIOS stage: Limine's MBR code and its stage 2 in the BIOS boot
      * partition (GPT entry 1), as the host does for the images. */
     if (rc == 0) {
-        char *bios[] = {"limine", "bios-install", data, "1", NULL};
-        if (run(bios) != 0) {
-            rc = die("limine bios-install failed on ", data);
-        }
+        rc = bios_install(disk);
     }
 #endif
     if (rc != 0) {
         return die("the install stopped; the disk is not bootable: ", disk);
     }
-    say("installed on ", disk, ": slot a has the mirror's release");
+    say("installed on ", disk, ": slot a has the release");
+    say("  ", b.header, NULL);
     return 0;
 }

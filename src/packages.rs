@@ -112,7 +112,8 @@ fn write_boot(manifest_dir: &Path, out: &Path, arch: &str) {
             crate::limine_image::boot_kernel(&elf)
         }
     };
-    let initramfs = crate::initramfs::build_initramfs_default(manifest_dir, arch);
+    let esp = crate::esp_limine_files(arch);
+    let initramfs = crate::initramfs::build_initramfs_default(manifest_dir, arch, &esp);
     let mut list = format!("# myos {}", Release::current(manifest_dir).text());
     let mut put = |file: String, data: &[u8]| -> String {
         let path = out.join(&file);
@@ -125,7 +126,7 @@ fn write_boot(manifest_dir: &Path, out: &Path, arch: &str) {
     }
     // Limine's files for the ESP `get-myos --install` makes, as the boot
     // images have them: `esp <path on the ESP> <size> <sha256> <file>`.
-    for f in crate::esp_limine_files(arch) {
+    for f in esp {
         let line = put(format!("{arch}-esp-{}", f.path.replace('/', "-")), &f.data);
         list.push_str(&format!("esp {} {line}", f.path));
     }
