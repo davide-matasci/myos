@@ -13,6 +13,8 @@
 #                   on the guest's keyboard through the QEMU monitor (the
 #                   launcher's socket, $MYOS_QEMU_MONITOR). One request per
 #                   key would not keep the order: requests run in parallel.
+#   keyburst N KEY  type KEY N times, 10 ms apart: a burst of interrupts
+#                   for the keyboard's readers to drain together.
 set -u
 
 # The smoke's bulk: BULK_LINES lines "%06d\n" (tcp_listen_smoke.c).
@@ -72,8 +74,25 @@ PY
   echo "boot test: sendkey $*" >&2
 }
 
+keyburst() {
+  python3 - "${MYOS_QEMU_MONITOR:?no QEMU monitor}" "$1" "$2" <<'PY'
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+s.settimeout(5)
+s.recv(4096)  # the banner and prompt
+for _ in range(int(sys.argv[2])):
+    s.sendall(f"sendkey {sys.argv[3]}\n".encode())
+    time.sleep(0.01)
+time.sleep(1)
+s.close()
+PY
+  echo "boot test: keyburst $1 $2" >&2
+}
+
 case "${1:-}" in
   tcp-ping) tcp_ping "${2:?port}" ;;
   sendkey) shift; sendkey "${1:?keys}" "${@:2}" ;;
+  keyburst) keyburst "${2:?count}" "${3:?key}" ;;
   *) echo "host.sh: unknown request: $*" >&2; exit 2 ;;
 esac
