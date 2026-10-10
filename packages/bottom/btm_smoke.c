@@ -1,7 +1,9 @@
 /* btm-smoke: bottom's boot test, driving btm on a pty as a person at a
  * terminal would (packages/bottom/test.sh).
  *
- * btm runs on the slave of a fresh 40x120 pty (forkpty). Its screen must
+ * btm runs on the slave of a fresh 60x120 pty (forkpty), tall enough for
+ * its process table to hold every process of a boot (with 40 rows it has
+ * 8, and init, at 0% and a high pid, fell below them). Its screen must
  * show the CPU, memory and process widgets with what the kernel reports:
  * the widget titles, the RAM legend, and processes by name (init, and btm
  * itself) in the process table. Then `q` must end it, with status 0 and the
@@ -117,7 +119,7 @@ static int fail(const char *what, pid_t child) {
 }
 
 int main(void) {
-    struct winsize ws = {.ws_row = 40, .ws_col = 120};
+    struct winsize ws = {.ws_row = 60, .ws_col = 120};
     int master;
     pid_t child = forkpty(&master, NULL, NULL, &ws);
     if (child < 0) {
