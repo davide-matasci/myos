@@ -1025,23 +1025,48 @@ lx_python_net() {
 }
 # An Alpine X client on the native X server (the tinyx package, installed
 # as an app): xdpyinfo reaches Xfbdev's /tmp/.X11-unix/X0 over AF_UNIX and
-# describes the display. It gives up at once while the server does not
-# answer yet, so it is run again. Its root is its own and removed after:
-# /tmp is in the kernel heap, which the Python root already fills.
+# describes the display. The server takes the screen (/dev/fb/ctl says
+# graphics) before it answers clients; xdpyinfo gives up at once while it
+# does not answer yet, so it is run again, each run killed after 30 s: the
+# whole test stays well under the boot test's 600 s without output. Its
+# root is its own and removed after: /tmp is in the kernel heap, which the
+# Python root already fills.
 lx_x11() {
 	r=/tmp/alpine-x11
 	run-myos get-alpine -r $r xdpyinfo || { rm -rf $r; return 1; }
 	run-myos tinyx:Xfbdev :0 -br > $OUT/lx-x11-server.log 2>&1 &
 	xpid=$!
 	i=0
-	while [ $i -lt 60 ] && ! DISPLAY=:0 linux --root $r xdpyinfo > $OUT/lx-x11.out 2>&1; do
+	while [ $i -lt 60 ] && ! grep -q " graphics$" /dev/fb/ctl; do
 		sleep 1
 		i=$((i + 1))
 	done
+	ok=0
+	try=0
+	while [ $ok = 0 ] && [ $try -lt 5 ]; do
+		DISPLAY=:0 linux --root $r xdpyinfo > $OUT/lx-x11.out 2>&1 &
+		cpid=$!
+		j=0
+		while [ $j -lt 30 ] && kill -0 $cpid 2>/dev/null; do
+			sleep 1
+			j=$((j + 1))
+		done
+		kill $cpid 2>/dev/null
+		wait $cpid 2>/dev/null
+		grep -q "^name of display:" $OUT/lx-x11.out && ok=1
+		try=$((try + 1))
+	done
 	kill $xpid 2>/dev/null
+	i=0
+	while [ $i -lt 10 ] && kill -0 $xpid 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill -9 $xpid 2>/dev/null
 	wait $xpid 2>/dev/null
 	rm -rf $r
-	grep -q "^name of display:" $OUT/lx-x11.out && return 0
+	[ $ok = 1 ] && return 0
+	echo "after $try tries:"
 	head -20 $OUT/lx-x11.out
 	cat $OUT/lx-x11-server.log
 	return 1

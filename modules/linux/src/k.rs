@@ -264,6 +264,10 @@ pub mod task {
     pub fn wake_addr(addr: usize, max: usize) -> usize {
         api().wake_addr(addr, max)
     }
+    /// Wake the tasks sleeping on "any event" (`poll`, `select`).
+    pub fn wake_any() {
+        api().wake_any()
+    }
 
     pub enum FdKind {
         Tty,

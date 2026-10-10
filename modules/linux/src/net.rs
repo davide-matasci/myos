@@ -313,6 +313,9 @@ pub fn connect(fd: usize, addr: usize, len: usize) -> R {
         cmd.extend_from_slice(peer.as_bytes());
         fs::write(&format!("{conv}/ctl"), 0, &cmd).ok_or(ECONNREFUSED)?;
         files::with_sock(fd, |s| s.unix = Some(UnixNames { peer, ..u }));
+        // The listener has a connection queued: wake its server, asleep in
+        // `poll` or `accept`. A `ctl` written without an fd wakes nobody.
+        task::wake_any();
         return Ok(0);
     }
     let peer = get_addr(addr, len)?;
@@ -438,6 +441,8 @@ pub fn shutdown(fd: usize, how: usize) -> R {
     let (conv, _) = sock(fd)?;
     if how == SHUT_RDWR {
         let _ = fs::write(&format!("{conv}/ctl"), 0, b"hangup");
+        // The peer's reads end: news for its pollers.
+        task::wake_any();
     }
     Ok(0)
 }
