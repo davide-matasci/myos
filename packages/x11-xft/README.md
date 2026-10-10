@@ -8,8 +8,8 @@ dmenu expect upstream; the fonts are the `x11-fonts` package.
 
 ```sh
 get-myos tinyx x11-xft x11-fonts    # x11-xft brings x11-libs with it
-fc-match monospace        # DejaVuSansMono.ttf: "DejaVu Sans Mono" "Book"
-fc-list
+run-myos x11-xft,x11-fonts:fc-match monospace        # DejaVuSansMono.ttf: "DejaVu Sans Mono" "Book"
+run-myos x11-xft,x11-fonts:fc-list
 ```
 
 ## What it is built from

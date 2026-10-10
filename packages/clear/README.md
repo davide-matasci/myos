@@ -3,8 +3,8 @@
 The `clear` program from **ncurses** (the same upstream 6.5 the `ncurses`
 package pins): it writes the terminal's clear-screen capability to stdout.
 
-Not shipped in the boot image; `get-myos clear` installs it as
-`/bin/custom/clear`.
+Not shipped in the boot image; `get-myos clear` installs it as an app
+(`docs/packages.md`), `run-myos clear` runs it.
 
 ## How it builds
 

@@ -1,4 +1,4 @@
-# tinyx, installed as a package: startx runs Xfbdev and, once the server
+# tinyx, installed as an app: startx runs Xfbdev and, once the server
 # says it is ready, the client tinyx_smoke, which checks the screen's size,
 # paints the framebuffer red through a window, puts a green MIT-SHM image
 # on it and reads it back, and gets the Shift+A the host types through the
@@ -6,7 +6,7 @@
 # server and the console has its screen back.
 tinyx_run() {
 	: > /tmp/tinyx.out
-	startx /bin/etc/tinyx_smoke >> /tmp/tinyx.out 2>&1 &
+	run-myos tinyx:startx /bin/etc/tinyx_smoke >> /tmp/tinyx.out 2>&1 &
 	spid=$!
 	i=0
 	while [ $i -lt 60 ] && ! grep -q -e ready -e "FAIL ]" -e "startx:" /tmp/tinyx.out 2>/dev/null; do

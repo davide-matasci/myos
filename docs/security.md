@@ -63,9 +63,10 @@ exec /bin/custom/netd -> netd
   rules come first. The owner is a captured component (`$u`) or a fixed
   name. A file no rule matches is `unlabeled`. Labels are taken from the
   file's **canonical** path, the one bind mounts resolve to, so a file
-  reached through a bind has the label of where it is stored (`get-myos`'s
-  packages live under `/tmp/pkg`, labelled `sys.pkg`; `/dev/shm`, POSIX
-  shared memory, is `/tmp/.shm`, labelled `tmp`).
+  reached through a bind or a namespace binding has the label of where it
+  is stored (`get-myos`'s apps live under `/data/apps` or `/tmp/apps`,
+  labelled `sys.pkg`, whatever path `run-myos` shows them at; `/dev/shm`,
+  POSIX shared memory, is `/tmp/.shm`, labelled `tmp`).
 - **Domains.** `domain NAME:` and rules on the same line or on the indented
   lines below: `KIND(OWNER) {rights}`. The owner is `self` (the process's
   user), `group` (any group of the user), `*` (anyone, or no owner), a fixed
@@ -182,6 +183,10 @@ sec ns /bin:read,exec /lib:read /dev/sda/data:read,write -- B
 
 - A path under no binding does not exist; a directory above bindings (`/`,
   `/dev` above `/dev/sda/data`) is made up and lists only them.
+- A directory a binding leads to lists its own entries and the names bound
+  directly below it: with `/` bound to `/` and a file bound at
+  `/bin/custom/vim`, `ls /bin/custom` shows vim among the image's programs
+  (`run-myos`, `docs/packages.md`).
 - A binding's source must be one the caller can name, and its rights are at
   most the caller's there, so a namespace only narrows. There is no way back
   to a name the namespace lacks: `mount` and `bind` need names too.

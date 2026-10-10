@@ -18,20 +18,20 @@ dwm_net_state() {
 }
 
 dwm_run() {
-	Xfbdev :0 -br > /tmp/dwm-server.log 2>&1 &
+	run-myos tinyx:Xfbdev :0 -br > /tmp/dwm-server.log 2>&1 &
 	xpid=$!
 	ok=0
-	if /bin/etc/dwm_smoke server; then
-		DISPLAY=:0 dwm > /tmp/dwm.log 2>&1 &
+	if run-myos dwm:dwm_smoke server; then
+		DISPLAY=:0 run-myos dwm > /tmp/dwm.log 2>&1 &
 		dpid=$!
-		if /bin/etc/dwm_smoke bar; then
+		if run-myos dwm:dwm_smoke bar; then
 			echo "HOST c-smokes sendkey alt-b" >&3
-			if /bin/etc/dwm_smoke gone; then
+			if run-myos dwm:dwm_smoke gone; then
 				echo "HOST c-smokes sendkey alt-b" >&3
-				/bin/etc/dwm_smoke bar && ok=1
+				run-myos dwm:dwm_smoke bar && ok=1
 			fi
 		fi
-		[ $ok = 1 ] || { dwm_net_state; /bin/etc/dwm_smoke probe; }
+		[ $ok = 1 ] || { dwm_net_state; run-myos dwm:dwm_smoke probe; }
 		kill $dpid 2>/dev/null
 		wait $dpid 2>/dev/null
 		# 143 (SIGTERM): dwm was still running.

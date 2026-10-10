@@ -1,0 +1,111 @@
+#!/bin/sh
+# run-myos [-r ROOT] APP[,APP...][:CMD] [ARGS...]
+#
+# Run an app get-myos installed (docs/packages.md): ROOT/APP/ holds the
+# files the port would have in the image (bin/custom/vim, lib/vim/vimrc)
+# and its manifest, `app`:
+#
+#   run /bin/custom/vim        what `run-myos APP` starts (none: a library)
+#   needs x11-xft x11-fonts    the apps it uses, theirs included
+#
+# The command runs in a namespace of its own (`sec ns`, docs/security.md):
+# the whole system as the caller sees it, and the files of APP and of what
+# it needs at the paths they were built for, the shallowest path the
+# system lacks bound to the app's (/lib/vim to ROOT/vim/lib/vim; a file
+# into a directory the system has, /bin/custom/vim, alone). Nothing changes
+# for any other process, and nothing is left behind when it exits.
+#
+# APP:CMD runs another command of the view's apps, the named ones first
+# (coreutils:ls), or, as an absolute path, anything in the view
+# (os-test:/bin/sh SCRIPT). Several apps, comma separated, share one view
+# (tinyx,dwm:startx, a session; git,coreutils:/bin/custom/heap), the
+# command without CMD the first one's. ROOT is -r, else what
+# `get-myos --root` says.
+
+usage() {
+	echo "usage: run-myos [-r ROOT] APP[,APP...][:CMD] [ARGS...]" >&2
+	exit 2
+}
+
+root=
+if [ "${1-}" = -r ]; then
+	[ $# -ge 2 ] || usage
+	root=$2
+	shift 2
+fi
+[ $# -ge 1 ] || usage
+[ -n "$root" ] || root=$(get-myos --root) || exit 1
+spec=$1
+shift
+named=${spec%%:*}
+app=${named%%,*}
+cmd=
+case $spec in *:*) cmd=${spec#*:} ;; esac
+
+# The value of `key` in APP's manifest.
+manifest() {
+	sed -n "s/^$2[ 	][ 	]*//p" "$root/$1/app" | head -n 1
+}
+
+# The apps named and, transitively, what they need.
+apps=
+todo=$(echo "$named" | tr , ' ')
+while [ -n "$todo" ]; do
+	a=${todo%% *}
+	todo=${todo#"$a"}
+	todo=${todo# }
+	case " $apps " in *" $a "*) continue ;; esac
+	if [ ! -f "$root/$a/app" ]; then
+		echo "run-myos: $a is not installed in $root (get-myos $a)" >&2
+		exit 1
+	fi
+	apps="$apps $a"
+	todo="$todo $(manifest "$a" needs)"
+	todo=${todo# }
+done
+
+# What to run.
+case $cmd in
+"")
+	path=$(manifest "$app" run)
+	[ -n "$path" ] || { echo "run-myos: $app has no command of its own: run-myos $app:CMD" >&2; exit 1; }
+	;;
+/*)
+	path=$cmd
+	;;
+*)
+	path=
+	for a in $apps; do
+		for d in "$root/$a"/bin/*/; do
+			[ -e "$d$cmd" ] && path=/bin/${d#"$root/$a/bin/"}$cmd && break 2
+		done
+	done
+	[ -n "$path" ] || { echo "run-myos: no command $cmd in$apps" >&2; exit 1; }
+	;;
+esac
+
+# The bindings: each app's tree walked from its top, a path the system
+# lacks bound whole, a directory it has entered; the manifest and the
+# app's own tests (lib/myos-tests) are not part of its view.
+binds=
+for a in $apps; do
+	dir=$root/$a
+	queue=/
+	while [ -n "$queue" ]; do
+		d=${queue%% *}
+		queue=${queue#"$d"}
+		queue=${queue# }
+		for e in $(ls -A "$dir$d"); do
+			rel=${d%/}/$e
+			case $rel in /app | /lib/myos-tests) continue ;; esac
+			if [ -e "$rel" ] && [ -d "$dir$rel" ] && [ ! -L "$dir$rel" ]; then
+				queue="$queue $rel"
+			else
+				binds="$binds $rel=$dir$rel"
+			fi
+		done
+		queue=${queue# }
+	done
+done
+
+exec sec ns / $binds -- "$path" "$@"

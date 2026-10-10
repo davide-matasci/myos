@@ -8,8 +8,8 @@
 [ "$MODE" = full ] || return 0
 
 ostest_report() {
-	sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o || return 1
-	(cd /tmp/o && make TESTLIST=misc/ci-boot.tests report 2>&1 | tee /tmp/o/report.log >&3)
+	run-myos os-test:/bin/sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o || return 1
+	(cd /tmp/o && run-myos os-test:/bin/custom/make TESTLIST=misc/ci-boot.tests report 2>&1 | tee /tmp/o/report.log >&3)
 	grep -e "^pass_rate=" -e "^F " -e "^C " -e "=== os-test" /tmp/o/report.log
 	rate=$(grep "^pass_rate=" /tmp/o/report.log | head -n 1)
 	[ -n "$rate" ] || { echo "no pass_rate line"; return 1; }

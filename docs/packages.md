@@ -1,26 +1,33 @@
-# Packages and get-myos
+# Packages, apps and get-myos
 
 A **package** is a port that CI builds and publishes but the image does not
-carry. On a running system, `get-myos` fetches it from a mirror and makes
-its files appear where the image would have had them. Which ports are
-packages is decided by their directory: `packages/<name>` instead of
-`ports/<name>` (see `docs/ports.md`); nothing else changes, the descriptor
-(`port.env`) is the same.
+carry. On a running system, `get-myos` fetches it from a mirror and installs
+it as an **app**: a directory of its own, `ROOT/<name>/`, that nothing
+outside it sees until `run-myos` runs it. Which ports are packages is
+decided by their directory: `packages/<name>` instead of `ports/<name>`
+(see `docs/ports.md`); nothing else changes, the descriptor (`port.env`) is
+the same.
 
 ## On the guest
 
 ```sh
 get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
+get-myos [-r ROOT] --root
+run-myos [-r ROOT] APP[,APP...][:CMD] [ARGS...]
 ```
 
+- **The root** is `-r`, else `$MYOS_APPS`, else `/data/apps` when the boot
+  disk's data partition is mounted at `/data` (`docs/install.md`), else
+  `/tmp/apps` (the tmpfs, gone at reboot); `get-myos --root` prints it.
+  An app in `/data/apps` is there at the next boot, ready to run.
 - Downloads `<arch>-index.txt` (and `<arch>-packages.txt`) from the mirror
-  once (into `ROOT/var/lib/get-myos/`; `-u` refreshes them), then streams
+  once (into `ROOT/.get-myos/`; `-u` refreshes them), then streams
   each package's `<arch>-<name>.tar.gz` from `curl` through gunzip and tar
-  straight into `ROOT` (default `/tmp/pkg`, on the tmpfs), checking the
-  SHA-256 of the stream against the index at the end (a mismatch leaves the
-  files unbound and the package not recorded). The tarball is never stored:
-  a tmpfs file holds at most 16 MiB and the riscv64 `os-test` package is
-  bigger than that.
+  straight into `ROOT/<name>/`, checking the SHA-256 of the stream against
+  the index at the end (a mismatch leaves the package not recorded). The
+  tarball is never stored: a tmpfs file holds at most 16 MiB and the
+  riscv64 `os-test` package is bigger than that. `get-myos` records what it
+  installed under `ROOT/.get-myos/pkgs/`.
 - **Dependencies**: a package's index line names the packages it needs on
   the running system (`PORT_RDEPS` in its descriptor, `docs/ports.md`:
   `st` needs `x11-xft` and `x11-fonts`, `x11-xft` needs `x11-libs`), and
@@ -33,8 +40,8 @@ get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
   the greater number), commit and syscall **ABI** (`src/release.rs`). The
   image carries the same for the running system in `/lib/myos-release`.
   `get-myos -u` refreshes the index and brings every installed package
-  whose version changed to the new one (the files are rewritten under
-  `ROOT` and bound again; the binds are by path). `get-myos -l` lists the
+  whose version changed to the new one (its files rewritten under
+  `ROOT/<name>/`). `get-myos -l` lists the
   mirror's packages: version, dependencies, `installed`, `upgrade`
   (installed at another version) or `-`, after the mirror's and the
   system's release and ABI.
@@ -44,21 +51,50 @@ get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
   programs could call syscalls this kernel lacks) and says which release
   the system has. An index or an image from before the header has no ABI
   to compare, and installs as before.
-- Then **bind-mounts** the unpacked files where the image has them: the
-  first directory of a file's path that the running system lacks
-  (`/tmp/pkg/lib/vim` at `/lib/vim`, `lib/os-test`), or the file itself
-  when every directory above it exists (`/tmp/pkg/bin/custom/vim` at
-  `/bin/custom/vim`, since `/bin/custom` is a read-only tree with other
-  programs in it; a package's test script into `/lib/myos-tests/ports/`).
-  Programs find their files at the usual paths, `PATH` needs no change,
-  and `/proc/mounts` lists the binds. A bind lasts until reboot; `get-myos`
-  records what it installed under `ROOT/var/lib/get-myos/pkgs/`.
 - The mirror is `-m`, else `$MYOS_MIRROR`, else the project's rolling
   GitHub release (`.../releases/download/rolling`). Downloads go through
   `curl` (in every image, with the CA bundle).
-- `ROOT` can be anywhere writable (`-r /mnt/pkg` on an ext2 disk mounted at `/mnt`); only
-  the binds are lost at reboot, running `get-myos` again re-binds without
-  downloading.
+
+### Apps
+
+An app's directory holds the port's files at the paths the image would
+have them (`ROOT/vim/bin/custom/vim`, `ROOT/vim/lib/vim/vimrc`) and its
+**manifest**, `app`, which the packager writes into the tarball
+(`src/packages.rs`):
+
+```
+run /bin/custom/vim
+needs x11-xft x11-fonts
+```
+
+`run` is the program `run-myos APP` starts (the one named after the port,
+else its first in `bin/custom/`; a port without programs, a library such
+as `x11-libs`, has none), `needs` the apps it uses (its `PORT_RDEPS`).
+
+Nothing of an app is on `PATH` or bound anywhere: `run-myos` (a shell
+script, `user/get-myos/run-myos`) runs it in a **namespace** of its own
+(`sec ns`, `docs/security.md`): the whole system as the caller sees it,
+plus the files of the app and, transitively, of what it needs, at the
+paths they were built for. For each app it walks the tree and binds the
+shallowest path the system lacks (`/lib/vim` to `ROOT/vim/lib/vim`), or a
+file alone in a directory the system has (`/bin/custom/vim`, since
+`/bin/custom` holds the image's programs). Nothing changes for any other
+process, and nothing is left behind when the command exits. The manifest
+and the app's tests (`lib/myos-tests`) are not part of the view. Within
+the view, a directory lists the names bound below it too (`ls
+/bin/custom` shows `vim`).
+
+- `run-myos vim FILE` runs the app's `run`.
+- `run-myos coreutils:ls` runs another program, found in the `bin/*/` of
+  the view's apps (the named ones first); `run-myos os-test:/bin/sh
+  SCRIPT` an absolute path, anything in the view.
+- `run-myos tinyx,dwm:startx` gives several apps one view (an X session:
+  tinyx's `startx` runs `Xfbdev` and dwm); `run-myos APP,...` without a
+  command runs the first one's.
+
+The rights are the caller's: the namespace only adds what the apps hold,
+under the `sys.pkg` label (`etc/policy`: `/tmp/apps/**` and
+`/data/apps/**`). An app is not isolated from the rest of the system yet.
 
 It shares its download, tar and gzip code with `get-alpine`
 (`user/get-myos/pkgtools.c`; the Linux layer's installer is the same
@@ -74,7 +110,7 @@ while a port is in the image).
 
 | File | Content |
 |------|---------|
-| `<arch>-<name>.tar.gz` | ustar, gzip `-n`: the port's files at their image paths (`bin/custom/vim`, `lib/vim/vimrc`), mode 0755/0644, mtime 0; a program's aliases (a multicall ELF's names, `bin/git`) are symlinks to the file that has its data, relative to their directory (the tmpfs has no hard links, and a copy each would multiply the program); reproducible for the same inputs |
+| `<arch>-<name>.tar.gz` | ustar, gzip `-n`: the port's files at their image paths (`bin/custom/vim`, `lib/vim/vimrc`), mode 0755/0644, mtime 0, and the app's manifest, `app` (above); a program's aliases (a multicall ELF's names, `bin/git`) are symlinks to the file that has its data, relative to their directory (the tmpfs has no hard links, and a copy each would multiply the program); reproducible for the same inputs |
 | `<arch>-index.txt` | a header, `# myos release=<YYYYMMDDHHMM> commit=<short hash> abi=<syscall count>` (`src/release.rs`), then one line per package: `name version size sha256 file deps`; the version is the port's input hash (its stamp), a user program's the tarball's own hash; `deps` the runtime dependencies (`PORT_RDEPS`), comma separated, `-` for none. `cargo run -- packages` refuses a dependency that is not a package with files, or a loop |
 | `<arch>-boot.txt` | the boot files of the release, for `get-myos --upgrade` and `--install` (`docs/install.md`): the index's header, then `kernel <size> <sha256> <arch>-kernel`, `initramfs <size> <sha256> <arch>-initramfs`, and `esp <path> <size> <sha256> <arch>-esp-<path>` for each of Limine's files on a boot disk's ESP (`EFI/BOOT/BOOTX64.EFI`, `boot/limine/limine.conf` for slot `a`, ...), which `--install` writes and `--upgrade` brings a disk's to. Every initramfs carries the same `esp` lines and files at `/lib/myos-boot/` (`--install --local`) |
 | `<arch>-kernel`, `<arch>-initramfs` | the kernel as the boot disk has it (its loadable segments) and the initramfs of a default build (no Linux layer, whatever the build that wrote them has) |
@@ -97,11 +133,15 @@ index with.
   `index.txt` and `packages.txt` there are the arch's) and installs
   **every package of the build** as its first test (`install_packages` in
   `user/tests/run.sh`: first one package with dependencies alone, checking
-  they came with it, then all of them), so the tests that use one (git in
-  `heap`, os-test with `make`, the packages' own `test.sh`) find it at its
-  image path; get-myos's own test (`user/get-myos/test.sh`) then checks
-  the listing and an upgrade (a package recorded at a stale version is
-  fetched again by `-u`). The boot job needs `gzip` and `sha256sum`.
+  they came with it, then all of them) into `/tmp/apps` (`MYOS_APPS`: the
+  test disk's 64 MiB data partition is too small for os-test); the tests
+  that use one (git and coreutils in `heap`, os-test with `make`, the
+  packages' own `test.sh`, which `run.sh` finds in the apps) run it with
+  `run-myos`. get-myos's own test (`user/get-myos/test.sh`) then checks
+  the listing, an app installed in the default root (`/data/apps`) that
+  runs and is still there after the reboot (`app_kept`), and an upgrade
+  (a package recorded at a stale version is fetched again by `-u`). The
+  boot job needs `gzip` and `sha256sum`.
 - The build job writes the packages of the three arches (`cargo run --
   packages`) and uploads them as the `myos-packages` artifact (7 days).
 
