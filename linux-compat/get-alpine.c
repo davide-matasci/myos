@@ -2,13 +2,14 @@
  * get-alpine [-r ROOT] [-u] PACKAGE...
  *
  * Download Alpine Linux packages, with their run-time dependencies, into a
- * Linux root (default /tmp/alpine), to run them with
+ * Linux root (default /data/alpine with the boot disk's data partition
+ * mounted at /data, else /tmp/alpine), to run them with
  *     linux --root ROOT PROGRAM [ARG...]
  * Part of the optional Linux compatibility layer (docs/linux-compat.md):
  * nothing from Alpine is in the image, everything is fetched at run time.
  *
  * The repository indexes (main and community: APKINDEX.tar.gz) are
- * downloaded once and reduced to ROOT/var/lib/get-alpine/index, one line
+ * downloaded once and reduced to ROOT/.get-alpine/index, one line
  * per package: repository, name, version, checksum, dependencies, provides.
  * -u refreshes them. Dependencies ("so:libonig.so.5", "cmd:sh", names) are
  * resolved through package names and provides.
@@ -254,7 +255,7 @@ static int db_path(char *out, const char *file) {
     if (strlen(file) + 32 > sizeof rel) {
         return -1;
     }
-    strcpy(rel, "var/lib/get-alpine/");
+    strcpy(rel, ".get-alpine/");
     strcat(rel, file);
     return under_root(out, rel);
 }
@@ -687,7 +688,7 @@ static void write_resolv_conf(FILE *f) {
 int main(int argc, char **argv) {
     int update = 0, i = 1;
     pkg_prog = "get-alpine";
-    pkg_root = "/tmp/alpine";
+    pkg_root = data_mounted() ? "/data/alpine" : "/tmp/alpine";
     for (; i < argc && argv[i][0] == '-'; i++) {
         if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
             pkg_root = argv[++i];
@@ -700,7 +701,8 @@ int main(int argc, char **argv) {
     if (i >= argc && !update) {
         fputs("usage: get-alpine [-r ROOT] [-u] PACKAGE...\n"
               "  Install Alpine Linux (" ALPINE_ARCH ") packages and their dependencies\n"
-              "  into ROOT (default /tmp/alpine); run them with: linux --root ROOT PROGRAM\n"
+              "  into ROOT (default /data/alpine with /data mounted, else /tmp/alpine);\n"
+              "  run them with: linux --root ROOT PROGRAM\n"
               "  -u  refresh the repository indexes\n",
               stderr);
         return 2;
@@ -711,7 +713,7 @@ int main(int argc, char **argv) {
     if (pkg_root[0] != '/' || strlen(pkg_root) > 100) {
         return die("ROOT must be an absolute path of at most 100 bytes: ", pkg_root);
     }
-    static const char *dirs[] = {"dev", "proc", "tmp", "etc", "var/lib/get-alpine/pkgs"};
+    static const char *dirs[] = {"dev", "proc", "tmp", "etc", ".get-alpine/pkgs"};
     char path[PATH_MAX_GV];
     mkdirs(pkg_root, 1);
     for (size_t k = 0; k < sizeof dirs / sizeof dirs[0]; k++) {

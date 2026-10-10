@@ -57,6 +57,19 @@ int under_root(char *out, const char *rel) {
     return 0;
 }
 
+int data_mounted(void) {
+    char line[512];
+    int data = 0;
+    FILE *f = fopen("/proc/mounts", "r");
+    while (f != NULL && !data && fgets(line, sizeof line, f) != NULL) {
+        data = strstr(line, " /data ") != NULL;
+    }
+    if (f != NULL) {
+        fclose(f);
+    }
+    return data;
+}
+
 /* mkdir -p of path's directories (and path itself if `self`). */
 void mkdirs(const char *path, int self) {
     char buf[PATH_MAX_GV];
