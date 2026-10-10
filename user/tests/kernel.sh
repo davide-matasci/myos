@@ -337,6 +337,12 @@ two" ] && cmp $d/dir2/sub/big /tmp/fat-big || return 1
 	rm -r $d/dir2 $d/moved.txt /tmp/fat-big && [ "$(ls $d)" = msg ]
 }
 t fat_rw fat_rw
+# How full the FAT volume is (statvfs, the fat module's statfs): a file
+# takes its clusters and gives them back (fileio_smoke.c).
+fat_space() {
+	/bin/etc/fileio_smoke space /tmp/fat
+}
+t fat_space fat_space
 
 # USB (docs/usb.md): every boot has an xHCI controller with a hub on its
 # first port and a memory stick behind the hub, the same FAT volume as
