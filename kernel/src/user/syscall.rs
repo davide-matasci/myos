@@ -2077,6 +2077,11 @@ fn sys_mount(args_ptr: usize) -> usize {
     if fstype.is_empty() {
         return SYSERR;
     }
+    // Under a bind, the mount goes where the bind leads (`/mnt/disk` with
+    // `/tmp/mnt` bound over `/mnt`: at `/tmp/mnt/disk`), as paths reach it.
+    let Some(tgt) = fs::vfs::canonical(&tgt) else {
+        return SYSERR;
+    };
     if fs::mount_fstype(dev, tgt.trim_start_matches('/'), fstype, &src) {
         0
     } else {
@@ -2099,6 +2104,10 @@ fn sys_umount(ptr: usize, len: usize) -> usize {
     if !crate::sec::allowed_object("kernel.mounts", None, Rights::WRITE) || !may(&path, Rights::MOUNT) {
         return SYSERR;
     }
+    // Where a mount under a bind was made (sys_mount).
+    let Some(path) = fs::vfs::canonical(&path) else {
+        return SYSERR;
+    };
     if fs::vfs::unmount(&path) { 0 } else { SYSERR }
 }
 

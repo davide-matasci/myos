@@ -35,16 +35,12 @@ get_myos_upgrade() {
 	# behaviour is lua's own business: `lua -v` fails on riscv64).
 	[ -n "$want" ] && [ "$have" = "$want" ] && [ -x /bin/custom/lua ]
 }
-# The ESP of the running boot disk mounted at $1: the one whose slot a has
-# this system's release; its partition in $boot_part.
-mount_boot_esp() {
-	for p in $(grep ' c12a7328-f81f-11d2-ba4b-00a0c93ec93b ' /proc/partitions | cut -d' ' -f1); do
-		mount /dev/$p $1 fat || continue
-		boot_part=$p
-		[ "$(cat $1/boot/a/version 2> /dev/null)" = "$(cat /lib/myos-release)" ] && return 0
-		umount $1
-	done
-	return 1
+# The running boot disk's ESP, which `mount -a` mounted at /boot: its
+# partition in $boot_part.
+boot_esp() {
+	boot_part=$(grep '^/dev/[^ ]* /boot fat ' /proc/mounts | cut -d' ' -f1)
+	boot_part=${boot_part#/dev/}
+	[ -n "$boot_part" ] && [ "$(cat /boot/boot/a/version)" = "$(cat /lib/myos-release)" ]
 }
 
 # Limine on the running boot disk made stale, so that --upgrade has to
@@ -52,13 +48,12 @@ mount_boot_esp() {
 # limine-bios.sys too and the BIOS stage erased (the bios job's second boot
 # then needs the one --upgrade writes again).
 stale_limine() {
-	mount_boot_esp /tmp/boot-esp || return 1
-	for f in /tmp/boot-esp/EFI/BOOT/*; do
+	boot_esp || return 1
+	for f in /boot/EFI/BOOT/*; do
 		echo stale >> $f
 	done
-	bios=/tmp/boot-esp/boot/limine/limine-bios.sys
+	bios=/boot/boot/limine/limine-bios.sys
 	[ -f $bios ] && echo stale >> $bios
-	umount /tmp/boot-esp
 	if [ -f /lib/myos-boot/boot-limine-limine-bios.sys ]; then
 		dd if=/dev/zero of=/dev/${boot_part%/*}/p1 bs=4096 count=256 2> /dev/null || return 1
 	fi
@@ -72,7 +67,7 @@ stale_limine() {
 # without -f has nothing to do.
 boot_upgrade() {
 	grep -q 'slot=a' /proc/cmdline || { cat /proc/cmdline; return 1; }
-	mkdir -p /tmp/boot-esp && stale_limine || return 1
+	stale_limine || return 1
 	get-myos -m $MIRROR --upgrade -f > /tmp/upgrade.out 2>&1 || { cat /tmp/upgrade.out; return 1; }
 	cat /tmp/upgrade.out
 	r=0
@@ -81,7 +76,7 @@ boot_upgrade() {
 		grep -q '^get-myos: Limine: replaced boot/limine/limine-bios.sys$' /tmp/upgrade.out \
 			&& grep -q '^get-myos: Limine: rewrote the BIOS stage' /tmp/upgrade.out || r=1
 	fi
-	mount_boot_esp /tmp/boot-esp || return 1
+	boot_esp || return 1
 	# (Not `name`: run.sh's t reports the test under that variable.)
 	while read -r what a b c d; do
 		case $what in
@@ -90,18 +85,17 @@ boot_upgrade() {
 		*) continue ;;
 		esac
 		[ "$f" = boot/limine/limine.conf ] && continue
-		got=$(sha256sum /tmp/boot-esp/$f | cut -d' ' -f1)
+		got=$(sha256sum /boot/$f | cut -d' ' -f1)
 		[ "$got" = "$sum" ] || { echo "$f: $got, list: $sum"; r=1; }
 	done < /tmp/pkg/var/lib/get-myos/boot
 	head -1 /tmp/pkg/var/lib/get-myos/boot | sed 's/^# myos //' > /tmp/boot-version
-	cmp /tmp/boot-version /tmp/boot-esp/boot/b/version || r=1
-	conf=/tmp/boot-esp/boot/limine/limine.conf
+	cmp /tmp/boot-version /boot/boot/b/version || r=1
+	conf=/boot/boot/limine/limine.conf
 	cat $conf
 	[ "$(grep -c '^/' $conf)" -eq 2 ] || r=1
 	[ "$(grep '^/' $conf | head -1)" = "/myos b" ] || r=1
 	[ "$(grep 'path:' $conf | head -1)" = "    path: boot():/boot/b/kernel" ] || r=1
 	grep -q '^    cmdline: slot=a$' $conf && grep -q '^timeout: 3$' $conf && grep -q '^serial: yes$' $conf || r=1
-	umount /tmp/boot-esp
 	[ $r = 0 ] || return 1
 	get-myos -m $MIRROR --upgrade 2>&1 | grep -q 'up to date'
 }
@@ -110,7 +104,8 @@ boot_upgrade() {
 # BIOS boot partition, the ESP and the data partition (the rest of the
 # disk); the ESP has slot a and Limine's files as the list has them (the
 # limine.conf booting slot a alone), slot a's version is the list's
-# release, slot b is empty; the data partition is an empty ext2.
+# release, slot b is empty, its fstab names the data partition (at /data);
+# the data partition is an empty ext2.
 installed_disk() {
 	d=$1
 	grep "^$d/" /proc/partitions
@@ -134,6 +129,8 @@ installed_disk() {
 	cat $conf
 	[ "$(grep -c '^/' $conf)" -eq 1 ] && grep -q '^    cmdline: slot=a$' $conf && grep -q '^timeout: 0$' $conf || r=1
 	[ -d /tmp/new-esp/boot/b ] && [ -z "$(ls /tmp/new-esp/boot/b)" ] || { echo "slot b not empty"; r=1; }
+	g=$(grep "^$d/p3 " /proc/partitions | cut -d' ' -f5)
+	grep -q "^PARTUUID=$g /data ext2\$" /tmp/new-esp/fstab || { cat /tmp/new-esp/fstab; r=1; }
 	umount /tmp/new-esp
 	mount /dev/$d/p3 /tmp/new-data ext2 && [ "$(ls /tmp/new-data)" = lost+found ] && umount /tmp/new-data \
 		|| { echo "the data partition is not an empty ext2"; r=1; }
