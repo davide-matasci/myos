@@ -45,9 +45,19 @@ const DESC_F_WRITE: u16 = 2;
 const AVAIL_F_NO_INTERRUPT: u16 = 1;
 const DESC_SIZE: usize = 16;
 
-const QSIZE: u16 = 16;
+/// Entries per queue (the device's maximum if smaller): the frames the
+/// device may hold for netd before it drops them. A 64 KiB TCP window is
+/// 45 full frames; 16 lost most of a burst, and every drop a retransmit.
+const QSIZE: u16 = 128;
 const PAGE: usize = 4096;
 const BUF_SIZE: usize = 2048;
+/// RX buffers come in runs of this many pages (`RX_CHUNK_BUFS` buffers
+/// each): the contiguous allocation a module gets is a run of frames the
+/// allocator happens to hand out in order, which 64 pages at once are not
+/// sure to be.
+const RX_CHUNK_PAGES: usize = 8;
+const RX_CHUNK_BUFS: usize = RX_CHUNK_PAGES * PAGE / BUF_SIZE;
+const RX_CHUNKS: usize = (QSIZE as usize).div_ceil(RX_CHUNK_BUFS);
 /// virtio 1.0 + VERSION_1 includes `num_buffers` (12 bytes). Userspace sees
 /// the Ethernet frame only.
 const HDR_SIZE: usize = 12;
@@ -82,8 +92,8 @@ struct Net {
     notify_mult: u32,
     rx: Queue,
     tx: Queue,
-    rx_buf_va: *mut u8,
-    rx_buf_phys: u64,
+    /// The RX buffers, [`RX_CHUNK_BUFS`] per run (`rx_buf`).
+    rx_chunks: [(*mut u8, u64); RX_CHUNKS],
     tx_buf_va: *mut u8,
     tx_buf_phys: u64,
     mac: [u8; 6],
@@ -474,8 +484,15 @@ fn used_elem(q: &Queue, idx: u16) -> (u16, u32) {
     (id as u16, len)
 }
 
+/// RX buffer `i`: its virtual and physical address.
+fn rx_buf(net: &Net, i: u16) -> (*mut u8, u64) {
+    let (va, phys) = net.rx_chunks[i as usize / RX_CHUNK_BUFS];
+    let off = (i as usize % RX_CHUNK_BUFS) * BUF_SIZE;
+    (unsafe { va.add(off) }, phys + off as u64)
+}
+
 fn post_rx(net: &Net, i: u16) {
-    let addr = net.rx_buf_phys + u64::from(i) * BUF_SIZE as u64;
+    let (_, addr) = rx_buf(net, i);
     unsafe {
         write_desc(net.rx.desc, i, addr, BUF_SIZE as u32, DESC_F_WRITE);
     }
@@ -531,8 +548,10 @@ fn probe(api: &KernelApi, pci_index: u32, slot_index: usize) -> Option<Net> {
     let rx = setup_queue(api, common, 0)?;
     let tx = setup_queue(api, common, 1)?;
 
-    let rx_pages = ((rx.num as usize) * BUF_SIZE + PAGE - 1) / PAGE;
-    let (rx_buf_va, rx_buf_phys) = dma_alloc(api, rx_pages)?;
+    let mut rx_chunks = [(core::ptr::null_mut(), 0u64); RX_CHUNKS];
+    for chunk in rx_chunks.iter_mut().take((rx.num as usize).div_ceil(RX_CHUNK_BUFS)) {
+        *chunk = dma_alloc(api, RX_CHUNK_PAGES)?;
+    }
     let (tx_buf_va, tx_buf_phys) = dma_alloc(api, 1)?;
 
     let mut net = Net {
@@ -540,8 +559,7 @@ fn probe(api: &KernelApi, pci_index: u32, slot_index: usize) -> Option<Net> {
         notify_mult: caps.notify_mult,
         rx,
         tx,
-        rx_buf_va,
-        rx_buf_phys,
+        rx_chunks,
         tx_buf_va,
         tx_buf_phys,
         mac,
@@ -688,11 +706,9 @@ fn read_frame(net: &mut Net, buf: *mut u8, buf_len: usize) -> i32 {
         0
     };
     let copy = if pkt_len < buf_len { pkt_len } else { buf_len };
-    let src = unsafe { net.rx_buf_va.add(id as usize * BUF_SIZE + HDR_SIZE) };
-    dcache_civac(
-        unsafe { net.rx_buf_va.add(id as usize * BUF_SIZE) },
-        BUF_SIZE,
-    );
+    let (buf_va, _) = rx_buf(net, id);
+    let src = unsafe { buf_va.add(HDR_SIZE) };
+    dcache_civac(buf_va, BUF_SIZE);
     if copy != 0 {
         unsafe { core::ptr::copy_nonoverlapping(src, buf, copy) };
     }

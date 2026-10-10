@@ -585,17 +585,20 @@ pub fn fd_dup_min(oldfd: usize, minfd: usize, cloexec: bool) -> Option<usize> {
     })
 }
 
-/// File/chr write chunk (and pipe copy) size. DHCP ~300B was truncated at
-/// 128, so TX chunks became separate Ethernet frames. Cap at netfs
-/// MSG_CAP-REQ_HDR (2042): a 2048 chunk was rejected by net_write (payload >
-/// MSG_CAP-6) → EIO on large SSH/TLS writes.
-const FILE_IO_TMP: usize = 2042;
+/// File/chr write chunk (and pipe copy) size: what one call of the backend
+/// gets at most, and the most of a message a device that takes messages
+/// (netd's replies on `/dev/netd`, up to its `REP_CAP`) gets whole. DHCP
+/// ~300B was truncated at 128, so TX chunks became separate Ethernet
+/// frames; a download's bytes crossed from netd to netfs in 2 KiB pieces,
+/// a call of the backend each.
+const FILE_IO_TMP: usize = 8192;
 
-/// File/chr read size. A device that hands out messages (netfs's requests to
-/// netd on `/dev/netd`, up to 2048 bytes) must get each whole into one read:
-/// it was copied through `FILE_IO_TMP` and lost its tail, and netd dropped
-/// the request.
-const FILE_READ_TMP: usize = 4096;
+/// File/chr read size: what one `read` returns at most, and what one call
+/// of the backend gets. A device that hands out messages (netfs's requests
+/// to netd on `/dev/netd`, up to 2048 bytes) must get each whole into one
+/// read: it was copied through a smaller buffer and lost its tail, and netd
+/// dropped the request. curl reads 16 KiB at a time.
+const FILE_READ_TMP: usize = 16384;
 
 /// Read/write on a pty end whose peer has hung up. `usize::MAX` stays the
 /// generic SYSERR (EBADF in libgloss); this distinct value lets libgloss map

@@ -86,10 +86,10 @@ const MSG_CAP: usize = 2048;
 const RING: usize = 128; /* SSH writev/kex burst; was 32 — riscv EIO */
 const MAX_CONV: usize = 32;
 /// Per-conversation RX staging. Cert chains exceed 512; drop = TLS timeout.
-const DATA_CAP: usize = 8192;
+const DATA_CAP: usize = 32768;
 /// TCP bytes a conv's writers may have queued in netd at once: a write
 /// takes what fits and a full conv refuses it (the writer waits for POLLOUT).
-const TX_CAP: u16 = 8192;
+const TX_CAP: u16 = 32768;
 const STATUS_CAP: usize = 64;
 /// `/net/ndb`: an address line and a few `dns=` lines.
 const NDB_CAP: usize = 256;
@@ -167,6 +167,10 @@ struct Conv {
     /// non-hangup status so real peer close still lands.
     suppress_stale_hangup: bool,
     proto: u8,
+    /// The unread bytes: `data_len` of them from `data_off` on (a read
+    /// moves the start instead of the rest of the buffer; an append that
+    /// would run past the end moves what is left to the front first).
+    data_off: u16,
     data_len: u16,
     data: [u8; DATA_CAP],
     /// Drained bytes not yet returned to netd as REQ_CREDIT.
@@ -206,6 +210,7 @@ impl Conv {
         closing: false,
         suppress_stale_hangup: false,
         proto: 0,
+        data_off: 0,
         data_len: 0,
         data: [0; DATA_CAP],
         credit: 0,
@@ -469,6 +474,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 closing: false,
                 suppress_stale_hangup: false,
                 proto,
+                data_off: 0,
                 data_len: 0,
                 data: [0; DATA_CAP],
                 credit: 0,
@@ -497,6 +503,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 closing: false,
                 suppress_stale_hangup: false,
                 proto,
+                data_off: 0,
                 data_len: 0,
                 data: [0; DATA_CAP],
                 credit: 0,
@@ -553,6 +560,15 @@ fn return_credit(st: &mut State, id: u16, p: u8) {
     }
 }
 
+/// The unread bytes at the front of the buffer, for an append or a walk.
+fn compact(c: &mut Conv) {
+    let (off, have) = (c.data_off as usize, c.data_len as usize);
+    if off != 0 {
+        c.data.copy_within(off..off + have, 0);
+        c.data_off = 0;
+    }
+}
+
 fn append_data(c: &mut Conv, src: &[u8]) {
     let have = c.data_len as usize;
     if c.proto == PROTO_UDP {
@@ -560,8 +576,12 @@ fn append_data(c: &mut Conv, src: &[u8]) {
         // length, and one that does not fit is dropped whole.
         let n = 2 + src.len();
         if have + n <= DATA_CAP {
-            c.data[have..have + 2].copy_from_slice(&(src.len() as u16).to_le_bytes());
-            c.data[have + 2..have + n].copy_from_slice(src);
+            if c.data_off as usize + have + n > DATA_CAP {
+                compact(c);
+            }
+            let end = c.data_off as usize + have;
+            c.data[end..end + 2].copy_from_slice(&(src.len() as u16).to_le_bytes());
+            c.data[end + 2..end + n].copy_from_slice(src);
             c.data_len = (have + n) as u16;
         }
         return;
@@ -570,13 +590,18 @@ fn append_data(c: &mut Conv, src: &[u8]) {
     if n == 0 {
         return;
     }
-    c.data[have..have + n].copy_from_slice(&src[..n]);
+    if c.data_off as usize + have + n > DATA_CAP {
+        compact(c);
+    }
+    let end = c.data_off as usize + have;
+    c.data[end..end + n].copy_from_slice(&src[..n]);
     c.data_len = (have + n) as u16;
 }
 
 /// Drop a udp conv's queued datagrams from anyone but `addr`!`port` (its
 /// header's remote address and port).
 fn keep_from(c: &mut Conv, addr: [u8; 4], port: [u8; 2]) {
+    compact(c);
     let have = c.data_len as usize;
     let (mut from, mut to) = (0, 0);
     while from + 2 <= have {
@@ -656,6 +681,7 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 // One suppressed hangup/error; cleared on data / other status.
                 suppress_stale_hangup: true,
                 proto,
+                data_off: 0,
                 data_len: 0,
                 data: [0; DATA_CAP],
                 credit: 0,
@@ -992,21 +1018,21 @@ unsafe extern "C" fn net_read(
             // A stream read takes what fits; a datagram read takes the next
             // datagram (behind its header from hdata), its excess bytes
             // discarded (`append_data`).
+            let off = c.data_off as usize;
             let (n, used) = if p == PROTO_UDP {
-                let len = u16::from_le_bytes([c.data[0], c.data[1]]) as usize;
+                let len = u16::from_le_bytes([c.data[off], c.data[off + 1]]) as usize;
                 let skip = if hdr { 0 } else { UDP_HDR.min(len) };
                 let n = out.len().min(len - skip);
-                out[..n].copy_from_slice(&c.data[2 + skip..2 + skip + n]);
+                let at = off + 2 + skip;
+                out[..n].copy_from_slice(&c.data[at..at + n]);
                 (n, 2 + len)
             } else {
                 let n = out.len().min(have);
-                out[..n].copy_from_slice(&c.data[..n]);
+                out[..n].copy_from_slice(&c.data[off..off + n]);
                 (n, n)
             };
-            if used < have {
-                c.data.copy_within(used..have, 0);
-            }
             c.data_len = (have - used) as u16;
+            c.data_off = if used < have { (off + used) as u16 } else { 0 };
             c.credit += used as u16;
             return_credit(st, id, p);
             n as i32

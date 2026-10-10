@@ -66,7 +66,13 @@ const UDP_HDR: usize = 12;
 
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
+/// A request from netfs (its ring's slot), and a reply to it: a data reply
+/// carries up to `REP_CAP - REP_HDR` of a TCP stream at once, so a burst
+/// crosses to netfs in a few writes instead of one per MSS. A reply must
+/// reach netfs in one piece: no more than the kernel's write chunk
+/// (`FILE_IO_TMP` in task/fd.rs).
 const MSG_CAP: usize = 2048;
+const REP_CAP: usize = 8192;
 const MAX_CONV: usize = 32;
 const FILE_IO: usize = 2048;
 const DHCP_POLLS: usize = 3000;
@@ -83,11 +89,15 @@ const IDLE_SLEEP_QUIET_NS: u64 = 10_000_000;
 const IDLE_WAIT_IRQ_NS: u64 = 1_000_000_000;
 
 const ICMP_IDENT_BASE: u16 = 0x22b;
-const TCP_RX: usize = 4096;
-const TCP_TX: usize = 4096;
+/// A TCP socket's receive and send buffers: the receive one is the window
+/// offered to the peer (4 KiB of it capped a download at a few segments per
+/// round trip, 1-2 MB/s under QEMU), the send one what a writer may have
+/// in flight.
+const TCP_RX: usize = 65536;
+const TCP_TX: usize = 32768;
 /// netfs's per-conv receive buffer (modules/netfs DATA_CAP). It drops what
 /// does not fit, so netd never has more than this in flight to it.
-const NETFS_RX_CAP: u16 = 8192;
+const NETFS_RX_CAP: u16 = 32768;
 /// A UDP socket's receive and send buffers: a few datagrams up to what one
 /// netfs message carries.
 const UDP_BUF: usize = 4096;
@@ -357,7 +367,7 @@ fn encode_rep(typ: u8, conv: u16, status: i32, payload: &[u8], out: &mut [u8]) -
 }
 
 fn reply(fd: usize, typ: u8, conv: u16, status: i32, payload: &[u8]) {
-    let mut tmp = [0u8; MSG_CAP];
+    let mut tmp = [0u8; REP_CAP];
     let Some(n) = encode_rep(typ, conv, status, payload, &mut tmp) else {
         return;
     };
@@ -1126,7 +1136,7 @@ fn drain_tcp_rx_into_rep(
     let Some(h) = convs[i].handle else {
         return;
     };
-    let mut tmp = [0u8; 1400];
+    let mut tmp = [0u8; REP_CAP - REP_HDR];
     for _ in 0..8 {
         let s = sockets.get_mut::<tcp::Socket>(h);
         let room = (convs[i].rx_room as usize).min(tmp.len());
@@ -1441,6 +1451,7 @@ fn pump_sockets(
     chan: usize,
 ) {
     let checksum = device.capabilities().checksum;
+    let mut rx_tmp = [0u8; REP_CAP - REP_HDR];
     for i in 0..MAX_CONV {
         let conv = i as u16;
         match convs[i].kind {
@@ -1539,15 +1550,22 @@ fn pump_sockets(
                     convs[i].hungup = true;
                     reply(chan, REP_STATUS, conv, 0, b"hangup");
                 }
-                let room = (convs[i].rx_room as usize).min(1400);
-                if s.can_recv() && room != 0 {
-                    let mut tmp = [0u8; 1400];
-                    if let Ok(n) = s.recv_slice(&mut tmp[..room]) {
-                        if n != 0 {
-                            convs[i].rx_room -= n as u16;
-                            reply(chan, REP_DATA, conv, 0, &tmp[..n]);
-                        }
+                // All netfs has room for, a message of up to `REP_CAP` at a
+                // time: one MSS per pass left a 64 KiB window's worth waiting
+                // through as many wake-ups.
+                loop {
+                    let room = (convs[i].rx_room as usize).min(REP_CAP - REP_HDR);
+                    if room == 0 || !s.can_recv() {
+                        break;
                     }
+                    let Ok(n) = s.recv_slice(&mut rx_tmp[..room]) else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    convs[i].rx_room -= n as u16;
+                    reply(chan, REP_DATA, conv, 0, &rx_tmp[..n]);
                 }
                 // Peer FIN / inactive: hangup only after RX drained into REP_DATA.
                 // CloseWait + empty RX => may_recv false; Closed => !active.
@@ -1771,7 +1789,14 @@ fn main() -> ! {
         // used to pin a CPU at 100% forever. Frames or requests seen this
         // round mean the NIC/peer is active, so poll again at once.
         let rx_now = device.rx_frames();
-        if !got_req && rx_now == rx_before && !lodev.pending() {
+        // Received bytes netfs has room for (its credit came back while
+        // the socket still held some): deliver them next pass, no sleep.
+        let backlog = convs.iter().any(|c| {
+            matches!(c.kind, Kind::Tcp)
+                && c.rx_room != 0
+                && c.handle.is_some_and(|h| sockets.get::<tcp::Socket>(h).can_recv())
+        });
+        if !got_req && !backlog && rx_now == rx_before && !lodev.pending() {
             let active = convs
                 .iter()
                 .any(|c| !matches!(c.kind, Kind::Empty) && c.listen_port == 0);
