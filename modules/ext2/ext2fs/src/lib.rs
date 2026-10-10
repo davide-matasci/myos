@@ -80,6 +80,18 @@ pub enum Kind {
     Other,
 }
 
+/// How full the filesystem is ([`Fs::usage`], `statvfs`). The blocks
+/// count the whole filesystem, its metadata too, as `df` shows it; all
+/// the free ones may be taken (the allocator keeps none back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    pub block_size: u32,
+    pub blocks: u32,
+    pub free_blocks: u32,
+    pub inodes: u32,
+    pub free_inodes: u32,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Stat {
     pub kind: Kind,

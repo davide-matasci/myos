@@ -383,6 +383,10 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         }
         SYS_CLOCK_MONOTONIC => crate::time::monotonic_ns() as usize,
         SYS_MSYNC => sys_msync(a0, a1),
+        at::SYS_STATFSAT => {
+            let [a3, a4, _] = regs.args_3_5();
+            at::sys_statfsat(a0, a1, a2, a3, a4)
+        }
         at::SYS_OPENAT..=at::SYS_EXECAT => {
             let [a3, a4, a5] = regs.args_3_5();
             match nr {

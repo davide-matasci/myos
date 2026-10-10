@@ -44,7 +44,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// interrupt-driven keyboard), and `keyboard_irq` / `cursor_blinks` to
 /// [`ModuleConsoleOps`] (CPU 0 without its tick).
 /// 34 made [`VfsStatInfo`]'s `size` 64 bits (sizes past 4 GiB).
-pub const ABI_VERSION: u32 = 34;
+/// 35 added [`ModuleVfsOps::statfs`] and [`KernelApi::vfs_statfs`] (how
+/// full a filesystem is, [`VfsStatFs`]).
+pub const ABI_VERSION: u32 = 35;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -60,6 +62,25 @@ pub type IrqHandler = unsafe extern "C" fn(ctx: *mut core::ffi::c_void);
 /// `pci_irq_enable` out value: the device is on legacy INTx (read its ISR
 /// register in the handler to deassert the line).
 pub const MYOS_IRQ_INTX: u16 = 0xFFFF;
+
+/// How full a filesystem is ([`ModuleVfsOps::statfs`], `statvfs(3)`):
+/// sizes in blocks of `bsize` bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VfsStatFs {
+    pub bsize: u64,
+    pub blocks: u64,
+    pub bfree: u64,
+    /// Free blocks an ordinary user may take (`bfree` less what is
+    /// reserved).
+    pub bavail: u64,
+    /// File nodes (inodes), in all and free; 0 for a filesystem without
+    /// them.
+    pub files: u64,
+    pub ffree: u64,
+    /// The longest name a directory entry takes.
+    pub namemax: u64,
+}
 
 /// Stat blob exchanged with module VFS hooks (matches kernel layout).
 #[repr(C)]
@@ -212,6 +233,10 @@ pub struct ModuleVfsOps {
     pub file_id: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i64>,
     /// [`ModuleVfsOps::set_times`] of the file with inode `ino`.
     pub set_times_ino: Option<unsafe extern "C" fn(ino: u64, atime: u64, mtime: u64) -> i32>,
+    // --- ABI 35: filesystem space ---
+    /// Optional: how full the filesystem is (`statvfs`): 0, or negative.
+    /// Without it the mount reports no blocks at all.
+    pub statfs: Option<unsafe extern "C" fn(out: *mut VfsStatFs) -> i32>,
 }
 
 /// [`ModuleVfsOps::read`]: nothing to read yet. A read through an fd waits
@@ -808,6 +833,10 @@ pub struct KernelApi {
     /// console's readers and pollers, which take it through
     /// [`ModuleConsoleOps::keyboard_poll`]. Safe from interrupt context.
     pub console_input: unsafe extern "C" fn(),
+    // --- ABI 35 ---
+    /// How full the filesystem holding `path` (a real path, as
+    /// `vfs_stat`'s) is: 0, or negative (no such file).
+    pub vfs_statfs: unsafe extern "C" fn(path: StrRef, out: *mut VfsStatFs) -> i32,
 }
 
 /// Where a module keeps the table `module_init` received: set once there,
@@ -1078,6 +1107,10 @@ impl KernelApi {
 
     pub fn vfs_stat(&self, path: &str, out: &mut PathStat) -> i32 {
         unsafe { (self.vfs_stat)(StrRef::new(path), out) }
+    }
+
+    pub fn vfs_statfs(&self, path: &str, out: &mut VfsStatFs) -> i32 {
+        unsafe { (self.vfs_statfs)(StrRef::new(path), out) }
     }
 
     pub fn vfs_listdir(&self, path: &str, buf: &mut [u8]) -> i32 {

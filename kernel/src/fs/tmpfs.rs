@@ -132,6 +132,23 @@ fn forget(id: u64) {
 }
 
 static ENTRIES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+
+/// How full tmpfs is (`statvfs`): its files' bytes are in the kernel heap,
+/// so the heap is its space, and [`MAX_ENTRIES`] its file nodes.
+pub fn statfs() -> myos_abi::VfsStatFs {
+    const BLOCK: u64 = 4096;
+    let (size, free) = crate::heap::usage();
+    let used = ENTRIES.lock().len() as u64;
+    myos_abi::VfsStatFs {
+        bsize: BLOCK,
+        blocks: size as u64 / BLOCK,
+        bfree: free as u64 / BLOCK,
+        bavail: free as u64 / BLOCK,
+        files: MAX_ENTRIES as u64,
+        ffree: (MAX_ENTRIES as u64).saturating_sub(used),
+        namemax: 255,
+    }
+}
 /// The mount root's times (it has no entry).
 static ROOT_ATIME: AtomicU64 = AtomicU64::new(0);
 static ROOT_MTIME: AtomicU64 = AtomicU64::new(0);
