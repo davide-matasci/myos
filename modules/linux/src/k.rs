@@ -412,6 +412,11 @@ pub mod fs {
             atime: st.atime,
         })
     }
+    /// How full the filesystem holding `path` (a real path) is.
+    pub fn statfs(path: &str) -> Option<myos_abi::VfsStatFs> {
+        let mut st = myos_abi::VfsStatFs::default();
+        (api().vfs_statfs(path, &mut st) == 0).then_some(st)
+    }
     /// Set a file's access and modification times (`myos_abi::MYOS_TIME_OMIT`
     /// keeps one).
     pub fn set_times(path: &str, atime: u64, mtime: u64) -> bool {

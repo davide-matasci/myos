@@ -46,6 +46,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         4 => ret(sys::fstatat(AT_FDCWD, a[0], a[1], 0)), // stat
         6 => ret(sys::fstatat(AT_FDCWD, a[0], a[1], sys::AT_SYMLINK_NOFOLLOW)), // lstat
         5 => ret(sys::fstat(a[0], a[1])),
+        137 => ret(sys::statfs(a[0], a[1])),
+        138 => ret(sys::fstatfs(a[0], a[1])),
         7 => ret(sys::poll(a[0], a[1], a[2] as i32 as isize)),
         8 => ret(sys::lseek(a[0], a[1], a[2])),
         9 => ret(sys::mmap(a[0], a[1], a[2], a[3], a[4], a[5])),

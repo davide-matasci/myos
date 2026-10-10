@@ -24,6 +24,7 @@
 #include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -415,6 +416,15 @@ int main(int argc, char **argv) {
     check(fd >= 0 && futimens(fd, ts) == 0 && stat(path, &st) == 0 && st.st_atime == 1000
               && st.st_mtime == 3000,
           "futimens");
+
+    /* statvfs and fstatvfs (musl calls statfs and fstatfs): /tmp's
+     * filesystem has blocks, some free, and the fd's is the same one. */
+    struct statvfs sv, fsv;
+    check(statvfs("/tmp", &sv) == 0 && sv.f_frsize > 0 && sv.f_blocks > 0 && sv.f_bfree > 0
+              && sv.f_bfree <= sv.f_blocks && sv.f_bavail <= sv.f_bfree,
+          "statvfs");
+    check(fd >= 0 && fstatvfs(fd, &fsv) == 0 && fsv.f_blocks == sv.f_blocks && fsv.f_frsize == sv.f_frsize,
+          "fstatvfs");
     close(fd);
 
     /* readdir. */
