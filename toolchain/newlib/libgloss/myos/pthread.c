@@ -762,7 +762,9 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
     t->arg = arg;
     t->base = base;
     t->len = len;
-    t->state = attr && attr->detachstate == PTHREAD_CREATE_DETACHED ? DETACHED : RUNNING;
+    /* Joinable until its id is in the block: a thread detached from the
+     * start could end, and unmap the block, before the store below. */
+    t->state = RUNNING;
 
     start_threading();
     __atomic_fetch_add(&live, 1, __ATOMIC_RELAXED);
@@ -779,6 +781,9 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
      * run yet: pthread_cancel signals it by it. */
     __atomic_store_n(&t->tid, (uint32_t)tid, __ATOMIC_RELAXED);
     *thread = t;
+    if (attr && attr->detachstate == PTHREAD_CREATE_DETACHED) {
+        pthread_detach(t); /* unmaps the block itself if it has ended */
+    }
     return 0;
 }
 

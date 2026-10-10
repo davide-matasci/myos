@@ -143,6 +143,9 @@ on the same calls, laid out as the std port's:
   pointer too (word 0 points at itself, for x86_64's `fs:0`). Joining frees
   the mapping, or the thread itself when it was detached first, ending in
   the same register-only sequence as a std thread with its signals blocked.
+  A thread created detached is detached by `pthread_create` only once it
+  has stored the thread's id into the block (before that, the thread could
+  end and unmap the block under the store).
   The main thread's block is a static, and its thread pointer is only set
   when the second thread starts: a program that never starts one runs as
   before. The last thread to end exits the process as `exit(0)` does
