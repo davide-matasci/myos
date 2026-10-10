@@ -134,6 +134,31 @@ kbd_events() {
 	contains "[ OK ] kbd" /tmp/kbd.out
 }
 t kbd kbd_events
+# A burst of keys while /dev/console/kbd is held: the host types `a` 200
+# times, 10 ms apart, and each press and release arrives once, in order
+# (400 lines, no line twice in a row). The console's input thread and the
+# reader drain the keyboard together; the PS/2 controller once gave both
+# the same byte, a second press.
+kbd_burst() {
+	: > /tmp/kb.out
+	cat /dev/console/kbd > /tmp/kb.out &
+	pid=$!
+	sleep 1
+	echo "HOST c-smokes keyburst 200 a" >&3
+	i=0
+	while [ $i -lt 30 ] && [ "$(wc -l < /tmp/kb.out)" -lt 400 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	sleep 1
+	kill $pid 2>/dev/null
+	wait $pid 2>/dev/null
+	lines=$(wc -l < /tmp/kb.out)
+	dups=$(uniq -d /tmp/kb.out | wc -l)
+	echo "$lines events, $dups repeated"
+	[ "$lines" -eq 400 ] && [ "$dups" -eq 0 ]
+}
+t kbd_burst kbd_burst
 # ^C on the keyboard while nothing reads the console: the console's input
 # thread runs the line discipline anyway and the foreground group (this
 # shell's) gets SIGINT, so a job that only reads /dev/zero ends. This shell
