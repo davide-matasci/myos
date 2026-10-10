@@ -47,7 +47,8 @@ t netconv /bin/etc/netconv_smoke
 t loopback /bin/etc/loopback_smoke
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
 # the wait; setpgid on a child before its exec, EACCES after; a child's
-# setsid: its own session, no controlling terminal (child_smoke.c).
+# setsid: its own session, no controlling terminal; SIGINT ends a child
+# spinning without syscalls (child_smoke.c).
 t child /bin/etc/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports, the resolver (localhost without
@@ -133,6 +134,29 @@ kbd_events() {
 	contains "[ OK ] kbd" /tmp/kbd.out
 }
 t kbd kbd_events
+# ^C on the keyboard while nothing reads the console: the console's input
+# thread runs the line discipline anyway and the foreground group (this
+# shell's) gets SIGINT, so a job that only reads /dev/zero ends. This shell
+# ignores it meanwhile; the job is back at the default action.
+ctrl_c() {
+	trap '' INT
+	( trap - INT; exec sha512sum /dev/zero ) &
+	pid=$!
+	sleep 1
+	echo "HOST c-smokes sendkey ctrl-c" >&3
+	i=0
+	while [ $i -lt 30 ] && kill -0 $pid 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill -9 $pid 2>/dev/null
+	wait $pid
+	rc=$?
+	trap - INT
+	echo "sha512sum ended with $rc"
+	[ $rc -eq 130 ]
+}
+t ctrl_c ctrl_c
 # netd listen/accept: the smoke announces TCP 2323; the host connects back
 # through QEMU's port forward (the HOST request runs host.sh tcp-ping),
 # sends "ping" and expects "pong", then 280 KB of numbered lines (more than

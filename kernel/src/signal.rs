@@ -17,8 +17,9 @@
 //! - **Blocking syscalls** stop waiting when a signal would act
 //!   ([`interrupt_wait`]) and return `EINTR`, or restart for `SA_RESTART`.
 //!
-//! A task looping in user mode without making syscalls is not interrupted:
-//! delivery waits for its next syscall.
+//! A task looping in user mode without making syscalls is terminated by a
+//! signal whose action is to terminate when an interrupt preempts it
+//! ([`on_user_preempted`]); a caught signal waits for its next syscall.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -97,12 +98,13 @@ pub fn leave_input_read() {
 }
 
 /// An interrupt that preempted user mode is about to return there: a
-/// pending `SIGKILL` ends the task now. Signals otherwise act at syscall
-/// exit, which a thread spinning in user mode would never reach (its process
-/// could not finish exiting).
+/// pending signal whose action is to terminate (`SIGKILL`, `^C`'s `SIGINT`
+/// left at its default, ...) ends the task now. A thread spinning in user
+/// mode would never reach a syscall exit, where signals otherwise act; a
+/// caught signal still waits for it (its handler needs the syscall's frame).
 pub fn on_user_preempted() {
-    if task::signal_kill_pending(task::current_id()) {
-        task::user_exit_signal(SIGKILL);
+    if let Some(sig) = task::signal_terminating(task::current_id()) {
+        task::user_exit_signal(sig);
     }
 }
 

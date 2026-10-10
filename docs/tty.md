@@ -120,6 +120,12 @@ virtio-input device's interrupt); otherwise it is polled every 10 ms while
 someone waits. The file exists when the
 console module found a keyboard ([`modules/console/src/kbdev.rs`](../modules/console/src/kbdev.rs)).
 
+Console input goes through the line discipline as it arrives, whether or
+not anything reads the console (the `console-input` kernel thread,
+[`kernel/src/input.rs`](../kernel/src/input.rs)): `^C` interrupts a
+foreground job that never reads it, such as `sha512sum /dev/zero`, and
+typed-ahead input is echoed at once.
+
 A read of the console (`/dev/console/data`, `/dev/tty`) waits for as long as
 it takes, a shell at its prompt until the next key, without holding the
 filesystem tree: a rename, unlink or new file elsewhere does not wait for

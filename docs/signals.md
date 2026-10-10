@@ -50,9 +50,10 @@ that terminates ends the whole process.
 
 Signals act on the way out of a syscall (`signal::on_syscall_exit`), as the
 default actions always did. A process looping in user mode without syscalls
-is not interrupted until its next syscall, except by `SIGKILL`, which also
-acts when an interrupt preempts it in user mode
-(`signal::on_user_preempted`).
+is also ended when an interrupt preempts it in user mode
+(`signal::on_user_preempted`) by a pending signal whose action is to
+terminate (`SIGKILL`, or `^C`'s `SIGINT` left at its default); a caught
+signal waits for its next syscall.
 
 For a caught signal the kernel:
 
