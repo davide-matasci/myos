@@ -498,9 +498,39 @@ pub(super) fn sys_listdirat(dirfd: usize, ptr: usize, len: usize, buf: usize, ca
         if !f.may(Rights::READ) {
             return SYSERR;
         }
-        fs::listdir(&f.real, &mut names).min(cap)
+        let n = fs::listdir(&f.real, &mut names);
+        with_bound_names(&f.real, &mut names, n).min(cap)
     };
     if write_user_bytes(task::current_aspace(), buf, &names[..n]) { n } else { SYSERR }
+}
+
+/// The listing `names[..n]` of the real directory `real`, with the names a
+/// namespace binds directly below it appended when it lacks them: a file
+/// bound into a directory of the system (`run-myos`'s `/bin/custom/vim`)
+/// is listed with it. A directory the namespace makes up lists its
+/// bindings already (`fs::listdir`).
+fn with_bound_names(real: &str, names: &mut [u8], mut n: usize) -> usize {
+    if real.starts_with('@') {
+        return n;
+    }
+    task::with_ns(|ns| {
+        let Some(ns) = ns else {
+            return n;
+        };
+        let Some(virt) = ns.to_virtual(real) else {
+            return n;
+        };
+        for name in ns.children(&virt) {
+            let listed = names[..n].split(|&b| b == b'\n').any(|l| l == name.as_bytes());
+            if listed || n + name.len() + 1 > names.len() {
+                continue;
+            }
+            names[n..n + name.len()].copy_from_slice(name.as_bytes());
+            names[n + name.len()] = b'\n';
+            n += name.len() + 1;
+        }
+        n
+    })
 }
 
 pub(super) fn sys_execat(dirfd: usize, ptr: usize, len: usize, args: usize, flags: usize) -> usize {

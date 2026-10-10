@@ -182,6 +182,10 @@ sec ns /bin:read,exec /lib:read /dev/sda/data:read,write -- B
 
 - A path under no binding does not exist; a directory above bindings (`/`,
   `/dev` above `/dev/sda/data`) is made up and lists only them.
+- A directory a binding leads to lists its own entries and the names bound
+  directly below it: with `/` bound to `/` and a file bound at
+  `/bin/custom/vim`, `ls /bin/custom` shows vim among the image's programs
+  (`run-myos`, `docs/packages.md`).
 - A binding's source must be one the caller can name, and its rights are at
   most the caller's there, so a namespace only narrows. There is no way back
   to a name the namespace lacks: `mount` and `bind` need names too.
