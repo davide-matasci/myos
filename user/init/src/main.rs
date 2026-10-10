@@ -3,7 +3,7 @@
 #![no_main]
 
 use myos_user::{
-    close, exit, fork, open_flags, status_fail, status_ok, wait_status, exec, write_fd, O_WRONLY,
+    close, exit, fork, open_flags, status_fail, status_ok, status_warn, wait_status, exec, write_fd, O_WRONLY,
 };
 
 /// Default keymap path in the initramfs (libfs nested tree). Switch to US with:
@@ -96,6 +96,29 @@ fn smoke_fork_exec_ok() {
     }
 }
 
+/// `mount -a` (docs/install.md): the boot disk's ESP at `/boot`, then what
+/// its `fstab` (`/boot/fstab`) lists (the data partition at `/data`). Waited for: the
+/// programs started next may want those. A line that failed is reported by
+/// mount and does not stop the boot.
+fn mount_all() {
+    match fork() {
+        Some(0) => {
+            exec(b"/bin/custom/mount", &[b"mount", b"-a"]);
+            status_fail("mount exec failed");
+            exit();
+        }
+        Some(pid) => loop {
+            match wait_status() {
+                Some((p, 0)) if p == pid => break status_ok("mount -a"),
+                Some((p, _)) if p == pid => break status_warn("mount -a: not everything mounted"),
+                Some(_) => {}
+                None => break,
+            }
+        },
+        None => status_fail("mount fork failed"),
+    }
+}
+
 fn spawn_netd() {
     match fork() {
         Some(0) => {
@@ -145,6 +168,7 @@ fn start() -> ! {
     load_default_keymap();
     smoke_fork_ping();
     smoke_fork_exec_ok();
+    mount_all();
     spawn_netd();
     spawn_getty_loop();
 }

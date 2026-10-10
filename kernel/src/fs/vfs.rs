@@ -14,7 +14,7 @@ pub use super::node::Vnode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatInfo {
     pub mode: u32,
-    pub size: u32,
+    pub size: u64,
     pub ino: u32,
     pub nlink: u32,
     /// Filesystem device id for this mount (`st_dev`). Distinct per mount so
@@ -285,7 +285,7 @@ pub fn holds_mount(prefix: &str) -> bool {
 
 /// `umount(2)`: detach the block-device mount at `prefix`. Refused for the
 /// kernel's own trees, and while the mount is busy: a mount below it, a bind
-/// into or out of it, an open file on it. The filesystem's `unmount` hook
+/// into it or of something in it, an open file on it. The filesystem's `unmount` hook
 /// then writes back what it caches.
 pub fn unmount(prefix: &str) -> bool {
     let prefix = normalize_path(prefix);
@@ -310,8 +310,10 @@ pub fn unmount(prefix: &str) -> bool {
         if mounts.iter().any(|m| m.prefix.starts_with(below.as_str())) {
             return false;
         }
+        // A bind of the mount point itself (`/mnt` over `/tmp/mnt`, with a disk
+        // mounted on `/tmp/mnt`) names the directory, there after the mount.
         let under = |p: &str| p == prefix || p.starts_with(below.as_str());
-        if BINDS.lock().iter().any(|(target, source)| under(target) || under(source)) {
+        if BINDS.lock().iter().any(|(target, source)| under(target) || source.starts_with(below.as_str())) {
             return false;
         }
         if node::on_mount(idx) {

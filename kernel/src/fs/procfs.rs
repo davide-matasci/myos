@@ -6,7 +6,9 @@
 //! `sys/security/users` (docs/security.md); every process at `<pid>/` and
 //! its threads at `<pid>/task/<tid>/`, and the CPUs' idle time at `cpu`
 //! (`docs/proc.md`), and the kernel and the initramfs this boot came from
-//! at `boot/` (`get-myos --install --local`, docs/install.md).
+//! at `boot/` (`get-myos --install --local`, docs/install.md), with the
+//! partition it booted from (`boot/partuuid`, what `mount -a` mounts at
+//! `/boot`).
 
 use crate::fs::StatInfo;
 use crate::fs::vfs;
@@ -396,6 +398,7 @@ fn generated(name: &str) -> Option<alloc::string::String> {
         // slot it came from, docs/install.md), and a newline.
         "cmdline" => Some(alloc::format!("{}\n", crate::limine_boot::cmdline())),
         "partitions" => Some(crate::blk::partitions_text()),
+        "boot/partuuid" => crate::limine_boot::boot_partuuid().map(|u| alloc::format!("{u}\n")),
         _ => match parse_pid(name)? {
             PidNode::Status(pid) => process_status(pid),
             PidNode::ThreadStatus(tid) => thread_status(tid),
@@ -585,6 +588,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         "sys" => b"kernel\nsecurity\n",
         "sys/kernel" => b"hostname\n",
         "sys/security" => b"users\n",
+        "boot" if crate::limine_boot::boot_partuuid().is_some() => b"kernel\ninitramfs\npartuuid\n",
         "boot" => b"kernel\ninitramfs\n",
         _ => return 0,
     };
@@ -620,13 +624,14 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     if let Some(text) = generated(name) {
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
-            size: text.len() as u32,
+            size: text.len() as u64,
             ino: match name {
                 "self/ctx" => 94,
                 "sys/security/users" => 95,
                 "cpu" => 96,
                 "cmdline" => 98,
                 "partitions" => 97,
+                "boot/partuuid" => 86,
                 _ => pid_ino(name),
             },
             nlink: 1,
@@ -675,7 +680,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     if let Some(data) = name.strip_prefix("boot/").and_then(crate::limine_boot::boot_file) {
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
-            size: u32::try_from(data.len()).unwrap_or(u32::MAX),
+            size: data.len() as u64,
             ino: if name == "boot/kernel" { 88 } else { 89 },
             nlink: 1,
             dev: 0,
@@ -686,7 +691,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     if name == HOSTNAME_PATH {
         return Some(StatInfo {
             mode: S_IFREG | 0o644,
-            size: hostname_text().len() as u32,
+            size: hostname_text().len() as u64,
             ino: 92,
             nlink: 1,
             dev: 0,
@@ -717,7 +722,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                     SelfNode::Exe => 99,
                     _ => 100,
                 };
-                (S_IFLNK | 0o777, ino, u32::try_from(len).unwrap_or(u32::MAX))
+                (S_IFLNK | 0o777, ino, len as u64)
             }
         };
         return Some(StatInfo {
@@ -734,7 +739,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         let text = vfs::mounts_text();
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
-            size: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            size: text.len() as u64,
             ino: 2,
             nlink: 1,
             dev: 0,
@@ -746,7 +751,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         let text = cpuinfo_text();
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
-            size: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            size: text.len() as u64,
             ino: 4,
             nlink: 1,
             dev: 0,
@@ -758,7 +763,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         let text = crate::mm::meminfo_text();
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
-            size: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            size: text.len() as u64,
             ino: 10,
             nlink: 1,
             dev: 0,
@@ -770,7 +775,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         let text = crate::irq::interrupts_text();
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
-            size: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            size: text.len() as u64,
             ino: 11,
             nlink: 1,
             dev: 0,
@@ -782,7 +787,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         let text = crate::modules::modules_text();
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
-            size: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            size: text.len() as u64,
             ino: 12,
             nlink: 1,
             dev: 0,
@@ -794,7 +799,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         let text = crate::platform::text();
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
-            size: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            size: text.len() as u64,
             ino: 13,
             nlink: 1,
             dev: 0,
@@ -810,7 +815,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         };
         return Some(StatInfo {
             mode,
-            size: u32::try_from(data.len()).unwrap_or(u32::MAX),
+            size: data.len() as u64,
             ino,
             nlink: 1,
             dev: 0,
@@ -828,7 +833,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         };
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
-            size: u32::try_from(data.len()).unwrap_or(u32::MAX),
+            size: data.len() as u64,
             ino,
             nlink: 1,
             dev: 0,

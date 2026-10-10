@@ -17,7 +17,7 @@
 //! reads would wait on them.
 
 mod cache;
-mod gpt;
+pub(crate) mod gpt;
 
 use alloc::string::String;
 use alloc::vec::Vec;

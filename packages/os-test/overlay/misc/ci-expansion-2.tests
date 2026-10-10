@@ -55,6 +55,7 @@ TESTS += basic/locale/setlocale
 # basic: math
 TESTS += basic/math/nan
 TESTS += basic/math/nanf
+TESTS += basic/math/nanl
 
 # basic: ndbm
 TESTS += basic/ndbm/dbm_clearerr

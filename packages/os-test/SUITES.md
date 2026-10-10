@@ -24,7 +24,7 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`
 (~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (155 paths:
 POSIX core + non-basic + the myos suite) and `misc/ci-expansion-2.tests`
-(502 paths: the rest of the suite that passes) and `misc/ci-udp.tests` (the
+(503 paths: the rest of the suite that passes) and `misc/ci-udp.tests` (the
 udp suite's 207). Wired the same way as basic: thin
 `ci-smoke-copy.sh` staging + host prebuild + `make … TESTLIST=… report`.
 
@@ -50,7 +50,7 @@ re-use across sessions, `mknod(S_IFIFO)` / `mkfifoat`).
 ## `ci-expansion-2.tests` (the rest that passes)
 
 Every runtime test outside the other lists was host-built for all three
-arches and booted in batches; the list keeps the 502 that build and pass on
+arches and booted in batches; the list keeps the 503 that build and pass on
 bios, aarch64 and riscv64: most of `basic/` (wchar, wctype, pthread, stdlib,
 stdio, unistd, time, fenv, complex, ndbm, pwd/grp, locale, sys_mman,
 sys_shm, termios, syslog, ...), the `paths` FHS checks (a missing directory
@@ -95,8 +95,6 @@ until they pass honestly (no xfails):
   pointer, and the program faults (CI run on PR #259). Without the option
   the conversions print literally
 - `process/zombie-setpgid-move` (hang)
-- `basic/math/nanl` — overflows the stack on aarch64: the `long double`
-  conversion stubs (`ports/sbase/trunctfdf2.c`) call themselves (issue #374)
 - `basic/complex/*` (25) — results differ from the expected ones in the
   last bits; `basic/unistd` (16), `basic/sys_socket` (13), `basic/stdlib`
   (5) and a few more in `stdio`, `sys_stat`, `wchar`, `netdb`, `time`,

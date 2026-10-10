@@ -193,8 +193,13 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
 
 ## Rules and conventions
 
-- **Append-only ABIs**: native syscall numbers and the module `KernelApi`
-  (`modules/abi`) only grow; never renumber or reorder.
+- **No ABI workarounds**: the kernel, the modules, libc and every port and
+  package are rebuilt from this tree together, so an ABI (the native
+  syscalls, the module `KernelApi` and its `#[repr(C)]` types in
+  `modules/abi`, libgloss) is changed the right way: widen the field,
+  change the struct or the call. Never add a compatibility shim to keep
+  old binaries working (an appended `_hi` field, a second call beside the
+  old one). Bump `ABI_VERSION` (`modules/abi`) when the module ABI changes.
 - **Optional stays optional**: features off by default (like `linux_compat`)
   must not change a default build; gate their code with `cfg(feature)`.
 - **No vendored upstream sources**: ports pin a version/revision (and

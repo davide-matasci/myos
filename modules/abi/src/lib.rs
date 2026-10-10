@@ -43,7 +43,8 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 33 added [`KernelApi::irq_enable`] and [`KernelApi::console_input`] (an
 /// interrupt-driven keyboard), and `keyboard_irq` / `cursor_blinks` to
 /// [`ModuleConsoleOps`] (CPU 0 without its tick).
-pub const ABI_VERSION: u32 = 33;
+/// 34 made [`VfsStatInfo`]'s `size` 64 bits (sizes past 4 GiB).
+pub const ABI_VERSION: u32 = 34;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -65,7 +66,7 @@ pub const MYOS_IRQ_INTX: u16 = 0xFFFF;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VfsStatInfo {
     pub mode: u32,
-    pub size: u32,
+    pub size: u64,
     pub ino: u32,
     pub nlink: u32,
     /// Last modification, in seconds since the epoch (0: not kept).

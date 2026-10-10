@@ -47,16 +47,17 @@ t netconv /bin/etc/netconv_smoke
 t loopback /bin/etc/loopback_smoke
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
 # the wait; setpgid on a child before its exec, EACCES after; a child's
-# setsid: its own session, no controlling terminal; fork shares the pages
-# copy-on-write: each side's stores are its own, two forks deep; the shell
-# exec'd from a larger image gets an empty heap (child_smoke.c).
+# setsid: its own session, no controlling terminal; SIGINT ends a child
+# spinning without syscalls; fork shares the pages copy-on-write: each
+# side's stores are its own, two forks deep; the shell exec'd from a larger
+# image gets an empty heap (child_smoke.c).
 t child /bin/etc/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports, the resolver (localhost without
 # a lookup, a name no server knows failing in bounded time), and the soft
-# float's double arithmetic, compares, conversions and printf; setitimer and
-# alarm (SIGALRM on time, a blocking read cut short, the default action)
-# (libc_smoke.c).
+# float's double arithmetic, compares, conversions and printf, the long
+# double conversions (issue #374); setitimer and alarm (SIGALRM on time, a
+# blocking read cut short, the default action) (libc_smoke.c).
 t libc /bin/etc/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
 # whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a
@@ -65,8 +66,8 @@ t at /bin/etc/at_smoke
 # O_EXCL creates a name once, racers or not, and a symlink there is taken;
 # ftruncate; pread/pwrite leave the position, ESPIPE on a pipe; close-on-exec
 # fds are gone after exec; one read gives a file's bytes up to the count or
-# its end; a rename does not wait for a process reading the console
-# (fileio_smoke.c; on ext2 in mkfs.ext2's test).
+# its end; a rename does not wait for a process reading the console; lseek
+# and ftello past 2 GiB (fileio_smoke.c; on ext2 in mkfs.ext2's test).
 t fileio /bin/etc/fileio_smoke
 # MAP_SHARED mappings of a file are the file: stores read back with read()
 # and survive munmap, close and a child's exit, write() shows in them, a
@@ -135,6 +136,54 @@ kbd_events() {
 	contains "[ OK ] kbd" /tmp/kbd.out
 }
 t kbd kbd_events
+# A burst of keys while /dev/console/kbd is held: the host types `a` 200
+# times, 10 ms apart, and each press and release arrives once, in order
+# (400 lines, no line twice in a row). The console's input thread and the
+# reader drain the keyboard together; the PS/2 controller once gave both
+# the same byte, a second press.
+kbd_burst() {
+	: > /tmp/kb.out
+	cat /dev/console/kbd > /tmp/kb.out &
+	pid=$!
+	sleep 1
+	echo "HOST c-smokes keyburst 200 a" >&3
+	i=0
+	while [ $i -lt 30 ] && [ "$(wc -l < /tmp/kb.out)" -lt 400 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	sleep 1
+	kill $pid 2>/dev/null
+	wait $pid 2>/dev/null
+	lines=$(wc -l < /tmp/kb.out)
+	dups=$(uniq -d /tmp/kb.out | wc -l)
+	echo "$lines events, $dups repeated"
+	[ "$lines" -eq 400 ] && [ "$dups" -eq 0 ]
+}
+t kbd_burst kbd_burst
+# ^C on the keyboard while nothing reads the console: the console's input
+# thread runs the line discipline anyway and the foreground group (this
+# shell's) gets SIGINT, so a job that only reads /dev/zero ends. This shell
+# ignores it meanwhile; the job is back at the default action.
+ctrl_c() {
+	trap '' INT
+	( trap - INT; exec sha512sum /dev/zero ) &
+	pid=$!
+	sleep 1
+	echo "HOST c-smokes sendkey ctrl-c" >&3
+	i=0
+	while [ $i -lt 30 ] && kill -0 $pid 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill -9 $pid 2>/dev/null
+	wait $pid
+	rc=$?
+	trap - INT
+	echo "sha512sum ended with $rc"
+	[ $rc -eq 130 ]
+}
+t ctrl_c ctrl_c
 # netd listen/accept: the smoke announces TCP 2323; the host connects back
 # through QEMU's port forward (the HOST request runs host.sh tcp-ping),
 # sends "ping" and expects "pong", then 280 KB of numbered lines (more than

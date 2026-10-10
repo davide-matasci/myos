@@ -173,9 +173,22 @@ pub fn signal_wakeable(id: usize) -> bool {
     })
 }
 
-/// Whether `SIGKILL` is pending for `id` (it acts even when blocked).
-pub fn signal_kill_pending(id: usize) -> bool {
-    id < MAX_TASKS && with_sig(|tasks, _| tasks[id].sig_pending & KILL_BIT != 0)
+/// The pending signal that would terminate `id` with its default action:
+/// `SIGKILL` (it acts even when blocked), else the lowest unblocked one
+/// that is neither caught nor ignored.
+pub fn signal_terminating(id: usize) -> Option<u32> {
+    if id >= MAX_TASKS {
+        return None;
+    }
+    with_sig(|tasks, tabs| {
+        let set = deliverable(&tasks[id]);
+        if set & KILL_BIT != 0 {
+            return Some(signal::SIGKILL);
+        }
+        (1..32u32).find(|&sig| {
+            set & (1 << sig) != 0 && matches!(disposition(tasks, tabs, id, sig), Disposition::Terminate)
+        })
+    })
 }
 
 /// Consume the lowest-numbered pending, unblocked signal of `id` that has an

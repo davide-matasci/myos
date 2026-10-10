@@ -79,9 +79,9 @@ The full boot test (`packages/os-test/test.sh`, `docs/testing.md`) runs a
 non-basic suites (`limits`, `io`, `malloc`, `paths`, `process`, `signal`,
 `stdio`, `udp`) **plus** `misc/ci-expansion.tests` (155: POSIX core, more
 non-basic, signal handlers, and the myos `chroot`/FIFO suite) **plus**
-`misc/ci-expansion-2.tests` (502: every other test that builds and passes on
+`misc/ci-expansion-2.tests` (503: every other test that builds and passes on
 all three arches) **plus** `misc/ci-udp.tests` (the 207 of the udp suite,
-over netd's loopback interface). 1040 tests, all host-prebuilt. See `SUITES.md` for the full
+over netd's loopback interface). 1041 tests, all host-prebuilt. See `SUITES.md` for the full
 suite inventory, the selection rationale and the deferred tests.
 
 Guest staging uses a thin copy (not the whole suite):

@@ -143,7 +143,7 @@ fn stat_info(st: &ext2fs::Stat) -> VfsStatInfo {
     };
     VfsStatInfo {
         mode: kind | (st.mode as u32 & 0o7777),
-        size: st.size.min(u32::MAX as u64) as u32,
+        size: st.size,
         ino: st.ino,
         nlink: st.links as u32,
         mtime: u64::from(st.mtime),

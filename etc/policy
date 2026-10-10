@@ -10,7 +10,7 @@ login -> shell
 # can only be entered by a domain with `write` on kernel.users (login);
 # one with `login: none` by nobody: system only runs what init starts.
 user root    domains: admin shell untrusted   login: admin
-user system  domains: init netd login smoke   login: none
+user system  domains: init netd login smoke mount   login: none
 
 # Labels: the last rule that matches a file's path names its label;
 # `$u` captures a path component as the label's owner.
@@ -60,6 +60,12 @@ domain smoke:
     sys.file {read} sys.bin {read exec} sys.lib {read} sys.etc {read}
     tmp {all} dev {read write} dev.tty {read write} dev.common {read write}
     proc {read} proc(self) {signal} kernel.mounts {write}
+# `mount -a` at boot (docs/install.md): the boot disk's ESP at /boot, what
+# its fstab (/boot/fstab) lists at /data and under /mnt (/tmp/mnt, bound over it).
+domain mount:
+    sys.file {read mount} sys.etc {read} tmp {read create mount} mnt {read mount}
+    dev {read write} dev.tty {write} dev.common {read write} proc {read}
+    kernel.mounts {write}
 # The administrator: the whole system, but not other users' secrets.
 domain admin:
     sys.file {all} sys.bin {all} sys.lib {all} sys.etc {all} sys.policy {all} sys.run {all}
@@ -85,4 +91,5 @@ domain untrusted:
 # `domains:` list it.
 exec /bin/custom/netd    -> netd
 exec /bin/custom/ok      -> smoke
+exec /bin/custom/mount   -> mount
 exec /bin/ubase/getty    -> login

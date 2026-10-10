@@ -24,6 +24,30 @@ const LINUX_DATA_TYPE: [u8; 16] = [
     0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4,
 ];
 
+/// The ESP's `fstab` (at its root: `/boot/fstab` on the running system) of a
+/// boot disk whose data partition has the unique GUID `data`, as `get-myos
+/// --install` writes it too (user/get-myos/boot.c).
+fn fstab(data: &[u8; 16]) -> String {
+    format!(
+        "# What `mount -a` mounts at boot (docs/install.md): PARTUUID=<guid> MOUNTPOINT FSTYPE [rw],\n\
+         # the partition's unique GUID from /proc/partitions; a mount point under /mnt is made.\n\
+         PARTUUID={} /data ext2\n",
+        guid_text(data)
+    )
+}
+
+/// A GUID as text, as `/proc/partitions` shows it: its first three fields
+/// little-endian.
+fn guid_text(g: &[u8; 16]) -> String {
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        u32::from_le_bytes([g[0], g[1], g[2], g[3]]),
+        u16::from_le_bytes([g[4], g[5]]),
+        u16::from_le_bytes([g[6], g[7]]),
+        g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]
+    )
+}
+
 /// A partition of [`write_gpt`]: its entry (from 0), type and unique GUIDs,
 /// first and last LBA, attributes and name.
 struct GptPart<'a> {
@@ -98,6 +122,9 @@ impl ext2fs::Device for PartDev<'_> {
 /// - partition 2, the ESP: FAT32, 512 MiB, holding `files` and the empty
 ///   `dirs`;
 /// - partition 3, the data partition: ext2, 64 MiB, empty.
+///
+/// The ESP's `fstab` names the data partition by its unique GUID, for
+/// `mount -a` to mount it at `/data` (docs/install.md).
 fn write_boot_disk(dest: &Path, files: &[DiskFile], dirs: &[&str]) {
     if let Some(parent) = dest.parent() {
         let _ = fs::create_dir_all(parent);
@@ -161,7 +188,8 @@ fn write_boot_disk(dest: &Path, files: &[DiskFile], dirs: &[&str]) {
     for dir in dirs {
         mkdirs(&mut vol, dir);
     }
-    for file in files {
+    let fstab = DiskFile { path: "fstab".into(), data: fstab(&parts[2].uuid).into_bytes() };
+    for file in files.iter().chain([&fstab]) {
         if let Some((dir, _)) = file.path.rsplit_once('/') {
             mkdirs(&mut vol, dir);
         }

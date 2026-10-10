@@ -55,7 +55,8 @@ ext2_held() {
 		&& rm /tmp/disk/h /tmp/disk/r
 }
 # The file calls on the disk: O_EXCL, ftruncate (blocks given back, zeros
-# when it grows again), pread/pwrite, close-on-exec (fileio_smoke.c).
+# when it grows again), pread/pwrite, close-on-exec, a 5 GiB file's size
+# (fileio_smoke.c).
 ext2_files() {
 	/bin/etc/fileio_smoke /tmp/disk
 }

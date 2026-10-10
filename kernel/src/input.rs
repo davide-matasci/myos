@@ -50,6 +50,22 @@ pub fn init() {
         arch::serial_rx_irq_on();
         UART_IRQ.store(true, Ordering::SeqCst);
     }
+    task::spawn_named(b"console-input", input_thread);
+}
+
+/// Runs the line discipline on console input as it arrives, whether or not
+/// anyone reads the console: `^C` interrupts a foreground job that never
+/// reads (the shell waits on it, `sha512sum /dev/zero` reads its file), and
+/// typed-ahead input is echoed. Readers take the cooked bytes it leaves.
+/// Woken by the UART's interrupt (or CPU 0's tick staging it) and the
+/// keyboard's; a keyboard without an interrupt is polled at a reader's rate.
+fn input_thread() {
+    loop {
+        let seq = task::wait_seq();
+        poll();
+        let polled = console::keyboard_present() && !console::keyboard_irq();
+        task::block_until(task::KEY_CONSOLE, seq, if polled { task::deadline_ms(10) } else { 0 });
+    }
 }
 
 /// The UART interrupts on received data; without, CPU 0's tick drains it
@@ -71,10 +87,10 @@ unsafe extern "C" fn uart_interrupt(_ctx: *mut core::ffi::c_void) {
 
 /// CPU 0's timer tick, while the UART has no interrupt: stage its bytes so
 /// a starved shell CPU cannot overrun the FIFO (bios `which ls`→`which s`
-/// under -smp 4 TCG). When bytes land, wake the console reader (it blocks
-/// on KEY_CONSOLE, possibly on another CPU): ECHO only runs from that
-/// reader's poll — without a wake, host echo-sync waits then resends,
-/// sticky-keying `login: rroooo…` / `roootttt…`.
+/// under -smp 4 TCG). When bytes land, wake the console's input thread (it
+/// blocks on KEY_CONSOLE, possibly on another CPU): ECHO runs from its
+/// poll — without a wake, host echo-sync waits then resends, sticky-keying
+/// `login: rroooo…` / `roootttt…`.
 pub fn tick() {
     if !uart_irq() && drain_uart_irq() {
         task::wake(task::KEY_CONSOLE);
@@ -143,8 +159,13 @@ fn fold_irq_rx() {
     }
 }
 
+/// One `poll` at a time: the input thread and a reader both poll, and two
+/// folding the staging ring at once would take its bytes out of order.
+static POLL_LOCK: Mutex<()> = Mutex::new(());
+
 /// Drain UART and keyboard into the ring (call with interrupts enabled).
 pub fn poll() {
+    let _poll = POLL_LOCK.lock();
     // Fold IRQ-staged bytes, then drain UART under the same lock (no parallel
     // `inb` vs the interrupt). Interrupts off meanwhile: the UART's
     // interrupt on this CPU would find the lock held and leave a

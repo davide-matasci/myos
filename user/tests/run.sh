@@ -80,18 +80,16 @@ contains() {
 # The second boot: slot b, with b's release (its version file, which the
 # upgrade wrote, is this initramfs's /lib/myos-release), boots by default.
 # The third, of the disk get-myos --install made: its slot a, likewise.
+# Either has its ESP at /boot and the data partition its fstab names at
+# /data.
 booted_slot() {
-	cat /proc/cmdline /lib/myos-release
+	cat /proc/cmdline /lib/myos-release /proc/mounts
 	grep -q "slot=$1" /proc/cmdline || return 1
-	mkdir -p /tmp/esp-$1
-	for p in $(grep ' c12a7328-f81f-11d2-ba4b-00a0c93ec93b ' /proc/partitions | cut -d' ' -f1); do
-		mount /dev/$p /tmp/esp-$1 fat || continue
-		v=$(cat /tmp/esp-$1/boot/$1/version 2> /dev/null)
-		umount /tmp/esp-$1
-		[ "$v" = "$(cat /lib/myos-release)" ] && return 0
-	done
-	echo "no ESP has slot $1 at this release"
-	return 1
+	[ "$(cat /boot/boot/$1/version)" = "$(cat /lib/myos-release)" ] || { echo "/boot has no slot $1 at this release"; return 1; }
+	# The disk's own data partition at /data (its /boot/fstab).
+	data=$(grep ' /data ext2 ' /proc/mounts | cut -d' ' -f1)
+	g=$(grep "^${data#/dev/} " /proc/partitions | cut -d' ' -f5)
+	[ -n "$g" ] && grep -q "^PARTUUID=$g /data ext2\$" /boot/fstab
 }
 if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 	if [ "$MODE" = reboot ]; then

@@ -13,13 +13,13 @@
 
 #include "myos_syscalls.h"
 
-int _lseek(int fd, off_t pos, int whence) {
+off_t _lseek(int fd, off_t pos, int whence) {
     long ret = myos_syscall3(MYOS_SYS_LSEEK, fd, (long)pos, whence);
     if (ret == (long)MYOS_SYSERR) {
         errno = ESPIPE;
         return -1;
     }
-    return (int)ret;
+    return (off_t)ret;
 }
 
 
@@ -60,7 +60,7 @@ int _fork(void) {
         errno = EAGAIN;
         return -1;
     }
-    return (int)ret;
+    return (off_t)ret;
 }
 
 static int wait_body(int *status) {
@@ -77,7 +77,7 @@ static int wait_body(int *status) {
     if (status != NULL) {
         *status = st;
     }
-    return (int)ret;
+    return (off_t)ret;
 }
 
 /*

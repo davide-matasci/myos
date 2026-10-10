@@ -213,7 +213,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         let e = &files[i];
         return Some(StatInfo {
             mode: S_IFREG | 0o755,
-            size: e.data.len() as u32,
+            size: e.data.len() as u64,
             ino: crate::fs::vfs::data_ino(e.data),
             nlink: 1,
             dev: 0,

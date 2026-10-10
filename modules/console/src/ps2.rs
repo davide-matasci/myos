@@ -43,6 +43,13 @@ static DECODER: Mutex<Option<Decoder>> = Mutex::new(None);
 static RAW_DECODER: Mutex<Option<RawDecoder>> = Mutex::new(None);
 /// Multi-byte sequences (CSI arrows) ready to drain from `poll_byte`.
 static FIFO: Mutex<ByteFifo> = Mutex::new(ByteFifo::new());
+/// Held from the status read to the decode of the byte taken: the kernel's
+/// console-input thread and a `/dev/console/kbd` reader drain the
+/// controller at the same time. Unserialized, both saw the same byte
+/// waiting; one took it, the other read the emptied data port, which gives
+/// the last byte again, and decoded a second press (or decoded them out of
+/// order).
+static CONTROLLER: Mutex<()> = Mutex::new(());
 
 pub fn init() {
     // The handler first: the controller raises IRQ 1 as soon as the probe
@@ -112,6 +119,7 @@ const PUMP_MAX: usize = 64;
 
 /// Read and decode one byte from the controller; false when none waits.
 fn feed_one() -> bool {
+    let _controller = CONTROLLER.lock();
     let status = inb(STATUS);
     if status & ST_OUT_FULL == 0 {
         return false;

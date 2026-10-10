@@ -14,6 +14,7 @@ issue #291.
 /proc/meminfo                       RAM: total, free, available; the allocator's counters
 /proc/boot/kernel                   the kernel file this boot came from, as Limine loaded it
 /proc/boot/initramfs                the initramfs this boot came from (get-myos --install --local)
+/proc/boot/partuuid                 the GPT partition it booted from, its unique GUID (mount -a: /boot)
 ```
 
 `ls /proc` lists the processes. A thread is a task slot and its tid is the
