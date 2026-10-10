@@ -234,8 +234,9 @@ Threads: `clone` with `CLONE_THREAD` (and `CLONE_VM`, `CLONE_FS`,
 `CLONE_THREAD` is the fork form, or `posix_spawn`'s (`CLONE_VM |
 CLONE_VFORK` with a stack, what Rust's `Command` uses through musl): a fork
 whose child starts on that stack (the core's `fork_from`). Its memory is a
-copy rather than shared, which posix_spawn does not notice: its child
-reports a failed exec through a pipe the parent waits on.
+fork's (the parent's pages shared copy-on-write, `README.md`) rather than
+shared, which posix_spawn does not notice: its child reports a failed exec
+through a pipe the parent waits on.
 
 Signals: `rt_sigaction` (handlers with `SA_SIGINFO`, `SA_RESTART`,
 `SA_NODEFER`, `SA_RESETHAND`, `sa_mask`), `rt_sigreturn`, `rt_sigprocmask`,
@@ -289,7 +290,7 @@ such a program the kernel:
    objects, which the dynamic linker resolves;
 3. maps the interpreter, also unrelocated (it relocates itself), at the start
    of the new image's `mmap` window, with per-segment protections, and
-   records it as `mmap` regions (so fork copies it and exit frees it);
+   records it as `mmap` regions (so fork shares it and exit frees it);
 4. starts the interpreter, with `AT_BASE` = its load address and
    `AT_PHDR` / `AT_ENTRY` naming the program.
 
@@ -321,7 +322,8 @@ reserved first. That needed core `mmap` work, which native programs share:
   read-only: a store takes the mapping's protection as above), so a
   program's code and data are paged in with a few faults rather than one
   per page from its second run on; `/proc/meminfo` counts the faults and
-  the pages mapped around them.
+  the pages mapped around them. A fork shares every page of the parent's
+  the same way, copy-on-write (`README.md`).
   rustc reserves 256 MiB for its allocator and maps
   some 250 MiB of libraries, and `rustc --version` touches about 30 MiB of
   it. A file changed or deleted while mapped gives its new contents (or

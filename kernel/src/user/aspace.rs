@@ -4,7 +4,13 @@
 use super::*;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-/// Copy this process's user code+stack+heap pages into a new aspace at the same VA.
+/// The current process's address space for a forked child: a new root
+/// that maps the same pages, image, stack, heap and mmap regions, without
+/// copying them. A private page's frame is shared copy-on-write (`cow`):
+/// both mappings lose write permission and carry `LEAF_COW`, and the
+/// first store by either side faults and copies it (`cow_break`); a
+/// shared mapping's and a device's pages are the same in both, writable
+/// as before. `None` when the image is out of bounds.
 pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) -> Option<u64> {
     let n_pages = span.div_ceil(PAGE);
     if n_pages == 0 || n_pages > MAX_ELF_PAGES {
@@ -14,67 +20,97 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     if src == 0 {
         return None;
     }
-    // Heap, not kstack: MAX_ELF_PAGES×8 ≈ 9KiB on every fork's syscall stack.
-    // The copies use `try_alloc_frame_user`, so a fork under memory pressure
-    // fails with ENOMEM (handled by the caller) instead of aborting the kernel;
-    // frames taken before a failure are freed so a failed fork leaks nothing.
-    let mut frames = alloc::vec![0u64; n_pages];
-    let free_all = |frames: &[u64]| frames.iter().copied().filter(|&f| f != 0).for_each(mm::free_frame);
-    for i in 0..n_pages {
-        let va = base + (i * PAGE) as u64;
-        let Some(phys) = virt_to_phys(src, va) else {
-            free_all(&frames);
-            return None;
-        };
-        let Some(dst) = mm::try_alloc_frame_user(2) else {
-            free_all(&frames);
-            return None;
-        };
-        frames[i] = dst;
-        unsafe {
-            core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(dst), PAGE);
-        }
-        sync_icache(mm::hhdm(dst) as usize, PAGE);
-    }
-    let stack_va = base + stack_off;
-    let mut stack_frames = [0u64; USER_STACK_PAGES];
-    for i in 0..USER_STACK_PAGES {
-        let Some(phys) = virt_to_phys(src, stack_va + (i * PAGE) as u64) else {
-            free_all(&frames);
-            free_all(&stack_frames);
-            return None;
-        };
-        let Some(dst) = mm::try_alloc_frame_user(2) else {
-            free_all(&frames);
-            free_all(&stack_frames);
-            return None;
-        };
-        stack_frames[i] = dst;
-        unsafe {
-            core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(dst), PAGE);
-        }
-    }
-    let aspace = create_aspace(&frames[..n_pages], &stack_frames, base, stack_off);
+    let aspace = create_aspace(&[], &[], base, stack_off);
+    let regions = task::mmap_regions();
+    // The parent's other threads keep running: none may free, copy or
+    // page in one of its pages while the walk shares them (a frame freed
+    // by `munmap` between the read of its entry and its share would be the
+    // child's and the allocator's at once). `FAULT_LOCK` is what every
+    // such change takes (`free_mapped_page`, `fault_in`, `mprotect`).
+    // Interrupts are off already (`fork_current`).
+    let guard = FAULT_LOCK.lock();
+    share_run(src, aspace, base, n_pages);
+    share_run(src, aspace, base + stack_off, USER_STACK_PAGES);
     let heap_base = heap_base_va(base, stack_off);
-    let heap_end = align_up_usize(brk_cur as usize, PAGE);
-    let mut va = heap_base as usize;
-    while va < heap_end {
-        if let Some(phys) = virt_to_phys(src, va as u64) {
-            // The code and stack frames now belong to `aspace`; on failure
-            // reclaim the whole partial child (heap mapped so far included).
-            let Some(dst) = mm::try_alloc_frame_user(2) else {
-                reclaim_user_aspace(aspace, base, span, stack_off, va as u64, &[]);
-                return None;
-            };
-            unsafe {
-                core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(dst), PAGE);
-            }
-            map_heap_page(aspace, va as u64, dst);
-        }
-        va += PAGE;
+    let heap_end = align_up_usize(brk_cur as usize, PAGE) as u64;
+    if heap_end > heap_base {
+        share_run(src, aspace, heap_base, ((heap_end - heap_base) / PAGE as u64) as usize);
     }
-    copy_mmap_pages(src, aspace);
+    share_mmap_pages(src, aspace, &regions);
+    drop(guard);
+    // The parent's pages lost their write permission: its translations go,
+    // on this CPU and on any other running one of its threads (a shootdown
+    // waits for every CPU, and a shell forks for each command: the whole
+    // boot slowed down on riscv64 with one per fork). Off the lock: a peer
+    // waiting for it with interrupts off could not answer the shootdown.
+    if task::aspace_loaded_elsewhere(src) {
+        flush_user_tlb();
+    } else {
+        TLB_FLUSHES.fetch_add(1, Ordering::Relaxed);
+        crate::arch::flush_tlb_local();
+    }
+    cow::note_fork();
     Some(aspace)
+}
+
+/// `pages` pages from `va`: those mapped in `src` shared with `dst`.
+fn share_run(src: u64, dst: u64, va: u64, pages: usize) {
+    for i in 0..pages {
+        share_page(src, dst, va + (i * PAGE) as u64);
+    }
+}
+
+/// The page at `va` of `src`, if mapped, mapped in `dst` too: the page
+/// cache's frame as it is (a private mapping shares it read-only until a
+/// store, as before the fork); any other frame copy-on-write, read-only
+/// in both with `LEAF_COW`, and `LEAF_COW_WRITE` when it was writable (a
+/// read-only page's store stays a violation: the copy is for `mprotect`).
+fn share_page(src: u64, dst: u64, va: u64) {
+    use crate::arch::upaging::{leaf_mut, leaf_phys, leaf_with_write, leaf_writable, set_leaf, LEAF_COW, LEAF_COW_WRITE};
+    let Some(p) = leaf_mut(src, va) else {
+        return;
+    };
+    let pte = unsafe { *p };
+    let phys = leaf_phys(pte);
+    if fs::pagecache::share(phys) {
+        set_leaf(dst, va, pte);
+        return;
+    }
+    cow::share(phys);
+    let write = if leaf_writable(pte) { LEAF_COW_WRITE } else { 0 };
+    let shared = leaf_with_write(pte, false) | LEAF_COW | write;
+    unsafe { *p = shared };
+    set_leaf(dst, va, shared);
+}
+
+/// The mmap regions' pages mapped in `dst` as in `src`: a shared mapping's
+/// and a device's the same (the cache counts a shared mapping's), a
+/// private mapping's copy-on-write.
+fn share_mmap_pages(src: u64, dst: u64, regions: &[task::MmapRegion]) {
+    use crate::arch::upaging::{leaf_mut, leaf_phys, set_leaf};
+    for r in regions.iter() {
+        if r.pages == 0 {
+            continue;
+        }
+        let same = r.prot & (task::MMAP_DEVICE | task::MMAP_SHARED) != 0;
+        let mut va = r.va;
+        let end = r.va.saturating_add(r.pages as u64 * PAGE as u64);
+        while va < end {
+            if same {
+                if let Some(p) = leaf_mut(src, va) {
+                    let pte = unsafe { *p };
+                    if r.prot & task::MMAP_DEVICE != 0 || fs::pagecache::share(leaf_phys(pte)) {
+                        set_leaf(dst, va, pte);
+                    } else {
+                        share_page(src, dst, va);
+                    }
+                }
+            } else {
+                share_page(src, dst, va);
+            }
+            va += PAGE as u64;
+        }
+    }
 }
 
 pub(super) fn heap_base_va(base: u64, stack_off: u64) -> u64 {
@@ -93,46 +129,6 @@ pub(super) fn mmap_limit_va(base: u64, stack_off: u64) -> u64 {
     mmap_base_va(base, stack_off) + (MMAP_AREA_PAGES * PAGE) as u64
 }
 
-fn copy_mmap_pages(src: u64, dst: u64) {
-    let regions = task::mmap_regions();
-    for r in regions.iter() {
-        if r.pages == 0 {
-            continue;
-        }
-        let mut va = r.va;
-        let end = r.va.saturating_add(r.pages as u64 * PAGE as u64);
-        while va < end {
-            if let Some(phys) = virt_to_phys(src, va) {
-                // A device's pages are shared with the child, not copied,
-                // and so are a file's from the page cache: a shared
-                // mapping's writable, a private mapping's read-only in the
-                // child as in the parent, copied by its first store.
-                if r.prot & task::MMAP_DEVICE != 0 {
-                    map_user_page_prot(dst, va, phys, r.prot as usize);
-                    va += PAGE as u64;
-                    continue;
-                }
-                if fs::pagecache::share(phys) {
-                    let prot = r.prot as usize;
-                    let writable = prot & PROT_WRITE != 0 && r.prot & task::MMAP_SHARED != 0;
-                    crate::arch::upaging::map_user_page_prot(dst, va, phys, writable, prot & PROT_EXEC != 0);
-                    va += PAGE as u64;
-                    continue;
-                }
-                let frame = mm::alloc_frame_site(2);
-                unsafe {
-                    core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(frame), PAGE);
-                }
-                if r.prot & PROT_EXEC as u32 != 0 {
-                    sync_icache(mm::hhdm(frame) as usize, PAGE);
-                }
-                map_user_page_prot(dst, va, frame, r.prot as usize);
-            }
-            va += PAGE as u64;
-        }
-    }
-}
-
 pub(super) fn align_up_usize(v: usize, align: usize) -> usize {
     (v + align - 1) & !(align - 1)
 }
@@ -147,7 +143,9 @@ static UNMAPPED: Mutex<alloc::vec::Vec<(u64, u64)>> = Mutex::new(alloc::vec::Vec
 
 /// After a change that only added mappings (none removed, narrowed or
 /// moved): no CPU can hold a translation that is now wrong, as x86_64 and
-/// aarch64 keep no missing ones, so no other CPU is asked to flush. riscv64
+/// aarch64 keep no missing ones, so nothing is flushed, on this CPU either
+/// (a process maps memory and grows its heap all the time: under QEMU a
+/// flush empties the whole software TLB, refilled by page walks). riscv64
 /// may keep a missing translation: there it is [`flush_user_tlb`].
 ///
 /// A multithreaded process grows its heap and maps memory all the time; a
@@ -156,16 +154,52 @@ static UNMAPPED: Mutex<alloc::vec::Vec<(u64, u64)>> = Mutex::new(alloc::vec::Vec
 pub(super) fn flush_user_tlb_added() {
     if cfg!(target_arch = "riscv64") {
         flush_user_tlb();
-    } else {
-        crate::arch::flush_tlb_local();
     }
 }
 
 /// Flush the current address space's user translations (on every CPU that
 /// has it loaded), then free the frames unmapped from it before.
 pub(super) fn flush_user_tlb() {
+    TLB_FLUSHES.fetch_add(1, Ordering::Relaxed);
     let aspace = task::current_aspace();
-    // Taken before the flush: it covers only what was unmapped by then.
+    let freed = take_unmapped(aspace);
+    crate::arch::upaging::flush_user_tlb();
+    for frame in freed {
+        release_frame(frame);
+    }
+}
+
+/// [`flush_user_tlb`] after the pages `[va, va + pages)` were unmapped or
+/// narrowed and nothing else: when they are few, their translations alone
+/// go, on x86_64 one at a time here and the whole TLB on a CPU that also
+/// runs the process, on aarch64 one at a time on every CPU (`tlbi ...is`).
+/// A whole-TLB flush costs QEMU every translation it cached and the page
+/// walks to get them back, and an allocator gives memory back a few pages
+/// at a time (`madvise`, `munmap`): most of a build's flushes. riscv64
+/// keeps the whole flush (its `flush_user_tlb` reaches every hart).
+pub(super) fn flush_user_pages(va: usize, pages: usize) {
+    const FEW: usize = 32;
+    if pages > FEW || cfg!(target_arch = "riscv64") {
+        return flush_user_tlb();
+    }
+    let aspace = task::current_aspace();
+    let freed = take_unmapped(aspace);
+    for i in 0..pages {
+        flush_page(va + i * PAGE);
+    }
+    if cfg!(target_arch = "x86_64") && task::aspace_loaded_elsewhere(aspace) {
+        TLB_FLUSHES.fetch_add(1, Ordering::Relaxed);
+        crate::smp::tlb_shootdown();
+    }
+    for frame in freed {
+        release_frame(frame);
+    }
+}
+
+/// The frames unmapped from `aspace` while it was loaded elsewhere, to be
+/// released once its translations are flushed. Taken before the flush: it
+/// covers only what was unmapped by then.
+fn take_unmapped(aspace: u64) -> alloc::vec::Vec<u64> {
     let mut freed = alloc::vec::Vec::new();
     let flags = crate::arch::irq_save();
     crate::arch::irq_off();
@@ -176,16 +210,14 @@ pub(super) fn flush_user_tlb() {
         a != aspace
     });
     crate::arch::irq_restore(flags);
-    crate::arch::upaging::flush_user_tlb();
-    for frame in freed {
-        release_frame(frame);
-    }
+    freed
 }
 
 /// A user frame no mapping of this one uses any more: back to the page
-/// cache when it is one of its frames, freed otherwise.
+/// cache when it is one of its frames, counted out of a fork's share when
+/// it is shared (`cow`), freed otherwise.
 pub(super) fn release_frame(frame: u64) {
-    if !fs::pagecache::release(frame) {
+    if !fs::pagecache::release(frame) && !cow::release(frame) {
         mm::free_frame(frame);
     }
 }
@@ -352,7 +384,7 @@ pub enum Access {
 }
 
 /// Two threads of a process touching the same new page must not both map it.
-static FAULT_LOCK: Mutex<()> = Mutex::new(());
+pub(super) static FAULT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Pages a file-backed fault maps at once, the faulting one included: the
 /// following ones of the region that the page cache already holds (Linux
@@ -361,15 +393,86 @@ static FAULT_LOCK: Mutex<()> = Mutex::new(());
 /// instead of one per page.
 const FAULT_AROUND: usize = 16;
 
-/// Faults handled (`/proc/meminfo`), and the pages the fault-around mapped
-/// on top of the faulting ones.
+/// Faults handled (`/proc/meminfo`), the pages the fault-around mapped on
+/// top of the faulting ones, and the flushes of a whole user address
+/// space's translations (`flush_user_tlb`) and of one page's.
 static FAULTS: AtomicU64 = AtomicU64::new(0);
 static FAULT_AROUND_PAGES: AtomicU64 = AtomicU64::new(0);
+static TLB_FLUSHES: AtomicU64 = AtomicU64::new(0);
+static TLB_PAGE_FLUSHES: AtomicU64 = AtomicU64::new(0);
 
-/// How many page faults were handled, and how many pages the fault-around
-/// mapped besides (`/proc/meminfo`).
-pub fn fault_counts() -> (u64, u64) {
-    (FAULTS.load(Ordering::Relaxed), FAULT_AROUND_PAGES.load(Ordering::Relaxed))
+/// How many page faults were handled, how many pages the fault-around
+/// mapped besides, and how many user TLB flushes there were, of the whole
+/// address space and of one page (`/proc/meminfo`).
+pub fn fault_counts() -> (u64, u64, u64, u64) {
+    (
+        FAULTS.load(Ordering::Relaxed),
+        FAULT_AROUND_PAGES.load(Ordering::Relaxed),
+        TLB_FLUSHES.load(Ordering::Relaxed),
+        TLB_PAGE_FLUSHES.load(Ordering::Relaxed),
+    )
+}
+
+/// Drop this CPU's translation of the user page at `va`.
+fn flush_page(va: usize) {
+    TLB_PAGE_FLUSHES.fetch_add(1, Ordering::Relaxed);
+    crate::arch::flush_tlb_page_local(va);
+}
+
+/// The page at `page`, mapped read-only because a fork shares its frame
+/// (`LEAF_COW` in its entry `p`): the process's own from now on, with the
+/// write permission it had before the share (`LEAF_COW_WRITE`), a copy of
+/// the frame unless this mapping is its last (`cow::claim`). Under
+/// `FAULT_LOCK`. Whether the page was copied (the other CPUs' translations
+/// of it name the old frame then), or `None` when no frame could be had.
+fn cow_break(page: usize, p: *mut u64) -> Option<bool> {
+    use crate::arch::upaging::{leaf_executable, leaf_phys, leaf_with_phys, leaf_with_write, LEAF_COW, LEAF_COW_WRITE};
+    let pte = unsafe { *p };
+    let phys = leaf_phys(pte);
+    let copied = !cow::claim(phys);
+    let own = if copied {
+        let own = mm::try_alloc_frame_user(2)?;
+        unsafe { core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(own), PAGE) };
+        if leaf_executable(pte) {
+            sync_icache(mm::hhdm(own) as usize, PAGE);
+        }
+        cow::note_copy();
+        own
+    } else {
+        phys
+    };
+    let write = pte & LEAF_COW_WRITE != 0;
+    unsafe { *p = leaf_with_write(leaf_with_phys(pte, own), write) & !(LEAF_COW | LEAF_COW_WRITE) };
+    flush_page(page);
+    Some(copied)
+}
+
+/// [`cow_break`] for `mprotect`, which makes a shared page writable, under
+/// the fault lock like it; the other CPUs' translations are dropped by the
+/// caller's flush. False when no frame could be had.
+pub(super) fn user_cow_break(page: usize, p: *mut u64) -> bool {
+    cow_break(page, p).is_some()
+}
+
+/// The frame at `va` of `aspace`, the process's own: a frame a fork shares
+/// is replaced by a fresh one (exec writes a new image over the pages it
+/// keeps: the other side of the share keeps the old bytes). The frame
+/// mapped there, or none.
+pub(super) fn own_frame(aspace: u64, va: u64) -> Option<u64> {
+    use crate::arch::upaging::{leaf_mut, leaf_phys, leaf_with_phys, leaf_with_write, LEAF_COW, LEAF_COW_WRITE};
+    let p = leaf_mut(aspace, va)?;
+    let pte = unsafe { *p };
+    if pte & LEAF_COW == 0 {
+        return Some(leaf_phys(pte));
+    }
+    let phys = leaf_phys(pte);
+    let own = if cow::claim(phys) {
+        phys
+    } else {
+        mm::alloc_frame_site(1)
+    };
+    unsafe { *p = leaf_with_write(leaf_with_phys(pte, own), true) & !(LEAF_COW | LEAF_COW_WRITE) };
+    Some(own)
 }
 
 /// Page in the mmap page at `va` of the current process on its first touch,
@@ -384,6 +487,51 @@ pub fn fault_counts() -> (u64, u64) {
 /// page is the file's: its first store makes it dirty.
 pub fn fault_in(va: usize, access: Access) -> bool {
     let page = va & !(PAGE - 1);
+    // A store to a page mapped read-only because a fork shares its frame:
+    // the page is copied (or taken) for this process, whatever region it
+    // is in (the image, stack and heap are in none), when it was writable
+    // before the share. A store to a page another thread just made
+    // writable needs nothing more.
+    if access == Access::Write {
+        use crate::arch::upaging::{leaf_mut, leaf_writable, LEAF_COW, LEAF_COW_WRITE};
+        let aspace = task::current_aspace();
+        let flags = crate::arch::irq_save();
+        crate::arch::irq_off();
+        let guard = FAULT_LOCK.lock();
+        // Handled here: whether the store may go on, and whether the page
+        // was copied.
+        let done = match leaf_mut(aspace, page as u64) {
+            Some(p) => {
+                let pte = unsafe { *p };
+                if pte & LEAF_COW != 0 {
+                    FAULTS.fetch_add(1, Ordering::Relaxed);
+                    if pte & LEAF_COW_WRITE == 0 {
+                        Some((false, false))
+                    } else {
+                        Some(cow_break(page, p).map_or((false, false), |copied| (true, copied)))
+                    }
+                } else if leaf_writable(pte) {
+                    Some((true, false))
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        drop(guard);
+        crate::arch::irq_restore(flags);
+        if let Some((ok, copied)) = done {
+            // The other CPUs running this process may still translate the
+            // page to the old frame: dropped off the lock (a peer waiting
+            // for it with interrupts off could not answer the shootdown),
+            // before the store the fault retries. A stale read-only entry
+            // for the same frame only costs a fault that finds it writable.
+            if copied && task::aspace_loaded_elsewhere(aspace) {
+                flush_user_tlb();
+            }
+            return ok;
+        }
+    }
     let Some((prot, file, left)) = task::mmap_backing(page) else {
         return false;
     };
@@ -444,7 +592,9 @@ pub fn fault_in(va: usize, access: Access) -> bool {
     let guard = FAULT_LOCK.lock();
     // Another thread may have paged it in meanwhile: then only the
     // protection is (re)applied.
-    let (frame, copied) = match (virt_to_phys(aspace, page as u64), fresh) {
+    let present = virt_to_phys(aspace, page as u64);
+    let was_mapped = present.is_some();
+    let (frame, copied) = match (present, fresh) {
         (Some(mapped), fresh) => {
             if let Some(frame) = fresh {
                 release_frame(frame);
@@ -459,7 +609,7 @@ pub fn fault_in(va: usize, access: Access) -> bool {
                     return false;
                 };
                 unsafe { core::ptr::copy_nonoverlapping(mm::hhdm(mapped), mm::hhdm(own), PAGE) };
-                free_mapped_page(aspace, page as u64);
+                free_mapped_page_locked(aspace, page as u64);
                 (Some(own), true)
             } else {
                 if access == Access::Write && cached && shared {
@@ -472,14 +622,28 @@ pub fn fault_in(va: usize, access: Access) -> bool {
     };
     if let Some(frame) = frame {
         // A private mapping's cached page stays read-only (its store
-        // copies it, above); the process's own pages take the region's.
-        let writable = prot & PROT_WRITE != 0 && (shared || file.is_none() || !fs::pagecache::is_cached(frame));
-        crate::arch::upaging::map_user_page_prot(aspace, page as u64, frame, writable, prot & PROT_EXEC != 0);
+        // copies it, above), and so does a page a fork shares (its store
+        // copies it, `cow_break`); the process's own pages take the region's.
+        use crate::arch::upaging::{leaf_mut, map_user_page_prot, LEAF_COW, LEAF_COW_WRITE};
+        let cow = leaf_mut(aspace, page as u64).map_or(0, |p| unsafe { *p } & (LEAF_COW | LEAF_COW_WRITE));
+        let writable = prot & PROT_WRITE != 0
+            && cow & LEAF_COW == 0
+            && (shared || file.is_none() || !fs::pagecache::is_cached(frame));
+        map_user_page_prot(aspace, page as u64, frame, writable, prot & PROT_EXEC != 0);
+        if cow != 0 {
+            if let Some(p) = leaf_mut(aspace, page as u64) {
+                unsafe { *p |= cow };
+            }
+        }
         // The page was not mapped before, or mapped read-only: no other CPU
         // can hold a translation that lets it write (one that faults on it
         // meanwhile flushes its own here), so this CPU's entry for it is all
-        // there is to drop now; a copy drops the others' below.
-        crate::arch::flush_tlb_page_local(page);
+        // there is to drop now; a copy drops the others' below. A page that
+        // was not mapped has no entry to drop on x86_64 and aarch64, which
+        // keep no missing translation (riscv64 may).
+        if was_mapped || cfg!(target_arch = "riscv64") {
+            flush_page(page);
+        }
         FAULTS.fetch_add(1, Ordering::Relaxed);
         if let Some((node, off)) = &file {
             fault_around(aspace, page, prot, node, *off, left);
@@ -517,12 +681,27 @@ fn fault_around(aspace: u64, page: usize, prot: usize, node: &fs::Vnode, off: us
             sync_icache(mm::hhdm(frame) as usize, PAGE);
         }
         crate::arch::upaging::map_user_page_prot(aspace, va as u64, frame, false, prot & PROT_EXEC != 0);
-        crate::arch::flush_tlb_page_local(va);
+        // Not mapped before: no entry to drop, but on riscv64 (as above).
+        if cfg!(target_arch = "riscv64") {
+            flush_page(va);
+        }
         FAULT_AROUND_PAGES.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 pub(super) fn free_mapped_page(aspace: u64, va: u64) {
+    // Under the fault lock: a fork walking the address space (`copy_user_aspace`)
+    // must see the page mapped and share its frame, or see it gone.
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    let guard = FAULT_LOCK.lock();
+    free_mapped_page_locked(aspace, va);
+    drop(guard);
+    crate::arch::irq_restore(flags);
+}
+
+/// [`free_mapped_page`] for a caller that holds `FAULT_LOCK`.
+pub(super) fn free_mapped_page_locked(aspace: u64, va: u64) {
     let Some(phys) = virt_to_phys(aspace, va) else {
         return;
     };

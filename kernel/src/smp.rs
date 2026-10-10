@@ -193,8 +193,35 @@ fn tlb_all_seen(epoch: u64) -> bool {
     true
 }
 
-/// Invalidate this CPU's user TLB and ask every other online CPU to do the same.
+/// TLB shootdowns sent (`/proc/meminfo`).
+static TLB_SHOOTDOWNS: AtomicU64 = AtomicU64::new(0);
+
+pub fn tlb_shootdowns() -> u64 {
+    TLB_SHOOTDOWNS.load(Ordering::Relaxed)
+}
+
+/// Per CPU: a shootdown passed it over while it was idle (`tlb_shootdown`);
+/// it flushes its TLB before it runs a task again (`tlb_take_stale`).
+static TLB_STALE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+
+/// Whether a shootdown passed this CPU over while it was idle, cleared:
+/// the scheduler flushes the TLB then, before the CPU runs a task. With
+/// interrupts off, after the CPU said it is not idle (`CPU_IDLE`): a
+/// shootdown that saw it idle before that store sees the flag taken here,
+/// or the shooter sees the CPU awake after setting the flag and waits for
+/// its ack.
+pub fn tlb_take_stale(cpu: usize) -> bool {
+    TLB_STALE[cpu.min(MAX_CPUS - 1)].swap(false, Ordering::SeqCst)
+}
+
+/// Invalidate this CPU's user TLB and ask every other online CPU to do the
+/// same. An idle CPU is not asked: it runs no user code, so its stale
+/// translations do no harm until it resumes a task, and it flushes them
+/// then (`TLB_STALE`). Waiting for it cost the ack's latency per shootdown
+/// (a wake from the halt, under TCG the host's) for nothing, and a shell
+/// forks and exits for every command with the other CPU idle.
 pub fn tlb_shootdown() {
+    TLB_SHOOTDOWNS.fetch_add(1, Ordering::Relaxed);
     let others = online_count().saturating_sub(1);
     if others == 0 {
         flush_tlb_local();
@@ -218,6 +245,27 @@ pub fn tlb_shootdown() {
     };
     let epoch = TLB_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
     tlb_service();
+    // The idle CPUs: flagged, and their acks given on their behalf. One
+    // that stops being idle in between sees the flag (the flag is set
+    // before its idleness is read again, and it says so before it looks).
+    let me = cpu_id();
+    let mut awake = false;
+    for i in 0..MAX_CPUS {
+        if i == me || !ONLINE[i].load(Ordering::SeqCst) {
+            continue;
+        }
+        if crate::task::cpu_idle(i) {
+            TLB_STALE[i].store(true, Ordering::SeqCst);
+            if crate::task::cpu_idle(i) {
+                TLB_SEEN[i].fetch_max(epoch, Ordering::SeqCst);
+                continue;
+            }
+        }
+        awake = true;
+    }
+    if !awake {
+        return;
+    }
     ipi_mark_tlb();
     arch::ipi_tlb_shootdown();
     let mut spins = 0u32;

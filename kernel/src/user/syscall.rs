@@ -273,6 +273,13 @@ impl SyscallRegs {
 /// on x86, so `signal::deliver_due` can clear it on every arch).
 pub use crate::arch::set_syscall_frame;
 
+/// System calls made, native and foreign (`/proc/meminfo`).
+static SYSCALLS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+pub fn syscalls() -> u64 {
+    SYSCALLS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn syscall_dispatch(
     nr: usize,
@@ -284,6 +291,7 @@ pub extern "C" fn syscall_dispatch(
     regs: *mut u64,
 ) -> usize {
     task::save_user_context(user_rip, user_rsp);
+    SYSCALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let mut regs = SyscallRegs(regs);
     // A task exec'd with a foreign personality (the Linux module) makes that
     // personality's syscalls (own numbers, errno returns); see `personality`.
@@ -1812,7 +1820,7 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         }
     };
     // Only a MAP_FIXED one replaces mappings: the others only add some.
-    let flush = || if fixed { flush_user_tlb() } else { flush_user_tlb_added() };
+    let flush = |va: usize| if fixed { flush_user_pages(va, pages) } else { flush_user_tlb_added() };
     if let (true, Some(node)) = (device, &file) {
         let Some(va) = record(prot as u32 | task::MMAP_DEVICE, None) else {
             return SYSERR;
@@ -1822,13 +1830,13 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
                 map_user_page_prot(aspace, (va + i * PAGE) as u64, frame, prot);
             }
         }
-        flush();
+        flush(va);
         return va;
     }
     // The pages get their frames on first touch (`fault_in`), so a large
     // reservation or a big library costs only what is used.
     if let Some(va) = record(prot as u32 | shared, file.as_ref().map(|node| (node, offset))) {
-        flush();
+        flush(va);
         return va;
     }
     // A file mapping fails there when the mapped-file table is full: read
@@ -1853,7 +1861,7 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         sync_icache(mm::hhdm(frame) as usize, PAGE);
         mapped += PAGE;
     }
-    flush();
+    flush(va);
     va
 }
 
@@ -1885,7 +1893,7 @@ pub(crate) fn mmap_discard(addr: usize, len: usize) -> bool {
             free_mapped_page(aspace, va as u64);
         }
     }
-    flush_user_tlb();
+    flush_user_pages(addr, pages);
     true
 }
 
@@ -1921,7 +1929,7 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     // mapping of the process still holds them).
     sync_shared_in(addr, addr + map_len);
     release_mmap_range(task::current_aspace(), &old, addr as u64, pages);
-    flush_user_tlb();
+    flush_user_pages(addr, pages);
     if !task::mmap_remove(addr as u64, pages as u32) {
         return SYSERR;
     }
@@ -1970,7 +1978,18 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
     let mut off = 0;
     while off < map_len {
         let va = (addr + off) as u64;
+        // A page's entry is read and rewritten under the fault lock: no
+        // fault, free or fork may change it in between (`copy_user_aspace`).
+        let shared_file = task::mmap_backing(va as usize).is_some_and(|(p, _, _)| p & task::MMAP_SHARED != 0);
+        let flags = crate::arch::irq_save();
+        crate::arch::irq_off();
+        let guard = FAULT_LOCK.lock();
+        let unlock = |guard| {
+            drop(guard);
+            crate::arch::irq_restore(flags);
+        };
         let Some(mut phys) = virt_to_phys(aspace, va) else {
+            unlock(guard);
             // An mmap page not touched yet takes the new protection when
             // it is paged in.
             if va >= area_lo {
@@ -1979,20 +1998,42 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
             }
             return SYSERR;
         };
+        // A page a fork shares (copy-on-write) becomes this process's own
+        // before it may be written, and keeps its mark otherwise.
+        let cow_leaf = crate::arch::upaging::leaf_mut(aspace, va)
+            .filter(|&p| unsafe { *p } & crate::arch::upaging::LEAF_COW != 0);
+        let mut keep_cow = false;
+        if let Some(p) = cow_leaf {
+            if prot & PROT_WRITE != 0 {
+                if !user_cow_break(va as usize, p) {
+                    unlock(guard);
+                    return SYSERR;
+                }
+                phys = virt_to_phys(aspace, va).unwrap_or(phys);
+            } else {
+                keep_cow = true;
+            }
+        }
         // A page shared through the page cache becomes this process's own
         // before it may be written; a shared mapping's stays the file's,
         // dirty from now on.
         if prot & PROT_WRITE != 0 && fs::pagecache::is_cached(phys) {
-            if task::mmap_backing(va as usize).is_some_and(|(p, _, _)| p & task::MMAP_SHARED != 0) {
+            if shared_file {
                 fs::pagecache::dirtied(phys);
             } else {
                 let own = mm::alloc_frame_site(4);
                 unsafe { core::ptr::copy_nonoverlapping(mm::hhdm(phys), mm::hhdm(own), PAGE) };
-                free_mapped_page(aspace, va);
+                free_mapped_page_locked(aspace, va);
                 phys = own;
             }
         }
         map_user_page_prot(aspace, va, phys, prot);
+        if keep_cow {
+            if let Some(p) = crate::arch::upaging::leaf_mut(aspace, va) {
+                unsafe { *p |= crate::arch::upaging::LEAF_COW };
+            }
+        }
+        unlock(guard);
         if prot & PROT_EXEC != 0 {
             // mprotect RW→RX: clean D-cache, invalidate I-cache for this range.
             sync_icache(va as usize, PAGE);

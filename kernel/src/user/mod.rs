@@ -7,6 +7,7 @@ mod image;
 mod syscall;
 mod uaccess;
 pub use aspace::*;
+pub mod cow;
 pub use enter::*;
 use image::*;
 pub use image::AuxV;

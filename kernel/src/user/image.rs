@@ -21,7 +21,7 @@ pub(super) fn load_user_elf(bytes: &[u8], relocate: bool) -> Option<(u64, usize,
     if info.span > ELF_SCRATCH_BYTES {
         return None;
     }
-    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
+    let _scratch_guard = lock_elf_scratch();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -112,7 +112,7 @@ fn apply_elf_load_prots(aspace: u64, bytes: &[u8], base: u64, image_pages: usize
 }
 
 pub(super) fn reuse_or_alloc_frame(aspace: u64, va: u64) -> u64 {
-    if let Some(phys) = virt_to_phys(aspace, va) {
+    if let Some(phys) = own_frame(aspace, va) {
         phys
     } else {
         let frame = mm::alloc_frame_site(1);
@@ -128,6 +128,22 @@ static ELF_SCRATCH_PAGES: AtomicUsize = AtomicUsize::new(0);
 /// without this lock they shred each other's relocated image (UEFI full-boot
 /// user #PF cr2=0x401 / bogus low pointer in sbase `cat` after os-test).
 static ELF_SCRATCH_LOCK: Mutex<()> = Mutex::new(());
+
+/// Take [`ELF_SCRATCH_LOCK`], answering the other CPUs' TLB shootdowns
+/// while waiting: an exec holds it across shootdowns of its own, and a
+/// second exec waiting for it with interrupts off (a syscall's) could not
+/// answer them, so each ran to its spin cap, a second each. A shell
+/// pipeline execs on both CPUs at once all the time (the riscv64 boot test
+/// ran out of its budget on that: see `smp::tlb_shootdown`).
+fn lock_elf_scratch() -> spin::MutexGuard<'static, ()> {
+    loop {
+        if let Some(guard) = ELF_SCRATCH_LOCK.try_lock() {
+            return guard;
+        }
+        crate::smp::tlb_service();
+        core::hint::spin_loop();
+    }
+}
 
 /// Borrow the shared ELF scratch. Caller must hold [`ELF_SCRATCH_LOCK`] for
 /// the whole realize + copy-into-aspace window — not merely this call.
@@ -182,7 +198,7 @@ pub(super) fn reload_user_elf(
     if info.span > MAX_RELOAD_PAGES * PAGE {
         return None;
     }
-    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
+    let _scratch_guard = lock_elf_scratch();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -197,7 +213,9 @@ pub(super) fn reload_user_elf(
     };
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
-        let Some(phys) = virt_to_phys(aspace, va) else {
+        // A frame a fork shares is replaced first: the new image is this
+        // process's alone.
+        let Some(phys) = own_frame(aspace, va) else {
             return None;
         };
         let off = i * PAGE;
@@ -260,13 +278,21 @@ fn free_heap_window(aspace: u64, base: u64, stack_off: u64) {
 /// Grow the current aspace and load a large ELF (up to [`MAX_EXPAND_PAGES`]).
 /// Used when [`reload_user_elf`] is too small but we already have an aspace
 /// (post-fork exec of release uutils / ripgrep).
-/// Free stack/heap pages from a prior expand/load when the stack window moves,
-/// and **always** drop the old heap window on in-place exec.
+/// Free the old image's pages past the new code span, and stack/heap pages
+/// from a prior expand/load when the stack window moves, and **always**
+/// drop the old heap window on in-place exec.
 ///
 /// Pages that fall inside the new code span `[base, base+new_stack_off)` are
 /// kept for `reuse_or_alloc_frame` to turn into code. Without stack reclaim,
 /// each uutils→rg-sized expand abandons `USER_STACK_PAGES + HEAP_PAGES` frames
 /// and riscv UEFI walks the freelist dry → classic `sepc=0` after the next ecall.
+///
+/// The old image's pages past the new span go too: a program larger than
+/// [`MAX_RELOAD_PAGES`] exec'd by a larger one still (`st -e /bin/sh`) moves
+/// the stack down, and those pages would sit in the new stack and heap
+/// windows, read-only text where the new program expects an empty heap
+/// (`sys_brk` keeps a page it finds mapped). The forked copies they used to
+/// be were writable, which hid it; copy-on-write keeps their protection.
 ///
 /// Heap is freed even when `stack_off` is unchanged: in-place reload/expand used
 /// to leave prior brk pages mapped while `replace_user` reset `brk_cur` to
@@ -277,6 +303,11 @@ fn free_abandoned_stack_heap(aspace: u64, base: u64, old_stack_off: u64, new_sta
         return;
     }
     let new_code_end = base + new_stack_off;
+    let mut va = new_code_end;
+    while va < base + old_stack_off {
+        free_mapped_page(aspace, va);
+        va += PAGE as u64;
+    }
     if old_stack_off != new_stack_off {
         for i in 0..USER_STACK_PAGES {
             let va = base + old_stack_off + (i * PAGE) as u64;
@@ -318,7 +349,7 @@ pub(super) fn expand_user_elf(
     // mapping and a SYSERR return into wiped user text (ISO login rip=0).
     // Hold ELF_SCRATCH_LOCK across realize→copy-out so a peer AP exec
     // (pipeline RR) cannot overwrite scratch mid-flight.
-    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
+    let _scratch_guard = lock_elf_scratch();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -357,7 +388,9 @@ pub(super) fn expand_user_elf(
 
     for i in 0..n_pages {
         let va = base + (i * PAGE) as u64;
-        let Some(phys) = virt_to_phys(aspace, va) else {
+        // A frame a fork shares is replaced first: the new image is this
+        // process's alone.
+        let Some(phys) = own_frame(aspace, va) else {
             return None;
         };
         let off = i * PAGE;
@@ -519,7 +552,7 @@ pub(crate) fn map_elf_unrelocated(
         return None;
     }
     let pages = info.span.div_ceil(PAGE);
-    let guard = ELF_SCRATCH_LOCK.lock();
+    let guard = lock_elf_scratch();
     let buf = elf_scratch_mut(info.span)?;
     let load_bias = va.checked_sub(info.min_vaddr)?;
     let entry = elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, false).ok()?;

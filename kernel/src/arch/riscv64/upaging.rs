@@ -205,6 +205,71 @@ pub fn unmap_user_page(aspace: u64, va: u64) {
     }
 }
 
+/// A bit of a leaf entry reserved for software (RSW): the page's frame is
+/// shared with another address space by a fork, copied before a store
+/// (`user::cow`).
+pub const LEAF_COW: u64 = 1 << 8;
+/// The other RSW bit: the page was writable before the share (its copy is
+/// again).
+pub const LEAF_COW_WRITE: u64 = 1 << 9;
+
+/// The leaf entry of `va` in `aspace`, if `va` is mapped by a 4 KiB page:
+/// a pointer into the page table, for the `leaf_*` helpers to read and
+/// change it in place. Allocates nothing.
+pub fn leaf_mut(aspace: u64, va: u64) -> Option<*mut u64> {
+    let root_phys = satp_ppn(aspace);
+    let i2 = ((va >> 30) & 0x1ff) as usize;
+    let i1 = ((va >> 21) & 0x1ff) as usize;
+    let i0 = ((va >> 12) & 0x1ff) as usize;
+    unsafe {
+        let root = &*mm::table(root_phys);
+        let mid_pte = root[i2];
+        if mid_pte & paging::PTE_V == 0 || !paging::pte_is_table(mid_pte) {
+            return None;
+        }
+        let mid = &*mm::table(paging::pte_phys(mid_pte));
+        let leaf_pte = mid[i1];
+        if leaf_pte & paging::PTE_V == 0 || !paging::pte_is_table(leaf_pte) {
+            return None;
+        }
+        let leaf = &mut *mm::table(paging::pte_phys(leaf_pte));
+        let pte = leaf[i0];
+        if pte & paging::PTE_V == 0 || pte & (paging::PTE_R | paging::PTE_W | paging::PTE_X) == 0 {
+            return None;
+        }
+        Some(&mut leaf[i0] as *mut u64)
+    }
+}
+
+/// Set the leaf entry of `va` to `pte` as it is (the tables made as needed).
+pub fn set_leaf(aspace: u64, va: u64, pte: u64) {
+    let i0 = ((va >> 12) & 0x1ff) as usize;
+    let leaf = ensure_riscv_leaf(aspace, va);
+    unsafe {
+        (*leaf)[i0] = pte;
+    }
+}
+
+pub fn leaf_phys(pte: u64) -> u64 {
+    paging::pte_phys(pte)
+}
+
+pub fn leaf_with_phys(pte: u64, phys: u64) -> u64 {
+    paging::pte_leaf_4k(phys, pte & 0x3ff)
+}
+
+pub fn leaf_writable(pte: u64) -> bool {
+    pte & paging::PTE_W != 0
+}
+
+pub fn leaf_with_write(pte: u64, w: bool) -> u64 {
+    if w { pte | paging::PTE_W } else { pte & !paging::PTE_W }
+}
+
+pub fn leaf_executable(pte: u64) -> bool {
+    pte & paging::PTE_X != 0
+}
+
 /// Map a code page: RW so the loader can fill it, and executable.
 pub fn map_user_code_page(aspace: u64, va: u64, pa: u64) {
     map_user_page_riscv64(aspace, va, pa, true);

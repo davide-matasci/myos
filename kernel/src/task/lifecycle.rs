@@ -308,6 +308,9 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
     };
 
     let Some((slot, stack_base, sp, top)) = claim_slot() else {
+        // The child's address space shares the parent's pages: given back,
+        // so that the parent's are its own again.
+        user::reclaim_user_aspace(aspace, base, span, off, brk, &child_proc.mmap);
         drop_child_fds(&mut child_proc);
         irq_restore(flags);
         return None;
