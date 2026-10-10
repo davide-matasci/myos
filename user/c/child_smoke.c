@@ -7,7 +7,9 @@
  * (ECHILD), whether asked after the exit or while waiting for it. A parent
  * may move its child to another process group until the child execs, and
  * gets EACCES after. A child's setsid makes it a session leader with no
- * controlling terminal, out of its parent's reach. Prints [ OK ] child.
+ * controlling terminal, out of its parent's reach. A child spinning in
+ * user mode without syscalls dies of a SIGINT left at its default action
+ * (the kernel ends it when it preempts it). Prints [ OK ] child.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -148,6 +150,37 @@ static int setsid_child(void) {
     return 0;
 }
 
+/* A child that never makes a syscall (a pure CPU loop, as an interrupted
+ * computation): SIGINT at its default action still ends it. */
+static int spinning_child(void) {
+    int status, i;
+    pid_t pid = fork();
+    if (pid == 0) {
+        for (;;) {
+            __asm__ volatile("" ::: "memory");
+        }
+    }
+    if (pid < 0) {
+        return fail("fork a spinning child");
+    }
+    usleep(200 * 1000);
+    if (kill(pid, SIGINT) != 0) {
+        return fail("kill(spinning child, SIGINT)");
+    }
+    for (i = 0; i < 50 && waitpid(pid, &status, WNOHANG) == 0; i++) {
+        usleep(100 * 1000);
+    }
+    if (i == 50) {
+        kill(pid, SIGKILL);
+        waitpid(pid, &status, 0);
+        return fail("SIGINT left a spinning child running");
+    }
+    if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGINT) {
+        return fail("a spinning child's SIGINT status");
+    }
+    return 0;
+}
+
 int main(void) {
     struct sigaction old;
     int status;
@@ -178,6 +211,9 @@ int main(void) {
         return fail("a plain parent's zombie");
     }
 
+    if (spinning_child() != 0) {
+        return 1;
+    }
     if (setsid_child() != 0) {
         return 1;
     }
