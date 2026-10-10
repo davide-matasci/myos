@@ -1024,20 +1024,23 @@ lx_python_net() {
 	[ "$out" = "HTTP 200" ]
 }
 # An Alpine X client on the native X server (the tinyx package, installed
-# as an app): xdpyinfo, in the Python test's root, reaches Xfbdev's
-# /tmp/.X11-unix/X0 over AF_UNIX and describes the display. It gives up
-# at once while the server does not answer yet, so it is run again.
+# as an app): xdpyinfo reaches Xfbdev's /tmp/.X11-unix/X0 over AF_UNIX and
+# describes the display. It gives up at once while the server does not
+# answer yet, so it is run again. Its root is its own and removed after:
+# /tmp is in the kernel heap, which the Python root already fills.
 lx_x11() {
-	run-myos get-alpine -r /tmp/alpine xdpyinfo || return 1
+	r=/tmp/alpine-x11
+	run-myos get-alpine -r $r xdpyinfo || { rm -rf $r; return 1; }
 	run-myos tinyx:Xfbdev :0 -br > $OUT/lx-x11-server.log 2>&1 &
 	xpid=$!
 	i=0
-	while [ $i -lt 60 ] && ! DISPLAY=:0 linux --root /tmp/alpine xdpyinfo > $OUT/lx-x11.out 2>&1; do
+	while [ $i -lt 60 ] && ! DISPLAY=:0 linux --root $r xdpyinfo > $OUT/lx-x11.out 2>&1; do
 		sleep 1
 		i=$((i + 1))
 	done
 	kill $xpid 2>/dev/null
 	wait $xpid 2>/dev/null
+	rm -rf $r
 	grep -q "^name of display:" $OUT/lx-x11.out && return 0
 	head -20 $OUT/lx-x11.out
 	cat $OUT/lx-x11-server.log
