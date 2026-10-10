@@ -19,6 +19,9 @@ int die(const char *a, const char *b);
 int under_root(char *out, const char *rel);
 /* mkdir -p of path's directories (and path itself if `self`). */
 void mkdirs(const char *path, int self);
+/* Whether something is mounted at /data (the boot disk's data partition,
+ * docs/install.md): the default roots are kept there when it is. */
+int data_mounted(void);
 
 /* curl -fsSL URL -o DEST, three attempts; -1 when every attempt failed. */
 int download(const char *url, const char *dest);

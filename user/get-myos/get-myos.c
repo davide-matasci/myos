@@ -556,16 +556,7 @@ static const char *default_root(void) {
     if (env != NULL && env[0] != '\0') {
         return env;
     }
-    char line[512];
-    int data = 0;
-    FILE *f = fopen("/proc/mounts", "r");
-    while (f != NULL && !data && fgets(line, sizeof line, f) != NULL) {
-        data = strstr(line, " /data ") != NULL;
-    }
-    if (f != NULL) {
-        fclose(f);
-    }
-    return data ? "/data/apps" : "/tmp/apps";
+    return data_mounted() ? "/data/apps" : "/tmp/apps";
 }
 
 int main(int argc, char **argv) {

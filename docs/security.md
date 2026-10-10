@@ -65,7 +65,8 @@ exec /bin/custom/netd -> netd
   file's **canonical** path, the one bind mounts resolve to, so a file
   reached through a bind or a namespace binding has the label of where it
   is stored (`get-myos`'s apps live under `/data/apps` or `/tmp/apps`,
-  labelled `sys.pkg`, whatever path `run-myos` shows them at; `/dev/shm`,
+  labelled `sys.pkg`, whatever path `run-myos` shows them at, and so does
+  `get-alpine`'s root on the data partition, `/data/alpine`; `/dev/shm`,
   POSIX shared memory, is `/tmp/.shm`, labelled `tmp`).
 - **Domains.** `domain NAME:` and rules on the same line or on the indented
   lines below: `KIND(OWNER) {rights}`. The owner is `self` (the process's

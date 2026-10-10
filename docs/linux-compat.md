@@ -20,8 +20,8 @@ cargo run --features linux_compat -- aarch64   # (or riscv64)
 # in the guest:
 linux /bin/linux/linux-smoke               # prints LINUX-SMOKE OK
 linux /bin/linux/linux-dyn                 # dynamic: prints LINUX-DYN OK
-get-alpine jq                              # Alpine Linux packages
-linux --root /tmp/alpine jq -n '1+1'
+get-alpine jq                              # Alpine Linux packages, into /data/alpine
+linux --root /data/alpine jq -n '1+1'      # (/tmp/alpine without a /data)
 ```
 
 In a default build the module is not loaded at boot; `insmod
@@ -36,12 +36,12 @@ three of which Alpine has repositories for) downloads packages at run time
 with the guest's `curl`:
 
 ```sh
-get-alpine [-r ROOT] [-u] PACKAGE...       # ROOT defaults to /tmp/alpine
+get-alpine [-r ROOT] [-u] PACKAGE...       # ROOT: /data/alpine or /tmp/alpine
 linux --root ROOT PROGRAM [ARG...]
 ```
 
 1. The `main` and `community` indexes (`APKINDEX.tar.gz`) are downloaded
-   once and reduced, streaming, to `ROOT/var/lib/get-alpine/index`: one
+   once and reduced, streaming, to `ROOT/.get-alpine/index`: one
    line per package with its repository, version, control checksum,
    dependencies and provides (`so:`, `cmd:`, ...). `-u` refreshes it.
 2. Each package and, recursively, its dependencies (`musl` included; a
@@ -51,7 +51,7 @@ linux --root ROOT PROGRAM [ARG...]
    control member must match the index's `C:Q1...` and the SHA-256 of the
    data member the `datahash` in the control's `.PKGINFO`. The data tar is
    then unpacked into `ROOT`. Installed packages
-   (`ROOT/var/lib/get-alpine/pkgs/`) are skipped. Install scripts are not
+   (`ROOT/.get-alpine/pkgs/`) are skipped. Install scripts are not
    run, and the index signature is not checked (the download is HTTPS).
    A dropped download resumes where it stopped (or starts over from a
    server that cannot resume); three attempts in a row that get no further
@@ -67,9 +67,14 @@ TARGET bind`; binds last until reboot, and binding a target again replaces
 the bind), so the chrooted process sees them like any other directory.
 
 `ALPINE_MIRROR` overrides `https://dl-cdn.alpinelinux.org/alpine` and
-`ALPINE_BRANCH` overrides `latest-stable`. `/tmp` is a tmpfs in the kernel
-heap, so a root there holds a few small packages and is gone at reboot.
-A bigger one goes on a disk, for instance Alpine's Rust compiler (rust,
+`ALPINE_BRANCH` overrides `latest-stable`. The default root is
+`/data/alpine` when the boot disk's data partition is mounted at `/data`
+(`docs/install.md`), kept across reboots and upgrades, else `/tmp/alpine`:
+`/tmp` is a tmpfs in the kernel heap, so a root there holds a few small
+packages and is gone at reboot. `etc/policy` labels `/data/alpine`
+`sys.pkg`, as `get-myos`'s apps: a user's shell reads and runs what is
+there, and the administrator installs it. A root too big for the data
+partition goes on another disk, for instance Alpine's Rust compiler (rust,
 LLVM and gcc: ~300 MB of downloads, ~600 MB installed) on the scratch disk
 of a test boot:
 
@@ -476,10 +481,12 @@ call, shared data, a relocated function pointer and a thread-local in
 `libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`).
 The test is plain musl C, so it can also be run on a Linux host for
 reference. The full list then runs
-`get-alpine jq && linux --root /tmp/alpine jq -Rrn '...' /proc/mounts`,
-which counts the binds of `/dev`, `/proc` and `/net` it sees in the root and
-expects `ALPINE-JQ 6`, then installs Python into the same root (python3 and
-its 19 dependencies, ~45 MB) and runs
+`get-alpine jq && linux --root /data/alpine jq -Rrn '...' /proc/mounts` (the
+default root on the test disk's data partition, with get-alpine's records
+in `/data/alpine/.get-alpine/`), which counts the binds of `/dev`, `/proc`
+and `/net` it sees in the root and expects `ALPINE-JQ 6`, then installs
+Python into `/tmp/alpine` (python3 and its 19 dependencies, ~45 MB, more
+than the 64 MiB data partition holds) and runs
 `python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])'`
 (the standard library and two C extension modules), expecting `PYTHON 42`,
 and fetches `http://example.com/` with `urllib` (DNS over UDP, then TCP),

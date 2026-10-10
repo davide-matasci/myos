@@ -10,7 +10,7 @@ them.
 |-----------|------|------|---------------------------------|-------|
 | 1 `BIOS Boot` | BIOS boot | 1 MiB at LBA 2048 | `/dev/vda/p1` | Limine's BIOS stage 2 (`limine bios-install`, x86) |
 | 2 `EFI System` | ESP (`c12a7328-…`) | 512 MiB, FAT32 | `/dev/vda/p2`, mounted at `/boot` | Limine, the boot slots, `limine.conf` and `fstab` |
-| 3 `myos data` | Linux data (`0fc63daf-…`) | 64 MiB (the rest of the disk after `--install`), ext2 | `/dev/vda/p3`, mounted at `/data` | state an upgrade keeps; empty for now |
+| 3 `myos data` | Linux data (`0fc63daf-…`) | 64 MiB (the rest of the disk after `--install`), ext2 | `/dev/vda/p3`, mounted at `/data` | state an upgrade keeps: `get-myos`'s apps, `get-alpine`'s root |
 
 The image is 579 MiB, written sparse: only what the partitions hold takes
 space on the host.
@@ -209,9 +209,12 @@ the way, if it is ever needed.
 ## The data partition
 
 An empty ext2 (`ext2fs::mkfs`, the same code as myos's `mkfs.ext2`) at
-`/data`, for what must outlive an upgrade: SSH host keys and
-`authorized_keys` (in `/tmp` for now, `docs/ssh.md`), `/etc` overrides, home
-directories; which of those move there is its own change. Only the
+`/data`, for what must outlive an upgrade. It holds the default roots of
+the package tools: `get-myos`'s apps in `/data/apps` (`docs/packages.md`)
+and `get-alpine`'s Alpine root in `/data/alpine` (`docs/linux-compat.md`),
+both labelled `sys.pkg`. Other candidates are SSH host keys and
+`authorized_keys` (in `/tmp` for now, `docs/ssh.md`), `/etc` overrides and
+home directories; which of those move there is its own change. Only the
 administrator may write it (the policy's `sys.file` label). On a disk larger
 than the image (a VPS), the space after it is left unused: growing the
 partition to the disk needs the GPT rewritten, which can come later.

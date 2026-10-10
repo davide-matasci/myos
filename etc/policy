@@ -24,6 +24,7 @@ label /var/run/**            sys.run
 label /tmp/**                tmp
 label /tmp/apps/**           sys.pkg
 label /data/apps/**          sys.pkg
+label /data/alpine/**        sys.pkg
 label /home/$u/**            home($u)
 label /home/$u/.ssh/**       secret($u)
 label /mnt/**                mnt
