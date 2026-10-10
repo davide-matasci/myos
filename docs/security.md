@@ -32,7 +32,7 @@ boot system init                # the first process (init): user and domain
 login -> shell                  # the domain `setuser` enters by default
 
 user root    domains: admin shell untrusted   login: admin
-user system  domains: init netd login   login: none
+user system  domains: init netd login mount   login: none
 user alice   groups: dev   domains: shell untrusted   home: /home/alice   password: sha256:SALT:HEX
 
 label /**                 sys.file
@@ -149,8 +149,10 @@ starts, is one, so it cannot be typed at the console.
 
 ## The default policy
 
-- `system` runs init (`init`), netd (`netd`), getty and login (`login`) and
-  the boot smoke `/bin/custom/ok` (`smoke`), each with what it uses.
+- `system` runs init (`init`), netd (`netd`), getty and login (`login`),
+  init's `mount -a` (`mount`: the ESP at `/boot`, the fstab's partitions,
+  `docs/install.md`) and the boot smoke `/bin/custom/ok` (`smoke`), each
+  with what it uses.
 - `root` logs in to `admin`: the whole system (the image, `/tmp`, devices,
   `/proc`, `/net`, the kernel objects, every home) but not other users'
   `secret`s. It can also run `shell` and `untrusted` programs.

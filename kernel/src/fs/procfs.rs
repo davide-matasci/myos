@@ -6,7 +6,9 @@
 //! `sys/security/users` (docs/security.md); every process at `<pid>/` and
 //! its threads at `<pid>/task/<tid>/`, and the CPUs' idle time at `cpu`
 //! (`docs/proc.md`), and the kernel and the initramfs this boot came from
-//! at `boot/` (`get-myos --install --local`, docs/install.md).
+//! at `boot/` (`get-myos --install --local`, docs/install.md), with the
+//! partition it booted from (`boot/partuuid`, what `mount -a` mounts at
+//! `/boot`).
 
 use crate::fs::StatInfo;
 use crate::fs::vfs;
@@ -396,6 +398,7 @@ fn generated(name: &str) -> Option<alloc::string::String> {
         // slot it came from, docs/install.md), and a newline.
         "cmdline" => Some(alloc::format!("{}\n", crate::limine_boot::cmdline())),
         "partitions" => Some(crate::blk::partitions_text()),
+        "boot/partuuid" => crate::limine_boot::boot_partuuid().map(|u| alloc::format!("{u}\n")),
         _ => match parse_pid(name)? {
             PidNode::Status(pid) => process_status(pid),
             PidNode::ThreadStatus(tid) => thread_status(tid),
@@ -585,6 +588,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         "sys" => b"kernel\nsecurity\n",
         "sys/kernel" => b"hostname\n",
         "sys/security" => b"users\n",
+        "boot" if crate::limine_boot::boot_partuuid().is_some() => b"kernel\ninitramfs\npartuuid\n",
         "boot" => b"kernel\ninitramfs\n",
         _ => return 0,
     };
@@ -627,6 +631,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 "cpu" => 96,
                 "cmdline" => 98,
                 "partitions" => 97,
+                "boot/partuuid" => 86,
                 _ => pid_ino(name),
             },
             nlink: 1,

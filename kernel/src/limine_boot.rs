@@ -133,6 +133,27 @@ pub fn boot_file(name: &str) -> Option<&'static [u8]> {
     Some(unsafe { core::slice::from_raw_parts(data.as_ptr(), data.len()) })
 }
 
+/// The GPT partition the kernel's file was loaded from (the boot disk's
+/// ESP), its unique GUID as `/proc/partitions` writes it: `/proc/boot/partuuid`,
+/// what `mount -a` mounts at `/boot`. `None` from a medium without a GPT
+/// (the ISO).
+pub fn boot_partuuid() -> Option<alloc::string::String> {
+    let file = EXECUTABLE_FILE.response()?.executable_file();
+    // Read at the offset of the protocol's `struct limine_file`: the crate's
+    // `File` lacks the `unused` word after `media_type`, which puts its
+    // GUID fields 4 bytes early. The GUID's bytes are as the GPT has them.
+    const GPT_PART_UUID: usize = 80;
+    let base = file as *const limine::file::File as *const u8;
+    let mut g = [0u8; 16];
+    // SAFETY: Limine's file structure is at least 112 bytes long (it ends
+    // with three GUIDs), and stays mapped for the kernel's life.
+    unsafe { core::ptr::copy_nonoverlapping(base.add(GPT_PART_UUID), g.as_mut_ptr(), 16) };
+    if g == [0; 16] {
+        return None;
+    }
+    Some(crate::blk::gpt::guid_text(&g))
+}
+
 /// Limine RSDP virtual address, or `None` when firmware has no ACPI.
 pub fn rsdp_va() -> Option<usize> {
     let resp = RSDP.response()?;

@@ -152,40 +152,69 @@ partitions() {
 	mount $d/p3 /tmp/p3 fat && cmp /bin/sbase/ls "/tmp/p3/A dir/ls" && umount /tmp/p3
 }
 # The boot disk's layout (docs/install.md; a virtio disk on every arch,
-# vdc on x86): its ESP holds the kernel, the initramfs and
-# the version in slot a, an empty slot b and the one limine.conf, which
-# boots slot a and tells the kernel so (/proc/cmdline); the data partition
-# is an empty ext2.
+# vdc on x86), as `mount -a` mounted it at boot: the ESP at /boot (the
+# partition /proc/boot/partuuid names) holds the kernel, the initramfs and
+# the version in slot a, an empty slot b, the one limine.conf, which boots
+# slot a and tells the kernel so (/proc/cmdline), and fstab, which
+# names the data partition: an empty ext2 at /data.
 boot_disk() {
 	data=$(grep '"myos data"$' /proc/partitions | cut -d' ' -f1)
 	[ -n "$data" ] || { cat /proc/partitions; return 1; }
 	disk=${data%/*}
 	esp=$(grep "^$disk/p[0-9]* .* c12a7328-f81f-11d2-ba4b-00a0c93ec93b " /proc/partitions | cut -d' ' -f1)
 	[ -n "$esp" ] || { cat /proc/partitions; return 1; }
-	mkdir -p /tmp/boot-esp /tmp/boot-data && mount /dev/$esp /tmp/boot-esp fat || return 1
-	/bin/sbase/find /tmp/boot-esp > /tmp/boot-esp.txt
+	cat /proc/mounts /boot/fstab
 	r=0
-	[ -s /tmp/boot-esp/boot/a/kernel ] && [ -s /tmp/boot-esp/boot/a/initramfs ] || r=1
-	[ -d /tmp/boot-esp/boot/b ] && [ -z "$(ls /tmp/boot-esp/boot/b)" ] || r=1
-	grep -q '^    path: boot():/boot/a/kernel$' /tmp/boot-esp/boot/limine/limine.conf || r=1
-	[ "$(cat /tmp/boot-esp/boot/a/version)" = "$(cat /lib/myos-release)" ] || r=1
+	grep -q "^$esp .* $(cat /proc/boot/partuuid) " /proc/partitions || r=1
+	grep -q "^/dev/$esp /boot fat " /proc/mounts && grep -q "^/dev/$data /data ext2 " /proc/mounts || r=1
+	grep -q "^PARTUUID=$(grep "^$data " /proc/partitions | cut -d' ' -f5) /data ext2$" /boot/fstab || r=1
+	/bin/sbase/find /boot > /tmp/boot-esp.txt
+	[ -s /boot/boot/a/kernel ] && [ -s /boot/boot/a/initramfs ] || r=1
+	[ -d /boot/boot/b ] && [ -z "$(ls /boot/boot/b)" ] || r=1
+	grep -q '^    path: boot():/boot/a/kernel$' /boot/boot/limine/limine.conf || r=1
+	[ "$(cat /boot/boot/a/version)" = "$(cat /lib/myos-release)" ] || r=1
 	grep -q 'slot=a' /proc/cmdline || r=1
-	[ "$(/bin/sbase/find /tmp/boot-esp -name limine.conf | wc -l)" -eq 1 ] || r=1
+	[ "$(/bin/sbase/find /boot -name limine.conf | wc -l)" -eq 1 ] || r=1
 	# What this boot came from (/proc/boot/) is slot a's, and Limine's files
 	# the initramfs carries for `get-myos --install --local` are the ESP's.
-	cmp /proc/boot/kernel /tmp/boot-esp/boot/a/kernel && cmp /proc/boot/initramfs /tmp/boot-esp/boot/a/initramfs || r=1
+	cmp /proc/boot/kernel /boot/boot/a/kernel && cmp /proc/boot/initramfs /boot/boot/a/initramfs || r=1
 	while read -r what path size sum file; do
-		cmp "$file" "/tmp/boot-esp/$path" || r=1
+		cmp "$file" "/boot/$path" || r=1
 	done < /lib/myos-boot/boot.txt
-	umount /tmp/boot-esp
 	[ $r = 0 ] || { cat /tmp/boot-esp.txt; return 1; }
-	mount /dev/$data /tmp/boot-data ext2 && [ "$(ls /tmp/boot-data)" = lost+found ] && umount /tmp/boot-data
+	[ "$(ls /data)" = lost+found ]
+}
+# /boot/fstab edited on the running system (docs/install.md): a line naming
+# the scratch disk's p3 (FAT since `partitions`) by its unique GUID mounts it
+# under /mnt, its mount point made there (/mnt is /tmp/mnt, bound over it);
+# a line naming a /dev path is refused and one whose partition is not there
+# skipped, without stopping the others; a second `mount -a` leaves what is
+# mounted. `mount PARTUUID=...` mounts by GUID too. The fstab is restored.
+fstab_mount() {
+	cp /boot/fstab /tmp/fstab.orig || return 1
+	g=$(grep '^nvme1n1/p3 ' /proc/partitions | cut -d' ' -f5)
+	{
+		echo "/dev/nvme1n1/p3 /mnt/bad fat"
+		echo "PARTUUID=00000000-0000-4000-8000-00000000dead /mnt/gone fat"
+		echo "PARTUUID=$g /mnt/scratch/p3 fat rw"
+	} >> /boot/fstab
+	mount -a > /tmp/mount-a.out 2>&1
+	rc=$?
+	cp /tmp/fstab.orig /boot/fstab
+	cat /tmp/mount-a.out /proc/mounts
+	[ $rc = 1 ] || return 1
+	grep -q 'PARTUUID=<guid>' /tmp/mount-a.out && grep -q 'dead, skipped$' /tmp/mount-a.out || return 1
+	grep -q "^/dev/nvme1n1/p3 /tmp/mnt/scratch/p3 fat " /proc/mounts && [ -d "/mnt/scratch/p3/A dir" ] || return 1
+	mount -a || return 1
+	[ "$(grep -c '^/dev/nvme1n1/p3 ' /proc/mounts)" -eq 1 ] || return 1
+	umount /mnt/scratch/p3 && mkdir -p /mnt/x && mount PARTUUID=$g /mnt/x fat && [ -d "/mnt/x/A dir" ] && umount /mnt/x
 }
 t rmmod_hello rmmod_hello
 t rmmod_busy rmmod_busy
 t pci_rescan pci_rescan
 t partitions partitions
 t boot_disk boot_disk
+t fstab_mount fstab_mount
 
 # A terminal is a directory (docs/tty.md): `data` is the terminal, `ctl` its
 # state as text. /proc/self/fd/N names what an fd is open on, /proc/self/tty
