@@ -963,6 +963,21 @@ lx_dyn() {
 	cat $OUT/linux-dyn.log
 	contains "LINUX-DYN OK" $OUT/linux-dyn.log
 }
+# AF_UNIX between the layers (docs/sockets-unix.md): a Linux client
+# connects to a native server by the name it listens under in /net/unix,
+# as an Alpine X client reaches the X server's /tmp/.X11-unix/X0, and gets
+# its bytes echoed.
+lx_unix() {
+	/bin/etc/unix_smoke echo /tmp/.lx-unix > $OUT/lx-unix-server.log 2>&1 &
+	spid=$!
+	capture $OUT/lx-unix.log linux /bin/linux/linux-smoke unix /tmp/.lx-unix
+	# A client that never connected leaves the server in accept.
+	contains "LINUX-UNIX OK" $OUT/lx-unix.log || kill $spid 2>/dev/null
+	wait $spid
+	status=$?
+	cat $OUT/lx-unix.log $OUT/lx-unix-server.log
+	[ $status = 0 ] && contains "LINUX-UNIX OK" $OUT/lx-unix.log
+}
 # The page cache (kernel/src/fs/pagecache.rs): the libraries one run maps
 # serve the next (PageCacheKiB), and one rewritten in between is read as it
 # is now. libsmoke2.so overwritten with libsmoke.so has no smoke2_name for
@@ -1008,6 +1023,26 @@ lx_python_net() {
 	echo "$out"
 	[ "$out" = "HTTP 200" ]
 }
+# An Alpine X client on the native X server (the tinyx package, installed
+# as an app): xdpyinfo, in the Python test's root, reaches Xfbdev's
+# /tmp/.X11-unix/X0 over AF_UNIX and describes the display. It gives up
+# at once while the server does not answer yet, so it is run again.
+lx_x11() {
+	run-myos get-alpine -r /tmp/alpine xdpyinfo || return 1
+	run-myos tinyx:Xfbdev :0 -br > $OUT/lx-x11-server.log 2>&1 &
+	xpid=$!
+	i=0
+	while [ $i -lt 60 ] && ! DISPLAY=:0 linux --root /tmp/alpine xdpyinfo > $OUT/lx-x11.out 2>&1; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill $xpid 2>/dev/null
+	wait $xpid 2>/dev/null
+	grep -q "^name of display:" $OUT/lx-x11.out && return 0
+	head -20 $OUT/lx-x11.out
+	cat $OUT/lx-x11-server.log
+	return 1
+}
 # Alpine's rustc (rust, LLVM and gcc: ~600 MB) from the disk the launcher
 # prepares on the host (linux-compat/alpine-disk.sh, /dev/nvme2n1/data): its
 # libraries and allocator reservation need over 500 MiB of address space,
@@ -1027,11 +1062,13 @@ lx_insmod() {
 if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t linux_smoke lx_smoke
 	t linux_dyn lx_dyn
+	t linux_unix lx_unix
 	t linux_pagecache lx_pagecache
 	if [ "$MODE" = full ]; then
 		t alpine_jq lx_alpine
 		t alpine_python lx_python
 		t alpine_python_net lx_python_net
+		t alpine_x11 lx_x11
 		t alpine_rustc lx_rustc
 	fi
 else

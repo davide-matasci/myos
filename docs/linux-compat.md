@@ -257,10 +257,11 @@ Signals: `rt_sigaction` (handlers with `SA_SIGINFO`, `SA_RESTART`,
 alternate stacks). Signal numbers and masks are translated between Linux and
 the native (newlib) numbering, also in `wait4` statuses.
 
-Sockets: `socket` (`AF_INET` stream and datagram), `connect`, `sendto`,
-`recvfrom`, `sendmsg`, `recvmsg`, `shutdown`, `getsockname`, `getpeername`,
-`getsockopt` (`SO_ERROR`, `SO_TYPE`), `setsockopt` and `bind` (accepted,
-ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
+Sockets: `socket` (`AF_INET` stream and datagram, `AF_UNIX` stream),
+`socketpair` (`AF_UNIX`), `connect`, `bind`, `listen`, `accept`, `accept4`
+(`AF_UNIX`), `sendto`, `recvfrom`, `sendmsg`, `recvmsg`, `shutdown`,
+`getsockname`, `getpeername`, `getsockopt` (`SO_ERROR`, `SO_TYPE`),
+`setsockopt` (accepted, ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
 too. See Sockets below.
 
 Time and misc: `clock_gettime`, `gettimeofday`, `time`, `nanosleep`,
@@ -289,6 +290,16 @@ up, and `get-alpine` gives a new root an `/etc/resolv.conf` for musl naming
 the DNS servers the system uses: the `dns=` lines of `/net/ndb`, QEMU's
 `10.0.2.3` without any. It is written once, when the root has none, so a
 root moved to another network needs it edited or removed.
+
+An `AF_UNIX` stream socket is a `/net/unix` conversation, mapped as
+libgloss maps a native program's (`docs/sockets-unix.md`): `connect`
+writes `connect NAME`, `listen` announces the name `bind` gave, `accept`
+takes the next connection from the listener's `listen`, and an abstract
+name (leading NUL) is `@name`. Names live in `/net/unix`, not in the
+filesystem, so Linux and native programs reach each other by name, also
+from inside a `linux --root`: an Alpine X client connects to the native
+X server's `/tmp/.X11-unix/X0` with nothing in its root (libxcb tries the
+abstract name first, is refused, and takes the path).
 
 ## Dynamic linking
 
@@ -424,10 +435,12 @@ three, the kernel crate itself an hour. Known gaps:
 - An eventfd is a pipe (its write end kept aside): a non-zero write wakes
   a reader, a read returns how many writes it collected. No semaphore mode
   and no initial value.
-- `socketpair(AF_UNIX, SOCK_STREAM | SOCK_SEQPACKET)` is a `/net/unix`
-  pair (`docs/sockets-unix.md`), its ends kept like TCP sockets (Rust's
-  `Command` reports a failed exec through one). Stream semantics for
-  both: no message boundaries, and no fd passing.
+- `AF_UNIX` sockets are `/net/unix` conversations (Sockets above), and
+  `socketpair(AF_UNIX, SOCK_STREAM | SOCK_SEQPACKET)` a `/net/unix` pair,
+  their ends kept like TCP sockets (Rust's `Command` reports a failed exec
+  through one). Stream semantics for `SOCK_SEQPACKET` too: no message
+  boundaries; no fd passing (`SCM_RIGHTS`: issue #340) and no
+  `SOCK_DGRAM`.
 - File locks are the native ones (`README.md`, "File locks"): `flock`,
   `fcntl`'s record locks (`F_SETLK`, `F_SETLKW`, `F_GETLK`) and the open
   file description's (`F_OFD_SETLK`, ...), so cargo, SQLite and git
@@ -447,8 +460,8 @@ three, the kernel crate itself an hour. Known gaps:
   `/dev`, `/proc`, ...) and FAT report 0. `utimensat`, `futimens` and
   `utimes` set them there (`UTIME_NOW`, `UTIME_OMIT`; nanoseconds are
   dropped) and fail with `EROFS` elsewhere.
-- Sockets: IPv4 clients and `socketpair` only (no `listen`/`accept`, no
-  IPv6, no other Unix sockets); no half-close (`shutdown` hangs up only for
+- Sockets: IPv4 clients and `AF_UNIX` streams only (no `AF_INET`
+  `listen`/`accept`, no IPv6); no half-close (`shutdown` hangs up only for
   `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are
   ignored; `poll` reports a connected socket writable even with no send
   room left (a nonblocking write then says `EAGAIN`).
