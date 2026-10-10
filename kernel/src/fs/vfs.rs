@@ -1379,7 +1379,7 @@ fn file_stat(idx: usize, id: u64) -> Option<StatInfo> {
             if unsafe { ops.stat_ino?(id, &mut out) } != 0 {
                 return None;
             }
-            StatInfo { mode: out.mode, size: out.size(), ino: out.ino, nlink: out.nlink, dev: 0, mtime: out.mtime, atime: out.atime }
+            StatInfo { mode: out.mode, size: out.size, ino: out.ino, nlink: out.nlink, dev: 0, mtime: out.mtime, atime: out.atime }
         }
     };
     Some(StatInfo { dev: (idx as u32).wrapping_add(1), ..info })
@@ -1689,7 +1689,7 @@ fn module_stat(ops: &ModuleVfsOps, rel: &str) -> Option<StatInfo> {
     }
     Some(StatInfo {
         mode: out.mode,
-        size: out.size(),
+        size: out.size,
         ino: out.ino,
         nlink: out.nlink,
         dev: 0,

@@ -157,12 +157,11 @@ unsafe extern "C" fn fat_stat<const S: usize>(path: *const u8, path_len: usize, 
     unsafe {
         *out = VfsStatInfo {
             mode: kind | perm,
-            size: st.size,
+            size: u64::from(st.size),
             ino: st.id,
             nlink,
             mtime: u64::from(st.mtime),
             atime: u64::from(st.atime),
-            size_hi: 0,
         }
     };
     0

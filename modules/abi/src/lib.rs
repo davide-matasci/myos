@@ -43,7 +43,7 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 33 added [`KernelApi::irq_enable`] and [`KernelApi::console_input`] (an
 /// interrupt-driven keyboard), and `keyboard_irq` / `cursor_blinks` to
 /// [`ModuleConsoleOps`] (CPU 0 without its tick).
-/// 34 added `size_hi` to [`VfsStatInfo`] (sizes past 4 GiB).
+/// 34 made [`VfsStatInfo`]'s `size` 64 bits (sizes past 4 GiB).
 pub const ABI_VERSION: u32 = 34;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
@@ -66,7 +66,7 @@ pub const MYOS_IRQ_INTX: u16 = 0xFFFF;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VfsStatInfo {
     pub mode: u32,
-    pub size: u32,
+    pub size: u64,
     pub ino: u32,
     pub nlink: u32,
     /// Last modification, in seconds since the epoch (0: not kept).
@@ -74,21 +74,6 @@ pub struct VfsStatInfo {
     /// Last access as set by `set_times` (reads need not change it), in
     /// seconds since the epoch (0: not kept).
     pub atime: u64,
-    /// The size's upper 32 bits (`size` is the lower ones).
-    pub size_hi: u32,
-}
-
-impl VfsStatInfo {
-    /// The whole size in bytes.
-    pub fn size(&self) -> u64 {
-        u64::from(self.size_hi) << 32 | u64::from(self.size)
-    }
-
-    /// Set the whole size in bytes.
-    pub fn set_size(&mut self, size: u64) {
-        self.size = size as u32;
-        self.size_hi = (size >> 32) as u32;
-    }
 }
 
 /// Module-provided VFS backend hooks. Function pointers may be null only where

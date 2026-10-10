@@ -848,7 +848,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
     };
     unsafe {
         (*out).mode = mode;
-        (*out).size = size;
+        (*out).size = u64::from(size);
         (*out).ino = ino;
         (*out).nlink = if mode & S_IFDIR != 0 { 2 } else { 1 };
     }
