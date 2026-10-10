@@ -311,7 +311,7 @@ artifacts_ready() {
   while read -r f; do
     [[ -e "$f" ]] || { echo "kernel artifacts: missing $f (ports.sh --all-files all)" >&2; return 1; }
   done < <(./scripts/ports.sh --all-files all)
-  for f in $(linux_compat_members) target/linux-compat/{x86_64,aarch64,riscv64}/get-alpine; do
+  for f in $(linux_compat_members); do
     [[ -e "$f" ]] || { echo "kernel artifacts: missing $f (linux-compat)" >&2; return 1; }
   done
   return 0

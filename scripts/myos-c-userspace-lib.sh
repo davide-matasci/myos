@@ -58,6 +58,7 @@ MYOS_DROPBEAR_VERSION_STAMP="$MYOS_ROOT/target/.myos-dropbear-version"
 MYOS_OS_TEST_VERSION="$MYOS_ROOT/target/.myos-os-test-version"
 MYOS_LINUX_COMPAT_VERSION="$MYOS_ROOT/target/.myos-linux-compat-version"
 MYOS_GET_MYOS_VERSION="$MYOS_ROOT/target/.myos-get-myos-version"
+MYOS_GET_ALPINE_VERSION="$MYOS_ROOT/target/.myos-get-alpine-version"
 
 MYOS_SBASE_MANIFEST="$MYOS_ROOT/target/sbase-manifest-x86_64.txt"
 MYOS_COREUTILS_MANIFEST="$MYOS_ROOT/target/coreutils-manifest-x86_64.txt"
@@ -172,6 +173,32 @@ myos_get_myos_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/get-myos-${arch}-unknown-none" ]] || return 1
+  done
+  return 0
+}
+
+# get-alpine (packages/get-alpine): its source, get-myos's shared pkgtools,
+# the build script, and what it links (newlib, zlib).
+myos_get_alpine_version_hash() {
+  local h
+  h="$(
+    {
+      sha256sum "$MYOS_ROOT/packages/get-alpine/get-alpine.c" "$MYOS_ROOT/packages/get-alpine/build.sh" \
+        "$MYOS_ROOT/user/get-myos/pkgtools.c" "$MYOS_ROOT/user/get-myos/pkgtools.h"
+      myos_newlib_version_hash
+      myos_zlib_version_hash
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_get_alpine_is_current() {
+  local arch
+  [[ -f "$MYOS_GET_ALPINE_VERSION" ]] \
+    && [[ "$(cat "$MYOS_GET_ALPINE_VERSION")" == "$(myos_get_alpine_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/get-alpine-${arch}-unknown-none" ]] || return 1
   done
   return 0
 }
@@ -454,16 +481,14 @@ myos_dropbear_is_current() {
   return 0
 }
 
-# Linux compatibility layer userspace (linux-compat/build.sh): musl, the
-# Linux test binaries and get-alpine. Not the launcher, which has its own
-# script and is part of the kernels bundle.
+# Linux compatibility layer userspace (linux-compat/build.sh): musl and the
+# Linux test binaries. Not the launcher, which has its own script and is
+# part of the kernels bundle, nor get-alpine, a package.
 myos_linux_compat_version_hash() {
   local h
   h="$(
     {
-      sha256sum "$MYOS_ROOT/linux-compat/build.sh" \
-        "$MYOS_ROOT/linux-compat/get-alpine.c" \
-        "$MYOS_ROOT/user/get-myos/pkgtools.c" "$MYOS_ROOT/user/get-myos/pkgtools.h" || true
+      sha256sum "$MYOS_ROOT/linux-compat/build.sh" || true
       find "$MYOS_ROOT/linux-compat/tests" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum 2>/dev/null || true
       myos_newlib_version_hash
@@ -480,7 +505,7 @@ myos_linux_compat_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/linux-smoke-${arch}-linux-musl" ]] || return 1
-    for f in "ld-musl-${arch}.so.1" libsmoke.so libsmoke2.so linux-dyn get-alpine; do
+    for f in "ld-musl-${arch}.so.1" libsmoke.so libsmoke2.so linux-dyn; do
       [[ -f "$MYOS_ROOT/target/linux-compat/${arch}/$f" ]] || return 1
     done
   done

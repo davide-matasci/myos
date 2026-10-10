@@ -979,14 +979,15 @@ lx_pagecache() {
 	cp /lib/libsmoke2.so /tmp/pc/libsmoke2.so
 	LD_LIBRARY_PATH=/tmp/pc linux /bin/linux/linux-dyn && rm -r /tmp/pc
 }
-# A real Alpine package, downloaded at run time (jq + oniguruma + musl) into
+# A real Alpine package, downloaded at run time (jq + oniguruma + musl) by
+# get-alpine (a package, installed by the full list like the others) into
 # the default root, /data/alpine on the boot disk's data partition (mounted
 # at /data), with get-alpine's records in ROOT/.get-alpine, and run chrooted
 # in that root: it counts the binds of /dev, /proc and /net into the root it
 # sees in /proc/mounts (3, doubled).
 lx_alpine() {
 	grep -q ' /data ' /proc/mounts || { echo "no /data"; return 1; }
-	get-alpine jq || return 1
+	run-myos get-alpine jq || return 1
 	[ -s /data/alpine/.get-alpine/pkgs/jq ] || { ls -a /data/alpine /data/alpine/.get-alpine; return 1; }
 	out=$(linux --root /data/alpine jq -Rrn '[inputs|select(test("/data/alpine/"))]|"ALPINE-JQ \(length*2)"' /proc/mounts)
 	echo "$out"
@@ -996,7 +997,7 @@ lx_alpine() {
 # disk's data partition: in /tmp): the standard library, and the json and
 # sqlite3 C extension modules.
 lx_python() {
-	get-alpine -r /tmp/alpine python3 || return 1
+	run-myos get-alpine -r /tmp/alpine python3 || return 1
 	out=$(linux --root /tmp/alpine python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])')
 	echo "$out"
 	[ "$out" = "PYTHON 42" ]

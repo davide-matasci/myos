@@ -7,8 +7,6 @@
 #   target/linux-compat/<arch>/ld-musl-<arch>.so.1  musl's libc.so / dynamic linker
 #   target/linux-compat/<arch>/{linux-dyn,libsmoke.so,libsmoke2.so}
 #                                              a dynamically linked test
-#   target/linux-compat/<arch>/get-alpine       Alpine package fetcher (myos newlib,
-#                                              with the zlib port)
 # musl is built from its release tarball with clang for each target; on
 # aarch64/riscv64 its libc.so links compiler-rt's quad-float builtins (fetched
 # per file, like ports/curl/build-softfloat-riscv64.sh). Only needed for
@@ -39,7 +37,6 @@ RANLIB_BIN="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
 # artifacts, which carry newlib itself; they are cheap to (re)write.
 "$ROOT/toolchain/newlib/tool-wrappers.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
-"$ROOT/ports/zlib/build.sh"
 
 # compiler-rt builtins for libc.so on aarch64/riscv64 (128-bit long double).
 CRT_TAG=llvmorg-19.1.7
@@ -90,28 +87,6 @@ C
       -c "$CRT_SRC/$f" -o "$obj/${f%.c}.o"
   done
   "$AR_BIN" rcs "$out" "$obj"/*.o
-}
-
-# get-alpine for one arch, linked like the launcher plus the zlib port
-# (Alpine packages and indexes are gzip-compressed tars).
-build_get_alpine() {
-  local arch="$1"
-  local triple="$arch-unknown-myos"
-  local nl="$ROOT/target/newlib-$arch"
-  local zl="$ROOT/target/zlib-$arch"
-  local out="$ROOT/target/linux-compat/$arch"
-  local obj="$ROOT/target/linux-compat/get-alpine-$arch.o"
-  local tools="$ROOT/target/linux-compat/pkgtools-$arch.o"
-  mkdir -p "$out"
-  # The download/tar/gzip code is shared with get-myos (user/get-myos).
-  "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$nl/$triple/include" -I"$zl/include" \
-    -I"$ROOT/user/get-myos" -c "$ROOT/linux-compat/get-alpine.c" -o "$obj"
-  "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$nl/$triple/include" -I"$zl/include" \
-    -c "$ROOT/user/get-myos/pkgtools.c" -o "$tools"
-  ld.lld -pie --no-dynamic-linker -o "$out/get-alpine" \
-    --entry=_start -z max-page-size=4096 \
-    "$nl/$triple/lib/crt0.o" "$obj" "$tools" "$zl/lib/libz.a" -L"$nl/$triple/lib" \
-    --start-group -lc -lgloss -lg --end-group
 }
 
 tarball="$ROOT/target/linux-compat/musl-$MUSL_VERSION.tar.gz"
@@ -181,8 +156,6 @@ for arch in "${ARCHES[@]}"; do
     "$prefix/lib/Scrt1.o" "$prefix/lib/crti.o" "$ROOT/linux-compat/tests/linux-dyn.c" \
     "$out/libsmoke.so" -L"$prefix/lib" -lc "$prefix/lib/crtn.o"
 
-  echo "==> get-alpine ($arch, myos newlib + zlib)"
-  build_get_alpine "$arch"
 done
 # The launcher ships in every image; its own script builds it for the 3 arches.
 "$ROOT/linux-compat/build-launcher.sh"

@@ -226,7 +226,7 @@ myos_ports_matrix() {
     printf '{"port":"%s","script":"./%s","needs_sysroot":"%s","deps":"%s"},' \
       "$name" "$(myos_port_build_script)" "$needs_sysroot" "$deps"
   done
-  printf '{"port":"linux-compat","script":"./linux-compat/build.sh","needs_sysroot":"0","deps":"zlib"}]\n'
+  printf '{"port":"linux-compat","script":"./linux-compat/build.sh","needs_sysroot":"0","deps":""}]\n'
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

@@ -11,5 +11,4 @@ tests and the Alpine package fetcher. Design, scope and limits:
 | `build-launcher.sh` | builds the launcher for x86_64, aarch64 and riscv64 (run by `build.rs`) |
 | `tests/linux-smoke.c` | boot smoke, built as a static-PIE Linux binary against musl for each arch |
 | `tests/linux-dyn.c`, `tests/libsmoke*.c` | dynamically linked smoke and its shared objects |
-| `get-alpine.c` | Alpine Linux package fetcher (native, zlib port) |
 | `build.sh` | builds the musl pieces per arch (`cargo build --features linux_compat`); fetches musl 1.2.5 (pinned sha256) and builds it with clang |

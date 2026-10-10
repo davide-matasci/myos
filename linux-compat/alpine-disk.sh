@@ -37,7 +37,7 @@ work="$ROOT/target/alpine-disk-$arch"
 rm -rf "$work"
 mkdir -p "$work/root"
 cc -O2 -DALPINE_ARCH="\"$arch\"" -I"$ROOT/user/get-myos" -I"$zsrc" \
-  "$ROOT/linux-compat/get-alpine.c" "$ROOT/user/get-myos/pkgtools.c" \
+  "$ROOT/packages/get-alpine/get-alpine.c" "$ROOT/user/get-myos/pkgtools.c" \
   "$zsrc"/{inflate,inftrees,inffast,zutil,adler32,crc32}.c \
   -o "$work/get-alpine"
 

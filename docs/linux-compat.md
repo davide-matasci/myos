@@ -5,8 +5,9 @@
 > *personality* hook (`kernel/src/personality.rs`) the module fills through
 > the module ABI. Every image carries the module under `/lib/modules/linux`
 > and the `linux` launcher; the `linux_compat` Cargo feature (off by
-> default) loads the module at boot and adds the musl test binaries and
-> `get-alpine`. Nothing about native myos programs changes when it is
+> default) loads the module at boot and adds the musl test binaries.
+> `get-alpine`, which fetches Alpine Linux packages, is a myos package
+> (`get-myos get-alpine`). Nothing about native myos programs changes when it is
 > loaded. myos's own syscall ABI stays the primary interface; this layer is
 > an add-on for running some unmodified Linux binaries.
 
@@ -20,23 +21,30 @@ cargo run --features linux_compat -- aarch64   # (or riscv64)
 # in the guest:
 linux /bin/linux/linux-smoke               # prints LINUX-SMOKE OK
 linux /bin/linux/linux-dyn                 # dynamic: prints LINUX-DYN OK
-get-alpine jq                              # Alpine Linux packages, into /data/alpine
+get-myos get-alpine                        # the Alpine package fetcher, a package
+run-myos get-alpine jq                     # Alpine Linux packages, into /data/alpine
 linux --root /data/alpine jq -n '1+1'      # (/tmp/alpine without a /data)
 ```
 
 In a default build the module is not loaded at boot; `insmod
 /lib/modules/linux` loads it (`[ OK ] linux`, listed in `/proc/modules`),
-after which `linux PROGRAM` works for any Linux musl binary at hand.
+after which `linux PROGRAM` works for any Linux musl binary at hand, and
+the lines above from `get-myos get-alpine` on work the same: nothing of
+the layer but the module and the launcher is needed to run Alpine's
+packages.
 
 ## Alpine Linux packages: `get-alpine`
 
-Nothing from Alpine is in the image: `get-alpine` (`linux-compat/get-alpine.c`,
-a native program built with the layer on x86_64, aarch64 and riscv64, all
-three of which Alpine has repositories for) downloads packages at run time
-with the guest's `curl`:
+Nothing from Alpine is in the image: `get-alpine`
+(`packages/get-alpine/get-alpine.c`, a native program for x86_64, aarch64
+and riscv64, all three of which Alpine has repositories for) downloads
+packages at run time with the guest's `curl`. It is a package
+(`docs/packages.md`), not in the image: `get-myos get-alpine` installs it
+as an app, `run-myos get-alpine` runs it, whether or not the image was
+built with the layer.
 
 ```sh
-get-alpine [-r ROOT] [-u] PACKAGE...       # ROOT: /data/alpine or /tmp/alpine
+run-myos get-alpine [-r ROOT] [-u] PACKAGE...   # ROOT: /data/alpine or /tmp/alpine
 linux --root ROOT PROGRAM [ARG...]
 ```
 
@@ -80,7 +88,7 @@ of a test boot:
 
 ```sh
 mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
-get-alpine -r /mnt/alpine rust
+run-myos get-alpine -r /mnt/alpine rust
 linux --root /mnt/alpine rustc --version
 ```
 
@@ -98,12 +106,12 @@ into a directory and makes an ext2 image of it, to attach as a disk.
 | `src/limine_image.rs` | `OPTIONAL_MODULES`: `linux` is in `/lib/modules/boot.list` only with `linux_compat`, in `/lib/modules` always |
 | `Cargo.toml` (root) | feature `linux_compat` (not in `default` or `core`) |
 | `linux-compat/build-launcher.sh` | the `linux` launcher for each arch, in every image (`build.rs` runs it) |
-| `linux-compat/build.sh` | musl, the Linux test binaries and `get-alpine` for each arch (run by `build.rs` when the feature is on) |
+| `linux-compat/build.sh` | musl and the Linux test binaries for each arch (run by `build.rs` when the feature is on) |
 
 Without the module loaded the kernel has no personality registered:
 `SYS_LINUX_NEXT_EXEC` (51) fails, so `linux PROGRAM` prints an error, and a
 task can never get the Linux personality. Without the feature the image has
-no `/bin/linux/` and no `get-alpine`.
+no `/bin/linux/`.
 
 ## How a process becomes a Linux process
 
@@ -140,7 +148,7 @@ Linux ones. It is killed by its own fault; the kernel stays up.
 | `linux-compat/launcher.c` | the `linux` command |
 | `linux-compat/tests/linux-smoke.c` | Linux-side boot smoke (musl, static) |
 | `linux-compat/tests/linux-dyn.c`, `libsmoke*.c` | dynamically linked smoke and its shared objects |
-| `linux-compat/get-alpine.c` | the Alpine package fetcher (linked with the zlib port) |
+| `packages/get-alpine/get-alpine.c` | the Alpine package fetcher (a package, linked with the zlib port) |
 
 ### The personality ABI
 
@@ -368,7 +376,7 @@ sh /lib/self-host.sh /mnt           # REV: the branch to build (master)
 ```
 
 It installs Alpine's rust, cargo, rust-src, lld, clang, bash, busybox and
-git into `DIR/alpine` with `get-alpine`, clones (or updates) the source,
+git into `DIR/alpine` with `get-alpine` (installed with `get-myos` first), clones (or updates) the source,
 builds `core`, `alloc` and `compiler_builtins` once for
 `x86_64-unknown-none` into Alpine's `rustlib` (Alpine ships them for its
 own target only; the kernel's `build.rs` builds every module and user
@@ -481,7 +489,7 @@ call, shared data, a relocated function pointer and a thread-local in
 `libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`).
 The test is plain musl C, so it can also be run on a Linux host for
 reference. The full list then runs
-`get-alpine jq && linux --root /data/alpine jq -Rrn '...' /proc/mounts` (the
+`run-myos get-alpine jq && linux --root /data/alpine jq -Rrn '...' /proc/mounts` (the
 default root on the test disk's data partition, with get-alpine's records
 in `/data/alpine/.get-alpine/`), which counts the binds of `/dev`, `/proc`
 and `/net` it sees in the root and expects `ALPINE-JQ 6`, then installs
@@ -503,13 +511,14 @@ in `/proc/modules`: the module is built and loadable in every build.
 
 CI builds the musl pieces when their inputs change (`linux-compat` in
 `ci-ports.yml`, cached in the GHCR registry by `scripts/ci-registry.sh`
-under a hash of `linux-compat/`, newlib and zlib) and packs them into
+under a hash of `linux-compat/` and newlib) and packs them into
 `ci-build.tar.zst`. The full boot (daily, or `full_boot` on dispatch;
 `MYOS_CI_FEATURES=linux_compat`) builds all four disk images with the
 layer, so bios, uefi, aarch64 and riscv64 run the tests above. On master
 the **iso** job builds the x86_64 hybrid ISO with `--features linux_compat`,
 so the downloadable ISO always carries the layer (module loaded at boot,
-`linux-smoke`, `linux-dyn`, `get-alpine`). There are no separate Linux jobs.
+`linux-smoke`, `linux-dyn`; `get-alpine` comes from the release's packages).
+There are no separate Linux jobs.
 
 `linux-compat/build.sh` builds musl (static and shared) with clang for each
 target (and skips itself when its outputs match its stamp,
