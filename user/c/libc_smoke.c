@@ -2,13 +2,16 @@
  * (toolchain/newlib/libgloss/myos/posix_extra.c, netdb.c): getrandom from
  * /dev/urandom, vfork, daemon, the service lookups that find nothing, the
  * resolver (localhost, a missing name failing in bounded time), and the
- * termios and netinet constants the headers now carry;
+ * termios and netinet constants the headers now carry; the long double
+ * conversions;
  * the interval timer and alarm (SIGALRM on time, a blocking read cut short,
  * the default action).
  * Prints one `[ OK ] libc` or a `[ FAIL ] libc ...` line; the boot test
  * reads the exit status. */
 #include <errno.h>
 #include <fcntl.h>
+#include <float.h>
+#include <math.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -227,6 +230,56 @@ static int check_double(void) {
     return 0;
 }
 
+/* The long double conversions (binary128 on aarch64 and riscv64, the
+ * helpers of ports/sbase/trunctfdf2.c; x87 on x86_64): to and from double
+ * and float, exact both ways for what fits, rounding to nearest-even, the
+ * denormals, inf and NaN, and printf and strtold through them. The helpers
+ * once called themselves (issue #374). Doubles compare the results, so no
+ * long double compare helper is needed. */
+static int check_long_double(void) {
+    volatile double d[] = { 1.5, -0.1, DBL_MIN, DBL_TRUE_MIN, -DBL_MAX, 1e300, INFINITY };
+    volatile float f[] = { 1.5f, -0.1f, FLT_MIN, FLT_TRUE_MIN, FLT_MAX };
+    volatile long double above_half = 0x1.000000000000081p0L, tie_even = 0x1.00000000000008p0L,
+                         tie_odd = 0x1.00000000000018p0L, denorm_tie = 0x1.8p-1074L,
+                         big = 0x1p200L, nanl_ = NAN;
+    volatile double nan_d;
+    char buf[64];
+    unsigned i;
+    for (i = 0; i < sizeof d / sizeof d[0]; i++) {
+        volatile long double l = d[i];
+        if ((double)l != d[i]) {
+            return fail("long double <-> double");
+        }
+    }
+    for (i = 0; i < sizeof f / sizeof f[0]; i++) {
+        volatile long double l = f[i];
+        if ((float)l != f[i] || (double)l != (double)f[i]) {
+            return fail("long double <-> float");
+        }
+    }
+    if ((double)above_half != 0x1.0000000000001p0 || (double)tie_even != 1.0
+        || (double)tie_odd != 0x1.0000000000002p0 || (double)denorm_tie != 0x1p-1073) {
+        return fail("long double to double rounding");
+    }
+    if ((float)big != INFINITY || (float)(long double)d[3] != 0.0f) {
+        return fail("long double to float range");
+    }
+    nan_d = (double)nanl_;
+    if (nan_d == nan_d || (float)nanl_ == (float)nanl_) {
+        return fail("long double NaN");
+    }
+    snprintf(buf, sizeof buf, "%.3Lf %Lg", (long double)d[0], (long double)f[0]);
+    if (strcmp(buf, "1.500 1.5") != 0) {
+        printf("printf: %s\n", buf);
+        return fail("long double printf");
+    }
+    if ((double)strtold("2.5e2", NULL) != 250.0 || (double)strtold("-0.1", NULL) != -0.1) {
+        printf("strtold: %a %a\n", (double)strtold("2.5e2", NULL), (double)strtold("-0.1", NULL));
+        return fail("strtold");
+    }
+    return 0;
+}
+
 static volatile sig_atomic_t alarms;
 
 static void on_alarm(int sig) {
@@ -301,7 +354,7 @@ static int check_timers(void) {
 
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()
-        || check_termios() || check_double() || check_timers()) {
+        || check_termios() || check_double() || check_long_double() || check_timers()) {
         return 1;
     }
     printf("[ OK ] libc\n");

@@ -1,6 +1,6 @@
 # The curated os-test list (misc/ci-boot.tests: POSIX core, non-basic,
 # signal handlers, myos chroot/FIFO, the udp suite and the rest of the
-# suite that passes; 1040 prebuilt tests): a thin writable copy of the
+# suite that passes; 1041 prebuilt tests): a thin writable copy of the
 # suite under /tmp/o,
 # `make report`, and every test must pass.
 # Full mode only (the list takes a while under TCG). The report's progress

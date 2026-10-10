@@ -14,7 +14,7 @@ pub use super::node::Vnode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatInfo {
     pub mode: u32,
-    pub size: u32,
+    pub size: u64,
     pub ino: u32,
     pub nlink: u32,
     /// Filesystem device id for this mount (`st_dev`). Distinct per mount so

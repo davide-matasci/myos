@@ -52,9 +52,9 @@ t child /bin/etc/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports, the resolver (localhost without
 # a lookup, a name no server knows failing in bounded time), and the soft
-# float's double arithmetic, compares, conversions and printf; setitimer and
-# alarm (SIGALRM on time, a blocking read cut short, the default action)
-# (libc_smoke.c).
+# float's double arithmetic, compares, conversions and printf, the long
+# double conversions (issue #374); setitimer and alarm (SIGALRM on time, a
+# blocking read cut short, the default action) (libc_smoke.c).
 t libc /bin/etc/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
 # whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a
@@ -63,8 +63,8 @@ t at /bin/etc/at_smoke
 # O_EXCL creates a name once, racers or not, and a symlink there is taken;
 # ftruncate; pread/pwrite leave the position, ESPIPE on a pipe; close-on-exec
 # fds are gone after exec; one read gives a file's bytes up to the count or
-# its end; a rename does not wait for a process reading the console
-# (fileio_smoke.c; on ext2 in mkfs.ext2's test).
+# its end; a rename does not wait for a process reading the console; lseek
+# and ftello past 2 GiB (fileio_smoke.c; on ext2 in mkfs.ext2's test).
 t fileio /bin/etc/fileio_smoke
 # MAP_SHARED mappings of a file are the file: stores read back with read()
 # and survive munmap, close and a child's exit, write() shows in them, a

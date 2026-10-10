@@ -627,10 +627,10 @@ fn stat_at(at: At) -> Option<StatInfo> {
     let entries = ENTRIES.lock();
     let i = index_at(&entries, at)?;
     let (mode, size, nlink) = match &entries[i].kind {
-        Kind::Dir => (S_IFDIR | 0o755, 0u32, 2u32),
-        Kind::File(data) => (S_IFREG | 0o755, data.len() as u32, 1u32),
-        Kind::Symlink(t) => (S_IFLNK | 0o777, t.len() as u32, 1u32),
-        Kind::Fifo(_) => (S_IFIFO | 0o644, 0u32, 1u32),
+        Kind::Dir => (S_IFDIR | 0o755, 0u64, 2u32),
+        Kind::File(data) => (S_IFREG | 0o755, data.len() as u64, 1u32),
+        Kind::Symlink(t) => (S_IFLNK | 0o777, t.len() as u64, 1u32),
+        Kind::Fifo(_) => (S_IFIFO | 0o644, 0u64, 1u32),
     };
     Some(StatInfo {
         mode,

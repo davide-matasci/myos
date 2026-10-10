@@ -38,9 +38,9 @@ get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
   mirror's packages: version, dependencies, `installed`, `upgrade`
   (installed at another version) or `-`, after the mirror's and the
   system's release and ABI.
-- **Compatibility**: the syscall numbers only grow (`AGENTS.md`), so a
-  package built against ABI *N* runs on any kernel with ABI ≥ *N*;
-  `get-myos` refuses an index whose ABI is above the system's (its
+- **Compatibility**: packages are rebuilt with every release (an ABI
+  change is made outright, not worked around, `AGENTS.md`); `get-myos`
+  refuses an index whose ABI is above the system's (its
   programs could call syscalls this kernel lacks) and says which release
   the system has. An index or an image from before the header has no ABI
   to compare, and installs as before.

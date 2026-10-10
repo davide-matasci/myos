@@ -552,6 +552,7 @@ myos_tcc_version_hash() {
       sha256sum "$MYOS_ROOT/ports/tcc/versions.env"
       find "$MYOS_ROOT/ports/tcc" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
+      sha256sum "$MYOS_ROOT/ports/sbase/trunctfdf2.c" 2>/dev/null
       sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
     } | myos_hash
   )"
@@ -1074,6 +1075,7 @@ myos_make_version_hash() {
       myos_newlib_version_hash
       find "$(myos_port_dir make)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
+      sha256sum "$MYOS_ROOT/ports/sbase/trunctfdf2.c" 2>/dev/null
       sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
     } | myos_hash
   )"

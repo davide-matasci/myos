@@ -153,7 +153,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         Node::Data(id) => (S_IFCHR | 0o620, ino(id, 2), 0),
         Node::Ctl(id) => {
             let len = pty::ctl_text(id).map_or(0, |t| t.len());
-            (S_IFREG | 0o644, ino(id, 3), u32::try_from(len).unwrap_or(u32::MAX))
+            (S_IFREG | 0o644, ino(id, 3), len as u64)
         }
     };
     Some(StatInfo {

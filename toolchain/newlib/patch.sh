@@ -465,7 +465,109 @@ PYFCNTL
   fi
 }
 
+patch_strtold_binary128() {
+  # strtold (and strtold_l, wcstold) parse through _strtorx_l, which packs
+  # the x87 80-bit format whatever long double is. aarch64's and riscv64's
+  # long double is IEEE binary128, where those bytes read as garbage (NaN
+  # for "2.5e2"). With a 113-bit mantissa, parse at that precision and pack
+  # binary128 instead (myos-strtold-binary128).
+  local f="$NEWLIB_SRC/newlib/libc/stdlib/strtorx.c"
+  if ! grep -q 'myos-strtold-binary128' "$f"; then
+    python3 - "$f" <<'PYSTRTOLD'
+import sys
+f = sys.argv[1]
+s = open(f).read()
+old = """	k = _strtodg_l(p, s, sp, fpi, &exp, bits, loc);
+	ULtox((__UShort*)L, bits, exp, k);
+	return k;
+	}"""
+new = """	k = _strtodg_l(p, s, sp, fpi, &exp, bits, loc);
+	ULtox((__UShort*)L, bits, exp, k);
+	return k;
+	}
+#endif /* __LDBL_MANT_DIG__ != 113 */"""
+assert old in s, f"{f}: _strtorx_l body not found"
+s = s.replace(old, new, 1)
+old = """ void
+#ifdef KR_headers
+ULtox(L, bits, exp, k)"""
+new = """#if __LDBL_MANT_DIG__ == 113
+/* myos-strtold-binary128: long double is IEEE binary128 (aarch64,
+   riscv64): the 113-bit significand from _strtodg_l (bits[], least
+   significant word first, its value bits * 2^exp) packed with a 15-bit
+   exponent, the integer bit implied. */
+ static void
+ULtoQ(__ULong *L, __ULong *bits, Long exp, int k)
+{
+	/* L's words, least significant first (little-endian targets) */
+	switch(k & STRTOG_Retmask) {
+	  case STRTOG_NoNumber:
+	  case STRTOG_Zero:
+		L[0] = L[1] = L[2] = L[3] = 0;
+		break;
+
+	  case STRTOG_Denormal:
+		L[0] = bits[0];
+		L[1] = bits[1];
+		L[2] = bits[2];
+		L[3] = bits[3];
+		break;
+
+	  case STRTOG_Normal:
+	  case STRTOG_NaNbits:
+		L[0] = bits[0];
+		L[1] = bits[1];
+		L[2] = bits[2];
+		L[3] = (bits[3] & ~0x10000) | (__ULong)(exp + 0x3fff + 112) << 16;
+		break;
+
+	  case STRTOG_Infinite:
+		L[0] = L[1] = L[2] = 0;
+		L[3] = 0x7fff0000;
+		break;
+
+	  case STRTOG_NaN:
+		L[0] = L[1] = L[2] = 0;
+		L[3] = 0x7fff8000;
+	  }
+	if (k & STRTOG_Neg)
+		L[3] |= 0x80000000;
+}
+
+ int
+_strtorx_l(struct _reent *p, const char *s, char **sp, int rounding, void *L,
+	   locale_t loc)
+{
+	static FPI fpi0 = { 113, 1-16383-113+1, 32766 - 16383 - 113 + 1, 1, SI };
+	FPI *fpi, fpi1;
+	__ULong bits[4];
+	Long exp;
+	int k;
+
+	fpi = &fpi0;
+	if (rounding != FPI_Round_near) {
+		fpi1 = fpi0;
+		fpi1.rounding = rounding;
+		fpi = &fpi1;
+		}
+	k = _strtodg_l(p, s, sp, fpi, &exp, bits, loc);
+	ULtoQ((__ULong*)L, bits, exp, k);
+	return k;
+	}
+#else
+ void
+#ifdef KR_headers
+ULtox(L, bits, exp, k)"""
+assert old in s, f"{f}: ULtox not found"
+s = s.replace(old, new, 1)
+open(f, "w").write(s)
+PYSTRTOLD
+    echo "patched strtorx.c: strtold packs binary128 (myos-strtold-binary128)"
+  fi
+}
+
 patch_valist
 patch_fcntl_arg
 patch_tmpfile
 patch_x86_longjmp_val0
+patch_strtold_binary128
