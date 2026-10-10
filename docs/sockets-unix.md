@@ -63,13 +63,15 @@ lock, so the unix conversations have their own spinlock.
 
 `SOCK_DGRAM` is not supported (`EPROTONOSUPPORT`).
 
+The Linux layer maps a Linux program's `AF_UNIX` calls onto `/net/unix`
+the same way (`modules/linux/src/net.rs`, `docs/linux-compat.md`), so
+Linux and native programs connect to each other by name.
+
 ## Not yet
 
 - Passing file descriptors (`SCM_RIGHTS`) and credentials (`SCM_CREDENTIALS`,
   `SO_PEERCRED`): issue #340. Shared memory between processes is there
   (`shm_open`, `memfd_create`, System V `shmget`, `MAP_SHARED`: README).
-- The Linux layer (`modules/linux/src/net.rs`) maps `AF_INET` and, of
-  `AF_UNIX`, only `socketpair`.
 
 ## Test
 
@@ -79,4 +81,8 @@ reads any, 48 conversations open at once, `EADDRINUSE` and `ECONNREFUSED`,
 a nonblocking `accept`, `poll` on a listener, a forked client exchanging a
 greeting and then sending 256 KiB (more than the buffer, so its writes wait
 for the reader), EOF after it closes, and the name free again after the
-listener closes.
+listener closes. The Linux layer's: `linux-smoke` (`t linux_smoke`) does
+the same calls between Linux processes, an abstract name too, and
+`t linux_unix` (`user/tests/kernel.sh`) connects a Linux client to a native
+server (`unix_smoke echo NAME`); the full list runs Alpine's `xdpyinfo`
+against the native X server (`t alpine_x11`).
