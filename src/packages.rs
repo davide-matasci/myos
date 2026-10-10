@@ -6,7 +6,16 @@
 //! <arch>-index.txt          `# myos release=... commit=... abi=...`, then one line
 //!                           per package: name version size sha256 file deps
 //! <arch>-packages.txt       the names of the ports the image does not carry (packages/)
-//! <arch>-<name>.tar.gz      the package
+//! <arch>-<name>.tar.gz      the package: its files, and `app`, its manifest
+//! ```
+//!
+//! `get-myos` unpacks a package into a directory of its own, an app, which
+//! `run-myos` runs (docs/packages.md). The manifest says what:
+//!
+//! ```text
+//! run /bin/custom/vim        the app's command: bin/custom/<name>, else its first
+//!                            program in bin/custom; no line when it has none
+//! needs x11-xft x11-fonts    PORT_RDEPS, the apps whose files it uses
 //! ```
 //!
 //! `deps` are the package's runtime dependencies (`PORT_RDEPS`), comma
@@ -48,8 +57,7 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
     check_rdeps(&all);
     let mut index = format!("# myos {}", Release::current(manifest_dir).text());
     // The ports the image lacks: what `get-myos` is for, and what the full
-    // boot test installs (an image port installed over itself would bind
-    // its files over the image's).
+    // boot test installs.
     let mut packages = String::new();
     for port in &all {
         if port.files.is_empty() {
@@ -66,6 +74,13 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
             continue;
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries.push(Entry {
+            name: "app".into(),
+            data: app_manifest(port, &entries).into_bytes(),
+            ino: entries.len() as u64 + 1,
+            nlink: 1,
+            mode: 0o100644,
+        });
         let tar_path = out.join(format!("{arch}-{}.tar", port.name));
         std::fs::write(&tar_path, ustar(&entries)).expect("write package tar");
         // -n: no name or timestamp in the gzip header, so the same files
@@ -131,6 +146,23 @@ fn write_boot(manifest_dir: &Path, out: &Path, arch: &str) {
         list.push_str(&format!("esp {} {line}", f.path));
     }
     std::fs::write(out.join(format!("{arch}-boot.txt")), list).expect("write the boot file list");
+}
+
+/// The app manifest of `port`, whose files are `entries` (sorted): `run`,
+/// its command (`bin/custom/<name>`, else its first program there), and
+/// `needs`, its runtime dependencies (`run-myos`, user/get-myos/run-myos).
+fn app_manifest(port: &ports::Port, entries: &[Entry]) -> String {
+    let own = format!("bin/custom/{}", port.name);
+    let run = entries
+        .iter()
+        .find(|e| e.name == own)
+        .or_else(|| entries.iter().find(|e| e.name.starts_with("bin/custom/")));
+    let mut text = String::new();
+    if let Some(e) = run {
+        text.push_str(&format!("run /{}\n", e.name));
+    }
+    text.push_str(&format!("needs {}\n", port.rdeps.join(" ")));
+    text
 }
 
 /// Every runtime dependency (`PORT_RDEPS`) names a package with files, and

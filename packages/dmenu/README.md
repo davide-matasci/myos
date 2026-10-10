@@ -7,8 +7,8 @@ you pick. dwm's Alt+P runs its `dmenu_run`, which lists the programs of
 `PATH` and runs the one you pick.
 
 ```sh
-get-myos tinyx dwm dmenu    # the Xft stack and the fonts come with them
-startx                  # then Alt+P in dwm
+get-myos tinyx dwm          # dwm brings dmenu, st, the Xft stack and the fonts
+run-myos tinyx,dwm:startx   # then Alt+P in dwm
 ```
 
 The package installs `dmenu`, `stest` (the file tests `dmenu_path` filters

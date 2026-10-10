@@ -7,7 +7,7 @@ built for myos. Core protocol, no mouse, no XKB, no GL; the screen is
 
 ```sh
 get-myos tinyx
-startx some-x-client        # dwm when no client is named
+run-myos tinyx,APP:startx CLIENT    # APP the app with the client; dwm when none is named
 ```
 
 The server takes the screen and the keyboard from the console while it runs
@@ -51,7 +51,7 @@ Fonts: libXfont's built-in `fixed` and `cursor` (the font path is
 
 ## The test
 
-`test.sh` (full mode, after the install): `startx /bin/etc/tinyx_smoke`;
+`test.sh` (full mode, after the install): `run-myos tinyx:startx /bin/etc/tinyx_smoke`;
 `tinyx_smoke` checks that the screen is `/dev/fb`'s size, maps a red window over it and
 reads the framebuffer back, and receives the Shift+A the host types through
 the QEMU monitor as keycode 38, "A"; when it exits startx stops the server,

@@ -21,7 +21,7 @@ prompt (what the ISO is for).
 | CI | every pull request, on bios, uefi, aarch64 and riscv64 | the daily scheduled run and `workflow_dispatch` with `full_boot` |
 | budget | 4 minutes (5 with the Linux layer) | 50 minutes |
 | network | QEMU's user network only (DNS and the listen test go through it) | the host's: HTTPS, the Alpine mirror, this build's packages |
-| tests | the shell, exec, the basic programs, GPT partitions and ext2 on the scratch disk, FAT read-write, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain), plus: every package of the build installed from the host's mirror, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear and a login on a pty, the Linux layer's Alpine packages (jq, Python, and rustc from a disk the host prepares), the curated os-test list, the packages' own tests, `get-myos --upgrade` of the boot disk (Limine made stale first) and `--install` on the scratch disk, then a **second boot** of the upgraded disk, which must come up from slot `b`, and a **third** of the disk `--install --local` made (by BIOS on the bios job) (`docs/install.md`) |
+| tests | the shell, exec, the basic programs, GPT partitions and ext2 on the scratch disk, FAT read-write, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain and uutils, apps), plus: every package of the build installed from the host's mirror as an app, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear and a login on a pty, the Linux layer's Alpine packages (jq, Python, and rustc from a disk the host prepares), the curated os-test list, the packages' own tests, `get-myos --upgrade` of the boot disk (Limine made stale first) and `--install` on the scratch disk, then a **second boot** of the upgraded disk, which must come up from slot `b`, and a **third** of the disk `--install --local` made (by BIOS on the bios job) (`docs/install.md`) |
 
 ## In the guest
 
@@ -71,7 +71,10 @@ the feature, `insmod` otherwise). The runner sources `kernel.sh`, then
 `ports/*.sh` in name order; the packer names those so the core image ports
 (the shell, the basic programs) come first, the other image ports next,
 the packages last. In the full mode the very first test installs every
-package the host's mirror has.
+package the host's mirror has, as apps in `/tmp/apps` (`MYOS_APPS`,
+`docs/packages.md`), and the runner sources the packages' tests from
+there (`<app>/lib/myos-tests/ports/`) with the image's, in the same name
+order; they run their programs with `run-myos`.
 
 The tty test (`user/c/tty_smoke.c`, in `user/c/test.sh`) drives an
 interactive shell on a pty the way a person types at the console: history
@@ -82,15 +85,15 @@ foreground pipeline with the shell surviving.
 
 A port ships its test with `PORT_TEST=test.sh` in its `port.env`
 (`docs/ports.md`): the file lands at `/lib/myos-tests/ports/<group>-<name>.sh`
-in the image, or in the package (`0` for a core image port, `1` for another
-image port, `2` for a package), so moving a port between `ports/` and
+in the image, or in the package's app (`0` for a core image port, `1` for
+another image port, `2` for a package), so moving a port between `ports/` and
 `packages/` moves its test too. The runner sources every file of that
 directory in name order, after `kernel.sh`. A test script calls `t`:
 
 ```sh
 # packages/make/test.sh
 make_version() {
-	grep -q /bin/custom/make /proc/mounts && make --version | grep -q "GNU Make"
+	run-myos make --version | grep -q "GNU Make" && [ ! -e /bin/custom/make ]
 }
 t make make_version
 ```
@@ -156,7 +159,8 @@ test disks, which keep their names: not NVMe, whose 64-bit BAR SeaBIOS
 cannot reach with 4 GiB of RAM). After a full list that passed, the launcher
 boots the copy again and types `sh /lib/myos-tests/run.sh reboot`, which
 checks only that the system came up from slot `b` at the release the
-upgrade wrote; then it boots the scratch disk `get-myos --install --local`
+upgrade wrote, and that the app the list installed in `/data/apps` (on the
+boot disk's data partition) is still there and runs; then it boots the scratch disk `get-myos --install --local`
 made (the list's last test, `t_last` in `run.sh`: mkfs.ext2's formats the
 whole scratch disk; kept as `target/installed-<name>.img`) as the boot disk, by BIOS on the
 bios job and UEFI on the others, and `run.sh installed` checks it came up

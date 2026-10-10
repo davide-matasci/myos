@@ -1,5 +1,5 @@
-# lynx, installed as a package.
+# lynx, installed as an app.
 lynx_version() {
-	lynx -version | grep -q "Lynx Version"
+	run-myos lynx -version | grep -q "Lynx Version"
 }
 t lynx lynx_version

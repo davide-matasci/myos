@@ -1,5 +1,6 @@
-# GNU make, installed as a package: bound at its image path, runs.
+# GNU make, installed as an app: it runs at its image path in its view,
+# and nowhere else.
 make_version() {
-	grep -q /bin/custom/make /proc/mounts && make --version | grep -q "GNU Make"
+	run-myos make --version | grep -q "GNU Make" && [ ! -e /bin/custom/make ]
 }
 t make make_version

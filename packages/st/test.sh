@@ -1,4 +1,4 @@
-# st, installed as a package, on Xfbdev (the tinyx package), without a
+# st, installed as an app, on Xfbdev (the tinyx package), without a
 # window manager: st starts a shell on a pty; st_smoke gives st's window the
 # focus, as a window manager would, and sees the shell's first line (lit
 # pixels in the screen's top left, st_smoke.c); the host types a line
@@ -6,17 +6,17 @@
 # with st's TERM; st exits with it.
 
 st_run() {
-	Xfbdev :0 -br > /tmp/st-server.log 2>&1 &
+	run-myos tinyx:Xfbdev :0 -br > /tmp/st-server.log 2>&1 &
 	xpid=$!
 	ok=0
 	rm -f /tmp/st-typed
-	if /bin/etc/st_smoke server; then
-		DISPLAY=:0 st -e /bin/sh -c \
+	if run-myos st:st_smoke server; then
+		DISPLAY=:0 run-myos st -e /bin/sh -c \
 			'echo st-ready; read l; echo "$l $TERM" > /tmp/st-typed' > /tmp/st.log 2>&1 &
 		spid=$!
 		# The window first: until the server paints, the top left still
 		# has the console's text.
-		if /bin/etc/st_smoke focus && /bin/etc/st_smoke text; then
+		if run-myos st:st_smoke focus && run-myos st:st_smoke text; then
 			echo "HOST c-smokes sendkey o k ret" >&3
 			i=0
 			while [ $i -lt 60 ] && [ ! -s /tmp/st-typed ]; do
@@ -32,7 +32,7 @@ st_run() {
 				echo "st exited with $st"
 				[ $st = 0 ] && ok=1
 			else
-				/bin/etc/st_smoke probe
+				run-myos st:st_smoke probe
 			fi
 		fi
 		[ $ok = 1 ] || { kill $spid 2>/dev/null; wait $spid 2>/dev/null; }

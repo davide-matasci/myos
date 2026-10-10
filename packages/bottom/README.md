@@ -6,7 +6,7 @@ widgets, with the kernel's numbers from `/proc`.
 
 ```sh
 get-myos bottom
-btm               # q quits; dd on a process sends it a signal
+run-myos bottom                 # q quits; dd on a process sends it a signal
 ```
 
 ## What it shows

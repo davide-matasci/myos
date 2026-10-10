@@ -5,12 +5,13 @@ X server of the `tinyx` package. It is driven from the keyboard, which suits
 an X server without a mouse.
 
 ```sh
-get-myos tinyx dwm st dmenu   # the Xft stack and the fonts come with them
-startx
+get-myos tinyx dwm            # st, dmenu, the Xft stack and the fonts come with it
+run-myos tinyx,dwm:startx
 ```
 
 `startx` (the tinyx package) runs the server and dwm, and stops the server
-when dwm quits (Alt+Shift+Q).
+when dwm quits (Alt+Shift+Q); the two apps share one view
+(`docs/packages.md`), in which dwm finds st and dmenu, the apps it needs.
 
 The stock configuration (`config.def.h`): Alt is the modifier, Alt+B toggles
 the bar, Alt+J/K move the focus, Alt+Return zooms, Alt+Shift+C closes a
