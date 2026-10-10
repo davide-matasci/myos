@@ -148,8 +148,8 @@ and `/proc/boot/initramfs` (what Limine loaded, kept in memory for the
 kernel's life, so it works however the system booted: the ISO from a CD or
 a USB stick, a disk), and Limine's files from the initramfs, which carries
 the ESP's at `/lib/myos-boot/` with a `boot.txt` in the release list's
-format. get-myos writes the list of those (`/tmp/pkg/var/lib/get-myos/
-local-boot`, the files named by their paths) and installs from it as from
+format. get-myos writes the list of those (`.get-myos/local-boot` in its
+root, `docs/packages.md`, the files named by their paths) and installs from it as from
 a mirror's: the same layout, checks and BIOS stage; slot `a` gets this
 system's release (`/lib/myos-release`). From the ISO, that is the ISO's
 system, the Linux layer included (the ISO is built with it); a later

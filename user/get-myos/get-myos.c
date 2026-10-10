@@ -1,22 +1,27 @@
 /*
  * get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
+ * get-myos [-r ROOT] --root
  * get-myos [-m MIRROR] --upgrade [-f]
  * get-myos [-m MIRROR] --install DISK [--local]
  *
  * Install myos packages: the programs CI builds but the image does not
- * carry (packages/<name>, docs/packages.md). A package is a gzip tar of the
- * files the port would have in the image (bin/custom/vim, lib/vim/vimrc),
- * unpacked under ROOT (default /tmp/pkg, on the tmpfs) and bind-mounted
- * where the image would have them (a directory the image lacks, or a file
- * into one it has), so programs find their files at the usual paths and
- * PATH needs no change. A package's runtime dependencies (the `deps` field
- * of its index line, from the port's PORT_RDEPS) are installed first.
+ * carry (packages/<name>, docs/packages.md), as apps. A package is a gzip
+ * tar of the files the port would have in the image (bin/custom/vim,
+ * lib/vim/vimrc) and its manifest (`app`), unpacked into its own directory
+ * of the apps root, ROOT/<name>/, and nowhere else: nothing of the system
+ * changes, uninstalling is removing that directory. `run-myos NAME` runs
+ * it, its files seen at their image paths in that process's namespace
+ * only (run-myos, docs/packages.md). ROOT is -r, else $MYOS_APPS, else
+ * /data/apps when the boot disk's data partition is mounted (it survives
+ * a reboot), else /tmp/apps; --root prints it. A package's runtime
+ * dependencies (the `deps` field of its index line, from the port's
+ * PORT_RDEPS) are installed first.
  *
  * The mirror holds one index per architecture (<arch>-index.txt: a header
  * naming the build's release and syscall ABI, then name, version, size,
  * SHA-256, file and dependencies of every package), the list of what the
  * image lacks (<arch>-packages.txt) and the tarballs (<arch>-<name>.tar.gz).
- * The index is downloaded once into ROOT/var/lib/get-myos/index; -u
+ * The index is downloaded once into ROOT/.get-myos/index; -u
  * refreshes it and upgrades the installed packages whose version changed.
  * -l lists the mirror's packages. An index whose ABI is above the running
  * system's (/lib/myos-release, written by the image build) is refused: its
@@ -25,8 +30,8 @@
  * A package streams from curl through gunzip and the tar reader into ROOT
  * (nothing is stored: a tmpfs file holds 16 MiB at most, less than some
  * packages); its SHA-256 is checked over the stream, and only a package
- * whose checksum matches is bound and recorded (ROOT/var/lib/get-myos/pkgs/
- * <name> holds its version). MYOS_MIRROR or -m overrides the default, the
+ * whose checksum matches is recorded (ROOT/.get-myos/pkgs/<name> holds its
+ * version). MYOS_MIRROR or -m overrides the default, the
  * project's rolling GitHub release; the full boot test uses the host-served
  * mirror of the build's own packages (http://10.0.2.2:8765).
  *
@@ -68,18 +73,15 @@
 #define MYOS_RELEASE_FILE "/lib/myos-release"
 #endif
 
-/* libgloss/myos mount(2): SYS_MOUNT; "bind" makes SOURCE visible at TARGET. */
-int mount(const char *source, const char *target, const char *fstype, ...);
-
 static char mirror[200];
 
-/* ROOT/var/lib/get-myos/<file> */
+/* ROOT/.get-myos/<file> */
 static int db_path(char *out, const char *file) {
     char rel[PATH_MAX_GV];
     if (strlen(file) + 32 > sizeof rel) {
         return -1;
     }
-    strcpy(rel, "var/lib/get-myos/");
+    strcpy(rel, ".get-myos/");
     strcat(rel, file);
     return under_root(out, rel);
 }
@@ -92,7 +94,7 @@ void mirror_url(char *url, size_t cap, const char *file) {
     }
 }
 
-/* Fetch FILE of the mirror into ROOT/var/lib/get-myos/<db>. */
+/* Fetch FILE of the mirror into ROOT/.get-myos/<db>. */
 static int fetch_db(const char *file, const char *db) {
     char url[512], path[PATH_MAX_GV];
     if (db_path(path, db) != 0) {
@@ -218,42 +220,10 @@ static int find_package(const char *want, package *pkg) {
     return found;
 }
 
-/* ---- unpacking into the root, then binding -------------------------------- */
+/* ---- unpacking into the app's directory ---------------------------------- */
 
-/* What a package's entries are bound as: the first directory of the entry's
- * path that the running system does not have (lib/vim for lib/vim/vimrc,
- * lib/os-test for everything under it), or the file itself when all its
- * directories exist (bin/custom/vim: /bin/custom is a read-only tree of the
- * image with other programs in it; lib/myos-tests/ports/2-vim.sh lands next
- * to the image's test scripts). */
-#define MAX_BINDS 256
-static char binds[MAX_BINDS][PATH_MAX_GV];
-static size_t nbinds;
-
-static void note_bind(const char *name) {
-    char rel[PATH_MAX_GV], abs[PATH_MAX_GV + 1];
-    struct stat st;
-    copy_field(rel, sizeof rel, name, strlen(name));
-    for (char *slash = strchr(rel, '/'); slash != NULL; slash = strchr(slash + 1, '/')) {
-        *slash = '\0';
-        abs[0] = '/';
-        strcpy(abs + 1, rel);
-        int have = stat(abs, &st) == 0;
-        *slash = '/';
-        if (!have) {
-            *slash = '\0';
-            break;
-        }
-    }
-    for (size_t i = 0; i < nbinds; i++) {
-        if (strcmp(binds[i], rel) == 0) {
-            return;
-        }
-    }
-    if (nbinds < MAX_BINDS) {
-        strcpy(binds[nbinds++], rel);
-    }
-}
+/* The package being unpacked: its entries go to ROOT/<app>/. */
+static const char *app;
 
 typedef struct {
     int fd;
@@ -272,8 +242,15 @@ static int unpack_entry(tar *t, char type, const char *name, const char *link, u
     if (name[0] == '\0' || name[0] == '.' || strstr(name, "/../") != NULL || strncmp(name, "../", 3) == 0) {
         return 0;
     }
-    char path[PATH_MAX_GV];
-    if (under_root(path, name) != 0) {
+    char rel[PATH_MAX_GV], path[PATH_MAX_GV];
+    if (strlen(app) + 1 + strlen(name) >= sizeof rel) {
+        u->failed = 1;
+        return 0;
+    }
+    strcpy(rel, app);
+    strcat(rel, "/");
+    strcat(rel, name);
+    if (under_root(path, rel) != 0) {
         u->failed = 1;
         return 0;
     }
@@ -300,7 +277,6 @@ static int unpack_entry(tar *t, char type, const char *name, const char *link, u
             u->failed = 1;
             return 0;
         }
-        note_bind(name);
         return 0;
     }
     u->fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
@@ -309,7 +285,6 @@ static int unpack_entry(tar *t, char type, const char *name, const char *link, u
         u->failed = 1;
         return 0;
     }
-    note_bind(name);
     return 1;
 }
 
@@ -351,9 +326,10 @@ static void stream_out(void *ctx, int member, const uint8_t *p, size_t n) {
     tar_feed(&((stream *)ctx)->t, p, n);
 }
 
-/* Download and unpack `url` into the root in one pass; 0 when curl, the
- * gzip and the tar all ended well, with the stream's SHA-256 in hex[65]. */
-static int fetch_unpack(const char *url, char *hex) {
+/* Download and unpack `url` into ROOT/<name>/ in one pass; 0 when curl,
+ * the gzip and the tar all ended well, with the stream's SHA-256 in
+ * hex[65]. */
+static int fetch_unpack(const char *url, const char *name, char *hex) {
     int pid = 0;
     int fd = download_open(url, &pid);
     if (fd < 0) {
@@ -367,7 +343,7 @@ static int fetch_unpack(const char *url, char *hex) {
     s.t.end = unpack_end;
     s.t.ctx = &s.u;
     s.u.fd = -1;
-    nbinds = 0;
+    app = name;
     int members = gunzip_fd(fd, stream_in, stream_out, &s);
     unpack_end(&s.t);
     free(s.t.meta);
@@ -380,22 +356,6 @@ static int fetch_unpack(const char *url, char *hex) {
     if (members < 1 || s.t.failed || s.u.failed) {
         say("bad archive: ", url, NULL);
         return -1;
-    }
-    return 0;
-}
-
-static int bind_all(void) {
-    for (size_t i = 0; i < nbinds; i++) {
-        char src[PATH_MAX_GV], tgt[PATH_MAX_GV];
-        if (under_root(src, binds[i]) != 0 || strlen(binds[i]) + 2 > sizeof tgt) {
-            return die("path too long: ", binds[i]);
-        }
-        tgt[0] = '/';
-        strcpy(tgt + 1, binds[i]);
-        if (mount(src, tgt, "bind") != 0) {
-            say("cannot bind ", src, tgt);
-            return 1;
-        }
     }
     return 0;
 }
@@ -446,8 +406,8 @@ static void mark_installed(const char *name, const char *version) {
 
 /* Bring `want` to the index's version: its dependencies first (depth
  * first, each once), then itself when it is not installed or installed at
- * another version (an upgrade: the new files replace the old under ROOT,
- * the binds are by path and keep pointing at them, and are redone anyway).
+ * another version (an upgrade: the new files replace the old in its
+ * directory).
  * `asked` marks a package named on the command line, which says so when
  * there is nothing to do; a dependency already there is silent. */
 static int install(const char *want, int depth, int asked) {
@@ -485,7 +445,7 @@ static int install(const char *want, int depth, int asked) {
     /* A transient failure should not fail the whole install; a retry
      * rewrites the files of the attempt before it. */
     int attempt = 1;
-    while (fetch_unpack(url, hex) != 0) {
+    while (fetch_unpack(url, pkg.name, hex) != 0) {
         if (attempt++ == 3) {
             return die("download failed: ", url);
         }
@@ -493,11 +453,8 @@ static int install(const char *want, int depth, int asked) {
         sleep(2);
     }
     if (strcmp(hex, pkg.csum) != 0) {
-        /* The files are under ROOT but not bound nor recorded. */
+        /* The files are in its directory but not recorded. */
         return die("checksum mismatch: ", pkg.file);
-    }
-    if (bind_all() != 0) {
-        return 1;
     }
     mark_installed(pkg.name, pkg.version);
     return 0;
@@ -591,12 +548,32 @@ static int boot(const char *disk, int force, int local) {
     return disk != NULL ? boot_install(disk, path, mirror_url) : boot_upgrade(path, mirror_url, force);
 }
 
+/* The apps root when neither -r nor $MYOS_APPS names one: /data/apps when
+ * the boot disk's data partition is mounted at /data (`mount -a`,
+ * docs/install.md), else /tmp/apps (the ISO, on the tmpfs). */
+static const char *default_root(void) {
+    const char *env = getenv("MYOS_APPS");
+    if (env != NULL && env[0] != '\0') {
+        return env;
+    }
+    char line[512];
+    int data = 0;
+    FILE *f = fopen("/proc/mounts", "r");
+    while (f != NULL && !data && fgets(line, sizeof line, f) != NULL) {
+        data = strstr(line, " /data ") != NULL;
+    }
+    if (f != NULL) {
+        fclose(f);
+    }
+    return data ? "/data/apps" : "/tmp/apps";
+}
+
 int main(int argc, char **argv) {
-    int update = 0, list = 0, upgrade = 0, force = 0, local = 0, i = 1;
+    int update = 0, list = 0, upgrade = 0, force = 0, local = 0, root = 0, i = 1;
     const char *install_disk = NULL;
     const char *m = getenv("MYOS_MIRROR");
     pkg_prog = "get-myos";
-    pkg_root = "/tmp/pkg";
+    pkg_root = default_root();
     copy_field(mirror, sizeof mirror, m != NULL ? m : DEFAULT_MIRROR, sizeof mirror);
     for (; i < argc && argv[i][0] == '-'; i++) {
         if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
@@ -615,15 +592,24 @@ int main(int argc, char **argv) {
             install_disk = argv[++i];
         } else if (strcmp(argv[i], "--local") == 0) {
             local = 1;
+        } else if (strcmp(argv[i], "--root") == 0) {
+            root = 1;
         } else {
             break;
         }
     }
+    if (root) {
+        fputs(pkg_root, stdout);
+        fputs("\n", stdout);
+        return 0;
+    }
     if ((i >= argc && !update && !list && !upgrade && install_disk == NULL) || (local && install_disk == NULL)) {
         fputs("usage: get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...\n"
+              "       get-myos [-r ROOT] --root\n"
               "       get-myos [-m MIRROR] --upgrade [-f] | --install DISK [--local]\n"
-              "  Install myos (" MYOS_ARCH ") packages and what they need into ROOT (default\n"
-              "  /tmp/pkg) and bind their files where the image has them (/bin/custom/NAME, /lib/NAME)\n"
+              "  Install myos (" MYOS_ARCH ") packages and what they need as apps, each in\n"
+              "  ROOT/NAME (default $MYOS_APPS, else /data/apps with /data mounted, else\n"
+              "  /tmp/apps; --root prints it); `run-myos NAME` runs one\n"
               "  -m  the mirror (default $MYOS_MIRROR, else " DEFAULT_MIRROR ")\n"
               "  -u  refresh the index and upgrade the installed packages it changed\n"
               "  -l  list the mirror's packages: version, dependencies, installed or not\n"

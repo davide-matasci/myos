@@ -3,9 +3,11 @@
 Cross-compiling [uutils/coreutils](https://github.com/uutils/coreutils) v0.10.0 for `x86_64-unknown-myos` using the patched myos sysroot.
 
 A package, not in the image: `get-myos coreutils` installs the multicall ELF
-under its 32 names in `/bin/coreutils` (sbase, first in `PATH`, has 30 of
-them). The full boot installs it before the tests, so its `test.sh` and the
-uutils stages of `heap` run there. The patched crates of `prepare.sh` are
+under its 32 names in `/bin/coreutils`, as an app (`docs/packages.md`):
+`run-myos coreutils:ls` runs one (sbase, first in `PATH`, has 30 of them;
+in the app's view `/bin/coreutils` is the app's). The full boot installs it
+before the tests, so its `test.sh` and the uutils stages of `heap` run
+there. The patched crates of `prepare.sh` are
 shared with the image's ripgrep and with bottom.
 
 ## Quick repro

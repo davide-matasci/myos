@@ -1,4 +1,4 @@
-# dmenu, installed as a package, on Xfbdev (the tinyx package), without a
+# dmenu, installed as an app, on Xfbdev (the tinyx package), without a
 # window manager; the host types through the QEMU monitor (dmenu grabs the
 # keyboard).
 #   dmenu: its bar shows the selected item (#005577 along the screen's top,
@@ -8,9 +8,9 @@
 #     Return pick uname, which the shell dmenu_run pipes into runs.
 
 dmenu_server() {
-	Xfbdev :0 -br > /tmp/dmenu-server.log 2>&1 &
+	run-myos tinyx:Xfbdev :0 -br > /tmp/dmenu-server.log 2>&1 &
 	xpid=$!
-	/bin/etc/dmenu_smoke server
+	run-myos dmenu:dmenu_smoke server
 }
 
 dmenu_server_stop() {
@@ -21,9 +21,9 @@ dmenu_server_stop() {
 dmenu_pick() {
 	ok=0
 	if dmenu_server; then
-		printf 'alpha\nbeta\ngamma\n' | DISPLAY=:0 dmenu > /tmp/dmenu.out 2> /tmp/dmenu.log &
+		printf 'alpha\nbeta\ngamma\n' | DISPLAY=:0 run-myos dmenu > /tmp/dmenu.out 2> /tmp/dmenu.log &
 		dpid=$!
-		if /bin/etc/dmenu_smoke bar; then
+		if run-myos dmenu:dmenu_smoke bar; then
 			echo "HOST c-smokes sendkey b ret" >&3
 			wait $dpid
 			st=$?
@@ -44,7 +44,7 @@ dmenu_run_pick() {
 	want=$(uname)
 	mkdir -p /tmp/dmenu-cache
 	rm -f /tmp/dmenu-ran /tmp/dmenu-cache/dmenu_run
-	XDG_CACHE_HOME=/tmp/dmenu-cache dmenu_path > /tmp/dmenu-path.out
+	XDG_CACHE_HOME=/tmp/dmenu-cache run-myos dmenu:dmenu_path > /tmp/dmenu-path.out
 	missing=
 	for p in uname dmenu sh; do
 		grep -q -x $p /tmp/dmenu-path.out || missing="$missing $p"
@@ -52,8 +52,8 @@ dmenu_run_pick() {
 	[ -z "$missing" ] || echo "dmenu_path leaves out$missing"
 	if [ -z "$missing" ] && dmenu_server; then
 		# The shell dmenu_run pipes the pick into writes to its stdout.
-		XDG_CACHE_HOME=/tmp/dmenu-cache DISPLAY=:0 dmenu_run > /tmp/dmenu-ran 2> /tmp/dmenu.log
-		if /bin/etc/dmenu_smoke bar; then
+		XDG_CACHE_HOME=/tmp/dmenu-cache DISPLAY=:0 run-myos dmenu:dmenu_run > /tmp/dmenu-ran 2> /tmp/dmenu.log
+		if run-myos dmenu:dmenu_smoke bar; then
 			echo "HOST c-smokes sendkey u n a m e ret" >&3
 			for i in 1 2 3 4 5 6 7 8 9 10; do
 				[ -s /tmp/dmenu-ran ] && break

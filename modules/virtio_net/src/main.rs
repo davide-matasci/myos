@@ -713,7 +713,40 @@ fn net_write_n(idx: usize, buf: *const u8, buf_len: usize) -> i32 {
 
 /// Send `buf` as one frame (cut at [`ETH_MAX`]) and wait for the device to
 /// take it; the bytes sent.
+/// The TX ring is idle: the device used every frame pushed so far (its used
+/// index caught up with the avail index this driver writes), so the one TX
+/// buffer is free.
+fn tx_idle(net: &Net) -> bool {
+    used_idx(&net.tx) == r16(net.tx.avail as usize + 2)
+}
+
+/// Wait for [`tx_idle`] at most `TX_SPIN` polls. Syscalls run with
+/// interrupts masked (SIE clear on RISC-V): the old 50e6-spin wait could
+/// freeze the guest for tens of seconds when the used ring lagged, so CI
+/// hung after `tcc std ok` with no ping timeout printed. The cap is well
+/// above normal QEMU completion (usually <<1k spins) but far below a
+/// multi-second IRQ-off stall.
+fn wait_tx_idle(net: &Net) -> bool {
+    const TX_SPIN: u32 = 50_000;
+    for _ in 0..TX_SPIN {
+        if tx_idle(net) {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
+/// Send one frame. A frame the device has not used within the wait is
+/// reported as not sent but stays in flight: the next send waits for it
+/// before it reuses the buffer. Comparing the two ring indices, rather
+/// than a count of the frames seen used, keeps a late completion from
+/// putting the driver behind the device for good (every later send then
+/// spun its whole wait and failed: netd's transfers stalled).
 fn write_frame(net: &mut Net, buf: *const u8, buf_len: usize) -> i32 {
+    if !wait_tx_idle(net) {
+        return -1;
+    }
     let frame = if buf_len > ETH_MAX { ETH_MAX } else { buf_len };
     unsafe {
         core::ptr::write_bytes(net.tx_buf_va, 0, HDR_SIZE);
@@ -727,24 +760,7 @@ fn write_frame(net: &mut Net, buf: *const u8, buf_len: usize) -> i32 {
     dcache_civac(net.tx.desc, PAGE);
     push(&net.tx, 0);
     notify(net, &net.tx, 1);
-
-    // Syscalls run with interrupts masked (SIE clear on RISC-V). The old
-    // 50e6-spin wait could freeze the guest for tens of seconds when the used
-    // ring lagged, so CI hung after `tcc std ok` with no ping timeout printed.
-    // Cap well above normal QEMU completion (usually <<1k spins) but far below
-    // a multi-second IRQ-off stall.
-    const TX_SPIN: u32 = 50_000;
-    let want = net.tx.last_used.wrapping_add(1);
-    let mut spins = 0u32;
-    while spins < TX_SPIN {
-        if used_idx(&net.tx) == want {
-            net.tx.last_used = want;
-            return frame as i32;
-        }
-        core::hint::spin_loop();
-        spins += 1;
-    }
-    -1
+    if wait_tx_idle(net) { frame as i32 } else { -1 }
 }
 
 #[inline(never)]

@@ -1,7 +1,6 @@
 --- getty.c
 +++ getty.c
-@@ -54,6 +54,8 @@
- 	sigemptyset(&sa.sa_mask);
+@@ -55,6 +55,8 @@
  	sigaction(SIGHUP, &sa, NULL);
  
  	setenv("TERM", term, 1);
@@ -9,7 +8,27 @@
 +	setenv("TERMCAP", "/lib/termcap", 1);
  
  	setsid();
-@@ -124,8 +126,11 @@
+ 
+@@ -112,20 +114,28 @@
+ 	if (argc > 2)
+ 		return execvp(argv[2], argv + 2);
+ 
++	/*
++	 * myos: flush pending input before the prompt, not after it. The
++	 * console echoes input as it arrives, so a name typed as soon as the
++	 * prompt showed lost its echoed first byte to the flush ("root" read
++	 * as "oot": "who are you?").
++	 */
++	ioctl(0, TCFLSH, (void *)0);
+ 	if (gethostname(hostname, sizeof(hostname)) == 0)
+ 		printf("%s ", hostname);
+ 	printf("login: ");
+ 	fflush(stdout);
+ 
+-	/* Flush pending input */
+-	ioctl(0, TCFLSH, (void *)0);
+ 	memset(logname, 0, sizeof(logname));
+ 	while (1) {
  		n = read(0, &c, 1);
  		if (n < 0)
  			eprintf("read:");
@@ -22,7 +41,7 @@
  		if (i >= sizeof(logname) - 1)
  			eprintf("login name too long\n");
  		if (c == '\n' || c == '\r')
-@@ -134,7 +139,10 @@
+@@ -134,7 +144,10 @@
  	}
  	if (logname[0] == '-')
  		eprintf("login name cannot start with '-'\n");

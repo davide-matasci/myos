@@ -7,9 +7,9 @@ every event it gets: keys with their keycode, keysym and the text they
 type, focus, exposure, configure and RandR screen changes.
 
 ```sh
-get-myos tinyx x11-apps
-startx                      # then, in st: xev
-xev -root -event keyboard   # or, on a server without a window manager
+get-myos tinyx dwm x11-apps
+run-myos tinyx,dwm,x11-apps:startx      # then, in st: xev
+run-myos x11-apps -root -event keyboard # or, on a server without a window manager
 ```
 
 ## What it is built from

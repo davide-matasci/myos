@@ -4,9 +4,9 @@
 of the `tinyx` package: the terminal dwm's Alt+Shift+Return starts.
 
 ```sh
-get-myos tinyx dwm st     # st brings x11-xft, x11-fonts and x11-libs with it
-startx                  # then Alt+Shift+Return in dwm
-startx st               # or st alone, without a window manager
+get-myos tinyx dwm                 # dwm brings st; st x11-xft, x11-fonts and x11-libs
+run-myos tinyx,dwm:startx          # then Alt+Shift+Return in dwm
+run-myos tinyx,st:startx st        # or st alone, without a window manager
 ```
 
 The stock configuration (`config.def.h`): the font asked for is

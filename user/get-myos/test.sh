@@ -26,14 +26,14 @@ get_myos_list() {
 	grep -q '^st [0-9a-f]* x11-xft,x11-fonts installed$' /tmp/get-myos-list
 }
 get_myos_upgrade() {
-	echo stale > /tmp/pkg/var/lib/get-myos/pkgs/lua
+	echo stale > $MYOS_APPS/.get-myos/pkgs/lua
 	get-myos -m $MIRROR -u || return 1
-	have=$(cat /tmp/pkg/var/lib/get-myos/pkgs/lua)
+	have=$(cat $MYOS_APPS/.get-myos/pkgs/lua)
 	want=$(get-myos -m $MIRROR -l | sed -n 's/^lua \([0-9a-f]*\) .*/\1/p')
 	echo "lua: recorded $have, index $want"
-	# The record follows the index and the binary is bound again (its
+	# The record follows the index and the app is there again (its
 	# behaviour is lua's own business: `lua -v` fails on riscv64).
-	[ -n "$want" ] && [ "$have" = "$want" ] && [ -x /bin/custom/lua ]
+	[ -n "$want" ] && [ "$have" = "$want" ] && [ -x $MYOS_APPS/lua/bin/custom/lua ]
 }
 # The running boot disk's ESP, which `mount -a` mounted at /boot: its
 # partition in $boot_part.
@@ -87,8 +87,8 @@ boot_upgrade() {
 		[ "$f" = boot/limine/limine.conf ] && continue
 		got=$(sha256sum /boot/$f | cut -d' ' -f1)
 		[ "$got" = "$sum" ] || { echo "$f: $got, list: $sum"; r=1; }
-	done < /tmp/pkg/var/lib/get-myos/boot
-	head -1 /tmp/pkg/var/lib/get-myos/boot | sed 's/^# myos //' > /tmp/boot-version
+	done < $(get-myos --root)/.get-myos/boot
+	head -1 $(get-myos --root)/.get-myos/boot | sed 's/^# myos //' > /tmp/boot-version
 	cmp /tmp/boot-version /boot/boot/b/version || r=1
 	conf=/boot/boot/limine/limine.conf
 	cat $conf
@@ -149,7 +149,7 @@ boot_install() {
 	boot=$(grep ' "EFI System"$' /proc/partitions | cut -d/ -f1 | head -1)
 	get-myos -m $MIRROR --install $boot 2>&1 | grep -q 'running boot disk' || return 1
 	get-myos -m $MIRROR --install /dev/nvme1n1 || return 1
-	installed_disk nvme1n1 /tmp/pkg/var/lib/get-myos/boot
+	installed_disk nvme1n1 $(get-myos --root)/.get-myos/boot
 }
 
 # --install --local on the scratch disk, no mirror: the running system's
@@ -160,7 +160,7 @@ boot_install() {
 boot_install_local() {
 	scratch_disk
 	get-myos --install /dev/nvme1n1 --local || return 1
-	list=/tmp/pkg/var/lib/get-myos/local-boot
+	list=$(get-myos --root)/.get-myos/local-boot
 	cat $list
 	[ "$(head -1 $list)" = "# myos $(cat /lib/myos-release)" ] || return 1
 	grep -q '^kernel [0-9]* [0-9a-f]* /proc/boot/kernel$' $list \
@@ -173,8 +173,20 @@ boot_install_local() {
 	return $r
 }
 
+# An app in the default root, the boot disk's data partition (/data/apps:
+# the full list's own are in /tmp/apps, MYOS_APPS): installed there, it
+# runs, and is still there at the next boot (run.sh reboot).
+apps_data() {
+	[ "$(MYOS_APPS= get-myos --root)" = /data/apps ] || return 1
+	MYOS_APPS= get-myos -m $MIRROR clear || return 1
+	ls /data/apps/clear/bin/custom/clear /data/apps/clear/app || return 1
+	MYOS_APPS= run-myos clear -T linux > /tmp/apps-data.out || return 1
+	[ "$(cat /tmp/apps-data.out)" = "$(printf '\033[H\033[J')" ]
+}
+
 if [ "$MODE" = full ]; then
 	t get_myos_list get_myos_list
+	t apps_data apps_data
 	t get_myos_upgrade get_myos_upgrade
 	t boot_upgrade boot_upgrade
 	t_last boot_install

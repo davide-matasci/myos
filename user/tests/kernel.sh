@@ -861,6 +861,8 @@ sec_power() {
 # Namespaces: a program sees only what it is given. Given disk-a (read
 # only) as /tmp/sec/a, it reads that and not disk-b, and writes nothing; /
 # lists only what is bound. An open fd it is handed is a deliberate grant.
+# With the whole tree bound, a file bound into a directory of it is listed
+# with the directory's own files (run-myos's apps, docs/packages.md).
 sec_ns() {
 	ns="$SEC ns /bin:read,exec /tmp/sec/a=/tmp/sec/disk-a:read --"
 	[ "$($ns /bin/sbase/cat /tmp/sec/a)" = disk-a ] || return 1
@@ -869,7 +871,10 @@ sec_ns() {
 	out=$($ns /bin/sbase/ls / | tr '\n' ' ')
 	echo "ls /: $out"
 	[ "$out" = "bin tmp " ] || return 1
-	[ "$($ns /bin/sbase/cat < /tmp/sec/disk-b)" = disk-b ]
+	[ "$($ns /bin/sbase/cat < /tmp/sec/disk-b)" = disk-b ] || return 1
+	out=$($SEC ns / /bin/sbase/nsbound=/tmp/sec/disk-a -- /bin/sbase/ls /bin/sbase)
+	echo "$out" | grep -qx nsbound && echo "$out" | grep -qx cat || { echo "ls /bin/sbase: $out"; return 1; }
+	[ "$($SEC ns / /bin/sbase/nsbound=/tmp/sec/disk-a -- /bin/sbase/cat /bin/sbase/nsbound)" = disk-a ]
 }
 # A directory fd is a capability: a program handed one its namespace
 # cannot name works beneath it with the rights it was opened with (all of
