@@ -1029,7 +1029,7 @@ lx_python_net() {
 # graphics) before it answers clients; xdpyinfo gives up at once while it
 # does not answer yet, so it is run again, each run killed after 30 s: the
 # whole test stays well under the boot test's 600 s without output. Its
-# root is its own and removed after: /tmp is in the kernel heap, which the
+# root is its own and emptied after: /tmp is in the kernel heap, which the
 # Python root already fills.
 lx_x11() {
 	r=/tmp/alpine-x11
@@ -1064,7 +1064,11 @@ lx_x11() {
 	done
 	kill -9 $xpid 2>/dev/null
 	wait $xpid 2>/dev/null
-	rm -rf $r
+	# linux --root bound /dev, /proc and /net into the root, and the binds
+	# stay: rm must not go through them.
+	for f in $r/* $r/.[!.]*; do
+		case ${f##*/} in dev | proc | net) ;; *) rm -rf "$f" ;; esac
+	done
 	[ $ok = 1 ] && return 0
 	echo "after $try tries:"
 	head -20 $OUT/lx-x11.out
