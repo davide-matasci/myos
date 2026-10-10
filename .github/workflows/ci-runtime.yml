@@ -58,7 +58,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Full boot: every image carries the optional Linux layer, and the
-          # boot jobs run its smokes and get-alpine. Boot-mini does not.
+          # boot jobs run its smokes and Alpine's packages. Boot-mini does not.
           MYOS_CI_FEATURES: ${{ inputs.full_boot && 'linux_compat' || '' }}
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
@@ -241,8 +241,8 @@ jobs:
 
   iso:
     # x86_64 hybrid ISO from the build outputs, on master only: the image
-    # with everything in it (the Linux layer loaded at boot, its tests and
-    # get-alpine), published on the rolling release by the publish job. The
+    # with everything in it (the Linux layer loaded at boot and its tests),
+    # published on the rolling release by the publish job. The
     # bios and uefi boots test the same kernel and initramfs from the disk
     # images; the ISO itself is not booted. Toolchain only for
     # `cargo run -- iso`; must not rebuild ports here.

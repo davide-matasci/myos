@@ -28,8 +28,8 @@ default = []
 
 # Optional Linux syscall compatibility layer (see docs/linux-compat.md): the
 # kernel module (modules/linux) is always built; this feature loads it at
-# boot and adds the musl test binaries plus get-alpine to the image (the
-# `linux` launcher ships regardless).
+# boot and adds the musl test binaries to the image (the `linux` launcher
+# ships regardless; get-alpine is a package, packages/get-alpine).
 linux_compat = []
 
 [build-dependencies]

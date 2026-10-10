@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ISO job: extract ci-build.tar.zst then cargo build + iso, with the Linux layer
-# (`--features linux_compat`: the `linux` module loaded at boot, the musl
-# tests and get-alpine, whose files the build job packs). Must not rebuild
+# (`--features linux_compat`: the `linux` module loaded at boot and the musl
+# tests, whose files the build job packs). Must not rebuild
 # ports.
 set -euo pipefail
 chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh 2>/dev/null || true

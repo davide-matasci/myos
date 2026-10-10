@@ -38,7 +38,7 @@ say() {
 # links are made here).
 if [ ! -x $R/usr/bin/cargo ]; then
 	say "installing the toolchain into $R"
-	get-alpine -r $R rust cargo rust-src lld clang bash busybox git || exit 1
+	get-myos get-alpine && run-myos get-alpine -r $R rust cargo rust-src lld clang bash busybox git || exit 1
 fi
 if [ ! -e $R/usr/bin/env ]; then
 	linux --root $R /bin/busybox --install -s || exit 1
