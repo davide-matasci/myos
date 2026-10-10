@@ -391,7 +391,12 @@ Per-CPU ring3↔ring0 state:
   is reliable on QEMU.
 
 TLB shootdown: local invalidate, then IPI the other online CPUs and wait
-briefly for acks (`smp::tlb_shootdown`, try-lock + bounded spin). A targeted
+briefly for acks (`smp::tlb_shootdown`, try-lock + bounded spin). An idle
+CPU (in the idle loop, or halted) is passed over: it runs no user code, so
+it is flagged instead (`TLB_STALE`) and flushes its TLB when it next
+resumes a task (`schedule`), and its ack is given for it. Waiting for a
+halted CPU's ack cost its wake per shootdown (under TCG the host thread's),
+for every copy-on-write fork and exit of a shell command. A targeted
 reschedule IPI wakes a halted CPU when a task homed there becomes Ready
 (`spawn`, `fork`, `wake`).
 

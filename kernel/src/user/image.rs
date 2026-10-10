@@ -21,7 +21,7 @@ pub(super) fn load_user_elf(bytes: &[u8], relocate: bool) -> Option<(u64, usize,
     if info.span > ELF_SCRATCH_BYTES {
         return None;
     }
-    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
+    let _scratch_guard = lock_elf_scratch();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -129,6 +129,22 @@ static ELF_SCRATCH_PAGES: AtomicUsize = AtomicUsize::new(0);
 /// user #PF cr2=0x401 / bogus low pointer in sbase `cat` after os-test).
 static ELF_SCRATCH_LOCK: Mutex<()> = Mutex::new(());
 
+/// Take [`ELF_SCRATCH_LOCK`], answering the other CPUs' TLB shootdowns
+/// while waiting: an exec holds it across shootdowns of its own, and a
+/// second exec waiting for it with interrupts off (a syscall's) could not
+/// answer them, so each ran to its spin cap, a second each. A shell
+/// pipeline execs on both CPUs at once all the time (the riscv64 boot test
+/// ran out of its budget on that: see `smp::tlb_shootdown`).
+fn lock_elf_scratch() -> spin::MutexGuard<'static, ()> {
+    loop {
+        if let Some(guard) = ELF_SCRATCH_LOCK.try_lock() {
+            return guard;
+        }
+        crate::smp::tlb_service();
+        core::hint::spin_loop();
+    }
+}
+
 /// Borrow the shared ELF scratch. Caller must hold [`ELF_SCRATCH_LOCK`] for
 /// the whole realize + copy-into-aspace window — not merely this call.
 pub(super) fn elf_scratch_mut(len: usize) -> Option<&'static mut [u8]> {
@@ -182,7 +198,7 @@ pub(super) fn reload_user_elf(
     if info.span > MAX_RELOAD_PAGES * PAGE {
         return None;
     }
-    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
+    let _scratch_guard = lock_elf_scratch();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -333,7 +349,7 @@ pub(super) fn expand_user_elf(
     // mapping and a SYSERR return into wiped user text (ISO login rip=0).
     // Hold ELF_SCRATCH_LOCK across realize→copy-out so a peer AP exec
     // (pipeline RR) cannot overwrite scratch mid-flight.
-    let _scratch_guard = ELF_SCRATCH_LOCK.lock();
+    let _scratch_guard = lock_elf_scratch();
     let buf = elf_scratch_mut(info.span)?;
     unsafe {
         core::ptr::write_bytes(buf.as_mut_ptr(), 0, info.span);
@@ -536,7 +552,7 @@ pub(crate) fn map_elf_unrelocated(
         return None;
     }
     let pages = info.span.div_ceil(PAGE);
-    let guard = ELF_SCRATCH_LOCK.lock();
+    let guard = lock_elf_scratch();
     let buf = elf_scratch_mut(info.span)?;
     let load_bias = va.checked_sub(info.min_vaddr)?;
     let entry = elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, false).ok()?;

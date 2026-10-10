@@ -182,9 +182,14 @@ fn pick_and_switch() -> Pick {
     } else {
         aspace
     };
+    // A shootdown passed this CPU over while it was idle: the switch
+    // flushes, or the TLB is flushed here (`smp::tlb_shootdown`).
+    let stale = crate::smp::tlb_take_stale(crate::smp::cpu_id());
     if want != loaded_aspace() {
         user::switch_aspace(want);
         set_loaded_aspace(want);
+    } else if stale {
+        crate::arch::flush_tlb_local();
     }
 
     // `old` becomes Ready only once task_switch has saved its stack pointer
@@ -562,6 +567,13 @@ static NEED_RESCHED: [AtomicBool; crate::smp::MAX_CPUS] =
 /// Per CPU: halted (or about to halt) in an idle loop / `block_until`.
 static CPU_IDLE: [AtomicBool; crate::smp::MAX_CPUS] =
     [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+
+/// Whether `cpu` is in the idle loop: between picks, or halted. Said before
+/// a task is picked (`CPU_IDLE` is cleared under `TASKS` before the switch),
+/// so a shootdown may pass an idle CPU over (`smp::tlb_shootdown`).
+pub fn cpu_idle(cpu: usize) -> bool {
+    CPU_IDLE[cpu.min(crate::smp::MAX_CPUS - 1)].load(Ordering::SeqCst)
+}
 /// Per CPU: how often it halted waiting for an interrupt (`/proc/cpuinfo`).
 static IDLE_HALTS: [AtomicU64; crate::smp::MAX_CPUS] =
     [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
@@ -693,6 +705,11 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
     }
     let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     CPU_IDLE[cpu].store(false, Ordering::SeqCst);
+    // Back to the task that blocked, on the same CPU: the shootdowns that
+    // passed this CPU over while it was idle are honored here.
+    if crate::smp::tlb_take_stale(cpu) {
+        crate::arch::flush_tlb_local();
+    }
     irq_restore(flags);
 }
 

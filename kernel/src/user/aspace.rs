@@ -39,9 +39,16 @@ pub fn copy_user_aspace(base: u64, span: usize, stack_off: u64, brk_cur: u64) ->
     share_mmap_pages(src, aspace, &regions);
     drop(guard);
     // The parent's pages lost their write permission: its translations go,
-    // on every CPU that has it loaded. Off the lock: a peer waiting for it
-    // with interrupts off could not answer the shootdown.
-    flush_user_tlb();
+    // on this CPU and on any other running one of its threads (a shootdown
+    // waits for every CPU, and a shell forks for each command: the whole
+    // boot slowed down on riscv64 with one per fork). Off the lock: a peer
+    // waiting for it with interrupts off could not answer the shootdown.
+    if task::aspace_loaded_elsewhere(src) {
+        flush_user_tlb();
+    } else {
+        TLB_FLUSHES.fetch_add(1, Ordering::Relaxed);
+        crate::arch::flush_tlb_local();
+    }
     cow::note_fork();
     Some(aspace)
 }
