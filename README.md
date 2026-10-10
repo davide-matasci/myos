@@ -359,7 +359,7 @@ Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs). Its c
 ./toolchain/newlib/build.sh         # fetch newlib 4.4.0, build libc + libgloss/myos
 ./scripts/build-c-hello.sh          # minimal write() smoke
 ./ports/sbase/build.sh              # 99 sbase utilities, one multicall ELF under /bin/sbase
-./ports/ubase/build.sh              # getty + login under /u/
+./ports/ubase/build.sh              # getty, login and df under /bin/ubase/
 ./ports/oksh/build.sh               # oksh 7.9 as /sh
 ./packages/vim/build.sh             # vim FEAT_TINY (a package: get-myos vim)
 ./ports/zlib/build.sh               # static libz.a for git and get-myos
