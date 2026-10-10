@@ -4,7 +4,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use myos_abi::ModuleVfsOps;
+use myos_abi::{ModuleVfsOps, VfsStatFs};
 
 use super::node;
 use super::pagecache;
@@ -124,6 +124,9 @@ pub struct MountOps {
     pub set_size: Option<fn(&str, usize) -> bool>,
     /// Optional: the mount's files by id (see [`FileOps`]).
     pub files: Option<FileOps>,
+    /// Optional: how full the filesystem is (`statvfs`). `None` for one
+    /// that holds no blocks (devfs, procfs): it reports none.
+    pub statfs: Option<fn() -> VfsStatFs>,
     /// Optional: the paths whose `read` may wait for as long as it takes
     /// (the console waits for a key): read without the tree held, which
     /// would hold off every rename, unlink and new file meanwhile.
@@ -382,11 +385,7 @@ pub fn mounts_text() -> Vec<u8> {
         out.push(b' ');
         out.extend_from_slice(m.name.as_bytes());
         out.push(b' ');
-        let opts: &[u8] = match m.backend {
-            MountBackend::Kernel(ops) if ops.writable => b"rw",
-            MountBackend::Module(ops) if ops.write.is_some() || ops.create.is_some() => b"rw",
-            _ => b"ro",
-        };
+        let opts: &[u8] = if backend_writable(&m.backend) { b"rw" } else { b"ro" };
         out.extend_from_slice(opts);
         out.extend_from_slice(b" 0 0\n");
     }
@@ -1335,6 +1334,51 @@ fn backend_stat(idx: usize, rel: &str) -> Option<StatInfo> {
 
 fn backend_of(idx: usize) -> Option<MountBackend> {
     MOUNTS.lock().get(idx).map(|m| m.backend)
+}
+
+/// The mount takes writes (`rw` in `/proc/mounts`).
+fn backend_writable(backend: &MountBackend) -> bool {
+    match backend {
+        MountBackend::Kernel(ops) => ops.writable,
+        MountBackend::Module(ops) => ops.write.is_some() || ops.create.is_some(),
+    }
+}
+
+/// How full mount `idx`'s filesystem is, and whether it is read-only. A
+/// filesystem that holds no blocks reports none (of a page each).
+fn backend_statfs(idx: usize) -> Option<(VfsStatFs, bool)> {
+    let backend = backend_of(idx)?;
+    let none = VfsStatFs { bsize: 4096, namemax: 255, ..VfsStatFs::default() };
+    let st = match backend {
+        MountBackend::Kernel(ops) => ops.statfs.map_or(none, |f| f()),
+        MountBackend::Module(ops) => match ops.statfs {
+            Some(f) => {
+                let mut st = VfsStatFs::default();
+                if unsafe { f(&mut st) } != 0 {
+                    return None;
+                }
+                st
+            }
+            None => none,
+        },
+    };
+    Some((st, !backend_writable(&backend)))
+}
+
+/// How full the filesystem holding `path` is, and whether it is
+/// read-only (`statvfs`): `None` when there is no such file.
+pub fn statfs(path: &str) -> Option<(VfsStatFs, bool)> {
+    let _tree = tree_read();
+    let (idx, ref rel) = resolve_index(path)?;
+    backend_stat(idx, rel)?;
+    backend_statfs(idx)
+}
+
+/// [`statfs`] of the filesystem an open file is on (`fstatvfs`).
+pub fn statfs_node(node: &Vnode) -> Option<(VfsStatFs, bool)> {
+    let _tree = tree_read();
+    let (idx, _) = node::locate(node)?;
+    backend_statfs(idx)
 }
 
 /// The id mount `idx`'s filesystem gives the file at `rel` ([`FileOps`]),

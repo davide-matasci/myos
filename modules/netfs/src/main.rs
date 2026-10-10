@@ -1329,6 +1329,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         set_size_ino: None,
         file_id: None,
         set_times_ino: None,
+        statfs: None,
         readlink: None,
     };
     let mount_rc = api.vfs_mount("netfs", "net", &ops);

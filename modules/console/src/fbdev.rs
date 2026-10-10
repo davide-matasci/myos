@@ -306,6 +306,7 @@ pub fn mount(fb: FramebufferInfo) -> i32 {
         set_size_ino: None,
         file_id: None,
         set_times_ino: None,
+        statfs: None,
     };
     api().vfs_mount("fb", "dev/fb", &ops)
 }

@@ -93,6 +93,10 @@ struct winsize;
 #define MYOS_SYS_CHDIRAT 78
 #define MYOS_SYS_LISTDIRAT 79
 #define MYOS_SYS_EXECAT 80
+/* statfsat(dirfd, path, len, flags, out): how full the file's filesystem
+ * is, struct myos_statfs (statvfs.c); MYOS_AT_EMPTY_PATH with an empty
+ * path: the fd's (fstatvfs). */
+#define MYOS_SYS_STATFSAT 94
 #define MYOS_AT_FDCWD (-100L)
 #define MYOS_AT_SYMLINK_NOFOLLOW 0x100
 #define MYOS_AT_REMOVEDIR 0x200

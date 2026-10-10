@@ -48,6 +48,10 @@ pub(super) const SYS_LISTDIRAT: usize = 79;
 /// program (an ELF, or a `#!` script); `args` is the native exec block
 /// (`copy_user_exec_pack`). Returns only on failure.
 pub(super) const SYS_EXECAT: usize = 80;
+/// `statfsat(dirfd, path, len, flags, out)`: [`MyosStatfs`] of the
+/// filesystem the file is on (`statvfs`; with [`AT_EMPTY_PATH`] and an
+/// empty path, of the fd's: `fstatvfs`).
+pub(super) const SYS_STATFSAT: usize = 94;
 
 /// The cwd, as a directory fd.
 pub const AT_FDCWD: usize = -100isize as usize;
@@ -291,6 +295,76 @@ pub(super) fn sys_statat(dirfd: usize, ptr: usize, len: usize, flags: usize, out
     };
     let bytes = unsafe {
         core::slice::from_raw_parts(&st as *const MyosStat as *const u8, core::mem::size_of::<MyosStat>())
+    };
+    if write_user_bytes(task::current_aspace(), out, bytes) { 0 } else { SYSERR }
+}
+
+/// [`SYS_STATFSAT`]'s result: sizes in blocks of `bsize` bytes.
+#[repr(C)]
+struct MyosStatfs {
+    bsize: u64,
+    blocks: u64,
+    bfree: u64,
+    bavail: u64,
+    files: u64,
+    ffree: u64,
+    namemax: u64,
+    /// [`ST_RDONLY`].
+    flags: u64,
+}
+
+/// [`MyosStatfs::flags`]: the filesystem takes no writes.
+const ST_RDONLY: u64 = 1;
+
+impl MyosStatfs {
+    fn new((st, read_only): (myos_abi::VfsStatFs, bool)) -> MyosStatfs {
+        MyosStatfs {
+            bsize: st.bsize,
+            blocks: st.blocks,
+            bfree: st.bfree,
+            bavail: st.bavail,
+            files: st.files,
+            ffree: st.ffree,
+            namemax: st.namemax,
+            flags: if read_only { ST_RDONLY } else { 0 },
+        }
+    }
+}
+
+/// `statvfs` of open `fd`'s filesystem: a terminal or pipe is on none,
+/// which holds no blocks.
+fn statfs_fd(fd: usize) -> Option<MyosStatfs> {
+    let none = myos_abi::VfsStatFs { bsize: 4096, namemax: 255, ..Default::default() };
+    match task::fd_kind(fd)? {
+        task::FdKind::Tty | task::FdKind::Pipe => Some(MyosStatfs::new((none, false))),
+        task::FdKind::File { .. } => fs::vfs::statfs_node(&task::fd_file_node(fd)?).map(MyosStatfs::new),
+    }
+}
+
+pub(super) fn sys_statfsat(dirfd: usize, ptr: usize, len: usize, flags: usize, out: usize) -> usize {
+    if out == 0 || !user_range_ok(out, core::mem::size_of::<MyosStatfs>()) {
+        return SYSERR;
+    }
+    let Some(path) = user_path(ptr, len) else {
+        return SYSERR;
+    };
+    let st = if empty_path(&path, flags) {
+        statfs_fd(dirfd)
+    } else {
+        let _tree = fs::vfs::hold_read();
+        resolve(dirfd, &path, true).and_then(|f| {
+            // A file the caller has no right at all on is not there for it.
+            if crate::sec::rights_in(&f.real, f.ns_rights()).is_empty() {
+                return None;
+            }
+            fs::vfs::statfs(&f.real).map(MyosStatfs::new)
+        })
+    };
+    let Some(st) = st else {
+        return SYSERR;
+    };
+    let bytes = unsafe {
+        core::slice::from_raw_parts(&st as *const MyosStatfs as *const u8, core::mem::size_of::<MyosStatfs>())
     };
     if write_user_bytes(task::current_aspace(), out, bytes) { 0 } else { SYSERR }
 }

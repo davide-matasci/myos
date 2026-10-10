@@ -354,3 +354,36 @@ fn file_id_follows_the_file() {
     drop(fs.unmount().unwrap());
     e2fsck_clean(&path);
 }
+
+/// The counts `dumpe2fs -h` prints for `field` (`Free blocks`, ...).
+fn dumpe2fs(path: &Path, field: &str) -> u32 {
+    let out = Command::new("dumpe2fs").arg("-h").arg(path).output().expect("dumpe2fs");
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().find(|l| l.starts_with(&format!("{field}:"))).expect(field);
+    line[field.len() + 1..].trim().parse().unwrap()
+}
+
+#[test]
+fn usage_follows_the_disk() {
+    let path = image("usage", 8 << 20);
+    mke2fs(&path, &["-b", "4096"]);
+    let mut fs = Fs::mount(open(&path)).unwrap();
+    let start = fs.usage();
+    assert_eq!(start.block_size, 4096);
+    assert_eq!(start.blocks, dumpe2fs(&path, "Block count"));
+    assert_eq!(start.free_blocks, dumpe2fs(&path, "Free blocks"));
+    assert_eq!(start.inodes, dumpe2fs(&path, "Inode count"));
+    assert_eq!(start.free_inodes, dumpe2fs(&path, "Free inodes"));
+    // A 1 MiB file takes its 256 blocks (and an indirect one), and an inode.
+    write_all(&mut fs, "f", &pattern(1 << 20, 3), 65536);
+    let full = fs.usage();
+    assert!(start.free_blocks - full.free_blocks >= 256, "{start:?} -> {full:?}");
+    assert_eq!(full.free_inodes, start.free_inodes - 1);
+    fs.sync().unwrap();
+    assert_eq!(full.free_blocks, dumpe2fs(&path, "Free blocks"));
+    fs.unlink("f").unwrap();
+    assert_eq!(fs.usage(), start);
+    drop(fs.unmount().unwrap());
+    e2fsck_clean(&path);
+}

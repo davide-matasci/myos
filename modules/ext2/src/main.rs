@@ -17,7 +17,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ext2fs::{Device, Fs, Kind};
-use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo, MYOS_TIME_OMIT};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatFs, VfsStatInfo, MYOS_TIME_OMIT};
 
 /// The kernel's table, set once by `module_init` before anything runs.
 static API: ApiCell = ApiCell::new();
@@ -149,6 +149,22 @@ fn stat_info(st: &ext2fs::Stat) -> VfsStatInfo {
         mtime: u64::from(st.mtime),
         atime: u64::from(st.atime),
     }
+}
+
+unsafe extern "C" fn ext2_statfs<const S: usize>(out: *mut VfsStatFs) -> i32 {
+    let Some(u) = with_fs::<S, _>(|fs| fs.usage()) else { return -1 };
+    unsafe {
+        *out = VfsStatFs {
+            bsize: u64::from(u.block_size),
+            blocks: u64::from(u.blocks),
+            bfree: u64::from(u.free_blocks),
+            bavail: u64::from(u.free_blocks),
+            files: u64::from(u.inodes),
+            ffree: u64::from(u.free_inodes),
+            namemax: 255,
+        }
+    };
+    0
 }
 
 unsafe extern "C" fn ext2_listdir<const S: usize>(
@@ -358,6 +374,7 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         set_size_ino: Some(ext2_set_size_ino::<S>),
         file_id: Some(ext2_file_id::<S>),
         set_times_ino: Some(ext2_set_times_ino::<S>),
+        statfs: Some(ext2_statfs::<S>),
     }
 }
 

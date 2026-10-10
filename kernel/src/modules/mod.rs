@@ -128,6 +128,7 @@ static API: KernelApi = KernelApi {
     current_uid: api_current_uid,
     irq_enable: api_irq_enable,
     console_input: api_console_input,
+    vfs_statfs: api_vfs_statfs,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -889,6 +890,22 @@ unsafe extern "C" fn api_vfs_stat(path: StrRef, out: *mut PathStat) -> i32 {
                     atime: st.atime,
                 };
             }
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_vfs_statfs(path: StrRef, out: *mut myos_abi::VfsStatFs) -> i32 {
+    let Some(path) = str_ref(path) else {
+        return -1;
+    };
+    if out.is_null() || crate::sec::rights_on(path).is_empty() {
+        return -1;
+    }
+    match crate::fs::vfs::statfs(path) {
+        Some((st, _)) => {
+            unsafe { *out = st };
             0
         }
         None => -1,

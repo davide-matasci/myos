@@ -66,3 +66,15 @@ pub fn init() {
 pub fn phys_end() -> u64 {
     PHYS_END.load(Ordering::SeqCst)
 }
+
+/// The heap's size and the bytes free in it: tmpfs's space (`statvfs`).
+pub fn usage() -> (usize, usize) {
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    let (size, free) = {
+        let heap = ALLOCATOR.0.lock();
+        (heap.size(), heap.free())
+    };
+    crate::arch::irq_restore(flags);
+    (size, free)
+}
