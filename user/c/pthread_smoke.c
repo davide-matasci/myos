@@ -13,7 +13,8 @@
  *   - stdio and malloc from four threads at once (newlib's locks), a
  *     line written in three calls whole under flockfile; readdir_r;
  *   - once across threads, pthread_exit with a cleanup handler and a
- *     value for its joiner, a detached thread;
+ *     value for its joiner, a detached thread, detached threads that end
+ *     at once;
  *   - 150 threads started and joined, past the kernel's task slots, so
  *     each one's slot and stack are given back;
  *   - a read-write lock shared by readers and writers, a barrier over
@@ -298,6 +299,14 @@ static void *identity(void *arg) {
     return arg;
 }
 
+static int quick_done;
+
+static void *quick(void *arg) {
+    (void)arg;
+    __atomic_store_n(&quick_done, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+
 static int with_threads(void) {
     pthread_t t[WORKERS];
     int rc;
@@ -398,12 +407,25 @@ static int with_threads(void) {
     if ((rc = pthread_create(&t[0], &attr, detached, NULL)) != 0) {
         return fail("create detached", rc);
     }
-    pthread_attr_destroy(&attr);
     pthread_mutex_lock(&detached_lock);
     while (!detached_done) {
         pthread_cond_wait(&detached_ran, &detached_lock);
     }
     pthread_mutex_unlock(&detached_lock);
+    /* Detached threads that end at once: one may be gone, its block
+     * unmapped, before pthread_create has stored its id there (issue
+     * #390: the creator's store faulted). Each is waited for so the
+     * kernel's task slots come back. */
+    for (int i = 0; i < 50; i++) {
+        __atomic_store_n(&quick_done, 0, __ATOMIC_RELAXED);
+        if ((rc = pthread_create(&t[0], &attr, quick, NULL)) != 0) {
+            return fail("create detached ending at once", rc);
+        }
+        while (!__atomic_load_n(&quick_done, __ATOMIC_ACQUIRE)) {
+            pthread_yield();
+        }
+    }
+    pthread_attr_destroy(&attr);
 
     for (long i = 0; i < 150; i++) {
         pthread_t one;
