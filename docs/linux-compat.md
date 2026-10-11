@@ -166,8 +166,12 @@ the kernel):
   `task/thread.rs`): the kernel resets, copies or applies the bits and
   calls `ops.on_spawn / on_fork / on_thread / on_exec` so the module can do
   the same with its own per-slot state (fd paths, the trampoline, the
-  `clear_tid` word). The thread pointer and the FP/SIMD registers are
-  switched for every user task by the core (`task/tp.rs`, `task/fpu.rs`);
+  `clear_tid` word). `on_spawn`, `on_fork` and `on_thread` run with the
+  core's task lock held and interrupts off, so a lock the module takes in
+  them is never held while calling into the core (`current_pid` takes
+  that lock: `files.rs` reads the pid before locking its tables). The
+  thread pointer and the FP/SIMD registers are switched for every user
+  task by the core (`task/tp.rs`, `task/fpu.rs`);
 - signal delivery (`signal.rs`): a caught signal of an active task goes to
   `ops.deliver(regs, &SignalDelivery, &mut ret)` (the decided handler,
   trampoline, return context and the native mask the handler's return

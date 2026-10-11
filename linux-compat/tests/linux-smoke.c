@@ -604,6 +604,41 @@ static int unix_client(const char *name) {
     return ok ? 0 : 1;
 }
 
+/* A thread setting fd flags while its process forks: the layer's fork hook
+ * runs under the core's task lock and takes the fd tables' locks, which the
+ * flag calls hold while asking the core for the pid; taken in the other
+ * order that was a deadlock of two CPUs (both spinning, interrupts off). */
+static volatile int flagging_done;
+
+static void *flagger(void *arg) {
+    int fd = *(int *)arg;
+    while (!flagging_done) {
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        fcntl(fd, F_SETFD, 0);
+    }
+    return NULL;
+}
+
+static void check_fork_vs_fds(void) {
+    int fd = open("/dev/null", O_RDONLY);
+    pthread_t t;
+    int ok = fd >= 0 && pthread_create(&t, NULL, flagger, &fd) == 0;
+    for (int i = 0; ok && i < 100; i++) {
+        pid_t c = fork();
+        if (c == 0) {
+            _exit(0);
+        }
+        int status = 0;
+        ok = c > 0 && waitpid(c, &status, 0) == c && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    }
+    flagging_done = 1;
+    if (fd >= 0) {
+        pthread_join(t, NULL);
+        close(fd);
+    }
+    check(ok, "fork while a thread sets fd flags");
+}
+
 static void check_toolchain_calls(char *self) {
     /* posix_spawn: musl's clone(CLONE_VM | CLONE_VFORK) on a stack of its own. */
     pid_t c;
@@ -934,6 +969,7 @@ int main(int argc, char **argv) {
     check(tcgetattr(1, &t) == -1 && errno == ENOTTY, "tcgetattr on a file: ENOTTY");
 
     check_toolchain_calls(argv[0]);
+    check_fork_vs_fds();
 
     if (failures) {
         out("LINUX-SMOKE FAIL\n");

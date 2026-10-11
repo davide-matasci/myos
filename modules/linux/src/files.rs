@@ -4,6 +4,10 @@
 //! `*at` calls need one, and a directory fd needs a read position. Paths are
 //! the task's own (chroot-relative) absolute view. A socket's is its `/net`
 //! conversation, with the socket's state.
+//!
+//! Lock order: the core calls `on_fork` and `on_spawn` with its task lock
+//! held, so nothing here may enter the core (`task::current_pid` takes
+//! that lock) while holding `PATHS` or `FLAGS`: the pid is read first.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -60,36 +64,42 @@ pub fn on_spawn(slot: usize) {
 
 /// Set fd's close-on-exec flag.
 pub fn set_cloexec(fd: usize, on: bool) {
+    let me = task::current_pid();
     let mut f = FLAGS.lock();
-    let e = &mut f[task::current_pid()];
+    let e = &mut f[me];
     let b = bit(fd);
     e.cloexec = if on { e.cloexec | b } else { e.cloexec & !b };
 }
 
 pub fn cloexec(fd: usize) -> bool {
-    FLAGS.lock()[task::current_pid()].cloexec & bit(fd) != 0
+    let me = task::current_pid();
+    FLAGS.lock()[me].cloexec & bit(fd) != 0
 }
 
 pub fn set_nonblock(fd: usize, on: bool) {
+    let me = task::current_pid();
     let mut f = FLAGS.lock();
-    let e = &mut f[task::current_pid()];
+    let e = &mut f[me];
     let b = bit(fd);
     e.nonblock = if on { e.nonblock | b } else { e.nonblock & !b };
 }
 
 pub fn nonblock(fd: usize) -> bool {
-    FLAGS.lock()[task::current_pid()].nonblock & bit(fd) != 0
+    let me = task::current_pid();
+    FLAGS.lock()[me].nonblock & bit(fd) != 0
 }
 
 pub fn set_sigfd(fd: usize, on: bool) {
+    let me = task::current_pid();
     let mut f = FLAGS.lock();
-    let e = &mut f[task::current_pid()];
+    let e = &mut f[me];
     let b = bit(fd);
     e.sigfd = if on { e.sigfd | b } else { e.sigfd & !b };
 }
 
 pub fn sigfd(fd: usize) -> bool {
-    FLAGS.lock()[task::current_pid()].sigfd & bit(fd) != 0
+    let me = task::current_pid();
+    FLAGS.lock()[me].sigfd & bit(fd) != 0
 }
 
 
@@ -100,7 +110,8 @@ pub fn take_cloexec(slot: usize) -> u64 {
 }
 
 pub fn get(fd: usize) -> Option<FdPath> {
-    PATHS.lock()[task::current_pid()].iter().find(|e| e.fd == fd).cloned()
+    let me = task::current_pid();
+    PATHS.lock()[me].iter().find(|e| e.fd == fd).cloned()
 }
 
 pub fn set(fd: usize, path: String, dir: bool) {
@@ -112,20 +123,23 @@ pub fn set_sock(fd: usize, conv: String, sock: Sock) {
 }
 
 fn put(e: FdPath) {
+    let me = task::current_pid();
     let mut t = PATHS.lock();
-    let v = &mut t[task::current_pid()];
+    let v = &mut t[me];
     v.retain(|x| x.fd != e.fd);
     v.push(e);
 }
 
 /// Change the state of socket `fd`; `None` if it is not a socket.
 pub fn with_sock<T>(fd: usize, f: impl FnOnce(&mut Sock) -> T) -> Option<T> {
+    let me = task::current_pid();
     let mut t = PATHS.lock();
-    t[task::current_pid()].iter_mut().find(|e| e.fd == fd)?.sock.as_mut().map(f)
+    t[me].iter_mut().find(|e| e.fd == fd)?.sock.as_mut().map(f)
 }
 
 pub fn remove(fd: usize) {
-    PATHS.lock()[task::current_pid()].retain(|e| e.fd != fd);
+    let me = task::current_pid();
+    PATHS.lock()[me].retain(|e| e.fd != fd);
     set_cloexec(fd, false);
     set_nonblock(fd, false);
     set_sigfd(fd, false);
@@ -145,8 +159,9 @@ pub fn dup(old: usize, new: usize) {
 }
 
 pub fn set_pos(fd: usize, pos: usize) {
+    let me = task::current_pid();
     let mut t = PATHS.lock();
-    if let Some(e) = t[task::current_pid()].iter_mut().find(|e| e.fd == fd) {
+    if let Some(e) = t[me].iter_mut().find(|e| e.fd == fd) {
         e.pos = pos;
     }
 }
