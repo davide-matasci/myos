@@ -76,7 +76,10 @@ static HEAP: KernelHeap = KernelHeap;
 /// A Linux syscall from a task with the personality (see the module docs).
 pub fn dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: &mut SyscallRegs) -> usize {
     let args = arch::args(regs, a0, a1, a2);
-    arch::syscall(nr, args, regs)
+    let kept = trace::enter(nr, &args);
+    let ret = arch::syscall(nr, args, regs);
+    trace::leave(kept, ret);
+    ret
 }
 
 unsafe extern "C" fn op_syscall(nr: usize, a0: usize, a1: usize, a2: usize, regs: *mut u64) -> usize {
