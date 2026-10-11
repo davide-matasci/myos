@@ -1071,43 +1071,65 @@ lx_python_net() {
 # an AF_UNIX socket (the layer's listeners are unix ones: issue #415), a
 # timer, a timeout that elapses, SIGUSR1 handled by the loop, a child's
 # output read back. The script runs inside the Python root (the launcher
-# binds /dev, /proc and /net into it, not /tmp).
+# binds /dev, /proc and /net into it, not /tmp); it says what it is at on
+# stderr and gives up after 60 s, and is killed after 120 s should the loop
+# itself hang, so a step that never ends fails the test instead of
+# stalling the boot.
 lx_python_asyncio() {
 	mkdir -p /tmp/alpine/tmp
 	cat > /tmp/alpine/tmp/asyncio_smoke.py <<'PY'
 import asyncio, os, selectors, signal, sys
 sel = type(selectors.DefaultSelector()).__name__
+def step(what):
+    print('step:', what, file=sys.stderr, flush=True)
 async def main():
     loop = asyncio.get_running_loop()
     async def handle(r, w):
         w.write((await r.read(100)).upper())
         await w.drain()
         w.close()
+    step('unix server')
     srv = await asyncio.start_unix_server(handle, '/tmp/asyncio.sock')
     async with srv:
+        step('connect')
         r, w = await asyncio.open_unix_connection('/tmp/asyncio.sock')
         w.write(b'asyncio')
         await w.drain()
+        step('echo')
         echoed = await asyncio.wait_for(r.read(100), 10)
         w.close()
+    step('sleep')
     t0 = loop.time()
     await asyncio.sleep(0.2)
     slept = loop.time() - t0 >= 0.15
+    step('timeout')
     try:
         await asyncio.wait_for(asyncio.Event().wait(), 0.2)
         timed_out = False
     except asyncio.TimeoutError:
         timed_out = True
+    step('signal')
     got = loop.create_future()
     loop.add_signal_handler(signal.SIGUSR1, got.set_result, 'USR1')
     loop.call_later(0.1, os.kill, os.getpid(), signal.SIGUSR1)
     sig = await asyncio.wait_for(got, 10)
+    step('subprocess')
     p = await asyncio.create_subprocess_exec(sys.executable, '-c', 'print("sub")', stdout=asyncio.subprocess.PIPE)
     out, _ = await p.communicate()
     print('ASYNCIO', sel, echoed.decode(), slept, timed_out, sig, out.strip().decode(), p.returncode)
-asyncio.run(main())
+asyncio.run(asyncio.wait_for(main(), 60))
 PY
-	out=$(linux --root /tmp/alpine python3 /tmp/asyncio_smoke.py 2>&1)
+	linux --root /tmp/alpine python3 /tmp/asyncio_smoke.py > $OUT/asyncio.out 2> $OUT/asyncio.err &
+	apid=$!
+	i=0
+	while [ $i -lt 120 ] && kill -0 $apid 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill $apid 2>/dev/null
+	wait $apid 2>/dev/null
+	out=$(cat $OUT/asyncio.out)
+	cat $OUT/asyncio.err
 	echo "$out"
 	[ "$out" = "ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0" ]
 }
