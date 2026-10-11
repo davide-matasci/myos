@@ -1,12 +1,13 @@
-# Event counters and timers
+# Event counters, timers and wait sets
 
 An event counter is what Linux calls an eventfd, a timer what it calls a
-timerfd: a kernel object a program holds as an fd, reads for what
-happened (a count, the expirations of a timer), polls for readiness, and
-hands to a `poll` with its sockets and pipes. myos serves both from the
-kernel (`kernel/src/evfd.rs`), as directories under `/dev` the Plan 9 way
-(`kernel/src/fs/evfs.rs`), like the terminals (`docs/tty.md`) and the
-`/net` conversations (`docs/sockets-curl.md`):
+timerfd, a wait set what it calls an epoll instance: a kernel object a
+program holds as an fd, reads for what happened (a count, the expirations
+of a timer, the members of a set that are ready), polls for readiness,
+and hands to a `poll` with its sockets and pipes. myos serves all three
+from the kernel (`kernel/src/evfd.rs`), as directories under `/dev` the
+Plan 9 way (`kernel/src/fs/evfs.rs`), like the terminals (`docs/tty.md`)
+and the `/net` conversations (`docs/sockets-curl.md`):
 
 ```
 /dev/event/clone         read: allocates an event counter, answers its number N
@@ -17,13 +18,18 @@ kernel (`kernel/src/evfd.rs`), as directories under `/dev` the Plan 9 way
 /dev/timer/N/data        the timer: 8-byte reads take the expirations since the last
 /dev/timer/N/ctl         commands: arm FIRST [INTERVAL] [abs] [realtime] | disarm
 /dev/timer/N/status      armed LEFT INTERVAL | disarmed
-/proc/self/fd/N          symlink: /dev/event/3/data for a counter, /dev/timer/0/data for a timer
+/dev/wait/clone          read: allocates a wait set, answers its number N
+/dev/wait/N/data         the set: 16-byte reads take the ready members {u64 cookie, u32 events, u32 0}
+/dev/wait/N/ctl          commands: add FD EVENTS COOKIE | mod FD EVENTS COOKIE | del FD
+/dev/wait/N/status       members N, then one FD EVENTS COOKIE line per member
+/proc/self/fd/N          symlink: /dev/event/3/data for a counter, /dev/timer/0/data, /dev/wait/1/data
 ```
 
 A program reads `clone` once (the number comes as text, `3\n`), opens
-`N/data` and keeps that fd: it is the eventfd or timerfd. The kernel knows
-the fd as its own kind (`FdEntry::Event`, `FdEntry::Timer` in
-`kernel/src/task/fd.rs`): `read`, `write` and `poll` on it are the kernel's,
+`N/data` and keeps that fd: it is the eventfd, timerfd or epoll fd. The
+kernel knows the fd as its own kind (`FdEntry::Event`, `FdEntry::Timer`,
+`FdEntry::Wait` in `kernel/src/task/fd.rs`): `read`, `write` and `poll`
+on it are the kernel's,
 a `fork` or `dup` shares the object (a reference count frees it with the
 last fd), and `/proc/self/fd/N` names its directory, so a library holding
 only the fd finds `ctl` and `status`. An object belongs to the user whose
@@ -33,11 +39,13 @@ are `dev.common`, every user's).
 
 libgloss wraps the Linux calls over these files
 (`toolchain/newlib/libgloss/myos/evfd.c`, `<sys/eventfd.h>`,
-`<sys/timerfd.h>`): `eventfd`, `eventfd_read`, `eventfd_write`,
-`timerfd_create`, `timerfd_settime`, `timerfd_gettime`. The Linux layer
-maps `eventfd2` and the three `timerfd_*` syscalls onto the same objects
-(`modules/linux/src/sys.rs`, `docs/linux-compat.md`), so a Linux program's
-eventfd is a native fd and the layer keeps no state for it.
+`<sys/timerfd.h>`, `<sys/epoll.h>`): `eventfd`, `eventfd_read`,
+`eventfd_write`, `timerfd_create`, `timerfd_settime`, `timerfd_gettime`,
+`epoll_create`, `epoll_create1`, `epoll_ctl`, `epoll_wait`, `epoll_pwait`.
+The Linux layer maps `eventfd2`, the `timerfd_*` and the `epoll_*`
+syscalls onto the same objects (`modules/linux/src/sys.rs`,
+`docs/linux-compat.md`), so a Linux program's eventfd or epoll fd is a
+native fd and the layer keeps no state for it.
 
 ## Event counters
 
@@ -89,6 +97,44 @@ A timerfd's clock matters only to `TFD_TIMER_ABSTIME`: libgloss remembers
 the Linux layer, where every clock is the wall clock
 (`docs/linux-compat.md`), arms relative to now.
 
+## Wait sets
+
+A wait set holds members: other fds' open objects (a pipe end, a socket's
+file, an event counter, a timer, another set), each tagged with the fd it
+was added by and a cookie, and asked for a readiness. A read of the set
+gives the members ready now, up to what the buffer holds, as 16-byte
+records `{u64 cookie, u32 events, u32 0}`, `events` the `poll(2)` bits
+that hold (`POLLIN` 1, `POLLOUT` 4, `POLLERR` 8, `POLLHUP` 0x10, the last
+two always reported); a read with no member ready waits for one (`EAGAIN`
+with `O_NONBLOCK`), and `poll` says `POLLIN` while one is. A timed wait is
+a `poll` on the set's fd with the timeout, then a read: what `epoll_wait`
+does (libgloss and the Linux layer keep the set's fd non-blocking, so a
+member that stopped being ready in between gives nothing rather than a
+wait). A set may be a member of another, not of itself, and not in a
+cycle (refused, as Linux's `ELOOP`).
+
+The `ctl` commands name the member by an fd of the writing process:
+
+| command | effect |
+|---------|--------|
+| `add FD EVENTS COOKIE` | the object behind FD joins, asked for EVENTS; refused when the set already has it by that fd |
+| `mod FD EVENTS COOKIE` | new events and cookie, re-armed (a `oneshot` member fires again) |
+| `del FD` | leaves |
+
+`EVENTS` is a comma list of `in`, `out`, `et` (edge-triggered: a readiness
+is reported once, until the member was seen not ready; Linux reports
+every new event, which is near enough for an event loop), `oneshot`
+(reported once, then disabled until a `mod`), or `none` (errors and
+hangups only). `status` reads `members N` and one `FD EVENTS COOKIE` line
+per member, ` disabled` after a fired `oneshot`.
+
+A member is the open object, not the fd number: a `dup` of the fd or the
+same fd in a forked child refer to the same member, and closing the
+object's last fd (in every process) takes it out of every set, as on
+Linux (`fd_drop` in `kernel/src/task/fd.rs`). The set itself is shared
+with a fork, like Linux's: the child's `add` shows in the parent. A set
+holds 1024 members at most.
+
 ## From the shell
 
 ```
@@ -108,5 +154,8 @@ program opens and closes it (as a `/net` conversation does).
 timers through libgloss: the count, `EAGAIN`, `EINVAL`, the semaphore
 mode, a read woken by a forked child's write, `status`, a one-shot and a
 periodic timer, `gettime`, `disarm`, an absolute time.
-`linux-compat/tests/linux-smoke.c` does the same from a musl program
-through the Linux layer.
+`user/c/epoll_smoke.c` (`t epoll`) runs the wait sets: pipes and an event
+counter as members, a timeout, a child's write ending a wait, `et`,
+`oneshot`, the errors, a member gone with its fd, a set in a set, the set
+shared with a fork. `linux-compat/tests/linux-smoke.c` does the same from
+a musl program through the Linux layer.

@@ -130,6 +130,7 @@ static API: KernelApi = KernelApi {
     console_input: api_console_input,
     vfs_statfs: api_vfs_statfs,
     blk_name: api_blk_name,
+    wait_take: api_wait_take,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1130,6 +1131,22 @@ unsafe extern "C" fn api_tty_ctl_write(fd: usize, text: *const u8, len: usize) -
     }
     let text = unsafe { core::slice::from_raw_parts(text, len) };
     if crate::task::fd_tty_ctl_write(fd, text).is_some() { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_wait_take(fd: usize, out: *mut u8, max: usize) -> i32 {
+    let Some(records) = crate::task::wait_take(fd, max) else {
+        return -1;
+    };
+    if out.is_null() {
+        return -1;
+    }
+    for (i, (cookie, events)) in records.iter().enumerate() {
+        let mut record = [0u8; 16];
+        record[..8].copy_from_slice(&cookie.to_le_bytes());
+        record[8..12].copy_from_slice(&events.to_le_bytes());
+        unsafe { core::ptr::copy_nonoverlapping(record.as_ptr(), out.add(i * 16), 16) };
+    }
+    records.len() as i32
 }
 
 unsafe extern "C" fn api_fd_path(fd: usize, buf: *mut u8, cap: usize) -> i32 {

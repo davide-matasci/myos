@@ -324,6 +324,23 @@ pub mod task {
         buf.truncate((n as usize).min(buf.len()));
         Some(buf)
     }
+    /// The ready members of the wait set `fd` is open on, up to `max`, as
+    /// `(cookie, events)`, taken (docs/events.md); `None` for no wait set.
+    pub fn wait_take(fd: usize, max: usize) -> Option<alloc::vec::Vec<(u64, u32)>> {
+        let mut buf = alloc::vec![0u8; max * 16];
+        let n = api().wait_take(fd, &mut buf, max);
+        if n < 0 {
+            return None;
+        }
+        Some(
+            buf.chunks_exact(16)
+                .take(n as usize)
+                .map(|r| {
+                    (u64::from_le_bytes(r[..8].try_into().unwrap()), u32::from_le_bytes(r[8..12].try_into().unwrap()))
+                })
+                .collect(),
+        )
+    }
     pub fn pipe_open() -> Option<(usize, usize)> {
         let (mut r, mut w) = (0usize, 0usize);
         (api().pipe_open(&mut r, &mut w) == 0).then_some((r, w))

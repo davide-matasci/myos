@@ -523,8 +523,8 @@ fn rw_ops(
 }
 
 /// Mount rootfs at `/` (the image's files, read-only), tmpfs at `/tmp/`,
-/// devfs at `/dev/` with ptsfs at `/dev/pts/` and evfs at `/dev/event/` and
-/// `/dev/timer/`, procfs at `/proc/`; bind
+/// devfs at `/dev/` with ptsfs at `/dev/pts/` and evfs at `/dev/event/`,
+/// `/dev/timer/` and `/dev/wait/`, procfs at `/proc/`; bind
 /// `/dev/shm`.
 pub fn init() {
     vfs::mount(
@@ -614,9 +614,9 @@ pub fn init() {
             reject_readlink,
         ),
     );
-    // The event counters and the timers (docs/events.md): /dev/event and
-    // /dev/timer, each clone and N/{data,ctl,status}; fds on data route
-    // via crate::task like a pty's.
+    // The event counters, the timers and the wait sets (docs/events.md):
+    // /dev/event, /dev/timer and /dev/wait, each clone and
+    // N/{data,ctl,status}; fds on data route via crate::task like a pty's.
     vfs::mount(
         "evfs",
         "dev/event",
@@ -649,6 +649,26 @@ pub fn init() {
             evfs::timer::truncate,
             evfs::timer::read,
             evfs::timer::write,
+            reject_mkdir,
+            reject_rmdir,
+            reject_unlink,
+            reject_rename,
+            reject_symlink,
+            reject_readlink,
+        ),
+    );
+    vfs::mount(
+        "evfs",
+        "dev/wait",
+        rw_ops(
+            evfs::wait::lookup,
+            evfs::wait::stat,
+            evfs::wait::listdir_at,
+            evfs::wait::register,
+            evfs::wait::create,
+            evfs::wait::truncate,
+            evfs::wait::read,
+            evfs::wait::write,
             reject_mkdir,
             reject_rmdir,
             reject_unlink,

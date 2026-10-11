@@ -46,7 +46,10 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 34 made [`VfsStatInfo`]'s `size` 64 bits (sizes past 4 GiB).
 /// 35 added [`ModuleVfsOps::statfs`] and [`KernelApi::vfs_statfs`] (how
 /// full a filesystem is, [`VfsStatFs`]).
-pub const ABI_VERSION: u32 = 36;
+/// 36 added [`KernelApi::blk_name`] (a block device's name).
+/// 37 added [`KernelApi::wait_take`] (a wait set's ready members, for the
+/// Linux layer's `epoll_wait`).
+pub const ABI_VERSION: u32 = 37;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -845,6 +848,12 @@ pub struct KernelApi {
     /// `out`: its length, or negative for no such disk. What a name
     /// ending in `?` became (`sd?` -> `sdb`).
     pub blk_name: unsafe extern "C" fn(dev: u32, out: *mut u8, cap: usize) -> i32,
+    // --- ABI 37 ---
+    /// The ready members of the wait set `fd` is open on (`/dev/wait`,
+    /// docs/events.md), taken as a read takes them: up to `max` records of
+    /// 16 bytes, `{u64 cookie, u32 events, u32 0}`, into `out`; how many,
+    /// 0 when none is ready now, negative when `fd` is no wait set.
+    pub wait_take: unsafe extern "C" fn(fd: usize, out: *mut u8, max: usize) -> i32,
 }
 
 /// Where a module keeps the table `module_init` received: set once there,
@@ -1300,6 +1309,12 @@ impl KernelApi {
     /// The disk's name into `out`: its length, or negative.
     pub fn blk_name(&self, dev: u32, out: &mut [u8]) -> i32 {
         unsafe { (self.blk_name)(dev, out.as_mut_ptr(), out.len()) }
+    }
+
+    /// [`KernelApi::wait_take`]: `out` holds `max` records of 16 bytes.
+    pub fn wait_take(&self, fd: usize, out: &mut [u8], max: usize) -> i32 {
+        debug_assert!(out.len() >= max * 16);
+        unsafe { (self.wait_take)(fd, out.as_mut_ptr(), max.min(out.len() / 16)) }
     }
 
     /// Other modules reach `table` as a `T` (`UsbHostOps` for [`USB_SERVICE`]).

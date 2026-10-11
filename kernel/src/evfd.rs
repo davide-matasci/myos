@@ -1,9 +1,9 @@
-//! Event counters and timers: `/dev/event/N` and `/dev/timer/N`
-//! (`docs/events.md`). An object comes from reading the directory's
-//! `clone`, which allocates it and answers its number; `N/data` opened is
-//! the fd a program holds (an event or timer fd in [`crate::task`], whose
-//! reads and writes come here), `N/ctl` takes its commands as text and
-//! `N/status` describes it.
+//! Event counters, timers and wait sets: `/dev/event/N`, `/dev/timer/N`
+//! and `/dev/wait/N` (`docs/events.md`). An object comes from reading the
+//! directory's `clone`, which allocates it and answers its number;
+//! `N/data` opened is the fd a program holds (an event, timer or wait fd
+//! in [`crate::task`], whose reads and writes come here), `N/ctl` takes
+//! its commands as text and `N/status` describes it.
 //!
 //! An event counter is a `u64` a write adds to and a read takes: the whole
 //! count (zeroed) or, as a semaphore, one at a time. A timer counts its
@@ -11,14 +11,20 @@
 //! the wall clock, once or at an interval, and fires from the scheduler's
 //! tick ([`tick`]) or the arming CPU's timer. Both are readable while they
 //! hold something to take, which is what `poll` reports, so an event loop
-//! waits for them like for a pipe. Linux's `eventfd` and `timerfd` are
-//! these (libgloss `evfd.c`, the Linux layer).
+//! waits for them like for a pipe. A wait set holds other fds' objects
+//! and is readable while one of them is ready: a read gives their cookies
+//! and readiness, so an event loop waits for many fds in one read. Linux's
+//! `eventfd`, `timerfd` and `epoll` are these (libgloss `evfd.c`, the
+//! Linux layer).
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
+
+use crate::task::FdEntry;
 
 /// Linux's counter ceiling: a write that would pass it waits.
 const COUNT_MAX: u64 = u64::MAX - 1;
@@ -156,11 +162,13 @@ pub fn event_ref(id: usize) {
     }
 }
 
-/// One fd referring to event `id` closed; the last frees it.
-pub fn event_drop(id: usize) {
-    if EVENTS.get(id).is_some_and(|e| refs_drop(&e.refs)) {
+/// One fd referring to event `id` closed; the last frees it (true then).
+pub fn event_drop(id: usize) -> bool {
+    let last = EVENTS.get(id).is_some_and(|e| refs_drop(&e.refs));
+    if last {
         EVENTS.free(id);
     }
+    last
 }
 
 /// Take the count: the whole of it (zeroed), or one as a semaphore.
@@ -319,10 +327,13 @@ pub fn timer_ref(id: usize) {
     }
 }
 
-pub fn timer_drop(id: usize) {
-    if TIMERS.get(id).is_some_and(|t| refs_drop(&t.refs)) {
+/// One fd referring to timer `id` closed; the last frees it (true then).
+pub fn timer_drop(id: usize) -> bool {
+    let last = TIMERS.get(id).is_some_and(|t| refs_drop(&t.refs));
+    if last {
         TIMERS.free(id);
     }
+    last
 }
 
 /// Take the expirations counted so far (those due now included). `None`
@@ -434,4 +445,250 @@ pub fn tick(now: u64, mut fired: impl FnMut(usize)) -> u64 {
         }
     }
     next
+}
+
+// ---- wait sets -----------------------------------------------------------
+
+/// The readiness a member asks for and reports: `poll(2)`'s bits, which
+/// are Linux's `EPOLL*` values too.
+pub const WAIT_IN: u32 = 0x1;
+pub const WAIT_OUT: u32 = 0x4;
+pub const WAIT_ERR: u32 = 0x8;
+pub const WAIT_HUP: u32 = 0x10;
+/// `et`: a readiness is reported once, until the member was seen not
+/// ready (an edge, near enough: Linux reports every new event).
+const WAIT_ET: u32 = 1 << 31;
+/// `oneshot`: reported once, then the member waits for a `mod`.
+const WAIT_ONESHOT: u32 = 1 << 30;
+
+/// Members a set holds at most (Linux has no limit; this bounds the heap
+/// a process can take).
+const WAIT_MEMBERS_MAX: usize = 1024;
+
+/// A member of a wait set: an open object (what an fd refers to: a pipe
+/// end, a socket's file, an event, ...), tagged with the fd it was added
+/// by, in the process that added it. `mod` and `del` name it by that fd,
+/// `add` refuses it twice. Closing the object's last fd removes it
+/// ([`wait_forget`]), as on Linux.
+struct Member {
+    fd: usize,
+    target: FdEntry,
+    events: u32,
+    cookie: u64,
+    /// `et`: reported while ready, not seen not ready since.
+    reported: bool,
+    /// `oneshot`: reported, waiting for a `mod`.
+    disabled: bool,
+}
+
+pub struct Wait {
+    members: Mutex<Vec<Member>>,
+    refs: Refs,
+}
+
+static WAITS: Table<Wait> = Table::new();
+
+/// A new, empty wait set (`clone`): its id.
+pub fn wait_alloc() -> Option<usize> {
+    WAITS.alloc(Wait { members: Mutex::new(Vec::new()), refs: Refs::new() })
+}
+
+/// Whether wait set `id` is there, for the current process's user.
+pub fn wait_exists(id: usize) -> bool {
+    WAITS.get(id).is_some_and(|w| w.refs.visible())
+}
+
+pub fn wait_id_bound() -> usize {
+    WAITS.bound()
+}
+
+pub fn wait_open(id: usize) -> bool {
+    WAITS.get(id).map(|w| refs_open(&w.refs)).is_some()
+}
+
+pub fn wait_ref(id: usize) {
+    if let Some(w) = WAITS.get(id) {
+        w.refs.fds.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// One fd referring to wait set `id` closed; the last frees it (true then).
+pub fn wait_drop(id: usize) -> bool {
+    let last = WAITS.get(id).is_some_and(|w| refs_drop(&w.refs));
+    if last {
+        WAITS.free(id);
+    }
+    last
+}
+
+/// A comma list of `in`, `out`, `et`, `oneshot` (or `none`) as bits.
+fn wait_events(text: &str) -> Option<u32> {
+    if text == "none" {
+        return Some(0);
+    }
+    let mut bits = 0;
+    for word in text.split(',') {
+        bits |= match word {
+            "in" => WAIT_IN,
+            "out" => WAIT_OUT,
+            "et" => WAIT_ET,
+            "oneshot" => WAIT_ONESHOT,
+            _ => return None,
+        };
+    }
+    Some(bits)
+}
+
+fn wait_events_text(bits: u32) -> String {
+    let words = [(WAIT_IN, "in"), (WAIT_OUT, "out"), (WAIT_ET, "et"), (WAIT_ONESHOT, "oneshot")];
+    let text: Vec<&str> = words.iter().filter(|(bit, _)| bits & bit != 0).map(|(_, word)| *word).collect();
+    if text.is_empty() { String::from("none") } else { text.join(",") }
+}
+
+/// Whether set `set` holds set `needle`, through at most `depth` more
+/// sets: a set in itself, or a cycle of sets, would scan without end.
+fn wait_holds(set: usize, needle: usize, depth: usize) -> bool {
+    let Some(w) = WAITS.get(set) else { return false };
+    let inner: Vec<usize> = w
+        .members
+        .lock()
+        .iter()
+        .filter_map(|m| if let FdEntry::Wait(id) = m.target { Some(id) } else { None })
+        .collect();
+    inner.iter().any(|&id| id == needle || (depth > 0 && wait_holds(id, needle, depth - 1)))
+}
+
+/// A command on wait set `id`'s `ctl` (`docs/events.md`): `add FD EVENTS
+/// COOKIE` (FD an fd of the writing process, EVENTS a comma list of `in`,
+/// `out`, `et`, `oneshot`, or `none`; COOKIE what a read reports for it),
+/// `mod FD EVENTS COOKIE` (new events and cookie, re-armed), `del FD`.
+/// Refused (`None`): a bad line, an fd that is not open, `add` of a member
+/// the set has, of the set itself or of a set holding this one; `mod` or
+/// `del` of what is no member.
+pub fn wait_ctl_write(id: usize, text: &[u8]) -> Option<usize> {
+    let w = WAITS.get(id)?;
+    let line = core::str::from_utf8(trim(text)).ok()?;
+    let mut words = line.split_ascii_whitespace();
+    let verb = words.next()?;
+    let fd: usize = words.next()?.parse().ok()?;
+    let target = crate::task::fd_entry(fd)?;
+    match verb {
+        "add" | "mod" => {
+            let events = wait_events(words.next()?)?;
+            let cookie: u64 = words.next()?.parse().ok()?;
+            if words.next().is_some() {
+                return None;
+            }
+            let member = Member { fd, target, events, cookie, reported: false, disabled: false };
+            if verb == "add" {
+                if let FdEntry::Wait(other) = target {
+                    if other == id || wait_holds(other, id, 4) {
+                        return None;
+                    }
+                }
+                let mut members = w.members.lock();
+                if members.iter().any(|m| m.fd == fd && m.target == target)
+                    || members.len() >= WAIT_MEMBERS_MAX
+                    || members.try_reserve(1).is_err()
+                {
+                    return None;
+                }
+                members.push(member);
+            } else {
+                let mut members = w.members.lock();
+                let m = members.iter_mut().find(|m| m.fd == fd && m.target == target)?;
+                *m = member;
+            }
+        }
+        "del" => {
+            if words.next().is_some() {
+                return None;
+            }
+            let mut members = w.members.lock();
+            let i = members.iter().position(|m| m.fd == fd && m.target == target)?;
+            members.remove(i);
+        }
+        _ => return None,
+    }
+    // A member added or re-armed may be ready: the set's readers look.
+    crate::task::wake_any();
+    Some(text.len())
+}
+
+/// The ready members of set `id`, up to `max` of them, as `(cookie,
+/// readiness)`; with `take`, an `et` member's readiness counts as reported
+/// and a `oneshot` one is disabled (what a read does; `poll` only looks).
+/// The second result: whether a member is the console tty, which a waiter
+/// re-checks when the keyboard is polled.
+pub fn wait_scan(id: usize, max: usize, take: bool) -> (Vec<(u64, u32)>, bool) {
+    let mut out = Vec::new();
+    let mut tty = false;
+    let Some(w) = WAITS.get(id) else { return (out, false) };
+    // The members' readiness is asked outside the lock: a member that is
+    // a set itself scans its own.
+    let snapshot: Vec<(usize, FdEntry, u32)> =
+        w.members.lock().iter().filter(|m| !m.disabled).map(|m| (m.fd, m.target, m.events)).collect();
+    let mut ready = Vec::new();
+    for (fd, target, events) in snapshot {
+        let (bits, is_tty) = crate::task::entry_poll(target);
+        tty |= is_tty && events & WAIT_IN != 0;
+        let hit = u32::from(bits) & (events & (WAIT_IN | WAIT_OUT) | WAIT_ERR | WAIT_HUP);
+        ready.push((fd, target, hit));
+    }
+    let mut members = w.members.lock();
+    for (fd, target, hit) in ready {
+        let Some(m) = members.iter_mut().find(|m| m.fd == fd && m.target == target) else { continue };
+        if hit == 0 {
+            if take {
+                m.reported = false;
+            }
+            continue;
+        }
+        if m.events & WAIT_ET != 0 && m.reported {
+            continue;
+        }
+        if out.len() >= max {
+            // What the reader has no room for stays as it is.
+            break;
+        }
+        if take {
+            if m.events & WAIT_ET != 0 {
+                m.reported = true;
+            }
+            if m.events & WAIT_ONESHOT != 0 {
+                m.disabled = true;
+            }
+        }
+        out.push((m.cookie, hit));
+    }
+    (out, tty)
+}
+
+/// Whether set `id` has a ready member (what `poll` reports for its fd),
+/// and whether one is the console tty.
+pub fn wait_ready(id: usize) -> (bool, bool) {
+    let (ready, tty) = wait_scan(id, 1, false);
+    (!ready.is_empty(), tty)
+}
+
+/// The object `target`'s last fd closed: no set holds it any more.
+pub fn wait_forget(target: FdEntry) {
+    for id in 0..WAITS.bound() {
+        if let Some(w) = WAITS.get(id) {
+            w.members.lock().retain(|m| m.target != target);
+        }
+    }
+}
+
+/// Wait set `id`'s `status`: `members N`, then one line per member, `FD
+/// EVENTS COOKIE`, with ` disabled` after a `oneshot` one that fired.
+pub fn wait_status(id: usize) -> Option<Vec<u8>> {
+    let w = WAITS.get(id)?;
+    let members = w.members.lock();
+    let mut text = alloc::format!("members {}\n", members.len());
+    for m in members.iter() {
+        let disabled = if m.disabled { " disabled" } else { "" };
+        text += &alloc::format!("{} {} {}{disabled}\n", m.fd, wait_events_text(m.events), m.cookie);
+    }
+    Some(text.into_bytes())
 }

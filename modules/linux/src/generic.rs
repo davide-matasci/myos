@@ -14,6 +14,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     match nr {
         17 => ret(sys::getcwd(a[0], a[1])),
         19 => ret(sys::eventfd2(a[0], a[1])),
+        20 => ret(sys::epoll_create1(a[0])),
+        21 => ret(sys::epoll_ctl(a[0], a[1], a[2], a[3])),
+        22 => ret(sys::epoll_pwait(a[0], a[1], a[2], a[3] as isize)),
         23 => ret(sys::dup(a[0], 0)),
         24 => ret(sys::dup3(a[0], a[1], false, a[2])),
         25 => ret(sys::fcntl(a[0], a[1], a[2])),
@@ -123,6 +126,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         261 => ret(sys::prlimit(a[1], a[3])),
         278 => ret(sys::getrandom(a[0], a[1])),
         279 => ret(sys::memfd_create(a[0], a[1])),
+        441 => ret(sys::epoll_pwait2(a[0], a[1], a[2], a[3])),
         _ => err(ENOSYS),
     }
 }

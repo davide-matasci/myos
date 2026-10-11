@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
@@ -478,6 +479,71 @@ static void check_evfd(void) {
     close(fd);
 }
 
+/* epoll (docs/events.md): a pipe's write end is reported writable, its
+ * read end once a byte is in it; a timeout elapses; a child's write ends a
+ * wait; EPOLLET reports once while the data stays; EPOLLONESHOT once until
+ * EPOLL_CTL_MOD; EEXIST and ENOENT; a member goes with its last fd. */
+static void check_epoll(void) {
+    struct epoll_event ev[4];
+    int p[2], q[2], ep, n;
+    char c = 'x';
+    ep = epoll_create1(EPOLL_CLOEXEC);
+    check(ep >= 0 && pipe(p) == 0 && pipe(q) == 0, "epoll_create1");
+    ev[0].events = EPOLLIN;
+    ev[0].data.u64 = 10;
+    check(epoll_ctl(ep, EPOLL_CTL_ADD, p[0], &ev[0]) == 0, "epoll_ctl: add the read end");
+    ev[0].events = EPOLLOUT;
+    ev[0].data.u64 = 11;
+    check(epoll_ctl(ep, EPOLL_CTL_ADD, p[1], &ev[0]) == 0, "epoll_ctl: add the write end");
+    check(epoll_ctl(ep, EPOLL_CTL_ADD, p[1], &ev[0]) == -1 && errno == EEXIST, "epoll_ctl: a second add is EEXIST");
+    check(epoll_ctl(ep, EPOLL_CTL_MOD, q[0], &ev[0]) == -1 && errno == ENOENT, "epoll_ctl: mod of a non-member is ENOENT");
+    n = epoll_wait(ep, ev, 4, 0);
+    check(n == 1 && ev[0].data.u64 == 11 && ev[0].events == EPOLLOUT, "epoll_wait: an empty pipe's write end only");
+    check(epoll_ctl(ep, EPOLL_CTL_DEL, p[1], NULL) == 0, "epoll_ctl: del");
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    n = epoll_wait(ep, ev, 4, 100);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    check(n == 0 && ms >= 80, "epoll_wait: a 100 ms timeout elapses");
+    check(write(p[1], &c, 1) == 1 && epoll_wait(ep, ev, 4, 1000) == 1 && ev[0].data.u64 == 10 && ev[0].events == EPOLLIN &&
+              read(p[0], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 0,
+          "epoll_wait: a byte makes the read end readable, a read takes it back");
+    pid_t pid = fork();
+    if (pid == 0) {
+        usleep(100000);
+        _exit(write(p[1], &c, 1) == 1 ? 0 : 1);
+    }
+    int status = 0;
+    check(epoll_wait(ep, ev, 4, -1) == 1 && ev[0].data.u64 == 10 && read(p[0], &c, 1) == 1 &&
+              waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "epoll_wait: a child's write ends a wait");
+    ev[0].events = EPOLLIN | EPOLLET;
+    ev[0].data.u64 = 30;
+    check(epoll_ctl(ep, EPOLL_CTL_ADD, q[0], &ev[0]) == 0 && write(q[1], "ab", 2) == 2 && epoll_wait(ep, ev, 4, 0) == 1 &&
+              ev[0].data.u64 == 30 && epoll_wait(ep, ev, 4, 0) == 0,
+          "EPOLLET: reported once while the data stays");
+    check(read(q[0], &c, 1) == 1 && read(q[0], &c, 1) == 1 && write(q[1], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 1 &&
+              ev[0].data.u64 == 30 && read(q[0], &c, 1) == 1,
+          "EPOLLET: reported again after a drain");
+    ev[0].events = EPOLLIN | EPOLLONESHOT;
+    ev[0].data.u64 = 31;
+    check(epoll_ctl(ep, EPOLL_CTL_MOD, q[0], &ev[0]) == 0 && write(q[1], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 1 &&
+              ev[0].data.u64 == 31 && epoll_wait(ep, ev, 4, 0) == 0,
+          "EPOLLONESHOT: once");
+    ev[0].events = EPOLLIN;
+    ev[0].data.u64 = 32;
+    check(epoll_ctl(ep, EPOLL_CTL_MOD, q[0], &ev[0]) == 0 && epoll_wait(ep, ev, 4, 0) == 1 && ev[0].data.u64 == 32 &&
+              read(q[0], &c, 1) == 1,
+          "EPOLLONESHOT: re-armed by mod");
+    close(q[0]);
+    check(epoll_ctl(ep, EPOLL_CTL_DEL, q[0], NULL) == -1 && errno == EBADF, "epoll: a closed member's fd is EBADF");
+    close(q[1]);
+    close(p[0]);
+    close(p[1]);
+    close(ep);
+}
+
 /* `unix NAME`: connect to a server listening under NAME (a native one,
  * user/tests/kernel.sh; it may not listen yet: retried for 20 s), send a
  * line, read it back. */
@@ -562,6 +628,7 @@ static void check_toolchain_calls(char *self) {
     check_unix_sockets();
     check_select();
     check_evfd();
+    check_epoll();
 
     /* A file cut, grown and written at a position, with locks and fsync. */
     struct stat st;

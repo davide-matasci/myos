@@ -31,6 +31,11 @@ t poll /bin/etc/poll_smoke
 # one-shot and a periodic timerfd, gettime, disarm, an absolute time
 # (evfd_smoke.c).
 t evfd /bin/etc/evfd_smoke
+# Wait sets (docs/events.md): epoll over pipes and an event counter, a
+# timeout, a child's write ending a wait, EPOLLET, EPOLLONESHOT, the
+# errors, a member gone with its fd, a set in a set, the set shared with a
+# fork (epoll_smoke.c).
+t epoll /bin/etc/epoll_smoke
 # readv/writev over a pipe, a socketpair and a nonblocking socket that
 # fills mid-writev (uio_smoke.c).
 t uio /bin/etc/uio_smoke

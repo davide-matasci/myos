@@ -670,6 +670,141 @@ pub fn timerfd_gettime(fd: usize, cur: usize) -> R {
     Ok(0)
 }
 
+// ---- epoll: wait sets (docs/events.md) --------------------------------------
+
+/// `struct epoll_event`: `events` (u32) then `data` (u64), packed on
+/// x86_64 (12 bytes), aligned elsewhere (16).
+#[cfg(target_arch = "x86_64")]
+const EPOLL_EVENT_SIZE: usize = 12;
+#[cfg(not(target_arch = "x86_64"))]
+const EPOLL_EVENT_SIZE: usize = 16;
+const EPOLL_DATA_OFF: usize = EPOLL_EVENT_SIZE - 8;
+
+const EPOLL_CTL_ADD: usize = 1;
+const EPOLL_CTL_DEL: usize = 2;
+const EPOLL_CTL_MOD: usize = 3;
+const EPOLLIN: u32 = 0x1;
+const EPOLLOUT: u32 = 0x4;
+const EPOLLET: u32 = 1 << 31;
+const EPOLLONESHOT: u32 = 1 << 30;
+/// An `epoll_wait` takes this many at most in one go (the rest stay ready).
+const EPOLL_MAX_EVENTS: usize = 64;
+
+/// `epoll_create1(flags)`: an fd on a kernel wait set. The fd is kept
+/// non-blocking here: `epoll_wait` waits for readiness itself and then
+/// takes what is ready, never blocking in the read.
+pub fn epoll_create1(flags: usize) -> R {
+    if flags & !O_CLOEXEC != 0 {
+        return Err(EINVAL);
+    }
+    let (fd, _) = evfd_open("wait", flags | O_NONBLOCK)?;
+    Ok(fd)
+}
+
+pub fn epoll_create(size: usize) -> R {
+    if (size as isize) <= 0 {
+        return Err(EINVAL);
+    }
+    epoll_create1(0)
+}
+
+/// The `EVENTS` word of a wait set's `ctl` for Linux `events` bits: `in`,
+/// `out`, `et`, `oneshot`; what myos lacks (`EPOLLPRI`, `EPOLLRDHUP`,
+/// `EPOLLEXCLUSIVE`, ...) is dropped, `EPOLLERR` and `EPOLLHUP` are always
+/// reported.
+fn epoll_events_word(events: u32) -> String {
+    let words = [(EPOLLIN, "in"), (EPOLLOUT, "out"), (EPOLLET, "et"), (EPOLLONESHOT, "oneshot")];
+    let text: Vec<&str> = words.iter().filter(|(bit, _)| events & bit != 0).map(|(_, w)| *w).collect();
+    if text.is_empty() { String::from("none") } else { text.join(",") }
+}
+
+/// Whether the set at `dir` lists `fd` among its members (`status`).
+fn epoll_has(dir: &str, fd: usize) -> bool {
+    let mut b = alloc::vec![0u8; 16384];
+    let n = fs::read(&alloc::format!("{dir}/status"), 0, &mut b).unwrap_or(0);
+    let text = core::str::from_utf8(&b[..n]).unwrap_or("");
+    text.lines().skip(1).any(|l| l.split_ascii_whitespace().next().and_then(|w| w.parse::<usize>().ok()) == Some(fd))
+}
+
+/// `epoll_ctl(epfd, op, fd, event)`: an `add`, `mod` or `del` on the wait
+/// set's `ctl`. The kernel refuses without a reason, so the one Linux
+/// gives is worked out here: `EBADF` for a closed fd, `EEXIST` for an
+/// `add` of a member, `ENOENT` for a `mod` or `del` of a non-member,
+/// `ELOOP` for a set added to itself or into a cycle, `EINVAL` otherwise.
+pub fn epoll_ctl(epfd: usize, op: usize, fd: usize, event: usize) -> R {
+    let dir = evfd_dir(epfd, "wait")?;
+    if task::fd_kind(fd).is_none() {
+        return Err(EBADF);
+    }
+    let cmd = match op {
+        EPOLL_CTL_ADD | EPOLL_CTL_MOD => {
+            let mut b = [0u8; EPOLL_EVENT_SIZE];
+            get(event, &mut b)?;
+            let events = u32::from_le_bytes(b[..4].try_into().unwrap());
+            let cookie = u64::from_le_bytes(b[EPOLL_DATA_OFF..].try_into().unwrap());
+            let verb = if op == EPOLL_CTL_ADD { "add" } else { "mod" };
+            alloc::format!("{verb} {fd} {} {cookie}", epoll_events_word(events))
+        }
+        EPOLL_CTL_DEL => alloc::format!("del {fd}"),
+        _ => return Err(EINVAL),
+    };
+    if fs::write(&alloc::format!("{dir}/ctl"), 0, cmd.as_bytes()).is_some() {
+        return Ok(0);
+    }
+    let member = epoll_has(&dir, fd);
+    Err(match op {
+        EPOLL_CTL_ADD if member => EEXIST,
+        // A refused add of a set: the set itself, or a cycle of sets.
+        EPOLL_CTL_ADD if evfd_dir(fd, "wait").is_ok() => ELOOP,
+        EPOLL_CTL_ADD => EINVAL,
+        _ if !member => ENOENT,
+        _ => EINVAL,
+    })
+}
+
+/// `epoll_wait(epfd, events, maxevents, timeout_ms)`: wait for a ready
+/// member, then take the ready ones, up to `maxevents`, into the
+/// `struct epoll_event`s at `events`.
+pub fn epoll_wait(epfd: usize, events: usize, maxevents: usize, timeout_ms: isize) -> R {
+    if (maxevents as isize) <= 0 {
+        return Err(EINVAL);
+    }
+    evfd_dir(epfd, "wait")?;
+    let max = maxevents.min(EPOLL_MAX_EVENTS);
+    if !user::buffer_ok(events, max * EPOLL_EVENT_SIZE) {
+        return Err(EFAULT);
+    }
+    let timeout_us = (timeout_ms >= 0).then(|| timeout_ms as u64 * 1000);
+    let mut taken = Vec::new();
+    wait_ready(timeout_us, || {
+        taken = task::wait_take(epfd, max).ok_or(EINVAL)?;
+        Ok(taken.len())
+    })?;
+    let mut b = alloc::vec![0u8; taken.len() * EPOLL_EVENT_SIZE];
+    for (i, (cookie, bits)) in taken.iter().enumerate() {
+        let e = &mut b[i * EPOLL_EVENT_SIZE..(i + 1) * EPOLL_EVENT_SIZE];
+        e[..4].copy_from_slice(&bits.to_le_bytes());
+        e[EPOLL_DATA_OFF..].copy_from_slice(&cookie.to_le_bytes());
+    }
+    if !b.is_empty() {
+        put(events, &b)?;
+    }
+    Ok(taken.len())
+}
+
+/// `epoll_pwait(epfd, events, maxevents, timeout_ms, sigmask)`: the signal
+/// mask is not applied, as `ppoll`'s.
+pub fn epoll_pwait(epfd: usize, events: usize, maxevents: usize, timeout_ms: isize) -> R {
+    epoll_wait(epfd, events, maxevents, timeout_ms)
+}
+
+/// `epoll_pwait2(epfd, events, maxevents, timeout, sigmask)`: a `struct
+/// timespec` timeout (null: none).
+pub fn epoll_pwait2(epfd: usize, events: usize, maxevents: usize, ts: usize) -> R {
+    let timeout_ms = timespec_us(ts)?.map_or(-1, |us| us.div_ceil(1000).min(isize::MAX as u64) as isize);
+    epoll_wait(epfd, events, maxevents, timeout_ms)
+}
+
 pub fn dup(fd: usize, min: usize) -> R {
     let new = task::fd_dup_min(fd, min).ok_or(EBADF)?;
     files::dup(fd, new);

@@ -168,10 +168,11 @@ pub fn slave_ref(id: usize) {
     }
 }
 
-/// Last fd referencing the master end closed.
-pub fn drop_master(id: usize) {
-    let Some(p) = pty_at(id) else { return };
-    if p.master_refs.fetch_sub(1, Ordering::SeqCst) == 1 {
+/// One fd referencing the master end closed; true when it was the last.
+pub fn drop_master(id: usize) -> bool {
+    let Some(p) = pty_at(id) else { return false };
+    let last = p.master_refs.fetch_sub(1, Ordering::SeqCst) == 1;
+    if last {
         // Session end: the login shell's controlling pty is gone.
         if let Some(pgid) = session_pgid(id) {
             let _ = crate::signal::kill_pg(pgid, SIGHUP);
@@ -180,16 +181,19 @@ pub fn drop_master(id: usize) {
         notify(id);
         free_if_dead(id);
     }
+    last
 }
 
-/// One fd referencing the slave end closed.
-pub fn drop_slave(id: usize) {
-    let Some(p) = pty_at(id) else { return };
-    if p.slave_refs.fetch_sub(1, Ordering::SeqCst) == 1 {
+/// One fd referencing the slave end closed; true when it was the last.
+pub fn drop_slave(id: usize) -> bool {
+    let Some(p) = pty_at(id) else { return false };
+    let last = p.slave_refs.fetch_sub(1, Ordering::SeqCst) == 1;
+    if last {
         // A blocked master read drains and then reports EIO.
         notify(id);
     }
     free_if_dead(id);
+    last
 }
 
 /// Make the pair the controlling terminal of the caller's session

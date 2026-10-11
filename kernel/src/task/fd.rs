@@ -4,10 +4,14 @@
 //! a fork's copies the POSIX way.
 
 use super::*;
+use alloc::vec::Vec;
 use spin::Mutex;
 
+/// What an fd refers to. Two fds with equal entries refer to the same open
+/// object (a pipe end, an open file description, ...): what a wait set's
+/// member is (`crate::evfd`).
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum FdEntry {
+pub enum FdEntry {
     Empty,
     Stdin,
     Console,
@@ -26,6 +30,8 @@ pub(super) enum FdEntry {
     Event(usize),
     /// A timer (`/dev/timer/N/data`): reads take the expirations.
     Timer(usize),
+    /// A wait set (`/dev/wait/N/data`): reads take the ready members.
+    Wait(usize),
 }
 
 /// One open file description (POSIX): the node, the file offset and the
@@ -190,6 +196,10 @@ pub(super) fn fd_clone(entry: FdEntry) -> FdEntry {
             crate::evfd::timer_ref(id);
             entry
         }
+        FdEntry::Wait(id) => {
+            crate::evfd::wait_ref(id);
+            entry
+        }
         FdEntry::File(id) => {
             open_file_ref(id);
             entry
@@ -198,24 +208,37 @@ pub(super) fn fd_clone(entry: FdEntry) -> FdEntry {
     }
 }
 
+/// An fd that was `entry` closed. When it was the object's last, the wait
+/// sets it was a member of forget it (`docs/events.md`), as on Linux.
 pub(super) fn fd_drop(entry: FdEntry) {
-    match entry {
+    let gone = match entry {
         FdEntry::PipeRead(id) => pipe::drop_reader(id),
         FdEntry::PipeWrite(id) => pipe::drop_writer(id),
         FdEntry::PtyMaster(id) => crate::pty::drop_master(id),
         FdEntry::PtySlave(id) => crate::pty::drop_slave(id),
         FdEntry::Event(id) => crate::evfd::event_drop(id),
         FdEntry::Timer(id) => crate::evfd::timer_drop(id),
-        FdEntry::File(id) => {
-            if let Some(node) = open_file_unref(id) {
+        FdEntry::Wait(id) => crate::evfd::wait_drop(id),
+        FdEntry::File(id) => match open_file_unref(id) {
+            Some(node) => {
                 // The description's own locks go with it (`fs::lock`).
                 crate::fs::lock::release(crate::fs::lock::Owner::Flock(id));
                 crate::fs::lock::release(crate::fs::lock::Owner::Ofd(id));
                 crate::fs::vfs::close_ref(&node);
+                true
             }
-        }
-        _ => {}
+            None => false,
+        },
+        FdEntry::Empty | FdEntry::Stdin | FdEntry::Console => false,
+    };
+    if gone {
+        crate::evfd::wait_forget(entry);
     }
+}
+
+/// What `fd` refers to; `None` for a closed fd.
+pub fn fd_entry(fd: usize) -> Option<FdEntry> {
+    with_process_mut(|t| t.fds.get(fd).copied()).filter(|e| *e != FdEntry::Empty)
 }
 
 /// The calling process closes an fd that was `entry`: its record locks on
@@ -430,6 +453,7 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
             Some(u32::from(readable) | u32::from(writable) << 1)
         }
         FdEntry::Timer(id) => Some(u32::from(crate::evfd::timer_poll(id))),
+        FdEntry::Wait(id) => Some(u32::from(crate::evfd::wait_ready(id).0)),
         _ => None,
     })
 }
@@ -445,9 +469,14 @@ pub const POLLNVAL: u16 = 0x20;
 /// caller asked for, and whether `fd` is the console tty (whose keyboard
 /// input is polled, not interrupt-driven: a waiter re-checks it).
 pub fn fd_poll(fd: usize) -> (u16, bool) {
-    let Some(entry) = with_process_mut(|t| t.fds.get(fd).copied()) else {
-        return (POLLNVAL, false);
-    };
+    match with_process_mut(|t| t.fds.get(fd).copied()) {
+        Some(entry) => entry_poll(entry),
+        None => (POLLNVAL, false),
+    }
+}
+
+/// [`fd_poll`] of what an fd refers to (a wait set's member, `crate::evfd`).
+pub fn entry_poll(entry: FdEntry) -> (u16, bool) {
     let tty = || {
         let readable = if crate::input::readable() { POLLIN } else { 0 };
         (readable | POLLOUT, true)
@@ -501,6 +530,10 @@ pub fn fd_poll(fd: usize) -> (u16, bool) {
             (bits, false)
         }
         FdEntry::Timer(id) => (if crate::evfd::timer_poll(id) { POLLIN } else { 0 }, false),
+        FdEntry::Wait(id) => {
+            let (ready, tty) = crate::evfd::wait_ready(id);
+            (if ready { POLLIN } else { 0 }, tty)
+        }
         FdEntry::File(id) => {
             // A module file (a socket's /net data) knows its readiness; any
             // other file is always readable and writable.
@@ -555,17 +588,20 @@ pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
     out
 }
 
-/// Open `/dev/event/N/data` or `/dev/timer/N/data` (`docs/events.md`): an
-/// fd on the object; `None` when there is no such object or no free fd.
+/// Open `/dev/event/N/data`, `/dev/timer/N/data` or `/dev/wait/N/data`
+/// (`docs/events.md`): an fd on the object; `None` when there is no such
+/// object or no free fd.
 pub fn fd_open_evfd(kind: crate::fs::evfs::Kind, id: usize) -> Option<usize> {
     use crate::fs::evfs::Kind;
     let entry = match kind {
         Kind::Event => FdEntry::Event(id),
         Kind::Timer => FdEntry::Timer(id),
+        Kind::Wait => FdEntry::Wait(id),
     };
     let opened = match kind {
         Kind::Event => crate::evfd::event_open(id),
         Kind::Timer => crate::evfd::timer_open(id),
+        Kind::Wait => crate::evfd::wait_open(id),
     };
     if !opened {
         return None;
@@ -838,6 +874,41 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                 }
                 return 8;
             }
+            FdEntry::Wait(id) => {
+                // The ready members as 16-byte records `{cookie, events,
+                // 0}`, as many as fit; a shorter buffer is an error.
+                if len < 16 {
+                    return usize::MAX;
+                }
+                let seq = wait_seq();
+                let (records, tty) = crate::evfd::wait_scan(id, len.min(FILE_READ_TMP) / 16, true);
+                if records.is_empty() {
+                    // As `poll`: a signal that runs a handler ends the
+                    // wait, never a restart.
+                    if signal_wakeable(current_id()) {
+                        return crate::signal::SYSERR_EINTR;
+                    }
+                    // Anything happening wakes the pollers; a polled
+                    // keyboard is re-checked at its rate (`sys_poll`).
+                    let until = if tty && crate::input::keyboard_present() && !crate::console::keyboard_irq() {
+                        deadline_ms(10)
+                    } else {
+                        0
+                    };
+                    block_until(WAIT_ANY, seq, until);
+                    continue;
+                }
+                let mut bytes = Vec::with_capacity(records.len() * 16);
+                for (cookie, events) in records {
+                    bytes.extend_from_slice(&cookie.to_le_bytes());
+                    bytes.extend_from_slice(&events.to_le_bytes());
+                    bytes.extend_from_slice(&[0u8; 4]);
+                }
+                if !user::copy_to_user(current_aspace(), buf, &bytes) {
+                    return usize::MAX;
+                }
+                return bytes.len();
+            }
             FdEntry::Empty | FdEntry::Console | FdEntry::PipeWrite(_) => return usize::MAX,
         }
     }
@@ -1038,7 +1109,9 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
         FdEntry::Stdin | FdEntry::Console | FdEntry::PtyMaster(_) | FdEntry::PtySlave(_) => {
             FdKind::Tty
         }
-        FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) | FdEntry::Event(_) | FdEntry::Timer(_) => FdKind::Pipe,
+        FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) | FdEntry::Event(_) | FdEntry::Timer(_) | FdEntry::Wait(_) => {
+            FdKind::Pipe
+        }
         FdEntry::File(_) if fd_is_console_tty(entry) => FdKind::Tty,
         FdEntry::File(id) => FdKind::File {
             size: open_file_node(id).and_then(|node| crate::fs::size_of(&node)).unwrap_or(0),
@@ -1048,8 +1121,8 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
 
 /// What `fd` is open on, as `/proc/self/fd/N` names it: a path for a file
 /// or a terminal (`/dev/console/data`, `/dev/pts/N/data`, the master end as
-/// `/dev/pts/N/master`), an event or timer (`/dev/event/N/data`,
-/// `/dev/timer/N/data`), `pipe:[N]` for a pipe end.
+/// `/dev/pts/N/master`), an event, timer or wait set (`/dev/event/N/data`,
+/// `/dev/timer/N/data`, `/dev/wait/N/data`), `pipe:[N]` for a pipe end.
 pub fn fd_path(fd: usize) -> Option<alloc::string::String> {
     use alloc::format;
     use alloc::string::String;
@@ -1063,7 +1136,18 @@ pub fn fd_path(fd: usize) -> Option<alloc::string::String> {
         FdEntry::PtySlave(id) => format!("/dev/pts/{id}/data"),
         FdEntry::Event(id) => format!("/dev/event/{id}/data"),
         FdEntry::Timer(id) => format!("/dev/timer/{id}/data"),
+        FdEntry::Wait(id) => format!("/dev/wait/{id}/data"),
     })
+}
+
+/// The ready members of the wait set `fd` is open on, up to `max`, as
+/// `(cookie, readiness)`, taken as a read takes them (`crate::evfd`); an
+/// empty list when none is ready now. `None` when `fd` is no wait set.
+pub fn wait_take(fd: usize, max: usize) -> Option<Vec<(u64, u32)>> {
+    let FdEntry::Wait(id) = fd_entry(fd)? else {
+        return None;
+    };
+    Some(crate::evfd::wait_scan(id, max, true).0)
 }
 
 /// What `fd` grants beneath it (a file description's `rights`).
