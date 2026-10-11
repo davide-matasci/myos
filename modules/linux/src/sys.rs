@@ -1338,6 +1338,17 @@ pub fn clock_gettime(ts: usize) -> R {
     Ok(0)
 }
 
+/// `clock_getres(clock, res)`: the one clock's resolution, a microsecond
+/// (`now_us`). A null `res` only checks the clock.
+pub fn clock_getres(res: usize) -> R {
+    if res != 0 {
+        let mut b = [0u8; 16];
+        b[8..].copy_from_slice(&1000u64.to_le_bytes());
+        put(res, &b)?;
+    }
+    Ok(0)
+}
+
 #[allow(dead_code)]
 pub fn time(t: usize) -> R {
     let s = (now_us() / 1_000_000) as usize;

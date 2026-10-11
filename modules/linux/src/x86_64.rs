@@ -143,6 +143,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         217 => ret(sys::getdents64(a[0], a[1], a[2])),
         218 => thread::set_tid_address(a[0]),
         228 => ret(sys::clock_gettime(a[1])),
+        229 => ret(sys::clock_getres(a[1])),
         230 => ret(sys::nanosleep(a[2], a[1] & 1 != 0)), // clock_nanosleep
         234 => ret(sys::kill(a[1], a[2])),               // tgkill
         257 => ret(sys::openat(a[0], a[1], a[2])),

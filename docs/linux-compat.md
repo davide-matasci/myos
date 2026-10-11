@@ -268,8 +268,8 @@ Sockets: `socket` (`AF_INET` stream and datagram, `AF_UNIX` stream),
 `setsockopt` (accepted, ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
 too. See Sockets below.
 
-Time and misc: `clock_gettime`, `gettimeofday`, `time`, `nanosleep`,
-`clock_nanosleep`, `getrandom`; `memfd_create` (a file of `/dev/shm`
+Time and misc: `clock_gettime`, `clock_getres`, `gettimeofday`, `time`,
+`nanosleep`, `clock_nanosleep`, `getrandom`; `memfd_create` (a file of `/dev/shm`
 created and unlinked at once, as libgloss's; sealing is accepted and not
 done); `poll` and `select` (x86_64), `ppoll` and `pselect6` (the same
 readiness: readable on `POLLIN`, `POLLHUP` or `POLLERR`, writable on
