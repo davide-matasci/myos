@@ -131,6 +131,7 @@ static API: KernelApi = KernelApi {
     vfs_statfs: api_vfs_statfs,
     blk_name: api_blk_name,
     wait_take: api_wait_take,
+    user_mapped: api_user_mapped,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1272,6 +1273,10 @@ unsafe extern "C" fn api_thread_place(tid: i32) {
     if tid >= 0 {
         crate::task::place_thread(tid as usize);
     }
+}
+
+unsafe extern "C" fn api_user_mapped(addr: usize, len: usize) -> i32 {
+    crate::user::user_mapped(addr, len) as i32
 }
 
 unsafe extern "C" fn api_mmap_discard(addr: usize, len: usize) -> i32 {

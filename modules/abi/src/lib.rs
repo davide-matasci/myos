@@ -49,7 +49,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 36 added [`KernelApi::blk_name`] (a block device's name).
 /// 37 added [`KernelApi::wait_take`] (a wait set's ready members, for the
 /// Linux layer's `epoll_wait`).
-pub const ABI_VERSION: u32 = 37;
+/// 38 added [`KernelApi::user_mapped`] (the Linux layer's `mremap` tells
+/// a mapped range from a hole).
+pub const ABI_VERSION: u32 = 38;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -854,6 +856,10 @@ pub struct KernelApi {
     /// 16 bytes, `{u64 cookie, u32 events, u32 0}`, into `out`; how many,
     /// 0 when none is ready now, negative when `fd` is no wait set.
     pub wait_take: unsafe extern "C" fn(fd: usize, out: *mut u8, max: usize) -> i32,
+    // --- ABI 38 ---
+    /// 1 when every page of `[addr, addr + len)` is the calling process's
+    /// (its image, stack, heap below the break or an mmap region), else 0.
+    pub user_mapped: unsafe extern "C" fn(addr: usize, len: usize) -> i32,
 }
 
 /// Where a module keeps the table `module_init` received: set once there,
@@ -1339,6 +1345,10 @@ impl KernelApi {
 
     pub fn wake(&self, key: usize) {
         unsafe { (self.wake)(key) }
+    }
+
+    pub fn user_mapped(&self, addr: usize, len: usize) -> bool {
+        unsafe { (self.user_mapped)(addr, len) != 0 }
     }
 
     pub fn mmap_discard(&self, addr: usize, len: usize) -> i32 {

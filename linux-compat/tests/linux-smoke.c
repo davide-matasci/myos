@@ -652,7 +652,17 @@ static void check_misc_calls(void) {
           "mremap: shrink in place, no growth");
     if (m != MAP_FAILED) {
         munmap(m, 4096);
+        check(mremap(m, 4096, 8192, 0) == MAP_FAILED && errno == EFAULT, "mremap of a hole: EFAULT");
     }
+    // musl measures the main thread's stack by growing one page after
+    // another below it until mremap says EFAULT.
+    pthread_attr_t a;
+    void *low = NULL;
+    size_t size = 0;
+    char here;
+    check(pthread_getattr_np(pthread_self(), &a) == 0 && pthread_attr_getstack(&a, &low, &size) == 0 &&
+              (char *)low <= &here && &here < (char *)low + size,
+          "pthread_getattr_np: the main thread's stack");
 }
 
 static void check_fork_vs_fds(void) {

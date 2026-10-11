@@ -225,6 +225,9 @@ pub mod task {
         api().thread_place(tid as i32)
     }
     /// Drop the pages of `[addr, addr + len)`: they read as new next time.
+    pub fn user_mapped(addr: usize, len: usize) -> bool {
+        api().user_mapped(addr, len)
+    }
     pub fn mmap_discard(addr: usize, len: usize) -> bool {
         api().mmap_discard(addr, len) == 0
     }
