@@ -415,19 +415,47 @@ pub fn table(phys: u64) -> *mut [u64; 512] {
     hhdm(phys & !0xfff) as *mut [u64; 512]
 }
 
-/// Allocate `n` consecutive 4 KiB frames for DMA rings: `(phys, hhdm va)`.
-/// Fails if the bump allocator crossed a memmap hole (should not happen for
-/// a handful of pages).
+/// Allocate `n` consecutive 4 KiB frames for DMA (a module's
+/// `dma_alloc`: queues, bounce buffers, rings): `(phys, hhdm va)`, zeroed.
+/// One frame may come from the freelist; a run of them comes from the bump
+/// cursor in one step under the allocator's lock ([`alloc_contiguous_frames`]):
+/// frames popped one by one are adjacent only by luck (the freelist is in
+/// the order processes freed them, and another CPU may allocate in
+/// between), and a virtio bounce pool left without its pages hands the
+/// device physical address 0. `None` once no run of `n` is left.
 pub fn alloc_contiguous_pages(n: usize) -> Option<(u64, *mut u8)> {
-    if n == 0 {
-        return None;
-    }
-    let first = alloc_frame_site(0);
-    for i in 1..n {
-        let p = alloc_frame_site(0);
-        if p != first + (i as u64) * 4096 {
-            return None;
+    let first = match n {
+        0 => return None,
+        // Counted by `raw_alloc`.
+        1 => raw_alloc()?,
+        _ => {
+            let first = alloc_contiguous_frames(n)?;
+            FRAME_ALLOC_COUNT.fetch_add(n as u64, Ordering::Relaxed);
+            first
         }
-    }
+    };
+    FRAME_SITE_COUNTS[0].fetch_add(n as u64, Ordering::Relaxed);
     Some((first, hhdm(first)))
+}
+
+/// Boot self-check of [`alloc_contiguous_pages`]: with the freelist holding
+/// frames in an order that is not a run (as after processes exit), a run
+/// of DMA pages is still contiguous and zeroed. Whether it held.
+pub fn dma_pages_smoke() -> bool {
+    let frames: alloc::vec::Vec<u64> = (0..4).map(|_| alloc_frame()).collect();
+    // Freed lowest first: the freelist pops them highest first, a descending
+    // order that frames taken one by one would not make a run of.
+    for &f in &frames {
+        free_frame(f);
+    }
+    const N: usize = 3;
+    let Some((phys, va)) = alloc_contiguous_pages(N) else {
+        return false;
+    };
+    let zeroed = unsafe { core::slice::from_raw_parts(va, N * PAGE as usize) }.iter().all(|&b| b == 0);
+    let ok = zeroed && va == hhdm(phys) && phys & 0xfff == 0;
+    for i in 0..N as u64 {
+        free_frame(phys + i * PAGE);
+    }
+    ok
 }

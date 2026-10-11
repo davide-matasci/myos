@@ -274,6 +274,13 @@ fn prove_heap() {
     let _ = boxed;
     let _ = v;
     console::status_ok("heap");
+    // A device's DMA run (`mm::alloc_contiguous_pages`) is one even when the
+    // freelist is not in order.
+    if mm::dma_pages_smoke() {
+        console::status_ok("dma pages");
+    } else {
+        console::status_fail("dma pages: not a contiguous run");
+    }
 }
 
 #[panic_handler]
