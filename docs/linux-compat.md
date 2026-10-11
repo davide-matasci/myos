@@ -456,6 +456,8 @@ three, the kernel crate itself an hour. Known gaps:
   ignored. Every Linux
   clock is the one clock here, so a `TFD_TIMER_ABSTIME` value is taken
   relative to it, whatever the clock the timerfd was created on.
+- `listen` and `accept` serve `AF_UNIX` sockets only: a TCP socket's
+  `listen` is `EOPNOTSUPP` (issue #415).
 - `AF_UNIX` sockets are `/net/unix` conversations (Sockets above), and
   `socketpair(AF_UNIX, SOCK_STREAM | SOCK_SEQPACKET)` a `/net/unix` pair,
   their ends kept like TCP sockets (Rust's `Command` reports a failed exec
@@ -535,8 +537,9 @@ and fetches `http://example.com/` with `urllib` (DNS over UDP, then TCP),
 expecting `HTTP 200`, and runs an asyncio script (`alpine_python_asyncio`:
 the end-to-end test of the event fds, `docs/events.md`), whose selector is
 `select.epoll` over `/dev/wait`, whose signal handler is a wakeup fd in it
-and whose subprocess is watched from a thread: a TCP echo over loopback, a
-timer, a timeout, `SIGUSR1` handled by the loop and a child's output,
+and whose subprocess is watched from a thread: an echo over an `AF_UNIX`
+socket, a timer, a timeout, `SIGUSR1` handled by the loop and a child's
+output,
 expecting `ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0`. Last, it
 mounts the disk the launcher made on the
 host with `linux-compat/alpine-disk.sh ARCH target/alpine-rust-ARCH.img

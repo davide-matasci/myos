@@ -1067,7 +1067,8 @@ lx_python_net() {
 # ... and its event loop, the end-to-end test of the event fds
 # (docs/events.md): asyncio's selector is epoll (select.epoll over
 # /dev/wait), its signal handler a wakeup fd in that selector, its
-# subprocess a child watched from a thread; a TCP echo over loopback, a
+# subprocess a child watched from a thread; an echo server and client over
+# an AF_UNIX socket (the layer's listeners are unix ones: issue #415), a
 # timer, a timeout that elapses, SIGUSR1 handled by the loop, a child's
 # output read back. The script runs inside the Python root (the launcher
 # binds /dev, /proc and /net into it, not /tmp).
@@ -1082,9 +1083,9 @@ async def main():
         w.write((await r.read(100)).upper())
         await w.drain()
         w.close()
-    srv = await asyncio.start_server(handle, '127.0.0.1', 8766)
+    srv = await asyncio.start_unix_server(handle, '/tmp/asyncio.sock')
     async with srv:
-        r, w = await asyncio.open_connection('127.0.0.1', 8766)
+        r, w = await asyncio.open_unix_connection('/tmp/asyncio.sock')
         w.write(b'asyncio')
         await w.drain()
         echoed = await asyncio.wait_for(r.read(100), 10)
