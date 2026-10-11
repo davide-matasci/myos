@@ -482,19 +482,6 @@ pub fn fd_poll(fd: usize) -> (u16, bool) {
     }
 }
 
-/// Peer fd of a pipe end in the current task (read<->write), or None.
-/// Legacy `PIPE_PEER` syscall (the old libgloss SIGCHLD self-pipe wake).
-pub fn fd_pipe_peer(fd: usize) -> Option<usize> {
-    if fd >= MAX_FDS {
-        return None;
-    }
-    with_process_mut(|t| match t.fds[fd] {
-        FdEntry::PipeRead(id) => (0..MAX_FDS).find(|&i| t.fds[i] == FdEntry::PipeWrite(id)),
-        FdEntry::PipeWrite(id) => (0..MAX_FDS).find(|&i| t.fds[i] == FdEntry::PipeRead(id)),
-        _ => None,
-    })
-}
-
 /// Open `/dev/pts/clone`: allocate a pty pair, take the master fd.
 pub fn fd_open_pty_master() -> Option<usize> {
     let id = crate::pty::alloc()?;
@@ -536,7 +523,10 @@ pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
     out
 }
 
-pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
+/// Make `newfd` a copy of `oldfd` (`dup2`, `dup3`), closing what it was
+/// open on; `newfd == oldfd` is left as it is. `cloexec` is the copy's own
+/// close-at-exec flag.
+pub fn fd_dup2(oldfd: usize, newfd: usize, cloexec: bool) -> bool {
     if oldfd >= MAX_FDS || newfd >= MAX_FDS {
         return false;
     }
@@ -552,8 +542,12 @@ pub fn fd_dup2(oldfd: usize, newfd: usize) -> bool {
         }
         let prev = t.fds[newfd];
         t.fds[newfd] = fd_clone(old);
-        // The copy stays open across exec, whatever `oldfd` does.
-        t.cloexec &= !(1 << newfd);
+        // The copy's own flag (`dup3`), whatever `oldfd`'s is.
+        if cloexec {
+            t.cloexec |= 1 << newfd;
+        } else {
+            t.cloexec &= !(1 << newfd);
+        }
         (true, prev)
     });
     records_released(dropped);

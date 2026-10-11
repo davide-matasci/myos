@@ -328,7 +328,7 @@ int sigaction(int sig, const struct sigaction *restrict act,
         kin.tramp = (unsigned long)(uintptr_t)__myos_sigtramp;
     }
     ret = myos_syscall3(
-        MYOS_SYS_SIGACTION2,
+        MYOS_SYS_SIGACTION,
         (long)sig,
         act ? (long)(uintptr_t)&kin : 0,
         oact ? (long)(uintptr_t)&kout : 0);

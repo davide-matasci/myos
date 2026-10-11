@@ -382,19 +382,6 @@ pub fn signal_take_interrupted(id: usize) -> bool {
     id < MAX_TASKS && INTERRUPTED[id].swap(false, Ordering::SeqCst)
 }
 
-/// Take-and-clear a pending bit: the legacy `SIGCHLD_TAKE` syscall that
-/// libgloss used before handlers were delivered by the kernel.
-pub fn signal_take_pending(id: usize, bit: u32) -> bool {
-    if id >= MAX_TASKS {
-        return false;
-    }
-    with_sig(|tasks, _| {
-        let had = tasks[id].sig_pending & bit != 0;
-        tasks[id].sig_pending &= !bit;
-        had
-    })
-}
-
 /// Run `f` on the handler table alone, IRQs off. Callers must not hold
 /// `SIG_TABLES`; holding `TASKS` is fine (it comes first in lock order).
 fn with_tables(f: impl FnOnce(&mut [SigTable; MAX_TASKS])) {

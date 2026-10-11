@@ -9,14 +9,16 @@ use super::*;
 // `ns`), 44 mkfifo, 61 stat2, 62 utimens, 63 futimens, 66 stat3: the path
 // calls are the `*at` ones (`at`, 70 on). 28 was `ioctl`: a device's state
 // is its `ctl` file (docs/tty.md). 0 write and 3 read: `pwrite` and
-// `pread` (82, 81) do both, at the file position or at an offset.
+// `pread` (82, 81) do both, at the file position or at an offset. 7 wait:
+// `waitpid` (46) with no pid. 11 dup2: `dupfd` (14) with `DUP_EXACT`. 35
+// sigaction: the 4-word form (50). 39, 41 and 42 (`sigchld_take`,
+// `sigchld_pending`, `pipe_peer`): libgloss polled for SIGCHLD before the
+// kernel delivered handlers.
 const SYS_EXIT: usize = 1;
 const SYS_CLOSE: usize = 4;
 pub(super) const SYS_FORK: usize = 6;
-const SYS_WAIT: usize = 7;
 const SYS_BRK: usize = 9;
 const SYS_PIPE: usize = 10;
-const SYS_DUP2: usize = 11;
 const SYS_EXECNAME: usize = 13;
 const SYS_DUPFD: usize = 14;
 const SYS_GETCWD: usize = 16;
@@ -31,29 +33,18 @@ const SYS_GETPGID: usize = 31;
 const SYS_GETSID: usize = 32;
 const SYS_GETTIMEOFDAY: usize = 33;
 const SYS_KILL: usize = 34;
-const SYS_SIGACTION: usize = 35;
 const SYS_GETPID: usize = 36;
 const SYS_SIGPROCMASK: usize = 37;
 /// `poll(fds, nfds, timeout_ms)`: set each `struct pollfd`'s `revents`
 /// and return how many are non-zero, waiting for the first one when none
 /// is (up to `timeout_ms`; negative: no limit, 0: just look).
 const SYS_POLL: usize = 38;
-/// Legacy (39, 41, 42): before the kernel delivered handlers, libgloss
-/// polled for SIGCHLD from `select()`/`poll()` and ran the handler itself.
-/// Kept for binaries built against that libgloss.
-/// Take-and-clear the current task's pending `SIGCHLD` bit (returns 1/0).
-const SYS_SIGCHLD_TAKE: usize = 39;
-/// 1 if the calling task has an exited-and-unreaped child.
-const SYS_SIGCHLD_PENDING: usize = 41;
-/// Peer fd of a pipe end (the old SIGCHLD self-pipe wake).
-const SYS_PIPE_PEER: usize = 42;
 /// sigreturn(): the libc signal trampoline is done with the frame at the
 /// user stack pointer (see `crate::signal`).
 const SYS_SIGRETURN: usize = 45;
 
-/// waitpid(status, options, pid): like `SYS_WAIT` but writes a POSIX `int`
-/// status (`WIFSIGNALED`-aware) and can wait for one child. A new number, as
-/// some `SYS_WAIT` callers leave the second and third registers unset.
+/// waitpid(status, options, pid): wait for the child `pid` (any child when
+/// it is not > 0); `status` gets a POSIX `int` status (`WIFSIGNALED`-aware).
 const SYS_WAITPID: usize = 46;
 /// sigpending() -> pending set.
 const SYS_SIGPENDING: usize = 47;
@@ -61,9 +52,10 @@ const SYS_SIGPENDING: usize = 47;
 const SYS_SIGSUSPEND: usize = 48;
 /// sigwait(set) -> signal number taken from `set`.
 const SYS_SIGWAIT: usize = 49;
-/// sigaction with a 4th struct word, the libc trampoline that runs function
-/// handlers (`SYS_SIGACTION` keeps the 3-word, DFL/IGN-only form).
-const SYS_SIGACTION2: usize = 50;
+/// sigaction(sig, act, oact): `act` and `oact` are 4 words, `{handler,
+/// flags, mask, trampoline}`, the trampoline being the libc code that runs
+/// a function handler (`crate::signal::sigaction`).
+const SYS_SIGACTION: usize = 50;
 
 /// linux_next_exec(): the caller's next successful exec starts the image
 /// with the Linux personality (the `linux` launcher). Only with the optional
@@ -193,6 +185,9 @@ const FILE_AT: usize = 1;
 const FD_GET: usize = 0;
 const FD_SET: usize = 1;
 const FD_CLOEXEC: usize = 1;
+/// `dupfd(fd, new, flags)` flag: the copy is fd `new` itself, closed first
+/// if open (`dup2`, `dup3`), rather than the first free fd from `new` on.
+const DUP_EXACT: usize = 2;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
@@ -310,11 +305,9 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_EXIT => sys_exit(a0),
         SYS_CLOSE => sys_close(a0),
         SYS_FORK => sys_fork(regs),
-        SYS_WAIT => sys_wait(a0, a1),
         SYS_WAITPID => sys_waitpid(a0, a1, a2),
         SYS_BRK => sys_brk(a0),
         SYS_PIPE => sys_pipe(a0, a1),
-        SYS_DUP2 => sys_dup2(a0, a1),
         SYS_DUPFD => sys_dupfd(a0, a1, a2),
         SYS_EXECNAME => sys_exec_name(a0, a1),
         SYS_GETCWD => sys_getcwd(a0, a1),
@@ -333,14 +326,10 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         SYS_GETSID => sys_getsid(a0),
         SYS_GETTIMEOFDAY => sys_gettimeofday(a0, a1),
         SYS_KILL => sys_kill(a0, a1),
-        SYS_SIGACTION => sys_sigaction(a0, a1, a2, false),
-        SYS_SIGACTION2 => sys_sigaction(a0, a1, a2, true),
+        SYS_SIGACTION => sys_sigaction(a0, a1, a2),
         SYS_GETPID => sys_getpid(),
         SYS_SIGPROCMASK => sys_sigprocmask(a0, a1, a2),
         SYS_POLL => sys_poll(a0, a1, a2 as isize),
-        SYS_SIGCHLD_TAKE => sys_sigchld_take(),
-        SYS_SIGCHLD_PENDING => sys_sigchld_pending(),
-        SYS_PIPE_PEER => sys_pipe_peer(a0),
         SYS_SIGRETURN => crate::signal::sigreturn(regs),
         SYS_SIGPENDING => crate::signal::sigpending(),
         SYS_SIGSUSPEND => crate::signal::sigsuspend(a0 as u32),
@@ -910,10 +899,10 @@ fn sys_kill(pid: usize, sig: usize) -> usize {
 }
 
 /// `sigaction(sig, act, oact)`; see [`crate::signal::sigaction`].
-fn sys_sigaction(sig: usize, act: usize, oact: usize, with_tramp: bool) -> usize {
+fn sys_sigaction(sig: usize, act: usize, oact: usize) -> usize {
     let act = if act == 0 { None } else { Some(act) };
     let oact = if oact == 0 { None } else { Some(oact) };
-    if crate::signal::sigaction(sig as u32, act, oact, with_tramp) {
+    if crate::signal::sigaction(sig as u32, act, oact) {
         0
     } else {
         SYSERR
@@ -1286,20 +1275,6 @@ pub(crate) fn sys_fork(regs: &SyscallRegs) -> usize {
     }
 }
 
-/// `wait(status, options)`: any child; `status` gets the exit-code byte
-/// (`128 + sig` for a signal death).
-fn sys_wait(status_ptr: usize, options: usize) -> usize {
-    if status_ptr != 0 && !user_range_ok(status_ptr, 1) {
-        return SYSERR;
-    }
-    task::wait_child(
-        if status_ptr == 0 { None } else { Some(status_ptr) },
-        options & WAIT_NOHANG != 0,
-        None,
-        false,
-    )
-}
-
 /// `waitpid(status, options, pid)`: `pid > 0` waits for that child, anything
 /// else for any child; `status` gets a POSIX `int` status.
 pub(crate) fn sys_waitpid(status_ptr: usize, options: usize, pid: usize) -> usize {
@@ -1310,7 +1285,6 @@ pub(crate) fn sys_waitpid(status_ptr: usize, options: usize, pid: usize) -> usiz
         if status_ptr == 0 { None } else { Some(status_ptr) },
         options & WAIT_NOHANG != 0,
         if (pid as isize) > 0 { Some(pid) } else { None },
-        true,
     )
 }
 
@@ -1392,43 +1366,17 @@ fn sys_poll(fds_ptr: usize, nfds: usize, timeout_ms: isize) -> usize {
     }
 }
 
-fn sys_sigchld_take() -> usize {
-    sys_sigchld_take_inner()
-}
-
-fn sys_sigchld_pending() -> usize {
-    if task::has_exited_child(task::current_pid()) { 1 } else { 0 }
-}
-
-fn sys_pipe_peer(fd: usize) -> usize {
-    match task::fd_pipe_peer(fd) {
-        Some(p) => p,
-        None => SYSERR,
-    }
-}
-
-fn sys_sigchld_take_inner() -> usize {
-    let bit = 1u32 << crate::signal::SIGCHLD;
-    if task::signal_take_pending(task::current_pid(), bit) {
-        1
+/// `dupfd(fd, new, flags)`: a copy of `fd` as the first free fd from `new`
+/// on, or with [`DUP_EXACT`] as `new` itself; [`FD_CLOEXEC`] makes the
+/// copy close at exec. The copy's number.
+fn sys_dupfd(oldfd: usize, newfd: usize, flags: usize) -> usize {
+    let cloexec = flags & FD_CLOEXEC != 0;
+    let fd = if flags & DUP_EXACT != 0 {
+        task::fd_dup2(oldfd, newfd, cloexec).then_some(newfd)
     } else {
-        0
-    }
-}
-
-fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
-    if task::fd_dup2(oldfd, newfd) {
-        0
-    } else {
-        SYSERR
-    }
-}
-
-fn sys_dupfd(oldfd: usize, minfd: usize, flags: usize) -> usize {
-    match task::fd_dup_min(oldfd, minfd, flags & FD_CLOEXEC != 0) {
-        Some(fd) => fd,
-        None => SYSERR,
-    }
+        task::fd_dup_min(oldfd, newfd, cloexec)
+    };
+    fd.unwrap_or(SYSERR)
 }
 
 fn lock_result(r: Result<(), fs::lock::Refused>) -> usize {
