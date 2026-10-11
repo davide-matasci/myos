@@ -15,3 +15,5 @@ myos-abi = { path = "../abi" }
 # Virtqueues, the PCI and MMIO transports, the block and net devices (MIT,
 # rcore-os). Without `alloc`: the modules hand it their own DMA pages.
 virtio-drivers = { version = "0.13.0", default-features = false }
+# The crate reports through `log`: its warnings go to the console.
+log = "0.4"

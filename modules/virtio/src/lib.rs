@@ -35,6 +35,32 @@ static API: ApiCell = ApiCell::new();
 /// `api` is the table `module_init` received, valid for the module's life.
 pub unsafe fn init(api: &'static KernelApi) {
     unsafe { API.set(api) };
+    // The crate's warnings on the console (`virtio WARN: ...`); the first
+    // module to come up installs the logger, the others' calls fail.
+    let _ = log::set_logger(&Console);
+    log::set_max_level(log::LevelFilter::Warn);
+}
+
+struct Console;
+
+impl log::Log for Console {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        m.level() <= log::Level::Warn
+    }
+    fn log(&self, record: &log::Record) {
+        use core::fmt::Write;
+        struct Out;
+        impl Write for Out {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                api().write_str(s);
+                Ok(())
+            }
+        }
+        if self.enabled(record.metadata()) {
+            let _ = writeln!(Out, "virtio {}: {}", record.level(), record.args());
+        }
+    }
+    fn flush(&self) {}
 }
 
 fn api() -> &'static KernelApi {
@@ -392,6 +418,8 @@ pub fn probe_pci(kind: DeviceType, known: &mut dyn FnMut(Id) -> bool, found: &mu
             let mut root = root();
             let df = df_of(bus, slot, func);
             map_bars(&mut root, df);
+            // A transport of the wrong kind cannot happen (the ids above
+            // are the kind's); one that fails to open was never a device.
             match PciTransport::new::<MyosHal, _>(&mut root, df) {
                 Ok(t) if t.device_type() == kind => found(dev, SomeTransport::Pci(t)),
                 _ => api.write_str("virtio: a PCI function without the modern layout, skipped\n"),
@@ -400,8 +428,16 @@ pub fn probe_pci(kind: DeviceType, known: &mut dyn FnMut(Id) -> bool, found: &mu
     }
 }
 
+/// `MagicValue` and `DeviceID` of a virtio-mmio window.
+const MMIO_MAGIC: usize = 0x000;
+const MMIO_DEVICE_ID: usize = 0x008;
+const MMIO_MAGIC_VALUE: u32 = 0x7472_6976; // "virt"
+
 /// Every `virtio,mmio` node of the device tree holding a device of `kind`
-/// that is not `known`, for `found`. None on an arch without a tree.
+/// that is not `known`, for `found`. None on an arch without a tree. The
+/// kind is read from the window before a transport is opened on it: a
+/// transport resets its device when dropped, and the other nodes are other
+/// modules' running devices.
 pub fn probe_mmio(kind: DeviceType, known: &mut dyn FnMut(Id) -> bool, found: &mut dyn FnMut(Id, Device)) {
     let api = api();
     for i in 0.. {
@@ -410,7 +446,17 @@ pub fn probe_mmio(kind: DeviceType, known: &mut dyn FnMut(Id) -> bool, found: &m
             break;
         }
         let dev = Id::Mmio { base: node.base, irq: node.irq };
-        if known(dev) {
+        if known(dev) || node.base == 0 || node.size < MMIO_DEVICE_ID + 4 {
+            continue;
+        }
+        // SAFETY: the kernel mapped `size` bytes of the node's registers at `base`.
+        let (magic, id) = unsafe {
+            (
+                core::ptr::read_volatile((node.base + MMIO_MAGIC) as *const u32),
+                core::ptr::read_volatile((node.base + MMIO_DEVICE_ID) as *const u32),
+            )
+        };
+        if magic != MMIO_MAGIC_VALUE || id != kind as u32 {
             continue;
         }
         let Some(header) = NonNull::new(node.base as *mut VirtIOHeader) else {
