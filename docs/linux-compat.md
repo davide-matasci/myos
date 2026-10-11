@@ -520,6 +520,36 @@ three, the kernel crate itself an hour. Known gaps:
     kernel heap (a quarter of the memory, 64 MiB to 1 GiB: 256 MiB in the
     1 GiB CI guests).
 
+## Debugging
+
+A program that exits without a word usually asked for something the layer
+does not have, or crashed. Two things say which:
+
+- **The trace.** `echo 1 > /proc/linux_trace` (root: writing `/proc` is
+  the policy's `proc {all}`, `docs/security.md`) makes the layer report
+  every syscall it does not implement on the console as it answers
+  `ENOSYS`, with the process and the first three arguments, in the
+  arch's own numbering (x86_64's, or the generic table of aarch64 and
+  riscv64):
+  ```
+  linux: pid 7 syscall 4000 (0x1, 0x2, 0x3): ENOSYS
+  ```
+  `echo 0 > /proc/linux_trace` turns it off; it starts off.
+- **Where a fault was.** The kernel's `user fault` line names the file
+  and the ELF virtual address of the faulting instruction when it is in
+  a file mapping, which is where a shared library's code is:
+  ```
+  [ WARN ] user fault: page fault in /lib/libsmoke.so+0x15a0 cr2=0x0 rip=0x80011bb5a0 ...
+  ```
+  The address is what `nm`, `objdump --start-address` and `addr2line -e
+  FILE` take, on a copy of the same file on the host. The dynamic linker
+  (musl's libc too) and the last page of each segment of a program are
+  copied at exec and say `in anonymous memory` (issue #418). A write to
+  address 0 (`cr2=0x0`, `code=0x6` on x86_64) from a program's own code
+  is often deliberate: Firefox's `MOZ_CRASH` and `MOZ_RELEASE_ASSERT`
+  store a reason and write to 0, and the reason is the string the code
+  loads just before the write.
+
 ## Testing
 
 The boot tests (`docs/testing.md`, `user/tests/kernel.sh`) run
@@ -533,7 +563,10 @@ call, shared data, a relocated function pointer and a thread-local in
 `libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`);
 `linux --root` of a bare root with the smoke's event fd checks
 (`linux-smoke evfd`, `LINUX-EVFD OK`) runs them through the root's bind
-of `/dev`.
+of `/dev`; `linux_trace` turns the trace on, checks that a syscall no arch
+has still gets `ENOSYS` (`linux-smoke enosys`), and off again. A fault
+cannot be a boot test (the host takes the kernel's `user fault` line for a
+crash), so the fault's location is not tested in the boot.
 The test is plain musl C, so it can also be run on a Linux host for
 reference. The full list then runs
 `run-myos get-alpine jq && linux --root /data/alpine jq -Rrn '...' /proc/mounts` (the

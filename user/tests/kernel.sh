@@ -1028,6 +1028,20 @@ lx_evfd_root() {
 	cat $OUT/lx-evfd-root.log
 	contains "LINUX-EVFD OK" $OUT/lx-evfd-root.log
 }
+# The layer's trace switch (docs/linux-compat.md, Debugging): on, a call
+# it does not implement still gets ENOSYS (and is reported on the console);
+# off again; anything but 0 or 1 refused.
+lx_trace() {
+	echo 1 > /proc/linux_trace && [ "$(cat /proc/linux_trace)" = 1 ] || return 1
+	linux /bin/linux/linux-smoke enosys
+	rc=$?
+	echo 0 > /proc/linux_trace
+	[ $rc = 0 ] && [ "$(cat /proc/linux_trace)" = 0 ] || return 1
+	if echo maybe > /proc/linux_trace 2>/dev/null; then
+		echo "/proc/linux_trace took 'maybe'"
+		return 1
+	fi
+}
 # The page cache (kernel/src/fs/pagecache.rs): the libraries one run maps
 # serve the next (PageCacheKiB), and one rewritten in between is read as it
 # is now. libsmoke2.so overwritten with libsmoke.so has no smoke2_name for
@@ -1219,6 +1233,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t linux_dyn lx_dyn
 	t linux_unix lx_unix
 	t linux_evfd_root lx_evfd_root
+	t linux_trace lx_trace
 	t linux_pagecache lx_pagecache
 	if [ "$MODE" = full ]; then
 		t alpine_jq lx_alpine

@@ -2,7 +2,7 @@
 //! riscv64 share. No legacy calls (`open`, `fork`, `poll`, `dup2`, ...):
 //! libc uses the `*at` / `clone` / `ppoll` / `dup3` forms.
 
-use super::abi::{err, result, EFAULT, EINVAL, ENOMEM, ENOSYS, EPERM, ESRCH};
+use super::abi::{err, result, EFAULT, EINVAL, ENOMEM, EPERM, ESRCH};
 use super::signal as lsig;
 use super::net;
 use super::sys::{self, ret};
@@ -130,7 +130,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         278 => ret(sys::getrandom(a[0], a[1])),
         279 => ret(sys::memfd_create(a[0], a[1])),
         441 => ret(sys::epoll_pwait2(a[0], a[1], a[2], a[3])),
-        _ => err(ENOSYS),
+        _ => super::trace::unimplemented(nr, &a),
     }
 }
 

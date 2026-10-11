@@ -33,6 +33,7 @@ mod net;
 mod signal;
 mod sys;
 mod thread;
+mod trace;
 mod tty;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -149,6 +150,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
         return -2;
     }
     k::set_api(api);
+    trace::init();
     let rc = api.personality_register(&OPS);
     if rc == 0 {
         status_ok(api, "linux");
