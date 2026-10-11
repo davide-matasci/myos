@@ -532,7 +532,13 @@ than the 64 MiB data partition holds) and runs
 `python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])'`
 (the standard library and two C extension modules), expecting `PYTHON 42`,
 and fetches `http://example.com/` with `urllib` (DNS over UDP, then TCP),
-expecting `HTTP 200`. Last, it mounts the disk the launcher made on the
+expecting `HTTP 200`, and runs an asyncio script (`alpine_python_asyncio`:
+the end-to-end test of the event fds, `docs/events.md`), whose selector is
+`select.epoll` over `/dev/wait`, whose signal handler is a wakeup fd in it
+and whose subprocess is watched from a thread: a TCP echo over loopback, a
+timer, a timeout, `SIGUSR1` handled by the loop and a child's output,
+expecting `ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0`. Last, it
+mounts the disk the launcher made on the
 host with `linux-compat/alpine-disk.sh ARCH target/alpine-rust-ARCH.img
 rust` (kept in `target/`: remove it for newer packages) and attached as
 `/dev/nvme2n1/data` (writes go to a QEMU snapshot), and runs `rustc --version`

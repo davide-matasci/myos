@@ -1064,6 +1064,52 @@ lx_python_net() {
 	echo "$out"
 	[ "$out" = "HTTP 200" ]
 }
+# ... and its event loop, the end-to-end test of the event fds
+# (docs/events.md): asyncio's selector is epoll (select.epoll over
+# /dev/wait), its signal handler a wakeup fd in that selector, its
+# subprocess a child watched from a thread; a TCP echo over loopback, a
+# timer, a timeout that elapses, SIGUSR1 handled by the loop, a child's
+# output read back. The script runs inside the Python root (the launcher
+# binds /dev, /proc and /net into it, not /tmp).
+lx_python_asyncio() {
+	mkdir -p /tmp/alpine/tmp
+	cat > /tmp/alpine/tmp/asyncio_smoke.py <<'PY'
+import asyncio, os, selectors, signal, sys
+sel = type(selectors.DefaultSelector()).__name__
+async def main():
+    loop = asyncio.get_running_loop()
+    async def handle(r, w):
+        w.write((await r.read(100)).upper())
+        await w.drain()
+        w.close()
+    srv = await asyncio.start_server(handle, '127.0.0.1', 8766)
+    async with srv:
+        r, w = await asyncio.open_connection('127.0.0.1', 8766)
+        w.write(b'asyncio')
+        await w.drain()
+        echoed = await asyncio.wait_for(r.read(100), 10)
+        w.close()
+    t0 = loop.time()
+    await asyncio.sleep(0.2)
+    slept = loop.time() - t0 >= 0.15
+    try:
+        await asyncio.wait_for(asyncio.Event().wait(), 0.2)
+        timed_out = False
+    except asyncio.TimeoutError:
+        timed_out = True
+    got = loop.create_future()
+    loop.add_signal_handler(signal.SIGUSR1, got.set_result, 'USR1')
+    loop.call_later(0.1, os.kill, os.getpid(), signal.SIGUSR1)
+    sig = await asyncio.wait_for(got, 10)
+    p = await asyncio.create_subprocess_exec(sys.executable, '-c', 'print("sub")', stdout=asyncio.subprocess.PIPE)
+    out, _ = await p.communicate()
+    print('ASYNCIO', sel, echoed.decode(), slept, timed_out, sig, out.strip().decode(), p.returncode)
+asyncio.run(main())
+PY
+	out=$(linux --root /tmp/alpine python3 /tmp/asyncio_smoke.py 2>&1)
+	echo "$out"
+	[ "$out" = "ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0" ]
+}
 # An Alpine X client on the native X server (the tinyx package, installed
 # as an app): xdpyinfo reaches Xfbdev's /tmp/.X11-unix/X0 over AF_UNIX and
 # describes the display. The server takes the screen (/dev/fb/ctl says
@@ -1141,6 +1187,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 		t alpine_jq lx_alpine
 		t alpine_python lx_python
 		t alpine_python_net lx_python_net
+		t alpine_python_asyncio lx_python_asyncio
 		t alpine_x11 lx_x11
 		t alpine_rustc lx_rustc
 	fi
