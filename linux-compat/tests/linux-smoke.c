@@ -29,6 +29,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/syscall.h>
+#include <sys/timerfd.h>
 #include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -414,6 +415,69 @@ static void check_select(void) {
     close(p[0]);
 }
 
+/* eventfd and timerfd (docs/events.md): a counter adds up its writes and a
+ * read takes them (one at a time as a semaphore, from the initial value);
+ * an empty nonblocking read is EAGAIN; a child's write wakes a blocked
+ * read; a one-shot timer expires once after its delay, a periodic one
+ * counts its expirations, gettime shows what is left, disarming stops it. */
+static void check_evfd(void) {
+    uint64_t v = 0;
+    struct pollfd p;
+    int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    check(fd >= 0, "eventfd");
+    check(read(fd, &v, 8) == -1 && errno == EAGAIN, "eventfd: an empty nonblocking read is EAGAIN");
+    v = 3;
+    check(write(fd, &v, 8) == 8 && (v = 4, write(fd, &v, 8) == 8) && read(fd, &v, 8) == 8 && v == 7,
+          "eventfd: a read takes the whole count");
+    p.fd = fd;
+    p.events = POLLIN | POLLOUT;
+    check(poll(&p, 1, 0) == 1 && p.revents == POLLOUT, "eventfd: an empty counter is only writable");
+    close(fd);
+    fd = eventfd(2, EFD_SEMAPHORE);
+    check(fd >= 0 && read(fd, &v, 8) == 8 && v == 1 && read(fd, &v, 8) == 8 && v == 1,
+          "eventfd: a semaphore takes one per read, from the initial value");
+    pid_t pid = fork();
+    if (pid == 0) {
+        usleep(100000);
+        v = 1;
+        _exit(write(fd, &v, 8) == 8 ? 0 : 1);
+    }
+    int status = 0;
+    check(read(fd, &v, 8) == 8 && v == 1 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0,
+          "eventfd: a child's write wakes a blocked read");
+    close(fd);
+
+    struct itimerspec its = {{0, 0}, {0, 50000000}}, cur;
+    struct timespec t0, t1;
+    fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    check(fd >= 0, "timerfd_create");
+    p.fd = fd;
+    p.events = POLLIN;
+    check(poll(&p, 1, 0) == 0, "timerfd: a disarmed timer is not readable");
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    check(timerfd_settime(fd, 0, &its, NULL) == 0 && timerfd_gettime(fd, &cur) == 0 && cur.it_value.tv_nsec > 0 &&
+              cur.it_value.tv_nsec <= 50000000 && cur.it_interval.tv_nsec == 0,
+          "timerfd: a one-shot armed 50 ms ahead");
+    check(read(fd, &v, 8) == 8 && v == 1, "timerfd: a read waits for the expiry");
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    check(ms >= 40, "timerfd: not before 50 ms");
+    check(poll(&p, 1, 0) == 0 && timerfd_gettime(fd, &cur) == 0 && cur.it_value.tv_nsec == 0,
+          "timerfd: a one-shot is disarmed after its expiry");
+    its.it_value.tv_nsec = 20000000;
+    its.it_interval.tv_nsec = 20000000;
+    check(timerfd_settime(fd, 0, &its, NULL) == 0, "timerfd: periodic");
+    usleep(100000);
+    check(read(fd, &v, 8) == 8 && v >= 3 && v <= 15, "timerfd: the expirations of 100 ms");
+    memset(&its, 0, sizeof its);
+    check(timerfd_settime(fd, 0, &its, &cur) == 0 && cur.it_interval.tv_nsec == 20000000,
+          "timerfd: disarming returns the old setting");
+    usleep(50000);
+    check(poll(&p, 1, 0) == 0, "timerfd: disarmed");
+    close(fd);
+}
+
 /* `unix NAME`: connect to a server listening under NAME (a native one,
  * user/tests/kernel.sh; it may not listen yet: retried for 20 s), send a
  * line, read it back. */
@@ -497,6 +561,7 @@ static void check_toolchain_calls(char *self) {
     close(sv[1]);
     check_unix_sockets();
     check_select();
+    check_evfd();
 
     /* A file cut, grown and written at a position, with locks and fsync. */
     struct stat st;

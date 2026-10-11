@@ -659,6 +659,15 @@ fn open_fd(path: alloc::string::String, rights: Rights, flags: usize, tree: fs::
             }
         }
     }
+    // An event counter's or a timer's data (docs/events.md): the fd is an
+    // event or timer fd, its I/O routed via crate::evfd.
+    for (kind, prefix) in [(fs::evfs::Kind::Event, "dev/event/"), (fs::evfs::Kind::Timer, "dev/timer/")] {
+        if let Some(rest) = path_rel.strip_prefix(prefix) {
+            if let Some(id) = fs::evfs::data_id(kind, rest) {
+                return task::fd_open_evfd(kind, id).unwrap_or(SYSERR);
+            }
+        }
+    }
     // /dev/tty in a pty session (a forkpty child and what it started: an SSH
     // login, the tty smoke) is that pty's slave, not the console.
     if path_rel == "dev/tty" {

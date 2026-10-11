@@ -33,12 +33,9 @@ static PATHS: Mutex<[Vec<FdPath>; MAX_TASKS]> = Mutex::new([const { Vec::new() }
 struct Flags {
     cloexec: u64,
     nonblock: u64,
-    /// An eventfd's hidden pipe write end (`sys::eventfd2`), by the read
-    /// end that stands for it: fd + 1.
-    writer: [u8; 64],
 }
 
-const NO_FLAGS: Flags = Flags { cloexec: 0, nonblock: 0, writer: [0; 64] };
+const NO_FLAGS: Flags = Flags { cloexec: 0, nonblock: 0 };
 
 static FLAGS: Mutex<[Flags; MAX_TASKS]> = Mutex::new([NO_FLAGS; MAX_TASKS]);
 
@@ -58,19 +55,11 @@ pub fn on_spawn(slot: usize) {
     FLAGS.lock()[slot] = NO_FLAGS;
 }
 
-/// `fd` and the hidden write end behind it, if any: they share their flags.
-fn with_writer(e: &Flags, fd: usize) -> u64 {
-    match e.writer.get(fd) {
-        Some(&w) if w != 0 => bit(fd) | bit(w as usize - 1),
-        _ => bit(fd),
-    }
-}
-
 /// Set fd's close-on-exec flag.
 pub fn set_cloexec(fd: usize, on: bool) {
     let mut f = FLAGS.lock();
     let e = &mut f[task::current_pid()];
-    let b = with_writer(e, fd);
+    let b = bit(fd);
     e.cloexec = if on { e.cloexec | b } else { e.cloexec & !b };
 }
 
@@ -81,24 +70,12 @@ pub fn cloexec(fd: usize) -> bool {
 pub fn set_nonblock(fd: usize, on: bool) {
     let mut f = FLAGS.lock();
     let e = &mut f[task::current_pid()];
-    let b = with_writer(e, fd);
+    let b = bit(fd);
     e.nonblock = if on { e.nonblock | b } else { e.nonblock & !b };
 }
 
 pub fn nonblock(fd: usize) -> bool {
     FLAGS.lock()[task::current_pid()].nonblock & bit(fd) != 0
-}
-
-/// The hidden write end behind eventfd `fd`, if it is one.
-pub fn writer(fd: usize) -> Option<usize> {
-    let w = *FLAGS.lock()[task::current_pid()].writer.get(fd)?;
-    (w != 0).then(|| w as usize - 1)
-}
-
-pub fn set_writer(fd: usize, writer: Option<usize>) {
-    if let Some(slot) = FLAGS.lock()[task::current_pid()].writer.get_mut(fd) {
-        *slot = writer.map_or(0, |w| w as u8 + 1);
-    }
 }
 
 
@@ -137,7 +114,6 @@ pub fn remove(fd: usize) {
     PATHS.lock()[task::current_pid()].retain(|e| e.fd != fd);
     set_cloexec(fd, false);
     set_nonblock(fd, false);
-    set_writer(fd, None);
 }
 
 /// `new` now refers to what `old` does (dup/dup2/F_DUPFD), without

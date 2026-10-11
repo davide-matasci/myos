@@ -37,6 +37,8 @@ label /dev/null              dev.common
 label /dev/zero              dev.common
 label /dev/random            dev.common
 label /dev/urandom           dev.common
+label /dev/event/**          dev.common
+label /dev/timer/**          dev.common
 label /proc/**               proc
 label /net/**                net
 

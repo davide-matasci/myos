@@ -210,7 +210,8 @@ Files: `read`, `write`, `readv`, `writev`, `open`, `openat`, `close`, `stat`,
 `f_type`), `lseek`, `getdents64`, `ioctl` (the tty
 requests from the terminal's ctl file, `docs/tty.md`; `FIONBIO` on sockets;
 the console keymap and module devices natively), `access`,
-`faccessat`, `pipe`, `pipe2`, `eventfd(2)`, `dup`, `dup2`, `dup3`, `fcntl`
+`faccessat`, `pipe`, `pipe2`, `eventfd(2)`, `timerfd_create`,
+`timerfd_settime`, `timerfd_gettime`, `dup`, `dup2`, `dup3`, `fcntl`
 (dup, fd flags, record locks), `flock`, `truncate`, `ftruncate`, `fsync`,
 `fdatasync`, `chmod`, `chown` (and their `f`, `l`, `at` forms), `getcwd`,
 `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`, `rename(at/at2)`,
@@ -437,9 +438,13 @@ three, the kernel crate itself an hour. Known gaps:
   successful exec closes the close-on-exec fds (the `on_exec` hook), and a
   non-blocking pipe end that would block gives `EAGAIN` (from the core's
   pipe readiness, as libgloss does for native programs).
-- An eventfd is a pipe (its write end kept aside): a non-zero write wakes
-  a reader, a read returns how many writes it collected. No semaphore mode
-  and no initial value.
+- An eventfd is the kernel's event counter (`/dev/event/N/data`,
+  `docs/events.md`) and a timerfd its timer (`/dev/timer/N/data`): the fd
+  the program holds is the native one, read, written and polled by the
+  core; `eventfd2`'s semaphore mode and initial value and `timerfd_settime`
+  / `timerfd_gettime` are the object's `ctl` and `status`. Every Linux
+  clock is the one clock here, so a `TFD_TIMER_ABSTIME` value is taken
+  relative to it, whatever the clock the timerfd was created on.
 - `AF_UNIX` sockets are `/net/unix` conversations (Sockets above), and
   `socketpair(AF_UNIX, SOCK_STREAM | SOCK_SEQPACKET)` a `/net/unix` pair,
   their ends kept like TCP sockets (Rust's `Command` reports a failed exec

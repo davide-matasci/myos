@@ -544,6 +544,14 @@ pub const KEY_SIGNAL: usize = 0x5_0000;
 pub const fn key_threads(pid: usize) -> usize {
     0x6_0000 + pid
 }
+/// Readers and writers of event counter `id` (`crate::evfd`).
+pub const fn key_event(id: usize) -> usize {
+    0x7_0000 + id
+}
+/// Readers of timer `id` (`crate::evfd`).
+pub const fn key_timer(id: usize) -> usize {
+    0x8_0000 + id
+}
 /// Waiters for a file lock on node `node` (`fs::lock`).
 pub const fn key_lock(node: usize) -> usize {
     0x10_0000 + node
@@ -767,17 +775,35 @@ pub fn wake(key: usize) {
     {
         let mut tasks = TASKS.lock();
         WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
-        let any = ANY_WAITERS.load(Ordering::SeqCst) != 0;
-        for i in 0..MAX_TASKS {
-            if tasks[i].state == State::Blocked
-                && (tasks[i].wait_key == key || (any && tasks[i].wait_key == WAIT_ANY))
-            {
-                wake_locked(&mut tasks, i, &mut kicks);
-            }
-        }
+        wake_key_locked(&mut tasks, key, &mut kicks);
     }
     irq_restore(flags);
     kick(kicks);
+}
+
+/// `wake` under `TASKS`: every task blocked on `key`, and the `WAIT_ANY`
+/// waiters; true when any was.
+fn wake_key_locked(tasks: &mut TaskTable, key: usize, kicks: &mut u64) -> bool {
+    let any = ANY_WAITERS.load(Ordering::SeqCst) != 0;
+    let mut woke = false;
+    for i in 0..MAX_TASKS {
+        if tasks[i].state == State::Blocked && (tasks[i].wait_key == key || (any && tasks[i].wait_key == WAIT_ANY)) {
+            wake_locked(tasks, i, kicks);
+            woke = true;
+        }
+    }
+    woke
+}
+
+/// Something is due at monotonic `deadline` that is nobody's sleep (a
+/// timer being armed, `crate::evfd`): the ticks look for it from then on,
+/// an idle CPU wakes for it, and this CPU's timer fires at it.
+pub fn deadline_soon(deadline: u64) {
+    let flags = irq_save();
+    irq_off();
+    NEXT_DEADLINE.fetch_min(deadline, Ordering::SeqCst);
+    crate::arch::timer_deadline(deadline);
+    irq_restore(flags);
 }
 
 /// Wake at most `max` tasks blocked on `key` exactly (not the `WAIT_ANY`
@@ -932,6 +958,11 @@ pub fn timer_tick() {
                 next = next.min(tasks[i].wake_at);
             }
         }
+        // The timers (`/dev/timer`): their expiries wake their readers and
+        // the pollers.
+        next = next.min(crate::evfd::tick(now, |id| {
+            woke |= wake_key_locked(&mut tasks, key_timer(id), &mut kicks);
+        }));
         NEXT_DEADLINE.store(next, Ordering::SeqCst);
         if woke {
             WAIT_SEQ.fetch_add(1, Ordering::SeqCst);

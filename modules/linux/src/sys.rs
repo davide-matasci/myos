@@ -167,9 +167,6 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
     if would_block(fd, 1) {
         return Err(EAGAIN);
     }
-    if files::writer(fd).is_some() {
-        return eventfd_read(fd, buf, len);
-    }
     match files::get(fd) {
         Some(e) if e.dir => Err(EISDIR),
         Some(e) if e.sock.is_some() => net::recv(fd, false, io),
@@ -179,9 +176,6 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
 
 pub fn write(fd: usize, buf: usize, len: usize) -> R {
     let io = || native(task::fd_write(fd, buf, len), EBADF);
-    if let Some(w) = files::writer(fd) {
-        return eventfd_write(w, buf, len);
-    }
     if would_block(fd, 2) {
         return Err(EAGAIN);
     }
@@ -278,10 +272,6 @@ fn pty_alias(path: String) -> String {
 }
 
 pub fn close(fd: usize) -> R {
-    if let Some(w) = files::writer(fd) {
-        files::set_writer(fd, None);
-        close(w).ok();
-    }
     files::remove(fd);
     if task::fd_close(fd) { Ok(0) } else { Err(EBADF) }
 }
@@ -543,47 +533,141 @@ pub fn pipe2(fds: usize, flags: usize) -> R {
     Ok(0)
 }
 
-/// `eventfd2(initval, flags)` as a native pipe: the eventfd is the read
-/// end, the write end is kept aside (`files::writer`). A write of a
-/// non-zero count puts a byte in the pipe; a read takes what is there and
-/// gives the number of bytes as the count. Enough for a wakeup (libcurl's),
-/// not for exact counts: no semaphore mode, no initial value.
+// ---- event counters and timers (docs/events.md) ---------------------------
+
+/// A new object at `/dev/<kind>/clone`: its number.
+fn evfd_clone(kind: &str) -> R2<usize> {
+    let mut b = [0u8; 16];
+    let n = fs::read(&alloc::format!("/dev/{kind}/clone"), 0, &mut b).ok_or(ENOMEM)?;
+    core::str::from_utf8(&b[..n]).ok().and_then(|t| t.trim().parse().ok()).ok_or(ENOMEM)
+}
+
+/// An fd on a new object of `kind` (its `data`), with the `O_CLOEXEC` and
+/// `O_NONBLOCK` of `flags`.
+fn evfd_open(kind: &str, flags: usize) -> R2<(usize, String)> {
+    let dir = alloc::format!("/dev/{kind}/{}", evfd_clone(kind)?);
+    let fd = native(user::open_path(&alloc::format!("{dir}/data"), 2), EMFILE)?;
+    files::remove(fd);
+    files::set_cloexec(fd, flags & O_CLOEXEC != 0);
+    files::set_nonblock(fd, flags & O_NONBLOCK != 0);
+    Ok((fd, dir))
+}
+
+/// The directory (`/dev/<kind>/N`) of the object `fd` is open on.
+fn evfd_dir(fd: usize, kind: &str) -> R2<String> {
+    let path = task::fd_path(fd).ok_or(EBADF)?;
+    let prefix = alloc::format!("/dev/{kind}/");
+    let id = core::str::from_utf8(&path)
+        .ok()
+        .and_then(|p| p.strip_prefix(prefix.as_str())?.strip_suffix("/data"))
+        .ok_or(EINVAL)?;
+    Ok(alloc::format!("{prefix}{id}"))
+}
+
+/// `eventfd2(initval, flags)`: an fd on a kernel event counter. The
+/// semaphore mode and the initial value are commands on its `ctl`.
 pub fn eventfd2(init: usize, flags: usize) -> R {
     const EFD_SEMAPHORE: usize = 1;
-    if init != 0 || flags & EFD_SEMAPHORE != 0 {
+    if flags & !(EFD_SEMAPHORE | O_CLOEXEC | O_NONBLOCK) != 0 {
         return Err(EINVAL);
     }
-    let (r, w) = task::pipe_open().ok_or(EMFILE)?;
-    for fd in [r, w] {
-        files::remove(fd);
-        files::set_cloexec(fd, flags & O_CLOEXEC != 0);
+    let (fd, dir) = evfd_open("event", flags)?;
+    let ctl = alloc::format!("{dir}/ctl");
+    let init = init as u32;
+    let ok = (flags & EFD_SEMAPHORE == 0 || fs::write(&ctl, 0, b"semaphore").is_some())
+        && (init == 0 || fs::write(&ctl, 0, alloc::format!("add {init}").as_bytes()).is_some());
+    if !ok {
+        close(fd).ok();
+        return Err(EINVAL);
     }
-    files::set_nonblock(r, flags & O_NONBLOCK != 0);
-    files::set_writer(r, Some(w));
-    Ok(r)
+    Ok(fd)
 }
 
-fn eventfd_read(fd: usize, buf: usize, len: usize) -> R {
-    if len < 8 {
+/// `timerfd_create(clockid, flags)`: an fd on a kernel timer. Every Linux
+/// clock is the one clock here (`timespec_deadline`), so the clock is not
+/// kept.
+pub fn timerfd_create(clockid: usize, flags: usize) -> R {
+    const CLOCK_REALTIME: usize = 0;
+    const CLOCK_MONOTONIC: usize = 1;
+    const CLOCK_BOOTTIME: usize = 7;
+    if !matches!(clockid, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME)
+        || flags & !(O_CLOEXEC | O_NONBLOCK) != 0
+    {
         return Err(EINVAL);
     }
-    // The bytes land in the caller's buffer, then their number replaces them.
-    let n = native(user::sys_read(fd, buf, 8), EBADF)?;
-    put(buf, &(n as u64).to_le_bytes())?;
-    Ok(8)
+    Ok(evfd_open("timer", flags)?.0)
 }
 
-fn eventfd_write(writer: usize, buf: usize, len: usize) -> R {
-    if len < 8 {
+/// The `struct timespec` at `ts` in nanoseconds; `EINVAL` for one Linux
+/// refuses (negative, or a nanosecond field of a second or more).
+fn timespec_ns(ts: usize) -> R2<u64> {
+    let sec = get_u64(ts)?;
+    let nsec = get_u64(ts + 8)?;
+    if (sec as i64) < 0 || nsec >= 1_000_000_000 {
         return Err(EINVAL);
     }
-    let mut v = [0u8; 8];
-    get(buf, &mut v)?;
-    if u64::from_le_bytes(v) != 0 {
-        // Any one byte of the caller's buffer will do.
-        native(task::fd_write(writer, buf, 1), EBADF)?;
+    Ok(sec.saturating_mul(1_000_000_000).saturating_add(nsec))
+}
+
+/// Timer `dir`'s `status`: nanoseconds until its next expiry and between
+/// expiries (both 0: disarmed).
+fn timer_status(dir: &str) -> R2<(u64, u64)> {
+    let mut b = [0u8; 64];
+    let n = fs::read(&alloc::format!("{dir}/status"), 0, &mut b).ok_or(EBADF)?;
+    let text = core::str::from_utf8(&b[..n]).map_err(|_| EIO)?;
+    let mut words = text.split_ascii_whitespace();
+    match words.next() {
+        Some("armed") => {
+            let mut ns = || words.next().and_then(|w| w.parse().ok()).ok_or(EIO);
+            Ok((ns()?, ns()?))
+        }
+        Some("disarmed") => Ok((0, 0)),
+        _ => Err(EIO),
     }
-    Ok(8)
+}
+
+/// `(left, interval)` as the `struct itimerspec` at `ptr` (interval first).
+fn put_itimerspec(ptr: usize, (left, interval): (u64, u64)) -> R2<()> {
+    let mut b = [0u8; 32];
+    for (i, ns) in [interval, left].into_iter().enumerate() {
+        b[i * 16..i * 16 + 8].copy_from_slice(&(ns / 1_000_000_000).to_le_bytes());
+        b[i * 16 + 8..i * 16 + 16].copy_from_slice(&(ns % 1_000_000_000).to_le_bytes());
+    }
+    put(ptr, &b)
+}
+
+/// `timerfd_settime(fd, flags, new, old)`: an `arm` or `disarm` on the
+/// timer's `ctl`. An absolute value (`TFD_TIMER_ABSTIME`) is on the one
+/// Linux clock, and goes to the kernel relative to now.
+pub fn timerfd_settime(fd: usize, flags: usize, new: usize, old: usize) -> R {
+    const TFD_TIMER_ABSTIME: usize = 1;
+    if flags & !TFD_TIMER_ABSTIME != 0 {
+        return Err(EINVAL);
+    }
+    let dir = evfd_dir(fd, "timer")?;
+    let interval = timespec_ns(new)?;
+    let value = timespec_ns(new + 16)?;
+    if old != 0 {
+        put_itimerspec(old, timer_status(&dir)?)?;
+    }
+    let cmd = if value == 0 {
+        String::from("disarm")
+    } else {
+        let first = if flags & TFD_TIMER_ABSTIME != 0 {
+            value.saturating_sub(now_us().saturating_mul(1000)).max(1)
+        } else {
+            value
+        };
+        alloc::format!("arm {first} {interval}")
+    };
+    fs::write(&alloc::format!("{dir}/ctl"), 0, cmd.as_bytes()).ok_or(EINVAL)?;
+    Ok(0)
+}
+
+pub fn timerfd_gettime(fd: usize, cur: usize) -> R {
+    let dir = evfd_dir(fd, "timer")?;
+    put_itimerspec(cur, timer_status(&dir)?)?;
+    Ok(0)
 }
 
 pub fn dup(fd: usize, min: usize) -> R {

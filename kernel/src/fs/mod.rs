@@ -3,6 +3,7 @@
 pub mod cpio;
 mod devfs;
 pub mod ptsfs;
+pub mod evfs;
 mod fstype;
 pub mod lock;
 mod node;
@@ -522,7 +523,8 @@ fn rw_ops(
 }
 
 /// Mount rootfs at `/` (the image's files, read-only), tmpfs at `/tmp/`,
-/// devfs at `/dev/` with ptsfs at `/dev/pts/`, procfs at `/proc/`; bind
+/// devfs at `/dev/` with ptsfs at `/dev/pts/` and evfs at `/dev/event/` and
+/// `/dev/timer/`, procfs at `/proc/`; bind
 /// `/dev/shm`.
 pub fn init() {
     vfs::mount(
@@ -604,6 +606,49 @@ pub fn init() {
             ptsfs::truncate,
             ptsfs::read,
             ptsfs::write,
+            reject_mkdir,
+            reject_rmdir,
+            reject_unlink,
+            reject_rename,
+            reject_symlink,
+            reject_readlink,
+        ),
+    );
+    // The event counters and the timers (docs/events.md): /dev/event and
+    // /dev/timer, each clone and N/{data,ctl,status}; fds on data route
+    // via crate::task like a pty's.
+    vfs::mount(
+        "evfs",
+        "dev/event",
+        rw_ops(
+            evfs::event::lookup,
+            evfs::event::stat,
+            evfs::event::listdir_at,
+            evfs::event::register,
+            evfs::event::create,
+            evfs::event::truncate,
+            evfs::event::read,
+            evfs::event::write,
+            reject_mkdir,
+            reject_rmdir,
+            reject_unlink,
+            reject_rename,
+            reject_symlink,
+            reject_readlink,
+        ),
+    );
+    vfs::mount(
+        "evfs",
+        "dev/timer",
+        rw_ops(
+            evfs::timer::lookup,
+            evfs::timer::stat,
+            evfs::timer::listdir_at,
+            evfs::timer::register,
+            evfs::timer::create,
+            evfs::timer::truncate,
+            evfs::timer::read,
+            evfs::timer::write,
             reject_mkdir,
             reject_rmdir,
             reject_unlink,

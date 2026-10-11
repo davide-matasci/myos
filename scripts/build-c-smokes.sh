@@ -42,6 +42,7 @@ smokes=(
   "ctor-smoke user/c/ctor_smoke.c"
   "sched-smoke user/c/sched_smoke.c"
   "memhog user/c/memhog.c"
+  "evfd-smoke user/c/evfd_smoke.c"
 )
 for arch in x86_64 aarch64 riscv64; do
   triple="${arch}-unknown-myos"

@@ -159,7 +159,10 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         270 => ret(sys::pselect6(a[0], a[1], a[2], a[3], a[4])),
         271 => ret(sys::ppoll(a[0], a[1], a[2])),
         273 => 0, // set_robust_list
+        283 => ret(sys::timerfd_create(a[0], a[1])),
         284 => ret(sys::eventfd2(a[0], 0)),
+        286 => ret(sys::timerfd_settime(a[0], a[1], a[2], a[3])),
+        287 => ret(sys::timerfd_gettime(a[0], a[1])),
         290 => ret(sys::eventfd2(a[0], a[1])),
         292 => ret(sys::dup3(a[0], a[1], false, a[2])),
         293 => ret(sys::pipe2(a[0], a[1])),

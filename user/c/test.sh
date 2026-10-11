@@ -26,6 +26,11 @@ t fb_text /bin/etc/fb_smoke text
 # poll: timeouts, waking on pipe and unix socket events (not before),
 # POLLHUP/POLLERR/POLLNVAL, EAGAIN, EINTR (poll_smoke.c).
 t poll /bin/etc/poll_smoke
+# Event counters and timers (docs/events.md): eventfd counts, EAGAIN,
+# EINVAL, the semaphore mode, a read woken by a child's write, status; a
+# one-shot and a periodic timerfd, gettime, disarm, an absolute time
+# (evfd_smoke.c).
+t evfd /bin/etc/evfd_smoke
 # readv/writev over a pipe, a socketpair and a nonblocking socket that
 # fills mid-writev (uio_smoke.c).
 t uio /bin/etc/uio_smoke

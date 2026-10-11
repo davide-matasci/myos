@@ -52,6 +52,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         88 => ret(sys::utimensat(a[0], a[1], a[2], a[3])),
         80 => ret(sys::fstat(a[0], a[1])),
         82 | 83 => ret(sys::fd_noop(a[0])), // fsync, fdatasync
+        85 => ret(sys::timerfd_create(a[0], a[1])),
+        86 => ret(sys::timerfd_settime(a[0], a[1], a[2], a[3])),
+        87 => ret(sys::timerfd_gettime(a[0], a[1])),
         93 => thread::exit(a[0]),
         94 => task::user_exit(a[0] as u8), // exit_group
         96 => thread::set_tid_address(a[0]),

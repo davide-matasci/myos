@@ -21,6 +21,11 @@ pub(super) enum FdEntry {
     PtyMaster(usize),
     /// PTY slave end (`/dev/pts/N/data`): the session-side tty.
     PtySlave(usize),
+    /// An event counter (`/dev/event/N/data`, `crate::evfd`): reads take
+    /// the count, writes add to it. Refcounted like pipes.
+    Event(usize),
+    /// A timer (`/dev/timer/N/data`): reads take the expirations.
+    Timer(usize),
 }
 
 /// One open file description (POSIX): the node, the file offset and the
@@ -177,6 +182,14 @@ pub(super) fn fd_clone(entry: FdEntry) -> FdEntry {
             crate::pty::slave_ref(id);
             FdEntry::PtySlave(id)
         }
+        FdEntry::Event(id) => {
+            crate::evfd::event_ref(id);
+            entry
+        }
+        FdEntry::Timer(id) => {
+            crate::evfd::timer_ref(id);
+            entry
+        }
         FdEntry::File(id) => {
             open_file_ref(id);
             entry
@@ -191,6 +204,8 @@ pub(super) fn fd_drop(entry: FdEntry) {
         FdEntry::PipeWrite(id) => pipe::drop_writer(id),
         FdEntry::PtyMaster(id) => crate::pty::drop_master(id),
         FdEntry::PtySlave(id) => crate::pty::drop_slave(id),
+        FdEntry::Event(id) => crate::evfd::event_drop(id),
+        FdEntry::Timer(id) => crate::evfd::timer_drop(id),
         FdEntry::File(id) => {
             if let Some(node) = open_file_unref(id) {
                 // The description's own locks go with it (`fs::lock`).
@@ -410,6 +425,11 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
         FdEntry::PipeWrite(id) => {
             Some(if !pipe::write_would_block(id) { 2 } else { 0 })
         }
+        FdEntry::Event(id) => {
+            let (readable, writable) = crate::evfd::event_poll(id);
+            Some(u32::from(readable) | u32::from(writable) << 1)
+        }
+        FdEntry::Timer(id) => Some(u32::from(crate::evfd::timer_poll(id))),
         _ => None,
     })
 }
@@ -469,6 +489,18 @@ pub fn fd_poll(fd: usize) -> (u16, bool) {
             }
             (bits, false)
         }
+        FdEntry::Event(id) => {
+            let (readable, writable) = crate::evfd::event_poll(id);
+            let mut bits = 0;
+            if readable {
+                bits |= POLLIN;
+            }
+            if writable {
+                bits |= POLLOUT;
+            }
+            (bits, false)
+        }
+        FdEntry::Timer(id) => (if crate::evfd::timer_poll(id) { POLLIN } else { 0 }, false),
         FdEntry::File(id) => {
             // A module file (a socket's /net data) knows its readiness; any
             // other file is always readable and writable.
@@ -519,6 +551,36 @@ pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
     });
     if out.is_some() {
         crate::pty::slave_ref(id);
+    }
+    out
+}
+
+/// Open `/dev/event/N/data` or `/dev/timer/N/data` (`docs/events.md`): an
+/// fd on the object; `None` when there is no such object or no free fd.
+pub fn fd_open_evfd(kind: crate::fs::evfs::Kind, id: usize) -> Option<usize> {
+    use crate::fs::evfs::Kind;
+    let entry = match kind {
+        Kind::Event => FdEntry::Event(id),
+        Kind::Timer => FdEntry::Timer(id),
+    };
+    let opened = match kind {
+        Kind::Event => crate::evfd::event_open(id),
+        Kind::Timer => crate::evfd::timer_open(id),
+    };
+    if !opened {
+        return None;
+    }
+    let out = with_process_mut(|t| {
+        for i in 0..MAX_FDS {
+            if t.fds[i] == FdEntry::Empty {
+                t.fds[i] = entry;
+                return Some(i);
+            }
+        }
+        None
+    });
+    if out.is_none() {
+        fd_drop(entry);
     }
     out
 }
@@ -749,6 +811,33 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                 }
                 return n;
             }
+            FdEntry::Event(id) | FdEntry::Timer(id) => {
+                // The count (or the expirations) as 8 bytes, little endian;
+                // a shorter buffer is an error, as on Linux.
+                if len < 8 {
+                    return usize::MAX;
+                }
+                let timer = matches!(entry, FdEntry::Timer(_));
+                let seq = wait_seq();
+                let taken = if timer { crate::evfd::timer_read(id) } else { crate::evfd::event_read(id) };
+                let Some(value) = taken else {
+                    if crate::signal::interrupt_wait() {
+                        return 0;
+                    }
+                    // A timer's reader sleeps until its next expiry.
+                    let (key, deadline) = if timer {
+                        (key_timer(id), crate::evfd::timer_next_ns(id))
+                    } else {
+                        (key_event(id), 0)
+                    };
+                    block_until(key, seq, deadline);
+                    continue;
+                };
+                if !user::copy_to_user(current_aspace(), buf, &value.to_le_bytes()) {
+                    return usize::MAX;
+                }
+                return 8;
+            }
             FdEntry::Empty | FdEntry::Console | FdEntry::PipeWrite(_) => return usize::MAX,
         }
     }
@@ -868,6 +957,26 @@ pub fn fd_write(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                     total += n;
                     break;
                 }
+                FdEntry::Event(id) => {
+                    // Add an 8-byte little-endian value to the count; one
+                    // that would pass the ceiling waits for a read.
+                    if total != 0 || chunk < 8 {
+                        return if total == 0 { usize::MAX } else { total };
+                    }
+                    let value = u64::from_le_bytes(tmp[..8].try_into().unwrap());
+                    let seq = wait_seq();
+                    match crate::evfd::event_write(id, value) {
+                        crate::evfd::EventWrite::Done => return 8,
+                        crate::evfd::EventWrite::Invalid => return usize::MAX,
+                        crate::evfd::EventWrite::WouldBlock => {
+                            if crate::signal::interrupt_wait() {
+                                return usize::MAX;
+                            }
+                            block_until(key_event(id), seq, 0);
+                            continue;
+                        }
+                    }
+                }
                 _ => return if total == 0 { usize::MAX } else { total },
             }
         }
@@ -929,7 +1038,7 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
         FdEntry::Stdin | FdEntry::Console | FdEntry::PtyMaster(_) | FdEntry::PtySlave(_) => {
             FdKind::Tty
         }
-        FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) => FdKind::Pipe,
+        FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) | FdEntry::Event(_) | FdEntry::Timer(_) => FdKind::Pipe,
         FdEntry::File(_) if fd_is_console_tty(entry) => FdKind::Tty,
         FdEntry::File(id) => FdKind::File {
             size: open_file_node(id).and_then(|node| crate::fs::size_of(&node)).unwrap_or(0),
@@ -939,7 +1048,8 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
 
 /// What `fd` is open on, as `/proc/self/fd/N` names it: a path for a file
 /// or a terminal (`/dev/console/data`, `/dev/pts/N/data`, the master end as
-/// `/dev/pts/N/master`), `pipe:[N]` for a pipe end.
+/// `/dev/pts/N/master`), an event or timer (`/dev/event/N/data`,
+/// `/dev/timer/N/data`), `pipe:[N]` for a pipe end.
 pub fn fd_path(fd: usize) -> Option<alloc::string::String> {
     use alloc::format;
     use alloc::string::String;
@@ -951,6 +1061,8 @@ pub fn fd_path(fd: usize) -> Option<alloc::string::String> {
         FdEntry::PipeRead(id) | FdEntry::PipeWrite(id) => format!("pipe:[{id}]"),
         FdEntry::PtyMaster(id) => format!("/dev/pts/{id}/master"),
         FdEntry::PtySlave(id) => format!("/dev/pts/{id}/data"),
+        FdEntry::Event(id) => format!("/dev/event/{id}/data"),
+        FdEntry::Timer(id) => format!("/dev/timer/{id}/data"),
     })
 }
 
