@@ -230,7 +230,8 @@ Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve` (a
 the kernel's way: `exec` on the script and its `exec` rule apply,
 `docs/security.md`; a file that is neither an ELF nor a script fails with
 `ENOEXEC`),
-`exit` (the thread), `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`,
+`exit` (the thread), `exit_group`, `wait4`, `waitid` (`P_ALL`, `P_PID`;
+`WNOHANG`, `WNOWAIT`; exits only), `kill`, `tkill`, `tgkill`,
 `getpid`, `gettid`, `getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`,
 `setsid`, `uname` (the node name is the kernel's host name,
 `/proc/sys/kernel/hostname`), `sethostname`, `reboot` (the native

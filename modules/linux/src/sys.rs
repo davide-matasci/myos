@@ -1209,6 +1209,61 @@ pub fn wait4(pid: usize, status: usize, options: usize, rusage: usize) -> R {
     Ok(child)
 }
 
+/// `waitid(idtype, id, infop, options, rusage)`: `P_ALL` or `P_PID`; the
+/// options `WNOHANG` and `WNOWAIT` (the native wait reports without
+/// reaping; what Python's asyncio asks before `subprocess` reaps the
+/// child). Only exits are reported (`WEXITED`; the layer has no stopped
+/// children, `WSTOPPED` and `WCONTINUED` are taken as nothing to wait
+/// for). The `siginfo_t` is a `SIGCHLD`'s: `CLD_EXITED` with the exit
+/// code or `CLD_KILLED` with the Linux signal number; `si_pid` 0 when
+/// `WNOHANG` found no exited child, as on Linux.
+pub fn waitid(idtype: usize, id: usize, infop: usize, options: usize, rusage: usize) -> R {
+    const P_ALL: usize = 0;
+    const P_PID: usize = 1;
+    const WNOHANG: usize = 1;
+    const WEXITED: usize = 4;
+    const WNOWAIT: usize = 0x0100_0000;
+    const WAIT_NOWAIT: usize = 2; // the native option bit
+    const SIGCHLD: i32 = 17;
+    const CLD_EXITED: i32 = 1;
+    const CLD_KILLED: i32 = 2;
+    let pid = match idtype {
+        P_ALL => 0,
+        P_PID if (id as isize) > 0 => id,
+        _ => return Err(EINVAL),
+    };
+    if options & WEXITED == 0 {
+        return Err(EINVAL);
+    }
+    let opts = (options & WNOHANG) | if options & WNOWAIT != 0 { WAIT_NOWAIT } else { 0 };
+    // The native status lands in the caller's `siginfo_t` (a user address,
+    // as the core wants), which is then written whole.
+    let child = native(user::sys_waitpid(infop, opts, pid), ECHILD)?;
+    let mut info = [0u8; 128];
+    if child != 0 && infop != 0 {
+        let mut st = [0u8; 4];
+        get(infop, &mut st)?;
+        let status = u32::from_le_bytes(st);
+        let (code, value) = if status & 0x7f != 0 {
+            (CLD_KILLED, sig_to_linux(status & 0x7f) as i32)
+        } else {
+            (CLD_EXITED, (status >> 8) as i32)
+        };
+        info[..4].copy_from_slice(&SIGCHLD.to_le_bytes());
+        info[8..12].copy_from_slice(&code.to_le_bytes());
+        info[16..20].copy_from_slice(&(child as i32).to_le_bytes());
+        // si_uid: the layer's processes run as uid 0 (`getuid`).
+        info[24..28].copy_from_slice(&value.to_le_bytes());
+    }
+    if infop != 0 {
+        put(infop, &info)?;
+    }
+    if rusage != 0 {
+        put(rusage, &[0u8; 144])?;
+    }
+    Ok(0)
+}
+
 pub fn kill(pid: usize, sig: usize) -> R {
     // Signal 0 asks whether the target exists, of the kernel (which tells
     // the caller only about the processes it may signal).

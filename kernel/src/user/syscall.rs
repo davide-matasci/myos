@@ -191,6 +191,9 @@ const DUP_EXACT: usize = 2;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
+/// Wait options bit 1: report an exited child but leave it to a later
+/// wait (Linux `waitid` with `WNOWAIT`).
+const WAIT_NOWAIT: usize = 2;
 
 /// The user registers the syscall return path loads back, for the signal
 /// code to read and redirect (delivery, sigreturn, restart).
@@ -1299,6 +1302,7 @@ pub(crate) fn sys_waitpid(status_ptr: usize, options: usize, pid: usize) -> usiz
     task::wait_child(
         if status_ptr == 0 { None } else { Some(status_ptr) },
         options & WAIT_NOHANG != 0,
+        options & WAIT_NOWAIT != 0,
         if (pid as isize) > 0 { Some(pid) } else { None },
     )
 }

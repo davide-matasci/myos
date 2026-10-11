@@ -849,7 +849,15 @@ int main(int argc, char **argv) {
         }
     }
     usleep(20000);
+    /* waitid: WNOHANG on a live child reports nobody; WNOWAIT reports the
+     * death and leaves the child to waitpid. */
+    siginfo_t si;
+    memset(&si, 0xff, sizeof si);
+    check(waitid(P_PID, c, &si, WEXITED | WNOHANG) == 0 && si.si_pid == 0, "waitid WNOHANG");
     check(kill(c, SIGUSR1) == 0, "kill");
+    check(waitid(P_PID, c, &si, WEXITED | WNOWAIT) == 0 && si.si_signo == SIGCHLD &&
+              si.si_code == CLD_KILLED && si.si_pid == c && si.si_status == SIGUSR1,
+          "waitid WNOWAIT");
     check(waitpid(c, &status, 0) == c && WIFSIGNALED(status) && WTERMSIG(status) == SIGUSR1,
           "WTERMSIG(SIGUSR1)");
 

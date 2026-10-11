@@ -98,6 +98,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         60 => thread::exit(a[0]),
         231 => task::user_exit(a[0] as u8), // exit_group
         61 => ret(sys::wait4(a[0], a[1], a[2], a[3])),
+        247 => ret(sys::waitid(a[0], a[1], a[2], a[3], a[4])),
         62 => ret(sys::kill(a[0], a[1])),
         63 => ret(sys::uname(a[0])),
         169 => ret(sys::reboot(a[0], a[1], a[2])),
