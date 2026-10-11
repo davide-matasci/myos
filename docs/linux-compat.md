@@ -248,12 +248,15 @@ Threads: `clone` with `CLONE_THREAD` (and `CLONE_VM`, `CLONE_FS`,
 `REQUEUE`/`CMP_REQUEUE` as a wake of every waiter) maps onto the core's
 `wait_addr`/`wake_addr`; a thread's `exit` clears and wakes its
 `CLEAR_TID` word, which is what `pthread_join` waits on. `clone` without
-`CLONE_THREAD` is the fork form, or `posix_spawn`'s (`CLONE_VM |
-CLONE_VFORK` with a stack, what Rust's `Command` uses through musl): a fork
-whose child starts on that stack (the core's `fork_from`). Its memory is a
-fork's (the parent's pages shared copy-on-write, `README.md`) rather than
-shared, which posix_spawn does not notice: its child reports a failed exec
-through a pipe the parent waits on.
+`CLONE_THREAD` is the fork form, musl's `vfork` on aarch64 and riscv64
+(`CLONE_VM | CLONE_VFORK` on the parent's stack: a fork, as the x86_64
+`vfork` syscall is), or `posix_spawn`'s (`CLONE_VM | CLONE_VFORK` with a
+stack, what Rust's `Command` uses through musl): a fork whose child starts
+on that stack (the core's `fork_from`). Its memory is a fork's (the
+parent's pages shared copy-on-write, `README.md`) rather than shared,
+which posix_spawn and a `vfork` child that only execs do not notice:
+posix_spawn's child reports a failed exec through a pipe the parent waits
+on.
 
 Signals: `rt_sigaction` (handlers with `SA_SIGINFO`, `SA_RESTART`,
 `SA_NODEFER`, `SA_RESETHAND`, `sa_mask`), `rt_sigreturn`, `rt_sigprocmask`,
