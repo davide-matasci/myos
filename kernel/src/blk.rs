@@ -101,12 +101,22 @@ static SERIAL: AtomicU64 = AtomicU64::new(0);
 /// Register the disk `/dev/<name>/` backed by `ops` with `ctx`; the device
 /// id, or `None` when the table is full, the name is invalid or already
 /// taken. Its partitions come with the next [`scan`].
+/// Register a disk as `/dev/<name>`. A name ending in `?` is a family
+/// whose letters the kernel hands out (`sd?`: SCSI disks and USB sticks
+/// alike, whichever module brings them): the `?` becomes the lowest
+/// letter no disk of the family has; [`name`] tells the module which.
 pub fn register(name: &str, ops: ModuleBlkOps, ctx: usize) -> Option<u32> {
+    let mut devs = DEVS.lock();
+    let taken = |devs: &[Option<BlkDev>], n: &str| devs.iter().flatten().any(|d| matches!(d.kind, Kind::Disk { .. }) && d.name_str() == n);
+    let name = match name.strip_suffix('?') {
+        Some(family) => (b'a'..=b'z').map(|c| alloc::format!("{family}{}", c as char)).find(|n| !taken(&devs[..], n))?,
+        None => String::from(name),
+    };
+    let name = name.as_str();
     if name.is_empty() || name.len() > NAME_MAX || !name.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return None;
     }
-    let mut devs = DEVS.lock();
-    if devs.iter().flatten().any(|d| matches!(d.kind, Kind::Disk { .. }) && d.name_str() == name) {
+    if taken(&devs[..], name) {
         return None;
     }
     let slot = devs.iter().position(|d| d.is_none())?;
@@ -119,6 +129,13 @@ pub fn register(name: &str, ops: ModuleBlkOps, ctx: usize) -> Option<u32> {
     devs[slot] = Some(d);
     PENDING.store(true, Ordering::SeqCst);
     Some(slot as u32)
+}
+
+/// The name of disk `dev` (`sda`), as [`register`] settled it.
+pub fn name(dev: u32) -> Option<String> {
+    let devs = DEVS.lock();
+    let d = devs.get(dev as usize)?.as_ref()?;
+    matches!(d.kind, Kind::Disk { .. }).then(|| String::from(d.name_str()))
 }
 
 /// The `/dev` paths of disk `dev` and of its partitions.

@@ -129,6 +129,7 @@ static API: KernelApi = KernelApi {
     irq_enable: api_irq_enable,
     console_input: api_console_input,
     vfs_statfs: api_vfs_statfs,
+    blk_name: api_blk_name,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1326,6 +1327,17 @@ unsafe extern "C" fn api_rng_fill(buf: *mut u8, len: usize) {
 }
 
 // --- ABI 21: hot-pluggable buses (docs/usb.md) ---
+
+unsafe extern "C" fn api_blk_name(dev: u32, out: *mut u8, cap: usize) -> i32 {
+    let Some(name) = crate::blk::name(dev) else {
+        return -1;
+    };
+    let n = name.len().min(cap);
+    if !out.is_null() && n > 0 {
+        unsafe { core::ptr::copy_nonoverlapping(name.as_ptr(), out, n) };
+    }
+    name.len() as i32
+}
 
 unsafe extern "C" fn api_blk_unregister(dev: u32) -> i32 {
     match crate::blk::unregister(dev) {

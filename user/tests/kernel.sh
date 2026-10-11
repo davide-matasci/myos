@@ -364,8 +364,9 @@ t fat_space fat_space
 # USB (docs/usb.md): every boot has an xHCI controller with a hub on its
 # first port and a memory stick behind the hub, the same FAT volume as
 # /dev/vda/data. The stick is enumerated on the USB thread after the modules
-# load, so the test waits for /dev/sda/data; /proc/usb lists the hub and the
-# stick with their drivers, the stick's line naming its disk; the volume
+# load, so the test waits for /dev/sdb/data (sda is the virtio-scsi disk:
+# the kernel hands out the sd letters to both); /proc/usb lists the hub and
+# the stick with their drivers, the stick's line naming its disk; the volume
 # mounts and reads.
 wait_for() {
 	n=$1
@@ -377,11 +378,11 @@ wait_for() {
 	done
 }
 usb_disk() {
-	wait_for 30 test -e /dev/sda/data || { cat /proc/usb; return 1; }
+	wait_for 30 test -e /dev/sdb/data || { cat /proc/usb; return 1; }
 	cat /proc/usb
 	grep -q ' hub ' /proc/usb || return 1
-	grep -q ':usb_storage sda$' /proc/usb || return 1
-	mkdir -p /tmp/usb && mount /dev/sda/data /tmp/usb fat || return 1
+	grep -q ':usb_storage sdb$' /proc/usb || return 1
+	mkdir -p /tmp/usb && mount /dev/sdb/data /tmp/usb fat || return 1
 	[ "$(cat /tmp/usb/msg)" = fat-msg ]
 }
 t usb_disk usb_disk
@@ -392,12 +393,12 @@ t usb_disk usb_disk
 # removed (README, VFS). The stick of usb_disk is the disk.
 mount_rules() {
 	umount /tmp/usb && ! [ -e /tmp/usb/msg ] || return 1
-	mount /dev/sda/data /tmp/none fat 2>&1 | grep -q 'no such directory' || return 1
-	mount /dev/sda/data /mnt fat && [ "$(cat /mnt/msg)" = fat-msg ] || return 1
-	mount /dev/sda/data /tmp/usb fat 2>&1 | grep -q 'already mounted' || return 1
-	umount /mnt && mkdir -p /tmp/a/b && mount /dev/sda/data /tmp/a/b fat || return 1
-	grep -q '^/dev/sda/data /tmp/a/b fat ' /proc/mounts || return 1
-	mount /dev/sda/data /tmp/a/b fat 2>&1 | grep -q 'already a mount point' || return 1
+	mount /dev/sdb/data /tmp/none fat 2>&1 | grep -q 'no such directory' || return 1
+	mount /dev/sdb/data /mnt fat && [ "$(cat /mnt/msg)" = fat-msg ] || return 1
+	mount /dev/sdb/data /tmp/usb fat 2>&1 | grep -q 'already mounted' || return 1
+	umount /mnt && mkdir -p /tmp/a/b && mount /dev/sdb/data /tmp/a/b fat || return 1
+	grep -q '^/dev/sdb/data /tmp/a/b fat ' /proc/mounts || return 1
+	mount /dev/sdb/data /tmp/a/b fat 2>&1 | grep -q 'already a mount point' || return 1
 	! mv /tmp/a /tmp/c 2>/dev/null || return 1
 	exec 4< /tmp/a/b/msg
 	umount /tmp/a/b 2>&1 | grep -q busy || return 1
@@ -412,13 +413,13 @@ t mount_rules mount_rules
 # again, its /dev entry goes (nothing holds it).
 usb_hotplug() {
 	echo "HOST tests usb-plug" >&3
-	wait_for 30 test -e /dev/sdb/data || { cat /proc/usb; return 1; }
+	wait_for 30 test -e /dev/sdc/data || { cat /proc/usb; return 1; }
 	cat /proc/usb
-	grep -q 'port 2 super .*:usb_storage sdb$' /proc/usb || return 1
-	/bin/sbase/dd if=/dev/sdb/data of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
-	[ "$(/bin/sbase/wc -c < /tmp/usb-sdb.bin)" -eq 512 ] || return 1
+	grep -q 'port 2 super .*:usb_storage sdc$' /proc/usb || return 1
+	/bin/sbase/dd if=/dev/sdc/data of=/tmp/usb-sdc.bin bs=512 count=1 2>/dev/null || return 1
+	[ "$(/bin/sbase/wc -c < /tmp/usb-sdc.bin)" -eq 512 ] || return 1
 	echo "HOST tests usb-unplug" >&3
-	wait_for 30 sh -c '! test -e /dev/sdb/data' || { cat /proc/usb; return 1; }
+	wait_for 30 sh -c '! test -e /dev/sdc/data' || { cat /proc/usb; return 1; }
 	cat /proc/usb
 	! grep -q gone /proc/usb
 }
@@ -428,34 +429,34 @@ t usb_hotplug usb_hotplug
 # mounted from it (or an fd holds it) cannot be unregistered, so it stays as a
 # `gone` entry failing its I/O. Nothing calls back when the mount/fd finally
 # goes, so unless usb_storage sweeps released `gone` disks, its /dev name and
-# table slot leak: the next stick lands on sdc (then sdd…) and repeated
+# table slot leak: the next stick lands on sdd (then sde…) and repeated
 # unplug-while-busy runs the table out. Here: mount the stick, pull it while
-# mounted, unmount, re-plug — the fresh stick must reuse sdb (not leak to sdc),
+# mounted, unmount, re-plug — the fresh stick must reuse sdc (not leak to sdd),
 # and the kernel must not fault across the busy unplug.
 usb_hotplug_busy_reuse() {
 	mkdir -p /tmp/usbm
 	# Settle from the previous test's unplug before we drive our own.
 	sleep 2
 	echo "HOST tests usb-plug" >&3
-	wait_for 40 sh -c 'grep -q "port 2 .*usb_storage sdb" /proc/usb' \
-		|| { echo "reuse: no sdb to start"; cat /proc/usb; return 1; }
+	wait_for 40 sh -c 'grep -q "port 2 .*usb_storage sdc" /proc/usb' \
+		|| { echo "reuse: no sdc to start"; cat /proc/usb; return 1; }
 	# Mount it, then pull it while mounted: blk_unregister is refused, so the
 	# disk must stay as a `gone` entry failing its I/O (and not fault).
-	mount /dev/sdb/data /tmp/usbm fat || { echo "reuse: mount failed"; cat /proc/usb; return 1; }
+	mount /dev/sdc/data /tmp/usbm fat || { echo "reuse: mount failed"; cat /proc/usb; return 1; }
 	echo "HOST tests usb-unplug" >&3
 	sleep 3
 	# Let go: the mount was the only holder, so the disk is now reclaimable.
 	umount /tmp/usbm || { echo "reuse: umount failed"; cat /proc/usb; return 1; }
 	sleep 1
-	# Re-plug. The freed slot and sdb name must be reused, so the fresh stick
-	# enumerates on port 2 as sdb again and no leaked disk lingers on sdc.
+	# Re-plug. The freed slot and sdc name must be reused, so the fresh stick
+	# enumerates on port 2 as sdc again and no leaked disk lingers on sdd.
 	echo "HOST tests usb-plug" >&3
-	wait_for 40 sh -c 'grep -q "port 2 .*usb_storage sdb" /proc/usb' \
-		|| { echo "reuse: replugged stick is not sdb — slot leaked"; cat /proc/usb; return 1; }
-	test -e /dev/sdc/data && { echo "reuse: a leaked disk lingers on sdc"; cat /proc/usb; return 1; }
-	/bin/sbase/dd if=/dev/sdb/data of=/dev/null bs=512 count=1 2> /dev/null || { echo "reuse: sdb will not read"; return 1; }
+	wait_for 40 sh -c 'grep -q "port 2 .*usb_storage sdc" /proc/usb' \
+		|| { echo "reuse: replugged stick is not sdc — slot leaked"; cat /proc/usb; return 1; }
+	test -e /dev/sdd/data && { echo "reuse: a leaked disk lingers on sdd"; cat /proc/usb; return 1; }
+	/bin/sbase/dd if=/dev/sdc/data of=/dev/null bs=512 count=1 2> /dev/null || { echo "reuse: sdc will not read"; return 1; }
 	echo "HOST tests usb-unplug" >&3
-	wait_for 30 sh -c '! test -e /dev/sdb/data'
+	wait_for 30 sh -c '! test -e /dev/sdc/data'
 }
 t usb_hotplug_busy_reuse usb_hotplug_busy_reuse
 
@@ -468,17 +469,17 @@ t usb_hotplug_busy_reuse usb_hotplug_busy_reuse
 usb_hub_replug() {
 	echo "HOST tests hub-unplug" >&3
 	# The stick goes first (a detach takes the children first), the hub after.
-	wait_for 30 sh -c '! test -e /dev/sda/data' || { cat /proc/usb; return 1; }
+	wait_for 30 sh -c '! test -e /dev/sdb/data' || { cat /proc/usb; return 1; }
 	wait_for 30 sh -c '! grep -q " hub " /proc/usb' || { cat /proc/usb; return 1; }
 	echo "HOST tests hub-plug" >&3
 	wait_for 30 grep -q ' hub ' /proc/usb || { cat /proc/usb; return 1; }
 	sleep 2
 	echo "HOST tests hub-disk" >&3
-	wait_for 30 test -e /dev/sda/data || { cat /proc/usb; return 1; }
+	wait_for 30 test -e /dev/sdb/data || { cat /proc/usb; return 1; }
 	cat /proc/usb
-	grep -q 'port 1 .*:usb_storage sda$' /proc/usb || return 1
-	/bin/sbase/dd if=/dev/sda/data of=/tmp/usb-sda.bin bs=512 count=1 2>/dev/null || return 1
-	[ "$(/bin/sbase/wc -c < /tmp/usb-sda.bin)" -eq 512 ]
+	grep -q 'port 1 .*:usb_storage sdb$' /proc/usb || return 1
+	/bin/sbase/dd if=/dev/sdb/data of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
+	[ "$(/bin/sbase/wc -c < /tmp/usb-sdb.bin)" -eq 512 ]
 }
 t usb_hub_replug usb_hub_replug
 
