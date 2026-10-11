@@ -123,6 +123,13 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         96 => result(user::sys_gettimeofday(a[0], a[1]), EFAULT),
         97 => ret(sys::prlimit(a[0], a[1])), // getrlimit
         102 | 104 | 107 | 108 => 0,          // getuid, getgid, geteuid, getegid
+        118 | 120 => ret(sys::getresid(a[0], a[1], a[2])), // getresuid, getresgid
+        140 => 20, // getpriority: nice 0 (the result is 20 - nice)
+        141 => 0,  // setpriority: accepted; the core schedules
+        157 => ret(sys::prctl(a[0])),
+        187 => 0, // readahead: a hint
+        25 => ret(sys::mremap(a[0], a[1], a[2])),
+        285 => ret(sys::fallocate(a[0], a[1], a[2], a[3])),
         105 | 106 | 160 => 0,                // setuid, setgid, setrlimit
         109 => result(user::sys_setpgid(a[0], a[1]), EPERM),
         110 => task::current_ppid(),

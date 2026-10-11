@@ -85,8 +85,9 @@ pub use crate::arch::UserRegs;
 pub const MAX_MMAP_REGIONS: usize = 4096;
 
 /// Distinct files a process can have mapped at once (a file mapping past
-/// this is copied in whole at `mmap` time instead of paged in).
-pub const MAX_MAPPED_FILES: usize = 64;
+/// this is copied in whole at `mmap` time instead of paged in). A browser
+/// maps well over a hundred: its libraries, their GTK stack, fonts.
+pub const MAX_MAPPED_FILES: usize = 1024;
 
 /// A run of mmap pages with one protection and one backing. Its pages get
 /// frames on first touch (`user::fault_in`): zeroed, or read from the file.

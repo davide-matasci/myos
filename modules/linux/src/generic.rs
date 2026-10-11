@@ -100,6 +100,13 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         178 => task::current_tid(),
         173 => task::current_ppid(),
         174..=177 => 0, // getuid, geteuid, getgid, getegid
+        148 | 150 => ret(sys::getresid(a[0], a[1], a[2])), // getresuid, getresgid
+        141 => 20, // getpriority: nice 0 (the result is 20 - nice)
+        140 => 0,  // setpriority: accepted; the core schedules
+        167 => ret(sys::prctl(a[0])),
+        213 => 0, // readahead: a hint
+        216 => ret(sys::mremap(a[0], a[1], a[2])),
+        47 => ret(sys::fallocate(a[0], a[1], a[2], a[3])),
         198 => ret(net::socket(a[0], a[1])),
         199 => ret(net::socketpair(a[0], a[1], a[3])),
         200 => ret(net::bind(a[0], a[1], a[2])),

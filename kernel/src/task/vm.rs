@@ -96,10 +96,21 @@ pub fn clear_mmap() {
 /// Let go of the mapped files no region names any more: an anonymous
 /// shared mapping's file (`vfs::anon_file`) lives by its references.
 fn prune_files(t: &mut Process) {
-    for i in 0..MAX_MAPPED_FILES {
-        if t.mapped_files[i].is_some() && !t.mmap.iter().any(|r| r.file as usize == i + 1) {
-            t.mapped_files[i] = None;
+    // One pass over the regions, not one per file: a process may have
+    // thousands of each.
+    let mut named = alloc::vec![false; t.mapped_files.len()];
+    for r in &t.mmap {
+        if let Some(n) = (r.file as usize).checked_sub(1).and_then(|i| named.get_mut(i)) {
+            *n = true;
         }
+    }
+    for (slot, named) in t.mapped_files.iter_mut().zip(named) {
+        if !named {
+            *slot = None;
+        }
+    }
+    while t.mapped_files.last().is_some_and(Option::is_none) {
+        t.mapped_files.pop();
     }
 }
 
@@ -172,14 +183,25 @@ fn add_region(t: &mut Process, va: u64, pages: u32, prot: u32, file: Option<(&cr
     true
 }
 
-/// The `mapped_files` entry for `node`: the one already holding it, else
-/// one no region names any more.
+/// The `mapped_files` entry for `node`: the one already holding it, else a
+/// free one, else a new one; when the table is full, after letting go of
+/// the files no region names any more. `None` when it is full of mapped
+/// files.
 fn mapped_file_slot(t: &mut Process, node: &crate::fs::Vnode) -> Option<usize> {
-    let used = |i: usize| t.mmap.iter().any(|r| r.file as usize == i + 1);
-    if let Some(i) = (0..MAX_MAPPED_FILES).find(|&i| used(i) && t.mapped_files[i].as_ref() == Some(node)) {
+    if let Some(i) = t.mapped_files.iter().position(|f| f.as_ref() == Some(node)) {
         return Some(i);
     }
-    let i = (0..MAX_MAPPED_FILES).find(|&i| !used(i))?;
+    if t.mapped_files.len() >= MAX_MAPPED_FILES {
+        prune_files(t);
+    }
+    let i = match t.mapped_files.iter().position(Option::is_none) {
+        Some(i) => i,
+        None if t.mapped_files.len() < MAX_MAPPED_FILES => {
+            t.mapped_files.push(None);
+            t.mapped_files.len() - 1
+        }
+        None => return None,
+    };
     t.mapped_files[i] = Some(node.clone());
     Some(i)
 }

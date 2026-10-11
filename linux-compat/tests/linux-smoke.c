@@ -24,7 +24,9 @@
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/reboot.h>
+#include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
@@ -619,6 +621,40 @@ static void *flagger(void *arg) {
     return NULL;
 }
 
+/* What Firefox asked for at startup: posix_fallocate (fallocate mode 0)
+ * grows a file and other modes are EOPNOTSUPP; getresuid; getpriority;
+ * prctl names a thread and refuses seccomp; mremap shrinks in place and
+ * cannot grow; readahead is a hint. */
+static void check_misc_calls(void) {
+    int fd = open("/tmp/linux-smoke.falloc", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    struct stat st;
+    check(fd >= 0 && posix_fallocate(fd, 0, 8192) == 0 && fstat(fd, &st) == 0 && st.st_size == 8192 &&
+              posix_fallocate(fd, 0, 100) == 0 && fstat(fd, &st) == 0 && st.st_size == 8192,
+          "posix_fallocate grows a file, never shrinks it");
+    check(fd >= 0 && syscall(SYS_fallocate, fd, 1, 0, 100) == -1 && errno == EOPNOTSUPP,
+          "fallocate FALLOC_FL_KEEP_SIZE: EOPNOTSUPP");
+    check(fd >= 0 && syscall(SYS_readahead, fd, 0, 4096) == 0, "readahead");
+    close(fd);
+    unlink("/tmp/linux-smoke.falloc");
+    uid_t r = 1, e = 1, s = 1;
+    gid_t gr = 1, ge = 1, gs = 1;
+    check(getresuid(&r, &e, &s) == 0 && r == 0 && e == 0 && s == 0 && getresgid(&gr, &ge, &gs) == 0 && gr == 0 &&
+              ge == 0 && gs == 0,
+          "getresuid, getresgid");
+    errno = 0;
+    check(getpriority(PRIO_PROCESS, 0) == 0 && errno == 0 && setpriority(PRIO_PROCESS, 0, 0) == 0,
+          "getpriority, setpriority");
+    check(prctl(PR_SET_NAME, "smoke") == 0 && prctl(PR_GET_SECCOMP) == -1 && errno == EINVAL,
+          "prctl: a name, no seccomp");
+    char *m = mmap(NULL, 3 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    check(m != MAP_FAILED && mremap(m, 3 * 4096, 4096, 0) == m && mremap(m, 4096, 8192, MREMAP_MAYMOVE) == MAP_FAILED &&
+              errno == ENOMEM,
+          "mremap: shrink in place, no growth");
+    if (m != MAP_FAILED) {
+        munmap(m, 4096);
+    }
+}
+
 static void check_fork_vs_fds(void) {
     int fd = open("/dev/null", O_RDONLY);
     pthread_t t;
@@ -978,6 +1014,7 @@ int main(int argc, char **argv) {
 
     check_toolchain_calls(argv[0]);
     check_fork_vs_fds();
+    check_misc_calls();
 
     if (failures) {
         out("LINUX-SMOKE FAIL\n");

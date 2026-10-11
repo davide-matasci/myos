@@ -303,6 +303,68 @@ pub fn madvise(addr: usize, len: usize, advice: usize) -> R {
     Ok(0)
 }
 
+/// `fallocate(fd, mode, offset, len)`: mode 0 (what `posix_fallocate`
+/// asks) makes the file at least `offset + len` long, as an `ftruncate`
+/// would; the blocks are not reserved ahead (a full disk shows at the
+/// write). The other modes (keep the size, punch a hole, ...) are
+/// `EOPNOTSUPP`, which callers take as a filesystem without them: Firefox
+/// sizes its shared memory with `ftruncate` then.
+pub fn fallocate(fd: usize, mode: usize, offset: usize, len: usize) -> R {
+    if mode != 0 {
+        return Err(EOPNOTSUPP);
+    }
+    let end = offset.checked_add(len).filter(|_| len != 0 && (offset as isize) >= 0).ok_or(EINVAL)?;
+    match task::fd_kind(fd).ok_or(EBADF)? {
+        task::FdKind::File { size } if end > size => ftruncate(fd, end),
+        task::FdKind::File { .. } => Ok(0),
+        _ => Err(ESPIPE),
+    }
+}
+
+/// `mremap(old, old_size, new_size, flags)`: a shrink lets go of the end
+/// and keeps the address. A mapping cannot grow (`ENOMEM`, the answer of a
+/// kernel that finds no room): musl's `realloc`, the main user, then
+/// allocates anew and copies.
+pub fn mremap(old: usize, old_size: usize, new_size: usize) -> R {
+    const PAGE: usize = 4096;
+    if old % PAGE != 0 || new_size == 0 {
+        return Err(EINVAL);
+    }
+    let (old_end, new_end) = (old_size.div_ceil(PAGE) * PAGE, new_size.div_ceil(PAGE) * PAGE);
+    if new_end > old_end {
+        return Err(ENOMEM);
+    }
+    if new_end < old_end {
+        native(user::sys_munmap(old + new_end, old_end - new_end), EFAULT)?;
+    }
+    Ok(old)
+}
+
+/// `getresuid` / `getresgid`: every id is 0, as `getuid` and friends say
+/// (what a process may do is the policy's, `docs/security.md`).
+pub fn getresid(r: usize, e: usize, s: usize) -> R {
+    for p in [r, e, s] {
+        put(p, &0u32.to_le_bytes())?;
+    }
+    Ok(0)
+}
+
+/// `prctl`: a thread's name and an anonymous mapping's (`PR_SET_VMA`) are
+/// accepted and not kept; dumpable reads as set. Any other option is
+/// `EINVAL`, a kernel's answer for one it does not have (seccomp included,
+/// which sandboxes probe for).
+pub fn prctl(option: usize) -> R {
+    const PR_GET_DUMPABLE: usize = 3;
+    const PR_SET_DUMPABLE: usize = 4;
+    const PR_SET_NAME: usize = 15;
+    const PR_SET_VMA: usize = 0x5356_4d41;
+    match option {
+        PR_SET_NAME | PR_SET_VMA | PR_SET_DUMPABLE => Ok(0),
+        PR_GET_DUMPABLE => Ok(1),
+        _ => Err(EINVAL),
+    }
+}
+
 /// `fsync`, `fdatasync`, `fchmod`, `fchown`: done once `fd` is valid.
 /// myos keeps no owners or permission bits, and ext2 writes a file's
 /// cached blocks back when its last fd closes.

@@ -41,9 +41,10 @@ pub(super) struct Process {
     /// The mmap regions (in the window after the brk heap), sorted by
     /// address, none empty; at most [`MAX_MMAP_REGIONS`].
     pub mmap: Vec<MmapRegion>,
-    /// The files the regions page in from; an entry no region names is free
-    /// (it lets its file go when it is reused, or at exec and exit).
-    pub mapped_files: [Option<crate::fs::Vnode>; MAX_MAPPED_FILES],
+    /// The files the regions page in from, at most [`MAX_MAPPED_FILES`]
+    /// (grown as files are mapped); an entry no region names is let go
+    /// when a mapping goes (`vm::prune_files`), at exec and at exit.
+    pub mapped_files: Vec<Option<crate::fs::Vnode>>,
     /// Session id (slot of the session leader). Inherited on fork. New
     /// spawns start as their own session (`sid == slot`); `setsid` creates a
     /// fresh session for a forked child.
@@ -97,7 +98,7 @@ static EMPTY_PROC: Process = Process {
     cwd: root_cwd_buf(),
     cwd_len: 1,
     mmap: Vec::new(),
-    mapped_files: [const { None }; MAX_MAPPED_FILES],
+    mapped_files: Vec::new(),
     sid: 0,
     pgid: 0,
     execd: false,
