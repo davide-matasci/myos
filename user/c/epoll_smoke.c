@@ -182,7 +182,7 @@ int main(void) {
     }
     /* A member goes with its last fd. */
     close(efd);
-    if (members(ep) != 3) {
+    if (members(ep) != 2) {
         return fail("a closed member is forgotten");
     }
     if (epoll_ctl(ep, EPOLL_CTL_DEL, efd, NULL) != -1 || errno != EBADF) {
@@ -207,7 +207,7 @@ int main(void) {
     if (pid == 0) {
         _exit(add(ep, q[1], EPOLLOUT, 50) == 0 ? 0 : 1);
     }
-    if (waitpid(pid, &status, 0) != pid || status != 0 || members(ep) != 4) {
+    if (waitpid(pid, &status, 0) != pid || status != 0 || members(ep) != 3) {
         return fail("a child's add is in the shared set");
     }
     if (one(ep, 0, ev) != 0 || ev[0].data.u64 != 50 || ev[0].events != EPOLLOUT) {
