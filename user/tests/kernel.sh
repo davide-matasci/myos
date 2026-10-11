@@ -218,14 +218,15 @@ t pci_rescan pci_rescan
 # and ends where READ CAPACITY said.
 scsi_disk() {
 	d=/dev/sda/data
-	[ -e $d ] || return 1
-	! grep -q 'sda$' /proc/usb || return 1
-	printf 'scsi-disk-%s' "$$" > /tmp/scsi.in
-	dd if=/tmp/scsi.in of=$d bs=512 seek=3 count=1 conv=notrunc 2> /dev/null || return 1
-	dd if=$d of=/tmp/scsi.out bs=512 skip=3 count=1 2> /dev/null || return 1
-	[ "$(head -c "$(wc -c < /tmp/scsi.in)" /tmp/scsi.out)" = "$(cat /tmp/scsi.in)" ] || return 1
-	[ "$(dd if=$d bs=512 skip=2047 count=1 2> /dev/null | wc -c)" -eq 512 ] || return 1
-	[ "$(dd if=$d bs=512 skip=2048 count=1 2> /dev/null | wc -c)" -eq 0 ]
+	[ -e $d ] || { echo "no $d"; ls /dev; return 1; }
+	! grep -q 'sda$' /proc/usb || { echo "sda is a USB stick"; cat /proc/usb; return 1; }
+	dd if=/dev/zero of=/tmp/scsi.in bs=512 count=1 2> /dev/null || return 1
+	printf 'scsi-disk-%s' "$$" | dd of=/tmp/scsi.in conv=notrunc 2> /dev/null || return 1
+	dd if=/tmp/scsi.in of=$d bs=512 seek=3 count=1 conv=notrunc 2> /dev/null || { echo "write failed"; return 1; }
+	dd if=$d of=/tmp/scsi.out bs=512 skip=3 count=1 2> /dev/null || { echo "read failed"; return 1; }
+	cmp /tmp/scsi.in /tmp/scsi.out || return 1
+	[ "$(dd if=$d bs=512 skip=2047 count=1 2> /dev/null | wc -c)" -eq 512 ] || { echo "last sector"; return 1; }
+	[ "$(dd if=$d bs=512 skip=2048 count=1 2> /dev/null | wc -c)" -eq 0 ] || { echo "past the end"; return 1; }
 }
 t scsi_disk scsi_disk
 t partitions partitions
