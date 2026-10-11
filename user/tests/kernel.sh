@@ -1019,6 +1019,15 @@ lx_unix() {
 	cat $OUT/lx-unix.log $OUT/lx-unix-server.log
 	[ $status = 0 ] && contains "LINUX-UNIX OK" $OUT/lx-unix.log
 }
+# The event fds from a chroot (how Alpine's programs run, docs/events.md):
+# the launcher binds the system's /dev into the root, and
+# /dev/wait/N/data opened there must still be a wait set, not a plain file.
+lx_evfd_root() {
+	mkdir -p /tmp/lxroot && cp /bin/linux/linux-smoke /tmp/lxroot/ || return 1
+	capture $OUT/lx-evfd-root.log linux --root /tmp/lxroot /linux-smoke evfd
+	cat $OUT/lx-evfd-root.log
+	contains "LINUX-EVFD OK" $OUT/lx-evfd-root.log
+}
 # The page cache (kernel/src/fs/pagecache.rs): the libraries one run maps
 # serve the next (PageCacheKiB), and one rewritten in between is read as it
 # is now. libsmoke2.so overwritten with libsmoke.so has no smoke2_name for
@@ -1209,6 +1218,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t linux_smoke lx_smoke
 	t linux_dyn lx_dyn
 	t linux_unix lx_unix
+	t linux_evfd_root lx_evfd_root
 	t linux_pagecache lx_pagecache
 	if [ "$MODE" = full ]; then
 		t alpine_jq lx_alpine

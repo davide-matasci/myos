@@ -486,10 +486,13 @@ static void check_evfd(void) {
  * EPOLL_CTL_MOD; EEXIST and ENOENT; a member goes with its last fd. */
 static void check_epoll(void) {
     struct epoll_event ev[4];
-    int p[2], q[2], ep, n;
+    int p[2] = {-1, -1}, q[2] = {-1, -1}, ep, n;
     char c = 'x';
     ep = epoll_create1(EPOLL_CLOEXEC);
     check(ep >= 0 && pipe(p) == 0 && pipe(q) == 0, "epoll_create1");
+    if (ep < 0 || p[0] < 0 || q[0] < 0) {
+        return; /* the waits below would read whatever fd a missing pipe left */
+    }
     ev[0].events = EPOLLIN;
     ev[0].data.u64 = 10;
     check(epoll_ctl(ep, EPOLL_CTL_ADD, p[0], &ev[0]) == 0, "epoll_ctl: add the read end");
@@ -731,6 +734,15 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && strcmp(argv[1], "unix") == 0) {
         return unix_client(argv[2]);
+    }
+    /* `evfd`: the event fds alone, for a run chrooted into a bare root
+     * (`linux --root`), where /dev is a bind of the system's. */
+    if (argc > 1 && strcmp(argv[1], "evfd") == 0) {
+        check_evfd();
+        check_epoll();
+        check_signalfd();
+        out(failures ? "LINUX-EVFD FAIL\n" : "LINUX-EVFD OK\n");
+        return failures != 0;
     }
 
     struct utsname u;

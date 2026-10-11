@@ -526,7 +526,10 @@ signal numbers, handlers, masks, `sigwait`, `EINTR` and `SA_RESTART`,
 pthreads: a mutex, a condition variable, thread-local storage, thread ids,
 join, and `exit` from a thread ending the process) and `LINUX-DYN OK` (a
 call, shared data, a relocated function pointer and a thread-local in
-`libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`).
+`libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`);
+`linux --root` of a bare root with the smoke's event fd checks
+(`linux-smoke evfd`, `LINUX-EVFD OK`) runs them through the root's bind
+of `/dev`.
 The test is plain musl C, so it can also be run on a Linux host for
 reference. The full list then runs
 `run-myos get-alpine jq && linux --root /data/alpine jq -Rrn '...' /proc/mounts` (the

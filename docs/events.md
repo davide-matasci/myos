@@ -191,7 +191,10 @@ shared with a fork. `user/c/sigfd_smoke.c` (`t sigfd`) runs the signal
 fds: a blocked signal read instead of delivered, one outside the mask
 delivered, `EAGAIN`, a child's kill ending a read, the mask changed, the
 fd in a wait set. `linux-compat/tests/linux-smoke.c` does the same from a
-musl program through the Linux layer. End to end, the full list runs an
+musl program through the Linux layer, and once more chrooted into a bare
+root (`linux_evfd_root` in `user/tests/kernel.sh`: `linux --root` binds
+the system's `/dev` into the root, and the fds must be the same objects
+there). End to end, the full list runs an
 asyncio script in the Alpine Python root (`alpine_python_asyncio` in
 `user/tests/kernel.sh`, `docs/linux-compat.md`): Python's event loop
 selects on `select.epoll`, a `/dev/wait` set, with its signal wakeup fd
