@@ -97,10 +97,12 @@ but the shutdown all the same, as on Linux.
 
 Both directions of a TCP conversation are flow-controlled between netfs and
 netd, so neither side ever drops bytes. Received data waits in the smoltcp
-socket until netfs's 8 KiB buffer has room (netfs hands the room back with
-`REQ_CREDIT` as readers drain it). Sent data: netfs lets a conversation's
-writers queue up to 8 KiB in netd; netd moves it into the smoltcp socket in
-order as the TCP window allows and hands the room back with `REP_TXCREDIT`.
+socket (64 KiB, the window offered to the peer) until netfs's 32 KiB buffer
+has room (netfs hands the room back with `REQ_CREDIT` as readers drain it);
+netd moves all it has room for per pass, in messages of up to 8 KiB. Sent
+data: netfs lets a conversation's writers queue up to 32 KiB in netd; netd
+moves it into the smoltcp socket (32 KiB) in order as the TCP window allows
+and hands the room back with `REP_TXCREDIT`.
 A write with no room left is refused, and the library waits for POLLOUT.
 
 TCP listens through netd's `announce` (`listen`/`accept`, dropbear's SSH
