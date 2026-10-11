@@ -12,7 +12,7 @@ controller, a hub and two sticks (one plugged in by a test).
 |--------|------|
 | `modules/xhci` | The xHCI controller (PCI class `0C/03`, interface `30`): rings, interrupter, device slots, enumeration, root-port hot-plug, the `UsbHostOps` service, `/proc/usb` |
 | `modules/usb_hub` | Hub class (9): hub descriptor, port power and reset, the status-change interrupt endpoint; children through `hub_attach` / `hub_detach` |
-| `modules/usb_storage` | Mass storage class (8/6/0x50, bulk-only SCSI): `blk_register` as `sda`, `sdb`, …; `blk_unregister` on unplug |
+| `modules/usb_storage` | Mass storage class (8/6/0x50, bulk-only SCSI): `blk_register` as `sd?` (the kernel hands out the letter, shared with the virtio-scsi disks); `blk_unregister` on unplug |
 
 ## How the modules reach each other
 
@@ -114,8 +114,8 @@ One line per device:
 ```
 controller 0 ports 8 irq on events 86 irqs 83
 0x001 parent 0x000 port 5 full 0409:55aa class 09 if0=09/00/00:usb_hub hub 8
-0x002 parent 0x001 port 1 full 46f4:0001 class 00 if0=08/06/50:usb_storage sda
-0x003 parent 0x000 port 2 super 46f4:0001 class 00 if0=08/06/50:usb_storage sdb
+0x002 parent 0x001 port 1 full 46f4:0001 class 00 if0=08/06/50:usb_storage sdb
+0x003 parent 0x000 port 2 super 46f4:0001 class 00 if0=08/06/50:usb_storage sdc
 ```
 
 a line per controller (its root ports, whether its interrupt is on, the
@@ -133,10 +133,10 @@ in.
 The launcher gives every boot `qemu-xhci`, a `usb-hub` on its `port=1`
 (a USB 2 port, number 5 of the controller's eight: QEMU's hub is
 full-speed, and so is the stick behind it) and a `usb-storage` behind the
-hub (`/dev/sda/data`, the same FAT volume as `/dev/vda/data` in its own image file),
+hub (`/dev/sdb/data`, the same FAT volume as `/dev/vda/data` in its own image file),
 plus a second stick's drive that `user/tests/host.sh usb-plug` attaches to
 `port=2` (a USB 3 port: a SuperSpeed device) through the QEMU monitor and
-`usb-unplug` removes. `kernel.sh` waits for `/dev/sda/data`,
+`usb-unplug` removes. `kernel.sh` waits for `/dev/sdb/data`,
 checks `/proc/usb`, mounts and reads the volume (`usb_disk`), then plugs,
 reads and unplugs the second stick (`usb_hotplug`). The boot markers
 `[ OK ] xhci`, `usb_hub`, `usb_storage` cover the modules' init.

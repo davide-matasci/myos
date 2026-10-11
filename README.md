@@ -14,7 +14,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Interactive shell** — getty → login (`root`, empty password) → [oksh](https://github.com/ibara/oksh) 7.9
 - **Security** — no superuser: every process runs for a user in a domain, every file has a label its path gives it, and `/etc/policy` says what each domain may do to each label (deny by default, SELinux-like); per-process namespaces narrow what a program can name, Plan 9 style (`sec ns`); passwords are checked by the kernel (`docs/security.md`)
 - **Rust kernel** — `#![no_std]`, higher-half link, HHDM memory, preemptive round-robin scheduler
-- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, NVMe, xHCI USB with hubs and sticks, virtio-net, netfs, FAT16/FAT32, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
+- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, virtio-scsi, NVMe, xHCI USB with hubs and sticks, virtio-net, netfs, FAT16/FAT32, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
 - **VFS with multiple backends** — rootfs, tmpfs, devfs, procfs, FAT16/FAT32, ext2
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos tinyx dwm` brings st, dmenu, the Xft stack and the fonts with it, then `run-myos tinyx,dwm:startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets (`get-myos x11-apps`, then `run-myos x11-apps`, `packages/x11-apps/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
@@ -117,7 +117,7 @@ Boot (Limine)
             ├─ Scheduler (round-robin kernel threads + user tasks)
             ├─ VFS (mount table → rootfs / tmpfs / devfs / procfs / ext2 / netfs)
             ├─ Modules (Limine list, in order): console, hello, pci_enum,
-            │     acpi, virtio_blk, nvme, xhci, usb_hub, usb_storage, virtio_net, netfs, fat, ext2
+            │     acpi, virtio_blk, virtio_scsi, nvme, xhci, usb_hub, usb_storage, virtio_net, netfs, fat, ext2
             └─ Userspace (ELF processes)
                  ├─ /ok smoke (always-on alloc/user/fat/proc markers)
                  ├─ /netd (smoltcp over /dev/net0/data; only opener of net0)
@@ -163,9 +163,11 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `kernel/src/fs/` | VFS + rootfs/tmpfs/devfs/procfs backends |
 | `kernel/src/modules/` | ELF64 loader, KernelApi wrappers, loaded-module registry |
 | `modules/abi` | Shared `#[repr(C)]` KernelApi (v14: PCI/DMA/`dev_register`/`blk_register`/`console_register`/`personality_register`/`dt_mmio_find`) |
-| `modules/virtq` | Split virtqueue helpers shared by the virtio modules |
+| `modules/virtio` | What the virtio modules share: the `virtio-drivers` crate's `Hal` over the module ABI, PCI and virtio-mmio probing by device type, interrupt routing |
+| `modules/virtq` | Split virtqueue helpers for the console's virtio-input keyboard |
 | `modules/console` | Framebuffer text screen and `/dev/fb`, PS/2 + virtio-input keyboards, loadable keymap (`keymaps/`; scancode decoding in the host-testable `ps2-scancode` crate) |
-| `modules/virtio_blk` | virtio-blk `/dev/vd*`: PCI legacy I/O (x86_64) or virtio-mmio (aarch64, riscv64) |
+| `modules/virtio_blk` | virtio-blk `/dev/vd*` on `virtio-drivers`: virtio-pci (modern) or virtio-mmio |
+| `modules/virtio_scsi` | virtio-scsi: the host's disks as `/dev/sd*` (a VPS's disks), on `virtio-drivers`' virtqueue |
 | `modules/nvme` | NVMe `/dev/nvmeXn1` (PCI class 01/08, polled queues) |
 | `modules/xhci` | xHCI USB host controller: the USB bus service (`UsbHostOps`), enumeration and hot-plug on its own kernel thread, `/proc/usb` (`docs/usb.md`) |
 | `modules/usb_hub` | USB hub class driver: ports, resets, the devices behind a hub |
@@ -173,7 +175,7 @@ Dual console: serial (kernel) + Limine framebuffer (the `console` module; boot o
 | `modules/hello` | Sample module (`[ OK ] hello`) |
 | `modules/fat` | Writable FAT16/FAT32: `ModuleVfsOps` over the `fatvol` crate (`modules/fat/fatvol`: fstool's FAT driver, with growing by zeros, rename and file times of its own), host-tested against dosfstools and mtools |
 | `modules/ext2` | Writable ext2: `ModuleVfsOps` over the `ext2fs` crate (`modules/ext2/ext2fs`, also `mkfs.ext2`'s), host-tested against e2fsprogs |
-| `modules/virtio_net` | Modern virtio-pci net: `/dev/net0/` (`data` Ethernet frames, `ctl` the MAC and interrupt), RX interrupt wakes `poll` |
+| `modules/virtio_net` | virtio-net on `virtio-drivers` (virtio-pci or virtio-mmio): `/dev/net0/` (`data` Ethernet frames, `ctl` the MAC and interrupt), RX interrupt wakes `poll` |
 | `modules/netfs` | Plan 9 `/net` + `/dev/netd/data` channel to userspace netd; `/net/unix` local connections |
 | `modules/linux` | Linux syscall compatibility layer: a syscall *personality* (`personality_register`) for musl binaries |
 | `user/init` | PID1: smoke fork/`/ok`, fork `/netd`, exec `/sh` (baked in) |
@@ -219,7 +221,7 @@ Produces:
 qemu-system-x86_64 -m 256 \
   -drive format=raw,file=target/bios.img \
   -drive if=none,id=vd0,format=raw,file=target/fat.img \
-  -device virtio-blk-pci,drive=vd0,disable-modern=on \
+  -device virtio-blk-pci,drive=vd0 \
   -serial stdio
 ```
 
@@ -281,7 +283,7 @@ Write the disk image to a USB stick or an internal drive (`target/uefi.img`; `ta
 - **rootfs** — the read-only tree at `/`: every file of the image in one sorted table: the initramfs, the cpio archive Limine loads next to the kernel modules, unpacked by reference (no copy), and a module's `vfs_register`. The kernel embeds no program: it starts `/bin/custom/init` from the initramfs; a directory is implied by its files (`mnt/.keep` for an empty one). `/tmp`, `/dev`, `/proc` and module filesystems are mounted over it
 - **procfs** — `/proc/mounts`, `/proc/partitions` and `/proc/cmdline` (Limine's `cmdline:`, the boot slot) (generated, not stored bytes); `/proc/boot/kernel` and `/proc/boot/initramfs`, the files this boot came from, and `/proc/boot/partuuid`, the partition (mounted at `/boot`); every process at `/proc/<pid>/status` and its threads at `/proc/<pid>/task/<tid>/status`, with names and CPU times, and the CPUs' idle time at `/proc/cpu` (`docs/proc.md`); `/proc/sys/kernel/hostname` holds the host name ("myos" at boot; `echo name > /proc/sys/kernel/hostname`, or `hostname name`, sets it, up to 64 bytes)
 - **tmpfs/devfs** — writable mount for `O_CREAT`; device nodes
-- **virtio-blk / NVMe** — modules registering the disks `vda`… and `nvme0n1` through `blk_register`; loaded before the filesystem modules
+- **virtio-blk / virtio-scsi / NVMe** — modules registering the disks `vda`…, `sda`… and `nvme0n1` through `blk_register` (`sd?`: the kernel hands out the letter, to SCSI disks and USB sticks alike); loaded before the filesystem modules. The virtio ones are the `virtio-drivers` crate bound to the module ABI by `modules/virtio`
 - **Disks and partitions** — a disk is a directory, `/dev/<disk>/`: `data` is the whole disk, `p<N>` the partition in entry `N` of its GUID partition table (numbered by entry, so a gap stays a gap), a block device of its own confined to its sectors (`kernel/src/blk.rs`, `kernel/src/blk/gpt.rs`). The table is read on the first look at `/dev` after the disk appeared: both CRC32s checked, the backup at the end of the disk when the primary is bad; MBR tables are not read. `/proc/partitions` lists them, one line each: `nvme1n1/p1 2048 20971520 c12a7328-f81f-11d2-ba4b-00a0c93ec93b <unique GUID> "EFI system"` (first sector, bytes, type and unique GUIDs, name). A disk's partitions go with it (a USB stick pulled out), which is refused while one is mounted or open; writing `rescan` to `/proc/pci` reads again the tables of the disks none of whose partitions is in use
 - **Page cache** — a file's pages that processes map without write permission (programs' and libraries' code and constant data) are one frame each, shared by every mapping of them and kept for the next process (`kernel/src/fs/pagecache.rs`); a write, a truncation or an unlink drops them, up to a quarter of RAM (`PageCacheKiB` in `/proc/meminfo`). A `MAP_SHARED` mapping of a regular file through a writable fd is the file: its pages are the cache's frames, written through it by every process that maps them, seen by `read` and updated by `write` at once, and written back to the file by `msync`, `munmap`, exit and exec; a file unlinked while an fd or a mapping holds it keeps its pages for them. A `MAP_SHARED | MAP_ANON` mapping is one of a tmpfs file no name reaches, shared with forked children and gone with its last mapping. POSIX shared memory is `/dev/shm`, a tmpfs directory bound there (`shm_open`, `shm_unlink`, `memfd_create` in libgloss: the file is created and unlinked at once; System V `shmget`/`shmat`/`shmdt`/`shmctl` too, a segment being a file there, its id the file's inode number, its mode reported as 0666 since the file's protection is the policy's). A tmpfs file is bytes in the kernel heap that the mapping's frames are written back to: a segment costs its size twice, up to the tmpfs file cap of 16 MiB (issue #338)
 - **Fork is copy-on-write** — a forked child maps its parent's pages (image, stack, heap, private mappings) rather than copies of them: both sides lose write permission to a shared page (`LEAF_COW` in the leaf entry, `kernel/src/user/cow.rs` counts its mappings), and the first store by either side, from userspace or by a kernel copy into the page, gives that side its own copy, or the frame itself when the other side's mapping has gone (`user::cow_break`). A shared mapping's and a device's pages are the same in both. Exec in place replaces the shared frames it keeps before it writes the new image. `Forks` and `CowCopies` in `/proc/meminfo` count the forks and the pages copied
@@ -301,7 +303,7 @@ Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, cal
 | Bytes live in | `/lib/modules/<name>` in the initramfs, named in load order by `/lib/modules/boot.list` | `/lib/modules/<name>` in the initramfs (or any file) |
 | Loaded by | `modules::load_boot_modules` right after the initramfs is unpacked | `SYS_INSMOD` from `/bin/custom/insmod` |
 
-`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, nvme), the USB bus (xhci, then its class drivers usb_hub and usb_storage), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on. The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
+`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, virtio_scsi, nvme), the USB bus (xhci, then its class drivers usb_hub and usb_storage), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on. The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
 
 Module exports:
 ```rust

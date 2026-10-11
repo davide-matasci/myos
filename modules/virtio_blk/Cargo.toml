@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "virtio-blk kernel module: /dev/vd* over PCI legacy I/O (x86_64) or virtio-mmio (aarch64, riscv64)."
+description = "virtio-blk kernel module: /dev/vd* over virtio-pci (modern) or virtio-mmio."
 
 [[bin]]
 name = "virtio_blk"
@@ -15,7 +15,7 @@ bench = false
 
 [dependencies]
 myos-abi = { path = "../abi" }
-virtq = { path = "../virtq" }
+myos-virtio = { path = "../virtio" }
 
 [profile.dev]
 panic = "abort"

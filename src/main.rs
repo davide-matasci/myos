@@ -188,6 +188,29 @@ fn write_empty_blk_image() {
         .unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
 }
 
+fn scsi_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/scsi.img")
+}
+
+/// The virtio-scsi test disk: 1 MiB, empty (`kernel.sh`'s `scsi_disk`
+/// writes and reads it back).
+fn write_scsi_image() {
+    let dest = scsi_img_path();
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&dest, vec![0u8; 1024 * 1024]).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+}
+
+/// A virtio-scsi host (`device`: the PCI or the virtio-mmio one) with
+/// the test disk as its target 0.
+fn add_virtio_scsi(cmd: &mut Command, device: &str) {
+    write_scsi_image();
+    cmd.arg("-device").arg(format!("{device},id=scsi0"));
+    cmd.arg("-drive").arg(format!("if=none,id=scsi0d,format=raw,file={}", scsi_img_path().display()));
+    cmd.arg("-device").arg("scsi-hd,drive=scsi0d,bus=scsi0.0");
+}
+
 fn nvme_img_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/nvme.img")
 }
@@ -354,15 +377,14 @@ fn add_virtio_blk_x86(cmd: &mut Command) {
     let empty = empty_img_path();
     cmd.arg("-drive")
         .arg(format!("if=none,id=vd0,format=raw,file={}", fat.display()));
-    // Legacy I/O-BAR virtio-blk (kernel talks to BAR0 ports, device 0x1001).
-    cmd.arg("-device")
-        .arg("virtio-blk-pci,drive=vd0,disable-modern=on");
+    // Transitional virtio-blk-pci: the module drives its modern layout.
+    cmd.arg("-device").arg("virtio-blk-pci,drive=vd0");
     cmd.arg("-drive").arg(format!(
         "if=none,id=vd1,format=raw,file={}",
         empty.display()
     ));
-    cmd.arg("-device")
-        .arg("virtio-blk-pci,drive=vd1,disable-modern=on");
+    cmd.arg("-device").arg("virtio-blk-pci,drive=vd1");
+    add_virtio_scsi(cmd, "virtio-scsi-pci");
     add_nvme(cmd);
     add_usb(cmd);
 }
@@ -379,6 +401,7 @@ fn add_virtio_blk_aarch64(cmd: &mut Command) {
         empty.display()
     ));
     cmd.arg("-device").arg("virtio-blk-device,drive=vd1");
+    add_virtio_scsi(cmd, "virtio-scsi-device");
     add_nvme(cmd);
     add_usb(cmd);
 }
@@ -723,16 +746,17 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path, Mode) 
     exit(if ok { 0 } else { 1 })
 }
 
-/// x86: the boot disk as a third legacy virtio-blk (`/dev/vdc/`, after
+/// x86: the boot disk as a third virtio-blk (`/dev/vdc/`, after
 /// `add_virtio_blk_x86`'s two, so the test disks keep their names), the one
 /// the firmware boots: myos sees it (`get-myos --upgrade` writes it), which
 /// an IDE disk it is not. Not NVMe: with 4 GiB of RAM SeaBIOS maps the NVMe
 /// BAR (64-bit) above 4 GiB, out of its reach, and finds no disk to boot;
-/// the legacy virtio-blk's BAR0 is I/O ports.
+/// the transitional virtio-blk keeps its legacy BAR0 in I/O ports for the
+/// firmware, and the modern layout the module drives beside it.
 fn add_boot_disk(cmd: &mut Command, image: &Path) {
     cmd.arg("-drive")
         .arg(format!("if=none,id=bootdisk,format=raw,file={}", image.display()));
-    cmd.arg("-device").arg("virtio-blk-pci,drive=bootdisk,disable-modern=on,bootindex=0");
+    cmd.arg("-device").arg("virtio-blk-pci,drive=bootdisk,bootindex=0");
 }
 
 fn qemu_aarch64(image: &Path, ci: bool) -> Command {

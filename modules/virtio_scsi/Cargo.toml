@@ -1,0 +1,30 @@
+[workspace]
+
+[package]
+name = "virtio_scsi"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "virtio-scsi kernel module: the disks of a virtio-scsi host as /dev/sd*."
+
+[[bin]]
+name = "virtio_scsi"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+myos-virtio = { path = "../virtio" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

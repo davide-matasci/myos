@@ -46,7 +46,7 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 34 made [`VfsStatInfo`]'s `size` 64 bits (sizes past 4 GiB).
 /// 35 added [`ModuleVfsOps::statfs`] and [`KernelApi::vfs_statfs`] (how
 /// full a filesystem is, [`VfsStatFs`]).
-pub const ABI_VERSION: u32 = 35;
+pub const ABI_VERSION: u32 = 36;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -621,7 +621,10 @@ pub struct KernelApi {
     /// Register a block device as `/dev/<name>` (`vda`, `nvme0n1`, …) and a
     /// `blk_*` device id. Returns the id (>= 0) or negative on error (table
     /// full, duplicate name). The kernel's `blk_read` / `blk_write` and the
-    /// filesystem modules then reach it through `ops`.
+    /// filesystem modules then reach it through `ops`. A name ending in
+    /// `?` (`sd?`) gets the lowest free letter of that family from the
+    /// kernel, whichever module registered the others; `blk_name` tells
+    /// which.
     pub blk_register: unsafe extern "C" fn(
         name: *const u8,
         name_len: usize,
@@ -837,6 +840,11 @@ pub struct KernelApi {
     /// How full the filesystem holding `path` (a real path, as
     /// `vfs_stat`'s) is: 0, or negative (no such file).
     pub vfs_statfs: unsafe extern "C" fn(path: StrRef, out: *mut VfsStatFs) -> i32,
+    // --- ABI 36 ---
+    /// The name of the block device `dev` (`blk_register`'s id), into
+    /// `out`: its length, or negative for no such disk. What a name
+    /// ending in `?` became (`sd?` -> `sdb`).
+    pub blk_name: unsafe extern "C" fn(dev: u32, out: *mut u8, cap: usize) -> i32,
 }
 
 /// Where a module keeps the table `module_init` received: set once there,
@@ -1287,6 +1295,11 @@ impl KernelApi {
 
     pub fn blk_unregister(&self, dev: u32) -> i32 {
         unsafe { (self.blk_unregister)(dev) }
+    }
+
+    /// The disk's name into `out`: its length, or negative.
+    pub fn blk_name(&self, dev: u32, out: &mut [u8]) -> i32 {
+        unsafe { (self.blk_name)(dev, out.as_mut_ptr(), out.len()) }
     }
 
     /// Other modules reach `table` as a `T` (`UsbHostOps` for [`USB_SERVICE`]).

@@ -42,7 +42,6 @@ struct Disk {
     capacity: u64,
     tag: u32,
     gone: bool,
-    name: [u8; 3],
 }
 
 static API: ApiCell = ApiCell::new();
@@ -261,18 +260,6 @@ unsafe extern "C" fn blk_capacity(ctx: usize) -> u64 {
     with_disk(ctx, |d| d.capacity).unwrap_or(0)
 }
 
-/// The lowest `sdX` letter no disk in the table uses.
-fn free_name() -> Option<[u8; 3]> {
-    let mut used = [false; 26];
-    for slot in &DISKS {
-        if let Some(d) = slot.lock().as_ref() {
-            used[usize::from(d.name[2] - b'a')] = true;
-        }
-    }
-    let letter = used.iter().position(|&u| !u)? as u8;
-    Some([b's', b'd', b'a' + letter])
-}
-
 unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceInfo) -> i32 {
     let (dev, intf) = unsafe { (&*dev, &*intf) };
     if intf.class != CLASS_MASS_STORAGE || intf.subclass != SUBCLASS_SCSI || intf.protocol != PROTOCOL_BULK_ONLY {
@@ -284,13 +271,9 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     let (Some(ep_in), Some(ep_out)) = (ep_in, ep_out) else {
         return -1;
     };
-    // Free any slot/name still held by a disk unplugged while busy and since
+    // Free any slot still held by a disk unplugged while busy and since
     // released, so a fresh plug reuses it instead of running the table out.
     reclaim_gone();
-    // The name before the slot: `free_name` looks at every slot.
-    let Some(name) = free_name() else {
-        return -1;
-    };
     let Some((slot, mut free)) = DISKS.iter().enumerate().find_map(|(i, s)| {
         let s = s.lock();
         s.is_none().then_some((i, s))
@@ -306,7 +289,6 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
         capacity: 0,
         tag: 0,
         gone: false,
-        name,
     });
     // INQUIRY (what it is; the answer is not needed), ready, capacity.
     let mut inquiry = [0u8; 36];
@@ -323,14 +305,18 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
         return -1;
     };
     d.capacity = capacity;
-    // `sdX`: always ASCII.
-    let id = api().blk_register(core::str::from_utf8(&name).unwrap_or_default(), &OPS, slot);
+    // `sd?`: the kernel picks the letter (SCSI disks are `sd*` too).
+    let id = api().blk_register("sd?", &OPS, slot);
     if id < 0 {
         status_fail(api(), "usb_storage: blk_register");
         *free = None;
         return -1;
     }
     d.blk = id;
+    let mut name = [0u8; 3];
+    if api().blk_name(id as u32, &mut name) != 3 {
+        name = *b"sd?";
+    }
     // `/proc/usb` names the disk on its interface's line.
     let _ = host().interface_label(dev.id, intf.number, &name);
     0

@@ -14,6 +14,7 @@ const MODULES: &[(&str, &str)] = &[
     ("pci_enum", "pci_enum"),
     ("acpi", "acpi"),
     ("virtio_blk", "virtio_blk"),
+    ("virtio_scsi", "virtio_scsi"),
     ("nvme", "nvme"),
     ("xhci", "xhci"),
     ("usb_hub", "usb_hub"),
@@ -218,8 +219,8 @@ fn nested_elf(
     if target.contains("x86_64")
         && matches!(
             bin,
-            "ext2" | "fat" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "virtio_blk" | "nvme" | "linux"
-                | "xhci" | "usb_hub" | "usb_storage"
+            "ext2" | "fat" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "virtio_blk" | "virtio_scsi" | "nvme"
+                | "linux" | "xhci" | "usb_hub" | "usb_storage"
         )
     {
         rustflags = String::from("-C panic=abort -C relocation-model=pic");

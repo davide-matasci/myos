@@ -1,0 +1,19 @@
+[package]
+name = "myos-virtio"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "What the virtio kernel modules share: the virtio-drivers Hal over the module ABI, PCI and virtio-mmio probing, interrupts."
+
+[lib]
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+# Virtqueues, the PCI and MMIO transports, the block and net devices (MIT,
+# rcore-os). Without `alloc`: the modules hand it their own DMA pages.
+virtio-drivers = { version = "0.13.0", default-features = false }
+# The crate reports through `log`: its warnings go to the console.
+log = "0.4"
